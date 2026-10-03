@@ -19,9 +19,11 @@ TUNNEL_NET=10.79.0.0/30
 CENGARDE_PORT=65500
 WG_PORT=65501
 PASSTHROUGH=no
-PASSTHROUGH_PORTS=1024:65000 # keep CENGARDE_PORT, WG_PORT and SSH outside
+PASSTHROUGH_PORTS=1024:65000
+SSH_PORT=22 # never forwarded, nor are CENGARDE_PORT and WG_PORT
 PUB_IF=
 CONF=${CENGARDE_NAT_CONF:-/etc/cengarde/nat.conf}
+# shellcheck source=/dev/null
 [ -r "$CONF" ] && . "$CONF"
 [ -n "$PUB_IF" ] || PUB_IF=$(ip -4 route show default |
 	awk '{ for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit } }')
@@ -62,6 +64,10 @@ rule "$1" $ins FORWARD -i "$WG_IF" -j ACCEPT
 rule "$1" $ins FORWARD -o "$WG_IF" -j ACCEPT
 rule "$1" -t nat $add POSTROUTING -s "$TUNNEL_NET" -o "$PUB_IF" -j MASQUERADE
 if [ "$PASSTHROUGH" = yes ] || [ "$1" = down ]; then
+	# Kept here even when inside PASSTHROUGH_PORTS: cengarde itself and SSH.
+	rule "$1" -t nat $add PREROUTING -i "$PUB_IF" -p udp --dport "$CENGARDE_PORT" -j RETURN
+	rule "$1" -t nat $add PREROUTING -i "$PUB_IF" -p udp --dport "$WG_PORT" -j RETURN
+	rule "$1" -t nat $add PREROUTING -i "$PUB_IF" -p tcp --dport "$SSH_PORT" -j RETURN
 	for proto in tcp udp; do
 		rule "$1" -t nat $add PREROUTING -i "$PUB_IF" -p "$proto" --dport "$PASSTHROUGH_PORTS" \
 			-j DNAT --to-destination "$CLIENT_IP"

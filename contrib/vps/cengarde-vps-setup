@@ -1,0 +1,66 @@
+#!/bin/sh
+# Writes the cengarde server and WireGuard configuration of a VPS from the
+# pairing secret the router generated. Both ends derive every key from that
+# secret ("cengarde keys"), so it is the only value they have to share.
+#
+#   cengarde-vps-setup [SECRET_FILE]      default /etc/cengarde/secret
+#
+# Writes /etc/cengarde/cengarde.conf and /etc/wireguard/wg0.conf. Ports come
+# from /etc/cengarde/nat.conf (CENGARDE_PORT, WG_PORT), as for cengarde-nat.
+# Run it again after changing the secret, then:
+#   systemctl restart wg-quick@wg0 cengarde
+#
+# SPDX-License-Identifier: GPL-2.0-only
+set -eu
+
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+SECRET_FILE=${1:-/etc/cengarde/secret}
+CENGARDE_PORT=65500
+WG_PORT=65501
+CONF=${CENGARDE_NAT_CONF:-/etc/cengarde/nat.conf}
+# shellcheck source=/dev/null
+[ -r "$CONF" ] && . "$CONF"
+
+if [ ! -s "$SECRET_FILE" ]; then
+	echo "cengarde-vps-setup: no secret in $SECRET_FILE (the router shows it in LuCI)" >&2
+	exit 1
+fi
+keys=$(cengarde keys < "$SECRET_FILE")
+eval "$keys"
+client_pub=$(printf '%s\n' "$CG_WG_CLIENT_KEY" | wg pubkey)
+
+umask 077
+mkdir -p /etc/cengarde /etc/wireguard
+
+cat > /etc/cengarde/cengarde.conf.new <<EOF
+# Written by cengarde-vps-setup from $SECRET_FILE; run it again instead of
+# editing the keys. Other settings: see engine/examples/server.conf.
+mode = server
+key = $CG_LINK_KEY
+listen = *:$CENGARDE_PORT
+wireguard = 127.0.0.1:$WG_PORT
+status_file = /run/cengarde/status.json
+# Lower latency for more CPU (docs/historias/006); fine on dedicated vCPUs.
+#busy_poll_us = 50
+EOF
+
+cat > /etc/wireguard/wg0.conf.new <<EOF
+# Written by cengarde-vps-setup from $SECRET_FILE.
+[Interface]
+Address = 10.79.0.1/30
+ListenPort = $WG_PORT
+PrivateKey = $CG_WG_SERVER_KEY
+MTU = 1380
+PostUp = /usr/local/sbin/cengarde-nat up %i
+PostDown = /usr/local/sbin/cengarde-nat down %i
+
+[Peer]
+# The router
+PublicKey = $client_pub
+PresharedKey = $CG_WG_PSK
+AllowedIPs = 10.79.0.2/32
+EOF
+
+mv /etc/cengarde/cengarde.conf.new /etc/cengarde/cengarde.conf
+mv /etc/wireguard/wg0.conf.new /etc/wireguard/wg0.conf
+echo "cengarde-vps-setup: wrote /etc/cengarde/cengarde.conf and /etc/wireguard/wg0.conf"
