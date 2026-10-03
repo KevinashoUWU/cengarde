@@ -11,23 +11,22 @@ todos los enlaces del cliente (p. ej. una Raspberry Pi con varios módems) hacia
 un servidor (VPS), y el otro extremo se queda con la primera copia. Objetivo
 del fork: motor en C (Linux primero: Pi, OpenWrt, VPS), luego eBPF opcional,
 empaquetado para OpenWrt y una web de administración nueva. Plan:
-`ROADMAP.md`. Estado: Fases 1 y 2 hechas en lo esencial (`engine/`, salud de
-enlaces); siguiente, binario para OpenWrt limpio (no SmoothWAN) y la Pi.
+`ROADMAP.md`. Estado: Fases 1 y 2 hechas en lo esencial; Fase 3 empezada
+(paquete OpenWrt y plantilla del VPS, sin probar aún en hardware real).
 
 ## Mapa del repo
 
 - `engine/`: motor C (`src/`, `tests/`, `examples/`, `README.md`).
-- `cmd/engarde-{client,server}/`: engarde Go de referencia, solo para medir.
-- `webmanager/` → `internal/assets/browser/`: UI Angular del Go (se sustituirá).
-- `bench/`: laboratorio netns/veth con `udpgen` (WireGuard falso). Ver
-  `bench/README.md`.
+- `openwrt/`: paquete del SDK y guía de instalación; `contrib/`: VPS
+  (cloud-init, NAT) y unidad systemd.
+- `cmd/`, `webmanager/`: engarde Go y su UI, de referencia (solo para medir).
+- `bench/`: laboratorio netns/veth con `udpgen` (WireGuard falso), ver su README.
 - `docs/historias/`: investigación y decisiones (índice abajo).
 
 ## Comandos
 
-- Motor: `make -C engine` y `make -C engine test`. También
-  `make -C engine SANITIZE=1 test` y, en cruzado,
-  `make CC=aarch64-linux-gnu-gcc`.
+- Motor: `make -C engine test`, `make -C engine SANITIZE=1 test` y, en
+  cruzado, `make CC=aarch64-linux-gnu-gcc`.
 - Laboratorio (root):
   - `bench/lab.sh build`, `smoke` y `health` (los que corre el CI),
     `compare` (Go frente a C), `latency` y `suite` (línea base Go);
@@ -36,8 +35,9 @@ enlaces); siguiente, binario para OpenWrt limpio (no SmoothWAN) y la Pi.
   En el contenedor cloud hace falta `apt-get install -y iproute2 strace`
   (`apt-get update` antes); su kernel no tiene IPv6, WireGuard ni
   `sch_netem`.
-- CI: `.github/workflows/engine.yml` (gcc/clang con `-Werror`, sanitizers,
-  qemu en aarch64/armhf/MIPS big-endian, humo y salud de enlaces en netns).
+- CI: `engine.yml` (gcc/clang con `-Werror`, sanitizers, qemu en
+  aarch64/armhf/MIPS big-endian, humo y salud en netns) y `openwrt.yml`
+  (paquetes con los SDK 25.12/24.10, tests con su musl).
 
 ## Reglas de trabajo
 
@@ -76,3 +76,4 @@ enlaces); siguiente, binario para OpenWrt limpio (no SmoothWAN) y la Pi.
 | [004](docs/historias/004-entorno-real.md) | Entorno real: Pi 4 (destino OpenWrt limpio), 4 enlaces 5G en VLAN, VPS Vultr | fijes objetivos de rendimiento o empaquetado |
 | [005](docs/historias/005-motor-c-v1.md) | Motor C v1: protocolo, arquitectura y medidas | toques `engine/` |
 | [006](docs/historias/006-salud-de-enlaces.md) | Salud de enlaces (silenciado, mudo), protocolo v2, baja latencia | toques las sondas, el reparto o las perillas de latencia |
+| [007](docs/historias/007-openwrt-y-vps.md) | Paquete OpenWrt, plantilla del VPS, SmoothWAN como referencia | empaquetes, instales o diseñes la LuCI |

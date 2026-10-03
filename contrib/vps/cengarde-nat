@@ -1,0 +1,70 @@
+#!/bin/sh
+# NAT for the WireGuard tunnel behind cengarde on a VPS, and optional port
+# passthrough: TCP and UDP PASSTHROUGH_PORTS arriving at the server's public
+# address are forwarded to the router at the other end of the tunnel, so
+# the site gets the server's public IP for inbound connections (the router
+# hands them on, e.g. with UPnP).
+#
+# Called by wg-quick:  PostUp = cengarde-nat up %i
+#                      PostDown = cengarde-nat down %i
+# Settings: /etc/cengarde/nat.conf (shell variables, defaults below), or the
+# file named by CENGARDE_NAT_CONF.
+#
+# SPDX-License-Identifier: GPL-2.0-only
+set -u
+
+WG_IF=${2:-wg0}
+CLIENT_IP=10.79.0.2
+TUNNEL_NET=10.79.0.0/30
+CENGARDE_PORT=65500
+WG_PORT=65501
+PASSTHROUGH=no
+PASSTHROUGH_PORTS=1024:65000 # keep CENGARDE_PORT, WG_PORT and SSH outside
+PUB_IF=
+CONF=${CENGARDE_NAT_CONF:-/etc/cengarde/nat.conf}
+[ -r "$CONF" ] && . "$CONF"
+[ -n "$PUB_IF" ] || PUB_IF=$(ip -4 route show default |
+	awk '{ for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit } }')
+
+case "${1:-}" in
+up)
+	ins=-I add=-A
+	;;
+down)
+	ins=-D add=-D
+	;;
+*)
+	echo "usage: $0 up|down [wireguard interface]" >&2
+	exit 2
+	;;
+esac
+if [ -z "$PUB_IF" ]; then
+	echo "cengarde-nat: no default route; set PUB_IF in /etc/cengarde/nat.conf" >&2
+	exit 1
+fi
+
+fail=0
+# "down" removes whatever is there and ignores rules already gone.
+rule() {
+	if [ "$1" = down ]; then
+		shift
+		iptables "$@" 2>/dev/null
+		return 0
+	fi
+	shift
+	iptables "$@" || fail=1
+}
+
+# Inserted first, so they also work next to ufw's own chains.
+rule "$1" $ins INPUT -i "$PUB_IF" -p udp --dport "$CENGARDE_PORT" -j ACCEPT
+rule "$1" $ins INPUT -i "$PUB_IF" -p udp --dport "$WG_PORT" -j DROP # only cengarde talks to WireGuard
+rule "$1" $ins FORWARD -i "$WG_IF" -j ACCEPT
+rule "$1" $ins FORWARD -o "$WG_IF" -j ACCEPT
+rule "$1" -t nat $add POSTROUTING -s "$TUNNEL_NET" -o "$PUB_IF" -j MASQUERADE
+if [ "$PASSTHROUGH" = yes ] || [ "$1" = down ]; then
+	for proto in tcp udp; do
+		rule "$1" -t nat $add PREROUTING -i "$PUB_IF" -p "$proto" --dport "$PASSTHROUGH_PORTS" \
+			-j DNAT --to-destination "$CLIENT_IP"
+	done
+fi
+exit "$fail"

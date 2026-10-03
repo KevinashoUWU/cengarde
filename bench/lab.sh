@@ -17,6 +17,7 @@ BIN=$LAB/bin
 RUN=$LAB/run
 CLIENT_BIN=${CLIENT_BIN:-$BIN/engarde-client}
 SERVER_BIN=${SERVER_BIN:-$BIN/engarde-server}
+CENGARDE_BIN=${CENGARDE_BIN:-$BIN/cengarde} # e.g. a wrapper that runs an OpenWrt build
 NLINKS=${NLINKS:-3}
 SIZE=${SIZE:-1400}
 WRITE_TIMEOUT=${WRITE_TIMEOUT:-10}
@@ -115,9 +116,9 @@ EOF
 
 start() {
 	if [ "$ENGINE" = c ]; then
-		ip netns exec srv "$BIN/cengarde" -c "$RUN/server.conf" >"$RUN/server.log" 2>&1 &
+		ip netns exec srv "$CENGARDE_BIN" -c "$RUN/server.conf" >"$RUN/server.log" 2>&1 &
 		echo $! >"$RUN/server.pid"
-		ip netns exec cli "$BIN/cengarde" -c "$RUN/client.conf" >"$RUN/client.log" 2>&1 &
+		ip netns exec cli "$CENGARDE_BIN" -c "$RUN/client.conf" >"$RUN/client.log" 2>&1 &
 		echo $! >"$RUN/client.pid"
 		sleep 1.5 # links come up from netlink at once; give the first probes time
 		return

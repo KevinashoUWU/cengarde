@@ -1,0 +1,74 @@
+#cloud-config
+# cengarde server on a VPS (written for Ubuntu 22.04/24.04 on Vultr; not run
+# on a real VPS yet). Generate the keys on the router first (see
+# openwrt/README.md), replace the four REPLACE_ values below and paste this
+# file as the cloud-init "user data" when creating the server.
+#
+# What it sets up:
+# - cengarde built from source, as a systemd service (UDP 65500);
+# - WireGuard (wg0, 10.79.0.1/30) behind cengarde: only cengarde talks to it,
+#   on 127.0.0.1:65501;
+# - NAT for the tunnel and, with PASSTHROUGH=yes in /etc/cengarde/nat.conf,
+#   TCP and UDP 1024-65000 forwarded to the router (10.79.0.2): the site gets
+#   this server's public IP for inbound connections.
+# SSH and the rest of the system are left as the provider set them up.
+#
+# Afterwards: systemctl status cengarde wg-quick@wg0,
+# cat /run/cengarde/status.json, wg show.
+
+package_update: true
+packages:
+  - wireguard-tools
+  - build-essential
+  - git
+  - iptables
+
+write_files:
+  - path: /etc/cengarde/cengarde.conf
+    permissions: '0600'
+    content: |
+      mode = server
+      # The output of "cengarde genkey", the same as on the router.
+      key = REPLACE_CENGARDE_KEY
+      listen = *:65500
+      wireguard = 127.0.0.1:65501
+      status_file = /run/cengarde/status.json
+      # Lower latency for more CPU (docs/historias/006); fine on dedicated vCPUs.
+      #busy_poll_us = 50
+  - path: /etc/wireguard/wg0.conf
+    permissions: '0600'
+    content: |
+      [Interface]
+      Address = 10.79.0.1/30
+      ListenPort = 65501
+      PrivateKey = REPLACE_WG_SERVER_PRIVATE_KEY
+      MTU = 1380
+      PostUp = /usr/local/sbin/cengarde-nat up %i
+      PostDown = /usr/local/sbin/cengarde-nat down %i
+
+      [Peer]
+      PublicKey = REPLACE_WG_CLIENT_PUBLIC_KEY
+      PresharedKey = REPLACE_WG_PRESHARED_KEY
+      AllowedIPs = 10.79.0.2/32
+  - path: /etc/cengarde/nat.conf
+    content: |
+      # Forward TCP and UDP PASSTHROUGH_PORTS to the router (yes or no).
+      # After a change: systemctl restart wg-quick@wg0
+      PASSTHROUGH=yes
+      PASSTHROUGH_PORTS=1024:65000
+  - path: /etc/sysctl.d/90-cengarde.conf
+    content: |
+      net.ipv4.ip_forward = 1
+      net.core.rmem_max = 26214400
+      net.core.wmem_max = 26214400
+      net.core.netdev_max_backlog = 2048
+
+runcmd:
+  - sysctl --system
+  - git clone --depth 1 https://github.com/KevinashoUWU/cengarde /opt/cengarde
+  - make -C /opt/cengarde/engine
+  - make -C /opt/cengarde/engine install PREFIX=/usr/local
+  - install -m 0755 /opt/cengarde/contrib/vps/cengarde-nat /usr/local/sbin/cengarde-nat
+  - install -m 0644 /opt/cengarde/contrib/systemd/cengarde.service /etc/systemd/system/cengarde.service
+  - systemctl daemon-reload
+  - systemctl enable --now wg-quick@wg0 cengarde

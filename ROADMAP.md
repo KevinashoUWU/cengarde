@@ -425,11 +425,30 @@ fuzzing, privilegios mínimos, binarios estáticos y prueba en la Pi real.
 
 ### Fase 3: producto (OpenWrt, empaquetado y web; 3–6 semanas, en paralelo con la 2)
 
+**Estado (2026-10-03):** empezada
+([historia 007](docs/historias/007-openwrt-y-vps.md)).
+- Hecho:
+  - el paquete `cengarde` para OpenWrt 25.12 (apk) y 24.10 (ipk), para la
+    Pi 4 y x86_64, en el CI;
+  - la plantilla cloud-init del VPS, con reenvío de puertos;
+  - la unidad systemd;
+  - la guía de instalación en `openwrt/README.md`.
+- Falta: UCI y LuCI, un feed firmado, más targets y la prueba en el hardware
+  real.
+
 - **OpenWrt.** El destino es OpenWrt limpio (24.10 y 25.12, kernel 6.x), no
   SmoothWAN, que está abandonado y se quedó en kernel 5.x (historia 004).
-  - Paquetes `cengarde` y `luci-app-cengarde`, reutilizando el esquema UCI de
-    `openwrt-engarde` para que migrar no cueste nada.
-  - Init de procd con respawn y sysctl para `rmem_max`.
+  - Paquetes `cengarde` (hecho) y `luci-app-cengarde`, reutilizando el
+    esquema UCI de `openwrt-engarde` para que migrar no cueste nada.
+  - Pestaña de LuCI con todo lo que hoy se hace a mano en
+    `openwrt/README.md` (pedido del usuario, referencia SmoothWAN):
+    - estado por enlace;
+    - elegir los uplinks;
+    - crear el túnel de WireGuard solo;
+    - **IP pass** sí/no: el VPS reenvía los puertos 1024–65000 al router, y
+      UPnP en el router los reparte a la LAN para tener la IP pública del VPS
+      en terreno.
+  - Init de procd con respawn (hecho) y sysctl para `rmem_max`.
   - Feed propio (ipk para 24.10 y apk para 25.12) construido con el SDK en
     GitHub Actions para los targets habituales: `aarch64_cortex-a53`,
     `aarch64_cortex-a72`, `arm_cortex-a7_neon-vfpv4`, `mipsel_24kc` y
@@ -437,7 +456,9 @@ fuzzing, privilegios mínimos, binarios estáticos y prueba en la Pi real.
 - **Raspberry Pi OS, Debian y VPS.**
   - Binarios estáticos y `.deb`.
   - Unidad systemd endurecida (`AmbientCapabilities=CAP_NET_RAW
-    CAP_NET_ADMIN`, `ProtectSystem=strict`…).
+    CAP_NET_ADMIN`, `ProtectSystem=strict`…): hecha, en `contrib/systemd/`.
+  - Plantilla cloud-init para el VPS con WireGuard, NAT y reenvío de puertos:
+    hecha, en `contrib/vps/`.
   - Imagen Docker mínima para el servidor.
 - **API JSON versionada** (`/api/v2`), contrato único para la CLI, LuCI y la
   web.
@@ -456,6 +477,8 @@ fuzzing, privilegios mínimos, binarios estáticos y prueba en la Pi real.
 - **Alta estilo Tailscale:** `cengarde server init` genera las claves de
   WireGuard y una URL o un QR que el cliente importa para configurar
   WireGuard y cengarde de una vez. Es el quinto deseo del autor original.
+  - Como en SmoothWAN, bastará un solo secreto, pero de 256 bits
+    (`cengarde genkey`), no una contraseña de 8 caracteres (historia 007).
 
 **Salida:**
 - en OpenWrt se instala con un comando y se configura entero desde LuCI;

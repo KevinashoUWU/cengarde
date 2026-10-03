@@ -1,0 +1,103 @@
+name: OpenWrt
+
+# Builds the cengarde package with the official OpenWrt SDKs (25.12: .apk,
+# 24.10: .ipk) for the Raspberry Pi 4 and x86_64, runs the unit tests with
+# each target's own musl, and the netns smoke test with the x86_64 build.
+# The packages are uploaded as artifacts of the run.
+
+on:
+  push:
+    paths:
+      - 'engine/**'
+      - 'openwrt/**'
+      - 'bench/**'
+      - '.github/workflows/openwrt.yml'
+  pull_request:
+    paths:
+      - 'engine/**'
+      - 'openwrt/**'
+      - 'bench/**'
+      - '.github/workflows/openwrt.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ['25.12.5', '24.10.8']
+        target: ['bcm27xx/bcm2711', 'x86/64']
+        include:
+          - target: 'bcm27xx/bcm2711'
+            arch: aarch64_cortex-a72
+          - target: 'x86/64'
+            arch: x86_64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the SDK prerequisites
+        run: sudo apt-get update && sudo apt-get install -y zstd rsync gawk qemu-user iproute2
+
+      - name: Find the SDK
+        id: sdk
+        run: |
+          base=https://downloads.openwrt.org/releases/${{ matrix.release }}/targets/${{ matrix.target }}
+          curl -fsS "$base/sha256sums" -o sums
+          line=$(grep ' \*openwrt-sdk-.*\.tar\.zst$' sums)
+          name=${line##*\*}
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "url=$base/$name" >> "$GITHUB_OUTPUT"
+          echo "sha=${line%% *}" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the SDK
+        uses: actions/cache@v4
+        with:
+          path: sdk.tar.zst
+          key: ${{ steps.sdk.outputs.name }}
+
+      - name: Unpack the SDK
+        run: |
+          [ -f sdk.tar.zst ] || curl -fsS -o sdk.tar.zst "${{ steps.sdk.outputs.url }}"
+          echo "${{ steps.sdk.outputs.sha }}  sdk.tar.zst" | sha256sum -c
+          mkdir sdk
+          tar --zstd -xf sdk.tar.zst -C sdk --strip-components=1
+
+      - name: Build the package
+        run: |
+          ln -s "$GITHUB_WORKSPACE/openwrt/cengarde" sdk/package/cengarde
+          make -C sdk defconfig
+          make -C sdk package/cengarde/compile V=s
+
+      - name: Unit tests with the target's musl
+        run: |
+          export STAGING_DIR=$PWD/sdk/staging_dir
+          tc=$(echo "$STAGING_DIR"/toolchain-*)
+          make -C engine CC="$(echo "$tc"/bin/*-openwrt-linux-musl-gcc)" CFLAGS="-Os -Werror" \
+            HARDEN= HARDEN_LDFLAGS= cengarde-test
+          if [ "${{ matrix.arch }}" = x86_64 ]; then
+            "$tc"/lib/ld-musl-x86_64.so.1 --library-path "$tc/lib" engine/cengarde-test
+          else
+            qemu-aarch64 -L "$tc" engine/cengarde-test
+          fi
+
+      - name: Smoke test of the OpenWrt build in network namespaces
+        if: matrix.arch == 'x86_64'
+        run: |
+          tc=$(echo "$PWD"/sdk/staging_dir/toolchain-*)
+          bin=$(find "$PWD/sdk/build_dir" -path '*/.pkgdir/cengarde/usr/sbin/cengarde')
+          printf '#!/bin/sh\nexec %s --library-path %s %s "$@"\n' \
+            "$tc/lib/ld-musl-x86_64.so.1" "$tc/lib" "$bin" > cengarde-musl
+          chmod +x cengarde-musl
+          ./cengarde-musl version
+          sudo ENGINE=c bench/lab.sh build
+          sudo CENGARDE_BIN="$PWD/cengarde-musl" bench/lab.sh smoke
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cengarde-openwrt-${{ matrix.release }}-${{ matrix.arch }}
+          path: sdk/bin/packages/*/base/cengarde*
+          if-no-files-found: error

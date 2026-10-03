@@ -1,0 +1,46 @@
+# cengarde as a systemd service: the server on a VPS, or a client on a Linux
+# box. The configuration holds the shared key, so it stays root-only (0600)
+# and systemd hands a copy to the unprivileged service user as a credential.
+# Needs systemd 248 or newer (Ubuntu 22.04, Debian 12).
+#
+#   install -m 0644 contrib/systemd/cengarde.service /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now cengarde
+#
+# Status: set "status_file = /run/cengarde/status.json" in the configuration.
+
+[Unit]
+Description=cengarde, redundant multi-link transport for WireGuard
+Documentation=https://github.com/KevinashoUWU/cengarde
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+DynamicUser=yes
+LoadCredential=cengarde.conf:/etc/cengarde/cengarde.conf
+ExecStart=/usr/local/sbin/cengarde -c %d/cengarde.conf
+Restart=always
+RestartSec=2
+RuntimeDirectory=cengarde
+# CAP_NET_ADMIN: large socket buffers (SO_RCVBUFFORCE). CAP_NET_RAW: a client
+# binds each uplink socket to its interface. CAP_SYS_NICE: rt_priority.
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW CAP_SYS_NICE
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_SYS_NICE
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
