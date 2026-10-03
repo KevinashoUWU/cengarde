@@ -58,6 +58,7 @@ sudo bench/lab.sh teardown
 | `PROTO` | vacío | `c` o `dedup`: usa `protoclient` (C) en vez del cliente Go |
 | `CLIENT_BIN` / `SERVER_BIN` | `bench/bin/engarde-*` | probar otros binarios de engarde |
 | `CLIENT_EXTRA` / `SERVER_EXTRA` | vacío | ajustes extra de cengarde, `clave = valor` separados por `;` (p. ej. `busy_poll_us = 50`) |
+| `CENGARDE_BIN` | `bench/bin/cengarde` | otro binario de cengarde, p. ej. un envoltorio que ejecuta la compilación de OpenWrt con su musl (historia 007) |
 
 Demos de los problemas descritos en el roadmap: `demo_stranger` (el servidor
 envía el tráfico del túnel a cualquiera que le mande un paquete),
