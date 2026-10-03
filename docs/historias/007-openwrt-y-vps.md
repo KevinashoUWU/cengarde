@@ -27,7 +27,8 @@
     systemd sin privilegios y monta el NAT.
   - Reenvía los puertos 1024–65000 al router (el «IP pass» de SmoothWAN).
   - Las reglas de NAT y reenvío están probadas en namespaces.
-- **Sin probar todavía** en un router ni en un VPS reales, y sin LuCI.
+- **Sin probar todavía** en un router ni en un VPS reales. La UCI, la LuCI
+  y el emparejamiento con un secreto llegaron después: historia 008.
 - **SmoothWAN marca qué tiene que hacer la LuCI:**
   - emparejar con el VPS desde el router;
   - IP pass con UPnP;
@@ -57,9 +58,11 @@ el cloud-config que SmoothWAN usa para el VPS y pidió dos cosas:
   `0.2.0-r1-g<commit>`.
 - **Flags:** se usan las del SDK, incluido su hardening; se anulan las del
   motor con `HARDEN=`.
-- **Configuración:** INI, por ahora sin UCI. Se instala la plantilla
-  `engine/examples/client.conf` como conffile 0600, con el estado en
+- **Configuración:** INI, sin UCI, con la plantilla
+  `engine/examples/client.conf` como conffile 0600 y el estado en
   `/var/run/cengarde.json` (tmpfs).
+  - Desde la versión 0.3 es UCI (`/etc/config/cengarde`) y el INI se genera
+    (historia 008).
 - **Servicio procd:**
   - se reinicia cada 5 s para siempre;
   - no arranca mientras la clave sea la de la plantilla;
@@ -93,7 +96,7 @@ el cloud-config que SmoothWAN usa para el VPS y pidió dos cosas:
     atacar por fuerza bruta sin conexión: el `mac1` depende de la clave
     pública del servidor, así que basta probar ~65⁸ ≈ 3·10¹⁴ contraseñas.
   - Plan: un solo secreto de 256 bits (`cengarde genkey`) del que la LuCI
-    derive todo (Fase 3).
+    derive todo. Hecho con BLAKE2s (historia 008).
 - **systemd:**
   - `DynamicUser` con la configuración pasada como credencial
     (`LoadCredential`), así que el archivo sigue siendo solo de root;
@@ -114,8 +117,9 @@ el cloud-config que SmoothWAN usa para el VPS y pidió dos cosas:
 ### Router (`openwrt/README.md`)
 
 - **Uplinks:** uno por VLAN (`eth1.<vid>`), por DHCP, cada uno con **su
-  métrica**. Con dos rutas por defecto de igual métrica, el kernel rechaza la
-  segunda y ese enlace se queda sin camino al VPS.
+  métrica**. Con dos rutas por defecto de igual métrica, netifd deja una sola
+  (observado en la VM de la historia 008: queda la del último en subir), y
+  los demás enlaces se quedan sin camino al VPS.
 - **DNS:** `peerdns 0` en los uplinks, porque muchas operadoras solo
   contestan a sus clientes, y DNS públicos en wg0.
 - **WireGuard:** endpoint `127.0.0.1:59401`, MTU 1380 y
@@ -156,18 +160,21 @@ el cloud-config que SmoothWAN usa para el VPS y pidió dos cosas:
 - crear y actualizar wg0 automáticamente;
 - IP pass sí/no y UPnP sí/no.
 
-**Pregunta abierta:** cómo activa el router el IP pass, que vive en el VPS.
+**Pregunta:** cómo activa el router el IP pass, que vive en el VPS.
 Opciones:
 - un mensaje de control autenticado en el protocolo, con el servidor
   aplicando nftables;
 - un agente en el VPS;
 - dejarlo en el VPS y mostrar la instrucción.
 
+**Decidido** (historia 008): por ahora queda en el VPS. El cloud-config que
+entrega LuCI sigue al interruptor; el mensaje de control queda pendiente.
+
 ## Pendiente
 
 - **Hardware real:** probar en la Pi 4 con OpenWrt 25.12 y en Vultr, y medir
   CPU por paquete en la Pi con el mismo método que el laboratorio.
-- **UCI y LuCI.**
+- ~~UCI y LuCI~~: hechas (historia 008).
 - **Feed firmado**, para instalar con `apk add` sin `--allow-untrusted`.
 - **Binarios estáticos** (musl) para Linux sin OpenWrt: Raspberry Pi OS u
   otras distribuciones.
@@ -178,3 +185,7 @@ Opciones:
 ## Cambios
 
 - 2026-10-03: creada.
+- 2026-10-03: UCI, LuCI y emparejamiento con un secreto (historia 008).
+  - La pregunta del IP pass queda decidida.
+  - La métrica repetida: netifd deja una sola ruta por defecto, no las
+    rechaza.

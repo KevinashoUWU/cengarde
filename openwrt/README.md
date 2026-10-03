@@ -1,212 +1,309 @@
 # cengarde en OpenWrt (y su VPS)
 
-Guía para la primera prueba en un OpenWrt limpio (25.12 o 24.10) con un VPS
-Ubuntu. El paquete se compila con los SDK oficiales de OpenWrt y ya está
-validado con su libc (tests unitarios y laboratorio). **Todavía no se ha
-probado en un router ni en un VPS reales**, y no hay interfaz LuCI: la
-configuración es el archivo INI. Decisiones y verificaciones en la
-[historia 007](../docs/historias/007-openwrt-y-vps.md).
+Un router OpenWrt (la Pi 4, un PC x86) que suma varios enlaces y un VPS
+que recibe. Todo se configura desde LuCI, en **Servicios → cengarde**, y
+ambos extremos comparten un solo secreto, del que salen todas las claves.
 
-Esquema: el WireGuard del router envía a cengarde en `127.0.0.1:59401`.
-cengarde duplica cada paquete por todos los uplinks hacia el VPS
-(UDP 65500), y allí otro cengarde entrega la primera copia al WireGuard del
-VPS. El túnel usa `10.79.0.1` (VPS) y `10.79.0.2` (router).
+**Estado:** probado de punta a punta en QEMU con dos VMs OpenWrt (router y
+un «VPS»):
+- configuración solo desde LuCI, con Playwright;
+- túnel arriba por tres enlaces, sin pérdidas al caer uno;
+- desactivar deja el router como estaba.
 
-## 1. El paquete
+El CI repite la prueba en cada cambio (`test/e2e.sh`). Falta probarlo en la
+Pi 4 y en un VPS reales. Decisiones en las historias
+[007](../docs/historias/007-openwrt-y-vps.md) y
+[008](../docs/historias/008-luci-uci-y-emparejamiento.md).
 
-**Del CI:** en GitHub, Actions → *OpenWrt* → la ejecución más reciente →
-*Artifacts*:
+```
+LAN ── router OpenWrt ══ enlace 1 ══╗
+       WireGuard wgcg   ══ enlace 2 ══╬══ VPS: cengarde → WireGuard wg0 → Internet
+       └→ cengarde      ══ enlace 3 ══╝   (cada paquete por todos; gana la primera copia)
+```
 
-| Artefacto | Para | Formato |
+## En cinco pasos
+
+1. **Instala** la imagen lista o los paquetes (sección 1).
+2. **Crea una interfaz por enlace** (módem o VLAN), con DHCP (sección 2).
+3. **Crea el VPS** pegando el cloud-config que muestra LuCI (sección 3).
+4. **Activa:** en LuCI, la IP del VPS, los enlaces y *Activado*, y luego
+   *Guardar y aplicar* (sección 4).
+5. **Mira** *Servicios → cengarde → Estado* (sección 5).
+
+## 1. Instalar
+
+### Imagen lista (lo más fácil)
+
+En GitHub: *Releases* (cuando haya un tag), o *Actions → OpenWrt* → la
+ejecución más reciente → *Artifacts*.
+
+| Artefacto | Para | Archivo |
 | --- | --- | --- |
-| `cengarde-openwrt-25.12.5-aarch64_cortex-a72` | Raspberry Pi 4 con OpenWrt 25.12 | `.apk` |
-| `cengarde-openwrt-25.12.5-x86_64` | PC x86 (p. ej. el J4005) con 25.12 | `.apk` |
-| `cengarde-openwrt-24.10.8-*` | lo mismo con OpenWrt 24.10 | `.ipk` |
+| `cengarde-firmware-25.12.5-rpi-4` | Raspberry Pi 4 / 400 / CM4 | `…-rpi-4-ext4-factory.img.gz` a la microSD |
+| `cengarde-firmware-25.12.5-generic` | PC x86-64 (p. ej. el J4005) | `…-combined-efi.img.gz` (UEFI) o `…-combined.img.gz` (BIOS) |
 
-**O compilado con el SDK** (de
-`https://downloads.openwrt.org/releases/<versión>/targets/<target>/`; la Pi 4
-es `bcm27xx/bcm2711` y un PC es `x86/64`):
+Es OpenWrt 25.12.5 oficial más:
+- cengarde y su página de LuCI;
+- LuCI en español;
+- WireGuard;
+- UPnP (miniupnpd y su página);
+- drivers de adaptadores Ethernet USB: Realtek r8152/r8153/r8156, ASIX
+  AX88179 y CDC Ethernet (módems HiLink, tethering).
+
+**Instalar la imagen:**
+- **Grabar:** descomprímela y grábala con balenaEtcher o
+  `gunzip -c … | dd of=/dev/sdX bs=4M`.
+- **Entrar:** a `http://192.168.1.1`, usuario `root` y sin contraseña.
+  Ponle una de inmediato: *Sistema → Administración*.
+- **Desde un OpenWrt que ya tienes:** usa la imagen `-sysupgrade` en
+  *Sistema → Copia de seguridad / Grabar firmware*, que conserva la
+  configuración.
+
+Cada router genera su propio secreto en el primer arranque.
+
+### Paquetes en un OpenWrt que ya tienes
+
+El artefacto `cengarde-openwrt-<versión>-<arquitectura>` trae tres
+paquetes:
+- `cengarde`;
+- `luci-app-cengarde`;
+- `luci-i18n-cengarde-es`.
+
+| Arquitectura | Equipo |
+| --- | --- |
+| `aarch64_cortex-a72` | Pi 4 |
+| `x86_64` | PC |
+
+Cópialos al router (`scp` a `/tmp`) e instálalos:
 
 ```sh
-tar --zstd -xf openwrt-sdk-*.tar.zst && cd openwrt-sdk-*/
-ln -s /ruta/a/cengarde/openwrt/cengarde package/cengarde
-make defconfig && make package/cengarde/compile
-ls bin/packages/*/base/cengarde*
+apk update && apk add --allow-untrusted /tmp/*cengarde*.apk   # OpenWrt 25.12
+opkg update && opkg install /tmp/*cengarde*.ipk               # OpenWrt 24.10
+apk add miniupnpd-nftables luci-app-upnp                      # para IP pass (24.10: opkg install)
 ```
 
-**Instalación** (copia el archivo al router, por ejemplo con `scp` a `/tmp`):
+Las dependencias salen de los repositorios oficiales: WireGuard
+(`wireguard-tools`, `kmod-wireguard`) y `luci-proto-wireguard`.
+`--allow-untrusted` hace falta porque los paquetes no vienen de un feed
+firmado (pendiente).
+
+## 2. Los enlaces
+
+Una interfaz por módem o VLAN, con DHCP: *Red → Interfaces → Añadir
+interfaz*. Si el módem entrega la conexión por Ethernet en una VLAN, el
+dispositivo es `eth1.<vid>`.
+
+Por consola, para cuatro VLAN en un adaptador USB (ajusta nombres e IDs):
 
 ```sh
-apk add --allow-untrusted /tmp/cengarde-0.2.0-r1.apk      # OpenWrt 25.12
-opkg install /tmp/cengarde_0.2.0-r1_*.ipk                 # OpenWrt 24.10
+for spec in wom:10 entel:20 claro:30 movistar:40; do   # nombre:vlan
+	uci set network.${spec%%:*}=interface
+	uci set network.${spec%%:*}.proto='dhcp'
+	uci set network.${spec%%:*}.device="eth1.${spec#*:}"
+done
+uci commit network && service network reload
 ```
 
-El paquete instala:
-- `/usr/sbin/cengarde`;
-- el servicio `/etc/init.d/cengarde` (procd: reinicia solo y manda los logs
-  a `logread`). No arranca mientras la clave siga sin poner;
-- la configuración `/etc/cengarde/cengarde.conf`: una plantilla de cliente,
-  con permisos 0600 porque lleva la clave, y el estado en
-  `/var/run/cengarde.json`.
-
-## 2. Claves (en el router)
-
-Todas las claves se generan en el router, son aleatorias, y cuatro de ellas
-van luego a la plantilla del VPS:
-
-```sh
-apk update && apk add kmod-wireguard wireguard-tools   # 24.10: opkg update && opkg install ...
-mkdir -p /etc/cengarde && cd /etc/cengarde && umask 077
-cengarde genkey > cengarde.key
-wg genkey | tee wg-client.key | wg pubkey > wg-client.pub
-wg genkey | tee wg-server.key | wg pubkey > wg-server.pub
-wg genpsk > wg.psk
-echo "REPLACE_CENGARDE_KEY          $(cat cengarde.key)"
-echo "REPLACE_WG_SERVER_PRIVATE_KEY $(cat wg-server.key)"
-echo "REPLACE_WG_CLIENT_PUBLIC_KEY  $(cat wg-client.pub)"
-echo "REPLACE_WG_PRESHARED_KEY      $(cat wg.psk)"
-```
+- **No hace falta tocar nada más:** cengarde pone a cada enlace una métrica
+  propia, apaga los DNS de la operadora y los mete en la zona `wan` (ver
+  sección 4).
+- **Si el adaptador no aparece** en `ip link`, instala su driver; la imagen
+  ya trae los comunes.
+- **Sin interfaces IPv6 (DHCPv6) en los enlaces:** el túnel lleva solo IPv4
+  por ahora, y la LAN saldría por fuera de él con IPv6.
 
 ## 3. El VPS
 
-1. **Plantilla:** abre
-   [`contrib/vps/cloud-config.yaml`](../contrib/vps/cloud-config.yaml) y
-   cambia los cuatro `REPLACE_` por los valores del paso 2.
-   - El reenvío de puertos (sección 7) viene activado: `PASSTHROUGH=yes`.
-2. **Crear el servidor:** en Vultr, Ubuntu 22.04 o 24.04; pega la plantilla
-   en *Cloud-Init User-Data*.
-   - El servicio usa un solo hilo, así que importa la frecuencia de la CPU,
-     no el número de núcleos.
-3. **Comprobar:** a los pocos minutos (compila cengarde desde el código), por
-   SSH:
+1. **Copia el cloud-config:** en LuCI, *Servicios → cengarde →
+   Configuración → VPS*, usa *Copiar* o *Descargar*.
+   - Lleva el secreto y fija el mismo commit de cengarde que tiene el router,
+     para que ambos hablen el mismo protocolo.
+   - Sigue lo que marques en el formulario aunque no hayas guardado; por
+     ejemplo, *IP pass*.
+2. **Crea el VPS:** en Vultr, *Deploy → Cloud Compute*. Para el modo de
+   servicio de un solo hilo conviene la CPU más rápida: *CPU Optimized* o
+   *High Frequency*.
+   - Elige **Ubuntu 24.04** o 22.04.
+   - Pega el texto en *Cloud-Init User-Data*.
+   - Si usas un *Firewall Group* de Vultr, abre UDP 65500, y también los
+     puertos que reenvíes con IP pass.
+3. **Espera unos minutos:** compila cengarde. Luego, por SSH:
 
    ```sh
    systemctl status cengarde wg-quick@wg0
+   tail /var/log/cloud-init-output.log
    cat /run/cengarde/status.json
    ```
 
-Qué deja montado:
-- cengarde como servicio de systemd con usuario sin privilegios
-  ([`contrib/systemd/cengarde.service`](../contrib/systemd/cengarde.service));
-- WireGuard escuchando solo para cengarde;
-- NAT para el túnel;
-- `sysctl` (`ip_forward` y buffers).
+**Qué deja montado:**
+- cengarde como servicio de systemd sin privilegios;
+- WireGuard solo para cengarde (`127.0.0.1:65501`);
+- NAT y, con IP pass, el reenvío de puertos.
 
-A diferencia de la plantilla de SmoothWAN, no desactiva SSH ni el
-cortafuegos: añade sus propias reglas por delante.
+No desactiva SSH ni su cortafuegos. Detalle en
+[`contrib/vps/`](../contrib/vps/): `install.sh` instala,
+`cengarde-vps-setup` deriva las claves del secreto y `cengarde-nat` hace el
+NAT.
 
-## 4. Los uplinks (en el router)
+## 4. Activar
 
-Si el adaptador USB no aparece (`ip link`), instala su driver primero:
-- `kmod-usb-net-rtl8152` para los Realtek;
-- `kmod-usb-net-asix-ax88179` para los ASIX.
+En *Servicios → cengarde → Configuración*, pestaña *General*:
+- **Activado;**
+- **Dirección del VPS:** su IP pública. Tiene que ser una IP, no un nombre:
+  con todo el tráfico por el túnel, el nombre no se podría resolver;
+- **Enlaces:** los del paso 2.
 
-Cada VLAN es una interfaz DHCP. Cada una necesita **su propia métrica**: si
-dos rutas por defecto tienen la misma, el kernel rechaza la segunda y ese
-enlace se queda sin camino al VPS. Los DNS de las operadoras se ignoran
-(`peerdns 0`), porque muchas solo contestan a sus propios clientes y las
-consultas irán por el túnel. Ajusta los nombres y los VLAN ID:
+Luego *Guardar y aplicar*. Desde ese momento cengarde mantiene en la
+configuración del router:
 
-```sh
-for spec in wom:10:10 entel:20:20 claro:30:30 movistar:40:40; do  # nombre:vlan:métrica
-	name=${spec%%:*}; rest=${spec#*:}; vid=${rest%%:*}; metric=${rest#*:}
-	uci set network.$name=interface
-	uci set network.$name.proto='dhcp'
-	uci set network.$name.device="eth1.$vid"
-	uci set network.$name.metric="$metric"
-	uci set network.$name.peerdns='0'
-done
-WAN=$(uci show firewall | sed -n "s/^firewall\.\([^.]*\)\.name='wan'$/\1/p")
-for n in wom entel claro movistar wg0; do uci add_list firewall.$WAN.network=$n; done
-uci commit firewall
-```
+| Dónde | Qué | ¿Se deshace al desactivar? |
+| --- | --- | --- |
+| Red | interfaz `wgcg` (WireGuard, `10.79.0.2/30`) con las claves del secreto; su par `cengarde_vps` apunta a cengarde en `127.0.0.1` | sí |
+| Rutas | `0.0.0.0/1` y `128.0.0.0/1` por `wgcg`: le ganan a cualquier ruta por defecto sin borrarlas, y cada enlace conserva la suya para cengarde | sí |
+| Enlaces | una métrica propia a cada uno (con la misma métrica, netifd deja una sola ruta por defecto) | no: no estorba |
+| Enlaces | `peerdns 0`: los DNS de la operadora irían por el VPS y suelen rechazarlo; se usan los de la pestaña *Túnel* | sí |
+| Cortafuegos | `wgcg`, y los enlaces que no tengan zona, en la zona `wan` | `wgcg` sí, los enlaces no |
+| UPnP | con IP pass: miniupnpd sobre `wgcg`, con la IP del VPS como externa | sí |
 
-cengarde no necesita mwan3: ata cada socket a su interfaz y usa la ruta por
-defecto de esa interfaz.
+**Otros detalles:**
+- **Sin dirección del VPS o sin enlaces** no se crea el túnel, para no
+  dejar el router sin salida.
+- **Desinstalar** el paquete también lo deshace todo.
+- **Pestaña Avanzado:** las perillas del motor (silenciado de enlaces
+  lentos, sondas, sondeo activo); valen los valores por defecto.
 
-## 5. WireGuard (en el router)
+## 5. Estado
 
-```sh
-uci set network.wg0=interface
-uci set network.wg0.proto='wireguard'
-uci set network.wg0.private_key="$(cat /etc/cengarde/wg-client.key)"
-uci add_list network.wg0.addresses='10.79.0.2/30'
-uci set network.wg0.mtu='1380'
-uci add_list network.wg0.dns='1.1.1.1'
-uci add_list network.wg0.dns='9.9.9.9'
-uci set network.vps=wireguard_wg0
-uci set network.vps.public_key="$(cat /etc/cengarde/wg-server.pub)"
-uci set network.vps.preshared_key="$(cat /etc/cengarde/wg.psk)"
-uci set network.vps.endpoint_host='127.0.0.1'
-uci set network.vps.endpoint_port='59401'
-uci set network.vps.persistent_keepalive='25'
-uci set network.vps.route_allowed_ips='1'
-uci add_list network.vps.allowed_ips='0.0.0.0/0'
-uci commit network
-```
+*Servicios → cengarde → Estado* se actualiza cada 3 s:
+- **Servicio:** si está en marcha.
+- **Túnel WireGuard:** último handshake.
+- **Tráfico** y copias duplicadas descartadas.
+- **Por enlace:**
+  - estado: activo, silenciado o sin respuesta;
+  - RTT;
+  - *atraso frente al más rápido*: pasado el límite, el enlace se silencia;
+  - si el VPS lo usa para bajar;
+  - qué parte de la bajada llegó primero por él.
+- **Avisos:** falta la IP, un enlace caído, el motor detenido…
 
-- **Toda la LAN sale por el túnel:** `allowed_ips 0.0.0.0/0`.
-- **MTU 1380:** deja sitio a la cabecera de cengarde (24 B) en redes
-  móviles. Si algo se atasca con paquetes grandes, baja a 1280.
-
-## 6. cengarde (en el router)
+Por consola:
 
 ```sh
-cd /etc/cengarde
-sed -i "s|^key = .*|key = $(cat cengarde.key)|; s|^server = .*|server = IP_DEL_VPS:65500|" cengarde.conf
-vi cengarde.conf      # interfaces = eth1.* y, si quieres, [link eth1.10] label = WOM ...
-cengarde -t -c cengarde.conf
-/etc/init.d/cengarde enable && /etc/init.d/cengarde start
-service network restart && service firewall restart
+cengarde-setup status     # lo mismo que la página, en JSON
+logread -e cengarde       # "link eth1.10 (wom) up ..." por enlace
+wg show wgcg              # handshake con el VPS
+ping -c 3 10.79.0.1       # el VPS a través del túnel
 ```
 
-- Pon en `server` la **IP** del VPS, no un nombre: al arrancar, el router
-  todavía no tiene DNS (va por el túnel).
-- Si aun así no puede arrancar, procd lo reintenta cada 5 s.
+## IP pass (la IP pública del VPS en terreno)
 
-**Comprobar:**
+**En el VPS:** el TCP y el UDP de los puertos 1024–65000 que llegan a su IP
+se reenvían al router, con la IP de origen intacta. El puerto de cengarde,
+el de WireGuard y el SSH nunca se reenvían.
+
+**En el router:**
+- miniupnpd entrega esos puertos a los equipos de la LAN que los piden:
+  consolas, P2P, cámaras;
+- un reenvío fijo se hace en *Red → Cortafuegos → Reenvíos de puertos*,
+  desde la zona `wan`.
+
+**Activarlo:**
+- En LuCI: pestaña *Túnel*, *IP pass*. Requiere «enrutar todo el tráfico
+  por el túnel».
+- **En el VPS va en el cloud-config** (`PASSTHROUGH=yes`), que sigue al
+  interruptor.
+- **Para cambiarlo con el VPS ya creado:** edita `PASSTHROUGH` en
+  `/etc/cengarde/nat.conf` y ejecuta `systemctl restart wg-quick@wg0`. El
+  router todavía no se lo puede pedir al VPS (historia 008).
+
+## Por consola (sin LuCI)
 
 ```sh
-logread -e cengarde        # "link eth1.10 up ..." por cada uplink
-cat /var/run/cengarde.json # estado, RTT y salud de cada enlace
-wg show                    # "latest handshake" reciente
-ping -c 3 10.79.0.1        # el VPS a través del túnel
+uci set cengarde.main.server='203.0.113.10'          # la IP del VPS
+uci add_list cengarde.main.uplink='wom'              # uno por enlace
+uci set cengarde.main.enabled='1'
+uci commit cengarde && /etc/init.d/cengarde reload
+cengarde-setup cloud-config > vps.yaml               # el user data del VPS
 ```
 
-## 7. IP pública en terreno (reenvío de puertos y UPnP)
+- **Todas las opciones**, comentadas: `/etc/config/cengarde`.
+- **`config_file`:** usa un archivo INI propio en lugar del generado. Sirve,
+  por ejemplo, para un servidor OpenWrt.
+- **Configuración que se genera:** `/var/etc/cengarde.conf`.
 
-**En el VPS** (`PASSTHROUGH=yes`, activado por defecto):
-- el TCP y el UDP de los puertos 1024–65000 que llegan a su IP pública se
-  reenvían al router con la IP de origen intacta;
-- 65500 (cengarde), 65501 (WireGuard) y el SSH quedan fuera.
+## Problemas conocidos
 
-Se cambia en `/etc/cengarde/nat.conf` y se aplica con
-`systemctl restart wg-quick@wg0`.
+- **VPS con varias IP:** el servidor contesta desde la dirección por
+  defecto de la máquina, y el router descarta esas respuestas. Fija la buena
+  en `/etc/cengarde/cengarde.conf` (`listen = IP:65500`) y reinicia el
+  servicio. Lo encontró la prueba en QEMU (historia 008).
+- **IP pass necesita que la IP del VPS sea pública:** miniupnpd no arranca
+  con una privada o reservada. En `logread` aparece «ext_ip contains
+  reserved / private address».
+- **Cambiar el secreto:** escribe el nuevo en `/etc/cengarde/secret` del VPS
+  y ejecuta:
 
-**En el router**, UPnP para que los equipos de la LAN abran sus puertos
-solos (consolas, juegos, P2P), anunciando la IP del VPS como pública:
+  ```sh
+  cengarde-vps-setup && systemctl restart wg-quick@wg0 cengarde
+  ```
+
+- **Actualizar:** router y VPS con el mismo commit. En el VPS:
+
+  ```sh
+  git -C /opt/cengarde fetch --depth 1 https://github.com/KevinashoUWU/cengarde <commit>
+  git -C /opt/cengarde checkout FETCH_HEAD && sh /opt/cengarde/contrib/vps/install.sh
+  ```
+
+## Probar sin hardware
+
+[`test/e2e.sh`](test/e2e.sh) arranca dos VMs con la imagen x86-64 y
+comprueba el flujo completo:
+- enlaces por DHCP;
+- configuración solo desde LuCI;
+- túnel arriba;
+- un enlace caído sin perder pings;
+- desactivación limpia.
 
 ```sh
-apk add miniupnpd-nftables luci-app-upnp   # 24.10: opkg install ...
-uci set upnpd.config.enabled='1'
-uci set upnpd.config.external_iface='wg0'
-uci set upnpd.config.external_ip='IP_DEL_VPS'
-uci commit upnpd
-/etc/init.d/miniupnpd enable && /etc/init.d/miniupnpd restart
+sudo apt-get install -y qemu-system-x86 openssh-client
+(cd openwrt/test && npm ci && npx playwright install chromium)
+openwrt/test/e2e.sh openwrt-25.12.5-cengarde-x86-64-generic-ext4-combined.img.gz
 ```
 
-- **Reenvíos fijos** hacia un equipo concreto (un servidor en terreno): en
-  LuCI, Red → Cortafuegos → Reenvíos de puertos, desde la zona `wan`.
-- Comprueba con `apk search miniupnpd` el nombre exacto del paquete en tu
-  versión.
+- Deja capturas de LuCI y logs en `e2e-out/`.
+- Con KVM tarda un minuto; sin KVM, unos tres.
+- `test/vm.sh` arranca las VMs para explorar a mano: LuCI del router en
+  `http://127.0.0.1:8080`, y SSH en los puertos 2222 (router) y 2223
+  (VPS).
 
-## Pendiente (LuCI)
+## Compilar
 
-Una página de LuCI que haga todo esto sin consola:
-- emparejar con el VPS con un solo secreto;
-- crear el túnel de WireGuard solo;
-- elegir los uplinks;
-- activar o desactivar el reenvío de puertos y UPnP;
-- ver el estado de cada enlace.
+**Paquetes, con el SDK** de
+`https://downloads.openwrt.org/releases/<versión>/targets/<target>/`
+(`bcm27xx/bcm2711` para la Pi 4, `x86/64` para un PC). Del feed de LuCI
+basta `luci-base`, por `luci.mk` y sus herramientas `po2lmo` y `jsmin`:
 
-Está en el ROADMAP, Fase 3.
+```sh
+tar --zstd -xf openwrt-sdk-*.tar.zst && cd openwrt-sdk-*/
+./scripts/feeds update luci
+mkdir -p package/feeds/luci && ln -s ../../../feeds/luci/modules/luci-base package/feeds/luci/
+ln -s /ruta/a/cengarde/openwrt/cengarde /ruta/a/cengarde/openwrt/luci-app-cengarde package/
+make defconfig && make package/cengarde/compile package/luci-app-cengarde/compile
+ls bin/packages/*/base/*cengarde*
+```
+
+**Imagen, con el ImageBuilder** de la misma carpeta: copia los paquetes a
+`packages/` y ejecuta
+
+```sh
+make image PROFILE=rpi-4 EXTRA_IMAGE_NAME=cengarde PACKAGES="cengarde \
+  luci-app-cengarde luci-i18n-cengarde-es luci luci-i18n-base-es \
+  miniupnpd-nftables luci-app-upnp luci-i18n-upnp-es kmod-usb-net-asix-ax88179"
+```
+
+`PROFILE=generic` para x86-64. La lista completa está en
+`.github/workflows/openwrt.yml`.
+
+Las traducciones viven en `luci-app-cengarde/po/es/cengarde.po`;
+`python3 openwrt/luci-app-cengarde/i18n.py` las sincroniza con las vistas
+(el CI falla si falta alguna).

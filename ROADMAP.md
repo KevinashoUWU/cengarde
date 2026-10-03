@@ -51,8 +51,15 @@
 > - Fase 2, salud de los enlaces y baja latencia (historia 006): un enlace con
 >   500 ms de cola se silencia en 3–3,6 s sin pérdidas y vuelve sin oscilar;
 >   `busy_poll_us` baja la latencia mediana por debajo de la del Go a cambio
->   de CPU. Siguiente: compilar para OpenWrt limpio (no SmoothWAN, que está
->   abandonado y trae kernel 5.x) y probar en la Pi.
+>   de CPU.
+> - OpenWrt limpio (historias 007 y 008), no SmoothWAN, que está abandonado y
+>   trae kernel 5.x:
+>   - imágenes y paquetes para 25.12 y 24.10;
+>   - todo se configura desde LuCI con un solo secreto compartido con el
+>     VPS;
+>   - probado de punta a punta en QEMU.
+>
+>   Siguiente: probarlo en la Pi 4 y en Vultr.
 
 ## 1. Cómo funciona hoy
 
@@ -425,23 +432,33 @@ fuzzing, privilegios mínimos, binarios estáticos y prueba en la Pi real.
 
 ### Fase 3: producto (OpenWrt, empaquetado y web; 3–6 semanas, en paralelo con la 2)
 
-**Estado (2026-10-03):** empezada
-([historia 007](docs/historias/007-openwrt-y-vps.md)).
+**Estado (2026-10-03):** OpenWrt hecho en lo esencial, sin probar aún en
+hardware real (historias [007](docs/historias/007-openwrt-y-vps.md) y
+[008](docs/historias/008-luci-uci-y-emparejamiento.md)).
 - Hecho:
-  - el paquete `cengarde` para OpenWrt 25.12 (apk) y 24.10 (ipk), para la
-    Pi 4 y x86_64, en el CI;
-  - la plantilla cloud-init del VPS, con reenvío de puertos;
-  - la unidad systemd;
-  - la guía de instalación en `openwrt/README.md`.
-- Falta: UCI y LuCI, un feed firmado, más targets y la prueba en el hardware
-  real.
+  - los paquetes para OpenWrt 25.12 (apk) y 24.10 (ipk), para la Pi 4 y
+    x86_64, en el CI:
+    - `cengarde`, con UCI y `cengarde-setup`, que crea el túnel de
+      WireGuard, las rutas, las métricas, el DNS, la zona y el UPnP;
+    - `luci-app-cengarde`, con estado y configuración;
+    - `luci-i18n-cengarde-es`;
+  - el emparejamiento con un solo secreto de 256 bits (`cengarde keys`);
+  - el cloud-config del VPS, que LuCI entrega listo para copiar;
+  - imágenes 25.12 para la Pi 4 y x86-64 con todo incluido;
+  - la prueba de punta a punta en QEMU con LuCI (Playwright), en el CI;
+  - la unidad systemd y la guía en `openwrt/README.md`.
+- Falta:
+  - la prueba en la Pi 4 y en Vultr;
+  - un feed firmado y más targets;
+  - IP pass pedido desde el router y respuestas del servidor desde la IP de
+    destino (historia 008).
 
 - **OpenWrt.** El destino es OpenWrt limpio (24.10 y 25.12, kernel 6.x), no
   SmoothWAN, que está abandonado y se quedó en kernel 5.x (historia 004).
-  - Paquetes `cengarde` (hecho) y `luci-app-cengarde`, reutilizando el
-    esquema UCI de `openwrt-engarde` para que migrar no cueste nada.
-  - Pestaña de LuCI con todo lo que hoy se hace a mano en
-    `openwrt/README.md` (pedido del usuario, referencia SmoothWAN):
+  - Paquetes `cengarde` y `luci-app-cengarde` (hechos).
+    - El esquema UCI es propio, no el de `openwrt-engarde`: el protocolo v2
+      no es compatible y no hay nada que migrar.
+  - Pestaña de LuCI (hecha; pedido del usuario, referencia SmoothWAN):
     - estado por enlace;
     - elegir los uplinks;
     - crear el túnel de WireGuard solo;
@@ -477,8 +494,9 @@ fuzzing, privilegios mínimos, binarios estáticos y prueba en la Pi real.
 - **Alta estilo Tailscale:** `cengarde server init` genera las claves de
   WireGuard y una URL o un QR que el cliente importa para configurar
   WireGuard y cengarde de una vez. Es el quinto deseo del autor original.
-  - Como en SmoothWAN, bastará un solo secreto, pero de 256 bits
-    (`cengarde genkey`), no una contraseña de 8 caracteres (historia 007).
+  - Como en SmoothWAN, basta un solo secreto, pero de 256 bits, no una
+    contraseña de 8 caracteres. Está hecho en OpenWrt: el router lo genera y
+    el VPS lo recibe en su cloud-config (historia 008).
 
 **Salida:**
 - en OpenWrt se instala con un comando y se configura entero desde LuCI;
