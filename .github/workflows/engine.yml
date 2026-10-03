@@ -55,3 +55,5 @@ jobs:
       - uses: actions/checkout@v4
       - name: Smoke test in network namespaces
         run: sudo ENGINE=c bench/lab.sh build && sudo bench/lab.sh smoke
+      - name: Link health (a link with a 500 ms queue is muted and comes back)
+        run: sudo bench/lab.sh health
