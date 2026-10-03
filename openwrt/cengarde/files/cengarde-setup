@@ -1,0 +1,382 @@
+#!/bin/sh
+# Brings the rest of the router in line with /etc/config/cengarde. The init
+# script runs "apply" on every start and reload; LuCI reads "status" and
+# "cloud-config".
+#
+#   cengarde-setup apply          WireGuard interface, firewall, uplinks, UPnP
+#   cengarde-setup disable        undo what apply set up
+#   cengarde-setup engine-conf    print the engine configuration
+#   cengarde-setup cloud-config   print the VPS user data, secret filled in
+#   cengarde-setup status         JSON for LuCI: problems, tunnel, engine
+#
+# What apply maintains while cengarde is enabled with tunnel = 1, once the
+# VPS address and at least one uplink are set (metrics also before that):
+# - network: interface "wgcg" (WireGuard, 10.79.0.2/30) with the keys derived
+#   from the secret, and its peer "cengarde_vps" reached through cengarde on
+#   127.0.0.1; with route_all, 0.0.0.0/1 and 128.0.0.0/1 through it (more
+#   specific than any default route, which the uplinks keep for cengarde);
+# - each uplink: a metric of its own (two default routes with the same metric
+#   replace each other) and peerdns 0 (carrier DNS servers would be reached
+#   through the VPS and usually refuse); "dns" goes on the tunnel instead;
+# - firewall: wgcg, and uplinks that have no zone yet, in the wan zone
+#   (masquerade, inbound rejected);
+# - with ip_pass, miniupnpd with wgcg as its external interface and the VPS
+#   address as the external IP.
+#
+# SPDX-License-Identifier: GPL-2.0-only
+
+. /lib/functions.sh
+. /lib/functions/network.sh
+set -f
+
+TUN=wgcg
+PEER=cengarde_vps
+TUN_ADDR=10.79.0.2/30
+CLOUD_CONFIG=/usr/share/cengarde/cloud-config.yaml
+STATUS_FILE=/var/run/cengarde.json
+CHANGED=
+
+log() { logger -t cengarde-setup "$*"; }
+
+die() {
+	echo "cengarde-setup: $*" >&2
+	exit 1
+}
+
+list_has() {
+	case " $1 " in *" $2 "*) return 0 ;; esac
+	return 1
+}
+
+is_ipv4() {
+	case "$1" in '' | *[!0-9.]*) return 1 ;; esac
+	return 0
+}
+
+changed() { list_has "$CHANGED" "$1" || CHANGED="$CHANGED $1"; }
+
+# want CONFIG.SECTION[.OPTION] VALUE: set it unless it already has that value.
+want() {
+	[ "$(uci -q get "$1")" = "$2" ] && return 0
+	uci set "$1=$2"
+	changed "${1%%.*}"
+}
+
+# want_list CONFIG.SECTION.OPTION "ITEM ..."
+want_list() {
+	local v
+
+	[ "$(uci -q get "$1")" = "$2" ] && return 0
+	uci -q delete "$1"
+	for v in $2; do
+		uci add_list "$1=$v"
+	done
+	changed "${1%%.*}"
+}
+
+drop() {
+	uci -q get "$1" >/dev/null || return 0
+	uci delete "$1"
+	changed "${1%%.*}"
+}
+
+sections() { # CONFIG TYPE (anonymous ones by their cfgXXXXXX name)
+	uci -q -X show "$1" | sed -n "s/^$1\.\([^.=]*\)=$2\$/\1/p"
+}
+
+load() {
+	config_load cengarde
+	config_get_bool ENABLED main enabled 0
+	config_get_bool TUNNEL main tunnel 1
+	config_get_bool ROUTE_ALL main route_all 1
+	config_get_bool IP_PASS main ip_pass 0
+	config_get SECRET main secret
+	config_get SERVER main server
+	config_get PORT main port 65500
+	config_get MTU main mtu 1380
+	config_get DNS main dns "1.1.1.1 9.9.9.9"
+	config_get UPLINKS main uplink
+	config_get LOG_LEVEL main log_level info
+}
+
+derive_keys() {
+	local keys
+
+	[ -n "$SECRET" ] || return 1
+	keys=$(printf '%s\n' "$SECRET" | cengarde keys) || return 1
+	eval "$keys"
+}
+
+# Device of a logical interface: its layer 3 device while it is up,
+# otherwise the configured one when that is a plain network device.
+uplink_device() {
+	local dev
+
+	network_get_device dev "$1" && [ -n "$dev" ] && { echo "$dev"; return 0; }
+	network_get_physdev dev "$1" && [ -n "$dev" ] || dev=$(uci -q get "network.$1.device")
+	case "$dev" in '' | */* | @*) return 1 ;; esac
+	echo "$dev"
+}
+
+fix_uplinks() { # METRICS PEERDNS: on|off each
+	local s m taken='' n
+
+	if [ "$1" = on ]; then
+		for s in $(sections network interface); do
+			list_has "$UPLINKS" "$s" && continue
+			m=$(uci -q get "network.$s.metric") && taken="$taken $m"
+		done
+		for s in $UPLINKS; do
+			uci -q get "network.$s" >/dev/null || continue
+			m=$(uci -q get "network.$s.metric")
+			if [ -z "$m" ] || [ "$m" = 0 ] || list_has "$taken" "$m"; then
+				n=10
+				while list_has "$taken" "$n"; do n=$((n + 10)); done
+				want "network.$s.metric" "$n"
+				m=$n
+			fi
+			taken="$taken $m"
+		done
+	fi
+	# peerdns 0 only while the tunnel is up, undone wherever it was set.
+	for s in $(sections network interface); do
+		if [ "$2" = on ] && list_has "$UPLINKS" "$s"; then
+			[ "$(uci -q get "network.$s.peerdns")" = 0 ] && continue
+			want "network.$s.peerdns" 0
+			want "network.$s.cengarde_peerdns" 1
+		elif [ "$(uci -q get "network.$s.cengarde_peerdns")" = 1 ]; then
+			drop "network.$s.peerdns"
+			drop "network.$s.cengarde_peerdns"
+		fi
+	done
+}
+
+fix_zone() { # on|off
+	local z wan='' zoned='' s add=''
+
+	for z in $(sections firewall zone); do
+		[ "$(uci -q get "firewall.$z.name")" = wan ] && wan=$z
+		zoned="$zoned $(uci -q get "firewall.$z.network")"
+	done
+	if [ -z "$wan" ]; then
+		[ "$1" = on ] && log "no firewall zone named wan: put $TUN and the uplinks in the zone of the uplinks"
+		return 0
+	fi
+	if [ "$1" = off ]; then
+		list_has "$(uci -q get "firewall.$wan.network")" "$TUN" || return 0
+		uci del_list "firewall.$wan.network=$TUN"
+		changed firewall
+		return 0
+	fi
+	list_has "$zoned" "$TUN" || add=$TUN
+	for s in $UPLINKS; do # uplinks with no zone yet; left there when disabled
+		list_has "$zoned" "$s" || ! uci -q get "network.$s" >/dev/null || add="$add $s"
+	done
+	for s in $add; do
+		uci add_list "firewall.$wan.network=$s"
+		changed firewall
+	done
+}
+
+fix_upnp() { # on|off
+	[ -f /etc/config/upnpd ] || {
+		[ "$1" = on ] && log "IP pass needs miniupnpd-nftables"
+		return 0
+	}
+	if [ "$1" = on ]; then
+		want upnpd.config.enabled 1
+		want upnpd.config.external_iface "$TUN"
+		if is_ipv4 "$SERVER"; then
+			want upnpd.config.external_ip "$SERVER"
+			drop upnpd.config.use_stun
+		else # a name: let miniupnpd find the address through the tunnel
+			drop upnpd.config.external_ip
+			want upnpd.config.use_stun 1
+		fi
+	elif [ "$(uci -q get upnpd.config.external_iface)" = "$TUN" ]; then
+		want upnpd.config.enabled 0
+		drop upnpd.config.external_iface
+		drop upnpd.config.external_ip
+		drop upnpd.config.use_stun
+	fi
+}
+
+fix_tunnel() { # on|off
+	local pub
+
+	if [ "$1" = off ]; then
+		drop "network.$PEER"
+		drop "network.$TUN"
+		return 0
+	fi
+	pub=$(printf '%s\n' "$CG_WG_SERVER_KEY" | wg pubkey) || return 1
+	want "network.$TUN" interface
+	want "network.$TUN.proto" wireguard
+	want "network.$TUN.private_key" "$CG_WG_CLIENT_KEY"
+	want_list "network.$TUN.addresses" "$TUN_ADDR"
+	want "network.$TUN.mtu" "$MTU"
+	want "network.$TUN.nohostroute" 1
+	want_list "network.$TUN.dns" "$DNS"
+	want "network.$PEER" "wireguard_$TUN"
+	want "network.$PEER.description" "cengarde VPS"
+	want "network.$PEER.public_key" "$pub"
+	want "network.$PEER.preshared_key" "$CG_WG_PSK"
+	want "network.$PEER.endpoint_host" 127.0.0.1
+	want "network.$PEER.endpoint_port" "$PORT"
+	want "network.$PEER.persistent_keepalive" 25
+	want "network.$PEER.route_allowed_ips" "$ROUTE_ALL"
+	want_list "network.$PEER.allowed_ips" "0.0.0.0/1 128.0.0.0/1"
+}
+
+commit() {
+	local c
+
+	for c in $CHANGED; do
+		uci commit "$c"
+	done
+	[ -n "$CHANGED" ] || return 0
+	log "updated:$CHANGED"
+	list_has "$CHANGED" network && ubus call network reload
+	list_has "$CHANGED" firewall && /etc/init.d/firewall reload >/dev/null 2>&1
+	list_has "$CHANGED" upnpd && /etc/init.d/miniupnpd restart >/dev/null 2>&1
+	return 0
+}
+
+apply() {
+	local on=off
+
+	load
+	if [ "$ENABLED" = 1 ] && [ "$TUNNEL" = 1 ]; then
+		if ! derive_keys; then
+			log "no valid secret: set one in LuCI or with uci set cengarde.main.secret=\$(cengarde genkey)"
+			return 1
+		fi
+		# Without them the tunnel would take every route and lead nowhere.
+		if [ -z "$SERVER" ] || [ -z "$UPLINKS" ]; then
+			log "tunnel left down until the VPS address and an uplink are set"
+		else
+			on=on
+		fi
+	fi
+	fix_tunnel "$on" || return 1
+	fix_zone "$on"
+	if [ "$ENABLED" = 1 ]; then
+		fix_uplinks on "$on"
+	else
+		fix_uplinks off off
+	fi
+	if [ "$on" = on ] && [ "$IP_PASS" = 1 ] && [ "$ROUTE_ALL" = 1 ]; then
+		fix_upnp on
+	else
+		fix_upnp off
+	fi
+	commit
+}
+
+disable() {
+	load
+	ENABLED=0
+	fix_tunnel off
+	fix_zone off
+	fix_uplinks off off
+	fix_upnp off
+	commit
+}
+
+engine_conf() {
+	local s dev seen='' server k v
+
+	load
+	derive_keys || die "no valid secret (uci get cengarde.main.secret)"
+	[ -n "$SERVER" ] || die "no server: set the VPS address (uci set cengarde.main.server=...)"
+	case "$SERVER" in *:*) server="[$SERVER]:$PORT" ;; *) server="$SERVER:$PORT" ;; esac
+	cat <<-EOF
+		# Generated from /etc/config/cengarde by cengarde-setup: edit that instead.
+		mode = client
+		key = $CG_LINK_KEY
+		listen = 127.0.0.1:$PORT
+		server = $server
+		# Only the uplinks below.
+		interfaces =
+		status_file = $STATUS_FILE
+		log_level = $LOG_LEVEL
+	EOF
+	for k in mute_behind_ms unmute_behind_ms mute_settle_ms mute_trickle min_active_links \
+		probe_interval_ms probe_idle_ms busy_poll_us cpu rt_priority sndbuf description; do
+		config_get v main "$k"
+		[ -n "$v" ] && echo "$k = $v"
+	done
+	for s in $UPLINKS; do
+		dev=$(uplink_device "$s") || continue
+		list_has "$seen" "$dev" && continue
+		seen="$seen $dev"
+		printf '\n[link %s]\nlabel = %s\n' "$dev" "$s"
+	done
+}
+
+cloud_config() {
+	local pt=no
+
+	load
+	[ -n "$SECRET" ] || die "no secret yet"
+	[ "$IP_PASS" = 1 ] && pt=yes
+	sed -e "s|^\( *\)REPLACE_SECRET\$|\1$SECRET|" \
+		-e "s|^\( *CENGARDE_PORT=\).*|\1$PORT|" \
+		-e "s|^\( *PASSTHROUGH=\).*|\1$pt|" "$CLOUD_CONFIG"
+}
+
+problem() { # CODE [INTERFACE]
+	PROBLEMS="$PROBLEMS${PROBLEMS:+,}{\"code\":\"$1\"${2:+,\"iface\":\"$2\"}}"
+}
+
+# Everything LuCI's status page needs in one call.
+status() {
+	local s running=false hs=0 rx=0 tx=0 now line engine=null
+
+	load
+	PROBLEMS=
+	if [ "$ENABLED" = 1 ]; then
+		derive_keys || problem no_secret
+		[ -n "$SERVER" ] || problem no_server
+		[ -n "$UPLINKS" ] || problem no_uplinks
+		for s in $UPLINKS; do
+			if ! uci -q get "network.$s" >/dev/null; then
+				problem uplink_unknown "$s"
+			elif [ "$(uci -q get "network.$s.defaultroute")" = 0 ]; then
+				problem uplink_noroute "$s"
+			elif ! network_is_up "$s"; then
+				problem uplink_down "$s"
+			fi
+		done
+		[ "$IP_PASS" = 1 ] && [ ! -f /etc/config/upnpd ] && problem no_upnp
+		if pidof cengarde >/dev/null; then
+			running=true
+		else
+			problem not_running
+		fi
+	fi
+	if [ "$TUNNEL" = 1 ] && line=$(wg show "$TUN" dump 2>/dev/null | sed -n 2p) && [ -n "$line" ]; then
+		# shellcheck disable=SC2086 # split the fields (globbing is off)
+		set -- $line
+		hs=$5 rx=$6 tx=$7
+	fi
+	now=$(date +%s)
+	[ -s "$STATUS_FILE" ] && [ "$running" = true ] && engine=$(cat "$STATUS_FILE")
+	printf '{"enabled":%s,"running":%s,"problems":[%s],"tunnel":{"handshake":%s,"now":%s,"rx_bytes":%s,"tx_bytes":%s},"engine":%s}\n' \
+		"$([ "$ENABLED" = 1 ] && echo true || echo false)" "$running" "$PROBLEMS" \
+		"$hs" "$now" "$rx" "$tx" "$engine"
+}
+
+exec 9>/var/lock/cengarde-setup.lock
+flock 9
+case "$1" in
+apply) apply ;;
+disable) disable ;;
+engine-conf) engine_conf ;;
+cloud-config) cloud_config ;;
+status) status ;;
+*)
+	echo "usage: cengarde-setup apply|disable|engine-conf|cloud-config|status" >&2
+	exit 2
+	;;
+esac
