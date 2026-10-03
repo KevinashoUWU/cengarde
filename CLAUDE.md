@@ -8,30 +8,36 @@ Contexto mínimo para trabajar en este repo. Aquí solo van reglas, comandos e
 
 Fork de porech/engarde (Go). engarde duplica cada datagrama de WireGuard por
 todos los enlaces del cliente (p. ej. una Raspberry Pi con varios módems) hacia
-un servidor (VPS), y WireGuard descarta los duplicados. Objetivo del fork:
-reescribirlo en C (Linux primero: Pi, OpenWrt, VPS), luego eBPF opcional,
-empaquetado para OpenWrt y una web de administración nueva. Plan y criterios
-de salida: `ROADMAP.md`. Estado: Fase 0 (banco de pruebas) hecha; siguiente,
-Fase 1a (cliente C compatible en el cable con engarde Go).
+un servidor (VPS), y el otro extremo se queda con la primera copia. Objetivo
+del fork: motor en C (Linux primero: Pi, OpenWrt, VPS), luego eBPF opcional,
+empaquetado para OpenWrt y una web de administración nueva. Plan:
+`ROADMAP.md`. Estado: Fase 1 en marcha, con el motor C v1 en `engine/`
+(cliente y servidor funcionando, medidos en el laboratorio).
 
 ## Mapa del repo
 
-- `cmd/engarde-{client,server}/`: implementación Go de referencia (upstream).
-  Se porta su comportamiento, no su diseño.
-- `webmanager/` → `internal/assets/browser/`: UI Angular embebida (se sustituirá).
-- `bench/`: laboratorio netns/veth, `udpgen` (WireGuard falso) y
-  `protoclient.c` (prototipo de cliente en C). Ver `bench/README.md`.
+- `engine/`: motor C (`src/`, `tests/`, `examples/`, `README.md`).
+- `cmd/engarde-{client,server}/`: engarde Go de referencia, solo para medir.
+- `webmanager/` → `internal/assets/browser/`: UI Angular del Go (se sustituirá).
+- `bench/`: laboratorio netns/veth con `udpgen` (WireGuard falso). Ver
+  `bench/README.md`.
 - `docs/historias/`: investigación y decisiones (índice abajo).
 
 ## Comandos
 
-- Go: `go build ./cmd/...` (necesita `internal/assets/browser/`: `make
-  frontend` o un `index.html` de relleno).
-- Laboratorio (root): `bench/lab.sh build`, `bench/lab.sh suite`, demos
-  `demo_stranger`, `demo_webpanic` y `demo_races`. En el contenedor cloud
-  hace falta antes `apt-get install -y iproute2 strace`; su kernel no tiene
-  WireGuard ni `sch_netem`.
-- Todavía no hay tests unitarios.
+- Motor: `make -C engine` y `make -C engine test`. También
+  `make -C engine SANITIZE=1 test` y, en cruzado,
+  `make CC=aarch64-linux-gnu-gcc`.
+- Laboratorio (root):
+  - `bench/lab.sh build`, `smoke` (prueba del motor, la que corre el CI),
+    `compare` (Go frente a C) y `suite` (línea base Go);
+  - `ENGINE=c` usa cengarde en ambos extremos.
+
+  En el contenedor cloud hace falta `apt-get install -y iproute2 strace`
+  (`apt-get update` antes); su kernel no tiene IPv6, WireGuard ni
+  `sch_netem`.
+- CI: `.github/workflows/engine.yml` (gcc/clang con `-Werror`, sanitizers,
+  qemu en aarch64/armhf/MIPS big-endian, humo en netns).
 
 ## Reglas de trabajo
 
@@ -39,13 +45,15 @@ Fase 1a (cliente C compatible en el cable con engarde Go).
   (`tipo: resumen`, como upstream).
 - PRs hacia `master`: el usuario autoriza crearlos y pushearlos sin preguntar.
 - Toda cifra de rendimiento sale de `bench/` o se marca como estimación.
-- Compatibilidad en el cable con engarde Go hasta la Fase 5 (protocolo v0:
-  datagramas WireGuard tal cual).
-- Plano de datos: nunca bloquear, nunca `malloc` por paquete, nunca un log por
-  paquete.
-- La lógica de decisión (silenciado de enlaces, dedup, admisión de caminos) va
-  en funciones puras dentro de cabeceras pequeñas, con tests unitarios
-  aislados (patrón de libRIST, historia 003).
+- **Protocolo propio v1:** cliente y servidor son siempre cengarde, sin
+  compatibilidad con engarde Go. Cualquier cambio de formato sube
+  `CG_PROTO_VERSION` (historia 005).
+- **Plano de datos:** nunca bloquear, nunca `malloc` por paquete, nunca un log
+  por paquete; marcar en el anti-replay solo después de verificar el MAC.
+- **Lógica de decisión** (dedup, política de envío, silenciado, tablas): en
+  funciones puras dentro de cabeceras pequeñas, con tests unitarios aislados
+  (patrón de libRIST, historia 003).
+- **Compilar:** el motor tiene que compilar sin warnings con gcc y clang.
 
 ## Memoria del proyecto: historias
 
@@ -62,6 +70,8 @@ Fase 1a (cliente C compatible en el cable con engarde Go).
 
 | # | Tema | Léela cuando… |
 | --- | --- | --- |
-| [001](docs/historias/001-diagnostico-engarde-go.md) | Diagnóstico medido del engarde Go | toques el plano de datos, el servidor o la web; para no repetir sus bugs |
-| [002](docs/historias/002-wireguard-para-cengarde.md) | WireGuard: formato, índices, anti-replay | implementes dedup, sesiones, admisión de caminos o MTU |
+| [001](docs/historias/001-diagnostico-engarde-go.md) | Diagnóstico medido del engarde Go | quieras saber qué no repetir o comparar con la línea base |
+| [002](docs/historias/002-wireguard-para-cengarde.md) | WireGuard: formato, índices, anti-replay | toques el MTU, la detección de WireGuard o las sesiones |
 | [003](docs/historias/003-librist-gestion-de-enlaces.md) | libRIST: silenciado de enlaces, WRR, ARQ | diseñes la salud de los enlaces, el reparto, el bonding o la recuperación |
+| [004](docs/historias/004-entorno-real.md) | Entorno real: Pi 4 + SmoothWAN, 4 enlaces 5G en VLAN, VPS Vultr | fijes objetivos de rendimiento o empaquetado |
+| [005](docs/historias/005-motor-c-v1.md) | Motor C v1: protocolo, arquitectura y medidas | toques `engine/` |

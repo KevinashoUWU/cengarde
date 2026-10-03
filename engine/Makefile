@@ -1,0 +1,48 @@
+# cengarde engine.
+#
+# CC, CFLAGS, CPPFLAGS and LDFLAGS belong to whoever builds (cross builds,
+# OpenWrt) and may be overridden on the command line; the flags the code
+# needs live in the CG_* variables. make SANITIZE=1 builds with ASan and
+# UBSan; HARDEN= and HARDEN_LDFLAGS= drop the hardening flags.
+
+CC ?= cc
+CFLAGS ?= -O2 -g
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo unknown)
+PREFIX ?= /usr
+
+CG_CFLAGS = -std=c11 -D_GNU_SOURCE -DCG_VERSION=\"$(VERSION)\" \
+            -Wall -Wextra -Wshadow -Wpointer-arith -Wstrict-prototypes -Wmissing-prototypes \
+            -Wformat=2 -Wno-unused-parameter -Wvla
+ifeq ($(SANITIZE),1)
+CG_CFLAGS += -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all
+CG_LDFLAGS = -fsanitize=address,undefined
+else
+HARDEN ?= -fstack-protector-strong -D_FORTIFY_SOURCE=2 -fPIE
+HARDEN_LDFLAGS ?= -pie -Wl,-z,relro,-z,now
+CG_CFLAGS += $(HARDEN)
+CG_LDFLAGS = $(HARDEN_LDFLAGS)
+endif
+
+CORE = src/siphash.c src/proto.c src/util.c src/log.c src/config.c
+NET = src/netlink.c src/sock.c src/status.c src/os.c src/client.c src/server.c
+TESTS = tests/test_main.c tests/test_siphash.c tests/test_proto.c tests/test_replay.c \
+        tests/test_arrival.c tests/test_config.c tests/test_util.c tests/test_idmap.c
+
+all: cengarde
+
+cengarde: src/main.c $(CORE) $(NET) $(wildcard src/*.h)
+	$(CC) $(CG_CFLAGS) $(CPPFLAGS) $(CFLAGS) -o $@ src/main.c $(CORE) $(NET) $(LDFLAGS) $(CG_LDFLAGS)
+
+cengarde-test: $(TESTS) $(CORE) $(wildcard src/*.h tests/*.h)
+	$(CC) $(CG_CFLAGS) $(CPPFLAGS) $(CFLAGS) -Isrc -o $@ $(TESTS) $(CORE) $(LDFLAGS) $(CG_LDFLAGS)
+
+test: cengarde-test
+	./cengarde-test
+
+install: cengarde
+	install -D -m 0755 cengarde $(DESTDIR)$(PREFIX)/sbin/cengarde
+
+clean:
+	rm -f cengarde cengarde-test
+
+.PHONY: all test install clean

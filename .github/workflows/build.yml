@@ -38,10 +38,13 @@ jobs:
         # Save build artifacts
         cp -r dist /tmp/dist
 
-        # Fetch or create gh-pages branch
-        git fetch origin gh-pages:gh-pages 2>/dev/null || git checkout --orphan gh-pages
-
-        git checkout gh-pages
+        # Fetch gh-pages, or start it empty on the first deploy (a fork does not
+        # copy it)
+        if git fetch origin gh-pages:gh-pages 2>/dev/null; then
+          git checkout gh-pages
+        else
+          git switch --orphan gh-pages
+        fi
 
         # Clean untracked files left over from the build step
         git clean -fd

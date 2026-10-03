@@ -1,0 +1,57 @@
+name: Engine
+
+on:
+  push:
+    paths:
+      - 'engine/**'
+      - 'bench/**'
+      - '.github/workflows/engine.yml'
+  pull_request:
+    paths:
+      - 'engine/**'
+      - 'bench/**'
+      - '.github/workflows/engine.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        cc: [gcc, clang]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and unit tests (warnings are errors)
+        run: make -C engine CC=${{ matrix.cc }} CFLAGS="-O2 -g -Werror" all test
+      - name: Unit tests with ASan and UBSan
+        run: make -C engine clean && make -C engine CC=${{ matrix.cc }} SANITIZE=1 test
+
+  cross:
+    # OpenWrt targets: 64-bit ARM (Pi 4), 32-bit ARM and big-endian MIPS.
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        include:
+          - triplet: aarch64-linux-gnu
+            qemu: qemu-aarch64
+          - triplet: arm-linux-gnueabihf
+            qemu: qemu-arm
+          - triplet: mips-linux-gnu
+            qemu: qemu-mips
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cross compiler and qemu
+        run: sudo apt-get update && sudo apt-get install -y gcc-${{ matrix.triplet }} qemu-user
+      - name: Build and run unit tests under qemu
+        run: |
+          make -C engine CC=${{ matrix.triplet }}-gcc CFLAGS="-O2 -Werror" all cengarde-test
+          ${{ matrix.qemu }} -L /usr/${{ matrix.triplet }} engine/cengarde-test
+
+  lab:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Smoke test in network namespaces
+        run: sudo ENGINE=c bench/lab.sh build && sudo bench/lab.sh smoke

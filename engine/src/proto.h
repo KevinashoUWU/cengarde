@@ -1,0 +1,83 @@
+/* cengarde wire protocol, version 1.
+ *
+ * Every datagram between client and server carries a 24-byte header followed
+ * by the payload (a WireGuard datagram for DATA). All integers are big-endian.
+ *
+ *   0       ver(4 bits) | type(4 bits)
+ *   1       flags (0)
+ *   2       reserved (0)
+ *   3       link id        <- not authenticated, so the sender MACs a packet
+ *                             once and patches this byte per link
+ *   4..7    session id     (random, chosen by the client)
+ *   8..11   sequence       (per session and direction, shared by all types)
+ *   12..15  timestamp      (sender monotonic clock, microseconds, wraps)
+ *   16..23  MAC            SipHash-2-4 over bytes 0..15 (byte 3 zeroed) and
+ *                          the payload, stored little-endian
+ *
+ * Each direction has its own 16-byte key (client->server, server->client),
+ * both taken from the 32-byte shared secret.
+ *
+ * SPDX-License-Identifier: GPL-2.0-only */
+#ifndef CG_PROTO_H
+#define CG_PROTO_H
+
+#include <stddef.h>
+#include <stdint.h>
+
+#include "siphash.h"
+
+#define CG_PROTO_VERSION 1
+#define CG_HDR_LEN 24
+#define CG_MAC_OFF 16
+#define CG_LINK_OFF 3
+#define CG_KEY_LEN 32 /* shared secret: c2s key || s2c key */
+
+enum cg_type {
+	CG_T_DATA = 1,        /* payload: WireGuard datagram */
+	CG_T_PROBE = 2,       /* client -> server, one link; payload: cg_probe_info */
+	CG_T_PROBE_REPLY = 3, /* server -> client, same path; payload: cg_probe_info */
+};
+
+struct cg_hdr {
+	uint8_t type;
+	uint8_t flags;
+	uint8_t link;
+	uint32_t session;
+	uint32_t seq;
+	uint32_t ts;
+};
+
+/* Probe and probe reply payload: each side reports what it measures on this
+ * path in its receive direction, so both ends see both directions. */
+struct cg_probe_info {
+	uint32_t echo_ts; /* reply: ts of the probe being answered; probe: 0 */
+	uint32_t rx;      /* verified packets received on this path (wraps) */
+	uint32_t wins;    /* of those, copies that arrived first (wraps) */
+	uint32_t lag_us;  /* smoothed delay behind the first copy */
+};
+#define CG_PROBE_INFO_LEN 16
+
+/* Writes a complete header, MAC included, for hdr and payload. */
+void cg_hdr_write(uint8_t out[CG_HDR_LEN], const struct cg_hdr *h, const uint8_t key[CG_SIPHASH_KEY_LEN],
+		  const void *payload, size_t plen);
+
+/* Parses buf (header + payload) without checking the MAC. Returns 0 when the
+ * header is well formed and the payload length fits the type, -1 otherwise. */
+int cg_hdr_parse(struct cg_hdr *h, const uint8_t *buf, size_t len);
+
+/* Returns 1 when the MAC of buf (header + payload) is valid under key. */
+int cg_hdr_verify(const uint8_t *buf, size_t len, const uint8_t key[CG_SIPHASH_KEY_LEN]);
+
+static inline void cg_hdr_set_link(uint8_t *hdr, uint8_t link)
+{
+	hdr[CG_LINK_OFF] = link;
+}
+
+void cg_probe_info_write(uint8_t out[CG_PROBE_INFO_LEN], const struct cg_probe_info *pi);
+void cg_probe_info_read(struct cg_probe_info *pi, const uint8_t in[CG_PROBE_INFO_LEN]);
+
+/* Does buf have the shape of a WireGuard message (type 1-4, reserved bytes
+ * zero, fixed handshake sizes, data >= 32 bytes)? See docs/historias/002. */
+int cg_looks_like_wg(const uint8_t *buf, size_t len);
+
+#endif
