@@ -26,6 +26,10 @@ ejemplo `make CC=aarch64-linux-gnu-gcc`) y dentro del SDK de OpenWrt.
 
 ## Puesta en marcha
 
+En OpenWrt hay paquete y una guía completa del router y del VPS (enlaces,
+WireGuard, reenvío de puertos): [`openwrt/README.md`](../openwrt/README.md).
+A mano, en cualquier Linux:
+
 1. **Clave compartida** (la misma en los dos extremos):
 
    ```sh
