@@ -9,14 +9,48 @@
 #include "config.h"
 #include "engine.h"
 #include "log.h"
+#include "pair.h"
 #include "util.h"
 
 static void usage(FILE *f)
 {
 	fprintf(f, "usage: cengarde [-v] -c FILE     run as client or server (mode in FILE)\n"
 		   "       cengarde -t -c FILE        check FILE and exit\n"
-		   "       cengarde genkey            print a new shared key\n"
+		   "       cengarde genkey            print a new shared key or pairing secret\n"
+		   "       cengarde keys < SECRET     print the keys derived from a pairing secret\n"
 		   "       cengarde version\n");
+}
+
+/* Reads the secret from stdin so that it never shows in the process list,
+ * and prints shell assignments (base64 needs no quoting inside '...'). */
+static int keys(void)
+{
+	uint8_t secret[CG_PAIR_LEN], k[CG_PAIR_LEN];
+	char line[128], out[64];
+	size_t n;
+	int rc = 0;
+
+	if (!fgets(line, sizeof(line), stdin)) {
+		fprintf(stderr, "keys: no secret on standard input\n");
+		return 1;
+	}
+	n = strcspn(line, " \t\r\n");
+	line[n] = 0;
+	if (cg_base64_decode(secret, sizeof(secret), line) != CG_PAIR_LEN) {
+		fprintf(stderr, "keys: expected the base64 of %d bytes (see 'cengarde genkey')\n", CG_PAIR_LEN);
+		rc = 1;
+	} else {
+		for (int i = 0; i < CG_PAIR_NKEYS; i++) {
+			cg_pair_derive(k, secret, (enum cg_pair_key)i);
+			cg_base64_encode(out, k, sizeof(k));
+			printf("CG_%s='%s'\n", cg_pair_name((enum cg_pair_key)i), out);
+		}
+	}
+	explicit_bzero(secret, sizeof(secret));
+	explicit_bzero(k, sizeof(k));
+	explicit_bzero(line, sizeof(line));
+	explicit_bzero(out, sizeof(out));
+	return rc;
 }
 
 static int genkey(void)
@@ -43,6 +77,8 @@ int main(int argc, char **argv)
 
 	if (argc == 2 && !strcmp(argv[1], "genkey"))
 		return genkey();
+	if (argc == 2 && !strcmp(argv[1], "keys"))
+		return keys();
 	if (argc == 2 && !strcmp(argv[1], "version")) {
 		puts("cengarde " CG_VERSION);
 		return 0;

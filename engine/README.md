@@ -26,8 +26,8 @@ ejemplo `make CC=aarch64-linux-gnu-gcc`) y dentro del SDK de OpenWrt.
 
 ## Puesta en marcha
 
-En OpenWrt hay paquete y una guía completa del router y del VPS (enlaces,
-WireGuard, reenvío de puertos): [`openwrt/README.md`](../openwrt/README.md).
+En OpenWrt todo se configura desde LuCI, y el VPS se instala con el
+cloud-config que esta entrega: ver [`openwrt/README.md`](../openwrt/README.md).
 A mano, en cualquier Linux:
 
 1. **Clave compartida** (la misma en los dos extremos):
@@ -53,6 +53,32 @@ A mano, en cualquier Linux:
    (1500 − IP − 8 UDP − 24 cengarde − 32 WireGuard). En redes móviles conviene
    ir más bajo, por ejemplo `MTU = 1380`, o menos si algún operador tiene un
    MTU de camino menor.
+
+## Emparejar con un solo secreto
+
+En lugar de repartir cuatro claves, los dos extremos pueden derivarlas de un
+secreto de 32 bytes (la salida de `cengarde genkey`):
+
+```sh
+cengarde keys < secreto
+# CG_LINK_KEY='…'        la clave de cengarde ("key"), igual en los dos extremos
+# CG_WG_SERVER_KEY='…'   la clave privada de WireGuard del VPS
+# CG_WG_CLIENT_KEY='…'   la del router
+# CG_WG_PSK='…'          la PSK de WireGuard
+```
+
+- **Derivación:** cada clave es BLAKE2s-256 con el secreto como clave y
+  `"cengarde pairing v1: " + etiqueta` como mensaje. Las privadas de
+  WireGuard salen recortadas, como las de `wg genkey`.
+- **Entrada estándar:** el secreto se lee de ahí para que no aparezca en la
+  lista de procesos.
+- **Salida:** asignaciones de shell para `eval`. Las públicas se sacan con
+  `wg pubkey`.
+- **Quién lo usa:** `cengarde-setup`, en OpenWrt, y
+  [`contrib/vps/cengarde-vps-setup`](../contrib/vps/cengarde-vps-setup).
+
+Detalle y razones en la
+[historia 008](../docs/historias/008-luci-uci-y-emparejamiento.md).
 
 ## Qué hace cada extremo
 
