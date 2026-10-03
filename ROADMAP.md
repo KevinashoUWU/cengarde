@@ -2,7 +2,9 @@
 
 > Propuesta de octubre de 2026. Se basa en la lectura del código Go heredado de
 > [porech/engarde](https://github.com/porech/engarde) y en mediciones
-> reproducibles con el laboratorio de [`bench/`](bench/README.md).
+> reproducibles con el laboratorio de [`bench/`](bench/README.md). El detalle de
+> cada investigación (referencias al código, datos crudos, fuentes) está en
+> [`docs/historias/`](docs/historias/README.md).
 
 ## Resumen
 
@@ -80,6 +82,9 @@ viaja siempre por todos los enlaces, y la configuración mínima en el lado
 servidor.
 
 ## 2. Diagnóstico medido
+
+Resumen; las causas con referencias archivo:línea y los datos crudos están en la
+[historia 001](docs/historias/001-diagnostico-engarde-go.md).
 
 ### 2.1 Laboratorio
 
@@ -364,12 +369,22 @@ orientativas, para una persona a tiempo parcial.
   OpenWrt). Sin bufferbloat, el failover hacia un enlace lento también es
   inmediato.
 - Perfilado en la Pi (`perf`) y ajuste del tamaño de lote.
+- **Salud de los enlaces**, inspirada en libRIST
+  ([historia 003](docs/historias/003-librist-gestion-de-enlaces.md)):
+  - un enlace mudo sale de la rotación en ~300 ms y vuelve en cuanto llega
+    algo;
+  - un enlace que llega siempre tarde o cuya cola local crece se silencia con
+    histéresis, manteniendo un goteo para medirlo y volviendo en rampa;
+  - nunca se silencia al último enlace que transporta y nunca se destruye un
+    socket por un error transitorio.
 
 **Salida:**
 - `UdpRcvbufErrors` = 0 por debajo del 80 % de CPU;
 - el servidor escala con los núcleos;
 - en una Pi 4 con 4 enlaces, el límite pasa a ser el de los enlaces (objetivo:
-  ≥100 Mbit/s si los enlaces dan para ello).
+  ≥100 Mbit/s si los enlaces dan para ello);
+- un enlace con 500 ms de cola local se silencia sin afectar a los demás y
+  vuelve sin oscilar cuando se recupera.
 
 ### Fase 3: producto (OpenWrt, empaquetado y web; 3–6 semanas, en paralelo con la 2)
 
@@ -438,6 +453,11 @@ orientativas, para una persona a tiempo parcial.
 
 ### Fase 5: más allá de la redundancia pura (continua)
 
+Implementar bonding es fácil; que funcione bien sobre enlaces móviles es un I+D
+largo de ensayo y error (Peplink, Mushroom Networks, Speedify…). El NEWS de
+libRIST documenta muchos de esos fallos y sus arreglos (historia 003), y es la
+lista de comprobación de partida.
+
 - **k-de-N:** cada paquete va solo por los k mejores enlaces, lo que ahorra
   datos en enlaces móviles.
 - **Redundancia selectiva por tamaño:** duplicar los paquetes pequeños (ACKs,
@@ -449,6 +469,11 @@ orientativas, para una persona a tiempo parcial.
 - **FEC** XOR o Reed-Solomon con SIMD (NEON/AVX2), sobre el protocolo v1.
 - **Sondas por enlace** (RTT, jitter, pérdida, MTU de camino) y elección
   automática de enlaces.
+- **Configuración unificada al estilo libRIST:** peso por enlace, donde 0 es
+  duplicar y > 0 es una parte del reparto WRR, de modo que redundancia y
+  bonding se mezclan con un solo parámetro.
+- **ARQ opcional** (NACK y buffer de latencia, como RIST) como redundancia
+  barata: 1–2 enlaces más recuperación por el mejor.
 
 **Salida:** cada modo con su escenario en el laboratorio. Por ejemplo, con 2
 enlaces iguales el bonding debe dar ≥1,8× uno solo, y con 4 enlaces la FEC
@@ -465,6 +490,8 @@ debe sobrevivir a la caída de uno con ≤1,34× de sobrecoste.
 - [ ] Buffers de socket grandes, ninguna asignación por paquete y reloj grueso
   (`CLOCK_MONOTONIC_COARSE`) leído una vez por iteración.
 - [ ] Colas cortas por enlace (AQM) para que el failover sea inmediato.
+- [ ] Salud de enlaces con histéresis, goteo y rampa; nunca silenciar al último
+  (historia 003).
 
 **Robustez**
 - [ ] Netlink en vez de sondear cada segundo.
@@ -561,6 +588,9 @@ enlaces:
   MPTCP).
 - srtla / BELABOX: agregación de varios módems para emisión en directo, con
   ideas útiles para repartir por enlace.
+- libRIST (<https://code.videolan.org/rist/librist>, BSD-2-Clause):
+  silenciado de enlaces por RTT (`rtt-drop`) con goteo, WRR con enlaces
+  duplicados y ARQ. Ver la historia 003.
 - Las mejoras de throughput de wireguard-go en Tailscale con UDP GSO/GRO
   (blog de Tailscale, 2022–2023).
 - `qosify` de OpenWrt: ejemplo de programa eBPF (TC) empaquetado para OpenWrt.
