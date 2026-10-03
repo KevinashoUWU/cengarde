@@ -8,6 +8,7 @@
 //   -r 0 (default) only receives. Latency percentiles saturate at 200000 us.
 #define _GNU_SOURCE
 #include <arpa/inet.h>
+#include <endian.h>
 #include <errno.h>
 #include <getopt.h>
 #include <pthread.h>
@@ -24,9 +25,11 @@
 #define MAGIC 0x45474e44u /* "EGND" */
 #define HIST_US 200000    /* 1us buckets up to 200ms */
 
+/* Shaped like a WireGuard data message (type 4, three zero bytes) so that
+ * cengarde treats it as WireGuard traffic. */
 struct hdr {
+	uint32_t wg_type;
 	uint32_t magic;
-	uint32_t pad;
 	uint64_t seq;
 	uint64_t ts_ns;
 };
@@ -183,6 +186,7 @@ int main(int argc, char **argv)
 				usleep(1000);
 		char *pkt = calloc(1, size);
 		struct hdr *h = (struct hdr *)pkt;
+		h->wg_type = htole32(4);
 		h->magic = MAGIC;
 		uint64_t start = now_ns(), end = start + duration * 1000000000ull;
 		for (;;) {

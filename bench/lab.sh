@@ -2,8 +2,8 @@
 # cengarde benchmark lab: two network namespaces joined by three veth "links".
 #
 #   netns cli (the Pi)                          netns srv (the VPS)
-#   fake WG: udpgen 127.0.0.1:50000             engarde-server 0.0.0.0:59402
-#   engarde-client 127.0.0.1:59401              fake WG: udpgen 127.0.0.1:59301
+#   fake WG: udpgen 127.0.0.1:50000             server :59402 (engarde or cengarde)
+#   client 127.0.0.1:59401                      fake WG: udpgen 127.0.0.1:59301
 #   l1 10.0.1.1 ──────────────────────────────── s1 10.0.1.2
 #   l2 10.0.2.1 ──────────────────────────────── s2 10.0.2.2
 #   l3 10.0.3.1 ──────────────────────────────── s3 10.0.3.2
@@ -21,11 +21,15 @@ NLINKS=${NLINKS:-3}
 SIZE=${SIZE:-1400}
 WRITE_TIMEOUT=${WRITE_TIMEOUT:-10}
 PROTO=${PROTO:-} # empty: Go client; "c": C prototype; "dedup": C prototype + dedup
+ENGINE=${ENGINE:-go} # go: engarde (Go) on both ends; c: cengarde (engine/) on both ends
+KEY=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA= # lab-only shared key
 
 build() {
 	mkdir -p "$BIN"
 	gcc -O2 -Wall -Wextra -pthread -o "$BIN/udpgen" "$LAB/udpgen.c" || return 1
 	gcc -O2 -Wall -Wextra -o "$BIN/protoclient" "$LAB/protoclient.c" || return 1
+	make -s -C "$REPO/engine" cengarde && cp "$REPO/engine/cengarde" "$BIN/cengarde" || return 1
+	[ "$ENGINE" = c ] && return 0 # the Go baseline is not needed
 	if [ ! -d "$REPO/cmd/engarde-client" ]; then
 		echo "no Go sources: set CLIENT_BIN/SERVER_BIN to existing engarde binaries"
 		return 0
@@ -82,9 +86,36 @@ server:
   webManager:
     listenAddr: "127.0.0.1:9002"
 EOF
+	cat >"$RUN/client.conf" <<EOF
+mode = client
+key = $KEY
+listen = 127.0.0.1:59401
+server = 10.0.1.2:59402
+interfaces = none
+status_file = $RUN/client.json
+EOF
+	for i in 1 2 3; do
+		printf '[link l%s]\nserver = 10.0.%s.2:59402\nenabled = %s\n' "$i" "$i" \
+			"$([ "$i" -le "$NLINKS" ] && echo yes || echo no)" >>"$RUN/client.conf"
+	done
+	cat >"$RUN/server.conf" <<EOF
+mode = server
+key = $KEY
+listen = *:59402
+wireguard = 127.0.0.1:59301
+status_file = $RUN/server.json
+EOF
 }
 
 start() {
+	if [ "$ENGINE" = c ]; then
+		ip netns exec srv "$BIN/cengarde" -c "$RUN/server.conf" >"$RUN/server.log" 2>&1 &
+		echo $! >"$RUN/server.pid"
+		ip netns exec cli "$BIN/cengarde" -c "$RUN/client.conf" >"$RUN/client.log" 2>&1 &
+		echo $! >"$RUN/client.pid"
+		sleep 1.5 # links come up from netlink at once; give the first probes time
+		return
+	fi
 	ip netns exec srv "$SERVER_BIN" "$RUN/server.yml" >"$RUN/server.log" 2>&1 &
 	echo $! >"$RUN/server.pid"
 	if [ -n "$PROTO" ]; then
@@ -266,8 +297,69 @@ demo_races() {
 	teardown
 }
 
+# engarde (Go) against cengarde (C), each on both ends, 3 links; then the
+# slow-link scenario with cengarde (quoted in docs/historias/005).
+compare() {
+	local eng r
+	for eng in go c; do
+		ENGINE=$eng
+		NLINKS=3
+		setup && start
+		for r in 10000 20000 40000; do
+			echo -n "$eng down "
+			down $r 5
+		done
+		for r in 10000 30000 60000; do
+			echo -n "$eng up   "
+			up $r 5
+		done
+		stop
+	done
+	ENGINE=c
+	setup && start
+	shape l3 5mbit
+	echo -n "c slow l3 "
+	up 2000 8
+	echo "   link sockets re-created: $(grep -c 'link .* down' "$RUN/client.log")"
+	stop
+	teardown
+}
+
+# CI smoke test for cengarde (engine/): every packet arrives exactly once in
+# both directions, and an unauthenticated sender gets nothing back.
+smoke() {
+	local fail=0 dir sent uniq dup got traffic
+	ENGINE=c
+	setup && start || return 1
+	for dir in down up; do
+		"$dir" 2000 3
+		sent=$(sed -n 's/.*sent=\([0-9]*\).*/\1/p' "$RUN/tx.out")
+		uniq=$(sed -n 's/.*uniq=\([0-9]*\).*/\1/p' "$RUN/rx.out")
+		dup=$(sed -n 's/.*dup=\([0-9]*\).*/\1/p' "$RUN/rx.out")
+		if [ -z "$sent" ] || [ $((uniq * 1000)) -lt $((sent * 995)) ] || [ "$dup" != 0 ]; then
+			echo "FAIL: $dir: sent=$sent uniq=$uniq dup=$dup"
+			fail=1
+		fi
+	done
+	down 2000 4 >/dev/null &
+	traffic=$!
+	sleep 1
+	got=$(ip netns exec cli "$BIN/udpgen" -b 10.0.1.1:7777 -p 10.0.1.2:59402 -r 2 -d 1 -g 2 |
+		sed -n 's/.*rx=\([0-9]*\).*/\1/p')
+	wait "$traffic"
+	if [ "$got" != 0 ]; then
+		echo "FAIL: an unauthenticated sender received $got packets"
+		fail=1
+	fi
+	grep -q "from 10.0.1.1:7777" "$RUN/server.log" || { echo "FAIL: server did not report the stranger"; fail=1; }
+	stop
+	[ "$fail" = 0 ] && echo "smoke: ok" || { echo "--- client log"; cat "$RUN/client.log"; echo "--- server log"; cat "$RUN/server.log"; }
+	teardown
+	return "$fail"
+}
+
 if [ $# -eq 0 ]; then
-	echo "usage: $0 build|setup|start|stop|teardown|up PPS [S]|down PPS [S]|shape LINK RATE|unshape LINK|suite|demo_stranger|demo_webpanic|demo_races"
+	echo "usage: $0 build|setup|start|stop|teardown|up PPS [S]|down PPS [S]|shape LINK RATE|unshape LINK|suite|compare|smoke|demo_stranger|demo_webpanic|demo_races"
 	exit 1
 fi
 "$@"
