@@ -1,6 +1,6 @@
 # 004 — Entorno real de despliegue (datos de campo)
 
-- **Fecha:** 2026-10-03
+- **Fecha:** 2026-10-03 (actualizada el mismo día: OpenWrt limpio)
 - **Estado:** vigente
 - **Fuentes:** datos aportados por el usuario (2026-10-03).
 
@@ -21,6 +21,9 @@
 - **Decisión del usuario:** como es una reconstrucción, cliente y servidor
   serán cengarde desde el primer día. No hace falta compatibilidad en el cable
   con engarde Go (ver historia 005).
+- **Destino del cliente:** OpenWrt limpio, no SmoothWAN. Según el usuario,
+  SmoothWAN quedó abandonado hace años y se quedó en kernel 5.x. Las medidas
+  de arriba se hicieron sobre SmoothWAN.
 
 ## Hallazgos
 
@@ -45,8 +48,9 @@
 - **Pruebas en el hardware real:** `bench/` no reproduce el driver USB ni las
   VLAN. Cuando haya binario para aarch64, medir CPU por paquete en la Pi con el
   mismo método (`/proc/<pid>/stat`) y en el VPS.
-- **Empaquetado (Fase 3):** el destino natural es SmoothWAN/OpenWrt en aarch64
-  (Pi 4: `aarch64_cortex-a72`) y x86_64.
+- **Empaquetado (Fase 3):** OpenWrt limpio (24.10 o 25.12, kernel 6.x) en
+  aarch64 (Pi 4: target `bcm27xx/bcm2711`, arquitectura
+  `aarch64_cortex-a72`) y en x86_64. No SmoothWAN.
 
 ## Pendiente
 
@@ -57,3 +61,4 @@
 ## Cambios
 
 - 2026-10-03: creada con los datos de campo del usuario.
+- 2026-10-03: el destino es OpenWrt limpio, no SmoothWAN (decisión del usuario).

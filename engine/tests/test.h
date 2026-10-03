@@ -36,5 +36,6 @@ void test_arrival(void);
 void test_config(void);
 void test_util(void);
 void test_idmap(void);
+void test_health(void);
 
 #endif

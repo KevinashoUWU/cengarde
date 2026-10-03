@@ -10,23 +10,25 @@ CFLAGS ?= -O2 -g
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo unknown)
 PREFIX ?= /usr
 
-CG_CFLAGS = -std=c11 -D_GNU_SOURCE -DCG_VERSION=\"$(VERSION)\" \
+CG_CFLAGS = -std=c11 -D_GNU_SOURCE -DCG_VERSION=\"$(VERSION)\" -pthread \
             -Wall -Wextra -Wshadow -Wpointer-arith -Wstrict-prototypes -Wmissing-prototypes \
             -Wformat=2 -Wno-unused-parameter -Wvla
+CG_LDFLAGS = -pthread
 ifeq ($(SANITIZE),1)
 CG_CFLAGS += -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all
-CG_LDFLAGS = -fsanitize=address,undefined
+CG_LDFLAGS += -fsanitize=address,undefined
 else
 HARDEN ?= -fstack-protector-strong -D_FORTIFY_SOURCE=2 -fPIE
 HARDEN_LDFLAGS ?= -pie -Wl,-z,relro,-z,now
 CG_CFLAGS += $(HARDEN)
-CG_LDFLAGS = $(HARDEN_LDFLAGS)
+CG_LDFLAGS += $(HARDEN_LDFLAGS)
 endif
 
 CORE = src/siphash.c src/proto.c src/util.c src/log.c src/config.c
 NET = src/netlink.c src/sock.c src/status.c src/os.c src/client.c src/server.c
 TESTS = tests/test_main.c tests/test_siphash.c tests/test_proto.c tests/test_replay.c \
-        tests/test_arrival.c tests/test_config.c tests/test_util.c tests/test_idmap.c
+        tests/test_arrival.c tests/test_config.c tests/test_util.c tests/test_idmap.c \
+        tests/test_health.c
 
 all: cengarde
 

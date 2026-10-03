@@ -48,6 +48,11 @@
 > - El motor C v1 ya funciona (`engine/`, historia 005). En el laboratorio
 >   gasta 4–7× menos CPU por paquete que el cliente Go, no pierde paquetes
 >   donde el Go perdía hasta un 38 % y aguanta el enlace lento sin despeinarse.
+> - Fase 2, salud de los enlaces y baja latencia (historia 006): un enlace con
+>   500 ms de cola se silencia en 3–3,6 s sin pérdidas y vuelve sin oscilar;
+>   `busy_poll_us` baja la latencia mediana por debajo de la del Go a cambio
+>   de CPU. Siguiente: compilar para OpenWrt limpio (no SmoothWAN, que está
+>   abandonado y trae kernel 5.x) y probar en la Pi.
 
 ## 1. Cómo funciona hoy
 
@@ -384,8 +389,13 @@ fuzzing, privilegios mínimos, binarios estáticos y prueba en la Pi real.
 
 ### Fase 2: rendimiento (2–4 semanas)
 
-- Deduplicación exacta antes de WireGuard y hilos separados de subida y bajada
-  si el perfilado lo pide.
+**Estado (2026-10-03):**
+- Hecho: salud de los enlaces, sondeo adaptativo, protocolo v2, `busy_poll_us`,
+  `cpu` y `rt_priority`, y el estado escrito desde un hilo aparte
+  (historia 006).
+- Aplazado hasta medir en el VPS y en la Pi: servidor multihilo, GSO/GRO y
+  ajuste del lote.
+
 - Servidor multihilo con `SO_REUSEPORT`; GSO/GRO donde se demuestre útil.
 - Colas cortas por enlace: `SO_SNDBUF` pequeño, descartar en EAGAIN y
   recomendar o configurar fq_codel/cake en los uplinks (`sqm-scripts` en
@@ -393,13 +403,16 @@ fuzzing, privilegios mínimos, binarios estáticos y prueba en la Pi real.
   inmediato.
 - Perfilado en la Pi (`perf`) y ajuste del tamaño de lote.
 - **Salud de los enlaces**, inspirada en libRIST
-  ([historia 003](docs/historias/003-librist-gestion-de-enlaces.md)):
-  - un enlace mudo sale de la rotación en ~300 ms y vuelve en cuanto llega
-    algo;
-  - un enlace que llega siempre tarde o cuya cola local crece se silencia con
-    histéresis, manteniendo un goteo para medirlo y volviendo en rampa;
-  - nunca se silencia al último enlace que transporta y nunca se destruye un
-    socket por un error transitorio.
+  ([historia 003](docs/historias/003-librist-gestion-de-enlaces.md)) —
+  hecho, con estos cambios sobre el plan
+  ([historia 006](docs/historias/006-salud-de-enlaces.md)):
+  - un enlace mudo sale de la rotación en 1–1,5 s, no en ~300 ms, porque un
+    enlace que se llena también enmudece un rato. Vuelve en cuanto contesta;
+  - un enlace que llega tarde se silencia con histéresis. Lo mide el otro
+    extremo con las sondas, así que no hace falta goteo, y vuelve de golpe
+    con espera exponencial: en redundancia pura la rampa reordenaría;
+  - siempre llevan todo al menos 2 enlaces y nunca se destruye un socket por
+    un error transitorio.
 
 **Salida:**
 - `UdpRcvbufErrors` = 0 por debajo del 80 % de CPU;
@@ -407,11 +420,13 @@ fuzzing, privilegios mínimos, binarios estáticos y prueba en la Pi real.
 - en una Pi 4 con 4 enlaces, el límite pasa a ser el de los enlaces (objetivo:
   ≥100 Mbit/s si los enlaces dan para ello);
 - un enlace con 500 ms de cola local se silencia sin afectar a los demás y
-  vuelve sin oscilar cuando se recupera.
+  vuelve sin oscilar cuando se recupera — hecho (`bench/lab.sh health`, que
+  corre en el CI).
 
 ### Fase 3: producto (OpenWrt, empaquetado y web; 3–6 semanas, en paralelo con la 2)
 
-- **OpenWrt.**
+- **OpenWrt.** El destino es OpenWrt limpio (24.10 y 25.12, kernel 6.x), no
+  SmoothWAN, que está abandonado y se quedó en kernel 5.x (historia 004).
   - Paquetes `cengarde` y `luci-app-cengarde`, reutilizando el esquema UCI de
     `openwrt-engarde` para que migrar no cueste nada.
   - Init de procd con respawn y sysctl para `rmem_max`.

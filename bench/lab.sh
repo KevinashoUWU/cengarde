@@ -22,6 +22,9 @@ SIZE=${SIZE:-1400}
 WRITE_TIMEOUT=${WRITE_TIMEOUT:-10}
 PROTO=${PROTO:-} # empty: Go client; "c": C prototype; "dedup": C prototype + dedup
 ENGINE=${ENGINE:-go} # go: engarde (Go) on both ends; c: cengarde (engine/) on both ends
+# Extra cengarde settings, "key = value" pairs separated by ";" (global section).
+CLIENT_EXTRA=${CLIENT_EXTRA:-}
+SERVER_EXTRA=${SERVER_EXTRA:-}
 KEY=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA= # lab-only shared key
 
 build() {
@@ -94,6 +97,7 @@ server = 10.0.1.2:59402
 interfaces = none
 status_file = $RUN/client.json
 EOF
+	[ -n "$CLIENT_EXTRA" ] && echo "$CLIENT_EXTRA" | tr ';' '\n' >>"$RUN/client.conf"
 	for i in 1 2 3; do
 		printf '[link l%s]\nserver = 10.0.%s.2:59402\nenabled = %s\n' "$i" "$i" \
 			"$([ "$i" -le "$NLINKS" ] && echo yes || echo no)" >>"$RUN/client.conf"
@@ -105,6 +109,8 @@ listen = *:59402
 wireguard = 127.0.0.1:59301
 status_file = $RUN/server.json
 EOF
+	[ -n "$SERVER_EXTRA" ] && echo "$SERVER_EXTRA" | tr ';' '\n' >>"$RUN/server.conf"
+	return 0
 }
 
 start() {
@@ -325,6 +331,61 @@ compare() {
 	teardown
 }
 
+# Link health (docs/historias/006): link 3 gets a 500 ms queue (5 Mbit/s,
+# socket buffers big enough to fill it) while 2000 pps (22 Mbit/s) flow,
+# first upload (queue on the client), then download (queue on the server).
+# It must be muted within 5 s, without loss on the tunnel, and come back to
+# stay once the queue is gone.
+health() {
+	local dir fail=0 sent uniq
+	ENGINE=c
+	CLIENT_EXTRA="sndbuf = 4194304${CLIENT_EXTRA:+;$CLIENT_EXTRA}"
+	for dir in up down; do
+		setup && start || return 1
+		python3 "$LAB/health.py" "$dir" "$RUN" 50 3 25 >"$RUN/health.txt" &
+		local watch=$!
+		"$dir" 2000 50 >"$RUN/traffic.txt"
+		wait "$watch" || fail=1
+		cat "$RUN/health.txt"
+		echo "   tunnel: $(cat "$RUN/traffic.txt")"
+		sent=$(sed -n 's/.*sent=\([0-9]*\).*/\1/p' "$RUN/tx.out")
+		uniq=$(sed -n 's/.*uniq=\([0-9]*\).*/\1/p' "$RUN/rx.out")
+		[ -n "$sent" ] && [ $((uniq * 1000)) -ge $((sent * 999)) ] || { echo "FAIL: $dir lost packets"; fail=1; }
+		grep -h "muted" "$RUN/client.log" "$RUN/server.log" | sed 's/^/   /'
+		stop
+	done
+	teardown
+	[ "$fail" = 0 ] && echo "health: ok" || echo "health: FAILED"
+	return "$fail"
+}
+
+# Wake-up latency and CPU with busy polling (docs/historias/006): one link,
+# so there are no copies to race; cengarde with busy_poll_us 0, 50 and 200
+# on both ends, and the Go engarde for reference when it is built.
+latency() {
+	local b r
+	NLINKS=1
+	for b in 0 50 200; do
+		ENGINE=c CLIENT_EXTRA="busy_poll_us = $b" SERVER_EXTRA="busy_poll_us = $b"
+		setup && start
+		for r in down up; do
+			echo -n "c busy_poll_us=$b $r "
+			"$r" 10000 5
+		done
+		stop
+	done
+	if [ -x "$CLIENT_BIN" ]; then
+		ENGINE=go
+		setup && start
+		for r in down up; do
+			echo -n "go $r "
+			"$r" 10000 5
+		done
+		stop
+	fi
+	teardown
+}
+
 # CI smoke test for cengarde (engine/): every packet arrives exactly once in
 # both directions, and an unauthenticated sender gets nothing back.
 smoke() {
@@ -359,7 +420,7 @@ smoke() {
 }
 
 if [ $# -eq 0 ]; then
-	echo "usage: $0 build|setup|start|stop|teardown|up PPS [S]|down PPS [S]|shape LINK RATE|unshape LINK|suite|compare|smoke|demo_stranger|demo_webpanic|demo_races"
+	echo "usage: $0 build|setup|start|stop|teardown|up PPS [S]|down PPS [S]|shape LINK RATE|unshape LINK|suite|compare|smoke|health|latency|demo_stranger|demo_webpanic|demo_races"
 	exit 1
 fi
 "$@"

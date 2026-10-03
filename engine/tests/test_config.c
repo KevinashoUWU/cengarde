@@ -41,7 +41,15 @@ void test_config(void)
 	CHECK(!strcmp(cg_addr_str(&c.server[1], buf, sizeof(buf)), "[2001:db8::1]:59402"));
 	CHECK(!strcmp(cg_addr_str(&c.listen, buf, sizeof(buf)), "127.0.0.1:59401"));
 	CHECK_EQ(c.probe_interval_ms, 500);
-	CHECK_EQ(c.stall_ms, 1500); /* 3 probe intervals */
+	CHECK_EQ(c.probe_idle_ms, 1000);
+	CHECK_EQ(c.mute_behind_ms, 150); /* link health defaults */
+	CHECK_EQ(c.unmute_behind_ms, 120);
+	CHECK_EQ(c.mute_settle_ms, 2000);
+	CHECK_EQ(c.mute_trickle, 0);
+	CHECK_EQ(c.min_active_links, 2);
+	CHECK_EQ(c.busy_poll_us, 0);
+	CHECK_EQ(c.cpu, -1);
+	CHECK_EQ(c.rt_priority, 0);
 	CHECK_EQ(c.ninclude, 2);
 	CHECK(cg_match_any("eth1.10", c.include, c.ninclude));
 	CHECK(!cg_match_any("eth0", c.include, c.ninclude));
@@ -65,6 +73,47 @@ void test_config(void)
 	CHECK(!strcmp(cg_addr_str(&c.wireguard, buf, sizeof(buf)), "127.0.0.1:51820"));
 	CHECK_EQ(c.max_sessions, 64);
 	CHECK(warn[0] == '\0');
+	cg_config_free(&c);
+
+	/* Link health and latency knobs, the same keys in both modes. */
+	CHECK_EQ(cg_config_parse(&c,
+				 "mode = server\nkey = " KEY "\nwireguard = 127.0.0.1:51820\nmute_behind_ms = 300\n"
+				 "mute_trickle = 50\nmin_active_links = 1\nbusy_poll_us = 50\ncpu = 3\nrt_priority = 10\n",
+				 err, sizeof(err), warn, sizeof(warn)),
+		 0);
+	CHECK_EQ(c.mute_behind_ms, 300);
+	CHECK_EQ(c.unmute_behind_ms, 240); /* 80 % of mute_behind_ms */
+	CHECK_EQ(c.mute_trickle, 50);
+	CHECK_EQ(c.min_active_links, 1);
+	CHECK_EQ(c.busy_poll_us, 50);
+	CHECK_EQ(c.cpu, 3);
+	CHECK_EQ(c.rt_priority, 10);
+	CHECK(warn[0] == '\0');
+	cg_config_free(&c);
+	CHECK_EQ(cg_config_parse(&c,
+				 "mode = server\nkey = " KEY "\nwireguard = 127.0.0.1:51820\nmute_behind_ms = 0\n",
+				 err, sizeof(err), warn, sizeof(warn)),
+		 0);
+	CHECK_EQ(c.unmute_behind_ms, 0); /* delay muting off */
+	cg_config_free(&c);
+	CHECK_EQ(cg_config_parse(&c,
+				 "mode = server\nkey = " KEY "\nwireguard = 127.0.0.1:51820\nmute_behind_ms = 100\n"
+				 "unmute_behind_ms = 150\n",
+				 err, sizeof(err), warn, sizeof(warn)),
+		 -1);
+	CHECK(strstr(err, "unmute_behind_ms") != NULL);
+	CHECK_EQ(cg_config_parse(&c,
+				 "mode = server\nkey = " KEY "\nwireguard = 127.0.0.1:51820\nmin_active_links = 0\n",
+				 err, sizeof(err), warn, sizeof(warn)),
+		 -1);
+	CHECK_EQ(cg_config_parse(&c, "mode = client\nkey = " KEY "\nserver = 192.0.2.1:1\nprobe_interval_ms = 200\n"
+				 "probe_idle_ms = 100\n",
+				 err, sizeof(err), warn, sizeof(warn)),
+		 -1); /* idle probing cannot be faster than active probing */
+	CHECK_EQ(cg_config_parse(&c, "mode = client\nkey = " KEY "\nserver = 192.0.2.1:1\nprobe_interval_ms = 2000\n",
+				 err, sizeof(err), warn, sizeof(warn)),
+		 0);
+	CHECK_EQ(c.probe_idle_ms, 2000); /* raised to the active interval */
 	cg_config_free(&c);
 
 	/* Errors carry the key or the line. */

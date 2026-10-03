@@ -17,13 +17,14 @@ l2 10.0.2.1 ──────────────────────�
 l3 10.0.3.1 ──────────────────────────────── s3 10.0.3.2
 ```
 
-Las cifras citadas en [`ROADMAP.md`](../ROADMAP.md) y en las historias 001 y
-005 salen de aquí.
+Las cifras citadas en [`ROADMAP.md`](../ROADMAP.md) y en las historias 001,
+005 y 006 salen de aquí.
 
 ## Requisitos
 
 root, iproute2 (`ip`, `tc` con `sch_tbf`), gcc y make. Go solo hace falta para
-el engarde de referencia (no con `ENGINE=c`); curl y python3, para las demos.
+el engarde de referencia (no con `ENGINE=c`); python3, para `health` y las
+demos, y curl, para las demos.
 
 ## Uso
 
@@ -31,7 +32,9 @@ el engarde de referencia (no con `ENGINE=c`); curl y python3, para las demos.
 sudo bench/lab.sh build    # udpgen, protoclient, cengarde y engarde Go (normal y -race) en bench/bin/
 sudo bench/lab.sh suite    # línea base del engarde Go (historia 001, ~5 min)
 sudo bench/lab.sh compare  # engarde Go frente a cengarde, cada uno en ambos extremos (historia 005)
-sudo bench/lab.sh smoke    # prueba de humo de cengarde (la que corre el CI)
+sudo bench/lab.sh smoke    # prueba de humo de cengarde (la corre el CI)
+sudo bench/lab.sh health   # salud de enlaces: un enlace con 500 ms de cola, subida y bajada (la corre el CI; historia 006)
+sudo bench/lab.sh latency  # latencia y CPU con busy_poll_us 0, 50 y 200, y el Go de referencia (historia 006)
 sudo ENGINE=c bench/lab.sh build   # solo udpgen y cengarde, sin Go
 ```
 
@@ -54,6 +57,7 @@ sudo bench/lab.sh teardown
 | `ENGINE` | `go` | `c`: cengarde (`engine/`) en ambos extremos, con configs INI en `bench/run/` |
 | `PROTO` | vacío | `c` o `dedup`: usa `protoclient` (C) en vez del cliente Go |
 | `CLIENT_BIN` / `SERVER_BIN` | `bench/bin/engarde-*` | probar otros binarios de engarde |
+| `CLIENT_EXTRA` / `SERVER_EXTRA` | vacío | ajustes extra de cengarde, `clave = valor` separados por `;` (p. ej. `busy_poll_us = 50`) |
 
 Demos de los problemas descritos en el roadmap: `demo_stranger` (el servidor
 envía el tráfico del túnel a cualquiera que le mande un paquete),
@@ -83,6 +87,8 @@ pps=10000 (112 Mbit/s) sent=49997 uniq=49997 loss=0.00% dup=99994 p50=110us p99=
   de cada paquete) no aparece en las cifras.
 - veth no es un módem: sin `sch_netem` no hay retardo, jitter ni pérdida en los
   enlaces; `tbf` solo emula un enlace lento con la cola en la propia máquina.
+  Esa cola la limita también el `sndbuf` del socket (~190 ms a 5 Mbit/s por
+  defecto), así que `health` lo sube a 4 MiB para tener 500 ms.
 - Los valores absolutos dependen de la CPU (una VM x86 no es una Pi). Compara
   variantes en la misma máquina y, si puedes, ejecútalo también en la Pi.
 - `protoclient.c` es el prototipo de ~200 líneas que sirvió para la primera

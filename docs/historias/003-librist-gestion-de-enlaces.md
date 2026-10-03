@@ -215,6 +215,16 @@ ACTIVO → SILENCIADO (llega tarde o su cola crece; con goteo) → EN RAMPA →
 ACTIVO. Nunca se deja sin transportador. Nombres de parámetros alineados con
 libRIST para que sean familiares: `drop`, `restore`, `settle` y `trickle`.
 
+**Cómo quedó** (historia 006):
+- **Rampa:** no hay; en redundancia pura reordenaría. Se vuelve de golpe con
+  espera exponencial.
+- **Goteo:** opcional y apagado por defecto, porque las sondas ya miden.
+- **Umbral de mudo:** 1–1,5 s en vez de ~300 ms, para no confundir un enlace
+  que se llena con uno muerto.
+- **Medida:** retraso de ida por sentido en vez de RTT.
+- **Nombres:** `mute_behind_ms`, `unmute_behind_ms`, `mute_settle_ms`,
+  `mute_trickle` y `min_active_links`.
+
 ## Pendiente
 
 - Leer los tests unitarios de libRIST y reutilizar sus casos para las
@@ -227,3 +237,5 @@ libRIST para que sean familiares: `drop`, `restore`, `settle` y `trickle`.
 ## Cambios
 
 - 2026-10-03: creada (libRIST v0.2.20, commit 4f45ef8).
+- 2026-10-03: implementado en la Fase 2, con los cambios anotados en "Cómo
+  quedó" (historia 006).

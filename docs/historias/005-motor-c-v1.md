@@ -1,7 +1,8 @@
 # 005 — Motor C v1: protocolo y arquitectura
 
-- **Fecha:** 2026-10-03
-- **Estado:** vigente
+- **Fecha:** 2026-10-03 (actualizada el mismo día con la Fase 2)
+- **Estado:** vigente; la historia 006 sustituye la política de envío, las
+  sondas y el formato de `cg_probe_info` (protocolo v2)
 - **Fuentes:** `engine/` (código y tests), `sudo bench/lab.sh compare` y
   `smoke`, historias 001–004.
 
@@ -65,7 +66,9 @@
   medir el RTT (EWMA 1/8), mantener el NAT abierto y que el servidor aprenda
   el camino. Su payload, `cg_probe_info`, lleva lo que cada lado mide en su
   sentido de recepción (rx, primeras copias, retraso), así que cada extremo ve
-  los dos sentidos.
+  los dos sentidos. En la Fase 2 pasan a ser adaptativas (100 ms con
+  tráfico, 1 s en reposo) y llevan el retraso de ida: protocolo v2,
+  historia 006.
 - **Formato:** cualquier cambio sube `CG_PROTO_VERSION`.
 
 ### Recepción y deduplicación
@@ -80,14 +83,13 @@
   primera copia. Son las señales para el silenciado de la Fase 2 (historia
   003). Como cuentan duplicados sin verificar, son informativas.
 
-### Política de envío (`src/policy.h`, patrón libRIST)
+### Política de envío (patrón libRIST)
 
-- Un enlace o camino sin nada verificado durante `stall_ms` (3 s por defecto)
-  deja de llevar payload; solo mantiene las sondas.
-- Vuelve en cuanto llega algo verificado.
-- Si todos están mudos, se envía por todos.
-- El socket nunca se destruye por errores transitorios: un EAGAIN descarta
-  la copia de ese enlace y nada más.
+La versión 1 (`src/policy.h`) dejaba sin payload un enlace sin nada verificado
+durante `stall_ms` (3 s) y enviaba por todos si todos estaban mudos. La Fase 2
+la sustituye por `src/health.h` (mudo en los dos sentidos y silenciado por
+retraso; historia 006). Se mantiene que el socket nunca se destruye por
+errores transitorios: un EAGAIN descarta la copia de ese enlace y nada más.
 
 ### Cliente (`src/client.c`)
 
@@ -124,7 +126,7 @@
   a un servidor cengarde).
 - **IPv6 ausente:** si el kernel arrancó sin IPv6, `listen = *` cae a IPv4.
 - **Estado:** JSON atómico (temporal + `rename`) en `status_file`, cada
-  segundo.
+  segundo; desde la Fase 2, escrito por un hilo aparte (historia 006).
 - **Makefile:** los flags imprescindibles van en `CG_CFLAGS`; `CFLAGS` y
   `LDFLAGS` son del que compila (OpenWrt los pasa por línea de comandos).
 
@@ -187,13 +189,8 @@ Rango de dos pasadas completas:
 
 ## Pendiente
 
-- **Fase 2:**
-  - silenciado por retraso o pérdida (las señales ya existen en `rx_lag_ms`,
-    `rx_missed` y `server_view`/`client_view`), con histéresis, goteo y rampa
-    (historia 003);
-  - modo de sondeo activo opcional para bajar latencia a costa de CPU.
-- **Escribir el estado fuera del bucle** (o recomendar tmpfs, que es lo
-  normal en OpenWrt).
+- ~~**Fase 2:** silenciado por retraso; espera activa opcional; escribir el
+  estado fuera del bucle~~: hecho (historia 006).
 - **Servidor con varias IPs:** responder desde la IP de llegada
   (`IP_PKTINFO`).
 - **Hilos y privilegios:** servidor multihilo (`SO_REUSEPORT`) si una vCPU se
@@ -206,3 +203,6 @@ Rango de dos pasadas completas:
 ## Cambios
 
 - 2026-10-03: creada con la primera versión del motor.
+- 2026-10-03: la Fase 2 sustituye la política de envío, las sondas y el
+  formato de `cg_probe_info` (protocolo v2), y saca el estado del bucle
+  (historia 006).
