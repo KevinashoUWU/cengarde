@@ -1,0 +1,8 @@
+{
+  "private": true,
+  "description": "End-to-end test of luci-app-cengarde in OpenWrt VMs (see e2e.sh)",
+  "type": "module",
+  "devDependencies": {
+    "playwright": "1.56.1"
+  }
+}

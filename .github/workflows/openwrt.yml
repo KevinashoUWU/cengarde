@@ -1,21 +1,34 @@
 name: OpenWrt
 
-# Builds the cengarde package with the official OpenWrt SDKs (25.12: .apk,
-# 24.10: .ipk) for the Raspberry Pi 4 and x86_64, runs the unit tests with
-# each target's own musl, and the netns smoke test with the x86_64 build.
-# The packages are uploaded as artifacts of the run.
+# Everything for OpenWrt:
+# - lint: shell scripts, LuCI views, translations in step with the views;
+# - package: cengarde, luci-app-cengarde and luci-i18n-cengarde-es with the
+#   official SDKs (25.12: .apk, 24.10: .ipk) for the Raspberry Pi 4 and
+#   x86_64; unit tests with each target's own musl, netns smoke test with the
+#   x86_64 build;
+# - image: firmware with LuCI (in Spanish too), cengarde, WireGuard and UPnP
+#   from the official ImageBuilder: 25.12 for the Pi 4 and x86_64, plus 24.10
+#   x86_64 for the test;
+# - e2e: each x86_64 image in two QEMU VMs, router and VPS, configured from
+#   LuCI with Playwright (openwrt/test/e2e.sh);
+# - release: a v* tag publishes the packages and the 25.12 images.
+# Packages, images and the e2e screenshots are artifacts of the run.
 
 on:
   push:
+    branches: ['**']
+    tags: ['v*']
     paths:
       - 'engine/**'
       - 'openwrt/**'
+      - 'contrib/**'
       - 'bench/**'
       - '.github/workflows/openwrt.yml'
   pull_request:
     paths:
       - 'engine/**'
       - 'openwrt/**'
+      - 'contrib/**'
       - 'bench/**'
       - '.github/workflows/openwrt.yml'
   workflow_dispatch:
@@ -23,7 +36,32 @@ on:
 permissions:
   contents: read
 
+env:
+  # On top of each profile's defaults.
+  IMAGE_PACKAGES: >-
+    cengarde luci-app-cengarde luci-i18n-cengarde-es luci luci-i18n-base-es
+    miniupnpd-nftables luci-app-upnp luci-i18n-upnp-es
+    kmod-usb-net-rtl8152 kmod-usb-net-asix-ax88179 kmod-usb-net-cdc-ether
+
 jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Shell scripts
+        run: |
+          shellcheck -s sh -e SC1091,SC3043 openwrt/cengarde/files/cengarde-setup \
+            openwrt/cengarde/files/cengarde.defaults openwrt/test/*.sh \
+            contrib/vps/cengarde-nat contrib/vps/cengarde-vps-setup contrib/vps/install.sh
+          shellcheck -s sh -e SC1091,SC3043,SC2034,SC2154 openwrt/cengarde/files/cengarde.init
+
+      - name: LuCI views
+        run: for f in openwrt/luci-app-cengarde/htdocs/luci-static/resources/view/cengarde/*.js; do node --check "$f"; done
+
+      - name: Translations in step with the views
+        run: python3 openwrt/luci-app-cengarde/i18n.py && git diff --exit-code openwrt/luci-app-cengarde/po
+
   package:
     runs-on: ubuntu-24.04
     strategy:
@@ -37,7 +75,11 @@ jobs:
           - target: 'x86/64'
             arch: x86_64
     steps:
+      # The commit itself, not the merge with the base branch: the VPS
+      # cloud-config inside the package builds this same commit.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Install the SDK prerequisites
         run: sudo apt-get update && sudo apt-get install -y zstd rsync gawk qemu-user iproute2
@@ -66,11 +108,21 @@ jobs:
           mkdir sdk
           tar --zstd -xf sdk.tar.zst -C sdk --strip-components=1
 
-      - name: Build the package
+      # luci.mk and the host tools of luci-base (po2lmo, jsmin) are all the
+      # LuCI app needs: the rest of the feed stays out of the build.
+      - name: Add luci-base from the LuCI feed
+        run: |
+          cd sdk
+          ./scripts/feeds update luci
+          mkdir -p package/feeds/luci
+          ln -s ../../../feeds/luci/modules/luci-base package/feeds/luci/luci-base
+
+      - name: Build the packages
         run: |
           ln -s "$GITHUB_WORKSPACE/openwrt/cengarde" sdk/package/cengarde
+          ln -s "$GITHUB_WORKSPACE/openwrt/luci-app-cengarde" sdk/package/luci-app-cengarde
           make -C sdk defconfig
-          make -C sdk package/cengarde/compile V=s
+          make -C sdk package/cengarde/compile package/luci-app-cengarde/compile V=s
 
       - name: Unit tests with the target's musl
         run: |
@@ -99,5 +151,149 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: cengarde-openwrt-${{ matrix.release }}-${{ matrix.arch }}
-          path: sdk/bin/packages/*/base/cengarde*
+          path: sdk/bin/packages/*/base/*cengarde*
           if-no-files-found: error
+
+  image:
+    needs: package
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - release: '25.12.5'
+            target: 'bcm27xx/bcm2711'
+            arch: aarch64_cortex-a72
+            profile: rpi-4
+          - release: '25.12.5'
+            target: 'x86/64'
+            arch: x86_64
+            profile: generic
+          - release: '24.10.8'
+            target: 'x86/64'
+            arch: x86_64
+            profile: generic
+    steps:
+      - name: Install the ImageBuilder prerequisites
+        run: sudo apt-get update && sudo apt-get install -y zstd
+
+      - name: Find the ImageBuilder
+        id: ib
+        run: |
+          base=https://downloads.openwrt.org/releases/${{ matrix.release }}/targets/${{ matrix.target }}
+          curl -fsS "$base/sha256sums" -o sums
+          line=$(grep ' \*openwrt-imagebuilder-.*\.tar\.zst$' sums)
+          name=${line##*\*}
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "url=$base/$name" >> "$GITHUB_OUTPUT"
+          echo "sha=${line%% *}" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the ImageBuilder
+        uses: actions/cache@v4
+        with:
+          path: ib.tar.zst
+          key: ${{ steps.ib.outputs.name }}
+
+      - name: Unpack the ImageBuilder
+        run: |
+          [ -f ib.tar.zst ] || curl -fsS -o ib.tar.zst "${{ steps.ib.outputs.url }}"
+          echo "${{ steps.ib.outputs.sha }}  ib.tar.zst" | sha256sum -c
+          mkdir ib
+          tar --zstd -xf ib.tar.zst -C ib --strip-components=1
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: cengarde-openwrt-${{ matrix.release }}-${{ matrix.arch }}
+          path: pkgs
+
+      - name: Build the image
+        run: |
+          find pkgs -name '*.apk' -o -name '*.ipk' | xargs cp -t ib/packages/
+          make -C ib image PROFILE=${{ matrix.profile }} PACKAGES="$IMAGE_PACKAGES" EXTRA_IMAGE_NAME=cengarde
+          ls -l ib/bin/targets/*/*/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cengarde-firmware-${{ matrix.release }}-${{ matrix.profile }}
+          path: |
+            ib/bin/targets/*/*/*-combined*.img.gz
+            ib/bin/targets/*/*/*-factory.img.gz
+            ib/bin/targets/*/*/*-sysupgrade.img.gz
+            ib/bin/targets/*/*/*.manifest
+            ib/bin/targets/*/*/sha256sums
+          if-no-files-found: error
+
+  e2e:
+    needs: image
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ['25.12.5', '24.10.8']
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' |
+            sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Install QEMU and Playwright
+        run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends qemu-system-x86
+          cd openwrt/test
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: cengarde-firmware-${{ matrix.release }}-generic
+          path: fw
+
+      - name: Router and VPS in QEMU, configured from LuCI
+        run: openwrt/test/e2e.sh "$(find fw -name '*-generic-ext4-combined.img.gz')" e2e-out
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cengarde-e2e-${{ matrix.release }}
+          path: |
+            e2e-out/screenshots
+            e2e-out/*.txt
+            e2e-out/*.json
+            e2e-out/vm/*.console
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [lint, package, image, e2e]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cengarde-*
+          path: dist
+
+      # .apk names carry no architecture: prefix release and architecture.
+      # The LuCI packages are the same for every architecture of a release.
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir rel
+          for d in dist/cengarde-openwrt-*; do
+            tag=${d#dist/cengarde-openwrt-}
+            find "$d" -type f \( -name '*.apk' -o -name '*.ipk' \) | while read -r f; do
+              b=${f##*/}
+              case "$b" in
+              luci-*) cp -n "$f" "rel/openwrt-${tag%%-*}-$b" ;;
+              *) cp "$f" "rel/openwrt-$tag-$b" ;;
+              esac
+            done
+          done
+          find dist/cengarde-firmware-25.12.* -type f -name '*.img.gz' -exec cp -t rel/ {} +
+          (cd rel && sha256sum * > sha256sums)
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --generate-notes rel/*
