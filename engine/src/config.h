@@ -65,6 +65,18 @@ struct cg_config {
 	int rcvbuf;
 	int log_level;
 
+	/* link health, each end for its send direction (health.h) */
+	uint32_t mute_behind_ms; /* 0: never mute for delay */
+	uint32_t unmute_behind_ms;
+	uint32_t mute_settle_ms;
+	uint32_t mute_trickle;
+	uint32_t min_active_links;
+
+	/* latency knobs */
+	uint32_t busy_poll_us; /* poll without sleeping this long after traffic */
+	int cpu;               /* pin to this CPU; -1: any */
+	uint32_t rt_priority;  /* SCHED_FIFO priority; 0: normal scheduling */
+
 	/* client */
 	int nserver;
 	struct sockaddr_storage server[CG_MAX_SERVER_ADDRS];
@@ -74,8 +86,8 @@ struct cg_config {
 	int nexclude;
 	struct cg_link_cfg links[CG_MAX_LINK_CFG];
 	int nlinks;
-	uint32_t probe_interval_ms;
-	uint32_t stall_ms;
+	uint32_t probe_interval_ms; /* while there is traffic */
+	uint32_t probe_idle_ms;     /* while there is none */
 	int sndbuf;
 
 	/* server */

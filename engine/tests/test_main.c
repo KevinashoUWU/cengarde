@@ -12,7 +12,7 @@ int main(void)
 	} suites[] = {
 		{ "siphash", test_siphash }, { "proto", test_proto },   { "replay", test_replay },
 		{ "arrival", test_arrival }, { "config", test_config }, { "util", test_util },
-		{ "idmap", test_idmap },
+		{ "idmap", test_idmap },   { "health", test_health },
 	};
 
 	for (unsigned i = 0; i < sizeof(suites) / sizeof(suites[0]); i++) {

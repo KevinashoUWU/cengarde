@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "arrival.h" /* CG_MAX_LINKS */
 #include "log.h"
 #include "util.h"
 
@@ -365,7 +366,12 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	c->status_interval_ms = 1000;
 	c->rcvbuf = 4 << 20;
 	c->log_level = CG_LOG_INFO;
-	c->probe_interval_ms = 1000;
+	c->mute_behind_ms = 150;
+	c->mute_settle_ms = 2000;
+	c->min_active_links = 2;
+	c->cpu = -1;
+	c->probe_interval_ms = 100;
+	c->probe_idle_ms = 1000;
 	c->max_sessions = 64;
 	c->session_timeout_ms = 180000;
 	c->path_timeout_ms = 30000;
@@ -384,6 +390,23 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 		goto out;
 	}
 
+	if (get_u32(&ini, "", "mute_behind_ms", 0, 60000, &c->mute_behind_ms, err, errlen))
+		goto out;
+	c->unmute_behind_ms = c->mute_behind_ms * 4 / 5;
+	if (get_u32(&ini, "", "unmute_behind_ms", 0, c->mute_behind_ms, &c->unmute_behind_ms, err, errlen) ||
+	    get_u32(&ini, "", "mute_settle_ms", 100, 600000, &c->mute_settle_ms, err, errlen) ||
+	    get_u32(&ini, "", "mute_trickle", 0, 1000000, &c->mute_trickle, err, errlen) ||
+	    get_u32(&ini, "", "min_active_links", 1, CG_MAX_LINKS, &c->min_active_links, err, errlen) ||
+	    get_u32(&ini, "", "busy_poll_us", 0, 1000000, &c->busy_poll_us, err, errlen) ||
+	    get_u32(&ini, "", "rt_priority", 0, 99, &c->rt_priority, err, errlen))
+		goto out;
+	if (cg_ini_get(&ini, "", "cpu")) {
+		u = 0;
+		if (get_u32(&ini, "", "cpu", 0, 1023, &u, err, errlen))
+			goto out;
+		c->cpu = (int)u;
+	}
+
 	if (!cg_ini_get(&ini, "", "listen")) {
 		cg_addr_parse(c->mode == CG_MODE_CLIENT ? "127.0.0.1:59401" : "*:59402", 0, &c->listen, 1, e,
 			      sizeof(e));
@@ -398,10 +421,11 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 			snprintf(err, errlen, "server: required in client mode");
 			goto out;
 		}
-		if (get_u32(&ini, "", "probe_interval_ms", 50, 60000, &c->probe_interval_ms, err, errlen))
+		if (get_u32(&ini, "", "probe_interval_ms", 100, 60000, &c->probe_interval_ms, err, errlen))
 			goto out;
-		c->stall_ms = 3 * c->probe_interval_ms;
-		if (get_u32(&ini, "", "stall_ms", 100, 600000, &c->stall_ms, err, errlen))
+		if (c->probe_idle_ms < c->probe_interval_ms)
+			c->probe_idle_ms = c->probe_interval_ms;
+		if (get_u32(&ini, "", "probe_idle_ms", c->probe_interval_ms, 600000, &c->probe_idle_ms, err, errlen))
 			goto out;
 		u = 0;
 		if (get_u32(&ini, "", "sndbuf", 0, 1 << 30, &u, err, errlen))
@@ -420,11 +444,9 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 			snprintf(err, errlen, "wireguard: required in server mode (local WireGuard address)");
 			goto out;
 		}
-		c->stall_ms = 3000;
 		if (get_u32(&ini, "", "max_sessions", 1, 4096, &c->max_sessions, err, errlen) ||
 		    get_u32(&ini, "", "session_timeout_ms", 1000, 86400000, &c->session_timeout_ms, err, errlen) ||
-		    get_u32(&ini, "", "path_timeout_ms", 1000, 3600000, &c->path_timeout_ms, err, errlen) ||
-		    get_u32(&ini, "", "stall_ms", 100, 600000, &c->stall_ms, err, errlen))
+		    get_u32(&ini, "", "path_timeout_ms", 1000, 3600000, &c->path_timeout_ms, err, errlen))
 			goto out;
 	}
 

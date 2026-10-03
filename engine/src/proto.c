@@ -87,9 +87,11 @@ int cg_hdr_verify(const uint8_t *buf, size_t len, const uint8_t key[CG_SIPHASH_K
 void cg_probe_info_write(uint8_t out[CG_PROBE_INFO_LEN], const struct cg_probe_info *pi)
 {
 	put32(out, pi->echo_ts);
-	put32(out + 4, pi->rx);
-	put32(out + 8, pi->wins);
-	put32(out + 12, pi->lag_us);
+	put32(out + 4, pi->owd);
+	put32(out + 8, pi->interval_ms);
+	put32(out + 12, pi->rx);
+	put32(out + 16, pi->wins);
+	put32(out + 20, pi->lag_us);
 }
 
 int cg_looks_like_wg(const uint8_t *buf, size_t len)
@@ -113,7 +115,9 @@ int cg_looks_like_wg(const uint8_t *buf, size_t len)
 void cg_probe_info_read(struct cg_probe_info *pi, const uint8_t in[CG_PROBE_INFO_LEN])
 {
 	pi->echo_ts = get32(in);
-	pi->rx = get32(in + 4);
-	pi->wins = get32(in + 8);
-	pi->lag_us = get32(in + 12);
+	pi->owd = get32(in + 4);
+	pi->interval_ms = get32(in + 8);
+	pi->rx = get32(in + 12);
+	pi->wins = get32(in + 16);
+	pi->lag_us = get32(in + 20);
 }

@@ -2,7 +2,6 @@
 #include <string.h>
 
 #include "arrival.h"
-#include "policy.h"
 #include "test.h"
 
 static struct cg_arrivals a;
@@ -36,12 +35,4 @@ void test_arrival(void)
 	/* A copy whose slot was already reused is late. */
 	cg_arr_dup(&a, rx, 0, 0, 2);
 	CHECK_EQ(rx[2].late, 1);
-
-	/* Policy: silent links stop carrying payload, unless every link is silent. */
-	CHECK(cg_link_live(1000, 1500, 600));
-	CHECK(!cg_link_live(1000, 1700, 600));
-	CHECK(!cg_link_live(0, 10, 600)); /* never heard: not live */
-	CHECK(cg_link_sends(1000, 1700, 600, 0)); /* nobody live: send everywhere */
-	CHECK(!cg_link_sends(1000, 1700, 600, 1));
-	CHECK(cg_link_sends(1000, 1500, 600, 1));
 }

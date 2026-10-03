@@ -1,10 +1,10 @@
-/* cengarde wire protocol, version 1.
+/* cengarde wire protocol, version 2 (version 1 had no delay reports).
  *
  * Every datagram between client and server carries a 24-byte header followed
  * by the payload (a WireGuard datagram for DATA). All integers are big-endian.
  *
  *   0       ver(4 bits) | type(4 bits)
- *   1       flags (0)
+ *   1       flags          (CG_F_*; 0 on DATA)
  *   2       reserved (0)
  *   3       link id        <- not authenticated, so the sender MACs a packet
  *                             once and patches this byte per link
@@ -26,7 +26,7 @@
 
 #include "siphash.h"
 
-#define CG_PROTO_VERSION 1
+#define CG_PROTO_VERSION 2
 #define CG_HDR_LEN 24
 #define CG_MAC_OFF 16
 #define CG_LINK_OFF 3
@@ -38,6 +38,10 @@ enum cg_type {
 	CG_T_PROBE_REPLY = 3, /* server -> client, same path; payload: cg_probe_info */
 };
 
+/* Header flags on probes and probe replies. */
+#define CG_F_OWD 0x01   /* cg_probe_info.owd holds a measurement */
+#define CG_F_MUTED 0x02 /* the sender carries no payload on this link (link health) */
+
 struct cg_hdr {
 	uint8_t type;
 	uint8_t flags;
@@ -48,14 +52,22 @@ struct cg_hdr {
 };
 
 /* Probe and probe reply payload: each side reports what it measures on this
- * path in its receive direction, so both ends see both directions. */
+ * path in its receive direction, so both ends see both directions.
+ *
+ * owd is the one-way delay of the newest probe (in a reply) or probe reply
+ * (in a probe) received on this path: the receiver's clock at arrival minus
+ * the header ts. The two clocks are unrelated, so the value only means
+ * something compared with the other paths of the same session; the sender
+ * uses it for link health (health.h). */
 struct cg_probe_info {
-	uint32_t echo_ts; /* reply: ts of the probe being answered; probe: 0 */
-	uint32_t rx;      /* verified packets received on this path (wraps) */
-	uint32_t wins;    /* of those, copies that arrived first (wraps) */
-	uint32_t lag_us;  /* smoothed delay behind the first copy */
+	uint32_t echo_ts;     /* reply: ts of the probe being answered; probe: 0 */
+	uint32_t owd;         /* valid with CG_F_OWD */
+	uint32_t interval_ms; /* probe: time until the next probe on this path; reply: 0 */
+	uint32_t rx;          /* verified packets received on this path (wraps) */
+	uint32_t wins;        /* of those, copies that arrived first (wraps) */
+	uint32_t lag_us;      /* smoothed delay behind the first copy */
 };
-#define CG_PROBE_INFO_LEN 16
+#define CG_PROBE_INFO_LEN 24
 
 /* Writes a complete header, MAC included, for hdr and payload. */
 void cg_hdr_write(uint8_t out[CG_HDR_LEN], const struct cg_hdr *h, const uint8_t key[CG_SIPHASH_KEY_LEN],

@@ -10,7 +10,7 @@ void test_proto(void)
 	struct cg_hdr h = { .type = CG_T_DATA, .flags = 0, .link = 5, .session = 0xdeadbeef, .seq = 0x01020304,
 			    .ts = 0xa0b0c0d0 },
 		      p;
-	struct cg_probe_info pi = { 1, 2, 3, 0xfffffffe }, po;
+	struct cg_probe_info pi = { 1, 0x80000001, 100, 2, 3, 0xfffffffe }, po;
 	uint8_t pib[CG_PROBE_INFO_LEN];
 
 	for (int i = 0; i < 16; i++) {
@@ -24,7 +24,7 @@ void test_proto(void)
 	memcpy(pkt + CG_HDR_LEN, payload, sizeof(payload));
 
 	/* Layout: version/type, session, seq and ts in network order, link at byte 3. */
-	CHECK_EQ(pkt[0], 0x11);
+	CHECK_EQ(pkt[0], 0x21);
 	CHECK_EQ(pkt[3], 5);
 	CHECK(!memcmp(pkt + 4, "\xde\xad\xbe\xef\x01\x02\x03\x04\xa0\xb0\xc0\xd0", 12));
 
@@ -57,25 +57,35 @@ void test_proto(void)
 	/* Malformed headers. */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, CG_HDR_LEN), -1); /* DATA without payload */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, CG_HDR_LEN - 1), -1);
-	pkt[0] = 0x21; /* version 2 */
+	pkt[0] = 0x11; /* version 1 (no delay reports) is refused */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
-	pkt[0] = 0x1f; /* unknown type */
+	pkt[0] = 0x31; /* version 3 */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
-	pkt[0] = 0x11;
+	pkt[0] = 0x2f; /* unknown type */
+	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
+	pkt[0] = 0x21;
 	pkt[2] = 1; /* reserved must be zero */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
 	pkt[2] = 0;
 
-	/* Probes carry exactly one cg_probe_info. */
+	/* Probes carry exactly one cg_probe_info; flags are authenticated. */
 	h.type = CG_T_PROBE;
+	h.flags = CG_F_OWD | CG_F_MUTED;
 	cg_probe_info_write(pib, &pi);
 	cg_hdr_write(pkt, &h, key_a, pib, sizeof(pib));
 	memcpy(pkt + CG_HDR_LEN, pib, sizeof(pib));
 	CHECK_EQ(cg_hdr_parse(&p, pkt, CG_HDR_LEN + CG_PROBE_INFO_LEN), 0);
 	CHECK_EQ(cg_hdr_parse(&p, pkt, CG_HDR_LEN + CG_PROBE_INFO_LEN + 1), -1);
 	CHECK(cg_hdr_verify(pkt, CG_HDR_LEN + CG_PROBE_INFO_LEN, key_a));
+	CHECK_EQ(cg_hdr_parse(&p, pkt, CG_HDR_LEN + CG_PROBE_INFO_LEN), 0);
+	CHECK_EQ(p.flags, CG_F_OWD | CG_F_MUTED);
+	pkt[1] ^= CG_F_MUTED;
+	CHECK(!cg_hdr_verify(pkt, CG_HDR_LEN + CG_PROBE_INFO_LEN, key_a));
+	pkt[1] ^= CG_F_MUTED;
 	cg_probe_info_read(&po, pkt + CG_HDR_LEN);
-	CHECK(po.echo_ts == 1 && po.rx == 2 && po.wins == 3 && po.lag_us == 0xfffffffe);
+	CHECK(po.echo_ts == 1 && po.owd == 0x80000001 && po.interval_ms == 100 && po.rx == 2 && po.wins == 3 &&
+	      po.lag_us == 0xfffffffe);
+	CHECK(!memcmp(pkt + CG_HDR_LEN, "\x00\x00\x00\x01\x80\x00\x00\x01\x00\x00\x00\x64", 12));
 
 	/* WireGuard message shapes (docs/historias/002). */
 	{

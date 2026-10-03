@@ -5,11 +5,13 @@
 
 #include <stdint.h>
 #include <string.h>
+#include <sys/epoll.h>
 #include <sys/socket.h>
 #include <sys/uio.h>
 
 #include "config.h"
 #include "proto.h"
+#include "util.h"
 
 #ifndef CG_VERSION
 #define CG_VERSION "unknown"
@@ -49,9 +51,21 @@ static inline int cg_rx(int fd, struct cg_rxbatch *b)
 	return recvmmsg(fd, b->msg, CG_BATCH, MSG_DONTWAIT, NULL);
 }
 
+/* epoll_wait that, with busy_poll_us, keeps polling without sleeping for
+ * that long after the last traffic: the next packet is picked up without a
+ * wake-up, at the cost of a busy CPU while traffic flows. */
+static inline int cg_wait(int ep, struct epoll_event *ev, int max, uint32_t busy_poll_us, uint64_t last_traffic_us)
+{
+	return epoll_wait(ep, ev, max, busy_poll_us && cg_now_us() - last_traffic_us < busy_poll_us ? 0 : -1);
+}
+
 int cg_timerfd(unsigned interval_ms);
 int cg_random(void *buf, size_t len);
 int cg_epoll_add(int ep, int fd, uint64_t tag);
+/* Applies the cpu and rt_priority knobs to the calling thread and returns
+ * the busy_poll_us to use (0 when polling would starve a single CPU).
+ * Failures are warnings: the tunnel runs anyway. */
+uint32_t cg_tune(const struct cg_config *cfg);
 
 int cg_client_run(const struct cg_config *cfg, int sigfd);
 int cg_server_run(const struct cg_config *cfg, int sigfd);
