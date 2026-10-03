@@ -1,6 +1,6 @@
 # 001 — Diagnóstico medido del engarde Go
 
-- **Fecha:** 2026-10-03
+- **Fecha:** 2026-10-03 (actualizada el mismo día con datos de campo)
 - **Estado:** vigente
 - **Fuentes:** código Go en `cmd/` (commit 3492df9); laboratorio `bench/`
   (`sudo bench/lab.sh suite` y las demos); resumen en `ROADMAP.md` §2.
@@ -22,8 +22,9 @@
   está ocupado; 15–16 data races en el cliente y 6 en el servidor.
 - **Prototipo C** (`bench/protoclient.c`): ~4× menos CPU en bajada con 3
   enlaces, ~6× deduplicando.
-- **Pendiente:** medir en la Pi real si el techo de ~30 Mbit/s es de CPU o de
-  los enlaces.
+- **Confirmado en campo** (historia 004): la Pi 4B con 4 enlaces se queda en
+  20–30 Mbit/s por CPU; un Celeron J4005 con la misma configuración llega a
+  ~90 Mbit/s.
 
 ## Contexto
 
@@ -128,9 +129,12 @@ Go frente al prototipo C, con 3 enlaces y el mismo servidor Go:
   - el escenario del enlace lento no afecta a los demás;
   - ThreadSanitizer limpio.
 
+  Las tres primeras ya se cumplen (historia 005). La cuarta no aplica: el
+  motor es de un solo hilo y no tiene web.
+
 ## Pendiente
 
-- Medir en la Pi real (pasos en `ROADMAP.md` §7).
+- ~~Medir en la Pi real~~: confirmado por el usuario (historia 004).
 - WireGuard real e iperf3 TCP en el laboratorio; `netem` en una máquina que
   lo tenga.
 - Comprobar si algún enlace del usuario da más de 30 Mbit/s por sí solo.
@@ -138,3 +142,5 @@ Go frente al prototipo C, con 3 enlaces y el mismo servidor Go:
 ## Cambios
 
 - 2026-10-03: creada a partir de la primera sesión de medidas.
+- 2026-10-03: confirmado en campo el límite de CPU en la Pi (historia 004); las
+  pruebas de aceptación se cumplen en el motor C (historia 005).

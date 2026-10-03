@@ -36,9 +36,18 @@
    ~30 Mbit/s, ninguna reescritura pasará de ~30 Mbit/s en modo redundante.
    Para sumar enlaces hace falta agregación (bonding) o FEC, que están en la
    Fase 5.
-6. **Orden recomendado:** banco de pruebas → núcleo en C compatible en el cable
-   con engarde Go → rendimiento → producto (OpenWrt + web) → eBPF como
-   acelerador opcional → modos más allá de la redundancia pura.
+6. **Orden recomendado:** banco de pruebas → núcleo en C (protocolo propio;
+   cliente y servidor siempre cengarde) → rendimiento → producto (OpenWrt +
+   web) → eBPF como acelerador opcional → modos más allá de la redundancia
+   pura.
+
+> **Actualización 2026-10-03:**
+> - El usuario confirmó en campo el límite de CPU de la Pi (historia 004) y
+>   decidió que cliente y servidor sean cengarde desde el primer día, así que
+>   se abandona la compatibilidad en el cable con engarde Go.
+> - El motor C v1 ya funciona (`engine/`, historia 005). En el laboratorio
+>   gasta 4–7× menos CPU por paquete que el cliente Go, no pierde paquetes
+>   donde el Go perdía hasta un 38 % y aguanta el enlace lento sin despeinarse.
 
 ## 1. Cómo funciona hoy
 
@@ -222,16 +231,21 @@ La [sección 7](#7-qué-medir-en-la-raspberry-pi) explica cómo distinguirlos.
    los demás enlaces: tumba el túnel entero. La clave debe ser (índice
    receptor, contador, tag Poly1305). Un paquete falso con el mismo contador
    tiene otro tag, así que se reenvía, WireGuard lo rechaza y el bueno pasa.
+   *Resuelto de otra forma en el motor v1:* la cabecera propia lleva un MAC
+   sobre cabecera y payload, y solo una copia verificada marca su secuencia
+   (historia 005).
 5. **C en un demonio expuesto a Internet** pierde la seguridad de memoria de
    Go. Hay que compensarlo con una superficie de parseo mínima, fuzzing
    (libFuzzer o AFL++) de los parsers de paquetes, configuración y HTTP,
    ASan/UBSan en CI, flags de hardening y privilegios mínimos. Si la seguridad
    llegara a pesar más que C, existe el port a Rust `rengarde`.
-6. **Compatibilidad en el cable con engarde Go** en las primeras fases. Así se
-   migra un extremo cada vez (cliente C con servidor Go y viceversa) y se puede
-   comparar en producción.
-7. **Linux primero.** El objetivo es Pi, OpenWrt y VPS. Windows y macOS pueden
-   seguir con el cliente Go de upstream gracias a esa compatibilidad.
+6. ~~Compatibilidad en el cable con engarde Go en las primeras fases.~~
+   **Cambiado el 2026-10-03:** cliente y servidor son siempre cengarde (es una
+   reconstrucción), así que hay protocolo propio con cabecera autenticada
+   desde el primer día (historia 005).
+7. **Linux primero.** El objetivo es Pi, OpenWrt y VPS. Un cliente para
+   Windows o macOS necesitaría un port del motor, porque ya no habla el
+   protocolo de engarde Go.
 
 ## 4. Arquitectura propuesta
 
@@ -258,27 +272,24 @@ segundo deseo del autor original.
 - Enlaces con `SO_BINDTODEVICE` más bind a la IP del enlace, IPv4 e IPv6.
   Selección por lista explícita o patrones (`wwan*`), y exclusión automática
   de `lo`, `wg*`, bridges y `docker*`.
-- Deduplicación con un anillo de 2^k huecos indexado por (índice receptor,
-  contador) de WireGuard. Cada hueco guarda índice, contador, 8 bytes del tag,
-  la máscara de enlaces por los que ha llegado y la hora de la primera llegada
-  (unos 32 B: 128–512 KB en total).
+- Deduplicación por la secuencia autenticada de la cabecera propia (ventana
+  anti-replay de 8192 bits). Aparte, un anillo de llegadas guarda la máscara de
+  enlaces por los que llegó cada paquete y la hora de la primera copia
+  (historia 005).
 - De esa tabla salen estadísticas por enlace sin coste extra: cuántas veces
   llegó primero ("wins"), su retardo frente al más rápido y una pérdida
   aproximada (huecos reciclados sin el bit de ese enlace).
 
 ### 4.2 Servidor
 
-- **Sesiones sin cambiar el protocolo.** Los caminos se agrupan por sesión de
-  WireGuard observando los índices del handshake: la iniciación lleva el
-  índice del cliente y la respuesta, los dos. Cada sesión tiene su propio
+- **Sesiones** por el id de sesión de la cabecera propia (hecho en v1). Ya no
+  hace falta observar los índices de WireGuard. Cada sesión tiene su propio
   socket hacia WireGuard, como un NAT, de modo que el WireGuard del servidor ve
   a cada cliente como un endpoint distinto. Así caben **varios clientes en un
   mismo puerto**, incluso cuando es el servidor quien inicia el handshake.
-- **Admisión de caminos.** Un camino nuevo solo se acepta si trae un mensaje
-  WireGuard válido (tipo y longitud) con un índice de sesión conocido, o una
-  iniciación con `mac1` válido si se configura la clave pública del servidor.
-  Hay un límite de caminos por sesión y nunca se envía a una dirección sin
-  confirmar. Eso cierra la reflexión del bug 1.
+- **Admisión de caminos** (hecho en v1): una sesión o un camino nuevo (o un
+  cambio de dirección) solo se acepta con el MAC verificado, y nunca se envía
+  a una dirección sin confirmar. Eso cierra la reflexión del bug 1.
 - **Varios hilos** con `SO_REUSEPORT`: cada camino va a un hilo por hash de la
   4-tupla, de modo que se usan todos los núcleos y las copias de un mismo
   paquete ya no comparten cola.
@@ -287,13 +298,16 @@ segundo deseo del autor original.
 
 ### 4.3 Protocolo
 
-- **v0 "compat":** datagramas WireGuard tal cual, 100 % compatible con engarde
-  Go.
-- **v1 "nativo"** (opcional, Fase 5): una cabecera corta y autenticada con
-  versión, sesión, enlace, secuencia, marca de tiempo y un MAC SipHash con
-  clave compartida. Permite sondas por enlace (RTT, pérdida, jitter), FEC y
-  agregación. Cuesta MTU: con IPv4 debajo quedan ~20 B libres respecto al MTU
-  1420 de WireGuard; con IPv6, ninguno.
+- **v1, desde el día uno** (implementado; detalle en la historia 005):
+  - cabecera de 24 B con versión y tipo, enlace, sesión, secuencia, marca de
+    tiempo y MAC SipHash-2-4 sobre cabecera y payload, con una clave por
+    sentido;
+  - sondas por enlace (RTT y vista cruzada de cada sentido);
+  - la base para FEC, agregación y ARQ.
+
+  Cuesta MTU: el de WireGuard tiene que ser ≤ 1416 sobre IPv4 y ≤ 1396 sobre
+  IPv6 con una ruta de 1500.
+- ~~v0 "compat"~~: descartado (cliente y servidor son siempre cengarde).
 
 ### 4.4 Configuración, control y observabilidad
 
@@ -334,7 +348,16 @@ orientativas, para una persona a tiempo parcial.
 
 **Salida:** tabla de referencia reproducible y diagnóstico de la Pi.
 
-### Fase 1: núcleo en C con paridad funcional y compatible en el cable (3–5 semanas)
+### Fase 1: núcleo en C con protocolo propio (3–5 semanas)
+
+**Estado (2026-10-03):** hecho lo esencial en `engine/` (historia 005):
+- cliente y servidor, epoll y lotes, netlink, IPv4/IPv6;
+- sesiones y admisión por MAC, sondas, estado JSON;
+- tests (también bajo qemu en aarch64, armhf y MIPS big-endian) y CI.
+
+Falta lo marcado como pendiente en la historia 005: socket de control,
+fuzzing, privilegios mínimos, binarios estáticos y prueba en la Pi real.
+
 
 - **1a: cliente**, que es lo que ataca el problema de la Pi si resulta ser de
   CPU.
@@ -352,7 +375,7 @@ orientativas, para una persona a tiempo parcial.
   - Binarios estáticos con musl para aarch64, armv7, x86_64 y mipsel.
 
 **Salida:**
-- interopera con engarde Go en los dos sentidos;
+- cliente y servidor cengarde de punta a punta (`bench/lab.sh smoke`) — hecho;
 - `demo_stranger` no recibe nada y `demo_webpanic` no tumba el túnel;
 - 0 errores de sanitizers en la suite;
 - con 3 enlaces, en bajada gasta ≤ 1/3 de la CPU por paquete del cliente Go;
@@ -573,7 +596,7 @@ enlaces:
 | Riesgo | Mitigación |
 | --- | --- |
 | Bugs de memoria en C | Parsers mínimos, fuzzing continuo, sanitizers, revisión y separación de privilegios |
-| Diferencias de comportamiento con engarde Go | Compatibilidad en el cable y pruebas de interoperabilidad en CI |
+| Diferencias de comportamiento con engarde Go | Las mismas pruebas de laboratorio (`compare`) contra la línea base Go |
 | Soporte desigual de eBPF (XDP genérico en la Pi y en USB; OpenWrt sin BTF) | eBPF opcional con respaldo automático; nada de CO-RE |
 | Alcance (web + OpenWrt + eBPF + modos) | Fases con criterios de salida; la Fase 1a ya ataca el problema de la Pi |
 | Licencia | Al derivar de engarde (GPLv2), cengarde es GPLv2. Programas BPF con licencia "GPL" o dual BSD/GPL; libbpf (LGPL-2.1 o BSD-2) es compatible |
