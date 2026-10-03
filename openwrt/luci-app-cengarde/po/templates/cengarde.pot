@@ -1,0 +1,278 @@
+msgid ""
+msgstr "Content-Type: text/plain; charset=UTF-8"
+
+msgid "cengarde"
+msgstr ""
+
+msgid "Sends every packet of a WireGuard tunnel to a VPS over all the selected uplinks at once, and the first copy to arrive wins: one uplink failing or lagging no longer drops the connection. Setup: copy the cloud-config from the VPS tab when creating the VPS, then enter its IP here, pick the uplinks and enable."
+msgstr ""
+
+msgid "General"
+msgstr ""
+
+msgid "VPS"
+msgstr ""
+
+msgid "Tunnel"
+msgstr ""
+
+msgid "Advanced"
+msgstr ""
+
+msgid "Enabled"
+msgstr ""
+
+msgid "VPS address"
+msgstr ""
+
+msgid "Public IP of the VPS, as the provider shows it. An IP and not a name: with all traffic going through the tunnel, a name could not be resolved before the tunnel is up."
+msgstr ""
+
+msgid "VPS port"
+msgstr ""
+
+msgid "UDP port of cengarde on the VPS."
+msgstr ""
+
+msgid "Uplinks"
+msgstr ""
+
+msgid "The interfaces to bond: one per modem or VLAN, each with its own default route. cengarde gives them a metric of their own if they share one and puts them in the wan firewall zone."
+msgstr ""
+
+msgid "Pairing secret"
+msgstr ""
+
+msgid "Every key of the tunnel derives from it: the VPS only needs this value, which goes in its cloud-config. A new secret means updating the VPS too."
+msgstr ""
+
+msgid "Expected the output of \"cengarde genkey\" (44 characters)"
+msgstr ""
+
+msgid "A VPS set up with the current secret will stop working until it gets the new one. Generate a new secret?"
+msgstr ""
+
+msgid "Generate"
+msgstr ""
+
+msgid "VPS cloud-config"
+msgstr ""
+
+msgid "Paste it as \"user data\" (cloud-init) when creating an Ubuntu 22.04 or 24.04 VPS, e.g. on Vultr. It builds the same cengarde version as this router and sets up WireGuard, NAT and IP pass. Setup log on the VPS: /var/log/cloud-init-output.log."
+msgstr ""
+
+msgid "Copied to the clipboard."
+msgstr ""
+
+msgid "Copy"
+msgstr ""
+
+msgid "Download"
+msgstr ""
+
+msgid "Manage the WireGuard tunnel"
+msgstr ""
+
+msgid "Creates the interface wgcg (10.79.0.2/30) with the keys derived from the secret, in the wan firewall zone. Off: set up WireGuard yourself, cengarde only listens on 127.0.0.1 at the VPS port."
+msgstr ""
+
+msgid "Route all traffic through the tunnel"
+msgstr ""
+
+msgid "Through routes more specific than the default ones, which the uplinks keep for cengarde itself."
+msgstr ""
+
+msgid "IP pass"
+msgstr ""
+
+msgid "The VPS forwards TCP and UDP ports 1024-65000 to this router and UPnP hands them on to the LAN: devices and services here get the public IP of the VPS. Also update the VPS (PASSTHROUGH in /etc/cengarde/nat.conf) when changing this."
+msgstr ""
+
+msgid "Needs miniupnpd-nftables (and luci-app-upnp to see the mappings)."
+msgstr ""
+
+msgid "DNS servers"
+msgstr ""
+
+msgid "Used through the tunnel; the uplinks stop announcing their carriers' DNS servers, which usually refuse queries coming from the VPS."
+msgstr ""
+
+msgid "Tunnel MTU"
+msgstr ""
+
+msgid "Mute after falling behind (ms)"
+msgstr ""
+
+msgid "A link that stays this far behind the fastest one for the settle time stops carrying traffic until it catches up. 0: never."
+msgstr ""
+
+msgid "Settle time (ms)"
+msgstr ""
+
+msgid "Minimum active links"
+msgstr ""
+
+msgid "Never mute below this many links."
+msgstr ""
+
+msgid "Probe interval (ms)"
+msgstr ""
+
+msgid "While there is traffic; each idle link is probed every second."
+msgstr ""
+
+msgid "Busy polling (µs)"
+msgstr ""
+
+msgid "Keeps polling this long after traffic instead of sleeping: lower latency, more CPU. 0: off."
+msgstr ""
+
+msgid "Log level"
+msgstr ""
+
+msgid "Errors"
+msgstr ""
+
+msgid "Warnings"
+msgstr ""
+
+msgid "Information"
+msgstr ""
+
+msgid "Debug"
+msgstr ""
+
+msgid "No valid pairing secret: generate one in the VPS tab."
+msgstr ""
+
+msgid "No VPS address yet."
+msgstr ""
+
+msgid "No uplinks selected."
+msgstr ""
+
+msgid "Uplink %s does not exist in the network configuration."
+msgstr ""
+
+msgid "Uplink %s has \"Use default gateway\" off: cengarde needs its default route."
+msgstr ""
+
+msgid "Uplink %s is down."
+msgstr ""
+
+msgid "IP pass is on but miniupnpd is not installed."
+msgstr ""
+
+msgid "The engine is not running: see System > System Log."
+msgstr ""
+
+msgid "%d s ago"
+msgstr ""
+
+msgid "%d min ago"
+msgstr ""
+
+msgid "%d h ago"
+msgstr ""
+
+msgid "down"
+msgstr ""
+
+msgid "no answer"
+msgstr ""
+
+msgid "muted"
+msgstr ""
+
+msgid "active"
+msgstr ""
+
+msgid "disabled"
+msgstr ""
+
+msgid "running"
+msgstr ""
+
+msgid "stopped"
+msgstr ""
+
+msgid "Service"
+msgstr ""
+
+msgid "no handshake for %s"
+msgstr ""
+
+msgid "connected"
+msgstr ""
+
+msgid "handshake %s"
+msgstr ""
+
+msgid "waiting for the VPS"
+msgstr ""
+
+msgid "WireGuard tunnel"
+msgstr ""
+
+msgid "Traffic"
+msgstr ""
+
+msgid "%s up, %s down"
+msgstr ""
+
+msgid "Duplicate copies dropped"
+msgstr ""
+
+msgid "Version"
+msgstr ""
+
+msgid "Uplink"
+msgstr ""
+
+msgid "State"
+msgstr ""
+
+msgid "RTT"
+msgstr ""
+
+msgid "Behind the fastest"
+msgstr ""
+
+msgid "From the VPS"
+msgstr ""
+
+msgid "Arrived first"
+msgstr ""
+
+msgid "Sent"
+msgstr ""
+
+msgid "Mutes"
+msgstr ""
+
+msgid "muted by the VPS"
+msgstr ""
+
+msgid "in use"
+msgstr ""
+
+msgid "No uplink is up yet."
+msgstr ""
+
+msgid "The engine is not running."
+msgstr ""
+
+msgid "Could not read the status (is the cengarde package installed?)."
+msgstr ""
+
+msgid "Status"
+msgstr ""
+
+msgid "Behind the fastest: how much later this uplink delivers than the quickest one; past the limit it gets muted (no traffic, probes only) until it catches up. Arrived first: share of the download that came through this uplink before any other copy."
+msgstr ""
+
+msgid "Every packet goes through all active uplinks; the VPS keeps the first copy."
+msgstr ""
+
+msgid "Settings"
+msgstr ""

@@ -1,0 +1,32 @@
+{
+	"admin/services/cengarde": {
+		"title": "cengarde",
+		"order": 60,
+		"action": {
+			"type": "alias",
+			"path": "admin/services/cengarde/status"
+		},
+		"depends": {
+			"acl": [ "luci-app-cengarde" ],
+			"uci": { "cengarde": true }
+		}
+	},
+
+	"admin/services/cengarde/status": {
+		"title": "Status",
+		"order": 10,
+		"action": {
+			"type": "view",
+			"path": "cengarde/status"
+		}
+	},
+
+	"admin/services/cengarde/config": {
+		"title": "Settings",
+		"order": 20,
+		"action": {
+			"type": "view",
+			"path": "cengarde/config"
+		}
+	}
+}
