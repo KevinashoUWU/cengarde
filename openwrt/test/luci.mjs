@@ -6,7 +6,8 @@
 // Against the router VM of vm.sh (uplinks up1-up3, VPS at 1.2.3.4, see
 // e2e.sh): configures cengarde from the web UI only (address, uplinks, IP
 // pass, enable), checks that the cloud-config follows the form, applies,
-// and waits on the status page for the tunnel and the three uplinks.
+// and waits on the status page for the tunnel, the three uplinks and the
+// VPS confirming IP pass; then pauses an uplink there and resumes it.
 // Fails on any JavaScript error after logging in.
 //
 // SPDX-License-Identifier: GPL-2.0-only
@@ -36,6 +37,21 @@ function check(cond, what) {
 	if (!cond)
 		throw new Error(`check failed: ${what}`);
 }
+
+// Polls the status page (it refreshes itself every 3 s) until cond holds.
+async function until(cond, what, ms = 120000) {
+	const deadline = Date.now() + ms;
+
+	while (Date.now() < deadline) {
+		if (await cond())
+			return;
+		await page.waitForTimeout(1000);
+	}
+	throw new Error(`timed out waiting for ${what}`);
+}
+
+const activeRows = () => page.locator('table.cengarde-links tr.tr:has-text("activo")').count();
+const row = (label) => page.locator(`table.cengarde-links tr.tr:has-text("${label} (")`);
 
 // LuCI gives checkboxes a random id; data-widget-id names them.
 async function flag(name, on) {
@@ -107,7 +123,7 @@ try {
 	const deadline = Date.now() + 120000;
 	let rows = 0, connected = false;
 	while (Date.now() < deadline) {
-		rows = await page.locator('table.table tr.tr:has-text("activo")').count();
+		rows = await activeRows();
 		connected = await page.locator('text=conectado').count() > 0;
 		if (rows === UPLINKS.length && connected)
 			break;
@@ -117,6 +133,18 @@ try {
 	check(connected, 'the WireGuard tunnel is connected');
 	check(rows === UPLINKS.length, `all ${UPLINKS.length} uplinks active (got ${rows})`);
 	check(await page.locator('.cengarde-problem').count() === 0, 'no problems reported');
+
+	step('status page: the VPS confirms IP pass');
+	await until(async () => await page.locator('text=activo en el VPS').count() > 0, 'IP pass on at the VPS', 30000);
+
+	step('status page: pause up3, then resume it');
+	await row('up3').locator('button:has-text("Pausar")').click();
+	await until(async () => await row('up3').locator('text=en pausa').count() > 0 &&
+		await activeRows() === UPLINKS.length - 1, 'up3 paused');
+	await shot('06-status-paused');
+	await row('up3').locator('button:has-text("Reanudar")').click();
+	await until(async () => await activeRows() === UPLINKS.length, 'up3 back');
+	check(await row('up3').locator('button:has-text("Pausar")').count() === 1, 'up3 can be paused again');
 
 	check(errors.length === 0, `no JavaScript errors (${errors.join('; ')})`);
 	step('ok');

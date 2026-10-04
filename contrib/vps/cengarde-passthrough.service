@@ -1,0 +1,9 @@
+# Started by cengarde-passthrough.path: turns IP pass (TCP and UDP ports of
+# this server forwarded to the router) on or off as the router asks.
+[Unit]
+Description=cengarde: apply the IP pass the router asks for
+After=wg-quick@wg0.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/cengarde-nat sync wg0

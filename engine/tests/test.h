@@ -39,5 +39,6 @@ void test_idmap(void);
 void test_health(void);
 void test_blake2s(void);
 void test_pair(void);
+void test_ctl(void);
 
 #endif

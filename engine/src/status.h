@@ -28,6 +28,8 @@ void cg_json_ms(struct cg_json *j, const char *key, uint64_t us); /* microsecond
 void cg_json_ms_signed(struct cg_json *j, const char *key, int64_t us);
 void cg_json_bool(struct cg_json *j, const char *key, int v);
 void cg_json_null(struct cg_json *j, const char *key);
+/* Appends text as it is: plain-text replies use the same buffer. */
+void cg_json_raw(struct cg_json *j, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 
 /* Writes data to path atomically. Returns 0 or -1 (errno set). */
 int cg_status_write(const char *path, const char *data, size_t len);
@@ -44,12 +46,13 @@ struct cg_status_writer {
 	int stop, running;
 };
 
-/* Starts the thread. Call before raising the scheduling priority of the
- * caller, so the writer keeps normal scheduling. Returns 0 or -1. */
+/* Starts the thread, with normal scheduling whatever the cpu and
+ * rt_priority knobs gave the caller. Returns 0 or -1. */
 int cg_status_writer_start(struct cg_status_writer *w, const char *path);
-/* Hands the text of j over (j is left empty). Never waits: when the writer
- * is busy taking the previous snapshot, this one is dropped. */
-void cg_status_writer_submit(struct cg_status_writer *w, struct cg_json *j);
+/* Hands the text of j over (j is left empty), replacing a snapshot not
+ * written yet. Never waits: returns -1, and keeps j, in the rare moment the
+ * writer holds the lock to take the previous one. */
+int cg_status_writer_submit(struct cg_status_writer *w, struct cg_json *j);
 void cg_status_writer_stop(struct cg_status_writer *w);
 
 #endif

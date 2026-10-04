@@ -57,3 +57,5 @@ jobs:
         run: sudo ENGINE=c bench/lab.sh build && sudo bench/lab.sh smoke
       - name: Link health (a link with a 500 ms queue is muted and comes back)
         run: sudo bench/lab.sh health
+      - name: Control socket, reloads and IP pass under traffic (no loss, same session)
+        run: sudo bench/lab.sh control

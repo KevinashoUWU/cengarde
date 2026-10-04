@@ -107,7 +107,8 @@ el cloud-config que SmoothWAN usa para el VPS y pidió dos cosas:
 - **IP pass** (`cengarde-nat`):
   - DNAT de TCP/UDP 1024–65000 al router, conservando la IP de origen;
   - masquerade a la salida;
-  - se activa o desactiva en `nat.conf`.
+  - se activa o desactiva en `nat.conf` (desde la historia 009 lo pide el
+    router, y `nat.conf` solo fija el valor inicial).
 
   Probado en namespaces (un veth en lugar de wg0):
   - entra TCP 8080 y UDP 30000 con su origen real, y 65500 se queda en el VPS;
@@ -189,3 +190,5 @@ entrega LuCI sigue al interruptor; el mensaje de control queda pendiente.
   - La pregunta del IP pass queda decidida.
   - La métrica repetida: netifd deja una sola ruta por defecto, no las
     rechaza.
+- 2026-10-04: el IP pass lo gobierna el router y procd manda `SIGHUP` en
+  vez de reiniciar el motor (historia 009).

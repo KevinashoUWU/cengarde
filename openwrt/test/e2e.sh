@@ -11,9 +11,12 @@
 #     one as the external address) and a cengarde server with WireGuard,
 #     all keys derived from the router's pairing secret;
 #  3. configures cengarde on the router from LuCI only (luci.mjs), which
-#     waits for the tunnel and the three uplinks on the status page;
-#  4. pings through the tunnel while one uplink goes down: no loss allowed;
-#  5. disables cengarde and checks that the router is back as it was.
+#     waits for the tunnel, the three uplinks and IP pass on at the VPS,
+#     and pauses and resumes an uplink from the status page;
+#  4. turns IP pass off while pinging through the tunnel: the engine takes
+#     the change without a restart and without loss, and the VPS follows;
+#  5. pings through the tunnel while one uplink goes down: no loss allowed;
+#  6. disables cengarde and checks that the router is back as it was.
 # Screenshots and logs go to OUT_DIR (default ./e2e-out). Needs qemu-system-x86,
 # ssh and node with "npm install" done in this directory.
 #
@@ -82,6 +85,8 @@ key = $CG_LINK_KEY
 listen = 1.2.3.4:65500
 wireguard = 127.0.0.1:65501
 status_file = /var/run/cengarde.json
+control_socket = /var/run/cengarde/cengarde.sock
+passthrough_file = /var/run/cengarde/passthrough
 EOC
 uci set cengarde.main.config_file=/etc/cengarde/server.conf
 uci set cengarde.main.tunnel=0
@@ -139,6 +144,43 @@ if "$VM" ssh router 'pidof miniupnpd >/dev/null && grep -qx ext_ifname=wgcg /var
 else
 	bad "IP pass: miniupnpd is not running on the tunnel"
 fi
+
+if [ "$("$VM" ssh vps 'cat /var/run/cengarde/passthrough')" = on ]; then
+	ok "IP pass: the VPS got the router's request"
+else
+	bad "IP pass: the VPS has no request from the router"
+fi
+
+say "IP pass off while pinging: applied in place, no restart, no loss"
+pid=$("$VM" ssh router 'pidof cengarde')
+"$VM" ssh router 'ping -q -c 12 10.79.0.1' > "$OUT/ping-reload.txt" 2>&1 &
+ping_pid=$!
+sleep 3
+"$VM" ssh router sh -s <<'EOF'
+uci set cengarde.main.ip_pass=0
+uci set cengarde.main.mute_behind_ms=200
+uci commit cengarde
+ubus call service event '{"type":"config.change","data":{"package":"cengarde"}}'
+EOF
+wait "$ping_pid" || true
+cat "$OUT/ping-reload.txt"
+if grep -q ' 0% packet loss' "$OUT/ping-reload.txt" && [ "$("$VM" ssh router 'pidof cengarde')" = "$pid" ] &&
+	"$VM" ssh router 'logread | grep -q "reload: configuration applied"'; then
+	ok "the change went in without restarting the engine or losing a packet"
+else
+	bad "the change restarted the engine or lost packets"
+fi
+if [ "$("$VM" ssh vps 'cat /var/run/cengarde/passthrough')" = off ]; then
+	ok "IP pass: the VPS follows the switch"
+else
+	bad "IP pass: the VPS did not get the switch"
+fi
+if "$VM" ssh router 'cengarde ctl links' > "$OUT/ctl-links.txt" && grep -q '^eth3 .* live ' "$OUT/ctl-links.txt"; then
+	ok "cengarde ctl links on the router"
+else
+	bad "cengarde ctl links"
+fi
+cat "$OUT/ctl-links.txt"
 
 say "data path: ping through the tunnel while up2 goes down"
 "$VM" ssh router 'ping -q -c 12 10.79.0.1' > "$OUT/ping.txt" 2>&1 &

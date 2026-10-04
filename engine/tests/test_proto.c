@@ -24,7 +24,7 @@ void test_proto(void)
 	memcpy(pkt + CG_HDR_LEN, payload, sizeof(payload));
 
 	/* Layout: version/type, session, seq and ts in network order, link at byte 3. */
-	CHECK_EQ(pkt[0], 0x21);
+	CHECK_EQ(pkt[0], 0x31);
 	CHECK_EQ(pkt[3], 5);
 	CHECK(!memcmp(pkt + 4, "\xde\xad\xbe\xef\x01\x02\x03\x04\xa0\xb0\xc0\xd0", 12));
 
@@ -59,11 +59,13 @@ void test_proto(void)
 	CHECK_EQ(cg_hdr_parse(&p, pkt, CG_HDR_LEN - 1), -1);
 	pkt[0] = 0x11; /* version 1 (no delay reports) is refused */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
-	pkt[0] = 0x31; /* version 3 */
+	pkt[0] = 0x21; /* version 2 (no IP pass flags) too */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
-	pkt[0] = 0x2f; /* unknown type */
+	pkt[0] = 0x41; /* version 4 */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
-	pkt[0] = 0x21;
+	pkt[0] = 0x3f; /* unknown type */
+	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
+	pkt[0] = 0x31;
 	pkt[2] = 1; /* reserved must be zero */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
 	pkt[2] = 0;
@@ -86,6 +88,22 @@ void test_proto(void)
 	CHECK(po.echo_ts == 1 && po.owd == 0x80000001 && po.interval_ms == 100 && po.rx == 2 && po.wins == 3 &&
 	      po.lag_us == 0xfffffffe);
 	CHECK(!memcmp(pkt + CG_HDR_LEN, "\x00\x00\x00\x01\x80\x00\x00\x01\x00\x00\x00\x64", 12));
+
+	/* IP pass in the flags: three states, the rest of the flags untouched. */
+	CHECK_EQ(cg_pass_flags(-1), 0);
+	CHECK_EQ(cg_pass_flags(0), CG_F_PASS_SET);
+	CHECK_EQ(cg_pass_flags(1), CG_F_PASS_SET | CG_F_PASS);
+	CHECK_EQ(cg_pass_get(0), -1);
+	CHECK_EQ(cg_pass_get(CG_F_PASS), -1); /* without PASS_SET it says nothing */
+	CHECK_EQ(cg_pass_get(CG_F_OWD | CG_F_MUTED | cg_pass_flags(0)), 0);
+	CHECK_EQ(cg_pass_get(CG_F_OWD | cg_pass_flags(1)), 1);
+	CHECK_EQ(cg_pass_flags(1) & (CG_F_OWD | CG_F_MUTED), 0);
+	h.flags = (uint8_t)(CG_F_OWD | cg_pass_flags(1));
+	cg_hdr_write(pkt, &h, key_a, pib, sizeof(pib));
+	memcpy(pkt + CG_HDR_LEN, pib, sizeof(pib));
+	CHECK(cg_hdr_verify(pkt, CG_HDR_LEN + CG_PROBE_INFO_LEN, key_a));
+	pkt[1] ^= CG_F_PASS; /* nobody on the way can turn it off */
+	CHECK(!cg_hdr_verify(pkt, CG_HDR_LEN + CG_PROBE_INFO_LEN, key_a));
 
 	/* WireGuard message shapes (docs/historias/002). */
 	{

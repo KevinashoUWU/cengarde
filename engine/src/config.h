@@ -62,6 +62,7 @@ struct cg_config {
 	struct sockaddr_storage listen;
 	char status_file[256];
 	uint32_t status_interval_ms;
+	char control_socket[108]; /* "": none (ctl.h) */
 	int rcvbuf;
 	int log_level;
 
@@ -89,12 +90,14 @@ struct cg_config {
 	uint32_t probe_interval_ms; /* while there is traffic */
 	uint32_t probe_idle_ms;     /* while there is none */
 	int sndbuf;
+	int passthrough; /* IP pass asked of the server: -1 nothing, 0 off, 1 on */
 
 	/* server */
 	struct sockaddr_storage wireguard;
 	uint32_t max_sessions;
 	uint32_t session_timeout_ms;
 	uint32_t path_timeout_ms;
+	char passthrough_file[256]; /* where the IP pass the client asks for goes; "": nowhere */
 
 	char *strings; /* storage behind include/exclude */
 };
@@ -109,5 +112,15 @@ void cg_config_free(struct cg_config *c);
 
 /* Settings for an interface: its [link NAME] section, or NULL. */
 const struct cg_link_cfg *cg_config_link(const struct cg_config *c, const char *ifname);
+
+/* A reload applies b over a running a, except what the event loop set up
+ * once: returns the first such setting that differs (the process restarts
+ * for it), or NULL. */
+const char *cg_config_restart_needed(const struct cg_config *a, const struct cg_config *b);
+
+/* The value of a global key in the file at path, without checking the rest
+ * of it (and without resolving any name in it). Returns 0, 1 when the key
+ * is not there, or -1 with err set. */
+int cg_config_peek(const char *path, const char *key, char *out, size_t outlen, char *err, size_t errlen);
 
 #endif

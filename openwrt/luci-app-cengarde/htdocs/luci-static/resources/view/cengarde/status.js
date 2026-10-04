@@ -40,18 +40,54 @@ function badge(text, color) {
 }
 
 function linkState(l) {
+	let b;
+
+	if (l.state == 'paused')
+		return badge(_('paused'), '#888');
 	if (l.state == 'down')
-		return badge(_('down'), '#888');
-	if (l.state == 'stalled')
-		return badge(_('no answer'), '#c33');
-	if (l.upload == 'muted')
-		return badge(_('muted'), '#d80');
-	return badge(_('active'), '#393');
+		b = badge(_('down'), '#888');
+	else if (l.state == 'waiting')
+		b = badge(_('waiting for the VPS'), '#d80');
+	else if (l.state == 'stalled')
+		b = badge(_('no answer'), '#c33');
+	else if (l.upload == 'muted')
+		b = badge(_('muted'), '#d80');
+	else
+		b = badge(_('active'), '#393');
+	return (l.override == 'on') ? E('span', {}, [ b, ' ', E('small', {}, [ _('forced on') ]) ]) : b;
+}
+
+// IP pass as asked of the VPS, and as the VPS reports it.
+function ipPass(p) {
+	if (p.requested == null)
+		return null;
+	if (p.server == 'none')
+		return badge(_('the VPS does not apply it (passthrough_file missing in its cengarde.conf)'), '#c33');
+	if (p.server != p.requested)
+		return badge(_('waiting for the VPS to confirm'), '#d80');
+	return (p.server == 'on') ? badge(_('on at the VPS'), '#393') : _('off');
+}
+
+function sleep(ms) {
+	return new Promise(function(resolve) { window.setTimeout(resolve, ms); });
 }
 
 return view.extend({
 	load: function() {
 		return L.resolveDefault(fs.exec_direct('/usr/sbin/cengarde-setup', [ 'status' ], 'json'), null);
+	},
+
+	refresh: function() {
+		return this.load().then(L.bind(this.update, this, this.node));
+	},
+
+	// Pause an uplink (off), or hand it back to the configuration (auto).
+	handleLink: function(name, what) {
+		return fs.exec('/usr/sbin/cengarde', [ 'ctl', 'link', name, what ]).then(L.bind(function(res) {
+			if (res.code != 0)
+				ui.addNotification(null, E('p', {}, [ (res.stderr || res.stdout || '').trim() ]), 'error');
+			return sleep(1200).then(L.bind(this.refresh, this));
+		}, this));
 	},
 
 	renderSummary: function(st) {
@@ -77,6 +113,9 @@ return view.extend({
 		}
 		rows.push([ _('WireGuard tunnel'), tunnel ]);
 
+		if (e && e.passthrough && ipPass(e.passthrough))
+			rows.push([ _('IP pass'), ipPass(e.passthrough) ]);
+
 		if (e) {
 			rows.push([ _('Traffic'), _('%s up, %s down').format(
 				'%1024.2mB'.format(e.upload.bytes), '%1024.2mB'.format(e.download.bytes)) ]);
@@ -95,7 +134,7 @@ return view.extend({
 	renderLinks: function(st) {
 		const links = (st.engine && st.engine.links) || [];
 		let firsts = 0;
-		const table = E('table', { 'class': 'table' }, [
+		const table = E('table', { 'class': 'table cengarde-links' }, [
 			E('tr', { 'class': 'tr table-titles' }, [
 				E('th', { 'class': 'th' }, [ _('Uplink') ]),
 				E('th', { 'class': 'th' }, [ _('State') ]),
@@ -104,30 +143,44 @@ return view.extend({
 				E('th', { 'class': 'th' }, [ _('From the VPS') ]),
 				E('th', { 'class': 'th' }, [ _('Arrived first') ]),
 				E('th', { 'class': 'th' }, [ _('Sent') ]),
-				E('th', { 'class': 'th' }, [ _('Mutes') ])
+				E('th', { 'class': 'th' }, [ _('Mutes') ]),
+				E('th', { 'class': 'th' }, [ ' ' ])
 			])
 		]);
 
 		links.forEach(function(l) { firsts += l.rx_first; });
-		cbi_update_table(table, links.map(function(l) {
+		cbi_update_table(table, links.map(L.bind(function(l) {
+			const manual = l.override && l.override != 'auto';
+			const out = (l.state == 'paused' || l.state == 'down'); // its figures are old
+
 			return [
 				E('span', { 'title': l.name }, [ l.label || l.name, l.label ? E('small', {}, [ ' (' + l.name + ')' ]) : '' ]),
 				linkState(l),
-				ms(l.rtt_ms),
-				ms(l.upload_behind_ms),
-				l.download_muted ? badge(_('muted by the VPS'), '#d80') : _('in use'),
+				ms(out ? null : l.rtt_ms),
+				ms(out ? null : l.upload_behind_ms),
+				out ? '-' : l.download_muted ? badge(_('muted by the VPS'), '#d80') : _('in use'),
 				firsts ? '%.0f %%'.format(100 * l.rx_first / firsts) : '-',
 				'%1024.2mB'.format(l.tx_bytes),
-				'%d'.format(l.upload_mutes)
+				'%d'.format(l.upload_mutes),
+				E('button', {
+					'class': 'cbi-button ' + (manual ? 'cbi-button-apply' : 'cbi-button-neutral'),
+					'data-link': l.name,
+					'title': manual ? _('Back to what the configuration says') : _('Takes the uplink out until you resume it or cengarde restarts'),
+					'click': ui.createHandlerFn(this, 'handleLink', l.name, manual ? 'auto' : 'off')
+				}, [ l.override == 'off' ? _('Resume') : manual ? _('Automatic') : _('Pause') ])
 			];
-		}), E('em', {}, [ st.running ? _('No uplink is up yet.') : _('The engine is not running.') ]));
+		}, this)), E('em', {}, [ st.running ? _('No uplink is up yet.') : _('The engine is not running.') ]));
 
 		return table;
 	},
 
 	renderProblems: function(st) {
-		return E('div', {}, st.problems.map(function(p) {
-			return E('div', { 'class': 'alert-message warning cengarde-problem' }, [ problemText(p) ]);
+		const problems = st.problems.map(problemText);
+
+		if (st.engine && st.engine.config_error)
+			problems.push(_('The last change was not applied, cengarde goes on with the previous settings: %s').format(st.engine.config_error));
+		return E('div', {}, problems.map(function(text) {
+			return E('div', { 'class': 'alert-message warning cengarde-problem' }, [ text ]);
 		}));
 	},
 
@@ -144,7 +197,7 @@ return view.extend({
 			E('h3', {}, [ _('Uplinks') ]),
 			this.renderLinks(st),
 			E('p', { 'class': 'cbi-section-descr' }, [
-				_('Behind the fastest: how much later this uplink delivers than the quickest one; past the limit it gets muted (no traffic, probes only) until it catches up. Arrived first: share of the download that came through this uplink before any other copy.')
+				_('Behind the fastest: how much later this uplink delivers than the quickest one; past the limit it gets muted (no traffic, probes only) until it catches up. Arrived first: share of the download that came through this uplink before any other copy. Pause: takes an uplink out without touching the configuration, until you resume it or cengarde restarts.')
 			])
 		]);
 	},
@@ -152,11 +205,9 @@ return view.extend({
 	render: function(st) {
 		const node = E('div', { 'class': 'cbi-section' });
 
+		this.node = node;
 		this.update(node, st);
-		poll.add(L.bind(function() {
-			return L.resolveDefault(fs.exec_direct('/usr/sbin/cengarde-setup', [ 'status' ], 'json'), null)
-				.then(L.bind(this.update, this, node));
-		}, this), 3);
+		poll.add(L.bind(this.refresh, this), 3);
 
 		return E([], [
 			E('h2', {}, [ _('cengarde') ]),

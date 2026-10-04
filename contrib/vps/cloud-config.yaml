@@ -9,13 +9,14 @@
 # - cengarde, built from the same commit as the router (UDP 65500);
 # - WireGuard (wg0, 10.79.0.1/30) behind cengarde, reachable only by it on
 #   127.0.0.1:65501; every key derives from the secret (cengarde-vps-setup);
-# - NAT for the tunnel and, with PASSTHROUGH=yes, TCP and UDP 1024-65000
-#   forwarded to the router (10.79.0.2): the site gets this server's public
-#   IP for inbound connections ("IP pass" on the router hands them on).
+# - NAT for the tunnel and IP pass: TCP and UDP 1024-65000 forwarded to the
+#   router (10.79.0.2), so the site gets this server's public IP for inbound
+#   connections. The router turns it on or off from LuCI (its "IP pass"
+#   switch, through cengarde); PASSTHROUGH below only holds until it does.
 # SSH and the rest of the system are left as the provider set them up.
 #
 # Afterwards: systemctl status cengarde wg-quick@wg0, wg show,
-# cat /run/cengarde/status.json. Log of this setup: /var/log/cloud-init-output.log
+# cengarde ctl status. Log of this setup: /var/log/cloud-init-output.log
 
 package_update: true
 packages:
@@ -33,8 +34,9 @@ write_files:
     content: |
       # cengarde port on this server (the router's "port" setting).
       CENGARDE_PORT=65500
-      # Forward TCP and UDP PASSTHROUGH_PORTS to the router (yes or no).
-      # After a change: systemctl restart wg-quick@wg0
+      # IP pass, TCP and UDP PASSTHROUGH_PORTS forwarded to the router, until
+      # the router asks for it on or off (yes or no). After a change:
+      # systemctl restart wg-quick@wg0
       PASSTHROUGH=yes
       PASSTHROUGH_PORTS=1024:65000
 

@@ -1,6 +1,9 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 #include <arpa/inet.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "config.h"
 #include "test.h"
@@ -24,6 +27,115 @@ static const char client_conf[] = "# cengarde client\n"
 				  "server = 198.51.100.7:59402\n"
 				  "enabled = no\n"
 				  "colour = blue\n";
+
+#define SERVER "mode = server\nkey = " KEY "\nwireguard = 127.0.0.1:51820\n"
+#define CLIENT "mode = client\nkey = " KEY "\nserver = 192.0.2.1:59402\n"
+
+/* Control socket, IP pass, and what a reload applies in place. */
+static void test_config_reload(void)
+{
+	static struct cg_config a, b;
+	char err[256], warn[512], path[] = "/tmp/cengarde-test-XXXXXX", out[108];
+	FILE *f;
+	int fd;
+
+	CHECK_EQ(cg_config_parse(&a, CLIENT, err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(a.passthrough, -1); /* asks nothing of the server */
+	CHECK(a.control_socket[0] == '\0');
+	cg_config_free(&a);
+	CHECK_EQ(cg_config_parse(&a, CLIENT "passthrough = yes\ncontrol_socket = /var/run/cengarde/cengarde.sock\n", err,
+				 sizeof(err), warn, sizeof(warn)),
+		 0);
+	CHECK_EQ(a.passthrough, 1);
+	CHECK(!strcmp(a.control_socket, "/var/run/cengarde/cengarde.sock"));
+	CHECK(warn[0] == '\0');
+	cg_config_free(&a);
+	CHECK_EQ(cg_config_parse(&a, CLIENT "passthrough = no\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(a.passthrough, 0);
+	cg_config_free(&a);
+	CHECK_EQ(cg_config_parse(&a, CLIENT "passthrough = maybe\n", err, sizeof(err), warn, sizeof(warn)), -1);
+	CHECK(strstr(err, "passthrough") != NULL);
+	CHECK_EQ(cg_config_parse(&a, CLIENT "control_socket = cengarde.sock\n", err, sizeof(err), warn, sizeof(warn)),
+		 -1); /* relative: refused */
+	CHECK(strstr(err, "absolute") != NULL);
+	CHECK_EQ(cg_config_parse(&a, SERVER "passthrough_file = /run/cengarde/passthrough\n", err, sizeof(err), warn,
+				 sizeof(warn)),
+		 0);
+	CHECK(!strcmp(a.passthrough_file, "/run/cengarde/passthrough"));
+	cg_config_free(&a);
+	CHECK_EQ(cg_config_parse(&a, SERVER "passthrough = yes\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK(strstr(warn, "unknown key 'passthrough'") != NULL); /* a client setting */
+	cg_config_free(&a);
+
+	/* In place: links, servers, health, probes, IP pass, status. */
+	CHECK_EQ(cg_config_parse(&a, CLIENT "interfaces = eth1.*\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(cg_config_parse(&b,
+				 "mode = client\nkey = " KEY "\nserver = 198.51.100.7:1\ninterfaces = wwan*\n"
+				 "passthrough = yes\nmute_behind_ms = 300\nprobe_interval_ms = 200\n"
+				 "status_file = /tmp/x.json\nlog_level = debug\nsndbuf = 65536\n[link eth9]\n",
+				 err, sizeof(err), warn, sizeof(warn)),
+		 0);
+	CHECK(cg_config_restart_needed(&a, &b) == NULL);
+	cg_config_free(&b);
+	/* A restart for what the event loop set up once. */
+	CHECK_EQ(cg_config_parse(&b, CLIENT "interfaces = eth1.*\nlisten = 127.0.0.1:1\n", err, sizeof(err), warn,
+				 sizeof(warn)),
+		 0);
+	CHECK(cg_config_restart_needed(&a, &b) && !strcmp(cg_config_restart_needed(&a, &b), "listen"));
+	cg_config_free(&b);
+	CHECK_EQ(cg_config_parse(&b,
+				 "mode = client\nkey = AQECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=\n"
+				 "server = 192.0.2.1:59402\n",
+				 err, sizeof(err), warn, sizeof(warn)),
+		 0);
+	CHECK(!strcmp(cg_config_restart_needed(&a, &b), "key"));
+	cg_config_free(&b);
+	CHECK_EQ(cg_config_parse(&b, CLIENT "control_socket = /tmp/s\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK(!strcmp(cg_config_restart_needed(&a, &b), "control_socket"));
+	cg_config_free(&b);
+	CHECK_EQ(cg_config_parse(&b, CLIENT "cpu = 1\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK(!strcmp(cg_config_restart_needed(&a, &b), "cpu"));
+	cg_config_free(&b);
+	CHECK_EQ(cg_config_parse(&b, CLIENT "busy_poll_us = 10\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK(!strcmp(cg_config_restart_needed(&a, &b), "busy_poll_us"));
+	cg_config_free(&b);
+	CHECK_EQ(cg_config_parse(&b, CLIENT "rt_priority = 5\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK(!strcmp(cg_config_restart_needed(&a, &b), "rt_priority"));
+	cg_config_free(&b);
+	CHECK_EQ(cg_config_parse(&b, SERVER, err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK(!strcmp(cg_config_restart_needed(&a, &b), "mode"));
+	cg_config_free(&a);
+	CHECK_EQ(cg_config_parse(&a, SERVER "passthrough_file = /run/p\nsession_timeout_ms = 5000\n", err, sizeof(err),
+				 warn, sizeof(warn)),
+		 0);
+	CHECK(cg_config_restart_needed(&a, &b) == NULL);
+	cg_config_free(&a);
+	CHECK_EQ(cg_config_parse(&a, SERVER "max_sessions = 8\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK(!strcmp(cg_config_restart_needed(&a, &b), "max_sessions"));
+	cg_config_free(&a);
+	CHECK_EQ(cg_config_parse(&a, "mode = server\nkey = " KEY "\nwireguard = 127.0.0.1:51821\n", err, sizeof(err),
+				 warn, sizeof(warn)),
+		 0);
+	CHECK(!strcmp(cg_config_restart_needed(&a, &b), "wireguard"));
+	cg_config_free(&a);
+	cg_config_free(&b);
+
+	/* Peek: one key, without the rest of the file having to make sense. */
+	fd = mkstemp(path);
+	CHECK(fd >= 0);
+	if (fd < 0)
+		return;
+	f = fdopen(fd, "w");
+	fputs("mode = client\nserver = name.that.never.resolves.invalid:1\ncontrol_socket = /run/x.sock\n", f);
+	fclose(f);
+	CHECK_EQ(cg_config_peek(path, "control_socket", out, sizeof(out), err, sizeof(err)), 0);
+	CHECK(!strcmp(out, "/run/x.sock"));
+	CHECK_EQ(cg_config_peek(path, "status_file", out, sizeof(out), err, sizeof(err)), 1);
+	CHECK_EQ(cg_config_peek(path, "control_socket", out, 4, err, sizeof(err)), -1);
+	unlink(path);
+	CHECK_EQ(cg_config_peek(path, "control_socket", out, sizeof(out), err, sizeof(err)), -1);
+	CHECK(strstr(err, path) != NULL);
+}
 
 void test_config(void)
 {
@@ -134,4 +246,6 @@ void test_config(void)
 	CHECK_EQ(cg_config_parse(&c, "mode = server\nkey = " KEY "\nwireguard = localhost:51820\n", err,
 				 sizeof(err), warn, sizeof(warn)),
 		 -1); /* wireguard must be numeric */
+
+	test_config_reload();
 }

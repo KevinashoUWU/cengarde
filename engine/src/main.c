@@ -3,10 +3,12 @@
 #include <getopt.h>
 #include <signal.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/signalfd.h>
 
 #include "config.h"
+#include "ctl.h"
 #include "engine.h"
 #include "log.h"
 #include "pair.h"
@@ -16,9 +18,87 @@ static void usage(FILE *f)
 {
 	fprintf(f, "usage: cengarde [-v] -c FILE     run as client or server (mode in FILE)\n"
 		   "       cengarde -t -c FILE        check FILE and exit\n"
+		   "       cengarde ctl [-s SOCKET | -c FILE] COMMAND\n"
+		   "                                  talk to a running cengarde through its\n"
+		   "                                  control_socket (default " CG_CTL_DEFAULT_SOCKET "):\n"
+		   "                                  status, links, link NAME off|on|auto, reset, reload\n"
 		   "       cengarde genkey            print a new shared key or pairing secret\n"
 		   "       cengarde keys < SECRET     print the keys derived from a pairing secret\n"
-		   "       cengarde version\n");
+		   "       cengarde version\n"
+		   "SIGHUP reloads the configuration without dropping the tunnel.\n");
+}
+
+/* "cengarde ctl": one command to the control socket (ctl.h). */
+static int ctl(int argc, char **argv)
+{
+	char sock[sizeof(((struct cg_config *)0)->control_socket)] = CG_CTL_DEFAULT_SOCKET;
+	char line[CG_CTL_LINE] = "", err[512], *reply;
+	const char *conf = NULL;
+	struct cg_ctl_cmd cmd;
+	size_t len, n = 0;
+	int opt, rc;
+
+	while ((opt = getopt(argc, argv, "s:c:h")) != -1) {
+		switch (opt) {
+		case 's':
+			if (strlen(optarg) >= sizeof(sock)) {
+				fprintf(stderr, "cengarde ctl: socket path too long\n");
+				return 2;
+			}
+			strcpy(sock, optarg);
+			break;
+		case 'c':
+			conf = optarg;
+			break;
+		case 'h':
+			usage(stdout);
+			return 0;
+		default:
+			usage(stderr);
+			return 2;
+		}
+	}
+	if (optind == argc) {
+		usage(stderr);
+		return 2;
+	}
+	for (int i = optind; i < argc; i++) {
+		size_t w = strlen(argv[i]);
+
+		if (n + w + 2 > sizeof(line)) {
+			fprintf(stderr, "cengarde ctl: command too long\n");
+			return 2;
+		}
+		if (n)
+			line[n++] = ' ';
+		memcpy(line + n, argv[i], w + 1);
+		n += w;
+	}
+	if (cg_ctl_parse(line, &cmd, err, sizeof(err)) < 0) {
+		fprintf(stderr, "cengarde ctl: %s\n", err);
+		return 2;
+	}
+	if (conf) {
+		rc = cg_config_peek(conf, "control_socket", sock, sizeof(sock), err, sizeof(err));
+		if (rc) {
+			fprintf(stderr, "cengarde ctl: %s\n", rc < 0 ? err : "no control_socket in that file");
+			return 1;
+		}
+	}
+	if (cg_ctl_request(sock, line, cmd.op == CG_CTL_RELOAD ? CG_CTL_RELOAD_TIMEOUT_MS + 5000 : CG_CTL_TIMEOUT_MS,
+			   &reply, &len, err, sizeof(err)) < 0) {
+		fprintf(stderr, "cengarde ctl: %s\n", err);
+		return 1;
+	}
+	if (len >= 7 && !memcmp(reply, "error: ", 7)) {
+		fprintf(stderr, "cengarde ctl: %s", reply + 7);
+		rc = 1;
+	} else {
+		fwrite(reply, 1, len, stdout);
+		rc = 0;
+	}
+	free(reply);
+	return rc;
 }
 
 /* Reads the secret from stdin so that it never shows in the process list,
@@ -69,16 +149,19 @@ static int genkey(void)
 
 int main(int argc, char **argv)
 {
-	static struct cg_config cfg;
-	char err[512], warn[2048], *line, *save = NULL;
+	struct cg_config *cfg;
+	struct cg_run run;
+	char err[512], warn[2048];
 	const char *path = NULL;
-	int opt, check = 0, verbose = 0, rc, sigfd;
+	int opt, check = 0, verbose = 0, sigfd;
 	sigset_t set;
 
 	if (argc == 2 && !strcmp(argv[1], "genkey"))
 		return genkey();
 	if (argc == 2 && !strcmp(argv[1], "keys"))
 		return keys();
+	if (argc >= 2 && !strcmp(argv[1], "ctl"))
+		return ctl(argc - 1, argv + 1);
 	if (argc == 2 && !strcmp(argv[1], "version")) {
 		puts("cengarde " CG_VERSION);
 		return 0;
@@ -106,28 +189,36 @@ int main(int argc, char **argv)
 		usage(stderr);
 		return 2;
 	}
-	if (cg_config_load(&cfg, path, err, sizeof(err), warn, sizeof(warn)) < 0) {
-		cg_err("%s: %s", path, err);
+	cfg = calloc(1, sizeof(*cfg));
+	if (!cfg) {
+		cg_err("out of memory");
 		return 1;
 	}
-	cg_log_level = verbose ? CG_LOG_DEBUG : cfg.log_level;
-	for (line = strtok_r(warn, "\n", &save); line; line = strtok_r(NULL, "\n", &save))
-		cg_warn("%s: %s", path, line);
+	if (cg_config_load(cfg, path, err, sizeof(err), warn, sizeof(warn)) < 0) {
+		cg_err("%s", err);
+		free(cfg);
+		return 1;
+	}
+	cg_log_level = verbose ? CG_LOG_DEBUG : cfg->log_level;
+	cg_log_warnings(path, warn);
 	if (check) {
-		printf("%s: ok (%s)\n", path, cfg.mode == CG_MODE_CLIENT ? "client" : "server");
-		cg_config_free(&cfg);
+		printf("%s: ok (%s)\n", path, cfg->mode == CG_MODE_CLIENT ? "client" : "server");
+		cg_config_free(cfg);
+		free(cfg);
 		return 0;
 	}
 
+	/* Blocked before anything else: a restart in place (cg_reexec) keeps
+	 * them blocked, so a signal sent meanwhile waits in the signalfd. */
 	signal(SIGPIPE, SIG_IGN);
 	sigemptyset(&set);
 	sigaddset(&set, SIGINT);
 	sigaddset(&set, SIGTERM);
+	sigaddset(&set, SIGHUP);
 	if (sigprocmask(SIG_BLOCK, &set, NULL) < 0 || (sigfd = signalfd(-1, &set, SFD_NONBLOCK | SFD_CLOEXEC)) < 0) {
 		cg_err("signalfd: %s", strerror(errno));
 		return 1;
 	}
-	rc = cfg.mode == CG_MODE_CLIENT ? cg_client_run(&cfg, sigfd) : cg_server_run(&cfg, sigfd);
-	cg_config_free(&cfg);
-	return rc;
+	run = (struct cg_run){ .path = path, .argv = argv, .sigfd = sigfd, .verbose = verbose };
+	return cfg->mode == CG_MODE_CLIENT ? cg_client_run(cfg, &run) : cg_server_run(cfg, &run);
 }

@@ -10,16 +10,23 @@
  * Download: duplicates are recognised by sequence number before the MAC is
  * checked, so only the first copy of each packet pays for verification.
  *
+ * A reload (SIGHUP or "cengarde ctl reload") applies the new configuration
+ * in place, keeping the session; what was set up only once makes the process
+ * start again (cg_config_restart_needed).
+ *
  * SPDX-License-Identifier: GPL-2.0-only */
 #include <errno.h>
 #include <net/if.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/epoll.h>
+#include <sys/signalfd.h>
 #include <unistd.h>
 
 #include "arrival.h"
+#include "ctl.h"
 #include "engine.h"
 #include "health.h"
 #include "log.h"
@@ -53,10 +60,11 @@ struct link {
 };
 
 struct client {
-	const struct cg_config *cfg;
+	struct cg_config *cfg; /* replaced by a reload */
+	const struct cg_run *run;
 	const uint8_t *k_tx, *k_rx;
 	uint32_t session, tx_seq;
-	int ep, wg_fd, tfd, sigfd;
+	int ep, wg_fd, tfd;
 	struct sockaddr_storage wg_peer;
 	int have_peer;
 	struct cg_nl nl;
@@ -67,6 +75,12 @@ struct client {
 	struct cg_arrivals arr;
 	struct cg_link_rx rx[CG_MAX_LINKS];
 	struct cg_status_writer sw;
+	struct cg_ctl ctl;
+	struct cg_ovr_table ovr; /* links paused or forced on by hand */
+	struct cg_loader loader;
+	int reload_again;
+	int server_pass; /* IP pass in the server's replies: -2 no reply yet, -1 none */
+	char config_error[600]; /* why the last reload was refused */
 	uint64_t start_ms, next_status_ms, next_reconcile_ms, last_traffic_ms;
 
 	uint64_t up_pkts, up_bytes, up_toobig;
@@ -80,6 +94,10 @@ struct client {
 	struct iovec oiov[CG_BATCH][2];
 };
 
+/* Why an interface does or does not carry the tunnel. */
+enum { WHY_OK, WHY_PAUSED, WHY_EXCLUDED, WHY_DOWN, WHY_NOADDR };
+static const char *const why_name[] = { "ok", "paused", "excluded", "down", "no address" };
+
 static uint32_t srtt_ms(const struct link *l)
 {
 	return (uint32_t)(l->srtt8_us / 8000);
@@ -90,6 +108,15 @@ static int link_live(const struct link *l, uint64_t now_ms)
 {
 	return l->fd >= 0 && l->last_reply_ms &&
 	       !cg_probes_stalled(l->unanswered, l->first_unanswered_ms, now_ms, srtt_ms(l));
+}
+
+static const char *link_state(const struct client *c, const struct link *l, uint64_t now_ms)
+{
+	if (l->fd < 0)
+		return cg_ovr_get(&c->ovr, l->ifname) == CG_OVR_OFF ? "paused" : "down";
+	if (!l->last_reply_ms)
+		return "waiting";
+	return link_live(l, now_ms) ? "live" : "stalled";
 }
 
 static void link_masks(const struct client *c, uint64_t now_ms, uint16_t *present, uint16_t *live)
@@ -141,23 +168,65 @@ static void link_close(struct client *c, struct link *l, const char *why)
 	cg_info("link %s down: %s", l->ifname, why);
 }
 
-static struct link *link_get(struct client *c, const char *ifname)
+static struct link *link_find(struct client *c, const char *ifname)
 {
-	struct link *free_slot = NULL;
-
-	for (int i = 0; i < CG_MAX_LINKS; i++) {
+	for (int i = 0; i < CG_MAX_LINKS; i++)
 		if (c->link[i].used && !strcmp(c->link[i].ifname, ifname))
 			return &c->link[i];
-		if (!c->link[i].used && !free_slot)
-			free_slot = &c->link[i];
+	return NULL;
+}
+
+static struct link *link_get(struct client *c, const char *ifname)
+{
+	struct link *l = link_find(c, ifname);
+
+	if (l)
+		return l;
+	for (int i = 0; i < CG_MAX_LINKS; i++) {
+		if (c->link[i].used)
+			continue;
+		l = &c->link[i];
+		memset(l, 0, sizeof(*l));
+		l->used = 1;
+		l->fd = -1;
+		snprintf(l->ifname, sizeof(l->ifname), "%s", ifname);
+		return l;
 	}
-	if (!free_slot)
-		return NULL;
-	memset(free_slot, 0, sizeof(*free_slot));
-	free_slot->used = 1;
-	free_slot->fd = -1;
-	snprintf(free_slot->ifname, sizeof(free_slot->ifname), "%s", ifname);
-	return free_slot;
+	return NULL;
+}
+
+/* Whether the configuration wants an interface: a [link] section overrides
+ * the interfaces and exclude patterns. */
+static int configured(const struct cg_config *cfg, const char *ifname)
+{
+	const struct cg_link_cfg *lc = cg_config_link(cfg, ifname);
+
+	return lc ? lc->enabled
+		  : cg_match_any(ifname, cfg->include, cfg->ninclude) && !cg_match_any(ifname, cfg->exclude, cfg->nexclude);
+}
+
+/* Whether ifc carries the tunnel and, when it does, from which local address
+ * to which server address. A manual override (ctl.h) goes before the
+ * configuration. */
+static int eligible(struct client *c, const struct cg_iface *ifc, struct sockaddr_storage *local,
+		    struct sockaddr_storage *remote)
+{
+	const struct cg_config *cfg = c->cfg;
+	const struct cg_link_cfg *lc = cg_config_link(cfg, ifc->name);
+	enum cg_ovr o = cg_ovr_get(&c->ovr, ifc->name);
+	const struct sockaddr_storage *servers = lc && lc->nserver ? lc->server : cfg->server;
+	int nservers = lc && lc->nserver ? lc->nserver : cfg->nserver;
+
+	if (!cg_ovr_wanted(o, configured(cfg, ifc->name)))
+		return o == CG_OVR_OFF ? WHY_PAUSED : WHY_EXCLUDED;
+	if (!(ifc->flags & IFF_UP) || !(ifc->flags & IFF_RUNNING))
+		return WHY_DOWN;
+	for (int k = 0; k < nservers; k++)
+		if (cg_iface_pick(ifc, servers[k].ss_family, local) == 0) {
+			*remote = servers[k];
+			return WHY_OK;
+		}
+	return WHY_NOADDR;
 }
 
 /* Brings sockets in line with the interfaces netlink reports. */
@@ -171,29 +240,23 @@ static void reconcile(struct client *c, uint64_t now_ms)
 	for (int i = 0; i < c->nl.nifs; i++) {
 		const struct cg_iface *ifc = &c->nl.ifs[i];
 		const struct cg_link_cfg *lc;
-		const struct sockaddr_storage *servers;
 		struct sockaddr_storage local, remote;
-		int nservers, found = 0, wanted;
 		struct link *l;
+		int why;
 
 		if (!ifc->name[0])
 			continue;
+		why = eligible(c, ifc, &local, &remote);
+		if (why == WHY_PAUSED) {
+			/* A slot all the same, so that the status shows it paused. */
+			l = link_get(c, ifc->name);
+			if (l)
+				link_close(c, l, "paused");
+			continue;
+		}
+		if (why != WHY_OK)
+			continue;
 		lc = cg_config_link(cfg, ifc->name);
-		/* A [link] section overrides the interfaces/exclude patterns. */
-		wanted = lc ? lc->enabled
-			    : cg_match_any(ifc->name, cfg->include, cfg->ninclude) &&
-				      !cg_match_any(ifc->name, cfg->exclude, cfg->nexclude);
-		if (!wanted || !(ifc->flags & IFF_UP) || !(ifc->flags & IFF_RUNNING))
-			continue;
-		servers = lc && lc->nserver ? lc->server : cfg->server;
-		nservers = lc && lc->nserver ? lc->nserver : cfg->nserver;
-		for (int k = 0; k < nservers && !found; k++)
-			if (cg_iface_pick(ifc, servers[k].ss_family, &local) == 0) {
-				remote = servers[k];
-				found = 1;
-			}
-		if (!found)
-			continue;
 		l = link_get(c, ifc->name);
 		if (!l) {
 			if (cg_ratelimit_ok(&c->rl_full, now_ms, 60000))
@@ -353,6 +416,7 @@ static void on_probe_reply(struct client *c, struct link *l, const struct cg_hdr
 	l->peer_view = pi;
 	l->peer_view_ms = now_ms;
 	l->peer_muted = !!(h->flags & CG_F_MUTED);
+	c->server_pass = cg_pass_get(h->flags);
 	/* The server timed our probe's trip up this link; we time the reply's
 	 * trip down and report it in the next probe. */
 	if (h->flags & CG_F_OWD)
@@ -461,7 +525,8 @@ static void send_probe(struct client *c, struct link *l, uint64_t now_us, uint32
 				    .lag_us = cg_lag_us(&c->rx[id]) };
 	struct cg_hdr h = { .type = CG_T_PROBE,
 			    .flags = (uint8_t)((l->have_down_owd ? CG_F_OWD : 0) |
-					       (c->uh[id].state == CG_H_MUTED ? CG_F_MUTED : 0)),
+					       (c->uh[id].state == CG_H_MUTED ? CG_F_MUTED : 0) |
+					       cg_pass_flags(c->cfg->passthrough)),
 			    .link = (uint8_t)id,
 			    .session = c->session,
 			    .seq = c->tx_seq++,
@@ -502,83 +567,291 @@ static void health_tick(struct client *c, uint64_t now_ms)
 	}
 }
 
-static void write_status(struct client *c, uint64_t now_ms)
+/* -2 (no reply yet) and, unless none is set, -1 give null; -1: "none". */
+static void json_pass(struct cg_json *j, const char *key, int pass, int none)
 {
-	struct cg_json j;
+	if (pass < -1 || (pass < 0 && !none))
+		cg_json_null(j, key);
+	else
+		cg_json_str(j, key, pass < 0 ? "none" : pass ? "on" : "off");
+}
+
+static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
+{
 	char buf[64];
 
-	cg_json_init(&j);
-	cg_json_obj(&j, NULL);
-	cg_json_str(&j, "mode", "client");
-	cg_json_str(&j, "version", CG_VERSION);
-	cg_json_str(&j, "description", c->cfg->description);
-	cg_json_u64(&j, "uptime_ms", now_ms - c->start_ms);
+	cg_json_obj(j, NULL);
+	cg_json_str(j, "mode", "client");
+	cg_json_str(j, "version", CG_VERSION);
+	cg_json_str(j, "description", c->cfg->description);
+	cg_json_u64(j, "uptime_ms", now_ms - c->start_ms);
 	snprintf(buf, sizeof(buf), "%08x", c->session);
-	cg_json_str(&j, "session", buf);
-	cg_json_str(&j, "wireguard", c->have_peer ? cg_addr_str(&c->wg_peer, buf, sizeof(buf)) : "");
-	cg_json_u64(&j, "probe_interval_ms", probe_interval(c, now_ms));
-	cg_json_obj(&j, "upload");
-	cg_json_u64(&j, "packets", c->up_pkts);
-	cg_json_u64(&j, "bytes", c->up_bytes);
-	cg_json_u64(&j, "too_big", c->up_toobig);
-	cg_json_end(&j, '}');
-	cg_json_obj(&j, "download");
-	cg_json_u64(&j, "packets", c->down_pkts);
-	cg_json_u64(&j, "bytes", c->down_bytes);
-	cg_json_u64(&j, "duplicates", c->rx_dups);
-	cg_json_u64(&j, "too_old", c->rx_old);
-	cg_json_u64(&j, "auth_failures", c->rx_auth_fail);
-	cg_json_u64(&j, "malformed", c->rx_malformed + c->rx_trunc);
-	cg_json_u64(&j, "foreign_session", c->rx_foreign);
-	cg_json_u64(&j, "wireguard_drops", c->down_wg_drops + c->down_no_peer);
-	cg_json_end(&j, '}');
-	cg_json_arr(&j, "links");
+	cg_json_str(j, "session", buf);
+	cg_json_str(j, "wireguard", c->have_peer ? cg_addr_str(&c->wg_peer, buf, sizeof(buf)) : "");
+	cg_json_u64(j, "probe_interval_ms", probe_interval(c, now_ms));
+	cg_json_str(j, "config_error", c->config_error);
+	cg_json_obj(j, "passthrough");
+	json_pass(j, "requested", c->cfg->passthrough, 0);
+	/* "none": the server does not apply IP pass (no passthrough_file). */
+	json_pass(j, "server", c->server_pass, 1);
+	cg_json_end(j, '}');
+	cg_json_obj(j, "upload");
+	cg_json_u64(j, "packets", c->up_pkts);
+	cg_json_u64(j, "bytes", c->up_bytes);
+	cg_json_u64(j, "too_big", c->up_toobig);
+	cg_json_end(j, '}');
+	cg_json_obj(j, "download");
+	cg_json_u64(j, "packets", c->down_pkts);
+	cg_json_u64(j, "bytes", c->down_bytes);
+	cg_json_u64(j, "duplicates", c->rx_dups);
+	cg_json_u64(j, "too_old", c->rx_old);
+	cg_json_u64(j, "auth_failures", c->rx_auth_fail);
+	cg_json_u64(j, "malformed", c->rx_malformed + c->rx_trunc);
+	cg_json_u64(j, "foreign_session", c->rx_foreign);
+	cg_json_u64(j, "wireguard_drops", c->down_wg_drops + c->down_no_peer);
+	cg_json_end(j, '}');
+	cg_json_arr(j, "overrides");
+	for (int i = 0; i < c->ovr.n; i++) {
+		cg_json_obj(j, NULL);
+		cg_json_str(j, "name", c->ovr.e[i].name);
+		cg_json_str(j, "override", cg_ovr_name(c->ovr.e[i].v));
+		cg_json_end(j, '}');
+	}
+	cg_json_end(j, ']');
+	cg_json_arr(j, "links");
 	for (int i = 0; i < CG_MAX_LINKS; i++) {
 		const struct link *l = &c->link[i];
 		const struct cg_hlink *h = &c->uh[i];
 		const struct cg_link_cfg *lc;
 
-		if (!l->used)
+		/* Not the links a reload took out, unless set by hand. */
+		if (!l->used || (l->fd < 0 && cg_ovr_get(&c->ovr, l->ifname) == CG_OVR_AUTO &&
+				 !configured(c->cfg, l->ifname)))
 			continue;
 		lc = cg_config_link(c->cfg, l->ifname);
-		cg_json_obj(&j, NULL);
-		cg_json_u64(&j, "id", (uint64_t)i);
-		cg_json_str(&j, "name", l->ifname);
-		cg_json_str(&j, "label", lc ? lc->label : "");
-		cg_json_str(&j, "state", l->fd < 0 ? "down" : link_live(l, now_ms) ? "live" : "stalled");
-		cg_json_str(&j, "local", l->fd >= 0 ? cg_addr_str(&l->local, buf, sizeof(buf)) : "");
-		cg_json_str(&j, "remote", l->fd >= 0 ? cg_addr_str(&l->remote, buf, sizeof(buf)) : "");
-		cg_json_ms(&j, "rtt_ms", l->srtt8_us / 8);
-		cg_json_u64(&j, "last_rx_ms_ago", l->last_rx_ms ? now_ms - l->last_rx_ms : 0);
-		cg_json_str(&j, "upload", h->state == CG_H_MUTED ? "muted" : "active");
+		cg_json_obj(j, NULL);
+		cg_json_u64(j, "id", (uint64_t)i);
+		cg_json_str(j, "name", l->ifname);
+		cg_json_str(j, "label", lc ? lc->label : "");
+		cg_json_str(j, "state", link_state(c, l, now_ms));
+		cg_json_str(j, "override", cg_ovr_name(cg_ovr_get(&c->ovr, l->ifname)));
+		cg_json_str(j, "local", l->fd >= 0 ? cg_addr_str(&l->local, buf, sizeof(buf)) : "");
+		cg_json_str(j, "remote", l->fd >= 0 ? cg_addr_str(&l->remote, buf, sizeof(buf)) : "");
+		cg_json_ms(j, "rtt_ms", l->srtt8_us / 8);
+		cg_json_u64(j, "last_rx_ms_ago", l->last_rx_ms ? now_ms - l->last_rx_ms : 0);
+		cg_json_str(j, "upload", h->state == CG_H_MUTED ? "muted" : "active");
 		if (h->have_behind)
-			cg_json_ms_signed(&j, "upload_behind_ms", h->behind_us);
+			cg_json_ms_signed(j, "upload_behind_ms", h->behind_us);
 		else
-			cg_json_null(&j, "upload_behind_ms");
-		cg_json_u64(&j, "upload_mutes", h->mutes);
-		cg_json_u64(&j, "upload_state_ms", now_ms - h->changed_ms);
-		cg_json_bool(&j, "download_muted", l->peer_muted);
-		cg_json_u64(&j, "tx_packets", l->tx_pkts);
-		cg_json_u64(&j, "tx_bytes", l->tx_bytes);
-		cg_json_u64(&j, "tx_drops", l->tx_drops);
-		cg_json_u64(&j, "tx_errors", l->tx_errors);
-		cg_json_u64(&j, "rx_first", c->rx[i].wins);
-		cg_json_u64(&j, "rx_duplicate", c->rx[i].dups);
-		cg_json_u64(&j, "rx_late", c->rx[i].late);
-		cg_json_u64(&j, "rx_missed", c->rx[i].missed);
-		cg_json_ms(&j, "rx_lag_ms", cg_lag_us(&c->rx[i]));
-		cg_json_obj(&j, "server_view");
-		cg_json_u64(&j, "age_ms", l->peer_view_ms ? now_ms - l->peer_view_ms : 0);
-		cg_json_u64(&j, "rx", l->peer_view.rx);
-		cg_json_u64(&j, "first", l->peer_view.wins);
-		cg_json_ms(&j, "lag_ms", l->peer_view.lag_us);
-		cg_json_end(&j, '}');
-		cg_json_end(&j, '}');
+			cg_json_null(j, "upload_behind_ms");
+		cg_json_u64(j, "upload_mutes", h->mutes);
+		cg_json_u64(j, "upload_state_ms", now_ms - h->changed_ms);
+		cg_json_bool(j, "download_muted", l->peer_muted);
+		cg_json_u64(j, "tx_packets", l->tx_pkts);
+		cg_json_u64(j, "tx_bytes", l->tx_bytes);
+		cg_json_u64(j, "tx_drops", l->tx_drops);
+		cg_json_u64(j, "tx_errors", l->tx_errors);
+		cg_json_u64(j, "rx_first", c->rx[i].wins);
+		cg_json_u64(j, "rx_duplicate", c->rx[i].dups);
+		cg_json_u64(j, "rx_late", c->rx[i].late);
+		cg_json_u64(j, "rx_missed", c->rx[i].missed);
+		cg_json_ms(j, "rx_lag_ms", cg_lag_us(&c->rx[i]));
+		cg_json_obj(j, "server_view");
+		cg_json_u64(j, "age_ms", l->peer_view_ms ? now_ms - l->peer_view_ms : 0);
+		cg_json_u64(j, "rx", l->peer_view.rx);
+		cg_json_u64(j, "first", l->peer_view.wins);
+		cg_json_ms(j, "lag_ms", l->peer_view.lag_us);
+		cg_json_end(j, '}');
+		cg_json_end(j, '}');
 	}
-	cg_json_end(&j, ']');
-	cg_json_end(&j, '}');
+	cg_json_end(j, ']');
+	cg_json_end(j, '}');
+}
+
+static void write_status(struct client *c, uint64_t now_ms)
+{
+	struct cg_json j;
+
+	cg_json_init(&j);
+	status_json(c, now_ms, &j);
 	cg_status_writer_submit(&c->sw, &j);
 	cg_json_free(&j);
+}
+
+/* "cengarde ctl links": every interface netlink knows, as a table. */
+#define LINK_ROW "%-15s %-12s %-10s %-6s %-6s %9s  %-24s %s\n"
+static void links_text(struct client *c, uint64_t now_ms, struct cg_json *j)
+{
+	char a[64], b[64], rtt[24];
+
+	cg_json_raw(j, LINK_ROW, "INTERFACE", "LABEL", "STATE", "MANUAL", "UPLOAD", "RTT", "LOCAL", "REMOTE");
+	for (int i = 0; i < c->nl.nifs; i++) {
+		const struct cg_iface *ifc = &c->nl.ifs[i];
+		const struct cg_link_cfg *lc;
+		struct sockaddr_storage local, remote;
+		const struct link *l;
+		enum cg_ovr o;
+		int why, up;
+
+		if (!ifc->name[0])
+			continue;
+		lc = cg_config_link(c->cfg, ifc->name);
+		o = cg_ovr_get(&c->ovr, ifc->name);
+		why = eligible(c, ifc, &local, &remote);
+		l = link_find(c, ifc->name);
+		up = why == WHY_OK && l && l->fd >= 0;
+		if (up && l->srtt8_us)
+			snprintf(rtt, sizeof(rtt), "%u.%u ms", (unsigned)(l->srtt8_us / 8000),
+				 (unsigned)(l->srtt8_us / 800 % 10));
+		else
+			strcpy(rtt, "-");
+		cg_json_raw(j, LINK_ROW, ifc->name, lc && lc->label[0] ? lc->label : "-",
+			    up ? link_state(c, l, now_ms) : why == WHY_OK ? "unusable" : why_name[why],
+			    o == CG_OVR_AUTO ? "-" : cg_ovr_name(o),
+			    up ? (c->uh[l - c->link].state == CG_H_MUTED ? "muted" : "active") : "-", rtt,
+			    up ? cg_addr_str(&l->local, a, sizeof(a)) : "-", up ? cg_addr_str(&l->remote, b, sizeof(b)) : "-");
+	}
+	for (int i = 0; i < c->ovr.n; i++)
+		if (!cg_nl_find(&c->nl, c->ovr.e[i].name))
+			cg_json_raw(j, LINK_ROW, c->ovr.e[i].name, "-", "absent", cg_ovr_name(c->ovr.e[i].v), "-", "-", "-",
+				    "-");
+}
+
+/* ---- reload ---- */
+
+static void reload_start(struct client *c)
+{
+	if (cg_loader_start(&c->loader, c->run->path) < 0)
+		c->reload_again = 1; /* once the load under way is done */
+}
+
+/* Puts next in place of the running configuration, keeping the session. */
+static void apply_config(struct client *c, struct cg_config *next, uint64_t now_ms)
+{
+	struct cg_config *old = c->cfg;
+
+	c->cfg = next;
+	c->k_tx = next->key;
+	c->k_rx = next->key + CG_SIPHASH_KEY_LEN;
+	c->hcfg = cg_hcfg_of(next);
+	cg_log_level = c->run->verbose ? CG_LOG_DEBUG : next->log_level;
+	if (strcmp(old->status_file, next->status_file)) {
+		cg_status_writer_stop(&c->sw);
+		if (next->status_file[0] && cg_status_writer_start(&c->sw, next->status_file) < 0)
+			cg_warn("status file %s: cannot start the writer thread", next->status_file);
+	}
+	if (old->rcvbuf != next->rcvbuf || old->sndbuf != next->sndbuf) {
+		cg_sock_buffers(c->wg_fd, next->rcvbuf, next->rcvbuf);
+		for (int i = 0; i < CG_MAX_LINKS; i++)
+			if (c->link[i].fd >= 0)
+				cg_sock_buffers(c->link[i].fd, next->rcvbuf, next->sndbuf);
+	}
+	if (old->passthrough != next->passthrough && next->passthrough >= 0)
+		cg_info("asking the server for IP pass %s", next->passthrough ? "on" : "off");
+	cg_config_free(old);
+	free(old);
+	reconcile(c, now_ms);
+}
+
+/* A load finished. Returns -1 when the process has to stop (a restart that
+ * could not happen). */
+static int reload_done(struct client *c)
+{
+	struct cg_config *next;
+	const char *why = NULL;
+	char msg[700];
+
+	if (!cg_loader_done(&c->loader, &next))
+		return 0;
+	if (!next) {
+		cg_err("reload refused, still running the previous configuration: %s", c->loader.err);
+		snprintf(c->config_error, sizeof(c->config_error), "%s", c->loader.err);
+		snprintf(msg, sizeof(msg), "error: %s\n", c->loader.err);
+	} else {
+		cg_log_warnings(c->run->path, c->loader.warn);
+		c->config_error[0] = '\0';
+		why = cg_config_restart_needed(c->cfg, next);
+		if (why) {
+			snprintf(msg, sizeof(msg), "ok: %s changed, restarting\n", why);
+		} else {
+			apply_config(c, next, cg_now_ms());
+			cg_info("reload: configuration applied");
+			snprintf(msg, sizeof(msg), "ok\n");
+		}
+	}
+	if (!why && c->reload_again) {
+		/* Asked again while loading: whoever waits gets the newer outcome. */
+		c->reload_again = 0;
+		reload_start(c);
+		return 0;
+	}
+	cg_ctl_reply_waiting(&c->ctl, c->ep, msg);
+	if (!why)
+		return 0;
+	cg_info("reload: %s changed, restarting", why);
+	cg_config_free(next);
+	free(next);
+	cg_status_writer_stop(&c->sw);
+	cg_ctl_close(&c->ctl, c->ep);
+	cg_reexec(c->run->argv);
+	cg_err("restart: %s", strerror(errno));
+	return -1;
+}
+
+/* ---- control socket ---- */
+
+static void ctl_command(struct client *c, int k, uint64_t now_ms)
+{
+	struct cg_ctl_cmd cmd;
+	struct cg_json j;
+	char err[256];
+
+	cg_json_init(&j);
+	if (cg_ctl_parse(c->ctl.c[k].in, &cmd, err, sizeof(err)) < 0) {
+		cg_json_raw(&j, "error: %s\n", err);
+	} else {
+		switch (cmd.op) {
+		case CG_CTL_STATUS:
+			status_json(c, now_ms, &j);
+			cg_json_raw(&j, "\n");
+			break;
+		case CG_CTL_LINKS:
+			links_text(c, now_ms, &j);
+			break;
+		case CG_CTL_LINK:
+			if (cg_ovr_set(&c->ovr, cmd.ifname, cmd.ovr) < 0) {
+				cg_json_raw(&j, "error: more than %d links set by hand; undo some with auto or reset\n",
+					    CG_CTL_OVERRIDES);
+				break;
+			}
+			cg_info("link %s: %s by hand", cmd.ifname,
+				cmd.ovr == CG_OVR_OFF  ? "paused"
+				: cmd.ovr == CG_OVR_ON ? "forced on"
+						       : "back to the configuration");
+			reconcile(c, now_ms);
+			cg_json_raw(&j, "ok\n");
+			break;
+		case CG_CTL_RESET:
+			cg_ovr_reset(&c->ovr);
+			cg_info("every link back to the configuration");
+			reconcile(c, now_ms);
+			cg_json_raw(&j, "ok\n");
+			break;
+		case CG_CTL_RELOAD:
+			cg_info("reloading %s", c->run->path);
+			c->ctl.c[k].waiting = 1;
+			c->ctl.c[k].deadline_ms = now_ms + CG_CTL_RELOAD_TIMEOUT_MS;
+			reload_start(c);
+			cg_json_free(&j);
+			return; /* the reply goes out when the load is done */
+		}
+	}
+	if (j.failed) {
+		cg_json_free(&j);
+		cg_ctl_reply(&c->ctl, c->ep, k, NULL, 0);
+	} else {
+		cg_ctl_reply(&c->ctl, c->ep, k, j.buf, j.len); /* takes the buffer */
+	}
 }
 
 static void tick(struct client *c)
@@ -602,9 +875,27 @@ static void tick(struct client *c)
 		write_status(c, now_ms);
 		c->next_status_ms = now_ms + c->cfg->status_interval_ms;
 	}
+	cg_ctl_expire(&c->ctl, c->ep, now_ms);
 }
 
-int cg_client_run(const struct cg_config *cfg, int sigfd)
+/* Reads the signals: 1 to stop, 0 to go on (SIGHUP starts a reload). */
+static int signals(struct client *c)
+{
+	struct signalfd_siginfo si;
+	int stop = 0;
+
+	while (read(c->run->sigfd, &si, sizeof(si)) == (ssize_t)sizeof(si)) {
+		if (si.ssi_signo != SIGHUP) {
+			stop = 1;
+		} else {
+			cg_info("SIGHUP: reloading %s", c->run->path);
+			reload_start(c);
+		}
+	}
+	return stop;
+}
+
+int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 {
 	struct client *c = calloc(1, sizeof(*c));
 	char err[256], buf[64];
@@ -614,20 +905,25 @@ int cg_client_run(const struct cg_config *cfg, int sigfd)
 
 	if (!c) {
 		cg_err("out of memory");
+		cg_config_free(cfg);
+		free(cfg);
 		return 1;
 	}
 	c->cfg = cfg;
+	c->run = run;
 	c->k_tx = cfg->key;
 	c->k_rx = cfg->key + CG_SIPHASH_KEY_LEN;
-	c->sigfd = sigfd;
 	c->ep = c->wg_fd = c->tfd = -1;
 	c->nl.fd = -1;
-	c->hcfg = (struct cg_hcfg){ .mute_behind_us = cfg->mute_behind_ms * 1000,
-				    .unmute_behind_us = cfg->unmute_behind_ms * 1000,
-				    .settle_ms = cfg->mute_settle_ms,
-				    .min_active = cfg->min_active_links };
+	c->server_pass = -2;
+	c->hcfg = cg_hcfg_of(cfg);
+	cg_ctl_init(&c->ctl);
 	for (int i = 0; i < CG_MAX_LINKS; i++)
 		c->link[i].fd = -1;
+	if (cg_loader_init(&c->loader) < 0) {
+		cg_err("eventfd: %s", strerror(errno));
+		goto out;
+	}
 	cg_replay_reset(&c->replay);
 	do {
 		if (cg_random(&c->session, sizeof(c->session)) < 0 || cg_random(&c->tx_seq, sizeof(c->tx_seq)) < 0) {
@@ -654,14 +950,20 @@ int cg_client_run(const struct cg_config *cfg, int sigfd)
 	if (c->ep < 0 || c->tfd < 0 || cg_epoll_add(c->ep, c->wg_fd, CG_EV(CG_EV_WG, 0)) < 0 ||
 	    cg_epoll_add(c->ep, c->nl.fd, CG_EV(CG_EV_NL, 0)) < 0 ||
 	    cg_epoll_add(c->ep, c->tfd, CG_EV(CG_EV_TIMER, 0)) < 0 ||
-	    cg_epoll_add(c->ep, sigfd, CG_EV(CG_EV_SIG, 0)) < 0) {
+	    cg_epoll_add(c->ep, run->sigfd, CG_EV(CG_EV_SIG, 0)) < 0 ||
+	    cg_epoll_add(c->ep, c->loader.efd, CG_EV(CG_EV_LOAD, 0)) < 0) {
 		cg_err("epoll setup: %s", strerror(errno));
 		goto out;
 	}
+	/* The control socket is a convenience: the tunnel runs without it. */
+	if (cfg->control_socket[0] && cg_ctl_open(&c->ctl, cfg->control_socket, c->ep, err, sizeof(err)) < 0)
+		cg_warn("control socket: %s", err);
 	if (cfg->status_file[0] && cg_status_writer_start(&c->sw, cfg->status_file) < 0)
 		cg_warn("status file %s: cannot start the writer thread", cfg->status_file);
 	cg_info("client %s: session %08x, WireGuard endpoint %s", CG_VERSION, c->session,
 		cg_addr_str(&cfg->listen, buf, sizeof(buf)));
+	if (cfg->passthrough >= 0)
+		cg_info("asking the server for IP pass %s", cfg->passthrough ? "on" : "off");
 	busy = cg_tune(cfg);
 	reconcile(c, c->start_ms);
 
@@ -701,10 +1003,25 @@ int cg_client_run(const struct cg_config *cfg, int sigfd)
 				tick(c);
 				break;
 			}
+			case CG_EV_CTL: {
+				uint64_t now_ms = cg_now_ms();
+				int k = cg_ctl_event(&c->ctl, c->ep, idx, now_ms);
+
+				if (k >= 0)
+					ctl_command(c, k, now_ms);
+				break;
+			}
+			case CG_EV_LOAD:
+				if (reload_done(c) < 0)
+					goto out;
+				break;
 			case CG_EV_SIG:
-				cg_info("client stopping");
-				rc = 0;
-				goto out;
+				if (signals(c)) {
+					cg_info("client stopping");
+					rc = 0;
+					goto out;
+				}
+				break;
 			}
 		}
 		if (traffic && busy)
@@ -712,6 +1029,8 @@ int cg_client_run(const struct cg_config *cfg, int sigfd)
 	}
 out:
 	cg_status_writer_stop(&c->sw);
+	cg_ctl_close(&c->ctl, c->ep);
+	cg_loader_free(&c->loader);
 	for (int i = 0; i < CG_MAX_LINKS; i++)
 		if (c->link[i].fd >= 0)
 			close(c->link[i].fd);
@@ -722,6 +1041,8 @@ out:
 	if (c->ep >= 0)
 		close(c->ep);
 	cg_nl_close(&c->nl);
+	cg_config_free(c->cfg);
+	free(c->cfg);
 	free(c);
 	return rc;
 }

@@ -1,12 +1,18 @@
 #!/bin/sh
-# NAT for the WireGuard tunnel behind cengarde on a VPS, and optional port
-# passthrough: TCP and UDP PASSTHROUGH_PORTS arriving at the server's public
-# address are forwarded to the router at the other end of the tunnel, so
-# the site gets the server's public IP for inbound connections (the router
-# hands them on, e.g. with UPnP).
+# NAT for the WireGuard tunnel behind cengarde on a VPS, and IP pass: TCP and
+# UDP PASSTHROUGH_PORTS arriving at the server's public address are forwarded
+# to the router at the other end of the tunnel, so the site gets the
+# server's public IP for inbound connections (the router hands them on, e.g.
+# with UPnP).
 #
-# Called by wg-quick:  PostUp = cengarde-nat up %i
-#                      PostDown = cengarde-nat down %i
+#   cengarde-nat up [WG_IF]     wg-quick PostUp: NAT, and IP pass if wanted
+#   cengarde-nat down [WG_IF]   wg-quick PostDown: undo all of it
+#   cengarde-nat sync [WG_IF]   IP pass on or off as wanted now; the
+#                               cengarde-passthrough.path unit runs it
+#
+# IP pass is wanted as the router asks for it through cengarde (the server
+# writes the wish to PASSTHROUGH_FILE), else as it last asked (kept in
+# STATE_FILE across reboots), else as PASSTHROUGH says.
 # Settings: /etc/cengarde/nat.conf (shell variables, defaults below), or the
 # file named by CENGARDE_NAT_CONF.
 #
@@ -18,8 +24,10 @@ CLIENT_IP=10.79.0.2
 TUNNEL_NET=10.79.0.0/30
 CENGARDE_PORT=65500
 WG_PORT=65501
-PASSTHROUGH=no
+PASSTHROUGH=no # until the router says
 PASSTHROUGH_PORTS=1024:65000
+PASSTHROUGH_FILE=/run/cengarde/passthrough
+STATE_FILE=/var/lib/cengarde-nat/passthrough
 SSH_PORT=22 # never forwarded, nor are CENGARDE_PORT and WG_PORT
 PUB_IF=
 CONF=${CENGARDE_NAT_CONF:-/etc/cengarde/nat.conf}
@@ -29,14 +37,9 @@ CONF=${CENGARDE_NAT_CONF:-/etc/cengarde/nat.conf}
 	awk '{ for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit } }')
 
 case "${1:-}" in
-up)
-	ins=-I add=-A
-	;;
-down)
-	ins=-D add=-D
-	;;
+up | down | sync) ;;
 *)
-	echo "usage: $0 up|down [wireguard interface]" >&2
+	echo "usage: $0 up|down|sync [wireguard interface]" >&2
 	exit 2
 	;;
 esac
@@ -46,31 +49,88 @@ if [ -z "$PUB_IF" ]; then
 fi
 
 fail=0
-# "down" removes whatever is there and ignores rules already gone.
-rule() {
-	if [ "$1" = down ]; then
-		shift
-		iptables "$@" 2>/dev/null
-		return 0
-	fi
-	shift
-	iptables "$@" || fail=1
+# add and del run by name, as the first argument of base and pass.
+# add TABLE -I|-A CHAIN RULE...: unless it is there already.
+# shellcheck disable=SC2317
+add() {
+	t=$1 op=$2
+	shift 2
+	iptables -t "$t" -C "$@" 2>/dev/null || iptables -t "$t" "$op" "$@" || fail=1
+}
+# del TABLE -I|-A CHAIN RULE...: every copy, quietly if there is none.
+# shellcheck disable=SC2317
+del() {
+	t=$1
+	shift 2
+	while iptables -t "$t" -C "$@" 2>/dev/null; do
+		iptables -t "$t" -D "$@" || break
+	done
 }
 
-# Inserted first, so they also work next to ufw's own chains.
-rule "$1" $ins INPUT -i "$PUB_IF" -p udp --dport "$CENGARDE_PORT" -j ACCEPT
-rule "$1" $ins INPUT -i "$PUB_IF" -p udp --dport "$WG_PORT" -j DROP # only cengarde talks to WireGuard
-rule "$1" $ins FORWARD -i "$WG_IF" -j ACCEPT
-rule "$1" $ins FORWARD -o "$WG_IF" -j ACCEPT
-rule "$1" -t nat $add POSTROUTING -s "$TUNNEL_NET" -o "$PUB_IF" -j MASQUERADE
-if [ "$PASSTHROUGH" = yes ] || [ "$1" = down ]; then
+base() { # add|del
+	# Inserted first, so they also work next to ufw's own chains.
+	"$1" filter -I INPUT -i "$PUB_IF" -p udp --dport "$CENGARDE_PORT" -j ACCEPT
+	"$1" filter -I INPUT -i "$PUB_IF" -p udp --dport "$WG_PORT" -j DROP # only cengarde talks to WireGuard
+	"$1" filter -I FORWARD -i "$WG_IF" -j ACCEPT
+	"$1" filter -I FORWARD -o "$WG_IF" -j ACCEPT
+	"$1" nat -A POSTROUTING -s "$TUNNEL_NET" -o "$PUB_IF" -j MASQUERADE
+}
+
+pass() { # add|del
 	# Kept here even when inside PASSTHROUGH_PORTS: cengarde itself and SSH.
-	rule "$1" -t nat $add PREROUTING -i "$PUB_IF" -p udp --dport "$CENGARDE_PORT" -j RETURN
-	rule "$1" -t nat $add PREROUTING -i "$PUB_IF" -p udp --dport "$WG_PORT" -j RETURN
-	rule "$1" -t nat $add PREROUTING -i "$PUB_IF" -p tcp --dport "$SSH_PORT" -j RETURN
+	"$1" nat -A PREROUTING -i "$PUB_IF" -p udp --dport "$CENGARDE_PORT" -j RETURN
+	"$1" nat -A PREROUTING -i "$PUB_IF" -p udp --dport "$WG_PORT" -j RETURN
+	"$1" nat -A PREROUTING -i "$PUB_IF" -p tcp --dport "$SSH_PORT" -j RETURN
 	for proto in tcp udp; do
-		rule "$1" -t nat $add PREROUTING -i "$PUB_IF" -p "$proto" --dport "$PASSTHROUGH_PORTS" \
+		"$1" nat -A PREROUTING -i "$PUB_IF" -p "$proto" --dport "$PASSTHROUGH_PORTS" \
 			-j DNAT --to-destination "$CLIENT_IP"
 	done
-fi
+}
+
+# Sets WANT (on or off) and FROM (who decided).
+wanted() {
+	WANT=$(cat "$PASSTHROUGH_FILE" 2>/dev/null) FROM=router
+	case "$WANT" in on | off) return ;; esac
+	WANT=$(cat "$STATE_FILE" 2>/dev/null) FROM="router, before"
+	case "$WANT" in on | off) return ;; esac
+	FROM=$CONF
+	[ "$PASSTHROUGH" = yes ] && WANT=on || WANT=off
+}
+
+apply_pass() {
+	wanted
+	if [ "$WANT" = on ]; then
+		pass add
+	else
+		pass del
+	fi
+	# The router's word stands until it says otherwise, reboots included.
+	if [ "$FROM" = router ] && [ "$(cat "$STATE_FILE" 2>/dev/null)" != "$WANT" ]; then
+		mkdir -p "${STATE_FILE%/*}" && echo "$WANT" >"$STATE_FILE" || fail=1
+	fi
+	echo "cengarde-nat: IP pass $WANT ($FROM)"
+}
+
+case "$1" in
+up)
+	base add
+	apply_pass
+	;;
+down)
+	pass del
+	base del
+	;;
+sync)
+	# Only while the tunnel is up; "up" applies it otherwise.
+	if iptables -t nat -C POSTROUTING -s "$TUNNEL_NET" -o "$PUB_IF" -j MASQUERADE 2>/dev/null; then
+		apply_pass
+	else
+		wanted
+		if [ "$FROM" = router ]; then
+			mkdir -p "${STATE_FILE%/*}" && echo "$WANT" >"$STATE_FILE" || fail=1
+		fi
+		echo "cengarde-nat: tunnel down; IP pass $WANT once it is up ($FROM)"
+	fi
+	;;
+esac
 exit "$fail"

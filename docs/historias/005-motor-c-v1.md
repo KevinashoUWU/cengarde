@@ -1,8 +1,10 @@
 # 005 — Motor C v1: protocolo y arquitectura
 
-- **Fecha:** 2026-10-03 (actualizada el mismo día con la Fase 2)
+- **Fecha:** 2026-10-03 (actualizada el mismo día con la Fase 2, y el
+  2026-10-04 con la historia 009)
 - **Estado:** vigente; la historia 006 sustituye la política de envío, las
-  sondas y el formato de `cg_probe_info` (protocolo v2)
+  sondas y el formato de `cg_probe_info` (protocolo v2), y la 009 suma las
+  banderas de IP pass (protocolo v3)
 - **Fuentes:** `engine/` (código y tests), `sudo bench/lab.sh compare` y
   `smoke`, historias 001–004.
 
@@ -11,7 +13,8 @@
 - **Un binario, `cengarde`:** cliente o servidor según la configuración.
   - C11 sin dependencias, un hilo con epoll, lotes de 64 con
     `recvmmsg`/`sendmmsg` y ningún `malloc` por paquete.
-  - Ocupa 55–70 KB sin símbolos (x86_64, aarch64, MIPS).
+  - Ocupa 55–70 KB sin símbolos (x86_64, aarch64, MIPS); unos 97 KB desde
+    la historia 009 (OpenWrt x86_64).
 - **Protocolo propio v1:** cliente y servidor son siempre cengarde (decisión
   del usuario, historia 004).
   - Cabecera de 24 B con sesión, secuencia, marca de tiempo y MAC SipHash-2-4
@@ -206,3 +209,6 @@ Rango de dos pasadas completas:
 - 2026-10-03: la Fase 2 sustituye la política de envío, las sondas y el
   formato de `cg_probe_info` (protocolo v2), y saca el estado del bucle
   (historia 006).
+- 2026-10-04: socket de control, recarga en caliente y banderas de IP pass
+  (protocolo v3); el binario de OpenWrt x86_64 pasa de 70 a 97 KB
+  (historia 009).

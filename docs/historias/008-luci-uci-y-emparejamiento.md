@@ -1,6 +1,6 @@
 # 008 — UCI, LuCI, emparejamiento con un secreto, imágenes y prueba en QEMU
 
-- **Fecha:** 2026-10-03
+- **Fecha:** 2026-10-03 (actualizada el 2026-10-04 con la historia 009)
 - **Estado:** vigente
 - **Fuentes:**
   - código:
@@ -117,8 +117,9 @@ protocolo v2 no es compatible y no hay configuración que migrar.
 
 **El init** (procd): en cada `start` o `reload` ejecuta
 `cengarde-setup apply`, genera `/var/etc/cengarde.conf` y registra la
-instancia con `procd_set_param file`. procd reinicia el motor solo si esa
-configuración cambió.
+instancia con `procd_set_param file`. Si esa configuración cambió, procd
+manda `SIGHUP` y el motor la aplica sin cortar (historia 009; antes la
+reiniciaba).
 - **Disparadores:** `cengarde` (lo que aplica LuCI) y `interface.*` de cada
   enlace. El dispositivo de un módem (`wwan0`) solo se conoce cuando la
   interfaz está arriba.
@@ -206,10 +207,11 @@ y el CI falla si falta alguna. LuCI elige el idioma según el navegador.
 - **`cengarde-nat`:** nunca reenvía el puerto de cengarde, el de WireGuard
   ni el SSH, aunque caigan dentro del rango (reglas `RETURN`). Probado en
   namespaces con el rango 1:65535 y cengarde en el 3000.
-- **Quién activa el IP pass del VPS** (la pregunta abierta de la 007): por
-  ahora, el VPS.
+- **Quién activa el IP pass del VPS** (la pregunta abierta de la 007): al
+  principio, el VPS.
   - El cloud-config sigue al interruptor de LuCI.
-  - Para cambiarlo después: `nat.conf` y reiniciar `wg-quick@wg0`.
+  - Desde la historia 009 lo pide el router por cengarde, y `nat.conf` solo
+    fija el valor hasta el primer pedido.
 
 ### Imágenes
 
@@ -279,8 +281,6 @@ emulación. En el CI va con KVM.
   cloud-config, y medir CPU en la Pi.
 - **Servidor:** responder desde la dirección por la que llegó el paquete
   (`IP_PKTINFO`/`IPV6_PKTINFO` en `sendmmsg`).
-- **IP pass pedido por el router al VPS:** un mensaje de control
-  autenticado, que sube `CG_PROTO_VERSION`.
 - **IPv6 dentro del túnel.**
 - **Feed firmado:** `apk add` sin `--allow-untrusted`.
 - **Probar también la imagen de la Pi en QEMU** (`raspi4b`, desde QEMU 9).
@@ -289,3 +289,5 @@ emulación. En el CI va con KVM.
 ## Cambios
 
 - 2026-10-03: creada.
+- 2026-10-04: el IP pass pedido por el router y el `SIGHUP` de procd quedan
+  hechos (historia 009).

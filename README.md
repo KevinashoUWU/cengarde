@@ -36,17 +36,21 @@ LAN ── router OpenWrt ───┼══ enlace 2 (5G) ══┼─── VP
   - el servidor solo atiende paquetes autenticados;
   - WireGuard cifra el contenido.
 - **Liviano:** C11 sin dependencias, un hilo con epoll y lotes
-  (`recvmmsg`/`sendmmsg`). El binario ocupa menos de 80 KB.
+  (`recvmmsg`/`sendmmsg`). El binario ocupa unos 100 KB.
 - **OpenWrt de punta a punta:**
   - paquetes para 25.12 y 24.10, e imágenes listas para la Pi 4 y x86-64;
   - una pestaña de LuCI en español;
   - el túnel WireGuard se crea solo, a partir de un único secreto compartido
     con el VPS;
-  - **IP pass**: la IP pública del VPS en tu red, con UPnP.
+  - **IP pass**: la IP pública del VPS en tu red, con UPnP. Se enciende y se
+    apaga desde el router, y el VPS lo sigue solo.
 - **El VPS en un paso:** LuCI entrega el cloud-config listo para pegar al
   crear el VPS (Ubuntu, por ejemplo en Vultr).
 - **Estado en vivo:** RTT, atraso y qué enlace entrega primero cada paquete,
-  en LuCI o en JSON.
+  en LuCI, en JSON o con `cengarde ctl`.
+- **Cambios sin cortar:** la configuración se aplica en marcha, con la misma
+  sesión, y un enlace se puede pausar y reanudar desde LuCI o con
+  `cengarde ctl link NOMBRE off`.
 
 ## Medidas
 
@@ -96,9 +100,10 @@ Las configuraciones de cliente y servidor se explican en
 
 - **Motor:** listo lo esencial:
   - redundancia;
-  - protocolo propio v2;
+  - protocolo propio v3;
   - salud de los enlaces;
-  - perillas de baja latencia.
+  - perillas de baja latencia;
+  - recarga en caliente y socket de control (`cengarde ctl`).
 - **OpenWrt:** paquetes, LuCI, imágenes y emparejamiento con un solo secreto.
   Se prueba de punta a punta en QEMU en cada cambio: dos VMs, configuradas
   desde LuCI.
@@ -114,8 +119,6 @@ Lo que viene; el detalle está en [ROADMAP.md](ROADMAP.md):
   - responder desde la IP de llegada (VPS con varias IP);
   - varios hilos;
   - IPv6 dentro del túnel.
-- **IP pass gobernado desde el router:** activarlo o desactivarlo en el VPS
-  sin entrar a él.
 - **Distribución:** un feed de OpenWrt firmado, binarios estáticos y paquetes
   para Debian y Raspberry Pi OS.
 - **eBPF/XDP opcional** para bajar la CPU en el VPS (Fase 4).

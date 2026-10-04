@@ -10,7 +10,8 @@
 		},
 		"write": {
 			"file": {
-				"/usr/sbin/cengarde genkey": [ "exec" ]
+				"/usr/sbin/cengarde genkey": [ "exec" ],
+				"/usr/sbin/cengarde ctl link *": [ "exec" ]
 			},
 			"uci": [ "cengarde" ]
 		}

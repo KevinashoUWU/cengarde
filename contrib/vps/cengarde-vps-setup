@@ -40,6 +40,10 @@ key = $CG_LINK_KEY
 listen = *:$CENGARDE_PORT
 wireguard = 127.0.0.1:$WG_PORT
 status_file = /run/cengarde/status.json
+# "cengarde ctl status" (or links) as root.
+control_socket = /run/cengarde/cengarde.sock
+# The IP pass the router asks for; cengarde-passthrough.path applies it.
+passthrough_file = /run/cengarde/passthrough
 # Lower latency for more CPU (docs/historias/006); fine on dedicated vCPUs.
 #busy_poll_us = 50
 EOF

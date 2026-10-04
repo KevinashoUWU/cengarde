@@ -85,7 +85,7 @@ msgstr ""
 msgid "IP pass"
 msgstr ""
 
-msgid "The VPS forwards TCP and UDP ports 1024-65000 to this router and UPnP hands them on to the LAN: devices and services here get the public IP of the VPS. Also update the VPS (PASSTHROUGH in /etc/cengarde/nat.conf) when changing this."
+msgid "The VPS forwards TCP and UDP ports 1024-65000 to this router and UPnP hands them on to the LAN: devices and services here get the public IP of the VPS. The VPS follows this switch on its own, within a second of saving."
 msgstr ""
 
 msgid "Needs miniupnpd-nftables (and luci-app-upnp to see the mappings)."
@@ -175,7 +175,13 @@ msgstr ""
 msgid "%d h ago"
 msgstr ""
 
+msgid "paused"
+msgstr ""
+
 msgid "down"
+msgstr ""
+
+msgid "waiting for the VPS"
 msgstr ""
 
 msgid "no answer"
@@ -185,6 +191,21 @@ msgid "muted"
 msgstr ""
 
 msgid "active"
+msgstr ""
+
+msgid "forced on"
+msgstr ""
+
+msgid "the VPS does not apply it (passthrough_file missing in its cengarde.conf)"
+msgstr ""
+
+msgid "waiting for the VPS to confirm"
+msgstr ""
+
+msgid "on at the VPS"
+msgstr ""
+
+msgid "off"
 msgstr ""
 
 msgid "disabled"
@@ -206,9 +227,6 @@ msgid "connected"
 msgstr ""
 
 msgid "handshake %s"
-msgstr ""
-
-msgid "waiting for the VPS"
 msgstr ""
 
 msgid "WireGuard tunnel"
@@ -256,10 +274,28 @@ msgstr ""
 msgid "in use"
 msgstr ""
 
+msgid "Back to what the configuration says"
+msgstr ""
+
+msgid "Takes the uplink out until you resume it or cengarde restarts"
+msgstr ""
+
+msgid "Resume"
+msgstr ""
+
+msgid "Automatic"
+msgstr ""
+
+msgid "Pause"
+msgstr ""
+
 msgid "No uplink is up yet."
 msgstr ""
 
 msgid "The engine is not running."
+msgstr ""
+
+msgid "The last change was not applied, cengarde goes on with the previous settings: %s"
 msgstr ""
 
 msgid "Could not read the status (is the cengarde package installed?)."
@@ -268,7 +304,7 @@ msgstr ""
 msgid "Status"
 msgstr ""
 
-msgid "Behind the fastest: how much later this uplink delivers than the quickest one; past the limit it gets muted (no traffic, probes only) until it catches up. Arrived first: share of the download that came through this uplink before any other copy."
+msgid "Behind the fastest: how much later this uplink delivers than the quickest one; past the limit it gets muted (no traffic, probes only) until it catches up. Arrived first: share of the download that came through this uplink before any other copy. Pause: takes an uplink out without touching the configuration, until you resume it or cengarde restarts."
 msgstr ""
 
 msgid "Every packet goes through all active uplinks; the VPS keeps the first copy."
