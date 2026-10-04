@@ -555,6 +555,28 @@ llega a un servicio de metadatos falso, y root sí. Solo corre con
   `test_pktinfo`, `test_srvpick`, `test_addrpick`, y listas en
   `test_config`.
 - **Binario** de OpenWrt x86_64: de 97 a 110 KB.
+- **QEMU** (`openwrt/test/e2e.sh`, 25.12.5, paquetes 0.4.2 de `5a1df76`):
+  pasa entero, 28 comprobaciones. Lo nuevo:
+  - el «VPS» escucha en `*` con 1.2.3.4, 1.2.3.5 y 2001:db8::4, y anuncia
+    por RA un prefijo global y una ULA en cada enlace, MTU 1400 en up3 y un
+    prefijo delegado en up1, que el router toma con su propia `up1v6`;
+  - sin cengarde, la LAN recibe ese prefijo; con todo por el túnel, ya no
+    (y `ipv6_leak` no aparece); al desactivar, vuelve, sin marcas;
+  - con 2001:db8::4 primera, los tres enlaces van por IPv6 desde su
+    dirección global, no la ULA, y el VPS contesta desde 2001:db8::4;
+  - `path_mtu` solo en up3, y el motor avisa (un datagrama de 1408 B da
+    paquetes de 1480 B; pide MTU 1296);
+  - con la IPv6 bloqueada en up2, solo up2 pasa a 1.2.3.4, sin perder
+    pings; sin 2001:db8::4 en el VPS, pasan todos;
+  - aplicar otra vez no cambia nada, y nada se recarga en 60 s.
+- **Visto en QEMU, sin cambiar nada:**
+  - al bajar una interfaz, Linux borra sus direcciones IPv6 y netifd no las
+    repone; en el «VPS» de la prueba, el enlace afectado se quedó sin IPv6
+    y el motor pasó solo a la IPv4, como debía (la prueba ahora usa
+    `keep_addr_on_down`);
+  - al arrancar, mientras netifd vuelve a poner las direcciones, un enlace
+    puede cambiar de origen varias veces en un par de segundos (5 en 2 s en
+    up1); luego queda fijo.
 
 ## Qué hacemos con esto
 
