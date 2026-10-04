@@ -21,9 +21,10 @@
 #   through the VPS and usually refuse); "dns" goes on the tunnel instead,
 #   its IPv4 servers only: IPv6 does not go through the tunnel yet;
 # - IPv6 on the uplinks (uplink_ipv6, also with tunnel = 0): a DHCPv6
-#   interface "<uplink>6" on top of each DHCP or static uplink, so that the
-#   engine sees the modem's IPv6, which never reaches the LAN (delegate 0)
-#   nor the router's DNS (peerdns 0); in the uplink's firewall zone;
+#   interface "<uplink>6" on the device of each DHCP or static uplink, so
+#   that the engine sees the modem's IPv6, which never reaches the LAN
+#   (delegate 0) nor the router's DNS (peerdns 0); in the uplink's firewall
+#   zone;
 # - with route_all, delegate 0 and peerdns 0 also on the IPv6 interfaces of
 #   the uplinks that cengarde did not create (wan6 next to wan): otherwise
 #   the LAN gets their prefix and its IPv6 goes around the tunnel;
@@ -212,8 +213,7 @@ companion_plan() {
 	PLAN=own
 	if [ "${#CNAME}" -gt 15 ]; then
 		PLAN=conflict
-	elif uci -q get "network.$CNAME" >/dev/null &&
-		{ ! owned "$CNAME" || [ "$(uci -q get "network.$CNAME.device")" != "@$1" ]; }; then
+	elif uci -q get "network.$CNAME" >/dev/null && ! owned "$CNAME"; then
 		PLAN=conflict
 	fi
 }
@@ -223,19 +223,13 @@ owned_companions() {
 	local s out=''
 
 	for s in $(sections network interface); do
-		owned "$s" || continue
-		case "$(uci -q get "network.$s.device")" in @*) out="$out${out:+ }$s" ;; esac
+		owned "$s" && out="$out${out:+ }$s"
 	done
 	echo "$out"
 }
 
-# The uplink a companion of cengarde's is on.
-companion_uplink() {
-	local dev
-
-	dev=$(uci -q get "network.$1.device")
-	echo "${dev#@}"
-}
+# The uplink of a companion of cengarde's: its name is always "<uplink>6".
+companion_uplink() { echo "${1%6}"; }
 
 # Device of a logical interface: its layer 3 device while it or one of its
 # IPv6 companions is up, otherwise the configured one when that is a plain
@@ -312,7 +306,7 @@ fix_uplinks() { # METRICS PEERDNS CLOSE_IPV6: on|off each
 # The uplinks' own DHCPv6 interfaces (on), or none (off). A section cengarde
 # did not create is never changed: its name is reported as a conflict.
 fix_companions() { # on|off
-	local s c m keep=''
+	local s c d o v keep=''
 
 	if [ "$1" = on ]; then
 		for s in $UPLINKS; do
@@ -320,19 +314,28 @@ fix_companions() { # on|off
 			[ "$PLAN" = own ] || continue
 			c=$CNAME
 			keep="$keep $c"
+			# On the uplink's device, as OpenWrt puts wan6 next to wan: "@wan"
+			# only exists while wan's IPv4 is up (netifd's alias.c), so its
+			# IPv6 would go down with it. "@wan" only when wan has no device
+			# of its own (a wireless client).
+			d=$(uci -q get "network.$s.device")
+			case "$d" in '' | @* | */*) d="@$s" ;; esac
 			want "network.$c" interface
 			want "network.$c.proto" dhcpv6
-			want "network.$c.device" "@$s"
+			want "network.$c.device" "$d"
 			want "network.$c.reqprefix" no
 			want "network.$c.delegate" 0
 			want "network.$c.peerdns" 0
 			want "network.$c.cengarde_owned" 1
-			# The uplink's metric for its IPv6 default route too.
-			if m=$(uci -q get "network.$s.metric"); then
-				want "network.$c.metric" "$m"
-			else
-				drop "network.$c.metric"
-			fi
+			# The uplink's metric for its IPv6 default route too, and
+			# whether it comes up at all.
+			for o in metric auto disabled; do
+				if v=$(uci -q get "network.$s.$o"); then
+					want "network.$c.$o" "$v"
+				else
+					drop "network.$c.$o"
+				fi
+			done
 		done
 	fi
 	for c in $(owned_companions); do

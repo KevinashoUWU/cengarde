@@ -174,12 +174,12 @@ fi
 
 if "$VM" ssh router sh -s <<'EOF'
 for i in 1 2 3; do
-	[ "$(uci -q get network.up${i}6.device) $(uci -q get network.up${i}6.delegate)" = "@up$i 0" ] || exit 1
+	[ "$(uci -q get network.up${i}6.device) $(uci -q get network.up${i}6.delegate)" = "eth$i 0" ] || exit 1
 	uci show firewall | grep -q "cengarde_network6=.*'up${i}6'" || exit 1
 done
 EOF
 then
-	ok "IPv6 companions up16-up36: delegate 0, in the uplinks' zone"
+	ok "IPv6 companions up16-up36: on the uplinks' devices, delegate 0, in their zone"
 else
 	bad "IPv6 companions"
 fi
