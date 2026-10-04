@@ -140,6 +140,7 @@ int cg_addr_parse(const char *s, int allow_names, struct sockaddr_storage *out, 
 		if (inet_pton(AF_INET6, host, &a6->sin6_addr) == 1) {
 			a6->sin6_family = AF_INET6;
 			a6->sin6_port = htons(port);
+			cg_addr_unmap(out);
 			return 1;
 		}
 	}
@@ -163,12 +164,52 @@ int cg_addr_parse(const char *s, int allow_names, struct sockaddr_storage *out, 
 			((struct sockaddr_in *)&out[n])->sin_port = htons(port);
 		else
 			((struct sockaddr_in6 *)&out[n])->sin6_port = htons(port);
+		cg_addr_unmap(&out[n]);
 		n++;
 	}
 	freeaddrinfo(res);
 	if (!n)
 		snprintf(err, errlen, "'%s' has no IPv4 or IPv6 address", host);
 	return n ? n : -1;
+}
+
+void cg_addr_unmap(struct sockaddr_storage *a)
+{
+	const struct sockaddr_in6 *a6 = (const struct sockaddr_in6 *)a;
+	struct sockaddr_in a4 = { .sin_family = AF_INET };
+
+	if (a->ss_family != AF_INET6 || !IN6_IS_ADDR_V4MAPPED(&a6->sin6_addr))
+		return;
+	a4.sin_port = a6->sin6_port;
+	memcpy(&a4.sin_addr, &a6->sin6_addr.s6_addr[12], sizeof(a4.sin_addr));
+	memset(a, 0, sizeof(*a));
+	memcpy(a, &a4, sizeof(a4));
+}
+
+const char *cg_addr_unfit_peer(const struct sockaddr_storage *a)
+{
+	struct sockaddr_storage u = *a;
+
+	cg_addr_unmap(&u);
+	if (u.ss_family == AF_INET) {
+		uint32_t ip = ntohl(((const struct sockaddr_in *)&u)->sin_addr.s_addr);
+
+		if (ip == 0)
+			return "the wildcard address";
+		if ((ip & 0xf0000000u) == 0xe0000000u) /* 224.0.0.0/4 */
+			return "a multicast address";
+		return NULL;
+	}
+	if (u.ss_family == AF_INET6) {
+		const struct in6_addr *ip = &((const struct sockaddr_in6 *)&u)->sin6_addr;
+
+		if (IN6_IS_ADDR_UNSPECIFIED(ip))
+			return "the wildcard address";
+		if (IN6_IS_ADDR_MULTICAST(ip))
+			return "a multicast address";
+		return NULL;
+	}
+	return "not an IP address";
 }
 
 const char *cg_addr_str(const struct sockaddr_storage *a, char *buf, size_t len)

@@ -137,6 +137,82 @@ static void test_config_reload(void)
 	CHECK(strstr(err, path) != NULL);
 }
 
+/* Address lists: a single listen and wireguard address, servers to send to,
+ * IPv4-mapped addresses as IPv4. */
+static void test_config_addrs(void)
+{
+	static const char *const bad[] = {
+		"*:59402", "0.0.0.0:59402", "[::]:59402", "[::ffff:0.0.0.0]:59402", "224.0.0.1:59402",
+		"[ff02::1]:59402", "[::ffff:239.1.2.3]:59402",
+	};
+	static struct cg_config c, d;
+	char err[256], warn[512], text[256];
+
+	/* Extra addresses were dropped in silence. */
+	CHECK_EQ(cg_config_parse(&c, SERVER "listen = 192.0.2.1:59402 198.51.100.1:59402\n", err, sizeof(err), warn,
+				 sizeof(warn)),
+		 -1);
+	CHECK(strstr(err, "listen: expected a single address") != NULL);
+	CHECK_EQ(cg_config_parse(&c, CLIENT "listen = 127.0.0.1:1, 127.0.0.1:2\n", err, sizeof(err), warn, sizeof(warn)),
+		 -1);
+	CHECK(strstr(err, "listen") != NULL);
+	CHECK_EQ(cg_config_parse(&c, "mode = server\nkey = " KEY "\nwireguard = 127.0.0.1:51820 127.0.0.1:51821\n", err,
+				 sizeof(err), warn, sizeof(warn)),
+		 -1);
+	CHECK(strstr(err, "wireguard: expected a single address") != NULL);
+	CHECK_EQ(cg_config_parse(&c, "mode = client\nkey = " KEY "\nserver = 192.0.2.1:1 192.0.2.2:1 192.0.2.3:1 "
+				 "192.0.2.4:1 192.0.2.5:1\n",
+				 err, sizeof(err), warn, sizeof(warn)),
+		 -1);
+	CHECK(strstr(err, "server: at most 4 addresses") != NULL);
+	CHECK_EQ(cg_config_parse(&c, CLIENT "[link eth1]\nserver = 192.0.2.1:1 192.0.2.2:1 192.0.2.3:1 192.0.2.4:1\n",
+				 err, sizeof(err), warn, sizeof(warn)),
+		 0);
+	CHECK_EQ(c.links[0].nserver, 4);
+	cg_config_free(&c);
+
+	/* A server is somewhere to send to: no wildcard, no multicast. */
+	for (size_t i = 0; i < CG_ARRAY_SIZE(bad); i++) {
+		snprintf(text, sizeof(text), "mode = client\nkey = " KEY "\nserver = %s\n", bad[i]);
+		CHECK_EQ(cg_config_parse(&c, text, err, sizeof(err), warn, sizeof(warn)), -1);
+		CHECK(!strncmp(err, "server: ", 8) && strstr(err, bad[i]) != NULL);
+		snprintf(text, sizeof(text), CLIENT "[link eth1]\nserver = 198.51.100.7:1 %s\n", bad[i]);
+		CHECK_EQ(cg_config_parse(&c, text, err, sizeof(err), warn, sizeof(warn)), -1);
+		CHECK(strstr(err, bad[i]) != NULL);
+	}
+	CHECK_EQ(cg_config_parse(&c, "mode = client\nkey = " KEY "\nserver = 0.0.0.0:59402\n", err, sizeof(err), warn,
+				 sizeof(warn)),
+		 -1);
+	CHECK(!strcmp(err, "server: '0.0.0.0:59402' is the wildcard address"));
+	/* The wildcard is still fine where it means "any local address". */
+	CHECK_EQ(cg_config_parse(&c, SERVER "listen = 0.0.0.0:59402\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	cg_config_free(&c);
+	CHECK_EQ(cg_config_parse(&c, CLIENT "listen = [::]:59401\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	cg_config_free(&c);
+
+	/* IPv4-mapped addresses become IPv4, so they leave through IPv4. */
+	CHECK_EQ(cg_config_parse(&c,
+				 "mode = client\nkey = " KEY "\nserver = [::ffff:203.0.113.10]:59402 [2001:db8::1]:59402\n"
+				 "listen = [::ffff:127.0.0.1]:59401\n[link eth1]\nserver = [::ffff:198.51.100.7]:1\n",
+				 err, sizeof(err), warn, sizeof(warn)),
+		 0);
+	CHECK_EQ(c.nserver, 2);
+	CHECK_EQ(c.server[0].ss_family, AF_INET);
+	CHECK_EQ(c.server[1].ss_family, AF_INET6);
+	CHECK_EQ(c.listen.ss_family, AF_INET);
+	CHECK_EQ(c.links[0].server[0].ss_family, AF_INET);
+	CHECK(!strcmp(cg_addr_str(&c.server[0], text, sizeof(text)), "203.0.113.10:59402"));
+	cg_config_free(&c);
+	CHECK_EQ(cg_config_parse(&c, "mode = server\nkey = " KEY "\nwireguard = [::ffff:127.0.0.1]:51820\n", err,
+				 sizeof(err), warn, sizeof(warn)),
+		 0);
+	CHECK_EQ(c.wireguard.ss_family, AF_INET);
+	CHECK_EQ(cg_config_parse(&d, SERVER, err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK(cg_config_restart_needed(&c, &d) == NULL); /* the same address */
+	cg_config_free(&c);
+	cg_config_free(&d);
+}
+
 void test_config(void)
 {
 	struct cg_config c;
@@ -248,4 +324,5 @@ void test_config(void)
 		 -1); /* wireguard must be numeric */
 
 	test_config_reload();
+	test_config_addrs();
 }

@@ -30,9 +30,19 @@ int cg_base64_decode(uint8_t *out, size_t outcap, const char *in);
 
 /* "1.2.3.4:5", "[2001:db8::1]:5", "*:5" (IPv6 any, dual-stack) or, when
  * allow_names is set, "host.example:5". Fills up to max addresses and returns
- * how many, or -1 with a message in err. */
+ * how many, or -1 with a message in err. IPv4-mapped addresses come back as
+ * IPv4 (cg_addr_unmap). */
 int cg_addr_parse(const char *s, int allow_names, struct sockaddr_storage *out, int max, char *err,
 		  size_t errlen);
+
+/* Turns an IPv4-mapped IPv6 address ("[::ffff:192.0.2.1]:5") into plain
+ * IPv4, port included, so that it goes out of an IPv4 socket. Leaves any
+ * other address alone. */
+void cg_addr_unmap(struct sockaddr_storage *a);
+
+/* Why a cannot be a peer to send to ("the wildcard address", "a multicast
+ * address"), or NULL when it can. IPv4-mapped addresses count as IPv4. */
+const char *cg_addr_unfit_peer(const struct sockaddr_storage *a);
 
 /* Writes "1.2.3.4:5" or "[2001:db8::1]:5"; IPv4-mapped IPv6 prints as IPv4. */
 const char *cg_addr_str(const struct sockaddr_storage *a, char *buf, size_t len);
