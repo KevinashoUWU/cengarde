@@ -1,0 +1,19 @@
+# cengarde forward table 1, written by the engine: data only
+rule alpha tcp 9000 9000 22
+rule nobody tcp 9100 9100 9100 SECRETMARK
+rule ../../etc tcp 9101 9101 9101
+rule alpha sctp 9102 9102 9102
+rule alpha tcp 9103 9103
+rule alpha tcp 70000 70000 70000
+rule alpha tcp 9105 9104 9105
+rule alpha tcp 9106 9106 65535x
+rule alpha tcp 65000 65010 65530
+rule alpha tcp 22 22 22
+rule alpha udp 65500 65500 65500
+rule alpha tcp 8999 9001 8999
+rule bravo tcp 9200 9200 9200
+pass alpha
+pass alpha
+SECRETMARK this line is not a rule
+rule alpha tcp -5 9 9
+rule alpha udp 9300 9300 9300
