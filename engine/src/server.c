@@ -51,7 +51,7 @@ struct path {
 	int used;
 	struct sockaddr_storage addr;
 	struct cg_local local; /* the address of ours its packets arrive at */
-	union cg_ctl_tx ctl;   /* the control message that sends from it */
+	union cg_ctl_tx ctl;   /* the control message that sends from it (loop thread only) */
 	size_t ctl_len;        /* 0: none, the route picks the source */
 	uint64_t since_ms, last_rx_ms;
 	uint64_t last_owd_ms; /* last probe saying the client hears our replies */
@@ -242,9 +242,12 @@ static void session_destroy(struct server *s, struct session *S, const char *why
 /* A verified packet from `from` on link of S, already marked in the replay
  * window: the path learns where the client is and, from the control
  * messages in m, which address of ours it sends to. A forged or replayed
- * packet never gets here, so nobody else can move a path. The control
- * message is written before its length, the order a reader on another
- * thread would need. */
+ * packet never gets here, so nobody else can move a path. Only the loop
+ * thread touches a path: the control message is rewritten in place while
+ * the old ctl_len is still set, and wg_read hands P->ctl.b to sendmmsg as
+ * is. A multithreaded server (design decision 28) has to build it in a
+ * second buffer and publish that buffer and its length with one release
+ * store, read with acquire; the order of the stores alone is not enough. */
 static struct path *path_update(struct server *s, struct session *S, unsigned link,
 				const struct sockaddr_storage *from, const struct msghdr *m, uint64_t now_ms)
 {
