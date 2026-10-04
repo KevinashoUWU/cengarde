@@ -126,4 +126,12 @@ void test_proto(void)
 		wg[0] = 5;
 		CHECK(!cg_looks_like_wg(wg, 64));
 	}
+
+	/* Outer packet sizes: the WireGuard MTU that fills a 1500-byte path is
+	 * 1416 over IPv4 and 1396 over IPv6; the default 1380 fits both. */
+	CHECK_EQ(cg_outer_len(AF_INET, 1416 + CG_WG_OVERHEAD), 1500);
+	CHECK_EQ(cg_outer_len(AF_INET6, 1396 + CG_WG_OVERHEAD), 1500);
+	CHECK_EQ(cg_outer_len(AF_INET6, 1380 + CG_WG_OVERHEAD), 1484);
+	CHECK_EQ(1500 - cg_outer_len(AF_INET6, CG_WG_OVERHEAD), 1396);
+	CHECK_EQ(cg_outer_len(AF_INET, 0), CG_HDR_LEN + 28);
 }

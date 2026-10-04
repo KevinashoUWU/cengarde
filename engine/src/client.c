@@ -63,6 +63,7 @@ struct link {
 	int back_to_first;      /* a reply ended a dead round: the first candidate at the next reconcile */
 	uint64_t cand_since_ms; /* when its socket to cand opened */
 	uint64_t failovers;
+	uint32_t path_mtu; /* IP_MTU or IPV6_MTU of its socket, read every RECONCILE_MS */
 	uint64_t up_since_ms, last_rx_ms, last_reply_ms, last_probe_ms, retry_ms;
 	uint64_t srtt8_us; /* 8 x smoothed RTT */
 	uint32_t rtt_us;
@@ -76,7 +77,7 @@ struct link {
 	struct cg_probe_info peer_view; /* server's view of this path (upload) */
 	uint64_t peer_view_ms;
 	struct cg_echo probes; /* probes sent, for the echoes in replies (epoch.h) */
-	struct cg_ratelimit rl, rl_move;
+	struct cg_ratelimit rl, rl_move, rl_mtu;
 };
 
 struct client {
@@ -101,9 +102,11 @@ struct client {
 	int reload_again;
 	int server_pass; /* IP pass in the server's replies: -2 no reply yet, -1 none */
 	char config_error[600]; /* why the last reload was refused */
-	uint64_t start_ms, next_status_ms, next_reconcile_ms, last_traffic_ms;
+	uint64_t start_ms, next_status_ms, next_reconcile_ms, next_path_ms, last_traffic_ms;
 
 	uint64_t up_pkts, up_bytes, up_toobig;
+	uint32_t up_max;     /* largest WireGuard datagram since the last path check */
+	uint32_t up_largest; /* the same over the last check period, for the status */
 	uint64_t down_pkts, down_bytes, down_wg_drops, down_no_peer;
 	uint64_t rx_malformed, rx_foreign, rx_auth_fail, rx_old, rx_dups, rx_trunc;
 	uint64_t window_resets;      /* the server started over (epoch.h) */
@@ -275,6 +278,17 @@ static int eligible(struct client *c, const struct cg_iface *ifc, struct cands *
 	return e->n ? WHY_OK : WHY_NOFAMILY;
 }
 
+static uint32_t sock_path_mtu(int fd, int family)
+{
+	int v = 0;
+	socklen_t len = sizeof(v);
+
+	if (family == AF_INET6 ? getsockopt(fd, IPPROTO_IPV6, IPV6_MTU, &v, &len)
+			       : getsockopt(fd, IPPROTO_IP, IP_MTU, &v, &len))
+		return 0;
+	return v > 0 ? (uint32_t)v : 0;
+}
+
 /* Whether to log a move: each one in the first round, then once a minute
  * while no address answers (an outage would fill the log). */
 static int move_loud(struct link *l, int n, uint64_t now_ms)
@@ -367,6 +381,7 @@ static void link_open(struct client *c, struct link *l, const struct cg_iface *i
 	l->local = local;
 	l->remote = l->cand;
 	l->up_since_ms = l->cand_since_ms = now_ms;
+	l->path_mtu = sock_path_mtu(l->fd, l->remote.ss_family);
 	if (l->last_rx_ms > c->new_before_open_ms)
 		c->new_before_open_ms = l->last_rx_ms;
 	l->last_rx_ms = l->last_reply_ms = l->last_probe_ms = 0;
@@ -435,6 +450,29 @@ static void reconcile(struct client *c, uint64_t now_ms)
 							: why_name[l->why]);
 	}
 	c->next_reconcile_ms = now_ms + RECONCILE_MS;
+}
+
+/* Every RECONCILE_MS: the path MTU of each socket, and a warning when the
+ * largest WireGuard datagram since the last check does not fit it. */
+static void path_check(struct client *c, uint64_t now_ms)
+{
+	for (int i = 0; i < CG_MAX_LINKS; i++) {
+		struct link *l = &c->link[i];
+		int f = l->remote.ss_family;
+		uint32_t need = cg_outer_len(f, c->up_max), wrap = cg_outer_len(f, CG_WG_OVERHEAD);
+
+		if (l->fd < 0)
+			continue;
+		l->path_mtu = sock_path_mtu(l->fd, f);
+		if (c->up_max && l->path_mtu && need > l->path_mtu && cg_ratelimit_ok(&l->rl_mtu, now_ms, 600000))
+			cg_warn("link %s: WireGuard datagrams of %u bytes make %u-byte packets over IPv%c, more than its path "
+				"MTU of %u: lower the WireGuard MTU to %u",
+				l->ifname, c->up_max, need, f == AF_INET6 ? '6' : '4', l->path_mtu,
+				l->path_mtu > wrap ? l->path_mtu - wrap : 0);
+	}
+	c->up_largest = c->up_max;
+	c->up_max = 0;
+	c->next_path_ms = now_ms + RECONCILE_MS;
 }
 
 /* Sends the m packets prepared in hdr/oiov: all of them on every carrying
@@ -506,6 +544,8 @@ static void wg_read(struct client *c)
 						CG_MAX_PAYLOAD);
 				continue;
 			}
+			if (len > c->up_max)
+				c->up_max = (uint32_t)len; /* for the path MTU check */
 			/* Downstream goes back to whoever last sent something shaped like
 			 * WireGuard, not to any local sender. */
 			if (cg_looks_like_wg(c->in.buf[i], len)) {
@@ -782,6 +822,7 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 	cg_json_u64(j, "packets", c->up_pkts);
 	cg_json_u64(j, "bytes", c->up_bytes);
 	cg_json_u64(j, "too_big", c->up_toobig);
+	cg_json_u64(j, "largest", c->up_largest);
 	cg_json_end(j, '}');
 	cg_json_obj(j, "download");
 	cg_json_u64(j, "packets", c->down_pkts);
@@ -831,6 +872,7 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 			cg_json_null(j, "candidate");
 		cg_json_u64(j, "candidates", (uint64_t)l->ncand);
 		cg_json_u64(j, "failovers", l->failovers);
+		cg_json_u64(j, "path_mtu", l->fd >= 0 ? l->path_mtu : 0);
 		cg_json_ms(j, "rtt_ms", l->srtt8_us / 8);
 		cg_json_u64(j, "last_rx_ms_ago", l->last_rx_ms ? now_ms - l->last_rx_ms : 0);
 		cg_json_str(j, "upload", h->state == CG_H_MUTED ? "muted" : "active");
@@ -874,10 +916,10 @@ static void write_status(struct client *c, uint64_t now_ms)
 
 /* "cengarde ctl links": every interface netlink knows, as a table. The
  * addresses go last, LOCAL as wide as the widest (IPv6). */
-#define LINK_ROW "%-15s %-12s %-10s %-6s %-6s %9s %9s  %-*s  %s\n"
+#define LINK_ROW "%-15s %-12s %-10s %-6s %-6s %9s %5s %9s  %-*s  %s\n"
 static void links_text(struct client *c, uint64_t now_ms, struct cg_json *j)
 {
-	char a[64], b[64], remote[96], rtt[24], moves[24];
+	char a[64], b[64], remote[96], rtt[24], mtu[16], moves[24];
 	struct cands e;
 	int w = 5;
 
@@ -887,7 +929,7 @@ static void links_text(struct client *c, uint64_t now_ms, struct cg_json *j)
 
 			w = len > w ? len : w;
 		}
-	cg_json_raw(j, LINK_ROW, "INTERFACE", "LABEL", "STATE", "MANUAL", "UPLOAD", "RTT", "FAILOVERS", w, "LOCAL",
+	cg_json_raw(j, LINK_ROW, "INTERFACE", "LABEL", "STATE", "MANUAL", "UPLOAD", "RTT", "MTU", "FAILOVERS", w, "LOCAL",
 		    "REMOTE");
 	for (int i = 0; i < c->nl.nifs; i++) {
 		const struct cg_iface *ifc = &c->nl.ifs[i];
@@ -908,6 +950,10 @@ static void links_text(struct client *c, uint64_t now_ms, struct cg_json *j)
 				 (unsigned)(l->srtt8_us / 800 % 10));
 		else
 			strcpy(rtt, "-");
+		if (up && l->path_mtu)
+			snprintf(mtu, sizeof(mtu), "%u", l->path_mtu);
+		else
+			strcpy(mtu, "-");
 		if (l)
 			snprintf(moves, sizeof(moves), "%llu", (unsigned long long)l->failovers);
 		else
@@ -921,13 +967,13 @@ static void links_text(struct client *c, uint64_t now_ms, struct cg_json *j)
 		cg_json_raw(j, LINK_ROW, ifc->name, lc && lc->label[0] ? lc->label : "-",
 			    up ? link_state(c, l, now_ms) : why == WHY_OK ? "unusable" : why_name[why],
 			    o == CG_OVR_AUTO ? "-" : cg_ovr_name(o),
-			    up ? (c->uh[l - c->link].state == CG_H_MUTED ? "muted" : "active") : "-", rtt, moves, w,
+			    up ? (c->uh[l - c->link].state == CG_H_MUTED ? "muted" : "active") : "-", rtt, mtu, moves, w,
 			    up ? cg_addr_str(&l->local, a, sizeof(a)) : "-", remote);
 	}
 	for (int i = 0; i < c->ovr.n; i++)
 		if (!cg_nl_find(&c->nl, c->ovr.e[i].name))
-			cg_json_raw(j, LINK_ROW, c->ovr.e[i].name, "-", "absent", cg_ovr_name(c->ovr.e[i].v), "-", "-", "-", w,
-				    "-", "-");
+			cg_json_raw(j, LINK_ROW, c->ovr.e[i].name, "-", "absent", cg_ovr_name(c->ovr.e[i].v), "-", "-", "-",
+				    "-", w, "-", "-");
 }
 
 /* ---- reload ---- */
@@ -1103,6 +1149,8 @@ static void tick(struct client *c)
 	health_tick(c, now_ms);
 	if (failover || now_ms >= c->next_reconcile_ms)
 		reconcile(c, now_ms);
+	if (now_ms >= c->next_path_ms)
+		path_check(c, now_ms);
 	if (c->sw.running && now_ms >= c->next_status_ms) {
 		write_status(c, now_ms);
 		c->next_status_ms = now_ms + c->cfg->status_interval_ms;
