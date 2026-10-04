@@ -527,7 +527,8 @@ Sin cambio de protocolo ni del motor: un VPS lo toma bajo un router 0.4.
   --orig-port-dst N -r VIEJO` hasta 256 puertos, o `-r VIEJO` entero si es
   más; probado en netns con conntrack-tools 1.4.8: un flujo UDP a 10 por
   segundo pasa al nuevo router en menos de 2 s, y sin conntrack se queda en
-  el viejo.
+  el viejo (comprobado aparte en el kernel 6.18 con iptables 1.8.10: ni
+  `iptables-restore --noflush` ni `iptables -R` mueven un flujo vivo).
 - **Entrada:** el archivo de IP pass del motor v3 pasa a
   `/var/lib/cengarde/passthrough` (lo guarda el propio motor, así que
   sobrevive a reinicios; el estado de la 0.4 se migra). La tabla de reenvío
