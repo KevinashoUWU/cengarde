@@ -10,7 +10,8 @@ la salud de los enlaces en
 
 **No es compatible en el cable con engarde Go:** usa su propia cabecera
 autenticada (protocolo v3), así que los dos extremos tienen que ser cengarde
-de la misma versión de protocolo.
+de la misma versión de protocolo. `cengarde version` la muestra al final, por
+ejemplo `cengarde 0.4.0-r1 (protocol 3)`.
 
 ## Compilar
 
@@ -61,15 +62,36 @@ secreto de 32 bytes (la salida de `cengarde genkey`):
 
 ```sh
 cengarde keys < secreto
-# CG_LINK_KEY='…'        la clave de cengarde ("key"), igual en los dos extremos
-# CG_WG_SERVER_KEY='…'   la clave privada de WireGuard del VPS
-# CG_WG_CLIENT_KEY='…'   la del router
-# CG_WG_PSK='…'          la PSK de WireGuard
+# CG_LINK_KEY='…'                 la clave de cengarde ("key"), igual en los dos extremos
+# CG_WG_SERVER_KEY='…'            la clave privada de WireGuard del VPS
+# CG_WG_CLIENT_KEY='…'            la del router
+# CG_WG_PSK='…'                   la PSK de WireGuard
+# CG_TUNNEL_ADDR='10.79.x.y'      la IPv4 del router dentro del túnel
+# CG_TUNNEL_ULA='fdxx:xxxx:xxxx'  su prefijo ULA, un /48 (el túnel usa su ::/64)
+# CG_CLIENT_HINT='N'              la pista de cliente, de 0 a 255
 ```
 
 - **Derivación:** cada clave es BLAKE2s-256 con el secreto como clave y
   `"cengarde pairing v1: " + etiqueta` como mensaje. Las privadas de
   WireGuard salen recortadas, como las de `wg genkey`.
+- **Direcciones del túnel:** salen de la misma fórmula, para que nadie tenga
+  que elegir números cuando varios routers comparten un VPS:
+  - `CG_TUNNEL_ADDR`: con `d` la salida de la etiqueta `tunnel` y
+    `u = d[0] · 256 + d[1]` (big-endian, igual en cualquier CPU),
+    `v = 2 + u mod 65533` y la dirección es `10.79.(v >> 8).(v & 255)`.
+    Nunca es 10.79.0.0, ni 10.79.0.1 (la del VPS), ni 10.79.255.255.
+  - `CG_TUNNEL_ULA`: `fd` seguido de los 5 primeros bytes de la etiqueta
+    `tunnel-ula`, con cuatro cifras por grupo para que `${CG_TUNNEL_ULA}::2`
+    sea una dirección.
+- **Pista de cliente:** `CG_CLIENT_HINT` es el primer byte de BLAKE2s-256
+  con la clave de cengarde (`CG_LINK_KEY`, no el secreto) como clave y
+  `"cengarde v4 client hint"` como mensaje. El protocolo v4 la llevará en el
+  byte 2 de la cabecera para que el servidor elija la clave de cada router
+  sin probarlas todas; hoy ningún paquete la lleva.
+- **Variables nuevas al final:** las cuatro primeras líneas no cambian, así
+  que los scripts que hacen `eval` de la salida siguen igual. Hoy el túnel
+  sigue usando 10.79.0.2/30; las direcciones derivadas son para varios
+  routers por VPS.
 - **Entrada estándar:** el secreto se lee de ahí para que no aparezca en la
   lista de procesos.
 - **Salida:** asignaciones de shell para `eval`. Las públicas se sacan con
