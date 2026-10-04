@@ -113,18 +113,26 @@ uci commit network && service network reload
   sección 4).
 - **Si el adaptador no aparece** en `ip link`, instala su driver; la imagen
   ya trae los comunes.
-- **Sin interfaces IPv6 (DHCPv6) en los enlaces:** el túnel lleva solo IPv4
-  por ahora, y la LAN saldría por fuera de él con IPv6.
-  - Ojo con una interfaz DHCPv6 sobre un enlace que delegue un prefijo, como
-    Starlink, por ejemplo el `wan6` de fábrica de los equipos con puerto WAN
-    (la Pi 4 no lo trae): bórrala, o ponle `delegate '0'` para que su
-    prefijo no llegue a la LAN. cengarde lo hará solo más adelante
-    (historia 010).
-
-    ```sh
-    uci set network.wan6.delegate='0'     # o el nombre de esa interfaz
-    uci commit network && service network reload
-    ```
+- **IPv6 de los enlaces:** cengarde agrega a cada enlace DHCP o estático
+  una interfaz DHCPv6, `<enlace>6` (por ejemplo `starlink6`), sobre el
+  mismo dispositivo y en la zona del enlace. Con ella el motor ve la IPv6
+  del módem y puede llegar al VPS por IPv6; su prefijo nunca llega a la LAN
+  (`delegate 0`) ni sus DNS al router (`peerdns 0`).
+  - **La fuga de IPv6 de la LAN:** el túnel lleva solo IPv4 por ahora; si
+    una interfaz delega un prefijo a la LAN, la IPv6 de la LAN sale por
+    fuera del túnel. Por eso, con «enrutar todo el tráfico por el
+    túnel», cengarde también pone `delegate 0` y `peerdns 0` en las
+    interfaces IPv6 de los enlaces que no creó, como el `wan6` de fábrica
+    de los equipos con puerto WAN (Starlink delega un prefijo), y
+    `delegate 0` en los enlaces PPP o de módem (qmi, mbim, ncm), que se lo
+    pasan a la `<enlace>_6` que crean. Desactivar cengarde lo deshace.
+  - **Apagarlo:** *IPv6 en los enlaces* (pestaña *Avanzado*,
+    `uplink_ipv6 '0'`) quita solo las compañeras `<enlace>6`; la fuga se
+    sigue cerrando mientras todo vaya por el túnel.
+  - **Avisos:** si el nombre `<enlace>6` ya existe o pasa de 15
+    caracteres, cengarde no toca esa interfaz y el estado muestra
+    `ipv6_companion_conflict`: el motor no verá la IPv6 de ese enlace. Si
+    la LAN aún tiene un prefijo público, muestra `ipv6_leak`.
 
 ## 3. El VPS
 
@@ -170,8 +178,12 @@ NAT.
 
 En *Servicios → cengarde → Configuración*, pestaña *General*:
 - **Activado;**
-- **Dirección del VPS:** su IP pública. Tiene que ser una IP, no un nombre:
-  con todo el tráfico por el túnel, el nombre no se podría resolver;
+- **Direcciones del VPS:** sus IP públicas, IPv4 e IPv6, en orden de
+  preferencia (hasta 8). Cada enlace usa la primera de una familia que
+  tenga, y pasa a la siguiente que pueda usar tras 10 s sin respuesta
+  (`server_failover_ms`, pestaña *Avanzado*). Tienen que ser IP, no
+  nombres: con todo el tráfico por el túnel, un nombre no se podría
+  resolver;
 - **Enlaces:** los del paso 2.
 
 Luego *Guardar y aplicar*. Desde ese momento cengarde mantiene en la
@@ -182,7 +194,9 @@ configuración del router:
 | Red | interfaz `wgcg` (WireGuard, `10.79.0.2/30`) con las claves del secreto; su par `cengarde_vps` apunta a cengarde en `127.0.0.1` | sí |
 | Rutas | `0.0.0.0/1` y `128.0.0.0/1` por `wgcg`: le ganan a cualquier ruta por defecto sin borrarlas, y cada enlace conserva la suya para cengarde | sí |
 | Enlaces | una métrica propia a cada uno (con la misma métrica, netifd deja una sola ruta por defecto) | no: no estorba |
-| Enlaces | `peerdns 0`: los DNS de la operadora irían por el VPS y suelen rechazarlo; se usan los de la pestaña *Túnel* | sí |
+| Enlaces | `peerdns 0`: los DNS de la operadora irían por el VPS y suelen rechazarlo; se usan los IPv4 de la pestaña *Túnel* | sí |
+| Enlaces | `<enlace>6`: DHCPv6 sobre el dispositivo del enlace, con `delegate 0` y `peerdns 0`, en la zona del enlace | sí |
+| Enlaces | con «enrutar todo»: `delegate 0` y `peerdns 0` en las interfaces IPv6 que no creó (`wan6`), y `delegate 0` en los enlaces PPP o de módem | sí |
 | Cortafuegos | `wgcg`, y los enlaces que no tengan zona, en la zona `wan` | `wgcg` sí, los enlaces no |
 | UPnP | con IP pass: miniupnpd sobre `wgcg`, con la IP del VPS como externa (o la que dé STUN) | sí |
 
@@ -192,6 +206,11 @@ configuración del router:
   CPU lo reinician, en el lugar y en menos de un segundo.
 - **Sin dirección del VPS o sin enlaces** no se crea el túnel, para no
   dejar el router sin salida.
+- **MTU del túnel:** 1380 por defecto; como mucho 1416 sobre IPv4 y 1396
+  si hay una dirección IPv6 del VPS (en caminos de 1500 bytes). Si el
+  camino de un enlace es más chico, el estado lo avisa.
+- **DNS de la pestaña Túnel:** solo los IPv4 van por el túnel mientras IPv6
+  no pase por él; los IPv6 se dejan fuera.
 - **Desinstalar** el paquete también lo deshace todo.
 - **Pestaña Avanzado:** las perillas del motor (silenciado de enlaces
   lentos, sondas, sondeo activo); valen los valores por defecto.
@@ -208,13 +227,19 @@ configuración del router:
   - estado: activo, silenciado, esperando al VPS, sin respuesta o en pausa;
   - RTT;
   - *atraso frente al más rápido*: pasado el límite, el enlace se silencia;
+  - la dirección del VPS que usa y su familia, con «alternativa» si la
+    primera que puede usar no contestó;
+  - la MTU del camino hasta el VPS;
   - si el VPS lo usa para bajar;
   - qué parte de la bajada llegó primero por él;
   - **Pausar / Reanudar:** saca el enlace sin tocar la configuración (por
     ejemplo, un módem que va a cambiar de plan). La pausa se mantiene hasta
     reanudarlo o hasta que cengarde se reinicie.
-- **Avisos:** falta la IP, un enlace caído, el motor detenido, un cambio que
-  no se pudo aplicar…
+- **Avisos:** falta la IP, un enlace caído o solo con IPv6 (sin dirección
+  IPv6 del VPS), el VPS que no contesta por ningún enlace, un camino con
+  MTU chica para el túnel, la fuga de IPv6 de la LAN, una compañera
+  `<enlace>6` que no se pudo crear, el motor detenido, un cambio que no se
+  pudo aplicar…
 
 Por consola:
 
@@ -255,7 +280,8 @@ el de WireGuard y el SSH nunca se reenvían.
 ## Por consola (sin LuCI)
 
 ```sh
-uci set cengarde.main.server='203.0.113.10'          # la IP del VPS
+uci add_list cengarde.main.server='203.0.113.10'     # la IP del VPS
+uci add_list cengarde.main.server='2001:db8::10'     # opcional: su IPv6
 uci add_list cengarde.main.uplink='wom'              # uno por enlace
 uci set cengarde.main.enabled='1'
 uci commit cengarde && /etc/init.d/cengarde reload
@@ -293,6 +319,10 @@ cengarde-setup cloud-config > vps.yaml               # el user data del VPS
   git -C /opt/cengarde checkout FETCH_HEAD && sh /opt/cengarde/contrib/vps/install.sh
   ```
 
+  La 0.5 convierte una vez, al instalarse, `option server` en
+  `list server`; una `option server` escrita a mano después se sigue
+  leyendo.
+
 ## Probar sin hardware
 
 [`test/e2e.sh`](test/e2e.sh) arranca dos VMs con la imagen x86-64 y
@@ -300,11 +330,12 @@ comprueba el flujo completo:
 - enlaces por DHCP;
 - configuración solo desde LuCI;
 - túnel arriba, e IP pass confirmado por el VPS;
+- compañeras IPv6 `<enlace>6` y `delegate 0` en un enlace PPPoE;
 - pausar y reanudar un enlace desde la página de estado;
 - apagar IP pass con pings en curso: sin reiniciar el motor, sin pérdidas,
   y el VPS lo sigue;
 - un enlace caído sin perder pings;
-- desactivación limpia.
+- desactivación limpia, y aplicar dos veces no cambia nada.
 
 ```sh
 sudo apt-get install -y qemu-system-x86 openssh-client
