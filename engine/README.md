@@ -216,6 +216,11 @@ Además, `config_error` (por qué no se aplicó la última recarga) y el IP pass
 `passthrough.requested` y `passthrough.server` en el cliente, y
 `passthrough` en el servidor.
 
+En el cliente, `download.window_resets` cuenta las veces que el servidor
+empezó de cero (se reinició con una secuencia por detrás de la ventana
+anti-replay) y el cliente rehízo su ventana para seguir recibiendo; cada vez
+lo registra como "server started over".
+
 ## Limitaciones conocidas
 
 - **Servidor con varias IPs públicas:** responde desde la IP que elija el

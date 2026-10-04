@@ -15,7 +15,7 @@ set -u
 LAB=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$LAB/.." && pwd)
 BIN=$LAB/bin
-RUN=$LAB/run
+RUN=$(realpath -ms "${RUN:-$LAB/run}") # configs, logs and control sockets (absolute; sun_path: at most 107 bytes)
 CLIENT_BIN=${CLIENT_BIN:-$BIN/engarde-client}
 SERVER_BIN=${SERVER_BIN:-$BIN/engarde-server}
 CENGARDE_BIN=${CENGARDE_BIN:-$BIN/cengarde} # e.g. a wrapper that runs an OpenWrt build
@@ -500,8 +500,44 @@ smoke() {
 	return "$fail"
 }
 
+# What CI runs (engine.yml): smoke, health, control and every bench/lab.d
+# scenario with LAB_CI=1. Each one runs in a subshell, since they set ENGINE
+# and the *_EXTRA settings, and from a clean lab; a failure does not stop the
+# others, and the last line sums up.
+ci() {
+	local t failed=""
+	trap teardown EXIT
+	trap 'teardown; exit 130' INT TERM
+	for t in smoke health control "${LAB_D_CI[@]}"; do
+		echo "## $t"
+		("$t") || failed="$failed $t"
+		teardown
+	done
+	if [ -n "$failed" ]; then
+		echo "ci: FAILED:$failed"
+		return 1
+	fi
+	echo "ci: ok (smoke health control ${LAB_D_CI[*]})"
+}
+
+# Scenarios in bench/lab.d/NAME.sh: each one defines the function NAME (run
+# it as "bench/lab.sh NAME"), uses what is above, and sets LAB_CI=1 to run in
+# "bench/lab.sh ci". A new scenario is a new file; this one does not change.
+LAB_D=() LAB_D_CI=()
+for f in "$LAB"/lab.d/*.sh; do
+	[ -e "$f" ] || continue
+	LAB_CI=0
+	# shellcheck source=/dev/null
+	. "$f"
+	f=$(basename "$f" .sh)
+	LAB_D+=("$f")
+	[ "$LAB_CI" = 1 ] && LAB_D_CI+=("$f")
+done
+unset f LAB_CI
+
 if [ $# -eq 0 ]; then
-	echo "usage: $0 build|setup|start|stop|teardown|up PPS [S]|down PPS [S]|shape LINK RATE|unshape LINK|suite|compare|smoke|health|control|latency|demo_stranger|demo_webpanic|demo_races"
+	f=$(IFS='|' && echo "${LAB_D[*]}")
+	echo "usage: $0 build|setup|start|stop|teardown|up PPS [S]|down PPS [S]|shape LINK RATE|unshape LINK|suite|compare|smoke|health|control|latency|ci|demo_stranger|demo_webpanic|demo_races${f:+|$f}"
 	exit 1
 fi
 "$@"

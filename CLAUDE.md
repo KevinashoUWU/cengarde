@@ -28,7 +28,7 @@ el router) probado en QEMU; falta hardware real.
 - Motor: `make -C engine test`, `make -C engine SANITIZE=1 test` y, en
   cruzado, `make CC=aarch64-linux-gnu-gcc`.
 - Laboratorio (root):
-  - `bench/lab.sh build`, `smoke`, `health`, `control` (los del CI), `latency`;
+  - `bench/lab.sh build`, `ci` (smoke, health, control y `lab.d/`), `latency`;
   - `ENGINE=go bench/lab.sh build` suma el Go del historial, para `compare`
     (Go frente a C) y `suite` (línea base Go).
 - OpenWrt de punta a punta: `openwrt/test/e2e.sh IMAGEN` (`openwrt/README.md`).

@@ -1,0 +1,16 @@
+/* The unit test suites, one line each: SUITE(name) runs test_name(). test.h
+ * declares them and test_main.c runs them in this order. No include guard:
+ * it is included once per meaning of SUITE.
+ * SPDX-License-Identifier: GPL-2.0-only */
+SUITE(siphash)
+SUITE(proto)
+SUITE(replay)
+SUITE(arrival)
+SUITE(config)
+SUITE(util)
+SUITE(idmap)
+SUITE(health)
+SUITE(blake2s)
+SUITE(pair)
+SUITE(ctl)
+SUITE(epoch)
