@@ -1,168 +1,980 @@
 #!/bin/sh
-# NAT for the WireGuard tunnel behind cengarde on a VPS, and IP pass: TCP and
-# UDP PASSTHROUGH_PORTS arriving at the server's public address are forwarded
-# to the router at the other end of the tunnel, so the site gets the
-# server's public IP for inbound connections (the router hands them on, e.g.
-# with UPnP).
+# The firewall of a cengarde server (a VPS, or a Debian or Ubuntu box of
+# your own), declarative and idempotent. Every rule lives in four chains of
+# its own, CG_IN and CG_FWD (filter) and CG_PRE and CG_POST (nat), each
+# restored whole with iptables-restore --noflush, and one jump to each,
+# inserted first so that ufw's chains come after them:
+# - cengarde's UDP port open; WireGuard's ports (one per router, from
+#   WG_PORT_BASE) answer only on lo, where cengarde talks to them, in IPv4
+#   and, when the box has it, IPv6;
+# - nothing from the tunnels (cg-*) reaches 169.254.0.0/16, the provider's
+#   metadata service, whose user data hold the pairing secret;
+# - the routers reach the Internet through the server (MASQUERADE), and
+#   not each other, except for the ports the server forwards;
+# - forwarding: TCP and UDP sent to one of the server's own addresses are
+#   forwarded (DNAT) to a router's tunnel address, from the Internet and
+#   from the routers' own sites alike (hairpin). With protocol 3 that is IP
+#   pass, the whole PASSTHROUGH_PORTS range to the one router, as the
+#   router asks for it: the engine writes "on" or "off" to PASSTHROUGH_FILE
+#   (until it does, PASSTHROUGH below says). FORWARD_FILE, the engine's
+#   forward table of protocol 4, replaces it when set;
+# - never forwarded, nor taken by a router: the reserved set, printed by
+#   "cengarde-nat reserved": SSH, cengarde, WireGuard, every port below 1024
+#   but FORWARD_ALLOW_LOW, FORWARD_RESERVED and, with FORWARD_AUTO_RESERVE,
+#   whatever this box itself listens on or Docker publishes, but
+#   FORWARD_UNRESERVE.
+# No rule names an interface (PUB_IF is an optional override), so a default
+# route that comes late or moves needs nothing.
 #
-#   cengarde-nat up [WG_IF]     wg-quick PostUp: NAT, and IP pass if wanted
-#   cengarde-nat down [WG_IF]   wg-quick PostDown: undo all of it
-#   cengarde-nat sync [WG_IF]   IP pass on or off as wanted now; the
-#                               cengarde-passthrough.path unit runs it
+#   cengarde-nat apply          remove the rules of cengarde 0.4, then sync:
+#                               at boot (cengarde-nat.service), at install
+#                               and from cengarde-vps-setup
+#   cengarde-nat sync           the rules as wanted now, with the live flows
+#                               of a port that changes hands moved to its
+#                               new target (conntrack); nothing while down
+#   cengarde-nat check          the rules put back if something removed them,
+#                               foreign firewalls, the reserved set followed
+#                               (cengarde-nat-check.timer)
+#   cengarde-nat down           every rule and chain removed
+#   cengarde-nat status         what is applied, and why
+#   cengarde-nat rules 4|6      the iptables-restore input (changes nothing)
+#   cengarde-nat jumps 4|6      the jumps into the chains (changes nothing)
+#   cengarde-nat reserved [-v]  the reserved set (-v: with the reasons)
+#   cengarde-nat purge-legacy   the rules of cengarde 0.4 removed
+# "up IFACE" and "down IFACE", the wg-quick hooks of cengarde 0.4, still
+# work for one release: apply, and purge-legacy.
 #
-# IP pass is wanted as the router asks for it through cengarde (the server
-# writes the wish to PASSTHROUGH_FILE), else as it last asked (kept in
-# STATE_FILE across reboots), else as PASSTHROUGH says.
-# Always: WireGuard (WG_PORT) only answers on loopback, where cengarde talks
-# to it, in IPv4 and, when the VPS has it, IPv6; and nothing from the tunnel
-# reaches 169.254.0.0/16, the provider's metadata service, whose user data
-# hold the pairing secret.
 # Settings: /etc/cengarde/nat.conf (shell variables, defaults below), or the
-# file named by CENGARDE_NAT_CONF.
+# file named by CENGARDE_NAT_CONF; it must be owned by root. CENGARDE_ROOT
+# goes in front of every path (tests). Admin commands take
+# /run/lock/cengarde-admin.lock, shared with cengarde-vps-setup.
 #
 # SPDX-License-Identifier: GPL-2.0-only
 set -u
 
-WG_IF=${2:-wg0}
-CLIENT_IP=10.79.0.2
-TUNNEL_NET=10.79.0.0/30
+PATH=$PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+R=${CENGARDE_ROOT:-}
+ME=cengarde-nat
+
 CENGARDE_PORT=65500
-WG_PORT=65501
-PASSTHROUGH=no # until the router says
+WG_PORT_BASE=   # router k's WireGuard: WG_PORT_BASE + k, k = 0..31
+WG_PORT=        # cengarde 0.4's name for it, read as the base
+PASSTHROUGH=no  # protocol 3: IP pass until the router asks (yes or no)
 PASSTHROUGH_PORTS=1024:65000
-PASSTHROUGH_FILE=/run/cengarde/passthrough
-STATE_FILE=/var/lib/cengarde-nat/passthrough
-SSH_PORT=22 # never forwarded, nor are CENGARDE_PORT and WG_PORT
-PUB_IF=
-CONF=${CENGARDE_NAT_CONF:-/etc/cengarde/nat.conf}
-# shellcheck source=/dev/null
-[ -r "$CONF" ] && . "$CONF"
-[ -n "$PUB_IF" ] || PUB_IF=$(ip -4 route show default |
-	awk '{ for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit } }')
+SSH_PORT=22
+FORWARD_ALLOW_LOW=    # ports below 1024 a router may have: "tcp:80 tcp:443"
+FORWARD_RESERVED=     # more ports never forwarded: "udp:5000-5010"
+FORWARD_AUTO_RESERVE=yes
+FORWARD_UNRESERVE=    # forwarded even though something listens there
+# shellcheck disable=SC2034 # for cengarde-vps-setup and protocol 4
+FORWARD_MAX_PORTS=1024
+FORWARD_SKIP_SRC=     # sources never forwarded: "192.168.1.0/24"
+PUB_IF=               # optional: the only interface forwarded and masqueraded
+# shellcheck disable=SC2034 # for cengarde-vps-setup
+ROUTER_NAME=router
+CLIENT_IP=
+TUNNEL_NET=
+# Where things are; tests change them.
+ENGINE_USER=cengarde
+PASSTHROUGH_FILE=$R/var/lib/cengarde/passthrough
+FORWARD_FILE=
+CLIENTS=$R/etc/cengarde/clients
+ENGINE_CONF=$R/etc/cengarde/cengarde.conf
+STATE=$R/run/cengarde-nat
+LOCK=$R/run/lock/cengarde-admin.lock
+NFT_DROPIN=$R/etc/systemd/system/nftables.service.d/cengarde.conf
+CONF=${CENGARDE_NAT_CONF:-$R/etc/cengarde/nat.conf}
+CONNTRACK=${CENGARDE_CONNTRACK:-conntrack}
+
+SERVER_ADDR=10.79.0.1
+TUNNEL_RANGE=10.79.0.0/16
+
+say() { echo "$ME: $*"; }
+warn() { echo "$ME: $*" >&2; }
+die() {
+	warn "$*"
+	exit 1
+}
+
+# safe FILE|DIR: owned by root, writable by nobody else, not a symlink.
+safe() {
+	local m
+	[ -e "$1" ] && [ ! -L "$1" ] || return 1
+	m=$(stat -c '%u %a' -- "$1" 2>/dev/null) || return 1
+	[ "${m%% *}" = 0 ] && [ $((0${m#* } & 022)) -eq 0 ]
+}
+is_port() {
+	case $1 in '' | *[!0-9]*) return 1 ;; esac
+	[ ${#1} -le 5 ] && [ "$1" -ge 1 ] && [ "$1" -le 65535 ]
+}
+is_name() {
+	case $1 in '' | default | -* | *[!a-z0-9-]*) return 1 ;; esac
+	[ ${#1} -le 12 ]
+}
+# is_tunnel ADDR: a router's tunnel address, 10.79.0.2 to 10.79.255.254.
+is_tunnel() {
+	local IFS=. x
+	# shellcheck disable=SC2086 # split on the dots
+	set -- $1
+	[ $# -eq 4 ] && [ "$1" = 10 ] && [ "$2" = 79 ] || return 1
+	for x in "$3" "$4"; do
+		case $x in '' | *[!0-9]*) return 1 ;; esac
+		[ ${#x} -le 3 ] && [ "$x" -le 255 ] || return 1
+	done
+	[ $(($3 * 256 + $4)) -ge 2 ] && [ $(($3 * 256 + $4)) -le 65534 ]
+}
+is_cidr() {
+	echo "$1" | awk -F'[./]' 'NF < 4 || NF > 5 { exit 1 }
+		{ for (i = 1; i <= NF; i++) if ($i !~ /^[0-9]+$/ || length($i) > 3 || $i > (i == 5 ? 32 : 255)) exit 1 }'
+}
+
+if [ -e "$CONF" ]; then
+	safe "$CONF" || die "$CONF must be a file owned by root and writable by nobody else"
+	# shellcheck source=/dev/null
+	. "$CONF"
+fi
+: "${WG_PORT_BASE:=${WG_PORT:-65501}}"
+for v in CENGARDE_PORT SSH_PORT WG_PORT_BASE; do
+	eval "is_port \"\${$v}\"" || die "$v in $CONF: not a port"
+done
+WG_PORT_LAST=$((WG_PORT_BASE + 31))
+[ "$WG_PORT_LAST" -le 65535 ] || die "WG_PORT_BASE in $CONF: the 32 WireGuard ports from it go past 65535"
+PASS_LO=${PASSTHROUGH_PORTS%%:*} PASS_HI=${PASSTHROUGH_PORTS#*:}
+if ! is_port "$PASS_LO" || ! is_port "$PASS_HI" || [ "$PASS_LO" -gt "$PASS_HI" ]; then
+	die "PASSTHROUGH_PORTS in $CONF: expected FIRST:LAST"
+fi
+case $PUB_IF in *[!A-Za-z0-9._@+-]*) die "PUB_IF in $CONF: not an interface name" ;; esac
+[ ${#PUB_IF} -le 15 ] || die "PUB_IF in $CONF: not an interface name"
+SKIP=
+for c in $FORWARD_SKIP_SRC; do
+	if is_cidr "$c"; then SKIP="$SKIP $c"; else warn "FORWARD_SKIP_SRC: $c is not an IPv4 address or CIDR; ignored"; fi
+done
+
+WORK=
+# shellcheck disable=SC2317 # run by the trap
+cleanup() { [ -z "$WORK" ] || rm -rf "$WORK"; }
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/cengarde-nat.XXXXXX") || die "cannot make a temporary directory"
+
+notices() {
+	[ -z "$CLIENT_IP$TUNNEL_NET" ] ||
+		warn "CLIENT_IP and TUNNEL_NET in $CONF are ignored now: each router's address is in $CLIENTS"
+}
+
+# ---- the admin lock ----
+
+# lock [try]: the lock shared with cengarde-vps-setup, unless the caller
+# holds it (CENGARDE_ADMIN_LOCKED=1). With "try", 1 when it is busy.
+lock() {
+	[ "${CENGARDE_ADMIN_LOCKED:-}" = 1 ] && return 0
+	mkdir -p "${LOCK%/*}" 2>/dev/null
+	exec 9>"$LOCK" || die "cannot open $LOCK"
+	if [ "${1:-}" = try ]; then
+		flock -n 9 || return 1
+	else
+		flock 9 || die "cannot take $LOCK"
+	fi
+	CENGARDE_ADMIN_LOCKED=1
+	export CENGARDE_ADMIN_LOCKED
+}
+
+firewalld_active() {
+	command -v systemctl >/dev/null && systemctl is-active -q firewalld 2>/dev/null
+}
+FIREWALLD="firewalld is active and not supported yet: use ufw or nftables, or stop firewalld"
+
+have_v6() {
+	[ -e /proc/net/if_inet6 ] && ip6tables -w -n -L INPUT >/dev/null 2>&1
+}
+
+# ---- the reserved set ----
+
+# listeners: "auto PROTO PORT PORT WHY" for every TCP listener and every
+# unconnected UDP socket outside the ephemeral range, on any address but
+# loopback.
+listeners() {
+	local eph
+	eph=$(cat "$R/proc/sys/net/ipv4/ip_local_port_range" 2>/dev/null) || eph="32768 60999"
+	{
+		ss -Hlntp 2>/dev/null | sed 's/^/tcp /'
+		ss -Hlnup 2>/dev/null | sed 's/^/udp /'
+	} | awk -v eph="$eph" '
+	BEGIN { split(eph, e, " "); elo = e[1] + 0; ehi = e[2] + 0 }
+	{
+		n = split($5, a, ":"); port = a[n]
+		if (port !~ /^[0-9]+$/ || port + 0 < 1 || port + 0 > 65535) next
+		addr = substr($5, 1, length($5) - length(port) - 1)
+		sub(/%.*/, "", addr); gsub(/[][]/, "", addr)
+		if (addr ~ /^127\./ || addr == "::1" || addr ~ /^::ffff:127\./) next
+		if ($1 == "udp" && port + 0 >= elo && port + 0 <= ehi) next
+		why = "listener"
+		if (match($0, /users:\(\("[^"]*"/)) {
+			w = substr($0, RSTART + 9, RLENGTH - 10)
+			gsub(/[^A-Za-z0-9._-]/, "_", w)
+			why = "listener:" w
+		}
+		print "auto", $1, port, port, why
+	}'
+}
+
+# docker_ports: "auto PROTO FIRST LAST docker" for each port Docker
+# publishes (its DNAT rules; docker-proxy listeners are seen by ss).
+docker_ports() {
+	iptables -w -t nat -S DOCKER 2>/dev/null | awk '
+	/ -j DNAT / {
+		p = ""; d = ""
+		for (i = 1; i < NF; i++) {
+			if ($i == "-p") p = $(i + 1)
+			if ($i == "--dport") d = $(i + 1)
+		}
+		if ((p == "tcp" || p == "udp") && d ~ /^[0-9]+(:[0-9]+)?$/) {
+			n = split(d, a, ":")
+			print "auto", p, a[1], a[n], "docker"
+		}
+	}'
+}
+
+# reserved_runs plain|verbose: the reserved set, merged, as "PROTO FIRST
+# LAST" (verbose: runs of one reason, "PROTO FIRST LAST WHY").
+reserved_runs() {
+	{
+		if [ "$FORWARD_AUTO_RESERVE" = yes ]; then
+			listeners
+			docker_ports
+		fi
+	} | awk -v mode="$1" -v me="$ME" \
+		-v cg="$CENGARDE_PORT" -v ssh="$SSH_PORT" -v wlo="$WG_PORT_BASE" -v whi="$WG_PORT_LAST" \
+		-v allow="$FORWARD_ALLOW_LOW" -v res="$FORWARD_RESERVED" -v unres="$FORWARD_UNRESERVE" '
+	function port(s) { return s ~ /^[0-9]+$/ && length(s) <= 5 && s + 0 >= 1 && s + 0 <= 65535 }
+	# tokens(VAR, LIST, ARRAY): marks ARRAY[proto, port] for "proto:first[-last]".
+	function tokens(var, list, arr,   n, t, i, a, b, lo, hi, p) {
+		n = split(list, t, " ")
+		for (i = 1; i <= n; i++) {
+			if (split(t[i], a, ":") != 2 || (a[1] != "tcp" && a[1] != "udp") ||
+			    split(a[2], b, "-") > 2 || !port(b[1]) || (b[2] != "" && !port(b[2]))) {
+				printf "%s: %s: %s is not tcp|udp:PORT[-PORT]; ignored\n", me, var, t[i] > "/dev/stderr"
+				continue
+			}
+			lo = b[1] + 0; hi = (b[2] == "" ? lo : b[2] + 0)
+			if (lo > hi) { p = lo; lo = hi; hi = p }
+			if (var == "FORWARD_ALLOW_LOW" && hi > 1023) {
+				printf "%s: %s: %s: only ports below 1024; the rest ignored\n", me, var, t[i] > "/dev/stderr"
+				if (lo > 1023) continue
+				hi = 1023
+			}
+			for (p = lo; p <= hi; p++) arr[a[1], p] = 1
+		}
+	}
+	BEGIN {
+		tokens("FORWARD_ALLOW_LOW", allow, al)
+		tokens("FORWARD_RESERVED", res, fr)
+		tokens("FORWARD_UNRESERVE", unres, un)
+	}
+	$1 == "auto" { for (p = $3 + 0; p <= $4 + 0; p++) if (!(($2, p) in au)) au[$2, p] = $5 }
+	END {
+		for (pi = 1; pi <= 2; pi++) {
+			proto = (pi == 1 ? "tcp" : "udp")
+			cur = ""; start = 0
+			for (p = 1; p <= 65536; p++) {
+				why = ""
+				if (p <= 65535) {
+					if (proto == "tcp" && p == ssh) why = "ssh"
+					else if (proto == "udp" && p == cg) why = "cengarde"
+					else if (proto == "udp" && p >= wlo && p <= whi) why = "wireguard"
+					else if (p < 1024 && !((proto, p) in al)) why = "below-1024"
+					else if ((proto, p) in fr) why = "FORWARD_RESERVED"
+					else if ((proto, p) in au && !((proto, p) in un)) why = au[proto, p]
+				}
+				key = (mode == "verbose" ? why : (why != ""))
+				if (why != "" && cur == key && start) continue
+				if (start) {
+					last = p - 1
+					if (mode == "verbose") print proto, start, last, cur
+					else print proto, start, last
+				}
+				start = 0; cur = ""
+				if (why != "") { start = p; cur = key }
+			}
+		}
+	}'
+}
+
+# reserved_tokens: the reserved set as "proto:first[-last]", one per line.
+reserved_tokens() {
+	reserved_runs plain | awk '{ print $1 ":" $2 ($3 != $2 ? "-" $3 : "") }'
+}
+
+# ---- the routers and what the engine asks for ----
+
+# clients: "NAME ADDR FORWARD SLOT" for every router in CLIENTS whose file
+# is safe; the others are left out, with the reason.
+clients() {
+	local f n a fw s
+	[ -d "$CLIENTS" ] || return 0
+	if ! safe "$CLIENTS"; then
+		warn "$CLIENTS must be a directory owned by root and writable by nobody else: no router served"
+		return 0
+	fi
+	for f in "$CLIENTS"/*; do
+		[ -e "$f" ] || [ -L "$f" ] || continue
+		n=${f##*/}
+		if ! is_name "$n"; then
+			warn "$f: not a router name; ignored"
+			continue
+		fi
+		if ! safe "$f" || [ ! -f "$f" ]; then
+			warn "$f must be a file owned by root and writable by nobody else: router $n ignored"
+			continue
+		fi
+		a=$(sed -n 's/^TUNNEL_ADDR=//p' "$f" | tail -n 1)
+		fw=$(sed -n 's/^FORWARD=//p' "$f" | tail -n 1)
+		s=$(sed -n 's/^SLOT=//p' "$f" | tail -n 1)
+		if ! is_tunnel "$a"; then
+			warn "$f: no valid TUNNEL_ADDR: router $n ignored"
+			continue
+		fi
+		[ "$fw" = no ] || fw=yes
+		case $s in '' | *[!0-9]*) s=99 ;; esac
+		echo "$n $a $fw $s"
+	done
+}
+
+# read_engine FILE: what the engine wrote to FILE, in WORK/engine. 2 when
+# there is no FILE; 1 when it is refused: a symlink, not a regular file,
+# not owned by ENGINE_USER, or over 64 KiB. Opened once and checked through
+# the descriptor, so what is read is what was checked; never sourced, and
+# never echoed.
+read_engine() {
+	local uid meta
+	if [ -L "$1" ]; then
+		warn "$1 is a symlink: refused"
+		return 1
+	fi
+	[ -e "$1" ] || return 2
+	uid=$(id -u "$ENGINE_USER" 2>/dev/null) || {
+		warn "$1: there is no user $ENGINE_USER to own it: refused"
+		return 1
+	}
+	# shellcheck disable=SC2016 # expanded by the inner sh
+	if ! timeout 5 sh -c 'exec 3<"$1" && stat -L -c "%u %s %F" /proc/self/fd/3 && head -c 65537 <&3' \
+		sh "$1" >"$WORK/engine.raw" 2>/dev/null; then
+		warn "$1 cannot be read: refused"
+		return 1
+	fi
+	meta=$(head -n 1 "$WORK/engine.raw")
+	case $meta in
+	"$uid "*" regular file" | "$uid "*" regular empty file") ;;
+	"$uid "*)
+		warn "$1 is not a regular file: refused"
+		return 1
+		;;
+	*)
+		warn "$1 is not owned by $ENGINE_USER: refused"
+		return 1
+		;;
+	esac
+	meta=${meta#* }
+	if [ "${meta%% *}" -gt 65536 ]; then
+		warn "$1 is larger than 64 KiB: refused"
+		return 1
+	fi
+	tail -n +2 "$WORK/engine.raw" >"$WORK/engine"
+}
+
+# table: the forwarding wanted now, in the forward table's format, in
+# WORK/table; WANT and FROM say how it was decided, for the logs.
+table() {
+	local rc v r
+	: >"$WORK/table"
+	if [ -n "$FORWARD_FILE" ]; then
+		WANT=table FROM=$FORWARD_FILE
+		read_engine "$FORWARD_FILE"
+		rc=$?
+		case $rc in
+		0) cp "$WORK/engine" "$WORK/table" ;;
+		2) FROM="nothing yet (no $FORWARD_FILE)" ;;
+		*) FROM="nothing ($FORWARD_FILE refused)" ;;
+		esac
+		return 0
+	fi
+	read_engine "$PASSTHROUGH_FILE"
+	rc=$?
+	case $rc in
+	0)
+		v=$(awk 'NR == 1 { v = $0 } END { if (NR == 1 && (v == "on" || v == "off")) print v }' "$WORK/engine")
+		if [ -n "$v" ]; then
+			WANT=$v FROM=router
+		else
+			warn "$PASSTHROUGH_FILE: line 1 skipped: not on or off"
+			WANT=off FROM="$PASSTHROUGH_FILE refused"
+		fi
+		;;
+	2)
+		WANT=off FROM="$CONF, until the router asks"
+		[ "$PASSTHROUGH" != yes ] || WANT=on
+		;;
+	*) WANT=off FROM="$PASSTHROUGH_FILE refused" ;;
+	esac
+	[ "$WANT" = on ] || return 0
+	# Protocol 3 serves one router: the first one offered forwarding.
+	r=$(awk '$3 == "yes" { print $4, $1 }' "$WORK/clients" | sort -n | awk 'NR == 1 { print $2 }')
+	if [ -n "$r" ]; then
+		echo "pass $r" >"$WORK/table"
+	else
+		FROM="$FROM; no router to forward to"
+	fi
+}
+
+# plan: what to apply, in WORK/plan, one line each, in order:
+#   skip CIDR                          a source never forwarded
+#   ret PROTO FIRST LAST               reserved
+#   dnat PROTO FIRST LAST ADDR TO NAME forwarded to ADDR, FIRST to TO
+# Explicit rules come before the whole range, so they carve themselves out
+# of it. A bad line of the table is skipped and logged by its number and
+# reason, never its content.
+plan() {
+	clients >"$WORK/clients"
+	reserved_runs plain >"$WORK/reserved"
+	table
+	awk -v cf="$WORK/clients" -v rf="$WORK/reserved" -v tf="$WORK/table" -v skip="$SKIP" \
+		-v plo="$PASS_LO" -v phi="$PASS_HI" -v me="$ME" -v tname="${FORWARD_FILE:-IP pass}" '
+	function bad(n, why) { printf "%s: %s line %d skipped: %s\n", me, tname, n, why > "/dev/stderr" }
+	function port(s) { return s ~ /^[0-9]+$/ && length(s) <= 5 && s + 0 >= 1 && s + 0 <= 65535 }
+	function reserved(p, lo, hi,   i) {
+		for (i = 1; i <= nr; i++) if (rp[i] == p && rlo[i] <= hi && rhi[i] >= lo) return 1
+		return 0
+	}
+	function taken(p, lo, hi,   i) {
+		for (i = 1; i <= nd; i++) if (dp[i] == p && dlo[i] <= hi && dhi[i] >= lo) return 1
+		return 0
+	}
+	BEGIN {
+		while ((getline l < cf) > 0) { split(l, a, " "); addr[a[1]] = a[2]; offered[a[1]] = a[3] }
+		while ((getline l < rf) > 0) { split(l, a, " "); nr++; rp[nr] = a[1]; rlo[nr] = a[2] + 0; rhi[nr] = a[3] + 0 }
+		n = split(skip, s, " ")
+		for (i = 1; i <= n; i++) print "skip", s[i]
+		for (i = 1; i <= nr; i++) print "ret", rp[i], rlo[i], rhi[i]
+		ln = 0
+		while ((getline l < tf) > 0) {
+			ln++
+			nf = split(l, f, " ")
+			if (nf == 0) continue
+			if (f[1] ~ /^#/) {
+				if (ln == 1 && match(l, /^# cengarde forward table [0-9]+/) && substr(l, 26, RLENGTH - 25) != "1") {
+					printf "%s: %s: written by another version of the engine (table %s): refused\n",
+						me, tname, substr(l, 26, RLENGTH - 25) > "/dev/stderr"
+					nd = 0; holder = ""
+					break
+				}
+				continue
+			}
+			if (f[1] == "pass") {
+				if (nf != 2) { bad(ln, "expected: pass NAME"); continue }
+				if (!(f[2] in addr)) { bad(ln, "no such router"); continue }
+				if (offered[f[2]] != "yes") { bad(ln, "forwarding is off for that router"); continue }
+				if (holder != "") { bad(ln, "a second holder of the whole range"); continue }
+				holder = f[2]
+				continue
+			}
+			if (f[1] != "rule") { bad(ln, "unknown line"); continue }
+			if (nf != 6) { bad(ln, "expected: rule NAME tcp|udp FIRST LAST TO"); continue }
+			if (!(f[2] in addr)) { bad(ln, "no such router"); continue }
+			if (offered[f[2]] != "yes") { bad(ln, "forwarding is off for that router"); continue }
+			if (f[3] != "tcp" && f[3] != "udp") { bad(ln, "protocol not tcp or udp"); continue }
+			if (!port(f[4]) || !port(f[5]) || !port(f[6])) { bad(ln, "a port is not 1 to 65535"); continue }
+			lo = f[4] + 0; hi = f[5] + 0; to = f[6] + 0
+			if (lo > hi) { bad(ln, "first port after the last"); continue }
+			if (to + hi - lo > 65535) { bad(ln, "the target range goes past 65535"); continue }
+			if (reserved(f[3], lo, hi)) { bad(ln, "a reserved port"); continue }
+			if (taken(f[3], lo, hi)) { bad(ln, "overlaps an earlier rule"); continue }
+			nd++; dp[nd] = f[3]; dlo[nd] = lo; dhi[nd] = hi; dad[nd] = addr[f[2]]; dto[nd] = to; dn[nd] = f[2]
+		}
+		for (i = 1; i <= nd; i++) print "dnat", dp[i], dlo[i], dhi[i], dad[i], dto[i], dn[i]
+		if (holder != "") {
+			print "dnat", "tcp", plo, phi, addr[holder], plo, holder
+			print "dnat", "udp", plo, phi, addr[holder], plo, holder
+		}
+	}' >"$WORK/plan"
+}
+
+# ---- the rules ----
+
+range() { if [ "$1" = "$2" ]; then echo "$1"; else echo "$1:$2"; fi; }
+# target FIRST LAST ADDR TO: a DNAT target. A port or range that keeps its
+# numbers goes to ADDR; a single port to ADDR:TO; a range to another one
+# keeps the offsets, ADDR:TO-END/FIRST.
+target() {
+	if [ "$4" = "$1" ]; then
+		echo "$3"
+	elif [ "$1" = "$2" ]; then
+		echo "$3:$4"
+	else
+		echo "$3:$4-$(($4 + $2 - $1))/$1"
+	fi
+}
+
+render4() {
+	cat <<-EOF
+		*filter
+		:CG_IN - [0:0]
+		:CG_FWD - [0:0]
+		-A CG_IN -p udp --dport $CENGARDE_PORT -j ACCEPT
+		-A CG_IN ! -i lo -p udp --dport $WG_PORT_BASE:$WG_PORT_LAST -j DROP
+		-A CG_FWD -i cg-+ -d 169.254.0.0/16 -j REJECT --reject-with icmp-net-prohibited
+		-A CG_FWD -o cg-+ -m conntrack --ctstate DNAT -j ACCEPT
+		-A CG_FWD -i cg-+ -o cg-+ -j DROP
+		-A CG_FWD -i cg-+ -j ACCEPT
+		-A CG_FWD -o cg-+ -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+		COMMIT
+		*nat
+		:CG_PRE - [0:0]
+		:CG_POST - [0:0]
+		-A CG_PRE -d $SERVER_ADDR -j RETURN
+	EOF
+	while read -r k p lo hi a to _; do
+		case $k in
+		skip) echo "-A CG_PRE -s $p -j RETURN" ;;
+		ret) echo "-A CG_PRE -p $p --dport $(range "$lo" "$hi") -j RETURN" ;;
+		dnat) echo "-A CG_PRE -p $p --dport $(range "$lo" "$hi") -j DNAT --to-destination $(target "$lo" "$hi" "$a" "$to")" ;;
+		esac
+	done <"$1"
+	echo "-A CG_POST -s $TUNNEL_RANGE -o cg-+ -m conntrack --ctstate DNAT -j SNAT --to-source $SERVER_ADDR"
+	if [ -n "$PUB_IF" ]; then
+		echo "-A CG_POST -s $TUNNEL_RANGE -o $PUB_IF -j MASQUERADE"
+	else
+		echo "-A CG_POST -s $TUNNEL_RANGE ! -o cg-+ -j MASQUERADE"
+	fi
+	echo COMMIT
+}
+
+render6() {
+	cat <<-EOF
+		*filter
+		:CG_IN - [0:0]
+		-A CG_IN -p udp --dport $CENGARDE_PORT -j ACCEPT
+		-A CG_IN ! -i lo -p udp --dport $WG_PORT_BASE:$WG_PORT_LAST -j DROP
+		COMMIT
+	EOF
+}
+
+# jumps4, jumps6: "TABLE CHAIN SPEC", in iptables -S's own order of words.
+jumps4() {
+	echo "filter INPUT -j CG_IN"
+	echo "filter FORWARD -j CG_FWD"
+	if [ -n "$PUB_IF" ]; then
+		echo "nat PREROUTING -i $PUB_IF -m addrtype --dst-type LOCAL -j CG_PRE"
+		echo "nat PREROUTING -i cg-+ -m addrtype --dst-type LOCAL -j CG_PRE"
+	else
+		echo "nat PREROUTING -m addrtype --dst-type LOCAL -j CG_PRE"
+	fi
+	echo "nat POSTROUTING -j CG_POST"
+}
+jumps6() { echo "filter INPUT -j CG_IN"; }
+
+BUILTIN="filter:INPUT filter:FORWARD nat:PREROUTING nat:POSTROUTING"
+
+# set_jumps iptables|ip6tables JUMPS: each jump of JUMPS once, inserted
+# first when missing; every other jump into a CG_ chain removed.
+set_jumps() {
+	local ipt="$1" t c spec line
+	set -f
+	while read -r t c spec; do
+		# shellcheck disable=SC2086 # the rule's own words
+		"$ipt" -w -t "$t" -C "$c" $spec 2>/dev/null || "$ipt" -w -t "$t" -I "$c" 1 $spec || FAIL=1
+	done <"$2"
+	for tc in $BUILTIN; do
+		t=${tc%:*} c=${tc#*:}
+		"$ipt" -w -t "$t" -S "$c" 2>/dev/null | grep -E -- ' -j CG_(IN|FWD|PRE|POST)$' |
+			awk -v t="$t" -v c="$c" -v jf="$2" '
+			BEGIN { while ((getline l < jf) > 0) { split(l, a, " "); if (a[1] == t && a[2] == c) want["-A " a[2] " " substr(l, length(a[1] a[2]) + 3)] = 1 } }
+			{ if (($0 in want) && !seen[$0]++) next; print }' |
+			while read -r line; do
+				# shellcheck disable=SC2086 # the rule's own words
+				"$ipt" -w -t "$t" -D ${line#-A } 2>/dev/null
+			done
+	done
+	set +f
+}
+
+# unjump IPT: every jump into a CG_ chain removed, and the chains.
+unjump() {
+	local ipt="$1" t c line
+	set -f
+	for tc in $BUILTIN; do
+		t=${tc%:*} c=${tc#*:}
+		"$ipt" -w -t "$t" -S "$c" 2>/dev/null | grep -E -- ' -j CG_(IN|FWD|PRE|POST)$' |
+			while read -r line; do
+				# shellcheck disable=SC2086 # the rule's own words
+				"$ipt" -w -t "$t" -D ${line#-A } 2>/dev/null
+			done
+	done
+	set +f
+	for tc in filter:CG_IN filter:CG_FWD nat:CG_PRE nat:CG_POST; do
+		t=${tc%:*} c=${tc#*:}
+		"$ipt" -w -t "$t" -F "$c" 2>/dev/null && "$ipt" -w -t "$t" -X "$c" 2>/dev/null
+	done
+}
+
+# snapshot: the chains and the jumps as they are now, to find out later
+# whether something changed them.
+snapshot() {
+	local t c
+	for tc in filter:CG_IN filter:CG_FWD nat:CG_PRE nat:CG_POST; do
+		t=${tc%:*} c=${tc#*:}
+		iptables -w -t "$t" -S "$c" 2>&1
+	done
+	for tc in $BUILTIN; do
+		t=${tc%:*} c=${tc#*:}
+		iptables -w -t "$t" -S "$c" 2>/dev/null | grep -E -- ' -j CG_(IN|FWD|PRE|POST)$'
+	done
+	if have_v6; then
+		ip6tables -w -S CG_IN 2>&1
+		ip6tables -w -S INPUT 2>/dev/null | grep -- ' -j CG_IN$'
+	fi
+}
+
+# ---- live flows ----
+
+# move_flows OLD_PLAN NEW_PLAN: deletes the conntrack entries of the flows
+# whose target (router and port) changed or went away, so that they reach
+# the new target: conntrack keeps a flow's DNAT binding, and a UDP flow
+# kept alive (a WireGuard or VoIP client, a game) would reach the old one
+# for ever. Up to 256 ports, per port; a wider range, every inbound flow of
+# that protocol to the old router (the flows it opens itself have a remote
+# host as reply source, and are left alone).
+move_flows() {
+	local k p a b out n moved=0
+	[ -s "$1" ] || return 0
+	awk -v oldf="$1" -v newf="$2" '
+	function load(file, P,   l, a, n) {
+		n = 0
+		while ((getline l < file) > 0) {
+			split(l, a, " ")
+			if (a[1] != "ret" && a[1] != "dnat") continue
+			n++; P[n, "k"] = a[1]; P[n, "p"] = a[2]; P[n, "lo"] = a[3] + 0; P[n, "hi"] = a[4] + 0
+			P[n, "t"] = (a[1] == "dnat" ? a[5] " " (a[6] - a[3]) : "")
+		}
+		close(file)
+		return n
+	}
+	function at(P, n, proto, port,   i) {
+		for (i = 1; i <= n; i++)
+			if (P[i, "p"] == proto && P[i, "lo"] <= port && P[i, "hi"] >= port) return P[i, "t"]
+		return ""
+	}
+	BEGIN {
+		no = load(oldf, O); nn = load(newf, N)
+		for (pi = 1; pi <= 2; pi++) {
+			proto = (pi == 1 ? "tcp" : "udp")
+			split("", bp)
+			bp[1] = 1; bp[65536] = 1
+			for (i = 1; i <= no; i++) if (O[i, "p"] == proto) { bp[O[i, "lo"]] = 1; bp[O[i, "hi"] + 1] = 1 }
+			for (i = 1; i <= nn; i++) if (N[i, "p"] == proto) { bp[N[i, "lo"]] = 1; bp[N[i, "hi"] + 1] = 1 }
+			a = 1
+			for (p = 2; p <= 65536; p++) {
+				if (!(p in bp)) continue
+				ot = at(O, no, proto, a)
+				if (ot != "" && ot != at(N, nn, proto, a)) {
+					split(ot, t, " ")
+					if (p - a > 256) all[proto, t[1]] = 1
+					else for (q = a; q < p; q++) one[++nx] = proto " " q " " t[1]
+				}
+				a = p
+			}
+		}
+		for (k in all) { split(k, t, SUBSEP); print "all", t[1], t[2] }
+		for (i = 1; i <= nx; i++) { split(one[i], t, " "); if (!((t[1], t[3]) in all)) print "port", one[i] }
+	}' >"$WORK/moves"
+	[ -s "$WORK/moves" ] || return 0
+	if ! command -v "$CONNTRACK" >/dev/null; then
+		warn "conntrack is not installed: live flows keep reaching their old target until they end (apt install conntrack)"
+		return 0
+	fi
+	while read -r k p a b; do
+		if [ "$k" = all ]; then
+			out=$("$CONNTRACK" -D -p "$p" -r "$a" 2>&1 >/dev/null)
+		else
+			out=$("$CONNTRACK" -D -p "$p" --orig-port-dst "$a" -r "$b" 2>&1 >/dev/null)
+		fi
+		n=$(echo "$out" | sed -n 's/.* \([0-9][0-9]*\) flow entr.* deleted.*/\1/p')
+		moved=$((moved + ${n:-0}))
+	done <"$WORK/moves"
+	[ "$moved" -eq 0 ] || say "moved $moved live flows to their new target"
+}
+
+# ---- the commands ----
+
+summary() {
+	local d
+	d=$(awk '$1 == "dnat" { n++ } END { print n + 0 }' "$WORK/plan")
+	if [ -n "$FORWARD_FILE" ]; then
+		say "applied: $d forwarding rules, from $FROM"
+	else
+		say "applied: IP pass $WANT ($FROM)$(awk '$1 == "dnat" { print ", to " $7 " (" $5 ")"; exit }' "$WORK/plan")"
+	fi
+}
+
+# sync_now: the rules as wanted now.
+sync_now() {
+	FAIL=0
+	plan
+	render4 "$WORK/plan" >"$WORK/rules4"
+	if ! iptables-restore -w --noflush <"$WORK/rules4"; then
+		warn "iptables-restore refused the rules; nothing changed"
+		return 1
+	fi
+	jumps4 >"$WORK/jumps4"
+	set_jumps iptables "$WORK/jumps4"
+	if have_v6; then
+		render6 >"$WORK/rules6"
+		jumps6 >"$WORK/jumps6"
+		if ip6tables-restore -w --noflush <"$WORK/rules6"; then
+			set_jumps ip6tables "$WORK/jumps6"
+		else
+			warn "ip6tables-restore refused the IPv6 rules"
+			FAIL=1
+		fi
+	fi
+	mkdir -p "$STATE" && chmod 0700 "$STATE" || FAIL=1
+	move_flows "$STATE/applied" "$WORK/plan"
+	cp "$WORK/plan" "$STATE/applied" &&
+		reserved_tokens >"$STATE/reserved" &&
+		snapshot >"$STATE/rules" &&
+		: >"$STATE/active" || FAIL=1
+	summary
+	return "$FAIL"
+}
+
+# purge_legacy: every rule cengarde 0.4's "cengarde-nat up" and IP pass
+# inserted, whichever interface they named, by their exact form.
+purge_legacy() {
+	local wg="${WG_PORT:-$WG_PORT_BASE}" pp="$PASS_LO:$PASS_HI"
+	legacy iptables filter INPUT \
+		"-A INPUT -i [^ ]+ -p udp -m udp --dport $CENGARDE_PORT -j ACCEPT" \
+		"-A INPUT (! )?-i [^ ]+ -p udp -m udp --dport $wg -j DROP"
+	legacy iptables filter FORWARD \
+		"-A FORWARD -i wg0 -j ACCEPT" \
+		"-A FORWARD -o wg0 -j ACCEPT" \
+		"-A FORWARD -d 169\.254\.0\.0/16 -i wg0 -j REJECT --reject-with icmp-net-prohibited"
+	legacy iptables nat POSTROUTING \
+		"-A POSTROUTING -s 10\.79\.0\.0/30 -o [^ ]+ -j MASQUERADE"
+	legacy iptables nat PREROUTING \
+		"-A PREROUTING -i [^ ]+ -p udp -m udp --dport ($CENGARDE_PORT|$wg) -j RETURN" \
+		"-A PREROUTING -i [^ ]+ -p tcp -m tcp --dport $SSH_PORT -j RETURN" \
+		"-A PREROUTING -i [^ ]+ -p (tcp|udp) -m (tcp|udp) --dport $pp -j DNAT --to-destination 10\.79\.0\.2"
+	legacy ip6tables filter INPUT \
+		"-A INPUT -p udp -m udp --dport $CENGARDE_PORT -j ACCEPT" \
+		"-A INPUT ! -i lo -p udp -m udp --dport $wg -j DROP"
+}
+# legacy IPT TABLE CHAIN PATTERN...: deletes the rules of CHAIN matching one
+# of the PATTERNs (whole lines of iptables -S).
+legacy() {
+	local ipt="$1" t="$2" c="$3" line
+	shift 3
+	command -v "$ipt" >/dev/null || return 0
+	for pat in "$@"; do
+		set -f
+		"$ipt" -w -t "$t" -S "$c" 2>/dev/null | grep -Ex -- "$pat" |
+			while read -r line; do
+				# shellcheck disable=SC2086 # the rule's own words
+				"$ipt" -w -t "$t" -D ${line#-A } 2>/dev/null
+			done
+		set +f
+	done
+}
+
+down_now() {
+	if [ -s "$STATE/applied" ]; then
+		echo "ret tcp 1 65535" >"$WORK/none"
+		echo "ret udp 1 65535" >>"$WORK/none"
+		move_flows "$STATE/applied" "$WORK/none"
+	fi
+	unjump iptables
+	command -v ip6tables >/dev/null && unjump ip6tables
+	purge_legacy
+	rm -f "$STATE/active" "$STATE/applied" "$STATE/reserved" "$STATE/rules"
+}
+
+# foreign: warnings about firewalls these rules cannot get past.
+foreign() {
+	local v l n
+	if firewalld_active; then
+		warn "$FIREWALLD"
+	fi
+	if command -v nft >/dev/null; then
+		nft list chains 2>/dev/null | awk '
+		$1 == "table" { fam = $2; tab = $3 }
+		$1 == "chain" { ch = $2 }
+		/hook (input|forward)/ && /policy drop/ {
+			hook = ($0 ~ /hook input/ ? "input" : "forward")
+			if ((fam == "ip" || fam == "ip6") && tab ~ /^(filter|nat|mangle|raw|security)$/ && ch ~ /^[A-Z]+$/) next
+			print fam, tab, ch, hook
+		}' | while read -r fam tab ch hook; do
+			v=$(nft list chain "$fam" "$tab" "$ch" 2>/dev/null)
+			case $hook in
+			input)
+				case $v in *"dport $CENGARDE_PORT"*) continue ;; esac
+				warn "nftables chain $fam $tab $ch drops what it does not accept on the input hook, and iptables cannot override it: add to it"
+				warn "  udp dport $CENGARDE_PORT accept"
+				;;
+			forward)
+				case $v in *'"cg-*"'*) continue ;; esac
+				warn "nftables chain $fam $tab $ch drops what it does not accept on the forward hook, and iptables cannot override it: add to it"
+				warn '  iifname "cg-*" accept'
+				warn '  oifname "cg-*" ct state established,related accept'
+				warn '  oifname "cg-*" ct status dnat accept'
+				;;
+			esac
+		done
+	fi
+	if command -v systemctl >/dev/null && systemctl is-enabled -q nftables 2>/dev/null && [ ! -e "$NFT_DROPIN" ]; then
+		warn "nftables.service is enabled but has no cengarde drop-in: its next start or reload removes these rules until the next check; run contrib/vps/install.sh again"
+	fi
+	if [ -s /proc/net/ip_tables_names ] && command -v iptables-legacy-save >/dev/null &&
+		command -v iptables-nft-save >/dev/null; then
+		l=$(iptables-legacy-save 2>/dev/null | grep -c '^-A')
+		n=$(iptables-nft-save 2>/dev/null | grep '^-A' | grep -vc 'CG_')
+		if [ "$l" -gt 0 ] && [ "$n" -gt 0 ]; then
+			warn "rules in both iptables backends, legacy and nft; these use $(iptables -V 2>/dev/null), and the other one's rules apply too"
+		fi
+	fi
+}
+
+cmd_check() {
+	local why=''
+	if ! lock try; then
+		say "busy (cengarde-vps-setup or another cengarde-nat is running); checking next time"
+		return 0
+	fi
+	if [ ! -e "$STATE/active" ]; then
+		say "down: nothing to check (cengarde-nat apply)"
+		return 0
+	fi
+	if firewalld_active; then
+		warn "$FIREWALLD"
+		return 1
+	fi
+	foreign
+	if [ "$(snapshot)" != "$(cat "$STATE/rules" 2>/dev/null)" ]; then
+		why="rules were missing or changed (a firewall reload?)"
+	fi
+	reserved_tokens >"$WORK/reserved.now"
+	if ! cmp -s "$WORK/reserved.now" "$STATE/reserved"; then
+		why="${why:+$why; }the reserved set changed"
+	fi
+	if [ -n "$why" ]; then
+		sync_now >/dev/null || return 1
+		say "$why: applied again"
+	fi
+	# What the engine's configuration says the reserved set is: kept in step
+	# by cengarde-vps-setup refresh.
+	if [ -r "$ENGINE_CONF" ] && command -v cengarde-vps-setup >/dev/null &&
+		grep -q '^# reserved: ' "$ENGINE_CONF" &&
+		[ "$(sed -n 's/^# reserved: //p' "$ENGINE_CONF")" != "$(tr '\n' ' ' <"$WORK/reserved.now" | sed 's/ $//')" ]; then
+		say "the engine's configuration has another reserved set: cengarde-vps-setup refresh"
+		cengarde-vps-setup refresh || return 1
+	fi
+	return 0
+}
+
+cmd_status() {
+	local d
+	if [ -e "$STATE/active" ]; then
+		if [ "$(snapshot)" = "$(cat "$STATE/rules" 2>/dev/null)" ]; then
+			say "applied"
+		else
+			say "applied, but the rules changed since (cengarde-nat sync puts them back)"
+		fi
+	else
+		say "down (cengarde-nat apply)"
+	fi
+	plan
+	if [ -n "$FORWARD_FILE" ]; then
+		say "wanted: from $FROM"
+	else
+		say "wanted: IP pass $WANT ($FROM)"
+	fi
+	d=$(awk '$1 == "dnat" { printf "  %s %s %s -> %s (%s)\n", $2, ($3 == $4 ? $3 : $3 "-" $4), $7, $5, $6 }' "$WORK/plan")
+	if [ -n "$d" ]; then
+		say "forwarded (protocol, ports, router, address, first target port):"
+		echo "$d"
+	else
+		say "nothing forwarded"
+	fi
+	say "reserved: $(reserved_tokens | tr '\n' ' ')"
+	command -v "$CONNTRACK" >/dev/null || say "conntrack is not installed: live flows do not move when a port changes hands"
+	foreign
+}
+
+usage() {
+	echo "usage: $ME apply|sync|check|down|status|purge-legacy|rules 4|6|jumps 4|6|reserved [-v]" >&2
+	exit 2
+}
 
 case "${1:-}" in
-up | down | sync) ;;
-*)
-	echo "usage: $0 up|down|sync [wireguard interface]" >&2
-	exit 2
+rules)
+	case "${2:-}" in
+	4)
+		plan
+		render4 "$WORK/plan"
+		;;
+	6) render6 ;;
+	*) usage ;;
+	esac
 	;;
-esac
-if [ -z "$PUB_IF" ]; then
-	echo "cengarde-nat: no default route; set PUB_IF in /etc/cengarde/nat.conf" >&2
-	exit 1
-fi
-
-fail=0
-# add and del run by name, as the first argument of base and pass, with
-# IPT: iptables, or ip6tables for the IPv6 rules.
-IPT=iptables
-# add TABLE -I|-A CHAIN RULE...: unless it is there already.
-# shellcheck disable=SC2317
-add() {
-	t=$1 op=$2
-	shift 2
-	"$IPT" -t "$t" -C "$@" 2>/dev/null || "$IPT" -t "$t" "$op" "$@" || fail=1
-}
-# del TABLE -I|-A CHAIN RULE...: every copy, quietly if there is none.
-# shellcheck disable=SC2317
-del() {
-	t=$1
-	shift 2
-	while "$IPT" -t "$t" -C "$@" 2>/dev/null; do
-		"$IPT" -t "$t" -D "$@" || break
-	done
-}
-
-base() { # add|del
-	# Inserted first, so they also work next to ufw's own chains.
-	"$1" filter -I INPUT -i "$PUB_IF" -p udp --dport "$CENGARDE_PORT" -j ACCEPT
-	# Only cengarde talks to WireGuard: not the Internet, nor the tunnel.
-	"$1" filter -I INPUT ! -i lo -p udp --dport "$WG_PORT" -j DROP
-	# A REJECT without the tunnel's ACCEPT (a down cut short, or an up that
-	# failed halfway) would end up below the ACCEPT inserted next: remove it
-	# first, so the two are inserted in order.
-	if [ "$1" = add ] && ! iptables -C FORWARD -i "$WG_IF" -j ACCEPT 2>/dev/null; then
-		del filter -I FORWARD -i "$WG_IF" -d 169.254.0.0/16 -j REJECT --reject-with icmp-net-prohibited
-	fi
-	"$1" filter -I FORWARD -i "$WG_IF" -j ACCEPT
-	# Inserted after the ACCEPT, so it ends up above it: the router and its
-	# LAN must not read the metadata service (the user data hold the secret).
-	"$1" filter -I FORWARD -i "$WG_IF" -d 169.254.0.0/16 -j REJECT --reject-with icmp-net-prohibited
-	"$1" filter -I FORWARD -o "$WG_IF" -j ACCEPT
-	"$1" nat -A POSTROUTING -s "$TUNNEL_NET" -o "$PUB_IF" -j MASQUERADE
-	# The 0.4 form of the DROP, left by an older cengarde-nat up.
-	del filter -I INPUT -i "$PUB_IF" -p udp --dport "$WG_PORT" -j DROP
-	base6 "$1"
-}
-
-# IPv6, if the VPS has it (the tunnel is IPv4 only): cengarde's port open
-# and WireGuard's closed, as WireGuard listens on IPv6 too. Removed whenever
-# ip6tables is there, quietly.
-base6() { # add|del
-	if [ "$1" = add ] && ! { [ -e /proc/net/if_inet6 ] && ip6tables -n -L INPUT >/dev/null 2>&1; }; then
-		return
-	fi
-	IPT=ip6tables
-	"$1" filter -I INPUT -p udp --dport "$CENGARDE_PORT" -j ACCEPT
-	"$1" filter -I INPUT ! -i lo -p udp --dport "$WG_PORT" -j DROP
-	IPT=iptables
-}
-
-pass() { # add|del
-	# Kept here even when inside PASSTHROUGH_PORTS: cengarde itself and SSH.
-	"$1" nat -A PREROUTING -i "$PUB_IF" -p udp --dport "$CENGARDE_PORT" -j RETURN
-	"$1" nat -A PREROUTING -i "$PUB_IF" -p udp --dport "$WG_PORT" -j RETURN
-	"$1" nat -A PREROUTING -i "$PUB_IF" -p tcp --dport "$SSH_PORT" -j RETURN
-	for proto in tcp udp; do
-		"$1" nat -A PREROUTING -i "$PUB_IF" -p "$proto" --dport "$PASSTHROUGH_PORTS" \
-			-j DNAT --to-destination "$CLIENT_IP"
-	done
-}
-
-# Sets WANT (on or off) and FROM (who decided).
-wanted() {
-	WANT=$(cat "$PASSTHROUGH_FILE" 2>/dev/null) FROM=router
-	case "$WANT" in on | off) return ;; esac
-	WANT=$(cat "$STATE_FILE" 2>/dev/null) FROM="router, before"
-	case "$WANT" in on | off) return ;; esac
-	FROM=$CONF
-	[ "$PASSTHROUGH" = yes ] && WANT=on || WANT=off
-}
-
-apply_pass() {
-	wanted
-	if [ "$WANT" = on ]; then
-		pass add
-	else
-		pass del
-	fi
-	# The router's word stands until it says otherwise, reboots included.
-	if [ "$FROM" = router ] && [ "$(cat "$STATE_FILE" 2>/dev/null)" != "$WANT" ]; then
-		mkdir -p "${STATE_FILE%/*}" && echo "$WANT" >"$STATE_FILE" || fail=1
-	fi
-	echo "cengarde-nat: IP pass $WANT ($FROM)"
-}
-
-case "$1" in
-up)
-	base add
-	apply_pass
+jumps)
+	case "${2:-}" in
+	4) jumps4 ;;
+	6) jumps6 ;;
+	*) usage ;;
+	esac
 	;;
-down)
-	pass del
-	base del
+reserved)
+	case "${2:-}" in
+	'') reserved_tokens ;;
+	-v) reserved_runs verbose | awk '{ printf "%s:%s %s\n", $1, ($2 == $3 ? $2 : $2 "-" $3), $4 }' ;;
+	*) usage ;;
+	esac
+	;;
+apply | up)
+	[ "$1" = apply ] || [ -z "${2:-}" ] ||
+		say "up $2: the wg-quick hook of cengarde 0.4; the rules no longer depend on the interface"
+	lock
+	notices
+	firewalld_active && die "$FIREWALLD"
+	purge_legacy
+	sync_now || exit 1
+	foreign
 	;;
 sync)
-	# Only while the tunnel is up; "up" applies it otherwise.
-	if iptables -t nat -C POSTROUTING -s "$TUNNEL_NET" -o "$PUB_IF" -j MASQUERADE 2>/dev/null; then
-		apply_pass
+	lock
+	if [ ! -e "$STATE/active" ]; then
+		say "down: nothing to sync (cengarde-nat apply brings the rules up)"
+		exit 0
+	fi
+	notices
+	firewalld_active && die "$FIREWALLD"
+	sync_now || exit 1
+	;;
+check) cmd_check || exit 1 ;;
+down)
+	lock
+	if [ -n "${2:-}" ]; then
+		# cengarde 0.4's PostDown of wg0, during an upgrade: only its rules.
+		purge_legacy
 	else
-		wanted
-		if [ "$FROM" = router ]; then
-			mkdir -p "${STATE_FILE%/*}" && echo "$WANT" >"$STATE_FILE" || fail=1
-		fi
-		echo "cengarde-nat: tunnel down; IP pass $WANT once it is up ($FROM)"
+		down_now
 	fi
 	;;
+purge-legacy)
+	lock
+	purge_legacy
+	;;
+status)
+	notices
+	cmd_status
+	;;
+*) usage ;;
 esac
-exit "$fail"
+exit 0

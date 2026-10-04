@@ -1,0 +1,24 @@
+# The firewall of a cengarde server: NAT for the routers' tunnels, the
+# forwarding they ask for, the metadata service and WireGuard's ports out
+# of reach (cengarde-nat). Applied at boot before the engine starts; the
+# rules name no interface, so a default route that comes late needs
+# nothing. Without RemainAfterExit, systemd would run ExecStop right after
+# ExecStart and remove the rules at once.
+[Unit]
+Description=cengarde: NAT and forwarding for the routers' tunnels
+Documentation=https://github.com/KevinashoUWU/cengarde/tree/master/contrib/vps
+After=network-online.target ufw.service nftables.service
+Wants=network-online.target
+Before=cengarde.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/cengarde-nat apply
+ExecReload=/usr/local/sbin/cengarde-nat sync
+ExecStop=/usr/local/sbin/cengarde-nat down
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
