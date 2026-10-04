@@ -135,7 +135,11 @@ static void on_addr(struct cg_nl *nl, struct nlmsghdr *nh)
 			nl->addrs_full = 1;
 			return;
 		}
+		/* New, even when the slot still holds the same one, removed
+		 * before (a modem that gets its address back). */
 		ifc->naddr++;
+		ifc->addr[i] = a;
+		nl->changed = 1;
 	}
 	if (memcmp(&ifc->addr[i], &a, sizeof(a))) {
 		ifc->addr[i] = a;
