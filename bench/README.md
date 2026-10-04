@@ -122,7 +122,7 @@ sudo bench/lab.sh teardown
 | `CLIENT_BIN` / `SERVER_BIN` | `bench/bin/engarde-*` | probar otros binarios de engarde |
 | `CLIENT_EXTRA` / `SERVER_EXTRA` | vacío | ajustes extra de cengarde, `clave = valor` separados por `;` (p. ej. `busy_poll_us = 50`) |
 | `CENGARDE_BIN` | `bench/bin/cengarde` | otro binario de cengarde, p. ej. un envoltorio que ejecuta la compilación de OpenWrt con su musl (historia 007) |
-| `RUN` | `bench/run` | configs, logs, JSON de estado y sockets de control. La ruta de un socket Unix no pasa de 107 bytes: si el repositorio está muy hondo, `control` falla con `socket path too long` y hay que usar un `RUN` más corto |
+| `RUN` | `bench/run` | configs, logs, JSON de estado y sockets de control. Un `RUN` relativo se toma desde el directorio actual y pasa a ruta absoluta, porque el motor solo acepta un `control_socket` absoluto. La ruta de un socket Unix no pasa de 107 bytes (contando la ruta absoluta): si el repositorio está muy hondo, `control` falla con `socket path too long` y hay que usar un `RUN` más corto, p. ej. bajo `/tmp` |
 
 Demos de los problemas del engarde Go descritos en el roadmap (necesitan
 `ENGINE=go bench/lab.sh build`):

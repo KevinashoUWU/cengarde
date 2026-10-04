@@ -15,7 +15,7 @@ set -u
 LAB=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$LAB/.." && pwd)
 BIN=$LAB/bin
-RUN=${RUN:-$LAB/run} # configs, logs and control sockets (sun_path: at most 107 bytes)
+RUN=$(realpath -ms "${RUN:-$LAB/run}") # configs, logs and control sockets (absolute; sun_path: at most 107 bytes)
 CLIENT_BIN=${CLIENT_BIN:-$BIN/engarde-client}
 SERVER_BIN=${SERVER_BIN:-$BIN/engarde-server}
 CENGARDE_BIN=${CENGARDE_BIN:-$BIN/cengarde} # e.g. a wrapper that runs an OpenWrt build
