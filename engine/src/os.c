@@ -19,6 +19,14 @@
 /* CPUs the process could use before the cpu knob pinned it. */
 static cpu_set_t initial_cpus;
 static int have_initial_cpus;
+/* Taken once, by whichever thread asks first: helper threads start before
+ * cg_tune pins the loop, and read the set from their own thread. */
+static pthread_once_t initial_once = PTHREAD_ONCE_INIT;
+
+static void initial_save(void)
+{
+	have_initial_cpus = sched_getaffinity(0, sizeof(initial_cpus), &initial_cpus) == 0;
+}
 
 int cg_timerfd(unsigned interval_ms)
 {
@@ -64,8 +72,7 @@ uint32_t cg_tune(const struct cg_config *cfg)
 {
 	uint32_t busy = cfg->busy_poll_us;
 
-	if (!have_initial_cpus && sched_getaffinity(0, sizeof(initial_cpus), &initial_cpus) == 0)
-		have_initial_cpus = 1;
+	pthread_once(&initial_once, initial_save); /* before pinning */
 	if (cfg->cpu >= 0) {
 		cpu_set_t set;
 
@@ -98,6 +105,7 @@ uint32_t cg_tune(const struct cg_config *cfg)
 
 int cg_initial_cpus(cpu_set_t *set)
 {
+	pthread_once(&initial_once, initial_save);
 	if (have_initial_cpus) {
 		*set = initial_cpus;
 		return 0;
@@ -167,6 +175,7 @@ void cg_thread_normal(void)
 	struct sched_param sp = { .sched_priority = 0 };
 
 	pthread_setschedparam(pthread_self(), SCHED_OTHER, &sp);
+	pthread_once(&initial_once, initial_save);
 	if (have_initial_cpus)
 		sched_setaffinity(0, sizeof(initial_cpus), &initial_cpus);
 }
