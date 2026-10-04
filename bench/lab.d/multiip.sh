@@ -19,9 +19,10 @@
 # - the /32 deleted while 2000 pps flow down: only l2's local_errors grow,
 #   its path stays, and the tunnel loses nothing through l1 and l3; with the
 #   /32 back, l2 is live again within 5 s.
-# The client's address list (WP4) adds one more step here: l2 with
-# "server = 198.51.100.7:59402 10.0.2.2:59402" back on the second address
-# within server_failover_ms + 1 s of the deletion.
+# Then, with the client's address list: l2 with "server = 198.51.100.7:59402
+# 10.0.2.2:59402" and server_failover_ms = 3000 is back on the second
+# address within 4 s of the /32's deletion, and the server's path follows it
+# there (links[].local 10.0.2.2).
 LAB_CI=1
 
 # multiip_py CHECK [ARGS]: the checks that read the status of both ends from
@@ -31,7 +32,8 @@ LAB_CI=1
 #                    within LIMIT s of T0 (epoch seconds);
 #   counts           packets received per link so far, as JSON;
 #   spread FILE DIR SENT   each link received 90 % of SENT since FILE;
-#   errors           only l2 has local_errors, and its path is still there.
+#   errors           only l2 has local_errors, and its path is still there;
+#   moved T0 LIMIT   l2 live on 10.0.2.2 on both ends within LIMIT s of T0.
 multiip_py() {
 	python3 - "$RUN" "$@" <<'EOF'
 import json, socket, sys, time
@@ -114,6 +116,20 @@ elif check == "spread":
     got = {n: now.get(n, 0) - before.get(n, 0) for n in LOCAL}
     print(f"{d} per link: " + " ".join(f"{n}={got[n]}" for n in sorted(got)))
     sys.exit(0 if all(v * 10 >= sent * 9 for v in got.values()) else 1)
+elif check == "moved":
+    t0, limit, want = float(args[0]), float(args[1]), "10.0.2.2:59402"
+    seen = "?"
+    while time.time() - t0 < limit + 2:
+        cli, p = status("client") or {}, paths(status("server"))
+        l2 = next((l for l in cli.get("links", []) if l["name"] == "l2"), {})
+        seen = (f"client {l2.get('state')} to {l2.get('remote')} (candidate {l2.get('candidate')}, "
+                f"{l2.get('failovers')} failovers), server local {p.get('l2', {}).get('local')}")
+        if l2.get("state") == "live" and l2.get("remote") == want and p.get("l2", {}).get("local") == want:
+            break
+        time.sleep(0.1)
+    took = time.time() - t0
+    print(f"after {took:.1f} s: {seen}")
+    sys.exit(0 if took <= limit else 1)
 elif check == "errors":
     p = paths(status("server"))
     errs = {n: p[n]["local_errors"] if n in p else None for n in LOCAL}
@@ -196,6 +212,30 @@ multiip_run() {
 	return "$fail"
 }
 
+# multiip_failover: l2 lists the /32 and then 10.0.2.2, and moves to the
+# second when the first goes away.
+multiip_failover() {
+	local fail=0 out
+	echo "   failover: l2 lists 198.51.100.7 and then 10.0.2.2"
+	setup || return 1
+	ip -n srv addr add 10.0.1.20/24 dev s1
+	ip -n srv addr add 198.51.100.7/32 dev lo
+	ip -n cli route add 198.51.100.7/32 via 10.0.2.2 dev l2
+	sed -i -e 's/10\.0\.1\.2:59402/10.0.1.20:59402/' \
+		-e 's/10\.0\.2\.2:59402/198.51.100.7:59402 10.0.2.2:59402/' "$RUN/client.conf"
+	sed -i '1a server_failover_ms = 3000' "$RUN/client.conf"
+	sed -i "s/^listen = .*/listen = *:59402/" "$RUN/server.conf"
+	start
+	out=$(multiip_py live "$(date +%s.%N)" 3) || fail=1
+	echo "   $out"
+	ip -n srv addr del 198.51.100.7/32 dev lo
+	out=$(multiip_py moved "$(date +%s.%N)" 4) || { echo "FAIL: l2 not on 10.0.2.2 within 4 s"; fail=1; }
+	echo "   /32 deleted: $out"
+	grep -h "no reply from 198.51.100.7" "$RUN/client.log" | sed 's/^/   /'
+	stop
+	return "$fail"
+}
+
 multiip() {
 	local fail=0 listen
 	if [ "$(printf %s "$RUN/client.sock" | wc -c)" -gt 107 ]; then
@@ -212,6 +252,8 @@ multiip() {
 		multiip_run "$listen" || fail=1
 		teardown
 	done
+	multiip_failover || fail=1
+	teardown
 	[ "$fail" = 0 ] && echo "multiip: ok" || echo "multiip: FAILED"
 	return "$fail"
 }

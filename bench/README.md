@@ -123,9 +123,10 @@ dirección a la que envía, descartaba la respuesta.
     y l3; con la /32 de vuelta, l2 vuelve a estar vivo en 5 s.
 - **Con el motor de antes** (`CENGARDE_BIN` de `3bcf673`), l1 y l2 nunca
   llegan a vivos: el escenario falla.
-- **Pendiente con la lista de direcciones del cliente (WP4):** l2 con
-  `server = 198.51.100.7:59402 10.0.2.2:59402` vuelve por la segunda en
-  `server_failover_ms` + 1 s tras borrar la /32.
+- **Con la lista de direcciones del cliente:** l2 con
+  `server = 198.51.100.7:59402 10.0.2.2:59402` y `server_failover_ms = 3000`
+  pasa a la segunda en 4 s como mucho tras borrar la /32 (medido: 2,8 s), y
+  el camino del servidor la sigue (`links[].local` 10.0.2.2).
 
 ### `fallback`: varias direcciones del servidor (`lab.d/fallback.sh`)
 
