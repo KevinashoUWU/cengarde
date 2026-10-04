@@ -149,6 +149,14 @@ uci commit network && service network reload
    - Pega el texto en *Cloud-Init User-Data*.
    - Si usas un *Firewall Group* de Vultr, abre UDP 65500, y también los
      puertos que reenvíes con IP pass.
+   - **IP fija:** la IPv4 que trae la instancia se pierde si la destruyes.
+     Una *Reserved IP* (US$3 al mes) sobrevive a eso: convierte en reservada
+     la IP actual de la instancia, o despliégala con una. Queda como su IP
+     principal y llega por DHCP: no hay nada que configurar en el VPS.
+   - **IPv6 (opcional):** márcala al crearla, o después en *Settings → IPv6
+     → Assign IPv6 Network* y reinicia desde el panel. Pon su IPv6 en la
+     lista de direcciones del router (paso 4): los enlaces con IPv6, como
+     Starlink, llegan por ella, y los demás por la IPv4.
 3. **Espera unos minutos:** compila cengarde. Luego, por SSH:
 
    ```sh
@@ -295,10 +303,6 @@ cengarde-setup cloud-config > vps.yaml               # el user data del VPS
 
 ## Problemas conocidos
 
-- **VPS con varias IP:** el servidor contesta desde la dirección por
-  defecto de la máquina, y el router descarta esas respuestas. Fija la buena
-  en `/etc/cengarde/cengarde.conf` (`listen = IP:65500`) y reinicia el
-  servicio. Lo encontró la prueba en QEMU (historia 008).
 - **IP pass necesita que la IP del VPS sea pública:** miniupnpd no arranca
   con una privada o reservada. En `logread` aparece «ext_ip contains
   reserved / private address».
@@ -310,16 +314,18 @@ cengarde-setup cloud-config > vps.yaml               # el user data del VPS
   ```
 
 - **Actualizar:** router y VPS con el mismo commit; la 0.4 cambió el
-  protocolo (v3) y no habla con un VPS anterior. La 0.4.1 no lo cambia,
-  pero actualiza igual el VPS: cierra al túnel los metadatos y el puerto de
-  WireGuard. En el VPS:
+  protocolo (v3) y no habla con un VPS anterior. La 0.4.1 y la 0.4.2 no lo
+  cambian, pero actualiza igual el VPS: la 0.4.1 cierra al túnel los
+  metadatos y el puerto de WireGuard, y la 0.4.2 contesta desde la dirección
+  a la que llegó cada paquete (antes, en un VPS con varias IP o con IPv6,
+  el router descartaba las respuestas que salían desde otra). En el VPS:
 
   ```sh
   git -C /opt/cengarde fetch --depth 1 https://github.com/KevinashoUWU/cengarde <commit>
   git -C /opt/cengarde checkout FETCH_HEAD && sh /opt/cengarde/contrib/vps/install.sh
   ```
 
-  La 0.5 convierte una vez, al instalarse, `option server` en
+  La 0.4.2 convierte una vez, al instalarse, `option server` en
   `list server`; una `option server` escrita a mano después se sigue
   leyendo.
 
@@ -331,6 +337,12 @@ comprueba el flujo completo:
 - configuración solo desde LuCI;
 - túnel arriba, e IP pass confirmado por el VPS;
 - compañeras IPv6 `<enlace>6` y `delegate 0` en un enlace PPPoE;
+- IPv6 hasta el VPS: cada enlace sale desde su dirección global (no la
+  ULA), el VPS contesta desde la suya (`*`), el aviso de MTU de un camino
+  de 1400, el paso a la IPv4 cuando un enlace pierde la IPv6 y cuando el
+  VPS pierde su dirección IPv6, y la fuga cerrada: un prefijo delegado
+  (como el de Starlink) no llega a la LAN mientras todo va por el túnel, y
+  vuelve al desactivar;
 - pausar y reanudar un enlace desde la página de estado;
 - apagar IP pass con pings en curso: sin reiniciar el motor, sin pérdidas,
   y el VPS lo sigue;

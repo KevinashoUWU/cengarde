@@ -73,6 +73,11 @@
 >   PR 1 (paquetes 0.4.1, sin cambio de protocolo) está hecho: un reinicio
 >   del servidor ya no deja la bajada atascada, y la LAN ya no lee por el
 >   túnel los metadatos del VPS, donde está el secreto.
+> - El PR 2 (paquetes 0.4.2, sin cambio de protocolo) también: el servidor
+>   contesta desde la dirección de llegada (varias IP o IPv6 en el VPS), el
+>   router acepta una lista de direcciones del VPS con failover por enlace y
+>   elige bien su IPv6 de origen, y la IPv6 de la LAN ya no sale por fuera
+>   del túnel.
 
 ## 1. Cómo funcionaba engarde (Go)
 
@@ -476,10 +481,7 @@ hardware real (historias [007](docs/historias/007-openwrt-y-vps.md) y
   - un feed firmado y más targets;
   - el plan de la historia
     [010](docs/historias/010-ipv6-varias-ip-multicliente-nombres.md), del
-    que el PR 1 está hecho:
-    - PR 2: respuestas desde la dirección de llegada (IPv4 e IPv6 en el
-      VPS, servidor casero), IPv6 por fuera del túnel y cierre de la fuga
-      de IPv6 de la LAN;
+    que los PR 1 y 2 están hechos:
     - PR 3: varios routers por VPS (protocolo v4) con un panel de reenvío
       de puertos;
     - PR 4: IPv6 dentro del túnel, apagado por defecto;
@@ -608,10 +610,10 @@ debe sobrevivir a la caída de uno con ≤1,34× de sobrecoste.
 - [ ] Netlink en vez de sondear cada segundo.
 - [ ] No destruir sockets por errores transitorios: EAGAIN o un timeout no
   significan que el enlace esté caído.
-- [ ] Buffers de 64 KiB o detección de truncado, y aviso por enlace cuando el
-  MTU de camino no basta.
-- [ ] IPv6: por fuera del túnel en el PR 2 y dentro en el PR 4 (historia
-  010).
+- [ ] Buffers de 64 KiB o detección de truncado. El aviso por enlace
+  cuando el MTU de camino no basta ya está (0.4.2, historia 010).
+- [ ] IPv6: por fuera del túnel ya está (0.4.2); dentro, en el PR 4
+  (historia 010).
 - [x] Que un reinicio del servidor no deje la bajada atascada (0.4.1,
   historia 010).
 - [ ] Rutas por enlace: documentar o automatizar reglas por origen
@@ -691,7 +693,7 @@ Con engarde, la Pi se quedaba en ~30 Mbit/s con 4 enlaces, por CPU
 | Soporte desigual de eBPF (XDP genérico en la Pi y en USB; OpenWrt sin BTF) | eBPF opcional con respaldo automático; nada de CO-RE |
 | Alcance (web + OpenWrt + eBPF + modos) | Fases con criterios de salida; la Fase 1a ya ataca el problema de la Pi |
 | El secreto viaja en el user data del VPS | El túnel no llega a los metadatos (0.4.1, probado en netns); el motor tampoco (`IPAddressDeny`, sin probar aún en un systemd real; PR 2); los secretos de los demás routers nunca van en el user data (historia 010) |
-| La IPv6 de la LAN sale por fuera del túnel si un enlace tiene en el router una interfaz DHCPv6 que delega su prefijo (Starlink) | Hasta el PR 2, no crearla o ponerle `delegate '0'` a mano (`openwrt/README.md`, sección 2); el PR 2 lo hace solo y avisa (`ipv6_leak`) |
+| La IPv6 de la LAN sale por fuera del túnel si un enlace tiene en el router una interfaz DHCPv6 que delega su prefijo (Starlink) | Desde 0.4.2, con todo el tráfico por el túnel, cengarde pone `delegate 0` en esas interfaces (y en los enlaces PPP o de módem) y avisa si la LAN aún tiene un prefijo público (`ipv6_leak`); probado en QEMU con un prefijo delegado (historia 010) |
 | Varios routers por VPS exigen cambiar el protocolo (v4) | Un solo cambio de formato, en el PR 3, con paquetes 0.5.0 en los dos extremos; la migración desde 0.4 se probará en el CI con systemd real |
 | Licencia | Al derivar de engarde (GPLv2), cengarde es GPLv2. Programas BPF con licencia "GPL" o dual BSD/GPL; libbpf (LGPL-2.1 o BSD-2) es compatible |
 

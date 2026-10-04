@@ -36,7 +36,7 @@ LAN ── router OpenWrt ───┼══ enlace 2 (5G) ══┼─── VP
   - el servidor solo atiende paquetes autenticados;
   - WireGuard cifra el contenido.
 - **Liviano:** C11 sin dependencias, un hilo con epoll y lotes
-  (`recvmmsg`/`sendmmsg`). El binario ocupa unos 100 KB.
+  (`recvmmsg`/`sendmmsg`). El binario ocupa unos 110 KB.
 - **OpenWrt de punta a punta:**
   - paquetes para 25.12 y 24.10, e imágenes listas para la Pi 4 y x86-64;
   - una pestaña de LuCI en español;
@@ -51,6 +51,11 @@ LAN ── router OpenWrt ───┼══ enlace 2 (5G) ══┼─── VP
 - **Cambios sin cortar:** la configuración se aplica en marcha, con la misma
   sesión, y un enlace se puede pausar y reanudar desde LuCI o con
   `cengarde ctl link NOMBRE off`.
+- **IPv4 e IPv6 hasta el VPS:** el router acepta varias direcciones del VPS
+  y cada enlace usa la primera que puede (por ejemplo, la IPv6 por
+  Starlink), con failover a la siguiente. El VPS contesta desde la
+  dirección a la que llegó cada paquete, así que sirve cualquier IP suya, y
+  el prefijo IPv6 de un enlace no se escapa a la LAN por fuera del túnel.
 
 ## Medidas
 
@@ -81,7 +86,8 @@ VM Xeon de 2,1 GHz, cada motor en ambos extremos (historias
    módem).
 3. **Crea el VPS:** en **Servicios → cengarde → VPS**, copia el cloud-config
    y pégalo como *user data* al crear el VPS.
-4. **Activa:** pon la IP del VPS, elige los enlaces y activa.
+4. **Activa:** pon la IP del VPS (o varias, IPv4 e IPv6), elige los
+   enlaces y activa.
 5. **Comprueba:** mira la página **Estado**.
 
 Guía completa, con las imágenes y los paquetes: [`openwrt/README.md`](openwrt/README.md).
@@ -116,9 +122,9 @@ Las configuraciones de cliente y servidor se explican en
 Lo que viene; el detalle está en [ROADMAP.md](ROADMAP.md):
 
 - **IPv6, varios routers por VPS y nombres** (plan en cinco PRs, historia
-  [010](docs/historias/010-ipv6-varias-ip-multicliente-nombres.md)):
-  - responder desde la dirección de llegada, IPv6 por fuera del túnel y
-    cierre de la fuga de IPv6 de la LAN;
+  [010](docs/historias/010-ipv6-varias-ip-multicliente-nombres.md); hechos
+  los arreglos y la respuesta desde la dirección de llegada con IPv6 por
+  fuera del túnel):
   - varios routers por VPS, con un panel de reenvío de puertos;
   - IPv6 dentro del túnel, apagado por defecto;
   - nombres con DNS dinámico, también para un servidor casero.
