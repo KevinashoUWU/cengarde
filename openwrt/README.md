@@ -21,7 +21,7 @@ Pi 4 y en un VPS reales. Decisiones en las historias
 
 ```
 LAN ── router OpenWrt ══ enlace 1 ══╗
-       WireGuard wgcg   ══ enlace 2 ══╬══ VPS: cengarde → WireGuard wg0 → Internet
+       WireGuard wgcg   ══ enlace 2 ══╬══ VPS: cengarde → WireGuard cg-router → Internet
        └→ cengarde      ══ enlace 3 ══╝   (cada paquete por todos; gana la primera copia)
 ```
 
@@ -160,27 +160,61 @@ uci commit network && service network reload
 3. **Espera unos minutos:** compila cengarde. Luego, por SSH:
 
    ```sh
-   systemctl status cengarde wg-quick@wg0
+   sudo cengarde-vps-setup list   # el router, su puerto y cuándo se le oyó
+   systemctl status cengarde wg-quick@cg-router cengarde-nat
    tail /var/log/cloud-init-output.log
-   cengarde ctl status        # o: cengarde ctl links
+   sudo cengarde ctl status       # o: cengarde ctl links
    ```
 
 **Qué deja montado:**
-- cengarde como servicio de systemd sin privilegios;
-- WireGuard solo para cengarde (`127.0.0.1:65501`): su puerto solo contesta
-  en la propia máquina; no desde Internet ni desde el túnel, tampoco por
-  IPv6;
+- cengarde como servicio de systemd, con un usuario propio (`cengarde`)
+  y sin privilegios;
+- el router, importado una sola vez del secreto del cloud-config (que
+  luego se borra) como `router`: un archivo en `/etc/cengarde/clients/` y
+  su WireGuard, `cg-router`, solo para cengarde (`127.0.0.1:65501`); los
+  puertos de WireGuard (65501–65532, uno por router) solo contestan en la
+  propia máquina, no desde Internet ni desde el túnel, tampoco por IPv6;
 - el túnel no llega al servicio de metadatos del proveedor
   (169.254.0.0/16), que guarda el secreto en el user data; el motor
   tampoco;
-- NAT y, con IP pass, el reenvío de puertos;
+- el cortafuegos de cengarde (`cengarde-nat.service`): NAT y, con IP pass,
+  el reenvío de puertos, en cadenas propias que no dependen del nombre de
+  ninguna interfaz; cada 5 minutos `cengarde-nat-check.timer` las repone si
+  otro cortafuegos las borró;
 - `cengarde-passthrough.path`, que abre o cierra el IP pass cuando lo pide
   el router.
 
-No desactiva SSH ni su cortafuegos. Detalle en
-[`contrib/vps/`](../contrib/vps/): `install.sh` instala,
-`cengarde-vps-setup` deriva las claves del secreto y `cengarde-nat` hace el
-NAT.
+No desactiva SSH ni su cortafuegos: convive con ufw y con
+`nftables.service` (si te falta algo, `sudo cengarde-nat check` dice qué
+líneas añadir); firewalld no está soportado todavía y la instalación se
+detiene con un mensaje. Detalle en [`contrib/vps/`](../contrib/vps/):
+`install.sh` instala, `cengarde-vps-setup` lleva los routers y deriva sus
+claves del secreto, y `cengarde-nat` hace el cortafuegos.
+
+### Un servidor propio, sin cloud-init
+
+Sirve cualquier Debian 12 o Ubuntu 22.04 o posterior, también en casa
+detrás del router de tu operador, si le llega una IPv4 pública (no detrás
+de CGNAT):
+
+```sh
+sudo apt-get install build-essential git iptables wireguard-tools conntrack
+sudo git clone https://github.com/KevinashoUWU/cengarde /opt/cengarde
+sudo git -C /opt/cengarde checkout COMMIT   # el del paquete del router (LuCI lo muestra)
+sudo sh /opt/cengarde/contrib/vps/install.sh
+sudo cengarde-vps-setup add router       # y pega el secreto del router
+```
+
+- **Sin secreto en `/etc/cengarde/secret`,** `install.sh` instala y te
+  recuerda el `add`; el secreto se pega, nunca va en la línea de órdenes.
+- **Con IPv4 privada** (un router de casa, o una nube con NAT 1:1 como
+  Oracle Cloud, AWS o GCP): `cengarde-vps-setup` lo detecta, dice qué abrir
+  «en tu router de casa o en el cortafuegos del proveedor (security list)»
+  (UDP 65500 y los puertos que liste `sudo cengarde-vps-setup forward`) y
+  nunca reenvía al router lo que viene de la propia red del servidor
+  (`FORWARD_SKIP_SRC` en `/etc/cengarde/nat.conf`).
+- **Sus propios servicios siguen siendo suyos:** lo que escucha en el
+  servidor y los puertos que publica Docker quedan fuera del reenvío.
 
 ## 4. Activar
 
@@ -263,8 +297,11 @@ ping -c 3 10.79.0.1           # el VPS a través del túnel
 ## IP pass (la IP pública del VPS en terreno)
 
 **En el VPS:** el TCP y el UDP de los puertos 1024–65000 que llegan a su IP
-se reenvían al router, con la IP de origen intacta. El puerto de cengarde,
-el de WireGuard y el SSH nunca se reenvían.
+se reenvían al router, con la IP de origen intacta. Nunca se reenvían el
+puerto de cengarde, los de WireGuard, el SSH ni lo que escucha el propio
+servidor o publica Docker; `sudo cengarde-vps-setup forward` los lista con
+su motivo. Los puertos reenviados también funcionan desde la propia LAN,
+por la IP del VPS.
 
 **En el router:**
 - miniupnpd entrega esos puertos a los equipos de la LAN que los piden:
@@ -306,13 +343,8 @@ cengarde-setup cloud-config > vps.yaml               # el user data del VPS
 - **IP pass necesita que la IP del VPS sea pública:** miniupnpd no arranca
   con una privada o reservada. En `logread` aparece «ext_ip contains
   reserved / private address».
-- **Cambiar el secreto:** escribe el nuevo en `/etc/cengarde/secret` del VPS
-  y ejecuta:
-
-  ```sh
-  cengarde-vps-setup && systemctl restart wg-quick@wg0 cengarde
-  ```
-
+- **Cambiar el secreto:** en el VPS, `sudo cengarde-vps-setup add router
+  --replace` y pega el nuevo; el router se corta un momento.
 - **Actualizar:** router y VPS con el mismo commit; la 0.4 cambió el
   protocolo (v3) y no habla con un VPS anterior. La 0.4.1 y la 0.4.2 no lo
   cambian, pero actualiza igual el VPS: la 0.4.1 cierra al túnel los
@@ -321,13 +353,32 @@ cengarde-setup cloud-config > vps.yaml               # el user data del VPS
   el router descartaba las respuestas que salían desde otra). En el VPS:
 
   ```sh
-  git -C /opt/cengarde fetch --depth 1 https://github.com/KevinashoUWU/cengarde <commit>
-  git -C /opt/cengarde checkout FETCH_HEAD && sh /opt/cengarde/contrib/vps/install.sh
+  sudo git -C /opt/cengarde fetch --depth 1 https://github.com/KevinashoUWU/cengarde <commit>
+  sudo git -C /opt/cengarde checkout FETCH_HEAD && sudo sh /opt/cengarde/contrib/vps/install.sh
   ```
 
   La 0.4.2 convierte una vez, al instalarse, `option server` en
   `list server`; una `option server` escrita a mano después se sigue
   leyendo.
+  - **Desde una sesión SSH,** `install.sh` sigue como una unidad propia
+    (`cengarde-upgrade`): si la sesión se corta, la actualización termina
+    igual. Su salida queda en `/var/log/cengarde-upgrade.log`. Si algo la
+    interrumpe, ejecútalo otra vez: termina lo que faltaba.
+  - **Desde la 0.4.2** (sin cambio de protocolo): `wg0` pasa a ser
+    `cg-router`, con el mismo puerto y la misma dirección del túnel, el
+    servicio pasa a un usuario fijo y el router sigue funcionando sin
+    tocarlo.
+  - **Cuando cambie el protocolo** (la 0.5), un extremo actualizado no
+    habla con el otro, y con «todo por el túnel» tu SSH al VPS va por ese
+    túnel. Sigue este orden: baja antes los paquetes nuevos del router;
+    desactiva cengarde en LuCI (el router y la LAN salen directo por los
+    módems, y el SSH al VPS también); actualiza el VPS; instala los
+    paquetes del router; activa cengarde.
+- **Volver a la 0.4.2:** en el VPS, `sudo cengarde-vps-setup purge` (quita
+  los servicios y reglas nuevos y deja el secreto del router en
+  `/etc/cengarde/secret`), luego `git checkout` del commit de la 0.4.2 y su
+  `install.sh`. Solo con el `install.sh` viejo no basta: `cg-router` sigue
+  ocupando el puerto 65501.
 
 ## Probar sin hardware
 

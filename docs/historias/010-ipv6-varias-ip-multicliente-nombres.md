@@ -2,7 +2,8 @@
 
 - **Fecha:** 2026-10-04
 - **Estado:** vigente. PR 1 y PR 2 hechos (paquetes 0.4.1 y 0.4.2,
-  protocolo v3 sin cambios); PR 3 a 5 pendientes.
+  protocolo v3 sin cambios); del PR 3, hecho el 3d1 (herramientas del VPS,
+  aún v3); el resto del PR 3 y los PR 4 y 5, pendientes.
 - **Fuentes:**
   - código del PR 1 (`git log ebe570b..823e4dd`):
     - `engine/src/epoch.h`; `client.c:442` (`ms_since_new`), `:456`
@@ -108,7 +109,13 @@
     `delegate '0'` mientras todo va por el túnel;
   - el "VPS" puede ser un Debian o Ubuntu casero con IP dinámica, quizá
     detrás de un router, encontrado por DNS dinámico.
-- **Siguiente:** el PR 3, varios routers por VPS (protocolo v4).
+- **Lo que cerró el PR 3d1** (solo VPS, protocolo v3): `cengarde-nat`
+  declarativo, sin nombres de interfaz y con hairpin; un archivo por router
+  en `/etc/cengarde/clients` con su `cg-NAME`; el secreto del cloud-config
+  importado una sola vez; usuario fijo; `install.sh` que sobrevive a una
+  sesión SSH cortada; vuelta a la 0.4.2 con `purge`. Un router 0.4 sigue
+  funcionando sin tocarlo (sección «PR 3d1»).
+- **Siguiente:** el PR 3d2, protocolo v4 y varios routers por VPS.
 
 ## Contexto
 
@@ -495,6 +502,68 @@ llega a un servicio de metadatos falso, y root sí. Solo corre con
 Afectaba a todo VPS con 22.04 desde la plantilla de la historia 007. La
 unidad usa ahora `${CREDENTIALS_DIRECTORY}`, que existe desde la 247.
 
+## PR 3d1: herramientas del VPS, aún con el protocolo v3 (hecho)
+
+Sin cambio de protocolo ni del motor: un VPS lo toma bajo un router 0.4.
+
+- **`cengarde-nat` declarativo:** cuatro cadenas propias (`CG_IN`,
+  `CG_FWD`, `CG_PRE`, `CG_POST`) restauradas enteras con
+  `iptables-restore --noflush` (declarar la cadena la vacía primero:
+  comprobado con 1.8.10), y un salto a cada una, el primero de su cadena.
+  Ninguna regla nombra una interfaz: el salto de `PREROUTING` usa
+  `-m addrtype --dst-type LOCAL` (ni difusión ni tráfico de paso) y el
+  `MASQUERADE`, `-s 10.79.0.0/16 ! -o cg-+`; `PUB_IF` queda como opción.
+  Hairpin: el `ACCEPT` de `--ctstate DNAT` va antes del `DROP` entre túneles
+  y un `SNAT` a 10.79.0.1. `apply`, `sync` (nada mientras está `down`),
+  `check` (el temporizador cada 5 min), `down`, `status`, `rules`, `jumps`,
+  `reserved`, `purge-legacy`.
+- **Conjunto reservado:** SSH, cengarde, los 32 puertos de WireGuard, todo
+  lo de debajo de 1024 salvo `FORWARD_ALLOW_LOW`, `FORWARD_RESERVED` y, con
+  `FORWARD_AUTO_RESERVE`, lo que escucha el servidor (`ss`, sin loopback ni
+  UDP efímero) y lo que publica Docker, salvo `FORWARD_UNRESERVE`. Va como
+  comentario en `cengarde.conf` (el motor v3 no lo lee; el v4 lo tomará
+  como `forward_reserved`).
+- **Flujos vivos:** al cambiar el destino de un puerto, `conntrack -D -p P
+  --orig-port-dst N -r VIEJO` hasta 256 puertos, o `-r VIEJO` entero si es
+  más; probado en netns con conntrack-tools 1.4.8: un flujo UDP a 10 por
+  segundo pasa al nuevo router en menos de 2 s, y sin conntrack se queda en
+  el viejo.
+- **Entrada:** el archivo de IP pass del motor v3 pasa a
+  `/var/lib/cengarde/passthrough` (lo guarda el propio motor, así que
+  sobrevive a reinicios; el estado de la 0.4 se migra). La tabla de reenvío
+  del v4 (`FORWARD_FILE`) ya se lee y se prueba con fixtures. Ambos se
+  rechazan enteros si son un enlace simbólico, no son un archivo regular,
+  no son del usuario `cengarde` o pasan de 64 KiB (comprobado sobre el
+  descriptor abierto, con `timeout` por si es un FIFO); una línea mala se
+  salta con su número y motivo, nunca su contenido.
+- **Otros cortafuegos:** ufw como antes; con `nftables.service`, un drop-in
+  vuelve a aplicar tras su arranque, recarga y parada (su `flush ruleset`
+  borra también las tablas de iptables-nft), y `check` dice qué líneas
+  añadir a una cadena ajena con política `drop`; firewalld se rechaza.
+- **`cengarde-vps-setup`:** `/etc/cengarde/clients/NAME` (0600 root) por
+  router y `cg-NAME` en 65501 + ranura; con v3, un solo router, en
+  10.79.0.2 (`LEGACY_ADDR=1`). El motor valida la configuración antes que
+  WireGuard: si la rechaza, falla la recarga o no contesta en 15 s, todo
+  vuelve a como estaba. Sin router, una clave que no sirve a nadie, así el
+  motor sigue arriba. IPv4 principal privada: `FORWARD_SKIP_SRC` y qué
+  abrir delante; en 100.64.0.0/10, aviso de CGNAT.
+- **`install.sh`:** desde una sesión interactiva o SSH se relanza con
+  `systemd-run` como `cengarde-upgrade`; para antes el servicio con
+  `DynamicUser` si el usuario estático no existe, porque `systemd-sysusers`
+  ve el usuario dinámico vivo (por nss-systemd) y no crea el estático (sin
+  reproducir aquí: lo comprueba el trabajo `systemd`).
+- **La unidad:** `User=cengarde` (`cengarde.sysusers`) y la configuración
+  en 0640 root:cengarde leída directamente, sin `LoadCredential`: una
+  recarga lee el archivo real, y la línea de órdenes no tiene especificadores
+  (el `%d` que rompía Ubuntu 22.04).
+- **Pruebas:** `nat-rules.sh` (reglas contra archivos dorados, cargadas con
+  `iptables-restore --test`), `netns.sh` (tráfico real), `setup-dryrun.sh`
+  (órdenes del sistema falsas), `security.sh`; `systemd.sh` solo en el CI:
+  instala la 0.4.2 del historial, actualiza desde una sesión que muere,
+  `purge` y vuelta, firewalld, nftables y Docker. El trabajo `netns` corre
+  también en 22.04 (iptables 1.8.7, conntrack-tools 1.4.6), donde se
+  comprueba el DNAT a un rango desplazado.
+
 ## Medidas
 
 - **Reinicios del servidor** (`sudo bench/lab.sh restart`, 3 enlaces, 2000
@@ -658,3 +727,4 @@ unidad usa ahora `${CREDENTIALS_DIRECTORY}`, que existe desde la 247.
   dispositivo del enlace y no sobre `@enlace`.
 - 2026-10-04: PR 2 hecho (0.4.2), con sus medidas; `cengarde-nat`
   declarativo pasa al PR 3.
+- 2026-10-04: PR 3d1 hecho (herramientas del VPS con el protocolo v3).
