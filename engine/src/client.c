@@ -11,6 +11,9 @@
  * checked, so only the first copy of each packet pays for verification. A
  * server that started over with a sequence behind the window is recognised
  * from its probe replies (epoch.h), and the window starts again.
+ * Server addresses: each link sends to one address of the server list, of a
+ * family it has, from its best source address for it (addrpick.h), and
+ * moves to the next one when the server stops answering there (srvpick.h).
  *
  * A reload (SIGHUP or "cengarde ctl reload") applies the new configuration
  * in place, keeping the session; what was set up only once makes the process
@@ -27,6 +30,7 @@
 #include <sys/signalfd.h>
 #include <unistd.h>
 
+#include "addrpick.h"
 #include "arrival.h"
 #include "ctl.h"
 #include "engine.h"
@@ -36,6 +40,7 @@
 #include "netlink.h"
 #include "replay.h"
 #include "sock.h"
+#include "srvpick.h"
 #include "status.h"
 #include "util.h"
 
@@ -46,7 +51,20 @@ struct link {
 	char ifname[IFNAMSIZ];
 	int fd;
 	int seen; /* still wanted in the current reconcile pass */
+	int why;  /* WHY_*: why it carries the tunnel or not, as of the last reconcile */
+	/* Of the last socket; kept once it closes, to tell a new local address. */
 	struct sockaddr_storage local, remote;
+	/* The server address it uses (srvpick.h), kept by address; none: the
+	 * first candidate, as after an outage of the link (down, without an
+	 * address, or gone) or a new list. */
+	struct sockaddr_storage cand;
+	int cand_idx, ncand;    /* where cand is among the link's candidates, and how many there are */
+	unsigned families;      /* 1 << AF_* of the interface's usable addresses, as of the last reconcile */
+	uint32_t silent_moves;  /* failovers since the last reply: a dead round once every candidate had one */
+	int back_to_first;      /* a reply ended a dead round: the first candidate at the next reconcile */
+	uint64_t cand_since_ms; /* when its socket to cand opened */
+	uint64_t failovers;
+	uint32_t path_mtu; /* IP_MTU or IPV6_MTU of its socket, read every RECONCILE_MS */
 	uint64_t up_since_ms, last_rx_ms, last_reply_ms, last_probe_ms, retry_ms;
 	uint64_t srtt8_us; /* 8 x smoothed RTT */
 	uint32_t rtt_us;
@@ -60,7 +78,7 @@ struct link {
 	struct cg_probe_info peer_view; /* server's view of this path (upload) */
 	uint64_t peer_view_ms;
 	struct cg_echo probes; /* probes sent, for the echoes in replies (epoch.h) */
-	struct cg_ratelimit rl;
+	struct cg_ratelimit rl, rl_move, rl_mtu;
 };
 
 struct client {
@@ -85,9 +103,11 @@ struct client {
 	int reload_again;
 	int server_pass; /* IP pass in the server's replies: -2 no reply yet, -1 none */
 	char config_error[600]; /* why the last reload was refused */
-	uint64_t start_ms, next_status_ms, next_reconcile_ms, last_traffic_ms;
+	uint64_t start_ms, next_status_ms, next_reconcile_ms, next_path_ms, last_traffic_ms;
 
 	uint64_t up_pkts, up_bytes, up_toobig;
+	uint32_t up_max;     /* largest WireGuard datagram since the last path check */
+	uint32_t up_largest; /* the same over the last check period, for the status */
 	uint64_t down_pkts, down_bytes, down_wg_drops, down_no_peer;
 	uint64_t rx_malformed, rx_foreign, rx_auth_fail, rx_old, rx_dups, rx_trunc;
 	uint64_t window_resets;      /* the server started over (epoch.h) */
@@ -101,8 +121,17 @@ struct client {
 };
 
 /* Why an interface does or does not carry the tunnel. */
-enum { WHY_OK, WHY_PAUSED, WHY_EXCLUDED, WHY_DOWN, WHY_NOADDR };
-static const char *const why_name[] = { "ok", "paused", "excluded", "down", "no address" };
+enum { WHY_OK, WHY_PAUSED, WHY_EXCLUDED, WHY_DOWN, WHY_NOADDR, WHY_NOFAMILY, WHY_UNUSABLE, WHY_GONE };
+static const char *const why_name[] = {
+	"ok", "paused", "excluded", "down", "no address", "no address of the server's family", "unusable", "absent",
+};
+
+/* What a link may send to: its candidates (srvpick.h). */
+struct cands {
+	unsigned families; /* 1 << AF_* of the interface's usable addresses */
+	int n;
+	struct sockaddr_storage a[CG_MAX_CANDS];
+};
 
 static uint32_t srtt_ms(const struct link *l)
 {
@@ -164,6 +193,7 @@ static int same_ip(const struct sockaddr_storage *a, const struct sockaddr_stora
 	return !memcmp(&((const struct sockaddr_in6 *)a)->sin6_addr, &((const struct sockaddr_in6 *)b)->sin6_addr, 16);
 }
 
+/* why: for the log, NULL for none. */
 static void link_close(struct client *c, struct link *l, const char *why)
 {
 	if (l->fd < 0)
@@ -171,7 +201,8 @@ static void link_close(struct client *c, struct link *l, const char *why)
 	epoll_ctl(c->ep, EPOLL_CTL_DEL, l->fd, NULL);
 	close(l->fd);
 	l->fd = -1;
-	cg_info("link %s down: %s", l->ifname, why);
+	if (why)
+		cg_info("link %s down: %s", l->ifname, why);
 }
 
 static struct link *link_find(struct client *c, const char *ifname)
@@ -211,107 +242,248 @@ static int configured(const struct cg_config *cfg, const char *ifname)
 		  : cg_match_any(ifname, cfg->include, cfg->ninclude) && !cg_match_any(ifname, cfg->exclude, cfg->nexclude);
 }
 
-/* Whether ifc carries the tunnel and, when it does, from which local address
- * to which server address. A manual override (ctl.h) goes before the
- * configuration. */
-static int eligible(struct client *c, const struct cg_iface *ifc, struct sockaddr_storage *local,
-		    struct sockaddr_storage *remote)
+/* The server list a link sends to: its [link] one, or the global one. */
+static struct cg_srvlist servers_of(const struct cg_config *cfg, const char *ifname)
+{
+	const struct cg_link_cfg *lc = cg_config_link(cfg, ifname);
+
+	if (lc && lc->nserver)
+		return (struct cg_srvlist){ lc->server, lc->nserver, lc->entry_n, lc->nentry };
+	return (struct cg_srvlist){ cfg->server, cfg->nserver, cfg->entry_n, cfg->nentry };
+}
+
+/* Whether ifc carries the tunnel and, when it does, which server addresses
+ * it may send to. A manual override (ctl.h) goes before the configuration.
+ * No side effects: reconcile applies the choice. */
+static int eligible(struct client *c, const struct cg_iface *ifc, struct cands *e)
 {
 	const struct cg_config *cfg = c->cfg;
-	const struct cg_link_cfg *lc = cg_config_link(cfg, ifc->name);
 	enum cg_ovr o = cg_ovr_get(&c->ovr, ifc->name);
-	const struct sockaddr_storage *servers = lc && lc->nserver ? lc->server : cfg->server;
-	int nservers = lc && lc->nserver ? lc->nserver : cfg->nserver;
+	struct cg_srvlist list;
 
+	e->families = 0;
+	e->n = 0;
 	if (!cg_ovr_wanted(o, configured(cfg, ifc->name)))
 		return o == CG_OVR_OFF ? WHY_PAUSED : WHY_EXCLUDED;
 	if (!(ifc->flags & IFF_UP) || !(ifc->flags & IFF_RUNNING))
 		return WHY_DOWN;
-	for (int k = 0; k < nservers; k++)
-		if (cg_iface_pick(ifc, servers[k].ss_family, local) == 0) {
-			*remote = servers[k];
-			return WHY_OK;
+	e->families = cg_src_families(ifc->addr, ifc->naddr);
+	if (!e->families)
+		return WHY_NOADDR;
+	list = servers_of(cfg, ifc->name);
+	e->n = cg_cands_build(list.a, list.n, e->families, e->a);
+	return e->n ? WHY_OK : WHY_NOFAMILY;
+}
+
+static uint32_t sock_path_mtu(int fd, int family)
+{
+	int v = 0;
+	socklen_t len = sizeof(v);
+
+	if (family == AF_INET6 ? getsockopt(fd, IPPROTO_IPV6, IPV6_MTU, &v, &len)
+			       : getsockopt(fd, IPPROTO_IP, IP_MTU, &v, &len))
+		return 0;
+	return v > 0 ? (uint32_t)v : 0;
+}
+
+/* Whether to log a move: each one in the first round, then once a minute
+ * while no address answers (an outage would fill the log). */
+static int move_loud(struct link *l, int n, uint64_t now_ms)
+{
+	return l->silent_moves <= (uint32_t)n || cg_ratelimit_ok(&l->rl_move, now_ms, 60000);
+}
+
+/* Points l at its server address among the candidates e of its interface
+ * (srvpick.h) and opens its socket there, or keeps the one it has. When a
+ * socket cannot be opened (an IPv6 address with no route, say: bound to
+ * its interface, an IPv4 socket connects all the same), it tries the next
+ * candidate at once, with failover on. */
+static void link_open(struct client *c, struct link *l, const struct cg_iface *ifc, const struct cands *e,
+		      uint64_t now_ms)
+{
+	const struct cg_config *cfg = c->cfg;
+	const struct cg_link_cfg *lc = cg_config_link(cfg, ifc->name);
+	const struct sockaddr_storage *cur = &l->cand;
+	struct cg_srvlist list = servers_of(cfg, ifc->name);
+	struct sockaddr_storage local;
+	char err[256], a[64], b[64];
+	int i, k, quiet = 0, skipped = 0;
+
+	/* Back to the first candidate when a family the link gained or lost
+	 * changes its candidates, when its local address toward the server
+	 * changed (a new lease or prefix), and when a reply ended a dead round.
+	 * A new list goes there from apply_config. */
+	if (cg_cands_changed(list.a, list.n, l->families, e->families)) {
+		cur = NULL;
+	} else if (l->back_to_first) {
+		cur = NULL;
+		cg_info("link %s: the server answers again after a round of its addresses without replies, back to %s",
+			l->ifname, cg_addr_str(&e->a[0], a, sizeof(a)));
+	} else if (l->local.ss_family && cg_addr_equal(&l->remote, &l->cand) &&
+		   cg_iface_pick(ifc, &l->cand, &local) == 0 && !same_ip(&local, &l->local)) {
+		cur = NULL;
+	}
+	l->families = e->families;
+	l->back_to_first = 0;
+	i = cur ? cg_cand_find(e->a, e->n, cur) : -1;
+	k = cg_srv_pick(e->a, e->n, cur, now_ms, l->cand_since_ms, l->last_reply_ms,
+			l->fd >= 0 ? cfg->server_failover_ms : 0, &l->silent_moves);
+	if (i >= 0 && k != i) {
+		uint64_t since = l->last_reply_ms > l->cand_since_ms ? l->last_reply_ms : l->cand_since_ms;
+
+		l->failovers++;
+		quiet = !move_loud(l, e->n, now_ms);
+		if (!quiet)
+			cg_info("link %s: no reply from %s for %u s, trying %s", l->ifname,
+				cg_addr_str(&e->a[i], a, sizeof(a)), (unsigned)((now_ms - since) / 1000),
+				cg_addr_str(&e->a[k], b, sizeof(b)));
+	}
+	for (int tries = 1;; tries++) {
+		l->cand = e->a[k];
+		l->cand_idx = k;
+		l->ncand = e->n;
+		if (cg_iface_pick(ifc, &l->cand, &local) < 0)
+			return; /* never: the candidates are of the families ifc has */
+		if (l->fd >= 0 && same_ip(&l->local, &local) && cg_addr_equal(&l->remote, &l->cand))
+			return;
+		if (l->fd >= 0 && quiet)
+			link_close(c, l, NULL);
+		else if (l->fd >= 0)
+			link_close(c, l, same_ip(&l->local, &local) ? "server address changed" : "address changed");
+		if (now_ms < l->retry_ms)
+			return;
+		l->fd = cg_udp_link(ifc->name, &local, &l->cand, err, sizeof(err));
+		if (l->fd >= 0)
+			break;
+		if (e->n > 1 && cfg->server_failover_ms && tries < e->n) {
+			int next = cg_srv_next(k, e->n, &l->silent_moves);
+
+			skipped++;
+			quiet = !move_loud(l, e->n, now_ms);
+			if (!quiet)
+				cg_info("link %s: cannot use %s (%s), trying %s", l->ifname, cg_addr_str(&e->a[k], a, sizeof(a)),
+					err, cg_addr_str(&e->a[next], b, sizeof(b)));
+			k = next;
+			continue;
 		}
-	return WHY_NOADDR;
+		if (cg_ratelimit_ok(&l->rl, now_ms, 30000))
+			cg_warn("link %s unusable: %s", ifc->name, err);
+		l->retry_ms = now_ms + RECONCILE_MS;
+		return;
+	}
+	/* Counted only now: a link that can open none of them is unusable, and
+	 * its retries every RECONCILE_MS are no failovers. The silent moves
+	 * count all the same, so the first reply still ends a dead round. */
+	l->failovers += (uint64_t)skipped;
+	cg_sock_buffers(l->fd, cfg->rcvbuf, cfg->sndbuf);
+	{
+		socklen_t len = sizeof(local);
+
+		getsockname(l->fd, (struct sockaddr *)&local, &len);
+	}
+	l->local = local;
+	l->remote = l->cand;
+	l->up_since_ms = l->cand_since_ms = now_ms;
+	l->path_mtu = sock_path_mtu(l->fd, l->remote.ss_family);
+	if (l->last_rx_ms > c->new_before_open_ms)
+		c->new_before_open_ms = l->last_rx_ms;
+	l->last_rx_ms = l->last_reply_ms = l->last_probe_ms = 0;
+	memset(&l->probes, 0, sizeof(l->probes));
+	l->srtt8_us = 0;
+	l->rtt_us = l->unanswered = l->probe_announced = 0;
+	l->have_down_owd = l->peer_muted = 0;
+	cg_health_reset(&c->uh[l - c->link], now_ms);
+	if (cg_epoll_add(c->ep, l->fd, CG_EV(CG_EV_LINK, l - c->link)) < 0) {
+		link_close(c, l, "epoll");
+		return;
+	}
+	if (quiet)
+		return;
+	cg_info("link %s%s%s%s up: %s -> %s (id %d)", l->ifname, lc && lc->label[0] ? " (" : "",
+		lc && lc->label[0] ? lc->label : "", lc && lc->label[0] ? ")" : "", cg_addr_str(&l->local, a, sizeof(a)),
+		cg_addr_str(&l->remote, b, sizeof(b)), (int)(l - c->link));
 }
 
 /* Brings sockets in line with the interfaces netlink reports. */
 static void reconcile(struct client *c, uint64_t now_ms)
 {
-	const struct cg_config *cfg = c->cfg;
-	char err[256], a[64], b[64];
+	struct cands e;
 
-	for (int i = 0; i < CG_MAX_LINKS; i++)
+	for (int i = 0; i < CG_MAX_LINKS; i++) {
 		c->link[i].seen = 0;
+		c->link[i].why = WHY_GONE;
+	}
 	for (int i = 0; i < c->nl.nifs; i++) {
 		const struct cg_iface *ifc = &c->nl.ifs[i];
-		const struct cg_link_cfg *lc;
-		struct sockaddr_storage local, remote;
 		struct link *l;
 		int why;
 
 		if (!ifc->name[0])
 			continue;
-		why = eligible(c, ifc, &local, &remote);
-		if (why == WHY_PAUSED) {
-			/* A slot all the same, so that the status shows it paused. */
+		why = eligible(c, ifc, &e);
+		/* A slot all the same when paused, or when its [link] section
+		 * wants it and it has no address of the server's family, so
+		 * that the status shows why. */
+		if (why == WHY_OK || why == WHY_PAUSED || (why == WHY_NOFAMILY && cg_config_link(c->cfg, ifc->name)))
 			l = link_get(c, ifc->name);
-			if (l)
-				link_close(c, l, "paused");
-			continue;
-		}
-		if (why != WHY_OK)
-			continue;
-		lc = cg_config_link(cfg, ifc->name);
-		l = link_get(c, ifc->name);
+		else
+			l = link_find(c, ifc->name);
 		if (!l) {
-			if (cg_ratelimit_ok(&c->rl_full, now_ms, 60000))
+			if (why == WHY_OK && cg_ratelimit_ok(&c->rl_full, now_ms, 60000))
 				cg_warn("more than %d links, ignoring %s", CG_MAX_LINKS, ifc->name);
 			continue;
 		}
+		l->why = why;
+		if (why == WHY_PAUSED)
+			link_close(c, l, "paused");
+		if (why != WHY_OK)
+			continue;
 		l->seen = 1;
-		if (l->fd >= 0 && same_ip(&l->local, &local) && cg_addr_equal(&l->remote, &remote))
-			continue;
-		if (l->fd >= 0)
-			link_close(c, l, "address changed");
-		if (now_ms < l->retry_ms)
-			continue;
-		l->fd = cg_udp_link(ifc->name, &local, &remote, err, sizeof(err));
-		if (l->fd < 0) {
-			if (cg_ratelimit_ok(&l->rl, now_ms, 30000))
-				cg_warn("link %s unusable: %s", ifc->name, err);
-			l->retry_ms = now_ms + RECONCILE_MS;
-			continue;
-		}
-		cg_sock_buffers(l->fd, cfg->rcvbuf, cfg->sndbuf);
-		{
-			socklen_t len = sizeof(local);
-
-			getsockname(l->fd, (struct sockaddr *)&local, &len);
-		}
-		l->local = local;
-		l->remote = remote;
-		l->up_since_ms = now_ms;
-		if (l->last_rx_ms > c->new_before_open_ms)
-			c->new_before_open_ms = l->last_rx_ms;
-		l->last_rx_ms = l->last_reply_ms = l->last_probe_ms = 0;
-		memset(&l->probes, 0, sizeof(l->probes));
-		l->srtt8_us = 0;
-		l->rtt_us = l->unanswered = l->probe_announced = 0;
-		l->have_down_owd = l->peer_muted = 0;
-		cg_health_reset(&c->uh[l - c->link], now_ms);
-		if (cg_epoll_add(c->ep, l->fd, CG_EV(CG_EV_LINK, l - c->link)) < 0) {
-			link_close(c, l, "epoll");
-			continue;
-		}
-		cg_info("link %s%s%s%s up: %s -> %s (id %d)", l->ifname, lc && lc->label[0] ? " (" : "",
-			lc && lc->label[0] ? lc->label : "", lc && lc->label[0] ? ")" : "",
-			cg_addr_str(&l->local, a, sizeof(a)), cg_addr_str(&l->remote, b, sizeof(b)), (int)(l - c->link));
+		link_open(c, l, ifc, &e, now_ms);
+		if (l->fd < 0)
+			l->why = WHY_UNUSABLE;
 	}
-	for (int i = 0; i < CG_MAX_LINKS; i++)
-		if (c->link[i].used && c->link[i].fd >= 0 && !c->link[i].seen)
-			link_close(c, &c->link[i], "interface gone, down or not eligible");
+	for (int i = 0; i < CG_MAX_LINKS; i++) {
+		struct link *l = &c->link[i];
+
+		/* Down, gone, or without an address of the server's family: an
+		 * outage of the link, which comes back through its first server
+		 * address, with the same local address or a new one (srvpick.h).
+		 * Not a pause or an exclusion. */
+		if (l->used && !l->seen && l->why != WHY_PAUSED && l->why != WHY_EXCLUDED) {
+			memset(&l->cand, 0, sizeof(l->cand));
+			l->back_to_first = 0;
+		}
+		if (l->used && l->fd >= 0 && !l->seen)
+			link_close(c, l,
+				   l->why == WHY_GONE   ? "interface gone"
+				   : l->why == WHY_DOWN ? "interface down"
+							: why_name[l->why]);
+	}
 	c->next_reconcile_ms = now_ms + RECONCILE_MS;
+}
+
+/* Every RECONCILE_MS: the path MTU of each socket, and a warning when the
+ * largest WireGuard datagram since the last check does not fit it. */
+static void path_check(struct client *c, uint64_t now_ms)
+{
+	for (int i = 0; i < CG_MAX_LINKS; i++) {
+		struct link *l = &c->link[i];
+		int f = l->remote.ss_family;
+		uint32_t need = cg_outer_len(f, c->up_max), wrap = cg_outer_len(f, CG_WG_OVERHEAD);
+
+		if (l->fd < 0)
+			continue;
+		l->path_mtu = sock_path_mtu(l->fd, f);
+		if (c->up_max && l->path_mtu && need > l->path_mtu && cg_ratelimit_ok(&l->rl_mtu, now_ms, 600000))
+			cg_warn("link %s: WireGuard datagrams of %u bytes make %u-byte packets over IPv%c, more than its path "
+				"MTU of %u: lower the WireGuard MTU to %u",
+				l->ifname, c->up_max, need, f == AF_INET6 ? '6' : '4', l->path_mtu,
+				l->path_mtu > wrap ? l->path_mtu - wrap : 0);
+	}
+	c->up_largest = c->up_max;
+	c->up_max = 0;
+	c->next_path_ms = now_ms + RECONCILE_MS;
 }
 
 /* Sends the m packets prepared in hdr/oiov: all of them on every carrying
@@ -383,6 +555,8 @@ static void wg_read(struct client *c)
 						CG_MAX_PAYLOAD);
 				continue;
 			}
+			if (len > c->up_max)
+				c->up_max = (uint32_t)len; /* for the path MTU check */
 			/* Downstream goes back to whoever last sent something shaped like
 			 * WireGuard, not to any local sender. */
 			if (cg_looks_like_wg(c->in.buf[i], len)) {
@@ -425,6 +599,20 @@ static void on_probe_reply(struct client *c, struct link *l, const struct cg_hdr
 	}
 	l->last_reply_ms = now_ms;
 	l->unanswered = 0;
+	switch (cg_srv_on_reply(&l->silent_moves, l->ncand, l->cand_idx)) {
+	case CG_SRV_BACK:
+		l->back_to_first = 1;
+		c->next_reconcile_ms = 0; /* at the next tick, not while this socket is being read */
+		break;
+	case CG_SRV_RESUMED: {
+		char a[64];
+
+		/* Once per dead round; its later moves were not logged. */
+		cg_info("link %s: the server answers again after a round of its addresses without replies, at %s",
+			l->ifname, cg_addr_str(&l->remote, a, sizeof(a)));
+		break;
+	}
+	}
 	l->peer_view = pi;
 	l->peer_view_ms = now_ms;
 	l->peer_muted = !!(h->flags & CG_F_MUTED);
@@ -655,6 +843,7 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 	cg_json_u64(j, "packets", c->up_pkts);
 	cg_json_u64(j, "bytes", c->up_bytes);
 	cg_json_u64(j, "too_big", c->up_toobig);
+	cg_json_u64(j, "largest", c->up_largest);
 	cg_json_end(j, '}');
 	cg_json_obj(j, "download");
 	cg_json_u64(j, "packets", c->down_pkts);
@@ -691,9 +880,20 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 		cg_json_str(j, "name", l->ifname);
 		cg_json_str(j, "label", lc ? lc->label : "");
 		cg_json_str(j, "state", link_state(c, l, now_ms));
+		cg_json_str(j, "reason", l->fd >= 0 ? "" : why_name[l->why]);
 		cg_json_str(j, "override", cg_ovr_name(cg_ovr_get(&c->ovr, l->ifname)));
 		cg_json_str(j, "local", l->fd >= 0 ? cg_addr_str(&l->local, buf, sizeof(buf)) : "");
 		cg_json_str(j, "remote", l->fd >= 0 ? cg_addr_str(&l->remote, buf, sizeof(buf)) : "");
+		cg_json_str(j, "family", l->fd < 0 ? "" : l->remote.ss_family == AF_INET6 ? "ipv6" : "ipv4");
+		/* Its place in the server list, as filtered by family: 0 is the
+		 * first, a later one means it failed over (srvpick.h). */
+		if (l->fd >= 0)
+			cg_json_u64(j, "candidate", (uint64_t)l->cand_idx);
+		else
+			cg_json_null(j, "candidate");
+		cg_json_u64(j, "candidates", (uint64_t)l->ncand);
+		cg_json_u64(j, "failovers", l->failovers);
+		cg_json_u64(j, "path_mtu", l->fd >= 0 ? l->path_mtu : 0);
 		cg_json_ms(j, "rtt_ms", l->srtt8_us / 8);
 		cg_json_u64(j, "last_rx_ms_ago", l->last_rx_ms ? now_ms - l->last_rx_ms : 0);
 		cg_json_str(j, "upload", h->state == CG_H_MUTED ? "muted" : "active");
@@ -735,43 +935,83 @@ static void write_status(struct client *c, uint64_t now_ms)
 	cg_json_free(&j);
 }
 
-/* "cengarde ctl links": every interface netlink knows, as a table. */
-#define LINK_ROW "%-15s %-12s %-10s %-6s %-6s %9s  %-24s %s\n"
+/* The STATE of an interface in "ctl links"; *up: its link when that carries
+ * the tunnel, else NULL. */
+static const char *row_state(struct client *c, const struct cg_iface *ifc, uint64_t now_ms, const struct link **up)
+{
+	struct cands e;
+	int why = eligible(c, ifc, &e);
+	const struct link *l = link_find(c, ifc->name);
+
+	*up = why == WHY_OK && l && l->fd >= 0 ? l : NULL;
+	return *up ? link_state(c, *up, now_ms) : why == WHY_OK ? "unusable" : why_name[why];
+}
+
+/* "cengarde ctl links": every interface netlink knows, as a table. The
+ * addresses go last; STATE and LOCAL are as wide as their widest value (a
+ * long reason, an IPv6 address). */
+#define LINK_ROW "%-15s %-12s %-*s %-6s %-6s %9s %5s %9s  %-*s  %s\n"
 static void links_text(struct client *c, uint64_t now_ms, struct cg_json *j)
 {
-	char a[64], b[64], rtt[24];
+	char a[64], b[64], remote[96], rtt[24], mtu[16], moves[24];
+	const struct link *l;
+	int ws = 10, w = 5;
 
-	cg_json_raw(j, LINK_ROW, "INTERFACE", "LABEL", "STATE", "MANUAL", "UPLOAD", "RTT", "LOCAL", "REMOTE");
+	for (int i = 0; i < c->nl.nifs; i++) {
+		int len;
+
+		if (!c->nl.ifs[i].name[0])
+			continue;
+		len = (int)strlen(row_state(c, &c->nl.ifs[i], now_ms, &l));
+		ws = len > ws ? len : ws;
+		if (l) {
+			len = (int)strlen(cg_addr_str(&l->local, a, sizeof(a)));
+			w = len > w ? len : w;
+		}
+	}
+	cg_json_raw(j, LINK_ROW, "INTERFACE", "LABEL", ws, "STATE", "MANUAL", "UPLOAD", "RTT", "MTU", "FAILOVERS", w,
+		    "LOCAL", "REMOTE");
 	for (int i = 0; i < c->nl.nifs; i++) {
 		const struct cg_iface *ifc = &c->nl.ifs[i];
 		const struct cg_link_cfg *lc;
-		struct sockaddr_storage local, remote;
-		const struct link *l;
+		const struct link *slot;
+		const char *state;
 		enum cg_ovr o;
-		int why, up;
 
 		if (!ifc->name[0])
 			continue;
 		lc = cg_config_link(c->cfg, ifc->name);
 		o = cg_ovr_get(&c->ovr, ifc->name);
-		why = eligible(c, ifc, &local, &remote);
-		l = link_find(c, ifc->name);
-		up = why == WHY_OK && l && l->fd >= 0;
-		if (up && l->srtt8_us)
+		state = row_state(c, ifc, now_ms, &l);
+		if (l && l->srtt8_us)
 			snprintf(rtt, sizeof(rtt), "%u.%u ms", (unsigned)(l->srtt8_us / 8000),
 				 (unsigned)(l->srtt8_us / 800 % 10));
 		else
 			strcpy(rtt, "-");
-		cg_json_raw(j, LINK_ROW, ifc->name, lc && lc->label[0] ? lc->label : "-",
-			    up ? link_state(c, l, now_ms) : why == WHY_OK ? "unusable" : why_name[why],
+		if (l && l->path_mtu)
+			snprintf(mtu, sizeof(mtu), "%u", l->path_mtu);
+		else
+			strcpy(mtu, "-");
+		slot = link_find(c, ifc->name);
+		if (slot)
+			snprintf(moves, sizeof(moves), "%llu", (unsigned long long)slot->failovers);
+		else
+			strcpy(moves, "-");
+		/* With more than one candidate, which one: 1 is the first. */
+		if (l && l->ncand > 1)
+			snprintf(remote, sizeof(remote), "%s (%d/%d)", cg_addr_str(&l->remote, b, sizeof(b)), l->cand_idx + 1,
+				 l->ncand);
+		else
+			snprintf(remote, sizeof(remote), "%s", l ? cg_addr_str(&l->remote, b, sizeof(b)) : "-");
+		cg_json_raw(j, LINK_ROW, ifc->name, lc && lc->label[0] ? lc->label : "-", ws, state,
 			    o == CG_OVR_AUTO ? "-" : cg_ovr_name(o),
-			    up ? (c->uh[l - c->link].state == CG_H_MUTED ? "muted" : "active") : "-", rtt,
-			    up ? cg_addr_str(&l->local, a, sizeof(a)) : "-", up ? cg_addr_str(&l->remote, b, sizeof(b)) : "-");
+			    l ? (c->uh[l - c->link].state == CG_H_MUTED ? "muted" : "active") : "-", rtt, mtu, moves, w,
+			    l ? cg_addr_str(&l->local, a, sizeof(a)) : "-", remote);
 	}
 	for (int i = 0; i < c->ovr.n; i++)
 		if (!cg_nl_find(&c->nl, c->ovr.e[i].name))
-			cg_json_raw(j, LINK_ROW, c->ovr.e[i].name, "-", "absent", cg_ovr_name(c->ovr.e[i].v), "-", "-", "-",
-				    "-");
+			cg_json_raw(j, LINK_ROW, c->ovr.e[i].name, "-", ws, "absent", cg_ovr_name(c->ovr.e[i].v), "-", "-",
+				    "-", "-", w, "-", "-");
 }
 
 /* ---- reload ---- */
@@ -805,6 +1045,21 @@ static void apply_config(struct client *c, struct cg_config *next, uint64_t now_
 	}
 	if (old->passthrough != next->passthrough && next->passthrough >= 0)
 		cg_info("asking the server for IP pass %s", next->passthrough ? "on" : "off");
+	/* A link whose own list changed starts again from its first address,
+	 * as seen with the families it last opened with: not for an entry of
+	 * another family, nor for a name resolved again in another order
+	 * (srvpick.h). A link never opened has none, and no address to keep. */
+	for (int i = 0; i < CG_MAX_LINKS; i++) {
+		struct link *l = &c->link[i];
+		struct cg_srvlist a, b;
+
+		if (!l->used)
+			continue;
+		a = servers_of(old, l->ifname);
+		b = servers_of(next, l->ifname);
+		if (!cg_lists_same(&a, &b, l->families))
+			memset(&l->cand, 0, sizeof(l->cand));
+	}
 	cg_config_free(old);
 	free(old);
 	reconcile(c, now_ms);
@@ -915,6 +1170,7 @@ static void tick(struct client *c)
 {
 	uint64_t now_us = cg_now_us(), now_ms = now_us / 1000;
 	uint32_t interval = probe_interval(c, now_ms);
+	int failover = 0;
 
 	for (int i = 0; i < CG_MAX_LINKS; i++) {
 		struct link *l = &c->link[i];
@@ -924,10 +1180,16 @@ static void tick(struct client *c)
 		if (l->fd >= 0 &&
 		    (interval != l->probe_announced || now_ms - l->last_probe_ms + CG_TICK_MS / 2 >= interval))
 			send_probe(c, l, now_us, interval);
+		/* Its server address went silent: reconcile moves it (srvpick.h). */
+		if (l->fd >= 0 && l->ncand > 1 &&
+		    cg_srv_due(now_ms, l->cand_since_ms, l->last_reply_ms, c->cfg->server_failover_ms))
+			failover = 1;
 	}
 	health_tick(c, now_ms);
-	if (now_ms >= c->next_reconcile_ms)
+	if (failover || now_ms >= c->next_reconcile_ms)
 		reconcile(c, now_ms);
+	if (now_ms >= c->next_path_ms)
+		path_check(c, now_ms);
 	if (c->sw.running && now_ms >= c->next_status_ms) {
 		write_status(c, now_ms);
 		c->next_status_ms = now_ms + c->cfg->status_interval_ms;

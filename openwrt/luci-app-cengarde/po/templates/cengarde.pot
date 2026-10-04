@@ -22,10 +22,13 @@ msgstr ""
 msgid "Enabled"
 msgstr ""
 
-msgid "VPS address"
+msgid "VPS addresses"
 msgstr ""
 
-msgid "Public IP of the VPS, as the provider shows it. An IP and not a name: with all traffic going through the tunnel, a name could not be resolved before the tunnel is up."
+msgid "Public IPs of the VPS as the provider shows them, IPv4 and IPv6, in order of preference: each uplink uses the first one of a family it has, and tries the next one when the VPS does not answer there. IPs and not names: with all traffic going through the tunnel, a name could not be resolved before the tunnel is up."
+msgstr ""
+
+msgid "At most %d addresses"
 msgstr ""
 
 msgid "VPS port"
@@ -94,7 +97,7 @@ msgstr ""
 msgid "STUN server"
 msgstr ""
 
-msgid "Only for IP pass when the VPS address is not IPv4: UPnP then learns the public IPv4 of the VPS from this STUN server, through the tunnel (e.g. stun.cloudflare.com). Empty: UPnP announces no public IP and hands no ports on to the LAN."
+msgid "Only for IP pass when no VPS address is IPv4: UPnP then learns the public IPv4 of the VPS from this STUN server, through the tunnel (e.g. stun.cloudflare.com). Empty: UPnP announces no public IP and hands no ports on to the LAN."
 msgstr ""
 
 msgid "STUN port"
@@ -106,7 +109,31 @@ msgstr ""
 msgid "Used through the tunnel; the uplinks stop announcing their carriers' DNS servers, which usually refuse queries coming from the VPS."
 msgstr ""
 
+msgid "IPv6 servers are left out while IPv6 does not go through the tunnel: the router would reach them around it. Without an IPv4 server, 1.1.1.1 and 9.9.9.9 are used."
+msgstr ""
+
 msgid "Tunnel MTU"
+msgstr ""
+
+msgid "In a 1500-byte path, packets of up to 1416 bytes fit over IPv4 and of up to 1396 over IPv6. Larger ones get fragmented, and mobile networks often drop the fragments."
+msgstr ""
+
+msgid "At most %d with an IPv6 VPS address"
+msgstr ""
+
+msgid "IPv6 on the uplinks"
+msgstr ""
+
+msgid "Adds a DHCPv6 interface on top of each DHCP or static uplink (named after it, ending in 6), so that cengarde can reach the VPS over the IPv6 of the modems. Their IPv6 prefixes never reach the LAN."
+msgstr ""
+
+msgid "Next VPS address after (ms)"
+msgstr ""
+
+msgid "An uplink that gets no answer from the VPS for this long tries the next VPS address it can use, IPv4 or IPv6, in the list's order. 0: never."
+msgstr ""
+
+msgid "0 (never) or at least %d ms with this probe interval"
 msgstr ""
 
 msgid "Mute after falling behind (ms)"
@@ -127,7 +154,7 @@ msgstr ""
 msgid "Probe interval (ms)"
 msgstr ""
 
-msgid "While there is traffic; each idle link is probed every second."
+msgid "While there is traffic; each idle link is probed every second, or at this interval if it is longer. The next VPS address is tried after three idle probes at the least."
 msgstr ""
 
 msgid "Busy polling (µs)"
@@ -169,13 +196,34 @@ msgstr ""
 msgid "Uplink %s is down."
 msgstr ""
 
+msgid "Uplink %s only has IPv6 (its IPv4 is down) and no VPS address is IPv6: add the IPv6 address of the VPS in Settings."
+msgstr ""
+
+msgid "Uplink %s gets no IPv6 interface: the name %s is taken or longer than 15 characters, so cengarde does not see the IPv6 of that uplink."
+msgstr ""
+
+msgid "The LAN still holds the public IPv6 prefix %s: its IPv6 goes around the tunnel, through the uplinks. Turn off \"Delegate IPv6 prefixes\" on the interface it comes from."
+msgstr ""
+
 msgid "IP pass is on but miniupnpd is not installed."
 msgstr ""
 
-msgid "IP pass is on, but UPnP has no public IP to announce: the VPS address is not IPv4. Set a STUN server in Settings > Tunnel."
+msgid "IP pass is on, but UPnP has no public IP to announce: no VPS address is IPv4. Set a STUN server in Settings > Tunnel."
 msgstr ""
 
 msgid "The engine is not running: see System > System Log."
+msgstr ""
+
+msgid "The VPS does not answer on any uplink: check that it runs cengarde with the secret of this router, and that its firewall lets in UDP to the VPS port."
+msgstr ""
+
+msgid "Uplink %s takes packets of at most %d bytes to the VPS, fewer than the tunnel makes: lower the tunnel MTU to %d."
+msgstr ""
+
+msgid "Uplink %s takes packets of at most %d bytes to the VPS over IPv6, too few for the tunnel even at its smallest MTU (%d): if the uplink has IPv4 too, put an IPv4 VPS address first in the list."
+msgstr ""
+
+msgid "Uplink %s takes packets of at most %d bytes to the VPS, too few for the tunnel even at its smallest MTU (%d): its packets get fragmented, and mobile networks often drop the fragments."
 msgstr ""
 
 msgid "%d s ago"
@@ -206,6 +254,12 @@ msgid "active"
 msgstr ""
 
 msgid "forced on"
+msgstr ""
+
+msgid "failover"
+msgstr ""
+
+msgid "The first VPS address it can use did not answer. Failovers so far: %d"
 msgstr ""
 
 msgid "the VPS does not apply it (passthrough_file missing in its cengarde.conf)"
@@ -256,6 +310,9 @@ msgstr ""
 msgid "Version"
 msgstr ""
 
+msgid "%s, protocol %d"
+msgstr ""
+
 msgid "Uplink"
 msgstr ""
 
@@ -266,6 +323,12 @@ msgid "RTT"
 msgstr ""
 
 msgid "Behind the fastest"
+msgstr ""
+
+msgid "VPS address"
+msgstr ""
+
+msgid "Path MTU"
 msgstr ""
 
 msgid "From the VPS"
@@ -317,6 +380,9 @@ msgid "Status"
 msgstr ""
 
 msgid "Behind the fastest: how much later this uplink delivers than the quickest one; past the limit it gets muted (no traffic, probes only) until it catches up. Arrived first: share of the download that came through this uplink before any other copy. Pause: takes an uplink out without touching the configuration, until you resume it or cengarde restarts."
+msgstr ""
+
+msgid "VPS address: where the uplink sends to; \"failover\" when the first VPS address it can use did not answer. Path MTU: the largest packet the path to the VPS takes."
 msgstr ""
 
 msgid "Every packet goes through all active uplinks; the VPS keeps the first copy."

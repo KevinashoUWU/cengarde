@@ -282,6 +282,8 @@ emulación. En el CI va con KVM.
    - Solución por ahora: `listen` en la IP pública, como ya decía
      `server.conf`.
    - Pendiente: responder desde la dirección de destino (`IP_PKTINFO`).
+     Hecho en el PR 2 de la historia 010 (2026-10-04): ya no hace falta
+     fijar `listen`.
 5. **Límite de miniupnpd 2.3.9:** no arranca si `ext_ip` es privada o
    reservada (`option ext_ip contains reserved / private address`). Con un
    VPS real no pasa, pero un «VPS» de laboratorio necesita una IP pública,
@@ -309,3 +311,5 @@ emulación. En el CI va con KVM.
 - 2026-10-04: la LAN podía leer el secreto en los metadatos del VPS a
   través del túnel, y LuCI aceptaba una dirección con máscara (historia
   010).
+- 2026-10-04: el límite del punto 4 queda resuelto, y `server` pasa a ser
+  una lista (`list server`, migrada al instalar la 0.4.2; historia 010).

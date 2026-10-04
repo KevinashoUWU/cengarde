@@ -2,7 +2,7 @@
  *
  *   mode = client
  *   key = <base64 of 32 random bytes, see "cengarde genkey">
- *   server = vps.example.com:59402
+ *   server = 203.0.113.10:59402 [2001:db8::4]:59402
  *   interfaces = eth1.* wwan*
  *
  *   [link eth1.10]
@@ -18,10 +18,14 @@
 #include <sys/socket.h>
 
 #include "proto.h"
+#include "srvpick.h" /* CG_MAX_CANDS */
 
 #define CG_MAX_PATTERNS 32
 #define CG_MAX_LINK_CFG 32
-#define CG_MAX_SERVER_ADDRS 4
+/* Entries of a server list, addresses or names; a name takes at most
+ * CG_NAME_ADDRS addresses of each family, and a list CG_MAX_CANDS in all. */
+#define CG_MAX_SERVERS 8
+#define CG_NAME_ADDRS 4
 
 /* ---- generic INI layer ---- */
 
@@ -51,8 +55,10 @@ struct cg_link_cfg {
 	char name[IFNAMSIZ];
 	char label[64];
 	int enabled;
-	int nserver;
-	struct sockaddr_storage server[CG_MAX_SERVER_ADDRS];
+	int nserver; /* 0: the global list */
+	struct sockaddr_storage server[CG_MAX_CANDS];
+	int nentry;                      /* entries of server as written */
+	uint8_t entry_n[CG_MAX_SERVERS]; /* how many addresses each gave, in order */
 };
 
 struct cg_config {
@@ -79,8 +85,11 @@ struct cg_config {
 	uint32_t rt_priority;  /* SCHED_FIFO priority; 0: normal scheduling */
 
 	/* client */
-	int nserver;
-	struct sockaddr_storage server[CG_MAX_SERVER_ADDRS];
+	int nserver; /* addresses, in the order of preference (srvpick.h) */
+	struct sockaddr_storage server[CG_MAX_CANDS];
+	int nentry;                      /* entries of server as written */
+	uint8_t entry_n[CG_MAX_SERVERS]; /* how many addresses each gave, in order */
+	uint32_t server_failover_ms; /* without a reply, a link tries its next server address; 0: never */
 	char *include[CG_MAX_PATTERNS];
 	int ninclude;
 	char *exclude[CG_MAX_PATTERNS];

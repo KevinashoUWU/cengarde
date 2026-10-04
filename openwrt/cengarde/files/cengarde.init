@@ -48,8 +48,15 @@ add_uplink_trigger() {
 }
 
 service_triggers() {
+	local i
+
 	procd_add_reload_trigger cengarde
-	# An uplink's device may only be known once it is up.
+	# An uplink's device may only be known once it, or its IPv6 companion
+	# when its IPv4 is down, is up. Nothing in apply depends on that state,
+	# so these reloads change nothing but the engine configuration.
 	config_load cengarde
 	config_list_foreach main uplink add_uplink_trigger
+	for i in $($SETUP companions); do
+		add_uplink_trigger "$i"
+	done
 }

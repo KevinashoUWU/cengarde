@@ -204,12 +204,14 @@ Rango de dos pasadas completas:
 
 - ~~**Fase 2:** silenciado por retraso; espera activa opcional; escribir el
   estado fuera del bucle~~: hecho (historia 006).
-- **Servidor con varias IPs:** responder desde la IP de llegada
-  (`IP_PKTINFO`).
+- ~~**Servidor con varias IPs:** responder desde la IP de llegada
+  (`IP_PKTINFO`)~~: hecho (historia 010, PR 2).
 - **Hilos y privilegios:** servidor multihilo (`SO_REUSEPORT`) si una vCPU se
   queda corta; bajar privilegios (`CAP_NET_RAW`/`CAP_NET_ADMIN`).
-- **Operación:** `SIGHUP` para recargar y socket de control.
-- **IPv6:** no probado en el laboratorio (el kernel de la VM no tiene IPv6).
+- ~~**Operación:** `SIGHUP` para recargar y socket de control~~: hecho
+  (historia 009).
+- **IPv6:** no probado en el laboratorio (el kernel de la VM no tiene IPv6);
+  sí en QEMU desde el PR 2 (historia 010).
 - **Hardware real:** medir en la Pi 4 (aarch64, mismo método de CPU por
   paquete) y en el VPS de Vultr.
 
@@ -224,3 +226,6 @@ Rango de dos pasadas completas:
   (historia 009).
 - 2026-10-04: el reinicio del servidor podía dejar la bajada atascada, y una
   respuesta de sonda vieja paga ahora el MAC en el cliente (historia 010).
+- 2026-10-04: el servidor responde desde la dirección de llegada y el
+  cliente acepta una lista de direcciones del servidor; el binario de
+  OpenWrt x86_64 pasa de 97 a 110 KB (historia 010, PR 2).

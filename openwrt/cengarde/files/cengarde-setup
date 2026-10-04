@@ -7,23 +7,38 @@
 #   cengarde-setup disable        undo what apply set up
 #   cengarde-setup engine-conf    print the engine configuration
 #   cengarde-setup cloud-config   print the VPS user data, secret filled in
+#   cengarde-setup companions     the uplinks' IPv6 interfaces (init triggers)
 #   cengarde-setup status         JSON for LuCI: problems, tunnel, engine
 #
 # What apply maintains while cengarde is enabled with tunnel = 1, once the
-# VPS address and at least one uplink are set (metrics also before that):
+# VPS addresses and at least one uplink are set (metrics also before that):
 # - network: interface "wgcg" (WireGuard, 10.79.0.2/30) with the keys derived
 #   from the secret, and its peer "cengarde_vps" reached through cengarde on
 #   127.0.0.1; with route_all, 0.0.0.0/1 and 128.0.0.0/1 through it (more
 #   specific than any default route, which the uplinks keep for cengarde);
 # - each uplink: a metric of its own (two default routes with the same metric
 #   replace each other) and peerdns 0 (carrier DNS servers would be reached
-#   through the VPS and usually refuse); "dns" goes on the tunnel instead;
+#   through the VPS and usually refuse); "dns" goes on the tunnel instead,
+#   its IPv4 servers only: IPv6 does not go through the tunnel yet;
+# - IPv6 on the uplinks (uplink_ipv6, also with tunnel = 0): a DHCPv6
+#   interface "<uplink>6" on the device of each DHCP or static uplink, so
+#   that the engine sees the modem's IPv6, which never reaches the LAN
+#   (delegate 0) nor the router's DNS (peerdns 0); in the uplink's firewall
+#   zone;
+# - with route_all, delegate 0 and peerdns 0 also on the IPv6 interfaces of
+#   the uplinks that cengarde did not create (wan6 next to wan), and
+#   delegate 0 on the uplinks that are not DHCP (PPP, qmi, mbim and ncm pass
+#   it on to the IPv6 interface they create): otherwise the LAN gets their
+#   prefix and its IPv6 goes around the tunnel;
 # - firewall: wgcg, and uplinks that have no zone yet, in the wan zone
 #   (masquerade, inbound rejected);
-# - with ip_pass, miniupnpd with wgcg as its external interface and the VPS
-#   address as the external IP (when that is not IPv4, STUN with stun_host);
-#   the engine asks the VPS to forward its ports (and to stop when ip_pass
-#   goes off).
+# - with ip_pass, miniupnpd with wgcg as its external interface and the first
+#   IPv4 of the VPS addresses as the external IP (without one, STUN with
+#   stun_host); the engine asks the VPS to forward its ports (and to stop
+#   when ip_pass goes off).
+# Every option cengarde sets on a section it does not own carries a marker
+# (cengarde_peerdns, cengarde_delegate, cengarde_network6) so that disable
+# takes back exactly that.
 #
 # SPDX-License-Identifier: GPL-2.0-only
 
@@ -34,6 +49,7 @@ set -f
 TUN=wgcg
 PEER=cengarde_vps
 TUN_ADDR=10.79.0.2/30
+DEFAULT_DNS="1.1.1.1 9.9.9.9"
 CLOUD_CONFIG=/usr/share/cengarde/cloud-config.yaml
 STATUS_FILE=/var/run/cengarde.json
 CONTROL_SOCKET=/var/run/cengarde/cengarde.sock # cengarde ctl's default
@@ -93,13 +109,14 @@ load() {
 	config_get_bool TUNNEL main tunnel 1
 	config_get_bool ROUTE_ALL main route_all 1
 	config_get_bool IP_PASS main ip_pass 0
+	config_get_bool UPLINK_IPV6 main uplink_ipv6 1
 	config_get STUN_HOST main stun_host
 	config_get STUN_PORT main stun_port
 	config_get SECRET main secret
-	config_get SERVER main server
+	config_get SERVER main server # a list since 0.4.2; an option still works
 	config_get PORT main port 65500
 	config_get MTU main mtu 1380
-	config_get DNS main dns "1.1.1.1 9.9.9.9"
+	config_get DNS main dns "$DEFAULT_DNS"
 	config_get UPLINKS main uplink
 	config_get LOG_LEVEL main log_level info
 	# IP pass needs the tunnel to carry everything: replies go back through it.
@@ -115,23 +132,154 @@ derive_keys() {
 	eval "$keys"
 }
 
-# Device of a logical interface: its layer 3 device while it is up,
-# otherwise the configured one when that is a plain network device.
+# The first IPv4 among the VPS addresses.
+server_ipv4() {
+	local a
+
+	for a in $SERVER; do
+		is_ipv4 "$a" && { echo "$a"; return 0; }
+	done
+	return 1
+}
+
+# Whether some VPS address may be IPv6: an IPv6 literal, or a name.
+server_ipv6() {
+	local a
+
+	for a in $SERVER; do
+		is_ipv4 "$a" || return 0
+	done
+	return 1
+}
+
+# The IPv4 servers of "dns", the only ones the tunnel can take while IPv6
+# does not go through it (the router would reach the others around it).
+dns4() {
+	local d out=''
+
+	for d in $DNS; do
+		is_ipv4 "$d" && out="$out${out:+ }$d"
+	done
+	echo "${out:-$DEFAULT_DNS}"
+}
+
+owned() { [ "$(uci -q get "network.$1.cengarde_owned")" = 1 ]; }
+
+# The IPv6 interfaces of uplink $1 (DHCPv6, or static with an IPv6 address
+# or prefix): on the same device (wan6 next to wan, and cengarde's own), or
+# on top of it ("@wan"). IPv4 aliases on "@wan" are not. One pass over the
+# network configuration: LuCI asks for the status every few seconds.
+companions() {
+	uci -q -X show network | awk -v up="$1" '
+		BEGIN { q = sprintf("%c", 39) }
+		{
+			eq = index($0, "=")
+			val = substr($0, eq + 1)
+			gsub(q, "", val)
+			n = split(substr($0, 1, eq - 1), f, "[.]")
+			if (n == 2 && val == "interface")
+				order[++count] = f[2]
+			else if (n == 3 && f[3] == "device")
+				dev[f[2]] = val
+			else if (n == 3 && f[3] == "proto")
+				proto[f[2]] = val
+			else if (n == 3 && (f[3] == "ip6addr" || f[3] == "ip6prefix"))
+				six[f[2]] = 1
+		}
+		END {
+			for (i = 1; i <= count; i++) {
+				s = order[i]
+				if (s == up || !(proto[s] == "dhcpv6" || (proto[s] == "static" && six[s])))
+					continue
+				if (dev[s] == "@" up || (dev[up] != "" && dev[s] == dev[up]))
+					print s
+			}
+		}'
+}
+
+# What uplink $1 gets for IPv6, in PLAN (CNAME: the companion's name):
+#   own       cengarde keeps CNAME, "<uplink>6" ("_6" is what qmi and mbim
+#             call their own dynamic ones);
+#   foreign   it has one already, CNAME, so cengarde adds none;
+#   conflict  "<uplink>6" is taken, or longer than 15 characters;
+#   none      unknown, or not DHCP or static: other protocols (PPP, qmi,
+#             mbim...) bring their own IPv6.
+companion_plan() {
+	local c
+
+	PLAN=none
+	CNAME=
+	case "$(uci -q get "network.$1.proto")" in dhcp | static) ;; *) return 0 ;; esac
+	for c in $(companions "$1"); do
+		owned "$c" && continue
+		PLAN=foreign
+		CNAME=$c
+		return 0
+	done
+	CNAME="${1}6"
+	PLAN=own
+	if [ "${#CNAME}" -gt 15 ]; then
+		PLAN=conflict
+	elif uci -q get "network.$CNAME" >/dev/null && ! owned "$CNAME"; then
+		PLAN=conflict
+	fi
+}
+
+# The companions cengarde created, on one line.
+owned_companions() {
+	local s out=''
+
+	for s in $(sections network interface); do
+		owned "$s" && out="$out${out:+ }$s"
+	done
+	echo "$out"
+}
+
+# The uplink of a companion of cengarde's: its name is always "<uplink>6".
+companion_uplink() { echo "${1%6}"; }
+
+# Device of a logical interface: its layer 3 device while it or one of its
+# IPv6 companions is up, otherwise the configured one when that is a plain
+# network device.
 uplink_device() {
-	local dev
+	local dev c
 
 	network_get_device dev "$1" && [ -n "$dev" ] && { echo "$dev"; return 0; }
+	for c in $(companions "$1"); do
+		network_get_device dev "$c" && [ -n "$dev" ] && { echo "$dev"; return 0; }
+	done
 	network_get_physdev dev "$1" && [ -n "$dev" ] || dev=$(uci -q get "network.$1.device")
 	case "$dev" in '' | */* | @*) return 1 ;; esac
 	echo "$dev"
 }
 
-fix_uplinks() { # METRICS PEERDNS: on|off each
-	local s m taken='' n
+# keep_off OPTION "INTERFACE ...": OPTION 0 on the network interfaces listed,
+# marked cengarde_OPTION and undone wherever it no longer applies.
+keep_off() {
+	local s
+
+	for s in $(sections network interface); do
+		if list_has "$2" "$s"; then
+			# netifd's false is "0" or "false" (any other value is ignored)
+			case "$(uci -q get "network.$s.$1")" in 0 | false) continue ;; esac
+			want "network.$s.$1" 0
+			want "network.$s.cengarde_$1" 1
+		elif [ "$(uci -q get "network.$s.cengarde_$1")" = 1 ]; then
+			drop "network.$s.$1"
+			drop "network.$s.cengarde_$1"
+		fi
+	done
+}
+
+fix_uplinks() { # METRICS PEERDNS CLOSE_IPV6: on|off each
+	local s m taken='' n c pd='' dg=''
 
 	if [ "$1" = on ]; then
+		# The metrics of other IPv4 default routes: not those of the DHCPv6
+		# interfaces, which the companions copy from their uplinks.
 		for s in $(sections network interface); do
 			list_has "$UPLINKS" "$s" && continue
+			[ "$(uci -q get "network.$s.proto")" = dhcpv6 ] && continue
 			m=$(uci -q get "network.$s.metric") && taken="$taken $m"
 		done
 		for s in $UPLINKS; do
@@ -146,17 +294,67 @@ fix_uplinks() { # METRICS PEERDNS: on|off each
 			taken="$taken $m"
 		done
 	fi
-	# peerdns 0 only while the tunnel is up, undone wherever it was set.
-	for s in $(sections network interface); do
-		if [ "$2" = on ] && list_has "$UPLINKS" "$s"; then
-			[ "$(uci -q get "network.$s.peerdns")" = 0 ] && continue
-			want "network.$s.peerdns" 0
-			want "network.$s.cengarde_peerdns" 1
-		elif [ "$(uci -q get "network.$s.cengarde_peerdns")" = 1 ]; then
-			drop "network.$s.peerdns"
-			drop "network.$s.cengarde_peerdns"
-		fi
+	# peerdns 0 only while the tunnel is up; with all traffic through it,
+	# also delegate 0 and peerdns 0 on the uplinks' IPv6 interfaces that
+	# cengarde did not create (its own have them anyway), and delegate 0 on
+	# the uplinks themselves: PPP, qmi, mbim and ncm copy it onto the IPv6
+	# interface they create ("<uplink>_6"), and a static one may hold a
+	# prefix. Not on DHCP uplinks: there it only reaches 6rd, and netifd
+	# would restart their DHCP client for it.
+	[ "$2" = on ] && pd=$UPLINKS
+	if [ "$3" = on ]; then
+		for s in $UPLINKS; do
+			[ "$(uci -q get "network.$s.proto")" = dhcp ] || dg="$dg $s"
+			for c in $(companions "$s"); do
+				owned "$c" && continue
+				list_has "$pd" "$c" || pd="$pd $c"
+				dg="$dg $c"
+			done
+		done
+	fi
+	keep_off peerdns "$pd"
+	keep_off delegate "$dg"
+}
+
+# The uplinks' own DHCPv6 interfaces (on), or none (off). A section cengarde
+# did not create is never changed: its name is reported as a conflict.
+fix_companions() { # on|off
+	local s c d o v keep=''
+
+	if [ "$1" = on ]; then
+		for s in $UPLINKS; do
+			companion_plan "$s"
+			[ "$PLAN" = own ] || continue
+			c=$CNAME
+			keep="$keep $c"
+			# On the uplink's device, as OpenWrt puts wan6 next to wan: "@wan"
+			# only exists while wan's IPv4 is up (netifd's alias.c), so its
+			# IPv6 would go down with it. "@wan" only when wan has no device
+			# of its own (a wireless client).
+			d=$(uci -q get "network.$s.device")
+			case "$d" in '' | @* | */*) d="@$s" ;; esac
+			want "network.$c" interface
+			want "network.$c.proto" dhcpv6
+			want "network.$c.device" "$d"
+			want "network.$c.reqprefix" no
+			want "network.$c.delegate" 0
+			want "network.$c.peerdns" 0
+			want "network.$c.cengarde_owned" 1
+			# The uplink's metric for its IPv6 default route too, and
+			# whether it comes up at all.
+			for o in metric auto disabled; do
+				if v=$(uci -q get "network.$s.$o"); then
+					want "network.$c.$o" "$v"
+				else
+					drop "network.$c.$o"
+				fi
+			done
+		done
+	fi
+	for c in $(owned_companions); do
+		list_has "$keep" "$c" || drop "network.$c"
 	done
+	fix_zone6
 }
 
 fix_zone() { # on|off
@@ -186,12 +384,46 @@ fix_zone() { # on|off
 	done
 }
 
-# Where miniupnpd gets the public IP it announces: "server" when the VPS
-# address is an IPv4 literal, "stun" (found through the tunnel) when a STUN
-# server is given, otherwise "none": miniupnpd does not start with STUN on
-# and no server, and without a public IP UPnP hands no ports to the LAN.
+zone_of() { # NETWORK: the firewall zone that lists it
+	local z
+
+	for z in $(sections firewall zone); do
+		list_has "$(uci -q get "firewall.$z.network")" "$1" && { echo "$z"; return 0; }
+	done
+	return 1
+}
+
+# Each companion cengarde keeps goes in its uplink's zone, unless it is in a
+# zone already; it leaves the zone (marked cengarde_network6) with the
+# companion, or when the uplink moves to another zone.
+fix_zone6() {
+	local z c own
+
+	own=$(owned_companions)
+	for z in $(sections firewall zone); do
+		for c in $(uci -q get "firewall.$z.cengarde_network6"); do
+			list_has "$own" "$c" && [ "$(zone_of "$(companion_uplink "$c")")" = "$z" ] && continue
+			uci -q del_list "firewall.$z.network=$c"
+			uci -q del_list "firewall.$z.cengarde_network6=$c"
+			changed firewall
+		done
+	done
+	for c in $own; do
+		zone_of "$c" >/dev/null && continue
+		z=$(zone_of "$(companion_uplink "$c")") || continue
+		uci add_list "firewall.$z.network=$c"
+		uci add_list "firewall.$z.cengarde_network6=$c"
+		changed firewall
+	done
+}
+
+# Where miniupnpd gets the public IP it announces: "server" when one of the
+# VPS addresses is an IPv4 literal (the first one), "stun" (found through the
+# tunnel) when a STUN server is given, otherwise "none": miniupnpd does not
+# start with STUN on and no server, and without a public IP UPnP hands no
+# ports to the LAN.
 upnp_ip() {
-	if is_ipv4 "$SERVER"; then
+	if server_ipv4 >/dev/null; then
 		echo server
 	elif [ -n "$STUN_HOST" ]; then
 		echo stun
@@ -226,7 +458,7 @@ fix_upnp() { # on|off
 		want upnpd.config.external_iface "$TUN"
 		case $(upnp_ip) in
 		server)
-			want upnpd.config.external_ip "$SERVER"
+			want upnpd.config.external_ip "$(server_ipv4)"
 			fix_stun off
 			;;
 		stun)
@@ -236,7 +468,7 @@ fix_upnp() { # on|off
 		*)
 			drop upnpd.config.external_ip
 			fix_stun off
-			log "IP pass: the VPS address is not IPv4, so UPnP has no public IP to announce: set stun_host"
+			log "IP pass: no VPS address is IPv4, so UPnP has no public IP to announce: set stun_host"
 			;;
 		esac
 	elif [ "$(uci -q get upnpd.config.external_iface)" = "$TUN" ]; then
@@ -262,7 +494,7 @@ fix_tunnel() { # on|off
 	want_list "network.$TUN.addresses" "$TUN_ADDR"
 	want "network.$TUN.mtu" "$MTU"
 	want "network.$TUN.nohostroute" 1
-	want_list "network.$TUN.dns" "$DNS"
+	want_list "network.$TUN.dns" "$(dns4)"
 	want "network.$PEER" "wireguard_$TUN"
 	want "network.$PEER.description" "cengarde VPS"
 	want "network.$PEER.public_key" "$pub"
@@ -289,7 +521,7 @@ commit() {
 }
 
 apply() {
-	local on=off
+	local on=off six=off close=off
 
 	load
 	if [ "$ENABLED" = 1 ] && [ "$TUNNEL" = 1 ]; then
@@ -304,13 +536,17 @@ apply() {
 			on=on
 		fi
 	fi
+	# The engine runs once it has somewhere to go, with or without the tunnel.
+	[ "$ENABLED" = 1 ] && [ "$UPLINK_IPV6" = 1 ] && [ -n "$SERVER" ] && [ -n "$UPLINKS" ] && six=on
+	[ "$on" = on ] && [ "$ROUTE_ALL" = 1 ] && close=on
 	fix_tunnel "$on" || return 1
 	fix_zone "$on"
 	if [ "$ENABLED" = 1 ]; then
-		fix_uplinks on "$on"
+		fix_uplinks on "$on" "$close"
 	else
-		fix_uplinks off off
+		fix_uplinks off off off
 	fi
+	fix_companions "$six"
 	if [ "$on" = on ] && [ "$IP_PASS" = 1 ] && [ "$ROUTE_ALL" = 1 ]; then
 		fix_upnp on
 	else
@@ -324,18 +560,22 @@ disable() {
 	ENABLED=0
 	fix_tunnel off
 	fix_zone off
-	fix_uplinks off off
+	fix_uplinks off off off
+	fix_companions off
 	fix_upnp off
 	commit
 }
 
 engine_conf() {
-	local s dev seen='' server k v
+	local s dev seen='' server='' a k v
 
 	load
 	derive_keys || die "no valid secret (uci get cengarde.main.secret)"
-	[ -n "$SERVER" ] || die "no server: set the VPS address (uci set cengarde.main.server=...)"
-	case "$SERVER" in *:*) server="[$SERVER]:$PORT" ;; *) server="$SERVER:$PORT" ;; esac
+	[ -n "$SERVER" ] || die "no server: add the VPS address (uci add_list cengarde.main.server=...)"
+	for a in $SERVER; do
+		case "$a" in *:*) a="[$a]" ;; esac
+		server="$server${server:+ }$a:$PORT"
+	done
 	cat <<-EOF
 		# Generated from /etc/config/cengarde by cengarde-setup: edit that instead.
 		mode = client
@@ -350,7 +590,7 @@ engine_conf() {
 		# IP pass: the VPS forwards its ports here (or stops) as this says.
 		passthrough = $PASS
 	EOF
-	for k in mute_behind_ms unmute_behind_ms mute_settle_ms mute_trickle min_active_links \
+	for k in server_failover_ms mute_behind_ms unmute_behind_ms mute_settle_ms mute_trickle min_active_links \
 		probe_interval_ms probe_idle_ms busy_poll_us cpu rt_priority sndbuf description; do
 		config_get v main "$k"
 		[ -n "$v" ] && echo "$k = $v"
@@ -371,13 +611,85 @@ cloud_config() {
 		-e "s|^\( *PASSTHROUGH=\).*|\1$PASS|" "$CLOUD_CONFIG"
 }
 
-problem() { # CODE [INTERFACE]
-	PROBLEMS="$PROBLEMS${PROBLEMS:+,}{\"code\":\"$1\"${2:+,\"iface\":\"$2\"}}"
+# Every IPv6 interface of the uplinks, for the init script's triggers: the
+# engine follows their addresses, and an uplink whose IPv4 is down may only
+# have its device known through them.
+list_companions() {
+	local s c seen=''
+
+	load
+	for s in $UPLINKS; do
+		for c in $(companions "$s"); do
+			list_has "$seen" "$c" && continue
+			seen="$seen $c"
+			echo "$c"
+		done
+	done
+}
+
+problem() { # CODE [INTERFACE [MORE_JSON]]
+	PROBLEMS="$PROBLEMS${PROBLEMS:+,}{\"code\":\"$1\"${2:+,\"iface\":\"$2\"}${3:+,$3}}"
+}
+
+ipv6_up() { # UPLINK: one of its IPv6 interfaces is up
+	local c
+
+	for c in $(companions "$1"); do
+		network_is_up "$c" && return 0
+	done
+	return 1
+}
+
+# A prefix the LAN holds that is not a ULA (fc00::/7): its IPv6 goes out
+# through the uplinks, around the tunnel.
+leaked_prefix() {
+	local all='' p
+
+	eval "$(ubus call network.interface dump 2>/dev/null |
+		jsonfilter -F '/ ' -e "all=@.interface[*]['ipv6-prefix-assignment'][*]['address','mask']" 2>/dev/null)"
+	for p in $all; do
+		case "$p" in f[cd]??:*) continue ;; esac
+		echo "$p"
+		return 0
+	done
+	return 1
+}
+
+# From the engine's status: no reply from the VPS on any link after the
+# first 10 s (vps_silent), and links whose path MTU is smaller than the
+# packets the tunnel makes (path_mtu, with the largest tunnel MTU that fits,
+# and the family: LuCI advises otherwise when that MTU is below 1280).
+engine_problems() { # STATUS_JSON
+	local up=0 largest=0 wg n i=0 open=0 live=0 st fam pm name label over
+
+	eval "$(jsonfilter -s "$1" -e 'up=@.uptime_ms' -e 'largest=@.upload.largest' 2>/dev/null)"
+	wg=$largest
+	case "$MTU" in '' | *[!0-9]*) ;; *) [ "$TUNNEL" = 1 ] && [ $((MTU + 32)) -gt "$wg" ] && wg=$((MTU + 32)) ;; esac
+	n=$(jsonfilter -s "$1" -e '@.links[*].id' 2>/dev/null | wc -l)
+	while [ "$i" -lt "$n" ]; do
+		st='' fam='' pm=0 name='' label=''
+		eval "$(jsonfilter -s "$1" -e "st=@.links[$i].state" -e "fam=@.links[$i].family" \
+			-e "pm=@.links[$i].path_mtu" -e "name=@.links[$i].name" -e "label=@.links[$i].label" 2>/dev/null)"
+		i=$((i + 1))
+		case "$st" in
+		live) live=$((live + 1)) ;;
+		waiting | stalled) ;;
+		*) continue ;; # no socket: paused or down
+		esac
+		open=$((open + 1))
+		# WireGuard's datagram (MTU + 32), then ours (24), UDP (8) and IP.
+		over=52
+		[ "$fam" = ipv6 ] && over=72
+		[ "$pm" -gt 0 ] && [ $((wg + over)) -gt "$pm" ] &&
+			problem path_mtu "${label:-$name}" "\"mtu\":$pm,\"fit\":$((pm - over - 32)),\"family\":\"$fam\""
+	done
+	[ "$open" -gt 0 ] && [ "$live" = 0 ] && [ "$up" -ge 10000 ] && problem vps_silent
+	return 0
 }
 
 # Everything LuCI's status page needs in one call.
 status() {
-	local s running=false hs=0 rx=0 tx=0 now line engine=null
+	local s running=false hs=0 rx=0 tx=0 now line engine=null proto p
 
 	load
 	PROBLEMS=
@@ -391,9 +703,21 @@ status() {
 			elif [ "$(uci -q get "network.$s.defaultroute")" = 0 ]; then
 				problem uplink_noroute "$s"
 			elif ! network_is_up "$s"; then
-				problem uplink_down "$s"
+				# Its IPv4 is down; with IPv6 up it is "IPv6 only", which
+				# carries the tunnel when the VPS has an IPv6 address.
+				if ! ipv6_up "$s"; then
+					problem uplink_down "$s"
+				elif ! server_ipv6; then
+					problem uplink_ipv6_only "$s"
+				fi
+			fi
+			if [ "$UPLINK_IPV6" = 1 ]; then
+				companion_plan "$s"
+				[ "$PLAN" = conflict ] && problem ipv6_companion_conflict "$s" "\"name\":\"$CNAME\""
 			fi
 		done
+		[ "$TUNNEL" = 1 ] && [ "$ROUTE_ALL" = 1 ] && [ -n "$SERVER" ] && [ -n "$UPLINKS" ] &&
+			p=$(leaked_prefix) && problem ipv6_leak "" "\"prefix\":\"$p\""
 		[ "$IP_PASS" = 1 ] && [ ! -f /etc/config/upnpd ] && problem no_upnp
 		[ "$PASS" = yes ] && [ -n "$SERVER" ] && [ -f /etc/config/upnpd ] && [ "$(upnp_ip)" = none ] &&
 			problem upnp_no_ip
@@ -409,9 +733,13 @@ status() {
 		hs=$5 rx=$6 tx=$7
 	fi
 	now=$(date +%s)
-	[ -s "$STATUS_FILE" ] && [ "$running" = true ] && engine=$(cat "$STATUS_FILE")
-	printf '{"enabled":%s,"running":%s,"problems":[%s],"tunnel":{"handshake":%s,"now":%s,"rx_bytes":%s,"tx_bytes":%s},"engine":%s}\n' \
-		"$([ "$ENABLED" = 1 ] && echo true || echo false)" "$running" "$PROBLEMS" \
+	if [ -s "$STATUS_FILE" ] && [ "$running" = true ]; then
+		engine=$(cat "$STATUS_FILE")
+		engine_problems "$engine"
+	fi
+	proto=$(cengarde version 2>/dev/null | sed -n 's/.*(protocol \([0-9]*\)).*/\1/p')
+	printf '{"enabled":%s,"running":%s,"protocol":%s,"problems":[%s],"tunnel":{"handshake":%s,"now":%s,"rx_bytes":%s,"tx_bytes":%s},"engine":%s}\n' \
+		"$([ "$ENABLED" = 1 ] && echo true || echo false)" "$running" "${proto:-null}" "$PROBLEMS" \
 		"$hs" "$now" "$rx" "$tx" "$engine"
 }
 
@@ -422,9 +750,10 @@ apply) apply ;;
 disable) disable ;;
 engine-conf) engine_conf ;;
 cloud-config) cloud_config ;;
+companions) list_companions ;;
 status) status ;;
 *)
-	echo "usage: cengarde-setup apply|disable|engine-conf|cloud-config|status" >&2
+	echo "usage: cengarde-setup apply|disable|engine-conf|cloud-config|companions|status" >&2
 	exit 2
 	;;
 esac

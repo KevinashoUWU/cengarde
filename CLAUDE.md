@@ -10,8 +10,8 @@ todos los enlaces del cliente (p. ej. una Raspberry Pi con varios módems) hacia
 un servidor (VPS), y el otro extremo se queda con la primera copia. Objetivo
 del fork: motor en C (Pi, OpenWrt, VPS), eBPF opcional y OpenWrt con LuCI.
 Plan: `ROADMAP.md`. Estado: Fases 1 y 2 hechas; Fase 3: OpenWrt (UCI, LuCI,
-imágenes, un solo secreto, `cengarde ctl`, recarga sin cortar, IP pass desde
-el router) probado en QEMU; falta hardware real.
+imágenes, un solo secreto, `cengarde ctl`, recarga sin cortar, IP pass, IPv6
+por fuera del túnel) probado en QEMU; falta hardware real.
 
 ## Mapa del repo
 
@@ -30,12 +30,12 @@ el router) probado en QEMU; falta hardware real.
   `lab.d/`) y `latency`; `ENGINE=go bench/lab.sh build` suma el Go del
   historial, para `compare` (Go frente a C) y `suite` (línea base Go).
 - OpenWrt de punta a punta: `openwrt/test/e2e.sh IMAGEN` (`openwrt/README.md`).
-- Contenedor cloud: `apt-get update` y luego `iproute2 strace` (laboratorio)
-  o `qemu-system-x86 openssh-client` (e2e); sin IPv6, WireGuard ni netem.
+- Contenedor cloud: `apt-get update`, `iproute2 iptables strace` (laboratorio)
+  o `qemu-system-x86 openssh-client` (e2e); sin IPv6, WireGuard, netem, systemd.
 - CI: `engine.yml` (gcc/clang con `-Werror`, sanitizers, qemu en aarch64,
   armhf y MIPS big-endian, laboratorio en netns), `openwrt.yml` (paquetes
   25.12/24.10, imágenes, e2e con KVM y release con tags `v*`) y `vps.yml`
-  (reglas de seguridad de `cengarde-nat` en netns).
+  (reglas de `cengarde-nat` en netns, y el VPS entero con systemd real).
 
 ## Reglas de trabajo
 
@@ -77,4 +77,4 @@ el router) probado en QEMU; falta hardware real.
 | [007](docs/historias/007-openwrt-y-vps.md) | Paquete OpenWrt, plantilla del VPS, SmoothWAN como referencia | empaquetes o instales en OpenWrt o el VPS |
 | [008](docs/historias/008-luci-uci-y-emparejamiento.md) | UCI, LuCI, un solo secreto (BLAKE2s), imágenes, prueba en QEMU | toques `openwrt/`, `cengarde keys` o el cloud-config |
 | [009](docs/historias/009-recarga-control-e-ip-pass.md) | Recarga sin cortar, `cengarde ctl`, pausa de enlaces, IP pass desde el router (v3) | toques la recarga, el socket de control, procd o el IP pass |
-| [010](docs/historias/010-ipv6-varias-ip-multicliente-nombres.md) | Plan de IPv6, respuesta desde la dirección de llegada, varios routers por VPS (v4) y nombres; PR 1: reinicio del servidor y metadatos del VPS | toques IPv6, las direcciones del VPS, el multicliente, `cengarde-nat` o los nombres |
+| [010](docs/historias/010-ipv6-varias-ip-multicliente-nombres.md) | Plan de IPv6, varios routers por VPS (v4) y nombres; hechos el PR 1 (reinicio del servidor, metadatos del VPS) y el PR 2 (dirección de llegada, lista de direcciones, IPv6 por fuera, fuga de IPv6) | toques IPv6, las direcciones del VPS, el multicliente, `cengarde-nat` o los nombres |

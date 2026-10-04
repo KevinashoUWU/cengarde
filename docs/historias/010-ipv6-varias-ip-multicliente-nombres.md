@@ -1,8 +1,8 @@
 # 010 — IPv6, dirección de llegada, varios routers por VPS y nombres
 
 - **Fecha:** 2026-10-04
-- **Estado:** vigente. PR 1 hecho (paquetes 0.4.1, protocolo v3 sin
-  cambios); PR 2 a 5 pendientes.
+- **Estado:** vigente. PR 1 y PR 2 hechos (paquetes 0.4.1 y 0.4.2,
+  protocolo v3 sin cambios); PR 3 a 5 pendientes.
 - **Fuentes:**
   - código del PR 1 (`git log ebe570b..823e4dd`):
     - `engine/src/epoch.h`; `client.c:442` (`ms_since_new`), `:456`
@@ -16,7 +16,17 @@
       (`fix_stun`) y `:399` (`upnp_no_ip`); `config.js` y `status.js`;
     - antes del PR 1, en `ebe570b`: `config.c:257` (direcciones de más
       descartadas en silencio) y `cengarde-nat:73` (DROP solo en `PUB_IF`);
-  - commits: `7ae94a8` (reinicio del servidor), `b7da949` y `4f2f6d8`
+  - código del PR 2 (`git log 1c27532..`, paquetes 0.4.2):
+    - `engine/src/pktinfo.h`; `server.c` (`path_update`, `flush_replies`);
+      `sock.c` (`cg_udp_bind_opts`);
+    - `engine/src/srvpick.h` y `addrpick.h`; `client.c` (`link_open`,
+      `path_check`); `netlink.c` (`on_addr`, `cg_addr_slot`);
+    - `openwrt/cengarde/files/cengarde-setup` (`companions`,
+      `fix_companions`, `keep_off`, `leaked_prefix`, `engine_problems`),
+      `cengarde.defaults` (migración a `list server`), `config.js` y
+      `status.js`;
+    - `contrib/vps/test/systemd.sh` y el trabajo `systemd` de `vps.yml`;
+  - commits del PR 1: `7ae94a8` (reinicio del servidor), `b7da949` y `4f2f6d8`
     (metadatos y WireGuard), `a69fa64` y `79b4d9f` (validación), `0f13648`
     y `9296855` (LuCI y STUN), `bfe114e` (emparejamiento), `d99d5ec`,
     `7fcd131`, `1f6b666`, `b8eff95`, `c202376`, `53f3b83`, `d0ce648` y
@@ -33,6 +43,8 @@
       (`delegate`), `wireguard.sh` (IPv6) y el `validation.js` de LuCI
       (tipo `host`); `board.d/02_network` de la imagen 25.12.5 de la Pi 4;
       miniupnpd 2.3.9 (STUN);
+    - de 25.12.5: `alias.c` de netifd, `dhcp.sh`, `ppp.sh` y `ppp6-up`,
+      `qmi.sh`, `mbim.sh` y `ncm.sh` (`delegate`);
   - systemd: `systemd.service(5)` (`RemainAfterExit`), `LoadCredential=`
     (v249, v255 y v260), `IPAddressDeny=`; unidades `.path` en la
     historia 009;
@@ -43,7 +55,8 @@
     y `products/compute/instances/cloud-compute/networking/ipv6`; y
     `netplan generate` 1.1.2;
   - respuestas del usuario, 2026-10-04;
-  - medidas: `sudo bench/lab.sh restart [REF]`, `sudo bench/lab.sh ci`,
+  - medidas: `sudo bench/lab.sh restart [REF]`, `multiip`, `fallback`,
+    `down` y `up` (antes y después), `sudo bench/lab.sh ci`,
     `sudo sh contrib/vps/test/security.sh` (y `vps.yml`) y
     `openwrt/test/e2e.sh` con 25.12.5.
 
@@ -52,7 +65,7 @@
 - **Cuatro pedidos, cinco PRs y un solo cambio de protocolo:**
   1. arreglos, sin cambio de protocolo (**hecho**, 0.4.1);
   2. respuesta desde la dirección de llegada, IPv6 por fuera del túnel y
-     cierre de la fuga de IPv6 de la LAN;
+     cierre de la fuga de IPv6 de la LAN (**hecho**, 0.4.2);
   3. varios routers por VPS, con el protocolo v4 y un panel de reenvío de
      puertos;
   4. IPv6 dentro del túnel, apagado por defecto;
@@ -70,18 +83,32 @@
   - configuración más estricta, MTU de LuCI hasta 1416, STUN solo con un
     servidor explícito, y direcciones de túnel y pista de cliente
     derivadas del secreto (aún sin usar).
+- **Lo que cerró el PR 2:**
+  - un VPS con varias IP, o con IPv6, ya funciona: el servidor contesta
+    desde la dirección a la que llegó cada paquete (en el laboratorio, con
+    el motor anterior, los enlaces que iban a una dirección secundaria
+    nunca quedaban vivos);
+  - el router acepta hasta 8 direcciones del VPS, IPv4 e IPv6; cada enlace
+    usa la primera que puede y pasa a la siguiente tras 10 s sin
+    respuesta, y elige su IPv6 de origen como RFC 6724 (nunca la ULA si hay
+    una global);
+  - la IPv6 de los módems llega al motor con una interfaz DHCPv6 por
+    enlace, y la LAN ya no recibe por fuera del túnel el prefijo que
+    delega un enlace como Starlink (probado en QEMU con un prefijo
+    delegado);
+  - aviso cuando el MTU del camino de un enlace no deja pasar el túnel.
 - **Decisiones del usuario que cambian el diseño:**
   - la IPv4 reservada, si la hay, es la IP principal del VPS: nada de IP
     extra ni de IP propia 1:1 por router;
   - el IP pass con varios routers es un panel de reenvío de puertos;
   - IPv6 dentro del túnel apagado por defecto;
   - solo Starlink da IPv6 hoy, con un prefijo delegado: la IPv6 de la LAN
-    puede salir por fuera del túnel si el enlace Starlink tiene una
-    interfaz DHCPv6 que lo delega; hasta el PR 2, no crearla o ponerle
-    `delegate '0'`;
+    podía salir por fuera del túnel si el enlace Starlink tenía una
+    interfaz DHCPv6 que lo delegaba; desde el PR 2, cengarde le pone
+    `delegate '0'` mientras todo va por el túnel;
   - el "VPS" puede ser un Debian o Ubuntu casero con IP dinámica, quizá
     detrás de un router, encontrado por DNS dinámico.
-- **Siguiente:** el PR 2, que además cierra esa fuga.
+- **Siguiente:** el PR 3, varios routers por VPS (protocolo v4).
 
 ## Contexto
 
@@ -168,13 +195,22 @@ Sin respuesta: cuántos routers por VPS. Se mantiene el límite del diseño,
 
 ### OpenWrt (24.10 y 25.12)
 
-- **netifd:** una interfaz DHCPv6 compañera por enlace (`proto dhcpv6`
-  sobre `@enlace`) le da al motor la IPv6 del módem. `delegate 0` no pasa
-  su prefijo a la LAN y `peerdns 0` no usa sus DNS. Las mismas opciones
-  existen en las dos ramas.
-- **Nombres de compañeras:** qmi y mbim crean interfaces dinámicas
-  `<iface>_6`, que no heredan `delegate`; por eso las compañeras de
-  cengarde no usan ese sufijo y el estado avisará de la fuga.
+- **netifd:** una interfaz DHCPv6 compañera por enlace (`proto dhcpv6`)
+  le da al motor la IPv6 del módem. `delegate 0` no pasa su prefijo a la
+  LAN y `peerdns 0` no usa sus DNS. Las mismas opciones existen en las dos
+  ramas.
+- **Dispositivo de la compañera:** el del enlace, como el `wan6` de
+  fábrica; `@enlace` solo si el enlace no tiene uno propio (un cliente
+  wifi). Un alias `@enlace` existe solo mientras el enlace está arriba
+  (`alias.c`, `alias_check_state`): un fallo de DHCPv4 se llevaría también
+  su IPv6.
+- **Interfaces IPv6 dinámicas:** PPP, qmi, mbim y ncm crean `<iface>_6` y
+  le copian `delegate 0` solo desde la interfaz madre (`ppp6-up`,
+  `qmi.sh`, `mbim.sh`, `ncm.sh`). Por eso, mientras todo va por el túnel,
+  cengarde pone `delegate 0` en los enlaces que no son DHCP; en los DHCP
+  no, porque `dhcp.sh` declara `delegate` (solo para 6rd) y netifd
+  reiniciaría su cliente DHCP. Las compañeras de cengarde no usan ese
+  sufijo, y `ipv6_leak` queda como aviso para otras fuentes.
 - **La Pi 4 no trae `wan6`:** de fábrica solo tiene `lan`
   (`board.d/02_network`). La fuga de IPv6 aparece solo si alguien crea
   una DHCPv6 que delega sobre el enlace Starlink, o si Starlink va al
@@ -210,9 +246,10 @@ sigue igual (ver «Pendiente, por PR»).
 | --- | --- | --- |
 | Arreglo inmediato del reinicio (anillo de ecos) | 1 | Hecho. |
 | Emparejamiento: dirección de túnel, ULA y pista derivadas | 1 | Hecho; se usan en el PR 3. |
-| MTU: 1380, LuCI 1280–1416, tope 1396 con un literal IPv6, `path_mtu` | 1–2 | El rango de LuCI está hecho; el resto, en el PR 2. |
-| Responder desde la dirección de llegada: un socket `[::]` con pktinfo | 2 | Hace falta igual: IPv4 e IPv6 en el VPS (SLAAC, temporales) y un servidor casero con varias direcciones. |
-| Compañeras DHCPv6 (`delegate 0`, `peerdns 0`) y cierre de la fuga aunque cengarde no las haya creado | 2 | Pasa a ser lo urgente: Starlink delega un prefijo. |
+| MTU: 1380, LuCI 1280–1416, tope 1396 con un literal IPv6, `path_mtu` | 1–2 | Hecho. |
+| Responder desde la dirección de llegada: un socket `[::]` con pktinfo | 2 | Hecho. Hacía falta igual: IPv4 e IPv6 en el VPS (SLAAC, temporales) y un servidor casero con varias direcciones. |
+| Compañeras DHCPv6 (`delegate 0`, `peerdns 0`) y cierre de la fuga aunque cengarde no las haya creado | 2 | Hecho; pasó a ser lo urgente: Starlink delega un prefijo. |
+| `cengarde-nat` declarativo con su unidad (`RemainAfterExit`) | 2 | **Movido al PR 3,** junto al panel de puertos que lo reescribe; el PR 2 prueba en un systemd real el `cengarde-nat` de hoy. |
 | IP extra en el VPS e IPv4 propia 1:1 por router (`--public-ip`, `pass_ip`, SNAT fijo, despacho con `-g`) | 2–3 | **Sustituida** por la decisión 1: la reservada es la IP principal. Fuera también `extra-ips` y el netplan para IP extra. |
 | IP pass con varios routers: la IP principal para uno y 1:1 para los demás | 3 | **Sustituida** por el panel de reenvío de puertos (abajo). |
 | IPv6 dentro del túnel: ULA y NAT66 en los dos extremos | 4 | Apagado por defecto. El lado VPS no puede suponer netplan. |
@@ -356,6 +393,108 @@ los metadatos en el VPS.
   reales, en el nuevo `vps.yml`, que falla si no hay IPv6. Los scripts
   pasan shellcheck en `openwrt.yml`.
 
+## PR 2: dirección de llegada, IPv6 por fuera y fuga de IPv6 (hecho)
+
+Paquetes 0.4.2, protocolo v3 sin cambios: un router 0.4.1 habla con un VPS
+0.4.2 y al revés. Lo que arregla el VPS (contestar desde la dirección de
+llegada) pide actualizar el VPS; lo del router (lista, IPv6, fuga), el
+router.
+
+### Servidor: respuesta desde la dirección de llegada (`pktinfo.h`, `server.c`)
+
+- **Solo con un `listen` comodín** (`*` o `0.0.0.0`, el de
+  `cengarde-vps-setup`): pide `IPV6_RECVPKTINFO` (o `IP_PKTINFO` sin IPv6)
+  y responde por cada camino con `IPV6_PKTINFO` (ifindex 0, `CMSG_LEN(20)`)
+  o `IP_PKTINFO` (`ipi_spec_dst`). Si el kernel no lo acepta, avisa y sigue
+  como antes.
+- **Se aprende solo después del MAC y de marcar el anti-replay,** como la
+  dirección del cliente. El mensaje de control de cada camino se arma una
+  vez y se copia en cada respuesta, sin `malloc` ni log por paquete.
+- **Un error no corta a los demás:** las respuestas de sonda salen en un
+  bucle que salta solo el mensaje que falla (`sendmmsg` se detiene en el
+  primer error), y cada camino envía su lote aparte. Una dirección que
+  desaparece suma `local_errors` en su camino, con un log limitado, y el
+  camino sigue.
+- **Estado:** `listen`, `reply_from_arrival`, `rx.ctrunc` y, por camino,
+  `local`, `moves` y `local_errors`; la columna LOCAL en `ctl links`.
+- **Hilos:** el servidor sigue con un hilo; el comentario que daba el
+  mensaje de control por listo para varios hilos se corrigió. Publicarlo
+  bien (dos búferes o un contador de secuencia) queda para el servidor
+  multihilo.
+
+### Cliente: lista de direcciones, origen IPv6 y MTU de camino
+
+- **`server` es una lista ordenada** de hasta 8 entradas (global o por
+  `[link]`); un nombre da hasta 4 direcciones por familia y se resuelve al
+  leer el archivo, como antes (el PR 5 cambia eso).
+- **Una familia por enlace** y failover pegajoso (`srvpick.h`): la primera
+  entrada de una familia que el enlace tiene; tras `server_failover_ms`
+  (10 s; 0 lo apaga; como mínimo 3 × `probe_idle_ms`) sin respuesta
+  verificada, la siguiente. Vuelve a la primera solo si:
+  - cambia o pierde su dirección local (también si vuelve la misma);
+  - gana o pierde una familia con entradas en su lista;
+  - una recarga cambia las entradas de su familia (otra familia, o un
+    nombre que da las mismas direcciones en otro orden, no cuentan);
+  - llega la primera respuesta tras una ronda entera sin respuestas.
+- **Origen IPv6** (`addrpick.h`), por rango de RFC 6724: nunca tentativa,
+  fallida o de enlace local; la ULA hacia un destino que no es ULA va
+  última, luego las obsoletas, las temporales, y primero las estables.
+  Entre iguales, la más nueva, como el kernel: así un prefijo nuevo
+  (renumeración brusca, RFC 8978) se usa en marcha igual que al arrancar.
+- **MTU de camino:** cada 5 s lee `IP_MTU`/`IPV6_MTU` de cada socket y lo
+  compara con el datagrama de WireGuard más grande de esos 5 s (un `if` por
+  paquete); si no cabe, avisa cada 10 min por enlace con el MTU de
+  WireGuard que cabría. Estado: `family`, `candidate`, `candidates`,
+  `failovers`, `path_mtu` y `reason` por enlace, y `upload.largest`.
+- **Encontrado de paso:** un enlace que perdía su única dirección y
+  recuperaba la misma no se notaba hasta la siguiente vuelta de 5 s
+  (`netlink.c`); ahora cuenta como cambio al momento.
+
+### OpenWrt: lista, compañeras IPv6 y fuga
+
+- **`list server`** en lugar de `option server`; `cengarde.defaults` lo
+  convierte una vez al instalar. UPnP anuncia la primera IPv4 de la lista.
+- **Compañeras `<enlace>6`** (DHCPv6, `reqprefix no`, `delegate 0`,
+  `peerdns 0`, marca `cengarde_owned`) sobre el dispositivo del enlace, en
+  su zona, con su métrica; `uplink_ipv6 '0'` las quita. Si el nombre ya
+  existe y no es suyo, no lo toca y avisa (`ipv6_companion_conflict`). Si
+  el enlace ya tiene una DHCPv6 propia (como el `wan6` de fábrica), no
+  crea otra.
+- **Fuga:** con «enrutar todo», `delegate 0` y `peerdns 0`, con marcas, en
+  las interfaces IPv6 de los enlaces que no creó, y `delegate 0` en los
+  enlaces que no son DHCP (PPP, qmi, mbim, ncm se lo pasan a su
+  `<iface>_6`). Desactivar lo deshace. `ipv6_leak` avisa si la LAN aún
+  tiene un prefijo que no es ULA.
+- **Estado:** un enlace con IPv4 caída e IPv6 arriba cuenta como «solo
+  IPv6» (y solo avisa si el VPS no tiene IPv6); `vps_silent` (ningún enlace
+  con respuesta tras 10 s); `path_mtu` con la familia y el MTU que cabe,
+  sin pedir nunca menos de 1280.
+- **LuCI:** lista de direcciones (hasta 8, sin máscara), tope de MTU 1396
+  con una IPv6 en la lista, `server_failover_ms` validado contra el
+  intervalo de sondas como en el motor, la columna VPS por enlace con su
+  familia y una marca de «alternativa», el MTU de camino, y los DNS IPv6
+  fuera del túnel mientras IPv6 no vaya por él.
+- **procd:** disparadores también para las compañeras; `apply` converge
+  (la prueba de QEMU lo comprueba: aplicar otra vez no cambia nada y nada
+  se recarga en 60 s).
+
+### VPS en un systemd real (`contrib/vps/test/systemd.sh`)
+
+Nuevo trabajo `systemd` en `vps.yml`, en los runners de GitHub con Ubuntu
+24.04 y 22.04 (systemd 255 y 249): `install.sh` desde el checkout, un
+router en un netns con el mismo secreto, el IP pass encendido y apagado
+por `cengarde-passthrough.path`, reinicios de `cengarde` y de
+`wg-quick@wg0` con las mismas reglas, `install.sh` otra vez sin reglas
+repetidas, e `IPAddressDeny`: un curl en el cgroup de `cengarde.service` no
+llega a un servicio de metadatos falso, y root sí. Solo corre con
+`CI=true` o `--yes`: instala de verdad y enciende ufw.
+
+**Lo que encontró en su primera pasada:** en Ubuntu 22.04 (systemd 249)
+`cengarde.service` no arrancaba nunca: rechazaba el `%d` de `ExecStart`
+("Failed to resolve unit specifiers in %d/cengarde.conf: Invalid slot").
+Afectaba a todo VPS con 22.04 desde la plantilla de la historia 007. La
+unidad usa ahora `${CREDENTIALS_DIRECTORY}`, que existe desde la 247.
+
 ## Medidas
 
 - **Reinicios del servidor** (`sudo bench/lab.sh restart`, 3 enlaces, 2000
@@ -387,10 +526,69 @@ los metadatos en el VPS.
 - **QEMU** (`openwrt/test/e2e.sh`, 25.12.5, con el código de `76bf10e`,
   igual a 0.4.1 salvo la versión): pasa entero, LuCI incluido.
 
+**PR 2** (mismo contenedor de 4 CPU, compartido con otros procesos):
+- **`multiip`** (`sudo bench/lab.sh multiip`): el servidor con una
+  secundaria en `s1` y una /32 en `lo`, con `listen` en `0.0.0.0` y en `*`:
+  - con el motor anterior (`3bcf673`), l1 y l2 nunca llegan a vivos;
+  - con el nuevo, los tres vivos a los 1,5 s, cada camino con su `local`;
+    2000 pps en cada sentido llegan una vez (5999 de 5999 por enlace);
+  - al borrar la /32 con 2000 pps de bajada, solo l2 suma `local_errors`
+    (unos 2400–2600; l1 y l3, 0) y el túnel no pierde nada; con la /32 de
+    vuelta, l2 vive otra vez en 1,8–2,0 s;
+  - con `server = 198.51.100.7 10.0.2.2` y 3 s de failover, l2 pasa a la
+    segunda 2,8 s después de borrar la /32, y el camino del servidor la
+    sigue.
+- **CPU del servidor por paquete** (`down` y `up` a 10.000 pps de 1400 B, 3
+  enlaces, `listen = *`, 5 rondas alternando el motor anterior y el nuevo;
+  resolución 0,2 µs):
+
+  | Sentido | Antes (media / mediana) | Después (media / mediana) |
+  | --- | --- | --- |
+  | bajada (cada paquete por 3 caminos, ahora con su mensaje de control) | 17,8 / 17,6 µs | 18,3 / 18,4 µs (+3 %; los rangos se solapan) |
+  | subida (recibir con pktinfo) | 12,9 / 13,0 µs | 12,8 / 12,8 µs (sin diferencia) |
+
+- **`fallback`** (4 s de failover): con la primera dirección muerta, vivo
+  en la segunda a los 4,0–4,1 s, y se queda; una IPv6 primera en un enlace
+  solo IPv4 no retrasa nada (0,0 s); tras un corte del lado del servidor de
+  al menos 25 s, de vuelta en la primera 0,2–1,2 s después de que vuelve;
+  si el enlace pierde su propia dirección y la recupera, en la primera a
+  los 0,1 s; con un camino de MTU 1400, `path_mtu` 1400 y el aviso pide un
+  MTU de WireGuard de 1316, sin perder paquetes.
+- **`sudo bench/lab.sh ci`:** smoke, health, control, fallback, multiip y
+  restart pasan.
+- **Tests unitarios:** 209 808 checks sin fallos con gcc, clang y
+  sanitizers, y en qemu (aarch64, armhf y MIPS big-endian). Nuevos:
+  `test_pktinfo`, `test_srvpick`, `test_addrpick`, y listas en
+  `test_config`.
+- **Binario** de OpenWrt x86_64: de 97 a 110 KB.
+- **QEMU** (`openwrt/test/e2e.sh`, 25.12.5, paquetes 0.4.2 de `5a1df76`):
+  pasa entero, 28 comprobaciones. Lo nuevo:
+  - el «VPS» escucha en `*` con 1.2.3.4, 1.2.3.5 y 2001:db8::4, y anuncia
+    por RA un prefijo global y una ULA en cada enlace, MTU 1400 en up3 y un
+    prefijo delegado en up1, que el router toma con su propia `up1v6`;
+  - sin cengarde, la LAN recibe ese prefijo; con todo por el túnel, ya no
+    (y `ipv6_leak` no aparece); al desactivar, vuelve, sin marcas;
+  - con 2001:db8::4 primera, los tres enlaces van por IPv6 desde su
+    dirección global, no la ULA, y el VPS contesta desde 2001:db8::4;
+  - `path_mtu` solo en up3, y el motor avisa (un datagrama de 1408 B da
+    paquetes de 1480 B; pide MTU 1296);
+  - con la IPv6 bloqueada en up2, solo up2 pasa a 1.2.3.4, sin perder
+    pings; sin 2001:db8::4 en el VPS, pasan todos;
+  - aplicar otra vez no cambia nada, y nada se recarga en 60 s.
+- **Visto en QEMU, sin cambiar nada:**
+  - al bajar una interfaz, Linux borra sus direcciones IPv6 y netifd no las
+    repone; en el «VPS» de la prueba, el enlace afectado se quedó sin IPv6
+    y el motor pasó solo a la IPv4, como debía (la prueba ahora usa
+    `keep_addr_on_down`);
+  - al arrancar, mientras netifd vuelve a poner las direcciones, un enlace
+    puede cambiar de origen varias veces en un par de segundos (5 en 2 s en
+    up1); luego queda fijo.
+
 ## Qué hacemos con esto
 
-- **El PR 2 va primero,** porque cierra la fuga de IPv6 de Starlink;
-  mientras tanto, el arreglo a mano de `openwrt/README.md` (sección 2).
+- **El PR 2 fue primero,** porque cerraba la fuga de IPv6 de Starlink;
+  ya está hecho, y el arreglo a mano de `openwrt/README.md` ya no hace
+  falta.
 - **Un solo cambio de formato,** v4, solo en el PR 3, con paquetes 0.5.0 en
   los dos extremos.
 - **El lado VPS es "un Debian o Ubuntu cualquiera":** Vultr es un caso, no
@@ -402,28 +600,6 @@ los metadatos en el VPS.
 
 ## Pendiente, por PR
 
-### PR 2: dirección de llegada, IPv6 por fuera y fuga de IPv6
-
-- **Servidor:** respuesta desde la dirección de llegada (`pktinfo.h`,
-  `cg_rx_ctl`), el bucle que salta el mensaje fallido, `local_errors` y la
-  columna LOCAL en `ctl links`; escenario `multiip`.
-- **Cliente:** `server` como lista ordenada (hasta 8) con failover
-  pegajoso tras 10 s sin respuesta y vuelta a la primera tras una ronda
-  entera sin respuesta (`srvpick.h`); una familia por enlace y elección del
-  origen IPv6 (`addrpick.h`); `path_mtu` y aviso de MTU; escenario
-  `fallback`.
-- **OpenWrt:** `list server` (migrado por uci-defaults), compañeras DHCPv6
-  con `delegate 0` y `peerdns 0`, las mismas marcas en las que ya existen,
-  tope de MTU 1396 con un literal IPv6, y los problemas `vps_silent`,
-  `path_mtu`, `ipv6_leak` e `ipv6_companion_conflict`.
-- **VPS:** `cengarde-nat` declarativo (`rules`, `apply`, `down`, `sync`,
-  `purge-legacy`), `cengarde-nat.service` con `RemainAfterExit`, flock, y
-  `vps.yml` con trabajos estáticos y con systemd real (también para la
-  unidad `.path` e `IPAddressDeny`). Sin `ip add` ni `extra-ips`.
-- **e2e:** el "VPS" de QEMU con alias IPv4 e IPv6, RA y una ULA para el
-  fallo del origen; failover; la fuga de PD.
-- **Docs:** guía de Vultr con la reservada como IP principal e IPv6.
-
 ### PR 3: varios routers por VPS (protocolo v4) y panel de puertos
 
 - **Protocolo v4:** pista en el byte 2; sondas de 56 B con `cookie` y
@@ -433,8 +609,10 @@ los metadatos en el VPS.
   cliente. Cierra el secuestro del IP pass con sondas reenviadas.
 - **Servidor multicliente:** `[client NAME]`, admisión por pista sin
   probar todas las claves, sesión activa por cliente, cambios sin reinicio.
-- **VPS:** `cengarde-vps-setup add|remove|list` (sin `--public-ip`; sirve
-  igual en un servidor casero), `cg-NAME` en 65501–65532, migración desde
+- **VPS:** `cengarde-nat` declarativo (`rules`, `apply`, `down`, `sync`,
+  `purge-legacy`) con `cengarde-nat.service` (`RemainAfterExit`) y flock,
+  movido desde el PR 2; `cengarde-vps-setup add|remove|list` (sin
+  `--public-ip`; sirve igual en un servidor casero), `cg-NAME` en 65501–65532, migración desde
   0.4, usuario fijo, `cengarde ctl reload` con respuesta, y el panel de
   reenvío de puertos.
 - **OpenWrt:** túnel /32 derivado más ruta a 10.79.0.1, `vps_name`, el
@@ -475,3 +653,8 @@ los metadatos en el VPS.
 ## Cambios
 
 - 2026-10-04: creada con el plan, las respuestas del usuario y el PR 1.
+- 2026-10-04: corregido: las `<iface>_6` de PPP, qmi, mbim y ncm sí copian
+  `delegate 0` de su interfaz madre; las compañeras van sobre el
+  dispositivo del enlace y no sobre `@enlace`.
+- 2026-10-04: PR 2 hecho (0.4.2), con sus medidas; `cengarde-nat`
+  declarativo pasa al PR 3.
