@@ -31,15 +31,35 @@ demos.
 
 ```sh
 sudo bench/lab.sh build    # udpgen, protoclient y cengarde en bench/bin/
-sudo bench/lab.sh smoke    # prueba de humo de cengarde (la corre el CI)
-sudo bench/lab.sh health   # salud de enlaces: un enlace con 500 ms de cola, subida y bajada (la corre el CI; historia 006)
-sudo bench/lab.sh control  # con tráfico: pausar un enlace, recargar dos veces, IP pass on/off; sin pérdidas (la corre el CI; historia 009)
+sudo bench/lab.sh ci       # lo que corre el CI: smoke, health, control y los escenarios de lab.d con LAB_CI=1
+sudo bench/lab.sh smoke    # prueba de humo de cengarde
+sudo bench/lab.sh health   # salud de enlaces: un enlace con 500 ms de cola, subida y bajada (historia 006)
+sudo bench/lab.sh control  # con tráfico: pausar un enlace, recargar dos veces, IP pass on/off; sin pérdidas (historia 009)
 sudo bench/lab.sh latency  # latencia y CPU con busy_poll_us 0, 50 y 200, y el Go si está compilado (historia 006)
 
 sudo ENGINE=go bench/lab.sh build  # además, el engarde Go (normal y -race)
 sudo bench/lab.sh suite    # línea base del engarde Go (historia 001, ~5 min)
 sudo bench/lab.sh compare  # engarde Go frente a cengarde, cada uno en ambos extremos (historia 005)
 ```
+
+`ci` corre cada escenario en una subshell y con el laboratorio limpio, sigue
+aunque uno falle y acaba con `ci: ok (...)` o `ci: FAILED: ...`; borra los
+namespaces al salir, también si se interrumpe. El CI (`engine.yml`) solo llama
+a `build` y a `ci`.
+
+### Escenarios en `lab.d/`
+
+Cada escenario nuevo va en su propio archivo, `bench/lab.d/NOMBRE.sh`, que
+`lab.sh` carga al arrancar: define la función `NOMBRE` (se corre con
+`sudo bench/lab.sh NOMBRE`), usa las funciones y variables de `lab.sh`
+(`setup`, `start`, `teardown`, `jget`, `$RUN`, `$BIN`…) y pone `LAB_CI=1` si
+el CI tiene que correrlo. Así, cambios en paralelo añaden escenarios sin tocar
+`lab.sh`. Reglas:
+
+- autocontenido: monta su laboratorio y lo desmonta con `teardown` al acabar,
+  también si falla;
+- termina con `NOMBRE: ok` o `NOMBRE: FAILED`, con una línea `FAIL: ...` que
+  diga qué falló, y devuelve distinto de 0 si falló.
 
 Paso a paso (pasa las mismas variables a `setup` y a `start`):
 
@@ -63,6 +83,7 @@ sudo bench/lab.sh teardown
 | `CLIENT_BIN` / `SERVER_BIN` | `bench/bin/engarde-*` | probar otros binarios de engarde |
 | `CLIENT_EXTRA` / `SERVER_EXTRA` | vacío | ajustes extra de cengarde, `clave = valor` separados por `;` (p. ej. `busy_poll_us = 50`) |
 | `CENGARDE_BIN` | `bench/bin/cengarde` | otro binario de cengarde, p. ej. un envoltorio que ejecuta la compilación de OpenWrt con su musl (historia 007) |
+| `RUN` | `bench/run` | configs, logs, JSON de estado y sockets de control. La ruta de un socket Unix no pasa de 107 bytes: si el repositorio está muy hondo, `control` falla con `socket path too long` y hay que usar un `RUN` más corto |
 
 Demos de los problemas del engarde Go descritos en el roadmap (necesitan
 `ENGINE=go bench/lab.sh build`):

@@ -53,9 +53,10 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: Smoke test in network namespaces
-        run: sudo ENGINE=c bench/lab.sh build && sudo bench/lab.sh smoke
-      - name: Link health (a link with a 500 ms queue is muted and comes back)
-        run: sudo bench/lab.sh health
-      - name: Control socket, reloads and IP pass under traffic (no loss, same session)
-        run: sudo bench/lab.sh control
+      - name: Build the lab (udpgen and cengarde)
+        run: sudo ENGINE=c bench/lab.sh build
+      # smoke; health (a link with a 500 ms queue is muted and comes back);
+      # control (pause, reloads and IP pass under traffic, no loss, same
+      # session); and every bench/lab.d scenario with LAB_CI=1.
+      - name: Lab scenarios in network namespaces (smoke, health, control, bench/lab.d)
+        run: sudo bench/lab.sh ci
