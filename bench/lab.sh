@@ -8,7 +8,8 @@
 #   l2 10.0.2.1 ──────────────────────────────── s2 10.0.2.2
 #   l3 10.0.3.1 ──────────────────────────────── s3 10.0.3.2
 #
-# Needs root, iproute2 (ip, tc with sch_tbf), gcc, go, curl, python3.
+# Needs root, iproute2 (ip, tc with sch_tbf), gcc, make and python3; the
+# engarde (Go) baseline also needs go, git and curl.
 # Usage: sudo bench/lab.sh <function> [args]   (see bench/README.md)
 set -u
 LAB=$(cd "$(dirname "$0")" && pwd)
@@ -21,8 +22,12 @@ CENGARDE_BIN=${CENGARDE_BIN:-$BIN/cengarde} # e.g. a wrapper that runs an OpenWr
 NLINKS=${NLINKS:-3}
 SIZE=${SIZE:-1400}
 WRITE_TIMEOUT=${WRITE_TIMEOUT:-10}
-PROTO=${PROTO:-} # empty: Go client; "c": C prototype; "dedup": C prototype + dedup
-ENGINE=${ENGINE:-go} # go: engarde (Go) on both ends; c: cengarde (engine/) on both ends
+PROTO=${PROTO:-} # with ENGINE=go, empty: Go client; "c": C prototype; "dedup": C prototype + dedup
+ENGINE=${ENGINE:-c} # c: cengarde (engine/) on both ends; go: the engarde (Go) baseline
+# The engarde Go code left this tree: the baseline is built from the upstream
+# commit this fork started from, taken from the git history (or fetched).
+GO_REF=${GO_REF:-3492df906049826c226996b50224f963ee37bdf3}
+GO_REPO=${GO_REPO:-https://github.com/porech/engarde}
 # Extra cengarde settings, "key = value" pairs separated by ";" (global section).
 CLIENT_EXTRA=${CLIENT_EXTRA:-}
 SERVER_EXTRA=${SERVER_EXTRA:-}
@@ -33,16 +38,14 @@ build() {
 	gcc -O2 -Wall -Wextra -pthread -o "$BIN/udpgen" "$LAB/udpgen.c" || return 1
 	gcc -O2 -Wall -Wextra -o "$BIN/protoclient" "$LAB/protoclient.c" || return 1
 	make -s -C "$REPO/engine" cengarde && cp "$REPO/engine/cengarde" "$BIN/cengarde" || return 1
-	[ "$ENGINE" = c ] && return 0 # the Go baseline is not needed
-	if [ ! -d "$REPO/cmd/engarde-client" ]; then
-		echo "no Go sources: set CLIENT_BIN/SERVER_BIN to existing engarde binaries"
-		return 0
-	fi
-	# Build the Go engarde from the working tree with a stub web UI, leaving the
-	# real internal/assets/browser (produced by the Angular build) untouched.
+	[ "$ENGINE" = go ] || return 0 # ENGINE=go also builds the Go baseline
+	# engarde (Go) at GO_REF, with a stub web UI.
 	local tmp t
+	if ! git -C "$REPO" cat-file -e "$GO_REF^{commit}" 2>/dev/null; then
+		git -C "$REPO" fetch -q --depth 1 "$GO_REPO" "$GO_REF" || return 1
+	fi
 	tmp=$(mktemp -d)
-	(cd "$REPO" && git ls-files -z cmd internal vendor go.mod go.sum | tar --null -T - -cf -) | tar -xf - -C "$tmp"
+	git -C "$REPO" archive "$GO_REF" cmd internal vendor go.mod go.sum | tar -xf - -C "$tmp" || return 1
 	mkdir -p "$tmp/internal/assets/browser"
 	echo '<html>stub</html>' >"$tmp/internal/assets/browser/index.html"
 	for t in client server; do
@@ -50,6 +53,14 @@ build() {
 		(cd "$tmp" && go build -race -o "$BIN/engarde-$t-race" "./cmd/engarde-$t") || return 1
 	done
 	rm -rf "$tmp"
+}
+
+# The modes that measure the engarde (Go) baseline call this first.
+need_go() {
+	ENGINE=go
+	[ -x "$CLIENT_BIN" ] && [ -x "$SERVER_BIN" ] && return 0
+	echo "engarde (Go) not built: sudo ENGINE=go bench/lab.sh build" >&2
+	return 1
 }
 
 setup() {
@@ -211,6 +222,7 @@ report() {
 # Reproduces the measurements quoted in ROADMAP.md (takes a few minutes).
 suite() {
 	local n v
+	need_go || return 1
 	echo "## Go client, download 10k pps, 1/2/3 links"
 	for n in 1 2 3; do
 		NLINKS=$n
@@ -260,6 +272,7 @@ suite() {
 # whole downstream traffic for clientTimeout seconds.
 demo_stranger() {
 	local traffic
+	[ "$ENGINE" = c ] || need_go || return 1
 	setup && start
 	down 2000 6 >/dev/null &
 	traffic=$!
@@ -274,6 +287,7 @@ demo_stranger() {
 # manager port is busy, taking the tunnel down with it.
 demo_webpanic() {
 	local squatter
+	need_go || return 1
 	setup
 	ip netns exec cli python3 -c 'import socket,time; s=socket.socket(); s.bind(("127.0.0.1",9001)); s.listen(1); time.sleep(5)' &
 	squatter=$!
@@ -289,6 +303,7 @@ demo_webpanic() {
 demo_races() {
 	local i traffic
 	CLIENT_BIN=$BIN/engarde-client-race SERVER_BIN=$BIN/engarde-server-race
+	need_go || return 1
 	setup && start
 	down 3000 5 >/dev/null &
 	traffic=$!
@@ -308,6 +323,7 @@ demo_races() {
 # slow-link scenario with cengarde (quoted in docs/historias/005).
 compare() {
 	local eng r
+	need_go || return 1
 	for eng in go c; do
 		ENGINE=$eng
 		NLINKS=3

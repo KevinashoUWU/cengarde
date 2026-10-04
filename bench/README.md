@@ -1,7 +1,8 @@
 # bench — laboratorio de rendimiento
 
-Laboratorio reproducible para medir engarde (Go) y el motor cengarde en C
-(`engine/`, y en el futuro eBPF) en una sola máquina Linux, sin hardware. Dos network
+Laboratorio reproducible para medir el motor cengarde en C (`engine/`, y en
+el futuro eBPF), y compararlo con el engarde Go original, en una sola máquina
+Linux, sin hardware. Dos network
 namespaces unidos por tres pares veth que hacen de enlaces: `cli` hace de
 Raspberry Pi y `srv` de VPS. WireGuard se sustituye por `udpgen`, un
 emisor/receptor UDP que numera y marca con la hora cada paquete, así que se
@@ -22,27 +23,28 @@ Las cifras citadas en [`ROADMAP.md`](../ROADMAP.md) y en las historias 001,
 
 ## Requisitos
 
-root, iproute2 (`ip`, `tc` con `sch_tbf`), gcc y make. Go solo hace falta para
-el engarde de referencia (no con `ENGINE=c`); python3, para `health` y las
-demos, y curl, para las demos.
+root, iproute2 (`ip`, `tc` con `sch_tbf`), gcc, make y python3. Go y git solo
+hacen falta para la línea base del engarde Go (`ENGINE=go`), y curl para sus
+demos.
 
 ## Uso
 
 ```sh
-sudo bench/lab.sh build    # udpgen, protoclient, cengarde y engarde Go (normal y -race) en bench/bin/
-sudo bench/lab.sh suite    # línea base del engarde Go (historia 001, ~5 min)
-sudo bench/lab.sh compare  # engarde Go frente a cengarde, cada uno en ambos extremos (historia 005)
+sudo bench/lab.sh build    # udpgen, protoclient y cengarde en bench/bin/
 sudo bench/lab.sh smoke    # prueba de humo de cengarde (la corre el CI)
 sudo bench/lab.sh health   # salud de enlaces: un enlace con 500 ms de cola, subida y bajada (la corre el CI; historia 006)
-sudo bench/lab.sh latency  # latencia y CPU con busy_poll_us 0, 50 y 200, y el Go de referencia (historia 006)
-sudo ENGINE=c bench/lab.sh build   # solo udpgen y cengarde, sin Go
+sudo bench/lab.sh latency  # latencia y CPU con busy_poll_us 0, 50 y 200, y el Go si está compilado (historia 006)
+
+sudo ENGINE=go bench/lab.sh build  # además, el engarde Go (normal y -race)
+sudo bench/lab.sh suite    # línea base del engarde Go (historia 001, ~5 min)
+sudo bench/lab.sh compare  # engarde Go frente a cengarde, cada uno en ambos extremos (historia 005)
 ```
 
 Paso a paso (pasa las mismas variables a `setup` y a `start`):
 
 ```sh
 sudo NLINKS=3 bench/lab.sh setup     # netns, enlaces y configs en bench/run/
-sudo NLINKS=3 bench/lab.sh start     # engarde-server + engarde-client
+sudo NLINKS=3 bench/lab.sh start     # cengarde en ambos extremos (ENGINE=go: engarde)
 sudo bench/lab.sh down 10000 5       # 10.000 pps de bajada (VPS -> Pi) durante 5 s
 sudo bench/lab.sh up 10000 5         # subida (Pi -> VPS)
 sudo bench/lab.sh shape l3 5mbit     # enlace lento con cola local (módem USB, WiFi)
@@ -53,19 +55,22 @@ sudo bench/lab.sh teardown
 | --- | --- | --- |
 | `NLINKS` | 3 | enlaces activos (1–3) |
 | `SIZE` | 1400 | tamaño de paquete en bytes |
+| `ENGINE` | `c` | `c`: cengarde (`engine/`) en ambos extremos, con configs INI en `bench/run/`; `go`: el engarde Go |
+| `GO_REF` / `GO_REPO` | `3492df9…` / porech/engarde | de qué commit sale el engarde Go: del historial de este repositorio o, si no está (clon superficial), de `GO_REPO` |
 | `WRITE_TIMEOUT` | 10 | `writeTimeout` del cliente Go, en ms (`-1` lo desactiva) |
-| `ENGINE` | `go` | `c`: cengarde (`engine/`) en ambos extremos, con configs INI en `bench/run/` |
-| `PROTO` | vacío | `c` o `dedup`: usa `protoclient` (C) en vez del cliente Go |
+| `PROTO` | vacío | con `ENGINE=go`, `c` o `dedup`: usa `protoclient` (C) en vez del cliente Go |
 | `CLIENT_BIN` / `SERVER_BIN` | `bench/bin/engarde-*` | probar otros binarios de engarde |
 | `CLIENT_EXTRA` / `SERVER_EXTRA` | vacío | ajustes extra de cengarde, `clave = valor` separados por `;` (p. ej. `busy_poll_us = 50`) |
 | `CENGARDE_BIN` | `bench/bin/cengarde` | otro binario de cengarde, p. ej. un envoltorio que ejecuta la compilación de OpenWrt con su musl (historia 007) |
 
-Demos de los problemas descritos en el roadmap: `demo_stranger` (el servidor
-envía el tráfico del túnel a cualquiera que le mande un paquete),
-`demo_webpanic` (el cliente se cae si el puerto web está ocupado) y
-`demo_races` (detector de carreras de Go con tráfico y uso normal de la web).
-Con `ENGINE=c`, `demo_stranger` muestra que cengarde no responde a nadie sin
-autenticar.
+Demos de los problemas del engarde Go descritos en el roadmap (necesitan
+`ENGINE=go bench/lab.sh build`):
+- `demo_stranger`: el servidor envía el tráfico del túnel a cualquiera que le
+  mande un paquete. Con el valor por defecto, `ENGINE=c`, muestra en cambio
+  que cengarde no responde a nadie sin autenticar.
+- `demo_webpanic`: el cliente se cae si el puerto web está ocupado.
+- `demo_races`: detector de carreras de Go, con tráfico y uso normal de la
+  web.
 
 ## Cómo leer la salida
 
