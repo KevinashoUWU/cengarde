@@ -22,7 +22,8 @@
 #   sudo sh contrib/vps/test/security.sh
 #
 # Needs root, iproute2, iptables, python3 and curl. CENGARDE_NAT names
-# another cengarde-nat to test.
+# another cengarde-nat to test. SECURITY_REQUIRE_V6=1 makes a VPS namespace
+# without IPv6 a failure instead of a note (vps.yml sets it).
 #
 # SPDX-License-Identifier: GPL-2.0-only
 set -u
@@ -148,13 +149,21 @@ has() {
 	shift
 	nsexec "$VPS" "$cmd" -C "$@" 2>/dev/null
 }
-dup() { rules iptables | sort | uniq -d | grep -q .; }
+# dup: a rule twice, IPv4 and IPv6 apart (their policy lines are the same).
+dup() {
+	rules iptables | sort | uniq -d | grep -q . ||
+		{ [ "$V6" = yes ] && rules ip6tables | sort | uniq -d | grep -q .; }
+}
 quiet_down() {
 	out=$(nat down 2>&1) && [ -z "$out" ]
 }
 v6_checks() {
 	if [ "$V6" = no ]; then
-		say "note: no IPv6 in this kernel (no /proc/net/if_inet6), so no ip6tables rules and no IPv6 checks here; CI runners have IPv6"
+		if [ "${SECURITY_REQUIRE_V6:-0}" = 1 ]; then
+			bad "IPv6 required (SECURITY_REQUIRE_V6=1), but the VPS namespace has none (no /proc/net/if_inet6)"
+		else
+			say "note: no IPv6 in this kernel (no /proc/net/if_inet6), so no ip6tables rules and no IPv6 checks here; vps.yml sets SECURITY_REQUIRE_V6=1"
+		fi
 		return
 	fi
 	check "IPv6: cengarde's port accepted" \

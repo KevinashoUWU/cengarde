@@ -27,4 +27,4 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y iptables iproute2 python3 curl
 
       - name: Metadata out of the tunnel's reach, WireGuard's port closed, nothing left after down
-        run: sudo sh contrib/vps/test/security.sh
+        run: sudo env SECURITY_REQUIRE_V6=1 sh contrib/vps/test/security.sh
