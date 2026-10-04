@@ -9,7 +9,7 @@
  * accepts: a sanity check of the checker the steering tests rely on. */
 static void test_cbpf(void)
 {
-	static const uint8_t pkt[4] = { 7, 8, 9, 10 };
+	static const uint8_t pkt[5] = { 7, 8, 9, 10, 11 };
 	struct sock_filter back[] = {
 		BPF_STMT(BPF_LD | BPF_W | BPF_LEN, 0),
 		BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 4, 1, 0),
