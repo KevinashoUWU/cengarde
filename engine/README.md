@@ -172,7 +172,10 @@ server = 203.0.113.10:59402 [2001:db8::4]:59402
 - **Dirección de origen IPv6:** la elige como RFC 6724: nunca una tentativa,
   fallida o de enlace local; una ULA (fc00::/7) hacia un destino que no es
   ULA va última (sirve si el módem hace NAT66), luego las obsoletas, luego
-  las temporales y primero las estables. En IPv4, la principal.
+  las temporales y primero las estables. Entre iguales, la más nueva, como
+  el kernel: si llega un prefijo nuevo mientras el viejo sigue preferido
+  (una renumeración brusca, RFC 8978), pasa al nuevo, igual en marcha que
+  al arrancar. En IPv4, la principal.
 - **Log:** `link X: no reply from A for 10 s, trying B` en cada cambio de la
   primera ronda; si ninguna contesta, una vez por minuto. Tras una ronda
   entera sin respuesta, la primera respuesta se registra una vez:

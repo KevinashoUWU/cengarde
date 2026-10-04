@@ -24,7 +24,7 @@ struct cg_iface {
 	char name[IFNAMSIZ];
 	unsigned flags; /* IFF_* */
 	int naddr;
-	struct cg_nl_addr addr[CG_NL_MAX_ADDRS]; /* in the order netlink reported them */
+	struct cg_nl_addr addr[CG_NL_MAX_ADDRS]; /* in the kernel's order: IPv6 newest first (cg_addr_slot) */
 };
 
 struct cg_nl {

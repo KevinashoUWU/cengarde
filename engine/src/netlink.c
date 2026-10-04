@@ -120,7 +120,8 @@ static void on_addr(struct cg_nl *nl, struct nlmsghdr *nh)
 			break;
 	if (nh->nlmsg_type == RTM_DELADDR) {
 		if (i < ifc->naddr) {
-			/* Shifted, not swapped: the first seen breaks ties (addrpick.h). */
+			/* Shifted, not swapped: keeps the kernel's order, which
+			 * breaks ties (addrpick.h). */
 			memmove(&ifc->addr[i], &ifc->addr[i + 1], sizeof(ifc->addr[0]) * (size_t)(ifc->naddr - i - 1));
 			ifc->naddr--;
 			nl->changed = 1;
@@ -135,11 +136,15 @@ static void on_addr(struct cg_nl *nl, struct nlmsghdr *nh)
 			nl->addrs_full = 1;
 			return;
 		}
-		/* New, even when the slot still holds the same one, removed
-		 * before (a modem that gets its address back). */
+		/* Dump replies are multipart; events are not. A change even when
+		 * the slot held the same address, removed before (a modem that
+		 * gets its address back). */
+		i = cg_addr_slot(a.family, !!(nh->nlmsg_flags & NLM_F_MULTI), ifc->naddr);
+		memmove(&ifc->addr[i + 1], &ifc->addr[i], sizeof(ifc->addr[0]) * (size_t)(ifc->naddr - i));
 		ifc->naddr++;
 		ifc->addr[i] = a;
 		nl->changed = 1;
+		return;
 	}
 	if (memcmp(&ifc->addr[i], &a, sizeof(a))) {
 		ifc->addr[i] = a;

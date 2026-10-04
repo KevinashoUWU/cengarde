@@ -37,6 +37,24 @@ static int pick(const struct cg_nl_addr *a, int n, const char *to)
 	return cg_src_pick(a, n, &d);
 }
 
+/* Whether the source toward to is ip. */
+static int picked(const struct cg_nl_addr *a, int n, const char *to, const char *ip)
+{
+	int k = pick(a, n, to);
+
+	return k >= 0 && !memcmp(a[k].addr, nla(ip, 0, 0).addr, 16);
+}
+
+/* Stores an address the interface did not have, as netlink.c does. */
+static void learn(struct cg_nl_addr *a, int *n, struct cg_nl_addr x, int from_dump)
+{
+	int at = cg_addr_slot(x.family, from_dump, *n);
+
+	memmove(&a[at + 1], &a[at], sizeof(a[0]) * (size_t)(*n - at));
+	a[at] = x;
+	(*n)++;
+}
+
 static int rank(const char *ip, uint32_t flags, uint8_t scope, const char *to)
 {
 	struct cg_nl_addr a = nla(ip, flags, scope);
@@ -50,6 +68,7 @@ void test_addrpick(void)
 {
 	const uint8_t U = RT_SCOPE_UNIVERSE;
 	struct cg_nl_addr a[8];
+	int n;
 
 	/* The ranks of decision 4. */
 	CHECK_EQ(rank("2001:db8::1", 0, U, "2001:db8:9::1"), 4);
@@ -93,10 +112,26 @@ void test_addrpick(void)
 	CHECK_EQ(cg_src_families(a, 3), 0);
 	a[3] = nla("2001:db8:1::4", IFA_F_TEMPORARY, U);
 	CHECK_EQ(pick(a, 4, "2001:db8:ff::1"), 3);
-	/* The first seen breaks ties. */
-	a[0] = nla("2001:db8:1::1", 0, U);
-	a[1] = nla("2001:db8:1::2", 0, U);
-	CHECK_EQ(pick(a, 2, "2001:db8:ff::1"), 0);
+	/* Ties go to the first in the kernel's order, the newest address, the
+	 * same at startup as at runtime: two stable GUAs, the old prefix still
+	 * preferred when a new one comes (flash renumbering). */
+	n = 0;
+	learn(a, &n, nla("2a0d:3344:bbbb::2", 0, U), 1); /* a dump lists the new one first */
+	learn(a, &n, nla("2a0d:3344:aaaa::2", 0, U), 1);
+	CHECK(picked(a, n, "2001:19f0::1", "2a0d:3344:bbbb::2"));
+	n = 0;
+	learn(a, &n, nla("10.0.0.1", 0, U), 1);
+	learn(a, &n, nla("10.0.0.2", 0, U), 1);
+	learn(a, &n, nla("2a0d:3344:aaaa::2", 0, U), 1); /* running with the old one */
+	learn(a, &n, nla("2a0d:3344:bbbb::2", 0, U), 0); /* an event brings the new one */
+	CHECK(picked(a, n, "2001:19f0::1", "2a0d:3344:bbbb::2"));
+	/* IPv4 keeps the kernel's order both ways, the oldest primary first. */
+	CHECK(picked(a, n, "203.0.113.1", "10.0.0.1"));
+	learn(a, &n, nla("10.0.0.3", 0, U), 0);
+	CHECK(picked(a, n, "203.0.113.1", "10.0.0.1"));
+	CHECK_EQ(cg_addr_slot(AF_INET, 0, 3), 3);
+	CHECK_EQ(cg_addr_slot(AF_INET6, 1, 3), 3);
+	CHECK_EQ(cg_addr_slot(AF_INET6, 0, 3), 0);
 
 	/* IPv4: the primary before secondaries, never loopback, link-local or
 	 * 0.0.0.0, and never an address of the other family. */

@@ -1,14 +1,17 @@
 /* Client side: which local address a link sends from.
  *
  * IPv4: the primary address of the interface before its secondaries, never
- * loopback, link-local or 0.0.0.0; the first seen among equals.
+ * loopback, link-local or 0.0.0.0; the first in the kernel's order among
+ * equals, the oldest primary.
  *
  * IPv6 follows RFC 6724 (source address selection) as far as a link can
  * tell. Linux gives ULAs (fc00::/7) global scope, so netlink does not tell
  * them from global addresses: by scope alone, a ULA listed before the GUA
  * was picked, and the link sent toward a global server from an address with
  * no route there. Ranks (cg_ip6_src_rank), the highest wins and the first
- * seen breaks ties:
+ * in the kernel's order breaks ties: the newest address, as in the kernel's
+ * own source selection, so a new prefix that comes while the old one is
+ * still preferred (flash renumbering, RFC 8978) takes over at once:
  *
  *   0  unusable: tentative, failed DAD, or not global scope (link-local, host)
  *   1  a ULA toward a destination that is not a ULA: last but not banned (in
@@ -21,8 +24,8 @@
  *      IPV6_PREFER_SRC_PUBLIC), because a temporary address expires within
  *      a day and would move the path with it
  *
- * Pure functions over the addresses netlink reported, in the order it did
- * (netlink.c keeps that order); no I/O.
+ * Pure functions over the addresses netlink reported, in the kernel's order
+ * (cg_addr_slot); no I/O.
  *
  * SPDX-License-Identifier: GPL-2.0-only */
 #ifndef CG_ADDRPICK_H
@@ -90,6 +93,17 @@ static inline int cg_src_pick(const struct cg_nl_addr *a, int n, const struct so
 		}
 	}
 	return best;
+}
+
+/* Where netlink.c stores an address it has not seen, among the n it has.
+ * The kernel lists the IPv6 addresses of a scope newest first, and its
+ * source selection keeps the first on a tie; a dump reports them in that
+ * order. So an IPv6 address learned from an event goes in front, and one
+ * from a dump, or an IPv4 one (oldest primary first), at the end: the same
+ * order at startup, at runtime and after a resync. */
+static inline int cg_addr_slot(int family, int from_dump, int n)
+{
+	return family == AF_INET6 && !from_dump ? 0 : n;
 }
 
 /* The families an interface has a usable address of, as 1 << AF_INET and
