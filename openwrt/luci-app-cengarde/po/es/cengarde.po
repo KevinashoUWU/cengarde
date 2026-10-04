@@ -165,6 +165,21 @@ msgstr "Sondeo activo (µs)"
 msgid "Keeps polling this long after traffic instead of sleeping: lower latency, more CPU. 0: off."
 msgstr "Sigue sondeando este tiempo después del tráfico en vez de dormir: menos latencia, más CPU. 0: desactivado."
 
+msgid "Threads per uplink"
+msgstr "Hilos por enlace"
+
+msgid "Off runs the code of every release so far. On gives each uplink a thread of its own, so that a stalled uplink or thread no longer holds back the others; it takes more CPU at low traffic, and a stall of the main thread, which checks every packet, still holds back every uplink at once. One thread runs the new structure without its threads, to tell a problem of the threads from one of the new code. A change restarts the engine."
+msgstr "Desactivado corre el código de todas las versiones hasta ahora. Activado le da a cada enlace un hilo propio, así que un enlace o un hilo atascado ya no frena a los demás; gasta más CPU con poco tráfico, y un atasco del hilo principal, el que revisa cada paquete, sigue frenando todos los enlaces a la vez. Un hilo corre la estructura nueva sin sus hilos, para distinguir un problema de los hilos de uno del código nuevo. Cambiarlo reinicia el motor."
+
+msgid "Off (the usual code)"
+msgstr "Desactivado (el código de siempre)"
+
+msgid "One thread (new structure)"
+msgstr "Un hilo (estructura nueva)"
+
+msgid "On (one thread per uplink)"
+msgstr "Activado (un hilo por enlace)"
+
 msgid "Log level"
 msgstr "Nivel de registro"
 
@@ -218,6 +233,9 @@ msgstr "El motor no está corriendo: revisa Sistema > Registro del sistema."
 
 msgid "The VPS does not answer on any uplink: check that it runs cengarde with the secret of this router, and that its firewall lets in UDP to the VPS port."
 msgstr "El VPS no contesta por ningún enlace: revisa que corra cengarde con el secreto de este router y que su cortafuegos deje entrar UDP al puerto del VPS."
+
+msgid "The thread of uplink %s has not run for %d s with packets waiting; the other uplinks go on. If it happens again, set \"Threads per uplink\" to Off in Settings > Advanced."
+msgstr "El hilo del enlace %s lleva %d s sin correr con paquetes esperando; los demás enlaces siguen. Si vuelve a pasar, pon \"Hilos por enlace\" en Desactivado en Configuración > Avanzado."
 
 msgid "Uplink %s takes packets of at most %d bytes to the VPS, fewer than the tunnel makes: lower the tunnel MTU to %d."
 msgstr "El enlace %s lleva hasta el VPS paquetes de como mucho %d bytes, menos de lo que arma el túnel: baja la MTU del túnel a %d."

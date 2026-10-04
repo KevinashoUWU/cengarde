@@ -163,6 +163,21 @@ msgstr ""
 msgid "Keeps polling this long after traffic instead of sleeping: lower latency, more CPU. 0: off."
 msgstr ""
 
+msgid "Threads per uplink"
+msgstr ""
+
+msgid "Off runs the code of every release so far. On gives each uplink a thread of its own, so that a stalled uplink or thread no longer holds back the others; it takes more CPU at low traffic, and a stall of the main thread, which checks every packet, still holds back every uplink at once. One thread runs the new structure without its threads, to tell a problem of the threads from one of the new code. A change restarts the engine."
+msgstr ""
+
+msgid "Off (the usual code)"
+msgstr ""
+
+msgid "One thread (new structure)"
+msgstr ""
+
+msgid "On (one thread per uplink)"
+msgstr ""
+
 msgid "Log level"
 msgstr ""
 
@@ -215,6 +230,9 @@ msgid "The engine is not running: see System > System Log."
 msgstr ""
 
 msgid "The VPS does not answer on any uplink: check that it runs cengarde with the secret of this router, and that its firewall lets in UDP to the VPS port."
+msgstr ""
+
+msgid "The thread of uplink %s has not run for %d s with packets waiting; the other uplinks go on. If it happens again, set \"Threads per uplink\" to Off in Settings > Advanced."
 msgstr ""
 
 msgid "Uplink %s takes packets of at most %d bytes to the VPS, fewer than the tunnel makes: lower the tunnel MTU to %d."

@@ -222,6 +222,14 @@ configuración del router:
 - **Desinstalar** el paquete también lo deshace todo.
 - **Pestaña Avanzado:** las perillas del motor (silenciado de enlaces
   lentos, sondas, sondeo activo); valen los valores por defecto.
+- **Hilos por enlace** (pestaña *Avanzado*): *Desactivado (el código de
+  siempre)*, el valor por omisión hasta medirlos en la Pi; *Activado (un
+  hilo por enlace)*, para que un enlace o un hilo atascado no frene a los
+  demás, a cambio de más CPU con poco tráfico; *Un hilo (estructura nueva)*,
+  para distinguir un fallo de los hilos de uno del código nuevo. Cambiarlo
+  reinicia el motor (unos segundos sin túnel). Si un hilo se queda parado
+  más de 5 s con paquetes esperando, el estado lo avisa
+  (`link_thread_stalled`).
 
 ## 5. Estado
 

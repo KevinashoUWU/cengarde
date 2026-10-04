@@ -28,9 +28,15 @@
 #     from its global address (not the ULA); the path MTU of up3 shows in
 #     the status and the log; with IPv6 blocked on up2 only up2 moves to
 #     1.2.3.4, without loss; without 2001:db8::4 they all move;
-#  7. checks that apply has converged: run again it changes nothing, and
+#  7. link threads: link_threads off (the per-link structure in one
+#     thread), then on (a thread per uplink, musl's threads), then legacy
+#     again: the engine restarts in place each time, every link comes back
+#     live, pings get through without loss, and with on "cengarde ctl
+#     threads" shows the hub and a thread per uplink with their CPU (from
+#     their CPU clocks: OpenWrt's kernel has no schedstat);
+#  8. checks that apply has converged: run again it changes nothing, and
 #     nothing reloads for 60 s (the companions' triggers cause no loop);
-#  8. disables cengarde and checks that the router is back as it was (the
+#  9. disables cengarde and checks that the router is back as it was (the
 #     LAN gets its prefix again), and converged again.
 # Screenshots and logs go to OUT_DIR (default ./e2e-out). Needs qemu-system-x86,
 # ssh and node with "npm install" done in this directory.
@@ -102,6 +108,16 @@ until_ok() {
 # All three links live toward REMOTE.
 all_on() {
 	[ "$(links | grep -c " live .* $1 ")" = 3 ]
+}
+
+# All three links live, whichever VPS address.
+all_live() {
+	[ "$(links | grep -c ' live ')" = 3 ]
+}
+
+# The link_threads mode the engine runs.
+lt_mode() {
+	"$VM" ssh router "cengarde ctl status | jsonfilter -e '@.threads.mode'"
 }
 
 # The LAN holds the prefix delegated through up1v6.
@@ -463,6 +479,28 @@ if "$VM" ssh router 'ping -q -c 3 10.79.0.1' >/dev/null 2>&1; then
 else
 	bad "no tunnel after moving to 1.2.3.4"
 fi
+
+say "link threads: off, on, then legacy again"
+for mode in off on legacy; do
+	"$VM" ssh router "uci set cengarde.main.link_threads=$mode; uci commit cengarde; /etc/init.d/cengarde reload"
+	if until_ok 30 all_live && [ "$(lt_mode)" = "$mode" ] &&
+		"$VM" ssh router 'ping -q -c 5 10.79.0.1' > "$OUT/ping-threads-$mode.txt" 2>&1 &&
+		grep -q ' 0% packet loss' "$OUT/ping-threads-$mode.txt"; then
+		ok "link_threads $mode: every link live, no loss"
+	else
+		bad "link_threads $mode"
+		links
+		"$VM" ssh router 'logread | grep cengarde | tail -20'
+	fi
+	[ "$mode" = on ] || continue
+	sleep 3 # two samples of each thread's CPU clock, a second apart
+	"$VM" ssh router 'cengarde ctl threads' | tee "$OUT/ctl-threads.txt"
+	if [ "$(grep -cE '^cg-(hub|eth[123]) +[0-9]+ +[0-9]+ +[0-9]+ +[0-9]+\.[0-9]$' "$OUT/ctl-threads.txt")" = 4 ]; then
+		ok "ctl threads: the hub and a thread per uplink, each with its CPU"
+	else
+		bad "ctl threads does not show the hub and three uplink threads with their CPU"
+	fi
+done
 
 converged "enabled"
 

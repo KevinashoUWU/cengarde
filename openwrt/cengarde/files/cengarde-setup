@@ -591,7 +591,7 @@ engine_conf() {
 		passthrough = $PASS
 	EOF
 	for k in server_failover_ms mute_behind_ms unmute_behind_ms mute_settle_ms mute_trickle min_active_links \
-		probe_interval_ms probe_idle_ms busy_poll_us cpu rt_priority sndbuf description; do
+		probe_interval_ms probe_idle_ms busy_poll_us cpu rt_priority sndbuf link_threads io_queue description; do
 		config_get v main "$k"
 		[ -n "$v" ] && echo "$k = $v"
 	done
@@ -656,21 +656,26 @@ leaked_prefix() {
 }
 
 # From the engine's status: no reply from the VPS on any link after the
-# first 10 s (vps_silent), and links whose path MTU is smaller than the
-# packets the tunnel makes (path_mtu, with the largest tunnel MTU that fits,
-# and the family: LuCI advises otherwise when that MTU is below 1280).
+# first 10 s (vps_silent), links whose path MTU is smaller than the packets
+# the tunnel makes (path_mtu, with the largest tunnel MTU that fits, and the
+# family: LuCI advises otherwise when that MTU is below 1280), and links
+# whose thread has not run for over 5 s with packets waiting
+# (link_thread_stalled, link_threads = on).
 engine_problems() { # STATUS_JSON
-	local up=0 largest=0 wg n i=0 open=0 live=0 st fam pm name label over
+	local up=0 largest=0 wg n i=0 open=0 live=0 st fam pm name label over stall
 
 	eval "$(jsonfilter -s "$1" -e 'up=@.uptime_ms' -e 'largest=@.upload.largest' 2>/dev/null)"
 	wg=$largest
 	case "$MTU" in '' | *[!0-9]*) ;; *) [ "$TUNNEL" = 1 ] && [ $((MTU + 32)) -gt "$wg" ] && wg=$((MTU + 32)) ;; esac
 	n=$(jsonfilter -s "$1" -e '@.links[*].id' 2>/dev/null | wc -l)
 	while [ "$i" -lt "$n" ]; do
-		st='' fam='' pm=0 name='' label=''
+		st='' fam='' pm=0 name='' label='' stall=0
 		eval "$(jsonfilter -s "$1" -e "st=@.links[$i].state" -e "fam=@.links[$i].family" \
-			-e "pm=@.links[$i].path_mtu" -e "name=@.links[$i].name" -e "label=@.links[$i].label" 2>/dev/null)"
+			-e "pm=@.links[$i].path_mtu" -e "name=@.links[$i].name" -e "label=@.links[$i].label" \
+			-e "stall=@.links[$i].io_stalled_ms" 2>/dev/null)"
 		i=$((i + 1))
+		[ "${stall:-0}" -gt 5000 ] 2>/dev/null &&
+			problem link_thread_stalled "${label:-$name}" "\"seconds\":$((stall / 1000))"
 		case "$st" in
 		live) live=$((live + 1)) ;;
 		waiting | stalled) ;;
