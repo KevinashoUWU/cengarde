@@ -5,8 +5,9 @@
 //
 // Against the router VM of vm.sh (uplinks up1-up3, VPS at 1.2.3.4, see
 // e2e.sh): configures cengarde from the web UI only (VPS addresses,
-// uplinks, IP pass, enable), checks that an address with a mask and an MTU
-// of 1420 are refused and that the cloud-config follows the form, applies,
+// uplinks, IP pass, enable), checks that an address with a mask, an MTU of
+// 1420 and a VPS failover time below three probe intervals are refused and
+// that the cloud-config follows the form, applies,
 // and waits on the status page for the tunnel, the three uplinks and the
 // VPS confirming IP pass; then pauses an uplink there and resumes it.
 // Fails on any JavaScript error after logging in.
@@ -137,6 +138,25 @@ try {
 	await tab('vps');
 	cc = await page.inputValue('#cengarde-cloud-config');
 	check(/PASSTHROUGH=yes/.test(cc), 'the cloud-config follows the IP pass switch before saving');
+
+	step('Advanced tab: the VPS failover time follows the probe interval');
+	await tab('advanced');
+	const failover = page.locator(id('widget.cbid.cengarde.main.server_failover_ms'));
+	const probe = page.locator(id('widget.cbid.cengarde.main.probe_interval_ms'));
+	const type = async (field, v) => {
+		await field.fill('');
+		if (v)
+			await field.pressSequentially(v);
+		await field.blur();
+	};
+	await type(probe, '2000');
+	await type(failover, '5000');
+	check(await invalid(failover), 'failover 5000 is refused with probes every 2000 ms');
+	await type(failover, '6000');
+	check(!await invalid(failover), 'failover 6000 is taken with probes every 2000 ms');
+	await type(failover, '');
+	await type(probe, '');
+	check(!await invalid(failover) && !await invalid(probe), 'both back to their defaults');
 
 	step('save and apply');
 	await tab('general');

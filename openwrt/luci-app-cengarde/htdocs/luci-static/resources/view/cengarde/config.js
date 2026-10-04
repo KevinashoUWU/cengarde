@@ -248,8 +248,16 @@ return view.extend({
 
 		o = s.taboption('advanced', form.Value, 'server_failover_ms', _('Next VPS address after (ms)'),
 			_('An uplink that gets no answer from the VPS for this long tries the next VPS address of its family. 0: never.'));
-		o.datatype = 'or(0,range(3000,3600000))';
+		o.datatype = 'range(0,3600000)';
 		o.placeholder = '10000';
+		// The engine wants 0 or at least three idle probes: probe_idle_ms
+		// (1000 unless set in UCI), raised to the probe interval when larger.
+		o.validate = function(section_id, v) {
+			const idle = Math.max(+value(m, 'probe_idle_ms') || 1000, +value(m, 'probe_interval_ms') || 100);
+
+			return (+v && +v < 3 * idle)
+				? _('0 (never) or at least %d ms with this probe interval').format(3 * idle) : true;
+		};
 
 		o = s.taboption('advanced', form.Value, 'mute_behind_ms', _('Mute after falling behind (ms)'),
 			_('A link that stays this far behind the fastest one for the settle time stops carrying traffic until it catches up. 0: never.'));
@@ -266,7 +274,7 @@ return view.extend({
 		o.placeholder = '2';
 
 		o = s.taboption('advanced', form.Value, 'probe_interval_ms', _('Probe interval (ms)'),
-			_('While there is traffic; each idle link is probed every second.'));
+			_('While there is traffic; each idle link is probed every second, or at this interval if it is longer. The next VPS address is tried after three idle probes at the least.'));
 		o.datatype = 'range(100,60000)';
 		o.placeholder = '100';
 

@@ -133,6 +133,9 @@ msgstr ""
 msgid "An uplink that gets no answer from the VPS for this long tries the next VPS address of its family. 0: never."
 msgstr ""
 
+msgid "0 (never) or at least %d ms with this probe interval"
+msgstr ""
+
 msgid "Mute after falling behind (ms)"
 msgstr ""
 
@@ -151,7 +154,7 @@ msgstr ""
 msgid "Probe interval (ms)"
 msgstr ""
 
-msgid "While there is traffic; each idle link is probed every second."
+msgid "While there is traffic; each idle link is probed every second, or at this interval if it is longer. The next VPS address is tried after three idle probes at the least."
 msgstr ""
 
 msgid "Busy polling (µs)"
