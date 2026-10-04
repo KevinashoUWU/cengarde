@@ -38,6 +38,7 @@ sudo bench/lab.sh control  # con tráfico: pausar un enlace, recargar dos veces,
 sudo bench/lab.sh latency  # latencia y CPU con busy_poll_us 0, 50 y 200, y el Go si está compilado (historia 006)
 sudo bench/lab.sh restart  # reinicios del servidor con tráfico: todos los enlaces vivos en 4 s (lab.d, va en ci)
 sudo bench/lab.sh restart ebe570b  # lo mismo con el motor de otro commit, p. ej. el de antes del arreglo
+sudo bench/lab.sh multiip  # servidor con varias direcciones: responde desde la de llegada (lab.d, va en ci)
 
 sudo ENGINE=go bench/lab.sh build  # además, el engarde Go (normal y -race)
 sudo bench/lab.sh suite    # línea base del engarde Go (historia 001, ~5 min)
@@ -95,6 +96,34 @@ bajada vuelve a fluir (la regla, en `engine/src/epoch.h` y la historia
 
 Medidas (antes y después del arreglo, y con un anillo de 4 sondas):
 historia [010](../docs/historias/010-ipv6-varias-ip-multicliente-nombres.md).
+
+### `multiip`: el servidor con varias direcciones (`lab.d/multiip.sh`)
+
+El servidor escucha en un comodín y responde desde la dirección a la que
+llegó cada paquete (`engine/src/pktinfo.h`). Antes respondía desde la que
+elegía la ruta, y el socket del enlace del cliente, conectado a la
+dirección a la que envía, descartaba la respuesta.
+
+- **Montaje:** `srv` tiene además 10.0.1.20/24 en `s1` (secundaria) y
+  198.51.100.7/32 en `lo`, a la que `cli` llega por `l2`. l1 envía a la
+  secundaria, l2 a la /32 y l3 a 10.0.3.2, como siempre.
+- **Dos pasadas,** con `listen = 0.0.0.0:59402` y con `*:59402` (doble pila
+  con direcciones v4-mapped donde el kernel tiene IPv6; IPv4 si no, como en
+  el contenedor sin IPv6).
+- **Comprueba:**
+  - todos los enlaces vivos en los dos extremos en 3 s, y en cada camino
+    del servidor `links[].local` es la dirección a la que envía su enlace
+    (también en la columna LOCAL de `cengarde ctl links`);
+  - 2000 pps de bajada y de subida, cada paquete una vez (como `smoke`) y
+    al menos el 90 % por cada enlace;
+  - al borrar la /32 con 2000 pps de bajada, solo crecen los
+    `local_errors` de l2, su camino sigue y el túnel no pierde nada por l1
+    y l3; con la /32 de vuelta, l2 vuelve a estar vivo en 5 s.
+- **Con el motor de antes** (`CENGARDE_BIN` de `3bcf673`), l1 y l2 nunca
+  llegan a vivos: el escenario falla.
+- **Pendiente con la lista de direcciones del cliente (WP4):** l2 con
+  `server = 198.51.100.7:59402 10.0.2.2:59402` vuelve por la segunda en
+  `server_failover_ms` + 1 s tras borrar la /32.
 
 Paso a paso (pasa las mismas variables a `setup` y a `start`):
 
