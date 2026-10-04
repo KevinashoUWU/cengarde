@@ -20,7 +20,7 @@ hardware real.
 - `engine/`: motor C (`src/`, `tests/`, `examples/`, `README.md`).
 - `openwrt/`: paquetes `cengarde` y `luci-app-cengarde`, `test/` (VMs QEMU
   y Playwright) y guía; `contrib/`: VPS (cloud-init, NAT) y systemd.
-- `cmd/`, `webmanager/`: engarde Go y su UI, de referencia (solo para medir).
+- El engarde Go original salió del árbol; sigue en el historial (`3492df9`).
 - `bench/`: laboratorio netns/veth con `udpgen` (WireGuard falso), ver su README.
 - `docs/historias/`: investigación y decisiones (índice abajo).
 
@@ -29,9 +29,9 @@ hardware real.
 - Motor: `make -C engine test`, `make -C engine SANITIZE=1 test` y, en
   cruzado, `make CC=aarch64-linux-gnu-gcc`.
 - Laboratorio (root):
-  - `bench/lab.sh build`, `smoke` y `health` (los que corre el CI),
-    `compare` (Go frente a C), `latency` y `suite` (línea base Go);
-  - `ENGINE=c` usa cengarde en ambos extremos.
+  - `bench/lab.sh build`, `smoke` y `health` (los que corre el CI), `latency`;
+  - `ENGINE=go bench/lab.sh build` suma el Go del historial, para `compare`
+    (Go frente a C) y `suite` (línea base Go).
 - OpenWrt de punta a punta: `openwrt/test/e2e.sh IMAGEN` (`openwrt/README.md`).
 - Contenedor cloud: `apt-get update` y luego `iproute2 strace` (laboratorio)
   o `qemu-system-x86 openssh-client` (e2e); sin IPv6, WireGuard ni netem.
