@@ -489,6 +489,12 @@ repetidas, e `IPAddressDeny`: un curl en el cgroup de `cengarde.service` no
 llega a un servicio de metadatos falso, y root sí. Solo corre con
 `CI=true` o `--yes`: instala de verdad y enciende ufw.
 
+**Lo que encontró en su primera pasada:** en Ubuntu 22.04 (systemd 249)
+`cengarde.service` no arrancaba nunca: rechazaba el `%d` de `ExecStart`
+("Failed to resolve unit specifiers in %d/cengarde.conf: Invalid slot").
+Afectaba a todo VPS con 22.04 desde la plantilla de la historia 007. La
+unidad usa ahora `${CREDENTIALS_DIRECTORY}`, que existe desde la 247.
+
 ## Medidas
 
 - **Reinicios del servidor** (`sudo bench/lab.sh restart`, 3 enlaces, 2000

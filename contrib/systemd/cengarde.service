@@ -1,7 +1,9 @@
 # cengarde as a systemd service: the server on a VPS, or a client on a Linux
 # box. The configuration holds the shared key, so it stays root-only (0600)
 # and systemd hands a copy to the unprivileged service user as a credential.
-# Needs systemd 248 or newer (Ubuntu 22.04, Debian 12).
+# Needs systemd 247 or newer (Ubuntu 22.04, Debian 12). The path goes through
+# ${CREDENTIALS_DIRECTORY}: systemd 249 (Ubuntu 22.04) refuses the %d
+# specifier in ExecStart, and the unit would never start.
 #
 #   install -m 0644 contrib/systemd/cengarde.service /etc/systemd/system/
 #   systemctl daemon-reload && systemctl enable --now cengarde
@@ -20,7 +22,7 @@ Wants=network-online.target
 [Service]
 DynamicUser=yes
 LoadCredential=cengarde.conf:/etc/cengarde/cengarde.conf
-ExecStart=/usr/local/sbin/cengarde -c %d/cengarde.conf
+ExecStart=/usr/local/sbin/cengarde -c ${CREDENTIALS_DIRECTORY}/cengarde.conf
 Restart=always
 RestartSec=2
 RuntimeDirectory=cengarde

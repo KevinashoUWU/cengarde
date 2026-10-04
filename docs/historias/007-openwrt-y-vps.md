@@ -105,7 +105,11 @@ el cloud-config que SmoothWAN usa para el VPS y pidió dos cosas:
   - `DynamicUser` con la configuración pasada como credencial
     (`LoadCredential`), así que el archivo sigue siendo solo de root;
   - capacidades `NET_ADMIN`, `NET_RAW` y `SYS_NICE`, y sandbox;
-  - necesita systemd 248 o posterior; `systemd-analyze verify` no da avisos.
+  - necesita systemd 247 o posterior; `systemd-analyze verify` no da avisos.
+    Corrección (2026-10-04): con `%d` en `ExecStart`, systemd 249 (Ubuntu
+    22.04) rechazaba la unidad y el servicio nunca arrancaba; lo vio el
+    trabajo con systemd real del PR 2 (historia 010), y ahora usa
+    `${CREDENTIALS_DIRECTORY}`.
 - **No desactiva SSH ni el cortafuegos** (SmoothWAN sí): sus reglas van
   delante de las de ufw.
 - **IP pass** (`cengarde-nat`):
@@ -198,3 +202,5 @@ entrega LuCI sigue al interruptor; el mensaje de control queda pendiente.
   vez de reiniciar el motor (historia 009).
 - 2026-10-04: el puerto de WireGuard del VPS no estaba cerrado al túnel ni
   a IPv6 (historia 010).
+- 2026-10-04: la unidad de systemd no arrancaba en Ubuntu 22.04 (`%d` en
+  `ExecStart`); ahora usa `${CREDENTIALS_DIRECTORY}` (historia 010).
