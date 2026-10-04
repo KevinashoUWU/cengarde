@@ -11,7 +11,7 @@ la salud de los enlaces en
 **No es compatible en el cable con engarde Go:** usa su propia cabecera
 autenticada (protocolo v3), así que los dos extremos tienen que ser cengarde
 de la misma versión de protocolo. `cengarde version` la muestra al final, por
-ejemplo `cengarde 0.4.0-r1 (protocol 3)`.
+ejemplo `cengarde 0.4.1-r1-g<commit> (protocol 3)` en OpenWrt.
 
 ## Compilar
 

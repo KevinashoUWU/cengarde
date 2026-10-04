@@ -1,6 +1,6 @@
 # 007 — Paquete para OpenWrt, plantilla del VPS y SmoothWAN como referencia
 
-- **Fecha:** 2026-10-03
+- **Fecha:** 2026-10-03 (actualizada el 2026-10-04 con la historia 010)
 - **Estado:** vigente
 - **Fuentes:**
   - `openwrt/cengarde/`, `openwrt/README.md`,
@@ -88,6 +88,10 @@ el cloud-config que SmoothWAN usa para el VPS y pidió dos cosas:
   - cengarde en 65500/UDP;
   - WireGuard en 65501/UDP, accesible solo desde la propia máquina (se
     descarta desde fuera);
+    - *Corrección 2026-10-04:* el DROP solo cubría la interfaz pública y
+      solo IPv4: desde el túnel, y por IPv6 si el VPS la tiene, se llegaba.
+      Desde 0.4.1 se descarta en todo lo que no sea `lo`, en IPv4 e IPv6
+      (historia 010);
   - los dos quedan fuera del rango reenviado, 1024–65000.
 - **Claves:** aleatorias, generadas en el router; cuatro valores se pegan en
   la plantilla.
@@ -192,3 +196,5 @@ entrega LuCI sigue al interruptor; el mensaje de control queda pendiente.
     rechaza.
 - 2026-10-04: el IP pass lo gobierna el router y procd manda `SIGHUP` en
   vez de reiniciar el motor (historia 009).
+- 2026-10-04: el puerto de WireGuard del VPS no estaba cerrado al túnel ni
+  a IPv6 (historia 010).

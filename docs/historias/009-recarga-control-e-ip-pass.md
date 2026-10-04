@@ -1,6 +1,6 @@
 # 009 — Recarga en caliente, socket de control e IP pass desde el router
 
-- **Fecha:** 2026-10-04
+- **Fecha:** 2026-10-04 (actualizada el mismo día con la historia 010)
 - **Estado:** vigente
 - **Fuentes:**
   - código:
@@ -158,6 +158,9 @@ había que entrar al VPS: editar `nat.conf` y reiniciar `wg-quick@wg0`.
   - con «gana cualquiera», un pedido viejo podría ganar;
   - sin sesiones, el estado no cambia: un router apagado no apaga el IP
     pass.
+  - *Corrección 2026-10-04:* una sonda capturada y reenviada tras un
+    reinicio del servidor abre la sesión más nueva y decide el IP pass; lo
+    cierra el HELLO del protocolo v4 (PR 3, historia 010).
 - **El servidor no toca el cortafuegos:** corre sin privilegios
   (`DynamicUser`).
   - Escribe su deseo a un archivo, desde un segundo hilo escritor; si el
@@ -225,10 +228,12 @@ había que entrar al VPS: editar `nat.conf` y reiniciar `wg-quick@wg0`.
 - **Probar la unidad `.path` en un VPS real:** el contenedor no tiene
   systemd.
 - **Servidor:** responder desde la dirección de llegada (`IP_PKTINFO`),
-  pendiente desde la historia 008.
+  pendiente desde la historia 008; va en el PR 2 de la historia 010.
 - **LuCI:** mostrar las pausas de interfaces que no existen (hoy solo
   `cengarde ctl links` las muestra, como «absent»).
 
 ## Cambios
 
 - 2026-10-04: creada.
+- 2026-10-04: una sonda reenviada tras un reinicio del servidor puede
+  decidir el IP pass (historia 010).

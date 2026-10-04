@@ -65,6 +65,15 @@
 >
 >   Siguiente: probarlo en la Pi 4 y en Vultr.
 
+> **Actualización 2026-10-04:**
+> - Recarga sin cortar, `cengarde ctl` e IP pass pedido desde el router
+>   (historia 009).
+> - Plan en cinco PRs para IPv6, respuesta desde la dirección de llegada,
+>   varios routers por VPS y nombres con DNS dinámico (historia 010). El
+>   PR 1 (paquetes 0.4.1, sin cambio de protocolo) está hecho: un reinicio
+>   del servidor ya no deja la bajada atascada, y la LAN ya no lee por el
+>   túnel los metadatos del VPS, donde está el secreto.
+
 ## 1. Cómo funcionaba engarde (Go)
 
 ```
@@ -364,7 +373,9 @@ orientativas, para una persona a tiempo parcial.
   dentro del túnel, y escenarios con retardo, jitter y pérdida (`netem`) en
   una máquina que lo tenga.
 - [ ] Laboratorio en CI: los runners de GitHub Actions permiten netns con sudo,
-  así que se pueden detectar regresiones de rendimiento.
+  así que se pueden detectar regresiones de rendimiento. En parte:
+  `bench/lab.sh ci` (smoke, health, control y restart) detecta fallos, no
+  pérdidas de rendimiento.
 
 **Salida:** tabla de referencia reproducible y diagnóstico de la Pi.
 
@@ -442,7 +453,7 @@ la recarga en caliente llegaron con la historia 009.
 
 ### Fase 3: producto (OpenWrt, empaquetado y web; 3–6 semanas, en paralelo con la 2)
 
-**Estado (2026-10-03):** OpenWrt hecho en lo esencial, sin probar aún en
+**Estado (2026-10-04):** OpenWrt hecho en lo esencial, sin probar aún en
 hardware real (historias [007](docs/historias/007-openwrt-y-vps.md) y
 [008](docs/historias/008-luci-uci-y-emparejamiento.md)).
 - Hecho:
@@ -463,7 +474,16 @@ hardware real (historias [007](docs/historias/007-openwrt-y-vps.md) y
 - Falta:
   - la prueba en la Pi 4 y en Vultr;
   - un feed firmado y más targets;
-  - respuestas del servidor desde la IP de destino (historia 008).
+  - el plan de la historia
+    [010](docs/historias/010-ipv6-varias-ip-multicliente-nombres.md), del
+    que el PR 1 está hecho:
+    - PR 2: respuestas desde la dirección de llegada (IPv4 e IPv6 en el
+      VPS, servidor casero), IPv6 por fuera del túnel y cierre de la fuga
+      de IPv6 de la LAN;
+    - PR 3: varios routers por VPS (protocolo v4) con un panel de reenvío
+      de puertos;
+    - PR 4: IPv6 dentro del túnel, apagado por defecto;
+    - PR 5: nombres con DNS dinámico, también para un servidor casero.
 
 - **OpenWrt.** El destino es OpenWrt limpio (24.10 y 25.12, kernel 6.x), no
   SmoothWAN, que está abandonado y se quedó en kernel 5.x (historia 004).
@@ -590,7 +610,10 @@ debe sobrevivir a la caída de uno con ≤1,34× de sobrecoste.
   significan que el enlace esté caído.
 - [ ] Buffers de 64 KiB o detección de truncado, y aviso por enlace cuando el
   MTU de camino no basta.
-- [ ] IPv6.
+- [ ] IPv6: por fuera del túnel en el PR 2 y dentro en el PR 4 (historia
+  010).
+- [x] Que un reinicio del servidor no deje la bajada atascada (0.4.1,
+  historia 010).
 - [ ] Rutas por enlace: documentar o automatizar reglas por origen
   (`ip rule from <ip> table N`) cuando un uplink no tiene ruta por defecto, o
   integrarse con mwan3 en OpenWrt.
@@ -607,6 +630,12 @@ debe sobrevivir a la caída de uno con ≤1,34× de sobrecoste.
   CAP_NET_RAW si el socket no estaba ligado a un dispositivo. Usuario sin
   privilegios y procd/systemd endurecidos.
 - [ ] Fuzzing, sanitizers y hardening del compilador.
+- [x] En el VPS, el túnel no llega a los metadatos (donde está el secreto)
+  ni al puerto de WireGuard (0.4.1, probado en netns; historia 010).
+- [ ] Que el motor del VPS tampoco llegue a los metadatos: `IPAddressDeny`
+  ya está en 0.4.1, sin probar aún en un systemd real (PR 2).
+- [ ] Que una sonda reenviada tras un reinicio del servidor no decida el IP
+  pass: HELLO del protocolo v4, PR 3 (historia 010).
 
 **Uso y operación**
 - [ ] Lista explícita o patrones de interfaces, con exclusión automática de
@@ -661,6 +690,9 @@ Con engarde, la Pi se quedaba en ~30 Mbit/s con 4 enlaces, por CPU
 | Diferencias de comportamiento con engarde Go | Las mismas pruebas de laboratorio (`compare`) contra la línea base Go, compilada desde el historial |
 | Soporte desigual de eBPF (XDP genérico en la Pi y en USB; OpenWrt sin BTF) | eBPF opcional con respaldo automático; nada de CO-RE |
 | Alcance (web + OpenWrt + eBPF + modos) | Fases con criterios de salida; la Fase 1a ya ataca el problema de la Pi |
+| El secreto viaja en el user data del VPS | El túnel no llega a los metadatos (0.4.1, probado en netns); el motor tampoco (`IPAddressDeny`, sin probar aún en un systemd real; PR 2); los secretos de los demás routers nunca van en el user data (historia 010) |
+| La IPv6 de la LAN sale por fuera del túnel si un enlace tiene en el router una interfaz DHCPv6 que delega su prefijo (Starlink) | Hasta el PR 2, no crearla o ponerle `delegate '0'` a mano (`openwrt/README.md`, sección 2); el PR 2 lo hace solo y avisa (`ipv6_leak`) |
+| Varios routers por VPS exigen cambiar el protocolo (v4) | Un solo cambio de formato, en el PR 3, con paquetes 0.5.0 en los dos extremos; la migración desde 0.4 se probará en el CI con systemd real |
 | Licencia | Al derivar de engarde (GPLv2), cengarde es GPLv2. Programas BPF con licencia "GPL" o dual BSD/GPL; libbpf (LGPL-2.1 o BSD-2) es compatible |
 
 ## 9. Referencias y proyectos parecidos

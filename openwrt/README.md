@@ -115,6 +115,16 @@ uci commit network && service network reload
   ya trae los comunes.
 - **Sin interfaces IPv6 (DHCPv6) en los enlaces:** el túnel lleva solo IPv4
   por ahora, y la LAN saldría por fuera de él con IPv6.
+  - Ojo con una interfaz DHCPv6 sobre un enlace que delegue un prefijo, como
+    Starlink, por ejemplo el `wan6` de fábrica de los equipos con puerto WAN
+    (la Pi 4 no lo trae): bórrala, o ponle `delegate '0'` para que su
+    prefijo no llegue a la LAN. cengarde lo hará solo más adelante
+    (historia 010).
+
+    ```sh
+    uci set network.wan6.delegate='0'     # o el nombre de esa interfaz
+    uci commit network && service network reload
+    ```
 
 ## 3. El VPS
 
@@ -141,7 +151,12 @@ uci commit network && service network reload
 
 **Qué deja montado:**
 - cengarde como servicio de systemd sin privilegios;
-- WireGuard solo para cengarde (`127.0.0.1:65501`);
+- WireGuard solo para cengarde (`127.0.0.1:65501`): su puerto solo contesta
+  en la propia máquina; no desde Internet ni desde el túnel, tampoco por
+  IPv6;
+- el túnel no llega al servicio de metadatos del proveedor
+  (169.254.0.0/16), que guarda el secreto en el user data; el motor
+  tampoco;
 - NAT y, con IP pass, el reenvío de puertos;
 - `cengarde-passthrough.path`, que abre o cierra el IP pass cuando lo pide
   el router.
@@ -269,7 +284,9 @@ cengarde-setup cloud-config > vps.yaml               # el user data del VPS
   ```
 
 - **Actualizar:** router y VPS con el mismo commit; la 0.4 cambió el
-  protocolo (v3) y no habla con un VPS anterior. En el VPS:
+  protocolo (v3) y no habla con un VPS anterior. La 0.4.1 no lo cambia,
+  pero actualiza igual el VPS: cierra al túnel los metadatos y el puerto de
+  WireGuard. En el VPS:
 
   ```sh
   git -C /opt/cengarde fetch --depth 1 https://github.com/KevinashoUWU/cengarde <commit>
