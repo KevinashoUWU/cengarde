@@ -223,16 +223,19 @@ static inline unsigned cg_path_diff(const struct sockaddr_storage *addr, const s
 				    const struct sockaddr_storage *from, const struct cg_local *got)
 {
 	unsigned ch = 0;
-	int was4 = cg_addr_is4(addr), is4 = cg_addr_is4(from);
 
-	if (!cg_addr_equal(addr, from))
+	/* Per packet, normally: the same address, the same local one. */
+	if (!cg_addr_equal(addr, from)) {
+		int was4 = cg_addr_is4(addr);
+
 		ch |= CG_PATH_NEW_ADDR;
-	if (was4 >= 0 && was4 != is4)
-		ch |= CG_PATH_NEW_FAMILY;
+		if (was4 >= 0 && was4 != cg_addr_is4(from))
+			ch |= CG_PATH_NEW_FAMILY;
+	}
 	if (got->known) {
 		if (!local->known || memcmp(local->addr, got->addr, 16))
 			ch |= CG_PATH_NEW_LOCAL;
-	} else if (local->known && cg_local_is4(local) != is4) {
+	} else if (local->known && cg_local_is4(local) != cg_addr_is4(from)) {
 		ch |= CG_PATH_NEW_LOCAL;
 	}
 	return ch;
