@@ -170,6 +170,30 @@ static void test_config_addrs(void)
 		 0);
 	CHECK_EQ(c.links[0].nserver, 4);
 	cg_config_free(&c);
+	/* A name never pushes a later entry out unchecked or unused: localhost
+	 * has two addresses wherever /etc/hosts also lists ::1. */
+	CHECK_EQ(cg_config_parse(&c, "mode = client\nkey = " KEY "\nserver = 192.0.2.1:1 192.0.2.2:1 192.0.2.3:1 "
+				 "224.0.0.1:1\n",
+				 err, sizeof(err), warn, sizeof(warn)),
+		 -1);
+	CHECK(!strcmp(err, "server: '224.0.0.1:1' is a multicast address"));
+	CHECK_EQ(cg_config_parse(&c, "mode = client\nkey = " KEY "\nserver = localhost:1 192.0.2.2:1 192.0.2.3:1 "
+				 "224.0.0.1:1\n",
+				 err, sizeof(err), warn, sizeof(warn)),
+		 -1);
+	CHECK(!strcmp(err, "server: '224.0.0.1:1' is a multicast address"));
+	CHECK_EQ(cg_config_parse(&c, "mode = client\nkey = " KEY "\nserver = localhost:1 192.0.2.2:1 192.0.2.3:1 "
+				 "0.0.0.0:1\n",
+				 err, sizeof(err), warn, sizeof(warn)),
+		 -1);
+	CHECK(!strcmp(err, "server: '0.0.0.0:1' is the wildcard address"));
+	CHECK_EQ(cg_config_parse(&c, "mode = client\nkey = " KEY "\nserver = localhost:1 192.0.2.2:1 192.0.2.3:1 "
+				 "192.0.2.4:1\n",
+				 err, sizeof(err), warn, sizeof(warn)),
+		 0);
+	CHECK_EQ(c.nserver, 4);
+	CHECK(!strcmp(cg_addr_str(&c.server[3], text, sizeof(text)), "192.0.2.4:1"));
+	cg_config_free(&c);
 
 	/* A server is somewhere to send to: no wildcard, no multicast. */
 	for (size_t i = 0; i < CG_ARRAY_SIZE(bad); i++) {

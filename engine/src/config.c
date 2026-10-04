@@ -237,9 +237,10 @@ static int get_str(struct cg_ini *ini, const char *sec, const char *key, char *o
 	return 0;
 }
 
-/* Parses a list of at most max addresses into out; a name may stand for
- * several and fills what is left. Peers are addresses to send to: names are
- * allowed there, the wildcard and multicast addresses are not. */
+/* Parses a list of at most max entries into out; a name may stand for several
+ * addresses and takes the slots the later entries leave, so every entry is
+ * parsed, checked and kept. Peers are addresses to send to: names are allowed
+ * there, the wildcard and multicast addresses are not. */
 static int get_addrs(struct cg_ini *ini, const char *sec, const char *key, int peers,
 		     struct sockaddr_storage *out, int max, int *n, char *err, size_t errlen)
 {
@@ -263,8 +264,8 @@ static int get_addrs(struct cg_ini *ini, const char *sec, const char *key, int p
 			snprintf(err, errlen, "%s: at most %d addresses", key, max);
 		return -1;
 	}
-	for (int i = 0; i < count && *n < max; i++) {
-		int got = cg_addr_parse(items[i], peers, out + *n, max - *n, e, sizeof(e));
+	for (int i = 0; i < count; i++) { /* count <= max: a slot is left for each later entry */
+		int got = cg_addr_parse(items[i], peers, out + *n, max - *n - (count - 1 - i), e, sizeof(e));
 		const char *why = NULL;
 
 		if (got < 0) {
