@@ -19,7 +19,11 @@ ejemplo `cengarde 0.4.1-r1-g<commit> (protocol 3)` en OpenWrt.
 make -C engine            # binario engine/cengarde
 make -C engine test       # tests unitarios
 make -C engine SANITIZE=1 test   # con ASan y UBSan
+make -C engine SANITIZE=thread test   # con TSAN (los hilos: tests/test_threads.c)
 ```
+
+`test_threads` pasa 10^7 entradas por el anillo de los hilos;
+`CG_TEST_RING_N` cambia la cifra (p. ej. 10^8 en un ARM de verdad).
 
 Solo necesita un compilador C11 y las cabeceras de Linux, sin más
 dependencias. Respeta `CC`, `CFLAGS` y `LDFLAGS` para compilar en cruzado (por
@@ -235,6 +239,36 @@ perder un paquete del túnel y vuelve, sin recaer, cuando se le quita
   ignora `busy_poll_us` si hay una sola CPU o si se fija con `cpu`, para no
   dejar sin CPU a los hilos del kernel que le entregan los paquetes.
 
+## Hilos por enlace (`link_threads`, cliente)
+
+Cómo lee el cliente los sockets de sus enlaces (historia
+[011](../docs/historias/011-hilos.md)):
+
+- **`legacy`, por omisión:** el bucle de siempre (0.4), que lee todos los
+  enlaces. Sigue siendo el valor por omisión hasta medir los hilos en la Pi
+  (puerta P), y es la vía de escape: un cambio en LuCI vuelve a él.
+- **`on`:** un hilo por enlace (como mucho 8; a partir del noveno, comparten
+  el hilo que menos enlaces tenga) que lee su socket a un anillo; el hilo
+  principal (el *hub*) toma lo de cada hilo por turnos y decide todo como
+  antes (secuencia, MAC, ventana anti-replay, salud, sondas). Un enlace o un
+  hilo que no recibe CPU llena solo su propio socket: los demás siguen. Un
+  atasco del hilo principal, en cambio, frena todos los enlaces a la vez
+  (cada socket lo amortigua con su buffer). Cuesta más CPU con poco
+  tráfico: un despertar por lote en cada hilo (medido: historia 011).
+- **`off`:** la misma estructura nueva en un solo hilo, sin hilos ni
+  timbres; sirve para distinguir un fallo de los hilos de uno del código
+  nuevo. No es el código de antes: eso es `legacy`.
+- **`auto`:** `on` solo para la clase de máquina medida (aarch64 o x86-64,
+  4 CPU o más, sin `cpu`) y solo en una versión que lo permita; en esta
+  versión, `legacy` siempre. `cengarde -t` dice en qué queda.
+- **Perillas:** `io_queue` (64–1024, potencia de dos; 256) es la cola de
+  órdenes de cada hilo; `cpu` en una sección `[link]` fija el hilo de ese
+  enlace; `cpu` global fija el principal; `rt_priority` va a todos los hilos
+  de datos y `busy_poll_us` también, mientras quepan en las CPU con una de
+  sobra (si no, solo el principal, con un aviso).
+- **Todo se fija al arrancar:** cambiar cualquiera de estas reinicia el
+  proceso en el lugar.
+
 ## Cambiar la configuración en marcha
 
 `SIGHUP` (o `cengarde ctl reload`) vuelve a leer el archivo sin cortar el
@@ -251,8 +285,9 @@ túnel:
   que funciona. En el laboratorio, dos recargas y la pausa de un enlace a
   2000 pps no perdieron ningún paquete (`sudo bench/lab.sh control`).
 - **Reiniciando el proceso en el lugar** (mismo PID, sesión nueva): `mode`,
-  `key`, `listen`, `control_socket`, `busy_poll_us`, `cpu`, `rt_priority` y,
-  en el servidor, `wireguard` y `max_sessions`.
+  `key`, `listen`, `control_socket`, `busy_poll_us`, `cpu`, `rt_priority`,
+  en el cliente `link_threads`, `io_queue` y el `cpu` de un `[link]`, y en
+  el servidor `wireguard` y `max_sessions`.
 - **Si el archivo tiene un error,** sigue con la configuración anterior,
   lo registra y lo publica en el estado (`config_error`).
 - **Sin bloquear el túnel:** la lectura va en un hilo aparte, porque un
@@ -271,6 +306,7 @@ cengarde ctl link eth1.30 off   # pausar un enlace (on: forzarlo; auto: lo que d
 cengarde ctl reset              # todos los enlaces otra vez como dice la config
 cengarde ctl reload             # como SIGHUP, pero responde si se aplicó
 cengarde ctl status             # el JSON de estado
+cengarde ctl threads            # cada hilo: TID, última CPU, ms de CPU y % de CPU en los últimos 5 s
 ```
 
 - **Socket:** el de arriba por omisión; otro con `-s RUTA`, o el de una
@@ -285,6 +321,11 @@ cengarde ctl status             # el JSON de estado
 - **`links` en el servidor:** muestra las sesiones y sus enlaces, con la
   dirección del cliente (`ADDRESS`) y la del servidor a la que envía
   (`LOCAL`).
+- **`threads`:** el hilo principal (`cg-hub` en el cliente, `cg-main` en el
+  servidor), los de cada enlace (`cg-<interfaz>`, con `link_threads = on`) y
+  los que escriben el estado. La CPU sale del reloj de CPU de cada hilo
+  (`pthread_getcpuclockid`): los kernels de OpenWrt no tienen `schedstat`.
+  Los scripts del laboratorio buscan ahí los hilos por nombre.
 
 ## IP pass pedido por el cliente
 
@@ -341,6 +382,23 @@ desde la dirección de llegada. Por enlace:
 
 `rx.ctrunc` cuenta los paquetes cuya dirección de llegada no cupo.
 
+En el cliente, `threads` dice el modo pedido (`setting`), el que corre
+(`mode`), cuántos hilos de enlace hay (`pumps`) y la CPU del principal
+(`hub_cpu_pct`); por enlace:
+- `pump`: su hilo (`null` en `legacy`);
+- `socket_drops`: datagramas que el kernel tiró en su socket (`SO_MEMINFO`;
+  `null` si no lo dice), en cualquier modo;
+- `io_stalled_ms`: cuánto lleva su hilo sin dar una vuelta con trabajo
+  esperando (0 por debajo de 1 s; a los 5 s lo registra);
+- `pump_cpu_pct`: la CPU de su hilo en los últimos 5 s;
+- `hop_us.down`: p50 y p99, en los últimos 5 s, de lo que espera un lote
+  entre el hilo que lo leyó y el principal que lo toma (`up`, con el PR 3c);
+- `rx_paused`: veces que su hilo dejó de leer porque el principal no daba
+  abasto (el kernel guarda lo que llega, y si se llena descarta solo de ese
+  enlace); `open_failed`: sockets que su hilo no pudo vigilar.
+`download.stale` cuenta lo que llegó por un socket ya cerrado o sustituido
+(se descarta antes de mirarlo).
+
 En el cliente, `upload.largest` es el datagrama de WireGuard más grande de
 los últimos 5 s, el que se compara con cada `path_mtu`, y
 `download.window_resets` cuenta las veces que el servidor
@@ -354,4 +412,6 @@ lo registra como "server started over".
   paquete que WireGuard le envía, como engarde.
 - **Enlaces asimétricos:** un enlace que sube pero no baja (o al revés) se da
   por mudo en los dos sentidos, aunque uno de ellos funcione.
-- **Aún no** baja privilegios y el servidor es de un solo hilo.
+- **Aún no** baja privilegios y el servidor es de un solo hilo; en el
+  cliente, con `link_threads = on`, la subida la sigue enviando el hilo
+  principal (los hilos de enlace la enviarán con el PR 3c).

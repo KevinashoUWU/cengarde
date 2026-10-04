@@ -428,6 +428,9 @@ la recarga en caliente llegaron con la historia 009.
   (historia 006).
 - Aplazado hasta medir en el VPS y en la Pi: servidor multihilo, GSO/GRO y
   ajuste del lote.
+- Hecho (PR 3b, 2026-10-04): un hilo por enlace en el router para recibir
+  (`link_threads = on`), a mano hasta medirlo en la Pi; por omisión, el
+  bucle de siempre (historia 011).
 
 - Servidor multihilo con `SO_REUSEPORT`; GSO/GRO donde se demuestre útil.
 - Colas cortas por enlace: `SO_SNDBUF` pequeño, descartar en EAGAIN y
