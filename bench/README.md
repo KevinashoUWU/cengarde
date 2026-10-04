@@ -41,6 +41,10 @@ sudo bench/lab.sh restart  # reinicios del servidor con tráfico: todos los enla
 sudo bench/lab.sh restart ebe570b  # lo mismo con el motor de otro commit, p. ej. el de antes del arreglo
 sudo bench/lab.sh multiip  # servidor con varias direcciones: responde desde la de llegada (lab.d, va en ci)
 sudo bench/lab.sh fallback # varias direcciones del servidor por enlace: failover, IPv6 que se salta, vuelta tras un corte, MTU de camino (lab.d, va en ci)
+sudo bench/lab.sh mtstall  # un hilo de enlace sin CPU no frena a los demás (link_threads = on; lab.d, va en ci)
+sudo bench/lab.sh mtlat    # latencia y CPU de legacy, off, on y on con busy_poll a 2, 20 y 80 kpps (lab.d, a mano)
+sudo bench/lab.sh soak     # 1 h por modo (off y on): tráfico variado, pérdidas, enlaces que caen, recargas (lab.d, a mano)
+sudo CLIENT_EXTRA="link_threads = on" bench/lab.sh ci   # el ci con los hilos por enlace (el CI corre legacy, off y on)
 
 sudo ENGINE=go bench/lab.sh build  # además, el engarde Go (normal y -race)
 sudo bench/lab.sh suite    # línea base del engarde Go (historia 001, ~5 min)
@@ -205,6 +209,46 @@ Demos de los problemas del engarde Go descritos en el roadmap (necesitan
 - `demo_webpanic`: el cliente se cae si el puerto web está ocupado.
 - `demo_races`: detector de carreras de Go, con tráfico y uso normal de la
   web.
+
+### `mtstall`: un hilo de enlace sin CPU (`lab.d/mtstall.sh`)
+
+Con `link_threads = on` cada enlace tiene un hilo que lee su socket, así que
+uno que no recibe CPU llena solo su socket y las copias de los otros llegan
+a tiempo (historia [011](../docs/historias/011-hilos.md)).
+
+- **Montaje:** 2000 pps en los dos sentidos durante 12 s (`MTSTALL_S`). Un
+  bucle `SCHED_FIFO` 99 ocupa la última CPU 300 ms de cada 2 s; el hilo que
+  lee l3 (`cg-l3`, buscado por nombre con `cengarde ctl threads`) pasa a esa
+  CPU y todo lo demás (los otros hilos, el servidor, los WireGuard falsos)
+  se queda fuera de ella. `rcvbuf = 256 KiB`: cada atasco de 300 ms (unos
+  600 datagramas de l3) desborda el socket de l3.
+- **Pasa con `on`:** el túnel no pierde nada (99,9 %) en ningún sentido,
+  los sockets de l1 y l2 no descartan nada (`socket_drops`), y como mucho el
+  5 por mil (`MTSTALL_LATE_PM`) de los paquetes llega con 50 ms o más de
+  retraso (`over50ms` de `udpgen`; la VM se para sola hasta 38 ms, y
+  `bench/jitter.c`, que marca esas pausas, llega con el PR 3a).
+- **`off` y `legacy`:** el único bucle lee todos los enlaces, así que el
+  bucle ocupado se lleva el hilo principal: se informa, no se juzga.
+- Necesita `chrt` y `taskset` (util-linux) y 2 CPU o más.
+
+### `mtlat` y `soak`: a mano (`lab.d/mtlat.sh`, `lab.d/soak.sh`)
+
+- **`mtlat`:** `MTLAT_RUNS` (5) pasadas intercaladas de cada modo de
+  `MTLAT_MODES` (`legacy off on on+busy`; `on+busy` es `on` con
+  `busy_poll_us = 50`) a `MTLAT_RATES` (2000, 20 000 y 80 000 pps) en cada
+  sentido de `MTLAT_DIRS`, `MTLAT_S` (5) s cada una. Cada línea es la de
+  `up`/`down` (pérdida, p50/p99, CPU por paquete de cada extremo, de todos
+  sus hilos) y, en bajada, el salto que mide el propio motor (`hop_us`: lo
+  que espera un lote entre el hilo que lo leyó y el principal). Al final,
+  la mediana de cada punto. Con `MTLAT_S` de 10 o más, la
+  ventana de 5 s de `hop_us` cae entera dentro del tráfico.
+- **`soak`:** `SOAK_S` (3600) s por modo de `SOAK_MODES` (`off on`), en
+  tramos de 60 s a 2000, 10 000 y 20 000 pps y 80, 400 y 1400 bytes por
+  turnos, mientras l3 cambia de pérdida y retardo cada 2 min (netem; `tbf`
+  si el kernel no lo tiene), l2 cae 10 s cada 10 min y el cliente recarga
+  cada 5 min. Pasa si cada tramo entrega el 99,9 %, no hay avisos de hilos
+  parados ni de sockets que no se pudieron vigilar, todas las recargas dicen
+  `ok` y el RSS del cliente no crece más de 1 MiB tras los primeros 5 min.
 
 ## Cómo leer la salida
 
