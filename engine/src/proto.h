@@ -1,4 +1,5 @@
-/* cengarde wire protocol, version 2 (version 1 had no delay reports).
+/* cengarde wire protocol, version 3 (version 1 had no delay reports,
+ * version 2 no IP pass flags).
  *
  * Every datagram between client and server carries a 24-byte header followed
  * by the payload (a WireGuard datagram for DATA). All integers are big-endian.
@@ -26,7 +27,7 @@
 
 #include "siphash.h"
 
-#define CG_PROTO_VERSION 2
+#define CG_PROTO_VERSION 3
 #define CG_HDR_LEN 24
 #define CG_MAC_OFF 16
 #define CG_LINK_OFF 3
@@ -41,6 +42,22 @@ enum cg_type {
 /* Header flags on probes and probe replies. */
 #define CG_F_OWD 0x01   /* cg_probe_info.owd holds a measurement */
 #define CG_F_MUTED 0x02 /* the sender carries no payload on this link (link health) */
+/* IP pass, the server's public ports forwarded to the client's site: a probe
+ * with CG_F_PASS_SET asks for it on (CG_F_PASS) or off; a reply with it says
+ * what the server has handed on to apply. The newest session decides. */
+#define CG_F_PASS_SET 0x04
+#define CG_F_PASS 0x08
+
+/* IP pass as flags, and back: -1 says nothing, 0 off, 1 on. */
+static inline uint8_t cg_pass_flags(int pass)
+{
+	return pass < 0 ? 0 : (uint8_t)(CG_F_PASS_SET | (pass ? CG_F_PASS : 0));
+}
+
+static inline int cg_pass_get(uint8_t flags)
+{
+	return flags & CG_F_PASS_SET ? !!(flags & CG_F_PASS) : -1;
+}
 
 struct cg_hdr {
 	uint8_t type;

@@ -403,6 +403,70 @@ latency() {
 	teardown
 }
 
+# jget FILE EXPR: a value from a status JSON (EXPR in Python, on d).
+jget() { python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); print(eval(sys.argv[2]))' "$1" "$2"; }
+
+# Control socket, reload and IP pass (docs/historias/009). While 2000 pps flow
+# up: pause link 3 by hand, reload the client by SIGHUP (IP pass off) and by
+# "cengarde ctl reload" (IP pass back on), and resume link 3. The tunnel keeps
+# its session and loses nothing, and the server writes each IP pass wish to
+# its passthrough_file. Then a setting that needs a restart (cpu) restarts
+# the client in place: same PID, new session.
+control() {
+	local fail=0 ctl sess pid traffic sent uniq out
+	ENGINE=c
+	CLIENT_EXTRA="control_socket = $RUN/client.sock;passthrough = yes${CLIENT_EXTRA:+;$CLIENT_EXTRA}"
+	SERVER_EXTRA="control_socket = $RUN/server.sock;passthrough_file = $RUN/passthrough${SERVER_EXTRA:+;$SERVER_EXTRA}"
+	setup && start || return 1
+	ctl="$CENGARDE_BIN ctl -s $RUN/client.sock"
+	sess=$(jget "$RUN/client.json" 'd["session"]')
+	pid=$(cat "$RUN/client.pid")
+	[ "$(cat "$RUN/passthrough" 2>/dev/null)" = on ] || { echo "FAIL: IP pass not asked for at start"; fail=1; }
+	up 2000 12 >"$RUN/traffic.txt" &
+	traffic=$!
+	sleep 2
+	[ "$($ctl link l3 off)" = ok ] || { echo "FAIL: link l3 off"; fail=1; }
+	sleep 1
+	$ctl links | grep -Eq '^l3 +[^ ]+ +paused +off ' || { echo "FAIL: l3 not paused"; $ctl links; fail=1; }
+	$ctl status >"$RUN/client-now.json"
+	[ "$(jget "$RUN/client-now.json" '[l["state"] for l in d["links"] if l["name"] == "l3"][0]')" = paused ] ||
+		{ echo "FAIL: the status does not show l3 paused"; fail=1; }
+	sed -i 's/^passthrough = yes/passthrough = no/' "$RUN/client.conf"
+	kill -HUP "$pid"
+	sleep 2
+	[ "$(cat "$RUN/passthrough")" = off ] || { echo "FAIL: IP pass off did not reach the server"; fail=1; }
+	sed -i 's/^passthrough = no/passthrough = yes/' "$RUN/client.conf"
+	out=$($ctl reload)
+	[ "$out" = ok ] || { echo "FAIL: ctl reload said: $out"; fail=1; }
+	sleep 2
+	[ "$(cat "$RUN/passthrough")" = on ] || { echo "FAIL: IP pass on did not reach the server"; fail=1; }
+	[ "$($ctl link l3 auto)" = ok ] || { echo "FAIL: link l3 auto"; fail=1; }
+	sleep 1
+	$ctl links | grep -Eq '^l3 +[^ ]+ +(live|waiting) +- ' || { echo "FAIL: l3 not back"; $ctl links; fail=1; }
+	wait "$traffic"
+	echo "   tunnel: $(cat "$RUN/traffic.txt")"
+	sent=$(sed -n 's/.*sent=\([0-9]*\).*/\1/p' "$RUN/tx.out")
+	uniq=$(sed -n 's/.*uniq=\([0-9]*\).*/\1/p' "$RUN/rx.out")
+	[ -n "$sent" ] && [ $((uniq * 1000)) -ge $((sent * 999)) ] || { echo "FAIL: packets lost"; fail=1; }
+	[ "$(jget "$RUN/client.json" 'd["session"]')" = "$sess" ] || { echo "FAIL: the reloads changed the session"; fail=1; }
+	[ "$(jget "$RUN/client.json" 'd["passthrough"]["server"]')" = on ] ||
+		{ echo "FAIL: the client does not see IP pass on at the server"; fail=1; }
+	$CENGARDE_BIN ctl -s "$RUN/server.sock" links | grep -q '^SESSION' || { echo "FAIL: server ctl links"; fail=1; }
+	# A setting the loop set up once: the client starts again in place.
+	sed -i '1a cpu = 0' "$RUN/client.conf"
+	out=$($ctl reload)
+	[ "$out" = "ok: cpu changed, restarting" ] || { echo "FAIL: ctl reload said: $out"; fail=1; }
+	sleep 2
+	kill -0 "$pid" 2>/dev/null || { echo "FAIL: the client is gone"; fail=1; }
+	[ "$(jget "$RUN/client.json" 'd["session"]')" != "$sess" ] || { echo "FAIL: no new session after the restart"; fail=1; }
+	$ctl links | grep -Eq '^l1 +[^ ]+ +live' || { echo "FAIL: no control socket after the restart"; fail=1; }
+	grep -hE "paused|by hand|reload|IP pass|restarting|configuration" "$RUN/client.log" "$RUN/server.log" | sed 's/^/   /'
+	stop
+	teardown
+	[ "$fail" = 0 ] && echo "control: ok" || echo "control: FAILED"
+	return "$fail"
+}
+
 # CI smoke test for cengarde (engine/): every packet arrives exactly once in
 # both directions, and an unauthenticated sender gets nothing back.
 smoke() {
@@ -437,7 +501,7 @@ smoke() {
 }
 
 if [ $# -eq 0 ]; then
-	echo "usage: $0 build|setup|start|stop|teardown|up PPS [S]|down PPS [S]|shape LINK RATE|unshape LINK|suite|compare|smoke|health|latency|demo_stranger|demo_webpanic|demo_races"
+	echo "usage: $0 build|setup|start|stop|teardown|up PPS [S]|down PPS [S]|shape LINK RATE|unshape LINK|suite|compare|smoke|health|control|latency|demo_stranger|demo_webpanic|demo_races"
 	exit 1
 fi
 "$@"

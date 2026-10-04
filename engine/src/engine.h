@@ -3,6 +3,7 @@
 #ifndef CG_ENGINE_H
 #define CG_ENGINE_H
 
+#include <pthread.h>
 #include <stdint.h>
 #include <string.h>
 #include <sys/epoll.h>
@@ -10,6 +11,7 @@
 #include <sys/uio.h>
 
 #include "config.h"
+#include "health.h"
 #include "proto.h"
 #include "util.h"
 
@@ -26,8 +28,46 @@
 #define CG_MAX_ROUNDS 8
 
 /* epoll tags: kind in the high half, index in the low half. */
-enum { CG_EV_SIG = 1, CG_EV_TIMER, CG_EV_NL, CG_EV_WG, CG_EV_LINK, CG_EV_LISTEN };
+enum { CG_EV_SIG = 1, CG_EV_TIMER, CG_EV_NL, CG_EV_WG, CG_EV_LINK, CG_EV_LISTEN, CG_EV_CTL, CG_EV_LOAD };
 #define CG_EV(kind, idx) (((uint64_t)(kind) << 32) | (uint32_t)(idx))
+
+/* What a run needs besides its configuration: where that came from, to
+ * reload it, and the command line, to restart in place. */
+struct cg_run {
+	const char *path;
+	char **argv;
+	int sigfd; /* SIGHUP reloads; SIGINT and SIGTERM stop */
+	int verbose; /* -v: debug logging, whatever log_level says */
+};
+
+/* Loads the configuration in a thread of its own, so that a reload never
+ * stalls the event loop: a server given by name waits on DNS. */
+struct cg_loader {
+	pthread_t thread;
+	int efd; /* eventfd, readable once a load is done (CG_EV_LOAD) */
+	int busy, joinable;
+	const char *path;
+	struct cg_config *cfg; /* the result */
+	char err[512], warn[2048];
+};
+
+int cg_loader_init(struct cg_loader *l); /* 0 or -1 */
+/* Starts loading path. Returns -1 while a load is still running. */
+int cg_loader_start(struct cg_loader *l, const char *path);
+/* On CG_EV_LOAD: returns 1 once the load is done, with *cfg the new
+ * configuration (the caller's from now on) or NULL and l->err set; else 0. */
+int cg_loader_done(struct cg_loader *l, struct cg_config **cfg);
+void cg_loader_free(struct cg_loader *l);
+
+/* Logs the warnings of a configuration load (one per line in warn). */
+void cg_log_warnings(const char *path, char *warn);
+/* Runs the same command line again in this process, which keeps its PID for
+ * procd or systemd; signals stay blocked, so none is lost. Returns only on
+ * failure. */
+void cg_reexec(char **argv);
+/* Undoes the cpu and rt_priority knobs for the calling thread: helper
+ * threads must not compete with the event loop. */
+void cg_thread_normal(void);
 
 struct cg_rxbatch {
 	struct mmsghdr msg[CG_BATCH];
@@ -59,6 +99,14 @@ static inline int cg_wait(int ep, struct epoll_event *ev, int max, uint32_t busy
 	return epoll_wait(ep, ev, max, busy_poll_us && cg_now_us() - last_traffic_us < busy_poll_us ? 0 : -1);
 }
 
+static inline struct cg_hcfg cg_hcfg_of(const struct cg_config *cfg)
+{
+	return (struct cg_hcfg){ .mute_behind_us = cfg->mute_behind_ms * 1000,
+				 .unmute_behind_us = cfg->unmute_behind_ms * 1000,
+				 .settle_ms = cfg->mute_settle_ms,
+				 .min_active = cfg->min_active_links };
+}
+
 int cg_timerfd(unsigned interval_ms);
 int cg_random(void *buf, size_t len);
 int cg_epoll_add(int ep, int fd, uint64_t tag);
@@ -67,7 +115,9 @@ int cg_epoll_add(int ep, int fd, uint64_t tag);
  * Failures are warnings: the tunnel runs anyway. */
 uint32_t cg_tune(const struct cg_config *cfg);
 
-int cg_client_run(const struct cg_config *cfg, int sigfd);
-int cg_server_run(const struct cg_config *cfg, int sigfd);
+/* Both take over cfg (calloc'ed) and free it, or the one a reload put in
+ * its place, when they return. */
+int cg_client_run(struct cg_config *cfg, const struct cg_run *run);
+int cg_server_run(struct cg_config *cfg, const struct cg_run *run);
 
 #endif

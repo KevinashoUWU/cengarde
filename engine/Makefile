@@ -25,10 +25,10 @@ CG_LDFLAGS += $(HARDEN_LDFLAGS)
 endif
 
 CORE = src/siphash.c src/proto.c src/util.c src/log.c src/config.c src/blake2s.c src/pair.c
-NET = src/netlink.c src/sock.c src/status.c src/os.c src/client.c src/server.c
+NET = src/netlink.c src/sock.c src/status.c src/os.c src/ctl.c src/client.c src/server.c
 TESTS = tests/test_main.c tests/test_siphash.c tests/test_proto.c tests/test_replay.c \
         tests/test_arrival.c tests/test_config.c tests/test_util.c tests/test_idmap.c \
-        tests/test_health.c tests/test_blake2s.c
+        tests/test_health.c tests/test_blake2s.c tests/test_ctl.c
 
 all: cengarde
 

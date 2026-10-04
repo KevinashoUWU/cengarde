@@ -9,7 +9,7 @@ la salud de los enlaces en
 [`docs/historias/006-salud-de-enlaces.md`](../docs/historias/006-salud-de-enlaces.md).
 
 **No es compatible en el cable con engarde Go:** usa su propia cabecera
-autenticada (protocolo v2), así que los dos extremos tienen que ser cengarde
+autenticada (protocolo v3), así que los dos extremos tienen que ser cengarde
 de la misma versión de protocolo.
 
 ## Compilar
@@ -138,11 +138,69 @@ perder un paquete del túnel y vuelve, sin recaer, cuando se le quita
   ignora `busy_poll_us` si hay una sola CPU o si se fija con `cpu`, para no
   dejar sin CPU a los hilos del kernel que le entregan los paquetes.
 
+## Cambiar la configuración en marcha
+
+`SIGHUP` (o `cengarde ctl reload`) vuelve a leer el archivo sin cortar el
+túnel:
+
+- **En el lugar, con la misma sesión:** enlaces (`interfaces`, `exclude`,
+  `[link]`), direcciones del servidor, etiquetas, salud de los enlaces,
+  sondas, buffers, `log_level`, `status_file`, `description`, IP pass y, en el
+  servidor, los tiempos de espera. En el laboratorio, dos recargas y la pausa
+  de un enlace a 2000 pps no perdieron ningún paquete
+  (`sudo bench/lab.sh control`).
+- **Reiniciando el proceso en el lugar** (mismo PID, sesión nueva): `mode`,
+  `key`, `listen`, `control_socket`, `busy_poll_us`, `cpu`, `rt_priority` y,
+  en el servidor, `wireguard` y `max_sessions`.
+- **Si el archivo tiene un error,** sigue con la configuración anterior,
+  lo registra y lo publica en el estado (`config_error`).
+- **Sin bloquear el túnel:** la lectura va en un hilo aparte, porque un
+  servidor dado por nombre espera al DNS.
+- **En OpenWrt,** procd manda `SIGHUP` en vez de reiniciar cuando cambia la
+  configuración generada.
+
+## Socket de control: `cengarde ctl`
+
+Con `control_socket = /var/run/cengarde/cengarde.sock` (un socket Unix, solo
+para root), `cengarde ctl` habla con el motor en marcha:
+
+```sh
+cengarde ctl links              # cada interfaz y por qué lleva el túnel o no
+cengarde ctl link eth1.30 off   # pausar un enlace (on: forzarlo; auto: lo que diga la config)
+cengarde ctl reset              # todos los enlaces otra vez como dice la config
+cengarde ctl reload             # como SIGHUP, pero responde si se aplicó
+cengarde ctl status             # el JSON de estado
+```
+
+- **Socket:** el de arriba por omisión; otro con `-s RUTA`, o el de una
+  configuración con `-c ARCHIVO`.
+- **Pausas:** se mantienen en las recargas y se pierden al reiniciar, como
+  las exclusiones temporales del gestor web de engarde Go
+  (`include`/`exclude`/`swap`/`reset`).
+- **`links` en el servidor:** muestra las sesiones y sus enlaces.
+
+## IP pass pedido por el cliente
+
+El IP pass, los puertos del VPS reenviados al sitio del cliente, se gobierna
+desde el cliente:
+
+- **Cliente:** `passthrough = yes` o `no` lo pide en cada sonda (bandera
+  autenticada). Sin la opción no pide nada.
+- **Servidor:** con `passthrough_file = RUTA`, escribe ahí `on` u `off` según
+  lo pida la sesión más nueva, desde un hilo aparte. Mantiene el valor cuando
+  no queda ninguna sesión.
+- **Confirmación:** el servidor devuelve en sus respuestas lo que entregó, y
+  el cliente lo muestra en `passthrough.server`.
+- **Quién aplica:** cengarde no toca el cortafuegos. En el VPS,
+  [`contrib/vps`](../contrib/vps/) vigila ese archivo con una unidad
+  `.path` de systemd y ejecuta `cengarde-nat sync`.
+
 ## Estado
 
 `status_file` escribe cada segundo, desde un hilo aparte para que un disco
 lento no frene el túnel, un JSON con contadores globales y, por enlace:
-- estado (`live`, `stalled` o `down`) y RTT;
+- estado (`live`, `waiting` antes de la primera respuesta, `stalled`, `down`
+  o `paused`), si está pausado o forzado a mano (`override`) y RTT;
 - salud en el sentido que decide este extremo (`upload` en el cliente,
   `download` en el servidor): `active` o `muted`, cuánto va por detrás del
   más rápido (`*_behind_ms`), cuántas veces se silenció y desde cuándo;
@@ -154,6 +212,10 @@ lento no frene el túnel, un JSON con contadores globales y, por enlace:
 - `rx_missed`: paquetes que no trajo;
 - lo mismo visto desde el otro extremo (`server_view` / `client_view`).
 
+Además, `config_error` (por qué no se aplicó la última recarga) y el IP pass:
+`passthrough.requested` y `passthrough.server` en el cliente, y
+`passthrough` en el servidor.
+
 ## Limitaciones conocidas
 
 - **Servidor con varias IPs públicas:** responde desde la IP que elija el
@@ -162,5 +224,4 @@ lento no frene el túnel, un JSON con contadores globales y, por enlace:
   paquete que WireGuard le envía, como engarde.
 - **Enlaces asimétricos:** un enlace que sube pero no baja (o al revés) se da
   por mudo en los dos sentidos, aunque uno de ellos funcione.
-- **Aún no** baja privilegios, no recarga la configuración y el servidor es de
-  un solo hilo.
+- **Aún no** baja privilegios y el servidor es de un solo hilo.

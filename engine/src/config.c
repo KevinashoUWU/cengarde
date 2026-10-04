@@ -378,8 +378,13 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 
 	if (get_str(&ini, "", "description", c->description, sizeof(c->description), err, errlen) ||
 	    get_str(&ini, "", "status_file", c->status_file, sizeof(c->status_file), err, errlen) ||
-	    get_u32(&ini, "", "status_interval_ms", 100, 3600000, &c->status_interval_ms, err, errlen))
+	    get_u32(&ini, "", "status_interval_ms", 100, 3600000, &c->status_interval_ms, err, errlen) ||
+	    get_str(&ini, "", "control_socket", c->control_socket, sizeof(c->control_socket), err, errlen))
 		goto out;
+	if (c->control_socket[0] && c->control_socket[0] != '/') {
+		snprintf(err, errlen, "control_socket: expected an absolute path");
+		goto out;
+	}
 	u = (uint32_t)c->rcvbuf;
 	if (get_u32(&ini, "", "rcvbuf", 0, 1 << 30, &u, err, errlen))
 		goto out;
@@ -431,6 +436,9 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 		if (get_u32(&ini, "", "sndbuf", 0, 1 << 30, &u, err, errlen))
 			goto out;
 		c->sndbuf = (int)u;
+		c->passthrough = -1;
+		if (get_bool(&ini, "", "passthrough", &c->passthrough, err, errlen))
+			goto out;
 		if (parse_lists(c, &ini) < 0) {
 			snprintf(err, errlen, "out of memory");
 			goto out;
@@ -446,7 +454,9 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 		}
 		if (get_u32(&ini, "", "max_sessions", 1, 4096, &c->max_sessions, err, errlen) ||
 		    get_u32(&ini, "", "session_timeout_ms", 1000, 86400000, &c->session_timeout_ms, err, errlen) ||
-		    get_u32(&ini, "", "path_timeout_ms", 1000, 3600000, &c->path_timeout_ms, err, errlen))
+		    get_u32(&ini, "", "path_timeout_ms", 1000, 3600000, &c->path_timeout_ms, err, errlen) ||
+		    get_str(&ini, "", "passthrough_file", c->passthrough_file, sizeof(c->passthrough_file), err,
+			    errlen))
 			goto out;
 	}
 
@@ -468,35 +478,95 @@ out:
 	return rc;
 }
 
-int cg_config_load(struct cg_config *c, const char *path, char *err, size_t errlen, char *warn,
-		   size_t warnlen)
+static char *read_file(const char *path, char *err, size_t errlen)
 {
 	FILE *f = fopen(path, "r");
 	char *text;
 	long len;
-	int rc;
 
 	if (!f) {
 		snprintf(err, errlen, "%s: %s", path, strerror(errno));
-		return -1;
+		return NULL;
 	}
 	if (fseek(f, 0, SEEK_END) || (len = ftell(f)) < 0 || len > (1 << 20) || fseek(f, 0, SEEK_SET)) {
 		snprintf(err, errlen, "%s: cannot read (or larger than 1 MiB)", path);
 		fclose(f);
-		return -1;
+		return NULL;
 	}
 	text = malloc((size_t)len + 1);
 	if (!text || fread(text, 1, (size_t)len, f) != (size_t)len) {
 		snprintf(err, errlen, "%s: read error", path);
 		free(text);
 		fclose(f);
-		return -1;
+		return NULL;
 	}
 	text[len] = '\0';
 	fclose(f);
-	rc = cg_config_parse(c, text, err, errlen, warn, warnlen);
+	return text;
+}
+
+int cg_config_load(struct cg_config *c, const char *path, char *err, size_t errlen, char *warn,
+		   size_t warnlen)
+{
+	char *text = read_file(path, err, errlen), e[384];
+	int rc;
+
+	if (!text)
+		return -1;
+	rc = cg_config_parse(c, text, e, sizeof(e), warn, warnlen);
+	if (rc < 0)
+		snprintf(err, errlen, "%s: %s", path, e);
 	free(text);
 	return rc;
+}
+
+int cg_config_peek(const char *path, const char *key, char *out, size_t outlen, char *err, size_t errlen)
+{
+	char *text = read_file(path, err, errlen);
+	struct cg_ini ini;
+	const char *v;
+	int rc = 1;
+
+	if (!text)
+		return -1;
+	if (cg_ini_parse(&ini, text, err, errlen) < 0) {
+		free(text);
+		return -1;
+	}
+	free(text);
+	v = cg_ini_get(&ini, "", key);
+	if (v && strlen(v) >= outlen) {
+		snprintf(err, errlen, "%s: value too long", key);
+		rc = -1;
+	} else if (v) {
+		strcpy(out, v);
+		rc = 0;
+	}
+	cg_ini_free(&ini);
+	return rc;
+}
+
+const char *cg_config_restart_needed(const struct cg_config *a, const struct cg_config *b)
+{
+	if (a->mode != b->mode)
+		return "mode";
+	if (memcmp(a->key, b->key, sizeof(a->key)))
+		return "key";
+	if (!cg_addr_equal(&a->listen, &b->listen))
+		return "listen";
+	if (strcmp(a->control_socket, b->control_socket))
+		return "control_socket";
+	if (a->busy_poll_us != b->busy_poll_us)
+		return "busy_poll_us";
+	if (a->cpu != b->cpu)
+		return "cpu";
+	if (a->rt_priority != b->rt_priority)
+		return "rt_priority";
+	if (a->mode == CG_MODE_SERVER && !cg_addr_equal(&a->wireguard, &b->wireguard))
+		return "wireguard";
+	if (a->mode == CG_MODE_SERVER && a->max_sessions != b->max_sessions)
+		return "max_sessions";
+	return NULL;
 }
 
 void cg_config_free(struct cg_config *c)

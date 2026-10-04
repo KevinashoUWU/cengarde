@@ -33,6 +33,7 @@ demos.
 sudo bench/lab.sh build    # udpgen, protoclient y cengarde en bench/bin/
 sudo bench/lab.sh smoke    # prueba de humo de cengarde (la corre el CI)
 sudo bench/lab.sh health   # salud de enlaces: un enlace con 500 ms de cola, subida y bajada (la corre el CI; historia 006)
+sudo bench/lab.sh control  # con tráfico: pausar un enlace, recargar dos veces, IP pass on/off; sin pérdidas (la corre el CI; historia 009)
 sudo bench/lab.sh latency  # latencia y CPU con busy_poll_us 0, 50 y 200, y el Go si está compilado (historia 006)
 
 sudo ENGINE=go bench/lab.sh build  # además, el engarde Go (normal y -race)

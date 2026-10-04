@@ -8,8 +8,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
+#include "engine.h" /* cg_thread_normal */
 #include "log.h"
 #include "util.h"
 
@@ -24,11 +26,11 @@ void cg_json_free(struct cg_json *j)
 	memset(j, 0, sizeof(*j));
 }
 
-static void put(struct cg_json *j, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+static void vput(struct cg_json *j, const char *fmt, va_list ap) __attribute__((format(printf, 2, 0)));
 
-static void put(struct cg_json *j, const char *fmt, ...)
+static void vput(struct cg_json *j, const char *fmt, va_list ap)
 {
-	va_list ap;
+	va_list aq;
 	int n;
 
 	if (j->failed)
@@ -36,9 +38,9 @@ static void put(struct cg_json *j, const char *fmt, ...)
 	for (;;) {
 		size_t room = j->cap - j->len;
 
-		va_start(ap, fmt);
-		n = vsnprintf(j->buf ? j->buf + j->len : NULL, room, fmt, ap);
-		va_end(ap);
+		va_copy(aq, ap);
+		n = vsnprintf(j->buf ? j->buf + j->len : NULL, room, fmt, aq);
+		va_end(aq);
 		if (n < 0) {
 			j->failed = 1;
 			return;
@@ -58,6 +60,26 @@ static void put(struct cg_json *j, const char *fmt, ...)
 		j->buf = nb;
 		j->cap = cap;
 	}
+}
+
+static void put(struct cg_json *j, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+
+static void put(struct cg_json *j, const char *fmt, ...)
+{
+	va_list ap;
+
+	va_start(ap, fmt);
+	vput(j, fmt, ap);
+	va_end(ap);
+}
+
+void cg_json_raw(struct cg_json *j, const char *fmt, ...)
+{
+	va_list ap;
+
+	va_start(ap, fmt);
+	vput(j, fmt, ap);
+	va_end(ap);
 }
 
 static void key(struct cg_json *j, const char *k)
@@ -148,6 +170,18 @@ int cg_status_write(const char *path, const char *data, size_t len)
 	if (snprintf(tmp, sizeof(tmp), "%s.tmp", path) >= (int)sizeof(tmp))
 		return -1;
 	fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+	if (fd < 0 && errno == ENOENT) {
+		/* The last directory, such as /var/run/cengarde, may not be there yet. */
+		char dir[512], *slash;
+
+		strcpy(dir, tmp);
+		slash = strrchr(dir, '/');
+		if (slash && slash != dir) {
+			*slash = '\0';
+			if (mkdir(dir, 0755) == 0)
+				fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+		}
+	}
 	if (fd < 0)
 		return -1;
 	w = write(fd, data, len);
@@ -163,6 +197,7 @@ static void *writer_main(void *arg)
 	struct cg_status_writer *w = arg;
 	struct cg_ratelimit rl = { 0 };
 
+	cg_thread_normal();
 	pthread_mutex_lock(&w->mu);
 	for (;;) {
 		char *buf;
@@ -206,12 +241,12 @@ int cg_status_writer_start(struct cg_status_writer *w, const char *path)
 	return 0;
 }
 
-void cg_status_writer_submit(struct cg_status_writer *w, struct cg_json *j)
+int cg_status_writer_submit(struct cg_status_writer *w, struct cg_json *j)
 {
 	char *old;
 
 	if (!w->running || j->failed || !j->buf || pthread_mutex_trylock(&w->mu))
-		return;
+		return -1;
 	old = w->buf;
 	w->buf = j->buf;
 	w->len = j->len;
@@ -220,6 +255,7 @@ void cg_status_writer_submit(struct cg_status_writer *w, struct cg_json *j)
 	j->buf = NULL;
 	j->len = j->cap = 0;
 	free(old);
+	return 0;
 }
 
 void cg_status_writer_stop(struct cg_status_writer *w)
