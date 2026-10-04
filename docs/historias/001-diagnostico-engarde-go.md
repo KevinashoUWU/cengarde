@@ -1,9 +1,12 @@
 # 001 — Diagnóstico medido del engarde Go
 
-- **Fecha:** 2026-10-03 (actualizada el mismo día con datos de campo)
+- **Fecha:** 2026-10-03 (actualizada el mismo día con datos de campo, y el
+  2026-10-04)
 - **Estado:** vigente
-- **Fuentes:** código Go en `cmd/` (commit 3492df9); laboratorio `bench/`
-  (`sudo bench/lab.sh suite` y las demos); resumen en `ROADMAP.md` §2.
+- **Fuentes:** código Go en `cmd/` del commit 3492df9 (ya no está en el
+  árbol: `git show 3492df9:cmd/...`); laboratorio `bench/`
+  (`sudo ENGINE=go bench/lab.sh build`, luego `suite` y las demos); resumen en
+  `ROADMAP.md` §2.
 
 ## TL;DR
 
@@ -144,3 +147,6 @@ Go frente al prototipo C, con 3 enlaces y el mismo servidor Go:
 - 2026-10-03: creada a partir de la primera sesión de medidas.
 - 2026-10-03: confirmado en campo el límite de CPU en la Pi (historia 004); las
   pruebas de aceptación se cumplen en el motor C (historia 005).
+- 2026-10-04: el código Go salió del árbol. El laboratorio lo compila desde el
+  commit 3492df9 del historial con `ENGINE=go bench/lab.sh build`, así que las
+  medidas siguen siendo reproducibles.

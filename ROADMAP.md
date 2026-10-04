@@ -5,6 +5,10 @@
 > reproducibles con el laboratorio de [`bench/`](bench/README.md). El detalle de
 > cada investigación (referencias al código, datos crudos, fuentes) está en
 > [`docs/historias/`](docs/historias/README.md).
+>
+> Las secciones 1 y 2 describen el engarde Go original. Su código salió del
+> árbol el 2026-10-04 y sigue en el historial (commit `3492df9`), desde donde
+> el laboratorio lo compila con `ENGINE=go` para compararse.
 
 ## Resumen
 
@@ -61,7 +65,7 @@
 >
 >   Siguiente: probarlo en la Pi 4 y en Vultr.
 
-## 1. Cómo funciona hoy
+## 1. Cómo funcionaba engarde (Go)
 
 ```
  apps ─ wg0 ─► 127.0.0.1:59401 ┌──────────── engarde-client (Go) ─────────────┐
@@ -323,8 +327,9 @@ segundo deseo del autor original.
 
 ### 4.4 Configuración, control y observabilidad
 
-- Formato propio tipo INI (como `wg-quick`), sin dependencias, más un
-  conversor desde el `engarde.yml` actual. En OpenWrt se usa UCI
+- Formato propio tipo INI (como `wg-quick`), sin dependencias; sin
+  conversor desde `engarde.yml`, porque no hay compatibilidad. En OpenWrt se
+  usa UCI
   (`/etc/config/cengarde`) y el init script genera los parámetros. Recarga con
   `SIGHUP`, y los cambios hechos desde la UI pueden guardarse si se quiere.
 - Socket Unix con JSON (`cengarde status`, `cengarde link wwan1 off`). En
@@ -606,53 +611,47 @@ debe sobrevivir a la caída de uno con ≤1,34× de sobrecoste.
 - [ ] Gestión opcional de la interfaz WireGuard (endpoint, MTU, keepalive) por
   netlink.
 
-**Código y build** (si el Go se mantiene como referencia durante la migración)
-- [ ] Corregir el panic de la web, las carreras (mutex/atomics) y la admisión
-  de caminos; `-race` en CI.
-- [ ] Limpiar restos: `Gopkg.*` (de dep), `.idea/`, el `package-lock.json`
-  vacío de la raíz, `ioutil` y `// +build`, el `go 1.16` de `go.mod` frente al
-  Go 1.25 de CI, y Protractor/TSLint (obsoletos) en la web.
+**Código y build:** ~~arreglar y limpiar el Go heredado~~. El 2026-10-04 se
+retiró del árbol, junto con su UI Angular, su build y la publicación en
+GitHub Pages.
 
 ## 7. Qué medir en la Raspberry Pi
 
-Para saber si el techo de ~30 Mbit/s viene de la CPU (engarde) o de los
-enlaces:
+Con engarde, la Pi se quedaba en ~30 Mbit/s con 4 enlaces, por CPU
+(historia 004). Para ver dónde está ahora el techo con cengarde:
 
 1. Capacidad de cada enlace por separado, sin túnel:
    `iperf3 -c <vps> -B <ip_del_enlace>` (y `-R` para la bajada).
-2. WireGuard sin engarde por el mejor enlace: iperf3 contra la IP del túnel.
-3. engarde con 1 enlace (excluyendo los demás), y luego con 2, 3 y 4. Si el
-   throughput baja o la CPU se dispara al añadir enlaces, es engarde. Si se
-   queda en lo que da el mejor enlace, son los enlaces.
+2. WireGuard sin cengarde por el mejor enlace: iperf3 contra la IP del túnel.
+3. cengarde con 1 enlace y luego con 2, 3 y 4 (los enlaces se eligen en
+   LuCI). Si el throughput baja o la CPU se dispara al añadir enlaces, es
+   cengarde. Si se queda en lo que da el mejor enlace, son los enlaces.
 4. Durante cada prueba:
 
    ```sh
-   top -H -p "$(pidof engarde-client)"   # CPU por hilo: ¿algún núcleo al 100 %?
+   top -H -p "$(pidof cengarde)"          # CPU: ¿el núcleo de cengarde al 100 %?
    mpstat -P ALL 1                        # %soft (softirq) por núcleo (paquete sysstat)
    grep -A1 '^Udp:' /proc/net/snmp        # RcvbufErrors creciendo = pérdidas en sockets
-   ss -uamp | grep -A1 engarde            # skmem: d<n> = descartes de ese socket
-   tc -s qdisc show dev wwan0             # cola y descartes de cada uplink
+   ss -uamp | grep -A1 cengarde           # skmem: d<n> = descartes de ese socket
+   tc -s qdisc show dev eth1.10           # cola y descartes de cada uplink
    vcgencmd get_throttled; vcgencmd measure_temp   # ¿throttling térmico o de voltaje?
-   lsusb -t                               # en Pi ≤ 3B+, Ethernet y USB comparten un bus USB 2.0
+   cengarde-setup status                  # por enlace: estado, RTT, atraso, silenciados
    ```
 
-5. Mitigaciones que puedes aplicar ya con el Go actual:
-   - `sysctl -w net.core.rmem_default=4194304 net.core.rmem_max=8388608`, que
-     reduce las pérdidas por ráfagas. Afecta a todos los sockets, lo cual es
-     aceptable en una Pi dedicada.
-   - No usar `writeTimeout: -1`.
-   - fq_codel o cake en los uplinks, para mantener cortas las colas locales.
-   - Un MTU de WireGuard conservador en redes móviles (por ejemplo 1280–1380)
-     para evitar fragmentación.
-   - En el servidor, filtrar por cortafuegos el puerto de engarde si los
-     orígenes de los clientes son previsibles.
+5. Ajustes si hace falta:
+   - `sysctl -w net.core.rmem_default=4194304 net.core.rmem_max=8388608` y
+     `option sndbuf` en `/etc/config/cengarde`, para las ráfagas;
+   - `busy_poll_us` y `cpu` (pestaña *Avanzado*) si la latencia importa más
+     que la CPU (historia 006);
+   - fq_codel o cake en los uplinks, para mantener cortas las colas locales;
+   - un MTU de WireGuard conservador en redes móviles (1280–1380).
 
 ## 8. Riesgos y mitigaciones
 
 | Riesgo | Mitigación |
 | --- | --- |
 | Bugs de memoria en C | Parsers mínimos, fuzzing continuo, sanitizers, revisión y separación de privilegios |
-| Diferencias de comportamiento con engarde Go | Las mismas pruebas de laboratorio (`compare`) contra la línea base Go |
+| Diferencias de comportamiento con engarde Go | Las mismas pruebas de laboratorio (`compare`) contra la línea base Go, compilada desde el historial |
 | Soporte desigual de eBPF (XDP genérico en la Pi y en USB; OpenWrt sin BTF) | eBPF opcional con respaldo automático; nada de CO-RE |
 | Alcance (web + OpenWrt + eBPF + modos) | Fases con criterios de salida; la Fase 1a ya ataca el problema de la Pi |
 | Licencia | Al derivar de engarde (GPLv2), cengarde es GPLv2. Programas BPF con licencia "GPL" o dual BSD/GPL; libbpf (LGPL-2.1 o BSD-2) es compatible |
