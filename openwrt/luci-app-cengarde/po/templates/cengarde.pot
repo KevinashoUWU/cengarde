@@ -217,6 +217,12 @@ msgstr ""
 msgid "Uplink %s takes packets of at most %d bytes to the VPS, fewer than the tunnel makes: lower the tunnel MTU to %d."
 msgstr ""
 
+msgid "Uplink %s takes packets of at most %d bytes to the VPS over IPv6, too few for the tunnel even at its smallest MTU (%d): if the uplink has IPv4 too, put an IPv4 VPS address first in the list."
+msgstr ""
+
+msgid "Uplink %s takes packets of at most %d bytes to the VPS, too few for the tunnel even at its smallest MTU (%d): its packets get fragmented, and mobile networks often drop the fragments."
+msgstr ""
+
 msgid "%d s ago"
 msgstr ""
 

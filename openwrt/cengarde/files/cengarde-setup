@@ -657,7 +657,8 @@ leaked_prefix() {
 
 # From the engine's status: no reply from the VPS on any link after the
 # first 10 s (vps_silent), and links whose path MTU is smaller than the
-# packets the tunnel makes (path_mtu, with the largest tunnel MTU that fits).
+# packets the tunnel makes (path_mtu, with the largest tunnel MTU that fits,
+# and the family: LuCI advises otherwise when that MTU is below 1280).
 engine_problems() { # STATUS_JSON
 	local up=0 largest=0 wg n i=0 open=0 live=0 st fam pm name label over
 
@@ -680,7 +681,7 @@ engine_problems() { # STATUS_JSON
 		over=52
 		[ "$fam" = ipv6 ] && over=72
 		[ "$pm" -gt 0 ] && [ $((wg + over)) -gt "$pm" ] &&
-			problem path_mtu "${label:-$name}" "\"mtu\":$pm,\"fit\":$((pm - over - 32))"
+			problem path_mtu "${label:-$name}" "\"mtu\":$pm,\"fit\":$((pm - over - 32)),\"family\":\"$fam\""
 	done
 	[ "$open" -gt 0 ] && [ "$live" = 0 ] && [ "$up" -ge 10000 ] && problem vps_silent
 	return 0

@@ -219,6 +219,12 @@ msgstr "El VPS no contesta por ningún enlace: revisa que corra cengarde con el 
 msgid "Uplink %s takes packets of at most %d bytes to the VPS, fewer than the tunnel makes: lower the tunnel MTU to %d."
 msgstr "El enlace %s lleva hasta el VPS paquetes de como mucho %d bytes, menos de lo que arma el túnel: baja la MTU del túnel a %d."
 
+msgid "Uplink %s takes packets of at most %d bytes to the VPS over IPv6, too few for the tunnel even at its smallest MTU (%d): if the uplink has IPv4 too, put an IPv4 VPS address first in the list."
+msgstr "El enlace %s lleva hasta el VPS por IPv6 paquetes de como mucho %d bytes, muy pocos para el túnel incluso con su MTU mínima (%d): si el enlace también tiene IPv4, pon primero en la lista una dirección IPv4 del VPS."
+
+msgid "Uplink %s takes packets of at most %d bytes to the VPS, too few for the tunnel even at its smallest MTU (%d): its packets get fragmented, and mobile networks often drop the fragments."
+msgstr "El enlace %s lleva hasta el VPS paquetes de como mucho %d bytes, muy pocos para el túnel incluso con su MTU mínima (%d): sus paquetes se fragmentan, y las redes móviles suelen descartar los fragmentos."
+
 msgid "%d s ago"
 msgstr "hace %d s"
 

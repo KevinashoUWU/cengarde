@@ -7,6 +7,8 @@
 
 // SPDX-License-Identifier: GPL-2.0-only
 
+const MTU_MIN = 1280; // the smallest tunnel MTU config.js takes
+
 function problemText(p) {
 	switch (p.code) {
 	case 'no_secret': return _('No valid pairing secret: generate one in the VPS tab.');
@@ -22,7 +24,13 @@ function problemText(p) {
 	case 'upnp_no_ip': return _('IP pass is on, but UPnP has no public IP to announce: no VPS address is IPv4. Set a STUN server in Settings > Tunnel.');
 	case 'not_running': return _('The engine is not running: see System > System Log.');
 	case 'vps_silent': return _('The VPS does not answer on any uplink: check that it runs cengarde with the secret of this router, and that its firewall lets in UDP to the VPS port.');
-	case 'path_mtu': return _('Uplink %s takes packets of at most %d bytes to the VPS, fewer than the tunnel makes: lower the tunnel MTU to %d.').format(p.iface, p.mtu, p.fit);
+	case 'path_mtu':
+		if (p.fit >= MTU_MIN)
+			return _('Uplink %s takes packets of at most %d bytes to the VPS, fewer than the tunnel makes: lower the tunnel MTU to %d.').format(p.iface, p.mtu, p.fit);
+		// Lowering the MTU is no way out there.
+		if (p.family == 'ipv6')
+			return _('Uplink %s takes packets of at most %d bytes to the VPS over IPv6, too few for the tunnel even at its smallest MTU (%d): if the uplink has IPv4 too, put an IPv4 VPS address first in the list.').format(p.iface, p.mtu, MTU_MIN);
+		return _('Uplink %s takes packets of at most %d bytes to the VPS, too few for the tunnel even at its smallest MTU (%d): its packets get fragmented, and mobile networks often drop the fragments.').format(p.iface, p.mtu, MTU_MIN);
 	default: return p.code;
 	}
 }
