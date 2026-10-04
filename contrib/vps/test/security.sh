@@ -11,6 +11,8 @@
 # With no firewall, and then behind a ufw-like one, the test checks that:
 # - after "up" the router cannot read the metadata through the tunnel, and
 #   is told so at once, while the VPS itself and the router's Internet work;
+# - "up" again puts the REJECT back above the tunnel's ACCEPT when either
+#   one is missing (deleted by hand, or a down cut short), with no rule twice;
 # - WireGuard's port is dropped from the Internet and from the tunnel but
 #   answers on lo, and cengarde's port is open;
 # - with IPv6, ip6tables accepts cengarde's port and drops WireGuard's;
@@ -220,6 +222,13 @@ nsexec "$VPS" iptables -D FORWARD -i wg0 -d 169.254.0.0/16 -j REJECT --reject-wi
 check "without it the router reads the metadata (the test sees the leak)" fetch "$ROUTER" "$META"
 check "cengarde-nat up again" nat up
 check "the REJECT is back above the tunnel's ACCEPT" rejected "$ROUTER" "$META"
+check "no rule twice" not dup
+
+say "the tunnel's ACCEPT deleted by hand (a down cut short), then up again"
+nsexec "$VPS" iptables -D FORWARD -i wg0 -j ACCEPT
+check "cengarde-nat up again" nat up
+check "the REJECT is still above the tunnel's ACCEPT" rejected "$ROUTER" "$META"
+check "the router reaches the Internet through the tunnel" fetch "$ROUTER" 10.1.0.2
 check "no rule twice" not dup
 
 say "down"

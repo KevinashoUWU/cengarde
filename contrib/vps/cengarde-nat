@@ -78,6 +78,12 @@ base() { # add|del
 	"$1" filter -I INPUT -i "$PUB_IF" -p udp --dport "$CENGARDE_PORT" -j ACCEPT
 	# Only cengarde talks to WireGuard: not the Internet, nor the tunnel.
 	"$1" filter -I INPUT ! -i lo -p udp --dport "$WG_PORT" -j DROP
+	# A REJECT without the tunnel's ACCEPT (a down cut short, or an up that
+	# failed halfway) would end up below the ACCEPT inserted next: remove it
+	# first, so the two are inserted in order.
+	if [ "$1" = add ] && ! iptables -C FORWARD -i "$WG_IF" -j ACCEPT 2>/dev/null; then
+		del filter -I FORWARD -i "$WG_IF" -d 169.254.0.0/16 -j REJECT --reject-with icmp-net-prohibited
+	fi
 	"$1" filter -I FORWARD -i "$WG_IF" -j ACCEPT
 	# Inserted after the ACCEPT, so it ends up above it: the router and its
 	# LAN must not read the metadata service (the user data hold the secret).
