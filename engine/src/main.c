@@ -12,6 +12,7 @@
 #include "engine.h"
 #include "log.h"
 #include "pair.h"
+#include "proto.h"
 #include "util.h"
 
 static void usage(FILE *f)
@@ -23,8 +24,9 @@ static void usage(FILE *f)
 		   "                                  control_socket (default " CG_CTL_DEFAULT_SOCKET "):\n"
 		   "                                  status, links, link NAME off|on|auto, reset, reload\n"
 		   "       cengarde genkey            print a new shared key or pairing secret\n"
-		   "       cengarde keys < SECRET     print the keys derived from a pairing secret\n"
-		   "       cengarde version\n"
+		   "       cengarde keys < SECRET     print the keys, tunnel addresses and client hint\n"
+		   "                                  derived from a pairing secret\n"
+		   "       cengarde version           print the version and the protocol version\n"
 		   "SIGHUP reloads the configuration without dropping the tunnel.\n");
 }
 
@@ -102,10 +104,12 @@ static int ctl(int argc, char **argv)
 }
 
 /* Reads the secret from stdin so that it never shows in the process list,
- * and prints shell assignments (base64 needs no quoting inside '...'). */
+ * and prints shell assignments (base64 needs no quoting inside '...').
+ * cengarde-setup and cengarde-vps-setup eval them: new lines go last and
+ * the old ones never change. */
 static int keys(void)
 {
-	uint8_t secret[CG_PAIR_LEN], k[CG_PAIR_LEN];
+	uint8_t secret[CG_PAIR_LEN], k[CG_PAIR_LEN], a4[4], ula[CG_PAIR_ULA_LEN];
 	char line[128], out[64];
 	size_t n;
 	int rc = 0;
@@ -125,6 +129,15 @@ static int keys(void)
 			cg_base64_encode(out, k, sizeof(k));
 			printf("CG_%s='%s'\n", cg_pair_name((enum cg_pair_key)i), out);
 		}
+		cg_pair_tunnel4(a4, secret);
+		cg_pair_tunnel_ula(ula, secret);
+		cg_pair_derive(k, secret, CG_PAIR_LINK);
+		/* The ULA as a /48 prefix, four digits per group, so that
+		 * "${CG_TUNNEL_ULA}::2" is an address. */
+		printf("CG_TUNNEL_ADDR='%d.%d.%d.%d'\n"
+		       "CG_TUNNEL_ULA='%02x%02x:%02x%02x:%02x%02x'\n"
+		       "CG_CLIENT_HINT='%d'\n",
+		       a4[0], a4[1], a4[2], a4[3], ula[0], ula[1], ula[2], ula[3], ula[4], ula[5], cg_client_hint(k));
 	}
 	explicit_bzero(secret, sizeof(secret));
 	explicit_bzero(k, sizeof(k));
@@ -163,7 +176,7 @@ int main(int argc, char **argv)
 	if (argc >= 2 && !strcmp(argv[1], "ctl"))
 		return ctl(argc - 1, argv + 1);
 	if (argc == 2 && !strcmp(argv[1], "version")) {
-		puts("cengarde " CG_VERSION);
+		printf("cengarde %s (protocol %d)\n", CG_VERSION, CG_PROTO_VERSION);
 		return 0;
 	}
 	while ((opt = getopt(argc, argv, "c:tvh")) != -1) {

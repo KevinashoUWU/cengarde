@@ -1,6 +1,7 @@
 /* BLAKE2s vectors: RFC 7693 appendix B ("abc"), the reference keyed KAT
  * (key 00..1f, message 00..n-1) and Python's hashlib.blake2s for the rest.
- * Pairing vectors from hashlib.blake2s with the derivation in pair.h.
+ * Pairing vectors (keys, tunnel addresses and the client hint) from
+ * hashlib.blake2s with the derivations in pair.h.
  * SPDX-License-Identifier: GPL-2.0-only */
 #include <string.h>
 
@@ -93,6 +94,16 @@ void test_blake2s(void)
 	}
 }
 
+/* Secret of the tunnel edge vectors: 28 zero bytes, then n big-endian. */
+static void counter_secret(uint8_t s[CG_PAIR_LEN], uint32_t n)
+{
+	memset(s, 0, CG_PAIR_LEN);
+	s[28] = (uint8_t)(n >> 24);
+	s[29] = (uint8_t)(n >> 16);
+	s[30] = (uint8_t)(n >> 8);
+	s[31] = (uint8_t)n;
+}
+
 void test_pair(void)
 {
 	static const char *want[2][CG_PAIR_NKEYS] = {
@@ -105,7 +116,27 @@ void test_pair(void)
 		  "40be0b23243987470f807af1d9c2fa175b19f2606adfa582af97789c56c7bf72",
 		  "b7d45d88e88a061573748c17db6020646cfb9c1d4704ae139a4c2646e8b13329" },
 	};
-	uint8_t secret[2][CG_PAIR_LEN], out[CG_PAIR_LEN], exp[CG_PAIR_LEN];
+	/* Tunnel addresses of the same secrets, and the hint of their link key. */
+	static const struct {
+		const char *addr, *ula;
+		int hint;
+	} tun[2] = {
+		{ "0a4fede4", "fd082f26d3b6", 183 }, /* u = 60898: 10.79.237.228, fd08:2f26:d3b6 */
+		{ "0a4f2a78", "fdefba8736b1", 120 }, /* u = 10870: 10.79.42.120, fdef:ba87:36b1 */
+	};
+	/* Counter secrets whose u lands on the edges of v = 2 + u % 65533. */
+	static const struct {
+		uint32_t n;
+		const char *addr;
+	} edge[] = {
+		{ 44348, "0a4f0002" }, /* u = 0 */
+		{ 34118, "0a4ffffe" }, /* u = 65532, the highest: 10.79.255.254 */
+		{ 58116, "0a4f0002" }, /* u = 65533 wraps to the lowest */
+		{ 15557, "0a4f0003" }, /* u = 65534 */
+		{ 9455, "0a4f0004" },  /* u = 65535 */
+	};
+	uint8_t secret[2][CG_PAIR_LEN], out[CG_PAIR_LEN], exp[CG_PAIR_LEN], a4[4], ula[CG_PAIR_ULA_LEN];
+	int bad = 0;
 
 	for (int i = 0; i < CG_PAIR_LEN; i++)
 		secret[0][i] = (uint8_t)i;
@@ -118,10 +149,39 @@ void test_pair(void)
 			unhex(exp, want[s][k]);
 			CHECK(!memcmp(out, exp, CG_PAIR_LEN));
 		}
+		cg_pair_tunnel4(a4, secret[s]);
+		CHECK_EQ(unhex(exp, tun[s].addr), 4);
+		CHECK(!memcmp(a4, exp, 4));
+		cg_pair_tunnel_ula(ula, secret[s]);
+		CHECK_EQ(unhex(exp, tun[s].ula), CG_PAIR_ULA_LEN);
+		CHECK(!memcmp(ula, exp, CG_PAIR_ULA_LEN));
+		cg_pair_derive(out, secret[s], CG_PAIR_LINK);
+		CHECK_EQ(cg_client_hint(out), tun[s].hint);
 	}
 
 	/* WireGuard private keys are clamped Curve25519 scalars. */
 	cg_pair_derive(out, secret[1], CG_PAIR_WG_CLIENT);
 	CHECK((out[0] & 7) == 0 && (out[31] & 0xc0) == 0x40);
 	CHECK(!strcmp(cg_pair_name(CG_PAIR_WG_PSK), "WG_PSK"));
+
+	/* The hint keyed directly with 00..1f. */
+	CHECK_EQ(cg_client_hint(secret[0]), 198);
+
+	for (size_t i = 0; i < sizeof(edge) / sizeof(edge[0]); i++) {
+		counter_secret(out, edge[i].n);
+		cg_pair_tunnel4(a4, out);
+		unhex(exp, edge[i].addr);
+		CHECK(!memcmp(a4, exp, 4));
+	}
+	/* Never 10.79.0.0, the VPS's 10.79.0.1 or 10.79.255.255; always a ULA. */
+	for (uint32_t n = 0; n < 4096; n++) {
+		unsigned v;
+
+		counter_secret(out, n);
+		cg_pair_tunnel4(a4, out);
+		cg_pair_tunnel_ula(ula, out);
+		v = (unsigned)a4[2] << 8 | a4[3];
+		bad += a4[0] != 10 || a4[1] != 79 || v < 2 || v > 65534 || ula[0] != 0xfd;
+	}
+	CHECK_EQ(bad, 0);
 }

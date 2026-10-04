@@ -6,14 +6,15 @@ int cg_test_checks;
 
 int main(void)
 {
+	/* The Makefile builds every tests/test_*.c; a new suite adds its line to
+	 * suites.h. */
 	static const struct {
 		const char *name;
 		void (*fn)(void);
 	} suites[] = {
-		{ "siphash", test_siphash }, { "proto", test_proto },   { "replay", test_replay },
-		{ "arrival", test_arrival }, { "config", test_config }, { "util", test_util },
-		{ "idmap", test_idmap },   { "health", test_health }, { "blake2s", test_blake2s },
-		{ "pair", test_pair },       { "ctl", test_ctl },
+#define SUITE(name) { #name, test_##name },
+#include "suites.h"
+#undef SUITE
 	};
 
 	for (unsigned i = 0; i < sizeof(suites) / sizeof(suites[0]); i++) {

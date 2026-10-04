@@ -53,8 +53,12 @@ jobs:
         run: |
           shellcheck -s sh -e SC1091,SC3043 openwrt/cengarde/files/cengarde-setup \
             openwrt/cengarde/files/cengarde.defaults openwrt/test/*.sh \
-            contrib/vps/cengarde-nat contrib/vps/cengarde-vps-setup contrib/vps/install.sh
+            contrib/vps/cengarde-nat contrib/vps/cengarde-vps-setup contrib/vps/install.sh \
+            contrib/vps/test/*.sh
           shellcheck -s sh -e SC1091,SC3043,SC2034,SC2154 openwrt/cengarde/files/cengarde.init
+
+      - name: Lab scripts (bash)
+        run: shellcheck -s bash -e SC2015 bench/lab.sh bench/lab.d/*.sh
 
       - name: LuCI views
         run: for f in openwrt/luci-app-cengarde/htdocs/luci-static/resources/view/cengarde/*.js; do node --check "$f"; done

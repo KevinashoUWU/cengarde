@@ -1,6 +1,7 @@
 # 008 — UCI, LuCI, emparejamiento con un secreto, imágenes y prueba en QEMU
 
-- **Fecha:** 2026-10-03 (actualizada el 2026-10-04 con la historia 009)
+- **Fecha:** 2026-10-03 (actualizada el 2026-10-04 con la historia 009 y el
+  STUN explícito)
 - **Estado:** vigente
 - **Fuentes:**
   - código:
@@ -158,7 +159,11 @@ reiniciaba).
 
 **IP pass en el router:**
 - miniupnpd con `external_iface wgcg` y `external_ip` igual a la IP del VPS;
-- si no, con STUN;
+- si esa IP no es IPv4, con STUN, pero solo con un servidor explícito
+  (`stun_host` y, si no es 3478, `stun_port`): miniupnpd no arranca con
+  `use_stun` y sin `ext_stun_host`. Sin servidor no se pone ni
+  `external_ip` ni STUN, UPnP no pasa puertos y el estado avisa
+  `upnp_no_ip`;
 - miniupnpd acepta una IP declarada aunque la interfaz tenga una privada.
 
 **Al quitar el paquete:** el `prerm` ejecuta `cengarde-setup disable`.
@@ -291,3 +296,6 @@ emulación. En el CI va con KVM.
 - 2026-10-03: creada.
 - 2026-10-04: el IP pass pedido por el router y el `SIGHUP` de procd quedan
   hechos (historia 009).
+- 2026-10-04: UPnP usa STUN solo con `stun_host`. Antes, con un VPS sin
+  IPv4, se activaba `use_stun` sin servidor y miniupnpd no arrancaba
+  (`upnp_ip` en `cengarde-setup`).

@@ -8,7 +8,9 @@
  * (health.h) mutes uplinks that lag far behind the fastest one, from the
  * delays the server reports in its probe replies.
  * Download: duplicates are recognised by sequence number before the MAC is
- * checked, so only the first copy of each packet pays for verification.
+ * checked, so only the first copy of each packet pays for verification. A
+ * server that started over with a sequence behind the window is recognised
+ * from its probe replies (epoch.h), and the window starts again.
  *
  * A reload (SIGHUP or "cengarde ctl reload") applies the new configuration
  * in place, keeping the session; what was set up only once makes the process
@@ -28,6 +30,7 @@
 #include "arrival.h"
 #include "ctl.h"
 #include "engine.h"
+#include "epoch.h"
 #include "health.h"
 #include "log.h"
 #include "netlink.h"
@@ -56,6 +59,7 @@ struct link {
 	uint64_t tx_pkts, tx_bytes, tx_drops, tx_errors;
 	struct cg_probe_info peer_view; /* server's view of this path (upload) */
 	uint64_t peer_view_ms;
+	struct cg_echo probes; /* probes sent, for the echoes in replies (epoch.h) */
 	struct cg_ratelimit rl;
 };
 
@@ -86,7 +90,9 @@ struct client {
 	uint64_t up_pkts, up_bytes, up_toobig;
 	uint64_t down_pkts, down_bytes, down_wg_drops, down_no_peer;
 	uint64_t rx_malformed, rx_foreign, rx_auth_fail, rx_old, rx_dups, rx_trunc;
-	struct cg_ratelimit rl_auth, rl_big, rl_wg, rl_full;
+	uint64_t window_resets;      /* the server started over (epoch.h) */
+	uint64_t new_before_open_ms; /* newest last_rx_ms of a link before its socket was reopened */
+	struct cg_ratelimit rl_auth, rl_big, rl_wg, rl_full, rl_restart;
 
 	struct cg_rxbatch in;
 	uint8_t hdr[CG_BATCH][CG_HDR_LEN];
@@ -286,7 +292,10 @@ static void reconcile(struct client *c, uint64_t now_ms)
 		l->local = local;
 		l->remote = remote;
 		l->up_since_ms = now_ms;
+		if (l->last_rx_ms > c->new_before_open_ms)
+			c->new_before_open_ms = l->last_rx_ms;
 		l->last_rx_ms = l->last_reply_ms = l->last_probe_ms = 0;
+		memset(&l->probes, 0, sizeof(l->probes));
 		l->srtt8_us = 0;
 		l->rtt_us = l->unanswered = l->probe_announced = 0;
 		l->have_down_owd = l->peer_muted = 0;
@@ -406,6 +415,9 @@ static void on_probe_reply(struct client *c, struct link *l, const struct cg_hdr
 	uint32_t rtt;
 
 	cg_probe_info_read(&pi, payload);
+	/* Each probe is answered once: a copy of this reply replayed later
+	 * cannot count for epoch.h. */
+	cg_echo_take(&l->probes, pi.echo_ts, now_ms, CG_ECHO_MAX_AGE_MS);
 	rtt = now32 - pi.echo_ts;
 	if (rtt < 10u * 1000 * 1000) {
 		l->rtt_us = rtt;
@@ -423,6 +435,44 @@ static void on_probe_reply(struct client *c, struct link *l, const struct cg_hdr
 		cg_health_report(&c->uh[l - c->link], pi.owd, now_ms, CG_STALL_PROBES * c->cfg->probe_idle_ms);
 	l->down_owd = now32 - h->ts;
 	l->have_down_owd = 1;
+}
+
+/* Since the newest verified NEW packet on any link: for the restart check
+ * only, never per packet. */
+static uint64_t ms_since_new(const struct client *c, uint64_t now_ms)
+{
+	uint64_t last = c->new_before_open_ms;
+
+	for (int i = 0; i < CG_MAX_LINKS; i++)
+		if (c->link[i].last_rx_ms > last)
+			last = c->link[i].last_rx_ms;
+	return now_ms - last;
+}
+
+/* A packet the window judged OLD: when it shows that the server started over
+ * (epoch.h), the window starts again and the packet goes on as NEW, its MAC
+ * verified (returns 1). Only a probe reply can show that, so only those pay
+ * for a MAC here, and the echo is taken only from a verified one. */
+static int started_over(struct client *c, struct link *l, const struct cg_hdr *h, const uint8_t *b, size_t len,
+			uint64_t now_ms)
+{
+	struct cg_probe_info pi;
+	int mac_ok, echo = 0;
+
+	if (h->type != CG_T_PROBE_REPLY)
+		return 0;
+	mac_ok = cg_hdr_verify(b, len, c->k_rx);
+	if (mac_ok) {
+		cg_probe_info_read(&pi, b + CG_HDR_LEN);
+		echo = cg_echo_take(&l->probes, pi.echo_ts, now_ms, CG_ECHO_MAX_AGE_MS);
+	}
+	if (!cg_restart_reply(CG_RP_OLD, h->type, mac_ok, echo, ms_since_new(c, now_ms), 2 * c->cfg->probe_idle_ms))
+		return 0;
+	cg_replay_reset(&c->replay);
+	c->window_resets++;
+	if (cg_ratelimit_ok(&c->rl_restart, now_ms, 10000))
+		cg_info("link %s: the server started over, download window reset", l->ifname);
+	return 1;
 }
 
 static void link_read(struct client *c, struct link *l)
@@ -445,6 +495,7 @@ static void link_read(struct client *c, struct link *l)
 			uint8_t *b = c->in.buf[i];
 			size_t len = c->in.msg[i].msg_len;
 			struct cg_hdr h;
+			int verified = 0;
 
 			if (c->in.msg[i].msg_hdr.msg_flags & MSG_TRUNC) {
 				c->rx_trunc++;
@@ -460,6 +511,10 @@ static void link_read(struct client *c, struct link *l)
 			}
 			switch (cg_replay_check(&c->replay, h.seq)) {
 			case CG_RP_OLD:
+				if (started_over(c, l, &h, b, len, now_ms)) {
+					verified = 1;
+					break;
+				}
 				c->rx_old++;
 				continue;
 			case CG_RP_DUP:
@@ -470,7 +525,7 @@ static void link_read(struct client *c, struct link *l)
 			default:
 				break;
 			}
-			if (!cg_hdr_verify(b, len, c->k_rx)) {
+			if (!verified && !cg_hdr_verify(b, len, c->k_rx)) {
 				c->rx_auth_fail++;
 				if (cg_ratelimit_ok(&c->rl_auth, now_ms, 10000))
 					cg_warn("link %s: packet failed authentication (wrong key?)", l->ifname);
@@ -538,6 +593,7 @@ static void send_probe(struct client *c, struct link *l, uint64_t now_us, uint32
 	if (send(l->fd, pkt, sizeof(pkt), MSG_DONTWAIT) < 0 && errno != EAGAIN && errno != ENOBUFS &&
 	    cg_ratelimit_ok(&l->rl, now_ms, 10000))
 		cg_warn("link %s probe: %s", l->ifname, strerror(errno));
+	cg_echo_push(&l->probes, h.ts, now_ms);
 	l->have_down_owd = 0;
 	l->last_probe_ms = now_ms;
 	l->probe_announced = interval;
@@ -605,6 +661,7 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 	cg_json_u64(j, "bytes", c->down_bytes);
 	cg_json_u64(j, "duplicates", c->rx_dups);
 	cg_json_u64(j, "too_old", c->rx_old);
+	cg_json_u64(j, "window_resets", c->window_resets);
 	cg_json_u64(j, "auth_failures", c->rx_auth_fail);
 	cg_json_u64(j, "malformed", c->rx_malformed + c->rx_trunc);
 	cg_json_u64(j, "foreign_session", c->rx_foreign);

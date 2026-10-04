@@ -13,6 +13,10 @@
 # IP pass is wanted as the router asks for it through cengarde (the server
 # writes the wish to PASSTHROUGH_FILE), else as it last asked (kept in
 # STATE_FILE across reboots), else as PASSTHROUGH says.
+# Always: WireGuard (WG_PORT) only answers on loopback, where cengarde talks
+# to it, in IPv4 and, when the VPS has it, IPv6; and nothing from the tunnel
+# reaches 169.254.0.0/16, the provider's metadata service, whose user data
+# hold the pairing secret.
 # Settings: /etc/cengarde/nat.conf (shell variables, defaults below), or the
 # file named by CENGARDE_NAT_CONF.
 #
@@ -49,31 +53,59 @@ if [ -z "$PUB_IF" ]; then
 fi
 
 fail=0
-# add and del run by name, as the first argument of base and pass.
+# add and del run by name, as the first argument of base and pass, with
+# IPT: iptables, or ip6tables for the IPv6 rules.
+IPT=iptables
 # add TABLE -I|-A CHAIN RULE...: unless it is there already.
 # shellcheck disable=SC2317
 add() {
 	t=$1 op=$2
 	shift 2
-	iptables -t "$t" -C "$@" 2>/dev/null || iptables -t "$t" "$op" "$@" || fail=1
+	"$IPT" -t "$t" -C "$@" 2>/dev/null || "$IPT" -t "$t" "$op" "$@" || fail=1
 }
 # del TABLE -I|-A CHAIN RULE...: every copy, quietly if there is none.
 # shellcheck disable=SC2317
 del() {
 	t=$1
 	shift 2
-	while iptables -t "$t" -C "$@" 2>/dev/null; do
-		iptables -t "$t" -D "$@" || break
+	while "$IPT" -t "$t" -C "$@" 2>/dev/null; do
+		"$IPT" -t "$t" -D "$@" || break
 	done
 }
 
 base() { # add|del
 	# Inserted first, so they also work next to ufw's own chains.
 	"$1" filter -I INPUT -i "$PUB_IF" -p udp --dport "$CENGARDE_PORT" -j ACCEPT
-	"$1" filter -I INPUT -i "$PUB_IF" -p udp --dport "$WG_PORT" -j DROP # only cengarde talks to WireGuard
+	# Only cengarde talks to WireGuard: not the Internet, nor the tunnel.
+	"$1" filter -I INPUT ! -i lo -p udp --dport "$WG_PORT" -j DROP
+	# A REJECT without the tunnel's ACCEPT (a down cut short, or an up that
+	# failed halfway) would end up below the ACCEPT inserted next: remove it
+	# first, so the two are inserted in order.
+	if [ "$1" = add ] && ! iptables -C FORWARD -i "$WG_IF" -j ACCEPT 2>/dev/null; then
+		del filter -I FORWARD -i "$WG_IF" -d 169.254.0.0/16 -j REJECT --reject-with icmp-net-prohibited
+	fi
 	"$1" filter -I FORWARD -i "$WG_IF" -j ACCEPT
+	# Inserted after the ACCEPT, so it ends up above it: the router and its
+	# LAN must not read the metadata service (the user data hold the secret).
+	"$1" filter -I FORWARD -i "$WG_IF" -d 169.254.0.0/16 -j REJECT --reject-with icmp-net-prohibited
 	"$1" filter -I FORWARD -o "$WG_IF" -j ACCEPT
 	"$1" nat -A POSTROUTING -s "$TUNNEL_NET" -o "$PUB_IF" -j MASQUERADE
+	# The 0.4 form of the DROP, left by an older cengarde-nat up.
+	del filter -I INPUT -i "$PUB_IF" -p udp --dport "$WG_PORT" -j DROP
+	base6 "$1"
+}
+
+# IPv6, if the VPS has it (the tunnel is IPv4 only): cengarde's port open
+# and WireGuard's closed, as WireGuard listens on IPv6 too. Removed whenever
+# ip6tables is there, quietly.
+base6() { # add|del
+	if [ "$1" = add ] && ! { [ -e /proc/net/if_inet6 ] && ip6tables -n -L INPUT >/dev/null 2>&1; }; then
+		return
+	fi
+	IPT=ip6tables
+	"$1" filter -I INPUT -p udp --dport "$CENGARDE_PORT" -j ACCEPT
+	"$1" filter -I INPUT ! -i lo -p udp --dport "$WG_PORT" -j DROP
+	IPT=iptables
 }
 
 pass() { # add|del

@@ -1,0 +1,2 @@
+# Work packages append suites in parallel; a union merge keeps every line.
+engine/tests/suites.h merge=union
