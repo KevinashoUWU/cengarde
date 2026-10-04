@@ -104,7 +104,8 @@ lan_prefix() {
 }
 
 mkdir -p "$OUT"
-trap '"$VM" stop' EXIT
+# E2E_KEEP=1 leaves the VMs running at the end, to look around (vm.sh ssh).
+[ "${E2E_KEEP:-0}" = 1 ] || trap '"$VM" stop' EXIT
 "$VM" start "$IMAGE"
 "$VM" wait
 
@@ -321,6 +322,7 @@ if grep -q ' 0% packet loss' "$OUT/ping-reload.txt" && [ "$("$VM" ssh router 'pi
 	ok "the change went in without restarting the engine or losing a packet"
 else
 	bad "the change restarted the engine or lost packets"
+	"$VM" ssh router "echo before: $pid, now: \$(pidof cengarde); logread | grep -E 'cengarde|procd' | tail -20"
 fi
 if [ "$("$VM" ssh vps 'cat /var/run/cengarde/passthrough')" = off ]; then
 	ok "IP pass: the VPS follows the switch"
@@ -368,6 +370,8 @@ if until_ok 40 all_on '\[2001:db8::4\]:65500'; then
 	ok "every link went to the first address of the new list, over IPv6"
 else
 	bad "not every link is live on [2001:db8::4]"
+	"$VM" ssh router 'ip -6 addr; ip -6 route; logread | grep cengarde | tail -20'
+	"$VM" ssh vps 'ip -6 addr; ip -6 route'
 fi
 links | tee "$OUT/ctl-links6.txt"
 if [ "$(grep -cE ' \[2001:db8:[0-9a-f:]+\]:[0-9]+ +\[2001:db8::4\]:65500' "$OUT/ctl-links6.txt")" = 3 ]; then
@@ -458,6 +462,7 @@ if [ -z "$leftover" ]; then
 	ok "nothing left of the tunnel"
 else
 	bad "left after disabling: $leftover"
+	"$VM" ssh router 'ps w | grep [c]engarde; logread | grep -E "cengarde|procd" | tail -20'
 fi
 if "$VM" ssh router 'uci show network | grep -qE "peerdns|delegate"'; then
 	bad "peerdns or delegate still set on an uplink"
