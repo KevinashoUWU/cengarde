@@ -1,0 +1,30 @@
+name: VPS
+
+# The VPS side without a VPS (contrib/vps/test): cengarde-nat in network
+# namespaces with the runner's real iptables, IPv6 included. The scripts
+# themselves are linted in openwrt.yml.
+
+on:
+  push:
+    paths:
+      - 'contrib/**'
+      - '.github/workflows/vps.yml'
+  pull_request:
+    paths:
+      - 'contrib/**'
+      - '.github/workflows/vps.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  netns:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install iptables, iproute2, python3 and curl
+        run: sudo apt-get update && sudo apt-get install -y iptables iproute2 python3 curl
+
+      - name: Metadata out of the tunnel's reach, WireGuard's port closed, nothing left after down
+        run: sudo sh contrib/vps/test/security.sh
