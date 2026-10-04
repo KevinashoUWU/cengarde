@@ -4,7 +4,7 @@
 	uci set cengarde.main.secret="$(/usr/sbin/cengarde genkey)"
 	uci commit cengarde
 }
-# 0.5: the VPS address became "list server" (several addresses, in order).
+# 0.4.2: the VPS address became "list server" (several addresses, in order).
 if uci -q export cengarde | grep -q "^[[:space:]]*option server "; then
 	server=$(uci -q get cengarde.main.server)
 	uci delete cengarde.main.server

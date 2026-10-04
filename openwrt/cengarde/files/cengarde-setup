@@ -113,7 +113,7 @@ load() {
 	config_get STUN_HOST main stun_host
 	config_get STUN_PORT main stun_port
 	config_get SECRET main secret
-	config_get SERVER main server # a list since 0.5; an option still works
+	config_get SERVER main server # a list since 0.4.2; an option still works
 	config_get PORT main port 65500
 	config_get MTU main mtu 1380
 	config_get DNS main dns "$DEFAULT_DNS"
