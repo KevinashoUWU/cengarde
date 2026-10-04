@@ -133,5 +133,21 @@ void test_util(void)
 	CHECK(cg_ratelimit_ok(&rl, 1500, 500));
 	CHECK_EQ(rl.suppressed, 2);
 
+	/* 32-bit counters read across threads, totals kept in 64 bits. */
+	CHECK_EQ(cg_delta32(10, 4), 6);
+	CHECK_EQ(cg_delta32(3, 0xfffffffdu), 6);
+	CHECK_EQ(cg_delta32(7, 7), 0);
+	{
+		uint64_t total = 0;
+		uint32_t last = 0, c = 0;
+
+		for (int i = 0; i < 5; i++) {
+			c += 0x60000000u; /* wraps twice */
+			cg_acc32(&total, &last, c);
+		}
+		CHECK_EQ(total, 5ull * 0x60000000u);
+		CHECK_EQ(last, c);
+	}
+
 	test_util_peer();
 }

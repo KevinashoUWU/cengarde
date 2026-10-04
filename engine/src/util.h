@@ -23,6 +23,21 @@ static inline uint64_t cg_now_ms(void)
 	return cg_now_us() / 1000u;
 }
 
+/* How much a 32-bit counter grew from last to now, across its wrap: counters
+ * read across threads are 32-bit (MIPS32 has no 64-bit atomics), and their
+ * reader keeps the 64-bit totals. */
+static inline uint32_t cg_delta32(uint32_t now, uint32_t last)
+{
+	return now - last;
+}
+
+/* Adds the growth of a 32-bit counter since *last to *total. */
+static inline void cg_acc32(uint64_t *total, uint32_t *last, uint32_t now)
+{
+	*total += cg_delta32(now, *last);
+	*last = now;
+}
+
 /* Standard base64 with padding. encode: out must hold 4*ceil(len/3)+1 bytes.
  * decode: returns the decoded length, or -1 on malformed input or overflow. */
 void cg_base64_encode(char *out, const uint8_t *in, size_t len);

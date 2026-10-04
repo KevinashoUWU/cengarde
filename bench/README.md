@@ -31,7 +31,7 @@ del Go.
 ## Uso
 
 ```sh
-sudo bench/lab.sh build    # udpgen, protoclient y cengarde en bench/bin/
+sudo bench/lab.sh build    # udpgen, protoclient, ringbench y cengarde en bench/bin/
 sudo bench/lab.sh ci       # lo que corre el CI: smoke, health, control y los escenarios de lab.d con LAB_CI=1
 sudo bench/lab.sh smoke    # prueba de humo de cengarde
 sudo bench/lab.sh health   # salud de enlaces: un enlace con 500 ms de cola, subida y bajada (historia 006)
@@ -51,6 +51,22 @@ sudo bench/lab.sh compare  # engarde Go frente a cengarde, cada uno en ambos ext
 aunque uno falle y acaba con `ci: ok (...)` o `ci: FAILED: ...`; borra los
 namespaces al salir, también si se interrumpe. El CI (`engine.yml`) solo llama
 a `build` y a `ci`.
+
+### `ringbench`: lo que cuesta pasar trabajo entre hilos
+
+`bench/bin/ringbench [-d SEGUNDOS] [-q]` mide el anillo de los hilos del
+motor (`engine/src/ring.h`) en la máquina donde corre: sin root ni
+namespaces, así que sirve tal cual en la Pi, en un VPS o en un portátil.
+
+- `spin`: un consumidor que nunca duerme; ns por entrada con lotes de 1, 8 y
+  64 (el coste cuando los dos hilos están ocupados).
+- `wake`: un productor que publica una entrada con su hora a 2000, 20 000 y
+  80 000 por segundo y un consumidor que duerme en su timbre (un eventfd)
+  cuando no hay nada, como el hub y las bombas del router a poco tráfico:
+  latencia del traspaso (p50 y p99), despertares por entrada y CPU por
+  entrada de cada hilo, de sus relojes de CPU (la del productor incluye el
+  `nanosleep` que le marca el ritmo). Con `-q`, además con el consumidor
+  sondeando (`poll`) en vez de dormir.
 
 ### Escenarios en `lab.d/`
 

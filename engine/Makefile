@@ -3,7 +3,8 @@
 # CC, CFLAGS, CPPFLAGS and LDFLAGS belong to whoever builds (cross builds,
 # OpenWrt) and may be overridden on the command line; the flags the code
 # needs live in the CG_* variables. make SANITIZE=1 builds with ASan and
-# UBSan; HARDEN= and HARDEN_LDFLAGS= drop the hardening flags.
+# UBSan, make SANITIZE=thread with TSAN; HARDEN= and HARDEN_LDFLAGS= drop
+# the hardening flags.
 
 CC ?= cc
 CFLAGS ?= -O2 -g
@@ -17,6 +18,9 @@ CG_LDFLAGS = -pthread
 ifeq ($(SANITIZE),1)
 CG_CFLAGS += -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all
 CG_LDFLAGS += -fsanitize=address,undefined
+else ifeq ($(SANITIZE),thread)
+CG_CFLAGS += -fsanitize=thread -fno-omit-frame-pointer
+CG_LDFLAGS += -fsanitize=thread
 else
 HARDEN ?= -fstack-protector-strong -D_FORTIFY_SOURCE=2 -fPIE
 HARDEN_LDFLAGS ?= -pie -Wl,-z,relro,-z,now
