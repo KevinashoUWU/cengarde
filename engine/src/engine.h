@@ -12,6 +12,7 @@
 
 #include "config.h"
 #include "health.h"
+#include "pktinfo.h"
 #include "proto.h"
 #include "util.h"
 
@@ -76,8 +77,11 @@ struct cg_rxbatch {
 	uint8_t buf[CG_BATCH][CG_BUF];
 };
 
-/* One non-blocking recvmmsg. Returns the datagram count, 0 or -1. */
-static inline int cg_rx(int fd, struct cg_rxbatch *b)
+/* One non-blocking recvmmsg, with room in ctl[CG_BATCH] (when not NULL) for
+ * the control messages of each datagram: its arrival address (pktinfo.h).
+ * msg_controllen is set again on every call, because the kernel writes back
+ * how much it used. Returns the datagram count, 0 or -1. */
+static inline int cg_rx_ctl(int fd, struct cg_rxbatch *b, union cg_ctl_rx *ctl)
 {
 	for (int i = 0; i < CG_BATCH; i++) {
 		b->iov[i].iov_base = b->buf[i];
@@ -87,8 +91,17 @@ static inline int cg_rx(int fd, struct cg_rxbatch *b)
 		b->msg[i].msg_hdr.msg_namelen = sizeof(b->from[i]);
 		b->msg[i].msg_hdr.msg_iov = &b->iov[i];
 		b->msg[i].msg_hdr.msg_iovlen = 1;
+		if (ctl) {
+			b->msg[i].msg_hdr.msg_control = ctl[i].b;
+			b->msg[i].msg_hdr.msg_controllen = sizeof(ctl[i].b);
+		}
 	}
 	return recvmmsg(fd, b->msg, CG_BATCH, MSG_DONTWAIT, NULL);
+}
+
+static inline int cg_rx(int fd, struct cg_rxbatch *b)
+{
+	return cg_rx_ctl(fd, b, NULL);
 }
 
 /* epoll_wait that, with busy_poll_us, keeps polling without sleeping for

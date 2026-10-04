@@ -7,6 +7,7 @@
 #include <string.h>
 #include <unistd.h>
 
+#include "log.h"
 #include "util.h"
 
 int cg_udp_socket(int family)
@@ -27,11 +28,26 @@ int cg_sock_buffers(int fd, int rcvbuf, int sndbuf)
 	return v;
 }
 
+static int is_wildcard(const struct sockaddr_storage *a)
+{
+	if (a->ss_family == AF_INET)
+		return ((const struct sockaddr_in *)a)->sin_addr.s_addr == htonl(INADDR_ANY);
+	return a->ss_family == AF_INET6 && IN6_IS_ADDR_UNSPECIFIED(&((const struct sockaddr_in6 *)a)->sin6_addr);
+}
+
 int cg_udp_bind(const struct sockaddr_storage *addr, int v6only, char *err, size_t errlen)
+{
+	int off = 0;
+
+	return cg_udp_bind_opts(addr, v6only, &off, NULL, err, errlen);
+}
+
+int cg_udp_bind_opts(const struct sockaddr_storage *addr, int v6only, int *pktinfo, int *family, char *err,
+		     size_t errlen)
 {
 	char buf[64];
 	struct sockaddr_storage any4;
-	int fd = cg_udp_socket(addr->ss_family);
+	int fd = cg_udp_socket(addr->ss_family), on = 1;
 
 	/* "*" means dual-stack; on a kernel booted without IPv6 fall back to IPv4. */
 	if (fd < 0 && errno == EAFNOSUPPORT && addr->ss_family == AF_INET6 &&
@@ -51,11 +67,27 @@ int cg_udp_bind(const struct sockaddr_storage *addr, int v6only, char *err, size
 	}
 	if (addr->ss_family == AF_INET6)
 		setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &v6only, sizeof(v6only));
+	if (*pktinfo && !is_wildcard(addr)) {
+		*pktinfo = 0;
+	} else if (*pktinfo) {
+		/* On a dual-stack socket IPV6_RECVPKTINFO also covers IPv4
+		 * arrivals, as v4-mapped addresses. */
+		int v6 = addr->ss_family == AF_INET6;
+
+		if (setsockopt(fd, v6 ? IPPROTO_IPV6 : IPPROTO_IP, v6 ? IPV6_RECVPKTINFO : IP_PKTINFO, &on, sizeof(on)) < 0) {
+			cg_warn("%s: %s: %s; replies leave from the address the route picks",
+				cg_addr_str(addr, buf, sizeof(buf)), v6 ? "IPV6_RECVPKTINFO" : "IP_PKTINFO",
+				strerror(errno));
+			*pktinfo = 0;
+		}
+	}
 	if (bind(fd, (const struct sockaddr *)addr, cg_addr_len(addr)) < 0) {
 		snprintf(err, errlen, "bind %s: %s", cg_addr_str(addr, buf, sizeof(buf)), strerror(errno));
 		close(fd);
 		return -1;
 	}
+	if (family)
+		*family = addr->ss_family;
 	return fd;
 }
 

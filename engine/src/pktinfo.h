@@ -35,16 +35,17 @@ struct cg_local {
 };
 
 /* Receive control buffer of one datagram: the arrival address takes
- * CMSG_SPACE(20), 40 bytes (32 on 32-bit). */
+ * CMSG_SPACE(20), 40 bytes (32 on 32-bit). Aligned as CMSG_ALIGN steps
+ * (struct cmsghdr itself has a flexible array in glibc). */
 #define CG_CTL_RX_LEN 64
 union cg_ctl_rx {
-	struct cmsghdr align;
+	size_t align;
 	uint8_t b[CG_CTL_RX_LEN];
 };
 
 /* Send control buffer: one IPV6_PKTINFO or IP_PKTINFO. */
 union cg_ctl_tx {
-	struct cmsghdr align;
+	size_t align;
 	uint8_t b[CMSG_SPACE(sizeof(struct in6_pktinfo))];
 };
 

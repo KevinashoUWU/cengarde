@@ -10,6 +10,13 @@
  * paths that lag far behind the fastest one, from the delays the client
  * reports in its probes.
  *
+ * Several addresses: on a wildcard listen address the server learns, per
+ * path and from verified packets only, which of its addresses the client
+ * sends to, and everything it sends back on that path leaves from it
+ * (pktinfo.h). Any address of the machine works, including one added while
+ * the server runs; an address that goes away is counted on the paths that
+ * used it (local_errors) and never cuts the others.
+ *
  * IP pass: the client's probes ask for it on or off (CG_F_PASS_SET); the
  * newest session decides, and the server writes its wish to passthrough_file
  * for the system to apply (contrib/vps), from a thread so the loop never
@@ -31,6 +38,7 @@
 #include "health.h"
 #include "idmap.h"
 #include "log.h"
+#include "pktinfo.h"
 #include "replay.h"
 #include "sock.h"
 #include "status.h"
@@ -42,11 +50,16 @@
 struct path {
 	int used;
 	struct sockaddr_storage addr;
+	struct cg_local local; /* the address of ours its packets arrive at */
+	union cg_ctl_tx ctl;   /* the control message that sends from it */
+	size_t ctl_len;        /* 0: none, the route picks the source */
 	uint64_t since_ms, last_rx_ms;
 	uint64_t last_owd_ms; /* last probe saying the client hears our replies */
 	uint32_t interval_ms; /* the client's probe interval on this path */
 	int peer_muted;       /* the client carries no upload on this path */
 	uint64_t tx_pkts, tx_bytes, tx_drops;
+	uint64_t moves;        /* changes of address, at either end */
+	uint64_t local_errors; /* datagrams that could not leave: our address gone, no route */
 	struct cg_probe_info peer_view; /* client's view of this path (download) */
 	uint64_t peer_view_ms;
 };
@@ -71,6 +84,10 @@ struct server {
 	const struct cg_run *run;
 	const uint8_t *k_tx, *k_rx;
 	int ep, lfd, tfd;
+	int lfamily;     /* lfd's family */
+	int pktinfo;     /* lfd reports arrival addresses: replies leave from them */
+	uint16_t lport;  /* lfd's port, network order */
+	char laddr[64];  /* lfd's address as bound, for the log and the status */
 	struct session *s;
 	uint32_t max;
 	int32_t newest; /* index of the newest session, -1: none */
@@ -86,10 +103,11 @@ struct server {
 	char config_error[600];
 	uint64_t start_ms, next_status_ms, next_sweep_ms;
 
-	uint64_t rx_malformed, rx_auth_fail, rx_old, rx_dups, rx_trunc, sessions_full;
-	struct cg_ratelimit rl_auth, rl_full, rl_send;
+	uint64_t rx_malformed, rx_auth_fail, rx_old, rx_dups, rx_trunc, rx_ctrunc, sessions_full;
+	struct cg_ratelimit rl_auth, rl_full, rl_send, rl_local;
 
 	struct cg_rxbatch in;
+	union cg_ctl_rx rxctl[CG_BATCH]; /* arrival addresses of a listen batch */
 	uint8_t hdr[CG_BATCH][CG_HDR_LEN];
 	struct mmsghdr out[CG_BATCH];
 	struct iovec oiov[CG_BATCH][2];
@@ -97,6 +115,9 @@ struct server {
 	uint32_t q_sess[CG_BATCH];
 	uint8_t reply[CG_BATCH][CG_HDR_LEN + CG_PROBE_INFO_LEN];
 	struct sockaddr_storage reply_to[CG_BATCH];
+	union cg_ctl_tx reply_ctl[CG_BATCH];
+	struct session *reply_sess[CG_BATCH]; /* whose path each reply is for */
+	uint8_t reply_link[CG_BATCH];
 	struct mmsghdr rmsg[CG_BATCH];
 	struct iovec riov[CG_BATCH];
 };
@@ -130,6 +151,19 @@ static uint16_t expect_mask(const struct session *S, uint64_t now_ms)
 		if (path_live(&S->path[i], now_ms) && !S->path[i].peer_muted)
 			m |= (uint16_t)(1u << i);
 	return m;
+}
+
+/* An address of ours as "a.b.c.d:port" or "[v6]:port", "" when unknown. */
+static const char *local_str(const struct server *s, const struct cg_local *l, char *buf, size_t len)
+{
+	struct sockaddr_storage a;
+
+	if (!l->known) {
+		buf[0] = '\0';
+		return buf;
+	}
+	cg_local_sockaddr(l, s->lport, &a);
+	return cg_addr_str(&a, buf, len);
 }
 
 /* ---- session table ---- */
@@ -203,6 +237,85 @@ static void session_destroy(struct server *s, struct session *S, const char *why
 			s->newest = (int32_t)i;
 }
 
+/* ---- paths ---- */
+
+/* A verified packet from `from` on link of S, already marked in the replay
+ * window: the path learns where the client is and, from the control
+ * messages in m, which address of ours it sends to. A forged or replayed
+ * packet never gets here, so nobody else can move a path. The control
+ * message is written before its length, the order a reader on another
+ * thread would need. */
+static struct path *path_update(struct server *s, struct session *S, unsigned link,
+				const struct sockaddr_storage *from, const struct msghdr *m, uint64_t now_ms)
+{
+	struct path *P = &S->path[link];
+	struct sockaddr_storage old;
+	struct cg_local got = { .known = 0 }, old_local;
+	unsigned ch;
+	char a[64], o[64], l[64], ol[64];
+
+	if (s->pktinfo && !cg_local_from_msg(m, &got) && (m->msg_flags & MSG_CTRUNC))
+		s->rx_ctrunc++;
+	if (!P->used) {
+		memset(P, 0, sizeof(*P));
+		P->used = 1;
+		P->since_ms = now_ms;
+		P->interval_ms = DEFAULT_INTERVAL_MS;
+		cg_health_reset(&S->dh[link], now_ms);
+		cg_path_learn(&P->addr, &P->local, from, &got);
+		P->ctl_len = cg_local_cmsg(&P->local, s->lfamily, &P->ctl);
+		cg_info("session %08x: link %u via %s%s%s", S->id, link, cg_addr_str(from, a, sizeof(a)),
+			P->local.known ? " to " : "", local_str(s, &P->local, l, sizeof(l)));
+		return P;
+	}
+	ch = cg_path_diff(&P->addr, &P->local, from, &got);
+	if (!ch)
+		return P;
+	old = P->addr;
+	old_local = P->local;
+	cg_path_learn(&P->addr, &P->local, from, &got);
+	if (ch & CG_PATH_NEW_LOCAL)
+		P->ctl_len = cg_local_cmsg(&P->local, s->lfamily, &P->ctl);
+	/* Its delays over the other family say nothing about this one. */
+	if (ch & CG_PATH_NEW_FAMILY)
+		cg_health_reset(&S->dh[link], now_ms);
+	P->moves++;
+	if (s->pktinfo)
+		cg_info("session %08x: link %u moved %s (to %s) -> %s (to %s)", S->id, link,
+			cg_addr_str(&old, o, sizeof(o)), old_local.known ? local_str(s, &old_local, ol, sizeof(ol)) : "?",
+			cg_addr_str(from, a, sizeof(a)), P->local.known ? local_str(s, &P->local, l, sizeof(l)) : "?");
+	else
+		cg_info("session %08x: link %u moved %s -> %s", S->id, link, cg_addr_str(&old, o, sizeof(o)),
+			cg_addr_str(from, a, sizeof(a)));
+	return P;
+}
+
+/* n datagrams for link of S could not leave, with errno err. When our
+ * address is gone or there is no route, the path counts it and stays: the
+ * address may come back, and the client moves to another one on its own. */
+static void send_failed(struct server *s, struct session *S, unsigned link, int err, unsigned n, uint64_t now_ms)
+{
+	struct path *P = &S->path[link];
+	char a[64], l[64];
+
+	switch (cg_send_err_kind(err)) {
+	case CG_SEND_LOCAL:
+		P->local_errors += n;
+		if (cg_ratelimit_ok(&s->rl_local, now_ms, 10000))
+			cg_warn("session %08x link %u: cannot send to %s from %s: %s (address removed or no route)",
+				S->id, link, cg_addr_str(&P->addr, a, sizeof(a)),
+				P->local.known ? local_str(s, &P->local, l, sizeof(l)) : "the route's address",
+				strerror(err));
+		break;
+	case CG_SEND_OTHER:
+		if (cg_ratelimit_ok(&s->rl_send, now_ms, 10000))
+			cg_warn("session %08x link %u send: %s", S->id, link, strerror(err));
+		break;
+	case CG_SEND_STOP:
+		break;
+	}
+}
+
 /* ---- client -> WireGuard ---- */
 
 /* up_owd: the probe's trip up this path, timed here, for the client's link
@@ -210,6 +323,7 @@ static void session_destroy(struct server *s, struct session *S, const char *why
 static void queue_reply(struct server *s, int *nr, struct session *S, unsigned link, const struct cg_hdr *probe,
 			uint32_t up_owd, uint64_t now_us)
 {
+	const struct path *P = &S->path[link];
 	uint8_t *r = s->reply[*nr];
 	struct cg_probe_info pi = { .echo_ts = probe->ts,
 				    .owd = up_owd,
@@ -226,7 +340,7 @@ static void queue_reply(struct server *s, int *nr, struct session *S, unsigned l
 
 	cg_probe_info_write(r + CG_HDR_LEN, &pi);
 	cg_hdr_write(r, &h, s->k_tx, r + CG_HDR_LEN, CG_PROBE_INFO_LEN);
-	s->reply_to[*nr] = S->path[link].addr;
+	s->reply_to[*nr] = P->addr;
 	s->riov[*nr].iov_base = r;
 	s->riov[*nr].iov_len = CG_HDR_LEN + CG_PROBE_INFO_LEN;
 	memset(&s->rmsg[*nr].msg_hdr, 0, sizeof(s->rmsg[*nr].msg_hdr));
@@ -234,7 +348,36 @@ static void queue_reply(struct server *s, int *nr, struct session *S, unsigned l
 	s->rmsg[*nr].msg_hdr.msg_namelen = cg_addr_len(&s->reply_to[*nr]);
 	s->rmsg[*nr].msg_hdr.msg_iov = &s->riov[*nr];
 	s->rmsg[*nr].msg_hdr.msg_iovlen = 1;
+	/* A copy, like the address: a later packet of the batch may move the
+	 * path before the replies go out. */
+	if (P->ctl_len) {
+		memcpy(s->reply_ctl[*nr].b, P->ctl.b, P->ctl_len);
+		s->rmsg[*nr].msg_hdr.msg_control = s->reply_ctl[*nr].b;
+		s->rmsg[*nr].msg_hdr.msg_controllen = P->ctl_len;
+	}
+	s->reply_sess[*nr] = S;
+	s->reply_link[*nr] = (uint8_t)link;
 	(*nr)++;
+}
+
+/* Sends the probe replies of a batch. sendmmsg stops at the first datagram
+ * that fails, so one path whose address of ours went away would take the
+ * replies of every later path with it: the batch goes on past the one that
+ * failed. A full socket stops it, the rest would fail too. */
+static void flush_replies(struct server *s, int nr, uint64_t now_ms)
+{
+	for (int i = 0; i < nr;) {
+		int sent = sendmmsg(s->lfd, s->rmsg + i, (unsigned)(nr - i), MSG_DONTWAIT);
+
+		if (sent > 0) {
+			i += sent;
+			continue;
+		}
+		if (cg_send_err_kind(errno) == CG_SEND_STOP)
+			return;
+		send_failed(s, s->reply_sess[i], s->reply_link[i], errno, 1, now_ms);
+		i++;
+	}
 }
 
 static void on_probe(struct server *s, struct session *S, struct path *P, unsigned link, const struct cg_hdr *h,
@@ -285,7 +428,7 @@ static void flush_wg(struct server *s, int nq)
 static void listen_read(struct server *s)
 {
 	for (int round = 0; round < CG_MAX_ROUNDS; round++) {
-		int n = cg_rx(s->lfd, &s->in), nq = 0, nr = 0;
+		int n = cg_rx_ctl(s->lfd, &s->in, s->rxctl), nq = 0, nr = 0;
 		uint64_t now_us, now_ms;
 		uint32_t now32;
 
@@ -302,7 +445,7 @@ static void listen_read(struct server *s)
 			struct path *P;
 			struct cg_hdr h;
 			int verified = 0;
-			char a[64], o[64];
+			char a[64];
 
 			if (s->in.msg[i].msg_hdr.msg_flags & MSG_TRUNC) {
 				s->rx_trunc++;
@@ -352,20 +495,7 @@ static void listen_read(struct server *s)
 			}
 			cg_replay_mark(&S->replay, h.seq);
 			S->last_rx_ms = now_ms;
-			P = &S->path[h.link];
-			if (!P->used) {
-				memset(P, 0, sizeof(*P));
-				P->used = 1;
-				P->addr = *from;
-				P->since_ms = now_ms;
-				P->interval_ms = DEFAULT_INTERVAL_MS;
-				cg_health_reset(&S->dh[h.link], now_ms);
-				cg_info("session %08x: link %u via %s", S->id, h.link, cg_addr_str(from, a, sizeof(a)));
-			} else if (!cg_addr_equal(&P->addr, from)) {
-				cg_info("session %08x: link %u moved %s -> %s", S->id, h.link,
-					cg_addr_str(&P->addr, o, sizeof(o)), cg_addr_str(from, a, sizeof(a)));
-				P->addr = *from;
-			}
+			P = path_update(s, S, h.link, from, &s->in.msg[i].msg_hdr, now_ms);
 			P->last_rx_ms = now_ms;
 			if (h.type == CG_T_PROBE) {
 				on_probe(s, S, P, h.link, &h, b + CG_HDR_LEN, now_ms);
@@ -382,12 +512,8 @@ static void listen_read(struct server *s)
 		}
 		if (nq)
 			flush_wg(s, nq);
-		if (nr) {
-			int sent = sendmmsg(s->lfd, s->rmsg, (unsigned)nr, MSG_DONTWAIT);
-
-			if (sent < 0 && errno != EAGAIN && cg_ratelimit_ok(&s->rl_send, now_ms, 10000))
-				cg_warn("probe reply: %s", strerror(errno));
-		}
+		if (nr)
+			flush_replies(s, nr, now_ms);
 		if (n < CG_BATCH)
 			return;
 	}
@@ -447,12 +573,17 @@ static void wg_read(struct server *s, struct session *S)
 				s->out[x].msg_hdr.msg_namelen = cg_addr_len(&P->addr);
 				s->out[x].msg_hdr.msg_iov = s->oiov[sel[x]];
 				s->out[x].msg_hdr.msg_iovlen = 2;
+				if (P->ctl_len) {
+					s->out[x].msg_hdr.msg_control = P->ctl.b;
+					s->out[x].msg_hdr.msg_controllen = P->ctl_len;
+				}
 			}
+			/* One sendmmsg per path: a path that cannot send never
+			 * holds up the others. */
 			sent = sendmmsg(s->lfd, s->out, (unsigned)k, MSG_DONTWAIT);
 			if (sent < 0) {
 				P->tx_drops += (uint64_t)k;
-				if (errno != EAGAIN && errno != ENOBUFS && cg_ratelimit_ok(&s->rl_send, now_ms, 10000))
-					cg_warn("session %08x link %d send: %s", S->id, p, strerror(errno));
+				send_failed(s, S, (unsigned)p, errno, (unsigned)k, now_ms);
 				continue;
 			}
 			P->tx_drops += (uint64_t)(k - sent);
@@ -534,12 +665,15 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 	cg_json_str(j, "description", s->cfg->description);
 	cg_json_u64(j, "uptime_ms", now_ms - s->start_ms);
 	cg_json_str(j, "config_error", s->config_error);
+	cg_json_str(j, "listen", s->laddr);
+	cg_json_bool(j, "reply_from_arrival", s->pktinfo);
 	json_pass(j, "passthrough", s->pw.running ? s->pass_written : -1);
 	cg_json_obj(j, "rx");
 	cg_json_u64(j, "duplicates", s->rx_dups);
 	cg_json_u64(j, "too_old", s->rx_old);
 	cg_json_u64(j, "auth_failures", s->rx_auth_fail);
 	cg_json_u64(j, "malformed", s->rx_malformed + s->rx_trunc);
+	cg_json_u64(j, "ctrunc", s->rx_ctrunc);
 	cg_json_u64(j, "sessions_refused", s->sessions_full);
 	cg_json_end(j, '}');
 	cg_json_arr(j, "sessions");
@@ -571,6 +705,10 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 			cg_json_obj(j, NULL);
 			cg_json_u64(j, "id", (uint64_t)p);
 			cg_json_str(j, "address", cg_addr_str(&P->addr, buf, sizeof(buf)));
+			if (P->local.known)
+				cg_json_str(j, "local", local_str(s, &P->local, buf, sizeof(buf)));
+			else
+				cg_json_null(j, "local");
 			cg_json_str(j, "state", path_live(P, now_ms) ? "live" : "stalled");
 			cg_json_u64(j, "last_rx_ms_ago", now_ms - P->last_rx_ms);
 			cg_json_u64(j, "probe_interval_ms", P->interval_ms);
@@ -585,6 +723,8 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 			cg_json_u64(j, "tx_packets", P->tx_pkts);
 			cg_json_u64(j, "tx_bytes", P->tx_bytes);
 			cg_json_u64(j, "tx_drops", P->tx_drops);
+			cg_json_u64(j, "moves", P->moves);
+			cg_json_u64(j, "local_errors", P->local_errors);
 			cg_json_u64(j, "rx_first", S->rx[p].wins);
 			cg_json_u64(j, "rx_duplicate", S->rx[p].dups);
 			cg_json_u64(j, "rx_late", S->rx[p].late);
@@ -615,13 +755,14 @@ static void write_status(struct server *s, uint64_t now_ms)
 	cg_json_free(&j);
 }
 
-/* "cengarde ctl links": the sessions and their links, as a table. */
-#define PATH_ROW "%-9s %-6s %-5s %-30s %-8s %-8s %s\n"
+/* "cengarde ctl links": the sessions and their links, as a table. The
+ * addresses go last, ADDRESS wide enough for "[IPv6]:port". */
+#define PATH_ROW "%-9s %-6s %-5s %-8s %-8s %-8s %-47s %s\n"
 static void links_text(struct server *s, uint64_t now_ms, struct cg_json *j)
 {
-	char id[16], link[8], ago[24], a[64];
+	char id[16], link[8], ago[24], a[64], l[64];
 
-	cg_json_raw(j, PATH_ROW, "SESSION", "NEWEST", "LINK", "ADDRESS", "STATE", "DOWNLOAD", "LAST RX");
+	cg_json_raw(j, PATH_ROW, "SESSION", "NEWEST", "LINK", "STATE", "DOWNLOAD", "LAST RX", "ADDRESS", "LOCAL");
 	for (uint32_t i = 0; i < s->max; i++) {
 		const struct session *S = &s->s[i];
 
@@ -637,8 +778,9 @@ static void links_text(struct server *s, uint64_t now_ms, struct cg_json *j)
 			snprintf(link, sizeof(link), "%d", p);
 			snprintf(ago, sizeof(ago), "%u.%u s", (unsigned)(ms / 1000), (unsigned)(ms / 100 % 10));
 			cg_json_raw(j, PATH_ROW, id, s->newest == (int32_t)i ? "yes" : "", link,
-				    cg_addr_str(&P->addr, a, sizeof(a)), path_live(P, now_ms) ? "live" : "stalled",
-				    S->dh[p].state == CG_H_MUTED ? "muted" : "active", ago);
+				    path_live(P, now_ms) ? "live" : "stalled", S->dh[p].state == CG_H_MUTED ? "muted" : "active",
+				    ago, cg_addr_str(&P->addr, a, sizeof(a)),
+				    P->local.known ? local_str(s, &P->local, l, sizeof(l)) : "-");
 		}
 	}
 }
@@ -825,7 +967,9 @@ static int signals(struct server *s)
 int cg_server_run(struct cg_config *cfg, const struct cg_run *run)
 {
 	struct server *s = calloc(1, sizeof(*s));
-	char err[256], buf[64], wg[64];
+	struct sockaddr_storage bound;
+	socklen_t blen = sizeof(bound);
+	char err[256], wg[64];
 	uint64_t last_traffic_us = 0;
 	uint32_t busy;
 	int rc = 1, rcv;
@@ -857,11 +1001,18 @@ int cg_server_run(struct cg_config *cfg, const struct cg_run *run)
 	}
 	s->start_ms = cg_now_ms();
 
-	s->lfd = cg_udp_bind(&cfg->listen, 0, err, sizeof(err));
+	s->pktinfo = 1; /* on a wildcard only */
+	s->lfd = cg_udp_bind_opts(&cfg->listen, 0, &s->pktinfo, &s->lfamily, err, sizeof(err));
 	if (s->lfd < 0) {
 		cg_err("%s", err);
 		goto out;
 	}
+	/* What was bound: "*" is IPv4 on a kernel without IPv6. */
+	if (getsockname(s->lfd, (struct sockaddr *)&bound, &blen) < 0)
+		bound = cfg->listen;
+	cg_addr_str(&bound, s->laddr, sizeof(s->laddr));
+	s->lport = bound.ss_family == AF_INET ? ((const struct sockaddr_in *)&bound)->sin_port :
+						((const struct sockaddr_in6 *)&bound)->sin6_port;
 	rcv = cg_sock_buffers(s->lfd, cfg->rcvbuf, cfg->rcvbuf);
 	if (rcv < (1 << 20))
 		cg_warn("receive buffer is only %d bytes; raise net.core.rmem_max or run with CAP_NET_ADMIN", rcv);
@@ -881,8 +1032,9 @@ int cg_server_run(struct cg_config *cfg, const struct cg_run *run)
 		cg_warn("status file %s: cannot start the writer thread", cfg->status_file);
 	if (cfg->passthrough_file[0] && cg_status_writer_start(&s->pw, cfg->passthrough_file) < 0)
 		cg_warn("%s: cannot start the writer thread", cfg->passthrough_file);
-	cg_info("server %s: listening on %s, WireGuard at %s, up to %u sessions", CG_VERSION,
-		cg_addr_str(&cfg->listen, buf, sizeof(buf)), cg_addr_str(&cfg->wireguard, wg, sizeof(wg)), s->max);
+	cg_info("server %s: listening on %s%s, WireGuard at %s, up to %u sessions", CG_VERSION, s->laddr,
+		s->pktinfo ? ", replying from each packet's arrival address" : "",
+		cg_addr_str(&cfg->wireguard, wg, sizeof(wg)), s->max);
 	busy = cg_tune(cfg);
 
 	for (;;) {
