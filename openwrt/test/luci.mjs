@@ -4,8 +4,9 @@
 //   node luci.mjs [BASE_URL] [SCREENSHOT_DIR]
 //
 // Against the router VM of vm.sh (uplinks up1-up3, VPS at 1.2.3.4, see
-// e2e.sh): configures cengarde from the web UI only (address, uplinks, IP
-// pass, enable), checks that the cloud-config follows the form, applies,
+// e2e.sh): configures cengarde from the web UI only (VPS addresses,
+// uplinks, IP pass, enable), checks that an address with a mask and an MTU
+// of 1420 are refused and that the cloud-config follows the form, applies,
 // and waits on the status page for the tunnel, the three uplinks and the
 // VPS confirming IP pass; then pauses an uplink there and resumes it.
 // Fails on any JavaScript error after logging in.
@@ -17,7 +18,9 @@ import { mkdirSync } from 'node:fs';
 
 const base = process.argv[2] || 'http://127.0.0.1:8080';
 const shots = process.argv[3] || 'screenshots';
-const VPS = '1.2.3.4';
+// The engine sticks to the first address that answers: 1.2.3.5 is never
+// tried while 1.2.3.4 works.
+const VPS = [ '1.2.3.4', '1.2.3.5' ];
 const UPLINKS = [ 'up1', 'up2', 'up3' ];
 const errors = [];
 let loggedIn = false;
@@ -50,6 +53,7 @@ async function until(cond, what, ms = 120000) {
 	throw new Error(`timed out waiting for ${what}`);
 }
 
+const invalid = (field) => field.evaluate((e) => e.classList.contains('cbi-input-invalid'));
 const activeRows = () => page.locator('table.cengarde-links tr.tr:has-text("activo")').count();
 const row = (label) => page.locator(`table.cengarde-links tr.tr:has-text("${label} (")`);
 
@@ -79,7 +83,22 @@ try {
 	await page.waitForSelector(id('widget.cbid.cengarde.main.server'));
 	await shot('01-settings-empty');
 
-	await page.fill(id('widget.cbid.cengarde.main.server'), VPS);
+	step('VPS addresses: a mask is refused, two addresses go in');
+	// Typed key by key: LuCI checks the field on keyup, and Enter only adds
+	// a valid entry to the list.
+	const server = page.locator(id('widget.cbid.cengarde.main.server'));
+	const listed = () => page.locator(`${id('cbid.cengarde.main.server')} .item input[type="hidden"]`)
+		.evaluateAll((items) => items.map((e) => e.value));
+	await server.pressSequentially('1.2.3.4/24');
+	await server.press('Enter');
+	check(await invalid(server) && (await listed()).length === 0, '1.2.3.4/24 is refused');
+	await server.fill('');
+	for (const addr of VPS) {
+		await server.pressSequentially(addr);
+		await server.press('Enter');
+	}
+	check(JSON.stringify(await listed()) === JSON.stringify(VPS), `the VPS addresses, in order (${await listed()})`);
+
 	await page.click(id('cbid.cengarde.main.uplink'));
 	for (const up of UPLINKS) {
 		// the open dropdown also keeps a hidden copy of each item
@@ -102,8 +121,17 @@ try {
 	check(/PASSTHROUGH=no/.test(cc), 'no passthrough while IP pass is off');
 	await shot('03-settings-vps');
 
-	step('Tunnel tab: IP pass on, the cloud-config follows');
+	step('Tunnel tab: an MTU of 1420 is refused, IP pass on, the cloud-config follows');
 	await tab('tunnel');
+	const mtu = page.locator(id('widget.cbid.cengarde.main.mtu'));
+	const mtuSaved = await mtu.inputValue();
+	await mtu.fill('');
+	await mtu.pressSequentially('1420');
+	check(await invalid(mtu), 'an MTU of 1420 is refused');
+	await mtu.fill('');
+	await mtu.pressSequentially(mtuSaved);
+	await mtu.blur();
+	check(!await invalid(mtu), `the MTU is valid again (${mtuSaved || 'default'})`);
 	await flag('ip_pass', true);
 	await shot('04-settings-tunnel');
 	await tab('vps');

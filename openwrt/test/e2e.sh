@@ -12,11 +12,15 @@
 #     all keys derived from the router's pairing secret;
 #  3. configures cengarde on the router from LuCI only (luci.mjs), which
 #     waits for the tunnel, the three uplinks and IP pass on at the VPS,
-#     and pauses and resumes an uplink from the status page;
+#     and pauses and resumes an uplink from the status page; each uplink
+#     gets its DHCPv6 companion (up16-up36) in the uplinks' zone;
 #  4. turns IP pass off while pinging through the tunnel: the engine takes
 #     the change without a restart and without loss, and the VPS follows;
 #  5. pings through the tunnel while one uplink goes down: no loss allowed;
-#  6. disables cengarde and checks that the router is back as it was.
+#  6. checks that apply has converged: run again it changes nothing, and
+#     nothing reloads for 60 s (the companions' triggers cause no loop);
+#  7. disables cengarde and checks that the router is back as it was, and
+#     converged again.
 # Screenshots and logs go to OUT_DIR (default ./e2e-out). Needs qemu-system-x86,
 # ssh and node with "npm install" done in this directory.
 #
@@ -35,6 +39,29 @@ ok() { echo "e2e: ok: $*"; }
 bad() {
 	echo "e2e: FAIL: $*"
 	fails=$((fails + 1))
+}
+
+# Log lines that a reload loop would keep adding: cengarde-setup changing
+# the configuration, and netifd taking interfaces up or down.
+churn() {
+	"$VM" ssh router 'logread | grep -cE "cengarde-setup: updated:|netifd: Interface .* is now (up|down)" || true'
+}
+
+# converged WHAT: "cengarde-setup apply" changes nothing more, and in the
+# next 60 s nothing reloads.
+converged() {
+	local before after
+
+	before=$(churn)
+	"$VM" ssh router 'cengarde-setup apply'
+	sleep 60
+	after=$(churn)
+	if [ "$before" = "$after" ]; then
+		ok "$1: apply changes nothing, no reloads in 60 s"
+	else
+		bad "$1: $((after - before)) new updates or interface changes"
+		"$VM" ssh router 'logread | grep -E "cengarde-setup|netifd" | tail -20'
+	fi
 }
 
 mkdir -p "$OUT"
@@ -145,6 +172,18 @@ else
 	bad "IP pass: miniupnpd is not running on the tunnel"
 fi
 
+if "$VM" ssh router sh -s <<'EOF'
+for i in 1 2 3; do
+	[ "$(uci -q get network.up${i}6.device) $(uci -q get network.up${i}6.delegate)" = "@up$i 0" ] || exit 1
+	uci show firewall | grep -q "cengarde_network6=.*'up${i}6'" || exit 1
+done
+EOF
+then
+	ok "IPv6 companions up16-up36: delegate 0, in the uplinks' zone"
+else
+	bad "IPv6 companions"
+fi
+
 if [ "$("$VM" ssh vps 'cat /var/run/cengarde/passthrough')" = on ]; then
 	ok "IP pass: the VPS got the router's request"
 else
@@ -203,6 +242,8 @@ else
 	bad "status"
 fi
 
+converged "enabled"
+
 say "disable: the router goes back to how it was"
 "$VM" ssh router sh -s <<'EOF'
 uci set cengarde.main.enabled=0
@@ -211,7 +252,7 @@ ubus call service event '{"type":"config.change","data":{"package":"cengarde"}}'
 EOF
 sleep 10
 "$VM" ssh router 'uci show network; uci show firewall; ip route' > "$OUT/router-after.txt"
-leftover=$("$VM" ssh router 'pidof cengarde; uci show network | grep -E "wgcg|cengarde"; ip route | grep wgcg; uci -q get upnpd.config.external_iface' || true)
+leftover=$("$VM" ssh router 'pidof cengarde; uci show network | grep -E "wgcg|cengarde|up[123]6"; uci show firewall | grep -E "cengarde|up[123]6"; ip route | grep wgcg; uci -q get upnpd.config.external_iface' || true)
 if [ -z "$leftover" ]; then
 	ok "nothing left of the tunnel"
 else
@@ -222,6 +263,7 @@ if "$VM" ssh router 'uci show network | grep -q "peerdns"'; then
 else
 	ok "uplinks announce their DNS servers again"
 fi
+converged "disabled"
 
 if [ "$fails" -eq 0 ]; then
 	say "all passed"
