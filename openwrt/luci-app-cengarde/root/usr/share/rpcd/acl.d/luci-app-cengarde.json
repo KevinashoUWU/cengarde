@@ -6,7 +6,7 @@
 				"/usr/sbin/cengarde-setup status": [ "exec" ],
 				"/usr/share/cengarde/cloud-config.yaml": [ "read" ]
 			},
-			"uci": [ "cengarde", "upnpd" ]
+			"uci": [ "cengarde", "network", "upnpd" ]
 		},
 		"write": {
 			"file": {

@@ -9,6 +9,10 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 const TEMPLATE = '/usr/share/cengarde/cloud-config.yaml';
+const MAX_SERVERS = 8; // the engine's CG_MAX_SERVERS
+// Largest tunnel MTU in a 1500-byte path: 1500 - (IP, UDP, cengarde and
+// WireGuard headers), 20 + 8 + 24 + 32 over IPv4, 40 + 8 + 24 + 32 over IPv6.
+const MTU_IPV6 = 1396;
 
 // Same substitutions as "cengarde-setup cloud-config", on the values in the
 // form, so the text follows unsaved changes.
@@ -28,11 +32,16 @@ function value(map, name) {
 	return uci.get('cengarde', 'main', name);
 }
 
+function isIPv6(addr) {
+	return String(addr).indexOf(':') >= 0;
+}
+
 return view.extend({
 	load: function() {
 		return Promise.all([
 			L.resolveDefault(fs.read(TEMPLATE), ''),
 			L.resolveDefault(uci.load('upnpd'), null),
+			L.resolveDefault(uci.load('network'), null),
 			uci.load('cengarde')
 		]);
 	},
@@ -63,10 +72,14 @@ return view.extend({
 		o = s.taboption('general', form.Flag, 'enabled', _('Enabled'));
 		o.rmempty = false;
 
-		o = s.taboption('general', form.Value, 'server', _('VPS address'),
-			_('Public IP of the VPS, as the provider shows it. An IP and not a name: with all traffic going through the tunnel, a name could not be resolved before the tunnel is up.'));
+		o = s.taboption('general', form.DynamicList, 'server', _('VPS addresses'),
+			_('Public IPs of the VPS as the provider shows them, IPv4 and IPv6, in order of preference: each uplink uses the first one of a family it has, and tries the next one when the VPS does not answer there. IPs and not names: with all traffic going through the tunnel, a name could not be resolved before the tunnel is up.'));
 		o.datatype = 'ipaddr(1)';
 		o.placeholder = '203.0.113.10';
+		o.validate = function(section_id) {
+			return (L.toArray(this.formvalue(section_id)).length > MAX_SERVERS)
+				? _('At most %d addresses').format(MAX_SERVERS) : true;
+		};
 
 		o = s.taboption('general', form.Value, 'port', _('VPS port'),
 			_('UDP port of cengarde on the VPS.'));
@@ -78,8 +91,14 @@ return view.extend({
 			_('The interfaces to bond: one per modem or VLAN, each with its own default route. cengarde gives them a metric of their own if they share one and puts them in the wan firewall zone.'));
 		o.multiple = true;
 		o.nocreate = true;
+		// Not the IPv6 companions (cengarde's own, or any on top of another
+		// interface), unless one was chosen already.
 		o.filter = function(section_id, value) {
-			return value != 'lan' && value != 'loopback' && value != 'wgcg';
+			const chosen = L.toArray(uci.get('cengarde', 'main', 'uplink')).indexOf(value) >= 0;
+			const companion = uci.get('network', value, 'cengarde_owned') == '1' ||
+				String(uci.get('network', value, 'device') || '').charAt(0) == '@';
+
+			return value != 'lan' && value != 'loopback' && value != 'wgcg' && (chosen || !companion);
 		};
 
 		o = s.taboption('vps', form.Value, 'secret', _('Pairing secret'),
@@ -180,7 +199,7 @@ return view.extend({
 		o.onchange = refresh;
 
 		o = s.taboption('tunnel', form.Value, 'stun_host', _('STUN server'),
-			_('Only for IP pass when the VPS address is not IPv4: UPnP then learns the public IPv4 of the VPS from this STUN server, through the tunnel (e.g. stun.cloudflare.com). Empty: UPnP announces no public IP and hands no ports on to the LAN.'));
+			_('Only for IP pass when no VPS address is IPv4: UPnP then learns the public IPv4 of the VPS from this STUN server, through the tunnel (e.g. stun.cloudflare.com). Empty: UPnP announces no public IP and hands no ports on to the LAN.'));
 		o.datatype = 'host(1)'; // a name or IPv4: miniupnpd asks over IPv4
 		o.depends('ip_pass', '1');
 
@@ -194,11 +213,43 @@ return view.extend({
 		o.datatype = 'ipaddr(1)';
 		o.placeholder = '1.1.1.1';
 		o.depends('tunnel', '1');
+		o.renderWidget = function(section_id, option_index, cfgvalue) {
+			const widget = form.DynamicList.prototype.renderWidget.apply(this, [section_id, option_index, cfgvalue]);
 
-		o = s.taboption('tunnel', form.Value, 'mtu', _('Tunnel MTU'));
+			this.warning = E('div', { 'class': 'cbi-value-description', 'style': 'display:none;color:#c33' }, [
+				_('IPv6 servers are left out while IPv6 does not go through the tunnel: the router would reach them around it. Without an IPv4 server, 1.1.1.1 and 9.9.9.9 are used.')
+			]);
+			return E('div', {}, [ widget, this.warning ]);
+		};
+		// A warning, not an error: the list is kept for when IPv6 goes
+		// through the tunnel.
+		o.validate = function(section_id) {
+			if (this.warning)
+				this.warning.style.display = L.toArray(this.formvalue(section_id)).some(isIPv6) ? '' : 'none';
+			return true;
+		};
+
+		o = s.taboption('tunnel', form.Value, 'mtu', _('Tunnel MTU'),
+			_('In a 1500-byte path, packets of up to 1416 bytes fit over IPv4 and of up to 1396 over IPv6. Larger ones get fragmented, and mobile networks often drop the fragments.'));
 		o.datatype = 'range(1280,1416)';
 		o.placeholder = '1380';
 		o.depends('tunnel', '1');
+		// The form checks every field again on each change, so this follows
+		// the VPS addresses too.
+		o.validate = function(section_id, v) {
+			return (+v > MTU_IPV6 && L.toArray(value(m, 'server')).some(isIPv6))
+				? _('At most %d with an IPv6 VPS address').format(MTU_IPV6) : true;
+		};
+
+		o = s.taboption('advanced', form.Flag, 'uplink_ipv6', _('IPv6 on the uplinks'),
+			_('Adds a DHCPv6 interface on top of each DHCP or static uplink (named after it, ending in 6), so that cengarde can reach the VPS over the IPv6 of the modems. Their IPv6 prefixes never reach the LAN.'));
+		o.default = '1';
+		o.rmempty = false;
+
+		o = s.taboption('advanced', form.Value, 'server_failover_ms', _('Next VPS address after (ms)'),
+			_('An uplink that gets no answer from the VPS for this long tries the next VPS address of its family. 0: never.'));
+		o.datatype = 'or(0,range(3000,3600000))';
+		o.placeholder = '10000';
 
 		o = s.taboption('advanced', form.Value, 'mute_behind_ms', _('Mute after falling behind (ms)'),
 			_('A link that stays this far behind the fastest one for the settle time stops carrying traffic until it catches up. 0: never.'));

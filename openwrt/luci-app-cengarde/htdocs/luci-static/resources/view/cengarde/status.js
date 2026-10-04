@@ -15,9 +15,14 @@ function problemText(p) {
 	case 'uplink_unknown': return _('Uplink %s does not exist in the network configuration.').format(p.iface);
 	case 'uplink_noroute': return _('Uplink %s has "Use default gateway" off: cengarde needs its default route.').format(p.iface);
 	case 'uplink_down': return _('Uplink %s is down.').format(p.iface);
+	case 'uplink_ipv6_only': return _('Uplink %s only has IPv6 (its IPv4 is down) and no VPS address is IPv6: add the IPv6 address of the VPS in Settings.').format(p.iface);
+	case 'ipv6_companion_conflict': return _('Uplink %s gets no IPv6 interface: the name %s is taken or longer than 15 characters, so cengarde does not see the IPv6 of that uplink.').format(p.iface, p.name);
+	case 'ipv6_leak': return _('The LAN still holds the public IPv6 prefix %s: its IPv6 goes around the tunnel, through the uplinks. Turn off "Delegate IPv6 prefixes" on the interface it comes from.').format(p.prefix);
 	case 'no_upnp': return _('IP pass is on but miniupnpd is not installed.');
-	case 'upnp_no_ip': return _('IP pass is on, but UPnP has no public IP to announce: the VPS address is not IPv4. Set a STUN server in Settings > Tunnel.');
+	case 'upnp_no_ip': return _('IP pass is on, but UPnP has no public IP to announce: no VPS address is IPv4. Set a STUN server in Settings > Tunnel.');
 	case 'not_running': return _('The engine is not running: see System > System Log.');
+	case 'vps_silent': return _('The VPS does not answer on any uplink: check that it runs cengarde with the secret of this router, and that its firewall lets in UDP to the VPS port.');
+	case 'path_mtu': return _('Uplink %s takes packets of at most %d bytes to the VPS, fewer than the tunnel makes: lower the tunnel MTU to %d.').format(p.iface, p.mtu, p.fit);
 	default: return p.code;
 	}
 }
@@ -34,9 +39,10 @@ function ms(v) {
 	return (v == null) ? '-' : '%.1f ms'.format(v);
 }
 
-function badge(text, color) {
+function badge(text, color, title) {
 	return E('span', {
-		'style': 'display:inline-block;padding:0 .5em;border-radius:.5em;color:#fff;background:' + color
+		'style': 'display:inline-block;padding:0 .5em;border-radius:.5em;color:#fff;background:' + color,
+		'title': title || null
 	}, [ text ]);
 }
 
@@ -56,6 +62,21 @@ function linkState(l) {
 	else
 		b = badge(_('active'), '#393');
 	return (l.override == 'on') ? E('span', {}, [ b, ' ', E('small', {}, [ _('forced on') ]) ]) : b;
+}
+
+// The VPS address a link sends to, without the port, its family, and
+// whether the link moved past its first address of that family.
+function vpsAddress(l) {
+	const addr = (l.remote || '').replace(/:\d+$/, '').replace(/^\[(.*)\]$/, '$1');
+	let parts;
+
+	if (!addr)
+		return '-';
+	parts = [ addr, ' ', E('small', {}, [ l.family == 'ipv6' ? 'IPv6' : 'IPv4' ]) ];
+	if (l.candidate > 0)
+		parts.push(' ', badge(_('failover'), '#d80',
+			_('Its first VPS address of this family did not answer. Failovers so far: %d').format(l.failovers)));
+	return E('span', {}, parts);
 }
 
 // IP pass as asked of the VPS, and as the VPS reports it.
@@ -121,7 +142,7 @@ return view.extend({
 			rows.push([ _('Traffic'), _('%s up, %s down').format(
 				'%1024.2mB'.format(e.upload.bytes), '%1024.2mB'.format(e.download.bytes)) ]);
 			rows.push([ _('Duplicate copies dropped'), '%d'.format(e.download.duplicates) ]);
-			rows.push([ _('Version'), e.version ]);
+			rows.push([ _('Version'), st.protocol ? _('%s, protocol %d').format(e.version, st.protocol) : e.version ]);
 		}
 
 		return E('table', { 'class': 'table' }, rows.map(function(r) {
@@ -141,6 +162,8 @@ return view.extend({
 				E('th', { 'class': 'th' }, [ _('State') ]),
 				E('th', { 'class': 'th' }, [ _('RTT') ]),
 				E('th', { 'class': 'th' }, [ _('Behind the fastest') ]),
+				E('th', { 'class': 'th' }, [ _('VPS address') ]),
+				E('th', { 'class': 'th' }, [ _('Path MTU') ]),
 				E('th', { 'class': 'th' }, [ _('From the VPS') ]),
 				E('th', { 'class': 'th' }, [ _('Arrived first') ]),
 				E('th', { 'class': 'th' }, [ _('Sent') ]),
@@ -159,6 +182,8 @@ return view.extend({
 				linkState(l),
 				ms(out ? null : l.rtt_ms),
 				ms(out ? null : l.upload_behind_ms),
+				out ? '-' : vpsAddress(l),
+				(out || !l.path_mtu) ? '-' : '%d'.format(l.path_mtu),
 				out ? '-' : l.download_muted ? badge(_('muted by the VPS'), '#d80') : _('in use'),
 				firsts ? '%.0f %%'.format(100 * l.rx_first / firsts) : '-',
 				'%1024.2mB'.format(l.tx_bytes),
@@ -198,7 +223,9 @@ return view.extend({
 			E('h3', {}, [ _('Uplinks') ]),
 			this.renderLinks(st),
 			E('p', { 'class': 'cbi-section-descr' }, [
-				_('Behind the fastest: how much later this uplink delivers than the quickest one; past the limit it gets muted (no traffic, probes only) until it catches up. Arrived first: share of the download that came through this uplink before any other copy. Pause: takes an uplink out without touching the configuration, until you resume it or cengarde restarts.')
+				_('Behind the fastest: how much later this uplink delivers than the quickest one; past the limit it gets muted (no traffic, probes only) until it catches up. Arrived first: share of the download that came through this uplink before any other copy. Pause: takes an uplink out without touching the configuration, until you resume it or cengarde restarts.'),
+				' ',
+				_('VPS address: where the uplink sends to; "failover" when its first VPS address of that family did not answer. Path MTU: the largest packet the path to the VPS takes.')
 			])
 		]);
 	},
