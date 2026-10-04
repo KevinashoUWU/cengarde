@@ -105,7 +105,11 @@ tras `server_failover_ms` sin respuesta (`engine/src/srvpick.h`). Con 4 s de
 failover (`FAILOVER_MS`):
 
 - **l1**, `10.0.1.99 10.0.1.2`: la primera no lleva a ningún sitio; tiene
-  que vivir en la segunda dentro del tiempo de failover y quedarse.
+  que vivir en la segunda dentro del tiempo de failover y quedarse. Después,
+  dos recargas que no lo cambian de dirección: una añade a su lista una
+  entrada IPv6, que no es de su familia, y otra intercambia sus dos
+  direcciones, así que la nueva primera es donde ya está. Ninguna puede
+  cerrar su socket.
 - **l2**, `[2001:db8::2] 10.0.2.2`: sin IPv6 en el enlace (ni en el
   laboratorio), la entrada IPv6 no cuenta y vive en la IPv4 al momento.
 - **l3**, `10.0.3.2 10.0.3.20`: las dos llevan al servidor (10.0.3.20 por un

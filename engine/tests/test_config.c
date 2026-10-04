@@ -177,6 +177,7 @@ static void test_config_addrs(void)
 				 err, sizeof(err), warn, sizeof(warn)),
 		 0);
 	CHECK_EQ(c.links[0].nserver, CG_MAX_SERVERS);
+	CHECK(c.links[0].nentry == CG_MAX_SERVERS && c.links[0].entry_n[0] == 1 && c.links[0].entry_n[7] == 1);
 	CHECK(!strcmp(cg_addr_str(&c.links[0].server[4], text, sizeof(text)), "[2001:db8::5]:1"));
 	CHECK(!strcmp(cg_addr_str(&c.links[0].server[7], text, sizeof(text)), "192.0.2.8:1"));
 	CHECK_EQ(c.nserver, 1);
@@ -204,6 +205,9 @@ static void test_config_addrs(void)
 		 0);
 	CHECK(c.nserver >= 4 && c.nserver <= 5); /* localhost: 127.0.0.1, maybe ::1 */
 	CHECK(!strcmp(cg_addr_str(&c.server[c.nserver - 1], text, sizeof(text)), "192.0.2.4:1"));
+	/* Which addresses each entry gave, for a reload (srvpick.h). */
+	CHECK_EQ(c.nentry, 4);
+	CHECK(c.entry_n[0] == c.nserver - 3 && c.entry_n[1] == 1 && c.entry_n[3] == 1);
 	cg_config_free(&c);
 
 	/* A server is somewhere to send to: no wildcard, no multicast. */

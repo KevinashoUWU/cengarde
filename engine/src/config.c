@@ -241,9 +241,12 @@ static int get_str(struct cg_ini *ini, const char *sec, const char *key, char *o
  * A name may stand for several addresses, at most CG_NAME_ADDRS of each
  * family, and takes the slots the later entries leave, so every entry is
  * parsed, checked and kept. Peers are addresses to send to: names are allowed
- * there, the wildcard and multicast addresses are not. */
+ * there, the wildcard and multicast addresses are not. entry_n (max of them,
+ * or NULL) gets how many addresses each entry gave, and *nentry how many
+ * entries there were (srvpick.h compares lists by entry on a reload). */
 static int get_addrs(struct cg_ini *ini, const char *sec, const char *key, int peers,
-		     struct sockaddr_storage *out, int max, int cap, int *n, char *err, size_t errlen)
+		     struct sockaddr_storage *out, int max, int cap, int *n, uint8_t *entry_n, int *nentry, char *err,
+		     size_t errlen)
 {
 	const char *v = cg_ini_get(ini, sec, key);
 	char buf[1024], *items[CG_MAX_SERVERS * 2], e[256];
@@ -251,6 +254,8 @@ static int get_addrs(struct cg_ini *ini, const char *sec, const char *key, int p
 	int count;
 
 	*n = 0;
+	if (nentry)
+		*nentry = 0;
 	if (!v)
 		return 0;
 	if (strlen(v) >= sizeof(buf)) {
@@ -290,6 +295,10 @@ static int get_addrs(struct cg_ini *ini, const char *sec, const char *key, int p
 			(*f)++;
 			room--;
 			out[(*n)++] = got[j];
+		}
+		if (entry_n) {
+			entry_n[i] = (uint8_t)(per[0] + per[1]);
+			*nentry = i + 1;
 		}
 	}
 	if (!*n) {
@@ -332,7 +341,8 @@ static int parse_links(struct cg_config *c, struct cg_ini *ini, char *err, size_
 		l->enabled = 1;
 		if (get_str(ini, sec, "label", l->label, sizeof(l->label), err, errlen) ||
 		    get_bool(ini, sec, "enabled", &l->enabled, err, errlen) ||
-		    get_addrs(ini, sec, "server", 1, l->server, CG_MAX_SERVERS, CG_MAX_CANDS, &l->nserver, err, errlen))
+		    get_addrs(ini, sec, "server", 1, l->server, CG_MAX_SERVERS, CG_MAX_CANDS, &l->nserver, l->entry_n,
+			      &l->nentry, err, errlen))
 			return -1;
 	}
 	return 0;
@@ -444,12 +454,13 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	if (!cg_ini_get(&ini, "", "listen")) {
 		cg_addr_parse(c->mode == CG_MODE_CLIENT ? "127.0.0.1:59401" : "*:59402", 0, &c->listen, 1, e,
 			      sizeof(e));
-	} else if (get_addrs(&ini, "", "listen", 0, &c->listen, 1, 1, &n, err, errlen)) {
+	} else if (get_addrs(&ini, "", "listen", 0, &c->listen, 1, 1, &n, NULL, NULL, err, errlen)) {
 		goto out;
 	}
 
 	if (c->mode == CG_MODE_CLIENT) {
-		if (get_addrs(&ini, "", "server", 1, c->server, CG_MAX_SERVERS, CG_MAX_CANDS, &c->nserver, err, errlen))
+		if (get_addrs(&ini, "", "server", 1, c->server, CG_MAX_SERVERS, CG_MAX_CANDS, &c->nserver, c->entry_n,
+			      &c->nentry, err, errlen))
 			goto out;
 		if (!c->nserver) {
 			snprintf(err, errlen, "server: required in client mode");
@@ -485,7 +496,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 		if (parse_links(c, &ini, err, errlen))
 			goto out;
 	} else {
-		if (get_addrs(&ini, "", "wireguard", 0, &c->wireguard, 1, 1, &n, err, errlen))
+		if (get_addrs(&ini, "", "wireguard", 0, &c->wireguard, 1, 1, &n, NULL, NULL, err, errlen))
 			goto out;
 		if (!n) {
 			snprintf(err, errlen, "wireguard: required in server mode (local WireGuard address)");

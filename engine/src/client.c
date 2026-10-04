@@ -242,16 +242,13 @@ static int configured(const struct cg_config *cfg, const char *ifname)
 }
 
 /* The server list a link sends to: its [link] one, or the global one. */
-static const struct sockaddr_storage *servers_of(const struct cg_config *cfg, const char *ifname, int *n)
+static struct cg_srvlist servers_of(const struct cg_config *cfg, const char *ifname)
 {
 	const struct cg_link_cfg *lc = cg_config_link(cfg, ifname);
 
-	if (lc && lc->nserver) {
-		*n = lc->nserver;
-		return lc->server;
-	}
-	*n = cfg->nserver;
-	return cfg->server;
+	if (lc && lc->nserver)
+		return (struct cg_srvlist){ lc->server, lc->nserver, lc->entry_n, lc->nentry };
+	return (struct cg_srvlist){ cfg->server, cfg->nserver, cfg->entry_n, cfg->nentry };
 }
 
 /* Whether ifc carries the tunnel and, when it does, which server addresses
@@ -261,8 +258,7 @@ static int eligible(struct client *c, const struct cg_iface *ifc, struct cands *
 {
 	const struct cg_config *cfg = c->cfg;
 	enum cg_ovr o = cg_ovr_get(&c->ovr, ifc->name);
-	const struct sockaddr_storage *servers;
-	int nservers;
+	struct cg_srvlist list;
 
 	e->families = 0;
 	e->n = 0;
@@ -273,8 +269,8 @@ static int eligible(struct client *c, const struct cg_iface *ifc, struct cands *
 	e->families = cg_src_families(ifc->addr, ifc->naddr);
 	if (!e->families)
 		return WHY_NOADDR;
-	servers = servers_of(cfg, ifc->name, &nservers);
-	e->n = cg_cands_build(servers, nservers, e->families, e->a);
+	list = servers_of(cfg, ifc->name);
+	e->n = cg_cands_build(list.a, list.n, e->families, e->a);
 	return e->n ? WHY_OK : WHY_NOFAMILY;
 }
 
@@ -1024,18 +1020,19 @@ static void apply_config(struct client *c, struct cg_config *next, uint64_t now_
 	}
 	if (old->passthrough != next->passthrough && next->passthrough >= 0)
 		cg_info("asking the server for IP pass %s", next->passthrough ? "on" : "off");
-	/* A link whose server list changed starts again from its first
-	 * address (srvpick.h). */
+	/* A link whose own list changed starts again from its first address,
+	 * as seen with the families it last opened with: not for an entry of
+	 * another family, nor for a name resolved again in another order
+	 * (srvpick.h). A link never opened has none, and no address to keep. */
 	for (int i = 0; i < CG_MAX_LINKS; i++) {
 		struct link *l = &c->link[i];
-		const struct sockaddr_storage *a, *b;
-		int na, nb;
+		struct cg_srvlist a, b;
 
 		if (!l->used)
 			continue;
-		a = servers_of(old, l->ifname, &na);
-		b = servers_of(next, l->ifname, &nb);
-		if (!cg_cands_same(a, na, b, nb))
+		a = servers_of(old, l->ifname);
+		b = servers_of(next, l->ifname);
+		if (!cg_lists_same(&a, &b, l->families))
 			memset(&l->cand, 0, sizeof(l->cand));
 	}
 	cg_config_free(old);

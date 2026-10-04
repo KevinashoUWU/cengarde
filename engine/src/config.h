@@ -57,6 +57,8 @@ struct cg_link_cfg {
 	int enabled;
 	int nserver; /* 0: the global list */
 	struct sockaddr_storage server[CG_MAX_CANDS];
+	int nentry;                      /* entries of server as written */
+	uint8_t entry_n[CG_MAX_SERVERS]; /* how many addresses each gave, in order */
 };
 
 struct cg_config {
@@ -85,6 +87,8 @@ struct cg_config {
 	/* client */
 	int nserver; /* addresses, in the order of preference (srvpick.h) */
 	struct sockaddr_storage server[CG_MAX_CANDS];
+	int nentry;                      /* entries of server as written */
+	uint8_t entry_n[CG_MAX_SERVERS]; /* how many addresses each gave, in order */
 	uint32_t server_failover_ms; /* without a reply, a link tries its next server address; 0: never */
 	char *include[CG_MAX_PATTERNS];
 	int ninclude;

@@ -148,12 +148,15 @@ server = 203.0.113.10:59402 [2001:db8::4]:59402
   siguiente, y al final vuelve a empezar. Si no puede ni abrir el socket
   hacia una (sin ruta, por ejemplo), pasa a la siguiente al momento.
 - **Pegajoso:** se queda donde le contestan. Vuelve a la primera solo si
-  cambia su dirección local, si cambia la lista (al recargar) o con la
+  cambia su dirección local, si una recarga cambia su lista o con la
   primera respuesta después de una ronda entera sin respuesta en ninguna:
   entonces el caído era el enlace, no la dirección (un corte de la red
   móvil en el que el módem conserva su dirección), y vuelve a mandar el
-  orden de la lista. No reintenta la preferida por su cuenta: cada intento
-  costaría 10 s sin ese enlace mientras siga rota.
+  orden de la lista. En una recarga cuentan las entradas de su familia:
+  añadir, quitar, editar o mover una lo devuelve a la primera; una entrada
+  de otra familia, o un nombre que al resolverse otra vez da las mismas
+  direcciones en otro orden, no lo mueven. No reintenta la preferida por su
+  cuenta: cada intento costaría 10 s sin ese enlace mientras siga rota.
 - **Dirección de origen IPv6:** la elige como RFC 6724: nunca una tentativa,
   fallida o de enlace local; una ULA (fc00::/7) hacia un destino que no es
   ULA va última (sirve si el módem hace NAT66), luego las obsoletas, luego
@@ -218,9 +221,12 @@ túnel:
   `[link]`), direcciones del servidor y `server_failover_ms`, etiquetas,
   salud de los enlaces, sondas, buffers, `log_level`, `status_file`,
   `description`, IP pass y, en el servidor, los tiempos de espera. Un enlace
-  cuya lista de servidores cambió empieza otra vez por la primera dirección. En el laboratorio, dos recargas y la pausa
-  de un enlace a 2000 pps no perdieron ningún paquete
-  (`sudo bench/lab.sh control`).
+  empieza otra vez por la primera dirección del servidor solo si cambiaron
+  sus propias entradas (las de su familia: añadidas, quitadas, editadas o
+  movidas); una entrada de otra familia, o un nombre que vuelve a
+  resolverse con las mismas direcciones en otro orden, no mueve un enlace
+  que funciona. En el laboratorio, dos recargas y la pausa de un enlace a
+  2000 pps no perdieron ningún paquete (`sudo bench/lab.sh control`).
 - **Reiniciando el proceso en el lugar** (mismo PID, sesión nueva): `mode`,
   `key`, `listen`, `control_socket`, `busy_poll_us`, `cpu`, `rt_priority` y,
   en el servidor, `wireguard` y `max_sessions`.

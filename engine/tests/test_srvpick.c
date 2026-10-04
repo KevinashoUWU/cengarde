@@ -53,6 +53,91 @@ static int reply(struct sim *s, uint64_t now)
 	return 1;
 }
 
+/* A server list as config.c stores it, from its entries separated by "|",
+ * each the addresses a literal or a name gave: "A1 A2 | B". */
+struct list {
+	struct sockaddr_storage a[CG_MAX_CANDS];
+	uint8_t entry_n[CG_MAX_CANDS];
+	struct cg_srvlist v;
+};
+
+static const struct cg_srvlist *mklist(struct list *l, const char *spec)
+{
+	char buf[512], *save, *tok;
+
+	memset(l, 0, sizeof(*l));
+	l->v.a = l->a;
+	l->v.entry_n = l->entry_n;
+	snprintf(buf, sizeof(buf), "%s", spec);
+	for (tok = strtok_r(buf, " ", &save); tok; tok = strtok_r(NULL, " ", &save)) {
+		if (!strcmp(tok, "|")) {
+			l->v.nentry++;
+			continue;
+		}
+		l->a[l->v.n++] = addr(tok);
+		l->entry_n[l->v.nentry]++;
+	}
+	l->v.nentry++;
+	return &l->v;
+}
+
+/* Whether a reload from list a to list b moves a link with these families
+ * back to its first address. */
+static int moves(const char *a, const char *b, unsigned families)
+{
+	struct list la, lb;
+
+	return !cg_lists_same(mklist(&la, a), mklist(&lb, b), families);
+}
+
+#define A "203.0.113.1:59402"
+#define B "203.0.113.2:59402"
+#define C "198.51.100.7:59402"
+#define D "192.0.2.4:59402"
+#define S "[2001:db8::4]:59402"
+
+static void lists_on_reload(void)
+{
+	struct sockaddr_storage cands[CG_MAX_CANDS];
+	struct list l;
+	int g[CG_MAX_CANDS];
+
+	/* Groups: a name's addresses together, an entry of another family or
+	 * only repeating earlier addresses gives none. */
+	CHECK_EQ(cg_cands_groups(mklist(&l, A " " B " | " S " | " C " | " A), V4, cands, g), 2);
+	CHECK(g[0] == 2 && g[1] == 1);
+	CHECK(cg_addr_equal(&cands[2], &l.a[3]));
+	CHECK_EQ(cg_cands_groups(&l.v, V4 | V6, cands, g), 3);
+	CHECK_EQ(cg_cands_groups(&l.v, 0, cands, g), 0);
+
+	/* Nothing changed, or nothing the link uses. */
+	CHECK(!moves(A " | " C, A " | " C, V4));
+	CHECK(!moves(A " | " C, A " | " C " | " S, V4)); /* an IPv6 entry on an IPv4 link */
+	CHECK(!moves(S " | " A " | " C, A " | " C, V4));
+	CHECK(moves(A " | " C, A " | " C " | " S, V4 | V6));
+	CHECK(!moves(A " | " C, C " | " A, 0)); /* never opened: no address to keep */
+	/* A name resolved again in another order: the same entry. Also a name
+	 * with an IPv4 and an IPv6 address whose order flips (RFC 6724 sorts
+	 * by the routes the router has at the time). */
+	CHECK(!moves(A " " B " | " C, B " " A " | " C, V4));
+	CHECK(!moves(A " " S " | " C, S " " A " | " C, V4));
+	CHECK(!moves(A " " S " | " C, S " " A " | " C, V4 | V6));
+	CHECK(!moves(A " | " C, A " | " C " | " A, V4)); /* a repeat gives nothing */
+	/* The operator's own changes to the link's addresses move it. */
+	CHECK(moves(A " | " C, C " | " A, V4)); /* two entries swapped */
+	CHECK(moves(A " | " C, A " | " D, V4)); /* one edited */
+	CHECK(moves(A " | " C, A, V4));         /* one removed */
+	CHECK(moves(A " | " C, A " | " C " | " D, V4));
+	CHECK(moves(A " " B " | " C, A " " B " " D " | " C, V4)); /* a name with one more */
+	CHECK(moves(A " " B " | " C, A " | " B " " C, V4));         /* split another way */
+	CHECK(moves(A " " S, A " " B, V4));
+}
+#undef A
+#undef B
+#undef C
+#undef D
+#undef S
+
 void test_srvpick(void)
 {
 	struct sockaddr_storage list[CG_MAX_CANDS + 8], other[4];
@@ -144,9 +229,11 @@ void test_srvpick(void)
 	CHECK_EQ(cg_srv_pick(other, 2, &other[2], t, t, 0, FAILOVER, &silent), 0);
 	CHECK_EQ(silent, 0);
 	CHECK(cg_cands_same(other, 2, other, 2));
-	CHECK(!cg_cands_same(other, 2, s.cand, 2)); /* the same set, another order */
+	CHECK(!cg_cands_same(other, 2, s.cand, 2)); /* in order: the same set, another order differs */
 	CHECK(!cg_cands_same(other, 2, other, 1));
 	CHECK(cg_cands_same(other, 0, s.cand, 0));
+
+	lists_on_reload();
 
 	/* A broken first address: the link moves on and stays on the second. */
 	memset(&s, 0, sizeof(s));

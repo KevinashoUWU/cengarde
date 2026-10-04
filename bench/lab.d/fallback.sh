@@ -8,7 +8,10 @@
 #
 # - l1, "server = 10.0.1.99:59402 10.0.1.2:59402": nothing answers at the
 #   first address, so l1 goes live on the second within the failover time,
-#   and stays there.
+#   and stays there. Then two reloads that leave it where it is: one adds
+#   an IPv6 entry to its list, which l1 has no IPv6 for, and one swaps its
+#   two addresses, so the new first is where l1 already is. Neither closes
+#   its socket.
 # - l2, "server = [2001:db8::2]:59402 10.0.2.2:59402": the link has no IPv6
 #   address (nor does the lab), so the IPv6 entry is no candidate for it and
 #   l2 goes live on 10.0.2.2 at once.
@@ -80,8 +83,16 @@ fb_link() {
 # fb_list LINK LIST: the server list of [link LINK] in the client's config.
 fb_list() { sed -i "/^\[link $1\]\$/{n;s/^server = .*/server = $2/}" "$RUN/client.conf"; }
 
+# fb_reload LINK LIST: fb_list, then a reload of the client.
+fb_reload() {
+	local out
+	fb_list "$1" "$2"
+	out=$("$CENGARDE_BIN" ctl -s "$RUN/client.sock" reload 2>&1)
+	[ "$out" = ok ] || { echo "FAIL: ctl reload said: $out"; return 1; }
+}
+
 fallback() {
-	local fail=0 out moves1 moves3 sent uniq secs=$(((FAILOVER_MS + 1999) / 1000 + 1))
+	local fail=0 out moves1 moves3 downs sent uniq secs=$(((FAILOVER_MS + 1999) / 1000 + 1))
 	local on1='l["state"] == "live" and l["remote"] == "10.0.1.2:59402" and l["candidate"] == 1'
 	local on3a='l["state"] == "live" and l["remote"] == "10.0.3.2:59402" and l["candidate"] == 0'
 	local on3b='l["state"] == "live" and l["remote"] == "10.0.3.20:59402" and l["candidate"] == 1'
@@ -124,6 +135,20 @@ fallback() {
 	out=$(fb_wait l3 "$on3b and l[\"failovers\"] == $moves3" 1) ||
 		{ echo "FAIL: l3 left 10.0.3.20 although it answers: $out"; fail=1; }
 	echo "   l1 and l3 stay on their second address (failovers: l1 $moves1, l3 $moves3)"
+	# Reloads: an IPv6 entry added to l1's list is none of l1's (no IPv6
+	# on it), so l1 stays on its second address; its two addresses swapped
+	# are the operator's new order, whose first is where l1 already is.
+	downs=$(grep -c "link l1 down" "$RUN/client.log")
+	fb_reload l1 "10.0.1.99:59402 10.0.1.2:59402 [2001:db8::9]:59402" || fail=1
+	sleep "$secs"
+	out=$(fb_wait l1 "$on1 and l[\"failovers\"] == $moves1" 1) ||
+		{ echo "FAIL: l1 moved on a reload that added an IPv6 entry: $out"; fail=1; }
+	fb_reload l1 "10.0.1.2:59402 10.0.1.99:59402" || fail=1
+	out=$(fb_wait l1 "l[\"state\"] == \"live\" and l[\"remote\"] == \"10.0.1.2:59402\" and l[\"candidate\"] == 0" 2) ||
+		{ echo "FAIL: l1 not on the new first address after a reload that swapped its list: $out"; fail=1; }
+	[ "$(grep -c "link l1 down" "$RUN/client.log")" = "$downs" ] && [ "$(fb_link l1 failovers)" = "$moves1" ] ||
+		{ echo "FAIL: a reload that kept l1's addresses closed its socket"; fail=1; }
+	echo "   l1, reloads with an IPv6 entry added and its two addresses swapped: stays on 10.0.1.2 without reopening"
 
 	# An outage of l3: every address of its server side gone for a while.
 	ip -n srv addr flush dev s3
