@@ -23,6 +23,7 @@ int main(void)
 		{ "blake2s", test_blake2s },
 		{ "pair", test_pair },
 		{ "ctl", test_ctl },
+		{ "epoch", test_epoch },
 	};
 
 	for (unsigned i = 0; i < sizeof(suites) / sizeof(suites[0]); i++) {

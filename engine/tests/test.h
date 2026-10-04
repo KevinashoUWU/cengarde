@@ -40,5 +40,6 @@ void test_health(void);
 void test_blake2s(void);
 void test_pair(void);
 void test_ctl(void);
+void test_epoch(void);
 
 #endif
