@@ -69,6 +69,10 @@ void cg_reexec(char **argv);
 /* Undoes the cpu and rt_priority knobs for the calling thread: helper
  * threads must not compete with the event loop. */
 void cg_thread_normal(void);
+/* Saves the CPUs the process may run on, which cg_thread_normal goes back
+ * to. Called once, before any thread exists: helper threads only read it,
+ * and the status writers start before cg_tune pins the event loop. */
+void cg_cpus_save(void);
 
 struct cg_rxbatch {
 	struct mmsghdr msg[CG_BATCH];

@@ -57,12 +57,16 @@ int cg_epoll_add(int ep, int fd, uint64_t tag)
 	return epoll_ctl(ep, EPOLL_CTL_ADD, fd, &ev);
 }
 
+void cg_cpus_save(void)
+{
+	if (sched_getaffinity(0, sizeof(initial_cpus), &initial_cpus) == 0)
+		have_initial_cpus = 1;
+}
+
 uint32_t cg_tune(const struct cg_config *cfg)
 {
 	uint32_t busy = cfg->busy_poll_us;
 
-	if (!have_initial_cpus && sched_getaffinity(0, sizeof(initial_cpus), &initial_cpus) == 0)
-		have_initial_cpus = 1;
 	if (cfg->cpu >= 0) {
 		cpu_set_t set;
 

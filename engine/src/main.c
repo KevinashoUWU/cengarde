@@ -262,6 +262,7 @@ int main(int argc, char **argv)
 		cg_err("signalfd: %s", strerror(errno));
 		return 1;
 	}
+	cg_cpus_save();
 	run = (struct cg_run){ .path = path, .argv = argv, .sigfd = sigfd, .verbose = verbose };
 	return cfg->mode == CG_MODE_CLIENT ? cg_client_run(cfg, &run) : cg_server_run(cfg, &run);
 }
