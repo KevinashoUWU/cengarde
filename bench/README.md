@@ -283,6 +283,25 @@ python3 bench/mt.py table s1.jsonl
 sudo RUN=/tmp/cg-mt flock /tmp/cengarde-netns.lock python3 bench/mt.py sweep e1 down,up 40000,80000 5 3 1400 3
 ```
 
+Primera medida de la puerta S1 aquí (4 vCPU, 5 s por punto, 4 rondas,
+`lanes` 1 y 8 intercaladas, búferes del servidor por defecto, los del
+router a 32 MiB):
+
+| subida, kpps | rondas ≤ 0,1 %, 1 / 8 colas | paquetes enteros perdidos en el servidor (est.), 1 / 8 colas | µs/paquete del servidor (media), 1 / 8 colas |
+| ---: | --- | --- | --- |
+| 40 | 4/4 / 4/4 | 0 / 0 | 7,98 / 7,81 |
+| 80 | 3/4 / 4/4 | 1352 / 0 | 8,04 / 7,77 |
+| 90 | 3/4 / 4/4 | 1049 / 0 | 7,66 / 7,67 |
+| 100 | 3/4 / 4/4 | 5764 / 0 | 7,43 / 7,34 |
+| 110 | 1/4 / 3/4 | 9846 / 0 | 7,52 / 7,33 |
+
+A 110 kpps con 8 colas, la ronda que pasó del 0,1 % (0,405 %) perdió en
+el socket de WireGuard del router, antes de duplicar. En bajada a
+saturación (110 y 120 kpps) las dos variantes pierden en el socket de
+WireGuard de la sesión, antes de duplicar (110 kpps: 0–3,9 % con un
+socket, 0,2–2,7 % con 8 colas; 120 kpps: 1,7–6,6 % y 3,0–4,2 %), con la
+misma CPU por paquete (8,16 frente a 8,11 µs y 7,87 frente a 7,77 µs).
+
 `bench/jitter.c` (`bin/jitter -d SEGUNDOS`) mide cuánto tarda en despertar
 un sueño de 1 ms en cada CPU y marca los despertares tardíos con su hora
 `CLOCK_MONOTONIC`: así se distinguen las pausas de la VM entera (tardíos a

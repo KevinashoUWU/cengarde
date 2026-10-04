@@ -212,6 +212,15 @@ copias de un mismo paquete esperan en colas distintas.
   llevaba las tres copias de cada paquete: el 73–98 % de las copias
   perdidas en el servidor eran paquetes enteros, y la redundancia no
   servía de nada. Con colas separadas desbordan en momentos distintos.
+- **Medido** (`bench/mt.py s1`: subida de 40 a 110 kpps con 3 enlaces, 5 s
+  por punto, 4 rondas con `lanes = 1` y 8 intercaladas, búferes del
+  servidor por defecto y los del router a 32 MiB para que solo pueda tirar
+  el servidor): con un socket, 18.011 paquetes perdidos con todas sus
+  copias en él, y a 110 kpps solo 1 ronda de 4 con pérdida ≤ 0,1 %; con 8
+  colas, ninguno en las 20 rondas, y 3 de 4 a 110 kpps (la cuarta perdió
+  un 0,405 % en el socket de WireGuard del propio router, antes de
+  duplicar). La CPU por paquete del servidor, igual o algo menos: entre
+  −3,4 % y +0,1 % según la tasa.
 - **La bajada sale por la cola de su enlace:** el camino `p` envía desde el
   socket `p & (lanes − 1)`, el mismo al que llega su enlace (están todos
   atados a la misma dirección y puerto, y la respuesta sale desde la
