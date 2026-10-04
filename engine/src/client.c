@@ -306,7 +306,7 @@ static void link_open(struct client *c, struct link *l, const struct cg_iface *i
 	struct cg_srvlist list = servers_of(cfg, ifc->name);
 	struct sockaddr_storage local;
 	char err[256], a[64], b[64];
-	int i, k, quiet = 0;
+	int i, k, quiet = 0, skipped = 0;
 
 	/* Back to the first candidate when a family the link gained or lost
 	 * changes its candidates, when its local address toward the server
@@ -357,7 +357,7 @@ static void link_open(struct client *c, struct link *l, const struct cg_iface *i
 		if (e->n > 1 && cfg->server_failover_ms && tries < e->n) {
 			int next = cg_srv_next(k, e->n, &l->silent_moves);
 
-			l->failovers++;
+			skipped++;
 			quiet = !move_loud(l, e->n, now_ms);
 			if (!quiet)
 				cg_info("link %s: cannot use %s (%s), trying %s", l->ifname, cg_addr_str(&e->a[k], a, sizeof(a)),
@@ -370,6 +370,10 @@ static void link_open(struct client *c, struct link *l, const struct cg_iface *i
 		l->retry_ms = now_ms + RECONCILE_MS;
 		return;
 	}
+	/* Counted only now: a link that can open none of them is unusable, and
+	 * its retries every RECONCILE_MS are no failovers. The silent moves
+	 * count all the same, so the first reply still ends a dead round. */
+	l->failovers += (uint64_t)skipped;
 	cg_sock_buffers(l->fd, cfg->rcvbuf, cfg->sndbuf);
 	{
 		socklen_t len = sizeof(local);
