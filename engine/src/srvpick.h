@@ -187,7 +187,8 @@ static inline int cg_srv_dead_round(uint32_t silent, int n)
 /* The candidate a link uses now, an index into cands (n of them; -1 when
  * n is 0): the one at cur while it answers, the next once it is due
  * (cg_srv_due), and the first when cur is NULL or not a candidate (a new
- * link, a new list, a family gone), which starts *silent again. */
+ * link, a new list, a family gone, an outage of the link), which starts
+ * *silent again. */
 static inline int cg_srv_pick(const struct sockaddr_storage *cands, int n, const struct sockaddr_storage *cur,
 			      uint64_t now_ms, uint64_t opened_ms, uint64_t last_reply_ms, uint32_t failover_ms,
 			      uint32_t *silent)
