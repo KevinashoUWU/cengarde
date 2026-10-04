@@ -1031,7 +1031,7 @@ static void apply_config(struct client *c, struct cg_config *next, uint64_t now_
 	c->k_tx = next->key;
 	c->k_rx = next->key + CG_SIPHASH_KEY_LEN;
 	c->hcfg = cg_hcfg_of(next);
-	cg_log_level = c->run->verbose ? CG_LOG_DEBUG : next->log_level;
+	cg_log_level_set(c->run->verbose ? CG_LOG_DEBUG : next->log_level);
 	if (strcmp(old->status_file, next->status_file)) {
 		cg_status_writer_stop(&c->sw);
 		if (next->status_file[0] && cg_status_writer_start(&c->sw, next->status_file) < 0)

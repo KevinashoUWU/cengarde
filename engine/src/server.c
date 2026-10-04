@@ -846,7 +846,7 @@ static void apply_config(struct server *s, struct cg_config *next)
 	s->k_rx = next->key;
 	s->k_tx = next->key + CG_SIPHASH_KEY_LEN;
 	s->hcfg = cg_hcfg_of(next);
-	cg_log_level = s->run->verbose ? CG_LOG_DEBUG : next->log_level;
+	cg_log_level_set(s->run->verbose ? CG_LOG_DEBUG : next->log_level);
 	if (strcmp(old->status_file, next->status_file))
 		writer_restart(&s->sw, next->status_file);
 	if (strcmp(old->passthrough_file, next->passthrough_file)) {

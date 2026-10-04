@@ -212,7 +212,7 @@ int main(int argc, char **argv)
 		free(cfg);
 		return 1;
 	}
-	cg_log_level = verbose ? CG_LOG_DEBUG : cfg->log_level;
+	cg_log_level_set(verbose ? CG_LOG_DEBUG : cfg->log_level);
 	cg_log_warnings(path, warn);
 	if (check) {
 		printf("%s: ok (%s)\n", path, cfg->mode == CG_MODE_CLIENT ? "client" : "server");
