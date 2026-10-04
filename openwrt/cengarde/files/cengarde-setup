@@ -163,9 +163,10 @@ dns4() {
 
 owned() { [ "$(uci -q get "network.$1.cengarde_owned")" = 1 ]; }
 
-# The interfaces that carry the IPv6 of uplink $1: on top of it ("@wan"), or
-# a DHCPv6 interface on the same device (wan6 next to wan). One pass over
-# the network configuration: LuCI asks for the status every few seconds.
+# The IPv6 interfaces of uplink $1 (DHCPv6, or static with an IPv6 address
+# or prefix): on the same device (wan6 next to wan, and cengarde's own), or
+# on top of it ("@wan"). IPv4 aliases on "@wan" are not. One pass over the
+# network configuration: LuCI asks for the status every few seconds.
 companions() {
 	uci -q -X show network | awk -v up="$1" '
 		BEGIN { q = sprintf("%c", 39) }
@@ -180,11 +181,15 @@ companions() {
 				dev[f[2]] = val
 			else if (n == 3 && f[3] == "proto")
 				proto[f[2]] = val
+			else if (n == 3 && (f[3] == "ip6addr" || f[3] == "ip6prefix"))
+				six[f[2]] = 1
 		}
 		END {
 			for (i = 1; i <= count; i++) {
 				s = order[i]
-				if (s != up && (dev[s] == "@" up || (dev[up] != "" && dev[s] == dev[up] && proto[s] == "dhcpv6")))
+				if (s == up || !(proto[s] == "dhcpv6" || (proto[s] == "static" && six[s])))
+					continue
+				if (dev[s] == "@" up || (dev[up] != "" && dev[s] == dev[up]))
 					print s
 			}
 		}'
