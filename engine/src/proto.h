@@ -24,6 +24,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <sys/socket.h>
 
 #include "siphash.h"
 
@@ -104,6 +105,19 @@ static inline void cg_hdr_set_link(uint8_t *hdr, uint8_t link)
 
 void cg_probe_info_write(uint8_t out[CG_PROBE_INFO_LEN], const struct cg_probe_info *pi);
 void cg_probe_info_read(struct cg_probe_info *pi, const uint8_t in[CG_PROBE_INFO_LEN]);
+
+/* Size of the IP packet that carries a datagram of len bytes (WireGuard's)
+ * over family AF_INET or AF_INET6: IP header, UDP header and ours. */
+static inline uint32_t cg_outer_len(int family, uint32_t len)
+{
+	return len + CG_HDR_LEN + 8 + (family == AF_INET6 ? 40 : 20);
+}
+
+/* What WireGuard adds to each packet it carries: 16 bytes of header and 16
+ * of tag. The largest WireGuard MTU over a path MTU is therefore
+ * mtu - cg_outer_len(family, CG_WG_OVERHEAD): 1416 over IPv4 and 1396 over
+ * IPv6 on a 1500-byte path. */
+#define CG_WG_OVERHEAD 32
 
 /* Does buf have the shape of a WireGuard message (type 1-4, reserved bytes
  * zero, fixed handshake sizes, data >= 32 bytes)? See docs/historias/002. */

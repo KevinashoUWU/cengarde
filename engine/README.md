@@ -44,6 +44,7 @@ A mano, en cualquier Linux:
    (59402 por defecto).
 
 3. **Cliente:** copia `examples/client.conf`. Pon la clave, `server = <VPS>:59402`
+   (o varias direcciones del VPS, ver [más abajo](#varias-direcciones-del-servidor))
    y los enlaces: patrones en `interfaces` o secciones `[link NOMBRE]`.
 
 4. **WireGuard del cliente:** el `Endpoint` del peer pasa a ser la dirección
@@ -53,7 +54,10 @@ A mano, en cualquier Linux:
    1500 bytes el máximo es 1416 sobre IPv4 y 1396 sobre IPv6
    (1500 − IP − 8 UDP − 24 cengarde − 32 WireGuard). En redes móviles conviene
    ir más bajo, por ejemplo `MTU = 1380`, o menos si algún operador tiene un
-   MTU de camino menor.
+   MTU de camino menor. El cliente lee cada 5 s el MTU de camino de cada
+   enlace (`path_mtu` en el estado) y avisa en el log, como mucho cada 10
+   minutos por enlace, si los datagramas de WireGuard más grandes no caben,
+   con el MTU que sí cabría.
 
 ## Emparejar con un solo secreto
 
@@ -105,7 +109,8 @@ Detalle y razones en la
 ## Qué hace cada extremo
 
 - **Cliente:**
-  - abre un socket por enlace (`SO_BINDTODEVICE` + bind a la IP del enlace);
+  - abre un socket por enlace (`SO_BINDTODEVICE` + bind a la IP del enlace),
+    hacia una de las direcciones del servidor (ver la sección siguiente);
   - sigue los cambios de interfaces y direcciones por netlink;
   - manda cada paquete por todos los enlaces activos, sin bloquear: un enlace
     lleno pierde solo sus copias;
@@ -123,6 +128,73 @@ Detalle y razones en la
     (con un `listen` comodín, `*` o `0.0.0.0`): sirve cualquier dirección
     del VPS, también una añadida en marcha, como una IP reservada o IPv6;
   - reparte la bajada por todos los caminos activos.
+
+## Varias direcciones del servidor
+
+`server` es una lista ordenada de hasta 8 entradas, global o por
+`[link NOMBRE]`: IPv4, `[IPv6]` o nombres. El orden es la preferencia. Un
+nombre vale por sus direcciones (como mucho 4 de cada familia) y se resuelve
+al leer el archivo.
+
+```ini
+server = 203.0.113.10:59402 [2001:db8::4]:59402
+#server_failover_ms = 10000
+```
+
+- **Una familia por enlace:** cada enlace usa una sola dirección a la vez,
+  la primera de una familia de la que tenga dirección propia; nunca IPv4 e
+  IPv6 a la vez por el mismo módem, que duplicaría el tráfico por la misma
+  radio sin ganar diversidad. Las entradas de otra familia no cuentan para
+  ese enlace: con solo IPv4, una IPv6 primera en la lista se salta.
+- **Failover:** si el enlace pasa `server_failover_ms` (10 s; 0 lo apaga,
+  como mínimo 3 × `probe_idle_ms`) sin una respuesta verificada, prueba la
+  siguiente, y al final vuelve a empezar. Si no puede ni abrir el socket
+  hacia una, pasa a la siguiente al momento (solo con el failover
+  encendido). En la práctica pasa con una IPv6 sin ruta; en IPv4 el socket
+  atado a la interfaz se abre aunque no haya ruta, así que una IPv4 muerta
+  solo cae por el plazo.
+- **Pegajoso:** se queda donde le contestan. Vuelve a la primera solo:
+  - si cambia o pierde su dirección local: se cae, se queda sin dirección
+    (o sin ninguna de la familia del servidor) o desaparece, aunque vuelva
+    con la misma (un módem USB tras perder la señal);
+  - si gana o pierde una familia con entradas en su lista: la IPv6 de
+    Starlink llega después de la IPv4, así que con `server = [IPv6] IPv4`
+    el enlace empieza en IPv4 y pasa a la IPv6 cuando aparece; con una
+    lista solo IPv4, la IPv6 que va y viene no lo mueve;
+  - si una recarga cambia su lista. Cuentan las entradas de su familia:
+    añadir, quitar, editar o mover una lo devuelve a la primera; una
+    entrada de otra familia, o un nombre que al resolverse otra vez da las
+    mismas direcciones en otro orden, no lo mueven;
+  - con la primera respuesta después de una ronda entera sin respuesta en
+    ninguna: entonces el caído era el enlace, no la dirección (un corte de
+    la red móvil en el que el módem conserva su dirección), y vuelve a
+    mandar el orden de la lista.
+
+  No reintenta la preferida por su cuenta: cada intento costaría 10 s sin
+  ese enlace mientras siga rota.
+- **Dirección de origen IPv6:** la elige como RFC 6724: nunca una tentativa,
+  fallida o de enlace local; una ULA (fc00::/7) hacia un destino que no es
+  ULA va última (sirve si el módem hace NAT66), luego las obsoletas, luego
+  las temporales y primero las estables. Entre iguales, la más nueva, como
+  el kernel: si llega un prefijo nuevo mientras el viejo sigue preferido
+  (una renumeración brusca, RFC 8978), pasa al nuevo, igual en marcha que
+  al arrancar. En IPv4, la principal.
+- **Log:** `link X: no reply from A for 10 s, trying B` en cada cambio de la
+  primera ronda; si ninguna contesta, una vez por minuto. Tras una ronda
+  entera sin respuesta, la primera respuesta se registra una vez:
+  `link X: the server answers again after a round of its addresses without
+  replies`, con `back to A` si vuelve a la primera o `at A` si ya estaba
+  en ella.
+- **Estado:** cada enlace muestra su familia, en qué dirección de la lista
+  está y cuántos failovers lleva (ver [Estado](#estado)). Un enlace con
+  sección `[link]` y sin dirección de la familia de ninguna entrada aparece
+  caído con el motivo "no address of the server's family".
+
+En el laboratorio (`sudo bench/lab.sh fallback`, con 4 s de failover): con
+la primera dirección muerta el enlace vive en la segunda a los 4 s y se
+queda; una IPv6 primera en un enlace solo IPv4 no retrasa nada; tras 25 s
+sin ninguna dirección del servidor, vuelve a la primera; y también vuelve
+al momento si pierde su propia dirección y recupera la misma.
 
 ## Salud de los enlaces
 
@@ -169,11 +241,15 @@ perder un paquete del túnel y vuelve, sin recaer, cuando se le quita
 túnel:
 
 - **En el lugar, con la misma sesión:** enlaces (`interfaces`, `exclude`,
-  `[link]`), direcciones del servidor, etiquetas, salud de los enlaces,
-  sondas, buffers, `log_level`, `status_file`, `description`, IP pass y, en el
-  servidor, los tiempos de espera. En el laboratorio, dos recargas y la pausa
-  de un enlace a 2000 pps no perdieron ningún paquete
-  (`sudo bench/lab.sh control`).
+  `[link]`), direcciones del servidor y `server_failover_ms`, etiquetas,
+  salud de los enlaces, sondas, buffers, `log_level`, `status_file`,
+  `description`, IP pass y, en el servidor, los tiempos de espera. Un enlace
+  empieza otra vez por la primera dirección del servidor solo si cambiaron
+  sus propias entradas (las de su familia: añadidas, quitadas, editadas o
+  movidas); una entrada de otra familia, o un nombre que vuelve a
+  resolverse con las mismas direcciones en otro orden, no mueve un enlace
+  que funciona. En el laboratorio, dos recargas y la pausa de un enlace a
+  2000 pps no perdieron ningún paquete (`sudo bench/lab.sh control`).
 - **Reiniciando el proceso en el lugar** (mismo PID, sesión nueva): `mode`,
   `key`, `listen`, `control_socket`, `busy_poll_us`, `cpu`, `rt_priority` y,
   en el servidor, `wireguard` y `max_sessions`.
@@ -190,7 +266,7 @@ Con `control_socket = /var/run/cengarde/cengarde.sock` (un socket Unix, solo
 para root), `cengarde ctl` habla con el motor en marcha:
 
 ```sh
-cengarde ctl links              # cada interfaz y por qué lleva el túnel o no
+cengarde ctl links              # cada interfaz, por qué lleva el túnel o no, y hacia dónde
 cengarde ctl link eth1.30 off   # pausar un enlace (on: forzarlo; auto: lo que diga la config)
 cengarde ctl reset              # todos los enlaces otra vez como dice la config
 cengarde ctl reload             # como SIGHUP, pero responde si se aplicó
@@ -202,6 +278,10 @@ cengarde ctl status             # el JSON de estado
 - **Pausas:** se mantienen en las recargas y se pierden al reiniciar, como
   las exclusiones temporales del gestor web de engarde Go
   (`include`/`exclude`/`swap`/`reset`).
+- **`links` en el cliente:** estado, RTT, MTU de camino (`MTU`), failovers y
+  las direcciones al final: la local, tan ancha como la más larga (IPv6), y
+  la del servidor, con `(2/3)` cuando la lista del enlace tiene más de una
+  (la segunda de tres).
 - **`links` en el servidor:** muestra las sesiones y sus enlaces, con la
   dirección del cliente (`ADDRESS`) y la del servidor a la que envía
   (`LOCAL`).
@@ -227,7 +307,12 @@ desde el cliente:
 `status_file` escribe cada segundo, desde un hilo aparte para que un disco
 lento no frene el túnel, un JSON con contadores globales y, por enlace:
 - estado (`live`, `waiting` antes de la primera respuesta, `stalled`, `down`
-  o `paused`), si está pausado o forzado a mano (`override`) y RTT;
+  o `paused`), por qué no lleva el túnel (`reason`, vacío si lo lleva), si
+  está pausado o forzado a mano (`override`) y RTT;
+- en el cliente, hacia dónde: `local`, `remote`, `family` (`ipv4` o `ipv6`),
+  `candidate` (su lugar entre las direcciones del servidor de su familia: 0
+  es la primera; más, que hizo failover), `candidates`, `failovers` y
+  `path_mtu` (el MTU de camino de su socket, 0 si no se sabe);
 - salud en el sentido que decide este extremo (`upload` en el cliente,
   `download` en el servidor): `active` o `muted`, cuánto va por detrás del
   más rápido (`*_behind_ms`), cuántas veces se silenció y desde cuándo;
@@ -256,7 +341,9 @@ desde la dirección de llegada. Por enlace:
 
 `rx.ctrunc` cuenta los paquetes cuya dirección de llegada no cupo.
 
-En el cliente, `download.window_resets` cuenta las veces que el servidor
+En el cliente, `upload.largest` es el datagrama de WireGuard más grande de
+los últimos 5 s, el que se compara con cada `path_mtu`, y
+`download.window_resets` cuenta las veces que el servidor
 empezó de cero (se reinició con una secuencia por detrás de la ventana
 anti-replay) y el cliente rehízo su ventana para seguir recibiendo; cada vez
 lo registra como "server started over".

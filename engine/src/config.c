@@ -237,18 +237,25 @@ static int get_str(struct cg_ini *ini, const char *sec, const char *key, char *o
 	return 0;
 }
 
-/* Parses a list of at most max entries into out; a name may stand for several
- * addresses and takes the slots the later entries leave, so every entry is
+/* Parses a list of at most max entries into out, which holds cap addresses.
+ * A name may stand for several addresses, at most CG_NAME_ADDRS of each
+ * family, and takes the slots the later entries leave, so every entry is
  * parsed, checked and kept. Peers are addresses to send to: names are allowed
- * there, the wildcard and multicast addresses are not. */
+ * there, the wildcard and multicast addresses are not. entry_n (max of them,
+ * or NULL) gets how many addresses each entry gave, and *nentry how many
+ * entries there were (srvpick.h compares lists by entry on a reload). */
 static int get_addrs(struct cg_ini *ini, const char *sec, const char *key, int peers,
-		     struct sockaddr_storage *out, int max, int *n, char *err, size_t errlen)
+		     struct sockaddr_storage *out, int max, int cap, int *n, uint8_t *entry_n, int *nentry, char *err,
+		     size_t errlen)
 {
 	const char *v = cg_ini_get(ini, sec, key);
-	char buf[512], *items[CG_MAX_SERVER_ADDRS * 2], e[256];
+	char buf[1024], *items[CG_MAX_SERVERS * 2], e[256];
+	struct sockaddr_storage got[CG_MAX_CANDS];
 	int count;
 
 	*n = 0;
+	if (nentry)
+		*nentry = 0;
 	if (!v)
 		return 0;
 	if (strlen(v) >= sizeof(buf)) {
@@ -264,21 +271,35 @@ static int get_addrs(struct cg_ini *ini, const char *sec, const char *key, int p
 			snprintf(err, errlen, "%s: at most %d addresses", key, max);
 		return -1;
 	}
-	for (int i = 0; i < count; i++) { /* count <= max: a slot is left for each later entry */
-		int got = cg_addr_parse(items[i], peers, out + *n, max - *n - (count - 1 - i), e, sizeof(e));
+	for (int i = 0; i < count; i++) {
+		/* count <= max <= cap: a slot is left for each later entry. */
+		int room = cap - *n - (count - 1 - i), per[2] = { 0, 0 };
+		int k = cg_addr_parse(items[i], peers, got, (int)CG_ARRAY_SIZE(got), e, sizeof(e));
 		const char *why = NULL;
 
-		if (got < 0) {
+		if (k < 0) {
 			snprintf(err, errlen, "%s: %s", key, e);
 			return -1;
 		}
-		for (int j = 0; peers && j < got && !why; j++)
-			why = cg_addr_unfit_peer(&out[*n + j]);
+		for (int j = 0; peers && j < k && !why; j++)
+			why = cg_addr_unfit_peer(&got[j]);
 		if (why) {
 			snprintf(err, errlen, "%s: '%s' is %s", key, items[i], why);
 			return -1;
 		}
-		*n += got;
+		for (int j = 0; j < k && room > 0; j++) {
+			int *f = &per[got[j].ss_family == AF_INET6];
+
+			if (*f == CG_NAME_ADDRS)
+				continue;
+			(*f)++;
+			room--;
+			out[(*n)++] = got[j];
+		}
+		if (entry_n) {
+			entry_n[i] = (uint8_t)(per[0] + per[1]);
+			*nentry = i + 1;
+		}
 	}
 	if (!*n) {
 		snprintf(err, errlen, "%s: no address given", key);
@@ -320,7 +341,8 @@ static int parse_links(struct cg_config *c, struct cg_ini *ini, char *err, size_
 		l->enabled = 1;
 		if (get_str(ini, sec, "label", l->label, sizeof(l->label), err, errlen) ||
 		    get_bool(ini, sec, "enabled", &l->enabled, err, errlen) ||
-		    get_addrs(ini, sec, "server", 1, l->server, CG_MAX_SERVER_ADDRS, &l->nserver, err, errlen))
+		    get_addrs(ini, sec, "server", 1, l->server, CG_MAX_SERVERS, CG_MAX_CANDS, &l->nserver, l->entry_n,
+			      &l->nentry, err, errlen))
 			return -1;
 	}
 	return 0;
@@ -432,12 +454,13 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	if (!cg_ini_get(&ini, "", "listen")) {
 		cg_addr_parse(c->mode == CG_MODE_CLIENT ? "127.0.0.1:59401" : "*:59402", 0, &c->listen, 1, e,
 			      sizeof(e));
-	} else if (get_addrs(&ini, "", "listen", 0, &c->listen, 1, &n, err, errlen)) {
+	} else if (get_addrs(&ini, "", "listen", 0, &c->listen, 1, 1, &n, NULL, NULL, err, errlen)) {
 		goto out;
 	}
 
 	if (c->mode == CG_MODE_CLIENT) {
-		if (get_addrs(&ini, "", "server", 1, c->server, CG_MAX_SERVER_ADDRS, &c->nserver, err, errlen))
+		if (get_addrs(&ini, "", "server", 1, c->server, CG_MAX_SERVERS, CG_MAX_CANDS, &c->nserver, c->entry_n,
+			      &c->nentry, err, errlen))
 			goto out;
 		if (!c->nserver) {
 			snprintf(err, errlen, "server: required in client mode");
@@ -449,6 +472,16 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 			c->probe_idle_ms = c->probe_interval_ms;
 		if (get_u32(&ini, "", "probe_idle_ms", c->probe_interval_ms, 600000, &c->probe_idle_ms, err, errlen))
 			goto out;
+		/* At least 3 idle probes go unanswered before a link gives up on
+		 * an address. */
+		c->server_failover_ms = 10000 > 3 * c->probe_idle_ms ? 10000 : 3 * c->probe_idle_ms;
+		if (get_u32(&ini, "", "server_failover_ms", 0, 3600000, &c->server_failover_ms, err, errlen))
+			goto out;
+		if (c->server_failover_ms && c->server_failover_ms < 3 * c->probe_idle_ms) {
+			snprintf(err, errlen, "server_failover_ms: expected 0 (never) or at least 3 x probe_idle_ms (%u)",
+				 3 * c->probe_idle_ms);
+			goto out;
+		}
 		u = 0;
 		if (get_u32(&ini, "", "sndbuf", 0, 1 << 30, &u, err, errlen))
 			goto out;
@@ -463,7 +496,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 		if (parse_links(c, &ini, err, errlen))
 			goto out;
 	} else {
-		if (get_addrs(&ini, "", "wireguard", 0, &c->wireguard, 1, &n, err, errlen))
+		if (get_addrs(&ini, "", "wireguard", 0, &c->wireguard, 1, 1, &n, NULL, NULL, err, errlen))
 			goto out;
 		if (!n) {
 			snprintf(err, errlen, "wireguard: required in server mode (local WireGuard address)");

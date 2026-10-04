@@ -25,7 +25,8 @@ Las cifras citadas en [`ROADMAP.md`](../ROADMAP.md) y en las historias 001,
 
 root, iproute2 (`ip`, `tc` con `sch_tbf`), gcc, make y python3. Go solo hace
 falta para la línea base del engarde Go (`ENGINE=go`); git, para esa línea
-base y para `restart REF`; y curl, para las demos del Go.
+base y para `restart REF`; iptables, para `fallback`; y curl, para las demos
+del Go.
 
 ## Uso
 
@@ -39,6 +40,7 @@ sudo bench/lab.sh latency  # latencia y CPU con busy_poll_us 0, 50 y 200, y el G
 sudo bench/lab.sh restart  # reinicios del servidor con tráfico: todos los enlaces vivos en 4 s (lab.d, va en ci)
 sudo bench/lab.sh restart ebe570b  # lo mismo con el motor de otro commit, p. ej. el de antes del arreglo
 sudo bench/lab.sh multiip  # servidor con varias direcciones: responde desde la de llegada (lab.d, va en ci)
+sudo bench/lab.sh fallback # varias direcciones del servidor por enlace: failover, IPv6 que se salta, vuelta tras un corte, MTU de camino (lab.d, va en ci)
 
 sudo ENGINE=go bench/lab.sh build  # además, el engarde Go (normal y -race)
 sudo bench/lab.sh suite    # línea base del engarde Go (historia 001, ~5 min)
@@ -124,6 +126,35 @@ dirección a la que envía, descartaba la respuesta.
 - **Pendiente con la lista de direcciones del cliente (WP4):** l2 con
   `server = 198.51.100.7:59402 10.0.2.2:59402` vuelve por la segunda en
   `server_failover_ms` + 1 s tras borrar la /32.
+
+### `fallback`: varias direcciones del servidor (`lab.d/fallback.sh`)
+
+Cada enlace manda a una dirección de su lista `server` y pasa a la siguiente
+tras `server_failover_ms` sin respuesta (`engine/src/srvpick.h`). Con 4 s de
+failover (`FAILOVER_MS`):
+
+- **l1**, `10.0.1.99 10.0.1.2`: la primera no lleva a ningún sitio; tiene
+  que vivir en la segunda dentro del tiempo de failover y quedarse. Después,
+  dos recargas que no lo cambian de dirección: una añade a su lista una
+  entrada IPv6, que no es de su familia, y otra intercambia sus dos
+  direcciones, así que la nueva primera es donde ya está. Ninguna puede
+  cerrar su socket.
+- **l2**, `[2001:db8::2] 10.0.2.2`: sin IPv6 en el enlace (ni en el
+  laboratorio), la entrada IPv6 no cuenta y vive en la IPv4 al momento.
+- **l3**, `10.0.3.2 10.0.3.20`: las dos llevan al servidor (10.0.3.20 por un
+  DNAT de iptables en el netns `srv`, así que basta con que el servidor
+  escuche en una). Con 10.0.3.2 bloqueada pasa a 10.0.3.20, y se queda
+  aunque 10.0.3.2 vuelva. Después, un corte: el lado del servidor pierde
+  sus direcciones durante al menos 25 s (`OUTAGE_S`), hasta que l3 acaba de
+  pasar a 10.0.3.20, y l3 conserva la suya, como un módem que mantiene su
+  concesión. Recorre las dos sin respuesta (una ronda
+  muerta), y la primera respuesta lo devuelve a 10.0.3.2. Por último, otra
+  vez en 10.0.3.20, l3 pierde su propia dirección y recupera la misma: eso
+  también lo devuelve a la primera, al momento.
+- **MTU de camino:** l2 baja a MTU 1400 mientras suben datagramas de 1400
+  bytes; el estado tiene que dar `path_mtu` 1400 en l2 (1500 en l1) y el log
+  tiene que pedir un MTU de WireGuard de 1316 solo para l2, sin perder
+  paquetes.
 
 Paso a paso (pasa las mismas variables a `setup` y a `start`):
 

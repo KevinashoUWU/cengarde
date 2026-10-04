@@ -161,14 +161,26 @@ static void test_config_addrs(void)
 		 -1);
 	CHECK(strstr(err, "wireguard: expected a single address") != NULL);
 	CHECK_EQ(cg_config_parse(&c, "mode = client\nkey = " KEY "\nserver = 192.0.2.1:1 192.0.2.2:1 192.0.2.3:1 "
-				 "192.0.2.4:1 192.0.2.5:1\n",
+				 "192.0.2.4:1 192.0.2.5:1 192.0.2.6:1 192.0.2.7:1 192.0.2.8:1 192.0.2.9:1\n",
 				 err, sizeof(err), warn, sizeof(warn)),
 		 -1);
-	CHECK(strstr(err, "server: at most 4 addresses") != NULL);
-	CHECK_EQ(cg_config_parse(&c, CLIENT "[link eth1]\nserver = 192.0.2.1:1 192.0.2.2:1 192.0.2.3:1 192.0.2.4:1\n",
+	CHECK(strstr(err, "server: at most 8 addresses") != NULL);
+	CHECK_EQ(cg_config_parse(&c, CLIENT "[link eth1]\nserver = 192.0.2.1:1 192.0.2.2:1 192.0.2.3:1 192.0.2.4:1 "
+				 "[2001:db8::5]:1 192.0.2.6:1 192.0.2.7:1 192.0.2.8:1 192.0.2.9:1\n",
+				 err, sizeof(err), warn, sizeof(warn)),
+		 -1);
+	CHECK(strstr(err, "server: at most 8 addresses") != NULL);
+	/* An ordered list of up to CG_MAX_SERVERS, global or per link, IPv4
+	 * and IPv6 mixed. */
+	CHECK_EQ(cg_config_parse(&c, CLIENT "[link eth1]\nserver = 192.0.2.1:1 192.0.2.2:1 192.0.2.3:1 192.0.2.4:1 "
+				 "[2001:db8::5]:1 192.0.2.6:1 192.0.2.7:1 192.0.2.8:1\n",
 				 err, sizeof(err), warn, sizeof(warn)),
 		 0);
-	CHECK_EQ(c.links[0].nserver, 4);
+	CHECK_EQ(c.links[0].nserver, CG_MAX_SERVERS);
+	CHECK(c.links[0].nentry == CG_MAX_SERVERS && c.links[0].entry_n[0] == 1 && c.links[0].entry_n[7] == 1);
+	CHECK(!strcmp(cg_addr_str(&c.links[0].server[4], text, sizeof(text)), "[2001:db8::5]:1"));
+	CHECK(!strcmp(cg_addr_str(&c.links[0].server[7], text, sizeof(text)), "192.0.2.8:1"));
+	CHECK_EQ(c.nserver, 1);
 	cg_config_free(&c);
 	/* A name never pushes a later entry out unchecked or unused: localhost
 	 * has two addresses wherever /etc/hosts also lists ::1. */
@@ -191,8 +203,11 @@ static void test_config_addrs(void)
 				 "192.0.2.4:1\n",
 				 err, sizeof(err), warn, sizeof(warn)),
 		 0);
-	CHECK_EQ(c.nserver, 4);
-	CHECK(!strcmp(cg_addr_str(&c.server[3], text, sizeof(text)), "192.0.2.4:1"));
+	CHECK(c.nserver >= 4 && c.nserver <= 5); /* localhost: 127.0.0.1, maybe ::1 */
+	CHECK(!strcmp(cg_addr_str(&c.server[c.nserver - 1], text, sizeof(text)), "192.0.2.4:1"));
+	/* Which addresses each entry gave, for a reload (srvpick.h). */
+	CHECK_EQ(c.nentry, 4);
+	CHECK(c.entry_n[0] == c.nserver - 3 && c.entry_n[1] == 1 && c.entry_n[3] == 1);
 	cg_config_free(&c);
 
 	/* A server is somewhere to send to: no wildcard, no multicast. */
@@ -235,11 +250,44 @@ static void test_config_addrs(void)
 	CHECK(cg_config_restart_needed(&c, &d) == NULL); /* the same address */
 	cg_config_free(&c);
 	cg_config_free(&d);
+
+	/* server_failover_ms: 10 s, or 3 idle probes when those take longer;
+	 * 0 never moves; less than 3 x probe_idle_ms is refused. */
+	CHECK_EQ(cg_config_parse(&c, CLIENT, err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(c.server_failover_ms, 10000);
+	cg_config_free(&c);
+	CHECK_EQ(cg_config_parse(&c, CLIENT "probe_idle_ms = 5000\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(c.server_failover_ms, 15000);
+	cg_config_free(&c);
+	CHECK_EQ(cg_config_parse(&c, CLIENT "server_failover_ms = 0\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(c.server_failover_ms, 0);
+	cg_config_free(&c);
+	CHECK_EQ(cg_config_parse(&c, CLIENT "server_failover_ms = 3000\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(c.server_failover_ms, 3000);
+	cg_config_free(&c);
+	CHECK_EQ(cg_config_parse(&c, CLIENT "server_failover_ms = 2999\n", err, sizeof(err), warn, sizeof(warn)), -1);
+	CHECK(strstr(err, "server_failover_ms") != NULL && strstr(err, "3000") != NULL);
+	CHECK_EQ(cg_config_parse(&c, CLIENT "probe_idle_ms = 2000\nserver_failover_ms = 5000\n", err, sizeof(err), warn,
+				 sizeof(warn)),
+		 -1);
+	CHECK_EQ(cg_config_parse(&c, CLIENT "server_failover_ms = 3600001\n", err, sizeof(err), warn, sizeof(warn)), -1);
+	CHECK_EQ(cg_config_parse(&c, SERVER "server_failover_ms = 5000\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK(strstr(warn, "unknown key 'server_failover_ms'") != NULL); /* a client setting */
+	cg_config_free(&c);
+	/* Applied in place, like the lists themselves. */
+	CHECK_EQ(cg_config_parse(&c, CLIENT, err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(cg_config_parse(&d, "mode = client\nkey = " KEY "\nserver = 192.0.2.9:1 [2001:db8::9]:1\n"
+				 "server_failover_ms = 0\n[link eth1]\nserver = 192.0.2.8:1 192.0.2.7:1\n",
+				 err, sizeof(err), warn, sizeof(warn)),
+		 0);
+	CHECK(cg_config_restart_needed(&c, &d) == NULL);
+	cg_config_free(&c);
+	cg_config_free(&d);
 }
 
 void test_config(void)
 {
-	struct cg_config c;
+	static struct cg_config c;
 	char err[256], warn[512], buf[64];
 	const struct cg_link_cfg *l;
 

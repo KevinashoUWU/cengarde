@@ -12,6 +12,7 @@
 #include <string.h>
 #include <unistd.h>
 
+#include "addrpick.h"
 #include "log.h"
 
 static struct cg_iface *find_index(struct cg_nl *nl, int index)
@@ -119,15 +120,31 @@ static void on_addr(struct cg_nl *nl, struct nlmsghdr *nh)
 			break;
 	if (nh->nlmsg_type == RTM_DELADDR) {
 		if (i < ifc->naddr) {
-			ifc->addr[i] = ifc->addr[--ifc->naddr];
+			/* Shifted, not swapped: keeps the kernel's order, which
+			 * breaks ties (addrpick.h). */
+			memmove(&ifc->addr[i], &ifc->addr[i + 1], sizeof(ifc->addr[0]) * (size_t)(ifc->naddr - i - 1));
+			ifc->naddr--;
 			nl->changed = 1;
 		}
 		return;
 	}
 	if (i == ifc->naddr) {
-		if (ifc->naddr == CG_NL_MAX_ADDRS)
+		if (ifc->naddr == CG_NL_MAX_ADDRS) {
+			if (!nl->addrs_full)
+				cg_warn("interface %s has more than %d addresses: ignoring the rest",
+					ifc->name[0] ? ifc->name : "?", CG_NL_MAX_ADDRS);
+			nl->addrs_full = 1;
 			return;
+		}
+		/* Dump replies are multipart; events are not. A change even when
+		 * the slot held the same address, removed before (a modem that
+		 * gets its address back). */
+		i = cg_addr_slot(a.family, !!(nh->nlmsg_flags & NLM_F_MULTI), ifc->naddr);
+		memmove(&ifc->addr[i + 1], &ifc->addr[i], sizeof(ifc->addr[0]) * (size_t)(ifc->naddr - i));
 		ifc->naddr++;
+		ifc->addr[i] = a;
+		nl->changed = 1;
+		return;
 	}
 	if (memcmp(&ifc->addr[i], &a, sizeof(a))) {
 		ifc->addr[i] = a;
@@ -256,46 +273,23 @@ void cg_nl_close(struct cg_nl *nl)
 	nl->fd = -1;
 }
 
-int cg_ipv4_usable(const uint8_t a[4])
+int cg_iface_pick(const struct cg_iface *ifc, const struct sockaddr_storage *dst, struct sockaddr_storage *out)
 {
-	return a[0] != 127 && !(a[0] == 169 && a[1] == 254) && !(a[0] == 0);
-}
+	int k = cg_src_pick(ifc->addr, ifc->naddr, dst);
 
-int cg_iface_pick(const struct cg_iface *ifc, int family, struct sockaddr_storage *out)
-{
-	const struct cg_nl_addr *best = NULL;
-
-	for (int i = 0; i < ifc->naddr; i++) {
-		const struct cg_nl_addr *a = &ifc->addr[i];
-
-		if (a->family != family)
-			continue;
-		if (family == AF_INET) {
-			if (!cg_ipv4_usable(a->addr))
-				continue;
-			if (!best || ((best->flags & IFA_F_SECONDARY) && !(a->flags & IFA_F_SECONDARY)))
-				best = a;
-		} else {
-			if (a->scope != RT_SCOPE_UNIVERSE ||
-			    (a->flags & (IFA_F_TENTATIVE | IFA_F_DADFAILED | IFA_F_DEPRECATED)))
-				continue;
-			if (!best || ((best->flags & IFA_F_TEMPORARY) && !(a->flags & IFA_F_TEMPORARY)))
-				best = a;
-		}
-	}
-	if (!best)
+	if (k < 0)
 		return -1;
 	memset(out, 0, sizeof(*out));
-	if (family == AF_INET) {
+	if (dst->ss_family == AF_INET) {
 		struct sockaddr_in *s = (struct sockaddr_in *)out;
 
 		s->sin_family = AF_INET;
-		memcpy(&s->sin_addr, best->addr, 4);
+		memcpy(&s->sin_addr, ifc->addr[k].addr, 4);
 	} else {
 		struct sockaddr_in6 *s = (struct sockaddr_in6 *)out;
 
 		s->sin6_family = AF_INET6;
-		memcpy(&s->sin6_addr, best->addr, 16);
+		memcpy(&s->sin6_addr, ifc->addr[k].addr, 16);
 	}
 	return 0;
 }
