@@ -75,6 +75,13 @@ converged() {
 	fi
 }
 
+# The engine's pid on the router, from procd: pidof would also count the
+# init script (/etc/init.d/cengarde reload runs under that name).
+ENGINE_PID="ubus call service list '{\"name\":\"cengarde\"}' | jsonfilter -e '@.cengarde.instances.*.pid'"
+engine_pid() {
+	"$VM" ssh router "$ENGINE_PID"
+}
+
 # The links of the router's engine that are not excluded (cengarde ctl links).
 links() {
 	"$VM" ssh router 'cengarde ctl links' | grep -E '^eth[123] '
@@ -178,6 +185,11 @@ uci commit cengarde
 sleep 3
 /etc/init.d/dnsmasq restart >/dev/null 2>&1
 /etc/init.d/odhcpd restart
+# An uplink taken down below keeps its IPv6 addresses, as a carrier's end
+# does when the modem drops; netifd would not put them back.
+for i in 1 2 3; do
+	sysctl -qw net.ipv6.conf.eth$i.keep_addr_on_down=1
+done
 /etc/init.d/cengarde restart
 EOF
 
@@ -305,7 +317,7 @@ else
 fi
 
 say "IP pass off while pinging: applied in place, no restart, no loss"
-pid=$("$VM" ssh router 'pidof cengarde')
+pid=$(engine_pid)
 "$VM" ssh router 'ping -q -c 12 10.79.0.1' > "$OUT/ping-reload.txt" 2>&1 &
 ping_pid=$!
 sleep 3
@@ -317,12 +329,12 @@ ubus call service event '{"type":"config.change","data":{"package":"cengarde"}}'
 EOF
 wait "$ping_pid" || true
 cat "$OUT/ping-reload.txt"
-if grep -q ' 0% packet loss' "$OUT/ping-reload.txt" && [ "$("$VM" ssh router 'pidof cengarde')" = "$pid" ] &&
+if grep -q ' 0% packet loss' "$OUT/ping-reload.txt" && [ -n "$pid" ] && [ "$(engine_pid)" = "$pid" ] &&
 	"$VM" ssh router 'logread | grep -q "reload: configuration applied"'; then
 	ok "the change went in without restarting the engine or losing a packet"
 else
 	bad "the change restarted the engine or lost packets"
-	"$VM" ssh router "echo before: $pid, now: \$(pidof cengarde); logread | grep -E 'cengarde|procd' | tail -20"
+	"$VM" ssh router "echo before: $pid, now: \$($ENGINE_PID); logread | grep -E 'cengarde|procd' | tail -20"
 fi
 if [ "$("$VM" ssh vps 'cat /var/run/cengarde/passthrough')" = off ]; then
 	ok "IP pass: the VPS follows the switch"
@@ -457,7 +469,7 @@ ubus call service event '{"type":"config.change","data":{"package":"cengarde"}}'
 EOF
 sleep 10
 "$VM" ssh router 'uci show network; uci show firewall; ip route' > "$OUT/router-after.txt"
-leftover=$("$VM" ssh router 'pidof cengarde; uci show network | grep -E "wgcg|cengarde|up[123]6"; uci show firewall | grep -E "cengarde|up[123]6"; ip route | grep wgcg; uci -q get upnpd.config.external_iface' || true)
+leftover=$("$VM" ssh router "$ENGINE_PID"'; uci show network | grep -E "wgcg|cengarde|up[123]6"; uci show firewall | grep -E "cengarde|up[123]6"; ip route | grep wgcg; uci -q get upnpd.config.external_iface' || true)
 if [ -z "$leftover" ]; then
 	ok "nothing left of the tunnel"
 else
