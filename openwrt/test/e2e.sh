@@ -213,10 +213,15 @@ uci commit network
 EOF
 sleep 10
 "$VM" ssh router 'uci show network; uci show firewall; ip route; ip -6 route' > "$OUT/router-before.txt"
-if until_ok 30 lan_prefix; then
+# odhcp6c asks for the prefix again only at its next renewal when the first
+# answer had none (the VPS's odhcpd may still be starting): restart it once.
+if until_ok 45 lan_prefix ||
+	{ say "no prefix yet: up1v6 asks again"; "$VM" ssh router 'ifup up1v6'; until_ok 45 lan_prefix; }; then
 	ok "without cengarde the LAN gets the prefix delegated through up1v6"
 else
 	bad "no prefix delegated to the LAN: the leak test below proves nothing"
+	"$VM" ssh router 'ifstatus up1v6; logread | grep -E "odhcp6c|netifd" | tail -20'
+	"$VM" ssh vps 'ubus call dhcp ipv6leases; logread | grep odhcpd | tail -20'
 fi
 
 say "enabled without a VPS address: no tunnel yet, the router keeps its routes and DNS"
