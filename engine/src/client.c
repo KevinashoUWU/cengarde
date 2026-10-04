@@ -32,6 +32,7 @@
 
 #include "addrpick.h"
 #include "arrival.h"
+#include "clientpath.h"
 #include "ctl.h"
 #include "engine.h"
 #include "epoch.h"
@@ -65,7 +66,7 @@ struct link {
 	uint64_t cand_since_ms; /* when its socket to cand opened */
 	uint64_t failovers;
 	uint32_t path_mtu; /* IP_MTU or IPV6_MTU of its socket, read every RECONCILE_MS */
-	uint64_t up_since_ms, last_rx_ms, last_reply_ms, last_probe_ms, retry_ms;
+	uint64_t up_since_ms, last_reply_ms, last_probe_ms, retry_ms;
 	uint64_t srtt8_us; /* 8 x smoothed RTT */
 	uint32_t rtt_us;
 	uint32_t unanswered; /* probes sent since the last reply */
@@ -77,15 +78,16 @@ struct link {
 	uint64_t tx_pkts, tx_bytes, tx_drops, tx_errors;
 	struct cg_probe_info peer_view; /* server's view of this path (upload) */
 	uint64_t peer_view_ms;
-	struct cg_echo probes; /* probes sent, for the echoes in replies (epoch.h) */
+	struct cg_rxl rxl; /* as the download sees it: generation, last packet, probe echoes */
 	struct cg_ratelimit rl, rl_move, rl_mtu;
 };
 
 struct client {
 	struct cg_config *cfg; /* replaced by a reload */
 	const struct cg_run *run;
-	const uint8_t *k_tx, *k_rx;
-	uint32_t session, tx_seq;
+	uint32_t session;
+	struct cg_txs txs; /* sequence and key up */
+	struct cg_rxs rxs; /* window, arrivals and counters down (clientpath.h) */
 	int ep, wg_fd, tfd;
 	struct sockaddr_storage wg_peer;
 	int have_peer;
@@ -93,9 +95,6 @@ struct client {
 	struct link link[CG_MAX_LINKS];
 	struct cg_hlink uh[CG_MAX_LINKS]; /* upload health, by link id */
 	struct cg_hcfg hcfg;
-	struct cg_replay replay;
-	struct cg_arrivals arr;
-	struct cg_link_rx rx[CG_MAX_LINKS];
 	struct cg_status_writer sw;
 	struct cg_ctl ctl;
 	struct cg_ovr_table ovr; /* links paused or forced on by hand */
@@ -109,9 +108,6 @@ struct client {
 	uint32_t up_max;     /* largest WireGuard datagram since the last path check */
 	uint32_t up_largest; /* the same over the last check period, for the status */
 	uint64_t down_pkts, down_bytes, down_wg_drops, down_no_peer;
-	uint64_t rx_malformed, rx_foreign, rx_auth_fail, rx_old, rx_dups, rx_trunc;
-	uint64_t window_resets;      /* the server started over (epoch.h) */
-	uint64_t new_before_open_ms; /* newest last_rx_ms of a link before its socket was reopened */
 	struct cg_ratelimit rl_auth, rl_big, rl_wg, rl_full, rl_restart;
 
 	struct cg_rxbatch in;
@@ -193,6 +189,13 @@ static int same_ip(const struct sockaddr_storage *a, const struct sockaddr_stora
 	return !memcmp(&((const struct sockaddr_in6 *)a)->sin6_addr, &((const struct sockaddr_in6 *)b)->sin6_addr, 16);
 }
 
+/* The link's socket, as the loop and the download see it. */
+static void link_set_fd(struct link *l, int fd)
+{
+	l->fd = fd;
+	l->rxl.open = fd >= 0;
+}
+
 /* why: for the log, NULL for none. */
 static void link_close(struct client *c, struct link *l, const char *why)
 {
@@ -200,7 +203,7 @@ static void link_close(struct client *c, struct link *l, const char *why)
 		return;
 	epoll_ctl(c->ep, EPOLL_CTL_DEL, l->fd, NULL);
 	close(l->fd);
-	l->fd = -1;
+	link_set_fd(l, -1);
 	if (why)
 		cg_info("link %s down: %s", l->ifname, why);
 }
@@ -225,7 +228,7 @@ static struct link *link_get(struct client *c, const char *ifname)
 		l = &c->link[i];
 		memset(l, 0, sizeof(*l));
 		l->used = 1;
-		l->fd = -1;
+		link_set_fd(l, -1);
 		snprintf(l->ifname, sizeof(l->ifname), "%s", ifname);
 		return l;
 	}
@@ -352,7 +355,7 @@ static void link_open(struct client *c, struct link *l, const struct cg_iface *i
 			link_close(c, l, same_ip(&l->local, &local) ? "server address changed" : "address changed");
 		if (now_ms < l->retry_ms)
 			return;
-		l->fd = cg_udp_link(ifc->name, &local, &l->cand, err, sizeof(err));
+		link_set_fd(l, cg_udp_link(ifc->name, &local, &l->cand, err, sizeof(err)));
 		if (l->fd >= 0)
 			break;
 		if (e->n > 1 && cfg->server_failover_ms && tries < e->n) {
@@ -385,10 +388,9 @@ static void link_open(struct client *c, struct link *l, const struct cg_iface *i
 	l->remote = l->cand;
 	l->up_since_ms = l->cand_since_ms = now_ms;
 	l->path_mtu = sock_path_mtu(l->fd, l->remote.ss_family);
-	if (l->last_rx_ms > c->new_before_open_ms)
-		c->new_before_open_ms = l->last_rx_ms;
-	l->last_rx_ms = l->last_reply_ms = l->last_probe_ms = 0;
-	memset(&l->probes, 0, sizeof(l->probes));
+	/* The newest packet of any link stays in rxs.newest_ms (epoch.h). */
+	l->rxl.last_rx_ms = l->last_reply_ms = l->last_probe_ms = 0;
+	memset(&l->rxl.probes, 0, sizeof(l->rxl.probes));
 	l->srtt8_us = 0;
 	l->rtt_us = l->unanswered = l->probe_announced = 0;
 	l->have_down_owd = l->peer_muted = 0;
@@ -544,7 +546,6 @@ static void wg_read(struct client *c)
 		now_ms = now_us / 1000;
 		for (int i = 0; i < n; i++) {
 			size_t len = c->in.msg[i].msg_len;
-			struct cg_hdr h = { .type = CG_T_DATA, .session = c->session, .ts = (uint32_t)now_us };
 
 			if (!len)
 				continue;
@@ -563,8 +564,7 @@ static void wg_read(struct client *c)
 				c->wg_peer = c->in.from[i];
 				c->have_peer = 1;
 			}
-			h.seq = c->tx_seq++;
-			cg_hdr_write(c->hdr[m], &h, c->k_tx, c->in.buf[i], len);
+			cg_up_header(&c->txs, c->hdr[m], CG_T_DATA, 0, 0, (uint32_t)now_us, c->in.buf[i], len);
 			c->oiov[m][0].iov_base = c->hdr[m];
 			c->oiov[m][0].iov_len = CG_HDR_LEN;
 			c->oiov[m][1].iov_base = c->in.buf[i];
@@ -591,7 +591,7 @@ static void on_probe_reply(struct client *c, struct link *l, const struct cg_hdr
 	cg_probe_info_read(&pi, payload);
 	/* Each probe is answered once: a copy of this reply replayed later
 	 * cannot count for epoch.h. */
-	cg_echo_take(&l->probes, pi.echo_ts, now_ms, CG_ECHO_MAX_AGE_MS);
+	cg_echo_take(&l->rxl.probes, pi.echo_ts, now_ms, CG_ECHO_MAX_AGE_MS);
 	rtt = now32 - pi.echo_ts;
 	if (rtt < 10u * 1000 * 1000) {
 		l->rtt_us = rtt;
@@ -625,44 +625,18 @@ static void on_probe_reply(struct client *c, struct link *l, const struct cg_hdr
 	l->have_down_owd = 1;
 }
 
-/* Since the newest verified NEW packet on any link: for the restart check
- * only, never per packet. */
-static uint64_t ms_since_new(const struct client *c, uint64_t now_ms)
+/* Logs what a verdict of cg_rx_entry asks for, rate-limited. */
+static void rx_verdict_log(struct client *c, struct link *l, enum cg_rxv v, uint64_t now_ms)
 {
-	uint64_t last = c->new_before_open_ms;
-
-	for (int i = 0; i < CG_MAX_LINKS; i++)
-		if (c->link[i].last_rx_ms > last)
-			last = c->link[i].last_rx_ms;
-	return now_ms - last;
-}
-
-/* A packet the window judged OLD: when it shows that the server started over
- * (epoch.h), the window starts again and the packet goes on as NEW, its MAC
- * verified (returns 1). Only a probe reply can show that, so only those pay
- * for a MAC here, and the echo is taken only from a verified one. */
-static int started_over(struct client *c, struct link *l, const struct cg_hdr *h, const uint8_t *b, size_t len,
-			uint64_t now_ms)
-{
-	struct cg_probe_info pi;
-	int mac_ok, echo = 0;
-
-	if (h->type != CG_T_PROBE_REPLY)
-		return 0;
-	mac_ok = cg_hdr_verify(b, len, c->k_rx);
-	if (mac_ok) {
-		cg_probe_info_read(&pi, b + CG_HDR_LEN);
-		echo = cg_echo_take(&l->probes, pi.echo_ts, now_ms, CG_ECHO_MAX_AGE_MS);
-	}
-	if (!cg_restart_reply(CG_RP_OLD, h->type, mac_ok, echo, ms_since_new(c, now_ms), 2 * c->cfg->probe_idle_ms))
-		return 0;
-	cg_replay_reset(&c->replay);
-	c->window_resets++;
-	if (cg_ratelimit_ok(&c->rl_restart, now_ms, 10000))
+	if (v == CG_RXV_AUTH && cg_ratelimit_ok(&c->rl_auth, now_ms, 10000))
+		cg_warn("link %s: packet failed authentication (wrong key?)", l->ifname);
+	else if (v == CG_RXV_RESET && cg_ratelimit_ok(&c->rl_restart, now_ms, 10000))
 		cg_info("link %s: the server started over, download window reset", l->ifname);
-	return 1;
 }
 
+/* Today's loop (link_threads = legacy): reads a link's socket into the
+ * client's batch, judges each datagram (clientpath.h) and sends the first
+ * copies to WireGuard, one sendmmsg per batch. */
 static void link_read(struct client *c, struct link *l)
 {
 	unsigned id = (unsigned)(l - c->link);
@@ -671,6 +645,7 @@ static void link_read(struct client *c, struct link *l)
 		int n = cg_rx(l->fd, &c->in), q = 0;
 		uint64_t now_us, now_ms;
 		uint32_t now32;
+		uint16_t expect;
 
 		if (n < 0 && (errno == ECONNREFUSED || errno == EHOSTUNREACH || errno == ENETUNREACH))
 			continue; /* an ICMP error from an earlier send; the queue may hold more */
@@ -679,53 +654,24 @@ static void link_read(struct client *c, struct link *l)
 		now_us = cg_now_us();
 		now_ms = now_us / 1000;
 		now32 = (uint32_t)now_us;
+		expect = expect_mask(c);
 		for (int i = 0; i < n; i++) {
 			uint8_t *b = c->in.buf[i];
 			size_t len = c->in.msg[i].msg_len;
 			struct cg_hdr h;
-			int verified = 0;
+			enum cg_rxv v = cg_rx_entry(&c->rxs, &l->rxl, id, l->rxl.gen, b, len,
+						    !!(c->in.msg[i].msg_hdr.msg_flags & MSG_TRUNC), now_us, expect, &h);
 
-			if (c->in.msg[i].msg_hdr.msg_flags & MSG_TRUNC) {
-				c->rx_trunc++;
+			if (v == CG_RXV_DROP)
 				continue;
-			}
-			if (cg_hdr_parse(&h, b, len) < 0 || (h.type != CG_T_DATA && h.type != CG_T_PROBE_REPLY)) {
-				c->rx_malformed++;
-				continue;
-			}
-			if (h.session != c->session) {
-				c->rx_foreign++;
-				continue;
-			}
-			switch (cg_replay_check(&c->replay, h.seq)) {
-			case CG_RP_OLD:
-				if (started_over(c, l, &h, b, len, now_ms)) {
-					verified = 1;
-					break;
+			if (v != CG_RXV_DATA) {
+				rx_verdict_log(c, l, v, now_ms);
+				if (v != CG_RXV_AUTH) {
+					on_probe_reply(c, l, &h, b + CG_HDR_LEN, now32, now_ms);
+					expect = expect_mask(c);
 				}
-				c->rx_old++;
-				continue;
-			case CG_RP_DUP:
-				c->rx_dups++;
-				if (h.type == CG_T_DATA)
-					cg_arr_dup(&c->arr, c->rx, h.seq, now32, id);
-				continue;
-			default:
-				break;
-			}
-			if (!verified && !cg_hdr_verify(b, len, c->k_rx)) {
-				c->rx_auth_fail++;
-				if (cg_ratelimit_ok(&c->rl_auth, now_ms, 10000))
-					cg_warn("link %s: packet failed authentication (wrong key?)", l->ifname);
 				continue;
 			}
-			cg_replay_mark(&c->replay, h.seq);
-			l->last_rx_ms = now_ms;
-			if (h.type == CG_T_PROBE_REPLY) {
-				on_probe_reply(c, l, &h, b + CG_HDR_LEN, now32, now_ms);
-				continue;
-			}
-			cg_arr_first(&c->arr, c->rx, h.seq, now32, id, expect_mask(c));
 			c->oiov[q][0].iov_base = b + CG_HDR_LEN;
 			c->oiov[q][0].iov_len = len - CG_HDR_LEN;
 			memset(&c->out[q].msg_hdr, 0, sizeof(c->out[q].msg_hdr));
@@ -760,28 +706,23 @@ static void send_probe(struct client *c, struct link *l, uint64_t now_us, uint32
 	unsigned id = (unsigned)(l - c->link);
 	uint64_t now_ms = now_us / 1000;
 	uint8_t pkt[CG_HDR_LEN + CG_PROBE_INFO_LEN];
+	const struct cg_link_rx *rx = &c->rxs.rx[id];
 	struct cg_probe_info pi = { .echo_ts = 0,
 				    .owd = l->have_down_owd ? l->down_owd : 0,
 				    .interval_ms = interval,
-				    .rx = (uint32_t)(c->rx[id].wins + c->rx[id].dups),
-				    .wins = (uint32_t)c->rx[id].wins,
-				    .lag_us = cg_lag_us(&c->rx[id]) };
-	struct cg_hdr h = { .type = CG_T_PROBE,
-			    .flags = (uint8_t)((l->have_down_owd ? CG_F_OWD : 0) |
-					       (c->uh[id].state == CG_H_MUTED ? CG_F_MUTED : 0) |
-					       cg_pass_flags(c->cfg->passthrough)),
-			    .link = (uint8_t)id,
-			    .session = c->session,
-			    .seq = c->tx_seq++,
-			    .ts = (uint32_t)now_us };
+				    .rx = (uint32_t)(rx->wins + rx->dups),
+				    .wins = (uint32_t)rx->wins,
+				    .lag_us = cg_lag_us(rx) };
+	uint8_t flags = (uint8_t)((l->have_down_owd ? CG_F_OWD : 0) | (c->uh[id].state == CG_H_MUTED ? CG_F_MUTED : 0) |
+				  cg_pass_flags(c->cfg->passthrough));
 
 	cg_probe_info_write(pkt + CG_HDR_LEN, &pi);
-	cg_hdr_write(pkt, &h, c->k_tx, pkt + CG_HDR_LEN, CG_PROBE_INFO_LEN);
+	cg_up_header(&c->txs, pkt, CG_T_PROBE, flags, (uint8_t)id, (uint32_t)now_us, pkt + CG_HDR_LEN, CG_PROBE_INFO_LEN);
 	/* A full queue drops the probe like any other packet: that is a measurement, not an error. */
 	if (send(l->fd, pkt, sizeof(pkt), MSG_DONTWAIT) < 0 && errno != EAGAIN && errno != ENOBUFS &&
 	    cg_ratelimit_ok(&l->rl, now_ms, 10000))
 		cg_warn("link %s probe: %s", l->ifname, strerror(errno));
-	cg_echo_push(&l->probes, h.ts, now_ms);
+	cg_echo_push(&l->rxl.probes, (uint32_t)now_us, now_ms);
 	l->have_down_owd = 0;
 	l->last_probe_ms = now_ms;
 	l->probe_announced = interval;
@@ -848,12 +789,12 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 	cg_json_obj(j, "download");
 	cg_json_u64(j, "packets", c->down_pkts);
 	cg_json_u64(j, "bytes", c->down_bytes);
-	cg_json_u64(j, "duplicates", c->rx_dups);
-	cg_json_u64(j, "too_old", c->rx_old);
-	cg_json_u64(j, "window_resets", c->window_resets);
-	cg_json_u64(j, "auth_failures", c->rx_auth_fail);
-	cg_json_u64(j, "malformed", c->rx_malformed + c->rx_trunc);
-	cg_json_u64(j, "foreign_session", c->rx_foreign);
+	cg_json_u64(j, "duplicates", c->rxs.dups);
+	cg_json_u64(j, "too_old", c->rxs.old);
+	cg_json_u64(j, "window_resets", c->rxs.window_resets);
+	cg_json_u64(j, "auth_failures", c->rxs.auth_fail);
+	cg_json_u64(j, "malformed", c->rxs.malformed + c->rxs.trunc);
+	cg_json_u64(j, "foreign_session", c->rxs.foreign);
 	cg_json_u64(j, "wireguard_drops", c->down_wg_drops + c->down_no_peer);
 	cg_json_end(j, '}');
 	cg_json_arr(j, "overrides");
@@ -895,7 +836,7 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 		cg_json_u64(j, "failovers", l->failovers);
 		cg_json_u64(j, "path_mtu", l->fd >= 0 ? l->path_mtu : 0);
 		cg_json_ms(j, "rtt_ms", l->srtt8_us / 8);
-		cg_json_u64(j, "last_rx_ms_ago", l->last_rx_ms ? now_ms - l->last_rx_ms : 0);
+		cg_json_u64(j, "last_rx_ms_ago", l->rxl.last_rx_ms ? now_ms - l->rxl.last_rx_ms : 0);
 		cg_json_str(j, "upload", h->state == CG_H_MUTED ? "muted" : "active");
 		if (h->have_behind)
 			cg_json_ms_signed(j, "upload_behind_ms", h->behind_us);
@@ -908,11 +849,11 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 		cg_json_u64(j, "tx_bytes", l->tx_bytes);
 		cg_json_u64(j, "tx_drops", l->tx_drops);
 		cg_json_u64(j, "tx_errors", l->tx_errors);
-		cg_json_u64(j, "rx_first", c->rx[i].wins);
-		cg_json_u64(j, "rx_duplicate", c->rx[i].dups);
-		cg_json_u64(j, "rx_late", c->rx[i].late);
-		cg_json_u64(j, "rx_missed", c->rx[i].missed);
-		cg_json_ms(j, "rx_lag_ms", cg_lag_us(&c->rx[i]));
+		cg_json_u64(j, "rx_first", c->rxs.rx[i].wins);
+		cg_json_u64(j, "rx_duplicate", c->rxs.rx[i].dups);
+		cg_json_u64(j, "rx_late", c->rxs.rx[i].late);
+		cg_json_u64(j, "rx_missed", c->rxs.rx[i].missed);
+		cg_json_ms(j, "rx_lag_ms", cg_lag_us(&c->rxs.rx[i]));
 		cg_json_obj(j, "server_view");
 		cg_json_u64(j, "age_ms", l->peer_view_ms ? now_ms - l->peer_view_ms : 0);
 		cg_json_u64(j, "rx", l->peer_view.rx);
@@ -1028,8 +969,9 @@ static void apply_config(struct client *c, struct cg_config *next, uint64_t now_
 	struct cg_config *old = c->cfg;
 
 	c->cfg = next;
-	c->k_tx = next->key;
-	c->k_rx = next->key + CG_SIPHASH_KEY_LEN;
+	c->txs.k_tx = next->key;
+	c->rxs.k_rx = next->key + CG_SIPHASH_KEY_LEN;
+	c->rxs.restart_ms = 2 * next->probe_idle_ms;
 	c->hcfg = cg_hcfg_of(next);
 	cg_log_level = c->run->verbose ? CG_LOG_DEBUG : next->log_level;
 	if (strcmp(old->status_file, next->status_file)) {
@@ -1230,26 +1172,29 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 	}
 	c->cfg = cfg;
 	c->run = run;
-	c->k_tx = cfg->key;
-	c->k_rx = cfg->key + CG_SIPHASH_KEY_LEN;
+	c->txs.k_tx = cfg->key;
+	c->rxs.k_rx = cfg->key + CG_SIPHASH_KEY_LEN;
+	c->rxs.restart_ms = 2 * cfg->probe_idle_ms;
 	c->ep = c->wg_fd = c->tfd = -1;
 	c->nl.fd = -1;
 	c->server_pass = -2;
 	c->hcfg = cg_hcfg_of(cfg);
 	cg_ctl_init(&c->ctl);
 	for (int i = 0; i < CG_MAX_LINKS; i++)
-		c->link[i].fd = -1;
+		link_set_fd(&c->link[i], -1);
 	if (cg_loader_init(&c->loader) < 0) {
 		cg_err("eventfd: %s", strerror(errno));
 		goto out;
 	}
-	cg_replay_reset(&c->replay);
+	cg_replay_reset(&c->rxs.replay);
 	do {
-		if (cg_random(&c->session, sizeof(c->session)) < 0 || cg_random(&c->tx_seq, sizeof(c->tx_seq)) < 0) {
+		if (cg_random(&c->session, sizeof(c->session)) < 0 ||
+		    cg_random(&c->txs.seq, sizeof(c->txs.seq)) < 0) {
 			cg_err("getrandom: %s", strerror(errno));
 			goto out;
 		}
 	} while (!c->session);
+	c->txs.session = c->rxs.session = c->session;
 	c->start_ms = cg_now_ms();
 
 	c->wg_fd = cg_udp_bind(&cfg->listen, 1, err, sizeof(err));
