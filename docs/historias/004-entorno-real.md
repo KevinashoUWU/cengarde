@@ -1,8 +1,9 @@
 # 004 — Entorno real de despliegue (datos de campo)
 
-- **Fecha:** 2026-10-03 (actualizada el mismo día: OpenWrt limpio)
+- **Fecha:** 2026-10-03 (actualizada el mismo día: OpenWrt limpio; y el
+  2026-10-04: Starlink e IPv6)
 - **Estado:** vigente
-- **Fuentes:** datos aportados por el usuario (2026-10-03).
+- **Fuentes:** datos aportados por el usuario (2026-10-03 y 2026-10-04).
 
 ## TL;DR
 
@@ -21,6 +22,11 @@
 - **Decisión del usuario:** como es una reconstrucción, cliente y servidor
   serán cengarde desde el primer día. No hace falta compatibilidad en el cable
   con engarde Go (ver historia 005).
+- **IPv6 y Starlink** (2026-10-04): hoy solo un enlace Starlink da IPv6,
+  nativa y con un prefijo delegado; su IPv4 va detrás de CGNAT. Los módems
+  5G no dan IPv6, y no se sabe si el VPS la tiene. El "VPS" podría ser
+  también un Debian o Ubuntu casero con IP dinámica, quizá detrás de un
+  router, encontrado por DNS dinámico (historia 010).
 - **Destino del cliente:** OpenWrt limpio, no SmoothWAN. Según el usuario,
   SmoothWAN quedó abandonado hace años y se quedó en kernel 5.x. Las medidas
   de arriba se hicieron sobre SmoothWAN.
@@ -62,3 +68,5 @@
 
 - 2026-10-03: creada con los datos de campo del usuario.
 - 2026-10-03: el destino es OpenWrt limpio, no SmoothWAN (decisión del usuario).
+- 2026-10-04: enlace Starlink con IPv6 y prefijo delegado, 5G sin IPv6 y
+  servidor casero posible (historia 010).

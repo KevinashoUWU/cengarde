@@ -1,7 +1,7 @@
 # 005 — Motor C v1: protocolo y arquitectura
 
 - **Fecha:** 2026-10-03 (actualizada el mismo día con la Fase 2, y el
-  2026-10-04 con la historia 009)
+  2026-10-04 con las historias 009 y 010)
 - **Estado:** vigente; la historia 006 sustituye la política de envío, las
   sondas y el formato de `cg_probe_info` (protocolo v2), y la 009 suma las
   banderas de IP pass (protocolo v3)
@@ -81,6 +81,9 @@
 - **Orden:** comprobar → si es DUP u OLD, descartar sin MAC → si es NEW,
   verificar el MAC → marcar. Un duplicado no refresca la vida del camino,
   porque no está autenticado; las sondas sí.
+  - *Corrección 2026-10-04:* desde 0.4.1, en el cliente, una respuesta de
+    sonda OLD sí paga el MAC, para ver si el servidor empezó de cero
+    (`epoch.h`, historia 010).
 - **Estadísticas por enlace** (`src/arrival.h`): cuántas veces llegó primero,
   duplicados, tardíos, paquetes que no trajo y retraso suavizado frente a la
   primera copia. Son las señales para el silenciado de la Fase 2 (historia
@@ -189,6 +192,13 @@ Rango de dos pasadas completas:
 - **Cambio de IP de un enlace:** vuelve al instante con la IP nueva.
 - **Reinicio del servidor en caliente:** la sesión se recrea con el primer
   paquete; solo se pierde el segundo que estuvo caído.
+  - *Corrección 2026-10-04:* no siempre. La sesión nueva empieza con una
+    secuencia aleatoria y, más o menos la mitad de las veces, cae detrás de
+    la ventana del cliente: la bajada quedaba atascada hasta reiniciar el
+    cliente (7 de 10 y, en otra pasada con
+    `sudo bench/lab.sh restart ebe570b`, 4 de 10). Arreglado en 0.4.1: 0 de
+    54; vuelta en 2,0–2,1 s cuando hubo que rehacer la ventana (22 de 54) y
+    en 0,0–0,1 s si no (historia 010).
 
 ## Pendiente
 
@@ -212,3 +222,5 @@ Rango de dos pasadas completas:
 - 2026-10-04: socket de control, recarga en caliente y banderas de IP pass
   (protocolo v3); el binario de OpenWrt x86_64 pasa de 70 a 97 KB
   (historia 009).
+- 2026-10-04: el reinicio del servidor podía dejar la bajada atascada, y una
+  respuesta de sonda vieja paga ahora el MAC en el cliente (historia 010).

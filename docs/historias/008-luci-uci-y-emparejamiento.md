@@ -1,7 +1,7 @@
 # 008 — UCI, LuCI, emparejamiento con un secreto, imágenes y prueba en QEMU
 
-- **Fecha:** 2026-10-03 (actualizada el 2026-10-04 con la historia 009 y el
-  STUN explícito)
+- **Fecha:** 2026-10-03 (actualizada el 2026-10-04 con la historia 009, el
+  STUN explícito y la historia 010)
 - **Estado:** vigente
 - **Fuentes:**
   - código:
@@ -98,6 +98,11 @@ capturado.
   efímeras.
 - El secreto viaja en el user data de Vultr, que se ve en su panel y desde
   el servicio de metadatos del VPS.
+  - *Corrección 2026-10-04:* hasta 0.4.0, el VPS también reenviaba hacia
+    ese servicio el tráfico de la LAN del router (en netns, con un servicio
+    falso, la LAN leía el secreto). Desde 0.4.1, `cengarde-nat` rechaza el
+    tráfico del túnel hacia 169.254.0.0/16 (probado en netns) y el motor
+    tiene `IPAddressDeny`, sin probar aún en un systemd real (historia 010).
 - Para rotarlo: *Generar* en LuCI y luego `/etc/cengarde/secret` más
   `cengarde-vps-setup` en el VPS.
 
@@ -154,6 +159,8 @@ reiniciaba).
 - **El servidor tiene que ser una IP:** con todo el tráfico por el túnel, un
   nombre no se puede resolver antes de que el túnel exista. LuCI lo valida
   como `ipaddr`.
+  - *Corrección 2026-10-04:* `ipaddr` aceptaba `203.0.113.10/24`, que el
+    motor rechaza; desde 0.4.1 es `ipaddr(1)`, sin máscara (historia 010).
 
 **Cortafuegos:** `wgcg`, y los enlaces que no tengan zona, en `wan`.
 
@@ -299,3 +306,6 @@ emulación. En el CI va con KVM.
 - 2026-10-04: UPnP usa STUN solo con `stun_host`. Antes, con un VPS sin
   IPv4, se activaba `use_stun` sin servidor y miniupnpd no arrancaba
   (`upnp_ip` en `cengarde-setup`).
+- 2026-10-04: la LAN podía leer el secreto en los metadatos del VPS a
+  través del túnel, y LuCI aceptaba una dirección con máscara (historia
+  010).

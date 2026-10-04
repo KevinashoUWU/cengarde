@@ -115,10 +115,14 @@ Las configuraciones de cliente y servidor se explican en
 
 Lo que viene; el detalle está en [ROADMAP.md](ROADMAP.md):
 
-- **Servidor:**
-  - responder desde la IP de llegada (VPS con varias IP);
-  - varios hilos;
-  - IPv6 dentro del túnel.
+- **IPv6, varios routers por VPS y nombres** (plan en cinco PRs, historia
+  [010](docs/historias/010-ipv6-varias-ip-multicliente-nombres.md)):
+  - responder desde la dirección de llegada, IPv6 por fuera del túnel y
+    cierre de la fuga de IPv6 de la LAN;
+  - varios routers por VPS, con un panel de reenvío de puertos;
+  - IPv6 dentro del túnel, apagado por defecto;
+  - nombres con DNS dinámico, también para un servidor casero.
+- **Servidor:** varios hilos.
 - **Distribución:** un feed de OpenWrt firmado, binarios estáticos y paquetes
   para Debian y Raspberry Pi OS.
 - **eBPF/XDP opcional** para bajar la CPU en el VPS (Fase 4).

@@ -1,8 +1,7 @@
 # CLAUDE.md — cengarde
 
-Contexto mínimo para trabajar en este repo. Aquí solo van reglas, comandos e
-índice; lo investigado vive en `docs/historias/`. **Mantenerlo por debajo de
-~80 líneas.**
+Contexto mínimo: reglas, comandos e índice; lo investigado vive en
+`docs/historias/`. **Mantenerlo por debajo de ~80 líneas.**
 
 ## Proyecto
 
@@ -27,16 +26,16 @@ el router) probado en QEMU; falta hardware real.
 
 - Motor: `make -C engine test`, `make -C engine SANITIZE=1 test` y, en
   cruzado, `make CC=aarch64-linux-gnu-gcc`.
-- Laboratorio (root):
-  - `bench/lab.sh build`, `ci` (smoke, health, control y `lab.d/`), `latency`;
-  - `ENGINE=go bench/lab.sh build` suma el Go del historial, para `compare`
-    (Go frente a C) y `suite` (línea base Go).
+- Laboratorio (root): `bench/lab.sh build`, `ci` (smoke, health, control y
+  `lab.d/`) y `latency`; `ENGINE=go bench/lab.sh build` suma el Go del
+  historial, para `compare` (Go frente a C) y `suite` (línea base Go).
 - OpenWrt de punta a punta: `openwrt/test/e2e.sh IMAGEN` (`openwrt/README.md`).
 - Contenedor cloud: `apt-get update` y luego `iproute2 strace` (laboratorio)
   o `qemu-system-x86 openssh-client` (e2e); sin IPv6, WireGuard ni netem.
 - CI: `engine.yml` (gcc/clang con `-Werror`, sanitizers, qemu en aarch64,
-  armhf y MIPS big-endian, laboratorio en netns) y `openwrt.yml` (paquetes
-  25.12/24.10, imágenes, e2e con KVM y release con tags `v*`).
+  armhf y MIPS big-endian, laboratorio en netns), `openwrt.yml` (paquetes
+  25.12/24.10, imágenes, e2e con KVM y release con tags `v*`) y `vps.yml`
+  (reglas de seguridad de `cengarde-nat` en netns).
 
 ## Reglas de trabajo
 
@@ -56,7 +55,7 @@ el router) probado en QEMU; falta hardware real.
 
 ## Memoria del proyecto: historias
 
-- Este archivo no crece con investigación. Lo investigado va a
+- Este archivo no crece con investigación: lo investigado va a
   `docs/historias/NNN-tema.md` (plantilla en `docs/historias/README.md`), y
   aquí solo se añade una línea al índice.
 - Antes de investigar algo, busca si ya hay historia. Si cambian los hechos,
@@ -72,9 +71,10 @@ el router) probado en QEMU; falta hardware real.
 | [001](docs/historias/001-diagnostico-engarde-go.md) | Diagnóstico medido del engarde Go | quieras saber qué no repetir o comparar con la línea base |
 | [002](docs/historias/002-wireguard-para-cengarde.md) | WireGuard: formato, índices, anti-replay | toques el MTU, la detección de WireGuard o las sesiones |
 | [003](docs/historias/003-librist-gestion-de-enlaces.md) | libRIST: silenciado de enlaces, WRR, ARQ | diseñes la salud de los enlaces, el reparto, el bonding o la recuperación |
-| [004](docs/historias/004-entorno-real.md) | Entorno real: Pi 4 (destino OpenWrt limpio), 4 enlaces 5G en VLAN, VPS Vultr | fijes objetivos de rendimiento o empaquetado |
+| [004](docs/historias/004-entorno-real.md) | Entorno real: Pi 4 (destino OpenWrt limpio), 4 enlaces 5G en VLAN y Starlink, VPS Vultr | fijes objetivos de rendimiento o empaquetado |
 | [005](docs/historias/005-motor-c-v1.md) | Motor C v1: protocolo, arquitectura y medidas | toques `engine/` |
 | [006](docs/historias/006-salud-de-enlaces.md) | Salud de enlaces (silenciado, mudo), protocolo v2, baja latencia | toques las sondas, el reparto o las perillas de latencia |
 | [007](docs/historias/007-openwrt-y-vps.md) | Paquete OpenWrt, plantilla del VPS, SmoothWAN como referencia | empaquetes o instales en OpenWrt o el VPS |
 | [008](docs/historias/008-luci-uci-y-emparejamiento.md) | UCI, LuCI, un solo secreto (BLAKE2s), imágenes, prueba en QEMU | toques `openwrt/`, `cengarde keys` o el cloud-config |
 | [009](docs/historias/009-recarga-control-e-ip-pass.md) | Recarga sin cortar, `cengarde ctl`, pausa de enlaces, IP pass desde el router (v3) | toques la recarga, el socket de control, procd o el IP pass |
+| [010](docs/historias/010-ipv6-varias-ip-multicliente-nombres.md) | Plan de IPv6, respuesta desde la dirección de llegada, varios routers por VPS (v4) y nombres; PR 1: reinicio del servidor y metadatos del VPS | toques IPv6, las direcciones del VPS, el multicliente, `cengarde-nat` o los nombres |
