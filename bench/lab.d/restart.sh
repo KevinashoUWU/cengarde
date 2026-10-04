@@ -34,7 +34,7 @@ WEDGE_S=${WEDGE_S:-10}
 # paused is live with a packet verified after T0 (epoch seconds), then checks
 # for one second that the download flows. Prints one line; exit 0 when it
 # recovered, 1 when not within LIMIT seconds, 2 when the download did not
-# flow afterwards.
+# flow afterwards, 3 when the client never answered on its control socket.
 restart_watch() {
 	python3 - "$RUN/client.sock" "$1" "$2" 2000 <<'EOF'
 import json, socket, sys, time
@@ -64,14 +64,18 @@ def behind(d, since_ms):
             (l["state"] != "live" or l["last_rx_ms_ago"] >= since_ms)]
 
 
-d, late = None, ["?"]
+d, late, seen = None, ["?"], False
 while time.time() - t0 < limit:
     d = status()
     if d:
+        seen = True
         late = behind(d, (time.time() - t0) * 1000)
         if not late:
             break
     time.sleep(0.05)
+if not seen:
+    print(f"no status from {path} in {limit:.0f} s: the client is down or has no control socket")
+    sys.exit(3)
 if late:
     print(f"wedged: {' '.join(late)} without a packet verified since the restart after {limit:.0f} s")
     sys.exit(1)
@@ -104,7 +108,8 @@ restart_proc() {
 # back. Returns 0 when every link is live within RESTART_LIMIT s and the
 # download flows, 1 when wedged (the client is then restarted, as an operator
 # had to), 2 when the download did not flow afterwards, 3 when it took longer
-# than RESTART_LIMIT.
+# than RESTART_LIMIT, 4 when the client did not answer at all (nothing to
+# judge: it is down, not wedged).
 restart_once() {
 	local out rc took
 	restart_proc server
@@ -122,19 +127,37 @@ restart_once() {
 		restart_watch "$(date +%s.%N)" "$WEDGE_S" >/dev/null || echo "   (no recovery after restarting the client either)"
 		return 1
 		;;
+	3) return 4 ;;
 	esac
 	return 2
 }
 
-# window_resets: the client's counter right now ("-" before the fix).
+# window_resets: the client's counter right now ("-" before the fix, "?" when
+# the client does not answer).
 window_resets() {
-	"$CENGARDE_BIN" ctl -s "$RUN/client.sock" status >"$RUN/client-now.json" 2>/dev/null
-	jget "$RUN/client-now.json" 'd["download"].get("window_resets", "-")' 2>/dev/null
+	"$CENGARDE_BIN" ctl -s "$RUN/client.sock" status >"$RUN/client-now.json" 2>/dev/null &&
+		jget "$RUN/client-now.json" 'd["download"].get("window_resets", "-")' 2>/dev/null || echo "?"
+}
+
+# not_running: names each end that is not running, with the end of its log
+# (e.g. a setting it refused).
+not_running() {
+	local end
+	for end in server client; do
+		[ -f "$RUN/$end.pid" ] && ! kill -0 "$(cat "$RUN/$end.pid")" 2>/dev/null || continue
+		echo "FAIL: the $end is not running"
+		tail -n 5 "$RUN/$end.log" | sed 's/^/   /'
+	done
 }
 
 restart() {
-	local ref=${1:-} tmp="" fail=0 n=0 wedged=0 slow=0 noflow=0 secs i j rc rtt out r0 alone=""
+	local ref=${1:-} tmp="" fail=0 ready=1 n=0 wedged=0 slow=0 noflow=0 secs i j rc rtt out r0 alone=""
 	local ctl="$CENGARDE_BIN ctl -s $RUN/client.sock"
+	if [ "$(printf %s "$RUN/client.sock" | wc -c)" -gt 107 ]; then
+		echo "FAIL: $RUN/client.sock is longer than 107 bytes (sun_path): use a shorter RUN"
+		echo "restart: FAILED"
+		return 1
+	fi
 	ENGINE=c NLINKS=3
 	CLIENT_EXTRA="control_socket = $RUN/client.sock${CLIENT_EXTRA:+;$CLIENT_EXTRA}"
 	trap teardown EXIT
@@ -155,7 +178,7 @@ restart() {
 	fi
 	if ! { setup && start; }; then
 		echo "FAIL: the lab did not start"
-		fail=1
+		fail=1 ready=0
 	else
 		secs=$(((RESTARTS + 8) * (WEDGE_S + 10) + 10)) # killed by teardown long before
 		ip netns exec cli tc qdisc replace dev l3 root tbf rate 5mbit burst 32kb latency 800ms
@@ -164,10 +187,22 @@ restart() {
 		ip netns exec srv "$BIN/udpgen" -b 127.0.0.1:59301 -l -r 2000 -s "$SIZE" -d "$secs" -g 1 >/dev/null &
 		ip netns exec cli "$BIN/udpgen" -b 127.0.0.1:50000 -p 127.0.0.1:59401 -r 20 -s 64 -d "$secs" -g 1 >/dev/null &
 		sleep 4
-		out=$(restart_watch "$(date +%s.%N)" 5) || { echo "FAIL: before any restart: $out"; fail=1; }
-		rtt=$(jget "$RUN/client.json" '[round(l["rtt_ms"]) for l in d["links"] if l["name"] == "l3"][0]' 2>/dev/null)
-		echo "   before the restarts: $out; l3 RTT ${rtt:-?} ms"
-		[ "${rtt:-0}" -ge 600 ] || { echo "FAIL: the l3 queue is not full (RTT ${rtt:-?} ms, 800 wanted)"; fail=1; }
+		if ! out=$(restart_watch "$(date +%s.%N)" 5); then
+			echo "FAIL: before any restart: $out"
+			fail=1 ready=0
+		else
+			rtt=$(jget "$RUN/client.json" '[round(l["rtt_ms"]) for l in d["links"] if l["name"] == "l3"][0]' 2>/dev/null)
+			echo "   before the restarts: $out; l3 RTT ${rtt:-?} ms"
+			# Not fatal: with a shorter RTT the restarts still tell something.
+			[ "${rtt:-0}" -ge 600 ] || { echo "FAIL: the l3 queue is not full (RTT ${rtt:-?} ms, 800 wanted)"; fail=1; }
+		fi
+	fi
+	if [ "$ready" = 0 ]; then
+		# Restarting would only wait WEDGE_S at a time and blame a wedge:
+		# name what is wrong instead.
+		echo "FAIL: no restarts, the lab is not ready"
+		not_running
+	else
 		for i in $(seq 1 "$RESTARTS") alone; do
 			if [ "$i" = alone ]; then
 				# Only l3 left: a restart is seen from replies to probes
@@ -194,6 +229,7 @@ restart() {
 			1) wedged=$((wedged + 1)) ;;
 			2) noflow=$((noflow + 1)) && echo "FAIL: the download did not flow again" ;;
 			3) slow=$((slow + 1)) && echo "FAIL: longer than $RESTART_LIMIT s" ;;
+			4) echo "FAIL: no status from the client"; not_running; fail=1; break ;;
 			esac
 			sleep 1
 		done

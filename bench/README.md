@@ -90,6 +90,9 @@ contesta a una de sus últimas 64 sondas de ese enlace y que llega tras
   respuestas tardías de l3 pueden delatar el reinicio. Hasta 8 reinicios,
   hasta que uno caiga por detrás de la ventana.
 - **Con `REF`** compila el motor de ese commit en `$RUN` y lo mide igual.
+- **Si el laboratorio no está listo** (la comprobación de antes de reiniciar
+  falla, o el socket de control no contesta), no reinicia nada: dice qué
+  extremo no corre, con el final de su log, en vez de contarlo como atascado.
 
 Medidas en este laboratorio (contenedor de 4 CPU). El tiempo se cuenta desde
 que arranca el servidor nuevo, consultando el socket de control cada 50 ms:
