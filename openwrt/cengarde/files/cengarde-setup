@@ -21,8 +21,9 @@
 # - firewall: wgcg, and uplinks that have no zone yet, in the wan zone
 #   (masquerade, inbound rejected);
 # - with ip_pass, miniupnpd with wgcg as its external interface and the VPS
-#   address as the external IP; the engine asks the VPS to forward its ports
-#   (and to stop when ip_pass goes off).
+#   address as the external IP (when that is not IPv4, STUN with stun_host);
+#   the engine asks the VPS to forward its ports (and to stop when ip_pass
+#   goes off).
 #
 # SPDX-License-Identifier: GPL-2.0-only
 
@@ -92,6 +93,8 @@ load() {
 	config_get_bool TUNNEL main tunnel 1
 	config_get_bool ROUTE_ALL main route_all 1
 	config_get_bool IP_PASS main ip_pass 0
+	config_get STUN_HOST main stun_host
+	config_get STUN_PORT main stun_port
 	config_get SECRET main secret
 	config_get SERVER main server
 	config_get PORT main port 65500
@@ -183,6 +186,36 @@ fix_zone() { # on|off
 	done
 }
 
+# Where miniupnpd gets the public IP it announces: "server" when the VPS
+# address is an IPv4 literal, "stun" (found through the tunnel) when a STUN
+# server is given, otherwise "none": miniupnpd does not start with STUN on
+# and no server, and without a public IP UPnP hands no ports to the LAN.
+upnp_ip() {
+	if is_ipv4 "$SERVER"; then
+		echo server
+	elif [ -n "$STUN_HOST" ]; then
+		echo stun
+	else
+		echo none
+	fi
+}
+
+fix_stun() { # on|off
+	if [ "$1" = on ]; then
+		want upnpd.config.use_stun 1
+		want upnpd.config.stun_host "$STUN_HOST"
+		if [ -n "$STUN_PORT" ]; then
+			want upnpd.config.stun_port "$STUN_PORT"
+		else
+			drop upnpd.config.stun_port
+		fi
+	else
+		drop upnpd.config.use_stun
+		drop upnpd.config.stun_host
+		drop upnpd.config.stun_port
+	fi
+}
+
 fix_upnp() { # on|off
 	[ -f /etc/config/upnpd ] || {
 		[ "$1" = on ] && log "IP pass needs miniupnpd-nftables"
@@ -191,18 +224,26 @@ fix_upnp() { # on|off
 	if [ "$1" = on ]; then
 		want upnpd.config.enabled 1
 		want upnpd.config.external_iface "$TUN"
-		if is_ipv4 "$SERVER"; then
+		case $(upnp_ip) in
+		server)
 			want upnpd.config.external_ip "$SERVER"
-			drop upnpd.config.use_stun
-		else # a name: let miniupnpd find the address through the tunnel
+			fix_stun off
+			;;
+		stun)
 			drop upnpd.config.external_ip
-			want upnpd.config.use_stun 1
-		fi
+			fix_stun on
+			;;
+		*)
+			drop upnpd.config.external_ip
+			fix_stun off
+			log "IP pass: the VPS address is not IPv4, so UPnP has no public IP to announce: set stun_host"
+			;;
+		esac
 	elif [ "$(uci -q get upnpd.config.external_iface)" = "$TUN" ]; then
 		want upnpd.config.enabled 0
 		drop upnpd.config.external_iface
 		drop upnpd.config.external_ip
-		drop upnpd.config.use_stun
+		fix_stun off
 	fi
 }
 
@@ -354,6 +395,8 @@ status() {
 			fi
 		done
 		[ "$IP_PASS" = 1 ] && [ ! -f /etc/config/upnpd ] && problem no_upnp
+		[ "$PASS" = yes ] && [ -n "$SERVER" ] && [ -f /etc/config/upnpd ] && [ "$(upnp_ip)" = none ] &&
+			problem upnp_no_ip
 		if pidof cengarde >/dev/null; then
 			running=true
 		else

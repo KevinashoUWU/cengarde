@@ -65,7 +65,7 @@ return view.extend({
 
 		o = s.taboption('general', form.Value, 'server', _('VPS address'),
 			_('Public IP of the VPS, as the provider shows it. An IP and not a name: with all traffic going through the tunnel, a name could not be resolved before the tunnel is up.'));
-		o.datatype = 'ipaddr';
+		o.datatype = 'ipaddr(1)';
 		o.placeholder = '203.0.113.10';
 
 		o = s.taboption('general', form.Value, 'port', _('VPS port'),
@@ -179,14 +179,24 @@ return view.extend({
 		o.depends({ tunnel: '1', route_all: '1' });
 		o.onchange = refresh;
 
+		o = s.taboption('tunnel', form.Value, 'stun_host', _('STUN server'),
+			_('Only for IP pass when the VPS address is not IPv4: UPnP then learns the public IPv4 of the VPS from this STUN server, through the tunnel (e.g. stun.cloudflare.com). Empty: UPnP announces no public IP and hands no ports on to the LAN.'));
+		o.datatype = 'host(1)'; // a name or IPv4: miniupnpd asks over IPv4
+		o.depends('ip_pass', '1');
+
+		o = s.taboption('tunnel', form.Value, 'stun_port', _('STUN port'));
+		o.datatype = 'port';
+		o.placeholder = '3478';
+		o.depends('ip_pass', '1');
+
 		o = s.taboption('tunnel', form.DynamicList, 'dns', _('DNS servers'),
 			_('Used through the tunnel; the uplinks stop announcing their carriers\' DNS servers, which usually refuse queries coming from the VPS.'));
-		o.datatype = 'ipaddr';
+		o.datatype = 'ipaddr(1)';
 		o.placeholder = '1.1.1.1';
 		o.depends('tunnel', '1');
 
 		o = s.taboption('tunnel', form.Value, 'mtu', _('Tunnel MTU'));
-		o.datatype = 'range(1280,1420)';
+		o.datatype = 'range(1280,1416)';
 		o.placeholder = '1380';
 		o.depends('tunnel', '1');
 

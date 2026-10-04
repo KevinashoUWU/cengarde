@@ -16,6 +16,7 @@ function problemText(p) {
 	case 'uplink_noroute': return _('Uplink %s has "Use default gateway" off: cengarde needs its default route.').format(p.iface);
 	case 'uplink_down': return _('Uplink %s is down.').format(p.iface);
 	case 'no_upnp': return _('IP pass is on but miniupnpd is not installed.');
+	case 'upnp_no_ip': return _('IP pass is on, but UPnP has no public IP to announce: the VPS address is not IPv4. Set a STUN server in Settings > Tunnel.');
 	case 'not_running': return _('The engine is not running: see System > System Log.');
 	default: return p.code;
 	}
