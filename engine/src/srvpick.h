@@ -205,15 +205,21 @@ static inline int cg_srv_pick(const struct sockaddr_storage *cands, int n, const
 	return i;
 }
 
-/* A verified reply on a link using candidate cur_idx of n. Returns 1 when it
- * ends a dead round away from the first candidate: the link goes back to
- * the first. Either way the count of silent moves starts again. */
+/* What a verified reply does (cg_srv_on_reply). */
+enum {
+	CG_SRV_REPLY,   /* nothing: the link was answered within its round */
+	CG_SRV_BACK,    /* it ends a dead round away from the first: back there */
+	CG_SRV_RESUMED, /* it ends a dead round on the first: the link stays */
+};
+
+/* A verified reply on a link using candidate cur_idx of n: CG_SRV_*. Either
+ * way the count of silent moves starts again, so a dead round ends once. */
 static inline int cg_srv_on_reply(uint32_t *silent, int n, int cur_idx)
 {
-	int back = cg_srv_dead_round(*silent, n) && cur_idx > 0;
+	int dead = cg_srv_dead_round(*silent, n);
 
 	*silent = 0;
-	return back;
+	return !dead ? CG_SRV_REPLY : cur_idx > 0 ? CG_SRV_BACK : CG_SRV_RESUMED;
 }
 
 #endif

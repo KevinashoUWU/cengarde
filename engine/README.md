@@ -171,7 +171,11 @@ server = 203.0.113.10:59402 [2001:db8::4]:59402
   ULA va última (sirve si el módem hace NAT66), luego las obsoletas, luego
   las temporales y primero las estables. En IPv4, la principal.
 - **Log:** `link X: no reply from A for 10 s, trying B` en cada cambio de la
-  primera ronda; si ninguna contesta, una vez por minuto.
+  primera ronda; si ninguna contesta, una vez por minuto. Tras una ronda
+  entera sin respuesta, la primera respuesta se registra una vez:
+  `link X: the server answers again after a round of its addresses without
+  replies`, con `back to A` si vuelve a la primera o `at A` si ya estaba
+  en ella.
 - **Estado:** cada enlace muestra su familia, en qué dirección de la lista
   está y cuántos failovers lleva (ver [Estado](#estado)). Un enlace con
   sección `[link]` y sin dirección de la familia de ninguna entrada aparece

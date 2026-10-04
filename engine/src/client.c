@@ -594,9 +594,19 @@ static void on_probe_reply(struct client *c, struct link *l, const struct cg_hdr
 	}
 	l->last_reply_ms = now_ms;
 	l->unanswered = 0;
-	if (cg_srv_on_reply(&l->silent_moves, l->ncand, l->cand_idx)) {
+	switch (cg_srv_on_reply(&l->silent_moves, l->ncand, l->cand_idx)) {
+	case CG_SRV_BACK:
 		l->back_to_first = 1;
 		c->next_reconcile_ms = 0; /* at the next tick, not while this socket is being read */
+		break;
+	case CG_SRV_RESUMED: {
+		char a[64];
+
+		/* Once per dead round; its later moves were not logged. */
+		cg_info("link %s: the server answers again after a round of its addresses without replies, at %s",
+			l->ifname, cg_addr_str(&l->remote, a, sizeof(a)));
+		break;
+	}
 	}
 	l->peer_view = pi;
 	l->peer_view_ms = now_ms;

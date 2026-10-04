@@ -45,7 +45,7 @@ static int step(struct sim *s, uint64_t now)
 static int reply(struct sim *s, uint64_t now)
 {
 	s->replied = now;
-	if (!cg_srv_on_reply(&s->silent, s->n, s->idx))
+	if (cg_srv_on_reply(&s->silent, s->n, s->idx) != CG_SRV_BACK)
 		return 0;
 	s->idx = 0;
 	s->opened = now;
@@ -301,14 +301,20 @@ void test_srvpick(void)
 	CHECK_EQ(s.silent, 0);
 
 	/* A reply that ends a dead round on the first candidate: nothing to go
-	 * back to, but the count starts again. */
+	 * back to, but the link says the server answers again, once, and the
+	 * count starts again. */
 	silent = 2;
-	CHECK(!cg_srv_on_reply(&silent, 2, 0));
+	CHECK_EQ(cg_srv_on_reply(&silent, 2, 0), CG_SRV_RESUMED);
 	CHECK_EQ(silent, 0);
+	CHECK_EQ(cg_srv_on_reply(&silent, 2, 0), CG_SRV_REPLY);
+	silent = 5; /* more than a round: the moves the log kept quiet */
+	CHECK_EQ(cg_srv_on_reply(&silent, 2, 0), CG_SRV_RESUMED);
 	silent = 1;
-	CHECK(!cg_srv_on_reply(&silent, 2, 1)); /* half a round */
+	CHECK_EQ(cg_srv_on_reply(&silent, 2, 1), CG_SRV_REPLY); /* half a round */
 	silent = 3;
-	CHECK(cg_srv_on_reply(&silent, 3, 2));
+	CHECK_EQ(cg_srv_on_reply(&silent, 3, 2), CG_SRV_BACK);
+	silent = 3;
+	CHECK_EQ(cg_srv_on_reply(&silent, 1, 0), CG_SRV_REPLY); /* a single candidate has no rounds */
 
 	/* Three candidates: a dead round takes three silent moves. */
 	memset(&s, 0, sizeof(s));
