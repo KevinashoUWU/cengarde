@@ -1,13 +1,17 @@
 /* The server's receive memory budget.
  *
  * Every UDP socket of the machine draws its receive queue from one pool,
- * net.ipv4.udp_mem (pages: min, pressure, max). Past max, every UDP socket
- * drops what arrives, kernel WireGuard and DNS included. The kernel derives
- * it from RAM (max is about 19 % of it), so on a small VPS the server's
- * lanes, each with its own receive buffer, could fill it together: the
- * coupling the lanes exist to remove, moved to the whole machine.
+ * net.ipv4.udp_mem (pages: min, pressure, max). Past min, the kernel lets
+ * a UDP socket queue one datagram at most (UDP has no pressure mode); past
+ * max, none. The kernel derives it from RAM (max is about 19 % of it), so
+ * on a small VPS the server's lanes, each with its own receive buffer,
+ * could fill it together: the coupling the lanes exist to remove, moved to
+ * every UDP socket of the machine with a backlog (the lab's udpmem
+ * scenario: a socket read every 250 ms got 163 of 599 datagrams while
+ * eight full lanes held the pool past min).
  *
- * So the sockets that receive share half of the pressure threshold:
+ * So the sockets that receive share half of the pressure threshold, which
+ * is below min (3/4 of it):
  *   budget = udp_mem[1] x page / 2
  * and each gets min(rcvbuf, budget / (2 x sockets)) as its SO_RCVBUF,
  * since the kernel doubles that value. The sockets are the lanes of the
