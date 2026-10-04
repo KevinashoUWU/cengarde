@@ -136,7 +136,7 @@ struct server {
 
 	uint64_t rx_malformed, rx_auth_fail, rx_old, rx_dups, rx_trunc, rx_ctrunc, sessions_full;
 	uint64_t rx_junk, rx_short, rx_bad_version; /* read from the junk socket */
-	struct cg_ratelimit rl_auth, rl_full, rl_send, rl_local, rl_junk;
+	struct cg_ratelimit rl_auth, rl_full, rl_send, rl_local, rl_junk, rl_version;
 
 	struct cg_rxbatch in;
 	union cg_ctl_rx rxctl[CG_BATCH]; /* arrival addresses of a listen batch */
@@ -583,7 +583,7 @@ static void junk_read(struct server *s)
 					cg_addr_str(&s->in.from[i], a, sizeof(a)));
 		} else if (b[0] >> 4 != CG_PROTO_VERSION) {
 			s->rx_bad_version++;
-			if (cg_ratelimit_ok(&s->rl_junk, now_ms, 10000))
+			if (cg_ratelimit_ok(&s->rl_version, now_ms, 10000))
 				cg_warn("protocol v%d packet from %s: update the router or the VPS (this server speaks "
 					"v%d), or it is not cengarde",
 					b[0] >> 4, cg_addr_str(&s->in.from[i], a, sizeof(a)), CG_PROTO_VERSION);
