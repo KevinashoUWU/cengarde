@@ -295,8 +295,9 @@ static int move_loud(struct link *l, int n, uint64_t now_ms)
 
 /* Points l at its server address among the candidates e of its interface
  * (srvpick.h) and opens its socket there, or keeps the one it has. When a
- * socket cannot be opened (no route to that address, say), it tries the
- * next candidate at once. */
+ * socket cannot be opened (an IPv6 address with no route, say: bound to
+ * its interface, an IPv4 socket connects all the same), it tries the next
+ * candidate at once, with failover on. */
 static void link_open(struct client *c, struct link *l, const struct cg_iface *ifc, const struct cands *e,
 		      uint64_t now_ms)
 {

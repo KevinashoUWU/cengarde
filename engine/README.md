@@ -146,7 +146,10 @@ server = 203.0.113.10:59402 [2001:db8::4]:59402
 - **Failover:** si el enlace pasa `server_failover_ms` (10 s; 0 lo apaga,
   como mínimo 3 × `probe_idle_ms`) sin una respuesta verificada, prueba la
   siguiente, y al final vuelve a empezar. Si no puede ni abrir el socket
-  hacia una (sin ruta, por ejemplo), pasa a la siguiente al momento.
+  hacia una, pasa a la siguiente al momento (solo con el failover
+  encendido). En la práctica pasa con una IPv6 sin ruta; en IPv4 el socket
+  atado a la interfaz se abre aunque no haya ruta, así que una IPv4 muerta
+  solo cae por el plazo.
 - **Pegajoso:** se queda donde le contestan. Vuelve a la primera solo:
   - si cambia o pierde su dirección local: se cae, se queda sin dirección
     (o sin ninguna de la familia del servidor) o desaparece, aunque vuelva
