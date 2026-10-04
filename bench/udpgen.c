@@ -4,7 +4,8 @@
 // (CLOCK_MONOTONIC is shared across network namespaces on the same host).
 //
 // usage: udpgen -b ip:port [-p ip:port | -l] [-r pps] [-s size] [-d secs] [-g grace]
-//   -l  learn the peer from the first received packet (like WG does)
+//   -l  learn the peer from received packets and follow it when it moves, as
+//       WireGuard roams (a restarted cengarde server talks from a new port)
 //   -r 0 (default) only receives. Latency percentiles saturate at 200000 us.
 #define _GNU_SOURCE
 #include <arpa/inet.h>
@@ -37,6 +38,8 @@ struct hdr {
 static int sock;
 static struct sockaddr_in peer;
 static atomic_int have_peer;
+static int learn;
+static atomic_uint_fast64_t learned; /* -l: newest sender, s_addr << 16 | sin_port */
 static atomic_int stop_rx;
 static long rate = 0, size = 1400, duration = 10, grace = 2;
 static uint64_t max_seq_bits;
@@ -99,8 +102,11 @@ static void *rx_thread(void *arg)
 			struct hdr *h = (struct hdr *)bufs[i];
 			if (h->magic != MAGIC)
 				continue;
-			if (!atomic_load(&have_peer)) {
-				peer = from[i];
+			if (learn) {
+				uint64_t v = (uint64_t)from[i].sin_addr.s_addr << 16 | from[i].sin_port;
+
+				if (atomic_load(&learned) != v)
+					atomic_store(&learned, v);
 				atomic_store(&have_peer, 1);
 			}
 			rx_total++;
@@ -144,7 +150,7 @@ static uint64_t pct(double p)
 int main(int argc, char **argv)
 {
 	struct sockaddr_in bind_a;
-	int learn = 0, have_bind = 0, opt;
+	int have_bind = 0, opt;
 	while ((opt = getopt(argc, argv, "b:p:lr:s:d:g:")) != -1) {
 		switch (opt) {
 		case 'b': parse_addr(optarg, &bind_a); have_bind = 1; break;
@@ -194,6 +200,12 @@ int main(int argc, char **argv)
 			if (t >= end)
 				break;
 			uint64_t due = (t - start) * rate / 1000000000ull;
+			if (learn) {
+				uint64_t v = atomic_load(&learned);
+				peer.sin_family = AF_INET;
+				peer.sin_addr.s_addr = (uint32_t)(v >> 16);
+				peer.sin_port = (uint16_t)v;
+			}
 			while (sent < due) {
 				h->seq = sent;
 				h->ts_ns = now_ns();
