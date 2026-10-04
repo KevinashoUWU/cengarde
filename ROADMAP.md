@@ -330,11 +330,14 @@ segundo deseo del autor original.
 - Formato propio tipo INI (como `wg-quick`), sin dependencias; sin
   conversor desde `engarde.yml`, porque no hay compatibilidad. En OpenWrt se
   usa UCI
-  (`/etc/config/cengarde`) y el init script genera los parámetros. Recarga con
-  `SIGHUP`, y los cambios hechos desde la UI pueden guardarse si se quiere.
-- Socket Unix con JSON (`cengarde status`, `cengarde link wwan1 off`). En
-  OpenWrt, un plugin rpcd (ucode) lo publica en ubus para LuCI. Métricas
-  Prometheus opcionales.
+  (`/etc/config/cengarde`) y el init script genera los parámetros.
+- Recarga con `SIGHUP` sin cortar el túnel (hecho, historia 009): se aplica
+  en el lugar, o reinicia el proceso en el lugar para lo que el bucle arma
+  una sola vez.
+- Socket Unix de control (hecho, historia 009): `cengarde ctl status`,
+  `links`, `link wwan1 off|on|auto`, `reset` y `reload`. LuCI lo usa por
+  rpcd con un permiso acotado, sin plugin de ubus. Métricas Prometheus
+  opcionales.
 - Logs con límite de frecuencia: nunca un log por paquete.
 
 ## 5. Roadmap por fases
@@ -372,8 +375,9 @@ orientativas, para una persona a tiempo parcial.
 - sesiones y admisión por MAC, sondas, estado JSON;
 - tests (también bajo qemu en aarch64, armhf y MIPS big-endian) y CI.
 
-Falta lo marcado como pendiente en la historia 005: socket de control,
-fuzzing, privilegios mínimos, binarios estáticos y prueba en la Pi real.
+Falta lo marcado como pendiente en la historia 005: fuzzing, privilegios
+mínimos, binarios estáticos y prueba en la Pi real. El socket de control y
+la recarga en caliente llegaron con la historia 009.
 
 
 - **1a: cliente**, que es lo que ataca el problema de la Pi si resulta ser de
@@ -385,7 +389,8 @@ fuzzing, privilegios mínimos, binarios estáticos y prueba en la Pi real.
 - **1b: servidor.**
   - `cengarde server` con admisión de caminos y buffers grandes.
 - **Común a los dos:**
-  - Socket de control con `cengarde status`; logs con límite de frecuencia.
+  - Socket de control (`cengarde ctl`, hecho en la historia 009); logs con
+    límite de frecuencia.
   - Tests unitarios, fuzzing de parsers, ASan, UBSan y TSan en CI, y
     hardening (`-D_FORTIFY_SOURCE=3`, `-fstack-protector-strong`, PIE,
     RELRO).
@@ -451,18 +456,20 @@ hardware real (historias [007](docs/historias/007-openwrt-y-vps.md) y
   - el cloud-config del VPS, que LuCI entrega listo para copiar;
   - imágenes 25.12 para la Pi 4 y x86-64 con todo incluido;
   - la prueba de punta a punta en QEMU con LuCI (Playwright), en el CI;
-  - la unidad systemd y la guía en `openwrt/README.md`.
+  - la unidad systemd y la guía en `openwrt/README.md`;
+  - IP pass gobernado desde el router (protocolo v3), cambios aplicados sin
+    reiniciar el motor y pausa de enlaces desde LuCI (historia
+    [009](docs/historias/009-recarga-control-e-ip-pass.md)).
 - Falta:
   - la prueba en la Pi 4 y en Vultr;
   - un feed firmado y más targets;
-  - IP pass pedido desde el router y respuestas del servidor desde la IP de
-    destino (historia 008).
+  - respuestas del servidor desde la IP de destino (historia 008).
 
 - **OpenWrt.** El destino es OpenWrt limpio (24.10 y 25.12, kernel 6.x), no
   SmoothWAN, que está abandonado y se quedó en kernel 5.x (historia 004).
   - Paquetes `cengarde` y `luci-app-cengarde` (hechos).
-    - El esquema UCI es propio, no el de `openwrt-engarde`: el protocolo v2
-      no es compatible y no hay nada que migrar.
+    - El esquema UCI es propio, no el de `openwrt-engarde`: el protocolo de
+      cengarde no es compatible y no hay nada que migrar.
   - Pestaña de LuCI (hecha; pedido del usuario, referencia SmoothWAN):
     - estado por enlace;
     - elegir los uplinks;
@@ -607,7 +614,7 @@ debe sobrevivir a la caída de uno con ≤1,34× de sobrecoste.
 - [ ] Opción de guardar los cambios hechos en la UI.
 - [ ] Estadísticas por enlace que sirvan de algo: % de wins, retardo relativo,
   pérdida y MTU.
-- [ ] Recarga en caliente (`SIGHUP`).
+- [x] Recarga en caliente (`SIGHUP`), en cengarde (historia 009).
 - [ ] Gestión opcional de la interfaz WireGuard (endpoint, MTU, keepalive) por
   netlink.
 

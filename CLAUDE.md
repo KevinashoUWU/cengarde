@@ -9,11 +9,10 @@ Contexto mínimo para trabajar en este repo. Aquí solo van reglas, comandos e
 Fork de porech/engarde (Go). engarde duplica cada datagrama de WireGuard por
 todos los enlaces del cliente (p. ej. una Raspberry Pi con varios módems) hacia
 un servidor (VPS), y el otro extremo se queda con la primera copia. Objetivo
-del fork: motor en C (Linux primero: Pi, OpenWrt, VPS), luego eBPF opcional,
-empaquetado para OpenWrt y una web de administración nueva. Plan:
-`ROADMAP.md`. Estado: Fases 1 y 2 hechas en lo esencial; en la Fase 3,
-OpenWrt (UCI, LuCI, imágenes, un solo secreto) probado en QEMU, falta
-hardware real.
+del fork: motor en C (Pi, OpenWrt, VPS), eBPF opcional y OpenWrt con LuCI.
+Plan: `ROADMAP.md`. Estado: Fases 1 y 2 hechas; Fase 3: OpenWrt (UCI, LuCI,
+imágenes, un solo secreto, `cengarde ctl`, recarga sin cortar, IP pass desde
+el router) probado en QEMU; falta hardware real.
 
 ## Mapa del repo
 
@@ -29,15 +28,15 @@ hardware real.
 - Motor: `make -C engine test`, `make -C engine SANITIZE=1 test` y, en
   cruzado, `make CC=aarch64-linux-gnu-gcc`.
 - Laboratorio (root):
-  - `bench/lab.sh build`, `smoke` y `health` (los que corre el CI), `latency`;
+  - `bench/lab.sh build`, `smoke`, `health`, `control` (los del CI), `latency`;
   - `ENGINE=go bench/lab.sh build` suma el Go del historial, para `compare`
     (Go frente a C) y `suite` (línea base Go).
 - OpenWrt de punta a punta: `openwrt/test/e2e.sh IMAGEN` (`openwrt/README.md`).
 - Contenedor cloud: `apt-get update` y luego `iproute2 strace` (laboratorio)
   o `qemu-system-x86 openssh-client` (e2e); sin IPv6, WireGuard ni netem.
-- CI: `engine.yml` (gcc/clang con `-Werror`, sanitizers, qemu en
-  aarch64/armhf/MIPS big-endian, humo y salud en netns) y `openwrt.yml`
-  (paquetes 25.12/24.10, imágenes, e2e con KVM y release con tags `v*`).
+- CI: `engine.yml` (gcc/clang con `-Werror`, sanitizers, qemu en aarch64,
+  armhf y MIPS big-endian, laboratorio en netns) y `openwrt.yml` (paquetes
+  25.12/24.10, imágenes, e2e con KVM y release con tags `v*`).
 
 ## Reglas de trabajo
 
@@ -45,9 +44,9 @@ hardware real.
   (`tipo: resumen`, como upstream).
 - PRs hacia `master`: el usuario autoriza crearlos y pushearlos sin preguntar.
 - Toda cifra de rendimiento sale de `bench/` o se marca como estimación.
-- **Protocolo propio (v2):** cliente y servidor son siempre cengarde, sin
+- **Protocolo propio (v3):** cliente y servidor son siempre cengarde, sin
   compatibilidad con engarde Go. Cualquier cambio de formato sube
-  `CG_PROTO_VERSION` (historias 005 y 006).
+  `CG_PROTO_VERSION` (historias 005, 006 y 009).
 - **Plano de datos:** nunca bloquear, nunca `malloc` por paquete, nunca un log
   por paquete; marcar en el anti-replay solo después de verificar el MAC.
 - **Lógica de decisión** (dedup, política de envío, silenciado, tablas): en
@@ -78,3 +77,4 @@ hardware real.
 | [006](docs/historias/006-salud-de-enlaces.md) | Salud de enlaces (silenciado, mudo), protocolo v2, baja latencia | toques las sondas, el reparto o las perillas de latencia |
 | [007](docs/historias/007-openwrt-y-vps.md) | Paquete OpenWrt, plantilla del VPS, SmoothWAN como referencia | empaquetes o instales en OpenWrt o el VPS |
 | [008](docs/historias/008-luci-uci-y-emparejamiento.md) | UCI, LuCI, un solo secreto (BLAKE2s), imágenes, prueba en QEMU | toques `openwrt/`, `cengarde keys` o el cloud-config |
+| [009](docs/historias/009-recarga-control-e-ip-pass.md) | Recarga sin cortar, `cengarde ctl`, pausa de enlaces, IP pass desde el router (v3) | toques la recarga, el socket de control, procd o el IP pass |

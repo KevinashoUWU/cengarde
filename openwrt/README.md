@@ -8,12 +8,16 @@ ambos extremos comparten un solo secreto, del que salen todas las claves.
 un «VPS»):
 - configuración solo desde LuCI, con Playwright;
 - túnel arriba por tres enlaces, sin pérdidas al caer uno;
+- cambios aplicados sin reiniciar el motor ni perder pings, e IP pass
+  encendido y apagado desde el router;
+- pausar y reanudar un enlace desde la página de estado;
 - desactivar deja el router como estaba.
 
 El CI repite la prueba en cada cambio (`test/e2e.sh`). Falta probarlo en la
 Pi 4 y en un VPS reales. Decisiones en las historias
-[007](../docs/historias/007-openwrt-y-vps.md) y
-[008](../docs/historias/008-luci-uci-y-emparejamiento.md).
+[007](../docs/historias/007-openwrt-y-vps.md),
+[008](../docs/historias/008-luci-uci-y-emparejamiento.md) y
+[009](../docs/historias/009-recarga-control-e-ip-pass.md).
 
 ```
 LAN ── router OpenWrt ══ enlace 1 ══╗
@@ -132,13 +136,15 @@ uci commit network && service network reload
    ```sh
    systemctl status cengarde wg-quick@wg0
    tail /var/log/cloud-init-output.log
-   cat /run/cengarde/status.json
+   cengarde ctl status        # o: cengarde ctl links
    ```
 
 **Qué deja montado:**
 - cengarde como servicio de systemd sin privilegios;
 - WireGuard solo para cengarde (`127.0.0.1:65501`);
-- NAT y, con IP pass, el reenvío de puertos.
+- NAT y, con IP pass, el reenvío de puertos;
+- `cengarde-passthrough.path`, que abre o cierra el IP pass cuando lo pide
+  el router.
 
 No desactiva SSH ni su cortafuegos. Detalle en
 [`contrib/vps/`](../contrib/vps/): `install.sh` instala,
@@ -166,6 +172,9 @@ configuración del router:
 | UPnP | con IP pass: miniupnpd sobre `wgcg`, con la IP del VPS como externa | sí |
 
 **Otros detalles:**
+- **Los cambios posteriores no cortan el túnel:** el motor los aplica en
+  marcha, con la misma sesión. Solo el secreto, el puerto y las perillas de
+  CPU lo reinician, en el lugar y en menos de un segundo.
 - **Sin dirección del VPS o sin enlaces** no se crea el túnel, para no
   dejar el router sin salida.
 - **Desinstalar** el paquete también lo deshace todo.
@@ -177,22 +186,30 @@ configuración del router:
 *Servicios → cengarde → Estado* se actualiza cada 3 s:
 - **Servicio:** si está en marcha.
 - **Túnel WireGuard:** último handshake.
+- **IP pass:** activo en el VPS, desactivado, o esperando que el VPS lo
+  confirme.
 - **Tráfico** y copias duplicadas descartadas.
 - **Por enlace:**
-  - estado: activo, silenciado o sin respuesta;
+  - estado: activo, silenciado, esperando al VPS, sin respuesta o en pausa;
   - RTT;
   - *atraso frente al más rápido*: pasado el límite, el enlace se silencia;
   - si el VPS lo usa para bajar;
-  - qué parte de la bajada llegó primero por él.
-- **Avisos:** falta la IP, un enlace caído, el motor detenido…
+  - qué parte de la bajada llegó primero por él;
+  - **Pausar / Reanudar:** saca el enlace sin tocar la configuración (por
+    ejemplo, un módem que va a cambiar de plan). La pausa se mantiene hasta
+    reanudarlo o hasta que cengarde se reinicie.
+- **Avisos:** falta la IP, un enlace caído, el motor detenido, un cambio que
+  no se pudo aplicar…
 
 Por consola:
 
 ```sh
-cengarde-setup status     # lo mismo que la página, en JSON
-logread -e cengarde       # "link eth1.10 (wom) up ..." por enlace
-wg show wgcg              # handshake con el VPS
-ping -c 3 10.79.0.1       # el VPS a través del túnel
+cengarde-setup status         # lo mismo que la página, en JSON
+cengarde ctl links            # cada interfaz y por qué lleva el túnel o no
+cengarde ctl link eth3 off    # pausar un enlace; "auto" lo reanuda
+logread -e cengarde           # "link eth1.10 (wom) up ..." por enlace
+wg show wgcg                  # handshake con el VPS
+ping -c 3 10.79.0.1           # el VPS a través del túnel
 ```
 
 ## IP pass (la IP pública del VPS en terreno)
@@ -210,11 +227,12 @@ el de WireGuard y el SSH nunca se reenvían.
 **Activarlo:**
 - En LuCI: pestaña *Túnel*, *IP pass*. Requiere «enrutar todo el tráfico
   por el túnel».
-- **En el VPS va en el cloud-config** (`PASSTHROUGH=yes`), que sigue al
-  interruptor.
-- **Para cambiarlo con el VPS ya creado:** edita `PASSTHROUGH` en
-  `/etc/cengarde/nat.conf` y ejecuta `systemctl restart wg-quick@wg0`. El
-  router todavía no se lo puede pedir al VPS (historia 008).
+- **El VPS sigue al interruptor:** el router se lo pide por cengarde, en
+  cada sonda, y el VPS abre o cierra los puertos en menos de un segundo. La
+  página de estado muestra cuando el VPS lo confirma.
+- **El cloud-config** (`PASSTHROUGH` en `/etc/cengarde/nat.conf`) solo fija
+  el valor hasta que el router lo pide por primera vez. Desde entonces el VPS
+  recuerda lo último que pidió el router, también tras reiniciarse.
 
 ## Por consola (sin LuCI)
 
@@ -247,7 +265,8 @@ cengarde-setup cloud-config > vps.yaml               # el user data del VPS
   cengarde-vps-setup && systemctl restart wg-quick@wg0 cengarde
   ```
 
-- **Actualizar:** router y VPS con el mismo commit. En el VPS:
+- **Actualizar:** router y VPS con el mismo commit; la 0.4 cambió el
+  protocolo (v3) y no habla con un VPS anterior. En el VPS:
 
   ```sh
   git -C /opt/cengarde fetch --depth 1 https://github.com/KevinashoUWU/cengarde <commit>
@@ -260,7 +279,10 @@ cengarde-setup cloud-config > vps.yaml               # el user data del VPS
 comprueba el flujo completo:
 - enlaces por DHCP;
 - configuración solo desde LuCI;
-- túnel arriba;
+- túnel arriba, e IP pass confirmado por el VPS;
+- pausar y reanudar un enlace desde la página de estado;
+- apagar IP pass con pings en curso: sin reiniciar el motor, sin pérdidas,
+  y el VPS lo sigue;
 - un enlace caído sin perder pings;
 - desactivación limpia.
 
