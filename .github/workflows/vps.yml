@@ -1,12 +1,19 @@
 name: VPS
 
-# The VPS side without a VPS (contrib/vps/test):
-# - netns: cengarde-nat in network namespaces with the runner's real
-#   iptables, IPv6 included;
-# - systemd: install.sh and the services it sets up under the runner's real
-#   systemd, with a router (cengarde and WireGuard) in network namespaces.
-#   GitHub's runners are throwaway VMs booted with systemd, so the test
-#   installs cengarde on them for good.
+# The server side without a server (contrib/vps/test):
+# - netns, on Ubuntu 24.04 and 22.04 (iptables 1.8.10 and 1.8.7,
+#   conntrack-tools 1.4.8 and 1.4.6): cengarde-nat in network namespaces
+#   with the runner's real iptables, IPv6 included: the security rules, the
+#   golden rules, real traffic (forwarding, shifted ranges, hairpin, live
+#   flows moved with conntrack); cengarde-vps-setup and install.sh against
+#   fake system commands; the sysusers file;
+# - systemd: from cengarde 0.4.2 (this repository's history) to this
+#   checkout and back, under the runner's real systemd, with a router
+#   (cengarde and WireGuard) in network namespaces: the upgrade from a
+#   session that dies, purge and 0.4.2 again, IP pass, the server's own
+#   services, firewalld refused, nftables.service. GitHub's runners are
+#   throwaway VMs booted with systemd, so the test installs cengarde on
+#   them for good.
 # The scripts themselves are linted in openwrt.yml.
 
 on:
@@ -26,15 +33,39 @@ permissions:
 
 jobs:
   netns:
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-22.04]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install iptables, iproute2, python3 and curl
-        run: sudo apt-get update && sudo apt-get install -y iptables iproute2 python3 curl
+      - name: Install iptables, conntrack, nftables, wireguard-tools, a compiler, python3 and curl
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends iptables iproute2 conntrack nftables wireguard-tools \
+            build-essential python3 curl util-linux
 
-      - name: Metadata out of the tunnel's reach, WireGuard's port closed, nothing left after down
+      - name: Metadata out of the tunnels' reach, WireGuard's ports closed, nothing left after down
         run: sudo env SECURITY_REQUIRE_V6=1 sh contrib/vps/test/security.sh
+
+      - name: The rules against golden files, each loaded by iptables-restore --test
+        run: sudo sh contrib/vps/test/nat-rules.sh
+
+      - name: Real traffic through the rules, hairpin, live flows moved with conntrack
+        run: sudo sh contrib/vps/test/netns.sh
+
+      - name: cengarde-vps-setup and install.sh against fake system commands
+        run: sudo sh contrib/vps/test/setup-dryrun.sh
+
+      - name: The sysusers file
+        run: |
+          if systemd-sysusers --help | grep -q -- --dry-run; then
+            sudo systemd-sysusers --dry-run contrib/systemd/cengarde.sysusers
+          else
+            echo "systemd-sysusers $(systemd --version | head -n 1) has no --dry-run; the systemd job installs it"
+          fi
 
   systemd:
     # The Ubuntu releases the cloud-config supports: systemd 255 and 249.
@@ -45,12 +76,15 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # cengarde 0.4.2, which the test installs first and goes back to.
+          fetch-depth: 0
 
-      - name: Install what the cloud-config installs, plus ufw, python3, curl and ping
+      - name: Install what the cloud-config installs, plus ufw, nftables, python3, curl and ping
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential git iptables wireguard-tools \
-            iproute2 ufw python3 curl iputils-ping
+          sudo apt-get install -y --no-install-recommends build-essential git iptables wireguard-tools conntrack \
+            iproute2 ufw nftables python3 curl iputils-ping util-linux
 
-      - name: install.sh, the services, IP pass and IPAddressDeny under systemd, with a router in netns
+      - name: 0.4.2, the upgrade from a dying session, IP pass, purge and back, firewalld, nftables, under systemd
         run: sudo sh contrib/vps/test/systemd.sh --yes
