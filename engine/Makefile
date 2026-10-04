@@ -26,7 +26,7 @@ endif
 
 CORE = src/siphash.c src/proto.c src/util.c src/log.c src/config.c src/blake2s.c src/pair.c
 NET = src/netlink.c src/sock.c src/status.c src/os.c src/ctl.c src/client.c src/server.c
-# Every tests/test_*.c; test_main.c runs the suites listed in its table.
+# Every tests/test_*.c; tests/suites.h lists the suites test_main.c runs.
 TESTS = $(wildcard tests/test_*.c)
 
 all: cengarde

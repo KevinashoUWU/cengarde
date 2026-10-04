@@ -29,17 +29,8 @@ extern int cg_test_checks;
 		}                                                                                  \
 	} while (0)
 
-void test_siphash(void);
-void test_proto(void);
-void test_replay(void);
-void test_arrival(void);
-void test_config(void);
-void test_util(void);
-void test_idmap(void);
-void test_health(void);
-void test_blake2s(void);
-void test_pair(void);
-void test_ctl(void);
-void test_epoch(void);
+#define SUITE(name) void test_##name(void);
+#include "suites.h"
+#undef SUITE
 
 #endif
