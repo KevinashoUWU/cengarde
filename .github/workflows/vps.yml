@@ -1,17 +1,24 @@
 name: VPS
 
-# The VPS side without a VPS (contrib/vps/test): cengarde-nat in network
-# namespaces with the runner's real iptables, IPv6 included. The scripts
-# themselves are linted in openwrt.yml.
+# The VPS side without a VPS (contrib/vps/test):
+# - netns: cengarde-nat in network namespaces with the runner's real
+#   iptables, IPv6 included;
+# - systemd: install.sh and the services it sets up under the runner's real
+#   systemd, with a router (cengarde and WireGuard) in network namespaces.
+#   GitHub's runners are throwaway VMs booted with systemd, so the test
+#   installs cengarde on them for good.
+# The scripts themselves are linted in openwrt.yml.
 
 on:
   push:
     paths:
       - 'contrib/**'
+      - 'engine/**'
       - '.github/workflows/vps.yml'
   pull_request:
     paths:
       - 'contrib/**'
+      - 'engine/**'
       - '.github/workflows/vps.yml'
 
 permissions:
@@ -28,3 +35,22 @@ jobs:
 
       - name: Metadata out of the tunnel's reach, WireGuard's port closed, nothing left after down
         run: sudo env SECURITY_REQUIRE_V6=1 sh contrib/vps/test/security.sh
+
+  systemd:
+    # The Ubuntu releases the cloud-config supports: systemd 255 and 249.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-22.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install what the cloud-config installs, plus ufw, python3, curl and ping
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential git iptables wireguard-tools \
+            iproute2 ufw python3 curl iputils-ping
+
+      - name: install.sh, the services, IP pass and IPAddressDeny under systemd, with a router in netns
+        run: sudo sh contrib/vps/test/systemd.sh --yes
