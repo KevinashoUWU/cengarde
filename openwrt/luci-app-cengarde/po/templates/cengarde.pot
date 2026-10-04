@@ -91,6 +91,15 @@ msgstr ""
 msgid "Needs miniupnpd-nftables (and luci-app-upnp to see the mappings)."
 msgstr ""
 
+msgid "STUN server"
+msgstr ""
+
+msgid "Only for IP pass when the VPS address is not IPv4: UPnP then learns the public IPv4 of the VPS from this STUN server, through the tunnel (e.g. stun.cloudflare.com). Empty: UPnP announces no public IP and hands no ports on to the LAN."
+msgstr ""
+
+msgid "STUN port"
+msgstr ""
+
 msgid "DNS servers"
 msgstr ""
 
@@ -161,6 +170,9 @@ msgid "Uplink %s is down."
 msgstr ""
 
 msgid "IP pass is on but miniupnpd is not installed."
+msgstr ""
+
+msgid "IP pass is on, but UPnP has no public IP to announce: the VPS address is not IPv4. Set a STUN server in Settings > Tunnel."
 msgstr ""
 
 msgid "The engine is not running: see System > System Log."

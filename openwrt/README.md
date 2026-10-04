@@ -169,7 +169,7 @@ configuración del router:
 | Enlaces | una métrica propia a cada uno (con la misma métrica, netifd deja una sola ruta por defecto) | no: no estorba |
 | Enlaces | `peerdns 0`: los DNS de la operadora irían por el VPS y suelen rechazarlo; se usan los de la pestaña *Túnel* | sí |
 | Cortafuegos | `wgcg`, y los enlaces que no tengan zona, en la zona `wan` | `wgcg` sí, los enlaces no |
-| UPnP | con IP pass: miniupnpd sobre `wgcg`, con la IP del VPS como externa | sí |
+| UPnP | con IP pass: miniupnpd sobre `wgcg`, con la IP del VPS como externa (o la que dé STUN) | sí |
 
 **Otros detalles:**
 - **Los cambios posteriores no cortan el túnel:** el motor los aplica en
@@ -222,7 +222,10 @@ el de WireGuard y el SSH nunca se reenvían.
 - miniupnpd entrega esos puertos a los equipos de la LAN que los piden:
   consolas, P2P, cámaras;
 - un reenvío fijo se hace en *Red → Cortafuegos → Reenvíos de puertos*,
-  desde la zona `wan`.
+  desde la zona `wan`;
+- **VPS con dirección IPv6:** UPnP necesita la IPv4 pública del VPS. Pon un
+  servidor STUN en la pestaña *Túnel* (`stun_host`, y `stun_port` si no es
+  3478); sin él, UPnP no pasa puertos y el estado lo avisa (`upnp_no_ip`).
 
 **Activarlo:**
 - En LuCI: pestaña *Túnel*, *IP pass*. Requiere «enrutar todo el tráfico
