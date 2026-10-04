@@ -73,7 +73,8 @@ function linkState(l) {
 }
 
 // The VPS address a link sends to, without the port, its family, and
-// whether the link moved past its first address of that family.
+// whether the link moved past the first VPS address it can use (on an
+// uplink with IPv4 and IPv6, that one may be of the other family).
 function vpsAddress(l) {
 	const addr = (l.remote || '').replace(/:\d+$/, '').replace(/^\[(.*)\]$/, '$1');
 	let parts;
@@ -83,7 +84,7 @@ function vpsAddress(l) {
 	parts = [ addr, ' ', E('small', {}, [ l.family == 'ipv6' ? 'IPv6' : 'IPv4' ]) ];
 	if (l.candidate > 0)
 		parts.push(' ', badge(_('failover'), '#d80',
-			_('Its first VPS address of this family did not answer. Failovers so far: %d').format(l.failovers)));
+			_('The first VPS address it can use did not answer. Failovers so far: %d').format(l.failovers)));
 	return E('span', {}, parts);
 }
 
@@ -233,7 +234,7 @@ return view.extend({
 			E('p', { 'class': 'cbi-section-descr' }, [
 				_('Behind the fastest: how much later this uplink delivers than the quickest one; past the limit it gets muted (no traffic, probes only) until it catches up. Arrived first: share of the download that came through this uplink before any other copy. Pause: takes an uplink out without touching the configuration, until you resume it or cengarde restarts.'),
 				' ',
-				_('VPS address: where the uplink sends to; "failover" when its first VPS address of that family did not answer. Path MTU: the largest packet the path to the VPS takes.')
+				_('VPS address: where the uplink sends to; "failover" when the first VPS address it can use did not answer. Path MTU: the largest packet the path to the VPS takes.')
 			])
 		]);
 	},

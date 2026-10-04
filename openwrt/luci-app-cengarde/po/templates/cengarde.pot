@@ -130,7 +130,7 @@ msgstr ""
 msgid "Next VPS address after (ms)"
 msgstr ""
 
-msgid "An uplink that gets no answer from the VPS for this long tries the next VPS address of its family. 0: never."
+msgid "An uplink that gets no answer from the VPS for this long tries the next VPS address it can use, IPv4 or IPv6, in the list's order. 0: never."
 msgstr ""
 
 msgid "0 (never) or at least %d ms with this probe interval"
@@ -259,7 +259,7 @@ msgstr ""
 msgid "failover"
 msgstr ""
 
-msgid "Its first VPS address of this family did not answer. Failovers so far: %d"
+msgid "The first VPS address it can use did not answer. Failovers so far: %d"
 msgstr ""
 
 msgid "the VPS does not apply it (passthrough_file missing in its cengarde.conf)"
@@ -382,7 +382,7 @@ msgstr ""
 msgid "Behind the fastest: how much later this uplink delivers than the quickest one; past the limit it gets muted (no traffic, probes only) until it catches up. Arrived first: share of the download that came through this uplink before any other copy. Pause: takes an uplink out without touching the configuration, until you resume it or cengarde restarts."
 msgstr ""
 
-msgid "VPS address: where the uplink sends to; \"failover\" when its first VPS address of that family did not answer. Path MTU: the largest packet the path to the VPS takes."
+msgid "VPS address: where the uplink sends to; \"failover\" when the first VPS address it can use did not answer. Path MTU: the largest packet the path to the VPS takes."
 msgstr ""
 
 msgid "Every packet goes through all active uplinks; the VPS keeps the first copy."

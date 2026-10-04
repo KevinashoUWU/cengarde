@@ -247,7 +247,7 @@ return view.extend({
 		o.rmempty = false;
 
 		o = s.taboption('advanced', form.Value, 'server_failover_ms', _('Next VPS address after (ms)'),
-			_('An uplink that gets no answer from the VPS for this long tries the next VPS address of its family. 0: never.'));
+			_('An uplink that gets no answer from the VPS for this long tries the next VPS address it can use, IPv4 or IPv6, in the list\'s order. 0: never.'));
 		o.datatype = 'range(0,3600000)';
 		o.placeholder = '10000';
 		// The engine wants 0 or at least three idle probes: probe_idle_ms

@@ -132,8 +132,8 @@ msgstr "Agrega una interfaz DHCPv6 sobre cada enlace DHCP o estático (con su no
 msgid "Next VPS address after (ms)"
 msgstr "Siguiente dirección del VPS tras (ms)"
 
-msgid "An uplink that gets no answer from the VPS for this long tries the next VPS address of its family. 0: never."
-msgstr "Un enlace que pasa este tiempo sin respuesta del VPS prueba la siguiente dirección del VPS de su familia. 0: nunca."
+msgid "An uplink that gets no answer from the VPS for this long tries the next VPS address it can use, IPv4 or IPv6, in the list's order. 0: never."
+msgstr "Un enlace que pasa este tiempo sin respuesta del VPS prueba la siguiente dirección del VPS que puede usar, IPv4 o IPv6, en el orden de la lista. 0: nunca."
 
 msgid "0 (never) or at least %d ms with this probe interval"
 msgstr "0 (nunca) o al menos %d ms con este intervalo de sondas"
@@ -261,8 +261,8 @@ msgstr "forzado"
 msgid "failover"
 msgstr "alternativa"
 
-msgid "Its first VPS address of this family did not answer. Failovers so far: %d"
-msgstr "Su primera dirección del VPS de esta familia no contestó. Cambios hasta ahora: %d"
+msgid "The first VPS address it can use did not answer. Failovers so far: %d"
+msgstr "La primera dirección del VPS que puede usar no contestó. Cambios hasta ahora: %d"
 
 msgid "the VPS does not apply it (passthrough_file missing in its cengarde.conf)"
 msgstr "el VPS no lo aplica (falta passthrough_file en su cengarde.conf)"
@@ -384,8 +384,8 @@ msgstr "Estado"
 msgid "Behind the fastest: how much later this uplink delivers than the quickest one; past the limit it gets muted (no traffic, probes only) until it catches up. Arrived first: share of the download that came through this uplink before any other copy. Pause: takes an uplink out without touching the configuration, until you resume it or cengarde restarts."
 msgstr "Atraso frente al más rápido: cuánto más tarde entrega este enlace que el más rápido; pasado el límite se silencia (sin tráfico, solo sondas) hasta que se recupere. Llegó primero: parte de la bajada que entró por este enlace antes que cualquier otra copia. Pausar: saca un enlace sin tocar la configuración, hasta que lo reanudes o cengarde se reinicie."
 
-msgid "VPS address: where the uplink sends to; \"failover\" when its first VPS address of that family did not answer. Path MTU: the largest packet the path to the VPS takes."
-msgstr "Dirección del VPS: adónde envía el enlace; \"alternativa\" cuando su primera dirección del VPS de esa familia no contestó. MTU del camino: el paquete más grande que admite el camino hasta el VPS."
+msgid "VPS address: where the uplink sends to; \"failover\" when the first VPS address it can use did not answer. Path MTU: the largest packet the path to the VPS takes."
+msgstr "Dirección del VPS: adónde envía el enlace; \"alternativa\" cuando la primera dirección del VPS que puede usar no contestó. MTU del camino: el paquete más grande que admite el camino hasta el VPS."
 
 msgid "Every packet goes through all active uplinks; the VPS keeps the first copy."
 msgstr "Cada paquete sale por todos los enlaces activos; el VPS se queda con la primera copia."
