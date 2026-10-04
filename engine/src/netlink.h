@@ -10,7 +10,7 @@
 #include <sys/socket.h>
 
 #define CG_NL_MAX_IFS 64
-#define CG_NL_MAX_ADDRS 16
+#define CG_NL_MAX_ADDRS 32 /* per interface; more are ignored, with one warning */
 
 struct cg_nl_addr {
 	int family;
@@ -24,7 +24,7 @@ struct cg_iface {
 	char name[IFNAMSIZ];
 	unsigned flags; /* IFF_* */
 	int naddr;
-	struct cg_nl_addr addr[CG_NL_MAX_ADDRS];
+	struct cg_nl_addr addr[CG_NL_MAX_ADDRS]; /* in the order netlink reported them */
 };
 
 struct cg_nl {
@@ -33,6 +33,7 @@ struct cg_nl {
 	int nifs;
 	struct cg_iface ifs[CG_NL_MAX_IFS];
 	int changed; /* set whenever the table changes; the caller clears it */
+	int addrs_full; /* an interface had more than CG_NL_MAX_ADDRS (warned once) */
 };
 
 int cg_nl_open(struct cg_nl *nl, char *err, size_t errlen);
@@ -42,12 +43,9 @@ void cg_nl_close(struct cg_nl *nl);
 
 const struct cg_iface *cg_nl_find(const struct cg_nl *nl, const char *name);
 
-/* Preferred usable address of family on ifc, with port 0. IPv4: primary,
- * not loopback or link-local. IPv6: global scope, not tentative, deprecated
- * or failed, stable before temporary. Returns 0 or -1 if there is none. */
-int cg_iface_pick(const struct cg_iface *ifc, int family, struct sockaddr_storage *out);
-
-/* Pure helper for the IPv4 rule above (address in network order). */
-int cg_ipv4_usable(const uint8_t a[4]);
+/* The address of ifc to send to dst from, with port 0 (addrpick.h: IPv4
+ * primary first; IPv6 by RFC 6724 rank toward dst). Returns 0 or -1 when ifc
+ * has no usable address of dst's family. */
+int cg_iface_pick(const struct cg_iface *ifc, const struct sockaddr_storage *dst, struct sockaddr_storage *out);
 
 #endif

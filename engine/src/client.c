@@ -228,7 +228,7 @@ static int eligible(struct client *c, const struct cg_iface *ifc, struct sockadd
 	if (!(ifc->flags & IFF_UP) || !(ifc->flags & IFF_RUNNING))
 		return WHY_DOWN;
 	for (int k = 0; k < nservers; k++)
-		if (cg_iface_pick(ifc, servers[k].ss_family, local) == 0) {
+		if (cg_iface_pick(ifc, &servers[k], local) == 0) {
 			*remote = servers[k];
 			return WHY_OK;
 		}
