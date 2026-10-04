@@ -357,7 +357,7 @@ read_engine() {
 		return 1
 	}
 	# shellcheck disable=SC2016 # expanded by the inner sh
-	if ! timeout 5 sh -c 'exec 3<"$1" && stat -L -c "%u %s %F" /proc/self/fd/3 && head -c 65537 <&3' \
+	if ! timeout 5 sh -c 'exec 3<"$1" && stat -L -c "%u %s %F" /proc/self/fd/3 && { head -c 65537 <&3 || :; }' \
 		sh "$1" >"$WORK/engine.raw" 2>/dev/null; then
 		warn "$1 cannot be read: refused"
 		return 1
