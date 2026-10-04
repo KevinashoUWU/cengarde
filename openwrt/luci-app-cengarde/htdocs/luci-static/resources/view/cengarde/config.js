@@ -173,7 +173,7 @@ return view.extend({
 		o.onchange = refresh;
 
 		o = s.taboption('tunnel', form.Flag, 'ip_pass', _('IP pass'),
-			_('The VPS forwards TCP and UDP ports 1024-65000 to this router and UPnP hands them on to the LAN: devices and services here get the public IP of the VPS. Also update the VPS (PASSTHROUGH in /etc/cengarde/nat.conf) when changing this.') +
+			_('The VPS forwards TCP and UDP ports 1024-65000 to this router and UPnP hands them on to the LAN: devices and services here get the public IP of the VPS. The VPS follows this switch on its own, within a second of saving.') +
 			(hasUpnp ? '' : '<br /><strong>' + _('Needs miniupnpd-nftables (and luci-app-upnp to see the mappings).') + '</strong>'));
 		o.rmempty = false;
 		o.depends({ tunnel: '1', route_all: '1' });

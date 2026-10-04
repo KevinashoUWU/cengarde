@@ -1,9 +1,11 @@
 #!/bin/sh /etc/rc.common
 # cengarde, configured in /etc/config/cengarde (LuCI: Services > cengarde).
 # Every start and reload runs "cengarde-setup apply" (tunnel, firewall,
-# uplinks, UPnP) and regenerates the client configuration; procd restarts
-# the engine only when that configuration changed. With config_file set, the
-# engine runs that file instead (a server, for instance).
+# uplinks, UPnP) and regenerates the client configuration. When that changed,
+# procd sends the engine SIGHUP: it applies the new configuration without
+# dropping the tunnel (and restarts itself in place for the few settings that
+# need it). With config_file set, the engine runs that file instead (a
+# server, for instance), through the same path.
 
 START=90
 STOP=10
@@ -20,21 +22,24 @@ start_service() {
 	config_get_bool enabled main enabled 0
 	[ "$enabled" = 1 ] || return 0
 	config_get config_file main config_file
-	if [ -z "$config_file" ]; then
-		mkdir -p /var/etc
-		if ! (umask 077 && $SETUP engine-conf > "$CONF.new"); then
-			rm -f "$CONF.new"
-			return 1
-		fi
+	mkdir -p /var/etc
+	if [ -n "$config_file" ]; then
+		# The command line never changes, so procd always signals instead
+		# of restarting: a new path would otherwise go unnoticed.
+		ln -sf "$config_file" "$CONF"
+	elif (umask 077 && $SETUP engine-conf > "$CONF.new"); then
 		mv "$CONF.new" "$CONF"
-		config_file=$CONF
+	else
+		rm -f "$CONF.new"
+		return 1
 	fi
 	procd_open_instance
-	procd_set_param command "$PROG" -c "$config_file"
+	procd_set_param command "$PROG" -c "$CONF"
+	procd_set_param reload_signal HUP
 	procd_set_param respawn 3600 5 0
 	procd_set_param stdout 1
 	procd_set_param stderr 1
-	procd_set_param file "$config_file"
+	procd_set_param file "$CONF"
 	procd_close_instance
 }
 

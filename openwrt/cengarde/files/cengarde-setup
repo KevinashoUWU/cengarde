@@ -21,7 +21,8 @@
 # - firewall: wgcg, and uplinks that have no zone yet, in the wan zone
 #   (masquerade, inbound rejected);
 # - with ip_pass, miniupnpd with wgcg as its external interface and the VPS
-#   address as the external IP.
+#   address as the external IP; the engine asks the VPS to forward its ports
+#   (and to stop when ip_pass goes off).
 #
 # SPDX-License-Identifier: GPL-2.0-only
 
@@ -34,6 +35,7 @@ PEER=cengarde_vps
 TUN_ADDR=10.79.0.2/30
 CLOUD_CONFIG=/usr/share/cengarde/cloud-config.yaml
 STATUS_FILE=/var/run/cengarde.json
+CONTROL_SOCKET=/var/run/cengarde/cengarde.sock # cengarde ctl's default
 CHANGED=
 
 log() { logger -t cengarde-setup "$*"; }
@@ -97,6 +99,9 @@ load() {
 	config_get DNS main dns "1.1.1.1 9.9.9.9"
 	config_get UPLINKS main uplink
 	config_get LOG_LEVEL main log_level info
+	# IP pass needs the tunnel to carry everything: replies go back through it.
+	PASS=no
+	[ "$IP_PASS" = 1 ] && [ "$TUNNEL" = 1 ] && [ "$ROUTE_ALL" = 1 ] && PASS=yes
 }
 
 derive_keys() {
@@ -299,7 +304,10 @@ engine_conf() {
 		# Only the uplinks below.
 		interfaces =
 		status_file = $STATUS_FILE
+		control_socket = $CONTROL_SOCKET
 		log_level = $LOG_LEVEL
+		# IP pass: the VPS forwards its ports here (or stops) as this says.
+		passthrough = $PASS
 	EOF
 	for k in mute_behind_ms unmute_behind_ms mute_settle_ms mute_trickle min_active_links \
 		probe_interval_ms probe_idle_ms busy_poll_us cpu rt_priority sndbuf description; do
@@ -315,14 +323,11 @@ engine_conf() {
 }
 
 cloud_config() {
-	local pt=no
-
 	load
 	[ -n "$SECRET" ] || die "no secret yet"
-	[ "$IP_PASS" = 1 ] && pt=yes
 	sed -e "s|^\( *\)REPLACE_SECRET\$|\1$SECRET|" \
 		-e "s|^\( *CENGARDE_PORT=\).*|\1$PORT|" \
-		-e "s|^\( *PASSTHROUGH=\).*|\1$pt|" "$CLOUD_CONFIG"
+		-e "s|^\( *PASSTHROUGH=\).*|\1$PASS|" "$CLOUD_CONFIG"
 }
 
 problem() { # CODE [INTERFACE]
