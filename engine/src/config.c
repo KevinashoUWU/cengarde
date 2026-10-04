@@ -489,6 +489,23 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 		c->passthrough = -1;
 		if (get_bool(&ini, "", "passthrough", &c->passthrough, err, errlen))
 			goto out;
+		c->link_threads = CG_LT_LEGACY;
+		v = cg_ini_get(&ini, "", "link_threads");
+		if (v) {
+			if (!strcmp(v, "off"))
+				c->link_threads = CG_LT_OFF;
+			else if (strcmp(v, "legacy")) {
+				snprintf(err, errlen, "link_threads: expected off or legacy, got '%s'", v);
+				goto out;
+			}
+		}
+		c->io_queue = 256;
+		if (get_u32(&ini, "", "io_queue", 64, 1024, &c->io_queue, err, errlen))
+			goto out;
+		if (c->io_queue & (c->io_queue - 1)) {
+			snprintf(err, errlen, "io_queue: expected a power of two between 64 and 1024, got %u", c->io_queue);
+			goto out;
+		}
 		if (parse_lists(c, &ini) < 0) {
 			snprintf(err, errlen, "out of memory");
 			goto out;
@@ -612,6 +629,10 @@ const char *cg_config_restart_needed(const struct cg_config *a, const struct cg_
 		return "cpu";
 	if (a->rt_priority != b->rt_priority)
 		return "rt_priority";
+	if (a->mode == CG_MODE_CLIENT && a->link_threads != b->link_threads)
+		return "link_threads";
+	if (a->mode == CG_MODE_CLIENT && a->io_queue != b->io_queue)
+		return "io_queue";
 	if (a->mode == CG_MODE_SERVER && !cg_addr_equal(&a->wireguard, &b->wireguard))
 		return "wireguard";
 	if (a->mode == CG_MODE_SERVER && a->max_sessions != b->max_sessions)

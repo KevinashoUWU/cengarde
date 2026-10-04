@@ -137,6 +137,42 @@ static void test_config_reload(void)
 	CHECK(strstr(err, path) != NULL);
 }
 
+/* How the client handles its link sockets (pump.h): legacy by default. */
+static void test_config_threads(void)
+{
+	static struct cg_config a, b;
+	char err[256], warn[512];
+
+	CHECK_EQ(cg_config_parse(&a, CLIENT, err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(a.link_threads, CG_LT_LEGACY);
+	CHECK_EQ(a.io_queue, 256);
+	CHECK(!strcmp(cg_lt_name(a.link_threads), "legacy"));
+	CHECK_EQ(cg_config_parse(&b, CLIENT "link_threads = off\nio_queue = 64\n", err, sizeof(err), warn, sizeof(warn)),
+		 0);
+	CHECK_EQ(b.link_threads, CG_LT_OFF);
+	CHECK_EQ(b.io_queue, 64);
+	CHECK(warn[0] == '\0');
+	/* Set up once: a restart. */
+	CHECK(!strcmp(cg_config_restart_needed(&a, &b), "link_threads"));
+	cg_config_free(&b);
+	CHECK_EQ(cg_config_parse(&b, CLIENT "link_threads = legacy\nio_queue = 1024\n", err, sizeof(err), warn,
+				 sizeof(warn)),
+		 0);
+	CHECK(!strcmp(cg_config_restart_needed(&a, &b), "io_queue"));
+	cg_config_free(&b);
+	CHECK_EQ(cg_config_parse(&b, CLIENT "link_threads = maybe\n", err, sizeof(err), warn, sizeof(warn)), -1);
+	CHECK(strstr(err, "link_threads") != NULL);
+	CHECK_EQ(cg_config_parse(&b, CLIENT "io_queue = 100\n", err, sizeof(err), warn, sizeof(warn)), -1);
+	CHECK(strstr(err, "power of two") != NULL);
+	CHECK_EQ(cg_config_parse(&b, CLIENT "io_queue = 2048\n", err, sizeof(err), warn, sizeof(warn)), -1);
+	CHECK_EQ(cg_config_parse(&b, CLIENT "io_queue = 32\n", err, sizeof(err), warn, sizeof(warn)), -1);
+	/* Client settings: unknown to a server. */
+	CHECK_EQ(cg_config_parse(&b, SERVER "link_threads = off\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK(strstr(warn, "unknown key 'link_threads'") != NULL);
+	cg_config_free(&b);
+	cg_config_free(&a);
+}
+
 /* Address lists: a single listen and wireguard address, servers to send to,
  * IPv4-mapped addresses as IPv4. */
 static void test_config_addrs(void)
@@ -397,4 +433,5 @@ void test_config(void)
 
 	test_config_reload();
 	test_config_addrs();
+	test_config_threads();
 }

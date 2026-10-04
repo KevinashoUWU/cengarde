@@ -51,6 +51,17 @@ void cg_ini_free(struct cg_ini *ini);
 
 enum cg_mode { CG_MODE_CLIENT = 1, CG_MODE_SERVER = 2 };
 
+/* How the client handles its link sockets (pump.h, thrplan.h): legacy is
+ * the loop of 0.4 (the default until the per-link threads are measured on
+ * the Pi); off, the per-link structure in one thread; on, a thread per
+ * link; auto, what thrplan.h picks for this machine. */
+enum cg_link_threads { CG_LT_AUTO = 0, CG_LT_ON, CG_LT_OFF, CG_LT_LEGACY };
+
+static inline const char *cg_lt_name(int v)
+{
+	return v == CG_LT_ON ? "on" : v == CG_LT_OFF ? "off" : v == CG_LT_LEGACY ? "legacy" : "auto";
+}
+
 struct cg_link_cfg {
 	char name[IFNAMSIZ];
 	char label[64];
@@ -100,6 +111,8 @@ struct cg_config {
 	uint32_t probe_idle_ms;     /* while there is none */
 	int sndbuf;
 	int passthrough; /* IP pass asked of the server: -1 nothing, 0 off, 1 on */
+	int link_threads; /* enum cg_link_threads */
+	uint32_t io_queue; /* entries of each hub -> pump ring, a power of two */
 
 	/* server */
 	struct sockaddr_storage wireguard;
