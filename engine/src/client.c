@@ -914,66 +914,83 @@ static void write_status(struct client *c, uint64_t now_ms)
 	cg_json_free(&j);
 }
 
+/* The STATE of an interface in "ctl links"; *up: its link when that carries
+ * the tunnel, else NULL. */
+static const char *row_state(struct client *c, const struct cg_iface *ifc, uint64_t now_ms, const struct link **up)
+{
+	struct cands e;
+	int why = eligible(c, ifc, &e);
+	const struct link *l = link_find(c, ifc->name);
+
+	*up = why == WHY_OK && l && l->fd >= 0 ? l : NULL;
+	return *up ? link_state(c, *up, now_ms) : why == WHY_OK ? "unusable" : why_name[why];
+}
+
 /* "cengarde ctl links": every interface netlink knows, as a table. The
- * addresses go last, LOCAL as wide as the widest (IPv6). */
-#define LINK_ROW "%-15s %-12s %-10s %-6s %-6s %9s %5s %9s  %-*s  %s\n"
+ * addresses go last; STATE and LOCAL are as wide as their widest value (a
+ * long reason, an IPv6 address). */
+#define LINK_ROW "%-15s %-12s %-*s %-6s %-6s %9s %5s %9s  %-*s  %s\n"
 static void links_text(struct client *c, uint64_t now_ms, struct cg_json *j)
 {
 	char a[64], b[64], remote[96], rtt[24], mtu[16], moves[24];
-	struct cands e;
-	int w = 5;
+	const struct link *l;
+	int ws = 10, w = 5;
 
-	for (int i = 0; i < CG_MAX_LINKS; i++)
-		if (c->link[i].used && c->link[i].fd >= 0) {
-			int len = (int)strlen(cg_addr_str(&c->link[i].local, a, sizeof(a)));
+	for (int i = 0; i < c->nl.nifs; i++) {
+		int len;
 
+		if (!c->nl.ifs[i].name[0])
+			continue;
+		len = (int)strlen(row_state(c, &c->nl.ifs[i], now_ms, &l));
+		ws = len > ws ? len : ws;
+		if (l) {
+			len = (int)strlen(cg_addr_str(&l->local, a, sizeof(a)));
 			w = len > w ? len : w;
 		}
-	cg_json_raw(j, LINK_ROW, "INTERFACE", "LABEL", "STATE", "MANUAL", "UPLOAD", "RTT", "MTU", "FAILOVERS", w, "LOCAL",
-		    "REMOTE");
+	}
+	cg_json_raw(j, LINK_ROW, "INTERFACE", "LABEL", ws, "STATE", "MANUAL", "UPLOAD", "RTT", "MTU", "FAILOVERS", w,
+		    "LOCAL", "REMOTE");
 	for (int i = 0; i < c->nl.nifs; i++) {
 		const struct cg_iface *ifc = &c->nl.ifs[i];
 		const struct cg_link_cfg *lc;
-		const struct link *l;
+		const struct link *slot;
+		const char *state;
 		enum cg_ovr o;
-		int why, up;
 
 		if (!ifc->name[0])
 			continue;
 		lc = cg_config_link(c->cfg, ifc->name);
 		o = cg_ovr_get(&c->ovr, ifc->name);
-		why = eligible(c, ifc, &e);
-		l = link_find(c, ifc->name);
-		up = why == WHY_OK && l && l->fd >= 0;
-		if (up && l->srtt8_us)
+		state = row_state(c, ifc, now_ms, &l);
+		if (l && l->srtt8_us)
 			snprintf(rtt, sizeof(rtt), "%u.%u ms", (unsigned)(l->srtt8_us / 8000),
 				 (unsigned)(l->srtt8_us / 800 % 10));
 		else
 			strcpy(rtt, "-");
-		if (up && l->path_mtu)
+		if (l && l->path_mtu)
 			snprintf(mtu, sizeof(mtu), "%u", l->path_mtu);
 		else
 			strcpy(mtu, "-");
-		if (l)
-			snprintf(moves, sizeof(moves), "%llu", (unsigned long long)l->failovers);
+		slot = link_find(c, ifc->name);
+		if (slot)
+			snprintf(moves, sizeof(moves), "%llu", (unsigned long long)slot->failovers);
 		else
 			strcpy(moves, "-");
 		/* With more than one candidate, which one: 1 is the first. */
-		if (up && l->ncand > 1)
+		if (l && l->ncand > 1)
 			snprintf(remote, sizeof(remote), "%s (%d/%d)", cg_addr_str(&l->remote, b, sizeof(b)), l->cand_idx + 1,
 				 l->ncand);
 		else
-			snprintf(remote, sizeof(remote), "%s", up ? cg_addr_str(&l->remote, b, sizeof(b)) : "-");
-		cg_json_raw(j, LINK_ROW, ifc->name, lc && lc->label[0] ? lc->label : "-",
-			    up ? link_state(c, l, now_ms) : why == WHY_OK ? "unusable" : why_name[why],
+			snprintf(remote, sizeof(remote), "%s", l ? cg_addr_str(&l->remote, b, sizeof(b)) : "-");
+		cg_json_raw(j, LINK_ROW, ifc->name, lc && lc->label[0] ? lc->label : "-", ws, state,
 			    o == CG_OVR_AUTO ? "-" : cg_ovr_name(o),
-			    up ? (c->uh[l - c->link].state == CG_H_MUTED ? "muted" : "active") : "-", rtt, mtu, moves, w,
-			    up ? cg_addr_str(&l->local, a, sizeof(a)) : "-", remote);
+			    l ? (c->uh[l - c->link].state == CG_H_MUTED ? "muted" : "active") : "-", rtt, mtu, moves, w,
+			    l ? cg_addr_str(&l->local, a, sizeof(a)) : "-", remote);
 	}
 	for (int i = 0; i < c->ovr.n; i++)
 		if (!cg_nl_find(&c->nl, c->ovr.e[i].name))
-			cg_json_raw(j, LINK_ROW, c->ovr.e[i].name, "-", "absent", cg_ovr_name(c->ovr.e[i].v), "-", "-", "-",
-				    "-", w, "-", "-");
+			cg_json_raw(j, LINK_ROW, c->ovr.e[i].name, "-", ws, "absent", cg_ovr_name(c->ovr.e[i].v), "-", "-",
+				    "-", "-", w, "-", "-");
 }
 
 /* ---- reload ---- */
