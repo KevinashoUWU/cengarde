@@ -347,10 +347,10 @@ static void link_open(struct client *c, struct link *l, const struct cg_iface *i
 			return; /* never: the candidates are of the families ifc has */
 		if (l->fd >= 0 && same_ip(&l->local, &local) && cg_addr_equal(&l->remote, &l->cand))
 			return;
-		if (l->fd >= 0 && !same_ip(&l->local, &local))
-			link_close(c, l, "address changed");
+		if (l->fd >= 0 && quiet)
+			link_close(c, l, NULL);
 		else if (l->fd >= 0)
-			link_close(c, l, quiet ? NULL : "server address changed");
+			link_close(c, l, same_ip(&l->local, &local) ? "server address changed" : "address changed");
 		if (now_ms < l->retry_ms)
 			return;
 		l->fd = cg_udp_link(ifc->name, &local, &l->cand, err, sizeof(err));
