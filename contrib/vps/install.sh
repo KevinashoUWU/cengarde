@@ -1,0 +1,24 @@
+#!/bin/sh
+# Builds and installs cengarde on a VPS from this checkout and (re)starts
+# the server. The cloud-config runs it at first boot; to upgrade, update the
+# checkout (to the same commit as the router's package) and run it again.
+#
+# Needs build-essential, wireguard-tools and iptables, and the pairing
+# secret in /etc/cengarde/secret (see cloud-config.yaml).
+#
+# SPDX-License-Identifier: GPL-2.0-only
+set -eu
+
+SRC=$(cd "$(dirname "$0")/../.." && pwd)
+
+make -C "$SRC/engine"
+make -C "$SRC/engine" install PREFIX=/usr/local
+install -m 0755 "$SRC/contrib/vps/cengarde-nat" "$SRC/contrib/vps/cengarde-vps-setup" /usr/local/sbin/
+install -m 0644 "$SRC/contrib/systemd/cengarde.service" /etc/systemd/system/cengarde.service
+install -m 0644 "$SRC/contrib/vps/sysctl.conf" /etc/sysctl.d/90-cengarde.conf
+sysctl -q --system
+/usr/local/sbin/cengarde-vps-setup
+systemctl daemon-reload
+systemctl enable wg-quick@wg0 cengarde
+systemctl restart wg-quick@wg0 cengarde
+echo "cengarde: $(/usr/local/sbin/cengarde version) listening; status in /run/cengarde/status.json"

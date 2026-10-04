@@ -1,0 +1,280 @@
+msgid ""
+msgstr ""
+"Language: es\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+
+msgid "cengarde"
+msgstr "cengarde"
+
+msgid "Sends every packet of a WireGuard tunnel to a VPS over all the selected uplinks at once, and the first copy to arrive wins: one uplink failing or lagging no longer drops the connection. Setup: copy the cloud-config from the VPS tab when creating the VPS, then enter its IP here, pick the uplinks and enable."
+msgstr "Envía cada paquete de un túnel WireGuard a un VPS por todos los enlaces elegidos a la vez, y gana la primera copia que llega: que un enlace se caiga o se atrase ya no corta la conexión. Puesta en marcha: copia el cloud-config de la pestaña VPS al crear el VPS, luego escribe aquí su IP, elige los enlaces y activa."
+
+msgid "General"
+msgstr "General"
+
+msgid "VPS"
+msgstr "VPS"
+
+msgid "Tunnel"
+msgstr "Túnel"
+
+msgid "Advanced"
+msgstr "Avanzado"
+
+msgid "Enabled"
+msgstr "Activado"
+
+msgid "VPS address"
+msgstr "Dirección del VPS"
+
+msgid "Public IP of the VPS, as the provider shows it. An IP and not a name: with all traffic going through the tunnel, a name could not be resolved before the tunnel is up."
+msgstr "IP pública del VPS, tal como la muestra el proveedor. Una IP y no un nombre: con todo el tráfico yendo por el túnel, un nombre no se podría resolver antes de que el túnel esté arriba."
+
+msgid "VPS port"
+msgstr "Puerto del VPS"
+
+msgid "UDP port of cengarde on the VPS."
+msgstr "Puerto UDP de cengarde en el VPS."
+
+msgid "Uplinks"
+msgstr "Enlaces"
+
+msgid "The interfaces to bond: one per modem or VLAN, each with its own default route. cengarde gives them a metric of their own if they share one and puts them in the wan firewall zone."
+msgstr "Las interfaces que se suman: una por módem o VLAN, cada una con su propia ruta por defecto. cengarde les da una métrica propia si comparten una y las pone en la zona wan del cortafuegos."
+
+msgid "Pairing secret"
+msgstr "Secreto de emparejamiento"
+
+msgid "Every key of the tunnel derives from it: the VPS only needs this value, which goes in its cloud-config. A new secret means updating the VPS too."
+msgstr "Todas las claves del túnel salen de él: el VPS solo necesita este valor, que va en su cloud-config. Un secreto nuevo obliga a actualizar también el VPS."
+
+msgid "Expected the output of \"cengarde genkey\" (44 characters)"
+msgstr "Se espera la salida de \"cengarde genkey\" (44 caracteres)"
+
+msgid "A VPS set up with the current secret will stop working until it gets the new one. Generate a new secret?"
+msgstr "Un VPS configurado con el secreto actual dejará de funcionar hasta que reciba el nuevo. ¿Generar un secreto nuevo?"
+
+msgid "Generate"
+msgstr "Generar"
+
+msgid "VPS cloud-config"
+msgstr "Cloud-config del VPS"
+
+msgid "Paste it as \"user data\" (cloud-init) when creating an Ubuntu 22.04 or 24.04 VPS, e.g. on Vultr. It builds the same cengarde version as this router and sets up WireGuard, NAT and IP pass. Setup log on the VPS: /var/log/cloud-init-output.log."
+msgstr "Pégalo como \"user data\" (cloud-init) al crear un VPS con Ubuntu 22.04 o 24.04, por ejemplo en Vultr. Compila la misma versión de cengarde que este router y configura WireGuard, NAT e IP pass. Registro de la instalación en el VPS: /var/log/cloud-init-output.log."
+
+msgid "Copied to the clipboard."
+msgstr "Copiado al portapapeles."
+
+msgid "Copy"
+msgstr "Copiar"
+
+msgid "Download"
+msgstr "Descargar"
+
+msgid "Manage the WireGuard tunnel"
+msgstr "Gestionar el túnel WireGuard"
+
+msgid "Creates the interface wgcg (10.79.0.2/30) with the keys derived from the secret, in the wan firewall zone. Off: set up WireGuard yourself, cengarde only listens on 127.0.0.1 at the VPS port."
+msgstr "Crea la interfaz wgcg (10.79.0.2/30) con las claves derivadas del secreto, en la zona wan del cortafuegos. Desactivado: configuras WireGuard tú, y cengarde solo escucha en 127.0.0.1 en el puerto del VPS."
+
+msgid "Route all traffic through the tunnel"
+msgstr "Enrutar todo el tráfico por el túnel"
+
+msgid "Through routes more specific than the default ones, which the uplinks keep for cengarde itself."
+msgstr "Con rutas más específicas que las rutas por defecto, que los enlaces conservan para el propio cengarde."
+
+msgid "IP pass"
+msgstr "IP pass"
+
+msgid "The VPS forwards TCP and UDP ports 1024-65000 to this router and UPnP hands them on to the LAN: devices and services here get the public IP of the VPS. Also update the VPS (PASSTHROUGH in /etc/cengarde/nat.conf) when changing this."
+msgstr "El VPS reenvía los puertos TCP y UDP 1024-65000 a este router y UPnP los entrega a la LAN: los equipos y servicios de aquí quedan con la IP pública del VPS. Al cambiarlo, actualiza también el VPS (PASSTHROUGH en /etc/cengarde/nat.conf)."
+
+msgid "Needs miniupnpd-nftables (and luci-app-upnp to see the mappings)."
+msgstr "Requiere miniupnpd-nftables (y luci-app-upnp para ver los mapeos)."
+
+msgid "DNS servers"
+msgstr "Servidores DNS"
+
+msgid "Used through the tunnel; the uplinks stop announcing their carriers' DNS servers, which usually refuse queries coming from the VPS."
+msgstr "Se usan a través del túnel; los enlaces dejan de anunciar los DNS de sus operadoras, que suelen rechazar consultas que llegan desde el VPS."
+
+msgid "Tunnel MTU"
+msgstr "MTU del túnel"
+
+msgid "Mute after falling behind (ms)"
+msgstr "Silenciar tras atrasarse (ms)"
+
+msgid "A link that stays this far behind the fastest one for the settle time stops carrying traffic until it catches up. 0: never."
+msgstr "Un enlace que se mantiene así de atrasado respecto del más rápido durante el tiempo de asentamiento deja de llevar tráfico hasta que se recupere. 0: nunca."
+
+msgid "Settle time (ms)"
+msgstr "Tiempo de asentamiento (ms)"
+
+msgid "Minimum active links"
+msgstr "Mínimo de enlaces activos"
+
+msgid "Never mute below this many links."
+msgstr "Nunca silenciar por debajo de esta cantidad de enlaces."
+
+msgid "Probe interval (ms)"
+msgstr "Intervalo de sondas (ms)"
+
+msgid "While there is traffic; each idle link is probed every second."
+msgstr "Mientras hay tráfico; sin tráfico, cada enlace se sondea una vez por segundo."
+
+msgid "Busy polling (µs)"
+msgstr "Sondeo activo (µs)"
+
+msgid "Keeps polling this long after traffic instead of sleeping: lower latency, more CPU. 0: off."
+msgstr "Sigue sondeando este tiempo después del tráfico en vez de dormir: menos latencia, más CPU. 0: desactivado."
+
+msgid "Log level"
+msgstr "Nivel de registro"
+
+msgid "Errors"
+msgstr "Errores"
+
+msgid "Warnings"
+msgstr "Avisos"
+
+msgid "Information"
+msgstr "Información"
+
+msgid "Debug"
+msgstr "Depuración"
+
+msgid "No valid pairing secret: generate one in the VPS tab."
+msgstr "No hay un secreto de emparejamiento válido: genera uno en la pestaña VPS."
+
+msgid "No VPS address yet."
+msgstr "Falta la dirección del VPS."
+
+msgid "No uplinks selected."
+msgstr "No hay enlaces elegidos."
+
+msgid "Uplink %s does not exist in the network configuration."
+msgstr "El enlace %s no existe en la configuración de red."
+
+msgid "Uplink %s has \"Use default gateway\" off: cengarde needs its default route."
+msgstr "El enlace %s tiene desactivado \"Usar puerta de enlace predeterminada\": cengarde necesita su ruta por defecto."
+
+msgid "Uplink %s is down."
+msgstr "El enlace %s está caído."
+
+msgid "IP pass is on but miniupnpd is not installed."
+msgstr "IP pass está activado pero miniupnpd no está instalado."
+
+msgid "The engine is not running: see System > System Log."
+msgstr "El motor no está corriendo: revisa Sistema > Registro del sistema."
+
+msgid "%d s ago"
+msgstr "hace %d s"
+
+msgid "%d min ago"
+msgstr "hace %d min"
+
+msgid "%d h ago"
+msgstr "hace %d h"
+
+msgid "down"
+msgstr "caído"
+
+msgid "no answer"
+msgstr "sin respuesta"
+
+msgid "muted"
+msgstr "silenciado"
+
+msgid "active"
+msgstr "activo"
+
+msgid "disabled"
+msgstr "desactivado"
+
+msgid "running"
+msgstr "en marcha"
+
+msgid "stopped"
+msgstr "detenido"
+
+msgid "Service"
+msgstr "Servicio"
+
+msgid "no handshake for %s"
+msgstr "sin handshake desde %s"
+
+msgid "connected"
+msgstr "conectado"
+
+msgid "handshake %s"
+msgstr "handshake %s"
+
+msgid "waiting for the VPS"
+msgstr "esperando al VPS"
+
+msgid "WireGuard tunnel"
+msgstr "Túnel WireGuard"
+
+msgid "Traffic"
+msgstr "Tráfico"
+
+msgid "%s up, %s down"
+msgstr "%s de subida, %s de bajada"
+
+msgid "Duplicate copies dropped"
+msgstr "Copias duplicadas descartadas"
+
+msgid "Version"
+msgstr "Versión"
+
+msgid "Uplink"
+msgstr "Enlace"
+
+msgid "State"
+msgstr "Estado"
+
+msgid "RTT"
+msgstr "RTT"
+
+msgid "Behind the fastest"
+msgstr "Atraso frente al más rápido"
+
+msgid "From the VPS"
+msgstr "Desde el VPS"
+
+msgid "Arrived first"
+msgstr "Llegó primero"
+
+msgid "Sent"
+msgstr "Enviado"
+
+msgid "Mutes"
+msgstr "Silenciados"
+
+msgid "muted by the VPS"
+msgstr "silenciado por el VPS"
+
+msgid "in use"
+msgstr "en uso"
+
+msgid "No uplink is up yet."
+msgstr "Todavía no hay enlaces arriba."
+
+msgid "The engine is not running."
+msgstr "El motor no está corriendo."
+
+msgid "Could not read the status (is the cengarde package installed?)."
+msgstr "No se pudo leer el estado (¿está instalado el paquete cengarde?)."
+
+msgid "Status"
+msgstr "Estado"
+
+msgid "Behind the fastest: how much later this uplink delivers than the quickest one; past the limit it gets muted (no traffic, probes only) until it catches up. Arrived first: share of the download that came through this uplink before any other copy."
+msgstr "Atraso frente al más rápido: cuánto más tarde entrega este enlace que el más rápido; pasado el límite se silencia (sin tráfico, solo sondas) hasta que se recupere. Llegó primero: parte de la bajada que entró por este enlace antes que cualquier otra copia."
+
+msgid "Every packet goes through all active uplinks; the VPS keeps the first copy."
+msgstr "Cada paquete sale por todos los enlaces activos; el VPS se queda con la primera copia."
+
+msgid "Settings"
+msgstr "Configuración"

@@ -1,30 +1,50 @@
 #!/bin/sh /etc/rc.common
-# cengarde (client or server, as set in the configuration file).
-# Edit /etc/cengarde/cengarde.conf, check it with
-#   cengarde -t -c /etc/cengarde/cengarde.conf
-# then: /etc/init.d/cengarde enable && /etc/init.d/cengarde start
-# Logs: logread -e cengarde. Status: cat /var/run/cengarde.json
+# cengarde, configured in /etc/config/cengarde (LuCI: Services > cengarde).
+# Every start and reload runs "cengarde-setup apply" (tunnel, firewall,
+# uplinks, UPnP) and regenerates the client configuration; procd restarts
+# the engine only when that configuration changed. With config_file set, the
+# engine runs that file instead (a server, for instance).
 
 START=90
 STOP=10
 USE_PROCD=1
-
 PROG=/usr/sbin/cengarde
-CONF=/etc/cengarde/cengarde.conf
+SETUP=/usr/sbin/cengarde-setup
+CONF=/var/etc/cengarde.conf
 
 start_service() {
-	if grep -q '^key = REPLACE_WITH' "$CONF"; then
-		logger -t cengarde "not started: set key and server in $CONF first"
-		return 1
+	local enabled config_file
+
+	$SETUP apply
+	config_load cengarde
+	config_get_bool enabled main enabled 0
+	[ "$enabled" = 1 ] || return 0
+	config_get config_file main config_file
+	if [ -z "$config_file" ]; then
+		mkdir -p /var/etc
+		if ! (umask 077 && $SETUP engine-conf > "$CONF.new"); then
+			rm -f "$CONF.new"
+			return 1
+		fi
+		mv "$CONF.new" "$CONF"
+		config_file=$CONF
 	fi
 	procd_open_instance
-	procd_set_param command "$PROG" -c "$CONF"
-	# Retry every 5 s, forever: at boot the server name may not resolve yet
-	# (an IP address in "server" avoids the wait).
+	procd_set_param command "$PROG" -c "$config_file"
 	procd_set_param respawn 3600 5 0
 	procd_set_param stdout 1
 	procd_set_param stderr 1
-	# "reload" restarts it when the file changed.
-	procd_set_param file "$CONF"
+	procd_set_param file "$config_file"
 	procd_close_instance
+}
+
+add_uplink_trigger() {
+	procd_add_interface_trigger "interface.*" "$1" /etc/init.d/cengarde reload
+}
+
+service_triggers() {
+	procd_add_reload_trigger cengarde
+	# An uplink's device may only be known once it is up.
+	config_load cengarde
+	config_list_foreach main uplink add_uplink_trigger
 }

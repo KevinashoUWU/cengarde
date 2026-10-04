@@ -1,0 +1,7 @@
+#!/bin/sh
+# Every router gets a pairing secret of its own on first boot or install.
+[ -n "$(uci -q get cengarde.main.secret)" ] || {
+	uci set cengarde.main.secret="$(/usr/sbin/cengarde genkey)"
+	uci commit cengarde
+}
+exit 0

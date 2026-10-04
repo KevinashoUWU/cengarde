@@ -5,22 +5,25 @@
 #   make defconfig && make package/cengarde/compile
 #
 # The package directory has to stay inside the repository (a symlink is
-# fine): the sources are taken from ../../engine. Set ENGINE_DIR otherwise.
+# fine): the sources are taken from ../../engine and ../../contrib. Set
+# ENGINE_DIR otherwise.
 #
 # SPDX-License-Identifier: GPL-2.0-only
 
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=cengarde
-# 0.2: protocol v2. Both ends must run the same protocol version.
-PKG_VERSION:=0.2.0
+# 0.3: UCI configuration and one-secret pairing; still protocol v2. Both
+# ends must run the same protocol version.
+PKG_VERSION:=0.3.0
 PKG_RELEASE:=1
 
 PKG_LICENSE:=GPL-2.0-only
 PKG_LICENSE_FILES:=LICENSE.txt
 
 ENGINE_DIR ?= $(CURDIR)/../../engine
-GIT_REV := $(shell git -C $(ENGINE_DIR) rev-parse --short HEAD 2>/dev/null)
+GIT_REV := $(shell git -C $(ENGINE_DIR) rev-parse HEAD 2>/dev/null)
+GIT_SHORT := $(shell git -C $(ENGINE_DIR) rev-parse --short=7 HEAD 2>/dev/null)
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -29,6 +32,7 @@ define Package/cengarde
   CATEGORY:=Network
   TITLE:=Redundant multi-link transport for WireGuard
   URL:=https://github.com/KevinashoUWU/cengarde
+  DEPENDS:=+wireguard-tools
 endef
 
 define Package/cengarde/description
@@ -36,10 +40,12 @@ define Package/cengarde/description
   keeps the first copy that arrives at the other end, so the tunnel survives
   the loss or delay of any single link. It mutes links that lag far behind
   the others. The same binary is the client (the router) and the server.
+  Configured in /etc/config/cengarde (or with luci-app-cengarde), which also
+  sets up the WireGuard tunnel to the VPS from a single pairing secret.
 endef
 
 define Package/cengarde/conffiles
-/etc/cengarde/cengarde.conf
+/etc/config/cengarde
 endef
 
 define Build/Prepare
@@ -55,17 +61,28 @@ define Build/Compile
 		CPPFLAGS="$(TARGET_CPPFLAGS)" \
 		LDFLAGS="$(TARGET_LDFLAGS)" \
 		HARDEN= HARDEN_LDFLAGS= \
-		VERSION="$(PKG_VERSION)-r$(PKG_RELEASE)$(if $(GIT_REV),-g$(GIT_REV))" \
+		VERSION="$(PKG_VERSION)-r$(PKG_RELEASE)$(if $(GIT_SHORT),-g$(GIT_SHORT))" \
 		cengarde
 endef
 
+# The VPS cloud-config builds the server from this package's own commit,
+# so that both ends speak the same protocol.
 define Package/cengarde/install
-	$(INSTALL_DIR) $(1)/usr/sbin $(1)/etc/init.d $(1)/etc/cengarde
-	$(INSTALL_BIN) $(PKG_BUILD_DIR)/cengarde $(1)/usr/sbin/
+	$(INSTALL_DIR) $(1)/usr/sbin $(1)/etc/init.d $(1)/etc/config $(1)/etc/uci-defaults \
+		$(1)/usr/share/cengarde
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/cengarde ./files/cengarde-setup $(1)/usr/sbin/
 	$(INSTALL_BIN) ./files/cengarde.init $(1)/etc/init.d/cengarde
-	sed 's|^#status_file = .*|status_file = /var/run/cengarde.json|' \
-		$(ENGINE_DIR)/examples/client.conf > $(1)/etc/cengarde/cengarde.conf
-	chmod 0600 $(1)/etc/cengarde/cengarde.conf
+	$(INSTALL_CONF) ./files/cengarde.config $(1)/etc/config/cengarde
+	$(INSTALL_BIN) ./files/cengarde.defaults $(1)/etc/uci-defaults/90-cengarde
+	sed 's/CENGARDE_REF=master;/CENGARDE_REF=$(if $(GIT_REV),$(GIT_REV),master);/' \
+		$(ENGINE_DIR)/../contrib/vps/cloud-config.yaml > $(1)/usr/share/cengarde/cloud-config.yaml
+endef
+
+# Removal undoes the tunnel, firewall, uplink and UPnP settings it made.
+define Package/cengarde/prerm
+#!/bin/sh
+[ -n "$${IPKG_INSTROOT}" ] || /usr/sbin/cengarde-setup disable
+exit 0
 endef
 
 $(eval $(call BuildPackage,cengarde))

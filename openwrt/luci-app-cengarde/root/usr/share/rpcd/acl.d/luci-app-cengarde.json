@@ -1,0 +1,18 @@
+{
+	"luci-app-cengarde": {
+		"description": "Grant access to cengarde",
+		"read": {
+			"file": {
+				"/usr/sbin/cengarde-setup status": [ "exec" ],
+				"/usr/share/cengarde/cloud-config.yaml": [ "read" ]
+			},
+			"uci": [ "cengarde", "upnpd" ]
+		},
+		"write": {
+			"file": {
+				"/usr/sbin/cengarde genkey": [ "exec" ]
+			},
+			"uci": [ "cengarde" ]
+		}
+	}
+}

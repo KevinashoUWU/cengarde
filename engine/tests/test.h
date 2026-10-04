@@ -37,5 +37,7 @@ void test_config(void);
 void test_util(void);
 void test_idmap(void);
 void test_health(void);
+void test_blake2s(void);
+void test_pair(void);
 
 #endif

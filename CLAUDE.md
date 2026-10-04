@@ -11,14 +11,15 @@ todos los enlaces del cliente (p. ej. una Raspberry Pi con varios módems) hacia
 un servidor (VPS), y el otro extremo se queda con la primera copia. Objetivo
 del fork: motor en C (Linux primero: Pi, OpenWrt, VPS), luego eBPF opcional,
 empaquetado para OpenWrt y una web de administración nueva. Plan:
-`ROADMAP.md`. Estado: Fases 1 y 2 hechas en lo esencial; Fase 3 empezada
-(paquete OpenWrt y plantilla del VPS, sin probar aún en hardware real).
+`ROADMAP.md`. Estado: Fases 1 y 2 hechas en lo esencial; en la Fase 3,
+OpenWrt (UCI, LuCI, imágenes, un solo secreto) probado en QEMU, falta
+hardware real.
 
 ## Mapa del repo
 
 - `engine/`: motor C (`src/`, `tests/`, `examples/`, `README.md`).
-- `openwrt/`: paquete del SDK y guía de instalación; `contrib/`: VPS
-  (cloud-init, NAT) y unidad systemd.
+- `openwrt/`: paquetes `cengarde` y `luci-app-cengarde`, `test/` (VMs QEMU
+  y Playwright) y guía; `contrib/`: VPS (cloud-init, NAT) y systemd.
 - `cmd/`, `webmanager/`: engarde Go y su UI, de referencia (solo para medir).
 - `bench/`: laboratorio netns/veth con `udpgen` (WireGuard falso), ver su README.
 - `docs/historias/`: investigación y decisiones (índice abajo).
@@ -31,13 +32,12 @@ empaquetado para OpenWrt y una web de administración nueva. Plan:
   - `bench/lab.sh build`, `smoke` y `health` (los que corre el CI),
     `compare` (Go frente a C), `latency` y `suite` (línea base Go);
   - `ENGINE=c` usa cengarde en ambos extremos.
-
-  En el contenedor cloud hace falta `apt-get install -y iproute2 strace`
-  (`apt-get update` antes); su kernel no tiene IPv6, WireGuard ni
-  `sch_netem`.
+- OpenWrt de punta a punta: `openwrt/test/e2e.sh IMAGEN` (`openwrt/README.md`).
+- Contenedor cloud: `apt-get update` y luego `iproute2 strace` (laboratorio)
+  o `qemu-system-x86 openssh-client` (e2e); sin IPv6, WireGuard ni netem.
 - CI: `engine.yml` (gcc/clang con `-Werror`, sanitizers, qemu en
   aarch64/armhf/MIPS big-endian, humo y salud en netns) y `openwrt.yml`
-  (paquetes con los SDK 25.12/24.10, tests con su musl).
+  (paquetes 25.12/24.10, imágenes, e2e con KVM y release con tags `v*`).
 
 ## Reglas de trabajo
 
@@ -76,4 +76,5 @@ empaquetado para OpenWrt y una web de administración nueva. Plan:
 | [004](docs/historias/004-entorno-real.md) | Entorno real: Pi 4 (destino OpenWrt limpio), 4 enlaces 5G en VLAN, VPS Vultr | fijes objetivos de rendimiento o empaquetado |
 | [005](docs/historias/005-motor-c-v1.md) | Motor C v1: protocolo, arquitectura y medidas | toques `engine/` |
 | [006](docs/historias/006-salud-de-enlaces.md) | Salud de enlaces (silenciado, mudo), protocolo v2, baja latencia | toques las sondas, el reparto o las perillas de latencia |
-| [007](docs/historias/007-openwrt-y-vps.md) | Paquete OpenWrt, plantilla del VPS, SmoothWAN como referencia | empaquetes, instales o diseñes la LuCI |
+| [007](docs/historias/007-openwrt-y-vps.md) | Paquete OpenWrt, plantilla del VPS, SmoothWAN como referencia | empaquetes o instales en OpenWrt o el VPS |
+| [008](docs/historias/008-luci-uci-y-emparejamiento.md) | UCI, LuCI, un solo secreto (BLAKE2s), imágenes, prueba en QEMU | toques `openwrt/`, `cengarde keys` o el cloud-config |
