@@ -33,6 +33,8 @@
       (`delegate`), `wireguard.sh` (IPv6) y el `validation.js` de LuCI
       (tipo `host`); `board.d/02_network` de la imagen 25.12.5 de la Pi 4;
       miniupnpd 2.3.9 (STUN);
+    - de 25.12.5: `alias.c` de netifd, `dhcp.sh`, `ppp.sh` y `ppp6-up`,
+      `qmi.sh`, `mbim.sh` y `ncm.sh` (`delegate`);
   - systemd: `systemd.service(5)` (`RemainAfterExit`), `LoadCredential=`
     (v249, v255 y v260), `IPAddressDeny=`; unidades `.path` en la
     historia 009;
@@ -168,13 +170,22 @@ Sin respuesta: cuántos routers por VPS. Se mantiene el límite del diseño,
 
 ### OpenWrt (24.10 y 25.12)
 
-- **netifd:** una interfaz DHCPv6 compañera por enlace (`proto dhcpv6`
-  sobre `@enlace`) le da al motor la IPv6 del módem. `delegate 0` no pasa
-  su prefijo a la LAN y `peerdns 0` no usa sus DNS. Las mismas opciones
-  existen en las dos ramas.
-- **Nombres de compañeras:** qmi y mbim crean interfaces dinámicas
-  `<iface>_6`, que no heredan `delegate`; por eso las compañeras de
-  cengarde no usan ese sufijo y el estado avisará de la fuga.
+- **netifd:** una interfaz DHCPv6 compañera por enlace (`proto dhcpv6`)
+  le da al motor la IPv6 del módem. `delegate 0` no pasa su prefijo a la
+  LAN y `peerdns 0` no usa sus DNS. Las mismas opciones existen en las dos
+  ramas.
+- **Dispositivo de la compañera:** el del enlace, como el `wan6` de
+  fábrica; `@enlace` solo si el enlace no tiene uno propio (un cliente
+  wifi). Un alias `@enlace` existe solo mientras el enlace está arriba
+  (`alias.c`, `alias_check_state`): un fallo de DHCPv4 se llevaría también
+  su IPv6.
+- **Interfaces IPv6 dinámicas:** PPP, qmi, mbim y ncm crean `<iface>_6` y
+  le copian `delegate 0` solo desde la interfaz madre (`ppp6-up`,
+  `qmi.sh`, `mbim.sh`, `ncm.sh`). Por eso, mientras todo va por el túnel,
+  cengarde pone `delegate 0` en los enlaces que no son DHCP; en los DHCP
+  no, porque `dhcp.sh` declara `delegate` (solo para 6rd) y netifd
+  reiniciaría su cliente DHCP. Las compañeras de cengarde no usan ese
+  sufijo, y `ipv6_leak` queda como aviso para otras fuentes.
 - **La Pi 4 no trae `wan6`:** de fábrica solo tiene `lan`
   (`board.d/02_network`). La fuga de IPv6 aparece solo si alguien crea
   una DHCPv6 que delega sobre el enlace Starlink, o si Starlink va al
@@ -413,7 +424,8 @@ los metadatos en el VPS.
   origen IPv6 (`addrpick.h`); `path_mtu` y aviso de MTU; escenario
   `fallback`.
 - **OpenWrt:** `list server` (migrado por uci-defaults), compañeras DHCPv6
-  con `delegate 0` y `peerdns 0`, las mismas marcas en las que ya existen,
+  con `delegate 0` y `peerdns 0`, las mismas marcas en las que ya existen
+  (y `delegate 0` en los enlaces que no son DHCP),
   tope de MTU 1396 con un literal IPv6, y los problemas `vps_silent`,
   `path_mtu`, `ipv6_leak` e `ipv6_companion_conflict`.
 - **VPS:** `cengarde-nat` declarativo (`rules`, `apply`, `down`, `sync`,
@@ -475,3 +487,6 @@ los metadatos en el VPS.
 ## Cambios
 
 - 2026-10-04: creada con el plan, las respuestas del usuario y el PR 1.
+- 2026-10-04: corregido: las `<iface>_6` de PPP, qmi, mbim y ncm sí copian
+  `delegate 0` de su interfaz madre; las compañeras van sobre el
+  dispositivo del enlace y no sobre `@enlace`.
