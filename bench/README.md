@@ -118,7 +118,9 @@ failover (`FAILOVER_MS`):
   aunque 10.0.3.2 vuelva. Después, un corte: el lado del servidor pierde
   sus direcciones durante 25 s (`OUTAGE_S`), y l3 conserva la suya, como un
   módem que mantiene su concesión. Recorre las dos sin respuesta (una ronda
-  muerta), y la primera respuesta lo devuelve a 10.0.3.2.
+  muerta), y la primera respuesta lo devuelve a 10.0.3.2. Por último, otra
+  vez en 10.0.3.20, l3 pierde su propia dirección y recupera la misma: eso
+  también lo devuelve a la primera, al momento.
 - **MTU de camino:** l2 baja a MTU 1400 mientras suben datagramas de 1400
   bytes; el estado tiene que dar `path_mtu` 1400 en l2 (1500 en l1) y el log
   tiene que pedir un MTU de WireGuard de 1316 solo para l2, sin perder

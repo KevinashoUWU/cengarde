@@ -55,7 +55,8 @@ struct link {
 	/* Of the last socket; kept once it closes, to tell a new local address. */
 	struct sockaddr_storage local, remote;
 	/* The server address it uses (srvpick.h), kept by address; none: the
-	 * first candidate. */
+	 * first candidate, as after an outage of the link (down, without an
+	 * address, or gone) or a new list. */
 	struct sockaddr_storage cand;
 	int cand_idx, ncand;    /* where cand is among the link's candidates, and how many there are */
 	unsigned families;      /* 1 << AF_* of the interface's usable addresses, as of the last reconcile */
@@ -440,6 +441,14 @@ static void reconcile(struct client *c, uint64_t now_ms)
 	for (int i = 0; i < CG_MAX_LINKS; i++) {
 		struct link *l = &c->link[i];
 
+		/* Down, gone, or without an address of the server's family: an
+		 * outage of the link, which comes back through its first server
+		 * address, with the same local address or a new one (srvpick.h).
+		 * Not a pause or an exclusion. */
+		if (l->used && !l->seen && l->why != WHY_PAUSED && l->why != WHY_EXCLUDED) {
+			memset(&l->cand, 0, sizeof(l->cand));
+			l->back_to_first = 0;
+		}
 		if (l->used && l->fd >= 0 && !l->seen)
 			link_close(c, l,
 				   l->why == WHY_GONE   ? "interface gone"

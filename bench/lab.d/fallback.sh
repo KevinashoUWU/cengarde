@@ -22,7 +22,9 @@
 #   the server side of l3 loses its addresses for 25 s, while l3 keeps its
 #   own (a modem that keeps its lease). l3 goes through both addresses
 #   without a reply, a dead round, and the first reply after the outage
-#   sends it back to 10.0.3.2, the first.
+#   sends it back to 10.0.3.2, the first. Last, on 10.0.3.20 again, l3
+#   loses its own address and gets the same one back: that also sends it
+#   back to the first, at once.
 # - Path MTU: l2's MTU drops to 1400 on the client side while 1400-byte
 #   datagrams go up. The status shows path_mtu 1400 on l2, and the log asks
 #   for a WireGuard MTU of 1316 on l2 only.
@@ -92,7 +94,7 @@ fb_reload() {
 }
 
 fallback() {
-	local fail=0 out moves1 moves3 downs sent uniq secs=$(((FAILOVER_MS + 1999) / 1000 + 1))
+	local fail=0 out moves1 moves3 downs rounds sent uniq secs=$(((FAILOVER_MS + 1999) / 1000 + 1))
 	local on1='l["state"] == "live" and l["remote"] == "10.0.1.2:59402" and l["candidate"] == 1'
 	local on3a='l["state"] == "live" and l["remote"] == "10.0.3.2:59402" and l["candidate"] == 0'
 	local on3b='l["state"] == "live" and l["remote"] == "10.0.3.20:59402" and l["candidate"] == 1'
@@ -161,6 +163,23 @@ fallback() {
 		"failovers $(fb_link l3 failovers)"
 	grep -q "link l3: the server answers again after a round of its addresses without replies, back to 10.0.3.2:59402" \
 		"$RUN/client.log" || { echo "FAIL: l3 did not come back through a dead round"; fail=1; }
+
+	# An outage of l3 itself, on 10.0.3.20 again: its own address gone and
+	# back, the same one. That is a change of its local address, so it
+	# comes back on the first at once, with no dead round.
+	ip netns exec srv iptables -t raw -I PREROUTING -i s3 -d 10.0.3.2 -j DROP
+	out=$(fb_wait l3 "$on3b" "$((secs + 1))") || { echo "FAIL: l3 did not move to 10.0.3.20 again: $out"; fail=1; }
+	ip netns exec srv iptables -t raw -D PREROUTING -i s3 -d 10.0.3.2 -j DROP
+	rounds=$(grep -c "link l3: the server answers again" "$RUN/client.log")
+	ip -n cli addr flush dev l3
+	out=$(fb_wait l3 'l["state"] == "down" and l["reason"] == "no address"' 3) ||
+		{ echo "FAIL: l3 not down without its address: $out"; fail=1; }
+	sleep 2
+	ip -n cli addr add 10.0.3.1/24 dev l3
+	out=$(fb_wait l3 "$on3a" 3) || { echo "FAIL: l3 not back on its first address after losing its own: $out"; fail=1; }
+	echo "   l3, its own address gone and back: on the first after $out"
+	[ "$(grep -c "link l3: the server answers again" "$RUN/client.log")" = "$rounds" ] ||
+		{ echo "FAIL: l3 came back through a dead round, not through its local address"; fail=1; }
 
 	# Path MTU: l2 at 1400 bytes while 1400-byte datagrams go up.
 	ip -n cli link set l2 mtu 1400

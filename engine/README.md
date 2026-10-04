@@ -147,20 +147,25 @@ server = 203.0.113.10:59402 [2001:db8::4]:59402
   como mínimo 3 × `probe_idle_ms`) sin una respuesta verificada, prueba la
   siguiente, y al final vuelve a empezar. Si no puede ni abrir el socket
   hacia una (sin ruta, por ejemplo), pasa a la siguiente al momento.
-- **Pegajoso:** se queda donde le contestan. Vuelve a la primera solo si
-  cambia su dirección local, si gana o pierde una familia con entradas en
-  su lista (la IPv6 de Starlink llega después de la IPv4: con
-  `server = [IPv6] IPv4` el enlace empieza en IPv4 y pasa a la IPv6 cuando
-  aparece; con una lista solo IPv4, la IPv6 que va y viene no lo mueve), si
-  una recarga cambia su lista o con la primera respuesta después de una
-  ronda entera sin respuesta en ninguna:
-  entonces el caído era el enlace, no la dirección (un corte de la red
-  móvil en el que el módem conserva su dirección), y vuelve a mandar el
-  orden de la lista. En una recarga cuentan las entradas de su familia:
-  añadir, quitar, editar o mover una lo devuelve a la primera; una entrada
-  de otra familia, o un nombre que al resolverse otra vez da las mismas
-  direcciones en otro orden, no lo mueven. No reintenta la preferida por su
-  cuenta: cada intento costaría 10 s sin ese enlace mientras siga rota.
+- **Pegajoso:** se queda donde le contestan. Vuelve a la primera solo:
+  - si cambia o pierde su dirección local: se cae, se queda sin dirección
+    (o sin ninguna de la familia del servidor) o desaparece, aunque vuelva
+    con la misma (un módem USB tras perder la señal);
+  - si gana o pierde una familia con entradas en su lista: la IPv6 de
+    Starlink llega después de la IPv4, así que con `server = [IPv6] IPv4`
+    el enlace empieza en IPv4 y pasa a la IPv6 cuando aparece; con una
+    lista solo IPv4, la IPv6 que va y viene no lo mueve;
+  - si una recarga cambia su lista. Cuentan las entradas de su familia:
+    añadir, quitar, editar o mover una lo devuelve a la primera; una
+    entrada de otra familia, o un nombre que al resolverse otra vez da las
+    mismas direcciones en otro orden, no lo mueven;
+  - con la primera respuesta después de una ronda entera sin respuesta en
+    ninguna: entonces el caído era el enlace, no la dirección (un corte de
+    la red móvil en el que el módem conserva su dirección), y vuelve a
+    mandar el orden de la lista.
+
+  No reintenta la preferida por su cuenta: cada intento costaría 10 s sin
+  ese enlace mientras siga rota.
 - **Dirección de origen IPv6:** la elige como RFC 6724: nunca una tentativa,
   fallida o de enlace local; una ULA (fc00::/7) hacia un destino que no es
   ULA va última (sirve si el módem hace NAT66), luego las obsoletas, luego
@@ -174,8 +179,9 @@ server = 203.0.113.10:59402 [2001:db8::4]:59402
 
 En el laboratorio (`sudo bench/lab.sh fallback`, con 4 s de failover): con
 la primera dirección muerta el enlace vive en la segunda a los 4 s y se
-queda; una IPv6 primera en un enlace solo IPv4 no retrasa nada; y tras 25 s
-sin ninguna dirección del servidor, vuelve a la primera.
+queda; una IPv6 primera en un enlace solo IPv4 no retrasa nada; tras 25 s
+sin ninguna dirección del servidor, vuelve a la primera; y también vuelve
+al momento si pierde su propia dirección y recupera la misma.
 
 ## Salud de los enlaces
 
