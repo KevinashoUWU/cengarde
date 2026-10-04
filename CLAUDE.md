@@ -24,18 +24,19 @@ por fuera del túnel) probado en QEMU; falta hardware real.
 
 ## Comandos
 
-- Motor: `make -C engine test`, `make -C engine SANITIZE=1 test` y, en
-  cruzado, `make CC=aarch64-linux-gnu-gcc`.
+- Motor: `make -C engine test`, `SANITIZE=1 test` (ASan), `SANITIZE=thread
+  test` (TSAN) y, en cruzado, `make CC=aarch64-linux-gnu-gcc`.
 - Laboratorio (root): `bench/lab.sh build`, `ci` (smoke, health, control y
   `lab.d/`) y `latency`; `ENGINE=go bench/lab.sh build` suma el Go del
   historial, para `compare` (Go frente a C) y `suite` (línea base Go).
 - OpenWrt de punta a punta: `openwrt/test/e2e.sh IMAGEN` (`openwrt/README.md`).
 - Contenedor cloud: `apt-get update`, `iproute2 iptables strace` (laboratorio)
   o `qemu-system-x86 openssh-client` (e2e); sin IPv6, WireGuard, netem, systemd.
-- CI: `engine.yml` (gcc/clang con `-Werror`, sanitizers, qemu en aarch64,
-  armhf y MIPS big-endian, laboratorio en netns), `openwrt.yml` (paquetes
-  25.12/24.10, imágenes, e2e con KVM y release con tags `v*`) y `vps.yml`
-  (reglas de `cengarde-nat` en netns, y el VPS entero con systemd real).
+- CI: `engine.yml` (gcc/clang con `-Werror`, sanitizers y TSAN, qemu en
+  aarch64, armhf y MIPS BE, AArch64 real, laboratorio en netns),
+  `openwrt.yml` (paquetes 25.12/24.10, imágenes, e2e con KVM y release con
+  tags `v*`) y `vps.yml` (reglas de `cengarde-nat` en netns, y el VPS entero
+  con systemd real).
 
 ## Reglas de trabajo
 

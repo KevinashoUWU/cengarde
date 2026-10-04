@@ -3,7 +3,8 @@
 Laboratorio reproducible para medir el motor cengarde en C (`engine/`, y en
 el futuro eBPF), y compararlo con el engarde Go original, en una sola máquina
 Linux, sin hardware. Dos network
-namespaces unidos por tres pares veth que hacen de enlaces: `cli` hace de
+namespaces unidos por tres pares veth (o `NLINKS`, si son más) que hacen de
+enlaces: `cli` hace de
 Raspberry Pi y `srv` de VPS. WireGuard se sustituye por `udpgen`, un
 emisor/receptor UDP que numera y marca con la hora cada paquete, así que se
 miden pérdidas reales (paquetes sin ninguna copia), duplicados, reordenación y
@@ -41,6 +42,10 @@ sudo bench/lab.sh restart  # reinicios del servidor con tráfico: todos los enla
 sudo bench/lab.sh restart ebe570b  # lo mismo con el motor de otro commit, p. ej. el de antes del arreglo
 sudo bench/lab.sh multiip  # servidor con varias direcciones: responde desde la de llegada (lab.d, va en ci)
 sudo bench/lab.sh fallback # varias direcciones del servidor por enlace: failover, IPv6 que se salta, vuelta tras un corte, MTU de camino (lab.d, va en ci)
+sudo bench/lab.sh lanes    # las colas del servidor: una por enlace, la basura aparte, un segundo servidor rechazado; y lanes = 1 (lab.d, va en ci)
+sudo bench/lab.sh deepq    # un camino del servidor con 20 MB de cola local no afecta a los demás (lab.d, va en ci)
+sudo bench/lab.sh skew     # primeras llegadas repartidas entre enlaces idénticos, puerta C5 (lab.d, va en ci)
+sudo LAB_UDPMEM=1 bench/lab.sh udpmem  # el presupuesto de recepción frente a net.ipv4.udp_mem (lab.d; baja el sysctl de toda la máquina unos segundos: solo en el CI)
 
 sudo ENGINE=go bench/lab.sh build  # además, el engarde Go (normal y -race)
 sudo bench/lab.sh suite    # línea base del engarde Go (historia 001, ~5 min)
@@ -67,6 +72,74 @@ el CI tiene que correrlo. Así, cambios en paralelo añaden escenarios sin tocar
   diga qué falló, y devuelve distinto de 0 si falló;
 - pasa shellcheck como bash (`shellcheck -s bash -e SC2015 bench/lab.sh
   bench/lab.d/*.sh`, en el job lint de `openwrt.yml`).
+
+### `lanes`: las colas del servidor (`lab.d/lanes.sh`)
+
+El servidor escucha con un grupo `SO_REUSEPORT` de 8 sockets (*lanes*) y
+uno de basura, y un programa BPF mete cada datagrama en el de su número de
+enlace (`engine/src/steer.h`; [README del motor](../engine/README.md#colas-del-servidor-lanes)).
+Con las direcciones de `multiip` (l1 a una secundaria, l2 a una /32, l3 a
+10.0.3.2):
+
+- todos los enlaces vivos en 3 s, y en cada camino del servidor
+  `links[].local` es la dirección a la que envía su enlace: las respuestas
+  salen desde la dirección de llegada en cada cola;
+- 2000 pps de bajada y de subida, cada paquete una vez;
+- las colas 0, 1 y 2 reciben, cada una solo de su enlace (`lanes[].links`),
+  y las demás y la de basura nada;
+- un datagrama corto y uno de protocolo 4 van a la basura (`rx.junk`,
+  `rx.short`, `rx.bad_version`), no a una cola;
+- un segundo servidor en el mismo puerto no arranca ("Address already in
+  use") y el primero conserva sus 8 colas;
+- con `lanes = 1`, un solo socket y sin basura, y el mismo tráfico.
+
+### `deepq`: un camino del servidor con una cola larga (`lab.d/deepq.sh`)
+
+s3 envía a 5 Mbit/s detrás de una cola de 20 MB (`tbf limit 20mb`) mientras
+bajan 20.000 pps durante 10 s. La cola es más larga que el búfer de envío
+del socket, que se llena. Con un solo socket para todos los caminos ese
+búfer era de todos: los caminos sanos perdían sus copias y el túnel
+también. Con colas, el túnel no pierde nada y los caminos sanos no tiran
+ninguna copia. Medido aquí: con `lanes = 1` (`SERVER_EXTRA="lanes = 1"`)
+el túnel perdió un 10,48 % y los caminos sanos 21.970 y 20.972 copias; con
+8 colas, el túnel nada y los caminos sanos ninguna copia.
+
+### `skew`: primeras llegadas (`lab.d/skew.sh`)
+
+Tres enlaces idénticos, 2000 y 40.000 pps, 5 s en cada sentido. Un extremo
+envía cada lote camino a camino y el primero llega primero: cuando era
+siempre el camino 0, l1 ganaba el 90–100 % de las primeras llegadas. El
+servidor ahora rota el primero; en bajada ningún enlace puede pasar del
+60 % (`SKEW_MAX`, la puerta C5). La subida solo se informa hasta que el
+router envíe en paralelo. Medido aquí: bajada 33,0–33,9 % por enlace a las
+dos tasas; subida, l1 con el 92–99,7 %.
+
+### `udpmem`: el presupuesto de recepción (`lab.d/udpmem.sh`)
+
+Todos los sockets UDP de la máquina comparten `net.ipv4.udp_mem`: pasado su
+primer valor el kernel deja un solo datagrama en la cola de cada uno, y
+pasado el último, ninguno. Las colas del servidor se reparten la mitad del
+umbral de presión. El escenario baja `udp_mem` a `8192 12288 16384`
+páginas (y lo devuelve con un trap), para el servidor con `SIGSTOP`, llena
+todas las colas con datagramas de protocolo 3 y, mientras, un par UDP
+aparte intercambia 100 pps leyendo cada 250 ms (con algo de cola, como
+cualquier socket UDP ocupado):
+
+- el servidor informa `rcvbuf_capped` con el valor por socket del
+  presupuesto (24 MiB para 10 sockets);
+- todas las colas se llenan, y entre todas no pasan del presupuesto (sus
+  colas en `/proc/net/udp`);
+- el par no pierde nada;
+- tras `SIGCONT`, el túnel funciona en los dos sentidos.
+
+`udp_mem` es global y solo se ve en el primer namespace de red, así que
+el servidor de `srv` lo estimaría desde la RAM: el escenario se lo enseña
+con un tmpfs sobre `/proc/sys/net/ipv4` en su propio namespace de montaje,
+como lo leería en un VPS. `UDPMEM_SHOW` le enseña otros valores: con los
+reales no recorta, las colas dejan de llenarse en el primer valor de
+`udp_mem` y el par pierde la mayoría (medido: llegaron 163 de 599). Solo
+corre con `LAB_UDPMEM=1` (el CI lo pone): baja el sysctl de toda la
+máquina unos segundos.
 
 ### `restart`: el servidor se reinicia (`lab.d/restart.sh`)
 
@@ -170,7 +243,7 @@ sudo bench/lab.sh teardown
 
 | Variable | Valor por defecto | Uso |
 | --- | --- | --- |
-| `NLINKS` | 3 | enlaces activos (1–3) |
+| `NLINKS` | 3 | enlaces activos; con más de 3 crea más veth (l4 10.0.4.1…) |
 | `SIZE` | 1400 | tamaño de paquete en bytes |
 | `ENGINE` | `c` | `c`: cengarde (`engine/`) en ambos extremos, con configs INI en `bench/run/`; `go`: el engarde Go |
 | `GO_REF` / `GO_REPO` | `3492df9…` / porech/engarde | de qué commit sale el engarde Go: del historial de este repositorio o, si no está (clon superficial), de `GO_REPO` |
@@ -189,6 +262,33 @@ Demos de los problemas del engarde Go descritos en el roadmap (necesitan
 - `demo_webpanic`: el cliente se cae si el puerto web está ocupado.
 - `demo_races`: detector de carreras de Go, con tráfico y uso normal de la
   web.
+
+## Medidas más finas: `mt.py`, `jitter` y `mgen`
+
+`bench/mt.py` es el driver del estudio de hilos: envuelve `lab.sh` (setup,
+start, teardown) y repite su tráfico, y apunta por ejecución lo que la
+línea de `lab.sh` no da: CPU por paquete en ns (de
+`/proc/PID/task/*/schedstat`, por proceso y por hilo), descartes por socket
+según su papel (los enlaces del cliente, las colas del servidor por orden
+de creación, los sockets de WireGuard), los errores UDP de cada namespace y
+los contadores de los dos motores, con las colas del servidor. Cada
+ejecución es una línea JSON en `RESULTS` (por defecto `mt.jsonl`).
+
+```sh
+# gate S1: subida 80–110 kpps, lanes 1 y 8 intercaladas, 4 rondas, búferes
+# del router a 32 MiB para que solo pueda tirar el servidor
+sudo RUN=/tmp/cg-mt RESULTS=$PWD/s1.jsonl flock /tmp/cengarde-netns.lock python3 bench/mt.py s1 4
+python3 bench/mt.py table s1.jsonl
+# barrido, enlace lento, perf y varias sesiones (ver el docstring)
+sudo RUN=/tmp/cg-mt flock /tmp/cengarde-netns.lock python3 bench/mt.py sweep e1 down,up 40000,80000 5 3 1400 3
+```
+
+`bench/jitter.c` (`bin/jitter -d SEGUNDOS`) mide cuánto tarda en despertar
+un sueño de 1 ms en cada CPU y marca los despertares tardíos con su hora
+`CLOCK_MONOTONIC`: así se distinguen las pausas de la VM entera (tardíos a
+la vez en varias CPU) de los atascos del motor. `bench/mgen.c` es el
+WireGuard falso de varias sesiones que usan los comandos `multi` de
+`mt.py`. `build` compila los dos.
 
 ## Cómo leer la salida
 

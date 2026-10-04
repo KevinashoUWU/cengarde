@@ -19,6 +19,7 @@ ejemplo `cengarde 0.4.1-r1-g<commit> (protocol 3)` en OpenWrt.
 make -C engine            # binario engine/cengarde
 make -C engine test       # tests unitarios
 make -C engine SANITIZE=1 test   # con ASan y UBSan
+make -C engine SANITIZE=thread test   # con ThreadSanitizer (compilación aparte)
 ```
 
 Solo necesita un compilador C11 y las cabeceras de Linux, sin más
@@ -127,6 +128,8 @@ Detalle y razones en la
   - responde por cada camino desde la dirección a la que envía el cliente
     (con un `listen` comodín, `*` o `0.0.0.0`): sirve cualquier dirección
     del VPS, también una añadida en marcha, como una IP reservada o IPv6;
+  - escucha con un socket por enlace del cliente (*lanes*, ver la sección
+    [Colas del servidor](#colas-del-servidor-lanes));
   - reparte la bajada por todos los caminos activos.
 
 ## Varias direcciones del servidor
@@ -196,6 +199,63 @@ queda; una IPv6 primera en un enlace solo IPv4 no retrasa nada; tras 25 s
 sin ninguna dirección del servidor, vuelve a la primera; y también vuelve
 al momento si pierde su propia dirección y recupera la misma.
 
+## Colas del servidor (`lanes`)
+
+El servidor escucha en su puerto con varios sockets a la vez (un grupo
+`SO_REUSEPORT`): `lanes` sockets, 8 por defecto, y uno más para la basura.
+Un programa BPF clásico (`src/steer.h`) mete cada datagrama en el socket de
+su número de enlace (el enlace 0 en el 0, el 1 en el 1…), así que las
+copias de un mismo paquete esperan en colas distintas.
+
+- **Por qué:** con un solo socket, un parón del VPS (una VM se para 5–38 ms
+  varias veces cada 10 s en el laboratorio) desbordaba la única cola y se
+  llevaba las tres copias de cada paquete: el 73–98 % de las copias
+  perdidas en el servidor eran paquetes enteros, y la redundancia no
+  servía de nada. Con colas separadas desbordan en momentos distintos.
+- **La bajada sale por la cola de su enlace:** el camino `p` envía desde el
+  socket `p & (lanes − 1)`, el mismo al que llega su enlace (están todos
+  atados a la misma dirección y puerto, y la respuesta sale desde la
+  dirección de llegada, como antes). Así cada camino tiene su propio búfer
+  de envío y su propio lote de respuestas a sondas: un camino con una cola
+  local larga ya no llena el búfer de los demás. En el laboratorio
+  (`sudo bench/lab.sh deepq`: un camino a 5 Mbit/s con 20 MB de cola,
+  20.000 pps de bajada) el túnel pierde un 10,48 % con un solo socket y
+  nada con las colas.
+- **El primer camino rota:** el servidor envía cada lote camino a camino, y
+  el que sale primero llega primero; antes era siempre el 0, que ganaba el
+  90–100 % de las primeras llegadas (`rx_first`) en enlaces idénticos.
+  Ahora el primero cambia de lote a lote: 33 % por enlace en el
+  laboratorio a 2.000 y 40.000 pps (`sudo bench/lab.sh skew`).
+- **Basura:** lo que no es protocolo 3 (datagramas más cortos que una
+  cabecera, o de otra versión, como un router de otra versión) va al socket
+  de basura, nunca a una cola real: se cuenta (`rx.junk`, `rx.short`,
+  `rx.bad_version`) y se registra de vez en cuando ("protocol vN packet
+  from …: update the router or the VPS"). Tiene un búfer fijo de 256 KiB,
+  así que una avalancha de basura solo llena ese.
+- **Otro proceso en el mismo puerto:** antes de montar el grupo, el
+  servidor ata un socket sin `SO_REUSEPORT` y lo cierra; si el puerto está
+  ocupado, no arranca ("Address already in use") en vez de colarse en el
+  grupo de otro cengarde.
+- **`lanes = 1`** es un solo socket, como antes, sin socket de basura: el
+  interruptor para volver atrás. `lanes` (`auto` = 8, o 1, 2, 4, 8, 16)
+  solo cambia reiniciando el proceso. Un kernel anterior a 4.5, que no
+  admite el programa, también se queda con un socket (y lo dice en
+  `steering_error`).
+- **Memoria:** todos los sockets UDP de la máquina comparten
+  `net.ipv4.udp_mem`. Pasado su primer valor, el kernel solo deja un
+  datagrama en la cola de cada socket UDP, y pasado el último, ninguno;
+  ocho colas llenas podrían llevarse por delante cualquier otro socket UDP
+  con algo de cola (en el laboratorio, uno que lee cada 250 ms recibió 163
+  de 599 datagramas). Por eso los sockets que reciben (las colas, el
+  socket de WireGuard de la sesión y el de basura) se reparten la mitad del
+  umbral de presión, y cada uno recibe `min(rcvbuf, presupuesto / (2 ×
+  sockets))` (el kernel dobla el valor): en un VPS de 1 GB, unos 3,2 MiB
+  por socket en vez de 4 MiB *(cálculo)*. Se recalcula al arrancar y en
+  cada recarga; `cengarde -t` y el estado (`rcvbuf`, `rcvbuf_capped`)
+  dicen cuánto queda. En un namespace de red propio (un contenedor) el
+  sysctl no se ve y se estima desde la RAM, como lo calcula el kernel al
+  arrancar (`budget_from: "RAM"`).
+
 ## Salud de los enlaces
 
 Cada extremo decide por qué enlaces envía, con el retraso de ida que le
@@ -252,7 +312,7 @@ túnel:
   2000 pps no perdieron ningún paquete (`sudo bench/lab.sh control`).
 - **Reiniciando el proceso en el lugar** (mismo PID, sesión nueva): `mode`,
   `key`, `listen`, `control_socket`, `busy_poll_us`, `cpu`, `rt_priority` y,
-  en el servidor, `wireguard` y `max_sessions`.
+  en el servidor, `wireguard`, `max_sessions` y `lanes`.
 - **Si el archivo tiene un error,** sigue con la configuración anterior,
   lo registra y lo publica en el estado (`config_error`).
 - **Sin bloquear el túnel:** la lectura va en un hilo aparte, porque un
@@ -340,6 +400,21 @@ desde la dirección de llegada. Por enlace:
   or no route".
 
 `rx.ctrunc` cuenta los paquetes cuya dirección de llegada no cupo.
+
+Las colas del servidor (ver [Colas del servidor](#colas-del-servidor-lanes)):
+- `lanes[]`: por socket, `index`, `group` (0 hasta el protocolo 4), `rx`
+  (datagramas leídos), `drops` (los que el kernel tiró por cola llena;
+  `null` si el kernel no lo dice) y `links` (los enlaces cuyos paquetes
+  verificados llegaron por él: uno por cola);
+- `junk`: el socket de basura (`index`, `rx`, `drops`), o `null` con
+  `lanes = 1`; `rx.junk`, `rx.short` y `rx.bad_version` lo desglosan;
+- `rcvbuf`: `configured`, `budget` (bytes para todos los sockets que
+  reciben), `budget_from` (`net.ipv4.udp_mem` o `RAM`), `sockets`,
+  `per_socket` (lo que se pide) y `effective` (lo que el kernel da a cada
+  cola, el doble); `rcvbuf_capped` dice si `per_socket` quedó por debajo de
+  `rcvbuf`;
+- `steering_error`: por qué hay un solo socket aunque `lanes` pida más
+  (vacío si no pasa).
 
 En el cliente, `upload.largest` es el datagrama de WireGuard más grande de
 los últimos 5 s, el que se compara con cada `path_mtu`, y
