@@ -26,8 +26,10 @@
 #   (delegate 0) nor the router's DNS (peerdns 0); in the uplink's firewall
 #   zone;
 # - with route_all, delegate 0 and peerdns 0 also on the IPv6 interfaces of
-#   the uplinks that cengarde did not create (wan6 next to wan): otherwise
-#   the LAN gets their prefix and its IPv6 goes around the tunnel;
+#   the uplinks that cengarde did not create (wan6 next to wan), and
+#   delegate 0 on the uplinks that are not DHCP (PPP, qmi, mbim and ncm pass
+#   it on to the IPv6 interface they create): otherwise the LAN gets their
+#   prefix and its IPv6 goes around the tunnel;
 # - firewall: wgcg, and uplinks that have no zone yet, in the wan zone
 #   (masquerade, inbound rejected);
 # - with ip_pass, miniupnpd with wgcg as its external interface and the first
@@ -293,10 +295,15 @@ fix_uplinks() { # METRICS PEERDNS CLOSE_IPV6: on|off each
 	fi
 	# peerdns 0 only while the tunnel is up; with all traffic through it,
 	# also delegate 0 and peerdns 0 on the uplinks' IPv6 interfaces that
-	# cengarde did not create (its own have them anyway).
+	# cengarde did not create (its own have them anyway), and delegate 0 on
+	# the uplinks themselves: PPP, qmi, mbim and ncm copy it onto the IPv6
+	# interface they create ("<uplink>_6"), and a static one may hold a
+	# prefix. Not on DHCP uplinks: there it only reaches 6rd, and netifd
+	# would restart their DHCP client for it.
 	[ "$2" = on ] && pd=$UPLINKS
 	if [ "$3" = on ]; then
 		for s in $UPLINKS; do
+			[ "$(uci -q get "network.$s.proto")" = dhcp ] || dg="$dg $s"
 			for c in $(companions "$s"); do
 				owned "$c" && continue
 				list_has "$pd" "$c" || pd="$pd $c"
