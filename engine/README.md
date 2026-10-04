@@ -119,6 +119,9 @@ Detalle y razones en la
     clientes comparten un puerto;
   - aprende los caminos (sesión + enlace) solo de paquetes autenticados,
     incluidos los cambios de NAT;
+  - responde por cada camino desde la dirección a la que envía el cliente
+    (con un `listen` comodín, `*` o `0.0.0.0`): sirve cualquier dirección
+    del VPS, también una añadida en marcha, como una IP reservada o IPv6;
   - reparte la bajada por todos los caminos activos.
 
 ## Salud de los enlaces
@@ -199,7 +202,9 @@ cengarde ctl status             # el JSON de estado
 - **Pausas:** se mantienen en las recargas y se pierden al reiniciar, como
   las exclusiones temporales del gestor web de engarde Go
   (`include`/`exclude`/`swap`/`reset`).
-- **`links` en el servidor:** muestra las sesiones y sus enlaces.
+- **`links` en el servidor:** muestra las sesiones y sus enlaces, con la
+  dirección del cliente (`ADDRESS`) y la del servidor a la que envía
+  (`LOCAL`).
 
 ## IP pass pedido por el cliente
 
@@ -238,6 +243,19 @@ Además, `config_error` (por qué no se aplicó la última recarga) y el IP pass
 `passthrough.requested` y `passthrough.server` en el cliente, y
 `passthrough` en el servidor.
 
+En el servidor, `listen` es la dirección que abrió (`*` queda en
+`0.0.0.0` en un kernel sin IPv6) y `reply_from_arrival` dice si responde
+desde la dirección de llegada. Por enlace:
+- `local`: la dirección del servidor a la que envía el cliente (`null` si
+  no se sabe, p. ej. con un `listen` concreto);
+- `moves`: cuántas veces cambió la dirección de cualquiera de los dos
+  extremos (un NAT nuevo, otra dirección del VPS);
+- `local_errors`: paquetes que no pudieron salir porque esa dirección ya no
+  existe o no hay ruta; el camino sigue, y lo registra como "address removed
+  or no route".
+
+`rx.ctrunc` cuenta los paquetes cuya dirección de llegada no cupo.
+
 En el cliente, `download.window_resets` cuenta las veces que el servidor
 empezó de cero (se reinició con una secuencia por detrás de la ventana
 anti-replay) y el cliente rehízo su ventana para seguir recibiendo; cada vez
@@ -245,8 +263,6 @@ lo registra como "server started over".
 
 ## Limitaciones conocidas
 
-- **Servidor con varias IPs públicas:** responde desde la IP que elija el
-  kernel. Usa `listen = <IP pública>:59402`.
 - **Puerto de WireGuard en el cliente:** el cliente lo aprende del primer
   paquete que WireGuard le envía, como engarde.
 - **Enlaces asimétricos:** un enlace que sube pero no baja (o al revés) se da
