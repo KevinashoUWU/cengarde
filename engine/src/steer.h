@@ -34,6 +34,9 @@
 #include "proto.h"
 
 #define CG_MAX_LANES 16
+/* lanes = auto: a router's links 0 to 7 each on a queue of their own (one
+ * has 5: four 5G modems and Starlink). An unused lane costs a socket. */
+#define CG_LANES_AUTO 8
 #define CG_STEER_MAX 16 /* instructions of the protocol 3 program */
 
 /* lanes: 1, 2, 4, 8 or 16. */

@@ -29,7 +29,7 @@
 #define CG_MAX_ROUNDS 8
 
 /* epoll tags: kind in the high half, index in the low half. */
-enum { CG_EV_SIG = 1, CG_EV_TIMER, CG_EV_NL, CG_EV_WG, CG_EV_LINK, CG_EV_LISTEN, CG_EV_CTL, CG_EV_LOAD };
+enum { CG_EV_SIG = 1, CG_EV_TIMER, CG_EV_NL, CG_EV_WG, CG_EV_LINK, CG_EV_LISTEN, CG_EV_CTL, CG_EV_LOAD, CG_EV_JUNK };
 #define CG_EV(kind, idx) (((uint64_t)(kind) << 32) | (uint32_t)(idx))
 
 /* What a run needs besides its configuration: where that came from, to

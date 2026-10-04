@@ -9,6 +9,7 @@
 
 #include "arrival.h" /* CG_MAX_LINKS */
 #include "log.h"
+#include "steer.h"     /* lanes */
 #include "util.h"
 
 /* Interfaces that never carry tunnel traffic. */
@@ -412,6 +413,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	c->probe_interval_ms = 100;
 	c->probe_idle_ms = 1000;
 	c->max_sessions = 64;
+	c->lanes = CG_LANES_AUTO;
 	c->session_timeout_ms = 180000;
 	c->path_timeout_ms = 30000;
 
@@ -508,6 +510,19 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 		    get_str(&ini, "", "passthrough_file", c->passthrough_file, sizeof(c->passthrough_file), err,
 			    errlen))
 			goto out;
+		v = cg_ini_get(&ini, "", "lanes");
+		if (v && strcmp(v, "auto")) {
+			char *end;
+			unsigned long l;
+
+			errno = 0;
+			l = strtoul(v, &end, 10);
+			if (!*v || *end || errno || !cg_lanes_valid((unsigned)l) || l != (unsigned)l) {
+				snprintf(err, errlen, "lanes: expected auto, 1, 2, 4, 8 or 16, got '%s'", v);
+				goto out;
+			}
+			c->lanes = (uint32_t)l;
+		}
 	}
 
 	for (int i = 0; i < ini.n; i++) {
@@ -616,6 +631,8 @@ const char *cg_config_restart_needed(const struct cg_config *a, const struct cg_
 		return "wireguard";
 	if (a->mode == CG_MODE_SERVER && a->max_sessions != b->max_sessions)
 		return "max_sessions";
+	if (a->mode == CG_MODE_SERVER && a->lanes != b->lanes)
+		return "lanes";
 	return NULL;
 }
 
