@@ -22,8 +22,11 @@
 #   connection from the Internet to the VPS's public address reaches the
 #   router; passthrough = no and "cengarde ctl reload" take it away;
 # - IP pass stays on across a restart of cengarde with the router away, and
-#   comes back with a restart of wg-quick@wg0 (down, then up);
-# - install.sh run again, as an upgrade in place, leaves no rule twice;
+#   the path unit still answers the router when it comes back; a restart of
+#   wg-quick@wg0 (down, then up) brings back the same rules, in the same
+#   order;
+# - install.sh run again, as an upgrade in place, leaves no rule twice, and
+#   the tunnel comes back;
 # - IPAddressDeny: from cengarde.service's own cgroup 169.254.0.0/16 cannot
 #   be reached, nor from a transient unit with the same property, while root
 #   reaches it; nor can the router reach it through the tunnel;
@@ -76,13 +79,13 @@ fatal() {
 	diag
 	exit 1
 }
-# wait_for SECONDS COMMAND...: COMMAND until it succeeds, for SECONDS at most.
+# wait_for SECONDS COMMAND...: COMMAND, 0.2 s apart, until it succeeds; no
+# new try once SECONDS have passed (one already running may finish first).
 wait_for() {
-	n=$(($1 * 5))
+	deadline=$(($(date +%s) + $1))
 	shift
 	until "$@"; do
-		n=$((n - 1))
-		[ "$n" -gt 0 ] || return 1
+		[ "$(date +%s)" -lt "$deadline" ] || return 1
 		sleep 0.2
 	done
 }
@@ -240,6 +243,18 @@ rules() {
 	ip6tables -t filter -S 2>/dev/null | sed 's/^/6 filter /'
 }
 dups() { rules | sort | uniq -d; }
+# same_rules BEFORE WHAT: ok when the firewall is BEFORE again; else what
+# changed.
+same_rules() {
+	now=$(rules)
+	if [ "$now" = "$1" ]; then
+		ok "$2"
+	else
+		bad "$2; what changed:"
+		printf '%s\n' "$1" >"$TMP/rules.before"
+		printf '%s\n' "$now" | diff "$TMP/rules.before" -
+	fi
+}
 # pass_rules: IP pass forwards TCP and UDP to the router.
 pass_rules() {
 	for proto in tcp udp; do
@@ -250,9 +265,10 @@ pass_rules() {
 no_pass_rules() { ! iptables -t nat -S PREROUTING | grep -q -- "--to-destination $TUN_ROUTER"; }
 pass_file() { [ "$(cat "$PASS_FILE" 2>/dev/null)" = "$1" ]; }
 state_file() { [ "$(cat "$STATE_FILE" 2>/dev/null)" = "$1" ]; }
-# journal TEXT: cengarde-passthrough.service logged TEXT during the test.
+# journal TEXT [SINCE]: cengarde-passthrough.service logged TEXT since SINCE
+# (seconds since the epoch; by default, the start of the test).
 journal() {
-	journalctl -q --no-pager --since "@$T0" -u cengarde-passthrough.service | grep -qF "$1"
+	journalctl -q --no-pager --since "@${2:-$T0}" -u cengarde-passthrough.service | grep -qF "$1"
 }
 server_status() {
 	"$CG" ctl status >"$TMP/server.json" 2>/dev/null &&
@@ -392,19 +408,25 @@ restarts() {
 	check "IP pass on again" wait_for 10 pass_rules
 	router_stop
 	systemctl restart cengarde
-	# The path unit fires as /run/cengarde goes away; start what it starts
-	# anyway, so that the check below does not depend on the timing.
-	sleep 1
-	systemctl start cengarde-passthrough.service
+	# The path unit fires as /run/cengarde goes away. Start what it starts
+	# only if it did not (it was still busy with the sync above): every start
+	# counts toward the unit's start limit (5 in 10 s), and a refused one
+	# takes the path unit down with it.
+	wait_for 3 journal "IP pass on (router, before)" || systemctl start cengarde-passthrough.service
 	check "cengarde is active again" systemctl is-active -q cengarde
 	check "nobody has asked the new engine for anything" [ ! -e "$PASS_FILE" ]
 	check "IP pass stays on, as the router asked before" pass_rules
 	check "cengarde-nat sync said so" wait_for 5 journal "IP pass on (router, before)"
+	back=$(date +%s.%N)
 	router_start
 	check "the router comes back, and asks for on again" wait_for 15 pass_file on
+	check "the path unit runs cengarde-nat sync for it" wait_for 10 journal "IP pass on (router)" "$back"
+	check "cengarde-passthrough.path is still watching" systemctl is-active -q cengarde-passthrough.path
 
 	say "wg-quick@wg0 restarted: cengarde-nat down, then up, as at a reboot"
+	before=$(rules)
 	systemctl restart wg-quick@wg0 || bad "systemctl restart wg-quick@wg0"
+	same_rules "$before" "the firewall is the same rules, in the same order"
 	check "IP pass is back" pass_rules
 	check "the tunnel works again" wait_for 30 tunnel_ping
 }
@@ -417,6 +439,10 @@ reinstall() {
 	check "no rule twice" [ "$(dups)" = "$DUPS0" ]
 	check "the router's link comes back" wait_for 20 router_live
 	check "IP pass is on" wait_for 10 pass_rules
+	# install.sh restarted wg-quick@wg0: the new wg0 has no session and no
+	# endpoint for the router, so only the router can start a handshake,
+	# about 15 s after its data goes unanswered. deny() needs the tunnel.
+	check "the tunnel works again" wait_for 30 tunnel_ping
 }
 
 deny() {
@@ -460,14 +486,7 @@ stop_all() {
 	say "stop: cengarde-passthrough.path, cengarde and wg-quick@wg0 (its PostDown runs cengarde-nat down)"
 	router_stop
 	systemctl stop cengarde-passthrough.path cengarde wg-quick@wg0
-	now=$(rules)
-	if [ "$now" = "$RULES0" ]; then
-		ok "the firewall is as it was before install.sh"
-	else
-		bad "the firewall is as it was before install.sh; what changed:"
-		printf '%s\n' "$RULES0" >"$TMP/rules.before"
-		printf '%s\n' "$now" | diff "$TMP/rules.before" -
-	fi
+	same_rules "$RULES0" "the firewall is as it was before install.sh"
 	check "wg0 is gone" not ip link show wg0 2>/dev/null
 	check "cengarde-nat down again succeeds, quietly" quiet_down
 }
