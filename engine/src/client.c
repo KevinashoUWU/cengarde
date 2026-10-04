@@ -302,15 +302,16 @@ static void link_open(struct client *c, struct link *l, const struct cg_iface *i
 	const struct cg_config *cfg = c->cfg;
 	const struct cg_link_cfg *lc = cg_config_link(cfg, ifc->name);
 	const struct sockaddr_storage *cur = &l->cand;
+	struct cg_srvlist list = servers_of(cfg, ifc->name);
 	struct sockaddr_storage local;
 	char err[256], a[64], b[64];
 	int i, k, quiet = 0;
 
-	/* Back to the first candidate when the families of the link changed,
-	 * when its local address toward the server changed (a new lease or
-	 * prefix), and when a reply ended a dead round. A new list goes there
-	 * from apply_config. */
-	if (e->families != l->families) {
+	/* Back to the first candidate when a family the link gained or lost
+	 * changes its candidates, when its local address toward the server
+	 * changed (a new lease or prefix), and when a reply ended a dead round.
+	 * A new list goes there from apply_config. */
+	if (cg_cands_changed(list.a, list.n, l->families, e->families)) {
 		cur = NULL;
 	} else if (l->back_to_first) {
 		cur = NULL;

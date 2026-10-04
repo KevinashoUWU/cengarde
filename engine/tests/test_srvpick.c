@@ -132,6 +132,34 @@ static void lists_on_reload(void)
 	CHECK(moves(A " " B " | " C, A " | " B " " C, V4));         /* split another way */
 	CHECK(moves(A " " S, A " " B, V4));
 }
+
+/* A family gained or lost moves a link only when it changes its candidates. */
+static void families_change(void)
+{
+	struct sockaddr_storage cands[CG_MAX_CANDS];
+	uint32_t silent = 0;
+	struct list l;
+	int n;
+
+	/* IPv6 comes and goes on an uplink whose list is IPv4 only: the link
+	 * stays on the second address it failed over to. */
+	mklist(&l, C " | " A);
+	CHECK(!cg_cands_changed(l.a, l.v.n, V4, V4 | V6));
+	CHECK(!cg_cands_changed(l.a, l.v.n, V4 | V6, V4));
+	CHECK(!cg_cands_changed(l.a, l.v.n, V4, V4));
+	n = cg_cands_build(l.a, l.v.n, V4 | V6, cands);
+	CHECK_EQ(cg_srv_pick(cands, n, &l.a[1], 1000, 0, 900, FAILOVER, &silent), 1);
+	/* With an IPv6 entry, the same change is a new list: the first again. */
+	mklist(&l, S " | " C);
+	CHECK(cg_cands_changed(l.a, l.v.n, V4, V4 | V6));
+	CHECK(cg_cands_changed(l.a, l.v.n, V4 | V6, V4));
+	CHECK(cg_cands_changed(l.a, l.v.n, V4, V6));
+	/* An IPv6-only list, IPv4 lost; and a link never opened, which has
+	 * nothing to keep anyway. */
+	mklist(&l, S);
+	CHECK(!cg_cands_changed(l.a, l.v.n, V4 | V6, V6));
+	CHECK(cg_cands_changed(l.a, l.v.n, 0, V6));
+}
 #undef A
 #undef B
 #undef C
@@ -234,6 +262,7 @@ void test_srvpick(void)
 	CHECK(cg_cands_same(other, 0, s.cand, 0));
 
 	lists_on_reload();
+	families_change();
 
 	/* A broken first address: the link moves on and stays on the second. */
 	memset(&s, 0, sizeof(s));

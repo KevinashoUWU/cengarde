@@ -148,8 +148,12 @@ server = 203.0.113.10:59402 [2001:db8::4]:59402
   siguiente, y al final vuelve a empezar. Si no puede ni abrir el socket
   hacia una (sin ruta, por ejemplo), pasa a la siguiente al momento.
 - **Pegajoso:** se queda donde le contestan. Vuelve a la primera solo si
-  cambia su dirección local, si una recarga cambia su lista o con la
-  primera respuesta después de una ronda entera sin respuesta en ninguna:
+  cambia su dirección local, si gana o pierde una familia con entradas en
+  su lista (la IPv6 de Starlink llega después de la IPv4: con
+  `server = [IPv6] IPv4` el enlace empieza en IPv4 y pasa a la IPv6 cuando
+  aparece; con una lista solo IPv4, la IPv6 que va y viene no lo mueve), si
+  una recarga cambia su lista o con la primera respuesta después de una
+  ronda entera sin respuesta en ninguna:
   entonces el caído era el enlace, no la dirección (un corte de la red
   móvil en el que el módem conserva su dirección), y vuelve a mandar el
   orden de la lista. En una recarga cuentan las entradas de su familia:

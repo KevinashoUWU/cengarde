@@ -15,14 +15,17 @@
  * - Sticky: it stays wherever replies come. The choice is kept by address,
  *   not by index, so a list that gives the same addresses in another order
  *   (a name resolved again) does not move it.
- * - Back to the first only when the link's local address changes, when a
- *   reload changes its list (cg_lists_same: an entry of its families added,
- *   removed, edited or moved; not an entry of another family, nor a name
- *   resolved again in another order), both seen by the caller, or at the
- *   first reply after a dead round: once the link went through every
- *   candidate without any reply, the link was dead, not the address (a
- *   cellular outage, the modem's lease kept), and the operator's order wins
- *   again (cg_srv_on_reply).
+ * - Back to the first only when the link's local address changes, when it
+ *   gains or loses a family with entries in its list (cg_cands_changed:
+ *   Starlink's IPv6 comes after its IPv4, and with "[IPv6] IPv4" the link
+ *   moves to the IPv6 once it has one), when a reload changes its list
+ *   (cg_lists_same: an entry of its families added, removed, edited or
+ *   moved; not an entry of another family, nor a name resolved again in
+ *   another order), all three seen by the caller, or at the first reply
+ *   after a dead round: once the link went through every candidate without
+ *   any reply, the link was dead, not the address (a cellular outage, the
+ *   modem's lease kept), and the operator's order wins again
+ *   (cg_srv_on_reply).
  * - No periodic retry of a preferred address: each try would cost
  *   failover_ms of loss while it stays broken.
  *
@@ -134,6 +137,23 @@ static inline int cg_cands_same(const struct sockaddr_storage *a, int na, const 
 		if (!cg_addr_equal(&a[i], &b[i]))
 			return 0;
 	return 1;
+}
+
+/* Whether the candidates of a link from the n server addresses change when
+ * the families it has go from old_fam to new_fam: only a family with
+ * entries in the list counts, so IPv6 coming and going on an uplink leaves
+ * an IPv4-only list alone. */
+static inline int cg_cands_changed(const struct sockaddr_storage *servers, int n, unsigned old_fam,
+				   unsigned new_fam)
+{
+	struct sockaddr_storage a[CG_MAX_CANDS], b[CG_MAX_CANDS];
+	int na, nb;
+
+	if (old_fam == new_fam)
+		return 0;
+	na = cg_cands_build(servers, n, old_fam, a);
+	nb = cg_cands_build(servers, n, new_fam, b);
+	return !cg_cands_same(a, na, b, nb);
 }
 
 /* Whether a link's socket, opened at opened_ms, went failover_ms without a
