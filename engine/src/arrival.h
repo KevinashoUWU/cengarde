@@ -7,6 +7,14 @@
  * Duplicates are recorded without MAC verification, so the numbers are
  * informational: they must never drive security decisions.
  *
+ * Arrival times may come out of order: the router's hub takes each link
+ * pump's batches in turn, with the time each pump read them, so it can take
+ * a later copy before an earlier one waiting in another ring. A duplicate
+ * stamped before the recorded first copy takes the first place (and its
+ * win) from it. Since a copy whose MAC was never checked can move that
+ * credit, these numbers are for display only: scheduling and bonding take
+ * verified inputs (probe delays, first copies), never these.
+ *
  * SPDX-License-Identifier: GPL-2.0-only */
 #ifndef CG_ARRIVAL_H
 #define CG_ARRIVAL_H
@@ -22,8 +30,10 @@ struct cg_arr_slot {
 	uint16_t mask;   /* links that delivered a copy */
 	uint16_t expect; /* links expected to deliver one */
 	uint8_t used;
+	uint8_t first;   /* link of the first copy */
 };
 
+/* Display only: duplicates are counted before any MAC (see above). */
 struct cg_link_rx {
 	uint64_t wins;   /* first copies */
 	uint64_t dups;   /* later copies inside the stats window */
@@ -67,6 +77,7 @@ static inline void cg_arr_first(struct cg_arrivals *a, struct cg_link_rx rx[CG_M
 	s->mask = (uint16_t)(1u << link);
 	s->expect = expect;
 	s->used = 1;
+	s->first = (uint8_t)link;
 	rx[link].wins++;
 	cg_lag_sample(&rx[link], 0);
 }
@@ -85,6 +96,19 @@ static inline void cg_arr_dup(struct cg_arrivals *a, struct cg_link_rx rx[CG_MAX
 	if (s->mask & bit)
 		return; /* same link twice: a replay, not a copy */
 	s->mask |= bit;
+	if ((int32_t)(now_us - s->t_us) < 0) {
+		/* Received before the copy taken first: it was the first. */
+		struct cg_link_rx *was = &rx[s->first];
+
+		was->wins--;
+		was->dups++;
+		cg_lag_sample(was, s->t_us - now_us);
+		rx[link].wins++;
+		cg_lag_sample(&rx[link], 0);
+		s->first = (uint8_t)link;
+		s->t_us = now_us;
+		return;
+	}
 	rx[link].dups++;
 	cg_lag_sample(&rx[link], now_us - s->t_us);
 }
