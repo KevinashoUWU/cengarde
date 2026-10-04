@@ -70,6 +70,7 @@ struct cg_link_cfg {
 	struct sockaddr_storage server[CG_MAX_CANDS];
 	int nentry;                      /* entries of server as written */
 	uint8_t entry_n[CG_MAX_SERVERS]; /* how many addresses each gave, in order */
+	int cpu;                         /* pins its thread (link_threads = on); -1: none */
 };
 
 struct cg_config {

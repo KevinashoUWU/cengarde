@@ -11,6 +11,9 @@
  *                          restart.
  *   reset                  client: every uplink back to the configuration
  *   reload                 re-read the configuration, as SIGHUP does
+ *   threads                every thread of the engine: its TID, the CPU it
+ *                          last ran on, its CPU time and its share of a CPU
+ *                          over the last 5 s
  *
  * The command parser and the table of manual overrides are pure functions
  * with unit tests (tests/test_ctl.c); the socket itself is in ctl.c.
@@ -30,7 +33,7 @@
 #define CG_CTL_OVERRIDES 32
 #define CG_CTL_DEFAULT_SOCKET "/var/run/cengarde/cengarde.sock"
 
-enum cg_ctl_op { CG_CTL_STATUS = 1, CG_CTL_LINKS, CG_CTL_LINK, CG_CTL_RESET, CG_CTL_RELOAD };
+enum cg_ctl_op { CG_CTL_STATUS = 1, CG_CTL_LINKS, CG_CTL_LINK, CG_CTL_RESET, CG_CTL_RELOAD, CG_CTL_THREADS };
 
 /* Manual state of an uplink, over what the configuration says. */
 enum cg_ovr { CG_OVR_AUTO = 0, CG_OVR_OFF, CG_OVR_ON };
@@ -64,7 +67,8 @@ static inline int cg_ctl_parse(const char *line, struct cg_ctl_cmd *cmd, char *e
 	} plain[] = { { "status", CG_CTL_STATUS },
 		      { "links", CG_CTL_LINKS },
 		      { "reset", CG_CTL_RESET },
-		      { "reload", CG_CTL_RELOAD } };
+		      { "reload", CG_CTL_RELOAD },
+		      { "threads", CG_CTL_THREADS } };
 	char buf[CG_CTL_LINE], *w[4], *p = buf;
 	int n = 0;
 
@@ -104,7 +108,7 @@ static inline int cg_ctl_parse(const char *line, struct cg_ctl_cmd *cmd, char *e
 		return 0;
 	}
 	if (strcmp(w[0], "link")) {
-		snprintf(err, errlen, "unknown command '%.32s' (status, links, link, reset, reload)", w[0]);
+		snprintf(err, errlen, "unknown command '%.32s' (status, links, link, reset, reload, threads)", w[0]);
 		return -1;
 	}
 	if (n != 3) {

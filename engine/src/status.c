@@ -197,6 +197,8 @@ static void *writer_main(void *arg)
 	struct cg_status_writer *w = arg;
 	struct cg_ratelimit rl = { 0 };
 
+	w->tid = cg_gettid();
+	pthread_setname_np(pthread_self(), "cg-writer");
 	cg_thread_normal();
 	pthread_mutex_lock(&w->mu);
 	for (;;) {

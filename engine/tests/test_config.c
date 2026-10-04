@@ -162,6 +162,38 @@ static void test_config_threads(void)
 	cg_config_free(&b);
 	CHECK_EQ(cg_config_parse(&b, CLIENT "link_threads = maybe\n", err, sizeof(err), warn, sizeof(warn)), -1);
 	CHECK(strstr(err, "link_threads") != NULL);
+	CHECK_EQ(cg_config_parse(&b, CLIENT "link_threads = on\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(b.link_threads, CG_LT_ON);
+	cg_config_free(&b);
+	CHECK_EQ(cg_config_parse(&b, CLIENT "link_threads = auto\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(b.link_threads, CG_LT_AUTO);
+	CHECK(!strcmp(cg_lt_name(b.link_threads), "auto"));
+	cg_config_free(&b);
+	/* [link] cpu pins that link's thread: a restart, as every pin. */
+	cg_config_free(&a);
+	CHECK_EQ(cg_config_parse(&a, CLIENT "[link eth1]\nlabel = A\n[link eth2]\ncpu = 3\n", err, sizeof(err), warn,
+				 sizeof(warn)),
+		 0);
+	CHECK(warn[0] == '\0');
+	CHECK_EQ(cg_config_link(&a, "eth1")->cpu, -1);
+	CHECK_EQ(cg_config_link(&a, "eth2")->cpu, 3);
+	CHECK_EQ(cg_config_parse(&b, CLIENT "[link eth1]\nlabel = B\n[link eth2]\ncpu = 3\n", err, sizeof(err), warn,
+				 sizeof(warn)),
+		 0);
+	CHECK(cg_config_restart_needed(&a, &b) == NULL);
+	cg_config_free(&b);
+	CHECK_EQ(cg_config_parse(&b, CLIENT "[link eth1]\ncpu = 0\n[link eth2]\ncpu = 3\n", err, sizeof(err), warn,
+				 sizeof(warn)),
+		 0);
+	CHECK(!strcmp(cg_config_restart_needed(&a, &b), "cpu of a [link]"));
+	cg_config_free(&b);
+	CHECK_EQ(cg_config_parse(&b, CLIENT "[link eth1]\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK(!strcmp(cg_config_restart_needed(&a, &b), "cpu of a [link]")); /* eth2's pin went away */
+	CHECK(!strcmp(cg_config_restart_needed(&b, &a), "cpu of a [link]"));
+	cg_config_free(&b);
+	CHECK_EQ(cg_config_parse(&b, CLIENT "[link eth1]\ncpu = 1024\n", err, sizeof(err), warn, sizeof(warn)), -1);
+	cg_config_free(&a);
+	CHECK_EQ(cg_config_parse(&a, CLIENT, err, sizeof(err), warn, sizeof(warn)), 0);
 	CHECK_EQ(cg_config_parse(&b, CLIENT "io_queue = 100\n", err, sizeof(err), warn, sizeof(warn)), -1);
 	CHECK(strstr(err, "power of two") != NULL);
 	CHECK_EQ(cg_config_parse(&b, CLIENT "io_queue = 2048\n", err, sizeof(err), warn, sizeof(warn)), -1);

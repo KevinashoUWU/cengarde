@@ -9,7 +9,7 @@ enum cg_log_level {
 	CG_LOG_DEBUG = 3,
 };
 
-extern int cg_log_level;
+extern _Atomic int cg_log_level; /* written on reload, read by every thread */
 
 void cg_log(int level, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 int cg_log_level_parse(const char *s);

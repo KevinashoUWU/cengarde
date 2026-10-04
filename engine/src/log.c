@@ -9,7 +9,7 @@
 #include <string.h>
 #include <unistd.h>
 
-int cg_log_level = CG_LOG_INFO;
+_Atomic int cg_log_level = CG_LOG_INFO;
 
 static const char *const names[] = { "error", "warn", "info", "debug" };
 

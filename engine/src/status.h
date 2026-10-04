@@ -44,6 +44,7 @@ struct cg_status_writer {
 	char *buf; /* pending snapshot, owned */
 	size_t len;
 	int stop, running;
+	_Atomic int tid; /* its thread's, for "ctl threads" */
 };
 
 /* Starts the thread, with normal scheduling whatever the cpu and

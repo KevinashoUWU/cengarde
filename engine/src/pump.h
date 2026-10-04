@@ -38,6 +38,7 @@
 #define CG_PUMP_H
 
 #include <pthread.h>
+#include <sched.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <sys/socket.h>
@@ -109,8 +110,10 @@ struct cg_pump {
 	int paused;               /* receive ring full: its sockets are out of the poll */
 	uint32_t n_pkts, n_paused, n_errors; /* the counters' running values */
 	uint32_t busy_poll_us;
-	int cpu;
-	uint32_t rt_priority;
+	int cpu;              /* pin to this CPU; -1: the CPUs below */
+	uint32_t rt_priority; /* SCHED_FIFO priority; 0: normal */
+	cpu_set_t cpus;       /* the process's CPUs before the hub was pinned */
+	int have_cpus;
 	char name[16];
 	struct mmsghdr msg[CG_BATCH];
 	struct iovec iov[CG_BATCH];
@@ -134,6 +137,16 @@ int cg_pump_init(struct cg_pump *p, int threaded, int ep, uint32_t rxq, uint32_t
 /* Closes what it holds and frees it: inline, or after cg_pump_stop. */
 void cg_pump_free(struct cg_pump *p);
 
+/* Starts the thread of a threaded pump, named name (at most 15 characters
+ * are kept), which rings hub after each publish. p->cpu, p->rt_priority,
+ * p->busy_poll_us and p->cpus are set before. Returns 0 or -1. */
+int cg_pump_start(struct cg_pump *p, const char *name, struct cg_bell *hub);
+/* Stops the thread: 0, or -1 when it did not stop within timeout_ms (the
+ * caller must then leave everything it may still use alone). */
+int cg_pump_stop(struct cg_pump *p, int timeout_ms);
+/* CPU time of its thread, ns; 0 when unknown. */
+uint64_t cg_pump_cpu_ns(struct cg_pump *p);
+
 /* ---- the pump's side (its thread, or the hub inline) ---- */
 
 void cg_pump_cmd(struct cg_pump *p, const struct cg_pump_cmd *c);
@@ -147,6 +160,8 @@ int cg_pump_rx(struct cg_pump *p, unsigned link, int rounds);
  * when CG_PUMP_CMDS commands are still in flight: the pump is stalled, and
  * the hub keeps the command pending. */
 int cg_pump_post(struct cg_pump *p, const struct cg_pump_cmd *c);
+/* Commands posted and not taken yet. */
+uint32_t cg_pump_cmds_waiting(struct cg_pump *p);
 
 static inline uint32_t cg_pump_rx_avail(struct cg_pump *p)
 {

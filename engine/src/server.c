@@ -42,6 +42,7 @@
 #include "replay.h"
 #include "sock.h"
 #include "status.h"
+#include "thrplan.h" /* cg_cpuwin */
 #include "util.h"
 
 /* Probe interval assumed for a path until its client announces one. */
@@ -95,6 +96,8 @@ struct server {
 	struct cg_hcfg hcfg;
 	struct cg_status_writer sw;
 	struct cg_status_writer pw; /* passthrough_file */
+	struct cg_cpuwin cpu[3];    /* this loop, sw and pw, for "ctl threads" */
+	uint64_t next_cpu_ms;
 	int pass;         /* IP pass the newest session asks for: -1 nothing yet */
 	int pass_written; /* last one handed to pw: -1 none */
 	struct cg_ctl ctl;
@@ -805,10 +808,33 @@ static void pass_sync(struct server *s)
 	cg_json_free(&j);
 }
 
+/* Once a second: the CPU clock of each thread, for "ctl threads". */
+static void threads_sample(struct server *s, uint64_t now_ms)
+{
+	cg_cpuwin_add(&s->cpu[0], now_ms, cg_thread_cpu_ns(pthread_self(), 1));
+	if (s->sw.running)
+		cg_cpuwin_add(&s->cpu[1], now_ms, cg_thread_cpu_ns(s->sw.thread, 0));
+	if (s->pw.running)
+		cg_cpuwin_add(&s->cpu[2], now_ms, cg_thread_cpu_ns(s->pw.thread, 0));
+	s->next_cpu_ms = now_ms + 1000;
+}
+
+static void threads_text(struct server *s, struct cg_json *j)
+{
+	cg_threads_head(j);
+	cg_threads_row(j, "cg-main", cg_gettid(), cg_thread_cpu_ns(pthread_self(), 1), cg_cpuwin_permille(&s->cpu[0]));
+	if (s->sw.running)
+		cg_threads_row(j, "cg-status", s->sw.tid, cg_thread_cpu_ns(s->sw.thread, 0), cg_cpuwin_permille(&s->cpu[1]));
+	if (s->pw.running)
+		cg_threads_row(j, "cg-pass", s->pw.tid, cg_thread_cpu_ns(s->pw.thread, 0), cg_cpuwin_permille(&s->cpu[2]));
+}
+
 static void tick(struct server *s)
 {
 	uint64_t now_ms = cg_now_ms();
 
+	if (now_ms >= s->next_cpu_ms)
+		threads_sample(s, now_ms);
 	health_tick(s, now_ms);
 	if (now_ms >= s->next_sweep_ms) {
 		sweep(s, now_ms);
@@ -928,6 +954,9 @@ static void ctl_command(struct server *s, int k, uint64_t now_ms)
 			break;
 		case CG_CTL_LINKS:
 			links_text(s, now_ms, &j);
+			break;
+		case CG_CTL_THREADS:
+			threads_text(s, &j);
 			break;
 		case CG_CTL_LINK:
 		case CG_CTL_RESET:

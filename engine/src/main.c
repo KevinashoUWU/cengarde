@@ -13,6 +13,7 @@
 #include "log.h"
 #include "pair.h"
 #include "proto.h"
+#include "thrplan.h"
 #include "util.h"
 
 static void usage(FILE *f)
@@ -22,7 +23,8 @@ static void usage(FILE *f)
 		   "       cengarde ctl [-s SOCKET | -c FILE] COMMAND\n"
 		   "                                  talk to a running cengarde through its\n"
 		   "                                  control_socket (default " CG_CTL_DEFAULT_SOCKET "):\n"
-		   "                                  status, links, link NAME off|on|auto, reset, reload\n"
+		   "                                  status, links, link NAME off|on|auto, reset, reload,\n"
+		   "                                  threads\n"
 		   "       cengarde genkey            print a new shared key or pairing secret\n"
 		   "       cengarde keys < SECRET     print the keys, tunnel addresses and client hint\n"
 		   "                                  derived from a pairing secret\n"
@@ -215,7 +217,21 @@ int main(int argc, char **argv)
 	cg_log_level = verbose ? CG_LOG_DEBUG : cfg->log_level;
 	cg_log_warnings(path, warn);
 	if (check) {
-		printf("%s: ok (%s)\n", path, cfg->mode == CG_MODE_CLIENT ? "client" : "server");
+		if (cfg->mode == CG_MODE_CLIENT) {
+			/* What link_threads comes to on this machine (thrplan.h). */
+			static const char *const what[] = { [CG_LT_ON] = "a thread per link, up to 8",
+							    [CG_LT_OFF] = "the per-link structure in one thread",
+							    [CG_LT_LEGACY] = "the loop of 0.4" };
+			cpu_set_t cpus;
+			long n = sched_getaffinity(0, sizeof(cpus), &cpus) == 0 ? CPU_COUNT(&cpus) : 1;
+			int lt = cg_lt_resolve(cfg->link_threads, CG_LT_ARCH_MEASURED, (int)n, cfg->cpu >= 0, CG_LT_AUTO_ON);
+
+			printf("%s: ok (client, link_threads %s: %s%s%s)\n", path, cg_lt_name(cfg->link_threads),
+			       cfg->link_threads == CG_LT_AUTO ? cg_lt_name(lt) : "", cfg->link_threads == CG_LT_AUTO ? ", " : "",
+			       what[lt]);
+		} else {
+			printf("%s: ok (server)\n", path);
+		}
 		cg_config_free(cfg);
 		free(cfg);
 		return 0;
