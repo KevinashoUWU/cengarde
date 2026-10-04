@@ -1,0 +1,5 @@
+# The user cengarde.service runs as. install.sh puts this file in
+# /etc/sysusers.d/cengarde.conf and runs systemd-sysusers; elsewhere:
+#   install -m 0644 contrib/systemd/cengarde.sysusers /etc/sysusers.d/cengarde.conf
+#   systemd-sysusers
+u cengarde - "cengarde transport" - -

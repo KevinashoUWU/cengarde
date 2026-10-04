@@ -1,17 +1,25 @@
 # cengarde as a systemd service: the server on a VPS, or a client on a Linux
-# box. The configuration holds the shared key, so it stays root-only (0600)
-# and systemd hands a copy to the unprivileged service user as a credential.
-# Needs systemd 247 or newer (Ubuntu 22.04, Debian 12). The path goes through
-# ${CREDENTIALS_DIRECTORY}: systemd 249 (Ubuntu 22.04) refuses the %d
-# specifier in ExecStart, and the unit would never start.
+# box. Needs systemd 247 or newer (Ubuntu 22.04, Debian 12).
 #
+# It runs as the static user cengarde (cengarde.sysusers), which reads the
+# configuration itself: keep it 0640 root:cengarde, in a directory the
+# group can enter. A reload ("systemctl reload cengarde", or
+# "cengarde ctl reload" for an answer) reads the file again; the previous
+# unit handed the service a copy made at start (LoadCredential), which a
+# reload never refreshed before systemd 260. The command line has no
+# specifiers: systemd 249 (Ubuntu 22.04) refused the %d of that unit.
+#
+#   install -m 0644 contrib/systemd/cengarde.sysusers /etc/sysusers.d/cengarde.conf
+#   systemd-sysusers
+#   chgrp cengarde /etc/cengarde /etc/cengarde/cengarde.conf
+#   chmod 0750 /etc/cengarde && chmod 0640 /etc/cengarde/cengarde.conf
 #   install -m 0644 contrib/systemd/cengarde.service /etc/systemd/system/
 #   systemctl daemon-reload && systemctl enable --now cengarde
 #
 # Status: set "status_file = /run/cengarde/status.json" in the configuration,
 # or "control_socket = /run/cengarde/cengarde.sock" for "cengarde ctl status".
-# The service reads a copy of the configuration made when it starts: after
-# changing it, "systemctl restart cengarde" (a reload would read the copy).
+# Files the engine writes (the IP pass file of a server) go in
+# /var/lib/cengarde.
 
 [Unit]
 Description=cengarde, redundant multi-link transport for WireGuard
@@ -20,12 +28,15 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-DynamicUser=yes
-LoadCredential=cengarde.conf:/etc/cengarde/cengarde.conf
-ExecStart=/usr/local/sbin/cengarde -c ${CREDENTIALS_DIRECTORY}/cengarde.conf
+User=cengarde
+Group=cengarde
+ExecStart=/usr/local/sbin/cengarde -c /etc/cengarde/cengarde.conf
+ExecReload=/bin/kill -HUP $MAINPID
 Restart=always
 RestartSec=2
 RuntimeDirectory=cengarde
+StateDirectory=cengarde
+StateDirectoryMode=0750
 # CAP_NET_ADMIN: large socket buffers (SO_RCVBUFFORCE). CAP_NET_RAW: a client
 # binds each uplink socket to its interface. CAP_SYS_NICE: rt_priority.
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW CAP_SYS_NICE
