@@ -15,6 +15,9 @@ make -C "$SRC/engine"
 make -C "$SRC/engine" install PREFIX=/usr/local
 install -m 0755 "$SRC/contrib/vps/cengarde-nat" "$SRC/contrib/vps/cengarde-vps-setup" /usr/local/sbin/
 install -m 0644 "$SRC/contrib/systemd/cengarde.service" /etc/systemd/system/cengarde.service
+# On a VPS the engine is kept away from the metadata service (the secret).
+install -d -m 0755 /etc/systemd/system/cengarde.service.d
+install -m 0644 "$SRC/contrib/vps/cengarde-vps.conf" /etc/systemd/system/cengarde.service.d/vps.conf
 install -m 0644 "$SRC/contrib/vps/cengarde-passthrough.path" "$SRC/contrib/vps/cengarde-passthrough.service" \
 	/etc/systemd/system/
 install -m 0644 "$SRC/contrib/vps/sysctl.conf" /etc/sysctl.d/90-cengarde.conf
