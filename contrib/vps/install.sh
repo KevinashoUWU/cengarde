@@ -15,10 +15,12 @@ make -C "$SRC/engine"
 make -C "$SRC/engine" install PREFIX=/usr/local
 install -m 0755 "$SRC/contrib/vps/cengarde-nat" "$SRC/contrib/vps/cengarde-vps-setup" /usr/local/sbin/
 install -m 0644 "$SRC/contrib/systemd/cengarde.service" /etc/systemd/system/cengarde.service
+install -m 0644 "$SRC/contrib/vps/cengarde-passthrough.path" "$SRC/contrib/vps/cengarde-passthrough.service" \
+	/etc/systemd/system/
 install -m 0644 "$SRC/contrib/vps/sysctl.conf" /etc/sysctl.d/90-cengarde.conf
 sysctl -q --system
 /usr/local/sbin/cengarde-vps-setup
 systemctl daemon-reload
-systemctl enable wg-quick@wg0 cengarde
-systemctl restart wg-quick@wg0 cengarde
-echo "cengarde: $(/usr/local/sbin/cengarde version) listening; status in /run/cengarde/status.json"
+systemctl enable wg-quick@wg0 cengarde cengarde-passthrough.path
+systemctl restart wg-quick@wg0 cengarde cengarde-passthrough.path
+echo "cengarde: $(/usr/local/sbin/cengarde version) listening; cengarde ctl status, or /run/cengarde/status.json"

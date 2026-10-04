@@ -1,0 +1,11 @@
+# IP pass from the router: the cengarde server writes what the router asks
+# for (on or off) to /run/cengarde/passthrough, and this unit then runs
+# cengarde-passthrough.service, which applies it with "cengarde-nat sync".
+[Unit]
+Description=cengarde: watch the IP pass the router asks for
+
+[Path]
+PathChanged=/run/cengarde/passthrough
+
+[Install]
+WantedBy=multi-user.target

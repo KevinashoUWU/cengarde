@@ -6,7 +6,10 @@
 #   install -m 0644 contrib/systemd/cengarde.service /etc/systemd/system/
 #   systemctl daemon-reload && systemctl enable --now cengarde
 #
-# Status: set "status_file = /run/cengarde/status.json" in the configuration.
+# Status: set "status_file = /run/cengarde/status.json" in the configuration,
+# or "control_socket = /run/cengarde/cengarde.sock" for "cengarde ctl status".
+# The service reads a copy of the configuration made when it starts: after
+# changing it, "systemctl restart cengarde" (a reload would read the copy).
 
 [Unit]
 Description=cengarde, redundant multi-link transport for WireGuard
