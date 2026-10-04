@@ -260,7 +260,8 @@ keep_off() {
 
 	for s in $(sections network interface); do
 		if list_has "$2" "$s"; then
-			[ "$(uci -q get "network.$s.$1")" = 0 ] && continue
+			# netifd's false is "0" or "false" (any other value is ignored)
+			case "$(uci -q get "network.$s.$1")" in 0 | false) continue ;; esac
 			want "network.$s.$1" 0
 			want "network.$s.cengarde_$1" 1
 		elif [ "$(uci -q get "network.$s.cengarde_$1")" = 1 ]; then
