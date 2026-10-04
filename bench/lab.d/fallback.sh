@@ -19,10 +19,11 @@
 #   10.0.3.20 reaches it through a DNAT in the srv netns, so the scenario
 #   needs a single server address. With 10.0.3.2 blocked, l3 moves to
 #   10.0.3.20, and stays there once 10.0.3.2 works again. Then an outage:
-#   the server side of l3 loses its addresses for 25 s, while l3 keeps its
-#   own (a modem that keeps its lease). l3 goes through both addresses
-#   without a reply, a dead round, and the first reply after the outage
-#   sends it back to 10.0.3.2, the first. Last, on 10.0.3.20 again, l3
+#   the server side of l3 loses its addresses for at least OUTAGE_S (25) s,
+#   until l3 has just moved onto 10.0.3.20, while l3 keeps its own (a modem
+#   that keeps its lease). l3 goes through both addresses without a reply,
+#   a dead round, and the first reply after the outage sends it back to
+#   10.0.3.2, the first. Last, on 10.0.3.20 again, l3
 #   loses its own address and gets the same one back: that also sends it
 #   back to the first, at once.
 # - Path MTU: l2's MTU drops to 1400 on the client side while 1400-byte
@@ -94,7 +95,7 @@ fb_reload() {
 }
 
 fallback() {
-	local fail=0 out moves1 moves3 downs rounds sent uniq secs=$(((FAILOVER_MS + 1999) / 1000 + 1))
+	local fail=0 out moves1 moves3 downs rounds outage sent uniq secs=$(((FAILOVER_MS + 1999) / 1000 + 1))
 	local on1='l["state"] == "live" and l["remote"] == "10.0.1.2:59402" and l["candidate"] == 1'
 	local on3a='l["state"] == "live" and l["remote"] == "10.0.3.2:59402" and l["candidate"] == 0'
 	local on3b='l["state"] == "live" and l["remote"] == "10.0.3.20:59402" and l["candidate"] == 1'
@@ -154,12 +155,20 @@ fallback() {
 
 	# An outage of l3: every address of its server side gone for a while.
 	ip -n srv addr flush dev s3
+	SECONDS=0
 	sleep "$OUTAGE_S"
+	# Back once l3 has just moved onto its second address, so the first
+	# reply finds it there whatever FAILOVER_MS and OUTAGE_S are: the
+	# outage spans at least two moves, a dead round, and the reply has a
+	# whole failover period to come before the next move.
+	out=$(fb_wait l3 'l["candidate"] == 0' "$secs") && out=$(fb_wait l3 'l["candidate"] == 1' "$secs") ||
+		{ echo "FAIL: l3 did not go through its addresses during the outage: $out"; fail=1; }
+	outage=$SECONDS
 	ip -n srv addr add 10.0.3.2/24 dev s3
 	ip -n srv addr add 10.0.3.20/32 dev s3
 	out=$(fb_wait l3 "$on3a" "$((secs + 3))") ||
 		{ echo "FAIL: l3 not back on its first address after the outage: $out"; fail=1; }
-	echo "   l3, after $OUTAGE_S s with no server address: back on the first after $out," \
+	echo "   l3, after $outage s with no server address: back on the first after $out," \
 		"failovers $(fb_link l3 failovers)"
 	grep -q "link l3: the server answers again after a round of its addresses without replies, back to 10.0.3.2:59402" \
 		"$RUN/client.log" || { echo "FAIL: l3 did not come back through a dead round"; fail=1; }

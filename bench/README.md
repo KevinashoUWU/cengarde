@@ -116,8 +116,9 @@ failover (`FAILOVER_MS`):
   DNAT de iptables en el netns `srv`, así que basta con que el servidor
   escuche en una). Con 10.0.3.2 bloqueada pasa a 10.0.3.20, y se queda
   aunque 10.0.3.2 vuelva. Después, un corte: el lado del servidor pierde
-  sus direcciones durante 25 s (`OUTAGE_S`), y l3 conserva la suya, como un
-  módem que mantiene su concesión. Recorre las dos sin respuesta (una ronda
+  sus direcciones durante al menos 25 s (`OUTAGE_S`), hasta que l3 acaba de
+  pasar a 10.0.3.20, y l3 conserva la suya, como un módem que mantiene su
+  concesión. Recorre las dos sin respuesta (una ronda
   muerta), y la primera respuesta lo devuelve a 10.0.3.2. Por último, otra
   vez en 10.0.3.20, l3 pierde su propia dirección y recupera la misma: eso
   también lo devuelve a la primera, al momento.
