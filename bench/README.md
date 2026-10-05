@@ -128,7 +128,9 @@ cualquier socket UDP ocupado):
 - el servidor informa `rcvbuf_capped` con el valor por socket del
   presupuesto (24 MiB para 10 sockets);
 - todas las colas se llenan, y entre todas no pasan del presupuesto (sus
-  colas en `/proc/net/udp`);
+  colas en `/proc/net/udp` y `/proc/net/udp6`: con `*:59402` las colas son
+  sockets AF_INET6 de doble pila donde el kernel tiene IPv6, y esos solo
+  salen en `udp6`);
 - el par no pierde nada;
 - tras `SIGCONT`, el túnel funciona en los dos sentidos.
 

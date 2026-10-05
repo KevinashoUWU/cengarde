@@ -16,7 +16,9 @@
 # - the server reports rcvbuf_capped, with the per-socket value of the
 #   budget (24 MiB for 10 sockets);
 # - every lane fills, and all the lanes together hold no more than the
-#   budget (their receive queues in /proc/net/udp);
+#   budget (their receive queues in /proc/net/udp and /proc/net/udp6: with
+#   *:59402 the lanes are dual-stack AF_INET6 sockets where the kernel has
+#   IPv6, and the kernel lists those in udp6 only);
 # - the pair loses nothing;
 # - after SIGCONT the tunnel works again: smoke's traffic both ways.
 #
@@ -47,9 +49,10 @@ udpmem_cont() {
 
 # udpmem_py CHECK [ARGS]:
 #   capped           the server's status: rcvbuf_capped and its values;
-#   full UDP         the server's /proc/net/udp: every lane full (its
-#                    receive queue at 90 % of the effective rcvbuf or
-#                    more), and all of them within the budget;
+#   full UDP         the server's /proc/net/udp and udp6, one after the
+#                    other: every lane full (its receive queue at 90 % of
+#                    the effective rcvbuf or more), and all of them within
+#                    the budget;
 #   live LIMIT       every client link live within LIMIT s.
 udpmem_py() {
 	python3 - "$RUN" "$@" <<'EOF'
@@ -83,10 +86,14 @@ if check == "capped":
 elif check == "full":
     rb = json.load(open(f"{run}/rcvbuf.json"))
     socks = []  # (receive queue, drops) of every socket on port 59402
-    for line in open(args[0]).read().splitlines()[1:]:
+    # Both tables have the same columns, and each starts with a header line.
+    for line in open(args[0]).read().splitlines():
         f = line.split()
-        if len(f) > 12 and f[1].endswith(f":{59402:04X}"):
+        if len(f) > 12 and f[0] != "sl" and f[1].endswith(f":{59402:04X}"):
             socks.append((int(f[4].split(":")[1], 16), int(f[12])))
+    if not socks:
+        print("no socket on port 59402 in /proc/net/udp or /proc/net/udp6")
+        sys.exit(1)
     held = sum(r for r, _ in socks)
     full = sum(1 for r, _ in socks if r >= rb["effective"] * 0.9)
     print(f"{len(socks)} listen sockets hold {held} bytes (budget {rb['budget']}), {full} of them full "
@@ -190,7 +197,8 @@ udpmem() {
 	kill -STOP "$sp"
 	udpmem_flood 1500
 	sleep 0.5
-	ip netns exec srv cat /proc/net/udp >"$RUN/udp.txt"
+	# A kernel without IPv6 has no udp6; cat still prints udp.
+	ip netns exec srv cat /proc/net/udp /proc/net/udp6 >"$RUN/udp.txt" 2>/dev/null
 	out=$(udpmem_py full "$RUN/udp.txt") || { echo "FAIL: the lanes are not all full, or hold more than the budget"; fail=1; }
 	echo "   $out"
 	wait "$pair_rx"

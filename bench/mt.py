@@ -10,10 +10,10 @@ traffic, adding:
 - the fake WireGuard processes' own CPU, whole-system CPU, ksoftirqd and
   steal;
 - per-netns UDP counters (RcvbufErrors, SndbufErrors) and per-socket drops
-  from /proc/net/udp, labelled by role: client links l1.., the client's
-  WireGuard socket c_wg; the server's listen sockets lfd (all of them) and
-  lfd0.. (by creation order: the lanes, then the junk socket), its
-  per-session WireGuard sockets sess_wg; the generators gen;
+  from /proc/net/udp and udp6, labelled by role: client links l1.., the
+  client's WireGuard socket c_wg; the server's listen sockets lfd (all of
+  them) and lfd0.. (by creation order: the lanes, then the junk socket),
+  its per-session WireGuard sockets sess_wg; the generators gen;
 - the engines' own counters through their control sockets, the server's
   lanes included (rx and kernel drops per lane, from SO_MEMINFO).
 
@@ -39,6 +39,7 @@ import glob
 import json
 import os
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -133,17 +134,23 @@ def snmp(ns):
 
 
 def hexaddr(h):
+    """An address of /proc/net/udp or udp6 (its 32-bit words in host
+    order): 127.0.0.1:59402, [::]:59402 or [::ffff:10.0.1.2]:59402."""
     ip, port = h.split(':')
-    b = bytes.fromhex(ip)[::-1]
-    return '.'.join(str(x) for x in b) + ':' + str(int(port, 16))
+    b = b''.join(int(ip[i:i + 8], 16).to_bytes(4, sys.byteorder) for i in range(0, len(ip), 8))
+    if len(b) == 4:
+        return socket.inet_ntop(socket.AF_INET, b) + ':' + str(int(port, 16))
+    return '[' + socket.inet_ntop(socket.AF_INET6, b) + ']:' + str(int(port, 16))
 
 
 def udp_drops(ns):
-    """Per-socket drops from /proc/net/udp, labelled by role."""
+    """Per-socket drops from /proc/net/udp and udp6, labelled by role. With
+    *:59402 the server's listen sockets are dual-stack AF_INET6 sockets
+    where the kernel has IPv6, and the kernel lists those in udp6 only."""
     out = {}
-    for l in nsx(ns, 'cat', '/proc/net/udp').splitlines()[1:]:
+    for l in nsx(ns, 'cat', '/proc/net/udp', '/proc/net/udp6').splitlines():
         f = l.split()
-        if len(f) < 13:
+        if len(f) < 13 or f[0] == 'sl':  # each table starts with a header
             continue
         loc, rem, drops = hexaddr(f[1]), hexaddr(f[2]), int(f[12])
         if ns == 'cli':
