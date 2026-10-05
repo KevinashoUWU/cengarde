@@ -364,10 +364,10 @@ cengarde-setup cloud-config > vps.yaml               # el user data del VPS
     (`cengarde-upgrade`): si la sesión se corta, la actualización termina
     igual. Su salida queda en `/var/log/cengarde-upgrade.log`. Si algo la
     interrumpe, ejecútalo otra vez: termina lo que faltaba.
-  - **Desde la 0.4.2** (sin cambio de protocolo): `wg0` pasa a ser
-    `cg-router`, con el mismo puerto y la misma dirección del túnel, el
-    servicio pasa a un usuario fijo y el router sigue funcionando sin
-    tocarlo.
+  - **De una 0.4 anterior a la 0.4.4** (sin cambio de protocolo): `wg0`
+    pasa a ser `cg-router`, con el mismo puerto y la misma dirección del
+    túnel, el servicio pasa a un usuario fijo y el router sigue funcionando
+    sin tocarlo.
   - **Cuando cambie el protocolo** (la 0.5), un extremo actualizado no
     habla con el otro, y con «todo por el túnel» tu SSH al VPS va por ese
     túnel. Sigue este orden: baja antes los paquetes nuevos del router;

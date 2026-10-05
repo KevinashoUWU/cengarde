@@ -1,9 +1,9 @@
 # 010 — IPv6, dirección de llegada, varios routers por VPS y nombres
 
-- **Fecha:** 2026-10-04
+- **Fecha:** 2026-10-05
 - **Estado:** vigente. PR 1 y PR 2 hechos (paquetes 0.4.1 y 0.4.2,
   protocolo v3 sin cambios); del PR 3, hecho el 3d1 (herramientas del VPS,
-  aún v3); el resto del PR 3 y los PR 4 y 5, pendientes.
+  aún v3; paquetes 0.4.4); el resto del PR 3 y los PR 4 y 5, pendientes.
 - **Fuentes:**
   - código del PR 1 (`git log ebe570b..823e4dd`):
     - `engine/src/epoch.h`; `client.c:442` (`ms_since_new`), `:456`
@@ -109,12 +109,13 @@
     `delegate '0'` mientras todo va por el túnel;
   - el "VPS" puede ser un Debian o Ubuntu casero con IP dinámica, quizá
     detrás de un router, encontrado por DNS dinámico.
-- **Lo que cerró el PR 3d1** (solo VPS, protocolo v3): `cengarde-nat`
-  declarativo, sin nombres de interfaz y con hairpin; un archivo por router
-  en `/etc/cengarde/clients` con su `cg-NAME`; el secreto del cloud-config
-  importado una sola vez; usuario fijo; `install.sh` que sobrevive a una
-  sesión SSH cortada; vuelta a la 0.4.2 con `purge`. Un router 0.4 sigue
-  funcionando sin tocarlo (sección «PR 3d1»).
+- **Lo que cerró el PR 3d1** (solo VPS, protocolo v3, paquetes 0.4.4):
+  `cengarde-nat` declarativo, sin nombres de interfaz y con hairpin; un
+  archivo por router en `/etc/cengarde/clients` con su `cg-NAME`; el
+  secreto del cloud-config importado una sola vez; usuario fijo;
+  `install.sh` que sobrevive a una sesión SSH cortada; vuelta a la 0.4.2
+  con `purge`. Un router 0.4 sigue funcionando sin tocarlo (sección
+  «PR 3d1»).
 - **Siguiente:** el PR 3d2, protocolo v4 y varios routers por VPS.
 
 ## Contexto
@@ -756,3 +757,10 @@ Sin cambio de protocolo ni del motor: un VPS lo toma bajo un router 0.4.
 - 2026-10-04: PR 2 hecho (0.4.2), con sus medidas; `cengarde-nat`
   declarativo pasa al PR 3.
 - 2026-10-04: PR 3d1 hecho (herramientas del VPS con el protocolo v3).
+- 2026-10-05: PR 3d1 tras su revisión (paquetes 0.4.4): `purge` ya no
+  espera 90 s a su propio candado; los flujos UDP que contestaba el
+  servidor pasan al router; los sockets UDP del kernel quedan reservados;
+  el aviso de dos backends de iptables funciona; `install.sh` compila antes
+  de tocar `wg0` y ve la sesión SSH a través de `sudo`; `add --replace`
+  deshace también el archivo de IP pass; `forward` dice lo que reenvía el
+  v3.

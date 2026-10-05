@@ -15,7 +15,7 @@ include $(TOPDIR)/rules.mk
 PKG_NAME:=cengarde
 # 0.4: protocol v3 (IP pass asked of the VPS), control socket, changes
 # applied without a restart. Both ends must run the same protocol version.
-PKG_VERSION:=0.4.2
+PKG_VERSION:=0.4.4
 PKG_RELEASE:=1
 
 PKG_LICENSE:=GPL-2.0-only
