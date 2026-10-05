@@ -337,6 +337,18 @@ cengarde-setup cloud-config > vps.yaml               # el user data del VPS
   `list server`; una `option server` escrita a mano después se sigue
   leyendo.
 
+  La 0.4.6 tampoco cambia el protocolo (routers y VPS de la 0.4.1 en
+  adelante se entienden): trae al router los hilos por enlace
+  (`link_threads`, pestaña *Avanzado* → *Hilos por enlace*), por omisión
+  `legacy`, el mismo bucle de antes, y *Activado* (`on`, un hilo por
+  enlace) solo si lo eliges a mano hasta medirlo en la Pi; cambiarlo
+  reinicia el motor. El estado avisa de un hilo de enlace parado con
+  paquetes esperando (`link_thread_stalled`), y `cengarde ctl threads`
+  lista los hilos en los dos extremos. En OpenWrt 24.10, `opkg install` de
+  un paquete con la versión ya instalada no hace nada (dice «up to date»):
+  para probar una compilación con la misma versión, `opkg install
+  --force-reinstall`; en 25.12, `apk add` la reemplaza sin más.
+
 ## Probar sin hardware
 
 [`test/e2e.sh`](test/e2e.sh) arranca dos VMs con la imagen x86-64 y
