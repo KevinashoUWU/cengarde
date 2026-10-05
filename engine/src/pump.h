@@ -164,6 +164,28 @@ int cg_pump_post(struct cg_pump *p, const struct cg_pump_cmd *c);
 /* Commands posted and not taken yet. */
 uint32_t cg_pump_cmds_waiting(struct cg_pump *p);
 
+/* The pending state of a link (op 0: none), the one command for it that a
+ * stalled pump has not taken, takes c in its place: the newest state wins.
+ * Returns the socket of a pending OPEN that c replaced, which the pump
+ * never saw, so that the caller, its only owner, closes it; else -1. */
+static inline int cg_pend_keep(struct cg_pump_cmd *pend, const struct cg_pump_cmd *c)
+{
+	int unsent = pend->op == CG_PUMP_OPEN ? pend->fd : -1;
+
+	*pend = *c;
+	return unsent;
+}
+
+/* Hands c, a command for one link, to the pump, or keeps it in that link's
+ * pending state pend: c is posted only when nothing is pending and the
+ * post succeeds, so nothing jumps ahead of an older pending state, and the
+ * hub never piles up sockets however often it opens and closes the link.
+ * Returns what cg_pend_keep returns: a socket the caller closes, or -1. */
+int cg_pump_send(struct cg_pump *p, struct cg_pump_cmd *pend, const struct cg_pump_cmd *c);
+/* Posts the pending state pend once the pump has room again (pend->op is
+ * 0 after that). */
+void cg_pump_send_pending(struct cg_pump *p, struct cg_pump_cmd *pend);
+
 static inline uint32_t cg_pump_rx_avail(struct cg_pump *p)
 {
 	return cg_ring_avail(&p->rxq);

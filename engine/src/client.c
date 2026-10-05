@@ -257,29 +257,24 @@ static int pumped(const struct client *c)
 
 /* Hands a command for link l to its pump. A stalled pump (CG_PUMP_CMDS
  * commands it has not taken) gets it later, from tick: only the newest
- * state of each link waits, so the hub never piles up sockets however often
- * failover and reconcile run, and a socket the pump never saw is still the
- * hub's to close when a newer state replaces it. */
+ * state of each link waits (cg_pump_send), so the hub never piles up
+ * sockets however often failover and reconcile run, and a socket the pump
+ * never saw is still the hub's to close when a newer state replaces it. */
 static void link_cmd(struct client *c, struct link *l, uint8_t op, int fd)
 {
 	struct cg_pump_cmd cmd = { .op = op, .link = (uint8_t)(l - c->link), .gen = l->rxl.gen, .fd = fd };
+	int unsent = cg_pump_send(c->pump[l->pump], &l->pend, &cmd);
 
-	if (!l->pend.op && cg_pump_post(c->pump[l->pump], &cmd) == 0)
-		return;
-	if (l->pend.op == CG_PUMP_OPEN)
-		close(l->pend.fd);
-	l->pend = cmd;
+	if (unsent >= 0)
+		close(unsent);
 }
 
 /* tick: what stalled pumps can take now. */
 static void link_cmds_retry(struct client *c)
 {
-	for (int i = 0; i < CG_MAX_LINKS; i++) {
-		struct link *l = &c->link[i];
-
-		if (l->pend.op && cg_pump_post(c->pump[l->pump], &l->pend) == 0)
-			l->pend.op = 0;
-	}
+	for (int i = 0; i < CG_MAX_LINKS; i++)
+		if (c->link[i].pend.op)
+			cg_pump_send_pending(c->pump[c->link[i].pump], &c->link[i].pend);
 }
 
 /* why: for the log, NULL for none. */

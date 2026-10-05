@@ -219,6 +219,19 @@ int cg_pump_post(struct cg_pump *p, const struct cg_pump_cmd *c)
 	return 0;
 }
 
+int cg_pump_send(struct cg_pump *p, struct cg_pump_cmd *pend, const struct cg_pump_cmd *c)
+{
+	if (!pend->op && cg_pump_post(p, c) == 0)
+		return -1;
+	return cg_pend_keep(pend, c);
+}
+
+void cg_pump_send_pending(struct cg_pump *p, struct cg_pump_cmd *pend)
+{
+	if (pend->op && cg_pump_post(p, pend) == 0)
+		pend->op = 0;
+}
+
 /* ---- the thread ---- */
 
 /* Runs the commands the hub posted. Returns 1 on STOP. */

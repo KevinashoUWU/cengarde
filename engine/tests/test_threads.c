@@ -17,9 +17,14 @@
  *   one alone; with both taken out it must not (the test sees the bug);
  * - open_failed: a socket the pump's epoll refuses comes back to the hub,
  *   stays open until the hub's CLOSE, and is closed by it;
- * - a stalled pump: at most CG_PUMP_CMDS commands in flight.
+ * - a stalled pump: at most CG_PUMP_CMDS commands in flight, and the
+ *   pending state of a link meanwhile (cg_pump_send, as the client's
+ *   link_cmd uses it): only the newest state waits, a socket the pump never
+ *   saw goes back to the hub to close, the one the pump holds never does,
+ *   and the newest state reaches the pump once it runs again.
  * SPDX-License-Identifier: GPL-2.0-only */
 #include <arpa/inet.h>
+#include <dirent.h>
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <poll.h>
@@ -342,6 +347,143 @@ static void pump_stalled(void)
 	free(p);
 }
 
+/* Open file descriptors of the process: a socket the pump or the hub
+ * forgot to close shows here. */
+static int nfds(void)
+{
+	DIR *d = opendir("/proc/self/fd");
+	int n = 0;
+
+	while (d && readdir(d))
+		n++;
+	if (d)
+		closedir(d);
+	return n;
+}
+
+/* What the pending state's truth table says (cg_pend_keep). */
+static void pend_keep(void)
+{
+	struct cg_pump_cmd pend = { 0 }, open1 = { .op = CG_PUMP_OPEN, .gen = 1, .fd = 41 },
+			   open2 = { .op = CG_PUMP_OPEN, .gen = 2, .fd = 42 }, close3 = { .op = CG_PUMP_CLOSE, .gen = 3, .fd = -1 };
+
+	CHECK_EQ(cg_pend_keep(&pend, &close3), -1); /* nothing pending */
+	CHECK(pend.op == CG_PUMP_CLOSE && pend.gen == 3);
+	CHECK_EQ(cg_pend_keep(&pend, &open1), -1); /* a CLOSE holds no socket */
+	CHECK(pend.op == CG_PUMP_OPEN && pend.fd == 41 && pend.gen == 1);
+	CHECK_EQ(cg_pend_keep(&pend, &open2), 41); /* an OPEN over an OPEN */
+	CHECK(pend.op == CG_PUMP_OPEN && pend.fd == 42 && pend.gen == 2);
+	CHECK_EQ(cg_pend_keep(&pend, &close3), 42);
+	CHECK(pend.op == CG_PUMP_CLOSE && pend.gen == 3);
+}
+
+/* A stalled pump and the pending state of link 0, with real sockets: the
+ * pump holds x, and the hub closes, reopens and closes the link while the
+ * pump's thread has not started and CG_PUMP_CMDS commands wait. */
+static void pump_pending(void)
+{
+	struct cg_pump *p = pump_alloc(16);
+	struct cg_pump_cmd hold = { .op = CG_PUMP_OPEN, .link = 0, .gen = 1 }, filler = { .op = CG_PUMP_CLOSE, .link = 5 };
+	struct cg_pump_cmd pend = { 0 }, c = { .link = 0 };
+	int x, xpeer, a, a2, b, bpeer, base;
+	uint32_t next = 0;
+	uint8_t gen = 1;
+
+	CHECK(p != NULL);
+	if (!p)
+		return;
+	CHECK_EQ(udp_pair(&x, &xpeer), 0);
+	hold.fd = x;
+	cg_pump_cmd(p, &hold); /* an OPEN it took before it stalled */
+	for (int i = 0; i < CG_PUMP_CMDS; i++)
+		CHECK_EQ(cg_pump_post(p, &filler), 0);
+
+	/* The link closes: pending; x is the pump's, never the hub's. */
+	c.op = CG_PUMP_CLOSE;
+	c.gen = ++gen;
+	c.fd = -1;
+	CHECK_EQ(cg_pump_send(p, &pend, &c), -1);
+	CHECK(pend.op == CG_PUMP_CLOSE && pend.gen == gen);
+	CHECK(fd_open(x));
+
+	/* Reopened and closed again ten times: the OPEN replaces the CLOSE,
+	 * and the next CLOSE gives its socket back to the hub. */
+	base = nfds();
+	for (int i = 0; i < 10; i++) {
+		int s = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+
+		CHECK(s >= 0);
+		c.op = CG_PUMP_OPEN;
+		c.gen = ++gen;
+		c.fd = s;
+		CHECK_EQ(cg_pump_send(p, &pend, &c), -1);
+		CHECK(pend.op == CG_PUMP_OPEN && pend.fd == s && pend.gen == gen);
+		c.op = CG_PUMP_CLOSE;
+		c.gen = ++gen;
+		c.fd = -1;
+		CHECK_EQ(cg_pump_send(p, &pend, &c), s);
+		close(s);
+		CHECK(pend.op == CG_PUMP_CLOSE && pend.gen == gen);
+		CHECK_EQ(nfds(), base);
+		CHECK(fd_open(x));
+	}
+
+	/* An OPEN over an OPEN: the older socket goes back. */
+	a = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+	a2 = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+	CHECK(a >= 0 && a2 >= 0);
+	c.op = CG_PUMP_OPEN;
+	c.gen = ++gen;
+	c.fd = a;
+	CHECK_EQ(cg_pump_send(p, &pend, &c), -1);
+	c.gen = ++gen;
+	c.fd = a2;
+	CHECK_EQ(cg_pump_send(p, &pend, &c), a);
+	close(a);
+	CHECK(pend.op == CG_PUMP_OPEN && pend.fd == a2 && pend.gen == gen);
+
+	/* Still stalled: tick's retry posts nothing. */
+	cg_pump_send_pending(p, &pend);
+	CHECK(pend.op == CG_PUMP_OPEN && pend.fd == a2);
+
+	/* It runs again and takes what was in flight. A newer state that
+	 * comes before tick's retry does not jump ahead of the pending one,
+	 * though the ring has room: it replaces it. */
+	CHECK_EQ(cg_pump_start(p, "cg-pending", &hub), 0);
+	CHECK(cmds_done(p));
+	CHECK_EQ(udp_pair(&b, &bpeer), 0);
+	c.gen = ++gen;
+	c.fd = b;
+	CHECK_EQ(cg_pump_send(p, &pend, &c), a2);
+	close(a2);
+	CHECK(pend.op == CG_PUMP_OPEN && pend.fd == b && pend.gen == gen);
+	CHECK_EQ(cg_pump_cmds_waiting(p), 0);
+
+	/* The retry posts the newest state, and the pump lets go of x for b,
+	 * whose datagrams carry the newest generation. */
+	cg_pump_send_pending(p, &pend);
+	CHECK_EQ(pend.op, 0);
+	CHECK(cmds_done(p));
+	CHECK(!fd_open(x));
+	CHECK(fd_open(b));
+	send_n(bpeer, 0, 5);
+	CHECK_EQ(hub_take(p, 0, gen, &next, 5), 5);
+
+	/* Nothing pending: straight to the pump, which closes b. */
+	c.op = CG_PUMP_CLOSE;
+	c.gen = ++gen;
+	c.fd = -1;
+	CHECK_EQ(cg_pump_send(p, &pend, &c), -1);
+	CHECK_EQ(pend.op, 0);
+	CHECK(cmds_done(p));
+	CHECK(!fd_open(b));
+	CHECK_EQ(cg_pump_stop(p, 1000), 0);
+	cg_pump_free(p);
+	free(p);
+	close(xpeer);
+	close(bpeer);
+}
+
 /* open_failed: /dev/null cannot be polled. */
 static void pump_open_failed(void)
 {
@@ -489,6 +631,8 @@ void test_threads(void)
 	CHECK_EQ(cg_bell_init(&hub), 0);
 	pump_basics();
 	pump_stalled();
+	pend_keep();
+	pump_pending();
 	pump_open_failed();
 	race_run(RACE_BOTH);
 	race_run(RACE_EVENTFD_ONLY);
