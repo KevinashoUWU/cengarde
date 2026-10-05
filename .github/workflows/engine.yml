@@ -44,15 +44,32 @@ jobs:
         run: sudo sysctl -w vm.mmap_rnd_bits=28
       - name: Unit tests with ThreadSanitizer
         run: make -C engine CC=${{ matrix.cc }} SANITIZE=thread test
-      # TSAN binaries on both ends of the lab, at its low rates; a report
-      # stops the engine (halt_on_error), which fails the scenario.
-      - name: Lab with TSAN binaries (smoke, health, control, lanes, multiip, restart)
+      # TSAN binaries on both ends of the lab, at its low rates: the ci set
+      # without deepq, skew and udpmem, which flood. A report stops that
+      # engine (halt_on_error), but a stopped engine fails a check only while
+      # one is running. So each process's reports also go to a file of its
+      # own (log_path: tsan/report.PID, root's, mode 0640), which no later
+      # pass or scenario truncates, and any such file fails the step after
+      # each scenario: a report in a stop path (where the status,
+      # passthrough and loader threads are joined; restart stops the server
+      # 10 times or more), in lanes' second server or in a ctl call too.
+      - name: Lab with TSAN binaries (smoke, health, control, fallback, lanes, multiip, restart)
         run: |
           sudo ENGINE=c bench/lab.sh build
           make -C engine clean
           make -C engine CC=${{ matrix.cc }} SANITIZE=thread cengarde
-          for t in smoke health control lanes multiip restart; do
-            sudo TSAN_OPTIONS=halt_on_error=1 CENGARDE_BIN="$PWD/engine/cengarde" bench/lab.sh "$t" || exit 1
+          tsan=$RUNNER_TEMP/tsan
+          mkdir -p "$tsan"
+          for t in smoke health control fallback lanes multiip restart; do
+            rc=0
+            sudo TSAN_OPTIONS="halt_on_error=1 log_path=$tsan/report" CENGARDE_BIN="$PWD/engine/cengarde" \
+              bench/lab.sh "$t" || rc=$?
+            if ls "$tsan"/report.* >/dev/null 2>&1; then
+              echo "ThreadSanitizer reports in $t:"
+              sudo cat "$tsan"/report.*
+              exit 1
+            fi
+            [ "$rc" = 0 ] || exit 1
           done
 
   cross:
