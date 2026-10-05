@@ -11,7 +11,8 @@
 # with who they are, the port and the source they saw. The forwarding comes
 # from a forward table of protocol 4 (FORWARD_FILE): alpha has tcp and udp
 # 9000 (to its port 22) and tcp 7000-7010; bravo udp 5000-5010 (to
-# 15000-15010) and the whole range. Checks:
+# 15000-15010) and the whole range; at the end, from protocol 3's IP pass
+# file, the whole range for alpha, the router of the first slot. Checks:
 # - each rule reaches the right router and port, the shifted range too,
 #   with the source intact; the whole range reaches its holder, but not
 #   the ports carved out of it; reserved ports (SSH, cengarde, a service of
@@ -27,7 +28,13 @@
 #   keeps reaching the old router after a port changes hands when conntrack
 #   is missing (the problem), and lands on the new one within 2 s of the
 #   sync with it: the whole range moving, an explicit rule moving, a router
-#   removed;
+#   removed, a port the server answered itself given to a router (while the
+#   server's own flow from a port of that range to a peer stays its own),
+#   and a restart while another rule keeps conntrack on: after down nothing
+#   reaches the router, and after apply the stream does again;
+# - protocol 3: IP pass on reaches alpha; off, the stream leaves it within
+#   0.5 s; on again, with the stream still running, it reaches alpha again
+#   within 2 s;
 # - apply twice gives the same rules, two applies at once one jump each;
 #   check puts back a flushed chain and a deleted jump, warns about an
 #   nftables chain that drops forwarded traffic, and does nothing while
@@ -174,7 +181,26 @@ def stream(addr, port, sport, seconds):
     while time.time() < end:
         s.sendto(("stream%s %d" % (sport, n)).encode(), (addr, int(port))); n += 1
         time.sleep(0.1)
-{"serve": serve, "tcp": tcp, "udp": udp, "stream": stream}[sys.argv[1]](*sys.argv[2:])
+def peer(bind, port, addr, dport, every, seconds, log):
+    s = socket.socket(A, socket.SOCK_DGRAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind((bind, int(port)))
+    end, nxt, n = time.time() + float(seconds), 0, 0
+    while time.time() < end:
+        if time.time() >= nxt:
+            try:
+                s.sendto(("peer%s %d" % (port, n)).encode(), (addr, int(dport)))
+            except OSError:
+                pass
+            n += 1; nxt = time.time() + float(every)
+        if select.select([s], [], [], max(0, min(nxt, end) - time.time()))[0]:
+            try:
+                d, a = s.recvfrom(2048)
+            except OSError:
+                continue
+            with open(log, "a") as f:
+                f.write("%.3f %s %s %s\n" % (time.time(), port, a[0], d.decode(errors="replace")))
+{"serve": serve, "tcp": tcp, "udp": udp, "stream": stream, "peer": peer}[sys.argv[1]](*sys.argv[2:])
 EOF
 py() {
 	ns=$1
@@ -349,11 +375,13 @@ stream() {
 	py "$INET" stream 10.1.0.1 "$1" "$2" 12 &
 	STREAM=$!
 }
-# got LOG SPORT [SINCE [UNTIL]]: datagrams of the stream from SPORT in LOG,
-# between two times.
-got() {
-	awk -v s="stream$2" -v a="${3:-0}" -v b="${4:-9999999999}" '$4 == s && $1 >= a && $1 <= b { n++ } END { exit !(n > 0) }' "$1"
+# heard LOG WORD [SINCE [UNTIL]]: datagrams in LOG whose payload starts with
+# WORD, between two times.
+heard() {
+	awk -v s="$2" -v a="${3:-0}" -v b="${4:-9999999999}" '$4 == s && $1 >= a && $1 <= b { n++ } END { exit !(n > 0) }' "$1"
 }
+# got LOG SPORT [SINCE [UNTIL]]: datagrams of the stream from SPORT in LOG.
+got() { heard "$1" "stream$2" "${3:-0}" "${4:-9999999999}"; }
 # later T SECONDS: T plus SECONDS, to the millisecond (print would round
 # the time to six digits).
 later() { awk -v t="$1" -v s="$2" 'BEGIN { printf "%.3f", t + s }'; }
@@ -414,6 +442,77 @@ sleep 2.5
 check "the stream left alpha and reached bravo, the whole range's holder, within 2 s" moved alpha bravo 41002 "$t"
 wait "$STREAM"
 router alpha 10.79.0.2 0
+
+say "live flows: a port the server answered itself goes to a router"
+table 'rule alpha tcp 7000 7010 7000'
+check "udp 9000 and the range not forwarded" nat sync
+stream 9000 41003
+# The server's own flow, from its port 42000 (inside the range the next
+# sync gives bravo) to a peer at 198.51.100.1: it must stay the server's.
+py "$VPS" peer 0.0.0.0 42000 198.51.100.1 30000 2 10 "$TMP/vps-peer.log" &
+P1=$!
+sleep 0.5
+py "$INET" peer 198.51.100.1 30000 10.2.0.1 42000 0.1 9 "$TMP/inet-peer.log" &
+P2=$!
+sleep 2
+check "the server hears its peer" heard "$TMP/vps-peer.log" peer30000
+table "$T1"
+t=$(now)
+check "udp 9000 to alpha, the whole range to bravo" nat sync
+check "it moves the flow the server answered" sh -c 'printf "%s\n" "$1" | grep -q "moved [1-9][0-9]* live flows"' sh "$OUT"
+sleep 2.5
+check "the stream reaches alpha within 2 s" got "$TMP/alpha.log" 41003 "$t" "$(later "$t" 2)"
+check "the server's own flow, on a port bravo now holds, still reaches the server" \
+	heard "$TMP/vps-peer.log" peer30000 "$(later "$t" 0.5)" "$(later "$t" 2.5)"
+wait "$STREAM" "$P1" "$P2"
+
+say "live flows: cengarde-nat restarted (down, apply) while another rule keeps conntrack on"
+# As Docker's rules do: then the stream is tracked, answered by the server,
+# between down and apply, and apply has no applied state to compare with.
+nsexec "$VPS" iptables -A FORWARD -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+stream 30000 41004
+sleep 2
+check "the stream reaches bravo, the whole range's holder" got "$TMP/bravo.log" 41004
+check "down" nat down
+t=$(now)
+sleep 2
+check "after down nothing reaches bravo" not got "$TMP/bravo.log" 41004 "$(later "$t" 0.3)"
+t=$(now)
+check "apply" nat apply
+sleep 2.5
+check "the stream reaches bravo again within 2 s" got "$TMP/bravo.log" 41004 "$t" "$(later "$t" 2)"
+wait "$STREAM"
+nsexec "$VPS" iptables -D FORWARD -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+
+say "protocol 3: the engine's IP pass file, read as the whole range"
+# pass on|off: the IP pass file as the engine writes it: its user's, a
+# temporary file renamed over the old one.
+pass() {
+	echo "$1" >"$R/var/lib/cengarde/passthrough.tmp"
+	chown nobody "$R/var/lib/cengarde/passthrough.tmp"
+	mv "$R/var/lib/cengarde/passthrough.tmp" "$R/var/lib/cengarde/passthrough"
+}
+printf 'ENGINE_USER=nobody\nFORWARD_SKIP_SRC="10.1.0.3/32"\n' >"$R/etc/cengarde/nat.conf"
+pass on
+check "IP pass on" nat sync
+check "to alpha, the router of the first slot" sh -c 'printf "%s\n" "$1" | grep -q "IP pass on (router), to alpha (10.79.0.2)"' sh "$OUT"
+check "tcp 20000 reaches alpha" is "alpha:20000:10.1.0.2" py "$INET" tcp 10.1.0.1 20000
+check "tcp 22 stays on the server" is "vps:22:10.1.0.2" py "$INET" tcp 10.1.0.1 22
+stream 30000 41005
+sleep 2
+check "a stream reaches alpha" got "$TMP/alpha.log" 41005
+pass off
+t=$(now)
+check "IP pass off" nat sync
+sleep 2.5
+check "the stream left alpha within 0.5 s" not got "$TMP/alpha.log" 41005 "$(later "$t" 0.5)"
+check "tcp 20000 stays on the server now" is none py "$INET" tcp 10.1.0.1 20000
+pass on
+t=$(now)
+check "IP pass on again, the stream still running" nat sync
+sleep 2.5
+check "the stream reaches alpha again within 2 s" got "$TMP/alpha.log" 41005 "$t" "$(later "$t" 2)"
+wait "$STREAM"
 
 say "down"
 check "cengarde-nat down" nat down

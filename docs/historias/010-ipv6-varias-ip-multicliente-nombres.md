@@ -528,7 +528,16 @@ Sin cambio de protocolo ni del motor: un VPS lo toma bajo un router 0.4.
   más; probado en netns con conntrack-tools 1.4.8: un flujo UDP a 10 por
   segundo pasa al nuevo router en menos de 2 s, y sin conntrack se queda en
   el viejo (comprobado aparte en el kernel 6.18 con iptables 1.8.10: ni
-  `iptables-restore --noflush` ni `iptables -R` mueven un flujo vivo).
+  `iptables-restore --noflush` ni `iptables -R` mueven un flujo vivo). Un
+  puerto UDP que contestaba el propio servidor y pasa a un router (IP pass
+  de apagado a encendido, una regla nueva, un `apply` sin estado aplicado
+  tras un reinicio): se borran, una a una, las entradas enviadas a una
+  dirección del servidor y contestadas desde ella; los flujos que abren el
+  servidor o los routers van a un host remoto y no se tocan (probado en
+  netns: sin esto, el flujo seguía en el servidor). TCP no lo necesita: un
+  puerto sin nadie contesta con un reset. `down` quita las reglas antes de
+  borrar los flujos: al revés, un paquete entre los dos volvía a quedar
+  atado al router.
 - **Entrada:** el archivo de IP pass del motor v3 pasa a
   `/var/lib/cengarde/passthrough` (lo guarda el propio motor, así que
   sobrevive a reinicios; el estado de la 0.4 se migra). La tabla de reenvío

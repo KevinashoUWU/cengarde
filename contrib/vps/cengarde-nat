@@ -642,10 +642,15 @@ snapshot() {
 # kept alive (a WireGuard or VoIP client, a game) would reach the old one
 # for ever. Up to 256 ports, per port; a wider range, every inbound flow of
 # that protocol to the old router (the flows it opens itself have a remote
-# host as reply source, and are left alone).
+# host as reply source, and are left alone). A UDP port this server
+# answered itself (with no OLD_PLAN, every port) and now given to a router:
+# its flows sent to one of the server's own addresses and answered from it,
+# deleted one by one; the server's own outbound flows and the routers'
+# have a remote host as destination, and are left alone. TCP needs nothing
+# there: a port nobody serves answers with a reset, and the retry is a new
+# flow.
 move_flows() {
-	local k p a b out n moved=0
-	[ -s "$1" ] || return 0
+	local k p a b out n moved=0 s d sp dp
 	awk -v oldf="$1" -v newf="$2" '
 	function load(file, P,   l, a, n) {
 		n = 0
@@ -674,12 +679,12 @@ move_flows() {
 			a = 1
 			for (p = 2; p <= 65536; p++) {
 				if (!(p in bp)) continue
-				ot = at(O, no, proto, a)
-				if (ot != "" && ot != at(N, nn, proto, a)) {
+				ot = at(O, no, proto, a); nt = at(N, nn, proto, a)
+				if (ot != "" && ot != nt) {
 					split(ot, t, " ")
 					if (p - a > 256) all[proto, t[1]] = 1
 					else for (q = a; q < p; q++) one[++nx] = proto " " q " " t[1]
-				}
+				} else if (ot == "" && nt != "" && proto == "udp") print "here", proto, a, p - 1
 				a = p
 			}
 		}
@@ -692,14 +697,38 @@ move_flows() {
 		return 0
 	fi
 	while read -r k p a b; do
-		if [ "$k" = all ]; then
-			out=$("$CONNTRACK" -D -p "$p" -r "$a" 2>&1 >/dev/null)
-		else
-			out=$("$CONNTRACK" -D -p "$p" --orig-port-dst "$a" -r "$b" 2>&1 >/dev/null)
-		fi
+		case $k in
+		all) out=$("$CONNTRACK" -D -p "$p" -r "$a" 2>&1 >/dev/null) ;;
+		port) out=$("$CONNTRACK" -D -p "$p" --orig-port-dst "$a" -r "$b" 2>&1 >/dev/null) ;;
+		*) continue ;;
+		esac
 		n=$(echo "$out" | sed -n 's/.* \([0-9][0-9]*\) flow entr.* deleted.*/\1/p')
 		moved=$((moved + ${n:-0}))
 	done <"$WORK/moves"
+	if grep -q '^here ' "$WORK/moves"; then
+		# The server's own addresses, but loopback and the tunnels' 10.79.
+		ip -4 -o addr show 2>/dev/null | awk '{ sub(/\/.*/, "", $4); if ($4 !~ /^(127|10\.79)\./) print $4 }' >"$WORK/addrs"
+		# Each entry: the first src, dst, sport and dport are the original
+		# direction, the second src the reply's source.
+		"$CONNTRACK" -L -p udp 2>/dev/null | awk -v mf="$WORK/moves" -v af="$WORK/addrs" '
+		BEGIN {
+			while ((getline l < mf) > 0) { split(l, m, " "); if (m[1] == "here") { n++; lo[n] = m[3] + 0; hi[n] = m[4] + 0 } }
+			while ((getline l < af) > 0) mine[l] = 1
+		}
+		{
+			split("", f); split("", c)
+			for (i = 1; i <= NF; i++)
+				if (match($i, /^(src|dst|sport|dport)=/)) { k = substr($i, 1, RLENGTH - 1); f[k, ++c[k]] = substr($i, RLENGTH + 1) }
+			if (c["src"] < 2 || f["src", 2] != f["dst", 1] || !(f["dst", 1] in mine)) next
+			for (j = 1; j <= n; j++)
+				if (f["dport", 1] + 0 >= lo[j] && f["dport", 1] + 0 <= hi[j]) { print f["src", 1], f["dst", 1], f["sport", 1], f["dport", 1]; next }
+		}' >"$WORK/here"
+		while read -r s d sp dp; do
+			out=$("$CONNTRACK" -D -p udp -s "$s" -d "$d" --sport "$sp" --dport "$dp" 2>&1 >/dev/null)
+			n=$(echo "$out" | sed -n 's/.* \([0-9][0-9]*\) flow entr.* deleted.*/\1/p')
+			moved=$((moved + ${n:-0}))
+		done <"$WORK/here"
+	fi
 	[ "$moved" -eq 0 ] || say "moved $moved live flows to their new target"
 }
 
@@ -785,14 +814,16 @@ legacy() {
 }
 
 down_now() {
+	unjump iptables
+	command -v ip6tables >/dev/null && unjump ip6tables
+	purge_legacy
+	# The flows after the rules: a packet between the two would be forwarded
+	# to its router again, and that flow would stay bound to it.
 	if [ -s "$STATE/applied" ]; then
 		echo "ret tcp 1 65535" >"$WORK/none"
 		echo "ret udp 1 65535" >>"$WORK/none"
 		move_flows "$STATE/applied" "$WORK/none"
 	fi
-	unjump iptables
-	command -v ip6tables >/dev/null && unjump ip6tables
-	purge_legacy
 	rm -f "$STATE/active" "$STATE/applied" "$STATE/reserved" "$STATE/rules"
 }
 
