@@ -1,6 +1,7 @@
 /* Per-link receive statistics in a redundant stream: which link delivered
  * each packet first, how far behind the others arrived, and which links
- * never delivered a copy. These are the inputs for link health decisions.
+ * never delivered a copy. They are for display only (see below): link
+ * health (probe delays, health.h), scheduling and bonding never read them.
  *
  * Slots are indexed by sequence; when a slot is reused, the links that were
  * expected but never delivered the old packet are counted as missed.
