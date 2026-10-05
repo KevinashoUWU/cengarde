@@ -40,6 +40,7 @@ build() {
 	gcc -O2 -Wall -Wextra -pthread -o "$BIN/mgen" "$LAB/mgen.c" || return 1
 	gcc -O2 -Wall -Wextra -pthread -o "$BIN/jitter" "$LAB/jitter.c" || return 1
 	gcc -O2 -Wall -Wextra -o "$BIN/protoclient" "$LAB/protoclient.c" || return 1
+	gcc -O2 -Wall -Wextra -pthread -I"$REPO/engine/src" -o "$BIN/ringbench" "$LAB/ringbench.c" || return 1
 	make -s -C "$REPO/engine" cengarde && cp "$REPO/engine/cengarde" "$BIN/cengarde" || return 1
 	[ "$ENGINE" = go ] || return 0 # ENGINE=go also builds the Go baseline
 	# engarde (Go) at GO_REF, with a stub web UI.

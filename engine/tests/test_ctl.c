@@ -20,6 +20,8 @@ static void test_parse(void)
 	CHECK(parses("  links\n", &c) && c.op == CG_CTL_LINKS);
 	CHECK(parses("reset\r\n", &c) && c.op == CG_CTL_RESET);
 	CHECK(parses("reload", &c) && c.op == CG_CTL_RELOAD);
+	CHECK(parses("threads\n", &c) && c.op == CG_CTL_THREADS);
+	CHECK_EQ(cg_ctl_parse("threads all", &c, err, sizeof(err)), -1);
 	CHECK(parses("link eth1.10 off", &c) && c.op == CG_CTL_LINK && !strcmp(c.ifname, "eth1.10") &&
 	      c.ovr == CG_OVR_OFF);
 	CHECK(parses("link\twwan0  on\n", &c) && c.op == CG_CTL_LINK && !strcmp(c.ifname, "wwan0") && c.ovr == CG_OVR_ON);
@@ -33,6 +35,7 @@ static void test_parse(void)
 	CHECK(strstr(err, "takes no arguments") != NULL);
 	CHECK_EQ(cg_ctl_parse("shutdown", &c, err, sizeof(err)), -1);
 	CHECK(strstr(err, "unknown command 'shutdown'") != NULL);
+	CHECK(strstr(err, "threads") != NULL); /* listed among the commands */
 	CHECK_EQ(cg_ctl_parse("link eth0", &c, err, sizeof(err)), -1);
 	CHECK(strstr(err, "usage") != NULL);
 	CHECK_EQ(cg_ctl_parse("link eth0 down", &c, err, sizeof(err)), -1);

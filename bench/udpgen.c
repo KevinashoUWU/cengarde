@@ -136,6 +136,16 @@ static void *rx_thread(void *arg)
 	return NULL;
 }
 
+/* Unique packets that took at least us microseconds. */
+static uint64_t over(uint64_t us)
+{
+	uint64_t n = hist_over;
+
+	for (uint64_t i = us; i < HIST_US; i++)
+		n += hist[i];
+	return n;
+}
+
 static uint64_t pct(double p)
 {
 	uint64_t target = (uint64_t)(p * rx_unique), acc = 0;
@@ -223,9 +233,9 @@ int main(int argc, char **argv)
 	atomic_store(&stop_rx, 1);
 	pthread_join(rx, NULL);
 	printf("sent=%lu send_err=%lu rx=%lu uniq=%lu dup=%lu reord=%lu lat_avg_us=%lu p50_us=%lu p99_us=%lu "
-	       "p999_us=%lu over200ms=%lu\n",
+	       "p999_us=%lu over200ms=%lu over50ms=%lu\n",
 	       sent, send_err, rx_total, rx_unique, rx_dup, rx_reord,
 	       rx_unique ? lat_sum_us / rx_unique : 0, rx_unique ? pct(0.50) : 0,
-	       rx_unique ? pct(0.99) : 0, rx_unique ? pct(0.999) : 0, hist_over);
+	       rx_unique ? pct(0.99) : 0, rx_unique ? pct(0.999) : 0, hist_over, over(50000));
 	return 0;
 }

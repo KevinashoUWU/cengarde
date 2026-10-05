@@ -88,6 +88,9 @@
   duplicados, tardíos, paquetes que no trajo y retraso suavizado frente a la
   primera copia. Son las señales para el silenciado de la Fase 2 (historia
   003). Como cuentan duplicados sin verificar, son informativas.
+  - *Corrección 2026-10-05:* el silenciado usa el retraso de ida de las
+    sondas (historia 006); estas estadísticas son solo para mostrar
+    (historia 011).
 
 ### Política de envío (patrón libRIST)
 

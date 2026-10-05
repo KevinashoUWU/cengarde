@@ -15,6 +15,13 @@
  * family it has, from its best source address for it (addrpick.h), and
  * moves to the next one when the server stops answering there (srvpick.h).
  *
+ * Link sockets (link_threads): "legacy" reads them in this loop, as 0.4
+ * did; "off" and "on" hand them to pumps (pump.h), which read them into
+ * receive rings this loop then takes in turn ("off": one pump, run inline
+ * here; "on": a thread per link). Every mode makes the same per-packet
+ * decisions (clientpath.h); this loop keeps the session, the window, health
+ * and probes, and still sends upload copies itself.
+ *
  * A reload (SIGHUP or "cengarde ctl reload") applies the new configuration
  * in place, keeping the session; what was set up only once makes the process
  * start again (cg_config_restart_needed).
@@ -30,18 +37,26 @@
 #include <sys/signalfd.h>
 #include <unistd.h>
 
+#ifndef SO_MEMINFO
+#define SO_MEMINFO 55
+#endif
+
 #include "addrpick.h"
 #include "arrival.h"
+#include "clientpath.h"
 #include "ctl.h"
 #include "engine.h"
 #include "epoch.h"
 #include "health.h"
+#include "hist.h"
 #include "log.h"
 #include "netlink.h"
+#include "pump.h"
 #include "replay.h"
 #include "sock.h"
 #include "srvpick.h"
 #include "status.h"
+#include "thrplan.h"
 #include "util.h"
 
 #define RECONCILE_MS 5000
@@ -65,7 +80,7 @@ struct link {
 	uint64_t cand_since_ms; /* when its socket to cand opened */
 	uint64_t failovers;
 	uint32_t path_mtu; /* IP_MTU or IPV6_MTU of its socket, read every RECONCILE_MS */
-	uint64_t up_since_ms, last_rx_ms, last_reply_ms, last_probe_ms, retry_ms;
+	uint64_t up_since_ms, last_reply_ms, last_probe_ms, retry_ms;
 	uint64_t srtt8_us; /* 8 x smoothed RTT */
 	uint32_t rtt_us;
 	uint32_t unanswered; /* probes sent since the last reply */
@@ -77,15 +92,22 @@ struct link {
 	uint64_t tx_pkts, tx_bytes, tx_drops, tx_errors;
 	struct cg_probe_info peer_view; /* server's view of this path (upload) */
 	uint64_t peer_view_ms;
-	struct cg_echo probes; /* probes sent, for the echoes in replies (epoch.h) */
+	struct cg_rxl rxl; /* as the download sees it: generation, last packet, probe echoes */
+	uint8_t pump;      /* its pump (off and on), once it had a socket: sticky */
+	uint8_t has_pump;
+	uint64_t open_failed; /* sockets its pump could not poll */
+	/* The newest command its pump has not taken yet because the pump is
+	 * stalled (op 0: none); an OPEN here holds a socket the pump never saw. */
+	struct cg_pump_cmd pend;
 	struct cg_ratelimit rl, rl_move, rl_mtu;
 };
 
 struct client {
 	struct cg_config *cfg; /* replaced by a reload */
 	const struct cg_run *run;
-	const uint8_t *k_tx, *k_rx;
-	uint32_t session, tx_seq;
+	uint32_t session;
+	struct cg_txs txs; /* sequence and key up */
+	struct cg_rxs rxs; /* window, arrivals and counters down (clientpath.h) */
 	int ep, wg_fd, tfd;
 	struct sockaddr_storage wg_peer;
 	int have_peer;
@@ -93,9 +115,6 @@ struct client {
 	struct link link[CG_MAX_LINKS];
 	struct cg_hlink uh[CG_MAX_LINKS]; /* upload health, by link id */
 	struct cg_hcfg hcfg;
-	struct cg_replay replay;
-	struct cg_arrivals arr;
-	struct cg_link_rx rx[CG_MAX_LINKS];
 	struct cg_status_writer sw;
 	struct cg_ctl ctl;
 	struct cg_ovr_table ovr; /* links paused or forced on by hand */
@@ -109,10 +128,33 @@ struct client {
 	uint32_t up_max;     /* largest WireGuard datagram since the last path check */
 	uint32_t up_largest; /* the same over the last check period, for the status */
 	uint64_t down_pkts, down_bytes, down_wg_drops, down_no_peer;
-	uint64_t rx_malformed, rx_foreign, rx_auth_fail, rx_old, rx_dups, rx_trunc;
-	uint64_t window_resets;      /* the server started over (epoch.h) */
-	uint64_t new_before_open_ms; /* newest last_rx_ms of a link before its socket was reopened */
 	struct cg_ratelimit rl_auth, rl_big, rl_wg, rl_full, rl_restart;
+
+	/* Link sockets (pump.h): the mode in use, and the pumps of off and on. */
+	int lt;                          /* CG_LT_LEGACY, CG_LT_OFF or CG_LT_ON */
+	int ncpus;                       /* in the affinity mask, at start */
+	cpu_set_t cpus;                  /* the process's, before the cpu knob pinned the hub */
+	struct cg_bell bell;             /* rung by the pump threads (on) */
+	struct cg_pump *pump[CG_MAX_PUMPS];
+	uint8_t pump_links[CG_MAX_PUMPS]; /* links each pump serves */
+	struct pump_stats {
+		uint64_t pkts, paused, errors; /* totals of the pump's 32-bit counters */
+		uint32_t l_pkts, l_paused, l_errors;
+		uint32_t stalled_ms; /* how long work waited for it with no loop pass */
+		struct cg_stall stall;
+		uint32_t hop_snap[CG_HIST_N], hop_win[CG_HIST_N]; /* hop over the last 5 s */
+		struct cg_cpuwin cpu;
+		struct cg_ratelimit rl_stall, rl_err;
+	} pst[CG_MAX_PUMPS];
+	struct cg_cpuwin hub_cpu, sw_cpu;
+	unsigned guards;                 /* thrplan.h warnings already given */
+	uint64_t next_second_ms, next_hop_ms;
+	int npumps;
+	unsigned drain_first;            /* the pump taken first in the next pass */
+	unsigned send_first;             /* rotates the order links send a batch in */
+	struct cg_hist hop[CG_MAX_PUMPS]; /* download: from a pump's read to this loop's take, us */
+	struct mmsghdr *dmsg;            /* the first copies of a pass, to WireGuard */
+	struct iovec *diov;
 
 	struct cg_rxbatch in;
 	uint8_t hdr[CG_BATCH][CG_HDR_LEN];
@@ -138,10 +180,17 @@ static uint32_t srtt_ms(const struct link *l)
 	return (uint32_t)(l->srtt8_us / 8000);
 }
 
+/* It has a socket its pump (or this loop) reads: not one waiting for a
+ * stalled pump to take it. */
+static int link_up(const struct link *l)
+{
+	return l->fd >= 0 && l->pend.op != CG_PUMP_OPEN;
+}
+
 /* Live: the server answers our probes on it, so it works both ways. */
 static int link_live(const struct link *l, uint64_t now_ms)
 {
-	return l->fd >= 0 && l->last_reply_ms &&
+	return link_up(l) && l->last_reply_ms &&
 	       !cg_probes_stalled(l->unanswered, l->first_unanswered_ms, now_ms, srtt_ms(l));
 }
 
@@ -158,7 +207,7 @@ static void link_masks(const struct client *c, uint64_t now_ms, uint16_t *presen
 {
 	*present = *live = 0;
 	for (int i = 0; i < CG_MAX_LINKS; i++) {
-		if (c->link[i].fd < 0)
+		if (!link_up(&c->link[i]))
 			continue;
 		*present |= (uint16_t)(1u << i);
 		if (link_live(&c->link[i], now_ms))
@@ -172,7 +221,7 @@ static uint16_t expect_mask(const struct client *c)
 	uint16_t m = 0;
 
 	for (int i = 0; i < CG_MAX_LINKS; i++)
-		if (c->link[i].fd >= 0 && !c->link[i].peer_muted)
+		if (link_up(&c->link[i]) && !c->link[i].peer_muted)
 			m |= (uint16_t)(1u << i);
 	return m;
 }
@@ -193,14 +242,56 @@ static int same_ip(const struct sockaddr_storage *a, const struct sockaddr_stora
 	return !memcmp(&((const struct sockaddr_in6 *)a)->sin6_addr, &((const struct sockaddr_in6 *)b)->sin6_addr, 16);
 }
 
+/* The link's socket, as the loop and the download see it. */
+static void link_set_fd(struct link *l, int fd)
+{
+	l->fd = fd;
+	l->rxl.open = fd >= 0;
+}
+
+/* Whether a pump holds the link sockets (link_threads off and on). */
+static int pumped(const struct client *c)
+{
+	return c->lt != CG_LT_LEGACY;
+}
+
+/* Hands a command for link l to its pump. A stalled pump (CG_PUMP_CMDS
+ * commands it has not taken) gets it later, from tick: only the newest
+ * state of each link waits (cg_pump_send), so the hub never piles up
+ * sockets however often failover and reconcile run, and a socket the pump
+ * never saw is still the hub's to close when a newer state replaces it. */
+static void link_cmd(struct client *c, struct link *l, uint8_t op, int fd)
+{
+	struct cg_pump_cmd cmd = { .op = op, .link = (uint8_t)(l - c->link), .gen = l->rxl.gen, .fd = fd };
+	int unsent = cg_pump_send(c->pump[l->pump], &l->pend, &cmd);
+
+	if (unsent >= 0)
+		close(unsent);
+}
+
+/* tick: what stalled pumps can take now. */
+static void link_cmds_retry(struct client *c)
+{
+	for (int i = 0; i < CG_MAX_LINKS; i++)
+		if (c->link[i].pend.op)
+			cg_pump_send_pending(c->pump[c->link[i].pump], &c->link[i].pend);
+}
+
 /* why: for the log, NULL for none. */
 static void link_close(struct client *c, struct link *l, const char *why)
 {
 	if (l->fd < 0)
 		return;
-	epoll_ctl(c->ep, EPOLL_CTL_DEL, l->fd, NULL);
-	close(l->fd);
-	l->fd = -1;
+	if (pumped(c)) {
+		/* Its pump closes it; what the pump read from it is stale from
+		 * now on, so no reply of a closed link reaches its health. */
+		l->rxl.gen++;
+		link_cmd(c, l, CG_PUMP_CLOSE, -1);
+	} else {
+		epoll_ctl(c->ep, EPOLL_CTL_DEL, l->fd, NULL);
+		close(l->fd);
+	}
+	link_set_fd(l, -1);
 	if (why)
 		cg_info("link %s down: %s", l->ifname, why);
 }
@@ -225,7 +316,7 @@ static struct link *link_get(struct client *c, const char *ifname)
 		l = &c->link[i];
 		memset(l, 0, sizeof(*l));
 		l->used = 1;
-		l->fd = -1;
+		link_set_fd(l, -1);
 		snprintf(l->ifname, sizeof(l->ifname), "%s", ifname);
 		return l;
 	}
@@ -284,6 +375,98 @@ static uint32_t sock_path_mtu(int fd, int family)
 			       : getsockopt(fd, IPPROTO_IP, IP_MTU, &v, &len))
 		return 0;
 	return v > 0 ? (uint32_t)v : 0;
+}
+
+static struct cg_pump *pump_new(void)
+{
+	size_t size = (sizeof(struct cg_pump) + CG_CACHELINE - 1) / CG_CACHELINE * CG_CACHELINE;
+	struct cg_pump *p = aligned_alloc(CG_CACHELINE, size);
+
+	if (p)
+		memset(p, 0, size);
+	return p;
+}
+
+/* The guards of thrplan.h for the threads there are now, each warning once. */
+static void guards_check(struct client *c)
+{
+	int pins[CG_MAX_PUMPS];
+	unsigned g, fresh;
+
+	for (int k = 0; k < c->npumps; k++)
+		pins[k] = c->pump[k]->cpu;
+	g = cg_thr_guards(1 + c->npumps, c->ncpus, c->cfg->rt_priority, c->cfg->busy_poll_us, pins, c->npumps);
+	fresh = g & ~c->guards;
+	c->guards |= g;
+	if (fresh & CG_TG_RT_ALL)
+		cg_warn("rt_priority on %d data threads with %d CPUs: the kernel's own work may starve", 1 + c->npumps,
+			c->ncpus);
+	if (fresh & CG_TG_BUSY_HUB)
+		cg_warn("busy_poll_us: %d data threads do not fit %d CPUs with one to spare, the link threads do not poll",
+			1 + c->npumps, c->ncpus);
+	if (fresh & CG_TG_PIN_SHARED)
+		cg_warn("two link threads pinned to the same CPU");
+}
+
+/* link_threads = on: a thread for link l, the first time it gets a socket,
+ * or a place on the pump with the fewest links once CG_MAX_PUMPS run
+ * (thrplan.h). Returns 0 or -1. */
+static int link_pump(struct client *c, struct link *l)
+{
+	const struct cg_link_cfg *lc = cg_config_link(c->cfg, l->ifname);
+	struct cg_pump *p;
+	char name[8 + IFNAMSIZ]; /* the thread's name keeps 15 characters */
+	uint32_t busy;
+	int k;
+
+	if (l->has_pump)
+		return 0;
+	k = c->lt == CG_LT_ON ? cg_pump_pick(c->pump_links, c->npumps, CG_MAX_PUMPS) : 0;
+	if (k == c->npumps) {
+		p = pump_new();
+		if (!p || cg_pump_init(p, 1, -1, CG_PUMP_RXQ, c->cfg->io_queue) < 0) {
+			free(p);
+			return -1;
+		}
+		p->cpu = lc ? lc->cpu : -1;
+		p->rt_priority = c->cfg->rt_priority;
+		p->cpus = c->cpus;
+		p->have_cpus = 1;
+		/* Busy polling only while the data threads fit the CPUs with one
+		 * to spare (thrplan.h). */
+		busy = cg_pump_busy_us(c->npumps + 1, c->ncpus, c->cfg->busy_poll_us);
+		atomic_store_explicit(&p->busy_poll_us, busy, memory_order_relaxed);
+		snprintf(name, sizeof(name), "cg-%s", l->ifname);
+		if (cg_pump_start(p, name, &c->bell) < 0) {
+			cg_pump_free(p);
+			free(p);
+			return -1;
+		}
+		c->pump[c->npumps++] = p;
+		/* Past that, the pumps that polled stop too: the hub alone polls. */
+		if (!busy)
+			for (int i = 0; i < c->npumps; i++)
+				atomic_store_explicit(&c->pump[i]->busy_poll_us, 0, memory_order_relaxed);
+		guards_check(c);
+	}
+	l->pump = (uint8_t)k;
+	l->has_pump = 1;
+	c->pump_links[k]++;
+	return 0;
+}
+
+/* A socket's kernel receive queue and the datagrams it dropped
+ * (SO_MEMINFO). Returns 0, or -1 when the kernel does not say. */
+static int sock_meminfo(int fd, uint32_t *rmem, uint32_t *drops)
+{
+	uint32_t m[9] = { 0 }; /* SK_MEMINFO_RMEM_ALLOC is 0, SK_MEMINFO_DROPS 8 */
+	socklen_t len = sizeof(m);
+
+	if (fd < 0 || getsockopt(fd, SOL_SOCKET, SO_MEMINFO, m, &len) < 0 || len < sizeof(m))
+		return -1;
+	*rmem = m[0];
+	*drops = m[8];
+	return 0;
 }
 
 /* Whether to log a move: each one in the first round, then once a minute
@@ -352,7 +535,7 @@ static void link_open(struct client *c, struct link *l, const struct cg_iface *i
 			link_close(c, l, same_ip(&l->local, &local) ? "server address changed" : "address changed");
 		if (now_ms < l->retry_ms)
 			return;
-		l->fd = cg_udp_link(ifc->name, &local, &l->cand, err, sizeof(err));
+		link_set_fd(l, cg_udp_link(ifc->name, &local, &l->cand, err, sizeof(err)));
 		if (l->fd >= 0)
 			break;
 		if (e->n > 1 && cfg->server_failover_ms && tries < e->n) {
@@ -385,15 +568,27 @@ static void link_open(struct client *c, struct link *l, const struct cg_iface *i
 	l->remote = l->cand;
 	l->up_since_ms = l->cand_since_ms = now_ms;
 	l->path_mtu = sock_path_mtu(l->fd, l->remote.ss_family);
-	if (l->last_rx_ms > c->new_before_open_ms)
-		c->new_before_open_ms = l->last_rx_ms;
-	l->last_rx_ms = l->last_reply_ms = l->last_probe_ms = 0;
-	memset(&l->probes, 0, sizeof(l->probes));
+	/* The newest packet of any link stays in rxs.newest_ms (epoch.h). */
+	l->rxl.last_rx_ms = l->last_reply_ms = l->last_probe_ms = 0;
+	memset(&l->rxl.probes, 0, sizeof(l->rxl.probes));
 	l->srtt8_us = 0;
 	l->rtt_us = l->unanswered = l->probe_announced = 0;
 	l->have_down_owd = l->peer_muted = 0;
 	cg_health_reset(&c->uh[l - c->link], now_ms);
-	if (cg_epoll_add(c->ep, l->fd, CG_EV(CG_EV_LINK, l - c->link)) < 0) {
+	if (pumped(c)) {
+		if (link_pump(c, l) < 0) {
+			/* Never handed over: still this loop's to close. */
+			close(l->fd);
+			link_set_fd(l, -1);
+			l->retry_ms = now_ms + RECONCILE_MS;
+			if (cg_ratelimit_ok(&l->rl, now_ms, 30000))
+				cg_warn("link %s: cannot start its thread, trying again", l->ifname);
+			return;
+		}
+		/* A failure to poll it comes back through open_failed (tick). */
+		l->rxl.gen++;
+		link_cmd(c, l, CG_PUMP_OPEN, l->fd);
+	} else if (cg_epoll_add(c->ep, l->fd, CG_EV(CG_EV_LINK, l - c->link)) < 0) {
 		link_close(c, l, "epoll");
 		return;
 	}
@@ -491,10 +686,19 @@ static void path_check(struct client *c, uint64_t now_ms)
 static void send_links(struct client *c, int m, uint64_t now_ms)
 {
 	uint16_t present, live, carry;
+	int ids[CG_MAX_LINKS], n = 0, first = 0;
 
 	link_masks(c, now_ms, &present, &live);
 	carry = cg_health_carriers(c->uh, CG_MAX_LINKS, present, live);
-	for (int i = 0; i < CG_MAX_LINKS; i++) {
+	for (int i = 0; i < CG_MAX_LINKS; i++)
+		if ((carry >> i & 1) || ((live >> i & 1) && c->cfg->mute_trickle))
+			ids[n++] = i;
+	/* With pumps the first link of a batch rotates: the one that goes
+	 * first wins the race to the server on identical links. */
+	if (n && pumped(c))
+		first = (int)(c->send_first++ % (unsigned)n);
+	for (int x0 = 0; x0 < n; x0++) {
+		int i = ids[(first + x0) % n];
 		struct link *l = &c->link[i];
 		int sel[CG_BATCH], k = 0, s;
 
@@ -544,7 +748,6 @@ static void wg_read(struct client *c)
 		now_ms = now_us / 1000;
 		for (int i = 0; i < n; i++) {
 			size_t len = c->in.msg[i].msg_len;
-			struct cg_hdr h = { .type = CG_T_DATA, .session = c->session, .ts = (uint32_t)now_us };
 
 			if (!len)
 				continue;
@@ -563,8 +766,7 @@ static void wg_read(struct client *c)
 				c->wg_peer = c->in.from[i];
 				c->have_peer = 1;
 			}
-			h.seq = c->tx_seq++;
-			cg_hdr_write(c->hdr[m], &h, c->k_tx, c->in.buf[i], len);
+			cg_up_header(&c->txs, c->hdr[m], CG_T_DATA, 0, 0, (uint32_t)now_us, c->in.buf[i], len);
 			c->oiov[m][0].iov_base = c->hdr[m];
 			c->oiov[m][0].iov_len = CG_HDR_LEN;
 			c->oiov[m][1].iov_base = c->in.buf[i];
@@ -591,7 +793,7 @@ static void on_probe_reply(struct client *c, struct link *l, const struct cg_hdr
 	cg_probe_info_read(&pi, payload);
 	/* Each probe is answered once: a copy of this reply replayed later
 	 * cannot count for epoch.h. */
-	cg_echo_take(&l->probes, pi.echo_ts, now_ms, CG_ECHO_MAX_AGE_MS);
+	cg_echo_take(&l->rxl.probes, pi.echo_ts, now_ms, CG_ECHO_MAX_AGE_MS);
 	rtt = now32 - pi.echo_ts;
 	if (rtt < 10u * 1000 * 1000) {
 		l->rtt_us = rtt;
@@ -625,44 +827,50 @@ static void on_probe_reply(struct client *c, struct link *l, const struct cg_hdr
 	l->have_down_owd = 1;
 }
 
-/* Since the newest verified NEW packet on any link: for the restart check
- * only, never per packet. */
-static uint64_t ms_since_new(const struct client *c, uint64_t now_ms)
+/* Logs what a verdict of cg_rx_entry asks for, rate-limited. */
+static void rx_verdict_log(struct client *c, struct link *l, enum cg_rxv v, uint64_t now_ms)
 {
-	uint64_t last = c->new_before_open_ms;
-
-	for (int i = 0; i < CG_MAX_LINKS; i++)
-		if (c->link[i].last_rx_ms > last)
-			last = c->link[i].last_rx_ms;
-	return now_ms - last;
-}
-
-/* A packet the window judged OLD: when it shows that the server started over
- * (epoch.h), the window starts again and the packet goes on as NEW, its MAC
- * verified (returns 1). Only a probe reply can show that, so only those pay
- * for a MAC here, and the echo is taken only from a verified one. */
-static int started_over(struct client *c, struct link *l, const struct cg_hdr *h, const uint8_t *b, size_t len,
-			uint64_t now_ms)
-{
-	struct cg_probe_info pi;
-	int mac_ok, echo = 0;
-
-	if (h->type != CG_T_PROBE_REPLY)
-		return 0;
-	mac_ok = cg_hdr_verify(b, len, c->k_rx);
-	if (mac_ok) {
-		cg_probe_info_read(&pi, b + CG_HDR_LEN);
-		echo = cg_echo_take(&l->probes, pi.echo_ts, now_ms, CG_ECHO_MAX_AGE_MS);
-	}
-	if (!cg_restart_reply(CG_RP_OLD, h->type, mac_ok, echo, ms_since_new(c, now_ms), 2 * c->cfg->probe_idle_ms))
-		return 0;
-	cg_replay_reset(&c->replay);
-	c->window_resets++;
-	if (cg_ratelimit_ok(&c->rl_restart, now_ms, 10000))
+	if (v == CG_RXV_AUTH && cg_ratelimit_ok(&c->rl_auth, now_ms, 10000))
+		cg_warn("link %s: packet failed authentication (wrong key?)", l->ifname);
+	else if (v == CG_RXV_RESET && cg_ratelimit_ok(&c->rl_restart, now_ms, 10000))
 		cg_info("link %s: the server started over, download window reset", l->ifname);
-	return 1;
 }
 
+/* Sends q first copies to WireGuard, never waiting: what does not fit is
+ * dropped, as a full link drops its own copies. */
+static void wg_send(struct client *c, struct mmsghdr *m, int q, uint64_t now_ms)
+{
+	int s;
+
+	c->last_traffic_ms = now_ms;
+	if (!c->have_peer) {
+		c->down_no_peer += (uint64_t)q; /* WireGuard has not sent anything yet */
+		return;
+	}
+	s = sendmmsg(c->wg_fd, m, (unsigned)q, MSG_DONTWAIT);
+	if (s < q) {
+		c->down_wg_drops += (uint64_t)(q - (s < 0 ? 0 : s));
+		if (s < 0 && errno != EAGAIN && cg_ratelimit_ok(&c->rl_wg, now_ms, 10000))
+			cg_warn("send to WireGuard: %s", strerror(errno));
+	}
+}
+
+static void wg_msg(struct client *c, struct mmsghdr *m, struct iovec *iov, uint8_t *payload, size_t len)
+{
+	iov->iov_base = payload;
+	iov->iov_len = len;
+	memset(&m->msg_hdr, 0, sizeof(m->msg_hdr));
+	m->msg_hdr.msg_name = &c->wg_peer;
+	m->msg_hdr.msg_namelen = cg_addr_len(&c->wg_peer);
+	m->msg_hdr.msg_iov = iov;
+	m->msg_hdr.msg_iovlen = 1;
+	c->down_pkts++;
+	c->down_bytes += len;
+}
+
+/* Today's loop (link_threads = legacy): reads a link's socket into the
+ * client's batch, judges each datagram (clientpath.h) and sends the first
+ * copies to WireGuard, one sendmmsg per batch. */
 static void link_read(struct client *c, struct link *l)
 {
 	unsigned id = (unsigned)(l - c->link);
@@ -671,6 +879,7 @@ static void link_read(struct client *c, struct link *l)
 		int n = cg_rx(l->fd, &c->in), q = 0;
 		uint64_t now_us, now_ms;
 		uint32_t now32;
+		uint16_t expect;
 
 		if (n < 0 && (errno == ECONNREFUSED || errno == EHOSTUNREACH || errno == ENETUNREACH))
 			continue; /* an ICMP error from an earlier send; the queue may hold more */
@@ -679,77 +888,111 @@ static void link_read(struct client *c, struct link *l)
 		now_us = cg_now_us();
 		now_ms = now_us / 1000;
 		now32 = (uint32_t)now_us;
+		expect = expect_mask(c);
 		for (int i = 0; i < n; i++) {
 			uint8_t *b = c->in.buf[i];
 			size_t len = c->in.msg[i].msg_len;
 			struct cg_hdr h;
-			int verified = 0;
+			enum cg_rxv v = cg_rx_entry(&c->rxs, &l->rxl, id, l->rxl.gen, b, len,
+						    !!(c->in.msg[i].msg_hdr.msg_flags & MSG_TRUNC), now_us, expect, &h);
 
-			if (c->in.msg[i].msg_hdr.msg_flags & MSG_TRUNC) {
-				c->rx_trunc++;
+			if (v == CG_RXV_DROP)
 				continue;
-			}
-			if (cg_hdr_parse(&h, b, len) < 0 || (h.type != CG_T_DATA && h.type != CG_T_PROBE_REPLY)) {
-				c->rx_malformed++;
-				continue;
-			}
-			if (h.session != c->session) {
-				c->rx_foreign++;
-				continue;
-			}
-			switch (cg_replay_check(&c->replay, h.seq)) {
-			case CG_RP_OLD:
-				if (started_over(c, l, &h, b, len, now_ms)) {
-					verified = 1;
-					break;
+			if (v != CG_RXV_DATA) {
+				rx_verdict_log(c, l, v, now_ms);
+				if (v != CG_RXV_AUTH) {
+					on_probe_reply(c, l, &h, b + CG_HDR_LEN, now32, now_ms);
+					expect = expect_mask(c);
 				}
-				c->rx_old++;
-				continue;
-			case CG_RP_DUP:
-				c->rx_dups++;
-				if (h.type == CG_T_DATA)
-					cg_arr_dup(&c->arr, c->rx, h.seq, now32, id);
-				continue;
-			default:
-				break;
-			}
-			if (!verified && !cg_hdr_verify(b, len, c->k_rx)) {
-				c->rx_auth_fail++;
-				if (cg_ratelimit_ok(&c->rl_auth, now_ms, 10000))
-					cg_warn("link %s: packet failed authentication (wrong key?)", l->ifname);
 				continue;
 			}
-			cg_replay_mark(&c->replay, h.seq);
-			l->last_rx_ms = now_ms;
-			if (h.type == CG_T_PROBE_REPLY) {
-				on_probe_reply(c, l, &h, b + CG_HDR_LEN, now32, now_ms);
-				continue;
-			}
-			cg_arr_first(&c->arr, c->rx, h.seq, now32, id, expect_mask(c));
-			c->oiov[q][0].iov_base = b + CG_HDR_LEN;
-			c->oiov[q][0].iov_len = len - CG_HDR_LEN;
-			memset(&c->out[q].msg_hdr, 0, sizeof(c->out[q].msg_hdr));
-			c->out[q].msg_hdr.msg_name = &c->wg_peer;
-			c->out[q].msg_hdr.msg_namelen = cg_addr_len(&c->wg_peer);
-			c->out[q].msg_hdr.msg_iov = c->oiov[q];
-			c->out[q].msg_hdr.msg_iovlen = 1;
-			c->down_pkts++;
-			c->down_bytes += len - CG_HDR_LEN;
+			wg_msg(c, &c->out[q], &c->oiov[q][0], b + CG_HDR_LEN, len - CG_HDR_LEN);
 			q++;
 		}
 		if (q)
-			c->last_traffic_ms = now_ms;
-		if (q && !c->have_peer) {
-			c->down_no_peer += (uint64_t)q; /* WireGuard has not sent anything yet */
-		} else if (q) {
-			int s = sendmmsg(c->wg_fd, c->out, (unsigned)q, MSG_DONTWAIT);
+			wg_send(c, c->out, q, now_ms);
+		if (n < CG_BATCH)
+			return;
+	}
+}
 
-			if (s < q) {
-				c->down_wg_drops += (uint64_t)(q - (s < 0 ? 0 : s));
-				if (s < 0 && errno != EAGAIN && cg_ratelimit_ok(&c->rl_wg, now_ms, 10000))
-					cg_warn("send to WireGuard: %s", strerror(errno));
+/* One slot a pump read: 1 when it is a first copy for WireGuard. */
+static int hub_slot(struct client *c, const struct cg_rxslot *sl, uint16_t *expect)
+{
+	struct link *l = &c->link[sl->link];
+	uint64_t now_ms = sl->t_us / 1000;
+	struct cg_hdr h;
+	enum cg_rxv v = cg_rx_entry(&c->rxs, &l->rxl, sl->link, sl->gen, sl->buf, sl->len, sl->trunc, sl->t_us,
+				    *expect, &h);
+
+	if (v == CG_RXV_DATA)
+		return 1;
+	if (v == CG_RXV_DROP)
+		return 0;
+	rx_verdict_log(c, l, v, now_ms);
+	if (v != CG_RXV_AUTH) {
+		on_probe_reply(c, l, &h, sl->buf + CG_HDR_LEN, (uint32_t)sl->t_us, now_ms);
+		*expect = expect_mask(c);
+	}
+	return 0;
+}
+
+/* Takes what the pumps read (link_threads off and on): each pump in turn,
+ * starting with a different one on every pass, up to CG_BATCH slots each.
+ * Judges each slot in the order of today's loop (clientpath.h), with the
+ * time its pump read it, sends the first copies of the whole pass to
+ * WireGuard in one sendmmsg straight out of the slots, and only then gives
+ * the slots back. Returns the slots taken. */
+static int hub_drain(struct client *c)
+{
+	uint32_t took[CG_MAX_PUMPS];
+	uint64_t now_us = cg_now_us();
+	uint16_t expect = expect_mask(c);
+	int q = 0, total = 0;
+
+	for (int k = 0; k < c->npumps; k++) {
+		int pi = (int)((c->drain_first + (unsigned)k) % (unsigned)c->npumps);
+		struct cg_pump *p = c->pump[pi];
+		uint32_t n = cg_pump_rx_avail(p);
+		uint64_t stamp = 0;
+
+		if (n > CG_BATCH)
+			n = CG_BATCH;
+		for (uint32_t i = 0; i < n; i++) {
+			struct cg_rxslot *sl = cg_pump_rx_slot(p, i);
+
+			/* Hop stamps: once per batch the pump read. */
+			if (sl->t_us != stamp) {
+				stamp = sl->t_us;
+				cg_hist_add(&c->hop[pi], now_us > stamp ? (uint32_t)(now_us - stamp) : 0);
+			}
+			if (hub_slot(c, sl, &expect)) {
+				wg_msg(c, &c->dmsg[q], &c->diov[q], sl->buf + CG_HDR_LEN, sl->len - CG_HDR_LEN);
+				q++;
 			}
 		}
+		took[pi] = n;
+		total += (int)n;
+	}
+	c->drain_first++;
+	if (q)
+		wg_send(c, c->dmsg, q, now_us / 1000);
+	for (int pi = 0; total && pi < c->npumps; pi++)
+		if (took[pi])
+			cg_pump_rx_release(c->pump[pi], took[pi]);
+	return total;
+}
+
+/* link_threads = off: the one pump reads the link that is ready, and this
+ * loop takes the batch at once, as today's loop does. */
+static void inline_read(struct client *c, unsigned idx)
+{
+	struct cg_pump *p = c->pump[0];
+
+	for (int round = 0; round < CG_MAX_ROUNDS && p->fd[idx] >= 0; round++) {
+		int n = cg_pump_rx(p, idx, 1);
+
+		hub_drain(c);
 		if (n < CG_BATCH)
 			return;
 	}
@@ -760,28 +1003,23 @@ static void send_probe(struct client *c, struct link *l, uint64_t now_us, uint32
 	unsigned id = (unsigned)(l - c->link);
 	uint64_t now_ms = now_us / 1000;
 	uint8_t pkt[CG_HDR_LEN + CG_PROBE_INFO_LEN];
+	const struct cg_link_rx *rx = &c->rxs.rx[id];
 	struct cg_probe_info pi = { .echo_ts = 0,
 				    .owd = l->have_down_owd ? l->down_owd : 0,
 				    .interval_ms = interval,
-				    .rx = (uint32_t)(c->rx[id].wins + c->rx[id].dups),
-				    .wins = (uint32_t)c->rx[id].wins,
-				    .lag_us = cg_lag_us(&c->rx[id]) };
-	struct cg_hdr h = { .type = CG_T_PROBE,
-			    .flags = (uint8_t)((l->have_down_owd ? CG_F_OWD : 0) |
-					       (c->uh[id].state == CG_H_MUTED ? CG_F_MUTED : 0) |
-					       cg_pass_flags(c->cfg->passthrough)),
-			    .link = (uint8_t)id,
-			    .session = c->session,
-			    .seq = c->tx_seq++,
-			    .ts = (uint32_t)now_us };
+				    .rx = (uint32_t)(rx->wins + rx->dups),
+				    .wins = (uint32_t)rx->wins,
+				    .lag_us = cg_lag_us(rx) };
+	uint8_t flags = (uint8_t)((l->have_down_owd ? CG_F_OWD : 0) | (c->uh[id].state == CG_H_MUTED ? CG_F_MUTED : 0) |
+				  cg_pass_flags(c->cfg->passthrough));
 
 	cg_probe_info_write(pkt + CG_HDR_LEN, &pi);
-	cg_hdr_write(pkt, &h, c->k_tx, pkt + CG_HDR_LEN, CG_PROBE_INFO_LEN);
+	cg_up_header(&c->txs, pkt, CG_T_PROBE, flags, (uint8_t)id, (uint32_t)now_us, pkt + CG_HDR_LEN, CG_PROBE_INFO_LEN);
 	/* A full queue drops the probe like any other packet: that is a measurement, not an error. */
 	if (send(l->fd, pkt, sizeof(pkt), MSG_DONTWAIT) < 0 && errno != EAGAIN && errno != ENOBUFS &&
 	    cg_ratelimit_ok(&l->rl, now_ms, 10000))
 		cg_warn("link %s probe: %s", l->ifname, strerror(errno));
-	cg_echo_push(&l->probes, h.ts, now_ms);
+	cg_echo_push(&l->rxl.probes, (uint32_t)now_us, now_ms);
 	l->have_down_owd = 0;
 	l->last_probe_ms = now_ms;
 	l->probe_announced = interval;
@@ -820,6 +1058,48 @@ static void json_pass(struct cg_json *j, const char *key, int pass, int none)
 		cg_json_str(j, key, pass < 0 ? "none" : pass ? "on" : "off");
 }
 
+/* Tenths of a percent as a percentage with 1 decimal; null below 0. */
+static void json_pct(struct cg_json *j, const char *key, int permille)
+{
+	if (permille < 0)
+		cg_json_null(j, key);
+	else
+		cg_json_ms(j, key, (uint64_t)permille * 100); /* "12.300" for 123 */
+}
+
+/* A link's pump and its socket: which pump, the kernel's drops, a stalled
+ * thread, its CPU, and the hop of its datagrams to this loop (p50 and p99
+ * over the last 5 s; up: PR 3c). */
+static void link_threads_json(struct client *c, const struct link *l, struct cg_json *j)
+{
+	const struct pump_stats *ps = l->has_pump ? &c->pst[l->pump] : NULL;
+	uint32_t rmem, drops, p50, p99;
+
+	if (ps)
+		cg_json_u64(j, "pump", l->pump);
+	else
+		cg_json_null(j, "pump");
+	if (sock_meminfo(l->fd, &rmem, &drops) == 0)
+		cg_json_u64(j, "socket_drops", drops);
+	else
+		cg_json_null(j, "socket_drops");
+	cg_json_u64(j, "open_failed", l->open_failed);
+	cg_json_u64(j, "rx_paused", ps ? ps->paused : 0);
+	cg_json_u64(j, "io_stalled_ms", ps && c->lt == CG_LT_ON ? ps->stalled_ms : 0);
+	json_pct(j, "pump_cpu_pct", ps && c->lt == CG_LT_ON ? cg_cpuwin_permille(&ps->cpu) : -1);
+	cg_json_obj(j, "hop_us");
+	if (ps && cg_hist_pct(ps->hop_win, 50, &p50) && cg_hist_pct(ps->hop_win, 99, &p99)) {
+		cg_json_obj(j, "down");
+		cg_json_u64(j, "p50", p50);
+		cg_json_u64(j, "p99", p99);
+		cg_json_end(j, '}');
+	} else {
+		cg_json_null(j, "down");
+	}
+	cg_json_null(j, "up");
+	cg_json_end(j, '}');
+}
+
 static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 {
 	char buf[64];
@@ -834,6 +1114,19 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 	cg_json_str(j, "wireguard", c->have_peer ? cg_addr_str(&c->wg_peer, buf, sizeof(buf)) : "");
 	cg_json_u64(j, "probe_interval_ms", probe_interval(c, now_ms));
 	cg_json_str(j, "config_error", c->config_error);
+	cg_json_obj(j, "threads");
+	cg_json_str(j, "setting", cg_lt_name(c->cfg->link_threads));
+	cg_json_str(j, "mode", cg_lt_name(c->lt));
+	cg_json_u64(j, "pumps", (uint64_t)c->npumps);
+	json_pct(j, "hub_cpu_pct", cg_cpuwin_permille(&c->hub_cpu));
+	/* The guards of thrplan.h that fired, as logged (guards_check): the
+	 * knobs only change with a restart, so they hold for the process. */
+	cg_json_arr(j, "warnings");
+	for (unsigned b = 1; b <= CG_TG_PIN_SHARED; b <<= 1)
+		if (c->guards & b)
+			cg_json_str(j, NULL, cg_thr_guard_name(b));
+	cg_json_end(j, ']');
+	cg_json_end(j, '}');
 	cg_json_obj(j, "passthrough");
 	json_pass(j, "requested", c->cfg->passthrough, 0);
 	/* "none": the server does not apply IP pass (no passthrough_file). */
@@ -848,12 +1141,13 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 	cg_json_obj(j, "download");
 	cg_json_u64(j, "packets", c->down_pkts);
 	cg_json_u64(j, "bytes", c->down_bytes);
-	cg_json_u64(j, "duplicates", c->rx_dups);
-	cg_json_u64(j, "too_old", c->rx_old);
-	cg_json_u64(j, "window_resets", c->window_resets);
-	cg_json_u64(j, "auth_failures", c->rx_auth_fail);
-	cg_json_u64(j, "malformed", c->rx_malformed + c->rx_trunc);
-	cg_json_u64(j, "foreign_session", c->rx_foreign);
+	cg_json_u64(j, "duplicates", c->rxs.dups);
+	cg_json_u64(j, "too_old", c->rxs.old);
+	cg_json_u64(j, "window_resets", c->rxs.window_resets);
+	cg_json_u64(j, "auth_failures", c->rxs.auth_fail);
+	cg_json_u64(j, "malformed", c->rxs.malformed + c->rxs.trunc);
+	cg_json_u64(j, "foreign_session", c->rxs.foreign);
+	cg_json_u64(j, "stale", c->rxs.stale_gen);
 	cg_json_u64(j, "wireguard_drops", c->down_wg_drops + c->down_no_peer);
 	cg_json_end(j, '}');
 	cg_json_arr(j, "overrides");
@@ -893,9 +1187,10 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 			cg_json_null(j, "candidate");
 		cg_json_u64(j, "candidates", (uint64_t)l->ncand);
 		cg_json_u64(j, "failovers", l->failovers);
+		link_threads_json(c, l, j);
 		cg_json_u64(j, "path_mtu", l->fd >= 0 ? l->path_mtu : 0);
 		cg_json_ms(j, "rtt_ms", l->srtt8_us / 8);
-		cg_json_u64(j, "last_rx_ms_ago", l->last_rx_ms ? now_ms - l->last_rx_ms : 0);
+		cg_json_u64(j, "last_rx_ms_ago", l->rxl.last_rx_ms ? now_ms - l->rxl.last_rx_ms : 0);
 		cg_json_str(j, "upload", h->state == CG_H_MUTED ? "muted" : "active");
 		if (h->have_behind)
 			cg_json_ms_signed(j, "upload_behind_ms", h->behind_us);
@@ -908,11 +1203,11 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 		cg_json_u64(j, "tx_bytes", l->tx_bytes);
 		cg_json_u64(j, "tx_drops", l->tx_drops);
 		cg_json_u64(j, "tx_errors", l->tx_errors);
-		cg_json_u64(j, "rx_first", c->rx[i].wins);
-		cg_json_u64(j, "rx_duplicate", c->rx[i].dups);
-		cg_json_u64(j, "rx_late", c->rx[i].late);
-		cg_json_u64(j, "rx_missed", c->rx[i].missed);
-		cg_json_ms(j, "rx_lag_ms", cg_lag_us(&c->rx[i]));
+		cg_json_u64(j, "rx_first", c->rxs.rx[i].wins);
+		cg_json_u64(j, "rx_duplicate", c->rxs.rx[i].dups);
+		cg_json_u64(j, "rx_late", c->rxs.rx[i].late);
+		cg_json_u64(j, "rx_missed", c->rxs.rx[i].missed);
+		cg_json_ms(j, "rx_lag_ms", cg_lag_us(&c->rxs.rx[i]));
 		cg_json_obj(j, "server_view");
 		cg_json_u64(j, "age_ms", l->peer_view_ms ? now_ms - l->peer_view_ms : 0);
 		cg_json_u64(j, "rx", l->peer_view.rx);
@@ -1014,6 +1309,20 @@ static void links_text(struct client *c, uint64_t now_ms, struct cg_json *j)
 				    "-", "-", w, "-", "-");
 }
 
+/* "cengarde ctl threads": the hub (this loop), its pumps and the status
+ * writer, with their CPU from their own clocks. */
+static void threads_text(struct client *c, struct cg_json *j)
+{
+	cg_threads_head(j);
+	cg_threads_row(j, "cg-hub", cg_gettid(), cg_thread_cpu_ns(pthread_self(), 1), cg_cpuwin_permille(&c->hub_cpu));
+	for (int k = 0; k < c->npumps; k++)
+		if (c->pump[k]->threaded)
+			cg_threads_row(j, c->pump[k]->name, atomic_load(&c->pump[k]->tid), cg_pump_cpu_ns(c->pump[k]),
+				       cg_cpuwin_permille(&c->pst[k].cpu));
+	if (c->sw.running)
+		cg_threads_row(j, c->sw.name, c->sw.tid, cg_thread_cpu_ns(c->sw.thread, 0), cg_cpuwin_permille(&c->sw_cpu));
+}
+
 /* ---- reload ---- */
 
 static void reload_start(struct client *c)
@@ -1028,13 +1337,14 @@ static void apply_config(struct client *c, struct cg_config *next, uint64_t now_
 	struct cg_config *old = c->cfg;
 
 	c->cfg = next;
-	c->k_tx = next->key;
-	c->k_rx = next->key + CG_SIPHASH_KEY_LEN;
+	c->txs.k_tx = next->key;
+	c->rxs.k_rx = next->key + CG_SIPHASH_KEY_LEN;
+	c->rxs.restart_ms = 2 * next->probe_idle_ms;
 	c->hcfg = cg_hcfg_of(next);
 	cg_log_level_set(c->run->verbose ? CG_LOG_DEBUG : next->log_level);
 	if (strcmp(old->status_file, next->status_file)) {
 		cg_status_writer_stop(&c->sw);
-		if (next->status_file[0] && cg_status_writer_start(&c->sw, next->status_file) < 0)
+		if (next->status_file[0] && cg_status_writer_start(&c->sw, next->status_file, "cg-status") < 0)
 			cg_warn("status file %s: cannot start the writer thread", next->status_file);
 	}
 	if (old->rcvbuf != next->rcvbuf || old->sndbuf != next->sndbuf) {
@@ -1130,6 +1440,9 @@ static void ctl_command(struct client *c, int k, uint64_t now_ms)
 		case CG_CTL_LINKS:
 			links_text(c, now_ms, &j);
 			break;
+		case CG_CTL_THREADS:
+			threads_text(c, &j);
+			break;
 		case CG_CTL_LINK:
 			if (cg_ovr_set(&c->ovr, cmd.ifname, cmd.ovr) < 0) {
 				cg_json_raw(&j, "error: more than %d links set by hand; undo some with auto or reset\n",
@@ -1166,18 +1479,98 @@ static void ctl_command(struct client *c, int k, uint64_t now_ms)
 	}
 }
 
+/* Links whose pump could not poll their new socket: closed (the pump lets
+ * go of it), and the next reconcile tries again. */
+static void take_open_failed(struct client *c, uint64_t now_ms)
+{
+	for (int k = 0; k < c->npumps; k++) {
+		_Atomic uint32_t *f = &c->pump[k]->open_failed;
+		uint32_t m = atomic_load_explicit(f, memory_order_relaxed) ? atomic_exchange(f, 0) : 0;
+
+		for (unsigned i = 0; m; i++, m >>= 1) {
+			struct link *l = &c->link[i];
+
+			if (!(m & 1))
+				continue;
+			l->open_failed++;
+			if (cg_ratelimit_ok(&l->rl, now_ms, 30000))
+				cg_warn("link %s: its socket could not be polled, trying again", l->ifname);
+			link_close(c, l, NULL);
+		}
+	}
+}
+
+/* How long work has waited for pump k with no loop pass (commands, or
+ * datagrams in one of its sockets while its ring has room): 0 below 1 s,
+ * counted from the first check that saw it waiting (thrplan.h). Its loop
+ * clock is read before the work, so that a pass in between can only end
+ * the count. */
+static uint32_t pump_stalled_ms(struct client *c, int k, uint64_t now_ms)
+{
+	struct cg_pump *p = c->pump[k];
+	uint32_t loop = atomic_load_explicit(&p->loop_ms, memory_order_relaxed), rmem, drops;
+	int work = cg_pump_cmds_waiting(p) > 0;
+
+	for (int i = 0; i < CG_MAX_LINKS && !work; i++) {
+		const struct link *l = &c->link[i];
+
+		if (l->has_pump && l->pump == k && link_up(l) && !atomic_load(&p->rx_blocked) &&
+		    sock_meminfo(l->fd, &rmem, &drops) == 0 && rmem)
+			work = 1;
+	}
+	return cg_stall_check(&c->pst[k].stall, loop, work, now_ms);
+}
+
+/* Once a second: the threads' CPU, the pumps' counters and liveness. */
+static void threads_second(struct client *c, uint64_t now_ms)
+{
+	cg_cpuwin_add(&c->hub_cpu, now_ms, cg_thread_cpu_ns(pthread_self(), 1));
+	if (c->sw.running)
+		cg_cpuwin_add(&c->sw_cpu, now_ms, cg_thread_cpu_ns(c->sw.thread, 0));
+	for (int k = 0; k < c->npumps; k++) {
+		struct cg_pump *p = c->pump[k];
+		struct pump_stats *ps = &c->pst[k];
+		uint32_t errs = atomic_load_explicit(&p->rx_errors, memory_order_relaxed);
+
+		cg_acc32(&ps->pkts, &ps->l_pkts, atomic_load_explicit(&p->rx_pkts, memory_order_relaxed));
+		cg_acc32(&ps->paused, &ps->l_paused, atomic_load_explicit(&p->rx_paused, memory_order_relaxed));
+		if (errs != ps->l_errors && cg_ratelimit_ok(&ps->rl_err, now_ms, 10000))
+			cg_warn("%s receive: %s", p->threaded ? p->name : "link",
+				strerror(atomic_load_explicit(&p->rx_errno, memory_order_relaxed)));
+		cg_acc32(&ps->errors, &ps->l_errors, errs);
+		if (!p->threaded)
+			continue;
+		cg_cpuwin_add(&ps->cpu, now_ms, cg_pump_cpu_ns(p));
+		ps->stalled_ms = pump_stalled_ms(c, k, now_ms);
+		if (ps->stalled_ms > 5000 && cg_ratelimit_ok(&ps->rl_stall, now_ms, 60000))
+			cg_warn("thread %s has not run for %u s with work waiting", p->name, ps->stalled_ms / 1000);
+	}
+}
+
 static void tick(struct client *c)
 {
 	uint64_t now_us = cg_now_us(), now_ms = now_us / 1000;
 	uint32_t interval = probe_interval(c, now_ms);
 	int failover = 0;
 
+	take_open_failed(c, now_ms);
+	link_cmds_retry(c);
+	if (now_ms >= c->next_second_ms) {
+		threads_second(c, now_ms);
+		c->next_second_ms = now_ms + 1000;
+	}
+	if (now_ms >= c->next_hop_ms) {
+		for (int k = 0; k < c->npumps; k++)
+			cg_hist_window(c->hop[k].b, c->pst[k].hop_snap, c->pst[k].hop_win);
+		c->next_hop_ms = now_ms + 5000;
+	}
+
 	for (int i = 0; i < CG_MAX_LINKS; i++) {
 		struct link *l = &c->link[i];
 
 		/* A new interval goes out at once, so the server never waits for a
 		 * probe at the old rate. */
-		if (l->fd >= 0 &&
+		if (link_up(l) &&
 		    (interval != l->probe_announced || now_ms - l->last_probe_ms + CG_TICK_MS / 2 >= interval))
 			send_probe(c, l, now_us, interval);
 		/* Its server address went silent: reconcile moves it (srvpick.h). */
@@ -1214,9 +1607,67 @@ static int signals(struct client *c)
 	return stop;
 }
 
+/* What the hub's drain needs, and the pump of link_threads off (one,
+ * inline) or the bell of on (whose threads start with their links).
+ * Returns 0 or -1. */
+static int pumps_init(struct client *c)
+{
+	if (!pumped(c))
+		return 0;
+	c->dmsg = calloc(CG_MAX_PUMPS * CG_BATCH, sizeof(*c->dmsg));
+	c->diov = calloc(CG_MAX_PUMPS * CG_BATCH, sizeof(*c->diov));
+	if (!c->dmsg || !c->diov)
+		return -1;
+	if (c->lt == CG_LT_ON) {
+		if (cg_initial_cpus(&c->cpus) < 0)
+			CPU_ZERO(&c->cpus);
+		return cg_bell_init(&c->bell) < 0 || cg_epoll_add(c->ep, c->bell.efd, CG_EV(CG_EV_BELL, 0)) < 0 ? -1 : 0;
+	}
+	c->pump[0] = pump_new();
+	if (!c->pump[0] || cg_pump_init(c->pump[0], 0, c->ep, CG_PUMP_RXQ_INLINE, 0) < 0) {
+		free(c->pump[0]);
+		c->pump[0] = NULL;
+		return -1;
+	}
+	c->npumps = 1;
+	return 0;
+}
+
+/* Stops the pump threads, each within 1 s; one that does not makes the
+ * process leave at once (procd starts it again), without freeing what that
+ * thread may still use. */
+static void pumps_stop(struct client *c)
+{
+	for (int k = 0; k < c->npumps; k++)
+		if (cg_pump_stop(c->pump[k], 1000) < 0) {
+			cg_err("thread %s did not stop within 1 s: leaving at once", c->pump[k]->name);
+			_exit(1);
+		}
+}
+
+/* Closes what the pumps hold, and the sockets stalled pumps never took,
+ * and frees them. */
+static void pumps_free(struct client *c)
+{
+	for (int i = 0; i < CG_MAX_LINKS; i++)
+		if (c->link[i].pend.op == CG_PUMP_OPEN)
+			close(c->link[i].pend.fd);
+	for (int k = 0; k < c->npumps; k++) {
+		cg_pump_free(c->pump[k]);
+		free(c->pump[k]);
+		c->pump[k] = NULL;
+	}
+	c->npumps = 0;
+	free(c->dmsg);
+	free(c->diov);
+	c->dmsg = NULL;
+	c->diov = NULL;
+	cg_bell_free(&c->bell);
+}
+
 int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 {
-	struct client *c = calloc(1, sizeof(*c));
+	struct client *c = aligned_alloc(CG_CACHELINE, sizeof(*c)); /* sizeof: a multiple of its alignment */
 	char err[256], buf[64];
 	uint64_t last_traffic_us = 0;
 	uint32_t busy;
@@ -1228,28 +1679,40 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 		free(cfg);
 		return 1;
 	}
+	memset(c, 0, sizeof(*c));
 	c->cfg = cfg;
 	c->run = run;
-	c->k_tx = cfg->key;
-	c->k_rx = cfg->key + CG_SIPHASH_KEY_LEN;
+	c->bell.efd = -1;
+	{
+		cpu_set_t set;
+		long n = sched_getaffinity(0, sizeof(set), &set) == 0 ? CPU_COUNT(&set) : sysconf(_SC_NPROCESSORS_ONLN);
+
+		c->ncpus = n > 0 ? (int)n : 1;
+	}
+	c->lt = cg_lt_resolve(cfg->link_threads, CG_LT_ARCH_MEASURED, c->ncpus, cfg->cpu >= 0, CG_LT_AUTO_ON);
+	c->txs.k_tx = cfg->key;
+	c->rxs.k_rx = cfg->key + CG_SIPHASH_KEY_LEN;
+	c->rxs.restart_ms = 2 * cfg->probe_idle_ms;
 	c->ep = c->wg_fd = c->tfd = -1;
 	c->nl.fd = -1;
 	c->server_pass = -2;
 	c->hcfg = cg_hcfg_of(cfg);
 	cg_ctl_init(&c->ctl);
 	for (int i = 0; i < CG_MAX_LINKS; i++)
-		c->link[i].fd = -1;
+		link_set_fd(&c->link[i], -1);
 	if (cg_loader_init(&c->loader) < 0) {
 		cg_err("eventfd: %s", strerror(errno));
 		goto out;
 	}
-	cg_replay_reset(&c->replay);
+	cg_replay_reset(&c->rxs.replay);
 	do {
-		if (cg_random(&c->session, sizeof(c->session)) < 0 || cg_random(&c->tx_seq, sizeof(c->tx_seq)) < 0) {
+		if (cg_random(&c->session, sizeof(c->session)) < 0 ||
+		    cg_random(&c->txs.seq, sizeof(c->txs.seq)) < 0) {
 			cg_err("getrandom: %s", strerror(errno));
 			goto out;
 		}
 	} while (!c->session);
+	c->txs.session = c->rxs.session = c->session;
 	c->start_ms = cg_now_ms();
 
 	c->wg_fd = cg_udp_bind(&cfg->listen, 1, err, sizeof(err));
@@ -1274,13 +1737,17 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 		cg_err("epoll setup: %s", strerror(errno));
 		goto out;
 	}
+	if (pumps_init(c) < 0) {
+		cg_err("link pumps: out of memory");
+		goto out;
+	}
 	/* The control socket is a convenience: the tunnel runs without it. */
 	if (cfg->control_socket[0] && cg_ctl_open(&c->ctl, cfg->control_socket, c->ep, err, sizeof(err)) < 0)
 		cg_warn("control socket: %s", err);
-	if (cfg->status_file[0] && cg_status_writer_start(&c->sw, cfg->status_file) < 0)
+	if (cfg->status_file[0] && cg_status_writer_start(&c->sw, cfg->status_file, "cg-status") < 0)
 		cg_warn("status file %s: cannot start the writer thread", cfg->status_file);
-	cg_info("client %s: session %08x, WireGuard endpoint %s", CG_VERSION, c->session,
-		cg_addr_str(&cfg->listen, buf, sizeof(buf)));
+	cg_info("client %s: session %08x, WireGuard endpoint %s, link_threads %s", CG_VERSION, c->session,
+		cg_addr_str(&cfg->listen, buf, sizeof(buf)), cg_lt_name(c->lt));
 	if (cfg->passthrough >= 0)
 		cg_info("asking the server for IP pass %s", cfg->passthrough ? "on" : "off");
 	busy = cg_tune(cfg);
@@ -1288,8 +1755,20 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 
 	for (;;) {
 		struct epoll_event ev[32];
-		int n = cg_wait(c->ep, ev, 32, busy, last_traffic_us), traffic = 0;
+		int timeout = busy && cg_now_us() - last_traffic_us < busy ? 0 : -1, armed = 0, n, traffic = 0;
 
+		/* link_threads = on: the pumps ring this loop's bell when they
+		 * publish and it said it sleeps (ring.h). */
+		if (c->lt == CG_LT_ON && timeout < 0) {
+			cg_bell_arm(&c->bell);
+			armed = 1;
+			for (int k = 0; k < c->npumps && timeout < 0; k++)
+				if (cg_ring_has_work_sc(&c->pump[k]->rxq))
+					timeout = 0;
+		}
+		n = epoll_wait(c->ep, ev, 32, timeout);
+		if (armed)
+			cg_bell_disarm(&c->bell);
 		if (n < 0 && errno != EINTR) {
 			cg_err("epoll_wait: %s", strerror(errno));
 			goto out;
@@ -1303,7 +1782,11 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 				traffic = 1;
 				break;
 			case CG_EV_LINK:
-				if (idx < CG_MAX_LINKS && c->link[idx].fd >= 0)
+				if (idx >= CG_MAX_LINKS)
+					break;
+				if (c->lt == CG_LT_OFF)
+					inline_read(c, idx);
+				else if (c->link[idx].fd >= 0)
 					link_read(c, &c->link[idx]);
 				traffic = 1;
 				break;
@@ -1334,6 +1817,9 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 				if (reload_done(c) < 0)
 					goto out;
 				break;
+			case CG_EV_BELL:
+				cg_bell_drain(&c->bell);
+				break;
 			case CG_EV_SIG:
 				if (signals(c)) {
 					cg_info("client stopping");
@@ -1343,6 +1829,10 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 				break;
 			}
 		}
+		/* What the pump threads read: a few passes, then epoll again for
+		 * WireGuard, the timer and the rest. */
+		for (int r = 0; c->lt == CG_LT_ON && r < CG_MAX_ROUNDS && hub_drain(c) > 0; r++)
+			traffic = 1;
 		if (traffic && busy)
 			last_traffic_us = cg_now_us();
 	}
@@ -1351,8 +1841,10 @@ out:
 	cg_ctl_close(&c->ctl, c->ep);
 	cg_loader_free(&c->loader);
 	for (int i = 0; i < CG_MAX_LINKS; i++)
-		if (c->link[i].fd >= 0)
+		if (c->link[i].fd >= 0 && !pumped(c))
 			close(c->link[i].fd);
+	pumps_stop(c);
+	pumps_free(c); /* they close the link sockets they hold */
 	if (c->wg_fd >= 0)
 		close(c->wg_fd);
 	if (c->tfd >= 0)

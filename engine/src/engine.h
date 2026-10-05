@@ -4,6 +4,7 @@
 #define CG_ENGINE_H
 
 #include <pthread.h>
+#include <sched.h>
 #include <stdint.h>
 #include <string.h>
 #include <sys/epoll.h>
@@ -29,7 +30,8 @@
 #define CG_MAX_ROUNDS 8
 
 /* epoll tags: kind in the high half, index in the low half. */
-enum { CG_EV_SIG = 1, CG_EV_TIMER, CG_EV_NL, CG_EV_WG, CG_EV_LINK, CG_EV_LISTEN, CG_EV_CTL, CG_EV_LOAD, CG_EV_JUNK };
+enum { CG_EV_SIG = 1, CG_EV_TIMER, CG_EV_NL, CG_EV_WG, CG_EV_LINK, CG_EV_LISTEN, CG_EV_CTL, CG_EV_LOAD, CG_EV_JUNK,
+       CG_EV_BELL /* a doorbell (ring.h): a thread's rings have work */ };
 #define CG_EV(kind, idx) (((uint64_t)(kind) << 32) | (uint32_t)(idx))
 
 /* What a run needs besides its configuration: where that came from, to
@@ -73,6 +75,18 @@ void cg_thread_normal(void);
  * to. Called once, before any thread exists: helper threads only read it,
  * and the status writers start before cg_tune pins the event loop. */
 void cg_cpus_save(void);
+/* The CPUs cg_cpus_save found, before the cpu knob pinned the process:
+ * data threads start from them. Returns 0 or -1. */
+int cg_initial_cpus(cpu_set_t *set);
+int cg_gettid(void);
+/* CPU time of thread th (self: the calling one), from its CPU clock, ns; 0
+ * when unknown. */
+uint64_t cg_thread_cpu_ns(pthread_t th, int self);
+/* "cengarde ctl threads": a header, then one line per thread (permille:
+ * tenths of a percent of a CPU over the last seconds, -1: unknown). */
+struct cg_json;
+void cg_threads_head(struct cg_json *j);
+void cg_threads_row(struct cg_json *j, const char *name, int tid, uint64_t cpu_ns, int permille);
 
 struct cg_rxbatch {
 	struct mmsghdr msg[CG_BATCH];

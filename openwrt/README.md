@@ -256,6 +256,14 @@ configuración del router:
 - **Desinstalar** el paquete también lo deshace todo.
 - **Pestaña Avanzado:** las perillas del motor (silenciado de enlaces
   lentos, sondas, sondeo activo); valen los valores por defecto.
+- **Hilos por enlace** (pestaña *Avanzado*): *Desactivado (el código de
+  siempre)*, el valor por omisión hasta medirlos en la Pi; *Activado (un
+  hilo por enlace)*, para que un enlace o un hilo atascado no frene a los
+  demás, a cambio de más CPU con poco tráfico; *Un hilo (estructura nueva)*,
+  para distinguir un fallo de los hilos de uno del código nuevo. Cambiarlo
+  reinicia el motor (unos segundos sin túnel). Si un hilo se queda parado
+  más de 5 s con paquetes esperando, el estado lo avisa
+  (`link_thread_stalled`).
 
 ## 5. Estado
 
@@ -359,7 +367,7 @@ cengarde-setup cloud-config > vps.yaml               # el user data del VPS
 - **Cambiar el secreto:** en el VPS, `sudo cengarde-vps-setup add router
   --replace` y pega el nuevo; el router se corta un momento.
 - **Actualizar:** router y VPS con el mismo commit; la 0.4 cambió el
-  protocolo (v3) y no habla con un VPS anterior. De la 0.4.1 a la 0.4.5
+  protocolo (v3) y no habla con un VPS anterior. De la 0.4.1 a la 0.4.6
   no lo cambian (un router de una y un VPS de otra se entienden en los dos
   sentidos), pero actualiza igual el VPS:
   - la 0.4.1 cierra al túnel los metadatos y el puerto de WireGuard;
@@ -374,7 +382,17 @@ cengarde-setup cloud-config > vps.yaml               # el user data del VPS
     WireGuard inicie el handshake (`wireguard_poke`, `none` lo apaga);
   - la 0.4.5 renueva las herramientas del VPS: `cengarde-vps-setup`,
     `cengarde-nat` declarativo, `wg0` pasa a `cg-router` y el servicio a un
-    usuario fijo (abajo, qué cambia al actualizar y cómo volver).
+    usuario fijo (abajo, qué cambia al actualizar y cómo volver);
+  - la 0.4.6 trae al router los hilos por enlace (`link_threads`, pestaña
+    *Avanzado* → *Hilos por enlace*): por omisión `legacy`, el mismo bucle
+    de antes, y *Activado* (`on`, un hilo por enlace) solo si lo eliges a
+    mano, hasta medirlo en la Pi; cambiarlo reinicia el motor. El estado
+    avisa de un hilo de enlace parado con paquetes esperando
+    (`link_thread_stalled`), y `cengarde ctl threads` lista los hilos en
+    los dos extremos. En OpenWrt 24.10, `opkg install` de un paquete con la
+    versión ya instalada no hace nada («up to date»): para probar una
+    compilación con la misma versión, `opkg install --force-reinstall`; en
+    25.12, `apk add` la reemplaza sin más.
 
   En el VPS:
 
@@ -405,6 +423,7 @@ cengarde-setup cloud-config > vps.yaml               # el user data del VPS
   `/etc/cengarde/secret`), luego `git checkout` del commit de la 0.4.2 y su
   `install.sh`. Solo con el `install.sh` viejo no basta: `cg-router` sigue
   ocupando el puerto 65501.
+
 
 ## Probar sin hardware
 
