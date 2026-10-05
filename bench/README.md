@@ -222,7 +222,7 @@ a tiempo (historia [011](../docs/historias/011-hilos.md)).
   CPU y todo lo demás (los otros hilos, el servidor, los WireGuard falsos)
   se queda fuera de ella. `rcvbuf = 256 KiB`: cada atasco de 300 ms (unos
   600 datagramas de l3) desborda el socket de l3.
-- **Pasa con `on`:** el túnel no pierde nada (99,9 %) en ningún sentido,
+- **Pasa con `on`:** el túnel no pierde ni un paquete en ningún sentido,
   los sockets de l1 y l2 no descartan nada (`socket_drops`), y como mucho el
   5 por mil (`MTSTALL_LATE_PM`) de los paquetes llega con 50 ms o más de
   retraso (`over50ms` de `udpgen`; la VM se para sola hasta 38 ms, y

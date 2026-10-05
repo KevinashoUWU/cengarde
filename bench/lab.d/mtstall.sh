@@ -11,8 +11,8 @@
 # of 300 ms holds about 600 of l3's datagrams, more than its socket keeps
 # (rcvbuf = 256 KiB, doubled by the kernel), so l3 drops.
 #
-# - link_threads = on: no tunnel loss (99.9 %, as the other scenarios) in
-#   either direction; no drops in the sockets of l1 and l2; at most
+# - link_threads = on: no tunnel loss in either direction (every packet
+#   sent arrives); no drops in the sockets of l1 and l2; at most
 #   MTSTALL_LATE_PM (5) per mille of the tunnel's packets 50 ms late or
 #   more (the VM pauses for up to 38 ms on its own; bench/jitter.c, which
 #   marks those pauses, comes with the server's lanes).
@@ -67,6 +67,7 @@ mt_run() {
 	taskset -p -c "$cpu" "$tid" >/dev/null
 	ip netns exec srv "$BIN/udpgen" -b 127.0.0.1:59301 -l -r 2000 -s "$SIZE" -d "$MTSTALL_S" -g 2 >"$RUN/srv.out" &
 	gs=$!
+	sleep 0.3 # as in up(): else the server hands the first packets to an unbound port
 	ip netns exec cli "$BIN/udpgen" -b 127.0.0.1:50000 -p 127.0.0.1:59401 -r 2000 -s "$SIZE" -d "$MTSTALL_S" -g 2 \
 		>"$RUN/cli.out" &
 	gc=$!
@@ -104,7 +105,7 @@ mt_dir() {
 		return
 	fi
 	echo "sent $sent uniq $uniq late $late ($((late * 1000 / (sent > 0 ? sent : 1))) per mille) $(
-		[ $((uniq * 1000)) -ge $((sent * 999)) ] && [ $((late * 1000)) -le $((sent * MTSTALL_LATE_PM)) ] &&
+		[ "$uniq" = "$sent" ] && [ $((late * 1000)) -le $((sent * MTSTALL_LATE_PM)) ] &&
 			echo ok || echo bad)"
 }
 
