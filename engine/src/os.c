@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 #include <errno.h>
+#include <fcntl.h>
 #include <sched.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -7,11 +8,13 @@
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <sys/random.h>
+#include <sys/syscall.h>
 #include <sys/timerfd.h>
 #include <unistd.h>
 
 #include "engine.h"
 #include "log.h"
+#include "status.h"
 
 /* CPUs the process could use before the cpu knob pinned it. */
 static cpu_set_t initial_cpus;
@@ -97,6 +100,72 @@ uint32_t cg_tune(const struct cg_config *cfg)
 	return busy;
 }
 
+int cg_initial_cpus(cpu_set_t *set)
+{
+	if (have_initial_cpus) {
+		*set = initial_cpus;
+		return 0;
+	}
+	return sched_getaffinity(0, sizeof(*set), set);
+}
+
+int cg_gettid(void)
+{
+	return (int)syscall(SYS_gettid);
+}
+
+uint64_t cg_thread_cpu_ns(pthread_t th, int self)
+{
+	struct timespec ts;
+	clockid_t clk = CLOCK_THREAD_CPUTIME_ID;
+
+	if ((!self && pthread_getcpuclockid(th, &clk)) || clock_gettime(clk, &ts))
+		return 0;
+	return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+
+/* The CPU a thread last ran on: field 39 of /proc/self/task/TID/stat (the
+ * file exists on OpenWrt, unlike schedstat). -1 when unknown. */
+static int task_cpu(int tid)
+{
+	char path[64], buf[512], *p;
+	int fd, n, field = 2;
+
+	snprintf(path, sizeof(path), "/proc/self/task/%d/stat", tid);
+	fd = open(path, O_RDONLY | O_CLOEXEC);
+	if (fd < 0)
+		return -1;
+	n = (int)read(fd, buf, sizeof(buf) - 1);
+	close(fd);
+	if (n <= 0)
+		return -1;
+	buf[n] = '\0';
+	p = strrchr(buf, ')'); /* the name may hold spaces */
+	if (!p)
+		return -1;
+	for (p++; *p && field < 39; p++)
+		if (*p == ' ')
+			field++;
+	return field == 39 ? atoi(p) : -1;
+}
+
+void cg_threads_head(struct cg_json *j)
+{
+	cg_json_raw(j, "%-15s %7s %4s %10s %6s\n", "THREAD", "TID", "CPU", "CPU_MS", "%CPU");
+}
+
+void cg_threads_row(struct cg_json *j, const char *name, int tid, uint64_t cpu_ns, int permille)
+{
+	char cpu[16] = "-", pct[16] = "-";
+	int last = tid > 0 ? task_cpu(tid) : -1;
+
+	if (last >= 0)
+		snprintf(cpu, sizeof(cpu), "%d", last);
+	if (permille >= 0)
+		snprintf(pct, sizeof(pct), "%d.%d", permille / 10, permille % 10);
+	cg_json_raw(j, "%-15s %7d %4s %10llu %6s\n", name, tid, cpu, (unsigned long long)(cpu_ns / 1000000), pct);
+}
+
 void cg_thread_normal(void)
 {
 	struct sched_param sp = { .sched_priority = 0 };
@@ -130,6 +199,7 @@ static void *loader_main(void *arg)
 	struct cg_loader *l = arg;
 	uint64_t one = 1;
 
+	pthread_setname_np(pthread_self(), "cg-load");
 	cg_thread_normal();
 	l->cfg = calloc(1, sizeof(*l->cfg));
 	if (!l->cfg) {

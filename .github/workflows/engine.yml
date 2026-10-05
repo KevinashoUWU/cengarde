@@ -58,23 +58,29 @@ jobs:
       # each scenario: a report in a stop path (where the status,
       # passthrough and loader threads are joined; restart stops the server
       # 10 times or more), in lanes' second server or in a ctl call too.
-      - name: Lab with TSAN binaries (smoke, health, control, fallback, lanes, multiip, restart)
+      # The same set twice: the router's default loop (legacy), then with a
+      # thread per link (on), which adds mtstall (a stalled link thread).
+      - name: Lab with TSAN binaries (smoke, health, control, fallback, lanes, multiip, restart; link_threads legacy and on)
         run: |
           sudo ENGINE=c bench/lab.sh build
           make -C engine clean
           make -C engine CC=${{ matrix.cc }} SANITIZE=thread cengarde
           tsan=$RUNNER_TEMP/tsan
           mkdir -p "$tsan"
-          for t in smoke health control fallback lanes multiip restart; do
-            rc=0
-            sudo TSAN_OPTIONS="halt_on_error=1 log_path=$tsan/report" CENGARDE_BIN="$PWD/engine/cengarde" \
-              bench/lab.sh "$t" || rc=$?
-            if ls "$tsan"/report.* >/dev/null 2>&1; then
-              echo "ThreadSanitizer reports in $t:"
-              sudo cat "$tsan"/report.*
-              exit 1
-            fi
-            [ "$rc" = 0 ] || exit 1
+          for lt in legacy on; do
+            set -- smoke health control fallback lanes multiip restart
+            [ "$lt" = on ] && set -- "$@" mtstall
+            for t in "$@"; do
+              rc=0
+              sudo TSAN_OPTIONS="halt_on_error=1 log_path=$tsan/report" CENGARDE_BIN="$PWD/engine/cengarde" \
+                CLIENT_EXTRA="link_threads = $lt" bench/lab.sh "$t" || rc=$?
+              if ls "$tsan"/report.* >/dev/null 2>&1; then
+                echo "ThreadSanitizer reports in $t (link_threads $lt):"
+                sudo cat "$tsan"/report.*
+                exit 1
+              fi
+              [ "$rc" = 0 ] || exit 1
+            done
           done
 
   cross:
@@ -118,6 +124,13 @@ jobs:
 
   lab:
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        # How the client reads its links: legacy (the default, the loop of
+        # 0.4), off (the per-link pumps in one thread) and on (a thread per
+        # link).
+        link_threads: [legacy, off, on]
     steps:
       - uses: actions/checkout@v4
       - name: Build the lab (udpgen and cengarde)
@@ -128,10 +141,10 @@ jobs:
       # included (it lowers net.ipv4.udp_mem for a few seconds and puts it
       # back: fine on a throwaway runner).
       - name: Lab scenarios in network namespaces (smoke, health, control, bench/lab.d)
-        run: sudo LAB_UDPMEM=1 bench/lab.sh ci
+        run: sudo LAB_UDPMEM=1 CLIENT_EXTRA="link_threads = ${{ matrix.link_threads }}" bench/lab.sh ci
       # The server's lanes are on by default: control and restart once more
       # with one listen socket, the off switch.
       - name: control and restart with lanes = 1
         run: |
-          sudo SERVER_EXTRA="lanes = 1" bench/lab.sh control
-          sudo SERVER_EXTRA="lanes = 1" bench/lab.sh restart
+          sudo SERVER_EXTRA="lanes = 1" CLIENT_EXTRA="link_threads = ${{ matrix.link_threads }}" bench/lab.sh control
+          sudo SERVER_EXTRA="lanes = 1" CLIENT_EXTRA="link_threads = ${{ matrix.link_threads }}" bench/lab.sh restart

@@ -283,6 +283,13 @@ return view.extend({
 		o.datatype = 'range(0,1000000)';
 		o.placeholder = '0';
 
+		o = s.taboption('advanced', form.ListValue, 'link_threads', _('Threads per uplink'),
+			_('Off runs the code of every release so far. On gives each uplink a thread of its own, so that a stalled uplink or thread no longer holds back the others; it takes more CPU at low traffic, and a stall of the main thread, which checks every packet, still holds back every uplink at once. One thread runs the new structure without its threads, to tell a problem of the threads from one of the new code. A change restarts the engine.'));
+		o.value('legacy', _('Off (the usual code)'));
+		o.value('off', _('One thread (new structure)'));
+		o.value('on', _('On (one thread per uplink)'));
+		o.default = 'legacy';
+
 		o = s.taboption('advanced', form.ListValue, 'log_level', _('Log level'));
 		o.value('error', _('Errors'));
 		o.value('warn', _('Warnings'));

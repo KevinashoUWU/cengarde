@@ -38,16 +38,18 @@ endif
 
 CORE = src/siphash.c src/proto.c src/util.c src/log.c src/config.c src/blake2s.c src/pair.c
 NET = src/netlink.c src/sock.c src/status.c src/os.c src/ctl.c src/client.c src/server.c
+# The router's link pumps: threads the unit tests run too (test_threads).
+THR = src/pump.c
 # Every tests/test_*.c; tests/suites.h lists the suites test_main.c runs.
 TESTS = $(wildcard tests/test_*.c)
 
 all: cengarde
 
-cengarde: src/main.c $(CORE) $(NET) $(wildcard src/*.h)
-	$(CC) $(CG_CFLAGS) $(CPPFLAGS) $(CFLAGS) -o $@ src/main.c $(CORE) $(NET) $(LDFLAGS) $(CG_LDFLAGS)
+cengarde: src/main.c $(CORE) $(THR) $(NET) $(wildcard src/*.h)
+	$(CC) $(CG_CFLAGS) $(CPPFLAGS) $(CFLAGS) -o $@ src/main.c $(CORE) $(THR) $(NET) $(LDFLAGS) $(CG_LDFLAGS)
 
-cengarde-test: $(TESTS) $(CORE) $(wildcard src/*.h tests/*.h)
-	$(CC) $(CG_CFLAGS) $(CPPFLAGS) $(CFLAGS) -Isrc -o $@ $(TESTS) $(CORE) $(LDFLAGS) $(CG_LDFLAGS)
+cengarde-test: $(TESTS) $(CORE) $(THR) $(wildcard src/*.h tests/*.h)
+	$(CC) $(CG_CFLAGS) $(CPPFLAGS) $(CFLAGS) -Isrc -o $@ $(TESTS) $(CORE) $(THR) $(LDFLAGS) $(CG_LDFLAGS)
 
 test: cengarde-test
 	./cengarde-test

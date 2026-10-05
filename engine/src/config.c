@@ -340,6 +340,14 @@ static int parse_links(struct cg_config *c, struct cg_ini *ini, char *err, size_
 		memset(l, 0, sizeof(*l));
 		strcpy(l->name, name);
 		l->enabled = 1;
+		l->cpu = -1;
+		if (cg_ini_get(ini, sec, "cpu")) {
+			uint32_t cpu;
+
+			if (get_u32(ini, sec, "cpu", 0, 1023, &cpu, err, errlen))
+				return -1;
+			l->cpu = (int)cpu;
+		}
 		if (get_str(ini, sec, "label", l->label, sizeof(l->label), err, errlen) ||
 		    get_bool(ini, sec, "enabled", &l->enabled, err, errlen) ||
 		    get_addrs(ini, sec, "server", 1, l->server, CG_MAX_SERVERS, CG_MAX_CANDS, &l->nserver, l->entry_n,
@@ -491,6 +499,26 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 		c->passthrough = -1;
 		if (get_bool(&ini, "", "passthrough", &c->passthrough, err, errlen))
 			goto out;
+		/* legacy, the loop of 0.4, until the threads are measured on the
+		 * Pi (thrplan.h: auto is legacy in this release too). */
+		c->link_threads = CG_LT_LEGACY;
+		v = cg_ini_get(&ini, "", "link_threads");
+		if (v) {
+			for (c->link_threads = CG_LT_AUTO; c->link_threads <= CG_LT_LEGACY; c->link_threads++)
+				if (!strcmp(v, cg_lt_name(c->link_threads)))
+					break;
+			if (c->link_threads > CG_LT_LEGACY) {
+				snprintf(err, errlen, "link_threads: expected auto, on, off or legacy, got '%s'", v);
+				goto out;
+			}
+		}
+		c->io_queue = 256;
+		if (get_u32(&ini, "", "io_queue", 64, 1024, &c->io_queue, err, errlen))
+			goto out;
+		if (c->io_queue & (c->io_queue - 1)) {
+			snprintf(err, errlen, "io_queue: expected a power of two between 64 and 1024, got %u", c->io_queue);
+			goto out;
+		}
 		if (parse_lists(c, &ini) < 0) {
 			snprintf(err, errlen, "out of memory");
 			goto out;
@@ -618,6 +646,21 @@ int cg_config_peek(const char *path, const char *key, char *out, size_t outlen, 
 	return rc;
 }
 
+/* Whether a [link] pins its thread elsewhere: each pump is pinned once. */
+static int links_cpu_differ(const struct cg_config *a, const struct cg_config *b)
+{
+	for (int i = 0; i < a->nlinks; i++) {
+		const struct cg_link_cfg *o = cg_config_link(b, a->links[i].name);
+
+		if (a->links[i].cpu != (o ? o->cpu : -1))
+			return 1;
+	}
+	for (int i = 0; i < b->nlinks; i++)
+		if (b->links[i].cpu >= 0 && !cg_config_link(a, b->links[i].name))
+			return 1;
+	return 0;
+}
+
 const char *cg_config_restart_needed(const struct cg_config *a, const struct cg_config *b)
 {
 	if (a->mode != b->mode)
@@ -634,6 +677,12 @@ const char *cg_config_restart_needed(const struct cg_config *a, const struct cg_
 		return "cpu";
 	if (a->rt_priority != b->rt_priority)
 		return "rt_priority";
+	if (a->mode == CG_MODE_CLIENT && a->link_threads != b->link_threads)
+		return "link_threads";
+	if (a->mode == CG_MODE_CLIENT && a->io_queue != b->io_queue)
+		return "io_queue";
+	if (a->mode == CG_MODE_CLIENT && links_cpu_differ(a, b))
+		return "cpu of a [link]";
 	if (a->mode == CG_MODE_SERVER && !cg_addr_equal(&a->wireguard, &b->wireguard))
 		return "wireguard";
 	if (a->mode == CG_MODE_SERVER && a->max_sessions != b->max_sessions)

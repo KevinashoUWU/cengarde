@@ -32,7 +32,7 @@ del Go.
 ## Uso
 
 ```sh
-sudo bench/lab.sh build    # udpgen, protoclient y cengarde en bench/bin/
+sudo bench/lab.sh build    # udpgen, protoclient, ringbench y cengarde en bench/bin/
 sudo bench/lab.sh ci       # lo que corre el CI: smoke, health, control y los escenarios de lab.d con LAB_CI=1
 sudo bench/lab.sh smoke    # prueba de humo de cengarde
 sudo bench/lab.sh health   # salud de enlaces: un enlace con 500 ms de cola, subida y bajada (historia 006)
@@ -47,6 +47,10 @@ sudo bench/lab.sh deepq    # un camino del servidor con 20 MB de cola local no a
 sudo bench/lab.sh skew     # primeras llegadas repartidas entre enlaces idénticos, puerta C5 (lab.d, va en ci)
 sudo bench/lab.sh wgpoke   # un router con la hora atrasada: el servidor hace que WireGuard inicie el handshake (lab.d, va en ci)
 sudo LAB_UDPMEM=1 bench/lab.sh udpmem  # el presupuesto de recepción frente a net.ipv4.udp_mem (lab.d; baja el sysctl de toda la máquina unos segundos: solo en el CI)
+sudo bench/lab.sh mtstall  # un hilo de enlace sin CPU no frena a los demás (link_threads = on; lab.d, va en ci)
+sudo bench/lab.sh mtlat    # latencia y CPU de legacy, off, on y on con busy_poll a 2, 20 y 80 kpps (lab.d, a mano)
+sudo bench/lab.sh soak     # 1 h por modo (off y on): tráfico variado, pérdidas, enlaces que caen, recargas (lab.d, a mano)
+sudo CLIENT_EXTRA="link_threads = on" bench/lab.sh ci   # el ci con los hilos por enlace (el CI corre legacy, off y on)
 
 sudo ENGINE=go bench/lab.sh build  # además, el engarde Go (normal y -race)
 sudo bench/lab.sh suite    # línea base del engarde Go (historia 001, ~5 min)
@@ -57,6 +61,22 @@ sudo bench/lab.sh compare  # engarde Go frente a cengarde, cada uno en ambos ext
 aunque uno falle y acaba con `ci: ok (...)` o `ci: FAILED: ...`; borra los
 namespaces al salir, también si se interrumpe. El CI (`engine.yml`) solo llama
 a `build` y a `ci`.
+
+### `ringbench`: lo que cuesta pasar trabajo entre hilos
+
+`bench/bin/ringbench [-d SEGUNDOS] [-q]` mide el anillo de los hilos del
+motor (`engine/src/ring.h`) en la máquina donde corre: sin root ni
+namespaces, así que sirve tal cual en la Pi, en un VPS o en un portátil.
+
+- `spin`: un consumidor que nunca duerme; ns por entrada con lotes de 1, 8 y
+  64 (el coste cuando los dos hilos están ocupados).
+- `wake`: un productor que publica una entrada con su hora a 2000, 20 000 y
+  80 000 por segundo y un consumidor que duerme en su timbre (un eventfd)
+  cuando no hay nada, como el hub y las bombas del router a poco tráfico:
+  latencia del traspaso (p50 y p99), despertares por entrada y CPU por
+  entrada de cada hilo, de sus relojes de CPU (la del productor incluye el
+  `nanosleep` que le marca el ritmo). Con `-q`, además con el consumidor
+  sondeando (`poll`) en vez de dormir.
 
 ### Escenarios en `lab.d/`
 
@@ -349,6 +369,63 @@ su búfer (~33 ms a 110 kpps *(cálculo)*), no un hilo único que se queda
 atrás más tiempo. Con 5 enlaces, el router satura desde 60–70 kpps.
 Detalle, la bajada y las opciones que quedan por decidir: historia
 [011](../docs/historias/011-hilos.md).
+
+### `mtstall`: un hilo de enlace sin CPU (`lab.d/mtstall.sh`)
+
+Con `link_threads = on` cada enlace tiene un hilo que lee su socket, así que
+uno que no recibe CPU llena solo su socket y las copias de los otros llegan
+a tiempo (historia [011](../docs/historias/011-hilos.md)).
+
+- **Montaje:** 2000 pps en los dos sentidos durante 12 s (`MTSTALL_S`). Un
+  bucle `SCHED_FIFO` 99 ocupa la última CPU 300 ms de cada 2 s; el hilo que
+  lee l3 (`cg-l3`, buscado por nombre con `cengarde ctl threads`) pasa a esa
+  CPU y todo lo demás (los otros hilos, el servidor, los WireGuard falsos)
+  se queda fuera de ella. `rcvbuf = 256 KiB`: cada atasco de 300 ms (unos
+  600 datagramas de l3) desborda el socket de l3.
+- **Pasa con `on`:** el túnel no pierde ni un paquete en ningún sentido,
+  los sockets de l1 y l2 no descartan nada (`socket_drops`), y como mucho el
+  5 por mil (`MTSTALL_LATE_PM`) de los paquetes llega con 50 ms o más de
+  retraso (`over50ms` de `udpgen`; la VM se para sola hasta 38 ms; el
+  escenario aún no cruza esos retrasos con las pausas que marca
+  `bench/jitter.c`).
+- **`off` y `legacy`:** el único bucle lee todos los enlaces, así que el
+  bucle ocupado se lleva el hilo principal: se informa, no se juzga.
+- **Modos:** con `link_threads` en `CLIENT_EXTRA` (cada trabajo `lab` del
+  CI pone uno) corre solo ese modo, con el resto de esos ajustes; sin él,
+  los tres, cada uno en un subshell con todas las CPU.
+- Necesita `chrt` y `taskset` (util-linux) y 2 CPU o más.
+
+### `mtlat` y `soak`: a mano (`lab.d/mtlat.sh`, `lab.d/soak.sh`)
+
+- **`mtlat`:** `MTLAT_RUNS` (5) pasadas intercaladas de cada modo de
+  `MTLAT_MODES` (`legacy off on on+busy`; `on+busy` es `on` con
+  `busy_poll_us = 50`) a `MTLAT_RATES` (2000, 20 000 y 80 000 pps) en cada
+  sentido de `MTLAT_DIRS`, `MTLAT_S` (5) s cada una. Cada línea es la de
+  `up`/`down` (pérdida, p50/p99, CPU por paquete de cada extremo, de todos
+  sus hilos) y, en bajada, el salto que mide el propio motor (`hop_us`: lo
+  que espera un lote entre el hilo que lo leyó y el principal). Al final,
+  la mediana de cada punto. Con `MTLAT_S` de 10 o más, la
+  ventana de 5 s de `hop_us` cae entera dentro del tráfico.
+- **`soak`:** `SOAK_S` (3600) s por modo de `SOAK_MODES` (`off on`), en
+  tramos de 60 s a 2000, 10 000, 20 000 y 40 000 pps y 80, 400 y 1400
+  bytes por turnos, mientras l3 cambia de pérdida y retardo cada 2 min
+  (netem; `tbf` si el kernel no lo tiene), el cliente recarga cada 5 min y
+  l2 cae 10 s cada 10 min. Cada tramo imprime lo que perdió cada sentido y
+  los descartes contados para ese sentido mientras corría, los que pueden
+  explicarlo: de paquetes enteros, los del kernel al recibir en los sockets
+  de ese sentido (colas llenas y puertos sin socket, `/proc/net/snmp` y
+  `/proc/net/udp`), lo que el motor no pudo entregar a WireGuard y los
+  errores de envío del WireGuard falso que envía; de copias, por enlace, lo
+  que el motor no pudo enviar y lo que tiraron después el veth o la `qdisc`
+  de l3. Un paquete solo se pierde si se pierden sus copias en dos enlaces
+  o más, así que cuentan las copias de todos los enlaces menos el que más
+  perdió: l3, limitado a propósito, o l2 mientras está caído, no explican
+  solos una pérdida. Pasa (diseño D.4: entregado = enviado menos descartes
+  contados) si ningún tramo pierde en un sentido más paquetes que los
+  descartes contados para él, no hay avisos de hilos parados ni de sockets
+  que no se pudieron vigilar, todas las recargas dicen `ok` y el RSS del
+  cliente no crece más de 1 MiB tras los primeros 5 min. Al final de cada
+  modo dice cuántas recargas, caídas de l2 y cambios de l3 hubo.
 
 ## Cómo leer la salida
 
