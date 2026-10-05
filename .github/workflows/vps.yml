@@ -62,7 +62,9 @@ jobs:
       - name: The sysusers file
         run: |
           if systemd-sysusers --help | grep -q -- --dry-run; then
-            sudo systemd-sysusers --dry-run contrib/systemd/cengarde.sysusers
+            # An absolute path: a relative one is looked up in sysusers.d and
+            # ignored, with exit status 0.
+            sudo systemd-sysusers --dry-run "$PWD/contrib/systemd/cengarde.sysusers"
           else
             echo "systemd-sysusers $(systemd --version | head -n 1) has no --dry-run; the systemd job installs it"
           fi
