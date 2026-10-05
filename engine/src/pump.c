@@ -271,6 +271,8 @@ static void *pump_main(void *arg)
 	pump_tune(p);
 	for (;;) {
 		uint64_t now_us = cg_now_us();
+		/* The hub turns it off once the threads outgrow the CPUs. */
+		uint32_t busy = atomic_load_explicit(&p->busy_poll_us, memory_order_relaxed);
 		int n, timeout = -1, armed = 0, traffic = 0;
 
 		atomic_store_explicit(&p->loop_ms, (uint32_t)(now_us / 1000), memory_order_relaxed);
@@ -279,7 +281,7 @@ static void *pump_main(void *arg)
 		/* Awake, and the hub made room: read again. */
 		if (p->paused && cg_ring_unblocked(&p->rx_blocked))
 			pump_poll(p, 1);
-		if (p->busy_poll_us && now_us - last_traffic_us < p->busy_poll_us) {
+		if (busy && now_us - last_traffic_us < busy) {
 			timeout = 0;
 		} else {
 			if (p->hook)
@@ -313,7 +315,7 @@ static void *pump_main(void *arg)
 				}
 			}
 		}
-		if (traffic && p->busy_poll_us)
+		if (traffic && busy)
 			last_traffic_us = cg_now_us();
 	}
 	return NULL;

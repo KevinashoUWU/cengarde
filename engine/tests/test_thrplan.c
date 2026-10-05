@@ -54,6 +54,15 @@ void test_thrplan(void)
 	CHECK_EQ(cg_thr_guards(5, 8, 0, 0, pins, 4), CG_TG_PIN_SHARED);
 	CHECK_EQ(cg_thr_guards(5, 8, 0, 0, pins, 3), 0);
 	CHECK_EQ(cg_thr_guards(6, 4, 5, 50, pins, 4), CG_TG_RT_ALL | CG_TG_BUSY_HUB | CG_TG_PIN_SHARED);
+	/* Busy polling in every pump or in none: 4 CPUs fit the hub and two
+	 * pumps with one to spare, not three (then the hub alone polls). */
+	CHECK_EQ(cg_pump_busy_us(1, 4, 50), 50);
+	CHECK_EQ(cg_pump_busy_us(2, 4, 50), 50);
+	CHECK_EQ(cg_pump_busy_us(3, 4, 50), 0);
+	CHECK_EQ(cg_pump_busy_us(5, 4, 50), 0);
+	CHECK_EQ(cg_pump_busy_us(5, 8, 50), 50);
+	CHECK_EQ(cg_pump_busy_us(1, 2, 50), 0);
+	CHECK_EQ(cg_pump_busy_us(2, 4, 0), 0);
 
 	/* CPU over the last 5 s from a thread's clock: none with one sample;
 	 * half a CPU; then the window slides past an idle start. */

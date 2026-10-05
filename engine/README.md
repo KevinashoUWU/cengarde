@@ -265,7 +265,8 @@ Cómo lee el cliente los sockets de sus enlaces (historia
   órdenes de cada hilo; `cpu` en una sección `[link]` fija el hilo de ese
   enlace; `cpu` global fija el principal; `rt_priority` va a todos los hilos
   de datos y `busy_poll_us` también, mientras quepan en las CPU con una de
-  sobra (si no, solo el principal, con un aviso).
+  sobra (si no, ningún hilo de enlace sondea, tampoco los que ya lo hacían:
+  solo el principal, con un aviso).
 - **Todo se fija al arrancar:** cambiar cualquiera de estas reinicia el
   proceso en el lugar.
 

@@ -85,6 +85,7 @@ struct cg_pump {
 	_Alignas(CG_CACHELINE) _Atomic uint32_t rx_blocked; /* space handshake (ring.h) */
 	_Atomic uint32_t open_failed; /* links whose socket its epoll refused; the hub takes them */
 	_Atomic uint32_t stop;
+	_Atomic uint32_t busy_poll_us; /* set before its start; the hub may lower it to 0 (thrplan.h) */
 	/* Its liveness and counters: one writer (the pump), relaxed stores,
 	 * 32-bit; the hub keeps the totals (cg_acc32). */
 	_Alignas(CG_CACHELINE) _Atomic uint32_t loop_ms; /* clock of its last loop pass (ms, wraps) */
@@ -109,7 +110,6 @@ struct cg_pump {
 	uint16_t failed;          /* of those, the ones its epoll refused (kept, not polled) */
 	int paused;               /* receive ring full: its sockets are out of the poll */
 	uint32_t n_pkts, n_paused, n_errors; /* the counters' running values */
-	uint32_t busy_poll_us;
 	int cpu;              /* pin to this CPU; -1: the CPUs below */
 	uint32_t rt_priority; /* SCHED_FIFO priority; 0: normal */
 	cpu_set_t cpus;       /* the process's CPUs before the hub was pinned */
@@ -139,7 +139,8 @@ void cg_pump_free(struct cg_pump *p);
 
 /* Starts the thread of a threaded pump, named name (at most 15 characters
  * are kept), which rings hub after each publish. p->cpu, p->rt_priority,
- * p->busy_poll_us and p->cpus are set before. Returns 0 or -1. */
+ * p->busy_poll_us and p->cpus are set before; the thread reads
+ * busy_poll_us again on every loop pass. Returns 0 or -1. */
 int cg_pump_start(struct cg_pump *p, const char *name, struct cg_bell *hub);
 /* Stops the thread: 0, or -1 when it did not stop within timeout_ms (the
  * caller must then leave everything it may still use alone). */

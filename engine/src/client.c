@@ -407,7 +407,7 @@ static void guards_check(struct client *c)
 		cg_warn("rt_priority on %d data threads with %d CPUs: the kernel's own work may starve", 1 + c->npumps,
 			c->ncpus);
 	if (fresh & CG_TG_BUSY_HUB)
-		cg_warn("busy_poll_us: %d data threads do not fit %d CPUs with one to spare, only the hub polls",
+		cg_warn("busy_poll_us: %d data threads do not fit %d CPUs with one to spare, the link threads do not poll",
 			1 + c->npumps, c->ncpus);
 	if (fresh & CG_TG_PIN_SHARED)
 		cg_warn("two link threads pinned to the same CPU");
@@ -421,6 +421,7 @@ static int link_pump(struct client *c, struct link *l)
 	const struct cg_link_cfg *lc = cg_config_link(c->cfg, l->ifname);
 	struct cg_pump *p;
 	char name[8 + IFNAMSIZ]; /* the thread's name keeps 15 characters */
+	uint32_t busy;
 	int k;
 
 	if (l->has_pump)
@@ -438,8 +439,8 @@ static int link_pump(struct client *c, struct link *l)
 		p->have_cpus = 1;
 		/* Busy polling only while the data threads fit the CPUs with one
 		 * to spare (thrplan.h). */
-		if (!(cg_thr_guards(2 + c->npumps, c->ncpus, 0, c->cfg->busy_poll_us, NULL, 0) & CG_TG_BUSY_HUB))
-			p->busy_poll_us = c->cfg->busy_poll_us;
+		busy = cg_pump_busy_us(c->npumps + 1, c->ncpus, c->cfg->busy_poll_us);
+		atomic_store_explicit(&p->busy_poll_us, busy, memory_order_relaxed);
 		snprintf(name, sizeof(name), "cg-%s", l->ifname);
 		if (cg_pump_start(p, name, &c->bell) < 0) {
 			cg_pump_free(p);
@@ -447,6 +448,10 @@ static int link_pump(struct client *c, struct link *l)
 			return -1;
 		}
 		c->pump[c->npumps++] = p;
+		/* Past that, the pumps that polled stop too: the hub alone polls. */
+		if (!busy)
+			for (int i = 0; i < c->npumps; i++)
+				atomic_store_explicit(&c->pump[i]->busy_poll_us, 0, memory_order_relaxed);
 		guards_check(c);
 	}
 	l->pump = (uint8_t)k;

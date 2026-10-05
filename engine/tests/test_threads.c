@@ -423,7 +423,7 @@ static void race_run(int variant)
 	if (variant == RACE_EVENTFD_ONLY || variant == RACE_NEITHER)
 		p->test_flags = CG_PUMP_TEST_NO_PRESLEEP;
 	if (variant == RACE_SPINNING)
-		p->busy_poll_us = 2000000;
+		atomic_store_explicit(&p->busy_poll_us, 2000000, memory_order_relaxed);
 	send_n(b, 0, 40); /* five times its ring */
 	CHECK_EQ(cg_pump_start(p, "cg-race", &hub), 0);
 	c.fd = a;

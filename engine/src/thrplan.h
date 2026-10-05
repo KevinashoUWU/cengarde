@@ -63,7 +63,7 @@ static inline int cg_pump_pick(const uint8_t *nlinks, int npumps, int cap)
 
 /* What the guards found (bits). */
 #define CG_TG_RT_ALL 1     /* rt_priority on as many data threads as CPUs */
-#define CG_TG_BUSY_HUB 2   /* busy polling only on the hub: the threads do not fit */
+#define CG_TG_BUSY_HUB 2   /* the threads do not fit: no pump busy polls, only the hub */
 #define CG_TG_PIN_SHARED 4 /* two pumps pinned to one CPU */
 
 /* data_threads: the hub and the pumps; pins: the CPU each pump is pinned
@@ -82,6 +82,15 @@ static inline unsigned cg_thr_guards(int data_threads, int ncpus, uint32_t rt_pr
 			if (pins[i] >= 0 && pins[i] == pins[k])
 				g |= CG_TG_PIN_SHARED;
 	return g;
+}
+
+/* The busy_poll_us of every pump while npumps of them run: the setting
+ * while they and the hub fit the CPUs with one to spare, else 0 for all of
+ * them, those already running too (the hub alone polls). Pumps are never
+ * removed, so once 0 it stays 0. */
+static inline uint32_t cg_pump_busy_us(int npumps, int ncpus, uint32_t busy_poll_us)
+{
+	return cg_thr_guards(1 + npumps, ncpus, 0, busy_poll_us, NULL, 0) & CG_TG_BUSY_HUB ? 0 : busy_poll_us;
 }
 
 /* CPU use of a thread: one sample of its CPU clock a second, the share of
