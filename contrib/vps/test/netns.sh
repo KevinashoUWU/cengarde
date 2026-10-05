@@ -38,14 +38,16 @@
 #   within 2 s;
 # - apply twice gives the same rules, two applies at once one jump each;
 #   check puts back a flushed chain and a deleted jump, warns about an
-#   nftables chain that drops forwarded traffic, and does nothing while
-#   down; sync does nothing while down; starting from cengarde 0.4's rules,
-#   apply removes them; down leaves the firewall as it was.
+#   nftables chain that drops forwarded traffic and about rules in both
+#   iptables backends (legacy and nft), and does nothing while down; sync
+#   does nothing while down; starting from cengarde 0.4's rules, apply
+#   removes them; down leaves the firewall as it was.
 #
 #   sudo sh contrib/vps/test/netns.sh
 #
 # Needs root, iproute2, iptables, python3 and conntrack (conntrack-tools);
-# nft for the nftables warning. Run it under the lab's lock (flock
+# nft for the nftables warning, iptables-legacy for the two-backend one;
+# VXLAN for a kernel UDP socket. Run it under the lab's lock (flock
 # /tmp/cengarde-netns.lock) next to other network namespace tests.
 # CENGARDE_NAT names another cengarde-nat.
 #
@@ -219,10 +221,11 @@ is() {
 	}
 }
 # saved: the server's iptables, one rule per line. iptables -S rather than
-# iptables-save, which leaves out the tables nobody has used yet.
+# iptables-save, which leaves out the tables nobody has used yet; without
+# the note iptables-nft adds once legacy tables exist (the test makes one).
 saved() {
 	for t in filter nat; do
-		nsexec "$VPS" iptables -t "$t" -S | sed "s/^/$t /"
+		nsexec "$VPS" iptables -t "$t" -S 2>/dev/null | grep -v '^# Warning: ' | sed "s/^/$t /"
 	done
 }
 jumps() { nsexec "$VPS" iptables-save | grep -c -- "-j $1\$"; }
@@ -380,6 +383,20 @@ if command -v nft >/dev/null; then
 	nsexec "$VPS" nft delete table inet strict
 else
 	say "note: no nft here; the nftables warning is not checked"
+fi
+if command -v iptables-legacy >/dev/null && command -v iptables-nft >/dev/null &&
+	nsexec "$VPS" iptables-legacy -A INPUT -p udp --dport 9 -j DROP 2>/dev/null; then
+	nsexec "$VPS" iptables-nft -A INPUT -p tcp --dport 2222 -j ACCEPT
+	check "rules in both iptables backends: check" nat check
+	check "it warns about them" sh -c 'printf "%s\n" "$1" | grep -q "rules in both iptables backends"' sh "$OUT"
+	check "iptables-nft's note about the legacy tables is no change of the rules" \
+		not sh -c 'printf "%s\n" "$1" | grep -q "applied again"' sh "$OUT"
+	nsexec "$VPS" iptables-legacy -D INPUT -p udp --dport 9 -j DROP
+	check "the legacy rule deleted (its table stays): check" nat check
+	check "no warning" not sh -c 'printf "%s\n" "$1" | grep -q "both iptables backends"' sh "$OUT"
+	nsexec "$VPS" iptables-nft -D INPUT -p tcp --dport 2222 -j ACCEPT
+else
+	say "note: no iptables-legacy here; the two-backend warning is not checked"
 fi
 check "status" nat status
 check "status says what is forwarded" sh -c 'printf "%s\n" "$1" | grep -q "tcp 9000 alpha -> 10.79.0.2 (22)"' sh "$OUT"

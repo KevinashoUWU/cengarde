@@ -619,19 +619,20 @@ unjump() {
 }
 
 # snapshot: the chains and the jumps as they are now, to find out later
-# whether something changed them.
+# whether something changed them. A missing chain shows as iptables' error;
+# iptables-nft's "# Warning: iptables-legacy tables present" is no change.
 snapshot() {
 	local t c
 	for tc in filter:CG_IN filter:CG_FWD nat:CG_PRE nat:CG_POST; do
 		t=${tc%:*} c=${tc#*:}
-		iptables -w -t "$t" -S "$c" 2>&1
+		iptables -w -t "$t" -S "$c" 2>&1 | grep -v '^# Warning: '
 	done
 	for tc in $BUILTIN; do
 		t=${tc%:*} c=${tc#*:}
 		iptables -w -t "$t" -S "$c" 2>/dev/null | grep -E -- ' -j CG_(IN|FWD|PRE|POST)$'
 	done
 	if have_v6; then
-		ip6tables -w -S CG_IN 2>&1
+		ip6tables -w -S CG_IN 2>&1 | grep -v '^# Warning: '
 		ip6tables -w -S INPUT 2>/dev/null | grep -- ' -j CG_IN$'
 	fi
 }
@@ -864,7 +865,9 @@ foreign() {
 	if command -v systemctl >/dev/null && systemctl is-enabled -q nftables 2>/dev/null && [ ! -e "$NFT_DROPIN" ]; then
 		warn "nftables.service is enabled but has no cengarde drop-in: its next start or reload removes these rules until the next check; run contrib/vps/install.sh again"
 	fi
-	if [ -s /proc/net/ip_tables_names ] && command -v iptables-legacy-save >/dev/null &&
+	# Legacy tables exist when the list has a line (procfs files show size 0,
+	# so not [ -s ]); iptables-nft's own note reads it the same way.
+	if grep -qs . /proc/net/ip_tables_names && command -v iptables-legacy-save >/dev/null &&
 		command -v iptables-nft-save >/dev/null; then
 		l=$(iptables-legacy-save 2>/dev/null | grep -c '^-A')
 		n=$(iptables-nft-save 2>/dev/null | grep '^-A' | grep -vc 'CG_')

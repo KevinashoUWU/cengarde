@@ -552,6 +552,9 @@ Sin cambio de protocolo ni del motor: un VPS lo toma bajo un router 0.4.
   vuelve a aplicar tras su arranque, recarga y parada (su `flush ruleset`
   borra también las tablas de iptables-nft), y `check` dice qué líneas
   añadir a una cadena ajena con política `drop`; firewalld se rechaza.
+  Reglas en los dos backends (legacy y nft): un aviso, según el contenido
+  de `/proc/net/ip_tables_names` (los archivos de `/proc` dicen tamaño 0,
+  así que `[ -s ]` nunca lo veía).
 - **`cengarde-vps-setup`:** `/etc/cengarde/clients/NAME` (0600 root) por
   router y `cg-NAME` en 65501 + ranura; con v3, un solo router, en
   10.79.0.2 (`LEGACY_ADDR=1`). El motor valida la configuración antes que
