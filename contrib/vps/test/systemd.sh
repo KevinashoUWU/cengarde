@@ -488,7 +488,9 @@ pass_on_off() {
 	check "cengarde is active again" systemctl is-active -q cengarde
 	check "IP pass stays on: the engine's file is kept" pass_rules
 	router_start
-	check "the router comes back" wait_for 30 router_live
+	# WireGuard on the VPS still sends to the old engine's socket until the
+	# router's WireGuard sends through the new one: tunnel_back pings.
+	tunnel_back "cengarde restarted"
 	check "cengarde-passthrough.path is still watching" systemctl is-active -q cengarde-passthrough.path
 	say "everything stopped and started: the rules before the engine"
 	systemctl stop cengarde cengarde-nat
@@ -502,7 +504,7 @@ pass_on_off() {
 		$(systemctl show -p ExecMainStartTimestampMonotonic --value cengarde)
 	check "started together: cengarde-nat is active before the engine starts ($1 < $2)" [ "${1:-0}" -lt "${2:-0}" ]
 	check "and IP pass is on" pass_rules
-	check "the router comes back" wait_for 30 router_live
+	tunnel_back "everything restarted"
 }
 
 no_pub_if() {
