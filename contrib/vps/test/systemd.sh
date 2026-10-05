@@ -28,9 +28,11 @@
 #   cengarde-nat.service started before the engine;
 # - PUB_IF removed: the rules name no interface, and a route added after
 #   cengarde-nat.service started works for the routers' Internet;
-# - the server's own services: a listener on 8123 and, with Docker, a port
-#   it publishes, inside IP pass's range: both stay on the server after the
-#   check timer's run, and "cengarde-vps-setup forward" lists them;
+# - the server's own services: a listener on 8123 (allowed in ufw, as its
+#   operator would) and, with Docker, a port it publishes, inside IP pass's
+#   range: both stay on the server after the check timer's run, and
+#   "cengarde-vps-setup forward" lists them; the engine's configuration
+#   gets the same reserved set, and follows it once they are gone;
 # - install.sh again, as "ssh vps 'sudo sh install.sh'" runs it (no
 #   terminal, and sudo drops SSH_CONNECTION): it sees the SSH session all
 #   the same, goes on as cengarde-upgrade, and changes no rule; plain runs,
@@ -74,7 +76,7 @@ FAR_IP=198.51.100.7 # on inet, reached through a route added later
 META=169.254.79.254 # a fake metadata service, in inet
 TUN_VPS=10.79.0.1 TUN_ROUTER=10.79.0.2
 CG_PORT=65500 PASS_PORT=9000
-T0=0 TMP='' ROUTER_PID='' RULES0='' DENY='' LOCAL_PID='' DOCKER_ID=''
+T0=0 TMP='' ROUTER_PID='' RULES0='' DENY='' LOCAL_PID='' DOCKER_ID='' UFW=''
 fails=0
 
 say() { echo "systemd: $*"; }
@@ -399,6 +401,7 @@ firewall() {
 	if command -v ufw >/dev/null; then
 		say "ufw on"
 		{ ufw allow 22/tcp && ufw --force enable; } >/dev/null || fatal "ufw enable"
+		UFW=1
 	else
 		say "note: no ufw here, so the test runs without it"
 	fi
@@ -513,6 +516,12 @@ no_pub_if() {
 		fetch "$ROUTER" "http://$FAR_IP/index" internet
 }
 
+# same_reserved: the engine's configuration says what cengarde-nat reserves
+# now.
+same_reserved() {
+	[ "$(sed -n 's/^# reserved: //p' /etc/cengarde/cengarde.conf)" = "$("$NAT" reserved | tr '\n' ' ' | sed 's/ $//')" ]
+}
+
 own_services() {
 	say "the server's own services, inside IP pass's range"
 	mkdir -p "$TMP/local"
@@ -527,8 +536,17 @@ own_services() {
 		say "note: no Docker here (or no busybox image): Docker's ports are not checked"
 	fi
 	systemctl start cengarde-nat-check.service
+	# ufw (on since firewall()) drops what it does not allow, reserved or
+	# not: 8123 is opened for this check, as the operator of that service
+	# would. "local" then also proves it was not forwarded: the router
+	# listens on nothing there, and would refuse it.
+	[ -z "$UFW" ] || ufw allow 8123/tcp >/dev/null || bad "ufw allow 8123/tcp"
 	check "after the check timer's run, 8123 stays on the server" fetch "$INET" "http://$VPS_IP:8123/index" local
+	# Closed again, so that stop_all finds the rules of before 0.4.2.
+	[ -z "$UFW" ] || ufw delete allow 8123/tcp >/dev/null || bad "ufw delete allow 8123/tcp"
 	check "cengarde-vps-setup forward lists it, with its process" sh -c '"$1" forward | grep -q "tcp:8123 .*something listening here: python3"' sh "$SETUP"
+	# What the check's refresh wrote, while every listener is still there.
+	check "the check put the same reserved set in the engine's configuration" same_reserved
 	if [ -n "$DOCKER_ID" ]; then
 		check "Docker's 18080 is reserved too" sh -c '"$1" forward | grep -Eq "tcp:18080 "' sh "$SETUP"
 		check "and a connection to it reaches the container (any HTTP answer), not the router" \
@@ -536,12 +554,12 @@ own_services() {
 		docker rm -f "$DOCKER_ID" >/dev/null 2>&1
 		DOCKER_ID=
 	fi
-	check "the engine's configuration has the same reserved set" \
-		[ "$(sed -n 's/^# reserved: //p' /etc/cengarde/cengarde.conf)" = "$("$NAT" reserved | tr '\n' ' ' | sed 's/ $//')" ]
 	kill "$LOCAL_PID"
+	wait "$LOCAL_PID" 2>/dev/null
 	LOCAL_PID=
 	systemctl start cengarde-nat-check.service
 	check "the listener gone, the check gives 8123 back to IP pass" sh -c '! "$1" reserved | grep -qx tcp:8123' sh "$NAT"
+	check "and the engine's configuration follows" same_reserved
 }
 
 reinstall() {
