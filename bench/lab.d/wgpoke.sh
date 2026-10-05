@@ -70,8 +70,24 @@ wgpoke_server() {
 	jget "$RUN/server.json" "$1" 2>/dev/null
 }
 
+# wgpoke_redirects: how many initiations the server has redirected so far.
+wgpoke_redirects() {
+	local n
+	n=$(wgpoke_server 'd["wireguard"]["redirected_handshakes"]')
+	echo "${n:-0}"
+}
+
+# wgpoke_restart: the router restarts, its WireGuard with the engine: its
+# fake WireGuard stops first, or data it sends while the new client starts
+# would make the new session WireGuard's endpoint before any poke.
+wgpoke_restart() {
+	wgpoke_router stop
+	wgpoke_client restart
+	wgpoke_router knock
+}
+
 wgpoke() {
-	local fail=0 v r n rn port_b='' ports='' delay
+	local fail=0 v r n rn red port_b='' ports='' delay
 	ENGINE=c NLINKS=3
 	SERVER_EXTRA="wireguard_poke = 127.0.0.1:59309;session_timeout_ms = 5000${SERVER_EXTRA:+;$SERVER_EXTRA}"
 	trap 'pkill -f "$LAB/fakewg.py"; teardown' EXIT
@@ -97,9 +113,9 @@ wgpoke() {
 	grep -q '^poked' "$v" && { echo "FAIL: WireGuard was poked while the data flowed"; fail=1; }
 
 	echo "   2. the client restarts and knocks"
+	red=$(wgpoke_redirects)
 	n=$(wgpoke_lines "$v")
-	wgpoke_client restart
-	wgpoke_router knock
+	wgpoke_restart
 	if wgpoke_wait "$r" 0 '^got-initiation' "$KNOCK_S"; then
 		echo "   WireGuard's initiation reached the router: $(tail -n +$((n + 1)) "$v" | grep -c '^ignored') initiations ignored before"
 	else
@@ -107,7 +123,7 @@ wgpoke() {
 		fail=1
 	fi
 	tail -n +$((n + 1)) "$v" | grep -q '^poked' || { echo "FAIL: WireGuard was not poked"; fail=1; }
-	[ "$(wgpoke_server 'd["wireguard"]["redirected_handshakes"]')" -ge 1 ] 2>/dev/null ||
+	[ "$(($(wgpoke_redirects) - red))" -ge 1 ] ||
 		{ echo "FAIL: the initiation did not go down the new session (redirected_handshakes)"; fail=1; }
 	if wgpoke_wait "$v" "$n" '^endpoint' 3; then
 		port_b=$(tail -n +$((n + 1)) "$v" | sed -n 's/^endpoint //p' | tail -1)
@@ -119,9 +135,9 @@ wgpoke() {
 
 	echo "   3. the client restarts and knocks; WireGuard answers the poke 7 s late"
 	echo 7 >"$delay"
+	red=$(wgpoke_redirects)
 	rn=$(wgpoke_lines "$r")
-	wgpoke_client restart
-	wgpoke_router knock
+	wgpoke_restart
 	if wgpoke_wait "$r" "$rn" '^got-initiation' 14; then
 		echo "   WireGuard's initiation reached the router after the old session closed"
 	else
@@ -129,8 +145,7 @@ wgpoke() {
 		fail=1
 	fi
 	grep -q 'takes over the port' "$RUN/server.log" || { echo "FAIL: the new session did not take over the port"; fail=1; }
-	[ "$(wgpoke_server 'd["wireguard"]["redirected_handshakes"]')" = 1 ] ||
-		{ echo "FAIL: a redirect where none was needed"; fail=1; }
+	[ "$(wgpoke_redirects)" = "$red" ] || { echo "FAIL: a redirect where none was needed"; fail=1; }
 	echo 0 >"$delay"
 	sleep 1
 
@@ -139,6 +154,7 @@ wgpoke() {
 	wgpoke_client stop
 	sleep 8
 	[ "$(wgpoke_server 'len(d["sessions"])')" = 0 ] || { echo "FAIL: the old session is still there"; fail=1; }
+	red=$(wgpoke_redirects)
 	n=$(wgpoke_lines "$v")
 	rn=$(wgpoke_lines "$r")
 	wgpoke_client start
@@ -156,16 +172,14 @@ wgpoke() {
 		echo "FAIL: the new session knocked from port(s) ${ports:-none}, not $port_b"
 		fail=1
 	fi
-	[ "$(wgpoke_server 'd["wireguard"]["redirected_handshakes"]')" = 1 ] ||
-		{ echo "FAIL: a redirect where none was needed"; fail=1; }
+	[ "$(wgpoke_redirects)" = "$red" ] || { echo "FAIL: a redirect where none was needed"; fail=1; }
 
 	echo "   5. wireguard_poke = none"
 	sed -i 's/^wireguard_poke = .*/wireguard_poke = none/' "$RUN/server.conf"
 	kill -HUP "$(cat "$RUN/server.pid")"
 	sleep 1
 	n=$(wgpoke_lines "$v")
-	wgpoke_client restart
-	wgpoke_router knock
+	wgpoke_restart
 	sleep 4
 	tail -n +$((n + 1)) "$v" | grep -q '^poked' && { echo "FAIL: WireGuard was poked with wireguard_poke = none"; fail=1; }
 	tail -n +$((n + 1)) "$v" | grep -q '^ignored' || { echo "FAIL: the client did not knock"; fail=1; }
