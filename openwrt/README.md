@@ -314,11 +314,19 @@ cengarde-setup cloud-config > vps.yaml               # el user data del VPS
   ```
 
 - **Actualizar:** router y VPS con el mismo commit; la 0.4 cambió el
-  protocolo (v3) y no habla con un VPS anterior. La 0.4.1 y la 0.4.2 no lo
-  cambian, pero actualiza igual el VPS: la 0.4.1 cierra al túnel los
-  metadatos y el puerto de WireGuard, y la 0.4.2 contesta desde la dirección
-  a la que llegó cada paquete (antes, en un VPS con varias IP o con IPv6,
-  el router descartaba las respuestas que salían desde otra). En el VPS:
+  protocolo (v3) y no habla con un VPS anterior. La 0.4.1, la 0.4.2 y la
+  0.4.3 no lo cambian (un router de una y un VPS de otra se entienden en
+  los dos sentidos), pero actualiza igual el VPS:
+  - la 0.4.1 cierra al túnel los metadatos y el puerto de WireGuard;
+  - la 0.4.2 contesta desde la dirección a la que llegó cada paquete
+    (antes, en un VPS con varias IP o con IPv6, el router descartaba las
+    respuestas que salían desde otra);
+  - la 0.4.3 escucha con una cola por enlace (`lanes`, 8 por omisión), así
+    que un parón corto del VPS ya no se lleva todas las copias de un
+    paquete; `lanes = 1` en `/etc/cengarde/cengarde.conf` y
+    `systemctl restart cengarde` vuelven al socket único de antes.
+
+  En el VPS:
 
   ```sh
   git -C /opt/cengarde fetch --depth 1 https://github.com/KevinashoUWU/cengarde <commit>
