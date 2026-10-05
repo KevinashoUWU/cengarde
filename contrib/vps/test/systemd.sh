@@ -15,11 +15,11 @@
 #   history) with its install.sh, as its cloud-config did, with PUB_IF
 #   facing inet: the tunnel works and IP pass reaches the router;
 # - upgrades to this checkout with install.sh run from a session that is
-#   killed right after its first step (wg0 down): the transient unit
-#   cengarde-upgrade finishes anyway; wg0 is gone, cg-router has port 65501
-#   and the router's address, no rule of 0.4 is left, the engine runs as the
-#   static user cengarde, the secret file was imported and deleted, and the
-#   router comes back with IP pass on, as it last asked;
+#   killed once wg0 is down (its step 2, after the build): the transient
+#   unit cengarde-upgrade finishes anyway; wg0 is gone, cg-router has port
+#   65501 and the router's address, no rule of 0.4 is left, the engine runs
+#   as the static user cengarde, the secret file was imported and deleted,
+#   and the router comes back with IP pass on, as it last asked;
 # - the units: systemd-analyze verify, Restart=on-failure accepted for the
 #   oneshot cengarde-nat.service; "cengarde ctl reload" answers;
 # - IP pass on and off through cengarde-passthrough.path and the file the
@@ -418,14 +418,15 @@ install_old() {
 # upgrade: this checkout's install.sh from an SSH session, killed once wg0
 # is down; the transient unit cengarde-upgrade finishes the upgrade.
 upgrade() {
-	say "upgrade: install.sh from an SSH session, killed right after its first step"
+	say "upgrade: install.sh from an SSH session, killed once wg0 is down"
 	rm -f "$UPGRADE_STATUS"
 	start=$(stat -c %s "$UPGRADE_LOG" 2>/dev/null || echo 0)
 	setsid env SSH_CONNECTION="192.0.2.9 50000 $VPS_IP 22" sh "$SRC/contrib/vps/install.sh" \
 		</dev/null >"$TMP/session.log" 2>&1 &
 	session=$!
-	step2() { tail -c +"$((start + 1))" "$UPGRADE_LOG" 2>/dev/null | grep -q 'install.sh: 2/6'; }
-	check "it runs as the unit cengarde-upgrade, logging to $UPGRADE_LOG" wait_for 60 step2
+	# Step 3 starts once step 2 has taken wg0 down.
+	wg0_down() { tail -c +"$((start + 1))" "$UPGRADE_LOG" 2>/dev/null | grep -q 'install.sh: 3/6'; }
+	check "it runs as the unit cengarde-upgrade, logging to $UPGRADE_LOG" wait_for 60 wg0_down
 	kill -KILL -- "-$session" 2>/dev/null
 	wait "$session" 2>/dev/null
 	check "the session said where to follow it" grep -q "running as the unit cengarde-upgrade" "$TMP/session.log"

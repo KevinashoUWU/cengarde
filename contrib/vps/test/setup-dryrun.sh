@@ -22,9 +22,10 @@
 #   refusals;
 # - a 0.4 server: wg0 and its IP pass state migrated, by
 #   cengarde-vps-setup and by install.sh (firewalld refused before anything
-#   changes, the old service stopped before systemd-sysusers, the nftables
-#   drop-in only when nftables is enabled, run twice); purge writes the
-#   secret back for 0.4's install.sh;
+#   changes, a build that fails before wg0 is touched, the old service
+#   stopped before systemd-sysusers, the nftables drop-in only when nftables
+#   is enabled, run twice); purge writes the secret back for 0.4's
+#   install.sh;
 # - what systemd runs when it stops cengarde-nat.service (ExecStop) or 0.4's
 #   wg0 (PostDown) takes the admin lock, as PID 1's child, not the caller's:
 #   a stand-in for it gets the lock at once, during purge and the migration;
@@ -215,9 +216,16 @@ echo "systemd-sysusers $*" >>"$CALLS"
 grep -q "^$CENGARDE_ENGINE_USER:" "$CENGARDE_ROOT/etc/passwd" 2>/dev/null ||
 	echo "$CENGARDE_ENGINE_USER:x:0:0::/:/usr/sbin/nologin" >>"$CENGARDE_ROOT/etc/passwd"
 EOF
-for f in stty make sysctl userdel systemd-run; do
+for f in stty sysctl userdel systemd-run; do
 	printf '#!/bin/sh\necho "%s $*" >>"$CALLS"\n' "$f" >"$BIN/$f"
 done
+# make: the build fails with FAKE_BUILD_FAIL set (the install does not).
+cat >"$BIN/make" <<'EOF'
+#!/bin/sh
+echo "make $*" >>"$CALLS"
+case " $* " in *" install "*) ;; *) [ -z "${FAKE_BUILD_FAIL:-}" ] || exit 2 ;; esac
+exit 0
+EOF
 chmod +x "$BIN"/*
 
 S1=$("$ENGINE" genkey) S2=$("$ENGINE" genkey) S3=$("$ENGINE" genkey)
@@ -521,7 +529,13 @@ check "with firewalld active, install.sh refuses" not env FAKE_FIREWALLD=1 sh -c
 check "before changing anything" sh -c '[ "$(cat "$CALLS")" = "systemctl is-active -q firewalld" ]'
 check "the same files" [ "$(fingerprint)" = "$before" ]
 : >"$CALLS"
+check "a build that fails: install.sh fails" not env FAKE_BUILD_FAIL=1 sh -c 'env CENGARDE_ROOT="$1" CENGARDE_ENGINE_USER=root PATH="$2" sh "$3" >/dev/null 2>&1' \
+	sh "$R" "$BIN:$PATH" "$INSTALL"
+check "with 0.4's wg0 untouched, so its router keeps its tunnel" not called 'wg-quick@wg0'
+check "the same files" [ "$(fingerprint)" = "$before" ]
+: >"$CALLS"
 check "install.sh" inst
+check "the engine built before wg0 is stopped" order '^make -C [^ ]*/engine$' '^systemctl disable --now wg-quick@wg0$'
 check "wg0 stopped before anything new is installed" order '^systemctl disable --now wg-quick@wg0$' '^make -C .*/engine install'
 check "the old service stopped before systemd-sysusers (its dynamic user)" order '^systemctl stop cengarde$' '^systemd-sysusers'
 check "the units in place, nftables' drop-in left out (not enabled)" \

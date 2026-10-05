@@ -80,18 +80,21 @@ if [ -n "${CENGARDE_UPGRADE_DETACHED:-}" ]; then
 	say "started $(date -u +%Y-%m-%dT%H:%M:%SZ) from $SRC"
 fi
 
-say "1/6: cengarde 0.4's wg0"
+# The build first: one that fails leaves a 0.4 server, and its router's
+# tunnel, as they were.
+say "1/6: build"
+make -C "$SRC/engine"
+
+say "2/6: cengarde 0.4's wg0"
 if [ -e "$R/etc/wireguard/wg0.conf" ] &&
 	head -n 1 "$R/etc/wireguard/wg0.conf" | grep -q '^# Written by cengarde-vps-setup'; then
-	# Its PostDown runs the cengarde-nat installed now: 0.4's own "down",
-	# or, when this runs again, the new one's, which removes 0.4's rules.
+	# Before anything new is installed: its PostDown runs the cengarde-nat
+	# installed now, 0.4's own "down", or, when this runs again, the new
+	# one's, which removes 0.4's rules.
 	systemctl disable --now wg-quick@wg0 || :
 	rm -f "$R/etc/wireguard/wg0.conf"
 	say "wg0 stopped and removed; its router comes back as cg-router, same port and tunnel address"
 fi
-
-say "2/6: build"
-make -C "$SRC/engine"
 
 say "3/6: install"
 make -C "$SRC/engine" install DESTDIR="$R" PREFIX=/usr/local
