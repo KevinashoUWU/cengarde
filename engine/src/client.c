@@ -1325,7 +1325,7 @@ static void threads_text(struct client *c, struct cg_json *j)
 			cg_threads_row(j, c->pump[k]->name, atomic_load(&c->pump[k]->tid), cg_pump_cpu_ns(c->pump[k]),
 				       cg_cpuwin_permille(&c->pst[k].cpu));
 	if (c->sw.running)
-		cg_threads_row(j, "cg-status", c->sw.tid, cg_thread_cpu_ns(c->sw.thread, 0), cg_cpuwin_permille(&c->sw_cpu));
+		cg_threads_row(j, c->sw.name, c->sw.tid, cg_thread_cpu_ns(c->sw.thread, 0), cg_cpuwin_permille(&c->sw_cpu));
 }
 
 /* ---- reload ---- */
@@ -1349,7 +1349,7 @@ static void apply_config(struct client *c, struct cg_config *next, uint64_t now_
 	cg_log_level = c->run->verbose ? CG_LOG_DEBUG : next->log_level;
 	if (strcmp(old->status_file, next->status_file)) {
 		cg_status_writer_stop(&c->sw);
-		if (next->status_file[0] && cg_status_writer_start(&c->sw, next->status_file) < 0)
+		if (next->status_file[0] && cg_status_writer_start(&c->sw, next->status_file, "cg-status") < 0)
 			cg_warn("status file %s: cannot start the writer thread", next->status_file);
 	}
 	if (old->rcvbuf != next->rcvbuf || old->sndbuf != next->sndbuf) {
@@ -1749,7 +1749,7 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 	/* The control socket is a convenience: the tunnel runs without it. */
 	if (cfg->control_socket[0] && cg_ctl_open(&c->ctl, cfg->control_socket, c->ep, err, sizeof(err)) < 0)
 		cg_warn("control socket: %s", err);
-	if (cfg->status_file[0] && cg_status_writer_start(&c->sw, cfg->status_file) < 0)
+	if (cfg->status_file[0] && cg_status_writer_start(&c->sw, cfg->status_file, "cg-status") < 0)
 		cg_warn("status file %s: cannot start the writer thread", cfg->status_file);
 	cg_info("client %s: session %08x, WireGuard endpoint %s, link_threads %s", CG_VERSION, c->session,
 		cg_addr_str(&cfg->listen, buf, sizeof(buf)), cg_lt_name(c->lt));

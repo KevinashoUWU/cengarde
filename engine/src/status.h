@@ -45,11 +45,13 @@ struct cg_status_writer {
 	size_t len;
 	int stop, running;
 	_Atomic int tid; /* its thread's, for "ctl threads" */
+	char name[16];   /* its thread's, as the kernel and "ctl threads" show it */
 };
 
-/* Starts the thread, with normal scheduling whatever the cpu and
- * rt_priority knobs gave the caller. Returns 0 or -1. */
-int cg_status_writer_start(struct cg_status_writer *w, const char *path);
+/* Starts the thread, named name (at most 15 characters are kept), with
+ * normal scheduling whatever the cpu and rt_priority knobs gave the caller.
+ * Returns 0 or -1. */
+int cg_status_writer_start(struct cg_status_writer *w, const char *path, const char *name);
 /* Hands the text of j over (j is left empty), replacing a snapshot not
  * written yet. Never waits: returns -1, and keeps j, in the rare moment the
  * writer holds the lock to take the previous one. */

@@ -198,7 +198,7 @@ static void *writer_main(void *arg)
 	struct cg_ratelimit rl = { 0 };
 
 	w->tid = cg_gettid();
-	pthread_setname_np(pthread_self(), "cg-writer");
+	pthread_setname_np(pthread_self(), w->name);
 	cg_thread_normal();
 	pthread_mutex_lock(&w->mu);
 	for (;;) {
@@ -222,12 +222,13 @@ static void *writer_main(void *arg)
 	return NULL;
 }
 
-int cg_status_writer_start(struct cg_status_writer *w, const char *path)
+int cg_status_writer_start(struct cg_status_writer *w, const char *path, const char *name)
 {
 	memset(w, 0, sizeof(*w));
 	if (strlen(path) >= sizeof(w->path))
 		return -1;
 	strcpy(w->path, path);
+	snprintf(w->name, sizeof(w->name), "%s", name);
 	if (pthread_mutex_init(&w->mu, NULL))
 		return -1;
 	if (pthread_cond_init(&w->cv, NULL)) {

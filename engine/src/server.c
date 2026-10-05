@@ -824,9 +824,9 @@ static void threads_text(struct server *s, struct cg_json *j)
 	cg_threads_head(j);
 	cg_threads_row(j, "cg-main", cg_gettid(), cg_thread_cpu_ns(pthread_self(), 1), cg_cpuwin_permille(&s->cpu[0]));
 	if (s->sw.running)
-		cg_threads_row(j, "cg-status", s->sw.tid, cg_thread_cpu_ns(s->sw.thread, 0), cg_cpuwin_permille(&s->cpu[1]));
+		cg_threads_row(j, s->sw.name, s->sw.tid, cg_thread_cpu_ns(s->sw.thread, 0), cg_cpuwin_permille(&s->cpu[1]));
 	if (s->pw.running)
-		cg_threads_row(j, "cg-pass", s->pw.tid, cg_thread_cpu_ns(s->pw.thread, 0), cg_cpuwin_permille(&s->cpu[2]));
+		cg_threads_row(j, s->pw.name, s->pw.tid, cg_thread_cpu_ns(s->pw.thread, 0), cg_cpuwin_permille(&s->cpu[2]));
 }
 
 static void tick(struct server *s)
@@ -856,10 +856,10 @@ static void reload_start(struct server *s)
 		s->reload_again = 1; /* once the load under way is done */
 }
 
-static void writer_restart(struct cg_status_writer *w, const char *path)
+static void writer_restart(struct cg_status_writer *w, const char *path, const char *name)
 {
 	cg_status_writer_stop(w);
-	if (path[0] && cg_status_writer_start(w, path) < 0)
+	if (path[0] && cg_status_writer_start(w, path, name) < 0)
 		cg_warn("%s: cannot start the writer thread", path);
 }
 
@@ -874,9 +874,9 @@ static void apply_config(struct server *s, struct cg_config *next)
 	s->hcfg = cg_hcfg_of(next);
 	cg_log_level = s->run->verbose ? CG_LOG_DEBUG : next->log_level;
 	if (strcmp(old->status_file, next->status_file))
-		writer_restart(&s->sw, next->status_file);
+		writer_restart(&s->sw, next->status_file, "cg-status");
 	if (strcmp(old->passthrough_file, next->passthrough_file)) {
-		writer_restart(&s->pw, next->passthrough_file);
+		writer_restart(&s->pw, next->passthrough_file, "cg-pass");
 		s->pass_written = -1; /* write it again, there */
 	}
 	if (old->rcvbuf != next->rcvbuf) {
@@ -1060,9 +1060,9 @@ int cg_server_run(struct cg_config *cfg, const struct cg_run *run)
 	/* The control socket is a convenience: the tunnel runs without it. */
 	if (cfg->control_socket[0] && cg_ctl_open(&s->ctl, cfg->control_socket, s->ep, err, sizeof(err)) < 0)
 		cg_warn("control socket: %s", err);
-	if (cfg->status_file[0] && cg_status_writer_start(&s->sw, cfg->status_file) < 0)
+	if (cfg->status_file[0] && cg_status_writer_start(&s->sw, cfg->status_file, "cg-status") < 0)
 		cg_warn("status file %s: cannot start the writer thread", cfg->status_file);
-	if (cfg->passthrough_file[0] && cg_status_writer_start(&s->pw, cfg->passthrough_file) < 0)
+	if (cfg->passthrough_file[0] && cg_status_writer_start(&s->pw, cfg->passthrough_file, "cg-pass") < 0)
 		cg_warn("%s: cannot start the writer thread", cfg->passthrough_file);
 	cg_info("server %s: listening on %s%s, WireGuard at %s, up to %u sessions", CG_VERSION, s->laddr,
 		s->pktinfo ? ", replying from each packet's arrival address" : "",

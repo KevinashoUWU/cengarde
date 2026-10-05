@@ -324,7 +324,9 @@ cengarde ctl threads            # cada hilo: TID, última CPU, ms de CPU y % de 
   (`LOCAL`).
 - **`threads`:** el hilo principal (`cg-hub` en el cliente, `cg-main` en el
   servidor), los de cada enlace (`cg-<interfaz>`, con `link_threads = on`) y
-  los que escriben el estado. La CPU sale del reloj de CPU de cada hilo
+  los que escriben el estado (`cg-status`, y `cg-pass` en el servidor), con
+  el mismo nombre que muestran `ps -L` o `top -H` (el principal se sigue
+  llamando `cengarde`). La CPU sale del reloj de CPU de cada hilo
   (`pthread_getcpuclockid`): los kernels de OpenWrt no tienen `schedstat`.
   Los scripts del laboratorio buscan ahí los hilos por nombre.
 
