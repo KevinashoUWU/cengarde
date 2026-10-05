@@ -140,7 +140,8 @@ struct client {
 	struct pump_stats {
 		uint64_t pkts, paused, errors; /* totals of the pump's 32-bit counters */
 		uint32_t l_pkts, l_paused, l_errors;
-		uint32_t stalled_ms; /* with work waiting and no loop pass for over 1 s */
+		uint32_t stalled_ms; /* how long work waited for it with no loop pass */
+		struct cg_stall stall;
 		uint32_t hop_snap[CG_HIST_N], hop_win[CG_HIST_N]; /* hop over the last 5 s */
 		struct cg_cpuwin cpu;
 		struct cg_ratelimit rl_stall, rl_err;
@@ -1492,17 +1493,17 @@ static void take_open_failed(struct client *c, uint64_t now_ms)
 	}
 }
 
-/* How long pump k has not run a loop pass while work waits for it
- * (commands, or datagrams in one of its sockets while its ring has room):
- * 0 below 1 s. */
+/* How long work has waited for pump k with no loop pass (commands, or
+ * datagrams in one of its sockets while its ring has room): 0 below 1 s,
+ * counted from the first check that saw it waiting (thrplan.h). Its loop
+ * clock is read before the work, so that a pass in between can only end
+ * the count. */
 static uint32_t pump_stalled_ms(struct client *c, int k, uint64_t now_ms)
 {
 	struct cg_pump *p = c->pump[k];
-	uint32_t age = (uint32_t)now_ms - atomic_load_explicit(&p->loop_ms, memory_order_relaxed), rmem, drops;
+	uint32_t loop = atomic_load_explicit(&p->loop_ms, memory_order_relaxed), rmem, drops;
 	int work = cg_pump_cmds_waiting(p) > 0;
 
-	if (age <= 1000)
-		return 0;
 	for (int i = 0; i < CG_MAX_LINKS && !work; i++) {
 		const struct link *l = &c->link[i];
 
@@ -1510,7 +1511,7 @@ static uint32_t pump_stalled_ms(struct client *c, int k, uint64_t now_ms)
 		    sock_meminfo(l->fd, &rmem, &drops) == 0 && rmem)
 			work = 1;
 	}
-	return work ? age : 0;
+	return cg_stall_check(&c->pst[k].stall, loop, work, now_ms);
 }
 
 /* Once a second: the threads' CPU, the pumps' counters and liveness. */

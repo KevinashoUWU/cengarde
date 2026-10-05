@@ -1,7 +1,8 @@
 /* Thread plan: which link_threads mode a router runs, which pump each link
- * gets, the warnings for knobs that would starve the machine, and the CPU
- * use of a thread over the last seconds. Pure functions, no clock and no
- * I/O (tests/test_thrplan.c).
+ * gets, the warnings for knobs that would starve the machine, the CPU use
+ * of a thread over the last seconds, and how long work has waited for a
+ * thread that does not run. Pure functions, no clock and no I/O
+ * (tests/test_thrplan.c).
  *
  * - link_threads = auto turns the per-link threads on only for the class of
  *   machine they were measured on (aarch64 or x86-64, at least 4 CPUs in the
@@ -117,6 +118,31 @@ static inline int cg_cpuwin_permille(const struct cg_cpuwin *w)
 	if (!dt || w->cpu_ns[newest] < w->cpu_ns[oldest])
 		return -1;
 	return (int)(dc / dt / 1000); /* ns per ms of wall time: 10^6 is one CPU, 1000 per permille */
+}
+
+/* Liveness of a thread that sleeps while it has nothing to do (a pump):
+ * how long work has waited for it with no loop pass, 0 below 1 s. Called
+ * once a second with the clock the thread stored at its last loop pass
+ * (ms, wraps) and whether work waits for it now. Counted from the first
+ * check that saw the work waiting with no pass since: short by up to a
+ * second, and never the time the thread slept with nothing to do. loop_ms
+ * is compared, never subtracted: a pass made after the caller read its
+ * own clock is a pass like any other. */
+struct cg_stall {
+	uint32_t loop_ms;  /* the thread's loop_ms when the wait was first seen */
+	uint64_t since_ms; /* when, by the caller's clock */
+	int waiting;
+};
+
+static inline uint32_t cg_stall_check(struct cg_stall *s, uint32_t loop_ms, int work, uint64_t now_ms)
+{
+	if (!work || !s->waiting || loop_ms != s->loop_ms) {
+		s->loop_ms = loop_ms;
+		s->since_ms = now_ms;
+		s->waiting = work;
+		return 0;
+	}
+	return now_ms - s->since_ms > 1000 ? (uint32_t)(now_ms - s->since_ms) : 0;
 }
 
 #endif

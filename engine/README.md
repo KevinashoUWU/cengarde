@@ -388,8 +388,11 @@ En el cliente, `threads` dice el modo pedido (`setting`), el que corre
 - `pump`: su hilo (`null` en `legacy`);
 - `socket_drops`: datagramas que el kernel tiró en su socket (`SO_MEMINFO`;
   `null` si no lo dice), en cualquier modo;
-- `io_stalled_ms`: cuánto lleva su hilo sin dar una vuelta con trabajo
-  esperando (0 por debajo de 1 s; a los 5 s lo registra);
+- `io_stalled_ms`: cuánto lleva el trabajo (órdenes, o datagramas en su
+  socket con sitio en su anillo) esperando a su hilo sin que dé una vuelta,
+  contado desde la primera comprobación (una por segundo) que lo vio
+  esperando: puede quedarse corto hasta 1 s, y nunca cuenta lo que el hilo
+  durmió sin nada que hacer (0 por debajo de 1 s; a los 5 s lo registra);
 - `pump_cpu_pct`: la CPU de su hilo en los últimos 5 s;
 - `hop_us.down`: p50 y p99, en los últimos 5 s, de lo que espera un lote
   entre el hilo que lo leyó y el principal que lo toma (`up`, con el PR 3c);

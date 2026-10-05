@@ -9,6 +9,7 @@ void test_thrplan(void)
 	uint8_t nl[8] = { 0 };
 	int pins[4] = { -1, 2, -1, 2 };
 	struct cg_cpuwin w;
+	struct cg_stall st;
 
 	/* Explicit settings stand. */
 	CHECK_EQ(cg_lt_resolve(CG_LT_ON, 0, 1, 1, 0), CG_LT_ON);
@@ -70,4 +71,35 @@ void test_thrplan(void)
 	for (uint64_t t = 8; t <= 13; t++)
 		cg_cpuwin_add(&w, t * 1000, 750000000ull + (t - 7) * 1000000000ull);
 	CHECK_EQ(cg_cpuwin_permille(&w), 1000); /* a whole CPU */
+
+	/* How long work waited for a thread, checked once a second: asleep
+	 * with nothing to do for 7 s, then work it takes before the next
+	 * check: never stalled. */
+	memset(&st, 0, sizeof(st));
+	CHECK_EQ(cg_stall_check(&st, 1000, 0, 2000), 0);
+	CHECK_EQ(cg_stall_check(&st, 1000, 1, 8000), 0); /* its loop_ms 7 s old: it only slept */
+	CHECK_EQ(cg_stall_check(&st, 8300, 0, 9000), 0);
+	/* Work at checks with no pass between: from the first of them. */
+	CHECK_EQ(cg_stall_check(&st, 8300, 1, 10000), 0);
+	CHECK_EQ(cg_stall_check(&st, 8300, 1, 11000), 0); /* 1 s: not above */
+	CHECK_EQ(cg_stall_check(&st, 8300, 1, 11050), 1050);
+	CHECK_EQ(cg_stall_check(&st, 8300, 1, 16100), 6100);
+	/* A pass: the count starts again. */
+	CHECK_EQ(cg_stall_check(&st, 16500, 1, 17100), 0);
+	CHECK_EQ(cg_stall_check(&st, 16500, 1, 18200), 1100);
+	CHECK_EQ(cg_stall_check(&st, 16500, 0, 19200), 0);
+	/* Busy: work at every check, a pass between each. */
+	for (uint32_t t = 20000; t < 30000; t += 1000)
+		CHECK_EQ(cg_stall_check(&st, t - 10, 1, t), 0);
+	/* A pass after the caller read its clock (loop_ms ahead of now_ms)
+	 * is a pass like any other: never a wrap to 49 days. */
+	CHECK_EQ(cg_stall_check(&st, 30003, 1, 30000), 0);
+	CHECK_EQ(cg_stall_check(&st, 30003, 0, 31000), 0);
+	CHECK_EQ(cg_stall_check(&st, 32002, 1, 32000), 0);
+	CHECK_EQ(cg_stall_check(&st, 32002, 1, 33000), 0);
+	CHECK_EQ(cg_stall_check(&st, 32002, 1, 34000), 2000); /* then no pass for 2 s */
+	/* Across the wrap of its 32-bit clock. */
+	CHECK_EQ(cg_stall_check(&st, 0xffffff00u, 1, 40000), 0);
+	CHECK_EQ(cg_stall_check(&st, 0x100u, 1, 41000), 0); /* a pass across the wrap */
+	CHECK_EQ(cg_stall_check(&st, 0x100u, 1, 43000), 2000);
 }
