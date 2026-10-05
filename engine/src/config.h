@@ -108,6 +108,10 @@ struct cg_config {
 	uint32_t path_timeout_ms;
 	char passthrough_file[256]; /* where the IP pass the client asks for goes; "": nowhere */
 	uint32_t lanes;             /* listen sockets steered by link id (steer.h); 1: one socket */
+	/* The client's address in the tunnel: a datagram there makes WireGuard
+	 * start a handshake when it ignores the client's (wgwatch.h). Family
+	 * AF_UNSPEC: never. */
+	struct sockaddr_storage wireguard_poke;
 
 	char *strings; /* storage behind include/exclude */
 };
