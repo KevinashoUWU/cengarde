@@ -21,8 +21,12 @@ CG_CFLAGS += -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-
 CG_LDFLAGS += -fsanitize=address,undefined
 else ifeq ($(SANITIZE),thread)
 # gcc warns (-Wtsan) about what TSAN does not model, such as
-# atomic_thread_fence: an error here. clang has no such warning.
-TSAN_WERROR = $(shell $(CC) -Werror -Wtsan -fsanitize=thread -E -x c /dev/null -o /dev/null 2>/dev/null && echo -Werror=tsan)
+# atomic_thread_fence (rule R1): an error here. <stdatomic.h> spells it as a
+# macro, and gcc drops a warning located in a system header's macro unless
+# the function was inlined into our code; -ftrack-macro-expansion=0 puts the
+# location at our call, so a fence is caught out of line and at -O0 too.
+# clang has neither flag.
+TSAN_WERROR = $(shell $(CC) -Werror -Wtsan -ftrack-macro-expansion=0 -fsanitize=thread -E -x c /dev/null -o /dev/null 2>/dev/null && echo -Werror=tsan -ftrack-macro-expansion=0)
 CG_CFLAGS += -fsanitize=thread -fno-omit-frame-pointer $(TSAN_WERROR)
 CG_LDFLAGS += -fsanitize=thread
 else

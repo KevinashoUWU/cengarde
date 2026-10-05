@@ -27,6 +27,11 @@ jobs:
         run: make -C engine CC=${{ matrix.cc }} CFLAGS="-O2 -g -Werror" all test
       - name: Unit tests with ASan and UBSan
         run: make -C engine clean && make -C engine CC=${{ matrix.cc }} SANITIZE=1 test
+      # TSAN does not model standalone fences (rule R1). gcc's -Wtsan catches
+      # atomic_thread_fence in gcc's TSAN build; this grep catches it with any
+      # compiler, and __sync_synchronize, which -Wtsan never reports.
+      - name: Rule R1, no standalone fences
+        run: "! grep -rnE 'atomic_thread_fence|__sync_synchronize' engine/src engine/tests"
 
   tsan:
     # ThreadSanitizer: a build of its own (it cannot share one with ASan),
