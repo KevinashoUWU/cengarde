@@ -18,7 +18,6 @@ por fuera del túnel) probado en QEMU; falta hardware real.
 - `engine/`: motor C (`src/`, `tests/`, `examples/`, `README.md`).
 - `openwrt/`: paquetes `cengarde` y `luci-app-cengarde`, `test/` (VMs QEMU
   y Playwright) y guía; `contrib/`: VPS (cloud-init, NAT) y systemd.
-- El engarde Go original salió del árbol; sigue en el historial (`3492df9`).
 - `bench/`: laboratorio netns/veth con `udpgen` (WireGuard falso), ver su README.
 - `docs/historias/`: investigación y decisiones (índice abajo).
 
@@ -27,16 +26,15 @@ por fuera del túnel) probado en QEMU; falta hardware real.
 - Motor: `make -C engine test`, `SANITIZE=1 test` (ASan), `SANITIZE=thread
   test` (TSAN) y, en cruzado, `make CC=aarch64-linux-gnu-gcc`.
 - Laboratorio (root): `bench/lab.sh build`, `ci` (smoke, health, control y
-  `lab.d/`) y `latency`; `ENGINE=go bench/lab.sh build` suma el Go del
-  historial, para `compare` (Go frente a C) y `suite` (línea base Go).
+  `lab.d/`) y `latency`; `ENGINE=go bench/lab.sh build` suma el engarde Go,
+  que salió del árbol (`3492df9`), para `compare` (Go frente a C) y `suite`.
 - OpenWrt de punta a punta: `openwrt/test/e2e.sh IMAGEN` (`openwrt/README.md`).
 - Contenedor cloud: `apt-get update`, `iproute2 iptables strace` (laboratorio)
   o `qemu-system-x86 openssh-client` (e2e); sin IPv6, WireGuard, netem, systemd.
-- CI: `engine.yml` (gcc/clang con `-Werror`, sanitizers y TSAN, qemu en
-  aarch64, armhf y MIPS BE, AArch64 real, laboratorio en netns),
-  `openwrt.yml` (paquetes 25.12/24.10, imágenes, e2e con KVM y release con
-  tags `v*`) y `vps.yml` (reglas de `cengarde-nat` en netns, y el VPS entero
-  con systemd real).
+- CI: `engine.yml` (gcc/clang con `-Werror`, ASan y TSAN, qemu en aarch64,
+  armhf y MIPS BE, AArch64 real, laboratorio en netns), `openwrt.yml`
+  (paquetes 25.12/24.10, imágenes, e2e con KVM y release con tags `v*`) y
+  `vps.yml` (reglas de `cengarde-nat` en netns, y el VPS con systemd real).
 
 ## Reglas de trabajo
 
@@ -79,3 +77,4 @@ por fuera del túnel) probado en QEMU; falta hardware real.
 | [008](docs/historias/008-luci-uci-y-emparejamiento.md) | UCI, LuCI, un solo secreto (BLAKE2s), imágenes, prueba en QEMU | toques `openwrt/`, `cengarde keys` o el cloud-config |
 | [009](docs/historias/009-recarga-control-e-ip-pass.md) | Recarga sin cortar, `cengarde ctl`, pausa de enlaces, IP pass desde el router (v3) | toques la recarga, el socket de control, procd o el IP pass |
 | [010](docs/historias/010-ipv6-varias-ip-multicliente-nombres.md) | Plan de IPv6, varios routers por VPS (v4) y nombres; hechos el PR 1 (reinicio del servidor, metadatos del VPS) y el PR 2 (dirección de llegada, lista de direcciones, IPv6 por fuera, fuga de IPv6) | toques IPv6, las direcciones del VPS, el multicliente, `cengarde-nat` o los nombres |
+| [011](docs/historias/011-hilos.md) | Hilos en los dos extremos: colas del servidor (PR 3a, `lanes`, `steer.h`, `rcvbudget.h`, `udp_mem`) y la puerta S1 | toques `lanes`, el programa BPF, el presupuesto de recepción, `udp_mem` o los hilos de cualquier extremo |
