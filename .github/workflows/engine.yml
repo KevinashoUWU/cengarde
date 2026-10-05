@@ -27,6 +27,55 @@ jobs:
         run: make -C engine CC=${{ matrix.cc }} CFLAGS="-O2 -g -Werror" all test
       - name: Unit tests with ASan and UBSan
         run: make -C engine clean && make -C engine CC=${{ matrix.cc }} SANITIZE=1 test
+      # TSAN does not model standalone fences (rule R1). gcc's -Wtsan catches
+      # atomic_thread_fence in gcc's TSAN build; this grep catches it with any
+      # compiler, and __sync_synchronize, which -Wtsan never reports.
+      - name: Rule R1, no standalone fences
+        run: "! grep -rnE 'atomic_thread_fence|__sync_synchronize' engine/src engine/tests"
+
+  tsan:
+    # ThreadSanitizer: a build of its own (it cannot share one with ASan),
+    # on glibc x86_64 (gcc's TSAN does not support musl). With gcc, -Wtsan
+    # is an error. No suppressions.
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        cc: [gcc, clang]
+    steps:
+      - uses: actions/checkout@v4
+      # The TSAN runtimes of gcc 13 and clang 18 cannot place their shadow
+      # memory with the runners' 32 bits of mmap randomness.
+      - name: Fewer bits of mmap randomness for TSAN
+        run: sudo sysctl -w vm.mmap_rnd_bits=28
+      - name: Unit tests with ThreadSanitizer
+        run: make -C engine CC=${{ matrix.cc }} SANITIZE=thread test
+      # TSAN binaries on both ends of the lab, at its low rates: the ci set
+      # without deepq, skew and udpmem, which flood. A report stops that
+      # engine (halt_on_error), but a stopped engine fails a check only while
+      # one is running. So each process's reports also go to a file of its
+      # own (log_path: tsan/report.PID, root's, mode 0640), which no later
+      # pass or scenario truncates, and any such file fails the step after
+      # each scenario: a report in a stop path (where the status,
+      # passthrough and loader threads are joined; restart stops the server
+      # 10 times or more), in lanes' second server or in a ctl call too.
+      - name: Lab with TSAN binaries (smoke, health, control, fallback, lanes, multiip, restart)
+        run: |
+          sudo ENGINE=c bench/lab.sh build
+          make -C engine clean
+          make -C engine CC=${{ matrix.cc }} SANITIZE=thread cengarde
+          tsan=$RUNNER_TEMP/tsan
+          mkdir -p "$tsan"
+          for t in smoke health control fallback lanes multiip restart; do
+            rc=0
+            sudo TSAN_OPTIONS="halt_on_error=1 log_path=$tsan/report" CENGARDE_BIN="$PWD/engine/cengarde" \
+              bench/lab.sh "$t" || rc=$?
+            if ls "$tsan"/report.* >/dev/null 2>&1; then
+              echo "ThreadSanitizer reports in $t:"
+              sudo cat "$tsan"/report.*
+              exit 1
+            fi
+            [ "$rc" = 0 ] || exit 1
+          done
 
   cross:
     # OpenWrt targets: 64-bit ARM (Pi 4), 32-bit ARM and big-endian MIPS.
@@ -49,6 +98,24 @@ jobs:
           make -C engine CC=${{ matrix.triplet }}-gcc CFLAGS="-O2 -Werror" all cengarde-test
           ${{ matrix.qemu }} -L /usr/${{ matrix.triplet }} engine/cengarde-test
 
+  arm:
+    # Real AArch64: its memory model is weak like the Pi's Cortex-A72, where
+    # x86 and qemu-user's TCG both run on x86's strong ordering. The unit
+    # tests and the lab, then the same built for ARMv8.0's LL/SC atomics
+    # without LSE (-mno-outline-atomics -march=armv8-a), as on the A72.
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and unit tests (warnings are errors)
+        run: make -C engine CFLAGS="-O2 -g -Werror" all test
+      - name: Lab scenarios in network namespaces
+        run: sudo ENGINE=c bench/lab.sh build && sudo bench/lab.sh ci
+      - name: Again with LL/SC atomics (ARMv8.0, no LSE)
+        run: |
+          make -C engine clean
+          make -C engine CFLAGS="-O2 -g -Werror -mno-outline-atomics -march=armv8-a" all test
+          sudo CENGARDE_BIN="$PWD/engine/cengarde" bench/lab.sh ci
+
   lab:
     runs-on: ubuntu-24.04
     steps:
@@ -57,6 +124,14 @@ jobs:
         run: sudo ENGINE=c bench/lab.sh build
       # smoke; health (a link with a 500 ms queue is muted and comes back);
       # control (pause, reloads and IP pass under traffic, no loss, same
-      # session); and every bench/lab.d scenario with LAB_CI=1.
+      # session); and every bench/lab.d scenario with LAB_CI=1, udpmem
+      # included (it lowers net.ipv4.udp_mem for a few seconds and puts it
+      # back: fine on a throwaway runner).
       - name: Lab scenarios in network namespaces (smoke, health, control, bench/lab.d)
-        run: sudo bench/lab.sh ci
+        run: sudo LAB_UDPMEM=1 bench/lab.sh ci
+      # The server's lanes are on by default: control and restart once more
+      # with one listen socket, the off switch.
+      - name: control and restart with lanes = 1
+        run: |
+          sudo SERVER_EXTRA="lanes = 1" bench/lab.sh control
+          sudo SERVER_EXTRA="lanes = 1" bench/lab.sh restart

@@ -5,11 +5,17 @@
 #include "log.h"
 
 #include <stdarg.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
 
-int cg_log_level = CG_LOG_INFO;
+/* Rule R3 of the threading design: only 32-bit and pointer atomics, and
+ * only where the target has them without locks (MIPS32 and ARMv7 included). */
+_Static_assert(ATOMIC_INT_LOCK_FREE == 2 && ATOMIC_POINTER_LOCK_FREE == 2,
+	       "int and pointer atomics must be lock-free");
+
+_Atomic int cg_log_level = CG_LOG_INFO;
 
 static const char *const names[] = { "error", "warn", "info", "debug" };
 
@@ -19,7 +25,7 @@ void cg_log(int level, const char *fmt, ...)
 	va_list ap;
 	int n, m;
 
-	if (level > cg_log_level)
+	if (level > cg_log_level_get())
 		return;
 	n = snprintf(line, sizeof(line), "%s: ", names[level]);
 	va_start(ap, fmt);

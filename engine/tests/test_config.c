@@ -118,6 +118,9 @@ static void test_config_reload(void)
 		 0);
 	CHECK(!strcmp(cg_config_restart_needed(&a, &b), "wireguard"));
 	cg_config_free(&a);
+	CHECK_EQ(cg_config_parse(&a, SERVER "lanes = 4\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK(!strcmp(cg_config_restart_needed(&a, &b), "lanes")); /* the socket group is built once */
+	cg_config_free(&a);
 	cg_config_free(&b);
 
 	/* Peek: one key, without the rest of the file having to make sense. */
@@ -332,8 +335,32 @@ void test_config(void)
 	CHECK(!strcmp(cg_addr_str(&c.listen, buf, sizeof(buf)), "[::]:59402"));
 	CHECK(!strcmp(cg_addr_str(&c.wireguard, buf, sizeof(buf)), "127.0.0.1:51820"));
 	CHECK_EQ(c.max_sessions, 64);
+	CHECK_EQ(c.lanes, 8);
 	CHECK(warn[0] == '\0');
 	cg_config_free(&c);
+
+	/* lanes: auto (8) or a power of two up to 16. */
+	{
+		static const char *const ok[] = { "auto", "1", "2", "4", "8", "16" };
+		static const unsigned want[] = { 8, 1, 2, 4, 8, 16 };
+		static const char *const bad[] = { "0", "3", "6", "32", "-8", "eight", "4x", "4294967300" };
+		char text[160];
+
+		for (size_t i = 0; i < CG_ARRAY_SIZE(ok); i++) {
+			snprintf(text, sizeof(text), SERVER "lanes = %s\n", ok[i]);
+			CHECK_EQ(cg_config_parse(&c, text, err, sizeof(err), warn, sizeof(warn)), 0);
+			CHECK_EQ(c.lanes, want[i]);
+			cg_config_free(&c);
+		}
+		for (size_t i = 0; i < CG_ARRAY_SIZE(bad); i++) {
+			snprintf(text, sizeof(text), SERVER "lanes = %s\n", bad[i]);
+			CHECK_EQ(cg_config_parse(&c, text, err, sizeof(err), warn, sizeof(warn)), -1);
+			CHECK(!strncmp(err, "lanes: expected auto, 1, 2, 4, 8 or 16", 38));
+		}
+		CHECK_EQ(cg_config_parse(&c, CLIENT "lanes = 4\n", err, sizeof(err), warn, sizeof(warn)), 0);
+		CHECK(strstr(warn, "unknown key 'lanes'") != NULL); /* a server setting */
+		cg_config_free(&c);
+	}
 
 	/* Link health and latency knobs, the same keys in both modes. */
 	CHECK_EQ(cg_config_parse(&c,

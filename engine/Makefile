@@ -3,7 +3,9 @@
 # CC, CFLAGS, CPPFLAGS and LDFLAGS belong to whoever builds (cross builds,
 # OpenWrt) and may be overridden on the command line; the flags the code
 # needs live in the CG_* variables. make SANITIZE=1 builds with ASan and
-# UBSan; HARDEN= and HARDEN_LDFLAGS= drop the hardening flags.
+# UBSan, make SANITIZE=thread with ThreadSanitizer (a build of its own: it
+# cannot share one with ASan); HARDEN= and HARDEN_LDFLAGS= drop the
+# hardening flags.
 
 CC ?= cc
 CFLAGS ?= -O2 -g
@@ -17,6 +19,16 @@ CG_LDFLAGS = -pthread
 ifeq ($(SANITIZE),1)
 CG_CFLAGS += -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all
 CG_LDFLAGS += -fsanitize=address,undefined
+else ifeq ($(SANITIZE),thread)
+# gcc warns (-Wtsan) about what TSAN does not model, such as
+# atomic_thread_fence (rule R1): an error here. <stdatomic.h> spells it as a
+# macro, and gcc drops a warning located in a system header's macro unless
+# the function was inlined into our code; -ftrack-macro-expansion=0 puts the
+# location at our call, so a fence is caught out of line and at -O0 too.
+# clang has neither flag.
+TSAN_WERROR = $(shell $(CC) -Werror -Wtsan -ftrack-macro-expansion=0 -fsanitize=thread -E -x c /dev/null -o /dev/null 2>/dev/null && echo -Werror=tsan -ftrack-macro-expansion=0)
+CG_CFLAGS += -fsanitize=thread -fno-omit-frame-pointer $(TSAN_WERROR)
+CG_LDFLAGS += -fsanitize=thread
 else
 HARDEN ?= -fstack-protector-strong -D_FORTIFY_SOURCE=2 -fPIE
 HARDEN_LDFLAGS ?= -pie -Wl,-z,relro,-z,now

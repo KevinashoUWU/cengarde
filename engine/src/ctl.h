@@ -162,9 +162,11 @@ static inline int cg_ovr_set(struct cg_ovr_table *t, const char *name, enum cg_o
 		return 0;
 	}
 	if (i == n) {
-		if (n == CG_CTL_OVERRIDES || strlen(name) >= sizeof(t->e[0].name))
+		size_t len = strlen(name);
+
+		if (n == CG_CTL_OVERRIDES || len >= sizeof(t->e[0].name))
 			return -1;
-		strcpy(t->e[i].name, name);
+		memcpy(t->e[i].name, name, len + 1);
 		t->n = n + 1;
 	}
 	t->e[i].v = v;

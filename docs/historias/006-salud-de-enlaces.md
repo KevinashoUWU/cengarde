@@ -1,6 +1,6 @@
 # 006 — Salud de los enlaces y baja latencia (Fase 2)
 
-- **Fecha:** 2026-10-03
+- **Fecha:** 2026-10-03 (actualizada el 2026-10-05 con la historia 011)
 - **Estado:** vigente
 - **Fuentes:** `engine/src/health.h` (lógica y tests), `client.c`, `server.c`,
   `proto.h`; `sudo bench/lab.sh health`, `latency` y `compare`; historias 003
@@ -214,7 +214,8 @@ Misma prueba con el `sndbuf` por defecto:
 ## Pendiente
 
 - **Servidor multihilo** (`SO_REUSEPORT`) y GSO/GRO: aplazados hasta medir en
-  el VPS.
+  el VPS. Las colas `SO_REUSEPORT`, todavía con un hilo, llegaron con el
+  PR 3a (historia 011); los hilos del servidor siguen pendientes (PR 3e).
   - Estimación: un cliente a ~100 Mbit/s con 4 enlaces son ~36.000 copias/s.
   - A 8–10 µs por copia (laboratorio), es un 30–40 % de una vCPU.
 - **Perfilado en la Pi** (`perf`) y ajuste del tamaño de lote.
@@ -236,3 +237,5 @@ Misma prueba con el `sndbuf` por defecto:
 
 - 2026-10-03: creada con la Fase 2 (salud de enlaces, protocolo v2 y perillas
   de latencia).
+- 2026-10-05: las colas `SO_REUSEPORT` del servidor, con un hilo (historia
+  011, PR 3a).

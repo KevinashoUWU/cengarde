@@ -208,8 +208,17 @@ uci set network.up1v6.proto=dhcpv6
 uci set network.up1v6.device=@up1
 uci set network.up1v6.reqaddress=try
 uci set network.up1v6.reqprefix=auto
+# up1 and up1v6 in the wan zone, as wan and wan6 are on a stock router: the
+# DHCPv6 answers come in through its rules. Without a zone they only came in
+# through the rules wan left on eth1, until the firewall next reloaded. up2
+# and up3 stay without a zone: cengarde-setup puts them in it.
+zone=$(uci show firewall | sed -n "s/^\(firewall\.[^.]*\)\.name='wan'$/\1/p")
+uci add_list "$zone.network=up1"
+uci add_list "$zone.network=up1v6"
 uci commit network
+uci commit firewall
 /etc/init.d/network reload
+/etc/init.d/firewall reload >/dev/null 2>&1
 EOF
 sleep 10
 "$VM" ssh router 'uci show network; uci show firewall; ip route; ip -6 route' > "$OUT/router-before.txt"
