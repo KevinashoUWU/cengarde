@@ -632,22 +632,55 @@ def cmd_s1(argv):
         teardown()
 
 
+def before_dup(r):
+    """Datagrams dropped before duplication, where lanes cannot help:
+    upload at the router's WireGuard socket (c_wg) and its generator's;
+    download at the session's WireGuard socket on the server (sess_wg) and
+    its generator's."""
+    if r['dir'] == 'up':
+        d = r.get('sockdrops_cli', {})
+        return d.get('c_wg', 0) + d.get('gen', 0)
+    d = r.get('sockdrops_srv', {})
+    return d.get('sess_wg', 0) + d.get('gen', 0)
+
+
+def after_dedup(r):
+    """Upload datagrams the server dropped after dedup, on their way to
+    WireGuard."""
+    srv = r.get('sockdrops_srv', {})
+    return srv.get('gen', 0) + srv.get('sess_wg', 0) + (r.get('s_wg_drops') or 0)
+
+
+def lane_drops(r):
+    """Copies dropped at the server's listen sockets."""
+    return sum(r.get('s_lane_drops') or []) or r.get('sockdrops_srv', {}).get('lfd', 0)
+
+
 def whole_lost(r):
     """Packets lost with every copy at the server's listen sockets
     (upload), estimated as the loss nothing else explains: what the
     client dropped before duplication and what the server dropped after
     dedup are taken out. 0 when no listen socket dropped anything."""
-    lanes = sum(r.get('s_lane_drops') or []) or r.get('sockdrops_srv', {}).get('lfd', 0)
-    if r['dir'] != 'up' or not lanes:
+    if r['dir'] != 'up' or not lane_drops(r):
         return 0
-    cli, srv = r.get('sockdrops_cli', {}), r.get('sockdrops_srv', {})
-    before = cli.get('c_wg', 0) + cli.get('gen', 0)
-    after = srv.get('gen', 0) + srv.get('sess_wg', 0) + (r.get('s_wg_drops') or 0)
-    return max(0, r['sent'] - r['uniq'] - before - after)
+    return max(0, r['sent'] - r['uniq'] - before_dup(r) - after_dedup(r))
+
+
+def whole_exact(r):
+    """Whether whole_lost(r) is a count rather than an estimate: no other
+    drop counter moved, so every packet lost lost all its copies at the
+    listen sockets."""
+    return not lane_drops(r) or not (before_dup(r) or after_dedup(r) or r.get('c_tx_drops') or
+                                     r.get('softnet_drops'))
 
 
 def cmd_table(argv):
-    """table FILE...: S1 rows by direction, lanes and rate."""
+    """table FILE...: S1 rows by direction, links, rate and lanes. The
+    loss after duplication leaves out what was dropped before it
+    (before_dup): here the router's one thread reaches its CPU ceiling
+    near 100 kpps with 3 links (60 kpps with 5) and then drops at its
+    WireGuard socket, where lanes cannot help. A whole-packet count marked
+    ≈ is an estimate: other sockets dropped too in that run."""
     rows = {}
     for f in argv:
         for line in open(f):
@@ -664,19 +697,24 @@ def cmd_table(argv):
     def mean(v):
         return sum(v) / len(v) if v else 0
 
-    print('| dir | links | kpps | lanes | runs | loss % | runs ≤ 0.1 % | server µs/pkt (mean) | client µs/pkt (mean) '
-          '| server CPU % | p50 µs | copies dropped at the listen sockets | whole packets lost there (est.) |')
-    print('| --- | --- | ---: | ---: | ---: | --- | ---: | --- | --- | --- | --- | --- | --- |')
+    print('| dir | links | kpps | lanes | runs | loss % (mean) | runs ≤ 0.1 % | dropped before duplication '
+          '| runs ≤ 0.1 % after duplication | server µs/pkt (mean) | client µs/pkt (mean) | server CPU % '
+          '| client CPU % | p50 µs | copies dropped at the listen sockets | whole packets lost there |')
+    print('| --- | --- | ---: | ---: | ---: | --- | ---: | --- | ---: | --- | --- | --- | --- | --- | --- | --- |')
     for k in sorted(rows):
         rs = rows[k]
         d, n, pps, L = k
-        drops = [sum(r.get('s_lane_drops') or []) or r.get('sockdrops_srv', {}).get('lfd', 0) for r in rs]
-        print(f"| {d} | {n[1:]} | {pps // 1000} | {L} | {len(rs)} | {rng([r['loss_pct'] for r in rs], '%.3f')} "
-              f"| {sum(1 for r in rs if r['loss_pct'] <= 0.1)}/{len(rs)} "
+        loss = [r['loss_pct'] for r in rs]
+        after = [100.0 * (r['sent'] - r['uniq'] - before_dup(r)) / r['sent'] if r['sent'] else 0.0 for r in rs]
+        print(f"| {d} | {n[1:]} | {pps // 1000} | {L} | {len(rs)} | {rng(loss, '%.3f')} ({mean(loss):.3f}) "
+              f"| {sum(1 for x in loss if x <= 0.1)}/{len(rs)} | {', '.join(str(before_dup(r)) for r in rs)} "
+              f"| {sum(1 for x in after if x <= 0.1)}/{len(rs)} "
               f"| {rng([r['server_us'] for r in rs])} ({mean([r['server_us'] for r in rs]):.2f}) "
               f"| {rng([r['client_us'] for r in rs])} ({mean([r['client_us'] for r in rs]):.2f}) "
-              f"| {rng([r['server_cpu_pct'] for r in rs], '%.0f')} | {rng([r['p50'] for r in rs if r['p50'] is not None], '%d')} "
-              f"| {', '.join(map(str, drops))} | {', '.join(str(whole_lost(r)) for r in rs)} |")
+              f"| {rng([r['server_cpu_pct'] for r in rs], '%.0f')} | {rng([r['client_cpu_pct'] for r in rs], '%.0f')} "
+              f"| {rng([r['p50'] for r in rs if r['p50'] is not None], '%d')} "
+              f"| {', '.join(str(lane_drops(r)) for r in rs)} "
+              f"| {', '.join(('' if whole_exact(r) else '≈') + str(whole_lost(r)) for r in rs)} |")
 
 
 if __name__ == '__main__':
