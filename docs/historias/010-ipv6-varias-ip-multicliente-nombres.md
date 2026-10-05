@@ -562,6 +562,14 @@ Sin cambio de protocolo ni del motor: un VPS lo toma bajo un router 0.4.
   vuelve a como estaba. Sin router, una clave que no sirve a nadie, así el
   motor sigue arriba. IPv4 principal privada: `FORWARD_SKIP_SRC` y qué
   abrir delante; en 100.64.0.0/10, aviso de CGNAT.
+- **`forward off|on|limit|allow|disallow|reserve|unreserve`:** adelantadas
+  del WP10b (PR 3d2). Con v3, `off|on` y `reserve|unreserve` actúan sobre
+  el IP pass; `allow|disallow` solo cuentan dentro de `PASSTHROUGH_PORTS`
+  (1024:65000 por omisión), así que por omisión nada de debajo de 1024 se
+  reenvía, y `allow` lo dice; `limit` se guarda para el v4. Un
+  `PASSTHROUGH_PORTS` que empieza debajo de 1024 avisa: la 0.4 reenviaba
+  esos puertos (salvo el SSH), y ahora quedan reservados salvo
+  `FORWARD_ALLOW_LOW`.
 - **`install.sh`:** desde una sesión interactiva o SSH se relanza con
   `systemd-run` como `cengarde-upgrade` (la sesión SSH se reconoce por un
   `sshd` entre sus padres: `sudo` borra `SSH_CONNECTION`, y

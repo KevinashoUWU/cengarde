@@ -33,6 +33,9 @@
 #
 # Protocol 3 serves one router: a second one needs cengarde 0.5 on both
 # ends. That router keeps 10.79.0.2, the tunnel address of every 0.4 router.
+# Its IP pass forwards PASSTHROUGH_PORTS (1024:65000), less the reserved
+# ports: "forward allow" frees a port below 1024, which a router gets only
+# inside that range; "forward limit" is kept for protocol 4.
 # Settings: /etc/cengarde/nat.conf (see cengarde-nat). CENGARDE_ROOT goes in
 # front of every path (tests).
 #
@@ -47,6 +50,7 @@ CENGARDE_PORT=65500
 WG_PORT_BASE=
 WG_PORT=
 SSH_PORT=22
+PASSTHROUGH_PORTS=1024:65000
 FORWARD_ALLOW_LOW=
 FORWARD_RESERVED=
 FORWARD_UNRESERVE=
@@ -116,6 +120,9 @@ fi
 : "${WG_PORT_BASE:=${WG_PORT:-65501}}"
 is_port "$CENGARDE_PORT" || die "CENGARDE_PORT in $CONF: not a port"
 is_port "$WG_PORT_BASE" || die "WG_PORT_BASE in $CONF: not a port"
+# What protocol 3's IP pass forwards (cengarde-nat refuses a bad one).
+PASS_LO=${PASSTHROUGH_PORTS%%:*} PASS_HI=${PASSTHROUGH_PORTS#*:}
+is_port "$PASS_LO" && is_port "$PASS_HI" || PASS_LO=1024 PASS_HI=65000
 ENGINE_GROUP=$ENGINE_USER
 
 TMPF=
@@ -679,6 +686,7 @@ cmd_default() {
 	import
 	behind_nat
 	regen
+	low_pass
 	if [ "$(nrouters)" -eq 0 ]; then
 		say "no router yet. On the router, LuCI shows its secret (VPS tab); here:"
 		say "  sudo cengarde-vps-setup add NAME     (then paste the secret)"
@@ -848,6 +856,28 @@ cmd_list() {
 		say "IP pass: $(awk '$1 == "dnat" { print "on, to " $7 " (" $5 ")"; f = 1; exit } END { if (!f) print "off" }' "$NAT_STATE/applied")"
 }
 
+# allow_note TOKEN: what "forward allow" does for TOKEN with protocol 3,
+# whose IP pass forwards only PASSTHROUGH_PORTS: below 1024, by default,
+# nothing yet.
+allow_note() {
+	local lo="${1#*:}" hi
+	hi=${lo#*-} lo=${lo%-*}
+	if [ "$hi" -lt "$PASS_LO" ] || [ "$lo" -gt "$PASS_HI" ]; then
+		say "$1 is allowed, but nothing forwards it yet: with protocol 3, IP pass forwards only PASSTHROUGH_PORTS ($PASSTHROUGH_PORTS); a router gets it with protocol 4 (cengarde 0.5), or with a PASSTHROUGH_PORTS that includes it"
+	elif [ "$lo" -lt "$PASS_LO" ] || [ "$hi" -gt "$PASS_HI" ]; then
+		say "$1 is allowed; with protocol 3, IP pass forwards only its ports inside PASSTHROUGH_PORTS ($PASSTHROUGH_PORTS)"
+	else
+		say "$1 is allowed, inside PASSTHROUGH_PORTS ($PASSTHROUGH_PORTS): IP pass forwards it to its router, unless this server uses it (cengarde-vps-setup forward says)"
+	fi
+}
+
+# low_pass: a PASSTHROUGH_PORTS that starts below 1024, as cengarde 0.4 took
+# it: those ports are reserved now, unless in FORWARD_ALLOW_LOW.
+low_pass() {
+	[ "$PASS_LO" -lt 1024 ] || return 0
+	warn "PASSTHROUGH_PORTS ($PASSTHROUGH_PORTS) starts below 1024: cengarde 0.4 forwarded ports $PASS_LO-1023 too; now IP pass forwards only those in FORWARD_ALLOW_LOW (\"$FORWARD_ALLOW_LOW\"): cengarde-vps-setup forward allow tcp:PORT udp:PORT..."
+}
+
 # tokens CMD TOKEN...: checks PROTO:PORT[-PORT] tokens.
 tokens() {
 	local t lo hi
@@ -885,11 +915,12 @@ cmd_forward() {
 		cengarde-nat reserved -v | awk '{ w = $2
 			sub(/^listener:/, "something listening here: ", w)
 			if (w == "listener") w = "something listening here"
-			if (w == "below-1024") w = "below 1024 (cengarde-vps-setup forward allow opens one)"
+			if (w == "below-1024") w = "below 1024 (forward allow frees one; IP pass forwards it only inside PASSTHROUGH_PORTS)"
 			if (w == "ssh") w = "SSH"
 			if (w == "docker") w = "published by Docker"
 			if (w == "FORWARD_RESERVED") w = "FORWARD_RESERVED in nat.conf"
 			printf "  %-18s %s\n", $1, w }'
+		low_pass
 		echo "Forwarding per router (cengarde-vps-setup forward off|on NAME):"
 		for n in $(routers); do
 			load "$n"
@@ -939,7 +970,8 @@ cmd_forward() {
 		v=$FORWARD_ALLOW_LOW
 		for t in "$@"; do
 			case ${t#*:} in *-*) n=${t##*-} ;; *) n=${t#*:} ;; esac
-			[ "$n" -le 1023 ] || die "$t: forward $sub is for ports below 1024; the others are open to routers unless reserved"
+			[ "$n" -le 1023 ] ||
+				die "$t: forward $sub is for ports below 1024; the others, inside PASSTHROUGH_PORTS ($PASSTHROUGH_PORTS), go to IP pass's router unless reserved"
 			if [ "$sub" = allow ]; then v=$(add_list "$v" "$t"); else v=$(del_list "$v" "$t"); fi
 		done
 		keep "$CONF"
@@ -948,6 +980,9 @@ cmd_forward() {
 		kept
 		nat_apply
 		say "FORWARD_ALLOW_LOW=\"$v\""
+		if [ "$sub" = allow ]; then
+			for t in "$@"; do allow_note "$t"; done
+		fi
 		;;
 	reserve | unreserve)
 		tokens "$@"

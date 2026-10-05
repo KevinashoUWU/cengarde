@@ -21,7 +21,9 @@
 #   after remove, after --replace and with slot 0 taken, running again
 #   leaves clients/ as it was;
 # - forward off|on|limit|allow|disallow|reserve|unreserve, and their
-#   refusals;
+#   refusals; allow says what protocol 3's IP pass forwards of the port
+#   (nothing below PASSTHROUGH_PORTS), and a PASSTHROUGH_PORTS below 1024,
+#   which cengarde 0.4 forwarded whole, is warned about;
 # - a 0.4 server: wg0 and its IP pass state migrated, by
 #   cengarde-vps-setup and by install.sh (firewalld refused before anything
 #   changes, a build that fails before wg0 is touched, the old service
@@ -381,8 +383,18 @@ check "forward limit home default" setup forward limit home default
 check "FORWARD_MAX_PORTS empty" [ -z "$(val "$H" FORWARD_MAX_PORTS)" ]
 check "forward allow tcp:80 tcp:443" setup forward allow tcp:80 tcp:443
 check "FORWARD_ALLOW_LOW=\"tcp:80 tcp:443\"" grep -qx 'FORWARD_ALLOW_LOW="tcp:80 tcp:443"' "$N"
+check "protocol 3: it says nothing forwards them yet (outside PASSTHROUGH_PORTS)" \
+	said "tcp:443 is allowed, but nothing forwards it yet"
 check "forward allow tcp:80 again: once" setup forward allow tcp:80
 check "still once" grep -qx 'FORWARD_ALLOW_LOW="tcp:80 tcp:443"' "$N"
+printf 'PASSTHROUGH_PORTS=1:65000\n' >>"$N"
+check "with PASSTHROUGH_PORTS=1:65000, forward allow tcp:80" setup forward allow tcp:80
+check "it says IP pass forwards it" said "tcp:80 is allowed, inside PASSTHROUGH_PORTS (1:65000): IP pass forwards it to its router"
+check "and not that nothing does" not said "nothing forwards it yet"
+check "forward, with that range" setup forward
+check "it warns that the ports below 1024 that 0.4 forwarded are reserved now" \
+	said "PASSTHROUGH_PORTS (1:65000) starts below 1024: cengarde 0.4 forwarded ports 1-1023 too"
+sed -i '/^PASSTHROUGH_PORTS=/d' "$N"
 check "forward disallow tcp:80" setup forward disallow tcp:80
 check "FORWARD_ALLOW_LOW=\"tcp:443\"" grep -qx 'FORWARD_ALLOW_LOW="tcp:443"' "$N"
 check "forward allow tcp:2000 is refused (not below 1024)" not setup forward allow tcp:2000

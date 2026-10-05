@@ -149,7 +149,8 @@ if [ ! -e "$R/etc/cengarde/nat.conf" ]; then
 		#PASSTHROUGH=no           IP pass until the router asks for it
 		#PASSTHROUGH_PORTS=1024:65000
 		#SSH_PORT=22              never forwarded
-		#FORWARD_ALLOW_LOW=""     ports below 1024 routers may have: "tcp:80 tcp:443"
+		#FORWARD_ALLOW_LOW=""     ports below 1024 routers may have: "tcp:80 tcp:443";
+		#                         protocol 3's IP pass forwards them only inside PASSTHROUGH_PORTS
 		#FORWARD_RESERVED=""      more ports never forwarded: "udp:5000-5010"
 		#FORWARD_AUTO_RESERVE=yes this server's own listeners and Docker ports
 		#FORWARD_UNRESERVE=""     forwarded even though something listens there
