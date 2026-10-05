@@ -634,6 +634,7 @@ rollback() {
 	say "forward again to this checkout"
 	sh "$SRC/contrib/vps/install.sh" </dev/null >"$TMP/install.log" 2>&1 ||
 		{ bad "install.sh after the rollback"; cat "$TMP/install.log"; }
+	check "a plain run, as cloud-init's, stays attached" not grep -q "running as the unit cengarde-upgrade" "$TMP/install.log"
 	check "upgraded again: the units are active" active_new
 	check "no rule of 0.4 is left" not legacy_rules
 	check "the secret file, the same router's, removed" [ ! -e "$SECRET" ]
