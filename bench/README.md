@@ -20,7 +20,7 @@ l3 10.0.3.1 ──────────────────────�
 ```
 
 Las cifras citadas en [`ROADMAP.md`](../ROADMAP.md) y en las historias 001,
-005, 006, 009 y 010 salen de aquí.
+005, 006, 009, 010 y 011 salen de aquí.
 
 ## Requisitos
 
@@ -280,29 +280,12 @@ ejecución es una línea JSON en `RESULTS` (por defecto `mt.jsonl`).
 # gate S1: subida 80–110 kpps, lanes 1 y 8 intercaladas, 4 rondas, búferes
 # del router a 32 MiB para que solo pueda tirar el servidor
 sudo RUN=/tmp/cg-mt RESULTS=$PWD/s1.jsonl flock /tmp/cengarde-netns.lock python3 bench/mt.py s1 4
+# 5 enlaces, 4 y 8 colas, por debajo del techo del router
+sudo RUN=/tmp/cg-mt RESULTS=$PWD/s1.jsonl flock /tmp/cengarde-netns.lock python3 bench/mt.py s1 4 40000,50000,60000 4,8 5 5 up
 python3 bench/mt.py table s1.jsonl
 # barrido, enlace lento, perf y varias sesiones (ver el docstring)
 sudo RUN=/tmp/cg-mt flock /tmp/cengarde-netns.lock python3 bench/mt.py sweep e1 down,up 40000,80000 5 3 1400 3
 ```
-
-Primera medida de la puerta S1 aquí (4 vCPU, 5 s por punto, 4 rondas,
-`lanes` 1 y 8 intercaladas, búferes del servidor por defecto, los del
-router a 32 MiB):
-
-| subida, kpps | rondas ≤ 0,1 %, 1 / 8 colas | paquetes enteros perdidos en el servidor (est.), 1 / 8 colas | µs/paquete del servidor (media), 1 / 8 colas |
-| ---: | --- | --- | --- |
-| 40 | 4/4 / 4/4 | 0 / 0 | 7,98 / 7,81 |
-| 80 | 3/4 / 4/4 | 1352 / 0 | 8,04 / 7,77 |
-| 90 | 3/4 / 4/4 | 1049 / 0 | 7,66 / 7,67 |
-| 100 | 3/4 / 4/4 | 5764 / 0 | 7,43 / 7,34 |
-| 110 | 1/4 / 3/4 | 9846 / 0 | 7,52 / 7,33 |
-
-A 110 kpps con 8 colas, la ronda que pasó del 0,1 % (0,405 %) perdió en
-el socket de WireGuard del router, antes de duplicar. En bajada a
-saturación (110 y 120 kpps) las dos variantes pierden en el socket de
-WireGuard de la sesión, antes de duplicar (110 kpps: 0–3,9 % con un
-socket, 0,2–2,7 % con 8 colas; 120 kpps: 1,7–6,6 % y 3,0–4,2 %), con la
-misma CPU por paquete (8,16 frente a 8,11 µs y 7,87 frente a 7,77 µs).
 
 `bench/jitter.c` (`bin/jitter -d SEGUNDOS`) mide cuánto tarda en despertar
 un sueño de 1 ms en cada CPU y marca los despertares tardíos con su hora
@@ -310,6 +293,35 @@ un sueño de 1 ms en cada CPU y marca los despertares tardíos con su hora
 la vez en varias CPU) de los atascos del motor. `bench/mgen.c` es el
 WireGuard falso de varias sesiones que usan los comandos `multi` de
 `mt.py`. `build` compila los dos.
+
+### La puerta S1
+
+`mt.py s1` intercala `lanes` ronda a ronda (1 y 8; con 5 enlaces, 4 y 8),
+con los búferes del servidor por defecto y los del router a 32 MiB, 5 s y
+4 rondas por punto. Cuatro sesiones con el mismo código (4 vCPU
+compartidas con otros agentes; ≈: estimado por resta, porque en esa ronda
+también tiró otro socket). `mt.py table` da por ronda lo que se tiró antes
+de duplicar (en subida, en el socket de WireGuard del router; en bajada,
+en el de la sesión en el servidor) y cuántas rondas quedan en ≤ 0,1 % sin
+eso:
+
+| Criterio | Medido | Veredicto |
+| --- | --- | --- |
+| 110 kpps con ≤ 0,1 % de pérdida en 4 de 4 rondas | 8 colas: 3/4, 2/4 y 2/4 (sin lo que tiró el router, 4/4, 3/4 y 3/4); 1 cola: 1/4, 0/4 y 0/4 | **no se cumple** |
+| paquetes enteros perdidos en las colas, ≥ 10× menos que con una | 0 / 18.011, ≈12.643 / ≈107.977 (8,5×) y 1.650 / 42.747 (26×); sumadas, 11,8× | se cumple en 2 de 3 sesiones y en la suma |
+| µs/paquete del servidor a ±5 % de una cola (40–110 kpps) | de −4,4 % a +4,9 % | se cumple |
+| bajada a saturación (110 y 120 kpps) a ±5 % | µs/paquete de −2,4 % a +0,5 %; pérdida media menor con 8 colas en 3 de 4 puntos, y +0,25 puntos en el cuarto (3,44 → 3,69 %) | µs, sí; pérdida, no peor salvo ese punto, dentro del ruido entre rondas |
+| 5 enlaces, 8 colas no peor que 4 (40–60 kpps) | ningún paquete entero perdido en el servidor; copias tiradas en las colas, 4.374 (50 kpps) y 7.526 (60 kpps) con 4 colas, ninguna con 8; µs/paquete de −0,3 % a +2,8 % | se cumple |
+
+Tal como está escrita, S1 no pasa. El router de este laboratorio tiene un
+solo hilo y a 110 kpps va al 81–102 % de CPU: en 4 de las 5 rondas que
+fallaron con 8 colas tiró en su propio socket de WireGuard, antes de
+duplicar. Y en dos de ellas el servidor perdió paquetes enteros, con las
+tres colas desbordadas a la vez: una cola absorbe un parón más corto que
+su búfer (~33 ms a 110 kpps *(cálculo)*), no un hilo único que se queda
+atrás más tiempo. Con 5 enlaces, el router satura desde 60–70 kpps.
+Detalle, la bajada y las opciones que quedan por decidir: historia
+[011](../docs/historias/011-hilos.md).
 
 ## Cómo leer la salida
 

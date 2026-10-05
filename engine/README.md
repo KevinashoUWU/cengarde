@@ -214,13 +214,19 @@ copias de un mismo paquete esperan en colas distintas.
   servía de nada. Con colas separadas desbordan en momentos distintos.
 - **Medido** (`bench/mt.py s1`: subida de 40 a 110 kpps con 3 enlaces, 5 s
   por punto, 4 rondas con `lanes = 1` y 8 intercaladas, búferes del
-  servidor por defecto y los del router a 32 MiB para que solo pueda tirar
-  el servidor): con un socket, 18.011 paquetes perdidos con todas sus
-  copias en él, y a 110 kpps solo 1 ronda de 4 con pérdida ≤ 0,1 %; con 8
-  colas, ninguno en las 20 rondas, y 3 de 4 a 110 kpps (la cuarta perdió
-  un 0,405 % en el socket de WireGuard del propio router, antes de
-  duplicar). La CPU por paquete del servidor, igual o algo menos: entre
-  −3,4 % y +0,1 % según la tasa.
+  servidor por defecto y los del router a 32 MiB; tres sesiones): paquetes
+  perdidos con todas sus copias en el servidor, de 18.011 a unos 108.000
+  con un socket y de 0 a unos 12.600 con 8 colas (11,8× menos sumando las
+  tres; estimados por resta donde el router también tiró), con la misma
+  CPU por paquete del servidor (de −4,4 % a +4,9 %). A 110 kpps, 3, 2 y 2
+  rondas de 4 con pérdida ≤ 0,1 % con 8 colas (1, 0 y 0 con un socket): la
+  puerta S1 pide 4 de 4, y tal como está escrita no se cumple.
+- **Lo que las colas no arreglan:** absorben un parón más corto que el
+  búfer de una cola (unos 33 ms a 110 kpps con el valor por defecto
+  *(cálculo)*). Si el único hilo del servidor se queda atrás más tiempo,
+  desbordan todas a la vez y vuelven a perderse paquetes enteros; así
+  fallaron, con 8 colas, las rondas de 110 kpps que no perdieron en el
+  propio router. Eso queda para los hilos del servidor.
 - **La bajada sale por la cola de su enlace:** el camino `p` envía desde el
   socket `p & (lanes − 1)`, el mismo al que llega su enlace (están todos
   atados a la misma dirección y puerto, y la respuesta sale desde la
@@ -264,6 +270,9 @@ copias de un mismo paquete esperan en colas distintas.
   dicen cuánto queda. En un namespace de red propio (un contenedor) el
   sysctl no se ve y se estima desde la RAM, como lo calcula el kernel al
   arrancar (`budget_from: "RAM"`).
+
+Detalle, medidas y razones en la
+[historia 011](../docs/historias/011-hilos.md).
 
 ## Salud de los enlaces
 
