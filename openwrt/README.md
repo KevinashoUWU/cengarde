@@ -306,6 +306,19 @@ cengarde-setup cloud-config > vps.yaml               # el user data del VPS
 - **IP pass necesita que la IP del VPS sea pública:** miniupnpd no arranca
   con una privada o reservada. En `logread` aparece «ext_ip contains
   reserved / private address».
+- **Un router sin reloj con batería (Raspberry Pi):** arranca con la hora de
+  la imagen, o la del último cambio en `/etc`, hasta que el NTP la corrige
+  por el túnel.
+  - Por eso el estado puede mostrar un handshake «anterior al ajuste de la
+    hora»: el siguiente, en unos dos minutos con tráfico, muestra su
+    antigüedad real.
+  - Antes de la 0.4.4, en el VPS: si el router se reinicia con la hora
+    atrasada, WireGuard ignora sus handshakes (son más viejos que el último
+    que aceptó) y el túnel no vuelve («esperando al VPS»). Se destraba con
+    *Sistema → Sistema → Sincronizar con el navegador* en LuCI, o en el VPS
+    con `systemctl restart wg-quick@wg0`. Desde la 0.4.4, el VPS lo
+    destraba solo en menos de un minuto (35–38 s medidos en QEMU; historia
+    002).
 - **Cambiar el secreto:** escribe el nuevo en `/etc/cengarde/secret` del VPS
   y ejecuta:
 
@@ -314,9 +327,9 @@ cengarde-setup cloud-config > vps.yaml               # el user data del VPS
   ```
 
 - **Actualizar:** router y VPS con el mismo commit; la 0.4 cambió el
-  protocolo (v3) y no habla con un VPS anterior. La 0.4.1, la 0.4.2 y la
-  0.4.3 no lo cambian (un router de una y un VPS de otra se entienden en
-  los dos sentidos), pero actualiza igual el VPS:
+  protocolo (v3) y no habla con un VPS anterior. De la 0.4.1 a la 0.4.4 no
+  lo cambian (un router de una y un VPS de otra se entienden en los dos
+  sentidos), pero actualiza igual el VPS:
   - la 0.4.1 cierra al túnel los metadatos y el puerto de WireGuard;
   - la 0.4.2 contesta desde la dirección a la que llegó cada paquete
     (antes, en un VPS con varias IP o con IPv6, el router descartaba las
@@ -324,7 +337,9 @@ cengarde-setup cloud-config > vps.yaml               # el user data del VPS
   - la 0.4.3 escucha con una cola por enlace (`lanes`, 8 por omisión), así
     que un parón corto del VPS ya no se lleva todas las copias de un
     paquete; `lanes = 1` en `/etc/cengarde/cengarde.conf` y
-    `systemctl restart cengarde` vuelven al socket único de antes.
+    `systemctl restart cengarde` vuelven al socket único de antes;
+  - la 0.4.4 destraba un router que vuelve con la hora atrasada: hace que
+    WireGuard inicie el handshake (`wireguard_poke`, `none` lo apaga).
 
   En el VPS:
 

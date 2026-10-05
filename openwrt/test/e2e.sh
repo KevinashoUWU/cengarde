@@ -28,9 +28,14 @@
 #     from its global address (not the ULA); the path MTU of up3 shows in
 #     the status and the log; with IPv6 blocked on up2 only up2 moves to
 #     1.2.3.4, without loss; without 2001:db8::4 they all move;
-#  7. checks that apply has converged: run again it changes nothing, and
+#  7. restarts the router's engine and WireGuard with its clock an hour
+#     behind, as a router without a battery-backed clock comes back: the VPS
+#     ignores its handshakes, so the tunnel comes back only because the VPS
+#     engine gets a handshake WireGuard starts to the router (it pokes it
+#     with wireguard_poke when it has nothing to send);
+#  8. checks that apply has converged: run again it changes nothing, and
 #     nothing reloads for 60 s (the companions' triggers cause no loop);
-#  8. disables cengarde and checks that the router is back as it was (the
+#  9. disables cengarde and checks that the router is back as it was (the
 #     LAN gets its prefix again), and converged again.
 # Screenshots and logs go to OUT_DIR (default ./e2e-out). Needs qemu-system-x86,
 # ssh and node with "npm install" done in this directory.
@@ -472,6 +477,38 @@ if "$VM" ssh router 'ping -q -c 3 10.79.0.1' >/dev/null 2>&1; then
 else
 	bad "no tunnel after moving to 1.2.3.4"
 fi
+
+say "clock: the router's engine and WireGuard come back with its clock an hour behind"
+"$VM" ssh router sh -s <<'EOF'
+/etc/init.d/cengarde stop
+ifdown wgcg
+date -s @$(($(date +%s) - 3600)) >/dev/null
+EOF
+sleep 5
+"$VM" ssh router '/etc/init.d/cengarde start; ifup wgcg'
+# WireGuard on the VPS ignores the router's handshakes: the tunnel is back
+# only once WireGuard there starts one (on its own when it had something to
+# send, or poked by the engine) and the engine gets it to the router's new
+# session (redirect or port). Back means a handshake on the new wgcg and a
+# ping only wgcg can carry: 10.79.0.1 also answers over an uplink.
+tunnel_back() {
+	"$VM" ssh router "wg show wgcg latest-handshakes | awk '\$2 > 0 { ok = 1 } END { exit !ok }' &&
+		ping -q -c 1 -W 2 -I wgcg 10.79.0.1 >/dev/null 2>&1"
+}
+if until_ok 90 tunnel_back; then
+	ok "tunnel back with the router's clock an hour behind"
+else
+	bad "no tunnel with the router's clock an hour behind"
+fi
+"$VM" ssh vps 'logread | grep cengarde | grep -E "poking it|goes down session|takes over the port" | tail -3'
+if "$VM" ssh router 'ping -q -c 10 -I wgcg 10.79.0.1' | grep -q ' 0% packet loss'; then
+	ok "and it stays up"
+else
+	bad "the tunnel did not stay up after coming back"
+fi
+"$VM" ssh router sh -s <<'EOF'
+date -s @$(($(date +%s) + 3600)) >/dev/null
+EOF
 
 converged "enabled"
 

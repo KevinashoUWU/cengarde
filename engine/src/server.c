@@ -33,6 +33,14 @@
  * for the system to apply (contrib/vps), from a thread so the loop never
  * waits on the disk. A reload applies in place, as on the client.
  *
+ * A client whose clock went back (a router without a battery-backed clock
+ * that restarted) is ignored by WireGuard, which takes only handshakes newer
+ * than the last one. The server watches the handshakes it hands on and pokes
+ * WireGuard into starting one of its own (wgwatch.h); WireGuard sends it to
+ * the session it knows, so after a restart it goes down the newest one, and
+ * the port WireGuard knows passes on to the newest: when its older session
+ * closes, or when it starts alone.
+ *
  * SPDX-License-Identifier: GPL-2.0-only */
 #include <errno.h>
 #include <inttypes.h>
@@ -57,6 +65,7 @@
 #include "status.h"
 #include "steer.h"
 #include "util.h"
+#include "wgwatch.h"
 
 /* Probe interval assumed for a path until its client announces one. */
 #define DEFAULT_INTERVAL_MS 1000
@@ -84,6 +93,8 @@ struct session {
 	int used;
 	uint32_t id;
 	int wg_fd;
+	uint16_t wg_port; /* wg_fd's own port (network order): WireGuard knows the client by it */
+	struct cg_wgw wgw; /* the client's handshakes WireGuard has not answered */
 	uint32_t tx_seq;
 	int pass; /* IP pass its probes ask for: -1 nothing */
 	uint64_t created_ms, last_rx_ms;
@@ -122,6 +133,7 @@ struct server {
 	struct session *s;
 	uint32_t max;
 	int32_t newest; /* index of the newest session, -1: none */
+	uint16_t wg_port; /* the newest session's wg_port, kept after it closes */
 	struct cg_idmap ids; /* session id -> index into s */
 	struct cg_hcfg hcfg;
 	struct cg_status_writer sw;
@@ -136,7 +148,8 @@ struct server {
 
 	uint64_t rx_malformed, rx_auth_fail, rx_old, rx_dups, rx_trunc, rx_ctrunc, sessions_full;
 	uint64_t rx_junk, rx_short, rx_bad_version; /* read from the junk socket */
-	struct cg_ratelimit rl_auth, rl_full, rl_send, rl_local, rl_junk, rl_version;
+	uint64_t wg_pokes, wg_redirects;
+	struct cg_ratelimit rl_auth, rl_full, rl_send, rl_local, rl_junk, rl_version, rl_poke, rl_redirect;
 
 	struct cg_rxbatch in;
 	union cg_ctl_rx rxctl[CG_BATCH]; /* arrival addresses of a listen batch */
@@ -207,36 +220,81 @@ static struct session *lookup(struct server *s, uint32_t id)
 	return i < 0 ? NULL : &s->s[i];
 }
 
+/* The port of a bound socket (network order), 0 when unknown. */
+static uint16_t local_port(int fd)
+{
+	struct sockaddr_storage a;
+	socklen_t len = sizeof(a);
+
+	if (getsockname(fd, (struct sockaddr *)&a, &len) < 0)
+		return 0;
+	if (a.ss_family == AF_INET)
+		return ((struct sockaddr_in *)&a)->sin_port;
+	return a.ss_family == AF_INET6 ? ((struct sockaddr_in6 *)&a)->sin6_port : 0;
+}
+
+/* A socket connected to WireGuard with the session buffers, bound to port
+ * when it is not 0 and free (else to any other); -1 with errno set. */
+static int wg_socket(struct server *s, uint16_t port)
+{
+	int fd = cg_udp_socket(s->cfg->wireguard.ss_family), e;
+
+	if (fd < 0)
+		return -1;
+	if (port) {
+		struct sockaddr_storage b;
+
+		memset(&b, 0, sizeof(b));
+		b.ss_family = s->cfg->wireguard.ss_family;
+		if (b.ss_family == AF_INET)
+			((struct sockaddr_in *)&b)->sin_port = port;
+		else
+			((struct sockaddr_in6 *)&b)->sin6_port = port;
+		(void)!bind(fd, (const struct sockaddr *)&b, cg_addr_len(&b));
+	}
+	if (connect(fd, (const struct sockaddr *)&s->cfg->wireguard, cg_addr_len(&s->cfg->wireguard)) < 0) {
+		e = errno;
+		close(fd);
+		errno = e;
+		return -1;
+	}
+	cg_sock_buffers(fd, s->rb.per_socket, s->cfg->rcvbuf);
+	return fd;
+}
+
 static struct session *session_create(struct server *s, uint32_t id, const struct sockaddr_storage *from,
 				      uint64_t now_ms)
 {
 	char a[64];
 	struct session *S = NULL;
-	int fd;
+	int fd, alone = 1;
 
-	for (uint32_t i = 0; i < s->max; i++)
-		if (!s->s[i].used) {
+	for (uint32_t i = 0; i < s->max; i++) {
+		if (s->s[i].used)
+			alone = 0;
+		else if (!S)
 			S = &s->s[i];
-			break;
-		}
+	}
 	if (!S) {
 		s->sessions_full++;
 		if (cg_ratelimit_ok(&s->rl_full, now_ms, 10000))
 			cg_warn("session limit (%u) reached, refusing %08x", s->max, id);
 		return NULL;
 	}
-	fd = cg_udp_socket(s->cfg->wireguard.ss_family);
-	if (fd < 0 || connect(fd, (const struct sockaddr *)&s->cfg->wireguard, cg_addr_len(&s->cfg->wireguard)) < 0) {
+	/* WireGuard knows the client by the port of its session's socket. One
+	 * that starts while no other is left takes the newest one's port again:
+	 * what WireGuard sends still arrives, its own handshakes included, which
+	 * a router that came back with its clock behind needs (wgwatch.h). */
+	fd = wg_socket(s, alone ? s->wg_port : 0);
+	if (fd < 0) {
 		cg_err("session %08x: socket to WireGuard: %s", id, strerror(errno));
-		if (fd >= 0)
-			close(fd);
 		return NULL;
 	}
-	cg_sock_buffers(fd, s->rb.per_socket, s->cfg->rcvbuf);
 	memset(S, 0, sizeof(*S));
 	S->used = 1;
 	S->id = id;
 	S->wg_fd = fd;
+	S->wg_port = local_port(fd);
 	if (cg_random(&S->tx_seq, sizeof(S->tx_seq)) < 0)
 		S->tx_seq = (uint32_t)now_ms;
 	S->created_ms = S->last_rx_ms = now_ms;
@@ -249,24 +307,54 @@ static struct session *session_create(struct server *s, uint32_t id, const struc
 	}
 	cg_idmap_put(&s->ids, id, (int32_t)(S - s->s));
 	s->newest = (int32_t)(S - s->s);
+	s->wg_port = S->wg_port;
 	cg_info("session %08x: new client from %s", id, cg_addr_str(from, a, sizeof(a)));
 	return S;
 }
 
-static void session_destroy(struct server *s, struct session *S, const char *why)
+/* N, knocking in vain, takes over port, which an older session of the
+ * client just freed: WireGuard may still know the client by it, and send
+ * there the handshake it starts (wgwatch.h). When the port is no longer
+ * free, N keeps its socket. */
+static void session_rehome(struct server *s, struct session *N, uint16_t port)
 {
+	int fd = wg_socket(s, port);
+
+	if (fd < 0)
+		return;
+	if (local_port(fd) != port || cg_epoll_add(s->ep, fd, CG_EV(CG_EV_WG, N - s->s)) < 0) {
+		close(fd);
+		return;
+	}
+	epoll_ctl(s->ep, EPOLL_CTL_DEL, N->wg_fd, NULL);
+	close(N->wg_fd);
+	N->wg_fd = fd;
+	N->wg_port = s->wg_port = port;
+	cg_info("session %08x: takes over the port WireGuard knew its client by", N->id);
+}
+
+static void session_destroy(struct server *s, struct session *S, const char *why, uint64_t now_ms)
+{
+	struct session *N;
+
 	cg_info("session %08x closed: %s", S->id, why);
 	epoll_ctl(s->ep, EPOLL_CTL_DEL, S->wg_fd, NULL);
 	close(S->wg_fd);
 	cg_idmap_del(&s->ids, S->id);
 	S->used = 0;
-	if (s->newest != (int32_t)(S - s->s))
+	if (s->newest != (int32_t)(S - s->s)) {
+		N = s->newest >= 0 ? &s->s[s->newest] : NULL;
+		if (N && N->created_ms > S->created_ms && cg_wgw_knocking(&N->wgw, now_ms))
+			session_rehome(s, N, S->wg_port);
 		return;
+	}
 	/* IP pass stays as it was until the next newest session asks. */
 	s->newest = -1;
 	for (uint32_t i = 0; i < s->max; i++)
 		if (s->s[i].used && (s->newest < 0 || s->s[i].created_ms > s->s[s->newest].created_ms))
 			s->newest = (int32_t)i;
+	if (s->newest >= 0)
+		s->wg_port = s->s[s->newest].wg_port;
 }
 
 /* ---- paths ---- */
@@ -542,6 +630,7 @@ static void listen_read(struct server *s, struct lane *ln)
 				continue;
 			}
 			cg_arr_first(&S->arr, S->rx, h.seq, now32, h.link, expect_mask(S, now_ms));
+			cg_wgw_from_client(&S->wgw, cg_wg_handshake(b + CG_HDR_LEN, len - CG_HDR_LEN), now_ms);
 			S->up_pkts++;
 			S->up_bytes += len - CG_HDR_LEN;
 			s->q_sess[nq] = (uint32_t)(S - s->s);
@@ -593,86 +682,122 @@ static void junk_read(struct server *s)
 
 /* ---- WireGuard -> client ---- */
 
+/* Datagram buf from WireGuard as entry m of a batch down S's paths. */
+static void down_prepare(struct server *s, struct session *S, int m, uint8_t *buf, size_t len, uint64_t now_us)
+{
+	struct cg_hdr h = { .type = CG_T_DATA, .session = S->id, .ts = (uint32_t)now_us };
+
+	h.seq = S->tx_seq++;
+	cg_hdr_write(s->hdr[m], &h, s->k_tx, buf, len);
+	s->oiov[m][0].iov_base = s->hdr[m];
+	s->oiov[m][0].iov_len = CG_HDR_LEN;
+	s->oiov[m][1].iov_base = buf;
+	s->oiov[m][1].iov_len = len;
+	S->down_pkts++;
+	S->down_bytes += len;
+}
+
+/* Sends the batch of m entries down the paths of S. */
+static void down_send(struct server *s, struct session *S, int m, uint64_t now_ms)
+{
+	int order[CG_MAX_LINKS], no = 0;
+	uint16_t present, live, carry;
+
+	path_masks(S, now_ms, &present, &live);
+	carry = cg_health_carriers(S->dh, CG_MAX_LINKS, present, live);
+	/* The batch goes out path after path, and the path sent first
+	 * delivers first: the first path rotates from batch to batch, so
+	 * that none wins the client's first arrivals by its position. */
+	for (int p = 0; p < CG_MAX_LINKS; p++)
+		if ((carry >> p & 1) || ((live >> p & 1) && s->cfg->mute_trickle))
+			order[no++] = p;
+	for (int o = 0; o < no; o++) {
+		int p = order[(o + S->rot) % (unsigned)no];
+		struct path *P = &S->path[p];
+		int sel[CG_BATCH], k = 0, sent;
+
+		if (carry >> p & 1) {
+			for (int j = 0; j < m; j++)
+				sel[k++] = j;
+		} else if ((live >> p & 1) && s->cfg->mute_trickle) {
+			for (int j = 0; j < m; j++)
+				if (cg_trickle(&S->dh[p], s->cfg->mute_trickle))
+					sel[k++] = j;
+		}
+		if (!k)
+			continue;
+		for (int x = 0; x < k; x++) {
+			cg_hdr_set_link(s->hdr[sel[x]], (uint8_t)p);
+			memset(&s->out[x].msg_hdr, 0, sizeof(s->out[x].msg_hdr));
+			s->out[x].msg_hdr.msg_name = &P->addr;
+			s->out[x].msg_hdr.msg_namelen = cg_addr_len(&P->addr);
+			s->out[x].msg_hdr.msg_iov = s->oiov[sel[x]];
+			s->out[x].msg_hdr.msg_iovlen = 2;
+			if (P->ctl_len) {
+				s->out[x].msg_hdr.msg_control = P->ctl.b;
+				s->out[x].msg_hdr.msg_controllen = P->ctl_len;
+			}
+		}
+		/* One sendmmsg per path, on the lane its link arrives on: a
+		 * path that cannot send never holds up the others, and with
+		 * lanes it does not fill their send buffer either. */
+		sent = sendmmsg(s->lane[(unsigned)p & (s->nlanes - 1)].fd, s->out, (unsigned)k, MSG_DONTWAIT);
+		if (sent < 0) {
+			P->tx_drops += (uint64_t)k;
+			send_failed(s, S, (unsigned)p, errno, (unsigned)k, now_ms);
+			continue;
+		}
+		P->tx_drops += (uint64_t)(k - sent);
+		P->tx_pkts += (uint64_t)sent;
+		for (int x = 0; x < sent; x++)
+			P->tx_bytes += s->oiov[sel[x]][1].iov_len;
+	}
+	S->rot++;
+}
+
 static void wg_read(struct server *s, struct session *S)
 {
 	for (int round = 0; round < CG_MAX_ROUNDS; round++) {
-		int n = cg_rx(S->wg_fd, &s->in), m = 0, order[CG_MAX_LINKS], no;
-		uint16_t present, live, carry;
+		int n = cg_rx(S->wg_fd, &s->in), m = 0, redir[CG_BATCH], nr = 0;
+		struct session *N = NULL;
 		uint64_t now_us, now_ms;
 
 		if (n <= 0)
 			return;
 		now_us = cg_now_us();
 		now_ms = now_us / 1000;
+		/* WireGuard still knows a router that restarted by its old
+		 * session: the handshakes it starts go down the newest one while
+		 * that one knocks in vain (wgwatch.h). */
+		if (s->newest >= 0 && &s->s[s->newest] != S &&
+		    cg_wgw_redirect(&s->s[s->newest].wgw, S->last_rx_ms, now_ms))
+			N = &s->s[s->newest];
 		for (int i = 0; i < n; i++) {
 			size_t len = s->in.msg[i].msg_len;
-			struct cg_hdr h = { .type = CG_T_DATA, .session = S->id, .ts = (uint32_t)now_us };
+			int t;
 
 			if ((s->in.msg[i].msg_hdr.msg_flags & MSG_TRUNC) || len > CG_MAX_PAYLOAD || !len) {
 				S->toobig++;
 				continue;
 			}
-			h.seq = S->tx_seq++;
-			cg_hdr_write(s->hdr[m], &h, s->k_tx, s->in.buf[i], len);
-			s->oiov[m][0].iov_base = s->hdr[m];
-			s->oiov[m][0].iov_len = CG_HDR_LEN;
-			s->oiov[m][1].iov_base = s->in.buf[i];
-			s->oiov[m][1].iov_len = len;
-			S->down_pkts++;
-			S->down_bytes += len;
-			m++;
+			t = cg_wg_handshake(s->in.buf[i], len);
+			cg_wgw_from_wireguard(&S->wgw, t);
+			if (N && t == CG_WG_INITIATION)
+				redir[nr++] = i;
+			else
+				down_prepare(s, S, m++, s->in.buf[i], len, now_us);
 		}
-		path_masks(S, now_ms, &present, &live);
-		carry = cg_health_carriers(S->dh, CG_MAX_LINKS, present, live);
-		/* The batch goes out path after path, and the path sent first
-		 * delivers first: the first path rotates from batch to batch, so
-		 * that none wins the client's first arrivals by its position. */
-		no = 0;
-		for (int p = 0; m && p < CG_MAX_LINKS; p++)
-			if ((carry >> p & 1) || ((live >> p & 1) && s->cfg->mute_trickle))
-				order[no++] = p;
-		for (int o = 0; o < no; o++) {
-			int p = order[(o + S->rot) % (unsigned)no];
-			struct path *P = &S->path[p];
-			int sel[CG_BATCH], k = 0, sent;
-
-			if (carry >> p & 1) {
-				for (int j = 0; j < m; j++)
-					sel[k++] = j;
-			} else if ((live >> p & 1) && s->cfg->mute_trickle) {
-				for (int j = 0; j < m; j++)
-					if (cg_trickle(&S->dh[p], s->cfg->mute_trickle))
-						sel[k++] = j;
-			}
-			if (!k)
-				continue;
-			for (int x = 0; x < k; x++) {
-				cg_hdr_set_link(s->hdr[sel[x]], (uint8_t)p);
-				memset(&s->out[x].msg_hdr, 0, sizeof(s->out[x].msg_hdr));
-				s->out[x].msg_hdr.msg_name = &P->addr;
-				s->out[x].msg_hdr.msg_namelen = cg_addr_len(&P->addr);
-				s->out[x].msg_hdr.msg_iov = s->oiov[sel[x]];
-				s->out[x].msg_hdr.msg_iovlen = 2;
-				if (P->ctl_len) {
-					s->out[x].msg_hdr.msg_control = P->ctl.b;
-					s->out[x].msg_hdr.msg_controllen = P->ctl_len;
-				}
-			}
-			/* One sendmmsg per path, on the lane its link arrives on: a
-			 * path that cannot send never holds up the others, and with
-			 * lanes it does not fill their send buffer either. */
-			sent = sendmmsg(s->lane[(unsigned)p & (s->nlanes - 1)].fd, s->out, (unsigned)k, MSG_DONTWAIT);
-			if (sent < 0) {
-				P->tx_drops += (uint64_t)k;
-				send_failed(s, S, (unsigned)p, errno, (unsigned)k, now_ms);
-				continue;
-			}
-			P->tx_drops += (uint64_t)(k - sent);
-			P->tx_pkts += (uint64_t)sent;
-			for (int x = 0; x < sent; x++)
-				P->tx_bytes += s->oiov[sel[x]][1].iov_len;
+		if (m)
+			down_send(s, S, m, now_ms);
+		if (nr) {
+			for (int r = 0; r < nr; r++)
+				down_prepare(s, N, r, s->in.buf[redir[r]], s->in.msg[redir[r]].msg_len, now_us);
+			down_send(s, N, nr, now_ms);
+			s->wg_redirects += (uint64_t)nr;
+			if (cg_ratelimit_ok(&s->rl_redirect, now_ms, 60000))
+				cg_info("session %08x: a handshake WireGuard started goes down session %08x, the "
+					"client's newest", S->id, N->id);
 		}
-		S->rot++;
 		if (n < CG_BATCH)
 			return;
 	}
@@ -717,7 +842,7 @@ static void sweep(struct server *s, uint64_t now_ms)
 		if (!S->used)
 			continue;
 		if (now_ms - S->last_rx_ms > s->cfg->session_timeout_ms) {
-			session_destroy(s, S, "idle");
+			session_destroy(s, S, "idle", now_ms);
 			continue;
 		}
 		for (int p = 0; p < CG_MAX_LINKS; p++)
@@ -819,6 +944,10 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 	cg_json_u64(j, "short", s->rx_short);
 	cg_json_u64(j, "bad_version", s->rx_bad_version);
 	cg_json_end(j, '}');
+	cg_json_obj(j, "wireguard");
+	cg_json_u64(j, "pokes", s->wg_pokes);
+	cg_json_u64(j, "redirected_handshakes", s->wg_redirects);
+	cg_json_end(j, '}');
 	cg_json_arr(j, "sessions");
 	for (uint32_t i = 0; i < s->max; i++) {
 		const struct session *S = &s->s[i];
@@ -837,6 +966,7 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 		cg_json_u64(j, "download_packets", S->down_pkts);
 		cg_json_u64(j, "download_bytes", S->down_bytes);
 		cg_json_u64(j, "wireguard_drops", S->wg_drops);
+		cg_json_u64(j, "wireguard_unanswered", cg_wgw_knocking(&S->wgw, now_ms) ? S->wgw.unanswered : 0);
 		cg_json_u64(j, "too_big", S->toobig);
 		cg_json_arr(j, "links");
 		for (int p = 0; p < CG_MAX_LINKS; p++) {
@@ -945,11 +1075,42 @@ static void pass_sync(struct server *s)
 	cg_json_free(&j);
 }
 
+/* WireGuard ignores the newest session's handshakes, most likely because
+ * the client's clock went back: a datagram to the client's address in the
+ * tunnel makes it start one of its own, which the client takes whatever
+ * its clock says (wgwatch.h). From a socket opened for the moment: at most
+ * one every CG_WGW_POKE_MS, and only while the client knocks. */
+static void wg_poke(struct server *s, struct session *S, uint64_t now_ms)
+{
+	const struct sockaddr_storage *to = &s->cfg->wireguard_poke;
+	char a[64];
+	int fd;
+
+	if (to->ss_family == AF_UNSPEC || !cg_wgw_poke(&S->wgw, now_ms))
+		return;
+	fd = cg_udp_socket(to->ss_family);
+	if (fd < 0 || sendto(fd, "", 1, 0, (const struct sockaddr *)to, cg_addr_len(to)) < 0) {
+		if (cg_ratelimit_ok(&s->rl_poke, now_ms, 60000))
+			cg_warn("session %08x: cannot poke WireGuard through %s: %s", S->id, cg_addr_str(to, a, sizeof(a)),
+				strerror(errno));
+	} else {
+		s->wg_pokes++;
+		if (cg_ratelimit_ok(&s->rl_poke, now_ms, 60000))
+			cg_info("session %08x: WireGuard ignores the client's handshakes (%u so far; its clock may have "
+				"gone back): poking it through %s to start one",
+				S->id, S->wgw.unanswered, cg_addr_str(to, a, sizeof(a)));
+	}
+	if (fd >= 0)
+		close(fd);
+}
+
 static void tick(struct server *s)
 {
 	uint64_t now_ms = cg_now_ms();
 
 	health_tick(s, now_ms);
+	if (s->newest >= 0)
+		wg_poke(s, &s->s[s->newest], now_ms);
 	if (now_ms >= s->next_sweep_ms) {
 		sweep(s, now_ms);
 		s->next_sweep_ms = now_ms + 1000;

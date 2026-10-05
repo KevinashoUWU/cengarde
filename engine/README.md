@@ -380,6 +380,33 @@ desde el cliente:
   [`contrib/vps`](../contrib/vps/) vigila ese archivo con una unidad
   `.path` de systemd y ejecuta `cengarde-nat sync`.
 
+## Router con la hora atrasada (`wireguard_poke`)
+
+WireGuard ignora una iniciación de handshake que no sea más nueva que la
+última que aceptó de ese peer. Una Raspberry Pi no tiene reloj con batería:
+al reiniciarse vuelve con la hora atrasada (la de la imagen, o la del último
+cambio en `/etc`), y con todo por el túnel el NTP no puede corregirla. El
+túnel quedaba caído hasta que el reloj alcanzaba esa hora (historia 002).
+Desde la 0.4.4, el servidor lo destraba solo, sin cambiar el protocolo:
+
+- **Detecta:** cuenta las iniciaciones del cliente que WireGuard no contesta
+  (`wgwatch.h`).
+- **Empuja:** tras 3 sin respuesta, manda un datagrama a `wireguard_poke`,
+  la dirección del router dentro del túnel (por omisión `10.79.0.2:9`; `none`
+  lo apaga). WireGuard inicia entonces el handshake él mismo, y el router lo
+  acepta tenga la hora que tenga. Como mucho uno cada 15 s, y solo mientras
+  el cliente siga llamando.
+- **Redirige:** WireGuard manda su iniciación a la sesión que conoce, que
+  tras un reinicio del router es la vieja; va por la sesión nueva mientras
+  esta llame en vano y la vieja haya callado antes.
+- **Hereda el puerto:** WireGuard conoce al cliente por el puerto del socket
+  de su sesión. Ese puerto pasa a la sesión nueva cuando la vieja se cierra
+  mientras la nueva llama en vano, o cuando la nueva empieza sin otras
+  vivas. Así se destraba también un corte más largo que
+  `session_timeout_ms`, o un WireGuard que contesta tarde.
+- **Estado:** `wireguard.pokes` y `wireguard.redirected_handshakes`, y por
+  sesión `wireguard_unanswered`.
+
 ## Estado
 
 `status_file` escribe cada segundo, desde un hilo aparte para que un disco

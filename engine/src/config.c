@@ -523,6 +523,13 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 			}
 			c->lanes = (uint32_t)l;
 		}
+		/* The router's end of the tunnel cengarde sets up (10.79.0.2/30). */
+		v = cg_ini_get(&ini, "", "wireguard_poke");
+		if (!v)
+			cg_addr_parse("10.79.0.2:9", 0, &c->wireguard_poke, 1, e, sizeof(e));
+		else if (strcmp(v, "none") &&
+			 get_addrs(&ini, "", "wireguard_poke", 1, &c->wireguard_poke, 1, 1, &n, NULL, NULL, err, errlen))
+			goto out;
 	}
 
 	for (int i = 0; i < ini.n; i++) {

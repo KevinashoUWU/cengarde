@@ -689,7 +689,7 @@ engine_problems() { # STATUS_JSON
 
 # Everything LuCI's status page needs in one call.
 status() {
-	local s running=false hs=0 rx=0 tx=0 now line engine=null proto p
+	local s running=false hs=0 rx=0 tx=0 now up line engine=null proto p
 
 	load
 	PROBLEMS=
@@ -733,14 +733,17 @@ status() {
 		hs=$5 rx=$6 tx=$7
 	fi
 	now=$(date +%s)
+	# Since boot: a handshake older than that came before the clock was set
+	# (a router without a battery-backed clock), and its age means nothing.
+	up=$(cut -d. -f1 /proc/uptime)
 	if [ -s "$STATUS_FILE" ] && [ "$running" = true ]; then
 		engine=$(cat "$STATUS_FILE")
 		engine_problems "$engine"
 	fi
 	proto=$(cengarde version 2>/dev/null | sed -n 's/.*(protocol \([0-9]*\)).*/\1/p')
-	printf '{"enabled":%s,"running":%s,"protocol":%s,"problems":[%s],"tunnel":{"handshake":%s,"now":%s,"rx_bytes":%s,"tx_bytes":%s},"engine":%s}\n' \
+	printf '{"enabled":%s,"running":%s,"protocol":%s,"problems":[%s],"tunnel":{"handshake":%s,"now":%s,"uptime":%s,"rx_bytes":%s,"tx_bytes":%s},"engine":%s}\n' \
 		"$([ "$ENABLED" = 1 ] && echo true || echo false)" "$running" "${proto:-null}" "$PROBLEMS" \
-		"$hs" "$now" "$rx" "$tx" "$engine"
+		"$hs" "$now" "${up:-0}" "$rx" "$tx" "$engine"
 }
 
 exec 9>/var/lock/cengarde-setup.lock

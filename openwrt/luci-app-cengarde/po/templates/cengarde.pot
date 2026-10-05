@@ -286,6 +286,12 @@ msgstr ""
 msgid "Service"
 msgstr ""
 
+msgid "handshake before the clock was set"
+msgstr ""
+
+msgid "The router set its clock after this handshake: the next one, within about two minutes of traffic, shows its age."
+msgstr ""
+
 msgid "no handshake for %s"
 msgstr ""
 

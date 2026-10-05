@@ -362,6 +362,32 @@ void test_config(void)
 		cg_config_free(&c);
 	}
 
+	/* wireguard_poke: the router's end of the tunnel by default, an address,
+	 * or none; never the wildcard. A reload applies it. */
+	CHECK_EQ(cg_config_parse(&c, SERVER, err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK(!strcmp(cg_addr_str(&c.wireguard_poke, buf, sizeof(buf)), "10.79.0.2:9"));
+	cg_config_free(&c);
+	CHECK_EQ(cg_config_parse(&c, SERVER "wireguard_poke = 10.80.0.6:7\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK(!strcmp(cg_addr_str(&c.wireguard_poke, buf, sizeof(buf)), "10.80.0.6:7"));
+	CHECK(warn[0] == '\0');
+	{
+		static struct cg_config o;
+
+		CHECK_EQ(cg_config_parse(&o, SERVER, err, sizeof(err), warn, sizeof(warn)), 0);
+		CHECK(cg_config_restart_needed(&o, &c) == NULL);
+		cg_config_free(&o);
+	}
+	cg_config_free(&c);
+	CHECK_EQ(cg_config_parse(&c, SERVER "wireguard_poke = none\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(c.wireguard_poke.ss_family, AF_UNSPEC);
+	CHECK(warn[0] == '\0');
+	cg_config_free(&c);
+	CHECK_EQ(cg_config_parse(&c, SERVER "wireguard_poke = *:9\n", err, sizeof(err), warn, sizeof(warn)), -1);
+	CHECK(!strncmp(err, "wireguard_poke: ", 16));
+	CHECK_EQ(cg_config_parse(&c, CLIENT "wireguard_poke = 10.79.0.2:9\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK(strstr(warn, "unknown key 'wireguard_poke'") != NULL);
+	cg_config_free(&c);
+
 	/* Link health and latency knobs, the same keys in both modes. */
 	CHECK_EQ(cg_config_parse(&c,
 				 "mode = server\nkey = " KEY "\nwireguard = 127.0.0.1:51820\nmute_behind_ms = 300\n"

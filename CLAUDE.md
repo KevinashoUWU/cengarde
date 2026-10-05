@@ -68,7 +68,7 @@ por fuera del túnel) probado en QEMU; falta hardware real.
 | # | Tema | Léela cuando… |
 | --- | --- | --- |
 | [001](docs/historias/001-diagnostico-engarde-go.md) | Diagnóstico medido del engarde Go | quieras saber qué no repetir o comparar con la línea base |
-| [002](docs/historias/002-wireguard-para-cengarde.md) | WireGuard: formato, índices, anti-replay | toques el MTU, la detección de WireGuard o las sesiones |
+| [002](docs/historias/002-wireguard-para-cengarde.md) | WireGuard: formato, índices, anti-replay, el reloj del router | toques el MTU, la detección de WireGuard, las sesiones o los handshakes |
 | [003](docs/historias/003-librist-gestion-de-enlaces.md) | libRIST: silenciado de enlaces, WRR, ARQ | diseñes la salud de los enlaces, el reparto, el bonding o la recuperación |
 | [004](docs/historias/004-entorno-real.md) | Entorno real: Pi 4 (destino OpenWrt limpio), 4 enlaces 5G en VLAN y Starlink, VPS Vultr | fijes objetivos de rendimiento o empaquetado |
 | [005](docs/historias/005-motor-c-v1.md) | Motor C v1: protocolo, arquitectura y medidas | toques `engine/` |

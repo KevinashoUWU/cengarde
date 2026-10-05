@@ -228,9 +228,13 @@ Medido y leído en el kernel, es antes:
     bajada y 5 enlaces;
   - repetir S1 en una máquina más tranquila o más rápida.
 
+- **Decisión del usuario (2026-10-05):** aceptar el 3a por lo que cumple y
+  exigir el criterio de pérdida a 110 kpps a los trabajadores del servidor
+  (PR 3e) y a la puerta V en un VPS de verdad.
+
 ## Pendiente
 
-- La decisión sobre S1 (arriba).
+- S1 a 110 kpps de subida: en el PR 3e y en la puerta V.
 - Puerta V: en un VPS de 1 vCPU, el techo de subida con `lanes` 1 y 8.
 - `udpmem` con IPv6: solo en el CI (este contenedor no tiene IPv6).
 - Grupos de colas por router y la pista del protocolo 4 (PR 3d2);
