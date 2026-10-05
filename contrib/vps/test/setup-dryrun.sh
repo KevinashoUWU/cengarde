@@ -14,7 +14,9 @@
 # - the secret never on a command line, and only in clients/NAME;
 #   on a terminal (script(1)), echo off while it is typed, and back on;
 # - a configuration the engine refuses, a reload that fails and one that
-#   hangs (cut by the timeout): the previous files back, exit 1;
+#   hangs (cut by the timeout): the previous files back, exit 1; with
+#   --replace, the engine's IP pass file too (a router may even be called
+#   passthrough);
 # - the one-shot import of /etc/cengarde/secret: imported once and deleted;
 #   after remove, after --replace and with slot 0 taken, running again
 #   leaves clients/ as it was;
@@ -263,7 +265,7 @@ said() { printf '%s\n' "$OUT" | grep -qF -- "$1"; }
 val() { sed -n "s/^$2=//p" "$1"; }
 conf() { cat "$R/etc/cengarde/cengarde.conf" 2>/dev/null; }
 mode() { stat -c '%a %U' "$1"; }
-fingerprint() { find "$R/etc" -type f ! -name '.*' -exec md5sum {} + 2>/dev/null | sort; }
+fingerprint() { find "$R/etc" "$R/var/lib/cengarde" -type f ! -name '.*' -exec md5sum {} + 2>/dev/null | sort; }
 
 say "add a router, with no secret file (a server of your own)"
 fresh add
@@ -356,6 +358,16 @@ check "a reload that hangs, cut by the timeout: exit 1" not env FAKE_CTL=hang CE
 	sh "$S2" "$R" "$BIN:$PATH" "$SETUP"
 check "within a few seconds" [ $(($(date +%s) - t0)) -lt 8 ]
 check "nothing changed" [ "$(fingerprint)" = "$before" ]
+mkdir -p "$R/var/lib/cengarde"
+echo on >"$R/var/lib/cengarde/passthrough" # the router's last IP pass wish
+before=$(fingerprint)
+check "--replace with a new secret, a reload answered with an error: exit 1" not env FAKE_CTL=error sh -c 'printf "%s\n" "$1" | env CENGARDE_ROOT="$2" PATH="$3" sh "$4" add home --replace' \
+	sh "$S3" "$R" "$BIN:$PATH" "$SETUP"
+check "nothing changed, the IP pass file included" [ "$(fingerprint)" = "$before" ]
+check "--replace, a configuration the engine refuses: exit 1" not env FAKE_T_FAIL=1 sh -c 'printf "%s\n" "$1" | env CENGARDE_ROOT="$2" PATH="$3" sh "$4" add home --replace' \
+	sh "$S3" "$R" "$BIN:$PATH" "$SETUP"
+check "nothing changed, the IP pass file included" [ "$(fingerprint)" = "$before" ]
+rm -f "$R/var/lib/cengarde/passthrough"
 
 say "forward off|on|limit|allow|disallow|reserve|unreserve"
 H=$R/etc/cengarde/clients/home N=$R/etc/cengarde/nat.conf
@@ -434,6 +446,15 @@ before=$(fingerprint)
 check "no arguments" setup
 check "clients/ unchanged: office only" [ "$(ls "$R/etc/cengarde/clients")" = office ]
 check "the same files" [ "$(fingerprint)" = "$before" ]
+say "  a router named passthrough, as the IP pass file is, replaced: the reload fails"
+fresh pname
+check "add passthrough" add passthrough "$S1"
+mkdir -p "$R/var/lib/cengarde"
+echo off >"$R/var/lib/cengarde/passthrough"
+before=$(fingerprint)
+check "add passthrough --replace, a reload answered with an error: exit 1" not env FAKE_CTL=error sh -c 'printf "%s\n" "$1" | env CENGARDE_ROOT="$2" PATH="$3" sh "$4" add passthrough --replace' \
+	sh "$S2" "$R" "$BIN:$PATH" "$SETUP"
+check "both files back as they were" [ "$(fingerprint)" = "$before" ]
 
 say "on a terminal"
 fresh tty

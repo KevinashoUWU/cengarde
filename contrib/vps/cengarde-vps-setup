@@ -124,7 +124,7 @@ PUBLIC_IP=''
 UNDO=
 # shellcheck disable=SC2317 # run by the trap
 cleanup() {
-	local rc=$? f
+	local rc=$? f n=0
 	if [ -n "$STTY" ]; then
 		stty echo 2>/dev/null || :
 		STTY=
@@ -133,7 +133,8 @@ cleanup() {
 	if [ -n "$UNDO" ]; then
 		if [ "$rc" -ne 0 ]; then
 			while read -r f; do
-				if [ -e "$UNDO/${f##*/}" ]; then mv "$UNDO/${f##*/}" "$f"; else rm -f "$f"; fi
+				n=$((n + 1))
+				if [ -e "$UNDO/$n" ]; then mv "$UNDO/$n" "$f"; else rm -f "$f"; fi
 			done <"$UNDO/list"
 			warn "nothing changed"
 		fi
@@ -143,7 +144,9 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
 
-# keep FILE...: put back as they are now if this command fails.
+# keep FILE...: put back as they are now if this command fails. Each copy
+# is named by its line in the list, not by the file's name: a router may be
+# called "passthrough", as the IP pass file is.
 keep() {
 	local f
 	[ -n "$UNDO" ] || {
@@ -155,7 +158,7 @@ keep() {
 	for f in "$@"; do
 		! grep -qxF "$f" "$UNDO/list" || continue
 		echo "$f" >>"$UNDO/list"
-		[ ! -e "$f" ] || cp -p "$f" "$UNDO/${f##*/}"
+		[ ! -e "$f" ] || cp -p "$f" "$UNDO/$(($(wc -l <"$UNDO/list")))"
 	done
 }
 # kept: what keep saved is not needed any more.
@@ -683,7 +686,7 @@ cmd_default() {
 }
 
 cmd_add() {
-	local name='' label='' label_set='' addr='' replace='' rename='' proto='' other old='' s
+	local name='' label='' label_set='' addr='' replace='' rename='' proto='' other old='' s newpass=''
 	PUBLIC_IP=''
 	while [ $# -gt 0 ]; do
 		case $1 in
@@ -751,7 +754,7 @@ cmd_add() {
 			fi
 			say "replacing router $name: new secret"
 			C_SECRET=$SECRET C_IMPORTED='' C_ADDED=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-			rm -f "$PASS_FILE" # the new router asks for IP pass itself
+			newpass=1
 		fi
 	elif [ -n "$other" ]; then
 		if [ "$rename" != "$other" ] && ! ask "That secret is router $other's. Rename $other to $name?"; then
@@ -771,7 +774,7 @@ cmd_add() {
 		s=$(free_slot) || die "32 routers already: no WireGuard port left"
 		C_NAME=$name C_SECRET=$SECRET C_SLOT=$s C_ADDR=$LEGACY_TUNNEL C_LABEL='' C_FORWARD=yes C_MAXP=''
 		C_ADDED=$(date -u +%Y-%m-%dT%H:%M:%SZ) C_IMPORTED='' C_LEGACY=1
-		rm -f "$PASS_FILE"
+		newpass=1
 	fi
 	if [ -n "$addr" ]; then
 		C_ADDR=$addr C_LEGACY=''
@@ -784,6 +787,13 @@ cmd_add() {
 			die "router $other has the tunnel address $C_ADDR: generate a new secret on the router, or give another with --tunnel-addr"
 	done
 	keep "$CLIENTS/$C_NAME"
+	if [ -n "$newpass" ]; then
+		# A new router asks for IP pass itself. Its file goes before the
+		# engine restarts with the new key, so that the router's first wish
+		# is never lost, and comes back if this command fails.
+		keep "$PASS_FILE"
+		rm -f "$PASS_FILE"
+	fi
 	save
 	# The engine first: when it refuses the configuration, nothing changed.
 	write_conf
