@@ -12,7 +12,7 @@
  *   with a seq_cst store of cons + n. Both index stores are seq_cst, and so
  *   are the loads that decide whether to sleep or whether there is room
  *   (each is one side of a Dekker pair); other index loads are acquire.
- * - No atomic_thread_fence anywhere: gcc's TSAN does not model it.
+ * - No standalone fences (rule R1): gcc's TSAN does not model them.
  * - 32-bit atomics only (MIPS32 has no 64-bit ones).
  * - An eventfd only wakes: no ordering depends on it (TSAN treats it as a
  *   synchronisation, so the threaded tests also run a spinning consumer).
