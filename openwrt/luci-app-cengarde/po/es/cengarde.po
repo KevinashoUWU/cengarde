@@ -288,6 +288,12 @@ msgstr "detenido"
 msgid "Service"
 msgstr "Servicio"
 
+msgid "handshake before the clock was set"
+msgstr "handshake anterior al ajuste de la hora"
+
+msgid "The router set its clock after this handshake: the next one, within about two minutes of traffic, shows its age."
+msgstr "El router ajustó su hora después de este handshake: el siguiente, en unos dos minutos con tráfico, muestra su antigüedad."
+
 msgid "no handshake for %s"
 msgstr "sin handshake desde %s"
 

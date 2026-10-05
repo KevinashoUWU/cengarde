@@ -137,8 +137,14 @@ return view.extend({
 		if (st.tunnel.handshake > 0) {
 			const ago = st.tunnel.now - st.tunnel.handshake;
 
-			tunnel = (ago > 180) ? badge(_('no handshake for %s').format(age(ago)), '#c33')
-				: E('span', {}, [ badge(_('connected'), '#393'), ' ', _('handshake %s').format(age(ago)) ]);
+			/* Older than the boot, or in the future: the clock was set after
+			 * the handshake (no battery-backed clock), and its age is unknown. */
+			if (ago < 0 || (st.tunnel.uptime > 0 && ago > st.tunnel.uptime))
+				tunnel = badge(_('handshake before the clock was set'), '#d80',
+					_('The router set its clock after this handshake: the next one, within about two minutes of traffic, shows its age.'));
+			else
+				tunnel = (ago > 180) ? badge(_('no handshake for %s').format(age(ago)), '#c33')
+					: E('span', {}, [ badge(_('connected'), '#393'), ' ', _('handshake %s').format(age(ago)) ]);
 		} else {
 			tunnel = st.enabled ? badge(_('waiting for the VPS'), '#d80') : '-';
 		}
