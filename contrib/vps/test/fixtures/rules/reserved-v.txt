@@ -1,0 +1,15 @@
+tcp:1-21 below-1024
+tcp:22 ssh
+tcp:23-79 below-1024
+tcp:81-442 below-1024
+tcp:444-1023 below-1024
+tcp:3000 listener
+tcp:8080 listener:docker-proxy
+tcp:9443 listener:my_web
+udp:1-1023 below-1024
+udp:5000-5010 FORWARD_RESERVED
+udp:5353 listener:avahi-daemon
+udp:27015-27020 docker
+udp:51820 listener
+udp:65500 cengarde
+udp:65501-65532 wireguard

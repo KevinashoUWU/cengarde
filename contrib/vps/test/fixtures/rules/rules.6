@@ -1,0 +1,5 @@
+*filter
+:CG_IN - [0:0]
+-A CG_IN -p udp --dport 65500 -j ACCEPT
+-A CG_IN ! -i lo -p udp --dport 65501:65532 -j DROP
+COMMIT

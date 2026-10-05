@@ -1,0 +1,8 @@
+UNCONN 0      0      127.0.0.53%lo:53         0.0.0.0:*    users:(("systemd-resolve",pid=599,fd=13))
+UNCONN 0      0     10.0.0.5%eth0:68          0.0.0.0:*    users:(("systemd-network",pid=550,fd=20))
+UNCONN 0      0            0.0.0.0:5353       0.0.0.0:*    users:(("avahi-daemon",pid=650,fd=12))
+UNCONN 0      0                  *:65500            *:*    users:(("cengarde",pid=900,fd=5))
+UNCONN 0      0            0.0.0.0:65501      0.0.0.0:*
+UNCONN 0      0            0.0.0.0:40000      0.0.0.0:*    users:(("dig",pid=2000,fd=3))
+UNCONN 0      0          127.0.0.1:323        0.0.0.0:*    users:(("chronyd",pid=640,fd=5))
+UNCONN 0      0            0.0.0.0:51820      0.0.0.0:*

@@ -1,0 +1,9 @@
+LISTEN 0      4096   127.0.0.53%lo:53         0.0.0.0:*    users:(("systemd-resolve",pid=599,fd=14))
+LISTEN 0      128          0.0.0.0:22         0.0.0.0:*    users:(("sshd",pid=801,fd=3))
+LISTEN 0      128             [::]:22            [::]:*    users:(("sshd",pid=801,fd=4))
+LISTEN 0      4096       127.0.0.1:631        0.0.0.0:*    users:(("cupsd",pid=702,fd=7))
+LISTEN 0      4096           [::1]:631           [::]:*    users:(("cupsd",pid=702,fd=8))
+LISTEN 0      128          0.0.0.0:8123       0.0.0.0:*    users:(("python3",pid=1200,fd=5))
+LISTEN 0      4096         0.0.0.0:8080       0.0.0.0:*    users:(("docker-proxy",pid=1500,fd=4))
+LISTEN 0      511    192.168.1.10:9443        0.0.0.0:*    users:(("my web",pid=1600,fd=6))
+LISTEN 0      511       10.79.0.1:3000        0.0.0.0:*

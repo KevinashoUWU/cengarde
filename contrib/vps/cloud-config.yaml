@@ -5,18 +5,23 @@
 # commit of its own package already filled in; by hand, put the router's
 # secret (uci get cengarde.main.secret) in place of REPLACE_SECRET.
 #
-# What it sets up:
-# - cengarde, built from the same commit as the router (UDP 65500);
-# - WireGuard (wg0, 10.79.0.1/30) behind cengarde, reachable only by it on
-#   127.0.0.1:65501; every key derives from the secret (cengarde-vps-setup);
-# - NAT for the tunnel and IP pass: TCP and UDP 1024-65000 forwarded to the
-#   router (10.79.0.2), so the site gets this server's public IP for inbound
-#   connections. The router turns it on or off from LuCI (its "IP pass"
-#   switch, through cengarde); PASSTHROUGH below only holds until it does.
+# What it sets up (contrib/vps/install.sh):
+# - cengarde, built from the same commit as the router (UDP 65500), as a
+#   service with a user of its own;
+# - the router, imported once from /etc/cengarde/secret (then deleted) as
+#   "router": its WireGuard (cg-router, 10.79.0.1, router 10.79.0.2) behind
+#   cengarde, reachable only by it on 127.0.0.1:65501; every key derives
+#   from the secret (cengarde-vps-setup);
+# - the firewall (cengarde-nat): NAT for the tunnel and IP pass, TCP and
+#   UDP 1024-65000 forwarded to the router, so the site gets this server's
+#   public IP for inbound connections. The router turns it on or off from
+#   LuCI (its "IP pass" switch, through cengarde); PASSTHROUGH below only
+#   holds until it does. Never forwarded: SSH, ports below 1024, and
+#   whatever this server listens on itself.
 # SSH and the rest of the system are left as the provider set them up.
 #
-# Afterwards: systemctl status cengarde wg-quick@wg0, wg show,
-# cengarde ctl status. Log of this setup: /var/log/cloud-init-output.log
+# Afterwards: sudo cengarde-vps-setup list, cengarde ctl status, wg show.
+# Log of this setup: /var/log/cloud-init-output.log
 
 package_update: true
 packages:
@@ -24,6 +29,7 @@ packages:
   - git
   - iptables
   - wireguard-tools
+  - conntrack
 
 write_files:
   - path: /etc/cengarde/secret
@@ -35,8 +41,8 @@ write_files:
       # cengarde port on this server (the router's "port" setting).
       CENGARDE_PORT=65500
       # IP pass, TCP and UDP PASSTHROUGH_PORTS forwarded to the router, until
-      # the router asks for it on or off (yes or no). After a change:
-      # systemctl restart wg-quick@wg0
+      # the router asks for it on or off (yes or no). Other settings: see
+      # contrib/vps/cengarde-nat; after a change: sudo cengarde-vps-setup
       PASSTHROUGH=yes
       PASSTHROUGH_PORTS=1024:65000
 

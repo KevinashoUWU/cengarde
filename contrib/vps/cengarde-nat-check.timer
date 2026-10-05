@@ -1,0 +1,12 @@
+# Every 5 minutes, cengarde-nat check: the rules put back after a foreign
+# firewall flushed them (an "nft -f" by hand, a firewall without a
+# drop-in), and the reserved set kept in step with what this box listens on.
+[Unit]
+Description=cengarde: check the firewall rules every 5 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target
