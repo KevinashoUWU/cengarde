@@ -32,8 +32,10 @@
 #   check timer's run, and "cengarde-vps-setup forward" lists them;
 # - install.sh again changes no rule; IPAddressDeny keeps the engine away
 #   from 169.254.0.0/16, and the tunnel too;
-# - back: "cengarde-vps-setup purge", then 0.4.2's install.sh: the tunnel
-#   and IP pass work again; then this checkout's install.sh again;
+# - back: "cengarde-vps-setup purge", quick, with cengarde-nat.service's
+#   ExecStop on time (purge takes the admin lock it needs only after the
+#   units are stopped), then 0.4.2's install.sh: the tunnel and IP pass work
+#   again; then this checkout's install.sh again;
 # - firewalld active: install.sh and cengarde-nat apply refuse;
 # - everything stopped: the firewall is as it was before 0.4.2, behind ufw;
 # - nftables.service with a forward chain whose policy is drop: the drop-in
@@ -575,7 +577,14 @@ deny() {
 rollback() {
 	say "back to 0.4.2: cengarde-vps-setup purge, then 0.4.2's install.sh"
 	echo "PUB_IF=$PUB" >>"$NAT_CONF" # 0.4.2's rules need it
+	t=$(date +%s)
 	"$SETUP" purge >"$TMP/purge.log" 2>&1 || { bad "purge"; cat "$TMP/purge.log"; }
+	took=$(($(date +%s) - t))
+	# cengarde-nat.service's ExecStop takes the admin lock; had purge held it
+	# while stopping the unit, systemd would have waited TimeoutStopSec (90 s).
+	check "purge takes less than 30 s (it took $took s)" [ "$took" -lt 30 ]
+	check "purge: cengarde-nat.service stopped in time" not journal cengarde-nat "Stopping timed out" "$t"
+	check "purge: cengarde-nat.service is not failed" not systemctl is-failed -q cengarde-nat
 	check "purge: no unit of this checkout left" not sh -c 'ls /etc/systemd/system | grep -Eq "^cengarde-nat|^cengarde-passthrough"'
 	check "purge: no rule of its own left" not sh -c 'iptables-save | grep -q CG_'
 	check "purge: the secret written back" [ -s "$SECRET" ]

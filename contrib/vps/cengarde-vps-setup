@@ -576,11 +576,24 @@ behind_nat() {
 
 # ---- the commands ----
 
-# migrate_04: cengarde 0.4's single wg0 and its IP pass state.
+# is_04_wg0: wg0.conf is cengarde 0.4's.
+is_04_wg0() {
+	[ -e "$WG_DIR/wg0.conf" ] && head -n 1 "$WG_DIR/wg0.conf" | grep -q '^# Written by cengarde-vps-setup'
+}
+
+# stop_04_wg0: cengarde 0.4's wg0 stopped, before the admin lock is taken:
+# systemd, not this script, runs its PostDown ("cengarde-nat down wg0"),
+# which takes the lock itself and would wait for this script until
+# TimeoutStopSec.
+stop_04_wg0() {
+	! is_04_wg0 || systemctl disable --now wg-quick@wg0 2>/dev/null || :
+}
+
+# migrate_04: cengarde 0.4's single wg0 (stopped by stop_04_wg0) and its IP
+# pass state.
 migrate_04() {
 	local v
-	if [ -e "$WG_DIR/wg0.conf" ] && head -n 1 "$WG_DIR/wg0.conf" | grep -q '^# Written by cengarde-vps-setup'; then
-		systemctl disable --now wg-quick@wg0 2>/dev/null || :
+	if is_04_wg0; then
 		rm -f "$WG_DIR/wg0.conf"
 		say "cengarde 0.4's wg0 stopped and removed: each router has its own cg-NAME now"
 	fi
@@ -657,6 +670,7 @@ regen() {
 cmd_default() {
 	check_proto
 	check_ports
+	stop_04_wg0
 	lock
 	migrate_04
 	import
@@ -984,13 +998,15 @@ cmd_refresh() {
 }
 
 cmd_purge() {
-	local all='' f n s0='' v
+	local all='' f n s0='' v u
 	case ${1:-} in
 	'') ;;
 	--all) all=1 ;;
 	*) die "usage: purge [--all]" ;;
 	esac
-	lock
+	# The units first, the admin lock after: systemd, not this script, runs
+	# cengarde-nat.service's ExecStop ("cengarde-nat down"), which takes the
+	# lock itself and would wait for this script until TimeoutStopSec.
 	for f in "$WG_DIR"/cg-*.conf; do
 		[ -e "$f" ] || continue
 		n=${f##*/cg-}
@@ -998,10 +1014,12 @@ cmd_purge() {
 		systemctl disable --now "wg-quick@cg-$n" 2>/dev/null || :
 	done
 	for u in cengarde-nat-check.timer cengarde-nat-check.service cengarde-passthrough.path \
-		cengarde-passthrough.service cengarde-forward.path cengarde-forward.service cengarde.service; do
+		cengarde-passthrough.service cengarde-forward.path cengarde-forward.service cengarde.service \
+		cengarde-nat.service; do
 		systemctl disable --now "$u" 2>/dev/null || :
 	done
-	systemctl disable --now cengarde-nat.service 2>/dev/null || :
+	lock
+	# Again, in case the unit was not running or its ExecStop failed.
 	cengarde-nat down || warn "cengarde-nat down failed"
 	rm -f "$UNITS/cengarde-nat.service" "$UNITS/cengarde-nat-check.timer" "$UNITS/cengarde-nat-check.service" \
 		"$UNITS/cengarde-passthrough.path" "$UNITS/cengarde-passthrough.service" \

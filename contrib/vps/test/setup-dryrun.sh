@@ -25,6 +25,9 @@
 #   changes, the old service stopped before systemd-sysusers, the nftables
 #   drop-in only when nftables is enabled, run twice); purge writes the
 #   secret back for 0.4's install.sh;
+# - what systemd runs when it stops cengarde-nat.service (ExecStop) or 0.4's
+#   wg0 (PostDown) takes the admin lock, as PID 1's child, not the caller's:
+#   a stand-in for it gets the lock at once, during purge and the migration;
 # - a server of your own: no secret (the add command shown, a key that
 #   serves nobody), a private main IPv4 (FORWARD_SKIP_SRC and what to open,
 #   for a home router or a cloud's security list), carrier-grade NAT.
@@ -90,6 +93,19 @@ shift
 [ "${1:-}" = -q ] && shift
 now=
 [ "${1:-}" = --now ] && now=1 && shift
+# stopped UNIT: what systemd runs when an active UNIT stops, started as PID 1
+# starts it, not as a child of the caller: cengarde-nat.service's ExecStop
+# and 0.4's wg0 PostDown take the admin lock; a stand-in waits 3 s for it.
+stopped() {
+	case $1 in cengarde-nat | cengarde-nat.service | wg-quick@wg0) ;; *) return 0 ;; esac
+	[ -e "$FAKE_STATE/$1" ] || return 0
+	mkdir -p "$CENGARDE_ROOT/run/lock"
+	if env -u CENGARDE_ADMIN_LOCKED flock -w 3 "$CENGARDE_ROOT/run/lock/cengarde-admin.lock" true 9>&-; then
+		echo "stop $1: took the admin lock" >>"$CALLS"
+	else
+		echo "stop $1: the admin lock is busy" >>"$CALLS"
+	fi
+}
 case $cmd in
 is-active)
 	[ "$1" = firewalld ] && [ -n "${FAKE_FIREWALLD:-}" ] && exit 0
@@ -101,9 +117,14 @@ is-enabled)
 	exit
 	;;
 enable) for u; do touch "$FAKE_STATE/enabled-$u"; [ -z "$now" ] || touch "$FAKE_STATE/$u"; done ;;
-disable) for u; do rm -f "$FAKE_STATE/enabled-$u"; [ -z "$now" ] || rm -f "$FAKE_STATE/$u"; done ;;
+disable)
+	for u; do
+		rm -f "$FAKE_STATE/enabled-$u"
+		[ -z "$now" ] || { stopped "$u"; rm -f "$FAKE_STATE/$u"; }
+	done
+	;;
 start | restart) for u; do touch "$FAKE_STATE/$u"; done ;;
-stop) for u; do rm -f "$FAKE_STATE/$u"; done ;;
+stop) for u; do stopped "$u"; rm -f "$FAKE_STATE/$u"; done ;;
 esac
 exit 0
 EOF
@@ -423,8 +444,10 @@ mkdir -p "$R/etc/wireguard" "$R/var/lib/cengarde-nat"
 printf '# Written by cengarde-vps-setup from /etc/cengarde/secret.\n[Interface]\nListenPort = 65501\n' >"$R/etc/wireguard/wg0.conf"
 echo off >"$R/var/lib/cengarde-nat/passthrough"
 (umask 077 && echo "$S1" >"$R/etc/cengarde/secret")
+touch "$FAKE_STATE/wg-quick@wg0"
 check "no arguments" setup
 check "wg0 stopped and its file removed" sh -c 'grep -q "^systemctl disable --now wg-quick@wg0$" "$1" && [ ! -e "$2/etc/wireguard/wg0.conf" ]' sh "$CALLS" "$R"
+check "wg0's PostDown, run by systemd, gets the admin lock at once" called '^stop wg-quick@wg0: took the admin lock$'
 check "the router's last IP pass wish kept: off" [ "$(cat "$R/var/lib/cengarde/passthrough")" = off ]
 check "0.4's state file gone" [ ! -e "$R/var/lib/cengarde-nat" ]
 check "the router imported with 10.79.0.2 on port 65501" \
@@ -437,11 +460,14 @@ for u in cengarde.service cengarde-nat.service cengarde-nat-check.timer cengarde
 	: >"$R/etc/systemd/system/$u"
 done
 : >"$CALLS"
+touch "$FAKE_STATE/cengarde-nat.service"
 check "purge" setup purge
 check "the units gone" [ -z "$(find "$R/etc/systemd/system" -type f)" ]
 check "every service disabled, cg-router too, and cengarde-nat down" \
 	sh -c 'for u in wg-quick@cg-router cengarde-nat-check.timer cengarde-passthrough.path cengarde.service cengarde-nat.service; do
 		grep -q "^systemctl disable --now $u$" "$1" || exit 1; done; grep -q "^cengarde-nat down$" "$1"' sh "$CALLS"
+check "cengarde-nat.service's ExecStop, run by systemd, gets the admin lock at once" \
+	called '^stop cengarde-nat.service: took the admin lock$'
 check "the router's secret written back, 0600" sh -c '[ "$(cat "$1")" = "$2" ] && [ "$(stat -c %a "$1")" = 600 ]' sh "$R/etc/cengarde/secret" "$S1"
 check "its IP pass wish written back for 0.4" [ "$(cat "$R/var/lib/cengarde-nat/passthrough")" = off ]
 check "clients/ and cg-router.conf kept" [ -e "$R/etc/cengarde/clients/router" ] && [ -e "$R/etc/wireguard/cg-router.conf" ]
