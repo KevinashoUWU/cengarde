@@ -28,13 +28,14 @@
 # - live flows: a UDP stream of 10 datagrams a second, from a fixed port,
 #   keeps reaching the old router after a port changes hands when conntrack
 #   is missing (the problem), and lands on the new one within 2 s of the
-#   sync with it: the whole range moving, an explicit rule moving, a router
+#   end of the sync with it (the clock starts when the sync returns: the
+#   sync itself takes 0.4-0.9 s on a CI runner): the whole range moving, an explicit rule moving, a router
 #   removed, a port the server answered itself given to a router (while the
 #   server's own flow from a port of that range to a peer stays its own),
 #   and a restart while another rule keeps conntrack on: after down nothing
 #   reaches the router, and after apply the stream does again;
 # - protocol 3: IP pass on reaches alpha; off, the stream leaves it within
-#   0.5 s; on again, with the stream still running, it reaches alpha again
+#   0.5 s of the sync's end; on again, with the stream still running, it reaches alpha again
 #   within 2 s;
 # - apply twice gives the same rules, two applies at once one jump each;
 #   check puts back a flushed chain and a deleted jump, warns about an
@@ -417,11 +418,11 @@ got() { heard "$1" "stream$2" "${3:-0}" "${4:-9999999999}"; }
 # later T SECONDS: T plus SECONDS, to the millisecond (print would round
 # the time to six digits).
 later() { awk -v t="$1" -v s="$2" 'BEGIN { printf "%.3f", t + s }'; }
-# moved FROM TO SPORT T: the stream left FROM by T + 0.5 s and reached TO
-# by T + 2 s.
+# moved FROM TO SPORT T E: a sync from T to E moved the stream: it left
+# FROM by E + 0.5 s and reached TO by E + 2 s.
 moved() {
-	got "$TMP/$2.log" "$3" "$4" "$(later "$4" 2)" &&
-		not got "$TMP/$1.log" "$3" "$(later "$4" 0.5)"
+	got "$TMP/$2.log" "$3" "$4" "$(later "$5" 2)" &&
+		not got "$TMP/$1.log" "$3" "$(later "$5" 0.5)"
 }
 now() { date +%s.%N | cut -c1-14; }
 
@@ -443,9 +444,10 @@ sleep 1
 table 'pass bravo'
 t=$(now)
 check "the whole range to bravo, with conntrack" nat sync
+e=$(now)
 check "it moves the flow" sh -c 'printf "%s\n" "$1" | grep -q "moved [1-9][0-9]* live flows"' sh "$OUT"
 sleep 2.5
-check "the stream left alpha and reached bravo within 2 s" moved alpha bravo 41000 "$t"
+check "the stream left alpha and reached bravo within 2 s" moved alpha bravo 41000 "$t" "$e"
 wait "$STREAM"
 
 say "live flows: a port changes hands"
@@ -457,8 +459,9 @@ check "the stream reaches alpha" got "$TMP/alpha.log" 41001
 table "$(printf '%s\n' "$T1" | sed 's/^rule alpha udp 9000 9000 22$/rule bravo udp 9000 9000 9000/')"
 t=$(now)
 check "udp 9000 to bravo" nat sync
+e=$(now)
 sleep 2.5
-check "the stream left alpha and reached bravo within 2 s" moved alpha bravo 41001 "$t"
+check "the stream left alpha and reached bravo within 2 s" moved alpha bravo 41001 "$t" "$e"
 wait "$STREAM"
 
 say "live flows: a router removed"
@@ -470,8 +473,9 @@ check "the stream reaches alpha" got "$TMP/alpha.log" 41002
 rm -f "$R/etc/cengarde/clients/alpha"
 t=$(now)
 check "alpha removed" nat sync
+e=$(now)
 sleep 2.5
-check "the stream left alpha and reached bravo, the whole range's holder, within 2 s" moved alpha bravo 41002 "$t"
+check "the stream left alpha and reached bravo, the whole range's holder, within 2 s" moved alpha bravo 41002 "$t" "$e"
 wait "$STREAM"
 router alpha 10.79.0.2 0
 
@@ -491,11 +495,12 @@ check "the server hears its peer" heard "$TMP/vps-peer.log" peer30000
 table "$T1"
 t=$(now)
 check "udp 9000 to alpha, the whole range to bravo" nat sync
+e=$(now)
 check "it moves the flow the server answered" sh -c 'printf "%s\n" "$1" | grep -q "moved [1-9][0-9]* live flows"' sh "$OUT"
 sleep 2.5
-check "the stream reaches alpha within 2 s" got "$TMP/alpha.log" 41003 "$t" "$(later "$t" 2)"
+check "the stream reaches alpha within 2 s" got "$TMP/alpha.log" 41003 "$t" "$(later "$e" 2)"
 check "the server's own flow, on a port bravo now holds, still reaches the server" \
-	heard "$TMP/vps-peer.log" peer30000 "$(later "$t" 0.5)" "$(later "$t" 2.5)"
+	heard "$TMP/vps-peer.log" peer30000 "$(later "$e" 0.5)" "$(later "$e" 2.5)"
 wait "$STREAM" "$P1" "$P2"
 
 say "live flows: cengarde-nat restarted (down, apply) while another rule keeps conntrack on"
@@ -511,8 +516,9 @@ sleep 2
 check "after down nothing reaches bravo" not got "$TMP/bravo.log" 41004 "$(later "$t" 0.3)"
 t=$(now)
 check "apply" nat apply
+e=$(now)
 sleep 2.5
-check "the stream reaches bravo again within 2 s" got "$TMP/bravo.log" 41004 "$t" "$(later "$t" 2)"
+check "the stream reaches bravo again within 2 s" got "$TMP/bravo.log" 41004 "$t" "$(later "$e" 2)"
 wait "$STREAM"
 nsexec "$VPS" iptables -D FORWARD -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
 
@@ -534,16 +540,17 @@ stream 30000 41005
 sleep 2
 check "a stream reaches alpha" got "$TMP/alpha.log" 41005
 pass off
-t=$(now)
 check "IP pass off" nat sync
+e=$(now)
 sleep 2.5
-check "the stream left alpha within 0.5 s" not got "$TMP/alpha.log" 41005 "$(later "$t" 0.5)"
+check "the stream left alpha within 0.5 s" not got "$TMP/alpha.log" 41005 "$(later "$e" 0.5)"
 check "tcp 20000 stays on the server now" is none py "$INET" tcp 10.1.0.1 20000
 pass on
 t=$(now)
 check "IP pass on again, the stream still running" nat sync
+e=$(now)
 sleep 2.5
-check "the stream reaches alpha again within 2 s" got "$TMP/alpha.log" 41005 "$t" "$(later "$t" 2)"
+check "the stream reaches alpha again within 2 s" got "$TMP/alpha.log" 41005 "$t" "$(later "$e" 2)"
 wait "$STREAM"
 
 say "down"
