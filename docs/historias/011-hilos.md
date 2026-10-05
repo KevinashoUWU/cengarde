@@ -1,6 +1,6 @@
 # 011 — Hilos en los dos extremos: hilos por enlace en el router (PR 3b)
 
-- **Fecha:** 2026-10-04
+- **Fecha:** 2026-10-04 (actualizada el 2026-10-05 con la revisión del PR)
 - **Estado:** vigente. PR 3b (hilos de recepción por enlace en el router)
   hecho; 3a (carriles del servidor), 3c (hilos de envío) y 3e (trabajadores
   del servidor) en otras ramas o pendientes; puerta P (la Pi) sin medir.
@@ -37,7 +37,10 @@
   (≤ +30 %) **no** pasa aquí, y por eso `on` sigue a mano.
 - `off` cuesta lo mismo que el bucle de siempre (puerta C0 de velocidad,
   ±5 %; un +6,4 % de una primera tanda no se repitió con 5 pasadas) y pasa
-  todos los escenarios del laboratorio; `on` y `legacy` también.
+  todos los escenarios del laboratorio y el soak de 1 h; `on` también, y
+  `legacy`, los escenarios. El e2e de QEMU pasa en los tres modos, salvo
+  una comprobación de tiempo de la propia prueba que sin KVM también falla
+  con el PR 2.
 
 ## Contexto
 
@@ -101,6 +104,25 @@ socket. El PR 3b hace la recepción; el 3c hará el envío desde las bombas.
 - **Rotación:** con bombas, el primer enlace de cada lote de subida rota.
 - **CPU por hilo** del reloj de CPU de cada hilo (`pthread_getcpuclockid`):
   OpenWrt no tiene `schedstat`.
+- **Hilo parado** (`io_stalled_ms` y su aviso): se cuenta desde la primera
+  comprobación (una por segundo) que vio trabajo esperando sin ninguna
+  vuelta del hilo desde entonces (`cg_stall_check`, `thrplan.h`). Contarlo
+  desde la última vuelta, como se hacía, daba por parada una bomba que solo
+  había dormido sin nada que hacer: 0,3 s de retraso al volver l3 tras 7 s
+  caído marcaban 7,5–8 s y el aviso; ahora 0 en 8 de 8 rondas, y un atasco
+  real de 8 s marca 6,3–7,3 s con aviso. `loop_ms` solo se compara, así que
+  una vuelta posterior a la lectura del reloj del hub ya no da 49 días.
+- **Sondeo activo:** en todas las bombas o en ninguna (`cg_pump_busy_us`).
+  Cuando ya no caben en las CPU con una de sobra, el hub se lo quita también
+  a las que ya sondeaban (un atómico que la bomba lee en cada vuelta): antes,
+  con 4 CPU y 3 enlaces, sondeaban las dos primeras y el registro decía que
+  solo el hub. Los avisos del plan de hilos van también al estado
+  (`threads.warnings`).
+- **Estado pendiente** de un enlace con su bomba atascada: en la API de la
+  bomba (`cg_pump_send`), probado con sockets reales en `test_threads` (diez
+  reaperturas sin fugas, gana el estado más nuevo y nada se le adelanta).
+- **Nombres:** los hilos que escriben el estado se llaman en el kernel como
+  en `ctl threads` (`cg-status`, y `cg-pass` en el servidor).
 
 ### Medidas
 
@@ -119,7 +141,9 @@ socket. El PR 3b hace la recepción; el 3c hará el envío desde las bombas.
 - **C0, corrección:** `ci` entero (smoke, health, control, fallback,
   mtstall, multiip y restart) pasa con `legacy`, `off` y `on` (y antes, en
   cada paso del PR: `legacy` tras la factorización, `off` tras el modo en
-  línea). Falta el soak de 1 h (abajo, uno corto) y el e2e de QEMU.
+  línea; otra vez tras la revisión). El soak de 1 h y el e2e de QEMU
+  (abajo) se corrieron sobre la cabeza del PR, con los hilos ya dentro, y
+  no «antes de cualquier commit que añada hilos», como pedía el diseño.
 - **C1** (bajada, `off` frente a `on`, 3 pasadas de 10 s, medianas;
   `bench/lab.sh mtlat`):
 
@@ -138,13 +162,19 @@ socket. El PR 3b hace la recepción; el 3c hará el envío desde las bombas.
   diseño preveía para este caso: `on` sigue a mano y, si la Pi lo confirma,
   primero la propiedad adaptativa de los enlaces.
 - **`mtstall`** (2000 pps en cada sentido, 12 s, 300 ms sin CPU cada 2 s
-  en el hilo de l3 o, en `off` y `legacy`, en el bucle único):
+  en el hilo de l3 o, en `off` y `legacy`, en el bucle único; tras la
+  revisión, cada modo en su propio subshell, con el bucle ocupado y el hilo
+  atascado en la última CPU y todo lo demás en las otras; dos pasadas):
 
   | Modo | Bajada: pérdida, tarde (≥ 50 ms) | Subida: pérdida, tarde | Descartes en el socket l1 / l2 / l3 |
   | --- | --- | --- | --- |
-  | `on` | 0, 0 | 0, 0 | 0 / 0 / 1859 |
-  | `off` | 7,8 %, 4,7 % | 7,7 %, 4,7 % | 1862 / 1874 / 1876 |
-  | `legacy` | 8,0 %, 4,7 % | 8,0 %, 4,7 % | 1914 / 1919 / 1919 |
+  | `on` | 0, 0 | 0, 0 | 0 / 0 / 1852–1854 |
+  | `off` | 7,7 %, 4,7 % | 7,7 %, 4,7 % | 1854–1860 / 1875–1879 / 1877–1880 |
+  | `legacy` | 7,7 %, 4,7 % | 7,7 %, 4,7 % | 1854 / 1864 / 1867 |
+
+  Antes de la revisión, `legacy` daba 8,0 % y unos 1915 descartes: cada
+  modo heredaba una CPU menos del anterior (con `legacy`, el servidor, el
+  cliente y los WireGuard falsos compartían una sola CPU).
 
   Con `on`, el atasco de un hilo de enlace queda en su enlace; con un solo
   bucle, el mismo atasco tira copias de todos los enlaces a la vez y el
@@ -155,14 +185,45 @@ socket. El PR 3b hace la recepción; el 3c hará el envío desde las bombas.
   anterior a este PR: `cg_tune` escribía el conjunto de CPU inicial en el
   hilo principal mientras el hilo del estado ya lo leía
   (`cg_thread_normal`); ahora lo toma un `pthread_once`. Después, `smoke` y
-  `control` pasan sin avisos con `on` y con `off`. (El `cengarde` compilado
-  con TSAN por gcc da dos avisos falsos de `-Wstringop-overflow` en
-  `ctl.h`, también en master.)
-- **Soak corto** (`SOAK_S=300`, 5 min por modo, `off` y `on`; sin netem en
-  este contenedor, así que l3 alterna `tbf`): 4 tramos por modo sin pérdida,
-  sin avisos de hilos parados ni sockets sin vigilar, RSS final 2,8 MB
-  (`off`) y 3,5 MB (`on`). En 5 min no llegan ni la caída de l2 (cada
-  10 min) ni la referencia de RSS: el soak de 1 h queda pendiente.
+  `control` pasan sin avisos con `on` y con `off`. Tras la revisión, con
+  `link_threads = on` y binarios TSAN de gcc y de clang en los dos
+  extremos, `smoke`, `health`, `control`, `fallback`, `multiip`, `restart`
+  y `mtstall` pasan sin avisos (y `mtstall` sin perder ni un paquete). (El
+  `cengarde` compilado con TSAN por gcc da dos avisos falsos de
+  `-Wstringop-overflow` en `ctl.h`, también en master.)
+- **Soak de 1 h** (`SOAK_S=3600`, `off` y luego `on`, cada uno con el
+  candado de los namespaces; sin netem en este contenedor, así que l3
+  alterna `tbf`): por modo, 57 tramos de 60 s, 11 recargas (todas `ok`), 5
+  caídas de l2 de 10 s y 29 cambios de l3; ningún aviso de hilo parado ni
+  de socket sin vigilar; RSS del cliente 2868 → 3008 kB con `off` y 3584 →
+  3724 kB con `on` desde los 5 min. Los dos pasan con la regla del diseño
+  (toda pérdida queda explicada por descartes contados en su sentido):
+
+  | kpps | `off`: bajada, subida perdidas | `on`: bajada, subida perdidas |
+  | --- | --- | --- |
+  | 2 y 10 | 0, 0 | 0, 0 |
+  | 20 | 0,004 %, 0,036 % | 0,003 %, 0,015 % |
+  | 40 | 0,58 %, 3,2 % | 0,15 %, 0,89 % |
+
+  A 40 kpps en los dos sentidos esta VM no da abasto: con `off`, el hilo
+  único deja llenarse el socket de WireGuard del cliente (la subida perdida
+  coincide a veces exacta con sus descartes) y los de enlace; con `on`, la
+  subida se pierde en el socket único del servidor, lo que arreglan los
+  carriles de 3a. El soak corto de antes (`SOAK_S=300`) solo llegó a 4
+  tramos (unos 248 s): ni recargas ni caídas de l2, solo dos cambios de
+  `tbf` en l3.
+- **e2e de QEMU** (25.12.5 x86-64, sin KVM en este contenedor; los
+  paquetes de esta rama, aún numerados 0.4.5, con el mismo código): pasa
+  todo, también el paso 7 (`off`, `on` y otra vez `legacy`: cada cambio
+  reinicia el motor en el lugar, los tres enlaces vuelven vivos, el ping
+  pasa sin pérdida y `ctl threads` muestra el hub y un hilo por enlace con
+  su CPU), salvo una comprobación del paso 4 que en esta máquina falla
+  igual con la imagen y la prueba del PR 2: la prueba lee el archivo de IP
+  pass del VPS justo al acabar su ping de 12 s, y sin KVM la aplicación del
+  router tarda unos 9 s (33 s con la máquina cargada), así que el VPS
+  cambia en el mismo segundo en que se lee (cambió: «IP pass off» en su
+  registro, `off` en el archivo). El CI, con KVM, corre el e2e en 25.12 y
+  en 24.10.
 
 ## Qué hacemos con esto
 
@@ -178,10 +239,23 @@ socket. El PR 3b hace la recepción; el 3c hará el envío desde las bombas.
 ## Pendiente
 
 - Puerta P en la Pi (banco cableado y enlaces reales); 3c (envío desde las
-  bombas, arena, `sched.h`); `jitter.c` para `mtstall` (llega con 3a); el
-  soak de 1 h y `mtcorr` a mano; el e2e de QEMU con `off` y `on` (añadido,
-  sin correr aquí).
+  bombas, arena, `sched.h`); `jitter.c` para `mtstall` y el soak (llega
+  con 3a); `mtcorr` a mano; el e2e de 24.10, que corre el CI del PR.
+- Al rebasar sobre 3a: su paso de TSAN del laboratorio en `engine.yml`
+  también con `link_threads = on` (`CLIENT_EXTRA`) en su lista de
+  escenarios, y `mtstall` una vez, que elige su modo él solo; aquí ya
+  pasan así sin avisos (arriba).
+- Que la comprobación del VPS en el paso 4 del e2e espere al cambio en vez
+  de leerlo una sola vez (falla sin KVM, también con el PR 2).
 
 ## Cambios
 
 - 2026-10-04: creada con el PR 3b.
+- 2026-10-05: revisión del PR: hilo parado contado desde que se vio el
+  trabajo esperando (y sin dar 49 días), sondeo activo en todas las bombas
+  o en ninguna, avisos del plan de hilos en el estado, nombres de los hilos
+  que escriben el estado, estado pendiente en la API de la bomba con su
+  prueba; `mtstall` corre el modo de `CLIENT_EXTRA`, cada modo en su propio
+  subshell y sin tolerancia de pérdida; el soak recarga cada 5 min, llega a
+  40 kpps y juzga con los descartes contados; soak de 1 h y e2e de QEMU;
+  paquetes 0.4.6.
