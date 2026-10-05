@@ -1,0 +1,8 @@
+# Started by cengarde-nat-check.timer.
+[Unit]
+Description=cengarde: put the firewall rules back if something removed them
+After=cengarde-nat.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/cengarde-nat check

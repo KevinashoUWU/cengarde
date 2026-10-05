@@ -1,70 +1,1124 @@
 #!/bin/sh
-# Writes the cengarde server and WireGuard configuration of a VPS from the
-# pairing secret the router generated. Both ends derive every key from that
-# secret ("cengarde keys"), so it is the only value they have to share.
+# The routers of a cengarde server, one file each in /etc/cengarde/clients,
+# and everything derived from them: the engine's configuration, one
+# WireGuard interface per router (cg-NAME, port WG_PORT_BASE + slot) and the
+# firewall (cengarde-nat). Every key derives from a router's pairing secret
+# ("cengarde keys"), the only value both ends share; it is read from
+# standard input, never from the command line.
 #
-#   cengarde-vps-setup [SECRET_FILE]      default /etc/cengarde/secret
+#   cengarde-vps-setup               everything again from clients/; a 0.4
+#                                    server migrated; on a server set up by
+#                                    the cloud-config, /etc/cengarde/secret
+#                                    imported, once, as the first router
+#   cengarde-vps-setup add [NAME] [--label TEXT] [--tunnel-addr ADDR]
+#                      [--replace] [--rename OLD] [--proto N] [--public-ip ADDR]
+#                                    a router (default name: ROUTER_NAME);
+#                                    run again, it changes nothing
+#   cengarde-vps-setup remove NAME
+#   cengarde-vps-setup list          the routers and when they were last heard
+#   cengarde-vps-setup forward       what is forwarded to whom, the ports this
+#                                    server keeps (and why), and what to open
+#                                    in front of a server behind NAT
+#   cengarde-vps-setup forward off|on NAME
+#   cengarde-vps-setup forward limit NAME N|default
+#   cengarde-vps-setup forward allow|disallow PROTO:PORT[-PORT]...   (below 1024)
+#   cengarde-vps-setup forward reserve|unreserve PROTO:PORT[-PORT]...
+#   cengarde-vps-setup refresh       the engine's configuration again, reloaded
+#                                    if it changed (cengarde-nat check)
+#   cengarde-vps-setup purge [--all] the services of install.sh removed and the
+#                                    secret of the router in slot 0 written back
+#                                    to /etc/cengarde/secret, so that cengarde
+#                                    0.4's install.sh works again; --all also
+#                                    removes the routers and the engine's state
 #
-# Writes /etc/cengarde/cengarde.conf and /etc/wireguard/wg0.conf. Ports come
-# from /etc/cengarde/nat.conf (CENGARDE_PORT, WG_PORT), as for cengarde-nat.
-# Run it again after changing the secret, then:
-#   systemctl restart wg-quick@wg0 cengarde
+# Protocol 3 serves one router: a second one needs cengarde 0.5 on both
+# ends. That router keeps 10.79.0.2, the tunnel address of every 0.4 router.
+# Its IP pass forwards PASSTHROUGH_PORTS (1024:65000), less the reserved
+# ports: "forward allow" frees a port below 1024, which a router gets only
+# inside that range; "forward limit" is kept for protocol 4.
+# Settings: /etc/cengarde/nat.conf (see cengarde-nat). CENGARDE_ROOT goes in
+# front of every path (tests).
 #
 # SPDX-License-Identifier: GPL-2.0-only
 set -eu
 
-PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-SECRET_FILE=${1:-/etc/cengarde/secret}
+PATH=$PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+R=${CENGARDE_ROOT:-}
+ME=cengarde-vps-setup
+
 CENGARDE_PORT=65500
-WG_PORT=65501
-CONF=${CENGARDE_NAT_CONF:-/etc/cengarde/nat.conf}
-# shellcheck source=/dev/null
-[ -r "$CONF" ] && . "$CONF"
+WG_PORT_BASE=
+WG_PORT=
+SSH_PORT=22
+PASSTHROUGH_PORTS=1024:65000
+FORWARD_ALLOW_LOW=
+FORWARD_RESERVED=
+FORWARD_UNRESERVE=
+ROUTER_NAME=router
+ENGINE_USER=cengarde
 
-if [ ! -s "$SECRET_FILE" ]; then
-	echo "cengarde-vps-setup: no secret in $SECRET_FILE (the router shows it in LuCI)" >&2
+ETC=$R/etc/cengarde
+CONF=${CENGARDE_NAT_CONF:-$ETC/nat.conf}
+CLIENTS=$ETC/clients
+SECRET_FILE=$ETC/secret
+IDLE_KEY=$ETC/idle-key
+ENGINE_CONF=$ETC/cengarde.conf
+WG_DIR=$R/etc/wireguard
+STATE_DIR=$R/var/lib/cengarde
+PASS_FILE=$STATE_DIR/passthrough
+OLD_PASS=$R/var/lib/cengarde-nat/passthrough
+NAT_STATE=$R/run/cengarde-nat
+SOCK=$R/run/cengarde/cengarde.sock
+LOCK=$R/run/lock/cengarde-admin.lock
+UNITS=$R/etc/systemd/system
+SYSUSERS=$R/etc/sysusers.d/cengarde.conf
+CTL_TIMEOUT=${CENGARDE_CTL_TIMEOUT:-15}
+SERVER_ADDR=10.79.0.1
+LEGACY_TUNNEL=10.79.0.2 # every router of protocol 3
+MAX_ROUTERS=1           # protocol 3
+
+say() { echo "$ME: $*"; }
+warn() { echo "$ME: $*" >&2; }
+die() {
+	warn "$*"
 	exit 1
+}
+
+# safe FILE|DIR: owned by root, writable by nobody else, not a symlink.
+safe() {
+	local m
+	[ -e "$1" ] && [ ! -L "$1" ] || return 1
+	m=$(stat -c '%u %a' -- "$1" 2>/dev/null) || return 1
+	[ "${m%% *}" = 0 ] && [ $((0${m#* } & 022)) -eq 0 ]
+}
+is_port() {
+	case $1 in '' | *[!0-9]*) return 1 ;; esac
+	[ ${#1} -le 5 ] && [ "$1" -ge 1 ] && [ "$1" -le 65535 ]
+}
+# A router's name: cg-NAME must fit in an interface name (15 characters).
+is_name() {
+	case $1 in '' | default | -* | *[!a-z0-9-]*) return 1 ;; esac
+	[ ${#1} -le 12 ]
+}
+is_tunnel() {
+	local IFS=. x
+	# shellcheck disable=SC2086 # split on the dots
+	set -- $1
+	[ $# -eq 4 ] && [ "$1" = 10 ] && [ "$2" = 79 ] || return 1
+	for x in "$3" "$4"; do
+		case $x in '' | *[!0-9]*) return 1 ;; esac
+		[ ${#x} -le 3 ] && [ "$x" -le 255 ] || return 1
+	done
+	[ $(($3 * 256 + $4)) -ge 2 ] && [ $(($3 * 256 + $4)) -le 65534 ]
+}
+
+if [ -e "$CONF" ]; then
+	safe "$CONF" || die "$CONF must be a file owned by root and writable by nobody else"
+	# shellcheck source=/dev/null
+	. "$CONF"
 fi
-keys=$(cengarde keys < "$SECRET_FILE")
-eval "$keys"
-client_pub=$(printf '%s\n' "$CG_WG_CLIENT_KEY" | wg pubkey)
+: "${WG_PORT_BASE:=${WG_PORT:-65501}}"
+is_port "$CENGARDE_PORT" || die "CENGARDE_PORT in $CONF: not a port"
+is_port "$WG_PORT_BASE" || die "WG_PORT_BASE in $CONF: not a port"
+# What protocol 3's IP pass forwards (cengarde-nat refuses a bad one).
+PASS_LO=${PASSTHROUGH_PORTS%%:*} PASS_HI=${PASSTHROUGH_PORTS#*:}
+is_port "$PASS_LO" && is_port "$PASS_HI" || PASS_LO=1024 PASS_HI=65000
+ENGINE_GROUP=$ENGINE_USER
 
-umask 077
-mkdir -p /etc/cengarde /etc/wireguard
+TMPF=
+STTY=
+PUBLIC_IP=''
+UNDO=
+# shellcheck disable=SC2317 # run by the trap
+cleanup() {
+	local rc=$? f n=0
+	if [ -n "$STTY" ]; then
+		stty echo 2>/dev/null || :
+		STTY=
+	fi
+	[ -z "$TMPF" ] || rm -f "$TMPF"
+	if [ -n "$UNDO" ]; then
+		if [ "$rc" -ne 0 ]; then
+			while read -r f; do
+				n=$((n + 1))
+				if [ -e "$UNDO/$n" ]; then mv "$UNDO/$n" "$f"; else rm -f "$f"; fi
+			done <"$UNDO/list"
+			warn "nothing changed"
+		fi
+		rm -rf "$UNDO"
+	fi
+}
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
 
-cat > /etc/cengarde/cengarde.conf.new <<EOF
-# Written by cengarde-vps-setup from $SECRET_FILE; run it again instead of
-# editing the keys. Other settings: see engine/examples/server.conf.
-mode = server
-key = $CG_LINK_KEY
-listen = *:$CENGARDE_PORT
-wireguard = 127.0.0.1:$WG_PORT
-status_file = /run/cengarde/status.json
-# "cengarde ctl status" (or links) as root.
-control_socket = /run/cengarde/cengarde.sock
-# The IP pass the router asks for; cengarde-passthrough.path applies it.
-passthrough_file = /run/cengarde/passthrough
-# Lower latency for more CPU (docs/historias/006); fine on dedicated vCPUs.
-#busy_poll_us = 50
-EOF
+# keep FILE...: put back as they are now if this command fails. Each copy
+# is named by its line in the list, not by the file's name: a router may be
+# called "passthrough", as the IP pass file is.
+keep() {
+	local f
+	[ -n "$UNDO" ] || {
+		UNDO=$ETC/.undo
+		rm -rf "$UNDO"
+		mkdir -m 0700 "$UNDO"
+		: >"$UNDO/list"
+	}
+	for f in "$@"; do
+		! grep -qxF "$f" "$UNDO/list" || continue
+		echo "$f" >>"$UNDO/list"
+		[ ! -e "$f" ] || cp -p "$f" "$UNDO/$(($(wc -l <"$UNDO/list")))"
+	done
+}
+# kept: what keep saved is not needed any more.
+kept() {
+	rm -rf "$UNDO"
+	UNDO=
+}
 
-cat > /etc/wireguard/wg0.conf.new <<EOF
-# Written by cengarde-vps-setup from $SECRET_FILE.
-[Interface]
-Address = 10.79.0.1/30
-ListenPort = $WG_PORT
-PrivateKey = $CG_WG_SERVER_KEY
-MTU = 1380
-PostUp = /usr/local/sbin/cengarde-nat up %i
-PostDown = /usr/local/sbin/cengarde-nat down %i
+lock() {
+	[ "${CENGARDE_ADMIN_LOCKED:-}" = 1 ] && return 0
+	mkdir -p "${LOCK%/*}"
+	exec 9>"$LOCK"
+	flock 9
+	CENGARDE_ADMIN_LOCKED=1
+	export CENGARDE_ADMIN_LOCKED
+}
 
-[Peer]
-# The router
-PublicKey = $client_pub
-PresharedKey = $CG_WG_PSK
-AllowedIPs = 10.79.0.2/32
-EOF
+# ---- the routers ----
 
-mv /etc/cengarde/cengarde.conf.new /etc/cengarde/cengarde.conf
-mv /etc/wireguard/wg0.conf.new /etc/wireguard/wg0.conf
-echo "cengarde-vps-setup: wrote /etc/cengarde/cengarde.conf and /etc/wireguard/wg0.conf"
+# kv FILE KEY: KEY's value in FILE (never sourced).
+kv() { sed -n "s/^$2=//p" "$1" | tail -n 1; }
+
+routers() {
+	local f
+	[ -d "$CLIENTS" ] || return 0
+	for f in "$CLIENTS"/*; do
+		[ -e "$f" ] || continue
+		is_name "${f##*/}" && echo "${f##*/}"
+	done
+}
+nrouters() { routers | wc -l; }
+
+# load NAME: the router's settings into C_*; its file must be safe.
+load() {
+	local f="$CLIENTS/$1"
+	if ! safe "$f" || [ ! -f "$f" ]; then
+		die "$f must be a file owned by root and writable by nobody else"
+	fi
+	C_NAME=$1
+	C_SECRET=$(kv "$f" SECRET)
+	C_SLOT=$(kv "$f" SLOT)
+	C_ADDR=$(kv "$f" TUNNEL_ADDR)
+	C_LABEL=$(kv "$f" LABEL)
+	C_ADDED=$(kv "$f" ADDED)
+	C_FORWARD=$(kv "$f" FORWARD)
+	C_MAXP=$(kv "$f" FORWARD_MAX_PORTS)
+	C_IMPORTED=$(kv "$f" IMPORTED)
+	C_LEGACY=$(kv "$f" LEGACY_ADDR)
+	[ "$C_FORWARD" = no ] || C_FORWARD=yes
+	case $C_SLOT in '' | *[!0-9]*) die "$f: SLOT is not a number" ;; esac
+	is_tunnel "$C_ADDR" || die "$f: TUNNEL_ADDR is not a router's tunnel address"
+}
+
+# save: C_* to clients/C_NAME, whole, root-only.
+save() {
+	mkdir -p "$CLIENTS"
+	chmod 0700 "$CLIENTS"
+	TMPF=$CLIENTS/.$C_NAME.new
+	(umask 077 && cat >"$TMPF") <<-EOF
+		# Router $C_NAME of this cengarde server: its pairing secret, and what
+		# the server keeps about it. Written by cengarde-vps-setup; change it
+		# with cengarde-vps-setup, not by hand.
+		SECRET=$C_SECRET
+		SLOT=$C_SLOT
+		TUNNEL_ADDR=$C_ADDR
+		LABEL=$C_LABEL
+		ADDED=$C_ADDED
+		FORWARD=$C_FORWARD
+		FORWARD_MAX_PORTS=$C_MAXP
+		IMPORTED=$C_IMPORTED
+		LEGACY_ADDR=$C_LEGACY
+	EOF
+	mv "$TMPF" "$CLIENTS/$C_NAME"
+	TMPF=
+}
+
+# with_secret: the name of the router whose secret is SECRET, if any.
+with_secret() {
+	local n
+	for n in $(routers); do
+		[ "$(kv "$CLIENTS/$n" SECRET)" = "$SECRET" ] && echo "$n" && return 0
+	done
+	return 0
+}
+
+free_slot() {
+	local s used n
+	used=$(for n in $(routers); do kv "$CLIENTS/$n" SLOT; done)
+	s=0
+	while [ "$s" -lt 32 ]; do
+		echo "$used" | grep -qx "$s" || {
+			echo "$s"
+			return 0
+		}
+		s=$((s + 1))
+	done
+	return 1
+}
+
+# keys: the keys derived from SECRET into CG_*; 1 when it is not a secret.
+keys() {
+	local out
+	case $SECRET in *[!A-Za-z0-9+/=]*) return 1 ;; esac
+	[ ${#SECRET} -eq 44 ] || return 1
+	# printf is a shell builtin: the secret never shows in a command line.
+	out=$(printf '%s\n' "$SECRET" | cengarde keys 2>/dev/null) || return 1
+	eval "$out"
+}
+
+# read_secret NAME: SECRET from standard input; on a terminal, not echoed.
+read_secret() {
+	SECRET=
+	if [ -t 0 ]; then
+		printf 'Pairing secret of router %s (LuCI shows it in the VPS tab), not echoed: ' "$1" >&2
+		STTY=1
+		stty -echo
+		IFS= read -r SECRET || :
+		stty echo
+		STTY=
+		echo >&2
+	else
+		IFS= read -r SECRET || :
+	fi
+	SECRET=$(printf '%s' "$SECRET" | tr -d ' \t\r')
+}
+
+ask() { # QUESTION: yes on a terminal that says y
+	local a
+	[ -t 0 ] || return 1
+	printf '%s [y/N] ' "$1" >&2
+	IFS= read -r a || return 1
+	case $a in y | Y | yes | si | sí | s) return 0 ;; esac
+	return 1
+}
+
+engine_proto() { cengarde version 2>/dev/null | sed -n 's/.*(protocol \([0-9][0-9]*\)).*/\1/p'; }
+
+# last_seen: when the engine last heard the router (protocol 3: its one
+# router), from "cengarde ctl links".
+last_seen() {
+	local out
+	[ -S "$SOCK" ] || {
+		echo "-"
+		return 0
+	}
+	out=$(timeout 5 cengarde ctl -s "$SOCK" links 2>/dev/null) || {
+		echo "-"
+		return 0
+	}
+	echo "$out" | awk '
+	NR > 1 { for (i = 2; i < NF; i++) if ($i ~ /^[0-9]+\.[0-9]$/ && $(i + 1) == "s") { if (min == "" || $i + 0 < min + 0) min = $i; s[$1] = 1 } }
+	END { n = 0; for (k in s) n++; if (min == "") print "never (no session)"; else printf "%s s ago, %d session%s\n", min, n, (n == 1 ? "" : "s") }'
+}
+
+# ---- what gets written ----
+
+ensure_dirs() {
+	mkdir -p "$ETC" "$WG_DIR"
+	chgrp "$ENGINE_GROUP" "$ETC" 2>/dev/null || warn "no group $ENGINE_GROUP (systemd-sysusers, see install.sh)"
+	chmod 0750 "$ETC"
+	chmod 0700 "$WG_DIR"
+	if [ -d "$CLIENTS" ]; then
+		chown root "$CLIENTS" && chmod 0700 "$CLIENTS"
+	fi
+}
+
+idle_key() {
+	if [ ! -s "$IDLE_KEY" ]; then
+		(umask 077 && cengarde genkey >"$IDLE_KEY") || die "cengarde genkey"
+	fi
+	cat "$IDLE_KEY"
+}
+
+# engine_conf: the engine's configuration, protocol 3, on stdout.
+engine_conf() {
+	local n reserved
+	reserved=$(cengarde-nat reserved) || die "cengarde-nat reserved failed (see above)"
+	reserved=$(echo "$reserved" | tr '\n' ' ' | sed 's/ $//')
+	n=$(routers | head -n 1)
+	cat <<-EOF
+		# Written by cengarde-vps-setup from $CLIENTS; run it again instead of
+		# editing. Other settings: engine/examples/server.conf.
+		mode = server
+	EOF
+	if [ -n "$n" ]; then
+		load "$n"
+		keys_of "$n"
+		cat <<-EOF
+			# Router $n ($CLIENTS/$n). Protocol 3 serves one router; several
+			# need cengarde 0.5 on both ends.
+			key = $CG_LINK_KEY
+			wireguard = 127.0.0.1:$((WG_PORT_BASE + C_SLOT))
+		EOF
+	else
+		cat <<-EOF
+			# No router yet ("cengarde-vps-setup add"): a key that serves nobody.
+			key = $(idle_key)
+			wireguard = 127.0.0.1:$WG_PORT_BASE
+		EOF
+	fi
+	cat <<-EOF
+		listen = *:$CENGARDE_PORT
+		status_file = /run/cengarde/status.json
+		# "cengarde ctl status" (or links), as root.
+		control_socket = /run/cengarde/cengarde.sock
+		# The IP pass the router asks for; cengarde-passthrough.path applies it.
+		passthrough_file = /var/lib/cengarde/passthrough
+		# The ports a router can never have (cengarde-nat reserved); the engine
+		# takes them from protocol 4 on, cengarde-nat now.
+		# reserved: $reserved
+		# Lower latency for more CPU (docs/historias/006); fine on dedicated vCPUs.
+		#busy_poll_us = 50
+	EOF
+}
+
+keys_of() { # NAME: CG_* of a configured router
+	SECRET=$(kv "$CLIENTS/$1" SECRET)
+	keys || die "$CLIENTS/$1: SECRET is not a pairing secret"
+}
+
+# reload: the engine reads its configuration again; its answer in RELOAD.
+# 1 on an error, or no answer within CTL_TIMEOUT seconds. An engine that
+# is not running (or restarting) reads the file when it starts.
+reload() {
+	local ans rc
+	if ! systemctl is-active -q cengarde 2>/dev/null; then
+		RELOAD="cengarde is not running: it reads this configuration when it starts"
+		return 0
+	fi
+	if [ ! -S "$SOCK" ]; then
+		systemctl reload cengarde || {
+			RELOAD="error: systemctl reload cengarde failed"
+			return 1
+		}
+		RELOAD="reloaded (systemctl reload cengarde: no control socket to answer)"
+		return 0
+	fi
+	ans=$(timeout "$CTL_TIMEOUT" cengarde ctl -s "$SOCK" reload 2>&1) && rc=0 || rc=$?
+	if [ "$rc" -eq 0 ]; then
+		RELOAD=$ans
+		return 0
+	fi
+	if [ "$rc" -eq 124 ]; then
+		RELOAD="error: the engine did not answer \"cengarde ctl reload\" within $CTL_TIMEOUT s"
+	else
+		RELOAD="error: ${ans#cengarde ctl: }"
+	fi
+	return 1
+}
+
+# write_conf: the engine's configuration, checked by the engine before it
+# goes in place, then reloaded; the previous file back on any error.
+write_conf() {
+	local new="$ETC/.cengarde.conf.new" old="$ETC/.cengarde.conf.old" out
+	RELOAD=unchanged
+	TMPF=$new
+	(umask 027 && engine_conf >"$new") || die "cannot write $new"
+	chgrp "$ENGINE_GROUP" "$new" 2>/dev/null || :
+	chmod 0640 "$new"
+	if [ -e "$ENGINE_CONF" ] && cmp -s "$new" "$ENGINE_CONF"; then
+		# Ownership and mode as they should be, from 0.4's 0600 root.
+		chgrp "$ENGINE_GROUP" "$ENGINE_CONF" 2>/dev/null || :
+		chmod 0640 "$ENGINE_CONF"
+		rm -f "$new"
+		TMPF=
+		return 0
+	fi
+	out=$(cengarde -t -c "$new" 2>&1) || die "the engine refuses the new configuration, so the previous one stays: $out"
+	rm -f "$old"
+	[ ! -e "$ENGINE_CONF" ] || cp -p "$ENGINE_CONF" "$old"
+	mv "$new" "$ENGINE_CONF"
+	TMPF=
+	if ! reload; then
+		if [ -e "$old" ]; then
+			mv "$old" "$ENGINE_CONF"
+			die "$RELOAD; the previous $ENGINE_CONF is back"
+		fi
+		rm -f "$ENGINE_CONF"
+		die "$RELOAD"
+	fi
+	rm -f "$old"
+	case $RELOAD in "ok: "*) warn "the engine restarted (${RELOAD#ok: }): every router saw a cut of about 1 s" ;; esac
+	return 0
+}
+
+# wg_conf: router C_NAME's WireGuard (keys in CG_*), on stdout.
+wg_conf() {
+	local pub
+	pub=$(printf '%s\n' "$CG_WG_CLIENT_KEY" | wg pubkey) || die "wg pubkey"
+	cat <<-EOF
+		# Written by cengarde-vps-setup for router $C_NAME ($CLIENTS/$C_NAME);
+		# run it again instead of editing. Only cengarde talks to it (lo).
+		[Interface]
+		Address = $SERVER_ADDR/32
+		ListenPort = $((WG_PORT_BASE + C_SLOT))
+		PrivateKey = $CG_WG_SERVER_KEY
+		MTU = 1380
+		Table = auto
+
+		[Peer]
+		# $C_NAME
+		PublicKey = $pub
+		PresharedKey = $CG_WG_PSK
+		AllowedIPs = $C_ADDR/32
+	EOF
+}
+
+# wg_up: router C_NAME's interface as its configuration says, cutting it
+# only when the address, the port or the peer changed. WG says what was done.
+wg_up() {
+	local f="$WG_DIR/cg-$C_NAME.conf" new u="wg-quick@cg-$C_NAME"
+	new=$WG_DIR/.cg-$C_NAME.conf.new
+	TMPF=$new
+	(umask 077 && wg_conf >"$new")
+	if [ ! -e "$f" ]; then
+		mv "$new" "$f"
+		systemctl enable --now "$u" || die "systemctl enable --now $u"
+		WG="up (new)"
+	elif cmp -s "$new" "$f"; then
+		rm -f "$new"
+		WG=unchanged
+		if ! systemctl is-active -q "$u"; then
+			systemctl enable --now "$u" || die "systemctl enable --now $u"
+			WG="started"
+		fi
+	elif [ "$(grep -Ev '^(PrivateKey|PresharedKey) ' "$new")" = "$(grep -Ev '^(PrivateKey|PresharedKey) ' "$f")" ] &&
+		systemctl is-active -q "$u"; then
+		mv "$new" "$f"
+		if ! wg-quick strip "cg-$C_NAME" >"$WG_DIR/.cg-$C_NAME.strip" ||
+			! wg syncconf "cg-$C_NAME" "$WG_DIR/.cg-$C_NAME.strip"; then
+			die "wg syncconf cg-$C_NAME"
+		fi
+		rm -f "$WG_DIR/.cg-$C_NAME.strip"
+		WG="keys changed (wg syncconf, no cut)"
+	else
+		mv "$new" "$f"
+		if ! systemctl enable "$u" || ! systemctl restart "$u"; then
+			die "systemctl restart $u"
+		fi
+		WG="restarted (its address, port or peer changed: this router saw a cut)"
+	fi
+	TMPF=
+}
+
+wg_down() { # NAME
+	systemctl disable --now "wg-quick@cg-$1" 2>/dev/null || :
+	rm -f "$WG_DIR/cg-$1.conf"
+}
+
+nat_apply() {
+	cengarde-nat apply || die "cengarde-nat apply failed (see above)"
+}
+
+# ---- the main IPv4, and a server behind NAT ----
+
+# main_ipv4: "ADDR DEV" of the default route, if any.
+main_ipv4() {
+	ip -4 route get 192.0.2.1 2>/dev/null |
+		awk '{ for (i = 1; i < NF; i++) { if ($i == "src") a = $(i + 1); if ($i == "dev") d = $(i + 1) } } END { if (a != "") print a, d }'
+}
+private4() {
+	case $1 in
+	10.* | 192.168.*) return 0 ;;
+	172.*)
+		local b="${1#172.}"
+		b=${b%%.*}
+		[ "$b" -ge 16 ] && [ "$b" -le 31 ]
+		;;
+	*) return 1 ;;
+	esac
+}
+cgnat4() {
+	case $1 in
+	100.*)
+		local b="${1#100.}"
+		b=${b%%.*}
+		[ "$b" -ge 64 ] && [ "$b" -le 127 ]
+		;;
+	*) return 1 ;;
+	esac
+}
+
+# set_conf VAR VALUE: VAR="VALUE" in nat.conf, in place or added.
+set_conf() {
+	TMPF=$CONF.new
+	{ [ -e "$CONF" ] && cat "$CONF"; } | awk -v var="$1" -v val="$2" '
+	index($0, var "=") == 1 { if (!done) print var "=\"" val "\""; done = 1; next }
+	{ print }
+	END { if (!done) print var "=\"" val "\"" }' >"$TMPF"
+	chmod 0644 "$TMPF"
+	mv "$TMPF" "$CONF"
+	TMPF=
+	eval "$1=\$2"
+}
+
+# behind_nat: on a server whose main IPv4 is private (a home router, or a
+# cloud with 1:1 NAT), FORWARD_SKIP_SRC once, and what to open in front.
+behind_nat() {
+	local m a d nets
+	m=$(main_ipv4)
+	[ -n "$m" ] || return 0
+	a=${m% *} d=${m#* }
+	if cgnat4 "$a"; then
+		warn "this server's main IPv4, $a, is in 100.64.0.0/10: it is probably behind carrier-grade NAT, and routers cannot reach it as a server; it needs a public IPv4"
+		return 0
+	fi
+	private4 "$a" || return 0
+	if ! grep -q '^FORWARD_SKIP_SRC=' "$CONF" 2>/dev/null; then
+		nets=$(ip -4 route show dev "$d" scope link proto kernel 2>/dev/null | awk '{ print $1 }' | tr '\n' ' ' | sed 's/ $//')
+		if [ -n "$nets" ]; then
+			set_conf FORWARD_SKIP_SRC "$nets"
+			say "sources in $nets (this server's own network) are never forwarded to a router: FORWARD_SKIP_SRC in $CONF"
+		fi
+	fi
+	say "this server's main IPv4, $a on $d, is private: it is behind a home router or a cloud with 1:1 NAT (Oracle Cloud, AWS, GCP)."
+	say "open UDP $CENGARDE_PORT, and the ports \"cengarde-vps-setup forward\" lists, towards $a in your home router or in the provider's firewall (security list)${PUBLIC_IP:+; routers reach it at $PUBLIC_IP}"
+}
+
+# ---- the commands ----
+
+# is_04_wg0: wg0.conf is cengarde 0.4's.
+is_04_wg0() {
+	[ -e "$WG_DIR/wg0.conf" ] && head -n 1 "$WG_DIR/wg0.conf" | grep -q '^# Written by cengarde-vps-setup'
+}
+
+# stop_04_wg0: cengarde 0.4's wg0 stopped, before the admin lock is taken:
+# systemd, not this script, runs its PostDown ("cengarde-nat down wg0"),
+# which takes the lock itself and would wait for this script until
+# TimeoutStopSec.
+stop_04_wg0() {
+	! is_04_wg0 || systemctl disable --now wg-quick@wg0 2>/dev/null || :
+}
+
+# migrate_04: cengarde 0.4's single wg0 (stopped by stop_04_wg0) and its IP
+# pass state.
+migrate_04() {
+	local v
+	if is_04_wg0; then
+		rm -f "$WG_DIR/wg0.conf"
+		say "cengarde 0.4's wg0 stopped and removed: each router has its own cg-NAME now"
+	fi
+	if [ -e "$OLD_PASS" ]; then
+		v=$(head -n 1 "$OLD_PASS" 2>/dev/null || :)
+		if [ ! -e "$PASS_FILE" ] && { [ "$v" = on ] || [ "$v" = off ]; }; then
+			mkdir -p "$STATE_DIR"
+			chown "$ENGINE_USER:$ENGINE_GROUP" "$STATE_DIR" && chmod 0750 "$STATE_DIR"
+			echo "$v" >"$PASS_FILE"
+			chown "$ENGINE_USER:$ENGINE_GROUP" "$PASS_FILE"
+			say "IP pass $v, as the router last asked cengarde 0.4"
+		fi
+		rm -f "$OLD_PASS"
+		rmdir "${OLD_PASS%/*}" 2>/dev/null || :
+	fi
+}
+
+check_ports() {
+	[ $((WG_PORT_BASE + 31)) -le 65535 ] ||
+		die "WG_PORT_BASE $WG_PORT_BASE: the 32 WireGuard ports from it go past 65535"
+	if [ "$CENGARDE_PORT" -ge "$WG_PORT_BASE" ] && [ "$CENGARDE_PORT" -le $((WG_PORT_BASE + 31)) ]; then
+		die "CENGARDE_PORT $CENGARDE_PORT is inside the WireGuard ports $WG_PORT_BASE-$((WG_PORT_BASE + 31))"
+	fi
+}
+
+check_proto() {
+	P=$(engine_proto)
+	[ "$P" = 3 ] ||
+		die "this cengarde-vps-setup writes protocol 3 configurations, and the engine says protocol ${P:-unknown}: install both from one checkout (contrib/vps/install.sh)"
+}
+
+# import: /etc/cengarde/secret (cloud-config) as the first router, only
+# into an empty clients/, and deleted once imported: a router removed
+# later must not come back with the next install.sh.
+import() {
+	local s other
+	[ -e "$SECRET_FILE" ] || return 0
+	SECRET=$(head -n 1 "$SECRET_FILE" | tr -d ' \t\r')
+	if [ "$(nrouters)" -gt 0 ]; then
+		other=$(with_secret)
+		if [ -n "$other" ]; then
+			rm -f "$SECRET_FILE"
+			say "$SECRET_FILE is router $other's secret, already configured: removed"
+		else
+			warn "ignoring $SECRET_FILE: routers are configured; use \"cengarde-vps-setup add\""
+		fi
+		return 0
+	fi
+	keys || die "$SECRET_FILE is not a pairing secret (LuCI shows it in the VPS tab)"
+	is_name "$ROUTER_NAME" || die "ROUTER_NAME in $CONF: not a router name"
+	s=$(free_slot)
+	C_NAME=$ROUTER_NAME C_SECRET=$SECRET C_SLOT=$s C_ADDR=$LEGACY_TUNNEL C_LABEL=''
+	C_ADDED=$(date -u +%Y-%m-%dT%H:%M:%SZ) C_FORWARD=yes C_MAXP='' C_IMPORTED=1 C_LEGACY=1
+	save
+	rm -f "$SECRET_FILE"
+	say "router $C_NAME imported from $SECRET_FILE (then removed), tunnel address $C_ADDR, WireGuard port $((WG_PORT_BASE + s))"
+}
+
+# regen: everything from clients/.
+regen() {
+	local n
+	ensure_dirs
+	for n in $(routers); do
+		load "$n"
+		keys_of "$n"
+		wg_up
+		[ "$WG" = unchanged ] || say "cg-$n: $WG"
+	done
+	write_conf
+	[ "$RELOAD" = unchanged ] || say "engine: $RELOAD"
+	nat_apply
+}
+
+cmd_default() {
+	check_proto
+	check_ports
+	stop_04_wg0
+	lock
+	migrate_04
+	import
+	behind_nat
+	regen
+	low_pass
+	if [ "$(nrouters)" -eq 0 ]; then
+		say "no router yet. On the router, LuCI shows its secret (VPS tab); here:"
+		say "  sudo cengarde-vps-setup add NAME     (then paste the secret)"
+	fi
+}
+
+cmd_add() {
+	local name='' label='' label_set='' addr='' replace='' rename='' proto='' other old='' s newpass=''
+	PUBLIC_IP=''
+	while [ $# -gt 0 ]; do
+		case $1 in
+		--label)
+			[ $# -ge 2 ] || die "--label needs a text"
+			label=$2 label_set=1
+			shift
+			;;
+		--tunnel-addr)
+			[ $# -ge 2 ] || die "--tunnel-addr needs an address"
+			addr=$2
+			shift
+			;;
+		--replace) replace=1 ;;
+		--rename)
+			[ $# -ge 2 ] || die "--rename needs the old name"
+			rename=$2
+			shift
+			;;
+		--proto)
+			[ $# -ge 2 ] || die "--proto needs a number"
+			proto=$2
+			shift
+			;;
+		--public-ip)
+			[ $# -ge 2 ] || die "--public-ip needs an address"
+			PUBLIC_IP=$2
+			shift
+			;;
+		-*) die "add: unknown option $1" ;;
+		*)
+			[ -z "$name" ] || die "add: one name only"
+			name=$1
+			;;
+		esac
+		shift
+	done
+	name=${name:-$ROUTER_NAME}
+	is_name "$name" || die "$name: a router's name is 1 to 12 of a-z, 0-9 and -, not starting with -, and not \"default\""
+	case $label in *[![:print:]]* | *'"'* | *\\*) die "--label: printable characters only, no quotes" ;; esac
+	[ ${#label} -le 64 ] || die "--label: 64 characters at most"
+	[ -z "$addr" ] || is_tunnel "$addr" || die "--tunnel-addr $addr: expected 10.79.X.Y, from 10.79.0.2 to 10.79.255.254"
+	[ -z "$replace" ] || [ -z "$rename" ] || die "--replace and --rename do not go together"
+	[ -z "$rename" ] || is_name "$rename" || die "--rename $rename: not a router name"
+	P=$(engine_proto)
+	if [ -n "$proto" ] && [ "$proto" != "$P" ]; then
+		die "the router speaks protocol $proto, and this server's engine ($(cengarde version 2>/dev/null)) protocol ${P:-unknown}. Upgrade the server to the router's commit (LuCI shows it) first:
+  git -C /opt/cengarde fetch --depth 1 https://github.com/KevinashoUWU/cengarde COMMIT
+  git -C /opt/cengarde checkout FETCH_HEAD && sudo sh /opt/cengarde/contrib/vps/install.sh"
+	fi
+	check_proto
+	check_ports
+	read_secret "$name"
+	keys || die "that is not a pairing secret (the router's LuCI shows it in the VPS tab, 44 characters)"
+	lock
+	ensure_dirs
+	other=$(with_secret)
+	if [ -e "$CLIENTS/$name" ]; then
+		load "$name"
+		if [ "$C_SECRET" != "$SECRET" ]; then
+			[ -z "$other" ] || die "that secret is router $other's already"
+			if [ -z "$replace" ] &&
+				! ask "Router $name exists (tunnel $C_ADDR, last heard $(last_seen)) with another secret. Replace it?"; then
+				die "router $name exists with another secret: \"add $name --replace\" replaces it"
+			fi
+			say "replacing router $name: new secret"
+			C_SECRET=$SECRET C_IMPORTED='' C_ADDED=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+			newpass=1
+		fi
+	elif [ -n "$other" ]; then
+		if [ "$rename" != "$other" ] && ! ask "That secret is router $other's. Rename $other to $name?"; then
+			die "that secret is router $other's: \"add $name --rename $other\" renames it"
+		fi
+		load "$other"
+		old=$other
+		C_NAME=$name
+		keep "$CLIENTS/$old" "$CLIENTS/$name"
+		mv "$CLIENTS/$old" "$CLIENTS/$name"
+	else
+		[ -z "$rename" ] || die "--rename $rename: no router with that secret"
+		other=$(routers | head -n 1)
+		if [ "$(nrouters)" -ge "$MAX_ROUTERS" ]; then
+			die "this server already has router $other: protocol 3 serves one router, and several routers need cengarde 0.5 on both ends (or remove $other first, or \"add $other --replace\")"
+		fi
+		s=$(free_slot) || die "32 routers already: no WireGuard port left"
+		C_NAME=$name C_SECRET=$SECRET C_SLOT=$s C_ADDR=$LEGACY_TUNNEL C_LABEL='' C_FORWARD=yes C_MAXP=''
+		C_ADDED=$(date -u +%Y-%m-%dT%H:%M:%SZ) C_IMPORTED='' C_LEGACY=1
+		newpass=1
+	fi
+	if [ -n "$addr" ]; then
+		C_ADDR=$addr C_LEGACY=''
+	fi
+	[ -z "$label_set" ] || C_LABEL=$label
+	[ "$C_ADDR" != "$SERVER_ADDR" ] || die "$C_ADDR is the server's own tunnel address"
+	for other in $(routers); do
+		[ "$other" != "$C_NAME" ] || continue
+		[ "$(kv "$CLIENTS/$other" TUNNEL_ADDR)" != "$C_ADDR" ] ||
+			die "router $other has the tunnel address $C_ADDR: generate a new secret on the router, or give another with --tunnel-addr"
+	done
+	keep "$CLIENTS/$C_NAME"
+	if [ -n "$newpass" ]; then
+		# A new router asks for IP pass itself. Its file goes before the
+		# engine restarts with the new key, so that the router's first wish
+		# is never lost, and comes back if this command fails.
+		keep "$PASS_FILE"
+		rm -f "$PASS_FILE"
+	fi
+	save
+	# The engine first: when it refuses the configuration, nothing changed.
+	write_conf
+	kept
+	keys_of "$C_NAME"
+	if [ -n "$old" ]; then
+		wg_down "$old"
+		say "router $old renamed to $C_NAME"
+	fi
+	wg_up
+	behind_nat
+	nat_apply
+	say "router $C_NAME: tunnel address $C_ADDR, WireGuard 127.0.0.1:$((WG_PORT_BASE + C_SLOT)) (cg-$C_NAME, $WG)"
+	say "this server: $(ip -o addr show scope global 2>/dev/null | awk '{ sub(/\/.*/, "", $4); printf "%s ", $4 }')port $CENGARDE_PORT"
+	say "engine: $RELOAD"
+}
+
+cmd_remove() {
+	local name="${1:-}" had
+	[ -n "$name" ] || die "usage: remove NAME"
+	is_name "$name" || die "$name: not a router name"
+	check_proto
+	lock
+	[ -e "$CLIENTS/$name" ] || die "no router $name"
+	load "$name"
+	had=$(awk -v a="$C_ADDR" '$1 == "dnat" && $5 == a { print $2 " " ($3 == $4 ? $3 : $3 "-" $4) }' \
+		"$NAT_STATE/applied" 2>/dev/null | tr '\n' ',' | sed 's/,$//; s/,/, /g')
+	keep "$CLIENTS/$name"
+	rm -f "$CLIENTS/$name"
+	write_conf
+	kept
+	wg_down "$name"
+	[ "$C_IMPORTED" != 1 ] || rm -f "$SECRET_FILE"
+	rm -f "$PASS_FILE"
+	nat_apply
+	say "router $name removed${had:+; released its forwarding: $had}"
+	say "engine: $RELOAD"
+}
+
+cmd_list() {
+	local n p
+	p=$(engine_proto)
+	say "engine: $(cengarde version 2>/dev/null || echo 'not installed')"
+	printf '%-12s %-4s %-6s %-14s %-8s %-28s %s\n' NAME SLOT PORT TUNNEL FORWARD "LAST HEARD" LABEL
+	for n in $(routers); do
+		load "$n"
+		printf '%-12s %-4s %-6s %-14s %-8s %-28s %s\n' "$n" "$C_SLOT" $((WG_PORT_BASE + C_SLOT)) "$C_ADDR" \
+			"$C_FORWARD" "$(last_seen)" "$C_LABEL"
+	done
+	[ "$(nrouters)" -gt 0 ] || say "no router (cengarde-vps-setup add NAME)"
+	[ "$p" != 3 ] || [ ! -e "$NAT_STATE/applied" ] ||
+		say "IP pass: $(awk '$1 == "dnat" { print "on, to " $7 " (" $5 ")"; f = 1; exit } END { if (!f) print "off" }' "$NAT_STATE/applied")"
+}
+
+# allow_note TOKEN: what "forward allow" does for TOKEN with protocol 3,
+# whose IP pass forwards only PASSTHROUGH_PORTS: below 1024, by default,
+# nothing yet.
+allow_note() {
+	local lo="${1#*:}" hi
+	hi=${lo#*-} lo=${lo%-*}
+	if [ "$hi" -lt "$PASS_LO" ] || [ "$lo" -gt "$PASS_HI" ]; then
+		say "$1 is allowed, but nothing forwards it yet: with protocol 3, IP pass forwards only PASSTHROUGH_PORTS ($PASSTHROUGH_PORTS); a router gets it with protocol 4 (cengarde 0.5), or with a PASSTHROUGH_PORTS that includes it"
+	elif [ "$lo" -lt "$PASS_LO" ] || [ "$hi" -gt "$PASS_HI" ]; then
+		say "$1 is allowed; with protocol 3, IP pass forwards only its ports inside PASSTHROUGH_PORTS ($PASSTHROUGH_PORTS)"
+	else
+		say "$1 is allowed, inside PASSTHROUGH_PORTS ($PASSTHROUGH_PORTS): IP pass forwards it to its router, unless this server uses it (cengarde-vps-setup forward says)"
+	fi
+}
+
+# low_pass: a PASSTHROUGH_PORTS that starts below 1024, as cengarde 0.4 took
+# it: those ports are reserved now, unless in FORWARD_ALLOW_LOW.
+low_pass() {
+	[ "$PASS_LO" -lt 1024 ] || return 0
+	warn "PASSTHROUGH_PORTS ($PASSTHROUGH_PORTS) starts below 1024: cengarde 0.4 forwarded ports $PASS_LO-1023 too; now IP pass forwards only those in FORWARD_ALLOW_LOW (\"$FORWARD_ALLOW_LOW\"): cengarde-vps-setup forward allow tcp:PORT udp:PORT..."
+}
+
+# tokens CMD TOKEN...: checks PROTO:PORT[-PORT] tokens.
+tokens() {
+	local t lo hi
+	[ $# -gt 1 ] || die "forward $1: give PROTO:PORT[-PORT], such as tcp:443"
+	shift
+	for t in "$@"; do
+		echo "$t" | grep -Eqx '(tcp|udp):[0-9]{1,5}(-[0-9]{1,5})?' || die "$t: expected tcp|udp:PORT[-PORT]"
+		lo=${t#*:} hi=${lo#*-} lo=${lo%-*}
+		if ! is_port "$lo" || ! is_port "$hi" || [ "$lo" -gt "$hi" ]; then
+			die "$t: ports 1 to 65535, first to last"
+		fi
+	done
+}
+# in_list LIST TOKEN, add_list LIST TOKEN, del_list LIST TOKEN
+in_list() { echo " $1 " | grep -q " $2 "; }
+add_list() { if in_list "$1" "$2"; then echo "$1"; else echo "${1:+$1 }$2"; fi; }
+del_list() { echo " $1 " | sed "s| $2 | |g; s|^ *||; s| *$||"; }
+
+# always_reserved TOKEN: SSH, cengarde or WireGuard.
+always_reserved() {
+	local p="${1%%:*}" lo="${1#*:}" hi
+	hi=${lo#*-} lo=${lo%-*}
+	[ "$p" = tcp ] && [ "$lo" -le "$SSH_PORT" ] && [ "$hi" -ge "$SSH_PORT" ] && return 0
+	[ "$p" = udp ] && [ "$lo" -le "$CENGARDE_PORT" ] && [ "$hi" -ge "$CENGARDE_PORT" ] && return 0
+	[ "$p" = udp ] && [ "$lo" -le $((WG_PORT_BASE + 31)) ] && [ "$hi" -ge "$WG_PORT_BASE" ] && return 0
+	return 1
+}
+
+cmd_forward() {
+	local sub="${1:-}" t v n
+	case $sub in
+	'')
+		cengarde-nat status 2>&1 | grep -v '^cengarde-nat: reserved: '
+		echo "Reserved on this server, never forwarded nor given to a router:"
+		cengarde-nat reserved -v | awk '{ w = $2
+			sub(/^listener:/, "something listening here: ", w)
+			if (w == "listener") w = "something listening here"
+			if (w == "below-1024") w = "below 1024 (forward allow frees one; IP pass forwards it only inside PASSTHROUGH_PORTS)"
+			if (w == "ssh") w = "SSH"
+			if (w == "docker") w = "published by Docker"
+			if (w == "FORWARD_RESERVED") w = "FORWARD_RESERVED in nat.conf"
+			printf "  %-18s %s\n", $1, w }'
+		low_pass
+		echo "Forwarding per router (cengarde-vps-setup forward off|on NAME):"
+		for n in $(routers); do
+			load "$n"
+			echo "  $n: $C_FORWARD, last heard $(last_seen)"
+		done
+		behind_nat_view
+		;;
+	off | on)
+		[ $# -eq 2 ] || die "usage: forward $sub NAME"
+		check_proto
+		lock
+		if ! is_name "$2" || [ ! -e "$CLIENTS/$2" ]; then
+			die "no router $2"
+		fi
+		load "$2"
+		if [ "$sub" = on ]; then C_FORWARD=yes; else C_FORWARD=no; fi
+		keep "$CLIENTS/$2"
+		save
+		write_conf
+		kept
+		nat_apply
+		say "forwarding to router $2: $C_FORWARD"
+		;;
+	limit)
+		[ $# -eq 3 ] || die "usage: forward limit NAME N|default"
+		lock
+		if ! is_name "$2" || [ ! -e "$CLIENTS/$2" ]; then
+			die "no router $2"
+		fi
+		load "$2"
+		case $3 in
+		default) C_MAXP='' ;;
+		*)
+			case $3 in '' | *[!0-9]*) die "forward limit: N is a number of ports, or default" ;; esac
+			[ "$3" -le 131070 ] || die "forward limit: at most 131070 (every port, TCP and UDP)"
+			C_MAXP=$3
+			;;
+		esac
+		save
+		say "router $2 may open ${C_MAXP:-the default number of} ports with its own rules (protocol 4, cengarde 0.5, on: today a router has only IP pass)"
+		;;
+	allow | disallow)
+		tokens "$@"
+		shift
+		check_proto
+		lock
+		v=$FORWARD_ALLOW_LOW
+		for t in "$@"; do
+			case ${t#*:} in *-*) n=${t##*-} ;; *) n=${t#*:} ;; esac
+			[ "$n" -le 1023 ] ||
+				die "$t: forward $sub is for ports below 1024; the others, inside PASSTHROUGH_PORTS ($PASSTHROUGH_PORTS), go to IP pass's router unless reserved"
+			if [ "$sub" = allow ]; then v=$(add_list "$v" "$t"); else v=$(del_list "$v" "$t"); fi
+		done
+		keep "$CONF"
+		set_conf FORWARD_ALLOW_LOW "$v"
+		write_conf
+		kept
+		nat_apply
+		say "FORWARD_ALLOW_LOW=\"$v\""
+		if [ "$sub" = allow ]; then
+			for t in "$@"; do allow_note "$t"; done
+		fi
+		;;
+	reserve | unreserve)
+		tokens "$@"
+		shift
+		check_proto
+		lock
+		for t in "$@"; do
+			if always_reserved "$t"; then
+				[ "$sub" = reserve ] || die "$t: SSH, cengarde and WireGuard are always reserved"
+			fi
+			v=${t#*:}
+			if [ "$sub" = unreserve ] && [ "${v%-*}" -le 1023 ]; then
+				die "$t: below 1024 it is \"forward allow\""
+			fi
+			if [ "$sub" = reserve ]; then
+				FORWARD_RESERVED=$(add_list "$FORWARD_RESERVED" "$t")
+				FORWARD_UNRESERVE=$(del_list "$FORWARD_UNRESERVE" "$t")
+			else
+				FORWARD_RESERVED=$(del_list "$FORWARD_RESERVED" "$t")
+				FORWARD_UNRESERVE=$(add_list "$FORWARD_UNRESERVE" "$t")
+			fi
+		done
+		keep "$CONF"
+		set_conf FORWARD_RESERVED "$FORWARD_RESERVED"
+		set_conf FORWARD_UNRESERVE "$FORWARD_UNRESERVE"
+		write_conf
+		kept
+		nat_apply
+		say "FORWARD_RESERVED=\"$FORWARD_RESERVED\" FORWARD_UNRESERVE=\"$FORWARD_UNRESERVE\""
+		;;
+	*) die "usage: forward [off|on NAME | limit NAME N|default | allow|disallow|reserve|unreserve PROTO:PORT[-PORT]...]" ;;
+	esac
+}
+
+# behind_nat_view: what behind_nat says, changing nothing.
+behind_nat_view() {
+	local m a d
+	m=$(main_ipv4)
+	[ -n "$m" ] || return 0
+	a=${m% *} d=${m#* }
+	if cgnat4 "$a"; then
+		echo "This server's main IPv4, $a, is in 100.64.0.0/10: probably behind carrier-grade NAT, unreachable as a server."
+	elif private4 "$a"; then
+		echo "This server's main IPv4, $a on $d, is private: behind a home router or a cloud with 1:1 NAT."
+		echo "Open towards $a, in your home router or in the provider's firewall (security list):"
+		echo "  udp $CENGARDE_PORT (cengarde)"
+		if [ -e "$NAT_STATE/applied" ]; then
+			awk '$1 == "dnat" { printf "  %s %s (to router %s)\n", $2, ($3 == $4 ? $3 : $3 "-" $4), $7 }' "$NAT_STATE/applied"
+		fi
+	fi
+}
+
+cmd_refresh() {
+	check_proto
+	lock
+	write_conf
+	[ "$RELOAD" = unchanged ] || say "engine: $RELOAD"
+}
+
+cmd_purge() {
+	local all='' f n s0='' v u
+	case ${1:-} in
+	'') ;;
+	--all) all=1 ;;
+	*) die "usage: purge [--all]" ;;
+	esac
+	# The units first, the admin lock after: systemd, not this script, runs
+	# cengarde-nat.service's ExecStop ("cengarde-nat down"), which takes the
+	# lock itself and would wait for this script until TimeoutStopSec.
+	for f in "$WG_DIR"/cg-*.conf; do
+		[ -e "$f" ] || continue
+		n=${f##*/cg-}
+		n=${n%.conf}
+		systemctl disable --now "wg-quick@cg-$n" 2>/dev/null || :
+	done
+	for u in cengarde-nat-check.timer cengarde-nat-check.service cengarde-passthrough.path \
+		cengarde-passthrough.service cengarde-forward.path cengarde-forward.service cengarde.service \
+		cengarde-nat.service; do
+		systemctl disable --now "$u" 2>/dev/null || :
+	done
+	lock
+	# Again, in case the unit was not running or its ExecStop failed.
+	cengarde-nat down || warn "cengarde-nat down failed"
+	rm -f "$UNITS/cengarde-nat.service" "$UNITS/cengarde-nat-check.timer" "$UNITS/cengarde-nat-check.service" \
+		"$UNITS/cengarde-passthrough.path" "$UNITS/cengarde-passthrough.service" \
+		"$UNITS/cengarde-forward.path" "$UNITS/cengarde-forward.service" \
+		"$UNITS/nftables.service.d/cengarde.conf" "$UNITS/cengarde.service"
+	rm -rf "$UNITS/cengarde.service.d"
+	rmdir "$UNITS/nftables.service.d" 2>/dev/null || :
+	systemctl daemon-reload 2>/dev/null || :
+	# cengarde 0.4 serves one router, and its install.sh reads its secret
+	# from /etc/cengarde/secret: the router in slot 0.
+	for n in $(routers); do
+		[ "$(kv "$CLIENTS/$n" SLOT)" = 0 ] && s0=$n
+	done
+	if [ -n "$s0" ]; then
+		(umask 077 && kv "$CLIENTS/$s0" SECRET >"$SECRET_FILE")
+		say "router $s0's secret written back to $SECRET_FILE, for cengarde 0.4's install.sh"
+	else
+		warn "no router in slot 0: $SECRET_FILE not written"
+	fi
+	v=$(head -n 1 "$PASS_FILE" 2>/dev/null || :)
+	if [ "$v" = on ] || [ "$v" = off ]; then
+		mkdir -p "${OLD_PASS%/*}"
+		echo "$v" >"$OLD_PASS"
+	fi
+	if [ -n "$all" ]; then
+		for n in $(routers); do rm -f "$WG_DIR/cg-$n.conf"; done
+		rm -rf "$CLIENTS" "$STATE_DIR" "$NAT_STATE"
+		rm -f "$IDLE_KEY" "$SYSUSERS"
+		userdel "$ENGINE_USER" 2>/dev/null || :
+		say "routers, their WireGuard files and the engine's state removed"
+	fi
+	say "purged. Back to cengarde 0.4: check out its commit, then run its contrib/vps/install.sh"
+}
+
+case "${1:-}" in
+'') cmd_default ;;
+add)
+	shift
+	cmd_add "$@"
+	;;
+remove)
+	shift
+	cmd_remove "$@"
+	;;
+list) cmd_list ;;
+forward)
+	shift
+	cmd_forward "$@"
+	;;
+refresh) cmd_refresh ;;
+purge)
+	shift
+	cmd_purge "$@"
+	;;
+-h | --help | help) sed -n '2,/^# SPDX/p' "$0" | sed 's/^# \{0,1\}//' ;;
+*) die "unknown command $1 (cengarde-vps-setup --help)" ;;
+esac

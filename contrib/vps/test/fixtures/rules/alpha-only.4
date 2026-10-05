@@ -1,0 +1,24 @@
+*filter
+:CG_IN - [0:0]
+:CG_FWD - [0:0]
+-A CG_IN -p udp --dport 65500 -j ACCEPT
+-A CG_IN ! -i lo -p udp --dport 65501:65532 -j DROP
+-A CG_FWD -i cg-+ -d 169.254.0.0/16 -j REJECT --reject-with icmp-net-prohibited
+-A CG_FWD -o cg-+ -m conntrack --ctstate DNAT -j ACCEPT
+-A CG_FWD -i cg-+ -o cg-+ -j DROP
+-A CG_FWD -i cg-+ -j ACCEPT
+-A CG_FWD -o cg-+ -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+COMMIT
+*nat
+:CG_PRE - [0:0]
+:CG_POST - [0:0]
+-A CG_PRE -d 10.79.0.1 -j RETURN
+-A CG_PRE -p tcp --dport 1:1023 -j RETURN
+-A CG_PRE -p udp --dport 1:1023 -j RETURN
+-A CG_PRE -p udp --dport 65500:65532 -j RETURN
+-A CG_PRE -p tcp --dport 9000 -j DNAT --to-destination 10.79.0.2:22
+-A CG_PRE -p tcp --dport 7000:7010 -j DNAT --to-destination 10.79.0.2
+-A CG_PRE -p tcp --dport 12000:12099 -j DNAT --to-destination 10.79.0.2:2000-2099/12000
+-A CG_POST -s 10.79.0.0/16 -o cg-+ -m conntrack --ctstate DNAT -j SNAT --to-source 10.79.0.1
+-A CG_POST -s 10.79.0.0/16 ! -o cg-+ -j MASQUERADE
+COMMIT

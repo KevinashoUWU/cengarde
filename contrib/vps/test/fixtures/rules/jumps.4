@@ -1,0 +1,4 @@
+filter INPUT -j CG_IN
+filter FORWARD -j CG_FWD
+nat PREROUTING -m addrtype --dst-type LOCAL -j CG_PRE
+nat POSTROUTING -j CG_POST

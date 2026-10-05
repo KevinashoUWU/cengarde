@@ -1,0 +1,8 @@
+# cengarde forward table 1, written by the engine: data only
+pass bravo
+rule alpha tcp 9000 9000 22
+rule alpha tcp 7000 7010 7000
+rule bravo udp 5000 5010 15000
+rule bravo tcp 6000 6000 6000
+rule bravo udp 6000 6000 6000
+rule alpha tcp 12000 12099 2000
