@@ -79,6 +79,16 @@ static void test_overrides(void)
 	CHECK_EQ(cg_ovr_set(&t, "never-set", CG_OVR_AUTO), 0);
 	CHECK_EQ(t.n, 1);
 
+	/* A name fits with its terminator: IFNAMSIZ - 1 characters at most. */
+	CHECK_EQ(cg_ovr_set(&t, "abcdefghijklmno", CG_OVR_OFF), 0);
+	CHECK_EQ(t.n, 2);
+	CHECK_EQ(cg_ovr_get(&t, "abcdefghijklmno"), CG_OVR_OFF);
+	CHECK_EQ(cg_ovr_set(&t, "abcdefghijklmnop", CG_OVR_OFF), -1);
+	CHECK_EQ(t.n, 2);
+	CHECK_EQ(cg_ovr_get(&t, "abcdefghijklmnop"), CG_OVR_AUTO);
+	CHECK_EQ(cg_ovr_set(&t, "abcdefghijklmno", CG_OVR_AUTO), 0);
+	CHECK_EQ(t.n, 1);
+
 	/* Full table: new names are refused, existing ones still change. */
 	for (int i = 0; t.n < CG_CTL_OVERRIDES; i++) {
 		snprintf(name, sizeof(name), "eth%d", i);
