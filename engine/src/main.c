@@ -1,11 +1,13 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 #include <errno.h>
 #include <getopt.h>
+#include <inttypes.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/signalfd.h>
+#include <unistd.h>
 
 #include "config.h"
 #include "ctl.h"
@@ -13,6 +15,8 @@
 #include "log.h"
 #include "pair.h"
 #include "proto.h"
+#include "rcvbudget.h"
+#include "sock.h"
 #include "util.h"
 
 static void usage(FILE *f)
@@ -146,6 +150,30 @@ static int keys(void)
 	return rc;
 }
 
+/* "cengarde -t" on a server: its listen sockets and their receive buffers
+ * on this machine (rcvbudget.h), as a start would set them up. */
+static void server_plan(const struct cg_config *cfg)
+{
+	uint64_t mem[3];
+	int from = cg_udp_mem_read(mem), junk = cfg->lanes > 1;
+	long page = sysconf(_SC_PAGESIZE);
+	struct cg_rcvbudget b = cg_rcvbudget(from >= 0 ? mem : NULL, page > 0 ? (uint64_t)page : 4096,
+					     cg_rcvbudget_sockets(cfg->lanes, 1, 1, junk), cfg->rcvbuf);
+
+	if (junk)
+		printf("listen: %u lanes by link id and a junk socket\n", cfg->lanes);
+	else
+		printf("listen: one socket (lanes = 1)\n");
+	if (from >= 0)
+		printf("rcvbuf: %d bytes per socket for %u receiving sockets, within a budget of %" PRIu64
+		       " MiB (half of net.ipv4.udp_mem's pressure threshold%s)\n",
+		       b.per_socket, b.sockets, b.budget >> 20,
+		       from ? ", estimated from RAM: the sysctl is not visible in this network namespace" : "");
+	else
+		printf("rcvbuf: %d bytes per socket (net.ipv4.udp_mem unreadable: no budget)\n", b.per_socket);
+	printf("rcvbuf_capped: %s\n", b.capped ? "true" : "false");
+}
+
 static int genkey(void)
 {
 	uint8_t key[CG_KEY_LEN];
@@ -212,10 +240,12 @@ int main(int argc, char **argv)
 		free(cfg);
 		return 1;
 	}
-	cg_log_level = verbose ? CG_LOG_DEBUG : cfg->log_level;
+	cg_log_level_set(verbose ? CG_LOG_DEBUG : cfg->log_level);
 	cg_log_warnings(path, warn);
 	if (check) {
 		printf("%s: ok (%s)\n", path, cfg->mode == CG_MODE_CLIENT ? "client" : "server");
+		if (cfg->mode == CG_MODE_SERVER)
+			server_plan(cfg);
 		cg_config_free(cfg);
 		free(cfg);
 		return 0;
@@ -232,6 +262,7 @@ int main(int argc, char **argv)
 		cg_err("signalfd: %s", strerror(errno));
 		return 1;
 	}
+	cg_cpus_save();
 	run = (struct cg_run){ .path = path, .argv = argv, .sigfd = sigfd, .verbose = verbose };
 	return cfg->mode == CG_MODE_CLIENT ? cg_client_run(cfg, &run) : cg_server_run(cfg, &run);
 }

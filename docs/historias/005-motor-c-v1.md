@@ -1,7 +1,7 @@
 # 005 — Motor C v1: protocolo y arquitectura
 
-- **Fecha:** 2026-10-03 (actualizada el mismo día con la Fase 2, y el
-  2026-10-04 con las historias 009 y 010)
+- **Fecha:** 2026-10-03 (actualizada el mismo día con la Fase 2, el
+  2026-10-04 con las historias 009 y 010, y el 2026-10-05 con la 011)
 - **Estado:** vigente; la historia 006 sustituye la política de envío, las
   sondas y el formato de `cg_probe_info` (protocolo v2), y la 009 suma las
   banderas de IP pass (protocolo v3)
@@ -207,7 +207,9 @@ Rango de dos pasadas completas:
 - ~~**Servidor con varias IPs:** responder desde la IP de llegada
   (`IP_PKTINFO`)~~: hecho (historia 010, PR 2).
 - **Hilos y privilegios:** servidor multihilo (`SO_REUSEPORT`) si una vCPU se
-  queda corta; bajar privilegios (`CAP_NET_RAW`/`CAP_NET_ADMIN`).
+  queda corta: las colas `SO_REUSEPORT`, todavía con un hilo, están hechas
+  (historia 011, PR 3a) y los hilos del servidor, pendientes (PR 3e); bajar
+  privilegios (`CAP_NET_RAW`/`CAP_NET_ADMIN`).
 - ~~**Operación:** `SIGHUP` para recargar y socket de control~~: hecho
   (historia 009).
 - **IPv6:** no probado en el laboratorio (el kernel de la VM no tiene IPv6);
@@ -229,3 +231,5 @@ Rango de dos pasadas completas:
 - 2026-10-04: el servidor responde desde la dirección de llegada y el
   cliente acepta una lista de direcciones del servidor; el binario de
   OpenWrt x86_64 pasa de 97 a 110 KB (historia 010, PR 2).
+- 2026-10-05: el servidor escucha con un grupo `SO_REUSEPORT` de colas, una
+  por enlace, todavía con un hilo (historia 011, PR 3a).

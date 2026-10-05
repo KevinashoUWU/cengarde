@@ -1,5 +1,16 @@
-/* cengarde server: one listening socket for every client path, one socket
+/* cengarde server: listening sockets shared by every client path, one socket
  * towards WireGuard per session.
+ *
+ * Lanes: the listen address is a SO_REUSEPORT group of `lanes` sockets plus
+ * a junk socket, and a classic BPF program (steer.h) puts each datagram on
+ * the lane of its link id, so the copies of one packet wait in different
+ * receive queues and one queue's overflow rarely takes a whole packet. The
+ * download of path p leaves from lane p & (lanes - 1), the socket its link
+ * arrives on: each path has its own send buffer and its own probe reply
+ * batch. With lanes = 1, or a kernel that cannot steer, one socket as
+ * before. The receive buffers share a budget below net.ipv4.udp_mem
+ * (rcvbudget.h), so that the extra queues cannot starve every other UDP
+ * socket of the machine.
  *
  * A session is created only by a packet whose MAC verifies, and a path (a
  * client uplink, keyed by session and link id) only learns or changes its
@@ -24,6 +35,7 @@
  *
  * SPDX-License-Identifier: GPL-2.0-only */
 #include <errno.h>
+#include <inttypes.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -39,13 +51,17 @@
 #include "idmap.h"
 #include "log.h"
 #include "pktinfo.h"
+#include "rcvbudget.h"
 #include "replay.h"
 #include "sock.h"
 #include "status.h"
+#include "steer.h"
 #include "util.h"
 
 /* Probe interval assumed for a path until its client announces one. */
 #define DEFAULT_INTERVAL_MS 1000
+/* The junk socket's receive buffer: what a flood of garbage can fill. */
+#define JUNK_RCVBUF (256 * 1024)
 
 struct path {
 	int used;
@@ -77,17 +93,32 @@ struct session {
 	struct cg_arrivals arr;
 	struct cg_link_rx rx[CG_MAX_LINKS];
 	uint64_t up_pkts, up_bytes, down_pkts, down_bytes, wg_drops, toobig;
+	uint32_t rot; /* download batches sent: the first path of each rotates */
+};
+
+/* A listen socket of the group (steer.h). */
+struct lane {
+	int fd;
+	uint64_t rx;    /* datagrams read */
+	uint16_t links; /* link ids of the verified packets read from it */
 };
 
 struct server {
 	struct cg_config *cfg; /* replaced by a reload */
 	const struct cg_run *run;
 	const uint8_t *k_tx, *k_rx;
-	int ep, lfd, tfd;
-	int lfamily;     /* lfd's family */
-	int pktinfo;     /* lfd reports arrival addresses: replies leave from them */
-	uint16_t lport;  /* lfd's port, network order */
-	char laddr[64];  /* lfd's address as bound, for the log and the status */
+	int ep, tfd;
+	struct lane lane[CG_MAX_LANES];
+	uint32_t nlanes;        /* listen sockets: 1 without a group */
+	int jfd;                /* the group's junk socket, -1 without a group */
+	char steer_error[160];  /* why there is no group although lanes > 1 ("": none) */
+	int lfamily;     /* the listen sockets' family */
+	int pktinfo;     /* they report arrival addresses: replies leave from them */
+	uint16_t lport;  /* their port, network order */
+	char laddr[64];  /* their address as bound, for the log and the status */
+	struct cg_rcvbudget rb; /* receive buffers (rcvbudget.h) */
+	int udp_mem_from;       /* its udp_mem: 0 the sysctl, 1 estimated from RAM, -1 unknown */
+	int rcv_eff;            /* SO_RCVBUF the kernel reports for lane 0 */
 	struct session *s;
 	uint32_t max;
 	int32_t newest; /* index of the newest session, -1: none */
@@ -104,7 +135,8 @@ struct server {
 	uint64_t start_ms, next_status_ms, next_sweep_ms;
 
 	uint64_t rx_malformed, rx_auth_fail, rx_old, rx_dups, rx_trunc, rx_ctrunc, sessions_full;
-	struct cg_ratelimit rl_auth, rl_full, rl_send, rl_local;
+	uint64_t rx_junk, rx_short, rx_bad_version; /* read from the junk socket */
+	struct cg_ratelimit rl_auth, rl_full, rl_send, rl_local, rl_junk, rl_version;
 
 	struct cg_rxbatch in;
 	union cg_ctl_rx rxctl[CG_BATCH]; /* arrival addresses of a listen batch */
@@ -200,7 +232,7 @@ static struct session *session_create(struct server *s, uint32_t id, const struc
 			close(fd);
 		return NULL;
 	}
-	cg_sock_buffers(fd, s->cfg->rcvbuf, s->cfg->rcvbuf);
+	cg_sock_buffers(fd, s->rb.per_socket, s->cfg->rcvbuf);
 	memset(S, 0, sizeof(*S));
 	S->used = 1;
 	S->id = id;
@@ -363,14 +395,16 @@ static void queue_reply(struct server *s, int *nr, struct session *S, unsigned l
 	(*nr)++;
 }
 
-/* Sends the probe replies of a batch. sendmmsg stops at the first datagram
- * that fails, so one path whose address of ours went away would take the
- * replies of every later path with it: the batch goes on past the one that
- * failed. A full socket stops it, the rest would fail too. */
-static void flush_replies(struct server *s, int nr, uint64_t now_ms)
+/* Sends the probe replies of a batch read from one lane, on that lane, the
+ * socket their paths' downloads leave from. sendmmsg stops at the first
+ * datagram that fails, so one path whose address of ours went away would
+ * take the replies of every later path with it: the batch goes on past the
+ * one that failed. A full socket stops it, the rest would fail too; with
+ * lanes, that is only the paths of this lane. */
+static void flush_replies(struct server *s, int fd, int nr, uint64_t now_ms)
 {
 	for (int i = 0; i < nr;) {
-		int sent = sendmmsg(s->lfd, s->rmsg + i, (unsigned)(nr - i), MSG_DONTWAIT);
+		int sent = sendmmsg(fd, s->rmsg + i, (unsigned)(nr - i), MSG_DONTWAIT);
 
 		if (sent > 0) {
 			i += sent;
@@ -428,15 +462,16 @@ static void flush_wg(struct server *s, int nq)
 	}
 }
 
-static void listen_read(struct server *s)
+static void listen_read(struct server *s, struct lane *ln)
 {
 	for (int round = 0; round < CG_MAX_ROUNDS; round++) {
-		int n = cg_rx_ctl(s->lfd, &s->in, s->rxctl), nq = 0, nr = 0;
+		int n = cg_rx_ctl(ln->fd, &s->in, s->rxctl), nq = 0, nr = 0;
 		uint64_t now_us, now_ms;
 		uint32_t now32;
 
 		if (n <= 0)
 			return;
+		ln->rx += (uint64_t)n;
 		now_us = cg_now_us();
 		now_ms = now_us / 1000;
 		now32 = (uint32_t)now_us;
@@ -497,6 +532,7 @@ static void listen_read(struct server *s)
 				continue;
 			}
 			cg_replay_mark(&S->replay, h.seq);
+			ln->links |= (uint16_t)(1u << h.link);
 			S->last_rx_ms = now_ms;
 			P = path_update(s, S, h.link, from, &s->in.msg[i].msg_hdr, now_ms);
 			P->last_rx_ms = now_ms;
@@ -516,9 +552,42 @@ static void listen_read(struct server *s)
 		if (nq)
 			flush_wg(s, nq);
 		if (nr)
-			flush_replies(s, nr, now_ms);
+			flush_replies(s, ln->fd, nr, now_ms);
 		if (n < CG_BATCH)
 			return;
+	}
+}
+
+/* The junk socket: what the steering program found not to be protocol 3
+ * (steer.h). Counted and now and then logged, never parsed further; one
+ * batch per loop pass, so a flood fills only its small buffer and never
+ * starves the lanes. */
+static void junk_read(struct server *s)
+{
+	int n = cg_rx(s->jfd, &s->in);
+	uint64_t now_ms;
+	char a[64];
+
+	if (n <= 0)
+		return;
+	now_ms = cg_now_ms();
+	for (int i = 0; i < n; i++) {
+		const uint8_t *b = s->in.buf[i];
+		size_t len = s->in.msg[i].msg_len;
+
+		s->rx_junk++;
+		if (len < CG_HDR_LEN) {
+			s->rx_short++;
+			if (cg_ratelimit_ok(&s->rl_junk, now_ms, 10000))
+				cg_warn("short packet (%zu bytes) from %s: not cengarde", len,
+					cg_addr_str(&s->in.from[i], a, sizeof(a)));
+		} else if (b[0] >> 4 != CG_PROTO_VERSION) {
+			s->rx_bad_version++;
+			if (cg_ratelimit_ok(&s->rl_version, now_ms, 10000))
+				cg_warn("protocol v%d packet from %s: update the router or the VPS (this server speaks "
+					"v%d), or it is not cengarde",
+					b[0] >> 4, cg_addr_str(&s->in.from[i], a, sizeof(a)), CG_PROTO_VERSION);
+		}
 	}
 }
 
@@ -527,7 +596,7 @@ static void listen_read(struct server *s)
 static void wg_read(struct server *s, struct session *S)
 {
 	for (int round = 0; round < CG_MAX_ROUNDS; round++) {
-		int n = cg_rx(S->wg_fd, &s->in), m = 0;
+		int n = cg_rx(S->wg_fd, &s->in), m = 0, order[CG_MAX_LINKS], no;
 		uint16_t present, live, carry;
 		uint64_t now_us, now_ms;
 
@@ -555,7 +624,15 @@ static void wg_read(struct server *s, struct session *S)
 		}
 		path_masks(S, now_ms, &present, &live);
 		carry = cg_health_carriers(S->dh, CG_MAX_LINKS, present, live);
-		for (int p = 0; m && p < CG_MAX_LINKS; p++) {
+		/* The batch goes out path after path, and the path sent first
+		 * delivers first: the first path rotates from batch to batch, so
+		 * that none wins the client's first arrivals by its position. */
+		no = 0;
+		for (int p = 0; m && p < CG_MAX_LINKS; p++)
+			if ((carry >> p & 1) || ((live >> p & 1) && s->cfg->mute_trickle))
+				order[no++] = p;
+		for (int o = 0; o < no; o++) {
+			int p = order[(o + S->rot) % (unsigned)no];
 			struct path *P = &S->path[p];
 			int sel[CG_BATCH], k = 0, sent;
 
@@ -581,9 +658,10 @@ static void wg_read(struct server *s, struct session *S)
 					s->out[x].msg_hdr.msg_controllen = P->ctl_len;
 				}
 			}
-			/* One sendmmsg per path: a path that cannot send never
-			 * holds up the others. */
-			sent = sendmmsg(s->lfd, s->out, (unsigned)k, MSG_DONTWAIT);
+			/* One sendmmsg per path, on the lane its link arrives on: a
+			 * path that cannot send never holds up the others, and with
+			 * lanes it does not fill their send buffer either. */
+			sent = sendmmsg(s->lane[(unsigned)p & (s->nlanes - 1)].fd, s->out, (unsigned)k, MSG_DONTWAIT);
 			if (sent < 0) {
 				P->tx_drops += (uint64_t)k;
 				send_failed(s, S, (unsigned)p, errno, (unsigned)k, now_ms);
@@ -594,6 +672,7 @@ static void wg_read(struct server *s, struct session *S)
 			for (int x = 0; x < sent; x++)
 				P->tx_bytes += s->oiov[sel[x]][1].iov_len;
 		}
+		S->rot++;
 		if (n < CG_BATCH)
 			return;
 	}
@@ -658,6 +737,63 @@ static void json_pass(struct cg_json *j, const char *key, int pass)
 		cg_json_str(j, key, pass ? "on" : "off");
 }
 
+/* Drops the kernel counted on fd's receive queue, or null. */
+static void json_drops(struct cg_json *j, int fd)
+{
+	uint32_t drops;
+
+	if (cg_sock_drops(fd, &drops) == 0)
+		cg_json_u64(j, "drops", drops);
+	else
+		cg_json_null(j, "drops");
+}
+
+/* The listen sockets, the junk socket and the receive budget. */
+static void lanes_json(struct server *s, struct cg_json *j)
+{
+	cg_json_str(j, "steering_error", s->steer_error);
+	cg_json_arr(j, "lanes");
+	for (uint32_t i = 0; i < s->nlanes; i++) {
+		const struct lane *ln = &s->lane[i];
+
+		cg_json_obj(j, NULL);
+		cg_json_u64(j, "index", i);
+		cg_json_u64(j, "group", 0);
+		cg_json_u64(j, "rx", ln->rx);
+		json_drops(j, ln->fd);
+		cg_json_arr(j, "links");
+		for (unsigned l = 0; l < CG_MAX_LINKS; l++)
+			if (ln->links >> l & 1)
+				cg_json_u64(j, NULL, l);
+		cg_json_end(j, ']');
+		cg_json_end(j, '}');
+	}
+	cg_json_end(j, ']');
+	if (s->jfd >= 0) {
+		cg_json_obj(j, "junk");
+		cg_json_u64(j, "index", s->nlanes);
+		cg_json_u64(j, "rx", s->rx_junk);
+		json_drops(j, s->jfd);
+		cg_json_end(j, '}');
+	} else {
+		cg_json_null(j, "junk");
+	}
+	cg_json_obj(j, "rcvbuf");
+	cg_json_u64(j, "configured", (uint64_t)s->cfg->rcvbuf);
+	if (s->rb.budget) {
+		cg_json_u64(j, "budget", s->rb.budget);
+		cg_json_str(j, "budget_from", s->udp_mem_from ? "RAM" : "net.ipv4.udp_mem");
+	} else {
+		cg_json_null(j, "budget");
+		cg_json_null(j, "budget_from");
+	}
+	cg_json_u64(j, "sockets", s->rb.sockets);
+	cg_json_u64(j, "per_socket", (uint64_t)s->rb.per_socket);
+	cg_json_u64(j, "effective", (uint64_t)(s->rcv_eff > 0 ? s->rcv_eff : 0));
+	cg_json_end(j, '}');
+	cg_json_bool(j, "rcvbuf_capped", s->rb.capped);
+}
+
 static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 {
 	char buf[64];
@@ -671,6 +807,7 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 	cg_json_str(j, "listen", s->laddr);
 	cg_json_bool(j, "reply_from_arrival", s->pktinfo);
 	json_pass(j, "passthrough", s->pw.running ? s->pass_written : -1);
+	lanes_json(s, j);
 	cg_json_obj(j, "rx");
 	cg_json_u64(j, "duplicates", s->rx_dups);
 	cg_json_u64(j, "too_old", s->rx_old);
@@ -678,6 +815,9 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 	cg_json_u64(j, "malformed", s->rx_malformed + s->rx_trunc);
 	cg_json_u64(j, "ctrunc", s->rx_ctrunc);
 	cg_json_u64(j, "sessions_refused", s->sessions_full);
+	cg_json_u64(j, "junk", s->rx_junk);
+	cg_json_u64(j, "short", s->rx_short);
+	cg_json_u64(j, "bad_version", s->rx_bad_version);
 	cg_json_end(j, '}');
 	cg_json_arr(j, "sessions");
 	for (uint32_t i = 0; i < s->max; i++) {
@@ -822,6 +962,119 @@ static void tick(struct server *s)
 	cg_ctl_expire(&s->ctl, s->ep, now_ms);
 }
 
+/* ---- listen sockets ---- */
+
+/* The receive budget (rcvbudget.h), from net.ipv4.udp_mem as it is now:
+ * at start and on every reload. The lanes and every session's WireGuard
+ * socket get the new value when it changed, or always with force (the
+ * configured rcvbuf changed: the send buffers follow it, as before). The
+ * junk socket keeps its fixed buffer. */
+static void rcvbuf_apply(struct server *s, int force)
+{
+	uint64_t mem[3];
+	int from = cg_udp_mem_read(mem);
+	long page = sysconf(_SC_PAGESIZE);
+	struct cg_rcvbudget rb = cg_rcvbudget(from >= 0 ? mem : NULL, page > 0 ? (uint64_t)page : 4096,
+					      cg_rcvbudget_sockets(s->nlanes, 1, 1, s->jfd >= 0), s->cfg->rcvbuf);
+
+	s->udp_mem_from = from;
+
+	if (rb.capped && (!s->rb.capped || rb.per_socket != s->rb.per_socket))
+		cg_warn("rcvbuf: %d bytes per socket instead of %d: %u receiving sockets share %" PRIu64
+			" MiB, half of net.ipv4.udp_mem's pressure threshold, so that other UDP sockets keep room",
+			rb.per_socket, s->cfg->rcvbuf, rb.sockets, rb.budget >> 20);
+	if (!force && rb.per_socket == s->rb.per_socket) {
+		s->rb = rb;
+		return;
+	}
+	s->rb = rb;
+	for (uint32_t i = 0; i < s->nlanes; i++) {
+		int rcv = cg_sock_buffers(s->lane[i].fd, rb.per_socket, s->cfg->rcvbuf);
+
+		if (!i)
+			s->rcv_eff = rcv;
+	}
+	for (uint32_t i = 0; i < s->max; i++)
+		if (s->s[i].used)
+			cg_sock_buffers(s->s[i].wg_fd, rb.per_socket, s->cfg->rcvbuf);
+}
+
+static void lanes_close(struct server *s)
+{
+	for (uint32_t i = 0; i < CG_MAX_LANES; i++)
+		if (s->lane[i].fd >= 0) {
+			close(s->lane[i].fd);
+			s->lane[i].fd = -1;
+		}
+	if (s->jfd >= 0)
+		close(s->jfd);
+	s->jfd = -1;
+	s->nlanes = 0;
+}
+
+/* One listen socket, as before lanes. */
+static int lane_single(struct server *s, char *err, size_t errlen)
+{
+	s->lane[0].fd = cg_udp_bind_opts(&s->cfg->listen, 0, 0, &s->pktinfo, &s->lfamily, err, errlen);
+	if (s->lane[0].fd < 0)
+		return -1;
+	s->nlanes = 1;
+	return 0;
+}
+
+/* Opens the listen sockets: with lanes > 1, the SO_REUSEPORT group of the
+ * lanes and the junk socket, steered by link id (steer.h). Returns 0, or -1
+ * with err set: the start fails. */
+static int lanes_open(struct server *s, char *err, size_t errlen)
+{
+	const struct cg_config *cfg = s->cfg;
+	struct sock_filter prog[CG_STEER_MAX];
+	int n, fd, off = 0, pktinfo = s->pktinfo;
+
+	if (cfg->lanes <= 1)
+		return lane_single(s, err, errlen);
+	n = cg_steer_v3(prog, CG_STEER_MAX, cfg->lanes);
+	if (n < 0) {
+		snprintf(err, errlen, "lanes = %u: no steering program for it", cfg->lanes);
+		return -1;
+	}
+	/* Bound once without SO_REUSEPORT: it fails if another process holds
+	 * the port. With SO_REUSEPORT alone, a second cengarde of the same
+	 * user would join the group in silence and take part of the traffic. */
+	fd = cg_udp_bind_opts(&cfg->listen, 0, 0, &off, NULL, err, errlen);
+	if (fd < 0)
+		return -1;
+	close(fd);
+	/* In the order of steer.h: the lanes, then junk. A member is never
+	 * closed alone (the last one would move into its index), so a failure
+	 * in the middle closes them all and the start fails. */
+	for (uint32_t i = 0; i <= cfg->lanes; i++) {
+		int pk = i < cfg->lanes ? pktinfo : 0;
+
+		fd = cg_udp_bind_opts(&cfg->listen, 0, 1, &pk, i ? NULL : &s->lfamily, err, errlen);
+		if (fd < 0) {
+			lanes_close(s);
+			return -1;
+		}
+		if (i < cfg->lanes) {
+			s->lane[i].fd = fd;
+			s->nlanes = i + 1;
+			if (!pk)
+				s->pktinfo = 0;
+		} else {
+			s->jfd = fd;
+		}
+	}
+	if (cg_sock_steer(s->lane[0].fd, prog, (unsigned short)n) == 0)
+		return 0;
+	/* A kernel before 4.5: one socket, as before lanes. */
+	snprintf(s->steer_error, sizeof(s->steer_error), "SO_ATTACH_REUSEPORT_CBPF: %s", strerror(errno));
+	cg_warn("%s: the kernel cannot steer the %u lanes; one listen socket instead", s->steer_error, cfg->lanes);
+	lanes_close(s);
+	s->pktinfo = pktinfo;
+	return lane_single(s, err, errlen);
+}
+
 /* ---- reload ---- */
 
 static void reload_start(struct server *s)
@@ -846,19 +1099,14 @@ static void apply_config(struct server *s, struct cg_config *next)
 	s->k_rx = next->key;
 	s->k_tx = next->key + CG_SIPHASH_KEY_LEN;
 	s->hcfg = cg_hcfg_of(next);
-	cg_log_level = s->run->verbose ? CG_LOG_DEBUG : next->log_level;
+	cg_log_level_set(s->run->verbose ? CG_LOG_DEBUG : next->log_level);
 	if (strcmp(old->status_file, next->status_file))
 		writer_restart(&s->sw, next->status_file);
 	if (strcmp(old->passthrough_file, next->passthrough_file)) {
 		writer_restart(&s->pw, next->passthrough_file);
 		s->pass_written = -1; /* write it again, there */
 	}
-	if (old->rcvbuf != next->rcvbuf) {
-		cg_sock_buffers(s->lfd, next->rcvbuf, next->rcvbuf);
-		for (uint32_t i = 0; i < s->max; i++)
-			if (s->s[i].used)
-				cg_sock_buffers(s->s[i].wg_fd, next->rcvbuf, next->rcvbuf);
-	}
+	rcvbuf_apply(s, old->rcvbuf != next->rcvbuf);
 	cg_config_free(old);
 	free(old);
 }
@@ -975,7 +1223,7 @@ int cg_server_run(struct cg_config *cfg, const struct cg_run *run)
 	char err[256], wg[64];
 	uint64_t last_traffic_us = 0;
 	uint32_t busy;
-	int rc = 1, rcv;
+	int rc = 1;
 
 	if (!s) {
 		cg_err("out of memory");
@@ -987,7 +1235,9 @@ int cg_server_run(struct cg_config *cfg, const struct cg_run *run)
 	s->run = run;
 	s->k_rx = cfg->key;
 	s->k_tx = cfg->key + CG_SIPHASH_KEY_LEN;
-	s->ep = s->lfd = s->tfd = -1;
+	s->ep = s->tfd = s->jfd = -1;
+	for (uint32_t i = 0; i < CG_MAX_LANES; i++)
+		s->lane[i].fd = -1;
 	s->max = cfg->max_sessions;
 	s->newest = -1;
 	s->pass = s->pass_written = -1;
@@ -1005,23 +1255,34 @@ int cg_server_run(struct cg_config *cfg, const struct cg_run *run)
 	s->start_ms = cg_now_ms();
 
 	s->pktinfo = 1; /* on a wildcard only */
-	s->lfd = cg_udp_bind_opts(&cfg->listen, 0, &s->pktinfo, &s->lfamily, err, sizeof(err));
-	if (s->lfd < 0) {
+	if (lanes_open(s, err, sizeof(err)) < 0) {
 		cg_err("%s", err);
 		goto out;
 	}
 	/* What was bound: "*" is IPv4 on a kernel without IPv6. */
-	if (getsockname(s->lfd, (struct sockaddr *)&bound, &blen) < 0)
+	if (getsockname(s->lane[0].fd, (struct sockaddr *)&bound, &blen) < 0)
 		bound = cfg->listen;
 	cg_addr_str(&bound, s->laddr, sizeof(s->laddr));
 	s->lport = bound.ss_family == AF_INET ? ((const struct sockaddr_in *)&bound)->sin_port :
 						((const struct sockaddr_in6 *)&bound)->sin6_port;
-	rcv = cg_sock_buffers(s->lfd, cfg->rcvbuf, cfg->rcvbuf);
-	if (rcv < (1 << 20))
-		cg_warn("receive buffer is only %d bytes; raise net.core.rmem_max or run with CAP_NET_ADMIN", rcv);
+	rcvbuf_apply(s, 1);
+	if (s->jfd >= 0)
+		cg_sock_buffers(s->jfd, JUNK_RCVBUF, 0);
+	if (!s->rb.capped && s->rcv_eff < (1 << 20))
+		cg_warn("receive buffer is only %d bytes; raise net.core.rmem_max or run with CAP_NET_ADMIN",
+			s->rcv_eff);
 	s->ep = epoll_create1(EPOLL_CLOEXEC);
 	s->tfd = cg_timerfd(CG_TICK_MS);
-	if (s->ep < 0 || s->tfd < 0 || cg_epoll_add(s->ep, s->lfd, CG_EV(CG_EV_LISTEN, 0)) < 0 ||
+	if (s->ep < 0 || s->tfd < 0) {
+		cg_err("epoll setup: %s", strerror(errno));
+		goto out;
+	}
+	for (uint32_t i = 0; i < s->nlanes; i++)
+		if (cg_epoll_add(s->ep, s->lane[i].fd, CG_EV(CG_EV_LISTEN, i)) < 0) {
+			cg_err("epoll setup: %s", strerror(errno));
+			goto out;
+		}
+	if ((s->jfd >= 0 && cg_epoll_add(s->ep, s->jfd, CG_EV(CG_EV_JUNK, 0)) < 0) ||
 	    cg_epoll_add(s->ep, s->tfd, CG_EV(CG_EV_TIMER, 0)) < 0 ||
 	    cg_epoll_add(s->ep, run->sigfd, CG_EV(CG_EV_SIG, 0)) < 0 ||
 	    cg_epoll_add(s->ep, s->loader.efd, CG_EV(CG_EV_LOAD, 0)) < 0) {
@@ -1038,6 +1299,9 @@ int cg_server_run(struct cg_config *cfg, const struct cg_run *run)
 	cg_info("server %s: listening on %s%s, WireGuard at %s, up to %u sessions", CG_VERSION, s->laddr,
 		s->pktinfo ? ", replying from each packet's arrival address" : "",
 		cg_addr_str(&cfg->wireguard, wg, sizeof(wg)), s->max);
+	if (s->jfd >= 0)
+		cg_info("%u listen lanes by link id, and a junk socket; receive buffers %d bytes each (%u sockets)",
+			s->nlanes, s->rb.per_socket, s->rb.sockets);
 	busy = cg_tune(cfg);
 
 	for (;;) {
@@ -1053,8 +1317,12 @@ int cg_server_run(struct cg_config *cfg, const struct cg_run *run)
 
 			switch (kind) {
 			case CG_EV_LISTEN:
-				listen_read(s);
+				if (idx < s->nlanes)
+					listen_read(s, &s->lane[idx]);
 				traffic = 1;
+				break;
+			case CG_EV_JUNK:
+				junk_read(s);
 				break;
 			case CG_EV_WG:
 				if (idx < s->max && s->s[idx].used)
@@ -1101,8 +1369,7 @@ out:
 	for (uint32_t i = 0; s->s && i < s->max; i++)
 		if (s->s[i].used)
 			close(s->s[i].wg_fd);
-	if (s->lfd >= 0)
-		close(s->lfd);
+	lanes_close(s);
 	if (s->tfd >= 0)
 		close(s->tfd);
 	if (s->ep >= 0)

@@ -2,12 +2,15 @@
 #include "sock.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/sysinfo.h>
 #include <unistd.h>
 
 #include "log.h"
+#include "rcvbudget.h"
 #include "util.h"
 
 int cg_udp_socket(int family)
@@ -39,11 +42,11 @@ int cg_udp_bind(const struct sockaddr_storage *addr, int v6only, char *err, size
 {
 	int off = 0;
 
-	return cg_udp_bind_opts(addr, v6only, &off, NULL, err, errlen);
+	return cg_udp_bind_opts(addr, v6only, 0, &off, NULL, err, errlen);
 }
 
-int cg_udp_bind_opts(const struct sockaddr_storage *addr, int v6only, int *pktinfo, int *family, char *err,
-		     size_t errlen)
+int cg_udp_bind_opts(const struct sockaddr_storage *addr, int v6only, int reuseport, int *pktinfo, int *family,
+		     char *err, size_t errlen)
 {
 	char buf[64];
 	struct sockaddr_storage any4;
@@ -81,6 +84,11 @@ int cg_udp_bind_opts(const struct sockaddr_storage *addr, int v6only, int *pktin
 			*pktinfo = 0;
 		}
 	}
+	if (reuseport && setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &on, sizeof(on)) < 0) {
+		snprintf(err, errlen, "SO_REUSEPORT: %s", strerror(errno));
+		close(fd);
+		return -1;
+	}
 	if (bind(fd, (const struct sockaddr *)addr, cg_addr_len(addr)) < 0) {
 		snprintf(err, errlen, "bind %s: %s", cg_addr_str(addr, buf, sizeof(buf)), strerror(errno));
 		close(fd);
@@ -89,6 +97,58 @@ int cg_udp_bind_opts(const struct sockaddr_storage *addr, int v6only, int *pktin
 	if (family)
 		*family = addr->ss_family;
 	return fd;
+}
+
+int cg_sock_steer(int fd, const struct sock_filter *prog, unsigned short n)
+{
+#ifdef SO_ATTACH_REUSEPORT_CBPF
+	struct sock_fprog fp = { .len = n, .filter = (struct sock_filter *)prog };
+
+	return setsockopt(fd, SOL_SOCKET, SO_ATTACH_REUSEPORT_CBPF, &fp, sizeof(fp));
+#else
+	errno = ENOPROTOOPT;
+	return -1;
+#endif
+}
+
+int cg_sock_drops(int fd, uint32_t *drops)
+{
+#ifdef SO_MEMINFO
+	/* SK_MEMINFO_DROPS (linux/sock_diag.h, an enum): a fixed index of the
+	 * ABI. A kernel older than the counter copies fewer values. */
+	enum { DROPS = 8 };
+	uint32_t mi[16];
+	socklen_t len = sizeof(mi);
+
+	if (getsockopt(fd, SOL_SOCKET, SO_MEMINFO, mi, &len) == 0 && len > DROPS * sizeof(mi[0])) {
+		*drops = mi[DROPS];
+		return 0;
+	}
+#endif
+	return -1;
+}
+
+int cg_udp_mem_read(uint64_t mem[3])
+{
+	char buf[128];
+	ssize_t n = -1;
+	struct sysinfo si;
+	long page = sysconf(_SC_PAGESIZE);
+	int fd = open("/proc/sys/net/ipv4/udp_mem", O_RDONLY | O_CLOEXEC);
+
+	if (fd >= 0) {
+		n = read(fd, buf, sizeof(buf) - 1);
+		close(fd);
+	}
+	if (n > 0) {
+		buf[n] = '\0';
+		if (cg_udp_mem_parse(buf, mem) == 0)
+			return 0;
+	}
+	if (sysinfo(&si) < 0 || page <= 0)
+		return -1;
+	cg_udp_mem_estimate((uint64_t)si.totalram * si.mem_unit, (uint64_t)page, mem);
+	return 1;
 }
 
 int cg_udp_link(const char *ifname, const struct sockaddr_storage *local, const struct sockaddr_storage *remote,

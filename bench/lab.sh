@@ -1,5 +1,6 @@
 #!/bin/bash
-# cengarde benchmark lab: two network namespaces joined by three veth "links".
+# cengarde benchmark lab: two network namespaces joined by veth "links" (three,
+# or NLINKS when more).
 #
 #   netns cli (the Pi)                          netns srv (the VPS)
 #   fake WG: udpgen 127.0.0.1:50000             server :59402 (engarde or cengarde)
@@ -36,6 +37,8 @@ KEY=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA= # lab-only shared key
 build() {
 	mkdir -p "$BIN"
 	gcc -O2 -Wall -Wextra -pthread -o "$BIN/udpgen" "$LAB/udpgen.c" || return 1
+	gcc -O2 -Wall -Wextra -pthread -o "$BIN/mgen" "$LAB/mgen.c" || return 1
+	gcc -O2 -Wall -Wextra -pthread -o "$BIN/jitter" "$LAB/jitter.c" || return 1
 	gcc -O2 -Wall -Wextra -o "$BIN/protoclient" "$LAB/protoclient.c" || return 1
 	make -s -C "$REPO/engine" cengarde && cp "$REPO/engine/cengarde" "$BIN/cengarde" || return 1
 	[ "$ENGINE" = go ] || return 0 # ENGINE=go also builds the Go baseline
@@ -70,8 +73,8 @@ setup() {
 	ip netns add srv || return 1
 	ip -n cli link set lo up
 	ip -n srv link set lo up
-	local i excl='"lo"'
-	for i in 1 2 3; do
+	local i excl='"lo"' nveth=$((NLINKS > 3 ? NLINKS : 3))
+	for i in $(seq 1 "$nveth"); do
 		ip link add "l$i" netns cli type veth peer name "s$i" netns srv
 		ip -n cli addr add "10.0.$i.1/24" dev "l$i"
 		ip -n srv addr add "10.0.$i.2/24" dev "s$i"
@@ -110,7 +113,7 @@ interfaces = none
 status_file = $RUN/client.json
 EOF
 	[ -n "$CLIENT_EXTRA" ] && echo "$CLIENT_EXTRA" | tr ';' '\n' >>"$RUN/client.conf"
-	for i in 1 2 3; do
+	for i in $(seq 1 "$nveth"); do
 		printf '[link l%s]\nserver = 10.0.%s.2:59402\nenabled = %s\n' "$i" "$i" \
 			"$([ "$i" -le "$NLINKS" ] && echo yes || echo no)" >>"$RUN/client.conf"
 	done
@@ -163,6 +166,8 @@ stop() {
 teardown() {
 	stop 2>/dev/null
 	pkill -f "$BIN/udpgen" 2>/dev/null
+	pkill -f "$BIN/mgen" 2>/dev/null
+	pkill -f "$BIN/jitter" 2>/dev/null
 	ip netns del cli 2>/dev/null
 	ip netns del srv 2>/dev/null
 	return 0

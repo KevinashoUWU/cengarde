@@ -29,7 +29,7 @@
 #define CG_MAX_ROUNDS 8
 
 /* epoll tags: kind in the high half, index in the low half. */
-enum { CG_EV_SIG = 1, CG_EV_TIMER, CG_EV_NL, CG_EV_WG, CG_EV_LINK, CG_EV_LISTEN, CG_EV_CTL, CG_EV_LOAD };
+enum { CG_EV_SIG = 1, CG_EV_TIMER, CG_EV_NL, CG_EV_WG, CG_EV_LINK, CG_EV_LISTEN, CG_EV_CTL, CG_EV_LOAD, CG_EV_JUNK };
 #define CG_EV(kind, idx) (((uint64_t)(kind) << 32) | (uint32_t)(idx))
 
 /* What a run needs besides its configuration: where that came from, to
@@ -69,6 +69,10 @@ void cg_reexec(char **argv);
 /* Undoes the cpu and rt_priority knobs for the calling thread: helper
  * threads must not compete with the event loop. */
 void cg_thread_normal(void);
+/* Saves the CPUs the process may run on, which cg_thread_normal goes back
+ * to. Called once, before any thread exists: helper threads only read it,
+ * and the status writers start before cg_tune pins the event loop. */
+void cg_cpus_save(void);
 
 struct cg_rxbatch {
 	struct mmsghdr msg[CG_BATCH];

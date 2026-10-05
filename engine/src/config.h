@@ -107,6 +107,7 @@ struct cg_config {
 	uint32_t session_timeout_ms;
 	uint32_t path_timeout_ms;
 	char passthrough_file[256]; /* where the IP pass the client asks for goes; "": nowhere */
+	uint32_t lanes;             /* listen sockets steered by link id (steer.h); 1: one socket */
 
 	char *strings; /* storage behind include/exclude */
 };
