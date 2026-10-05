@@ -246,12 +246,25 @@ a tiempo (historia [011](../docs/historias/011-hilos.md)).
   la mediana de cada punto. Con `MTLAT_S` de 10 o más, la
   ventana de 5 s de `hop_us` cae entera dentro del tráfico.
 - **`soak`:** `SOAK_S` (3600) s por modo de `SOAK_MODES` (`off on`), en
-  tramos de 60 s a 2000, 10 000 y 20 000 pps y 80, 400 y 1400 bytes por
-  turnos, mientras l3 cambia de pérdida y retardo cada 2 min (netem; `tbf`
-  si el kernel no lo tiene), l2 cae 10 s cada 10 min y el cliente recarga
-  cada 5 min. Pasa si cada tramo entrega el 99,9 %, no hay avisos de hilos
-  parados ni de sockets que no se pudieron vigilar, todas las recargas dicen
-  `ok` y el RSS del cliente no crece más de 1 MiB tras los primeros 5 min.
+  tramos de 60 s a 2000, 10 000, 20 000 y 40 000 pps y 80, 400 y 1400
+  bytes por turnos, mientras l3 cambia de pérdida y retardo cada 2 min
+  (netem; `tbf` si el kernel no lo tiene), el cliente recarga cada 5 min y
+  l2 cae 10 s cada 10 min. Cada tramo imprime lo que perdió cada sentido y
+  los descartes contados para ese sentido mientras corría, los que pueden
+  explicarlo: de paquetes enteros, los del kernel al recibir en los sockets
+  de ese sentido (colas llenas y puertos sin socket, `/proc/net/snmp` y
+  `/proc/net/udp`), lo que el motor no pudo entregar a WireGuard y los
+  errores de envío del WireGuard falso que envía; de copias, por enlace, lo
+  que el motor no pudo enviar y lo que tiraron después el veth o la `qdisc`
+  de l3. Un paquete solo se pierde si se pierden sus copias en dos enlaces
+  o más, así que cuentan las copias de todos los enlaces menos el que más
+  perdió: l3, limitado a propósito, o l2 mientras está caído, no explican
+  solos una pérdida. Pasa (diseño D.4: entregado = enviado menos descartes
+  contados) si ningún tramo pierde en un sentido más paquetes que los
+  descartes contados para él, no hay avisos de hilos parados ni de sockets
+  que no se pudieron vigilar, todas las recargas dicen `ok` y el RSS del
+  cliente no crece más de 1 MiB tras los primeros 5 min. Al final de cada
+  modo dice cuántas recargas, caídas de l2 y cambios de l3 hubo.
 
 ## Cómo leer la salida
 
