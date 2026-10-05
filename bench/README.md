@@ -45,6 +45,7 @@ sudo bench/lab.sh fallback # varias direcciones del servidor por enlace: failove
 sudo bench/lab.sh lanes    # las colas del servidor: una por enlace, la basura aparte, un segundo servidor rechazado; y lanes = 1 (lab.d, va en ci)
 sudo bench/lab.sh deepq    # un camino del servidor con 20 MB de cola local no afecta a los demás (lab.d, va en ci)
 sudo bench/lab.sh skew     # primeras llegadas repartidas entre enlaces idénticos, puerta C5 (lab.d, va en ci)
+sudo bench/lab.sh wgpoke   # un router con la hora atrasada: el servidor hace que WireGuard inicie el handshake (lab.d, va en ci)
 sudo LAB_UDPMEM=1 bench/lab.sh udpmem  # el presupuesto de recepción frente a net.ipv4.udp_mem (lab.d; baja el sysctl de toda la máquina unos segundos: solo en el CI)
 
 sudo ENGINE=go bench/lab.sh build  # además, el engarde Go (normal y -race)
@@ -173,6 +174,32 @@ bajada vuelve a fluir (la regla, en `engine/src/epoch.h` y la historia
 
 Medidas (antes y después del arreglo, y con un anillo de 4 sondas):
 historia [010](../docs/historias/010-ipv6-varias-ip-multicliente-nombres.md).
+
+### `wgpoke`: un router con la hora atrasada (`lab.d/wgpoke.sh`)
+
+WireGuard ignora las iniciaciones de un router que volvió con la hora
+atrasada; el servidor lo nota y hace que WireGuard inicie él
+(`engine/src/wgwatch.h`, historia
+[002](../docs/historias/002-wireguard-para-cengarde.md)). `bench/fakewg.py`
+hace de los dos WireGuard: el del VPS ignora toda iniciación e inicia una
+cuando lo empujan; el del router la contesta.
+
+- **1:** con datos, WireGuard aprende la sesión del cliente y nadie empuja.
+- **2:** el cliente se reinicia y llama. En 6 s (`KNOCK_S`) WireGuard recibe
+  el empujón, su iniciación (hacia la sesión vieja) va por la nueva y llega
+  al router, y la respuesta deja la sesión nueva como su endpoint.
+- **3:** lo mismo, pero WireGuard inicia 7 s después del empujón (el real
+  espera 15 s si su sesión sigue válida). Para entonces la sesión vieja
+  expiró y la que llama heredó su puerto: la iniciación llega igual, sin
+  redirección.
+- **4:** el cliente para 8 s, más que `session_timeout_ms` (5 s aquí), y
+  vuelve a llamar: la sesión nueva retoma el puerto de la anterior y la
+  iniciación le llega directo.
+- **5:** con `wireguard_poke = none` (recarga), un cliente que llama tras un
+  reinicio no provoca empujones.
+
+El motor de antes del arreglo falla las fases 2, 3 y 4; sin el traspaso del
+puerto, falla la 3.
 
 ### `multiip`: el servidor con varias direcciones (`lab.d/multiip.sh`)
 
