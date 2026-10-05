@@ -54,6 +54,10 @@ void test_thrplan(void)
 	CHECK_EQ(cg_thr_guards(5, 8, 0, 0, pins, 4), CG_TG_PIN_SHARED);
 	CHECK_EQ(cg_thr_guards(5, 8, 0, 0, pins, 3), 0);
 	CHECK_EQ(cg_thr_guards(6, 4, 5, 50, pins, 4), CG_TG_RT_ALL | CG_TG_BUSY_HUB | CG_TG_PIN_SHARED);
+	CHECK(!strcmp(cg_thr_guard_name(CG_TG_RT_ALL), "rt_priority_every_cpu"));
+	CHECK(!strcmp(cg_thr_guard_name(CG_TG_BUSY_HUB), "busy_poll_capped"));
+	CHECK(!strcmp(cg_thr_guard_name(CG_TG_PIN_SHARED), "pumps_share_cpu"));
+	CHECK(!strcmp(cg_thr_guard_name(8), "unknown"));
 	/* Busy polling in every pump or in none: 4 CPUs fit the hub and two
 	 * pumps with one to spare, not three (then the hub alone polls). */
 	CHECK_EQ(cg_pump_busy_us(1, 4, 50), 50);

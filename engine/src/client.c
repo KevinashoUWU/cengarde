@@ -1124,6 +1124,13 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 	cg_json_str(j, "mode", cg_lt_name(c->lt));
 	cg_json_u64(j, "pumps", (uint64_t)c->npumps);
 	json_pct(j, "hub_cpu_pct", cg_cpuwin_permille(&c->hub_cpu));
+	/* The guards of thrplan.h that fired, as logged (guards_check): the
+	 * knobs only change with a restart, so they hold for the process. */
+	cg_json_arr(j, "warnings");
+	for (unsigned b = 1; b <= CG_TG_PIN_SHARED; b <<= 1)
+		if (c->guards & b)
+			cg_json_str(j, NULL, cg_thr_guard_name(b));
+	cg_json_end(j, ']');
 	cg_json_end(j, '}');
 	cg_json_obj(j, "passthrough");
 	json_pass(j, "requested", c->cfg->passthrough, 0);

@@ -66,6 +66,20 @@ static inline int cg_pump_pick(const uint8_t *nlinks, int npumps, int cap)
 #define CG_TG_BUSY_HUB 2   /* the threads do not fit: no pump busy polls, only the hub */
 #define CG_TG_PIN_SHARED 4 /* two pumps pinned to one CPU */
 
+/* The name of one guard bit in the status (threads.warnings). */
+static inline const char *cg_thr_guard_name(unsigned bit)
+{
+	switch (bit) {
+	case CG_TG_RT_ALL:
+		return "rt_priority_every_cpu";
+	case CG_TG_BUSY_HUB:
+		return "busy_poll_capped";
+	case CG_TG_PIN_SHARED:
+		return "pumps_share_cpu";
+	}
+	return "unknown";
+}
+
 /* data_threads: the hub and the pumps; pins: the CPU each pump is pinned
  * to, -1 for none. */
 static inline unsigned cg_thr_guards(int data_threads, int ncpus, uint32_t rt_priority, uint32_t busy_poll_us,

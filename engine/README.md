@@ -384,8 +384,12 @@ desde la dirección de llegada. Por enlace:
 `rx.ctrunc` cuenta los paquetes cuya dirección de llegada no cupo.
 
 En el cliente, `threads` dice el modo pedido (`setting`), el que corre
-(`mode`), cuántos hilos de enlace hay (`pumps`) y la CPU del principal
-(`hub_cpu_pct`); por enlace:
+(`mode`), cuántos hilos de enlace hay (`pumps`), la CPU del principal
+(`hub_cpu_pct`) y los avisos del plan de hilos, los mismos que van al
+registro (`warnings`: `rt_priority_every_cpu`, tiempo real en tantos hilos
+de datos como CPU; `busy_poll_capped`, los hilos de enlace no sondean
+porque no caben en las CPU con una de sobra; `pumps_share_cpu`, dos hilos
+de enlace fijados a la misma CPU); por enlace:
 - `pump`: su hilo (`null` en `legacy`);
 - `socket_drops`: datagramas que el kernel tiró en su socket (`SO_MEMINFO`;
   `null` si no lo dice), en cualquier modo;
