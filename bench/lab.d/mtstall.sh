@@ -20,6 +20,10 @@
 #   the loop itself (the main thread): reported, not judged; the late
 #   packets come close to the stall.
 #
+# A link_threads in CLIENT_EXTRA (each lab job of engine.yml sets one) runs
+# that mode alone, the caller's other settings kept; without one, all three
+# modes run, each in a subshell of its own with every CPU.
+#
 # Needs chrt and taskset (util-linux) and 2 CPUs or more.
 LAB_CI=1
 
@@ -44,7 +48,8 @@ mt_run() {
 	local mode=$1 cpu rest tid t fail=0 down up d1 d2 d3 gs gc
 	cpu=$(($(nproc) - 1))
 	rest=0-$((cpu - 1))
-	CLIENT_EXTRA="link_threads = $mode;rcvbuf = 262144;control_socket = $RUN/client.sock"
+	# The caller's settings first: the last value of a key wins.
+	CLIENT_EXTRA="${mt_extra:+$mt_extra;}link_threads = $mode;rcvbuf = 262144;control_socket = $RUN/client.sock"
 	setup && start || return 1
 	# Everything but the stalled thread stays off the busy CPU.
 	taskset -a -p -c "$rest" "$(cat "$RUN/server.pid")" >/dev/null
@@ -104,7 +109,7 @@ mt_dir() {
 }
 
 mtstall() {
-	local fail=0 mode
+	local fail=0 mode modes="on off legacy" mt_extra=${CLIENT_EXTRA:-}
 	ENGINE=c NLINKS=3
 	trap teardown EXIT
 	trap 'teardown; exit 130' INT TERM
@@ -113,8 +118,12 @@ mtstall() {
 		echo "mtstall: FAILED"
 		return 1
 	fi
-	for mode in on off legacy; do
-		mt_run "$mode" || fail=1
+	# A link_threads in CLIENT_EXTRA runs that mode alone. Each pass in a
+	# subshell: it narrows its own CPUs with taskset, and nproc follows them.
+	mode=$(sed -n 's/.*link_threads *= *\([a-z]*\).*/\1/p' <<<"$mt_extra")
+	[ -n "$mode" ] && modes=$mode
+	for mode in $modes; do
+		(mt_run "$mode") || fail=1
 	done
 	teardown
 	[ "$fail" = 0 ] && echo "mtstall: ok" || echo "mtstall: FAILED"

@@ -229,6 +229,9 @@ a tiempo (historia [011](../docs/historias/011-hilos.md)).
   `bench/jitter.c`, que marca esas pausas, llega con el PR 3a).
 - **`off` y `legacy`:** el único bucle lee todos los enlaces, así que el
   bucle ocupado se lleva el hilo principal: se informa, no se juzga.
+- **Modos:** con `link_threads` en `CLIENT_EXTRA` (cada trabajo `lab` del
+  CI pone uno) corre solo ese modo, con el resto de esos ajustes; sin él,
+  los tres, cada uno en un subshell con todas las CPU.
 - Necesita `chrt` y `taskset` (util-linux) y 2 CPU o más.
 
 ### `mtlat` y `soak`: a mano (`lab.d/mtlat.sh`, `lab.d/soak.sh`)
