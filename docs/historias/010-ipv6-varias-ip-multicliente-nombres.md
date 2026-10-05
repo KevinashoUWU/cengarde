@@ -563,12 +563,14 @@ Sin cambio de protocolo ni del motor: un VPS lo toma bajo un router 0.4.
   motor sigue arriba. IPv4 principal privada: `FORWARD_SKIP_SRC` y qué
   abrir delante; en 100.64.0.0/10, aviso de CGNAT.
 - **`install.sh`:** desde una sesión interactiva o SSH se relanza con
-  `systemd-run` como `cengarde-upgrade`; compila antes de tocar el `wg0` de
-  la 0.4, así que una compilación fallida deja al router con su túnel; para
-  antes el servicio con `DynamicUser` si el usuario estático no existe,
-  porque `systemd-sysusers` ve el usuario dinámico vivo (por nss-systemd) y
-  no crea el estático (sin reproducir aquí: lo comprueba el trabajo
-  `systemd`).
+  `systemd-run` como `cengarde-upgrade` (la sesión SSH se reconoce por un
+  `sshd` entre sus padres: `sudo` borra `SSH_CONNECTION`, y
+  `ssh vps 'sudo sh install.sh'` no tiene terminal); compila antes de tocar
+  el `wg0` de la 0.4, así que una compilación fallida deja al router con su
+  túnel; para antes el servicio con `DynamicUser` si el usuario estático no
+  existe, porque `systemd-sysusers` ve el usuario dinámico vivo (por
+  nss-systemd) y no crea el estático (sin reproducir aquí: lo comprueba el
+  trabajo `systemd`).
 - **La unidad:** `User=cengarde` (`cengarde.sysusers`) y la configuración
   en 0640 root:cengarde leída directamente, sin `LoadCredential`: una
   recarga lee el archivo real, y la línea de órdenes no tiene especificadores
@@ -576,8 +578,9 @@ Sin cambio de protocolo ni del motor: un VPS lo toma bajo un router 0.4.
 - **Pruebas:** `nat-rules.sh` (reglas contra archivos dorados, cargadas con
   `iptables-restore --test`), `netns.sh` (tráfico real), `setup-dryrun.sh`
   (órdenes del sistema falsas), `security.sh`; `systemd.sh` solo en el CI:
-  instala la 0.4.2 del historial, actualiza desde una sesión que muere,
-  `purge` y vuelta, firewalld, nftables y Docker. El trabajo `netns` corre
+  instala la 0.4.2 del historial, actualiza con `sudo sh install.sh` desde
+  una terminal que se cuelga (y otra vez sin terminal, como
+  `ssh vps 'sudo …'`), `purge` y vuelta, firewalld, nftables y Docker. El trabajo `netns` corre
   también en 22.04 (iptables 1.8.7, conntrack-tools 1.4.6), donde se
   comprueba el DNAT a un rango desplazado.
 

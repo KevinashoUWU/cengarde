@@ -14,12 +14,13 @@
 # - installs cengarde 0.4.2 (CENGARDE_OLD_REF, from this repository's
 #   history) with its install.sh, as its cloud-config did, with PUB_IF
 #   facing inet: the tunnel works and IP pass reaches the router;
-# - upgrades to this checkout with install.sh run from a session that is
-#   killed once wg0 is down (its step 2, after the build): the transient
-#   unit cengarde-upgrade finishes anyway; wg0 is gone, cg-router has port
-#   65501 and the router's address, no rule of 0.4 is left, the engine runs
-#   as the static user cengarde, the secret file was imported and deleted,
-#   and the router comes back with IP pass on, as it last asked;
+# - upgrades to this checkout with "sudo sh install.sh" on a terminal
+#   (script) that hangs up once wg0 is down (its step 2, after the build),
+#   as an SSH session riding the tunnel does: the transient unit
+#   cengarde-upgrade finishes anyway; wg0 is gone, cg-router has port 65501
+#   and the router's address, no rule of 0.4 is left, the engine runs as
+#   the static user cengarde, the secret file was imported and deleted, and
+#   the router comes back with IP pass on, as it last asked;
 # - the units: systemd-analyze verify, Restart=on-failure accepted for the
 #   oneshot cengarde-nat.service; "cengarde ctl reload" answers;
 # - IP pass on and off through cengarde-passthrough.path and the file the
@@ -30,8 +31,11 @@
 # - the server's own services: a listener on 8123 and, with Docker, a port
 #   it publishes, inside IP pass's range: both stay on the server after the
 #   check timer's run, and "cengarde-vps-setup forward" lists them;
-# - install.sh again changes no rule; IPAddressDeny keeps the engine away
-#   from 169.254.0.0/16, and the tunnel too;
+# - install.sh again, as "ssh vps 'sudo sh install.sh'" runs it (no
+#   terminal, and sudo drops SSH_CONNECTION): it sees the SSH session all
+#   the same, goes on as cengarde-upgrade, and changes no rule; plain runs,
+#   as cloud-init's, stay attached; IPAddressDeny keeps the engine away from
+#   169.254.0.0/16, and the tunnel too;
 # - back: "cengarde-vps-setup purge", quick, with cengarde-nat.service's
 #   ExecStop on time (purge takes the admin lock it needs only after the
 #   units are stopped), then 0.4.2's install.sh: the tunnel and IP pass work
@@ -50,7 +54,8 @@
 # (vps.yml, on GitHub's runners) or --yes. Needs systemd as PID 1, the
 # wireguard module, wireguard-tools, iptables, conntrack, nftables, git and
 # the repository's history (CENGARDE_OLD_REF), python3, curl, make and a C
-# compiler, and ufw and docker if they are to be tested too;
+# compiler, script, sudo and pgrep, and ufw and docker if they are to be
+# tested too;
 # 10.250.80.0/23, 198.51.100.7 and 10.79.0.0/16 must be free here.
 #
 # SPDX-License-Identifier: GPL-2.0-only
@@ -162,7 +167,7 @@ preflight() {
 		exit 1
 	fi
 	for cmd in ip iptables ip6tables wg wg-quick conntrack nft git python3 curl ping make cc journalctl \
-		systemd-run systemd-analyze setsid; do
+		systemd-run systemd-analyze setsid script sudo pgrep; do
 		command -v "$cmd" >/dev/null || die "$cmd is missing"
 	done
 	git -c safe.directory="$SRC" -C "$SRC" cat-file -e "$OLD_REF:contrib/vps/install.sh" 2>/dev/null ||
@@ -415,20 +420,26 @@ install_old() {
 	check "0.4.2: the server's public address reaches the router's site" wait_for 10 pass_reaches
 }
 
-# upgrade: this checkout's install.sh from an SSH session, killed once wg0
-# is down; the transient unit cengarde-upgrade finishes the upgrade.
+# upgrade: this checkout's install.sh as the guide says, "sudo sh
+# install.sh" on the terminal of an SSH session, which hangs up once wg0 is
+# down; the transient unit cengarde-upgrade finishes the upgrade.
 upgrade() {
-	say "upgrade: install.sh from an SSH session, killed once wg0 is down"
+	say "upgrade: sudo sh install.sh on a terminal that hangs up once wg0 is down"
 	rm -f "$UPGRADE_STATUS"
 	start=$(stat -c %s "$UPGRADE_LOG" 2>/dev/null || echo 0)
-	setsid env SSH_CONNECTION="192.0.2.9 50000 $VPS_IP 22" sh "$SRC/contrib/vps/install.sh" \
-		</dev/null >"$TMP/session.log" 2>&1 &
+	# script gives it a terminal. dash has no job control, so setsid does not
+	# fork: $! is script's.
+	setsid script -qec "sudo sh '$SRC/contrib/vps/install.sh'" /dev/null </dev/null >"$TMP/session.log" 2>&1 &
 	session=$!
 	# Step 3 starts once step 2 has taken wg0 down.
 	wg0_down() { tail -c +"$((start + 1))" "$UPGRADE_LOG" 2>/dev/null | grep -q 'install.sh: 3/6'; }
 	check "it runs as the unit cengarde-upgrade, logging to $UPGRADE_LOG" wait_for 60 wg0_down
-	kill -KILL -- "-$session" 2>/dev/null
+	# The terminal hangs up, as when the SSH session drops: SIGHUP reaches
+	# sudo, and through it the session's install.sh, which follows the log.
+	kill -KILL "$session" 2>/dev/null
 	wait "$session" 2>/dev/null
+	follower() { pgrep -f -- "-f $UPGRADE_LOG" >/dev/null; }
+	check "the hangup ended the session's install.sh, which followed the log" wait_for 30 not follower
 	check "the session said where to follow it" grep -q "running as the unit cengarde-upgrade" "$TMP/session.log"
 	done_upgrade() { [ -s "$UPGRADE_STATUS" ] && ! systemctl is-active -q cengarde-upgrade; }
 	check "the session is gone, and the unit finishes anyway" wait_for 900 done_upgrade
@@ -534,10 +545,15 @@ own_services() {
 }
 
 reinstall() {
-	say "install.sh again, as an upgrade in place, from no terminal"
+	say "install.sh again, as an upgrade in place, as \"ssh vps 'sudo sh install.sh'\" runs it"
 	before=$(rules)
-	sh "$SRC/contrib/vps/install.sh" </dev/null >"$TMP/install.log" 2>&1 ||
+	# No terminal, and sudo drops SSH_CONNECTION: install.sh can only see the
+	# session as an sshd among its parents (here sh, under that name).
+	ln -sf "$(command -v sh)" "$TMP/sshd"
+	"$TMP/sshd" -c 'sudo sh "$1" </dev/null; exit $?' sh "$SRC/contrib/vps/install.sh" >"$TMP/install.log" 2>&1 ||
 		{ bad "install.sh again"; cat "$TMP/install.log"; }
+	check "it saw the SSH session through sudo: it ran as the unit cengarde-upgrade" \
+		grep -q "running as the unit cengarde-upgrade" "$TMP/install.log"
 	check "the units are active" active_new
 	same_rules "$before" "the same rules"
 	check "the router's link comes back" wait_for 30 router_live

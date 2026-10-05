@@ -2,7 +2,8 @@
 # Builds and installs cengarde on a server (a VPS, or a Debian or Ubuntu box
 # of your own) from this checkout, and (re)starts it. The cloud-config runs
 # it at first boot; to upgrade, check out the router's commit and run it
-# again. From an SSH session it goes on as a systemd unit of its own
+# again. From a terminal or an SSH session (sshd among its parents, which
+# sudo keeps, unlike SSH_CONNECTION) it goes on as a systemd unit of its own
 # (cengarde-upgrade), so a session that drops halfway, because it rode the
 # tunnel being restarted, does not stop it; every step checks first what is
 # done already, so running it again finishes a half-done upgrade.
@@ -66,11 +67,23 @@ detach() {
 	exit "$rc"
 }
 
+# from_ssh: sshd is among this process's parents. sudo resets the
+# environment (no SSH_CONNECTION in "ssh vps 'sudo sh install.sh'"), not the
+# process tree.
+from_ssh() {
+	local p=$PPID
+	while [ "${p:-0}" -gt 1 ]; do
+		case $(cat "/proc/$p/comm" 2>/dev/null) in sshd | sshd-session) return 0 ;; esac
+		p=$(sed -n 's/^.*) [A-Za-z] \([0-9][0-9]*\) .*$/\1/p' "/proc/$p/stat" 2>/dev/null)
+	done
+	return 1
+}
+
 [ -n "$R" ] || [ "$(id -u)" -eq 0 ] || die "run it as root: sudo sh $0"
 if command -v systemctl >/dev/null && systemctl is-active -q firewalld 2>/dev/null; then
 	die "firewalld is active and not supported yet: use ufw or nftables, or stop firewalld"
 fi
-if [ -z "${CENGARDE_UPGRADE_DETACHED:-}" ] && { [ -t 0 ] || [ -n "${SSH_CONNECTION:-}" ]; } &&
+if [ -z "${CENGARDE_UPGRADE_DETACHED:-}" ] && { [ -t 0 ] || [ -n "${SSH_CONNECTION:-}" ] || from_ssh; } &&
 	[ -z "$R" ] && [ -d /run/systemd/system ] && command -v systemd-run >/dev/null; then
 	detach
 fi
