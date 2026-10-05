@@ -520,7 +520,9 @@ Sin cambio de protocolo ni del motor: un VPS lo toma bajo un router 0.4.
 - **Conjunto reservado:** SSH, cengarde, los 32 puertos de WireGuard, todo
   lo de debajo de 1024 salvo `FORWARD_ALLOW_LOW`, `FORWARD_RESERVED` y, con
   `FORWARD_AUTO_RESERVE`, lo que escucha el servidor (`ss`, sin loopback ni
-  UDP efímero) y lo que publica Docker, salvo `FORWARD_UNRESERVE`. Va como
+  el UDP efímero de un proceso; un socket del kernel, como el de un
+  WireGuard propio en 51820, queda reservado aunque caiga en el rango
+  efímero) y lo que publica Docker, salvo `FORWARD_UNRESERVE`. Va como
   comentario en `cengarde.conf` (el motor v3 no lo lee; el v4 lo tomará
   como `forward_reserved`).
 - **Flujos vivos:** al cambiar el destino de un puerto, `conntrack -D -p P

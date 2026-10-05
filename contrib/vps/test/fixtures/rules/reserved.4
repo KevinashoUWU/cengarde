@@ -23,6 +23,7 @@ COMMIT
 -A CG_PRE -p udp --dport 5000:5010 -j RETURN
 -A CG_PRE -p udp --dport 5353 -j RETURN
 -A CG_PRE -p udp --dport 27015:27020 -j RETURN
+-A CG_PRE -p udp --dport 51820 -j RETURN
 -A CG_PRE -p udp --dport 65500:65532 -j RETURN
 -A CG_PRE -p tcp --dport 1024:65000 -j DNAT --to-destination 10.79.0.2
 -A CG_PRE -p udp --dport 1024:65000 -j DNAT --to-destination 10.79.0.2

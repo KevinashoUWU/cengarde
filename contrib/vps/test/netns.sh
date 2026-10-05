@@ -16,8 +16,9 @@
 # - each rule reaches the right router and port, the shifted range too,
 #   with the source intact; the whole range reaches its holder, but not
 #   the ports carved out of it; reserved ports (SSH, cengarde, a service of
-#   the server itself on 8123) stay on the server; a skipped source and a
-#   broadcast are not forwarded;
+#   the server itself on 8123) stay on the server, and a kernel UDP socket
+#   on 51820 (VXLAN's, as a WireGuard interface's) is reserved; a skipped
+#   source and a broadcast are not forwarded;
 # - the routers do not reach each other's tunnel addresses; hairpin: bravo
 #   reaches alpha's published port at the server's public address, as does
 #   alpha itself (from 10.79.0.1), while 10.79.0.1 and port 22 stay local;
@@ -256,6 +257,15 @@ tunnel "$A" alpha 10.79.0.2
 tunnel "$B" bravo 10.79.12.34
 nsexec "$VPS" sysctl -qw net.ipv4.ip_forward=1
 set +e
+# A UDP socket of the kernel's in the ephemeral range, no process's, as the
+# server's own WireGuard interface has on 51820: VXLAN opens one the same way.
+VX=
+if ip -n "$VPS" link add vxwg type vxlan id 7 dstport 51820 local 10.1.0.1 dev pub 2>/dev/null &&
+	ip -n "$VPS" link set vxwg up; then
+	VX=1
+else
+	say "note: no VXLAN here; a kernel UDP socket is not checked (nat-rules.sh checks how ss shows one)"
+fi
 
 py "$INET" serve inet "$TMP/inet.log" 80 "" &
 py "$VPS" serve vps "$TMP/vps.log" 22,8123 65500 &
@@ -313,6 +323,11 @@ check "udp 20000 too" is "bravo:20000:10.1.0.2" py "$INET" udp 10.1.0.1 20000 pr
 check "tcp 22 stays on the server (reserved)" is "vps:22:10.1.0.2" py "$INET" tcp 10.1.0.1 22
 check "udp 65500 stays on the server (cengarde)" is "vps:65500:10.1.0.2" py "$INET" udp 10.1.0.1 65500 probe
 check "tcp 8123, a service of the server inside the whole range, stays on it" is "vps:8123:10.1.0.2" py "$INET" tcp 10.1.0.1 8123
+if [ -n "$VX" ]; then
+	check "a kernel UDP socket in the ephemeral range (51820, as WireGuard's) is reserved" \
+		sh -c 'ip netns exec "$1" env CENGARDE_ROOT="$2" sh "$3" reserved | grep -qx udp:51820' sh "$VPS" "$R" "$NAT"
+	check "and kept out of the whole range" nsexec "$VPS" iptables -t nat -C CG_PRE -p udp --dport 51820 -j RETURN
+fi
 check "a skipped source (FORWARD_SKIP_SRC) is not forwarded" is none py "$INET" tcp 10.1.0.1 20000 10.1.0.3
 py "$INET" udp 10.1.0.255 20000 bcast 10.1.0.2 yes >/dev/null
 check "a broadcast to the server is not forwarded" not grep -q " 20000 .* bcast" "$TMP/bravo.log"

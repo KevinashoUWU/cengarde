@@ -10,8 +10,10 @@
 #   and the whole range of another router with the explicit rules carved
 #   out of it;
 # - the reserved set: below 1024 with FORWARD_ALLOW_LOW, this server's own
-#   listeners and Docker's ports (fixtures/ss-*.txt, docker-nat.txt),
-#   FORWARD_UNRESERVE, FORWARD_RESERVED; "reserved -v" with the reasons;
+#   listeners and Docker's ports (fixtures/ss-*.txt, docker-nat.txt), a
+#   kernel UDP socket in the ephemeral range too (WireGuard's), but not a
+#   process's there, FORWARD_UNRESERVE, FORWARD_RESERVED; "reserved -v" with
+#   the reasons;
 # - FORWARD_SKIP_SRC; the jumps and the MASQUERADE without and with PUB_IF;
 #   the hairpin accept before the tunnels' DROP, and its SNAT; IPv6;
 # - a forward table with bad lines (fixtures/forward-bad): each skipped and
@@ -284,7 +286,8 @@ check "a bad token and a port above 1023 in FORWARD_ALLOW_LOW: said, ignored" \
 	sh -c 'printf "%s\n" "$1" | grep -q "FORWARD_RESERVED: bogus is not" && printf "%s\n" "$1" | grep -q "FORWARD_ALLOW_LOW: udp:2000: only ports below 1024"' sh "$ERR"
 nat reserved -v
 check "reserved -v: the reasons" golden reserved-v.txt
-check "loopback listeners, a UDP socket in the ephemeral range and FORWARD_UNRESERVE are not reserved" \
+check "a kernel UDP socket in the ephemeral range (WireGuard on 51820, no process) is reserved" out_has "udp:51820 listener"
+check "loopback listeners, a process's UDP socket in the ephemeral range and FORWARD_UNRESERVE are not reserved" \
 	sh -c '! printf "%s\n" "$1" | grep -Eq "^(tcp:631|udp:323|udp:40000|tcp:8123) "' sh "$OUT"
 nat reserved
 check "reserved: merged" golden reserved.txt

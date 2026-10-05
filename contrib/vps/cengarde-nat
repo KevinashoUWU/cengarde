@@ -191,8 +191,10 @@ have_v6() {
 # ---- the reserved set ----
 
 # listeners: "auto PROTO PORT PORT WHY" for every TCP listener and every
-# unconnected UDP socket outside the ephemeral range, on any address but
-# loopback.
+# unconnected UDP socket, on any address but loopback, but a process's UDP
+# socket in the ephemeral range: a client's, which comes and goes. A socket
+# no process holds (ss -p, as root, names none) is the kernel's, such as a
+# WireGuard interface's on 51820, and stays reserved wherever it is.
 listeners() {
 	local eph
 	eph=$(cat "$R/proc/sys/net/ipv4/ip_local_port_range" 2>/dev/null) || eph="32768 60999"
@@ -207,7 +209,7 @@ listeners() {
 		addr = substr($5, 1, length($5) - length(port) - 1)
 		sub(/%.*/, "", addr); gsub(/[][]/, "", addr)
 		if (addr ~ /^127\./ || addr == "::1" || addr ~ /^::ffff:127\./) next
-		if ($1 == "udp" && port + 0 >= elo && port + 0 <= ehi) next
+		if ($1 == "udp" && port + 0 >= elo && port + 0 <= ehi && /users:\(\(/) next
 		why = "listener"
 		if (match($0, /users:\(\("[^"]*"/)) {
 			w = substr($0, RSTART + 9, RLENGTH - 10)
