@@ -342,6 +342,60 @@ compartido las cifras de una sola repetición varían: para comparar dos
 versiones, usa varias repeticiones en la misma máquina. Falta un cliente
 QUIC dentro del túnel, que la historia 012 pide junto a TCP.
 
+### `fieldrec`: el registrador de campo (`lab.d/fieldrec.sh`, `fieldrec.py`)
+
+El otro instrumento del paso 0 mide el terreno: cómo se portan de verdad
+los enlaces de la Pi. En el router, `cengarde-rec`
+([guía de OpenWrt](../openwrt/README.md#registrar-los-enlaces-durante-días))
+guarda cada versión nueva del archivo de estado del motor como una línea
+JSON, en archivos por hora comprimidos con gzip. Aquí,
+`fieldrec.py DIR|ARCHIVO...` los lee en orden y escribe un informe en
+Markdown (`--json` guarda además el resumen). El informe trae:
+
+- por enlace: tiempo arriba, caídas (cuántas, cuánto duran), RTT p50/p95/p99,
+  su variación, pérdida de bajada y de subida, y silenciados;
+- cuántos enlaces quedan vivos a la vez;
+- por cada par: P(B caído | A caído), su *lift* frente a la independencia,
+  qué parte de las caídas de A tuvo una de B a menos de 2 s, y la correlación
+  de sus RTT;
+- el spread de RTT entre los enlaces vivos y entre los dos mejores;
+- las caídas y los saltos de RTT plegados sobre el reloj, módulo 15 s
+  (Starlink reconfigura cada 15 s, en los segundos 12, 27, 42 y 57);
+- por hora del día (`--utc-offset`), las caídas, el RTT y la pérdida de cada
+  enlace.
+
+Un enlace está caído si su estado no es `live`, o si no llegó nada por él
+en tres intervalos de sonda (300 ms como mínimo). Los enlaces en pausa no
+cuentan. La caída empieza en la última respuesta, que estampa el motor, y
+termina a mitad de camino entre la última muestra caída y la primera de
+vuelta. La resolución es `status_interval_ms`.
+
+La hora de cada muestra es `time_ms` del motor. Las muestras de antes de que
+NTP corrija el reloj (la Pi no tiene RTC) quedan fuera de los pliegues y
+del perfil por hora. Con un motor anterior, sin `time_ms`, se usa la hora
+del registrador, al segundo.
+
+La pérdida de bajada de un enlace se calcula por intervalo: es lo que no
+trajo de lo que entregó el túnel, cuando bajaron 20 paquetes o más. La de
+subida es lo que el servidor dice haber recibido por él frente a lo que se
+envió, en ventanas de 10 s, porque su cuenta llega con la última respuesta
+de sonda. Ninguna de las dos mide capacidad: en redundancia, cada enlace
+lleva el mismo tráfico.
+
+`lab.d/fieldrec.sh` (en `ci`) lo prueba de dos maneras:
+
+- `fieldrec_test.py`, sobre una grabación inventada con respuestas
+  conocidas: a y b caen juntos, c cae solo y sin que el motor lo marque
+  todavía, y Starlink corta en los segundos 12/27/42/57. La grabación trae
+  además un reinicio del motor, un hueco, el reloj antes de NTP, un archivo
+  de un motor sin `time_ms` y otro cortado por un apagón. Se comprobó que la
+  prueba falla si se rompe el pliegue, la correlación, el corte entre
+  corridas, la detección por silencio o el inicio de la caída.
+- De punta a punta: el motor y `cengarde-rec` reales (bajo `sh`), a 4
+  muestras por segundo, mientras s2 cae 3 s. Tienen que quedar solo
+  archivos comprimidos, cada muestra una vez, una caída de 2 a 5 s en l2 y
+  ninguna en l1 ni l3.
+
 Paso a paso (pasa las mismas variables a `setup` y a `start`):
 
 ```sh

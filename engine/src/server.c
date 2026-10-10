@@ -931,6 +931,7 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 	cg_json_str(j, "version", CG_VERSION);
 	cg_json_str(j, "description", s->cfg->description);
 	cg_json_u64(j, "uptime_ms", now_ms - s->start_ms);
+	cg_json_u64(j, "time_ms", cg_wall_ms());
 	cg_json_str(j, "config_error", s->config_error);
 	cg_json_str(j, "listen", s->laddr);
 	cg_json_bool(j, "reply_from_arrival", s->pktinfo);

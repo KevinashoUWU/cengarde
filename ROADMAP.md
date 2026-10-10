@@ -581,6 +581,12 @@ lista de comprobación de partida.
 > recién entonces k-de-N, duplicación disparada y la comparación entre ARQ de
 > un reintento, FEC XOR y k = 2. Las viñetas de abajo son las ideas de
 > partida; donde el estudio las corrige, manda la historia 012.
+>
+> **Paso 0, en parte (2026-10-10):** `bench/lab.sh bond` (WireGuard e
+> iperf3 reales sobre netem, en CI con `bond.yml`) da la línea base: la
+> redundancia de hoy entrega lo del mejor enlace. El registrador de campo
+> (`cengarde-rec` en la Pi, `bench/fieldrec.py`) va a medir la correlación
+> entre operadores y el patrón de Starlink.
 
 - **k-de-N:** cada paquete va solo por los k mejores enlaces, lo que ahorra
   datos en enlaces móviles.

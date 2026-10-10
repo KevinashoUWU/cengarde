@@ -302,6 +302,41 @@ wg show wgcg                  # handshake con el VPS
 ping -c 3 10.79.0.1           # el VPS a través del túnel
 ```
 
+### Registrar los enlaces durante días
+
+El registrador de campo (`cengarde-rec`) guarda el estado del motor en
+archivos por hora comprimidos con gzip, con un tope de tamaño. Por cada
+enlace queda el RTT, las caídas, el silenciado y los contadores, en la
+resolución de `status_interval_ms`. Con eso, `bench/fieldrec.py` responde a
+lo que el bonding necesita del terreno ([historia 012](../docs/historias/012-bonding.md)):
+
+- qué enlaces caen juntos;
+- si Starlink corta cada 15 s;
+- cuánto se separan los RTT entre enlaces;
+- cómo cambia todo eso según la hora.
+
+Viene apagado. Para una semana con cinco enlaces (unos 120 MB) conviene un
+disco USB en vez de `/tmp`:
+
+```sh
+uci set cengarde.recorder=recorder
+uci set cengarde.recorder.enabled=1
+uci set cengarde.recorder.dir=/mnt/usb/cengarde-rec   # o /tmp/cengarde-rec
+uci set cengarde.recorder.max_mb=200
+uci set cengarde.main.probe_idle_ms=100   # un enlace ocioso también contesta 10 veces por segundo
+uci commit cengarde && /etc/init.d/cengarde reload && /etc/init.d/cengarde-rec restart
+```
+
+Si el disco no está montado cuando arranca, escribe en la tarjeta SD.
+Detenerlo (`/etc/init.d/cengarde-rec stop`) cierra y comprime el archivo en
+curso. Para el análisis, en un PC con Python 3 (la hora de Chile es
+`--utc-offset -3` en verano y `-4` en invierno):
+
+```sh
+scp -O -r root@192.168.1.1:/mnt/usb/cengarde-rec .   # -O: dropbear no trae SFTP
+python3 bench/fieldrec.py --utc-offset -3 cengarde-rec > campo.md
+```
+
 ## IP pass (la IP pública del VPS en terreno)
 
 **En el VPS:** el TCP y el UDP de los puertos 1024–65000 que llegan a su IP
@@ -367,7 +402,7 @@ cengarde-setup cloud-config > vps.yaml               # el user data del VPS
 - **Cambiar el secreto:** en el VPS, `sudo cengarde-vps-setup add router
   --replace` y pega el nuevo; el router se corta un momento.
 - **Actualizar:** router y VPS con el mismo commit; la 0.4 cambió el
-  protocolo (v3) y no habla con un VPS anterior. De la 0.4.1 a la 0.4.6
+  protocolo (v3) y no habla con un VPS anterior. De la 0.4.1 a la 0.4.7
   no lo cambian (un router de una y un VPS de otra se entienden en los dos
   sentidos), pero actualiza igual el VPS:
   - la 0.4.1 cierra al túnel los metadatos y el puerto de WireGuard;
@@ -393,6 +428,10 @@ cengarde-setup cloud-config > vps.yaml               # el user data del VPS
     versión ya instalada no hace nada («up to date»): para probar una
     compilación con la misma versión, `opkg install --force-reinstall`; en
     25.12, `apk add` la reemplaza sin más.
+  - la 0.4.7 trae el registrador de campo (`cengarde-rec`, apagado: ver
+    [Registrar los enlaces durante días](#registrar-los-enlaces-durante-días)),
+    `status_interval_ms` en UCI y la hora de pared (`time_ms`) en el estado
+    de los dos extremos.
 
   En el VPS:
 

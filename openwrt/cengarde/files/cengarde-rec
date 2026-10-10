@@ -1,0 +1,118 @@
+#!/bin/sh
+# cengarde-rec: the field recorder of story 012. Keeps every new version of
+# cengarde's status file (status_file, rewritten whole every
+# status_interval_ms) as one JSON line, in hourly files compressed with gzip
+# and capped in total size, for bench/fieldrec.py to analyze: links that
+# fail together, Starlink's 15 s pattern, the RTT spread between links.
+#
+# The status file carries everything per link (state, RTT, the last reply,
+# mutes, counters) and, from cengarde 0.4.7, the wall clock ("time_ms");
+# with an older engine each line gets "t", this script's clock in seconds.
+# Nothing is chosen here: the analysis decides what to read, later.
+#
+# It never runs a command per poll but sleep: the status file is read with
+# the shell's own read, and only a new version (its uptime_ms changed) is
+# written. Cost per hour with 5 links at 1 sample/s: ~14 MB uncompressed
+# while being written (the current file), ~0.7 MB compressed.
+#
+# Usage: cengarde-rec [-s STATUS] [-d DIR] [-m MAX_MB] [-r ROTATE_S] [-p POLL_S]
+#   -s  the status file (/var/run/cengarde.json)
+#   -d  where to write (/tmp/cengarde-rec; a USB disk for a long campaign)
+#   -m  most MB of compressed files kept, the oldest go first (64)
+#   -r  seconds per file (3600)
+#   -p  seconds between reads (0.2; 1 where sleep takes no fractions)
+# SIGTERM or SIGINT closes and compresses the current file.
+
+STATUS=/var/run/cengarde.json
+DIR=/tmp/cengarde-rec
+MAX_MB=64
+ROTATE_S=3600
+POLL=0.2
+
+usage() {
+	sed -n '/^# Usage/,/^# SIGTERM/s/^# \{0,1\}//p' "$0" >&2
+	exit 2
+}
+
+while getopts s:d:m:r:p:h o; do
+	case $o in
+	s) STATUS=$OPTARG ;;
+	d) DIR=$OPTARG ;;
+	m) MAX_MB=$OPTARG ;;
+	r) ROTATE_S=$OPTARG ;;
+	p) POLL=$OPTARG ;;
+	*) usage ;;
+	esac
+done
+case "$MAX_MB$ROTATE_S" in '' | *[!0-9]*) usage ;; esac
+mkdir -p "$DIR" || exit 1
+sleep "$POLL" 2>/dev/null || POLL=1
+
+CUR=$DIR/current.jsonl
+N=0
+for f in "$DIR"/rec-*.jsonl*; do
+	[ -e "$f" ] || continue
+	f=${f##*/rec-}
+	f=${f%%-*}
+	f=${f#"${f%%[!0]*}"}
+	[ "${f:-0}" -gt "$N" ] 2>/dev/null && N=${f:-0}
+done
+
+# prune: the compressed files over MAX_MB, the oldest (lowest number) first.
+prune() {
+	total=0
+	for f in "$DIR"/rec-*.jsonl.gz; do
+		[ -e "$f" ] && total=$((total + $(wc -c <"$f")))
+	done
+	for f in "$DIR"/rec-*.jsonl.gz; do
+		[ "$total" -le $((MAX_MB * 1048576)) ] && break
+		[ -e "$f" ] || continue
+		total=$((total - $(wc -c <"$f")))
+		rm -f "$f"
+	done
+}
+
+# rotate [now]: closes the current file; gzip in the background unless now.
+rotate() {
+	[ -s "$CUR" ] || return 0
+	N=$((N + 1))
+	f=$(printf '%s/rec-%06d-%s.jsonl' "$DIR" "$N" "$(date +%Y%m%d-%H%M%S)")
+	mv "$CUR" "$f" || return 0
+	if [ "${1:-}" = now ]; then
+		gzip -f "$f"
+		prune
+	else
+		{ gzip -f "$f" && prune; } &
+	fi
+}
+
+trap 'rotate now; exit 0' TERM INT
+rotate now # what a previous run left
+read -r start _ </proc/uptime
+start=${start%.*}
+last=
+while :; do
+	line=
+	{ read -r line || :; } 2>/dev/null <"$STATUS"
+	case $line in
+	'{'*'"uptime_ms":'*)
+		up=${line#*\"uptime_ms\":}
+		up=${up%%,*}
+		if [ "$up" != "$last" ]; then
+			last=$up
+			case $line in
+			*'"time_ms":'*) printf '%s\n' "$line" >>"$CUR" ;;
+			*) printf '{"t":%s,%s\n' "$(date +%s)" "${line#\{}" >>"$CUR" ;;
+			esac
+		fi
+		;;
+	esac
+	read -r now _ </proc/uptime
+	now=${now%.*}
+	if [ $((now - start)) -ge "$ROTATE_S" ]; then
+		rotate
+		start=$now
+	fi
+	sleep "$POLL" &
+	wait $!
+done

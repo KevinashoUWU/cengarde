@@ -1,7 +1,7 @@
 # 012 — Bonding para cengarde: qué dice la evidencia y el plan de la Fase 5
 
 - **Fecha:** 2026-10-10
-- **Estado:** vigente. Plan de la Fase 5 (bonding); nada implementado todavía.
+- **Estado:** vigente. Plan de la Fase 5 (bonding). Paso 0 hecho en parte: el laboratorio `bench/lab.sh bond` con su línea base y el registrador de campo (`cengarde-rec`, `bench/fieldrec.py`); falta el cliente QUIC, la dispersión y la semana de datos de la Pi.
 - **Fuentes:**
   - estudio con 103 agentes (2026-10-10): 60 fuentes primarias más 11 de huecos (normas RIST/SRT/MPTCP/MPQUIC/MP-DCCP/ATSSS/TR-348/RFC 8157, papers de planificadores y de FEC multicamino, código de SRTLA/MLVPN/glorytun/OpenMPTCProuter/ZeroTier/KCP, productos comerciales, medidas de 5G/LTE/Starlink, RACK-TLP/QUIC/WireGuard); la lista con acceso y veredictos está en [012-bonding/fuentes.md](012-bonding/fuentes.md) y las síntesis por eje en [012-bonding/ejes.md](012-bonding/ejes.md);
   - el estudio completo (con la matriz de SmoothStream y las fichas con cada cita) vive en el repo de SmoothStream, `estudio-bonding/`;
@@ -10,7 +10,7 @@
 ## TL;DR
 
 - **Hoy no hay nada roto:** esto es el plan del bonding futuro. La redundancia pura sigue igual.
-- **Primero el laboratorio:** los objetivos de la Fase 5 (≥ 1,8× con 2 enlaces iguales, FEC ≤ 1,34×) solo se pueden medir con TCP y QUIC reales dentro de WireGuard, sobre netem por enlace. `bench/` hoy usa `udpgen` sin WireGuard.
+- **Primero el laboratorio:** los objetivos de la Fase 5 (≥ 1,8× con 2 enlaces iguales, FEC ≤ 1,34×) solo se pueden medir con TCP y QUIC reales dentro de WireGuard, sobre netem por enlace. Ya está `bench/lab.sh bond` (TCP; QUIC falta), y su línea base dice que la redundancia de hoy entrega lo del mejor enlace y esconde el spread, la muerte de un enlace y los picos.
 - **Sin reordenador no se puede repartir:** RACK, el QUIC de Chrome y Windows confunden un spread de 50–150 ms con pérdidas. El reordenador va sobre la **secuencia autenticada de cengarde** (32 bits, bajo el MAC), no sobre el contador de WireGuard como decía el ROADMAP.
 - **En bonding un enlace caído pierde su parte:** el mudo de 1–1,5 s sirve para redundancia, no para repartir. Hace falta una exclusión rápida (~200–300 ms, el contador de entregas verificadas no avanza) separada del mudo, y control de cola (un AQM virtual en `cg_sched_mask`).
 - **El planificador es un candidato:** la llegada esperada (ETA = OWD + cola/capacidad) tiene que ganarles a un WRR por capacidad y a minRTT con tope. ARQ de un reintento, FEC XOR y k = 2 se comparan entre sí en el mismo paso; solo la FEC densa queda descartada.
@@ -101,6 +101,41 @@ Convención de la matriz: [ficha Ax] afirmación verificada de una ficha (los id
 
 Todo eso es [MEDIR] antes de fijar umbrales.
 
+### Línea base de la redundancia: el paso 0 [medido]
+
+Fuente: `bond.yml` en CI (run 38077768991, 2026-10-10), una repetición en un
+runner compartido, 10 s por corrida (31 s en `starlink15`). Las cifras son de
+subida; la bajada da lo mismo con ±1 Mbit/s. Enlaces: Mbit/s / retardo de un
+sentido en ms.
+
+| Caso | Enlaces | Mbit/s | Retransm. Cubic / BBR | RTT p50 Cubic / BBR (ms) |
+| --- | --- | ---: | --- | --- |
+| `equal` | 2 × 50/25 | 43,5 (solo: 43,5) | 34 / 93 | 109 / 52 |
+| `het` | 60/20, 30/35, 10/60 | 52,6 (solo: 52,6) | 44 / 0 | 103 / 42 |
+| `reorder50` | 50/20, 50/70 | 43,9 | 31 / 0 | 105 / 43 |
+| `reorder150` | 50/20, 50/170 | 43,9 | 31 / 0 | 104 / 43 |
+| `linkdeath` | 3 × 40/25, l2 cae un tercio | 35,1 | 67 / 73 | 107 / 52 |
+| `starlink15` | 50/25, 100/20↔50 con cortes de 1,5 s | 80,5 | 1268 / 2804 | 99 / 75 |
+| `ltespike` | 50/25 (+300 ms 1 s de cada 5), 50/30 | 43,6 | 29 / 92 | 109 / 56 |
+| `deepq` | 20/25 con 500 ms de cola, 50/25 | 43,5 | 33 / 94 | 108 / 52 |
+
+- **Hoy se recibe el mejor enlace, no la suma:** 43,5 Mbit/s con dos de 50, y
+  lo mismo que con el primero solo. Es la vara del objetivo de ≥ 1,8×
+  (≥ 78 Mbit/s en `equal`).
+- **La redundancia esconde lo que el bonding tendrá que manejar:** el spread
+  de 100 y 300 ms (gana la primera copia), la muerte de un enlace, los picos
+  de LTE y la cola profunda no cambian ni el goodput ni el RTT.
+- **Cubic llena la cola del cuello de botella** (RTT p50 ≈ el doble de la base
+  de 50 ms); BBR no. El control de cola del paso 3 tiene que conservar eso
+  al repartir.
+- **`starlink15` es el único caso con muchas retransmisiones.** La
+  explicación probable [razonado; MEDIR]: mientras l2 va a 50 ms, l1 llega
+  primero pero solo lleva 50 Mbit/s, y el resto llega 25 ms después por l2,
+  desordenado; en cada corte, el TCP que iba a 80 Mbit/s choca con la cola de
+  l1. O sea que la redundancia de hoy ya reordena cuando el enlace de menor
+  retardo es el de menos capacidad, y el reordenador del paso 1 también le
+  serviría.
+
 ## Qué hacemos con esto
 
 ### Orden de la Fase 5 y criterios de salida
@@ -109,7 +144,7 @@ Los umbrales son propuestas [razonado] y se miden en `bench/`.
 
 | Paso | Qué | Criterio de salida medible |
 | --- | --- | --- |
-| 0 | Laboratorio: WireGuard del kernel + iperf3 (Cubic/BBR) + un cliente QUIC, sobre netem por enlace; mismo build, n ≥ 10 con dispersión. Instrumentos pasivos: tardanza contra plazo absoluto, pérdida en todos los enlaces, histograma de tamaños y tipos | Corren en el CI bond, bondhet, reorder, linkdeath, starlink15 [supuesto], ltespike y deepq. Hay una semana de datos de la Pi con 4×5G + Starlink, con las métricas de RFC 8869 (pérdida, retardo, estabilidad de la tasa) |
+| 0 | Laboratorio: WireGuard del kernel + iperf3 (Cubic/BBR) + un cliente QUIC, sobre netem por enlace; mismo build, n ≥ 10 con dispersión. Instrumentos pasivos: tardanza contra plazo absoluto, pérdida en todos los enlaces, histograma de tamaños y tipos | Corren en el CI `equal`, `het`, `reorder50`/`reorder150`, `linkdeath`, `starlink15` [supuesto], `ltespike` y `deepq` (hecho, sin QUIC y con n = 1). Hay una semana de datos de la Pi con 4×5G + Starlink, con las métricas de RFC 8869 (pérdida, retardo, estabilidad de la tasa) |
 | 1 | Reordenador por la secuencia de cengarde (8192 ranuras, liberación por enlace, nunca descarta) y formato v4 de DATA (marca de reparto, bits ECN, secuencia de control aparte) | Con reparto forzado y 0/50/150 ms de spread, las retransmisiones del TCP interior quedan ≤ 1,2× las de un solo enlace. 0 descartes OLD. Desborde con IMIX sin descartes. Reinicio correcto tras CG_RXV_RESET y tras reiniciar el servidor (restart.sh). En redundancia pura, +0 ms y ≤ +5 % de CPU |
 | 2 | Estimador por enlace (OWD verificada, base, exceso aditivo, C_i) e informe v4 | C_i dentro de ±15 % del límite de netem 2 s después de un escalón. 50 ms de exceso detectados en ≤ 300 ms. Un escalón de +30 ms cada 15 s [supuesto] no se marca como congestión |
 | 3 | `cg_sched_mask`: exclusión rápida, AQM virtual, clases y planificador (ETA frente a WRR por capacidad y minRTT con tope), guarda y rampa | Ver la lista debajo de la tabla |
@@ -138,10 +173,16 @@ Los umbrales son propuestas [razonado] y se miden en `bench/`.
 
 ## Pendiente
 
-- Paso 0: el laboratorio con WireGuard del kernel, iperf3 (Cubic/BBR), un cliente QUIC y netem por enlace, y una semana de datos de la Pi con 4×5G + Starlink.
+- Paso 0, lo que falta:
+  - un cliente QUIC dentro del túnel;
+  - n ≥ 10 con dispersión (`workflow_dispatch` de `bond.yml` con más repeticiones);
+  - los instrumentos pasivos: tardanza contra plazo, histograma de tamaños;
+  - comprobar por qué `starlink15` retransmite tanto;
+  - una semana de la Pi con `cengarde-rec` (guía de OpenWrt) y su informe de `bench/fieldrec.py`.
 - Medir lo marcado [MEDIR] y [supuesto] antes de fijar umbrales: el patrón de 15 s de Starlink en Chile, la correlación entre operadores en Santiago, si el TOS del datagrama de WireGuard llega a cengarde por loopback, y la tolerancia al desorden de iOS/macOS.
 - Elegir con el protocolo v4: marca de reparto, bits ECN, secuencia de control aparte (toca `epoch.h`) e informe por enlace.
 
 ## Cambios
 
 - 2026-10-10: creada con el estudio de bonding.
+- 2026-10-10: paso 0 en parte. `bench/lab.sh bond` y `bond.yml`, con la línea base de arriba. El registrador de campo: `cengarde-rec` en el paquete de OpenWrt, `bench/fieldrec.py` con su prueba y `lab.d/fieldrec.sh`, y `time_ms` en el estado del motor.

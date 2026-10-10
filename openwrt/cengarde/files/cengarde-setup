@@ -591,7 +591,8 @@ engine_conf() {
 		passthrough = $PASS
 	EOF
 	for k in server_failover_ms mute_behind_ms unmute_behind_ms mute_settle_ms mute_trickle min_active_links \
-		probe_interval_ms probe_idle_ms busy_poll_us cpu rt_priority sndbuf link_threads io_queue description; do
+		probe_interval_ms probe_idle_ms status_interval_ms busy_poll_us cpu rt_priority sndbuf link_threads \
+		io_queue description; do
 		config_get v main "$k"
 		[ -n "$v" ] && echo "$k = $v"
 	done

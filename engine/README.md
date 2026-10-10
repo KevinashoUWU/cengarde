@@ -452,8 +452,11 @@ Desde la 0.4.4, el servidor lo destraba solo, sin cambiar el protocolo:
 
 ## Estado
 
-`status_file` escribe cada segundo, desde un hilo aparte para que un disco
-lento no frene el túnel, un JSON con contadores globales y, por enlace:
+`status_file` escribe cada segundo (`status_interval_ms`), desde un hilo
+aparte para que un disco lento no frene el túnel, un JSON con contadores
+globales, `uptime_ms` (el reloj monótono del proceso), `time_ms` (la hora de
+pared en ms, que salta cuando NTP la corrige en un router sin RTC) y, por
+enlace:
 - estado (`live`, `waiting` antes de la primera respuesta, `stalled`, `down`
   o `paused`), por qué no lleva el túnel (`reason`, vacío si lo lleva), si
   está pausado o forzado a mano (`override`) y RTT;

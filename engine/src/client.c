@@ -1109,6 +1109,7 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 	cg_json_str(j, "version", CG_VERSION);
 	cg_json_str(j, "description", c->cfg->description);
 	cg_json_u64(j, "uptime_ms", now_ms - c->start_ms);
+	cg_json_u64(j, "time_ms", cg_wall_ms());
 	snprintf(buf, sizeof(buf), "%08x", c->session);
 	cg_json_str(j, "session", buf);
 	cg_json_str(j, "wireguard", c->have_peer ? cg_addr_str(&c->wg_peer, buf, sizeof(buf)) : "");
