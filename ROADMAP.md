@@ -574,14 +574,24 @@ largo de ensayo y error (Peplink, Mushroom Networks, Speedify…). El NEWS de
 libRIST documenta muchos de esos fallos y sus arreglos (historia 003), y es la
 lista de comprobación de partida.
 
+> **Actualización 2026-10-10:** el estudio de bonding (historia 012) fija el
+> orden de esta fase y sus criterios de salida: primero el laboratorio con
+> TCP y QUIC reales dentro de WireGuard, después un reordenador, un
+> estimador por enlace, el reparto con exclusión rápida y control de cola, y
+> recién entonces k-de-N, duplicación disparada y la comparación entre ARQ de
+> un reintento, FEC XOR y k = 2. Las viñetas de abajo son las ideas de
+> partida; donde el estudio las corrige, manda la historia 012.
+
 - **k-de-N:** cada paquete va solo por los k mejores enlaces, lo que ahorra
   datos en enlaces móviles.
 - **Redundancia selectiva por tamaño:** duplicar los paquetes pequeños (ACKs,
   VoIP, handshakes) y repartir los grandes. WireGuard no expone el DSCP
   interior, pero el tamaño sí se ve.
-- **Agregación (bonding):** reordenar en el receptor usando el contador de
-  WireGuard, sin cabecera propia. El throughput se acerca a la suma de los
-  enlaces.
+- **Agregación (bonding):** reordenar en el receptor por la secuencia propia
+  de cengarde (32 bits por sesión y sentido, bajo el MAC), la misma de la
+  dedup y el anti-replay. ~~Usar el contador de WireGuard~~: el motor C nunca
+  lo usó, y la secuencia autenticada no se reinicia con los rekeys
+  (historia 012). El throughput se acerca a la suma de los enlaces.
 - **FEC** XOR o Reed-Solomon con SIMD (NEON/AVX2), sobre el protocolo v1.
 - **Sondas por enlace** (RTT, jitter, pérdida, MTU de camino) y elección
   automática de enlaces.

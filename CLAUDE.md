@@ -18,8 +18,7 @@ por fuera del túnel) probado en QEMU; falta hardware real.
 - `engine/`: motor C (`src/`, `tests/`, `examples/`, `README.md`).
 - `openwrt/`: paquetes `cengarde` y `luci-app-cengarde`, `test/` (VMs QEMU
   y Playwright) y guía; `contrib/`: VPS (cloud-init, NAT) y systemd.
-- `bench/`: laboratorio netns/veth con `udpgen` (WireGuard falso), ver su README.
-- `docs/historias/`: investigación y decisiones (índice abajo).
+- `bench/`: laboratorio netns/veth con `udpgen` (WireGuard falso); `docs/historias/`: investigación (índice abajo).
 
 ## Comandos
 
@@ -78,3 +77,4 @@ por fuera del túnel) probado en QEMU; falta hardware real.
 | [009](docs/historias/009-recarga-control-e-ip-pass.md) | Recarga sin cortar, `cengarde ctl`, pausa de enlaces, IP pass desde el router (v3) | toques la recarga, el socket de control, procd o el IP pass |
 | [010](docs/historias/010-ipv6-varias-ip-multicliente-nombres.md) | Plan de IPv6, varios routers por VPS (v4) y nombres; hechos el PR 1 (reinicio del servidor, metadatos del VPS) y el PR 2 (dirección de llegada, lista de direcciones, IPv6 por fuera, fuga de IPv6) | toques IPv6, las direcciones del VPS, el multicliente, `cengarde-nat` o los nombres |
 | [011](docs/historias/011-hilos.md) | Hilos: colas del servidor (PR 3a, `lanes`, `steer.h`, `rcvbudget.h`, `udp_mem`), la puerta S1 y un hilo por enlace en el router (PR 3b, `link_threads`, anillo SPSC) | toques `lanes`, el programa BPF, el presupuesto de recepción, `udp_mem`, `link_threads`, `ring.h`, `pump.c` o los hilos de cualquier extremo |
+| [012](docs/historias/012-bonding.md) | Estudio de bonding (60 fuentes, Haiku/Sonnet/Opus) y el plan de la Fase 5: laboratorio, reordenador por la secuencia de cengarde, exclusión rápida, control de cola | diseñes el bonding, k-de-N, la FEC, el ARQ o el reparto entre enlaces |
