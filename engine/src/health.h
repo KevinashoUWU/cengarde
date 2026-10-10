@@ -15,6 +15,10 @@
  *   there, and when an active link stalls the fastest muted one is promoted
  *   at once. The fastest active link is never behind itself, so it is never
  *   muted for delay.
+ * - With mute_behind_us 0 nothing is muted for delay, and a link muted
+ *   before (a reload turned muting off) carries again at once: the unmute
+ *   threshold cannot be above 0 then, so a late link would otherwise stay
+ *   muted for as long as it is late.
  *
  * Liveness (stall) is separate and immediate: a stalled link carries nothing
  * until it answers again, whatever its state. A stall does not erase what a
@@ -124,6 +128,19 @@ static inline uint16_t cg_health_eval(struct cg_hlink *h, int n, uint16_t live, 
 {
 	uint16_t act = 0, muted = 0, changed = 0;
 	int nact, best;
+
+	/* Muting off: every muted link is back, live or not, forced like a
+	 * promotion (no backoff if muting comes back on and mutes it again). */
+	if (!c->mute_behind_us)
+		for (int i = 0; i < n; i++)
+			if (h[i].state == CG_H_MUTED) {
+				h[i].state = CG_H_ACTIVE;
+				h[i].changed_ms = now_ms;
+				h[i].holding = 0;
+				h[i].unmuted_ms = 0;
+				h[i].backoff = 0;
+				changed |= (uint16_t)(1u << i);
+			}
 
 	for (int i = 0; i < n; i++) {
 		if (!(live >> i & 1))

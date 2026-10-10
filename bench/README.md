@@ -37,6 +37,7 @@ sudo bench/lab.sh ci       # lo que corre el CI: smoke, health, control y los es
 sudo bench/lab.sh smoke    # prueba de humo de cengarde
 sudo bench/lab.sh health   # salud de enlaces: un enlace con 500 ms de cola, subida y bajada (historia 006)
 sudo bench/lab.sh control  # con tráfico: pausar un enlace, recargar dos veces, IP pass on/off; sin pérdidas (historia 009)
+sudo bench/lab.sh muteoff  # una recarga con mute_behind_ms = 0 devuelve al instante un enlace silenciado, subida y bajada (lab.d, va en ci)
 sudo bench/lab.sh latency  # latencia y CPU con busy_poll_us 0, 50 y 200, y el Go si está compilado (historia 006)
 sudo bench/lab.sh restart  # reinicios del servidor con tráfico: todos los enlaces vivos en 4 s (lab.d, va en ci)
 sudo bench/lab.sh restart ebe570b  # lo mismo con el motor de otro commit, p. ej. el de antes del arreglo
@@ -228,6 +229,22 @@ siguiente:
    nuevas: no crea la sesión ni escribe el IP pass.
 6. El cliente real sigue sin pérdidas antes del reinicio y vuelve después,
    en menos de 5 s, sin ningún paquete `too_old`.
+
+### `muteoff`: apagar el silenciado en caliente (`lab.d/muteoff.sh`)
+
+Con 2000 pps por 3 enlaces, l3 recibe la misma cola de 500 ms que en
+`health` y se silencia. Una recarga (SIGHUP) agrega `mute_behind_ms = 0`:
+l3 tiene que volver a llevar datos en menos de `MUTEOFF_MAX_MS` (1000 ms),
+con la cola puesta, decir por qué en el log («unmuted, muting is off») y no
+volver a silenciarse mientras el silenciado siga apagado. Otra recarga quita
+la línea y l3 se silencia de nuevo. Se prueba en los dos sentidos: la subida
+la silencia el cliente y la bajada el servidor. El túnel no pierde nada ni
+cambia de sesión.
+
+Medido el 2026-10-10: l3 vuelve 58–139 ms después de la recarga. Con el
+motor anterior al arreglo seguía silenciado 3 s después en los dos sentidos:
+`unmute_behind_ms` no puede pasar de `mute_behind_ms`, así que quedaba en 0,
+y un enlace atrasado no volvía mientras siguiera atrasado (historia 006).
 
 ### `wgpoke`: un router con la hora atrasada (`lab.d/wgpoke.sh`)
 
