@@ -479,9 +479,9 @@ enabled = no
 - **Cuánto cuesta** (`bench/macbench`, un núcleo de un Xeon de 2,8 GHz,
   mínimos de 5 corridas): buscar la sesión cuesta 3 ns con un router y 10 ns
   con 64 (4 sesiones cada uno); el MAC de un DATA de 1400 B, 720 ns. Buscar
-  y verificar un DATA no se distingue de antes; una sonda, unos 8 ns más
-  (de 60 a 68 ns). Admitir una sesión cuesta un MAC por clave probada, unos
-  58 ns cada uno.
+  y verificar un DATA no se distingue de antes; una sonda, unos 7 ns más
+  (de 59–60 a 66–67 ns). Admitir una sesión cuesta un MAC por clave
+  probada, unos 57 ns cada uno.
 - **Sesiones:** cada router tiene las suyas, cada una con su socket hacia
   su WireGuard, y como mucho 4 a la vez (`CG_CLIENT_SESSIONS`): una quinta
   reemplaza a la que hace más tiempo que no se oye (un router que se

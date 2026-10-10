@@ -92,7 +92,8 @@ compara buscar y verificar ahora con lo de antes de varios routers
 en una máquina compartida, citar el mínimo.
 
 Medido el 2026-10-10 en este contenedor (un núcleo de un Xeon de 2,8 GHz,
-gcc 13.3, mínimos de 5 corridas de 0,2 s; dos corridas coinciden en ±10 %):
+gcc 13.3, mínimos de 5 corridas de 0,2 s; donde dos corridas no
+coinciden, las dos):
 
 | Operación | ns |
 | --- | --- |
@@ -100,9 +101,9 @@ gcc 13.3, mínimos de 5 corridas de 0,2 s; dos corridas coinciden en ±10 %):
 | MAC de una sonda | 57 |
 | buscar la sesión: 1 router, 32 (2 sesiones cada uno), 64 (4) | 3 / 5,4 / 10 |
 | descartar una pista que no es de nadie | 1 |
-| admitir una sonda: 1, 2 o 4 claves probadas | 58 / 122 / 252 |
-| buscar y verificar un DATA: antes, y ahora con 64 routers | 721 / 738 |
-| buscar y verificar una sonda: antes, y ahora con 1 router | 60 / 67 |
+| admitir una sonda: 1, 2 o 4 claves probadas | 57 / 111–122 / 222–252 |
+| buscar y verificar un DATA: antes, y ahora con 64 routers | 721–729 / 727–738 |
+| buscar y verificar una sonda: antes, y ahora con 1 router | 59–60 / 66–67 |
 
 ### Escenarios en `lab.d/`
 

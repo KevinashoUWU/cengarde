@@ -757,18 +757,22 @@ y OpenWrt son el 3d2c.
 
 - **Varios routers** (PR 3d2b, 2026-10-10, contenedor de 4 CPU):
   - `bench/macbench` (un núcleo de un Xeon de 2,8 GHz, mínimos de 5
-    corridas de 0,2 s): buscar la sesión cuesta 3 ns con un router, 5,4 ns
-    con 32 (2 sesiones cada uno) y 10 ns con 64 (4); el MAC de un DATA de
-    1400 B, 720 ns, y el de una sonda, 57 ns. Buscar y verificar un DATA no
-    se distingue de antes (721 frente a 738 ns con 64 routers); una sonda,
-    de 60 a 67 ns. Admitir una sesión cuesta un MAC por clave probada (58,
-    122 y 252 ns con 1, 2 y 4).
+    corridas de 0,2 s, dos veces): buscar la sesión cuesta 3 ns con un
+    router, 5,4 ns con 32 (2 sesiones cada uno) y 10 ns con 64 (4); el MAC
+    de un DATA de 1400 B, 720 ns, y el de una sonda, 57 ns. Buscar y
+    verificar un DATA no se distingue de antes (721–729 frente a 727–738 ns
+    con 64 routers); una sonda, de 59–60 a 66–67 ns. Admitir una sesión
+    cuesta un MAC por clave probada (57, 111–122 y 222–252 ns con 1, 2 y
+    4).
   - `sudo bench/lab.sh multiclient` (tres routers, dos con la misma pista):
     vivos en 1,1 s; 2999 de 2999 paquetes por router en cada sentido, a
     1000 pps los tres a la vez, sin duplicados; el IP pass pasa de alpha a
     bravo 0,8 s después de que alpha lo suelta; bravo rechazado 0,5–0,6 s
     después de desactivarlo y de vuelta en 1,9–2,0 s; alpha, 8999 de 8999
     a través de tres recargas, con la misma sesión.
+  - `sudo bench/lab.sh ci`: pasan smoke, health, control y los 12
+    escenarios de `lab.d` que corren aquí (udpmem solo en el CI), los de un
+    solo router con el motor nuevo sin cambios.
 - **Reinicios del servidor** (`sudo bench/lab.sh restart`, 3 enlaces, 2000
   pps de bajada, l3 detrás de 800 ms de cola llena; contenedor de 4 CPU;
   tiempo desde que arranca el servidor nuevo, consultando el socket de
