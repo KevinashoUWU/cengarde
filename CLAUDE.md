@@ -18,8 +18,7 @@ por fuera del túnel) probado en QEMU; falta hardware real.
 - `engine/`: motor C (`src/`, `tests/`, `examples/`, `README.md`).
 - `openwrt/`: paquetes `cengarde` y `luci-app-cengarde`, `test/` (VMs QEMU
   y Playwright) y guía; `contrib/`: VPS (cloud-init, NAT) y systemd.
-- `bench/`: laboratorio netns/veth con `udpgen` (WireGuard falso), ver su README.
-- `docs/historias/`: investigación y decisiones (índice abajo).
+- `bench/`: laboratorio netns/veth con `udpgen` (WireGuard falso); `docs/historias/`: investigación (índice abajo).
 
 ## Comandos
 
@@ -31,10 +30,10 @@ por fuera del túnel) probado en QEMU; falta hardware real.
 - OpenWrt de punta a punta: `openwrt/test/e2e.sh IMAGEN` (`openwrt/README.md`).
 - Contenedor cloud: `apt-get update`, `iproute2 iptables strace` (laboratorio)
   o `qemu-system-x86 openssh-client` (e2e); sin IPv6, WireGuard, netem, systemd.
-- CI: `engine.yml` (gcc/clang con `-Werror`, ASan y TSAN, qemu en aarch64,
-  armhf y MIPS BE, AArch64 real, laboratorio en netns), `openwrt.yml`
-  (paquetes 25.12/24.10, imágenes, e2e con KVM y release con tags `v*`) y
-  `vps.yml` (reglas de `cengarde-nat` en netns, y el VPS con systemd real).
+- CI: `engine.yml` (gcc/clang `-Werror`, ASan, TSAN, qemu aarch64/armhf/MIPS
+  BE, AArch64 real, laboratorio en netns), `openwrt.yml` (paquetes, imágenes,
+  e2e con KVM, release con tags `v*`), `vps.yml` (`cengarde-nat`, systemd
+  real) y `bond.yml` (`lab.sh bond`: WireGuard y TCP reales sobre netem).
 
 ## Reglas de trabajo
 
@@ -42,9 +41,9 @@ por fuera del túnel) probado en QEMU; falta hardware real.
   (`tipo: resumen`, como upstream).
 - PRs hacia `master`: el usuario autoriza crearlos y pushearlos sin preguntar.
 - Toda cifra de rendimiento sale de `bench/` o se marca como estimación.
-- **Protocolo propio (v3):** cliente y servidor son siempre cengarde, sin
+- **Protocolo propio (v4):** cliente y servidor son siempre cengarde, sin
   compatibilidad con engarde Go. Cualquier cambio de formato sube
-  `CG_PROTO_VERSION` (historias 005, 006 y 009).
+  `CG_PROTO_VERSION` (historias 005, 006, 009 y 010).
 - **Plano de datos:** nunca bloquear, nunca `malloc` por paquete, nunca un log
   por paquete; marcar en el anti-replay solo después de verificar el MAC.
 - **Lógica de decisión** (dedup, política de envío, silenciado, tablas): en
@@ -76,5 +75,6 @@ por fuera del túnel) probado en QEMU; falta hardware real.
 | [007](docs/historias/007-openwrt-y-vps.md) | Paquete OpenWrt, plantilla del VPS, SmoothWAN como referencia | empaquetes o instales en OpenWrt o el VPS |
 | [008](docs/historias/008-luci-uci-y-emparejamiento.md) | UCI, LuCI, un solo secreto (BLAKE2s), imágenes, prueba en QEMU | toques `openwrt/`, `cengarde keys` o el cloud-config |
 | [009](docs/historias/009-recarga-control-e-ip-pass.md) | Recarga sin cortar, `cengarde ctl`, pausa de enlaces, IP pass desde el router (v3) | toques la recarga, el socket de control, procd o el IP pass |
-| [010](docs/historias/010-ipv6-varias-ip-multicliente-nombres.md) | Plan de IPv6, varios routers por VPS (v4) y nombres; hechos el PR 1 (reinicio del servidor, metadatos del VPS) y el PR 2 (dirección de llegada, lista de direcciones, IPv6 por fuera, fuga de IPv6) | toques IPv6, las direcciones del VPS, el multicliente, `cengarde-nat` o los nombres |
+| [010](docs/historias/010-ipv6-varias-ip-multicliente-nombres.md) | Plan de IPv6, varios routers por VPS y nombres; hechos el PR 1 (reinicio del servidor, metadatos del VPS), el PR 2 (dirección de llegada, IPv6 por fuera, fuga de IPv6), el 3d1 (herramientas del VPS) y el 3d2a (protocolo v4: pista, HELLO y cookies, secuencia de control) | toques el protocolo, IPv6, las direcciones del VPS, el multicliente, `cengarde-nat` o los nombres |
 | [011](docs/historias/011-hilos.md) | Hilos: colas del servidor (PR 3a, `lanes`, `steer.h`, `rcvbudget.h`, `udp_mem`), la puerta S1 y un hilo por enlace en el router (PR 3b, `link_threads`, anillo SPSC) | toques `lanes`, el programa BPF, el presupuesto de recepción, `udp_mem`, `link_threads`, `ring.h`, `pump.c` o los hilos de cualquier extremo |
+| [012](docs/historias/012-bonding.md) | Estudio de bonding (60 fuentes, Haiku/Sonnet/Opus) y el plan de la Fase 5: laboratorio, reordenador por la secuencia de cengarde, exclusión rápida, control de cola; paso 0: `lab.sh bond` con su línea base y el registrador de campo | diseñes el bonding, k-de-N, la FEC, el ARQ o el reparto entre enlaces, o toques `bond`, `cengarde-rec` o `fieldrec.py` |

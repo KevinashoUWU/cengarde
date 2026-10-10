@@ -12,14 +12,20 @@
  * (rcvbudget.h), so that the extra queues cannot starve every other UDP
  * socket of the machine.
  *
- * A session is created only by a packet whose MAC verifies, and a path (a
- * client uplink, keyed by session and link id) only learns or changes its
- * address from a verified packet, so nobody can make the server send traffic
- * to an address of their choosing. Each session talks to WireGuard from its
- * own socket, so WireGuard sees every client as a distinct endpoint and many
- * clients can share one port. Link health (health.h) mutes the download on
- * paths that lag far behind the fastest one, from the delays the client
- * reports in its probes.
+ * A session is created, a path (a client uplink, keyed by session and link
+ * id) is learned and moves to another address only by a probe whose MAC
+ * verifies and that echoes a cookie this server handed to that address in a
+ * HELLO (cookie.h): nobody can make the server send traffic to an address of
+ * their choosing, not even with a probe captured earlier and sent again from
+ * elsewhere or after a restart. A session the server takes up that way goes
+ * on past the sequences the client's probe says it received, and its upload
+ * windows start with everything the client sent before marked (proto.h).
+ * DATA from an address the path does not know still goes to WireGuard (it
+ * verified, and its sequence is new) but never moves the path. Each session
+ * talks to WireGuard from its own socket, so WireGuard sees every client as
+ * a distinct endpoint and many clients can share one port. Link health
+ * (health.h) mutes the download on paths that lag far behind the fastest
+ * one, from the delays the client reports in its probes.
  *
  * Several addresses: on a wildcard listen address the server learns, per
  * path and from verified packets only, which of its addresses the client
@@ -53,11 +59,13 @@
 #include <unistd.h>
 
 #include "arrival.h"
+#include "cookie.h"
 #include "ctl.h"
 #include "engine.h"
 #include "health.h"
 #include "idmap.h"
 #include "log.h"
+#include "pair.h"
 #include "pktinfo.h"
 #include "rcvbudget.h"
 #include "replay.h"
@@ -72,6 +80,10 @@
 #define DEFAULT_INTERVAL_MS 1000
 /* The junk socket's receive buffer: what a flood of garbage can fill. */
 #define JUNK_RCVBUF (256 * 1024)
+/* HELLOs per second on average, and at once: a client starting with 16
+ * links needs 16, each again when its cookie moves (cookie.h). */
+#define HELLO_RATE 50
+#define HELLO_BURST 100
 
 struct path {
 	int used;
@@ -96,12 +108,14 @@ struct session {
 	int wg_fd;
 	uint16_t wg_port; /* wg_fd's own port (network order): WireGuard knows the client by it */
 	struct cg_wgw wgw; /* the client's handshakes WireGuard has not answered */
-	uint32_t tx_seq;
+	uint32_t tx_seq; /* next DATA sequence down */
+	uint32_t tx_ctl; /* next probe reply sequence */
 	int pass; /* IP pass its probes ask for: -1 nothing */
 	uint64_t created_ms, last_rx_ms;
 	struct path path[CG_MAX_LINKS];
 	struct cg_hlink dh[CG_MAX_LINKS]; /* download health, by link id */
-	struct cg_replay replay;
+	struct cg_replay replay; /* DATA up */
+	struct cg_replay ctl;    /* probes */
 	struct cg_arrivals arr;
 	struct cg_link_rx rx[CG_MAX_LINKS];
 	uint64_t up_pkts, up_bytes, down_pkts, down_bytes, wg_drops, toobig;
@@ -119,6 +133,9 @@ struct server {
 	struct cg_config *cfg; /* replaced by a reload */
 	const struct cg_run *run;
 	const uint8_t *k_tx, *k_rx;
+	uint8_t hint; /* the client's (pair.h): anything else is not ours */
+	struct cg_cookie_keys ck;
+	struct cg_bucket hello_budget;
 	int ep, tfd;
 	struct lane lane[CG_MAX_LANES];
 	uint32_t nlanes;        /* listen sockets: 1 without a group */
@@ -150,9 +167,11 @@ struct server {
 	uint64_t start_ms, next_status_ms, next_sweep_ms;
 
 	uint64_t rx_malformed, rx_auth_fail, rx_old, rx_dups, rx_trunc, rx_ctrunc, sessions_full;
+	uint64_t rx_hint, rx_no_session; /* not this client's hint; DATA for no session */
+	uint64_t hellos, hellos_refused, hellos_over; /* sent, of those refusing, not sent (budget) */
 	uint64_t rx_junk, rx_short, rx_bad_version; /* read from the junk socket */
 	uint64_t wg_pokes, wg_redirects;
-	struct cg_ratelimit rl_auth, rl_full, rl_send, rl_local, rl_junk, rl_version, rl_poke, rl_redirect;
+	struct cg_ratelimit rl_auth, rl_full, rl_send, rl_local, rl_junk, rl_version, rl_poke, rl_redirect, rl_hint;
 
 	struct cg_rxbatch in;
 	union cg_ctl_rx rxctl[CG_BATCH]; /* arrival addresses of a listen batch */
@@ -265,9 +284,13 @@ static int wg_socket(struct server *s, uint16_t port)
 	return fd;
 }
 
-static struct session *session_create(struct server *s, uint32_t id, const struct sockaddr_storage *from,
-				      uint64_t now_ms)
+/* A session for client probe h with info pi from `from`, its cookie
+ * checked: it goes on past what the client received and its upload windows
+ * start with what the client sent marked (proto.h). */
+static struct session *session_create(struct server *s, const struct cg_hdr *h, const struct cg_probe_info *pi,
+				      const struct sockaddr_storage *from, uint64_t now_ms)
 {
+	uint32_t id = h->session;
 	char a[64];
 	struct session *S = NULL;
 	int fd, alone = 1;
@@ -298,11 +321,12 @@ static struct session *session_create(struct server *s, uint32_t id, const struc
 	S->id = id;
 	S->wg_fd = fd;
 	S->wg_port = local_port(fd);
-	if (cg_random(&S->tx_seq, sizeof(S->tx_seq)) < 0)
-		S->tx_seq = (uint32_t)now_ms;
+	S->tx_seq = pi->rx_top + CG_SEQ_LEAP;
+	S->tx_ctl = pi->rx_top_ctl + CG_SEQ_LEAP;
 	S->created_ms = S->last_rx_ms = now_ms;
 	S->pass = -1;
-	cg_replay_reset(&S->replay);
+	cg_replay_init_marked(&S->replay, pi->tx_next - 1);
+	cg_replay_init_marked(&S->ctl, h->seq);
 	if (cg_epoll_add(s->ep, fd, CG_EV(CG_EV_WG, S - s->s)) < 0) {
 		close(fd);
 		S->used = 0;
@@ -364,9 +388,11 @@ static void session_destroy(struct server *s, struct session *S, const char *why
 
 /* A verified packet from `from` on link of S, already marked in the replay
  * window: the path learns where the client is and, from the control
- * messages in m, which address of ours it sends to. A forged or replayed
- * packet never gets here, so nobody else can move a path. Only the loop
- * thread touches a path: the control message is rewritten in place while
+ * messages in m, which address of ours it sends to. Only a probe whose
+ * cookie this address got moves the client's end (path_may_move); DATA only
+ * tells which address of ours it went to. A forged or replayed packet never
+ * gets here, so nobody else can move a path. Only the loop thread touches a
+ * path: the control message is rewritten in place while
  * the old ctl_len is still set, and wg_read hands P->ctl.b to sendmmsg as
  * is. A multithreaded server (design decision 28) has to build it in a
  * second buffer and publish that buffer and its length with one release
@@ -421,8 +447,12 @@ static struct path *path_update(struct server *s, struct session *S, unsigned li
  * address may come back, and the client moves to another one on its own. */
 static void send_failed(struct server *s, struct session *S, unsigned link, int err, unsigned n, uint64_t now_ms)
 {
-	struct path *P = &S->path[link];
+	struct path *P;
 	char a[64], l[64];
+
+	if (!S) /* a HELLO: no path to count it on */
+		return;
+	P = &S->path[link];
 
 	switch (cg_send_err_kind(err)) {
 	case CG_SEND_LOCAL:
@@ -455,13 +485,17 @@ static void queue_reply(struct server *s, int *nr, struct session *S, unsigned l
 				    .owd = up_owd,
 				    .rx = (uint32_t)(S->rx[link].wins + S->rx[link].dups),
 				    .wins = (uint32_t)S->rx[link].wins,
-				    .lag_us = cg_lag_us(&S->rx[link]) };
+				    .lag_us = cg_lag_us(&S->rx[link]),
+				    .rx_top = S->replay.top,
+				    .rx_top_ctl = S->ctl.top,
+				    .tx_next = S->tx_seq };
 	struct cg_hdr h = { .type = CG_T_PROBE_REPLY,
 			    .flags = (uint8_t)(CG_F_OWD | (S->dh[link].state == CG_H_MUTED ? CG_F_MUTED : 0) |
 				       cg_pass_flags(s->pw.running ? s->pass_written : -1)),
+			    .hint = s->hint,
 			    .link = (uint8_t)link,
 			    .session = S->id,
-			    .seq = S->tx_seq++,
+			    .seq = S->tx_ctl++,
 			    .ts = (uint32_t)now_us };
 
 	cg_probe_info_write(r + CG_HDR_LEN, &pi);
@@ -484,6 +518,79 @@ static void queue_reply(struct server *s, int *nr, struct session *S, unsigned l
 	s->reply_sess[*nr] = S;
 	s->reply_link[*nr] = (uint8_t)link;
 	(*nr)++;
+}
+
+/* A HELLO to probe h from `from` (its datagram m), which this server cannot
+ * take yet: a cookie for this address, or a refusal. Never larger than the
+ * probe, only to a probe whose MAC verified, and within HELLO_RATE. */
+static void queue_hello(struct server *s, int *nr, const struct cg_hdr *probe, const struct sockaddr_storage *from,
+			const struct msghdr *m, int refused, uint64_t now_us)
+{
+	uint64_t now_ms = now_us / 1000;
+	uint8_t *r = s->reply[*nr], fresh[CG_SIPHASH_KEY_LEN];
+	struct cg_local got = { .known = 0 };
+	struct cg_hello hl = { .echo_ts = probe->ts };
+	struct cg_hdr h = { .type = CG_T_HELLO,
+			    .flags = refused ? CG_F_REFUSED : 0,
+			    .hint = s->hint,
+			    .link = probe->link,
+			    .session = probe->session,
+			    .seq = 0,
+			    .ts = (uint32_t)now_us };
+	size_t ctl_len;
+
+	if (!cg_bucket_take(&s->hello_budget, now_ms, HELLO_RATE, HELLO_BURST)) {
+		s->hellos_over++;
+		return;
+	}
+	if (cg_cookie_due(&s->ck, now_ms)) {
+		if (cg_random(fresh, sizeof(fresh)) < 0)
+			return;
+		cg_cookie_rotate(&s->ck, now_ms, fresh);
+	}
+	hl.cookie = cg_cookie_make(&s->ck, 0, probe->session, probe->link, from);
+	cg_hello_write(r + CG_HDR_LEN, &hl);
+	cg_hdr_write(r, &h, s->k_tx, r + CG_HDR_LEN, CG_HELLO_LEN);
+	s->reply_to[*nr] = *from;
+	s->riov[*nr].iov_base = r;
+	s->riov[*nr].iov_len = CG_HDR_LEN + CG_HELLO_LEN;
+	memset(&s->rmsg[*nr].msg_hdr, 0, sizeof(s->rmsg[*nr].msg_hdr));
+	s->rmsg[*nr].msg_hdr.msg_name = &s->reply_to[*nr];
+	s->rmsg[*nr].msg_hdr.msg_namelen = cg_addr_len(&s->reply_to[*nr]);
+	s->rmsg[*nr].msg_hdr.msg_iov = &s->riov[*nr];
+	s->rmsg[*nr].msg_hdr.msg_iovlen = 1;
+	/* From the address it arrived at, like everything else. */
+	if (s->pktinfo)
+		cg_local_from_msg(m, &got);
+	ctl_len = cg_local_cmsg(&got, s->lfamily, &s->reply_ctl[*nr]);
+	if (ctl_len) {
+		s->rmsg[*nr].msg_hdr.msg_control = s->reply_ctl[*nr].b;
+		s->rmsg[*nr].msg_hdr.msg_controllen = ctl_len;
+	}
+	s->reply_sess[*nr] = NULL;
+	s->reply_link[*nr] = probe->link;
+	s->hellos++;
+	s->hellos_refused += !!refused;
+	(*nr)++;
+}
+
+/* Whether a probe from `from` with cookie may move the client's end of path
+ * P (or learn it): the same address needs nothing, another needs the cookie
+ * of a HELLO sent there. */
+static int path_may_move(struct server *s, const struct path *P, uint32_t session, unsigned link,
+			 const struct sockaddr_storage *from, uint32_t cookie, uint64_t now_ms)
+{
+	struct cg_local none = { .known = 0 };
+	uint8_t fresh[CG_SIPHASH_KEY_LEN];
+
+	if (P && P->used && !(cg_path_diff(&P->addr, &P->local, from, &none) & CG_PATH_NEW_ADDR))
+		return 1;
+	if (cg_cookie_due(&s->ck, now_ms)) {
+		if (cg_random(fresh, sizeof(fresh)) < 0)
+			return 0;
+		cg_cookie_rotate(&s->ck, now_ms, fresh);
+	}
+	return cg_cookie_ok(&s->ck, cookie, 0, session, (uint8_t)link, from);
 }
 
 /* Sends the probe replies of a batch read from one lane, on that lane, the
@@ -509,12 +616,12 @@ static void flush_replies(struct server *s, int fd, int nr, uint64_t now_ms)
 }
 
 static void on_probe(struct server *s, struct session *S, struct path *P, unsigned link, const struct cg_hdr *h,
-		     const uint8_t *payload, uint64_t now_ms)
+		     const struct cg_probe_info *pi, uint64_t now_ms)
 {
 	S->pass = cg_pass_get(h->flags);
 	if (S->pass >= 0 && s->newest == (int32_t)(S - s->s))
 		s->pass = S->pass;
-	cg_probe_info_read(&P->peer_view, payload);
+	P->peer_view = *pi;
 	P->peer_view_ms = now_ms;
 	if (P->peer_view.interval_ms >= 100 && P->peer_view.interval_ms <= 600000)
 		P->interval_ms = P->peer_view.interval_ms;
@@ -570,10 +677,12 @@ static void listen_read(struct server *s, struct lane *ln)
 			uint8_t *b = s->in.buf[i];
 			size_t len = s->in.msg[i].msg_len;
 			const struct sockaddr_storage *from = &s->in.from[i];
+			struct cg_probe_info pi;
+			struct cg_replay *w;
 			struct session *S;
 			struct path *P;
 			struct cg_hdr h;
-			int verified = 0;
+			int verified = 0, fresh = 0;
 			char a[64];
 
 			if (s->in.msg[i].msg_hdr.msg_flags & MSG_TRUNC) {
@@ -588,9 +697,24 @@ static void listen_read(struct server *s, struct lane *ln)
 						cg_addr_str(from, a, sizeof(a)), CG_PROTO_VERSION);
 				continue;
 			}
+			/* Another client's hint: not worth a MAC. */
+			if (h.hint != s->hint) {
+				s->rx_hint++;
+				if (cg_ratelimit_ok(&s->rl_hint, now_ms, 10000))
+					cg_warn("packet from %s for another router (client hint %02x, ours %02x: wrong key?)",
+						cg_addr_str(from, a, sizeof(a)), h.hint, s->hint);
+				continue;
+			}
+			if (h.type == CG_T_PROBE)
+				cg_probe_info_read(&pi, b + CG_HDR_LEN);
 			S = lookup(s, h.session);
 			if (!S) {
-				/* Nothing is created for a packet that does not authenticate. */
+				/* Only a probe takes a session up, and only with its
+				 * cookie; the DATA waits for it. */
+				if (h.type != CG_T_PROBE) {
+					s->rx_no_session++;
+					continue;
+				}
 				if (!cg_hdr_verify(b, len, s->k_rx)) {
 					s->rx_auth_fail++;
 					if (cg_ratelimit_ok(&s->rl_auth, now_ms, 10000))
@@ -598,12 +722,19 @@ static void listen_read(struct server *s, struct lane *ln)
 							cg_addr_str(from, a, sizeof(a)));
 					continue;
 				}
-				verified = 1;
-				S = session_create(s, h.session, from, now_ms);
-				if (!S)
+				if (!path_may_move(s, NULL, h.session, h.link, from, pi.cookie, now_ms)) {
+					queue_hello(s, &nr, &h, from, &s->in.msg[i].msg_hdr, 0, now_us);
 					continue;
+				}
+				S = session_create(s, &h, &pi, from, now_ms);
+				if (!S) {
+					queue_hello(s, &nr, &h, from, &s->in.msg[i].msg_hdr, 1, now_us);
+					continue;
+				}
+				verified = fresh = 1;
 			}
-			switch (cg_replay_check(&S->replay, h.seq)) {
+			w = h.type == CG_T_DATA ? &S->replay : &S->ctl;
+			switch (fresh ? CG_RP_NEW : cg_replay_check(w, h.seq)) {
 			case CG_RP_OLD:
 				s->rx_old++;
 				continue;
@@ -622,15 +753,29 @@ static void listen_read(struct server *s, struct lane *ln)
 						cg_addr_str(from, a, sizeof(a)));
 				continue;
 			}
-			cg_replay_mark(&S->replay, h.seq);
+			if (!fresh)
+				cg_replay_mark(w, h.seq);
 			ln->links |= (uint16_t)(1u << h.link);
 			S->last_rx_ms = now_ms;
-			P = path_update(s, S, h.link, from, &s->in.msg[i].msg_hdr, now_ms);
-			P->last_rx_ms = now_ms;
+			P = &S->path[h.link];
 			if (h.type == CG_T_PROBE) {
-				on_probe(s, S, P, h.link, &h, b + CG_HDR_LEN, now_ms);
+				/* A new link, or an address the path never used:
+				 * only with the cookie of a HELLO sent there. */
+				if (!path_may_move(s, P, S->id, h.link, from, pi.cookie, now_ms)) {
+					queue_hello(s, &nr, &h, from, &s->in.msg[i].msg_hdr, 0, now_us);
+					continue;
+				}
+				P = path_update(s, S, h.link, from, &s->in.msg[i].msg_hdr, now_ms);
+				P->last_rx_ms = now_ms;
+				on_probe(s, S, P, h.link, &h, &pi, now_ms);
 				queue_reply(s, &nr, S, h.link, &h, now32 - h.ts, now_us);
 				continue;
+			}
+			/* DATA: to WireGuard wherever it came from; it tells the path
+			 * only which address of ours it went to. */
+			if (P->used && path_may_move(s, P, S->id, h.link, from, 0, now_ms)) {
+				P = path_update(s, S, h.link, from, &s->in.msg[i].msg_hdr, now_ms);
+				P->last_rx_ms = now_ms;
 			}
 			cg_arr_first(&S->arr, S->rx, h.seq, now32, h.link, expect_mask(S, now_ms));
 			cg_wgw_from_client(&S->wgw, cg_wg_handshake(b + CG_HDR_LEN, len - CG_HDR_LEN), now_ms);
@@ -650,7 +795,7 @@ static void listen_read(struct server *s, struct lane *ln)
 	}
 }
 
-/* The junk socket: what the steering program found not to be protocol 3
+/* The junk socket: what the steering program found not to be protocol 4
  * (steer.h). Counted and now and then logged, never parsed further; one
  * batch per loop pass, so a flood fills only its small buffer and never
  * starves the lanes. */
@@ -688,7 +833,7 @@ static void junk_read(struct server *s)
 /* Datagram buf from WireGuard as entry m of a batch down S's paths. */
 static void down_prepare(struct server *s, struct session *S, int m, uint8_t *buf, size_t len, uint64_t now_us)
 {
-	struct cg_hdr h = { .type = CG_T_DATA, .session = S->id, .ts = (uint32_t)now_us };
+	struct cg_hdr h = { .type = CG_T_DATA, .hint = s->hint, .session = S->id, .ts = (uint32_t)now_us };
 
 	h.seq = S->tx_seq++;
 	cg_hdr_write(s->hdr[m], &h, s->k_tx, buf, len);
@@ -931,6 +1076,7 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 	cg_json_str(j, "version", CG_VERSION);
 	cg_json_str(j, "description", s->cfg->description);
 	cg_json_u64(j, "uptime_ms", now_ms - s->start_ms);
+	cg_json_u64(j, "time_ms", cg_wall_ms());
 	cg_json_str(j, "config_error", s->config_error);
 	cg_json_str(j, "listen", s->laddr);
 	cg_json_bool(j, "reply_from_arrival", s->pktinfo);
@@ -946,6 +1092,14 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 	cg_json_u64(j, "junk", s->rx_junk);
 	cg_json_u64(j, "short", s->rx_short);
 	cg_json_u64(j, "bad_version", s->rx_bad_version);
+	cg_json_u64(j, "other_hint", s->rx_hint);
+	cg_json_u64(j, "no_session", s->rx_no_session);
+	cg_json_end(j, '}');
+	/* Probes it could not take yet: a cookie sent back, or a refusal. */
+	cg_json_obj(j, "hellos");
+	cg_json_u64(j, "sent", s->hellos);
+	cg_json_u64(j, "refused", s->hellos_refused);
+	cg_json_u64(j, "over_budget", s->hellos_over);
 	cg_json_end(j, '}');
 	cg_json_obj(j, "wireguard");
 	cg_json_u64(j, "pokes", s->wg_pokes);
@@ -1220,7 +1374,7 @@ static int lanes_open(struct server *s, char *err, size_t errlen)
 
 	if (cfg->lanes <= 1)
 		return lane_single(s, err, errlen);
-	n = cg_steer_v3(prog, CG_STEER_MAX, cfg->lanes);
+	n = cg_steer_prog(prog, CG_STEER_MAX, cfg->lanes);
 	if (n < 0) {
 		snprintf(err, errlen, "lanes = %u: no steering program for it", cfg->lanes);
 		return -1;
@@ -1285,6 +1439,7 @@ static void apply_config(struct server *s, struct cg_config *next)
 	s->cfg = next;
 	s->k_rx = next->key;
 	s->k_tx = next->key + CG_SIPHASH_KEY_LEN;
+	s->hint = cg_client_hint(next->key);
 	s->hcfg = cg_hcfg_of(next);
 	cg_log_level_set(s->run->verbose ? CG_LOG_DEBUG : next->log_level);
 	if (strcmp(old->status_file, next->status_file))
@@ -1425,6 +1580,7 @@ int cg_server_run(struct cg_config *cfg, const struct cg_run *run)
 	s->run = run;
 	s->k_rx = cfg->key;
 	s->k_tx = cfg->key + CG_SIPHASH_KEY_LEN;
+	s->hint = cg_client_hint(cfg->key);
 	s->ep = s->tfd = s->jfd = -1;
 	for (uint32_t i = 0; i < CG_MAX_LANES; i++)
 		s->lane[i].fd = -1;

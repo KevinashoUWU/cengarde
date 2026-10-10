@@ -26,13 +26,13 @@ Las cifras citadas en [`ROADMAP.md`](../ROADMAP.md) y en las historias 001,
 
 root, iproute2 (`ip`, `tc` con `sch_tbf`), gcc, make y python3. Go solo hace
 falta para la línea base del engarde Go (`ENGINE=go`); git, para esa línea
-base y para `restart REF`; iptables, para `fallback`; y curl, para las demos
-del Go.
+base y para `restart REF`; iptables, para `fallback`; iperf3,
+wireguard-tools y `sch_netem`, para `bond`; y curl, para las demos del Go.
 
 ## Uso
 
 ```sh
-sudo bench/lab.sh build    # udpgen, protoclient, ringbench y cengarde en bench/bin/
+sudo bench/lab.sh build    # udpgen, protoclient, ringbench, cgprobe y cengarde en bench/bin/
 sudo bench/lab.sh ci       # lo que corre el CI: smoke, health, control y los escenarios de lab.d con LAB_CI=1
 sudo bench/lab.sh smoke    # prueba de humo de cengarde
 sudo bench/lab.sh health   # salud de enlaces: un enlace con 500 ms de cola, subida y bajada (historia 006)
@@ -108,7 +108,7 @@ Con las direcciones de `multiip` (l1 a una secundaria, l2 a una /32, l3 a
 - 2000 pps de bajada y de subida, cada paquete una vez;
 - las colas 0, 1 y 2 reciben, cada una solo de su enlace (`lanes[].links`),
   y las demás y la de basura nada;
-- un datagrama corto y uno de protocolo 4 van a la basura (`rx.junk`,
+- un datagrama corto y uno de protocolo 3 (un router anterior) van a la basura (`rx.junk`,
   `rx.short`, `rx.bad_version`), no a una cola;
 - un segundo servidor en el mismo puerto no arranca ("Address already in
   use") y el primero conserva sus 8 colas;
@@ -166,34 +166,68 @@ máquina unos segundos.
 
 ### `restart`: el servidor se reinicia (`lab.d/restart.sh`)
 
-Un servidor reiniciado abre la sesión de nuevo con una secuencia aleatoria,
-y más o menos la mitad de las veces cae por detrás de la ventana anti-replay
-del cliente. El escenario comprueba que el cliente rehace su ventana y la
-bajada vuelve a fluir (la regla, en `engine/src/epoch.h` y la historia
-[010](../docs/historias/010-ipv6-varias-ip-multicliente-nombres.md)).
+Hasta el protocolo 3, un servidor reiniciado abría la sesión de nuevo con
+una secuencia aleatoria. Más o menos la mitad de las veces caía por detrás
+de la ventana anti-replay del cliente, que tenía que rehacerla
+(`engine/src/epoch.h` hasta la 0.4).
+
+Con el protocolo 4 el servidor nuevo contesta las sondas con un HELLO y
+retoma la sesión con la sonda que trae su cookie. Sigue 2^20 por delante de
+lo que la sonda dice que recibió el cliente, así que no hay ventana que
+rehacer (historia
+[010](../docs/historias/010-ipv6-varias-ip-multicliente-nombres.md)). El
+escenario comprueba que los enlaces vuelven y la bajada fluye.
 
 - **Montaje:** 2000 pps de bajada (y 20 de subida, para que las sondas vayan
   cada 100 ms). l3 tiene 800 ms de cola siempre llena: tbf a 5 Mbit/s en el
   lado del cliente más un relleno de 7,8 Mbit/s, como `health` llena la suya
-  de 500 ms. Así sus respuestas contestan sondas de 8 o más atrás. El
-  WireGuard falso del VPS (`udpgen -l`) sigue al servidor nuevo a su puerto
-  nuevo, como WireGuard cuando cambia el punto final del otro lado.
+  de 500 ms. El WireGuard falso del VPS (`udpgen -l`) sigue al servidor
+  nuevo a su puerto nuevo, como WireGuard cuando cambia el punto final del
+  otro lado.
 - **Fase 1:** 10 reinicios (`RESTARTS`). Cada vez, todos los enlaces tienen
   que estar vivos, con un paquete verificado después del reinicio, en 4 s
   (`RESTART_LIMIT`) desde que arranca el servidor nuevo (consultando el
   socket de control cada 50 ms), y la bajada tiene que volver a fluir. Si
   en 10 s (`WEDGE_S`) no lo están, cuenta como atascado y se reinicia el
   cliente para seguir.
-- **Fase 2:** l1 y l2 en pausa (`cengarde ctl link … off`), así que solo las
-  respuestas tardías de l3 pueden delatar el reinicio. Hasta 8 reinicios,
-  hasta que uno caiga por detrás de la ventana.
-- **Con `REF`** compila el motor de ese commit en `$RUN` y lo mide igual.
+- **Fase 2:** l1 y l2 en pausa (`cengarde ctl link … off`), así que el HELLO
+  y la cookie solo pueden pasar por l3, detrás de su cola. Son `ALONE`
+  reinicios (3).
+- **Al final** dice cuántos HELLO tomó el cliente (`download.hellos`).
+- **Con `REF`** compila el motor de ese commit en `$RUN` y lo mide igual. Un
+  motor del protocolo 3 dice además `window_resets`.
 - **Si el laboratorio no está listo** (la comprobación de antes de reiniciar
   falla, o el socket de control no contesta), no reinicia nada: dice qué
   extremo no corre, con el final de su log, en vez de contarlo como atascado.
 
-Medidas (antes y después del arreglo, y con un anillo de 4 sondas):
-historia [010](../docs/historias/010-ipv6-varias-ip-multicliente-nombres.md).
+Medidas: historia
+[010](../docs/historias/010-ipv6-varias-ip-multicliente-nombres.md) (las del
+protocolo 3, antes y después del arreglo de la 0.4.1, y las del 4).
+
+### `replay`: cookies y reenvíos (`lab.d/replay.sh`)
+
+`bench/bin/cgprobe` (`bench/cgprobe.c`) hace de segundo router con la clave del laboratorio, desde
+direcciones del netns `cli` y junto al cliente real. Fabrica una sonda (con
+o sin cookie), un DATA o un datagrama guardado, lo envía y dice qué contestó
+el servidor: `hello COOKIE`, `refused`, `reply` o `none`. Comprueba lo
+siguiente:
+
+1. Una sonda de una sesión que el servidor no tiene recibe un HELLO, y no
+   crea nada. La misma sonda con la cookie recibe respuesta y crea la
+   sesión, con el IP pass que pide (se guarda como `p.bin`).
+2. `p.bin` otra vez, desde otra dirección, es un duplicado: no hay
+   respuesta y el camino no se mueve.
+3. Una sonda nueva desde otra dirección, con la cookie vieja, recibe un
+   HELLO para la dirección nueva y no mueve el camino. Con la cookie nueva,
+   lo mueve (un NAT que cambió el puerto).
+4. Un DATA de una sesión que no existe, una sonda con la pista de otro
+   router y una con otra clave no reciben nada, y quedan contadas
+   (`rx.no_session`, `rx.other_hint`, `rx.auth_failures`).
+5. Con el servidor reiniciado, `p.bin` desde cualquier dirección, también
+   la suya, recibe solo un HELLO, porque las claves de las cookies son
+   nuevas: no crea la sesión ni escribe el IP pass.
+6. El cliente real sigue sin pérdidas antes del reinicio y vuelve después,
+   en menos de 5 s, sin ningún paquete `too_old`.
 
 ### `wgpoke`: un router con la hora atrasada (`lab.d/wgpoke.sh`)
 
@@ -278,6 +312,123 @@ failover (`FAILOVER_MS`):
   bytes; el estado tiene que dar `path_mtu` 1400 en l2 (1500 en l1) y el log
   tiene que pedir un MTU de WireGuard de 1316 solo para l2, sin perder
   paquetes.
+
+### `bond`: el laboratorio de bonding (`lab.d/bond.sh`)
+
+Es el paso 0 de la Fase 5 ([historia 012](../docs/historias/012-bonding.md)).
+A diferencia del resto, aquí no hay WireGuard falso: un WireGuard real
+(`wgc` 10.79.0.2 en `cli`, `wgs` 10.79.0.1 en `srv`) pasa por cengarde, y
+dentro va TCP real. En cada corrida, iperf3 sube o baja (`-R`) con Cubic y
+con BBR, mientras ping mide el RTT del túnel cargado cada 100 ms. Los
+enlaces se moldean con netem en los dos sentidos: retardo de un sentido,
+tasa y una cola de 100 ms a esa tasa.
+
+| Caso | Enlaces | Qué pasa |
+| --- | --- | --- |
+| `equal` | 2 × 50 Mbit/s, 25 ms | nada; también con el primer enlace solo |
+| `het` | 60/20, 30/35 y 10/60 (Mbit/s / ms) | nada; también con el primer enlace solo |
+| `reorder50` | 2 × 50 Mbit/s, 20 y 70 ms | 100 ms de diferencia de RTT |
+| `reorder150` | 2 × 50 Mbit/s, 20 y 170 ms | 300 ms de diferencia de RTT |
+| `linkdeath` | 3 × 40 Mbit/s, 25 ms | l2 pierde todo durante el tercio central |
+| `starlink15` | 50/25 y 100/20 | cada 15 s, l2 pierde todo 1,5 s y su retardo cambia entre 20 y 50 ms (un patrón supuesto: el real está por medir) |
+| `ltespike` | 50/25 y 50/30 | cada 5 s, l1 sube 300 ms durante 1 s |
+| `deepq` | 20/25 con 500 ms de cola y 50/25 con 100 ms | nada |
+
+Así queda medido lo que hoy da la redundancia (cada paquete por todos los
+enlaces, gana la primera copia) y, en `equal` y `het`, lo que daría el mejor
+enlace solo. El bonding tendrá que superar esas cifras. El caso `deepq` de
+aquí no es el escenario `deepq` de arriba, que mide las colas del servidor.
+
+Por cada caso, variante (`bonded` o `solo`), sentido y control de congestión
+se escribe una línea JSON en `$RUN/bond.jsonl`. Cada línea lleva Mbit/s,
+retransmisiones de TCP, p50 y p99 del RTT y CPU de cada cengarde. Al final
+se imprime una tabla con las medianas, que también queda en `$RUN/bond.md`.
+
+El escenario no juzga la velocidad: solo falla si falla la fontanería, es
+decir, si no hay handshake, tráfico o pings. Necesita iperf3,
+wireguard-tools y ping. Si el kernel no trae WireGuard (el contenedor
+cloud), sirve wireguard-go con `WG_GO=/ruta/wireguard`. Sin netem, los
+enlaces solo tienen tasa (`tbf`), sin retardos ni eventos, y el escenario
+lo avisa; con `BOND_NEED_NETEM=1` eso pasa a ser un fallo.
+
+```sh
+sudo bench/lab.sh bond                                  # todos los casos, ~10 min
+sudo BOND_CASES="equal reorder150" BOND_S=20 BOND_N=3 bench/lab.sh bond
+sudo BOND_CC=bbr BOND_DIRS=down BOND_OUT=/tmp/b.jsonl bench/lab.sh bond
+```
+
+| Variable | Por defecto | Qué hace |
+| --- | --- | --- |
+| `BOND_CASES` | todos | casos a correr |
+| `BOND_S` | 10 | segundos por corrida de iperf3 (`starlink15`, al menos 31) |
+| `BOND_N` | 1 | repeticiones; la tabla da la mediana |
+| `BOND_CC` | `cubic bbr` | controles de congestión |
+| `BOND_DIRS` | `up down` | sentidos (`down` es iperf3 `-R`) |
+| `BOND_OUT` | vacío | archivo al que añadir las líneas JSON |
+| `WG_GO` | vacío | wireguard-go, si el kernel no tiene WireGuard |
+| `BOND_NEED_NETEM` | 0 | 1: sin netem, falla en vez de avisar |
+
+No entra en `ci`: lo corre su propio workflow, `bond.yml`, en cada cambio de
+`engine/` o `bench/`, con todos los casos y una repetición. La tabla queda
+en el resumen del job y el JSON en un artefacto. A mano (`workflow_dispatch`)
+se pueden pedir más repeticiones, otros segundos y otros casos. En un runner
+compartido las cifras de una sola repetición varían: para comparar dos
+versiones, usa varias repeticiones en la misma máquina. Falta un cliente
+QUIC dentro del túnel, que la historia 012 pide junto a TCP.
+
+### `fieldrec`: el registrador de campo (`lab.d/fieldrec.sh`, `fieldrec.py`)
+
+El otro instrumento del paso 0 mide el terreno: cómo se portan de verdad
+los enlaces de la Pi. En el router, `cengarde-rec`
+([guía de OpenWrt](../openwrt/README.md#registrar-los-enlaces-durante-días))
+guarda cada versión nueva del archivo de estado del motor como una línea
+JSON, en archivos por hora comprimidos con gzip. Aquí,
+`fieldrec.py DIR|ARCHIVO...` los lee en orden y escribe un informe en
+Markdown (`--json` guarda además el resumen). El informe trae:
+
+- por enlace: tiempo arriba, caídas (cuántas, cuánto duran), RTT p50/p95/p99,
+  su variación, pérdida de bajada y de subida, y silenciados;
+- cuántos enlaces quedan vivos a la vez;
+- por cada par: P(B caído | A caído), su *lift* frente a la independencia,
+  qué parte de las caídas de A tuvo una de B a menos de 2 s, y la correlación
+  de sus RTT;
+- el spread de RTT entre los enlaces vivos y entre los dos mejores;
+- las caídas y los saltos de RTT plegados sobre el reloj, módulo 15 s
+  (Starlink reconfigura cada 15 s, en los segundos 12, 27, 42 y 57);
+- por hora del día (`--utc-offset`), las caídas, el RTT y la pérdida de cada
+  enlace.
+
+Un enlace está caído si su estado no es `live`, o si no llegó nada por él
+en tres intervalos de sonda (300 ms como mínimo). Los enlaces en pausa no
+cuentan. La caída empieza en la última respuesta, que estampa el motor, y
+termina a mitad de camino entre la última muestra caída y la primera de
+vuelta. La resolución es `status_interval_ms`.
+
+La hora de cada muestra es `time_ms` del motor. Las muestras de antes de que
+NTP corrija el reloj (la Pi no tiene RTC) quedan fuera de los pliegues y
+del perfil por hora. Con un motor anterior, sin `time_ms`, se usa la hora
+del registrador, al segundo.
+
+La pérdida de bajada de un enlace se calcula por intervalo: es lo que no
+trajo de lo que entregó el túnel, cuando bajaron 20 paquetes o más. La de
+subida es lo que el servidor dice haber recibido por él frente a lo que se
+envió, en ventanas de 10 s, porque su cuenta llega con la última respuesta
+de sonda. Ninguna de las dos mide capacidad: en redundancia, cada enlace
+lleva el mismo tráfico.
+
+`lab.d/fieldrec.sh` (en `ci`) lo prueba de dos maneras:
+
+- `fieldrec_test.py`, sobre una grabación inventada con respuestas
+  conocidas: a y b caen juntos, c cae solo y sin que el motor lo marque
+  todavía, y Starlink corta en los segundos 12/27/42/57. La grabación trae
+  además un reinicio del motor, un hueco, el reloj antes de NTP, un archivo
+  de un motor sin `time_ms` y otro cortado por un apagón. Se comprobó que la
+  prueba falla si se rompe el pliegue, la correlación, el corte entre
+  corridas, la detección por silencio o el inicio de la caída.
+- De punta a punta: el motor y `cengarde-rec` reales (bajo `sh`), a 4
+  muestras por segundo, mientras s2 cae 3 s. Tienen que quedar solo
+  archivos comprimidos, cada muestra una vez, una caída de 2 a 5 s en l2 y
+  ninguna en l1 ni l3.
 
 Paso a paso (pasa las mismas variables a `setup` y a `start`):
 

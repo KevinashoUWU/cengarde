@@ -7,8 +7,10 @@
 #     198.51.100.7] -- [cgsd-pub 10.250.80.1] this machine, the server
 #
 # The router runs cengarde and WireGuard (wgcg, 10.79.0.2) with the keys of
-# the server's secret, as an OpenWrt router of protocol 3 does, and reaches
-# the server through inet, the Internet; a web server on its side stands in
+# the server's secret, as an OpenWrt router does, and reaches the server
+# through inet, the Internet. Its engine is always of the server's version
+# (0.4.2's with 0.4.2, protocol 3; this checkout's after the upgrade,
+# protocol 4): a router is updated along with its VPS; a web server on its side stands in
 # for its LAN. inet stands in for the provider's metadata service too, on a
 # link-local address. The test:
 # - installs cengarde 0.4.2 (CENGARDE_OLD_REF, from this repository's
@@ -76,7 +78,7 @@ FAR_IP=198.51.100.7 # on inet, reached through a route added later
 META=169.254.79.254 # a fake metadata service, in inet
 TUN_VPS=10.79.0.1 TUN_ROUTER=10.79.0.2
 CG_PORT=65500 PASS_PORT=9000
-T0=0 TMP='' ROUTER_PID='' RULES0='' DENY='' LOCAL_PID='' DOCKER_ID='' UFW=''
+T0=0 TMP='' ROUTER_PID='' ROUTER_BIN='' RULES0='' DENY='' LOCAL_PID='' DOCKER_ID='' UFW=''
 fails=0
 
 say() { echo "systemd: $*"; }
@@ -176,9 +178,10 @@ preflight() {
 		die "commit $OLD_REF (cengarde 0.4.2) is not in this repository's history: fetch it (actions/checkout with fetch-depth: 0)"
 }
 
-# prepare: the engine for the router, a secret of the test's own, 0.4.2's
-# tree, and the nat.conf of 0.4.2's cloud-config with PUB_IF facing inet.
-# IP pass starts off, so that the router turns it on.
+# prepare: the engines for the router (this checkout's and 0.4.2's), a
+# secret of the test's own, 0.4.2's tree, and the nat.conf of 0.4.2's
+# cloud-config with PUB_IF facing inet. IP pass starts off, so that the
+# router turns it on.
 prepare() {
 	make -s -C "$SRC/engine" cengarde || fatal "the engine does not build"
 	install -d -m 0700 "${SECRET%/*}"
@@ -194,6 +197,7 @@ prepare() {
 	eval "$keys"
 	mkdir "$TMP/old"
 	git -c safe.directory="$SRC" -C "$SRC" archive "$OLD_REF" | tar -x -C "$TMP/old" || fatal "git archive $OLD_REF"
+	make -s -C "$TMP/old/engine" cengarde VERSION=0.4.2 >/dev/null || fatal "0.4.2's engine does not build"
 }
 
 # net_up: the router and the Internet, in network namespaces.
@@ -372,8 +376,20 @@ router_conf() {
 	EOF
 }
 router_start() {
-	ip netns exec "$ROUTER" "$SRC/engine/cengarde" -c "$TMP/router.conf" >>"$TMP/router.log" 2>&1 &
+	ip netns exec "$ROUTER" "$ROUTER_BIN" -c "$TMP/router.conf" >>"$TMP/router.log" 2>&1 &
 	ROUTER_PID=$!
+}
+# router_version old|new: the router's engine of the server's version
+# (0.4.2's or this checkout's), restarted when it runs.
+router_version() {
+	local was=$ROUTER_PID
+	router_stop
+	if [ "$1" = old ]; then
+		ROUTER_BIN=$TMP/old/engine/cengarde
+	else
+		ROUTER_BIN=$SRC/engine/cengarde
+	fi
+	[ -z "$was" ] || router_start
 }
 router_stop() {
 	[ -n "$ROUTER_PID" ] || return 0
@@ -381,7 +397,7 @@ router_stop() {
 	wait "$ROUTER_PID" 2>/dev/null
 	ROUTER_PID=
 }
-router_ctl() { "$SRC/engine/cengarde" ctl -s "$TMP/router.sock" "$@"; }
+router_ctl() { "$ROUTER_BIN" ctl -s "$TMP/router.sock" "$@"; }
 router_live() { router_ctl links 2>/dev/null | grep -Eq '^up1 +[^ ]+ +live '; }
 # tunnel_back WHAT: the router's link live, the tunnel and the Internet
 # through it, after the server changed under it. WireGuard on a new
@@ -417,6 +433,7 @@ install_old() {
 	say "a router with the same secret, asking for IP pass"
 	router_wg || fatal "the router's WireGuard"
 	router_conf yes
+	router_version old
 	router_start
 	tunnel_back "0.4.2"
 	check "0.4.2: IP pass forwards to the router" wait_for 10 pass_rules
@@ -465,6 +482,8 @@ after_upgrade() {
 	check "systemd-analyze verify says nothing about the installed units" verify
 	DENY=$(systemctl show -p IPAddressDeny --value cengarde)
 	check "cengarde.service has the drop-in's IPAddressDeny=169.254.0.0/16 (it says: $DENY)" has_deny
+	say "the router updated too (the protocol changed)"
+	router_version new
 	tunnel_back "upgraded"
 	check "IP pass is on again" wait_for 15 pass_rules
 	check "the server's public address reaches the router's site" wait_for 10 pass_reaches
@@ -630,6 +649,7 @@ rollback() {
 	check "0.4.2 again: cengarde, wg-quick@wg0 and cengarde-passthrough.path are active" \
 		active cengarde wg-quick@wg0 cengarde-passthrough.path
 	check "0.4.2 again: wg0 on 65501" [ "$(wg show wg0 listen-port 2>/dev/null)" = 65501 ]
+	router_version old
 	tunnel_back "0.4.2 again"
 	check "0.4.2 again: IP pass on" wait_for 15 pass_rules
 	check "0.4.2 again: the server's public address reaches the router's site" wait_for 10 pass_reaches
@@ -640,6 +660,7 @@ rollback() {
 	check "upgraded again: the units are active" active_new
 	check "no rule of 0.4 is left" not legacy_rules
 	check "the secret file, the same router's, removed" [ ! -e "$SECRET" ]
+	router_version new
 	tunnel_back "upgraded again"
 	check "IP pass on" wait_for 15 pass_rules
 	sed -i '/^PUB_IF=/d' "$NAT_CONF"

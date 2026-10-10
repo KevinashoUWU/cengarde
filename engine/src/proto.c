@@ -37,8 +37,8 @@ void cg_hdr_write(uint8_t out[CG_HDR_LEN], const struct cg_hdr *h, const uint8_t
 
 	out[0] = (uint8_t)(CG_PROTO_VERSION << 4 | (h->type & 0x0f));
 	out[1] = h->flags;
-	out[2] = 0;
-	out[3] = h->link;
+	out[CG_HINT_OFF] = h->hint;
+	out[CG_LINK_OFF] = h->link;
 	put32(out + 4, h->session);
 	put32(out + 8, h->seq);
 	put32(out + 12, h->ts);
@@ -51,11 +51,12 @@ int cg_hdr_parse(struct cg_hdr *h, const uint8_t *buf, size_t len)
 {
 	size_t plen;
 
-	if (len < CG_HDR_LEN || buf[0] >> 4 != CG_PROTO_VERSION || buf[2] != 0)
+	if (len < CG_HDR_LEN || buf[0] >> 4 != CG_PROTO_VERSION)
 		return -1;
 	h->type = buf[0] & 0x0f;
 	h->flags = buf[1];
-	h->link = buf[3];
+	h->hint = buf[CG_HINT_OFF];
+	h->link = buf[CG_LINK_OFF];
 	h->session = get32(buf + 4);
 	h->seq = get32(buf + 8);
 	h->ts = get32(buf + 12);
@@ -65,7 +66,9 @@ int cg_hdr_parse(struct cg_hdr *h, const uint8_t *buf, size_t len)
 		return plen > 0 ? 0 : -1;
 	case CG_T_PROBE:
 	case CG_T_PROBE_REPLY:
-		return plen == CG_PROBE_INFO_LEN ? 0 : -1;
+		return plen >= CG_PROBE_INFO_LEN ? 0 : -1;
+	case CG_T_HELLO:
+		return plen >= CG_HELLO_LEN ? 0 : -1;
 	default:
 		return -1;
 	}
@@ -92,6 +95,10 @@ void cg_probe_info_write(uint8_t out[CG_PROBE_INFO_LEN], const struct cg_probe_i
 	put32(out + 12, pi->rx);
 	put32(out + 16, pi->wins);
 	put32(out + 20, pi->lag_us);
+	put32(out + 24, pi->cookie);
+	put32(out + 28, pi->rx_top);
+	put32(out + 32, pi->rx_top_ctl);
+	put32(out + 36, pi->tx_next);
 }
 
 int cg_looks_like_wg(const uint8_t *buf, size_t len)
@@ -120,4 +127,20 @@ void cg_probe_info_read(struct cg_probe_info *pi, const uint8_t in[CG_PROBE_INFO
 	pi->rx = get32(in + 12);
 	pi->wins = get32(in + 16);
 	pi->lag_us = get32(in + 20);
+	pi->cookie = get32(in + 24);
+	pi->rx_top = get32(in + 28);
+	pi->rx_top_ctl = get32(in + 32);
+	pi->tx_next = get32(in + 36);
+}
+
+void cg_hello_write(uint8_t out[CG_HELLO_LEN], const struct cg_hello *hl)
+{
+	put32(out, hl->echo_ts);
+	put32(out + 4, hl->cookie);
+}
+
+void cg_hello_read(struct cg_hello *hl, const uint8_t in[CG_HELLO_LEN])
+{
+	hl->echo_ts = get32(in);
+	hl->cookie = get32(in + 4);
 }

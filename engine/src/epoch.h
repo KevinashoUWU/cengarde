@@ -1,34 +1,27 @@
-/* Client side: telling a server that started over from a link that lags.
+/* Client side: tying what the server sends back to the probes it answers.
  *
- * A restarted server opens the session again with a new random sequence.
- * About half the time it lands more than the anti-replay window behind what
- * the client marked last, and every packet down is then OLD for good. An OLD
- * packet alone does not prove a restart: probe replies share the server's
- * sequence with DATA, so a link more than CG_REPLAY_WINDOW packets behind the
- * others delivers OLD replies too, while the other links still deliver NEW.
+ * Each link keeps its last CG_ECHO_N probes (their header ts, an exact
+ * microsecond value) and every probe reply or HELLO (proto.h) names the
+ * probe it answers. A HELLO carries no sequence, so this is what keeps a
+ * captured one from being sent again: it counts only for a probe this link
+ * sent at most CG_ECHO_MAX_AGE_MS ago, and only once (a stronger proof of
+ * freshness than a range: the 32-bit ts wraps every 71.6 minutes and
+ * travels in clear). Replies take their entry too, so a probe is answered
+ * once, by a reply or by a HELLO.
  *
- * So the window is reset only on an OLD probe reply that (cg_restart_reply):
- * 1. verifies (MAC);
- * 2. answers a probe this link sent at most CG_ECHO_MAX_AGE_MS ago, whose
- *    entry in the link's echo ring it consumes (an exact microsecond ts is a
- *    stronger proof of freshness than a range: the 32-bit ts wraps every
- *    71.6 minutes and travels in clear);
- * 3. comes after no verified NEW packet on any link for a threshold, which
- *    the client sets at 2 x probe_idle_ms.
- * A DATA packet never resets the window.
+ * Up to protocol 3 the ring also told a server that started over from a
+ * link that lags, and the client reset its window; from protocol 4 the
+ * server goes on past what the probes say the client received, so there is
+ * nothing to reset.
  *
- * The ring holds the last CG_ECHO_N probes of a link: 6.4 s of probes every
- * 100 ms, so a reply still matches on a link with seconds of queue. Pure
- * functions, no clock and no I/O.
+ * 6.4 s of probes every 100 ms, so an answer still matches on a link with
+ * seconds of queue. Pure functions, no clock and no I/O.
  *
  * SPDX-License-Identifier: GPL-2.0-only */
 #ifndef CG_EPOCH_H
 #define CG_EPOCH_H
 
 #include <stdint.h>
-
-#include "proto.h"
-#include "replay.h"
 
 #define CG_ECHO_N 64
 #define CG_ECHO_MAX_AGE_MS 10000
@@ -42,7 +35,7 @@ struct cg_echo_ent {
 struct cg_echo {
 	struct cg_echo_ent e[CG_ECHO_N];
 	uint8_t pos;   /* next entry to write */
-	uint64_t used; /* bit i: e[i] holds a probe no reply has consumed */
+	uint64_t used; /* bit i: e[i] holds a probe no reply or HELLO has consumed */
 };
 
 /* A probe with header ts goes out at now_ms; it replaces the oldest entry. */
@@ -64,18 +57,6 @@ static inline int cg_echo_take(struct cg_echo *r, uint32_t ts, uint64_t now_ms, 
 			return 1;
 		}
 	return 0;
-}
-
-/* Whether a packet the window judged v proves that the server started over,
- * so that the client resets its window and takes the packet as NEW.
- * echo_found: cg_echo_take() on the link it came from, only after the MAC
- * verified; ms_since_new_any: since the newest verified NEW packet on any
- * link. */
-static inline int cg_restart_reply(enum cg_replay_verdict v, uint8_t type, int mac_ok, int echo_found,
-				   uint64_t ms_since_new_any, uint32_t threshold_ms)
-{
-	return v == CG_RP_OLD && type == CG_T_PROBE_REPLY && mac_ok && echo_found &&
-	       ms_since_new_any >= threshold_ms;
 }
 
 #endif

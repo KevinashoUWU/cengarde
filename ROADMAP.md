@@ -486,7 +486,9 @@ hardware real (historias [007](docs/historias/007-openwrt-y-vps.md) y
     [010](docs/historias/010-ipv6-varias-ip-multicliente-nombres.md), del
     que los PR 1 y 2 están hechos:
     - PR 3: varios routers por VPS (protocolo v4) con un panel de reenvío
-      de puertos;
+      de puertos; hechos el 3d1 (herramientas del VPS) y el 3d2a (el
+      protocolo v4 en el motor, paquetes 0.5.0), faltan el 3d2b (varios
+      routers) y el 3d2c (VPS y OpenWrt);
     - PR 4: IPv6 dentro del túnel, apagado por defecto;
     - PR 5: nombres con DNS dinámico, también para un servidor casero.
 
@@ -574,14 +576,30 @@ largo de ensayo y error (Peplink, Mushroom Networks, Speedify…). El NEWS de
 libRIST documenta muchos de esos fallos y sus arreglos (historia 003), y es la
 lista de comprobación de partida.
 
+> **Actualización 2026-10-10:** el estudio de bonding (historia 012) fija el
+> orden de esta fase y sus criterios de salida: primero el laboratorio con
+> TCP y QUIC reales dentro de WireGuard, después un reordenador, un
+> estimador por enlace, el reparto con exclusión rápida y control de cola, y
+> recién entonces k-de-N, duplicación disparada y la comparación entre ARQ de
+> un reintento, FEC XOR y k = 2. Las viñetas de abajo son las ideas de
+> partida; donde el estudio las corrige, manda la historia 012.
+>
+> **Paso 0, en parte (2026-10-10):** `bench/lab.sh bond` (WireGuard e
+> iperf3 reales sobre netem, en CI con `bond.yml`) da la línea base: la
+> redundancia de hoy entrega lo del mejor enlace. El registrador de campo
+> (`cengarde-rec` en la Pi, `bench/fieldrec.py`) va a medir la correlación
+> entre operadores y el patrón de Starlink.
+
 - **k-de-N:** cada paquete va solo por los k mejores enlaces, lo que ahorra
   datos en enlaces móviles.
 - **Redundancia selectiva por tamaño:** duplicar los paquetes pequeños (ACKs,
   VoIP, handshakes) y repartir los grandes. WireGuard no expone el DSCP
   interior, pero el tamaño sí se ve.
-- **Agregación (bonding):** reordenar en el receptor usando el contador de
-  WireGuard, sin cabecera propia. El throughput se acerca a la suma de los
-  enlaces.
+- **Agregación (bonding):** reordenar en el receptor por la secuencia propia
+  de cengarde (32 bits por sesión y sentido, bajo el MAC), la misma de la
+  dedup y el anti-replay. ~~Usar el contador de WireGuard~~: el motor C nunca
+  lo usó, y la secuencia autenticada no se reinicia con los rekeys
+  (historia 012). El throughput se acerca a la suma de los enlaces.
 - **FEC** XOR o Reed-Solomon con SIMD (NEON/AVX2), sobre el protocolo v1.
 - **Sondas por enlace** (RTT, jitter, pérdida, MTU de camino) y elección
   automática de enlaces.
@@ -639,8 +657,9 @@ debe sobrevivir a la caída de uno con ≤1,34× de sobrecoste.
   ni al puerto de WireGuard (0.4.1, probado en netns; historia 010).
 - [ ] Que el motor del VPS tampoco llegue a los metadatos: `IPAddressDeny`
   ya está en 0.4.1, sin probar aún en un systemd real (PR 2).
-- [ ] Que una sonda reenviada tras un reinicio del servidor no decida el IP
-  pass: HELLO del protocolo v4, PR 3 (historia 010).
+- [x] Que una sonda reenviada tras un reinicio del servidor no decida el IP
+  pass: HELLO y cookies del protocolo v4, PR 3d2a (0.5.0, probado con
+  `bench/lab.sh replay`; historia 010).
 
 **Uso y operación**
 - [ ] Lista explícita o patrones de interfaces, con exclusión automática de

@@ -232,6 +232,9 @@ msgstr ""
 msgid "The VPS does not answer on any uplink: check that it runs cengarde with the secret of this router, and that its firewall lets in UDP to the VPS port."
 msgstr ""
 
+msgid "The VPS answers but refuses this router: it has as many sessions as it takes. Run \"cengarde-vps-setup list\" on the VPS."
+msgstr ""
+
 msgid "The thread of uplink %s has not run for %d s with packets waiting; the other uplinks go on. If it happens again, set \"Threads per uplink\" to Off in Settings > Advanced."
 msgstr ""
 

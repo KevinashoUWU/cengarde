@@ -69,7 +69,7 @@ static void test_steer_v3(void)
 		pkt[i] = (uint8_t)(i * 37 + 11);
 	for (size_t li = 0; li < sizeof(lanes_ok) / sizeof(lanes_ok[0]); li++) {
 		unsigned L = lanes_ok[li], seen[CG_MAX_LANES + 1];
-		int n = cg_steer_v3(prog, CG_STEER_MAX, L);
+		int n = cg_steer_prog(prog, CG_STEER_MAX, L);
 
 		CHECK(n > 0 && n <= CG_STEER_MAX && n <= BPF_MAXINSNS);
 		if (n <= 0)
@@ -101,7 +101,7 @@ static void test_steer_v3(void)
 			CHECK(seen[l] > 0);
 	}
 	/* Concretely, with 8 lanes. */
-	CHECK_EQ(cg_steer_v3(prog, CG_STEER_MAX, 8), 9);
+	CHECK_EQ(cg_steer_prog(prog, CG_STEER_MAX, 8), 9);
 	pkt[0] = (uint8_t)(CG_PROTO_VERSION << 4 | CG_T_DATA);
 	pkt[CG_LINK_OFF] = 2;
 	CHECK_EQ(cbpf_run(prog, 9, pkt, 1400), 2);
@@ -115,8 +115,8 @@ static void test_steer_v3(void)
 	CHECK_EQ(cbpf_run(prog, 9, pkt, 1400), 8);
 
 	for (size_t li = 0; li < sizeof(lanes_bad) / sizeof(lanes_bad[0]); li++)
-		CHECK_EQ(cg_steer_v3(prog, CG_STEER_MAX, lanes_bad[li]), -1);
-	CHECK_EQ(cg_steer_v3(prog, 8, 8), -1); /* no room */
+		CHECK_EQ(cg_steer_prog(prog, CG_STEER_MAX, lanes_bad[li]), -1);
+	CHECK_EQ(cg_steer_prog(prog, 8, 8), -1); /* no room */
 	CHECK(cg_lanes_valid(1) && cg_lanes_valid(16) && !cg_lanes_valid(0) && !cg_lanes_valid(24));
 }
 

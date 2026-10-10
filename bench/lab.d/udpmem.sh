@@ -8,7 +8,7 @@
 # half of the pressure threshold (engine/src/rcvbudget.h). Here udp_mem is lowered to UDPMEM
 # pages (8192 12288 16384: 64 MiB at most for the whole machine) and put
 # back by a trap, the server is stopped with SIGSTOP so that nothing
-# drains, and a flood of protocol 3 datagrams on every link id fills every
+# drains, and a flood of protocol 4 datagrams on every link id fills every
 # lane, while a separate UDP pair exchanges 100 pps. Its receiver reads
 # every 250 ms, so it holds a backlog like any busy UDP socket of the
 # machine. With 8 lanes at the default 4 MiB (8 MiB once doubled) the
@@ -134,7 +134,7 @@ print(f"rx={n}")
 EOF2
 }
 
-# udpmem_flood N: N protocol 3 datagrams (1400 bytes) on each link id 0-15,
+# udpmem_flood N: N protocol 4 datagrams (1400 bytes) on each link id 0-15,
 # from cli to the server's port: every lane gets 2 N.
 udpmem_flood() {
 	ip netns exec cli python3 - "$1" <<'EOF'
@@ -143,7 +143,7 @@ import socket, sys
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 s.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1 << 20)
 for link in range(16):
-    pkt = bytes([0x31, 0, 0, link]) + bytes(1396)
+    pkt = bytes([0x41, 0, 0, link]) + bytes(1396)
     for _ in range(int(sys.argv[1])):
         try:
             s.sendto(pkt, ("10.0.1.2", 59402))

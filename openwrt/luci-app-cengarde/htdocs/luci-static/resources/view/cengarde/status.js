@@ -24,6 +24,7 @@ function problemText(p) {
 	case 'upnp_no_ip': return _('IP pass is on, but UPnP has no public IP to announce: no VPS address is IPv4. Set a STUN server in Settings > Tunnel.');
 	case 'not_running': return _('The engine is not running: see System > System Log.');
 	case 'vps_silent': return _('The VPS does not answer on any uplink: check that it runs cengarde with the secret of this router, and that its firewall lets in UDP to the VPS port.');
+	case 'vps_refusing': return _('The VPS answers but refuses this router: it has as many sessions as it takes. Run "cengarde-vps-setup list" on the VPS.');
 	case 'link_thread_stalled': return _('The thread of uplink %s has not run for %d s with packets waiting; the other uplinks go on. If it happens again, set "Threads per uplink" to Off in Settings > Advanced.').format(p.iface, p.seconds);
 	case 'path_mtu':
 		if (p.fit >= MTU_MIN)

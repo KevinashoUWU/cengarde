@@ -1,0 +1,81 @@
+name: Bonding lab
+
+# Step 0 of story 012 (bench/lab.d/bond.sh): real WireGuard through cengarde
+# and real TCP inside it (iperf3, Cubic and BBR, up and down) with ping
+# under load, over veth links shaped with netem: equal and unequal links,
+# reordering, a link that dies, a Starlink-like pattern, LTE delay spikes
+# and a deep queue, plus the best link alone. It is the baseline that the
+# bonding of Fase 5 has to beat. It judges no speed: it fails only when the
+# plumbing does (no netem, no handshake, no traffic). The table of medians
+# goes to the job summary and the JSON lines to an artifact.
+
+on:
+  push:
+    paths:
+      - 'engine/**'
+      - 'bench/**'
+      - '.github/workflows/bond.yml'
+  pull_request:
+    paths:
+      - 'engine/**'
+      - 'bench/**'
+      - '.github/workflows/bond.yml'
+  workflow_dispatch:
+    inputs:
+      repetitions:
+        description: 'iperf3 runs per case, direction and congestion control'
+        default: '1'
+      seconds:
+        description: 'Seconds per iperf3 run (starlink15 takes at least 31)'
+        default: '10'
+      cases:
+        description: 'Cases, separated by spaces (empty: all of them)'
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  bond:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install iperf3 and wireguard-tools; load WireGuard, BBR and netem
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends iperf3 wireguard-tools
+          for m in wireguard tcp_bbr sch_netem; do
+            sudo modprobe "$m" || {
+              sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "linux-modules-extra-$(uname -r)" &&
+                sudo modprobe "$m"
+            }
+          done
+      - name: Build the lab (udpgen and cengarde)
+        run: sudo ENGINE=c bench/lab.sh build
+      - name: Bonding lab
+        env:
+          N: ${{ inputs.repetitions || '1' }}
+          S: ${{ inputs.seconds || '10' }}
+          CASES: ${{ inputs.cases }}
+        run: |
+          case "$N$S" in *[!0-9]*) echo "repetitions and seconds are numbers"; exit 1 ;; esac
+          set -- RUN="$RUNNER_TEMP/bond" BOND_NEED_NETEM=1 BOND_N="$N" BOND_S="$S"
+          [ -n "$CASES" ] && set -- "$@" BOND_CASES="$CASES"
+          sudo "$@" bench/lab.sh bond
+      - name: Table to the job summary
+        if: always()
+        run: |
+          {
+            echo "## Bonding lab: today's redundancy and the best link alone"
+            echo
+            cat "$RUNNER_TEMP/bond/bond.md" 2>/dev/null || echo "(no table)"
+          } >>"$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bond
+          path: |
+            ${{ runner.temp }}/bond/bond.jsonl
+            ${{ runner.temp }}/bond/bond.md
+          if-no-files-found: warn

@@ -1,5 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 #include "replay.h"
+
+#define CG_SEQ_LEAP_TEST (1u << 20)
 #include "test.h"
 
 static struct cg_replay r;
@@ -58,4 +60,27 @@ void test_replay(void)
 	CHECK_EQ(accept(0x05), CG_RP_DUP);
 	CHECK_EQ(accept(0x20), CG_RP_NEW);
 	CHECK_EQ(cg_replay_check(&r, 0x20 - CG_REPLAY_WINDOW), CG_RP_OLD);
+
+	/* A window born marked: everything up to top is DUP or OLD, later NEW. */
+	cg_replay_reset(&r);
+	cg_replay_init_marked(&r, 0x7000);
+	CHECK_EQ(cg_replay_check(&r, 0x7000), CG_RP_DUP);
+	CHECK_EQ(cg_replay_check(&r, 0x7000 - 100), CG_RP_DUP);
+	CHECK_EQ(cg_replay_check(&r, 0x7000 - CG_REPLAY_WINDOW), CG_RP_OLD);
+	CHECK_EQ(accept(0x7001), CG_RP_NEW);
+	CHECK_EQ(accept(0x7000 + CG_SEQ_LEAP_TEST), CG_RP_NEW);
+	CHECK_EQ(accept(0x7002), CG_RP_OLD); /* the window moved past it */
+	/* Out of order right after: the rest of top's block is not marked. */
+	cg_replay_reset(&r);
+	cg_replay_init_marked(&r, 0x7010);
+	CHECK_EQ(accept(0x7013), CG_RP_NEW);
+	CHECK_EQ(accept(0x7011), CG_RP_NEW);
+	CHECK_EQ(accept(0x7012), CG_RP_NEW);
+	CHECK_EQ(accept(0x7010), CG_RP_DUP);
+	CHECK_EQ(accept(0x700f), CG_RP_DUP);
+	cg_replay_reset(&r);
+	cg_replay_init_marked(&r, 0x703f); /* the last bit of a block */
+	CHECK_EQ(accept(0x7041), CG_RP_NEW);
+	CHECK_EQ(accept(0x7040), CG_RP_NEW);
+	CHECK_EQ(accept(0x703f), CG_RP_DUP);
 }

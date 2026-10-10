@@ -591,7 +591,8 @@ engine_conf() {
 		passthrough = $PASS
 	EOF
 	for k in server_failover_ms mute_behind_ms unmute_behind_ms mute_settle_ms mute_trickle min_active_links \
-		probe_interval_ms probe_idle_ms busy_poll_us cpu rt_priority sndbuf link_threads io_queue description; do
+		probe_interval_ms probe_idle_ms status_interval_ms busy_poll_us cpu rt_priority sndbuf link_threads \
+		io_queue description; do
 		config_get v main "$k"
 		[ -n "$v" ] && echo "$k = $v"
 	done
@@ -655,16 +656,18 @@ leaked_prefix() {
 	return 1
 }
 
-# From the engine's status: no reply from the VPS on any link after the
-# first 10 s (vps_silent), links whose path MTU is smaller than the packets
+# From the engine's status: the VPS refuses this router (vps_refusing,
+# protocol 4: its session limit), no reply from the VPS on any link after
+# the first 10 s (vps_silent), links whose path MTU is smaller than the packets
 # the tunnel makes (path_mtu, with the largest tunnel MTU that fits, and the
 # family: LuCI advises otherwise when that MTU is below 1280), and links
 # whose thread has not run for over 5 s with packets waiting
 # (link_thread_stalled, link_threads = on).
 engine_problems() { # STATUS_JSON
-	local up=0 largest=0 wg n i=0 open=0 live=0 st fam pm name label over stall
+	local up=0 largest=0 refusing=false wg n i=0 open=0 live=0 st fam pm name label over stall
 
-	eval "$(jsonfilter -s "$1" -e 'up=@.uptime_ms' -e 'largest=@.upload.largest' 2>/dev/null)"
+	eval "$(jsonfilter -s "$1" -e 'up=@.uptime_ms' -e 'largest=@.upload.largest' -e 'refusing=@.vps_refusing' \
+		2>/dev/null)"
 	wg=$largest
 	case "$MTU" in '' | *[!0-9]*) ;; *) [ "$TUNNEL" = 1 ] && [ $((MTU + 32)) -gt "$wg" ] && wg=$((MTU + 32)) ;; esac
 	n=$(jsonfilter -s "$1" -e '@.links[*].id' 2>/dev/null | wc -l)
@@ -688,7 +691,11 @@ engine_problems() { # STATUS_JSON
 		[ "$pm" -gt 0 ] && [ $((wg + over)) -gt "$pm" ] &&
 			problem path_mtu "${label:-$name}" "\"mtu\":$pm,\"fit\":$((pm - over - 32)),\"family\":\"$fam\""
 	done
-	[ "$open" -gt 0 ] && [ "$live" = 0 ] && [ "$up" -ge 10000 ] && problem vps_silent
+	if [ "$refusing" = true ]; then
+		problem vps_refusing
+	elif [ "$open" -gt 0 ] && [ "$live" = 0 ] && [ "$up" -ge 10000 ]; then
+		problem vps_silent
+	fi
 	return 0
 }
 

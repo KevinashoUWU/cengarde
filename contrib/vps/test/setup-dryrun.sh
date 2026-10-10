@@ -8,8 +8,8 @@
 # is a fake that answers ok, restarting, an error, or nothing. Checks:
 # - add, add again (nothing changes), a new secret (refused, then
 #   --replace: WireGuard restarted, the engine restarting), --rename,
-#   remove, list, forward; a second router refused under protocol 3; a
-#   tunnel address and WireGuard ports out of range; --proto 4 refused with
+#   remove, list, forward; a second router refused (one per engine today); a
+#   tunnel address and WireGuard ports out of range; --proto 5 refused with
 #   the upgrade command;
 # - the secret never on a command line, and only in clients/NAME;
 #   on a terminal (script(1)), echo off while it is typed, and back on;
@@ -21,7 +21,7 @@
 #   after remove, after --replace and with slot 0 taken, running again
 #   leaves clients/ as it was;
 # - forward off|on|limit|allow|disallow|reserve|unreserve, and their
-#   refusals; allow says what protocol 3's IP pass forwards of the port
+#   refusals; allow says what IP pass forwards of the port
 #   (nothing below PASSTHROUGH_PORTS), and a PASSTHROUGH_PORTS below 1024,
 #   which cengarde 0.4 forwarded whole, is warned about;
 # - a 0.4 server: wg0 and its IP pass state migrated, by
@@ -322,11 +322,11 @@ check "wg-quick@cg-router stopped and its file removed, cg-home up" \
 	sh -c 'grep -q "^systemctl disable --now wg-quick@cg-router$" "$1" && grep -q "^systemctl enable --now wg-quick@cg-home$" "$1" &&
 		[ ! -e "$2/etc/wireguard/cg-router.conf" ] && [ -e "$2/etc/wireguard/cg-home.conf" ]' sh "$CALLS" "$R"
 
-say "limits of protocol 3 and of the ports"
+say "limits of an engine that serves one router, and of the ports"
 before=$(fingerprint)
 check "a second router is refused" not add office "$S3"
-check "it says why" said "protocol 3 serves one router"
-check "--proto 4 is refused with the upgrade command" not add office "$S3" --proto 4
+check "it says why" said "serves one router"
+check "--proto 5 is refused with the upgrade command" not add office "$S3" --proto 5
 check "it prints the upgrade command" said "contrib/vps/install.sh"
 check "--tunnel-addr 10.79.0.1 is refused" not add home "$S2" --tunnel-addr 10.79.0.1
 check "a name too long for cg-NAME is refused" not add abcdefghijklm "$S3"
@@ -383,7 +383,7 @@ check "forward limit home default" setup forward limit home default
 check "FORWARD_MAX_PORTS empty" [ -z "$(val "$H" FORWARD_MAX_PORTS)" ]
 check "forward allow tcp:80 tcp:443" setup forward allow tcp:80 tcp:443
 check "FORWARD_ALLOW_LOW=\"tcp:80 tcp:443\"" grep -qx 'FORWARD_ALLOW_LOW="tcp:80 tcp:443"' "$N"
-check "protocol 3: it says nothing forwards them yet (outside PASSTHROUGH_PORTS)" \
+check "one router: it says nothing forwards them yet (outside PASSTHROUGH_PORTS)" \
 	said "tcp:443 is allowed, but nothing forwards it yet"
 check "forward allow tcp:80 again: once" setup forward allow tcp:80
 check "still once" grep -qx 'FORWARD_ALLOW_LOW="tcp:80 tcp:443"' "$N"
