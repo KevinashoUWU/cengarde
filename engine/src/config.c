@@ -357,6 +357,126 @@ static int parse_links(struct cg_config *c, struct cg_ini *ini, char *err, size_
 	return 0;
 }
 
+const struct cg_client_cfg *cg_config_client(const struct cg_config *c, const char *name)
+{
+	for (int i = 0; i < c->nclients; i++)
+		if (!strcmp(c->clients[i].name, name))
+			return &c->clients[i];
+	return NULL;
+}
+
+/* Whether ini has a [client NAME] section (or a bare [client]). */
+static int has_clients(const struct cg_ini *ini)
+{
+	for (int i = 0; i < ini->n; i++)
+		if (!strncmp(ini->e[i].section, "client", 6) && (!ini->e[i].section[6] || ini->e[i].section[6] == ' '))
+			return 1;
+	return 0;
+}
+
+/* A client's name goes into the forward table and the logs: letters,
+ * digits, '.', '_' and '-', starting with a letter or a digit. */
+static int valid_client_name(const char *n)
+{
+	size_t len = strlen(n);
+
+	if (!len || len >= CG_CLIENT_NAME || !isalnum((unsigned char)n[0]))
+		return 0;
+	for (; *n; n++)
+		if (!isalnum((unsigned char)*n) && *n != '.' && *n != '_' && *n != '-')
+			return 0;
+	return 1;
+}
+
+static const char *proto_name(uint8_t p)
+{
+	return p == CG_FWD_TCP ? "tcp" : "udp";
+}
+
+/* The [client NAME] sections of a server, in order, with their forward
+ * rules; called with c->wireguard already parsed (AF_UNSPEC: none). */
+static int parse_clients(struct cg_config *c, struct cg_ini *ini, char *err, size_t errlen)
+{
+	int fi, fj;
+
+	c->clients = calloc(CG_MAX_CLIENTS, sizeof(*c->clients));
+	c->forward = calloc(CG_FWD_MAX, sizeof(*c->forward));
+	if (!c->clients || !c->forward) {
+		snprintf(err, errlen, "out of memory");
+		return -1;
+	}
+	for (int i = 0; i < ini->n; i++) {
+		const char *sec = ini->e[i].section, *name, *v;
+		struct cg_client_cfg *k;
+		char e[256];
+		int n;
+
+		if (!strcmp(sec, "client")) {
+			snprintf(err, errlen, "[client]: expected [client NAME]");
+			return -1;
+		}
+		if (strncmp(sec, "client ", 7))
+			continue;
+		name = sec + 7;
+		if (cg_config_client(c, name))
+			continue;
+		if (!valid_client_name(name)) {
+			snprintf(err, errlen, "[%s]: a client's name is 1 to %d letters, digits, '.', '_' or '-', starting "
+				 "with a letter or a digit", sec, CG_CLIENT_NAME - 1);
+			return -1;
+		}
+		if (c->nclients == CG_MAX_CLIENTS) {
+			snprintf(err, errlen, "too many [client] sections (max %d)", CG_MAX_CLIENTS);
+			return -1;
+		}
+		k = &c->clients[c->nclients];
+		strcpy(k->name, name);
+		k->enabled = k->passthrough = 1;
+		v = cg_ini_get(ini, sec, "key");
+		if (!v || cg_base64_decode(k->key, sizeof(k->key), v) != CG_KEY_LEN) {
+			snprintf(err, errlen, "[%s] key: expected the base64 of %d bytes", sec, CG_KEY_LEN);
+			return -1;
+		}
+		for (int j = 0; j < c->nclients; j++)
+			if (!memcmp(c->clients[j].key, k->key, CG_KEY_LEN)) {
+				snprintf(err, errlen, "[%s] key: the same as [client %s]'s", sec, c->clients[j].name);
+				return -1;
+			}
+		if (get_str(ini, sec, "label", k->label, sizeof(k->label), e, sizeof(e)) ||
+		    get_bool(ini, sec, "enabled", &k->enabled, e, sizeof(e)) ||
+		    get_bool(ini, sec, "passthrough", &k->passthrough, e, sizeof(e)) ||
+		    get_addrs(ini, sec, "wireguard", 0, &k->wireguard, 1, 1, &n, NULL, NULL, e, sizeof(e)) ||
+		    (cg_ini_get(ini, sec, "wireguard_poke") && strcmp(cg_ini_get(ini, sec, "wireguard_poke"), "none") &&
+		     get_addrs(ini, sec, "wireguard_poke", 1, &k->wireguard_poke, 1, 1, &n, NULL, NULL, e, sizeof(e)))) {
+			snprintf(err, errlen, "[%s] %s", sec, e);
+			return -1;
+		}
+		if (k->wireguard.ss_family == AF_UNSPEC) {
+			if (c->wireguard.ss_family == AF_UNSPEC) {
+				snprintf(err, errlen, "[%s] wireguard: required (no global one)", sec);
+				return -1;
+			}
+			k->wireguard = c->wireguard;
+		}
+		v = cg_ini_get(ini, sec, "forward");
+		if (v && cg_fwd_parse(v, (uint8_t)c->nclients, c->forward, &c->nforward, CG_FWD_MAX, e, sizeof(e)) < 0) {
+			snprintf(err, errlen, "[%s] forward: %s", sec, e);
+			return -1;
+		}
+		c->nclients++;
+	}
+	/* A port forwarded to two clients, or twice to one, is a mistake. */
+	if (cg_fwd_overlap(c->forward, c->nforward, &fi, &fj)) {
+		const struct cg_fwd_rule *a = &c->forward[fi], *b = &c->forward[fj];
+
+		snprintf(err, errlen, "forward: %s %u-%u of [client %s] overlaps %s %u-%u of [client %s]",
+			 proto_name(a->proto), a->first, a->last, c->clients[a->client].name, proto_name(b->proto), b->first,
+			 b->last, c->clients[b->client].name);
+		return -1;
+	}
+	return 0;
+}
+
 static int parse_lists(struct cg_config *c, struct cg_ini *ini)
 {
 	const char *inc = cg_ini_get(ini, "", "interfaces"), *exc = cg_ini_get(ini, "", "exclude");
@@ -386,7 +506,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	struct cg_ini ini;
 	const char *v;
 	char e[256] = "";
-	int n, rc = -1;
+	int n, rc = -1, multi;
 	uint32_t u;
 
 	memset(c, 0, sizeof(*c));
@@ -405,8 +525,15 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 		goto out;
 	}
 
+	/* A server with [client] sections has a key in each, and none of its
+	 * own: which client a global one would be is anybody's guess. */
+	multi = c->mode == CG_MODE_SERVER && has_clients(&ini);
 	v = cg_ini_get(&ini, "", "key");
-	if (!v || cg_base64_decode(c->key, sizeof(c->key), v) != CG_KEY_LEN) {
+	if (multi && v) {
+		snprintf(err, errlen, "key: not with [client] sections, each has its own");
+		goto out;
+	}
+	if (!multi && (!v || cg_base64_decode(c->key, sizeof(c->key), v) != CG_KEY_LEN)) {
 		snprintf(err, errlen, "key: expected the base64 of %d bytes (see 'cengarde genkey')", CG_KEY_LEN);
 		goto out;
 	}
@@ -528,16 +655,37 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	} else {
 		if (get_addrs(&ini, "", "wireguard", 0, &c->wireguard, 1, 1, &n, NULL, NULL, err, errlen))
 			goto out;
-		if (!n) {
+		if (!n && !multi) {
 			snprintf(err, errlen, "wireguard: required in server mode (local WireGuard address)");
 			goto out;
 		}
+		if (multi && parse_clients(c, &ini, err, errlen))
+			goto out;
+		/* Room for every client's sessions (CG_CLIENT_SESSIONS each). */
+		if (c->max_sessions < (uint32_t)c->nclients * CG_CLIENT_SESSIONS)
+			c->max_sessions = (uint32_t)c->nclients * CG_CLIENT_SESSIONS;
 		if (get_u32(&ini, "", "max_sessions", 1, 4096, &c->max_sessions, err, errlen) ||
 		    get_u32(&ini, "", "session_timeout_ms", 1000, 86400000, &c->session_timeout_ms, err, errlen) ||
 		    get_u32(&ini, "", "path_timeout_ms", 1000, 3600000, &c->path_timeout_ms, err, errlen) ||
 		    get_str(&ini, "", "passthrough_file", c->passthrough_file, sizeof(c->passthrough_file), err,
-			    errlen))
+			    errlen) ||
+		    get_str(&ini, "", "forward_file", c->forward_file, sizeof(c->forward_file), err, errlen))
 			goto out;
+		/* One client asks for IP pass in passthrough_file; several share
+		 * the forward table. */
+		if (multi && c->passthrough_file[0]) {
+			snprintf(err, errlen, "passthrough_file: not with [client] sections, see forward_file");
+			goto out;
+		}
+		if (!multi && c->forward_file[0]) {
+			snprintf(err, errlen, "forward_file: only with [client] sections (one client: passthrough_file)");
+			goto out;
+		}
+		if (multi && cg_ini_get(&ini, "", "wireguard_poke")) {
+			snprintf(err, errlen, "wireguard_poke: with [client] sections, in each of them (that client's "
+				 "address in the tunnel)");
+			goto out;
+		}
 		v = cg_ini_get(&ini, "", "lanes");
 		if (v && strcmp(v, "auto")) {
 			char *end;
@@ -553,7 +701,9 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 		}
 		/* The router's end of the tunnel cengarde sets up (10.79.0.2/30). */
 		v = cg_ini_get(&ini, "", "wireguard_poke");
-		if (!v)
+		if (multi)
+			;
+		else if (!v)
 			cg_addr_parse("10.79.0.2:9", 0, &c->wireguard_poke, 1, e, sizeof(e));
 		else if (strcmp(v, "none") &&
 			 get_addrs(&ini, "", "wireguard_poke", 1, &c->wireguard_poke, 1, 1, &n, NULL, NULL, err, errlen))
@@ -665,6 +815,10 @@ const char *cg_config_restart_needed(const struct cg_config *a, const struct cg_
 {
 	if (a->mode != b->mode)
 		return "mode";
+	/* One client and several are different servers; within either, the
+	 * clients change in place (server.c). */
+	if (a->mode == CG_MODE_SERVER && !a->nclients != !b->nclients)
+		return "[client] sections";
 	if (memcmp(a->key, b->key, sizeof(a->key)))
 		return "key";
 	if (!cg_addr_equal(&a->listen, &b->listen))
@@ -683,10 +837,8 @@ const char *cg_config_restart_needed(const struct cg_config *a, const struct cg_
 		return "io_queue";
 	if (a->mode == CG_MODE_CLIENT && links_cpu_differ(a, b))
 		return "cpu of a [link]";
-	if (a->mode == CG_MODE_SERVER && !cg_addr_equal(&a->wireguard, &b->wireguard))
+	if (a->mode == CG_MODE_SERVER && !a->nclients && !cg_addr_equal(&a->wireguard, &b->wireguard))
 		return "wireguard";
-	if (a->mode == CG_MODE_SERVER && a->max_sessions != b->max_sessions)
-		return "max_sessions";
 	if (a->mode == CG_MODE_SERVER && a->lanes != b->lanes)
 		return "lanes";
 	return NULL;
@@ -697,4 +849,10 @@ void cg_config_free(struct cg_config *c)
 	free(c->strings);
 	c->strings = NULL;
 	c->ninclude = c->nexclude = 0;
+	free(c->clients);
+	c->clients = NULL;
+	c->nclients = 0;
+	free(c->forward);
+	c->forward = NULL;
+	c->nforward = 0;
 }

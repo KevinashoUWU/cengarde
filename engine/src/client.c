@@ -851,7 +851,7 @@ static void rx_verdict_log(struct client *c, struct link *l, enum cg_rxv v, uint
 	if (v == CG_RXV_AUTH && cg_ratelimit_ok(&c->rl_auth, now_ms, 10000))
 		cg_warn("link %s: packet failed authentication (wrong key?)", l->ifname);
 	else if (v == CG_RXV_HELLO && l->rxl.refused && cg_ratelimit_ok(&c->rl_refused, now_ms, 60000))
-		cg_warn("link %s: the server refuses this router (it has as many sessions as it takes)", l->ifname);
+		cg_warn("link %s: the server refuses this router (turned off there, or no room for a session)", l->ifname);
 	else if (v == CG_RXV_HELLO && cg_ratelimit_ok(&c->rl_hello, now_ms, 10000))
 		cg_dbg("link %s: the server asks for a cookie (a new session, link or address)", l->ifname);
 }

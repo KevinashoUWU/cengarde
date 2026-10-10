@@ -234,8 +234,8 @@ msgstr "El motor no está corriendo: revisa Sistema > Registro del sistema."
 msgid "The VPS does not answer on any uplink: check that it runs cengarde with the secret of this router, and that its firewall lets in UDP to the VPS port."
 msgstr "El VPS no contesta por ningún enlace: revisa que corra cengarde con el secreto de este router y que su cortafuegos deje entrar UDP al puerto del VPS."
 
-msgid "The VPS answers but refuses this router: it has as many sessions as it takes. Run \"cengarde-vps-setup list\" on the VPS."
-msgstr "El VPS contesta pero rechaza este router: ya tiene todas las sesiones que acepta. Ejecuta \"cengarde-vps-setup list\" en el VPS."
+msgid "The VPS answers but refuses this router: it is turned off there, or the VPS has no room for another session. Run \"cengarde-vps-setup list\" on the VPS."
+msgstr "El VPS contesta pero rechaza este router: está desactivado allí, o el VPS no tiene lugar para otra sesión. Ejecuta \"cengarde-vps-setup list\" en el VPS."
 
 msgid "The thread of uplink %s has not run for %d s with packets waiting; the other uplinks go on. If it happens again, set \"Threads per uplink\" to Off in Settings > Advanced."
 msgstr "El hilo del enlace %s lleva %d s sin correr con paquetes esperando; los demás enlaces siguen. Si vuelve a pasar, pon \"Hilos por enlace\" en Desactivado en Configuración > Avanzado."

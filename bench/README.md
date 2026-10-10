@@ -32,12 +32,13 @@ wireguard-tools y `sch_netem`, para `bond`; y curl, para las demos del Go.
 ## Uso
 
 ```sh
-sudo bench/lab.sh build    # udpgen, protoclient, ringbench, cgprobe y cengarde en bench/bin/
+sudo bench/lab.sh build    # udpgen, protoclient, ringbench, cgprobe, macbench y cengarde en bench/bin/
 sudo bench/lab.sh ci       # lo que corre el CI: smoke, health, control y los escenarios de lab.d con LAB_CI=1
 sudo bench/lab.sh smoke    # prueba de humo de cengarde
 sudo bench/lab.sh health   # salud de enlaces: un enlace con 500 ms de cola, subida y bajada (historia 006)
 sudo bench/lab.sh control  # con tráfico: pausar un enlace, recargar dos veces, IP pass on/off; sin pérdidas (historia 009)
 sudo bench/lab.sh muteoff  # una recarga con mute_behind_ms = 0 devuelve al instante un enlace silenciado, subida y bajada (lab.d, va en ci)
+sudo bench/lab.sh multiclient  # tres routers en un servidor: tráfico sin cruces, IP pass y tabla de reenvío, recargas (lab.d, va en ci)
 sudo bench/lab.sh latency  # latencia y CPU con busy_poll_us 0, 50 y 200, y el Go si está compilado (historia 006)
 sudo bench/lab.sh restart  # reinicios del servidor con tráfico: todos los enlaces vivos en 4 s (lab.d, va en ci)
 sudo bench/lab.sh restart ebe570b  # lo mismo con el motor de otro commit, p. ej. el de antes del arreglo
@@ -78,6 +79,30 @@ namespaces, así que sirve tal cual en la Pi, en un VPS o en un portátil.
   entrada de cada hilo, de sus relojes de CPU (la del productor incluye el
   `nanosleep` que le marca el ritmo). Con `-q`, además con el consumidor
   sondeando (`poll`) en vez de dormir.
+
+### `macbench`: lo que cuesta servir a varios routers
+
+`bench/bin/macbench [-n SEGUNDOS] [-r CORRIDAS] [-s SEMILLA]`
+(`bench/macbench.c`) mide en ns por operación, sin root ni namespaces, lo
+que el servidor hace por paquete: leer la cabecera, buscar la sesión por la
+pista del router (`engine/src/clients.h`) con 1, 32 y 64 routers, el MAC,
+admitir una sesión probando 1, 2 o 4 claves, y las cookies. La última tabla
+compara buscar y verificar ahora con lo de antes de varios routers
+(`cg_idmap_get` y el MAC). Imprime la mediana y el mínimo de cada medida:
+en una máquina compartida, citar el mínimo.
+
+Medido el 2026-10-10 en este contenedor (un núcleo de un Xeon de 2,8 GHz,
+gcc 13.3, mínimos de 5 corridas de 0,2 s; dos corridas coinciden en ±10 %):
+
+| Operación | ns |
+| --- | --- |
+| MAC de un DATA de 1400 B (`cg_hdr_verify`) | 720 |
+| MAC de una sonda | 57 |
+| buscar la sesión: 1 router, 32 (2 sesiones cada uno), 64 (4) | 3 / 5,4 / 10 |
+| descartar una pista que no es de nadie | 1 |
+| admitir una sonda: 1, 2 o 4 claves probadas | 58 / 122 / 252 |
+| buscar y verificar un DATA: antes, y ahora con 64 routers | 721 / 738 |
+| buscar y verificar una sonda: antes, y ahora con 1 router | 60 / 67 |
 
 ### Escenarios en `lab.d/`
 
@@ -229,6 +254,32 @@ siguiente:
    nuevas: no crea la sesión ni escribe el IP pass.
 6. El cliente real sigue sin pérdidas antes del reinicio y vuelve después,
    en menos de 5 s, sin ningún paquete `too_old`.
+
+### `multiclient`: varios routers en un servidor (`lab.d/multiclient.sh`)
+
+Tres motores cliente en el netns `cli`, cada uno un router con sus enlaces:
+alpha (l1 y l2), bravo (l3 y l4) y charlie (l5), con una clave elegida para
+que su pista sea la de alpha (el servidor prueba las dos claves). Un
+servidor con una sección `[client NOMBRE]` por router y un `udpgen` como
+WireGuard de cada uno. Comprueba:
+
+1. Los tres routers vivos en todos sus enlaces, de los dos lados, en 3 s,
+   con una sesión cada uno; `ctl links` con la columna `CLIENT`.
+2. 1000 pps de subida y luego de bajada para los tres a la vez: lo de cada
+   router llega una vez a su WireGuard y nada al de otro (otro router se
+   vería como duplicados o como más de lo enviado).
+3. IP pass: alpha lo pide y la tabla de reenvío dice `pass alpha` y sus dos
+   reglas; bravo lo pide también y espera; alpha lo suelta y pasa a bravo.
+   Cada router lo ve en sus respuestas (`passthrough.server`).
+4. Recargas del servidor mientras alpha pasa 1000 pps: bravo desactivado
+   (rechazado: `vps_refusing`, sin sesión) y activado otra vez (de vuelta en
+   5 s), charlie quitado (su sesión se cierra). Alpha no pierde nada ni
+   cambia de sesión, y el servidor no se reinicia.
+
+Medido el 2026-10-10: los tres vivos en 1,1 s; 2999 de 2999 paquetes por
+router en cada sentido; el IP pass pasa a bravo 0,8 s después de que alpha
+lo suelta; bravo rechazado 0,5–0,6 s después de desactivarlo y de vuelta en
+1,9–2,0 s; alpha, 8999 de 8999 a través de las tres recargas.
 
 ### `muteoff`: apagar el silenciado en caliente (`lab.d/muteoff.sh`)
 

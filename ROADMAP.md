@@ -486,9 +486,11 @@ hardware real (historias [007](docs/historias/007-openwrt-y-vps.md) y
     [010](docs/historias/010-ipv6-varias-ip-multicliente-nombres.md), del
     que los PR 1 y 2 están hechos:
     - PR 3: varios routers por VPS (protocolo v4) con un panel de reenvío
-      de puertos; hechos el 3d1 (herramientas del VPS) y el 3d2a (el
-      protocolo v4 en el motor, paquetes 0.5.0), faltan el 3d2b (varios
-      routers) y el 3d2c (VPS y OpenWrt);
+      de puertos; hechos el 3d1 (herramientas del VPS), el 3d2a (el
+      protocolo v4 en el motor, paquetes 0.5.0) y el 3d2b (varios routers
+      en el motor del servidor, con la tabla de reenvío; paquetes 0.5.1),
+      falta el 3d2c (`cengarde-vps-setup` con varios routers y su panel de
+      reenvío, y OpenWrt);
     - PR 4: IPv6 dentro del túnel, apagado por defecto;
     - PR 5: nombres con DNS dinámico, también para un servidor casero.
 

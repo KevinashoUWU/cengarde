@@ -111,7 +111,7 @@ static void test_config_reload(void)
 	CHECK(cg_config_restart_needed(&a, &b) == NULL);
 	cg_config_free(&a);
 	CHECK_EQ(cg_config_parse(&a, SERVER "max_sessions = 8\n", err, sizeof(err), warn, sizeof(warn)), 0);
-	CHECK(!strcmp(cg_config_restart_needed(&a, &b), "max_sessions"));
+	CHECK(cg_config_restart_needed(&a, &b) == NULL); /* a limit: the table grows in place */
 	cg_config_free(&a);
 	CHECK_EQ(cg_config_parse(&a, "mode = server\nkey = " KEY "\nwireguard = 127.0.0.1:51821\n", err, sizeof(err),
 				 warn, sizeof(warn)),
@@ -141,6 +141,170 @@ static void test_config_reload(void)
 }
 
 /* How the client handles its link sockets (pump.h): legacy by default. */
+#define KEY2 "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=" /* bytes 1..32 */
+#define KEY3 "AgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4fICE=" /* bytes 2..33 */
+#define MULTI "mode = server\nforward_file = /var/lib/cengarde/forward\n"
+#define ALPHA "[client alpha]\nkey = " KEY "\nwireguard = 127.0.0.1:65501\n"
+#define BRAVO "[client bravo]\nkey = " KEY2 "\nwireguard = 127.0.0.1:65502\n"
+
+/* A server with [client NAME] sections. */
+static void test_config_clients(void)
+{
+	static struct cg_config a, b;
+	char err[256], warn[512], buf[64];
+	const struct cg_client_cfg *k;
+
+	CHECK_EQ(cg_config_parse(&a,
+				 MULTI ALPHA "label = Roof\nwireguard_poke = 10.79.12.34:9\nforward = tcp:9000=22 both:6000\n"
+				       BRAVO "enabled = no\npassthrough = no\nforward = udp:5000-5010=15000\n",
+				 err, sizeof(err), warn, sizeof(warn)),
+		 0);
+	CHECK(warn[0] == '\0');
+	CHECK_EQ(a.nclients, 2);
+	k = cg_config_client(&a, "alpha");
+	CHECK(k == &a.clients[0]);
+	CHECK(!strcmp(k->label, "Roof"));
+	CHECK_EQ(k->enabled, 1);
+	CHECK_EQ(k->passthrough, 1);
+	CHECK_EQ(k->key[31], 31);
+	CHECK(!strcmp(cg_addr_str(&k->wireguard, buf, sizeof(buf)), "127.0.0.1:65501"));
+	CHECK(!strcmp(cg_addr_str(&k->wireguard_poke, buf, sizeof(buf)), "10.79.12.34:9"));
+	k = cg_config_client(&a, "bravo");
+	CHECK(k == &a.clients[1]);
+	CHECK_EQ(k->enabled, 0);
+	CHECK_EQ(k->passthrough, 0);
+	CHECK_EQ(k->wireguard_poke.ss_family, AF_UNSPEC); /* no default with several clients */
+	CHECK(cg_config_client(&a, "charlie") == NULL);
+	CHECK_EQ(a.nforward, 4); /* both: a tcp and a udp rule */
+	CHECK_EQ(a.forward[0].client, 0);
+	CHECK_EQ(a.forward[0].to, 22);
+	CHECK_EQ(a.forward[3].client, 1);
+	CHECK_EQ(a.forward[3].last, 5010);
+	CHECK(!strcmp(a.forward_file, "/var/lib/cengarde/forward"));
+	CHECK_EQ(a.max_sessions, 64); /* at least CG_CLIENT_SESSIONS per client */
+
+	/* Changes to the clients apply in place; going from one client to
+	 * several (or back) is another server. */
+	CHECK_EQ(cg_config_parse(&b, MULTI ALPHA "[client charlie]\nkey = " KEY3 "\nwireguard = 127.0.0.1:65503\n", err,
+				 sizeof(err), warn, sizeof(warn)),
+		 0);
+	CHECK(cg_config_restart_needed(&a, &b) == NULL);
+	cg_config_free(&b);
+	CHECK_EQ(cg_config_parse(&b, SERVER, err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK(!strcmp(cg_config_restart_needed(&a, &b), "[client] sections"));
+	CHECK(!strcmp(cg_config_restart_needed(&b, &a), "[client] sections"));
+	cg_config_free(&b);
+	cg_config_free(&a);
+	CHECK(a.clients == NULL && a.forward == NULL && a.nclients == 0);
+
+	/* A global WireGuard address serves the clients without their own. */
+	CHECK_EQ(cg_config_parse(&a, "mode = server\nwireguard = 127.0.0.1:51820\n[client alpha]\nkey = " KEY "\n" BRAVO,
+				 err, sizeof(err), warn, sizeof(warn)),
+		 0);
+	CHECK(!strcmp(cg_addr_str(&a.clients[0].wireguard, buf, sizeof(buf)), "127.0.0.1:51820"));
+	CHECK(!strcmp(cg_addr_str(&a.clients[1].wireguard, buf, sizeof(buf)), "127.0.0.1:65502"));
+	cg_config_free(&a);
+
+	/* max_sessions: room for every client unless set. */
+	{
+		char text[16384];
+		size_t n = (size_t)snprintf(text, sizeof(text), "mode = server\nwireguard = 127.0.0.1:51820\n");
+		uint8_t key[CG_KEY_LEN];
+		char b64[64];
+
+		for (int i = 0; i < 20; i++) {
+			memset(key, i, sizeof(key));
+			cg_base64_encode(b64, key, sizeof(key));
+			n += (size_t)snprintf(text + n, sizeof(text) - n, "[client r%d]\nkey = %s\n", i, b64);
+		}
+		CHECK_EQ(cg_config_parse(&a, text, err, sizeof(err), warn, sizeof(warn)), 0);
+		CHECK_EQ(a.max_sessions, 20 * CG_CLIENT_SESSIONS);
+		cg_config_free(&a);
+		snprintf(text + n, sizeof(text) - n, "[client r0]\nlabel = x\n"); /* a section again: the same client */
+		CHECK_EQ(cg_config_parse(&a, text, err, sizeof(err), warn, sizeof(warn)), 0);
+		CHECK_EQ(a.nclients, 20);
+		CHECK(!strcmp(a.clients[0].label, "x"));
+		cg_config_free(&a);
+		/* A max_sessions of its own is the limit. */
+		{
+			static char text2[sizeof(text) + 32];
+
+			snprintf(text2, sizeof(text2), "max_sessions = 9\n%s", text);
+			CHECK_EQ(cg_config_parse(&a, text2, err, sizeof(err), warn, sizeof(warn)), 0);
+			CHECK_EQ(a.max_sessions, 9);
+			cg_config_free(&a);
+		}
+		/* At most CG_MAX_CLIENTS. */
+		n = (size_t)snprintf(text, sizeof(text), "mode = server\nwireguard = 127.0.0.1:51820\n");
+		for (int i = 0; i <= CG_MAX_CLIENTS; i++) {
+			memset(key, i, sizeof(key));
+			cg_base64_encode(b64, key, sizeof(key));
+			n += (size_t)snprintf(text + n, sizeof(text) - n, "[client r%d]\nkey = %s\n", i, b64);
+		}
+		CHECK_EQ(cg_config_parse(&a, text, err, sizeof(err), warn, sizeof(warn)), -1);
+		CHECK(!strcmp(err, "too many [client] sections (max 64)"));
+	}
+
+	/* Mistakes. */
+	{
+		static const struct {
+			const char *text, *err;
+		} bad[] = {
+			{ MULTI "key = " KEY "\n" ALPHA, "key: not with [client] sections, each has its own" },
+			{ MULTI "[client]\nkey = " KEY "\n", "[client]: expected [client NAME]" },
+			{ MULTI "[client -x]\nkey = " KEY "\nwireguard = 127.0.0.1:1\n",
+			  "[client -x]: a client's name is 1 to 31 letters, digits, '.', '_' or '-', starting with a letter or "
+			  "a digit" },
+			{ MULTI "[client a/b]\nkey = " KEY "\nwireguard = 127.0.0.1:1\n",
+			  "[client a/b]: a client's name is 1 to 31 letters, digits, '.', '_' or '-', starting with a letter or "
+			  "a digit" },
+			{ MULTI "[client abcdefghijklmnopqrstuvwxyz012345]\nkey = " KEY "\nwireguard = 127.0.0.1:1\n",
+			  "[client abcdefghijklmnopqrstuvwxyz012345]: a client's name is 1 to 31 letters, digits, '.', '_' or "
+			  "'-', starting with a letter or a digit" },
+			{ MULTI "[client alpha]\nwireguard = 127.0.0.1:1\n",
+			  "[client alpha] key: expected the base64 of 32 bytes" },
+			{ MULTI "[client alpha]\nkey = " KEY "\n", "[client alpha] wireguard: required (no global one)" },
+			{ MULTI ALPHA "[client bravo]\nkey = " KEY "\nwireguard = 127.0.0.1:2\n",
+			  "[client bravo] key: the same as [client alpha]'s" },
+			{ MULTI ALPHA "enabled = maybe\n", "[client alpha] enabled: expected yes or no, got 'maybe'" },
+			{ MULTI ALPHA "wireguard_poke = 0.0.0.0:9\n", NULL },
+			{ MULTI ALPHA "forward = tcp:70000\n", NULL },
+			{ MULTI ALPHA "forward = tcp:9000-9010\n" BRAVO "forward = tcp:9010=22\n",
+			  "forward: tcp 9000-9010 of [client alpha] overlaps tcp 9010-9010 of [client bravo]" },
+			{ MULTI ALPHA "forward = both:53 udp:53\n",
+			  "forward: udp 53-53 of [client alpha] overlaps udp 53-53 of [client alpha]" },
+			{ "mode = server\nwireguard = 127.0.0.1:1\npassthrough_file = /run/p\n" ALPHA,
+			  "passthrough_file: not with [client] sections, see forward_file" },
+			{ SERVER "forward_file = /run/f\n",
+			  "forward_file: only with [client] sections (one client: passthrough_file)" },
+			{ MULTI "wireguard_poke = 10.79.0.2:9\n" ALPHA,
+			  "wireguard_poke: with [client] sections, in each of them (that client's address in the tunnel)" },
+		};
+
+		for (size_t i = 0; i < CG_ARRAY_SIZE(bad); i++) {
+			int rc = cg_config_parse(&a, bad[i].text, err, sizeof(err), warn, sizeof(warn));
+
+			CHECK_EQ(rc, -1);
+			if (rc == 0)
+				cg_config_free(&a);
+			else if (bad[i].err && strcmp(err, bad[i].err))
+				fprintf(stderr, "case %zu: got \"%s\"\n", i, err);
+			CHECK(!bad[i].err || !strcmp(err, bad[i].err));
+		}
+	}
+
+	/* passthrough_file is global; in a [client] section, an unknown key. */
+	CHECK_EQ(cg_config_parse(&a, MULTI ALPHA "passthrough_file = /run/p\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK(strstr(warn, "unknown key 'passthrough_file' in [client alpha]") != NULL);
+	cg_config_free(&a);
+
+	/* A [client] section in a client's configuration is not a client. */
+	CHECK_EQ(cg_config_parse(&a, CLIENT ALPHA, err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK(strstr(warn, "unknown key 'key' in [client alpha]") != NULL);
+	CHECK_EQ(a.nclients, 0);
+	cg_config_free(&a);
+}
+
 static void test_config_threads(void)
 {
 	static struct cg_config a, b;
@@ -519,4 +683,5 @@ void test_config(void)
 	test_config_reload();
 	test_config_addrs();
 	test_config_threads();
+	test_config_clients();
 }

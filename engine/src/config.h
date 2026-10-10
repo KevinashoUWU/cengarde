@@ -8,6 +8,18 @@
  *   [link eth1.10]
  *   label = WOM
  *
+ * A server serves one client with the global key, or several, one
+ * [client NAME] section each:
+ *
+ *   mode = server
+ *   forward_file = /var/lib/cengarde/forward
+ *
+ *   [client alpha]
+ *   key = <the router's key>
+ *   wireguard = 127.0.0.1:65501
+ *   wireguard_poke = 10.79.12.34:9
+ *   forward = tcp:9000=22 udp:5000-5010
+ *
  * SPDX-License-Identifier: GPL-2.0-only */
 #ifndef CG_CONFIG_H
 #define CG_CONFIG_H
@@ -17,6 +29,8 @@
 #include <stdint.h>
 #include <sys/socket.h>
 
+#include "clients.h"  /* CG_MAX_CLIENTS */
+#include "fwdtable.h" /* struct cg_fwd_rule */
 #include "proto.h"
 #include "srvpick.h" /* CG_MAX_CANDS */
 
@@ -73,6 +87,19 @@ struct cg_link_cfg {
 	int cpu;                         /* pins its thread (link_threads = on); -1: none */
 };
 
+/* A client of a server, a [client NAME] section. Its WireGuard address is
+ * the global one unless it has its own. */
+#define CG_CLIENT_NAME 32
+struct cg_client_cfg {
+	char name[CG_CLIENT_NAME];
+	char label[64];
+	uint8_t key[CG_KEY_LEN];
+	int enabled;     /* no: its probes are refused (a HELLO with CG_F_REFUSED) */
+	int passthrough; /* may hold IP pass */
+	struct sockaddr_storage wireguard;
+	struct sockaddr_storage wireguard_poke; /* AF_UNSPEC: none */
+};
+
 struct cg_config {
 	int mode;
 	uint8_t key[CG_KEY_LEN];
@@ -116,11 +143,18 @@ struct cg_config {
 	uint32_t io_queue; /* entries of each hub -> pump ring, a power of two */
 
 	/* server */
-	struct sockaddr_storage wireguard;
-	uint32_t max_sessions;
+	struct sockaddr_storage wireguard; /* AF_UNSPEC: none (every [client] has its own) */
+	uint32_t max_sessions; /* a limit, applied in place by a reload */
 	uint32_t session_timeout_ms;
 	uint32_t path_timeout_ms;
 	char passthrough_file[256]; /* where the IP pass the client asks for goes; "": nowhere */
+	/* [client NAME] sections, in their order (nclients 0: one client, the
+	 * global key), and their forward rules, by client. */
+	struct cg_client_cfg *clients;
+	int nclients;
+	struct cg_fwd_rule *forward;
+	int nforward;
+	char forward_file[256]; /* the forward table (fwdtable.h); "": none */
 	uint32_t lanes;             /* listen sockets steered by link id (steer.h); 1: one socket */
 	/* The client's address in the tunnel: a datagram there makes WireGuard
 	 * start a handshake when it ignores the client's (wgwatch.h). Family
@@ -129,6 +163,9 @@ struct cg_config {
 
 	char *strings; /* storage behind include/exclude */
 };
+
+/* The [client NAME] section called name, or NULL. */
+const struct cg_client_cfg *cg_config_client(const struct cg_config *c, const char *name);
 
 /* Parses text (file contents). Unknown keys are reported in warn (one per
  * line, may be truncated) but are not fatal. Returns 0 or -1 with err set. */

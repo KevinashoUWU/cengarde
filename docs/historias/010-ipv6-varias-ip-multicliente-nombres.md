@@ -1,11 +1,12 @@
 # 010 — IPv6, dirección de llegada, varios routers por VPS y nombres
 
-- **Fecha:** 2026-10-05
+- **Fecha:** 2026-10-10
 - **Estado:** vigente. PR 1 y PR 2 hechos (paquetes 0.4.1 y 0.4.2,
   protocolo v3 sin cambios). Del PR 3 están hechos el 3d1 (herramientas del
-  VPS, aún v3; paquetes 0.4.5) y el 3d2a (protocolo v4 en el motor, un
-  router por servidor; paquetes 0.5.0). Pendientes el resto del PR 3 (3d2b,
-  varios routers; 3d2c, VPS y OpenWrt) y los PR 4 y 5.
+  VPS, aún v3; paquetes 0.4.5), el 3d2a (protocolo v4 en el motor, un
+  router por servidor; paquetes 0.5.0) y el 3d2b (varios routers en el
+  motor del servidor; paquetes 0.5.1). Pendientes el 3d2c (VPS y OpenWrt)
+  y los PR 4 y 5.
 - **Fuentes:**
   - código del PR 1 (`git log ebe570b..823e4dd`):
     - `engine/src/epoch.h`; `client.c:442` (`ms_since_new`), `:456`
@@ -130,7 +131,20 @@
     rehacer tras un reinicio;
   - secuencia de control aparte y campos reservados para el bonding
     (historia 012).
-- **Siguiente:** el PR 3d2b, varios routers por VPS.
+- **Lo que cerró el PR 3d2b** (motor del servidor, protocolo v4 sin
+  cambios, paquetes 0.5.1):
+  - un servidor sirve a varios routers, una sección `[client NOMBRE]` cada
+    uno, con su clave, su WireGuard y sus sesiones; sin secciones, como
+    antes;
+  - la pista elige qué claves probar: buscar la sesión cuesta 3 ns con un
+    router y 10 ns con 64, frente a 720 ns del MAC de un DATA
+    (`bench/macbench`);
+  - agregar, desactivar, cambiar o quitar un router en una recarga no toca
+    a los demás (`bench/lab.sh multiclient`);
+  - el panel de reenvío vive en el VPS: reglas `forward` por router, y el
+    IP pass del primero que lo pide, en la tabla que lee `cengarde-nat`.
+- **Siguiente:** el PR 3d2c, `cengarde-vps-setup` con varios routers y su
+  panel de reenvío, y en OpenWrt el túnel /32 derivado.
 
 ## Contexto
 
@@ -288,10 +302,12 @@ sigue igual (ver «Pendiente, por PR»).
   un puerto pedido por dos routers.
 - **UPnP:** solo tiene sentido en el router con el rango completo; en los
   demás anunciaría puertos que nunca llegan.
-- **Por decidir:** dónde vive el panel. En el VPS
+- ~~**Por decidir:** dónde vive el panel. En el VPS
   (`cengarde-vps-setup forward add|del|list`) ve todos los routers y los
   choques. En la LuCI de cada router se parece más a lo pedido, pero
-  necesita llevar las reglas por el protocolo, que cambia en el mismo PR.
+  necesita llevar las reglas por el protocolo, que cambia en el mismo PR.~~
+  Decidido en el 3d2b (2026-10-10): en el VPS. El v4 salió sin campos para
+  reglas, y llevarlas desde LuCI pediría un v5.
 
 **Servidor casero con IP dinámica** (consecuencias, sin probar):
 - `contrib/vps` no puede suponer Vultr, cloud-init ni netplan: hace falta
@@ -667,8 +683,92 @@ el formato. Lo que quedó del plan, más lo que pidió la historia 012:
   `bench/cgprobe`) y `restart`, `lanes`, `multiip`, `udpmem` y `wgpoke`
   adaptados.
 
+## PR 3d2b: varios routers por servidor (hecho)
+
+Solo el motor del servidor, sin cambiar el formato: un router 0.5.0 habla
+con un VPS 0.5.1. Un servidor sin secciones `[client]` se porta como antes,
+con la misma salida en el estado y en `ctl links`. Las herramientas del VPS
+y OpenWrt son el 3d2c.
+
+- **Configuración** (`config.c`): una sección `[client NOMBRE]` por router,
+  con `key` (distinta en cada una), `wireguard` (la global si no tiene),
+  `wireguard_poke` (sin valor por omisión: la dirección de ese router en el
+  túnel), `label`, `enabled`, `passthrough` (si puede tener el IP pass) y
+  `forward`. Con secciones, la `key`, el `wireguard_poke` y el
+  `passthrough_file` globales son un error, y `forward_file` toma el lugar
+  del último. Nombres de 1 a 31 caracteres (letras, dígitos, `.`, `_`, `-`);
+  hasta 64 routers. `cengarde -t` los lista con su pista.
+- **Qué clave** (`clients.h`, puro): un índice de pista a routers, en orden.
+  La sesión se busca solo entre los routers de la pista del paquete, y una
+  sonda sin sesión prueba sus claves hasta que una verifica: normalmente
+  una, rara vez dos o tres (con 32 routers, unos 2 pares comparten pista).
+  Una pista que no es de nadie se descarta sin MAC.
+- **Ids de sesión:** el mapa guarda cada sesión bajo su id XOR un valor
+  aleatorio del lugar de su router (`cg_sesskey`), sorteado al arrancar, y
+  la búsqueda comprueba que la sesión sea de ese router. Dos routers con el
+  mismo id no chocan, y uno no puede ocupar a propósito la clave de la
+  sesión de otro (el id viaja en claro, el valor no). El choque por azar
+  (una vez en 2^32) se rechaza y se cuenta (`rx.id_clashes`).
+- **Por router:** su sesión más nueva, el puerto por el que WireGuard lo
+  conoce (y la redirección de handshakes de `wgwatch.h`), el empujón de
+  `wireguard_poke`, el IP pass que pide y su balde de HELLO (50 por segundo:
+  las sondas reenviadas de uno no frenan a los demás). Como mucho 4
+  sesiones a la vez (`CG_CLIENT_SESSIONS`): una quinta reemplaza a la menos
+  oída, y lo que la vieja tenía en el lote en curso se descarta, porque su
+  lugar puede tomarlo la nueva. `max_sessions` vale 64, o 4 por router si
+  son más, y una recarga lo cambia en el lugar (la tabla crece).
+- **Router desactivado** (`enabled = no`): sus sesiones se cierran y sus
+  sondas reciben un HELLO con `CG_F_REFUSED`; el router muestra
+  `vps_refusing`. El aviso del router y su texto en LuCI dicen ahora
+  «desactivado allí, o sin lugar para otra sesión».
+- **El panel de reenvío vive en el VPS** (la decisión que la historia
+  dejaba abierta): el protocolo v4 no tiene cómo llevar reglas desde el
+  router, y llevarlas pediría un v5. Las reglas van en la configuración del
+  servidor (`forward = tcp:9000=22 udp:5000-5010 both:6000`), que escribirá
+  `cengarde-vps-setup forward add` en el 3d2c; el router solo pide el IP
+  pass, como hasta ahora. Un puerto pedido dos veces es un error de
+  configuración; los reservados los sigue quitando `cengarde-nat`, que los
+  conoce.
+- **La tabla de reenvío** (`fwdtable.h`, puro): el motor escribe en
+  `forward_file`, desde un hilo y solo cuando cambia, las reglas de los
+  routers activos y, en `pass NOMBRE`, el dueño del IP pass: el formato que
+  `cengarde-nat` ya leía desde el 3d1 (`FORWARD_FILE`). El dueño es el
+  primero que lo pidió y lo conserva mientras no lo suelte; al soltarlo,
+  pasa al que lo pidió antes de los que esperan, nunca a uno que lo pidió
+  después del que lo tiene. Sobrevive a un reinicio del motor: al arrancar
+  lee la tabla que dejó, y no la reescribe si no cambió. El router que
+  espera lo ve en sus respuestas (`passthrough.server: off`) y en el
+  registro del servidor.
+- **Recargas** (`clients_apply`): cada router conserva su lugar mientras su
+  nombre siga; agregar uno, o cambiar su etiqueta, reglas o
+  `wireguard_poke`, no toca sesiones; quitarlo, desactivarlo o cambiar su
+  clave o su `wireguard` cierra solo las suyas. Pasar de un router a varios
+  (o al revés) reinicia.
+- **Estado:** `clients[]` (nombre, pista, WireGuard, sesiones, lo que pide,
+  si tiene el IP pass, sondas rechazadas), `client` en cada sesión,
+  `ip_pass_holder`, `max_sessions` y `rx.id_clashes`; la columna `CLIENT`
+  en `ctl links` y el hilo `cg-forward`. El presupuesto de recepción cuenta
+  un socket hacia WireGuard por router activo.
+- **Pruebas:** `test_clients`, `test_fwdtable` (el texto, byte a byte igual
+  a la tabla de prueba de `cengarde-nat`) y `test_config` (secciones,
+  errores, recargas); `bench/macbench` y el escenario `multiclient`.
+
 ## Medidas
 
+- **Varios routers** (PR 3d2b, 2026-10-10, contenedor de 4 CPU):
+  - `bench/macbench` (un núcleo de un Xeon de 2,8 GHz, mínimos de 5
+    corridas de 0,2 s): buscar la sesión cuesta 3 ns con un router, 5,4 ns
+    con 32 (2 sesiones cada uno) y 10 ns con 64 (4); el MAC de un DATA de
+    1400 B, 720 ns, y el de una sonda, 57 ns. Buscar y verificar un DATA no
+    se distingue de antes (721 frente a 738 ns con 64 routers); una sonda,
+    de 60 a 67 ns. Admitir una sesión cuesta un MAC por clave probada (58,
+    122 y 252 ns con 1, 2 y 4).
+  - `sudo bench/lab.sh multiclient` (tres routers, dos con la misma pista):
+    vivos en 1,1 s; 2999 de 2999 paquetes por router en cada sentido, a
+    1000 pps los tres a la vez, sin duplicados; el IP pass pasa de alpha a
+    bravo 0,8 s después de que alpha lo suelta; bravo rechazado 0,5–0,6 s
+    después de desactivarlo y de vuelta en 1,9–2,0 s; alpha, 8999 de 8999
+    a través de tres recargas, con la misma sesión.
 - **Reinicios del servidor** (`sudo bench/lab.sh restart`, 3 enlaces, 2000
   pps de bajada, l3 detrás de 800 ms de cola llena; contenedor de 4 CPU;
   tiempo desde que arranca el servidor nuevo, consultando el socket de
@@ -788,8 +888,10 @@ el formato. Lo que quedó del plan, más lo que pidió la historia 012:
   cliente. Cierra el secuestro del IP pass con sondas reenviadas.~~ Hecho
   en el 3d2a, con sondas de 64 B y sin el mínimo de 60 s (sección
   «PR 3d2a»).
-- **Servidor multicliente:** `[client NAME]`, admisión por pista sin
-  probar todas las claves, sesión activa por cliente, cambios sin reinicio.
+- ~~**Servidor multicliente:** `[client NAME]`, admisión por pista sin
+  probar todas las claves, sesión activa por cliente, cambios sin
+  reinicio.~~ Hecho en el 3d2b, con el panel de reenvío en el VPS (sección
+  «PR 3d2b»).
 - **VPS:** `cengarde-nat` declarativo (`rules`, `apply`, `down`, `sync`,
   `purge-legacy`) con `cengarde-nat.service` (`RemainAfterExit`) y flock,
   movido desde el PR 2; `cengarde-vps-setup add|remove|list` (sin
@@ -800,7 +902,7 @@ el formato. Lo que quedó del plan, más lo que pidió la historia 012:
   bloque "este router en un VPS existente" con el comando, sin `pass_ip`.
 - **Pruebas:** ~~`bench/cgprobe.c`, escenario `replay`; en `restart`,
   `window_resets = 0` con v4; paquetes 0.5.0~~ (hechos en el 3d2a);
-  `bench/macbench` y el escenario `multiclient`.
+  ~~`bench/macbench` y el escenario `multiclient`~~ (hechos en el 3d2b).
 
 ### PR 4: IPv6 dentro del túnel
 
@@ -850,3 +952,6 @@ el formato. Lo que quedó del plan, más lo que pidió la historia 012:
   dice lo que reenvía el v3.
 - 2026-10-10: PR 3d2a hecho (protocolo v4 en el motor, un router por
   servidor, paquetes 0.5.0), con sus medidas.
+- 2026-10-10: PR 3d2b hecho (varios routers en el motor del servidor,
+  paquetes 0.5.1), con sus medidas; decidido que el panel de reenvío vive
+  en el VPS.

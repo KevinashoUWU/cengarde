@@ -131,6 +131,8 @@ Detalle y razones en la
     [Protocolo v4](#protocolo-v4));
   - cada sesión tiene su propio socket hacia WireGuard, así que varios
     clientes comparten un puerto;
+  - sirve a uno o a varios routers, cada uno con su clave (ver
+    [Varios routers](#varios-routers-por-servidor-client-name));
   - responde por cada camino desde la dirección a la que envía el cliente
     (con un `listen` comodín, `*` o `0.0.0.0`): sirve cualquier dirección
     del VPS, también una añadida en marcha, como una IP reservada o IPv6;
@@ -369,10 +371,15 @@ túnel:
   resolverse con las mismas direcciones en otro orden, no mueve un enlace
   que funciona. En el laboratorio, dos recargas y la pausa de un enlace a
   2000 pps no perdieron ningún paquete (`sudo bench/lab.sh control`).
+- **En el servidor, también en el lugar:** las secciones `[client NAME]`
+  (agregar, quitar, desactivar o cambiar un router no toca a los demás) y
+  `max_sessions` (la tabla crece; con un límite menor, solo se rechazan
+  sesiones nuevas).
 - **Reiniciando el proceso en el lugar** (mismo PID, sesión nueva): `mode`,
   `key`, `listen`, `control_socket`, `busy_poll_us`, `cpu`, `rt_priority`,
   en el cliente `link_threads`, `io_queue` y el `cpu` de un `[link]`, y en
-  el servidor `wireguard`, `max_sessions` y `lanes`.
+  el servidor `wireguard` (con un solo router), `lanes` y pasar de un
+  router a varios o al revés (`[client] sections`).
 - **Si el archivo tiene un error,** sigue con la configuración anterior,
   lo registra y lo publica en el estado (`config_error`).
 - **Sin bloquear el túnel:** la lectura va en un hilo aparte, porque un
@@ -405,10 +412,12 @@ cengarde ctl threads            # cada hilo: TID, última CPU, ms de CPU y % de 
   (la segunda de tres).
 - **`links` en el servidor:** muestra las sesiones y sus enlaces, con la
   dirección del cliente (`ADDRESS`) y la del servidor a la que envía
-  (`LOCAL`).
+  (`LOCAL`); con varios routers, la columna `CLIENT` va primero (con uno
+  solo, la salida no cambia).
 - **`threads`:** el hilo principal (`cg-hub` en el cliente, `cg-main` en el
   servidor), los de cada enlace (`cg-<interfaz>`, con `link_threads = on`) y
-  los que escriben el estado (`cg-status`, y `cg-pass` en el servidor), con
+  los que escriben el estado (`cg-status`, y `cg-pass` o `cg-forward` en el
+  servidor), con
   el mismo nombre que muestran `ps -L` o `top -H` (el principal se sigue
   llamando `cengarde`). La CPU sale del reloj de CPU de cada hilo
   (`pthread_getcpuclockid`): los kernels de OpenWrt no tienen `schedstat`.
@@ -429,6 +438,90 @@ desde el cliente:
 - **Quién aplica:** cengarde no toca el cortafuegos. En el VPS,
   [`contrib/vps`](../contrib/vps/) vigila ese archivo con una unidad
   `.path` de systemd y ejecuta `cengarde-nat sync`.
+- **Con varios routers,** el IP pass va a la tabla de reenvío
+  (`forward_file`, sección siguiente).
+
+## Varios routers por servidor (`[client NAME]`)
+
+Desde la 0.5.1 (historia 010, PR 3d2b), sin cambiar el protocolo. Un
+servidor sin secciones `[client]` sirve a un router con la `key` global,
+como siempre; con ellas, a uno por sección:
+
+```ini
+mode = server
+listen = *:65500
+forward_file = /var/lib/cengarde/forward
+
+[client alpha]
+key = <la clave de alpha>
+wireguard = 127.0.0.1:65501
+wireguard_poke = 10.79.12.34:9
+forward = tcp:9000=22 udp:5000-5010
+
+[client bravo]
+key = <la de bravo>
+wireguard = 127.0.0.1:65502
+enabled = no
+```
+
+- **Por sección:** `key` (obligatoria y distinta en cada una), `wireguard`
+  (la global si no tiene), `wireguard_poke` (sin valor por omisión: la
+  dirección de ese router en el túnel), `label`, `enabled` (con `no`, sus
+  sondas reciben un HELLO de rechazo y el router muestra `vps_refusing`),
+  `passthrough` (`no`: nunca recibe el IP pass) y `forward`. Con secciones,
+  la `key`, el `wireguard_poke` y el `passthrough_file` globales son un
+  error.
+- **Qué clave:** cada paquete trae la pista de su router (protocolo v4). La
+  sesión se busca solo entre los routers de esa pista; una sonda sin sesión
+  prueba sus claves, normalmente una y rara vez dos o tres
+  (`src/clients.h`). Una pista que no es de nadie se descarta sin MAC
+  (`rx.other_hint`).
+- **Cuánto cuesta** (`bench/macbench`, un núcleo de un Xeon de 2,8 GHz,
+  mínimos de 5 corridas): buscar la sesión cuesta 3 ns con un router y 10 ns
+  con 64 (4 sesiones cada uno); el MAC de un DATA de 1400 B, 720 ns. Buscar
+  y verificar un DATA no se distingue de antes; una sonda, unos 8 ns más
+  (de 60 a 68 ns). Admitir una sesión cuesta un MAC por clave probada, unos
+  58 ns cada uno.
+- **Sesiones:** cada router tiene las suyas, cada una con su socket hacia
+  su WireGuard, y como mucho 4 a la vez (`CG_CLIENT_SESSIONS`): una quinta
+  reemplaza a la que hace más tiempo que no se oye (un router que se
+  reinicia en bucle no llena la tabla). `max_sessions` vale por omisión 64,
+  o 4 por router si son más de 16. La sesión más nueva de cada router
+  decide su IP pass, y el puerto que WireGuard conoce y el empujón de
+  `wireguard_poke` son de cada router.
+- **Cada router su presupuesto de HELLO** (50 por segundo): las sondas
+  reenviadas de uno no frenan a los demás.
+- **Reenvío de puertos** (`forward`): `PROTO:PUERTO[-PUERTO][=DESTINO]`,
+  con `tcp`, `udp` o `both`, separadas por espacios o comas; `DESTINO` es
+  el puerto del router (por omisión, el mismo). Un puerto pedido dos veces,
+  en el mismo router o en dos, es un error de la configuración.
+- **La tabla de reenvío** (`forward_file`, `src/fwdtable.h`): el motor
+  escribe ahí, cuando cambia y desde un hilo aparte, las reglas `forward`
+  de los routers activos y, en `pass NOMBRE`, el router que tiene el IP pass
+  (el rango entero). [`cengarde-nat`](../contrib/vps/cengarde-nat) la lee
+  con `FORWARD_FILE` y la aplica; deja fuera los puertos reservados y lo
+  que se pise. Formato:
+
+  ```
+  # cengarde forward table 1, written by the engine: data only
+  pass bravo
+  rule alpha tcp 9000 9000 22
+  rule alpha udp 5000 5010 5000
+  ```
+
+- **Quién tiene el IP pass:** el primero que lo pide, y lo conserva mientras
+  no lo suelte (lo pida `off`), aunque otro lo pida después o el motor se
+  reinicie (lo lee de la tabla al arrancar); al soltarlo pasa al que lo pidió
+  antes de los que esperan. Un router que lo pide y espera lo ve en el
+  registro ("asks for IP pass on, which alpha holds") y en sus respuestas
+  (`passthrough.server`: `off`).
+- **Recargas:** agregar un router, cambiar su etiqueta, sus reglas o su
+  `wireguard_poke` no toca ninguna sesión; quitarlo, desactivarlo o cambiar
+  su clave o su `wireguard` cierra solo las suyas (su router vuelve con el
+  HELLO, o queda rechazado). En el laboratorio
+  (`sudo bench/lab.sh multiclient`), tres routers, dos con la misma pista,
+  pasan 1000 pps cada uno en los dos sentidos sin perder ni cruzar nada, y
+  las recargas no le quitan un paquete al que sigue.
 
 ## Router con la hora atrasada (`wireguard_poke`)
 
@@ -484,7 +577,16 @@ enlace:
 
 Además, `config_error` (por qué no se aplicó la última recarga) y el IP pass:
 `passthrough.requested` y `passthrough.server` en el cliente, y
-`passthrough` en el servidor.
+`passthrough` en el servidor (con un router) o `ip_pass_holder` (con
+varios: el nombre del que lo tiene).
+
+En el servidor, `clients[]` tiene cada router: `name` (`null` con uno
+solo), `label`, `enabled`, `hint`, `wireguard`, `sessions`, `newest` (el id
+de su sesión más nueva), `passthrough` (lo que pide), `passthrough_allowed`,
+`ip_pass` (si lo tiene) y `refused` (sondas rechazadas: desactivado, o sin
+lugar). Cada sesión dice su `client`, y `max_sessions` el límite;
+`rx.id_clashes` cuenta las sesiones rechazadas porque su clave en la tabla
+chocó con la de otra (una en 2^32).
 
 En el servidor, `listen` es la dirección que abrió (`*` queda en
 `0.0.0.0` en un kernel sin IPv6) y `reply_from_arrival` dice si responde
@@ -542,8 +644,8 @@ En el cliente, `upload.largest` es el datagrama de WireGuard más grande de
 los últimos 5 s, el que se compara con cada `path_mtu`, y `download.hellos`
 cuenta los HELLO que tomó (un servidor que se reinició, una sesión que
 expiró, un enlace nuevo o un NAT que cambió). Por enlace, `cookie` dice si
-el servidor le dio una y `refused`, si lo rechaza (su límite de sesiones);
-`vps_refusing` resume eso para todo el router. En el servidor, `hellos`
+el servidor le dio una y `refused`, si lo rechaza (desactivado en el servidor, o sin lugar para
+otra sesión); `vps_refusing` resume eso para todo el router. En el servidor, `hellos`
 (`sent`, `refused` y `over_budget`) y, en `rx`, `other_hint` (paquetes de
 otro router, por su pista) y `no_session` (DATA de una sesión que todavía
 no tiene: espera a la sonda).
@@ -553,8 +655,9 @@ no tiene: espera a la sonda).
 Desde la 0.5.0 (historia 010, PR 3d2). La cabecera sigue midiendo 24 bytes:
 
 - **Byte 2, la pista de cliente:** el primer byte de un BLAKE2s de la clave
-  (`pair.h`). El servidor descarta sin calcular el MAC lo que trae otra
-  pista, y con varios routers (PR 3d2b) la usará para elegir la clave.
+  (`pair.h`). El servidor descarta sin calcular el MAC lo que trae una
+  pista que no es de ninguno de sus routers, y con varios elige con ella
+  qué claves probar.
 - **HELLO y cookies** (`cookie.h`): el servidor contesta con un HELLO la
   sonda que todavía no puede aceptar (no tiene su sesión, es un enlace
   nuevo o viene de otra dirección), con una cookie atada al cliente, la
