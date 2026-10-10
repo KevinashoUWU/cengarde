@@ -30,10 +30,10 @@ por fuera del túnel) probado en QEMU; falta hardware real.
 - OpenWrt de punta a punta: `openwrt/test/e2e.sh IMAGEN` (`openwrt/README.md`).
 - Contenedor cloud: `apt-get update`, `iproute2 iptables strace` (laboratorio)
   o `qemu-system-x86 openssh-client` (e2e); sin IPv6, WireGuard, netem, systemd.
-- CI: `engine.yml` (gcc/clang con `-Werror`, ASan y TSAN, qemu en aarch64,
-  armhf y MIPS BE, AArch64 real, laboratorio en netns), `openwrt.yml`
-  (paquetes 25.12/24.10, imágenes, e2e con KVM y release con tags `v*`) y
-  `vps.yml` (reglas de `cengarde-nat` en netns, y el VPS con systemd real).
+- CI: `engine.yml` (gcc/clang `-Werror`, ASan, TSAN, qemu aarch64/armhf/MIPS
+  BE, AArch64 real, laboratorio en netns), `openwrt.yml` (paquetes, imágenes,
+  e2e con KVM, release con tags `v*`), `vps.yml` (`cengarde-nat`, systemd
+  real) y `bond.yml` (`lab.sh bond`: WireGuard y TCP reales sobre netem).
 
 ## Reglas de trabajo
 

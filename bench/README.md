@@ -26,8 +26,8 @@ Las cifras citadas en [`ROADMAP.md`](../ROADMAP.md) y en las historias 001,
 
 root, iproute2 (`ip`, `tc` con `sch_tbf`), gcc, make y python3. Go solo hace
 falta para la línea base del engarde Go (`ENGINE=go`); git, para esa línea
-base y para `restart REF`; iptables, para `fallback`; y curl, para las demos
-del Go.
+base y para `restart REF`; iptables, para `fallback`; iperf3,
+wireguard-tools y `sch_netem`, para `bond`; y curl, para las demos del Go.
 
 ## Uso
 
@@ -278,6 +278,69 @@ failover (`FAILOVER_MS`):
   bytes; el estado tiene que dar `path_mtu` 1400 en l2 (1500 en l1) y el log
   tiene que pedir un MTU de WireGuard de 1316 solo para l2, sin perder
   paquetes.
+
+### `bond`: el laboratorio de bonding (`lab.d/bond.sh`)
+
+Es el paso 0 de la Fase 5 ([historia 012](../docs/historias/012-bonding.md)).
+A diferencia del resto, aquí no hay WireGuard falso: un WireGuard real
+(`wgc` 10.79.0.2 en `cli`, `wgs` 10.79.0.1 en `srv`) pasa por cengarde, y
+dentro va TCP real. En cada corrida, iperf3 sube o baja (`-R`) con Cubic y
+con BBR, mientras ping mide el RTT del túnel cargado cada 100 ms. Los
+enlaces se moldean con netem en los dos sentidos: retardo de un sentido,
+tasa y una cola de 100 ms a esa tasa.
+
+| Caso | Enlaces | Qué pasa |
+| --- | --- | --- |
+| `equal` | 2 × 50 Mbit/s, 25 ms | nada; también con el primer enlace solo |
+| `het` | 60/20, 30/35 y 10/60 (Mbit/s / ms) | nada; también con el primer enlace solo |
+| `reorder50` | 2 × 50 Mbit/s, 20 y 70 ms | 100 ms de diferencia de RTT |
+| `reorder150` | 2 × 50 Mbit/s, 20 y 170 ms | 300 ms de diferencia de RTT |
+| `linkdeath` | 3 × 40 Mbit/s, 25 ms | l2 pierde todo durante el tercio central |
+| `starlink15` | 50/25 y 100/20 | cada 15 s, l2 pierde todo 1,5 s y su retardo cambia entre 20 y 50 ms (un patrón supuesto: el real está por medir) |
+| `ltespike` | 50/25 y 50/30 | cada 5 s, l1 sube 300 ms durante 1 s |
+| `deepq` | 20/25 con 500 ms de cola y 50/25 con 100 ms | nada |
+
+Así queda medido lo que hoy da la redundancia (cada paquete por todos los
+enlaces, gana la primera copia) y, en `equal` y `het`, lo que daría el mejor
+enlace solo. El bonding tendrá que superar esas cifras. El caso `deepq` de
+aquí no es el escenario `deepq` de arriba, que mide las colas del servidor.
+
+Por cada caso, variante (`bonded` o `solo`), sentido y control de congestión
+se escribe una línea JSON en `$RUN/bond.jsonl`. Cada línea lleva Mbit/s,
+retransmisiones de TCP, p50 y p99 del RTT y CPU de cada cengarde. Al final
+se imprime una tabla con las medianas, que también queda en `$RUN/bond.md`.
+
+El escenario no juzga la velocidad: solo falla si falla la fontanería, es
+decir, si no hay handshake, tráfico o pings. Necesita iperf3,
+wireguard-tools y ping. Si el kernel no trae WireGuard (el contenedor
+cloud), sirve wireguard-go con `WG_GO=/ruta/wireguard`. Sin netem, los
+enlaces solo tienen tasa (`tbf`), sin retardos ni eventos, y el escenario
+lo avisa; con `BOND_NEED_NETEM=1` eso pasa a ser un fallo.
+
+```sh
+sudo bench/lab.sh bond                                  # todos los casos, ~10 min
+sudo BOND_CASES="equal reorder150" BOND_S=20 BOND_N=3 bench/lab.sh bond
+sudo BOND_CC=bbr BOND_DIRS=down BOND_OUT=/tmp/b.jsonl bench/lab.sh bond
+```
+
+| Variable | Por defecto | Qué hace |
+| --- | --- | --- |
+| `BOND_CASES` | todos | casos a correr |
+| `BOND_S` | 10 | segundos por corrida de iperf3 (`starlink15`, al menos 31) |
+| `BOND_N` | 1 | repeticiones; la tabla da la mediana |
+| `BOND_CC` | `cubic bbr` | controles de congestión |
+| `BOND_DIRS` | `up down` | sentidos (`down` es iperf3 `-R`) |
+| `BOND_OUT` | vacío | archivo al que añadir las líneas JSON |
+| `WG_GO` | vacío | wireguard-go, si el kernel no tiene WireGuard |
+| `BOND_NEED_NETEM` | 0 | 1: sin netem, falla en vez de avisar |
+
+No entra en `ci`: lo corre su propio workflow, `bond.yml`, en cada cambio de
+`engine/` o `bench/`, con todos los casos y una repetición. La tabla queda
+en el resumen del job y el JSON en un artefacto. A mano (`workflow_dispatch`)
+se pueden pedir más repeticiones, otros segundos y otros casos. En un runner
+compartido las cifras de una sola repetición varían: para comparar dos
+versiones, usa varias repeticiones en la misma máquina. Falta un cliente
+QUIC dentro del túnel, que la historia 012 pide junto a TCP.
 
 Paso a paso (pasa las mismas variables a `setup` y a `start`):
 
