@@ -401,10 +401,15 @@ cengarde-setup cloud-config > vps.yaml               # el user data del VPS
     002).
 - **Cambiar el secreto:** en el VPS, `sudo cengarde-vps-setup add router
   --replace` y pega el nuevo; el router se corta un momento.
-- **Actualizar:** router y VPS con el mismo commit; la 0.4 cambió el
-  protocolo (v3) y no habla con un VPS anterior. De la 0.4.1 a la 0.4.7
-  no lo cambian (un router de una y un VPS de otra se entienden en los dos
-  sentidos), pero actualiza igual el VPS:
+- **Actualizar:** router y VPS con el mismo commit. La 0.5 cambia el
+  protocolo (v4): un router 0.5 no habla con un VPS 0.4 ni al revés, así que
+  se actualizan juntos, primero el VPS (desde el router, por SSH, el túnel
+  se corta hasta que el router también tenga la 0.5). Trae las cookies que
+  impiden que una sonda reenviada cree una sesión, desvíe un enlace o
+  cambie el IP pass, y un VPS reiniciado retoma el túnel sin rehacer
+  ventanas (historia 010, PR 3d2a). La 0.4 cambió el protocolo (v3); de la
+  0.4.1 a la 0.4.7 no lo cambian (un router de una y un VPS de otra se
+  entienden en los dos sentidos), pero actualiza igual el VPS:
   - la 0.4.1 cierra al túnel los metadatos y el puerto de WireGuard;
   - la 0.4.2 contesta desde la dirección a la que llegó cada paquete
     (antes, en un VPS con varias IP o con IPv6, el router descartaba las

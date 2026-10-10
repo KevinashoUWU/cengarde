@@ -168,7 +168,7 @@ Los umbrales son propuestas [razonado] y se miden en `bench/`.
 - **FEC ≤ 1,34× con 4 enlaces.** Solo es posible si ningún enlace lleva más del ~25 % del tráfico protegido, porque la expansión mínima es 1/(1−s) [razonado]. Eso choca con repartir por capacidad: hay que elegir qué prima.
 - **ARQ.** Pasa a experimento. El ROADMAP ya lo pide como «ARQ opcional».
 - **ECN.** Marcar CE solo en los datagramas ECT y descartar los Not-ECT es una política de cengarde: WireGuard no descarta [G1-ecn-2020 B3, B6].
-- **Formato v4.** Incluye la marca de reparto, los bits de ECN, la secuencia de control aparte (toca epoch.h), el informe por enlace y, si se quiere una prueba activa de MTU, una sonda rellenada. Puede ir con el v4 del multicliente o en la versión siguiente.
+- ~~**Formato v4.** Incluye la marca de reparto, los bits de ECN, la secuencia de control aparte (toca epoch.h), el informe por enlace y, si se quiere una prueba activa de MTU, una sonda rellenada. Puede ir con el v4 del multicliente o en la versión siguiente.~~ Hecho en el v4 del multicliente (PR 3d2a, 2026-10-10, historia 010): la marca de reparto (0x04) y los bits de ECN (0x03) en los flags de DATA, que hoy se envían en 0, y la secuencia de control aparte, con su ventana. La carga de las sondas puede crecer, y el receptor ignora lo que no conoce: ahí van el informe por enlace y la sonda rellenada, sin otra versión.
 - **Corregir los textos.** ROADMAP.md:582-584 («reordenar usando el contador de WireGuard») y el contexto del estudio («dedup exacta por índice receptor + contador + tag») tienen que pasar a la secuencia de cengarde.
 
 ## Pendiente
@@ -180,9 +180,10 @@ Los umbrales son propuestas [razonado] y se miden en `bench/`.
   - comprobar por qué `starlink15` retransmite tanto;
   - una semana de la Pi con `cengarde-rec` (guía de OpenWrt) y su informe de `bench/fieldrec.py`.
 - Medir lo marcado [MEDIR] y [supuesto] antes de fijar umbrales: el patrón de 15 s de Starlink en Chile, la correlación entre operadores en Santiago, si el TOS del datagrama de WireGuard llega a cengarde por loopback, y la tolerancia al desorden de iOS/macOS.
-- Elegir con el protocolo v4: marca de reparto, bits ECN, secuencia de control aparte (toca `epoch.h`) e informe por enlace.
+- Definir los campos del informe por enlace, al final de la carga de las sondas v4 (el formato ya les deja lugar).
 
 ## Cambios
 
 - 2026-10-10: creada con el estudio de bonding.
+- 2026-10-10: el formato v4 (PR 3d2a) trae lo reservado para el bonding.
 - 2026-10-10: paso 0 en parte. `bench/lab.sh bond` y `bond.yml`, con la línea base de arriba. El registrador de campo: `cengarde-rec` en el paquete de OpenWrt, `bench/fieldrec.py` con su prueba y `lab.d/fieldrec.sh`, y `time_ms` en el estado del motor.

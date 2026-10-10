@@ -11,7 +11,7 @@
 # - 2000 pps down and up exactly once (dup 0, loss within 0.5 %, as smoke);
 # - lanes 0, 1 and 2 received, each from its own link only; lanes 3 to 7
 #   and the junk socket received nothing;
-# - a short datagram and a protocol 4 one land in the junk socket
+# - a short datagram and a protocol 3 one (an older router) land in the junk socket
 #   (rx.junk, rx.short, rx.bad_version), not in a lane;
 # - a second server on the same port fails to start ("Address already in
 #   use") instead of joining the group, and the first keeps its 8 lanes;
@@ -132,13 +132,13 @@ lanes_traffic() {
 }
 
 # lanes_send WHAT: one datagram from cli to the server's port: "short"
-# (10 bytes) or "v4" (a protocol 4 header and payload).
+# (10 bytes) or "v3" (a protocol 3 header and payload: an older router).
 lanes_send() {
 	ip netns exec cli python3 - "$1" <<'EOF'
 import socket, sys
 
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-data = b"x" * 10 if sys.argv[1] == "short" else bytes([0x41, 0, 0, 1]) + bytes(60)
+data = b"x" * 10 if sys.argv[1] == "short" else bytes([0x31, 0, 0, 1]) + bytes(60)
 s.sendto(data, ("10.0.3.2", 59402))
 EOF
 }
@@ -174,11 +174,11 @@ lanes() {
 	# Junk: a short datagram and a protocol 4 one.
 	"$CENGARDE_BIN" ctl -s "$RUN/server.sock" status >"$RUN/server-before.json"
 	lanes_send short
-	lanes_send v4
+	lanes_send v3
 	sleep 0.5
 	out=$(lanes_py junk "$RUN/server-before.json") || { echo "FAIL: the junk socket did not take them"; fail=1; }
 	echo "   $out"
-	grep -h "short packet\|protocol v4 packet" "$RUN/server.log" | sed 's/^/   /'
+	grep -h "short packet\|protocol v3 packet" "$RUN/server.log" | sed 's/^/   /'
 
 	# A second server on the same port: refused, not a member of the group.
 	sed -e "s|$RUN/server.sock|$RUN/server2.sock|" -e "s|$RUN/server.json|$RUN/server2.json|" \

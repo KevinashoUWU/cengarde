@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: GPL-2.0-only */
 SUITE(siphash)
 SUITE(proto)
+SUITE(cookie)
 SUITE(replay)
 SUITE(arrival)
 SUITE(config)

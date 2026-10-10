@@ -32,7 +32,7 @@ wireguard-tools y `sch_netem`, para `bond`; y curl, para las demos del Go.
 ## Uso
 
 ```sh
-sudo bench/lab.sh build    # udpgen, protoclient, ringbench y cengarde en bench/bin/
+sudo bench/lab.sh build    # udpgen, protoclient, ringbench, cgprobe y cengarde en bench/bin/
 sudo bench/lab.sh ci       # lo que corre el CI: smoke, health, control y los escenarios de lab.d con LAB_CI=1
 sudo bench/lab.sh smoke    # prueba de humo de cengarde
 sudo bench/lab.sh health   # salud de enlaces: un enlace con 500 ms de cola, subida y bajada (historia 006)
@@ -108,7 +108,7 @@ Con las direcciones de `multiip` (l1 a una secundaria, l2 a una /32, l3 a
 - 2000 pps de bajada y de subida, cada paquete una vez;
 - las colas 0, 1 y 2 reciben, cada una solo de su enlace (`lanes[].links`),
   y las demás y la de basura nada;
-- un datagrama corto y uno de protocolo 4 van a la basura (`rx.junk`,
+- un datagrama corto y uno de protocolo 3 (un router anterior) van a la basura (`rx.junk`,
   `rx.short`, `rx.bad_version`), no a una cola;
 - un segundo servidor en el mismo puerto no arranca ("Address already in
   use") y el primero conserva sus 8 colas;
@@ -166,34 +166,68 @@ máquina unos segundos.
 
 ### `restart`: el servidor se reinicia (`lab.d/restart.sh`)
 
-Un servidor reiniciado abre la sesión de nuevo con una secuencia aleatoria,
-y más o menos la mitad de las veces cae por detrás de la ventana anti-replay
-del cliente. El escenario comprueba que el cliente rehace su ventana y la
-bajada vuelve a fluir (la regla, en `engine/src/epoch.h` y la historia
-[010](../docs/historias/010-ipv6-varias-ip-multicliente-nombres.md)).
+Hasta el protocolo 3, un servidor reiniciado abría la sesión de nuevo con
+una secuencia aleatoria. Más o menos la mitad de las veces caía por detrás
+de la ventana anti-replay del cliente, que tenía que rehacerla
+(`engine/src/epoch.h` hasta la 0.4).
+
+Con el protocolo 4 el servidor nuevo contesta las sondas con un HELLO y
+retoma la sesión con la sonda que trae su cookie. Sigue 2^20 por delante de
+lo que la sonda dice que recibió el cliente, así que no hay ventana que
+rehacer (historia
+[010](../docs/historias/010-ipv6-varias-ip-multicliente-nombres.md)). El
+escenario comprueba que los enlaces vuelven y la bajada fluye.
 
 - **Montaje:** 2000 pps de bajada (y 20 de subida, para que las sondas vayan
   cada 100 ms). l3 tiene 800 ms de cola siempre llena: tbf a 5 Mbit/s en el
   lado del cliente más un relleno de 7,8 Mbit/s, como `health` llena la suya
-  de 500 ms. Así sus respuestas contestan sondas de 8 o más atrás. El
-  WireGuard falso del VPS (`udpgen -l`) sigue al servidor nuevo a su puerto
-  nuevo, como WireGuard cuando cambia el punto final del otro lado.
+  de 500 ms. El WireGuard falso del VPS (`udpgen -l`) sigue al servidor
+  nuevo a su puerto nuevo, como WireGuard cuando cambia el punto final del
+  otro lado.
 - **Fase 1:** 10 reinicios (`RESTARTS`). Cada vez, todos los enlaces tienen
   que estar vivos, con un paquete verificado después del reinicio, en 4 s
   (`RESTART_LIMIT`) desde que arranca el servidor nuevo (consultando el
   socket de control cada 50 ms), y la bajada tiene que volver a fluir. Si
   en 10 s (`WEDGE_S`) no lo están, cuenta como atascado y se reinicia el
   cliente para seguir.
-- **Fase 2:** l1 y l2 en pausa (`cengarde ctl link … off`), así que solo las
-  respuestas tardías de l3 pueden delatar el reinicio. Hasta 8 reinicios,
-  hasta que uno caiga por detrás de la ventana.
-- **Con `REF`** compila el motor de ese commit en `$RUN` y lo mide igual.
+- **Fase 2:** l1 y l2 en pausa (`cengarde ctl link … off`), así que el HELLO
+  y la cookie solo pueden pasar por l3, detrás de su cola. Son `ALONE`
+  reinicios (3).
+- **Al final** dice cuántos HELLO tomó el cliente (`download.hellos`).
+- **Con `REF`** compila el motor de ese commit en `$RUN` y lo mide igual. Un
+  motor del protocolo 3 dice además `window_resets`.
 - **Si el laboratorio no está listo** (la comprobación de antes de reiniciar
   falla, o el socket de control no contesta), no reinicia nada: dice qué
   extremo no corre, con el final de su log, en vez de contarlo como atascado.
 
-Medidas (antes y después del arreglo, y con un anillo de 4 sondas):
-historia [010](../docs/historias/010-ipv6-varias-ip-multicliente-nombres.md).
+Medidas: historia
+[010](../docs/historias/010-ipv6-varias-ip-multicliente-nombres.md) (las del
+protocolo 3, antes y después del arreglo de la 0.4.1, y las del 4).
+
+### `replay`: cookies y reenvíos (`lab.d/replay.sh`)
+
+`bench/bin/cgprobe` (`bench/cgprobe.c`) hace de segundo router con la clave del laboratorio, desde
+direcciones del netns `cli` y junto al cliente real. Fabrica una sonda (con
+o sin cookie), un DATA o un datagrama guardado, lo envía y dice qué contestó
+el servidor: `hello COOKIE`, `refused`, `reply` o `none`. Comprueba lo
+siguiente:
+
+1. Una sonda de una sesión que el servidor no tiene recibe un HELLO, y no
+   crea nada. La misma sonda con la cookie recibe respuesta y crea la
+   sesión, con el IP pass que pide (se guarda como `p.bin`).
+2. `p.bin` otra vez, desde otra dirección, es un duplicado: no hay
+   respuesta y el camino no se mueve.
+3. Una sonda nueva desde otra dirección, con la cookie vieja, recibe un
+   HELLO para la dirección nueva y no mueve el camino. Con la cookie nueva,
+   lo mueve (un NAT que cambió el puerto).
+4. Un DATA de una sesión que no existe, una sonda con la pista de otro
+   router y una con otra clave no reciben nada, y quedan contadas
+   (`rx.no_session`, `rx.other_hint`, `rx.auth_failures`).
+5. Con el servidor reiniciado, `p.bin` desde cualquier dirección, también
+   la suya, recibe solo un HELLO, porque las claves de las cookies son
+   nuevas: no crea la sesión ni escribe el IP pass.
+6. El cliente real sigue sin pérdidas antes del reinicio y vuelve después,
+   en menos de 5 s, sin ningún paquete `too_old`.
 
 ### `wgpoke`: un router con la hora atrasada (`lab.d/wgpoke.sh`)
 

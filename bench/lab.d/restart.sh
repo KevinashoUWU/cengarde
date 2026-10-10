@@ -1,12 +1,14 @@
 # shellcheck shell=bash disable=SC2034 # LAB_CI, ENGINE and NLINKS are read by lab.sh
 # Server restart under traffic: "bench/lab.sh restart [REF]".
 #
-# A restarted server opens the session again with a new random sequence. In
-# about half of the restarts it lands more than the anti-replay window behind
-# what the client saw last, and before the fix every packet down was "too
-# old" until the client restarted too. The client now resets its window on
-# an old probe reply that answers one of its recent probes, once nothing new
-# has come for 2 x probe_idle_ms (engine/src/epoch.h).
+# Up to protocol 3, a restarted server opened the session again with a new
+# random sequence; in about half of the restarts it landed more than the
+# anti-replay window behind what the client saw last, and before the fix of
+# 0.4.1 every packet down was "too old" until the client restarted too
+# (then the client reset its window, epoch.h). With protocol 4 the new
+# server answers the client's probes with a HELLO, takes the session up from
+# the probe that echoes its cookie, and goes on 2^20 past the sequences the
+# probe says the client received (proto.h): no window to reset.
 #
 # 2000 pps flow down (20 pps up keep the probes fast), and link 3 sits behind
 # an 800 ms queue kept full (tbf at 5 Mbit/s on the client side, plus a
@@ -18,9 +20,8 @@
 #   packet verified after it, and the download must flow again. A restart
 #   left without that for WEDGE_S seconds (10) counts as wedged, and the
 #   client is restarted to go on.
-# - Then with l1 and l2 paused, so that only l3's late replies can show the
-#   restart, until one restart lands behind the window (at most 8; each has
-#   an even chance), with the same checks.
+# - Then with l1 and l2 paused, so that only l3, behind its 800 ms queue,
+#   can carry the HELLO and the cookie, ALONE times (3), with the same checks.
 #
 # With REF, it measures the engine of that git commit instead (e.g. the one
 # before the fix, to count the wedges).
@@ -28,6 +29,7 @@ LAB_CI=1
 
 RESTARTS=${RESTARTS:-10}
 RESTART_LIMIT=${RESTART_LIMIT:-4}
+ALONE=${ALONE:-3}
 WEDGE_S=${WEDGE_S:-10}
 
 # restart_watch T0 LIMIT: waits until every link of the client that is not
@@ -83,8 +85,8 @@ took, p0 = time.time() - t0, d["download"]["packets"]
 time.sleep(1)
 d = status() or d
 flow = d["download"]["packets"] - p0
-resets = d["download"].get("window_resets", "-")
-print(f"every link live after {took:.1f} s, then {flow} packets down in 1 s, window_resets {resets}")
+hellos = d["download"].get("hellos", "-")
+print(f"every link live after {took:.1f} s, then {flow} packets down in 1 s, HELLOs {hellos}")
 sys.exit(0 if flow >= pps // 2 and not behind(d, 1000) else 2)
 EOF
 }
@@ -132,11 +134,12 @@ restart_once() {
 	return 2
 }
 
-# window_resets: the client's counter right now ("-" before the fix, "?" when
-# the client does not answer).
-window_resets() {
+# client_count KEY: a download counter of the client right now ("-" when
+# its engine has none, "?" when the client does not answer): hellos (HELLOs
+# taken, protocol 4) or window_resets (protocol 3).
+client_count() {
 	"$CENGARDE_BIN" ctl -s "$RUN/client.sock" status >"$RUN/client-now.json" 2>/dev/null &&
-		jget "$RUN/client-now.json" 'd["download"].get("window_resets", "-")' 2>/dev/null || echo "?"
+		jget "$RUN/client-now.json" "d['download'].get('$1', '-')" 2>/dev/null || echo "?"
 }
 
 # not_running: names each end that is not running, with the end of its log
@@ -151,7 +154,7 @@ not_running() {
 }
 
 restart() {
-	local ref=${1:-} tmp="" fail=0 ready=1 n=0 wedged=0 slow=0 noflow=0 secs i j rc rtt out r0 alone=""
+	local ref=${1:-} tmp="" fail=0 ready=1 n=0 wedged=0 slow=0 noflow=0 secs i j rc rtt out
 	local ctl="$CENGARDE_BIN ctl -s $RUN/client.sock"
 	if [ "$(printf %s "$RUN/client.sock" | wc -c)" -gt 107 ]; then
 		echo "FAIL: $RUN/client.sock is longer than 107 bytes (sun_path): use a shorter RUN"
@@ -210,16 +213,13 @@ restart() {
 				[ "$($ctl link l1 off)" = ok ] && [ "$($ctl link l2 off)" = ok ] ||
 					{ echo "FAIL: cannot pause l1 and l2"; fail=1; break; }
 				sleep 2
-				for j in $(seq 1 8); do
-					r0=$(window_resets)
+				for j in $(seq 1 "$ALONE"); do
 					n=$((n + 1))
 					restart_once "l3 alone, restart $j"
 					rc=$?
 					[ "$rc" = 0 ] || break
-					[ "$(window_resets)" != "$r0" ] && { alone=reset; break; }
 					sleep 1
 				done
-				[ "$rc" = 0 ] && [ -z "$alone" ] && echo "   (no restart with l3 alone landed behind the window: 1 chance in 256)"
 			else
 				n=$((n + 1))
 				restart_once "restart $i"
@@ -236,7 +236,8 @@ restart() {
 		[ "$wedged" = 0 ] || echo "FAIL: $wedged restarts wedged the download"
 		[ "$wedged$slow$noflow" = 000 ] || fail=1
 		echo "   $n restarts: $wedged wedged the download, $slow took more than $RESTART_LIMIT s," \
-			"$noflow without download afterwards; window resets: $(window_resets)"
+			"$noflow without download afterwards; HELLOs taken: $(client_count hellos)," \
+			"window resets: $(client_count window_resets)"
 		grep -h "started over" "$RUN/client.log" | sed 's/^/   /'
 	fi
 	stop

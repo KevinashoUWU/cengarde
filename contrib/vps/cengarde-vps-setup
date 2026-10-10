@@ -31,11 +31,12 @@
 #                                    0.4's install.sh works again; --all also
 #                                    removes the routers and the engine's state
 #
-# Protocol 3 serves one router: a second one needs cengarde 0.5 on both
-# ends. That router keeps 10.79.0.2, the tunnel address of every 0.4 router.
-# Its IP pass forwards PASSTHROUGH_PORTS (1024:65000), less the reserved
-# ports: "forward allow" frees a port below 1024, which a router gets only
-# inside that range; "forward limit" is kept for protocol 4.
+# The engines so far (protocol 3, cengarde 0.4; protocol 4, cengarde 0.5.0)
+# serve one router: several need the multi-router engine on both ends. That
+# router keeps 10.79.0.2, the tunnel address of every 0.4 router. Its IP
+# pass forwards PASSTHROUGH_PORTS (1024:65000), less the reserved ports:
+# "forward allow" frees a port below 1024, which a router gets only inside
+# that range; "forward limit" is kept for the multi-router engine.
 # Settings: /etc/cengarde/nat.conf (see cengarde-nat). CENGARDE_ROOT goes in
 # front of every path (tests).
 #
@@ -74,8 +75,8 @@ UNITS=$R/etc/systemd/system
 SYSUSERS=$R/etc/sysusers.d/cengarde.conf
 CTL_TIMEOUT=${CENGARDE_CTL_TIMEOUT:-15}
 SERVER_ADDR=10.79.0.1
-LEGACY_TUNNEL=10.79.0.2 # every router of protocol 3
-MAX_ROUTERS=1           # protocol 3
+LEGACY_TUNNEL=10.79.0.2 # every router of an engine that serves one
+MAX_ROUTERS=1           # protocols 3 and 4
 
 say() { echo "$ME: $*"; }
 warn() { echo "$ME: $*" >&2; }
@@ -120,7 +121,7 @@ fi
 : "${WG_PORT_BASE:=${WG_PORT:-65501}}"
 is_port "$CENGARDE_PORT" || die "CENGARDE_PORT in $CONF: not a port"
 is_port "$WG_PORT_BASE" || die "WG_PORT_BASE in $CONF: not a port"
-# What protocol 3's IP pass forwards (cengarde-nat refuses a bad one).
+# What IP pass forwards (cengarde-nat refuses a bad one).
 PASS_LO=${PASSTHROUGH_PORTS%%:*} PASS_HI=${PASSTHROUGH_PORTS#*:}
 is_port "$PASS_LO" && is_port "$PASS_HI" || PASS_LO=1024 PASS_HI=65000
 ENGINE_GROUP=$ENGINE_USER
@@ -303,7 +304,7 @@ ask() { # QUESTION: yes on a terminal that says y
 
 engine_proto() { cengarde version 2>/dev/null | sed -n 's/.*(protocol \([0-9][0-9]*\)).*/\1/p'; }
 
-# last_seen: when the engine last heard the router (protocol 3: its one
+# last_seen: when the engine last heard the router (today: its one
 # router), from "cengarde ctl links".
 last_seen() {
 	local out
@@ -339,7 +340,7 @@ idle_key() {
 	cat "$IDLE_KEY"
 }
 
-# engine_conf: the engine's configuration, protocol 3, on stdout.
+# engine_conf: the engine's configuration (protocols 3 and 4: one router), on stdout.
 engine_conf() {
 	local n reserved
 	reserved=$(cengarde-nat reserved) || die "cengarde-nat reserved failed (see above)"
@@ -373,8 +374,8 @@ engine_conf() {
 		control_socket = /run/cengarde/cengarde.sock
 		# The IP pass the router asks for; cengarde-passthrough.path applies it.
 		passthrough_file = /var/lib/cengarde/passthrough
-		# The ports a router can never have (cengarde-nat reserved); the engine
-		# takes them from protocol 4 on, cengarde-nat now.
+		# The ports a router can never have (cengarde-nat reserved); the
+		# multi-router engine will take them, cengarde-nat does now.
 		# reserved: $reserved
 		# Lower latency for more CPU (docs/historias/006); fine on dedicated vCPUs.
 		#busy_poll_us = 50
@@ -631,8 +632,10 @@ check_ports() {
 
 check_proto() {
 	P=$(engine_proto)
-	[ "$P" = 3 ] ||
-		die "this cengarde-vps-setup writes protocol 3 configurations, and the engine says protocol ${P:-unknown}: install both from one checkout (contrib/vps/install.sh)"
+	case $P in
+	3 | 4) ;;
+	*) die "this cengarde-vps-setup writes configurations of protocols 3 and 4, and the engine says protocol ${P:-unknown}: install both from one checkout (contrib/vps/install.sh)" ;;
+	esac
 }
 
 # import: /etc/cengarde/secret (cloud-config) as the first router, only
@@ -777,7 +780,7 @@ cmd_add() {
 		[ -z "$rename" ] || die "--rename $rename: no router with that secret"
 		other=$(routers | head -n 1)
 		if [ "$(nrouters)" -ge "$MAX_ROUTERS" ]; then
-			die "this server already has router $other: protocol 3 serves one router, and several routers need cengarde 0.5 on both ends (or remove $other first, or \"add $other --replace\")"
+			die "this server already has router $other: this engine (protocol $P) serves one router, and several routers need the multi-router engine on both ends (or remove $other first, or \"add $other --replace\")"
 		fi
 		s=$(free_slot) || die "32 routers already: no WireGuard port left"
 		C_NAME=$name C_SECRET=$SECRET C_SLOT=$s C_ADDR=$LEGACY_TUNNEL C_LABEL='' C_FORWARD=yes C_MAXP=''
@@ -852,20 +855,21 @@ cmd_list() {
 			"$C_FORWARD" "$(last_seen)" "$C_LABEL"
 	done
 	[ "$(nrouters)" -gt 0 ] || say "no router (cengarde-vps-setup add NAME)"
-	[ "$p" != 3 ] || [ ! -e "$NAT_STATE/applied" ] ||
+	case $p in 3 | 4) ;; *) return 0 ;; esac
+	[ ! -e "$NAT_STATE/applied" ] ||
 		say "IP pass: $(awk '$1 == "dnat" { print "on, to " $7 " (" $5 ")"; f = 1; exit } END { if (!f) print "off" }' "$NAT_STATE/applied")"
 }
 
-# allow_note TOKEN: what "forward allow" does for TOKEN with protocol 3,
-# whose IP pass forwards only PASSTHROUGH_PORTS: below 1024, by default,
-# nothing yet.
+# allow_note TOKEN: what "forward allow" does for TOKEN with an engine that
+# serves one router, whose IP pass forwards only PASSTHROUGH_PORTS: below
+# 1024, by default, nothing yet.
 allow_note() {
 	local lo="${1#*:}" hi
 	hi=${lo#*-} lo=${lo%-*}
 	if [ "$hi" -lt "$PASS_LO" ] || [ "$lo" -gt "$PASS_HI" ]; then
-		say "$1 is allowed, but nothing forwards it yet: with protocol 3, IP pass forwards only PASSTHROUGH_PORTS ($PASSTHROUGH_PORTS); a router gets it with protocol 4 (cengarde 0.5), or with a PASSTHROUGH_PORTS that includes it"
+		say "$1 is allowed, but nothing forwards it yet: IP pass forwards only PASSTHROUGH_PORTS ($PASSTHROUGH_PORTS); a router gets it with the multi-router engine's rules, or with a PASSTHROUGH_PORTS that includes it"
 	elif [ "$lo" -lt "$PASS_LO" ] || [ "$hi" -gt "$PASS_HI" ]; then
-		say "$1 is allowed; with protocol 3, IP pass forwards only its ports inside PASSTHROUGH_PORTS ($PASSTHROUGH_PORTS)"
+		say "$1 is allowed; IP pass forwards only its ports inside PASSTHROUGH_PORTS ($PASSTHROUGH_PORTS)"
 	else
 		say "$1 is allowed, inside PASSTHROUGH_PORTS ($PASSTHROUGH_PORTS): IP pass forwards it to its router, unless this server uses it (cengarde-vps-setup forward says)"
 	fi
@@ -960,7 +964,7 @@ cmd_forward() {
 			;;
 		esac
 		save
-		say "router $2 may open ${C_MAXP:-the default number of} ports with its own rules (protocol 4, cengarde 0.5, on: today a router has only IP pass)"
+		say "router $2 may open ${C_MAXP:-the default number of} ports with its own rules (with the multi-router engine: today a router has only IP pass)"
 		;;
 	allow | disallow)
 		tokens "$@"

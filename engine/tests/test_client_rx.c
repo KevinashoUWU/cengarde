@@ -25,6 +25,17 @@ static size_t mk(uint8_t type, uint32_t session, uint32_t seq, uint32_t ts, size
 	return CG_HDR_LEN + plen;
 }
 
+/* A HELLO answering a probe sent with ts echo. */
+static size_t hello(uint32_t echo, uint32_t cookie, uint8_t flags)
+{
+	struct cg_hello hl = { .echo_ts = echo, .cookie = cookie };
+	struct cg_hdr h = { .type = CG_T_HELLO, .flags = flags, .session = SESSION, .seq = 0, .ts = 1 };
+
+	cg_hello_write(pkt + CG_HDR_LEN, &hl);
+	cg_hdr_write(pkt, &h, key + CG_SIPHASH_KEY_LEN, pkt + CG_HDR_LEN, CG_HELLO_LEN);
+	return CG_HDR_LEN + CG_HELLO_LEN;
+}
+
 /* A probe reply answering a probe sent with ts echo. */
 static size_t reply(uint32_t seq, uint32_t echo)
 {
@@ -50,7 +61,6 @@ static void reset_state(void)
 	memset(&l2, 0, sizeof(l2));
 	r.session = SESSION;
 	r.k_rx = key + CG_SIPHASH_KEY_LEN;
-	r.restart_ms = 2000;
 	l1.open = l2.open = 1;
 	l1.gen = 3;
 	l2.gen = 7;
@@ -118,87 +128,116 @@ static void test_order(void)
 	CHECK_EQ(r.auth_fail, 1);
 	CHECK_EQ(l2.last_rx_ms, 0);
 
-	/* 7. A probe reply: marked, back to the caller, no arrival. */
+	/* 7. A probe reply: marked in the control window, back to the caller,
+	 * no arrival; DATA's window does not move. */
 	n = reply(101, 77);
 	CHECK_EQ(in(&l2, 1, 7, n, 1002), CG_RXV_REPLY);
 	CHECK_EQ(l2.last_rx_ms, 1002);
 	CHECK_EQ(r.rx[1].wins, 0);
-	CHECK_EQ(cg_replay_check(&r.replay, 101), CG_RP_DUP);
+	CHECK_EQ(cg_replay_check(&r.ctl, 101), CG_RP_DUP);
+	CHECK_EQ(cg_replay_check(&r.replay, 101), CG_RP_NEW);
+	CHECK_EQ(r.replay.top, 100);
 	/* A DUP reply is no arrival either. */
 	CHECK_EQ(in(&l1, 0, 3, n, 1003), CG_RXV_DROP);
 	CHECK_EQ(r.dups, 2);
 	CHECK_EQ(r.rx[0].dups, 0);
 
-	/* 4. OLD: far behind the window, and not a reply that shows a restart. */
-	n = mk(CG_T_DATA, SESSION, 101 - CG_REPLAY_WINDOW - 5, 1, 40);
+	/* 5. OLD: far behind the window. */
+	n = mk(CG_T_DATA, SESSION, 100 - CG_REPLAY_WINDOW - 5, 1, 40);
 	CHECK_EQ(in(&l1, 0, 3, n, 9000), CG_RXV_DROP);
 	CHECK_EQ(r.old, 1);
-	CHECK_EQ(r.window_resets, 0);
 }
 
-static void test_restart(void)
+/* HELLO: no sequence, so it counts only for an unanswered probe of the
+ * link it arrives on, once, and only with a MAC that verifies. */
+static void test_hello(void)
 {
-	uint32_t top = 50000, old = top - CG_REPLAY_WINDOW - 100;
+	size_t n;
+
+	reset_state();
+	cg_echo_push(&l1.probes, 555, 10000);
+	cg_echo_push(&l1.probes, 556, 10100);
+	/* Forged: counted, no cookie, the probe still unanswered. */
+	n = hello(555, 0xc00c1e, 0);
+	pkt[CG_MAC_OFF] ^= 1;
+	CHECK_EQ(in(&l1, 0, 3, n, 10200), CG_RXV_AUTH);
+	CHECK_EQ(r.auth_fail, 1);
+	CHECK_EQ(l1.cookie, 0);
+	pkt[CG_MAC_OFF] ^= 1;
+	/* On the wrong link: its ring has no such probe. */
+	CHECK_EQ(in(&l2, 1, 7, n, 10200), CG_RXV_DROP);
+	CHECK_EQ(r.hellos_stale, 1);
+	CHECK_EQ(l2.cookie, 0);
+	/* Genuine: the link keeps the cookie. */
+	CHECK_EQ(in(&l1, 0, 3, n, 10200), CG_RXV_HELLO);
+	CHECK_EQ(l1.cookie, 0xc00c1e);
+	CHECK_EQ(l1.refused, 0);
+	CHECK_EQ(l1.hello_ms, 10200);
+	CHECK_EQ(r.hellos, 1);
+	/* Sent again: its probe is answered already. */
+	CHECK_EQ(in(&l1, 0, 3, n, 10300), CG_RXV_DROP);
+	CHECK_EQ(r.hellos_stale, 2);
+	/* A refusal is kept too; a HELLO marks no window. */
+	n = hello(556, 0xbeef, CG_F_REFUSED);
+	CHECK_EQ(in(&l1, 0, 3, n, 10300), CG_RXV_HELLO);
+	CHECK_EQ(l1.cookie, 0xbeef);
+	CHECK_EQ(l1.refused, 1);
+	CHECK(!r.replay.init && !r.ctl.init);
+	/* A reply to a probe a HELLO answered still passes (its sequence is
+	 * what counts), and takes nothing. */
+	n = reply(9, 556);
+	CHECK_EQ(in(&l1, 0, 3, n, 10400), CG_RXV_REPLY);
+}
+
+/* DATA and control messages count apart: a link whose DATA lags beyond the
+ * window still delivers its replies, and a server that lost the session
+ * and goes on CG_SEQ_LEAP past the newest sequence needs no reset. */
+static void test_classes(void)
+{
+	uint32_t top = 50000;
 	size_t n;
 
 	reset_state();
 	n = mk(CG_T_DATA, SESSION, top, 1, 40);
 	CHECK_EQ(in(&l1, 0, 3, n, 10000), CG_RXV_DATA);
-	cg_echo_push(&l1.probes, 555, 10500);
-
-	/* Not yet 2 s of silence since the newest packet: OLD. */
-	n = reply(old, 555);
-	CHECK_EQ(in(&l1, 0, 3, n, 11999), CG_RXV_DROP);
-	CHECK_EQ(r.old, 1);
-	/* The echo was taken by that verified reply: a later one with the same
-	 * echo proves nothing. */
-	CHECK_EQ(in(&l1, 0, 3, n, 12500), CG_RXV_DROP);
-	CHECK_EQ(r.old, 2);
-	CHECK_EQ(r.window_resets, 0);
-
-	/* A forged reply never consumes the echo. */
-	cg_echo_push(&l1.probes, 556, 12000);
-	n = reply(old + 1, 556);
-	pkt[CG_MAC_OFF] ^= 1;
-	CHECK_EQ(in(&l1, 0, 3, n, 12600), CG_RXV_DROP);
-	CHECK_EQ(r.old, 3);
-	pkt[CG_MAC_OFF] ^= 1;
-	/* Genuine, with silence: the window starts again from it. */
-	CHECK_EQ(in(&l1, 0, 3, n, 12600), CG_RXV_RESET);
-	CHECK_EQ(r.window_resets, 1);
-	CHECK_EQ(r.replay.top, old + 1);
-	CHECK_EQ(cg_replay_check(&r.replay, old + 2), CG_RP_NEW);
-	CHECK_EQ(r.newest_ms, 12600);
-	/* A DATA packet never resets it. */
-	n = mk(CG_T_DATA, SESSION, old + 1 - CG_REPLAY_WINDOW - 10, 1, 40);
-	CHECK_EQ(in(&l1, 0, 3, n, 20000), CG_RXV_DROP);
-	CHECK_EQ(r.window_resets, 1);
-
-	/* Out of order between pumps: a packet stamped before the newest one
-	 * already taken shows no silence at all. */
+	n = reply(7, 1);
+	CHECK_EQ(in(&l1, 0, 3, n, 10001), CG_RXV_REPLY);
+	/* The same sequence in the other class is new. */
+	n = mk(CG_T_DATA, SESSION, 7, 1, 40);
+	CHECK_EQ(in(&l1, 0, 3, n, 10002), CG_RXV_DROP); /* OLD for DATA */
+	n = reply(top, 1);
+	CHECK_EQ(in(&l1, 0, 3, n, 10003), CG_RXV_REPLY);
+	CHECK_EQ(cg_rx_top(&r.replay), top);
+	CHECK_EQ(cg_rx_top(&r.ctl), top);
+	/* The server comes back past what the probes reported. */
+	n = mk(CG_T_DATA, SESSION, top + CG_SEQ_LEAP, 1, 40);
+	CHECK_EQ(in(&l2, 1, 7, n, 20000), CG_RXV_DATA);
+	n = reply(top + CG_SEQ_LEAP, 1);
+	CHECK_EQ(in(&l2, 1, 7, n, 20001), CG_RXV_REPLY);
+	/* What the old server still had in flight is OLD now, never DATA again. */
+	n = mk(CG_T_DATA, SESSION, top + 1, 1, 40);
+	CHECK_EQ(in(&l1, 0, 3, n, 20002), CG_RXV_DROP);
+	/* Nothing received: the probes say 0. */
 	reset_state();
-	n = mk(CG_T_DATA, SESSION, top, 1, 40);
-	CHECK_EQ(in(&l2, 1, 7, n, 30000), CG_RXV_DATA);
-	cg_echo_push(&l1.probes, 700, 9000);
-	n = reply(old, 700);
-	CHECK_EQ(in(&l1, 0, 3, n, 9500), CG_RXV_DROP);
-	CHECK_EQ(r.window_resets, 0);
-	CHECK_EQ(r.newest_ms, 30000);
+	CHECK_EQ(cg_rx_top(&r.replay), 0);
 }
 
 static void test_up(void)
 {
-	struct cg_txs t = { .session = SESSION, .seq = 0xfffffffeu, .k_tx = key };
+	struct cg_txs t = { .session = SESSION, .seq = 0xfffffffeu, .seq_ctl = 40, .hint = 0x5a, .k_tx = key };
 	uint8_t hdr[CG_HDR_LEN + CG_PROBE_INFO_LEN], payload[CG_PROBE_INFO_LEN] = "a probe's info";
 	struct cg_hdr h;
 
+	/* Each class has its own sequence; every header carries the hint. */
 	CHECK_EQ(cg_up_header(&t, hdr, CG_T_DATA, 0, 0, 1234, payload, sizeof(payload)), 0xfffffffeu);
-	CHECK_EQ(cg_up_header(&t, hdr, CG_T_PROBE, CG_F_OWD, 3, 99, payload, sizeof(payload)), 0xffffffffu);
+	CHECK_EQ(cg_up_header(&t, hdr, CG_T_DATA, 0, 0, 1234, payload, sizeof(payload)), 0xffffffffu);
+	CHECK_EQ(cg_up_header(&t, hdr, CG_T_PROBE, CG_F_OWD, 3, 99, payload, sizeof(payload)), 40);
 	CHECK_EQ(t.seq, 0);
+	CHECK_EQ(t.seq_ctl, 41);
 	memcpy(hdr + CG_HDR_LEN, payload, sizeof(payload));
 	CHECK_EQ(cg_hdr_parse(&h, hdr, sizeof(hdr)), 0);
-	CHECK(h.type == CG_T_PROBE && h.flags == CG_F_OWD && h.link == 3 && h.session == SESSION &&
-	      h.seq == 0xffffffffu && h.ts == 99);
+	CHECK(h.type == CG_T_PROBE && h.flags == CG_F_OWD && h.hint == 0x5a && h.link == 3 && h.session == SESSION &&
+	      h.seq == 40 && h.ts == 99);
 	CHECK(cg_hdr_verify(hdr, sizeof(hdr), key));
 	cg_hdr_set_link(hdr, 9); /* patched per link, outside the MAC */
 	CHECK(cg_hdr_verify(hdr, sizeof(hdr), key));
@@ -210,6 +249,7 @@ void test_client_rx(void)
 	for (int i = 0; i < CG_KEY_LEN; i++)
 		key[i] = (uint8_t)(i * 7 + 1);
 	test_order();
-	test_restart();
+	test_hello();
+	test_classes();
 	test_up();
 }

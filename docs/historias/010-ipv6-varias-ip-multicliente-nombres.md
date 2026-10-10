@@ -2,8 +2,10 @@
 
 - **Fecha:** 2026-10-05
 - **Estado:** vigente. PR 1 y PR 2 hechos (paquetes 0.4.1 y 0.4.2,
-  protocolo v3 sin cambios); del PR 3, hecho el 3d1 (herramientas del VPS,
-  aún v3; paquetes 0.4.5); el resto del PR 3 y los PR 4 y 5, pendientes.
+  protocolo v3 sin cambios). Del PR 3 están hechos el 3d1 (herramientas del
+  VPS, aún v3; paquetes 0.4.5) y el 3d2a (protocolo v4 en el motor, un
+  router por servidor; paquetes 0.5.0). Pendientes el resto del PR 3 (3d2b,
+  varios routers; 3d2c, VPS y OpenWrt) y los PR 4 y 5.
 - **Fuentes:**
   - código del PR 1 (`git log ebe570b..823e4dd`):
     - `engine/src/epoch.h`; `client.c:442` (`ms_since_new`), `:456`
@@ -116,7 +118,19 @@
   `install.sh` que sobrevive a una sesión SSH cortada; vuelta a la 0.4.2
   con `purge`. Un router 0.4 sigue funcionando sin tocarlo (sección
   «PR 3d1»).
-- **Siguiente:** el PR 3d2, protocolo v4 y varios routers por VPS.
+- **Lo que cerró el PR 3d2a** (protocolo v4, paquetes 0.5.0; router y VPS
+  se actualizan juntos):
+  - la pista de cliente en el byte 2, que el servidor mira antes del MAC;
+  - HELLO sin estado con cookie de 30 a 60 s (`cookie.h`): solo una sonda
+    que trae la cookie de su dirección crea una sesión, aprende un camino o
+    lo cambia de dirección. Una sonda capturada y reenviada no crea nada,
+    no desvía un camino y no cambia el IP pass (`bench/lab.sh replay`);
+  - el servidor retoma la sesión donde la sonda dice que está el cliente
+    (`rx_top + 2^20`, ventanas de subida marcadas): sin ventanas que
+    rehacer tras un reinicio;
+  - secuencia de control aparte y campos reservados para el bonding
+    (historia 012).
+- **Siguiente:** el PR 3d2b, varios routers por VPS.
 
 ## Contexto
 
@@ -593,6 +607,66 @@ Sin cambio de protocolo ni del motor: un VPS lo toma bajo un router 0.4.
   también en 22.04 (iptables 1.8.7, conntrack-tools 1.4.6), donde se
   comprueba el DNAT a un rango desplazado.
 
+## PR 3d2a: protocolo v4 en el motor (hecho)
+
+Un solo cambio de formato para todo el PR 3, en el motor y con un router
+por servidor. Los varios routers (3d2b) y las herramientas (3d2c) no tocan
+el formato. Lo que quedó del plan, más lo que pidió la historia 012:
+
+- **Cabecera** (`proto.h`): el byte 2 lleva la pista de cliente (el primer
+  byte de BLAKE2s de la clave, `pair.c`, autenticado). El servidor descarta
+  sin calcular el MAC lo que trae otra pista (`rx.other_hint`).
+- **Clases de secuencia:** DATA tiene una y las sondas con sus respuestas
+  otra, cada una con su ventana anti-replay en cada extremo. El HELLO lleva
+  0 y no pasa por ventanas. Así la secuencia de DATA solo tiene huecos de
+  pérdidas, y un enlace muy atrasado sigue entregando respuestas.
+- **HELLO y cookies** (`cookie.h`, puro y con tests): el servidor contesta
+  con un HELLO (`echo_ts` y cookie) a la sonda autenticada que no puede
+  aceptar todavía, porque no tiene su sesión, es un enlace nuevo o viene de
+  otra dirección. La cookie es SipHash, con una clave aleatoria por época
+  de 30 s, sobre cliente, sesión, enlace y dirección, y valen la época
+  actual y la anterior. Los HELLO salen de un balde de 50 por segundo (100
+  de ráfaga) y nunca son más grandes que la sonda.
+- **En el cliente** (`clientpath.h`): el HELLO cuenta solo si su MAC
+  verifica y contesta una sonda de ese enlace que nadie contestó aún (el
+  anillo de ecos de `epoch.h`, que se queda para esto), y una sola vez. La
+  sonda con la cookie sale enseguida, como mucho una por segundo y por
+  enlace, sin esperar al intervalo (un segundo en reposo): sin eso, la
+  conmutación de `multiip` tardaba 4,1 s en vez de 2,7. La regla de
+  `epoch.h` que rehacía la ventana desaparece.
+- **Sondas de 64 bytes** (40 de carga): a lo de v3 se suman `cookie`,
+  `rx_top` y `rx_top_ctl` (lo último que el emisor recibió en cada clase) y
+  `tx_next` (su próxima secuencia de DATA). Una carga más larga es válida y
+  su cola se ignora: así cabe el informe por enlace del bonding y una sonda
+  rellenada para medir el MTU, sin otra versión.
+- **Sesión retomada:** sus secuencias empiezan en `rx_top + 2^20` y
+  `rx_top_ctl + 2^20`; su ventana de DATA nace con todo hasta `tx_next − 1`
+  marcado y la de control con la sonda misma (`cg_replay_init_marked`, que
+  deja sin marcar lo que sigue en su bloque).
+- **Caminos:** solo una sonda con cookie los aprende o los cambia de
+  dirección. Un DATA de una dirección que el camino no conoce va igual a
+  WireGuard (está autenticado y su secuencia es nueva), pero no mueve nada.
+- **Reservado para el bonding** (DATA): los bits de ECN (0x03) y la copia
+  única (0x04); hoy se envían en 0 y se ignoran.
+- **Se apartó del plan:**
+  - **`session_timeout_ms` ≥ 60 s no se impuso.** Una sonda reenviada
+    después de que expire la sesión, dentro de la vida de su cookie, solo
+    puede venir de la dirección del cliente. Retoma la misma sesión, hacia
+    el mismo cliente y con sus deseos de entonces, hasta su sonda siguiente.
+    Lo que se reenvíe de DATA lo descarta WireGuard por sus contadores.
+    Imponerlo habría alargado `wgpoke` en más de un minuto sin cerrar nada.
+  - **`vps_refusing`** sale de un HELLO con `CG_F_REFUSED`, que hoy envía
+    el servidor cuando llega a su límite de sesiones. En el 3d2b lo usará
+    también para un router apagado.
+- **Herramientas:** `cengarde-vps-setup` acepta un motor del protocolo 3 o
+  4, los dos con un router; `vps.yml` (`systemd.sh`) usa en el router el
+  motor de la versión del VPS en cada fase (0.4.2 y luego este).
+- **Pruebas:** `test_cookie`, `test_proto` (pista, sondas largas, HELLO),
+  `test_client_rx` (HELLO, clases, servidor que vuelve 2^20 más allá) y
+  `test_replay` (ventana nacida marcada); en el laboratorio, `replay` (con
+  `bench/cgprobe`) y `restart`, `lanes`, `multiip`, `udpmem` y `wgpoke`
+  adaptados.
+
 ## Medidas
 
 - **Reinicios del servidor** (`sudo bench/lab.sh restart`, 3 enlaces, 2000
@@ -606,6 +680,13 @@ Sin cambio de protocolo ni del motor: un VPS lo toma bajo un router 0.4.
   | después, 3 pasadas (10; 10 y 30 más la fase con l3 sola) | 0 de 54; 22 rehicieron la ventana | 2,0–2,1 s si la rehicieron (el umbral es 2 s); 0,0–0,1 s si no |
   | prueba con un anillo de 4 sondas | 0 de 10 con los tres enlaces, pero con l3 sola la bajada se atasca | nunca con l3 sola |
 
+- **Con el protocolo 4** (PR 3d2a, mismo montaje, contenedor de 4 CPU):
+  13 reinicios (10 con los tres enlaces y 3 con l3 sola, con un RTT de
+  822 ms), ninguno atascado. Todos los enlaces vuelven en 0,9–1,9 s, el
+  tiempo de dos viajes de l3: el HELLO y la sonda con su cookie. El cliente
+  tomó 132 HELLO (las sondas que l3 tenía en cola reciben uno cada una) y
+  no rehízo nunca su ventana. En `replay`, con enlaces sin cola, el cliente
+  vuelve en 0,5 s y sin ningún `too_old`.
 - **`sudo bench/lab.sh ci`:** smoke, health, control y restart pasan.
 - **`security.sh`:** sin las reglas, el router lee los metadatos
   falsos (la prueba ve la fuga); con ellas no, y recibe el rechazo al
@@ -700,11 +781,13 @@ Sin cambio de protocolo ni del motor: un VPS lo toma bajo un router 0.4.
 
 ### PR 3: varios routers por VPS (protocolo v4) y panel de puertos
 
-- **Protocolo v4:** pista en el byte 2; sondas de 56 B con `cookie` y
+- ~~**Protocolo v4:** pista en el byte 2; sondas de 56 B con `cookie` y
   `rx_top`; HELLO sin estado con época de 30 s; la sesión nueva empieza en
   `rx_top + 2^20`; la ventana de subida nace con todo lo anterior marcado;
   `session_timeout_ms` ≥ 60 s en el servidor; `vps_refusing` en el
-  cliente. Cierra el secuestro del IP pass con sondas reenviadas.
+  cliente. Cierra el secuestro del IP pass con sondas reenviadas.~~ Hecho
+  en el 3d2a, con sondas de 64 B y sin el mínimo de 60 s (sección
+  «PR 3d2a»).
 - **Servidor multicliente:** `[client NAME]`, admisión por pista sin
   probar todas las claves, sesión activa por cliente, cambios sin reinicio.
 - **VPS:** `cengarde-nat` declarativo (`rules`, `apply`, `down`, `sync`,
@@ -715,8 +798,9 @@ Sin cambio de protocolo ni del motor: un VPS lo toma bajo un router 0.4.
   reenvío de puertos.
 - **OpenWrt:** túnel /32 derivado más ruta a 10.79.0.1, `vps_name`, el
   bloque "este router en un VPS existente" con el comando, sin `pass_ip`.
-- **Pruebas:** `bench/cgprobe.c`, `bench/macbench`, escenarios `replay` y
-  `multiclient`; en `restart`, `window_resets = 0` con v4. Paquetes 0.5.0.
+- **Pruebas:** ~~`bench/cgprobe.c`, escenario `replay`; en `restart`,
+  `window_resets = 0` con v4; paquetes 0.5.0~~ (hechos en el 3d2a);
+  `bench/macbench` y el escenario `multiclient`.
 
 ### PR 4: IPv6 dentro del túnel
 
@@ -764,3 +848,5 @@ Sin cambio de protocolo ni del motor: un VPS lo toma bajo un router 0.4.
   `install.sh` compila antes de tocar `wg0` y ve la sesión SSH a través de
   `sudo`; `add --replace` deshace también el archivo de IP pass; `forward`
   dice lo que reenvía el v3.
+- 2026-10-10: PR 3d2a hecho (protocolo v4 en el motor, un router por
+  servidor, paquetes 0.5.0), con sus medidas.

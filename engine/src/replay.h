@@ -48,6 +48,21 @@ static inline enum cg_replay_verdict cg_replay_check(const struct cg_replay *r, 
 	return (r->ring[(seq >> 6) % CG_REPLAY_BLOCKS] >> (seq & 63)) & 1 ? CG_RP_DUP : CG_RP_NEW;
 }
 
+/* A window that starts at top with every sequence up to it seen: what a
+ * server that lost its session takes from the client's probe (proto.h), so
+ * that nothing sent before can be replayed into the new session. */
+static inline void cg_replay_init_marked(struct cg_replay *r, uint32_t top)
+{
+	unsigned bit = top & 63;
+
+	r->init = 1;
+	r->top = top;
+	memset(r->ring, 0xff, sizeof(r->ring));
+	/* Not what comes after top in its block: mark() clears only the blocks
+	 * it moves into, so these would read as DUP out of order. */
+	r->ring[(top >> 6) % CG_REPLAY_BLOCKS] = bit == 63 ? ~0ULL : (1ULL << (bit + 1)) - 1;
+}
+
 /* Marks seq as seen. Call only for a sequence check() reported as NEW. */
 static inline void cg_replay_mark(struct cg_replay *r, uint32_t seq)
 {

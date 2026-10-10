@@ -9,7 +9,7 @@
  * different receive queues: a stall that overflows one queue rarely takes
  * every copy of a packet, and each path has its own send buffer for the
  * download, since the server answers path p on lane p & (L - 1). The junk
- * socket gets what is not cengarde protocol 3: datagrams shorter than a
+ * socket gets what is not cengarde protocol 4: datagrams shorter than a
  * header, and a wrong version nibble (a client of another protocol
  * version). Nothing else ever reaches it, so a flood of garbage fills only
  * that socket's small buffer.
@@ -19,9 +19,9 @@
  * index past the group would make the kernel fall back to its hash, which
  * is why junk has a socket of its own.
  *
- * Protocol 4 adds the client hint (byte 2), which picks a group of lanes
- * per router; the program then grows one comparison per hint (design
- * PR 3d2). Here, protocol 3: one group.
+ * Protocol 4 carries the client hint (byte 2), which could pick a group of
+ * lanes per router (one comparison per hint, design PR 3d2); for now one
+ * group serves every client.
  *
  * SPDX-License-Identifier: GPL-2.0-only */
 #ifndef CG_STEER_H
@@ -37,7 +37,7 @@
 /* lanes = auto: a router's links 0 to 7 each on a queue of their own (one
  * has 5: four 5G modems and Starlink). An unused lane costs a socket. */
 #define CG_LANES_AUTO 8
-#define CG_STEER_MAX 16 /* instructions of the protocol 3 program */
+#define CG_STEER_MAX 16 /* instructions of the program */
 
 /* lanes: 1, 2, 4, 8 or 16. */
 static inline int cg_lanes_valid(unsigned lanes)
@@ -54,10 +54,10 @@ static inline unsigned cg_steer_ref(const uint8_t *p, size_t len, unsigned lanes
 	return p[CG_LINK_OFF] & (lanes - 1);
 }
 
-/* Writes the protocol 3 program into prog, which has room for max
+/* Writes the program into prog, which has room for max
  * instructions. Returns its length, or -1 when lanes is not valid or prog
  * too short. */
-static inline int cg_steer_v3(struct sock_filter *prog, int max, unsigned lanes)
+static inline int cg_steer_prog(struct sock_filter *prog, int max, unsigned lanes)
 {
 	/* Instruction indices, so that the jumps are computed, not counted. */
 	enum { I_LEN, I_JLEN, I_VER, I_VMASK, I_JVER, I_LINK, I_LMASK, I_LANE, I_JUNK, I_N };

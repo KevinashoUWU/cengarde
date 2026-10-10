@@ -7,11 +7,13 @@
 void test_proto(void)
 {
 	uint8_t key_a[16], key_b[16], pkt[CG_HDR_LEN + 64], payload[64];
-	struct cg_hdr h = { .type = CG_T_DATA, .flags = 0, .link = 5, .session = 0xdeadbeef, .seq = 0x01020304,
-			    .ts = 0xa0b0c0d0 },
+	struct cg_hdr h = { .type = CG_T_DATA, .flags = 0, .hint = 0x5a, .link = 5, .session = 0xdeadbeef,
+			    .seq = 0x01020304, .ts = 0xa0b0c0d0 },
 		      p;
-	struct cg_probe_info pi = { 1, 0x80000001, 100, 2, 3, 0xfffffffe }, po;
-	uint8_t pib[CG_PROBE_INFO_LEN];
+	struct cg_probe_info pi = { 1, 0x80000001, 100, 2, 3, 0xfffffffe, 0xc00c1e, 0x11223344, 0x55667788, 0x99aabbcc },
+			     po;
+	struct cg_hello hl = { 0x01020304, 0xcafef00d }, ho;
+	uint8_t pib[CG_PROBE_INFO_LEN + 8], hb[CG_HELLO_LEN];
 
 	for (int i = 0; i < 16; i++) {
 		key_a[i] = (uint8_t)i;
@@ -23,13 +25,16 @@ void test_proto(void)
 	cg_hdr_write(pkt, &h, key_a, payload, sizeof(payload));
 	memcpy(pkt + CG_HDR_LEN, payload, sizeof(payload));
 
-	/* Layout: version/type, session, seq and ts in network order, link at byte 3. */
-	CHECK_EQ(pkt[0], 0x31);
+	/* Layout: version/type, the client hint at byte 2, link at byte 3,
+	 * session, seq and ts in network order. */
+	CHECK_EQ(pkt[0], 0x41);
+	CHECK_EQ(pkt[2], 0x5a);
 	CHECK_EQ(pkt[3], 5);
 	CHECK(!memcmp(pkt + 4, "\xde\xad\xbe\xef\x01\x02\x03\x04\xa0\xb0\xc0\xd0", 12));
 
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), 0);
 	CHECK_EQ(p.type, CG_T_DATA);
+	CHECK_EQ(p.hint, 0x5a);
 	CHECK_EQ(p.link, 5);
 	CHECK_EQ(p.session, 0xdeadbeef);
 	CHECK_EQ(p.seq, 0x01020304);
@@ -61,24 +66,36 @@ void test_proto(void)
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
 	pkt[0] = 0x21; /* version 2 (no IP pass flags) too */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
-	pkt[0] = 0x41; /* version 4 */
+	pkt[0] = 0x31; /* version 3 (no hint, cookies or control sequence) too */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
-	pkt[0] = 0x3f; /* unknown type */
+	pkt[0] = 0x4f; /* unknown type */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
-	pkt[0] = 0x31;
-	pkt[2] = 1; /* reserved must be zero */
-	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
-	pkt[2] = 0;
+	pkt[0] = 0x41;
+	pkt[2] = 0xff; /* any hint parses: the server judges it */
+	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), 0);
+	CHECK_EQ(p.hint, 0xff);
+	pkt[2] = 0x5a;
 
-	/* Probes carry exactly one cg_probe_info; flags are authenticated. */
+	/* The hint is authenticated, unlike the link id. */
+	CHECK(cg_hdr_verify(pkt, sizeof(pkt), key_a));
+	pkt[CG_HINT_OFF] ^= 1;
+	CHECK(!cg_hdr_verify(pkt, sizeof(pkt), key_a));
+	pkt[CG_HINT_OFF] ^= 1;
+
+	/* Probes carry at least one cg_probe_info, and a longer payload parses
+	 * (its tail is for later fields); flags are authenticated. */
 	h.type = CG_T_PROBE;
 	h.flags = CG_F_OWD | CG_F_MUTED;
+	memset(pib, 0xee, sizeof(pib));
 	cg_probe_info_write(pib, &pi);
-	cg_hdr_write(pkt, &h, key_a, pib, sizeof(pib));
+	cg_hdr_write(pkt, &h, key_a, pib, CG_PROBE_INFO_LEN);
 	memcpy(pkt + CG_HDR_LEN, pib, sizeof(pib));
 	CHECK_EQ(cg_hdr_parse(&p, pkt, CG_HDR_LEN + CG_PROBE_INFO_LEN), 0);
-	CHECK_EQ(cg_hdr_parse(&p, pkt, CG_HDR_LEN + CG_PROBE_INFO_LEN + 1), -1);
+	CHECK_EQ(cg_hdr_parse(&p, pkt, CG_HDR_LEN + CG_PROBE_INFO_LEN + 8), 0);
+	CHECK_EQ(cg_hdr_parse(&p, pkt, CG_HDR_LEN + CG_PROBE_INFO_LEN - 1), -1);
+	CHECK_EQ(cg_hdr_parse(&p, pkt, CG_HDR_LEN + 24), -1); /* a version 3 probe */
 	CHECK(cg_hdr_verify(pkt, CG_HDR_LEN + CG_PROBE_INFO_LEN, key_a));
+	CHECK(!cg_hdr_verify(pkt, CG_HDR_LEN + CG_PROBE_INFO_LEN + 8, key_a)); /* the tail is under the MAC */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, CG_HDR_LEN + CG_PROBE_INFO_LEN), 0);
 	CHECK_EQ(p.flags, CG_F_OWD | CG_F_MUTED);
 	pkt[1] ^= CG_F_MUTED;
@@ -86,8 +103,31 @@ void test_proto(void)
 	pkt[1] ^= CG_F_MUTED;
 	cg_probe_info_read(&po, pkt + CG_HDR_LEN);
 	CHECK(po.echo_ts == 1 && po.owd == 0x80000001 && po.interval_ms == 100 && po.rx == 2 && po.wins == 3 &&
-	      po.lag_us == 0xfffffffe);
+	      po.lag_us == 0xfffffffe && po.cookie == 0xc00c1e && po.rx_top == 0x11223344 &&
+	      po.rx_top_ctl == 0x55667788 && po.tx_next == 0x99aabbcc);
 	CHECK(!memcmp(pkt + CG_HDR_LEN, "\x00\x00\x00\x01\x80\x00\x00\x01\x00\x00\x00\x64", 12));
+	CHECK(!memcmp(pkt + CG_HDR_LEN + 24, "\x00\xc0\x0c\x1e\x11\x22\x33\x44\x55\x66\x77\x88\x99\xaa\xbb\xcc", 16));
+
+	/* HELLO: echo and cookie, at least 8 bytes. */
+	h.type = CG_T_HELLO;
+	h.flags = CG_F_REFUSED;
+	h.seq = 0;
+	cg_hello_write(hb, &hl);
+	cg_hdr_write(pkt, &h, key_a, hb, sizeof(hb));
+	memcpy(pkt + CG_HDR_LEN, hb, sizeof(hb));
+	CHECK_EQ(cg_hdr_parse(&p, pkt, CG_HDR_LEN + CG_HELLO_LEN), 0);
+	CHECK_EQ(p.type, CG_T_HELLO);
+	CHECK_EQ(p.flags, CG_F_REFUSED);
+	CHECK_EQ(cg_hdr_parse(&p, pkt, CG_HDR_LEN + CG_HELLO_LEN - 1), -1);
+	CHECK(cg_hdr_verify(pkt, CG_HDR_LEN + CG_HELLO_LEN, key_a));
+	cg_hello_read(&ho, pkt + CG_HDR_LEN);
+	CHECK(ho.echo_ts == 0x01020304 && ho.cookie == 0xcafef00d);
+
+	/* Sequence classes: probes and replies count apart from DATA. */
+	CHECK(cg_type_ctl(CG_T_PROBE) && cg_type_ctl(CG_T_PROBE_REPLY));
+	CHECK(!cg_type_ctl(CG_T_DATA) && !cg_type_ctl(CG_T_HELLO));
+	h.type = CG_T_PROBE;
+	h.seq = 0x01020304;
 
 	/* IP pass in the flags: three states, the rest of the flags untouched. */
 	CHECK_EQ(cg_pass_flags(-1), 0);
@@ -99,8 +139,8 @@ void test_proto(void)
 	CHECK_EQ(cg_pass_get(CG_F_OWD | cg_pass_flags(1)), 1);
 	CHECK_EQ(cg_pass_flags(1) & (CG_F_OWD | CG_F_MUTED), 0);
 	h.flags = (uint8_t)(CG_F_OWD | cg_pass_flags(1));
-	cg_hdr_write(pkt, &h, key_a, pib, sizeof(pib));
-	memcpy(pkt + CG_HDR_LEN, pib, sizeof(pib));
+	cg_hdr_write(pkt, &h, key_a, pib, CG_PROBE_INFO_LEN);
+	memcpy(pkt + CG_HDR_LEN, pib, CG_PROBE_INFO_LEN);
 	CHECK(cg_hdr_verify(pkt, CG_HDR_LEN + CG_PROBE_INFO_LEN, key_a));
 	pkt[1] ^= CG_F_PASS; /* nobody on the way can turn it off */
 	CHECK(!cg_hdr_verify(pkt, CG_HDR_LEN + CG_PROBE_INFO_LEN, key_a));

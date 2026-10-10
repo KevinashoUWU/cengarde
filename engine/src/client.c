@@ -51,6 +51,7 @@
 #include "hist.h"
 #include "log.h"
 #include "netlink.h"
+#include "pair.h"
 #include "pump.h"
 #include "replay.h"
 #include "sock.h"
@@ -81,6 +82,7 @@ struct link {
 	uint64_t failovers;
 	uint32_t path_mtu; /* IP_MTU or IPV6_MTU of its socket, read every RECONCILE_MS */
 	uint64_t up_since_ms, last_reply_ms, last_probe_ms, retry_ms;
+	uint64_t hello_probe_ms; /* the probe sent at once with a HELLO's cookie */
 	uint64_t srtt8_us; /* 8 x smoothed RTT */
 	uint32_t rtt_us;
 	uint32_t unanswered; /* probes sent since the last reply */
@@ -128,7 +130,7 @@ struct client {
 	uint32_t up_max;     /* largest WireGuard datagram since the last path check */
 	uint32_t up_largest; /* the same over the last check period, for the status */
 	uint64_t down_pkts, down_bytes, down_wg_drops, down_no_peer;
-	struct cg_ratelimit rl_auth, rl_big, rl_wg, rl_full, rl_restart;
+	struct cg_ratelimit rl_auth, rl_big, rl_wg, rl_full, rl_hello, rl_refused;
 
 	/* Link sockets (pump.h): the mode in use, and the pumps of off and on. */
 	int lt;                          /* CG_LT_LEGACY, CG_LT_OFF or CG_LT_ON */
@@ -827,13 +829,31 @@ static void on_probe_reply(struct client *c, struct link *l, const struct cg_hdr
 	l->have_down_owd = 1;
 }
 
+static void send_probe(struct client *c, struct link *l, uint64_t now_us, uint32_t interval);
+
+/* A HELLO gave l a cookie: the probe that carries it goes at once instead of
+ * at the next interval (a second when idle), at most once a second per
+ * link, so a server that keeps asking cannot make the probes run at the
+ * RTT. A refusal waits for the interval. */
+static void on_hello(struct client *c, struct link *l, uint64_t now_us)
+{
+	uint64_t now_ms = now_us / 1000;
+
+	if (l->rxl.refused || now_ms - l->hello_probe_ms < 1000)
+		return;
+	l->hello_probe_ms = now_ms;
+	send_probe(c, l, now_us, probe_interval(c, now_ms));
+}
+
 /* Logs what a verdict of cg_rx_entry asks for, rate-limited. */
 static void rx_verdict_log(struct client *c, struct link *l, enum cg_rxv v, uint64_t now_ms)
 {
 	if (v == CG_RXV_AUTH && cg_ratelimit_ok(&c->rl_auth, now_ms, 10000))
 		cg_warn("link %s: packet failed authentication (wrong key?)", l->ifname);
-	else if (v == CG_RXV_RESET && cg_ratelimit_ok(&c->rl_restart, now_ms, 10000))
-		cg_info("link %s: the server started over, download window reset", l->ifname);
+	else if (v == CG_RXV_HELLO && l->rxl.refused && cg_ratelimit_ok(&c->rl_refused, now_ms, 60000))
+		cg_warn("link %s: the server refuses this router (it has as many sessions as it takes)", l->ifname);
+	else if (v == CG_RXV_HELLO && cg_ratelimit_ok(&c->rl_hello, now_ms, 10000))
+		cg_dbg("link %s: the server asks for a cookie (a new session, link or address)", l->ifname);
 }
 
 /* Sends q first copies to WireGuard, never waiting: what does not fit is
@@ -900,9 +920,11 @@ static void link_read(struct client *c, struct link *l)
 				continue;
 			if (v != CG_RXV_DATA) {
 				rx_verdict_log(c, l, v, now_ms);
-				if (v != CG_RXV_AUTH) {
+				if (v == CG_RXV_REPLY) {
 					on_probe_reply(c, l, &h, b + CG_HDR_LEN, now32, now_ms);
 					expect = expect_mask(c);
+				} else if (v == CG_RXV_HELLO) {
+					on_hello(c, l, now_us);
 				}
 				continue;
 			}
@@ -930,9 +952,11 @@ static int hub_slot(struct client *c, const struct cg_rxslot *sl, uint16_t *expe
 	if (v == CG_RXV_DROP)
 		return 0;
 	rx_verdict_log(c, l, v, now_ms);
-	if (v != CG_RXV_AUTH) {
+	if (v == CG_RXV_REPLY) {
 		on_probe_reply(c, l, &h, sl->buf + CG_HDR_LEN, (uint32_t)sl->t_us, now_ms);
 		*expect = expect_mask(c);
+	} else if (v == CG_RXV_HELLO) {
+		on_hello(c, l, cg_now_us());
 	}
 	return 0;
 }
@@ -1004,12 +1028,18 @@ static void send_probe(struct client *c, struct link *l, uint64_t now_us, uint32
 	uint64_t now_ms = now_us / 1000;
 	uint8_t pkt[CG_HDR_LEN + CG_PROBE_INFO_LEN];
 	const struct cg_link_rx *rx = &c->rxs.rx[id];
+	/* The cookie, and where our windows stand, for a server that has to
+	 * take the session up (proto.h). */
 	struct cg_probe_info pi = { .echo_ts = 0,
 				    .owd = l->have_down_owd ? l->down_owd : 0,
 				    .interval_ms = interval,
 				    .rx = (uint32_t)(rx->wins + rx->dups),
 				    .wins = (uint32_t)rx->wins,
-				    .lag_us = cg_lag_us(rx) };
+				    .lag_us = cg_lag_us(rx),
+				    .cookie = l->rxl.cookie,
+				    .rx_top = cg_rx_top(&c->rxs.replay),
+				    .rx_top_ctl = cg_rx_top(&c->rxs.ctl),
+				    .tx_next = c->txs.seq };
 	uint8_t flags = (uint8_t)((l->have_down_owd ? CG_F_OWD : 0) | (c->uh[id].state == CG_H_MUTED ? CG_F_MUTED : 0) |
 				  cg_pass_flags(c->cfg->passthrough));
 
@@ -1100,6 +1130,23 @@ static void link_threads_json(struct client *c, const struct link *l, struct cg_
 	cg_json_end(j, '}');
 }
 
+/* The newest HELLO on l refused the router, and it is recent: no reply came
+ * after it, and it is at most 3 idle probe intervals (and a second) old. */
+static int link_refused(const struct client *c, const struct link *l, uint64_t now_ms)
+{
+	return l->rxl.refused && l->rxl.hello_ms >= l->last_reply_ms &&
+	       now_ms - l->rxl.hello_ms <= 3ull * c->cfg->probe_idle_ms + 1000;
+}
+
+/* The server refuses the router on some link: its session limit. */
+static int vps_refusing(const struct client *c, uint64_t now_ms)
+{
+	for (int i = 0; i < CG_MAX_LINKS; i++)
+		if (c->link[i].used && link_refused(c, &c->link[i], now_ms))
+			return 1;
+	return 0;
+}
+
 static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 {
 	char buf[64];
@@ -1114,6 +1161,7 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 	cg_json_str(j, "session", buf);
 	cg_json_str(j, "wireguard", c->have_peer ? cg_addr_str(&c->wg_peer, buf, sizeof(buf)) : "");
 	cg_json_u64(j, "probe_interval_ms", probe_interval(c, now_ms));
+	cg_json_bool(j, "vps_refusing", vps_refusing(c, now_ms));
 	cg_json_str(j, "config_error", c->config_error);
 	cg_json_obj(j, "threads");
 	cg_json_str(j, "setting", cg_lt_name(c->cfg->link_threads));
@@ -1144,7 +1192,7 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 	cg_json_u64(j, "bytes", c->down_bytes);
 	cg_json_u64(j, "duplicates", c->rxs.dups);
 	cg_json_u64(j, "too_old", c->rxs.old);
-	cg_json_u64(j, "window_resets", c->rxs.window_resets);
+	cg_json_u64(j, "hellos", c->rxs.hellos);
 	cg_json_u64(j, "auth_failures", c->rxs.auth_fail);
 	cg_json_u64(j, "malformed", c->rxs.malformed + c->rxs.trunc);
 	cg_json_u64(j, "foreign_session", c->rxs.foreign);
@@ -1200,6 +1248,10 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 		cg_json_u64(j, "upload_mutes", h->mutes);
 		cg_json_u64(j, "upload_state_ms", now_ms - h->changed_ms);
 		cg_json_bool(j, "download_muted", l->peer_muted);
+		/* The server answered with a HELLO lately: it is taking this
+		 * link up (cookie), or refuses the router. */
+		cg_json_bool(j, "cookie", l->rxl.cookie != 0);
+		cg_json_bool(j, "refused", link_refused(c, l, now_ms));
 		cg_json_u64(j, "tx_packets", l->tx_pkts);
 		cg_json_u64(j, "tx_bytes", l->tx_bytes);
 		cg_json_u64(j, "tx_drops", l->tx_drops);
@@ -1339,8 +1391,8 @@ static void apply_config(struct client *c, struct cg_config *next, uint64_t now_
 
 	c->cfg = next;
 	c->txs.k_tx = next->key;
+	c->txs.hint = cg_client_hint(next->key);
 	c->rxs.k_rx = next->key + CG_SIPHASH_KEY_LEN;
-	c->rxs.restart_ms = 2 * next->probe_idle_ms;
 	c->hcfg = cg_hcfg_of(next);
 	cg_log_level_set(c->run->verbose ? CG_LOG_DEBUG : next->log_level);
 	if (strcmp(old->status_file, next->status_file)) {
@@ -1692,8 +1744,8 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 	}
 	c->lt = cg_lt_resolve(cfg->link_threads, CG_LT_ARCH_MEASURED, c->ncpus, cfg->cpu >= 0, CG_LT_AUTO_ON);
 	c->txs.k_tx = cfg->key;
+	c->txs.hint = cg_client_hint(cfg->key);
 	c->rxs.k_rx = cfg->key + CG_SIPHASH_KEY_LEN;
-	c->rxs.restart_ms = 2 * cfg->probe_idle_ms;
 	c->ep = c->wg_fd = c->tfd = -1;
 	c->nl.fd = -1;
 	c->server_pass = -2;
@@ -1706,9 +1758,11 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 		goto out;
 	}
 	cg_replay_reset(&c->rxs.replay);
+	cg_replay_reset(&c->rxs.ctl);
 	do {
 		if (cg_random(&c->session, sizeof(c->session)) < 0 ||
-		    cg_random(&c->txs.seq, sizeof(c->txs.seq)) < 0) {
+		    cg_random(&c->txs.seq, sizeof(c->txs.seq)) < 0 ||
+		    cg_random(&c->txs.seq_ctl, sizeof(c->txs.seq_ctl)) < 0) {
 			cg_err("getrandom: %s", strerror(errno));
 			goto out;
 		}

@@ -9,9 +9,11 @@ la salud de los enlaces en
 [`docs/historias/006-salud-de-enlaces.md`](../docs/historias/006-salud-de-enlaces.md).
 
 **No es compatible en el cable con engarde Go:** usa su propia cabecera
-autenticada (protocolo v3), así que los dos extremos tienen que ser cengarde
+autenticada (protocolo v4), así que los dos extremos tienen que ser cengarde
 de la misma versión de protocolo. `cengarde version` la muestra al final, por
-ejemplo `cengarde 0.4.1-r1-g<commit> (protocol 3)` en OpenWrt.
+ejemplo `cengarde 0.5.0-r1-g<commit> (protocol 4)` en OpenWrt. El formato
+está en [`src/proto.h`](src/proto.h) y lo que cambió el v4 en la sección
+[Protocolo v4](#protocolo-v4).
 
 ## Compilar
 
@@ -123,11 +125,12 @@ Detalle y razones en la
     segundo en reposo: mide el RTT y el retraso de ida de cada enlace y
     mantiene abierto el NAT.
 - **Servidor:**
-  - crea una sesión por cliente solo a partir de un paquete autenticado;
+  - crea una sesión, aprende un camino (sesión + enlace) o lo cambia de
+    dirección (un NAT que cambió) solo con una sonda autenticada que trae
+    la cookie de un HELLO enviado a esa dirección (ver
+    [Protocolo v4](#protocolo-v4));
   - cada sesión tiene su propio socket hacia WireGuard, así que varios
     clientes comparten un puerto;
-  - aprende los caminos (sesión + enlace) solo de paquetes autenticados,
-    incluidos los cambios de NAT;
   - responde por cada camino desde la dirección a la que envía el cliente
     (con un `listen` comodín, `*` o `0.0.0.0`): sirve cualquier dirección
     del VPS, también una añadida en marcha, como una IP reservada o IPv6;
@@ -244,7 +247,7 @@ copias de un mismo paquete esperan en colas distintas.
   90–100 % de las primeras llegadas (`rx_first`) en enlaces idénticos.
   Ahora el primero cambia de lote a lote: 33 % por enlace en el
   laboratorio a 2.000 y 40.000 pps (`sudo bench/lab.sh skew`).
-- **Basura:** lo que no es protocolo 3 (datagramas más cortos que una
+- **Basura:** lo que no es protocolo 4 (datagramas más cortos que una
   cabecera, o de otra versión, como un router de otra versión) va al socket
   de basura, nunca a una cola real: se cuenta (`rx.junk`, `rx.short`,
   `rx.bad_version`) y se registra de vez en cuando ("protocol vN packet
@@ -532,11 +535,49 @@ de enlace fijados a la misma CPU); por enlace:
 (se descarta antes de mirarlo).
 
 En el cliente, `upload.largest` es el datagrama de WireGuard más grande de
-los últimos 5 s, el que se compara con cada `path_mtu`, y
-`download.window_resets` cuenta las veces que el servidor
-empezó de cero (se reinició con una secuencia por detrás de la ventana
-anti-replay) y el cliente rehízo su ventana para seguir recibiendo; cada vez
-lo registra como "server started over".
+los últimos 5 s, el que se compara con cada `path_mtu`, y `download.hellos`
+cuenta los HELLO que tomó (un servidor que se reinició, una sesión que
+expiró, un enlace nuevo o un NAT que cambió). Por enlace, `cookie` dice si
+el servidor le dio una y `refused`, si lo rechaza (su límite de sesiones);
+`vps_refusing` resume eso para todo el router. En el servidor, `hellos`
+(`sent`, `refused` y `over_budget`) y, en `rx`, `other_hint` (paquetes de
+otro router, por su pista) y `no_session` (DATA de una sesión que todavía
+no tiene: espera a la sonda).
+
+## Protocolo v4
+
+Desde la 0.5.0 (historia 010, PR 3d2). La cabecera sigue midiendo 24 bytes:
+
+- **Byte 2, la pista de cliente:** el primer byte de un BLAKE2s de la clave
+  (`pair.h`). El servidor descarta sin calcular el MAC lo que trae otra
+  pista, y con varios routers (PR 3d2b) la usará para elegir la clave.
+- **HELLO y cookies** (`cookie.h`): el servidor contesta con un HELLO la
+  sonda que todavía no puede aceptar (no tiene su sesión, es un enlace
+  nuevo o viene de otra dirección), con una cookie atada al cliente, la
+  sesión, el enlace y esa dirección, válida de 30 a 60 s. Solo la sonda que
+  la trae crea la sesión, aprende el camino o lo cambia de dirección. Una
+  sonda capturada y reenviada después, desde otro lado o tras un reinicio
+  del servidor, no crea nada, no desvía un camino y no cambia el IP pass. El
+  HELLO va solo a sondas autenticadas, nunca es más grande que la sonda y
+  sale de un balde de 50 por segundo.
+- **El servidor retoma la sesión donde está el cliente:** la sonda dice la
+  última secuencia que el cliente recibió en cada clase y la siguiente que
+  enviará. El servidor sigue 2^20 por delante de lo recibido, así que el
+  cliente nunca rehace su ventana, y sus ventanas de subida nacen con todo
+  lo anterior marcado. Tras un reinicio del servidor, el túnel vuelve en el
+  viaje del HELLO (en el laboratorio, `sudo bench/lab.sh restart`).
+- **Secuencia de control aparte:** sondas y respuestas cuentan en su propia
+  secuencia, con su propia ventana. La de DATA ya no tiene huecos que no
+  sean pérdidas (lo que necesita el reordenador del bonding), y un enlace
+  muy atrasado sigue entregando sus respuestas.
+- **Reservado para el bonding** (historia 012): en DATA, los bits de ECN
+  (0x03) y la marca de copia única (0x04), que hoy se envían en 0 y se
+  ignoran; la carga de las sondas puede crecer (se leen los campos
+  conocidos y se ignora el resto), para el informe por enlace y las sondas
+  rellenadas.
+
+`sudo bench/lab.sh replay` lo prueba con `bench/cgprobe`, que fabrica sondas
+con la clave del laboratorio.
 
 ## Limitaciones conocidas
 
