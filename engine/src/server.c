@@ -974,6 +974,8 @@ static void health_tick(struct server *s, uint64_t now_ms)
 			else if (h->unmuted_ms == now_ms)
 				cg_info("session %08x link %d: download unmuted, within %d ms of the fastest link", S->id, p,
 					h->behind_us > 0 ? h->behind_us / 1000 : 0);
+			else if (!s->hcfg.mute_behind_us)
+				cg_info("session %08x link %d: download unmuted, muting is off", S->id, p);
 			else
 				cg_info("session %08x link %d: download unmuted, too few active links", S->id, p);
 		}

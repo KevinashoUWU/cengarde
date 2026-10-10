@@ -1074,6 +1074,8 @@ static void health_tick(struct client *c, uint64_t now_ms)
 		else if (h->unmuted_ms == now_ms)
 			cg_info("link %s: upload unmuted, within %d ms of the fastest link", c->link[i].ifname,
 				h->behind_us > 0 ? h->behind_us / 1000 : 0);
+		else if (!c->hcfg.mute_behind_us)
+			cg_info("link %s: upload unmuted, muting is off", c->link[i].ifname);
 		else
 			cg_info("link %s: upload unmuted, too few active links", c->link[i].ifname);
 	}

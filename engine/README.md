@@ -298,7 +298,11 @@ servidor la bajada):
   duplica cada vez que vuelve y no aguanta (hasta ×8).
 - **Mínimo:** al menos `min_active_links` (2) enlaces vivos llevan siempre
   todo. Si uno se queda mudo, el silenciado más rápido vuelve al instante.
-- `mute_behind_ms = 0` desactiva el silenciado y deja redundancia pura.
+- `mute_behind_ms = 0` desactiva el silenciado y deja redundancia pura,
+  también en una recarga: los enlaces que estaban silenciados vuelven al
+  instante (`sudo bench/lab.sh muteoff`).
+- Todas estas perillas se cambian en caliente (SIGHUP o `cengarde ctl
+  reload`), sin cortar el túnel ni perder la sesión.
 
 En el laboratorio, un enlace con 500 ms de cola se silencia en 3–3,6 s sin
 perder un paquete del túnel y vuelve, sin recaer, cuando se le quita

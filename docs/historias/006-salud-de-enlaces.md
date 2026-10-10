@@ -1,6 +1,7 @@
 # 006 — Salud de los enlaces y baja latencia (Fase 2)
 
-- **Fecha:** 2026-10-03 (actualizada el 2026-10-05 con la historia 011)
+- **Fecha:** 2026-10-03 (actualizada el 2026-10-05 con la historia 011 y el
+  2026-10-10: apagar el silenciado en caliente)
 - **Estado:** vigente
 - **Fuentes:** `engine/src/health.h` (lógica y tests), `client.c`, `server.c`,
   `proto.h`; `sudo bench/lab.sh health`, `latency` y `compare`; historias 003
@@ -85,6 +86,18 @@ adaptado a la redundancia pura: todos los enlaces activos llevan todo.
   con espera exponencial; la rampa queda para el WRR de la Fase 5.
 - **Goteo opcional** (`mute_trickle`, 0 por defecto): las sondas ya miden, y
   el goteo solo añadiría reordenación.
+- **Todo se cambia en caliente** (historia 009): ninguna de estas perillas
+  está en `cg_config_restart_needed`. Una recarga conserva el estado de cada
+  enlace, y la evaluación siguiente (~100 ms) ya usa los umbrales nuevos.
+- **Apagar el silenciado devuelve los silenciados al instante** (2026-10-10).
+  Antes no lo hacía: `unmute_behind_ms` no puede pasar de `mute_behind_ms`,
+  así que con `mute_behind_ms = 0` quedaba en 0, y un enlace silenciado solo
+  volvía si llegaba a ser tan rápido como el más rápido. Uno atrasado seguía
+  silenciado mientras siguiera atrasado, aunque LuCI y el README prometían
+  «0: nunca». Ahora, con el silenciado apagado, vuelven todos de golpe, vivos
+  o no, como en una promoción (sin espera exponencial si se vuelve a
+  encender). Lo destapó una pregunta de Kevin sobre si el silenciado era en
+  caliente; lo cubren `test_off_on_reload` y el escenario `muteoff`.
 - **Nombres:** `mute_behind_ms`, `unmute_behind_ms`, `mute_settle_ms`,
   `mute_trickle`, `min_active_links`. Son más claros que los `drop` /
   `restore` de libRIST que proponía la historia 003.
@@ -239,3 +252,6 @@ Misma prueba con el `sndbuf` por defecto:
   de latencia).
 - 2026-10-05: las colas `SO_REUSEPORT` del servidor, con un hilo (historia
   011, PR 3a).
+- 2026-10-10: `mute_behind_ms = 0` en una recarga devuelve al instante los
+  enlaces silenciados (antes seguían silenciados mientras estuvieran
+  atrasados); escenario `muteoff`: 58–139 ms.

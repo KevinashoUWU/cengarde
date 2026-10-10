@@ -210,6 +210,43 @@ static void test_promotion(void)
 	CHECK(h[1].state == CG_H_ACTIVE && h[2].state == CG_H_ACTIVE);
 }
 
+static void test_off_on_reload(void)
+{
+	struct cg_hlink h[4];
+	uint32_t owd[4] = { 0, 10 * MS, 300 * MS, 400 * MS }, good[4] = { 0, 10 * MS, 20 * MS, 400 * MS };
+	struct cg_hcfg off = cfg;
+	uint64_t t;
+	uint16_t ch;
+
+	/* Links 2 and 3 muted, link 2 after a failed unmute (backoff 1). */
+	init(h, 4);
+	t = run(h, 4, owd, 15, 0, 3000, &cfg);
+	t = run(h, 4, good, 15, t + 100, t + 4100, &cfg);
+	CHECK_EQ(h[2].state, CG_H_ACTIVE);
+	t = run(h, 4, owd, 15, t + 100, t + 2100, &cfg);
+	CHECK(h[2].state == CG_H_MUTED && h[3].state == CG_H_MUTED);
+	CHECK_EQ(h[2].backoff, 1);
+
+	/* A reload turns muting off (the unmute threshold follows it to 0):
+	 * both carry again at the next evaluation, link 3 too although it is
+	 * not live right now, and none is muted again however late. */
+	off.mute_behind_us = off.unmute_behind_us = 0;
+	ch = step(h, 4, owd, 7, t + 100, &off);
+	CHECK_EQ(ch, 12);
+	CHECK(h[2].state == CG_H_ACTIVE && h[3].state == CG_H_ACTIVE);
+	CHECK(!h[2].backoff && !h[2].unmuted_ms && !h[3].unmuted_ms);
+	CHECK_EQ(cg_health_carriers(h, 4, 15, 15), 15);
+	t = run(h, 4, owd, 15, t + 200, t + 60000, &off);
+	CHECK(h[2].state == CG_H_ACTIVE && h[3].state == CG_H_ACTIVE);
+	CHECK_EQ(h[2].mutes, 2);
+
+	/* Back on: muted again after settle_ms, with no backoff (the way back
+	 * was forced, not a try). */
+	run(h, 4, owd, 15, t + 100, t + 2100, &cfg);
+	CHECK(h[2].state == CG_H_MUTED && h[3].state == CG_H_MUTED);
+	CHECK_EQ(h[2].backoff, 0);
+}
+
 static void test_stale(void)
 {
 	struct cg_hlink h[3];
@@ -290,6 +327,7 @@ void test_health(void)
 	test_hysteresis();
 	test_min_active();
 	test_promotion();
+	test_off_on_reload();
 	test_stale();
 	test_carriers();
 	test_stall();

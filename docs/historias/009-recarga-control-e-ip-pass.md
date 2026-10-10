@@ -123,6 +123,11 @@ había que entrar al VPS: editar `nat.conf` y reiniciar `wg-quick@wg0`.
 - **Hilos auxiliares en planificación normal:** el escritor de estado y el
   cargador vuelven a la afinidad original y a `SCHED_OTHER`
   (`cg_thread_normal`).
+- **Lo que se aplica en el lugar no siempre basta con cambiar el número**
+  (2026-10-10): una perilla que gobierna un estado ya tomado tiene que
+  revisar ese estado. Apagar el silenciado (`mute_behind_ms = 0`) dejaba
+  silenciados para siempre a los enlaces que ya lo estaban; ahora vuelven al
+  instante (historia 006, escenario `muteoff`).
 
 ### procd y systemd
 
@@ -237,3 +242,5 @@ había que entrar al VPS: editar `nat.conf` y reiniciar `wg-quick@wg0`.
 - 2026-10-04: creada.
 - 2026-10-04: una sonda reenviada tras un reinicio del servidor puede
   decidir el IP pass (historia 010).
+- 2026-10-10: una recarga que apaga el silenciado devuelve los enlaces
+  silenciados (historia 006).
