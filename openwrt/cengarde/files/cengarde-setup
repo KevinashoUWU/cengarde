@@ -6,7 +6,9 @@
 #   cengarde-setup apply          WireGuard interface, firewall, uplinks, UPnP,
 #                                 IPv6 in the tunnel
 #   cengarde-setup disable        undo what apply set up
-#   cengarde-setup engine-conf    print the engine configuration
+#   cengarde-setup engine-conf    print the engine configuration, with each
+#                                 uplink's DNS servers (resolver) for the
+#                                 VPS names, which the engine looks up itself
 #   cengarde-setup cloud-config   print the VPS user data, with the secret, the
 #                                 router's name (vps_name) and its tunnel address
 #   cengarde-setup companions     the uplinks' IPv6 interfaces (init triggers)
@@ -26,7 +28,10 @@
 # - each uplink: a metric of its own (two default routes with the same metric
 #   replace each other) and peerdns 0 (carrier DNS servers would be reached
 #   through the VPS and usually refuse); "dns" goes on the tunnel instead,
-#   its IPv4 servers only (the IPv6 ones are left out even with tunnel_ipv6);
+#   its IPv4 servers only (the IPv6 ones are left out even with tunnel_ipv6).
+#   The carrier's servers are not lost: netifd keeps them as "inactive", and
+#   engine-conf hands them to the engine, which asks them around the tunnel
+#   for the name of a VPS;
 # - IPv6 on the uplinks (uplink_ipv6, also with tunnel = 0): a DHCPv6
 #   interface "<uplink>6" on the device of each DHCP or static uplink, so
 #   that the engine sees the modem's IPv6, which never reaches the LAN
@@ -129,6 +134,34 @@ valid_ula() {
 	fd[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f][0-9a-f][0-9a-f]:[0-9a-f][0-9a-f][0-9a-f][0-9a-f]) return 0 ;;
 	esac
 	return 1
+}
+
+# A DNS server the engine's "resolver" takes: an IPv4 dotted quad, or an IPv6
+# address (hex digits, colons and dots), but not the wildcard nor multicast,
+# which make it refuse the whole file.
+valid_resolver() {
+	local IFS=. o n=0
+
+	case "$1" in
+	*:*:*)
+		case "$1" in
+		*[!0-9a-fA-F:.]*) return 1 ;;
+		*[!0:]*) ;;
+		*) return 1 ;;
+		esac
+		case "$1" in [fF][fF][0-9a-fA-F][0-9a-fA-F]:*) return 1 ;; esac
+		return 0
+		;;
+	'' | *[!0-9.]* | .* | *. | *..*) return 1 ;;
+	esac
+	for o in $1; do
+		n=$((n + 1))
+		case "$o" in 0?*) return 1 ;; esac
+		[ "${#o}" -le 3 ] && [ "$o" -le 255 ] || return 1
+		[ "$n" = 1 ] || continue
+		[ "$o" -ge 1 ] && [ "$o" -lt 224 ] || return 1 # 0.x.x.x, multicast and up
+	done
+	[ "$n" = 4 ]
 }
 
 changed() { list_has "$CHANGED" "$1" || CHANGED="$CHANGED $1"; }
@@ -547,7 +580,7 @@ fix_upnp() { # on|off
 		*)
 			drop upnpd.config.external_ip
 			fix_stun off
-			log "IP pass: no VPS address is IPv4, so UPnP has no public IP to announce: set stun_host"
+			log "IP pass: no VPS address is an IPv4 literal (a name's IP may change), so UPnP has no public IP to announce: set stun_host"
 			;;
 		esac
 	elif [ "$(uci -q get upnpd.config.external_iface)" = "$TUN" ]; then
@@ -741,8 +774,30 @@ disable() {
 	commit
 }
 
+# The DNS servers of uplink $1 for the engine's "resolver" (it asks them
+# through that uplink, before the global ones), on one line: those of the
+# uplink and of its IPv6 interfaces, in that order. netifd lists what it
+# applies under "dns-server" and, with peerdns 0, keeps the carrier's under
+# "inactive". At most 8, no repeats, IPv6 in brackets. Nothing when ubus fails.
+uplink_resolvers() {
+	local i st d out='' n=0
+
+	for i in $1 $(companions "$1"); do
+		st=$(ubus call "network.interface.$i" status 2>/dev/null) || continue
+		for d in $(jsonfilter -s "$st" -e '@["dns-server"][*]' -e '@.inactive["dns-server"][*]' 2>/dev/null); do
+			valid_resolver "$d" || continue
+			case "$d" in *:*) d="[$d]" ;; esac
+			list_has "$out" "$d" && continue
+			[ "$n" -lt 8 ] || break 2
+			out="$out${out:+ }$d"
+			n=$((n + 1))
+		done
+	done
+	echo "$out"
+}
+
 engine_conf() {
-	local s dev seen='' server='' a k v
+	local s dev seen='' server='' a k v r
 
 	load
 	derive_keys || die "no valid secret (uci get cengarde.main.secret)"
@@ -776,6 +831,8 @@ engine_conf() {
 		list_has "$seen" "$dev" && continue
 		seen="$seen $dev"
 		printf '\n[link %s]\nlabel = %s\n' "$dev" "$s"
+		r=$(uplink_resolvers "$s")
+		[ -z "$r" ] || echo "resolver = $r"
 	done
 }
 
@@ -843,9 +900,12 @@ leaked_prefix() {
 # the tunnel makes (path_mtu, with the largest tunnel MTU that fits, and the
 # family: LuCI advises otherwise when that MTU is below 1280), and links
 # whose thread has not run for over 5 s with packets waiting
-# (link_thread_stalled, link_threads = on).
+# (link_thread_stalled, link_threads = on), and the names of the VPS that have
+# no address (server_unresolved: lookups failed, or the DNS gave none, with the
+# engine's error). A name still waiting is no problem yet: a lookup takes 12 s
+# at most before it counts as failed, and without uplinks those say why.
 engine_problems() { # STATUS_JSON
-	local up=0 largest=0 refusing=false wg n i=0 open=0 live=0 st fam pm name label over stall
+	local up=0 largest=0 refusing=false wg n i=0 open=0 live=0 st fam pm name label over stall err
 
 	eval "$(jsonfilter -s "$1" -e 'up=@.uptime_ms' -e 'largest=@.upload.largest' -e 'refusing=@.vps_refusing' \
 		2>/dev/null)"
@@ -871,6 +931,18 @@ engine_problems() { # STATUS_JSON
 		[ "$fam" = ipv6 ] && over=72
 		[ "$pm" -gt 0 ] && [ $((wg + over)) -gt "$pm" ] &&
 			problem path_mtu "${label:-$name}" "\"mtu\":$pm,\"fit\":$((pm - over - 32)),\"family\":\"$fam\""
+	done
+	n=$(jsonfilter -s "$1" -e '@.names[*].name' 2>/dev/null | wc -l)
+	i=0
+	while [ "$i" -lt "$n" ]; do
+		st='' name='' err=''
+		eval "$(jsonfilter -s "$1" -e "st=@.names[$i].state" -e "name=@.names[$i].name" \
+			-e "err=@.names[$i].error" 2>/dev/null)"
+		i=$((i + 1))
+		case "$st" in failed | none) ;; *) continue ;; esac
+		case "$name" in '' | *[!A-Za-z0-9._-]*) continue ;; esac # it goes in JSON as it is
+		case "$err" in *[!a-z' ']*) err= ;; esac
+		problem server_unresolved "" "\"name\":\"$name\",\"error\":\"$err\""
 	done
 	if [ "$refusing" = true ]; then
 		problem vps_refusing

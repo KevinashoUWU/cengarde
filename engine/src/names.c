@@ -298,7 +298,9 @@ int cg_names_read(struct cg_names *s, int ep, unsigned idx, uint64_t now_ms)
 		silent = cg_rs_silent(&nm->rs, now_ms);
 		changed = cg_rs_answer(&nm->rs, f, &r, silent, now_ms);
 		memcpy(nm->via, nm->at[f], sizeof(nm->via)); /* the same size */
-		if (r.outcome == CG_DNS_ADDRS) {
+		/* No error for a family without records while the name has
+		 * addresses (an IPv4-only server): it is the usual case. */
+		if (r.outcome == CG_DNS_ADDRS || (r.outcome == CG_DNS_NODATA && cg_rs_has(&nm->rs))) {
 			nm->err = "";
 		} else {
 			nm->err = cg_dns_outcome_name(r.outcome);

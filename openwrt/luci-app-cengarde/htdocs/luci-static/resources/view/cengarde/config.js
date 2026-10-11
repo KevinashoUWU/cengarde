@@ -146,8 +146,8 @@ return view.extend({
 		o.rmempty = false;
 
 		o = s.taboption('general', form.DynamicList, 'server', _('VPS addresses'),
-			_('Public IPs of the VPS as the provider shows them, IPv4 and IPv6, in order of preference: each uplink uses the first one of a family it has, and tries the next one when the VPS does not answer there. IPs and not names: with all traffic going through the tunnel, a name could not be resolved before the tunnel is up.'));
-		o.datatype = 'ipaddr(1)';
+			_('Public IPs of the VPS as the provider shows them, IPv4 and IPv6, in order of preference: each uplink uses the first one of a family it has, and tries the next one when the VPS does not answer there. A name works too: the router looks it up through each uplink (the carrier\'s DNS first), never through the tunnel, and follows it when its IP changes (dynamic DNS). An MTU above 1396 does not fit if the name has an IPv6 address that the uplinks use.'));
+		o.datatype = 'host(0)'; // a name or an IP, without a mask
 		o.placeholder = '203.0.113.10';
 		o.validate = function(section_id) {
 			return (L.toArray(this.formvalue(section_id)).length > MAX_SERVERS)
