@@ -33,10 +33,12 @@
 #                               and from cengarde-vps-setup
 #   cengarde-nat sync           the rules as wanted now, with the live flows
 #                               of a port that changes hands moved to its
-#                               new target (conntrack); nothing while down
+#                               new target (conntrack), and again if the
+#                               engine changed its file meanwhile; nothing
+#                               while down
 #   cengarde-nat check          the rules put back if something removed them,
-#                               foreign firewalls, the reserved set followed
-#                               (cengarde-nat-check.timer)
+#                               foreign firewalls, the reserved set and the
+#                               engine's file followed (cengarde-nat-check.timer)
 #   cengarde-nat down           every rule and chain removed
 #   cengarde-nat status         what is applied, and why
 #   cengarde-nat rules 4|6      the iptables-restore input (changes nothing)
@@ -757,6 +759,13 @@ summary() {
 	fi
 }
 
+# engine_mark: what the engine's file says now, to tell whether it changed
+# while a sync applied it: a path unit does not start its service again
+# for a change made while the service runs.
+engine_mark() {
+	cksum <"${FORWARD_FILE:-$PASSTHROUGH_FILE}" 2>/dev/null || echo none
+}
+
 # sync_now: the rules as wanted now.
 sync_now() {
 	FAIL=0
@@ -909,6 +918,11 @@ cmd_check() {
 	if ! cmp -s "$WORK/reserved.now" "$STATE/reserved"; then
 		why="${why:+$why; }the reserved set changed"
 	fi
+	# What the engine asks for, in case a change of its file was missed.
+	plan 2>/dev/null
+	if [ -z "$why" ] && ! cmp -s "$WORK/plan" "$STATE/applied"; then
+		why="what the engine asks for changed"
+	fi
 	if [ -n "$why" ]; then
 		sync_now >/dev/null || return 1
 		say "$why: applied again"
@@ -1001,7 +1015,18 @@ sync)
 	fi
 	notices
 	firewalld_active && die "$FIREWALLD"
-	sync_now || exit 1
+	n=0
+	while :; do
+		mark=$(engine_mark)
+		sync_now || exit 1
+		[ "$(engine_mark)" != "$mark" ] || break
+		n=$((n + 1))
+		if [ "$n" -ge 5 ]; then
+			warn "the engine's file keeps changing: check applies it again within 5 minutes"
+			break
+		fi
+		say "the engine's file changed meanwhile: again"
+	done
 	;;
 check) cmd_check || exit 1 ;;
 down)

@@ -833,8 +833,14 @@ Sin cambiar el protocolo: el motor ya servía a varios routers desde el
 - **`cengarde-nat`** encuentra la tabla por el `forward_file` de la
   configuración del motor, solo si root es su dueño y nadie más puede
   escribirla (`FORWARD_FILE` en `nat.conf` sigue mandando).
-  `cengarde-passthrough.path` vigila también `/var/lib/cengarde/forward`;
-  se quedó con su nombre para no migrar unidades.
+  `cengarde-passthrough.path` se quedó con su nombre para no migrar
+  unidades y vigila el directorio `/var/lib/cengarde`, no el archivo. El
+  CI con systemd real lo mostró: con `PathChanged=` sobre el archivo, la
+  primera tabla del motor, que lo crea, no dispara nada, y el IP pass no
+  llegaba nunca. Además systemd no vuelve a lanzar el servicio por un
+  cambio que llega mientras corre, así que `cengarde-nat sync` se repite
+  si la tabla cambió mientras la aplicaba, y `check` (cada 5 minutos)
+  aplica una tabla que quedó sin aplicar (`netns.sh` prueba los dos).
 - **OpenWrt** (`cengarde-setup`, UCI, LuCI):
   - `wgcg` lleva la dirección del router como /32 (`tunnel_addr`, o la del
     secreto si está vacía) y una ruta propia a 10.79.0.1
