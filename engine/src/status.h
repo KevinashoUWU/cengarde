@@ -31,6 +31,14 @@ void cg_json_null(struct cg_json *j, const char *key);
 /* Appends text as it is: plain-text replies use the same buffer. */
 void cg_json_raw(struct cg_json *j, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 
+/* The measurements of story 012, the same at both ends: joint lateness
+ * (arrival.h) and WireGuard's datagrams by type and size in each direction
+ * (wgsize.h). */
+struct cg_arrivals;
+struct cg_wgs;
+void cg_json_joint(struct cg_json *j, const char *key, const struct cg_arrivals *a);
+void cg_json_sizes(struct cg_json *j, const char *key, const struct cg_wgs *up, const struct cg_wgs *down);
+
 /* Writes data to path atomically. Returns 0 or -1 (errno set). */
 int cg_status_write(const char *path, const char *data, size_t len);
 

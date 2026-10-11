@@ -745,6 +745,41 @@ otra sesión); `vps_refusing` resume eso para todo el router. En el servidor, `h
 otro router, por su pista) y `no_session` (DATA de una sesión que todavía
 no tiene: espera a la sonda).
 
+Para el bonding (historia 012) hay tres medidas que solo se muestran y
+nunca deciden nada; las toma el registrador de campo (`cengarde-rec`,
+`bench/fieldrec.py`). `lost_all` y `joint` miden la bajada en el cliente
+(en la raíz del JSON) y la subida de cada sesión en el servidor
+(`sessions[]`); `sizes` está en la raíz en los dos extremos.
+- `lost_all`: secuencias de DATA que salieron de la ventana anti-replay sin
+  llegar por ningún enlace, es decir, lo que el túnel perdió en todos. Se
+  cuenta desde la primera secuencia que vio la ventana (o desde donde siguió
+  un salto mayor que la ventana, como el de un servidor que retoma la sesión
+  2^20 más adelante) y va unas 8200 secuencias por detrás.
+- `joint`: la tardanza conjunta. Cuando su casilla se reutiliza (4096
+  secuencias después), cada paquete suma uno en `expect`, por la máscara de
+  enlaces que debían traer una copia, y uno en cada objeto de `late`, por la
+  máscara de los que no la trajeron dentro del plazo de `deadlines_ms`
+  correspondiente (50, 100 y 150 ms desde la primera copia; no llegar nunca
+  también es tarde). La clave es la máscara en decimal: el bit i es el enlace
+  cuyo `links[].id` es i; solo aparecen los cubos distintos de cero.
+  `packets` son los paquetes evaluados y `other`, los que quedan fuera: un
+  enlace esperado con id 8 o más, o una casilla reutilizada antes de 150 ms
+  (unos 27 kpps o más). La probabilidad de que todos los enlaces de un
+  conjunto S lleguen tarde a un plazo es la suma de los cubos de ese plazo
+  cuya máscara contiene a S dividida por la de los cubos de `expect` que lo
+  contienen: el número que decide k-de-N. Las copias tardías no pasan por el
+  MAC, así que esto solo sirve para medir.
+- `sizes`: los datagramas de WireGuard por tipo (`init`, `response`,
+  `cookie` y `other`) y los de datos por tamaño (`data` y `data_bytes`, 12
+  cubos: hasta cada borde de `edges`, incluido, y el último por encima de
+  1440). `up` es lo que el cliente lee de WireGuard y lo que el
+  servidor le entrega (primeras copias de todos los routers); `down`, al
+  revés.
+
+Cuesta poca memoria: cada casilla de llegadas pasa de 16 a 20 bytes y los
+histogramas suman 8 KiB, unos 24 KiB más por sesión (el cliente tiene una; el
+servidor, una por sesión: ~1,5 MiB con las 64 de `max_sessions` de fábrica).
+
 ## Protocolo v4
 
 Desde la 0.5.0 (historia 010, PR 3d2). La cabecera sigue midiendo 24 bytes:

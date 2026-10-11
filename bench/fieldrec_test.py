@@ -352,7 +352,7 @@ def bond_checks():
                  "### Best pair", "### By hour (UTC+0)", "### Pairs by hour (UTC+0)", "#### 100 ms", "| hour | a + b | a + c (5g) |", "## Lost on every link", "## WireGuard sizes", "### up:", "### down:",
                  "| a + b |", "| a + c (5g) + d + e |", "<= 32 (keepalive)", "<= 96 (empty ACK)", "> 1440", "Handshakes: init"):
         check(f"report has {what!r}", what in text)
-    check("report: the engine's other counter is explained", "had a link of id 8 or more" in text)
+    check("report: the engine's other counter is explained", "the engine could not judge" in text)
     # --- --utc-offset moves the hours.
     s3, _ = analyze_lines(lines, -3)
     check("--utc-offset shifts the hours (21, 22 and 23 for UTC-3)", sorted(s3["joint"]["by_hour"]) == [21, 22, 23]

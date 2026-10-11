@@ -32,8 +32,10 @@ restart, a gap or a counter that went down starts over, as for the others).
   independence (the product of each link's own share), and the lift over it;
   the best pair by joint lateness against the best pair by each link's own
   lateness and by its RTT (story 012, "Para decidir k-de-N"); all of it also
-  per hour of the day. Link ids come from links[].id; an id of 8 or more only
-  shows in the engine's "other" counter and is not analyzed;
+  per hour of the day. Link ids come from links[].id. The engine's "other"
+  counter holds what it could not judge, which is not analyzed: packets
+  with an expected link of id 8 or more, and packets whose slot came round
+  again before the longest deadline (about 27 kpps and up);
 - lost on every link (download): the tunnel's loss, overall and per hour;
 - WireGuard sizes, per direction: the share of data packets and of bytes at or
   under each edge, and the handshake counts.
@@ -904,8 +906,8 @@ def report_joint(j, utc_offset_h):
     w(f"{j['packets']} packets evaluated in {j['intervals']} intervals"
       + (f", {j['skipped_intervals']} intervals skipped (a counter went down)" if j["skipped_intervals"] else "") + ".")
     if j["other"]:
-        w(f"- {j['other']} ({fp(j['other_pct'])} % of the packets) had a link of id 8 or more: outside the engine's "
-          "histograms, so those links and those packets are not analyzed.")
+        w(f"- {j['other']} ({fp(j['other_pct'])} % of the packets) the engine could not judge (a link of id 8 or more, "
+          "or more than about 27 kpps): not analyzed.")
     if j["left_out"]:
         w(f"- left out, fewer than {JOINT_MIN_PKTS} packets sent on them: {', '.join(j['left_out'])}.")
     ov = j["overall"]

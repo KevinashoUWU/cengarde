@@ -11,9 +11,11 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "arrival.h"
 #include "engine.h" /* cg_thread_normal */
 #include "log.h"
 #include "util.h"
+#include "wgsize.h"
 
 void cg_json_init(struct cg_json *j)
 {
@@ -159,6 +161,69 @@ void cg_json_null(struct cg_json *j, const char *k)
 {
 	key(j, k);
 	put(j, "null");
+}
+
+/* The nonzero buckets of a histogram by link mask, keyed by the mask in
+ * decimal. */
+static void json_masks(struct cg_json *j, const char *k, const uint64_t h[CG_JOINT_MASKS])
+{
+	char m[12];
+
+	cg_json_obj(j, k);
+	for (unsigned i = 0; i < CG_JOINT_MASKS; i++) {
+		if (!h[i])
+			continue;
+		snprintf(m, sizeof(m), "%u", i);
+		cg_json_u64(j, m, h[i]);
+	}
+	cg_json_end(j, '}');
+}
+
+void cg_json_joint(struct cg_json *j, const char *k, const struct cg_arrivals *a)
+{
+	cg_json_obj(j, k);
+	cg_json_arr(j, "deadlines_ms");
+	for (unsigned d = 0; d < CG_JOINT_D; d++)
+		cg_json_u64(j, NULL, cg_joint_deadline_us(d) / 1000);
+	cg_json_end(j, ']');
+	cg_json_u64(j, "packets", a->evaluated);
+	json_masks(j, "expect", a->expect);
+	cg_json_arr(j, "late");
+	for (unsigned d = 0; d < CG_JOINT_D; d++)
+		json_masks(j, NULL, a->late[d]);
+	cg_json_end(j, ']');
+	cg_json_u64(j, "other", a->other);
+	cg_json_end(j, '}');
+}
+
+static void json_wgs(struct cg_json *j, const char *k, const struct cg_wgs *w)
+{
+	cg_json_obj(j, k);
+	cg_json_arr(j, "data");
+	for (unsigned i = 0; i < CG_WGS_N; i++)
+		cg_json_u64(j, NULL, w->data[i]);
+	cg_json_end(j, ']');
+	cg_json_arr(j, "data_bytes");
+	for (unsigned i = 0; i < CG_WGS_N; i++)
+		cg_json_u64(j, NULL, w->data_bytes[i]);
+	cg_json_end(j, ']');
+	cg_json_u64(j, "init", w->msg[CG_WGS_INIT]);
+	cg_json_u64(j, "response", w->msg[CG_WGS_RESPONSE]);
+	cg_json_u64(j, "cookie", w->msg[CG_WGS_COOKIE]);
+	cg_json_u64(j, "other", w->msg[CG_WGS_OTHER]);
+	cg_json_end(j, '}');
+}
+
+void cg_json_sizes(struct cg_json *j, const char *k, const struct cg_wgs *up, const struct cg_wgs *down)
+{
+	cg_json_obj(j, k);
+	cg_json_arr(j, "edges");
+	for (unsigned i = 0; i < CG_WGS_N - 1; i++)
+		cg_json_u64(j, NULL, cg_wgs_edge(i));
+	cg_json_end(j, ']');
+	json_wgs(j, "up", up);
+	json_wgs(j, "down", down);
+	cg_json_end(j, '}');
 }
 
 int cg_status_write(const char *path, const char *data, size_t len)
