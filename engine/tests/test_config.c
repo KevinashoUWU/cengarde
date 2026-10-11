@@ -604,6 +604,10 @@ static void test_config_names(void)
 				 sizeof(warn)),
 		 -1);
 	CHECK(!strcmp(err, "server: '10.0.0.256:1' is neither an address nor a name"));
+	CHECK_EQ(cg_config_parse(&c, "mode = client\nkey = " KEY "\nserver = *:59402\n", err, sizeof(err), warn,
+				 sizeof(warn)),
+		 -1);
+	CHECK(!strcmp(err, "server: '*:59402' is the wildcard address"));
 	CHECK_EQ(cg_config_parse(&c, "mode = client\nkey = " KEY "\nserver = [vps.example.com]:1\n", err, sizeof(err),
 				 warn, sizeof(warn)),
 		 -1);

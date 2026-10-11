@@ -385,6 +385,10 @@ static int get_servers(struct cg_ini *ini, const char *sec, struct cg_config *c,
 			snprintf(err, errlen, "server: %s", e);
 			return -1;
 		}
+		if (!strcmp(host, "*")) {
+			snprintf(err, errlen, "server: '%s' is the wildcard address", items[i]);
+			return -1;
+		}
 		if (cg_addr_literal(host, s->port, &s->a) == 0) {
 			why = cg_addr_unfit_peer(&s->a);
 			if (why) {

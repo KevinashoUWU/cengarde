@@ -186,6 +186,44 @@ static inline int cg_lists_same(const struct cg_srvlist *a, const struct cg_srvl
 	return 1;
 }
 
+/* Whether a name's new addresses leave a link on cur where it is: cur is
+ * still one of its candidates in b, and every entry before the one that
+ * gives it gives the same candidates as in a. A change in a later entry, or
+ * in cur's own, is no reason to move a link that works (a reload is: the
+ * operator edited the list, cg_lists_same); one before it is (the
+ * preferred server has a new address), and so is cur gone. */
+static inline int cg_lists_keep(const struct cg_srvlist *a, const struct cg_srvlist *b, unsigned families,
+				const struct sockaddr_storage *cur)
+{
+	struct sockaddr_storage ca[CG_MAX_CANDS], cb[CG_MAX_CANDS];
+	int ga[CG_MAX_CANDS], gb[CG_MAX_CANDS];
+	int na = cg_cands_groups(a, families, ca, ga), nb = cg_cands_groups(b, families, cb, gb);
+	int ka = 0, kb = 0, ia, ib, before = 0, at = 0;
+
+	for (int i = 0; i < na; i++)
+		ka += ga[i];
+	for (int i = 0; i < nb; i++)
+		kb += gb[i];
+	ia = cg_cand_find(ca, ka, cur);
+	ib = cg_cand_find(cb, kb, cur);
+	if (ia < 0 || ib < 0)
+		return 0;
+	while (before < na && at + ga[before] <= ia) /* the groups before cur's in a */
+		at += ga[before++];
+	if (ib < at)
+		return 0; /* earlier in b: something before it changed */
+	for (int i = 0, k = 0; i < before; k += ga[i++]) {
+		if (i >= nb || ga[i] != gb[i])
+			return 0;
+		for (int j = k; j < k + ga[i]; j++)
+			if (cg_cand_find(cb + k, gb[i], &ca[j]) < 0)
+				return 0;
+	}
+	/* The same groups before it, so cur's group starts at the same place;
+	 * it is in it in b too unless b's group there is shorter. */
+	return before < nb && ib < at + gb[before];
+}
+
 /* Whether two lists hold the same addresses in the same order. */
 static inline int cg_cands_same(const struct sockaddr_storage *a, int na, const struct sockaddr_storage *b, int nb)
 {

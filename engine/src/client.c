@@ -652,11 +652,11 @@ static void reconcile(struct client *c, uint64_t now_ms)
 		if (!ifc->name[0])
 			continue;
 		why = eligible(c, ifc, &e);
-		/* A slot all the same when paused, when the server's name has no
-		 * address yet, or when its [link] section wants it and it has no
-		 * address of the server's family, so that the status shows why. */
-		if (why == WHY_OK || why == WHY_PAUSED || why == WHY_UNRESOLVED ||
-		    (why == WHY_NOFAMILY && cg_config_link(c->cfg, ifc->name)))
+		/* A slot all the same when paused, or when its [link] section
+		 * wants it and it has no address of the server's family, or none
+		 * yet (the server's name), so that the status shows why. */
+		if (why == WHY_OK || why == WHY_PAUSED ||
+		    ((why == WHY_NOFAMILY || why == WHY_UNRESOLVED) && cg_config_link(c->cfg, ifc->name)))
 			l = link_get(c, ifc->name);
 		else
 			l = link_find(c, ifc->name);
@@ -707,9 +707,10 @@ static void lists_build(struct client *c, struct cg_config *cfg)
 	cg_config_build(cfg, p);
 }
 
-/* A name's addresses changed: like a reload that edits its entry, the
- * links whose list changed for their families start again from its first
- * address (srvpick.h); a link that keeps its address keeps its socket. */
+/* A name's addresses changed: a link goes back to its first address only
+ * when the address it uses is gone or an entry before it changed (the
+ * preferred server moved); otherwise it stays where the server answers,
+ * whatever changed after it (cg_lists_keep). */
 static void names_changed(struct client *c, uint64_t now_ms)
 {
 	struct cg_config *cfg = c->cfg;
@@ -727,10 +728,12 @@ static void names_changed(struct client *c, uint64_t now_ms)
 
 		if (!l->used)
 			continue;
+		if (!l->cand.ss_family)
+			continue; /* nowhere yet: its first candidate anyway */
 		e = entries_of(cfg, l->ifname, &ne);
 		now = (struct cg_srvlist){ na, cg_srv_build(e, ne, p, na, en), en, ne };
 		old = servers_of(cfg, l->ifname);
-		if (!cg_lists_same(&old, &now, l->families))
+		if (!cg_lists_keep(&old, &now, l->families, &l->cand))
 			memset(&l->cand, 0, sizeof(l->cand));
 	}
 	cg_config_build(cfg, p);
@@ -789,8 +792,8 @@ static void names_tick(struct client *c, uint64_t now_ms)
 	if (!c->cfg->nnames)
 		return;
 	for (int i = 0; i < CG_MAX_LINKS; i++)
-		if (link_live(&c->link[i], now_ms))
-			cg_names_live(&c->names, &c->link[i].remote, now_ms);
+		if (link_up(&c->link[i]))
+			cg_names_seen(&c->names, &c->link[i].remote, link_live(&c->link[i], now_ms), now_ms);
 	if (cg_names_need(&c->names, now_ms))
 		cg_names_tick(&c->names, c->ep, paths, dns_paths(c, paths, now_ms), now_ms);
 }

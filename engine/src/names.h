@@ -35,10 +35,11 @@ struct cg_name {
 	struct cg_rsname rs;
 	int fd[2];                     /* each question's attempt in flight; -1: none */
 	int adv[2];                    /* an error answer came: the next attempt goes out at the tick; -1: none */
+	const char *why[2];            /* why the last attempt of each failed, for the log and the status */
 	char at[2][IFNAMSIZ + 64];     /* where each question's attempt in flight went */
 	char via[IFNAMSIZ + 64];       /* where the newest answer came from */
 	const char *err;               /* why its newest lookup brought no address, "" */
-	struct cg_ratelimit rl;
+	struct cg_ratelimit rl[2], rl_keep;
 };
 
 struct cg_names {
@@ -56,8 +57,9 @@ void cg_names_set(struct cg_names *s, int ep, const struct cg_config *cfg);
 void cg_names_addrs(const struct cg_names *s, struct cg_nameaddrs *a, const struct cg_nameaddrs **p);
 /* Whether the configuration's name i has any address. */
 int cg_names_resolved(const struct cg_names *s, int i);
-/* A link is live on remote: the name that holds it is not silent. */
-void cg_names_live(struct cg_names *s, const struct sockaddr_storage *remote, uint64_t now_ms);
+/* A link points at remote (live: and the server answers it there): the
+ * name that holds it is in use, and not silent (resolve.h). */
+void cg_names_seen(struct cg_names *s, const struct sockaddr_storage *remote, int live, uint64_t now_ms);
 /* Silence turned into lookups; whether any lookup is due or in flight. */
 int cg_names_need(struct cg_names *s, uint64_t now_ms);
 /* Starts the lookups that are due and moves on from the attempts that

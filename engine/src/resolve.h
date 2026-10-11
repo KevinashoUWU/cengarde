@@ -18,17 +18,24 @@
  *   whatever their order, and links do not move for a new order. The next
  *   lookup comes after its TTL, clamped to [30 s, 15 min].
  * - An answer without addresses (NXDOMAIN, or no record of the family)
- *   takes the family's addresses away only while the name is silent: a
+ *   takes the family's addresses away only while that family is silent: a
  *   flaky resolver never takes away an address the server answers on. The
  *   next lookup after CG_RS_NEG_MS, or CG_RS_EMPTY_MS when the name is left
  *   with no address at all: a dynamic DNS record may be back in seconds.
+ * - Addresses no server has (the wildcard, loopback, multicast, IPv4-mapped
+ *   in an AAAA; a resolver that blocks a name may answer 0.0.0.0) are left
+ *   out, and an answer left with none counts as having none.
  * - A lookup that fails keeps what the name had (the last good answer) and
  *   tries again: 1 s doubling up to 15 s while the question never had an
  *   answer (a boot), 5 s doubling up to 60 s after one.
  * - Silent: a name with addresses on which no link has been live for
- *   CG_RS_SILENT_MS (its server moved, or is down): looked up at once, and
- *   again every CG_RS_SILENT_EVERY_MS while that lasts, whatever the TTL;
- *   new addresses end that, so the next silence is looked up at once.
+ *   CG_RS_SILENT_MS (its server moved, or is down). While some link still
+ *   points at it, it is looked up at once, then again after
+ *   CG_RS_SILENT_EVERY_MS, doubling up to CG_RS_SILENT_MAX_MS, whatever
+ *   the TTL; a link live again or new addresses end that episode. A name
+ *   no link points at (they failed over to a later entry) waits for its
+ *   TTL: its server may be down for good, and asking every few seconds
+ *   would buy nothing.
  *   When the server's address changes, the cut is the links' stall
  *   detection, plus that, plus what the dynamic DNS and the resolvers'
  *   caches take to give the new address.
@@ -53,7 +60,9 @@
 #define CG_RS_NEG_MS 300000u         /* after an answer without addresses, while the name has others */
 #define CG_RS_EMPTY_MS 15000u        /* after one that leaves the name with no address at all */
 #define CG_RS_SILENT_MS 2000u        /* no link live on a name's addresses: look it up */
-#define CG_RS_SILENT_EVERY_MS 15000u /* and again this often while that lasts */
+#define CG_RS_SILENT_EVERY_MS 15000u /* and again after this, while that lasts ... */
+#define CG_RS_SILENT_MAX_MS 60000u   /* ... doubling up to this */
+#define CG_RS_USED_MS 1000u          /* a link pointed at it this recently: in use */
 #define CG_RS_TIMEOUT_MS 2000u       /* an attempt */
 #define CG_RS_ATTEMPTS 6             /* of a lookup */
 #define CG_RS_RETRY_FIRST_MS 1000u   /* a failed lookup, no answer ever: 1 s ... */
@@ -77,14 +86,18 @@ struct cg_rsq {
 	uint64_t due_ms;                 /* the next lookup */
 	uint64_t sent_ms;                /* the attempt in flight */
 	uint64_t got_ms;                 /* the newest answer; 0: none */
+	uint64_t set_ms;                 /* when its addresses last changed */
+	uint64_t live_ms;                /* the newest time a link was live on one of them */
 	uint64_t lookups, failures;
 };
 
 struct cg_rsname {
-	struct cg_rsq q[2]; /* CG_RS_A, CG_RS_AAAA */
-	uint64_t addrs_ms;  /* when its addresses last changed */
-	uint64_t live_ms;   /* the newest time a link was live on one of them */
-	uint64_t kick_ms;   /* the newest lookup silence asked for; 0: none */
+	struct cg_rsq q[2];     /* CG_RS_A, CG_RS_AAAA */
+	uint64_t addrs_ms;      /* when its addresses last changed, either family */
+	uint64_t live_ms;       /* the newest time a link was live on one of them */
+	uint64_t used_ms;       /* the newest time a link pointed at one of them */
+	uint64_t kick_ms;       /* the newest lookup silence asked for; 0: none in this episode */
+	uint32_t kick_every_ms; /* the wait before the next one */
 };
 
 static inline int cg_rs_alen(int q)
@@ -131,13 +144,35 @@ static inline int cg_rs_sorted(const uint8_t (*src)[16], int n, int alen, uint8_
 	return k;
 }
 
+/* Whether the address a (alen bytes) of question f can be a server's: not
+ * the wildcard, loopback (dns: from a DNS; the hosts file may pin a name
+ * there) or multicast, and in an AAAA not IPv4-mapped (an IPv6 socket
+ * cannot send there). */
+static inline int cg_rs_fit(const uint8_t *a, int f, int dns)
+{
+	static const uint8_t zero[16], mapped[12] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff };
+	static const uint8_t lo6[16] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 };
+
+	if (f == CG_RS_A)
+		return a[0] != 0 && a[0] < 224 && !(dns && a[0] == 127);
+	return memcmp(a, zero, 16) && memcmp(a, mapped, 12) && a[0] != 0xff && !(dns && !memcmp(a, lo6, 16));
+}
+
 static inline int cg_rs_has(const struct cg_rsname *nm)
 {
 	return nm->q[CG_RS_A].n || nm->q[CG_RS_AAAA].n;
 }
 
-/* Whether no link has been live on the addresses of nm for
+/* Whether no link has been live on the addresses of question q for
  * CG_RS_SILENT_MS. */
+static inline int cg_rs_q_silent(const struct cg_rsq *q, uint64_t now_ms)
+{
+	uint64_t since = q->live_ms > q->set_ms ? q->live_ms : q->set_ms;
+
+	return q->n && now_ms - since >= CG_RS_SILENT_MS;
+}
+
+/* The same for the whole name. */
 static inline int cg_rs_silent(const struct cg_rsname *nm, uint64_t now_ms)
 {
 	uint64_t since = nm->live_ms > nm->addrs_ms ? nm->live_ms : nm->addrs_ms;
@@ -145,17 +180,45 @@ static inline int cg_rs_silent(const struct cg_rsname *nm, uint64_t now_ms)
 	return cg_rs_has(nm) && now_ms - since >= CG_RS_SILENT_MS;
 }
 
-/* Makes the lookups of a silent name due now, every CG_RS_SILENT_EVERY_MS
- * at most. Returns 1 when it did. */
+/* Whether a link points at one of its addresses (cg_rs_seen, each tick). */
+static inline int cg_rs_used(const struct cg_rsname *nm, uint64_t now_ms)
+{
+	return nm->used_ms && now_ms - nm->used_ms <= CG_RS_USED_MS;
+}
+
+/* A link points at an address of family f of nm (live: and the server
+ * answers it there). */
+static inline void cg_rs_seen(struct cg_rsname *nm, int f, int live, uint64_t now_ms)
+{
+	nm->used_ms = now_ms;
+	if (live)
+		nm->q[f].live_ms = nm->live_ms = now_ms;
+}
+
+/* Makes the lookups of a silent name some link still points at due now:
+ * at once when its silence starts, then after CG_RS_SILENT_EVERY_MS,
+ * doubling up to CG_RS_SILENT_MAX_MS. Returns 2 for the first lookup of an
+ * episode, 1 for a later one, 0 for none. */
 static inline int cg_rs_kick(struct cg_rsname *nm, uint64_t now_ms)
 {
-	if (!cg_rs_silent(nm, now_ms) || (nm->kick_ms && now_ms - nm->kick_ms < CG_RS_SILENT_EVERY_MS))
+	int first;
+
+	if (!cg_rs_silent(nm, now_ms) || !cg_rs_used(nm, now_ms))
 		return 0;
+	/* A link live since the last one: a new episode. */
+	first = !nm->kick_ms || nm->live_ms > nm->kick_ms;
+	if (first)
+		nm->kick_every_ms = CG_RS_SILENT_EVERY_MS;
+	else if (now_ms - nm->kick_ms < nm->kick_every_ms)
+		return 0;
+	else
+		nm->kick_every_ms = nm->kick_every_ms * 2 > CG_RS_SILENT_MAX_MS ? CG_RS_SILENT_MAX_MS
+										: nm->kick_every_ms * 2;
 	nm->kick_ms = now_ms;
 	for (int f = 0; f < 2; f++)
 		if (!nm->q[f].inflight && nm->q[f].due_ms > now_ms)
 			nm->q[f].due_ms = now_ms;
-	return 1;
+	return first ? 2 : 1;
 }
 
 static inline int cg_rs_due(const struct cg_rsq *q, uint64_t now_ms)
@@ -204,25 +267,29 @@ static inline int cg_rs_next(struct cg_rsq *q, int outcome, int npairs, uint16_t
 }
 
 /* An answer to question f of nm (CG_DNS_ADDRS, NODATA or NXDOMAIN; the
- * rest go to cg_rs_next), with silent as cg_rs_silent said before it.
- * Returns 1 when the family's addresses changed. */
-static inline int cg_rs_answer(struct cg_rsname *nm, int f, const struct cg_dns_result *r, int silent, uint64_t now_ms)
+ * rest go to cg_rs_next). Returns 1 when the family's addresses changed. */
+static inline int cg_rs_answer(struct cg_rsname *nm, int f, const struct cg_dns_result *r, uint64_t now_ms)
 {
 	struct cg_rsq *q = &nm->q[f];
-	uint8_t a[CG_NAME_ADDRS][16];
-	int n;
+	uint8_t a[CG_NAME_ADDRS][16], fit[CG_DNS_MAX_ADDRS][16];
+	int n = 0, outcome = r->outcome;
 
+	for (int i = 0; outcome == CG_DNS_ADDRS && i < r->n && i < CG_DNS_MAX_ADDRS; i++)
+		if (cg_rs_fit(r->addr[i], f, 1))
+			memcpy(fit[n++], r->addr[i], 16);
+	if (outcome == CG_DNS_ADDRS && !n)
+		outcome = CG_DNS_NODATA; /* only addresses no server has */
 	q->inflight = 0;
 	q->answered = 1;
-	q->outcome = (uint8_t)r->outcome;
+	q->outcome = (uint8_t)outcome;
 	q->got_ms = now_ms;
 	q->retry_ms = 0;
-	if (r->outcome == CG_DNS_ADDRS) {
-		n = cg_rs_sorted((const uint8_t(*)[16])r->addr, r->n, cg_rs_alen(f), a);
+	if (outcome == CG_DNS_ADDRS) {
+		n = cg_rs_sorted((const uint8_t(*)[16])fit, n, cg_rs_alen(f), a);
 		q->ttl = r->ttl;
 		q->due_ms = now_ms + cg_rs_ttl_ms(r->ttl);
 	} else {
-		n = silent ? 0 : q->n;
+		n = cg_rs_q_silent(q, now_ms) ? 0 : q->n;
 		memset(a, 0, sizeof(a));
 		memcpy(a, q->addr, (size_t)n * 16);
 		/* A name left with nothing to send to is asked again soon: its
@@ -233,7 +300,7 @@ static inline int cg_rs_answer(struct cg_rsname *nm, int f, const struct cg_dns_
 		return 0;
 	q->n = (uint8_t)n;
 	memcpy(q->addr, a, sizeof(a));
-	nm->addrs_ms = now_ms;
+	q->set_ms = nm->addrs_ms = now_ms;
 	nm->kick_ms = 0; /* new addresses: the next silence is a new one, looked up at once */
 	return 1;
 }
@@ -341,6 +408,8 @@ static inline int cg_hosts_find(const char *text, const char *name, struct cg_na
 			len = 0;
 			while (p + len < stop && p[len] != ' ' && p[len] != '\t' && p[len] != '\r' && p[len] != '#')
 				len++;
+			if (len >= sizeof(tok) && field == 0)
+				break; /* no address that long: no hosts line */
 			if (len < sizeof(tok)) {
 				memcpy(tok, p, len);
 				tok[len] = '\0';
@@ -354,8 +423,8 @@ static inline int cg_hosts_find(const char *text, const char *name, struct cg_na
 						memset(ip + 4, 0, 12);
 						f = CG_RS_A;
 					}
-					if (f < 0)
-						break; /* no address: no hosts line */
+					if (f < 0 || !cg_rs_fit((const uint8_t *)ip, f, 0))
+						break; /* no address, or "0.0.0.0 name" (a block): no hosts line */
 				} else {
 					if (len && tok[len - 1] == '.')
 						tok[len - 1] = '\0';

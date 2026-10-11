@@ -76,6 +76,8 @@ void cg_names_set(struct cg_names *s, int ep, const struct cg_config *cfg)
 			q_close(nm, CG_RS_AAAA, ep);
 			memset(&nm->rs, 0, sizeof(nm->rs));
 			nm->adv[0] = nm->adv[1] = -1;
+			nm->via[0] = '\0';
+			nm->err = "";
 		}
 	}
 }
@@ -104,11 +106,11 @@ int cg_names_resolved(const struct cg_names *s, int i)
 	return nm->hosts ? nm->hosts_addrs.n > 0 : cg_rs_has(&nm->rs);
 }
 
-void cg_names_live(struct cg_names *s, const struct sockaddr_storage *remote, uint64_t now_ms)
+void cg_names_seen(struct cg_names *s, const struct sockaddr_storage *remote, int live, uint64_t now_ms)
 {
 	for (int k = 0; k < CG_MAX_NAMES; k++)
 		if (s->n[k].used && !s->n[k].hosts && cg_rs_holds(&s->n[k].rs, remote))
-			s->n[k].rs.live_ms = now_ms;
+			cg_rs_seen(&s->n[k].rs, remote->ss_family == AF_INET6 ? CG_RS_AAAA : CG_RS_A, live, now_ms);
 }
 
 int cg_names_need(struct cg_names *s, uint64_t now_ms)
@@ -120,7 +122,7 @@ int cg_names_need(struct cg_names *s, uint64_t now_ms)
 
 		if (!nm->used || nm->hosts)
 			continue;
-		if (cg_rs_kick(&nm->rs, now_ms))
+		if (cg_rs_kick(&nm->rs, now_ms) == 2) /* the first of the episode only */
 			cg_info("server name %s: no link is live on its addresses, looking it up again", nm->name);
 		for (int f = 0; f < 2; f++)
 			need |= nm->rs.q[f].inflight || cg_rs_due(&nm->rs.q[f], now_ms);
@@ -155,6 +157,7 @@ static int attempt(struct cg_names *s, int ep, int k, int f, const struct cg_nam
 		return -1;
 	res = paths[p].res[r];
 	snprintf(nm->at[f], sizeof(nm->at[f]), "%s %s", paths[p].ifc->name, cg_addr_str(res, a, sizeof(a)));
+	nm->why[f] = "cannot ask";
 	if (cg_iface_pick(paths[p].ifc, res, &local) < 0)
 		return -1;
 	fd = cg_udp_link(paths[p].ifc->name, &local, res, err, sizeof(err));
@@ -162,13 +165,14 @@ static int attempt(struct cg_names *s, int ep, int k, int f, const struct cg_nam
 		cg_dbg("server name %s: cannot ask %s: %s", nm->name, nm->at[f], err);
 		return -1;
 	}
-	len = cg_dns_query(buf, sizeof(buf), q->id, nm->name, cg_rs_qtype(f));
+	len = cg_dns_query(buf, sizeof(buf), q->id, nm->name, cg_rs_qtype(f)); /* never fails: a checked name */
 	if (len < 0 || send(fd, buf, (size_t)len, 0) != len ||
 	    cg_epoll_add(ep, fd, CG_EV(CG_EV_DNS, k * 2 + f)) < 0) {
-		cg_dbg("server name %s: cannot ask %s: %s", nm->name, nm->at[f], strerror(errno));
+		cg_dbg("server name %s: cannot ask %s: %s", nm->name, nm->at[f], len < 0 ? "no query" : strerror(errno));
 		close(fd);
 		return -1;
 	}
+	nm->why[f] = "timeout"; /* unless something answers */
 	nm->fd[f] = fd;
 	return 0;
 }
@@ -197,8 +201,8 @@ static void lookup_failed(struct cg_name *nm, int f, uint64_t now_ms)
 	char buf[512];
 	const struct cg_rsq *q = &nm->rs.q[f];
 
-	nm->err = q->outcome == CG_DNS_IGNORE ? "timeout" : cg_dns_outcome_name(q->outcome);
-	if (cg_ratelimit_ok(&nm->rl, now_ms, 60000))
+	nm->err = q->outcome == CG_DNS_IGNORE && nm->why[f] ? nm->why[f] : cg_dns_outcome_name(q->outcome);
+	if (cg_ratelimit_ok(&nm->rl[f], now_ms, 60000))
 		cg_warn("server name %s: its lookup (%s) found no answer through any link (%s, the last through %s); %s %s",
 			nm->name, f == CG_RS_AAAA ? "IPv6" : "IPv4", nm->err, nm->at[f],
 			cg_rs_has(&nm->rs) ? "keeping" : "still", addrs_str(nm, buf, sizeof(buf)));
@@ -229,6 +233,8 @@ void cg_names_tick(struct cg_names *s, int ep, const struct cg_names_path *paths
 	uint8_t nres[CG_MAX_LINKS];
 	int npairs;
 
+	if (npaths > CG_MAX_LINKS)
+		npaths = CG_MAX_LINKS;
 	for (int i = 0; i < npaths; i++)
 		nres[i] = paths[i].n;
 	npairs = cg_rs_npairs(nres, npaths);
@@ -260,7 +266,7 @@ void cg_names_tick(struct cg_names *s, int ep, const struct cg_names_path *paths
 int cg_names_read(struct cg_names *s, int ep, unsigned idx, uint64_t now_ms)
 {
 	unsigned k = idx / 2;
-	int f = (int)(idx % 2), changed, silent;
+	int f = (int)(idx % 2), changed;
 	struct cg_name *nm;
 	struct cg_rsq *q;
 	struct cg_dns_result r;
@@ -283,6 +289,7 @@ int cg_names_read(struct cg_names *s, int ep, unsigned idx, uint64_t now_ms)
 			/* ICMP unreachable, mostly: nothing answers DNS there. */
 			cg_dbg("server name %s: %s: %s", nm->name, nm->at[f], strerror(errno));
 			q_close(nm, f, ep);
+			nm->why[f] = "unreachable";
 			nm->adv[f] = CG_DNS_IGNORE;
 			return 0;
 		}
@@ -296,25 +303,26 @@ int cg_names_read(struct cg_names *s, int ep, unsigned idx, uint64_t now_ms)
 			return 0;
 		}
 		was = addrs_str(nm, was_buf, sizeof(was_buf));
-		silent = cg_rs_silent(&nm->rs, now_ms);
-		changed = cg_rs_answer(&nm->rs, f, &r, silent, now_ms);
+		changed = cg_rs_answer(&nm->rs, f, &r, now_ms);
 		memcpy(nm->via, nm->at[f], sizeof(nm->via)); /* the same size */
 		/* No error for a family without records while the name has
 		 * addresses (an IPv4-only server): it is the usual case. */
-		if (r.outcome == CG_DNS_ADDRS || (r.outcome == CG_DNS_NODATA && cg_rs_has(&nm->rs))) {
+		/* What counts is what the answer left (cg_rs_answer: addresses no
+		 * server has make an empty answer). */
+		if (q->outcome == CG_DNS_ADDRS || (q->outcome == CG_DNS_NODATA && cg_rs_has(&nm->rs))) {
 			nm->err = "";
 		} else {
-			nm->err = cg_dns_outcome_name(r.outcome);
-			if (!changed && q->n && cg_ratelimit_ok(&nm->rl, now_ms, 60000))
+			nm->err = cg_dns_outcome_name(q->outcome);
+			if (!changed && q->n && cg_ratelimit_ok(&nm->rl_keep, now_ms, 60000))
 				cg_info("server name %s: %s for IPv%c from %s while the server answers there: keeping %s",
 					nm->name, nm->err, f == CG_RS_AAAA ? '6' : '4', nm->via, addrs_str(nm, now, sizeof(now)));
 		}
-		if (changed && r.outcome == CG_DNS_ADDRS)
+		if (changed && q->outcome == CG_DNS_ADDRS)
 			cg_info("server name %s: %s (was %s; TTL %u s, from %s)", nm->name, addrs_str(nm, now, sizeof(now)),
 				was, r.ttl, nm->via);
 		else if (changed)
 			cg_info("server name %s: %s (was %s; %s for IPv%c from %s, and no link is live there)", nm->name,
-				addrs_str(nm, now, sizeof(now)), was, cg_dns_outcome_name(r.outcome), f == CG_RS_AAAA ? '6' : '4',
+				addrs_str(nm, now, sizeof(now)), was, cg_dns_outcome_name(q->outcome), f == CG_RS_AAAA ? '6' : '4',
 				nm->via);
 		return changed;
 	}
@@ -386,7 +394,7 @@ void cg_names_json(const struct cg_names *s, struct cg_json *j, uint64_t now_ms)
 			cg_json_u64(j, "ttl", ttl);
 		else
 			cg_json_null(j, "ttl");
-		cg_json_bool(j, "silent", !nm->hosts && cg_rs_silent(&nm->rs, now_ms));
+		cg_json_bool(j, "silent", !nm->hosts && cg_rs_silent(&nm->rs, now_ms) && cg_rs_used(&nm->rs, now_ms));
 		cg_json_str(j, "error", nm->hosts ? "" : nm->err ? nm->err : "");
 		cg_json_str(j, "via", nm->via);
 		cg_json_u64(j, "lookups", lookups);

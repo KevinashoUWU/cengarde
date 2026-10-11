@@ -234,23 +234,29 @@ resolver = 192.168.8.1
   Un intento dura como mucho 2 s; los siguientes van por el siguiente enlace
   (el primer DNS de cada enlace, luego el segundo...), hasta 6 por búsqueda.
   Primero los enlaces vivos.
-- **Cuándo pregunta:** al arrancar y cuando aparece un enlace; después,
-  según el TTL de la respuesta, entre 30 s y 15 min; y al momento si ningún
-  enlace está vivo en sus direcciones durante 2 s (el servidor cambió de IP
-  o se cayó), y otra vez cada 15 s mientras siga así, sin importar el TTL.
+- **Cuándo pregunta:** al arrancar (en cuanto hay un enlace por el que
+  preguntar); después, según el TTL de la respuesta, entre 30 s y 15 min;
+  y al momento si los enlaces que apuntan a sus direcciones llevan 2 s sin
+  estar vivos (el servidor cambió de IP o se cayó), y otra vez a los 15 s,
+  30 s y luego cada 60 s mientras siga así, sin importar el TTL. Un nombre
+  al que ya no apunta ningún enlace (pasaron a otra entrada de la lista)
+  espera a su TTL.
 - **La última respuesta buena se queda:** si una búsqueda falla (sin
   respuesta, SERVFAIL, REFUSED), el nombre conserva sus direcciones y vuelve
   a preguntar (cada 5 s, doblando hasta 60 s; antes de la primera respuesta,
   desde 1 s hasta 15 s). Una respuesta vacía (NXDOMAIN, o sin registros de
-  la familia) solo quita direcciones si el servidor ya no contesta en ellas:
-  un DNS que falla nunca corta un túnel que funciona. Un nombre que se
-  queda sin ninguna dirección vuelve a preguntarse cada 15 s, no a los
-  5 min de una respuesta vacía.
-- **Cuando cambian las direcciones:** como una recarga que edita esa
-  entrada, los enlaces cuya lista cambió vuelven a la primera dirección; un
-  enlace que sigue en la misma conserva su socket. Las direcciones de un
-  nombre van ordenadas (IPv6 primero), así que uno con más de 4 da siempre
-  las mismas, en cualquier orden.
+  la familia) solo quita las direcciones de esa familia si el servidor ya
+  no contesta en ellas: un DNS que falla nunca corta un túnel que funciona.
+  Un nombre que se queda sin ninguna dirección vuelve a preguntarse cada
+  15 s, no a los 5 min de una respuesta vacía. Las direcciones que ningún
+  servidor tiene (0.0.0.0, `::`, loopback, multicast, una IPv4 dentro de un
+  AAAA; un DNS que bloquea un nombre suele dar 0.0.0.0) se descartan.
+- **Cuando cambian las direcciones:** un enlace vuelve a la primera
+  dirección de su lista solo si la que usa desapareció o si cambió una
+  entrada anterior a la suya (el servidor preferido tiene otra IP); un
+  cambio después de la suya no lo mueve, y si sigue en la misma dirección
+  conserva su socket. Las direcciones de un nombre van ordenadas (IPv6
+  primero), así que uno con más de 4 da siempre las mismas.
 - **Sin dirección todavía:** el enlace queda con el motivo `server name not
   resolved` y sube en cuanto llega la respuesta. Un nombre que no resuelve
   ya no impide arrancar.

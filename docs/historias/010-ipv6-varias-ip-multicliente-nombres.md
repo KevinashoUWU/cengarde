@@ -997,17 +997,27 @@ resolvía al arrancar dejaba el motor sin arrancar): lo busca el cliente.
   - una búsqueda que falla conserva las direcciones y reintenta: 1 s
     doblando hasta 15 s si nunca hubo respuesta, 5 s hasta 60 s si la hubo;
   - **silencio:** un nombre con direcciones en el que ningún enlace está
-    vivo durante 2 s se busca al momento, y cada 15 s mientras dure,
-    sin mirar el TTL; direcciones nuevas lo terminan;
+    vivo durante 2 s, mientras algún enlace apunta a él, se busca al
+    momento y otra vez a los 15 s, 30 s y luego cada 60 s, sin mirar el
+    TTL; un enlace vivo otra vez o direcciones nuevas terminan el episodio.
+    Uno al que ya no apunta ningún enlace (pasaron a otra entrada) espera a
+    su TTL;
   - una respuesta vacía (NXDOMAIN, o sin registros de la familia) solo
-    quita direcciones si el nombre está en silencio: un DNS que falla no
-    corta un túnel que funciona. La siguiente, a los 5 min; a los 15 s si
-    el nombre se quedó sin ninguna dirección.
+    quita las direcciones de esa familia si ningún enlace está vivo en
+    ellas (silencio por familia): un DNS que falla no corta un túnel que
+    funciona. La siguiente, a los 5 min; a los 15 s si el nombre se quedó
+    sin ninguna dirección;
+  - fuera las direcciones que ningún servidor tiene: 0.0.0.0, `::`,
+    loopback, multicast y una IPv4 dentro de un AAAA (un DNS que bloquea un
+    nombre suele dar 0.0.0.0); una respuesta que se queda sin ninguna
+    cuenta como vacía.
 - **Direcciones estables:** IPv6 primero (como `getaddrinfo` con IPv6
   global), cada familia ordenada y como mucho 4: un nombre con más da
-  siempre las mismas. Cuando cambian, como una recarga que edita esa
-  entrada (`cg_lists_same`): los enlaces cuya lista cambió vuelven a la
-  primera; uno que sigue en la misma dirección conserva su socket.
+  siempre las mismas. Cuando cambian (`cg_lists_keep`), un enlace vuelve a
+  la primera dirección solo si la suya desapareció o cambió una entrada
+  anterior a la suya (el servidor preferido tiene otra IP); un cambio
+  posterior no lo mueve. Una recarga sigue siendo más estricta
+  (`cg_lists_same`): ahí la lista la editó el operador.
 - **`/etc/hosts` primero,** leído con el archivo: `localhost` y los nombres
   fijados a mano no se consultan.
 - **Formato** (`dns.h`, puro): consulta sin EDNS; respuesta con cadenas
@@ -1027,9 +1037,26 @@ resolvía al arrancar dejaba el motor sin arrancar): lo busca el cliente.
   nombre en el estado de LuCI.
 - **UPnP con un nombre:** la IP de un nombre cambia, así que no cuenta
   como IP externa: STUN con `stun_host` (el aviso `upnp_no_ip` lo dice).
+- **Revisión** (un agente Opus, adversaria, con programas de prueba
+  propios): seis defectos, arreglados antes de fusionar:
+  - un cambio en una entrada posterior (el respaldo gana una dirección)
+    devolvía todos los enlaces a una primera entrada muerta: 10 s sin
+    túnel; de ahí `cg_lists_keep`;
+  - el silencio era por nombre: si la A nueva llegaba antes que el NODATA
+    del AAAA borrado, el AAAA viejo quedaba para siempre y los enlaces con
+    IPv6 perdían 10 s en cada vuelta a la primera; ahora es por familia;
+  - un nombre sin uso (los enlaces en otra entrada, o sin familia) se
+    buscaba cada 15 s para siempre, con una línea de log cada vez; ahora
+    solo mientras algún enlace apunta a él, con espera creciente, y el log
+    una vez por episodio;
+  - `cg_hosts_find` leía fuera del arreglo con un primer campo de 256
+    caracteres o más (ASan); 0.0.0.0 o multicast del DNS o de
+    `/etc/hosts` pasaban como dirección del servidor; y un nombre sin
+    resolver ocupaba un lugar de enlace por cada interfaz del sistema.
 - **Pruebas:**
   - en el contenedor: los tests del motor (gcc a `-O0`, `-Os` y `-O2`,
-    clang, ASan y UBSan), shellcheck, `node --check` e `i18n.py`; un arnés
+    clang, ASan y UBSan, y compilado para armhf, MIPS y aarch64),
+    shellcheck, `node --check` e `i18n.py`; un arnés
     de `ubus`/`jsonfilter` falsos con el `cengarde-setup` real en dash y
     busybox ash;
   - en VMs de OpenWrt 25.12 sin KVM (a mano, con el motor de ese momento):
