@@ -523,6 +523,51 @@ static void test_split_modes(void)
 	CHECK(!cg_split_active(CG_SPLIT_ON, r.reorders, r.split_me));
 }
 
+/* Which tail an end follows (cg_split_tail_newer): the newest sent, by the
+ * control sequence, whatever the order of arrival. */
+static void test_split_tail(void)
+{
+	/* A peer's message: its control sequence, and whether its tail says it
+	 * reorders. The end keeps what the message it took says. */
+	struct msg {
+		uint32_t seq;
+		int reorders;
+	};
+	/* A reload at the peer between 101 and 102 turns reordering off; the
+	 * messages sent before it on a slow link (99..101) arrive after the
+	 * newer ones on a fast link. */
+	static const struct msg after_reload[] = { { 100, 1 }, { 102, 0 }, { 99, 1 }, { 103, 0 }, { 101, 1 }, { 104, 0 } };
+	struct cg_split_tail t = { 0 };
+	int reorders = 0, flips = 0;
+
+	for (unsigned i = 0; i < CG_ARRAY_SIZE(after_reload); i++) {
+		if (cg_split_tail_newer(&t, after_reload[i].seq)) {
+			flips += reorders != after_reload[i].reorders && i;
+			reorders = after_reload[i].reorders;
+		}
+	}
+	CHECK_EQ(reorders, 0);
+	CHECK_EQ(flips, 1); /* one clean turn, no flapping back */
+	CHECK_EQ(t.seq, 104);
+
+	/* The first message is taken, whatever its sequence; a repeat is not newer. */
+	memset(&t, 0, sizeof(t));
+	CHECK(cg_split_tail_newer(&t, 0xfffffff0u));
+	CHECK(!cg_split_tail_newer(&t, 0xfffffff0u));
+	CHECK(!cg_split_tail_newer(&t, 0xffffffe0u));
+	/* Serial arithmetic across the wrap, as the replay window. */
+	CHECK(cg_split_tail_newer(&t, 0x10u));
+	CHECK(!cg_split_tail_newer(&t, 0xfffffff8u));
+	CHECK_EQ(t.seq, 0x10u);
+	/* A server back from a restart starts 2^20 (CG_SEQ_LEAP) past the newest
+	 * the client took: newer. A message from before it, still on its way, is
+	 * not. */
+	CHECK(cg_split_tail_newer(&t, 0x10u + CG_SEQ_LEAP));
+	CHECK(!cg_split_tail_newer(&t, 0x11u));
+	/* Anything within 2^31 ahead is newer (the ctl window takes 8128 behind). */
+	CHECK(cg_split_tail_newer(&t, 0x10u + CG_SEQ_LEAP + 0x7fffffffu));
+}
+
 void test_split(void)
 {
 	test_split_proportions();
@@ -534,4 +579,5 @@ void test_split(void)
 	test_split_flag();
 	test_split_stale();
 	test_split_modes();
+	test_split_tail();
 }

@@ -160,6 +160,7 @@ struct client {
 	uint16_t dup0;             /* of those, the weight-0 links: they carry every packet */
 	int peer_bond;             /* the newest probe reply had a bonding tail (proto.h) */
 	int peer_reorders;         /* and it said the server reorders: split = on splits */
+	struct cg_split_tail tail; /* which reply that was (split.h) */
 	int8_t pick[CG_BATCH]; /* per packet of an upload batch: its one link (split), or -1 (every carrier) */
 	uint32_t up_max;     /* largest WireGuard datagram since the last path check */
 	uint32_t up_largest; /* the same over the last check period, for the status */
@@ -1083,10 +1084,14 @@ static void on_probe_reply(struct client *c, struct link *l, const struct cg_hdr
 	uint32_t rtt;
 
 	cg_probe_info_read(&pi, payload);
-	/* Whether the server reorders, from the newest reply: split = on
-	 * follows it from the next batch (an older server sends no tail). */
-	c->peer_bond = cg_probe_bond_read(&pb, payload, plen);
-	c->peer_reorders = pb.reorders;
+	/* Whether the server reorders, from the newest reply sent (not the
+	 * last to arrive: one sent before a reload may come later on a slow
+	 * link): split = on follows it from the next batch (an older server
+	 * sends no tail). */
+	if (cg_split_tail_newer(&c->tail, h->seq)) {
+		c->peer_bond = cg_probe_bond_read(&pb, payload, plen);
+		c->peer_reorders = pb.reorders;
+	}
 	/* Each probe is answered once: a copy of this reply replayed later
 	 * cannot count for epoch.h. */
 	cg_echo_take(&l->rxl.probes, pi.echo_ts, now_ms, CG_ECHO_MAX_AGE_MS);

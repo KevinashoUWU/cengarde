@@ -146,6 +146,33 @@ static inline int cg_split_active(int mode, int peer_reorders, int peer_asks)
 	}
 }
 
+/* Which bonding tail an end follows: the one of the newest control message
+ * sent, by the peer's control sequence (one counter over every link: the
+ * server's replies, the client's probes), not of the last one to arrive.
+ * After a reload the messages sent before it on a slow link arrive after
+ * newer ones on a fast link and would turn back what those said, until the
+ * slow link's next message: an end would split towards a peer that no
+ * longer reorders, and back, for as long as the slowest link's delay. */
+struct cg_split_tail {
+	uint32_t seq; /* of the message taken last */
+	uint8_t seen; /* one was taken */
+};
+
+/* 1 when the verified control message of sequence seq is newer than the
+ * last one taken, which it then becomes: its tail (or its lack of one) is
+ * what the peer says now. 0 for an older one: its tail is left aside. The
+ * replay window drops repeats; a server back from a restart starts its
+ * replies 2^20 past the newest the client took, and a client back from one
+ * is a new session. */
+static inline int cg_split_tail_newer(struct cg_split_tail *t, uint32_t seq)
+{
+	if (t->seen && (int32_t)(seq - t->seq) <= 0)
+		return 0;
+	t->seq = seq;
+	t->seen = 1;
+	return 1;
+}
+
 /* The tail a client writes in its probes on a link (proto.h): weight, the
  * link's share of a split ([link] weight), its own reorder setting, and the
  * request for a split download when its split is on. */

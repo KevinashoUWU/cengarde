@@ -901,13 +901,16 @@ Los paquetes repartidos: en el cliente, `upload.split` y, por enlace,
 enlace. `upload.split_state` dice qué hace el cliente con la subida: `off`,
 `splitting`, `duplicating with < 2 links` (menos de dos enlaces aptos) o
 `waiting for the peer` (`split = on`, hasta que el servidor diga que
-reordena); `upload.server_reorders`, lo que dijo la última respuesta (`null`
-sin cola: un servidor anterior). En cada sesión del servidor, `split_mode`
+reordena); `upload.server_reorders`, lo que dijo la respuesta más nueva
+(`null` sin cola: un servidor anterior). En cada sesión del servidor, `split_mode`
 dice qué hace con la bajada: `off`, `force`, `client` (reparte como pide el
 cliente) o `duplicating` (`split = client`, pero el cliente no lo pide, no
 reordena o no lo dice); `client_reorders` y `client_asks_split`, lo que dijo
-su última sonda (`null` sin cola: un cliente anterior), y por enlace
-`client_weight`, el peso que manda el cliente.
+su sonda más nueva (`null` sin cola: un cliente anterior), y por enlace
+`client_weight`, el peso que manda el cliente. «Más nueva» es por su número
+de secuencia de control, no por la hora de llegada: tras una recarga, las
+sondas o respuestas que salieron antes por un enlace lento llegan después de
+las nuevas por uno rápido, y no deshacen lo que estas dijeron.
 
 ## Protocolo v4
 

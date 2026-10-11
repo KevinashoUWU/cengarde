@@ -157,8 +157,10 @@ struct session {
 	struct cg_split sp;  /* the split's round-robin credits */
 	uint32_t ro_pos;       /* its place in the server's ro_active, plus 1; 0: holds nothing */
 	/* The newest probe's bonding tail (proto.h): whether it had one, the
-	 * client reorders, and asks for a split download (split = client). */
+	 * client reorders, and asks for a split download (split = client); and
+	 * which probe that was (split.h). */
 	uint8_t peer_bond, peer_reorders, peer_asks;
+	struct cg_split_tail tail;
 	struct cg_reorder ro;  /* the upload, back in sequence (reorder.h); about 81 KiB */
 };
 
@@ -921,12 +923,16 @@ static void on_probe(struct server *s, struct session *S, struct path *P, unsign
 		P->interval_ms = P->peer_view.interval_ms;
 	P->peer_muted = !!(h->flags & CG_F_MUTED);
 	/* What split = client follows from the next batch on: whether the
-	 * client reorders and asks for a split download, from its newest probe
-	 * on any path, and this path's weight. A new weight starts the
+	 * client reorders and asks for a split download, from the newest probe
+	 * it sent on any path (not the last to arrive: one sent before a reload
+	 * may come later on a slow path), and this path's weight, from this
+	 * path's newest (each path is FIFO). A new weight starts the
 	 * round-robin even. */
-	S->peer_bond = pb != NULL;
-	S->peer_reorders = pb && pb->reorders;
-	S->peer_asks = pb && pb->split_me;
+	if (cg_split_tail_newer(&S->tail, h->seq)) {
+		S->peer_bond = pb != NULL;
+		S->peer_reorders = pb && pb->reorders;
+		S->peer_asks = pb && pb->split_me;
+	}
 	if (pb && (!P->bond_ok || P->bond_w != pb->weight))
 		cg_split_reset(&S->sp);
 	P->bond_ok = pb != NULL;
