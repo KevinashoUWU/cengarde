@@ -6,9 +6,12 @@
  * non-blocking sendmmsg per uplink, patching only the link byte. A full
  * uplink drops its own copies; it never stalls the others. Link health
  * (health.h) mutes uplinks that lag far behind the fastest one, from the
- * delays the server reports in its probe replies. With split = force
- * (split.h, the lab) a big data packet goes on one link instead, by smooth
- * round-robin among the live, active links whose server answers.
+ * delays the server reports in its probe replies. With split (split.h) a
+ * big data packet goes on one link instead, by smooth round-robin among the
+ * live, active links whose server answers: always with force (the lab,
+ * evenly), and with on by the [link] weights once the server's replies say
+ * it reorders. The probes say whether this end reorders and, with on, ask
+ * the server to split the download by those weights (proto.h's tail).
  * Download: duplicates are recognised by sequence number before the MAC is
  * checked, so only the first copy of each packet pays for verification. A
  * server that started over with a sequence behind the window is recognised
@@ -114,7 +117,7 @@ struct link {
 	int have_down_owd;
 	int peer_muted; /* the server carries no download on this link */
 	uint64_t tx_pkts, tx_bytes, tx_drops, tx_errors;
-	uint64_t tx_split; /* of tx_pkts, packets split (split.h) that went on this link only */
+	uint64_t tx_split; /* of tx_pkts, split packets (split.h): its share, or all of them with weight 0 */
 	struct cg_probe_info peer_view; /* server's view of this path (upload) */
 	uint64_t peer_view_ms;
 	struct cg_rxl rxl; /* as the download sees it: generation, last packet, probe echoes */
@@ -153,6 +156,10 @@ struct client {
 	uint64_t up_pkts, up_bytes, up_toobig;
 	uint64_t up_split;   /* of up_pkts, packets split (split.h) instead of copied to every link */
 	struct cg_split sp;  /* the split's round-robin credits */
+	uint16_t lw[CG_MAX_LINKS]; /* the [link] weights of the links in use (split = on), 1 without a section */
+	uint16_t dup0;             /* of those, the weight-0 links: they carry every packet */
+	int peer_bond;             /* the newest probe reply had a bonding tail (proto.h) */
+	int peer_reorders;         /* and it said the server reorders: split = on splits */
 	int8_t pick[CG_BATCH]; /* per packet of an upload batch: its one link (split), or -1 (every carrier) */
 	uint32_t up_max;     /* largest WireGuard datagram since the last path check */
 	uint32_t up_largest; /* the same over the last check period, for the status */
@@ -671,6 +678,31 @@ static void link_open(struct client *c, struct link *l, const struct cg_iface *i
 		cg_addr_str(&l->remote, b, sizeof(b)), (int)(l - c->link));
 }
 
+/* The [link] weights of the links in use, for split = on (1 without a
+ * section), and the weight-0 ones. Returns 1 when they changed, which
+ * starts the round-robin even again. */
+static int weights_update(struct client *c)
+{
+	uint16_t w[CG_MAX_LINKS] = { 0 }, dup0 = 0;
+
+	for (int i = 0; i < CG_MAX_LINKS; i++) {
+		const struct cg_link_cfg *lc;
+
+		if (!c->link[i].used)
+			continue;
+		lc = cg_config_link(c->cfg, c->link[i].ifname);
+		w[i] = (uint16_t)(lc ? lc->weight : 1);
+		if (!w[i])
+			dup0 |= (uint16_t)(1u << i);
+	}
+	c->dup0 = dup0;
+	if (!memcmp(w, c->lw, sizeof(w)))
+		return 0;
+	memcpy(c->lw, w, sizeof(w));
+	cg_split_reset(&c->sp);
+	return 1;
+}
+
 /* Brings sockets in line with the interfaces netlink reports. */
 static void reconcile(struct client *c, uint64_t now_ms)
 {
@@ -728,6 +760,7 @@ static void reconcile(struct client *c, uint64_t now_ms)
 				   : l->why == WHY_DOWN ? "interface down"
 							: why_name[l->why]);
 	}
+	weights_update(c);
 	c->next_reconcile_ms = now_ms + RECONCILE_MS;
 }
 
@@ -857,20 +890,38 @@ static void path_check(struct client *c, uint64_t now_ms)
 	c->next_path_ms = now_ms + RECONCILE_MS;
 }
 
+/* Whether the upload is split now (split.h): always with force, once the
+ * server's replies say it reorders with on. */
+static int split_active(const struct client *c)
+{
+	return cg_split_active(c->cfg->split, c->peer_reorders, 0);
+}
+
+/* The weights of the split and its weight-0 links: even with force, the
+ * [link] weights with on. */
+static const uint16_t *split_weights(const struct client *c, uint16_t *dup0)
+{
+	if (c->cfg->split == CG_SPLIT_FORCE) {
+		*dup0 = 0;
+		return split_equal;
+	}
+	*dup0 = c->dup0;
+	return c->lw;
+}
+
 /* The links that may take a share of a split upload (split.h): live and
  * carrying, not muted for delay (guard G1: never a muted, standby or
  * stalled link), and whose server answered within CG_SPLIT_STALE_PROBES of
  * their probe interval (guard G3: a dead link loses its share in about
  * 300 ms instead of the 1.3 s a stall takes). The interval is the longer of
  * the last two announced: when traffic starts, the last reply may still be
- * one of the idle interval's. Fewer than 2 make the split duplicate
- * everything (guard G2). Only split = force splits for now: on waits for
- * the server to say it reorders. */
+ * one of the idle interval's. Fewer than 2 with a weight make the split
+ * duplicate everything (guard G2). None while the upload is not split. */
 static uint16_t split_eligible(const struct client *c, uint16_t live, uint16_t carry, uint64_t now_ms)
 {
 	uint16_t e = 0;
 
-	if (c->cfg->split != CG_SPLIT_FORCE)
+	if (!split_active(c))
 		return 0;
 	for (int i = 0; i < CG_MAX_LINKS; i++) {
 		const struct link *l = &c->link[i];
@@ -886,23 +937,27 @@ static uint16_t split_eligible(const struct client *c, uint16_t live, uint16_t c
 /* What the split does with the upload now, for the status. */
 static const char *split_state(const struct client *c, uint64_t now_ms)
 {
-	uint16_t present, live, carry, e;
+	uint16_t present, live, carry, e, dup0;
+	const uint16_t *w = split_weights(c, &dup0);
+	int n = 0;
 
 	if (c->cfg->split == CG_SPLIT_OFF)
 		return "off";
-	if (c->cfg->split == CG_SPLIT_ON)
-		return "waiting for the peer"; /* the capability exchange comes later */
+	if (!split_active(c))
+		return "waiting for the peer"; /* on: no reply yet says the server reorders */
 	link_masks(c, now_ms, &present, &live);
 	carry = cg_health_carriers(c->uh, CG_MAX_LINKS, present, live);
 	e = split_eligible(c, live, carry, now_ms);
-	return e & (e - 1) ? "splitting" : "duplicating with < 2 links";
+	for (int i = 0; i < CG_MAX_LINKS; i++)
+		n += (e >> i & 1) && w[i] && !(dup0 >> i & 1);
+	return n >= 2 ? "splitting" : "duplicating with < 2 links";
 }
 
 /* Sends the m packets prepared in hdr/oiov: each on the links pick[] says
- * (every carrying link, health.h, or its one link when split), and one
- * duplicated packet in mute_trickle on the other live links. live and carry
- * as when the packets were picked. */
-static void send_links(struct client *c, int m, uint64_t now_ms, uint16_t live, uint16_t carry)
+ * (every carrying link, health.h, or its one link and the weight-0 links of
+ * dup0 when split), and one duplicated packet in mute_trickle on the other
+ * live links. live and carry as when the packets were picked. */
+static void send_links(struct client *c, int m, uint64_t now_ms, uint16_t live, uint16_t carry, uint16_t dup0)
 {
 	int ids[CG_MAX_LINKS], n = 0, first = 0;
 
@@ -920,7 +975,7 @@ static void send_links(struct client *c, int m, uint64_t now_ms, uint16_t live, 
 
 		if (carry >> i & 1) {
 			for (int j = 0; j < m; j++)
-				if (cg_split_dst(c->pick[j], carry, 0) >> i & 1)
+				if (cg_split_dst(c->pick[j], carry, dup0) >> i & 1)
 					sel[k++] = j;
 		} else if ((live >> i & 1) && c->cfg->mute_trickle) {
 			for (int j = 0; j < m; j++)
@@ -958,8 +1013,9 @@ static void send_links(struct client *c, int m, uint64_t now_ms, uint16_t live, 
 static void wg_read(struct client *c)
 {
 	for (int round = 0; round < CG_MAX_ROUNDS; round++) {
-		int n = cg_rx(c->wg_fd, &c->in), m = 0;
-		uint16_t present, live, carry, elig;
+		int n = cg_rx(c->wg_fd, &c->in), m = 0, split;
+		uint16_t present, live, carry, elig, dup0;
+		const uint16_t *w;
 		uint64_t now_us, now_ms;
 
 		if (n <= 0)
@@ -971,6 +1027,8 @@ static void wg_read(struct client *c)
 		link_masks(c, now_ms, &present, &live);
 		carry = cg_health_carriers(c->uh, CG_MAX_LINKS, present, live);
 		elig = split_eligible(c, live, carry, now_ms);
+		split = split_active(c);
+		w = split_weights(c, &dup0);
 		for (int i = 0; i < n; i++) {
 			size_t len = c->in.msg[i].msg_len;
 			uint8_t flags = 0;
@@ -992,10 +1050,9 @@ static void wg_read(struct client *c)
 				c->wg_peer = c->in.from[i];
 				c->have_peer = 1;
 			}
-			c->pick[m] = (int8_t)(c->cfg->split == CG_SPLIT_FORCE
-						      ? cg_split_pick(&c->sp, elig, 0, split_equal, c->in.buf[i][0],
-								      (uint32_t)len, c->cfg->split_small, &flags)
-						      : -1);
+			c->pick[m] = (int8_t)(split ? cg_split_pick(&c->sp, elig, dup0, w, c->in.buf[i][0], (uint32_t)len,
+								    c->cfg->split_small, &flags)
+						    : -1);
 			c->up_split += c->pick[m] >= 0;
 			cg_up_header(&c->txs, c->hdr[m], CG_T_DATA, flags, 0, (uint32_t)now_us, c->in.buf[i], len);
 			c->oiov[m][0].iov_base = c->hdr[m];
@@ -1009,20 +1066,27 @@ static void wg_read(struct client *c)
 		}
 		if (m) {
 			c->last_traffic_ms = now_ms;
-			send_links(c, m, now_ms, live, carry);
+			send_links(c, m, now_ms, live, carry, dup0);
 		}
 		if (n < CG_BATCH)
 			return;
 	}
 }
 
+/* A verified probe reply on l: payload, plen bytes (at least
+ * CG_PROBE_INFO_LEN), read at now32 / now_ms. */
 static void on_probe_reply(struct client *c, struct link *l, const struct cg_hdr *h, const uint8_t *payload,
-			   uint32_t now32, uint64_t now_ms)
+			   size_t plen, uint32_t now32, uint64_t now_ms)
 {
 	struct cg_probe_info pi;
+	struct cg_probe_bond pb;
 	uint32_t rtt;
 
 	cg_probe_info_read(&pi, payload);
+	/* Whether the server reorders, from the newest reply: split = on
+	 * follows it from the next batch (an older server sends no tail). */
+	c->peer_bond = cg_probe_bond_read(&pb, payload, plen);
+	c->peer_reorders = pb.reorders;
 	/* Each probe is answered once: a copy of this reply replayed later
 	 * cannot count for epoch.h. */
 	cg_echo_take(&l->rxl.probes, pi.echo_ts, now_ms, CG_ECHO_MAX_AGE_MS);
@@ -1297,7 +1361,7 @@ static void link_read(struct client *c, struct link *l)
 			if (v != CG_RXV_DATA) {
 				rx_verdict_log(c, l, v, now_ms);
 				if (v == CG_RXV_REPLY) {
-					on_probe_reply(c, l, &h, b + CG_HDR_LEN, now32, now_ms);
+					on_probe_reply(c, l, &h, b + CG_HDR_LEN, len - CG_HDR_LEN, now32, now_ms);
 					expect = expect_mask(c);
 					ro_reply(c, &rset, now32, now_ms);
 				} else if (v == CG_RXV_HELLO) {
@@ -1332,7 +1396,7 @@ static void hub_slot(struct client *c, struct cg_rxslot *sl, uint16_t *expect, u
 		return;
 	rx_verdict_log(c, l, v, now_ms);
 	if (v == CG_RXV_REPLY) {
-		on_probe_reply(c, l, &h, sl->buf + CG_HDR_LEN, (uint32_t)sl->t_us, now_ms);
+		on_probe_reply(c, l, &h, sl->buf + CG_HDR_LEN, (size_t)sl->len - CG_HDR_LEN, (uint32_t)sl->t_us, now_ms);
 		*expect = expect_mask(c);
 		ro_reply(c, rset, (uint32_t)now_us, now_us / 1000);
 	} else if (v == CG_RXV_HELLO) {
@@ -1402,7 +1466,10 @@ static void send_probe(struct client *c, struct link *l, uint64_t now_us, uint32
 {
 	unsigned id = (unsigned)(l - c->link);
 	uint64_t now_ms = now_us / 1000;
-	uint8_t pkt[CG_HDR_LEN + CG_PROBE_INFO_LEN];
+	uint8_t pkt[CG_HDR_LEN + CG_PROBE_BOND_LEN];
+	/* The bonding tail (proto.h): this link's weight, whether this end
+	 * reorders, and with split = on the request for a split download. */
+	struct cg_probe_bond pb = cg_split_probe_tail(c->cfg->split, c->cfg->reorder, c->lw[id]);
 	const struct cg_link_rx *rx = &c->rxs.rx[id];
 	/* The cookie, and where our windows stand, for a server that has to
 	 * take the session up (proto.h). */
@@ -1420,7 +1487,8 @@ static void send_probe(struct client *c, struct link *l, uint64_t now_us, uint32
 				  cg_pass_flags(c->cfg->passthrough));
 
 	cg_probe_info_write(pkt + CG_HDR_LEN, &pi);
-	cg_up_header(&c->txs, pkt, CG_T_PROBE, flags, (uint8_t)id, (uint32_t)now_us, pkt + CG_HDR_LEN, CG_PROBE_INFO_LEN);
+	cg_probe_bond_write(pkt + CG_HDR_LEN, &pb);
+	cg_up_header(&c->txs, pkt, CG_T_PROBE, flags, (uint8_t)id, (uint32_t)now_us, pkt + CG_HDR_LEN, CG_PROBE_BOND_LEN);
 	/* A full queue drops the probe like any other packet: that is a measurement, not an error. */
 	if (send(l->fd, pkt, sizeof(pkt), MSG_DONTWAIT) < 0 && errno != EAGAIN && errno != ENOBUFS &&
 	    cg_ratelimit_ok(&l->rl, now_ms, 10000))
@@ -1569,6 +1637,11 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 	/* Splitting the upload (split.h). */
 	cg_json_u64(j, "split", c->up_split);
 	cg_json_str(j, "split_state", split_state(c, now_ms));
+	/* What the newest probe reply says (null: no tail, an older server). */
+	if (c->peer_bond)
+		cg_json_bool(j, "server_reorders", c->peer_reorders);
+	else
+		cg_json_null(j, "server_reorders");
 	cg_json_end(j, '}');
 	cg_json_obj(j, "download");
 	cg_json_u64(j, "packets", c->down_pkts);
@@ -1647,6 +1720,7 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 		cg_json_u64(j, "tx_drops", l->tx_drops);
 		cg_json_u64(j, "tx_errors", l->tx_errors);
 		cg_json_u64(j, "tx_split", l->tx_split);
+		cg_json_u64(j, "weight", c->lw[i]); /* its share with split = on */
 		cg_json_u64(j, "rx_first", c->rxs.rx[i].wins);
 		cg_json_u64(j, "rx_duplicate", c->rxs.rx[i].dups);
 		cg_json_u64(j, "rx_late", c->rxs.rx[i].late);
@@ -1782,6 +1856,7 @@ static void reload_start(struct client *c)
 static void apply_config(struct client *c, struct cg_config *next, uint64_t now_ms)
 {
 	struct cg_config *old = c->cfg;
+	int bond;
 
 	c->cfg = next;
 	c->txs.k_tx = next->key;
@@ -1795,6 +1870,9 @@ static void apply_config(struct client *c, struct cg_config *next, uint64_t now_
 		ro_flush(c, now_ms);
 	if (old->split != next->split)
 		cg_split_reset(&c->sp);
+	/* The upload follows split and the weights from the next batch; the
+	 * server learns them, and reorder, from the probes that go out below. */
+	bond = old->split != next->split || old->reorder != next->reorder || weights_update(c);
 	cg_log_level_set(c->run->verbose ? CG_LOG_DEBUG : next->log_level);
 	if (strcmp(old->status_file, next->status_file)) {
 		cg_status_writer_stop(&c->sw);
@@ -1831,6 +1909,12 @@ static void apply_config(struct client *c, struct cg_config *next, uint64_t now_
 	cg_config_free(old);
 	free(old);
 	reconcile(c, now_ms);
+	/* A probe on every link at once: the server stops (or starts) splitting
+	 * the download within a round trip, not at the next interval. */
+	if (bond)
+		for (int i = 0; i < CG_MAX_LINKS; i++)
+			if (link_up(&c->link[i]))
+				send_probe(c, &c->link[i], cg_now_us(), probe_interval(c, now_ms));
 }
 
 /* A load finished. Returns -1 when the process has to stop (a restart that

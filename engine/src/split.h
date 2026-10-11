@@ -24,6 +24,15 @@
  *   split or not. These links are dup0 and are never picked.
  * - CG_F_SPLIT (proto.h) marks a packet that skips at least one carrier. It
  *   is under the MAC, so it is decided before the header is written.
+ * - Whether an end splits at all (cg_split_active) depends on its split
+ *   setting (config.h) and on what the peer's newest probe tail says
+ *   (cg_probe_bond, proto.h; cg_split_probe_tail and cg_split_reply_tail are
+ *   what each end writes in its own):
+ *   force always (the lab); a client's on once the server says it reorders,
+ *   with its [link] weights; a server's client when the client asks for it
+ *   and says it reorders, with the weights the client sends per link; off
+ *   never. A peer without the tail says neither, so nothing is split towards
+ *   an engine that cannot put it back in order.
  *
  * Without the reorderer at the receiving end, and the steps that follow (loss
  * detection per link, a queue per link), a split stream is slower and less
@@ -38,7 +47,8 @@
 #include <string.h>
 
 #include "arrival.h" /* CG_MAX_LINKS */
-#include "proto.h"   /* CG_F_SPLIT */
+#include "config.h"  /* enum cg_split_mode */
+#include "proto.h"   /* CG_F_SPLIT, struct cg_probe_bond */
 #include "wgsize.h"  /* CG_WGS_DATA */
 
 /* Guard G3: a link with no verified packet from the peer for more than this
@@ -117,6 +127,47 @@ static inline uint16_t cg_split_dst(int pick, uint16_t carriers, uint16_t dup0)
 	if (pick < 0)
 		return carriers;
 	return (uint16_t)(((1u << pick) | dup0) & carriers);
+}
+
+/* Whether an end with split setting mode (enum cg_split_mode) splits what it
+ * sends, given the peer's newest probe tail: peer_reorders and peer_asks are
+ * its CG_BOND_REORDERS and CG_BOND_SPLIT_ME (0 without a tail). */
+static inline int cg_split_active(int mode, int peer_reorders, int peer_asks)
+{
+	switch (mode) {
+	case CG_SPLIT_FORCE:
+		return 1;
+	case CG_SPLIT_ON: /* a client: once the server reorders */
+		return !!peer_reorders;
+	case CG_SPLIT_CLIENT: /* a server: when the client asks and reorders */
+		return peer_reorders && peer_asks;
+	default:
+		return 0;
+	}
+}
+
+/* The tail a client writes in its probes on a link (proto.h): weight, the
+ * link's share of a split ([link] weight), its own reorder setting, and the
+ * request for a split download when its split is on. */
+static inline struct cg_probe_bond cg_split_probe_tail(int mode, int reorders, uint32_t weight)
+{
+	struct cg_probe_bond b = { 0 };
+
+	b.weight = (uint16_t)(weight > CG_BOND_WEIGHT_MAX ? CG_BOND_WEIGHT_MAX : weight);
+	b.reorders = !!reorders;
+	b.split_me = mode == CG_SPLIT_ON;
+	return b;
+}
+
+/* The tail a server writes in a reply: its reorder setting only. It never
+ * asks for anything: the client's upload split follows the server's
+ * reordering alone. */
+static inline struct cg_probe_bond cg_split_reply_tail(int reorders)
+{
+	struct cg_probe_bond b = { 0 };
+
+	b.reorders = !!reorders;
+	return b;
 }
 
 /* Guard G3: whether a link whose peer was last heard from at last_rx_ms

@@ -133,6 +133,29 @@ void cg_probe_info_read(struct cg_probe_info *pi, const uint8_t in[CG_PROBE_INFO
 	pi->tx_next = get32(in + 36);
 }
 
+void cg_probe_bond_write(uint8_t *payload, const struct cg_probe_bond *b)
+{
+	uint32_t w = b->weight > CG_BOND_WEIGHT_MAX ? CG_BOND_WEIGHT_MAX : b->weight;
+
+	put32(payload + CG_PROBE_INFO_LEN,
+	      w | (b->reorders ? CG_BOND_REORDERS : 0) | (b->split_me ? CG_BOND_SPLIT_ME : 0));
+}
+
+int cg_probe_bond_read(struct cg_probe_bond *b, const uint8_t *payload, size_t plen)
+{
+	uint32_t v, w;
+
+	memset(b, 0, sizeof(*b));
+	if (plen < CG_PROBE_BOND_LEN)
+		return 0;
+	v = get32(payload + CG_PROBE_INFO_LEN);
+	w = v & CG_BOND_WEIGHT;
+	b->weight = (uint16_t)(w > CG_BOND_WEIGHT_MAX ? CG_BOND_WEIGHT_MAX : w);
+	b->reorders = !!(v & CG_BOND_REORDERS);
+	b->split_me = !!(v & CG_BOND_SPLIT_ME);
+	return 1;
+}
+
 void cg_hello_write(uint8_t out[CG_HELLO_LEN], const struct cg_hello *hl)
 {
 	put32(out, hl->echo_ts);

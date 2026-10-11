@@ -38,10 +38,13 @@
  * one, or its deadline; the sessions holding packets are on a list, and the
  * nearest deadline among them caps the loop's wait. Link health
  * (health.h) mutes the download on paths that lag far behind the fastest
- * one, from the delays the client reports in its probes. With split = force
- * (split.h, the lab) a big data packet goes down one path instead, by
- * smooth round-robin among the live, active paths the client still
- * answers on.
+ * one, from the delays the client reports in its probes. With split
+ * (split.h) a big data packet goes down one path instead, by smooth
+ * round-robin among the live, active paths the client still answers on:
+ * always with force (the lab, evenly), and with client (the default) when
+ * the client's probes ask for it and say it reorders, by the weights they
+ * carry per link. Replies to such probes say whether this end reorders
+ * (proto.h's tail), which is what the client's upload split follows.
  *
  * Several addresses: on a wildcard listen address the server learns, per
  * path and from verified packets only, which of its addresses the client
@@ -98,7 +101,7 @@
 #include "wgwatch.h"
 
 /* split = force shares the packets out evenly (split.h): every path weighs
- * 1. The client's weights come with split = client. */
+ * 1. With split = client, the weights the client sends per link. */
 static const uint16_t split_equal[CG_MAX_LINKS] = { 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 };
 _Static_assert(CG_MAX_LINKS == 16, "split_equal has a weight per path");
 
@@ -121,8 +124,10 @@ struct path {
 	uint64_t last_owd_ms; /* last probe saying the client hears our replies */
 	uint32_t interval_ms; /* the client's probe interval on this path */
 	int peer_muted;       /* the client carries no upload on this path */
+	uint16_t bond_w;      /* the weight its newest probe's tail gives it (split = client) */
+	uint8_t bond_ok;      /* that probe had a tail */
 	uint64_t tx_pkts, tx_bytes, tx_drops;
-	uint64_t tx_split;     /* of tx_pkts, packets split (split.h) that went down this path only */
+	uint64_t tx_split;     /* of tx_pkts, split packets (split.h): its share, or all of them with weight 0 */
 	uint64_t moves;        /* changes of address, at either end */
 	uint64_t local_errors; /* datagrams that could not leave: our address gone, no route */
 	struct cg_probe_info peer_view; /* client's view of this path (download) */
@@ -151,6 +156,9 @@ struct session {
 	uint64_t down_split; /* of down_pkts, packets split (split.h) instead of copied to every path */
 	struct cg_split sp;  /* the split's round-robin credits */
 	uint32_t ro_pos;       /* its place in the server's ro_active, plus 1; 0: holds nothing */
+	/* The newest probe's bonding tail (proto.h): whether it had one, the
+	 * client reorders, and asks for a split download (split = client). */
+	uint8_t peer_bond, peer_reorders, peer_asks;
 	struct cg_reorder ro;  /* the upload, back in sequence (reorder.h); about 81 KiB */
 };
 
@@ -262,7 +270,7 @@ struct server {
 	uint32_t q_sess[CG_BATCH];
 	uint16_t q_pool[CG_BATCH];
 	int8_t pick[CG_BATCH]; /* per packet of a download batch: its one path (split), or -1 (every carrier) */
-	uint8_t reply[CG_BATCH][CG_HDR_LEN + CG_PROBE_INFO_LEN];
+	uint8_t reply[CG_BATCH][CG_HDR_LEN + CG_PROBE_BOND_LEN];
 	struct sockaddr_storage reply_to[CG_BATCH];
 	union cg_ctl_tx reply_ctl[CG_BATCH];
 	struct session *reply_sess[CG_BATCH]; /* whose path each reply is for */
@@ -747,10 +755,13 @@ static int pass_told(const struct server *s, const struct client *C)
 }
 
 /* up_owd: the probe's trip up this path, timed here, for the client's link
- * health. */
+ * health. bond: the probe had a bonding tail, so the reply has one too,
+ * saying whether this end reorders (never larger than the probe). */
 static void queue_reply(struct server *s, int *nr, struct session *S, unsigned link, const struct cg_hdr *probe,
-			uint32_t up_owd, uint64_t now_us)
+			uint32_t up_owd, int bond, uint64_t now_us)
 {
+	size_t plen = bond ? CG_PROBE_BOND_LEN : CG_PROBE_INFO_LEN;
+	struct cg_probe_bond pb = cg_split_reply_tail(s->cfg->reorder);
 	const struct client *C = client_of(s, S);
 	const struct path *P = &S->path[link];
 	uint8_t *r = s->reply[*nr];
@@ -772,10 +783,12 @@ static void queue_reply(struct server *s, int *nr, struct session *S, unsigned l
 			    .ts = (uint32_t)now_us };
 
 	cg_probe_info_write(r + CG_HDR_LEN, &pi);
-	cg_hdr_write(r, &h, C->key + CG_SIPHASH_KEY_LEN, r + CG_HDR_LEN, CG_PROBE_INFO_LEN);
+	if (bond)
+		cg_probe_bond_write(r + CG_HDR_LEN, &pb);
+	cg_hdr_write(r, &h, C->key + CG_SIPHASH_KEY_LEN, r + CG_HDR_LEN, plen);
 	s->reply_to[*nr] = P->addr;
 	s->riov[*nr].iov_base = r;
-	s->riov[*nr].iov_len = CG_HDR_LEN + CG_PROBE_INFO_LEN;
+	s->riov[*nr].iov_len = CG_HDR_LEN + plen;
 	memset(&s->rmsg[*nr].msg_hdr, 0, sizeof(s->rmsg[*nr].msg_hdr));
 	s->rmsg[*nr].msg_hdr.msg_name = &s->reply_to[*nr];
 	s->rmsg[*nr].msg_hdr.msg_namelen = cg_addr_len(&s->reply_to[*nr]);
@@ -889,8 +902,10 @@ static void flush_replies(struct server *s, int fd, int nr, uint64_t now_ms)
 	}
 }
 
+/* A verified probe on P (link of S), with its info and bonding tail (pb,
+ * NULL: none, an older client). */
 static void on_probe(struct server *s, struct session *S, struct path *P, unsigned link, const struct cg_hdr *h,
-		     const struct cg_probe_info *pi, uint64_t now_ms)
+		     const struct cg_probe_info *pi, const struct cg_probe_bond *pb, uint64_t now_ms)
 {
 	struct client *C = client_of(s, S);
 
@@ -905,6 +920,17 @@ static void on_probe(struct server *s, struct session *S, struct path *P, unsign
 	if (P->peer_view.interval_ms >= 100 && P->peer_view.interval_ms <= 600000)
 		P->interval_ms = P->peer_view.interval_ms;
 	P->peer_muted = !!(h->flags & CG_F_MUTED);
+	/* What split = client follows from the next batch on: whether the
+	 * client reorders and asks for a split download, from its newest probe
+	 * on any path, and this path's weight. A new weight starts the
+	 * round-robin even. */
+	S->peer_bond = pb != NULL;
+	S->peer_reorders = pb && pb->reorders;
+	S->peer_asks = pb && pb->split_me;
+	if (pb && (!P->bond_ok || P->bond_w != pb->weight))
+		cg_split_reset(&S->sp);
+	P->bond_ok = pb != NULL;
+	P->bond_w = pb ? pb->weight : 0;
 	/* The client timed our last reply's trip down this path. */
 	if (h->flags & CG_F_OWD) {
 		P->last_owd_ms = now_ms;
@@ -1036,6 +1062,8 @@ static void listen_read(struct server *s, struct lane *ln)
 			size_t len = s->in.msg[i].msg_len;
 			const struct sockaddr_storage *from = &s->in.from[i];
 			struct cg_probe_info pi;
+			struct cg_probe_bond pb;
+			int bond = 0;
 			struct cg_replay *w;
 			struct session *S;
 			struct client *C;
@@ -1065,8 +1093,10 @@ static void listen_read(struct server *s, struct lane *ln)
 						"wrong key?)", cg_addr_str(from, a, sizeof(a)), h.hint);
 				continue;
 			}
-			if (h.type == CG_T_PROBE)
+			if (h.type == CG_T_PROBE) {
 				cg_probe_info_read(&pi, b + CG_HDR_LEN);
+				bond = cg_probe_bond_read(&pb, b + CG_HDR_LEN, len - CG_HDR_LEN);
+			}
 			S = lookup(s, &h, b, len, &verified);
 			if (!S) {
 				/* Only a probe takes a session up, and only with its
@@ -1141,8 +1171,8 @@ static void listen_read(struct server *s, struct lane *ln)
 				}
 				P = path_update(s, S, h.link, from, &s->in.msg[i].msg_hdr, now_ms);
 				P->last_rx_ms = now_ms;
-				on_probe(s, S, P, h.link, &h, &pi, now_ms);
-				queue_reply(s, &nr, S, h.link, &h, now32 - h.ts, now_us);
+				on_probe(s, S, P, h.link, &h, &pi, bond ? &pb : NULL, now_ms);
+				queue_reply(s, &nr, S, h.link, &h, now32 - h.ts, bond, now_us);
 				/* Its trip up this path, for the reorderer's deadlines;
 				 * the path may have changed its rset too. */
 				cg_ro_owd(&S->ro, h.link, now32 - h.ts);
@@ -1213,34 +1243,27 @@ static void junk_read(struct server *s)
 
 /* ---- WireGuard -> client ---- */
 
-/* Where a download batch of S goes (health.h): its paths present, live,
- * and those that carry every duplicated packet. */
+/* Where a download batch of S goes: its paths present, live, and those
+ * that carry every duplicated packet (health.h); and with the split
+ * (split.h), the paths that may take a share, their weights and the
+ * weight-0 ones, which carry every packet. */
 struct dpaths {
 	uint16_t present, live, carry;
+	int split;       /* the download is split (cg_split_active) */
+	uint16_t elig;   /* see split_eligible */
+	uint16_t dup0;
+	uint16_t w[CG_MAX_LINKS];
 };
-
-static struct dpaths down_paths(const struct session *S, uint64_t now_ms)
-{
-	struct dpaths d;
-
-	path_masks(S, now_ms, &d.present, &d.live);
-	d.carry = cg_health_carriers(S->dh, CG_MAX_LINKS, d.present, d.live);
-	return d;
-}
 
 /* The paths that may take a share of a split download (split.h): live and
  * carrying, not muted for delay (guard G1), and with a verified packet from
  * the client within CG_SPLIT_STALE_PROBES of the interval it announced on
- * that path (guard G3). Fewer than 2 make the split duplicate everything
- * (guard G2). Only split = force splits for now: client waits for the
- * client to ask for it. */
-static uint16_t split_eligible(const struct server *s, const struct session *S, const struct dpaths *d,
-			       uint64_t now_ms)
+ * that path (guard G3). Fewer than 2 with a weight make the split duplicate
+ * everything (guard G2). */
+static uint16_t split_eligible(const struct session *S, const struct dpaths *d, uint64_t now_ms)
 {
 	uint16_t e = 0;
 
-	if (s->cfg->split != CG_SPLIT_FORCE)
-		return 0;
 	for (int p = 0; p < CG_MAX_LINKS; p++)
 		if (((d->live & d->carry) >> p & 1) && S->dh[p].state == CG_H_ACTIVE &&
 		    !cg_split_stale(S->path[p].last_rx_ms, now_ms, S->path[p].interval_ms))
@@ -1248,20 +1271,51 @@ static uint16_t split_eligible(const struct server *s, const struct session *S, 
 	return e;
 }
 
+static struct dpaths down_paths(const struct server *s, const struct session *S, uint64_t now_ms)
+{
+	struct dpaths d;
+
+	memset(&d, 0, sizeof(d));
+	path_masks(S, now_ms, &d.present, &d.live);
+	d.carry = cg_health_carriers(S->dh, CG_MAX_LINKS, d.present, d.live);
+	d.split = cg_split_active(s->cfg->split, S->peer_reorders, S->peer_asks);
+	if (!d.split)
+		return d;
+	d.elig = split_eligible(S, &d, now_ms);
+	for (int p = 0; p < CG_MAX_LINKS; p++) {
+		/* force: even; client: as the client says, 1 until it does */
+		d.w[p] = s->cfg->split == CG_SPLIT_FORCE ? split_equal[p] : S->path[p].bond_ok ? S->path[p].bond_w : 1;
+		if (s->cfg->split != CG_SPLIT_FORCE && S->path[p].bond_ok && !d.w[p])
+			d.dup0 |= (uint16_t)(1u << p);
+	}
+	return d;
+}
+
+/* What the server does with S's download, for the status: off, force,
+ * client (split as the client asks) or duplicating (split = client, but the
+ * client does not ask for it, does not reorder, or sends no tail). */
+static const char *split_mode(const struct server *s, const struct session *S)
+{
+	if (s->cfg->split == CG_SPLIT_FORCE)
+		return "force";
+	if (s->cfg->split != CG_SPLIT_CLIENT)
+		return "off";
+	return cg_split_active(CG_SPLIT_CLIENT, S->peer_reorders, S->peer_asks) ? "client" : "duplicating";
+}
+
 /* Datagram buf from WireGuard as entry m of a batch down S's paths: split
- * among the paths of eligible when the split says so (split = force), else
- * copied to every carrier. */
+ * among the paths d allows when the download is split, else copied to
+ * every carrier. */
 static void down_prepare(struct server *s, struct session *S, int m, uint8_t *buf, size_t len, uint64_t now_us,
-			 uint16_t eligible)
+			 const struct dpaths *d)
 {
 	const struct client *C = client_of(s, S);
 	struct cg_hdr h = { .type = CG_T_DATA, .hint = C->hint, .session = S->id, .ts = (uint32_t)now_us };
 
 	/* Before the header: CG_F_SPLIT is under the MAC. */
-	s->pick[m] = (int8_t)(s->cfg->split == CG_SPLIT_FORCE
-				      ? cg_split_pick(&S->sp, eligible, 0, split_equal, buf[0], (uint32_t)len,
-						      s->cfg->split_small, &h.flags)
-				      : -1);
+	s->pick[m] = (int8_t)(d->split ? cg_split_pick(&S->sp, d->elig, d->dup0, d->w, buf[0], (uint32_t)len,
+						       s->cfg->split_small, &h.flags)
+				       : -1);
 	S->down_split += s->pick[m] >= 0;
 	h.seq = S->tx_seq++;
 	cg_hdr_write(s->hdr[m], &h, C->key + CG_SIPHASH_KEY_LEN, buf, len);
@@ -1275,9 +1329,9 @@ static void down_prepare(struct server *s, struct session *S, int m, uint8_t *bu
 }
 
 /* Sends the batch of m entries down the paths of S: each on the paths
- * pick[] says (every carrier, or its one path when split), and one
- * duplicated entry in mute_trickle on the other live paths. d: as when the
- * entries were picked. */
+ * pick[] says (every carrier, or its one path and the weight-0 ones when
+ * split), and one duplicated entry in mute_trickle on the other live
+ * paths. d: as when the entries were picked. */
 static void down_send(struct server *s, struct session *S, int m, uint64_t now_ms, const struct dpaths *d)
 {
 	int order[CG_MAX_LINKS], no = 0;
@@ -1296,7 +1350,7 @@ static void down_send(struct server *s, struct session *S, int m, uint64_t now_m
 
 		if (carry >> p & 1) {
 			for (int j = 0; j < m; j++)
-				if (cg_split_dst(s->pick[j], carry, 0) >> p & 1)
+				if (cg_split_dst(s->pick[j], carry, d->dup0) >> p & 1)
 					sel[k++] = j;
 		} else if ((live >> p & 1) && s->cfg->mute_trickle) {
 			for (int j = 0; j < m; j++)
@@ -1344,7 +1398,6 @@ static void wg_read(struct server *s, struct session *S)
 		struct session *N = NULL;
 		struct dpaths d, dn;
 		uint64_t now_us, now_ms;
-		uint16_t elig;
 
 		if (n <= 0)
 			return;
@@ -1352,8 +1405,7 @@ static void wg_read(struct server *s, struct session *S)
 		now_ms = now_us / 1000;
 		/* Where the batch goes, once: the split is decided per packet
 		 * before its header. */
-		d = down_paths(S, now_ms);
-		elig = split_eligible(s, S, &d, now_ms);
+		d = down_paths(s, S, now_ms);
 		/* WireGuard still knows a router that restarted by its old
 		 * session: the handshakes it starts go down the client's newest
 		 * one while that one knocks in vain (wgwatch.h). */
@@ -1373,16 +1425,15 @@ static void wg_read(struct server *s, struct session *S)
 			if (N && t == CG_WG_INITIATION)
 				redir[nr++] = i;
 			else
-				down_prepare(s, S, m++, s->in.buf[i], len, now_us, elig);
+				down_prepare(s, S, m++, s->in.buf[i], len, now_us, &d);
 		}
 		if (m)
 			down_send(s, S, m, now_ms, &d);
 		if (nr) {
 			/* Handshakes, which the split never splits. */
-			dn = down_paths(N, now_ms);
-			elig = split_eligible(s, N, &dn, now_ms);
+			dn = down_paths(s, N, now_ms);
 			for (int r = 0; r < nr; r++)
-				down_prepare(s, N, r, s->in.buf[redir[r]], s->in.msg[redir[r]].msg_len, now_us, elig);
+				down_prepare(s, N, r, s->in.buf[redir[r]], s->in.msg[redir[r]].msg_len, now_us, &dn);
 			down_send(s, N, nr, now_ms, &dn);
 			s->wg_redirects += (uint64_t)nr;
 			if (cg_ratelimit_ok(&s->rl_redirect, now_ms, 60000))
@@ -1634,6 +1685,16 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 		cg_json_u64(j, "download_packets", S->down_pkts);
 		cg_json_u64(j, "download_bytes", S->down_bytes);
 		cg_json_u64(j, "download_split", S->down_split);
+		/* What the server does with this download, and what the client's
+		 * newest probe asked (null: no tail, an older client). */
+		cg_json_str(j, "split_mode", split_mode(s, S));
+		if (S->peer_bond) {
+			cg_json_bool(j, "client_reorders", S->peer_reorders);
+			cg_json_bool(j, "client_asks_split", S->peer_asks);
+		} else {
+			cg_json_null(j, "client_reorders");
+			cg_json_null(j, "client_asks_split");
+		}
 		cg_json_u64(j, "wireguard_drops", S->wg_drops);
 		cg_json_u64(j, "wireguard_unanswered", cg_wgw_knocking(&S->wgw, now_ms) ? S->wgw.unanswered : 0);
 		cg_json_u64(j, "too_big", S->toobig);
@@ -1671,6 +1732,10 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 			cg_json_u64(j, "tx_bytes", P->tx_bytes);
 			cg_json_u64(j, "tx_drops", P->tx_drops);
 			cg_json_u64(j, "tx_split", P->tx_split);
+			if (P->bond_ok)
+				cg_json_u64(j, "client_weight", P->bond_w);
+			else
+				cg_json_null(j, "client_weight");
 			cg_json_u64(j, "moves", P->moves);
 			cg_json_u64(j, "local_errors", P->local_errors);
 			cg_json_u64(j, "rx_first", S->rx[p].wins);

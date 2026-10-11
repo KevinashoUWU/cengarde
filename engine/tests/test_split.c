@@ -457,6 +457,72 @@ static void test_split_stale(void)
 	CHECK(!cg_split_stale(last[1], now, iv));
 }
 
+/* Which end splits (cg_split_active), from its setting and the peer's
+ * tail, and the tails each end writes. */
+static void test_split_modes(void)
+{
+	static const int modes[] = { CG_SPLIT_OFF, CG_SPLIT_ON, CG_SPLIT_CLIENT, CG_SPLIT_FORCE };
+	struct cg_probe_bond b, r;
+	uint8_t pl[CG_PROBE_BOND_LEN] = { 0 };
+
+	for (unsigned m = 0; m < CG_ARRAY_SIZE(modes); m++)
+		for (int ro = 0; ro < 2; ro++)
+			for (int ask = 0; ask < 2; ask++) {
+				int want = modes[m] == CG_SPLIT_FORCE || (modes[m] == CG_SPLIT_ON && ro) ||
+					   (modes[m] == CG_SPLIT_CLIENT && ro && ask);
+
+				CHECK_EQ(cg_split_active(modes[m], ro, ask), want);
+			}
+	CHECK_EQ(cg_split_active(CG_SPLIT_ON, 2, 0), 1); /* any true value */
+	CHECK_EQ(cg_split_active(99, 1, 1), 0);           /* an unknown mode never splits */
+
+	/* The client's probe tail: its weight, its reorder, and with on (only)
+	 * the request. */
+	b = cg_split_probe_tail(CG_SPLIT_ON, 1, 3);
+	CHECK(b.weight == 3 && b.reorders && b.split_me);
+	b = cg_split_probe_tail(CG_SPLIT_FORCE, 1, 0);
+	CHECK(b.weight == 0 && b.reorders && !b.split_me); /* force asks nothing of the peer */
+	b = cg_split_probe_tail(CG_SPLIT_OFF, 0, 2000);
+	CHECK(b.weight == CG_BOND_WEIGHT_MAX && !b.reorders && !b.split_me);
+	/* The server's reply tail: its reorder only. */
+	b = cg_split_reply_tail(1);
+	CHECK(b.weight == 0 && b.reorders && !b.split_me);
+	b = cg_split_reply_tail(0);
+	CHECK(!b.weight && !b.reorders && !b.split_me);
+
+	/* End to end through the wire: a server with split = client splits
+	 * the download only for a client that asks and reorders. */
+	b = cg_split_probe_tail(CG_SPLIT_ON, 1, 1);
+	cg_probe_bond_write(pl, &b);
+	CHECK_EQ(cg_probe_bond_read(&r, pl, sizeof(pl)), 1);
+	CHECK(cg_split_active(CG_SPLIT_CLIENT, r.reorders, r.split_me));
+	CHECK(!cg_split_active(CG_SPLIT_OFF, r.reorders, r.split_me)); /* a server with split off */
+	b = cg_split_probe_tail(CG_SPLIT_ON, 0, 1); /* asks, but does not reorder */
+	cg_probe_bond_write(pl, &b);
+	cg_probe_bond_read(&r, pl, sizeof(pl));
+	CHECK(!cg_split_active(CG_SPLIT_CLIENT, r.reorders, r.split_me));
+	b = cg_split_probe_tail(CG_SPLIT_OFF, 1, 1); /* reorders, does not ask */
+	cg_probe_bond_write(pl, &b);
+	cg_probe_bond_read(&r, pl, sizeof(pl));
+	CHECK(!cg_split_active(CG_SPLIT_CLIENT, r.reorders, r.split_me));
+	CHECK(cg_split_active(CG_SPLIT_FORCE, r.reorders, r.split_me));
+	/* An older client (a 40-byte probe): nothing. */
+	CHECK_EQ(cg_probe_bond_read(&r, pl, CG_PROBE_INFO_LEN), 0);
+	CHECK(!cg_split_active(CG_SPLIT_CLIENT, r.reorders, r.split_me));
+	/* The client's upload with on: once a reply says the server reorders,
+	 * never from an older server or one with reorder off. */
+	b = cg_split_reply_tail(1);
+	cg_probe_bond_write(pl, &b);
+	CHECK_EQ(cg_probe_bond_read(&r, pl, sizeof(pl)), 1);
+	CHECK(cg_split_active(CG_SPLIT_ON, r.reorders, r.split_me));
+	b = cg_split_reply_tail(0);
+	cg_probe_bond_write(pl, &b);
+	cg_probe_bond_read(&r, pl, sizeof(pl));
+	CHECK(!cg_split_active(CG_SPLIT_ON, r.reorders, r.split_me));
+	cg_probe_bond_read(&r, pl, CG_PROBE_INFO_LEN);
+	CHECK(!cg_split_active(CG_SPLIT_ON, r.reorders, r.split_me));
+}
+
 void test_split(void)
 {
 	test_split_proportions();
@@ -467,4 +533,5 @@ void test_split(void)
 	test_split_dst();
 	test_split_flag();
 	test_split_stale();
+	test_split_modes();
 }

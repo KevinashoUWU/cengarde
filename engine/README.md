@@ -387,12 +387,12 @@ perder un paquete del túnel y vuelve, sin recaer, cuando se le quita
 ## Reordenamiento y reparto (`reorder`, `split`)
 
 Las perillas del bonding (historia
-[012](../docs/historias/012-bonding.md)). **Cada extremo ya reordena lo que
-recibe** (el cliente la bajada; el servidor la subida de cada sesión), y
-`split = force` reparte lo que envía; `on` y `client` esperan el intercambio
-de capacidades del paso siguiente del plan y, mientras tanto, duplican. Con
-redundancia pura y los valores por omisión no retiene nada: el orden de
-entrega es el de siempre.
+[012](../docs/historias/012-bonding.md)). **Cada extremo reordena lo que
+recibe** (el cliente la bajada; el servidor la subida de cada sesión) y
+reparte lo que envía según `split`: `force` siempre (el laboratorio); `on`,
+en el cliente, cuando el servidor dice que reordena; `client`, en el
+servidor, cuando el cliente lo pide y reordena. Con redundancia pura y los
+valores por omisión no retiene nada: el orden de entrega es el de siempre.
 
 - **`reorder` (`yes`), en los dos extremos:** el receptor pone en secuencia
   los datos verificados del otro extremo antes de entregarlos a WireGuard.
@@ -426,19 +426,30 @@ entrega es el de siempre.
   la bajada con los pesos de cada enlace. `client` hace que el servidor
   reparta la bajada solo si el cliente lo pide y reordena. `force` reparte
   a partes iguales, sin pesos y sin consultar al otro extremo: es para el
-  laboratorio. **Hoy solo `force` reparte:** `on` y `client` duplican todo
-  hasta que los extremos intercambien sus capacidades por las sondas (el
-  paso siguiente del plan), y el estado lo dice (`waiting for the peer`).
-  Solo reciben parte los enlaces vivos y activos (ni silenciados ni en
-  espera) cuyo otro extremo respondió en los últimos tres intervalos de
-  sondeo; con menos de dos, todo va por todos.
+  laboratorio. Los extremos se lo dicen en las sondas (ver [Protocolo
+  v4](#protocolo-v4)): cada sonda del cliente lleva el peso del enlace, si
+  el cliente reordena y, con `on`, si pide que le repartan la bajada; cada
+  respuesta del servidor, si el servidor reordena. Así, la subida del
+  cliente con `on` depende solo de que el servidor reordene, y la bajada
+  depende del `split` del servidor. Con un extremo de una versión anterior,
+  que no lo dice, no se reparte nada (`waiting for the peer`). Solo reciben
+  parte los enlaces vivos y activos (ni silenciados ni en espera) cuyo otro
+  extremo respondió en los últimos tres intervalos de sondeo; con menos de
+  dos, todo va por todos.
+- **Recarga:** apagar `split` vuelve a duplicar desde el lote siguiente en
+  ese extremo. El cliente manda una sonda por cada enlace al recargar, así
+  que el servidor deja de repartir la bajada (o empieza) en un viaje de ida
+  y vuelta; si es el servidor el que apaga `reorder`, el cliente deja de
+  repartir la subida con la respuesta siguiente, dentro de un intervalo de
+  sondeo (100 ms con tráfico).
 - **`split_small` (256; 0–2048 bytes):** los datagramas de hasta ese tamaño,
   los handshakes y todo lo que se envía con menos de dos enlaces aptos van
   siempre por todos los enlaces.
 - **`weight` en `[link X]` (cliente; 1, de 0 a 1000):** la parte del reparto
-  que lleva ese enlace con `split = on` (`force` no los mira). Con 0, el
-  enlace lleva copia de todos los paquetes, repartidos o no. Una interfaz
-  sin sección `[link]` pesa 1.
+  que lleva ese enlace con `split = on`, en la subida y en la bajada (el
+  cliente se los manda al servidor en las sondas; `force` no los mira). Con
+  0, el enlace lleva copia de todos los paquetes, repartidos o no. Una
+  interfaz sin sección `[link]` pesa 1.
 
 **El reparto es experimental.** Sin los pasos que siguen en el plan (detección
 de pérdidas por enlace, control de las colas de los módems) reparte peor que
@@ -882,11 +893,18 @@ enlaces que espera el reordenador (`null` sin medida). Su ventana ocupa
 solo lo que llega a retener.
 
 Los paquetes repartidos: en el cliente, `upload.split` y, por enlace,
-`tx_split` (los que salieron solo por él); en el servidor, `download_split`
-por sesión y `tx_split` por enlace. `upload.split_state` dice qué hace el
-cliente con la subida: `off`, `splitting`, `duplicating with < 2 links`
-(menos de dos enlaces aptos) o `waiting for the peer` (`split = on`, hasta
-que el servidor diga que reordena).
+`tx_split` (los que salieron por él: su parte, o todos con peso 0) y
+`weight`; en el servidor, `download_split` por sesión y `tx_split` por
+enlace. `upload.split_state` dice qué hace el cliente con la subida: `off`,
+`splitting`, `duplicating with < 2 links` (menos de dos enlaces aptos) o
+`waiting for the peer` (`split = on`, hasta que el servidor diga que
+reordena); `upload.server_reorders`, lo que dijo la última respuesta (`null`
+sin cola: un servidor anterior). En cada sesión del servidor, `split_mode`
+dice qué hace con la bajada: `off`, `force`, `client` (reparte como pide el
+cliente) o `duplicating` (`split = client`, pero el cliente no lo pide, no
+reordena o no lo dice); `client_reorders` y `client_asks_split`, lo que dijo
+su última sonda (`null` sin cola: un cliente anterior), y por enlace
+`client_weight`, el peso que manda el cliente.
 
 ## Protocolo v4
 
@@ -915,12 +933,20 @@ Desde la 0.5.0 (historia 010, PR 3d2). La cabecera sigue midiendo 24 bytes:
   secuencia, con su propia ventana. La de DATA ya no tiene huecos que no
   sean pérdidas (lo que necesita el reordenador del bonding), y un enlace
   muy atrasado sigue entregando sus respuestas.
-- **Reservado para el bonding** (historia 012): en DATA, los bits de ECN
-  (0x03) y la marca de reparto (0x04: este paquete no va por todos los
-  enlaces que llevan datos, aunque otro pueda llevar una copia), que hoy se
-  envían en 0 y se ignoran; la carga de las sondas puede crecer (se leen los
-  campos conocidos y se ignora el resto), para el informe por enlace y las
-  sondas rellenadas.
+- **Para el bonding** (historia 012): en DATA, los bits de ECN (0x03,
+  reservados: se envían en 0 y se ignoran) y la marca de reparto (0x04: este
+  paquete no va por todos los enlaces que llevan datos, aunque otro pueda
+  llevar una copia); la carga de las sondas puede crecer (se leen los campos
+  conocidos y se ignora el resto), para el informe por enlace y las sondas
+  rellenadas.
+- **La cola de bonding de las sondas:** 4 bytes más tras los 40 de
+  siempre, una palabra cuyos bits 0–9 son el peso del enlace (0–1000), el
+  16 dice "reordeno lo que recibo" y el 17 "repárteme lo que me envías"; el
+  resto va en 0 y se ignora. El cliente la manda en cada sonda; el servidor
+  la devuelve, solo con el bit 16, únicamente a una sonda que la traía, así
+  que una respuesta nunca es más grande que su sonda. Sigue siendo la
+  versión 4: un motor anterior lee los 40 bytes e ignora la cola, y uno nuevo
+  no lee cola de una sonda o respuesta de 40.
 
 `sudo bench/lab.sh replay` lo prueba con `bench/cgprobe`, que fabrica sondas
 con la clave del laboratorio.
