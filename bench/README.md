@@ -33,7 +33,7 @@ para `stream`; y curl, para las demos del Go.
 ## Uso
 
 ```sh
-sudo bench/lab.sh build    # udpgen, protoclient, ringbench, cgprobe, macbench y cengarde en bench/bin/
+sudo bench/lab.sh build    # udpgen, protoclient, ringbench, robench, cgprobe, macbench y cengarde en bench/bin/
 sudo bench/lab.sh ci       # lo que corre el CI: smoke, health, control y los escenarios de lab.d con LAB_CI=1
 sudo bench/lab.sh smoke    # prueba de humo de cengarde
 sudo bench/lab.sh health   # salud de enlaces: un enlace con 500 ms de cola, subida y bajada (historia 006)
@@ -56,6 +56,8 @@ sudo LAB_UDPMEM=1 bench/lab.sh udpmem  # el presupuesto de recepción frente a n
 sudo bench/lab.sh mtstall  # un hilo de enlace sin CPU no frena a los demás (link_threads = on; lab.d, va en ci)
 sudo bench/lab.sh mtlat    # latencia y CPU de legacy, off, on y on con busy_poll a 2, 20 y 80 kpps (lab.d, a mano)
 sudo bench/lab.sh soak     # 1 h por modo (off y on): tráfico variado, pérdidas, enlaces que caen, recargas (lab.d, a mano)
+sudo bench/lab.sh reorder  # el reordenador del receptor y el reparto (paso 1 de la Fase 5): IMIX con desbordes y cabeza de línea; sin ellos en el motor, "skip" (lab.d, a mano)
+bench/bin/robench          # ns por paquete de engine/src/reorder.h solo: en orden, 50/50 con 50 ms de diferencia, IMIX con bypass y desborde (1 s, sin root)
 sudo CLIENT_EXTRA="link_threads = on" bench/lab.sh ci   # el ci con los hilos por enlace (el CI corre legacy, off y on)
 
 sudo ENGINE=go bench/lab.sh build  # además, el engarde Go (normal y -race)
@@ -584,6 +586,52 @@ splitnoro` en `equal reorder50 reorder150`, unos 140. Cada corrida suma ahora
 la espera de 1,1 s por el estado del motor y un ping más, y la estimación
 cuenta 4 s de arranque y cierre por corrida (eran 3).
 
+### `reorder`: el reordenador del receptor y el reparto (`lab.d/reorder.sh`, `robench`)
+
+Para el paso 1 de la Fase 5 (historia 012). `lab.d/reorder.sh` se escribió
+contra los ajustes y el estado del plan (`split`, `reorder_*`, el objeto
+`reorder` del estado): con un motor que no lo tiene dice
+`reorder: skip: engine without reorder` y sale con 0; sin netem,
+`skip: no netem here` (con `REORDER_NEED_NETEM=1`, un fallo). Va con
+`LAB_CI=0` hasta que entre la integración. Los dos escenarios corren con
+`split = force` en los dos extremos y el silenciado apagado.
+
+- **`reorder_imix`: el desborde.** Paquetes IMIX (`udpgen -s imix`: 7 de 64, 4
+  de 576 y 1 de 1400 bytes; WireGuard falso) por dos enlaces con 150 ms de
+  diferencia (20 y 170 ms, con una cola de 60 000 paquetes, porque netem cuenta
+  contra su límite lo que va en el retardo), arriba y abajo, a dos tasas. La
+  ventana es de 4096 secuencias: a 20 kpps (205 ms) cabe la diferencia y a 30
+  kpps (136 ms) no, así que hay desborde. En todas: cada paquete llega una vez
+  (`uniq` = `sent`), `too_old` y `wireguard_drops` en 0 y `pool_full` en 0. Bajo
+  la ventana, sin desborde (`lost.overflow` = 0) y con los paquetes grandes en
+  orden (`IMIX_BELOW_ORD_MAX_PERMILLE`, 5 por mil); sobre ella, `lost.overflow`
+  > 0, y se informa qué parte de los grandes llegó detrás de uno posterior
+  (`bigord` de `udpgen`). Esa parte no tiene por qué ser casi 0: la copia tardía
+  de un hueco forzado sale desordenada, y a 30 kpps con 150 ms es la de todos
+  los paquetes del enlace lento; `IMIX_ORD_MAX_PCT` la acota si se quiere.
+  `IMIX_S` (8) son los segundos de cada tramo.
+- **`reorder_hol`: la cabeza de línea.** Lo real, el túnel con WireGuard (el
+  escenario `bond`) sobre `HOL_CASE` (`reorder50`), con iperf3 y QUIC
+  (`HOL_CC`) y, a la vez, `HOL_PPS` (50) datagramas de `HOL_SIZE` (160) bytes
+  por el túnel, con `reorder_bypass` 0, 128 y 256 (`HOL_BYPASS`). Cuánto espera
+  el flujo pequeño detrás de los grandes retenidos (p50 y p99 de su retardo) y
+  qué ven las transferencias (retransmisiones y pérdidas espurias) sale en la
+  tabla de `bond`. Falla solo si algo se tira por viejo o en el socket de
+  WireGuard.
+
+**`robench`** (`bench/robench.c`, lo compila `build`): cuesta `engine/src/reorder.h`
+sola, en ns por paquete, con flujos hechos a mano y el llamador que usará el
+motor (un `cg_ro_next` tras cada paquete); cada escenario, solo la lógica y con
+la copia del cuerpo al búfer del grupo. En orden, 1 de cada 100 adelantado con
+`reorder_dup_wait_ms` 0, 50/50 por dos enlaces con 50 ms de diferencia, IMIX con
+bypass y el desborde (IMIX a 30 kpps con 150 ms). Cada paquete tiene que salir
+exactamente una vez, o falla. Tarda menos de un segundo con un millón de
+paquetes por escenario (el primer argumento lo cambia). En este contenedor x86
+compartido (gcc -O2, cuatro corridas) [medido]: en orden 10–14 ns por paquete;
+con diferencia entre enlaces, 17–26 ns la lógica sola y 19–47 ns con la copia
+del cuerpo (la mitad de los paquetes se retiene en `spread 50`, el 21 % en
+IMIX). Ruidoso, y sirve para comparar versiones, no como coste en la Pi.
+
 ### Transmisión simulada (`bench/stream/`)
 
 RTMP (TCP) y SRT (UDP) por el túnel sin una transmisión real: `send.sh` en el
@@ -942,6 +990,11 @@ pps=10000 (112 Mbit/s) sent=49997 uniq=49997 loss=0.00% dup=99994 p50=110us p99=
 - `dup`: copias extra entregadas al "WireGuard". Con engarde Go son N−1 por
   paquete, y el WireGuard real las descifra todas antes de descartarlas;
   cengarde deduplica y entrega 0.
+- `big` y `bigord` (al final de la línea de `udpgen`): los paquetes únicos de
+  256 bytes o más y cuántos de ellos llegaron detrás de uno posterior. Con
+  `-s imix` (7 de 64, 4 de 576 y 1 de 1400 bytes, 347 de media; `SIZE=imix`
+  en el laboratorio) separa el desorden de lo que retiene un reordenador del
+  de los pequeños, que lo adelantan.
 - `us/pkt`: CPU (usuario + kernel en el contexto del proceso) por paquete
   WireGuard. Incluye el trabajo del kernel al enviar y, en veth/loopback, parte
   de la recepción del otro extremo; es igual para todas las variantes, así que

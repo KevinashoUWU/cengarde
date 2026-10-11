@@ -3,10 +3,15 @@
 // what it receives: unique packets, duplicates, reordering and one-way latency
 // (CLOCK_MONOTONIC is shared across network namespaces on the same host).
 //
-// usage: udpgen -b ip:port [-p ip:port | -l] [-r pps] [-s size] [-d secs] [-g grace]
+// usage: udpgen -b ip:port [-p ip:port | -l] [-r pps] [-s size|imix] [-d secs] [-g grace]
 //   -l  learn the peer from received packets and follow it when it moves, as
 //       WireGuard roams (a restarted cengarde server talks from a new port)
 //   -r 0 (default) only receives. Latency percentiles saturate at 200000 us.
+//   -s imix  sizes cycle 7 x 64, 4 x 576, 1 x 1400 bytes (by sequence, 12 to a
+//       cycle, 347 on average); the output then says how many of the unique
+//       packets were big (256 bytes or more) and how many of those arrived
+//       behind a later one: what a reorderer holds is the big ones, and what
+//       overtakes it is mostly small
 #define _GNU_SOURCE
 #include <arpa/inet.h>
 #include <endian.h>
@@ -25,6 +30,7 @@
 
 #define MAGIC 0x45474e44u /* "EGND" */
 #define HIST_US 200000    /* 1us buckets up to 200ms */
+#define BIG_LEN 256       /* from this size on a packet counts as big (reported apart) */
 
 /* Shaped like a WireGuard data message (type 4, three zero bytes) so that
  * cengarde treats it as WireGuard traffic. */
@@ -42,9 +48,11 @@ static int learn;
 static atomic_uint_fast64_t learned; /* -l: newest sender, s_addr << 16 | sin_port */
 static atomic_int stop_rx;
 static long rate = 0, size = 1400, duration = 10, grace = 2;
+static int imix;
 static uint64_t max_seq_bits;
 static uint8_t *seen;
 static uint64_t rx_total, rx_unique, rx_dup, rx_reord, rx_late_bits, max_seen;
+static uint64_t rx_big, rx_big_reord, max_seen_big;
 static uint64_t *hist;
 static uint64_t hist_over, lat_sum_us;
 
@@ -53,6 +61,14 @@ static uint64_t now_ns(void)
 	struct timespec ts;
 	clock_gettime(CLOCK_MONOTONIC, &ts);
 	return (uint64_t)ts.tv_sec * 1000000000ull + ts.tv_nsec;
+}
+
+/* The size of packet seq with -s imix: 7 of 64, 4 of 576 and 1 of 1400 in turn. */
+static long imix_size(uint64_t seq)
+{
+	uint64_t k = seq % 12;
+
+	return k < 7 ? 64 : k < 11 ? 576 : 1400;
 }
 
 static void parse_addr(const char *s, struct sockaddr_in *a)
@@ -125,6 +141,13 @@ static void *rx_thread(void *arg)
 				rx_reord++;
 			else
 				max_seen = s;
+			if (msgs[i].msg_len >= BIG_LEN) {
+				rx_big++;
+				if (s < max_seen_big)
+					rx_big_reord++;
+				else
+					max_seen_big = s;
+			}
 			uint64_t us = (t - h->ts_ns) / 1000;
 			lat_sum_us += us;
 			if (us < HIST_US)
@@ -167,14 +190,19 @@ int main(int argc, char **argv)
 		case 'p': parse_addr(optarg, &peer); atomic_store(&have_peer, 1); break;
 		case 'l': learn = 1; break;
 		case 'r': rate = atol(optarg); break;
-		case 's': size = atol(optarg); break;
+		case 's':
+			if (!strcmp(optarg, "imix"))
+				imix = 1;
+			else
+				size = atol(optarg);
+			break;
 		case 'd': duration = atol(optarg); break;
 		case 'g': grace = atol(optarg); break;
 		default: fprintf(stderr, "bad args\n"); return 1;
 		}
 	}
-	if (!have_bind || size < (long)sizeof(struct hdr) || size > 2000) {
-		fprintf(stderr, "usage: udpgen -b ip:port [-p ip:port|-l] [-r pps] [-s size] [-d secs]\n");
+	if (!have_bind || (!imix && (size < (long)sizeof(struct hdr) || size > 2000))) {
+		fprintf(stderr, "usage: udpgen -b ip:port [-p ip:port|-l] [-r pps] [-s size|imix] [-d secs]\n");
 		return 1;
 	}
 	sock = socket(AF_INET, SOCK_DGRAM, 0);
@@ -200,7 +228,7 @@ int main(int argc, char **argv)
 		if (learn)
 			while (!atomic_load(&have_peer))
 				usleep(1000);
-		char *pkt = calloc(1, size);
+		char *pkt = calloc(1, 2048);
 		struct hdr *h = (struct hdr *)pkt;
 		h->wg_type = htole32(4);
 		h->magic = MAGIC;
@@ -219,7 +247,7 @@ int main(int argc, char **argv)
 			while (sent < due) {
 				h->seq = sent;
 				h->ts_ns = now_ns();
-				if (sendto(sock, pkt, size, 0, (struct sockaddr *)&peer, sizeof(peer)) < 0)
+				if (sendto(sock, pkt, imix ? imix_size(sent) : size, 0, (struct sockaddr *)&peer, sizeof(peer)) < 0)
 					send_err++;
 				sent++;
 			}
@@ -233,9 +261,9 @@ int main(int argc, char **argv)
 	atomic_store(&stop_rx, 1);
 	pthread_join(rx, NULL);
 	printf("sent=%lu send_err=%lu rx=%lu uniq=%lu dup=%lu reord=%lu lat_avg_us=%lu p50_us=%lu p99_us=%lu "
-	       "p999_us=%lu over200ms=%lu over50ms=%lu\n",
+	       "p999_us=%lu over200ms=%lu over50ms=%lu big=%lu bigord=%lu\n",
 	       sent, send_err, rx_total, rx_unique, rx_dup, rx_reord,
 	       rx_unique ? lat_sum_us / rx_unique : 0, rx_unique ? pct(0.50) : 0,
-	       rx_unique ? pct(0.99) : 0, rx_unique ? pct(0.999) : 0, hist_over, over(50000));
+	       rx_unique ? pct(0.99) : 0, rx_unique ? pct(0.999) : 0, hist_over, over(50000), rx_big, rx_big_reord);
 	return 0;
 }

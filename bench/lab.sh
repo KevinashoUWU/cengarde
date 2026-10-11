@@ -41,6 +41,7 @@ build() {
 	gcc -O2 -Wall -Wextra -pthread -o "$BIN/jitter" "$LAB/jitter.c" || return 1
 	gcc -O2 -Wall -Wextra -o "$BIN/protoclient" "$LAB/protoclient.c" || return 1
 	gcc -O2 -Wall -Wextra -pthread -I"$REPO/engine/src" -o "$BIN/ringbench" "$LAB/ringbench.c" || return 1
+	gcc -O2 -Wall -Wextra -I"$REPO/engine/src" -o "$BIN/robench" "$LAB/robench.c" || return 1
 	gcc -O2 -Wall -Wextra -I"$REPO/engine/src" -o "$BIN/cgprobe" "$LAB/cgprobe.c" \
 		"$REPO"/engine/src/{proto,siphash,util,log,blake2s,pair}.c || return 1
 	gcc -O2 -Wall -Wextra -I"$REPO/engine/src" -o "$BIN/macbench" "$LAB/macbench.c" \
@@ -217,11 +218,12 @@ down() {
 # CPU per packet includes the kernel work done in the process context (sends,
 # and on veth/loopback part of the peer's receive path), the same for all variants.
 report() {
-	local pps=$1 secs=$2 cticks=$3 sticks=$4 sent uniq dup p50 p99 p999
+	local pps=$1 secs=$2 cticks=$3 sticks=$4 sent uniq dup p50 p99 p999 size=$SIZE
+	[ "$size" = imix ] && size=347 # udpgen -s imix: 347 bytes on average
 	sent=$(sed -n 's/.*sent=\([0-9]*\).*/\1/p' "$RUN/tx.out")
 	read -r uniq dup p50 p99 p999 < <(sed -n 's/.*uniq=\([0-9]*\) dup=\([0-9]*\).*p50_us=\([0-9]*\) p99_us=\([0-9]*\) p999_us=\([0-9]*\).*/\1 \2 \3 \4 \5/p' "$RUN/rx.out")
 	awk -v pps="$pps" -v secs="$secs" -v sent="$sent" -v uniq="$uniq" -v dup="$dup" -v p50="$p50" \
-		-v p99="$p99" -v p999="$p999" -v ct="$cticks" -v st="$sticks" -v hz="$(getconf CLK_TCK)" -v size="$SIZE" 'BEGIN {
+		-v p99="$p99" -v p999="$p999" -v ct="$cticks" -v st="$sticks" -v hz="$(getconf CLK_TCK)" -v size="$size" 'BEGIN {
 		loss = sent > 0 ? 100 * (sent - uniq) / sent : 0
 		printf "pps=%-6d (%4.0f Mbit/s) sent=%-7d uniq=%-7d loss=%6.2f%% dup=%-7d p50=%6dus p99=%6dus p99.9=%6dus cpu client=%5.1f%% server=%5.1f%% | us/pkt client=%5.1f server=%5.1f\n",
 			pps, pps * size * 8 / 1e6, sent, uniq, loss, dup, p50, p99, p999, 100 * ct / hz / secs, 100 * st / hz / secs,
