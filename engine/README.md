@@ -402,7 +402,7 @@ hasta entonces no cambian nada de lo que hace el motor.
 - **`reorder_bypass` (128; 0–2048 bytes):** los datagramas de datos de
   WireGuard de hasta ese tamaño (keepalives, ACK de TCP vacíos) y los
   handshakes se entregan al instante, sin esperar. Con 0, solo los handshakes.
-- **`reorder_pool_kb` (8192; 256–262144):** memoria para los paquetes
+- **`reorder_pool_kb` (8192; 256–131070):** memoria para los paquetes
   retenidos, en bloques de 2 KiB. Es lo único de esta sección que reinicia el
   proceso al cambiarlo; el resto se aplica en caliente.
 - **`split`:** reparte la subida (cliente) o la bajada (servidor) entre los

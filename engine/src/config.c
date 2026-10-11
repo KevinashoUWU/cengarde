@@ -789,7 +789,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 		    errlen) ||
 	    get_u32(&ini, "", "reorder_margin_ms", 0, 1000, &c->reorder_margin_ms, err, errlen) ||
 	    get_u32(&ini, "", "reorder_bypass", 0, 2048, &c->reorder_bypass, err, errlen) ||
-	    get_u32(&ini, "", "reorder_pool_kb", 256, 262144, &c->reorder_pool_kb, err, errlen) ||
+	    get_u32(&ini, "", "reorder_pool_kb", 256, 131070, &c->reorder_pool_kb, err, errlen) ||
 	    get_split(&ini, c, err, errlen) ||
 	    get_u32(&ini, "", "split_small", 0, 2048, &c->split_small, err, errlen))
 		goto out;

@@ -487,7 +487,7 @@ static void test_config_bonding(void)
 			{ "reorder_max_wait_ms", 0, 2000, offsetof(struct cg_config, reorder_max_wait_ms) },
 			{ "reorder_margin_ms", 0, 1000, offsetof(struct cg_config, reorder_margin_ms) },
 			{ "reorder_bypass", 0, 2048, offsetof(struct cg_config, reorder_bypass) },
-			{ "reorder_pool_kb", 256, 262144, offsetof(struct cg_config, reorder_pool_kb) },
+			{ "reorder_pool_kb", 256, 131070, offsetof(struct cg_config, reorder_pool_kb) },
 			{ "split_small", 0, 2048, offsetof(struct cg_config, split_small) },
 		};
 		char text[160], want[64];
