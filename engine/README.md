@@ -99,9 +99,10 @@ cengarde keys < secreto
   byte 2 de la cabecera para que el servidor elija la clave de cada router
   sin probarlas todas; hoy ningún paquete la lleva.
 - **Variables nuevas al final:** las cuatro primeras líneas no cambian, así
-  que los scripts que hacen `eval` de la salida siguen igual. Hoy el túnel
-  sigue usando 10.79.0.2/30; las direcciones derivadas son para varios
-  routers por VPS.
+  que los scripts que hacen `eval` de la salida siguen igual. Desde 0.5.2
+  el router usa en el túnel la dirección derivada (`CG_TUNNEL_ADDR`, una
+  /32), así que varios routers caben en un VPS sin repartir direcciones a
+  mano; los instalados antes conservan 10.79.0.2.
 - **Entrada estándar:** el secreto se lee de ahí para que no aparezca en la
   lista de procesos.
 - **Salida:** asignaciones de shell para `eval`. Las públicas se sacan con
@@ -503,9 +504,12 @@ enabled = no
 - **La tabla de reenvío** (`forward_file`, `src/fwdtable.h`): el motor
   escribe ahí, cuando cambia y desde un hilo aparte, las reglas `forward`
   de los routers activos y, en `pass NOMBRE`, el router que tiene el IP pass
-  (el rango entero). [`cengarde-nat`](../contrib/vps/cengarde-nat) la lee
-  con `FORWARD_FILE` y la aplica; deja fuera los puertos reservados y lo
-  que se pise. Formato:
+  (el rango entero). [`cengarde-nat`](../contrib/vps/cengarde-nat) la
+  encuentra por el `forward_file` de la configuración (o por `FORWARD_FILE`
+  en `nat.conf`) y la aplica; deja fuera los puertos reservados y lo que se
+  pise. En un VPS, [`cengarde-vps-setup`](../contrib/vps/cengarde-vps-setup)
+  escribe una sección por router y sus reglas
+  (`cengarde-vps-setup forward add NOMBRE tcp:8080=80`). Formato:
 
   ```
   # cengarde forward table 1, written by the engine: data only

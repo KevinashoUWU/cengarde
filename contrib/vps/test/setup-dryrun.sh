@@ -6,30 +6,39 @@
 # systemd-sysusers and userdel in PATH, which log what they are asked. The
 # engine is the real one for "keys", "genkey" and "-t"; its control socket
 # is a fake that answers ok, restarting, an error, or nothing. Checks:
-# - add, add again (nothing changes), a new secret (refused, then
-#   --replace: WireGuard restarted, the engine restarting), --rename,
-#   remove, list, forward; a second router refused (one per engine today); a
-#   tunnel address and WireGuard ports out of range; --proto 5 refused with
-#   the upgrade command;
+# - add (the tunnel address the secret gives, a [client NAME] section), add
+#   again (nothing changes), a new secret (refused, then --replace: its new
+#   address, WireGuard restarted, the engine restarting), --rename, a second
+#   router (its own slot, port and address), a tunnel address taken, the
+#   33rd router, an engine of protocol 3 and --proto 5 refused (with the
+#   upgrade command), WireGuard ports out of range; remove, the last one
+#   leaving a key that serves nobody; list and forward with each router's
+#   sessions;
 # - the secret never on a command line, and only in clients/NAME;
 #   on a terminal (script(1)), echo off while it is typed, and back on;
 # - a configuration the engine refuses, a reload that fails and one that
 #   hangs (cut by the timeout): the previous files back, exit 1; with
 #   --replace, the engine's IP pass file too (a router may even be called
 #   passthrough);
-# - the one-shot import of /etc/cengarde/secret: imported once and deleted;
-#   after remove, after --replace and with slot 0 taken, running again
-#   leaves clients/ as it was;
+# - the one-shot import of /etc/cengarde/secret: imported once and deleted,
+#   at 10.79.0.2 from a cloud-config before 0.5.2, at ROUTER_NAME and
+#   ROUTER_TUNNEL_ADDR from a newer one (as the router's, from its secret,
+#   when left as the repository has them); after remove, after --replace
+#   and with slot 0 taken, running again leaves clients/ as it was;
+# - forward add|del: one spelling of a rule, in the router's file and its
+#   section; refused: a reserved port (with the reason), an overlap with
+#   its own rule or another router's, past its limit, a bad rule; forward
+#   off comments its rules out;
 # - forward off|on|limit|allow|disallow|reserve|unreserve, and their
-#   refusals; allow says what IP pass forwards of the port
-#   (nothing below PASSTHROUGH_PORTS), and a PASSTHROUGH_PORTS below 1024,
-#   which cengarde 0.4 forwarded whole, is warned about;
-# - a 0.4 server: wg0 and its IP pass state migrated, by
-#   cengarde-vps-setup and by install.sh (firewalld refused before anything
-#   changes, a build that fails before wg0 is touched, the old service
-#   stopped before systemd-sysusers, the nftables drop-in only when nftables
-#   is enabled, run twice); purge writes the secret back for 0.4's
-#   install.sh;
+#   refusals; allow says how a router gets the port, and a
+#   PASSTHROUGH_PORTS below 1024, which cengarde 0.4 forwarded whole, is
+#   warned about;
+# - a 0.4 server: wg0 migrated and its IP pass state removed (the router
+#   asks again), by cengarde-vps-setup and by install.sh (firewalld refused
+#   before anything changes, a build that fails before wg0 is touched, the
+#   old service stopped before systemd-sysusers, the nftables drop-in only
+#   when nftables is enabled, run twice); purge writes the secret, and
+#   whether the router holds IP pass, back for 0.4's install.sh;
 # - what systemd runs when it stops cengarde-nat.service (ExecStop) or 0.4's
 #   wg0 (PostDown) takes the admin lock, as PID 1's child, not the caller's:
 #   a stand-in for it gets the lock at once, during purge and the migration;
@@ -152,8 +161,11 @@ ctl)
 		esac
 		;;
 	links)
-		echo "SESSION   NEWEST LINK  STATE    DOWNLOAD LAST RX  ADDRESS                                         LOCAL"
-		echo "1a2b3c4d  yes    0     live     active   0.4 s    203.0.113.5:40000                               -"
+		echo "CLIENT           SESSION   NEWEST LINK  STATE    DOWNLOAD LAST RX  ADDRESS                                         LOCAL"
+		echo "home             1a2b3c4d  yes    0     live     active   0.4 s    203.0.113.5:40000                               -"
+		echo "home             1a2b3c4d         1     live     muted    2.1 s    203.0.113.6:40000                               -"
+		echo "office           5e6f7a8b  yes    0     stalled  active   9.0 s    198.51.100.9:40000                              -"
+		echo "office           0a0b0c0d         0     stalled  active   31.5 s   198.51.100.9:40001                              -"
 		;;
 	*) echo "{}" ;;
 	esac
@@ -232,9 +244,11 @@ exit 0
 EOF
 chmod +x "$BIN"/*
 
-S1=$("$ENGINE" genkey) S2=$("$ENGINE" genkey) S3=$("$ENGINE" genkey)
+S1=$("$ENGINE" genkey) S2=$("$ENGINE" genkey) S3=$("$ENGINE" genkey) S4=$("$ENGINE" genkey)
 key_of() { printf '%s\n' "$1" | "$ENGINE" keys | sed -n "s/^CG_LINK_KEY='\(.*\)'$/\1/p"; }
-K1=$(key_of "$S1") K2=$(key_of "$S2")
+addr_of() { printf '%s\n' "$1" | "$ENGINE" keys | sed -n "s/^CG_TUNNEL_ADDR='\(.*\)'$/\1/p"; }
+K1=$(key_of "$S1") K2=$(key_of "$S2") K3=$(key_of "$S3")
+A1=$(addr_of "$S1") A2=$(addr_of "$S2") A3=$(addr_of "$S3")
 
 R=
 # fresh: a new root, nat.conf with the test's user, the engine's socket.
@@ -266,6 +280,8 @@ called() { grep -Eq -- "$1" "$CALLS"; }
 said() { printf '%s\n' "$OUT" | grep -qF -- "$1"; }
 val() { sed -n "s/^$2=//p" "$1"; }
 conf() { cat "$R/etc/cengarde/cengarde.conf" 2>/dev/null; }
+# section NAME: router NAME's [client] section of cengarde.conf, without it.
+section() { awk -v s="[client $1]" '/^\[/ { on = $0 == s; next } on' "$R/etc/cengarde/cengarde.conf"; }
 mode() { stat -c '%a %U' "$1"; }
 fingerprint() { find "$R/etc" "$R/var/lib/cengarde" -type f ! -name '.*' -exec md5sum {} + 2>/dev/null | sort; }
 
@@ -274,16 +290,20 @@ fresh add
 check "add router" add router "$S1"
 C=$R/etc/cengarde/clients/router
 check "clients/router: 0600 root, in a 0700 directory" [ "$(mode "$C") $(mode "${C%/*}")" = "600 root 700 root" ]
-check "it holds the secret, slot 0, 10.79.0.2 (protocol 3), forwarding on" \
-	[ "$(val "$C" SECRET) $(val "$C" SLOT) $(val "$C" TUNNEL_ADDR) $(val "$C" LEGACY_ADDR) $(val "$C" FORWARD)" = "$S1 0 10.79.0.2 1 yes" ]
+check "it holds the secret, slot 0, the tunnel address of its secret ($A1), forwarding on" \
+	[ "$(val "$C" SECRET) $(val "$C" SLOT) $(val "$C" TUNNEL_ADDR) $(val "$C" LEGACY_ADDR) $(val "$C" FORWARD)" = "$S1 0 $A1  yes" ]
 W=$R/etc/wireguard/cg-router.conf
 check "cg-router.conf: 0600, port 65501, 10.79.0.1/32, the router's /32, no wg-quick hooks" \
 	sh -c '[ "$(stat -c %a "$1")" = 600 ] && grep -qx "ListenPort = 65501" "$1" && grep -qx "Address = 10.79.0.1/32" "$1" &&
-		grep -qx "AllowedIPs = 10.79.0.2/32" "$1" && grep -qx "Table = auto" "$1" && ! grep -q "^Post" "$1"' sh "$W"
-check "cengarde.conf: 0640, the router's key, its WireGuard, the IP pass file, the reserved set" \
-	sh -c '[ "$(stat -c %a "$1")" = 640 ] && grep -qx "key = $2" "$1" && grep -qx "wireguard = 127.0.0.1:65501" "$1" &&
-		grep -qx "passthrough_file = /var/lib/cengarde/passthrough" "$1" &&
-		grep -qx "# reserved: tcp:1-1023 tcp:8123 udp:1-1023 udp:65500-65532" "$1"' sh "$R/etc/cengarde/cengarde.conf" "$K1"
+		grep -qx "AllowedIPs = $2/32" "$1" && grep -qx "Table = auto" "$1" && ! grep -q "^Post" "$1"' sh "$W" "$A1"
+check "cengarde.conf: 0640, the forward table and the reserved set, no global key, no IP pass file" \
+	sh -c '[ "$(stat -c %a "$1")" = 640 ] && grep -qx "forward_file = /var/lib/cengarde/forward" "$1" &&
+		grep -qx "# reserved: tcp:1-1023 tcp:8123 udp:1-1023 udp:65500-65532" "$1" &&
+		[ "$(sed "/^\[/q" "$1" | grep -c "^key = ")" = 0 ] && ! grep -q "^passthrough_file" "$1"' sh "$R/etc/cengarde/cengarde.conf"
+check "[client router]: its key, its WireGuard, the poke to its tunnel address" \
+	sh -c '[ "$(printf "%s\n" "$1" | grep -v "^#" | grep .)" = "key = $2
+wireguard = 127.0.0.1:65501
+wireguard_poke = $3:9" ]' sh "$(section router)" "$K1" "$A1"
 check "the engine checks it, and is asked to reload" sh -c 'grep -q "^cengarde -t -c .*cengarde.conf.new" "$1" && grep -q "^cengarde ctl -s .* reload" "$1"' sh "$CALLS"
 check "wg-quick@cg-router enabled and started" called '^systemctl enable --now wg-quick@cg-router$'
 check "cengarde-nat apply" called '^cengarde-nat apply$'
@@ -307,7 +327,9 @@ check "nothing changed" [ "$(fingerprint)" = "$before" ]
 : >"$CALLS"
 check "add router --replace" env FAKE_CTL=restart sh -c 'printf "%s\n" "$1" | env CENGARDE_ROOT="$2" PATH="$3" sh "$4" add router --replace' \
 	sh "$S2" "$R" "$BIN:$PATH" "$SETUP"
-check "the new key is in cengarde.conf" grep -qx "key = $K2" "$R/etc/cengarde/cengarde.conf"
+check "the new key is in cengarde.conf" sh -c 'printf "%s\n" "$1" | grep -qx "key = $2"' sh "$(section router)" "$K2"
+check "the tunnel address of the new secret ($A2), in its WireGuard" \
+	sh -c '[ "$(sed -n "s/^TUNNEL_ADDR=//p" "$1")" = "$3" ] && grep -qx "AllowedIPs = $3/32" "$2"' sh "$C" "$W" "$A2"
 check "WireGuard restarted (a new peer)" called '^systemctl restart wg-quick@cg-router$'
 
 say "the same secret under another name: a rename"
@@ -317,21 +339,46 @@ check "it says how" said "--rename router"
 check "add home --rename router" add home "$S2" --rename router --label "Casa de Ana"
 check "clients/home, no clients/router" [ -e "$R/etc/cengarde/clients/home" ] && [ ! -e "$C" ]
 check "slot, address and label kept or set" \
-	[ "$(val "$R/etc/cengarde/clients/home" SLOT) $(val "$R/etc/cengarde/clients/home" TUNNEL_ADDR) $(val "$R/etc/cengarde/clients/home" LABEL)" = "0 10.79.0.2 Casa de Ana" ]
+	[ "$(val "$R/etc/cengarde/clients/home" SLOT) $(val "$R/etc/cengarde/clients/home" TUNNEL_ADDR) $(val "$R/etc/cengarde/clients/home" LABEL)" = "0 $A2 Casa de Ana" ]
+check "[client home] with its label, no [client router]" \
+	sh -c 'printf "%s\n" "$1" | grep -qx "label = Casa de Ana" && ! grep -q "^\[client router\]" "$2"' sh "$(section home)" "$R/etc/cengarde/cengarde.conf"
 check "wg-quick@cg-router stopped and its file removed, cg-home up" \
 	sh -c 'grep -q "^systemctl disable --now wg-quick@cg-router$" "$1" && grep -q "^systemctl enable --now wg-quick@cg-home$" "$1" &&
 		[ ! -e "$2/etc/wireguard/cg-router.conf" ] && [ -e "$2/etc/wireguard/cg-home.conf" ]' sh "$CALLS" "$R"
 
-say "limits of an engine that serves one router, and of the ports"
+say "a second router"
+: >"$CALLS"
+check "add office" add office "$S3"
+O=$R/etc/cengarde/clients/office
+check "slot 1, its own address ($A3), port 65502" \
+	sh -c '[ "$(sed -n "s/^SLOT=//p; s/^TUNNEL_ADDR=//p" "$1" | tr "\n" " ")" = "1 $3 " ] &&
+		grep -qx "ListenPort = 65502" "$2/etc/wireguard/cg-office.conf"' sh "$O" "$R" "$A3"
+check "cengarde.conf: both sections, office's with its key, port and poke" \
+	sh -c 'printf "%s\n" "$1" | grep -qx "key = $2" && printf "%s\n" "$1" | grep -qx "wireguard = 127.0.0.1:65502" &&
+		printf "%s\n" "$1" | grep -qx "wireguard_poke = $3:9" && grep -q "^\[client home\]" "$4"' \
+	sh "$(section office)" "$K3" "$A3" "$R/etc/cengarde/cengarde.conf"
+check "a reload, cg-home left alone" sh -c 'grep -q "^cengarde ctl -s .* reload" "$1" && ! grep -q "wg-quick@cg-home" "$1"' sh "$CALLS"
+
+say "limits of the routers and of the ports"
 before=$(fingerprint)
-check "a second router is refused" not add office "$S3"
-check "it says why" said "serves one router"
-check "--proto 5 is refused with the upgrade command" not add office "$S3" --proto 5
+check "a tunnel address taken is refused" not add shop "$S4" --tunnel-addr "$A2"
+check "it says whose" said "router home has the tunnel address $A2"
+check "--proto 5 is refused with the upgrade command" not add shop "$S4" --proto 5
 check "it prints the upgrade command" said "contrib/vps/install.sh"
+check "an engine of protocol 3 is refused" not env FAKE_PROTO=3 sh -c 'printf "%s\n" "$1" | env CENGARDE_ROOT="$2" PATH="$3" sh "$4" add shop' \
+	sh "$S4" "$R" "$BIN:$PATH" "$SETUP"
 check "--tunnel-addr 10.79.0.1 is refused" not add home "$S2" --tunnel-addr 10.79.0.1
-check "a name too long for cg-NAME is refused" not add abcdefghijklm "$S3"
-check "\"default\" is refused" not add default "$S3"
+check "a name too long for cg-NAME is refused" not add abcdefghijklm "$S4"
+check "\"default\" is refused" not add default "$S4"
 check "a bad secret is refused" not add home "not-a-secret"
+check "nothing changed" [ "$(fingerprint)" = "$before" ]
+for i in $(seq 2 31); do
+	printf 'SECRET=x\nSLOT=%s\nTUNNEL_ADDR=10.79.1.%s\n' "$i" "$i" >"$R/etc/cengarde/clients/r$i"
+	chmod 0600 "$R/etc/cengarde/clients/r$i"
+done
+check "the 33rd router is refused" not add shop "$S4"
+check "it says why" said "this server has 32 routers already"
+rm -f "$R"/etc/cengarde/clients/r[0-9]*
 check "nothing changed" [ "$(fingerprint)" = "$before" ]
 printf 'ENGINE_USER=root\nWG_PORT_BASE=65520\n' >"$R/etc/cengarde/nat.conf"
 check "WireGuard ports past 65535 are refused" not add home "$S2"
@@ -340,9 +387,12 @@ check "cengarde's port inside the WireGuard ports is refused" not add home "$S2"
 printf 'ENGINE_USER=root\n' >"$R/etc/cengarde/nat.conf"
 
 say "list and forward"
+: >"$CALLS"
 check "list" setup list
-check "list shows the router, its port, address, label and last heard" \
-	sh -c 'printf "%s\n" "$1" | grep -E "^home +0 +65501 +10\.79\.0\.2 +yes +0\.4 s ago, 1 session +Casa de Ana$"' sh "$OUT"
+check "list shows each router, its port, address, label and last heard" \
+	sh -c 'printf "%s\n" "$1" | grep -Eq "^home +0 +65501 +$2 +yes +0\.4 s ago, 1 session +Casa de Ana$" &&
+		printf "%s\n" "$1" | grep -Eq "^office +1 +65502 +$3 +yes +9\.0 s ago, 2 sessions *$"' sh "$OUT" "$A2" "$A3"
+check "the engine asked once for both" [ "$(grep -c "^cengarde ctl .*links$" "$CALLS")" = 1 ]
 check "forward" setup forward
 check "forward shows the reserved ports with their reasons" said "something listening here: hass"
 check "and the router's forwarding" said "home: yes"
@@ -360,19 +410,66 @@ check "a reload that hangs, cut by the timeout: exit 1" not env FAKE_CTL=hang CE
 	sh "$S2" "$R" "$BIN:$PATH" "$SETUP"
 check "within a few seconds" [ $(($(date +%s) - t0)) -lt 8 ]
 check "nothing changed" [ "$(fingerprint)" = "$before" ]
-mkdir -p "$R/var/lib/cengarde"
-echo on >"$R/var/lib/cengarde/passthrough" # the router's last IP pass wish
 before=$(fingerprint)
 check "--replace with a new secret, a reload answered with an error: exit 1" not env FAKE_CTL=error sh -c 'printf "%s\n" "$1" | env CENGARDE_ROOT="$2" PATH="$3" sh "$4" add home --replace' \
-	sh "$S3" "$R" "$BIN:$PATH" "$SETUP"
-check "nothing changed, the IP pass file included" [ "$(fingerprint)" = "$before" ]
+	sh "$S4" "$R" "$BIN:$PATH" "$SETUP"
+check "nothing changed" [ "$(fingerprint)" = "$before" ]
 check "--replace, a configuration the engine refuses: exit 1" not env FAKE_T_FAIL=1 sh -c 'printf "%s\n" "$1" | env CENGARDE_ROOT="$2" PATH="$3" sh "$4" add home --replace' \
-	sh "$S3" "$R" "$BIN:$PATH" "$SETUP"
-check "nothing changed, the IP pass file included" [ "$(fingerprint)" = "$before" ]
-rm -f "$R/var/lib/cengarde/passthrough"
+	sh "$S4" "$R" "$BIN:$PATH" "$SETUP"
+check "nothing changed" [ "$(fingerprint)" = "$before" ]
+
+say "forward add|del: a router's own rules"
+H=$R/etc/cengarde/clients/home
+check "forward add home tcp:8080=80 udp:5000-5010" setup forward add home tcp:8080=80 udp:5000-5010
+check "in its file and in its section" \
+	sh -c '[ "$(sed -n "s/^RULES=//p" "$1")" = "tcp:8080=80 udp:5000-5010" ] &&
+		printf "%s\n" "$2" | grep -qx "forward = tcp:8080=80 udp:5000-5010"' sh "$H" "$(section home)"
+check "and cengarde-nat apply" called '^cengarde-nat apply$'
+before=$(fingerprint)
+check "the same rules spelled otherwise: unchanged" setup forward add home tcp:08080=080 udp:5000-5010=5000
+check "it says so" said "router home's rules unchanged"
+check "the same files" [ "$(fingerprint)" = "$before" ]
+check "forward add home both:7000-7001=7000" setup forward add home both:7000-7001=7000
+check "kept as both:7000-7001" [ "$(val "$H" RULES)" = "tcp:8080=80 udp:5000-5010 both:7000-7001" ]
+before=$(fingerprint)
+check "a port this server listens on is refused" not setup forward add home tcp:8123
+check "with the reason" said "tcp:8123: tcp 8123 is reserved on this server, something listening here: hass"
+check "below 1024 is refused" not setup forward add home tcp:443
+check "with the way to free it" said "below 1024 (cengarde-vps-setup forward allow tcp:443 frees it)"
+check "a port of another router's rule is refused" not setup forward add office udp:5005
+check "it says whose" said "udp:5005: overlaps udp:5000-5010, a rule of router home"
+check "a port of its own rule is refused (both is tcp too)" not setup forward add home tcp:7001
+check "it says so" said "tcp:7001: overlaps both:7000-7001, a rule of this router"
+for r in tcp:0 tcp:70000 tcp:9-8 tcp:65000-65535=65500 sctp:80 tcp:80= tcp; do
+	check "$r is refused" not setup forward add home "$r"
+done
+check "forward add nobody is refused" not setup forward add nobody tcp:9000
+check "nothing changed" [ "$(fingerprint)" = "$before" ]
+check "forward limit office 10" setup forward limit office 10
+check "11 ports past it are refused" not setup forward add office tcp:20000-20010
+check "it says why" said "router office would forward 11 ports with its own rules, past its limit of 10"
+check "10 ports fit" setup forward add office tcp:20000-20009
+check "a limit below its rules is refused" not setup forward limit office 5
+check "it says why" said "router office's rules take 10 ports already"
+check "forward limit office default" setup forward limit office default
+check "forward shows the rules and the ports they take" setup forward
+check "home's, with the default limit" said "its rules: tcp:8080=80 udp:5000-5010 both:7000-7001 (16 of 1024 ports)"
+check "office's" said "its rules: tcp:20000-20009 (10 of 1024 ports)"
+check "forward del home udp:5000-5010" setup forward del home udp:5000-5010
+check "gone from its file and its section" \
+	sh -c '[ "$(sed -n "s/^RULES=//p" "$1")" = "tcp:8080=80 both:7000-7001" ] &&
+		printf "%s\n" "$2" | grep -qx "forward = tcp:8080=80 both:7000-7001"' sh "$H" "$(section home)"
+check "a rule it does not have is refused" not setup forward del home tcp:9999
+check "forward del office all" setup forward del office all
+check "office has no rules" sh -c '[ -z "$(sed -n "s/^RULES=//p" "$1")" ] && ! printf "%s\n" "$2" | grep -q "^forward"' sh "$O" "$(section office)"
+check "forward off home" setup forward off home
+check "its section: no IP pass, its rules commented out" \
+	sh -c 'printf "%s\n" "$1" | grep -qx "passthrough = no" && printf "%s\n" "$1" | grep -qx "#forward = tcp:8080=80 both:7000-7001"' sh "$(section home)"
+check "forward on home" setup forward on home
+check "its rules back" sh -c 'printf "%s\n" "$1" | grep -qx "forward = tcp:8080=80 both:7000-7001" && ! printf "%s\n" "$1" | grep -q "^passthrough"' sh "$(section home)"
 
 say "forward off|on|limit|allow|disallow|reserve|unreserve"
-H=$R/etc/cengarde/clients/home N=$R/etc/cengarde/nat.conf
+N=$R/etc/cengarde/nat.conf
 check "forward off home" setup forward off home
 check "FORWARD=no, and cengarde-nat apply" sh -c '[ "$(sed -n "s/^FORWARD=//p" "$1")" = no ] && grep -q "^cengarde-nat apply" "$2"' sh "$H" "$CALLS"
 check "forward on home" setup forward on home
@@ -383,14 +480,18 @@ check "forward limit home default" setup forward limit home default
 check "FORWARD_MAX_PORTS empty" [ -z "$(val "$H" FORWARD_MAX_PORTS)" ]
 check "forward allow tcp:80 tcp:443" setup forward allow tcp:80 tcp:443
 check "FORWARD_ALLOW_LOW=\"tcp:80 tcp:443\"" grep -qx 'FORWARD_ALLOW_LOW="tcp:80 tcp:443"' "$N"
-check "one router: it says nothing forwards them yet (outside PASSTHROUGH_PORTS)" \
-	said "tcp:443 is allowed, but nothing forwards it yet"
+check "it says how a router gets one (outside PASSTHROUGH_PORTS)" \
+	said 'tcp:443 is allowed: a router gets it with "cengarde-vps-setup forward add NAME tcp:443"'
+check "and with it out of the reserved set, forward add home tcp:443 works" \
+	env FAKE_RESERVED="tcp:1-79 tcp:81-442 tcp:444-1023" sh -c 'env CENGARDE_ROOT="$1" PATH="$2" sh "$3" forward add home tcp:443' \
+	sh "$R" "$BIN:$PATH" "$SETUP"
+check "forward del home tcp:443" setup forward del home tcp:443
 check "forward allow tcp:80 again: once" setup forward allow tcp:80
 check "still once" grep -qx 'FORWARD_ALLOW_LOW="tcp:80 tcp:443"' "$N"
 printf 'PASSTHROUGH_PORTS=1:65000\n' >>"$N"
 check "with PASSTHROUGH_PORTS=1:65000, forward allow tcp:80" setup forward allow tcp:80
 check "it says IP pass forwards it" said "tcp:80 is allowed, inside PASSTHROUGH_PORTS (1:65000): IP pass forwards it to its router"
-check "and not that nothing does" not said "nothing forwards it yet"
+check "and not that it needs a rule" not said "a router gets it with"
 check "forward, with that range" setup forward
 check "it warns that the ports below 1024 that 0.4 forwarded are reserved now" \
 	said "PASSTHROUGH_PORTS (1:65000) starts below 1024: cengarde 0.4 forwarded ports 1-1023 too"
@@ -413,8 +514,12 @@ say "remove"
 check "remove home" setup remove home
 check "its files gone, its WireGuard stopped" \
 	sh -c '[ ! -e "$1/etc/cengarde/clients/home" ] && [ ! -e "$1/etc/wireguard/cg-home.conf" ] && grep -q "^systemctl disable --now wg-quick@cg-home$" "$2"' sh "$R" "$CALLS"
-check "the engine gets a key that serves nobody" sh -c 'grep -q "^# No router yet" "$1" && ! grep -q "key = $2" "$1"' sh "$R/etc/cengarde/cengarde.conf" "$K2"
+check "office stays, home's section gone" \
+	sh -c 'grep -q "^\[client office\]" "$1" && ! grep -q "^\[client home\]" "$1"' sh "$R/etc/cengarde/cengarde.conf"
 check "remove nobody is refused" not setup remove nobody
+check "remove office, the last one" setup remove office
+check "the engine gets a key that serves nobody, and no forward table" \
+	sh -c 'grep -q "^# No router yet" "$1" && ! grep -q "^\[client\|^forward_file\|key = $2" "$1"' sh "$R/etc/cengarde/cengarde.conf" "$K3"
 
 say "the one-shot import of /etc/cengarde/secret (the cloud-config)"
 fresh import
@@ -449,6 +554,30 @@ check "no arguments" setup
 check "the old secret is not imported again" [ "$(val "$C" SECRET)" = "$S2" ]
 check "it says why" said "ignoring $SF"
 check "clients/ unchanged" [ "$(fingerprint)" = "$before" ]
+say "  a cloud-config of 0.5.2: ROUTER_NAME and ROUTER_TUNNEL_ADDR"
+fresh import52 'ROUTER_NAME=casa
+ROUTER_TUNNEL_ADDR=10.79.5.6
+'
+SF=$R/etc/cengarde/secret
+(umask 077 && echo "$S1" >"$SF")
+check "no arguments" setup
+check "imported as casa, at 10.79.5.6" \
+	[ "$(val "$R/etc/cengarde/clients/casa" TUNNEL_ADDR) $(val "$R/etc/cengarde/clients/casa" LEGACY_ADDR)" = "10.79.5.6 " ]
+fresh importrepo 'ROUTER_NAME=REPLACE_ROUTER_NAME
+ROUTER_TUNNEL_ADDR=REPLACE_TUNNEL_ADDR
+'
+SF=$R/etc/cengarde/secret
+(umask 077 && echo "$S1" >"$SF")
+check "as the repository has them" setup
+check "imported as router, at its secret's address ($A1)" [ "$(val "$R/etc/cengarde/clients/router" TUNNEL_ADDR)" = "$A1" ]
+check "without a warning" not said "ROUTER_"
+fresh importbad 'ROUTER_TUNNEL_ADDR=10.80.0.2
+'
+SF=$R/etc/cengarde/secret
+(umask 077 && echo "$S1" >"$SF")
+check "ROUTER_TUNNEL_ADDR out of 10.79.0.0/16" setup
+check "imported at its secret's address ($A1)" [ "$(val "$R/etc/cengarde/clients/router" TUNNEL_ADDR)" = "$A1" ]
+check "with a warning" said "ROUTER_TUNNEL_ADDR in"
 say "  slot 0 taken by a router added by hand"
 fresh slot0
 SF=$R/etc/cengarde/secret
@@ -478,6 +607,16 @@ check "echo turned off for the secret, then back on" \
 	sh -c 'grep "^stty" "$1" | tr "\n" " " | grep -q "^stty -echo stty echo"' sh "$CALLS"
 check "the prompt says it is not echoed" grep -q "not echoed" "$TMP/tty.out"
 
+say "a router whose name sorts before the others'"
+fresh order
+check "add zeta" add zeta "$S1"
+: >"$CALLS"
+check "add alpha" add alpha "$S2"
+check "cg-alpha.conf: alpha's port and address, cg-zeta left alone" \
+	sh -c 'grep -qx "ListenPort = 65502" "$1/etc/wireguard/cg-alpha.conf" && grep -qx "AllowedIPs = $2/32" "$1/etc/wireguard/cg-alpha.conf" &&
+		grep -qx "AllowedIPs = $3/32" "$1/etc/wireguard/cg-zeta.conf" && ! grep -q "wg-quick@cg-zeta" "$4"' sh "$R" "$A2" "$A1" "$CALLS"
+check "it says alpha's address" said "router alpha: tunnel address $A2"
+
 say "a 0.4 server, migrated by cengarde-vps-setup"
 fresh m04 'PASSTHROUGH=yes
 '
@@ -489,12 +628,16 @@ touch "$FAKE_STATE/wg-quick@wg0"
 check "no arguments" setup
 check "wg0 stopped and its file removed" sh -c 'grep -q "^systemctl disable --now wg-quick@wg0$" "$1" && [ ! -e "$2/etc/wireguard/wg0.conf" ]' sh "$CALLS" "$R"
 check "wg0's PostDown, run by systemd, gets the admin lock at once" called '^stop wg-quick@wg0: took the admin lock$'
-check "the router's last IP pass wish kept: off" [ "$(cat "$R/var/lib/cengarde/passthrough")" = off ]
-check "0.4's state file gone" [ ! -e "$R/var/lib/cengarde-nat" ]
-check "the router imported with 10.79.0.2 on port 65501" \
+check "0.4's IP pass state gone, and nothing in its place: the router asks again" \
+	[ ! -e "$R/var/lib/cengarde-nat" ] && [ ! -e "$R/var/lib/cengarde/passthrough" ]
+check "it says so" said "the router asks for IP pass again"
+check "the router imported with 10.79.0.2 (a cloud-config before 0.5.2) on port 65501" \
 	sh -c '[ "$(sed -n "s/^TUNNEL_ADDR=//p" "$1/etc/cengarde/clients/router")" = 10.79.0.2 ] && grep -qx "ListenPort = 65501" "$1/etc/wireguard/cg-router.conf"' sh "$R"
 
 say "purge, for cengarde 0.4"
+# The engine's forward table: the router holds IP pass.
+mkdir -p "$R/var/lib/cengarde"
+printf '# cengarde forward table 1, written by the engine: data only\npass router\nrule router tcp 9000 9000 22\n' >"$R/var/lib/cengarde/forward"
 mkdir -p "$R/etc/systemd/system/cengarde.service.d" "$R/etc/systemd/system/nftables.service.d"
 for u in cengarde.service cengarde-nat.service cengarde-nat-check.timer cengarde-nat-check.service \
 	cengarde-passthrough.path cengarde-passthrough.service cengarde.service.d/vps.conf nftables.service.d/cengarde.conf; do
@@ -510,7 +653,7 @@ check "every service disabled, cg-router too, and cengarde-nat down" \
 check "cengarde-nat.service's ExecStop, run by systemd, gets the admin lock at once" \
 	called '^stop cengarde-nat.service: took the admin lock$'
 check "the router's secret written back, 0600" sh -c '[ "$(cat "$1")" = "$2" ] && [ "$(stat -c %a "$1")" = 600 ]' sh "$R/etc/cengarde/secret" "$S1"
-check "its IP pass wish written back for 0.4" [ "$(cat "$R/var/lib/cengarde-nat/passthrough")" = off ]
+check "its IP pass written back for 0.4: on, as it holds the range" [ "$(cat "$R/var/lib/cengarde-nat/passthrough")" = on ]
 check "clients/ and cg-router.conf kept" [ -e "$R/etc/cengarde/clients/router" ] && [ -e "$R/etc/wireguard/cg-router.conf" ]
 check "purge --all" setup purge --all
 check "clients/, cg-router.conf and the state gone" \
@@ -581,7 +724,8 @@ check "the unit runs as the static user, from the file itself" \
 check "the cloud-config's nat.conf kept" grep -qx 'PASSTHROUGH=yes' "$R/etc/cengarde/nat.conf"
 check "the router imported: cg-router on 65501, 10.79.0.2" \
 	sh -c '[ "$(sed -n "s/^TUNNEL_ADDR=//p" "$1/etc/cengarde/clients/router")" = 10.79.0.2 ] && grep -qx "ListenPort = 65501" "$1/etc/wireguard/cg-router.conf"' sh "$R"
-check "the secret file deleted, IP pass on kept" sh -c '[ ! -e "$1/etc/cengarde/secret" ] && [ "$(cat "$1/var/lib/cengarde/passthrough")" = on ]' sh "$R"
+check "the secret file deleted, 0.4's IP pass state too" \
+	sh -c '[ ! -e "$1/etc/cengarde/secret" ] && [ ! -e "$1/var/lib/cengarde-nat" ] && [ ! -e "$1/var/lib/cengarde/passthrough" ]' sh "$R"
 check "cengarde-nat apply before cengarde-vps-setup's own" order '^cengarde-nat apply$' '^systemctl enable --now wg-quick@cg-router$'
 check "the services enabled, cengarde restarted last" \
 	sh -c 'grep -q "^systemctl enable cengarde-nat.service cengarde-nat-check.timer cengarde-passthrough.path cengarde.service$" "$1" &&

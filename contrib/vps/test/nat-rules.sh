@@ -8,7 +8,8 @@
 # - the forward table of protocol 4 (fixtures/forward-two-routers): a port
 #   to another port, a range to itself, a shifted range, both protocols,
 #   and the whole range of another router with the explicit rules carved
-#   out of it;
+#   out of it; found through the engine's forward_file, but only in a
+#   configuration nobody but root can write;
 # - the reserved set: below 1024 with FORWARD_ALLOW_LOW, this server's own
 #   listeners and Docker's ports (fixtures/ss-*.txt, docker-nat.txt), a
 #   kernel UDP socket in the ephemeral range too (WireGuard's), but not a
@@ -197,6 +198,17 @@ check "a shifted range" out_has "-A CG_PRE -p udp --dport 5000:5010 -j DNAT --to
 check "the whole range last, after every explicit rule" \
 	sh -c 'printf "%s\n" "$1" | grep -- "-j DNAT" | tail -n 2 | grep -c "1024:65000 -j DNAT --to-destination 10.79.12.34$" | grep -qx 2' sh "$OUT"
 check "nothing logged" [ -z "$ERR" ]
+
+say "the forward table named by the engine's configuration"
+root enginetable
+rm -f "$R/etc/cengarde/clients/bravo"
+printf 'mode = server\n# forward_file = /elsewhere\nforward_file = /var/lib/cengarde/forward\n' >"$R/etc/cengarde/cengarde.conf"
+chmod 0640 "$R/etc/cengarde/cengarde.conf"
+printf '# cengarde forward table 1, written by the engine: data only\npass alpha\n' >"$R/var/lib/cengarde/forward"
+chown nobody "$R/var/lib/cengarde/forward"
+rules4 v3-on "its forward_file, under CENGARDE_ROOT: the whole range to alpha"
+chmod 0660 "$R/etc/cengarde/cengarde.conf"
+rules4 v3-off "a configuration others can write: not read, IP pass off"
 
 say "a forward table with bad lines"
 root badtable "FORWARD_FILE=$TMP/badtable/var/lib/cengarde/forward"

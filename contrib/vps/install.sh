@@ -13,9 +13,9 @@
 # Needs build-essential, git, iptables, wireguard-tools and conntrack
 # (cloud-config.yaml installs them). With /etc/cengarde/secret (the
 # cloud-config writes it) its router is imported; without it, add one with
-# "sudo cengarde-vps-setup add NAME". From cengarde 0.4: its wg0 becomes
-# cg-router, with the same port and tunnel address, and the service gets a
-# static user. Back to 0.4: "sudo cengarde-vps-setup purge", then the 0.4
+# "sudo cengarde-vps-setup add NAME ..." (the router's LuCI shows the whole
+# command). From cengarde 0.4: its wg0 becomes cg-router, with the same port
+# and tunnel address, and the service gets a static user. Back to 0.4: "sudo cengarde-vps-setup purge", then the 0.4
 # checkout's install.sh. firewalld is not supported yet: it stops here.
 #
 # SPDX-License-Identifier: GPL-2.0-only
@@ -146,17 +146,19 @@ if [ ! -e "$R/etc/cengarde/nat.conf" ]; then
 		# after a change: sudo cengarde-vps-setup. The defaults:
 		#CENGARDE_PORT=65500      the engine's UDP port (the router's "port")
 		#WG_PORT_BASE=65501       router k's WireGuard: 127.0.0.1, this + k
-		#PASSTHROUGH=no           IP pass until the router asks for it
-		#PASSTHROUGH_PORTS=1024:65000
+		#PASSTHROUGH_PORTS=1024:65000  IP pass's range, to the router that asks for it
 		#SSH_PORT=22              never forwarded
-		#FORWARD_ALLOW_LOW=""     ports below 1024 routers may have: "tcp:80 tcp:443";
-		#                         protocol 3's IP pass forwards them only inside PASSTHROUGH_PORTS
+		#FORWARD_ALLOW_LOW=""     ports below 1024 routers may have: "tcp:80 tcp:443"
+		#                         (cengarde-vps-setup forward add NAME tcp:443)
+		#FORWARD_MAX_PORTS=1024   ports a router may forward with its own rules
 		#FORWARD_RESERVED=""      more ports never forwarded: "udp:5000-5010"
 		#FORWARD_AUTO_RESERVE=yes this server's own listeners and Docker ports
 		#FORWARD_UNRESERVE=""     forwarded even though something listens there
 		#FORWARD_SKIP_SRC=""      sources never forwarded (set for a private IPv4)
 		#PUB_IF=""                only this interface forwarded and masqueraded
 		#ROUTER_NAME=router       the name of the cloud-config's router
+		#ROUTER_TUNNEL_ADDR=      its tunnel address (LuCI writes it in the
+		#                         cloud-config; without it, 10.79.0.2)
 	EOF
 	chmod 0644 "$R/etc/cengarde/nat.conf"
 fi
