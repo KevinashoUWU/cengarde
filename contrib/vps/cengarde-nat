@@ -20,6 +20,14 @@
 #   router that holds it, and each router's own rules. One that serves one
 #   router with the global key writes "on" or "off" to PASSTHROUGH_FILE, as
 #   the router asks for IP pass (until it does, PASSTHROUGH below says);
+# - with TUNNEL_IPV6=yes, on a box with IPv6: the routers' IPv6 through
+#   the tunnels (each router's ULA, in fc00::/7) masqueraded out of
+#   anything but a tunnel (NAT66: a provider routes no prefix to a VPS),
+#   never to another router, and IPv6 forwarding on. accept_ra goes from 1
+#   to 2 first wherever the kernel takes router advertisements, or this
+#   box would lose its own IPv6 default route; an interface whose
+#   advertisements a daemon takes (systemd-networkd: accept_ra 0) is left
+#   alone. Forwarding stays on after down, as something else may need it;
 # - never forwarded, nor taken by a router: the reserved set, printed by
 #   "cengarde-nat reserved": SSH, cengarde, WireGuard, every port below 1024
 #   but FORWARD_ALLOW_LOW, FORWARD_RESERVED and, with FORWARD_AUTO_RESERVE,
@@ -73,6 +81,7 @@ FORWARD_UNRESERVE=    # forwarded even though something listens there
 # shellcheck disable=SC2034 # for cengarde-vps-setup: ports of a router's own rules
 FORWARD_MAX_PORTS=1024
 FORWARD_SKIP_SRC=     # sources never forwarded: "192.168.1.0/24"
+TUNNEL_IPV6=no        # the routers' IPv6 through the tunnels (yes or no)
 PUB_IF=               # optional: the only interface forwarded and masqueraded
 # shellcheck disable=SC2034 # for cengarde-vps-setup
 ROUTER_NAME=router
@@ -92,6 +101,7 @@ CONNTRACK=${CENGARDE_CONNTRACK:-conntrack}
 
 SERVER_ADDR=10.79.0.1
 TUNNEL_RANGE=10.79.0.0/16
+TUNNEL_RANGE6=fc00::/7 # each router's ULA, derived from its secret
 
 say() { echo "$ME: $*"; }
 warn() { echo "$ME: $*" >&2; }
@@ -155,6 +165,7 @@ if ! is_port "$PASS_LO" || ! is_port "$PASS_HI" || [ "$PASS_LO" -gt "$PASS_HI" ]
 	die "PASSTHROUGH_PORTS in $CONF: expected FIRST:LAST"
 fi
 case $PUB_IF in *[!A-Za-z0-9._@+-]*) die "PUB_IF in $CONF: not an interface name" ;; esac
+case $TUNNEL_IPV6 in yes | no) ;; *) die "TUNNEL_IPV6 in $CONF: yes or no" ;; esac
 [ ${#PUB_IF} -le 15 ] || die "PUB_IF in $CONF: not an interface name"
 SKIP=
 for c in $FORWARD_SKIP_SRC; do
@@ -566,10 +577,26 @@ render6() {
 	cat <<-EOF
 		*filter
 		:CG_IN - [0:0]
+		:CG_FWD - [0:0]
 		-A CG_IN -p udp --dport $CENGARDE_PORT -j ACCEPT
 		-A CG_IN ! -i lo -p udp --dport $WG_PORT_BASE:$WG_PORT_LAST -j DROP
-		COMMIT
 	EOF
+	if [ "$TUNNEL_IPV6" = yes ]; then
+		cat <<-EOF
+			-A CG_FWD -i cg-+ -o cg-+ -j DROP
+			-A CG_FWD -i cg-+ -j ACCEPT
+			-A CG_FWD -o cg-+ -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+			COMMIT
+			*nat
+			:CG_POST - [0:0]
+		EOF
+		if [ -n "$PUB_IF" ]; then
+			echo "-A CG_POST -s $TUNNEL_RANGE6 -o $PUB_IF -j MASQUERADE"
+		else
+			echo "-A CG_POST -s $TUNNEL_RANGE6 ! -o cg-+ -j MASQUERADE"
+		fi
+	fi
+	echo COMMIT
 }
 
 # jumps4, jumps6: "TABLE CHAIN SPEC", in iptables -S's own order of words.
@@ -584,7 +611,12 @@ jumps4() {
 	fi
 	echo "nat POSTROUTING -j CG_POST"
 }
-jumps6() { echo "filter INPUT -j CG_IN"; }
+jumps6() {
+	echo "filter INPUT -j CG_IN"
+	[ "$TUNNEL_IPV6" = yes ] || return 0
+	echo "filter FORWARD -j CG_FWD"
+	echo "nat POSTROUTING -j CG_POST"
+}
 
 BUILTIN="filter:INPUT filter:FORWARD nat:PREROUTING nat:POSTROUTING"
 
@@ -646,8 +678,32 @@ snapshot() {
 	if have_v6; then
 		ip6tables -w -S CG_IN 2>&1 | grep -v '^# Warning: '
 		ip6tables -w -S INPUT 2>/dev/null | grep -- ' -j CG_IN$'
+		if [ "$TUNNEL_IPV6" = yes ]; then
+			ip6tables -w -S CG_FWD 2>&1 | grep -v '^# Warning: '
+			ip6tables -w -S FORWARD 2>/dev/null | grep -- ' -j CG_FWD$'
+			ip6tables -w -t nat -S CG_POST 2>&1 | grep -v '^# Warning: '
+			ip6tables -w -t nat -S POSTROUTING 2>/dev/null | grep -- ' -j CG_POST$'
+		fi
 	fi
 }
+
+# v6_forwarding: IPv6 forwarding on (TUNNEL_IPV6), accept_ra 2 first where
+# the kernel takes router advertisements (see the top of this file).
+v6_forwarding() {
+	local f n
+	for f in /proc/sys/net/ipv6/conf/*/accept_ra; do
+		n=${f%/accept_ra}
+		case ${n##*/} in all | lo | cg-*) continue ;; esac
+		if [ "$(cat "$f" 2>/dev/null)" = 1 ]; then
+			echo 2 >"$f" || return 1
+		fi
+	done
+	f=/proc/sys/net/ipv6/conf/all/forwarding
+	[ "$(cat "$f" 2>/dev/null)" != 1 ] || return 0
+	echo 1 >"$f" || return 1
+	say "IPv6 forwarding on (TUNNEL_IPV6=yes), accept_ra 2 where the kernel takes router advertisements"
+}
+v6_forwarding_on() { [ "$(cat /proc/sys/net/ipv6/conf/all/forwarding 2>/dev/null)" = 1 ]; }
 
 # ---- live flows ----
 
@@ -782,10 +838,22 @@ sync_now() {
 		jumps6 >"$WORK/jumps6"
 		if ip6tables-restore -w --noflush <"$WORK/rules6"; then
 			set_jumps ip6tables "$WORK/jumps6"
+			if [ "$TUNNEL_IPV6" = yes ]; then
+				# The rules first, then forwarding.
+				v6_forwarding || {
+					warn "cannot turn IPv6 forwarding on: the routers' IPv6 goes nowhere"
+					FAIL=1
+				}
+			elif ip6tables -w -t nat -S CG_POST >/dev/null 2>&1; then
+				# TUNNEL_IPV6 just went off: its NAT66 chain, now unused.
+				ip6tables -w -t nat -F CG_POST && ip6tables -w -t nat -X CG_POST || FAIL=1
+			fi
 		else
 			warn "ip6tables-restore refused the IPv6 rules"
 			FAIL=1
 		fi
+	elif [ "$TUNNEL_IPV6" = yes ]; then
+		warn "TUNNEL_IPV6=yes in $CONF, but this box has no IPv6 (or no ip6tables): the routers' IPv6 goes nowhere"
 	fi
 	mkdir -p "$STATE" && chmod 0700 "$STATE" || FAIL=1
 	move_flows "$STATE/applied" "$WORK/plan"
@@ -914,6 +982,9 @@ cmd_check() {
 	if [ "$(snapshot)" != "$(cat "$STATE/rules" 2>/dev/null)" ]; then
 		why="rules were missing or changed (a firewall reload?)"
 	fi
+	if [ "$TUNNEL_IPV6" = yes ] && have_v6 && ! v6_forwarding_on; then
+		why="${why:+$why; }IPv6 forwarding was off"
+	fi
 	reserved_tokens >"$WORK/reserved.now"
 	if ! cmp -s "$WORK/reserved.now" "$STATE/reserved"; then
 		why="${why:+$why; }the reserved set changed"
@@ -963,6 +1034,15 @@ cmd_status() {
 		say "nothing forwarded"
 	fi
 	say "reserved: $(reserved_tokens | tr '\n' ' ')"
+	if [ "$TUNNEL_IPV6" = no ]; then
+		say "the routers' IPv6: not through the tunnels (TUNNEL_IPV6=no; cengarde-vps-setup ipv6 on)"
+	elif ! have_v6; then
+		say "the routers' IPv6: TUNNEL_IPV6=yes, but this box has no IPv6"
+	elif v6_forwarding_on; then
+		say "the routers' IPv6: through the tunnels, masqueraded (NAT66)"
+	else
+		say "the routers' IPv6: TUNNEL_IPV6=yes, but IPv6 forwarding is off (cengarde-nat sync)"
+	fi
 	command -v "$CONNTRACK" >/dev/null || say "conntrack is not installed: live flows do not move when a port changes hands"
 	foreign
 }

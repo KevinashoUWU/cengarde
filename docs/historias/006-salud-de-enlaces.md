@@ -255,3 +255,7 @@ Misma prueba con el `sndbuf` por defecto:
 - 2026-10-10: `mute_behind_ms = 0` en una recarga devuelve al instante los
   enlaces silenciados (antes seguían silenciados mientras estuvieran
   atrasados); escenario `muteoff`: 58–139 ms.
+- 2026-10-11: LuCI dice «en reserva» en vez de «silenciado», con una
+  columna por sentido (subida y bajada): cada sentido lo decide el extremo
+  que envía, y es normal que un operador rinda más en un sentido. El motor
+  y su estado (`muted`, `mute_*`) no cambian.

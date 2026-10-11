@@ -112,6 +112,12 @@ msgstr ""
 msgid "Through routes more specific than the default ones, which the uplinks keep for cengarde itself."
 msgstr ""
 
+msgid "IPv6 through the tunnel"
+msgstr ""
+
+msgid "Carries IPv6 through the tunnel too, translated (NAT66) here and at the VPS: this router gets a ULA address in the tunnel, derived from the secret, and with \"Route all traffic through the tunnel\" the IPv6 of the router and of the LAN leaves through the VPS. The VPS needs IPv6 of its own and the command \"sudo cengarde-vps-setup ipv6 on\" (the cloud-config of a new VPS follows this switch when all traffic goes through the tunnel). The LAN needs a ULA prefix (Network > Interfaces > Global network options); its devices have only that, so they prefer IPv4 for sites that have both, and this serves mainly IPv6-only sites. Off until it has been tested on real hardware."
+msgstr ""
+
 msgid "IP pass"
 msgstr ""
 
@@ -163,10 +169,10 @@ msgstr ""
 msgid "0 (never) or at least %d ms with this probe interval"
 msgstr ""
 
-msgid "Mute after falling behind (ms)"
+msgid "Standby after falling behind (ms)"
 msgstr ""
 
-msgid "A link that stays this far behind the fastest one for the settle time stops carrying traffic until it catches up. 0: never."
+msgid "An uplink that stays this far behind the fastest one in a direction for the settle time goes on standby that way (probes only) until it catches up; the other direction is decided apart. 0: never."
 msgstr ""
 
 msgid "Settle time (ms)"
@@ -175,7 +181,7 @@ msgstr ""
 msgid "Minimum active links"
 msgstr ""
 
-msgid "Never mute below this many links."
+msgid "No uplink goes on standby if that would leave fewer than this many in use."
 msgstr ""
 
 msgid "Probe interval (ms)"
@@ -247,6 +253,9 @@ msgstr ""
 msgid "Uplink %s gets no IPv6 interface: the name %s is taken or longer than 15 characters, so cengarde does not see the IPv6 of that uplink."
 msgstr ""
 
+msgid "IPv6 through the tunnel is on, but the router has no ULA prefix, so the LAN has no IPv6 address to send through it: set one in Network > Interfaces > Global network options."
+msgstr ""
+
 msgid "The LAN still holds the public IPv6 prefix %s: its IPv6 goes around the tunnel, through the uplinks. Turn off \"Delegate IPv6 prefixes\" on the interface it comes from."
 msgstr ""
 
@@ -286,6 +295,12 @@ msgstr ""
 msgid "%d h ago"
 msgstr ""
 
+msgid "standby"
+msgstr ""
+
+msgid "in use"
+msgstr ""
+
 msgid "paused"
 msgstr ""
 
@@ -296,9 +311,6 @@ msgid "waiting for the VPS"
 msgstr ""
 
 msgid "no answer"
-msgstr ""
-
-msgid "muted"
 msgstr ""
 
 msgid "active"
@@ -358,6 +370,9 @@ msgstr ""
 msgid "WireGuard tunnel"
 msgstr ""
 
+msgid "IPv6 address in the tunnel"
+msgstr ""
+
 msgid "Traffic"
 msgstr ""
 
@@ -391,7 +406,10 @@ msgstr ""
 msgid "Path MTU"
 msgstr ""
 
-msgid "From the VPS"
+msgid "Upload (to the VPS)"
+msgstr ""
+
+msgid "Download (from the VPS)"
 msgstr ""
 
 msgid "Arrived first"
@@ -400,13 +418,13 @@ msgstr ""
 msgid "Sent"
 msgstr ""
 
-msgid "Mutes"
+msgid "Upload to standby"
 msgstr ""
 
-msgid "muted by the VPS"
+msgid "Behind the fastest uplink by more than the limit: the router sends through the others, and only probes through this one, until it catches up."
 msgstr ""
 
-msgid "in use"
+msgid "Slower than the best uplink from the VPS: the VPS sends through the others, and only probes through this one, until it catches up."
 msgstr ""
 
 msgid "Back to what the configuration says"
@@ -439,7 +457,10 @@ msgstr ""
 msgid "Status"
 msgstr ""
 
-msgid "Behind the fastest: how much later this uplink delivers than the quickest one; past the limit it gets muted (no traffic, probes only) until it catches up. Arrived first: share of the download that came through this uplink before any other copy. Pause: takes an uplink out without touching the configuration, until you resume it or cengarde restarts."
+msgid "Upload and download are decided apart, by the end that sends: an uplink can be on standby one way and in use the other, as is usual when carriers are faster one way (upload through one, download through another). On standby it carries only probes until it catches up with the best, and at least the minimum of active uplinks (Advanced tab) always stays in use."
+msgstr ""
+
+msgid "Behind the fastest: how much later this uplink delivers the upload than the quickest one; past the limit its upload goes on standby. Arrived first: share of the download that came through this uplink before any other copy. Pause: takes an uplink out without touching the configuration, until you resume it or cengarde restarts."
 msgstr ""
 
 msgid "VPS address: where the uplink sends to; \"failover\" when the first VPS address it can use did not answer. Path MTU: the largest packet the path to the VPS takes."
