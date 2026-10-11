@@ -20,6 +20,7 @@ modem that was down, and RF data that starts after the recording does and
 ends after it. Run: python3 bench/fieldrec_test.py
 """
 
+import bisect
 import collections
 import csv
 import gzip
@@ -27,6 +28,7 @@ import io
 import json
 import os
 import random
+import re
 import sys
 import tempfile
 import time
@@ -174,7 +176,17 @@ def regime(hour, d):
             (5000, bit("a", "b", "c", "e"), late_dist(ind))]
 
 
+BOND_MEMO = {}
+
+
 def bond_lines(soft_reset=None):
+    """The lines of _bond_lines, made once (nothing changes them)."""
+    if soft_reset not in BOND_MEMO:
+        BOND_MEMO[soft_reset] = _bond_lines(soft_reset)
+    return BOND_MEMO[soft_reset]
+
+
+def _bond_lines(soft_reset=None):
     """Status lines every 2 s for three hours; counters accumulate as floats and
     are rounded when written, so the totals are exact to a packet."""
     lines, st = [], None
@@ -663,7 +675,7 @@ def analyze_raw(lines, utc=0.0):
 RF_CACHE = {}
 
 
-def radio_of(a, text, name="rf.txt", offset=0.0, window=None, maps=(), utc=0.0, precision="auto", binary=None):
+def radio_of(a, text, name="rf.txt", offset=0.0, window=None, maps=(), utc=0.0, precision="auto", binary=None, local=fieldrec.RF_LOCAL_S):
     """summarize_radio on an RF file with this content (a file read once, as summarize_radio does not change it)."""
     key = (hash(text), hash(binary), name, precision)
     if key not in RF_CACHE:
@@ -676,7 +688,7 @@ def radio_of(a, text, name="rf.txt", offset=0.0, window=None, maps=(), utc=0.0, 
                 with open(path, "w", newline="") as fh:
                     fh.write(text)
             RF_CACHE[key] = fieldrec.load_rf([path], precision)
-    return fieldrec.summarize_radio(a, RF_CACHE[key], fieldrec.RadioOpts(offset, window, maps), utc)
+    return fieldrec.summarize_radio(a, RF_CACHE[key], fieldrec.RadioOpts(offset, window, maps, local), utc)
 
 
 def same_radio(x, y):
@@ -875,8 +887,8 @@ def radio_checks():
     t = text.getvalue()
     for what in ("## Radio", "### RF series and links", "### Radio per link", "### Changes", "### Radio changes and link events",
                  "### SINR before link events", "### Radio by hour (UTC+0)", "| cpe04/rm520n_09 | isp9 | wom | NOT MAPPED |",
-                 "- not mapped: cpe06/modem1", "- links without RF data: starlink", "| eth0.10 (WOM) | outage | 11 of 15 | rat | 11 (100 %) | 14.3 % (1.6) | 11 / 0 | 11 | 11 | <0.001 | more than chance |",
-                 "| eth0.30 (Claro B5) | outage | 24 of 24 | band | 12 (50 %) | 6.6 % (1.6) | 12 / 6 | 12 | 6 | <0.001 | more than chance |",
+                 "- not mapped: cpe06/modem1", "- links without RF data: starlink", "| eth0.10 (WOM) | outage | 11 of 15 | rat | 11 (100 %) | 14.3 % (1.6) | 11 / 0 | 11 | 11 | 1.6 / 1.6 | <0.001 / <0.001 | more than chance (local) |",
+                 "| eth0.30 (Claro B5) | outage | 24 of 24 | band | 12 (50 %) | 6.6 % (1.6) | 12 / 6 | 12 | 6 | 0.8 / 0.8 | <0.001 / <0.001 | more than chance (local) |",
                  "lower than usual", "no clear difference", "no changes", "too few events"):
         check(f"report has {what!r}", what in t)
     check("report: the radio goes between the hours and the joint lateness", t.index("## By hour") < t.index("## Radio") < t.index("## Joint lateness"))
@@ -929,6 +941,495 @@ def rf_of(text, csv_=False, precision="auto"):
     rf = fieldrec.RF()
     (fieldrec.read_rf_csv if csv_ else lambda fh, r: fieldrec.read_rf_lp(fh, r, precision))(io.StringIO(text, newline=""), rf)
     return rf
+
+
+# --- the local chance: a link whose outages and RAT changes both come thick in the same hour ------------------
+
+CL_N = 21600                                       # six hours, a status every second
+CL_BAD = (7200, 10800)                             # the changes and the outages are all in this hour
+CL_SINR_BAD = (5400, 12600)                        # and the SINR is low half an hour before and after it too (so a local baseline is fair)
+CL_CHANGES = [7200 + 100 * j for j in range(36)]   # the RAT flips every 100 s: windows of +-20 s cover 40 % of that hour
+CL_OUT = [(7305 + 170 * k, 5) for k in range(20)]  # 170 s apart; phase (5 + 70 k) mod 100 runs through all of 5, 15, ..., 95: 4 in 10 near a change
+
+
+def cluster_status():
+    lines = []
+    for k in range(CL_N):
+        t = k + 0.25
+        o = span_at(CL_OUT, t)
+        lines.append({"mode": "client", "uptime_ms": 5000 + int(t * 1000), "time_ms": R0 * 1000 + int(t * 1000), "session": "s0",
+                      "probe_interval_ms": 100, "download": {"packets": 0},
+                      "links": [{"id": 0, "name": "wwan0", "label": "Car", "state": "stalled" if o is not None else "live", "rtt_ms": 30.0,
+                                 "last_rx_ms_ago": int((t - o) * 1000) if o is not None else 20, "upload": "active"}]})
+    return lines
+
+
+def cluster_rf():
+    rng = random.Random(11)
+    base = {"site": "terreno", "cpe_id": "cpe09", "host": "cpe09", "modem_id": "m1", "leg": "car", "carrier": "claro"}
+    pts = []
+    for i in range(2159):
+        t = 10 + 10 * i
+        flip = CL_BAD[0] <= t < CL_BAD[1] and ((t - CL_BAD[0]) // 100) % 2 == 0
+        sinr = (3 if CL_SINR_BAD[0] <= t < CL_SINR_BAD[1] else 12) + rng.choice((-1, 0, 1))
+        for meas, extra, f in lte_lines(sinr, 4097, i):
+            pts.append((R0 + t, meas, {**base, **extra}, f))
+        pts.append((R0 + t, "cell_nwinfo", {**base, "rat": "wcdma" if flip else "fdd_lte", "band": "wcdma_band_1" if flip else "lte_band_7"},
+                    {"arfcn": 1, "plmn": "73001"}))
+    return pts
+
+
+def oracle_q(e, changes, V, N, L, step=0.5):
+    """The local chance of an event at e by brute force: the share of V within L of it (on a grid) within N of a change."""
+    num = den = 0
+    for a, b in V:
+        t, hi = max(a, e - L) + step / 2, min(b, e + L)
+        while t < hi:
+            i = bisect.bisect_left(changes, t)
+            den += 1
+            num += (i < len(changes) and changes[i] - t <= N) or (i > 0 and t - changes[i - 1] <= N)
+            t += step
+    return num / den
+
+
+def pb_oracle(qs, k):
+    """P(X >= k) and P(X <= k) from the whole distribution of the number of hits, built by convolution."""
+    dist = [1.0]
+    for q in qs:
+        new = [0.0] * (len(dist) + 1)
+        for i, x in enumerate(dist):
+            new[i] += x * (1 - q)
+            new[i + 1] += x * q
+        dist = new
+    return sum(dist[k:]), sum(dist[:k + 1])
+
+
+def oracle_local_level(eps, sinr, L, N, need=2):
+    """The local SINR rank of each episode by direct computation. sinr: [(time, value)]. The 'level' of a time t is the mean of the values in
+    [t-60, t) (at least need of them); an episode's baseline is the levels at the sample times within L of it but not in [e-60, e+N]."""
+    ts = [t for t, _ in sinr]
+
+    def level(t):
+        v = [x for u, x in sinr if t - 60 <= u < t]
+        return sum(v) / len(v) if len(v) >= need else None
+    lev = [(t, level(t)) for t in ts]
+    ranks, under, expect = [], 0, 0.0
+    for e in eps:
+        v = level(e)
+        b = sorted(m for t, m in lev if m is not None and e - L <= t <= e + L and not e - 60 <= t <= e + N)
+        if v is None or len(b) < 10:
+            continue
+        less, eq = sum(1 for x in b if x < v), sum(1 for x in b if x == v)
+        ranks.append((less + eq / 2) / len(b))
+        thr = b[min(len(b) - 1, int(0.1 * len(b)))]
+        under += v < thr
+        expect += sum(1 for x in b if x < thr) / len(b)
+    return ranks, under, expect
+
+
+def local_checks():
+    a = analyze_raw(cluster_status())
+    pts = cluster_rf()
+    lp = rf_lp(pts)
+    glob = radio_of(a, lp, local=0)["links"]["wwan0 (Car)"]
+    loc = radio_of(a, lp)["links"]["wwan0 (Car)"]
+    g, l_ = glob["events"]["outage"]["changes"]["rat"], loc["events"]["outage"]["changes"]["rat"]
+    hits = sum(1 for k in range(20) if (5 + 70 * k) % 100 in (5, 15, 85, 95))
+    check("cluster: 20 outages in one hour, 8 within 20 s of a RAT flip (4 in 10), 36 flips in that hour: the global chance is 6.7 %, the hits 40 %",
+          hits == 8 and g["n"] == 20 and g["hits"] == 8 and g["episodes"] == 20 and g["episode_hits"] == 8
+          and loc["changes"]["rat"]["n"] == 36 and 6 < g["chance_pct"] < 7.5 and g["share_pct"] == 40.0, (g, loc["changes"]["rat"]))
+    check("cluster: with the global chance alone (--rf-local 0) it reads 'more than chance' (p ~ 1e-5) and says it is the global one",
+          glob["events"]["outage"]["changes"]["rat"]["reading"] == "more than chance" and glob["events"]["outage"]["changes"]["rat"]["basis"] == "global"
+          and g["p"] < 1e-4 and glob["events"]["outage"]["changes"]["rat"]["p_local"] is None and glob["local_window_s"] == 0, glob["events"]["outage"]["changes"]["rat"])
+    check("cluster: with the local chance it reads 'about chance' (the same hits against what the neighbourhoods give), and says it is the local one",
+          l_["reading"] == "about chance" and l_["basis"] == "local" and l_["p"] == g["p"] and 0.1 < l_["p_local"] < 0.9
+          and 5 < l_["local_expected"] < 7.5 and l_["local_chance_pct"] > 4 * l_["chance_pct"] and loc["local_window_s"] == 1800, l_)
+    # --- q_e by brute force, the expected hits and the tail from the whole distribution
+    V = [(30, 21580)]
+    eps = [7305 + 170 * k for k in range(20)]
+    qs = [oracle_q(e, CL_CHANGES, V, 20, 1800) for e in eps]
+    mine = fieldrec.local_shares(eps, CL_CHANGES, 20, [[30, 21580]], 1800)
+    check("local chance: the share of the 1800 s around each episode within 20 s of a change, against a grid count (20 episodes, 0.21 to 0.40)",
+          max(abs(x - y) for x, y in zip(qs, mine)) < 5e-4 and 0.2 < min(qs) < 0.24 and max(qs) > 0.39, (min(qs), max(qs)))
+    pu, pl = pb_oracle(qs, 8)
+    check("local chance: the expected hits are the sum of those shares, the p-value the Poisson-binomial tail (a full convolution as the oracle)",
+          abs(l_["local_expected"] - sum(qs)) < 0.02 and abs(l_["p_local"] - pu) < 0.02 and l_["p_method"] == "exact" and pl > 0.5,
+          (l_["local_expected"], sum(qs), l_["p_local"], pu))
+    # --- SINR: low for 3 hours, the outages in the middle 2: against the whole link it is low, against its neighbourhood it is not
+    sg, sl = glob["events"]["outage"]["sinr_before"]["level"], loc["events"]["outage"]["sinr_before"]["level"]
+    check("SINR cluster: against the whole link the minute before an outage reads 'lower than usual' (rank ~ 17 %: the low 2 h are a third of the link), on the global rank alone",
+          sg["reading"] == "lower than usual" and sg["reading_basis"] == "global" and sg["mean_rank_pct"] < 35 and sg["p"] < 1e-5 and "local" not in sg, sg)
+    check("SINR cluster: against its own neighbourhood (leaving out [e-60, e+N]) it is 'no clear difference' (rank near 50 %), read on the local rank",
+          sl["reading"] == "no clear difference" and sl["reading_basis"] == "local" and sl["local"]["n"] == 20 and 35 < sl["local"]["mean_rank_pct"] < 65
+          and sl["local"]["p"] > 0.1 and sl["mean_rank_pct"] == sg["mean_rank_pct"] and sl["p"] == sg["p"], sl)
+    rng_ = random.Random(11)             # cluster_rf's own draws, in its order: the sinr of the serving line at each RF sample
+    sinr = []
+    for i_ in range(2159):
+        t_ = 10 + 10 * i_
+        sinr.append((t_, (3 if CL_SINR_BAD[0] <= t_ < CL_SINR_BAD[1] else 12) + rng_.choice((-1, 0, 1))))
+    ranks, under, expect = oracle_local_level(eps, sinr, 1800, 20)
+    check("SINR local baseline: the mean rank, the count under p10 and the expected count are those of a direct computation that leaves out [e-60, e+N] "
+          "(20 episodes; with the exclusion lifted they differ)",
+          len(ranks) == 20 and abs(sl["local"]["mean_rank_pct"] - 100 * sum(ranks) / 20) < 1e-3 and sl["local"]["under_p10"] == under
+          and abs(sl["local"]["expected_under_p10"] - expect) < 1e-3, (sl["local"], 100 * sum(ranks) / 20, under, expect))
+    # --- the precursor links are still precursors locally
+    base = radio_of(analyze_raw(radio_status()), rf_lp(rf_points()))["links"]
+    wo = base["eth0.10 (WOM)"]["events"]["outage"]["changes"]["rat"]
+    check("precursor link (wom): 'more than chance' on the local chance too, and the SINR 'lower than usual' on the local rank",
+          wo["reading"] == "more than chance" and wo["basis"] == "local" and wo["p_local"] < 1e-6 and wo["local_expected"] < 3
+          and base["eth0.10 (WOM)"]["events"]["outage"]["sinr_before"]["level"]["reading"] == "lower than usual"
+          and base["eth0.10 (WOM)"]["events"]["outage"]["sinr_before"]["level"]["reading_basis"] == "local", wo)
+    ent = base["eth0.20 (Entel 5G)"]["events"]["outage"]["changes"]["rat"]
+    check("no-precursor link (entel): 'about chance' locally too", ent["reading"] == "about chance" and ent["basis"] == "local" and ent["p_local"] > 0.5, ent)
+    few = base["eth0.10 (WOM)"]["events"]["upload_mute"]["changes"]["rat"]
+    check("too few episodes: the reading says so and names no basis, but the local p is there", few["reading"] == "too few events" and few["basis"] == ""
+          and few["p_local"] is not None, few)
+    # --- the option
+    with tempfile.TemporaryDirectory() as d:
+        os.mkdir(os.path.join(d, "rec"))
+        with open(os.path.join(d, "rec", "current.jsonl"), "w") as fh:
+            for x in cluster_status():
+                fh.write(json.dumps(x) + "\n")
+        with open(os.path.join(d, "rf.lp"), "w") as fh:
+            fh.write(lp)
+        res = {}
+        for opt in ("0", "30", "900"):
+            with contextlib.redirect_stdout(io.StringIO()):
+                fieldrec.main([os.path.join(d, "rec"), "--rf", os.path.join(d, "rf.lp"), "--rf-local", opt, "--json", os.path.join(d, f"s{opt}.json")])
+            res[opt] = json.load(open(os.path.join(d, f"s{opt}.json")))["radio"]["links"]["wwan0 (Car)"]
+    check("--rf-local: 0 is global only, a value under 2N is raised to 2N (40 s), 900 s gives a smaller neighbourhood and a different local chance",
+          res["0"]["local_window_s"] == 0 and res["30"]["local_window_s"] == 40 and res["900"]["local_window_s"] == 900
+          and res["900"]["events"]["outage"]["changes"]["rat"]["local_expected"] != l_["local_expected"]
+          and res["0"]["events"]["outage"]["sinr_before"]["level"]["reading_basis"] == "global", {k: v["local_window_s"] for k, v in res.items()})
+
+
+def local_unit_checks():
+    rng = random.Random(4)
+    qs = [rng.random() * 0.6 for _ in range(12)]
+    ok = all(abs(fieldrec.pb_tail(qs, k, True)[0] - pb_oracle(qs, k)[0]) < 1e-12 and abs(fieldrec.pb_tail(qs, k, False)[0] - pb_oracle(qs, k)[1]) < 1e-12
+             for k in range(0, 13))
+    check("pb_tail: both tails for every k against the whole distribution (12 trials), the edges 0 and n included", ok)
+    check("pb_tail: equal probabilities give the binomial tail",
+          abs(fieldrec.pb_tail([0.1] * 10, 1, True)[0] - (1 - 0.9 ** 10)) < 1e-12 and abs(fieldrec.pb_tail([0.2] * 30, 9, True)[0] - fieldrec.binom_tail(9, 30, 30, 0.2)) < 1e-12)
+    far, want = fieldrec.pb_tail([0.1] * 100, 60, True)[0], fieldrec.binom_tail(60, 100, 100, 0.1)
+    check("pb_tail: an upper tail far out is not 0 nor noise (nothing is subtracted from 1): 60 hits in 100 trials of 0.1 is ~2e-34, as the binomial says",
+          1e-35 < far < 1e-33 and abs(far - want) < 1e-9 * want, (far, want))
+    check("pb_tail: certain and impossible trials", fieldrec.pb_tail([1.0, 1.0, 0.0], 2, True)[0] == 1.0 and fieldrec.pb_tail([1.0, 1.0, 0.0], 3, True)[0] == 0.0
+          and fieldrec.pb_tail([1.0, 1.0, 0.0], 1, False)[0] == 0.0 and fieldrec.pb_tail([], 0, True)[0] == 1.0)
+    big = [0.3 + 0.2 * rng.random() for _ in range(60)]
+    exact = fieldrec.pb_tail(big, 25, True)
+    saved, fieldrec.PB_CELLS = fieldrec.PB_CELLS, 1
+    try:
+        approx, lower = fieldrec.pb_tail(big, 25, True), fieldrec.pb_tail(big, 25, False)
+        degenerate = fieldrec.pb_tail([1.0] * 5 + [0.0] * 5, 5, True), fieldrec.pb_tail([1.0] * 5 + [0.0] * 5, 6, True)
+    finally:
+        fieldrec.PB_CELLS = saved
+    check("pb_tail: above the size it can pay it falls back to a normal approximation, close to the exact tail (60 trials)",
+          exact[1] == "exact" and approx[1] == "normal" and abs(approx[0] - exact[0]) < 0.03 and abs(lower[0] - fieldrec.pb_tail(big, 25, False)[0]) < 0.03
+          and degenerate == ((1.0, "normal"), (0.0, "normal")), (exact, approx, lower, degenerate))
+    check("local_shares: with a neighbourhood far bigger than V every episode has the global chance (80 s of 300); a small one the local (30 s of 110); none where V is empty",
+          all(abs(x - 80 / 300) < 1e-9 for x in fieldrec.local_shares([50, 150], [100, 200], 20, [[0, 300]], 10000))
+          and abs(fieldrec.local_shares([50], [100, 200], 20, [[0, 300]], 60)[0] - 30 / 110) < 1e-9
+          and fieldrec.local_shares([500], [100], 20, [[0, 40], [1000, 1100]], 10) == [None])
+    c = fieldrec.IvCum([[0, 10], [20, 30]])
+    check("IvCum: lengths inside any span", c.between(5, 25) == 10 and c.between(-5, 100) == 20 and c.between(12, 18) == 0 and c.between(25, 26) == 1)
+
+
+# --- --export: tidy CSVs for R and pandas ----------------------------------------------------
+
+# The columns, written out: a column renamed, moved or dropped fails here before it breaks somebody's script.
+H_SAMPLES = [
+    'segment', 'session', 'sample', 'time_utc', 'time_epoch', 'uptime_ms', 'clock_synced', 'interval_ms', 'link',
+    'label', 'link_id', 'state', 'counted', 'out', 'last_rx_ms_ago', 'rtt_ms', 'rtt_dev_ms', 'rtt_step_ms',
+    'rtt_behind_best_ms', 'upload', 'upload_muted', 'upload_mutes', 'upload_mutes_delta', 'upload_state_ms',
+    'upload_behind_ms', 'download_muted', 'tx_packets_delta', 'server_rx_delta', 'rx_first_delta', 'rx_copies_delta',
+    'loss_down']
+H_EVENTS = ['kind', 'link', 'label', 'segment', 'start_utc', 'start_epoch', 'end_utc', 'end_epoch', 'duration_s', 'ends']
+H_JOINT = ['segment', 'time_utc', 'time_epoch', 'uptime_ms', 'clock_synced', 'interval_ms', 'deadline_ms', 'mask', 'set', 'expect', 'late']
+H_TUNNEL = ['segment', 'time_utc', 'time_epoch', 'uptime_ms', 'clock_synced', 'interval_ms', 'down_packets_delta', 'lost_all_delta']
+H_RF = [
+    'time_utc', 'time_epoch', 'rf_time_epoch', 'link', 'label', 'cpe_id', 'modem_id', 'leg', 'carrier', 'recorded',
+    'modem_up', 'rat', 'band', 'cell_kind', 'cell', 'nsa', 'sinr', 'rsrq', 'rsrp', 'source']
+H_RF_CHANGES = ['time_utc', 'time_epoch', 'link', 'label', 'cpe_id', 'modem_id', 'kind', 'from', 'to', 'recorded']
+EDGE_NAMES = ['le_32', 'le_96', 'le_128', 'le_192', 'le_256', 'le_384', 'le_512', 'le_768', 'le_1024', 'le_1280', 'le_1440', 'gt_1440']
+# per direction, in this order: packets per bucket, bytes per bucket, handshakes
+H_TUNNEL_SIZES = H_TUNNEL + [c for w in ("up", "down") for c in
+                             [f"{w}_{k}_{e}" for k in ("pkts", "bytes") for e in EDGE_NAMES] + [f"{w}_hs_{h}" for h in ("init", "response", "cookie", "other")]]
+
+
+def read_table(text):
+    rows = list(csv.reader(io.StringIO(text, newline="")))
+    return rows[0], [dict(zip(rows[0], r)) for r in rows[1:]], rows[1:]
+
+
+def export_run(src, extra=(), gz=False):
+    """main() with --export on a recording (a directory): (exit code, the report, {file name: text}, the JSON summary)."""
+    with tempfile.TemporaryDirectory() as d:
+        out = os.path.join(d, "ex")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = fieldrec.main([src, "--export", out, "--json", os.path.join(d, "s.json")] + list(extra) + (["--export-gzip"] if gz else []))
+        with open(os.path.join(d, "s.json")) as fh:
+            summary = json.load(fh)
+        files = {}
+        for name in sorted(os.listdir(out)):
+            with open(os.path.join(out, name), "rb") as fh:
+                raw = fh.read()
+            files[name] = gzip.decompress(raw).decode() if name.endswith(".gz") else raw.decode()
+        return rc, buf.getvalue(), files, summary
+
+
+def write_dir(d, lines):
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, "current.jsonl"), "w") as fh:
+        for x in lines:
+            fh.write(json.dumps(x) + "\n")
+    return d
+
+
+def sets_of(d):
+    """{mask: (expect, late)} per deadline of a joint.csv, summed."""
+    out = collections.defaultdict(lambda: collections.defaultdict(lambda: [0, 0]))
+    for r in d:
+        e = out[int(r["deadline_ms"])][int(r["mask"])]
+        e[0] += int(r["expect"])
+        e[1] += int(r["late"])
+    return out
+
+
+def export_checks():
+    # --- the first recording: a restart, a gap, the clock before NTP, an engine without time_ms, a cut file; no instruments
+    with tempfile.TemporaryDirectory() as d:
+        make(d)
+        notes = []
+        segs = fieldrec.segments(fieldrec.read_lines(fieldrec.files_of([d]), notes), notes)
+        rc, rep, fl, summ = export_run(d)
+        plain = io.StringIO()
+        with contextlib.redirect_stdout(plain):
+            fieldrec.main([d])
+    check("export: exits 0, writes the four files and README.txt (no --rf: no rf files); the report is the same with and without it",
+          rc == 0 and sorted(fl) == ["README.txt", "events.csv", "joint.csv", "samples.csv", "tunnel.csv"] and rep == plain.getvalue(), sorted(fl))
+    hs, sm, smr = read_table(fl["samples.csv"])
+    he, ev, _ = read_table(fl["events.csv"])
+    hj, jt, _ = read_table(fl["joint.csv"])
+    ht, tn, _ = read_table(fl["tunnel.csv"])
+    check("export: the headers are as written down (an old recording has no sizes: the tunnel has no size columns)",
+          hs == H_SAMPLES and he == H_EVENTS and hj == H_JOINT and ht == H_TUNNEL, (hs, he, hj, ht))
+    nlinks = sum(len(x.links) for seg in segs for x in seg)
+    check("export: a samples row per link per status sample (the first of each of 3 runs included), a tunnel row per interval, a joint file with no rows",
+          len(sm) == nlinks and len(tn) == sum(len(seg) - 1 for seg in segs) and jt == [] and {r["segment"] for r in sm} == {"0", "1", "2"}
+          and sum(r["sample"] == "0" for r in sm) == 3 * 4 and all(r["counted"] == "0" and r["interval_ms"] == "" for r in sm if r["sample"] == "0"),
+          (len(sm), nlinks))
+    check("export: the samples before NTP are marked (clock_synced 0), the others not; a time_utc is its time_epoch",
+          sum(r["clock_synced"] == "0" for r in sm) == 4 * sum(not x.synced for seg in segs for x in seg) > 0
+          and all(time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(float(r["time_epoch"]))) == r["time_utc"][:19] and r["time_utc"].endswith("Z") for r in sm[::97]),
+          sum(r["clock_synced"] == "0" for r in sm))
+    check("export: a field the status lacks is an empty cell (upload_state_ms), and so is what needs 30 RTTs or the previous sample (rtt_dev_ms first)",
+          all(r["upload_state_ms"] == "" for r in sm) and all(r["rtt_dev_ms"] == "" for r in sm[:100]) and any(r["rtt_dev_ms"] != "" for r in sm)
+          and all(r["tx_packets_delta"] == "" for r in sm if r["sample"] == "0"), None)
+    ok = True
+    for n in ("a", "b", "c", "sl"):
+        ls = [float(r["loss_down"]) for r in sm if r["link"] == n and r["loss_down"] != ""]
+        want = summ["links"][n]["loss_down_pct"]
+        ok &= (not ls and want is None) or (len(ls) > 100 and abs(100 * sum(ls) / len(ls) - want) < 0.01)
+    check("export: loss_down per interval (fraction) averages to the report's download loss of each link, and is empty where the report does not judge it (the first sample)",
+          ok and any(float(r["loss_down"]) > 0 for r in sm if r["loss_down"] != "") and all(r["loss_down"] == "" for r in sm if r["sample"] == "0"), None)
+    check("export: rtt_step_ms is there on the samples before NTP too (it needs no clock), empty at the first sample of a run",
+          any(r["rtt_step_ms"] != "" for r in sm if r["clock_synced"] == "0" and r["counted"] == "1") and all(r["rtt_step_ms"] == "" for r in sm if r["sample"] == "0"))
+    check("export: the joint and lost_all of an old recording are empty cells in the tunnel", all(r["lost_all_delta"] == "" for r in tn) and tn and all(r["down_packets_delta"] != "" for r in tn))
+    n_ev = collections.Counter(r["kind"] for r in ev)
+    gap = next(r for r in ev if r["kind"] == "gap")
+    rst = next(r for r in ev if r["kind"] == "restart")
+    check("export events: the one restart and the one gap of the recording, with their durations (1 s between runs, 61 s)",
+          n_ev["restart"] == 1 == n_ev["gap"] and float(gap["duration_s"]) == 61.0 and float(rst["duration_s"]) == 1.0 and gap["link"] == "" and gap["ends"] == "", (gap, rst))
+    ok = True
+    for n, v in summ["links"].items():
+        mine = [r for r in ev if r["kind"] == "outage" and r["link"] == n]
+        durs = [float(r["duration_s"]) for r in mine]
+        ok &= len(mine) == v["outages"] and abs(max(durs, default=0) - (v["outage_s"]["max"] or 0)) < 1e-3 \
+            and abs((fieldrec.pct(durs, 50) or 0) - (v["outage_s"]["p50"] or 0)) < 1e-3
+    check("export events: the outages of each link are the report's: their number, their median and longest duration", ok and n_ev["outage"] == sum(v["outages"] for v in summ["links"].values()))
+    check("export events: sorted by segment and start", [(int(r["segment"]), r["start_epoch"]) for r in ev] == sorted((int(r["segment"]), r["start_epoch"]) for r in ev) or
+          all((int(x["segment"]), x["start_epoch"] or "0") <= (int(y["segment"]), y["start_epoch"] or "0") for x, y in zip(ev, ev[1:])))
+
+    # --- the radio recording: known outages and mutes, a gap, and the RF data
+    a_lines = radio_status()
+    pts = rf_points()
+    lp = rf_lp(pts)
+    with tempfile.TemporaryDirectory() as d:
+        write_dir(os.path.join(d, "rec"), a_lines)
+        with open(os.path.join(d, "rf.lp"), "w") as fh:
+            fh.write(lp)
+        rc, rep_rf, fr, summ_rf = export_run(os.path.join(d, "rec"), ["--rf", os.path.join(d, "rf.lp")])
+    check("export --rf: rf.csv and rf_changes.csv are there, with the headers written down",
+          sorted(fr) == ["README.txt", "events.csv", "joint.csv", "rf.csv", "rf_changes.csv", "samples.csv", "tunnel.csv"]
+          and read_table(fr["rf.csv"])[0] == H_RF and read_table(fr["rf_changes.csv"])[0] == H_RF_CHANGES, sorted(fr))
+    _, ev, _ = read_table(fr["events.csv"])
+    by = lambda link, kind: sorted((float(r["start_epoch"]) for r in ev if r["link"] == link and r["kind"] == kind))   # noqa: E731
+    check("export events: WOM's 15 outages start where the engine says (to the ms), its 4 upload mutes at the stamped start, "
+          "Entel's 3 download mutes at the sample where they were seen",
+          by("eth0.10", "outage") == [R0 + s_ for s_, _ in OUT_W] and by("eth0.10", "upload_mute") == [R0 + s_ for s_, _ in MUTE_W]
+          and by("eth0.20", "download_mute") == [R0 + s_ + 0.25 for s_, _ in DMUTE_E] and by("eth0.20", "outage") == [R0 + s_ for s_, _ in OUT_E]
+          and by("eth0.30", "outage") == [R0 + s_ for s_, _ in OUT_C], by("eth0.10", "upload_mute"))
+    shown = {"eth0.10": "eth0.10 (WOM)", "eth0.20": "eth0.20 (Entel 5G)", "eth0.30": "eth0.30 (Claro B5)", "starlink": "starlink"}
+    check("export events: each link's outage and mute rows are the report's counts (outages, mutes)",
+          all(sum(r["kind"] == "outage" and r["link"] == v for r in ev) == summ_rf["links"][shown[v]]["outages"]
+              and sum(r["kind"] == "upload_mute" and r["link"] == v for r in ev) == summ_rf["links"][shown[v]]["mutes"] for v in shown), None)
+    um = [r for r in ev if r["kind"] == "upload_mute"][0]
+    dm = [r for r in ev if r["kind"] == "download_mute"][0]
+    og = [r for r in ev if r["kind"] == "outage"][0]
+    check("export events: durations by the same rule as the report's (halfway between the last sample out and the first back): 4.75 s, 19.75 s, 29.5 s; ends 'recovered'",
+          float(og["duration_s"]) == 4.75 and float(um["duration_s"]) == 19.75 and float(dm["duration_s"]) == 29.5
+          and {r["ends"] for r in ev if r["kind"] != "gap"} == {"recovered"}, (og, um, dm))
+    gp = [r for r in ev if r["kind"] == "gap"]
+    check("export events: the 30 s hole in the recording is a gap of 31 s between the segments 0 and 1", len(gp) == 1 and gp[0]["segment"] == "1" and float(gp[0]["duration_s"]) == 31.0, gp)
+    _, rf_rows, _ = read_table(fr["rf.csv"])
+    wom = [r for r in rf_rows if r["link"] == "eth0.10"]
+    cla = [r for r in rf_rows if r["link"] == "eth0.30"]
+    check("export rf.csv: a row per RF sample of the three series that map (721 + 718 + 551), none of the unmapped; the first row as it is read",
+          len(rf_rows) == 721 + 718 + 551 and {r["link"] for r in rf_rows} == {"eth0.10", "eth0.20", "eth0.30"} and
+          {k: wom[0][k] for k in ("time_utc", "rf_time_epoch", "label", "cpe_id", "modem_id", "leg", "carrier", "recorded", "modem_up", "rat", "band",
+                                  "cell_kind", "cell", "nsa", "sinr", "rsrq", "rsrp", "source")}
+          == dict(time_utc="2026-10-10T00:30:00.000Z", rf_time_epoch=f"{R0 + 1800}.000", label="WOM", cpe_id="cpe03", modem_id="rm520n_01", leg="wom",
+                  carrier="wom", recorded="1", modem_up="1", rat="lte", band="b7", cell_kind="cellid", cell="4097", nsa="0", sinr="10.0", rsrq="-11.0",
+                  rsrp="-95.0", source="cell_serving_lte"), wom[0])
+    check("export rf.csv: recorded is 0 after the recording ended (181 samples of wom), the modem that was down is modem_up 0 with the rest empty, "
+          "the source of claro is its rx paths and its cell empty",
+          sum(r["recorded"] == "0" for r in wom) == 181 and [r["modem_up"] for r in cla if r["modem_up"] == "0"] == ["0"] * 3
+          and all(r["rat"] == "" and r["sinr"] == "" and r["source"] == "" for r in cla if r["modem_up"] == "0")
+          and {r["source"] for r in cla if r["modem_up"] == "1"} == {"cell_rxpath"} and {r["cell"] for r in cla} == {""} and {r["cell_kind"] for r in cla} == {""},
+          [r["modem_up"] for r in cla][:5])
+    _, chg, _ = read_table(fr["rf_changes.csv"])
+    cnt = collections.Counter((r["link"], r["kind"], r["recorded"]) for r in chg)
+    check("export rf_changes.csv: the changes of the report (wom 22 rat and 22 band; entel 18 rat, 2 cell of its 3 -- not the one across the data hole; claro 12 band) "
+          "with recorded 1, and entel's 6 RAT changes after the recording with recorded 0",
+          cnt[("eth0.10", "rat", "1")] == 22 and cnt[("eth0.10", "band", "1")] == 22 and cnt[("eth0.20", "rat", "1")] == 18 and cnt[("eth0.20", "rat", "0")] == 6
+          and cnt[("eth0.20", "cell", "1")] == 2 and cnt[("eth0.30", "band", "1")] == 12 and ("eth0.10", "cell", "1") not in cnt, cnt)
+    first = next(r for r in chg if r["link"] == "eth0.10" and r["kind"] == "rat")
+    cell = [(r["from"], r["to"]) for r in chg if r["link"] == "eth0.20" and r["kind"] == "cell"]
+    bnd = next(r for r in chg if r["link"] == "eth0.10" and r["kind"] == "band")
+    check("export rf_changes.csv: from and to (lte to nr5g, b7 to n78, the cell id 4097 to 4098 and 4099 to 4100)",
+          (first["from"], first["to"]) == ("lte", "nr5g") and (bnd["from"], bnd["to"]) == ("b7", "n78") and cell == [("4097", "4098"), ("4099", "4100")], cell)
+    # the offset: time_epoch is the exported time plus it
+    with tempfile.TemporaryDirectory() as d:
+        write_dir(os.path.join(d, "rec"), a_lines)
+        with open(os.path.join(d, "rf.lp"), "w") as fh:
+            fh.write(rf_lp(rf_points(skew=30)))
+        rc2, _, fo, _ = export_run(os.path.join(d, "rec"), ["--rf", os.path.join(d, "rf.lp"), "--rf-offset", "-30"])
+    _, off_rows, _ = read_table(fo["rf.csv"])
+    check("export --rf-offset: time_epoch is the exported time plus the offset (rf_time_epoch keeps it), and it is the same table as with no skew",
+          all(float(r["time_epoch"]) == float(r["rf_time_epoch"]) - 30 for r in off_rows[::31])
+          and [r["time_epoch"] for r in off_rows] == [r["time_epoch"] for r in rf_rows], off_rows[0])
+    # README.txt: every file, every column, the clocks
+    rd = fr["README.txt"]
+    cols = {"samples.csv": H_SAMPLES, "events.csv": H_EVENTS, "joint.csv": H_JOINT, "rf.csv": H_RF, "rf_changes.csv": H_RF_CHANGES}
+    check("README.txt: each file with its rows and each of its columns; the row counts are the files'",
+          all(f"{n}: " in rd and all(re.search(rf"^  {re.escape(c)} +\[", rd, re.M) for c in cs) for n, cs in cols.items())
+          and f"{len(wom) + len(cla) + len([r for r in rf_rows if r['link'] == 'eth0.20'])} rows. Columns:" in rd
+          and f"{len(read_table(fr['samples.csv'])[1])} rows. Columns:" in rd, rd[:300])
+    check("README.txt: says how the times relate (the engine's time_ms, InfluxDB's clock at the POST, the offset), the command and the commit",
+          "time_ms" in rd and "InfluxDB's clock" in rd and "--rf-offset" in rd and "(here 0 s)" in rd and "Command: " in rd and "--export" in rd
+          and re.search(r"commit (unknown|[0-9a-f]{7,})", rd) and "uptime_ms" in rd, rd[:400])
+    check("README.txt: with --rf-offset it says which", "(here -30 s)" in fo["README.txt"])
+
+    # --- the bonding recording: joint, lost_all, sizes, a restart and (second run) a counter that starts over within a run
+    for soft in (1000,):                    # the interval where the counters start over is skipped by the report, and is empty cells here
+        lines = bond_lines(soft_reset=soft)
+        with tempfile.TemporaryDirectory() as d:
+            write_dir(d, lines)
+            rc, _, fb, s = export_run(d)
+        _, jr, _ = read_table(fb["joint.csv"])
+        ht, tr, _ = read_table(fb["tunnel.csv"])
+        tag = "" if soft is None else " with a counter that starts over (that interval is no row in the report, and is empty here)"
+        check("export tunnel.csv: the size columns, one per bucket edge, for packets and bytes and the handshakes, up and down, in that order" + tag, ht == H_TUNNEL_SIZES, ht[:12])
+        names = {(r["link"], r["label"]) for r in read_table(fb["samples.csv"])[1]}
+        disp = {(f"{n} ({lb})" if lb else n): n for n, lb in names}
+        want = s["joint"]["overall"]["deadlines"]
+        per = sets_of(jr)
+        p50 = per[50]
+        ok = len(per) == 3
+        full = 0
+        for di, v in enumerate(want):
+            dl = per[v["deadline_ms"]]
+            for sub in v["subsets"]:
+                m_s = sum(1 << IDS[disp[x]] for x in sub["set"])
+                ok &= sum(e for m, (e, _) in dl.items() if m & m_s == m_s) == sub["packets"] and sum(la for m, (_, la) in dl.items() if m & m_s == m_s) == sub["late"]
+            full = max(full, max(dl))
+        check("export joint.csv: the packets sent on every set of links and the late ones, summed from the rows over the masks that contain the set, "
+              "are the report's for all 26 sets at 3 deadlines" + tag, ok and len(want[0]["subsets"]) == 26, None)
+        edge = [r for r in jr if r["deadline_ms"] == "50" and r["mask"] == str(bit("a", "b", "c", "d", "e"))]
+        check("export joint.csv: the mask is the engine's (link ids 2, 5, 0, 7, 3), its set the names in id order; expect is the same at every deadline; mask 0 has no set"
+              + tag, edge and edge[0]["set"] == "c+a+e+b+d" and int(edge[0]["mask"]) == bit("a", "b", "c", "d", "e")
+              and p50[0][1] > 0 and all(p50[m][0] == per[150][m][0] for m in p50)
+              and all(r["set"] == "" for r in jr if r["mask"] == "0"), edge[:1])
+        lost, sz = s["lost_all"], s["sizes"]
+        got_l = sum(int(r["lost_all_delta"]) for r in tr if r["lost_all_delta"] != "")
+        got_d = sum(int(r["down_packets_delta"]) for r in tr if r["lost_all_delta"] != "")
+        check("export tunnel.csv: lost_all and the packets delivered, summed, are the report's" + tag, got_l == lost["overall"]["lost"] and got_d == lost["overall"]["delivered"], (got_l, got_d))
+        okz = True
+        for w in ("up", "down"):
+            for i, b_ in enumerate(sz[w]["buckets"]):
+                nm = EDGE_NAMES[i]
+                okz &= sum(int(r[f"{w}_pkts_{nm}"]) for r in tr if r[f"{w}_pkts_{nm}"] != "") == b_["packets"] \
+                    and sum(int(r[f"{w}_bytes_{nm}"]) for r in tr if r[f"{w}_bytes_{nm}"] != "") == b_["bytes"]
+            for h in ("init", "response", "cookie", "other"):
+                okz &= sum(int(r[f"{w}_hs_{h}"]) for r in tr if r[f"{w}_hs_{h}"] != "") == sz[w]["handshakes"][h]
+        check("export tunnel.csv: the WireGuard sizes per bucket (packets and bytes) and the handshakes, summed, are the report's" + tag, okz, None)
+        if soft:
+            skipped = [r for r in tr if r["lost_all_delta"] == "" and r["up_pkts_le_32"] == ""]
+            check("export tunnel.csv: the interval where the counters started over is an empty lost_all and empty sizes, still with its packets delta (and no joint rows)",
+                  len(skipped) == 1 and skipped[0]["down_packets_delta"] != "" and not [r for r in jr if (r["segment"], r["uptime_ms"]) == (skipped[0]["segment"], skipped[0]["uptime_ms"])], skipped[:1])
+    with contextlib.redirect_stderr(io.StringIO()):
+        try:
+            fieldrec.main(["x", "--export-gzip"])
+            rc_g = 0
+        except SystemExit as e:
+            rc_g = e.code
+    check("export --export-gzip without --export is an error", rc_g == 2)
+    mute_edges()
+
+
+def mute_edges():
+    """The ways a mute can end or not be seen, in a few made-up samples of one link."""
+    seq = [  # state, upload, mutes, upload_state_ms, download_muted, last_rx_ms_ago
+        ("live", "active", 0, 60000, False, 20), ("live", "active", 2, 60000, False, 20),         # t1: two mutes began and ended between samples
+        ("live", "muted", 3, 400, False, 20), ("live", "muted", 3, 1400, True, 20),                # t2: muted, 400 ms ago; t3: and the server mutes it for download
+        ("live", "muted", 4, 300, True, 20), ("live", "active", 4, 60000, False, 20),              # t4: unmuted and muted again; t5: back
+        ("live", "muted", 5, 200, False, 20), ("paused", "muted", 5, 1200, False, 20),             # t6: muted; t7: paused
+        ("live", "active", 5, 60000, False, 20), ("stalled", "muted", 6, 100, False, 500),         # t8: back; t9: muted, and out for good
+        ("stalled", "muted", 6, 1100, False, 1500)]                                                 # t10: the run ends here
+    lines = [{"mode": "client", "uptime_ms": 5000 + 1000 * k, "time_ms": R0 * 1000 + 1000 * k, "session": "s", "probe_interval_ms": 100, "download": {"packets": 0},
+              "links": [{"id": 0, "name": "x", "label": "", "state": st, "rtt_ms": 30.0, "last_rx_ms_ago": ago, "upload": up, "upload_mutes": mu,
+                         "upload_state_ms": ms, "download_muted": dm}]} for k, (st, up, mu, ms, dm, ago) in enumerate(seq)]
+    with tempfile.TemporaryDirectory() as d:
+        write_dir(d, lines)
+        _, _, fl, summ = export_run(d)
+        _, _, fz, _ = export_run(d, gz=True)
+    with tempfile.TemporaryDirectory() as d2:
+        write_dir(os.path.join(d2, "rec"), lines)
+        for gz_ in (True, False):
+            with contextlib.redirect_stdout(io.StringIO()):
+                fieldrec.main([os.path.join(d2, "rec"), "--export", os.path.join(d2, "out")] + (["--export-gzip"] if gz_ else []))
+        left = sorted(os.listdir(os.path.join(d2, "out")))
+    check("export: a plain export over a gzipped one leaves no .csv.gz of the earlier (and the other way round would be as clean)",
+          left == ["README.txt", "events.csv", "joint.csv", "samples.csv", "tunnel.csv"], left)
+    check("export --export-gzip: .csv.gz files with the same rows as the plain ones (README.txt stays plain and says so)",
+          sorted(fz) == sorted(x + ".gz" if x.endswith(".csv") else x for x in fl) and all(fz[n + ".gz"] == fl[n] for n in fl if n.endswith(".csv"))
+          and "gzipped (.csv.gz)" in fz["README.txt"] and "samples.csv.gz: " in fz["README.txt"] and len(fl["samples.csv"]) > 500, sorted(fz))
+    _, ev, _ = read_table(fl["events.csv"])
+    um = [(r["ends"], r["duration_s"], round(float(r["start_epoch"]) - R0, 3)) for r in ev if r["kind"] == "upload_mute"]
+    check("export events, upload mutes: one row per mute the report counts (6): two that began and ended between samples (no end), one cut by a new mute "
+          "(remuted), one recovered (halfway), one cut by a pause, and the one the run ended in (closed at the last sample muted)",
+          um == [("within_interval", "", 1.0), ("within_interval", "", 1.0), ("remuted", "2.1", 1.6), ("recovered", "0.8", 3.7), ("paused", "0.2", 5.8),
+                 ("segment_end", "1.1", 8.9)] and summ["links"]["x"]["mutes"] == 6, (um, summ["links"]["x"]["mutes"]))
+    dm = [(r["ends"], r["duration_s"], round(float(r["start_epoch"]) - R0, 3)) for r in ev if r["kind"] == "download_mute"]
+    check("export events, download mutes: from the sample where the flag was first seen to halfway to the first one back", dm == [("recovered", "1.5", 3.0)], dm)
+    og = [(r["ends"], r["duration_s"], round(float(r["start_epoch"]) - R0, 3)) for r in ev if r["kind"] == "outage"]
+    check("export events: an outage still going when the run ends ends at its last sample out (segment_end), and starts at the last reply", og == [("segment_end", "1.5", 8.5)], og)
+    _, sm, _ = read_table(fl["samples.csv"])
+    pz = [r for r in sm if r["state"] == "paused"]
+    check("export samples: a paused link has a row (counted 0, out empty), and its counters still there",
+          len(pz) == 1 and pz[0]["counted"] == "0" and pz[0]["out"] == "" and pz[0]["upload_mutes"] == "5", pz)
 
 
 # What cell-monitor.sh really wrote (2026-10-11, `cell-monitor -n` under dash and busybox ash, against its
@@ -1193,6 +1694,9 @@ def main():
     unit_checks()
     radio_checks()
     radio_unit_checks()
+    local_checks()
+    local_unit_checks()
+    export_checks()
     real_format_checks()
     print("fieldrec_test: " + ("ok" if not FAILS else f"FAILED: {', '.join(FAILS)}"))
     return 1 if FAILS else 0

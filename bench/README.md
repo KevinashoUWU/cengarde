@@ -49,6 +49,7 @@ sudo bench/lab.sh lanes    # las colas del servidor: una por enlace, la basura a
 sudo bench/lab.sh deepq    # un camino del servidor con 20 MB de cola local no afecta a los demás (lab.d, va en ci)
 sudo bench/lab.sh skew     # primeras llegadas repartidas entre enlaces idénticos, puerta C5 (lab.d, va en ci)
 sudo bench/lab.sh wgpoke   # un router con la hora atrasada: el servidor hace que WireGuard inicie el handshake (lab.d, va en ci)
+sudo bench/lab.sh wgport   # el socket del servidor hacia WireGuard nunca se queda con el puerto de WireGuard, con el rango efímero reducido a dos puertos (lab.d, va en ci)
 sudo LAB_UDPMEM=1 bench/lab.sh udpmem  # el presupuesto de recepción frente a net.ipv4.udp_mem (lab.d; baja el sysctl de toda la máquina unos segundos: solo en el CI)
 sudo bench/lab.sh mtstall  # un hilo de enlace sin CPU no frena a los demás (link_threads = on; lab.d, va en ci)
 sudo bench/lab.sh mtlat    # latencia y CPU de legacy, off, on y on con busy_poll a 2, 20 y 80 kpps (lab.d, a mano)
@@ -566,10 +567,19 @@ bench/fieldrec.py /ruta/a/cengarde-rec --utc-offset -3 --rf radio.csv --json cam
   bajada), cuántos inicios tuvieron un cambio a menos de N s (N = 2 intervalos
   de radio, mínimo 20 s; `--rf-window` lo fija) frente a lo esperado al azar,
   que es la parte del tiempo cubierta por esas ventanas, y cuántos fueron
-  antes o después. El p (binomial) y la lectura usan *episodios* (eventos
-  separados por 60 s o 2N, porque los de una ráfaga comparten ventana) y
-  piden 10. Después, el SINR del minuto anterior a cada episodio frente al
-  mismo promedio en todo momento del enlace, y su tendencia frente a los 4
+  antes o después. Ese azar se calcula dos veces: *global* (sobre todo el
+  tiempo) y *local* (para cada episodio, sobre el tiempo a menos de L = 30 min
+  de él; `--rf-local` lo fija y 0 lo apaga). El local evita que las horas en
+  que caídas y cambios de radio abundan a la vez (un auto en movimiento, una
+  tarde con mucha gente, lluvia) se lean como si uno anunciara al otro: las
+  caídas esperadas son la suma de esas partes y el p sale de la cola
+  Poisson-binomial (exacta; con más de unos 3 millones de celdas, una
+  aproximación normal). La lectura usa los *episodios* (eventos separados por
+  60 s o 2N, porque los de una ráfaga comparten ventana), pide 10 y se hace
+  con el azar local si lo hay; la tabla dice cuál usó. Después, el SINR del
+  minuto anterior a cada episodio frente al mismo promedio en todo momento del
+  enlace (global) y frente a los de las muestras a menos de L de él, sin
+  [e−60 s, e+N] (local, que es el que se lee), y su tendencia frente a los 4
   minutos previos. Al final, una tabla por hora del día. Con muchas filas es
   normal que alguna salga por azar: pesan más los conteos que la palabra.
 - **Antes de la semana:** pon `INTERVAL=10` en `/etc/cell-monitor.conf` (por
@@ -578,6 +588,58 @@ bench/fieldrec.py /ruta/a/cengarde-rec --utc-offset -3 --rf radio.csv --json cam
   nombre), y sincroniza por NTP la Pi y el servidor de InfluxDB. Comprueba
   con `cell-monitor -n` que el SINR sale en dB (de −20 a 30): algunos módems
   lo dan en 1/5 de dB, de 0 a 250, y el informe lo avisa si pasa de 50.
+
+#### Exportar para R o pandas (`--export`)
+
+`--export DIR` escribe, mientras analiza, CSV planos en formato largo (una
+fila de cabecera, hora en UTC ISO y en segundos desde 1970, el enlace por
+nombre y etiqueta, celda vacía donde falta el dato). `--export-gzip` los
+escribe como `.csv.gz`. Nada se calcula aparte: son los mismos números del
+informe, fila a fila.
+
+```sh
+bench/fieldrec.py /ruta/a/cengarde-rec --rf radio.csv --export campo/ --export-gzip
+```
+
+| Archivo | Una fila por |
+| --- | --- |
+| `samples.csv` | enlace y muestra de estado: estado, caído, silenciado, RTT y su desvío, retraso, deltas de paquetes, pérdida de bajada, y el id de la corrida (`segment`) |
+| `events.csv` | caída, silenciado de subida o de bajada, hueco o reinicio: inicio, fin, duración, y cómo terminó |
+| `joint.csv` | intervalo, plazo y conjunto de enlaces (máscara y nombres): paquetes esperados y tardíos |
+| `tunnel.csv` | intervalo: paquetes entregados, perdidos en todos los enlaces y tamaños de WireGuard (una columna por borde) |
+| `rf.csv`, `rf_changes.csv` | muestra de radio de cada serie asignada a un enlace, y cada cambio de RAT, banda o celda (con `--rf`) |
+| `README.txt` | lista cada archivo con sus columnas, unidades y filas, y dice cómo se relacionan los relojes (el del motor, el de InfluxDB y el `--rf-offset`) |
+
+```r
+s <- readr::read_csv("campo/samples.csv.gz"); e <- readr::read_csv("campo/events.csv.gz")   # data.table::fread lee .csv; para .gz pide R.utils
+aggregate(cbind(rtt_ms, out) ~ link, subset(s, counted == 1), mean)
+aggregate(duration_s ~ link, subset(e, kind == "outage"), function(x) c(n = length(x), mediana = median(x)))
+```
+```python
+import pandas as pd
+s = pd.read_csv("campo/samples.csv.gz", parse_dates=["time_utc"]); e = pd.read_csv("campo/events.csv.gz")
+s[s.counted == 1].groupby("link").agg(rtt_p50=("rtt_ms", "median"), caida=("out", "mean"))
+e[e.kind == "outage"].groupby("link").duration_s.agg(["count", "median"])
+```
+
+Las cabeceras están fijadas en `fieldrec_test.py`: un nombre cambiado en
+silencio hace fallar la prueba. Las horas de `samples`, `events`, `joint` y
+`tunnel` son el `time_ms` del motor (el reloj de la Pi); antes de que NTP lo
+corrija (`clock_synced` en 0) no valen. Las de `rf` y `rf_changes` son las de
+InfluxDB al recibir el POST más `--rf-offset`; `rf_time_epoch` conserva la
+original.
+
+Tamaño, tiempo y memoria, medidos con una semana sintética a 1 Hz con 5
+enlaces (604 800 muestras de estado completas, 168 archivos por hora): salen
+3 024 000 filas de `samples.csv` (517 MB), 5,1 millones de `joint.csv` (458 MB)
+y 604 800 de `tunnel.csv` (225 MB), 1,2 GB en total, o 160 MB con
+`--export-gzip`. El análisis tarda 196 s sin exportar, 263 s con `--export` y
+340 s con `--export-gzip` y 4 módems en `--rf` (2,7 millones de líneas). El
+pico de memoria es de unos 8 GB en los tres casos: lo ocupan las muestras, que
+se guardan todas (unos 11 KB cada una); las filas salen a medida que se
+calculan, así que exportar casi no suma (3 MB; con `--rf`, 350 MB). Antes de
+guardar solo las claves que se leen y de compartir las cadenas repetidas eran
+12,7 GB y 275 s: una semana a 1 Hz pide una máquina de 16 GB.
 
 `lab.d/fieldrec.sh` (en `ci`) lo prueba de dos maneras:
 
@@ -595,7 +657,13 @@ bench/fieldrec.py /ruta/a/cengarde-rec --utc-offset -3 --rf radio.csv --json cam
   otros dos que no, series sin enlace, un hueco de datos, un módem caído y
   radio que empieza después de la grabación y la rebasa. El conteo de aciertos
   y el azar se comparan con un cálculo por fuerza bruta, y las cuatro formas de
-  leer los datos tienen que dar lo mismo. También fija el formato real: son 17
+  leer los datos tienen que dar lo mismo. Otra grabación, de seis horas, tiene
+  caídas y cambios de RAT que abundan en la misma hora pero son
+  independientes dentro de ella: con el azar global se lee «más que el azar» y
+  con el local «igual que el azar», y el azar local de cada episodio se compara
+  con un conteo en rejilla y la cola con la convolución completa. Las
+  exportaciones se comprueban contra el informe (caídas y silenciados por
+  enlace, sumas de `joint.csv` contra P(S tarde), sumas de `tunnel.csv`). También fija el formato real: son 17
   líneas que escribió `cell-monitor.sh` contra `modem-sim.py`. Se comprobó que
   la prueba falla si se rompe `--rf-offset`, la ventana del azar, el corte en
   los huecos de datos, la asignación por etiqueta, nombre o carrier, los

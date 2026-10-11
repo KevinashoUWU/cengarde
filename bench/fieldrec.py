@@ -57,12 +57,26 @@ SINR, RSRQ and RSRP p10/p50/p90; RAT, band and serving-cell changes (per hour);
 for each kind of link event (outage, upload mute, download mute) the share of
 event starts with a RAT, band or cell change within +-N s (N = 2 RF intervals,
 at least 20 s), against the share a random time would have (the part of the
-time those windows cover), with the counts and a binomial test; the SINR of the
-minute before an event against the link's own SINR; and a table per hour.
+time those windows cover). That chance is worked out twice: over all the time
+(binomial test) and, for each event, over the time within L s of it (L =
+30 min, --rf-local; Poisson-binomial test), so that hours in which outages and
+radio changes both come thick (a moving car, a crowded evening) do not read as
+one announcing the other; the reading is on the local one. The same for the SINR
+of the minute before an event against the link's own: the whole link, and the
+neighbourhood of the event without [e-60 s, e+N]. And a table per hour.
+
+Export (--export DIR, --export-gzip): tidy CSVs for R and pandas, written while
+the analysis goes through the recording: samples.csv (a row per link per status
+sample, with what fieldrec derives), events.csv (outages, upload and download
+mutes, gaps and restarts), joint.csv (late packets per interval, deadline and
+set of links), tunnel.csv (lost_all and WireGuard sizes per interval) and, with
+--rf, rf.csv and rf_changes.csv; README.txt in DIR lists their columns, units
+and how the clocks relate. The columns are the schemas *_COLS below.
 
 Usage: bench/fieldrec.py [--utc-offset H] [--json OUT] DIR|FILE...
+                         [--export DIR [--export-gzip]]
                          [--rf FILE... [--rf-offset S] [--rf-window S]
-                          [--rf-map LEG=LINK] [--rf-precision P]]
+                          [--rf-local S] [--rf-map LEG=LINK] [--rf-precision P]]
 """
 
 import argparse
@@ -77,6 +91,7 @@ import math
 import os
 import re
 import statistics
+import subprocess
 import sys
 import time
 
@@ -183,6 +198,25 @@ def parse_sizes(z):
         return None
 
 
+# A week at 1 Hz is 600 000 samples, which are all kept: of each link only what is read is kept (a full link is 35 keys
+# and 2.5 KB parsed), and equal strings are one object. A key read anywhere below has to be here.
+LINK_KEYS = ("id", "name", "label", "state", "last_rx_ms_ago", "rtt_ms", "upload", "upload_behind_ms", "upload_mutes",
+             "upload_state_ms", "download_muted", "tx_packets", "rx_first", "rx_duplicate", "rx_late")
+SHARED = {}
+
+
+def slim_link(l):
+    out = {}
+    for k in LINK_KEYS:
+        v = l.get(k)
+        if v is not None:
+            out[k] = SHARED.setdefault(v, v) if isinstance(v, str) else v
+    sv = l.get("server_view")
+    if isinstance(sv, dict) and "rx" in sv:
+        out["server_view"] = {"rx": sv["rx"]}
+    return out
+
+
 class Sample:
     __slots__ = ("up", "wall", "session", "probe", "down", "links", "synced",
                  "ids", "idkey", "lost_all", "joint", "sizes")
@@ -196,12 +230,16 @@ class Sample:
         else:
             self.wall = None
         self.session = r.get("session")
+        if isinstance(self.session, str):
+            self.session = SHARED.setdefault(self.session, self.session)
         self.probe = int(r.get("probe_interval_ms") or 100)
         self.down = int((r.get("download") or {}).get("packets") or 0)
         self.links = {}
         self.ids = {}                  # link id (the bit in the engine's masks) -> name
         for l in r.get("links") or []:
+            l = slim_link(l)
             name = link_name(l)
+            name = SHARED.setdefault(name, name)
             self.links[name] = l
             if isinstance(l.get("id"), int):
                 self.ids[l["id"]] = name
@@ -262,7 +300,7 @@ def link_out(l, probe_ms):
     return (l.get("last_rx_ms_ago") or 0) > max(3 * probe_ms, 300)
 
 
-def analyze(segs, utc_offset_h=0.0):
+def analyze(segs, utc_offset_h=0.0, ex=None):
     links = sorted({n for seg in segs for s in seg for n in s.links})
     L = {n: dict(time=0, out_time=0, events=[], rtt=[], dev=[], behind=[], up_behind=[],
                  loss_num=0.0, loss_den=0, up_tx=0, up_rx=0, mutes=0, muted_time=0,
@@ -285,12 +323,15 @@ def analyze(segs, utc_offset_h=0.0):
             prev = segs[si - 1][-1]
             if prev.wall is not None and seg[0].wall is not None and seg[0].wall > prev.wall:
                 gap_ms += seg[0].wall - prev.wall
+        if ex is not None:
+            ex.segment_begin(si, seg, segs[si - 1][-1] if si else None)
         hist = collections.defaultdict(list)   # rolling RTTs for the median
         # An outage runs from its last reply (stamped by the engine) to
         # halfway between its last sample out and the first one back.
-        state = {n: dict(out=False, start=None, last=None, cov=None) for n in links}
+        state = {n: dict(out=False, start=None, last=None, cov=None, wall0=None) for n in links}
         upwin = {n: [0, 0, 0] for n in links}  # tx, rx, ms
-        for a, b in zip(seg, seg[1:]):
+        for idx, (a, b) in enumerate(zip(seg, seg[1:]), 1):
+            rows = {}                  # what is derived for each link, for the export
             dt = b.up - a.up
             total_ms += dt
             tick_dev = {}
@@ -302,11 +343,12 @@ def analyze(segs, utc_offset_h=0.0):
             for n, l in b.links.items():
                 if n not in meta:
                     meta[n] = (l.get("name") or "", l.get("label") or "")
+                xr = rows[n] = {}
                 if l.get("state") == "paused":
                     continue
                 d = L[n]
                 present.append(n)
-                out = link_out(l, b.probe)
+                out = xr["out"] = link_out(l, b.probe)
                 d["time"] += dt
                 st = state[n]
                 if b.synced:
@@ -322,6 +364,7 @@ def analyze(segs, utc_offset_h=0.0):
                     if not st["out"]:
                         ago = l.get("last_rx_ms_ago") or 0
                         st["out"], st["start"] = True, b.up - min(ago, dt)
+                        st["wall0"] = b.wall - ago if b.synced else None
                         if b.synced:
                             d["starts"].append(b.wall - ago)
                     st["last"] = b.up
@@ -329,6 +372,8 @@ def analyze(segs, utc_offset_h=0.0):
                     if st["out"]:
                         end = (st["last"] + b.up) / 2
                         d["events"].append(((si, st["start"]), end - st["start"]))
+                        if ex is not None:
+                            ex.outage(n, si, st["start"], end, st["wall0"], "recovered")
                         st["out"] = False
                     r = float(l.get("rtt_ms") or 0)
                     if r > 0:
@@ -342,18 +387,22 @@ def analyze(segs, utc_offset_h=0.0):
                             dv = r - statistics.median(h)
                             d["dev"].append(abs(dv))
                             tick_dev[n] = dv
+                            xr["dev"] = round(dv, 3)
                         pa = a.links.get(n)
-                        if pa and not link_out(pa, a.probe) and b.synced:
+                        if pa and not link_out(pa, a.probe):
                             ra = float(pa.get("rtt_ms") or 0)
                             if ra > 0:
-                                d["steps"].append((b.wall, abs(r - ra)))
+                                xr["step"] = round(abs(r - ra), 3)
+                                if b.synced:
+                                    d["steps"].append((b.wall, abs(r - ra)))
                     if l.get("upload_behind_ms") is not None:
                         d["up_behind"].append(float(l["upload_behind_ms"]))
                 if l.get("upload") == "muted":
                     d["muted_time"] += dt
                 pa = a.links.get(n)
                 if pa is not None:
-                    d["mutes"] += max(0, (l.get("upload_mutes") or 0) - (pa.get("upload_mutes") or 0))
+                    xr["mdelta"] = max(0, (l.get("upload_mutes") or 0) - (pa.get("upload_mutes") or 0))
+                    d["mutes"] += xr["mdelta"]
                     if b.synced:
                         # A mute begins where the counter grew or the state turned
                         # to muted; the engine stamps how long the state has lasted.
@@ -364,9 +413,11 @@ def analyze(segs, utc_offset_h=0.0):
                             d["mute_starts"] += [b.wall - (min(age, dt) if isinstance(age, (int, float)) and age >= 0 else 0)] * um
                         if l.get("download_muted") and not pa.get("download_muted"):
                             d["dmute_starts"].append(b.wall)
-                    got = sum((l.get(k) or 0) - (pa.get(k) or 0) for k in ("rx_first", "rx_duplicate", "rx_late"))
+                    got = sum((l.get(c) or 0) - (pa.get(c) or 0) for c in ("rx_first", "rx_duplicate", "rx_late"))
+                    xr["got"], xr["rx_first"] = got, (l.get("rx_first") or 0) - (pa.get("rx_first") or 0)
                     if dD >= MIN_PKTS and not l.get("download_muted"):
                         loss = min(1.0, max(0.0, 1 - got / dD))
+                        xr["loss"] = round(loss, 6)
                         d["loss_num"] += loss * dD
                         d["loss_den"] += dD
                         if hour is not None:
@@ -374,6 +425,7 @@ def analyze(segs, utc_offset_h=0.0):
                             d["hours"][hour][4] += dD
                     tx = (l.get("tx_packets") or 0) - (pa.get("tx_packets") or 0)
                     rx = ((l.get("server_view") or {}).get("rx", 0) - (pa.get("server_view") or {}).get("rx", 0)) % 2**32
+                    xr["tx"], xr["srv_rx"] = tx, rx
                     w = upwin[n]
                     w[0] += tx
                     w[1] += rx
@@ -418,13 +470,20 @@ def analyze(segs, utc_offset_h=0.0):
                 spread_two.append(v[1] - v[0])
                 for n, r in rtts.items():
                     L[n]["behind"].append(r - v[0])
+                    rows[n]["behind"] = round(r - v[0], 3)
+            if ex is not None:
+                ex.interval(si, idx, a, b, dt, rows)
         for n, st in state.items():
             if st["out"]:
                 L[n]["events"].append(((si, st["start"]), st["last"] - st["start"]))
+                if ex is not None:
+                    ex.outage(n, si, st["start"], st["last"], st["wall0"], "segment_end")
+        if ex is not None:
+            ex.segment_end(si)
     return dict(links=links, L=L, simul=simul, pair_t=pair_t, pair_out=pair_out, corr=corr,
                 spread_all=spread_all, spread_two=spread_two, total_ms=total_ms, gap_ms=gap_ms,
                 segments=len(segs), samples=sum(len(s) for s in segs), meta=meta,
-                bond=collect_bonding(segs, utc_offset_h))
+                bond=collect_bonding(segs, utc_offset_h, ex))
 
 
 def delta_buckets(b, a):
@@ -465,7 +524,7 @@ class JointAcc:
         self.late = [collections.Counter() for _ in range(nd)]
 
 
-def collect_bonding(segs, utc_offset_h=0.0):
+def collect_bonding(segs, utc_offset_h=0.0, ex=None):
     """Differences of the cumulative counters "joint", "lost_all" and "sizes"
     between consecutive samples of a run, added up overall (key -1) and per
     hour of the day (the hour of the later sample, as for the links). An
@@ -476,9 +535,10 @@ def collect_bonding(segs, utc_offset_h=0.0):
     sizes = dict(edges=None, intervals=0, skipped=0)
     for w in ("up", "down"):
         sizes[w] = dict(data=None, data_bytes=None, **{k: 0 for k in HANDSHAKES})
-    for seg in segs:
+    for si, seg in enumerate(segs):
         for a, b in zip(seg, seg[1:]):
             keys = (-1,)
+            lost_d = size_d = None             # what this interval gives the export
             if b.synced:
                 keys = (-1, int(((b.wall / 3600000.0) + utc_offset_h) % 24))
             if a.joint is not None and b.joint is not None:
@@ -494,6 +554,8 @@ def collect_bonding(segs, utc_offset_h=0.0):
                 else:
                     joint["intervals"] += 1
                     ek = b.idkey if a.idkey == b.idkey else merge_ids(a.idkey, b.idkey)
+                    if ex is not None:
+                        ex.joint(si, a, b, jb["dl"], de, dls, ek)
                     for h in keys:
                         acc = joint["acc"].get((ek, h))
                         if acc is None:
@@ -509,6 +571,7 @@ def collect_bonding(segs, utc_offset_h=0.0):
                     lost["skipped"] += 1
                 else:
                     lost["intervals"] += 1
+                    lost_d = dlost
                     for h in keys:
                         lost["acc"][h][0] += dlost
                         lost["acc"][h][1] += ddown
@@ -520,12 +583,15 @@ def collect_bonding(segs, utc_offset_h=0.0):
                     sizes["skipped"] += 1
                 else:
                     sizes["intervals"] += 1
+                    size_d = d
                     for w in ("up", "down"):
                         s = sizes[w]
                         for k in ("data", "data_bytes"):
                             s[k] = d[w][k] if s[k] is None else [x + y for x, y in zip(s[k], d[w][k])]
                         for k in HANDSHAKES:
                             s[k] += d[w][k]
+            if ex is not None:
+                ex.tunnel(si, a, b, lost_d, size_d)
     return dict(joint=joint, lost=lost, sizes=sizes)
 
 
@@ -1083,6 +1149,9 @@ RF_TREND_S = 300       # the minutes before that one, for the trend of the SINR
 MIN_EPISODES = 10      # independent events needed before the report reads a test
 EPISODE_S = 60         # events closer than this (or than 2N) are one episode for the tests
 P_READ = 0.01          # a test is read as a difference below this
+RF_LOCAL_S = 1800      # L: the neighbourhood (+-) of the local chance and the local SINR baseline
+MIN_LOCAL_BASE = 10    # RF samples a local SINR baseline needs
+PB_CELLS = 3000000     # episodes x hits the exact Poisson-binomial tail may cost; above it, a normal approximation
 CROSS_KINDS = ("rat", "band", "cell", "any")
 EVENT_KINDS = (("outage", "outage"), ("upload_mute", "upload mute"), ("download_mute", "download mute"))
 
@@ -1600,7 +1669,8 @@ def derive(s):
     if band is None:
         band = next((b for b in (norm_band(d[0]) for d in (lte, sa, pcc) if d) if b), None)
     srv = sa if (rat == "nr5g" and sa) else (lte or sa)    # in NSA, the LTE anchor
-    r = {"rat": rat, "band": band, "nsa": s.nsa, "up": s.up}
+    r = {"rat": rat, "band": band, "nsa": s.nsa, "up": s.up,
+         "srv_meas": None if not srv else "cell_serving_nr" if srv is sa else "cell_serving_lte"}
     r["cells"] = {}
     if srv and num(srv[1]) is not None:
         r["cells"]["cellid"] = int(srv[1])
@@ -1636,6 +1706,7 @@ def build_timeline(ser, off):
     tl.band = [r["band"] for r in rows]
     tl.nsa = [r["nsa"] for r in rows]
     tl.down = sum(1 for r in rows if r["up"] is not None and r["up"] == 0)
+    tl.up = [r["up"] for r in rows]
     # One source for the metrics and one way to name the cell for the whole
     # series, so a post that lacks a line does not make the values jump
     # between sources: the first of the order that has at least half as many
@@ -1648,16 +1719,19 @@ def build_timeline(ser, off):
     kc = {k: sum(1 for r in rows if k in r["cells"]) for k in korder}
     tl.cell_kind = next((k for k in korder if kc[k] and kc[k] * 2 >= max(kc.values())), None)
     tl.cell = [r["cells"].get(tl.cell_kind) for r in rows]
+    tl.meas = [{"serving": r["srv_meas"], "rxpath": "cell_rxpath", "ca": "cell_ca"}[tl.source]
+               if tl.source and any(v is not None for v in r["m"][tl.source]) else None for r in rows]
     return tl
 
 
 def changes_of(tl, kind):
     """(times a value changed, [start, end] spans in which a change would have
-    shown). Two readings of a value count only if no more than RF_GAP_K
-    intervals lie between them: after a longer hole nothing can be said."""
+    shown, [(time, from, to)] of the changes). Two readings of a value count
+    only if no more than RF_GAP_K intervals lie between them: after a longer
+    hole nothing can be said."""
     vals = getattr(tl, kind)
     cap = RF_GAP_K * tl.interval if tl.interval else 0
-    times, spans, last_t, last_v = [], [], None, None
+    times, spans, flips, last_t, last_v = [], [], [], None, None
     for t, v in zip(tl.t, vals):
         if v is None:
             continue
@@ -1665,8 +1739,9 @@ def changes_of(tl, kind):
             spans.append((last_t, t))
             if v != last_v:
                 times.append(t)
+                flips.append((t, last_v, v))
         last_t, last_v = t, v
-    return times, spans
+    return times, spans, flips
 
 
 # -- series to links
@@ -1788,16 +1863,87 @@ def hour_of(t, utc_offset_h):
     return int(((t / 3600.0) + utc_offset_h) % 24)
 
 
-def cross_row(evs, eps, cs, N, V):
+class IvCum:
+    """The length of a list of intervals (sorted, disjoint) inside any span,
+    in O(log n): prefix sums of the lengths."""
+
+    def __init__(self, A):
+        self.A = A
+        self.starts = [a for a, _ in A]
+        self.pre = [0.0]
+        for a, b in A:
+            self.pre.append(self.pre[-1] + b - a)
+
+    def upto(self, t):
+        i = bisect.bisect_right(self.starts, t)
+        if i == 0:
+            return 0.0
+        a, b = self.A[i - 1]
+        return self.pre[i - 1] + min(t, b) - a
+
+    def between(self, a, b):
+        return self.upto(b) - self.upto(a)
+
+
+def local_shares(eps, cs, N, V, L):
+    """For each episode e, the share of V within L s of it that lies within N s
+    of a change (cs, sorted): the chance that an event placed at random in
+    that neighbourhood has a change within N s. None where V has nothing
+    there. The global chance is this over the whole of V."""
+    W = iv_merge([[c - N, c + N] for c in cs])
+    VW, VV = IvCum(iv_and(W, V)), IvCum(V)
+    out = []
+    for e in eps:
+        den = VV.between(e - L, e + L)
+        out.append(VW.between(e - L, e + L) / den if den > 0 else None)
+    return out
+
+
+def pb_tail(qs, k, upper):
+    """(P(X >= k) if upper else P(X <= k), method) for X the number of
+    successes of independent trials with probabilities qs (Poisson-binomial).
+    Exact by a dynamic programme that keeps the counts up to k (for the upper
+    tail the rest is one absorbing cell, so nothing is ever subtracted from 1)
+    while n x (k + 1) fits PB_CELLS; above it, a normal approximation with
+    continuity correction."""
+    n = len(qs)
+    if upper and k <= 0 or not upper and k >= n:
+        return 1.0, "exact"
+    if upper and k > n or not upper and k < 0:
+        return 0.0, "exact"
+    if n * (k + 1) > PB_CELLS:
+        mu, var = sum(qs), sum(q * (1 - q) for q in qs)
+        if var <= 0:
+            return float(k <= mu if upper else k >= mu), "normal"
+        z = ((k - 0.5 - mu) if upper else (k + 0.5 - mu)) / math.sqrt(var)
+        return 0.5 * math.erfc((z if upper else -z) / math.sqrt(2)), "normal"
+    dp = [1.0] + [0.0] * k
+    for q in qs:
+        if q <= 0:
+            continue
+        prev = dp
+        dp = [x * (1 - q) + y * q for x, y in zip(prev, [0.0] + prev[:-1])]
+        if upper:
+            dp[k] += prev[k] * q
+    return (dp[k] if upper else sum(dp)), "exact"
+
+
+def cross_row(evs, eps, cs, N, V, L=0):
     """One kind of event against one kind of change. cs: the sorted change
-    times. An event has one if a change lies within N s of its start; chance
+    times. An event has one if a change lies within N s of its start. Chance
     is the part of V (the time where an event can be judged) within N s of a
-    change, which is the probability that an event placed at random would
-    have one. The test is on the episodes."""
+    change: the probability that an event placed at random in V would have
+    one (global). The local chance does it for each episode over the part of V
+    within L s of it, so that hours in which outages and changes both come
+    thick (a moving car, a crowded evening) do not count as one announcing the
+    other: the expected hits are the sum of those shares and the tail is the
+    Poisson-binomial one. The reading is on the episodes, the local one when
+    L > 0."""
     n, vlen = len(evs), iv_len(V)
     if not cs:
         return dict(n=n, hits=0, share_pct=0.0 if n else None, chance_pct=0.0, expected=0.0, before=0, after=0,
-                    episodes=len(eps), episode_hits=0, p=None, reading="no changes")
+                    episodes=len(eps), episode_hits=0, p=None, p_local=None, local_chance_pct=None, local_expected=None,
+                    expected_episodes=0.0, basis="", reading="no changes")
 
     def hit(e, lo, hi):
         i = bisect.bisect_left(cs, e + lo)
@@ -1810,26 +1956,40 @@ def cross_row(evs, eps, cs, N, V):
     q = chance(-N, N)
     hits = sum(hit(e, -N, N) for e in evs)
     eh = sum(hit(e, -N, N) for e in eps)
-    p = binom_tail(eh, len(eps), len(eps), q) if eps else None
-    if len(eps) < MIN_EPISODES:
-        reading = "too few events"
-    elif p < P_READ:
-        reading = "more than chance"
-    elif binom_tail(0, eh, len(eps), q) < P_READ:
-        reading = "less than chance"
+    ne = len(eps)
+    p = binom_tail(eh, ne, ne, q) if eps else None
+    qs = [x if x is not None else q for x in local_shares(eps, cs, N, V, L)] if L > 0 and eps else None
+    p_local, method = pb_tail(qs, eh, True) if qs else (None, "")
+    if ne < MIN_EPISODES:
+        reading, basis = "too few events", ""
     else:
-        reading = "about chance"
+        basis = "local" if qs else "global"
+        up = p_local if qs else p
+        if up < P_READ:
+            reading = "more than chance"
+        elif (pb_tail(qs, eh, False)[0] if qs else binom_tail(0, eh, ne, q)) < P_READ:
+            reading = "less than chance"
+        else:
+            reading = "about chance"
     return dict(n=n, hits=hits, share_pct=100 * hits / n if n else None, chance_pct=100 * q, expected=n * q,
                 before=sum(hit(e, -N, -1e-9) for e in evs), after=sum(hit(e, 0, N) for e in evs),
                 before_chance_pct=100 * chance(-N, 0), after_chance_pct=100 * chance(0, N),
-                episodes=len(eps), episode_hits=eh, p=p, reading=reading)
+                episodes=ne, episode_hits=eh, p=p, expected_episodes=ne * q,
+                local_chance_pct=100 * sum(qs) / ne if qs else None, local_expected=sum(qs) if qs else None,
+                p_local=p_local, p_method=method, basis=basis, reading=reading)
 
 
-def sinr_before(eps, S, base_times, need, need_trend):
+def sinr_before(eps, S, base_times, need, need_trend, N=0, L=0):
     """The SINR of the minute before each episode against the link's own: the
     mean over [e-60, e) of each event, and the same mean at every RF sample
     time, so the baseline is the same statistic. The trend is that mean minus
-    the mean of the 4 minutes before it."""
+    the mean of the 4 minutes before it. With L > 0 the level also has a local
+    baseline: for each episode, those means at the RF sample times within L s
+    of it, leaving out the times in [e-60, e+N] (the minute itself, the outage
+    and the changes around it); each episode's rank in its own baseline is
+    uniform if the SINR before outages is as at any time near them, which a
+    long bad stretch (rain, a crowd) cannot fake. The reading is on the local
+    rank when at least MIN_EPISODES episodes have a baseline."""
     def level(e):
         return S.mean(e - RF_PRE_S, e, need)
 
@@ -1849,10 +2009,32 @@ def sinr_before(eps, S, base_times, need, need_trend):
                 thr = pct(base, 10)
                 o.update(baseline_p10=thr, under_p10=sum(1 for v in vals if v < thr),
                          expected_under_p10=len(vals) * bisect.bisect_left(base, thr) / len(base))
-        if len(vals) < MIN_EPISODES or o.get("p") is None:
+        p, z, o["reading_basis"] = o.get("p"), o.get("z"), "global"
+        if what == "level" and L > 0:
+            pairs = [(t, m) for t in base_times for m in (level(t),) if m is not None]
+            ts, ranks, under, expect, meds = [t for t, _ in pairs], [], 0, 0.0, []
+            for e in eps:
+                v = level(e)
+                lo, hi = bisect.bisect_left(ts, e - L), bisect.bisect_right(ts, e + L)
+                b = sorted(m for t, m in pairs[lo:hi] if not e - RF_PRE_S <= t <= e + N)
+                if v is None or len(b) < MIN_LOCAL_BASE:
+                    continue
+                thr = pct(b, 10)
+                ranks.append(rank_of(v, b))
+                under += v < thr
+                expect += bisect.bisect_left(b, thr) / len(b)
+                meds.append(pct(b, 50))
+            if ranks:
+                mr = sum(ranks) / len(ranks)
+                zl = (mr - 0.5) * math.sqrt(12 * len(ranks))
+                o["local"] = dict(n=len(ranks), mean_rank_pct=100 * mr, z=zl, p=math.erfc(abs(zl) / math.sqrt(2)),
+                                  under_p10=under, expected_under_p10=expect, baseline_median=pct(meds, 50))
+                if len(ranks) >= MIN_EPISODES:
+                    p, z, o["reading_basis"] = o["local"]["p"], zl, "local"
+        if len(vals) < MIN_EPISODES or p is None:
             o["reading"] = "too few events"
-        elif o["p"] < P_READ:
-            low = o["z"] < 0
+        elif p < P_READ:
+            low = z < 0
             o["reading"] = ("lower than usual" if low else "higher than usual") if what == "level" else ("falls" if low else "rises")
         else:
             o["reading"] = "no clear difference" if what == "level" else "no clear trend"
@@ -1910,7 +2092,7 @@ def radio_link(name, tls, cen, events, o, utc_offset_h):
     for kind in ("rat", "band", "cell"):
         times, expo = [], 0.0
         for tl in tls:
-            ts, spans = changes_of(tl, kind)
+            ts, spans, _ = changes_of(tl, kind)
             times += ts
             expo += sum(iv_clip(a, b, D, Ds) for a, b in spans)
         chg[kind] = sorted(times)
@@ -1923,6 +2105,8 @@ def radio_link(name, tls, cen, events, o, utc_offset_h):
     r["changes"]["any"] = dict(n=len({c for c in chg["any"] if iv_has(D, Ds, c)}))
     # Events: outages and mutes against the changes, and the SINR before them.
     gap = max(EPISODE_S, 2 * N)
+    Lw = max(o.local, 2 * N) if o.local > 0 else 0       # a neighbourhood smaller than the windows would be nonsense
+    r["local_window_s"] = Lw
     need = 1 if (interval or 0) > 30 else 2
     S = Means(sinr_pairs)
     base_t = [t for t in S.t if iv_has(V, Vs, t)]
@@ -1937,8 +2121,8 @@ def radio_link(name, tls, cen, events, o, utc_offset_h):
             continue
         eps = thin(ev, gap)
         x = dict(events=len(evs), in_rf=len(ev), episodes=len(eps), episode_gap_s=gap,
-                 changes={c: cross_row(ev, eps, chg[c], N, V) for c in CROSS_KINDS})
-        x["sinr_before"] = sinr_before(eps, S, base_t, need, 3) if vals["sinr"] else None
+                 changes={c: cross_row(ev, eps, chg[c], N, V, Lw) for c in CROSS_KINDS})
+        x["sinr_before"] = sinr_before(eps, S, base_t, need, 3, N, Lw) if vals["sinr"] else None
         r["events"][kind] = x
     r["by_hour"] = {h: dict(rf_hours=round(v["rf"] / 3600, 3), sinr_p50=pct(v["sinr"], 50),
                             **{k: v[k] for k in ("rat", "band", "cell", "outage", "upload_mute", "download_mute")})
@@ -1961,7 +2145,7 @@ def iso(t):
     return None if t is None else time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(t))
 
 
-def summarize_radio(a, rf, o, utc_offset_h):
+def summarize_radio(a, rf, o, utc_offset_h, ex=None):
     """The radio section: o has offset (s added to the RF times), window (N, or
     None), maps ([(leg or carrier, link)]) and the files read."""
     meta, L = a["meta"], a["L"]
@@ -2028,6 +2212,8 @@ def summarize_radio(a, rf, o, utc_offset_h):
     out["overlap_hours"] = round(iv_len(iv_and(allrf, allc)) / 3600, 3)
     out["rf_range"] = [iso(allrf[0][0]), iso(allrf[-1][1])] if allrf else None
     out["recording_range"] = [iso(allc[0][0]), iso(allc[-1][1])] if allc else None
+    if ex is not None:
+        ex.rf([(key, row, tls[key]) for key, row in zip(sorted(rf.series), rows) if row["link"]], meta, ceng_all, o.offset)
     if not rf.series:
         notes.append("no RF series in the files: nothing of the measurements cell-monitor writes could be read from them")
     elif not out["overlap_hours"]:
@@ -2104,15 +2290,18 @@ def report_radio(r, utc_offset_h):
           + f" | {', '.join(d['cell_key']) or '-'} | {', '.join(d['rf_series'])} |")
     w("\n### Radio changes and link events\n")
     w("For each event start in the recording, with RF data N s either side: has the RAT, band or cell changed within N s "
-      "(any: one of the three)? Chance: the share of that time that is within N s of a change, which an event at a "
+      "(any: one of the three)? Global chance: the share of that time that is within N s of a change, which an event at a "
       "random time would have; in brackets, the hits it implies. Before and after: hits with the change in the N s "
-      "before the start, or at or after it. The p-value (binomial, one-sided) and the reading use the episodes, the "
+      "before the start, or at or after it. Local chance: the same share worked out for each episode over the time within "
+      "L s of it (L in the table), so that hours in which both come thick (a moving car, a crowded evening, rain) do not "
+      "count as one announcing the other; the expected hits are their sum. The p-values (one-sided; binomial for the global "
+      "chance, Poisson-binomial for the local one, exact unless it is too big) and the reading are on the episodes, the "
       "events at least max(60 s, 2N) apart, because events in a burst share their window; they need "
-      f"{MIN_EPISODES} episodes. Part of an excess can be the hour of the day (see the table by hour): both kinds of "
-      "event may be more frequent at the same hours. Judged: the events with RF data N s either side. A mute is the "
-      "engine's standby of a slow link (story 006).\n")
-    w("| link | event | judged of all | change | within N s | by chance | before / after | episodes | episode hits | p | reading |")
-    w("| --- | --- | ---: | --- | --- | --- | --- | ---: | ---: | ---: | --- |")
+      f"{MIN_EPISODES} episodes. The reading says which chance it used: the local one when there is one. Judged: the events "
+      "with RF data N s either side. A mute is the engine's standby of a slow link (story 006).\n")
+    w("| link | event | judged of all | change | within N s | global chance | before / after | episodes | episode hits | "
+      "expected global / local | p global / local | reading |")
+    w("| --- | --- | ---: | --- | --- | --- | --- | ---: | ---: | --- | --- | --- |")
     for n, d in r["links"].items():
         for kind, label in EVENT_KINDS:
             x = d["events"].get(kind)
@@ -2120,18 +2309,22 @@ def report_radio(r, utc_offset_h):
                 continue
             for c in CROSS_KINDS:
                 y = x["changes"][c]
+                rd = y["reading"] + (f" ({y['basis']})" if y["basis"] else "")
                 w(f"| {n} | {label} | {x['in_rf']} of {x['events']} | {c} | {y['hits']} ({f(y['share_pct'], 0)} %) | "
                   f"{f(y['chance_pct'], 1)} % ({f(y['expected'], 1)}) | {y['before']} / {y['after']} | {y['episodes']} | "
-                  f"{y['episode_hits']} | {fpv(y['p'])} | {y['reading']} |")
+                  f"{y['episode_hits']} | {f(y['expected_episodes'], 1)} / {f(y['local_expected'], 1)} | "
+                  f"{fpv(y['p'])} / {fpv(y['p_local'])} | {rd} |")
     w("\n### SINR before link events\n")
     w("The mean SINR of the minute before each episode against the same mean at every RF sample time of the link (so "
       "the baseline has the same spread). Level: the mean rank of the episodes in that baseline (50 % is no "
       "difference; low is a lower SINR than usual), and how many fell under the baseline's p10 (the baseline "
-      "gives the expected count). Trend: that minute minus the 4 before it; negative is falling. The reading needs "
-      f"{MIN_EPISODES} episodes and p under {P_READ}; with several rows, one of them under {P_READ} by chance is "
-      "to be expected now and then, so the counts matter more than the word.\n")
-    w("| link | event | episodes | minute before p50 dB | baseline p50 | under p10 (expected) | level: rank, p | level | "
-      "trend p50 dB | trend: rank, p | trend |")
+      "gives the expected count). Global: the baseline is the whole link. Local: for each episode, only the means at sample "
+      f"times within {f(next(iter(r['links'].values()))['local_window_s'], 0)} s of it, leaving out [e-60 s, e+N], so a long bad stretch "
+      "does not read as a precursor; the reading is on the local rank when there is one. Trend: that minute minus the 4 "
+      f"before it; negative is falling. The reading needs {MIN_EPISODES} episodes and p under {P_READ}; with several rows, "
+      f"one of them under {P_READ} by chance is to be expected now and then, so the counts matter more than the word.\n")
+    w("| link | event | episodes | minute before p50 dB | global baseline p50 | global: rank, p, under p10 (exp.) | "
+      "local: rank, p, under p10 (exp.) | level | trend p50 dB | trend: rank, p | trend |")
     w("| --- | --- | ---: | ---: | ---: | --- | --- | --- | ---: | --- | --- |")
     for n, d in r["links"].items():
         for kind, label in EVENT_KINDS:
@@ -2142,10 +2335,12 @@ def report_radio(r, utc_offset_h):
             if not sb:
                 w(f"| {n} | {label} | {x['episodes']} | - | - | - | - | no SINR in the RF data | - | - | - |")
                 continue
-            lv, tr = sb["level"], sb["trend"]
+            lv, tr, lc = sb["level"], sb["trend"], sb["level"].get("local")
+            loc = "-" if not lc else (f"{f(lc['mean_rank_pct'], 0)} %, {fpv(lc['p'])}, {lc['under_p10']} ({f(lc['expected_under_p10'], 1)})"
+                                      f" of {lc['n']}")
             w(f"| {n} | {label} | {lv['n']} of {x['episodes']} | {f(lv['median'])} | {f(lv['baseline_median'])} | "
-              f"{lv.get('under_p10', '-')} ({f(lv.get('expected_under_p10'), 1)}) | "
-              f"{f(lv.get('mean_rank_pct'), 0)} %, {fpv(lv.get('p'))} | {lv['reading']} | {f(tr['median'])} | "
+              f"{f(lv.get('mean_rank_pct'), 0)} %, {fpv(lv.get('p'))}, {lv.get('under_p10', '-')} ({f(lv.get('expected_under_p10'), 1)}) | "
+              f"{loc} | {lv['reading']}{'' if lv['reading'] == 'too few events' else ' (' + lv['reading_basis'] + ')'} | {f(tr['median'])} | "
               f"{f(tr.get('mean_rank_pct'), 0)} %, {fpv(tr.get('p'))} | {tr['reading']} |")
     w(f"\n### Radio by hour (UTC{utc_offset_h:+g})\n")
     w("RF hours with the recording, the changes seen, the median SINR and the link events that began in them.\n")
@@ -2157,9 +2352,405 @@ def report_radio(r, utc_offset_h):
               f"{v['outage']} | {v['upload_mute']} | {v['download_mute']} |")
 
 
+# --- Export: tidy CSVs for R and pandas -----------------------------------------------------
+
+SEGMENT_COL = ("segment", "index", "run of samples with no gap or restart between them, from 0; the same in every file")
+TIME_COLS = [
+    ("time_utc", "ISO 8601, UTC", "the engine's clock (time_ms of the status) to the ms; empty if the status had none"),
+    ("time_epoch", "s", "the same as seconds since 1970-01-01 UTC, to the ms"),
+    ("uptime_ms", "ms", "engine uptime: steady inside a segment, starts over at a restart"),
+    ("clock_synced", "0/1", "0: recorded before NTP set the Pi's clock, so time_utc and time_epoch are wrong"),
+    ("interval_ms", "ms", "uptime since the previous sample of the segment; empty for the first"),
+]
+SAMPLES_COLS = [SEGMENT_COL,
+                ("session", "text", "the engine's session id for the run"),
+                ("sample", "index", "position in the segment, from 0 (the first has no interval: it is context)")] + TIME_COLS + [
+    ("link", "text", "links[].name"),
+    ("label", "text", "links[].label"),
+    ("link_id", "int", "links[].id: the bit of this link in the masks of joint.csv"),
+    ("state", "text", "links[].state (live, stalled, paused, ...)"),
+    ("counted", "0/1", "1 if fieldrec counts this link at this sample (not paused, not the first of a segment)"),
+    ("out", "0/1", "out by fieldrec's rule: state not live, or nothing received for 3 probe intervals (300 ms at least); empty if paused"),
+    ("last_rx_ms_ago", "ms", "links[].last_rx_ms_ago"),
+    ("rtt_ms", "ms", "links[].rtt_ms"),
+    ("rtt_dev_ms", "ms", "rtt minus the median of the link's last 60 RTTs (signed); empty until 30 are known, and while out"),
+    ("rtt_step_ms", "ms", "absolute change of rtt since the previous sample, when both were live"),
+    ("rtt_behind_best_ms", "ms", "rtt minus the lowest rtt among the live links at this sample (2 or more)"),
+    ("upload", "text", "links[].upload (active or muted)"),
+    ("upload_muted", "0/1", "upload is muted: the engine's standby of a slow link"),
+    ("upload_mutes", "count", "links[].upload_mutes, the engine's cumulative counter"),
+    ("upload_mutes_delta", "count", "its growth since the previous sample (a counter that went down counts as 0)"),
+    ("upload_state_ms", "ms", "links[].upload_state_ms: how long the upload state has lasted"),
+    ("upload_behind_ms", "ms", "links[].upload_behind_ms as the engine reports it"),
+    ("download_muted", "0/1", "links[].download_muted: the server has this link muted for download"),
+    ("tx_packets_delta", "packets", "growth of links[].tx_packets since the previous sample"),
+    ("server_rx_delta", "packets", "growth of the server's count of what it received on this link (server_view.rx, modulo 2^32)"),
+    ("rx_first_delta", "packets", "growth of links[].rx_first: copies that arrived first"),
+    ("rx_copies_delta", "packets", "growth of rx_first + rx_duplicate + rx_late: every copy that arrived on this link"),
+    ("loss_down", "fraction", "1 - rx_copies_delta / packets the tunnel delivered in the interval, from 0 to 1; "
+                              "empty unless 20 or more were delivered and the link was not muted for download"),
+]
+EVENTS_COLS = [
+    ("kind", "text", "outage, upload_mute, download_mute, gap (the recorder stopped but the engine kept running) or restart (the engine restarted)"),
+    ("link", "text", "links[].name; empty for gap and restart"),
+    ("label", "text", "links[].label"),
+    ("segment", "index", "the segment it began in (for gap and restart, the one that follows it)"),
+    ("start_utc", "ISO 8601, UTC", "engine clock at the start; an outage starts at the link's last reply, a mute where the engine stamps it"),
+    ("start_epoch", "s", "the same, seconds since 1970"),
+    ("end_utc", "ISO 8601, UTC", "engine clock at the end; empty if it is not known"),
+    ("end_epoch", "s", "the same"),
+    ("duration_s", "s", "end minus start, by the engine's uptime where it can; empty if not known"),
+    ("ends", "text", "recovered (halfway between the last sample out and the first one back), segment_end (the run stopped first, so "
+                     "the end is the last sample out), within_interval (a mute that began and ended between two samples: no end), "
+                     "remuted, paused; empty for gap and restart"),
+]
+JOINT_COLS = [SEGMENT_COL] + TIME_COLS + [
+    ("deadline_ms", "ms", "the deadline after the first copy of a packet that late is judged at"),
+    ("mask", "int", "a set of links as the engine's bit mask (bit i is link_id i)"),
+    ("set", "text", "the same, as link names joined by +"),
+    ("expect", "packets", "packets sent in the interval on exactly the links of the mask (the same at every deadline)"),
+    ("late", "packets", "packets that were late or lost at the deadline on exactly the links of the mask (mask 0: none late). "
+                        "P(set S late) = sum of late over the masks that contain S / the same of expect"),
+]
+RF_COLS = [
+    ("time_utc", "ISO 8601, UTC", "RF sample time after --rf-offset: on the engine's clock"),
+    ("time_epoch", "s", "the same, seconds since 1970"),
+    ("rf_time_epoch", "s", "the time as exported by InfluxDB, before --rf-offset (cell-monitor posts none: it is the server's clock at the POST)"),
+    ("link", "text", "links[].name of the link the series maps to"),
+    ("label", "text", "links[].label"),
+    ("cpe_id", "text", "tag cpe_id"),
+    ("modem_id", "text", "tag modem_id"),
+    ("leg", "text", "tag leg, as cell-monitor sanitizes it"),
+    ("carrier", "text", "tag carrier"),
+    ("recorded", "0/1", "1 if the engine's recording watched the link at this time"),
+    ("modem_up", "0/1", "cell_monitor up: 0 when the modem's port was gone; empty if not exported"),
+    ("rat", "text", "lte, nr5g (stand-alone), nr5g-nsa or as the modem says; empty if unknown"),
+    ("band", "text", "b7, n78, ...; empty if unknown"),
+    ("cell_kind", "text", "how the cell is named in the series: cellid, pci (pci@frequency) or pcc (primary carrier)"),
+    ("cell", "text", "the serving cell"),
+    ("nsa", "0/1", "an NR leg next to LTE (cell_serving_nr mode nsa)"),
+    ("sinr", "dB", "SINR from the source named in source"),
+    ("rsrq", "dB", "RSRQ"),
+    ("rsrp", "dBm", "RSRP"),
+    ("source", "text", "measurement of sinr, rsrq and rsrp: cell_serving_lte, cell_serving_nr, cell_rxpath (mean of the rx paths) or cell_ca (primary carrier)"),
+]
+RF_CHANGES_COLS = [
+    ("time_utc", "ISO 8601, UTC", "RF sample time (after --rf-offset) at which the new value was first read"),
+    ("time_epoch", "s", "the same, seconds since 1970"),
+    ("link", "text", "links[].name"),
+    ("label", "text", "links[].label"),
+    ("cpe_id", "text", "tag cpe_id"),
+    ("modem_id", "text", "tag modem_id"),
+    ("kind", "text", "rat, band or cell"),
+    ("from", "text", "the value before"),
+    ("to", "text", "the value after"),
+    ("recorded", "0/1", "1 if the engine's recording watched the link then (the report counts those)"),
+]
+HS_NAMES = ("init", "response", "cookie", "other")
+EXPORT_NAMES = ("samples.csv", "events.csv", "joint.csv", "tunnel.csv", "rf.csv", "rf_changes.csv", "README.txt")
+
+
+def tunnel_cols(edges):
+    """The columns of tunnel.csv: the tunnel's lost_all and WireGuard sizes per interval; the sizes one column per bucket edge."""
+    cols = [SEGMENT_COL] + TIME_COLS + [
+        ("down_packets_delta", "packets", "growth of the packets the tunnel delivered to WireGuard (download.packets)"),
+        ("lost_all_delta", "packets", "growth of lost_all: sequences that left the replay window without a copy on any link; empty if the counter "
+                                      "went down or the status has none")]
+    if edges:
+        names = [f"le_{e}" for e in edges] + [f"gt_{edges[-1]}"]
+        for w, what in (("up", "read from WireGuard by the client"), ("down", "delivered to WireGuard")):
+            for k, unit in (("pkts", "packets"), ("bytes", "bytes")):
+                cols += [(f"{w}_{k}_{n}", unit, f"{w}: data {k} {what} in the interval, at or under the edge (le) or over the last (gt)")
+                         for n in names]
+            cols += [(f"{w}_hs_{h}", "packets", f"{w}: {h} handshake packets in the interval") for h in HS_NAMES]
+    return cols
+
+
+def cell_str(v):
+    if v is None:
+        return ""
+    if isinstance(v, tuple):
+        return str(v[0]) if v[1] is None else f"{v[0]}@{int(v[1])}"
+    return str(v)
+
+
+class Exporter:
+    """Writes the tidy CSVs of --export while the analysis goes through the
+    recording, a row at a time (events are few: they are kept and sorted at
+    the end). The headers come from the schemas above, which also make
+    README.txt."""
+
+    def __init__(self, dirn, gz, segs):
+        self.dir, self.gz = dirn, gz
+        os.makedirs(dirn, exist_ok=True)
+        for name in EXPORT_NAMES:            # no file of an earlier export, in the other form, left beside the new ones
+            for suffix in ("", ".gz"):
+                try:
+                    os.remove(os.path.join(dirn, name + suffix))
+                except FileNotFoundError:
+                    pass
+        self.files = {}                  # name -> [csv writer, handle, rows]
+        self.titles = {}
+        self.events = []
+        self.names = {}                  # the report's name of a link -> (name, label)
+        self.mute = {}                   # (kind, link) -> the mute in progress
+        self.sec, self.prefix = None, ""
+        self.tkey, self.tval = None, None
+        self.idn = {}
+        self.maskstr = {}
+        self.info = {}
+        self.edges = next((s.sizes["edges"] for seg in segs for s in seg if s.sizes), None)
+        self.open("samples.csv", SAMPLES_COLS, "one row per link per status sample the recorder kept")
+        self.open("joint.csv", JOINT_COLS, "download: packets late on each set of links, per interval and deadline (from the passive instrument "
+                                           "'joint'); only masks that grew")
+        self.open("tunnel.csv", tunnel_cols(self.edges), "the tunnel per interval: packets delivered, lost on every link, WireGuard sizes")
+
+    def open(self, name, cols, title):
+        path = os.path.join(self.dir, name + (".gz" if self.gz else ""))
+        fh = gzip.open(path, "wt", encoding="utf-8", newline="", compresslevel=6) if self.gz else open(path, "w", encoding="utf-8", newline="")
+        w = csv.writer(fh, lineterminator="\n")
+        w.writerow([c[0] for c in cols])
+        self.files[name] = [w, fh, 0, cols]
+        self.titles[name] = title
+
+    def row(self, name, values):
+        f = self.files[name]
+        f[0].writerow(values)
+        f[2] += 1
+
+    # -- times
+
+    def stamp(self, ms):
+        """(ISO 8601 UTC, epoch seconds) of a time in ms since 1970, or two empty cells."""
+        if ms is None:
+            return "", ""
+        ms = int(round(ms))
+        sec, frac = divmod(ms, 1000)
+        if sec != self.sec:
+            self.sec, self.prefix = sec, time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(sec))
+        return f"{self.prefix}.{frac:03d}Z", f"{sec}.{frac:03d}"
+
+    def tcols(self, si, b, dt):
+        """[segment, time_utc, time_epoch, uptime_ms, clock_synced, interval_ms] of a sample (the same list for all of its rows)."""
+        if self.tkey is not b:
+            iso_, ep = self.stamp(b.wall)
+            self.tkey, self.tval = b, [si, iso_, ep, b.up, int(b.synced and b.wall is not None), dt]
+        return self.tval
+
+    # -- events
+
+    def add_event(self, kind, n, si, up0, up1, wall0, ends, sort):
+        name, label = self.names.get(n, (n, "")) if n else ("", "")
+        dur = None if up1 is None else max(0.0, up1 - up0)
+        wall1 = None if wall0 is None or dur is None else wall0 + dur
+        s0, s1 = self.stamp(wall0), self.stamp(wall1)
+        self.events.append(((si, sort), [kind, name, label, si, s0[0], s0[1], s1[0], s1[1],
+                                         "" if dur is None else round(dur / 1000, 3), ends]))
+
+    def outage(self, n, si, up0, up1, wall0, ends):
+        self.add_event("outage", n, si, up0, up1, wall0, ends, wall0 if wall0 is not None else up0)
+
+    def segment_begin(self, si, seg, prev):
+        self.mute = {}
+        first = seg[0]
+        if prev is not None:
+            restart = first.session != prev.session or first.up < prev.up
+            dur = None
+            if prev.wall is not None and first.wall is not None:
+                dur = first.wall - prev.wall
+            elif not restart:
+                dur = first.up - prev.up
+            s0, s1 = self.stamp(prev.wall), self.stamp(first.wall)
+            self.events.append(((si, -1), ["restart" if restart else "gap", "", "", si, s0[0], s0[1], s1[0], s1[1],
+                                           "" if dur is None else round(dur / 1000, 3), ""]))
+        tc = self.tcols(si, first, None)
+        for n, l in first.links.items():
+            self.names[n] = (l.get("name") or str(l.get("id")), l.get("label") or "")
+            paused = l.get("state") == "paused"
+            self.row("samples.csv", self.sample_row(tc, first, 0, l, {}, 0, None if paused else int(link_out(l, first.probe))))
+
+    def segment_end(self, si):
+        for (kind, n), run in list(self.mute.items()):
+            self.add_event(kind, n, si, run["up"], run["last"], run["wall"], "segment_end", run["wall"] if run["wall"] is not None else run["up"])
+        self.mute = {}
+
+    # -- samples and mutes
+
+    def sample_row(self, tc, s, idx, l, x, counted, out):
+        up, dm = l.get("upload"), l.get("download_muted")
+        return [tc[0], s.session, idx] + tc[1:] + [
+            l.get("name") or str(l.get("id")), l.get("label") or "", l.get("id"), l.get("state"), counted, None if out is None else int(out),
+            l.get("last_rx_ms_ago"), l.get("rtt_ms"), x.get("dev"), x.get("step"), x.get("behind"),
+            up, None if up is None else int(up == "muted"), l.get("upload_mutes"), x.get("mdelta"), l.get("upload_state_ms"),
+            l.get("upload_behind_ms"), None if dm is None else int(bool(dm)),
+            x.get("tx"), x.get("srv_rx"), x.get("rx_first"), x.get("got"), x.get("loss")]
+
+    def interval(self, si, idx, a, b, dt, rows):
+        tc = self.tcols(si, b, dt)
+        for n, l in b.links.items():
+            self.names[n] = (l.get("name") or str(l.get("id")), l.get("label") or "")
+            x = rows.get(n) or {}
+            paused = l.get("state") == "paused"
+            self.row("samples.csv", self.sample_row(tc, b, idx, l, x, 0 if paused else 1, x.get("out")))
+            pa = a.links.get(n)
+            if paused:
+                for kind in ("upload_mute", "download_mute"):
+                    self.end_mute(kind, n, si, "paused")
+            elif pa is not None:
+                self.track_upload(n, si, a, b, dt, pa, l)
+                self.track_download(n, si, a, b, pa, l)
+
+    def end_mute(self, kind, n, si, ends, up1=None):
+        run = self.mute.pop((kind, n), None)
+        if run is not None:
+            self.add_event(kind, n, si, run["up"], run["last"] if up1 is None else up1, run["wall"], ends,
+                           run["wall"] if run["wall"] is not None else run["up"])
+
+    def track_upload(self, n, si, a, b, dt, pa, l):
+        """Upload mutes as episodes: the starts are fieldrec's (the counter grew, or the state turned to muted, the engine stamping how long
+        it has lasted); an end is halfway between the last sample muted and the first one back."""
+        prev_m, cur_m = pa.get("upload") == "muted", l.get("upload") == "muted"
+        um = max((l.get("upload_mutes") or 0) - (pa.get("upload_mutes") or 0), int(not prev_m and cur_m))
+        age = l.get("upload_state_ms") if cur_m else None
+        lag = min(age, dt) if isinstance(age, (int, float)) and age >= 0 else 0
+        up0, wall0 = b.up - lag, (b.wall - lag if b.wall is not None and b.synced else None)
+        run = self.mute.get(("upload_mute", n))
+        if run is not None and not cur_m:
+            self.end_mute("upload_mute", n, si, "recovered", (run["last"] + b.up) / 2)
+        elif run is not None and um > 0:
+            self.end_mute("upload_mute", n, si, "remuted", up0)
+        for _ in range(um - (1 if cur_m else 0)):                    # began and ended between two samples
+            self.add_event("upload_mute", n, si, b.up, None, b.wall if b.synced else None, "within_interval", b.wall if b.synced and b.wall is not None else b.up)
+        if um > 0 and cur_m:
+            self.mute[("upload_mute", n)] = run = dict(up=up0, wall=wall0, last=b.up)
+        if run is not None and cur_m:
+            run["last"] = b.up
+
+    def track_download(self, n, si, a, b, pa, l):
+        cur, prev = bool(l.get("download_muted")), bool(pa.get("download_muted"))
+        run = self.mute.get(("download_mute", n))
+        if run is not None and not cur:
+            self.end_mute("download_mute", n, si, "recovered", (run["last"] + b.up) / 2)
+        elif cur and not prev:
+            self.mute[("download_mute", n)] = run = dict(up=b.up, wall=b.wall if b.synced else None, last=b.up)
+        if run is not None and cur:
+            run["last"] = b.up
+
+    # -- the tunnel
+
+    def joint(self, si, a, b, deadlines, de, dls, ek):
+        key = (a.idkey, b.idkey)
+        names = self.idn.get(key)
+        if names is None:
+            names = {}
+            for s_ in (a, b):
+                for l in s_.links.values():
+                    if isinstance(l.get("id"), int):
+                        names[l["id"]] = l.get("name") or str(l["id"])
+            self.idn[key] = names
+        tc = self.tcols(si, b, b.up - a.up)
+        for di, d in enumerate(deadlines):
+            for m in sorted(set(de) | set(dls[di])):
+                ms = self.maskstr.get((key, m))
+                if ms is None:
+                    ms = self.maskstr[(key, m)] = "+".join(names.get(i, f"id{i}") for i in range(m.bit_length()) if m >> i & 1)
+                self.row("joint.csv", tc + [d, m, ms, de.get(m, 0), dls[di].get(m, 0)])
+
+    def tunnel(self, si, a, b, lost, sizes):
+        row = self.tcols(si, b, b.up - a.up) + [b.down - a.down, lost]
+        if self.edges:
+            for w in ("up", "down"):
+                if sizes is None:
+                    row += [None] * (2 * (len(self.edges) + 1) + len(HS_NAMES))
+                else:
+                    z = sizes[w]
+                    row += z["data"] + z["data_bytes"] + [z[h] for h in HS_NAMES]
+        self.row("tunnel.csv", row)
+
+    # -- radio
+
+    def rf(self, entries, meta, cover, offset):
+        """entries: (series key, its row of the summary, its timeline) of the series that map to a link; cover: link -> where the
+        recording watched it, in seconds on the engine's clock."""
+        self.open("rf.csv", RF_COLS, "one row per RF sample (a cell-monitor post) of each series that maps to a link, in time order per series")
+        self.open("rf_changes.csv", RF_CHANGES_COLS, "each change of RAT, band or serving cell read in the RF data (not across a hole of more than 3 intervals)")
+        for key, row, tl in entries:
+            name, label = meta[row["link"]]
+            starts = [x[0] for x in cover[row["link"]]]
+            rec = lambda t: int(iv_has(cover[row["link"]], starts, t))      # noqa: E731
+            for i, t in enumerate(tl.t):
+                iso_, ep = self.stamp(t * 1000)
+                self.row("rf.csv", [iso_, ep, f"{t - offset:.3f}", name, label, key[0], key[1], key[2], key[3], rec(t),
+                                    None if tl.up[i] is None else int(tl.up[i] != 0), tl.rat[i], tl.band[i], tl.cell_kind, cell_str(tl.cell[i]),
+                                    int(bool(tl.nsa[i])), tl.sinr[i], tl.rsrq[i], tl.rsrp[i], tl.meas[i]])
+            for kind in ("rat", "band", "cell"):
+                for t, old, new in changes_of(tl, kind)[2]:
+                    iso_, ep = self.stamp(t * 1000)
+                    self.row("rf_changes.csv", [iso_, ep, name, label, key[0], key[1], kind,
+                                                cell_str(old) if kind == "cell" else old, cell_str(new) if kind == "cell" else new, rec(t)])
+
+    # -- the end
+
+    def close(self):
+        self.open("events.csv", EVENTS_COLS, "outages, mutes (standby) and the gaps and restarts of the recording")
+        for _, r in sorted(self.events, key=lambda e: e[0]):
+            self.row("events.csv", r)
+        for f in self.files.values():
+            f[1].close()
+        with open(os.path.join(self.dir, "README.txt"), "w", encoding="utf-8") as fh:
+            fh.write(export_readme(self))
+
+
+def fieldrec_version():
+    """The short commit of the checkout this runs from, if git is there and it is one; otherwise 'unknown'."""
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+        r = subprocess.run(["git", "-C", here, "rev-parse", "--short", "HEAD"], capture_output=True, text=True, timeout=3)
+        v = r.stdout.strip() if r.returncode == 0 else ""
+        if v:
+            dirty = subprocess.run(["git", "-C", here, "status", "--porcelain", "--", "fieldrec.py"], capture_output=True, text=True, timeout=3)
+            return v + (" (fieldrec.py modified since)" if dirty.stdout.strip() else "")
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return "unknown"
+
+
+def export_readme(ex):
+    gz = ".gz" if ex.gz else ""
+    out = ["fieldrec export", "================", "",
+           f"Made by bench/fieldrec.py, commit {fieldrec_version()}, on {time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime())} UTC.",
+           "Command: " + " ".join(ex.info.get("argv", [])), "",
+           "Plain CSV, UTF-8, one header row, comma-separated, LF line ends" + (", each file gzipped (.csv.gz)" if ex.gz else "") + ".",
+           "An empty cell is a missing value. Booleans are 0/1. Names are the engine's (links[].name and links[].label).", "",
+           "TIMES", "-----",
+           "- samples.csv, events.csv, joint.csv, tunnel.csv: time_utc and time_epoch are the engine's wall clock (time_ms of the status), the Pi's",
+           "  clock, in UTC. Before NTP corrects it (the Pi has no RTC) the value is wrong: clock_synced is 0 there. Intervals inside a",
+           "  segment should use uptime_ms, which is steady; uptime_ms starts over when the engine restarts, so it means nothing across segments.",
+           "- A segment is a run of samples with no restart and no gap of more than 5 s; fieldrec starts over at each (events.csv has the gap",
+           "  and restart rows). Cumulative counters are only differenced inside a segment.",
+           "- rf.csv and rf_changes.csv (with --rf): the radio times are InfluxDB's clock when it received each cell-monitor POST (cell-monitor",
+           "  sends no timestamp), in whole seconds. time_utc and time_epoch are those plus the offset given with --rf-offset"
+           f" (here {ex.info.get('rf_offset', 0):g} s) to put them on the engine's clock; rf_time_epoch is the time as exported."
+           " They agree only if the Pi's and the InfluxDB server's clocks do.", ""]
+    for name in ("samples.csv", "events.csv", "joint.csv", "tunnel.csv", "rf.csv", "rf_changes.csv"):
+        f = ex.files.get(name)
+        if f is None:
+            continue
+        title = f"{name}{gz}: {ex.titles[name]}"
+        out += [title, "-" * len(title), f"{f[2]} rows. Columns:"]
+        w = max(len(c[0]) for c in f[3])
+        out += [f"  {c[0]:<{w}}  [{c[1]}]  {c[2]}" for c in f[3]]
+        out.append("")
+    out += ["Reading them", "------------",
+            "  R:       s <- readr::read_csv('samples.csv'); aggregate(rtt_ms ~ link, s, mean)    (data.table::fread reads .csv; .csv.gz needs R.utils)",
+            "  pandas:  import pandas as pd; s = pd.read_csv('samples.csv', parse_dates=['time_utc']); s.groupby('link').rtt_ms.mean()",
+            "  (readr and pandas read .csv.gz as it is.)", ""]
+    return "\n".join(out)
+
+
 class RadioOpts:
-    def __init__(self, offset=0.0, window=None, maps=()):
-        self.offset, self.window, self.maps = offset, window, list(maps)
+    def __init__(self, offset=0.0, window=None, maps=(), local=RF_LOCAL_S):
+        self.offset, self.window, self.maps, self.local = offset, window, list(maps), local
 
 
 def main(argv=None):
@@ -2167,6 +2758,9 @@ def main(argv=None):
     ap.add_argument("paths", nargs="*", help="cengarde-rec directories or files (.jsonl, .jsonl.gz)")
     ap.add_argument("--utc-offset", type=float, default=0.0, help="hours added to UTC for the hourly table (Chile: -3 or -4)")
     ap.add_argument("--json", help="also write the summary as JSON here")
+    ap.add_argument("--export", metavar="DIR", help="write tidy CSVs for R and pandas into DIR (samples, events, joint, tunnel and, "
+                    "with --rf, rf and rf_changes) and a README.txt that says what is in them")
+    ap.add_argument("--export-gzip", action="store_true", help="with --export: write .csv.gz")
     ap.add_argument("--rf", nargs="+", action="extend", metavar="FILE",
                     help="cell-monitor's RF metrics from InfluxDB: annotated CSV or line protocol (plain or .gz); "
                          "it takes every name after it, so put the recordings before it")
@@ -2174,6 +2768,8 @@ def main(argv=None):
                     help="seconds added to the RF times to put them on the Pi's clock (InfluxDB's 5 s ahead of the Pi: -5)")
     ap.add_argument("--rf-window", type=float, metavar="S",
                     help="N, the window of the crossing with the link events (default: 2 RF intervals, at least 20 s)")
+    ap.add_argument("--rf-local", type=float, default=RF_LOCAL_S, metavar="S",
+                    help="L, the neighbourhood (+-) of the local chance and the local SINR baseline (default 1800; 0: global only)")
     ap.add_argument("--rf-map", action="append", default=[], metavar="LEG=LINK",
                     help="a leg (or carrier, or modem_id) tag that maps to a link by hand; repeat for more")
     ap.add_argument("--rf-precision", choices=("auto", "s", "ms", "us", "ns"), default="auto",
@@ -2182,6 +2778,8 @@ def main(argv=None):
     if not o.paths:
         ap.error("no recordings: name them before --rf, which takes every name after it "
                  "(fieldrec.py DIR --rf rf.csv)")
+    if o.export_gzip and not o.export:
+        ap.error("--export-gzip needs --export DIR")
     maps = []
     for m in o.rf_map:
         k, eq, v = m.partition("=")
@@ -2204,10 +2802,16 @@ def main(argv=None):
     if not segs or sum(len(s) for s in segs) < 2:
         print("fewer than two samples", file=sys.stderr)
         return 1
-    a = analyze(segs, o.utc_offset)
-    s = summarize(a)
-    if rf is not None:
-        s["radio"] = summarize_radio(a, rf, RadioOpts(o.rf_offset, o.rf_window, maps), o.utc_offset)
+    ex = Exporter(o.export, o.export_gzip, segs) if o.export else None
+    try:
+        a = analyze(segs, o.utc_offset, ex)
+        s = summarize(a)
+        if rf is not None:
+            s["radio"] = summarize_radio(a, rf, RadioOpts(o.rf_offset, o.rf_window, maps, o.rf_local), o.utc_offset, ex)
+    finally:
+        if ex is not None:
+            ex.info = dict(argv=[os.path.basename(sys.argv[0])] + (list(argv) if argv is not None else sys.argv[1:]), rf_offset=o.rf_offset)
+            ex.close()
     report(s, notes, o.utc_offset)
     if o.json:
         with open(o.json, "w") as fh:
