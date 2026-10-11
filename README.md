@@ -121,12 +121,13 @@ Las configuraciones de cliente y servidor se explican en
 
 Lo que viene; el detalle está en [ROADMAP.md](ROADMAP.md):
 
-- **IPv6, varios routers por VPS y nombres** (plan en cinco PRs, historia
-  [010](docs/historias/010-ipv6-varias-ip-multicliente-nombres.md); hechos
-  los arreglos, la respuesta desde la dirección de llegada con IPv6 por
-  fuera del túnel, varios routers por VPS con un panel de reenvío de
-  puertos en el VPS, e IPv6 dentro del túnel, apagado por defecto):
-  - nombres con DNS dinámico, también para un servidor casero.
+- **IPv6, varios routers por VPS y nombres** (historia
+  [010](docs/historias/010-ipv6-varias-ip-multicliente-nombres.md)): hechos
+  los cinco PRs (los arreglos, la respuesta desde la dirección de llegada
+  con IPv6 por fuera del túnel, varios routers por VPS con un panel de
+  reenvío de puertos, IPv6 dentro del túnel apagado por defecto, y nombres
+  con DNS dinámico, también para un servidor casero); falta probarlos en
+  la Pi, en Vultr y con un servidor en casa.
 - **Servidor:** varios hilos.
 - **Distribución:** un feed de OpenWrt firmado, binarios estáticos y paquetes
   para Debian y Raspberry Pi OS.

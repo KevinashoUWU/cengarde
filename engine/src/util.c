@@ -82,12 +82,9 @@ static int parse_port(const char *s, uint16_t *port)
 	return 0;
 }
 
-int cg_addr_parse(const char *s, int allow_names, struct sockaddr_storage *out, int max, char *err,
-		  size_t errlen)
+int cg_hostport(const char *s, char *host, size_t hostlen, uint16_t *port, char *err, size_t errlen)
 {
-	char host[256];
 	const char *colon;
-	uint16_t port;
 	size_t hlen;
 
 	if (s[0] == '[') {
@@ -98,8 +95,9 @@ int cg_addr_parse(const char *s, int allow_names, struct sockaddr_storage *out, 
 			return -1;
 		}
 		hlen = (size_t)(close - s - 1);
-		memcpy(host, s + 1, hlen < sizeof(host) ? hlen : 0);
 		colon = close + 1;
+		if (hlen && hlen < hostlen)
+			memcpy(host, s + 1, hlen);
 	} else {
 		colon = strrchr(s, ':');
 		if (!colon || strchr(s, ':') != colon) {
@@ -107,18 +105,50 @@ int cg_addr_parse(const char *s, int allow_names, struct sockaddr_storage *out, 
 			return -1;
 		}
 		hlen = (size_t)(colon - s);
-		memcpy(host, s, hlen < sizeof(host) ? hlen : 0);
+		if (hlen && hlen < hostlen)
+			memcpy(host, s, hlen);
 	}
-	if (hlen == 0 || hlen >= sizeof(host)) {
+	if (hlen == 0 || hlen >= hostlen) {
 		snprintf(err, errlen, "malformed address '%s'", s);
 		return -1;
 	}
 	host[hlen] = '\0';
-	if (parse_port(colon + 1, &port) < 0) {
+	if (parse_port(colon + 1, port) < 0) {
 		snprintf(err, errlen, "bad port in '%s'", s);
 		return -1;
 	}
+	return 0;
+}
 
+int cg_addr_literal(const char *host, uint16_t port, struct sockaddr_storage *out)
+{
+	struct sockaddr_in *a4 = (struct sockaddr_in *)out;
+	struct sockaddr_in6 *a6 = (struct sockaddr_in6 *)out;
+
+	memset(out, 0, sizeof(*out));
+	if (inet_pton(AF_INET, host, &a4->sin_addr) == 1) {
+		a4->sin_family = AF_INET;
+		a4->sin_port = htons(port);
+		return 0;
+	}
+	if (inet_pton(AF_INET6, host, &a6->sin6_addr) == 1) {
+		a6->sin6_family = AF_INET6;
+		a6->sin6_port = htons(port);
+		cg_addr_unmap(out);
+		return 0;
+	}
+	memset(out, 0, sizeof(*out));
+	return -1;
+}
+
+int cg_addr_parse(const char *s, int allow_names, struct sockaddr_storage *out, int max, char *err,
+		  size_t errlen)
+{
+	char host[256];
+	uint16_t port;
+
+	if (cg_hostport(s, host, sizeof(host), &port, err, errlen) < 0)
+		return -1;
 	memset(out, 0, sizeof(*out) * (size_t)max);
 	if (strcmp(host, "*") == 0) {
 		struct sockaddr_in6 *a = (struct sockaddr_in6 *)out;
@@ -128,22 +158,8 @@ int cg_addr_parse(const char *s, int allow_names, struct sockaddr_storage *out, 
 		a->sin6_port = htons(port);
 		return 1;
 	}
-	{
-		struct sockaddr_in *a4 = (struct sockaddr_in *)out;
-		struct sockaddr_in6 *a6 = (struct sockaddr_in6 *)out;
-
-		if (inet_pton(AF_INET, host, &a4->sin_addr) == 1) {
-			a4->sin_family = AF_INET;
-			a4->sin_port = htons(port);
-			return 1;
-		}
-		if (inet_pton(AF_INET6, host, &a6->sin6_addr) == 1) {
-			a6->sin6_family = AF_INET6;
-			a6->sin6_port = htons(port);
-			cg_addr_unmap(out);
-			return 1;
-		}
-	}
+	if (cg_addr_literal(host, port, out) == 0)
+		return 1;
 	if (!allow_names) {
 		snprintf(err, errlen, "'%s' is not a numeric address", host);
 		return -1;
@@ -160,10 +176,7 @@ int cg_addr_parse(const char *s, int allow_names, struct sockaddr_storage *out, 
 		if (ai->ai_family != AF_INET && ai->ai_family != AF_INET6)
 			continue;
 		memcpy(&out[n], ai->ai_addr, ai->ai_addrlen);
-		if (ai->ai_family == AF_INET)
-			((struct sockaddr_in *)&out[n])->sin_port = htons(port);
-		else
-			((struct sockaddr_in6 *)&out[n])->sin6_port = htons(port);
+		cg_addr_set_port(&out[n], port);
 		cg_addr_unmap(&out[n]);
 		n++;
 	}
@@ -171,6 +184,14 @@ int cg_addr_parse(const char *s, int allow_names, struct sockaddr_storage *out, 
 	if (!n)
 		snprintf(err, errlen, "'%s' has no IPv4 or IPv6 address", host);
 	return n ? n : -1;
+}
+
+void cg_addr_set_port(struct sockaddr_storage *a, uint16_t port)
+{
+	if (a->ss_family == AF_INET)
+		((struct sockaddr_in *)a)->sin_port = htons(port);
+	else if (a->ss_family == AF_INET6)
+		((struct sockaddr_in6 *)a)->sin6_port = htons(port);
 }
 
 void cg_addr_unmap(struct sockaddr_storage *a)

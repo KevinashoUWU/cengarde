@@ -14,6 +14,9 @@
  * Server addresses: each link sends to one address of the server list, of a
  * family it has, from its best source address for it (addrpick.h), and
  * moves to the next one when the server stops answering there (srvpick.h).
+ * The names in the list are looked up here, through the links (resolve.h,
+ * names.c); when a name's addresses change, the links whose list changed
+ * start again from its first address, as after a reload.
  *
  * Link sockets (link_threads): "legacy" reads them in this loop, as 0.4
  * did; "off" and "on" hand them to pumps (pump.h), which read them into
@@ -50,6 +53,7 @@
 #include "health.h"
 #include "hist.h"
 #include "log.h"
+#include "names.h"
 #include "netlink.h"
 #include "pair.h"
 #include "pump.h"
@@ -121,6 +125,7 @@ struct client {
 	struct cg_ctl ctl;
 	struct cg_ovr_table ovr; /* links paused or forced on by hand */
 	struct cg_loader loader;
+	struct cg_names names; /* the server names' lookups, across reloads */
 	int reload_again;
 	int server_pass; /* IP pass in the server's replies: -2 no reply yet, -1 none */
 	char config_error[600]; /* why the last reload was refused */
@@ -165,9 +170,17 @@ struct client {
 };
 
 /* Why an interface does or does not carry the tunnel. */
-enum { WHY_OK, WHY_PAUSED, WHY_EXCLUDED, WHY_DOWN, WHY_NOADDR, WHY_NOFAMILY, WHY_UNUSABLE, WHY_GONE };
+enum { WHY_OK, WHY_PAUSED, WHY_EXCLUDED, WHY_DOWN, WHY_NOADDR, WHY_NOFAMILY, WHY_UNRESOLVED, WHY_UNUSABLE, WHY_GONE };
 static const char *const why_name[] = {
-	"ok", "paused", "excluded", "down", "no address", "no address of the server's family", "unusable", "absent",
+	"ok",
+	"paused",
+	"excluded",
+	"down",
+	"no address",
+	"no address of the server's family",
+	"server name not resolved",
+	"unusable",
+	"absent",
 };
 
 /* What a link may send to: its candidates (srvpick.h). */
@@ -340,9 +353,30 @@ static struct cg_srvlist servers_of(const struct cg_config *cfg, const char *ifn
 {
 	const struct cg_link_cfg *lc = cg_config_link(cfg, ifname);
 
-	if (lc && lc->nserver)
+	if (lc && lc->nsrv)
 		return (struct cg_srvlist){ lc->server, lc->nserver, lc->entry_n, lc->nentry };
 	return (struct cg_srvlist){ cfg->server, cfg->nserver, cfg->entry_n, cfg->nentry };
+}
+
+/* The entries of that list, as written. */
+static const struct cg_srvent *entries_of(const struct cg_config *cfg, const char *ifname, int *n)
+{
+	const struct cg_link_cfg *lc = cg_config_link(cfg, ifname);
+
+	*n = lc && lc->nsrv ? lc->nsrv : cfg->nsrv;
+	return lc && lc->nsrv ? lc->srv : cfg->srv;
+}
+
+/* Whether a link's list has a name without any address yet. */
+static int unresolved(const struct client *c, const char *ifname)
+{
+	int n;
+	const struct cg_srvent *e = entries_of(c->cfg, ifname, &n);
+
+	for (int i = 0; i < n; i++)
+		if (e[i].a.ss_family == AF_UNSPEC && !cg_names_resolved(&c->names, e[i].name))
+			return 1;
+	return 0;
 }
 
 /* Whether ifc carries the tunnel and, when it does, which server addresses
@@ -365,7 +399,7 @@ static int eligible(struct client *c, const struct cg_iface *ifc, struct cands *
 		return WHY_NOADDR;
 	list = servers_of(cfg, ifc->name);
 	e->n = cg_cands_build(list.a, list.n, e->families, e->a);
-	return e->n ? WHY_OK : WHY_NOFAMILY;
+	return e->n ? WHY_OK : unresolved(c, ifc->name) ? WHY_UNRESOLVED : WHY_NOFAMILY;
 }
 
 static uint32_t sock_path_mtu(int fd, int family)
@@ -619,9 +653,10 @@ static void reconcile(struct client *c, uint64_t now_ms)
 			continue;
 		why = eligible(c, ifc, &e);
 		/* A slot all the same when paused, or when its [link] section
-		 * wants it and it has no address of the server's family, so
-		 * that the status shows why. */
-		if (why == WHY_OK || why == WHY_PAUSED || (why == WHY_NOFAMILY && cg_config_link(c->cfg, ifc->name)))
+		 * wants it and it has no address of the server's family, or none
+		 * yet (the server's name), so that the status shows why. */
+		if (why == WHY_OK || why == WHY_PAUSED ||
+		    ((why == WHY_NOFAMILY || why == WHY_UNRESOLVED) && cg_config_link(c->cfg, ifc->name)))
 			l = link_get(c, ifc->name);
 		else
 			l = link_find(c, ifc->name);
@@ -658,6 +693,109 @@ static void reconcile(struct client *c, uint64_t now_ms)
 							: why_name[l->why]);
 	}
 	c->next_reconcile_ms = now_ms + RECONCILE_MS;
+}
+
+/* ---- server names ---- */
+
+/* The server lists of cfg from what its names have now. */
+static void lists_build(struct client *c, struct cg_config *cfg)
+{
+	struct cg_nameaddrs a[CG_MAX_NAMES];
+	const struct cg_nameaddrs *p[CG_MAX_NAMES];
+
+	cg_names_addrs(&c->names, a, p);
+	cg_config_build(cfg, p);
+}
+
+/* A name's addresses changed: a link goes back to its first address only
+ * when the address it uses is gone or an entry before it changed (the
+ * preferred server moved); otherwise it stays where the server answers,
+ * whatever changed after it (cg_lists_keep). */
+static void names_changed(struct client *c, uint64_t now_ms)
+{
+	struct cg_config *cfg = c->cfg;
+	struct cg_nameaddrs a[CG_MAX_NAMES];
+	const struct cg_nameaddrs *p[CG_MAX_NAMES];
+
+	cg_names_addrs(&c->names, a, p);
+	for (int i = 0; i < CG_MAX_LINKS; i++) {
+		struct link *l = &c->link[i];
+		struct sockaddr_storage na[CG_MAX_CANDS];
+		uint8_t en[CG_MAX_SERVERS];
+		struct cg_srvlist old, now;
+		const struct cg_srvent *e;
+		int ne;
+
+		if (!l->used)
+			continue;
+		if (!l->cand.ss_family)
+			continue; /* nowhere yet: its first candidate anyway */
+		e = entries_of(cfg, l->ifname, &ne);
+		now = (struct cg_srvlist){ na, cg_srv_build(e, ne, p, na, en), en, ne };
+		old = servers_of(cfg, l->ifname);
+		if (!cg_lists_keep(&old, &now, l->families, &l->cand))
+			memset(&l->cand, 0, sizeof(l->cand));
+	}
+	cg_config_build(cfg, p);
+	reconcile(c, now_ms);
+}
+
+/* The links the names may be looked up through, live ones first: those that
+ * would carry the tunnel, whether or not the server's name has an address
+ * of their family yet, each with its resolvers of the families it has. */
+static int dns_paths(struct client *c, struct cg_names_path *paths, uint64_t now_ms)
+{
+	const struct cg_config *cfg = c->cfg;
+	struct cg_names_path rest[CG_MAX_LINKS];
+	int n = 0, nrest = 0;
+
+	for (int i = 0; i < c->nl.nifs; i++) {
+		const struct cg_iface *ifc = &c->nl.ifs[i];
+		const struct cg_link_cfg *lc;
+		const struct link *l;
+		struct cg_names_path *p;
+		struct cands e;
+		int why;
+
+		if (!ifc->name[0] || n + nrest == CG_MAX_LINKS)
+			continue;
+		why = eligible(c, ifc, &e);
+		if (why != WHY_OK && why != WHY_NOFAMILY && why != WHY_UNRESOLVED)
+			continue;
+		l = link_find(c, ifc->name);
+		p = l && link_live(l, now_ms) ? &paths[n] : &rest[nrest];
+		p->ifc = ifc;
+		p->n = 0;
+		lc = cg_config_link(cfg, ifc->name);
+		for (int k = 0; lc && k < lc->nresolver && p->n < CG_NAMES_RES; k++)
+			if (e.families >> lc->resolver[k].ss_family & 1)
+				p->res[p->n++] = &lc->resolver[k];
+		for (int k = 0; k < cfg->nresolver && p->n < CG_NAMES_RES; k++)
+			if (e.families >> cfg->resolver[k].ss_family & 1)
+				p->res[p->n++] = &cfg->resolver[k];
+		if (!p->n)
+			continue;
+		if (p == &paths[n])
+			n++;
+		else
+			nrest++;
+	}
+	memcpy(&paths[n], rest, sizeof(rest[0]) * (size_t)nrest);
+	return n + nrest;
+}
+
+/* Each tick: which names the links are live on, and the lookups. */
+static void names_tick(struct client *c, uint64_t now_ms)
+{
+	struct cg_names_path paths[CG_MAX_LINKS];
+
+	if (!c->cfg->nnames)
+		return;
+	for (int i = 0; i < CG_MAX_LINKS; i++)
+		if (link_up(&c->link[i]))
+			cg_names_seen(&c->names, &c->link[i].remote, link_live(&c->link[i], now_ms), now_ms);
+	if (cg_names_need(&c->names, now_ms))
+		cg_names_tick(&c->names, c->ep, paths, dns_paths(c, paths, now_ms), now_ms);
 }
 
 /* Every RECONCILE_MS: the path MTU of each socket, and a warning when the
@@ -1209,6 +1347,7 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 		cg_json_end(j, '}');
 	}
 	cg_json_end(j, ']');
+	cg_names_json(&c->names, j, now_ms);
 	cg_json_arr(j, "links");
 	for (int i = 0; i < CG_MAX_LINKS; i++) {
 		const struct link *l = &c->link[i];
@@ -1410,10 +1549,14 @@ static void apply_config(struct client *c, struct cg_config *next, uint64_t now_
 	}
 	if (old->passthrough != next->passthrough && next->passthrough >= 0)
 		cg_info("asking the server for IP pass %s", next->passthrough ? "on" : "off");
-	/* A link whose own list changed starts again from its first address,
-	 * as seen with the families it last opened with: not for an entry of
-	 * another family, nor for a name resolved again in another order
-	 * (srvpick.h). A link never opened has none, and no address to keep. */
+	/* Names still there keep what they had: the new lists are built with
+	 * it. A link whose own list changed starts again from its first
+	 * address, as seen with the families it last opened with: not for an
+	 * entry of another family, nor for a name resolved again in another
+	 * order (srvpick.h). A link never opened has none, and no address to
+	 * keep. */
+	cg_names_set(&c->names, c->ep, next);
+	lists_build(c, next);
 	for (int i = 0; i < CG_MAX_LINKS; i++) {
 		struct link *l = &c->link[i];
 		struct cg_srvlist a, b;
@@ -1634,6 +1777,7 @@ static void tick(struct client *c)
 			failover = 1;
 	}
 	health_tick(c, now_ms);
+	names_tick(c, now_ms);
 	if (failover || now_ms >= c->next_reconcile_ms)
 		reconcile(c, now_ms);
 	if (now_ms >= c->next_path_ms)
@@ -1750,6 +1894,7 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 	c->rxs.k_rx = cfg->key + CG_SIPHASH_KEY_LEN;
 	c->ep = c->wg_fd = c->tfd = -1;
 	c->nl.fd = -1;
+	cg_names_init(&c->names);
 	c->server_pass = -2;
 	c->hcfg = cg_hcfg_of(cfg);
 	cg_ctl_init(&c->ctl);
@@ -1808,6 +1953,8 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 	if (cfg->passthrough >= 0)
 		cg_info("asking the server for IP pass %s", cfg->passthrough ? "on" : "off");
 	busy = cg_tune(cfg);
+	cg_names_set(&c->names, c->ep, cfg);
+	lists_build(c, cfg);
 	reconcile(c, c->start_ms);
 
 	for (;;) {
@@ -1877,6 +2024,13 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 			case CG_EV_BELL:
 				cg_bell_drain(&c->bell);
 				break;
+			case CG_EV_DNS: {
+				uint64_t now_ms = cg_now_ms();
+
+				if (cg_names_read(&c->names, c->ep, idx, now_ms))
+					names_changed(c, now_ms);
+				break;
+			}
 			case CG_EV_SIG:
 				if (signals(c)) {
 					cg_info("client stopping");
@@ -1896,6 +2050,7 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 out:
 	cg_status_writer_stop(&c->sw);
 	cg_ctl_close(&c->ctl, c->ep);
+	cg_names_close(&c->names, c->ep);
 	cg_loader_free(&c->loader);
 	for (int i = 0; i < CG_MAX_LINKS; i++)
 		if (c->link[i].fd >= 0 && !pumped(c))

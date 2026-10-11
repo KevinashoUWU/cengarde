@@ -26,7 +26,9 @@
 #     uplink (configuration only) gets delegate 0;
 #     wgcg has the derived address as a /32 and a route to 10.79.0.1; the
 #     status and "cengarde-setup cloud-config" carry the router's name and
-#     address, and an invalid tunnel_addr is refused;
+#     address, and an invalid tunnel_addr is refused; the engine
+#     configuration gives each link the DNS server its uplink got by DHCP
+#     (the VPS's dnsmasq, 10.1.N.1) as its resolver;
 #  4. turns IP pass off while pinging through the tunnel: the engine takes
 #     the change without a restart and without loss, and the VPS follows;
 #  5. pings through the tunnel while one uplink goes down: no loss allowed;
@@ -47,15 +49,20 @@
 #     their CPU clocks: OpenWrt's kernel has no schedstat);
 #  9. checks that apply has converged: run again it changes nothing, and
 #     nothing reloads for 60 s (the companions' triggers cause no loop);
-# 10. route_all off: 10.79.0.1 stays reachable through wgcg by the route
+# 10. a VPS name that only the uplinks' DNS can answer (dnsmasq at the VPS
+#     end of each uplink): the engine looks it up itself, through its links
+#     and not through the tunnel, brings every link up on its address, and
+#     follows it when the address changes and the old one goes away; a name
+#     nobody knows is a problem in the status; the IP list back;
+# 11. route_all off: 10.79.0.1 stays reachable through wgcg by the route
 #     cengarde keeps (the /1 routes are gone, and a /32 has no connected
 #     one), converged again; route_all back on;
-# 11. IPv6 in the tunnel (tunnel_ipv6 on): wgcg holds the ULA address derived
+# 12. IPv6 in the tunnel (tunnel_ipv6 on): wgcg holds the ULA address derived
 #     from the secret, a route6 leads to the VPS end, which answers a ping, the
 #     NAT66 rule is in the firewall, the LAN's odhcpd is told to announce a
 #     default route, and the status and the cloud-config say so; converged;
 #     off again: all of it gone, as it was, and converged;
-# 12. disables cengarde and checks that the router is back as it was (the
+# 13. disables cengarde and checks that the router is back as it was (the
 #     LAN gets its prefix again), and converged again.
 # Screenshots and logs go to OUT_DIR (default ./e2e-out). Needs qemu-system-x86,
 # ssh and node with "npm install" done in this directory.
@@ -132,6 +139,12 @@ all_on() {
 # All three links live, whichever VPS address.
 all_live() {
 	[ "$(links | grep -c ' live ')" = 3 ]
+}
+
+# All three links live toward REMOTE, which may be the only candidate (the
+# table shows "(n/m)" after it only when there are several).
+all_to() {
+	[ "$(links | grep -cE " live .* $1( |\$)")" = 3 ]
 }
 
 # The link_threads mode the engine runs.
@@ -396,6 +409,29 @@ else
 	ok "the status reports no IPv6 leak"
 fi
 
+# The DNS server each uplink got by DHCP is the VPS's dnsmasq, 10.1.N.1. With
+# peerdns 0 (set above) netifd keeps it as inactive; the engine configuration
+# hands it to the link as its resolver, so that the engine can look up a VPS
+# name through that link, and holds nothing global (the engine has a default).
+if "$VM" ssh router sh -s <<'EOF'
+conf=$(cengarde-setup engine-conf) || exit 1
+for i in 1 2 3; do
+	echo "$conf" | sed -n "/^\[link eth$i\]/,/^\$/p" | grep -qE "^resolver = (.* )?10\.1\.$i\.1( |\$)" || exit 1
+done
+! echo "$conf" | sed '/^\[link/,$d' | grep -q '^resolver'
+EOF
+then
+	ok "engine-conf: the resolver of each link is the DNS server of its uplink (10.1.N.1)"
+else
+	bad "engine-conf: no resolver line with the DNS server of each uplink"
+	"$VM" ssh router sh -s <<'EOF'
+cengarde-setup engine-conf | grep -v '^key'
+for i in up1 up16 up2 up3; do
+	ubus call network.interface.$i status | jsonfilter -e '@["dns-server"][*]' -e '@.inactive["dns-server"][*]'
+done
+EOF
+fi
+
 # No PPPoE server here: only the configuration. PPP copies the uplink's
 # delegate onto the IPv6 interface it creates (ppp9_6), so the uplink gets
 # delegate 0 while everything goes through the tunnel, and loses it after.
@@ -634,6 +670,98 @@ for mode in off on legacy; do
 done
 
 converged "enabled"
+
+# A name of the VPS that only the uplinks' DNS can answer: dnsmasq at the VPS
+# end of each uplink, which they got by DHCP as their DNS server, is told where
+# vps.test is. The engine looks the name up itself, through each of its links
+# and not through the tunnel, and follows it: the old address goes away at the
+# VPS, the DNS says the new one, and every link moves. A second name that
+# nobody knows only shows up as a problem. The list of IPs comes back at the end.
+vps_dns() { # [ADDRESS]: where vps.test is, or nowhere (a name dnsmasq answers
+	# with NODATA for AAAA, as a DNS does for a name with no IPv6 address; an
+	# address= entry would answer NXDOMAIN instead)
+	"$VM" ssh vps "uci -q delete dhcp.vpstest
+		${1:+uci set dhcp.vpstest=domain; uci set dhcp.vpstest.name=vps.test; uci set dhcp.vpstest.ip=$1}
+		uci commit dhcp
+		/etc/init.d/dnsmasq restart >/dev/null 2>&1"
+}
+server_list() { # ADDRESS_OR_NAME...
+	"$VM" ssh router "uci -q delete cengarde.main.server
+		for a in $*; do uci add_list cengarde.main.server=\$a; done
+		uci commit cengarde
+		ubus call service event '{\"type\":\"config.change\",\"data\":{\"package\":\"cengarde\"}}'"
+}
+name_field() { # N FIELD: of names[N] in the engine's status
+	"$VM" ssh router "cengarde ctl status | jsonfilter -e '@.names[$1].$2'"
+}
+unresolved() { # NAME: the status reports it as a problem
+	"$VM" ssh router 'cengarde-setup status' | grep -q "\"code\":\"server_unresolved\",\"name\":\"$1\""
+}
+tunnel_works() { "$VM" ssh router 'ping -q -c 5 -I wgcg 10.79.0.1' | grep -q ' 0% packet loss'; }
+
+say "VPS name: only the uplinks' DNS knows vps.test, and nobody nope.test"
+vps_dns 1.2.3.4
+server_list vps.test nope.test
+if until_ok 90 all_to '1\.2\.3\.4:65500'; then
+	ok "every link went to 1.2.3.4, the address its uplink's DNS gives vps.test"
+else
+	bad "not every link is live on 1.2.3.4 through the name vps.test"
+	links
+	"$VM" ssh router 'cengarde ctl status | jsonfilter -e "@.names[*]"; logread | grep cengarde | tail -20'
+	"$VM" ssh vps 'logread | grep dnsmasq | tail -5'
+fi
+# The answer came through a link, from its uplink's DNS server (the VPS's end
+# of it), and not from a global resolver.
+if [ "$(name_field 0 name)" = vps.test ] && [ "$(name_field 0 state)" = ok ] &&
+	[ "$(name_field 0 'addresses[*]')" = 1.2.3.4 ] &&
+	name_field 0 via | grep -qE '^eth[123] (10\.1\.[123]\.1|\[(2001:db8|fd00)[0-9a-f:]*\]):53$'; then
+	ok "the status: vps.test is ok at 1.2.3.4, answered through a link by its uplink's DNS server"
+else
+	bad "the status does not show vps.test at 1.2.3.4 from an uplink's DNS server"
+	"$VM" ssh router 'cengarde ctl status | jsonfilter -e "@.names[*]"' || true
+fi
+if tunnel_works; then
+	ok "the tunnel works through the name"
+else
+	bad "no tunnel through the name vps.test"
+fi
+if until_ok 60 unresolved nope.test && ! unresolved vps.test; then
+	ok "the status reports nope.test as a problem, and not vps.test"
+else
+	bad "the status does not report nope.test (and only it) as unresolved"
+	"$VM" ssh router 'cengarde-setup status; cengarde ctl status | jsonfilter -e "@.names[*]"' || true
+fi
+if node "$HERE/luci.mjs" http://127.0.0.1:8080 "$OUT/screenshots-names" names; then
+	ok "LuCI status: the names, their addresses and the problem of nope.test"
+else
+	bad "LuCI status of the names"
+fi
+
+say "VPS name: its address changes (1.2.3.4 goes away, the DNS says 1.2.3.5)"
+vps_dns 1.2.3.5
+"$VM" ssh vps 'ip addr del 1.2.3.4/32 dev lo'
+if until_ok 90 all_to '1\.2\.3\.5:65500' && [ "$(name_field 0 'addresses[*]')" = 1.2.3.5 ]; then
+	ok "every link followed vps.test to 1.2.3.5"
+else
+	bad "the links did not follow vps.test to 1.2.3.5"
+	links
+	"$VM" ssh router 'cengarde ctl status | jsonfilter -e "@.names[*]"; logread | grep cengarde | tail -20'
+fi
+if until_ok 30 tunnel_works; then
+	ok "the tunnel works after the move"
+else
+	bad "no tunnel after vps.test moved"
+fi
+
+"$VM" ssh vps 'ip addr add 1.2.3.4/32 dev lo'
+vps_dns
+server_list 2001:db8::4 1.2.3.4 1.2.3.5
+if until_ok 60 all_on '\[2001:db8::4\]:65500' && ! unresolved nope.test; then
+	ok "the list of IPs back: every link on [2001:db8::4], no name left"
+else
+	bad "the list of IPs did not bring the links back to [2001:db8::4]"
+	links
+fi
 
 # Without route_all the /1 routes are gone (cengarde-setup restarts wgcg for
 # that: netifd does not look at its peer), and the address is a /32: 10.79.0.1

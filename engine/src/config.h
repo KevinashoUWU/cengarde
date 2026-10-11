@@ -2,11 +2,17 @@
  *
  *   mode = client
  *   key = <base64 of 32 random bytes, see "cengarde genkey">
- *   server = 203.0.113.10:59402 [2001:db8::4]:59402
+ *   server = vps.example.com:59402 203.0.113.10:59402 [2001:db8::4]:59402
  *   interfaces = eth1.* wwan*
  *
  *   [link eth1.10]
  *   label = WOM
+ *   resolver = 192.168.8.1
+ *
+ * A name in "server" is looked up by the client itself, through the links
+ * (resolve.h, names.c), again as its TTL says and at once when the server
+ * stops answering on its addresses; /etc/hosts goes first, once, when the
+ * file is read.
  *
  * A server serves one client with the global key, or several, one
  * [client NAME] section each:
@@ -30,16 +36,15 @@
 #include <sys/socket.h>
 
 #include "clients.h"  /* CG_MAX_CLIENTS */
+#include "dns.h"      /* CG_DNS_NAME_MAX */
 #include "fwdtable.h" /* struct cg_fwd_rule */
 #include "proto.h"
 #include "srvpick.h" /* CG_MAX_CANDS */
 
 #define CG_MAX_PATTERNS 32
 #define CG_MAX_LINK_CFG 32
-/* Entries of a server list, addresses or names; a name takes at most
- * CG_NAME_ADDRS addresses of each family, and a list CG_MAX_CANDS in all. */
-#define CG_MAX_SERVERS 8
-#define CG_NAME_ADDRS 4
+#define CG_MAX_NAMES 8     /* names in all the server lists */
+#define CG_MAX_RESOLVERS 8 /* DNS servers in a resolver list */
 
 /* ---- generic INI layer ---- */
 
@@ -80,11 +85,24 @@ struct cg_link_cfg {
 	char name[IFNAMSIZ];
 	char label[64];
 	int enabled;
-	int nserver; /* 0: the global list */
+	int nsrv; /* entries of its "server" as written; 0: the global list */
+	struct cg_srvent srv[CG_MAX_SERVERS];
+	/* The list built from srv and the names' addresses (cg_config_build). */
+	int nserver;
 	struct sockaddr_storage server[CG_MAX_CANDS];
-	int nentry;                      /* entries of server as written */
+	int nentry;                      /* = nsrv */
 	uint8_t entry_n[CG_MAX_SERVERS]; /* how many addresses each gave, in order */
+	int nresolver;                   /* its own DNS servers (the carrier's), asked before the global ones */
+	struct sockaddr_storage resolver[CG_MAX_RESOLVERS];
 	int cpu;                         /* pins its thread (link_threads = on); -1: none */
+};
+
+/* A name of the server lists, lowercase without a trailing dot. One that
+ * /etc/hosts lists takes its addresses from there and is never looked up. */
+struct cg_name_cfg {
+	char name[CG_DNS_NAME_MAX + 1];
+	int hosts;
+	struct cg_nameaddrs addrs; /* hosts only */
 };
 
 /* A client of a server, a [client NAME] section. Its WireGuard address is
@@ -125,10 +143,18 @@ struct cg_config {
 	uint32_t rt_priority;  /* SCHED_FIFO priority; 0: normal scheduling */
 
 	/* client */
-	int nserver; /* addresses, in the order of preference (srvpick.h) */
+	int nsrv; /* entries of "server" as written, in the order of preference */
+	struct cg_srvent srv[CG_MAX_SERVERS];
+	/* The list built from srv and the names' addresses (srvpick.h,
+	 * cg_config_build). */
+	int nserver;
 	struct sockaddr_storage server[CG_MAX_CANDS];
-	int nentry;                      /* entries of server as written */
+	int nentry;                      /* = nsrv */
 	uint8_t entry_n[CG_MAX_SERVERS]; /* how many addresses each gave, in order */
+	int nnames; /* the names of every server list, in order of appearance */
+	struct cg_name_cfg names[CG_MAX_NAMES];
+	int nresolver; /* DNS servers every link may ask, after its own */
+	struct sockaddr_storage resolver[CG_MAX_RESOLVERS];
 	uint32_t server_failover_ms; /* without a reply, a link tries its next server address; 0: never */
 	char *include[CG_MAX_PATTERNS];
 	int ninclude;
@@ -164,6 +190,13 @@ struct cg_config {
 
 	char *strings; /* storage behind include/exclude */
 };
+
+/* Where /etc/hosts is (tests point it elsewhere). */
+extern const char *cg_hosts_path;
+
+/* Builds the server lists of c (global and of each [link]) from their
+ * entries and names[i], the addresses of c->names[i] now (NULL: none). */
+void cg_config_build(struct cg_config *c, const struct cg_nameaddrs *const *names);
 
 /* The [client NAME] section called name, or NULL. */
 const struct cg_client_cfg *cg_config_client(const struct cg_config *c, const char *name);

@@ -14,8 +14,15 @@
 // In the VPS tab, the cloud-config and the command that adds this router to a
 // VPS that serves others carry its name and the tunnel address derived from
 // the secret (which only the router can compute), and follow a name and an
-// address typed in the form; invalid ones are refused.
+// address typed in the form; invalid ones are refused. The VPS addresses take
+// host names too (not with a mask or a space).
 // Fails on any JavaScript error after logging in.
+//
+//   node luci.mjs BASE_URL SCREENSHOT_DIR names
+//
+// instead only logs in and checks the status page of the "VPS name" step of
+// e2e.sh: vps.test with its address and how long ago the DNS answered, and
+// nope.test, which nobody knows, as a problem.
 //
 // SPDX-License-Identifier: GPL-2.0-only
 
@@ -76,6 +83,24 @@ async function tab(name) {
 	await page.waitForTimeout(300);
 }
 
+// The status page while e2e.sh has vps.test (the uplinks' DNS says 1.2.3.4) and
+// nope.test (nobody knows it) as the VPS names.
+async function namesStatus() {
+	const nameRow = (n) => page.locator(`table.table tr.tr:has-text("Nombre del VPS ${n}")`);
+	const problem = (n) => page.locator(`.cengarde-problem:has-text("El nombre del VPS ${n} no se pudo resolver")`);
+
+	step('status page: the VPS names');
+	await page.goto(`${base}/cgi-bin/luci/admin/services/cengarde/status`);
+	await until(async () => await nameRow('vps.test').count() > 0 && await nameRow('nope.test').count() > 0 &&
+		await problem('nope.test').count() > 0, 'the VPS names on the status page', 60000);
+	await shot('07-status-names');
+	const found = await nameRow('vps.test').innerText();
+	check(found.includes('1.2.3.4') && /resuelto hace \d+ (s|min)/.test(found), `vps.test with its address and its age (${found})`);
+	check((await nameRow('nope.test').locator('td').nth(1).innerText()).trim() === '-', 'nope.test has no address');
+	check(await problem('vps.test').count() === 0, 'vps.test is no problem');
+	check(errors.length === 0, `no JavaScript errors (${errors.join('; ')})`);
+}
+
 try {
 	step('login');
 	await page.goto(`${base}/cgi-bin/luci/`);
@@ -83,13 +108,19 @@ try {
 	await page.fill('input[name=luci_password]', '');
 	await Promise.all([ page.waitForNavigation(), page.press('input[name=luci_password]', 'Enter') ]);
 	loggedIn = true;
+	if (process.argv[4] === 'names') {
+		await namesStatus();
+		step('ok');
+		await browser.close();
+		process.exit(0);
+	}
 
 	step('settings page');
 	await page.goto(`${base}/cgi-bin/luci/admin/services/cengarde/config`);
 	await page.waitForSelector(id('widget.cbid.cengarde.main.server'));
 	await shot('01-settings-empty');
 
-	step('VPS addresses: a mask is refused, two addresses go in');
+	step('VPS addresses: a mask is refused, names are taken, two addresses go in');
 	// Typed key by key: LuCI checks the field on keyup, and Enter only adds
 	// a valid entry to the list.
 	const server = page.locator(id('widget.cbid.cengarde.main.server'));
@@ -98,6 +129,17 @@ try {
 	await server.pressSequentially('1.2.3.4/24');
 	await server.press('Enter');
 	check(await invalid(server) && (await listed()).length === 0, '1.2.3.4/24 is refused');
+	// A name is taken as it is typed (not entered: it would stay in the list)
+	// unless it has a space, starts with - or is a number with dots that is no
+	// address.
+	await server.fill('');
+	await server.pressSequentially('vps.example.com');
+	check(!await invalid(server), 'a name is taken');
+	for (const bad of [ '-vps.example.com', 'vps example.com', '10.0.0.256' ]) {
+		await server.fill('');
+		await server.pressSequentially(bad);
+		check(await invalid(server), `${bad} is refused`);
+	}
 	await server.fill('');
 	for (const addr of VPS) {
 		await server.pressSequentially(addr);

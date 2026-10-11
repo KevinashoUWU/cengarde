@@ -7,8 +7,9 @@
   el motor, un router por servidor; paquetes 0.5.0), el 3d2b (varios
   routers en el motor del servidor; paquetes 0.5.1) y el 3d2c (varios
   routers en las herramientas del VPS y en OpenWrt; paquetes 0.5.2). El
-  PR 4 (IPv6 dentro del túnel, apagado por defecto; paquetes 0.5.3), hecho
-  y sin probar en hardware. Pendiente el PR 5.
+  PR 4 (IPv6 dentro del túnel, apagado por defecto; paquetes 0.5.3) y el
+  PR 5 (nombres con DNS dinámico; paquetes 0.5.4), hechos y sin probar en
+  hardware: cierran el plan.
 - **Fuentes:**
   - código del PR 1 (`git log ebe570b..823e4dd`):
     - `engine/src/epoch.h`; `client.c:442` (`ms_since_new`), `:456`
@@ -61,6 +62,13 @@
     y `products/compute/instances/cloud-compute/networking/ipv6`; y
     `netplan generate` 1.1.2;
   - respuestas del usuario, 2026-10-04;
+  - código del PR 5 (paquetes 0.5.4): `engine/src/dns.h`, `resolve.h`,
+    `names.c`, `client.c` (`names_tick`, `names_changed`, `dns_paths`),
+    `config.c` (`get_servers`, `get_resolvers`, `cg_config_build`);
+    `openwrt/cengarde/files/cengarde-setup` (`uplink_resolvers`,
+    `server_unresolved`); `bench/fakedns.py` y `bench/lab.d/names.sh`;
+  - netifd con `peerdns 0`, visto en una VM de OpenWrt 25.12 (2026-10-11):
+    `dns-server` vacío y los DNS del DHCP bajo `inactive.dns-server`;
   - medidas: `sudo bench/lab.sh restart [REF]`, `multiip`, `fallback`,
     `down` y `up` (antes y después), `sudo bench/lab.sh ci`,
     `sudo sh contrib/vps/test/security.sh` (y `vps.yml`) y
@@ -73,9 +81,9 @@
   2. respuesta desde la dirección de llegada, IPv6 por fuera del túnel y
      cierre de la fuga de IPv6 de la LAN (**hecho**, 0.4.2);
   3. varios routers por VPS, con el protocolo v4 y un panel de reenvío de
-     puertos;
-  4. IPv6 dentro del túnel, apagado por defecto;
-  5. nombres en vez de IP, pensados para DNS dinámico.
+     puertos (**hecho**, 0.4.5 a 0.5.2);
+  4. IPv6 dentro del túnel, apagado por defecto (**hecho**, 0.5.3);
+  5. nombres en vez de IP, pensados para DNS dinámico (**hecho**, 0.5.4).
 - **Lo que cerró el PR 1:**
   - un reinicio del servidor ya no deja la bajada atascada: antes pasaba en
     7 de 10 reinicios; después, en 0 de 54, y vuelve en 2,0–2,1 s cuando
@@ -166,7 +174,19 @@
     que tiene las dos (RFC 6724): sirve sobre todo para destinos solo IPv6;
   - en el VPS, el reenvío IPv6 se enciende después de pasar `accept_ra` a 2
     donde el kernel toma los anuncios de router; sin medir en Vultr.
-- **Siguiente:** el PR 5, nombres con DNS dinámico.
+- **Lo que cerró el PR 5** (nombres con DNS dinámico, paquetes 0.5.4, sin
+  cambiar el protocolo):
+  - el router busca él mismo el nombre del VPS, por cada enlace y atado a
+    su dirección, primero con los DNS de la operadora de ese enlace (que
+    netifd guarda como inactivos con `peerdns 0`) y nunca por el túnel;
+  - TTL entre 30 s y 15 min, la última respuesta buena se queda, y una
+    búsqueda al momento cuando ningún enlace está vivo en sus direcciones
+    durante 2 s: el corte cuando cambia la IP es de 3,3 s en el
+    laboratorio, más lo que tarden el DNS dinámico y las cachés;
+  - un nombre que no resuelve ya no impide arrancar; LuCI acepta nombres y
+    muestra a dónde apunta cada uno; una guía para el servidor en casa.
+- **Siguiente:** probar en hardware (la Pi, Vultr, un servidor en casa)
+  lo que este plan dejó hecho en el laboratorio y en QEMU.
 
 ## Contexto
 
@@ -339,8 +359,8 @@ sigue igual (ver «Pendiente, por PR»).
   con IP pass, los puertos reenviados. La respuesta desde la dirección de
   llegada (PR 2) sale con la privada y el router casero la traduce.
 - **Cuando cambia la IP:** los enlaces quedan mudos, el resolvedor vuelve a
-  consultar y se mudan. El corte dura la detección más una consulta: hay
-  que medirlo en el escenario `names` del PR 5.
+  consultar y se mudan. El corte dura la detección más una consulta: 3,3 s
+  en el escenario `names` del PR 5, sin cachés (sección «PR 5»).
 - **UPnP:** STUN con servidor explícito da la IP pública del router casero
   y sigue sus cambios.
 - **El servidor necesita una IPv4 pública** (sin CGNAT), con el UDP 65500
@@ -950,6 +970,102 @@ enciende después de probarlo en la Pi).
     a encender el reenvío) y el e2e en QEMU (encender y apagar en el router,
     `ping -6` a `ULA::1` por `wgcg`).
 
+## PR 5: nombres con DNS dinámico (hecho)
+
+Sin cambiar el protocolo: es cosa del router. Un nombre en `server` ya no
+se resuelve con `getaddrinfo` al leer el archivo (un nombre que no
+resolvía al arrancar dejaba el motor sin arrancar): lo busca el cliente.
+
+- **Por qué no el resolvedor del sistema:** con «enrutar todo» sus
+  consultas van por el túnel, que está caído justo cuando la IP del
+  servidor cambió; y `getaddrinfo` bloquea.
+- **Por los enlaces:** cada intento abre un socket nuevo con
+  `cg_udp_link` (`SO_BINDTODEVICE`, la dirección de origen del enlace,
+  conectado al DNS, puerto e id al azar) y lo cierra con la respuesta o a
+  los 2 s. Primero el primer DNS de cada enlace, luego el segundo de cada
+  uno (`cg_rs_pair`), hasta 6 intentos por búsqueda; primero los enlaces
+  vivos. Un error (SERVFAIL, REFUSED, malformado, ICMP) pasa al siguiente
+  al momento. A y AAAA son dos preguntas con su propio ciclo.
+- **Qué DNS:** los `resolver` del `[link]` (en OpenWrt, los de la
+  operadora: `engine-conf` toma `dns-server` e `inactive.dns-server` del
+  enlace y de sus compañeras IPv6; con `peerdns 0` netifd los guarda como
+  inactivos, visto en una VM de 25.12) y después los globales (de fábrica,
+  Cloudflare y Quad9). Con los CPE 5G de la historia 004, el DNS del enlace
+  es el propio CPE, que reenvía a la operadora.
+- **Cuándo** (`resolve.h`, puro, con tests):
+  - TTL acotado a [30 s, 15 min];
+  - una búsqueda que falla conserva las direcciones y reintenta: 1 s
+    doblando hasta 15 s si nunca hubo respuesta, 5 s hasta 60 s si la hubo;
+  - **silencio:** un nombre con direcciones en el que ningún enlace está
+    vivo durante 2 s, mientras algún enlace apunta a él, se busca al
+    momento y otra vez a los 15 s, 30 s y luego cada 60 s, sin mirar el
+    TTL; un enlace vivo otra vez o direcciones nuevas terminan el episodio.
+    Uno al que ya no apunta ningún enlace (pasaron a otra entrada) espera a
+    su TTL;
+  - una respuesta vacía (NXDOMAIN, o sin registros de la familia) solo
+    quita las direcciones de esa familia si ningún enlace está vivo en
+    ellas (silencio por familia): un DNS que falla no corta un túnel que
+    funciona. La siguiente, a los 5 min; a los 15 s si el nombre se quedó
+    sin ninguna dirección;
+  - fuera las direcciones que ningún servidor tiene: 0.0.0.0, `::`,
+    loopback, multicast y una IPv4 dentro de un AAAA (un DNS que bloquea un
+    nombre suele dar 0.0.0.0); una respuesta que se queda sin ninguna
+    cuenta como vacía.
+- **Direcciones estables:** IPv6 primero (como `getaddrinfo` con IPv6
+  global), cada familia ordenada y como mucho 4: un nombre con más da
+  siempre las mismas. Cuando cambian (`cg_lists_keep`), un enlace vuelve a
+  la primera dirección solo si la suya desapareció o cambió una entrada
+  anterior a la suya (el servidor preferido tiene otra IP); un cambio
+  posterior no lo mueve. Una recarga sigue siendo más estricta
+  (`cg_lists_same`): ahí la lista la editó el operador.
+- **`/etc/hosts` primero,** leído con el archivo: `localhost` y los nombres
+  fijados a mano no se consultan.
+- **Formato** (`dns.h`, puro): consulta sin EDNS; respuesta con cadenas
+  CNAME (8 saltos), punteros de compresión solo hacia atrás (128 saltos),
+  cada lectura acotada. 311 chequeos, una prueba aleatoria de unas 242 000
+  respuestas mutadas bajo ASan y UBSan, compilado para armhf, MIPS BE y
+  aarch64 y corrido en qemu; 22 mutantes del código, todos cazados.
+- **Seguridad:** sin DNSSEC (fuera del plan). Una respuesta falsa necesita
+  acertar puerto e id en la ventana del intento, y solo puede mandar el
+  túnel a una dirección sin la clave, que no contesta: a los 2 s el nombre
+  se busca otra vez. El operador del enlace puede falsificarla igual que
+  puede cortar el enlace.
+- **Estado:** `names[]` (estado, direcciones, edad de la respuesta,
+  próxima búsqueda, TTL, silencio, error, por dónde vino); el motivo
+  `server name not resolved` en los enlaces; en OpenWrt, el problema
+  `server_unresolved` (búsquedas fallidas o sin direcciones) y la fila del
+  nombre en el estado de LuCI.
+- **UPnP con un nombre:** la IP de un nombre cambia, así que no cuenta
+  como IP externa: STUN con `stun_host` (el aviso `upnp_no_ip` lo dice).
+- **Revisión** (un agente Opus, adversaria, con programas de prueba
+  propios): seis defectos, arreglados antes de fusionar:
+  - un cambio en una entrada posterior (el respaldo gana una dirección)
+    devolvía todos los enlaces a una primera entrada muerta: 10 s sin
+    túnel; de ahí `cg_lists_keep`;
+  - el silencio era por nombre: si la A nueva llegaba antes que el NODATA
+    del AAAA borrado, el AAAA viejo quedaba para siempre y los enlaces con
+    IPv6 perdían 10 s en cada vuelta a la primera; ahora es por familia;
+  - un nombre sin uso (los enlaces en otra entrada, o sin familia) se
+    buscaba cada 15 s para siempre, con una línea de log cada vez; ahora
+    solo mientras algún enlace apunta a él, con espera creciente, y el log
+    una vez por episodio;
+  - `cg_hosts_find` leía fuera del arreglo con un primer campo de 256
+    caracteres o más (ASan); 0.0.0.0 o multicast del DNS o de
+    `/etc/hosts` pasaban como dirección del servidor; y un nombre sin
+    resolver ocupaba un lugar de enlace por cada interfaz del sistema.
+- **Pruebas:**
+  - en el contenedor: los tests del motor (gcc a `-O0`, `-Os` y `-O2`,
+    clang, ASan y UBSan, y compilado para armhf, MIPS y aarch64),
+    shellcheck, `node --check` e `i18n.py`; un arnés
+    de `ubus`/`jsonfilter` falsos con el `cengarde-setup` real en dash y
+    busybox ash;
+  - en VMs de OpenWrt 25.12 sin KVM (a mano, con el motor de ese momento):
+    `resolver = 10.1.1.1 [fd00:1::1]` en el `[link]`, y el bloque nuevo del
+    e2e (un nombre que solo conocen los DNS de los enlaces, el túnel por
+    él, la dirección que cambia y los enlaces que la siguen, un nombre
+    desconocido como problema) y `luci.mjs`;
+  - solo en el CI: el e2e completo y `bench/lab.sh names` dentro de `ci`.
+
 ## Medidas
 
 - **Varios routers** (PR 3d2b, 2026-10-10, contenedor de 4 CPU):
@@ -1064,6 +1180,23 @@ enciende después de probarlo en la Pi).
     puede cambiar de origen varias veces en un par de segundos (5 en 2 s en
     up1); luego queda fijo.
 
+- **Nombres** (PR 5, 2026-10-11, `sudo bench/lab.sh names`, contenedor de
+  4 CPU, `bench/fakedns.py` sin caché como DNS de cada enlace, el servidor
+  en una /32 que llega por los tres enlaces, 1000 pps en cada sentido):
+  - arranque: todos los enlaces vivos en los dos extremos a los 1,5 s;
+  - cambio de IP: todos los enlaces vivos en la nueva 3,28 s y 3,30 s
+    después de borrar la vieja, dos veces seguidas (un enlace deja de estar
+    vivo a los 1,0–1,1 s; la búsqueda, a los 3,07 s, tarda milisegundos).
+    Antes del arreglo de `kick_ms`, el segundo cambio tardaba 11,8 s;
+  - DNS caído 40 s con TTL 30 s: 0 de 39 999 paquetes perdidos en cada
+    sentido, el nombre conserva su dirección (error `timeout`);
+  - TTL 0: 3 preguntas A en 70 s, separadas por 30,0 s como mínimo;
+  - NXDOMAIN con el servidor vivo: la dirección se queda, 0 perdidos;
+    NXDOMAIN sin servidor: el nombre se queda sin dirección (`none`) y los
+    enlaces dicen `server name not resolved`; con el registro y la
+    dirección de vuelta, enlaces vivos a los 16,0 s (antes del arreglo,
+    300,9 s: la espera negativa de 5 min).
+
 ## Qué hacemos con esto
 
 - **El PR 2 fue primero,** porque cerraba la fuga de IPv6 de Starlink;
@@ -1114,15 +1247,20 @@ enciende después de probarlo en la Pi).
   de netplan.~~ Con `TUNNEL_IPV6` y solo donde el kernel toma los anuncios.
 - Falta: probarlo en la Pi y en Vultr antes de encenderlo por defecto.
 
-### PR 5: nombres con DNS dinámico
+### ~~PR 5: nombres con DNS dinámico~~ (hecho, sección «PR 5»)
 
-- Resolvedor propio en el motor (`dns.h`, `resolve.h`): consultas por cada
-  enlace, atadas a su dirección, primero con los DNS de la operadora.
-- TTL entre 30 s y 15 min, última respuesta buena, nueva consulta cuando
+- ~~Resolvedor propio en el motor (`dns.h`, `resolve.h`): consultas por
+  cada enlace, atadas a su dirección, primero con los DNS de la
+  operadora.~~
+- ~~TTL entre 30 s y 15 min, última respuesta buena, nueva consulta cuando
   enmudecen todos los enlaces del nombre; medir el corte cuando cambia la
-  IP.
-- LuCI con el tipo `host`; UPnP con STUN para un servidor de IP dinámica.
-- Guía del servidor casero: reenvíos en el router de casa y DNS dinámico.
+  IP.~~ 3,3 s en el laboratorio.
+- ~~LuCI con el tipo `host`; UPnP con STUN para un servidor de IP
+  dinámica.~~
+- ~~Guía del servidor casero: reenvíos en el router de casa y DNS
+  dinámico.~~ En `openwrt/README.md`, «En casa, con IP dinámica».
+- Falta: un servidor en casa de verdad, con un DNS dinámico y los DNS de
+  las operadoras (sus cachés).
 
 ### Sin PR fijo
 
@@ -1163,3 +1301,5 @@ enciende después de probarlo en la Pi).
   paquetes 0.5.2). Cierra el PR 3.
 - 2026-10-11: PR 4 hecho (IPv6 dentro del túnel, apagado por defecto;
   paquetes 0.5.3), sin probar en hardware.
+- 2026-10-11: PR 5 hecho (nombres con DNS dinámico, paquetes 0.5.4), con
+  sus medidas; cierra el plan.

@@ -9,6 +9,20 @@
 
 const MTU_MIN = 1280; // the smallest tunnel MTU config.js takes
 
+// What the engine says went wrong looking up a name of the VPS: its error, in words.
+function resolveError(e) {
+	switch (e) {
+	case '':
+	case 'timeout': return _('no answer');
+	case 'servfail':
+	case 'refused': return _('the DNS server failed');
+	case 'nxdomain': return _('the name does not exist');
+	case 'nodata': return _('no addresses');
+	case 'no link': return _('no uplink to ask through');
+	default: return e;
+	}
+}
+
 function problemText(p) {
 	switch (p.code) {
 	case 'no_secret': return _('No valid pairing secret: generate one in the VPS tab.');
@@ -23,7 +37,8 @@ function problemText(p) {
 	case 'no_ula_prefix': return _('IPv6 through the tunnel is on, but the router has no ULA prefix, so the LAN has no IPv6 address to send through it: set one in Network > Interfaces > Global network options.');
 	case 'ipv6_leak': return _('The LAN still holds the public IPv6 prefix %s: its IPv6 goes around the tunnel, through the uplinks. Turn off "Delegate IPv6 prefixes" on the interface it comes from.').format(p.prefix);
 	case 'no_upnp': return _('IP pass is on but miniupnpd is not installed.');
-	case 'upnp_no_ip': return _('IP pass is on, but UPnP has no public IP to announce: no VPS address is IPv4. Set a STUN server in Settings > Tunnel.');
+	case 'upnp_no_ip': return _('IP pass is on, but UPnP has no public IP to announce: no VPS address is an IPv4 address (a name does not count, its IP may change). Set a STUN server in Settings > Tunnel.');
+	case 'server_unresolved': return _('The VPS name %s could not be resolved (%s).').format(p.name, resolveError(p.error));
 	case 'not_running': return _('The engine is not running: see System > System Log.');
 	case 'vps_silent': return _('The VPS does not answer on any uplink: check that it runs cengarde with the secret of this router, and that its firewall lets in UDP to the VPS port.');
 	case 'vps_refusing': return _('The VPS answers but refuses this router: it is turned off there, or the VPS has no room for another session. Run "cengarde-vps-setup list" on the VPS.');
@@ -98,6 +113,20 @@ function vpsAddress(l) {
 	return E('span', {}, parts);
 }
 
+// A name of the VPS: where it points now, and how long ago the DNS answered
+// (the engine looks it up itself, through the uplinks) or "from /etc/hosts".
+// A name with no address shows a dash: its problem is in the list above.
+function vpsName(n) {
+	const addrs = n.addresses || [];
+	const parts = [ addrs.length ? addrs.join(', ') : '-' ];
+
+	if (addrs.length && n.state == 'hosts')
+		parts.push(' ', E('small', {}, [ _('from /etc/hosts') ]));
+	else if (addrs.length && n.answered_ms_ago != null)
+		parts.push(' ', E('small', {}, [ _('answered %s').format(age(Math.floor(n.answered_ms_ago / 1000))) ]));
+	return E('span', {}, parts);
+}
+
 // IP pass as asked of the VPS, and as the VPS reports it.
 function ipPass(p) {
 	if (p.requested == null)
@@ -168,6 +197,9 @@ return view.extend({
 
 		if (st.tunnel_ipv6 && st.tunnel_ula)
 			rows.push([ _('IPv6 address in the tunnel'), st.tunnel_ula ]);
+
+		if (e && Array.isArray(e.names))
+			e.names.forEach(function(n) { rows.push([ _('VPS name %s').format(n.name), vpsName(n) ]); });
 
 		if (e && e.passthrough && ipPass(e.passthrough))
 			rows.push([ _('IP pass'), ipPass(e.passthrough) ]);

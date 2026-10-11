@@ -9,8 +9,14 @@
 
 #include "arrival.h" /* CG_MAX_LINKS */
 #include "log.h"
-#include "steer.h"     /* lanes */
+#include "resolve.h" /* cg_hosts_find */
+#include "steer.h"   /* lanes */
 #include "util.h"
+
+const char *cg_hosts_path = "/etc/hosts";
+
+/* Every link may ask these after its own (Cloudflare and Quad9). */
+static const char default_resolvers[] = "1.1.1.1 9.9.9.9 [2606:4700:4700::1111] [2620:fe::fe]";
 
 /* Interfaces that never carry tunnel traffic. */
 static const char default_exclude[] = "lo wg* docker* veth* br-* virbr* tun* tap* ifb* dummy*";
@@ -242,12 +248,10 @@ static int get_str(struct cg_ini *ini, const char *sec, const char *key, char *o
  * A name may stand for several addresses, at most CG_NAME_ADDRS of each
  * family, and takes the slots the later entries leave, so every entry is
  * parsed, checked and kept. Peers are addresses to send to: names are allowed
- * there, the wildcard and multicast addresses are not. entry_n (max of them,
- * or NULL) gets how many addresses each entry gave, and *nentry how many
- * entries there were (srvpick.h compares lists by entry on a reload). */
+ * there (getaddrinfo, the server's keys), the wildcard and multicast
+ * addresses are not. The client's server lists are get_servers'. */
 static int get_addrs(struct cg_ini *ini, const char *sec, const char *key, int peers,
-		     struct sockaddr_storage *out, int max, int cap, int *n, uint8_t *entry_n, int *nentry, char *err,
-		     size_t errlen)
+		     struct sockaddr_storage *out, int max, int cap, int *n, char *err, size_t errlen)
 {
 	const char *v = cg_ini_get(ini, sec, key);
 	char buf[1024], *items[CG_MAX_SERVERS * 2], e[256];
@@ -255,8 +259,6 @@ static int get_addrs(struct cg_ini *ini, const char *sec, const char *key, int p
 	int count;
 
 	*n = 0;
-	if (nentry)
-		*nentry = 0;
 	if (!v)
 		return 0;
 	if (strlen(v) >= sizeof(buf)) {
@@ -297,16 +299,179 @@ static int get_addrs(struct cg_ini *ini, const char *sec, const char *key, int p
 			room--;
 			out[(*n)++] = got[j];
 		}
-		if (entry_n) {
-			entry_n[i] = (uint8_t)(per[0] + per[1]);
-			*nentry = i + 1;
-		}
 	}
 	if (!*n) {
 		snprintf(err, errlen, "%s: no address given", key);
 		return -1;
 	}
 	return 0;
+}
+
+static char *read_file(const char *path, char *err, size_t errlen);
+
+/* The hosts file, read at most once per configuration; NULL when there is
+ * none (no name is in it, then). */
+struct hosts {
+	int read;
+	char *text;
+};
+
+static const char *hosts_text(struct hosts *h)
+{
+	char e[256];
+
+	if (!h->read) {
+		h->read = 1;
+		h->text = read_file(cg_hosts_path, e, sizeof(e));
+	}
+	return h->text;
+}
+
+/* The index of name among c's names, added (with what the hosts file gives
+ * it) when new; -1 with err set when there are too many. */
+static int name_index(struct cg_config *c, struct hosts *h, const char *key, const char *name, char *err,
+		      size_t errlen)
+{
+	struct cg_name_cfg *nc;
+
+	for (int i = 0; i < c->nnames; i++)
+		if (!strcmp(c->names[i].name, name))
+			return i;
+	if (c->nnames == CG_MAX_NAMES) {
+		snprintf(err, errlen, "%s: at most %d names in all the server lists", key, CG_MAX_NAMES);
+		return -1;
+	}
+	nc = &c->names[c->nnames];
+	memset(nc, 0, sizeof(*nc));
+	strcpy(nc->name, name);
+	nc->hosts = cg_hosts_find(hosts_text(h), name, &nc->addrs);
+	return c->nnames++;
+}
+
+/* A server list as written: at most max entries, each an address (no
+ * wildcard, no multicast) or a name, kept for the client to look up
+ * (resolve.h). Sets *n to how many; none when the key is not there. */
+static int get_servers(struct cg_ini *ini, const char *sec, struct cg_config *c, struct hosts *h,
+		       struct cg_srvent *out, int max, int *n, char *err, size_t errlen)
+{
+	const char *v = cg_ini_get(ini, sec, "server"), *why;
+	char buf[1024], *items[CG_MAX_SERVERS * 2], host[256], e[256];
+	int count;
+
+	*n = 0;
+	if (!v)
+		return 0;
+	if (strlen(v) >= sizeof(buf)) {
+		snprintf(err, errlen, "server: value too long");
+		return -1;
+	}
+	strcpy(buf, v);
+	count = cg_split_list(buf, items, (int)CG_ARRAY_SIZE(items));
+	if (count > max) { /* an error, never dropped in silence */
+		snprintf(err, errlen, "server: at most %d addresses", max);
+		return -1;
+	}
+	if (!count) {
+		snprintf(err, errlen, "server: no address given");
+		return -1;
+	}
+	for (int i = 0; i < count; i++) {
+		struct cg_srvent *s = &out[i];
+		char name[CG_DNS_NAME_MAX + 1];
+
+		memset(s, 0, sizeof(*s));
+		s->name = -1;
+		if (cg_hostport(items[i], host, sizeof(host), &s->port, e, sizeof(e)) < 0) {
+			snprintf(err, errlen, "server: %s", e);
+			return -1;
+		}
+		if (!strcmp(host, "*")) {
+			snprintf(err, errlen, "server: '%s' is the wildcard address", items[i]);
+			return -1;
+		}
+		if (cg_addr_literal(host, s->port, &s->a) == 0) {
+			why = cg_addr_unfit_peer(&s->a);
+			if (why) {
+				snprintf(err, errlen, "server: '%s' is %s", items[i], why);
+				return -1;
+			}
+		} else if (items[i][0] == '[' || cg_dns_name_norm(host, name, sizeof(name)) < 0) {
+			snprintf(err, errlen, "server: '%s' is neither an address nor a name", items[i]);
+			return -1;
+		} else if ((s->name = name_index(c, h, "server", name, err, errlen)) < 0) {
+			return -1;
+		}
+	}
+	*n = count;
+	return 0;
+}
+
+/* DNS servers: addresses with an optional port (53), "[...]" or bare for
+ * IPv6. Sets *n; dflt when the key is not there, none when it is empty. */
+static int get_resolvers(struct cg_ini *ini, const char *sec, const char *dflt, struct sockaddr_storage *out,
+			 int *n, char *err, size_t errlen)
+{
+	const char *v = cg_ini_get(ini, sec, "resolver"), *why;
+	char buf[1024], *items[CG_MAX_RESOLVERS * 2], e[256];
+	int count;
+
+	*n = 0;
+	if (!v)
+		v = dflt;
+	if (!v)
+		return 0;
+	if (strlen(v) >= sizeof(buf)) {
+		snprintf(err, errlen, "resolver: value too long");
+		return -1;
+	}
+	strcpy(buf, v);
+	count = cg_split_list(buf, items, (int)CG_ARRAY_SIZE(items));
+	if (count > CG_MAX_RESOLVERS) {
+		snprintf(err, errlen, "resolver: at most %d addresses", CG_MAX_RESOLVERS);
+		return -1;
+	}
+	for (int i = 0; i < count; i++) {
+		size_t len = strlen(items[i]);
+
+		/* "[2001:db8::53]": bare, but in brackets. */
+		if (len > 2 && items[i][0] == '[' && items[i][len - 1] == ']') {
+			memmove(items[i], items[i] + 1, len - 2);
+			items[i][len - 2] = '\0';
+		}
+		if (cg_addr_literal(items[i], 53, &out[i]) < 0 &&
+		    cg_addr_parse(items[i], 0, &out[i], 1, e, sizeof(e)) < 0) {
+			snprintf(err, errlen, "resolver: '%s' is not an address", items[i]);
+			return -1;
+		}
+		why = cg_addr_unfit_peer(&out[i]);
+		if (why) {
+			snprintf(err, errlen, "resolver: '%s' is %s", items[i], why);
+			return -1;
+		}
+	}
+	*n = count;
+	return 0;
+}
+
+void cg_config_build(struct cg_config *c, const struct cg_nameaddrs *const *names)
+{
+	const struct cg_nameaddrs *own[CG_MAX_NAMES];
+
+	/* Without addresses given, those of the hosts file (a name that is
+	 * not there gives none). */
+	if (!names) {
+		for (int i = 0; i < c->nnames; i++)
+			own[i] = c->names[i].hosts ? &c->names[i].addrs : NULL;
+		names = own;
+	}
+	c->nserver = cg_srv_build(c->srv, c->nsrv, names, c->server, c->entry_n);
+	c->nentry = c->nsrv;
+	for (int i = 0; i < c->nlinks; i++) {
+		struct cg_link_cfg *l = &c->links[i];
+
+		l->nserver = cg_srv_build(l->srv, l->nsrv, names, l->server, l->entry_n);
+		l->nentry = l->nsrv;
+	}
 }
 
 const struct cg_link_cfg *cg_config_link(const struct cg_config *c, const char *ifname)
@@ -317,7 +482,7 @@ const struct cg_link_cfg *cg_config_link(const struct cg_config *c, const char *
 	return NULL;
 }
 
-static int parse_links(struct cg_config *c, struct cg_ini *ini, char *err, size_t errlen)
+static int parse_links(struct cg_config *c, struct cg_ini *ini, struct hosts *h, char *err, size_t errlen)
 {
 	for (int i = 0; i < ini->n; i++) {
 		const char *sec = ini->e[i].section, *name;
@@ -350,8 +515,8 @@ static int parse_links(struct cg_config *c, struct cg_ini *ini, char *err, size_
 		}
 		if (get_str(ini, sec, "label", l->label, sizeof(l->label), err, errlen) ||
 		    get_bool(ini, sec, "enabled", &l->enabled, err, errlen) ||
-		    get_addrs(ini, sec, "server", 1, l->server, CG_MAX_SERVERS, CG_MAX_CANDS, &l->nserver, l->entry_n,
-			      &l->nentry, err, errlen))
+		    get_servers(ini, sec, c, h, l->srv, CG_MAX_SERVERS, &l->nsrv, err, errlen) ||
+		    get_resolvers(ini, sec, NULL, l->resolver, &l->nresolver, err, errlen))
 			return -1;
 	}
 	return 0;
@@ -448,9 +613,9 @@ static int parse_clients(struct cg_config *c, struct cg_ini *ini, char *err, siz
 		if (get_str(ini, sec, "label", k->label, sizeof(k->label), e, sizeof(e)) ||
 		    get_bool(ini, sec, "enabled", &k->enabled, e, sizeof(e)) ||
 		    get_bool(ini, sec, "passthrough", &k->passthrough, e, sizeof(e)) ||
-		    get_addrs(ini, sec, "wireguard", 0, &k->wireguard, 1, 1, &n, NULL, NULL, e, sizeof(e)) ||
+		    get_addrs(ini, sec, "wireguard", 0, &k->wireguard, 1, 1, &n, e, sizeof(e)) ||
 		    (cg_ini_get(ini, sec, "wireguard_poke") && strcmp(cg_ini_get(ini, sec, "wireguard_poke"), "none") &&
-		     get_addrs(ini, sec, "wireguard_poke", 1, &k->wireguard_poke, 1, 1, &n, NULL, NULL, e, sizeof(e)))) {
+		     get_addrs(ini, sec, "wireguard_poke", 1, &k->wireguard_poke, 1, 1, &n, e, sizeof(e)))) {
 			snprintf(err, errlen, "[%s] %s", sec, e);
 			return -1;
 		}
@@ -507,6 +672,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 		    size_t warnlen)
 {
 	struct cg_ini ini;
+	struct hosts hosts = { 0, NULL };
 	const char *v;
 	char e[256] = "";
 	int n, rc = -1, multi;
@@ -594,15 +760,15 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	if (!cg_ini_get(&ini, "", "listen")) {
 		cg_addr_parse(c->mode == CG_MODE_CLIENT ? "127.0.0.1:59401" : "*:59402", 0, &c->listen, 1, e,
 			      sizeof(e));
-	} else if (get_addrs(&ini, "", "listen", 0, &c->listen, 1, 1, &n, NULL, NULL, err, errlen)) {
+	} else if (get_addrs(&ini, "", "listen", 0, &c->listen, 1, 1, &n, err, errlen)) {
 		goto out;
 	}
 
 	if (c->mode == CG_MODE_CLIENT) {
-		if (get_addrs(&ini, "", "server", 1, c->server, CG_MAX_SERVERS, CG_MAX_CANDS, &c->nserver, c->entry_n,
-			      &c->nentry, err, errlen))
+		if (get_servers(&ini, "", c, &hosts, c->srv, CG_MAX_SERVERS, &c->nsrv, err, errlen) ||
+		    get_resolvers(&ini, "", default_resolvers, c->resolver, &c->nresolver, err, errlen))
 			goto out;
-		if (!c->nserver) {
+		if (!c->nsrv) {
 			snprintf(err, errlen, "server: required in client mode");
 			goto out;
 		}
@@ -653,10 +819,11 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 			snprintf(err, errlen, "out of memory");
 			goto out;
 		}
-		if (parse_links(c, &ini, err, errlen))
+		if (parse_links(c, &ini, &hosts, err, errlen))
 			goto out;
+		cg_config_build(c, NULL);
 	} else {
-		if (get_addrs(&ini, "", "wireguard", 0, &c->wireguard, 1, 1, &n, NULL, NULL, err, errlen))
+		if (get_addrs(&ini, "", "wireguard", 0, &c->wireguard, 1, 1, &n, err, errlen))
 			goto out;
 		if (!n && !multi) {
 			snprintf(err, errlen, "wireguard: required in server mode (local WireGuard address)");
@@ -709,7 +876,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 		else if (!v)
 			cg_addr_parse("10.79.0.2:9", 0, &c->wireguard_poke, 1, e, sizeof(e));
 		else if (strcmp(v, "none") &&
-			 get_addrs(&ini, "", "wireguard_poke", 1, &c->wireguard_poke, 1, 1, &n, NULL, NULL, err, errlen))
+			 get_addrs(&ini, "", "wireguard_poke", 1, &c->wireguard_poke, 1, 1, &n, err, errlen))
 			goto out;
 	}
 
@@ -726,6 +893,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	rc = 0;
 out:
 	cg_ini_free(&ini);
+	free(hosts.text);
 	if (rc)
 		cg_config_free(c);
 	return rc;

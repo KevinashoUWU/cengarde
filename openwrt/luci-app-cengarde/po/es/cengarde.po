@@ -30,8 +30,8 @@ msgstr "Activado"
 msgid "VPS addresses"
 msgstr "Direcciones del VPS"
 
-msgid "Public IPs of the VPS as the provider shows them, IPv4 and IPv6, in order of preference: each uplink uses the first one of a family it has, and tries the next one when the VPS does not answer there. IPs and not names: with all traffic going through the tunnel, a name could not be resolved before the tunnel is up."
-msgstr "IP públicas del VPS, tal como las muestra el proveedor, IPv4 e IPv6, en orden de preferencia: cada enlace usa la primera de una familia que tenga, y prueba la siguiente cuando el VPS no le contesta por ahí. IP y no nombres: con todo el tráfico yendo por el túnel, un nombre no se podría resolver antes de que el túnel esté arriba."
+msgid "Public IPs of the VPS as the provider shows them, IPv4 and IPv6, in order of preference: each uplink uses the first one of a family it has, and tries the next one when the VPS does not answer there. A name works too: the router looks it up through each uplink (the carrier's DNS first), never through the tunnel, and follows it when its IP changes (dynamic DNS). An MTU above 1396 does not fit if the name has an IPv6 address that the uplinks use."
+msgstr "IP públicas del VPS, tal como las muestra el proveedor, IPv4 e IPv6, en orden de preferencia: cada enlace usa la primera de una familia que tenga, y prueba la siguiente cuando el VPS no le contesta por ahí. También sirve un nombre: el router lo busca por cada enlace (primero en el DNS de la operadora), nunca por el túnel, y lo sigue cuando cambia su IP (DNS dinámico). Un MTU de más de 1396 no cabe si el nombre tiene una dirección IPv6 que usan los enlaces."
 
 msgid "At most %d addresses"
 msgstr "Como mucho %d direcciones"
@@ -228,6 +228,21 @@ msgstr "Información"
 msgid "Debug"
 msgstr "Depuración"
 
+msgid "no answer"
+msgstr "sin respuesta"
+
+msgid "the DNS server failed"
+msgstr "el DNS falló"
+
+msgid "the name does not exist"
+msgstr "no existe"
+
+msgid "no addresses"
+msgstr "sin direcciones"
+
+msgid "no uplink to ask through"
+msgstr "ningún enlace para preguntar"
+
 msgid "No valid pairing secret: generate one in the VPS tab."
 msgstr "No hay un secreto de emparejamiento válido: genera uno en la pestaña VPS."
 
@@ -264,8 +279,11 @@ msgstr "La LAN todavía tiene el prefijo IPv6 público %s: su IPv6 sale por fuer
 msgid "IP pass is on but miniupnpd is not installed."
 msgstr "IP pass está activado pero miniupnpd no está instalado."
 
-msgid "IP pass is on, but UPnP has no public IP to announce: no VPS address is IPv4. Set a STUN server in Settings > Tunnel."
-msgstr "IP pass está activado, pero UPnP no tiene una IP pública que anunciar: ninguna dirección del VPS es IPv4. Pon un servidor STUN en Configuración > Túnel."
+msgid "IP pass is on, but UPnP has no public IP to announce: no VPS address is an IPv4 address (a name does not count, its IP may change). Set a STUN server in Settings > Tunnel."
+msgstr "IP pass está activado, pero UPnP no tiene una IP pública que anunciar: ninguna dirección del VPS es una IPv4 (un nombre no cuenta, su IP puede cambiar). Pon un servidor STUN en Configuración > Túnel."
+
+msgid "The VPS name %s could not be resolved (%s)."
+msgstr "El nombre del VPS %s no se pudo resolver (%s)."
 
 msgid "The engine is not running: see System > System Log."
 msgstr "El motor no está corriendo: revisa Sistema > Registro del sistema."
@@ -312,9 +330,6 @@ msgstr "caído"
 msgid "waiting for the VPS"
 msgstr "esperando al VPS"
 
-msgid "no answer"
-msgstr "sin respuesta"
-
 msgid "active"
 msgstr "activo"
 
@@ -326,6 +341,12 @@ msgstr "alternativa"
 
 msgid "The first VPS address it can use did not answer. Failovers so far: %d"
 msgstr "La primera dirección del VPS que puede usar no contestó. Cambios hasta ahora: %d"
+
+msgid "from /etc/hosts"
+msgstr "por /etc/hosts"
+
+msgid "answered %s"
+msgstr "resuelto %s"
 
 msgid "the VPS does not apply it (no passthrough_file or forward_file in its cengarde.conf)"
 msgstr "el VPS no lo aplica (falta passthrough_file o forward_file en su cengarde.conf)"
@@ -374,6 +395,9 @@ msgstr "Túnel WireGuard"
 
 msgid "IPv6 address in the tunnel"
 msgstr "Dirección IPv6 en el túnel"
+
+msgid "VPS name %s"
+msgstr "Nombre del VPS %s"
 
 msgid "Traffic"
 msgstr "Tráfico"

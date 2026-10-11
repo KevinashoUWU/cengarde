@@ -133,6 +133,43 @@ static void lists_on_reload(void)
 	CHECK(moves(A " " S, A " " B, V4));
 }
 
+/* Whether a name's new addresses (list a to list b) move a link on cur
+ * back to its first address. */
+static int moves_on(const char *a, const char *b, unsigned families, const char *cur)
+{
+	struct list la, lb;
+	struct sockaddr_storage c = addr(cur);
+
+	return !cg_lists_keep(mklist(&la, a), mklist(&lb, b), families, &c);
+}
+
+static void lists_on_names(void)
+{
+	/* A change after its address, or in its own entry: the link stays
+	 * where the server answers (a dead first entry is not tried again). */
+	CHECK(!moves_on(A " | " B, A " | " B " " D, V4, B));
+	CHECK(!moves_on(A " | " B, A " | " B " " D, V4, A));
+	CHECK(!moves_on(A " | " B, A " | " D, V4, A));
+	CHECK(!moves_on(A " | " B, A " | " B " " S, V4, B));
+	CHECK(!moves_on(A " | " B, A " | " B " " S, V4 | V6, B));
+	/* An entry of another family before it: no matter. */
+	CHECK(!moves_on(S " | " A, "[2001:db8::9]:59402 | " A, V4, A));
+	/* Its address gone: back to the first. */
+	CHECK(moves_on(A " | " B, A " | " D, V4, B));
+	CHECK(moves_on(A, D, V4, A));
+	/* An entry before it changed: the preferred server moved, or its name
+	 * resolved for the first time. */
+	CHECK(moves_on(A " | " B, D " | " B, V4, B));
+	CHECK(moves_on("| " B, A " | " B, V4, B));
+	CHECK(moves_on(A " | " B, "| " B, V4, B));
+	CHECK(moves_on(A " | " B, A " " D " | " B, V4, B));
+	/* Its address now also given by an earlier entry: earlier, so moved. */
+	CHECK(moves_on(A " | " B, A " " B " | " B, V4, B));
+	/* Not one of the candidates before (a link nowhere yet). */
+	CHECK(moves_on(A, A, V4, D));
+	CHECK(moves_on(A, A, V6, A));
+}
+
 /* A family gained or lost moves a link only when it changes its candidates. */
 static void families_change(void)
 {
@@ -262,6 +299,7 @@ void test_srvpick(void)
 	CHECK(cg_cands_same(other, 0, s.cand, 0));
 
 	lists_on_reload();
+	lists_on_names();
 	families_change();
 
 	/* A broken first address: the link moves on and stays on the second. */

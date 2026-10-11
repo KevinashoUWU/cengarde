@@ -28,7 +28,7 @@ msgstr ""
 msgid "VPS addresses"
 msgstr ""
 
-msgid "Public IPs of the VPS as the provider shows them, IPv4 and IPv6, in order of preference: each uplink uses the first one of a family it has, and tries the next one when the VPS does not answer there. IPs and not names: with all traffic going through the tunnel, a name could not be resolved before the tunnel is up."
+msgid "Public IPs of the VPS as the provider shows them, IPv4 and IPv6, in order of preference: each uplink uses the first one of a family it has, and tries the next one when the VPS does not answer there. A name works too: the router looks it up through each uplink (the carrier's DNS first), never through the tunnel, and follows it when its IP changes (dynamic DNS). An MTU above 1396 does not fit if the name has an IPv6 address that the uplinks use."
 msgstr ""
 
 msgid "At most %d addresses"
@@ -226,6 +226,21 @@ msgstr ""
 msgid "Debug"
 msgstr ""
 
+msgid "no answer"
+msgstr ""
+
+msgid "the DNS server failed"
+msgstr ""
+
+msgid "the name does not exist"
+msgstr ""
+
+msgid "no addresses"
+msgstr ""
+
+msgid "no uplink to ask through"
+msgstr ""
+
 msgid "No valid pairing secret: generate one in the VPS tab."
 msgstr ""
 
@@ -262,7 +277,10 @@ msgstr ""
 msgid "IP pass is on but miniupnpd is not installed."
 msgstr ""
 
-msgid "IP pass is on, but UPnP has no public IP to announce: no VPS address is IPv4. Set a STUN server in Settings > Tunnel."
+msgid "IP pass is on, but UPnP has no public IP to announce: no VPS address is an IPv4 address (a name does not count, its IP may change). Set a STUN server in Settings > Tunnel."
+msgstr ""
+
+msgid "The VPS name %s could not be resolved (%s)."
 msgstr ""
 
 msgid "The engine is not running: see System > System Log."
@@ -310,9 +328,6 @@ msgstr ""
 msgid "waiting for the VPS"
 msgstr ""
 
-msgid "no answer"
-msgstr ""
-
 msgid "active"
 msgstr ""
 
@@ -323,6 +338,12 @@ msgid "failover"
 msgstr ""
 
 msgid "The first VPS address it can use did not answer. Failovers so far: %d"
+msgstr ""
+
+msgid "from /etc/hosts"
+msgstr ""
+
+msgid "answered %s"
 msgstr ""
 
 msgid "the VPS does not apply it (no passthrough_file or forward_file in its cengarde.conf)"
@@ -371,6 +392,9 @@ msgid "WireGuard tunnel"
 msgstr ""
 
 msgid "IPv6 address in the tunnel"
+msgstr ""
+
+msgid "VPS name %s"
 msgstr ""
 
 msgid "Traffic"
