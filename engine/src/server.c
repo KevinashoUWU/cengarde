@@ -333,6 +333,14 @@ static struct session *lookup(struct server *s, const struct cg_hdr *h, const ui
 	return NULL;
 }
 
+/* The port of an address (network order), 0 for another family. */
+static uint16_t addr_port(const struct sockaddr_storage *a)
+{
+	if (a->ss_family == AF_INET)
+		return ((const struct sockaddr_in *)a)->sin_port;
+	return a->ss_family == AF_INET6 ? ((const struct sockaddr_in6 *)a)->sin6_port : 0;
+}
+
 /* The port of a bound socket (network order), 0 when unknown. */
 static uint16_t local_port(int fd)
 {
@@ -341,14 +349,12 @@ static uint16_t local_port(int fd)
 
 	if (getsockname(fd, (struct sockaddr *)&a, &len) < 0)
 		return 0;
-	if (a.ss_family == AF_INET)
-		return ((struct sockaddr_in *)&a)->sin_port;
-	return a.ss_family == AF_INET6 ? ((struct sockaddr_in6 *)&a)->sin6_port : 0;
+	return addr_port(&a);
 }
 
 /* A socket connected to C's WireGuard with the session buffers, bound to
  * port when it is not 0 and free (else to any other); -1 with errno set. */
-static int wg_socket(struct server *s, const struct client *C, uint16_t port)
+static int wg_socket_once(struct server *s, const struct client *C, uint16_t port)
 {
 	int fd = cg_udp_socket(C->wireguard.ss_family), e;
 
@@ -372,6 +378,38 @@ static int wg_socket(struct server *s, const struct client *C, uint16_t port)
 		return -1;
 	}
 	cg_sock_buffers(fd, s->rb.per_socket, s->cfg->rcvbuf);
+	return fd;
+}
+
+/* wg_socket_once, never on WireGuard's own port. The kernel picks a free
+ * port from the ephemeral range, and WireGuard's is free while WireGuard is
+ * not up: if it listens in that range (the lab's fake one does, on 59301),
+ * the socket would hold the port WireGuard needs and talk to itself,
+ * sending what the client sends up back down to it. Such a socket stays
+ * open while the next one is picked, so that the kernel picks another
+ * port, and is closed then. */
+static int wg_socket(struct server *s, const struct client *C, uint16_t port)
+{
+	uint16_t wg = addr_port(&C->wireguard);
+	int fd = -1, held = -1, e;
+
+	for (int i = 0; i < 4; i++) {
+		fd = wg_socket_once(s, C, i ? 0 : port);
+		if (fd < 0 || local_port(fd) != wg)
+			break;
+		if (held >= 0)
+			close(held);
+		held = fd;
+		fd = -1;
+		errno = EADDRINUSE;
+	}
+	e = errno;
+	if (held >= 0) {
+		close(held);
+		cg_info("%sthe socket to WireGuard got WireGuard's own port (%u); %s", C->tag, ntohs(wg),
+			fd >= 0 ? "took another" : "found no other");
+	}
+	errno = e;
 	return fd;
 }
 
