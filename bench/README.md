@@ -388,8 +388,9 @@ failover (`FAILOVER_MS`):
 Es el paso 0 de la Fase 5 ([historia 012](../docs/historias/012-bonding.md)).
 A diferencia del resto, aquí no hay WireGuard falso: un WireGuard real
 (`wgc` 10.79.0.2 en `cli`, `wgs` 10.79.0.1 en `srv`) pasa por cengarde, y
-dentro va TCP real. En cada corrida, iperf3 sube o baja (`-R`) con Cubic y
-con BBR, mientras ping mide el RTT del túnel cargado cada 100 ms. Los
+dentro va tráfico real. En cada corrida, iperf3 sube o baja (`-R`) con Cubic
+y con BBR, y un emisor QUIC (`quicperf.py`, abajo) hace lo mismo, mientras
+ping mide el RTT del túnel cargado cada 100 ms. Los
 enlaces se moldean con netem en los dos sentidos: retardo de un sentido,
 tasa y una cola de 100 ms a esa tasa.
 
@@ -403,6 +404,7 @@ tasa y una cola de 100 ms a esa tasa.
 | `starlink15` | 50/25 y 100/20 | cada 15 s, l2 pierde todo 1,5 s y su retardo cambia entre 20 y 50 ms (un patrón supuesto: el real está por medir) |
 | `ltespike` | 50/25 y 50/30 | cada 5 s, l1 sube 300 ms durante 1 s |
 | `deepq` | 20/25 con 500 ms de cola y 50/25 con 100 ms | nada |
+| `starlink15sw` | 100/25 y 50/20 | como `starlink15` con las capacidades cambiadas; no está en la lista por defecto (`BOND_CASES`) |
 
 Así queda medido lo que hoy da la redundancia (cada paquete por todos los
 enlaces, gana la primera copia) y, en `equal` y `het`, lo que daría el mejor
@@ -411,18 +413,49 @@ aquí no es el escenario `deepq` de arriba, que mide las colas del servidor.
 
 Por cada caso, variante (`bonded` o `solo`), sentido y control de congestión
 se escribe una línea JSON en `$RUN/bond.jsonl`. Cada línea lleva Mbit/s,
-retransmisiones de TCP, p50 y p99 del RTT y CPU de cada cengarde. Al final
-se imprime una tabla con las medianas, que también queda en `$RUN/bond.md`.
+retransmisiones, p50 y p99 del RTT y CPU de cada cengarde, y RTT suavizado y
+mínimo del emisor. Para QUIC (`cc` = `quic`), `retrans` son los paquetes que
+el emisor declaró perdidos, y la línea suma los paquetes enviados y los
+espurios (los declarados perdidos que llegaron después: puro desorden); en
+TCP esos campos van en `null`. Al final se imprime una tabla, que también
+queda en `$RUN/bond.md`. Con una repetición da el valor de la corrida; con
+`BOND_N` > 1 da la mediana y, entre paréntesis, el rango p25–p75 (mínimo–
+máximo con menos de 4 repeticiones), para Mbit/s, retransmisiones y RTT. La
+columna `spurious` aparece cuando hay corridas QUIC.
 
 El escenario no juzga la velocidad: solo falla si falla la fontanería, es
 decir, si no hay handshake, tráfico o pings. Necesita iperf3,
-wireguard-tools y ping. Si el kernel no trae WireGuard (el contenedor
-cloud), sirve wireguard-go con `WG_GO=/ruta/wireguard`. Sin netem, los
-enlaces solo tienen tasa (`tbf`), sin retardos ni eventos, y el escenario
-lo avisa; con `BOND_NEED_NETEM=1` eso pasa a ser un fallo.
+wireguard-tools y ping, y aioquic para QUIC (abajo). Si el kernel no trae
+WireGuard (el contenedor cloud), sirve wireguard-go con
+`WG_GO=/ruta/wireguard`. Sin netem, los enlaces solo tienen tasa (`tbf`), sin
+retardos ni eventos, y el escenario lo avisa; con `BOND_NEED_NETEM=1` eso
+pasa a ser un fallo.
+
+**QUIC (`quicperf.py`).** Un servidor y un cliente de transferencia masiva
+sobre aioquic, para que los mismos enlaces vean también un emisor QUIC (lo
+que usan los navegadores y los teléfonos, aunque no con esta biblioteca): un
+flujo durante N segundos, subiendo o bajando, que imprime un objeto JSON con el
+goodput, los bytes, los paquetes enviados, los declarados perdidos y los
+espurios, el RTT suavizado y mínimo y el control de congestión (`cubic` o
+`reno`, los dos que trae aioquic). Su detección de pérdidas no se adapta al
+desorden (3 paquetes o 9/8 del RTT), así que un camino que reordena más que
+eso le cuenta como perdido lo que solo llegó tarde. El servidor genera un
+certificado autofirmado al arrancar, en memoria. Instalación y prueba a
+mano, sin el laboratorio:
 
 ```sh
-sudo bench/lab.sh bond                                  # todos los casos, ~10 min
+pip install aioquic==1.2.0       # en Ubuntu 24.04, como root: --break-system-packages --ignore-installed
+python3 -I bench/quicperf.py server --bind 127.0.0.1 &
+python3 -I bench/quicperf.py client 127.0.0.1 --dir down --secs 5
+```
+
+Es Python puro, en un solo núcleo: a más de 100–200 Mbit/s lo limita su CPU
+(unos 200 Mbit/s por loopback en este contenedor), por debajo de iperf3. La
+versión de aioquic está fijada porque `quicperf.py` usa dos de sus
+internos (la recuperación de pérdidas y el emisor del flujo).
+
+```sh
+sudo bench/lab.sh bond                                  # todos los casos, ~16 min
 sudo BOND_CASES="equal reorder150" BOND_S=20 BOND_N=3 bench/lab.sh bond
 sudo BOND_CC=bbr BOND_DIRS=down BOND_OUT=/tmp/b.jsonl bench/lab.sh bond
 ```
@@ -430,21 +463,27 @@ sudo BOND_CC=bbr BOND_DIRS=down BOND_OUT=/tmp/b.jsonl bench/lab.sh bond
 | Variable | Por defecto | Qué hace |
 | --- | --- | --- |
 | `BOND_CASES` | todos | casos a correr |
-| `BOND_S` | 10 | segundos por corrida de iperf3 (`starlink15`, al menos 31) |
-| `BOND_N` | 1 | repeticiones; la tabla da la mediana |
-| `BOND_CC` | `cubic bbr` | controles de congestión |
+| `BOND_S` | 10 | segundos por corrida (`starlink15`, al menos 31) |
+| `BOND_N` | 1 | repeticiones; la tabla da la mediana y el rango |
+| `BOND_CC` | `cubic bbr quic` | controles de congestión; `quic` solo si importa aioquic, y si no se avisa |
+| `BOND_QUIC_CC` | `cubic` | el control de congestión del emisor QUIC (`cubic` o `reno`) |
+| `BOND_QUIC_MTU` | 1350 | tamaño del datagrama QUIC (el túnel tiene MTU 1380) |
 | `BOND_DIRS` | `up down` | sentidos (`down` es iperf3 `-R`) |
 | `BOND_OUT` | vacío | archivo al que añadir las líneas JSON |
 | `WG_GO` | vacío | wireguard-go, si el kernel no tiene WireGuard |
 | `BOND_NEED_NETEM` | 0 | 1: sin netem, falla en vez de avisar |
+| `BOND_NEED_QUIC` | 0 | 1: sin aioquic, falla en vez de avisar |
 
 No entra en `ci`: lo corre su propio workflow, `bond.yml`, en cada cambio de
-`engine/` o `bench/`, con todos los casos y una repetición. La tabla queda
-en el resumen del job y el JSON en un artefacto. A mano (`workflow_dispatch`)
-se pueden pedir más repeticiones, otros segundos y otros casos. En un runner
-compartido las cifras de una sola repetición varían: para comparar dos
-versiones, usa varias repeticiones en la misma máquina. Falta un cliente
-QUIC dentro del túnel, que la historia 012 pide junto a TCP.
+`engine/` o `bench/`, con todos los casos y una repetición (~19 min, con
+`BOND_NEED_NETEM=1` y `BOND_NEED_QUIC=1`). La tabla queda en el resumen del
+job y el JSON en un artefacto. A mano (`workflow_dispatch`) se pueden pedir
+más repeticiones, otros segundos y otros casos. En un runner compartido las
+cifras de una sola repetición varían: para comparar dos versiones, usa varias
+repeticiones en la misma máquina. Con 10 repeticiones y todos los casos el
+job tarda unos 165 min (el límite es de 200 y el primer paso rechaza lo que
+no cabe); para menos tiempo, elige casos: `equal reorder150 starlink15` con
+10 repeticiones son unos 80 min.
 
 ### `fieldrec`: el registrador de campo (`lab.d/fieldrec.sh`, `fieldrec.py`)
 

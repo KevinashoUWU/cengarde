@@ -4,10 +4,12 @@
 # Real WireGuard through cengarde, real TCP inside: iperf3 (Cubic and BBR, up
 # and down) between the two ends of the tunnel while ping measures the RTT
 # under load, over links shaped with netem (one-way delay, rate, queue,
-# events). It measures what the router's users would see, so that the
-# bonding of Fase 5 has a baseline to beat: today's redundancy, and each
-# case's best link alone. It judges nothing about speed; a run fails only
-# when the plumbing does (no handshake, no traffic).
+# events). Next to TCP goes a QUIC sender, bench/quicperf.py (aioquic): same
+# links, same direction and ping, cc "quic". It measures what the router's
+# users would see, so that the bonding of Fase 5 has a baseline to beat:
+# today's redundancy, and each case's best link alone. It judges nothing
+# about speed; a run fails only when the plumbing does (no handshake, no
+# traffic).
 #
 #   netns cli: wgc 10.79.0.2/30, WireGuard -> 127.0.0.1:59401 (cengarde client)
 #   netns srv: wgs 10.79.0.1/30 on :59301 <- cengarde server (wireguard =)
@@ -24,27 +26,40 @@
 #               (100 Mbit/s) whose delay alternates 20 and 50 ms every 15 s,
 #               with 1.5 s of total loss at each switch (a supposed pattern,
 #               story 012: the real one is still to be measured)
+#   starlink15sw  not in the default list: starlink15 with the capacities swapped
+#               (link 1 100 Mbit/s, link 2 50 Mbit/s), the same delays and
+#               cuts. What a cut costs when the link left has room for the
+#               flow, to set against starlink15 (story 012: the retransmissions
+#               of starlink15 come from the cuts, not from the redundancy)
 #   ltespike    link 1 (50 Mbit/s, 25 ms) jumps by 300 ms for 1 s every 5 s;
 #               link 2 steady (50 Mbit/s, 30 ms)
 #   deepq       link 1 at 20 Mbit/s behind 500 ms of queue, link 2 at
 #               50 Mbit/s with 100 ms; both 25 ms
 #
-# Knobs: BOND_S (seconds per iperf3 run, 10; starlink15 takes at least 31),
-# BOND_N (repetitions, 1), BOND_CC ("cubic bbr"), BOND_DIRS ("up down"),
-# BOND_OUT (a file to append the JSON lines to). Needs iperf3, wg
-# (wireguard-tools), ping and netem; WireGuard from the kernel, or
-# wireguard-go named by WG_GO when the kernel has none. Without netem the
-# links only get a rate (tbf) and the delays are skipped, which is said;
-# BOND_NEED_NETEM=1 (the CI) makes that a failure instead.
+# Knobs: BOND_S (seconds per run, 10; starlink15 takes at least 31), BOND_N
+# (repetitions, 1; the table then gives the median and the spread), BOND_CC
+# ("cubic bbr quic"; quic only when aioquic imports, else a note),
+# BOND_NEED_QUIC (1: no aioquic is a failure, the CI), BOND_QUIC_CC (cubic or
+# reno, what the QUIC sender runs) and BOND_QUIC_MTU (QUIC datagram, 1350: the
+# tunnel is 1380), BOND_DIRS ("up down"), BOND_OUT (a file to append the JSON
+# lines to). Needs iperf3, wg (wireguard-tools), ping and netem; WireGuard
+# from the kernel, or wireguard-go named by WG_GO when the kernel has none.
+# Without netem the links only get a rate (tbf) and the delays are skipped,
+# which is said; BOND_NEED_NETEM=1 (the CI) makes that a failure instead.
+# In the JSON lines, "retrans" is TCP's retransmissions or, for quic, the
+# packets the sender declared lost ("spurious": the ones that arrived after all).
 
 BOND_S=${BOND_S:-10}
 BOND_N=${BOND_N:-1}
-BOND_CC=${BOND_CC:-cubic bbr}
+BOND_CC=${BOND_CC:-} # empty: cubic bbr quic (bond_ccs)
+BOND_QUIC_CC=${BOND_QUIC_CC:-cubic}
+BOND_QUIC_MTU=${BOND_QUIC_MTU:-1350}
 BOND_DIRS=${BOND_DIRS:-up down}
 BOND_CASES=${BOND_CASES:-equal het reorder50 reorder150 linkdeath starlink15 ltespike deepq}
 BOND_OUT=${BOND_OUT:-}
 WG_GO=${WG_GO:-}
 BOND_NEED_NETEM=${BOND_NEED_NETEM:-0}
+BOND_NEED_QUIC=${BOND_NEED_QUIC:-0}
 
 # bond_wg NETNS IF LISTEN ADDR KEYFILE PEERPUB PEERADDR [ENDPOINT]: a
 # WireGuard interface in NETNS, from the kernel or from wireguard-go.
@@ -87,10 +102,48 @@ bond_tunnel() {
 bond_untunnel() {
 	local f
 	pkill -f "iperf3 -s -B 10.79.0.1" 2>/dev/null
-	for f in "$RUN"/wgc.pid "$RUN"/wgs.pid; do
+	for f in "$RUN"/wgc.pid "$RUN"/wgs.pid "$RUN"/quic.pid; do
 		[ -f "$f" ] && kill "$(cat "$f")" 2>/dev/null
 		rm -f "$f"
 	done
+}
+
+# bond_quic_ok: whether bench/quicperf.py can run here (aioquic imports).
+bond_quic_ok() { python3 -I -c 'import aioquic, cryptography' 2>/dev/null; }
+
+# bond_ccs: settles BOND_CC. Empty means cubic, bbr and quic; quic goes, with a
+# note, when aioquic does not import, and that is a failure with BOND_NEED_QUIC=1.
+bond_ccs() {
+	local cc out="" quic=0
+	bond_quic_ok && quic=1
+	if [ "$BOND_NEED_QUIC" = 1 ] && [ "$quic" = 0 ]; then
+		echo "FAIL: no aioquic (BOND_NEED_QUIC=1): pip install aioquic==1.2.0"
+		return 1
+	fi
+	for cc in ${BOND_CC:-cubic bbr quic}; do
+		if [ "$cc" = quic ] && [ "$quic" = 0 ]; then
+			echo "   note: no aioquic here (pip install aioquic==1.2.0): no quic runs"
+			continue
+		fi
+		out="$out $cc"
+	done
+	BOND_CC=${out# }
+	[ -n "$BOND_CC" ] || { echo "FAIL: no congestion control to run"; return 1; }
+}
+
+# bond_quic_server: the QUIC server on the tunnel's server side, up before
+# the first run (it prints "listening" once it is bound).
+bond_quic_server() {
+	local i
+	ip netns exec srv python3 -I "$LAB/quicperf.py" server --bind 10.79.0.1 \
+		--cc "$BOND_QUIC_CC" --mtu "$BOND_QUIC_MTU" >"$RUN/quic-server.log" 2>&1 &
+	echo $! >"$RUN/quic.pid"
+	for i in $(seq 1 50); do
+		grep -q listening "$RUN/quic-server.log" 2>/dev/null && return 0
+		sleep 0.1
+	done
+	echo "FAIL: the QUIC server did not start ($(head -c 200 "$RUN/quic-server.log"))"
+	return 1
 }
 
 BOND_NETEM=
@@ -122,7 +175,7 @@ bond_link() {
 
 # bond_events CASE SECS: what changes during a run (in the background).
 bond_events() {
-	local c=$1 s=$2 t
+	local c=$1 s=$2 t r2=100
 	bond_netem_ok || return 0
 	case $c in
 	linkdeath)
@@ -131,12 +184,13 @@ bond_events() {
 		sleep "$(awk -v s="$s" 'BEGIN { print s / 3 }')"
 		bond_link 2 25 40
 		;;
-	starlink15)
+	starlink15 | starlink15sw)
+		[ "$c" = starlink15sw ] && r2=50
 		for t in $(seq 15 15 "$s"); do
 			sleep 13.5
-			bond_link 2 20 100 100 100
+			bond_link 2 20 "$r2" 100 100
 			sleep 1.5
-			bond_link 2 "$([ $((t / 15 % 2)) = 1 ] && echo 50 || echo 20)" 100
+			bond_link 2 "$([ $((t / 15 % 2)) = 1 ] && echo 50 || echo 20)" "$r2"
 		done
 		;;
 	ltespike)
@@ -159,6 +213,7 @@ bond_shape() {
 	reorder150) bond_link 1 20 50 && bond_link 2 170 50 ;;
 	linkdeath) bond_link 1 25 40 && bond_link 2 25 40 && bond_link 3 25 40 ;;
 	starlink15) bond_link 1 25 50 && bond_link 2 20 100 ;;
+	starlink15sw) bond_link 1 25 100 && bond_link 2 20 50 ;;
 	ltespike) bond_link 1 25 50 && bond_link 2 30 50 ;;
 	deepq) bond_link 1 25 20 500 && bond_link 2 25 50 ;;
 	*) return 1 ;;
@@ -172,38 +227,56 @@ bond_nlinks() {
 	esac
 }
 
-# bond_run CASE VARIANT DIR CC REP SECS: one iperf3 run with ping alongside;
-# appends a JSON line to $RUN/bond.jsonl and prints a short one.
+# bond_run CASE VARIANT DIR CC REP SECS: one run (iperf3, or quicperf for cc
+# quic) with ping alongside; appends a JSON line to $RUN/bond.jsonl and prints
+# a short one.
 bond_run() {
-	local c=$1 v=$2 dir=$3 cc=$4 rep=$5 s=$6 cp sp c0 s0 c1 s1 pg ev rc=0
+	local c=$1 v=$2 dir=$3 cc=$4 rep=$5 s=$6 cp sp c0 s0 c1 s1 pg ev res err rc=0
 	cp=$(cat "$RUN/client.pid") sp=$(cat "$RUN/server.pid")
 	c0=$(cpu_ticks "$cp") s0=$(cpu_ticks "$sp")
 	ip netns exec cli ping -n -i 0.1 -w $((s + 1)) 10.79.0.1 >"$RUN/ping.out" 2>&1 &
 	pg=$!
 	bond_events "$c" "$s" &
 	ev=$!
-	# shellcheck disable=SC2046 # -R or nothing
-	ip netns exec cli iperf3 -c 10.79.0.1 -t "$s" -C "$cc" -J $([ "$dir" = down ] && echo -R) >"$RUN/iperf.json" 2>"$RUN/iperf.err" || rc=1
+	if [ "$cc" = quic ]; then
+		res=$RUN/quic.json err=$RUN/quic.err
+		ip netns exec cli python3 -I "$LAB/quicperf.py" client 10.79.0.1 --dir "$dir" --secs "$s" \
+			--cc "$BOND_QUIC_CC" --mtu "$BOND_QUIC_MTU" >"$res" 2>"$err" || rc=1
+	else
+		res=$RUN/iperf.json err=$RUN/iperf.err
+		# shellcheck disable=SC2046 # -R or nothing
+		ip netns exec cli iperf3 -c 10.79.0.1 -t "$s" -C "$cc" -J $([ "$dir" = down ] && echo -R) >"$res" 2>"$err" || rc=1
+	fi
 	c1=$(cpu_ticks "$cp") s1=$(cpu_ticks "$sp")
 	# Not a bare wait: the wireguard-go processes are children too.
 	wait "$pg" "$ev"
-	python3 - "$RUN/iperf.json" "$RUN/ping.out" "$c" "$v" "$dir" "$cc" "$rep" "$s" $((c1 - c0)) $((s1 - s0)) \
+	python3 - "$res" "$RUN/ping.out" "$c" "$v" "$dir" "$cc" "$rep" "$s" $((c1 - c0)) $((s1 - s0)) \
 		"$(getconf CLK_TCK)" "$BOND_NETEM" >>"$RUN/bond.jsonl" <<'EOF' || rc=1
 import json, re, sys
-ipf, pingf, case, var, dirn, cc, rep, secs, ct, st, hz, netem = sys.argv[1:]
+resf, pingf, case, var, dirn, cc, rep, secs, ct, st, hz, netem = sys.argv[1:]
+# What does not apply to a kind of run stays null: TCP does not say how many
+# packets it sent, and QUIC has no "retransmits" but the packets it declared lost.
+extra = {"pkts_sent": None, "spurious": None, "srtt_ms": None, "min_rtt_ms": None, "quic_cc": None}
 try:
-    j = json.load(open(ipf))
-    end = j["end"]
-    mbps = end["sum_received"]["bits_per_second"] / 1e6
-    retrans = end["sum_sent"].get("retransmits")
+    j = json.load(open(resf))
+    if cc == "quic":
+        mbps, retrans = j["mbps"], j["lost"]
+        extra = {"pkts_sent": j["sent"], "spurious": j["spurious"], "srtt_ms": j["srtt_ms"],
+                 "min_rtt_ms": j["min_rtt_ms"], "quic_cc": j["cc"]}
+    else:
+        end = j["end"]
+        mbps = end["sum_received"]["bits_per_second"] / 1e6
+        retrans = end["sum_sent"].get("retransmits")
+        snd = end["streams"][0]["sender"]  # the sender's TCP_INFO RTTs, in microseconds
+        us = lambda k: round(snd[k] / 1000, 2) if snd.get(k) else None
+        extra.update(srtt_ms=us("mean_rtt"), min_rtt_ms=us("min_rtt"))
 except Exception as e:
     mbps, retrans = 0.0, None
 rtts = [float(m) for m in re.findall(r"time=([0-9.]+) ms", open(pingf).read())]
 rtts.sort()
 q = lambda p: rtts[min(len(rtts) - 1, int(p * len(rtts)))] if rtts else None
-sent = len(re.findall(r"icmp_seq=", open(pingf).read()))
 print(json.dumps({"case": case, "variant": var, "dir": dirn, "cc": cc, "rep": int(rep), "secs": int(secs),
-                  "mbps": round(mbps, 2), "retrans": retrans, "rtt_p50": q(0.5), "rtt_p99": q(0.99),
+                  "mbps": round(mbps, 2), "retrans": retrans, **extra, "rtt_p50": q(0.5), "rtt_p99": q(0.99),
                   "pings": len(rtts), "cpu_client_pct": round(100 * int(ct) / int(hz) / int(secs), 1),
                   "cpu_server_pct": round(100 * int(st) / int(hz) / int(secs), 1), "netem": netem == "yes"}))
 sys.exit(0 if mbps > 0.5 and rtts else 1)
@@ -211,8 +284,10 @@ EOF
 	tail -1 "$RUN/bond.jsonl" | python3 -c '
 import json, sys
 d = json.loads(sys.stdin.read())
-print("   {case:<10} {variant:<6} {dir:<4} {cc:<5} #{rep} {mbps:7.1f} Mbit/s retrans {retrans} rtt p50 {rtt_p50} p99 {rtt_p99} ms cpu {cpu_client_pct}/{cpu_server_pct} %".format(**d))'
-	[ "$rc" = 0 ] || echo "FAIL: $c $v $dir $cc #$rep: no traffic or no ping through the tunnel ($(head -c 200 "$RUN/iperf.err"))"
+sp = "" if d["spurious"] is None else " (spurious {})".format(d["spurious"])
+print("   {case:<10} {variant:<6} {dir:<4} {cc:<5} #{rep} {mbps:7.1f} Mbit/s retrans {retrans}".format(**d) + sp +
+      " rtt p50 {rtt_p50} p99 {rtt_p99} ms cpu {cpu_client_pct}/{cpu_server_pct} %".format(**d))'
+	[ "$rc" = 0 ] || echo "FAIL: $c $v $dir $cc #$rep: no traffic or no ping through the tunnel ($(head -c 200 "$err"))"
 	return "$rc"
 }
 
@@ -220,7 +295,7 @@ print("   {case:<10} {variant:<6} {dir:<4} {cc:<5} #{rep} {mbps:7.1f} Mbit/s ret
 # link alone), every direction, congestion control and repetition.
 bond_case() {
 	local c=$1 v=$2 s=$BOND_S dir cc rep fail=0
-	[ "$c" = starlink15 ] && [ "$s" -lt 31 ] && s=31
+	case $c in starlink15*) [ "$s" -lt 31 ] && s=31 ;; esac
 	ENGINE=c
 	NLINKS=$(bond_nlinks "$c")
 	[ "$v" = solo ] && NLINKS=1
@@ -232,6 +307,7 @@ bond_case() {
 	bond_shape "$c" || return 1
 	bond_tunnel || return 1
 	ip netns exec srv iperf3 -s -B 10.79.0.1 -D || return 1
+	case " $BOND_CC " in *" quic "*) bond_quic_server || return 1 ;; esac
 	sleep 0.5
 	for rep in $(seq 1 "$BOND_N"); do
 		for dir in $BOND_DIRS; do
@@ -245,7 +321,10 @@ bond_case() {
 	return "$fail"
 }
 
-# bond_table: medians per case, variant, direction and congestion control.
+# bond_table: per case, variant, direction and congestion control. With one
+# repetition, the value; with more, the median and, in parentheses, the p25 to
+# p75 range (the minimum to the maximum when there are fewer than 4). The
+# spurious column appears when some run (QUIC) counted them.
 bond_table() {
 	python3 - "$RUN/bond.jsonl" <<'EOF'
 import json, statistics, sys
@@ -255,15 +334,42 @@ for r in rows:
     k = (r["case"], r["variant"], r["dir"], r["cc"])
     if k not in keys:
         keys.append(k)
-med = lambda xs: statistics.median(xs) if xs else None
-print("| case | variant | dir | cc | n | Mbit/s | retrans | RTT p50 | RTT p99 | CPU cli/srv % |")
-print("| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |")
+spur = any(r.get("spurious") is not None for r in rows)
+many = any(sum(1 for r in rows if (r["case"], r["variant"], r["dir"], r["cc"]) == k) > 1 for k in keys)
+
+def cell(xs, p=1, spread=True):
+    """The median and, with several values, (p25-p75), or (min-max) with fewer than 4."""
+    xs = sorted(x for x in xs if x is not None)
+    if not xs:
+        return "-"
+    num = lambda x: f"{x:.{p}f}"
+    if len(xs) == 1 or not spread:
+        return num(statistics.median(xs))
+    if len(xs) < 4:
+        lo, hi = xs[0], xs[-1]
+    else:
+        q = statistics.quantiles(xs, n=4, method="inclusive")
+        lo, hi = q[0], q[2]
+    return f"{num(statistics.median(xs))} ({num(lo)}–{num(hi)})"
+
+head = ["case", "variant", "dir", "cc", "n", "Mbit/s", "retrans"] + (["spurious"] if spur else []) + ["RTT p50", "RTT p99", "CPU cli/srv %"]
+print("| " + " | ".join(head) + " |")
+print("| " + " | ".join(["---"] * 4 + ["---:"] * (len(head) - 4)) + " |")
 for k in keys:
     rs = [r for r in rows if (r["case"], r["variant"], r["dir"], r["cc"]) == k]
-    f = lambda name: med([r[name] for r in rs if r[name] is not None])
-    fmt = lambda x, p=1: "-" if x is None else f"{x:.{p}f}"
-    print(f"| {k[0]} | {k[1]} | {k[2]} | {k[3]} | {len(rs)} | {fmt(f('mbps'))} | {fmt(f('retrans'), 0)} | "
-          f"{fmt(f('rtt_p50'))} | {fmt(f('rtt_p99'))} | {fmt(f('cpu_client_pct'))}/{fmt(f('cpu_server_pct'))} |")
+    col = lambda name, p=1: cell([r.get(name) for r in rs], p)
+    med = lambda name: cell([r.get(name) for r in rs], spread=False)
+    cells = [k[0], k[1], k[2], k[3], str(len(rs)), col("mbps"), col("retrans", 0)] + ([col("spurious", 0)] if spur else []) + \
+        [col("rtt_p50"), col("rtt_p99"), f"{med('cpu_client_pct')}/{med('cpu_server_pct')}"]
+    print("| " + " | ".join(cells) + " |")
+if many or spur:
+    print()
+    notes = []
+    if many:
+        notes.append("n > 1: median (p25–p75), or (min–max) with n < 4.")
+    if spur:
+        notes.append("retrans of quic: packets declared lost; spurious: of those, the ones acknowledged afterwards.")
+    print(" ".join(notes))
 EOF
 }
 
@@ -272,10 +378,12 @@ bond() {
 	for tool in iperf3 wg ping; do
 		command -v "$tool" >/dev/null || { echo "bond: needs $tool"; return 1; }
 	done
+	bond_ccs || return 1
 	trap 'bond_untunnel; teardown' EXIT
 	trap 'bond_untunnel; teardown; exit 130' INT TERM
 	mkdir -p "$RUN"
 	: >"$RUN/bond.jsonl"
+	echo "bond: $BOND_CC, $BOND_N repetition(s) of $BOND_S s"
 	for c in $BOND_CASES; do
 		for v in bonded solo; do
 			case "$v:$c" in solo:equal | solo:het | bonded:*) ;; *) continue ;; esac
