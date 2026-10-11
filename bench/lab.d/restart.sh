@@ -60,10 +60,21 @@ def status():
         s.close()
 
 
+# t0 comes once the old server is gone and the new one started, so what the
+# old one sent arrives before it; a packet counts as the new server's only
+# GUARD_MS after t0, whatever the rounding to milliseconds and the time a
+# busy client takes to read it. Without the guard, the old server's last
+# packet now and then made a restart look recovered at once, and the
+# download measured then had not started yet (the new session needs a HELLO
+# and a cookie, one RTT of l3 or more).
+GUARD_MS = 100
+
+
 def behind(d, since_ms):
-    """Links not live yet, or without a packet verified in the last since_ms."""
+    """Links not live yet, or without a packet verified in the last since_ms
+    (less the guard)."""
     return [l["name"] for l in d["links"] if l["state"] != "paused" and
-            (l["state"] != "live" or l["last_rx_ms_ago"] >= since_ms)]
+            (l["state"] != "live" or l["last_rx_ms_ago"] >= since_ms - GUARD_MS)]
 
 
 d, late, seen = None, ["?"], False

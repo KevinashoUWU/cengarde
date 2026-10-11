@@ -24,7 +24,7 @@ function problemText(p) {
 	case 'upnp_no_ip': return _('IP pass is on, but UPnP has no public IP to announce: no VPS address is IPv4. Set a STUN server in Settings > Tunnel.');
 	case 'not_running': return _('The engine is not running: see System > System Log.');
 	case 'vps_silent': return _('The VPS does not answer on any uplink: check that it runs cengarde with the secret of this router, and that its firewall lets in UDP to the VPS port.');
-	case 'vps_refusing': return _('The VPS answers but refuses this router: it has as many sessions as it takes. Run "cengarde-vps-setup list" on the VPS.');
+	case 'vps_refusing': return _('The VPS answers but refuses this router: it is turned off there, or the VPS has no room for another session. Run "cengarde-vps-setup list" on the VPS.');
 	case 'link_thread_stalled': return _('The thread of uplink %s has not run for %d s with packets waiting; the other uplinks go on. If it happens again, set "Threads per uplink" to Off in Settings > Advanced.').format(p.iface, p.seconds);
 	case 'path_mtu':
 		if (p.fit >= MTU_MIN)
@@ -95,7 +95,10 @@ function ipPass(p) {
 	if (p.requested == null)
 		return null;
 	if (p.server == 'none')
-		return badge(_('the VPS does not apply it (passthrough_file missing in its cengarde.conf)'), '#c33');
+		return badge(_('the VPS does not apply it (no passthrough_file or forward_file in its cengarde.conf)'), '#c33');
+	// A VPS with several routers gives the whole range to one of them.
+	if (p.requested == 'on' && p.server == 'off')
+		return badge(_('not granted by the VPS: another of its routers holds it, or this one may not have it (run "cengarde-vps-setup forward" on the VPS)'), '#d80');
 	if (p.server != p.requested)
 		return badge(_('waiting for the VPS to confirm'), '#d80');
 	return (p.server == 'on') ? badge(_('on at the VPS'), '#393') : _('off');
