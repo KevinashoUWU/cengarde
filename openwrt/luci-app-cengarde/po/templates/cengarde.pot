@@ -283,7 +283,10 @@ msgstr ""
 msgid "The first VPS address it can use did not answer. Failovers so far: %d"
 msgstr ""
 
-msgid "the VPS does not apply it (passthrough_file missing in its cengarde.conf)"
+msgid "the VPS does not apply it (no passthrough_file or forward_file in its cengarde.conf)"
+msgstr ""
+
+msgid "not granted by the VPS: another of its routers holds it, or this one may not have it (run \"cengarde-vps-setup forward\" on the VPS)"
 msgstr ""
 
 msgid "waiting for the VPS to confirm"

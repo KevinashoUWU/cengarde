@@ -95,7 +95,10 @@ function ipPass(p) {
 	if (p.requested == null)
 		return null;
 	if (p.server == 'none')
-		return badge(_('the VPS does not apply it (passthrough_file missing in its cengarde.conf)'), '#c33');
+		return badge(_('the VPS does not apply it (no passthrough_file or forward_file in its cengarde.conf)'), '#c33');
+	// A VPS with several routers gives the whole range to one of them.
+	if (p.requested == 'on' && p.server == 'off')
+		return badge(_('not granted by the VPS: another of its routers holds it, or this one may not have it (run "cengarde-vps-setup forward" on the VPS)'), '#d80');
 	if (p.server != p.requested)
 		return badge(_('waiting for the VPS to confirm'), '#d80');
 	return (p.server == 'on') ? badge(_('on at the VPS'), '#393') : _('off');

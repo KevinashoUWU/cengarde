@@ -464,6 +464,9 @@ wireguard = 127.0.0.1:65502
 enabled = no
 ```
 
+- **Nombres:** de 1 a 12 minúsculas, dígitos o `-`, sin `-` al principio
+  y sin llamarse `default`: los que acepta `cengarde-nat` (su interfaz
+  `cg-NOMBRE` tiene que caber en un nombre de interfaz).
 - **Por sección:** `key` (obligatoria y distinta en cada una), `wireguard`
   (la global si no tiene), `wireguard_poke` (sin valor por omisión: la
   dirección de ese router en el túnel), `label`, `enabled` (con `no`, sus
@@ -475,7 +478,9 @@ enabled = no
   sesión se busca solo entre los routers de esa pista; una sonda sin sesión
   prueba sus claves, normalmente una y rara vez dos o tres
   (`src/clients.h`). Una pista que no es de nadie se descarta sin MAC
-  (`rx.other_hint`).
+  (`rx.other_hint`). Si dos routers de una misma pista tienen una sesión
+  con el mismo id (los ids viajan en claro: uno podría copiar el del
+  otro), decide la clave que verifica el paquete.
 - **Cuánto cuesta** (`bench/macbench`, un núcleo de un Xeon de 2,8 GHz,
   mínimos de 5 corridas): buscar la sesión cuesta 3 ns con un router y 10 ns
   con 64 (4 sesiones cada uno); el MAC de un DATA de 1400 B, 720 ns. Buscar
@@ -483,9 +488,9 @@ enabled = no
   (de 59–60 a 66–67 ns). Admitir una sesión cuesta un MAC por clave
   probada, unos 57 ns cada uno.
 - **Sesiones:** cada router tiene las suyas, cada una con su socket hacia
-  su WireGuard, y como mucho 4 a la vez (`CG_CLIENT_SESSIONS`): una quinta
-  reemplaza a la que hace más tiempo que no se oye (un router que se
-  reinicia en bucle no llena la tabla). `max_sessions` vale por omisión 64,
+  su WireGuard, y como mucho 4 a la vez (`CG_CLIENT_SESSIONS`), también
+  con un solo router: una quinta reemplaza a la que hace más tiempo que no
+  se oye (un router que se reinicia en bucle no llena la tabla). `max_sessions` vale por omisión 64,
   o 4 por router si son más de 16. La sesión más nueva de cada router
   decide su IP pass, y el puerto que WireGuard conoce y el empujón de
   `wireguard_poke` son de cada router.
@@ -512,9 +517,11 @@ enabled = no
 - **Quién tiene el IP pass:** el primero que lo pide, y lo conserva mientras
   no lo suelte (lo pida `off`), aunque otro lo pida después o el motor se
   reinicie (lo lee de la tabla al arrancar); al soltarlo pasa al que lo pidió
-  antes de los que esperan. Un router que lo pide y espera lo ve en el
-  registro ("asks for IP pass on, which alpha holds") y en sus respuestas
-  (`passthrough.server`: `off`).
+  antes de los que esperan. También lo pierde un router sin sesión desde
+  hace más de `session_timeout_ms` (apagado o mudado): si no, bloquearía a
+  los demás para siempre. Un router que lo pide y espera lo ve en el
+  registro ("asks for IP pass on, which alpha holds"), en sus respuestas
+  (`passthrough.server`: `off`) y en LuCI ("el VPS no lo concede").
 - **Recargas:** agregar un router, cambiar su etiqueta, sus reglas o su
   `wireguard_poke` no toca ninguna sesión; quitarlo, desactivarlo o cambiar
   su clave o su `wireguard` cierra solo las suyas (su router vuelve con el

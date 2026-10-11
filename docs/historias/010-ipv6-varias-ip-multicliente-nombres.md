@@ -696,8 +696,9 @@ y OpenWrt son el 3d2c.
   túnel), `label`, `enabled`, `passthrough` (si puede tener el IP pass) y
   `forward`. Con secciones, la `key`, el `wireguard_poke` y el
   `passthrough_file` globales son un error, y `forward_file` toma el lugar
-  del último. Nombres de 1 a 31 caracteres (letras, dígitos, `.`, `_`, `-`);
-  hasta 64 routers. `cengarde -t` los lista con su pista.
+  del último. Nombres de 1 a 12 minúsculas, dígitos o `-`, sin `-` al
+  principio y sin `default`: los de `cengarde-nat`, que si no los saltaría
+  en silencio. Hasta 64 routers. `cengarde -t` los lista con su pista.
 - **Qué clave** (`clients.h`, puro): un índice de pista a routers, en orden.
   La sesión se busca solo entre los routers de la pista del paquete, y una
   sonda sin sesión prueba sus claves hasta que una verifica: normalmente
@@ -708,14 +709,19 @@ y OpenWrt son el 3d2c.
   la búsqueda comprueba que la sesión sea de ese router. Dos routers con el
   mismo id no chocan, y uno no puede ocupar a propósito la clave de la
   sesión de otro (el id viaja en claro, el valor no). El choque por azar
-  (una vez en 2^32) se rechaza y se cuenta (`rx.id_clashes`).
+  (una vez en 2^32) se rechaza y se cuenta (`rx.id_clashes`). Si dos
+  routers de una pista tienen una sesión con el mismo id (uno puede copiar
+  el del otro), o la sonda de uno trae un id que solo el otro tiene,
+  decide la clave: se verifica antes de mirar la ventana, lo que solo
+  cuesta en ese caso.
 - **Por router:** su sesión más nueva, el puerto por el que WireGuard lo
   conoce (y la redirección de handshakes de `wgwatch.h`), el empujón de
   `wireguard_poke`, el IP pass que pide y su balde de HELLO (50 por segundo:
   las sondas reenviadas de uno no frenan a los demás). Como mucho 4
-  sesiones a la vez (`CG_CLIENT_SESSIONS`): una quinta reemplaza a la menos
-  oída, y lo que la vieja tenía en el lote en curso se descarta, porque su
-  lugar puede tomarlo la nueva. `max_sessions` vale 64, o 4 por router si
+  sesiones a la vez (`CG_CLIENT_SESSIONS`), también con un solo router
+  (antes, solo `max_sessions`): una quinta reemplaza a la menos oída, y lo
+  que la vieja tenía en el lote en curso se descarta, porque su lugar puede
+  tomarlo la nueva. `max_sessions` vale 64, o 4 por router si
   son más, y una recarga lo cambia en el lugar (la tabla crece).
 - **Router desactivado** (`enabled = no`): sus sesiones se cierran y sus
   sondas reciben un HELLO con `CG_F_REFUSED`; el router muestra
@@ -735,10 +741,12 @@ y OpenWrt son el 3d2c.
   `cengarde-nat` ya leía desde el 3d1 (`FORWARD_FILE`). El dueño es el
   primero que lo pidió y lo conserva mientras no lo suelte; al soltarlo,
   pasa al que lo pidió antes de los que esperan, nunca a uno que lo pidió
-  después del que lo tiene. Sobrevive a un reinicio del motor: al arrancar
-  lee la tabla que dejó, y no la reescribe si no cambió. El router que
-  espera lo ve en sus respuestas (`passthrough.server: off`) y en el
-  registro del servidor.
+  después del que lo tiene. Lo pierde también un router sin sesión desde
+  hace más de `session_timeout_ms` (apagado o mudado), que si no
+  bloquearía a los demás para siempre. Sobrevive a un reinicio del motor:
+  al arrancar lee la tabla que dejó, y no la reescribe si no cambió. El
+  router que espera lo ve en sus respuestas (`passthrough.server: off`), en
+  LuCI («el VPS no lo concede») y en el registro del servidor.
 - **Recargas** (`clients_apply`): cada router conserva su lugar mientras su
   nombre siga; agregar uno, o cambiar su etiqueta, reglas o
   `wireguard_poke`, no toca sesiones; quitarlo, desactivarlo o cambiar su
@@ -752,6 +760,19 @@ y OpenWrt son el 3d2c.
 - **Pruebas:** `test_clients`, `test_fwdtable` (el texto, byte a byte igual
   a la tabla de prueba de `cengarde-nat`) y `test_config` (secciones,
   errores, recargas); `bench/macbench` y el escenario `multiclient`.
+- **Lo que encontró la revisión** (un agente revisó el servidor con
+  arneses que incluyen `server.c`, entre ellos 20 000 operaciones al azar
+  con ASan y UBSan sobre sesiones, desalojos y recargas, sin fallos):
+  - un router nuevo que ocupaba en una recarga el lugar de uno quitado que
+    tenía el IP pass lo heredaba sin pedirlo; ahora quitar al dueño lo
+    suelta antes de dar el lugar;
+  - con dos routers de una pista y el mismo id, los paquetes de uno se
+    comprobaban con la clave del otro y se perdían; ahora decide la clave;
+  - el motor aceptaba nombres que `cengarde-nat` salta (mayúsculas, `_`,
+    más de 12 caracteres);
+  - un `realloc` fallido dejaba `max_sessions` por encima de la tabla, y
+    el choque de ids se comprobaba después de desalojar una sesión;
+  - un dueño apagado bloqueaba el IP pass para siempre (ver arriba).
 
 ## Medidas
 

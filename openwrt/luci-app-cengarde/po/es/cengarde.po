@@ -285,8 +285,11 @@ msgstr "alternativa"
 msgid "The first VPS address it can use did not answer. Failovers so far: %d"
 msgstr "La primera dirección del VPS que puede usar no contestó. Cambios hasta ahora: %d"
 
-msgid "the VPS does not apply it (passthrough_file missing in its cengarde.conf)"
-msgstr "el VPS no lo aplica (falta passthrough_file en su cengarde.conf)"
+msgid "the VPS does not apply it (no passthrough_file or forward_file in its cengarde.conf)"
+msgstr "el VPS no lo aplica (falta passthrough_file o forward_file en su cengarde.conf)"
+
+msgid "not granted by the VPS: another of its routers holds it, or this one may not have it (run \"cengarde-vps-setup forward\" on the VPS)"
+msgstr "el VPS no lo concede: lo tiene otro de sus routers, o este no puede tenerlo (ejecuta \"cengarde-vps-setup forward\" en el VPS)"
 
 msgid "waiting for the VPS to confirm"
 msgstr "esperando que el VPS lo confirme"

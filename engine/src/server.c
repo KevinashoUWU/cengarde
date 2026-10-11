@@ -148,6 +148,7 @@ struct client {
 	struct sockaddr_storage wireguard, poke; /* poke AF_UNSPEC: none */
 	uint32_t mix;     /* its sessions' keys in the map (cg_sesskey) */
 	uint32_t nsess;   /* its sessions */
+	uint64_t alone_ms; /* since when it has none (at first, since it was configured) */
 	int32_t newest;   /* index of its newest session, -1: none */
 	uint16_t wg_port; /* the newest session's wg_port, kept after it closes */
 	int pass;         /* IP pass its newest session asks for: -1 nothing yet */
@@ -286,16 +287,47 @@ static struct client *client_of(struct server *s, const struct session *S)
 	return &s->c[S->client];
 }
 
-/* The session of a packet with header h: one of a client with h's hint (a
- * few at worst, clients.h) whose session it is. NULL when there is none. */
-static struct session *lookup(struct server *s, const struct cg_hdr *h)
+/* The session of a client of h's hint (a few at worst, clients.h) with h's
+ * id, for c >= 0 in the chain from c on; -1 when there is none, else its
+ * index, and *c its client. */
+static int32_t lookup_from(struct server *s, const struct cg_hdr *h, int *c)
 {
-	for (int c = s->hx.first[h->hint]; c >= 0; c = s->hx.next[c]) {
-		int32_t i = cg_idmap_get(&s->ids, cg_sesskey(s->c[c].mix, h->session));
+	for (; *c >= 0; *c = s->hx.next[*c]) {
+		int32_t i = cg_idmap_get(&s->ids, cg_sesskey(s->c[*c].mix, h->session));
 
-		if (i >= 0 && s->s[i].client == c && s->s[i].id == h->session)
-			return &s->s[i];
+		if (i >= 0 && s->s[i].client == *c && s->s[i].id == h->session)
+			return i;
 	}
+	return -1;
+}
+
+/* The session of packet b (header h), NULL when there is none. One client
+ * of h's hint with a session of h's id is the usual case: its MAC is
+ * checked later, after the replay window. Two clients sharing the hint
+ * may have sessions with the same id (ids travel in the clear: one can
+ * pick the other's), and one's probe may carry an id only the other has a
+ * session with: then the keys decide, here, and *verified says the MAC
+ * was checked. A probe no key of those sessions verifies goes on as one
+ * without a session (its client is found by its key). */
+static struct session *lookup(struct server *s, const struct cg_hdr *h, const uint8_t *b, size_t len,
+			      int *verified)
+{
+	int c = s->hx.first[h->hint], n = 0, k;
+	int32_t one = -1, i;
+
+	if (c < 0)
+		return NULL;
+	for (k = c; (i = lookup_from(s, h, &k)) >= 0; k = s->hx.next[k]) {
+		one = one < 0 ? i : one;
+		n++;
+	}
+	if (!n || (n == 1 && (s->hx.next[c] < 0 || h->type != CG_T_PROBE)))
+		return one < 0 ? NULL : &s->s[one];
+	for (k = c; (i = lookup_from(s, h, &k)) >= 0; k = s->hx.next[k])
+		if (cg_hdr_verify(b, len, s->c[k].key)) {
+			*verified = 1;
+			return &s->s[i];
+		}
 	return NULL;
 }
 
@@ -374,7 +406,8 @@ static void session_destroy(struct server *s, struct session *S, const char *why
 	close(S->wg_fd);
 	cg_idmap_del(&s->ids, cg_sesskey(C->mix, S->id));
 	S->used = 0;
-	C->nsess--;
+	if (!--C->nsess)
+		C->alone_ms = now_ms;
 	s->nsess--;
 	/* A session replaced in the middle of a listen batch (session_create)
 	 * leaves nothing queued behind: its slot may take the new session. */
@@ -422,6 +455,13 @@ static struct session *session_create(struct server *s, struct client *C, const 
 	char a[64];
 	int fd, alone;
 
+	/* Another client's session already has this key: a 2^-32 chance. */
+	if (cg_idmap_get(&s->ids, key) >= 0) {
+		s->id_clashes++;
+		if (cg_ratelimit_ok(&s->rl_full, now_ms, 10000))
+			cg_warn("%ssession %08x: its key clashes with another client's session, refused", C->tag, id);
+		return NULL;
+	}
 	if (C->nsess >= CG_CLIENT_SESSIONS) {
 		for (uint32_t i = 0; i < s->cap; i++)
 			if (s->s[i].used && &s->c[s->s[i].client] == C && (!old || s->s[i].last_rx_ms < old->last_rx_ms))
@@ -437,12 +477,6 @@ static struct session *session_create(struct server *s, struct client *C, const 
 		C->refused++;
 		if (cg_ratelimit_ok(&s->rl_full, now_ms, 10000))
 			cg_warn("%ssession limit (%u) reached, refusing %08x", C->tag, s->max, id);
-		return NULL;
-	}
-	/* Another client's session already has this key: a 2^-32 chance. */
-	if (cg_idmap_get(&s->ids, key) >= 0) {
-		s->id_clashes++;
-		cg_warn("%ssession %08x: its key clashes with another client's session, refused", C->tag, id);
 		return NULL;
 	}
 	/* WireGuard knows the client by the port of its session's socket. One
@@ -826,7 +860,7 @@ static void listen_read(struct server *s, struct lane *ln)
 			}
 			if (h.type == CG_T_PROBE)
 				cg_probe_info_read(&pi, b + CG_HDR_LEN);
-			S = lookup(s, &h);
+			S = lookup(s, &h, b, len, &verified);
 			if (!S) {
 				/* Only a probe takes a session up, and only with its
 				 * cookie; the DATA waits for it. Which client it is:
@@ -1383,7 +1417,7 @@ static void write_status(struct server *s, uint64_t now_ms)
 #define PATH_ROW "%-9s %-6s %-5s %-8s %-8s %-8s %-47s %s\n"
 static void links_text(struct server *s, uint64_t now_ms, struct cg_json *j)
 {
-	char id[16], link[8], ago[24], a[64], l[64];
+	char id[16], link[12], ago[24], a[64], l[64];
 
 	if (s->multi)
 		cg_json_raw(j, "%-16s ", "CLIENT");
@@ -1443,10 +1477,13 @@ static void fwd_sync(struct server *s, uint64_t now_ms)
 	int holder, hc = -1, len, rules = 0;
 	struct cg_json j;
 
+	/* A router gone for longer than a session lasts (powered off, or moved
+	 * away) lets go of IP pass: it would block the others for good. */
 	for (int i = 0; i < CG_MAX_CLIENTS; i++) {
 		const struct client *C = &s->c[i];
 
-		cand[i].eligible = C->used && C->enabled && C->passthrough;
+		cand[i].eligible = C->used && C->enabled && C->passthrough &&
+				   (C->nsess || now_ms - C->alone_ms < cfg->session_timeout_ms);
 		cand[i].wish = C->used ? C->pass : -1;
 		cand[i].wish_ms = C->pass_on_ms;
 	}
@@ -1802,6 +1839,11 @@ static void clients_apply(struct server *s, const struct cg_config *cfg, uint64_
 		if (!k) {
 			cg_info("%sremoved", C->tag);
 			C->used = 0;
+			/* Its slot may go to a new client below: never its IP pass. */
+			if (s->holder == i)
+				s->holder = -1;
+			if (s->fw_holder == i)
+				s->fw_holder = -1;
 			continue;
 		}
 		if (!k->enabled && C->enabled)
@@ -1822,6 +1864,7 @@ static void clients_apply(struct server *s, const struct cg_config *cfg, uint64_
 		memset(C, 0, sizeof(*C));
 		C->used = 1;
 		C->newest = -1;
+		C->alone_ms = now_ms;
 		C->pass = C->pass_seen = -1;
 		if (cg_random(&C->mix, sizeof(C->mix)) < 0)
 			C->mix = (uint32_t)cg_now_us() * 2654435761u;
@@ -1830,8 +1873,6 @@ static void clients_apply(struct server *s, const struct cg_config *cfg, uint64_
 			cg_info("%sclient hint %02x, WireGuard at %s%s", C->tag, C->hint, cg_addr_str(&C->wireguard,
 				(char[64]){ 0 }, 64), C->enabled ? "" : ", disabled");
 	}
-	if (s->holder >= 0 && !s->c[s->holder].used)
-		s->holder = -1;
 	for (int i = 0; i < CG_MAX_CLIENTS; i++) {
 		hint[i] = s->c[i].hint;
 		used[i] = (uint8_t)s->c[i].used;
@@ -1852,8 +1893,10 @@ static int sessions_room(struct server *s, uint32_t max)
 	if (max <= s->cap)
 		return 0;
 	ns = realloc(s->s, sizeof(*ns) * max);
-	if (!ns)
+	if (!ns) {
+		s->max = s->cap;
 		return -1;
+	}
 	s->s = ns;
 	memset(s->s + s->cap, 0, sizeof(*ns) * (max - s->cap));
 	if (cg_idmap_init(&nm, max) < 0) {

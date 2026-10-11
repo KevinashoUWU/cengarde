@@ -374,16 +374,19 @@ static int has_clients(const struct cg_ini *ini)
 	return 0;
 }
 
-/* A client's name goes into the forward table and the logs: letters,
- * digits, '.', '_' and '-', starting with a letter or a digit. */
+/* A client's name goes into the forward table, where cengarde-nat takes
+ * only the names cengarde-vps-setup gives (is_name: its cg-NAME has to fit
+ * in an interface name): 1 to CG_CLIENT_NAME_MAX lowercase letters, digits
+ * and '-', not starting with '-', and not "default". Anything else would
+ * load here and then forward nothing, in silence. */
 static int valid_client_name(const char *n)
 {
 	size_t len = strlen(n);
 
-	if (!len || len >= CG_CLIENT_NAME || !isalnum((unsigned char)n[0]))
+	if (!len || len > CG_CLIENT_NAME_MAX || n[0] == '-' || !strcmp(n, "default"))
 		return 0;
 	for (; *n; n++)
-		if (!isalnum((unsigned char)*n) && *n != '.' && *n != '_' && *n != '-')
+		if (!(*n >= 'a' && *n <= 'z') && !(*n >= '0' && *n <= '9') && *n != '-')
 			return 0;
 	return 1;
 }
@@ -421,8 +424,8 @@ static int parse_clients(struct cg_config *c, struct cg_ini *ini, char *err, siz
 		if (cg_config_client(c, name))
 			continue;
 		if (!valid_client_name(name)) {
-			snprintf(err, errlen, "[%s]: a client's name is 1 to %d letters, digits, '.', '_' or '-', starting "
-				 "with a letter or a digit", sec, CG_CLIENT_NAME - 1);
+			snprintf(err, errlen, "[%s]: a client's name is 1 to %d lowercase letters, digits or '-', not "
+				 "starting with '-' and not \"default\"", sec, CG_CLIENT_NAME_MAX);
 			return -1;
 		}
 		if (c->nclients == CG_MAX_CLIENTS) {

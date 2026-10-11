@@ -89,7 +89,8 @@ struct cg_link_cfg {
 
 /* A client of a server, a [client NAME] section. Its WireGuard address is
  * the global one unless it has its own. */
-#define CG_CLIENT_NAME 32
+#define CG_CLIENT_NAME 32     /* room for a name, with its NUL */
+#define CG_CLIENT_NAME_MAX 12 /* the longest name: cg-NAME fits in IFNAMSIZ */
 struct cg_client_cfg {
 	char name[CG_CLIENT_NAME];
 	char label[64];

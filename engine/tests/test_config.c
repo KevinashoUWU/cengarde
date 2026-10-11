@@ -147,6 +147,9 @@ static void test_config_reload(void)
 #define ALPHA "[client alpha]\nkey = " KEY "\nwireguard = 127.0.0.1:65501\n"
 #define BRAVO "[client bravo]\nkey = " KEY2 "\nwireguard = 127.0.0.1:65502\n"
 
+#define NAME_ERR(sec) sec ": a client's name is 1 to 12 lowercase letters, digits or '-', not starting with " \
+		     "'-' and not \"default\""
+
 /* A server with [client NAME] sections. */
 static void test_config_clients(void)
 {
@@ -253,14 +256,17 @@ static void test_config_clients(void)
 			{ MULTI "key = " KEY "\n" ALPHA, "key: not with [client] sections, each has its own" },
 			{ MULTI "[client]\nkey = " KEY "\n", "[client]: expected [client NAME]" },
 			{ MULTI "[client -x]\nkey = " KEY "\nwireguard = 127.0.0.1:1\n",
-			  "[client -x]: a client's name is 1 to 31 letters, digits, '.', '_' or '-', starting with a letter or "
-			  "a digit" },
+			  NAME_ERR("[client -x]") },
 			{ MULTI "[client a/b]\nkey = " KEY "\nwireguard = 127.0.0.1:1\n",
-			  "[client a/b]: a client's name is 1 to 31 letters, digits, '.', '_' or '-', starting with a letter or "
-			  "a digit" },
-			{ MULTI "[client abcdefghijklmnopqrstuvwxyz012345]\nkey = " KEY "\nwireguard = 127.0.0.1:1\n",
-			  "[client abcdefghijklmnopqrstuvwxyz012345]: a client's name is 1 to 31 letters, digits, '.', '_' or "
-			  "'-', starting with a letter or a digit" },
+			  NAME_ERR("[client a/b]") },
+			{ MULTI "[client Alpha]\nkey = " KEY "\nwireguard = 127.0.0.1:1\n",
+			  NAME_ERR("[client Alpha]") },
+			{ MULTI "[client r_1]\nkey = " KEY "\nwireguard = 127.0.0.1:1\n",
+			  NAME_ERR("[client r_1]") },
+			{ MULTI "[client abcdefghijklm]\nkey = " KEY "\nwireguard = 127.0.0.1:1\n",
+			  NAME_ERR("[client abcdefghijklm]") },
+			{ MULTI "[client default]\nkey = " KEY "\nwireguard = 127.0.0.1:1\n",
+			  NAME_ERR("[client default]") },
 			{ MULTI "[client alpha]\nwireguard = 127.0.0.1:1\n",
 			  "[client alpha] key: expected the base64 of 32 bytes" },
 			{ MULTI "[client alpha]\nkey = " KEY "\n", "[client alpha] wireguard: required (no global one)" },
@@ -292,6 +298,12 @@ static void test_config_clients(void)
 			CHECK(!bad[i].err || !strcmp(err, bad[i].err));
 		}
 	}
+
+	/* The longest name: cg-NAME fits in an interface name. */
+	CHECK_EQ(cg_config_parse(&a, MULTI "[client abcdefghijk-]\nkey = " KEY "\nwireguard = 127.0.0.1:1\n", err,
+				 sizeof(err), warn, sizeof(warn)),
+		 0);
+	cg_config_free(&a);
 
 	/* passthrough_file is global; in a [client] section, an unknown key. */
 	CHECK_EQ(cg_config_parse(&a, MULTI ALPHA "passthrough_file = /run/p\n", err, sizeof(err), warn, sizeof(warn)), 0);
