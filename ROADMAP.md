@@ -494,7 +494,10 @@ hardware real (historias [007](docs/historias/007-openwrt-y-vps.md) y
       paquetes 0.5.2);
     - ~~PR 4: IPv6 dentro del túnel, apagado por defecto~~: hecho
       (paquetes 0.5.3), falta probarlo en la Pi y en Vultr;
-    - PR 5: nombres con DNS dinámico, también para un servidor casero.
+    - ~~PR 5: nombres con DNS dinámico, también para un servidor casero~~:
+      hecho (paquetes 0.5.4): el router busca el nombre por cada enlace, con
+      los DNS de su operadora, y lo sigue cuando cambia la IP; falta
+      probarlo con un servidor casero de verdad.
 
 - **OpenWrt.** El destino es OpenWrt limpio (24.10 y 25.12, kernel 6.x), no
   SmoothWAN, que está abandonado y se quedó en kernel 5.x (historia 004).
@@ -637,8 +640,9 @@ debe sobrevivir a la caída de uno con ≤1,34× de sobrecoste.
   significan que el enlace esté caído.
 - [ ] Buffers de 64 KiB o detección de truncado. El aviso por enlace
   cuando el MTU de camino no basta ya está (0.4.2, historia 010).
-- [ ] IPv6: por fuera del túnel ya está (0.4.2); dentro, en el PR 4
-  (historia 010).
+- [x] IPv6: por fuera del túnel (0.4.2) y dentro, apagado por defecto (PR 4,
+  0.5.3; historia 010). Falta probarlo en la Pi y en Vultr.
+- [x] Nombres del VPS con DNS dinámico (PR 5, 0.5.4; historia 010).
 - [x] Que un reinicio del servidor no deje la bajada atascada (0.4.1,
   historia 010).
 - [ ] Rutas por enlace: documentar o automatizar reglas por origen

@@ -250,16 +250,58 @@ sudo cengarde-vps-setup add router       # y pega el secreto del router (LuCI mu
 - **Sus propios servicios siguen siendo suyos:** lo que escucha en el
   servidor y los puertos que publica Docker quedan fuera del reenvío.
 
+### En casa, con IP dinámica (DNS dinámico)
+
+El "VPS" puede ser un equipo en tu casa (o en la oficina) aunque el
+operador te cambie la IP: el router lo busca por su nombre y lo sigue.
+
+1. **Una IPv4 pública de verdad:** compara la IP WAN que muestra tu router
+   de casa con la que ves en una página como *¿cuál es mi IP?*. Si son
+   distintas, o la WAN empieza por `100.64.` a `100.127.`, estás detrás de
+   CGNAT y no llega nada desde fuera: ni el reenvío ni el DNS dinámico lo
+   arreglan (pide al operador una IP pública). Un servidor solo con IPv6
+   todavía no sirve.
+2. **El servidor con IP fija en tu red:** una reserva DHCP en el router de
+   casa (por ejemplo `192.168.1.50`), e instálalo como en
+   [Un servidor propio](#un-servidor-propio-sin-cloud-init).
+3. **Reenvío de puertos en el router de casa,** hacia esa IP: UDP 65500 (el
+   puerto de cengarde) y, si usas IP pass, los puertos que liste
+   `sudo cengarde-vps-setup forward`. `cengarde-vps-setup` ve que el
+   servidor tiene una IPv4 privada y te lo recuerda.
+4. **Un nombre con DNS dinámico** (DuckDNS, No-IP, dynv6, o el de tu
+   dominio) que siga tu IP pública. Lo mejor es el cliente de DNS dinámico
+   del propio router de casa, que avisa en cuanto cambia la WAN; si no, uno
+   en el servidor (`ddclient`, o un `curl` cada minuto). Conviene un TTL
+   corto, de 60 s: los DNS de las operadoras guardan la IP vieja ese tiempo.
+5. **En el router con cengarde,** pestaña *General*, en *Direcciones del
+   VPS*: el nombre, por ejemplo `micasa.duckdns.org`. Puedes poner después
+   la IP de otro servidor como respaldo.
+
+**Qué pasa cuando cambia la IP de casa:** los enlaces dejan de recibir
+respuesta; a los 2 s el router vuelve a preguntar el nombre (por cada
+enlace, a los DNS de su operadora, nunca por el túnel), y cada 15 s
+mientras no haya respuesta; en cuanto el DNS da la IP nueva, todos los
+enlaces se mudan. El corte es lo que tarde tu DNS dinámico en publicar la IP
+nueva y los DNS en olvidar la vieja (el TTL), más unos segundos: en el
+laboratorio, sin cachés, se mide en el escenario `names`. El estado muestra el nombre, su IP y
+hace cuánto respondió el DNS, o el problema si no resuelve.
+
+**IP pass con un nombre:** UPnP necesita saber la IP pública y un nombre no
+sirve (su IP cambia): pon un servidor STUN en la pestaña *Túnel* (por
+ejemplo `stun.cloudflare.com`, puerto 3478); miniupnpd la descubre a
+través del túnel, así que ve la IP de tu casa y sigue sus cambios.
+
 ## 4. Activar
 
 En *Servicios → cengarde → Configuración*, pestaña *General*:
 - **Activado;**
-- **Direcciones del VPS:** sus IP públicas, IPv4 e IPv6, en orden de
-  preferencia (hasta 8). Cada enlace usa la primera de una familia que
-  tenga, y pasa a la siguiente que pueda usar tras 10 s sin respuesta
-  (`server_failover_ms`, pestaña *Avanzado*). Tienen que ser IP, no
-  nombres: con todo el tráfico por el túnel, un nombre no se podría
-  resolver;
+- **Direcciones del VPS:** sus IP públicas, IPv4 e IPv6, o nombres, en
+  orden de preferencia (hasta 8). Cada enlace usa la primera de una
+  familia que tenga, y pasa a la siguiente que pueda usar tras 10 s sin
+  respuesta (`server_failover_ms`, pestaña *Avanzado*). Un nombre lo busca
+  el propio cengarde por cada enlace, primero en los DNS de su operadora y
+  nunca por el túnel, y lo sigue si cambia de IP (ver
+  [En casa, con IP dinámica](#en-casa-con-ip-dinámica-dns-dinámico));
 - **Enlaces:** los del paso 2.
 
 Luego *Guardar y aplicar*. Desde ese momento cengarde mantiene en la
@@ -275,7 +317,7 @@ configuración del router:
 | Cortafuegos | con «IPv6 por el túnel»: un include de nftables (`cengarde_nat66`, que carga `/usr/share/cengarde/nat66.nft`) al comienzo de la cadena `srcnat`, que enmascara la IPv6 que sale por `wgcg` | sí |
 | DHCP | con «IPv6 por el túnel» y «enrutar todo»: `ra_default 1` en la sección `lan` de `/etc/config/dhcp`, marcado con `cengarde_ra_default`, solo si no tenía valor | sí, solo lo que puso cengarde |
 | Enlaces | una métrica propia a cada uno (con la misma métrica, netifd deja una sola ruta por defecto) | no: no estorba |
-| Enlaces | `peerdns 0`: los DNS de la operadora irían por el VPS y suelen rechazarlo; se usan los IPv4 de la pestaña *Túnel* | sí |
+| Enlaces | `peerdns 0`: los DNS de la operadora irían por el VPS y suelen rechazarlo; se usan los IPv4 de la pestaña *Túnel*. El motor sí usa los de cada enlace, por ese enlace, para buscar el nombre del VPS (netifd los guarda como inactivos) | sí |
 | Enlaces | `<enlace>6`: DHCPv6 sobre el dispositivo del enlace, con `delegate 0` y `peerdns 0`, en la zona del enlace | sí |
 | Enlaces | con «enrutar todo»: `delegate 0` y `peerdns 0` en las interfaces IPv6 que no creó (`wan6`), y `delegate 0` en los enlaces PPP o de módem | sí |
 | Cortafuegos | `wgcg`, y los enlaces que no tengan zona, en la zona `wan` | `wgcg` sí, los enlaces no |
@@ -314,6 +356,8 @@ configuración del router:
 - **Túnel WireGuard:** último handshake.
 - **IP pass:** activo en el VPS, desactivado, o esperando que el VPS lo
   confirme.
+- **Nombre del VPS** (si pusiste uno): su IP y hace cuánto respondió el DNS,
+  o «por /etc/hosts».
 - **Tráfico** y copias duplicadas descartadas.
 - **Por enlace:**
   - estado: activo, esperando al VPS, sin respuesta o en pausa;
@@ -333,7 +377,9 @@ configuración del router:
     ejemplo, un módem que va a cambiar de plan). La pausa se mantiene hasta
     reanudarlo o hasta que cengarde se reinicie.
 - **Avisos:** falta la IP, un enlace caído o solo con IPv6 (sin dirección
-  IPv6 del VPS), el VPS que no contesta por ningún enlace, un camino con
+  IPv6 del VPS), un nombre del VPS que no resuelve (con el motivo: sin
+  respuesta, el DNS falló, no existe), el VPS que no contesta por ningún
+  enlace, un camino con
   MTU chica para el túnel, la fuga de IPv6 de la LAN, una compañera
   `<enlace>6` que no se pudo crear, el motor detenido, un cambio que no se
   pudo aplicar…
