@@ -525,6 +525,60 @@ envió, en ventanas de 10 s, porque su cuenta llega con la última respuesta
 de sonda. Ninguna de las dos mide capacidad: en redundancia, cada enlace
 lleva el mismo tráfico.
 
+#### Radio: cruzar con `cell-monitor` (`--rf`)
+
+`--rf ARCHIVO...` suma al informe una sección **Radio** con lo que
+`cell-monitor` (SmoothStream, `Cell monitor/`) manda a InfluxDB desde cada CPE
+5G: RSRP, RSRQ, SINR, banda, RAT y celda. Sin `--rf` el informe no cambia.
+Pon `--rf` después de las grabaciones, porque toma todos los nombres que le
+siguen:
+
+```sh
+influx query --raw 'from(bucket: "Cellular")
+  |> range(start: 2026-10-14T00:00:00Z, stop: 2026-10-21T00:00:00Z)
+  |> filter(fn: (r) => r._measurement =~ /^cell_(nwinfo|serving_lte|serving_nr|rxpath|ca|monitor)$/)
+  |> filter(fn: (r) => r._field =~ /^(sinr|rsrp|rsrq|cellid|pci|earfcn|arfcn|up|plmn|(rsrp|rsrq|sinr)[1-4])$/)' > radio.csv
+bench/fieldrec.py /ruta/a/cengarde-rec --utc-offset -3 --rf radio.csv --json campo.json
+```
+
+- **Formatos** (se reconocen por el contenido; planos o con gzip): CSV
+  anotado de InfluxDB (`#group`, `#datatype`, `#default`), de `influx query
+  --raw` o de la descarga de la interfaz, con una fila por campo o con
+  `pivot()` y con varias tablas en un archivo; y *line protocol* con
+  timestamp (s, ms, µs o ns, por el tamaño; `--rf-precision` lo fija). Las
+  demás mediciones y campos se ignoran. La salida de `cell-monitor -n` no
+  sirve: no lleva timestamp, y se avisa.
+- **Asignación a un enlace:** el tag `leg` contra `links[].label` y, si no,
+  `links[].name`, sin distinguir mayúsculas y con la limpieza de
+  `cell-monitor` (minúsculas, espacios a `_`, solo `a-z 0-9 _ . -`). Sin
+  `leg`, el `carrier` contenido en la etiqueta. Lo que no se asigna sale como
+  `NOT MAPPED` con el motivo, y también los enlaces sin radio; si la etiqueta
+  de un enlace nombra a otro operador que el `carrier` de su serie, avisa de
+  un posible cruce. `--rf-map LEG=ENLACE` asigna a mano.
+- **El reloj:** `cell-monitor` no manda timestamp, así que cada punto lleva la
+  hora del servidor de InfluxDB al recibir el POST, en segundos. Esa hora y la
+  de la Pi (`time_ms` del motor) tienen que coincidir; la del CPE no cuenta.
+  `--rf-offset S` suma S segundos a las horas de radio. Todo se calcula solo
+  donde hay grabación y radio a la vez, y el informe da ese solape.
+- **Qué trae:** por enlace, el tiempo en cada RAT y banda, p10/p50/p90 de SINR,
+  RSRQ y RSRP, y los cambios de RAT, de banda y de celda por hora. Luego, para
+  cada tipo de evento del enlace (caída, silenciado de subida, silenciado de
+  bajada), cuántos inicios tuvieron un cambio a menos de N s (N = 2 intervalos
+  de radio, mínimo 20 s; `--rf-window` lo fija) frente a lo esperado al azar,
+  que es la parte del tiempo cubierta por esas ventanas, y cuántos fueron
+  antes o después. El p (binomial) y la lectura usan *episodios* (eventos
+  separados por 60 s o 2N, porque los de una ráfaga comparten ventana) y
+  piden 10. Después, el SINR del minuto anterior a cada episodio frente al
+  mismo promedio en todo momento del enlace, y su tendencia frente a los 4
+  minutos previos. Al final, una tabla por hora del día. Con muchas filas es
+  normal que alguna salga por azar: pesan más los conteos que la palabra.
+- **Antes de la semana:** pon `INTERVAL=10` en `/etc/cell-monitor.conf` (por
+  defecto son 30 s), usa un `CPE_ID` y un `MODEMn_ID` distintos en cada CPE,
+  pon `MODEMn_LEG` igual a la etiqueta del enlace en cengarde (o a su
+  nombre), y sincroniza por NTP la Pi y el servidor de InfluxDB. Comprueba
+  con `cell-monitor -n` que el SINR sale en dB (de −20 a 30): algunos módems
+  lo dan en 1/5 de dB, de 0 a 250, y el informe lo avisa si pasa de 50.
+
 `lab.d/fieldrec.sh` (en `ci`) lo prueba de dos maneras:
 
 - `fieldrec_test.py`, sobre una grabación inventada con respuestas
@@ -533,7 +587,20 @@ lleva el mismo tráfico.
   además un reinicio del motor, un hueco, el reloj antes de NTP, un archivo
   de un motor sin `time_ms` y otro cortado por un apagón. Se comprobó que la
   prueba falla si se rompe el pliegue, la correlación, el corte entre
-  corridas, la detección por silencio o el inicio de la caída.
+  corridas, la detección por silencio o el inicio de la caída. Otra
+  grabación inventada, de dos horas, es para `--rf`: caídas y silenciados a
+  horas conocidas, y datos de radio con la forma de la salida de
+  `cell-monitor`, en *line protocol* y en CSV anotado (una fila por campo y
+  con `pivot()`), con un enlace cuyos cambios de RAT preceden a sus caídas y
+  otros dos que no, series sin enlace, un hueco de datos, un módem caído y
+  radio que empieza después de la grabación y la rebasa. El conteo de aciertos
+  y el azar se comparan con un cálculo por fuerza bruta, y las cuatro formas de
+  leer los datos tienen que dar lo mismo. También fija el formato real: son 17
+  líneas que escribió `cell-monitor.sh` contra `modem-sim.py`. Se comprobó que
+  la prueba falla si se rompe `--rf-offset`, la ventana del azar, el corte en
+  los huecos de datos, la asignación por etiqueta, nombre o carrier, los
+  episodios, el solape con la grabación, la fuente del SINR, su dirección, las
+  horas, el inicio de los silenciados o la lectura de ns y de `#default`.
 - De punta a punta: el motor y `cengarde-rec` reales (bajo `sh`), a 4
   muestras por segundo, mientras s2 cae 3 s. Tienen que quedar solo
   archivos comprimidos, cada muestra una vez, una caída de 2 a 5 s en l2 y

@@ -40,19 +40,45 @@ restart, a gap or a counter that went down starts over, as for the others).
 - WireGuard sizes, per direction: the share of data packets and of bytes at or
   under each edge, and the handshake counts.
 
+Radio (optional, --rf FILE...): the RF metrics that SmoothStream's cell-monitor
+posts to InfluxDB for each 5G CPE (RSRP, RSRQ, SINR, band, RAT, cell), crossed
+with the links. Two formats, told apart by their content, plain or gzipped:
+InfluxDB annotated CSV (`influx query --raw`, or the UI's CSV download; several
+tables per file, one row per field or pivoted) and line protocol. Everything
+else in the files (other measurements, other fields) is ignored. A series
+belongs to the link whose label (else name) is its `leg` tag, case blind and
+after the sanitizing cell-monitor does to tags; with no `leg`, to the link
+whose label has its `carrier`; what maps to none is reported. cell-monitor
+posts no timestamps: the times are InfluxDB's own clock when each POST came
+in, in whole seconds, so that clock has to agree with the Pi's (--rf-offset
+moves it). The section reports, per link and over the hours where both the
+recording and the RF data exist: the time share of each RAT and band;
+SINR, RSRQ and RSRP p10/p50/p90; RAT, band and serving-cell changes (per hour);
+for each kind of link event (outage, upload mute, download mute) the share of
+event starts with a RAT, band or cell change within +-N s (N = 2 RF intervals,
+at least 20 s), against the share a random time would have (the part of the
+time those windows cover), with the counts and a binomial test; the SINR of the
+minute before an event against the link's own SINR; and a table per hour.
+
 Usage: bench/fieldrec.py [--utc-offset H] [--json OUT] DIR|FILE...
+                         [--rf FILE... [--rf-offset S] [--rf-window S]
+                          [--rf-map LEG=LINK] [--rf-precision P]]
 """
 
 import argparse
 import bisect
+import calendar
 import collections
+import csv
 import glob
 import gzip
 import json
 import math
 import os
+import re
 import statistics
 import sys
+import time
 
 GAP_MS = 5000          # longer between two samples: a gap, not an interval
 MIN_PKTS = 20          # download packets in an interval to judge its loss
@@ -240,8 +266,14 @@ def analyze(segs, utc_offset_h=0.0):
     links = sorted({n for seg in segs for s in seg for n in s.links})
     L = {n: dict(time=0, out_time=0, events=[], rtt=[], dev=[], behind=[], up_behind=[],
                  loss_num=0.0, loss_den=0, up_tx=0, up_rx=0, mutes=0, muted_time=0,
-                 starts=[], steps=[], hours=collections.defaultdict(lambda: [0, 0, [], 0.0, 0]))
+                 starts=[], steps=[], hours=collections.defaultdict(lambda: [0, 0, [], 0.0, 0]),
+                 # For the radio section: where the link was observed (wall ms, as
+                 # [start, end] runs) and the wall ms at which its upload and
+                 # download mutes began.
+                 cover=[], mute_starts=[], dmute_starts=[])
          for n in links}
+    meta = {}                          # link name -> (name, label) of the status
+
     simul = collections.Counter()      # (links present, links out) -> ms
     pair_t = collections.Counter()     # (a, b) -> ms both present
     pair_out = collections.Counter()   # (a, b, which) -> ms out: 'a', 'b', 'ab'
@@ -256,7 +288,7 @@ def analyze(segs, utc_offset_h=0.0):
         hist = collections.defaultdict(list)   # rolling RTTs for the median
         # An outage runs from its last reply (stamped by the engine) to
         # halfway between its last sample out and the first one back.
-        state = {n: dict(out=False, start=None, last=None) for n in links}
+        state = {n: dict(out=False, start=None, last=None, cov=None) for n in links}
         upwin = {n: [0, 0, 0] for n in links}  # tx, rx, ms
         for a, b in zip(seg, seg[1:]):
             dt = b.up - a.up
@@ -268,6 +300,8 @@ def analyze(segs, utc_offset_h=0.0):
             present, outs, rtts = [], set(), {}
             dD = b.down - a.down
             for n, l in b.links.items():
+                if n not in meta:
+                    meta[n] = (l.get("name") or "", l.get("label") or "")
                 if l.get("state") == "paused":
                     continue
                 d = L[n]
@@ -275,6 +309,13 @@ def analyze(segs, utc_offset_h=0.0):
                 out = link_out(l, b.probe)
                 d["time"] += dt
                 st = state[n]
+                if b.synced:
+                    cv = d["cover"]
+                    if cv and st["cov"] == a.up:
+                        cv[-1][1] = b.wall
+                    else:
+                        cv.append([b.wall - dt, b.wall])
+                    st["cov"] = b.up
                 if out:
                     outs.add(n)
                     d["out_time"] += dt
@@ -313,6 +354,16 @@ def analyze(segs, utc_offset_h=0.0):
                 pa = a.links.get(n)
                 if pa is not None:
                     d["mutes"] += max(0, (l.get("upload_mutes") or 0) - (pa.get("upload_mutes") or 0))
+                    if b.synced:
+                        # A mute begins where the counter grew or the state turned
+                        # to muted; the engine stamps how long the state has lasted.
+                        um = max((l.get("upload_mutes") or 0) - (pa.get("upload_mutes") or 0),
+                                 int(pa.get("upload") != "muted" and l.get("upload") == "muted"))
+                        age = l.get("upload_state_ms") if l.get("upload") == "muted" else None
+                        if um > 0:
+                            d["mute_starts"] += [b.wall - (min(age, dt) if isinstance(age, (int, float)) and age >= 0 else 0)] * um
+                        if l.get("download_muted") and not pa.get("download_muted"):
+                            d["dmute_starts"].append(b.wall)
                     got = sum((l.get(k) or 0) - (pa.get(k) or 0) for k in ("rx_first", "rx_duplicate", "rx_late"))
                     if dD >= MIN_PKTS and not l.get("download_muted"):
                         loss = min(1.0, max(0.0, 1 - got / dD))
@@ -372,7 +423,7 @@ def analyze(segs, utc_offset_h=0.0):
                 L[n]["events"].append(((si, st["start"]), st["last"] - st["start"]))
     return dict(links=links, L=L, simul=simul, pair_t=pair_t, pair_out=pair_out, corr=corr,
                 spread_all=spread_all, spread_two=spread_two, total_ms=total_ms, gap_ms=gap_ms,
-                segments=len(segs), samples=sum(len(s) for s in segs),
+                segments=len(segs), samples=sum(len(s) for s in segs), meta=meta,
                 bond=collect_bonding(segs, utc_offset_h))
 
 
@@ -842,6 +893,8 @@ def report(s, notes, utc_offset_h):
     for n, d in s["links"].items():
         for h, v in d["by_hour"].items():
             w(f"| {n} | {h:02d} | {f(v['out_pct'], 2)} | {f(v['rtt_p50'])} | {f(v['loss_down_pct'], 2)} |")
+    if s.get("radio"):
+        report_radio(s["radio"], utc_offset_h)
     report_joint(s.get("joint"), utc_offset_h)
     report_lost(s.get("lost_all"), utc_offset_h)
     report_sizes(s.get("sizes"))
@@ -1021,22 +1074,1140 @@ def report_sizes(z):
         w("\nHandshakes: " + ", ".join(f"{n} {d['handshakes'][n]}" for n in HANDSHAKES) + ".")
 
 
+# --- Radio: the RF metrics of SmoothStream's cell-monitor, crossed with the links ---------------
+
+RF_GAP_K = 3           # a gap longer than this many RF intervals is a hole, not coverage
+RF_MIN_WINDOW_S = 20   # the window of the crossing is 2 RF intervals, at least this (N)
+RF_PRE_S = 60          # "the minute before" an event
+RF_TREND_S = 300       # the minutes before that one, for the trend of the SINR
+MIN_EPISODES = 10      # independent events needed before the report reads a test
+EPISODE_S = 60         # events closer than this (or than 2N) are one episode for the tests
+P_READ = 0.01          # a test is read as a difference below this
+CROSS_KINDS = ("rat", "band", "cell", "any")
+EVENT_KINDS = (("outage", "outage"), ("upload_mute", "upload mute"), ("download_mute", "download mute"))
+
+# The measurements and fields of cell-monitor.sh that the radio section uses
+# (None: the tags are enough). Everything else is skipped: the file may hold
+# the whole bucket.
+RF_FIELDS = {
+    "cell_nwinfo": None,
+    "cell_serving_lte": {"cellid", "pci", "earfcn", "rsrp", "rsrq", "sinr"},
+    "cell_serving_nr": {"cellid", "pci", "arfcn", "rsrp", "rsrq", "sinr"},
+    "cell_ca": {"pci", "arfcn", "rsrp", "rsrq", "sinr"},
+    "cell_rxpath": {f"{m}{i}" for m in ("rsrp", "rsrq", "sinr") for i in range(1, 5)},
+    "cell_monitor": {"up"},
+}
+RF_KNOWN_UNUSED = ("cell_signal", "cell_temp", "cell_data", "cell_net")
+# Tag columns of cell-monitor's measurements: in a pivoted CSV they tell the
+# tags from the fields when the annotations are not there.
+RF_TAGS = ("site", "cpe_id", "host", "modem_id", "leg", "carrier", "rat", "band", "state", "duplex",
+           "mode", "cc_type", "cc_seq", "sensor", "operator")
+CSV_RESERVED = ("", "result", "table", "_start", "_stop", "_time", "_value", "_field", "_measurement")
+
+
+def san_tag(s):
+    """What cell-monitor.sh's san_tag does to a tag value: quotes and CR out,
+    lower case, runs of white space to _, only a-z 0-9 _ . - kept. A link's
+    label is compared with the leg tag in this form."""
+    s = (s or "").replace('"', "").replace("\r", "").lower()
+    return re.sub(r"[^a-z0-9_.\-]", "", re.sub(r"\s+", "_", s))
+
+
+# -- line protocol
+
+def split_esc(s, sep, quotes=False):
+    """s cut at the sep that is not escaped by a backslash (nor, with quotes,
+    inside a double-quoted string)."""
+    out, buf, esc, inq = [], [], False, False
+    for ch in s:
+        if esc:
+            buf.append(ch)
+            esc = False
+        elif ch == "\\":
+            buf.append(ch)
+            esc = True
+        elif quotes and ch == '"':
+            inq = not inq
+            buf.append(ch)
+        elif ch == sep and not inq:
+            out.append("".join(buf))
+            buf = []
+        else:
+            buf.append(ch)
+    out.append("".join(buf))
+    return out
+
+
+def lp_sections(line):
+    """The 2 or 3 sections of a line: measurement and tags, fields, timestamp.
+    The cuts are the spaces that are not escaped nor inside a string field."""
+    parts, buf, esc, inq = [], [], False, False
+    for ch in line:
+        if esc:
+            buf.append(ch)
+            esc = False
+        elif ch == "\\":
+            buf.append(ch)
+            esc = True
+        elif ch == '"' and len(parts) == 1:
+            inq = not inq
+            buf.append(ch)
+        elif ch == " " and not inq:
+            if buf:
+                parts.append("".join(buf))
+                buf = []
+        else:
+            buf.append(ch)
+    if buf:
+        parts.append("".join(buf))
+    return parts
+
+
+def lp_unescape(s):
+    return re.sub(r"\\([ ,=])", r"\1", s)
+
+
+def lp_value(v):
+    """A field value: 12i and 12u integers, floats, t/f booleans, "strings"."""
+    if v.startswith('"'):
+        return re.sub(r'\\(["\\])', r"\1", v[1:-1] if v.endswith('"') and len(v) > 1 else v[1:])
+    if v[-1:] in ("i", "u") and v[:-1].lstrip("+-").isdigit():
+        return int(v[:-1])
+    if v in ("t", "T", "true", "True", "TRUE"):
+        return True
+    if v in ("f", "F", "false", "False", "FALSE"):
+        return False
+    return float(v)
+
+
+# A line with no escapes and strings without a backslash or a quote inside (all
+# that cell-monitor writes: its tags are sanitized) is read by these two
+# expressions, much faster than the general reading below.
+LP_FAST = re.compile(r'([^\s,\\"=]+)((?:,[^\s,=\\"]+=[^\s,\\"]*)*) '
+                     r'((?:[^\s,=\\"]+=(?:"[^"\\]*"|[^\s,\\"]*))(?:,[^\s,=\\"]+=(?:"[^"\\]*"|[^\s,\\"]*))*)(?: (-?\d+))?')
+LP_FIELD = re.compile(r'([^\s,=\\"]+)=("[^"\\]*"|[^\s,\\"]*)')
+LP_MEAS = re.compile(r'[^,\s\\]+')
+
+
+def lp_parse(line):
+    """(measurement, tags, fields, timestamp or None) of a line-protocol line;
+    ValueError if it is not one."""
+    m = LP_FAST.fullmatch(line)
+    if m:
+        meas, tg, fl, ts = m.groups()
+        fields = LP_FIELD.findall(fl)
+        if all(v for _, v in fields):
+            tags = {}
+            for item in tg[1:].split(",") if tg else ():
+                k, _, v = item.partition("=")
+                if v:
+                    tags[k] = v
+            return meas, tags, {k: lp_value(v) for k, v in fields}, (int(ts) if ts else None)
+    return lp_parse_full(line)
+
+
+def lp_parse_full(line):
+    """The same for any line, escapes and quoted strings included."""
+    parts = lp_sections(line)
+    if len(parts) not in (2, 3):
+        raise ValueError("sections")
+    head = split_esc(parts[0], ",")
+    tags = {}
+    for item in head[1:]:
+        k, _, v = item.partition("=")
+        if not k:
+            raise ValueError("tag")
+        if v:
+            tags[lp_unescape(k)] = lp_unescape(v)
+    fields = {}
+    for item in split_esc(parts[1], ",", True):
+        k, _, v = item.partition("=")
+        if not k or not v:
+            raise ValueError("field")
+        fields[lp_unescape(k)] = lp_value(v)
+    if not head[0] or not fields:
+        raise ValueError("empty")
+    return lp_unescape(head[0]), tags, fields, (int(parts[2]) if len(parts) == 3 else None)
+
+
+def lp_seconds(x, precision):
+    """A line-protocol timestamp in seconds. Auto: by size, which tells apart
+    s, ms, us and ns for any date from 2001 to 2286."""
+    if precision == "auto":
+        ax = abs(x)
+        div = 1e9 if ax >= 1e17 else 1e6 if ax >= 1e14 else 1e3 if ax >= 1e11 else 1
+    else:
+        div = {"s": 1, "ms": 1e3, "us": 1e6, "ns": 1e9}[precision]
+    return x / div
+
+
+# -- annotated CSV
+
+TIME_RE = re.compile(r"^(\d{4})-(\d\d)-(\d\d)[T ](\d\d):(\d\d):(\d\d)(\.\d+)?(Z|[+-]\d\d:?\d\d)?$")
+
+
+def csv_time(v):
+    """Seconds since the epoch of an RFC 3339 time (a missing zone is UTC), or
+    of a bare number; None if it is neither."""
+    m = TIME_RE.match(v.strip())
+    if not m:
+        try:
+            return float(v)
+        except ValueError:
+            return None
+    y, mo, d, h, mi, s = (int(x) for x in m.groups()[:6])
+    t = calendar.timegm((y, mo, d, h, mi, s)) + (float(m.group(7)) if m.group(7) else 0.0)
+    z = m.group(8)
+    if z and z != "Z":
+        t -= (1 if z[0] == "+" else -1) * (int(z[1:3]) * 3600 + int(z[-2:]) * 60)
+    return t
+
+
+def csv_value(v):
+    try:
+        return float(v)
+    except ValueError:
+        return v
+
+
+# A sample holds what the posts of one second said, in fixed places: a week is
+# 300 000 of them, and dicts of dicts take 2.5 KB each, this under 1 KB.
+# Serving cell and primary carrier lines: [band, cellid, pci, frequency, rsrp,
+# rsrq, sinr, rat]; rx paths: rsrp1-4, rsrq1-4, sinr1-4 by RAT.
+SERVING_AT = {"cellid": 1, "pci": 2, "earfcn": 3, "arfcn": 3, "rsrp": 4, "rsrq": 5, "sinr": 6}
+RX_AT = {f"{m}{i + 1}": 4 * j + i for j, m in enumerate(("rsrp", "rsrq", "sinr")) for i in range(4)}
+
+
+class RFSample:
+    __slots__ = ("nw", "lte", "sa", "nsa", "pcc", "rx", "up")
+
+    def __init__(self):
+        self.nw = self.lte = self.sa = self.pcc = self.rx = self.up = None
+        self.nsa = False
+
+
+class RFSeries:
+    """The samples of one modem (cpe_id, modem_id, leg, carrier): second ->
+    what the posts of that second held."""
+
+    def __init__(self, key):
+        self.key = key
+        self.samples = {}
+
+
+class RF:
+    def __init__(self):
+        self.series = {}
+        self.files = []
+        self.records = self.no_time = self.bad = self.no_cols = 0
+        self.unknown = collections.Counter()
+        self.unused = collections.Counter()
+        self.share = {}                # equal values and tags are one object: a week is 300 000 samples
+
+    def wants(self, meas, field=None):
+        """Whether anything of this measurement (or this field of it) is used;
+        if not, it is counted as skipped."""
+        want = RF_FIELDS.get(meas, False)
+        if want is False:
+            (self.unused if meas in RF_KNOWN_UNUSED else self.unknown)[meas] += 1
+            return False
+        if field is not None and want is not None and field not in want:
+            self.unused[meas] += 1
+            return False
+        return True
+
+    def add(self, t, meas, tags, fields):
+        """One point (or, from a CSV with a row per field, one field of one)."""
+        if not self.wants(meas):
+            return
+        want = RF_FIELDS[meas]
+        if want is not None:
+            fields = {k: v for k, v in fields.items() if k in want}
+            if not fields:
+                self.unused[meas] += 1
+                return
+        sh = self.share
+        tags = {k: sh.setdefault(v, v) for k, v in tags.items()}
+        fields = {k: sh.setdefault(v, v) for k, v in fields.items()}
+        key = (tags.get("cpe_id") or tags.get("host") or "", tags.get("modem_id") or "",
+               tags.get("leg") or "", tags.get("carrier") or "")
+        ser = self.series.get(key)
+        if ser is None:
+            ser = self.series[key] = RFSeries(key)
+        sec = int(math.floor(t + 0.5))
+        s = ser.samples.get(sec)
+        if s is None:
+            s = ser.samples[sec] = RFSample()
+        if meas == "cell_nwinfo":
+            s.nw = (tags.get("rat", ""), tags.get("band", ""))
+        elif meas == "cell_serving_lte":
+            s.lte = serving_put(s.lte, tags, fields)
+        elif meas == "cell_serving_nr":
+            if (tags.get("mode") or ("sa" if "cellid" in fields else "nsa")).lower() == "sa":
+                s.sa = serving_put(s.sa, tags, fields)
+            else:
+                s.nsa = True
+        elif meas == "cell_ca":
+            cct = tags.get("cc_type")
+            if cct == "pcc" or (not cct and tags.get("cc_seq") == "1"):
+                s.pcc = serving_put(s.pcc, tags, fields)
+                s.pcc[7] = tags.get("rat", "")
+        elif meas == "cell_rxpath":
+            rx = s.rx
+            if rx is None:
+                rx = s.rx = {}
+            lst = rx.get((tags.get("rat") or "").lower())
+            if lst is None:
+                lst = rx[(tags.get("rat") or "").lower()] = [None] * 12
+            for k, v in fields.items():
+                lst[RX_AT[k]] = v
+        elif meas == "cell_monitor":
+            s.up = fields["up"]
+
+
+def serving_put(cur, tags, fields):
+    """The fields of a serving cell or carrier line into its 8 places."""
+    if cur is None:
+        cur = [None] * 8
+    if tags.get("band"):
+        cur[0] = tags["band"]
+    for k, v in fields.items():
+        i = SERVING_AT.get(k)
+        if i is not None:
+            cur[i] = v
+    return cur
+
+
+def read_rf_lp(fh, rf, precision):
+    for line in fh:
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        rf.records += 1
+        m = LP_MEAS.match(line)
+        if m and m.group() in RF_KNOWN_UNUSED:         # a third of the lines, none of them used
+            rf.unused[m.group()] += 1
+            continue
+        try:
+            meas, tags, fields, ts = lp_parse(line)
+        except (ValueError, OverflowError):
+            rf.bad += 1
+            continue
+        if ts is None:
+            rf.no_time += 1
+            continue
+        rf.add(lp_seconds(ts, precision), meas, tags, fields)
+
+
+def csv_block(head, ann):
+    """How to read the rows under a header: the columns of the time, the
+    measurement, the tags and the fields; None if it lacks the time or the
+    measurement. Tags are the columns named like cell-monitor's tags and those
+    in the group key (#group true); of the rest, a pivoted table has a field."""
+    idx = {c: i for i, c in enumerate(head) if c}
+    if "_time" not in idx or "_measurement" not in idx:
+        return None
+    grp = ann.get("#group") or []
+    tag_cols = [(c, i) for c, i in idx.items() if c not in CSV_RESERVED
+                and (c in RF_TAGS or (i < len(grp) and grp[i] == "true"))]
+    tagset = {c for c, _ in tag_cols}
+    long = "_field" in idx and "_value" in idx
+    return dict(head=head, dflt=ann.get("#default") or [], ti=idx["_time"], mi=idx["_measurement"], tags=tag_cols,
+                long=long, fi=idx.get("_field"), vi=idx.get("_value"),
+                fields=[] if long else [(c, i) for c, i in idx.items() if c not in CSV_RESERVED and c not in tagset])
+
+
+def csv_cell(row, i, dflt):
+    v = row[i] if i < len(row) else ""
+    return dflt[i] if v == "" and i < len(dflt) else v
+
+
+def read_rf_csv(fh, rf):
+    """Annotated CSV as InfluxDB writes it: blocks of annotation rows (#group,
+    #datatype, #default) and a header row, then the rows of one table or more;
+    a blank line ends a block. A row is one field (columns _field and _value)
+    or, pivoted, a whole point (a column per field)."""
+    ann, blk, head = {}, None, None
+    for row in csv.reader(fh):
+        if not row or not any(row):
+            ann, head = {}, None
+            continue
+        if row[0].startswith("#"):
+            if head is not None:          # annotations again: a new block, even with no blank line before
+                ann = {}
+            ann[row[0]] = row
+            head = None
+            continue
+        if head is None:
+            head = [c.strip() for c in row]
+            blk = csv_block(head, ann)
+            continue
+        if row == head:
+            continue
+        if blk is None:
+            rf.no_cols += 1
+            continue
+        d = blk["dflt"]
+        rf.records += 1
+        meas = csv_cell(row, blk["mi"], d)
+        if blk["long"]:
+            fld = csv_cell(row, blk["fi"], d)
+            if not rf.wants(meas, fld):
+                continue
+        t = csv_time(csv_cell(row, blk["ti"], d))
+        if t is None:
+            rf.bad += 1
+            continue
+        tags = {c: v for c, i in blk["tags"] for v in (csv_cell(row, i, d),) if v != ""}
+        if blk["long"]:
+            fields = {fld: csv_value(csv_cell(row, blk["vi"], d))}
+        else:
+            fields = {c: csv_value(v) for c, i in blk["fields"] for v in (csv_cell(row, i, d),) if v != ""}
+        rf.add(t, meas, tags, fields)
+
+
+def open_text(p):
+    if p.endswith(".gz"):
+        return gzip.open(p, "rt", encoding="utf-8-sig", newline="")
+    return open(p, encoding="utf-8-sig", newline="")
+
+
+def load_rf(paths, precision="auto"):
+    """The RF data of the files, plain or gzipped, each told apart by its
+    content; OSError for one that cannot be read."""
+    rf = RF()
+    for p in paths:
+        with open_text(p) as fh:
+            first = next((ln.strip() for ln in fh if ln.strip()), "")
+        cols = first.split(",")
+        is_csv = first.startswith(("#datatype", "#group", "#default")) or "_time" in cols or "_measurement" in cols
+        before = rf.records
+        with open_text(p) as fh:
+            if is_csv:
+                read_rf_csv(fh, rf)
+            else:
+                read_rf_lp(fh, rf, precision)
+        rf.files.append(dict(file=os.path.basename(p), format="annotated CSV" if is_csv else "line protocol",
+                             unit="rows" if is_csv else "lines", records=rf.records - before))
+    return rf
+
+
+# -- time intervals: lists of [start, end] in seconds, sorted and disjoint
+
+def iv_merge(iv):
+    out = []
+    for a, b in sorted(iv):
+        if b <= a:
+            continue
+        if out and a <= out[-1][1]:
+            out[-1][1] = max(out[-1][1], b)
+        else:
+            out.append([a, b])
+    return out
+
+
+def iv_and(A, B):
+    out, i, j = [], 0, 0
+    while i < len(A) and j < len(B):
+        a, b = max(A[i][0], B[j][0]), min(A[i][1], B[j][1])
+        if a < b:
+            out.append([a, b])
+        if A[i][1] < B[j][1]:
+            i += 1
+        else:
+            j += 1
+    return out
+
+
+def iv_len(A):
+    return sum(b - a for a, b in A)
+
+
+def iv_erode(A, n):
+    """Each interval n shorter at both ends (gone if that leaves nothing)."""
+    return [[a + n, b - n] for a, b in A if b - a > 2 * n]
+
+
+def iv_has(A, starts, t):
+    i = bisect.bisect_right(starts, t) - 1
+    return i >= 0 and t <= A[i][1]
+
+
+def iv_clip(a, b, A, starts):
+    """Length of [a, b] inside A."""
+    tot = 0.0
+    i = max(0, bisect.bisect_right(starts, a) - 1)
+    while i < len(A) and A[i][0] < b:
+        tot += max(0.0, min(b, A[i][1]) - max(a, A[i][0]))
+        i += 1
+    return tot
+
+
+# -- what a sample says
+
+def norm_rat(x):
+    """cell-monitor's rat tags ("fdd_lte", "tdd_nr5g", "nr5g-sa", ...) to lte,
+    nr5g (stand-alone) or nr5g-nsa; anything else as it comes."""
+    x = (x or "").lower().strip()
+    for p in ("fdd_", "tdd_"):
+        if x.startswith(p):
+            x = x[len(p):]
+    if not x:
+        return None
+    if x.startswith("nr5g") or x in ("nr", "5g"):
+        return "nr5g-nsa" if "nsa" in x else "nr5g"
+    if x.startswith("lte") or x == "eutran":
+        return "lte"
+    return x
+
+
+def norm_band(x):
+    """"lte_band_7" and "b7" to b7, "nr5g_band_78" and "n78" to n78; another
+    technology's band as it comes; None for none ("b" alone is what
+    cell-monitor writes when the modem gave no band)."""
+    x = (x or "").lower().strip()
+    if re.fullmatch(r"[bn]\d+", x):
+        return x
+    m = re.fullmatch(r"(lte|eutran)\D*(\d+)", x)
+    if m:
+        return "b" + m.group(2)
+    m = re.fullmatch(r"(nr5g|nr|5g)\D*(\d+)", x)
+    if m:
+        return "n" + m.group(2)
+    return None if x in ("", "b", "n") else x
+
+
+def num(x):
+    return float(x) if isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x) else None
+
+
+def mean_of(v, base):
+    """The mean of the up to 4 paths of a metric (None where a path is inactive)."""
+    v = [num(x) for x in v[base:base + 4]]
+    v = [x for x in v if x is not None]
+    return sum(v) / len(v) if v else None
+
+
+def derive(s):
+    """What one sample says: the RAT, the band, three ways to name the serving
+    cell, and RSRP, RSRQ and SINR from three places (the serving cell line,
+    the rx paths, the primary carrier)."""
+    nw, lte, sa, pcc, rx = s.nw, s.lte, s.sa, s.pcc, s.rx
+    rat = norm_rat(nw[0]) if nw else None
+    if rat is None:
+        rat = "nr5g" if sa else "lte" if lte else norm_rat(pcc[7]) if pcc else None
+    band = norm_band(nw[1]) if nw else None
+    if band is None:
+        band = next((b for b in (norm_band(d[0]) for d in (lte, sa, pcc) if d) if b), None)
+    srv = sa if (rat == "nr5g" and sa) else (lte or sa)    # in NSA, the LTE anchor
+    r = {"rat": rat, "band": band, "nsa": s.nsa, "up": s.up}
+    r["cells"] = {}
+    if srv and num(srv[1]) is not None:
+        r["cells"]["cellid"] = int(srv[1])
+    if srv and num(srv[2]) is not None:
+        r["cells"]["pci"] = (int(srv[2]), num(srv[3]))
+    if pcc and num(pcc[2]) is not None:
+        r["cells"]["pcc"] = (int(pcc[2]), num(pcc[3]))
+    r["m"] = {"serving": tuple(num(srv[i]) for i in (4, 5, 6)) if srv else (None,) * 3,
+              "ca": tuple(num(pcc[i]) for i in (4, 5, 6)) if pcc else (None,) * 3}
+    path = None
+    if rx:
+        path = rx.get("nr5g" if rat == "nr5g" else "lte") or (next(iter(rx.values())) if len(rx) == 1 else None)
+    r["m"]["rxpath"] = tuple(mean_of(path, i) for i in (0, 4, 8)) if path else (None,) * 3
+    return r
+
+
+class Timeline:
+    """One modem's samples in the engine's clock: for each, how long it holds
+    (until the next sample, at most RF_GAP_K intervals), and the values."""
+
+
+def build_timeline(ser, off):
+    ts = sorted(ser.samples)
+    tl = Timeline()
+    gaps = [b - a for a, b in zip(ts, ts[1:])]
+    tl.interval = float(statistics.median(gaps)) if gaps else None
+    cap = RF_GAP_K * tl.interval if tl.interval else 0
+    tl.t = [t + off for t in ts]
+    tl.w = [min(g, cap) for g in gaps] + [tl.interval or 0]
+    tl.cover = iv_merge([[t, t + w] for t, w in zip(tl.t, tl.w)])
+    rows = [derive(ser.samples[t]) for t in ts]
+    tl.rat = [r["rat"] for r in rows]
+    tl.band = [r["band"] for r in rows]
+    tl.nsa = [r["nsa"] for r in rows]
+    tl.down = sum(1 for r in rows if r["up"] is not None and r["up"] == 0)
+    # One source for the metrics and one way to name the cell for the whole
+    # series, so a post that lacks a line does not make the values jump
+    # between sources: the first of the order that has at least half as many
+    # samples as the one with most.
+    order = ("serving", "rxpath", "ca")
+    have = {k: sum(1 for r in rows if any(v is not None for v in r["m"][k])) for k in order}
+    tl.source = next((k for k in order if have[k] and have[k] * 2 >= max(have.values())), None)
+    tl.rsrp, tl.rsrq, tl.sinr = ([r["m"][tl.source][i] if tl.source else None for r in rows] for i in range(3))
+    korder = ("cellid", "pci", "pcc")
+    kc = {k: sum(1 for r in rows if k in r["cells"]) for k in korder}
+    tl.cell_kind = next((k for k in korder if kc[k] and kc[k] * 2 >= max(kc.values())), None)
+    tl.cell = [r["cells"].get(tl.cell_kind) for r in rows]
+    return tl
+
+
+def changes_of(tl, kind):
+    """(times a value changed, [start, end] spans in which a change would have
+    shown). Two readings of a value count only if no more than RF_GAP_K
+    intervals lie between them: after a longer hole nothing can be said."""
+    vals = getattr(tl, kind)
+    cap = RF_GAP_K * tl.interval if tl.interval else 0
+    times, spans, last_t, last_v = [], [], None, None
+    for t, v in zip(tl.t, vals):
+        if v is None:
+            continue
+        if last_t is not None and t - last_t <= cap:
+            spans.append((last_t, t))
+            if v != last_v:
+                times.append(t)
+        last_t, last_v = t, v
+    return times, spans
+
+
+# -- series to links
+
+def map_series(key, meta, maps):
+    """(link, how, reason): the link a series belongs to by its leg tag (a
+    label, else a name), by its carrier when it has no leg, or by --rf-map."""
+    cpe, modem, leg, car = key
+
+    def by(i, s):
+        return [n for n, m in meta.items() if m[i] and san_tag(m[i]) == s]
+
+    mine = {san_tag(x) for x in (leg, car, modem) if x}
+    for k, v in maps:
+        if k in mine:
+            hit = by(1, v) or by(0, v) or [n for n in meta if san_tag(n) == v]
+            if len(hit) == 1:
+                return hit[0], "map", ""
+            return None, "", f"--rf-map {k}={v}: " + ("no link has that label or name" if not hit else f"{len(hit)} links have it")
+    if leg:
+        s = san_tag(leg)
+        for i, what in ((1, "label"), (0, "name")):
+            hit = by(i, s)
+            if len(hit) == 1:
+                return hit[0], what, ""
+            if hit:
+                return None, "", f"leg {leg!r} is the {what} of {len(hit)} links ({', '.join(hit)})"
+        return None, "", f"leg {leg!r} is no link's label or name"
+    if car:
+        s = san_tag(car)
+        hit = [n for n, m in meta.items() if m[1] and s in san_tag(m[1])]
+        if len(hit) == 1:
+            return hit[0], "carrier", ""
+        if hit:
+            return None, "", f"no leg, and carrier {car!r} is in the label of {len(hit)} links ({', '.join(hit)})"
+        return None, "", f"no leg, and carrier {car!r} is in no link's label"
+    return None, "", "neither a leg nor a carrier tag"
+
+
+def pairing_notes(rows, meta):
+    """A series whose carrier tag is not in its link's label while another
+    carrier's name is: the leg pairing of cell-monitor is probably crossed."""
+    carriers = {san_tag(r["carrier"]) for r in rows if r["carrier"]}
+    notes = []
+    for r in rows:
+        if not r["link"] or not r["carrier"] or not meta[r["link"]][1]:
+            continue
+        lab, mine = san_tag(meta[r["link"]][1]), san_tag(r["carrier"])
+        other = sorted(c for c in carriers if c != mine and c in lab)
+        if mine not in lab and other:
+            notes.append(f"{r['cpe_id']}/{r['modem_id']} has leg {r['leg']!r} (link {r['link']}) but carrier {r['carrier']!r}, "
+                         f"and that link's label names {other[0]!r}: MODEMn_LEG and MODEMn_CARRIER of the CPE may be crossed")
+    return notes
+
+
+# -- statistics
+
+def binom_logs(ks, n, q):
+    lq, lp, lg = math.log(q), math.log1p(-q), math.lgamma
+    return [lg(n + 1) - lg(k + 1) - lg(n - k + 1) + k * lq + (n - k) * lp for k in ks]
+
+
+def binom_tail(lo, hi, n, q):
+    """P(lo <= X <= hi), X ~ Binomial(n, q)."""
+    lo, hi = max(lo, 0), min(hi, n)
+    if lo > hi:
+        return 0.0
+    if q <= 0:
+        return 1.0 if lo == 0 else 0.0
+    if q >= 1:
+        return 1.0 if hi == n else 0.0
+    t = binom_logs(range(lo, hi + 1), n, q)
+    m = max(t)
+    return min(1.0, math.exp(m) * sum(math.exp(x - m) for x in t))
+
+
+def thin(times, gap):
+    """The events at least gap seconds after the last one kept: episodes
+    whose windows do not share time, which is what the tests assume."""
+    out = []
+    for e in sorted(times):
+        if not out or e - out[-1] >= gap:
+            out.append(e)
+    return out
+
+
+def rank_of(x, base):
+    """Share of the sorted baseline below x (half of the ties)."""
+    return (bisect.bisect_left(base, x) + bisect.bisect_right(base, x)) / 2 / len(base)
+
+
+def rank_test(vals, base):
+    """Mean rank of vals in base (0.5: no difference) and the two-sided p of
+    its z; each rank is uniform if the values come from the same
+    distribution, with variance 1/12 (ties only make that larger)."""
+    if not vals or not base:
+        return None, None, None
+    mr = sum(rank_of(v, base) for v in vals) / len(vals)
+    z = (mr - 0.5) * math.sqrt(12 * len(vals))
+    return mr, z, math.erfc(abs(z) / math.sqrt(2))
+
+
+class Means:
+    """(time, value) pairs with prefix sums, for the mean over a span."""
+
+    def __init__(self, pairs):
+        pairs = sorted(pairs)
+        self.t = [p[0] for p in pairs]
+        self.c = [0.0]
+        for _, v in pairs:
+            self.c.append(self.c[-1] + v)
+
+    def mean(self, a, b, need):
+        i, j = bisect.bisect_left(self.t, a), bisect.bisect_left(self.t, b)
+        return (self.c[j] - self.c[i]) / (j - i) if j - i >= need else None
+
+
+def hour_of(t, utc_offset_h):
+    return int(((t / 3600.0) + utc_offset_h) % 24)
+
+
+def cross_row(evs, eps, cs, N, V):
+    """One kind of event against one kind of change. cs: the sorted change
+    times. An event has one if a change lies within N s of its start; chance
+    is the part of V (the time where an event can be judged) within N s of a
+    change, which is the probability that an event placed at random would
+    have one. The test is on the episodes."""
+    n, vlen = len(evs), iv_len(V)
+    if not cs:
+        return dict(n=n, hits=0, share_pct=0.0 if n else None, chance_pct=0.0, expected=0.0, before=0, after=0,
+                    episodes=len(eps), episode_hits=0, p=None, reading="no changes")
+
+    def hit(e, lo, hi):
+        i = bisect.bisect_left(cs, e + lo)
+        return i < len(cs) and cs[i] <= e + hi
+
+    def chance(lo, hi):
+        W = iv_merge([[c - hi, c - lo] for c in cs])
+        return iv_len(iv_and(W, V)) / vlen if vlen else 0.0
+
+    q = chance(-N, N)
+    hits = sum(hit(e, -N, N) for e in evs)
+    eh = sum(hit(e, -N, N) for e in eps)
+    p = binom_tail(eh, len(eps), len(eps), q) if eps else None
+    if len(eps) < MIN_EPISODES:
+        reading = "too few events"
+    elif p < P_READ:
+        reading = "more than chance"
+    elif binom_tail(0, eh, len(eps), q) < P_READ:
+        reading = "less than chance"
+    else:
+        reading = "about chance"
+    return dict(n=n, hits=hits, share_pct=100 * hits / n if n else None, chance_pct=100 * q, expected=n * q,
+                before=sum(hit(e, -N, -1e-9) for e in evs), after=sum(hit(e, 0, N) for e in evs),
+                before_chance_pct=100 * chance(-N, 0), after_chance_pct=100 * chance(0, N),
+                episodes=len(eps), episode_hits=eh, p=p, reading=reading)
+
+
+def sinr_before(eps, S, base_times, need, need_trend):
+    """The SINR of the minute before each episode against the link's own: the
+    mean over [e-60, e) of each event, and the same mean at every RF sample
+    time, so the baseline is the same statistic. The trend is that mean minus
+    the mean of the 4 minutes before it."""
+    def level(e):
+        return S.mean(e - RF_PRE_S, e, need)
+
+    def trend(e):
+        a, b = S.mean(e - RF_PRE_S, e, need), S.mean(e - RF_TREND_S - RF_PRE_S, e - RF_PRE_S, need_trend)
+        return None if a is None or b is None else a - b
+
+    out = {}
+    for what, fn in (("level", level), ("trend", trend)):
+        base = sorted(x for x in (fn(t) for t in base_times) if x is not None)
+        vals = sorted(x for x in (fn(e) for e in eps) if x is not None)
+        o = dict(n=len(vals), median=pct(vals, 50), baseline_median=pct(base, 50), baseline_n=len(base))
+        if vals and base:
+            mr, z, p = rank_test(vals, base)
+            o.update(mean_rank_pct=100 * mr, z=z, p=p)
+            if what == "level":
+                thr = pct(base, 10)
+                o.update(baseline_p10=thr, under_p10=sum(1 for v in vals if v < thr),
+                         expected_under_p10=len(vals) * bisect.bisect_left(base, thr) / len(base))
+        if len(vals) < MIN_EPISODES or o.get("p") is None:
+            o["reading"] = "too few events"
+        elif o["p"] < P_READ:
+            low = o["z"] < 0
+            o["reading"] = ("lower than usual" if low else "higher than usual") if what == "level" else ("falls" if low else "rises")
+        else:
+            o["reading"] = "no clear difference" if what == "level" else "no clear trend"
+        out[what] = o
+    return out
+
+
+def radio_link(name, tls, cen, events, o, utc_offset_h):
+    """All the radio figures of one link. cen: the intervals (s) where the
+    recording watched it; events: kind -> start times (s) in the engine's clock."""
+    ints = [tl.interval for tl in tls if tl.interval]
+    interval = float(statistics.median(ints)) if ints else None
+    N = o.window or max(RF_MIN_WINDOW_S, 2 * (interval or 0))
+    rfcov = iv_merge([iv for tl in tls for iv in tl.cover])
+    D = iv_and(cen, rfcov)                       # recorded and with RF data
+    V = iv_and(cen, iv_erode(rfcov, N))          # also N s of RF data either side
+    Ds, Vs = [x[0] for x in D], [x[0] for x in V]
+    r = dict(window_s=N, interval_s=interval, rf_hours=round(iv_len(rfcov) / 3600, 3),
+             recorded_hours=round(iv_len(cen) / 3600, 3), hours=round(iv_len(D) / 3600, 3),
+             series=len(tls), sources=sorted({tl.source for tl in tls if tl.source}),
+             cell_key=sorted({tl.cell_kind for tl in tls if tl.cell_kind}), modem_down_samples=sum(tl.down for tl in tls))
+    secs = {"rat": collections.Counter(), "band": collections.Counter()}
+    nsa_s = tot_s = 0.0
+    vals = {"sinr": [], "rsrq": [], "rsrp": []}
+    hours = collections.defaultdict(lambda: dict(rf=0.0, sinr=[], rat=0, band=0, cell=0, outage=0, upload_mute=0, download_mute=0))
+    sinr_pairs = []
+    for tl in tls:
+        for i, t in enumerate(tl.t):
+            if tl.sinr[i] is not None:
+                sinr_pairs.append((t, tl.sinr[i]))
+            c = iv_clip(t, t + tl.w[i], D, Ds)
+            if c <= 0:
+                continue
+            tot_s += c
+            secs["rat"][tl.rat[i]] += c
+            secs["band"][tl.band[i]] += c
+            nsa_s += c if tl.nsa[i] else 0.0
+            h = hours[hour_of(t, utc_offset_h)]
+            h["rf"] += c
+            if iv_has(D, Ds, t):
+                for m in vals:
+                    v = getattr(tl, m)[i]
+                    if v is not None:
+                        vals[m].append(v)
+                        if m == "sinr":
+                            h["sinr"].append(v)
+    r["rat_pct"] = {k or "unknown": 100 * v / tot_s for k, v in secs["rat"].items()} if tot_s else {}
+    r["band_pct"] = {k or "unknown": 100 * v / tot_s for k, v in secs["band"].items()} if tot_s else {}
+    r["nr_nsa_pct"] = 100 * nsa_s / tot_s if tot_s else None
+    for m, v in vals.items():
+        r[m] = dict(n=len(v), **{f"p{p}": pct(v, p) for p in (10, 50, 90)})
+    # Changes, per kind: the times (all of them, for the windows), how many
+    # fell in D, and the hours in which one could have been seen.
+    chg, r["changes"] = {}, {}
+    for kind in ("rat", "band", "cell"):
+        times, expo = [], 0.0
+        for tl in tls:
+            ts, spans = changes_of(tl, kind)
+            times += ts
+            expo += sum(iv_clip(a, b, D, Ds) for a, b in spans)
+        chg[kind] = sorted(times)
+        inside = [c for c in times if iv_has(D, Ds, c)]
+        for c in inside:
+            hours[hour_of(c, utc_offset_h)][kind] += 1
+        r["changes"][kind] = dict(n=len(inside), observed_hours=round(expo / 3600, 3),
+                                  per_hour=len(inside) / (expo / 3600) if expo else None)
+    chg["any"] = sorted({c for k in ("rat", "band", "cell") for c in chg[k]})
+    r["changes"]["any"] = dict(n=len({c for c in chg["any"] if iv_has(D, Ds, c)}))
+    # Events: outages and mutes against the changes, and the SINR before them.
+    gap = max(EPISODE_S, 2 * N)
+    need = 1 if (interval or 0) > 30 else 2
+    S = Means(sinr_pairs)
+    base_t = [t for t in S.t if iv_has(V, Vs, t)]
+    r["events"] = {}
+    for kind, _ in EVENT_KINDS:
+        evs = sorted(events.get(kind, []))
+        for e in evs:
+            if iv_has(D, Ds, e):
+                hours[hour_of(e, utc_offset_h)][kind] += 1
+        ev = sorted(e for e in evs if iv_has(V, Vs, e))
+        if not evs:
+            continue
+        eps = thin(ev, gap)
+        x = dict(events=len(evs), in_rf=len(ev), episodes=len(eps), episode_gap_s=gap,
+                 changes={c: cross_row(ev, eps, chg[c], N, V) for c in CROSS_KINDS})
+        x["sinr_before"] = sinr_before(eps, S, base_t, need, 3) if vals["sinr"] else None
+        r["events"][kind] = x
+    r["by_hour"] = {h: dict(rf_hours=round(v["rf"] / 3600, 3), sinr_p50=pct(v["sinr"], 50),
+                            **{k: v[k] for k in ("rat", "band", "cell", "outage", "upload_mute", "download_mute")})
+                    for h, v in sorted(hours.items()) if v["rf"] > 0}
+    return r
+
+
+def jsonable(x):
+    """Strict JSON: no NaN or infinity (None instead), keys as text."""
+    if isinstance(x, dict):
+        return {str(k): jsonable(v) for k, v in x.items()}
+    if isinstance(x, (list, tuple)):
+        return [jsonable(v) for v in x]
+    if isinstance(x, float):
+        return None if not math.isfinite(x) else sig(x, 6)
+    return x
+
+
+def iso(t):
+    return None if t is None else time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(t))
+
+
+def summarize_radio(a, rf, o, utc_offset_h):
+    """The radio section: o has offset (s added to the RF times), window (N, or
+    None), maps ([(leg or carrier, link)]) and the files read."""
+    meta, L = a["meta"], a["L"]
+    notes = []
+    out = dict(files=rf.files, offset_s=o.offset, records=rf.records, series=[], unmapped=[], links={},
+               links_without_rf=[], notes=notes)
+    if rf.no_time:
+        notes.append(f"{rf.no_time} line-protocol lines of the measurements used without a timestamp skipped (cell-monitor posts none: "
+                     "export from InfluxDB, which stamps them, not the output of `cell-monitor -n`)")
+    if rf.bad:
+        notes.append(f"{rf.bad} lines or rows that could not be read skipped")
+    if rf.no_cols:
+        notes.append(f"{rf.no_cols} CSV rows under a header without _time or _measurement skipped "
+                     "(a pivot() or keep() that dropped them?)")
+    if rf.unknown:
+        notes.append("measurements this does not know, skipped: " + ", ".join(f"{k} ({v})" for k, v in sorted(rf.unknown.items())))
+    rows, tls = [], {}
+    for key in sorted(rf.series):
+        ser = rf.series[key]
+        link, how, why = map_series(key, meta, o.maps)
+        tl = build_timeline(ser, o.offset)
+        tls[key] = tl
+        row = dict(cpe_id=key[0], modem_id=key[1], leg=key[2], carrier=key[3], samples=len(ser.samples),
+                   interval_s=tl.interval, first=iso(tl.t[0]) if tl.t else None, last=iso(tl.t[-1]) if tl.t else None,
+                   modem_down_samples=tl.down, source=tl.source, cell_key=tl.cell_kind, link=link, how=how, reason=why)
+        rows.append(row)
+        if tl.sinr and any(v is not None and v > 50 for v in tl.sinr):
+            notes.append(f"{key[0]}/{key[1]}: SINR up to {max(v for v in tl.sinr if v is not None):g}: not dB? "
+                         "some Quectel firmware reports it in 1/5 dB from -20 dB (0 to 250); this reads it as dB")
+        if tl.interval is None:
+            notes.append(f"{key[0]}/{key[1]}: a single sample, no coverage")
+    out["series"] = rows
+    out["unmapped"] = [r for r in rows if not r["link"]]
+    notes += pairing_notes(rows, meta)
+    by_link = collections.defaultdict(list)
+    for key, row in zip(sorted(rf.series), rows):
+        if row["link"]:
+            by_link[row["link"]].append(key)
+    ceng_all = {}
+    for n in a["links"]:
+        ceng_all[n] = iv_merge([[x / 1000 for x in iv] for iv in L[n]["cover"]])
+    for n in a["links"]:
+        keys = by_link.get(n)
+        if not keys:
+            out["links_without_rf"].append(n)
+            continue
+        group = [tls[k] for k in keys]
+        if len(keys) > 1:
+            cv = [iv_and(ceng_all[n], t.cover) for t in group]
+            for i in range(len(cv)):
+                for j in range(i + 1, len(cv)):
+                    both = iv_len(iv_and(cv[i], cv[j]))
+                    if both > 0.5 * max(1.0, min(iv_len(cv[i]), iv_len(cv[j]))):
+                        notes.append(f"link {n}: two RF series cover the same time ({'/'.join(keys[i][:2])} and "
+                                     f"{'/'.join(keys[j][:2])}): two modems with the same leg?")
+        ev = {"outage": [x / 1000 for x in L[n]["starts"]],
+              "upload_mute": [x / 1000 for x in L[n]["mute_starts"]],
+              "download_mute": [x / 1000 for x in L[n]["dmute_starts"]]}
+        out["links"][n] = radio_link(n, group, ceng_all[n], ev, o, utc_offset_h)
+        out["links"][n]["rf_series"] = ["/".join(k[:2]) for k in keys]
+    # How the two clocks overlap, for the reader to check before trusting anything.
+    allrf = iv_merge([iv for tl in tls.values() for iv in tl.cover])
+    allc = iv_merge([iv for v in ceng_all.values() for iv in v])
+    out["overlap_hours"] = round(iv_len(iv_and(allrf, allc)) / 3600, 3)
+    out["rf_range"] = [iso(allrf[0][0]), iso(allrf[-1][1])] if allrf else None
+    out["recording_range"] = [iso(allc[0][0]), iso(allc[-1][1])] if allc else None
+    if not rf.series:
+        notes.append("no RF series in the files: nothing of the measurements cell-monitor writes could be read from them")
+    elif not out["overlap_hours"]:
+        notes.append("the RF data and the recording share no time: check the clocks (--rf-offset) and the time zone of the export")
+    return jsonable(out)
+
+
+# -- the report
+
+def trio(d):
+    return "/".join(f(d.get(f"p{p}")) for p in (10, 50, 90)) if d and d.get("n") else "-"
+
+
+def shares(d, top=4):
+    if not d:
+        return "-"
+    items = sorted(d.items(), key=lambda kv: (-kv[1], kv[0]))
+    s = " ".join(f"{k} {v:.0f} %" for k, v in items[:top] if v >= 0.5)
+    rest = sum(v for k, v in items[top:]) + sum(v for k, v in items[:top] if v < 0.5)
+    return s + (f" other {rest:.0f} %" if rest >= 0.5 else "")
+
+
+def fpv(p):
+    return "-" if p is None else "<0.001" if p < 0.001 else f"{p:.2g}"
+
+
+def report_radio(r, utc_offset_h):
+    w = print
+    w("\n## Radio\n")
+    w("The RF metrics of cell-monitor against the links. The times of the RF data are InfluxDB's clock when each "
+      "POST came in (cell-monitor sends none), in whole seconds"
+      + (f", moved by {r['offset_s']:g} s" if r["offset_s"] else "") + "; they have to agree with the Pi's. "
+      "Everything below is over the time where the recording watched the link and there is RF data for it.\n")
+    for fl in r["files"]:
+        w(f"- {fl['file']}: {fl['format']}, {fl['records']} {fl['unit']}")
+    w(f"- RF data from {(r['rf_range'] or ['-', '-'])[0]} to {(r['rf_range'] or ['-', '-'])[1]} UTC; "
+      f"recording from {(r['recording_range'] or ['-', '-'])[0]} to {(r['recording_range'] or ['-', '-'])[1]}; "
+      f"{r['overlap_hours']} h in common.")
+    for n in r["notes"]:
+        w(f"- note: {n}")
+    w("\n### RF series and links\n")
+    w("| RF series (cpe/modem) | leg | carrier | link | by | samples | interval s | from | to | modem down |")
+    w("| --- | --- | --- | --- | --- | ---: | ---: | --- | --- | ---: |")
+    for s in r["series"]:
+        w(f"| {s['cpe_id']}/{s['modem_id']} | {s['leg'] or '-'} | {s['carrier'] or '-'} | {s['link'] or 'NOT MAPPED'} | "
+          f"{s['how'] or '-'} | {s['samples']} | {f(s['interval_s'])} | {s['first']} | {s['last']} | {s['modem_down_samples']} |")
+    if r["unmapped"] or r["links_without_rf"]:
+        w()
+    for s in r["unmapped"]:
+        w(f"- not mapped: {s['cpe_id']}/{s['modem_id']} (leg {s['leg'] or '-'}, carrier {s['carrier'] or '-'}): {s['reason']}")
+    if r["links_without_rf"]:
+        w(f"- links without RF data: {', '.join(r['links_without_rf'])}")
+    if not r["links"]:
+        w("\nNo link has RF data in common with the recording.")
+        return
+    w("\n### Radio per link\n")
+    w("Time share of each RAT and band; p10/p50/p90 of the samples (SINR and RSRQ in dB, RSRP in dBm) from the source "
+      "named (serving: the serving cell line, in NSA the LTE anchor's; rxpath: the mean of the rx paths; ca: the primary "
+      "carrier). NSA: time with an NR leg next to LTE.\n")
+    w("| link | h | RAT | band | NSA % | SINR p10/p50/p90 | RSRQ | RSRP | n | source |")
+    w("| --- | ---: | --- | --- | ---: | --- | --- | --- | ---: | --- |")
+    for n, d in r["links"].items():
+        w(f"| {n} | {f(d['hours'], 2)} | {shares(d['rat_pct'])} | {shares(d['band_pct'])} | {f(d['nr_nsa_pct'], 0)} | "
+          f"{trio(d['sinr'])} | {trio(d['rsrq'])} | {trio(d['rsrp'])} | {d['sinr']['n']} | {', '.join(d['sources']) or '-'} |")
+    w("\n### Changes\n")
+    w("Counts and rate per hour in which one could be seen. A change is a new value against the last one read; across a "
+      "hole of more than 3 RF intervals nothing is counted. The cell is named by the cell id, else the PCI and "
+      "frequency, else the primary carrier's.\n")
+    w("| link | N s | RAT | band | cell | cell named by | RF series |")
+    w("| --- | ---: | --- | --- | --- | --- | --- |")
+    for n, d in r["links"].items():
+        c = d["changes"]
+        w(f"| {n} | {f(d['window_s'], 0)} | " + " | ".join(f"{c[k]['n']} ({f(c[k]['per_hour'], 1)}/h)" for k in ("rat", "band", "cell"))
+          + f" | {', '.join(d['cell_key']) or '-'} | {', '.join(d['rf_series'])} |")
+    w("\n### Radio changes and link events\n")
+    w("For each event start in the recording, with RF data N s either side: has the RAT, band or cell changed within N s "
+      "(any: one of the three)? Chance: the share of that time that is within N s of a change, which an event at a "
+      "random time would have; in brackets, the hits it implies. Before and after: hits with the change in the N s "
+      "before the start, or at or after it. The p-value (binomial, one-sided) and the reading use the episodes, the "
+      "events at least max(60 s, 2N) apart, because events in a burst share their window; they need "
+      f"{MIN_EPISODES} episodes. Part of an excess can be the hour of the day (see the table by hour): both kinds of "
+      "event may be more frequent at the same hours. Judged: the events with RF data N s either side. A mute is the "
+      "engine's standby of a slow link (story 006).\n")
+    w("| link | event | judged of all | change | within N s | by chance | before / after | episodes | episode hits | p | reading |")
+    w("| --- | --- | ---: | --- | --- | --- | --- | ---: | ---: | ---: | --- |")
+    for n, d in r["links"].items():
+        for kind, label in EVENT_KINDS:
+            x = d["events"].get(kind)
+            if not x:
+                continue
+            for c in CROSS_KINDS:
+                y = x["changes"][c]
+                w(f"| {n} | {label} | {x['in_rf']} of {x['events']} | {c} | {y['hits']} ({f(y['share_pct'], 0)} %) | "
+                  f"{f(y['chance_pct'], 1)} % ({f(y['expected'], 1)}) | {y['before']} / {y['after']} | {y['episodes']} | "
+                  f"{y['episode_hits']} | {fpv(y['p'])} | {y['reading']} |")
+    w("\n### SINR before link events\n")
+    w("The mean SINR of the minute before each episode against the same mean at every RF sample time of the link (so "
+      "the baseline has the same spread). Level: the mean rank of the episodes in that baseline (50 % is no "
+      "difference; low is a lower SINR than usual), and how many fell under the baseline's p10 (the baseline "
+      "gives the expected count). Trend: that minute minus the 4 before it; negative is falling. The reading needs "
+      f"{MIN_EPISODES} episodes and p under {P_READ}; with several rows, one of them under {P_READ} by chance is "
+      "to be expected now and then, so the counts matter more than the word.\n")
+    w("| link | event | episodes | minute before p50 dB | baseline p50 | under p10 (expected) | level: rank, p | level | "
+      "trend p50 dB | trend: rank, p | trend |")
+    w("| --- | --- | ---: | ---: | ---: | --- | --- | --- | ---: | --- | --- |")
+    for n, d in r["links"].items():
+        for kind, label in EVENT_KINDS:
+            x = d["events"].get(kind)
+            if not x:
+                continue
+            sb = x["sinr_before"]
+            if not sb:
+                w(f"| {n} | {label} | {x['episodes']} | - | - | - | - | no SINR in the RF data | - | - | - |")
+                continue
+            lv, tr = sb["level"], sb["trend"]
+            w(f"| {n} | {label} | {lv['n']} of {x['episodes']} | {f(lv['median'])} | {f(lv['baseline_median'])} | "
+              f"{lv.get('under_p10', '-')} ({f(lv.get('expected_under_p10'), 1)}) | "
+              f"{f(lv.get('mean_rank_pct'), 0)} %, {fpv(lv.get('p'))} | {lv['reading']} | {f(tr['median'])} | "
+              f"{f(tr.get('mean_rank_pct'), 0)} %, {fpv(tr.get('p'))} | {tr['reading']} |")
+    w(f"\n### Radio by hour (UTC{utc_offset_h:+g})\n")
+    w("RF hours with the recording, the changes seen, the median SINR and the link events that began in them.\n")
+    w("| link | hour | RF h | RAT chg | band chg | cell chg | SINR p50 | outages | upload mutes | download mutes |")
+    w("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
+    for n, d in r["links"].items():
+        for h, v in d["by_hour"].items():
+            w(f"| {n} | {int(h):02d} | {f(v['rf_hours'], 2)} | {v['rat']} | {v['band']} | {v['cell']} | {f(v['sinr_p50'])} | "
+              f"{v['outage']} | {v['upload_mute']} | {v['download_mute']} |")
+
+
+class RadioOpts:
+    def __init__(self, offset=0.0, window=None, maps=()):
+        self.offset, self.window, self.maps = offset, window, list(maps)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("paths", nargs="+", help="cengarde-rec directories or files (.jsonl, .jsonl.gz)")
+    ap.add_argument("paths", nargs="*", help="cengarde-rec directories or files (.jsonl, .jsonl.gz)")
     ap.add_argument("--utc-offset", type=float, default=0.0, help="hours added to UTC for the hourly table (Chile: -3 or -4)")
     ap.add_argument("--json", help="also write the summary as JSON here")
+    ap.add_argument("--rf", nargs="+", action="extend", metavar="FILE",
+                    help="cell-monitor's RF metrics from InfluxDB: annotated CSV or line protocol (plain or .gz); "
+                         "it takes every name after it, so put the recordings before it")
+    ap.add_argument("--rf-offset", type=float, default=0.0, metavar="S",
+                    help="seconds added to the RF times to put them on the Pi's clock (InfluxDB's 5 s ahead of the Pi: -5)")
+    ap.add_argument("--rf-window", type=float, metavar="S",
+                    help="N, the window of the crossing with the link events (default: 2 RF intervals, at least 20 s)")
+    ap.add_argument("--rf-map", action="append", default=[], metavar="LEG=LINK",
+                    help="a leg (or carrier, or modem_id) tag that maps to a link by hand; repeat for more")
+    ap.add_argument("--rf-precision", choices=("auto", "s", "ms", "us", "ns"), default="auto",
+                    help="unit of the timestamps of line-protocol lines (default: by size)")
     o = ap.parse_args(argv)
+    if not o.paths:
+        ap.error("no recordings: name them before --rf, which takes every name after it "
+                 "(fieldrec.py DIR --rf rf.csv)")
+    maps = []
+    for m in o.rf_map:
+        k, eq, v = m.partition("=")
+        if not eq or not san_tag(k) or not san_tag(v):
+            ap.error(f"--rf-map {m!r}: expected LEG=LINK")
+        maps.append((san_tag(k), san_tag(v)))
     notes = []
     files = files_of(o.paths)
     if not files:
         print("no recordings found", file=sys.stderr)
         return 1
+    rf = None
+    if o.rf:
+        try:
+            rf = load_rf(o.rf, o.rf_precision)
+        except (OSError, EOFError, UnicodeDecodeError, csv.Error) as e:
+            print(f"cannot read the RF data: {e}", file=sys.stderr)
+            return 1
     segs = segments(read_lines(files, notes), notes)
     if not segs or sum(len(s) for s in segs) < 2:
         print("fewer than two samples", file=sys.stderr)
         return 1
-    s = summarize(analyze(segs, o.utc_offset))
+    a = analyze(segs, o.utc_offset)
+    s = summarize(a)
+    if rf is not None:
+        s["radio"] = summarize_radio(a, rf, RadioOpts(o.rf_offset, o.rf_window, maps), o.utc_offset)
     report(s, notes, o.utc_offset)
     if o.json:
         with open(o.json, "w") as fh:
