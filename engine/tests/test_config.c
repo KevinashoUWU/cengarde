@@ -384,6 +384,277 @@ static void test_config_threads(void)
 	cg_config_free(&a);
 }
 
+/* Parses text expecting an error that names key (and, if given, has more in
+ * it). */
+static void bad(const char *text, const char *key, const char *more)
+{
+	static struct cg_config c;
+	char err[256], warn[512];
+
+	CHECK_EQ(cg_config_parse(&c, text, err, sizeof(err), warn, sizeof(warn)), -1);
+	CHECK(!strncmp(err, key, strlen(key)));
+	CHECK(!more || strstr(err, more) != NULL);
+}
+
+/* Reordering and splitting (story 012): the defaults, the ranges, the mode
+ * words of each end, the weight of a link, and what a reload does with them. */
+static void test_config_bonding(void)
+{
+	static struct cg_config c, o;
+	char err[256], warn[512];
+	const struct cg_link_cfg *l;
+
+	/* The defaults, in both modes; the split of a server follows its client. */
+	CHECK_EQ(cg_config_parse(&c, CLIENT, err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(c.reorder, 1);
+	CHECK_EQ(c.reorder_max_wait_ms, 200);
+	CHECK_EQ(c.reorder_dup_wait_ms, 0);
+	CHECK_EQ(c.reorder_margin_ms, 10);
+	CHECK_EQ(c.reorder_bypass, 128);
+	CHECK_EQ(c.reorder_pool_kb, 8192);
+	CHECK_EQ(c.split, CG_SPLIT_OFF);
+	CHECK_EQ(c.split_small, 256);
+	CHECK(warn[0] == '\0');
+	cg_config_free(&c);
+	CHECK_EQ(cg_config_parse(&c, SERVER, err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(c.reorder, 1);
+	CHECK_EQ(c.reorder_max_wait_ms, 200);
+	CHECK_EQ(c.reorder_dup_wait_ms, 0);
+	CHECK_EQ(c.reorder_margin_ms, 10);
+	CHECK_EQ(c.reorder_bypass, 128);
+	CHECK_EQ(c.reorder_pool_kb, 8192);
+	CHECK_EQ(c.split, CG_SPLIT_CLIENT);
+	CHECK_EQ(c.split_small, 256);
+	CHECK(warn[0] == '\0');
+	cg_config_free(&c);
+	CHECK(!strcmp(cg_split_name(CG_SPLIT_OFF), "off") && !strcmp(cg_split_name(CG_SPLIT_ON), "on") &&
+	      !strcmp(cg_split_name(CG_SPLIT_CLIENT), "client") && !strcmp(cg_split_name(CG_SPLIT_FORCE), "force"));
+
+	/* All of them, in each mode (the same keys, no warning). */
+#define KNOBS                                                                                      \
+	"reorder = no\nreorder_max_wait_ms = 400\nreorder_dup_wait_ms = 20\nreorder_margin_ms = 25\n" \
+	"reorder_bypass = 256\nreorder_pool_kb = 1024\nsplit_small = 512\n"
+	CHECK_EQ(cg_config_parse(&c, CLIENT KNOBS "split = force\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(c.reorder, 0);
+	CHECK_EQ(c.reorder_max_wait_ms, 400);
+	CHECK_EQ(c.reorder_dup_wait_ms, 20);
+	CHECK_EQ(c.reorder_margin_ms, 25);
+	CHECK_EQ(c.reorder_bypass, 256);
+	CHECK_EQ(c.reorder_pool_kb, 1024);
+	CHECK_EQ(c.split_small, 512);
+	CHECK_EQ(c.split, CG_SPLIT_FORCE);
+	CHECK(warn[0] == '\0');
+	cg_config_free(&c);
+	CHECK_EQ(cg_config_parse(&c, SERVER KNOBS "split = off\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(c.reorder, 0);
+	CHECK_EQ(c.reorder_max_wait_ms, 400);
+	CHECK_EQ(c.reorder_dup_wait_ms, 20);
+	CHECK_EQ(c.reorder_margin_ms, 25);
+	CHECK_EQ(c.reorder_bypass, 256);
+	CHECK_EQ(c.reorder_pool_kb, 1024);
+	CHECK_EQ(c.split_small, 512);
+	CHECK_EQ(c.split, CG_SPLIT_OFF);
+	CHECK(warn[0] == '\0');
+	cg_config_free(&c);
+#undef KNOBS
+
+	/* reorder is a yes or no. */
+	{
+		static const char *const yes[] = { "yes", "true", "on", "1" }, *const no[] = { "no", "false", "off", "0" };
+		char text[160];
+
+		for (size_t i = 0; i < CG_ARRAY_SIZE(yes); i++) {
+			snprintf(text, sizeof(text), SERVER "reorder = %s\n", yes[i]);
+			CHECK_EQ(cg_config_parse(&c, text, err, sizeof(err), warn, sizeof(warn)), 0);
+			CHECK_EQ(c.reorder, 1);
+			cg_config_free(&c);
+			snprintf(text, sizeof(text), CLIENT "reorder = %s\n", no[i]);
+			CHECK_EQ(cg_config_parse(&c, text, err, sizeof(err), warn, sizeof(warn)), 0);
+			CHECK_EQ(c.reorder, 0);
+			cg_config_free(&c);
+		}
+		bad(CLIENT "reorder = maybe\n", "reorder", "yes or no");
+		bad(SERVER "reorder = \n", "reorder", "yes or no");
+	}
+
+	/* The ranges, edge by edge, in a client and a server alike. */
+	{
+		static const struct {
+			const char *key;
+			uint32_t min, max;
+			size_t off;
+		} r[] = {
+			{ "reorder_max_wait_ms", 0, 2000, offsetof(struct cg_config, reorder_max_wait_ms) },
+			{ "reorder_margin_ms", 0, 1000, offsetof(struct cg_config, reorder_margin_ms) },
+			{ "reorder_bypass", 0, 2048, offsetof(struct cg_config, reorder_bypass) },
+			{ "reorder_pool_kb", 256, 262144, offsetof(struct cg_config, reorder_pool_kb) },
+			{ "split_small", 0, 2048, offsetof(struct cg_config, split_small) },
+		};
+		char text[160], want[64];
+
+		for (size_t i = 0; i < CG_ARRAY_SIZE(r); i++) {
+			const char *base[2] = { CLIENT, SERVER };
+
+			for (int m = 0; m < 2; m++) {
+				for (int e = 0; e < 2; e++) {
+					uint32_t v = e ? r[i].max : r[i].min;
+
+					snprintf(text, sizeof(text), "%s%s = %u\n", base[m], r[i].key, v);
+					CHECK_EQ(cg_config_parse(&c, text, err, sizeof(err), warn, sizeof(warn)), 0);
+					CHECK_EQ(*(uint32_t *)((char *)&c + r[i].off), v);
+					CHECK(warn[0] == '\0');
+					cg_config_free(&c);
+				}
+				snprintf(want, sizeof(want), "between %u and %u, got", r[i].min, r[i].max);
+				snprintf(text, sizeof(text), "%s%s = %u\n", base[m], r[i].key, r[i].max + 1);
+				bad(text, r[i].key, want);
+				if (r[i].min) {
+					snprintf(text, sizeof(text), "%s%s = %u\n", base[m], r[i].key, r[i].min - 1);
+					bad(text, r[i].key, want);
+				}
+				snprintf(text, sizeof(text), "%s%s = -1\n", base[m], r[i].key);
+				bad(text, r[i].key, "got '-1'");
+				snprintf(text, sizeof(text), "%s%s = fast\n", base[m], r[i].key);
+				bad(text, r[i].key, "got 'fast'");
+				snprintf(text, sizeof(text), "%s%s = 5ms\n", base[m], r[i].key);
+				bad(text, r[i].key, "got '5ms'");
+			}
+		}
+	}
+
+	/* reorder_dup_wait_ms goes up to reorder_max_wait_ms, wherever that is
+	 * set in the file, and no further. */
+	CHECK_EQ(cg_config_parse(&c, CLIENT "reorder_dup_wait_ms = 200\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(c.reorder_dup_wait_ms, 200); /* the default maximum, 200 */
+	cg_config_free(&c);
+	bad(CLIENT "reorder_dup_wait_ms = 201\n", "reorder_dup_wait_ms", "between 0 and 200, got '201'");
+	CHECK_EQ(cg_config_parse(&c, SERVER "reorder_dup_wait_ms = 50\nreorder_max_wait_ms = 100\n", err, sizeof(err),
+				 warn, sizeof(warn)),
+		 0);
+	CHECK_EQ(c.reorder_dup_wait_ms, 50);
+	CHECK_EQ(c.reorder_max_wait_ms, 100);
+	cg_config_free(&c);
+	CHECK_EQ(cg_config_parse(&c, SERVER "reorder_max_wait_ms = 100\nreorder_dup_wait_ms = 100\n", err, sizeof(err),
+				 warn, sizeof(warn)),
+		 0);
+	CHECK_EQ(c.reorder_dup_wait_ms, 100);
+	cg_config_free(&c);
+	bad(SERVER "reorder_max_wait_ms = 100\nreorder_dup_wait_ms = 101\n", "reorder_dup_wait_ms",
+	    "between 0 and 100, got '101'");
+	bad(CLIENT "reorder_dup_wait_ms = 101\nreorder_max_wait_ms = 100\n", "reorder_dup_wait_ms", "got '101'");
+	/* No wait at all: the packets behind a gap never wait. */
+	CHECK_EQ(cg_config_parse(&c, CLIENT "reorder_max_wait_ms = 0\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK(c.reorder_max_wait_ms == 0 && c.reorder_dup_wait_ms == 0);
+	cg_config_free(&c);
+	bad(CLIENT "reorder_max_wait_ms = 0\nreorder_dup_wait_ms = 1\n", "reorder_dup_wait_ms", "between 0 and 0");
+
+	/* The mode words depend on the end: a client has on, a server client. */
+	{
+		static const char *const cw[] = { "off", "on", "force" }, *const sw[] = { "off", "client", "force" };
+		static const int cv[] = { CG_SPLIT_OFF, CG_SPLIT_ON, CG_SPLIT_FORCE };
+		static const int sv[] = { CG_SPLIT_OFF, CG_SPLIT_CLIENT, CG_SPLIT_FORCE };
+		char text[160];
+
+		for (size_t i = 0; i < 3; i++) {
+			snprintf(text, sizeof(text), CLIENT "split = %s\n", cw[i]);
+			CHECK_EQ(cg_config_parse(&c, text, err, sizeof(err), warn, sizeof(warn)), 0);
+			CHECK_EQ(c.split, cv[i]);
+			CHECK(warn[0] == '\0');
+			cg_config_free(&c);
+			snprintf(text, sizeof(text), SERVER "split = %s\n", sw[i]);
+			CHECK_EQ(cg_config_parse(&c, text, err, sizeof(err), warn, sizeof(warn)), 0);
+			CHECK_EQ(c.split, sv[i]);
+			CHECK(warn[0] == '\0');
+			cg_config_free(&c);
+		}
+		bad(CLIENT "split = client\n", "split", "expected off, on or force, got 'client'");
+		bad(SERVER "split = on\n", "split", "expected off, client or force, got 'on'");
+		/* Not a yes or no, not a case away, not empty. */
+		bad(CLIENT "split = yes\n", "split", "expected off, on or force, got 'yes'");
+		bad(SERVER "split = no\n", "split", "expected off, client or force, got 'no'");
+		bad(CLIENT "split = ON\n", "split", "got 'ON'");
+		bad(SERVER "split = Force\n", "split", "got 'Force'");
+		bad(CLIENT "split = \n", "split", "got ''");
+		bad(SERVER "split = 1\n", "split", "got '1'");
+	}
+
+	/* weight, per link: 1 by default, 0 to 1000; an interface with no
+	 * section has none to read. */
+	CHECK_EQ(cg_config_parse(&c,
+				 CLIENT "[link eth1]\nlabel = A\n[link eth2]\nweight = 3\n[link eth3]\nweight = 0\n"
+					"[link eth4]\nweight = 1000\n",
+				 err, sizeof(err), warn, sizeof(warn)),
+		 0);
+	CHECK(warn[0] == '\0');
+	CHECK_EQ(c.nlinks, 4);
+	l = cg_config_link(&c, "eth1");
+	CHECK(l && l->weight == 1);
+	l = cg_config_link(&c, "eth2");
+	CHECK(l && l->weight == 3);
+	l = cg_config_link(&c, "eth3");
+	CHECK(l && l->weight == 0);
+	l = cg_config_link(&c, "eth4");
+	CHECK(l && l->weight == 1000);
+	CHECK(cg_config_link(&c, "eth5") == NULL);
+	cg_config_free(&c);
+	bad(CLIENT "[link eth1]\nweight = 1001\n", "weight", "between 0 and 1000, got '1001'");
+	bad(CLIENT "[link eth1]\nweight = -1\n", "weight", "got '-1'");
+	bad(CLIENT "[link eth1]\nweight = heavy\n", "weight", "got 'heavy'");
+	/* The weight is a link's, not global; a server has no [link] weights (its
+	 * client's probes say them), and says so. */
+	CHECK_EQ(cg_config_parse(&c, CLIENT "weight = 2\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK(strstr(warn, "unknown key 'weight'") != NULL);
+	cg_config_free(&c);
+	CHECK_EQ(cg_config_parse(&c, SERVER "[link eth1]\nweight = 2\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK(strstr(warn, "unknown key 'weight' in [link eth1]") != NULL);
+	cg_config_free(&c);
+
+	/* A reload: only the pool is set up once (a restart); everything else
+	 * applies in place, in either mode. */
+	CHECK_EQ(cg_config_parse(&c, CLIENT "[link eth1]\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(cg_config_parse(&o,
+				 CLIENT "reorder = no\nreorder_max_wait_ms = 300\nreorder_dup_wait_ms = 10\n"
+					"reorder_margin_ms = 40\nreorder_bypass = 0\nsplit = force\nsplit_small = 64\n"
+					"[link eth1]\nweight = 7\n",
+				 err, sizeof(err), warn, sizeof(warn)),
+		 0);
+	CHECK(cg_config_restart_needed(&c, &o) == NULL);
+	CHECK(cg_config_restart_needed(&o, &c) == NULL);
+	cg_config_free(&o);
+	CHECK_EQ(cg_config_parse(&o, CLIENT "reorder_pool_kb = 4096\n[link eth1]\n", err, sizeof(err), warn,
+				 sizeof(warn)),
+		 0);
+	CHECK(cg_config_restart_needed(&c, &o) && !strcmp(cg_config_restart_needed(&c, &o), "reorder_pool_kb"));
+	CHECK(!strcmp(cg_config_restart_needed(&o, &c), "reorder_pool_kb"));
+	cg_config_free(&o);
+	CHECK_EQ(cg_config_parse(&o, CLIENT "reorder_pool_kb = 8192\n[link eth1]\n", err, sizeof(err), warn,
+				 sizeof(warn)),
+		 0);
+	CHECK(cg_config_restart_needed(&c, &o) == NULL); /* the same as the default */
+	cg_config_free(&o);
+	cg_config_free(&c);
+	CHECK_EQ(cg_config_parse(&c, SERVER, err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(cg_config_parse(&o, SERVER "reorder = no\nsplit = force\nreorder_max_wait_ms = 50\nsplit_small = 0\n", err,
+				 sizeof(err), warn, sizeof(warn)),
+		 0);
+	CHECK(cg_config_restart_needed(&c, &o) == NULL);
+	cg_config_free(&o);
+	CHECK_EQ(cg_config_parse(&o, SERVER "reorder_pool_kb = 256\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK(!strcmp(cg_config_restart_needed(&c, &o), "reorder_pool_kb"));
+	cg_config_free(&o);
+	cg_config_free(&c);
+
+	/* A configuration from before these keys loads as it did, and says
+	 * nothing about them. */
+	CHECK_EQ(cg_config_parse(&c, client_conf, err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK(strstr(warn, "reorder") == NULL && strstr(warn, "split") == NULL && strstr(warn, "weight") == NULL);
+	CHECK_EQ(c.reorder, 1);
+	CHECK_EQ(c.split, CG_SPLIT_OFF);
+	CHECK_EQ(cg_config_link(&c, "eth1.10")->weight, 1);
+	CHECK_EQ(cg_config_link(&c, "eth1.20")->weight, 1);
+	cg_config_free(&c);
+}
+
 /* Address lists: a single listen and wireguard address, servers to send to,
  * IPv4-mapped addresses as IPv4. */
 static void test_config_addrs(void)
@@ -813,4 +1084,5 @@ void test_config(void)
 	test_config_names();
 	test_config_threads();
 	test_config_clients();
+	test_config_bonding();
 }

@@ -384,6 +384,56 @@ En el laboratorio, un enlace con 500 ms de cola se silencia en 3–3,6 s sin
 perder un paquete del túnel y vuelve, sin recaer, cuando se le quita
 (`sudo bench/lab.sh health`).
 
+## Reordenamiento y reparto (`reorder`, `split`)
+
+Las perillas del bonding (historia
+[012](../docs/historias/012-bonding.md)). **Hoy solo se leen y se validan:**
+el reordenador y el reparto se conectan en los pasos siguientes del plan, y
+hasta entonces no cambian nada de lo que hace el motor.
+
+- **`reorder` (`yes`), en los dos extremos:** el receptor pone en secuencia
+  los datos verificados del otro extremo antes de entregarlos a WireGuard.
+  Un paquete que llega por delante de uno que falta espera como mucho
+  `reorder_max_wait_ms` (200; 0–2000), y menos si el que falta ya habría
+  llegado por el enlace más lento (su retraso más `reorder_margin_ms`: 10;
+  0–1000). Donde no hay reparto, es decir, con redundancia pura, la espera
+  es `reorder_dup_wait_ms` (0; de 0 a `reorder_max_wait_ms`): con 0 no se
+  retiene nada y el orden de entrega es el de siempre.
+- **`reorder_bypass` (128; 0–2048 bytes):** los datagramas de datos de
+  WireGuard de hasta ese tamaño (keepalives, ACK de TCP vacíos) y los
+  handshakes se entregan al instante, sin esperar. Con 0, solo los handshakes.
+- **`reorder_pool_kb` (8192; 256–262144):** memoria para los paquetes
+  retenidos, en bloques de 2 KiB. Es lo único de esta sección que reinicia el
+  proceso al cambiarlo; el resto se aplica en caliente.
+- **`split`:** reparte la subida (cliente) o la bajada (servidor) entre los
+  enlaces en vez de copiar cada paquete por todos: un paquete grande viaja
+  por un solo enlace, elegido según los pesos. El cliente admite `off` (por
+  omisión: todo por todos los enlaces, como siempre), `on` y `force`; el
+  servidor, `off`, `client` (por omisión) y `force`. `on` es el modo de campo:
+  el cliente reparte la subida cuando el servidor reordena y le pide repartir
+  la bajada con los pesos de cada enlace. `client` hace que el servidor
+  reparta la bajada solo si el cliente lo pide y reordena. `force` reparte
+  sin consultar al otro extremo: es para el laboratorio.
+- **`split_small` (256; 0–2048 bytes):** los datagramas de hasta ese tamaño,
+  los handshakes y todo lo que se envía con menos de dos enlaces aptos van
+  siempre por todos los enlaces.
+- **`weight` en `[link X]` (cliente; 1, de 0 a 1000):** la parte del reparto
+  que lleva ese enlace. Con 0, el enlace lleva copia de todos los paquetes,
+  repartidos o no. Una interfaz sin sección `[link]` pesa 1.
+
+**El reparto es experimental.** Sin los pasos que siguen en el plan (detección
+de pérdidas por enlace, control de las colas de los módems) reparte peor que
+la redundancia, y por eso no es el valor por omisión:
+
+- Un enlace que muere conserva su parte hasta que se detecta: del orden de
+  1,3–1,5 s (estimación). Uno que pasa más de tres intervalos de sondeo sin
+  ningún paquete verificado del otro extremo deja de recibir parte, aunque
+  sigue llevando los paquetes que van por todos.
+- El enlace más lento fija la latencia: hasta `mute_behind_ms` (150) más el
+  margen.
+- Los pesos son fijos. Uno por encima de lo que aguanta el enlace llena la
+  cola del módem y lo hace oscilar; no hay pacing ni control de colas.
+
 ## Baja latencia
 
 - `busy_poll_us`: tras cada paquete sigue sondeando sin dormir durante ese
@@ -437,8 +487,9 @@ túnel:
 
 - **En el lugar, con la misma sesión:** enlaces (`interfaces`, `exclude`,
   `[link]`), direcciones del servidor y `server_failover_ms`, etiquetas,
-  salud de los enlaces, sondas, buffers, `log_level`, `status_file`,
-  `description`, IP pass y, en el servidor, los tiempos de espera. Un enlace
+  salud de los enlaces, reordenamiento y reparto (salvo `reorder_pool_kb`),
+  sondas, buffers, `log_level`, `status_file`, `description`, IP pass y, en
+  el servidor, los tiempos de espera. Un enlace
   empieza otra vez por la primera dirección del servidor solo si cambiaron
   sus propias entradas (las de su familia: añadidas, quitadas, editadas o
   movidas); una entrada de otra familia, o un nombre que vuelve a
@@ -451,9 +502,9 @@ túnel:
   sesiones nuevas).
 - **Reiniciando el proceso en el lugar** (mismo PID, sesión nueva): `mode`,
   `key`, `listen`, `control_socket`, `busy_poll_us`, `cpu`, `rt_priority`,
-  en el cliente `link_threads`, `io_queue` y el `cpu` de un `[link]`, y en
-  el servidor `wireguard` (con un solo router), `lanes` y pasar de un
-  router a varios o al revés (`[client] sections`).
+  `reorder_pool_kb`, en el cliente `link_threads`, `io_queue` y el `cpu` de
+  un `[link]`, y en el servidor `wireguard` (con un solo router), `lanes` y
+  pasar de un router a varios o al revés (`[client] sections`).
 - **Si el archivo tiene un error,** sigue con la configuración anterior,
   lo registra y lo publica en el estado (`config_error`).
 - **Sin bloquear el túnel:** la lectura va en un hilo aparte. Los nombres

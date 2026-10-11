@@ -505,6 +505,7 @@ static int parse_links(struct cg_config *c, struct cg_ini *ini, struct hosts *h,
 		memset(l, 0, sizeof(*l));
 		strcpy(l->name, name);
 		l->enabled = 1;
+		l->weight = 1;
 		l->cpu = -1;
 		if (cg_ini_get(ini, sec, "cpu")) {
 			uint32_t cpu;
@@ -515,6 +516,7 @@ static int parse_links(struct cg_config *c, struct cg_ini *ini, struct hosts *h,
 		}
 		if (get_str(ini, sec, "label", l->label, sizeof(l->label), err, errlen) ||
 		    get_bool(ini, sec, "enabled", &l->enabled, err, errlen) ||
+		    get_u32(ini, sec, "weight", 0, 1000, &l->weight, err, errlen) ||
 		    get_servers(ini, sec, c, h, l->srv, CG_MAX_SERVERS, &l->nsrv, err, errlen) ||
 		    get_resolvers(ini, sec, NULL, l->resolver, &l->nresolver, err, errlen))
 			return -1;
@@ -668,6 +670,28 @@ static int parse_lists(struct cg_config *c, struct cg_ini *ini)
 	return 0;
 }
 
+/* split: off, on or force in a client; off, client or force in a server
+ * (enum cg_split_mode). c->mode is set. */
+static int get_split(struct cg_ini *ini, struct cg_config *c, char *err, size_t errlen)
+{
+	const char *v = cg_ini_get(ini, "", "split");
+	int mid = c->mode == CG_MODE_CLIENT ? CG_SPLIT_ON : CG_SPLIT_CLIENT;
+
+	if (!v)
+		return 0;
+	if (!strcmp(v, "off"))
+		c->split = CG_SPLIT_OFF;
+	else if (!strcmp(v, cg_split_name(mid)))
+		c->split = mid;
+	else if (!strcmp(v, "force"))
+		c->split = CG_SPLIT_FORCE;
+	else {
+		snprintf(err, errlen, "split: expected off, %s or force, got '%s'", cg_split_name(mid), v);
+		return -1;
+	}
+	return 0;
+}
+
 int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t errlen, char *warn,
 		    size_t warnlen)
 {
@@ -713,6 +737,13 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	c->mute_behind_ms = 150;
 	c->mute_settle_ms = 2000;
 	c->min_active_links = 2;
+	c->reorder = 1;
+	c->reorder_max_wait_ms = 200;
+	c->reorder_margin_ms = 10;
+	c->reorder_bypass = 128;
+	c->reorder_pool_kb = 8192;
+	c->split = c->mode == CG_MODE_SERVER ? CG_SPLIT_CLIENT : CG_SPLIT_OFF;
+	c->split_small = 256;
 	c->cpu = -1;
 	c->probe_interval_ms = 100;
 	c->probe_idle_ms = 1000;
@@ -749,6 +780,18 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	    get_u32(&ini, "", "min_active_links", 1, CG_MAX_LINKS, &c->min_active_links, err, errlen) ||
 	    get_u32(&ini, "", "busy_poll_us", 0, 1000000, &c->busy_poll_us, err, errlen) ||
 	    get_u32(&ini, "", "rt_priority", 0, 99, &c->rt_priority, err, errlen))
+		goto out;
+	/* Reordering and splitting, both ends (story 012); nothing reads them
+	 * yet. reorder_dup_wait_ms cannot pass reorder_max_wait_ms. */
+	if (get_bool(&ini, "", "reorder", &c->reorder, err, errlen) ||
+	    get_u32(&ini, "", "reorder_max_wait_ms", 0, 2000, &c->reorder_max_wait_ms, err, errlen) ||
+	    get_u32(&ini, "", "reorder_dup_wait_ms", 0, c->reorder_max_wait_ms, &c->reorder_dup_wait_ms, err,
+		    errlen) ||
+	    get_u32(&ini, "", "reorder_margin_ms", 0, 1000, &c->reorder_margin_ms, err, errlen) ||
+	    get_u32(&ini, "", "reorder_bypass", 0, 2048, &c->reorder_bypass, err, errlen) ||
+	    get_u32(&ini, "", "reorder_pool_kb", 256, 262144, &c->reorder_pool_kb, err, errlen) ||
+	    get_split(&ini, c, err, errlen) ||
+	    get_u32(&ini, "", "split_small", 0, 2048, &c->split_small, err, errlen))
 		goto out;
 	if (cg_ini_get(&ini, "", "cpu")) {
 		u = 0;
@@ -1002,6 +1045,8 @@ const char *cg_config_restart_needed(const struct cg_config *a, const struct cg_
 		return "cpu";
 	if (a->rt_priority != b->rt_priority)
 		return "rt_priority";
+	if (a->reorder_pool_kb != b->reorder_pool_kb)
+		return "reorder_pool_kb"; /* the pool is allocated once */
 	if (a->mode == CG_MODE_CLIENT && a->link_threads != b->link_threads)
 		return "link_threads";
 	if (a->mode == CG_MODE_CLIENT && a->io_queue != b->io_queue)
