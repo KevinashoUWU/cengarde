@@ -44,6 +44,61 @@
 #include "util.h"
 
 #define CG_MAX_CANDS 32 /* candidates of a link, names expanded */
+/* Entries of a server list, addresses or names; a name takes at most
+ * CG_NAME_ADDRS addresses of each family, and a list CG_MAX_CANDS in all. */
+#define CG_MAX_SERVERS 8
+#define CG_NAME_ADDRS 4
+
+/* An entry of a server list as written (config.h): an address with its
+ * port, or a name, by its index among the configuration's names, with the
+ * port its addresses take. */
+struct cg_srvent {
+	struct sockaddr_storage a; /* AF_UNSPEC: a name */
+	int name;
+	uint16_t port;
+};
+
+/* The addresses a name stands for, port 0, IPv6 first and then IPv4, each
+ * family in byte order, at most CG_NAME_ADDRS of each (resolve.h). */
+struct cg_nameaddrs {
+	int n;
+	struct sockaddr_storage a[2 * CG_NAME_ADDRS];
+};
+
+/* The list the rest of this file works on, from ne entries as written:
+ * each address, and the addresses of each name (names[e->name]; NULL, or
+ * none yet: the entry gives nothing) with the entry's port. A slot is kept
+ * for each later entry, so that no name pushes one out. Fills out (room for
+ * CG_MAX_CANDS) and entry_n (how many each entry gave, ne of them); returns
+ * how many addresses. */
+static inline int cg_srv_build(const struct cg_srvent *e, int ne, const struct cg_nameaddrs *const *names,
+			       struct sockaddr_storage *out, uint8_t *entry_n)
+{
+	int n = 0;
+
+	for (int i = 0; i < ne; i++) {
+		const struct cg_nameaddrs *na = e[i].a.ss_family == AF_UNSPEC && names ? names[e[i].name] : NULL;
+		int room = CG_MAX_CANDS - n - (ne - 1 - i), per[2] = { 0, 0 }, k = 0;
+
+		if (e[i].a.ss_family != AF_UNSPEC && room > 0) {
+			out[n++] = e[i].a;
+			k = 1;
+		}
+		for (int j = 0; na && j < na->n && room > 0; j++) {
+			int *f = &per[na->a[j].ss_family == AF_INET6];
+
+			if (*f == CG_NAME_ADDRS)
+				continue;
+			(*f)++;
+			room--;
+			out[n] = na->a[j];
+			cg_addr_set_port(&out[n++], e[i].port);
+			k++;
+		}
+		entry_n[i] = (uint8_t)k;
+	}
+	return n;
+}
 
 /* Where a is among the n candidates, or -1. */
 static inline int cg_cand_find(const struct sockaddr_storage *cands, int n, const struct sockaddr_storage *a)

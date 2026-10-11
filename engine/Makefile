@@ -37,7 +37,7 @@ CG_LDFLAGS += $(HARDEN_LDFLAGS)
 endif
 
 CORE = src/siphash.c src/proto.c src/util.c src/log.c src/config.c src/blake2s.c src/pair.c
-NET = src/netlink.c src/sock.c src/status.c src/os.c src/ctl.c src/client.c src/server.c
+NET = src/netlink.c src/sock.c src/status.c src/os.c src/ctl.c src/names.c src/client.c src/server.c
 # The router's link pumps: threads the unit tests run too (test_threads).
 THR = src/pump.c
 # Every tests/test_*.c; tests/suites.h lists the suites test_main.c runs.

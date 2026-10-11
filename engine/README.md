@@ -145,8 +145,9 @@ Detalle y razones en la
 
 `server` es una lista ordenada de hasta 8 entradas, global o por
 `[link NOMBRE]`: IPv4, `[IPv6]` o nombres. El orden es la preferencia. Un
-nombre vale por sus direcciones (como mucho 4 de cada familia) y se resuelve
-al leer el archivo.
+nombre vale por sus direcciones (como mucho 4 de cada familia), que el
+cliente busca por su cuenta y sigue cuando cambian (ver
+[Nombres del servidor](#nombres-del-servidor-dns-dinámico)).
 
 ```ini
 server = 203.0.113.10:59402 [2001:db8::4]:59402
@@ -207,6 +208,65 @@ la primera dirección muerta el enlace vive en la segunda a los 4 s y se
 queda; una IPv6 primera en un enlace solo IPv4 no retrasa nada; tras 25 s
 sin ninguna dirección del servidor, vuelve a la primera; y también vuelve
 al momento si pierde su propia dirección y recupera la misma.
+
+## Nombres del servidor (DNS dinámico)
+
+Un nombre en `server` sirve para un servidor con IP dinámica (un servidor en
+casa con DNS dinámico) o simplemente para no escribir la IP. El cliente lo
+busca él mismo, por los enlaces, y no con el resolvedor del sistema: con todo
+el tráfico por el túnel, las consultas del sistema van también por el túnel,
+que está caído justo cuando la IP del servidor cambió.
+
+```ini
+server = casa.example.net:65500 203.0.113.10:65500
+# Las de todos los enlaces, después de las propias (estas son las de fábrica).
+resolver = 1.1.1.1 9.9.9.9 [2606:4700:4700::1111] [2620:fe::fe]
+
+[link eth1.10]
+# Los DNS de la operadora: este enlace pregunta primero aquí.
+resolver = 192.168.8.1
+```
+
+- **Por los enlaces:** cada consulta sale por un enlace, atada a su
+  dirección como sus sockets, y pregunta primero a los `resolver` de su
+  `[link]` (en OpenWrt, los DNS que da la operadora a ese enlace) y después a
+  los globales (de fábrica, Cloudflare y Quad9; `resolver =` vacío, ninguno).
+  Un intento dura como mucho 2 s; los siguientes van por el siguiente enlace
+  (el primer DNS de cada enlace, luego el segundo...), hasta 6 por búsqueda.
+  Primero los enlaces vivos.
+- **Cuándo pregunta:** al arrancar y cuando aparece un enlace; después,
+  según el TTL de la respuesta, entre 30 s y 15 min; y al momento si ningún
+  enlace está vivo en sus direcciones durante 2 s (el servidor cambió de IP
+  o se cayó), y otra vez cada 15 s mientras siga así, sin importar el TTL.
+- **La última respuesta buena se queda:** si una búsqueda falla (sin
+  respuesta, SERVFAIL, REFUSED), el nombre conserva sus direcciones y vuelve
+  a preguntar (cada 5 s, doblando hasta 60 s; antes de la primera respuesta,
+  desde 1 s hasta 15 s). Una respuesta vacía (NXDOMAIN, o sin registros de
+  la familia) solo quita direcciones si el servidor ya no contesta en ellas:
+  un DNS que falla nunca corta un túnel que funciona.
+- **Cuando cambian las direcciones:** como una recarga que edita esa
+  entrada, los enlaces cuya lista cambió vuelven a la primera dirección; un
+  enlace que sigue en la misma conserva su socket. Las direcciones de un
+  nombre van ordenadas (IPv6 primero), así que uno con más de 4 da siempre
+  las mismas, en cualquier orden.
+- **Sin dirección todavía:** el enlace queda con el motivo `server name not
+  resolved` y sube en cuanto llega la respuesta. Un nombre que no resuelve
+  ya no impide arrancar.
+- **`/etc/hosts` primero:** un nombre que está ahí toma esas direcciones al
+  leer el archivo y nunca se consulta (`localhost`, o un nombre fijado a
+  mano).
+- **El corte cuando cambia la IP:** la detección de los enlaces (un segundo
+  con tráfico, unos tres sin él), más 2 s, más una consulta; y antes, lo que
+  tarden el DNS dinámico en publicar la IP nueva y los DNS de la operadora en
+  olvidar la vieja (su TTL: conviene uno corto, 60 s). El escenario `names`
+  del laboratorio lo mide sin cachés (ver abajo).
+- **Seguridad:** sin DNSSEC. Cada intento usa un socket nuevo, conectado al
+  DNS, con puerto e id al azar; una respuesta falsa solo puede mandar el
+  túnel a una dirección que no tiene la clave, que no contesta, y el nombre
+  vuelve a buscarse a los 2 s.
+- **Log:** `server name X: A B (was C; TTL 60 s, from eth1 192.168.8.1:53)`
+  cuando cambian; una vez por minuto si las búsquedas fallan.
+- **Estado:** `names[]`, ver [Estado](#estado).
 
 ## Colas del servidor (`lanes`)
 
@@ -383,8 +443,10 @@ túnel:
   router a varios o al revés (`[client] sections`).
 - **Si el archivo tiene un error,** sigue con la configuración anterior,
   lo registra y lo publica en el estado (`config_error`).
-- **Sin bloquear el túnel:** la lectura va en un hilo aparte, porque un
-  servidor dado por nombre espera al DNS.
+- **Sin bloquear el túnel:** la lectura va en un hilo aparte. Los nombres
+  ya no se resuelven al leer el archivo (salvo los de `/etc/hosts`): uno que
+  sigue en la configuración conserva sus direcciones, y uno nuevo se busca
+  al momento.
 - **En OpenWrt,** procd manda `SIGHUP` en vez de reiniciar cuando cambia la
   configuración generada.
 
@@ -585,6 +647,15 @@ enlace:
 - `rx_lag_ms`: retraso medio frente a la primera copia;
 - `rx_missed`: paquetes que no trajo;
 - lo mismo visto desde el otro extremo (`server_view` / `client_view`).
+
+En el cliente, `names[]` tiene cada nombre de las listas de servidor:
+`name`, `state` (`ok`; `hosts` si sale de `/etc/hosts`; `waiting` antes de
+la primera respuesta; `failed` si las búsquedas fallan y no tiene
+direcciones; `none` si el DNS respondió sin direcciones), `addresses` (IPv6
+primero), `answered_ms_ago`, `next_lookup_ms`, `ttl` (el que dio el DNS, en
+s), `silent` (ningún enlace vivo en sus direcciones), `error` (`timeout`,
+`servfail`, `refused`, `nxdomain`, `nodata`, `malformed` o `no link`),
+`via` (enlace y DNS de la última respuesta), `lookups` y `failures`.
 
 Además, `config_error` (por qué no se aplicó la última recarga) y el IP pass:
 `passthrough.requested` y `passthrough.server` en el cliente, y

@@ -60,6 +60,16 @@ int cg_base64_decode(uint8_t *out, size_t outcap, const char *in);
 int cg_addr_parse(const char *s, int allow_names, struct sockaddr_storage *out, int max, char *err,
 		  size_t errlen);
 
+/* Splits "host:port" or "[host]:port" into host (hostlen bytes) and port
+ * (1..65535). Returns 0, or -1 with a message in err. */
+int cg_hostport(const char *s, char *host, size_t hostlen, uint16_t *port, char *err, size_t errlen);
+
+/* host as an IPv4 or IPv6 literal (no brackets), with port: 0, or -1 when it
+ * is not one (out zeroed). IPv4-mapped addresses come back as IPv4. */
+int cg_addr_literal(const char *host, uint16_t port, struct sockaddr_storage *out);
+
+void cg_addr_set_port(struct sockaddr_storage *a, uint16_t port);
+
 /* Turns an IPv4-mapped IPv6 address ("[::ffff:192.0.2.1]:5") into plain
  * IPv4, port included, so that it goes out of an IPv4 socket. Leaves any
  * other address alone. */

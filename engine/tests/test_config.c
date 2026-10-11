@@ -532,6 +532,118 @@ static void test_config_addrs(void)
 	cg_config_free(&d);
 }
 
+/* Names in the server lists: kept for the client to look up, never
+ * resolved here, unless the hosts file lists them; and the resolvers. */
+static void test_config_names(void)
+{
+	static struct cg_config c;
+	char err[256], warn[512], buf[64], path[] = "/tmp/cengarde-hosts-XXXXXX";
+	const char *saved = cg_hosts_path;
+	struct cg_nameaddrs got;
+	const struct cg_nameaddrs *names[CG_MAX_NAMES] = { NULL };
+	FILE *f;
+	int fd;
+
+	/* A name gives no address until it is looked up; the list keeps its
+	 * place and its port. */
+	cg_hosts_path = "/nonexistent/hosts";
+	CHECK_EQ(cg_config_parse(&c, "mode = client\nkey = " KEY "\nserver = VPS.Example.com.:59402 192.0.2.2:7\n"
+				 "[link eth1]\nserver = vps.example.com:1 home.example.net:2\n[link eth2]\n",
+				 err, sizeof(err), warn, sizeof(warn)),
+		 0);
+	CHECK_EQ(c.nnames, 2);
+	CHECK(!strcmp(c.names[0].name, "vps.example.com") && !c.names[0].hosts);
+	CHECK(!strcmp(c.names[1].name, "home.example.net"));
+	CHECK(c.nsrv == 2 && c.srv[0].name == 0 && c.srv[0].port == 59402 && c.srv[1].name == -1);
+	CHECK(c.nserver == 1 && c.nentry == 2 && c.entry_n[0] == 0 && c.entry_n[1] == 1);
+	CHECK(!strcmp(cg_addr_str(&c.server[0], buf, sizeof(buf)), "192.0.2.2:7"));
+	CHECK(c.links[0].nsrv == 2 && c.links[0].nserver == 0 && c.links[0].srv[1].name == 1);
+	CHECK_EQ(c.links[1].nsrv, 0); /* the global list */
+	/* Built again with what the names have now. */
+	memset(&got, 0, sizeof(got));
+	got.a[got.n++] = (struct sockaddr_storage){ .ss_family = AF_INET };
+	((struct sockaddr_in *)&got.a[0])->sin_addr.s_addr = htonl(0xcb007105); /* 203.0.113.5 */
+	names[0] = &got;
+	cg_config_build(&c, names);
+	CHECK(c.nserver == 2 && c.entry_n[0] == 1 && c.entry_n[1] == 1);
+	CHECK(!strcmp(cg_addr_str(&c.server[0], buf, sizeof(buf)), "203.0.113.5:59402"));
+	CHECK(c.links[0].nserver == 1 && c.links[0].entry_n[0] == 1 && c.links[0].entry_n[1] == 0);
+	CHECK(!strcmp(cg_addr_str(&c.links[0].server[0], buf, sizeof(buf)), "203.0.113.5:1"));
+	/* Resolvers: the default ones, and a link's own. */
+	CHECK_EQ(c.nresolver, 4);
+	CHECK(!strcmp(cg_addr_str(&c.resolver[0], buf, sizeof(buf)), "1.1.1.1:53"));
+	CHECK(!strcmp(cg_addr_str(&c.resolver[2], buf, sizeof(buf)), "[2606:4700:4700::1111]:53"));
+	CHECK_EQ(c.links[0].nresolver, 0);
+	cg_config_free(&c);
+
+	/* Only names is fine: they come later. */
+	CHECK_EQ(cg_config_parse(&c, "mode = client\nkey = " KEY "\nserver = vps.example.com:1\nresolver =\n"
+				 "[link eth1]\nresolver = 192.168.8.1 [2001:db8::53]:5353 2001:db8::1 [2001:db8::2]\n",
+				 err, sizeof(err), warn, sizeof(warn)),
+		 0);
+	CHECK(c.nserver == 0 && c.nsrv == 1 && c.nresolver == 0);
+	CHECK_EQ(c.links[0].nresolver, 4);
+	CHECK(!strcmp(cg_addr_str(&c.links[0].resolver[0], buf, sizeof(buf)), "192.168.8.1:53"));
+	CHECK(!strcmp(cg_addr_str(&c.links[0].resolver[1], buf, sizeof(buf)), "[2001:db8::53]:5353"));
+	CHECK(!strcmp(cg_addr_str(&c.links[0].resolver[2], buf, sizeof(buf)), "[2001:db8::1]:53"));
+	CHECK(!strcmp(cg_addr_str(&c.links[0].resolver[3], buf, sizeof(buf)), "[2001:db8::2]:53"));
+	CHECK(!*warn);
+	cg_config_free(&c);
+
+	/* Mistakes. */
+	CHECK_EQ(cg_config_parse(&c, CLIENT "resolver = 224.0.0.1\n", err, sizeof(err), warn, sizeof(warn)), -1);
+	CHECK(!strcmp(err, "resolver: '224.0.0.1' is a multicast address"));
+	CHECK_EQ(cg_config_parse(&c, CLIENT "resolver = dns.google\n", err, sizeof(err), warn, sizeof(warn)), -1);
+	CHECK(!strcmp(err, "resolver: 'dns.google' is not an address"));
+	CHECK_EQ(cg_config_parse(&c, CLIENT "resolver = 1.1.1.1 1.1.1.2 1.1.1.3 1.1.1.4 1.1.1.5 1.1.1.6 1.1.1.7 "
+				 "1.1.1.8 1.1.1.9\n",
+				 err, sizeof(err), warn, sizeof(warn)),
+		 -1);
+	CHECK(!strcmp(err, "resolver: at most 8 addresses"));
+	CHECK_EQ(cg_config_parse(&c, "mode = client\nkey = " KEY "\nserver = 10.0.0.256:1\n", err, sizeof(err), warn,
+				 sizeof(warn)),
+		 -1);
+	CHECK(!strcmp(err, "server: '10.0.0.256:1' is neither an address nor a name"));
+	CHECK_EQ(cg_config_parse(&c, "mode = client\nkey = " KEY "\nserver = [vps.example.com]:1\n", err, sizeof(err),
+				 warn, sizeof(warn)),
+		 -1);
+	CHECK(strstr(err, "neither an address nor a name") != NULL);
+	CHECK_EQ(cg_config_parse(&c, "mode = client\nkey = " KEY "\nserver = bad..name:1\n", err, sizeof(err), warn,
+				 sizeof(warn)),
+		 -1);
+	CHECK_EQ(cg_config_parse(&c, "mode = client\nkey = " KEY "\nserver = a.x:1 b.x:1 c.x:1 d.x:1 e.x:1\n"
+				 "[link eth1]\nserver = f.x:1 g.x:1 h.x:1 a.x:1 i.x:1\n",
+				 err, sizeof(err), warn, sizeof(warn)),
+		 -1);
+	CHECK(!strcmp(err, "server: at most 8 names in all the server lists"));
+	CHECK_EQ(cg_config_parse(&c, "mode = client\nkey = " KEY "\nserver =\n", err, sizeof(err), warn,
+				 sizeof(warn)),
+		 -1);
+	CHECK(!strcmp(err, "server: no address given"));
+	/* The server takes no resolver: an unknown key there. */
+	CHECK_EQ(cg_config_parse(&c, SERVER "resolver = 1.1.1.1\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK(strstr(warn, "unknown key 'resolver'") != NULL);
+	cg_config_free(&c);
+
+	/* The hosts file goes first: its addresses, never looked up. */
+	fd = mkstemp(path);
+	CHECK(fd >= 0);
+	f = fdopen(fd, "w");
+	fputs("192.0.2.77 vps.example.com vps\n2001:db8::77 vps\n", f);
+	fclose(f);
+	cg_hosts_path = path;
+	CHECK_EQ(cg_config_parse(&c, "mode = client\nkey = " KEY "\nserver = vps:9 other.example.com:9\n", err,
+				 sizeof(err), warn, sizeof(warn)),
+		 0);
+	CHECK(c.nnames == 2 && c.names[0].hosts && c.names[0].addrs.n == 2 && !c.names[1].hosts);
+	CHECK(c.nserver == 2 && c.entry_n[0] == 2 && c.entry_n[1] == 0);
+	CHECK(!strcmp(cg_addr_str(&c.server[0], buf, sizeof(buf)), "[2001:db8::77]:9"));
+	CHECK(!strcmp(cg_addr_str(&c.server[1], buf, sizeof(buf)), "192.0.2.77:9"));
+	cg_config_free(&c);
+	unlink(path);
+	cg_hosts_path = saved;
+}
+
 void test_config(void)
 {
 	static struct cg_config c;
@@ -694,6 +806,7 @@ void test_config(void)
 
 	test_config_reload();
 	test_config_addrs();
+	test_config_names();
 	test_config_threads();
 	test_config_clients();
 }
