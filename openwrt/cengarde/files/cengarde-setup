@@ -8,7 +8,8 @@
 #   cengarde-setup disable        undo what apply set up
 #   cengarde-setup engine-conf    print the engine configuration, with each
 #                                 uplink's DNS servers (resolver) for the
-#                                 VPS names, which the engine looks up itself
+#                                 VPS names, which the engine looks up itself,
+#                                 and its weight in the split (split_weight)
 #   cengarde-setup cloud-config   print the VPS user data, with the secret, the
 #                                 router's name (vps_name) and its tunnel address
 #   cengarde-setup companions     the uplinks' IPv6 interfaces (init triggers)
@@ -796,8 +797,44 @@ uplink_resolvers() {
 	echo "$out"
 }
 
+# The weights of the experimental split, from "list split_weight 'UPLINK=W'":
+# WEIGHTS gets " UPLINK=W ..." with the entries that are valid. W is a whole
+# number from 0 to 1000 and UPLINK one of this router's uplinks; anything else
+# is left out and logged, so that the uplink keeps the engine's weight, 1. The
+# last entry for an uplink wins, as the last of a repeated key does in the
+# engine's file.
+split_weights() {
+	local e u w
+
+	WEIGHTS=
+	for e in $SPLIT_WEIGHT; do
+		case "$e" in
+		*=*) u=${e%%=*} w=${e#*=} ;;
+		*) u=$e w= ;;
+		esac
+		case "$w" in '' | 0?* | *[!0-9]*) w= ;; esac
+		if [ -z "$w" ] || [ "${#w}" -gt 4 ] || [ "$w" -gt 1000 ]; then
+			log "split_weight '$e': expected UPLINK=WEIGHT with a weight from 0 to 1000, left out"
+		elif ! list_has "$UPLINKS" "$u"; then
+			log "split_weight '$e': $u is not one of the uplinks, left out"
+		else
+			WEIGHTS="$WEIGHTS $u=$w"
+		fi
+	done
+}
+
+# The weight of uplink $1 in WEIGHTS, empty when it has none.
+split_weight_of() {
+	local e w=
+
+	for e in $WEIGHTS; do
+		case "$e" in "$1="*) w=${e#*=} ;; esac
+	done
+	echo "$w"
+}
+
 engine_conf() {
-	local s dev seen='' server='' a k v r
+	local s dev seen='' server='' a k v r w
 
 	load
 	derive_keys || die "no valid secret (uci get cengarde.main.secret)"
@@ -822,15 +859,36 @@ engine_conf() {
 	EOF
 	for k in server_failover_ms mute_behind_ms unmute_behind_ms mute_settle_ms mute_trickle min_active_links \
 		probe_interval_ms probe_idle_ms status_interval_ms busy_poll_us cpu rt_priority sndbuf link_threads \
-		io_queue description; do
+		io_queue description reorder_max_wait_ms reorder_dup_wait_ms reorder_margin_ms reorder_bypass \
+		reorder_pool_kb split_small; do
 		config_get v main "$k"
 		[ -n "$v" ] && echo "$k = $v"
 	done
+	# Reordering at the receiver is on in the engine unless this says no; the
+	# split is off unless this says so, and only on, never force (the lab's):
+	# the VPS follows the router and needs nothing of its own (split = client).
+	config_get v main reorder
+	case "$v" in
+	'') ;;
+	1 | on | yes | true | enabled) echo "reorder = yes" ;;
+	0 | off | no | false | disabled) echo "reorder = no" ;;
+	*) log "reorder '$v': expected 0 or 1, left out" ;;
+	esac
+	config_get v main split
+	case "$v" in
+	'' | 0 | off | no | false | disabled) ;;
+	1 | on | yes | true | enabled) echo "split = on" ;;
+	*) log "split '$v': expected 0 or 1, left out" ;;
+	esac
+	config_get SPLIT_WEIGHT main split_weight
+	split_weights
 	for s in $UPLINKS; do
 		dev=$(uplink_device "$s") || continue
 		list_has "$seen" "$dev" && continue
 		seen="$seen $dev"
 		printf '\n[link %s]\nlabel = %s\n' "$dev" "$s"
+		w=$(split_weight_of "$s")
+		[ -z "$w" ] || echo "weight = $w"
 		r=$(uplink_resolvers "$s")
 		[ -z "$r" ] || echo "resolver = $r"
 	done

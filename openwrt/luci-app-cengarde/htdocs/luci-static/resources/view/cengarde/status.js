@@ -66,6 +66,16 @@ function ms(v) {
 	return (v == null) ? '-' : '%.1f ms'.format(v);
 }
 
+// A two-column table of [ name, value ] rows.
+function rowsTable(rows) {
+	return E('table', { 'class': 'table' }, rows.map(function(r) {
+		return E('tr', { 'class': 'tr' }, [
+			E('td', { 'class': 'td left', 'width': '33%' }, [ r[0] ]),
+			E('td', { 'class': 'td left' }, [ r[1] ])
+		]);
+	}));
+}
+
 function badge(text, color, title) {
 	return E('span', {
 		'style': 'display:inline-block;padding:0 .5em;border-radius:.5em;color:#fff;background:' + color,
@@ -211,12 +221,42 @@ return view.extend({
 			rows.push([ _('Version'), st.protocol ? _('%s, protocol %d').format(e.version, st.protocol) : e.version ]);
 		}
 
-		return E('table', { 'class': 'table' }, rows.map(function(r) {
-			return E('tr', { 'class': 'tr' }, [
-				E('td', { 'class': 'td left', 'width': '33%' }, [ r[0] ]),
-				E('td', { 'class': 'td left' }, [ r[1] ])
-			]);
-		}));
+		return rowsTable(rows);
+	},
+
+	// Reordering at the receiver, from the engine's "reorder" object (counters
+	// since the engine started). An engine without the object has no box.
+	renderReorder: function(st) {
+		const r = st.engine && st.engine.reorder;
+		const n = function(v) { return (typeof v == 'number') ? v : 0; };
+		let lost, late, rows;
+
+		if (!r || typeof r != 'object')
+			return null;
+		if (r.enabled === false)
+			return E('p', { 'class': 'cbi-section-descr' }, [ _('Reordering is off (Advanced tab).') ]);
+
+		lost = r.lost || {};
+		late = r.late || {};
+		rows = [
+			[ _('Held now'), (typeof r.pool_buffers == 'number' && r.pool_buffers > 0)
+				? _('%d of %d').format(n(r.held), r.pool_buffers) : '%d'.format(n(r.held)) ],
+			[ _('Most held at once'), '%d'.format(n(r.held_max)) ],
+			[ _('Held in total'), '%d'.format(n(r.held_total)) ],
+			[ _('Missing packets given up on'), _('%d at the deadline, %d for lack of room').format(n(lost.cap), n(lost.overflow)) ],
+			[ _('Late after release'), E('span', {
+				'title': _('Arrived after the engine gave up on them: after the deadline %d, after running out of room %d, after the other uplinks had gone past %d, too old to tell %d.').format(
+					n(late.after_cap), n(late.after_overflow), n(late.after_rack), n(late.old))
+			}, [ '%d'.format(n(late.after_cap) + n(late.after_overflow) + n(late.after_rack) + n(late.old)) ]) ]
+		];
+		return E('div', {}, [
+			rowsTable(rows),
+			E('p', { 'class': 'cbi-section-descr' }, [
+				_('Held now: packets that arrived ahead of one that has not, out of how many there is room for. Most held at once and Held in total count since the engine started.'),
+				' ',
+				_('Missing packets given up on: the wait for the packet ended at its deadline, or the room ran out first. If it arrives afterwards it counts as late after release; many of those mean that the longest wait (Advanced tab) is too short for the slowest uplink.')
+			])
+		]);
 	},
 
 	renderLinks: function(st) {
@@ -281,12 +321,14 @@ return view.extend({
 	},
 
 	update: function(node, st) {
+		let sections, reorder;
+
 		if (!st) {
 			dom.content(node, E('div', { 'class': 'alert-message error' },
 				[ _('Could not read the status (is the cengarde package installed?).') ]));
 			return;
 		}
-		dom.content(node, [
+		sections = [
 			this.renderProblems(st),
 			E('h3', {}, [ _('Status') ]),
 			this.renderSummary(st),
@@ -299,7 +341,12 @@ return view.extend({
 				' ',
 				_('VPS address: where the uplink sends to; "failover" when the first VPS address it can use did not answer. Path MTU: the largest packet the path to the VPS takes.')
 			])
-		]);
+		];
+		// Only an engine that reorders reports it.
+		reorder = this.renderReorder(st);
+		if (reorder)
+			sections.push(E('h3', {}, [ _('Reordering') ]), reorder);
+		dom.content(node, sections);
 	},
 
 	render: function(st) {

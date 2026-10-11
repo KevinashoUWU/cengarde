@@ -259,6 +259,43 @@ try {
 	await type(probe, '');
 	check(!await invalid(failover) && !await invalid(probe), 'both back to their defaults');
 
+	step('Advanced tab: reordering is on and the split off; the weights are for uplinks, 0 to 1000');
+	const maxWait = page.locator(id('widget.cbid.cengarde.main.reorder_max_wait_ms'));
+	const bypass = page.locator(id('widget.cbid.cengarde.main.reorder_bypass'));
+	const reorder = page.locator('[data-widget-id="widget.cbid.cengarde.main.reorder"]');
+	const split = page.locator('[data-widget-id="widget.cbid.cengarde.main.split"]');
+	const weights = page.locator(id('widget.cbid.cengarde.main.split_weight'));
+	check(await page.locator('text=Reordenar en el receptor').count() > 0, 'the reordering option is in Spanish');
+	check(await reorder.isChecked(), 'reordering at the receiver is on by default');
+	check(!await split.isChecked(), 'the split is off by default');
+	check(!await weights.isVisible(), 'the weights are hidden while the split is off');
+	for (const [ field, bad, good ] of [ [ maxWait, '2001', '2000' ], [ bypass, '2049', '0' ] ]) {
+		await type(field, bad);
+		check(await invalid(field), `${bad} is refused`);
+		await type(field, good);
+		check(!await invalid(field), `${good} is taken`);
+		await type(field, '');
+	}
+	await flag('split', true);
+	check(await weights.isVisible(), 'the weights show with the split on');
+	check(await page.locator('text=experimental').count() > 0, 'the split says it is experimental');
+	// up1 to up3 are the uplinks chosen in the General tab
+	for (const bad of [ 'up1', 'up1=1001', 'up1=007', 'up1=-1', 'up9=2' ]) {
+		await type(weights, bad);
+		check(await invalid(weights), `the weight ${bad} is refused`);
+	}
+	for (const good of [ 'up1=0', 'up2=3', 'up3=1000' ]) {
+		await type(weights, good);
+		check(!await invalid(weights), `the weight ${good} is taken`);
+	}
+	await type(weights, '');
+	await shot('04b-settings-advanced');
+	await flag('reorder', false);
+	check(!await split.isVisible() && !await maxWait.isVisible(), 'without reordering the split and its settings are hidden');
+	await flag('reorder', true);
+	await flag('split', false);
+	check(!await weights.isVisible(), 'the weights hide again with the split off');
+
 	step('save and apply');
 	await tab('general');
 	const applied = page.evaluate(() => new Promise((resolve) =>

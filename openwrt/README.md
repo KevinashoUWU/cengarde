@@ -348,6 +348,38 @@ configuración del router:
   reinicia el motor (unos segundos sin túnel). Si un hilo se queda parado
   más de 5 s con paquetes esperando, el estado lo avisa
   (`link_thread_stalled`).
+- **Reordenamiento y reparto** (pestaña *Avanzado*; historia
+  [012](../docs/historias/012-bonding.md)). Las opciones ya llegan al motor;
+  él las aplica a medida que se conectan los pasos 4 a 8 de su plan, y hasta
+  entonces solo las lee y las valida.
+  - *Reordenar en el receptor* (`reorder`, activado): el extremo que recibe
+    retiene un paquete que llega antes que otro que falta, hasta que llegue
+    el que falta o hasta la *espera máxima* (`reorder_max_wait_ms`, 200 ms;
+    menos si el enlace más lento ya lo habría entregado), y los entrega a
+    WireGuard en orden. El VPS hace lo mismo con lo que recibe. Mientras cada
+    paquete va por todos los enlaces no retiene nada, así que el orden de
+    entrega es el de siempre. Los handshakes y los paquetes de hasta
+    *Paquetes que nunca se retienen* (`reorder_bypass`, 128 bytes:
+    keepalives, ACK vacíos) se entregan sin esperar. Sin interfaz quedan
+    `reorder_dup_wait_ms`, `reorder_margin_ms` y `reorder_pool_kb` (este
+    reinicia el motor al cambiarlo): ver `engine/README.md`.
+  - *Repartir los paquetes grandes entre los enlaces (experimental)*
+    (`split`, desactivado; necesita *Reordenar en el receptor*): en vez de
+    una copia por cada enlace, cada paquete de más de `split_small` bytes
+    (256) va por un solo enlace, elegido según su peso. El peso de cada
+    enlace es una entrada `ENLACE=PESO` de `split_weight` (el nombre de la
+    lista de enlaces; de 0 a 1000; sin entrada, 1; con 0 el enlace lleva
+    además una copia de todos los paquetes). Una entrada con un enlace que
+    no es de este router o un peso fuera de rango no se usa, y queda en
+    `logread`. El VPS sigue al router: reparte la bajada con los mismos
+    pesos si el router se lo pide, con su `split = client` de siempre, sin
+    tocar nada allí.
+  - **Hoy el reparto sale peor que copiar** (por eso viene apagado): un
+    enlace que muere conserva su parte hasta que el motor lo saca (unos
+    300 ms según la estimación; 1,5 s antes de esa protección) y los
+    paquetes que le tocaron se pierden; el enlace más lento con peso fija la
+    latencia de todos; y un peso mayor que lo que aguanta un enlace llena la
+    cola de su módem. Los pesos son fijos y no hay control de colas.
 
 ## 5. Estado
 
@@ -376,6 +408,13 @@ configuración del router:
   - **Pausar / Reanudar:** saca el enlace sin tocar la configuración (por
     ejemplo, un módem que va a cambiar de plan). La pausa se mantiene hasta
     reanudarlo o hasta que cengarde se reinicie.
+- **Reordenamiento** (si el motor lo informa; sin él, un motor anterior,
+  la caja no aparece): paquetes retenidos ahora (de los que caben), el
+  máximo retenido a la vez, los retenidos en total, los faltantes dados por
+  perdidos (por el plazo o por falta de lugar) y los que llegaron después de
+  darse por perdidos. Si estos últimos son muchos, la espera máxima es corta
+  para el enlace más lento. Los contadores cuentan desde que arrancó el
+  motor.
 - **Avisos:** falta la IP, un enlace caído o solo con IPv6 (sin dirección
   IPv6 del VPS), un nombre del VPS que no resuelve (con el motivo: sin
   respuesta, el DNS falló, no existe), el VPS que no contesta por ningún
@@ -558,6 +597,12 @@ cengarde-setup cloud-config > vps.yaml               # el user data del VPS
 - **Nombre y dirección en el VPS:** `uci set cengarde.main.vps_name=casa`;
   `uci set cengarde.main.tunnel_addr=10.79.5.6` (sin ella, la derivada).
   `cengarde-setup status` dice cuáles usa (`tunnel_addr`, `vps_name`).
+- **Reordenamiento y reparto:** `uci set cengarde.main.reorder=0` lo
+  apaga; `uci set cengarde.main.split=1` y `uci add_list
+  cengarde.main.split_weight=wan=3` (uno por enlace) encienden el reparto
+  experimental. En el archivo del motor salen como `reorder = no`,
+  `split = on` y `weight = 3` en la sección del enlace; `split` nunca sale
+  como `force` (es del laboratorio).
 - **`config_file`:** usa un archivo INI propio en lugar del generado. Sirve,
   por ejemplo, para un servidor OpenWrt.
 - **Configuración que se genera:** `/var/etc/cengarde.conf`.
@@ -676,6 +721,9 @@ comprueba el flujo completo:
   (como el de Starlink) no llega a la LAN mientras todo va por el túnel, y
   vuelve al desactivar;
 - pausar y reanudar un enlace desde la página de estado;
+- las opciones de reordenamiento y reparto, y el peso de cada enlace, en el
+  archivo del motor (lo inválido se omite y se registra), que el motor
+  acepta; y en LuCI, los rangos y la lista de pesos;
 - apagar IP pass con pings en curso: sin reiniciar el motor, sin pérdidas,
   y el VPS lo sigue;
 - un enlace caído sin perder pings;
@@ -692,6 +740,10 @@ openwrt/test/e2e.sh openwrt-25.12.5-cengarde-x86-64-generic-ext4-combined.img.gz
 - `test/vm.sh` arranca las VMs para explorar a mano: LuCI del router en
   `http://127.0.0.1:8080`, y SSH en los puertos 2222 (router) y 2223
   (VPS).
+- Sin VMs ni navegador, `node openwrt/test/views.mjs` corre `config.js` y
+  `status.js` contra un LuCI de mentira (opciones y rangos del
+  reordenamiento, lista de pesos, caja de *Reordenamiento*, y que cada
+  texto tenga su traducción); el CI lo ejecuta en `lint`.
 
 ## Compilar
 

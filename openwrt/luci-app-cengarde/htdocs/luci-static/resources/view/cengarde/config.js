@@ -28,6 +28,29 @@ function isTunnelAddr(addr) {
 	return m != null && +m[1] <= 255 && +m[2] <= 255 && n >= 2 && n <= 65534;
 }
 
+// An entry of the split weights, as cengarde-setup takes it: NAME=WEIGHT, a
+// whole number from 0 to 1000 without leading zeros.
+function splitWeight(entry) {
+	const m = /^([^=\s]+)=(0|[1-9][0-9]{0,2}|1000)$/.exec(String(entry));
+
+	return m ? { uplink: m[1], weight: +m[2] } : null;
+}
+
+// Whether an entry can go in the list of split weights (true), or why not: it
+// has the form above, its uplink is one of the uplinks of the router, and the
+// others (the entries already in the list) give that uplink no weight yet.
+function checkSplitWeight(entry, uplinks, others) {
+	const w = splitWeight(entry);
+
+	if (!w)
+		return _('Expected NAME=WEIGHT, with a weight from 0 to 1000');
+	if (uplinks.indexOf(w.uplink) < 0)
+		return _('%s is not one of the uplinks (General tab)').format(w.uplink);
+	if (others.some(function(e) { const o = splitWeight(e); return o != null && o.uplink == w.uplink; }))
+		return _('%s already has a weight').format(w.uplink);
+	return true;
+}
+
 // Same substitutions as "cengarde-setup cloud-config", on the values in the
 // form, so the text follows unsaved changes. Without an address (a new secret
 // that is not saved yet) its placeholder stays, and the VPS derives it.
@@ -396,6 +419,38 @@ return view.extend({
 			_('No uplink goes on standby if that would leave fewer than this many in use.'));
 		o.datatype = 'range(1,16)';
 		o.placeholder = '2';
+
+		o = s.taboption('advanced', form.Flag, 'reorder', _('Reorder at the receiver'),
+			_('The end that receives holds a packet that arrives ahead of a missing one until the missing one comes or its time runs out, and hands them to WireGuard in order. The VPS does the same with what it receives. While every packet is copied over all the uplinks nothing is held, so it changes nothing and costs almost nothing; it is what makes the split below usable.'));
+		o.default = '1';
+		o.rmempty = false;
+
+		o = s.taboption('advanced', form.Value, 'reorder_max_wait_ms', _('Longest wait for a missing packet (ms)'),
+			_('How long a packet that arrived early waits for the missing one before it is handed on anyway. It waits less when the slowest uplink would have delivered the missing one by then. A longer wait copes with slower uplinks, and adds delay when a packet is really lost.'));
+		o.datatype = 'range(0,2000)';
+		o.placeholder = '200';
+		o.depends('reorder', '1');
+
+		o = s.taboption('advanced', form.Value, 'reorder_bypass', _('Packets never held, up to (bytes)'),
+			_('WireGuard packets of up to this size (keepalives, empty TCP ACKs) are handed on at once, and so are the handshakes. 0: only the handshakes. A larger value lets small data packets overtake the big ones that are held, which TCP and QUIC can take for losses.'));
+		o.datatype = 'range(0,2048)';
+		o.placeholder = '128';
+		o.depends('reorder', '1');
+
+		o = s.taboption('advanced', form.Flag, 'split', _('Split large packets across the uplinks (experimental)'),
+			_('Instead of a copy over every uplink, each large packet (over 256 bytes, by default) goes over one uplink, chosen by weight; the small ones and the handshakes still go over all of them. This adds up the speed of the uplinks, but today it does worse than copying: an uplink that dies keeps its share of the packets until the engine takes it out (about 300 ms by estimate, 1.5 s before that), and the packets sent to it in the meantime are lost; the slowest uplink that has a weight sets the latency of all; and a weight above what an uplink can carry fills the queue of its modem and makes the uplink unstable. The VPS follows this router: it splits the download the same way, with the same weights, when the router asks for it, and needs no setting. It needs "Reorder at the receiver".'));
+		o.rmempty = false;
+		o.depends('reorder', '1');
+
+		o = s.taboption('advanced', form.DynamicList, 'split_weight', _('Weight of each uplink in the split'),
+			_('One entry per uplink, as NAME=WEIGHT (for example wan=3), with NAME as in the list of uplinks of the General tab and a weight from 0 to 1000. An uplink gets a share of the split packets in proportion to its weight; with no entry its weight is 1. 0: the uplink carries a copy of every packet, split or not. The weights do not follow the speed of the uplinks: choose them in proportion to what each one carries.'));
+		o.placeholder = 'wan=2';
+		o.depends({ reorder: '1', split: '1' });
+		// The entry being typed: its weight, an uplink of this router, and not
+		// one that has a weight already.
+		o.validate = function(section_id, v) {
+			return checkSplitWeight(v, L.toArray(value(m, 'uplink')), L.toArray(this.formvalue(section_id)));
+		};
 
 		o = s.taboption('advanced', form.Value, 'probe_interval_ms', _('Probe interval (ms)'),
 			_('While there is traffic; each idle link is probed every second, or at this interval if it is longer. The next VPS address is tried after three idle probes at the least.'));

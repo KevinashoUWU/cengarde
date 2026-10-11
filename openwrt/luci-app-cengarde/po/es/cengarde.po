@@ -3,6 +3,15 @@ msgstr ""
 "Language: es\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 
+msgid "Expected NAME=WEIGHT, with a weight from 0 to 1000"
+msgstr "Se espera NOMBRE=PESO, con un peso de 0 a 1000"
+
+msgid "%s is not one of the uplinks (General tab)"
+msgstr "%s no es uno de los enlaces (pestaña General)"
+
+msgid "%s already has a weight"
+msgstr "%s ya tiene un peso"
+
 msgid "Copied to the clipboard."
 msgstr "Copiado al portapapeles."
 
@@ -185,6 +194,36 @@ msgstr "Mínimo de enlaces activos"
 
 msgid "No uplink goes on standby if that would leave fewer than this many in use."
 msgstr "Ningún enlace pasa a reserva si eso dejara menos enlaces en uso que esta cantidad."
+
+msgid "Reorder at the receiver"
+msgstr "Reordenar en el receptor"
+
+msgid "The end that receives holds a packet that arrives ahead of a missing one until the missing one comes or its time runs out, and hands them to WireGuard in order. The VPS does the same with what it receives. While every packet is copied over all the uplinks nothing is held, so it changes nothing and costs almost nothing; it is what makes the split below usable."
+msgstr "El extremo que recibe retiene un paquete que llega antes que otro que falta, hasta que llegue el que falta o se acabe su plazo, y los entrega a WireGuard en orden. El VPS hace lo mismo con lo que recibe. Mientras cada paquete se copia por todos los enlaces no se retiene nada, así que no cambia nada y casi no cuesta; es lo que hace utilizable el reparto de más abajo."
+
+msgid "Longest wait for a missing packet (ms)"
+msgstr "Espera máxima por un paquete que falta (ms)"
+
+msgid "How long a packet that arrived early waits for the missing one before it is handed on anyway. It waits less when the slowest uplink would have delivered the missing one by then. A longer wait copes with slower uplinks, and adds delay when a packet is really lost."
+msgstr "Cuánto espera un paquete que llegó antes de tiempo al que falta, antes de entregarse igual. Espera menos si el enlace más lento ya habría entregado el que falta. Una espera mayor tolera enlaces más lentos y suma retardo cuando un paquete de verdad se pierde."
+
+msgid "Packets never held, up to (bytes)"
+msgstr "Paquetes que nunca se retienen, hasta (bytes)"
+
+msgid "WireGuard packets of up to this size (keepalives, empty TCP ACKs) are handed on at once, and so are the handshakes. 0: only the handshakes. A larger value lets small data packets overtake the big ones that are held, which TCP and QUIC can take for losses."
+msgstr "Los paquetes de WireGuard de hasta este tamaño (keepalives, ACK de TCP vacíos) se entregan al instante, igual que los handshakes. 0: solo los handshakes. Un valor mayor deja que paquetes de datos pequeños adelanten a los grandes que están retenidos, y TCP y QUIC pueden tomarlo por pérdidas."
+
+msgid "Split large packets across the uplinks (experimental)"
+msgstr "Repartir los paquetes grandes entre los enlaces (experimental)"
+
+msgid "Instead of a copy over every uplink, each large packet (over 256 bytes, by default) goes over one uplink, chosen by weight; the small ones and the handshakes still go over all of them. This adds up the speed of the uplinks, but today it does worse than copying: an uplink that dies keeps its share of the packets until the engine takes it out (about 300 ms by estimate, 1.5 s before that), and the packets sent to it in the meantime are lost; the slowest uplink that has a weight sets the latency of all; and a weight above what an uplink can carry fills the queue of its modem and makes the uplink unstable. The VPS follows this router: it splits the download the same way, with the same weights, when the router asks for it, and needs no setting. It needs \"Reorder at the receiver\"."
+msgstr "En vez de una copia por cada enlace, cada paquete grande (de más de 256 bytes, por omisión) va por un solo enlace, elegido según su peso; los pequeños y los handshakes siguen yendo por todos. Suma la velocidad de los enlaces, pero hoy lo hace peor que copiar: un enlace que muere conserva su parte de los paquetes hasta que el motor lo saca (unos 300 ms según la estimación, 1,5 s antes de esa protección), y los paquetes enviados por él mientras tanto se pierden; el enlace más lento que tiene peso fija la latencia de todos; y un peso mayor que lo que un enlace puede llevar llena la cola de su módem y lo vuelve inestable. El VPS sigue a este router: reparte la bajada del mismo modo, con los mismos pesos, cuando el router se lo pide, y no necesita ningún ajuste. Requiere \"Reordenar en el receptor\"."
+
+msgid "Weight of each uplink in the split"
+msgstr "Peso de cada enlace en el reparto"
+
+msgid "One entry per uplink, as NAME=WEIGHT (for example wan=3), with NAME as in the list of uplinks of the General tab and a weight from 0 to 1000. An uplink gets a share of the split packets in proportion to its weight; with no entry its weight is 1. 0: the uplink carries a copy of every packet, split or not. The weights do not follow the speed of the uplinks: choose them in proportion to what each one carries."
+msgstr "Una entrada por enlace, como NOMBRE=PESO (por ejemplo wan=3), con NOMBRE como en la lista de enlaces de la pestaña General y un peso de 0 a 1000. Un enlace recibe una parte de los paquetes repartidos en proporción a su peso; sin entrada, su peso es 1. 0: el enlace lleva una copia de todos los paquetes, repartidos o no. Los pesos no siguen la velocidad de los enlaces: elígelos en proporción a lo que lleva cada uno."
 
 msgid "Probe interval (ms)"
 msgstr "Intervalo de sondas (ms)"
@@ -414,6 +453,39 @@ msgstr "Versión"
 msgid "%s, protocol %d"
 msgstr "%s, protocolo %d"
 
+msgid "Reordering is off (Advanced tab)."
+msgstr "El reordenamiento está desactivado (pestaña Avanzado)."
+
+msgid "Held now"
+msgstr "Retenidos ahora"
+
+msgid "%d of %d"
+msgstr "%d de %d"
+
+msgid "Most held at once"
+msgstr "Máximo retenido a la vez"
+
+msgid "Held in total"
+msgstr "Retenidos en total"
+
+msgid "Missing packets given up on"
+msgstr "Faltantes dados por perdidos"
+
+msgid "%d at the deadline, %d for lack of room"
+msgstr "%d por el plazo, %d por falta de lugar"
+
+msgid "Late after release"
+msgstr "Llegaron después de darse por perdidos"
+
+msgid "Arrived after the engine gave up on them: after the deadline %d, after running out of room %d, after the other uplinks had gone past %d, too old to tell %d."
+msgstr "Llegaron cuando el motor ya los había dado por perdidos: tras el plazo %d, tras quedarse sin lugar %d, tras haberlos pasado los demás enlaces %d, demasiado viejos para saberlo %d."
+
+msgid "Held now: packets that arrived ahead of one that has not, out of how many there is room for. Most held at once and Held in total count since the engine started."
+msgstr "Retenidos ahora: paquetes que llegaron antes que uno que no ha llegado, de los que caben. Máximo retenido a la vez y Retenidos en total cuentan desde que arrancó el motor."
+
+msgid "Missing packets given up on: the wait for the packet ended at its deadline, or the room ran out first. If it arrives afterwards it counts as late after release; many of those mean that the longest wait (Advanced tab) is too short for the slowest uplink."
+msgstr "Faltantes dados por perdidos: la espera por el paquete terminó en su plazo, o se acabó el lugar antes. Si llega después, cuenta entre los que llegaron después de darse por perdidos; muchos de esos significan que la espera máxima (pestaña Avanzado) es demasiado corta para el enlace más lento."
+
 msgid "Uplink"
 msgstr "Enlace"
 
@@ -491,6 +563,9 @@ msgstr "Atraso frente al más rápido: cuánto más tarde entrega este enlace la
 
 msgid "VPS address: where the uplink sends to; \"failover\" when the first VPS address it can use did not answer. Path MTU: the largest packet the path to the VPS takes."
 msgstr "Dirección del VPS: adónde envía el enlace; \"alternativa\" cuando la primera dirección del VPS que puede usar no contestó. MTU del camino: el paquete más grande que admite el camino hasta el VPS."
+
+msgid "Reordering"
+msgstr "Reordenamiento"
 
 msgid "Every packet goes through all active uplinks; the VPS keeps the first copy."
 msgstr "Cada paquete sale por todos los enlaces activos; el VPS se queda con la primera copia."

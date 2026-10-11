@@ -28,7 +28,9 @@
 #     status and "cengarde-setup cloud-config" carry the router's name and
 #     address, and an invalid tunnel_addr is refused; the engine
 #     configuration gives each link the DNS server its uplink got by DHCP
-#     (the VPS's dnsmasq, 10.1.N.1) as its resolver;
+#     (the VPS's dnsmasq, 10.1.N.1) as its resolver, and carries the
+#     reordering and split options and the weight of each uplink (invalid
+#     ones left out), in a file the engine takes;
 #  4. turns IP pass off while pinging through the tunnel: the engine takes
 #     the change without a restart and without loss, and the VPS follows;
 #  5. pings through the tunnel while one uplink goes down: no loss allowed;
@@ -430,6 +432,66 @@ for i in up1 up16 up2 up3; do
 	ubus call network.interface.$i status | jsonfilter -e '@["dns-server"][*]' -e '@.inactive["dns-server"][*]'
 done
 EOF
+fi
+
+# Reordering and the experimental split: the options of /etc/config/cengarde
+# reach the engine's file (the split as "on", never "force"; a weight only in
+# the section of an uplink of the router, from 0 to 1000; the entries that
+# are not valid are left out and logged), and the engine takes that file. The
+# options are cleared first and after, so that nothing else runs with them.
+if "$VM" ssh router sh -s <<'EOF'
+conf() { cengarde-setup engine-conf; }
+section() { conf | sed -n "/^\[link $1\]/,/^\$/p"; }
+clear() {
+	for o in reorder reorder_max_wait_ms reorder_dup_wait_ms reorder_margin_ms reorder_bypass reorder_pool_kb \
+		split split_small split_weight; do
+		uci -q delete "cengarde.main.$o"
+	done
+	uci commit cengarde
+}
+r=0
+clear
+# nothing set: none of the keys (the engine's defaults rule)
+conf | grep -qE '^(reorder|split|weight)' && { echo "keys without options"; r=1; }
+uci set cengarde.main.reorder=1
+uci set cengarde.main.reorder_max_wait_ms=300
+uci set cengarde.main.reorder_dup_wait_ms=20
+uci set cengarde.main.reorder_bypass=64
+uci set cengarde.main.split=1
+uci set cengarde.main.split_small=300
+uci add_list cengarde.main.split_weight=up1=3
+uci add_list cengarde.main.split_weight=up3=0
+uci add_list cengarde.main.split_weight=up9=2
+uci add_list cengarde.main.split_weight=up2=1001
+uci commit cengarde
+for kv in 'reorder = yes' 'reorder_max_wait_ms = 300' 'reorder_dup_wait_ms = 20' 'reorder_bypass = 64' 'split = on' \
+	'split_small = 300'; do
+	conf | grep -qxF "$kv" || { echo "missing: $kv"; r=1; }
+done
+section eth1 | grep -qx 'weight = 3' || { echo "up1 (eth1) has no weight 3"; r=1; }
+section eth3 | grep -qx 'weight = 0' || { echo "up3 (eth3) has no weight 0"; r=1; }
+section eth2 | grep -q '^weight' && { echo "up2 (eth2) has a weight"; r=1; }
+[ "$(conf | grep -c '^weight')" = 2 ] || { echo "not two weights"; r=1; }
+logread | grep -q "split_weight 'up9=2'" || { echo "up9=2 not logged"; r=1; }
+logread | grep -q "split_weight 'up2=1001'" || { echo "up2=1001 not logged"; r=1; }
+# the engine's own parser takes the file; its shape is checked too
+(umask 077 && conf > /tmp/split.conf)
+cengarde -t -c /tmp/split.conf || r=1
+rm -f /tmp/split.conf
+uci set cengarde.main.reorder=0
+uci commit cengarde
+conf | grep -qxF 'reorder = no' || { echo "reorder 0 is not no"; r=1; }
+uci set cengarde.main.split=0
+uci commit cengarde
+conf | grep -q '^split = ' && { echo "split 0 is written"; r=1; }
+clear
+conf | grep -qE '^(reorder|split|weight)' && { echo "keys left after clearing"; r=1; }
+exit $r
+EOF
+then
+	ok "engine-conf: reordering and split options and per-uplink weights reach the engine's file, which it takes"
+else
+	bad "engine-conf: reordering and split options or weights"
 fi
 
 # No PPPoE server here: only the configuration. PPP copies the uplink's
