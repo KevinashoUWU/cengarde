@@ -134,10 +134,17 @@ static inline int cg_rx(int fd, struct cg_rxbatch *b)
 
 /* epoll_wait that, with busy_poll_us, keeps polling without sleeping for
  * that long after the last traffic: the next packet is picked up without a
- * wake-up, at the cost of a busy CPU while traffic flows. */
-static inline int cg_wait(int ep, struct epoll_event *ev, int max, uint32_t busy_poll_us, uint64_t last_traffic_us)
+ * wake-up, at the cost of a busy CPU while traffic flows. cap_ms >= 0 ends
+ * the wait after that long at the latest (the reorderer's next deadline);
+ * -1: no cap. */
+static inline int cg_wait(int ep, struct epoll_event *ev, int max, uint32_t busy_poll_us, uint64_t last_traffic_us,
+			  int cap_ms)
 {
-	return epoll_wait(ep, ev, max, busy_poll_us && cg_now_us() - last_traffic_us < busy_poll_us ? 0 : -1);
+	int timeout = busy_poll_us && cg_now_us() - last_traffic_us < busy_poll_us ? 0 : -1;
+
+	if (cap_ms >= 0 && (timeout < 0 || cap_ms < timeout))
+		timeout = cap_ms;
+	return epoll_wait(ep, ev, max, timeout);
 }
 
 /* An epoll timeout, in ms, for something due in due_us: ceiled, so that the

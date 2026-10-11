@@ -31,7 +31,12 @@
  * DATA from an address the path does not know still goes to WireGuard (it
  * verified, and its sequence is new) but never moves the path. Each session
  * talks to WireGuard from its own socket, so WireGuard sees every client as
- * a distinct endpoint and many clients can share one port. Link health
+ * a distinct endpoint and many clients can share one port, and puts its
+ * client's verified DATA back in sequence first (reorder.h, story 012): a
+ * packet that comes in ahead of a missing one waits in a pool buffer shared
+ * by every session, until the missing one comes, every path brought a later
+ * one, or its deadline; the sessions holding packets are on a list, and the
+ * nearest deadline among them caps the loop's wait. Link health
  * (health.h) mutes the download on paths that lag far behind the fastest
  * one, from the delays the client reports in its probes.
  *
@@ -133,6 +138,8 @@ struct session {
 	struct cg_link_rx rx[CG_MAX_LINKS];
 	uint64_t up_pkts, up_bytes, down_pkts, down_bytes, wg_drops, toobig;
 	uint32_t rot; /* download batches sent: the first path of each rotates */
+	uint32_t ro_pos;       /* its place in the server's ro_active, plus 1; 0: holds nothing */
+	struct cg_reorder ro;  /* the upload, back in sequence (reorder.h); about 81 KiB */
 };
 
 /* A client: a [client NAME] section, or the global key of a server with one
@@ -222,13 +229,26 @@ struct server {
 	uint64_t wg_pokes, wg_redirects, id_clashes;
 	struct cg_ratelimit rl_auth, rl_full, rl_send, rl_local, rl_junk, rl_version, rl_redirect, rl_hint, rl_fw;
 
+	/* Reordering of every session's upload (reorder.h): one pool of held
+	 * packets for all of them, allocated once; the sessions holding
+	 * packets (indexes into s, cap entries), the only ones whose deadlines
+	 * are looked at; and the releases left in this loop pass. */
+	struct cg_ro_pool pool;
+	struct cg_ro_cfg rocf;
+	uint32_t *ro_active;
+	uint32_t nactive;
+	uint32_t ro_budget;
+
 	struct cg_rxbatch in;
 	union cg_ctl_rx rxctl[CG_BATCH]; /* arrival addresses of a listen batch */
 	uint8_t hdr[CG_BATCH][CG_HDR_LEN];
 	struct mmsghdr out[CG_BATCH];
 	struct iovec oiov[CG_BATCH][2];
-	/* per listen batch: payloads for WireGuard and probe replies */
+	/* per listen batch: payloads for WireGuard (the session of each, and
+	 * the pool buffer it is in, given back once flush_wg sent it, even when
+	 * its session closed meanwhile), and probe replies */
 	uint32_t q_sess[CG_BATCH];
+	uint16_t q_pool[CG_BATCH];
 	uint8_t reply[CG_BATCH][CG_HDR_LEN + CG_PROBE_INFO_LEN];
 	struct sockaddr_storage reply_to[CG_BATCH];
 	union cg_ctl_tx reply_ctl[CG_BATCH];
@@ -435,6 +455,57 @@ static void session_rehome(struct server *s, struct session *N, uint16_t port)
 	cg_info("%ssession %08x: takes over the port WireGuard knew its client by", C->tag, N->id);
 }
 
+/* ---- the upload's reorderer, per session ---- */
+
+/* Keeps S on the list of sessions holding packets while it holds any. The
+ * list is walked backwards, so taking S out (the last one takes its place)
+ * never skips one not visited yet. */
+static void ro_track(struct server *s, struct session *S)
+{
+	uint32_t last;
+
+	if (S->ro.held && !S->ro_pos) {
+		s->ro_active[s->nactive++] = (uint32_t)(S - s->s);
+		S->ro_pos = s->nactive;
+	} else if (!S->ro.held && S->ro_pos) {
+		last = s->ro_active[--s->nactive];
+		s->ro_active[S->ro_pos - 1] = last;
+		s->s[last].ro_pos = S->ro_pos;
+		S->ro_pos = 0;
+	}
+}
+
+/* Everything S holds, in order, straight to its WireGuard (its session
+ * closes, or reorder was turned off), and its window starts again. Through
+ * s->out, which only flush_wg and down_send use, never across this. */
+static void ro_flush_session(struct server *s, struct session *S)
+{
+	struct iovec iov[CG_BATCH];
+	uint16_t bufs[CG_BATCH];
+	struct cg_ro_out o;
+	int m = 0, more = 1, sent;
+
+	while (more) {
+		more = cg_ro_flush(&S->ro, &o);
+		if (more) {
+			iov[m].iov_base = cg_ro_pool_buf(&s->pool, o.buf);
+			iov[m].iov_len = o.len;
+			memset(&s->out[m].msg_hdr, 0, sizeof(s->out[m].msg_hdr));
+			s->out[m].msg_hdr.msg_iov = &iov[m];
+			s->out[m].msg_hdr.msg_iovlen = 1;
+			bufs[m++] = o.buf;
+		}
+		if (m == CG_BATCH || (!more && m)) {
+			sent = sendmmsg(S->wg_fd, s->out, (unsigned)m, MSG_DONTWAIT);
+			if (sent < m)
+				S->wg_drops += (uint64_t)(m - (sent < 0 ? 0 : sent));
+			while (m)
+				cg_ro_pool_put(&s->pool, bufs[--m]);
+		}
+	}
+	ro_track(s, S);
+}
+
 static void session_destroy(struct server *s, struct session *S, const char *why, uint64_t now_ms)
 {
 	struct client *C = client_of(s, S);
@@ -442,6 +513,9 @@ static void session_destroy(struct server *s, struct session *S, const char *why
 	struct session *N;
 
 	cg_info("%ssession %08x closed: %s", C->tag, S->id, why);
+	/* What it holds goes first, in order: its WireGuard socket closes now.
+	 * What a listen batch queued for it is dropped below, as before. */
+	ro_flush_session(s, S);
 	epoll_ctl(s->ep, EPOLL_CTL_DEL, S->wg_fd, NULL);
 	close(S->wg_fd);
 	cg_idmap_del(&s->ids, cg_sesskey(C->mix, S->id));
@@ -852,6 +926,85 @@ static void flush_wg(struct server *s, int nq)
 	}
 }
 
+/* Sends the *nq queued payloads (flush_wg), then gives back the pool
+ * buffers they were in: only then, or a packet held meanwhile could take
+ * one still queued. */
+static void q_flush(struct server *s, int *nq)
+{
+	if (*nq)
+		flush_wg(s, *nq);
+	for (int j = 0; j < *nq; j++)
+		if (s->q_pool[j] != CG_RO_NOBUF)
+			cg_ro_pool_put(&s->pool, s->q_pool[j]);
+	*nq = 0;
+}
+
+/* Queues a payload for S's WireGuard, after what S has queued already;
+ * buf: the pool buffer it is in (CG_RO_NOBUF: in the listen batch, kept
+ * until the queue is sent). A full queue goes first: each session's
+ * entries still leave in queue order. */
+static void q_add(struct server *s, int *nq, struct session *S, uint8_t *payload, size_t len, uint16_t buf)
+{
+	if (*nq == CG_BATCH)
+		q_flush(s, nq);
+	s->q_sess[*nq] = (uint32_t)(S - s->s);
+	s->q_pool[*nq] = buf;
+	s->oiov[*nq][0].iov_base = payload;
+	s->oiov[*nq][0].iov_len = len;
+	(*nq)++;
+}
+
+/* What S's reorderer may hand on at now (the loop's clock, as its arrival
+ * times), queued after what is there: everything with all (a window
+ * overflow), else up to the pass's budget; the next pass comes at once for
+ * the rest (cg_ro_due_us says 0). rset: the paths the client sends DATA on
+ * (expect_mask). */
+static void up_drain(struct server *s, int *nq, struct session *S, uint16_t rset, uint32_t now, int all)
+{
+	struct cg_ro_out o;
+
+	while ((all || s->ro_budget) && cg_ro_next(&S->ro, &s->rocf, rset, now, &o)) {
+		q_add(s, nq, S, cg_ro_pool_buf(&s->pool, o.buf), o.len, o.buf);
+		if (s->ro_budget)
+			s->ro_budget--;
+	}
+}
+
+/* A verified first copy of S's DATA h (payload, len bytes) from path link,
+ * read at now: queued for WireGuard now, or once what comes before it did
+ * (copied into a pool buffer meanwhile), with what it releases after it. */
+static void up_deliver(struct server *s, int *nq, struct session *S, const struct cg_hdr *h, uint8_t *payload,
+		       size_t len, uint16_t rset, uint32_t now)
+{
+	struct cg_ro_pkt k = { .seq = h->seq,
+			       .ts = h->ts,
+			       .t_arr = now,
+			       .len = (uint16_t)len,
+			       .link = h->link,
+			       .flags = h->flags,
+			       .wgtype = len ? payload[0] : 0 };
+	enum cg_ro_v v;
+	uint16_t buf;
+
+	if (!s->cfg->reorder) {
+		q_add(s, nq, S, payload, len, CG_RO_NOBUF);
+		return;
+	}
+	v = cg_ro_in(&S->ro, &s->pool, &s->rocf, &k, rset, &buf);
+	if (v == CG_RO_AGAIN) {
+		/* The window overflowed: the gaps it forces out go, with what was
+		 * held behind them, all of it; then the packet is taken. */
+		up_drain(s, nq, S, rset, now, 1);
+		v = cg_ro_in(&S->ro, &s->pool, &s->rocf, &k, rset, &buf);
+	}
+	if (v == CG_RO_HOLD)
+		memcpy(cg_ro_pool_buf(&s->pool, buf), payload, len);
+	else
+		q_add(s, nq, S, payload, len, CG_RO_NOBUF); /* NOW (a second AGAIN cannot be: never dropped) */
+	up_drain(s, nq, S, rset, now, 0);
+	ro_track(s, S);
+}
+
 static void listen_read(struct server *s, struct lane *ln)
 {
 	for (int round = 0; round < CG_MAX_ROUNDS; round++) {
@@ -876,6 +1029,7 @@ static void listen_read(struct server *s, struct lane *ln)
 			struct path *P;
 			struct cg_hdr h;
 			int verified = 0, fresh = 0, c;
+			uint16_t expect;
 			char a[64];
 
 			if (s->in.msg[i].msg_hdr.msg_flags & MSG_TRUNC) {
@@ -976,6 +1130,13 @@ static void listen_read(struct server *s, struct lane *ln)
 				P->last_rx_ms = now_ms;
 				on_probe(s, S, P, h.link, &h, &pi, now_ms);
 				queue_reply(s, &nr, S, h.link, &h, now32 - h.ts, now_us);
+				/* Its trip up this path, for the reorderer's deadlines;
+				 * the path may have changed its rset too. */
+				cg_ro_owd(&S->ro, h.link, now32 - h.ts);
+				if (s->cfg->reorder && S->ro.held) {
+					up_drain(s, &nq, S, expect_mask(S, now_ms), now32, 0);
+					ro_track(s, S);
+				}
 				continue;
 			}
 			/* DATA: to WireGuard wherever it came from; it tells the path
@@ -984,18 +1145,15 @@ static void listen_read(struct server *s, struct lane *ln)
 				P = path_update(s, S, h.link, from, &s->in.msg[i].msg_hdr, now_ms);
 				P->last_rx_ms = now_ms;
 			}
-			cg_arr_first(&S->arr, S->rx, h.seq, now32, h.link, expect_mask(S, now_ms));
+			expect = expect_mask(S, now_ms);
+			cg_arr_first(&S->arr, S->rx, h.seq, now32, h.link, expect);
 			cg_wgw_from_client(&S->wgw, cg_wg_handshake(b + CG_HDR_LEN, len - CG_HDR_LEN), now_ms);
 			S->up_pkts++;
 			S->up_bytes += len - CG_HDR_LEN;
 			cg_wgs_add(&s->wgs_up, b + CG_HDR_LEN, len - CG_HDR_LEN);
-			s->q_sess[nq] = (uint32_t)(S - s->s);
-			s->oiov[nq][0].iov_base = b + CG_HDR_LEN;
-			s->oiov[nq][0].iov_len = len - CG_HDR_LEN;
-			nq++;
+			up_deliver(s, &nq, S, &h, b + CG_HDR_LEN, len - CG_HDR_LEN, expect, now32);
 		}
-		if (nq)
-			flush_wg(s, nq);
+		q_flush(s, &nq);
 		if (nr)
 			flush_replies(s, ln->fd, nr, now_ms);
 		if (n < CG_BATCH)
@@ -1372,13 +1530,23 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 	cg_json_u64(j, "redirected_handshakes", s->wg_redirects);
 	cg_json_end(j, '}');
 	cg_json_sizes(j, "sizes", &s->wgs_up, &s->wgs_down);
+	/* The pool every session's reorderer holds packets in (each session's
+	 * own counters are in its "reorder"). */
+	cg_json_obj(j, "reorder_pool");
+	cg_json_u64(j, "buffers", s->pool.n);
+	cg_json_u64(j, "free", s->pool.nfree);
+	cg_json_u64(j, "sessions_holding", s->nactive);
+	cg_json_u64(j, "full", s->pool.full);
+	cg_json_end(j, '}');
 	clients_json(s, j);
 	cg_json_arr(j, "sessions");
 	for (uint32_t i = 0; i < s->cap; i++) {
 		const struct session *S = &s->s[i];
+		uint16_t rset;
 
 		if (!S->used)
 			continue;
+		rset = expect_mask(S, now_ms);
 		cg_json_obj(j, NULL);
 		snprintf(buf, sizeof(buf), "%08x", S->id);
 		cg_json_str(j, "id", buf);
@@ -1394,9 +1562,11 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 		cg_json_u64(j, "wireguard_drops", S->wg_drops);
 		cg_json_u64(j, "wireguard_unanswered", cg_wgw_knocking(&S->wgw, now_ms) ? S->wgw.unanswered : 0);
 		cg_json_u64(j, "too_big", S->toobig);
-		/* Upload: lost on every link, and joint lateness (story 012). */
+		/* Upload: lost on every link, joint lateness, and the reorderer
+		 * (story 012). */
 		cg_json_u64(j, "lost_all", S->replay.lost);
 		cg_json_joint(j, "joint", &S->arr);
+		cg_json_reorder(j, "reorder", &S->ro, s->cfg->reorder, NULL);
 		cg_json_arr(j, "links");
 		for (int p = 0; p < CG_MAX_LINKS; p++) {
 			const struct path *P = &S->path[p];
@@ -1432,6 +1602,9 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 			cg_json_u64(j, "rx_late", S->rx[p].late);
 			cg_json_u64(j, "rx_missed", S->rx[p].missed);
 			cg_json_ms(j, "rx_lag_ms", cg_lag_us(&S->rx[p]));
+			/* Its upload delay behind the fastest path the reorderer
+			 * waits for, from the probes and the first copies. */
+			cg_json_owd_spread(j, "rx_owd_spread_ms", &S->ro, (unsigned)p, rset);
 			cg_json_obj(j, "client_view");
 			cg_json_u64(j, "age_ms", P->peer_view_ms ? now_ms - P->peer_view_ms : 0);
 			cg_json_u64(j, "rx", P->peer_view.rx);
@@ -1670,10 +1843,54 @@ static void threads_text(struct server *s, struct cg_json *j)
 		cg_threads_row(j, s->fw.name, s->fw.tid, cg_thread_cpu_ns(s->fw.thread, 0), cg_cpuwin_permille(&s->cpu[3]));
 }
 
+/* What became due in the sessions holding packets while nothing arrived (a
+ * deadline, or the rest of a drain the budget cut): after every loop pass,
+ * and every tick. */
+static void ro_service(struct server *s)
+{
+	uint64_t now_us, now_ms;
+	int nq = 0;
+
+	if (!s->nactive)
+		return;
+	now_us = cg_now_us();
+	now_ms = now_us / 1000;
+	for (uint32_t i = s->nactive; i-- > 0;) {
+		struct session *S = &s->s[s->ro_active[i]];
+
+		up_drain(s, &nq, S, expect_mask(S, now_ms), (uint32_t)now_us, 0);
+		ro_track(s, S);
+	}
+	q_flush(s, &nq);
+}
+
+/* The longest the loop may sleep for the reorderer: -1 when no session
+ * holds anything, 0 when something may go now, else the ms until the
+ * nearest deadline, ceiled. Asked again on every pass: a probe can bring a
+ * deadline forward. */
+static int ro_timeout(struct server *s)
+{
+	int32_t due = INT32_MAX;
+	uint64_t now_us;
+
+	if (!s->nactive)
+		return -1;
+	now_us = cg_now_us();
+	for (uint32_t i = 0; i < s->nactive && due > 0; i++) {
+		const struct session *S = &s->s[s->ro_active[i]];
+		int32_t d = cg_ro_due_us(&S->ro, &s->rocf, expect_mask(S, now_us / 1000), (uint32_t)now_us);
+
+		if (d < due)
+			due = d;
+	}
+	return cg_due_ms(due);
+}
+
 static void tick(struct server *s)
 {
 	uint64_t now_ms = cg_now_ms();
 
+	ro_service(s);
 	if (now_ms >= s->next_cpu_ms)
 		threads_sample(s, now_ms);
 	health_tick(s, now_ms);
@@ -1934,10 +2151,17 @@ static int sessions_room(struct server *s, uint32_t max)
 {
 	struct session *ns;
 	struct cg_idmap nm;
+	uint32_t *na;
 
 	s->max = max;
 	if (max <= s->cap)
 		return 0;
+	na = realloc(s->ro_active, sizeof(*na) * max);
+	if (!na) {
+		s->max = s->cap;
+		return -1;
+	}
+	s->ro_active = na;
 	ns = realloc(s->s, sizeof(*ns) * max);
 	if (!ns) {
 		s->max = s->cap;
@@ -1973,6 +2197,21 @@ static void apply_config(struct server *s, struct cg_config *next)
 
 	s->cfg = next;
 	s->hcfg = cg_hcfg_of(next);
+	/* The reorderer's knobs apply from the next packet; turned off, what
+	 * each session holds goes on at once, in order, and every window
+	 * starts again when it is turned back on. */
+	s->rocf = cg_ro_cfg_of(next);
+	if (old->reorder && !next->reorder) {
+		uint32_t held = 0;
+
+		for (uint32_t i = 0; i < s->cap; i++)
+			if (s->s[i].used) {
+				held += s->s[i].ro.held;
+				ro_flush_session(s, &s->s[i]);
+			}
+		if (held)
+			cg_info("reorder off: %u held packets handed on to WireGuard", held);
+	}
 	cg_log_level_set(s->run->verbose ? CG_LOG_DEBUG : next->log_level);
 	clients_apply(s, next, now_ms);
 	if (sessions_room(s, next->max_sessions) < 0)
@@ -2134,6 +2373,11 @@ int cg_server_run(struct cg_config *cfg, const struct cg_run *run)
 		cg_err("out of memory for %u sessions", cfg->max_sessions);
 		goto out;
 	}
+	if (cg_ro_pool_alloc(&s->pool, cfg->reorder_pool_kb) < 0) {
+		cg_err("reorder_pool_kb = %u: out of memory", cfg->reorder_pool_kb);
+		goto out;
+	}
+	s->rocf = cg_ro_cfg_of(cfg);
 
 	s->pktinfo = 1; /* on a wildcard only */
 	if (lanes_open(s, err, sizeof(err)) < 0) {
@@ -2196,8 +2440,12 @@ int cg_server_run(struct cg_config *cfg, const struct cg_run *run)
 
 	for (;;) {
 		struct epoll_event ev[32];
-		int n = cg_wait(s->ep, ev, 32, busy, last_traffic_us), traffic = 0;
+		int n, traffic = 0;
 
+		/* Until the reorderer's nearest deadline at most (CG_TICK_MS is
+		 * too coarse for it). */
+		n = cg_wait(s->ep, ev, 32, busy, last_traffic_us, ro_timeout(s));
+		s->ro_budget = CG_RO_PASS_MAX;
 		if (n < 0 && errno != EINTR) {
 			cg_err("epoll_wait: %s", strerror(errno));
 			goto out;
@@ -2248,6 +2496,7 @@ int cg_server_run(struct cg_config *cfg, const struct cg_run *run)
 				break;
 			}
 		}
+		ro_service(s);
 		if (traffic && busy)
 			last_traffic_us = cg_now_us();
 	}
@@ -2266,6 +2515,8 @@ out:
 	if (s->ep >= 0)
 		close(s->ep);
 	free(s->s);
+	free(s->ro_active);
+	cg_ro_pool_free(&s->pool);
 	cg_idmap_free(&s->ids);
 	cg_config_free(s->cfg);
 	free(s->cfg);

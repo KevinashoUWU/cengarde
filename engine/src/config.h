@@ -156,8 +156,9 @@ struct cg_config {
 	uint32_t min_active_links;
 
 	/* Reordering what arrives and splitting what is sent (story 012), both
-	 * ends. The client reorders its download with them (reorder.h); the
-	 * server's upload and the split come in the commits that follow. */
+	 * ends. Each end reorders what it receives with them (reorder.h): the
+	 * client its download, the server each session's upload; the split
+	 * comes in the commits that follow. */
 	int reorder;                  /* put the peer's DATA back in sequence before WireGuard */
 	uint32_t reorder_max_wait_ms; /* the longest a missing packet holds back the ones behind it */
 	uint32_t reorder_dup_wait_ms; /* the same where nothing is split (<= reorder_max_wait_ms) */

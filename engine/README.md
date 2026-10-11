@@ -387,10 +387,11 @@ perder un paquete del túnel y vuelve, sin recaer, cuando se le quita
 ## Reordenamiento y reparto (`reorder`, `split`)
 
 Las perillas del bonding (historia
-[012](../docs/historias/012-bonding.md)). **El cliente ya reordena la
-bajada;** la subida en el servidor y el reparto se conectan en los pasos
-siguientes del plan. Con redundancia pura y los valores por omisión no
-retiene nada: el orden de entrega es el de siempre.
+[012](../docs/historias/012-bonding.md)). **Cada extremo ya reordena lo que
+recibe** (el cliente la bajada; el servidor la subida de cada sesión); el
+reparto se conecta en los pasos siguientes del plan. Con redundancia pura y
+los valores por omisión no retiene nada: el orden de entrega es el de
+siempre.
 
 - **`reorder` (`yes`), en los dos extremos:** el receptor pone en secuencia
   los datos verificados del otro extremo antes de entregarlos a WireGuard.
@@ -405,9 +406,11 @@ retiene nada: el orden de entrega es el de siempre.
   handshakes se entregan al instante, sin esperar. Con 0, solo los handshakes.
 - **`reorder_pool_kb` (8192; 256–131070):** memoria para los paquetes
   retenidos, en bloques de 2 KiB, reservada al arrancar; solo ocupa RAM lo
-  que llega a usarse. Es lo único de esta sección que reinicia el proceso al
-  cambiarlo; el resto se aplica en caliente, y apagar `reorder` entrega en
-  orden lo que estaba retenido.
+  que llega a usarse. En el servidor la comparten todas las sesiones (cada
+  una suma además unos 81 KiB de ventana); una sesión que no encuentra
+  búfer entrega al instante y lo cuenta (`pool_full`). Es lo único de esta
+  sección que reinicia el proceso al cambiarlo; el resto se aplica en
+  caliente, y apagar `reorder` entrega en orden lo que estaba retenido.
 - **Sin bloquear:** el plazo del hueco más antiguo es el tiempo de espera
   del bucle (no el tic de 100 ms), y una pasada entrega como mucho 512
   retenidos (la siguiente viene enseguida), para no desbordar la cola de
@@ -835,11 +838,18 @@ nunca deciden nada; las toma el registrador de campo (`cengarde-rec`,
   servidor le entrega (primeras copias de todos los routers); `down`, al
   revés.
 
-El reordenador de la bajada (ver [Reordenamiento y
-reparto](#reordenamiento-y-reparto-reorder-split)) está en `reorder`, en la
-raíz del cliente:
-- `enabled`, `held` (retenidos ahora), `held_max`, `pool_buffers` y
-  `pool_free`;
+Cuesta poca memoria: cada casilla de llegadas pasa de 16 a 20 bytes y los
+histogramas suman 8 KiB, unos 24 KiB más por sesión (el cliente tiene una; el
+servidor, una por sesión: ~1,5 MiB con las 64 de `max_sessions` de fábrica).
+
+El reordenador (ver [Reordenamiento y
+reparto](#reordenamiento-y-reparto-reorder-split)) está en `reorder`: en la
+raíz del cliente para la bajada, y en cada sesión del servidor para su
+subida:
+- `enabled`, `held` (retenidos ahora), `held_max` y, en el cliente,
+  `pool_buffers` y `pool_free` (en el servidor, `reorder_pool` en la raíz:
+  `buffers`, `free`, `sessions_holding` y `full`, las veces que no hubo
+  búfer);
 - cada paquete verificado cuenta en uno solo de `in_order`, `held_total`
   (retenido hasta que llegó lo anterior), `bypassed` (pequeño o handshake:
   al instante), `late.*`, `far` (un salto de 8192 secuencias o más
@@ -857,14 +867,13 @@ raíz del cliente:
   soltar su hueco llegó cada tardío): histogramas con los bordes de
   `edges_ms`, incluidos, y un último cubo por encima de 500 ms;
   `max_burst`, la mayor tanda de retenidos entregada de una vez.
-Por enlace, `rx_owd_spread_ms` es cuánto va su retraso de bajada por detrás
-del más rápido de los enlaces que espera el reordenador (`null` sin medida),
-y `tx_split` y `upload.split` cuentan los paquetes repartidos
+Por enlace, `rx_owd_spread_ms` es cuánto va su retraso de llegada (bajada
+en el cliente, subida en el servidor) por detrás del más rápido de los
+enlaces que espera el reordenador (`null` sin medida). En el cliente,
+`tx_split` y `upload.split` cuentan los paquetes repartidos
 (`upload.split_state`: `off` mientras el reparto no está conectado).
-
-Cuesta poca memoria: cada casilla de llegadas pasa de 16 a 20 bytes y los
-histogramas suman 8 KiB, unos 24 KiB más por sesión (el cliente tiene una; el
-servidor, una por sesión: ~1,5 MiB con las 64 de `max_sessions` de fábrica).
+Su ventana ocupa 81 KiB (en el servidor, por sesión: ~5 MiB con 64,
+*cálculo*), y el pool, solo lo que llega a retener.
 
 ## Protocolo v4
 
