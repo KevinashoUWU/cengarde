@@ -1,0 +1,470 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
+#include <string.h>
+
+#include "health.h" /* cg_popcount16 */
+#include "split.h"
+#include "test.h"
+#include "util.h" /* CG_ARRAY_SIZE */
+
+#define BIG 1000      /* a data datagram well above split_small */
+#define SMALL_LEN 256 /* split_small, as configured by default */
+
+/* One WireGuard data packet of BIG bytes. */
+static int pick(struct cg_split *s, uint16_t eligible, uint16_t dup0, const uint16_t *w)
+{
+	return cg_split_pick(s, eligible, dup0, w, CG_WGS_DATA, BIG, SMALL_LEN, NULL);
+}
+
+static uint16_t bit(unsigned i)
+{
+	return (uint16_t)(1u << i);
+}
+
+/* Counts per link over n packets. */
+static void run(struct cg_split *s, uint16_t eligible, const uint16_t *w, unsigned n, unsigned *count)
+{
+	memset(count, 0, CG_MAX_LINKS * sizeof(*count));
+	for (unsigned k = 0; k < n; k++) {
+		int p = pick(s, eligible, 0, w);
+
+		CHECK(p >= 0 && p < CG_MAX_LINKS);
+		if (p >= 0 && p < CG_MAX_LINKS)
+			count[p]++;
+	}
+}
+
+/* The shares follow the weights. */
+static void test_split_proportions(void)
+{
+	static const uint16_t w11[CG_MAX_LINKS] = { 1, 1 };
+	static const uint16_t w13[CG_MAX_LINKS] = { 1, 3 };
+	static const uint16_t w235[CG_MAX_LINKS] = { 2, 0, 3, 0, 0, 5 };
+	static const uint16_t w124[CG_MAX_LINKS] = { 1, 2, 4 };
+	static const uint16_t wskew[CG_MAX_LINKS] = { 1, 1000 };
+	struct cg_split s;
+	unsigned n[CG_MAX_LINKS];
+
+	/* Whole periods are exact: 10000 packets are 5000 periods of 1:1, 2500
+	 * of 1:3 and 1000 of 2:3:5. */
+	cg_split_reset(&s);
+	run(&s, bit(0) | bit(1), w11, 10000, n);
+	CHECK_EQ(n[0], 5000);
+	CHECK_EQ(n[1], 5000);
+	cg_split_reset(&s);
+	run(&s, bit(0) | bit(1), w13, 10000, n);
+	CHECK_EQ(n[0], 2500);
+	CHECK_EQ(n[1], 7500);
+	cg_split_reset(&s);
+	run(&s, bit(0) | bit(2) | bit(5), w235, 10000, n); /* links 1, 3 and 4: weight 0, not asked */
+	CHECK_EQ(n[0], 2000);
+	CHECK_EQ(n[2], 3000);
+	CHECK_EQ(n[5], 5000);
+	CHECK_EQ(n[1] + n[3] + n[4], 0);
+
+	/* A period that does not divide 10000: every prefix stays within one
+	 * packet of the exact share, not only the end. */
+	{
+		unsigned m[3] = { 0, 0, 0 };
+		int off = 0;
+
+		cg_split_reset(&s);
+		for (unsigned k = 1; k <= 10000; k++) {
+			int p = pick(&s, bit(0) | bit(1) | bit(2), 0, w124);
+
+			CHECK(p >= 0 && p < 3);
+			if (p < 0 || p > 2)
+				return;
+			m[p]++;
+			for (int i = 0; i < 3; i++) {
+				long long d = (long long)m[i] * 7 - (long long)k * w124[i]; /* in 7ths of a packet */
+
+				off |= d > 7 || d < -7;
+			}
+		}
+		CHECK(!off);
+		CHECK_EQ(m[0] + m[1] + m[2], 10000);
+	}
+
+	/* A very uneven pair still gives the small one its packet. */
+	cg_split_reset(&s);
+	run(&s, bit(0) | bit(1), wskew, 10010, n);
+	CHECK_EQ(n[0], 10);
+	CHECK_EQ(n[1], 10000);
+
+	/* The biggest weights of all 16 links neither overflow nor skew. */
+	{
+		uint16_t wmax[CG_MAX_LINKS];
+
+		for (int i = 0; i < CG_MAX_LINKS; i++)
+			wmax[i] = 65535;
+		cg_split_reset(&s);
+		run(&s, 0xffff, wmax, 16 * 100, n);
+		for (int i = 0; i < CG_MAX_LINKS; i++)
+			CHECK_EQ(n[i], 100);
+	}
+}
+
+/* The order of the picks: the heavy link's share is spread out. */
+static void test_split_interleave(void)
+{
+	static const uint16_t w511[CG_MAX_LINKS] = { 5, 1, 1 };
+	static const uint16_t w13[CG_MAX_LINKS] = { 1, 3 };
+	static const uint16_t w11[CG_MAX_LINKS] = { 1, 1 };
+	/* nginx's example, a a b a c a a, twice. */
+	static const int want511[14] = { 0, 0, 1, 0, 2, 0, 0, 0, 0, 1, 0, 2, 0, 0 };
+	static const int want13[8] = { 1, 0, 1, 1, 1, 0, 1, 1 };
+	struct cg_split s;
+	int run5 = 0, longest = 0;
+
+	cg_split_reset(&s);
+	for (int k = 0; k < 14; k++)
+		CHECK_EQ(pick(&s, bit(0) | bit(1) | bit(2), 0, w511), want511[k]);
+	cg_split_reset(&s);
+	for (int k = 0; k < 8; k++)
+		CHECK_EQ(pick(&s, bit(0) | bit(1), 0, w13), want13[k]);
+	cg_split_reset(&s);
+	for (int k = 0; k < 6; k++)
+		CHECK_EQ(pick(&s, bit(0) | bit(1), 0, w11), k & 1); /* a tie goes to the lowest id */
+
+	/* 5 of every 7 packets go to link 0, and never more than 4 in a row
+	 * (a plain weighted round-robin would send all 5, back to back). */
+	cg_split_reset(&s);
+	for (int k = 0; k < 7000; k++) {
+		run5 = pick(&s, bit(0) | bit(1) | bit(2), 0, w511) == 0 ? run5 + 1 : 0;
+		longest = run5 > longest ? run5 : longest;
+	}
+	CHECK_EQ(longest, 4);
+}
+
+/* Only eligible links are picked, whatever else the weights say. */
+static void test_split_eligible(void)
+{
+	static const uint16_t w[CG_MAX_LINKS] = { 1, 1, 1, 0, 1 };
+	struct cg_split s;
+	unsigned n[CG_MAX_LINKS];
+
+	/* Link 1 is not eligible (muted, stalled or stale): it gets nothing. */
+	cg_split_reset(&s);
+	run(&s, bit(0) | bit(2) | bit(4), w, 9000, n);
+	CHECK_EQ(n[0], 3000);
+	CHECK_EQ(n[1], 0);
+	CHECK_EQ(n[2], 3000);
+	CHECK_EQ(n[4], 3000);
+
+	/* A weight-0 link named eligible is not picked either, nor one named
+	 * in dup0: those carry every packet and have no share to take. */
+	cg_split_reset(&s);
+	run(&s, bit(0) | bit(2) | bit(3), w, 6000, n);
+	CHECK_EQ(n[3], 0);
+	CHECK_EQ(n[0] + n[2], 6000);
+	cg_split_reset(&s);
+	for (int k = 0; k < 600; k++) {
+		int p = pick(&s, bit(0) | bit(1) | bit(2), bit(1), w);
+
+		CHECK(p == 0 || p == 2);
+	}
+	/* Links beyond the weights given have none. */
+	cg_split_reset(&s);
+	run(&s, 0xffff, w, 8000, n);
+	CHECK_EQ(n[3], 0);
+	for (int i = 5; i < CG_MAX_LINKS; i++)
+		CHECK_EQ(n[i], 0);
+	CHECK_EQ(n[0] + n[1] + n[2] + n[4], 8000);
+
+	/* The set changes under the round-robin: it follows. */
+	cg_split_reset(&s);
+	for (int k = 0; k < 100; k++) {
+		int p = pick(&s, bit(0) | bit(1), 0, w);
+
+		CHECK(p == 0 || p == 1);
+	}
+	for (int k = 0; k < 100; k++) {
+		int p = pick(&s, bit(2) | bit(4), 0, w);
+
+		CHECK(p == 2 || p == 4);
+	}
+}
+
+/* A link that leaves the set starts even when it comes back. */
+static void test_split_credits(void)
+{
+	static const uint16_t w[CG_MAX_LINKS] = { 3, 1, 2 };
+	struct cg_split s, fresh;
+
+	cg_split_reset(&s);
+	for (int k = 0; k < 5; k++)
+		pick(&s, bit(0) | bit(1) | bit(2), 0, w);
+	CHECK(s.cur[0] != 0 || s.cur[1] != 0 || s.cur[2] != 0);
+	CHECK(s.cur[2] != 0);
+	CHECK_EQ(s.cur[0] + s.cur[1] + s.cur[2], 0); /* the credits of a set balance */
+	for (int i = 3; i < CG_MAX_LINKS; i++)
+		CHECK_EQ(s.cur[i], 0); /* a link that was never eligible has none */
+
+	/* Link 2 leaves: its credit goes at the next call, even one that
+	 * duplicates the packet (a small one, here). */
+	CHECK_EQ(cg_split_pick(&s, bit(0) | bit(1), 0, w, CG_WGS_DATA, 40, SMALL_LEN, NULL), -1);
+	CHECK_EQ(s.cur[2], 0);
+
+	/* And it comes back at zero: its first turn is a plain 0 + weight. */
+	pick(&s, bit(0) | bit(1) | bit(2), 0, w);
+	CHECK(s.cur[2] == 2 || s.cur[2] == 2 - 6);
+
+	/* Fewer than 2 links: nothing is kept, so a second link joins even. */
+	cg_split_reset(&s);
+	for (int k = 0; k < 5; k++)
+		pick(&s, bit(0) | bit(1) | bit(2), 0, w);
+	CHECK_EQ(pick(&s, bit(1), 0, w), -1);
+	for (int i = 0; i < CG_MAX_LINKS; i++)
+		CHECK_EQ(s.cur[i], 0);
+	cg_split_reset(&fresh);
+	for (int k = 0; k < 24; k++)
+		CHECK_EQ(pick(&s, bit(0) | bit(2), 0, w), pick(&fresh, bit(0) | bit(2), 0, w));
+
+	/* Reset. */
+	cg_split_reset(&s);
+	for (int i = 0; i < CG_MAX_LINKS; i++)
+		CHECK_EQ(s.cur[i], 0);
+
+	/* Churn: the set changing at every packet keeps the credits bounded. */
+	{
+		static const uint16_t wc[CG_MAX_LINKS] = { 1000, 1, 500, 20, 3, 1000, 1, 1, 7, 100, 0, 5, 900, 2, 40, 1000 };
+		uint32_t x = 12345, total = 0;
+		int32_t most = 0;
+
+		for (int i = 0; i < CG_MAX_LINKS; i++)
+			total += wc[i];
+		cg_split_reset(&s);
+		for (int k = 0; k < 200000; k++) {
+			x = x * 1664525u + 1013904223u;
+			pick(&s, (uint16_t)(x >> 12), 0, wc);
+			for (int i = 0; i < CG_MAX_LINKS; i++) {
+				int32_t a = s.cur[i] < 0 ? -s.cur[i] : s.cur[i];
+
+				most = a > most ? a : most;
+			}
+		}
+		CHECK((uint32_t)most < total);
+	}
+}
+
+/* Duplicated packets: -1, flags untouched, no turn taken. */
+static void test_split_duplicate(void)
+{
+	static const uint16_t w[CG_MAX_LINKS] = { 1, 1, 1, 1 };
+	struct cg_split s, ref;
+	uint8_t flags = CG_F_ECN;
+
+	cg_split_reset(&s);
+
+	/* Fewer than 2 eligible links: everything is duplicated. */
+	CHECK_EQ(pick(&s, 0, 0, w), -1);
+	CHECK_EQ(pick(&s, bit(2), 0, w), -1);
+	CHECK_EQ(pick(&s, bit(0) | bit(1), bit(0) | bit(1), w), -1); /* both are weight 0 */
+	CHECK_EQ(pick(&s, bit(0) | bit(1), bit(1), w), -1);          /* one is */
+	{
+		/* A weight of 0 is not a share either, named in dup0 or not. */
+		static const uint16_t wz[CG_MAX_LINKS] = { 1, 0, 1 };
+
+		CHECK_EQ(pick(&s, bit(0) | bit(1), 0, wz), -1);
+		CHECK_EQ(pick(&s, bit(1), 0, wz), -1);
+		CHECK(pick(&s, bit(0) | bit(1) | bit(2), 0, wz) >= 0);
+	}
+	CHECK_EQ(cg_split_pick(&s, bit(2), 0, w, CG_WGS_DATA, BIG, SMALL_LEN, &flags), -1);
+	CHECK_EQ(flags, CG_F_ECN); /* untouched */
+	CHECK(pick(&s, bit(0) | bit(1), 0, w) >= 0);
+
+	/* WireGuard's other messages (handshakes, types 1 to 3) and anything
+	 * that is not WireGuard, whatever their size. */
+	for (unsigned t = 0; t < 256; t++)
+		CHECK_EQ(cg_split_pick(&s, 0xf, 0, w, (uint8_t)t, 1400, SMALL_LEN, NULL) == -1, t != CG_WGS_DATA);
+	CHECK_EQ(cg_split_pick(&s, 0xf, 0, w, 1, 148, SMALL_LEN, &flags), -1); /* an initiation */
+	CHECK_EQ(cg_split_pick(&s, 0xf, 0, w, 2, 92, SMALL_LEN, &flags), -1);  /* a response */
+	CHECK_EQ(cg_split_pick(&s, 0xf, 0, w, 3, 64, SMALL_LEN, &flags), -1);  /* a cookie reply */
+	CHECK_EQ(flags, CG_F_ECN);
+
+	/* Small datagrams (keepalives, empty ACKs): up to split_small, inclusive. */
+	CHECK_EQ(cg_split_pick(&s, 0xf, 0, w, CG_WGS_DATA, 0, SMALL_LEN, NULL), -1);
+	CHECK_EQ(cg_split_pick(&s, 0xf, 0, w, CG_WGS_DATA, 32, SMALL_LEN, NULL), -1); /* a keepalive */
+	CHECK_EQ(cg_split_pick(&s, 0xf, 0, w, CG_WGS_DATA, 96, SMALL_LEN, NULL), -1); /* an empty ACK */
+	CHECK_EQ(cg_split_pick(&s, 0xf, 0, w, CG_WGS_DATA, SMALL_LEN, SMALL_LEN, NULL), -1);
+	CHECK(cg_split_pick(&s, 0xf, 0, w, CG_WGS_DATA, SMALL_LEN + 1, SMALL_LEN, NULL) >= 0);
+	CHECK(cg_split_pick(&s, 0xf, 0, w, CG_WGS_DATA, 1440, SMALL_LEN, NULL) >= 0);
+	/* split_small 0 duplicates only the empty datagram; 2048, everything. */
+	CHECK(cg_split_pick(&s, 0xf, 0, w, CG_WGS_DATA, 1, 0, NULL) >= 0);
+	CHECK_EQ(cg_split_pick(&s, 0xf, 0, w, CG_WGS_DATA, 0, 0, NULL), -1);
+	CHECK_EQ(cg_split_pick(&s, 0xf, 0, w, CG_WGS_DATA, 1440, 2048, NULL), -1);
+
+	/* A duplicated packet takes no turn: the picks that follow are the same
+	 * as without it. */
+	cg_split_reset(&s);
+	cg_split_reset(&ref);
+	for (int k = 0; k < 50; k++) {
+		if (k % 3 == 0) {
+			cg_split_pick(&s, 0xf, 0, w, CG_WGS_DATA, 40, SMALL_LEN, NULL);
+			cg_split_pick(&s, 0xf, 0, w, 2, BIG, SMALL_LEN, NULL);
+		}
+		CHECK_EQ(pick(&s, 0xf, 0, w), pick(&ref, 0xf, 0, w));
+	}
+}
+
+/* Where a packet goes, and the weight-0 links in it. */
+static void test_split_dst(void)
+{
+	static const uint16_t w[CG_MAX_LINKS] = { 1, 1, 1, 0, 1 };
+	/* Links 0, 1 and 4 are eligible; 3 has weight 0; 2 carries but has no
+	 * share (it is stale). */
+	const uint16_t eligible = bit(0) | bit(1) | bit(4), dup0 = bit(3), carriers = eligible | dup0 | bit(2);
+	struct cg_split s;
+	unsigned to[CG_MAX_LINKS] = { 0 }, dup = 0, n = 4500;
+
+	CHECK_EQ(cg_split_dst(-1, carriers, dup0), carriers);
+	CHECK_EQ(cg_split_dst(1, carriers, dup0), bit(1) | bit(3));
+	CHECK_EQ(cg_split_dst(0, carriers, 0), bit(0));
+	CHECK_EQ(cg_split_dst(2, bit(2) | bit(3), bit(3) | bit(5)), bit(2) | bit(3)); /* link 5 does not carry */
+
+	cg_split_reset(&s);
+	for (unsigned k = 0; k < n; k++) {
+		/* Every third packet is a keepalive. */
+		uint32_t len = k % 3 ? BIG : 32;
+		int p = cg_split_pick(&s, eligible, dup0, w, CG_WGS_DATA, len, SMALL_LEN, NULL);
+		uint16_t dst = cg_split_dst(p, carriers, dup0);
+
+		CHECK(dst & dup0); /* the weight-0 link has a copy of every packet */
+		for (int i = 0; i < CG_MAX_LINKS; i++)
+			to[i] += dst >> i & 1;
+		if (p < 0) {
+			dup++;
+			CHECK_EQ(dst, carriers); /* the stale link too */
+		} else {
+			CHECK(!(dst & bit(2)));
+			CHECK_EQ(cg_popcount16(dst), 2); /* the picked link and the weight-0 one */
+		}
+	}
+	CHECK_EQ(dup, n / 3);
+	CHECK_EQ(to[3], n); /* every packet */
+	CHECK_EQ(to[2], dup);
+	/* The rest are shared out evenly among 0, 1 and 4, besides the copies of
+	 * the duplicated ones. */
+	CHECK_EQ(to[0] - dup, (n - dup) / 3);
+	CHECK_EQ(to[1] - dup, (n - dup) / 3);
+	CHECK_EQ(to[4] - dup, (n - dup) / 3);
+
+	/* One eligible link and a weight-0 one: nothing to share, every
+	 * carrier has every packet. */
+	cg_split_reset(&s);
+	CHECK_EQ(cg_split_pick(&s, bit(0), bit(3), w, CG_WGS_DATA, BIG, SMALL_LEN, NULL), -1);
+}
+
+/* CG_F_SPLIT: set when the packet skips a carrier, for every shape of the
+ * links and of the packet; the other bits are the caller's. */
+static void test_split_flag(void)
+{
+	static const uint16_t w[CG_MAX_LINKS] = { 1, 2, 3, 4, 5 };
+	static const struct {
+		uint8_t type, flags;
+		uint32_t len;
+	} kind[] = {
+		{ CG_WGS_DATA, 0, BIG },
+		{ CG_WGS_DATA, CG_F_ECN, BIG }, /* the sender's ECN bits stay */
+		{ 2, CG_F_ECN, 92 },            /* a handshake response */
+		{ CG_WGS_DATA, 0, 40 },         /* a small one */
+	};
+	struct cg_split s;
+	unsigned flagged = 0, plain = 0;
+
+	CHECK_EQ(CG_F_SPLIT, 0x04);
+	CHECK_EQ(CG_F_SPLIT & CG_F_ECN, 0);
+
+	cg_split_reset(&s);
+	/* Links 0 to 4, every way: which are eligible, which have weight 0 and
+	 * which carry with no share; each kind of packet. */
+	for (unsigned elig = 0; elig < 32; elig++)
+		for (unsigned zero = 0; zero < 32; zero++)
+			for (unsigned idle = 0; idle < 32; idle++) {
+				uint16_t carriers = (uint16_t)(elig | zero | idle);
+
+				if ((elig & zero) || (elig & idle) || (zero & idle))
+					continue;
+				for (unsigned t = 0; t < CG_ARRAY_SIZE(kind); t++) {
+					uint8_t flags = kind[t].flags;
+					int p = cg_split_pick(&s, (uint16_t)elig, (uint16_t)zero, w, kind[t].type, kind[t].len,
+							      SMALL_LEN, &flags);
+					uint16_t dst = cg_split_dst(p, carriers, (uint16_t)zero);
+					int skipped = (carriers & ~dst) != 0;
+
+					/* The flag is the skipping, nothing else... */
+					CHECK_EQ(!!(flags & CG_F_SPLIT), skipped);
+					CHECK_EQ(!!(flags & CG_F_SPLIT), p >= 0);
+					/* ...and the caller's bits stay. */
+					CHECK_EQ(flags & ~CG_F_SPLIT, kind[t].flags);
+					/* A packet never goes nowhere, and a split one goes to
+					 * the link picked. */
+					CHECK(dst != 0 || carriers == 0);
+					CHECK(p < 0 || (dst >> p & 1));
+					flagged += (unsigned)skipped;
+					plain += (unsigned)!skipped;
+				}
+			}
+	CHECK(flagged > 0 && plain > 0);
+
+	/* Without a flags byte to write, the picks are the same. */
+	{
+		struct cg_split a, b;
+		uint8_t f = 0;
+
+		cg_split_reset(&a);
+		cg_split_reset(&b);
+		for (int k = 0; k < 40; k++)
+			CHECK_EQ(cg_split_pick(&a, 0x1f, 0, w, CG_WGS_DATA, BIG, SMALL_LEN, NULL),
+				 cg_split_pick(&b, 0x1f, 0, w, CG_WGS_DATA, BIG, SMALL_LEN, &f));
+	}
+}
+
+/* Guard G3: the peer's silence on a link. */
+static void test_split_stale(void)
+{
+	static const uint16_t w[CG_MAX_LINKS] = { 1, 1, 1 };
+	const uint32_t iv = 100; /* probe_interval_ms */
+	const uint64_t now = 10300;
+	uint64_t last[3] = { 10300, 9999, 10250 }; /* link 1: 301 ms of silence */
+	uint16_t eligible = 0;
+	struct cg_split s;
+
+	CHECK(cg_split_stale(0, 5000, iv)); /* never heard from */
+	CHECK(cg_split_stale(0, 0, iv));
+	CHECK(!cg_split_stale(5000, 5000, iv));
+	CHECK(!cg_split_stale(5000, 5000 + 3 * iv, iv)); /* exactly three intervals: still fresh */
+	CHECK(cg_split_stale(5000, 5000 + 3 * iv + 1, iv));
+	CHECK(!cg_split_stale(5000, 5001, iv));
+	CHECK(!cg_split_stale(5000, 4999, iv)); /* a clock that went back is not silence */
+	CHECK(!cg_split_stale(1, 1 + 3 * 1000, 1000));
+	CHECK(cg_split_stale(1, 2 + 3 * 1000, 1000));
+	/* No overflow at the ends of the ranges. */
+	CHECK(!cg_split_stale(UINT64_MAX - 5, UINT64_MAX, UINT32_MAX));
+	CHECK(!cg_split_stale(1, (uint64_t)3 * UINT32_MAX + 1, UINT32_MAX));
+	CHECK(cg_split_stale(1, (uint64_t)3 * UINT32_MAX + 2, UINT32_MAX));
+
+	/* How the caller uses it: a link that stopped answering leaves the set
+	 * 300 ms later, and the shares go to the others. */
+	for (unsigned i = 0; i < 3; i++)
+		if (!cg_split_stale(last[i], now, iv))
+			eligible |= bit(i);
+	CHECK_EQ(eligible, bit(0) | bit(2));
+	cg_split_reset(&s);
+	for (int k = 0; k < 100; k++)
+		CHECK(pick(&s, eligible, 0, w) != 1);
+	last[1] = now - 300; /* a reply at the limit brings it back */
+	CHECK(!cg_split_stale(last[1], now, iv));
+}
+
+void test_split(void)
+{
+	test_split_proportions();
+	test_split_interleave();
+	test_split_eligible();
+	test_split_credits();
+	test_split_duplicate();
+	test_split_dst();
+	test_split_flag();
+	test_split_stale();
+}

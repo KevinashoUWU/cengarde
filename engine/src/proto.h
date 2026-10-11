@@ -24,6 +24,13 @@
  * Each direction has its own 16-byte key (client->server, server->client),
  * both taken from the 32-byte shared secret.
  *
+ * Invariant of DATA: the sender writes the sequence and the timestamp
+ * together and in order, so a packet with a higher sequence never carries an
+ * older timestamp (serial arithmetic, both wrap). The receiver's reorderer
+ * (story 012) bounds how long it waits for a missing sequence with the
+ * timestamp of a packet that did arrive after it, and the bound is only
+ * sound if that timestamp is not older than the missing packet's.
+ *
  * A server takes a new session, a new path (link id) or a path's new address
  * only from a probe that echoes a cookie it handed out in a HELLO to that
  * address (cookie.h): a probe captured earlier and sent again from elsewhere,
@@ -66,10 +73,14 @@ static inline int cg_type_ctl(uint8_t type)
 	return type == CG_T_PROBE || type == CG_T_PROBE_REPLY;
 }
 
-/* Header flags on DATA, reserved for bonding: senders write 0 for now and
- * receivers ignore them. */
+/* Header flags on DATA, for bonding (story 012). CG_F_ECN is reserved:
+ * senders write 0 for now and receivers ignore it. CG_F_SPLIT is written
+ * only by a sender that splits (split.h), and is under the MAC: this packet
+ * skips at least one carrier, some link that carries payload does not bring
+ * this sequence (a weight-0 link may bring it too, so it is not "the only
+ * copy"). */
 #define CG_F_ECN 0x03   /* the ECN field of the WireGuard datagram (RFC 3168 codepoint) */
-#define CG_F_SPLIT 0x04 /* the only copy, sent on one link: no other link brings this sequence */
+#define CG_F_SPLIT 0x04 /* this packet skips at least one carrier */
 
 /* Header flags on HELLO. */
 #define CG_F_REFUSED 0x01 /* the server will not take the session (limit, client off) */

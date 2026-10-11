@@ -808,10 +808,11 @@ Desde la 0.5.0 (historia 010, PR 3d2). La cabecera sigue midiendo 24 bytes:
   sean pérdidas (lo que necesita el reordenador del bonding), y un enlace
   muy atrasado sigue entregando sus respuestas.
 - **Reservado para el bonding** (historia 012): en DATA, los bits de ECN
-  (0x03) y la marca de copia única (0x04), que hoy se envían en 0 y se
-  ignoran; la carga de las sondas puede crecer (se leen los campos
-  conocidos y se ignora el resto), para el informe por enlace y las sondas
-  rellenadas.
+  (0x03) y la marca de reparto (0x04: este paquete no va por todos los
+  enlaces que llevan datos, aunque otro pueda llevar una copia), que hoy se
+  envían en 0 y se ignoran; la carga de las sondas puede crecer (se leen los
+  campos conocidos y se ignora el resto), para el informe por enlace y las
+  sondas rellenadas.
 
 `sudo bench/lab.sh replay` lo prueba con `bench/cgprobe`, que fabrica sondas
 con la clave del laboratorio.
