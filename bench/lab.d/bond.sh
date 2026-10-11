@@ -36,18 +36,51 @@
 #   deepq       link 1 at 20 Mbit/s behind 500 ms of queue, link 2 at
 #               50 Mbit/s with 100 ms; both 25 ms
 #
+# Variants (BOND_VARIANTS): what runs in each case. The engine settings of a
+# variant go to both ends through CLIENT_EXTRA and SERVER_EXTRA (yours, if any,
+# come after them).
+#   bonded       today's redundancy with the engine's defaults, what CI runs:
+#                the same as redund, the name the step 1 tables use
+#   solo         the first link alone (NLINKS 1), in the cases of BOND_SOLO_CASES
+#   redund       the defaults
+#   redund-ro0   reorder = no
+#   redund-dw20  reorder_dup_wait_ms = 20
+#   split        split = force, mute_behind_ms = 0, reorder_max_wait_ms = 400
+#                (muting would take the slow link out of reorder150 and hide
+#                the spread)
+#   splitnoro    split, with reorder = no: the control of split
+#   NAME-bpN     any of them with reorder_bypass = N
+# BOND_VARIANTS empty is "bonded solo", solo in equal and het only: exactly the
+# runs from before the variants (the CI's time estimate counts them). With
+# BOND_VARIANTS given, solo also runs in reorder50 and reorder150, the
+# baselines of split; BOND_SOLO_CASES says it by hand.
+#
 # Knobs: BOND_S (seconds per run, 10; starlink15 takes at least 31), BOND_N
 # (repetitions, 1; the table then gives the median and the spread), BOND_CC
 # ("cubic bbr quic"; quic only when aioquic imports, else a note),
 # BOND_NEED_QUIC (1: no aioquic is a failure, the CI), BOND_QUIC_CC (cubic or
 # reno, what the QUIC sender runs) and BOND_QUIC_MTU (QUIC datagram, 1350: the
 # tunnel is 1380), BOND_DIRS ("up down"), BOND_OUT (a file to append the JSON
-# lines to). Needs iperf3, wg (wireguard-tools), ping and netem; WireGuard
-# from the kernel, or wireguard-go named by WG_GO when the kernel has none.
+# lines to), BOND_SMALL (pps of a flow of datagrams of BOND_SMALL_SIZE bytes,
+# 160, through the tunnel alongside the transfer, 0: none) and
+# BOND_NETEM_INFLIGHT (1: netem's limit also covers the packets in the delay,
+# see bond_link; 0 is the step 0 baseline). Needs iperf3, wg
+# (wireguard-tools), ping and netem; WireGuard from the kernel, or
+# wireguard-go named by WG_GO when the kernel has none.
 # Without netem the links only get a rate (tbf) and the delays are skipped,
 # which is said; BOND_NEED_NETEM=1 (the CI) makes that a failure instead.
-# In the JSON lines, "retrans" is TCP's retransmissions or, for quic, the
-# packets the sender declared lost ("spurious": the ones that arrived after all).
+#
+# Each run takes the engine's status files and the WireGuard interfaces' counters
+# before and after (the engine writes them every second: a wait of 1.1 s per run;
+# the after of a run is the before of the next), and its JSON line carries the
+# differences: "eng" for cli and srv (the reorder counters, too_old,
+# wireguard_drops and lost_all; null from an engine without them) and
+# "wg_rx_dropped". A second ping, of 1200-byte packets (the ones a reorderer
+# holds: the 84-byte one bypasses it), gives rtt_big_p50 and rtt_big_p99.
+# "retrans" is TCP's retransmissions or, for quic, the packets the sender
+# declared lost ("spurious": the ones that arrived after all); retrans_pct is
+# its rate, over the segments the sender wrote or the packets it sent. The
+# tables and their rules are bondtab.py's (bondtab_test.py tests them).
 
 BOND_S=${BOND_S:-10}
 BOND_N=${BOND_N:-1}
@@ -56,6 +89,11 @@ BOND_QUIC_CC=${BOND_QUIC_CC:-cubic}
 BOND_QUIC_MTU=${BOND_QUIC_MTU:-1350}
 BOND_DIRS=${BOND_DIRS:-up down}
 BOND_CASES=${BOND_CASES:-equal het reorder50 reorder150 linkdeath starlink15 ltespike deepq}
+BOND_VARIANTS=${BOND_VARIANTS:-} # empty: bonded solo (bond_settle)
+BOND_SOLO_CASES=${BOND_SOLO_CASES:-} # empty: equal het (bond_settle)
+BOND_SMALL=${BOND_SMALL:-0}
+BOND_SMALL_SIZE=${BOND_SMALL_SIZE:-160}
+BOND_NETEM_INFLIGHT=${BOND_NETEM_INFLIGHT:-0}
 BOND_OUT=${BOND_OUT:-}
 WG_GO=${WG_GO:-}
 BOND_NEED_NETEM=${BOND_NEED_NETEM:-0}
@@ -131,6 +169,82 @@ bond_ccs() {
 	[ -n "$BOND_CC" ] || { echo "FAIL: no congestion control to run"; return 1; }
 }
 
+# bond_settle: fills BOND_VARIANTS and BOND_SOLO_CASES when they are empty.
+bond_settle() {
+	if [ -z "$BOND_VARIANTS" ]; then
+		BOND_VARIANTS="bonded solo"
+		BOND_SOLO_CASES=${BOND_SOLO_CASES:-equal het}
+	else
+		BOND_SOLO_CASES=${BOND_SOLO_CASES:-equal het reorder50 reorder150}
+	fi
+}
+
+# bond_variant NAME: the settings of a variant: BV_CLIENT and BV_SERVER
+# ("key = value;..."), BV_SOLO (1: the first link alone). 1 for a name it does not know.
+bond_variant() {
+	local v=$1 bp=
+	BV_CLIENT='' BV_SERVER='' BV_SOLO=0
+	case $v in *-bp*)
+		bp=${v##*-bp}
+		v=${v%-bp*}
+		case $bp in '' | *[!0-9]*) return 1 ;; esac
+		;;
+	esac
+	case $v in
+	bonded | redund) ;;
+	redund-ro0) BV_CLIENT="reorder = no" ;;
+	redund-dw20) BV_CLIENT="reorder_dup_wait_ms = 20" ;;
+	split) BV_CLIENT="split = force;mute_behind_ms = 0;reorder_max_wait_ms = 400" ;;
+	splitnoro) BV_CLIENT="split = force;mute_behind_ms = 0;reorder_max_wait_ms = 400;reorder = no" ;;
+	solo) BV_SOLO=1 ;;
+	*) return 1 ;;
+	esac
+	[ -n "$bp" ] && BV_CLIENT="${BV_CLIENT:+$BV_CLIENT;}reorder_bypass = $bp"
+	BV_SERVER=$BV_CLIENT
+	return 0
+}
+
+# bond_applies CASE VARIANT: whether the variant runs in the case (solo, in the
+# cases of BOND_SOLO_CASES only).
+bond_applies() {
+	local v=${2%-bp*}
+	[ "$v" = solo ] || return 0
+	case " $BOND_SOLO_CASES " in *" $1 "*) return 0 ;; esac
+	return 1
+}
+
+# bond_variants_check: every variant is known, and the engine takes its settings
+# ("cengarde -t" on a config like the lab's: a typo would otherwise cost a whole run).
+bond_variants_check() {
+	local v end f
+	mkdir -p "$RUN"
+	for v in $BOND_VARIANTS; do
+		bond_variant "$v" || {
+			echo "FAIL: unknown variant $v (bonded solo redund redund-ro0 redund-dw20 split splitnoro, and any with -bpN)"
+			return 1
+		}
+		[ -x "$CENGARDE_BIN" ] || continue
+		for end in client server; do
+			f=$RUN/check-$end.conf
+			if [ "$end" = client ]; then
+				printf 'mode = client\nkey = %s\nlisten = 127.0.0.1:59401\nserver = 10.0.1.2:59402\ninterfaces = none\n%s\n' \
+					"$KEY" "$(echo "$BV_CLIENT" | tr ';' '\n')" >"$f"
+			else
+				printf 'mode = server\nkey = %s\nlisten = *:59402\nwireguard = 127.0.0.1:59301\n%s\n' \
+					"$KEY" "$(echo "$BV_SERVER" | tr ';' '\n')" >"$f"
+			fi
+			"$CENGARDE_BIN" -t -c "$f" >"$RUN/check.out" 2>&1 || {
+				echo "FAIL: the engine does not take the settings of $v at the $end: $(head -c 200 "$RUN/check.out")"
+				return 1
+			}
+		done
+	done
+	rm -f "$RUN"/check-*.conf "$RUN/check.out"
+}
+
+# bond_join A B: A;B, or whichever is not empty.
+bond_join() { echo "${1:+$1${2:+;}}$2"; }
+
 # bond_quic_server: the QUIC server on the tunnel's server side, up before
 # the first run (it prints "listening" once it is bound).
 bond_quic_server() {
@@ -160,13 +274,21 @@ bond_netem_ok() {
 
 # bond_link N DELAY_MS RATE_MBIT [QUEUE_MS [LOSS_PCT]]: link N, both
 # directions: one-way delay, rate, a queue of QUEUE_MS (100) at that rate.
+# netem counts the packets in its delay against its limit: a link of 170 ms and
+# 50 Mbit/s holds 760 packets of 1400 bytes in flight, more than the 456 of the
+# limit for a 100 ms queue, and drops what does not fit (about 30 Mbit/s get
+# through, the queue being what is left of the limit). The step 0 tables are
+# like that, the redundancy hiding it behind the other link; a split has no
+# other copy. BOND_NETEM_INFLIGHT=1 adds to the limit what the delay holds, so
+# that QUEUE_MS is the queue beyond it (it changes the step 0 baseline).
 bond_link() {
-	local n=$1 d=$2 r=$3 q=${4:-100} loss=${5:-0} lim ns dev
+	local n=$1 d=$2 r=$3 q=${4:-100} loss=${5:-0} lim ns dev inflight=0
 	lim=$((r * 1000000 * q / 8000 / 1400 + 10))
+	[ "${BOND_NETEM_INFLIGHT:-0}" = 1 ] && inflight=$((r * 1000000 * d / 8000 / 1400))
 	for ns in cli srv; do
 		dev=$([ "$ns" = cli ] && echo "l$n" || echo "s$n")
 		if bond_netem_ok; then
-			ip netns exec "$ns" tc qdisc replace dev "$dev" root netem delay "${d}ms" rate "${r}mbit" limit "$lim" loss "${loss}%"
+			ip netns exec "$ns" tc qdisc replace dev "$dev" root netem delay "${d}ms" rate "${r}mbit" limit $((lim + inflight)) loss "${loss}%"
 		else
 			ip netns exec "$ns" tc qdisc replace dev "$dev" root tbf rate "${r}mbit" burst 32kb limit $((lim * 1500))
 		fi
@@ -227,17 +349,60 @@ bond_nlinks() {
 	esac
 }
 
+# bond_snap PREFIX: the engine's status files and the WireGuard interfaces'
+# counters now, as bondtab.py reads them (PREFIX.client.json, .server.json,
+# .wgc.json and .wgs.json; an empty file for what could not be read).
+bond_snap() {
+	cp "$RUN/client.json" "$1.client.json" 2>/dev/null || : >"$1.client.json"
+	cp "$RUN/server.json" "$1.server.json" 2>/dev/null || : >"$1.server.json"
+	ip -n cli -s -j link show dev wgc >"$1.wgc.json" 2>/dev/null || : >"$1.wgc.json"
+	ip -n srv -s -j link show dev wgs >"$1.wgs.json" 2>/dev/null || : >"$1.wgs.json"
+}
+
+# bond_snap_roll: the after of a run is the before of the next.
+bond_snap_roll() {
+	local f
+	for f in client server wgc wgs; do
+		mv -f "$RUN/snap-after.$f.json" "$RUN/snap-before.$f.json"
+	done
+}
+
+# bond_small_start DIR SECS: BOND_SMALL pps of BOND_SMALL_SIZE-byte datagrams
+# (udpgen) through the tunnel, towards where DIR sends; their pids go to BOND_BG.
+bond_small_start() {
+	local tx rx txa rxa
+	if [ "$1" = up ]; then
+		tx=cli rx=srv txa=10.79.0.2 rxa=10.79.0.1
+	else
+		tx=srv rx=cli txa=10.79.0.1 rxa=10.79.0.2
+	fi
+	rm -f "$RUN/small-tx.out" "$RUN/small-rx.out"
+	ip netns exec "$rx" "$BIN/udpgen" -b "$rxa:7002" -d $(($2 + 1)) -g 1 >"$RUN/small-rx.out" &
+	BOND_BG="$BOND_BG $!"
+	sleep 0.2
+	ip netns exec "$tx" "$BIN/udpgen" -b "$txa:7001" -p "$rxa:7002" -r "$BOND_SMALL" -s "$BOND_SMALL_SIZE" \
+		-d "$2" -g 0 >"$RUN/small-tx.out" &
+	BOND_BG="$BOND_BG $!"
+}
+
 # bond_run CASE VARIANT DIR CC REP SECS: one run (iperf3, or quicperf for cc
-# quic) with ping alongside; appends a JSON line to $RUN/bond.jsonl and prints
-# a short one.
+# quic) with two pings alongside (84 and 1200 bytes); appends a JSON line to
+# $RUN/bond.jsonl and prints a short one.
 bond_run() {
-	local c=$1 v=$2 dir=$3 cc=$4 rep=$5 s=$6 cp sp c0 s0 c1 s1 pg ev res err rc=0
+	local c=$1 v=$2 dir=$3 cc=$4 rep=$5 s=$6 cp sp c0 s0 c1 s1 res err rc=0 small=()
 	cp=$(cat "$RUN/client.pid") sp=$(cat "$RUN/server.pid")
+	BOND_BG=
 	c0=$(cpu_ticks "$cp") s0=$(cpu_ticks "$sp")
 	ip netns exec cli ping -n -i 0.1 -w $((s + 1)) 10.79.0.1 >"$RUN/ping.out" 2>&1 &
-	pg=$!
+	BOND_BG="$BOND_BG $!"
+	ip netns exec cli ping -n -i 0.1 -s 1200 -w $((s + 1)) 10.79.0.1 >"$RUN/pingbig.out" 2>&1 &
+	BOND_BG="$BOND_BG $!"
 	bond_events "$c" "$s" &
-	ev=$!
+	BOND_BG="$BOND_BG $!"
+	if [ "$BOND_SMALL" -gt 0 ]; then
+		bond_small_start "$dir" "$s"
+		small=(--small-tx "$RUN/small-tx.out" --small-rx "$RUN/small-rx.out")
+	fi
 	if [ "$cc" = quic ]; then
 		res=$RUN/quic.json err=$RUN/quic.err
 		ip netns exec cli python3 -I "$LAB/quicperf.py" client 10.79.0.1 --dir "$dir" --secs "$s" \
@@ -248,45 +413,19 @@ bond_run() {
 		ip netns exec cli iperf3 -c 10.79.0.1 -t "$s" -C "$cc" -J $([ "$dir" = down ] && echo -R) >"$res" 2>"$err" || rc=1
 	fi
 	c1=$(cpu_ticks "$cp") s1=$(cpu_ticks "$sp")
+	# The engine writes its status every second: what it counted until now is in
+	# the file after this wait (which overlaps the end of the pings).
+	sleep 1.1
+	bond_snap "$RUN/snap-after"
 	# Not a bare wait: the wireguard-go processes are children too.
-	wait "$pg" "$ev"
-	python3 - "$res" "$RUN/ping.out" "$c" "$v" "$dir" "$cc" "$rep" "$s" $((c1 - c0)) $((s1 - s0)) \
-		"$(getconf CLK_TCK)" "$BOND_NETEM" >>"$RUN/bond.jsonl" <<'EOF' || rc=1
-import json, re, sys
-resf, pingf, case, var, dirn, cc, rep, secs, ct, st, hz, netem = sys.argv[1:]
-# What does not apply to a kind of run stays null: TCP does not say how many
-# packets it sent, and QUIC has no "retransmits" but the packets it declared lost.
-extra = {"pkts_sent": None, "spurious": None, "srtt_ms": None, "min_rtt_ms": None, "quic_cc": None}
-try:
-    j = json.load(open(resf))
-    if cc == "quic":
-        mbps, retrans = j["mbps"], j["lost"]
-        extra = {"pkts_sent": j["sent"], "spurious": j["spurious"], "srtt_ms": j["srtt_ms"],
-                 "min_rtt_ms": j["min_rtt_ms"], "quic_cc": j["cc"]}
-    else:
-        end = j["end"]
-        mbps = end["sum_received"]["bits_per_second"] / 1e6
-        retrans = end["sum_sent"].get("retransmits")
-        snd = end["streams"][0]["sender"]  # the sender's TCP_INFO RTTs, in microseconds
-        us = lambda k: round(snd[k] / 1000, 2) if snd.get(k) else None
-        extra.update(srtt_ms=us("mean_rtt"), min_rtt_ms=us("min_rtt"))
-except Exception as e:
-    mbps, retrans = 0.0, None
-rtts = [float(m) for m in re.findall(r"time=([0-9.]+) ms", open(pingf).read())]
-rtts.sort()
-q = lambda p: rtts[min(len(rtts) - 1, int(p * len(rtts)))] if rtts else None
-print(json.dumps({"case": case, "variant": var, "dir": dirn, "cc": cc, "rep": int(rep), "secs": int(secs),
-                  "mbps": round(mbps, 2), "retrans": retrans, **extra, "rtt_p50": q(0.5), "rtt_p99": q(0.99),
-                  "pings": len(rtts), "cpu_client_pct": round(100 * int(ct) / int(hz) / int(secs), 1),
-                  "cpu_server_pct": round(100 * int(st) / int(hz) / int(secs), 1), "netem": netem == "yes"}))
-sys.exit(0 if mbps > 0.5 and rtts else 1)
-EOF
-	tail -1 "$RUN/bond.jsonl" | python3 -c '
-import json, sys
-d = json.loads(sys.stdin.read())
-sp = "" if d["spurious"] is None else " (spurious {})".format(d["spurious"])
-print("   {case:<10} {variant:<6} {dir:<4} {cc:<5} #{rep} {mbps:7.1f} Mbit/s retrans {retrans}".format(**d) + sp +
-      " rtt p50 {rtt_p50} p99 {rtt_p99} ms cpu {cpu_client_pct}/{cpu_server_pct} %".format(**d))'
+	# shellcheck disable=SC2086 # a list of pids
+	wait $BOND_BG
+	python3 -I "$LAB/bondtab.py" line --result "$res" --ping "$RUN/ping.out" --ping-big "$RUN/pingbig.out" \
+		--case "$c" --variant "$v" --dir "$dir" --cc "$cc" --rep "$rep" --secs "$s" \
+		--cpu-client $((c1 - c0)) --cpu-server $((s1 - s0)) --hz "$(getconf CLK_TCK)" --netem "$BOND_NETEM" \
+		--before "$RUN/snap-before" --after "$RUN/snap-after" ${small[@]+"${small[@]}"} >>"$RUN/bond.jsonl" || rc=1
+	bond_snap_roll
+	python3 -I "$LAB/bondtab.py" show "$RUN/bond.jsonl"
 	[ "$rc" = 0 ] || echo "FAIL: $c $v $dir $cc #$rep: no traffic or no ping through the tunnel ($(head -c 200 "$err"))"
 	return "$rc"
 }
@@ -298,7 +437,10 @@ bond_case() {
 	case $c in starlink15*) [ "$s" -lt 31 ] && s=31 ;; esac
 	ENGINE=c
 	NLINKS=$(bond_nlinks "$c")
-	[ "$v" = solo ] && NLINKS=1
+	bond_variant "$v" || return 1
+	[ "$BV_SOLO" = 1 ] && NLINKS=1
+	CLIENT_EXTRA=$(bond_join "$BV_CLIENT" "$CLIENT_EXTRA")
+	SERVER_EXTRA=$(bond_join "$BV_SERVER" "$SERVER_EXTRA")
 	setup && start || return 1
 	if [ "$BOND_NEED_NETEM" = 1 ] && ! bond_netem_ok; then
 		echo "FAIL: no netem (BOND_NEED_NETEM=1)"
@@ -308,7 +450,8 @@ bond_case() {
 	bond_tunnel || return 1
 	ip netns exec srv iperf3 -s -B 10.79.0.1 -D || return 1
 	case " $BOND_CC " in *" quic "*) bond_quic_server || return 1 ;; esac
-	sleep 0.5
+	sleep 1.7 # and the status files hold the handshake: the first before
+	bond_snap "$RUN/snap-before"
 	for rep in $(seq 1 "$BOND_N"); do
 		for dir in $BOND_DIRS; do
 			for cc in $BOND_CC; do
@@ -321,72 +464,72 @@ bond_case() {
 	return "$fail"
 }
 
-# bond_table: per case, variant, direction and congestion control. With one
-# repetition, the value; with more, the median and, in parentheses, the p25 to
-# p75 range (the minimum to the maximum when there are fewer than 4). The
-# spurious column appears when some run (QUIC) counted them.
-bond_table() {
-	python3 - "$RUN/bond.jsonl" <<'EOF'
-import json, statistics, sys
-rows = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
-keys = []
-for r in rows:
-    k = (r["case"], r["variant"], r["dir"], r["cc"])
-    if k not in keys:
-        keys.append(k)
-spur = any(r.get("spurious") is not None for r in rows)
-many = any(sum(1 for r in rows if (r["case"], r["variant"], r["dir"], r["cc"]) == k) > 1 for k in keys)
+# bond_table: the summary tables of the run, in Markdown. The rules (median and
+# p25-p75, or min-max, two modes, the engine's counters, the comparison against
+# solo or the control of each group) are bondtab.py's.
+bond_table() { python3 -I "$LAB/bondtab.py" table "$RUN/bond.jsonl"; }
 
-def cell(xs, p=1, spread=True):
-    """The median and, with several values, (p25-p75), or (min-max) with fewer than 4."""
-    xs = sorted(x for x in xs if x is not None)
-    if not xs:
-        return "-"
-    num = lambda x: f"{x:.{p}f}"
-    if len(xs) == 1 or not spread:
-        return num(statistics.median(xs))
-    if len(xs) < 4:
-        lo, hi = xs[0], xs[-1]
-    else:
-        q = statistics.quantiles(xs, n=4, method="inclusive")
-        lo, hi = q[0], q[2]
-    return f"{num(statistics.median(xs))} ({num(lo)}–{num(hi)})"
-
-head = ["case", "variant", "dir", "cc", "n", "Mbit/s", "retrans"] + (["spurious"] if spur else []) + ["RTT p50", "RTT p99", "CPU cli/srv %"]
-print("| " + " | ".join(head) + " |")
-print("| " + " | ".join(["---"] * 4 + ["---:"] * (len(head) - 4)) + " |")
-for k in keys:
-    rs = [r for r in rows if (r["case"], r["variant"], r["dir"], r["cc"]) == k]
-    col = lambda name, p=1: cell([r.get(name) for r in rs], p)
-    med = lambda name: cell([r.get(name) for r in rs], spread=False)
-    cells = [k[0], k[1], k[2], k[3], str(len(rs)), col("mbps"), col("retrans", 0)] + ([col("spurious", 0)] if spur else []) + \
-        [col("rtt_p50"), col("rtt_p99"), f"{med('cpu_client_pct')}/{med('cpu_server_pct')}"]
-    print("| " + " | ".join(cells) + " |")
-if many or spur:
-    print()
-    notes = []
-    if many:
-        notes.append("n > 1: median (p25–p75), or (min–max) with n < 4.")
-    if spur:
-        notes.append("retrans of quic: packets declared lost; spurious: of those, the ones acknowledged afterwards.")
-    print(" ".join(notes))
-EOF
+# bond_plan: how long the runs would take, from BOND_CASES, BOND_VARIANTS, BOND_N,
+# BOND_S, BOND_DIRS and BOND_CC (all three when empty): what bond.yml checks
+# before it starts. 1 when it is more than BOND_MAX_MIN (180) minutes.
+bond_plan() {
+	local c v w dirs=0 ccs=0 dur secs=0 runs=0 pairs=0 min
+	bond_settle
+	for v in $BOND_VARIANTS; do
+		bond_variant "$v" || {
+			echo "bond: unknown variant $v"
+			return 1
+		}
+	done
+	for w in $BOND_DIRS; do dirs=$((dirs + 1)); done
+	for w in ${BOND_CC:-cubic bbr quic}; do ccs=$((ccs + 1)); done
+	for c in $BOND_CASES; do
+		case $c in
+		equal | het | reorder50 | reorder150 | linkdeath | starlink15 | starlink15sw | ltespike | deepq) ;;
+		*)
+			echo "bond: unknown case $c"
+			return 1
+			;;
+		esac
+		dur=$BOND_S
+		case $c in starlink15*) [ "$dur" -lt 31 ] && dur=31 ;; esac
+		for v in $BOND_VARIANTS; do
+			bond_applies "$c" "$v" || continue
+			pairs=$((pairs + 1))
+			runs=$((runs + dirs * ccs))
+			# a run takes its seconds and about 4 more (starting, draining, the
+			# wait for the engine's status); a case, 6 to build its lab
+			secs=$((secs + dirs * ccs * (dur + 4) + 6))
+		done
+	done
+	min=$(((secs * BOND_N + 59) / 60 + 3))
+	echo "bond: $pairs case/variant pairs, $runs runs x $BOND_N repetition(s): about $min minutes, 3 of them installing"
+	[ "$min" -le "${BOND_MAX_MIN:-180}" ] || {
+		echo "Too long (more than ${BOND_MAX_MIN:-180}): pick fewer cases, variants, repetitions or seconds"
+		return 1
+	}
 }
 
 bond() {
-	local c v fail=0 failed=""
+	local c v fail=0 failed="" tool
 	for tool in iperf3 wg ping; do
 		command -v "$tool" >/dev/null || { echo "bond: needs $tool"; return 1; }
 	done
+	if [ "$BOND_SMALL" -gt 0 ] && [ ! -x "$BIN/udpgen" ]; then
+		echo "bond: needs $BIN/udpgen (bench/lab.sh build)"
+		return 1
+	fi
 	bond_ccs || return 1
+	bond_settle
+	mkdir -p "$RUN"
+	bond_variants_check || return 1
 	trap 'bond_untunnel; teardown' EXIT
 	trap 'bond_untunnel; teardown; exit 130' INT TERM
-	mkdir -p "$RUN"
 	: >"$RUN/bond.jsonl"
-	echo "bond: $BOND_CC, $BOND_N repetition(s) of $BOND_S s"
+	echo "bond: $BOND_CC; $BOND_VARIANTS; $BOND_N repetition(s) of $BOND_S s"
 	for c in $BOND_CASES; do
-		for v in bonded solo; do
-			case "$v:$c" in solo:equal | solo:het | bonded:*) ;; *) continue ;; esac
+		for v in $BOND_VARIANTS; do
+			bond_applies "$c" "$v" || continue
 			echo "## $c ($v)"
 			if ! (bond_case "$c" "$v"); then
 				failed="$failed $c/$v"

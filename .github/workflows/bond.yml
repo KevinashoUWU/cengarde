@@ -8,16 +8,28 @@ name: Bonding lab
 # best link alone. It is the baseline that the bonding of Fase 5 has to beat.
 # It judges no speed: it fails only when the plumbing does (no netem, no
 # aioquic, no handshake, no traffic). The table (median and spread when there
-# are repetitions) goes to the job summary and the JSON lines to an artifact.
+# are repetitions, the cells with two modes, the engine's counters and the
+# comparison against the reference variant) goes to the job summary and the
+# JSON lines to an artifact.
+#
+# Variants (step 1): the default is what has always run here, the engine's
+# defaults (bonded) and the best link alone (solo, in equal and het). With the
+# "variants" input of a manual run it also runs redund-ro0 (reorder = no),
+# redund-dw20 (reorder_dup_wait_ms = 20), split (split = force at both ends,
+# muting off), splitnoro (split without the reorderer) and any of them with
+# -bpN (reorder_bypass = N); giving variants puts solo also in reorder50 and
+# reorder150. The split and reorder settings need the engine of step 1.
 #
 # How long it takes, on a shared runner: about 3 minutes to install and build,
-# and per repetition of all the cases about 16 (10 variants of cases, each
+# and per repetition of the default about 18 (10 case and variant pairs, each
 # with 2 directions x 3 congestion controls; 10 s runs, 31 s in starlink15).
-# So the push and pull_request runs (one repetition) take about 19 minutes,
-# and repetitions=10 with all the cases about 165: the timeout leaves room for
-# that, and the "Estimate" step refuses what would not fit (more seconds or
-# repetitions): then pick cases, e.g. "equal reorder150 starlink15" takes about
-# 80 minutes for 10 repetitions.
+# So the push and pull_request runs (one repetition) take about 21 minutes,
+# and repetitions=10 with all the cases about 175: the timeout leaves room for
+# that, and the "Estimate" step (bench/lab.sh bond_plan, which counts the pairs
+# that the cases and variants make) refuses what would not fit: then pick
+# cases, e.g. "equal reorder150 starlink15" takes about 85 minutes for 10
+# repetitions, and variants "split solo splitnoro" in "equal reorder50
+# reorder150" about 140.
 
 on:
   push:
@@ -33,7 +45,7 @@ on:
   workflow_dispatch:
     inputs:
       repetitions:
-        description: 'Runs per case, direction and congestion control (10 with all the cases takes about 165 minutes)'
+        description: 'Runs per case, variant, direction and congestion control (10 with all the cases and the default variants takes about 175 minutes)'
         default: '1'
       seconds:
         description: 'Seconds per run (starlink15 takes at least 31)'
@@ -41,6 +53,12 @@ on:
       cases:
         description: 'Cases, separated by spaces (empty: all of them)'
         default: ''
+      variants:
+        description: 'Variants, separated by spaces (empty: bonded solo). Also: redund redund-ro0 redund-dw20 split splitnoro, and any with -bpN'
+        default: ''
+      netem_inflight:
+        description: '1: the limit of netem also covers the packets in the delay (bond_link); it changes the step 0 baseline, and a split needs it in reorder150'
+        default: '0'
 
 permissions:
   contents: read
@@ -50,29 +68,20 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 200
     steps:
+      - uses: actions/checkout@v4
       - name: Estimate the run time
         env:
           N: ${{ inputs.repetitions || '1' }}
           S: ${{ inputs.seconds || '10' }}
           CASES: ${{ inputs.cases }}
+          VARIANTS: ${{ inputs.variants }}
         run: |
           case "$N$S" in *[!0-9]*) echo "repetitions and seconds are numbers"; exit 1 ;; esac
-          # Per case: its variants (equal and het also run their best link alone)
-          # x 6 runs (2 directions x 3 congestion controls) x (seconds + 3 of
-          # starting and draining) + 6 of building the lab. Keep the default
-          # cases in step with bench/lab.d/bond.sh.
-          secs=0
-          for c in ${CASES:-equal het reorder50 reorder150 linkdeath starlink15 ltespike deepq}; do
-            dur=$S
-            case "$c" in starlink15*) [ "$S" -lt 31 ] && dur=31 ;; esac
-            v=1
-            case "$c" in equal | het) v=2 ;; esac
-            secs=$((secs + v * (6 * (dur + 3) + 6)))
-          done
-          min=$(((secs * N + 59) / 60 + 3))
-          echo "Estimated run time: $min minutes (the job times out at 200; this refuses more than 180)"
-          [ "$min" -le 180 ] || { echo "Too long: pick fewer cases, repetitions or seconds"; exit 1; }
-      - uses: actions/checkout@v4
+          # Empty cases and variants are the defaults (bench/lab.d/bond.sh counts them
+          # in bond_plan): the pairs of case and variant x 6 runs (2 directions x 3
+          # congestion controls) x (seconds + 4 of starting, the engine's status and
+          # draining) + 6 of building the lab. It refuses more than 180 minutes.
+          BOND_N="$N" BOND_S="$S" BOND_CASES="$CASES" BOND_VARIANTS="$VARIANTS" bench/lab.sh bond_plan
       - name: Install iperf3, wireguard-tools and aioquic; load WireGuard, BBR and netem
         run: |
           sudo apt-get update
@@ -86,6 +95,8 @@ jobs:
                 sudo modprobe "$m"
             }
           done
+      - name: Test the tables of the lab
+        run: python3 bench/bondtab_test.py
       - name: Build the lab (udpgen and cengarde)
         run: sudo ENGINE=c bench/lab.sh build
       - name: Bonding lab
@@ -93,16 +104,19 @@ jobs:
           N: ${{ inputs.repetitions || '1' }}
           S: ${{ inputs.seconds || '10' }}
           CASES: ${{ inputs.cases }}
+          VARIANTS: ${{ inputs.variants }}
+          INFLIGHT: ${{ inputs.netem_inflight || '0' }}
         run: |
-          case "$N$S" in *[!0-9]*) echo "repetitions and seconds are numbers"; exit 1 ;; esac
-          set -- RUN="$RUNNER_TEMP/bond" BOND_NEED_NETEM=1 BOND_NEED_QUIC=1 BOND_N="$N" BOND_S="$S"
+          case "$N$S$INFLIGHT" in *[!0-9]*) echo "repetitions, seconds and netem_inflight are numbers"; exit 1 ;; esac
+          set -- RUN="$RUNNER_TEMP/bond" BOND_NEED_NETEM=1 BOND_NEED_QUIC=1 BOND_N="$N" BOND_S="$S" BOND_NETEM_INFLIGHT="$INFLIGHT"
           [ -n "$CASES" ] && set -- "$@" BOND_CASES="$CASES"
+          [ -n "$VARIANTS" ] && set -- "$@" BOND_VARIANTS="$VARIANTS"
           sudo "$@" bench/lab.sh bond
       - name: Table to the job summary
         if: always()
         run: |
           {
-            echo "## Bonding lab: today's redundancy and the best link alone"
+            echo "## Bonding lab"
             echo
             cat "$RUNNER_TEMP/bond/bond.md" 2>/dev/null || echo "(no table)"
           } >>"$GITHUB_STEP_SUMMARY"
