@@ -63,6 +63,7 @@
 #include "status.h"
 #include "thrplan.h"
 #include "util.h"
+#include "wgsize.h"
 
 #define RECONCILE_MS 5000
 
@@ -135,6 +136,7 @@ struct client {
 	uint32_t up_max;     /* largest WireGuard datagram since the last path check */
 	uint32_t up_largest; /* the same over the last check period, for the status */
 	uint64_t down_pkts, down_bytes, down_wg_drops, down_no_peer;
+	struct cg_wgs wgs_up, wgs_down; /* WireGuard's datagrams read, and first copies to it (wgsize.h) */
 	struct cg_ratelimit rl_auth, rl_big, rl_wg, rl_full, rl_hello, rl_refused;
 
 	/* Link sockets (pump.h): the mode in use, and the pumps of off and on. */
@@ -913,6 +915,7 @@ static void wg_read(struct client *c)
 			c->oiov[m][1].iov_len = len;
 			c->up_pkts++;
 			c->up_bytes += len;
+			cg_wgs_add(&c->wgs_up, c->in.buf[i], len);
 			m++;
 		}
 		if (m) {
@@ -1024,6 +1027,7 @@ static void wg_msg(struct client *c, struct mmsghdr *m, struct iovec *iov, uint8
 	m->msg_hdr.msg_iovlen = 1;
 	c->down_pkts++;
 	c->down_bytes += len;
+	cg_wgs_add(&c->wgs_down, payload, len);
 }
 
 /* Today's loop (link_threads = legacy): reads a link's socket into the
@@ -1339,6 +1343,10 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 	cg_json_u64(j, "stale", c->rxs.stale_gen);
 	cg_json_u64(j, "wireguard_drops", c->down_wg_drops + c->down_no_peer);
 	cg_json_end(j, '}');
+	/* Download: lost on every link, and joint lateness (story 012). */
+	cg_json_u64(j, "lost_all", c->rxs.replay.lost);
+	cg_json_joint(j, "joint", &c->rxs.arr);
+	cg_json_sizes(j, "sizes", &c->wgs_up, &c->wgs_down);
 	cg_json_arr(j, "overrides");
 	for (int i = 0; i < c->ovr.n; i++) {
 		cg_json_obj(j, NULL);

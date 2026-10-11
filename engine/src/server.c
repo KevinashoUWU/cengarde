@@ -85,6 +85,7 @@
 #include "steer.h"
 #include "thrplan.h" /* cg_cpuwin */
 #include "util.h"
+#include "wgsize.h"
 #include "wgwatch.h"
 
 /* Probe interval assumed for a path until its client announces one. */
@@ -126,9 +127,9 @@ struct session {
 	uint64_t created_ms, last_rx_ms;
 	struct path path[CG_MAX_LINKS];
 	struct cg_hlink dh[CG_MAX_LINKS]; /* download health, by link id */
-	struct cg_replay replay; /* DATA up */
+	struct cg_replay replay; /* DATA up; its lost: lost on every link (lost_all) */
 	struct cg_replay ctl;    /* probes */
-	struct cg_arrivals arr;
+	struct cg_arrivals arr;  /* by link, and joint lateness (joint) */
 	struct cg_link_rx rx[CG_MAX_LINKS];
 	uint64_t up_pkts, up_bytes, down_pkts, down_bytes, wg_drops, toobig;
 	uint32_t rot; /* download batches sent: the first path of each rotates */
@@ -212,6 +213,7 @@ struct server {
 	int reload_again;
 	char config_error[600];
 	uint64_t start_ms, next_status_ms, next_sweep_ms;
+	struct cg_wgs wgs_up, wgs_down; /* first copies to WireGuard, and its datagrams read: every client (wgsize.h) */
 
 	uint64_t rx_malformed, rx_auth_fail, rx_old, rx_dups, rx_trunc, rx_ctrunc, sessions_full;
 	uint64_t rx_hint, rx_no_session; /* no client's hint; DATA for no session */
@@ -331,6 +333,14 @@ static struct session *lookup(struct server *s, const struct cg_hdr *h, const ui
 	return NULL;
 }
 
+/* The port of an address (network order), 0 for another family. */
+static uint16_t addr_port(const struct sockaddr_storage *a)
+{
+	if (a->ss_family == AF_INET)
+		return ((const struct sockaddr_in *)a)->sin_port;
+	return a->ss_family == AF_INET6 ? ((const struct sockaddr_in6 *)a)->sin6_port : 0;
+}
+
 /* The port of a bound socket (network order), 0 when unknown. */
 static uint16_t local_port(int fd)
 {
@@ -339,14 +349,12 @@ static uint16_t local_port(int fd)
 
 	if (getsockname(fd, (struct sockaddr *)&a, &len) < 0)
 		return 0;
-	if (a.ss_family == AF_INET)
-		return ((struct sockaddr_in *)&a)->sin_port;
-	return a.ss_family == AF_INET6 ? ((struct sockaddr_in6 *)&a)->sin6_port : 0;
+	return addr_port(&a);
 }
 
 /* A socket connected to C's WireGuard with the session buffers, bound to
  * port when it is not 0 and free (else to any other); -1 with errno set. */
-static int wg_socket(struct server *s, const struct client *C, uint16_t port)
+static int wg_socket_once(struct server *s, const struct client *C, uint16_t port)
 {
 	int fd = cg_udp_socket(C->wireguard.ss_family), e;
 
@@ -370,6 +378,38 @@ static int wg_socket(struct server *s, const struct client *C, uint16_t port)
 		return -1;
 	}
 	cg_sock_buffers(fd, s->rb.per_socket, s->cfg->rcvbuf);
+	return fd;
+}
+
+/* wg_socket_once, never on WireGuard's own port. The kernel picks a free
+ * port from the ephemeral range, and WireGuard's is free while WireGuard is
+ * not up: if it listens in that range (the lab's fake one does, on 59301),
+ * the socket would hold the port WireGuard needs and talk to itself,
+ * sending what the client sends up back down to it. Such a socket stays
+ * open while the next one is picked, so that the kernel picks another
+ * port, and is closed then. */
+static int wg_socket(struct server *s, const struct client *C, uint16_t port)
+{
+	uint16_t wg = addr_port(&C->wireguard);
+	int fd = -1, held = -1, e;
+
+	for (int i = 0; i < 4; i++) {
+		fd = wg_socket_once(s, C, i ? 0 : port);
+		if (fd < 0 || local_port(fd) != wg)
+			break;
+		if (held >= 0)
+			close(held);
+		held = fd;
+		fd = -1;
+		errno = EADDRINUSE;
+	}
+	e = errno;
+	if (held >= 0) {
+		close(held);
+		cg_info("%sthe socket to WireGuard got WireGuard's own port (%u); %s", C->tag, ntohs(wg),
+			fd >= 0 ? "took another" : "found no other");
+	}
+	errno = e;
 	return fd;
 }
 
@@ -948,6 +988,7 @@ static void listen_read(struct server *s, struct lane *ln)
 			cg_wgw_from_client(&S->wgw, cg_wg_handshake(b + CG_HDR_LEN, len - CG_HDR_LEN), now_ms);
 			S->up_pkts++;
 			S->up_bytes += len - CG_HDR_LEN;
+			cg_wgs_add(&s->wgs_up, b + CG_HDR_LEN, len - CG_HDR_LEN);
 			s->q_sess[nq] = (uint32_t)(S - s->s);
 			s->oiov[nq][0].iov_base = b + CG_HDR_LEN;
 			s->oiov[nq][0].iov_len = len - CG_HDR_LEN;
@@ -1011,6 +1052,7 @@ static void down_prepare(struct server *s, struct session *S, int m, uint8_t *bu
 	s->oiov[m][1].iov_len = len;
 	S->down_pkts++;
 	S->down_bytes += len;
+	cg_wgs_add(&s->wgs_down, buf, len);
 }
 
 /* Sends the batch of m entries down the paths of S. */
@@ -1329,6 +1371,7 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 	cg_json_u64(j, "pokes", s->wg_pokes);
 	cg_json_u64(j, "redirected_handshakes", s->wg_redirects);
 	cg_json_end(j, '}');
+	cg_json_sizes(j, "sizes", &s->wgs_up, &s->wgs_down);
 	clients_json(s, j);
 	cg_json_arr(j, "sessions");
 	for (uint32_t i = 0; i < s->cap; i++) {
@@ -1351,6 +1394,9 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 		cg_json_u64(j, "wireguard_drops", S->wg_drops);
 		cg_json_u64(j, "wireguard_unanswered", cg_wgw_knocking(&S->wgw, now_ms) ? S->wgw.unanswered : 0);
 		cg_json_u64(j, "too_big", S->toobig);
+		/* Upload: lost on every link, and joint lateness (story 012). */
+		cg_json_u64(j, "lost_all", S->replay.lost);
+		cg_json_joint(j, "joint", &S->arr);
 		cg_json_arr(j, "links");
 		for (int p = 0; p < CG_MAX_LINKS; p++) {
 			const struct path *P = &S->path[p];

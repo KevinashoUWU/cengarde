@@ -58,9 +58,9 @@ struct cg_rxs {
 	uint32_t session;
 	const uint8_t *k_rx;
 	uint64_t newest_ms;  /* newest verified NEW packet on any link */
-	struct cg_replay replay; /* DATA */
+	struct cg_replay replay; /* DATA; its lost: lost on every link (the status's lost_all) */
 	struct cg_replay ctl;    /* probe replies */
-	struct cg_arrivals arr;
+	struct cg_arrivals arr;  /* by link, and joint lateness (the status's joint) */
 	struct cg_link_rx rx[CG_MAX_LINKS];
 	uint64_t malformed, foreign, auth_fail, old, dups, trunc, stale_gen, hellos, hellos_stale;
 };

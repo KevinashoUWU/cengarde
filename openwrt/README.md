@@ -408,6 +408,15 @@ lo que el bonding necesita del terreno ([historia 012](../docs/historias/012-bon
 - cuánto se separan los RTT entre enlaces;
 - cómo cambia todo eso según la hora.
 
+Con los instrumentos pasivos del motor (desde la 0.5.5) suma la tardanza
+conjunta: de los paquetes que salieron por varios enlaces, cuántos llegaron
+tarde o no llegaron por todos a la vez (a 50, 100 y 150 ms de la primera
+copia), frente a lo que daría la independencia, y qué par conviene duplicar
+(el de menor tardanza conjunta, que no siempre es el de menor tardanza
+individual). También da la pérdida del túnel (paquetes que no llegaron por
+ningún enlace) y los tamaños de los datagramas de WireGuard. Una grabación de
+un motor anterior sigue sirviendo: esas secciones dicen que no hay datos.
+
 Viene apagado. Para una semana con cinco enlaces (unos 120 MB) conviene un
 disco USB en vez de `/tmp`:
 

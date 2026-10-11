@@ -49,6 +49,7 @@ sudo bench/lab.sh lanes    # las colas del servidor: una por enlace, la basura a
 sudo bench/lab.sh deepq    # un camino del servidor con 20 MB de cola local no afecta a los demás (lab.d, va en ci)
 sudo bench/lab.sh skew     # primeras llegadas repartidas entre enlaces idénticos, puerta C5 (lab.d, va en ci)
 sudo bench/lab.sh wgpoke   # un router con la hora atrasada: el servidor hace que WireGuard inicie el handshake (lab.d, va en ci)
+sudo bench/lab.sh wgport   # el socket del servidor hacia WireGuard nunca se queda con el puerto de WireGuard, con el rango efímero reducido a dos puertos (lab.d, va en ci)
 sudo LAB_UDPMEM=1 bench/lab.sh udpmem  # el presupuesto de recepción frente a net.ipv4.udp_mem (lab.d; baja el sysctl de toda la máquina unos segundos: solo en el CI)
 sudo bench/lab.sh mtstall  # un hilo de enlace sin CPU no frena a los demás (link_threads = on; lab.d, va en ci)
 sudo bench/lab.sh mtlat    # latencia y CPU de legacy, off, on y on con busy_poll a 2, 20 y 80 kpps (lab.d, a mano)
@@ -388,8 +389,9 @@ failover (`FAILOVER_MS`):
 Es el paso 0 de la Fase 5 ([historia 012](../docs/historias/012-bonding.md)).
 A diferencia del resto, aquí no hay WireGuard falso: un WireGuard real
 (`wgc` 10.79.0.2 en `cli`, `wgs` 10.79.0.1 en `srv`) pasa por cengarde, y
-dentro va TCP real. En cada corrida, iperf3 sube o baja (`-R`) con Cubic y
-con BBR, mientras ping mide el RTT del túnel cargado cada 100 ms. Los
+dentro va tráfico real. En cada corrida, iperf3 sube o baja (`-R`) con Cubic
+y con BBR, y un emisor QUIC (`quicperf.py`, abajo) hace lo mismo, mientras
+ping mide el RTT del túnel cargado cada 100 ms. Los
 enlaces se moldean con netem en los dos sentidos: retardo de un sentido,
 tasa y una cola de 100 ms a esa tasa.
 
@@ -403,6 +405,7 @@ tasa y una cola de 100 ms a esa tasa.
 | `starlink15` | 50/25 y 100/20 | cada 15 s, l2 pierde todo 1,5 s y su retardo cambia entre 20 y 50 ms (un patrón supuesto: el real está por medir) |
 | `ltespike` | 50/25 y 50/30 | cada 5 s, l1 sube 300 ms durante 1 s |
 | `deepq` | 20/25 con 500 ms de cola y 50/25 con 100 ms | nada |
+| `starlink15sw` | 100/25 y 50/20 | como `starlink15` con las capacidades cambiadas; no está en la lista por defecto (`BOND_CASES`) |
 
 Así queda medido lo que hoy da la redundancia (cada paquete por todos los
 enlaces, gana la primera copia) y, en `equal` y `het`, lo que daría el mejor
@@ -411,18 +414,49 @@ aquí no es el escenario `deepq` de arriba, que mide las colas del servidor.
 
 Por cada caso, variante (`bonded` o `solo`), sentido y control de congestión
 se escribe una línea JSON en `$RUN/bond.jsonl`. Cada línea lleva Mbit/s,
-retransmisiones de TCP, p50 y p99 del RTT y CPU de cada cengarde. Al final
-se imprime una tabla con las medianas, que también queda en `$RUN/bond.md`.
+retransmisiones, p50 y p99 del RTT y CPU de cada cengarde, y RTT suavizado y
+mínimo del emisor. Para QUIC (`cc` = `quic`), `retrans` son los paquetes que
+el emisor declaró perdidos, y la línea suma los paquetes enviados y los
+espurios (los declarados perdidos que llegaron después: puro desorden); en
+TCP esos campos van en `null`. Al final se imprime una tabla, que también
+queda en `$RUN/bond.md`. Con una repetición da el valor de la corrida; con
+`BOND_N` > 1 da la mediana y, entre paréntesis, el rango p25–p75 (mínimo–
+máximo con menos de 4 repeticiones), para Mbit/s, retransmisiones y RTT. La
+columna `spurious` aparece cuando hay corridas QUIC.
 
 El escenario no juzga la velocidad: solo falla si falla la fontanería, es
 decir, si no hay handshake, tráfico o pings. Necesita iperf3,
-wireguard-tools y ping. Si el kernel no trae WireGuard (el contenedor
-cloud), sirve wireguard-go con `WG_GO=/ruta/wireguard`. Sin netem, los
-enlaces solo tienen tasa (`tbf`), sin retardos ni eventos, y el escenario
-lo avisa; con `BOND_NEED_NETEM=1` eso pasa a ser un fallo.
+wireguard-tools y ping, y aioquic para QUIC (abajo). Si el kernel no trae
+WireGuard (el contenedor cloud), sirve wireguard-go con
+`WG_GO=/ruta/wireguard`. Sin netem, los enlaces solo tienen tasa (`tbf`), sin
+retardos ni eventos, y el escenario lo avisa; con `BOND_NEED_NETEM=1` eso
+pasa a ser un fallo.
+
+**QUIC (`quicperf.py`).** Un servidor y un cliente de transferencia masiva
+sobre aioquic, para que los mismos enlaces vean también un emisor QUIC (lo
+que usan los navegadores y los teléfonos, aunque no con esta biblioteca): un
+flujo durante N segundos, subiendo o bajando, que imprime un objeto JSON con el
+goodput, los bytes, los paquetes enviados, los declarados perdidos y los
+espurios, el RTT suavizado y mínimo y el control de congestión (`cubic` o
+`reno`, los dos que trae aioquic). Su detección de pérdidas no se adapta al
+desorden (3 paquetes o 9/8 del RTT), así que un camino que reordena más que
+eso le cuenta como perdido lo que solo llegó tarde. El servidor genera un
+certificado autofirmado al arrancar, en memoria. Instalación y prueba a
+mano, sin el laboratorio:
 
 ```sh
-sudo bench/lab.sh bond                                  # todos los casos, ~10 min
+pip install aioquic==1.2.0       # en Ubuntu 24.04, como root: --break-system-packages --ignore-installed
+python3 -I bench/quicperf.py server --bind 127.0.0.1 &
+python3 -I bench/quicperf.py client 127.0.0.1 --dir down --secs 5
+```
+
+Es Python puro, en un solo núcleo: a más de 100–200 Mbit/s lo limita su CPU
+(unos 200 Mbit/s por loopback en este contenedor), por debajo de iperf3. La
+versión de aioquic está fijada porque `quicperf.py` usa dos de sus
+internos (la recuperación de pérdidas y el emisor del flujo).
+
+```sh
+sudo bench/lab.sh bond                                  # todos los casos, ~16 min
 sudo BOND_CASES="equal reorder150" BOND_S=20 BOND_N=3 bench/lab.sh bond
 sudo BOND_CC=bbr BOND_DIRS=down BOND_OUT=/tmp/b.jsonl bench/lab.sh bond
 ```
@@ -430,21 +464,27 @@ sudo BOND_CC=bbr BOND_DIRS=down BOND_OUT=/tmp/b.jsonl bench/lab.sh bond
 | Variable | Por defecto | Qué hace |
 | --- | --- | --- |
 | `BOND_CASES` | todos | casos a correr |
-| `BOND_S` | 10 | segundos por corrida de iperf3 (`starlink15`, al menos 31) |
-| `BOND_N` | 1 | repeticiones; la tabla da la mediana |
-| `BOND_CC` | `cubic bbr` | controles de congestión |
+| `BOND_S` | 10 | segundos por corrida (`starlink15`, al menos 31) |
+| `BOND_N` | 1 | repeticiones; la tabla da la mediana y el rango |
+| `BOND_CC` | `cubic bbr quic` | controles de congestión; `quic` solo si importa aioquic, y si no se avisa |
+| `BOND_QUIC_CC` | `cubic` | el control de congestión del emisor QUIC (`cubic` o `reno`) |
+| `BOND_QUIC_MTU` | 1350 | tamaño del datagrama QUIC (el túnel tiene MTU 1380) |
 | `BOND_DIRS` | `up down` | sentidos (`down` es iperf3 `-R`) |
 | `BOND_OUT` | vacío | archivo al que añadir las líneas JSON |
 | `WG_GO` | vacío | wireguard-go, si el kernel no tiene WireGuard |
 | `BOND_NEED_NETEM` | 0 | 1: sin netem, falla en vez de avisar |
+| `BOND_NEED_QUIC` | 0 | 1: sin aioquic, falla en vez de avisar |
 
 No entra en `ci`: lo corre su propio workflow, `bond.yml`, en cada cambio de
-`engine/` o `bench/`, con todos los casos y una repetición. La tabla queda
-en el resumen del job y el JSON en un artefacto. A mano (`workflow_dispatch`)
-se pueden pedir más repeticiones, otros segundos y otros casos. En un runner
-compartido las cifras de una sola repetición varían: para comparar dos
-versiones, usa varias repeticiones en la misma máquina. Falta un cliente
-QUIC dentro del túnel, que la historia 012 pide junto a TCP.
+`engine/` o `bench/`, con todos los casos y una repetición (~19 min, con
+`BOND_NEED_NETEM=1` y `BOND_NEED_QUIC=1`). La tabla queda en el resumen del
+job y el JSON en un artefacto. A mano (`workflow_dispatch`) se pueden pedir
+más repeticiones, otros segundos y otros casos. En un runner compartido las
+cifras de una sola repetición varían: para comparar dos versiones, usa varias
+repeticiones en la misma máquina. Con 10 repeticiones y todos los casos el
+job tarda unos 165 min (el límite es de 200 y el primer paso rechaza lo que
+no cabe); para menos tiempo, elige casos: `equal reorder150 starlink15` con
+10 repeticiones son unos 80 min.
 
 ### `fieldrec`: el registrador de campo (`lab.d/fieldrec.sh`, `fieldrec.py`)
 
@@ -486,6 +526,121 @@ envió, en ventanas de 10 s, porque su cuenta llega con la última respuesta
 de sonda. Ninguna de las dos mide capacidad: en redundancia, cada enlace
 lleva el mismo tráfico.
 
+#### Radio: cruzar con `cell-monitor` (`--rf`)
+
+`--rf ARCHIVO...` suma al informe una sección **Radio** con lo que
+`cell-monitor` (SmoothStream, `Cell monitor/`) manda a InfluxDB desde cada CPE
+5G: RSRP, RSRQ, SINR, banda, RAT y celda. Sin `--rf` el informe no cambia.
+Pon `--rf` después de las grabaciones, porque toma todos los nombres que le
+siguen:
+
+```sh
+influx query --raw 'from(bucket: "Cellular")
+  |> range(start: 2026-10-14T00:00:00Z, stop: 2026-10-21T00:00:00Z)
+  |> filter(fn: (r) => r._measurement =~ /^cell_(nwinfo|serving_lte|serving_nr|rxpath|ca|monitor)$/)
+  |> filter(fn: (r) => r._field =~ /^(sinr|rsrp|rsrq|cellid|pci|earfcn|arfcn|up|plmn|(rsrp|rsrq|sinr)[1-4])$/)' > radio.csv
+bench/fieldrec.py /ruta/a/cengarde-rec --utc-offset -3 --rf radio.csv --json campo.json
+```
+
+- **Formatos** (se reconocen por el contenido; planos o con gzip): CSV
+  anotado de InfluxDB (`#group`, `#datatype`, `#default`), de `influx query
+  --raw` o de la descarga de la interfaz, con una fila por campo o con
+  `pivot()` y con varias tablas en un archivo; y *line protocol* con
+  timestamp (s, ms, µs o ns, por el tamaño; `--rf-precision` lo fija). Las
+  demás mediciones y campos se ignoran. La salida de `cell-monitor -n` no
+  sirve: no lleva timestamp, y se avisa.
+- **Asignación a un enlace:** el tag `leg` contra `links[].label` y, si no,
+  `links[].name`, sin distinguir mayúsculas y con la limpieza de
+  `cell-monitor` (minúsculas, espacios a `_`, solo `a-z 0-9 _ . -`). Sin
+  `leg`, el `carrier` contenido en la etiqueta. Lo que no se asigna sale como
+  `NOT MAPPED` con el motivo, y también los enlaces sin radio; si la etiqueta
+  de un enlace nombra a otro operador que el `carrier` de su serie, avisa de
+  un posible cruce. `--rf-map LEG=ENLACE` asigna a mano.
+- **El reloj:** `cell-monitor` no manda timestamp, así que cada punto lleva la
+  hora del servidor de InfluxDB al recibir el POST, en segundos. Esa hora y la
+  de la Pi (`time_ms` del motor) tienen que coincidir; la del CPE no cuenta.
+  `--rf-offset S` suma S segundos a las horas de radio. Todo se calcula solo
+  donde hay grabación y radio a la vez, y el informe da ese solape.
+- **Qué trae:** por enlace, el tiempo en cada RAT y banda, p10/p50/p90 de SINR,
+  RSRQ y RSRP, y los cambios de RAT, de banda y de celda por hora. Luego, para
+  cada tipo de evento del enlace (caída, silenciado de subida, silenciado de
+  bajada), cuántos inicios tuvieron un cambio a menos de N s (N = 2 intervalos
+  de radio, mínimo 20 s; `--rf-window` lo fija) frente a lo esperado al azar,
+  que es la parte del tiempo cubierta por esas ventanas, y cuántos fueron
+  antes o después. Ese azar se calcula dos veces: *global* (sobre todo el
+  tiempo) y *local* (para cada episodio, sobre el tiempo a menos de L = 30 min
+  de él; `--rf-local` lo fija y 0 lo apaga). El local evita que las horas en
+  que caídas y cambios de radio abundan a la vez (un auto en movimiento, una
+  tarde con mucha gente, lluvia) se lean como si uno anunciara al otro: las
+  caídas esperadas son la suma de esas partes y el p sale de la cola
+  Poisson-binomial (exacta; con más de unos 3 millones de celdas, una
+  aproximación normal). La lectura usa los *episodios* (eventos separados por
+  60 s o 2N, porque los de una ráfaga comparten ventana), pide 10 y se hace
+  con el azar local si lo hay; la tabla dice cuál usó. Después, el SINR del
+  minuto anterior a cada episodio frente al mismo promedio en todo momento del
+  enlace (global) y frente a los de las muestras a menos de L de él, sin
+  [e−60 s, e+N] (local, que es el que se lee), y su tendencia frente a los 4
+  minutos previos. Al final, una tabla por hora del día. Con muchas filas es
+  normal que alguna salga por azar: pesan más los conteos que la palabra.
+- **Antes de la semana:** pon `INTERVAL=10` en `/etc/cell-monitor.conf` (por
+  defecto son 30 s), usa un `CPE_ID` y un `MODEMn_ID` distintos en cada CPE,
+  pon `MODEMn_LEG` igual a la etiqueta del enlace en cengarde (o a su
+  nombre), y sincroniza por NTP la Pi y el servidor de InfluxDB. Comprueba
+  con `cell-monitor -n` que el SINR sale en dB (de −20 a 30): algunos módems
+  lo dan en 1/5 de dB, de 0 a 250, y el informe lo avisa si pasa de 50.
+
+#### Exportar para R o pandas (`--export`)
+
+`--export DIR` escribe, mientras analiza, CSV planos en formato largo (una
+fila de cabecera, hora en UTC ISO y en segundos desde 1970, el enlace por
+nombre y etiqueta, celda vacía donde falta el dato). `--export-gzip` los
+escribe como `.csv.gz`. Nada se calcula aparte: son los mismos números del
+informe, fila a fila.
+
+```sh
+bench/fieldrec.py /ruta/a/cengarde-rec --rf radio.csv --export campo/ --export-gzip
+```
+
+| Archivo | Una fila por |
+| --- | --- |
+| `samples.csv` | enlace y muestra de estado: estado, caído, silenciado, RTT y su desvío, retraso, deltas de paquetes, pérdida de bajada, y el id de la corrida (`segment`) |
+| `events.csv` | caída, silenciado de subida o de bajada, hueco o reinicio: inicio, fin, duración, y cómo terminó |
+| `joint.csv` | intervalo, plazo y conjunto de enlaces (máscara y nombres): paquetes esperados y tardíos |
+| `tunnel.csv` | intervalo: paquetes entregados, perdidos en todos los enlaces y tamaños de WireGuard (una columna por borde) |
+| `rf.csv`, `rf_changes.csv` | muestra de radio de cada serie asignada a un enlace, y cada cambio de RAT, banda o celda (con `--rf`) |
+| `README.txt` | lista cada archivo con sus columnas, unidades y filas, y dice cómo se relacionan los relojes (el del motor, el de InfluxDB y el `--rf-offset`) |
+
+```r
+s <- readr::read_csv("campo/samples.csv.gz"); e <- readr::read_csv("campo/events.csv.gz")   # data.table::fread lee .csv; para .gz pide R.utils
+aggregate(cbind(rtt_ms, out) ~ link, subset(s, counted == 1), mean)
+aggregate(duration_s ~ link, subset(e, kind == "outage"), function(x) c(n = length(x), mediana = median(x)))
+```
+```python
+import pandas as pd
+s = pd.read_csv("campo/samples.csv.gz", parse_dates=["time_utc"]); e = pd.read_csv("campo/events.csv.gz")
+s[s.counted == 1].groupby("link").agg(rtt_p50=("rtt_ms", "median"), caida=("out", "mean"))
+e[e.kind == "outage"].groupby("link").duration_s.agg(["count", "median"])
+```
+
+Las cabeceras están fijadas en `fieldrec_test.py`: un nombre cambiado en
+silencio hace fallar la prueba. Las horas de `samples`, `events`, `joint` y
+`tunnel` son el `time_ms` del motor (el reloj de la Pi); antes de que NTP lo
+corrija (`clock_synced` en 0) no valen. Las de `rf` y `rf_changes` son las de
+InfluxDB al recibir el POST más `--rf-offset`; `rf_time_epoch` conserva la
+original.
+
+Tamaño, tiempo y memoria, medidos con una semana sintética a 1 Hz con 5
+enlaces (604 800 muestras de estado completas, 168 archivos por hora): salen
+3 024 000 filas de `samples.csv` (517 MB), 5,1 millones de `joint.csv` (458 MB)
+y 604 800 de `tunnel.csv` (225 MB), 1,2 GB en total, o 160 MB con
+`--export-gzip`. El análisis tarda 196 s sin exportar, 263 s con `--export` y
+340 s con `--export-gzip` y 4 módems en `--rf` (2,7 millones de líneas). El
+pico de memoria es de unos 8 GB en los tres casos: lo ocupan las muestras, que
+se guardan todas (unos 11 KB cada una); las filas salen a medida que se
+calculan, así que exportar casi no suma (3 MB; con `--rf`, 350 MB). Antes de
+guardar solo las claves que se leen y de compartir las cadenas repetidas eran
+12,7 GB y 275 s: una semana a 1 Hz pide una máquina de 16 GB.
+
 `lab.d/fieldrec.sh` (en `ci`) lo prueba de dos maneras:
 
 - `fieldrec_test.py`, sobre una grabación inventada con respuestas
@@ -494,7 +649,26 @@ lleva el mismo tráfico.
   además un reinicio del motor, un hueco, el reloj antes de NTP, un archivo
   de un motor sin `time_ms` y otro cortado por un apagón. Se comprobó que la
   prueba falla si se rompe el pliegue, la correlación, el corte entre
-  corridas, la detección por silencio o el inicio de la caída.
+  corridas, la detección por silencio o el inicio de la caída. Otra
+  grabación inventada, de dos horas, es para `--rf`: caídas y silenciados a
+  horas conocidas, y datos de radio con la forma de la salida de
+  `cell-monitor`, en *line protocol* y en CSV anotado (una fila por campo y
+  con `pivot()`), con un enlace cuyos cambios de RAT preceden a sus caídas y
+  otros dos que no, series sin enlace, un hueco de datos, un módem caído y
+  radio que empieza después de la grabación y la rebasa. El conteo de aciertos
+  y el azar se comparan con un cálculo por fuerza bruta, y las cuatro formas de
+  leer los datos tienen que dar lo mismo. Otra grabación, de seis horas, tiene
+  caídas y cambios de RAT que abundan en la misma hora pero son
+  independientes dentro de ella: con el azar global se lee «más que el azar» y
+  con el local «igual que el azar», y el azar local de cada episodio se compara
+  con un conteo en rejilla y la cola con la convolución completa. Las
+  exportaciones se comprueban contra el informe (caídas y silenciados por
+  enlace, sumas de `joint.csv` contra P(S tarde), sumas de `tunnel.csv`). También fija el formato real: son 17
+  líneas que escribió `cell-monitor.sh` contra `modem-sim.py`. Se comprobó que
+  la prueba falla si se rompe `--rf-offset`, la ventana del azar, el corte en
+  los huecos de datos, la asignación por etiqueta, nombre o carrier, los
+  episodios, el solape con la grabación, la fuente del SINR, su dirección, las
+  horas, el inicio de los silenciados o la lectura de ns y de `#default`.
 - De punta a punta: el motor y `cengarde-rec` reales (bajo `sh`), a 4
   muestras por segundo, mientras s2 cae 3 s. Tienen que quedar solo
   archivos comprimidos, cada muestra una vez, una caída de 2 a 5 s en l2 y
