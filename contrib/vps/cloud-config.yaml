@@ -52,6 +52,9 @@ write_files:
       # the address derived from the secret).
       ROUTER_NAME=REPLACE_ROUTER_NAME
       ROUTER_TUNNEL_ADDR=REPLACE_TUNNEL_ADDR
+      # The routers' IPv6 through the tunnels, masqueraded out of this server
+      # (the router's "IPv6 through the tunnel" switch fills it in).
+      TUNNEL_IPV6=no
 
 runcmd:
   - CENGARDE_REF=master; git init -q /opt/cengarde && git -C /opt/cengarde fetch -q --depth 1 https://github.com/KevinashoUWU/cengarde "$CENGARDE_REF" && git -C /opt/cengarde checkout -q FETCH_HEAD

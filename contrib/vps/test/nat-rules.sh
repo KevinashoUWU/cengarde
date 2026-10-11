@@ -16,7 +16,9 @@
 #   process's there, FORWARD_UNRESERVE, FORWARD_RESERVED; "reserved -v" with
 #   the reasons;
 # - FORWARD_SKIP_SRC; the jumps and the MASQUERADE without and with PUB_IF;
-#   the hairpin accept before the tunnels' DROP, and its SNAT; IPv6;
+#   the hairpin accept before the tunnels' DROP, and its SNAT; IPv6, and
+#   with TUNNEL_IPV6=yes the routers' IPv6 masqueraded (NAT66), without and
+#   with PUB_IF, and its jumps; a TUNNEL_IPV6 that is neither yes nor no;
 # - a forward table with bad lines (fixtures/forward-bad): each skipped and
 #   logged by its number and reason, never its content; a table or IP pass
 #   file that is a symlink, a FIFO, someone else's or over 64 KiB: refused
@@ -320,11 +322,27 @@ nat jumps 6
 check "IPv6 jump" golden jumps.6
 nat rules 6
 check "IPv6 rules: cengarde open, WireGuard only on lo" golden rules.6
-if ip netns exec "$NS" ip6tables -w -n -L INPUT >/dev/null 2>&1; then
+V6=no
+ip netns exec "$NS" ip6tables -w -n -L INPUT >/dev/null 2>&1 && V6=yes
+if [ "$V6" = yes ]; then
 	check "ip6tables-restore --test takes them" loads 6
 else
 	say "note: no ip6tables in this kernel; the IPv6 rules are not loaded here (vps.yml does)"
 fi
+root tunnel6 'TUNNEL_IPV6=yes'
+nat rules 6
+check "TUNNEL_IPV6=yes: the routers' IPv6 forwarded, not to each other, and masqueraded" golden rules-tunnel.6
+[ "$V6" = no ] || check "ip6tables-restore --test takes them" loads 6
+nat jumps 6
+check "TUNNEL_IPV6=yes: FORWARD and POSTROUTING jump too" golden jumps-tunnel.6
+root tunnel6pub 'TUNNEL_IPV6=yes
+PUB_IF=eth0'
+nat rules 6
+check "TUNNEL_IPV6=yes with PUB_IF: masqueraded out of it only" out_has "-A CG_POST -s fc00::/7 -o eth0 -j MASQUERADE"
+root tunnel6bad 'TUNNEL_IPV6=maybe'
+check "a TUNNEL_IPV6 that is neither yes nor no is refused" not nat rules 6
+check "it says so" err_has "TUNNEL_IPV6 in"
+root jumps
 printf 'PUB_IF="eth0;reboot"\n' >>"$R/etc/cengarde/nat.conf"
 check "a PUB_IF that is no interface name is refused" not nat rules 4
 

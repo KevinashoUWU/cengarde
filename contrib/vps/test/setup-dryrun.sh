@@ -25,6 +25,10 @@
 #   ROUTER_TUNNEL_ADDR from a newer one (as the router's, from its secret,
 #   when left as the repository has them); after remove, after --replace
 #   and with slot 0 taken, running again leaves clients/ as it was;
+# - ipv6 on|off: refused on a server without IPv6; on, each router's
+#   WireGuard gets its ULA (::1 here, ::2 the router), TUNNEL_IPV6=yes in
+#   nat.conf and cengarde-nat applies it; off takes it back; the import of
+#   a cloud-config with TUNNEL_IPV6=yes;
 # - forward add|del: one spelling of a rule, in the router's file and its
 #   section; refused: a reserved port (with the reason), an overlap with
 #   its own rule or another router's, past its limit, a bad rule; forward
@@ -247,6 +251,7 @@ chmod +x "$BIN"/*
 S1=$("$ENGINE" genkey) S2=$("$ENGINE" genkey) S3=$("$ENGINE" genkey) S4=$("$ENGINE" genkey)
 key_of() { printf '%s\n' "$1" | "$ENGINE" keys | sed -n "s/^CG_LINK_KEY='\(.*\)'$/\1/p"; }
 addr_of() { printf '%s\n' "$1" | "$ENGINE" keys | sed -n "s/^CG_TUNNEL_ADDR='\(.*\)'$/\1/p"; }
+ula_of() { printf '%s\n' "$1" | "$ENGINE" keys | sed -n "s/^CG_TUNNEL_ULA='\(.*\)'$/\1/p"; }
 K1=$(key_of "$S1") K2=$(key_of "$S2") K3=$(key_of "$S3")
 A1=$(addr_of "$S1") A2=$(addr_of "$S2") A3=$(addr_of "$S3")
 
@@ -616,6 +621,44 @@ check "cg-alpha.conf: alpha's port and address, cg-zeta left alone" \
 	sh -c 'grep -qx "ListenPort = 65502" "$1/etc/wireguard/cg-alpha.conf" && grep -qx "AllowedIPs = $2/32" "$1/etc/wireguard/cg-alpha.conf" &&
 		grep -qx "AllowedIPs = $3/32" "$1/etc/wireguard/cg-zeta.conf" && ! grep -q "wg-quick@cg-zeta" "$4"' sh "$R" "$A2" "$A1" "$CALLS"
 check "it says alpha's address" said "router alpha: tunnel address $A2"
+
+say "ipv6 on|off: the routers' IPv6 through the tunnels"
+fresh ipv6
+U1=$(ula_of "$S1") U2=$(ula_of "$S2")
+check "add zeta" add zeta "$S1"
+check "add alpha" add alpha "$S2"
+before=$(fingerprint)
+check "ipv6 on, on a server without IPv6, is refused" not setup ipv6 on
+check "it says why" said "this server has no IPv6"
+check "nothing changed" [ "$(fingerprint)" = "$before" ]
+check "list says it is off" sh -c 'env CENGARDE_ROOT="$1" PATH="$2" sh "$3" list 2>&1 | grep -q "IPv6 through the tunnels: off"' sh "$R" "$BIN:$PATH" "$SETUP"
+mkdir -p "$R/proc/net"
+: >"$R/proc/net/if_inet6"
+: >"$CALLS"
+check "ipv6 on" setup ipv6 on
+check "TUNNEL_IPV6=\"yes\" in nat.conf" grep -qx 'TUNNEL_IPV6="yes"' "$R/etc/cengarde/nat.conf"
+check "each router's WireGuard: its ULA, ::1 here and ::2 its peer" \
+	sh -c 'grep -qx "Address = 10.79.0.1/32, $2::1/128" "$1/cg-zeta.conf" && grep -qx "AllowedIPs = $4/32, $2::2/128" "$1/cg-zeta.conf" &&
+		grep -qx "Address = 10.79.0.1/32, $3::1/128" "$1/cg-alpha.conf" && grep -qx "AllowedIPs = $5/32, $3::2/128" "$1/cg-alpha.conf"' \
+	sh "$R/etc/wireguard" "$U1" "$U2" "$A1" "$A2"
+check "both restarted, and cengarde-nat applies it" \
+	sh -c 'grep -q "^systemctl restart wg-quick@cg-zeta$" "$1" && grep -q "^systemctl restart wg-quick@cg-alpha$" "$1" && grep -q "^cengarde-nat apply$" "$1"' sh "$CALLS"
+check "list says it is on" sh -c 'env CENGARDE_ROOT="$1" PATH="$2" sh "$3" list 2>&1 | grep -q "IPv6 through the tunnels: on"' sh "$R" "$BIN:$PATH" "$SETUP"
+check "a router added now gets its ULA too" add omega "$S3"
+check "omega's WireGuard has it" grep -qx "AllowedIPs = $A3/32, $(ula_of "$S3")::2/128" "$R/etc/wireguard/cg-omega.conf"
+check "ipv6 off" setup ipv6 off
+check "TUNNEL_IPV6=\"no\"" grep -qx 'TUNNEL_IPV6="no"' "$R/etc/cengarde/nat.conf"
+check "no ULA left in the routers' WireGuard" not grep -q "::" "$R/etc/wireguard/cg-zeta.conf" "$R/etc/wireguard/cg-alpha.conf" "$R/etc/wireguard/cg-omega.conf"
+check "ipv6 maybe is refused" not setup ipv6 maybe
+say "  the import of a cloud-config with TUNNEL_IPV6=yes"
+fresh import6 'TUNNEL_IPV6=yes
+ROUTER_TUNNEL_ADDR=REPLACE_TUNNEL_ADDR
+'
+mkdir -p "$R/proc/net"
+: >"$R/proc/net/if_inet6"
+(umask 077 && echo "$S1" >"$R/etc/cengarde/secret")
+check "no arguments" setup
+check "router's WireGuard with its ULA" grep -qx "Address = 10.79.0.1/32, $U1::1/128" "$R/etc/wireguard/cg-router.conf"
 
 say "a 0.4 server, migrated by cengarde-vps-setup"
 fresh m04 'PASSTHROUGH=yes

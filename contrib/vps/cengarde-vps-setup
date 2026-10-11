@@ -30,6 +30,11 @@
 #   cengarde-vps-setup forward limit NAME N|default
 #   cengarde-vps-setup forward allow|disallow PROTO:PORT[-PORT]...   (below 1024)
 #   cengarde-vps-setup forward reserve|unreserve PROTO:PORT[-PORT]...
+#   cengarde-vps-setup ipv6 on|off   the routers' IPv6 through the tunnels
+#                                    (TUNNEL_IPV6): each router's ULA, derived
+#                                    from its secret, ::1 here and ::2 on the
+#                                    router, masqueraded out (cengarde-nat);
+#                                    the router turns it on in LuCI too
 #   cengarde-vps-setup refresh       the engine's configuration again, reloaded
 #                                    if it changed (cengarde-nat check)
 #   cengarde-vps-setup purge [--all] the services of install.sh removed and the
@@ -67,6 +72,7 @@ FORWARD_ALLOW_LOW=
 FORWARD_RESERVED=
 FORWARD_UNRESERVE=
 FORWARD_MAX_PORTS=1024
+TUNNEL_IPV6=no
 ROUTER_NAME=router
 # ROUTER_TUNNEL_ADDR, the cloud-config's router's tunnel address, is left
 # unset: a cloud-config without it is older than 0.5.2, and its router has
@@ -512,15 +518,24 @@ write_conf() {
 	return 0
 }
 
-# wg_conf: router C_NAME's WireGuard (keys in CG_*), on stdout.
+# have_v6: this box has IPv6.
+have_v6() { [ -e "$R/proc/net/if_inet6" ]; }
+# tunnel_v6: the routers' IPv6 goes through the tunnels.
+tunnel_v6() { [ "$TUNNEL_IPV6" = yes ] && have_v6; }
+
+# wg_conf: router C_NAME's WireGuard (keys in CG_*), on stdout. With
+# TUNNEL_IPV6, also the router's ULA (CG_TUNNEL_ULA): ::1 here, ::2 there.
 wg_conf() {
-	local pub
+	local pub a6='' r6=''
 	pub=$(printf '%s\n' "$CG_WG_CLIENT_KEY" | wg pubkey) || die "wg pubkey"
+	if tunnel_v6; then
+		a6=", $CG_TUNNEL_ULA::1/128" r6=", $CG_TUNNEL_ULA::2/128"
+	fi
 	cat <<-EOF
 		# Written by cengarde-vps-setup for router $C_NAME ($CLIENTS/$C_NAME);
 		# run it again instead of editing. Only cengarde talks to it (lo).
 		[Interface]
-		Address = $SERVER_ADDR/32
+		Address = $SERVER_ADDR/32$a6
 		ListenPort = $((WG_PORT_BASE + C_SLOT))
 		PrivateKey = $CG_WG_SERVER_KEY
 		MTU = 1380
@@ -530,7 +545,7 @@ wg_conf() {
 		# $C_NAME
 		PublicKey = $pub
 		PresharedKey = $CG_WG_PSK
-		AllowedIPs = $C_ADDR/32
+		AllowedIPs = $C_ADDR/32$r6
 	EOF
 }
 
@@ -916,6 +931,13 @@ cmd_list() {
 	done
 	[ "$(nrouters)" -gt 0 ] || say "no router (cengarde-vps-setup add NAME)"
 	[ ! -e "$NAT_STATE/applied" ] || say "IP pass: $(pass_view)"
+	if tunnel_v6; then
+		say "IPv6 through the tunnels: on (cengarde-vps-setup ipv6 off)"
+	elif [ "$TUNNEL_IPV6" = yes ]; then
+		say "IPv6 through the tunnels: TUNNEL_IPV6=yes, but this server has no IPv6"
+	else
+		say "IPv6 through the tunnels: off (cengarde-vps-setup ipv6 on)"
+	fi
 }
 
 # pass_view: who has IP pass's range, as cengarde-nat applied it.
@@ -1245,6 +1267,30 @@ behind_nat_view() {
 	fi
 }
 
+# cmd_ipv6 on|off: TUNNEL_IPV6 in nat.conf, and every router's WireGuard
+# and the firewall to match (each cg-NAME restarts: its addresses change).
+cmd_ipv6() {
+	local v
+	case ${1:-} in
+	on) v=yes ;;
+	off) v=no ;;
+	*) die "usage: ipv6 on|off" ;;
+	esac
+	[ "$v" = no ] || have_v6 ||
+		die "this server has no IPv6 (no $R/proc/net/if_inet6): its provider has to give it some first"
+	check_proto
+	lock
+	keep "$CONF"
+	set_conf TUNNEL_IPV6 "$v"
+	regen
+	kept
+	if [ "$v" = yes ]; then
+		say "the routers' IPv6 goes through the tunnels, masqueraded out of this server; on each router turn on \"IPv6 through the tunnel\" in LuCI (Tunnel tab)"
+	else
+		say "the routers' IPv6 no longer goes through the tunnels"
+	fi
+}
+
 cmd_refresh() {
 	check_proto
 	lock
@@ -1332,6 +1378,10 @@ list) cmd_list ;;
 forward)
 	shift
 	cmd_forward "$@"
+	;;
+ipv6)
+	shift
+	cmd_ipv6 "$@"
 	;;
 refresh) cmd_refresh ;;
 purge)

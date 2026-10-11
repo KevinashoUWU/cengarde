@@ -20,6 +20,11 @@
 #   Internet and from the tunnel but answer on lo, and cengarde's port is
 #   open;
 # - with IPv6, ip6tables accepts cengarde's port and drops WireGuard's;
+# - IPv6 through the tunnel (TUNNEL_IPV6, the router at its ULA ::2, the
+#   VPS at ::1): off, it goes nowhere; on, the router reaches the Internet
+#   from the VPS's address (NAT66), forwarding is on and accept_ra went from
+#   1 to 2 on the public interface first; check turns forwarding back on;
+#   off again, its NAT66 chain is gone;
 # - "down" leaves the rules as they were before "apply", also starting from
 #   the rules of cengarde 0.4, which "apply" replaces, and runs quietly when
 #   they are gone.
@@ -249,6 +254,52 @@ check "cengarde-nat check" nat check
 check "the REJECT is still above the tunnels' ACCEPT" rejected "$ROUTER" "$META"
 check "the router reaches the Internet through the tunnel" fetch "$ROUTER" 10.1.0.2
 check "no rule twice" not dup
+
+# IPv6 through the tunnel: the router's ULA ::2 and the VPS's ::1 on the
+# tunnel, as wg-quick and OpenWrt set them up; the Internet at 2001:db8:1::2,
+# with a web server of its own that logs who asks.
+ULA=fd00:1:2
+v6_tunnel() {
+	[ "$V6" = yes ] || return 0
+	say "IPv6 through the tunnel (TUNNEL_IPV6)"
+	ip -n "$VPS" addr add 2001:db8:1::1/64 dev pub nodad
+	ip -n "$INET" addr add 2001:db8:1::2/64 dev ext nodad
+	ip -n "$VPS" -6 route add default via 2001:db8:1::2
+	ip -n "$VPS" addr add "$ULA::1/128" dev cg-router nodad
+	ip -n "$VPS" -6 route add "$ULA::2/128" dev cg-router
+	ip -n "$ROUTER" addr add "$ULA::2/128" dev wg nodad
+	ip -n "$ROUTER" -6 route add "$ULA::1/128" dev wg
+	ip -n "$ROUTER" -6 route add default via "$ULA::1" dev wg
+	nsexec "$VPS" sysctl -qw net.ipv6.conf.pub.accept_ra=1
+	nsexec "$INET" python3 -m http.server 8080 --bind :: --directory "$TMP/www" >/dev/null 2>>"$TMP/www6.log" &
+	n=0
+	until nsexec "$INET" curl -g -s -m 1 -o /dev/null "http://[::1]:8080/user-data"; do
+		n=$((n + 1))
+		[ "$n" -lt 50 ] || { bad "the IPv6 web server did not start"; return; }
+		sleep 0.1
+	done
+	fetch6() { nsexec "$ROUTER" curl -g -s -m 3 -o /dev/null "http://[2001:db8:1::2]:8080/user-data"; }
+	check "TUNNEL_IPV6=no: the router's IPv6 goes nowhere" not fetch6
+	echo TUNNEL_IPV6=yes >>"$TMP/root/etc/cengarde/nat.conf"
+	check "TUNNEL_IPV6=yes: cengarde-nat sync" nat sync
+	check "accept_ra 2 on the public interface, so this box keeps its own IPv6 route" \
+		[ "$(nsexec "$VPS" sysctl -n net.ipv6.conf.pub.accept_ra)" = 2 ]
+	check "IPv6 forwarding on" [ "$(nsexec "$VPS" sysctl -n net.ipv6.conf.all.forwarding)" = 1 ]
+	: >"$TMP/www6.log"
+	check "the router reaches the Internet over IPv6 through the tunnel" fetch6
+	check "from the VPS's address (NAT66), not its ULA" \
+		sh -c 'grep -q "2001:db8:1::1" "$1" && ! grep -q "$2" "$1"' sh "$TMP/www6.log" "$ULA"
+	check "the router cannot read the metadata through the tunnel, still" rejected "$ROUTER" "$META"
+	nsexec "$VPS" sysctl -qw net.ipv6.conf.all.forwarding=0
+	check "forwarding turned off by someone: check" nat check
+	check "check turns it on again" [ "$(nsexec "$VPS" sysctl -n net.ipv6.conf.all.forwarding)" = 1 ]
+	check "no rule twice" not dup
+	sed -i '/^TUNNEL_IPV6=/d' "$TMP/root/etc/cengarde/nat.conf"
+	check "TUNNEL_IPV6 off again: cengarde-nat sync" nat sync
+	check "its NAT66 chain gone" not nsexec "$VPS" ip6tables -t nat -S CG_POST
+	check "and its FORWARD jump" not sh -c 'ip netns exec "$1" ip6tables -S FORWARD | grep -q CG_FWD' sh "$VPS"
+}
+v6_tunnel
 
 say "down"
 check "cengarde-nat down" nat down
