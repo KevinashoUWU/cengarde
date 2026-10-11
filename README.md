@@ -124,9 +124,8 @@ Lo que viene; el detalle está en [ROADMAP.md](ROADMAP.md):
 - **IPv6, varios routers por VPS y nombres** (plan en cinco PRs, historia
   [010](docs/historias/010-ipv6-varias-ip-multicliente-nombres.md); hechos
   los arreglos, la respuesta desde la dirección de llegada con IPv6 por
-  fuera del túnel y, en el motor del servidor, varios routers):
-  - varios routers por VPS en las herramientas del VPS y de OpenWrt, con un
-    panel de reenvío de puertos;
+  fuera del túnel y varios routers por VPS, con un panel de reenvío de
+  puertos en el VPS):
   - IPv6 dentro del túnel, apagado por defecto;
   - nombres con DNS dinámico, también para un servidor casero.
 - **Servidor:** varios hilos.
