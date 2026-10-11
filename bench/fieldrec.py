@@ -40,6 +40,19 @@ restart, a gap or a counter that went down starts over, as for the others).
 - WireGuard sizes, per direction: the share of data packets and of bytes at or
   under each edge, and the handshake counts.
 
+The receiver's reorderer (status field "reorder", step 1 of the bonding) adds a
+fourth section, with the same rules: its counters are differenced between
+samples and added up overall and per hour of the day; the client's is the
+top-level field, and a server's status, recorded the same way (cengarde-rec
+-s), has one per session, so its sessions are reported each, with the pool.
+Reported: the packets delivered and the share that was held, those handed on
+at once for being small, the gaps it gave up on (every link past the packet,
+the deadline, no room, a flush), the packets that came late after that (by what
+gave it up), the hold times and lateness histograms with their p50/p90/p99, the
+extremes of the gauges and the worst intervals. An interval with reordering off,
+or where a counter went down or the layout changed, is not added (counted
+apart). A recording without the field says so.
+
 Radio (optional, --rf FILE...): the RF metrics that SmoothStream's cell-monitor
 posts to InfluxDB for each 5G CPE (RSRP, RSRQ, SINR, band, RAT, cell), crossed
 with the links. Two formats, told apart by their content, plain or gzipped:
@@ -69,7 +82,9 @@ Export (--export DIR, --export-gzip): tidy CSVs for R and pandas, written while
 the analysis goes through the recording: samples.csv (a row per link per status
 sample, with what fieldrec derives), events.csv (outages, upload and download
 mutes, gaps and restarts), joint.csv (late packets per interval, deadline and
-set of links), tunnel.csv (lost_all and WireGuard sizes per interval) and, with
+set of links), tunnel.csv (lost_all and WireGuard sizes per interval), reorder.csv
+(the reorderer per interval in long format: the growth of each counter, the
+gauges and the histogram buckets; only if the recording has it) and, with
 --rf, rf.csv and rf_changes.csv; README.txt in DIR lists their columns, units
 and how the clocks relate. The columns are the schemas *_COLS below.
 
@@ -198,6 +213,73 @@ def parse_sizes(z):
         return None
 
 
+# The receiver's reorderer of the bonding step 1: the status field "reorder", the client's top-level one or the one of each
+# session of a server. Its counters are cumulative since the engine started, the gauges are not.
+RO_COUNTS = ("in_order", "held_total", "bypassed", "split_rx", "far", "resyncs", "pool_full",
+             "lost_rack", "lost_cap", "lost_overflow", "lost_flush",
+             "late_after_rack", "late_after_cap", "late_after_overflow", "late_old")
+RO_LOST = ("rack", "cap", "overflow", "flush")             # reorder.lost.*
+RO_LATE = ("after_rack", "after_cap", "after_overflow", "old")   # reorder.late.*
+RO_GAUGES = ("held", "held_max", "pool_buffers", "pool_free", "max_burst")   # held and pool_free now; held_max and max_burst since the start
+RO_HISTS = ("wait", "late_by")
+RO_WORST = 10          # intervals listed as the worst ones of a section
+
+
+def whole(x):
+    """A count of the status: a whole number from 0 up (not a boolean), or ValueError."""
+    if isinstance(x, bool) or not isinstance(x, int) or x < 0:
+        raise ValueError("not a count")
+    return x
+
+
+class Reorder:
+    __slots__ = ("enabled", "edges", "gauges", "counts", "wait", "late_by")
+
+
+def parse_reorder(o):
+    """The status field "reorder", or None if absent or not as expected. A
+    counter the engine does not report is 0; one that is there but is not a
+    count makes the whole field count as absent. The pool gauges only come
+    from a client, and the histograms need edges_ms (one more bucket than
+    edges)."""
+    if not isinstance(o, dict):
+        return None
+    try:
+        r = Reorder()
+        r.enabled = o.get("enabled", True)
+        lost, late = o.get("lost", {}), o.get("late", {})
+        if not isinstance(r.enabled, bool) or not isinstance(lost, dict) or not isinstance(late, dict):
+            return None
+        if r.enabled and not all(k in o for k in ("in_order", "held_total", "lost", "late")):
+            return None
+        r.edges = tuple(whole(x) for x in o.get("edges_ms") or ())
+
+        def count(d, k):
+            return 0 if d.get(k) is None else whole(d[k])
+        r.counts = (tuple(count(o, k) for k in RO_COUNTS[:7]) + tuple(count(lost, k) for k in RO_LOST)
+                    + tuple(count(late, k) for k in RO_LATE))
+        r.gauges = tuple(None if o.get(k) is None else whole(o[k]) for k in RO_GAUGES)
+        for k in RO_HISTS:
+            h = o.get(k)
+            h = None if h is None else tuple(whole(x) for x in h)
+            if h is not None and len(h) != len(r.edges) + 1:
+                return None
+            setattr(r, k, h)
+        return r
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
+def parse_pool(p):
+    """A server's "reorder_pool" as (buffers, free, sessions_holding, full), or None."""
+    if not isinstance(p, dict):
+        return None
+    try:
+        return tuple(whole(p[k]) for k in ("buffers", "free", "sessions_holding", "full"))
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 # A week at 1 Hz is 600 000 samples, which are all kept: of each link only what is read is kept (a full link is 35 keys
 # and 2.5 KB parsed), and equal strings are one object. A key read anywhere below has to be here.
 LINK_KEYS = ("id", "name", "label", "state", "last_rx_ms_ago", "rtt_ms", "upload", "upload_behind_ms", "upload_mutes",
@@ -219,7 +301,7 @@ def slim_link(l):
 
 class Sample:
     __slots__ = ("up", "wall", "session", "probe", "down", "links", "synced",
-                 "ids", "idkey", "lost_all", "joint", "sizes")
+                 "ids", "idkey", "lost_all", "joint", "sizes", "reorder")
 
     def __init__(self, r):
         self.up = int(r["uptime_ms"])
@@ -247,14 +329,85 @@ class Sample:
         self.lost_all = count_or_none(r.get("lost_all"))
         self.joint = parse_joint(r.get("joint"))
         self.sizes = parse_sizes(r.get("sizes"))
+        self.reorder = parse_reorder(r.get("reorder"))
         self.synced = True
 
 
-def segments(lines, notes):
+class ServerSample:
+    """The status of a server (mode "server"), of which only the reordering of
+    each session is read: sessions maps a session's id to (its Reorder, the
+    packets it delivered to WireGuard so far, its client's name or None);
+    pool is parse_pool's tuple."""
+    __slots__ = ("up", "wall", "coarse", "synced", "sessions", "pool")
+
+    def __init__(self, r):
+        self.up = int(r["uptime_ms"])
+        self.coarse = "time_ms" not in r and "t" in r
+        if "time_ms" in r:
+            self.wall = int(r["time_ms"])
+        elif "t" in r:
+            self.wall = int(float(r["t"]) * 1000)
+        else:
+            self.wall = None
+        self.sessions = {}
+        for x in r.get("sessions") or []:
+            if not isinstance(x, dict) or not isinstance(x.get("id"), str):
+                continue
+            ro = parse_reorder(x.get("reorder"))
+            if ro is not None:
+                sid = SHARED.setdefault(x["id"], x["id"])
+                client = x.get("client") if isinstance(x.get("client"), str) else None
+                self.sessions[sid] = (ro, count_or_none(x.get("upload_packets")), SHARED.setdefault(client, client))
+        self.pool = parse_pool(r.get("reorder_pool"))
+        self.synced = True
+
+
+def mark_synced(segs, tol):
+    """Sets .synced on the samples of the runs: a router without an RTC has
+    the wrong wall time until NTP sets it, and within a run the offset
+    between wall time and uptime is fixed, so the samples whose offset
+    differs from the run's last one predate the correction. Returns how many
+    do (or have no wall time at all)."""
+    unsynced = 0
+    for seg in segs:
+        last = next((s for s in reversed(seg) if s.wall is not None), None)
+        for s in seg:
+            s.synced = last is not None and s.wall is not None and \
+                abs((s.wall - s.up) - (last.wall - last.up)) <= tol
+            unsynced += not s.synced
+    return unsynced
+
+
+def server_segments(samples, notes):
+    """Runs of a server's samples without a gap or a restart (its uptime
+    going back); repeated samples (same uptime) dropped."""
+    segs, cur = [], []
+    for s in samples:
+        if cur:
+            p = cur[-1]
+            if s.up == p.up:
+                continue
+            if s.up < p.up or s.up - p.up > GAP_MS:
+                segs.append(cur)
+                cur = []
+        cur.append(s)
+    if cur:
+        segs.append(cur)
+    unsynced = mark_synced(segs, 2000 if any(s.coarse for s in samples) else 1000)
+    if unsynced:
+        notes.append(f"{unsynced} samples of the server before its clock was set (or without one): out of the hours")
+    return segs
+
+
+def segments(lines, notes, server=None):
     """Runs of samples from one engine run without gaps; repeated samples
-    (same uptime) dropped."""
+    (same uptime) dropped. With a list as server, the samples of a server's
+    recording (mode "server") are put in it, for server_segments."""
     segs, cur, wall_s = [], [], False
     for r in lines:
+        if server is not None and isinstance(r, dict) and r.get("mode") == "server" and "uptime_ms" in r:
+            server.append(ServerSample(r))
+            continue
         if not isinstance(r, dict) or r.get("mode") != "client" or "uptime_ms" not in r:
             continue
         s = Sample(r)
@@ -274,14 +427,7 @@ def segments(lines, notes):
     # A router without an RTC: before NTP sets the clock, its wall time is
     # wrong. Within a run the offset to uptime is fixed, so samples whose
     # offset differs from the run's last one predate the correction.
-    tol = 2000 if wall_s else 1000
-    unsynced = 0
-    for seg in segs:
-        last = next((s for s in reversed(seg) if s.wall is not None), None)
-        for s in seg:
-            s.synced = last is not None and s.wall is not None and \
-                abs((s.wall - s.up) - (last.wall - last.up)) <= tol
-            unsynced += not s.synced
+    unsynced = mark_synced(segs, 2000 if wall_s else 1000)
     if unsynced:
         notes.append(f"{unsynced} samples before the clock was set (or without one): out of the wall-clock folds")
     return segs
@@ -300,7 +446,9 @@ def link_out(l, probe_ms):
     return (l.get("last_rx_ms_ago") or 0) > max(3 * probe_ms, 300)
 
 
-def analyze(segs, utc_offset_h=0.0, ex=None):
+def analyze(segs, utc_offset_h=0.0, ex=None, server=()):
+    """segs: the client's runs (segments); server: those of a server's
+    recording (server_segments), of which only the reordering is read."""
     links = sorted({n for seg in segs for s in seg for n in s.links})
     L = {n: dict(time=0, out_time=0, events=[], rtt=[], dev=[], behind=[], up_behind=[],
                  loss_num=0.0, loss_den=0, up_tx=0, up_rx=0, mutes=0, muted_time=0,
@@ -480,10 +628,11 @@ def analyze(segs, utc_offset_h=0.0, ex=None):
                     ex.outage(n, si, st["start"], st["last"], st["wall0"], "segment_end")
         if ex is not None:
             ex.segment_end(si)
+    bond = collect_bonding(segs, utc_offset_h, ex)
+    bond["reorder"] = collect_reorder(segs, server, utc_offset_h, ex)
     return dict(links=links, L=L, simul=simul, pair_t=pair_t, pair_out=pair_out, corr=corr,
                 spread_all=spread_all, spread_two=spread_two, total_ms=total_ms, gap_ms=gap_ms,
-                segments=len(segs), samples=sum(len(s) for s in segs), meta=meta,
-                bond=collect_bonding(segs, utc_offset_h, ex))
+                segments=len(segs), samples=sum(len(s) for s in segs), meta=meta, bond=bond)
 
 
 def delta_buckets(b, a):
@@ -595,6 +744,146 @@ def collect_bonding(segs, utc_offset_h=0.0, ex=None):
     return dict(joint=joint, lost=lost, sizes=sizes)
 
 
+RO_I = {k: i for i, k in enumerate(RO_COUNTS)}
+RO_FAILED = ("lost_cap", "lost_overflow") + tuple("late_" + k for k in RO_LATE)   # where the wait did not do its job
+
+
+def delta_reorder(b, a):
+    """Growth between two samples of a Reorder's counters and histograms as
+    (counts, wait, late_by), or None if one went down or the layout (the
+    edges, which histograms there are) changed."""
+    if a.edges != b.edges:
+        return None
+    out = [tuple(y - x for x, y in zip(a.counts, b.counts))]
+    for k in RO_HISTS:
+        x, y = getattr(a, k), getattr(b, k)
+        if (x is None) != (y is None):
+            return None
+        out.append(None if x is None else tuple(q - p for p, q in zip(x, y)))
+    if any(h is not None and min(h) < 0 for h in out):
+        return None
+    return tuple(out)
+
+
+class ROAcc:
+    """What a reorderer did over some intervals: the growth of its counters
+    added up, and the extremes of its gauges."""
+    __slots__ = ("intervals", "delivered", "counts", "wait", "late_by", "held_seen", "held_max", "max_burst",
+                 "pool_buffers", "pool_free_min")
+
+    def __init__(self):
+        self.intervals = self.delivered = self.held_seen = self.held_max = self.max_burst = 0
+        self.counts = [0] * len(RO_COUNTS)
+        self.wait = self.late_by = self.pool_buffers = self.pool_free_min = None
+
+    def add(self, d, delivered, rb):
+        self.intervals += 1
+        self.delivered += delivered
+        self.counts = [x + y for x, y in zip(self.counts, d[0])]
+        for k, h in zip(RO_HISTS, d[1:]):
+            if h is not None:
+                cur = getattr(self, k)
+                setattr(self, k, list(h) if cur is None else [x + y for x, y in zip(cur, h)])
+        held, held_max, bufs, free, burst = rb.gauges
+        self.held_seen = max(self.held_seen, held or 0)
+        self.held_max = max(self.held_max, held_max or 0)
+        self.max_burst = max(self.max_burst, burst or 0)
+        if bufs is not None:
+            self.pool_buffers = max(self.pool_buffers or 0, bufs)
+        if free is not None:
+            self.pool_free_min = free if self.pool_free_min is None else min(self.pool_free_min, free)
+
+
+def ro_owner():
+    """What is kept of one reorderer (the client's, or one session's): its
+    ROAcc overall (key -1) and per hour, the intervals counted, those where it
+    was off, those skipped, and its worst intervals."""
+    return dict(acc={}, intervals=0, off=0, skipped=0, edges=None, client=None, worst=[])
+
+
+def collect_reorder(segs, server=(), utc_offset_h=0.0, ex=None):
+    """The reorderer's counters (the status field "reorder": the client's, and
+    each session's of a server's recording) differenced between consecutive
+    samples of a run and added up, overall (key -1) and per hour of the day
+    (the hour of the later sample), as the other instruments are. An interval
+    where reordering was off at either end is counted apart, and one where a
+    counter went down or the layout changed is skipped and counted: neither is
+    added, and neither is exported. Returns the client's owner, the sessions'
+    by id, and the server's pool."""
+    client, sessions = ro_owner(), {}
+    pool = dict(acc={}, intervals=0, skipped=0)
+
+    def hours(b):
+        if b.synced and b.wall is not None:
+            return (-1, int(((b.wall / 3600000.0) + utc_offset_h) % 24))
+        return (-1,)
+
+    def step(o, ra, rb, delivered, keys, b, si, dt):
+        """One interval of one reorderer; the delta it added, or None."""
+        if not ra.enabled or not rb.enabled:
+            o["off"] += 1
+            return None
+        d = delta_reorder(rb, ra)
+        if d is not None and o["edges"] not in (None, rb.edges):     # another layout than the first interval's: not added
+            d = None
+        if d is None:
+            o["skipped"] += 1
+            return None
+        o["edges"] = rb.edges
+        o["intervals"] += 1
+        for h in keys:
+            acc = o["acc"].get(h)
+            if acc is None:
+                acc = o["acc"][h] = ROAcc()
+            acc.add(d, delivered, rb)
+        failed = sum(d[0][RO_I[k]] for k in RO_FAILED)
+        if failed:
+            o["worst"].append((-failed, si, b.up, dict(
+                segment=si, time_utc=iso(b.wall / 1000.0) if b.synced and b.wall is not None else None, uptime_ms=b.up,
+                interval_ms=dt, delivered=delivered, held_total=d[0][RO_I["held_total"]], lost_cap=d[0][RO_I["lost_cap"]],
+                lost_overflow=d[0][RO_I["lost_overflow"]], late=sum(d[0][RO_I["late_" + k]] for k in RO_LATE), held=rb.gauges[0])))
+            if len(o["worst"]) > 4 * RO_WORST:
+                o["worst"].sort(key=lambda x: x[:3])
+                del o["worst"][RO_WORST:]
+        return d
+
+    for si, seg in enumerate(segs):
+        for a, b in zip(seg, seg[1:]):
+            if a.reorder is None or b.reorder is None:
+                continue
+            delivered = max(0, b.down - a.down)
+            d = step(client, a.reorder, b.reorder, delivered, hours(b), b, si, b.up - a.up)
+            if d is not None and ex is not None:
+                ex.reorder("client", si, b, b.session, "", delivered, d, b.reorder, b.up - a.up)
+    for si, seg in enumerate(server):
+        for a, b in zip(seg, seg[1:]):
+            keys = hours(b)
+            for sid, (rb, pk_b, name) in b.sessions.items():
+                before = a.sessions.get(sid)
+                if before is None:                    # a session of its own since this sample: it has no interval yet
+                    continue
+                ra, pk_a, _ = before
+                o = sessions.setdefault(sid, ro_owner())
+                o["client"] = name or o["client"]
+                delivered = max(0, pk_b - pk_a) if pk_a is not None and pk_b is not None else 0
+                d = step(o, ra, rb, delivered, keys, b, si, b.up - a.up)
+                if d is not None and ex is not None:
+                    ex.reorder("server", si, b, sid, name or "", delivered, d, rb, b.up - a.up)
+            if a.pool is not None and b.pool is not None:
+                full = b.pool[3] - a.pool[3]
+                if full < 0:
+                    pool["skipped"] += 1
+                    continue
+                pool["intervals"] += 1
+                for h in keys:
+                    p = pool["acc"].setdefault(h, dict(buffers=0, free_min=None, holding_max=0, full=0))
+                    p["buffers"] = max(p["buffers"], b.pool[0])
+                    p["free_min"] = b.pool[1] if p["free_min"] is None else min(p["free_min"], b.pool[1])
+                    p["holding_max"] = max(p["holding_max"], b.pool[2])
+                    p["full"] += full
+    return dict(client=client, sessions=sessions, pool=pool)
+
+
 def pearson(c):
     n, sx, sy, sxx, syy, sxy = c
     if n < 30:
@@ -699,6 +988,7 @@ def summarize(a):
     out["joint"] = summarize_joint(a["bond"]["joint"], a)
     out["lost_all"] = summarize_lost(a["bond"]["lost"])
     out["sizes"] = summarize_sizes(a["bond"]["sizes"])
+    out["reorder"] = summarize_reorder(a["bond"]["reorder"])
     return out
 
 
@@ -899,6 +1189,68 @@ def summarize_sizes(B):
     return out
 
 
+def ro_hist(counts, edges):
+    """A histogram of the reorderer (hold time of each held packet, or how
+    late a packet came after its gap was given up) as its buckets and the
+    smallest edge that holds a share of the packets: None for the last
+    bucket, which has no edge, or for no packets."""
+    n = sum(counts)
+
+    def le(pct):                       # whole numbers: no rounding at the edge, where a count is exactly pct % of the total
+        cum = 0
+        for e, c in zip(edges, counts):
+            cum += c
+            if n and cum * 100 >= pct * n:
+                return e
+        return None
+    return dict(edges_ms=list(edges), counts=list(counts), total=n,
+                pct=[round(100 * c / n, 3) if n else None for c in counts],
+                p50_le_ms=le(50), p90_le_ms=le(90), p99_le_ms=le(99))
+
+
+def ro_view(acc, edges):
+    c = dict(zip(RO_COUNTS, acc.counts))
+    late = {k: c["late_" + k] for k in RO_LATE}
+    return dict(intervals=acc.intervals, delivered=acc.delivered, in_order=c["in_order"], held_total=c["held_total"],
+                held_pct=sig(100 * c["held_total"] / acc.delivered) if acc.delivered else None,
+                bypassed=c["bypassed"], split_rx=c["split_rx"], lost={k: c["lost_" + k] for k in RO_LOST}, late=late,
+                late_total=sum(late.values()), far=c["far"], resyncs=c["resyncs"], pool_full=c["pool_full"],
+                held_seen_max=acc.held_seen, held_max=acc.held_max, max_burst=acc.max_burst,
+                pool_buffers=acc.pool_buffers, pool_free_min=acc.pool_free_min,
+                wait=None if acc.wait is None else ro_hist(acc.wait, edges),
+                late_by=None if acc.late_by is None else ro_hist(acc.late_by, edges))
+
+
+def summarize_reorder(B):
+    """The "reorder" section: the client's reorderer, and each session of a
+    server's, each with its totals and its hours; None if the recording has no
+    reorder field at all."""
+    def section(o):
+        if not (o["acc"] or o["off"] or o["skipped"]):
+            return None
+        edges = o["edges"] or ()
+        out = dict(intervals=o["intervals"], off_intervals=o["off"], skipped_intervals=o["skipped"], edges_ms=list(edges),
+                   overall=None, by_hour={}, worst_intervals=[])
+        if o["acc"]:
+            out["overall"] = ro_view(o["acc"][-1], edges)
+            out["by_hour"] = {h: ro_view(v, edges) for h, v in sorted(o["acc"].items()) if h >= 0}
+            out["worst_intervals"] = [x[3] for x in sorted(o["worst"], key=lambda x: x[:3])[:RO_WORST]]
+        return out
+
+    out = dict(client=section(B["client"]), server=None)
+    sess = {}
+    for sid, o in sorted(B["sessions"].items()):
+        sec = section(o)
+        if sec:
+            sess[sid] = dict(sec, client=o["client"])
+    p = B["pool"]
+    if sess or p["acc"] or p["skipped"]:
+        out["server"] = dict(sessions=sess, pool=dict(
+            intervals=p["intervals"], skipped_intervals=p["skipped"],
+            overall=p["acc"].get(-1), by_hour={h: v for h, v in sorted(p["acc"].items()) if h >= 0}))
+    return out if out["client"] or out["server"] else None
+
+
 def f(x, p=1):
     if x is None:
         return "-"
@@ -910,12 +1262,18 @@ def f(x, p=1):
 def report(s, notes, utc_offset_h):
     w = print
     w("# Field recording\n")
-    w(f"{s['hours']} h recorded in {s['segments']} runs ({s['samples']} samples), "
-      f"{s['gaps_hours']} h of gaps between them.\n")
+    if s["samples"] < 2:       # the recording of a server: its reorderer is all there is to analyze
+        w("No client samples: this is the recording of a server, of which only the reordering of its sessions is analyzed.\n")
+    else:
+        w(f"{s['hours']} h recorded in {s['segments']} runs ({s['samples']} samples), "
+          f"{s['gaps_hours']} h of gaps between them.\n")
     for n in notes:
         w(f"- note: {n}")
     if notes:
         w()
+    if s["samples"] < 2:
+        report_reorder(s.get("reorder"), utc_offset_h)
+        return
     w("## Links\n")
     w("| link | h | up % | outages | p50/p90/max s | <=1/1-3/3-10/10-60/>60 s | RTT p50/p95/p99 ms | dev p95 | behind best p50/p99 | loss down % | loss up % | mutes | muted % |")
     w("| --- | ---: | ---: | ---: | --- | --- | --- | ---: | --- | ---: | ---: | ---: | ---: |")
@@ -964,6 +1322,7 @@ def report(s, notes, utc_offset_h):
     report_joint(s.get("joint"), utc_offset_h)
     report_lost(s.get("lost_all"), utc_offset_h)
     report_sizes(s.get("sizes"))
+    report_reorder(s.get("reorder"), utc_offset_h)
 
 
 def fp(x):
@@ -1138,6 +1497,82 @@ def report_sizes(z):
             w(f"| {lab} | {r['packets']} | {f(r['packets_pct'], 2)} | {f(r['cum_packets_pct'], 2)} | "
               f"{f(r['bytes_pct'], 2)} | {f(r['cum_bytes_pct'], 2)} |")
         w("\nHandshakes: " + ", ".join(f"{n} {d['handshakes'][n]}" for n in HANDSHAKES) + ".")
+
+
+def ro_row(label, v):
+    lost, late = v["lost"], v["late"]
+    return (f"| {label} | {v['delivered']} | {v['held_total']} | {fp(v['held_pct'])} | {v['bypassed']} | "
+            f"{lost['rack']} / {lost['cap']} / {lost['overflow']} / {lost['flush']} | "
+            f"{late['after_rack']} / {late['after_cap']} / {late['after_overflow']} / {late['old']} | "
+            f"{v['far']} / {v['resyncs']} / {v['pool_full']} | {v['split_rx']} | {v['held_max']} | {v['max_burst']} |")
+
+
+def ro_q(h):
+    """p50 / p90 / p99 of a reorderer histogram, as the edge each is at or under."""
+    if not h["total"] or not h["edges_ms"]:
+        return "-"
+    return " / ".join(f"> {h['edges_ms'][-1]}" if h[k] is None else str(h[k]) for k in ("p50_le_ms", "p90_le_ms", "p99_le_ms"))
+
+
+def report_ro_section(title, sec, utc_offset_h):
+    w = print
+    w(f"\n### {title}\n")
+    w(f"{sec['intervals']} intervals counted, {sec['off_intervals']} with reordering off, "
+      f"{sec['skipped_intervals']} skipped (a counter went down or the layout changed).\n")
+    if sec["overall"] is None:
+        w("No data: nothing was counted" + (" (reordering was off)." if sec["off_intervals"] else "."))
+        return
+    w("| hour | delivered | held | held % | bypassed | lost: rack / cap / overflow / flush | "
+      "late after: rack / cap / overflow / old | far / resyncs / pool full | from split | most held | longest burst |")
+    w("| --- | ---: | ---: | ---: | ---: | --- | --- | --- | ---: | ---: | ---: |")
+    w(ro_row("all", sec["overall"]))
+    for h, v in sec["by_hour"].items():
+        w(ro_row(f"{h:02d} (UTC{utc_offset_h:+g})", v))
+    ov = sec["overall"]
+    if ov["pool_buffers"] is not None:
+        w(f"\nPool: {ov['pool_buffers']} buffers, the fewest free {ov['pool_free_min']}.")
+    edges = sec["edges_ms"]
+    hs = [(n, ov[k]) for n, k in (("hold time of the held packets", "wait"), ("lateness of the late ones", "late_by")) if ov[k]]
+    if hs and edges:
+        w("\nHistograms over all the intervals, in ms (the lateness is how long after its gap was given up on a packet came):\n")
+        w("| | " + " | ".join(f"<= {e}" for e in edges) + f" | > {edges[-1]} | total | p50 / p90 / p99 at or under |")
+        w("| --- |" + " ---: |" * (len(edges) + 2) + " --- |")
+        for n, h in hs:
+            w(f"| {n} | " + " | ".join(str(c) for c in h["counts"]) + f" | {h['total']} | {ro_q(h)} |")
+    if sec["worst_intervals"]:
+        w(f"\nThe {len(sec['worst_intervals'])} worst intervals, by packets given up on at the deadline or for lack of room plus late ones "
+          "(UTC; the wall time is empty before the clock was set):\n")
+        w("| run | time (UTC) | uptime ms | interval ms | delivered | held | lost cap | lost overflow | late | held at the end |")
+        w("| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
+        for x in sec["worst_intervals"]:
+            w(f"| {x['segment']} | {x['time_utc'] or '-'} | {x['uptime_ms']} | {x['interval_ms']} | {x['delivered']} | {x['held_total']} | "
+              f"{x['lost_cap']} | {x['lost_overflow']} | {x['late']} | {f(x['held'])} |")
+
+
+def report_reorder(x, utc_offset_h):
+    w = print
+    w("\n## Reordering\n")
+    if x is None:
+        w("No data: no `reorder` object in the recording (an engine without the receiver's reorderer of story 012, step 1).")
+        return
+    w("The receiver's reorderer (the status field `reorder`, counters since the engine started, differenced between samples). "
+      "Delivered: packets handed to WireGuard. Held: packets that waited for an earlier one; bypassed: handed on at once for being small. "
+      "Lost: gaps it gave up on, because every link had gone past the packet (rack), at its deadline (cap), for lack of room "
+      "(overflow) or at a flush. Late after: packets that came after their gap was given up on, by what gave it up (old: too long ago to tell). "
+      "Far, resyncs and pool full: packets passed through at once, and the times it picked up the sequence again. "
+      "Late after rack means the links do not deliver in order, or the links it waits for are the wrong ones; late after cap, "
+      "that the longest wait is too short.")
+    if x["client"]:
+        report_ro_section("Client (download)", x["client"], utc_offset_h)
+    srv = x["server"]
+    if srv:
+        for sid, sec in srv["sessions"].items():
+            report_ro_section(f"Server, session {sid}" + (f" (client {sec['client']})" if sec["client"] else "") + " (upload)", sec, utc_offset_h)
+        p = srv["pool"]
+        if p["overall"] is not None:
+            o = p["overall"]
+            w(f"\n### Server pool\n\n{p['intervals']} intervals ({p['skipped_intervals']} skipped): {o['buffers']} buffers, the fewest free "
+              f"{o['free_min']}, most sessions holding at once {o['holding_max']}, times a session found it empty {o['full']}.")
 
 
 # --- Radio: the RF metrics of SmoothStream's cell-monitor, crossed with the links ---------------
@@ -2412,6 +2847,21 @@ JOINT_COLS = [SEGMENT_COL] + TIME_COLS + [
     ("late", "packets", "packets that were late or lost at the deadline on exactly the links of the mask (mask 0: none late). "
                         "P(set S late) = sum of late over the masks that contain S / the same of expect"),
 ]
+REORDER_COLS = [SEGMENT_COL] + TIME_COLS + [
+    ("source", "text", "client (the reorderer of the client, download) or server (one session's, upload); a server's runs are numbered apart "
+                       "from the client's, from 0"),
+    ("session", "text", "client: the engine's session id for the run, as in samples.csv; server: the session's id"),
+    ("client", "text", "server: the name of the session's client, empty with a single one; empty for a client"),
+    ("kind", "text", "delta (growth in the interval), gauge (the value at the end of the interval; no row when 0) or hist (growth of one bucket "
+                     "of a histogram)"),
+    ("metric", "text", "delta: delivered (packets handed to WireGuard: download.packets for a client, the session's upload_packets for a "
+                       "server; a row in every interval counted) and each counter that grew: in_order, held_total, bypassed, split_rx, far, "
+                       "resyncs, pool_full, lost_rack, lost_cap, lost_overflow, lost_flush, late_after_rack, late_after_cap, "
+                       "late_after_overflow, late_old. gauge: held, held_max, pool_buffers, pool_free, max_burst. hist: wait (hold time of "
+                       "each held packet) or late_by (how long after its gap was given up on a late packet came)"),
+    ("bucket", "text", "hist: le_N (up to N ms; the engine's edges_ms) or gt_N (over the last edge); empty otherwise"),
+    ("value", "count", "the number the kind and metric say"),
+]
 RF_COLS = [
     ("time_utc", "ISO 8601, UTC", "RF sample time after --rf-offset: on the engine's clock"),
     ("time_epoch", "s", "the same, seconds since 1970"),
@@ -2447,7 +2897,7 @@ RF_CHANGES_COLS = [
     ("recorded", "0/1", "1 if the engine's recording watched the link then (the report counts those)"),
 ]
 HS_NAMES = ("init", "response", "cookie", "other")
-EXPORT_NAMES = ("samples.csv", "events.csv", "joint.csv", "tunnel.csv", "rf.csv", "rf_changes.csv", "README.txt")
+EXPORT_NAMES = ("samples.csv", "events.csv", "joint.csv", "tunnel.csv", "reorder.csv", "rf.csv", "rf_changes.csv", "README.txt")
 
 
 def tunnel_cols(edges):
@@ -2480,7 +2930,7 @@ class Exporter:
     the end). The headers come from the schemas above, which also make
     README.txt."""
 
-    def __init__(self, dirn, gz, segs):
+    def __init__(self, dirn, gz, segs, server=()):
         self.dir, self.gz = dirn, gz
         os.makedirs(dirn, exist_ok=True)
         for name in EXPORT_NAMES:            # no file of an earlier export, in the other form, left beside the new ones
@@ -2504,6 +2954,11 @@ class Exporter:
         self.open("joint.csv", JOINT_COLS, "download: packets late on each set of links, per interval and deadline (from the passive instrument "
                                            "'joint'); only masks that grew")
         self.open("tunnel.csv", tunnel_cols(self.edges), "the tunnel per interval: packets delivered, lost on every link, WireGuard sizes")
+        # Only for a recording that has the field, so that an older one exports what it always did.
+        self.server_reorder = any(s.sessions for seg in server for s in seg)
+        if self.server_reorder or any(s.reorder for seg in segs for s in seg):
+            self.open("reorder.csv", REORDER_COLS, "the receiver's reorderer per interval, long format: one row per counter that grew, gauge "
+                                                   "and histogram bucket that grew, with the packets delivered in every interval counted")
 
     def open(self, name, cols, title):
         path = os.path.join(self.dir, name + (".gz" if self.gz else ""))
@@ -2667,6 +3122,26 @@ class Exporter:
                     row += z["data"] + z["data_bytes"] + [z[h] for h in HS_NAMES]
         self.row("tunnel.csv", row)
 
+    def reorder(self, source, si, b, session, client, delivered, d, rb, dt):
+        """The rows of one interval of one reorderer (delta_reorder's d; rb is its Reorder at the end of the interval): the packets
+        delivered, each counter that grew, the gauges, each histogram bucket that grew."""
+        lead = self.tcols(si, b, dt) + [source, session or "", client]
+
+        def put(kind, metric, bucket, value):
+            self.row("reorder.csv", lead + [kind, metric, bucket, value])
+        put("delta", "delivered", "", delivered)
+        for k, v in zip(RO_COUNTS, d[0]):
+            if v:
+                put("delta", k, "", v)
+        for k, v in zip(RO_GAUGES, rb.gauges):
+            if v is not None and (v or k == "pool_free"):
+                put("gauge", k, "", v)
+        names = [f"le_{e}" for e in rb.edges] + [f"gt_{rb.edges[-1]}" if rb.edges else "gt"]
+        for k, h in zip(RO_HISTS, d[1:]):
+            for n, v in zip(names, h or ()):
+                if v:
+                    put("hist", k, n, v)
+
     # -- radio
 
     def rf(self, entries, meta, cover, offset):
@@ -2723,7 +3198,8 @@ def export_readme(ex):
            "Plain CSV, UTF-8, one header row, comma-separated, LF line ends" + (", each file gzipped (.csv.gz)" if ex.gz else "") + ".",
            "An empty cell is a missing value. Booleans are 0/1. Names are the engine's (links[].name and links[].label).", "",
            "TIMES", "-----",
-           "- samples.csv, events.csv, joint.csv, tunnel.csv: time_utc and time_epoch are the engine's wall clock (time_ms of the status), the Pi's",
+           "- " + ", ".join(n for n in ("samples.csv", "events.csv", "joint.csv", "tunnel.csv", "reorder.csv") if n in ex.files)
+           + ": time_utc and time_epoch are the engine's wall clock (time_ms of the status), the Pi's",
            "  clock, in UTC. Before NTP corrects it (the Pi has no RTC) the value is wrong: clock_synced is 0 there. Intervals inside a",
            "  segment should use uptime_ms, which is steady; uptime_ms starts over when the engine restarts, so it means nothing across segments.",
            "- A segment is a run of samples with no restart and no gap of more than 5 s; fieldrec starts over at each (events.csv has the gap",
@@ -2732,7 +3208,10 @@ def export_readme(ex):
            "  sends no timestamp), in whole seconds. time_utc and time_epoch are those plus the offset given with --rf-offset"
            f" (here {ex.info.get('rf_offset', 0):g} s) to put them on the engine's clock; rf_time_epoch is the time as exported."
            " They agree only if the Pi's and the InfluxDB server's clocks do.", ""]
-    for name in ("samples.csv", "events.csv", "joint.csv", "tunnel.csv", "rf.csv", "rf_changes.csv"):
+    if ex.server_reorder:
+        out[-1:-1] = ["- reorder.csv rows with source server come from a server's recording: their times are that server's clock, and their",
+                      "  segments are numbered apart from the client's (events.csv has none of them)."]
+    for name in ("samples.csv", "events.csv", "joint.csv", "tunnel.csv", "reorder.csv", "rf.csv", "rf_changes.csv"):
         f = ex.files.get(name)
         if f is None:
             continue
@@ -2758,8 +3237,8 @@ def main(argv=None):
     ap.add_argument("paths", nargs="*", help="cengarde-rec directories or files (.jsonl, .jsonl.gz)")
     ap.add_argument("--utc-offset", type=float, default=0.0, help="hours added to UTC for the hourly table (Chile: -3 or -4)")
     ap.add_argument("--json", help="also write the summary as JSON here")
-    ap.add_argument("--export", metavar="DIR", help="write tidy CSVs for R and pandas into DIR (samples, events, joint, tunnel and, "
-                    "with --rf, rf and rf_changes) and a README.txt that says what is in them")
+    ap.add_argument("--export", metavar="DIR", help="write tidy CSVs for R and pandas into DIR (samples, events, joint, tunnel, reorder "
+                    "if the recording has it and, with --rf, rf and rf_changes) and a README.txt that says what is in them")
     ap.add_argument("--export-gzip", action="store_true", help="with --export: write .csv.gz")
     ap.add_argument("--rf", nargs="+", action="extend", metavar="FILE",
                     help="cell-monitor's RF metrics from InfluxDB: annotated CSV or line protocol (plain or .gz); "
@@ -2798,13 +3277,15 @@ def main(argv=None):
         except (OSError, EOFError, UnicodeDecodeError, csv.Error) as e:
             print(f"cannot read the RF data: {e}", file=sys.stderr)
             return 1
-    segs = segments(read_lines(files, notes), notes)
-    if not segs or sum(len(s) for s in segs) < 2:
+    srv = []
+    segs = segments(read_lines(files, notes), notes, srv)
+    sevs = server_segments(srv, notes)
+    if sum(len(s) for s in segs) < 2 and sum(len(s) for s in sevs) < 2:
         print("fewer than two samples", file=sys.stderr)
         return 1
-    ex = Exporter(o.export, o.export_gzip, segs) if o.export else None
+    ex = Exporter(o.export, o.export_gzip, segs, sevs) if o.export else None
     try:
-        a = analyze(segs, o.utc_offset, ex)
+        a = analyze(segs, o.utc_offset, ex, sevs)
         s = summarize(a)
         if rf is not None:
             s["radio"] = summarize_radio(a, rf, RadioOpts(o.rf_offset, o.rf_window, maps, o.rf_local), o.utc_offset, ex)
