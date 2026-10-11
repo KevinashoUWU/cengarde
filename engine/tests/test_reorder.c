@@ -205,6 +205,24 @@ static int32_t due(uint32_t t)
 	return cg_ro_due_us(&R.r, &R.cf, R.rset, R.b.tb + t);
 }
 
+/* The rule at the top of reorder.h: every PASSED slot is ahead of the head,
+ * within the window, and passed_ahead counts them. */
+static int marks_ok(const struct cg_reorder *r)
+{
+	uint32_t n = 0;
+
+	for (uint32_t i = 0; i < CG_RO_SLOTS; i++) {
+		const struct cg_ro_slot *s = &r->slot[i];
+
+		if (s->state != CG_RO_PASSED)
+			continue;
+		if (s->seq % CG_RO_SLOTS != i || s->seq - r->head >= CG_RO_SLOTS)
+			return 0;
+		n++;
+	}
+	return n == r->passed_ahead;
+}
+
 /* What was handed on, from the k-th packet on, is want[0..n-1] and nothing more. */
 static int out_from(unsigned k, const uint32_t *want, unsigned n)
 {
@@ -587,9 +605,11 @@ static void sc_late(const struct base *b)
 	CHECK_EQ(in(N + 1, 0, 401 * MS, 0, SPLIT, DATA, BIG), CG_RO_NOW);
 	CHECK_EQ(R.r.st.late_cap, 1);
 	CHECK_EQ(R.r.st.late_by[0], 1);
-	/* Its slot is PASSED now: a second late copy (never, the anti-replay
-	 * window drops it) would count as old. */
-	CHECK_EQ(R.r.slot[(R.b.sb + N + 1) % N].state, CG_RO_PASSED);
+	/* Its slot is emptied: a second late copy (never, the anti-replay
+	 * window drops it) would count as old, and no mark is left behind the
+	 * head (sc_wrap). */
+	CHECK_EQ(R.r.slot[(R.b.sb + N + 1) % N].state, CG_RO_EMPTY);
+	CHECK(marks_ok(&R.r));
 	CHECK_EQ(hsum(R.r.st.late_by), 1); /* old ones have no lateness */
 }
 
@@ -785,6 +805,8 @@ static void sc_leap(const struct base *b)
 	CHECK_EQ(in(LEAP, 0, 0, 0, 0, DATA, BIG), CG_RO_NOW);
 	CHECK_EQ(R.r.st.resyncs, 1);
 	CHECK_EQ(R.r.passed_ahead, 0);
+	CHECK_EQ(R.r.slot[(R.b.sb + 3) % N].state, CG_RO_EMPTY);
+	CHECK(marks_ok(&R.r));
 	CHECK_EQ(R.r.head, R.b.sb + LEAP + 1);
 	CHECK_EQ(in(LEAP + 1, 0, 0, 0, 0, DATA, BIG), CG_RO_NOW);
 	CHECK_EQ(R.r.st.in_order, 3);
@@ -855,6 +877,7 @@ static void sc_bypass(const struct base *b)
 	CHECK(OUT_IS(0, 2, 1, 3));
 	CHECK_EQ(R.r.passed_ahead, 0);
 	CHECK_EQ(R.r.head, R.b.sb + 4);
+	CHECK(marks_ok(&R.r)); /* the mark stepped over is gone with it */
 
 	/* Handshakes always, even with bypass_len 0; data of 32 bytes then held. */
 	R.cf.bypass_len = 0;
@@ -871,6 +894,7 @@ static void sc_bypass(const struct base *b)
 	CHECK(once);
 	CHECK_EQ(R.nout, 9);
 	CHECK_EQ(R.r.passed_ahead, 0);
+	CHECK(marks_ok(&R.r));
 
 	/* Late and in order are what they are, bypass or not. */
 	CHECK_EQ(in(9, 0, 0, 0, 0, 1, 148), CG_RO_NOW);
@@ -903,6 +927,7 @@ static void sc_pool(const struct base *b)
 	CHECK(OUT_IS(0, 6, 2, 3, 4, 5));
 	CHECK_EQ(R.r.head, R.b.sb + 7); /* 6 stepped over */
 	CHECK_EQ(R.r.passed_ahead, 0);
+	CHECK(marks_ok(&R.r));
 	CHECK_EQ(R.p.nfree, 4);
 	CHECK_EQ(R.bad, 0);
 
@@ -1031,6 +1056,190 @@ static void sc_sweep(const struct base *b)
 	CHECK(R.r.link[0].hw_ok);
 	/* And the forced edge never outlives the head. */
 	CHECK(!R.r.force);
+}
+
+/* What the in-order path does with the packets up to seq, without sending
+ * them: the head moves to seq and each link of links brought one of the last
+ * of them. That path writes no slot, so this is how a test comes round 2^32
+ * sequences in a few steps. */
+static void come_round(uint32_t seq, uint16_t links)
+{
+	R.r.head = R.b.sb + seq;
+	for (unsigned i = 0; i < CG_MAX_LINKS; i++) {
+		if (links >> i & 1) {
+			R.r.link[i].hw = R.r.head - 1 - i;
+			R.r.link[i].hw_ok = 1;
+		}
+	}
+}
+
+/* The head comes round to g, 2^32 sequences after a mark there was left
+ * behind (or not): the last N + 1000 packets before g in order, through the
+ * reorderer, then g is missing and g + 1 (split) is held for it, no matter
+ * what the slot of g says; g fills the gap and both go in order, nothing
+ * given up, nothing late. t: the sender's clock, past what was sent. */
+static void wrap_tail(uint32_t g, uint32_t t)
+{
+	uint64_t lost0 = lost(&R.r.st), old0 = R.r.st.late_old;
+	uint32_t from = g - N - 1000;
+	unsigned k, ok = 1;
+
+	come_round(from, 0x3);
+	for (uint32_t s = from; s != g; s++, t += 10)
+		ok &= sendp(s, t, s & 1, 0) == CG_RO_NOW;
+	CHECK(ok);
+	CHECK_EQ(R.r.head, R.b.sb + g);
+	k = R.nout;
+	CHECK_EQ(sendp(g + 1, t + 10, 0, SPLIT), CG_RO_HOLD);
+	CHECK_EQ(R.r.held, 1); /* still held after the drain at its arrival */
+	CHECK_EQ(R.r.passed_ahead, 0);
+	CHECK(due(t + 10 + 10 * MS) > 0);
+	CHECK_EQ(in(g, t, t + 12 * MS, 1, SPLIT, DATA, BIG), CG_RO_NOW);
+	CHECK(OUT_TAIL(k, g, g + 1));
+	CHECK_EQ(lost(&R.r.st), lost0);
+	CHECK_EQ(R.r.st.late_old, old0);
+	CHECK(marks_ok(&R.r));
+}
+
+/* 17: no mark outlives its sequence. Each way the head leaves a PASSED slot
+ * behind empties it: the walk steps over a bypassed packet, a gap given up
+ * at a packet's arrival steps over one, a late packet takes its slot, a
+ * resync leaves the window. A mark left there would step the head over g
+ * without a wait when the session's sequence came round 2^32 later. */
+static void sc_wrap(const struct base *b)
+{
+	for (unsigned way = 0; way < 4; way++) {
+		uint32_t g = way == 2 ? 1 : 2;
+
+		rig(CG_RO_SLOTS, b, 200 * MS, 0, 10 * MS, 128, 0x3);
+		R.delay[0] = R.delay[1] = 10 * MS;
+		sendp(0, 0, 0, 0);
+		switch (way) {
+		case 0: /* bypass, then the walk (cg_ro_next) steps over it */
+			CHECK_EQ(in(2, 2, 2 + 10 * MS, 1, 0, DATA, SMALL), CG_RO_NOW);
+			CHECK_EQ(sendp(1, 1, 0, 0), CG_RO_NOW);
+			CHECK_EQ(R.r.head, R.b.sb + 3);
+			break;
+		case 1: /* bypass, then the gap before 3 goes at its arrival (cg_ro_skip) */
+			CHECK_EQ(in(2, 1, 1 + 10 * MS, 0, 0, DATA, SMALL), CG_RO_NOW);
+			CHECK_EQ(sendp(3, 2, 0, 0), CG_RO_NOW); /* dup_wait 0 */
+			CHECK_EQ(R.r.head, R.b.sb + 4);
+			CHECK_EQ(R.r.st.lost_cap, 1);
+			break;
+		case 2: /* given up, then late (cg_ro_late) */
+			CHECK_EQ(sendp(2, 2, 0, 0), CG_RO_NOW);
+			CHECK_EQ(sendp(1, 1, 1, 0), CG_RO_NOW);
+			CHECK_EQ(R.r.st.late_cap, 1);
+			break;
+		default: /* bypass ahead of a gap, then a resync */
+			CHECK_EQ(in(2, 1, 1 + 10 * MS, 1, 0, DATA, SMALL), CG_RO_NOW);
+			CHECK_EQ(R.r.passed_ahead, 1);
+			CHECK_EQ(sendp(N + 904, 3, 0, 0), CG_RO_NOW);
+			CHECK_EQ(R.r.st.resyncs, 1);
+			break;
+		}
+		CHECK_EQ(R.r.passed_ahead, 0);
+		CHECK(R.r.slot[(R.b.sb + g) % N].state != CG_RO_PASSED);
+		CHECK(marks_ok(&R.r));
+		wrap_tail(g, 10 * MS);
+	}
+	/* A mark ahead still does its job once come round: a packet passed
+	 * ahead of the gap is stepped over when the gap fills. Link 2 never
+	 * brings anything: no RACK, the gaps wait. */
+	rig(CG_RO_SLOTS, b, 200 * MS, 0, 10 * MS, 128, 0x7);
+	R.delay[0] = R.delay[1] = 10 * MS;
+	sendp(0, 0, 0, 0);
+	come_round(5, 0x3);
+	CHECK_EQ(in(7, 2, 2 + 10 * MS, 1, 0, DATA, SMALL), CG_RO_NOW);
+	CHECK_EQ(sendp(8, 3, 0, SPLIT), CG_RO_HOLD);
+	CHECK_EQ(sendp(6, 1, 1, SPLIT), CG_RO_HOLD);
+	CHECK_EQ(sendp(5, 0, 0, SPLIT), CG_RO_NOW);
+	CHECK(OUT_TAIL(1, 7, 5, 6, 8));
+	CHECK_EQ(R.r.passed_ahead + R.r.held, 0);
+	CHECK(marks_ok(&R.r));
+}
+
+/* 18: max_burst counts what one drain handed on. The engine's loop stops a
+ * drain at a budget per pass (CG_RO_PASS_MAX) and ends it there with
+ * cg_ro_burst_end; the rest goes in the next passes, each a drain of its
+ * own. 2000 held behind a gap, in passes of 512: 512, not 2000. */
+static void sc_burst(const struct base *b)
+{
+	struct cg_ro_out o;
+	unsigned passes = 0, most = 0, ok = 1;
+
+	rig(CG_RO_SLOTS, b, 200 * MS, 0, 10 * MS, 128, 0);
+	in(0, 0, 0, 0, SPLIT, DATA, BIG);
+	for (uint32_t s = 2; s <= 2001; s++)
+		ok &= in(s, 0, s, 0, SPLIT, DATA, BIG) == CG_RO_HOLD;
+	CHECK(ok);
+	CHECK_EQ(R.r.st.max_burst, 0);
+	for (;;) {
+		unsigned n = 0;
+
+		while (n < 512 && cg_ro_next(&R.r, &R.cf, R.rset, R.b.tb + 200 * MS + 2, &o)) {
+			R.back[n++] = o.buf;
+			emit(o.seq, 'r');
+		}
+		cg_ro_burst_end(&R.r);
+		for (unsigned i = 0; i < n; i++)
+			CHECK_EQ(cg_ro_pool_put(&R.p, R.back[i]), 0);
+		if (!n)
+			break;
+		passes++;
+		most = n > most ? n : most;
+		CHECK_EQ(R.r.st.max_burst, most);
+	}
+	CHECK_EQ(passes, 4); /* 512, 512, 512, 464 */
+	CHECK_EQ(most, 512);
+	CHECK_EQ(R.r.st.max_burst, 512);
+	CHECK_EQ(R.r.held, 0);
+	CHECK_EQ(R.r.st.lost_cap, 1);
+	CHECK_EQ(R.nout, 2001);
+	/* A drain that ran to its end needs no call; another one changes nothing. */
+	cg_ro_burst_end(&R.r);
+	CHECK_EQ(R.r.st.max_burst, 512);
+	CHECK_EQ(R.r.burst, 0);
+}
+
+/* 19: reorder off for longer than 2^31 sequences, then on again (a reload):
+ * the flush forgets each link's newest sequence, which nothing sweeps while
+ * the window is off and which would then read as ahead of the new window,
+ * so that RACK gave up every gap at once. The delays stay. */
+static void sc_offon(const struct base *b)
+{
+	static const uint32_t gone[] = { 1000, 1u << 30, 0x80000100u, 0x90000000u, 0xf0000000u };
+
+	for (unsigned i = 0; i < sizeof(gone) / sizeof(gone[0]); i++) {
+		uint32_t s = 0, t = 0;
+		uint64_t rack0;
+		unsigned k, ok = 1;
+
+		rig(CG_RO_SLOTS, b, 200 * MS, 0, 10 * MS, 128, 0x3);
+		R.delay[0] = R.delay[1] = 10 * MS;
+		for (; s < 2000; s++, t += 36)
+			ok &= sendp(s, t, s & 1, SPLIT) == CG_RO_NOW;
+		CHECK(ok);
+		CHECK_EQ(flush_all(), 0);
+		CHECK(!R.r.link[0].hw_ok && !R.r.link[1].hw_ok);
+		CHECK(R.r.link[0].owd_ok && R.r.link[1].owd_ok);
+		CHECK(!R.r.split_seen);
+		/* gone[i] packets go by while reorder is off: the reorderer sees none */
+		s += gone[i];
+		t += 1000 * MS;
+		for (unsigned j = 0; j < 100; j++, s++, t += 36)
+			ok &= sendp(s, t, j & 1, SPLIT) == CG_RO_NOW;
+		CHECK(ok);
+		rack0 = R.r.st.lost_rack;
+		k = R.nout;
+		/* s + 1 on link 1 before s on link 0: held for it */
+		CHECK_EQ(sendp(s + 1, t + 36, 1, SPLIT), CG_RO_HOLD);
+		CHECK_EQ(R.r.held, 1);
+		CHECK_EQ(sendp(s, t, 0, SPLIT), CG_RO_NOW);
+		CHECK(OUT_TAIL(k, s, s + 1));
+		CHECK_EQ(R.r.st.lost_rack, rack0);
+		CHECK_EQ(R.r.st.late_rack + R.r.st.late_old, 0);
+	}
 }
 
 /* ---- 13: random streams against a slow model ---- */
@@ -1213,6 +1422,7 @@ static int m_take_mark(uint64_t g)
 		return 0;
 	m_mark(g, 0);
 	M.npassed--;
+	m_write(g, CG_RO_EMPTY, 0);
 	return 1;
 }
 
@@ -1255,7 +1465,7 @@ static enum cg_ro_v m_in(const struct cg_ro_cfg *cf, const struct m_pkt *k, uint
 			else
 				M.st.late_overflow++;
 			M.st.late_by[m_bucket((int64_t)(k->t - M.wt[c]))]++;
-			M.wst[c] = CG_RO_PASSED;
+			M.wst[c] = CG_RO_EMPTY;
 		} else {
 			M.st.late_old++;
 		}
@@ -1387,9 +1597,12 @@ static int m_flush(struct m_pkt *out)
 			M.st.lost_flush++;
 	}
 	m_clear_marks();
-	M.init = M.force = 0;
+	M.init = M.force = M.split_seen = 0;
 	M.head = M.force_to = 0;
+	if (M.burst > M.st.max_burst)
+		M.st.max_burst = M.burst;
 	M.burst = 0;
+	memset(M.hw_ok, 0, sizeof(M.hw_ok));
 	memset(M.wseq, 0, sizeof(M.wseq));
 	memset(M.wst, 0, sizeof(M.wst));
 	memset(M.wt, 0, sizeof(M.wt));
@@ -1620,6 +1833,10 @@ static void t_take(const struct tev *e)
 		else if (R.r.st.resyncs != before.resyncs)
 			T.last_ord = p->seq, T.have_ord = 1;
 	}
+	/* No mark left behind: after each resync, and every 256 steps (a mark
+	 * the head left behind stays until its slot is written again). */
+	if (R.r.st.resyncs != before.resyncs || !(T.steps % 256))
+		RC(marks_ok(&R.r));
 	t_compare();
 	t_drain();
 	t_compare();
@@ -1758,6 +1975,7 @@ static void trial(int idx)
 			t_drain();
 		}
 	}
+	RC(marks_ok(&R.r));
 	t_flush();
 	for (unsigned i = 0; i < npk; i++)
 		RC(t_out[i] == t_seen[i]);
@@ -1805,6 +2023,9 @@ void test_reorder(void)
 		sc_owd(b);
 		sc_due(b);
 		sc_sweep(b);
+		sc_wrap(b);
+		sc_burst(b);
+		sc_offon(b);
 	}
 	test_random();
 }

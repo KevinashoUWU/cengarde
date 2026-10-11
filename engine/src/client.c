@@ -1229,7 +1229,9 @@ static void dout_add(struct client *c, uint8_t *payload, size_t len, uint16_t bu
 /* What the reorderer may hand on at now (the pass's clock, as its arrival
  * times), after what the batch holds: everything with all (a window
  * overflow, taken again right after), else up to the pass's budget; the
- * next pass comes at once for the rest (cg_ro_due_us says 0). */
+ * next pass comes at once for the rest (cg_ro_due_us says 0). A drain the
+ * budget cuts ends here for max_burst, which says what one drain gave
+ * WireGuard at once. */
 static void ro_drain(struct client *c, uint16_t rset, uint32_t now, int all, uint64_t now_ms)
 {
 	struct cg_ro_out o;
@@ -1239,6 +1241,7 @@ static void ro_drain(struct client *c, uint16_t rset, uint32_t now, int all, uin
 		if (c->ro_budget)
 			c->ro_budget--;
 	}
+	cg_ro_burst_end(&c->rxs.ro);
 }
 
 /* A first copy for WireGuard, payload (len bytes) of DATA h from link,

@@ -997,7 +997,8 @@ static void q_add(struct server *s, int *nq, struct session *S, uint8_t *payload
  * times), queued after what is there: everything with all (a window
  * overflow), else up to the pass's budget; the next pass comes at once for
  * the rest (cg_ro_due_us says 0). rset: the paths the client sends DATA on
- * (expect_mask). */
+ * (expect_mask). A drain the budget cuts ends here for max_burst, which says
+ * what one drain gave WireGuard at once. */
 static void up_drain(struct server *s, int *nq, struct session *S, uint16_t rset, uint32_t now, int all)
 {
 	struct cg_ro_out o;
@@ -1007,6 +1008,7 @@ static void up_drain(struct server *s, int *nq, struct session *S, uint16_t rset
 		if (s->ro_budget)
 			s->ro_budget--;
 	}
+	cg_ro_burst_end(&S->ro);
 }
 
 /* A verified first copy of S's DATA h (payload, len bytes) from path link,

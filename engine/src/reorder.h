@@ -21,10 +21,11 @@
  *   - the first packet starts the window after itself: NOW;
  *   - d == 0, in order: NOW (the common case, a few comparisons);
  *   - d < 0, late: NOW. If its slot still says why its gap was given up,
- *     late.after_<why> and how late in late_by (and the slot is PASSED);
+ *     late.after_<why> and how late in late_by (and the slot is emptied);
  *     else late.old;
  *   - d >= N (CG_RO_SLOTS) with nothing held: resync, the window starts
- *     after it (a server back 2^20 ahead, an outage longer than the window);
+ *     after it (a server back 2^20 ahead, an outage longer than the window)
+ *     and the marks of the old one are emptied;
  *   - N <= d < FAR while holding: AGAIN, nothing taken: the gaps before
  *     seq - N + 1 are forced out; the caller drains (cg_ro_next until 0)
  *     and calls again with the same packet, which is then taken (never a
@@ -44,7 +45,8 @@
  *     that buffers come back.
  *
  * Draining (cg_ro_next) walks from the head: a held packet goes on, a PASSED
- * slot is stepped over, and a gap (a sequence not here) is given up
+ * slot is stepped over (and emptied), and a gap (a sequence not here) is
+ * given up
  *   1. when forced (overflow, pool full): lost.overflow, held or not;
  *   2. never while nothing is held: a gap with nothing behind it costs
  *      nothing;
@@ -56,6 +58,14 @@
  * behind the packet that forced it, whose slot that packet then takes: in a
  * steady overflow (spread x rate above N) the late copies of forced gaps
  * mostly count as late.old, so read late.old next to lost.overflow.
+ *
+ * No slot behind the head says PASSED, and passed_ahead counts exactly the
+ * PASSED slots: every way the head leaves a mark behind (the walk, a gap
+ * given up at a packet's arrival, a late packet, a resync) empties it. The
+ * in-order path never writes a slot, so a slot keeps its sequence until the
+ * head comes round to it 2^32 sequences later (a day or two of one session
+ * at 30-50 kpps), and a stale mark would then step the head over a missing
+ * packet without a wait or a count.
  *
  * Deadline of the head gap, from s, the lowest held packet above it:
  *   C  = max_wait if s is split (CG_F_SPLIT) or a split packet arrived
@@ -86,8 +96,9 @@
  *     (cg_ro_pool_put) once the send that carried them is done, not before:
  *     a later HOLD would take it.
  * After cg_ro_in() (NOW or HOLD) the caller drains: cg_ro_next() until it
- * returns 0 (immediately when nothing is held or marked). cg_ro_due_us()
- * says when the next gap may go: an epoll timeout.
+ * returns 0 (immediately when nothing is held or marked), or until it stops
+ * and calls cg_ro_burst_end(). cg_ro_due_us() says when the next gap may go:
+ * an epoll timeout.
  *
  * Statistics (st): in_order, held_total, bypassed, late_*, far, resyncs and
  * pool_full partition the packets taken (each counts in exactly one);
@@ -95,8 +106,9 @@
  * long each held packet was held) and late_by (arrival minus when its gap
  * was given up) are histograms with inclusive upper edges of 1, 2, 5, 10,
  * 20, 50, 100, 200 and 500 ms and a last bucket above; max_burst is the
- * most held packets one drain handed on (from one cg_ro_next() returning 0
- * to the next).
+ * most held packets one drain handed on. A drain ends when cg_ro_next()
+ * returns 0, or when the caller stops it early (a budget per pass) and says
+ * so with cg_ro_burst_end(); the rest then goes in a later drain of its own.
  *
  * Pure: no clock, no I/O, no log, no allocation (docs/historias/012). The
  * instance is zeroed memory (cg_ro_init or memset); about 81 KiB.
@@ -491,6 +503,34 @@ static inline void cg_ro_pass(struct cg_reorder *r, struct cg_ro_slot *s, uint32
 	r->passed_ahead++;
 }
 
+/* Empties the marks ahead before the window leaves them without stepping
+ * over them (a resync): left there, each would say "handed on" when the head
+ * comes round to its sequence 2^32 later. At most N slots, on a rare event,
+ * and none to look at when there are no marks. */
+static inline void cg_ro_unmark(struct cg_reorder *r)
+{
+	for (uint32_t g = r->head; r->passed_ahead && g != r->head + CG_RO_SLOTS; g++) {
+		struct cg_ro_slot *s = &r->slot[g % CG_RO_SLOTS];
+
+		if (s->seq == g && s->state == CG_RO_PASSED) {
+			s->state = CG_RO_EMPTY;
+			r->passed_ahead--;
+		}
+	}
+	r->passed_ahead = 0;
+}
+
+/* Ends a drain: the held packets it handed on count for max_burst, and the
+ * next drain counts from 0. cg_ro_next() returning 0 ends one; a caller that
+ * stops before that (a budget per pass) calls this, or the rest, handed on
+ * in later passes, would count as the same drain. */
+static inline void cg_ro_burst_end(struct cg_reorder *r)
+{
+	if (r->burst > r->st.max_burst)
+		r->st.max_burst = r->burst;
+	r->burst = 0;
+}
+
 static inline enum cg_ro_v cg_ro_late(struct cg_reorder *r, const struct cg_ro_pkt *k)
 {
 	struct cg_ro_slot *s = &r->slot[k->seq % CG_RO_SLOTS];
@@ -506,7 +546,9 @@ static inline enum cg_ro_v cg_ro_late(struct cg_reorder *r, const struct cg_ro_p
 	else
 		r->st.late_overflow++;
 	cg_ro_hist_add(r->st.late_by, k->t_arr, s->t_arr);
-	s->state = CG_RO_PASSED;
+	/* Not PASSED: behind the head a mark would outlive its sequence (see
+	 * the top). EMPTY says as much to a second copy: old. */
+	s->state = CG_RO_EMPTY;
 	return CG_RO_NOW;
 }
 
@@ -524,16 +566,18 @@ static inline int cg_ro_skip(struct cg_reorder *r, const struct cg_ro_cfg *cf, c
 			return 0;
 	}
 	for (uint32_t g = r->head; g != k->seq; g++) {
-		const struct cg_ro_slot *s = &r->slot[g % CG_RO_SLOTS];
+		struct cg_ro_slot *s = &r->slot[g % CG_RO_SLOTS];
 
-		if (s->seq == g && s->state == CG_RO_PASSED)
+		if (s->seq == g && s->state == CG_RO_PASSED) {
+			s->state = CG_RO_EMPTY;
 			r->passed_ahead--;
-		else
+		} else {
 			cg_ro_lose(r, g,
 				   cg_ro_forced(r, g)                   ? CG_RO_LOST_OVF
 				   : rack && (int32_t)(lim - g) > 0 ? CG_RO_LOST_RACK
 									: CG_RO_LOST_CAP,
 				   k->t_arr);
+		}
 	}
 	r->head = k->seq + 1;
 	r->st.in_order++;
@@ -578,8 +622,8 @@ static inline enum cg_ro_v cg_ro_in(struct cg_reorder *r, struct cg_ro_pool *p, 
 			return CG_RO_NOW;
 		}
 		r->st.resyncs++;
+		cg_ro_unmark(r);
 		r->head = k->seq + 1;
-		r->passed_ahead = 0;
 		r->force = 0;
 		return CG_RO_NOW;
 	}
@@ -642,6 +686,7 @@ static inline int cg_ro_next(struct cg_reorder *r, const struct cg_ro_cfg *cf, u
 			return 1;
 		}
 		if (s->seq == g && s->state == CG_RO_PASSED) {
+			s->state = CG_RO_EMPTY;
 			r->passed_ahead--;
 			r->head++;
 			cg_ro_moved(r);
@@ -673,9 +718,7 @@ static inline int cg_ro_next(struct cg_reorder *r, const struct cg_ro_cfg *cf, u
 		r->head++;
 		cg_ro_moved(r);
 	}
-	if (r->burst > r->st.max_burst)
-		r->st.max_burst = r->burst;
-	r->burst = 0;
+	cg_ro_burst_end(r);
 	return 0;
 }
 
@@ -703,7 +746,12 @@ static inline int32_t cg_ro_due_us(const struct cg_reorder *r, const struct cg_r
 /* Everything held, in order (session gone, reorder turned off): 1 with the
  * next in *o, until 0. The gaps before held packets go as lost_flush. Then
  * the window starts again with the next packet (marks ahead and slots are
- * cleared); links and statistics stay. */
+ * cleared). The links' delays and the statistics stay. Their newest
+ * sequences (RACK) and the newest split packet are forgotten: nothing sweeps
+ * them while the window is off, and 2^31 sequences later a link's newest
+ * reads as ahead of any head (RACK would give up every gap at once until the
+ * sequence came round), as the 32-bit clock brings an old split packet back
+ * within max_wait every 72 minutes. */
 static inline int cg_ro_flush(struct cg_reorder *r, struct cg_ro_out *o)
 {
 	if (!r->init)
@@ -731,7 +779,10 @@ static inline int cg_ro_flush(struct cg_reorder *r, struct cg_ro_out *o)
 	r->passed_ahead = 0;
 	r->force = 0;
 	r->force_to = 0;
-	r->burst = 0;
+	r->split_seen = 0;
+	cg_ro_burst_end(r);
+	for (unsigned i = 0; i < CG_MAX_LINKS; i++)
+		r->link[i].hw_ok = 0;
 	memset(r->held_bits, 0, sizeof(r->held_bits));
 	memset(r->slot, 0, sizeof(r->slot));
 	return 0;

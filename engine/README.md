@@ -885,7 +885,10 @@ subida:
 - `wait` (cuánto esperó cada retenido) y `late_by` (cuánto después de
   soltar su hueco llegó cada tardío): histogramas con los bordes de
   `edges_ms`, incluidos, y un último cubo por encima de 500 ms;
-  `max_burst`, la mayor tanda de retenidos entregada de una vez.
+  `max_burst`, la mayor tanda de retenidos entregada de una vez: lo que
+  soltó una sola pasada del bucle, que entrega a lo sumo 512 (el resto va
+  en las pasadas siguientes, cada una con su tanda), salvo cuando la
+  ventana se desborda y sale todo junto.
 Por enlace, `rx_owd_spread_ms` es cuánto va su retraso de llegada (bajada
 en el cliente, subida en el servidor) por detrás del más rápido de los
 enlaces que espera el reordenador (`null` sin medida). Su ventana ocupa
