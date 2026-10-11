@@ -1,9 +1,23 @@
 #!/bin/sh
 # Every router gets a pairing secret of its own on first boot or install.
-[ -n "$(uci -q get cengarde.main.secret)" ] || {
+had_secret=$(uci -q get cengarde.main.secret)
+[ -n "$had_secret" ] || {
 	uci set cengarde.main.secret="$(/usr/sbin/cengarde genkey)"
 	uci commit cengarde
 }
+# 0.5.2: the router's address in the tunnel derives from its secret
+# (tunnel_addr unset). Until then every router used 10.79.0.2, the address
+# its VPS knows: an install that had a secret keeps it, or the tunnel would
+# be cut until the VPS is told. Not when wgcg already has another address,
+# which is how a later upgrade tells a router that chose to derive it.
+if [ -n "$had_secret" ] && [ -z "$(uci -q get cengarde.main.tunnel_addr)" ]; then
+	case "$(uci -q get network.wgcg.addresses)" in
+	'' | 10.79.0.2/30)
+		uci set cengarde.main.tunnel_addr=10.79.0.2
+		uci commit cengarde
+		;;
+	esac
+fi
 # 0.4.2: the VPS address became "list server" (several addresses, in order).
 if uci -q export cengarde | grep -q "^[[:space:]]*option server "; then
 	server=$(uci -q get cengarde.main.server)

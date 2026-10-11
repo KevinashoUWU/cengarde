@@ -14,13 +14,39 @@ const MAX_SERVERS = 8; // the engine's CG_MAX_SERVERS
 // WireGuard headers), 20 + 8 + 24 + 32 over IPv4, 40 + 8 + 24 + 32 over IPv6.
 const MTU_IPV6 = 1396;
 
+// A router's name on the VPS and an address in the tunnel, as the VPS and
+// cengarde-setup take them: cg-NAME has to fit in an interface name, and
+// 10.79.0.1 is the VPS's own.
+function isName(name) {
+	return /^[a-z0-9][a-z0-9-]{0,11}$/.test(name) && name != 'default';
+}
+
+function isTunnelAddr(addr) {
+	const m = /^10\.79\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})$/.exec(addr);
+	const n = m ? +m[1] * 256 + +m[2] : -1;
+
+	return m != null && +m[1] <= 255 && +m[2] <= 255 && n >= 2 && n <= 65534;
+}
+
 // Same substitutions as "cengarde-setup cloud-config", on the values in the
-// form, so the text follows unsaved changes.
-function cloudConfig(template, secret, port, ipPass) {
+// form, so the text follows unsaved changes. Without an address (a new secret
+// that is not saved yet) its placeholder stays, and the VPS derives it.
+function cloudConfig(template, secret, port, ipPass, name, addr) {
 	return template
 		.replace(/^(\s+)REPLACE_SECRET$/m, '$1' + (secret || 'REPLACE_SECRET'))
 		.replace(/^(\s*CENGARDE_PORT=).*$/m, '$1' + (port || '65500'))
-		.replace(/^(\s*PASSTHROUGH=).*$/m, '$1' + (ipPass == '1' ? 'yes' : 'no'));
+		.replace(/^(\s*PASSTHROUGH=).*$/m, '$1' + (ipPass == '1' ? 'yes' : 'no'))
+		.replace(/^(\s*ROUTER_NAME=).*$/m, '$1' + (isName(name) ? name : 'router'))
+		.replace(/^(\s*ROUTER_TUNNEL_ADDR=).*$/m, '$1' + (addr || 'REPLACE_TUNNEL_ADDR'));
+}
+
+function copyField(field) {
+	field.select();
+	if (navigator.clipboard && window.isSecureContext)
+		navigator.clipboard.writeText(field.value);
+	else
+		document.execCommand('copy');
+	ui.addTimeLimitedNotification(null, E('p', _('Copied to the clipboard.')), 3000, 'info');
 }
 
 // The value in the form once it is on the page, the saved one before.
@@ -30,6 +56,12 @@ function value(map, name) {
 	if (found && found[0].getUIElement('main'))
 		return found[0].formvalue('main');
 	return uci.get('cengarde', 'main', name);
+}
+
+// The engine's protocol and the address in the tunnel derived from the saved
+// secret (tunnel_addr_derived), which the browser cannot compute (BLAKE2s).
+function readStatus() {
+	return L.resolveDefault(fs.exec_direct('/usr/sbin/cengarde-setup', [ 'status' ], 'json'), null);
 }
 
 function isIPv6(addr) {
@@ -42,22 +74,61 @@ return view.extend({
 			L.resolveDefault(fs.read(TEMPLATE), ''),
 			L.resolveDefault(uci.load('upnpd'), null),
 			L.resolveDefault(uci.load('network'), null),
-			uci.load('cengarde')
+			uci.load('cengarde'),
+			readStatus()
 		]);
 	},
 
 	render: function(data) {
 		const template = data[0];
 		const hasUpnp = uci.get('upnpd', 'config') != null;
-		let m, s, o, textarea;
+		let status = data[4] || {};
+		let savedSecret = uci.get('cengarde', 'main', 'secret') || '';
+		let m, s, o, textarea, addCommand, addNote;
+
+		const text = function(name) { return String(value(m, name) || '').trim(); };
+
+		// This router's address in the tunnel as the form stands: the one set,
+		// else the one derived from the saved secret; null when it is not known
+		// (a new secret that is not saved yet, or an address that is not valid).
+		const tunnelAddr = function() {
+			const set = text('tunnel_addr');
+
+			if (set)
+				return isTunnelAddr(set) ? set : null;
+			return (status.tunnel_addr_derived && text('secret') == savedSecret) ? status.tunnel_addr_derived : null;
+		};
 
 		const refresh = function() {
 			const on = function(name, dflt) { return (value(m, name) || dflt) == '1'; };
+			const name = text('vps_name') || 'router';
+			const addr = tunnelAddr();
 
 			if (textarea)
 				textarea.value = cloudConfig(template, value(m, 'secret'), value(m, 'port'),
-					on('ip_pass', '0') && on('tunnel', '1') && on('route_all', '1') ? '1' : '0');
+					on('ip_pass', '0') && on('tunnel', '1') && on('route_all', '1') ? '1' : '0', name, addr);
+			if (addCommand) {
+				const ready = addr != null && isName(name);
+
+				addCommand.value = !ready ? '' : 'sudo cengarde-vps-setup add ' + name +
+					' --tunnel-addr ' + addr + (status.protocol ? ' --proto ' + status.protocol : '');
+				addNote.style.display = ready ? 'none' : '';
+			}
 		};
+
+		// A new secret changes the derived address, which only the saved
+		// configuration can tell: ask again once the changes are applied.
+		document.addEventListener('uci-applied', function() {
+			readStatus().then(function(st) {
+				const input = document.getElementById('widget.cbid.cengarde.main.tunnel_addr');
+
+				status = st || {};
+				savedSecret = uci.get('cengarde', 'main', 'secret') || '';
+				if (input)
+					input.placeholder = status.tunnel_addr_derived || '';
+				refresh();
+			});
+		});
 
 		m = new form.Map('cengarde', _('cengarde'),
 			_('Sends every packet of a WireGuard tunnel to a VPS over all the selected uplinks at once, and the first copy to arrive wins: one uplink failing or lagging no longer drops the connection. Setup: copy the cloud-config from the VPS tab when creating the VPS, then enter its IP here, pick the uplinks and enable.'));
@@ -102,7 +173,7 @@ return view.extend({
 		};
 
 		o = s.taboption('vps', form.Value, 'secret', _('Pairing secret'),
-			_('Every key of the tunnel derives from it: the VPS only needs this value, which goes in its cloud-config. A new secret means updating the VPS too.'));
+			_('Every key of the tunnel, and its address unless you set one, derives from it: the VPS only needs this value, which goes in its cloud-config. A new secret means updating the VPS too.'));
 		o.password = true;
 		o.rmempty = false;
 		o.validate = function(section_id, value) {
@@ -131,8 +202,25 @@ return view.extend({
 			]);
 		};
 
+		o = s.taboption('vps', form.Value, 'vps_name', _('Name on the VPS'),
+			_('How a VPS that serves several routers calls this one: 1 to 12 characters of a-z, 0-9 and -, not starting with - and not "default". Each router of a VPS needs its own. Empty: router.'));
+		o.placeholder = 'router';
+		o.onchange = refresh;
+		o.validate = function(section_id, v) {
+			return (!v || isName(v)) ? true :
+				_('1 to 12 characters of a-z, 0-9 and -, not starting with - and not "default"');
+		};
+
+		o = s.taboption('vps', form.Value, 'tunnel_addr', _('Address in the tunnel'),
+			_('The address of this router inside the tunnel, 10.79.X.Y from 10.79.0.2 to 10.79.255.254; each router of a VPS needs its own. Empty: the one derived from the saved secret, which the field shows in grey (after a new secret, save and apply to see it). A router installed before this version keeps 10.79.0.2: changing it means telling the VPS too.'));
+		o.placeholder = status.tunnel_addr_derived || '';
+		o.onchange = refresh;
+		o.validate = function(section_id, v) {
+			return (!v || isTunnelAddr(v)) ? true : _('Expected 10.79.X.Y, from 10.79.0.2 to 10.79.255.254');
+		};
+
 		o = s.taboption('vps', form.DummyValue, '_cloudconfig', _('VPS cloud-config'),
-			_('Paste it as "user data" (cloud-init) when creating an Ubuntu 22.04 or 24.04 VPS, e.g. on Vultr. It builds the same cengarde version as this router and sets up WireGuard, NAT and IP pass. Setup log on the VPS: /var/log/cloud-init-output.log.'));
+			_('For a new VPS. Paste it as "user data" (cloud-init) when creating an Ubuntu 22.04 or 24.04 VPS, e.g. on Vultr. It builds the same cengarde version as this router and sets up WireGuard, NAT and IP pass, with the name and address of this router. Setup log on the VPS: /var/log/cloud-init-output.log.'));
 		o.write = function() {};
 		o.remove = function() {};
 		o.renderWidget = function(section_id) {
@@ -153,12 +241,7 @@ return view.extend({
 						'class': 'cbi-button cbi-button-action',
 						'click': function(ev) {
 							ev.preventDefault();
-							textarea.select();
-							if (navigator.clipboard && window.isSecureContext)
-								navigator.clipboard.writeText(textarea.value);
-							else
-								document.execCommand('copy');
-							ui.addTimeLimitedNotification(null, E('p', _('Copied to the clipboard.')), 3000, 'info');
+							copyField(textarea);
 						}
 					}, [ _('Copy') ]),
 					E('button', {
@@ -178,8 +261,41 @@ return view.extend({
 			]);
 		};
 
+		o = s.taboption('vps', form.DummyValue, '_addcommand', _('This router on a VPS that already serves others'),
+			_('Instead of the cloud-config, run this on the VPS over SSH: it adds this router next to the others, with its own name and address in the tunnel. When it asks, paste the pairing secret shown above: it is never part of the command.'));
+		o.write = function() {};
+		o.remove = function() {};
+		o.renderWidget = function(section_id) {
+			addCommand = E('input', {
+				'class': 'cbi-input-text',
+				'type': 'text',
+				'readonly': 'readonly',
+				'style': 'width:100%;font-family:monospace;font-size:12px',
+				'id': 'cengarde-add-command'
+			});
+			addNote = E('div', { 'class': 'cbi-value-description', 'id': 'cengarde-add-note' }, [
+				_('The command shows once the name and the address in the tunnel are valid and known: after a new secret, save and apply first.')
+			]);
+			refresh();
+
+			return E('div', {}, [
+				addCommand,
+				addNote,
+				E('div', { 'style': 'margin-top:.5em' }, [
+					E('button', {
+						'class': 'cbi-button cbi-button-action',
+						'click': function(ev) {
+							ev.preventDefault();
+							if (addCommand.value)
+								copyField(addCommand);
+						}
+					}, [ _('Copy') ])
+				])
+			]);
+		};
+
 		o = s.taboption('tunnel', form.Flag, 'tunnel', _('Manage the WireGuard tunnel'),
-			_('Creates the interface wgcg (10.79.0.2/30) with the keys derived from the secret, in the wan firewall zone. Off: set up WireGuard yourself, cengarde only listens on 127.0.0.1 at the VPS port.'));
+			_('Creates the interface wgcg with the keys derived from the secret and this router\'s address in the tunnel (VPS tab), in the wan firewall zone. Off: set up WireGuard yourself, cengarde only listens on 127.0.0.1 at the VPS port.'));
 		o.default = '1';
 		o.rmempty = false;
 		o.onchange = refresh;

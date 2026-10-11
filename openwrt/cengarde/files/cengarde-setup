@@ -6,16 +6,22 @@
 #   cengarde-setup apply          WireGuard interface, firewall, uplinks, UPnP
 #   cengarde-setup disable        undo what apply set up
 #   cengarde-setup engine-conf    print the engine configuration
-#   cengarde-setup cloud-config   print the VPS user data, secret filled in
+#   cengarde-setup cloud-config   print the VPS user data, with the secret, the
+#                                 router's name (vps_name) and its tunnel address
 #   cengarde-setup companions     the uplinks' IPv6 interfaces (init triggers)
-#   cengarde-setup status         JSON for LuCI: problems, tunnel, engine
+#   cengarde-setup status         JSON for LuCI: problems, tunnel address and
+#                                 VPS name, tunnel, engine
 #
 # What apply maintains while cengarde is enabled with tunnel = 1, once the
 # VPS addresses and at least one uplink are set (metrics also before that):
-# - network: interface "wgcg" (WireGuard, 10.79.0.2/30) with the keys derived
-#   from the secret, and its peer "cengarde_vps" reached through cengarde on
-#   127.0.0.1; with route_all, 0.0.0.0/1 and 128.0.0.0/1 through it (more
-#   specific than any default route, which the uplinks keep for cengarde);
+# - network: interface "wgcg" (WireGuard) with the keys derived from the
+#   secret and this router's address in the tunnel as a /32 (tunnel_addr, or
+#   the one derived from the secret), and its peer "cengarde_vps" reached
+#   through cengarde on 127.0.0.1; a route to the VPS end of the tunnel,
+#   10.79.0.1, through it, which a /32 has no connected route for; with
+#   route_all, 0.0.0.0/1 and 128.0.0.0/1 through it (more specific than any
+#   default route, which the uplinks keep for cengarde); wgcg is restarted
+#   when its address or its peer change, which netifd may not notice;
 # - each uplink: a metric of its own (two default routes with the same metric
 #   replace each other) and peerdns 0 (carrier DNS servers would be reached
 #   through the VPS and usually refuse); "dns" goes on the tunnel instead,
@@ -48,12 +54,14 @@ set -f
 
 TUN=wgcg
 PEER=cengarde_vps
-TUN_ADDR=10.79.0.2/30
+ROUTE=cengarde_vps_route
+VPS_ADDR=10.79.0.1 # the VPS end of every tunnel
 DEFAULT_DNS="1.1.1.1 9.9.9.9"
 CLOUD_CONFIG=/usr/share/cengarde/cloud-config.yaml
 STATUS_FILE=/var/run/cengarde.json
 CONTROL_SOCKET=/var/run/cengarde/cengarde.sock # cengarde ctl's default
 CHANGED=
+RESTART_TUN=
 
 log() { logger -t cengarde-setup "$*"; }
 
@@ -70,6 +78,29 @@ list_has() {
 is_ipv4() {
 	case "$1" in '' | *[!0-9.]*) return 1 ;; esac
 	return 0
+}
+
+# A router's name on the VPS, as the VPS takes it: cg-NAME has to fit in an
+# interface name.
+valid_name() {
+	case "$1" in '' | default | -* | *[!a-z0-9-]*) return 1 ;; esac
+	[ "${#1}" -le 12 ]
+}
+
+# An address in the tunnel: 10.79.X.Y from 10.79.0.2 to 10.79.255.254 (10.79.0.1
+# is the VPS's), without leading zeros.
+valid_addr() {
+	local x y
+
+	case "$1" in 10.79.*.*) ;; *) return 1 ;; esac
+	x=${1#10.79.}
+	y=${x#*.}
+	x=${x%%.*}
+	case "$x$y" in *[!0-9]*) return 1 ;; esac
+	case "$x" in '' | 0?*) return 1 ;; esac
+	case "$y" in '' | 0?*) return 1 ;; esac
+	[ "${#x}" -le 3 ] && [ "${#y}" -le 3 ] && [ "$x" -le 255 ] && [ "$y" -le 255 ] || return 1
+	[ $((x * 256 + y)) -ge 2 ] && [ $((x * 256 + y)) -le 65534 ]
 }
 
 changed() { list_has "$CHANGED" "$1" || CHANGED="$CHANGED $1"; }
@@ -113,6 +144,8 @@ load() {
 	config_get STUN_HOST main stun_host
 	config_get STUN_PORT main stun_port
 	config_get SECRET main secret
+	config_get VPS_NAME main vps_name router
+	config_get TUNNEL_ADDR main tunnel_addr
 	config_get SERVER main server # a list since 0.4.2; an option still works
 	config_get PORT main port 65500
 	config_get MTU main mtu 1380
@@ -130,6 +163,19 @@ derive_keys() {
 	[ -n "$SECRET" ] || return 1
 	keys=$(printf '%s\n' "$SECRET" | cengarde keys) || return 1
 	eval "$keys"
+}
+
+# ADDR: this router's address in the tunnel, tunnel_addr or else the one
+# derived from the secret (after derive_keys). Fails, with ADDR empty, when
+# tunnel_addr is not a valid address.
+pick_addr() {
+	ADDR=
+	if [ -n "$TUNNEL_ADDR" ]; then
+		valid_addr "$TUNNEL_ADDR" && ADDR=$TUNNEL_ADDR
+	else
+		valid_addr "$CG_TUNNEL_ADDR" && ADDR=$CG_TUNNEL_ADDR
+	fi
+	[ -n "$ADDR" ]
 }
 
 # The first IPv4 among the VPS addresses.
@@ -479,19 +525,30 @@ fix_upnp() { # on|off
 	fi
 }
 
+# What netifd leaves as it is when it changes: reloading the network
+# configuration restarts wgcg for its keys, MTU and (25.12) addresses, but an
+# older wireguard.sh keeps the addresses it set up, and none looks at the
+# peer's routes, port or keys. commit restarts wgcg when this changed.
+tun_state() {
+	uci -q get "network.$TUN.addresses"
+	uci -q show "network.$PEER"
+}
+
 fix_tunnel() { # on|off
-	local pub
+	local pub before
 
 	if [ "$1" = off ]; then
 		drop "network.$PEER"
+		drop "network.$ROUTE"
 		drop "network.$TUN"
 		return 0
 	fi
 	pub=$(printf '%s\n' "$CG_WG_SERVER_KEY" | wg pubkey) || return 1
+	before=$(tun_state)
 	want "network.$TUN" interface
 	want "network.$TUN.proto" wireguard
 	want "network.$TUN.private_key" "$CG_WG_CLIENT_KEY"
-	want_list "network.$TUN.addresses" "$TUN_ADDR"
+	want_list "network.$TUN.addresses" "$ADDR/32"
 	want "network.$TUN.mtu" "$MTU"
 	want "network.$TUN.nohostroute" 1
 	want_list "network.$TUN.dns" "$(dns4)"
@@ -504,6 +561,16 @@ fix_tunnel() { # on|off
 	want "network.$PEER.persistent_keepalive" 25
 	want "network.$PEER.route_allowed_ips" "$ROUTE_ALL"
 	want_list "network.$PEER.allowed_ips" "0.0.0.0/1 128.0.0.0/1"
+	# A /32 has no connected route: the VPS end, reached with or without
+	# route_all, gets one.
+	want "network.$ROUTE" route
+	want "network.$ROUTE.interface" "$TUN"
+	want "network.$ROUTE.target" "$VPS_ADDR/32"
+	# A tunnel that is new is set up as it is.
+	if [ -n "$before" ] && [ "$before" != "$(tun_state)" ]; then
+		RESTART_TUN=1
+	fi
+	return 0
 }
 
 commit() {
@@ -515,6 +582,11 @@ commit() {
 	[ -n "$CHANGED" ] || return 0
 	log "updated:$CHANGED"
 	list_has "$CHANGED" network && ubus call network reload
+	if [ -n "$RESTART_TUN" ]; then
+		log "restarting $TUN: its address or its peer changed"
+		ifdown "$TUN"
+		ifup "$TUN"
+	fi
 	list_has "$CHANGED" firewall && /etc/init.d/firewall reload >/dev/null 2>&1
 	list_has "$CHANGED" upnpd && /etc/init.d/miniupnpd restart >/dev/null 2>&1
 	return 0
@@ -527,6 +599,10 @@ apply() {
 	if [ "$ENABLED" = 1 ] && [ "$TUNNEL" = 1 ]; then
 		if ! derive_keys; then
 			log "no valid secret: set one in LuCI or with uci set cengarde.main.secret=\$(cengarde genkey)"
+			return 1
+		fi
+		if ! pick_addr; then
+			log "tunnel_addr $TUNNEL_ADDR is not 10.79.X.Y from 10.79.0.2 to 10.79.255.254: tunnel left as it was"
 			return 1
 		fi
 		# Without them the tunnel would take every route and lead nowhere.
@@ -607,9 +683,14 @@ engine_conf() {
 cloud_config() {
 	load
 	[ -n "$SECRET" ] || die "no secret yet"
+	derive_keys || die "no valid secret (uci get cengarde.main.secret)"
+	valid_name "$VPS_NAME" || die "vps_name $VPS_NAME: 1 to 12 of a-z, 0-9 and -, not starting with -, and not \"default\""
+	pick_addr || die "tunnel_addr $TUNNEL_ADDR: expected 10.79.X.Y, from 10.79.0.2 to 10.79.255.254"
 	sed -e "s|^\( *\)REPLACE_SECRET\$|\1$SECRET|" \
 		-e "s|^\( *CENGARDE_PORT=\).*|\1$PORT|" \
-		-e "s|^\( *PASSTHROUGH=\).*|\1$PASS|" "$CLOUD_CONFIG"
+		-e "s|^\( *PASSTHROUGH=\).*|\1$PASS|" \
+		-e "s|^\( *ROUTER_NAME=\).*|\1$VPS_NAME|" \
+		-e "s|^\( *ROUTER_TUNNEL_ADDR=\).*|\1$ADDR|" "$CLOUD_CONFIG"
 }
 
 # Every IPv6 interface of the uplinks, for the init script's triggers: the
@@ -701,12 +782,26 @@ engine_problems() { # STATUS_JSON
 
 # Everything LuCI's status page needs in one call.
 status() {
-	local s running=false hs=0 rx=0 tx=0 now up line engine=null proto p
+	local s running=false hs=0 rx=0 tx=0 now up line engine=null proto p addr=null derived=null name=null have=0
 
 	load
 	PROBLEMS=
+	# The address and the name LuCI puts in the VPS's cloud-config and in its
+	# "add" command: the browser cannot derive the address from the secret.
+	# Besides the one in use, the derived one, which an empty tunnel_addr in
+	# the form means.
+	if derive_keys; then
+		have=1
+		valid_addr "$CG_TUNNEL_ADDR" && derived="\"$CG_TUNNEL_ADDR\""
+		if pick_addr; then
+			addr="\"$ADDR\""
+		elif [ "$ENABLED" = 1 ]; then
+			problem tunnel_addr_invalid
+		fi
+	fi
+	valid_name "$VPS_NAME" && name="\"$VPS_NAME\""
 	if [ "$ENABLED" = 1 ]; then
-		derive_keys || problem no_secret
+		[ "$have" = 1 ] || problem no_secret
 		[ -n "$SERVER" ] || problem no_server
 		[ -n "$UPLINKS" ] || problem no_uplinks
 		for s in $UPLINKS; do
@@ -753,8 +848,8 @@ status() {
 		engine_problems "$engine"
 	fi
 	proto=$(cengarde version 2>/dev/null | sed -n 's/.*(protocol \([0-9]*\)).*/\1/p')
-	printf '{"enabled":%s,"running":%s,"protocol":%s,"problems":[%s],"tunnel":{"handshake":%s,"now":%s,"uptime":%s,"rx_bytes":%s,"tx_bytes":%s},"engine":%s}\n' \
-		"$([ "$ENABLED" = 1 ] && echo true || echo false)" "$running" "${proto:-null}" "$PROBLEMS" \
+	printf '{"enabled":%s,"running":%s,"protocol":%s,"tunnel_addr":%s,"tunnel_addr_derived":%s,"vps_name":%s,"problems":[%s],"tunnel":{"handshake":%s,"now":%s,"uptime":%s,"rx_bytes":%s,"tx_bytes":%s},"engine":%s}\n' \
+		"$([ "$ENABLED" = 1 ] && echo true || echo false)" "$running" "${proto:-null}" "$addr" "$derived" "$name" "$PROBLEMS" \
 		"$hs" "$now" "${up:-0}" "$rx" "$tx" "$engine"
 }
 

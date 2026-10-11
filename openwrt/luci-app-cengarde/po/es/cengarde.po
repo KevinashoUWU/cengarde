@@ -3,6 +3,9 @@ msgstr ""
 "Language: es\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 
+msgid "Copied to the clipboard."
+msgstr "Copiado al portapapeles."
+
 msgid "cengarde"
 msgstr "cengarde"
 
@@ -48,8 +51,8 @@ msgstr "Las interfaces que se suman: una por módem o VLAN, cada una con su prop
 msgid "Pairing secret"
 msgstr "Secreto de emparejamiento"
 
-msgid "Every key of the tunnel derives from it: the VPS only needs this value, which goes in its cloud-config. A new secret means updating the VPS too."
-msgstr "Todas las claves del túnel salen de él: el VPS solo necesita este valor, que va en su cloud-config. Un secreto nuevo obliga a actualizar también el VPS."
+msgid "Every key of the tunnel, and its address unless you set one, derives from it: the VPS only needs this value, which goes in its cloud-config. A new secret means updating the VPS too."
+msgstr "Todas las claves del túnel, y su dirección si no fijas una, salen de él: el VPS solo necesita este valor, que va en su cloud-config. Un secreto nuevo obliga a actualizar también el VPS."
 
 msgid "Expected the output of \"cengarde genkey\" (44 characters)"
 msgstr "Se espera la salida de \"cengarde genkey\" (44 caracteres)"
@@ -60,14 +63,29 @@ msgstr "Un VPS configurado con el secreto actual dejará de funcionar hasta que 
 msgid "Generate"
 msgstr "Generar"
 
+msgid "Name on the VPS"
+msgstr "Nombre en el VPS"
+
+msgid "How a VPS that serves several routers calls this one: 1 to 12 characters of a-z, 0-9 and -, not starting with - and not \"default\". Each router of a VPS needs its own. Empty: router."
+msgstr "Cómo llama a este router un VPS que atiende a varios: de 1 a 12 caracteres entre a-z, 0-9 y -, sin empezar por - y distinto de \"default\". Cada router de un VPS necesita el suyo. Vacío: router."
+
+msgid "1 to 12 characters of a-z, 0-9 and -, not starting with - and not \"default\""
+msgstr "De 1 a 12 caracteres entre a-z, 0-9 y -, sin empezar por - y distinto de \"default\""
+
+msgid "Address in the tunnel"
+msgstr "Dirección en el túnel"
+
+msgid "The address of this router inside the tunnel, 10.79.X.Y from 10.79.0.2 to 10.79.255.254; each router of a VPS needs its own. Empty: the one derived from the saved secret, which the field shows in grey (after a new secret, save and apply to see it). A router installed before this version keeps 10.79.0.2: changing it means telling the VPS too."
+msgstr "La dirección de este router dentro del túnel, 10.79.X.Y de 10.79.0.2 a 10.79.255.254; cada router de un VPS necesita la suya. Vacío: la derivada del secreto guardado, que el campo muestra en gris (tras un secreto nuevo, guarda y aplica para verla). Un router instalado antes de esta versión conserva 10.79.0.2: cambiarla obliga a avisar también al VPS."
+
+msgid "Expected 10.79.X.Y, from 10.79.0.2 to 10.79.255.254"
+msgstr "Se espera 10.79.X.Y, de 10.79.0.2 a 10.79.255.254"
+
 msgid "VPS cloud-config"
 msgstr "Cloud-config del VPS"
 
-msgid "Paste it as \"user data\" (cloud-init) when creating an Ubuntu 22.04 or 24.04 VPS, e.g. on Vultr. It builds the same cengarde version as this router and sets up WireGuard, NAT and IP pass. Setup log on the VPS: /var/log/cloud-init-output.log."
-msgstr "Pégalo como \"user data\" (cloud-init) al crear un VPS con Ubuntu 22.04 o 24.04, por ejemplo en Vultr. Compila la misma versión de cengarde que este router y configura WireGuard, NAT e IP pass. Registro de la instalación en el VPS: /var/log/cloud-init-output.log."
-
-msgid "Copied to the clipboard."
-msgstr "Copiado al portapapeles."
+msgid "For a new VPS. Paste it as \"user data\" (cloud-init) when creating an Ubuntu 22.04 or 24.04 VPS, e.g. on Vultr. It builds the same cengarde version as this router and sets up WireGuard, NAT and IP pass, with the name and address of this router. Setup log on the VPS: /var/log/cloud-init-output.log."
+msgstr "Para un VPS nuevo. Pégalo como \"user data\" (cloud-init) al crear un VPS con Ubuntu 22.04 o 24.04, por ejemplo en Vultr. Compila la misma versión de cengarde que este router y configura WireGuard, NAT e IP pass, con el nombre y la dirección de este router. Registro de la instalación en el VPS: /var/log/cloud-init-output.log."
 
 msgid "Copy"
 msgstr "Copiar"
@@ -75,11 +93,20 @@ msgstr "Copiar"
 msgid "Download"
 msgstr "Descargar"
 
+msgid "This router on a VPS that already serves others"
+msgstr "Este router en un VPS que ya atiende a otros"
+
+msgid "Instead of the cloud-config, run this on the VPS over SSH: it adds this router next to the others, with its own name and address in the tunnel. When it asks, paste the pairing secret shown above: it is never part of the command."
+msgstr "En lugar del cloud-config, ejecuta esto en el VPS por SSH: agrega este router junto a los demás, con su propio nombre y dirección en el túnel. Cuando lo pida, pega el secreto de emparejamiento de arriba: nunca va en el comando."
+
+msgid "The command shows once the name and the address in the tunnel are valid and known: after a new secret, save and apply first."
+msgstr "El comando aparece cuando el nombre y la dirección en el túnel son válidos y se conocen: tras un secreto nuevo, guarda y aplica primero."
+
 msgid "Manage the WireGuard tunnel"
 msgstr "Gestionar el túnel WireGuard"
 
-msgid "Creates the interface wgcg (10.79.0.2/30) with the keys derived from the secret, in the wan firewall zone. Off: set up WireGuard yourself, cengarde only listens on 127.0.0.1 at the VPS port."
-msgstr "Crea la interfaz wgcg (10.79.0.2/30) con las claves derivadas del secreto, en la zona wan del cortafuegos. Desactivado: configuras WireGuard tú, y cengarde solo escucha en 127.0.0.1 en el puerto del VPS."
+msgid "Creates the interface wgcg with the keys derived from the secret and this router's address in the tunnel (VPS tab), in the wan firewall zone. Off: set up WireGuard yourself, cengarde only listens on 127.0.0.1 at the VPS port."
+msgstr "Crea la interfaz wgcg con las claves derivadas del secreto y la dirección de este router en el túnel (pestaña VPS), en la zona wan del cortafuegos. Desactivado: configuras WireGuard tú, y cengarde solo escucha en 127.0.0.1 en el puerto del VPS."
 
 msgid "Route all traffic through the tunnel"
 msgstr "Enrutar todo el tráfico por el túnel"
@@ -197,6 +224,9 @@ msgstr "Depuración"
 
 msgid "No valid pairing secret: generate one in the VPS tab."
 msgstr "No hay un secreto de emparejamiento válido: genera uno en la pestaña VPS."
+
+msgid "The address in the tunnel is not valid (10.79.X.Y, from 10.79.0.2 to 10.79.255.254): the tunnel is left as it was. Fix it in the VPS tab, or empty it to use the one derived from the secret."
+msgstr "La dirección en el túnel no es válida (10.79.X.Y, de 10.79.0.2 a 10.79.255.254): el túnel queda como estaba. Corrígela en la pestaña VPS, o vacíala para usar la derivada del secreto."
 
 msgid "No VPS address yet."
 msgstr "Falta la dirección del VPS."
