@@ -39,6 +39,9 @@ function splitWeight(entry) {
 // Whether an entry can go in the list of split weights (true), or why not: it
 // has the form above, its uplink is one of the uplinks of the router, and the
 // others (the entries already in the list) give that uplink no weight yet.
+// The list's value holds the entry being typed too once it is valid (LuCI's
+// DynamicList adds the pending input to getValue()), so an entry equal to it
+// is that entry, not another one: LuCI never lists the same entry twice.
 function checkSplitWeight(entry, uplinks, others) {
 	const w = splitWeight(entry);
 
@@ -46,7 +49,7 @@ function checkSplitWeight(entry, uplinks, others) {
 		return _('Expected NAME=WEIGHT, with a weight from 0 to 1000');
 	if (uplinks.indexOf(w.uplink) < 0)
 		return _('%s is not one of the uplinks (General tab)').format(w.uplink);
-	if (others.some(function(e) { const o = splitWeight(e); return o != null && o.uplink == w.uplink; }))
+	if (others.some(function(e) { const o = e !== entry ? splitWeight(e) : null; return o != null && o.uplink == w.uplink; }))
 		return _('%s already has a weight').format(w.uplink);
 	return true;
 }

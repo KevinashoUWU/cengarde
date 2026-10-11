@@ -146,6 +146,11 @@ for (const [lang, tr] of [ [ 'en', english ], [ 'es', spanish ] ]) {
 		'wan = 3', ' wan=3', 'wan=3 ', 'wan=3=4', 'wan:3', 'WAN=3', 'lte=3', 'up1=3' ])
 		assert.notEqual(check(bad), true, `${bad} is refused`);
 	assert.notEqual(check('wan=2', [ 'wan=3' ]), true, 'an uplink with a weight already is refused');
+	// LuCI's DynamicList puts the valid entry being typed in its own value: it
+	// is not another entry for the same uplink
+	assert.equal(check('wan=2', [ 'wan=2' ]), true, 'the entry being typed is not counted twice');
+	assert.equal(check('wan=0', [ 'lte2=3', 'wan=0' ]), true, 'nor with others listed');
+	assert.notEqual(check('wan=2', [ 'wan=3', 'wan=2' ]), true, 'another entry of the same uplink still is');
 	assert.equal(check('lte2=2', [ 'wan=3' ]), true, 'another uplink is taken');
 	assert.equal(check('wan=2', [ 'lte2=3' ]), true);
 	// the message says what to fix
