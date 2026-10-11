@@ -1,0 +1,4 @@
+# run directories and key files never go in the repository
+runs/
+stream-runs/
+*.key
