@@ -10,7 +10,7 @@
 ## TL;DR
 
 - **Hoy no hay nada roto:** esto es el plan del bonding futuro. La redundancia pura sigue igual.
-- **Primero el laboratorio:** los objetivos de la Fase 5 (≥ 1,8× con 2 enlaces iguales, FEC ≤ 1,34×) solo se pueden medir con TCP y QUIC reales dentro de WireGuard, sobre netem por enlace. Ya está `bench/lab.sh bond` (iperf3 con Cubic y BBR, y QUIC con aioquic), y su línea base dice que la redundancia de hoy entrega lo del mejor enlace y esconde el spread, la muerte de un enlace y los picos.
+- **Primero el laboratorio:** los objetivos de la Fase 5 (≥ 1,8× con 2 enlaces iguales, FEC ≤ 1,34×) solo se pueden medir con TCP y QUIC reales dentro de WireGuard, sobre netem por enlace. Ya está `bench/lab.sh bond` (iperf3 con Cubic y BBR, y QUIC con aioquic), y su línea base dice que la redundancia de hoy entrega lo del mejor enlace y esconde el spread, la muerte de un enlace y los picos. Con 10 repeticiones, `equal` es estable, pero `reorder150` (Cubic) y `starlink15` (BBR) tienen dos modos: una corrida no basta para comparar.
 - **Las retransmisiones de `starlink15` son pérdidas en los cortes, no desorden** [medido, 2026-10-11]: el 93–99 % son paquetes perdidos por todos los enlaces cuando, en cada corte de 1,5 s, el flujo de 80–90 Mbit/s cae sobre el enlace de 50 Mbit/s y su cola de 100 ms. Con dos enlaces FIFO, la redundancia no desordena. Lo que sí desordena, y es para el reordenador del paso 1, es la vuelta tras un corte: el enlace 5 ms más rápido adelanta a lo que fue solo por el otro.
 - **Sin reordenador no se puede repartir:** RACK, el QUIC de Chrome y Windows confunden un spread de 50–150 ms con pérdidas. El reordenador va sobre la **secuencia autenticada de cengarde** (32 bits, bajo el MAC), no sobre el contador de WireGuard como decía el ROADMAP.
 - **En bonding un enlace caído pierde su parte:** el mudo de 1–1,5 s sirve para redundancia, no para repartir. Hace falta una exclusión rápida (~200–300 ms, el contador de entregas verificadas no avanza) separada del mudo, y control de cola (un AQM virtual en `cg_sched_mask`).
@@ -176,6 +176,52 @@ base: `equal` 43,1–44,3 Mbit/s frente a 43,5, y `starlink15` Cubic de subida
   corte. `starlink15sw` (opcional, capacidades cambiadas) separa eso del
   efecto del cambio de camino.
 
+### Medidas con dispersión (2026-10-11) [medido]
+
+Fuente: `bond.yml` por `workflow_dispatch` (run 38159667834, commit
+`1d94ddf`), 10 repeticiones de `equal`, `reorder150` y `starlink15` con
+WireGuard del kernel y netem en un runner compartido; 10 s por corrida (31 s
+en `starlink15`), 66 min en total. Mediana (p25–p75), de subida salvo que se
+diga otra cosa.
+
+| Caso | cc | Mbit/s | Retransm. | Espurias (QUIC) | RTT p50 (ms) |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `equal` | Cubic | 43,5 (43,5–43,5) | 32 (30–33) | | 109 (108–109) |
+| `equal` | BBR | 43,3 (43,3–43,4) | 91 (91–92) | | 52 (52–52) |
+| `equal` | QUIC | 43,3 (43,3–43,3) | 74 (69–78) | 0 (0–0) | 105 (104–105) |
+| `equal`, un enlace solo | Cubic | 43,5 (43,5–43,5) | 32 (32–34) | | 109 (108–109) |
+| `reorder150` | Cubic | 43,8 (43,6–43,9) | 139 (30–383) | | 92 (79–104) |
+| `reorder150` | BBR | 43,8 (43,8–43,8) | 0 (0–0) | | 42,5 (42,3–43,1) |
+| `reorder150` | QUIC | 43,5 (43,5–43,5) | 13 (8–15) | 2 (1–4) | 100 (99–115) |
+| `starlink15` | Cubic | 80,5 (80,5–80,6) | 1255 (1238–1262) | | 98,5 (98,4–98,6) |
+| `starlink15` | BBR | 63,5 (63,4–76,1) | 1057 (1024–2196) | | 51 (51–69) |
+| `starlink15`, bajada | BBR | 79,4 (63,5–80,1) | 2871 (1050–3181) | | 73,5 (51–75) |
+| `starlink15` | QUIC | 66,5 (66,2–66,7) | 1122 (1098–1148) | 376 (362–388) | 76,3 (76,3–76,5) |
+
+- **`equal` es estable:** el p25–p75 del goodput cabe en 0,1 Mbit/s, y la
+  redundancia y un enlace solo dan lo mismo con los tres controles de
+  congestión. La vara de ≥ 1,8× (≥ 78 Mbit/s) no tiene ambigüedad.
+- **Dos casos tienen dos modos, no ruido:**
+  - `reorder150` con Cubic: o unas 30 retransmisiones con un RTT p50 de
+    104 ms, o 247–395 con 79 ms (5 de 10 corridas de subida y 3 de 10 de
+    bajada), con el mismo goodput. QUIC también se parte en el RTT (98–101
+    frente a 119–120 ms).
+  - `starlink15` con BBR: o ~63,5 Mbit/s con 970–1380 retransmisiones y
+    51 ms, o ~80 Mbit/s con 2470–3350 y 73–75 ms (3 de 10 de subida, 6 de 10 de
+    bajada). Cubic, en cambio, repite 80,5 Mbit/s y 1208–1466 retransmisiones en las 20.
+  - La línea base de una corrida (arriba) cayó en el modo bajo de
+    `reorder150` (31) y en el alto de `starlink15` con BBR (80,5 Mbit/s y
+    2804): ninguna de las dos es «el» valor. Por qué una corrida cae en un
+    modo u otro no está medido [MEDIR: `lost_all` y la tardanza conjunta por
+    corrida, que en corridas de 10 s todavía no sirven].
+- **Para los criterios de salida:** comparar el paso 1 o el 3 con esto pide
+  10 corridas de cada lado y contar cuántas caen en cada modo (o una prueba
+  de rangos), no la mediana sola ni una corrida.
+- **QUIC en `starlink15`:** un tercio de las pérdidas que declara son
+  espurias (376 de 1122 de subida, 392 de 1148 de bajada), estable de corrida
+  a corrida; en `equal` no hay espurias y en `reorder150`, 0–5. Su goodput
+  (66 Mbit/s) queda bajo el de Cubic.
+
 ### Instrumentos pasivos del motor (paso 0, 2026-10-11)
 
 Solo miden: ninguna decisión los lee (las copias tardías no pasan por el
@@ -254,7 +300,7 @@ Los umbrales son propuestas [razonado] y se miden en `bench/`.
   - ~~n ≥ 10 con dispersión~~ (hecho: la tabla da mediana y p25–p75; `workflow_dispatch` con `repetitions`, y la corrida de 10 queda en la sección «Medidas con dispersión»);
   - ~~los instrumentos pasivos: tardanza contra plazo, histograma de tamaños~~ (hecho, abajo);
   - ~~comprobar por qué `starlink15` retransmite tanto~~ (hecho: pérdida en los cortes, arriba);
-  - una semana de la Pi con `cengarde-rec` (guía de OpenWrt) y su informe de `bench/fieldrec.py`, que ahora también da la tardanza conjunta;
+  - una semana de la Pi con `cengarde-rec` (guía de OpenWrt) y su informe de `bench/fieldrec.py`, que ahora también da la tardanza conjunta y, con `--rf`, cruza los enlaces con las métricas de radio que `cell-monitor` (SmoothStream) deja en InfluxDB: si los cortes y silenciados coinciden con cambios de RAT, banda o celda más que al azar, y si el SINR cae antes;
   - `lost_all` por corrida en `bond.sh`: el contador va ~8200 secuencias detrás de la ventana, así que en corridas cortas le pasa a la siguiente las pérdidas del final; sirve en los intervalos largos del registrador.
 - Medir lo marcado [MEDIR] y [supuesto] antes de fijar umbrales: el patrón de 15 s de Starlink en Chile, la correlación entre operadores en Santiago, si el TOS del datagrama de WireGuard llega a cengarde por loopback, y la tolerancia al desorden de iOS/macOS.
 - Definir los campos del informe por enlace, al final de la carga de las sondas v4 (el formato ya les deja lugar).
@@ -265,3 +311,4 @@ Los umbrales son propuestas [razonado] y se miden en `bench/`.
 - 2026-10-10: el formato v4 (PR 3d2a) trae lo reservado para el bonding.
 - 2026-10-10: paso 0 en parte. `bench/lab.sh bond` y `bond.yml`, con la línea base de arriba. El registrador de campo: `cengarde-rec` en el paquete de OpenWrt, `bench/fieldrec.py` con su prueba y `lab.d/fieldrec.sh`, y `time_ms` en el estado del motor.
 - 2026-10-11: paso 0 hecho salvo los datos de campo (PR 6, paquetes 0.5.5): QUIC y dispersión en `bond`, los instrumentos pasivos del motor y su análisis en `fieldrec.py`. Corregida la explicación de `starlink15` (era [razonado]): son pérdidas en los cortes, no desorden.
+- 2026-10-11: la corrida de 10 repeticiones («Medidas con dispersión»: dos modos en `reorder150` con Cubic y en `starlink15` con BBR) y `fieldrec.py --rf`, con las métricas de radio de `cell-monitor`.
