@@ -243,7 +243,9 @@ resolver = 192.168.8.1
   a preguntar (cada 5 s, doblando hasta 60 s; antes de la primera respuesta,
   desde 1 s hasta 15 s). Una respuesta vacía (NXDOMAIN, o sin registros de
   la familia) solo quita direcciones si el servidor ya no contesta en ellas:
-  un DNS que falla nunca corta un túnel que funciona.
+  un DNS que falla nunca corta un túnel que funciona. Un nombre que se
+  queda sin ninguna dirección vuelve a preguntarse cada 15 s, no a los
+  5 min de una respuesta vacía.
 - **Cuando cambian las direcciones:** como una recarga que edita esa
   entrada, los enlaces cuya lista cambió vuelven a la primera dirección; un
   enlace que sigue en la misma conserva su socket. Las direcciones de un
@@ -255,11 +257,16 @@ resolver = 192.168.8.1
 - **`/etc/hosts` primero:** un nombre que está ahí toma esas direcciones al
   leer el archivo y nunca se consulta (`localhost`, o un nombre fijado a
   mano).
-- **El corte cuando cambia la IP:** la detección de los enlaces (un segundo
-  con tráfico, unos tres sin él), más 2 s, más una consulta; y antes, lo que
-  tarden el DNS dinámico en publicar la IP nueva y los DNS de la operadora en
-  olvidar la vieja (su TTL: conviene uno corto, 60 s). El escenario `names`
-  del laboratorio lo mide sin cachés (ver abajo).
+- **El corte cuando cambia la IP:** la detección de los enlaces, más 2 s,
+  más una consulta; y antes, lo que tarden el DNS dinámico en publicar la IP
+  nueva y los DNS de la operadora en olvidar la vieja (su TTL: conviene uno
+  corto, 60 s). En el laboratorio, sin cachés y a 1000 pps
+  (`sudo bench/lab.sh names`): todos los enlaces vivos en la dirección nueva
+  3,3 s después de borrar la vieja (1,1 s de detección), dos veces
+  seguidas; 40 s con el DNS caído no pierden ni un paquete; con TTL 0
+  pregunta cada 30 s; un NXDOMAIN con el servidor vivo no cambia nada; y un
+  nombre que se quedó sin dirección vuelve 16 s después de que vuelve su
+  registro.
 - **Seguridad:** sin DNSSEC. Cada intento usa un socket nuevo, conectado al
   DNS, con puerto e id al azar; una respuesta falsa solo puede mandar el
   túnel a una dirección que no tiene la clave, que no contesta, y el nombre

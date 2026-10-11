@@ -283,7 +283,7 @@ enlace, a los DNS de su operadora, nunca por el túnel), y cada 15 s
 mientras no haya respuesta; en cuanto el DNS da la IP nueva, todos los
 enlaces se mudan. El corte es lo que tarde tu DNS dinámico en publicar la IP
 nueva y los DNS en olvidar la vieja (el TTL), más unos segundos: en el
-laboratorio, sin cachés, se mide en el escenario `names`. El estado muestra el nombre, su IP y
+laboratorio, sin cachés, 3,3 s. El estado muestra el nombre, su IP y
 hace cuánto respondió el DNS, o el problema si no resuelve.
 
 **IP pass con un nombre:** UPnP necesita saber la IP pública y un nombre no
