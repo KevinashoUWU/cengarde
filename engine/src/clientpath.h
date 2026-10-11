@@ -22,7 +22,11 @@
  *   8. a probe reply goes back to the caller (it updates the link's health);
  *      DATA is the first copy, noted in the arrival ring, for WireGuard.
  * A server that restarted needs no window reset here: it goes on past what
- * the probes say we received (cg_probe_info).
+ * the probes say we received (cg_probe_info), and the reorderer takes its
+ * 2^20 leap as a far packet, then resyncs (reorder.h).
+ * What a DATA verdict hands on goes through the reorderer (reorder.h,
+ * client.c's down_deliver) before WireGuard; it lives here, with the window,
+ * because it has the same one owner.
  * cg_up_header() writes the header of one packet that goes up: the next
  * sequence of its class and the MAC, computed once (the link byte is patched
  * per link, outside the MAC).
@@ -40,6 +44,7 @@
 #include "arrival.h"
 #include "epoch.h"
 #include "proto.h"
+#include "reorder.h"
 #include "replay.h"
 
 /* A link as the download sees it. */
@@ -63,6 +68,7 @@ struct cg_rxs {
 	struct cg_arrivals arr;  /* by link, and joint lateness (the status's joint) */
 	struct cg_link_rx rx[CG_MAX_LINKS];
 	uint64_t malformed, foreign, auth_fail, old, dups, trunc, stale_gen, hellos, hellos_stale;
+	struct cg_reorder ro; /* the first copies, back in sequence (reorder.h); about 81 KiB */
 };
 
 enum cg_rxv {

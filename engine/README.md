@@ -387,9 +387,10 @@ perder un paquete del túnel y vuelve, sin recaer, cuando se le quita
 ## Reordenamiento y reparto (`reorder`, `split`)
 
 Las perillas del bonding (historia
-[012](../docs/historias/012-bonding.md)). **Hoy solo se leen y se validan:**
-el reordenador y el reparto se conectan en los pasos siguientes del plan, y
-hasta entonces no cambian nada de lo que hace el motor.
+[012](../docs/historias/012-bonding.md)). **El cliente ya reordena la
+bajada;** la subida en el servidor y el reparto se conectan en los pasos
+siguientes del plan. Con redundancia pura y los valores por omisión no
+retiene nada: el orden de entrega es el de siempre.
 
 - **`reorder` (`yes`), en los dos extremos:** el receptor pone en secuencia
   los datos verificados del otro extremo antes de entregarlos a WireGuard.
@@ -403,8 +404,15 @@ hasta entonces no cambian nada de lo que hace el motor.
   WireGuard de hasta ese tamaño (keepalives, ACK de TCP vacíos) y los
   handshakes se entregan al instante, sin esperar. Con 0, solo los handshakes.
 - **`reorder_pool_kb` (8192; 256–131070):** memoria para los paquetes
-  retenidos, en bloques de 2 KiB. Es lo único de esta sección que reinicia el
-  proceso al cambiarlo; el resto se aplica en caliente.
+  retenidos, en bloques de 2 KiB, reservada al arrancar; solo ocupa RAM lo
+  que llega a usarse. Es lo único de esta sección que reinicia el proceso al
+  cambiarlo; el resto se aplica en caliente, y apagar `reorder` entrega en
+  orden lo que estaba retenido.
+- **Sin bloquear:** el plazo del hueco más antiguo es el tiempo de espera
+  del bucle (no el tic de 100 ms), y una pasada entrega como mucho 512
+  retenidos (la siguiente viene enseguida), para no desbordar la cola de
+  descifrado de WireGuard (1024 por par). Un desborde de la ventana (4096
+  secuencias) se entrega entero.
 - **`split`:** reparte la subida (cliente) o la bajada (servidor) entre los
   enlaces en vez de copiar cada paquete por todos: un paquete grande viaja
   por un solo enlace, elegido según los pesos. El cliente admite `off` (por
@@ -826,6 +834,33 @@ nunca deciden nada; las toma el registrador de campo (`cengarde-rec`,
   1440). `up` es lo que el cliente lee de WireGuard y lo que el
   servidor le entrega (primeras copias de todos los routers); `down`, al
   revés.
+
+El reordenador de la bajada (ver [Reordenamiento y
+reparto](#reordenamiento-y-reparto-reorder-split)) está en `reorder`, en la
+raíz del cliente:
+- `enabled`, `held` (retenidos ahora), `held_max`, `pool_buffers` y
+  `pool_free`;
+- cada paquete verificado cuenta en uno solo de `in_order`, `held_total`
+  (retenido hasta que llegó lo anterior), `bypassed` (pequeño o handshake:
+  al instante), `late.*`, `far` (un salto de 8192 secuencias o más
+  mientras retenía, como el de un servidor que retoma la sesión),
+  `resyncs` y `pool_full` (sin búfer libre: al instante); `split_rx` cuenta
+  los repartidos;
+- `lost`: huecos que dejó de esperar, por qué: `rack` (todos los enlaces
+  trajeron uno posterior), `cap` (el plazo), `overflow` (la ventana se
+  llenó) y `flush` (al apagarlo);
+- `late`: los que llegaron después de eso, por la regla que soltó su hueco
+  (`after_rack`, `after_cap`, `after_overflow`; `old`, si su casilla ya era
+  de otro). `after_rack` > 0 dice que un enlace no entrega en orden o que se
+  esperaba a uno equivocado; `after_cap`, que el plazo es corto;
+- `wait` (cuánto esperó cada retenido) y `late_by` (cuánto después de
+  soltar su hueco llegó cada tardío): histogramas con los bordes de
+  `edges_ms`, incluidos, y un último cubo por encima de 500 ms;
+  `max_burst`, la mayor tanda de retenidos entregada de una vez.
+Por enlace, `rx_owd_spread_ms` es cuánto va su retraso de bajada por detrás
+del más rápido de los enlaces que espera el reordenador (`null` sin medida),
+y `tx_split` y `upload.split` cuentan los paquetes repartidos
+(`upload.split_state`: `off` mientras el reparto no está conectado).
 
 Cuesta poca memoria: cada casilla de llegadas pasa de 16 a 20 bytes y los
 histogramas suman 8 KiB, unos 24 KiB más por sesión (el cliente tiene una; el
