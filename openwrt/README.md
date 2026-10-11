@@ -118,7 +118,8 @@ uci commit network && service network reload
   mismo dispositivo y en la zona del enlace. Con ella el motor ve la IPv6
   del módem y puede llegar al VPS por IPv6; su prefijo nunca llega a la LAN
   (`delegate 0`) ni sus DNS al router (`peerdns 0`).
-  - **La fuga de IPv6 de la LAN:** el túnel lleva solo IPv4 por ahora; si
+  - **La fuga de IPv6 de la LAN:** por omisión el túnel lleva solo IPv4
+    (la IPv6 por el túnel es opcional: sección «IPv6 por el túnel»); si
     una interfaz delega un prefijo a la LAN, la IPv6 de la LAN sale por
     fuera del túnel. Por eso, con «enrutar todo el tráfico por el
     túnel», cengarde también pone `delegate 0` y `peerdns 0` en las
@@ -269,6 +270,10 @@ configuración del router:
 | Red | interfaz `wgcg` (WireGuard) con las claves del secreto y la dirección del router en el túnel como `/32` (`tunnel_addr`, o la derivada del secreto); su par `cengarde_vps` apunta a cengarde en `127.0.0.1` | sí |
 | Rutas | `10.79.0.1/32` por `wgcg` (la sección `cengarde_vps_route`): el VPS dentro del túnel, también sin «enrutar todo» | sí |
 | Rutas | `0.0.0.0/1` y `128.0.0.0/1` por `wgcg`: le ganan a cualquier ruta por defecto sin borrarlas, y cada enlace conserva la suya para cengarde | sí |
+| Red | con «IPv6 por el túnel» (apagado por defecto): `wgcg` suma `fdXX:XXXX:XXXX::2/128` (la ULA sale del secreto), el par permite también `::/1` y `8000::/1`, y la ruta a `fdXX:XXXX:XXXX::1/128` por `wgcg` (la sección `cengarde_vps_route6`) | sí |
+| Rutas | con «IPv6 por el túnel» y «enrutar todo»: `::/1` y `8000::/1` por `wgcg` | sí |
+| Cortafuegos | con «IPv6 por el túnel»: un include de nftables (`cengarde_nat66`, que carga `/usr/share/cengarde/nat66.nft`) al comienzo de la cadena `srcnat`, que enmascara la IPv6 que sale por `wgcg` | sí |
+| DHCP | con «IPv6 por el túnel» y «enrutar todo»: `ra_default 1` en la sección `lan` de `/etc/config/dhcp`, marcado con `cengarde_ra_default`, solo si no tenía valor | sí, solo lo que puso cengarde |
 | Enlaces | una métrica propia a cada uno (con la misma métrica, netifd deja una sola ruta por defecto) | no: no estorba |
 | Enlaces | `peerdns 0`: los DNS de la operadora irían por el VPS y suelen rechazarlo; se usan los IPv4 de la pestaña *Túnel* | sí |
 | Enlaces | `<enlace>6`: DHCPv6 sobre el dispositivo del enlace, con `delegate 0` y `peerdns 0`, en la zona del enlace | sí |
@@ -280,16 +285,16 @@ configuración del router:
 - **Los cambios posteriores no cortan el túnel:** el motor los aplica en
   marcha, con la misma sesión. Solo el secreto, el puerto y las perillas de
   CPU lo reinician, en el lugar y en menos de un segundo. Cambiar la
-  dirección del túnel o «enrutar todo» reinicia además la interfaz `wgcg`
-  (netifd no ve esos cambios): un corte breve mientras WireGuard rehace el
-  handshake.
+  dirección del túnel, «enrutar todo» o «IPv6 por el túnel» reinicia además
+  la interfaz `wgcg` (netifd no ve esos cambios): un corte breve mientras
+  WireGuard rehace el handshake.
 - **Sin dirección del VPS o sin enlaces** no se crea el túnel, para no
   dejar el router sin salida.
 - **MTU del túnel:** 1380 por defecto; como mucho 1416 sobre IPv4 y 1396
   si hay una dirección IPv6 del VPS (en caminos de 1500 bytes). Si el
   camino de un enlace es más chico, el estado lo avisa.
-- **DNS de la pestaña Túnel:** solo los IPv4 van por el túnel mientras IPv6
-  no pase por él; los IPv6 se dejan fuera.
+- **DNS de la pestaña Túnel:** solo los IPv4 van por el túnel; los IPv6 se
+  dejan fuera, también con «IPv6 por el túnel» (por ahora).
 - **Desinstalar** el paquete también lo deshace todo.
 - **Pestaña Avanzado:** las perillas del motor (silenciado de enlaces
   lentos, sondas, sondeo activo); valen los valores por defecto.
@@ -420,6 +425,64 @@ sudo cengarde-vps-setup forward                          # quién tiene qué
   el valor hasta que el router lo pide por primera vez. Desde entonces el VPS
   recuerda lo último que pidió el router, también tras reiniciarse.
 
+## IPv6 por el túnel (apagado por defecto)
+
+Por omisión el túnel lleva solo IPv4. Desde la 0.5.3 puede llevar también
+IPv6, traducida en los dos extremos (NAT66): con «enrutar todo», la IPv6 del
+router y de la LAN sale por el VPS. Viene apagado hasta probarlo en hardware
+real.
+
+**En el router** (pestaña *Túnel*, *IPv6 por el túnel*; `tunnel_ipv6 '1'`),
+cengarde mantiene:
+- en `wgcg`, una dirección ULA, `fdXX:XXXX:XXXX::2/128`; el VPS tiene la
+  `::1` del mismo prefijo. El prefijo sale del secreto (`cengarde keys` lo
+  imprime como `CG_TUNNEL_ULA`): no hay nada que elegir ni que repetir en el
+  VPS;
+- la ruta a esa `::1` por `wgcg`, que una `/128` no trae sola;
+- `::/1` y `8000::/1` entre las IP permitidas del par, así que con «enrutar
+  todo» toda la IPv6 va por `wgcg`;
+- un include de firewall4 (`nat66.nft`) que enmascara la IPv6 que sale por
+  `wgcg`;
+- con «enrutar todo», `ra_default 1` en la sección `lan` de
+  `/etc/config/dhcp`, para que odhcpd anuncie una ruta por defecto a una LAN
+  que solo tiene su ULA. Solo si no tenía valor: un `ra_default` tuyo se
+  respeta, y al apagar cengarde devuelve exactamente lo que puso.
+
+**Por qué NAT66 y una ULA:** el proveedor no enruta un prefijo al VPS (le da
+una dirección, o un `/64` en su propia interfaz), así que no hay prefijo que
+delegar a la LAN. La LAN solo tiene su ULA, y su IPv6 sale traducida, primero
+en el router y luego en el VPS.
+
+**Encenderla:** el VPS tiene que tener IPv6 propia (la que da el
+proveedor; ver el paso 2 de la sección 3). Luego, en los dos extremos:
+1. **En el VPS:** `sudo cengarde-vps-setup ipv6 on` (se niega si el VPS no
+   tiene IPv6; reinicia el WireGuard de cada router, un corte breve). Un VPS
+   nuevo no lo necesita: el cloud-config de LuCI sigue el interruptor
+   (`TUNNEL_IPV6=yes` cuando el router tiene también «enrutar todo»).
+2. **En el router:** LuCI, *Túnel* → *IPv6 por el túnel*, y *Guardar y
+   aplicar*. `wgcg` se reinicia (un corte breve). Por consola:
+   `uci set cengarde.main.tunnel_ipv6=1 && uci commit cengarde &&
+   /etc/init.d/cengarde reload`.
+
+**Conviene saber:**
+- **La LAN necesita un prefijo ULA** (*Red → Interfaces → Opciones globales
+  de red*, `network.globals.ula_prefix`; OpenWrt crea uno en el primer
+  arranque). Sin él, con «enrutar todo» el estado avisa `no_ula_prefix`.
+- **Un equipo de la LAN con solo un prefijo ULA prefiere la IPv4** para un
+  nombre que tiene las dos (RFC 6724, por la etiqueta de su dirección de
+  origen). La IPv6 por el túnel sirve sobre todo a los destinos que solo
+  tienen IPv6; no es un fallo.
+- **El estado** muestra la dirección IPv6 en el túnel; `cengarde-setup
+  status` la da como `tunnel_ula`, y `tunnel_ipv6` dice si está encendido.
+- **Apagarla:** en el router, el interruptor: `wgcg` pierde la dirección, el
+  cortafuegos el include y la LAN el `ra_default` que cengarde puso. En el
+  VPS, `sudo cengarde-vps-setup ipv6 off`.
+- **Lo que cubre `test/e2e.sh`** (QEMU): la dirección, la ruta y un ping al
+  extremo del VPS por el túnel, la regla de NAT66 en el cortafuegos, el
+  `ra_default` con su marca, y que apagarlo lo deja todo como estaba. No
+  cubre la salida a Internet por IPv6, que pide hardware real y un VPS con
+  IPv6.
+
 ## Por consola (sin LuCI)
 
 ```sh
@@ -460,9 +523,11 @@ cengarde-setup cloud-config > vps.yaml               # el user data del VPS
 - **Cambiar el secreto:** en el VPS, `sudo cengarde-vps-setup add NOMBRE
   --replace` y pega el nuevo; el router se corta un momento. Si su dirección
   en el túnel sale del secreto, cambia con él: guarda y aplica en LuCI y usa
-  el comando que muestra (lleva la nueva `--tunnel-addr`).
-- **Actualizar:** router y VPS con el mismo commit. La 0.5.2 saca la
-  dirección del túnel del secreto (sección «Nombre y dirección de cada
+  el comando que muestra (lleva la nueva `--tunnel-addr`). La ULA de la IPv6
+  por el túnel sale siempre del secreto y cambia también.
+- **Actualizar:** router y VPS con el mismo commit. La 0.5.3 no cambia el
+  protocolo: suma el interruptor de IPv6 por el túnel, apagado. La 0.5.2
+  saca la dirección del túnel del secreto (sección «Nombre y dirección de cada
   router»): un router que se actualiza conserva la `10.79.0.2` y sigue
   hablando con su VPS, uno nuevo usa la suya y su VPS tiene que ser 0.5.2. La
   0.5 cambia el protocolo (v4): un router 0.5 no habla con un VPS 0.4 ni al

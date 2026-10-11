@@ -112,6 +112,12 @@ msgstr ""
 msgid "Through routes more specific than the default ones, which the uplinks keep for cengarde itself."
 msgstr ""
 
+msgid "IPv6 through the tunnel"
+msgstr ""
+
+msgid "Carries IPv6 through the tunnel too, translated (NAT66) here and at the VPS: this router gets a ULA address in the tunnel, derived from the secret, and with \"Route all traffic through the tunnel\" the IPv6 of the router and of the LAN leaves through the VPS. The VPS needs IPv6 of its own and the command \"sudo cengarde-vps-setup ipv6 on\" (the cloud-config of a new VPS follows this switch when all traffic goes through the tunnel). The LAN needs a ULA prefix (Network > Interfaces > Global network options); its devices have only that, so they prefer IPv4 for sites that have both, and this serves mainly IPv6-only sites. Off until it has been tested on real hardware."
+msgstr ""
+
 msgid "IP pass"
 msgstr ""
 
@@ -247,6 +253,9 @@ msgstr ""
 msgid "Uplink %s gets no IPv6 interface: the name %s is taken or longer than 15 characters, so cengarde does not see the IPv6 of that uplink."
 msgstr ""
 
+msgid "IPv6 through the tunnel is on, but the router has no ULA prefix, so the LAN has no IPv6 address to send through it: set one in Network > Interfaces > Global network options."
+msgstr ""
+
 msgid "The LAN still holds the public IPv6 prefix %s: its IPv6 goes around the tunnel, through the uplinks. Turn off \"Delegate IPv6 prefixes\" on the interface it comes from."
 msgstr ""
 
@@ -356,6 +365,9 @@ msgid "handshake %s"
 msgstr ""
 
 msgid "WireGuard tunnel"
+msgstr ""
+
+msgid "IPv6 address in the tunnel"
 msgstr ""
 
 msgid "Traffic"

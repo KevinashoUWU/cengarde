@@ -7,7 +7,8 @@
 // e2e.sh): configures cengarde from the web UI only (VPS addresses,
 // uplinks, IP pass, enable), checks that an address with a mask, an MTU of
 // 1420 and a VPS failover time below three probe intervals are refused and
-// that the cloud-config follows the form, applies,
+// that the cloud-config follows the form (the IP pass and IPv6 through the
+// tunnel switches too: the second is off by default and left off), applies,
 // and waits on the status page for the tunnel, the three uplinks and the
 // VPS confirming IP pass; then pauses an uplink there and resumes it.
 // In the VPS tab, the cloud-config and the command that adds this router to a
@@ -170,7 +171,7 @@ try {
 		await addCommand() === `sudo cengarde-vps-setup add router --tunnel-addr ${derived} --proto ${proto}`,
 		'emptied, the name is router again and the address the derived one');
 
-	step('Tunnel tab: an MTU of 1420 is refused, IP pass on, the cloud-config follows');
+	step('Tunnel tab: an MTU of 1420 is refused, IP pass and IPv6 on, the cloud-config follows');
 	await tab('tunnel');
 	const mtu = page.locator(id('widget.cbid.cengarde.main.mtu'));
 	const mtuSaved = await mtu.inputValue();
@@ -182,10 +183,20 @@ try {
 	await mtu.blur();
 	check(!await invalid(mtu), `the MTU is valid again (${mtuSaved || 'default'})`);
 	await flag('ip_pass', true);
+	const ipv6 = page.locator('[data-widget-id="widget.cbid.cengarde.main.tunnel_ipv6"]');
+	check(await ipv6.count() === 1 && !await ipv6.isChecked(),
+		'IPv6 through the tunnel is a switch of the Tunnel tab, off by default');
+	await flag('tunnel_ipv6', true);
 	await shot('04-settings-tunnel');
 	await tab('vps');
 	cc = await page.inputValue('#cengarde-cloud-config');
 	check(/PASSTHROUGH=yes/.test(cc), 'the cloud-config follows the IP pass switch before saving');
+	check(/^\s*TUNNEL_IPV6=yes$/m.test(cc), 'the cloud-config follows the IPv6 switch before saving');
+	await tab('tunnel');
+	await flag('tunnel_ipv6', false);
+	await tab('vps');
+	cc = await page.inputValue('#cengarde-cloud-config');
+	check(/^\s*TUNNEL_IPV6=no$/m.test(cc) && /PASSTHROUGH=yes/.test(cc), 'and goes back to no with it, IP pass on');
 
 	step('Advanced tab: the VPS failover time follows the probe interval');
 	await tab('advanced');

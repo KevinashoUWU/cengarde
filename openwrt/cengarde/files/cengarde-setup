@@ -3,14 +3,15 @@
 # script runs "apply" on every start and reload; LuCI reads "status" and
 # "cloud-config".
 #
-#   cengarde-setup apply          WireGuard interface, firewall, uplinks, UPnP
+#   cengarde-setup apply          WireGuard interface, firewall, uplinks, UPnP,
+#                                 IPv6 in the tunnel
 #   cengarde-setup disable        undo what apply set up
 #   cengarde-setup engine-conf    print the engine configuration
 #   cengarde-setup cloud-config   print the VPS user data, with the secret, the
 #                                 router's name (vps_name) and its tunnel address
 #   cengarde-setup companions     the uplinks' IPv6 interfaces (init triggers)
-#   cengarde-setup status         JSON for LuCI: problems, tunnel address and
-#                                 VPS name, tunnel, engine
+#   cengarde-setup status         JSON for LuCI: problems, tunnel address (and
+#                                 its IPv6 one) and VPS name, tunnel, engine
 #
 # What apply maintains while cengarde is enabled with tunnel = 1, once the
 # VPS addresses and at least one uplink are set (metrics also before that):
@@ -25,7 +26,7 @@
 # - each uplink: a metric of its own (two default routes with the same metric
 #   replace each other) and peerdns 0 (carrier DNS servers would be reached
 #   through the VPS and usually refuse); "dns" goes on the tunnel instead,
-#   its IPv4 servers only: IPv6 does not go through the tunnel yet;
+#   its IPv4 servers only (the IPv6 ones are left out even with tunnel_ipv6);
 # - IPv6 on the uplinks (uplink_ipv6, also with tunnel = 0): a DHCPv6
 #   interface "<uplink>6" on the device of each DHCP or static uplink, so
 #   that the engine sees the modem's IPv6, which never reaches the LAN
@@ -38,13 +39,29 @@
 #   prefix and its IPv6 goes around the tunnel;
 # - firewall: wgcg, and uplinks that have no zone yet, in the wan zone
 #   (masquerade, inbound rejected);
+# - with tunnel_ipv6 (off by default; it needs a valid secret), IPv6 inside
+#   the tunnel: wgcg also holds ${CG_TUNNEL_ULA}::2/128, in the ULA prefix
+#   derived from the secret (cengarde keys; ::1 of it is the VPS end), with
+#   a route6 to that end like the IPv4 one (cengarde_vps_route6); the peer
+#   also allows ::/1 and 8000::/1, so with route_all all the IPv6 goes
+#   through wgcg; and a firewall4 include (nat66.nft, first in srcnat)
+#   masquerades IPv6 into the tunnel. NAT66 because the VPS provider routes
+#   no prefix to the VPS (one address, or a /64 on its own interface), so
+#   the LAN has nothing to send from but its ULA; and RFC 6724 makes a LAN
+#   device with only a ULA prefer IPv4 for a name that has both (the label
+#   of a ULA source does not match that of a global destination), so IPv6
+#   through the tunnel serves mainly IPv6-only destinations. With route_all,
+#   odhcpd has to announce a default route to a LAN that has only its ULA
+#   (network.globals.ula_prefix): ra_default 1 on dhcp.lan, unless it has a
+#   value already. The VPS end is switched on at the VPS (cengarde-vps-setup
+#   ipv6 on, or the cloud-config's TUNNEL_IPV6, which follows tunnel_ipv6);
 # - with ip_pass, miniupnpd with wgcg as its external interface and the first
 #   IPv4 of the VPS addresses as the external IP (without one, STUN with
 #   stun_host); the engine asks the VPS to forward its ports (and to stop
 #   when ip_pass goes off).
 # Every option cengarde sets on a section it does not own carries a marker
-# (cengarde_peerdns, cengarde_delegate, cengarde_network6) so that disable
-# takes back exactly that.
+# (cengarde_peerdns, cengarde_delegate, cengarde_network6,
+# cengarde_ra_default) so that disable takes back exactly that.
 #
 # SPDX-License-Identifier: GPL-2.0-only
 
@@ -55,6 +72,9 @@ set -f
 TUN=wgcg
 PEER=cengarde_vps
 ROUTE=cengarde_vps_route
+ROUTE6=cengarde_vps_route6
+NAT66=cengarde_nat66
+NAT66_FILE=/usr/share/cengarde/nat66.nft
 VPS_ADDR=10.79.0.1 # the VPS end of every tunnel
 DEFAULT_DNS="1.1.1.1 9.9.9.9"
 CLOUD_CONFIG=/usr/share/cengarde/cloud-config.yaml
@@ -103,6 +123,14 @@ valid_addr() {
 	[ $((x * 256 + y)) -ge 2 ] && [ $((x * 256 + y)) -le 65534 ]
 }
 
+# The ULA /48 prefix of the tunnel, as cengarde keys prints it: fdXX:XXXX:XXXX.
+valid_ula() {
+	case "$1" in
+	fd[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f][0-9a-f][0-9a-f]:[0-9a-f][0-9a-f][0-9a-f][0-9a-f]) return 0 ;;
+	esac
+	return 1
+}
+
 changed() { list_has "$CHANGED" "$1" || CHANGED="$CHANGED $1"; }
 
 # want CONFIG.SECTION[.OPTION] VALUE: set it unless it already has that value.
@@ -140,6 +168,7 @@ load() {
 	config_get_bool TUNNEL main tunnel 1
 	config_get_bool ROUTE_ALL main route_all 1
 	config_get_bool IP_PASS main ip_pass 0
+	config_get_bool TUNNEL_IPV6 main tunnel_ipv6 0
 	config_get_bool UPLINK_IPV6 main uplink_ipv6 1
 	config_get STUN_HOST main stun_host
 	config_get STUN_PORT main stun_port
@@ -155,6 +184,9 @@ load() {
 	# IP pass needs the tunnel to carry everything: replies go back through it.
 	PASS=no
 	[ "$IP_PASS" = 1 ] && [ "$TUNNEL" = 1 ] && [ "$ROUTE_ALL" = 1 ] && PASS=yes
+	# So does the VPS's side of IPv6 in the tunnel, which its cloud-config says.
+	VPS_IPV6=no
+	[ "$TUNNEL_IPV6" = 1 ] && [ "$TUNNEL" = 1 ] && [ "$ROUTE_ALL" = 1 ] && VPS_IPV6=yes
 }
 
 derive_keys() {
@@ -198,8 +230,9 @@ server_ipv6() {
 	return 1
 }
 
-# The IPv4 servers of "dns", the only ones the tunnel can take while IPv6
-# does not go through it (the router would reach the others around it).
+# The IPv4 servers of "dns", the only ones put on the tunnel: without
+# tunnel_ipv6 the router would reach an IPv6 one around the tunnel, and with
+# it they are left out too, for now.
 dns4() {
 	local d out=''
 
@@ -525,6 +558,46 @@ fix_upnp() { # on|off
 	fi
 }
 
+# NAT66 into the tunnel: the include that puts nat66.nft in firewall4's srcnat
+# chain.
+fix_nat66() { # on|off
+	if [ "$1" = on ]; then
+		want "firewall.$NAT66" include
+		want "firewall.$NAT66.type" nftables
+		want "firewall.$NAT66.path" "$NAT66_FILE"
+		want "firewall.$NAT66.position" chain-prepend
+		want "firewall.$NAT66.chain" srcnat
+	else
+		drop "firewall.$NAT66"
+	fi
+}
+
+# ra_default 1 on the LAN's DHCP section: odhcpd announces a default route even
+# though the LAN only has a ULA prefix. Only where it has no value, marked
+# cengarde_ra_default; a value the user gave, or changed since, is left as it is.
+fix_ra_default() { # on|off
+	local cur mine=0
+
+	uci -q get dhcp.lan >/dev/null || return 0
+	cur=$(uci -q get dhcp.lan.ra_default)
+	[ "$(uci -q get dhcp.lan.cengarde_ra_default)" = 1 ] && mine=1
+	if [ "$mine" = 1 ] && [ "$cur" != 1 ]; then
+		drop dhcp.lan.cengarde_ra_default # not ours any more
+		mine=0
+	fi
+	if [ "$1" = on ]; then
+		case "$cur" in
+		'' | 0)
+			want dhcp.lan.ra_default 1
+			want dhcp.lan.cengarde_ra_default 1
+			;;
+		esac
+	elif [ "$mine" = 1 ]; then
+		drop dhcp.lan.ra_default
+		drop dhcp.lan.cengarde_ra_default
+	fi
+}
+
 # What netifd leaves as it is when it changes: reloading the network
 # configuration restarts wgcg for its keys, MTU and (25.12) addresses, but an
 # older wireguard.sh keeps the addresses it set up, and none looks at the
@@ -534,12 +607,13 @@ tun_state() {
 	uci -q show "network.$PEER"
 }
 
-fix_tunnel() { # on|off
-	local pub before
+fix_tunnel() { # on|off IPV6: on|off
+	local pub before addrs='' allowed='0.0.0.0/1 128.0.0.0/1'
 
 	if [ "$1" = off ]; then
 		drop "network.$PEER"
 		drop "network.$ROUTE"
+		drop "network.$ROUTE6"
 		drop "network.$TUN"
 		return 0
 	fi
@@ -548,7 +622,12 @@ fix_tunnel() { # on|off
 	want "network.$TUN" interface
 	want "network.$TUN.proto" wireguard
 	want "network.$TUN.private_key" "$CG_WG_CLIENT_KEY"
-	want_list "network.$TUN.addresses" "$ADDR/32"
+	addrs="$ADDR/32"
+	if [ "$2" = on ]; then
+		addrs="$addrs ${CG_TUNNEL_ULA}::2/128"
+		allowed="$allowed ::/1 8000::/1"
+	fi
+	want_list "network.$TUN.addresses" "$addrs"
 	want "network.$TUN.mtu" "$MTU"
 	want "network.$TUN.nohostroute" 1
 	want_list "network.$TUN.dns" "$(dns4)"
@@ -560,12 +639,19 @@ fix_tunnel() { # on|off
 	want "network.$PEER.endpoint_port" "$PORT"
 	want "network.$PEER.persistent_keepalive" 25
 	want "network.$PEER.route_allowed_ips" "$ROUTE_ALL"
-	want_list "network.$PEER.allowed_ips" "0.0.0.0/1 128.0.0.0/1"
+	want_list "network.$PEER.allowed_ips" "$allowed"
 	# A /32 has no connected route: the VPS end, reached with or without
-	# route_all, gets one.
+	# route_all, gets one. The same goes for the /128 of IPv6.
 	want "network.$ROUTE" route
 	want "network.$ROUTE.interface" "$TUN"
 	want "network.$ROUTE.target" "$VPS_ADDR/32"
+	if [ "$2" = on ]; then
+		want "network.$ROUTE6" route6
+		want "network.$ROUTE6.interface" "$TUN"
+		want "network.$ROUTE6.target" "${CG_TUNNEL_ULA}::1/128"
+	else
+		drop "network.$ROUTE6"
+	fi
 	# A tunnel that is new is set up as it is.
 	if [ -n "$before" ] && [ "$before" != "$(tun_state)" ]; then
 		RESTART_TUN=1
@@ -588,12 +674,13 @@ commit() {
 		ifup "$TUN"
 	fi
 	list_has "$CHANGED" firewall && /etc/init.d/firewall reload >/dev/null 2>&1
+	list_has "$CHANGED" dhcp && /etc/init.d/odhcpd reload >/dev/null 2>&1
 	list_has "$CHANGED" upnpd && /etc/init.d/miniupnpd restart >/dev/null 2>&1
 	return 0
 }
 
 apply() {
-	local on=off six=off close=off
+	local on=off six=off close=off t6=off ra=off
 
 	load
 	if [ "$ENABLED" = 1 ] && [ "$TUNNEL" = 1 ]; then
@@ -615,7 +702,17 @@ apply() {
 	# The engine runs once it has somewhere to go, with or without the tunnel.
 	[ "$ENABLED" = 1 ] && [ "$UPLINK_IPV6" = 1 ] && [ -n "$SERVER" ] && [ -n "$UPLINKS" ] && six=on
 	[ "$on" = on ] && [ "$ROUTE_ALL" = 1 ] && close=on
-	fix_tunnel "$on" || return 1
+	if [ "$on" = on ] && [ "$TUNNEL_IPV6" = 1 ]; then
+		if valid_ula "$CG_TUNNEL_ULA"; then
+			t6=on
+		else
+			log "no ULA prefix from the secret (cengarde keys): IPv6 in the tunnel left off"
+		fi
+	fi
+	[ "$t6" = on ] && [ "$close" = on ] && ra=on
+	fix_tunnel "$on" "$t6" || return 1
+	fix_nat66 "$t6"
+	fix_ra_default "$ra"
 	fix_zone "$on"
 	if [ "$ENABLED" = 1 ]; then
 		fix_uplinks on "$on" "$close"
@@ -634,7 +731,9 @@ apply() {
 disable() {
 	load
 	ENABLED=0
-	fix_tunnel off
+	fix_tunnel off off
+	fix_nat66 off
+	fix_ra_default off
 	fix_zone off
 	fix_uplinks off off off
 	fix_companions off
@@ -689,6 +788,7 @@ cloud_config() {
 	sed -e "s|^\( *\)REPLACE_SECRET\$|\1$SECRET|" \
 		-e "s|^\( *CENGARDE_PORT=\).*|\1$PORT|" \
 		-e "s|^\( *PASSTHROUGH=\).*|\1$PASS|" \
+		-e "s|^\( *TUNNEL_IPV6=\).*|\1$VPS_IPV6|" \
 		-e "s|^\( *ROUTER_NAME=\).*|\1$VPS_NAME|" \
 		-e "s|^\( *ROUTER_TUNNEL_ADDR=\).*|\1$ADDR|" "$CLOUD_CONFIG"
 }
@@ -783,6 +883,7 @@ engine_problems() { # STATUS_JSON
 # Everything LuCI's status page needs in one call.
 status() {
 	local s running=false hs=0 rx=0 tx=0 now up line engine=null proto p addr=null derived=null name=null have=0
+	local t6=false ula=null
 
 	load
 	PROBLEMS=
@@ -798,7 +899,9 @@ status() {
 		elif [ "$ENABLED" = 1 ]; then
 			problem tunnel_addr_invalid
 		fi
+		valid_ula "$CG_TUNNEL_ULA" && ula="\"${CG_TUNNEL_ULA}::2\""
 	fi
+	[ "$TUNNEL" = 1 ] && [ "$TUNNEL_IPV6" = 1 ] && t6=true
 	valid_name "$VPS_NAME" && name="\"$VPS_NAME\""
 	if [ "$ENABLED" = 1 ]; then
 		[ "$have" = 1 ] || problem no_secret
@@ -825,6 +928,9 @@ status() {
 		done
 		[ "$TUNNEL" = 1 ] && [ "$ROUTE_ALL" = 1 ] && [ -n "$SERVER" ] && [ -n "$UPLINKS" ] &&
 			p=$(leaked_prefix) && problem ipv6_leak "" "\"prefix\":\"$p\""
+		# The LAN has no IPv6 address to send through the tunnel without a ULA.
+		[ "$t6" = true ] && [ "$ROUTE_ALL" = 1 ] && [ -z "$(uci -q get network.globals.ula_prefix)" ] &&
+			problem no_ula_prefix
 		[ "$IP_PASS" = 1 ] && [ ! -f /etc/config/upnpd ] && problem no_upnp
 		[ "$PASS" = yes ] && [ -n "$SERVER" ] && [ -f /etc/config/upnpd ] && [ "$(upnp_ip)" = none ] &&
 			problem upnp_no_ip
@@ -848,8 +954,9 @@ status() {
 		engine_problems "$engine"
 	fi
 	proto=$(cengarde version 2>/dev/null | sed -n 's/.*(protocol \([0-9]*\)).*/\1/p')
-	printf '{"enabled":%s,"running":%s,"protocol":%s,"tunnel_addr":%s,"tunnel_addr_derived":%s,"vps_name":%s,"problems":[%s],"tunnel":{"handshake":%s,"now":%s,"uptime":%s,"rx_bytes":%s,"tx_bytes":%s},"engine":%s}\n' \
-		"$([ "$ENABLED" = 1 ] && echo true || echo false)" "$running" "${proto:-null}" "$addr" "$derived" "$name" "$PROBLEMS" \
+	printf '{"enabled":%s,"running":%s,"protocol":%s,"tunnel_addr":%s,"tunnel_addr_derived":%s,"tunnel_ipv6":%s,"tunnel_ula":%s,"vps_name":%s,"problems":[%s],"tunnel":{"handshake":%s,"now":%s,"uptime":%s,"rx_bytes":%s,"tx_bytes":%s},"engine":%s}\n' \
+		"$([ "$ENABLED" = 1 ] && echo true || echo false)" "$running" "${proto:-null}" "$addr" "$derived" "$t6" "$ula" \
+		"$name" "$PROBLEMS" \
 		"$hs" "$now" "${up:-0}" "$rx" "$tx" "$engine"
 }
 

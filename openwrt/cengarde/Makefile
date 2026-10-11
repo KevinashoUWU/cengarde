@@ -15,7 +15,7 @@ include $(TOPDIR)/rules.mk
 PKG_NAME:=cengarde
 # 0.4: protocol v3 (IP pass asked of the VPS), control socket, changes
 # applied without a restart. Both ends must run the same protocol version.
-PKG_VERSION:=0.5.2
+PKG_VERSION:=0.5.3
 PKG_RELEASE:=1
 
 PKG_LICENSE:=GPL-2.0-only
@@ -75,6 +75,7 @@ define Package/cengarde/install
 	$(INSTALL_BIN) ./files/cengarde-rec.init $(1)/etc/init.d/cengarde-rec
 	$(INSTALL_CONF) ./files/cengarde.config $(1)/etc/config/cengarde
 	$(INSTALL_BIN) ./files/cengarde.defaults $(1)/etc/uci-defaults/90-cengarde
+	$(INSTALL_DATA) ./files/nat66.nft $(1)/usr/share/cengarde/
 	sed 's/CENGARDE_REF=master;/CENGARDE_REF=$(if $(GIT_REV),$(GIT_REV),master);/' \
 		$(ENGINE_DIR)/../contrib/vps/cloud-config.yaml > $(1)/usr/share/cengarde/cloud-config.yaml
 endef

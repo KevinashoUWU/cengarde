@@ -20,6 +20,7 @@ function problemText(p) {
 	case 'uplink_down': return _('Uplink %s is down.').format(p.iface);
 	case 'uplink_ipv6_only': return _('Uplink %s only has IPv6 (its IPv4 is down) and no VPS address is IPv6: add the IPv6 address of the VPS in Settings.').format(p.iface);
 	case 'ipv6_companion_conflict': return _('Uplink %s gets no IPv6 interface: the name %s is taken or longer than 15 characters, so cengarde does not see the IPv6 of that uplink.').format(p.iface, p.name);
+	case 'no_ula_prefix': return _('IPv6 through the tunnel is on, but the router has no ULA prefix, so the LAN has no IPv6 address to send through it: set one in Network > Interfaces > Global network options.');
 	case 'ipv6_leak': return _('The LAN still holds the public IPv6 prefix %s: its IPv6 goes around the tunnel, through the uplinks. Turn off "Delegate IPv6 prefixes" on the interface it comes from.').format(p.prefix);
 	case 'no_upnp': return _('IP pass is on but miniupnpd is not installed.');
 	case 'upnp_no_ip': return _('IP pass is on, but UPnP has no public IP to announce: no VPS address is IPv4. Set a STUN server in Settings > Tunnel.');
@@ -158,6 +159,9 @@ return view.extend({
 
 		if (st.tunnel_addr)
 			rows.push([ _('Address in the tunnel'), st.tunnel_addr ]);
+
+		if (st.tunnel_ipv6 && st.tunnel_ula)
+			rows.push([ _('IPv6 address in the tunnel'), st.tunnel_ula ]);
 
 		if (e && e.passthrough && ipPass(e.passthrough))
 			rows.push([ _('IP pass'), ipPass(e.passthrough) ]);

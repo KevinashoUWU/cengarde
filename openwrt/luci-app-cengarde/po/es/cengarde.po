@@ -114,6 +114,12 @@ msgstr "Enrutar todo el tráfico por el túnel"
 msgid "Through routes more specific than the default ones, which the uplinks keep for cengarde itself."
 msgstr "Con rutas más específicas que las rutas por defecto, que los enlaces conservan para el propio cengarde."
 
+msgid "IPv6 through the tunnel"
+msgstr "IPv6 por el túnel"
+
+msgid "Carries IPv6 through the tunnel too, translated (NAT66) here and at the VPS: this router gets a ULA address in the tunnel, derived from the secret, and with \"Route all traffic through the tunnel\" the IPv6 of the router and of the LAN leaves through the VPS. The VPS needs IPv6 of its own and the command \"sudo cengarde-vps-setup ipv6 on\" (the cloud-config of a new VPS follows this switch when all traffic goes through the tunnel). The LAN needs a ULA prefix (Network > Interfaces > Global network options); its devices have only that, so they prefer IPv4 for sites that have both, and this serves mainly IPv6-only sites. Off until it has been tested on real hardware."
+msgstr "Lleva también la IPv6 por el túnel, traducida (NAT66) aquí y en el VPS: este router recibe en el túnel una dirección ULA, derivada del secreto, y con \"Enrutar todo el tráfico por el túnel\" la IPv6 del router y de la LAN sale por el VPS. El VPS necesita IPv6 propia y la orden \"sudo cengarde-vps-setup ipv6 on\" (el cloud-config de un VPS nuevo sigue este interruptor cuando todo el tráfico va por el túnel). La LAN necesita un prefijo ULA (Red > Interfaces > Opciones globales de red); sus equipos solo tienen ese, así que prefieren la IPv4 para los sitios que tienen las dos, y esto sirve sobre todo para sitios solo IPv6. Apagado hasta que se pruebe en hardware real."
+
 msgid "IP pass"
 msgstr "IP pass"
 
@@ -249,6 +255,9 @@ msgstr "El enlace %s solo tiene IPv6 (su IPv4 está caída) y ninguna dirección
 msgid "Uplink %s gets no IPv6 interface: the name %s is taken or longer than 15 characters, so cengarde does not see the IPv6 of that uplink."
 msgstr "El enlace %s se queda sin interfaz IPv6: el nombre %s está ocupado o pasa de 15 caracteres, así que cengarde no ve la IPv6 de ese enlace."
 
+msgid "IPv6 through the tunnel is on, but the router has no ULA prefix, so the LAN has no IPv6 address to send through it: set one in Network > Interfaces > Global network options."
+msgstr "La IPv6 por el túnel está activada, pero el router no tiene un prefijo ULA, así que la LAN no tiene una dirección IPv6 con la que salir por él: define uno en Red > Interfaces > Opciones globales de red."
+
 msgid "The LAN still holds the public IPv6 prefix %s: its IPv6 goes around the tunnel, through the uplinks. Turn off \"Delegate IPv6 prefixes\" on the interface it comes from."
 msgstr "La LAN todavía tiene el prefijo IPv6 público %s: su IPv6 sale por fuera del túnel, por los enlaces. Desactiva \"Delegar prefijos IPv6\" en la interfaz de la que viene."
 
@@ -359,6 +368,9 @@ msgstr "handshake %s"
 
 msgid "WireGuard tunnel"
 msgstr "Túnel WireGuard"
+
+msgid "IPv6 address in the tunnel"
+msgstr "Dirección IPv6 en el túnel"
 
 msgid "Traffic"
 msgstr "Tráfico"

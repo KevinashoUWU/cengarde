@@ -16,7 +16,8 @@
 #     1.2.3.5 and 2001:db8::4, and a cengarde server listening on all of them
 #     (*), with WireGuard; all keys derive from the router's pairing secret,
 #     and so does the router's address in the tunnel (10.79.x.y, a /32, with
-#     10.79.0.1/32 on the VPS side);
+#     10.79.0.1/32 on the VPS side) and the ULA prefix of the IPv6 inside it
+#     (fdXX:XXXX:XXXX::2/128 on the router, ::1/128 on the VPS side);
 #  3. configures cengarde on the router from LuCI only (luci.mjs), which
 #     waits for the tunnel, the three uplinks and IP pass on at the VPS,
 #     and pauses and resumes an uplink from the status page; up2 and up3
@@ -49,7 +50,12 @@
 # 10. route_all off: 10.79.0.1 stays reachable through wgcg by the route
 #     cengarde keeps (the /1 routes are gone, and a /32 has no connected
 #     one), converged again; route_all back on;
-# 11. disables cengarde and checks that the router is back as it was (the
+# 11. IPv6 in the tunnel (tunnel_ipv6 on): wgcg holds the ULA address derived
+#     from the secret, a route6 leads to the VPS end, which answers a ping, the
+#     NAT66 rule is in the firewall, the LAN's odhcpd is told to announce a
+#     default route, and the status and the cloud-config say so; converged;
+#     off again: all of it gone, as it was, and converged;
+# 12. disables cengarde and checks that the router is back as it was (the
 #     LAN gets its prefix again), and converged again.
 # Screenshots and logs go to OUT_DIR (default ./e2e-out). Needs qemu-system-x86,
 # ssh and node with "npm install" done in this directory.
@@ -149,11 +155,22 @@ say "VPS: uplink ends with DHCP and IPv6, 1.2.3.4, 1.2.3.5, 2001:db8::4, cengard
 secret=$("$VM" ssh router 'uci get cengarde.main.secret')
 # The router's address in the tunnel: a new install has no tunnel_addr, so it
 # derives it from the secret.
-addr=$("$VM" ssh router "echo '$secret' | cengarde keys" | sed -n "s/^CG_TUNNEL_ADDR='\(.*\)'\$/\1/p")
+keys=$("$VM" ssh router "echo '$secret' | cengarde keys")
+addr=$(echo "$keys" | sed -n "s/^CG_TUNNEL_ADDR='\(.*\)'\$/\1/p")
 case "$addr" in
 10.79.*) ;;
 *)
 	echo "e2e: no tunnel address derived from the router's secret ($addr)"
+	exit 1
+	;;
+esac
+# And the ULA /48 prefix of the IPv6 in the tunnel: the router is ::2 in it and
+# the VPS ::1.
+ula=$(echo "$keys" | sed -n "s/^CG_TUNNEL_ULA='\(.*\)'\$/\1/p")
+case "$ula" in
+fd??:????:????) ;;
+*)
+	echo "e2e: no ULA prefix derived from the router's secret ($ula)"
 	exit 1
 	;;
 esac
@@ -198,11 +215,14 @@ uci set network.wg0.proto=wireguard
 uci set network.wg0.private_key="$CG_WG_SERVER_KEY"
 uci set network.wg0.listen_port=65501
 uci add_list network.wg0.addresses=10.79.0.1/32
+uci add_list network.wg0.addresses=${CG_TUNNEL_ULA}::1/128
 uci set network.router=wireguard_wg0
 uci set network.router.public_key="$(echo "$CG_WG_CLIENT_KEY" | wg pubkey)"
 uci set network.router.preshared_key="$CG_WG_PSK"
-# The router's address alone, with its route: a /32 has no connected one.
+# The router's addresses alone, with their routes: a /32 and a /128 have no
+# connected one.
 uci add_list network.router.allowed_ips=$CG_TUNNEL_ADDR/32
+uci add_list network.router.allowed_ips=${CG_TUNNEL_ULA}::2/128
 uci set network.router.route_allowed_ips=1
 uci commit network
 uci commit dhcp
@@ -655,6 +675,119 @@ else
 	"$VM" ssh router 'ip route; wg show wgcg; logread | grep -E "cengarde|netifd" | tail -20'
 fi
 
+# IPv6 inside the tunnel: the router's ULA address from the secret, a route to the
+# VPS end (::1 of the same prefix), NAT66 into wgcg and a default route
+# announced to the LAN (which here has the router's own ULA prefix). The VPS has
+# the other end of the addresses (wg0). The kernel prints an address its own way
+# (no leading zeros, "::" for a run of zeros): ask it with the address as an
+# argument, and match what it prints only by the parts that cannot change.
+say "IPv6 in the tunnel: on"
+tunnel_ipv6() {
+	"$VM" ssh router "uci set cengarde.main.tunnel_ipv6=$1; uci commit cengarde
+		ubus call service event '{\"type\":\"config.change\",\"data\":{\"package\":\"cengarde\"}}'"
+}
+wg6_addr() { "$VM" ssh router "ip -6 addr show dev wgcg scope global | grep -Eq 'inet6 ${ula%%:*}:[0-9a-f:]*:2/128'"; }
+via6_wgcg() { "$VM" ssh router "ip -6 route get ${ula}::1 | grep -q ' dev wgcg '"; }
+nft_masq() { "$VM" ssh router "nft list ruleset | grep -q 'cengarde: IPv6 into the tunnel'"; }
+ra_default() { "$VM" ssh router 'uci -q get dhcp.lan.ra_default || echo unset'; }
+ra_before=$(ra_default)
+ula_prefix=$("$VM" ssh router 'uci -q get network.globals.ula_prefix || true')
+tunnel_ipv6 1
+if until_ok 90 wg6_addr && until_ok 60 via6_wgcg && until_ok 90 tunnel_back &&
+	until_ok 30 "$VM" ssh router "ping -6 -q -c 3 -W 2 ${ula}::1 >/dev/null 2>&1"; then
+	"$VM" ssh router "ping -6 -q -c 8 -W 2 ${ula}::1" > "$OUT/ping6-tunnel.txt" 2>&1 || true
+	cat "$OUT/ping6-tunnel.txt"
+	if grep -q ' 0% packet loss' "$OUT/ping6-tunnel.txt"; then
+		ok "tunnel_ipv6 on: ${ula}::2 on wgcg, ${ula}::1 through wgcg, and the VPS answers a ping over IPv6"
+	else
+		bad "tunnel_ipv6 on: packets lost to ${ula}::1"
+	fi
+else
+	bad "tunnel_ipv6 on: no ${ula}::2 on wgcg, no route to ${ula}::1 through it, or no answer from it"
+	"$VM" ssh router 'uci show network.wgcg network.cengarde_vps network.cengarde_vps_route6; ip -6 addr; ip -6 route; wg show wgcg; logread | grep -E "cengarde|netifd" | tail -20'
+	"$VM" ssh vps 'ip -6 addr show dev wg0; ip -6 route; wg show'
+fi
+if [ "$("$VM" ssh router 'uci -q get network.wgcg.addresses')" = "$addr/32 ${ula}::2/128" ] &&
+	[ "$("$VM" ssh router 'uci -q get network.cengarde_vps.allowed_ips')" = "0.0.0.0/1 128.0.0.0/1 ::/1 8000::/1" ] &&
+	[ "$("$VM" ssh router 'uci -q get network.cengarde_vps_route6.target')" = "${ula}::1/128" ] &&
+	[ "$("$VM" ssh router 'uci -q get network.cengarde_vps_route6.interface')" = wgcg ]; then
+	ok "tunnel_ipv6 on: the addresses, the peer's allowed IPs and the route6 section are as cengarde-setup keeps them"
+else
+	bad "tunnel_ipv6 on: wgcg addresses, allowed IPs or route6 section"
+	"$VM" ssh router 'uci show network.wgcg network.cengarde_vps network.cengarde_vps_route6'
+fi
+# With route_all, the /1 halves of IPv6 lead into wgcg too.
+if "$VM" ssh router "ip -6 route | grep -q '^::/1 .*wgcg' && ip -6 route | grep -q '^8000::/1 .*wgcg'"; then
+	ok "tunnel_ipv6 on: ::/1 and 8000::/1 lead into wgcg (route_all)"
+else
+	bad "tunnel_ipv6 on: no ::/1 and 8000::/1 routes through wgcg"
+	"$VM" ssh router 'ip -6 route'
+fi
+if until_ok 30 nft_masq; then
+	ok "tunnel_ipv6 on: the firewall masquerades IPv6 into the tunnel (fw4 include)"
+else
+	bad "tunnel_ipv6 on: no NAT66 rule in the firewall"
+	"$VM" ssh router 'uci show firewall | grep -A5 cengarde_nat66; nft list chain inet fw4 srcnat; logread | grep -E "firewall|fw4" | tail -10'
+fi
+if [ "$(ra_default)" = 1 ] && [ "$("$VM" ssh router 'uci -q get dhcp.lan.cengarde_ra_default')" = 1 ] &&
+	"$VM" ssh router 'pidof odhcpd >/dev/null'; then
+	ok "tunnel_ipv6 on: ra_default 1 on the LAN, marked, and odhcpd runs"
+else
+	bad "tunnel_ipv6 on: ra_default on the LAN"
+	"$VM" ssh router 'uci show dhcp.lan; pidof odhcpd'
+fi
+"$VM" ssh router 'cengarde-setup status' > "$OUT/status-ipv6.json"
+cloud=$("$VM" ssh router 'cengarde-setup cloud-config')
+if grep -q '"tunnel_ipv6":true' "$OUT/status-ipv6.json" &&
+	grep -q "\"tunnel_ula\":\"${ula}::2\"" "$OUT/status-ipv6.json" &&
+	printf '%s\n' "$cloud" | grep -q '^ *TUNNEL_IPV6=yes$'; then
+	ok "tunnel_ipv6 on: the status has the ULA address and the cloud-config says TUNNEL_IPV6=yes"
+else
+	bad "tunnel_ipv6 on: the status or the cloud-config does not say so"
+	cat "$OUT/status-ipv6.json"
+	printf '%s\n' "$cloud" | grep -E 'TUNNEL_IPV6|PASSTHROUGH=' || true
+fi
+# The router has the ULA prefix OpenWrt makes on first boot: with it, no problem.
+if [ -n "$ula_prefix" ]; then
+	if grep -q '"code":"no_ula_prefix"' "$OUT/status-ipv6.json"; then
+		bad "tunnel_ipv6 on: the status reports no ULA prefix, and the router has $ula_prefix"
+	else
+		ok "tunnel_ipv6 on: the router has a ULA prefix ($ula_prefix): no problem reported"
+	fi
+elif grep -q '"code":"no_ula_prefix"' "$OUT/status-ipv6.json"; then
+	ok "tunnel_ipv6 on: the router has no ULA prefix and the status says so"
+else
+	bad "tunnel_ipv6 on: the router has no ULA prefix and the status does not say so"
+fi
+sleep 15 # wgcg came back up: let netifd settle first
+converged "tunnel_ipv6 on"
+
+say "IPv6 in the tunnel: off again"
+tunnel_ipv6 0
+if until_ok 90 eval '! wg6_addr' && until_ok 60 eval '! via6_wgcg' && until_ok 30 eval '! nft_masq' &&
+	until_ok 90 tunnel_back; then
+	ok "tunnel_ipv6 off: no ${ula}::2 on wgcg, no route to ${ula}::1, no NAT66 rule, the tunnel is back"
+else
+	bad "tunnel_ipv6 off: IPv6 still in the tunnel, or no tunnel"
+	"$VM" ssh router 'ip -6 addr show dev wgcg; ip -6 route; nft list chain inet fw4 srcnat; logread | grep -E "cengarde|netifd" | tail -20'
+fi
+leftover=$("$VM" ssh router 'uci show network | grep -E "route6|::2/128"; uci -q get network.cengarde_vps.allowed_ips | grep -F :;
+	uci show firewall | grep cengarde_nat66; uci show dhcp | grep cengarde_ra_default' || true)
+if [ -z "$leftover" ] && [ "$(ra_default)" = "$ra_before" ]; then
+	ok "tunnel_ipv6 off: no route6 section, no firewall include, ra_default back to $ra_before"
+else
+	bad "tunnel_ipv6 off: left behind: $leftover (ra_default $(ra_default), it was $ra_before)"
+fi
+"$VM" ssh router 'cengarde-setup status' > "$OUT/status-ipv6-off.json"
+if grep -q '"tunnel_ipv6":false' "$OUT/status-ipv6-off.json" &&
+	"$VM" ssh router 'cengarde-setup cloud-config' | grep -q '^ *TUNNEL_IPV6=no$'; then
+	ok "tunnel_ipv6 off: the status and the cloud-config say so"
+else
+	bad "tunnel_ipv6 off: the status or the cloud-config still say on"
+fi
+sleep 15
+converged "tunnel_ipv6 off"
+
 say "disable: the router goes back to how it was"
 "$VM" ssh router sh -s <<'EOF'
 uci set cengarde.main.enabled=0
@@ -663,7 +796,7 @@ ubus call service event '{"type":"config.change","data":{"package":"cengarde"}}'
 EOF
 sleep 10
 "$VM" ssh router 'uci show network; uci show firewall; ip route' > "$OUT/router-after.txt"
-leftover=$("$VM" ssh router "$ENGINE_PID"'; uci show network | grep -E "wgcg|cengarde|up[123]6"; uci show firewall | grep -E "cengarde|up[123]6"; ip route | grep wgcg; uci -q get upnpd.config.external_iface' || true)
+leftover=$("$VM" ssh router "$ENGINE_PID"'; uci show network | grep -E "wgcg|cengarde|up[123]6"; uci show firewall | grep -E "cengarde|up[123]6"; uci show dhcp | grep cengarde; ip route | grep wgcg; uci -q get upnpd.config.external_iface' || true)
 if [ -z "$leftover" ]; then
 	ok "nothing left of the tunnel"
 else

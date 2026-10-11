@@ -31,11 +31,12 @@ function isTunnelAddr(addr) {
 // Same substitutions as "cengarde-setup cloud-config", on the values in the
 // form, so the text follows unsaved changes. Without an address (a new secret
 // that is not saved yet) its placeholder stays, and the VPS derives it.
-function cloudConfig(template, secret, port, ipPass, name, addr) {
+function cloudConfig(template, secret, port, ipPass, ipv6, name, addr) {
 	return template
 		.replace(/^(\s+)REPLACE_SECRET$/m, '$1' + (secret || 'REPLACE_SECRET'))
 		.replace(/^(\s*CENGARDE_PORT=).*$/m, '$1' + (port || '65500'))
 		.replace(/^(\s*PASSTHROUGH=).*$/m, '$1' + (ipPass == '1' ? 'yes' : 'no'))
+		.replace(/^(\s*TUNNEL_IPV6=).*$/m, '$1' + (ipv6 == '1' ? 'yes' : 'no'))
 		.replace(/^(\s*ROUTER_NAME=).*$/m, '$1' + (isName(name) ? name : 'router'))
 		.replace(/^(\s*ROUTER_TUNNEL_ADDR=).*$/m, '$1' + (addr || 'REPLACE_TUNNEL_ADDR'));
 }
@@ -106,7 +107,8 @@ return view.extend({
 
 			if (textarea)
 				textarea.value = cloudConfig(template, value(m, 'secret'), value(m, 'port'),
-					on('ip_pass', '0') && on('tunnel', '1') && on('route_all', '1') ? '1' : '0', name, addr);
+					on('ip_pass', '0') && on('tunnel', '1') && on('route_all', '1') ? '1' : '0',
+					on('tunnel_ipv6', '0') && on('tunnel', '1') && on('route_all', '1') ? '1' : '0', name, addr);
 			if (addCommand) {
 				const ready = addr != null && isName(name);
 
@@ -303,6 +305,12 @@ return view.extend({
 		o = s.taboption('tunnel', form.Flag, 'route_all', _('Route all traffic through the tunnel'),
 			_('Through routes more specific than the default ones, which the uplinks keep for cengarde itself.'));
 		o.default = '1';
+		o.rmempty = false;
+		o.depends('tunnel', '1');
+		o.onchange = refresh;
+
+		o = s.taboption('tunnel', form.Flag, 'tunnel_ipv6', _('IPv6 through the tunnel'),
+			_('Carries IPv6 through the tunnel too, translated (NAT66) here and at the VPS: this router gets a ULA address in the tunnel, derived from the secret, and with "Route all traffic through the tunnel" the IPv6 of the router and of the LAN leaves through the VPS. The VPS needs IPv6 of its own and the command "sudo cengarde-vps-setup ipv6 on" (the cloud-config of a new VPS follows this switch when all traffic goes through the tunnel). The LAN needs a ULA prefix (Network > Interfaces > Global network options); its devices have only that, so they prefer IPv4 for sites that have both, and this serves mainly IPv6-only sites. Off until it has been tested on real hardware.'));
 		o.rmempty = false;
 		o.depends('tunnel', '1');
 		o.onchange = refresh;
