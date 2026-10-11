@@ -114,6 +114,8 @@ static void test_answers(void)
 	CHECK_EQ(cg_rs_answer(&nm, CG_RS_A, &r, 1, t + 5), 1);
 	CHECK_EQ(nm.q[CG_RS_A].n, 0);
 	CHECK(!cg_rs_has(&nm));
+	/* ... and a name left with no address is asked again soon, not in 5 minutes. */
+	CHECK_EQ(nm.q[CG_RS_A].due_ms, t + 5 + CG_RS_EMPTY_MS);
 	/* A new address replaces them all. */
 	r = answer4(other, 1, 300);
 	CHECK_EQ(cg_rs_answer(&nm, CG_RS_A, &r, 1, t + 6), 1);
@@ -204,6 +206,18 @@ static void test_silence(void)
 	cg_rs_start(&nm.q[CG_RS_A], 4, t + CG_RS_SILENT_EVERY_MS);
 	CHECK(cg_rs_kick(&nm, t + 2 * CG_RS_SILENT_EVERY_MS));
 	CHECK(nm.q[CG_RS_A].inflight && nm.q[CG_RS_A].id == 4);
+	/* New addresses end the episode: the next silence is looked up at once,
+	 * not 15 s after the last kick. */
+	{
+		int two[] = { 2 };
+		uint64_t u = t + 3 * CG_RS_SILENT_EVERY_MS;
+
+		CHECK(nm.kick_ms != 0);
+		r = answer4(two, 1, 600);
+		CHECK_EQ(cg_rs_answer(&nm, CG_RS_A, &r, 1, u), 1);
+		CHECK_EQ(nm.kick_ms, 0);
+		CHECK(cg_rs_kick(&nm, u + CG_RS_SILENT_MS));
+	}
 }
 
 static void test_pairs(void)

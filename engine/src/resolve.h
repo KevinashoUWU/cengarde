@@ -20,13 +20,15 @@
  * - An answer without addresses (NXDOMAIN, or no record of the family)
  *   takes the family's addresses away only while the name is silent: a
  *   flaky resolver never takes away an address the server answers on. The
- *   next lookup after CG_RS_NEG_MS.
+ *   next lookup after CG_RS_NEG_MS, or CG_RS_EMPTY_MS when the name is left
+ *   with no address at all: a dynamic DNS record may be back in seconds.
  * - A lookup that fails keeps what the name had (the last good answer) and
  *   tries again: 1 s doubling up to 15 s while the question never had an
  *   answer (a boot), 5 s doubling up to 60 s after one.
  * - Silent: a name with addresses on which no link has been live for
  *   CG_RS_SILENT_MS (its server moved, or is down): looked up at once, and
- *   again every CG_RS_SILENT_EVERY_MS while that lasts, whatever the TTL.
+ *   again every CG_RS_SILENT_EVERY_MS while that lasts, whatever the TTL;
+ *   new addresses end that, so the next silence is looked up at once.
  *   When the server's address changes, the cut is the links' stall
  *   detection, plus that, plus what the dynamic DNS and the resolvers'
  *   caches take to give the new address.
@@ -48,7 +50,8 @@
 
 #define CG_RS_TTL_MIN_MS 30000u
 #define CG_RS_TTL_MAX_MS 900000u
-#define CG_RS_NEG_MS 300000u         /* after an answer without addresses */
+#define CG_RS_NEG_MS 300000u         /* after an answer without addresses, while the name has others */
+#define CG_RS_EMPTY_MS 15000u        /* after one that leaves the name with no address at all */
 #define CG_RS_SILENT_MS 2000u        /* no link live on a name's addresses: look it up */
 #define CG_RS_SILENT_EVERY_MS 15000u /* and again this often while that lasts */
 #define CG_RS_TIMEOUT_MS 2000u       /* an attempt */
@@ -222,13 +225,16 @@ static inline int cg_rs_answer(struct cg_rsname *nm, int f, const struct cg_dns_
 		n = silent ? 0 : q->n;
 		memset(a, 0, sizeof(a));
 		memcpy(a, q->addr, (size_t)n * 16);
-		q->due_ms = now_ms + CG_RS_NEG_MS;
+		/* A name left with nothing to send to is asked again soon: its
+		 * record may be back in seconds (a dynamic DNS update). */
+		q->due_ms = now_ms + (n || nm->q[f ^ 1].n ? CG_RS_NEG_MS : CG_RS_EMPTY_MS);
 	}
 	if (n == q->n && !memcmp(a, q->addr, sizeof(a)))
 		return 0;
 	q->n = (uint8_t)n;
 	memcpy(q->addr, a, sizeof(a));
 	nm->addrs_ms = now_ms;
+	nm->kick_ms = 0; /* new addresses: the next silence is a new one, looked up at once */
 	return 1;
 }
 

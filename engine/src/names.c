@@ -265,7 +265,8 @@ int cg_names_read(struct cg_names *s, int ep, unsigned idx, uint64_t now_ms)
 	struct cg_rsq *q;
 	struct cg_dns_result r;
 	uint8_t buf[1500];
-	char was[512], now[512];
+	char was_buf[512], now[512];
+	const char *was;
 
 	if (k >= CG_MAX_NAMES)
 		return 0;
@@ -294,7 +295,7 @@ int cg_names_read(struct cg_names *s, int ep, unsigned idx, uint64_t now_ms)
 			nm->adv[f] = r.outcome; /* the next pair, at the tick */
 			return 0;
 		}
-		addrs_str(nm, was, sizeof(was));
+		was = addrs_str(nm, was_buf, sizeof(was_buf));
 		silent = cg_rs_silent(&nm->rs, now_ms);
 		changed = cg_rs_answer(&nm->rs, f, &r, silent, now_ms);
 		memcpy(nm->via, nm->at[f], sizeof(nm->via)); /* the same size */
@@ -308,9 +309,13 @@ int cg_names_read(struct cg_names *s, int ep, unsigned idx, uint64_t now_ms)
 				cg_info("server name %s: %s for IPv%c from %s while the server answers there: keeping %s",
 					nm->name, nm->err, f == CG_RS_AAAA ? '6' : '4', nm->via, addrs_str(nm, now, sizeof(now)));
 		}
-		if (changed)
+		if (changed && r.outcome == CG_DNS_ADDRS)
 			cg_info("server name %s: %s (was %s; TTL %u s, from %s)", nm->name, addrs_str(nm, now, sizeof(now)),
-				was, r.outcome == CG_DNS_ADDRS ? r.ttl : 0, nm->via);
+				was, r.ttl, nm->via);
+		else if (changed)
+			cg_info("server name %s: %s (was %s; %s for IPv%c from %s, and no link is live there)", nm->name,
+				addrs_str(nm, now, sizeof(now)), was, cg_dns_outcome_name(r.outcome), f == CG_RS_AAAA ? '6' : '4',
+				nm->via);
 		return changed;
 	}
 	return 0;
