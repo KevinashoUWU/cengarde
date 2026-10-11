@@ -6,8 +6,9 @@
   (herramientas del VPS, aún v3; paquetes 0.4.5), el 3d2a (protocolo v4 en
   el motor, un router por servidor; paquetes 0.5.0), el 3d2b (varios
   routers en el motor del servidor; paquetes 0.5.1) y el 3d2c (varios
-  routers en las herramientas del VPS y en OpenWrt; paquetes 0.5.2).
-  Pendientes los PR 4 y 5.
+  routers en las herramientas del VPS y en OpenWrt; paquetes 0.5.2). El
+  PR 4 (IPv6 dentro del túnel, apagado por defecto; paquetes 0.5.3), hecho
+  y sin probar en hardware. Pendiente el PR 5.
 - **Fuentes:**
   - código del PR 1 (`git log ebe570b..823e4dd`):
     - `engine/src/epoch.h`; `client.c:442` (`ms_since_new`), `:456`
@@ -153,7 +154,19 @@
   - el panel de reenvío: `cengarde-vps-setup forward add|del NOMBRE
     tcp:8080=80 udp:5000-5010 both:25565`, que rechaza puertos reservados,
     solapes y lo que pase del límite de cada router.
-- **Siguiente:** el PR 4, IPv6 dentro del túnel.
+- **Lo que cerró el PR 4** (IPv6 dentro del túnel, paquetes 0.5.3, sin
+  cambiar el protocolo):
+  - apagado por defecto en los dos extremos: `tunnel_ipv6` en el router
+    (LuCI, pestaña *Túnel*) y `cengarde-vps-setup ipv6 on` en el VPS (o el
+    cloud-config, que sigue al interruptor);
+  - cada router usa la ULA de su secreto, `::2` en el router y `::1` en el
+    VPS, con NAT66 en los dos extremos: el proveedor no le enruta un
+    prefijo al VPS;
+  - un dispositivo de la LAN con solo una ULA prefiere IPv4 para un sitio
+    que tiene las dos (RFC 6724): sirve sobre todo para destinos solo IPv6;
+  - en el VPS, el reenvío IPv6 se enciende después de pasar `accept_ra` a 2
+    donde el kernel toma los anuncios de router; sin medir en Vultr.
+- **Siguiente:** el PR 5, nombres con DNS dinámico.
 
 ## Contexto
 
@@ -880,6 +893,63 @@ Sin cambiar el protocolo: el motor ya servía a varios routers desde el
     con y sin «enrutar todo», una `tunnel_addr` inválida) y `luci.mjs` (los
     campos, el cloud-config y el comando).
 
+## PR 4: IPv6 dentro del túnel (hecho)
+
+Sin cambiar el protocolo: el IPv6 viaja dentro de WireGuard, como el IPv4.
+Apagado por defecto en los dos extremos (decisión 3 del usuario: se
+enciende después de probarlo en la Pi).
+
+- **Direcciones:** la ULA /48 que deriva del secreto (`CG_TUNNEL_ULA` de
+  `cengarde keys`, desde el PR 1): `ULA::2/128` en `wgcg`, `ULA::1/128` en
+  `cg-NOMBRE` del VPS. Cada router tiene la suya, así que varios routers en
+  un VPS no chocan.
+- **El router** (`cengarde-setup`, con `tunnel_ipv6`):
+  - `wgcg` suma `ULA::2/128`, con una `route6` propia a `ULA::1` (como la de
+    10.79.0.1), y el par permite `::/1 8000::/1`, que con «enrutar todo»
+    van por `wgcg`;
+  - NAT66 con un include de firewall4 (`nat66.nft`, primero en `srcnat`,
+    verificado en `fw4.uc`): la LAN sale con la dirección del router en el
+    túnel;
+  - con «enrutar todo», `ra_default 1` en `dhcp.lan` (marcado
+    `cengarde_ra_default`): odhcpd anuncia una ruta por defecto aunque la
+    LAN solo tenga su ULA (`router.c`). Un valor que puso el usuario no se
+    toca;
+  - el estado lleva `tunnel_ipv6`, `tunnel_ula` y el problema
+    `no_ula_prefix` (la LAN sin ULA no tiene nada que mandar); LuCI, el
+    interruptor y la dirección.
+- **El VPS** (`TUNNEL_IPV6` en `nat.conf`, `cengarde-vps-setup ipv6 on|off`):
+  - cada `cg-NOMBRE` suma `ULA::1/128` y `ULA::2/128` en `AllowedIPs` (se
+    reinicia una vez, al cambiar sus direcciones); un servidor sin IPv6
+    rechaza `ipv6 on`;
+  - `cengarde-nat` reenvía el IPv6 de los routers, nunca de uno a otro, y lo
+    enmascara (`-s fc00::/7 ! -o cg-+ -j MASQUERADE`, o por `PUB_IF`);
+  - el reenvío IPv6 se enciende después de las reglas, y antes `accept_ra`
+    pasa de 1 a 2 en cada interfaz donde el kernel toma los anuncios: si no,
+    el VPS perdería su propia ruta IPv6 por defecto. Una interfaz cuyos
+    anuncios toma un demonio (systemd-networkd: `accept_ra` 0) se deja
+    igual. `check` vuelve a encenderlo si alguien lo apaga; `down` lo deja
+    encendido, porque otra cosa puede necesitarlo.
+- **Riesgos sin medir:**
+  - un VPS con systemd-networkd nuevo (Debian 13, Ubuntu 26.04) podría
+    decidir los anuncios de router según el reenvío global [MEDIR en
+    Vultr antes de encenderlo por defecto];
+  - un VPS sin IPv6 con el router encendido: el IPv6 del router se pierde
+    dentro del túnel; los equipos de la LAN igual prefieren IPv4;
+  - los enlaces IPv6 del motor conviven con las rutas `::/1` de `wgcg`
+    porque sus sockets van atados al dispositivo del enlace; el e2e lo
+    prueba con la VPS de QEMU.
+- **Pruebas:**
+  - en este contenedor (sin IPv6 en el kernel): `nat-rules.sh` (las reglas
+    con `TUNNEL_IPV6`, sin y con `PUB_IF`, contra archivos de referencia),
+    `setup-dryrun.sh` (`ipv6 on|off`, la importación) y `netns.sh`;
+    shellcheck, `node --check` e `i18n.py`; un arnés de `uci` falso con el
+    `cengarde-setup` real, en dash y en busybox ash (133 chequeos, con tres
+    mutantes cazados);
+  - solo en el CI: `security.sh` (NAT66 con tráfico real: apagado no sale,
+    encendido sale con la dirección del VPS, `accept_ra` 2, `check` vuelve
+    a encender el reenvío) y el e2e en QEMU (encender y apagar en el router,
+    `ping -6` a `ULA::1` por `wgcg`).
+
 ## Medidas
 
 - **Varios routers** (PR 3d2b, 2026-10-10, contenedor de 4 CPU):
@@ -1036,12 +1106,13 @@ Sin cambiar el protocolo: el motor ya servía a varios routers desde el
   `window_resets = 0` con v4; paquetes 0.5.0~~ (hechos en el 3d2a);
   ~~`bench/macbench` y el escenario `multiclient`~~ (hechos en el 3d2b).
 
-### PR 4: IPv6 dentro del túnel
+### ~~PR 4: IPv6 dentro del túnel~~ (hecho, sección «PR 4»)
 
-- ULA derivada y NAT66 en el router (include de fw4) y en el VPS;
-  `ra_default` con marca; interruptor apagado por defecto.
-- En el VPS, reenvío IPv6 siempre junto con `accept_ra = 2`, sin depender
-  de netplan.
+- ~~ULA derivada y NAT66 en el router (include de fw4) y en el VPS;
+  `ra_default` con marca; interruptor apagado por defecto.~~
+- ~~En el VPS, reenvío IPv6 siempre junto con `accept_ra = 2`, sin depender
+  de netplan.~~ Con `TUNNEL_IPV6` y solo donde el kernel toma los anuncios.
+- Falta: probarlo en la Pi y en Vultr antes de encenderlo por defecto.
 
 ### PR 5: nombres con DNS dinámico
 
@@ -1090,3 +1161,5 @@ Sin cambiar el protocolo: el motor ya servía a varios routers desde el
 - 2026-10-11: PR 3d2c hecho (varios routers en `cengarde-vps-setup`, el
   panel `forward add|del`, la dirección del túnel derivada en OpenWrt;
   paquetes 0.5.2). Cierra el PR 3.
+- 2026-10-11: PR 4 hecho (IPv6 dentro del túnel, apagado por defecto;
+  paquetes 0.5.3), sin probar en hardware.

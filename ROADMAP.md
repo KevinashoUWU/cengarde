@@ -492,7 +492,8 @@ hardware real (historias [007](docs/historias/007-openwrt-y-vps.md) y
       0.5.1) y el 3d2c (`cengarde-vps-setup` con varios routers y su panel
       de reenvío, y en OpenWrt la dirección del túnel derivada del secreto;
       paquetes 0.5.2);
-    - PR 4: IPv6 dentro del túnel, apagado por defecto;
+    - ~~PR 4: IPv6 dentro del túnel, apagado por defecto~~: hecho
+      (paquetes 0.5.3), falta probarlo en la Pi y en Vultr;
     - PR 5: nombres con DNS dinámico, también para un servidor casero.
 
 - **OpenWrt.** El destino es OpenWrt limpio (24.10 y 25.12, kernel 6.x), no
