@@ -17,7 +17,7 @@ static uint64_t chain(const struct cg_hintidx *x, uint8_t h)
 void test_clients(void)
 {
 	struct cg_hintidx x;
-	uint8_t hint[CG_MAX_CLIENTS], used[CG_MAX_CLIENTS];
+	uint8_t hint[CG_MAX_CLIENTS] = { 0 }, used[CG_MAX_CLIENTS] = { 0 };
 	int prev, ordered;
 
 	/* No client: every hint is nobody's. */

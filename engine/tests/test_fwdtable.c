@@ -251,7 +251,7 @@ static void test_parse_report(void)
 		n = 0;
 		CHECK_EQ(cg_fwd_parse(entry, 3, r, &n, CG_FWD_MAX, err, sizeof(err)), -1);
 		if (len <= 40)
-			snprintf(want, sizeof(want), "'%s': not a port (1 to 65535)", entry);
+			snprintf(want, sizeof(want), "'%.40s': not a port (1 to 65535)", entry);
 		else
 			snprintf(want, sizeof(want), "'%.40s...': not a port (1 to 65535)", entry);
 		CHECK(!strcmp(err, want));
@@ -394,7 +394,7 @@ static void test_clash(void)
 
 static void test_overlap(void)
 {
-	struct cg_fwd_rule r[8];
+	struct cg_fwd_rule r[8] = { 0 };
 	int i = -7, j = -7;
 
 	CHECK(!cg_fwd_overlap(r, 0, &i, &j));
@@ -466,7 +466,7 @@ static void test_overlap(void)
 
 static void test_holder(void)
 {
-	struct cg_pass_cand c[4];
+	struct cg_pass_cand c[4] = { 0 };
 
 	/* Nobody: -1, with or without a holder to keep. */
 	CHECK_EQ(cg_pass_holder(c, 0, -1), -1);
