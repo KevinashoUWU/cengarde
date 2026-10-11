@@ -596,6 +596,13 @@ lista de comprobación de partida.
 > redundancia de hoy entrega lo del mejor enlace. El registrador de campo
 > (`cengarde-rec` en la Pi, `bench/fieldrec.py`) va a medir la correlación
 > entre operadores y el patrón de Starlink.
+>
+> **Paso 0 hecho salvo los datos de campo (2026-10-11, paquetes 0.5.5):**
+> QUIC y dispersión en `bond`; en el motor, la tardanza conjunta por
+> conjunto de enlaces, la pérdida en todos los enlaces y los tamaños de
+> WireGuard, que `fieldrec.py` convierte en P(todos tarde) y el mejor par
+> para k-de-N. Las retransmisiones de `starlink15` resultaron pérdidas en
+> los cortes, no desorden (historia 012). Falta la semana de la Pi.
 
 - **k-de-N:** cada paquete va solo por los k mejores enlaces, lo que ahorra
   datos en enlaces móviles.
