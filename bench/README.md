@@ -27,7 +27,8 @@ Las cifras citadas en [`ROADMAP.md`](../ROADMAP.md) y en las historias 001,
 root, iproute2 (`ip`, `tc` con `sch_tbf`), gcc, make y python3. Go solo hace
 falta para la línea base del engarde Go (`ENGINE=go`); git, para esa línea
 base y para `restart REF`; iptables, para `fallback`; iperf3,
-wireguard-tools y `sch_netem`, para `bond`; y curl, para las demos del Go.
+wireguard-tools y `sch_netem`, para `bond`; ffmpeg (con libsrt para SRT), `ss` y python3,
+para `stream`; y curl, para las demos del Go.
 
 ## Uso
 
@@ -39,6 +40,7 @@ sudo bench/lab.sh health   # salud de enlaces: un enlace con 500 ms de cola, sub
 sudo bench/lab.sh control  # con tráfico: pausar un enlace, recargar dos veces, IP pass on/off; sin pérdidas (historia 009)
 sudo bench/lab.sh muteoff  # una recarga con mute_behind_ms = 0 devuelve al instante un enlace silenciado, subida y bajada (lab.d, va en ci)
 sudo bench/lab.sh multiclient  # tres routers en un servidor: tráfico sin cruces, IP pass y tabla de reenvío, recargas (lab.d, va en ci)
+sudo bench/lab.sh stream   # transmisión simulada: RTMP y SRT por el túnel, con las grabaciones del motor y el informe de report.py (lab.d, a mano; ver bench/stream/)
 sudo bench/lab.sh latency  # latencia y CPU con busy_poll_us 0, 50 y 200, y el Go si está compilado (historia 006)
 sudo bench/lab.sh restart  # reinicios del servidor con tráfico: todos los enlaces vivos en 4 s (lab.d, va en ci)
 sudo bench/lab.sh restart ebe570b  # lo mismo con el motor de otro commit, p. ej. el de antes del arreglo
@@ -485,6 +487,18 @@ repeticiones en la misma máquina. Con 10 repeticiones y todos los casos el
 job tarda unos 165 min (el límite es de 200 y el primer paso rechaza lo que
 no cabe); para menos tiempo, elige casos: `equal reorder150 starlink15` con
 10 repeticiones son unos 80 min.
+
+### Transmisión simulada (`bench/stream/`)
+
+RTMP (TCP) y SRT (UDP) por el túnel sin una transmisión real: `send.sh` en el
+PC de la LAN de la Pi (imagen de prueba con reloj al milisegundo, NVENC o
+libx264, y lo que ve el emisor: `ss -tin` cada 100 ms, el progreso de ffmpeg,
+las estadísticas de SRT), `recv.sh` en un servidor propio (graba y anota la
+llegada de cada paquete de video) y `report.py`, que junta las dos puntas con
+la exportación de `fieldrec.py` y dice qué congelamiento o caída de la ventana
+TCP coincidió con un corte o un silenciado de un enlace. `lab.sh stream` lo
+corre de punta a punta en el laboratorio de `bond` (a mano). Comandos,
+claves, codificadores por máquina y lo que se probó: [stream/README.md](stream/README.md).
 
 ### `fieldrec`: el registrador de campo (`lab.d/fieldrec.sh`, `fieldrec.py`)
 
