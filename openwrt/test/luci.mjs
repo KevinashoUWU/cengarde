@@ -239,6 +239,10 @@ try {
 	await shot('05-status');
 	check(connected, 'the WireGuard tunnel is connected');
 	check(rows === UPLINKS.length, `all ${UPLINKS.length} uplinks active (got ${rows})`);
+	check(await page.locator('table.cengarde-links th:text-is("Subida")').count() === 1 &&
+		await page.locator('table.cengarde-links th:text-is("Bajada")').count() === 1,
+		'upload and download each have a column (in use or on standby)');
+	check(await page.locator('table.cengarde-links:has-text("silenciado")').count() === 0, 'no uplink reads "silenciado"');
 	check(await page.locator('.cengarde-problem').count() === 0, 'no problems reported');
 	check(await page.locator(`td:has-text("${derived}")`).count() > 0, 'the status shows the tunnel address');
 

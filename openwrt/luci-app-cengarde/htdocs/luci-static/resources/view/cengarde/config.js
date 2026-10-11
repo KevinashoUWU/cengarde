@@ -383,8 +383,8 @@ return view.extend({
 				? _('0 (never) or at least %d ms with this probe interval').format(3 * idle) : true;
 		};
 
-		o = s.taboption('advanced', form.Value, 'mute_behind_ms', _('Mute after falling behind (ms)'),
-			_('A link that stays this far behind the fastest one for the settle time stops carrying traffic until it catches up. 0: never.'));
+		o = s.taboption('advanced', form.Value, 'mute_behind_ms', _('Standby after falling behind (ms)'),
+			_('An uplink that stays this far behind the fastest one in a direction for the settle time goes on standby that way (probes only) until it catches up; the other direction is decided apart. 0: never.'));
 		o.datatype = 'range(0,60000)';
 		o.placeholder = '150';
 
@@ -393,7 +393,7 @@ return view.extend({
 		o.placeholder = '2000';
 
 		o = s.taboption('advanced', form.Value, 'min_active_links', _('Minimum active links'),
-			_('Never mute below this many links.'));
+			_('No uplink goes on standby if that would leave fewer than this many in use.'));
 		o.datatype = 'range(1,16)';
 		o.placeholder = '2';
 

@@ -296,8 +296,8 @@ configuración del router:
 - **DNS de la pestaña Túnel:** solo los IPv4 van por el túnel; los IPv6 se
   dejan fuera, también con «IPv6 por el túnel» (por ahora).
 - **Desinstalar** el paquete también lo deshace todo.
-- **Pestaña Avanzado:** las perillas del motor (silenciado de enlaces
-  lentos, sondas, sondeo activo); valen los valores por defecto.
+- **Pestaña Avanzado:** las perillas del motor (paso a reserva de los
+  enlaces lentos, sondas, sondeo activo); valen los valores por defecto.
 - **Hilos por enlace** (pestaña *Avanzado*): *Desactivado (el código de
   siempre)*, el valor por omisión hasta medirlos en la Pi; *Activado (un
   hilo por enlace)*, para que un enlace o un hilo atascado no frene a los
@@ -316,13 +316,18 @@ configuración del router:
   confirme.
 - **Tráfico** y copias duplicadas descartadas.
 - **Por enlace:**
-  - estado: activo, silenciado, esperando al VPS, sin respuesta o en pausa;
+  - estado: activo, esperando al VPS, sin respuesta o en pausa;
+  - subida y bajada, cada una «en uso» o «en reserva». Cada sentido se
+    decide aparte, en el extremo que envía: es normal subir por un operador
+    y bajar por otro. En reserva, el enlace solo lleva sondas hasta que
+    alcanza al mejor, y siempre quedan en uso al menos los enlaces activos
+    mínimos (pestaña *Avanzado*);
   - RTT;
-  - *atraso frente al más rápido*: pasado el límite, el enlace se silencia;
+  - *atraso frente al más rápido* en la subida: pasado el límite, la
+    subida de ese enlace pasa a reserva;
   - la dirección del VPS que usa y su familia, con «alternativa» si la
     primera que puede usar no contestó;
   - la MTU del camino hasta el VPS;
-  - si el VPS lo usa para bajar;
   - qué parte de la bajada llegó primero por él;
   - **Pausar / Reanudar:** saca el enlace sin tocar la configuración (por
     ejemplo, un módem que va a cambiar de plan). La pausa se mantiene hasta
@@ -348,7 +353,7 @@ ping -c 3 10.79.0.1           # el VPS a través del túnel
 
 El registrador de campo (`cengarde-rec`) guarda el estado del motor en
 archivos por hora comprimidos con gzip, con un tope de tamaño. Por cada
-enlace queda el RTT, las caídas, el silenciado y los contadores, en la
+enlace queda el RTT, las caídas, el paso a reserva y los contadores, en la
 resolución de `status_interval_ms`. Con eso, `bench/fieldrec.py` responde a
 lo que el bonding necesita del terreno ([historia 012](../docs/historias/012-bonding.md)):
 

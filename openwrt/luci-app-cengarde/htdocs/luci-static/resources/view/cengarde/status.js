@@ -58,6 +58,14 @@ function badge(text, color, title) {
 	}, [ text ]);
 }
 
+// An uplink on standby for one direction: slower than the best one there, it
+// carries only probes until it catches up. Not a fault, so not in a warning
+// colour: each direction is decided apart (upload here, download at the VPS),
+// and carriers are often faster one way than the other.
+function direction(standby, title) {
+	return standby ? badge(_('standby'), '#68a', title) : _('in use');
+}
+
 function linkState(l) {
 	let b;
 
@@ -69,8 +77,6 @@ function linkState(l) {
 		b = badge(_('waiting for the VPS'), '#d80');
 	else if (l.state == 'stalled')
 		b = badge(_('no answer'), '#c33');
-	else if (l.upload == 'muted')
-		b = badge(_('muted'), '#d80');
 	else
 		b = badge(_('active'), '#393');
 	return (l.override == 'on') ? E('span', {}, [ b, ' ', E('small', {}, [ _('forced on') ]) ]) : b;
@@ -192,10 +198,11 @@ return view.extend({
 				E('th', { 'class': 'th' }, [ _('Behind the fastest') ]),
 				E('th', { 'class': 'th' }, [ _('VPS address') ]),
 				E('th', { 'class': 'th' }, [ _('Path MTU') ]),
-				E('th', { 'class': 'th' }, [ _('From the VPS') ]),
+				E('th', { 'class': 'th' }, [ _('Upload (to the VPS)') ]),
+				E('th', { 'class': 'th' }, [ _('Download (from the VPS)') ]),
 				E('th', { 'class': 'th' }, [ _('Arrived first') ]),
 				E('th', { 'class': 'th' }, [ _('Sent') ]),
-				E('th', { 'class': 'th' }, [ _('Mutes') ]),
+				E('th', { 'class': 'th' }, [ _('Upload to standby') ]),
 				E('th', { 'class': 'th' }, [ ' ' ])
 			])
 		]);
@@ -212,7 +219,10 @@ return view.extend({
 				ms(out ? null : l.upload_behind_ms),
 				out ? '-' : vpsAddress(l),
 				(out || !l.path_mtu) ? '-' : '%d'.format(l.path_mtu),
-				out ? '-' : l.download_muted ? badge(_('muted by the VPS'), '#d80') : _('in use'),
+				out ? '-' : direction(l.upload == 'muted',
+					_('Behind the fastest uplink by more than the limit: the router sends through the others, and only probes through this one, until it catches up.')),
+				out ? '-' : direction(l.download_muted,
+					_('Slower than the best uplink from the VPS: the VPS sends through the others, and only probes through this one, until it catches up.')),
 				firsts ? '%.0f %%'.format(100 * l.rx_first / firsts) : '-',
 				'%1024.2mB'.format(l.tx_bytes),
 				'%d'.format(l.upload_mutes),
@@ -251,7 +261,9 @@ return view.extend({
 			E('h3', {}, [ _('Uplinks') ]),
 			this.renderLinks(st),
 			E('p', { 'class': 'cbi-section-descr' }, [
-				_('Behind the fastest: how much later this uplink delivers than the quickest one; past the limit it gets muted (no traffic, probes only) until it catches up. Arrived first: share of the download that came through this uplink before any other copy. Pause: takes an uplink out without touching the configuration, until you resume it or cengarde restarts.'),
+				_('Upload and download are decided apart, by the end that sends: an uplink can be on standby one way and in use the other, as is usual when carriers are faster one way (upload through one, download through another). On standby it carries only probes until it catches up with the best, and at least the minimum of active uplinks (Advanced tab) always stays in use.'),
+				' ',
+				_('Behind the fastest: how much later this uplink delivers the upload than the quickest one; past the limit its upload goes on standby. Arrived first: share of the download that came through this uplink before any other copy. Pause: takes an uplink out without touching the configuration, until you resume it or cengarde restarts.'),
 				' ',
 				_('VPS address: where the uplink sends to; "failover" when the first VPS address it can use did not answer. Path MTU: the largest packet the path to the VPS takes.')
 			])

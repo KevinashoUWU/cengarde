@@ -169,10 +169,10 @@ msgstr ""
 msgid "0 (never) or at least %d ms with this probe interval"
 msgstr ""
 
-msgid "Mute after falling behind (ms)"
+msgid "Standby after falling behind (ms)"
 msgstr ""
 
-msgid "A link that stays this far behind the fastest one for the settle time stops carrying traffic until it catches up. 0: never."
+msgid "An uplink that stays this far behind the fastest one in a direction for the settle time goes on standby that way (probes only) until it catches up; the other direction is decided apart. 0: never."
 msgstr ""
 
 msgid "Settle time (ms)"
@@ -181,7 +181,7 @@ msgstr ""
 msgid "Minimum active links"
 msgstr ""
 
-msgid "Never mute below this many links."
+msgid "No uplink goes on standby if that would leave fewer than this many in use."
 msgstr ""
 
 msgid "Probe interval (ms)"
@@ -295,6 +295,12 @@ msgstr ""
 msgid "%d h ago"
 msgstr ""
 
+msgid "standby"
+msgstr ""
+
+msgid "in use"
+msgstr ""
+
 msgid "paused"
 msgstr ""
 
@@ -305,9 +311,6 @@ msgid "waiting for the VPS"
 msgstr ""
 
 msgid "no answer"
-msgstr ""
-
-msgid "muted"
 msgstr ""
 
 msgid "active"
@@ -403,7 +406,10 @@ msgstr ""
 msgid "Path MTU"
 msgstr ""
 
-msgid "From the VPS"
+msgid "Upload (to the VPS)"
+msgstr ""
+
+msgid "Download (from the VPS)"
 msgstr ""
 
 msgid "Arrived first"
@@ -412,13 +418,13 @@ msgstr ""
 msgid "Sent"
 msgstr ""
 
-msgid "Mutes"
+msgid "Upload to standby"
 msgstr ""
 
-msgid "muted by the VPS"
+msgid "Behind the fastest uplink by more than the limit: the router sends through the others, and only probes through this one, until it catches up."
 msgstr ""
 
-msgid "in use"
+msgid "Slower than the best uplink from the VPS: the VPS sends through the others, and only probes through this one, until it catches up."
 msgstr ""
 
 msgid "Back to what the configuration says"
@@ -451,7 +457,10 @@ msgstr ""
 msgid "Status"
 msgstr ""
 
-msgid "Behind the fastest: how much later this uplink delivers than the quickest one; past the limit it gets muted (no traffic, probes only) until it catches up. Arrived first: share of the download that came through this uplink before any other copy. Pause: takes an uplink out without touching the configuration, until you resume it or cengarde restarts."
+msgid "Upload and download are decided apart, by the end that sends: an uplink can be on standby one way and in use the other, as is usual when carriers are faster one way (upload through one, download through another). On standby it carries only probes until it catches up with the best, and at least the minimum of active uplinks (Advanced tab) always stays in use."
+msgstr ""
+
+msgid "Behind the fastest: how much later this uplink delivers the upload than the quickest one; past the limit its upload goes on standby. Arrived first: share of the download that came through this uplink before any other copy. Pause: takes an uplink out without touching the configuration, until you resume it or cengarde restarts."
 msgstr ""
 
 msgid "VPS address: where the uplink sends to; \"failover\" when the first VPS address it can use did not answer. Path MTU: the largest packet the path to the VPS takes."

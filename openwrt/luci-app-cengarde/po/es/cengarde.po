@@ -171,11 +171,11 @@ msgstr "Un enlace que pasa este tiempo sin respuesta del VPS prueba la siguiente
 msgid "0 (never) or at least %d ms with this probe interval"
 msgstr "0 (nunca) o al menos %d ms con este intervalo de sondas"
 
-msgid "Mute after falling behind (ms)"
-msgstr "Silenciar tras atrasarse (ms)"
+msgid "Standby after falling behind (ms)"
+msgstr "Pasar a reserva tras atrasarse (ms)"
 
-msgid "A link that stays this far behind the fastest one for the settle time stops carrying traffic until it catches up. 0: never."
-msgstr "Un enlace que se mantiene así de atrasado respecto del más rápido durante el tiempo de asentamiento deja de llevar tráfico hasta que se recupere. 0: nunca."
+msgid "An uplink that stays this far behind the fastest one in a direction for the settle time goes on standby that way (probes only) until it catches up; the other direction is decided apart. 0: never."
+msgstr "Un enlace que se queda así de atrás del más rápido en un sentido durante el tiempo de asentamiento pasa a reserva en ese sentido (solo sondas) hasta que se recupera; el otro sentido se decide aparte. 0: nunca."
 
 msgid "Settle time (ms)"
 msgstr "Tiempo de asentamiento (ms)"
@@ -183,8 +183,8 @@ msgstr "Tiempo de asentamiento (ms)"
 msgid "Minimum active links"
 msgstr "Mínimo de enlaces activos"
 
-msgid "Never mute below this many links."
-msgstr "Nunca silenciar por debajo de esta cantidad de enlaces."
+msgid "No uplink goes on standby if that would leave fewer than this many in use."
+msgstr "Ningún enlace pasa a reserva si eso dejara menos enlaces en uso que esta cantidad."
 
 msgid "Probe interval (ms)"
 msgstr "Intervalo de sondas (ms)"
@@ -297,6 +297,12 @@ msgstr "hace %d min"
 msgid "%d h ago"
 msgstr "hace %d h"
 
+msgid "standby"
+msgstr "en reserva"
+
+msgid "in use"
+msgstr "en uso"
+
 msgid "paused"
 msgstr "en pausa"
 
@@ -308,9 +314,6 @@ msgstr "esperando al VPS"
 
 msgid "no answer"
 msgstr "sin respuesta"
-
-msgid "muted"
-msgstr "silenciado"
 
 msgid "active"
 msgstr "activo"
@@ -405,8 +408,11 @@ msgstr "Dirección del VPS"
 msgid "Path MTU"
 msgstr "MTU del camino"
 
-msgid "From the VPS"
-msgstr "Desde el VPS"
+msgid "Upload (to the VPS)"
+msgstr "Subida"
+
+msgid "Download (from the VPS)"
+msgstr "Bajada"
 
 msgid "Arrived first"
 msgstr "Llegó primero"
@@ -414,14 +420,14 @@ msgstr "Llegó primero"
 msgid "Sent"
 msgstr "Enviado"
 
-msgid "Mutes"
-msgstr "Silenciados"
+msgid "Upload to standby"
+msgstr "Subida a reserva"
 
-msgid "muted by the VPS"
-msgstr "silenciado por el VPS"
+msgid "Behind the fastest uplink by more than the limit: the router sends through the others, and only probes through this one, until it catches up."
+msgstr "Más atrás del enlace más rápido que el límite: el router envía por los demás, y por este solo sondas, hasta que se recupere."
 
-msgid "in use"
-msgstr "en uso"
+msgid "Slower than the best uplink from the VPS: the VPS sends through the others, and only probes through this one, until it catches up."
+msgstr "Más lento que el mejor enlace desde el VPS: el VPS envía por los demás, y por este solo sondas, hasta que se recupere."
 
 msgid "Back to what the configuration says"
 msgstr "Volver a lo que dice la configuración"
@@ -453,8 +459,11 @@ msgstr "No se pudo leer el estado (¿está instalado el paquete cengarde?)."
 msgid "Status"
 msgstr "Estado"
 
-msgid "Behind the fastest: how much later this uplink delivers than the quickest one; past the limit it gets muted (no traffic, probes only) until it catches up. Arrived first: share of the download that came through this uplink before any other copy. Pause: takes an uplink out without touching the configuration, until you resume it or cengarde restarts."
-msgstr "Atraso frente al más rápido: cuánto más tarde entrega este enlace que el más rápido; pasado el límite se silencia (sin tráfico, solo sondas) hasta que se recupere. Llegó primero: parte de la bajada que entró por este enlace antes que cualquier otra copia. Pausar: saca un enlace sin tocar la configuración, hasta que lo reanudes o cengarde se reinicie."
+msgid "Upload and download are decided apart, by the end that sends: an uplink can be on standby one way and in use the other, as is usual when carriers are faster one way (upload through one, download through another). On standby it carries only probes until it catches up with the best, and at least the minimum of active uplinks (Advanced tab) always stays in use."
+msgstr "La subida y la bajada se deciden aparte, cada una en el extremo que envía: un enlace puede estar en reserva en un sentido y en uso en el otro, algo normal cuando un operador es más rápido en un sentido (subir por uno, bajar por otro). En reserva solo lleva sondas hasta que alcanza al mejor, y siempre quedan en uso al menos los enlaces activos mínimos (pestaña Avanzado)."
+
+msgid "Behind the fastest: how much later this uplink delivers the upload than the quickest one; past the limit its upload goes on standby. Arrived first: share of the download that came through this uplink before any other copy. Pause: takes an uplink out without touching the configuration, until you resume it or cengarde restarts."
+msgstr "Atraso frente al más rápido: cuánto más tarde entrega este enlace la subida que el más rápido; pasado el límite, su subida pasa a reserva. Llegó primero: parte de la bajada que entró por este enlace antes que cualquier otra copia. Pausar: saca un enlace sin tocar la configuración, hasta que lo reanudes o cengarde se reinicie."
 
 msgid "VPS address: where the uplink sends to; \"failover\" when the first VPS address it can use did not answer. Path MTU: the largest packet the path to the VPS takes."
 msgstr "Dirección del VPS: adónde envía el enlace; \"alternativa\" cuando la primera dirección del VPS que puede usar no contestó. MTU del camino: el paquete más grande que admite el camino hasta el VPS."
