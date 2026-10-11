@@ -20,7 +20,8 @@
  *   6. the MAC, paid only by NEW packets;
  *   7. the window is marked, only now;
  *   8. a probe reply goes back to the caller (it updates the link's health);
- *      DATA is the first copy, noted in the arrival ring, for WireGuard.
+ *      DATA is the first copy, noted in the arrival ring (expected on every
+ *      link of expect, or on its own link only when split), for WireGuard.
  * A server that restarted needs no window reset here: it goes on past what
  * the probes say we received (cg_probe_info), and the reorderer takes its
  * 2^20 leap as a far packet, then resyncs (reorder.h).
@@ -118,9 +119,10 @@ static inline enum cg_rxv cg_rx_hello(struct cg_rxs *r, struct cg_rxl *l, const 
 	return CG_RXV_HELLO;
 }
 
-/* One datagram of len bytes in b from link (its socket of generation gen),
- * received at now_us; trunc: the kernel cut it. expect: the links the server
- * should send each packet on (for the arrival ring). *h gets the header. */
+/* One datagram of len bytes in b from link (its socket of generation gen,
+ * an id below CG_MAX_LINKS), received at now_us; trunc: the kernel cut it.
+ * expect: the links the server should send each duplicated packet on (for
+ * the arrival ring). *h gets the header. */
 static inline enum cg_rxv cg_rx_entry(struct cg_rxs *r, struct cg_rxl *l, unsigned link, uint8_t gen,
 				      const uint8_t *b, size_t len, int trunc, uint64_t now_us, uint16_t expect,
 				      struct cg_hdr *h)
@@ -170,7 +172,9 @@ static inline enum cg_rxv cg_rx_entry(struct cg_rxs *r, struct cg_rxl *l, unsign
 		r->newest_ms = now_ms;
 	if (h->type == CG_T_PROBE_REPLY)
 		return CG_RXV_REPLY;
-	cg_arr_first(&r->arr, r->rx, h->seq, now32, link, expect);
+	/* A split packet (split.h) comes on its one link: the others do not
+	 * miss it, and are not late for it. */
+	cg_arr_first(&r->arr, r->rx, h->seq, now32, link, h->flags & CG_F_SPLIT ? (uint16_t)(1u << link) : expect);
 	return CG_RXV_DATA;
 }
 

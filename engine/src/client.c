@@ -6,7 +6,9 @@
  * non-blocking sendmmsg per uplink, patching only the link byte. A full
  * uplink drops its own copies; it never stalls the others. Link health
  * (health.h) mutes uplinks that lag far behind the fastest one, from the
- * delays the server reports in its probe replies.
+ * delays the server reports in its probe replies. With split = force
+ * (split.h, the lab) a big data packet goes on one link instead, by smooth
+ * round-robin among the live, active links whose server answers.
  * Download: duplicates are recognised by sequence number before the MAC is
  * checked, so only the first copy of each packet pays for verification. A
  * server that started over with a sequence behind the window is recognised
@@ -64,6 +66,7 @@
 #include "pump.h"
 #include "replay.h"
 #include "sock.h"
+#include "split.h"
 #include "srvpick.h"
 #include "status.h"
 #include "thrplan.h"
@@ -74,6 +77,11 @@
 /* The output batch to WireGuard: a hub pass takes up to CG_BATCH slots of
  * each pump; a fuller batch (held packets released) is sent early. */
 #define DOUT_MAX (CG_MAX_PUMPS * CG_BATCH)
+
+/* split = force shares the packets out evenly (split.h): every link weighs
+ * 1. The configured weights are for split = on. */
+static const uint16_t split_equal[CG_MAX_LINKS] = { 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 };
+_Static_assert(CG_MAX_LINKS == 16, "split_equal has a weight per link");
 
 struct link {
 	int used;
@@ -101,6 +109,7 @@ struct link {
 	uint32_t unanswered; /* probes sent since the last reply */
 	uint64_t first_unanswered_ms;
 	uint32_t probe_announced; /* interval_ms of the last probe */
+	uint32_t probe_before;    /* and of the one before it */
 	uint32_t down_owd;        /* trip of the newest reply, for the next probe */
 	int have_down_owd;
 	int peer_muted; /* the server carries no download on this link */
@@ -143,6 +152,8 @@ struct client {
 
 	uint64_t up_pkts, up_bytes, up_toobig;
 	uint64_t up_split;   /* of up_pkts, packets split (split.h) instead of copied to every link */
+	struct cg_split sp;  /* the split's round-robin credits */
+	int8_t pick[CG_BATCH]; /* per packet of an upload batch: its one link (split), or -1 (every carrier) */
 	uint32_t up_max;     /* largest WireGuard datagram since the last path check */
 	uint32_t up_largest; /* the same over the last check period, for the status */
 	uint64_t down_pkts, down_bytes, down_wg_drops, down_no_peer;
@@ -633,7 +644,7 @@ static void link_open(struct client *c, struct link *l, const struct cg_iface *i
 	l->rxl.last_rx_ms = l->last_reply_ms = l->last_probe_ms = 0;
 	memset(&l->rxl.probes, 0, sizeof(l->rxl.probes));
 	l->srtt8_us = 0;
-	l->rtt_us = l->unanswered = l->probe_announced = 0;
+	l->rtt_us = l->unanswered = l->probe_announced = l->probe_before = 0;
 	l->have_down_owd = l->peer_muted = 0;
 	cg_health_reset(&c->uh[l - c->link], now_ms);
 	if (pumped(c)) {
@@ -846,15 +857,55 @@ static void path_check(struct client *c, uint64_t now_ms)
 	c->next_path_ms = now_ms + RECONCILE_MS;
 }
 
-/* Sends the m packets prepared in hdr/oiov: all of them on every carrying
- * link (health.h), one in mute_trickle on the other live links. */
-static void send_links(struct client *c, int m, uint64_t now_ms)
+/* The links that may take a share of a split upload (split.h): live and
+ * carrying, not muted for delay (guard G1: never a muted, standby or
+ * stalled link), and whose server answered within CG_SPLIT_STALE_PROBES of
+ * their probe interval (guard G3: a dead link loses its share in about
+ * 300 ms instead of the 1.3 s a stall takes). The interval is the longer of
+ * the last two announced: when traffic starts, the last reply may still be
+ * one of the idle interval's. Fewer than 2 make the split duplicate
+ * everything (guard G2). Only split = force splits for now: on waits for
+ * the server to say it reorders. */
+static uint16_t split_eligible(const struct client *c, uint16_t live, uint16_t carry, uint64_t now_ms)
 {
-	uint16_t present, live, carry;
-	int ids[CG_MAX_LINKS], n = 0, first = 0;
+	uint16_t e = 0;
 
+	if (c->cfg->split != CG_SPLIT_FORCE)
+		return 0;
+	for (int i = 0; i < CG_MAX_LINKS; i++) {
+		const struct link *l = &c->link[i];
+		uint32_t every = l->probe_announced > l->probe_before ? l->probe_announced : l->probe_before;
+
+		if (((live & carry) >> i & 1) && c->uh[i].state == CG_H_ACTIVE &&
+		    !cg_split_stale(l->last_reply_ms, now_ms, every ? every : c->cfg->probe_interval_ms))
+			e |= (uint16_t)(1u << i);
+	}
+	return e;
+}
+
+/* What the split does with the upload now, for the status. */
+static const char *split_state(const struct client *c, uint64_t now_ms)
+{
+	uint16_t present, live, carry, e;
+
+	if (c->cfg->split == CG_SPLIT_OFF)
+		return "off";
+	if (c->cfg->split == CG_SPLIT_ON)
+		return "waiting for the peer"; /* the capability exchange comes later */
 	link_masks(c, now_ms, &present, &live);
 	carry = cg_health_carriers(c->uh, CG_MAX_LINKS, present, live);
+	e = split_eligible(c, live, carry, now_ms);
+	return e & (e - 1) ? "splitting" : "duplicating with < 2 links";
+}
+
+/* Sends the m packets prepared in hdr/oiov: each on the links pick[] says
+ * (every carrying link, health.h, or its one link when split), and one
+ * duplicated packet in mute_trickle on the other live links. live and carry
+ * as when the packets were picked. */
+static void send_links(struct client *c, int m, uint64_t now_ms, uint16_t live, uint16_t carry)
+{
+	int ids[CG_MAX_LINKS], n = 0, first = 0;
+
 	for (int i = 0; i < CG_MAX_LINKS; i++)
 		if ((carry >> i & 1) || ((live >> i & 1) && c->cfg->mute_trickle))
 			ids[n++] = i;
@@ -869,10 +920,11 @@ static void send_links(struct client *c, int m, uint64_t now_ms)
 
 		if (carry >> i & 1) {
 			for (int j = 0; j < m; j++)
-				sel[k++] = j;
+				if (cg_split_dst(c->pick[j], carry, 0) >> i & 1)
+					sel[k++] = j;
 		} else if ((live >> i & 1) && c->cfg->mute_trickle) {
 			for (int j = 0; j < m; j++)
-				if (cg_trickle(&c->uh[i], c->cfg->mute_trickle))
+				if (c->pick[j] < 0 && cg_trickle(&c->uh[i], c->cfg->mute_trickle))
 					sel[k++] = j;
 		}
 		if (!k)
@@ -896,8 +948,10 @@ static void send_links(struct client *c, int m, uint64_t now_ms)
 		}
 		l->tx_drops += (uint64_t)(k - s); /* the rest would not fit: drop, never wait */
 		l->tx_pkts += (uint64_t)s;
-		for (int x = 0; x < s; x++)
+		for (int x = 0; x < s; x++) {
 			l->tx_bytes += c->oiov[sel[x]][1].iov_len;
+			l->tx_split += c->pick[sel[x]] >= 0;
+		}
 	}
 }
 
@@ -905,14 +959,21 @@ static void wg_read(struct client *c)
 {
 	for (int round = 0; round < CG_MAX_ROUNDS; round++) {
 		int n = cg_rx(c->wg_fd, &c->in), m = 0;
+		uint16_t present, live, carry, elig;
 		uint64_t now_us, now_ms;
 
 		if (n <= 0)
 			return;
 		now_us = cg_now_us();
 		now_ms = now_us / 1000;
+		/* Where the batch goes, once: the split is decided per packet
+		 * before its header (CG_F_SPLIT is under the MAC). */
+		link_masks(c, now_ms, &present, &live);
+		carry = cg_health_carriers(c->uh, CG_MAX_LINKS, present, live);
+		elig = split_eligible(c, live, carry, now_ms);
 		for (int i = 0; i < n; i++) {
 			size_t len = c->in.msg[i].msg_len;
+			uint8_t flags = 0;
 
 			if (!len)
 				continue;
@@ -931,7 +992,12 @@ static void wg_read(struct client *c)
 				c->wg_peer = c->in.from[i];
 				c->have_peer = 1;
 			}
-			cg_up_header(&c->txs, c->hdr[m], CG_T_DATA, 0, 0, (uint32_t)now_us, c->in.buf[i], len);
+			c->pick[m] = (int8_t)(c->cfg->split == CG_SPLIT_FORCE
+						      ? cg_split_pick(&c->sp, elig, 0, split_equal, c->in.buf[i][0],
+								      (uint32_t)len, c->cfg->split_small, &flags)
+						      : -1);
+			c->up_split += c->pick[m] >= 0;
+			cg_up_header(&c->txs, c->hdr[m], CG_T_DATA, flags, 0, (uint32_t)now_us, c->in.buf[i], len);
 			c->oiov[m][0].iov_base = c->hdr[m];
 			c->oiov[m][0].iov_len = CG_HDR_LEN;
 			c->oiov[m][1].iov_base = c->in.buf[i];
@@ -943,7 +1009,7 @@ static void wg_read(struct client *c)
 		}
 		if (m) {
 			c->last_traffic_ms = now_ms;
-			send_links(c, m, now_ms);
+			send_links(c, m, now_ms, live, carry);
 		}
 		if (n < CG_BATCH)
 			return;
@@ -1362,6 +1428,7 @@ static void send_probe(struct client *c, struct link *l, uint64_t now_us, uint32
 	cg_echo_push(&l->rxl.probes, (uint32_t)now_us, now_ms);
 	l->have_down_owd = 0;
 	l->last_probe_ms = now_ms;
+	l->probe_before = l->probe_announced;
 	l->probe_announced = interval;
 	if (!l->unanswered++)
 		l->first_unanswered_ms = now_ms;
@@ -1499,10 +1566,9 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 	cg_json_u64(j, "bytes", c->up_bytes);
 	cg_json_u64(j, "too_big", c->up_toobig);
 	cg_json_u64(j, "largest", c->up_largest);
-	/* Splitting the upload (split.h): not wired yet, every packet goes to
-	 * every carrying link. */
+	/* Splitting the upload (split.h). */
 	cg_json_u64(j, "split", c->up_split);
-	cg_json_str(j, "split_state", "off");
+	cg_json_str(j, "split_state", split_state(c, now_ms));
 	cg_json_end(j, '}');
 	cg_json_obj(j, "download");
 	cg_json_u64(j, "packets", c->down_pkts);
@@ -1727,6 +1793,8 @@ static void apply_config(struct client *c, struct cg_config *next, uint64_t now_
 	c->rocf = cg_ro_cfg_of(next);
 	if (old->reorder && !next->reorder)
 		ro_flush(c, now_ms);
+	if (old->split != next->split)
+		cg_split_reset(&c->sp);
 	cg_log_level_set(c->run->verbose ? CG_LOG_DEBUG : next->log_level);
 	if (strcmp(old->status_file, next->status_file)) {
 		cg_status_writer_stop(&c->sw);

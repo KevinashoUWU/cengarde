@@ -1,6 +1,6 @@
 /* cg_rx_entry and cg_up_header (clientpath.h): the router's per-packet
  * decisions, the same in every link_threads mode, with a fake link and
- * window.
+ * window, and the arrival ring's expected links for a split packet.
  * SPDX-License-Identifier: GPL-2.0-only */
 #include <string.h>
 
@@ -14,15 +14,21 @@ static struct cg_rxs r;
 static struct cg_rxl l1, l2;
 static uint8_t pkt[CG_HDR_LEN + 256];
 
-/* A packet from the server: type, sequence, timestamp, payload length. */
-static size_t mk(uint8_t type, uint32_t session, uint32_t seq, uint32_t ts, size_t plen)
+/* A packet from the server: type, sequence, timestamp, payload length and
+ * header flags. */
+static size_t mkf(uint8_t type, uint32_t session, uint32_t seq, uint32_t ts, size_t plen, uint8_t flags)
 {
-	struct cg_hdr h = { .type = type, .session = session, .seq = seq, .ts = ts, .link = 0 };
+	struct cg_hdr h = { .type = type, .flags = flags, .session = session, .seq = seq, .ts = ts, .link = 0 };
 
 	for (size_t i = 0; i < plen; i++)
 		pkt[CG_HDR_LEN + i] = (uint8_t)(seq + i);
 	cg_hdr_write(pkt, &h, key + CG_SIPHASH_KEY_LEN, pkt + CG_HDR_LEN, plen);
 	return CG_HDR_LEN + plen;
+}
+
+static size_t mk(uint8_t type, uint32_t session, uint32_t seq, uint32_t ts, size_t plen)
+{
+	return mkf(type, session, seq, ts, plen, 0);
 }
 
 /* A HELLO answering a probe sent with ts echo. */
@@ -222,6 +228,39 @@ static void test_classes(void)
 	CHECK_EQ(cg_rx_top(&r.replay), 0);
 }
 
+/* A split packet (CG_F_SPLIT, split.h) is expected on the link it came on
+ * only: the other links neither miss it nor are late for it. The flag is
+ * under the MAC. */
+static void test_split_expect(void)
+{
+	const struct cg_arr_slot *a = &r.arr.slot[1000 % CG_ARR_SLOTS], *b = &r.arr.slot[1001 % CG_ARR_SLOTS];
+	size_t n;
+
+	reset_state();
+	n = mkf(CG_T_DATA, SESSION, 1000, 1, 40, CG_F_SPLIT);
+	CHECK_EQ(in(&l2, 1, 7, n, 1000), CG_RXV_DATA);
+	CHECK_EQ(a->expect, 1u << 1);
+	n = mk(CG_T_DATA, SESSION, 1001, 1, 40);
+	CHECK_EQ(in(&l2, 1, 7, n, 1000), CG_RXV_DATA);
+	CHECK_EQ(b->expect, 0x3); /* duplicated: every link of expect */
+	n = mkf(CG_T_DATA, SESSION, 1002, 1, 40, CG_F_SPLIT);
+	CHECK_EQ(in(&l1, 0, 3, n, 1000), CG_RXV_DATA);
+	CHECK_EQ(r.arr.slot[1002 % CG_ARR_SLOTS].expect, 1u << 0);
+	/* When the slots are reused, link 0 missed the duplicated 1001 only,
+	 * and link 1 the split 1002 not at all. */
+	for (uint32_t q = 1000; q < 1003; q++) {
+		n = mk(CG_T_DATA, SESSION, q + CG_ARR_SLOTS, 1, 40);
+		CHECK_EQ(in(&l1, 0, 3, n, 2000), CG_RXV_DATA);
+	}
+	CHECK_EQ(r.rx[0].missed, 1);
+	CHECK_EQ(r.rx[1].missed, 0);
+	/* Set on the way, the flag breaks the MAC: never a forged split. */
+	n = mk(CG_T_DATA, SESSION, 1003, 1, 40);
+	pkt[1] |= CG_F_SPLIT;
+	CHECK_EQ(in(&l1, 0, 3, n, 3000), CG_RXV_AUTH);
+	CHECK_EQ(r.auth_fail, 1);
+}
+
 static void test_up(void)
 {
 	struct cg_txs t = { .session = SESSION, .seq = 0xfffffffeu, .seq_ctl = 40, .hint = 0x5a, .k_tx = key };
@@ -251,5 +290,6 @@ void test_client_rx(void)
 	test_order();
 	test_hello();
 	test_classes();
+	test_split_expect();
 	test_up();
 }

@@ -388,10 +388,11 @@ perder un paquete del túnel y vuelve, sin recaer, cuando se le quita
 
 Las perillas del bonding (historia
 [012](../docs/historias/012-bonding.md)). **Cada extremo ya reordena lo que
-recibe** (el cliente la bajada; el servidor la subida de cada sesión); el
-reparto se conecta en los pasos siguientes del plan. Con redundancia pura y
-los valores por omisión no retiene nada: el orden de entrega es el de
-siempre.
+recibe** (el cliente la bajada; el servidor la subida de cada sesión), y
+`split = force` reparte lo que envía; `on` y `client` esperan el intercambio
+de capacidades del paso siguiente del plan y, mientras tanto, duplican. Con
+redundancia pura y los valores por omisión no retiene nada: el orden de
+entrega es el de siempre.
 
 - **`reorder` (`yes`), en los dos extremos:** el receptor pone en secuencia
   los datos verificados del otro extremo antes de entregarlos a WireGuard.
@@ -424,13 +425,20 @@ siempre.
   el cliente reparte la subida cuando el servidor reordena y le pide repartir
   la bajada con los pesos de cada enlace. `client` hace que el servidor
   reparta la bajada solo si el cliente lo pide y reordena. `force` reparte
-  sin consultar al otro extremo: es para el laboratorio.
+  a partes iguales, sin pesos y sin consultar al otro extremo: es para el
+  laboratorio. **Hoy solo `force` reparte:** `on` y `client` duplican todo
+  hasta que los extremos intercambien sus capacidades por las sondas (el
+  paso siguiente del plan), y el estado lo dice (`waiting for the peer`).
+  Solo reciben parte los enlaces vivos y activos (ni silenciados ni en
+  espera) cuyo otro extremo respondió en los últimos tres intervalos de
+  sondeo; con menos de dos, todo va por todos.
 - **`split_small` (256; 0–2048 bytes):** los datagramas de hasta ese tamaño,
   los handshakes y todo lo que se envía con menos de dos enlaces aptos van
   siempre por todos los enlaces.
 - **`weight` en `[link X]` (cliente; 1, de 0 a 1000):** la parte del reparto
-  que lleva ese enlace. Con 0, el enlace lleva copia de todos los paquetes,
-  repartidos o no. Una interfaz sin sección `[link]` pesa 1.
+  que lleva ese enlace con `split = on` (`force` no los mira). Con 0, el
+  enlace lleva copia de todos los paquetes, repartidos o no. Una interfaz
+  sin sección `[link]` pesa 1.
 
 **El reparto es experimental.** Sin los pasos que siguen en el plan (detección
 de pérdidas por enlace, control de las colas de los módems) reparte peor que
@@ -869,11 +877,16 @@ subida:
   `max_burst`, la mayor tanda de retenidos entregada de una vez.
 Por enlace, `rx_owd_spread_ms` es cuánto va su retraso de llegada (bajada
 en el cliente, subida en el servidor) por detrás del más rápido de los
-enlaces que espera el reordenador (`null` sin medida). En el cliente,
-`tx_split` y `upload.split` cuentan los paquetes repartidos
-(`upload.split_state`: `off` mientras el reparto no está conectado).
-Su ventana ocupa 81 KiB (en el servidor, por sesión: ~5 MiB con 64,
-*cálculo*), y el pool, solo lo que llega a retener.
+enlaces que espera el reordenador (`null` sin medida). Su ventana ocupa
+81 KiB (en el servidor, por sesión: ~5 MiB con 64, *cálculo*), y el pool,
+solo lo que llega a retener.
+
+Los paquetes repartidos: en el cliente, `upload.split` y, por enlace,
+`tx_split` (los que salieron solo por él); en el servidor, `download_split`
+por sesión y `tx_split` por enlace. `upload.split_state` dice qué hace el
+cliente con la subida: `off`, `splitting`, `duplicating with < 2 links`
+(menos de dos enlaces aptos) o `waiting for the peer` (`split = on`, hasta
+que el servidor diga que reordena).
 
 ## Protocolo v4
 

@@ -86,8 +86,9 @@ static inline const char *cg_lt_name(int v)
  * on is the field mode of a client: it splits its upload once the server
  * says it reorders, and asks the server to split the download. client is the
  * server's: it splits the download when the client asks for it and reorders.
- * force splits whatever the other end says, for the lab. off duplicates
- * everything, as before. */
+ * force splits whatever the other end says, evenly, for the lab. off
+ * duplicates everything, as before. Only force is wired yet: on and client
+ * duplicate until the ends exchange their capability in the probes. */
 enum cg_split_mode { CG_SPLIT_OFF = 0, CG_SPLIT_ON, CG_SPLIT_CLIENT, CG_SPLIT_FORCE };
 
 static inline const char *cg_split_name(int v)
@@ -99,9 +100,9 @@ struct cg_link_cfg {
 	char name[IFNAMSIZ];
 	char label[64];
 	int enabled;
-	/* Its share of a split stream, 0 to 1000 (split.h; nothing reads it yet):
-	 * 0 makes it carry a copy of every packet. An interface with no [link]
-	 * section has 1. */
+	/* Its share of a split stream with split = on, 0 to 1000 (split.h; not
+	 * read yet: force splits evenly): 0 makes it carry a copy of every
+	 * packet. An interface with no [link] section has 1. */
 	uint32_t weight;
 	int nsrv; /* entries of its "server" as written; 0: the global list */
 	struct cg_srvent srv[CG_MAX_SERVERS];
@@ -157,8 +158,9 @@ struct cg_config {
 
 	/* Reordering what arrives and splitting what is sent (story 012), both
 	 * ends. Each end reorders what it receives with them (reorder.h): the
-	 * client its download, the server each session's upload; the split
-	 * comes in the commits that follow. */
+	 * client its download, the server each session's upload. split = force
+	 * splits what each end sends (split.h); on and client wait for the
+	 * capability exchange of a later commit, and duplicate meanwhile. */
 	int reorder;                  /* put the peer's DATA back in sequence before WireGuard */
 	uint32_t reorder_max_wait_ms; /* the longest a missing packet holds back the ones behind it */
 	uint32_t reorder_dup_wait_ms; /* the same where nothing is split (<= reorder_max_wait_ms) */

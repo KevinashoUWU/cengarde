@@ -782,7 +782,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	    get_u32(&ini, "", "rt_priority", 0, 99, &c->rt_priority, err, errlen))
 		goto out;
 	/* Reordering and splitting, both ends (story 012): each end reorders
-	 * what it receives with them; the split comes later.
+	 * what it receives with them; split = force splits what it sends.
 	 * reorder_dup_wait_ms cannot pass reorder_max_wait_ms. */
 	if (get_bool(&ini, "", "reorder", &c->reorder, err, errlen) ||
 	    get_u32(&ini, "", "reorder_max_wait_ms", 0, 2000, &c->reorder_max_wait_ms, err, errlen) ||
