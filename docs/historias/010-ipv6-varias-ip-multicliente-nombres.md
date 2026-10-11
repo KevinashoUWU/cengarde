@@ -1303,3 +1303,11 @@ resolvía al arrancar dejaba el motor sin arrancar): lo busca el cliente.
   paquetes 0.5.3), sin probar en hardware.
 - 2026-10-11: PR 5 hecho (nombres con DNS dinámico, paquetes 0.5.4), con
   sus medidas; cierra el plan.
+- 2026-10-11: el socket que el servidor abre hacia WireGuard por sesión
+  (3d2b) podía recibir del kernel el puerto de WireGuard, que está dentro
+  del rango efímero (51820, entre 32768 y 60999) y queda libre mientras
+  WireGuard está caído. Ese socket se conectaba a sí mismo: lo que el
+  cliente subía volvía de bajada, y WireGuard ya no podía tomar su puerto.
+  Lo vio una vez el CI (PR 6, el smoke de un paquete). Ahora el servidor lo
+  descarta y pide otro, y `bench/lab.sh wgport` (en ci) lo prueba con el
+  rango reducido a dos puertos.
