@@ -170,8 +170,9 @@ uci commit network && service network reload
 - cengarde como servicio de systemd, con un usuario propio (`cengarde`)
   y sin privilegios;
 - el router, importado una sola vez del secreto del cloud-config (que
-  luego se borra) como `router`: un archivo en `/etc/cengarde/clients/` y
-  su WireGuard, `cg-router`, solo para cengarde (`127.0.0.1:65501`); los
+  luego se borra) como `router` (o su `vps_name`): un archivo en
+  `/etc/cengarde/clients/` y su WireGuard, `cg-router`, solo para cengarde
+  (`127.0.0.1:65501`); los
   puertos de WireGuard (65501–65532, uno por router) solo contestan en la
   propia máquina, no desde Internet ni desde el túnel, tampoco por IPv6;
 - el túnel no llega al servicio de metadatos del proveedor
@@ -181,8 +182,8 @@ uci commit network && service network reload
   el reenvío de puertos, en cadenas propias que no dependen del nombre de
   ninguna interfaz; cada 5 minutos `cengarde-nat-check.timer` las repone si
   otro cortafuegos las borró;
-- `cengarde-passthrough.path`, que abre o cierra el IP pass cuando lo pide
-  el router.
+- `cengarde-passthrough.path`, que aplica la tabla de reenvío del motor
+  (el IP pass que pide el router y las reglas de cada uno) cuando cambia.
 
 No desactiva SSH ni su cortafuegos: convive con ufw y con
 `nftables.service` (si te falta algo, `sudo cengarde-nat check` dice qué
@@ -190,6 +191,38 @@ líneas añadir); firewalld no está soportado todavía y la instalación se
 detiene con un mensaje. Detalle en [`contrib/vps/`](../contrib/vps/):
 `install.sh` instala, `cengarde-vps-setup` lleva los routers y deriva sus
 claves del secreto, y `cengarde-nat` hace el cortafuegos.
+
+### Nombre y dirección de cada router
+
+Un VPS puede atender a varios routers; cada uno tiene su nombre y su dirección
+en el túnel (el VPS es la `10.79.0.1`). Los dos van en la pestaña *VPS* de
+LuCI:
+- **Nombre** (`vps_name`): de 1 a 12 caracteres entre `a-z`, `0-9` y `-`, sin
+  empezar por `-` y distinto de `default`; `router` si lo dejas vacío. En el
+  VPS es el archivo `/etc/cengarde/clients/NOMBRE` y su WireGuard `cg-NOMBRE`.
+- **Dirección** (`tunnel_addr`): `10.79.X.Y`, de `10.79.0.2` a `10.79.255.254`.
+  Vacía, sale del secreto (`cengarde keys`), así que dos routers no la
+  comparten sin que elijas nada. `wgcg` la lleva como `/32`, y cengarde
+  agrega la ruta a `10.79.0.1`, que un `/32` no trae, con o sin «enrutar todo».
+- **Un router anterior a la 0.5.2** conserva la `10.79.0.2`, la que su VPS ya
+  conoce, y sigue funcionando al actualizar. Pasar a la derivada (vaciar el
+  campo) exige que el VPS tenga la nueva: corta el túnel hasta entonces.
+
+El cloud-config de un VPS nuevo ya lleva el nombre y la dirección. Para
+sumar este router a **un VPS que ya atiende a otros**, LuCI (pestaña *VPS*,
+*Este router en un VPS que ya atiende a otros*) muestra el comando, con el
+nombre, la dirección y el protocolo del motor de este router:
+
+```sh
+sudo cengarde-vps-setup add casa --tunnel-addr 10.79.131.76 --proto 4
+```
+
+- **El VPS pide el secreto:** pega el de la misma pestaña. Nunca va en la
+  línea de órdenes.
+- **Mismo protocolo:** si el motor del VPS habla otro, `add` se niega y dice
+  qué actualizar. El VPS atiende a varios routers desde la 0.5.2.
+- **Tras generar un secreto nuevo,** guarda y aplica antes de copiar: LuCI no
+  puede calcular la dirección derivada, se la pide al router ya guardado.
 
 ### Un servidor propio, sin cloud-init
 
@@ -202,7 +235,7 @@ sudo apt-get install build-essential git iptables wireguard-tools conntrack
 sudo git clone https://github.com/KevinashoUWU/cengarde /opt/cengarde
 sudo git -C /opt/cengarde checkout COMMIT   # el del paquete del router (LuCI lo muestra)
 sudo sh /opt/cengarde/contrib/vps/install.sh
-sudo cengarde-vps-setup add router       # y pega el secreto del router
+sudo cengarde-vps-setup add router       # y pega el secreto del router (LuCI muestra el comando completo)
 ```
 
 - **Sin secreto en `/etc/cengarde/secret`,** `install.sh` instala y te
@@ -233,7 +266,8 @@ configuración del router:
 
 | Dónde | Qué | ¿Se deshace al desactivar? |
 | --- | --- | --- |
-| Red | interfaz `wgcg` (WireGuard, `10.79.0.2/30`) con las claves del secreto; su par `cengarde_vps` apunta a cengarde en `127.0.0.1` | sí |
+| Red | interfaz `wgcg` (WireGuard) con las claves del secreto y la dirección del router en el túnel como `/32` (`tunnel_addr`, o la derivada del secreto); su par `cengarde_vps` apunta a cengarde en `127.0.0.1` | sí |
+| Rutas | `10.79.0.1/32` por `wgcg` (la sección `cengarde_vps_route`): el VPS dentro del túnel, también sin «enrutar todo» | sí |
 | Rutas | `0.0.0.0/1` y `128.0.0.0/1` por `wgcg`: le ganan a cualquier ruta por defecto sin borrarlas, y cada enlace conserva la suya para cengarde | sí |
 | Enlaces | una métrica propia a cada uno (con la misma métrica, netifd deja una sola ruta por defecto) | no: no estorba |
 | Enlaces | `peerdns 0`: los DNS de la operadora irían por el VPS y suelen rechazarlo; se usan los IPv4 de la pestaña *Túnel* | sí |
@@ -245,7 +279,10 @@ configuración del router:
 **Otros detalles:**
 - **Los cambios posteriores no cortan el túnel:** el motor los aplica en
   marcha, con la misma sesión. Solo el secreto, el puerto y las perillas de
-  CPU lo reinician, en el lugar y en menos de un segundo.
+  CPU lo reinician, en el lugar y en menos de un segundo. Cambiar la
+  dirección del túnel o «enrutar todo» reinicia además la interfaz `wgcg`
+  (netifd no ve esos cambios): un corte breve mientras WireGuard rehace el
+  handshake.
 - **Sin dirección del VPS o sin enlaces** no se crea el túnel, para no
   dejar el router sin salida.
 - **MTU del túnel:** 1380 por defecto; como mucho 1416 sobre IPv4 y 1396
@@ -346,6 +383,24 @@ servidor o publica Docker; `sudo cengarde-vps-setup forward` los lista con
 su motivo. Los puertos reenviados también funcionan desde la propia LAN,
 por la IP del VPS.
 
+**Con varios routers en un VPS:** el rango entero va a uno solo, el primero
+que lo pide, que lo conserva mientras lo siga pidiendo; los demás ven en
+LuCI que el VPS no lo concede. A cualquiera se le pueden dar puertos sueltos
+desde el VPS, que le ganan al rango:
+
+```sh
+sudo cengarde-vps-setup forward add casa tcp:8080=80 udp:5000-5010 both:25565
+sudo cengarde-vps-setup forward del casa udp:5000-5010   # o: del casa all
+sudo cengarde-vps-setup forward                          # quién tiene qué
+```
+
+- **Formato:** `tcp`, `udp` o `both`, un puerto o un rango del VPS y, tras
+  `=`, el puerto del router si es otro.
+- **Se niega** a dar un puerto reservado (dice por qué), uno que ya tiene
+  otra regla (dice de quién) o más de 1024 puertos a un router
+  (`forward limit NOMBRE N` lo cambia). Bajo 1024, primero
+  `forward allow tcp:443`.
+
 **En el router:**
 - miniupnpd entrega esos puertos a los equipos de la LAN que los piden:
   consolas, P2P, cámaras;
@@ -377,6 +432,9 @@ cengarde-setup cloud-config > vps.yaml               # el user data del VPS
 ```
 
 - **Todas las opciones**, comentadas: `/etc/config/cengarde`.
+- **Nombre y dirección en el VPS:** `uci set cengarde.main.vps_name=casa`;
+  `uci set cengarde.main.tunnel_addr=10.79.5.6` (sin ella, la derivada).
+  `cengarde-setup status` dice cuáles usa (`tunnel_addr`, `vps_name`).
 - **`config_file`:** usa un archivo INI propio en lugar del generado. Sirve,
   por ejemplo, para un servidor OpenWrt.
 - **Configuración que se genera:** `/var/etc/cengarde.conf`.
@@ -399,14 +457,19 @@ cengarde-setup cloud-config > vps.yaml               # el user data del VPS
     con `systemctl restart wg-quick@wg0`. Desde la 0.4.4, el VPS lo
     destraba solo en menos de un minuto (35–38 s medidos en QEMU; historia
     002).
-- **Cambiar el secreto:** en el VPS, `sudo cengarde-vps-setup add router
-  --replace` y pega el nuevo; el router se corta un momento.
-- **Actualizar:** router y VPS con el mismo commit. La 0.5 cambia el
-  protocolo (v4): un router 0.5 no habla con un VPS 0.4 ni al revés, así que
-  se actualizan juntos, primero el VPS (desde el router, por SSH, el túnel
-  se corta hasta que el router también tenga la 0.5). Trae las cookies que
-  impiden que una sonda reenviada cree una sesión, desvíe un enlace o
-  cambie el IP pass, y un VPS reiniciado retoma el túnel sin rehacer
+- **Cambiar el secreto:** en el VPS, `sudo cengarde-vps-setup add NOMBRE
+  --replace` y pega el nuevo; el router se corta un momento. Si su dirección
+  en el túnel sale del secreto, cambia con él: guarda y aplica en LuCI y usa
+  el comando que muestra (lleva la nueva `--tunnel-addr`).
+- **Actualizar:** router y VPS con el mismo commit. La 0.5.2 saca la
+  dirección del túnel del secreto (sección «Nombre y dirección de cada
+  router»): un router que se actualiza conserva la `10.79.0.2` y sigue
+  hablando con su VPS, uno nuevo usa la suya y su VPS tiene que ser 0.5.2. La
+  0.5 cambia el protocolo (v4): un router 0.5 no habla con un VPS 0.4 ni al
+  revés, así que se actualizan juntos, primero el VPS (desde el router, por
+  SSH, el túnel se corta hasta que el router también tenga la 0.5). Trae las
+  cookies que impiden que una sonda reenviada cree una sesión, desvíe un
+  enlace o cambie el IP pass, y un VPS reiniciado retoma el túnel sin rehacer
   ventanas (historia 010, PR 3d2a). La 0.4 cambió el protocolo (v3); de la
   0.4.1 a la 0.4.7 no lo cambian (un router de una y un VPS de otra se
   entienden en los dos sentidos), pero actualiza igual el VPS:
@@ -476,6 +539,10 @@ comprueba el flujo completo:
 - enlaces por DHCP;
 - configuración solo desde LuCI;
 - túnel arriba, e IP pass confirmado por el VPS;
+- la dirección del router en el túnel, derivada del secreto: `wgcg` con su
+  `/32`, el estado y el cloud-config con el nombre y la dirección, una
+  `tunnel_addr` inválida rechazada, y la ruta a `10.79.0.1` que sigue
+  llevando por `wgcg` sin «enrutar todo»;
 - compañeras IPv6 `<enlace>6` y `delegate 0` en un enlace PPPoE;
 - IPv6 hasta el VPS: cada enlace sale desde su dirección global (no la
   ULA), el VPS contesta desde la suya (`*`), el aviso de MTU de un camino

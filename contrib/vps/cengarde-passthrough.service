@@ -1,7 +1,8 @@
-# Started by cengarde-passthrough.path: turns IP pass (TCP and UDP ports of
-# this server forwarded to the router) on or off as the router asks.
+# Started by cengarde-passthrough.path: forwards TCP and UDP ports of this
+# server to the routers (IP pass, and their own rules) as the engine's
+# forward table says.
 [Unit]
-Description=cengarde: apply the IP pass the router asks for
+Description=cengarde: apply what the routers forward
 After=cengarde-nat.service
 
 [Service]

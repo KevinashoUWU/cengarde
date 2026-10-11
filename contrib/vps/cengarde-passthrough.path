@@ -1,12 +1,17 @@
-# IP pass from the router (protocol 3): the cengarde server writes what the
-# router asks for, on or off, to /var/lib/cengarde/passthrough (kept across
-# reboots), and this unit then runs cengarde-passthrough.service, which
-# applies it with "cengarde-nat sync".
+# What the routers forward: the cengarde server writes its forward table (IP
+# pass and each router's own rules) to /var/lib/cengarde/forward, or, with
+# one router and the global key, what it asks for, on or off, to
+# /var/lib/cengarde/passthrough (both kept across reboots). This unit then
+# runs cengarde-passthrough.service, which applies it with
+# "cengarde-nat sync". It watches the directory: a path unit on the file
+# itself misses the file's creation (the engine's first table), and the
+# engine replaces the file whole on every change. cengarde-nat sync runs
+# again when the file changed while it ran, which this unit does not see.
 [Unit]
-Description=cengarde: watch the IP pass the router asks for
+Description=cengarde: watch what the routers forward
 
 [Path]
-PathChanged=/var/lib/cengarde/passthrough
+PathChanged=/var/lib/cengarde
 
 [Install]
 WantedBy=multi-user.target

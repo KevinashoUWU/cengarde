@@ -10,6 +10,10 @@
 // that the cloud-config follows the form, applies,
 // and waits on the status page for the tunnel, the three uplinks and the
 // VPS confirming IP pass; then pauses an uplink there and resumes it.
+// In the VPS tab, the cloud-config and the command that adds this router to a
+// VPS that serves others carry its name and the tunnel address derived from
+// the secret (which only the router can compute), and follow a name and an
+// address typed in the form; invalid ones are refused.
 // Fails on any JavaScript error after logging in.
 //
 // SPDX-License-Identifier: GPL-2.0-only
@@ -120,7 +124,51 @@ try {
 	check(cc.includes(`\n      ${secret}\n`), 'the cloud-config carries the secret');
 	check(/CENGARDE_REF=[0-9a-f]{40};/.test(cc), 'the cloud-config pins the commit of the package');
 	check(/PASSTHROUGH=no/.test(cc), 'no passthrough while IP pass is off');
+	check(/^\s*ROUTER_NAME=router$/m.test(cc), 'the cloud-config names the router "router" by default');
+	const derived = (/^\s*ROUTER_TUNNEL_ADDR=(10\.79\.\d+\.\d+)$/m.exec(cc) || [])[1];
+	check(derived, 'the cloud-config carries the tunnel address derived from the secret');
+	const addCommand = () => page.inputValue('#cengarde-add-command');
+	const proto = (/^sudo cengarde-vps-setup add router --tunnel-addr \S+ --proto (\d+)$/.exec(await addCommand()) || [])[1];
+	check(proto, `the command to add this router to a VPS (${await addCommand()})`);
+	check(await addCommand() === `sudo cengarde-vps-setup add router --tunnel-addr ${derived} --proto ${proto}`,
+		'the command carries the same address as the cloud-config');
+	check(!(await addCommand()).includes(secret), 'the secret is not in the command');
+	check(await page.locator(id('widget.cbid.cengarde.main.tunnel_addr')).getAttribute('placeholder') === derived,
+		'the address field shows the derived one while empty');
 	await shot('03-settings-vps');
+
+	step('VPS tab: a name and an address typed in the form, invalid ones refused');
+	const vpsName = page.locator(id('widget.cbid.cengarde.main.vps_name'));
+	const tunnelAddr = page.locator(id('widget.cbid.cengarde.main.tunnel_addr'));
+	const typeIn = async (field, v) => {
+		await field.fill('');
+		if (v)
+			await field.pressSequentially(v);
+		await field.blur();
+	};
+	for (const bad of [ 'Casa', '-casa', 'default', 'una-casa-muy-larga' ]) {
+		await typeIn(vpsName, bad);
+		check(await invalid(vpsName), `the name ${bad} is refused`);
+	}
+	await typeIn(vpsName, 'casa-ana');
+	check(!await invalid(vpsName), 'the name casa-ana is taken');
+	for (const bad of [ '10.79.0.1', '10.79.0.0', '10.79.255.255', '10.80.1.2', '10.79.1.256', '10.79.01.2' ]) {
+		await typeIn(tunnelAddr, bad);
+		check(await invalid(tunnelAddr), `the address ${bad} is refused`);
+	}
+	await typeIn(tunnelAddr, '10.79.7.8');
+	check(!await invalid(tunnelAddr), 'the address 10.79.7.8 is taken');
+	cc = await page.inputValue('#cengarde-cloud-config');
+	check(/^\s*ROUTER_NAME=casa-ana$/m.test(cc) && /^\s*ROUTER_TUNNEL_ADDR=10\.79\.7\.8$/m.test(cc),
+		'the cloud-config follows the name and the address in the form');
+	check(await addCommand() === `sudo cengarde-vps-setup add casa-ana --tunnel-addr 10.79.7.8 --proto ${proto}`,
+		'the command follows the name and the address in the form');
+	await typeIn(tunnelAddr, '');
+	await typeIn(vpsName, '');
+	cc = await page.inputValue('#cengarde-cloud-config');
+	check(/^\s*ROUTER_NAME=router$/m.test(cc) && cc.includes(`ROUTER_TUNNEL_ADDR=${derived}\n`) &&
+		await addCommand() === `sudo cengarde-vps-setup add router --tunnel-addr ${derived} --proto ${proto}`,
+		'emptied, the name is router again and the address the derived one');
 
 	step('Tunnel tab: an MTU of 1420 is refused, IP pass on, the cloud-config follows');
 	await tab('tunnel');
@@ -181,6 +229,7 @@ try {
 	check(connected, 'the WireGuard tunnel is connected');
 	check(rows === UPLINKS.length, `all ${UPLINKS.length} uplinks active (got ${rows})`);
 	check(await page.locator('.cengarde-problem').count() === 0, 'no problems reported');
+	check(await page.locator(`td:has-text("${derived}")`).count() > 0, 'the status shows the tunnel address');
 
 	step('status page: the VPS confirms IP pass');
 	await until(async () => await page.locator('text=activo en el VPS').count() > 0, 'IP pass on at the VPS', 30000);

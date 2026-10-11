@@ -12,6 +12,7 @@ const MTU_MIN = 1280; // the smallest tunnel MTU config.js takes
 function problemText(p) {
 	switch (p.code) {
 	case 'no_secret': return _('No valid pairing secret: generate one in the VPS tab.');
+	case 'tunnel_addr_invalid': return _('The address in the tunnel is not valid (10.79.X.Y, from 10.79.0.2 to 10.79.255.254): the tunnel is left as it was. Fix it in the VPS tab, or empty it to use the one derived from the secret.');
 	case 'no_server': return _('No VPS address yet.');
 	case 'no_uplinks': return _('No uplinks selected.');
 	case 'uplink_unknown': return _('Uplink %s does not exist in the network configuration.').format(p.iface);
@@ -154,6 +155,9 @@ return view.extend({
 			tunnel = st.enabled ? badge(_('waiting for the VPS'), '#d80') : '-';
 		}
 		rows.push([ _('WireGuard tunnel'), tunnel ]);
+
+		if (st.tunnel_addr)
+			rows.push([ _('Address in the tunnel'), st.tunnel_addr ]);
 
 		if (e && e.passthrough && ipPass(e.passthrough))
 			rows.push([ _('IP pass'), ipPass(e.passthrough) ]);

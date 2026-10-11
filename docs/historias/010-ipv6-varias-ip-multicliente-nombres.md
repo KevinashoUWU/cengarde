@@ -1,12 +1,13 @@
 # 010 — IPv6, dirección de llegada, varios routers por VPS y nombres
 
-- **Fecha:** 2026-10-10
+- **Fecha:** 2026-10-11
 - **Estado:** vigente. PR 1 y PR 2 hechos (paquetes 0.4.1 y 0.4.2,
-  protocolo v3 sin cambios). Del PR 3 están hechos el 3d1 (herramientas del
-  VPS, aún v3; paquetes 0.4.5), el 3d2a (protocolo v4 en el motor, un
-  router por servidor; paquetes 0.5.0) y el 3d2b (varios routers en el
-  motor del servidor; paquetes 0.5.1). Pendientes el 3d2c (VPS y OpenWrt)
-  y los PR 4 y 5.
+  protocolo v3 sin cambios). El PR 3 está hecho en cuatro partes: el 3d1
+  (herramientas del VPS, aún v3; paquetes 0.4.5), el 3d2a (protocolo v4 en
+  el motor, un router por servidor; paquetes 0.5.0), el 3d2b (varios
+  routers en el motor del servidor; paquetes 0.5.1) y el 3d2c (varios
+  routers en las herramientas del VPS y en OpenWrt; paquetes 0.5.2).
+  Pendientes los PR 4 y 5.
 - **Fuentes:**
   - código del PR 1 (`git log ebe570b..823e4dd`):
     - `engine/src/epoch.h`; `client.c:442` (`ms_since_new`), `:456`
@@ -143,8 +144,16 @@
     a los demás (`bench/lab.sh multiclient`);
   - el panel de reenvío vive en el VPS: reglas `forward` por router, y el
     IP pass del primero que lo pide, en la tabla que lee `cengarde-nat`.
-- **Siguiente:** el PR 3d2c, `cengarde-vps-setup` con varios routers y su
-  panel de reenvío, y en OpenWrt el túnel /32 derivado.
+- **Lo que cerró el PR 3d2c** (herramientas del VPS y OpenWrt, paquetes
+  0.5.2):
+  - `cengarde-vps-setup add` suma routers a un VPS (hasta 32), cada uno con
+    su sección, y no corta a los demás; LuCI muestra el comando;
+  - el router usa en el túnel la dirección que sale de su secreto, como
+    /32; los instalados antes conservan 10.79.0.2;
+  - el panel de reenvío: `cengarde-vps-setup forward add|del NOMBRE
+    tcp:8080=80 udp:5000-5010 both:25565`, que rechaza puertos reservados,
+    solapes y lo que pase del límite de cada router.
+- **Siguiente:** el PR 4, IPv6 dentro del túnel.
 
 ## Contexto
 
@@ -774,6 +783,103 @@ y OpenWrt son el 3d2c.
     el choque de ids se comprobaba después de desalojar una sesión;
   - un dueño apagado bloqueaba el IP pass para siempre (ver arriba).
 
+## PR 3d2c: varios routers en el VPS y en OpenWrt (hecho)
+
+Sin cambiar el protocolo: el motor ya servía a varios routers desde el
+3d2b. Esto lleva eso a las herramientas.
+
+- **El VPS** (`cengarde-vps-setup`):
+  - la configuración del motor tiene siempre una sección `[client NOMBRE]`
+    por router (`key`, `wireguard` en 65501 + su lugar, `wireguard_poke` a
+    su dirección, `label`, y `forward` o, con el reenvío apagado,
+    `passthrough = no` y sus reglas comentadas) y `forward_file`; sin
+    routers, la clave que no sirve a nadie. Pasar de ninguno a uno, o al
+    revés, reinicia el motor; agregar o quitar uno más es una recarga;
+  - hasta 32 routers, uno por puerto de WireGuard; `list` y `forward`
+    dicen cuándo se oyó a cada uno, por la columna `CLIENT` de `ctl links`
+    (una sola consulta por orden);
+  - la dirección de un router nuevo sale de su secreto (`CG_TUNNEL_ADDR`
+    de `cengarde keys`), igual que en el router; `--tunnel-addr` la fija;
+    un secreto nuevo con `--replace` trae la suya, salvo en un router que
+    conserva 10.79.0.2. Dos routers con la misma dirección se rechazan y
+    el comando dice cómo salir (un secreto nuevo o `--tunnel-addr`). Es
+    raro: 1 en 65 533 por par, cerca de 0,8 % de que algún par choque con
+    32 routers (cálculo, `pair.c`);
+  - el cloud-config lleva `ROUTER_NAME` y `ROUTER_TUNNEL_ADDR`, que LuCI
+    llena. Sin `ROUTER_TUNNEL_ADDR` (un cloud-config anterior) el router
+    importado queda en 10.79.0.2; con el texto del repositorio sin llenar
+    (`REPLACE_*`), se llama `router` y toma la de su secreto, sin avisar;
+  - el estado del IP pass de 0.4 ya no se copia: el router lo vuelve a
+    pedir cuando corre 0.5.2. `purge` devuelve a 0.4 si el router del
+    lugar 0 tiene el rango (la línea `pass` de la tabla) y avisa si su
+    dirección no es 10.79.0.2, la única que 0.4 conoce;
+  - `check_proto` exige el protocolo 4: este `cengarde-vps-setup` solo
+    escribe secciones.
+- **El panel de reenvío** (`forward add|del NOMBRE REGLA...`, la decisión
+  del 3d2b):
+  - las reglas son las del motor (`tcp|udp|both:PUERTO[-PUERTO][=DESTINO]`)
+    y se guardan en `RULES=` del archivo del router en una sola forma (sin
+    ceros a la izquierda, sin `=DESTINO` igual al primero), así que una
+    misma regla escrita de otro modo no cambia nada y `del` la encuentra;
+  - antes de escribir rechaza un puerto reservado (con su motivo, el de
+    `cengarde-nat reserved -v`), uno que ya tiene una regla del mismo
+    router o de otro, más puertos que el límite del router
+    (`FORWARD_MAX_PORTS`, 1024, o `forward limit`; `both` cuenta dos veces)
+    y más de 1024 reglas en total, el tope del motor. Si `cengarde-nat
+    reserved` falla, no escribe nada;
+  - `forward` muestra las reglas de cada router y cuántos puertos toman, y
+    quién tiene el IP pass; `forward allow` dice cómo dar un puerto bajo
+    1024 con `forward add`.
+- **`cengarde-nat`** encuentra la tabla por el `forward_file` de la
+  configuración del motor, solo si root es su dueño y nadie más puede
+  escribirla (`FORWARD_FILE` en `nat.conf` sigue mandando).
+  `cengarde-passthrough.path` se quedó con su nombre para no migrar
+  unidades y vigila el directorio `/var/lib/cengarde`, no el archivo. El
+  CI con systemd real lo mostró: con `PathChanged=` sobre el archivo, la
+  primera tabla del motor, que lo crea, no dispara nada, y el IP pass no
+  llegaba nunca. Además systemd no vuelve a lanzar el servicio por un
+  cambio que llega mientras corre, así que `cengarde-nat sync` se repite
+  si la tabla cambió mientras la aplicaba, y `check` (cada 5 minutos)
+  aplica una tabla que quedó sin aplicar (`netns.sh` prueba los dos).
+- **OpenWrt** (`cengarde-setup`, UCI, LuCI):
+  - `wgcg` lleva la dirección del router como /32 (`tunnel_addr`, o la del
+    secreto si está vacía) y una ruta propia a 10.79.0.1
+    (`network.cengarde_vps_route`), que un /32 no trae, con o sin «enrutar
+    todo»;
+  - `vps_name` (por omisión `router`) y `tunnel_addr`; una dirección
+    inválida deja el túnel como estaba, sale como problema en el estado y
+    `cloud-config` se niega;
+  - la migración (`cengarde.defaults`): una instalación que ya tenía
+    secreto y `wgcg` en 10.79.0.2/30 (o sin túnel) queda con
+    `tunnel_addr = 10.79.0.2`, la que conoce su VPS; una instalación nueva
+    usa la derivada. Queda un caso: una 0.5.2 nueva que nunca levantó el
+    túnel y cuyo VPS ya usa la derivada vuelve a 10.79.0.2 en su próxima
+    actualización (cerrarlo pide una marca en UCI);
+  - `cengarde-setup` reinicia `wgcg` (ifdown, ifup) cuando cambian su
+    dirección o su par: netifd no lo hace para las rutas del par, su
+    puerto ni sus claves, y en 24.10 tampoco para la dirección (leído en
+    `wireguard.sh` de 24.10.8 y 25.12 y en `interface_change_config`).
+    Por eso actualizar desde 0.5.1 corta el túnel una vez, al pasar de /30
+    a /32;
+  - LuCI: los campos *Nombre en el VPS* y *Dirección en el túnel* (con la
+    derivada de marcador), el cloud-config con los dos y el bloque *Este
+    router en un VPS que ya atiende a otros*, con
+    `sudo cengarde-vps-setup add NOMBRE --tunnel-addr DIR --proto N`. El
+    navegador no puede derivar la dirección (BLAKE2s): la pide a
+    `cengarde-setup status` (`tunnel_addr_derived`) y, tras un secreto
+    nuevo, el comando espera a que se guarde y aplique.
+- **Pruebas:**
+  - en este contenedor: `setup-dryrun.sh` (239 chequeos: un segundo
+    router, el 33.º rechazado, un nombre que ordena antes, las reglas y sus
+    rechazos, la importación con y sin `ROUTER_TUNNEL_ADDR`; cada
+    configuración la valida el motor real con `cengarde -t`),
+    `nat-rules.sh` (con la tabla hallada por `forward_file`) y `netns.sh`;
+    shellcheck, `node --check` e `i18n.py` como en el CI;
+  - solo en el CI: `systemd.sh` (la tabla da y quita el IP pass en un
+    systemd real), y en QEMU `e2e.sh` (la /32 derivada, la ruta a 10.79.0.1
+    con y sin «enrutar todo», una `tunnel_addr` inválida) y `luci.mjs` (los
+    campos, el cloud-config y el comando).
+
 ## Medidas
 
 - **Varios routers** (PR 3d2b, 2026-10-10, contenedor de 4 CPU):
@@ -917,14 +1023,15 @@ y OpenWrt son el 3d2c.
   probar todas las claves, sesión activa por cliente, cambios sin
   reinicio.~~ Hecho en el 3d2b, con el panel de reenvío en el VPS (sección
   «PR 3d2b»).
-- **VPS:** `cengarde-nat` declarativo (`rules`, `apply`, `down`, `sync`,
+- ~~**VPS:** `cengarde-nat` declarativo (`rules`, `apply`, `down`, `sync`,
   `purge-legacy`) con `cengarde-nat.service` (`RemainAfterExit`) y flock,
   movido desde el PR 2; `cengarde-vps-setup add|remove|list` (sin
   `--public-ip`; sirve igual en un servidor casero), `cg-NAME` en 65501–65532, migración desde
   0.4, usuario fijo, `cengarde ctl reload` con respuesta, y el panel de
-  reenvío de puertos.
-- **OpenWrt:** túnel /32 derivado más ruta a 10.79.0.1, `vps_name`, el
-  bloque "este router en un VPS existente" con el comando, sin `pass_ip`.
+  reenvío de puertos.~~ Hecho en el 3d1 y el 3d2c.
+- ~~**OpenWrt:** túnel /32 derivado más ruta a 10.79.0.1, `vps_name`, el
+  bloque "este router en un VPS existente" con el comando, sin `pass_ip`.~~
+  Hecho en el 3d2c (sección «PR 3d2c»).
 - **Pruebas:** ~~`bench/cgprobe.c`, escenario `replay`; en `restart`,
   `window_resets = 0` con v4; paquetes 0.5.0~~ (hechos en el 3d2a);
   ~~`bench/macbench` y el escenario `multiclient`~~ (hechos en el 3d2b).
@@ -980,3 +1087,6 @@ y OpenWrt son el 3d2c.
 - 2026-10-10: PR 3d2b hecho (varios routers en el motor del servidor,
   paquetes 0.5.1), con sus medidas; decidido que el panel de reenvío vive
   en el VPS.
+- 2026-10-11: PR 3d2c hecho (varios routers en `cengarde-vps-setup`, el
+  panel `forward add|del`, la dirección del túnel derivada en OpenWrt;
+  paquetes 0.5.2). Cierra el PR 3.

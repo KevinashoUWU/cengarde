@@ -13,11 +13,13 @@
 #   not each other, except for the ports the server forwards;
 # - forwarding: TCP and UDP sent to one of the server's own addresses are
 #   forwarded (DNAT) to a router's tunnel address, from the Internet and
-#   from the routers' own sites alike (hairpin). With protocol 3 that is IP
-#   pass, the whole PASSTHROUGH_PORTS range to the one router, as the
-#   router asks for it: the engine writes "on" or "off" to PASSTHROUGH_FILE
-#   (until it does, PASSTHROUGH below says). FORWARD_FILE, the engine's
-#   forward table of protocol 4, replaces it when set;
+#   from the routers' own sites alike (hairpin). An engine that serves its
+#   routers by name ([client NAME] sections, cengarde 0.5.2) writes them to
+#   its forward table, whose path is its forward_file (FORWARD_FILE
+#   overrides it): IP pass, the whole PASSTHROUGH_PORTS range to the one
+#   router that holds it, and each router's own rules. One that serves one
+#   router with the global key writes "on" or "off" to PASSTHROUGH_FILE, as
+#   the router asks for IP pass (until it does, PASSTHROUGH below says);
 # - never forwarded, nor taken by a router: the reserved set, printed by
 #   "cengarde-nat reserved": SSH, cengarde, WireGuard, every port below 1024
 #   but FORWARD_ALLOW_LOW, FORWARD_RESERVED and, with FORWARD_AUTO_RESERVE,
@@ -31,10 +33,12 @@
 #                               and from cengarde-vps-setup
 #   cengarde-nat sync           the rules as wanted now, with the live flows
 #                               of a port that changes hands moved to its
-#                               new target (conntrack); nothing while down
+#                               new target (conntrack), and again if the
+#                               engine changed its file meanwhile; nothing
+#                               while down
 #   cengarde-nat check          the rules put back if something removed them,
-#                               foreign firewalls, the reserved set followed
-#                               (cengarde-nat-check.timer)
+#                               foreign firewalls, the reserved set and the
+#                               engine's file followed (cengarde-nat-check.timer)
 #   cengarde-nat down           every rule and chain removed
 #   cengarde-nat status         what is applied, and why
 #   cengarde-nat rules 4|6      the iptables-restore input (changes nothing)
@@ -66,7 +70,7 @@ FORWARD_ALLOW_LOW=    # ports below 1024 a router may have: "tcp:80 tcp:443"
 FORWARD_RESERVED=     # more ports never forwarded: "udp:5000-5010"
 FORWARD_AUTO_RESERVE=yes
 FORWARD_UNRESERVE=    # forwarded even though something listens there
-# shellcheck disable=SC2034 # for cengarde-vps-setup and protocol 4
+# shellcheck disable=SC2034 # for cengarde-vps-setup: ports of a router's own rules
 FORWARD_MAX_PORTS=1024
 FORWARD_SKIP_SRC=     # sources never forwarded: "192.168.1.0/24"
 PUB_IF=               # optional: the only interface forwarded and masqueraded
@@ -139,6 +143,13 @@ for v in CENGARDE_PORT SSH_PORT WG_PORT_BASE; do
 done
 WG_PORT_LAST=$((WG_PORT_BASE + 31))
 [ "$WG_PORT_LAST" -le 65535 ] || die "WG_PORT_BASE in $CONF: the 32 WireGuard ports from it go past 65535"
+# The engine's forward table, unless nat.conf names one: its forward_file,
+# read only from a configuration root owns and nobody else can write.
+if [ -z "$FORWARD_FILE" ] && [ -f "$ENGINE_CONF" ] && safe "$ENGINE_CONF"; then
+	v=$(sed -n 's/^[[:space:]]*forward_file[[:space:]]*=[[:space:]]*\(\/[^[:space:]]*\)[[:space:]]*$/\1/p' \
+		"$ENGINE_CONF" | tail -n 1)
+	[ -z "$v" ] || FORWARD_FILE=$R$v
+fi
 PASS_LO=${PASSTHROUGH_PORTS%%:*} PASS_HI=${PASSTHROUGH_PORTS#*:}
 if ! is_port "$PASS_LO" || ! is_port "$PASS_HI" || [ "$PASS_LO" -gt "$PASS_HI" ]; then
 	die "PASSTHROUGH_PORTS in $CONF: expected FIRST:LAST"
@@ -419,7 +430,8 @@ table() {
 	*) WANT=off FROM="$PASSTHROUGH_FILE refused" ;;
 	esac
 	[ "$WANT" = on ] || return 0
-	# Protocol 3 serves one router: the first one offered forwarding.
+	# An engine with the global key serves one router: the first one
+	# offered forwarding.
 	r=$(awk '$3 == "yes" { print $4, $1 }' "$WORK/clients" | sort -n | awk 'NR == 1 { print $2 }')
 	if [ -n "$r" ]; then
 		echo "pass $r" >"$WORK/table"
@@ -747,6 +759,13 @@ summary() {
 	fi
 }
 
+# engine_mark: what the engine's file says now, to tell whether it changed
+# while a sync applied it: a path unit does not start its service again
+# for a change made while the service runs.
+engine_mark() {
+	cksum <"${FORWARD_FILE:-$PASSTHROUGH_FILE}" 2>/dev/null || echo none
+}
+
 # sync_now: the rules as wanted now.
 sync_now() {
 	FAIL=0
@@ -899,6 +918,11 @@ cmd_check() {
 	if ! cmp -s "$WORK/reserved.now" "$STATE/reserved"; then
 		why="${why:+$why; }the reserved set changed"
 	fi
+	# What the engine asks for, in case a change of its file was missed.
+	plan 2>/dev/null
+	if [ -z "$why" ] && ! cmp -s "$WORK/plan" "$STATE/applied"; then
+		why="what the engine asks for changed"
+	fi
 	if [ -n "$why" ]; then
 		sync_now >/dev/null || return 1
 		say "$why: applied again"
@@ -991,7 +1015,18 @@ sync)
 	fi
 	notices
 	firewalld_active && die "$FIREWALLD"
-	sync_now || exit 1
+	n=0
+	while :; do
+		mark=$(engine_mark)
+		sync_now || exit 1
+		[ "$(engine_mark)" != "$mark" ] || break
+		n=$((n + 1))
+		if [ "$n" -ge 5 ]; then
+			warn "the engine's file keeps changing: check applies it again within 5 minutes"
+			break
+		fi
+		say "the engine's file changed meanwhile: again"
+	done
 	;;
 check) cmd_check || exit 1 ;;
 down)

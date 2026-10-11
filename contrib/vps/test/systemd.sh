@@ -21,12 +21,14 @@
 #   as an SSH session riding the tunnel does: the transient unit
 #   cengarde-upgrade finishes anyway; wg0 is gone, cg-router has port 65501
 #   and the router's address, no rule of 0.4 is left, the engine runs as
-#   the static user cengarde, the secret file was imported and deleted, and
-#   the router comes back with IP pass on, as it last asked;
+#   the static user cengarde, the secret file was imported and deleted (at
+#   10.79.0.2: 0.4.2's cloud-config has no ROUTER_TUNNEL_ADDR), 0.4's IP pass
+#   state removed, and the router comes back asking for IP pass on;
 # - the units: systemd-analyze verify, Restart=on-failure accepted for the
 #   oneshot cengarde-nat.service; "cengarde ctl reload" answers;
-# - IP pass on and off through cengarde-passthrough.path and the file the
-#   engine keeps in /var/lib/cengarde; kept across a restart of cengarde;
+# - IP pass on and off through cengarde-passthrough.path and the forward
+#   table the engine keeps in /var/lib/cengarde; kept across a restart of
+#   cengarde;
 #   cengarde-nat.service started before the engine;
 # - PUB_IF removed: the rules name no interface, and a route added after
 #   cengarde-nat.service started works for the routers' Internet;
@@ -70,7 +72,7 @@ SRC=$(cd "$HERE/../../.." && pwd)
 OLD_REF=${CENGARDE_OLD_REF:-1c6005175e01c004c9c7b706f230d86c26b96f76} # 0.4.2
 CG=/usr/local/sbin/cengarde NAT=/usr/local/sbin/cengarde-nat SETUP=/usr/local/sbin/cengarde-vps-setup
 SECRET=/etc/cengarde/secret NAT_CONF=/etc/cengarde/nat.conf
-PASS_FILE=/var/lib/cengarde/passthrough
+FWD_FILE=/var/lib/cengarde/forward
 UPGRADE_LOG=/var/log/cengarde-upgrade.log UPGRADE_STATUS=/run/cengarde-upgrade.status
 ROUTER=cgsd-router INET=cgsd-inet PUB=cgsd-pub
 VPS_IP=10.250.80.1 INET_IP=10.250.80.2 CARRIER_IP=10.250.81.1 UPLINK_IP=10.250.81.2
@@ -302,7 +304,8 @@ pass_rules() {
 	done
 }
 no_pass_rules() { ! iptables -t nat -S | grep -q -- "--to-destination $TUN_ROUTER\$"; }
-pass_file() { [ "$(cat "$PASS_FILE" 2>/dev/null)" = "$1" ]; }
+# pass_held: the engine's forward table gives IP pass to the router.
+pass_held() { grep -qx "pass router" "$FWD_FILE" 2>/dev/null; }
 # legacy_rules: any rule of cengarde 0.4.
 legacy_rules() { rules | grep -Eq -- '-i wg0|-o wg0|10\.79\.0\.0/30|-i cgsd-pub -p (tcp|udp) -m (tcp|udp) --dport'; }
 # journal UNIT TEXT [SINCE]: UNIT logged TEXT since SINCE (seconds since the
@@ -477,7 +480,7 @@ after_upgrade() {
 	check "cengarde.conf is 0640 root:cengarde" [ "$(stat -c '%a %U %G' /etc/cengarde/cengarde.conf)" = "640 root cengarde" ]
 	check "the secret file was imported and deleted" [ ! -e "$SECRET" ]
 	check "the router keeps 10.79.0.2" grep -qx 'TUNNEL_ADDR=10.79.0.2' /etc/cengarde/clients/router
-	check "0.4's IP pass state moved to $PASS_FILE: on" pass_file on
+	check "0.4's IP pass state removed (the router asks again)" [ ! -e /var/lib/cengarde-nat/passthrough ]
 	check "cengarde-nat.service: Restart=on-failure accepted" [ "$(systemctl show -p Restart --value cengarde-nat)" = on-failure ]
 	check "systemd-analyze verify says nothing about the installed units" verify
 	DENY=$(systemctl show -p IPAddressDeny --value cengarde)
@@ -485,6 +488,7 @@ after_upgrade() {
 	say "the router updated too (the protocol changed)"
 	router_version new
 	tunnel_back "upgraded"
+	check "the router asks, and the forward table gives it IP pass" wait_for 15 pass_held
 	check "IP pass is on again" wait_for 15 pass_rules
 	check "the server's public address reaches the router's site" wait_for 10 pass_reaches
 	check "cengarde ctl reload answers ok (the engine reads the file itself)" [ "$("$CG" ctl reload)" = ok ]
@@ -495,7 +499,7 @@ pass_on_off() {
 	say "the router asks for IP pass off (passthrough = no, cengarde ctl reload)"
 	router_conf no
 	check "cengarde ctl reload on the router answers ok" [ "$(router_ctl reload)" = ok ]
-	check "the server writes off to $PASS_FILE" wait_for 10 pass_file off
+	check "the server's forward table takes IP pass away" wait_for 10 not pass_held
 	check "the path unit takes the forwarding away" wait_for 10 no_pass_rules
 	check "the server's public address no longer reaches the router" not pass_reaches
 	say "on again, then cengarde restarted with the router away"

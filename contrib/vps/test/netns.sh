@@ -38,7 +38,9 @@
 #   0.5 s of the sync's end; on again, with the stream still running, it reaches alpha again
 #   within 2 s;
 # - apply twice gives the same rules, two applies at once one jump each;
-#   check puts back a flushed chain and a deleted jump, warns about an
+#   check puts back a flushed chain and a deleted jump, follows a table
+#   the engine changed with no sync after it, and sync runs again for a
+#   table changed while it ran; check warns about an
 #   nftables chain that drops forwarded traffic and about rules in both
 #   iptables backends (legacy and nft), and does nothing while down; sync
 #   does nothing while down; starting from cengarde 0.4's rules, apply
@@ -365,6 +367,35 @@ check "it says so and applies again" sh -c 'printf "%s\n" "$1" | grep -q "rules 
 check "the same rules again" [ "$(saved)" = "$once" ]
 nsexec "$VPS" iptables -t filter -D FORWARD -j CG_FWD
 check "a jump deleted: check" nat check
+check "the same rules again" [ "$(saved)" = "$once" ]
+table "$T1
+rule bravo tcp 6000 6000 6000"
+check "a table the engine changed, with no sync after it (a missed path event): check" nat check
+check "it says so and applies it" sh -c 'printf "%s\n" "$1" | grep -q "what the engine asks for changed: applied again"' sh "$OUT"
+check "bravo's new rule is in" sh -c 'nsexec() { ip netns exec "$@"; }; nsexec "$1" iptables -t nat -S CG_PRE | grep -q -- "--dport 6000 -j DNAT"' sh "$VPS"
+table "$T1"
+check "the table back: check" nat check
+check "the same rules again" [ "$(saved)" = "$once" ]
+# A conntrack that, the first time, rewrites the table as the engine would
+# while sync applies it: a path unit would not start sync again for that.
+cat >"$TMP/conntrack-engine" <<EOF
+#!/bin/sh
+if [ ! -e "$TMP/rewritten" ]; then
+	: >"$TMP/rewritten"
+	{ cat "$R/var/lib/cengarde/forward"; echo 'rule bravo tcp 6000 6000 6000'; } >"$R/var/lib/cengarde/forward.tmp"
+	chown nobody "$R/var/lib/cengarde/forward.tmp"
+	mv "$R/var/lib/cengarde/forward.tmp" "$R/var/lib/cengarde/forward"
+fi
+exit 0
+EOF
+chmod +x "$TMP/conntrack-engine"
+table "$(printf '%s\n' "$T1" | sed 's/^pass bravo$/pass alpha/')"
+OUT=$(nsexec "$VPS" env CENGARDE_ROOT="$R" CENGARDE_CONNTRACK="$TMP/conntrack-engine" sh "$NAT" sync 2>&1)
+printf '%s\n' "$OUT" | sed 's/^/    /'
+check "the engine changes its table during a sync: sync runs again" sh -c 'printf "%s\n" "$1" | grep -q "changed meanwhile: again"' sh "$OUT"
+check "with what it changed meanwhile" sh -c 'ip netns exec "$1" iptables -t nat -S CG_PRE | grep -q -- "--dport 6000 -j DNAT"' sh "$VPS"
+table "$T1"
+check "the table back: sync" nat sync
 check "the same rules again" [ "$(saved)" = "$once" ]
 if command -v nft >/dev/null; then
 	nsexec "$VPS" nft -f - <<-'EOF'

@@ -14,13 +14,18 @@
 #     a global prefix around the tunnel. The VPS has addresses of its own,
 #     1.2.3.4 (miniupnpd refuses a reserved one as the external address),
 #     1.2.3.5 and 2001:db8::4, and a cengarde server listening on all of them
-#     (*), with WireGuard; all keys derive from the router's pairing secret;
+#     (*), with WireGuard; all keys derive from the router's pairing secret,
+#     and so does the router's address in the tunnel (10.79.x.y, a /32, with
+#     10.79.0.1/32 on the VPS side);
 #  3. configures cengarde on the router from LuCI only (luci.mjs), which
 #     waits for the tunnel, the three uplinks and IP pass on at the VPS,
 #     and pauses and resumes an uplink from the status page; up2 and up3
 #     get their DHCPv6 companions (up26, up36) on their devices, in the
 #     uplinks' zone, up1v6 stops handing its prefix to the LAN, and a PPPoE
 #     uplink (configuration only) gets delegate 0;
+#     wgcg has the derived address as a /32 and a route to 10.79.0.1; the
+#     status and "cengarde-setup cloud-config" carry the router's name and
+#     address, and an invalid tunnel_addr is refused;
 #  4. turns IP pass off while pinging through the tunnel: the engine takes
 #     the change without a restart and without loss, and the VPS follows;
 #  5. pings through the tunnel while one uplink goes down: no loss allowed;
@@ -41,7 +46,10 @@
 #     their CPU clocks: OpenWrt's kernel has no schedstat);
 #  9. checks that apply has converged: run again it changes nothing, and
 #     nothing reloads for 60 s (the companions' triggers cause no loop);
-# 10. disables cengarde and checks that the router is back as it was (the
+# 10. route_all off: 10.79.0.1 stays reachable through wgcg by the route
+#     cengarde keeps (the /1 routes are gone, and a /32 has no connected
+#     one), converged again; route_all back on;
+# 11. disables cengarde and checks that the router is back as it was (the
 #     LAN gets its prefix again), and converged again.
 # Screenshots and logs go to OUT_DIR (default ./e2e-out). Needs qemu-system-x86,
 # ssh and node with "npm install" done in this directory.
@@ -139,6 +147,16 @@ mkdir -p "$OUT"
 
 say "VPS: uplink ends with DHCP and IPv6, 1.2.3.4, 1.2.3.5, 2001:db8::4, cengarde server and WireGuard"
 secret=$("$VM" ssh router 'uci get cengarde.main.secret')
+# The router's address in the tunnel: a new install has no tunnel_addr, so it
+# derives it from the secret.
+addr=$("$VM" ssh router "echo '$secret' | cengarde keys" | sed -n "s/^CG_TUNNEL_ADDR='\(.*\)'\$/\1/p")
+case "$addr" in
+10.79.*) ;;
+*)
+	echo "e2e: no tunnel address derived from the router's secret ($addr)"
+	exit 1
+	;;
+esac
 "$VM" ssh vps "SECRET='$secret' sh -s" <<'EOF'
 set -e
 uci -q delete network.wan || true
@@ -179,11 +197,13 @@ uci set network.wg0=interface
 uci set network.wg0.proto=wireguard
 uci set network.wg0.private_key="$CG_WG_SERVER_KEY"
 uci set network.wg0.listen_port=65501
-uci add_list network.wg0.addresses=10.79.0.1/30
+uci add_list network.wg0.addresses=10.79.0.1/32
 uci set network.router=wireguard_wg0
 uci set network.router.public_key="$(echo "$CG_WG_CLIENT_KEY" | wg pubkey)"
 uci set network.router.preshared_key="$CG_WG_PSK"
-uci add_list network.router.allowed_ips=10.79.0.2/32
+# The router's address alone, with its route: a /32 has no connected one.
+uci add_list network.router.allowed_ips=$CG_TUNNEL_ADDR/32
+uci set network.router.route_allowed_ips=1
 uci commit network
 uci commit dhcp
 mkdir -p /etc/cengarde
@@ -193,6 +213,7 @@ mode = server
 key = $CG_LINK_KEY
 listen = *:65500
 wireguard = 127.0.0.1:65501
+wireguard_poke = $CG_TUNNEL_ADDR:9
 status_file = /var/run/cengarde.json
 control_socket = /var/run/cengarde/cengarde.sock
 passthrough_file = /var/run/cengarde/passthrough
@@ -276,6 +297,50 @@ else
 fi
 "$VM" ssh router 'uci show network; uci show firewall; uci show upnpd; ip route; wg show; cat /var/etc/cengarde.conf | grep -v "^key"; logread | grep cengarde' \
 	> "$OUT/router-enabled.txt" 2>&1 || true
+
+# A new install derives its address from the secret; wgcg holds it as a /32,
+# and the route to the VPS end is the one cengarde keeps (with a /32 there is
+# no connected route).
+if [ -z "$("$VM" ssh router 'uci -q get cengarde.main.tunnel_addr')" ] &&
+	[ "$("$VM" ssh router 'uci -q get network.wgcg.addresses')" = "$addr/32" ] &&
+	"$VM" ssh router "ip -4 addr show dev wgcg | grep -q 'inet $addr/32 ' &&
+		ip route | grep -q '^10\.79\.0\.1 dev wgcg' &&
+		uci -q get network.cengarde_vps_route.target | grep -qx 10.79.0.1/32"; then
+	ok "wgcg has the address derived from the secret ($addr/32) and a route to 10.79.0.1"
+else
+	bad "wgcg does not have $addr/32 and a route to 10.79.0.1"
+	"$VM" ssh router 'uci show cengarde.main; ip addr show dev wgcg; ip route'
+fi
+"$VM" ssh router 'cengarde-setup status' > "$OUT/status-addr.json"
+cloud=$("$VM" ssh router 'cengarde-setup cloud-config')
+if grep -q "\"tunnel_addr\":\"$addr\"" "$OUT/status-addr.json" &&
+	grep -q "\"tunnel_addr_derived\":\"$addr\"" "$OUT/status-addr.json" &&
+	grep -q '"vps_name":"router"' "$OUT/status-addr.json" &&
+	printf '%s\n' "$cloud" | grep -q '^ *ROUTER_NAME=router$' &&
+	printf '%s\n' "$cloud" | grep -q "^ *ROUTER_TUNNEL_ADDR=$addr\$"; then
+	ok "the status and the cloud-config carry the router's name and address"
+else
+	bad "the status or the cloud-config lack the router's name or address"
+	cat "$OUT/status-addr.json"
+	printf '%s\n' "$cloud" | grep ROUTER_ || true
+fi
+# An address that is not valid is refused, not half applied.
+if "$VM" ssh router sh -s <<'EOF'
+uci set cengarde.main.tunnel_addr=10.79.0.1
+uci commit cengarde
+r=0
+cengarde-setup cloud-config >/dev/null 2>&1 && r=1
+cengarde-setup status | grep -q '"tunnel_addr":null' || r=1
+cengarde-setup status | grep -q '"code":"tunnel_addr_invalid"' || r=1
+uci delete cengarde.main.tunnel_addr
+uci commit cengarde
+exit $r
+EOF
+then
+	ok "tunnel_addr 10.79.0.1 (the VPS's) is refused: no cloud-config, a problem in the status"
+else
+	bad "tunnel_addr 10.79.0.1 was not refused"
+fi
 
 if "$VM" ssh router 'pidof miniupnpd >/dev/null && grep -qx ext_ifname=wgcg /var/etc/miniupnpd.conf &&
 	grep -qx ext_ip=1.2.3.4 /var/etc/miniupnpd.conf'; then
@@ -549,6 +614,46 @@ for mode in off on legacy; do
 done
 
 converged "enabled"
+
+# Without route_all the /1 routes are gone (cengarde-setup restarts wgcg for
+# that: netifd does not look at its peer), and the address is a /32: 10.79.0.1
+# is reachable only by the route cengarde keeps. The VPS also answers 10.79.0.1
+# over an uplink, so ask the routing table and count the bytes wgcg sends.
+say "route_all off: 10.79.0.1 stays reachable through wgcg"
+route_all() {
+	"$VM" ssh router "uci set cengarde.main.route_all=$1; uci commit cengarde
+		ubus call service event '{\"type\":\"config.change\",\"data\":{\"package\":\"cengarde\"}}'"
+}
+wg_tx() { "$VM" ssh router "wg show wgcg transfer | awk '{ t = \$3 } END { print t + 0 }'"; }
+via_wgcg() { "$VM" ssh router "ip route get 10.79.0.1 | grep -q ' dev wgcg '"; }
+no_halves() { ! "$VM" ssh router "ip route | grep -q '^0\.0\.0\.0/1 '"; }
+route_all 0
+if until_ok 60 no_halves && until_ok 60 via_wgcg && until_ok 90 tunnel_back; then
+	before=$(wg_tx)
+	"$VM" ssh router 'ping -q -c 5 -W 2 10.79.0.1' > "$OUT/ping-route-all-off.txt" 2>&1 || true
+	cat "$OUT/ping-route-all-off.txt"
+	after=$(wg_tx)
+	# five echoes and replies of ~150 bytes each, a keepalive adds 32 at most
+	if grep -q ' 0% packet loss' "$OUT/ping-route-all-off.txt" && [ $((after - before)) -ge 500 ]; then
+		ok "route_all off: the ping to 10.79.0.1 went through wgcg ($((after - before)) bytes)"
+	else
+		bad "route_all off: 10.79.0.1 does not answer through wgcg (sent $((after - before)) bytes)"
+		"$VM" ssh router 'ip route; wg show wgcg; logread | grep -E "cengarde|netifd" | tail -20'
+	fi
+else
+	bad "route_all off: no route to 10.79.0.1 through wgcg"
+	"$VM" ssh router 'uci show network.cengarde_vps_route; ip route; logread | grep -E "cengarde|netifd" | tail -20'
+fi
+sleep 15 # up1v6 gets its prefix delegation back: let that settle first
+converged "route_all off"
+route_all 1
+halves() { "$VM" ssh router "ip route | grep -q '^0\.0\.0\.0/1 .*wgcg'"; }
+if until_ok 60 halves && until_ok 90 tunnel_back && until_ok 30 eval '! lan_prefix'; then
+	ok "route_all on again: the /1 routes are back, the tunnel answers, the IPv6 leak is closed"
+else
+	bad "route_all on again: no /1 routes, no tunnel or the LAN keeps the prefix"
+	"$VM" ssh router 'ip route; wg show wgcg; logread | grep -E "cengarde|netifd" | tail -20'
+fi
 
 say "disable: the router goes back to how it was"
 "$VM" ssh router sh -s <<'EOF'
