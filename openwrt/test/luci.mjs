@@ -53,7 +53,16 @@ page.on('pageerror', (e) => { if (loggedIn) errors.push(e.message); });
 
 const id = (s) => `[id="${s}"]`;
 const step = (s) => console.log(`luci: ${s}`);
-const shot = (name) => page.screenshot({ path: `${shots}/${name}.png`, fullPage: true });
+// A full-page screenshot taken while a text field has focus leaves Chromium
+// scrolled to the bottom of the page until the field loses focus, and then
+// the page jumps back to where it was. If that happens inside the next click
+// (its mousedown takes the focus away), the button moves away before the
+// mouseup and the click is lost: with the weights' input focused, Save &
+// Apply did nothing. So no field keeps the focus through a screenshot.
+async function shot(name) {
+	await page.evaluate(() => document.activeElement && document.activeElement.blur());
+	await page.screenshot({ path: `${shots}/${name}.png`, fullPage: true });
+}
 
 function check(cond, what) {
 	if (!cond)
