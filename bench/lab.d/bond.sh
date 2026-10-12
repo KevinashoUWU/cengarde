@@ -47,9 +47,15 @@
 #   redund-dw20  reorder_dup_wait_ms = 20
 #   split        split = force, mute_behind_ms = 0, reorder_max_wait_ms = 400
 #                (muting would take the slow link out of reorder150 and hide
-#                the spread)
+#                the spread); the engine's delay guard (split_spread_ms, 30
+#                by default) still takes it out of the share in reorder50
+#                and reorder150, as in the field: split-sp0 is without it
 #   splitnoro    split, with reorder = no: the control of split
 #   NAME-bpN     any of them with reorder_bypass = N
+#   NAME-spN     any of them with split_spread_ms = N; split-sp0 is the split
+#                without the delay guard, the raw round-robin (the engine's
+#                default, 30, keeps a link 50 ms behind out of the share)
+# Suffixes go in any order, each once (split-sp0-bp64).
 # BOND_VARIANTS empty is "bonded solo", solo in equal and het only: exactly the
 # runs from before the variants (the CI's time estimate counts them). With
 # BOND_VARIANTS given, solo also runs in reorder50 and reorder150, the
@@ -182,14 +188,19 @@ bond_settle() {
 # bond_variant NAME: the settings of a variant: BV_CLIENT and BV_SERVER
 # ("key = value;..."), BV_SOLO (1: the first link alone). 1 for a name it does not know.
 bond_variant() {
-	local v=$1 bp=
+	local v=$1 bp='' sp='' s
 	BV_CLIENT='' BV_SERVER='' BV_SOLO=0
-	case $v in *-bp*)
-		bp=${v##*-bp}
-		v=${v%-bp*}
-		case $bp in '' | *[!0-9]*) return 1 ;; esac
-		;;
-	esac
+	# The suffixes, from the last: -bpN and -spN, each once.
+	while :; do
+		s=${v##*-}
+		case $s in
+		bp[0-9]*) [ -z "$bp" ] || return 1; bp=${s#bp} ;;
+		sp[0-9]*) [ -z "$sp" ] || return 1; sp=${s#sp} ;;
+		*) break ;;
+		esac
+		case ${s#??} in *[!0-9]*) return 1 ;; esac
+		v=${v%-*}
+	done
 	case $v in
 	bonded | redund) ;;
 	redund-ro0) BV_CLIENT="reorder = no" ;;
@@ -200,6 +211,7 @@ bond_variant() {
 	*) return 1 ;;
 	esac
 	[ -n "$bp" ] && BV_CLIENT="${BV_CLIENT:+$BV_CLIENT;}reorder_bypass = $bp"
+	[ -n "$sp" ] && BV_CLIENT="${BV_CLIENT:+$BV_CLIENT;}split_spread_ms = $sp"
 	BV_SERVER=$BV_CLIENT
 	return 0
 }
@@ -207,8 +219,7 @@ bond_variant() {
 # bond_applies CASE VARIANT: whether the variant runs in the case (solo, in the
 # cases of BOND_SOLO_CASES only).
 bond_applies() {
-	local v=${2%-bp*}
-	[ "$v" = solo ] || return 0
+	[ "${2%%-*}" = solo ] || return 0
 	case " $BOND_SOLO_CASES " in *" $1 "*) return 0 ;; esac
 	return 1
 }
@@ -220,7 +231,7 @@ bond_variants_check() {
 	mkdir -p "$RUN"
 	for v in $BOND_VARIANTS; do
 		bond_variant "$v" || {
-			echo "FAIL: unknown variant $v (bonded solo redund redund-ro0 redund-dw20 split splitnoro, and any with -bpN)"
+			echo "FAIL: unknown variant $v (bonded solo redund redund-ro0 redund-dw20 split splitnoro, and any with -bpN or -spN)"
 			return 1
 		}
 		[ -x "$CENGARDE_BIN" ] || continue

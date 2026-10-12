@@ -13,7 +13,11 @@ bonding of Fase 5 needs from the field:
 - per link, outage starts and RTT steps folded on the wall clock, modulo 15 s
   and per second of the minute: Starlink reconfigures its links every 15 s
   (story 012 assumes 1.5 s of loss at each, still to be measured);
-- per hour of the day, each link's outages, RTT and loss.
+- per hour of the day, each link's outages, RTT and loss;
+- while the client split its upload, what each link did in the split
+  (links[].split_share: a share, out for its delay with split_spread_ms and
+  carrying copies, waiting for a delay...), how often the delay guard took
+  it out and how far behind the fastest it saw it.
 
 A link is out while its state is not "live" or nothing came from it for
 3 probe intervals (at least 300 ms); "paused" links (set off by hand) do
@@ -283,7 +287,10 @@ def parse_pool(p):
 # A week at 1 Hz is 600 000 samples, which are all kept: of each link only what is read is kept (a full link is 35 keys
 # and 2.5 KB parsed), and equal strings are one object. A key read anywhere below has to be here.
 LINK_KEYS = ("id", "name", "label", "state", "last_rx_ms_ago", "rtt_ms", "upload", "upload_behind_ms", "upload_mutes",
-             "upload_state_ms", "download_muted", "tx_packets", "rx_first", "rx_duplicate", "rx_late")
+             "upload_state_ms", "download_muted", "tx_packets", "rx_first", "rx_duplicate", "rx_late", "split_share",
+             "split_behind_ms")
+# What a link does in the upload split (links[].split_share, step 1's guard G4), in the report's order.
+SPLIT_SHARES = ("yes", "spread", "waiting", "weight 0", "no")
 SHARED = {}
 
 
@@ -452,6 +459,7 @@ def analyze(segs, utc_offset_h=0.0, ex=None, server=()):
     links = sorted({n for seg in segs for s in seg for n in s.links})
     L = {n: dict(time=0, out_time=0, events=[], rtt=[], dev=[], behind=[], up_behind=[],
                  loss_num=0.0, loss_den=0, up_tx=0, up_rx=0, mutes=0, muted_time=0,
+                 split=collections.Counter(), split_leaves=0, split_behind=[],
                  starts=[], steps=[], hours=collections.defaultdict(lambda: [0, 0, [], 0.0, 0]),
                  # For the radio section: where the link was observed (wall ms, as
                  # [start, end] runs) and the wall ms at which its upload and
@@ -498,6 +506,15 @@ def analyze(segs, utc_offset_h=0.0, ex=None, server=()):
                 present.append(n)
                 out = xr["out"] = link_out(l, b.probe)
                 d["time"] += dt
+                # The upload split, while the client splits (split_share null: it does not).
+                sh = l.get("split_share")
+                if isinstance(sh, str):
+                    d["split"][sh] += dt
+                    pa = a.links.get(n)
+                    if sh == "spread" and (pa is None or pa.get("split_share") != "spread"):
+                        d["split_leaves"] += 1
+                    if num(l.get("split_behind_ms")) is not None:
+                        d["split_behind"].append(float(l["split_behind_ms"]))
                 st = state[n]
                 if b.synced:
                     cv = d["cover"]
@@ -930,6 +947,18 @@ def fold(times_ms):
                 fold15=f15, minute=[som.get(s, 0) for s in range(60)])
 
 
+def split_summary(d):
+    """A link's time in the upload split by what it did there (links[].split_share), the times the delay guard
+    took it out, and its delay behind the fastest as the guard saw it; None when the client never split."""
+    t = sum(d["split"].values())
+    if not t:
+        return None
+    return dict(hours=round(t / 3600000, 3),
+                pct={k: round(100 * d["split"][k] / t, 2) for k in list(SPLIT_SHARES) + sorted(set(d["split"]) - set(SPLIT_SHARES))},
+                leaves=d["split_leaves"],
+                behind_ms={p: pct(d["split_behind"], p) for p in (50, 99)})
+
+
 def summarize(a):
     L, out = a["L"], {"links": {}, "pairs": [], "simultaneous": {}}
     for n in a["links"]:
@@ -954,6 +983,7 @@ def summarize(a):
             loss_up_pct=round(100 * max(0.0, 1 - d["up_rx"] / d["up_tx"]), 3) if d["up_tx"] else None,
             mutes=d["mutes"],
             muted_pct=round(100 * d["muted_time"] / d["time"], 3) if d["time"] else None,
+            split=split_summary(d),
             starlink_outages=fold(d["starts"]),
             starlink_steps=fold(steps),
             by_hour={h: dict(out_pct=round(100 * v[1] / v[0], 2) if v[0] else None,
@@ -1283,6 +1313,18 @@ def report(s, notes, utc_offset_h):
           f"{'/'.join(str(v) for v in o['buckets'].values())} | {f(r[50])}/{f(r[95])}/{f(r[99])} | "
           f"{f(d['rtt_dev_ms_p95'])} | {f(b[50])}/{f(b[99])} | {f(d['loss_down_pct'], 3)} | "
           f"{f(d['loss_up_pct'], 3)} | {d['mutes']} | {f(d['muted_pct'], 2)} |")
+    split = {n: d["split"] for n, d in s["links"].items() if d.get("split")}
+    if split:
+        w("\n## The upload split\n")
+        w("While the client split its upload: what each link did there (links[].split_share; yes: a share; spread: "
+          "out for its delay, split_spread_ms, carrying copies; waiting: no delay measured yet), how often the delay guard "
+          "took it out, and how far behind the fastest the guard saw it.\n")
+        w("| link | h | yes % | spread % | waiting % | weight 0 % | no % | taken out | behind p50/p99 ms |")
+        w("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |")
+        for n, x in split.items():
+            p, b = x["pct"], x["behind_ms"]
+            w(f"| {n} | {x['hours']} | " + " | ".join(f(p.get(k, 0.0), 2) for k in SPLIT_SHARES) +
+              f" | {x['leaves']} | {f(b[50])}/{f(b[99])} |")
     w("\n## Links live at once\n")
     w("| live | % of time |")
     w("| --- | ---: |")

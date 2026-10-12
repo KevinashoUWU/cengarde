@@ -532,7 +532,7 @@ FAMILY_REFS = {
     "solo": (),
 }
 DEFAULT_REFS = ("solo", "redund-ro0", "splitnoro")
-SUFFIX = re.compile(r"^(.+)-bp[0-9]+$")
+SUFFIX = re.compile(r"^(.+)-(?:bp|sp)[0-9]+$")  # bond.sh's -bpN (reorder_bypass), -spN (split_spread_ms)
 
 
 def references(variant, present, refs=None):
@@ -541,8 +541,9 @@ def references(variant, present, refs=None):
 
     - refs (--ref A,B): the first of them the group has, for every variant (the rule
       before the families);
-    - a variant with a -bpN suffix: the variant without it when the group has it,
-      else as that variant;
+    - a variant with suffixes (-bpN, -spN): the nearest of the variants without
+      its last ones that the group has (split-sp0-bp64: split-sp0, else split),
+      else as the variant without any;
     - the variant's FAMILY_REFS the group has;
     - none of those (or a variant the table does not know): the first of
       DEFAULT_REFS the group has."""
@@ -553,11 +554,12 @@ def references(variant, present, refs=None):
     if refs is not None:
         return first(refs)
     base = variant
-    m = SUFFIX.match(variant)
-    if m:
+    m = SUFFIX.match(base)
+    while m:
         base = m.group(1)
         if base in present:
             return [base]
+        m = SUFFIX.match(base)
     got = [r for r in FAMILY_REFS.get(base, ()) if r in present and r != variant]
     return got or first(DEFAULT_REFS)
 

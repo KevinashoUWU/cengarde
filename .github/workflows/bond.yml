@@ -17,8 +17,10 @@ name: Bonding lab
 # "variants" input of a manual run it also runs redund-ro0 (reorder = no),
 # redund-dw20 (reorder_dup_wait_ms = 20), split (split = force at both ends,
 # muting off), splitnoro (split without the reorderer) and any of them with
-# -bpN (reorder_bypass = N); giving variants puts solo also in reorder50 and
-# reorder150. The split and reorder settings need the engine of step 1.
+# -bpN (reorder_bypass = N) or -spN (split_spread_ms = N: split-sp0 is the
+# split without its delay guard, the raw round-robin); giving variants puts
+# solo also in reorder50 and reorder150. The split and reorder settings need
+# the engine of step 1.
 #
 # How long it takes, on a shared runner: about 3 minutes to install and build,
 # and per repetition of the default about 18 (10 case and variant pairs, each
@@ -54,7 +56,7 @@ on:
         description: 'Cases, separated by spaces (empty: all of them)'
         default: ''
       variants:
-        description: 'Variants, separated by spaces (empty: bonded solo). Also: redund redund-ro0 redund-dw20 split splitnoro, and any with -bpN'
+        description: 'Variants, separated by spaces (empty: bonded solo). Also: redund redund-ro0 redund-dw20 split splitnoro, and any with -bpN or -spN'
         default: ''
       netem_inflight:
         description: '1: the limit of netem also covers the packets in the delay (bond_link); it changes the step 0 baseline, and a split needs it in reorder150'

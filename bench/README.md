@@ -427,9 +427,10 @@ tuyos, si los hay, vienen después):
 | `redund` | los valores por defecto |
 | `redund-ro0` | `reorder = no` |
 | `redund-dw20` | `reorder_dup_wait_ms = 20` |
-| `split` | `split = force`, `mute_behind_ms = 0` y `reorder_max_wait_ms = 400` (con el silenciado el enlace lento de `reorder150` saldría del reparto y se escondería la diferencia) |
+| `split` | `split = force`, `mute_behind_ms = 0` y `reorder_max_wait_ms = 400` (con el silenciado el enlace lento de `reorder150` saldría del reparto y se escondería la diferencia). Con la guarda de retardo del motor (`split_spread_ms`, 30 ms por omisión), en `reorder50` y `reorder150` el enlace lento sale igual del reparto y lleva copias: es el modo de campo; el reparto sin filtro es `split-sp0` |
 | `splitnoro` | `split` con `reorder = no`: el control de `split` |
 | `NOMBRE-bpN` | cualquiera de ellas con `reorder_bypass = N` |
+| `NOMBRE-spN` | cualquiera de ellas con `split_spread_ms = N`. `split-sp0` es el reparto sin la guarda de retardo, el round-robin crudo: con el valor por omisión del motor (30 ms), en `reorder50` y `reorder150` el enlace lento deja su parte y lleva copias, así que `split` ya no mide el reparto sin filtro. Los sufijos van en cualquier orden, una vez cada uno (`split-sp0-bp64`) |
 
 Sin `BOND_VARIANTS` corren `bonded` y `solo`, esta última solo en `equal` y
 `het`: exactamente lo que había antes de las variantes, así que las tablas
@@ -507,8 +508,10 @@ Al final se imprimen las tablas (Markdown), que también quedan en
   familia que haya en su grupo (mismo caso, sentido y control), una fila por
   cada una: `bonded`, `redund` y `redund-dw20` frente a `redund-ro0`; `split`
   frente a `solo` y frente a `splitnoro`, su control; `redund-ro0` y
-  `splitnoro` frente a `solo`; una variante `-bpN`, frente a la misma sin el
-  sufijo si corrió, y si no como ella. Sin ninguna de sus referencias en el
+  `splitnoro` frente a `solo`; una variante con sufijo (`-bpN`, `-spN`),
+  frente a la misma sin su último sufijo si corrió (así `split-sp0` frente a
+  `split`: lo que cambia la guarda), y si no frente a la más cercana sin
+  sufijos que haya, o como la base. Sin ninguna de sus referencias en el
   grupo, frente a la primera que haya de `solo`, `redund-ro0` y `splitnoro`
   (así `bonded` sigue contra `solo` en la corrida de CI). Así una sola corrida
   con `solo` y las dos familias da las filas de los dos criterios de salida del
@@ -672,7 +675,11 @@ Markdown (`--json` guarda además el resumen). El informe trae:
 - las caídas y los saltos de RTT plegados sobre el reloj, módulo 15 s
   (Starlink reconfigura cada 15 s, en los segundos 12, 27, 42 y 57);
 - por hora del día (`--utc-offset`), las caídas, el RTT y la pérdida de cada
-  enlace.
+  enlace;
+- si el router repartió la subida, qué hizo cada enlace en el reparto
+  mientras repartía (`split_share`: su parte, fuera por su retardo con
+  `split_spread_ms` y llevando copias, esperando una medida de retardo...),
+  cuántas veces la guarda lo sacó y cuánto iba detrás del más rápido.
 
 Un enlace está caído si su estado no es `live`, o si no llegó nada por él
 en tres intervalos de sonda (300 ms como mínimo). Los enlaces en pausa no

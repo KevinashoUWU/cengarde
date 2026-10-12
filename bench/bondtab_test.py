@@ -390,6 +390,15 @@ def test_references(d):
     check(bondtab.references("split-bp64", {"solo", "split-bp64", "splitnoro"}) == ["solo", "splitnoro"],
           "references: a -bpN variant without its base is its base")
     check(bondtab.references("mystery", {"mystery", "redund-ro0"}) == ["redund-ro0"], "references: an unknown variant")
+    # -spN (split_spread_ms) as -bpN: split-sp0, the split without its delay guard, against split
+    check(bondtab.references("split-sp0", {"solo", "split", "split-sp0", "splitnoro"}) == ["split"], "references: split-sp0")
+    check(bondtab.references("split-sp0", {"solo", "split-sp0", "splitnoro"}) == ["solo", "splitnoro"],
+          "references: split-sp0 without split is split")
+    check(bondtab.references("split-sp0-bp64", {"split-sp0-bp64", "split-sp0", "split"}) == ["split-sp0"],
+          "references: the nearest without its last suffix")
+    check(bondtab.references("split-sp0-bp64", {"split-sp0-bp64", "split", "solo"}) == ["split"],
+          "references: else further down")
+    check(bondtab.references("splitnoro-sp0", {"splitnoro-sp0", "solo"}) == ["solo"], "references: a control's -spN")
     check(bondtab.references("solo", {"solo", "redund-ro0"}) == [], "references: solo")
     check(bondtab.references("split", {"split", "redund"}) == [], "references: nothing to compare with")
 

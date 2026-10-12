@@ -625,6 +625,48 @@ def server_lines(full_reset=None):
     return lines
 
 
+def split_lines():
+    """A client's status every second for 20 minutes, splitting its upload over a and b but for the first 100 s
+    (split_share null: not splitting yet). a always takes its share; b waits for a delay for 2 s, then is taken
+    out by the delay guard twice (from 300 to 360 s and from 600 to 720 s, 50 ms behind), else 10 ms behind."""
+    lines = []
+    for k in range(1200):
+        def link(i, n, share, behind):
+            return {"id": i, "name": n, "label": "", "state": "live", "rtt_ms": 30.0, "last_rx_ms_ago": 20,
+                    "split_share": share if k >= 100 else None, "split_behind_ms": behind if k >= 100 else None}
+        out = 300 <= k < 360 or 600 <= k < 720
+        b = "waiting" if 100 <= k < 102 else "spread" if out else "yes"
+        lines.append({"mode": "client", "uptime_ms": 100000 + 1000 * k, "time_ms": T1 + 1000 * k, "session": "s0",
+                      "probe_interval_ms": 100, "download": {"packets": 100 * k},
+                      "links": [link(0, "a", "yes", 0.0), link(1, "b", b, None if b == "waiting" else 50.0 if out else 10.0)]})
+    return lines
+
+
+def split_checks():
+    s, notes = analyze_lines(split_lines())
+    a, b = s["links"]["a"]["split"], s["links"]["b"]["split"]
+    check("split: only the time the client split counts (the 1100 intervals that end on a sample with split_share)",
+          a["hours"] == round(1100 / 3600, 3), a)
+    check("split: a took its share all along", a["pct"]["yes"] == 100.0 and a["leaves"] == 0, a)
+    check("split: b out for its delay 180 s of 1100 (16.36 %), waiting 2 s, taken out twice",
+          b["pct"]["spread"] == round(100 * 180 / 1100, 2) and b["pct"]["waiting"] == round(100 * 2 / 1100, 2)
+          and b["leaves"] == 2, b)
+    check("split: b behind the fastest as the guard saw it, 10 ms mostly and 50 when out",
+          b["behind_ms"][50] == 10.0 and b["behind_ms"][99] == 50.0, b["behind_ms"])
+    text = rendered(s, notes)
+    check("split: the report has the section, with b's row",
+          "## The upload split" in text and "| b | 0.306 | 83.45 | 16.36 | 0.18 | 0.00 | 0.00 | 2 | 10.0/50.0 |" in text,
+          [ln for ln in text.splitlines() if ln.startswith("| b |")])
+    # A recording from before the guard (no split_share), or a client that never split: no section
+    old = split_lines()
+    for ln in old:
+        for l in ln["links"]:
+            l["split_share"] = None
+    s, notes = analyze_lines(old)
+    check("split: a client that never split has no split data and no section",
+          s["links"]["b"]["split"] is None and "## The upload split" not in rendered(s, notes), s["links"]["b"]["split"])
+
+
 def reorder_checks():
     lines = reorder_lines()
     s, notes = analyze_all(lines)
@@ -2191,6 +2233,7 @@ def main():
           s["joint"] is None and s["lost_all"] is None and s["sizes"] is None
           and rendered(s, notes, -3).count("No data: the recording has no") == 3)
     bond_checks()
+    split_checks()
     reorder_checks()
     unit_checks()
     radio_checks()
