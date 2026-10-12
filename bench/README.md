@@ -503,13 +503,21 @@ Al final se imprimen las tablas (Markdown), que también quedan en
   extremo que recibió (el servidor en `up`, el cliente en `down`), y `too_old`,
   `wireguard_drops`, `lost_all` y `rx_dropped` de los dos. Debajo, si `too_old`,
   `pool_full` o `wireguard_drops` no son 0, lista las corridas.
-- **Contra la referencia**: cada variante frente a la primera que haya en su
-  grupo (mismo caso, sentido y control) de `solo`, `redund-ro0` y `splitnoro`
-  (`--ref`): razón de las medianas de Mbit/s, de la tasa de retransmisiones y de
-  la CPU de cada extremo, diferencia de los RTT, y el valor p de Mann–Whitney
-  (desde 5 corridas por lado) del goodput y de la tasa de retransmisiones. Es
-  lo que leen los criterios de salida del paso 1 (tasa ≤ 1,2× un enlace solo,
-  CPU ≤ 1,05×).
+- **Contra la referencia**: cada variante frente a las referencias de su
+  familia que haya en su grupo (mismo caso, sentido y control), una fila por
+  cada una: `bonded`, `redund` y `redund-dw20` frente a `redund-ro0`; `split`
+  frente a `solo` y frente a `splitnoro`, su control; `redund-ro0` y
+  `splitnoro` frente a `solo`; una variante `-bpN`, frente a la misma sin el
+  sufijo si corrió, y si no como ella. Sin ninguna de sus referencias en el
+  grupo, frente a la primera que haya de `solo`, `redund-ro0` y `splitnoro`
+  (así `bonded` sigue contra `solo` en la corrida de CI). Así una sola corrida
+  con `solo` y las dos familias da las filas de los dos criterios de salida del
+  paso 1: tasa ≤ 1,2× un enlace solo (`split` contra `solo`) y CPU ≤ 1,05× y
+  +0 ms (`redund` contra `redund-ro0`). `--ref A,B` vuelve a la regla de antes:
+  todas frente a la primera de esas que tenga el grupo. Cada fila da la razón
+  de las medianas de Mbit/s, de la tasa de retransmisiones y de la CPU de cada
+  extremo, la diferencia de los RTT y el valor p de Mann–Whitney (desde 5
+  corridas por lado) del goodput y de la tasa de retransmisiones.
 
 El escenario no juzga la velocidad: solo falla si falla la fontanería, es
 decir, si no hay handshake, tráfico o pings. Necesita iperf3,

@@ -4,7 +4,8 @@ known: the deltas of the engine's counters (client, server with sessions that co
 and go, an engine without the reorder object, a missing snapshot), a run's JSON
 line (iperf3 and quic, the 1200-byte ping, the flow of small packets), the rule for
 two modes against the numbers of story 012, the Mann-Whitney p-value against an
-exact count, and the tables. Run: python3 bench/bondtab_test.py
+exact count, the tables, and which variant each one is compared with. Run:
+python3 bench/bondtab_test.py
 """
 
 import contextlib
@@ -335,6 +336,64 @@ def test_tables(d):
     check(out.getvalue().strip() == "(no runs)", "an empty file says so")
 
 
+def test_references(d):
+    """Each variant against its family's references, all in one run (solo with them):
+    redundancy against redundancy without the reorderer, the split against one link
+    alone and against its control."""
+    cpu = {"solo": 10.0, "redund": 17.5, "redund-ro0": 17.0, "split": 18.0, "splitnoro": 17.8, "split-bp256": 18.9,
+           "bonded": 17.0, "redund-dw20": 17.5}
+    rows = []
+    for case, variants in (("equal", ("redund", "redund-ro0", "split", "splitnoro", "solo", "split-bp256")),
+                           ("starlink15", ("redund", "redund-ro0", "split", "splitnoro")),  # bond_settle: no solo
+                           ("het", ("bonded", "solo"))):  # BOND_VARIANTS empty: what CI runs
+        for v in variants:
+            for i in range(5):
+                rows.append(row(case, v, "up", "cubic", i + 1, 40.0 + i, 10, 0.1 + i / 100, cpu=(cpu[v], cpu[v])))
+    text = "\n".join(bondtab.tables(rows, None))
+    comp = text[text.index("Against the reference variant"):].splitlines()
+    pairs = [tuple(c.strip() for c in ln.split("|")[1:6]) for ln in comp if ln.startswith("| ") and "---" not in ln][1:]
+    against = lambda case, v: [p[4] for p in pairs if p[0] == case and p[1] == v]
+    check(against("equal", "redund") == ["redund-ro0"], "redund against redund-ro0 with solo there: " + str(pairs))
+    check("| equal | redund | up | cubic | redund-ro0 | 1.00× | " in text and text.count("| 1.03× | 1.03× |") >= 1,
+          "the CPU criterion row (17.5 / 17.0): " + str([ln for ln in comp if "| redund |" in ln]))
+    check(against("equal", "split") == ["solo", "splitnoro"], "split against solo and its control: " + str(against("equal", "split")))
+    check(against("equal", "redund-ro0") == ["solo"] and against("equal", "splitnoro") == ["solo"], "the controls against solo")
+    check(against("equal", "solo") == [], "solo against nothing")
+    check(against("equal", "split-bp256") == ["split"], "a -bpN variant against its base")
+    check(not any(p[1] == "split" and p[4] == "redund-ro0" for p in pairs), "never split against redund-ro0")
+    # No solo (starlink15): the families still pair up; a control without its
+    # reference falls back to the first of solo, redund-ro0, splitnoro there
+    check(against("starlink15", "redund") == ["redund-ro0"] and against("starlink15", "split") == ["splitnoro"],
+          "starlink15 without solo: " + str([p for p in pairs if p[0] == "starlink15"]))
+    check(against("starlink15", "redund-ro0") == [] and against("starlink15", "splitnoro") == ["redund-ro0"],
+          "the fallback, first of the defaults that is not itself")
+    # The CI's default run: bonded (no redund-ro0 there) against solo, as before
+    check(against("het", "bonded") == ["solo"], "bonded against solo when there is no redund-ro0")
+    # --ref: every variant against the first of these the group has, as before the families
+    text = "\n".join(bondtab.tables(rows, ["solo", "redund-ro0"]))
+    comp = text[text.index("Against the reference variant"):].splitlines()
+    refd = [tuple(c.strip() for c in ln.split("|")[1:6]) for ln in comp if ln.startswith("| ") and "---" not in ln][1:]
+    check({p[4] for p in refd if p[0] == "equal"} == {"solo"} and len([p for p in refd if p[0] == "equal"]) == 5,
+          "--ref solo,...: all five against solo in equal: " + str(refd))
+    check({p[4] for p in refd if p[0] == "starlink15"} == {"redund-ro0"}, "and against redund-ro0 without solo")
+    # through main, as bond.sh calls it (no --ref) and with one
+    path = os.path.join(d, "ref.jsonl")
+    write(path, "\n".join(json.dumps(r) for r in rows) + "\n")
+    for argv, want in ((["table", path], "| equal | split | up | cubic | splitnoro |"),
+                       (["table", path, "--ref", "redund-ro0"], "| equal | split | up | cubic | redund-ro0 |")):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            bondtab.main(argv)
+        check(want in out.getvalue(), f"{argv}: {want}")
+    # the rule alone
+    check(bondtab.references("split", {"solo", "split", "splitnoro"}) == ["solo", "splitnoro"], "references: split")
+    check(bondtab.references("split-bp64", {"solo", "split-bp64", "splitnoro"}) == ["solo", "splitnoro"],
+          "references: a -bpN variant without its base is its base")
+    check(bondtab.references("mystery", {"mystery", "redund-ro0"}) == ["redund-ro0"], "references: an unknown variant")
+    check(bondtab.references("solo", {"solo", "redund-ro0"}) == [], "references: solo")
+    check(bondtab.references("split", {"split", "redund"}) == [], "references: nothing to compare with")
+
+
 def main():
     with tempfile.TemporaryDirectory() as d:
         test_delta(d)
@@ -342,6 +401,7 @@ def main():
         test_modes()
         test_mwu()
         test_tables(d)
+        test_references(d)
     print(f"bondtab_test: {checks - fails}/{checks} ok" if not fails else f"bondtab_test: {fails} of {checks} FAILED")
     return 1 if fails else 0
 

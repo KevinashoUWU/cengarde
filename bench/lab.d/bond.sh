@@ -465,8 +465,8 @@ bond_case() {
 }
 
 # bond_table: the summary tables of the run, in Markdown. The rules (median and
-# p25-p75, or min-max, two modes, the engine's counters, the comparison against
-# solo or the control of each group) are bondtab.py's.
+# p25-p75, or min-max, two modes, the engine's counters, the comparison of each
+# variant with the references of its family) are bondtab.py's.
 bond_table() { python3 -I "$LAB/bondtab.py" table "$RUN/bond.jsonl"; }
 
 # bond_plan: how long the runs would take, from BOND_CASES, BOND_VARIANTS, BOND_N,

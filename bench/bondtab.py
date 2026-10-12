@@ -10,7 +10,9 @@
                               exit 1 when a counter NAME (too_old, wireguard_drops,
                               pool_full, lost_all, ...) is above 0 in a line of FILE
   bondtab.py table FILE [--ref A,B]
-                              the summary tables (Markdown) of the lines of FILE
+                              the summary tables (Markdown) of the lines of FILE; each
+                              variant against its family's references, or with --ref
+                              against the first of A,B its group has
 
 A snapshot is a prefix: PREFIX.client.json and PREFIX.server.json (the engine's
 status files), PREFIX.wgc.json and PREFIX.wgs.json (ip -s -j link show of the
@@ -516,10 +518,54 @@ def tables(rows, refs):
     return out
 
 
+# What each of bond.sh's variants is compared with (story 012, step 1 spec 8.3): the
+# redundancy variants with redundancy without the reorderer (CPU <= 1.05x, +0 ms), the
+# split with one link alone (rate <= 1.2x) and with its control (the split without the
+# reorderer), the controls with one link alone. solo is the reference of all.
+FAMILY_REFS = {
+    "bonded": ("redund-ro0",),
+    "redund": ("redund-ro0",),
+    "redund-dw20": ("redund-ro0",),
+    "redund-ro0": ("solo",),
+    "split": ("solo", "splitnoro"),
+    "splitnoro": ("solo",),
+    "solo": (),
+}
+DEFAULT_REFS = ("solo", "redund-ro0", "splitnoro")
+SUFFIX = re.compile(r"^(.+)-bp[0-9]+$")
+
+
+def references(variant, present, refs=None):
+    """The variants of a group (present: its variant names) that variant is compared
+    with, one row each, in order; never itself.
+
+    - refs (--ref A,B): the first of them the group has, for every variant (the rule
+      before the families);
+    - a variant with a -bpN suffix: the variant without it when the group has it,
+      else as that variant;
+    - the variant's FAMILY_REFS the group has;
+    - none of those (or a variant the table does not know): the first of
+      DEFAULT_REFS the group has."""
+    def first(rs):
+        r = next((x for x in rs if x in present), None)
+        return [r] if r is not None and r != variant else []
+
+    if refs is not None:
+        return first(refs)
+    base = variant
+    m = SUFFIX.match(variant)
+    if m:
+        base = m.group(1)
+        if base in present:
+            return [base]
+    got = [r for r in FAMILY_REFS.get(base, ()) if r in present and r != variant]
+    return got or first(DEFAULT_REFS)
+
+
 def compare(rows, by, keys, refs):
-    """Each variant against a reference variant of the same case, direction and
-    congestion control: the first of refs (default solo, redund-ro0, splitnoro) that
-    the group has. Ratios of the medians (goodput, retransmission rate, CPU), the
+    """Each variant against its reference variants (references(): its family's, or
+    the first of --ref) of the same case, direction and congestion control, one row
+    per reference. Ratios of the medians (goodput, retransmission rate, CPU), the
     difference of the RTT medians, and the Mann-Whitney p-value of the goodput and of
     the retransmission rate (from 5 runs on each side)."""
     groups = []
@@ -528,34 +574,31 @@ def compare(rows, by, keys, refs):
         if g not in groups:
             groups.append(g)
     body = []
+    med = lambda rs, f: statistics.median([x for x in (field(r, f) for r in rs) if x is not None] or [math.nan])
+
+    def ratio(x, y):
+        return "-" if math.isnan(x) or math.isnan(y) or not y else f"{x / y:.2f}×"
+
+    def diff(x, y):
+        return "-" if math.isnan(x) or math.isnan(y) else f"{x - y:+.1f}".replace("-0.0", "+0.0")
+
+    def pv(rs, rr, f):
+        p = mwu([field(r, f) for r in rs], [field(r, f) for r in rr])
+        return "-" if p is None else f"{p:.3f}"
+
     for g in groups:
         members = [k for k in keys if (k[0], k[2], k[3]) == g]
-        ref = next((k for r in refs for k in members if k[1] == r), None)
-        if ref is None:
-            continue
-        rr = by[ref]
-        med = lambda rs, f: statistics.median([x for x in (field(r, f) for r in rs) if x is not None] or [math.nan])
-
-        def ratio(x, y):
-            return "-" if math.isnan(x) or math.isnan(y) or not y else f"{x / y:.2f}×"
-
-        def diff(x, y):
-            return "-" if math.isnan(x) or math.isnan(y) else f"{x - y:+.1f}".replace("-0.0", "+0.0")
-
-        def pv(rs, f):
-            p = mwu([field(r, f) for r in rs], [field(r, f) for r in rr])
-            return "-" if p is None else f"{p:.3f}"
-
+        named = {k[1]: k for k in members}
         for k in members:
-            if k == ref:
-                continue
             rs = by[k]
-            body.append([k[0], k[1], k[2], k[3], ref[1],
-                         ratio(med(rs, "mbps"), med(rr, "mbps")), pv(rs, "mbps"),
-                         ratio(med(rs, "retrans_pct"), med(rr, "retrans_pct")), pv(rs, "retrans_pct"),
-                         diff(med(rs, "rtt_p50"), med(rr, "rtt_p50")), diff(med(rs, "rtt_big_p50"), med(rr, "rtt_big_p50")),
-                         ratio(med(rs, "cpu_client_pct"), med(rr, "cpu_client_pct")),
-                         ratio(med(rs, "cpu_server_pct"), med(rr, "cpu_server_pct"))])
+            for name in references(k[1], named, refs):
+                rr = by[named[name]]
+                body.append([k[0], k[1], k[2], k[3], name,
+                             ratio(med(rs, "mbps"), med(rr, "mbps")), pv(rs, rr, "mbps"),
+                             ratio(med(rs, "retrans_pct"), med(rr, "retrans_pct")), pv(rs, rr, "retrans_pct"),
+                             diff(med(rs, "rtt_p50"), med(rr, "rtt_p50")), diff(med(rs, "rtt_big_p50"), med(rr, "rtt_big_p50")),
+                             ratio(med(rs, "cpu_client_pct"), med(rr, "cpu_client_pct")),
+                             ratio(med(rs, "cpu_server_pct"), med(rr, "cpu_server_pct"))])
     if not body:
         return []
     head = ["case", "variant", "dir", "cc", "against", "Mbit/s", "p", "retrans %", "p", "RTT p50 Δms",
@@ -596,7 +639,8 @@ def main(argv):
     p.add_argument("names", nargs="+")
     p = sp.add_parser("table")
     p.add_argument("file")
-    p.add_argument("--ref", default="solo,redund-ro0,splitnoro")
+    p.add_argument("--ref", default=None, help="A,B: every variant against the first of these its group has "
+                   "(default: each against its family's, see references())")
     a = ap.parse_args(argv)
     if a.cmd == "line":
         return line(a)
@@ -607,7 +651,7 @@ def main(argv):
         return 0
     if a.cmd == "zero":
         return zero(a.file, a.names)
-    return table(a.file, a.ref.split(","))
+    return table(a.file, a.ref.split(",") if a.ref else None)
 
 
 if __name__ == "__main__":
