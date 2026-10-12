@@ -13,7 +13,7 @@
 - **Primero el laboratorio:** los objetivos de la Fase 5 (≥ 1,8× con 2 enlaces iguales, FEC ≤ 1,34×) solo se pueden medir con TCP y QUIC reales dentro de WireGuard, sobre netem por enlace. Ya está `bench/lab.sh bond` (iperf3 con Cubic y BBR, y QUIC con aioquic), y su línea base dice que la redundancia de hoy entrega lo del mejor enlace y esconde el spread, la muerte de un enlace y los picos. Con 10 repeticiones, `equal` es estable, pero `reorder150` (Cubic) y `starlink15` (BBR) tienen dos modos: una corrida no basta para comparar.
 - **Las retransmisiones de `starlink15` son pérdidas en los cortes, no desorden** [medido, 2026-10-11]: el 93–99 % son paquetes perdidos por todos los enlaces cuando, en cada corte de 1,5 s, el flujo de 80–90 Mbit/s cae sobre el enlace de 50 Mbit/s y su cola de 100 ms. Con dos enlaces FIFO, la redundancia no desordena. Lo que sí desordena, y es para el reordenador del paso 1, es la vuelta tras un corte: el enlace 5 ms más rápido adelanta a lo que fue solo por el otro.
 - **Sin reordenador no se puede repartir:** RACK, el QUIC de Chrome y Windows confunden un spread de 50–150 ms con pérdidas. El reordenador va sobre la **secuencia autenticada de cengarde** (32 bits, bajo el MAC), no sobre el contador de WireGuard como decía el ROADMAP.
-- **Paso 1, medido** [2026-10-12]: con el reordenador, el reparto de dos enlaces iguales da 1,98× uno solo con Cubic y BBR (QUIC 1,2–1,4×). Pero un reparto por turnos con 50–150 ms de dispersión se hunde (BBR a 1 Mbit/s, QUIC a 0,4) con el reordenador limpio: el receptor entrega al ritmo del enlace lento. La guarda `split_spread_ms` (30 ms) deja al lento con copias; repartir bien entre retardos distintos es el paso 3.
+- **Paso 1, medido** [2026-10-12]: en redundancia el reordenador no cambia nada medible (10 corridas; esperar 20 ms en duplicado empeora QUIC, así que la espera queda en 0). Con el reordenador, el reparto de dos enlaces iguales da 1,98× uno solo con Cubic y BBR (QUIC 1,2–1,4×). Pero un reparto por turnos con 50–150 ms de dispersión se hunde (BBR a 1 Mbit/s, QUIC a 0,4) con el reordenador limpio: el receptor entrega al ritmo del enlace lento. La guarda `split_spread_ms` (30 ms) deja al lento con copias; repartir bien entre retardos distintos es el paso 3.
 - **En bonding un enlace caído pierde su parte:** el mudo de 1–1,5 s sirve para redundancia, no para repartir. Hace falta una exclusión rápida (~200–300 ms, el contador de entregas verificadas no avanza) separada del mudo, y control de cola (un AQM virtual en `cg_sched_mask`).
 - **El planificador es un candidato:** la llegada esperada (ETA = OWD + cola/capacidad) tiene que ganarles a un WRR por capacidad y a minRTT con tope. ARQ de un reintento, FEC XOR y k = 2 se comparan entre sí en el mismo paso; solo la FEC densa queda descartada.
 - **Proceso:** Haiku extrajo 542 afirmaciones; Sonnet verificó cada cita (78 % verificadas, 21 % matizadas, 0,4 % refutadas); Opus sintetizó, armó las matrices y una auditoría densa corrigió la de cengarde.
@@ -384,7 +384,42 @@ reparto forzado en los dos extremos con la guarda G4 de 30 ms, y
   una vez).
 - *Reinicio:* los tests unitarios del salto de 2^20 y `restart.sh` con
   `split = force` y `split = on` pasan.
-- *Redundancia +0 ms y ≤ +5 % de CPU:* sin retener nada (`held_total` 0 en redundancia, en el contenedor) [medido]; el A/B con 10 repeticiones en `equal`, `reorder150` y `starlink15` (`redund` frente a `redund-ro0` y `redund-dw20`) está corriendo en el CI.
+- *Redundancia +0 ms y ≤ +5 % de CPU:* se cumple (abajo).
+
+#### El reordenador en redundancia [medido]
+
+Fuente: `bond.yml` por `workflow_dispatch`, commit `c0a75b4`, 10 corridas
+por celda: run 38189482615 (`equal` y `reorder150`, 10 s) y run
+38189484583 (`starlink15`, 31 s), sin `BOND_NETEM_INFLIGHT`. `redund` son
+los valores por omisión (reordenador encendido, `reorder_dup_wait_ms` 0),
+`redund-ro0` es `reorder = no` y `redund-dw20` espera hasta 20 ms en
+tráfico duplicado.
+
+- **Con los valores por omisión, el reordenador no cambia nada medible:**
+  contra `redund-ro0`, goodput 1,00× en las 18 celdas (3 casos, 3
+  controles de congestión, 2 sentidos) y CPU 0,93–1,02× en el cliente y el
+  servidor. El RTT p50 y el ping de 1200 B quedan dentro de ±1 ms, salvo
+  en celdas con dos modos (`reorder150` con Cubic de subida: +26 ms porque
+  6 de 10 corridas cayeron en el modo de 105 ms frente a 4 de 10; p =
+  0,36). No retuvo ningún paquete (`held` 0). Cumple el criterio «+0 ms y
+  ≤ +5 % de CPU».
+- **Lo que registran los contadores sin esperar:** en `equal` y
+  `reorder150`, los huecos son las pérdidas en todos los enlaces
+  (coinciden con `lost_all`). En `starlink15` suelta ~800–1600 huecos por
+  corrida y ve 60–480 llegadas tarde: el desorden de la vuelta tras cada
+  corte.
+- **Esperar 20 ms en duplicado empeora, no mejora:**
+  - QUIC declara 4,2 veces más pérdidas en `equal` (espurias de 0 a ~200)
+    y 19–24 veces más en `reorder150`; en `starlink15` sus espurias suben
+    de 282 a 640 de subida y de 312 a 429 de bajada, cuando el criterio
+    pedía que bajaran a la mitad;
+  - Cubic retransmite 9–12 % más en `starlink15` (p ≤ 0,007);
+  - BBR de bajada en `starlink15` cae en el modo alto en las 10 corridas
+    (75,6 Mbit/s, 3136 retransmisiones, +24 ms de RTT p50);
+  - en el resto, goodput y CPU iguales. Por qué empeora QUIC no está medido
+    [MEDIR: la espera retiene, detrás de cada pérdida en todos los enlaces,
+    los paquetes que la siguen].
+  - Decisión: `reorder_dup_wait_ms` queda en 0.
 
 ## Qué hacemos con esto
 
@@ -433,7 +468,7 @@ Los umbrales son propuestas [razonado] y se miden en `bench/`.
 - Medir lo marcado [MEDIR] y [supuesto] antes de fijar umbrales: el patrón de 15 s de Starlink en Chile, la correlación entre operadores en Santiago, si el TOS del datagrama de WireGuard llega a cengarde por loopback, y la tolerancia al desorden de iOS/macOS.
 - Definir los campos del informe por enlace, al final de la carga de las sondas v4 (el formato ya les deja lugar).
 - Paso 1, lo que falta:
-  - el A/B de `reorder_dup_wait_ms` (0 frente a 20 ms) en `starlink15` y con `link_threads` legacy y off, y el de `reorder_bypass` (0/128/256: `lab.d/reorder.sh`, `reorder_hol`), que no corrió en el CI;
+  - ~~el A/B de `reorder_dup_wait_ms`~~ (hecho: queda en 0); el de `reorder_bypass` (0/128/256: `lab.d/reorder.sh`, `reorder_hol`), que no corrió en el CI;
   - G3 medido: cuánto pierde el reparto cuando muere un enlace (`linkdeath` con `split`);
   - por qué QUIC declara pérdidas espurias con el reparto entre enlaces iguales;
   - `cengarde-vps-setup` no expone `split_spread_ms` (el VPS usa 30 ms);
@@ -446,4 +481,4 @@ Los umbrales son propuestas [razonado] y se miden en `bench/`.
 - 2026-10-10: paso 0 en parte. `bench/lab.sh bond` y `bond.yml`, con la línea base de arriba. El registrador de campo: `cengarde-rec` en el paquete de OpenWrt, `bench/fieldrec.py` con su prueba y `lab.d/fieldrec.sh`, y `time_ms` en el estado del motor.
 - 2026-10-11: paso 0 hecho salvo los datos de campo (PR 6, paquetes 0.5.5): QUIC y dispersión en `bond`, los instrumentos pasivos del motor y su análisis en `fieldrec.py`. Corregida la explicación de `starlink15` (era [razonado]): son pérdidas en los cortes, no desorden.
 - 2026-10-11: la corrida de 10 repeticiones («Medidas con dispersión»: dos modos en `reorder150` con Cubic y en `starlink15` con BBR) y `fieldrec.py --rf`, con las métricas de radio de `cell-monitor`.
-- 2026-10-12: paso 1 (PR #24, paquetes 0.6.0): el reordenador, el reparto experimental, la guarda `split_spread_ms` y sus medidas. Corregidas las referencias de código que el v4 dejó viejas (`CG_RXV_RESET`, la secuencia densa) y la ventana (4096, no 8192).
+- 2026-10-12: paso 1 (PR #24, paquetes 0.6.0): el reordenador, el reparto experimental, la guarda `split_spread_ms` y sus medidas; el A/B del reordenador en redundancia (sin costo; `reorder_dup_wait_ms` queda en 0). Corregidas las referencias de código que el v4 dejó viejas (`CG_RXV_RESET`, la secuencia densa) y la ventana (4096, no 8192).

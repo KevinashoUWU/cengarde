@@ -612,7 +612,8 @@ lista de comprobación de partida.
 > que va más de `split_spread_ms` (30 ms) detrás del más rápido. En el
 > laboratorio, dos enlaces iguales dan 1,98× uno solo con TCP; con 50–150
 > ms de dispersión el reparto fijo se hunde (BBR a 1 Mbit/s) y la guarda
-> vuelve a duplicar. Repartir bien con retardos distintos es el paso 3
+> vuelve a duplicar. En redundancia el reordenador no cuesta nada medible
+> (10 corridas). Repartir bien con retardos distintos es el paso 3
 > (planificador por llegada esperada); detalle en la historia 012.
 
 - **k-de-N:** cada paquete va solo por los k mejores enlaces, lo que ahorra

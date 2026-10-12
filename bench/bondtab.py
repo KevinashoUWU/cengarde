@@ -569,7 +569,7 @@ def compare(rows, by, keys, refs):
     the first of --ref) of the same case, direction and congestion control, one row
     per reference. Ratios of the medians (goodput, retransmission rate, CPU), the
     difference of the RTT medians, and the Mann-Whitney p-value of the goodput and of
-    the retransmission rate (from 5 runs on each side)."""
+    the retransmission rate (when both sides have 5 runs or more)."""
     groups = []
     for k in keys:
         g = (k[0], k[2], k[3])
@@ -605,7 +605,7 @@ def compare(rows, by, keys, refs):
         return []
     head = ["case", "variant", "dir", "cc", "against", "Mbit/s", "p", "retrans %", "p", "RTT p50 Δms",
             "1200 B RTT p50 Δms", "CPU cli", "CPU srv"]
-    return ["", "Against the reference variant (ratios and differences of the medians; p: Mann-Whitney, from 5 runs per side):",
+    return ["", "Against the reference variant (ratios and differences of the medians; p: Mann-Whitney, given with 5 runs or more on each side):",
             ""] + md_table(head, body, left=5)
 
 
