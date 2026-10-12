@@ -11,7 +11,14 @@ answers known by construction: three hours, five links (ids not in name
 order, one with a label, one with id 9 that only shows in "other"), c and d
 late together in the first hour and independent after it, d missing from a
 quarter of the packets' expect, an engine restart and a counter that restarts
-within a run. A third one is for the radio section (--rf): two hours of four links
+within a run. A reorder recording is for the receiver's reorderer (status field
+"reorder"): two hours of a client with known growth per hour of the day, two
+spikes of packets given up on, an engine restart, and variants with counters
+that restart within a run, reordering off for a while, samples without the
+field, an upgrade in the middle, other histogram edges in the second run or in
+a single sample, a sample without a histogram and a clock set late; a
+server's recording has one reorder per session (A all along, B for a while,
+new ids after a restart) and the pool. A third one is for the radio section (--rf): two hours of four links
 with outages and mutes at known times, and the RF metrics of cell-monitor in
 line protocol and annotated CSV, shaped like its output: a link whose RAT
 changes come just before its outages, one whose changes do not, one mapped by
@@ -130,7 +137,7 @@ def make(dirn):
 
 # --- the passive instruments: joint lateness, lost on every link, sizes ---------
 
-T1 = 1791504000000            # 2026-10-08 00:00:00 UTC
+T1 = 1791504000000            # 2026-10-09 00:00:00 UTC
 NS, RESTART_AT = 5400, 2700   # samples 2 s apart: three hours; the engine restarts at 01:30
 IDS = {"a": 2, "b": 5, "c": 0, "d": 7, "e": 3, "z": 9}   # z: id 9, only in "other"
 LABEL = {"c": "5g"}           # shown as "c (5g)"
@@ -427,6 +434,539 @@ def bond_checks():
     odd = [dict(x, joint={"deadlines_ms": [50], "late": "x", "expect": {}, "packets": 1}, sizes={"edges": [32]}, lost_all=-1) for x in lines]
     s7, _ = analyze_lines(odd)
     check("malformed fields are ignored, not a crash", s7["joint"] is None and s7["sizes"] is None and s7["lost_all"] is None)
+
+
+# --- the receiver's reorderer: the status field "reorder" of a client, and of each session of a server ------
+
+RO_N, RO_RESTART_AT = 3600, 1800              # two hours of samples 2 s apart from 00:00 UTC; the engine restarts at 01:00
+RO_EDGES = [1, 2, 5, 10, 20, 50, 100, 200, 500]
+LOSTK = ("rack", "cap", "overflow", "flush")
+LATEK = ("after_rack", "after_cap", "after_overflow", "old")
+# What each sample adds, by hour of the day. Each regime's packets add up to what it delivered, and its histograms to its
+# held (wait) and late (late_by) packets.
+RO_REG = [
+    dict(delivered=10000, in_order=8800, held_total=900, bypassed=150, split_rx=5000, far=0, pool_full=0,
+         lost=dict(rack=30, cap=40, overflow=20, flush=0), late=dict(after_rack=0, after_cap=100, after_overflow=50, old=0),
+         wait=[300, 250, 150, 100, 50, 30, 10, 5, 3, 2], late_by=[0, 0, 0, 10, 40, 50, 30, 15, 5, 0]),
+    dict(delivered=10000, in_order=9700, held_total=100, bypassed=150, split_rx=0, far=20, pool_full=10,
+         lost=dict(rack=5, cap=1, overflow=0, flush=0), late=dict(after_rack=10, after_cap=5, after_overflow=0, old=5),
+         wait=[50, 20, 10, 8, 5, 3, 2, 1, 1, 0], late_by=[5, 5, 5, 3, 2, 0, 0, 0, 0, 0])]
+# Samples where it gave up on a lot (and what came late after it): two in the first hour, and the last sample of the second.
+RO_SPIKE = {100: {"lost_cap": 500}, 500: {"lost_overflow": 400, "late_after_overflow": 200, ("late_by", 4): 200}, 3599: {"lost_cap": 600}}
+RO_EDGES2 = [1, 2, 5, 10, 20, 50, 100, 250, 500]
+
+
+def ro_grow(c, g):
+    for k in ("in_order", "held_total", "bypassed", "split_rx", "far", "pool_full"):
+        c[k] += g[k]
+    for k in LOSTK:
+        c["lost_" + k] += g["lost"][k]
+    for k in LATEK:
+        c["late_" + k] += g["late"][k]
+    for i in range(10):
+        c[("wait", i)] += g["wait"][i]
+        c[("late_by", i)] += g["late_by"][i]
+
+
+def ro_obj(c, held, held_max, burst, pool=None, edges=RO_EDGES):
+    """The status field "reorder" for the cumulative counters c; pool (buffers, free) only for a client."""
+    o = {"enabled": True, "held": held, "held_max": held_max, "in_order": c["in_order"], "held_total": c["held_total"],
+         "bypassed": c["bypassed"], "split_rx": c["split_rx"], "lost": {k: c["lost_" + k] for k in LOSTK},
+         "late": {k: c["late_" + k] for k in LATEK}, "far": c["far"], "resyncs": c["resyncs"], "pool_full": c["pool_full"],
+         "max_burst": burst, "edges_ms": edges, "wait": [c[("wait", i)] for i in range(10)],
+         "late_by": [c[("late_by", i)] for i in range(10)]}
+    if pool is not None:
+        o["pool_buffers"], o["pool_free"] = pool
+    return o
+
+
+def reorder_lines(soft_reset=None, off=(), bare=(), run1_edges=None, odd=(), nowait=(), skew=()):
+    """A client's status every 2 s for two hours, with "reorder". soft_reset: a sample where the counters start over within a run;
+    off: samples whose reorder is {"enabled": false}; bare: samples without the field; run1_edges: other edges in the second run;
+    odd: single samples with other edges; nowait: single samples without the wait histogram; skew: samples whose clock is 3 h behind
+    (recorded before NTP set it). The longest burst of the second run is lower than the first's."""
+    lines, c, down, held_max = [], None, 0, 0
+    for k in range(RO_N):
+        if k in (0, RO_RESTART_AT, soft_reset):
+            c, j0, held_max = collections.defaultdict(int), k, 0         # new counters
+        if k in (0, RO_RESTART_AT):
+            r0, down = k, 0                                               # a new run: the uptime starts over too
+        run, hour, j = int(k >= RO_RESTART_AT), (k * 2) // 3600, k - j0
+        if k != r0:
+            down += RO_REG[hour]["delivered"]
+        if j:
+            ro_grow(c, RO_REG[hour])
+            c["resyncs"] += j % 900 == 0
+            for key, v in RO_SPIKE.get(k, {}).items():
+                c[key] += v
+        held = (7 * j) % 61
+        held_max = max(held_max, held)
+        line = {"mode": "client", "uptime_ms": (100000 if run == 0 else 4000) + 2000 * (k - r0),
+                "time_ms": T1 + 2000 * k - (3 * 3600 * 1000 if k in skew else 0),
+                "session": f"s{run}", "probe_interval_ms": 100, "download": {"packets": down},
+                "links": [{"id": 0, "name": "a", "label": "", "state": "live", "rtt_ms": 30.0, "last_rx_ms_ago": 20}]}
+        if k not in bare:
+            edges = run1_edges if run and run1_edges else RO_EDGES2 if k in odd else RO_EDGES
+            burst = min(j // 8, 128) if run == 0 else min(j // 16, 50)
+            line["reorder"] = {"enabled": False} if k in off else ro_obj(c, held, held_max, burst, (4096, 4096 - held), edges)
+            if k in nowait and k not in off:
+                del line["reorder"]["wait"]
+        lines.append(line)
+    return lines
+
+
+def ro_totals(n=(RO_RESTART_AT - 1, RO_RESTART_AT - 1), spikes=True):
+    """What counted intervals add up to: n[h] intervals of the regime of hour h, and the spikes (True: all; False: none; or the
+    samples of those that are in)."""
+    t = collections.Counter()
+    for h, nn in enumerate(n):
+        g = RO_REG[h]
+        for k in ("delivered", "in_order", "held_total", "bypassed", "split_rx", "far", "pool_full"):
+            t[k] += nn * g[k]
+        for k in LOSTK:
+            t["lost_" + k] += nn * g["lost"][k]
+        for k in LATEK:
+            t["late_" + k] += nn * g["late"][k]
+        for i in range(10):
+            t[("wait", i)] += nn * g["wait"][i]
+            t[("late_by", i)] += nn * g["late_by"][i]
+    for k, sp in RO_SPIKE.items():
+        if spikes is True or (spikes and k in spikes):
+            t.update(sp)
+    return t
+
+
+H0_SPIKES, H1_SPIKES = (100, 500), (3599,)       # the spikes of each hour
+
+
+def ro_view_ok(v, t):
+    return (v["delivered"] == t["delivered"] and v["in_order"] == t["in_order"] and v["held_total"] == t["held_total"]
+            and v["bypassed"] == t["bypassed"] and v["split_rx"] == t["split_rx"] and v["far"] == t["far"]
+            and v["pool_full"] == t["pool_full"] and v["lost"] == {k: t["lost_" + k] for k in LOSTK}
+            and v["late"] == {k: t["late_" + k] for k in LATEK} and v["late_total"] == sum(t["late_" + k] for k in LATEK)
+            and v["wait"]["counts"] == [t[("wait", i)] for i in range(10)]
+            and v["late_by"]["counts"] == [t[("late_by", i)] for i in range(10)])
+
+
+def le_oracle(counts, edges, pct):
+    """The edge under which pct % of the packets are, by the cumulative counts; None above the last edge."""
+    n, cum = sum(counts), 0
+    for i, c in enumerate(counts):
+        cum += c
+        if cum * 100 >= pct * n:
+            return edges[i] if i < len(edges) else None
+    return None
+
+
+def analyze_all(lines, utc=0.0):
+    """analyze_lines with the server's samples too, as main() reads them."""
+    with tempfile.TemporaryDirectory() as d:
+        write_dir(d, lines)
+        notes, srv = [], []
+        segs = fieldrec.segments(fieldrec.read_lines(fieldrec.files_of([d]), notes), notes, srv)
+        sevs = fieldrec.server_segments(srv, notes)
+        return fieldrec.summarize(fieldrec.analyze(segs, utc, None, sevs)), notes
+
+
+SV_N, SV_RESTART_AT = 1200, 600               # a server's status every 2 s for 40 minutes; it restarts at 00:20
+SV_A = dict(upload=4000, in_order=3497, held_total=400, bypassed=100, lost=dict(rack=7, cap=2, overflow=0, flush=0),
+            late=dict(after_rack=0, after_cap=3, after_overflow=0, old=0), wait=[100, 100, 100, 50, 30, 10, 5, 3, 2, 0],
+            late_by=[0, 1, 1, 1, 0, 0, 0, 0, 0, 0])
+SV_B = dict(upload=1000, in_order=898, held_total=100, bypassed=0, lost=dict(rack=0, cap=0, overflow=1, flush=0),
+            late=dict(after_rack=0, after_cap=0, after_overflow=2, old=0), wait=[40, 30, 20, 5, 3, 1, 1, 0, 0, 0],
+            late_by=[0, 0, 1, 1, 0, 0, 0, 0, 0, 0])
+SV_B_FROM, SV_B_TO = 300, 450                 # session B is there from sample 300 to 450 (150 intervals), in the first run
+
+
+def sv_held(k):
+    """What A and B hold at sample k of server_lines (B only from SV_B_FROM to SV_B_TO)."""
+    a = (5 * (k % SV_RESTART_AT)) % 23
+    return a, ((3 * (k - SV_B_FROM)) % 17 if SV_B_FROM <= k <= SV_B_TO else 0)
+
+
+def server_lines(full_reset=None):
+    """A server's status every 2 s: session A ("casa") all along, with a new id after the restart, B ("campo") from sample 300 to 450
+    (first run), and the pool, whose "full" counter starts over at sample full_reset. The sessions' reorder has no pool fields."""
+    lines, c, full = [], {}, 0
+    for k in range(SV_N):
+        if k in (0, SV_RESTART_AT):
+            r0, full, c = k, 0, {"A": collections.defaultdict(int), "B": collections.defaultdict(int)}
+            hmax = {"A": 0, "B": 0}
+        run = int(k >= SV_RESTART_AT)
+        sess = []
+        for name, who, sid, g, since in (("casa", "A", f"aaaa000{run + 1}", SV_A, r0),
+                                         ("campo", "B", "bbbb0001", SV_B, SV_B_FROM if run == 0 and SV_B_FROM <= k <= SV_B_TO else None)):
+            if since is None:
+                continue
+            cc = c[who]
+            if k > since:                       # the first sample of a session has nothing yet
+                cc["upload"] += g["upload"]
+                for key in ("in_order", "held_total", "bypassed"):
+                    cc[key] += g[key]
+                for kk in LOSTK:
+                    cc["lost_" + kk] += g["lost"][kk]
+                for kk in LATEK:
+                    cc["late_" + kk] += g["late"][kk]
+                for i in range(10):
+                    cc[("wait", i)] += g["wait"][i]
+                    cc[("late_by", i)] += g["late_by"][i]
+            held = sv_held(k)[0 if who == "A" else 1]
+            hmax[who] = max(hmax[who], held)
+            sess.append({"id": sid, "client": name, "newest": True, "age_ms": 1000 * k, "upload_packets": cc["upload"], "lost_all": 0,
+                         "reorder": ro_obj(cc, held, hmax[who], (k - since) // 10)})
+        if k == full_reset:
+            full = 0
+        elif k > r0 and (k - r0) % 100 == 0:
+            full += 1
+        held = sv_held(k)
+        lines.append({"mode": "server", "version": "t", "uptime_ms": (50000 if run == 0 else 1000) + 2000 * (k - r0),
+                      "time_ms": T1 + 2000 * k, "sessions": sess,
+                      "reorder_pool": {"buffers": 4096, "free": 4096 - sum(held), "sessions_holding": sum(1 for x in held if x), "full": full}})
+    return lines
+
+
+def split_lines():
+    """A client's status every second for 20 minutes, splitting its upload over a and b but for the first 100 s
+    (split_share null: not splitting yet). a always takes its share; b waits for a delay for 2 s, then is taken
+    out by the delay guard twice (from 300 to 360 s and from 600 to 720 s, 50 ms behind), else 10 ms behind."""
+    lines = []
+    for k in range(1200):
+        def link(i, n, share, behind):
+            return {"id": i, "name": n, "label": "", "state": "live", "rtt_ms": 30.0, "last_rx_ms_ago": 20,
+                    "split_share": share if k >= 100 else None, "split_behind_ms": behind if k >= 100 else None}
+        out = 300 <= k < 360 or 600 <= k < 720
+        b = "waiting" if 100 <= k < 102 else "spread" if out else "yes"
+        lines.append({"mode": "client", "uptime_ms": 100000 + 1000 * k, "time_ms": T1 + 1000 * k, "session": "s0",
+                      "probe_interval_ms": 100, "download": {"packets": 100 * k},
+                      "links": [link(0, "a", "yes", 0.0), link(1, "b", b, None if b == "waiting" else 50.0 if out else 10.0)]})
+    return lines
+
+
+def split_checks():
+    s, notes = analyze_lines(split_lines())
+    a, b = s["links"]["a"]["split"], s["links"]["b"]["split"]
+    check("split: only the time the client split counts (the 1100 intervals that end on a sample with split_share)",
+          a["hours"] == round(1100 / 3600, 3), a)
+    check("split: a took its share all along", a["pct"]["yes"] == 100.0 and a["leaves"] == 0, a)
+    check("split: b out for its delay 180 s of 1100 (16.36 %), waiting 2 s, taken out twice",
+          b["pct"]["spread"] == round(100 * 180 / 1100, 2) and b["pct"]["waiting"] == round(100 * 2 / 1100, 2)
+          and b["leaves"] == 2, b)
+    check("split: b behind the fastest as the guard saw it, 10 ms mostly and 50 when out",
+          b["behind_ms"][50] == 10.0 and b["behind_ms"][99] == 50.0, b["behind_ms"])
+    text = rendered(s, notes)
+    check("split: the report has the section, with b's row",
+          "## The upload split" in text and "| b | 0.306 | 83.45 | 16.36 | 0.18 | 0.00 | 0.00 | 2 | 10.0/50.0 |" in text,
+          [ln for ln in text.splitlines() if ln.startswith("| b |")])
+    # A recording from before the guard (no split_share), or a client that never split: no section
+    old = split_lines()
+    for ln in old:
+        for l in ln["links"]:
+            l["split_share"] = None
+    s, notes = analyze_lines(old)
+    check("split: a client that never split has no split data and no section",
+          s["links"]["b"]["split"] is None and "## The upload split" not in rendered(s, notes), s["links"]["b"]["split"])
+
+
+def reorder_checks():
+    lines = reorder_lines()
+    s, notes = analyze_all(lines)
+    x = s["reorder"]
+    cl = x["client"]
+    n_int = 2 * (RO_RESTART_AT - 1)
+    ov, t = cl["overall"], ro_totals()
+    check("reorder: a client's field is read: two runs of 1799 intervals (a restart makes none), none skipped or off, the engine's edges, no server",
+          cl["intervals"] == n_int and cl["skipped_intervals"] == 0 and cl["off_intervals"] == 0 and cl["edges_ms"] == RO_EDGES
+          and x["server"] is None, (cl["intervals"], cl["skipped_intervals"], cl["off_intervals"], x["server"]))
+    check("reorder: every counter and both histograms added up over the two runs (the growth, not the last value), the two spikes in",
+          ro_view_ok(ov, t) and ov["intervals"] == n_int, ov)
+    check("reorder: held % is held over delivered (5 %); the resyncs of the two runs; the packets are those the status counted",
+          near(ov["held_pct"], 5.0, 1e-6) and ov["resyncs"] == 2 and ov["delivered"] == 10000 * n_int, (ov["held_pct"], ov["resyncs"]))
+    check("reorder: the gauges' extremes: 60 held at most (sampled and the engine's), longest burst 128, a pool of 4096 with 4036 free at the least",
+          (ov["held_seen_max"], ov["held_max"], ov["max_burst"], ov["pool_buffers"], ov["pool_free_min"]) == (60, 60, 128, 4096, 4036),
+          (ov["held_seen_max"], ov["held_max"], ov["max_burst"], ov["pool_buffers"], ov["pool_free_min"]))
+    h0, h1 = cl["by_hour"][0], cl["by_hour"][1]
+    check("reorder: by hour of the day (UTC): the first hour is the first regime with the spikes (9 % held), the second the second (1 %)",
+          sorted(cl["by_hour"]) == [0, 1] and ro_view_ok(h0, ro_totals((RO_RESTART_AT - 1, 0), H0_SPIKES)) and near(h0["held_pct"], 9.0, 1e-6)
+          and ro_view_ok(h1, ro_totals((0, RO_RESTART_AT - 1), H1_SPIKES)) and near(h1["held_pct"], 1.0, 1e-6)
+          and (h0["max_burst"], h1["max_burst"]) == (128, 50) and ov["max_burst"] == 128,
+          (sorted(cl["by_hour"]), h0["held_pct"], h1["held_pct"], h0["max_burst"], h1["max_burst"]))
+    w, lb = ov["wait"], ov["late_by"]
+    want_w = [le_oracle(w["counts"], RO_EDGES, p) for p in (50, 90, 99)]
+    want_l = [le_oracle(lb["counts"], RO_EDGES, p) for p in (50, 90, 99)]
+    check("reorder: p50/p90/p99 of the hold time are the edges the cumulative counts cross (2, 20 and 200 ms); of the lateness 50, 200 and 500",
+          [w["p50_le_ms"], w["p90_le_ms"], w["p99_le_ms"]] == want_w == [2, 20, 200]
+          and [lb["p50_le_ms"], lb["p90_le_ms"], lb["p99_le_ms"]] == want_l == [50, 200, 500]
+          and w["total"] == 1000 * (RO_RESTART_AT - 1) and near(sum(w["pct"]), 100.0, 1e-3), (w, lb))
+    wi = cl["worst_intervals"]
+    check("reorder: the 10 worst intervals by what the wait did not do: the 400 overflow + 200 late (810 failed), the 500 given up at the "
+          "deadline (710), the 600 given up at the last sample (621: it comes after the list was last cut, and still ranks third), then the "
+          "first of the 210 of every other (earliest first)",
+          len(wi) == fieldrec.RO_WORST and [x_["uptime_ms"] for x_ in wi[:3]] == [100000 + 2000 * 500, 100000 + 2000 * 100, 4000 + 2000 * (3599 - 1800)]
+          and [x_["uptime_ms"] for x_ in wi[3:]] == [100000 + 2000 * k for k in range(1, 8)]
+          and (wi[2]["segment"], wi[2]["lost_cap"], wi[2]["time_utc"]) == (1, 601, "2026-10-09 01:59:58")
+          and wi[0]["lost_overflow"] == 420 and wi[0]["lost_cap"] == 40 and wi[0]["late"] == 350 and wi[0]["time_utc"] == "2026-10-09 00:16:40"
+          and wi[1]["lost_cap"] == 540 and wi[1]["segment"] == 0 and wi[0]["delivered"] == 10000 and wi[0]["held_total"] == 900
+          and wi[0]["held"] == (7 * 500) % 61, wi[:3])
+    text = rendered(s, notes)
+    for what in ("## Reordering", "### Client (download)", "| hour | delivered | held | held % |", "| all | 35980000 | 1799000 | 5 |",
+                 "| 00 (UTC+0) | 17990000 | 1619100 | 9 |", "| 01 (UTC+0) | 17990000 | 179900 | 1 |", "Pool: 4096 buffers, the fewest free 4036",
+                 "hold time of the held packets", "lateness of the late ones", "| 1799000 | 2 / 20 / 200 |", "The 10 worst intervals",
+                 "| 0 | 2026-10-09 00:16:40 |", "<= 500 | > 500 | total | p50 / p90 / p99 at or under |"):
+        check(f"reorder: the report has {what!r}", what in text)
+    check("reorder: the report explains the late counts", "Late after rack means the links do not deliver in order" in text)
+    s3, _ = analyze_all(lines, -3)
+    check("reorder: --utc-offset moves the hours (21 and 22 for UTC-3), with the same counters",
+          sorted(s3["reorder"]["client"]["by_hour"]) == [21, 22] and ro_view_ok(s3["reorder"]["client"]["by_hour"][21], ro_totals((RO_RESTART_AT - 1, 0), H0_SPIKES)))
+    with tempfile.TemporaryDirectory() as d:
+        write_dir(d, lines)
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = fieldrec.main([d, "--json", os.path.join(d, "s.json"), "--utc-offset", "-3"])
+
+        def bad(c_):
+            raise ValueError(c_)
+        js = json.load(open(os.path.join(d, "s.json")), parse_constant=bad)
+    jc = js["reorder"]["client"]
+    check("reorder: --json has it, strict, with the hours as text and the histograms with their edges",
+          rc == 0 and jc["overall"]["held_total"] == t["held_total"] and jc["by_hour"]["21"]["held_pct"] == 9.0
+          and jc["overall"]["wait"]["edges_ms"] == RO_EDGES and jc["overall"]["wait"]["p90_le_ms"] == 20 and js["reorder"]["server"] is None
+          and len(jc["worst_intervals"]) == fieldrec.RO_WORST, list(js["reorder"]))
+    # --- a counter that starts over within a run: that interval is skipped (and counted), the rest added
+    sr, _ = analyze_all(reorder_lines(soft_reset=1000))
+    c1 = sr["reorder"]["client"]
+    check("reorder: counters that start over within a run: that one interval skipped and counted, the others added up",
+          c1["intervals"] == n_int - 1 and c1["skipped_intervals"] == 1 and ro_view_ok(c1["overall"], ro_totals((RO_RESTART_AT - 2, RO_RESTART_AT - 1))),
+          (c1["intervals"], c1["skipped_intervals"]))
+    # --- reordering off for 100 samples (a reload): the 101 intervals that touch them are counted apart, not added
+    so, _ = analyze_all(reorder_lines(off=range(1000, 1100)))
+    c2 = so["reorder"]["client"]
+    check("reorder: reordering off for 100 samples: 101 intervals counted as off, none skipped, the others added up",
+          c2["off_intervals"] == 101 and c2["skipped_intervals"] == 0 and c2["intervals"] == n_int - 101
+          and ro_view_ok(c2["overall"], ro_totals((RO_RESTART_AT - 1 - 101, RO_RESTART_AT - 1))), (c2["off_intervals"], c2["intervals"]))
+    # --- three samples without the field inside a run: the 4 intervals that touch them are left out (the spike at 100 with them)
+    sb, _ = analyze_all(reorder_lines(bare=(100, 101, 102)))
+    c3 = sb["reorder"]["client"]
+    t3 = ro_totals((RO_RESTART_AT - 1 - 4, RO_RESTART_AT - 1), (500,) + H1_SPIKES)
+    check("reorder: samples without the field inside a run: the 4 intervals that touch them are left out, nothing skipped, no crash",
+          c3["intervals"] == n_int - 4 and c3["skipped_intervals"] == 0 and c3["off_intervals"] == 0 and ro_view_ok(c3["overall"], t3),
+          (c3["intervals"], c3["skipped_intervals"]))
+    # --- the engine was upgraded: the first run has no field, the second has it
+    su, _ = analyze_all(reorder_lines(bare=range(RO_RESTART_AT)))
+    c4 = su["reorder"]["client"]
+    check("reorder: a run without the field and one with it: only the second counts (the hours say so)",
+          c4["intervals"] == RO_RESTART_AT - 1 and sorted(c4["by_hour"]) == [1]
+          and ro_view_ok(c4["overall"], ro_totals((0, RO_RESTART_AT - 1), H1_SPIKES)), (c4["intervals"], sorted(c4["by_hour"])))
+    # --- the histograms of another layout than the first interval's are not added: the second run is skipped, not mixed in
+    se, _ = analyze_all(reorder_lines(run1_edges=RO_EDGES2))
+    c5 = se["reorder"]["client"]
+    check("reorder: a second run with other edges is skipped (1799 intervals), not added to the first run's histograms",
+          c5["intervals"] == RO_RESTART_AT - 1 and c5["skipped_intervals"] == RO_RESTART_AT - 1 and c5["edges_ms"] == RO_EDGES
+          and ro_view_ok(c5["overall"], ro_totals((RO_RESTART_AT - 1, 0), H0_SPIKES)), (c5["intervals"], c5["skipped_intervals"], c5["edges_ms"]))
+    # --- one sample with other edges and one without the wait histogram: the 2 intervals that touch each are skipped
+    s6, _ = analyze_all(reorder_lines(odd=(700,), nowait=(900,)))
+    c6 = s6["reorder"]["client"]
+    check("reorder: a single sample with other edges and one without the wait histogram: the 4 intervals that touch them are skipped and counted, "
+          "the others added up with the first run's edges",
+          c6["skipped_intervals"] == 4 and c6["intervals"] == n_int - 4 and c6["edges_ms"] == RO_EDGES
+          and ro_view_ok(c6["overall"], ro_totals((RO_RESTART_AT - 1 - 4, RO_RESTART_AT - 1))), (c6["skipped_intervals"], c6["intervals"]))
+    # --- the first 99 intervals were recorded before NTP set the clock: they count overall, but are in no hour
+    sk, _ = analyze_all(reorder_lines(skew=range(100)))
+    ck = sk["reorder"]["client"]
+    check("reorder: samples recorded before the clock was set are in the totals but not in the hours (99 intervals), and have no time among the worst",
+          ck["intervals"] == n_int and ro_view_ok(ck["overall"], t) and sorted(ck["by_hour"]) == [0, 1]
+          and ro_view_ok(ck["by_hour"][0], ro_totals((RO_RESTART_AT - 1 - 99, 0), H0_SPIKES))
+          and ro_view_ok(ck["by_hour"][1], ro_totals((0, RO_RESTART_AT - 1), H1_SPIKES))
+          and ck["worst_intervals"][0]["time_utc"] == wi[0]["time_utc"] and ck["worst_intervals"][2]["time_utc"] == "2026-10-09 01:59:58"
+          and [x_["time_utc"] for x_ in ck["worst_intervals"][3:]] == [None] * 7,
+          (ck["intervals"], [x_["time_utc"] for x_ in ck["worst_intervals"]]))
+    # --- an old recording: no field, and the report says so
+    old, nold = analyze_all(reorder_lines(bare=range(RO_N)))
+    told = rendered(old, nold)
+    check("reorder: a recording without the field has no reorder section in the summary, and the report says so",
+          old["reorder"] is None and "## Reordering" in told and "No data: no `reorder` object in the recording" in told
+          and "## Links" in told and "## By hour" in told, told[-300:])
+    sbond, nbond = analyze_lines(bond_lines())
+    check("reorder: the bonding recording (joint, lost_all, sizes; no reorder) reports that too, and its other three sections are as before",
+          sbond["reorder"] is None and "No data: no `reorder` object" in rendered(sbond, nbond) and sbond["joint"] is not None
+          and sbond["lost_all"] is not None and sbond["sizes"] is not None)
+    # --- fields that are there but not as they should be count as absent
+    mal = [{"enabled": True, "in_order": "x", "held_total": 1, "lost": {}, "late": {}},
+           {"enabled": True, "in_order": -1, "held_total": 1, "lost": {}, "late": {}},
+           {"enabled": True, "in_order": 1, "held_total": 1.5, "lost": {}, "late": {}},
+           {"enabled": True, "in_order": True, "held_total": 1, "lost": {}, "late": {}},
+           {"enabled": True, "in_order": 1, "held_total": 1, "lost": {"cap": "1"}, "late": {}},
+           {"enabled": True, "in_order": 1, "held_total": 1, "lost": [], "late": {}},
+           {"enabled": True, "in_order": 1, "held_total": 1, "lost": {}, "late": {}, "edges_ms": [1, 2], "wait": [1, 2]},
+           {"enabled": True, "in_order": 1, "held_total": 1, "lost": {}, "late": {}, "edges_ms": [1, 2], "wait": [1, 2, -3]},
+           {"enabled": True, "in_order": 1, "held_total": 1, "lost": {}, "late": {}, "edges_ms": "x"},
+           {"enabled": "yes", "in_order": 1, "held_total": 1, "lost": {}, "late": {}},
+           {"enabled": True}, {}, "on", [], 7, None]
+    check("reorder: malformed fields (not counts, a wrong histogram, missing counters) are as absent, not a crash",
+          all(fieldrec.parse_reorder(m) is None for m in mal), [m for m in mal if fieldrec.parse_reorder(m) is not None])
+    sm, _ = analyze_all([dict(x_, reorder=mal[i % len(mal)]) for i, x_ in enumerate(lines[:400])])
+    check("reorder: a recording whose every field is malformed has no section", sm["reorder"] is None)
+    r = fieldrec.parse_reorder({"enabled": True, "in_order": 5, "held_total": 2, "lost": {"cap": 3}, "late": {}, "far": 1})
+    check("reorder: a counter the engine does not report is 0, the histograms and the pool gauges are optional",
+          r is not None and r.counts[fieldrec.RO_I["in_order"]] == 5 and r.counts[fieldrec.RO_I["lost_cap"]] == 3 and r.counts[fieldrec.RO_I["far"]] == 1
+          and sum(r.counts) == 11 and r.wait is None and r.late_by is None and r.gauges == (None,) * 5 and r.edges == ())
+    off = fieldrec.parse_reorder({"enabled": False})
+    check("reorder: {\"enabled\": false} alone is a reorderer that is off", off is not None and not off.enabled and sum(off.counts) == 0)
+    # --- the quantile of a histogram whose 99th percentile is in the last bucket has no edge; the report says so
+    h = fieldrec.ro_hist([90, 0, 0, 0, 0, 0, 0, 0, 0, 10], RO_EDGES)
+    h2 = fieldrec.ro_hist([0] * 10, RO_EDGES)
+    check("reorder: a percentile in the bucket after the last edge is None, and 'over the last edge' in the report; an empty histogram has none",
+          (h["p50_le_ms"], h["p90_le_ms"], h["p99_le_ms"]) == (1, 1, None) and fieldrec.ro_q(h) == "1 / 1 / > 500" and h2["p50_le_ms"] is None
+          and fieldrec.ro_q(h2) == "-" and h2["pct"] == [None] * 10 and h["pct"][0] == 90.0)
+    check("reorder: at the edge a bucket that holds exactly 90 % of 900 (810) is the p90, one packet fewer (809) moves it to the next",
+          fieldrec.ro_hist([810, 90, 0, 0, 0, 0, 0, 0, 0, 0], RO_EDGES)["p90_le_ms"] == 1 and fieldrec.ro_hist([809, 91, 0, 0, 0, 0, 0, 0, 0, 0], RO_EDGES)["p90_le_ms"] == 2)
+    # --- the server: a session each, a pool
+    sl = server_lines()
+    ss, ns = analyze_all(sl)
+    sv = ss["reorder"]["server"]
+    sa1, sa2, sb_ = sv["sessions"]["aaaa0001"], sv["sessions"]["aaaa0002"], sv["sessions"]["bbbb0001"]
+    ga, gb = SV_A, SV_B
+
+    def sv_ok(sec, g, n):
+        v = sec["overall"]
+        return (sec["intervals"] == n and sec["skipped_intervals"] == 0 and v["delivered"] == n * g["upload"] and v["in_order"] == n * g["in_order"]
+                and v["held_total"] == n * g["held_total"] and v["bypassed"] == n * g["bypassed"]
+                and v["lost"] == {k: n * g["lost"][k] for k in LOSTK} and v["late"] == {k: n * g["late"][k] for k in LATEK}
+                and v["wait"]["counts"] == [n * x_ for x_ in g["wait"]] and v["late_by"]["counts"] == [n * x_ for x_ in g["late_by"]]
+                and v["pool_buffers"] is None and v["pool_free_min"] is None)
+    check("reorder server: a section per session (a restart makes new ids): A's 599 intervals in each run, B's 150 between its first and last sample",
+          ss["reorder"]["client"] is None and sorted(sv["sessions"]) == ["aaaa0001", "aaaa0002", "bbbb0001"]
+          and sv_ok(sa1, ga, SV_RESTART_AT - 1) and sv_ok(sa2, ga, SV_RESTART_AT - 1) and sv_ok(sb_, gb, SV_B_TO - SV_B_FROM)
+          and (sa1["client"], sa2["client"], sb_["client"]) == ("casa", "casa", "campo"), {k: v["intervals"] for k, v in sv["sessions"].items()})
+    held_a = [(5 * j) % 23 for j in range(1, SV_RESTART_AT)]
+    check("reorder server: the gauges of a session from its own samples (held at most 22, none of the pool's)",
+          sa1["overall"]["held_seen_max"] == max(held_a) == 22 and sa1["overall"]["held_max"] == 22 and sa1["by_hour"][0]["delivered"] == sa1["overall"]["delivered"]
+          and sorted(sa1["by_hour"]) == [0], (sa1["overall"]["held_seen_max"], sa1["overall"]["max_burst"]))
+    pool = sv["pool"]
+    later = [k for k in range(1, SV_N) if k != SV_RESTART_AT]          # the samples that end an interval
+    want_free = min(4096 - sum(sv_held(k)) for k in later)
+    want_hold = max(sum(1 for hh in sv_held(k) if hh) for k in later)
+    check("reorder server: the pool over the two runs: its buffers, the fewest free, the most sessions holding at once, how often it was found empty",
+          pool["intervals"] == 2 * (SV_RESTART_AT - 1) and pool["skipped_intervals"] == 0
+          and pool["overall"] == dict(buffers=4096, free_min=want_free, holding_max=want_hold, full=2 * (SV_RESTART_AT // 100 - 1))
+          and pool["by_hour"][0] == pool["overall"], (pool, want_free, want_hold))
+    sp, _ = analyze_all(server_lines(full_reset=300))
+    pl = sp["reorder"]["server"]["pool"]
+    check("reorder server: a pool counter that starts over within a run: that interval skipped and counted for the pool (and the sessions untouched), "
+          "the others added (the 9 other times it was found empty)",
+          pl["skipped_intervals"] == 1 and pl["intervals"] == 2 * (SV_RESTART_AT - 1) - 1 and pl["overall"]["full"] == 9
+          and sv_ok(sp["reorder"]["server"]["sessions"]["aaaa0001"], ga, SV_RESTART_AT - 1), pl)
+    ts = rendered(ss, ns)
+    for what in ("# Field recording", "No client samples: this is the recording of a server", "## Reordering",
+                 "### Server, session aaaa0001 (client casa) (upload)", "### Server, session bbbb0001 (client campo) (upload)", "### Server pool",
+                 f"{2 * (SV_RESTART_AT - 1)} intervals (0 skipped): 4096 buffers, the fewest free {want_free}"):
+        check(f"reorder server: the report has {what!r}", what in ts)
+    check("reorder server: a server's recording has no link sections", "## Links" not in ts and "## Pairs" not in ts and "Pool:" not in ts)
+    with tempfile.TemporaryDirectory() as d:
+        write_dir(d, sl)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc_s = fieldrec.main([d, "--json", os.path.join(d, "s.json")])
+        js_s = json.load(open(os.path.join(d, "s.json")))
+    check("reorder server: main() takes a server's recording on its own (exit 0, the JSON has the sessions and the pool)",
+          rc_s == 0 and sorted(js_s["reorder"]["server"]["sessions"]) == ["aaaa0001", "aaaa0002", "bbbb0001"] and js_s["reorder"]["server"]["pool"]["overall"]["buffers"] == 4096
+          and js_s["reorder"]["client"] is None and js_s["samples"] == 0, list(js_s))
+    with tempfile.TemporaryDirectory() as d:
+        write_dir(d, sl[:1])
+        with contextlib.redirect_stderr(io.StringIO()):
+            rc_one = fieldrec.main([d])
+    check("reorder server: one sample is not enough, as for a client", rc_one == 1)
+    # a server and a client in the same files: each analyzed on its own; the client's report keeps all its sections
+    mixed = [m for pair in zip(lines[:SV_N], sl) for m in pair] + lines[SV_N:]
+    sx, nx = analyze_all(mixed)
+    tx = rendered(sx, nx)
+    check("reorder: a client's and a server's recording together: the client's counters are what they are alone, the server's sections are there, and so are the links",
+          sx["reorder"]["client"]["intervals"] == n_int and ro_view_ok(sx["reorder"]["client"]["overall"], t)
+          and sorted(sx["reorder"]["server"]["sessions"]) == ["aaaa0001", "aaaa0002", "bbbb0001"]
+          and "### Client (download)" in tx and "### Server, session aaaa0001" in tx and "## Links" in tx and "No client samples" not in tx, None)
+    # a server's sample that is not as a server's should be: no crash, no section
+    badsrv = [{"mode": "server", "uptime_ms": 1000 * i, "time_ms": T1 + 1000 * i, "sessions": [{"id": 5, "reorder": 3}, {"id": "x"}, "y", {"id": "z", "reorder": {"enabled": True}}],
+               "reorder_pool": {"buffers": "x"}} for i in range(5)]
+    sbs, _ = analyze_all(badsrv)
+    check("reorder server: sessions with no id, no field or a malformed one, and a bad pool: no section, no crash", sbs["reorder"] is None, sbs["reorder"])
+
+
+def reorder_export_checks():
+    lines = reorder_lines(soft_reset=1000, off=range(1400, 1450))
+    with tempfile.TemporaryDirectory() as d:
+        write_dir(d, lines)
+        rc, rep, fl, summ = export_run(d)
+        _, _, fz, _ = export_run(d, gz=True)
+        plain = io.StringIO()
+        with contextlib.redirect_stdout(plain):
+            fieldrec.main([d])
+    check("export reorder: reorder.csv is there when the recording has the field, with the headers written down and README.txt for it",
+          rc == 0 and sorted(fl) == ["README.txt", "events.csv", "joint.csv", "reorder.csv", "samples.csv", "tunnel.csv"]
+          and read_table(fl["reorder.csv"])[0] == H_REORDER and "reorder.csv: " in fl["README.txt"]
+          and all(re.search(rf"^  {re.escape(c)} +\[", fl["README.txt"], re.M) for c in H_REORDER) and "source server" not in fl["README.txt"], sorted(fl))
+    hr, rows, _ = read_table(fl["reorder.csv"])
+    cl = summ["reorder"]["client"]
+    ov = cl["overall"]
+    deliv = [r for r in rows if r["metric"] == "delivered"]
+    check("export reorder: a 'delivered' row for every interval counted (and none for the skipped, off or restart ones), summing to the report's delivered",
+          len(deliv) == cl["intervals"] and sum(int(r["value"]) for r in deliv) == ov["delivered"] and all(r["kind"] == "delta" for r in deliv),
+          (len(deliv), cl["intervals"]))
+    ok = True
+    for k in fieldrec.RO_COUNTS:
+        want = {"in_order": ov["in_order"], "held_total": ov["held_total"], "bypassed": ov["bypassed"], "split_rx": ov["split_rx"], "far": ov["far"],
+                "resyncs": ov["resyncs"], "pool_full": ov["pool_full"]}.get(k)
+        if want is None:
+            want = ov["lost" if k.startswith("lost_") else "late"][k.split("_", 1)[1]]
+        ok &= sum(int(r["value"]) for r in rows if r["kind"] == "delta" and r["metric"] == k) == want
+    check("export reorder: each counter's rows add up to the report's (the growth per interval), and there are rows only where it grew",
+          ok and all(int(r["value"]) > 0 for r in rows if r["kind"] == "delta" and r["metric"] != "delivered"), None)
+    okh = True
+    for m in ("wait", "late_by"):
+        for i, name in enumerate([f"le_{e}" for e in RO_EDGES] + ["gt_500"]):
+            okh &= sum(int(r["value"]) for r in rows if r["kind"] == "hist" and r["metric"] == m and r["bucket"] == name) == ov[m]["counts"][i]
+    check("export reorder: the histogram rows (le_1 ... le_500, gt_500) add up to the report's buckets, and are only the buckets that grew",
+          okh and all(int(r["value"]) > 0 for r in rows if r["kind"] == "hist") and {r["bucket"] for r in rows if r["kind"] != "hist"} == {""}, None)
+    gauge = collections.Counter(r["metric"] for r in rows if r["kind"] == "gauge")
+    check("export reorder: the gauges at the end of each interval: pool_buffers and pool_free in every one, held and held_max only where not 0",
+          gauge["pool_buffers"] == cl["intervals"] == gauge["pool_free"] and gauge["held"] < cl["intervals"] and gauge["max_burst"] > 0
+          and all(int(r["value"]) > 0 for r in rows if r["kind"] == "gauge" and r["metric"] in ("held", "held_max", "max_burst")), gauge)
+    skipped_up = 100000 + 2000 * 1000
+    off_up = {100000 + 2000 * k for k in range(1400, 1451)}
+    first_run = [r for r in rows if r["segment"] == "0"]            # (the second run's uptimes start over, and repeat these)
+    check("export reorder: nothing for the interval where the counters started over, nor for the 51 that touch the samples with reordering off, "
+          "and a row for the one before and the one after each",
+          not [r for r in first_run if int(r["uptime_ms"]) == skipped_up] and not [r for r in first_run if int(r["uptime_ms"]) in off_up]
+          and {100000 + 2000 * 999, 100000 + 2000 * 1001, 100000 + 2000 * 1399, 100000 + 2000 * 1451} <= {int(r["uptime_ms"]) for r in first_run}, None)
+    spike = [r for r in rows if r["uptime_ms"] == str(100000 + 2000 * 500) and r["segment"] == "0"]
+    check("export reorder: an interval's rows carry its time (the engine's clock), its segment and the engine's session; a client has no client name",
+          spike and {r["segment"] for r in spike} == {"0"} and {r["time_utc"] for r in spike} == {"2026-10-09T00:16:40.000Z"}
+          and {r["session"] for r in spike} == {"s0"} and {r["source"] for r in spike} == {"client"} and {r["client"] for r in spike} == {""}
+          and {r["interval_ms"] for r in spike} == {"2000"}
+          and [r["value"] for r in spike if r["metric"] == "lost_overflow"] == ["420"] and [r["value"] for r in spike if r["metric"] == "late_after_overflow"] == ["250"]
+          and [r["value"] for r in spike if r["kind"] == "hist" and r["metric"] == "late_by" and r["bucket"] == "le_20"] == ["240"], spike[:4])
+    check("export reorder --export-gzip: reorder.csv.gz with the same rows", fz.get("reorder.csv.gz") == fl["reorder.csv"] and "reorder.csv.gz: " in fz["README.txt"])
+    check("export reorder: the report is the same with and without --export", rep == plain.getvalue())
+    # a recording that lacks the field exports what it always did
+    with tempfile.TemporaryDirectory() as d:
+        write_dir(d, bond_lines())
+        _, _, fb, sb = export_run(d)
+    check("export reorder: a recording without the field has no reorder.csv, and its README.txt does not mention it",
+          "reorder.csv" not in fb and "reorder.csv" not in fb["README.txt"] and sb["reorder"] is None, sorted(fb))
+    # a server's rows
+    with tempfile.TemporaryDirectory() as d:
+        write_dir(d, server_lines())
+        _, _, fs, ss = export_run(d)
+    _, srows, _ = read_table(fs["reorder.csv"])
+    by = collections.Counter((r["session"], r["client"]) for r in srows if r["metric"] == "delivered")
+    sa = ss["reorder"]["server"]["sessions"]["aaaa0001"]["overall"]
+    check("export reorder, a server's recording: a row per session per interval, with the session's id and its client, source server, segments numbered from 0 "
+          "by the server's own runs; the sums are the report's",
+          {r["source"] for r in srows} == {"server"} and by == {("aaaa0001", "casa"): SV_RESTART_AT - 1, ("aaaa0002", "casa"): SV_RESTART_AT - 1,
+                                                                ("bbbb0001", "campo"): SV_B_TO - SV_B_FROM}
+          and {r["segment"] for r in srows if r["session"] == "aaaa0001"} == {"0"} and {r["segment"] for r in srows if r["session"] == "aaaa0002"} == {"1"}
+          and sum(int(r["value"]) for r in srows if r["session"] == "aaaa0001" and r["metric"] == "delivered") == sa["delivered"]
+          and sum(int(r["value"]) for r in srows if r["session"] == "aaaa0001" and r["metric"] == "held_total") == sa["held_total"]
+          and not [r for r in srows if r["metric"] in ("pool_buffers", "pool_free")]
+          and "source server" in fs["README.txt"] and sorted(fs) == ["README.txt", "events.csv", "joint.csv", "reorder.csv", "samples.csv", "tunnel.csv"],
+          by)
 
 
 # --- the radio section: cell-monitor's RF metrics against the links ---------------------
@@ -1147,6 +1687,8 @@ H_SAMPLES = [
 H_EVENTS = ['kind', 'link', 'label', 'segment', 'start_utc', 'start_epoch', 'end_utc', 'end_epoch', 'duration_s', 'ends']
 H_JOINT = ['segment', 'time_utc', 'time_epoch', 'uptime_ms', 'clock_synced', 'interval_ms', 'deadline_ms', 'mask', 'set', 'expect', 'late']
 H_TUNNEL = ['segment', 'time_utc', 'time_epoch', 'uptime_ms', 'clock_synced', 'interval_ms', 'down_packets_delta', 'lost_all_delta']
+H_REORDER = ['segment', 'time_utc', 'time_epoch', 'uptime_ms', 'clock_synced', 'interval_ms', 'source', 'session', 'client', 'kind', 'metric',
+             'bucket', 'value']
 H_RF = [
     'time_utc', 'time_epoch', 'rf_time_epoch', 'link', 'label', 'cpe_id', 'modem_id', 'leg', 'carrier', 'recorded',
     'modem_up', 'rat', 'band', 'cell_kind', 'cell', 'nsa', 'sinr', 'rsrq', 'rsrp', 'source']
@@ -1691,12 +2233,15 @@ def main():
           s["joint"] is None and s["lost_all"] is None and s["sizes"] is None
           and rendered(s, notes, -3).count("No data: the recording has no") == 3)
     bond_checks()
+    split_checks()
+    reorder_checks()
     unit_checks()
     radio_checks()
     radio_unit_checks()
     local_checks()
     local_unit_checks()
     export_checks()
+    reorder_export_checks()
     real_format_checks()
     print("fieldrec_test: " + ("ok" if not FAILS else f"FAILED: {', '.join(FAILS)}"))
     return 1 if FAILS else 0

@@ -33,7 +33,7 @@ para `stream`; y curl, para las demos del Go.
 ## Uso
 
 ```sh
-sudo bench/lab.sh build    # udpgen, protoclient, ringbench, cgprobe, macbench y cengarde en bench/bin/
+sudo bench/lab.sh build    # udpgen, protoclient, ringbench, robench, cgprobe, macbench y cengarde en bench/bin/
 sudo bench/lab.sh ci       # lo que corre el CI: smoke, health, control y los escenarios de lab.d con LAB_CI=1
 sudo bench/lab.sh smoke    # prueba de humo de cengarde
 sudo bench/lab.sh health   # salud de enlaces: un enlace con 500 ms de cola, subida y bajada (historia 006)
@@ -56,6 +56,8 @@ sudo LAB_UDPMEM=1 bench/lab.sh udpmem  # el presupuesto de recepción frente a n
 sudo bench/lab.sh mtstall  # un hilo de enlace sin CPU no frena a los demás (link_threads = on; lab.d, va en ci)
 sudo bench/lab.sh mtlat    # latencia y CPU de legacy, off, on y on con busy_poll a 2, 20 y 80 kpps (lab.d, a mano)
 sudo bench/lab.sh soak     # 1 h por modo (off y on): tráfico variado, pérdidas, enlaces que caen, recargas (lab.d, a mano)
+sudo bench/lab.sh reorder  # el reordenador del receptor y el reparto (paso 1 de la Fase 5): IMIX con desbordes y cabeza de línea; sin ellos en el motor, "skip" (lab.d, a mano)
+bench/bin/robench          # ns por paquete de engine/src/reorder.h solo: en orden, 50/50 con 50 ms de diferencia, IMIX con bypass y desborde (1 s, sin root)
 sudo CLIENT_EXTRA="link_threads = on" bench/lab.sh ci   # el ci con los hilos por enlace (el CI corre legacy, off y on)
 
 sudo ENGINE=go bench/lab.sh build  # además, el engarde Go (normal y -race)
@@ -414,17 +416,111 @@ enlaces, gana la primera copia) y, en `equal` y `het`, lo que daría el mejor
 enlace solo. El bonding tendrá que superar esas cifras. El caso `deepq` de
 aquí no es el escenario `deepq` de arriba, que mide las colas del servidor.
 
-Por cada caso, variante (`bonded` o `solo`), sentido y control de congestión
-se escribe una línea JSON en `$RUN/bond.jsonl`. Cada línea lleva Mbit/s,
-retransmisiones, p50 y p99 del RTT y CPU de cada cengarde, y RTT suavizado y
-mínimo del emisor. Para QUIC (`cc` = `quic`), `retrans` son los paquetes que
-el emisor declaró perdidos, y la línea suma los paquetes enviados y los
-espurios (los declarados perdidos que llegaron después: puro desorden); en
-TCP esos campos van en `null`. Al final se imprime una tabla, que también
-queda en `$RUN/bond.md`. Con una repetición da el valor de la corrida; con
-`BOND_N` > 1 da la mediana y, entre paréntesis, el rango p25–p75 (mínimo–
-máximo con menos de 4 repeticiones), para Mbit/s, retransmisiones y RTT. La
-columna `spurious` aparece cuando hay corridas QUIC.
+**Variantes (`BOND_VARIANTS`).** Qué corre en cada caso. Los ajustes de la
+variante van a los dos extremos por `CLIENT_EXTRA` y `SERVER_EXTRA` (los
+tuyos, si los hay, vienen después):
+
+| Variante | Qué es |
+| --- | --- |
+| `bonded` | la redundancia de hoy con los valores por defecto del motor; lo que corre el CI. Es la misma que `redund`, que es el nombre de las tablas del paso 1 |
+| `solo` | el primer enlace solo (`NLINKS` 1) |
+| `redund` | los valores por defecto |
+| `redund-ro0` | `reorder = no` |
+| `redund-dw20` | `reorder_dup_wait_ms = 20` |
+| `split` | `split = force`, `mute_behind_ms = 0` y `reorder_max_wait_ms = 400` (con el silenciado el enlace lento de `reorder150` saldría del reparto y se escondería la diferencia). Con la guarda de retardo del motor (`split_spread_ms`, 30 ms por omisión), en `reorder50` y `reorder150` el enlace lento sale igual del reparto y lleva copias: es el modo de campo; el reparto sin filtro es `split-sp0` |
+| `splitnoro` | `split` con `reorder = no`: el control de `split` |
+| `NOMBRE-bpN` | cualquiera de ellas con `reorder_bypass = N` |
+| `NOMBRE-spN` | cualquiera de ellas con `split_spread_ms = N`. `split-sp0` es el reparto sin la guarda de retardo, el round-robin crudo: con el valor por omisión del motor (30 ms), en `reorder50` y `reorder150` el enlace lento deja su parte y lleva copias, así que `split` ya no mide el reparto sin filtro. Los sufijos van en cualquier orden, una vez cada uno (`split-sp0-bp64`) |
+
+Sin `BOND_VARIANTS` corren `bonded` y `solo`, esta última solo en `equal` y
+`het`: exactamente lo que había antes de las variantes, así que las tablas
+viejas y las 10 repeticiones de la historia 012 siguen siendo comparables y la
+estimación de tiempo del CI vale. Con `BOND_VARIANTS` dado, `solo` corre también
+en `reorder50` y `reorder150`, las referencias de `split`; `BOND_SOLO_CASES` lo
+fija a mano. Antes de empezar, el motor revisa los ajustes de cada variante
+(`cengarde -t`), para que una errata no cueste una corrida entera. Los ajustes
+de reorden y reparto los lee el motor del paso 1; uno anterior solo los avisa
+como desconocidos y las variantes `split` no harían nada.
+
+**El límite de netem [razonado; sin medir, el contenedor no tiene netem].**
+netem cuenta contra su `limit` los paquetes que van dentro del retardo: un
+enlace de 170 ms y 50 Mbit/s lleva unos 760 paquetes de 1400 bytes en vuelo,
+más que los 456 de límite de una cola de 100 ms, y tira lo que no cabe (sobre
+todo en `reorder150`; en `reorder50`, con 310 en vuelo, la cola útil queda en
+una tercera parte). Las tablas del paso 0 son así y la redundancia lo esconde
+tras el otro enlace; un reparto no tiene otra copia, y esas pérdidas serían
+retransmisiones del `split` que no son suyas. `BOND_NETEM_INFLIGHT=1` suma al
+límite lo que cabe en el retardo: cambia la línea base del paso 0 (por eso
+está apagado por defecto), y `reorder_hol` lo enciende. Para comparar `split`
+con `solo` y `splitnoro` en `reorder50` y `reorder150`, enciéndelo en las tres
+(`variants` y `netem_inflight` en `bond.yml`).
+
+Por cada caso, variante, sentido y control de congestión se escribe una línea
+JSON en `$RUN/bond.jsonl`. Cada línea lleva Mbit/s, retransmisiones y su tasa
+(`retrans_pct`: sobre los segmentos que escribió el emisor, que son los bytes de
+iperf3 entre el MSS, o sobre los paquetes enviados en QUIC), p50 y p99 del RTT
+y CPU de cada cengarde, y RTT suavizado y mínimo del emisor. Un segundo ping de
+1200 bytes (el de 84 pasa de largo por el reordenador; este es de la clase que
+se retiene) da `rtt_big_p50` y `rtt_big_p99`. Para QUIC (`cc` = `quic`),
+`retrans` son los paquetes que el emisor declaró perdidos, y la línea suma los
+paquetes enviados y los espurios (los declarados perdidos que llegaron después:
+puro desorden); en TCP esos campos van en `null`.
+
+Antes y después de cada corrida se copian los archivos de estado de los dos
+extremos (el motor los escribe cada segundo: por eso hay una espera de 1,1 s por
+corrida; el «después» de una es el «antes» de la siguiente) y los contadores de
+las interfaces de WireGuard (`ip -s -j link show`). La línea lleva las
+diferencias en `eng.cli` y `eng.srv`: de `reorder.*` (`held_total`, `in_order`,
+`bypassed`, `split_rx`, `lost_rack`, `lost_cap`, `lost_overflow`, `lost_flush`,
+`late_after_rack`, `late_after_cap`, `late_after_overflow`, `late_old`, `far`,
+`resyncs`, `pool_full`, y los histogramas `wait` y `late_by`), `too_old`
+(`download.too_old` del cliente, `rx.too_old` del servidor), `wireguard_drops`
+y `lost_all`; `held_max` y `max_burst` son máximos desde que arrancó el caso, no
+diferencias. En `wg_rx_dropped`, la diferencia de `rx_dropped` de `wgc` y `wgs`.
+Lo que el motor no tiene (hoy, todo `reorder`) va en `null`, nunca es un error.
+Con `BOND_SMALL` > 0 (pps) corre además un flujo de datagramas de
+`BOND_SMALL_SIZE` bytes (160) por el túnel, en el sentido de la corrida, y la
+línea trae `small` (enviados, recibidos, p50 y p99 de su retardo en µs).
+
+Al final se imprimen las tablas (Markdown), que también quedan en
+`$RUN/bond.md`; las hace `bondtab.py`, que prueba `bondtab_test.py`:
+
+- **La principal**, por caso, variante, sentido y control de congestión. Con
+  una repetición da el valor de la corrida; con `BOND_N` > 1 da la mediana y,
+  entre paréntesis, el rango p25–p75 (mínimo–máximo con menos de 4
+  repeticiones), para Mbit/s, retransmisiones y su tasa, RTT de 84 y de 1200
+  bytes y el flujo pequeño. La columna `spurious` aparece cuando hay corridas
+  QUIC.
+- **Dos modos.** Una celda de 6 corridas o más se marca con † si sus valores
+  son dos grupos y no ruido (historia 012, «Medidas con dispersión»), y debajo
+  se listan los dos con cuántas corridas tiene cada uno. La regla: se ordenan
+  los valores y se cortan por el hueco más ancho que deje al menos 2 corridas a
+  cada lado; son dos modos si ese hueco es mayor que el rango (máximo menos
+  mínimo) del más ancho de los dos grupos y no menor que un mínimo por
+  métrica, lo que la medida no distingue (1 Mbit/s, 10 retransmisiones o
+  pérdidas espurias, 5 ms de RTT). Una corrida rara es una anomalía, no un modo;
+  es una descripción de 10 corridas, no una prueba.
+- **Contadores del motor**, la mediana de las diferencias de cada corrida en el
+  extremo que recibió (el servidor en `up`, el cliente en `down`), y `too_old`,
+  `wireguard_drops`, `lost_all` y `rx_dropped` de los dos. Debajo, si `too_old`,
+  `pool_full` o `wireguard_drops` no son 0, lista las corridas.
+- **Contra la referencia**: cada variante frente a las referencias de su
+  familia que haya en su grupo (mismo caso, sentido y control), una fila por
+  cada una: `bonded`, `redund` y `redund-dw20` frente a `redund-ro0`; `split`
+  frente a `solo` y frente a `splitnoro`, su control; `redund-ro0` y
+  `splitnoro` frente a `solo`; una variante con sufijo (`-bpN`, `-spN`),
+  frente a la misma sin su último sufijo si corrió (así `split-sp0` frente a
+  `split`: lo que cambia la guarda), y si no frente a la más cercana sin
+  sufijos que haya, o como la base. Sin ninguna de sus referencias en el
+  grupo, frente a la primera que haya de `solo`, `redund-ro0` y `splitnoro`
+  (así `bonded` sigue contra `solo` en la corrida de CI). Así una sola corrida
+  con `solo` y las dos familias da las filas de los dos criterios de salida del
+  paso 1: tasa ≤ 1,2× un enlace solo (`split` contra `solo`) y CPU ≤ 1,05× y
+  +0 ms (`redund` contra `redund-ro0`). `--ref A,B` vuelve a la regla de antes:
+  todas frente a la primera de esas que tenga el grupo. Cada fila da la razón
+  de las medianas de Mbit/s, de la tasa de retransmisiones y de la CPU de cada
+  extremo, la diferencia de los RTT y el valor p de Mann–Whitney (desde 5
+  corridas por lado) del goodput y de la tasa de retransmisiones.
 
 El escenario no juzga la velocidad: solo falla si falla la fontanería, es
 decir, si no hay handshake, tráfico o pings. Necesita iperf3,
@@ -458,14 +554,22 @@ versión de aioquic está fijada porque `quicperf.py` usa dos de sus
 internos (la recuperación de pérdidas y el emisor del flujo).
 
 ```sh
-sudo bench/lab.sh bond                                  # todos los casos, ~16 min
+sudo bench/lab.sh bond                                  # todos los casos, ~18 min
 sudo BOND_CASES="equal reorder150" BOND_S=20 BOND_N=3 bench/lab.sh bond
 sudo BOND_CC=bbr BOND_DIRS=down BOND_OUT=/tmp/b.jsonl bench/lab.sh bond
+sudo BOND_VARIANTS="split solo splitnoro" BOND_CASES="equal reorder50 reorder150" BOND_N=10 bench/lab.sh bond
+BOND_N=10 BOND_VARIANTS="split solo" bench/lab.sh bond_plan   # cuánto tardaría, sin correr (sin root)
+python3 bench/bondtab_test.py                           # pruebas de las tablas, sin root
 ```
 
 | Variable | Por defecto | Qué hace |
 | --- | --- | --- |
 | `BOND_CASES` | todos | casos a correr |
+| `BOND_VARIANTS` | `bonded solo` | variantes (arriba); dadas, `solo` corre también en `reorder50` y `reorder150` |
+| `BOND_SOLO_CASES` | `equal het` | casos en los que corre `solo` |
+| `BOND_SMALL` | 0 | pps de un flujo de datagramas pequeños por el túnel durante la corrida (0: ninguno) |
+| `BOND_SMALL_SIZE` | 160 | bytes de esos datagramas (un datagrama de WireGuard de 224) |
+| `BOND_NETEM_INFLIGHT` | 0 | 1: el límite de netem cuenta también lo que cabe en el retardo (arriba); cambia la línea base del paso 0 |
 | `BOND_S` | 10 | segundos por corrida (`starlink15`, al menos 31) |
 | `BOND_N` | 1 | repeticiones; la tabla da la mediana y el rango |
 | `BOND_CC` | `cubic bbr quic` | controles de congestión; `quic` solo si importa aioquic, y si no se avisa |
@@ -478,15 +582,66 @@ sudo BOND_CC=bbr BOND_DIRS=down BOND_OUT=/tmp/b.jsonl bench/lab.sh bond
 | `BOND_NEED_QUIC` | 0 | 1: sin aioquic, falla en vez de avisar |
 
 No entra en `ci`: lo corre su propio workflow, `bond.yml`, en cada cambio de
-`engine/` o `bench/`, con todos los casos y una repetición (~19 min, con
-`BOND_NEED_NETEM=1` y `BOND_NEED_QUIC=1`). La tabla queda en el resumen del
-job y el JSON en un artefacto. A mano (`workflow_dispatch`) se pueden pedir
-más repeticiones, otros segundos y otros casos. En un runner compartido las
-cifras de una sola repetición varían: para comparar dos versiones, usa varias
-repeticiones en la misma máquina. Con 10 repeticiones y todos los casos el
-job tarda unos 165 min (el límite es de 200 y el primer paso rechaza lo que
-no cabe); para menos tiempo, elige casos: `equal reorder150 starlink15` con
-10 repeticiones son unos 80 min.
+`engine/` o `bench/`, con todos los casos y las variantes por defecto y una
+repetición (~21 min, con `BOND_NEED_NETEM=1` y `BOND_NEED_QUIC=1`). La tabla
+queda en el resumen del job y el JSON en un artefacto. A mano
+(`workflow_dispatch`) se pueden pedir más repeticiones, otros segundos, otros
+casos y otras variantes (`variants`). En un runner compartido las cifras de una
+sola repetición varían: para comparar dos versiones, usa varias repeticiones en
+la misma máquina. El primer paso del job es `bond_plan`, que cuenta los pares
+de caso y variante, y rechaza lo que pasaría de 180 min (el límite del job es
+de 200). Con 10 repeticiones y todos los casos con las variantes por defecto
+son unos 175 min; para menos tiempo, elige casos: `equal reorder150
+starlink15` con 10 repeticiones son unos 85 min, y las variantes `split solo
+splitnoro` en `equal reorder50 reorder150`, unos 140. Cada corrida suma ahora
+la espera de 1,1 s por el estado del motor y un ping más, y la estimación
+cuenta 4 s de arranque y cierre por corrida (eran 3).
+
+### `reorder`: el reordenador del receptor y el reparto (`lab.d/reorder.sh`, `robench`)
+
+Para el paso 1 de la Fase 5 (historia 012). `lab.d/reorder.sh` se escribió
+contra los ajustes y el estado del plan (`split`, `reorder_*`, el objeto
+`reorder` del estado): con un motor que no lo tiene dice
+`reorder: skip: engine without reorder` y sale con 0; sin netem,
+`skip: no netem here` (con `REORDER_NEED_NETEM=1`, un fallo). Va con
+`LAB_CI=0` hasta que entre la integración. Los dos escenarios corren con
+`split = force` en los dos extremos y el silenciado apagado.
+
+- **`reorder_imix`: el desborde.** Paquetes IMIX (`udpgen -s imix`: 7 de 64, 4
+  de 576 y 1 de 1400 bytes; WireGuard falso) por dos enlaces con 150 ms de
+  diferencia (20 y 170 ms, con una cola de 60 000 paquetes, porque netem cuenta
+  contra su límite lo que va en el retardo), arriba y abajo, a dos tasas. La
+  ventana es de 4096 secuencias: a 20 kpps (205 ms) cabe la diferencia y a 30
+  kpps (136 ms) no, así que hay desborde. En todas: cada paquete llega una vez
+  (`uniq` = `sent`), `too_old` y `wireguard_drops` en 0 y `pool_full` en 0. Bajo
+  la ventana, sin desborde (`lost.overflow` = 0) y con los paquetes grandes en
+  orden (`IMIX_BELOW_ORD_MAX_PERMILLE`, 5 por mil); sobre ella, `lost.overflow`
+  > 0, y se informa qué parte de los grandes llegó detrás de uno posterior
+  (`bigord` de `udpgen`). Esa parte no tiene por qué ser casi 0: la copia tardía
+  de un hueco forzado sale desordenada, y a 30 kpps con 150 ms es la de todos
+  los paquetes del enlace lento; `IMIX_ORD_MAX_PCT` la acota si se quiere.
+  `IMIX_S` (8) son los segundos de cada tramo.
+- **`reorder_hol`: la cabeza de línea.** Lo real, el túnel con WireGuard (el
+  escenario `bond`) sobre `HOL_CASE` (`reorder50`), con iperf3 y QUIC
+  (`HOL_CC`) y, a la vez, `HOL_PPS` (50) datagramas de `HOL_SIZE` (160) bytes
+  por el túnel, con `reorder_bypass` 0, 128 y 256 (`HOL_BYPASS`). Cuánto espera
+  el flujo pequeño detrás de los grandes retenidos (p50 y p99 de su retardo) y
+  qué ven las transferencias (retransmisiones y pérdidas espurias) sale en la
+  tabla de `bond`. Falla solo si algo se tira por viejo o en el socket de
+  WireGuard.
+
+**`robench`** (`bench/robench.c`, lo compila `build`): cuesta `engine/src/reorder.h`
+sola, en ns por paquete, con flujos hechos a mano y el llamador que usará el
+motor (un `cg_ro_next` tras cada paquete); cada escenario, solo la lógica y con
+la copia del cuerpo al búfer del grupo. En orden, 1 de cada 100 adelantado con
+`reorder_dup_wait_ms` 0, 50/50 por dos enlaces con 50 ms de diferencia, IMIX con
+bypass y el desborde (IMIX a 30 kpps con 150 ms). Cada paquete tiene que salir
+exactamente una vez, o falla. Tarda menos de un segundo con un millón de
+paquetes por escenario (el primer argumento lo cambia). En este contenedor x86
+compartido (gcc -O2, cuatro corridas) [medido]: en orden 10–14 ns por paquete;
+con diferencia entre enlaces, 17–26 ns la lógica sola y 19–47 ns con la copia
+del cuerpo (la mitad de los paquetes se retiene en `spread 50`, el 21 % en
+IMIX). Ruidoso, y sirve para comparar versiones, no como coste en la Pi.
 
 ### Transmisión simulada (`bench/stream/`)
 
@@ -520,7 +675,11 @@ Markdown (`--json` guarda además el resumen). El informe trae:
 - las caídas y los saltos de RTT plegados sobre el reloj, módulo 15 s
   (Starlink reconfigura cada 15 s, en los segundos 12, 27, 42 y 57);
 - por hora del día (`--utc-offset`), las caídas, el RTT y la pérdida de cada
-  enlace.
+  enlace;
+- si el router repartió la subida, qué hizo cada enlace en el reparto
+  mientras repartía (`split_share`: su parte, fuera por su retardo con
+  `split_spread_ms` y llevando copias, esperando una medida de retardo...),
+  cuántas veces la guarda lo sacó y cuánto iba detrás del más rápido.
 
 Un enlace está caído si su estado no es `live`, o si no llegó nada por él
 en tres intervalos de sonda (300 ms como mínimo). Los enlaces en pausa no
@@ -846,6 +1005,11 @@ pps=10000 (112 Mbit/s) sent=49997 uniq=49997 loss=0.00% dup=99994 p50=110us p99=
 - `dup`: copias extra entregadas al "WireGuard". Con engarde Go son N−1 por
   paquete, y el WireGuard real las descifra todas antes de descartarlas;
   cengarde deduplica y entrega 0.
+- `big` y `bigord` (al final de la línea de `udpgen`): los paquetes únicos de
+  256 bytes o más y cuántos de ellos llegaron detrás de uno posterior. Con
+  `-s imix` (7 de 64, 4 de 576 y 1 de 1400 bytes, 347 de media; `SIZE=imix`
+  en el laboratorio) separa el desorden de lo que retiene un reordenador del
+  de los pequeños, que lo adelantan.
 - `us/pkt`: CPU (usuario + kernel en el contexto del proceso) por paquete
   WireGuard. Incluye el trabajo del kernel al enviar y, en veth/loopback, parte
   de la recepción del otro extremo; es igual para todas las variantes, así que

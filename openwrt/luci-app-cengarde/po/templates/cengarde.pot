@@ -1,6 +1,15 @@
 msgid ""
 msgstr "Content-Type: text/plain; charset=UTF-8"
 
+msgid "Expected NAME=WEIGHT, with a weight from 0 to 1000"
+msgstr ""
+
+msgid "%s is not one of the uplinks (General tab)"
+msgstr ""
+
+msgid "%s already has a weight"
+msgstr ""
+
 msgid "Copied to the clipboard."
 msgstr ""
 
@@ -184,6 +193,42 @@ msgstr ""
 msgid "No uplink goes on standby if that would leave fewer than this many in use."
 msgstr ""
 
+msgid "Reorder at the receiver"
+msgstr ""
+
+msgid "The end that receives holds a packet that arrives ahead of a missing one until the missing one comes or its time runs out, and hands them to WireGuard in order. The VPS does the same with what it receives. While every packet is copied over all the uplinks nothing is held, so it changes nothing and costs almost nothing; it is what makes the split below usable."
+msgstr ""
+
+msgid "Longest wait for a missing packet (ms)"
+msgstr ""
+
+msgid "How long a packet that arrived early waits for the missing one before it is handed on anyway. It waits less when the slowest uplink would have delivered the missing one by then. A longer wait copes with slower uplinks, and adds delay when a packet is really lost."
+msgstr ""
+
+msgid "Packets never held, up to (bytes)"
+msgstr ""
+
+msgid "WireGuard packets of up to this size (keepalives, empty TCP ACKs) are handed on at once, and so are the handshakes. 0: only the handshakes. A larger value lets small data packets overtake the big ones that are held, which TCP and QUIC can take for losses."
+msgstr ""
+
+msgid "Split large packets across the uplinks (experimental)"
+msgstr ""
+
+msgid "Instead of a copy over every uplink, each large packet (over 256 bytes, by default) goes over one uplink, chosen by weight; the small ones and the handshakes still go over all of them. This adds up the speed of the uplinks (in the lab, two equal uplinks carried 1.98 times what one does), but it protects less than copying: an uplink that dies keeps its share of the packets until the engine takes it out (about 300 ms by estimate, 1.5 s before that), and the packets sent to it in the meantime are lost; the slowest uplink in the split sets the latency of all (see the largest delay difference below); and a weight above what an uplink can carry fills the queue of its modem and makes the uplink unstable. The VPS follows this router: it splits the download the same way, with the same weights, when the router asks for it, and needs no setting. It needs \"Reorder at the receiver\"."
+msgstr ""
+
+msgid "Weight of each uplink in the split"
+msgstr ""
+
+msgid "One entry per uplink, as NAME=WEIGHT (for example wan=3), with NAME as in the list of uplinks of the General tab and a weight from 0 to 1000. An uplink gets a share of the split packets in proportion to its weight; with no entry its weight is 1. 0: the uplink carries a copy of every packet, split or not. The weights do not follow the speed of the uplinks: choose them in proportion to what each one carries."
+msgstr ""
+
+msgid "Largest delay difference to split (ms)"
+msgstr ""
+
+msgid "Only the uplinks whose delay towards the VPS is at most this much behind the fastest one get a share of the split; the others carry a copy of every packet, as with weight 0, and get their share back once they stay within three quarters of it for the settle time. The VPS does the same with the download, with its own setting (30 ms unless changed there). Measured in the lab: two equal uplinks split give almost twice one uplink, but 50 ms apart most of that gain is lost, and 150 ms apart the speed collapses: the slowest uplink in the split sets the pace of all. 0: no limit."
+msgstr ""
+
 msgid "Probe interval (ms)"
 msgstr ""
 
@@ -319,6 +364,12 @@ msgstr ""
 msgid "in use"
 msgstr ""
 
+msgid "copies only"
+msgstr ""
+
+msgid "More than the largest delay difference (Advanced tab) behind the fastest uplink: it carries a copy of every packet instead of a share of the split, until it catches up."
+msgstr ""
+
 msgid "paused"
 msgstr ""
 
@@ -412,6 +463,39 @@ msgstr ""
 msgid "%s, protocol %d"
 msgstr ""
 
+msgid "Reordering is off (Advanced tab)."
+msgstr ""
+
+msgid "Held now"
+msgstr ""
+
+msgid "%d of %d"
+msgstr ""
+
+msgid "Most held at once"
+msgstr ""
+
+msgid "Held in total"
+msgstr ""
+
+msgid "Missing packets given up on"
+msgstr ""
+
+msgid "%d at the deadline, %d for lack of room"
+msgstr ""
+
+msgid "Late after release"
+msgstr ""
+
+msgid "Arrived after the engine gave up on them: after the deadline %d, after running out of room %d, after the other uplinks had gone past %d, too old to tell %d."
+msgstr ""
+
+msgid "Held now: packets that arrived ahead of one that has not, out of how many there is room for. Most held at once and Held in total count since the engine started."
+msgstr ""
+
+msgid "Missing packets given up on: the wait for the packet ended at its deadline, or the room ran out first. If it arrives afterwards it counts as late after release; many of those mean that the longest wait (Advanced tab) is too short for the slowest uplink."
+msgstr ""
+
 msgid "Uplink"
 msgstr ""
 
@@ -490,7 +574,10 @@ msgstr ""
 msgid "VPS address: where the uplink sends to; \"failover\" when the first VPS address it can use did not answer. Path MTU: the largest packet the path to the VPS takes."
 msgstr ""
 
-msgid "Every packet goes through all active uplinks; the VPS keeps the first copy."
+msgid "Reordering"
+msgstr ""
+
+msgid "Every packet goes through all active uplinks and the other end keeps the first copy; with the split on, each big packet goes through one uplink and the other end puts them back in order."
 msgstr ""
 
 msgid "Settings"

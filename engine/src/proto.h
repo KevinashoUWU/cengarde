@@ -24,6 +24,13 @@
  * Each direction has its own 16-byte key (client->server, server->client),
  * both taken from the 32-byte shared secret.
  *
+ * Invariant of DATA: the sender writes the sequence and the timestamp
+ * together and in order, so a packet with a higher sequence never carries an
+ * older timestamp (serial arithmetic, both wrap). The receiver's reorderer
+ * (story 012) bounds how long it waits for a missing sequence with the
+ * timestamp of a packet that did arrive after it, and the bound is only
+ * sound if that timestamp is not older than the missing packet's.
+ *
  * A server takes a new session, a new path (link id) or a path's new address
  * only from a probe that echoes a cookie it handed out in a HELLO to that
  * address (cookie.h): a probe captured earlier and sent again from elsewhere,
@@ -34,7 +41,11 @@
  * Fields for what comes after redundancy (bonding, story 012) are reserved
  * now so that it needs no new version: the ECN and split bits of DATA, and
  * the probe payload, which may grow (a receiver reads the fields it knows
- * and ignores the rest).
+ * and ignores the rest). The bonding tail of probes and replies
+ * (cg_probe_bond) is the first such growth, and the reason it is still
+ * version 4 (stories 010 and 012): an engine without it reads the first 40
+ * bytes and ignores the 4 after them, one with it reads no tail from a
+ * 40-byte peer, and the MAC covers the whole payload either way.
  *
  * SPDX-License-Identifier: GPL-2.0-only */
 #ifndef CG_PROTO_H
@@ -66,10 +77,14 @@ static inline int cg_type_ctl(uint8_t type)
 	return type == CG_T_PROBE || type == CG_T_PROBE_REPLY;
 }
 
-/* Header flags on DATA, reserved for bonding: senders write 0 for now and
- * receivers ignore them. */
+/* Header flags on DATA, for bonding (story 012). CG_F_ECN is reserved:
+ * senders write 0 for now and receivers ignore it. CG_F_SPLIT is written
+ * only by a sender that splits (split.h), and is under the MAC: this packet
+ * skips at least one carrier, some link that carries payload does not bring
+ * this sequence (a weight-0 link may bring it too, so it is not "the only
+ * copy"). */
 #define CG_F_ECN 0x03   /* the ECN field of the WireGuard datagram (RFC 3168 codepoint) */
-#define CG_F_SPLIT 0x04 /* the only copy, sent on one link: no other link brings this sequence */
+#define CG_F_SPLIT 0x04 /* this packet skips at least one carrier */
 
 /* Header flags on HELLO. */
 #define CG_F_REFUSED 0x01 /* the server will not take the session (limit, client off) */
@@ -120,8 +135,10 @@ struct cg_hdr {
  * reset, and its upload windows start with everything up to tx_data marked
  * as seen, so that nothing the client sent before can be replayed to it.
  *
- * At least CG_PROBE_INFO_LEN bytes; a longer payload is valid and its tail is
- * ignored (room for bonding's per-link report and for padded probes). */
+ * At least CG_PROBE_INFO_LEN bytes; a longer payload is valid and what comes
+ * after the fields a receiver knows is ignored: cg_probe_bond at
+ * CG_PROBE_INFO_LEN, then room for bonding's per-link report and for padded
+ * probes. */
 struct cg_probe_info {
 	uint32_t echo_ts;     /* reply: ts of the probe being answered; probe: 0 */
 	uint32_t owd;         /* valid with CG_F_OWD */
@@ -136,6 +153,30 @@ struct cg_probe_info {
 };
 #define CG_PROBE_INFO_LEN 40
 #define CG_SEQ_LEAP (1u << 20)
+
+/* The bonding tail (story 012, the field mode of split.h): 4 bytes after
+ * cg_probe_info, a big-endian word whose bits say
+ *   0-9  weight: the sender's share of the split for this link, 0 to 1000
+ *        (0: it carries a copy of every packet; config.h's [link] weight);
+ *   16   CG_BOND_REORDERS: the sender's receive side puts DATA back in
+ *        sequence (reorder.h);
+ *   17   CG_BOND_SPLIT_ME: the sender asks to receive split DATA;
+ * and every other bit is reserved: written 0, ignored when read, so that a
+ * newer peer can use them. A client sends it in every probe; a server
+ * answers with one only a probe that had one, so that a reply is never
+ * larger than its probe, and a reply's weight and CG_BOND_SPLIT_ME are 0
+ * (the client's upload split depends only on the server reordering). */
+#define CG_PROBE_BOND_LEN (CG_PROBE_INFO_LEN + 4)
+#define CG_BOND_WEIGHT 0x3ffu
+#define CG_BOND_WEIGHT_MAX 1000
+#define CG_BOND_REORDERS (1u << 16)
+#define CG_BOND_SPLIT_ME (1u << 17)
+
+struct cg_probe_bond {
+	uint16_t weight;  /* 0 to CG_BOND_WEIGHT_MAX */
+	uint8_t reorders; /* CG_BOND_REORDERS */
+	uint8_t split_me; /* CG_BOND_SPLIT_ME */
+};
 
 /* HELLO payload: the server answers a probe it cannot take yet. echo_ts ties
  * it to that probe (the client takes each echo once, epoch.h), cookie is what
@@ -164,6 +205,14 @@ static inline void cg_hdr_set_link(uint8_t *hdr, uint8_t link)
 
 void cg_probe_info_write(uint8_t out[CG_PROBE_INFO_LEN], const struct cg_probe_info *pi);
 void cg_probe_info_read(struct cg_probe_info *pi, const uint8_t in[CG_PROBE_INFO_LEN]);
+/* The bonding tail, written at payload + CG_PROBE_INFO_LEN (a weight above
+ * CG_BOND_WEIGHT_MAX is written as the maximum). */
+void cg_probe_bond_write(uint8_t *payload, const struct cg_probe_bond *b);
+/* The tail of a probe or reply payload of plen bytes (plen >= CG_PROBE_INFO_LEN,
+ * as cg_hdr_parse checks): 1 with *b read, the reserved bits ignored and a
+ * weight above CG_BOND_WEIGHT_MAX read as the maximum; 0 with *b zeroed when
+ * the payload has none (a peer without it, plen < CG_PROBE_BOND_LEN). */
+int cg_probe_bond_read(struct cg_probe_bond *b, const uint8_t *payload, size_t plen);
 void cg_hello_write(uint8_t out[CG_HELLO_LEN], const struct cg_hello *hl);
 void cg_hello_read(struct cg_hello *hl, const uint8_t in[CG_HELLO_LEN]);
 

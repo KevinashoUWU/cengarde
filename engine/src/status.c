@@ -226,6 +226,73 @@ void cg_json_sizes(struct cg_json *j, const char *k, const struct cg_wgs *up, co
 	cg_json_end(j, '}');
 }
 
+static void json_hist(struct cg_json *j, const char *k, const uint64_t h[CG_RO_HIST])
+{
+	cg_json_arr(j, k);
+	for (unsigned i = 0; i < CG_RO_HIST; i++)
+		cg_json_u64(j, NULL, h[i]);
+	cg_json_end(j, ']');
+}
+
+void cg_json_reorder(struct cg_json *j, const char *k, const struct cg_reorder *r, int enabled,
+		     const struct cg_ro_pool *pool)
+{
+	const struct cg_ro_stats *st = &r->st;
+
+	cg_json_obj(j, k);
+	cg_json_bool(j, "enabled", enabled);
+	cg_json_u64(j, "held", r->held);
+	cg_json_u64(j, "held_max", st->held_max);
+	if (pool) {
+		cg_json_u64(j, "pool_buffers", pool->n);
+		cg_json_u64(j, "pool_free", pool->nfree);
+	}
+	cg_json_u64(j, "in_order", st->in_order);
+	cg_json_u64(j, "held_total", st->held_total);
+	cg_json_u64(j, "bypassed", st->bypassed);
+	cg_json_u64(j, "split_rx", st->split_rx);
+	cg_json_obj(j, "lost");
+	cg_json_u64(j, "rack", st->lost_rack);
+	cg_json_u64(j, "cap", st->lost_cap);
+	cg_json_u64(j, "overflow", st->lost_overflow);
+	cg_json_u64(j, "flush", st->lost_flush);
+	cg_json_end(j, '}');
+	cg_json_obj(j, "late");
+	cg_json_u64(j, "after_rack", st->late_rack);
+	cg_json_u64(j, "after_cap", st->late_cap);
+	cg_json_u64(j, "after_overflow", st->late_overflow);
+	cg_json_u64(j, "old", st->late_old);
+	cg_json_end(j, '}');
+	cg_json_u64(j, "far", st->far);
+	cg_json_u64(j, "resyncs", st->resyncs);
+	cg_json_u64(j, "pool_full", st->pool_full);
+	cg_json_u64(j, "max_burst", st->max_burst);
+	cg_json_arr(j, "edges_ms");
+	for (unsigned i = 0; i < CG_RO_HIST - 1; i++)
+		cg_json_u64(j, NULL, cg_ro_edge_ms(i));
+	cg_json_end(j, ']');
+	json_hist(j, "wait", st->wait);
+	json_hist(j, "late_by", st->late_by);
+	cg_json_end(j, '}');
+}
+
+void cg_json_owd_spread(struct cg_json *j, const char *k, const struct cg_reorder *r, unsigned link, uint16_t rset)
+{
+	const struct cg_ro_link *l = link < CG_MAX_LINKS ? &r->link[link] : NULL;
+	uint32_t fastest = 0;
+	int any = 0;
+
+	for (unsigned i = 0; rset; i++, rset >>= 1)
+		if ((rset & 1) && r->link[i].owd_ok && (!any || (int32_t)(r->link[i].owd - fastest) < 0)) {
+			fastest = r->link[i].owd;
+			any = 1;
+		}
+	if (!l || !l->owd_ok || !any)
+		cg_json_null(j, k);
+	else
+		cg_json_ms_signed(j, k, (int32_t)(l->owd - fastest));
+}
+
 int cg_status_write(const char *path, const char *data, size_t len)
 {
 	char tmp[512];

@@ -1,7 +1,8 @@
 name: OpenWrt
 
 # Everything for OpenWrt:
-# - lint: shell scripts, LuCI views, translations in step with the views;
+# - lint: shell scripts, LuCI views (syntax, and run against a stand-in for
+#   LuCI), translations in step with the views;
 # - package: cengarde, luci-app-cengarde and luci-i18n-cengarde-es with the
 #   official SDKs (25.12: .apk, 24.10: .ipk) for the Raspberry Pi 4 and
 #   x86_64; unit tests with each target's own musl, netns smoke test with the
@@ -63,6 +64,11 @@ jobs:
 
       - name: LuCI views
         run: for f in openwrt/luci-app-cengarde/htdocs/luci-static/resources/view/cengarde/*.js; do node --check "$f"; done
+
+      # config.js and status.js against a stand-in for LuCI: no router,
+      # browser or npm install (luci.mjs is the test with the real LuCI).
+      - name: LuCI views against a stand-in
+        run: node openwrt/test/views.mjs
 
       - name: Translations in step with the views
         run: python3 openwrt/luci-app-cengarde/i18n.py && git diff --exit-code openwrt/luci-app-cengarde/po

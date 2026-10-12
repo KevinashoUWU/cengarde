@@ -1,7 +1,8 @@
 # 008 — UCI, LuCI, emparejamiento con un secreto, imágenes y prueba en QEMU
 
 - **Fecha:** 2026-10-03 (actualizada el 2026-10-04 con la historia 009, el
-  STUN explícito y la historia 010)
+  STUN explícito y la historia 010, y el 2026-10-12 con una trampa de las
+  capturas de Playwright)
 - **Estado:** vigente
 - **Fuentes:**
   - código:
@@ -288,6 +289,17 @@ emulación. En el CI va con KVM.
    reservada (`option ext_ip contains reserved / private address`). Con un
    VPS real no pasa, pero un «VPS» de laboratorio necesita una IP pública,
    aunque sea ficticia.
+6. **Trampa de Playwright (2026-10-12):** una captura de página completa
+   tomada con el foco en un campo de texto deja a Chromium desplazado al
+   final de la página hasta que el campo pierde el foco, y entonces la
+   página vuelve a donde estaba. Si eso pasa dentro del clic siguiente (su
+   `mousedown` quita el foco), el botón se mueve antes del `mouseup`, el
+   clic cae en `div#view` y LuCI no hace nada: no guarda, no aplica y no
+   muestra error. Así falló *Guardar y aplicar* con el foco en la lista de
+   pesos (corrida 38189462608 del CI, en 24.10.8 y 25.12.5); con la imagen
+   del CI en QEMU sin KVM falló igual, con la página de vuelta en el mismo
+   desplazamiento que en la captura del CI. `shot()` quita el foco antes de
+   capturar.
 
 ## Pendiente
 
@@ -313,3 +325,5 @@ emulación. En el CI va con KVM.
   010).
 - 2026-10-04: el límite del punto 4 queda resuelto, y `server` pasa a ser
   una lista (`list server`, migrada al instalar la 0.4.2; historia 010).
+- 2026-10-12: punto 6, la captura de página completa con un campo con foco
+  que hacía perder el clic de *Guardar y aplicar* en `luci.mjs`.

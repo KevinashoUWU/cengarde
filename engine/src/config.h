@@ -81,10 +81,29 @@ static inline const char *cg_lt_name(int v)
 	return v == CG_LT_ON ? "on" : v == CG_LT_OFF ? "off" : v == CG_LT_LEGACY ? "legacy" : "auto";
 }
 
+/* How the send direction is shared out among the links (split.h, story
+ * 012). A client takes off, on or force; a server, off, client or force.
+ * on is the field mode of a client: it splits its upload once the server
+ * says it reorders, and asks the server to split the download. client is the
+ * server's: it splits the download when the client asks for it and reorders.
+ * force splits whatever the other end says, evenly, for the lab. off
+ * duplicates everything, as before. The ends tell each other in the
+ * probes' bonding tail (proto.h); split.h decides (cg_split_active). */
+enum cg_split_mode { CG_SPLIT_OFF = 0, CG_SPLIT_ON, CG_SPLIT_CLIENT, CG_SPLIT_FORCE };
+
+static inline const char *cg_split_name(int v)
+{
+	return v == CG_SPLIT_ON ? "on" : v == CG_SPLIT_CLIENT ? "client" : v == CG_SPLIT_FORCE ? "force" : "off";
+}
+
 struct cg_link_cfg {
 	char name[IFNAMSIZ];
 	char label[64];
 	int enabled;
+	/* Its share of a split stream with split = on, 0 to 1000 (split.h), up
+	 * and, sent in the probes, down; force splits evenly. 0 makes it carry
+	 * a copy of every packet. An interface with no [link] section has 1. */
+	uint32_t weight;
 	int nsrv; /* entries of its "server" as written; 0: the global list */
 	struct cg_srvent srv[CG_MAX_SERVERS];
 	/* The list built from srv and the names' addresses (cg_config_build). */
@@ -136,6 +155,20 @@ struct cg_config {
 	uint32_t mute_settle_ms;
 	uint32_t mute_trickle;
 	uint32_t min_active_links;
+
+	/* Reordering what arrives and splitting what is sent (story 012), both
+	 * ends. Each end reorders what it receives with them (reorder.h): the
+	 * client its download, the server each session's upload; and split
+	 * shares out what each end sends (split.h). */
+	int reorder;                  /* put the peer's DATA back in sequence before WireGuard */
+	uint32_t reorder_max_wait_ms; /* the longest a missing packet holds back the ones behind it */
+	uint32_t reorder_dup_wait_ms; /* the same where nothing is split (<= reorder_max_wait_ms) */
+	uint32_t reorder_margin_ms;   /* added to the slowest link's delay when waiting for a gap */
+	uint32_t reorder_bypass;      /* data datagrams of up to this many bytes skip the reorderer */
+	uint32_t reorder_pool_kb;     /* memory for the packets it holds; changing it restarts */
+	int split;                    /* enum cg_split_mode */
+	uint32_t split_small;         /* datagrams of up to this many bytes are never split */
+	uint32_t split_spread_ms;     /* only links this close to the fastest share the split (split.h G4); 0: off */
 
 	/* latency knobs */
 	uint32_t busy_poll_us; /* poll without sleeping this long after traffic */

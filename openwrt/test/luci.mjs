@@ -15,7 +15,12 @@
 // VPS that serves others carry its name and the tunnel address derived from
 // the secret (which only the router can compute), and follow a name and an
 // address typed in the form; invalid ones are refused. The VPS addresses take
-// host names too (not with a mask or a space).
+// host names too (not with a mask or a space). In the Advanced tab, with the
+// split on and two weights entered, the settings save and apply (LuCI checks
+// the list of weights as a whole when it saves), and the engine's
+// configuration on the router (read over ssh with vm.sh, as e2e.sh does)
+// carries the split and the two weights; then the split goes off again
+// before the final save and apply.
 // Fails on any JavaScript error after logging in.
 //
 //   node luci.mjs BASE_URL SCREENSHOT_DIR names
@@ -27,6 +32,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 import { chromium } from 'playwright';
+import { execFileSync } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
 
 const base = process.argv[2] || 'http://127.0.0.1:8080';
@@ -47,11 +53,43 @@ page.on('pageerror', (e) => { if (loggedIn) errors.push(e.message); });
 
 const id = (s) => `[id="${s}"]`;
 const step = (s) => console.log(`luci: ${s}`);
-const shot = (name) => page.screenshot({ path: `${shots}/${name}.png`, fullPage: true });
+// A full-page screenshot taken while a text field has focus leaves Chromium
+// scrolled to the bottom of the page until the field loses focus, and then
+// the page jumps back to where it was. If that happens inside the next click
+// (its mousedown takes the focus away), the button moves away before the
+// mouseup and the click is lost: with the weights' input focused, Save &
+// Apply did nothing. So no field keeps the focus through a screenshot.
+async function shot(name) {
+	await page.evaluate(() => document.activeElement && document.activeElement.blur());
+	await page.screenshot({ path: `${shots}/${name}.png`, fullPage: true });
+}
 
 function check(cond, what) {
 	if (!cond)
 		throw new Error(`check failed: ${what}`);
+}
+
+// A command on the router VM (vm.sh ssh router), its output.
+function onRouter(cmd) {
+	return execFileSync(new URL('vm.sh', import.meta.url).pathname, [ 'ssh', 'router', cmd ], { encoding: 'utf8' });
+}
+
+// The [link DEV] section of an engine configuration.
+const linkSection = (conf, dev) => conf.split('\n\n').find((b) => b.startsWith(`[link ${dev}]`)) || '';
+
+// Save and apply from the page's buttons: true once LuCI says the changes
+// are applied, else the save error LuCI shows instead (the form refused
+// them), or that neither came within 2 minutes.
+async function saveApply() {
+	const never = new Promise(() => {});
+	const applied = page.evaluate(() => new Promise((resolve) =>
+		document.addEventListener('uci-applied', () => resolve(true), { once: true })));
+	const refused = page.waitForSelector('.modal em', { timeout: 120000 })
+		.then((e) => e.innerText(), () => never);
+	const late = new Promise((resolve) => setTimeout(() => resolve('no answer in 2 minutes'), 120000).unref());
+
+	await page.click('.cbi-page-actions .cbi-button-apply li[data-value="0"]');
+	return Promise.race([ applied, refused, late ]);
 }
 
 // Polls the status page (it refreshes itself every 3 s) until cond holds.
@@ -258,6 +296,70 @@ try {
 	await type(failover, '');
 	await type(probe, '');
 	check(!await invalid(failover) && !await invalid(probe), 'both back to their defaults');
+
+	step('Advanced tab: reordering is on and the split off; the weights are for uplinks, 0 to 1000');
+	const maxWait = page.locator(id('widget.cbid.cengarde.main.reorder_max_wait_ms'));
+	const bypass = page.locator(id('widget.cbid.cengarde.main.reorder_bypass'));
+	const reorder = page.locator('[data-widget-id="widget.cbid.cengarde.main.reorder"]');
+	const split = page.locator('[data-widget-id="widget.cbid.cengarde.main.split"]');
+	const weights = page.locator(id('widget.cbid.cengarde.main.split_weight'));
+	check(await page.locator('text=Reordenar en el receptor').count() > 0, 'the reordering option is in Spanish');
+	check(await reorder.isChecked(), 'reordering at the receiver is on by default');
+	check(!await split.isChecked(), 'the split is off by default');
+	check(!await weights.isVisible(), 'the weights are hidden while the split is off');
+	for (const [ field, bad, good ] of [ [ maxWait, '2001', '2000' ], [ bypass, '2049', '0' ] ]) {
+		await type(field, bad);
+		check(await invalid(field), `${bad} is refused`);
+		await type(field, good);
+		check(!await invalid(field), `${good} is taken`);
+		await type(field, '');
+	}
+	await flag('split', true);
+	check(await weights.isVisible(), 'the weights show with the split on');
+	check(await page.locator('text=experimental').count() > 0, 'the split says it is experimental');
+	// up1 to up3 are the uplinks chosen in the General tab
+	for (const bad of [ 'up1', 'up1=1001', 'up1=007', 'up1=-1', 'up9=2' ]) {
+		await type(weights, bad);
+		check(await invalid(weights), `the weight ${bad} is refused`);
+	}
+	for (const good of [ 'up1=0', 'up2=3', 'up3=1000' ]) {
+		await type(weights, good);
+		check(!await invalid(weights), `the weight ${good} is taken`);
+	}
+	await type(weights, '');
+
+	step('Advanced tab: with the split on and two weights, the settings save and apply, and the engine gets them');
+	const weightList = page.locator(id('cbid.cengarde.main.split_weight'));
+	const listedWeights = () => weightList.locator('.item input[type="hidden"]').evaluateAll((items) => items.map((e) => e.value));
+	for (const w of [ 'up1=3', 'up2=0' ]) {
+		await type(weights, w);
+		await weights.press('Enter');
+	}
+	check(JSON.stringify(await listedWeights()) === '["up1=3","up2=0"]', `two weights listed (${await listedWeights()})`);
+	check(!await invalid(weightList), 'the list of weights is valid as a whole');
+	await shot('04b-settings-advanced');
+	const res = await saveApply();
+	check(res === true, `saved and applied with the split on (${res})`);
+	// The engine's configuration, as e2e.sh reads it, and the file the engine
+	// was started with (the apply writes it).
+	const conf = onRouter('cengarde-setup engine-conf');
+	check(/^split = on$/m.test(conf), 'engine-conf: split = on');
+	check(/^weight = 3$/m.test(linkSection(conf, 'eth1')) && /^weight = 0$/m.test(linkSection(conf, 'eth2')) &&
+		!/^weight/m.test(linkSection(conf, 'eth3')) && (conf.match(/^weight = /mg) || []).length === 2,
+	`engine-conf: weight 3 on up1 (eth1) and 0 on up2 (eth2), none on up3:\n${conf.replace(/^key = .*$/m, 'key = ...')}`);
+	await until(async () => onRouter("grep -c '^weight = ' /var/etc/cengarde.conf || true").trim() === '2',
+		'the engine running with the two weights', 30000);
+	await page.waitForTimeout(3000); // LuCI reloads the page after an apply
+	await page.goto(`${base}/cgi-bin/luci/admin/services/cengarde/config`);
+	await page.waitForSelector(id('widget.cbid.cengarde.main.server'));
+	await tab('advanced');
+	check(await split.isChecked() && JSON.stringify(await listedWeights()) === '["up1=3","up2=0"]',
+		'the page shows the split and the weights as saved');
+	await flag('reorder', false);
+	check(!await split.isVisible() && !await maxWait.isVisible(), 'without reordering the split and its settings are hidden');
+	await flag('reorder', true);
+	await flag('split', false);
+	check(!await weights.isVisible(), 'the weights hide again with the split off');
 
 	step('save and apply');
 	await tab('general');

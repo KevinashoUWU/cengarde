@@ -1,7 +1,7 @@
 # 012 — Bonding para cengarde: qué dice la evidencia y el plan de la Fase 5
 
-- **Fecha:** 2026-10-10
-- **Estado:** vigente. Plan de la Fase 5 (bonding). Paso 0 hecho salvo los datos de campo: el laboratorio `bench/lab.sh bond` con TCP y QUIC y su línea base, la dispersión con repeticiones, los instrumentos pasivos del motor (tardanza conjunta, pérdida en todos los enlaces, tamaños; paquetes 0.5.5) y el registrador de campo con su análisis (`cengarde-rec`, `bench/fieldrec.py`); falta la semana de datos de la Pi.
+- **Fecha:** 2026-10-10 (actualizada el 2026-10-12 con el paso 1)
+- **Estado:** vigente. Plan de la Fase 5 (bonding). Paso 0 hecho salvo los datos de campo: el laboratorio `bench/lab.sh bond` con TCP y QUIC y su línea base, la dispersión con repeticiones, los instrumentos pasivos del motor (tardanza conjunta, pérdida en todos los enlaces, tamaños; paquetes 0.5.5) y el registrador de campo con su análisis (`cengarde-rec`, `bench/fieldrec.py`); falta la semana de datos de la Pi. Paso 1 hecho (paquetes 0.6.0): el reordenador en los dos extremos y el reparto experimental con sus guardas, medidos en el laboratorio.
 - **Fuentes:**
   - estudio con 103 agentes (2026-10-10): 60 fuentes primarias más 11 de huecos (normas RIST/SRT/MPTCP/MPQUIC/MP-DCCP/ATSSS/TR-348/RFC 8157, papers de planificadores y de FEC multicamino, código de SRTLA/MLVPN/glorytun/OpenMPTCProuter/ZeroTier/KCP, productos comerciales, medidas de 5G/LTE/Starlink, RACK-TLP/QUIC/WireGuard); la lista con acceso y veredictos está en [012-bonding/fuentes.md](012-bonding/fuentes.md) y las síntesis por eje en [012-bonding/ejes.md](012-bonding/ejes.md);
   - el estudio completo (con la matriz de SmoothStream y las fichas con cada cita) vive en el repo de SmoothStream, `estudio-bonding/`;
@@ -13,6 +13,7 @@
 - **Primero el laboratorio:** los objetivos de la Fase 5 (≥ 1,8× con 2 enlaces iguales, FEC ≤ 1,34×) solo se pueden medir con TCP y QUIC reales dentro de WireGuard, sobre netem por enlace. Ya está `bench/lab.sh bond` (iperf3 con Cubic y BBR, y QUIC con aioquic), y su línea base dice que la redundancia de hoy entrega lo del mejor enlace y esconde el spread, la muerte de un enlace y los picos. Con 10 repeticiones, `equal` es estable, pero `reorder150` (Cubic) y `starlink15` (BBR) tienen dos modos: una corrida no basta para comparar.
 - **Las retransmisiones de `starlink15` son pérdidas en los cortes, no desorden** [medido, 2026-10-11]: el 93–99 % son paquetes perdidos por todos los enlaces cuando, en cada corte de 1,5 s, el flujo de 80–90 Mbit/s cae sobre el enlace de 50 Mbit/s y su cola de 100 ms. Con dos enlaces FIFO, la redundancia no desordena. Lo que sí desordena, y es para el reordenador del paso 1, es la vuelta tras un corte: el enlace 5 ms más rápido adelanta a lo que fue solo por el otro.
 - **Sin reordenador no se puede repartir:** RACK, el QUIC de Chrome y Windows confunden un spread de 50–150 ms con pérdidas. El reordenador va sobre la **secuencia autenticada de cengarde** (32 bits, bajo el MAC), no sobre el contador de WireGuard como decía el ROADMAP.
+- **Paso 1, medido** [2026-10-12]: en redundancia el reordenador no cambia nada medible (10 corridas; esperar 20 ms en duplicado empeora QUIC, así que la espera queda en 0). Con el reordenador, el reparto de dos enlaces iguales da 1,98× uno solo con Cubic y BBR (QUIC 1,2–1,4×). Pero un reparto por turnos con 50–150 ms de dispersión se hunde (BBR a 1 Mbit/s, QUIC a 0,4) con el reordenador limpio: el receptor entrega al ritmo del enlace lento. La guarda `split_spread_ms` (30 ms) deja al lento con copias; repartir bien entre retardos distintos es el paso 3.
 - **En bonding un enlace caído pierde su parte:** el mudo de 1–1,5 s sirve para redundancia, no para repartir. Hace falta una exclusión rápida (~200–300 ms, el contador de entregas verificadas no avanza) separada del mudo, y control de cola (un AQM virtual en `cg_sched_mask`).
 - **El planificador es un candidato:** la llegada esperada (ETA = OWD + cola/capacidad) tiene que ganarles a un WRR por capacidad y a minRTT con tope. ARQ de un reintento, FEC XOR y k = 2 se comparan entre sí en el mismo paso; solo la FEC densa queda descartada.
 - **Proceso:** Haiku extrajo 542 afirmaciones; Sonnet verificó cada cita (78 % verificadas, 21 % matizadas, 0,4 % refutadas); Opus sintetizó, armó las matrices y una auditoría densa corrigió la de cengarde.
@@ -45,8 +46,8 @@ Convención de la matriz: [ficha Ax] afirmación verificada de una ficha (los id
 1. **La secuencia es de cengarde.**
    - Es de 32 bits por sesión y sentido, va bajo el MAC y la comparten todos los tipos de mensaje [proto.h:13; clientpath.h:71]. La dedup y el anti-replay la usan [replay.h]. No hay dedup por índice receptor + contador + tag de WireGuard.
    - Ventajas para reordenar: solo entran paquetes verificados, no hay rekeys ni índices, los handshakes también llevan secuencia y no depende del orden en que WireGuard emite.
-   - Obligaciones: reiniciar el reordenador cuando se reinicia la ventana (`CG_RXV_RESET`, clientpath.h:135; epoch.h) o cambia la sesión, y comparar en aritmética serial de 32 bits, como `cg_replay_check` [replay.h:43].
-2. **La secuencia no es densa en datos.** Las sondas comparten la secuencia y cada una va por un solo enlace, así que un hueco no dice si se perdió un DATA o una sonda.
+   - Obligaciones: ~~reiniciar el reordenador cuando se reinicia la ventana (`CG_RXV_RESET`, clientpath.h:135; epoch.h) o cambia la sesión~~ (en v4 no hay reinicio de ventana: un servidor reiniciado sigue 2^20 más adelante, y el reordenador lo toma como un salto lejano; corregido el 2026-10-12 [código]), y comparar en aritmética serial de 32 bits, como `cg_replay_check` [replay.h:43].
+2. ~~**La secuencia no es densa en datos.**~~ Lo era en v3; en v4 las sondas y sus respuestas van en una secuencia de control aparte, así que un hueco en DATA es un DATA que falta (corregido el 2026-10-12 [código: proto.h, clientpath.h]). Lo de abajo era el plan para v4. Las sondas comparten la secuencia y cada una va por un solo enlace, así que un hueco no dice si se perdió un DATA o una sonda.
    - En v4: un espacio de secuencia propio para sondas, informes, NACK y paridad. Como mínimo, informar cuántas sondas salieron por intervalo.
    - Costo: hay que rehacer la detección de reinicio de epoch.h, que hoy se apoya en que las respuestas de sonda comparten la secuencia con DATA [razonado].
 3. **Marca de tiempo autenticada (bytes 12–15)** [proto.h:14]. Al repartir, cada paquete da una OWD verificada por enlace.
@@ -258,6 +259,168 @@ MAC). Los guarda el registrador de campo y los analiza `bench/fieldrec.py`.
   enlace a 10 Mbit/s, su cubo de tarde a 150 ms coincidió con su `rx_missed`
   (3043). 14 mutantes del código nuevo, todos cazados por los tests.
 
+### Paso 1: el reordenador y el reparto experimental (2026-10-12)
+
+Hecho en el PR #24 (paquetes 0.6.0). Lo que hay [código]:
+
+- **Reordenador** (`engine/src/reorder.h`, puro; en el cliente para la
+  bajada y en el servidor para la subida de cada sesión):
+  - una ventana de 4096 secuencias (no 8192: tiene que quedar holgada bajo
+    las 8128 del anti-replay, o un paquete liberado tarde sería OLD) y un
+    pool de buffers de 2 KiB reservado una vez (`reorder_pool_kb`, 8192);
+  - un hueco se suelta cuando todos los enlaces que podían traerlo
+    entregaron algo posterior (RACK por enlace, enlaces FIFO) o en su
+    plazo: la marca de tiempo del emisor del primer retenido + la OWD de
+    recepción del enlace más lento + un margen (10 ms), con tope
+    `reorder_max_wait_ms` (200) en tráfico repartido y
+    `reorder_dup_wait_ms` (0) en tráfico duplicado;
+  - con `reorder_dup_wait_ms` 0, la redundancia no retiene nada: el orden
+    de entrega es el de siempre, y los contadores registran el desorden que
+    arreglaría una espera;
+  - nunca descarta: si la ventana se desborda, los huecos salen en orden;
+    un salto lejano (los 2^20 de un servidor reiniciado) pasa y
+    resincroniza; los handshakes y los datagramas de hasta 128 B pasan sin
+    esperar.
+- **Reparto** (`split.h`, puro):
+  - round-robin ponderado suave entre los enlaces elegibles; los
+    datagramas de hasta `split_small` (256 B) y los que no son datos de
+    WireGuard van por todos; peso 0 = una copia de todo (la semántica de
+    libRIST);
+  - modos: el cliente `off`, `on` o `force` (laboratorio); el servidor
+    `off`, `client` (por omisión: sigue al cliente) o `force`;
+  - con `on`, los extremos se dicen en una cola de 4 B de las sondas si
+    reordenan, los pesos y si piden reparto, sin subir `CG_PROTO_VERSION`
+    (lo dejaron previsto las historias 010 y 012); vale solo la cola del
+    mensaje de control más nuevo.
+- **Guardas del reparto:**
+  - G1 y G2: nunca por un enlace silenciado o en reserva, y con menos de 2
+    elegibles, duplica;
+  - G3: un enlace sin nada verificado del otro extremo durante 3
+    intervalos de sonda deja de recibir parte (la ventana de un enlace
+    muerto pasa de ~1,3 s a ~300 ms [estimación; MEDIR en `linkdeath`]);
+  - G4, `split_spread_ms` (30 ms; 0 = sin límite; decidido como perilla
+    por el dueño): un enlace que va más de eso detrás del más rápido en su
+    retardo de envío lleva copias en vez de parte, y vuelve tras quedarse
+    dentro de 3/4 de esa diferencia durante `mute_settle_ms`.
+- **Costo por paquete** [medido, `bench/robench.c`, un núcleo de Xeon a
+  2,1 GHz del contenedor]: 15 ns en orden; 25 ns repartido con 50 ms de
+  dispersión, y 47 ns contando la copia al pool. El laboratorio mide
+  40–50 µs de CPU por paquete con el kernel.
+
+Correcciones a «Lo que el código cambia del plan» [código]: en v4 no hay
+`CG_RXV_RESET` (un servidor reiniciado sigue 2^20 más adelante), la
+secuencia de DATA es densa (las sondas van en una secuencia de control
+aparte) y la ventana es de 4096, no de 8192 (tachado arriba).
+
+#### El reparto, medido [medido]
+
+Fuente: `bond.yml` por `workflow_dispatch` (run 38189468737, commit
+`c0a75b4`), netem real con `BOND_NETEM_INFLIGHT=1` (netem cuenta lo que
+está en su retardo contra su límite: sin otra copia, un enlace lento
+desborda), 5 corridas de 10 s; mediana de Mbit/s de subida (la bajada da
+lo mismo ±10 %, salvo QUIC en `equal`: 53,0 con la guarda). `split` es el
+reparto forzado en los dos extremos con la guarda G4 de 30 ms, y
+`split-sp0` el mismo sin la guarda.
+
+| Caso | cc | Un enlace | `split` | `split-sp0` |
+| --- | --- | ---: | ---: | ---: |
+| `equal` | Cubic | 43,5 | 86,2 (1,98×) | 86,2 |
+| `equal` | BBR | 43,4 | 85,8 (1,98×) | 86,2 |
+| `equal` | QUIC | 43,2 | 60,9 (1,41×) | 60,7 |
+| `reorder50` | Cubic | 43,8 | 43,4 (duplica) | 51,0 |
+| `reorder50` | BBR | 43,6 | 43,6 (duplica) | 65,0 |
+| `reorder50` | QUIC | 43,4 | 43,4 (duplica) | 5,1 |
+| `reorder150` | Cubic | 43,8 | 43,8 (duplica) | 13,7 (7,5–20,6) |
+| `reorder150` | BBR | 43,6 | 43,6 (duplica) | 1,2 |
+| `reorder150` | QUIC | 43,4 | 43,4 (duplica) | 0,4 |
+
+- **Con enlaces iguales, el reparto duplica la velocidad de TCP:** 1,98×
+  con Cubic y con BBR, en los dos sentidos, con la misma tasa de
+  retransmisiones que un enlace solo (0,09 % en Cubic; BBR, ninguna). El
+  reordenador no perdió nada: sin huecos soltados por plazo ni por
+  desborde, sin llegadas tarde y `too_old` 0 en las dos puntas.
+- **QUIC (aioquic) gana menos:** 1,41× de subida y 1,23× de bajada, con
+  5–17 veces la tasa de pérdidas declaradas de un enlace solo (0,2–0,3 %),
+  casi todas espurias. Sin reordenador (`splitnoro`, run 38179417386, 3
+  corridas) caía a 16 Mbit/s de subida. Por qué declara pérdidas si el
+  reordenador entrega en orden no está medido [MEDIR].
+- **Sin la guarda, la dispersión hunde el reparto** (`split-sp0`):
+  - con 50 ms, TCP todavía gana algo sobre duplicar (Cubic 1,17×, BBR
+    1,49×), pero los paquetes de 1200 B esperan 37–54 ms más en el
+    reordenador, y QUIC cae a 5 Mbit/s;
+  - con 150 ms se hunde todo: Cubic 0,31×, BBR 0,03×, QUIC 0,01× (por
+    debajo del mínimo de 0,5 Mbit/s del laboratorio, que marcó la corrida
+    como fallida aunque los pings seguían pasando);
+  - los contadores del reordenador siguen limpios: no es desorden, es que
+    el receptor entrega al ritmo del enlace más lento. Con el tubo casi
+    vacío, los paquetes del enlace rápido no esperan y el flujo interior
+    mide el RTT rápido; con carga, todo espera al lento. BBR fija su
+    ventana con el RTT mínimo y entra en espiral, y HyStart saca a Cubic
+    temprano de slow start [razonado].
+- **La guarda G4 evita el hundimiento:** con 50 y 150 ms el enlace lento
+  pasa a llevar copias, nada se reparte (`split_rx` 0) y queda lo de un
+  enlace solo (1,00× en todas las celdas). Cuesta la ganancia que TCP
+  habría tenido con 50 ms; recuperarla sin hundir QUIC es trabajo del
+  planificador por llegada esperada (paso 3), que reparte según cuándo
+  llegará cada paquete y no por turnos.
+- **Con la guarda, `reorder50` es redundancia:** Cubic retransmite 1,5 %
+  frente a 0,08 % de un enlace solo, con 27 ms menos de RTT p50. Es la
+  redundancia de hoy con esa dispersión (`lost_all` 228 por corrida:
+  pérdidas en las dos colas a la vez), no el reparto.
+
+#### Criterios de salida del paso 1
+
+- *Retransmisiones del TCP interior ≤ 1,2× las de un enlace solo, con
+  reparto forzado y 0/50/150 ms:* se cumple con 0 ms (Cubic 0,99×, BBR
+  sin retransmisiones). Con 50 y 150 ms el criterio no alcanza: el
+  reordenador hace su trabajo, pero el reparto fijo hunde el goodput por
+  el control de congestión interior, algo que el criterio no preveía.
+  QUIC no lo cumple en ningún caso. De ahí la guarda G4.
+- *0 descartes OLD:* se cumple (`too_old` 0 en todas las corridas, en
+  las dos puntas).
+- *Desborde con IMIX sin descartes:* se cumple en el contenedor (sin
+  netem; enlace a 200 ms por un relé, 24 000 pps de 300 B: la ventana
+  desbordó 9158 veces de bajada y 37 837 de subida, y cada paquete llegó
+  una vez).
+- *Reinicio:* los tests unitarios del salto de 2^20 y `restart.sh` con
+  `split = force` y `split = on` pasan.
+- *Redundancia +0 ms y ≤ +5 % de CPU:* se cumple (abajo).
+
+#### El reordenador en redundancia [medido]
+
+Fuente: `bond.yml` por `workflow_dispatch`, commit `c0a75b4`, 10 corridas
+por celda: run 38189482615 (`equal` y `reorder150`, 10 s) y run
+38189484583 (`starlink15`, 31 s), sin `BOND_NETEM_INFLIGHT`. `redund` son
+los valores por omisión (reordenador encendido, `reorder_dup_wait_ms` 0),
+`redund-ro0` es `reorder = no` y `redund-dw20` espera hasta 20 ms en
+tráfico duplicado.
+
+- **Con los valores por omisión, el reordenador no cambia nada medible:**
+  contra `redund-ro0`, goodput 1,00× en las 18 celdas (3 casos, 3
+  controles de congestión, 2 sentidos) y CPU 0,93–1,02× en el cliente y el
+  servidor. El RTT p50 y el ping de 1200 B quedan dentro de ±1 ms, salvo
+  en celdas con dos modos (`reorder150` con Cubic de subida: +26 ms porque
+  6 de 10 corridas cayeron en el modo de 105 ms frente a 4 de 10; p =
+  0,36). No retuvo ningún paquete (`held` 0). Cumple el criterio «+0 ms y
+  ≤ +5 % de CPU».
+- **Lo que registran los contadores sin esperar:** en `equal` y
+  `reorder150`, los huecos son las pérdidas en todos los enlaces
+  (coinciden con `lost_all`). En `starlink15` suelta ~800–1600 huecos por
+  corrida y ve 60–480 llegadas tarde: el desorden de la vuelta tras cada
+  corte.
+- **Esperar 20 ms en duplicado empeora, no mejora:**
+  - QUIC declara 4,2 veces más pérdidas en `equal` (espurias de 0 a ~200)
+    y 19–24 veces más en `reorder150`; en `starlink15` sus espurias suben
+    de 282 a 640 de subida y de 312 a 429 de bajada, cuando el criterio
+    pedía que bajaran a la mitad;
+  - Cubic retransmite 9–12 % más en `starlink15` (p ≤ 0,007);
+  - BBR de bajada en `starlink15` cae en el modo alto en las 10 corridas
+    (75,6 Mbit/s, 3136 retransmisiones, +24 ms de RTT p50);
+  - en el resto, goodput y CPU iguales. Por qué empeora QUIC no está medido
+    [MEDIR: la espera retiene, detrás de cada pérdida en todos los enlaces,
+    los paquetes que la siguen].
+  - Decisión: `reorder_dup_wait_ms` queda en 0.
+
 ## Qué hacemos con esto
 
 ### Orden de la Fase 5 y criterios de salida
@@ -267,7 +430,7 @@ Los umbrales son propuestas [razonado] y se miden en `bench/`.
 | Paso | Qué | Criterio de salida medible |
 | --- | --- | --- |
 | 0 | Laboratorio: WireGuard del kernel + iperf3 (Cubic/BBR) + un cliente QUIC, sobre netem por enlace; mismo build, n ≥ 10 con dispersión. Instrumentos pasivos: tardanza contra plazo absoluto, pérdida en todos los enlaces, histograma de tamaños y tipos | Corren en el CI `equal`, `het`, `reorder50`/`reorder150`, `linkdeath`, `starlink15` [supuesto], `ltespike` y `deepq` (hecho, con QUIC; n = 10 por `workflow_dispatch`). Instrumentos en el motor (hecho, 0.5.5). Hay una semana de datos de la Pi con 4×5G + Starlink, con las métricas de RFC 8869 (pérdida, retardo, estabilidad de la tasa) |
-| 1 | Reordenador por la secuencia de cengarde (8192 ranuras, liberación por enlace, nunca descarta) y formato v4 de DATA (marca de reparto, bits ECN, secuencia de control aparte) | Con reparto forzado y 0/50/150 ms de spread, las retransmisiones del TCP interior quedan ≤ 1,2× las de un solo enlace. 0 descartes OLD. Desborde con IMIX sin descartes. Reinicio correcto tras CG_RXV_RESET y tras reiniciar el servidor (restart.sh). En redundancia pura, +0 ms y ≤ +5 % de CPU |
+| 1 | Reordenador por la secuencia de cengarde (~~8192~~ 4096 ranuras, liberación por enlace, nunca descarta) y formato v4 de DATA (marca de reparto, bits ECN, secuencia de control aparte) | Con reparto forzado y 0/50/150 ms de spread, las retransmisiones del TCP interior quedan ≤ 1,2× las de un solo enlace. 0 descartes OLD. Desborde con IMIX sin descartes. Reinicio correcto ~~tras CG_RXV_RESET~~ tras el salto de 2^20 de un servidor reiniciado (restart.sh). En redundancia pura, +0 ms y ≤ +5 % de CPU |
 | 2 | Estimador por enlace (OWD verificada, base, exceso aditivo, C_i) e informe v4 | C_i dentro de ±15 % del límite de netem 2 s después de un escalón. 50 ms de exceso detectados en ≤ 300 ms. Un escalón de +30 ms cada 15 s [supuesto] no se marca como congestión |
 | 3 | `cg_sched_mask`: exclusión rápida, AQM virtual, clases y planificador (ETA frente a WRR por capacidad y minRTT con tope), guarda y rampa | Ver la lista debajo de la tabla |
 | 4 | k-de-N y duplicación disparada (experimentos) | Se adoptan solo si, con los instrumentos del paso 0, P(el par elegido tarde o perdido) ≤ 2× P(todos tarde o perdidos) |
@@ -304,6 +467,12 @@ Los umbrales son propuestas [razonado] y se miden en `bench/`.
   - `lost_all` por corrida en `bond.sh`: el contador va ~8200 secuencias detrás de la ventana, así que en corridas cortas le pasa a la siguiente las pérdidas del final; sirve en los intervalos largos del registrador.
 - Medir lo marcado [MEDIR] y [supuesto] antes de fijar umbrales: el patrón de 15 s de Starlink en Chile, la correlación entre operadores en Santiago, si el TOS del datagrama de WireGuard llega a cengarde por loopback, y la tolerancia al desorden de iOS/macOS.
 - Definir los campos del informe por enlace, al final de la carga de las sondas v4 (el formato ya les deja lugar).
+- Paso 1, lo que falta:
+  - ~~el A/B de `reorder_dup_wait_ms`~~ (hecho: queda en 0); el de `reorder_bypass` (0/128/256: `lab.d/reorder.sh`, `reorder_hol`), que no corrió en el CI;
+  - G3 medido: cuánto pierde el reparto cuando muere un enlace (`linkdeath` con `split`);
+  - por qué QUIC declara pérdidas espurias con el reparto entre enlaces iguales;
+  - `cengarde-vps-setup` no expone `split_spread_ms` (el VPS usa 30 ms);
+  - probar `split = on` en la Pi con pesos por enlace, cuando el dueño lo decida.
 
 ## Cambios
 
@@ -312,3 +481,4 @@ Los umbrales son propuestas [razonado] y se miden en `bench/`.
 - 2026-10-10: paso 0 en parte. `bench/lab.sh bond` y `bond.yml`, con la línea base de arriba. El registrador de campo: `cengarde-rec` en el paquete de OpenWrt, `bench/fieldrec.py` con su prueba y `lab.d/fieldrec.sh`, y `time_ms` en el estado del motor.
 - 2026-10-11: paso 0 hecho salvo los datos de campo (PR 6, paquetes 0.5.5): QUIC y dispersión en `bond`, los instrumentos pasivos del motor y su análisis en `fieldrec.py`. Corregida la explicación de `starlink15` (era [razonado]): son pérdidas en los cortes, no desorden.
 - 2026-10-11: la corrida de 10 repeticiones («Medidas con dispersión»: dos modos en `reorder150` con Cubic y en `starlink15` con BBR) y `fieldrec.py --rf`, con las métricas de radio de `cell-monitor`.
+- 2026-10-12: paso 1 (PR #24, paquetes 0.6.0): el reordenador, el reparto experimental, la guarda `split_spread_ms` y sus medidas; el A/B del reordenador en redundancia (sin costo; `reorder_dup_wait_ms` queda en 0). Corregidas las referencias de código que el v4 dejó viejas (`CG_RXV_RESET`, la secuencia densa) y la ventana (4096, no 8192).

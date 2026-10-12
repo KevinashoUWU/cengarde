@@ -384,6 +384,112 @@ En el laboratorio, un enlace con 500 ms de cola se silencia en 3–3,6 s sin
 perder un paquete del túnel y vuelve, sin recaer, cuando se le quita
 (`sudo bench/lab.sh health`).
 
+## Reordenamiento y reparto (`reorder`, `split`)
+
+Las perillas del bonding (historia
+[012](../docs/historias/012-bonding.md)). **Cada extremo reordena lo que
+recibe** (el cliente la bajada; el servidor la subida de cada sesión) y
+reparte lo que envía según `split`: `force` siempre (el laboratorio); `on`,
+en el cliente, cuando el servidor dice que reordena; `client`, en el
+servidor, cuando el cliente lo pide y reordena. Con redundancia pura y los
+valores por omisión no retiene nada: el orden de entrega es el de siempre.
+
+- **`reorder` (`yes`), en los dos extremos:** el receptor pone en secuencia
+  los datos verificados del otro extremo antes de entregarlos a WireGuard.
+  Un paquete que llega por delante de uno que falta espera como mucho
+  `reorder_max_wait_ms` (200; 0–2000), y menos si el que falta ya habría
+  llegado por el enlace más lento (su retraso más `reorder_margin_ms`: 10;
+  0–1000). Donde no hay reparto, es decir, con redundancia pura, la espera
+  es `reorder_dup_wait_ms` (0; de 0 a `reorder_max_wait_ms`): con 0 no se
+  retiene nada y el orden de entrega es el de siempre.
+- **`reorder_bypass` (128; 0–2048 bytes):** los datagramas de datos de
+  WireGuard de hasta ese tamaño (keepalives, ACK de TCP vacíos) y los
+  handshakes se entregan al instante, sin esperar. Con 0, solo los handshakes.
+- **`reorder_pool_kb` (8192; 256–131070):** memoria para los paquetes
+  retenidos, en bloques de 2 KiB, reservada al arrancar; solo ocupa RAM lo
+  que llega a usarse. En el servidor la comparten todas las sesiones (cada
+  una suma además unos 81 KiB de ventana); una sesión que no encuentra
+  búfer entrega al instante y lo cuenta (`pool_full`). Es lo único de esta
+  sección que reinicia el proceso al cambiarlo; el resto se aplica en
+  caliente, y apagar `reorder` entrega en orden lo que estaba retenido.
+- **Sin bloquear:** el plazo del hueco más antiguo es el tiempo de espera
+  del bucle (no el tic de 100 ms), y una pasada entrega como mucho 512
+  retenidos (la siguiente viene enseguida), para no desbordar la cola de
+  descifrado de WireGuard (1024 por par). Un desborde de la ventana (4096
+  secuencias) se entrega entero.
+- **`split`:** reparte la subida (cliente) o la bajada (servidor) entre los
+  enlaces en vez de copiar cada paquete por todos: un paquete grande viaja
+  por un solo enlace, elegido según los pesos. El cliente admite `off` (por
+  omisión: todo por todos los enlaces, como siempre), `on` y `force`; el
+  servidor, `off`, `client` (por omisión) y `force`. `on` es el modo de campo:
+  el cliente reparte la subida cuando el servidor reordena y le pide repartir
+  la bajada con los pesos de cada enlace. `client` hace que el servidor
+  reparta la bajada solo si el cliente lo pide y reordena. `force` reparte
+  a partes iguales, sin pesos y sin consultar al otro extremo: es para el
+  laboratorio. Los extremos se lo dicen en las sondas (ver [Protocolo
+  v4](#protocolo-v4)): cada sonda del cliente lleva el peso del enlace, si
+  el cliente reordena y, con `on`, si pide que le repartan la bajada; cada
+  respuesta del servidor, si el servidor reordena. Así, la subida del
+  cliente con `on` depende solo de que el servidor reordene, y la bajada
+  depende del `split` del servidor. Con un extremo de una versión anterior,
+  que no lo dice, no se reparte nada (`waiting for the peer`). Solo reciben
+  parte los enlaces vivos y activos (ni silenciados ni en espera) cuyo otro
+  extremo respondió en los últimos tres intervalos de sondeo y que no van
+  más de `split_spread_ms` detrás del más rápido; con menos de dos, todo va
+  por todos.
+- **Recarga:** apagar `split` vuelve a duplicar desde el lote siguiente en
+  ese extremo. El cliente manda una sonda por cada enlace al recargar, así
+  que el servidor deja de repartir la bajada (o empieza) en un viaje de ida
+  y vuelta; si es el servidor el que apaga `reorder`, el cliente deja de
+  repartir la subida con la respuesta siguiente, dentro de un intervalo de
+  sondeo (100 ms con tráfico).
+- **`split_small` (256; 0–2048 bytes):** los datagramas de hasta ese tamaño,
+  los handshakes y todo lo que se envía con menos de dos enlaces aptos van
+  siempre por todos los enlaces.
+- **`split_spread_ms` (30; 0–2000), en los dos extremos, para lo que cada
+  uno envía:** solo reciben parte los enlaces que van, en ese sentido, a lo
+  sumo esa diferencia de retraso detrás del más rápido de los que podrían
+  recibirla; los demás llevan copia de todos los paquetes, como un enlace de
+  peso 0, y si queda uno solo, todo va por todos. El retraso es el mismo que
+  usa el silenciado (el que informa el otro extremo, filtrado). Un enlace
+  sale en cuanto pasa la diferencia y vuelve cuando se mantiene dentro de
+  3/4 de ella durante `mute_settle_ms` (2000), para que no oscile en el
+  borde; uno que todavía no tiene medida de retraso lleva copias hasta
+  tenerla. Con 0 no hay guarda: es el reparto sin filtro, para medirlo en el
+  laboratorio. Se aplica en caliente. El porqué: el receptor entrega en
+  orden, así que un reparto va al paso de su enlace más lento. En el
+  laboratorio (`bond.yml` con netem, `split = force`, 3 repeticiones;
+  *medido en laboratorio*, no en campo), dos enlaces iguales dieron 1,98× un
+  enlace solo con Cubic y con BBR; con 50 ms de diferencia (`reorder50`),
+  Cubic unas 1,15×, BBR 1,47× y QUIC cayó a 1–4 Mbit/s; con 150 ms
+  (`reorder150`) cayeron todos (BBR ~1 Mbit/s, Cubic 7–59 Mbit/s), con los
+  contadores del reordenador limpios (nada soltado antes de tiempo, nada
+  tardío). Con el tubo casi vacío, los paquetes del enlace rápido no esperan
+  y el flujo de adentro mide el RTT rápido; con carga, todo espera al lento:
+  BBR dimensiona su ventana por el RTT mínimo y se hunde, y HyStart saca a
+  Cubic del arranque lento antes de tiempo (*razonado*). La solución de fondo
+  es el planificador por hora de llegada del paso 3; hasta entonces, esta
+  guarda.
+- **`weight` en `[link X]` (cliente; 1, de 0 a 1000):** la parte del reparto
+  que lleva ese enlace con `split = on`, en la subida y en la bajada (el
+  cliente se los manda al servidor en las sondas; `force` no los mira). Con
+  0, el enlace lleva copia de todos los paquetes, repartidos o no. Una
+  interfaz sin sección `[link]` pesa 1.
+
+**El reparto es experimental.** Sin los pasos que siguen en el plan (detección
+de pérdidas por enlace, control de las colas de los módems) reparte peor que
+la redundancia, y por eso no es el valor por omisión:
+
+- Un enlace que muere conserva su parte hasta que se detecta: del orden de
+  1,3–1,5 s (estimación). Uno que pasa más de tres intervalos de sondeo sin
+  ningún paquete verificado del otro extremo deja de recibir parte, aunque
+  sigue llevando los paquetes que van por todos.
+- El enlace más lento fija la latencia: con la guarda, hasta
+  `split_spread_ms` (30) más el margen; sin ella (0), hasta `mute_behind_ms`
+  (150).
+- Los pesos son fijos. Uno por encima de lo que aguanta el enlace llena la
+  cola del módem y lo hace oscilar; no hay pacing ni control de colas.
+
 ## Baja latencia
 
 - `busy_poll_us`: tras cada paquete sigue sondeando sin dormir durante ese
@@ -437,8 +543,9 @@ túnel:
 
 - **En el lugar, con la misma sesión:** enlaces (`interfaces`, `exclude`,
   `[link]`), direcciones del servidor y `server_failover_ms`, etiquetas,
-  salud de los enlaces, sondas, buffers, `log_level`, `status_file`,
-  `description`, IP pass y, en el servidor, los tiempos de espera. Un enlace
+  salud de los enlaces, reordenamiento y reparto (salvo `reorder_pool_kb`),
+  sondas, buffers, `log_level`, `status_file`, `description`, IP pass y, en
+  el servidor, los tiempos de espera. Un enlace
   empieza otra vez por la primera dirección del servidor solo si cambiaron
   sus propias entradas (las de su familia: añadidas, quitadas, editadas o
   movidas); una entrada de otra familia, o un nombre que vuelve a
@@ -451,9 +558,9 @@ túnel:
   sesiones nuevas).
 - **Reiniciando el proceso en el lugar** (mismo PID, sesión nueva): `mode`,
   `key`, `listen`, `control_socket`, `busy_poll_us`, `cpu`, `rt_priority`,
-  en el cliente `link_threads`, `io_queue` y el `cpu` de un `[link]`, y en
-  el servidor `wireguard` (con un solo router), `lanes` y pasar de un
-  router a varios o al revés (`[client] sections`).
+  `reorder_pool_kb`, en el cliente `link_threads`, `io_queue` y el `cpu` de
+  un `[link]`, y en el servidor `wireguard` (con un solo router), `lanes` y
+  pasar de un router a varios o al revés (`[client] sections`).
 - **Si el archivo tiene un error,** sigue con la configuración anterior,
   lo registra y lo publica en el estado (`config_error`).
 - **Sin bloquear el túnel:** la lectura va en un hilo aparte. Los nombres
@@ -780,6 +887,64 @@ Cuesta poca memoria: cada casilla de llegadas pasa de 16 a 20 bytes y los
 histogramas suman 8 KiB, unos 24 KiB más por sesión (el cliente tiene una; el
 servidor, una por sesión: ~1,5 MiB con las 64 de `max_sessions` de fábrica).
 
+El reordenador (ver [Reordenamiento y
+reparto](#reordenamiento-y-reparto-reorder-split)) está en `reorder`: en la
+raíz del cliente para la bajada, y en cada sesión del servidor para su
+subida:
+- `enabled`, `held` (retenidos ahora), `held_max` y, en el cliente,
+  `pool_buffers` y `pool_free` (en el servidor, `reorder_pool` en la raíz:
+  `buffers`, `free`, `sessions_holding` y `full`, las veces que no hubo
+  búfer);
+- cada paquete verificado cuenta en uno solo de `in_order`, `held_total`
+  (retenido hasta que llegó lo anterior), `bypassed` (pequeño o handshake:
+  al instante), `late.*`, `far` (un salto de 8192 secuencias o más
+  mientras retenía, como el de un servidor que retoma la sesión),
+  `resyncs` y `pool_full` (sin búfer libre: al instante); `split_rx` cuenta
+  los repartidos;
+- `lost`: huecos que dejó de esperar, por qué: `rack` (todos los enlaces
+  trajeron uno posterior), `cap` (el plazo), `overflow` (la ventana se
+  llenó) y `flush` (al apagarlo);
+- `late`: los que llegaron después de eso, por la regla que soltó su hueco
+  (`after_rack`, `after_cap`, `after_overflow`; `old`, si su casilla ya era
+  de otro). `after_rack` > 0 dice que un enlace no entrega en orden o que se
+  esperaba a uno equivocado; `after_cap`, que el plazo es corto;
+- `wait` (cuánto esperó cada retenido) y `late_by` (cuánto después de
+  soltar su hueco llegó cada tardío): histogramas con los bordes de
+  `edges_ms`, incluidos, y un último cubo por encima de 500 ms;
+  `max_burst`, la mayor tanda de retenidos entregada de una vez: lo que
+  soltó una sola pasada del bucle, que entrega a lo sumo 512 (el resto va
+  en las pasadas siguientes, cada una con su tanda), salvo cuando la
+  ventana se desborda y sale todo junto.
+Por enlace, `rx_owd_spread_ms` es cuánto va su retraso de llegada (bajada
+en el cliente, subida en el servidor) por detrás del más rápido de los
+enlaces que espera el reordenador (`null` sin medida). Su ventana ocupa
+81 KiB (en el servidor, por sesión: ~5 MiB con 64, *cálculo*), y el pool,
+solo lo que llega a retener.
+
+Los paquetes repartidos: en el cliente, `upload.split` y, por enlace,
+`tx_split` (los que salieron por él: su parte, o todos con peso 0) y
+`weight`; en el servidor, `download_split` por sesión y `tx_split` por
+enlace. En los dos, por enlace, `split_share` dice qué hace en el reparto
+(`null` si ese extremo no reparte ahora): `yes` (recibe su parte), `spread`
+(está más de `split_spread_ms` detrás y lleva copias), `waiting` (sin medida
+de retraso todavía: lleva copias), `weight 0` (lleva copias por su peso) o
+`no` (no es apto: silenciado, en espera o sin respuesta reciente), y
+`split_behind_ms`, cuánto va detrás del más rápido según la guarda (`null`
+sin medida); el valor de `split_spread_ms` está en `upload` (cliente) y en
+cada sesión (servidor). `upload.split_state` dice qué hace el cliente con
+la subida: `off`, `splitting`, `duplicating with < 2 links` (menos de dos
+enlaces aptos) o `waiting for the peer` (`split = on`, hasta que el servidor
+diga que reordena); `upload.server_reorders`, lo que dijo la respuesta más
+nueva (`null` sin cola: un servidor anterior). En cada sesión del servidor,
+`split_mode` dice qué hace con la bajada: `off`, `force`, `client` (reparte como pide el
+cliente) o `duplicating` (`split = client`, pero el cliente no lo pide, no
+reordena o no lo dice); `client_reorders` y `client_asks_split`, lo que dijo
+su sonda más nueva (`null` sin cola: un cliente anterior), y por enlace
+`client_weight`, el peso que manda el cliente. «Más nueva» es por su número
+de secuencia de control, no por la hora de llegada: tras una recarga, las
+sondas o respuestas que salieron antes por un enlace lento llegan después de
+las nuevas por uno rápido, y no deshacen lo que estas dijeron.
+
 ## Protocolo v4
 
 Desde la 0.5.0 (historia 010, PR 3d2). La cabecera sigue midiendo 24 bytes:
@@ -807,11 +972,20 @@ Desde la 0.5.0 (historia 010, PR 3d2). La cabecera sigue midiendo 24 bytes:
   secuencia, con su propia ventana. La de DATA ya no tiene huecos que no
   sean pérdidas (lo que necesita el reordenador del bonding), y un enlace
   muy atrasado sigue entregando sus respuestas.
-- **Reservado para el bonding** (historia 012): en DATA, los bits de ECN
-  (0x03) y la marca de copia única (0x04), que hoy se envían en 0 y se
-  ignoran; la carga de las sondas puede crecer (se leen los campos
+- **Para el bonding** (historia 012): en DATA, los bits de ECN (0x03,
+  reservados: se envían en 0 y se ignoran) y la marca de reparto (0x04: este
+  paquete no va por todos los enlaces que llevan datos, aunque otro pueda
+  llevar una copia); la carga de las sondas puede crecer (se leen los campos
   conocidos y se ignora el resto), para el informe por enlace y las sondas
   rellenadas.
+- **La cola de bonding de las sondas:** 4 bytes más tras los 40 de
+  siempre, una palabra cuyos bits 0–9 son el peso del enlace (0–1000), el
+  16 dice "reordeno lo que recibo" y el 17 "repárteme lo que me envías"; el
+  resto va en 0 y se ignora. El cliente la manda en cada sonda; el servidor
+  la devuelve, solo con el bit 16, únicamente a una sonda que la traía, así
+  que una respuesta nunca es más grande que su sonda. Sigue siendo la
+  versión 4: un motor anterior lee los 40 bytes e ignora la cola, y uno nuevo
+  no lee cola de una sonda o respuesta de 40.
 
 `sudo bench/lab.sh replay` lo prueba con `bench/cgprobe`, que fabrica sondas
 con la clave del laboratorio.

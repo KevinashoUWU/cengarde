@@ -60,6 +60,29 @@ int cg_epoll_add(int ep, int fd, uint64_t tag)
 	return epoll_ctl(ep, EPOLL_CTL_ADD, fd, &ev);
 }
 
+int cg_ro_pool_alloc(struct cg_ro_pool *p, uint32_t pool_kb)
+{
+	uint32_t n = pool_kb / (CG_RO_BUF / 1024);
+	uint8_t *mem = malloc((size_t)n * CG_RO_BUF); /* not calloc: untouched pages stay free */
+	uint16_t *stack = malloc((size_t)n * sizeof(*stack));
+
+	memset(p, 0, sizeof(*p));
+	if (!n || !mem || !stack || cg_ro_pool_init(p, mem, stack, n) < 0) {
+		free(mem);
+		free(stack);
+		memset(p, 0, sizeof(*p));
+		return -1;
+	}
+	return 0;
+}
+
+void cg_ro_pool_free(struct cg_ro_pool *p)
+{
+	free(p->mem);
+	free(p->stack);
+	memset(p, 0, sizeof(*p));
+}
+
 void cg_cpus_save(void)
 {
 	if (sched_getaffinity(0, sizeof(initial_cpus), &initial_cpus) == 0)

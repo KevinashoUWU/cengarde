@@ -15,6 +15,7 @@
 #include "health.h"
 #include "pktinfo.h"
 #include "proto.h"
+#include "reorder.h"
 #include "util.h"
 
 #ifndef CG_VERSION
@@ -28,6 +29,14 @@
 /* Batches read from one socket before going back to epoll, so a busy
  * direction cannot starve the other one or the probes (level-triggered). */
 #define CG_MAX_ROUNDS 8
+/* Held packets the reorderer hands on per loop pass, at most, from its
+ * deadlines and gaps filled: the rest goes on the next pass, which comes at
+ * once (risk R1 of story 012's step 1: the kernel's WireGuard queues 1024
+ * packets per peer for decryption and drops beyond). A window overflow is
+ * drained whole all the same (reorder.h: CG_RO_AGAIN). */
+#define CG_RO_PASS_MAX 512
+
+_Static_assert(CG_RO_BUF >= CG_MAX_PAYLOAD, "a pool buffer holds the largest WireGuard datagram");
 
 /* epoll tags: kind in the high half, index in the low half. */
 enum { CG_EV_SIG = 1, CG_EV_TIMER, CG_EV_NL, CG_EV_WG, CG_EV_LINK, CG_EV_LISTEN, CG_EV_CTL, CG_EV_LOAD, CG_EV_JUNK,
@@ -125,10 +134,24 @@ static inline int cg_rx(int fd, struct cg_rxbatch *b)
 
 /* epoll_wait that, with busy_poll_us, keeps polling without sleeping for
  * that long after the last traffic: the next packet is picked up without a
- * wake-up, at the cost of a busy CPU while traffic flows. */
-static inline int cg_wait(int ep, struct epoll_event *ev, int max, uint32_t busy_poll_us, uint64_t last_traffic_us)
+ * wake-up, at the cost of a busy CPU while traffic flows. cap_ms >= 0 ends
+ * the wait after that long at the latest (the reorderer's next deadline);
+ * -1: no cap. */
+static inline int cg_wait(int ep, struct epoll_event *ev, int max, uint32_t busy_poll_us, uint64_t last_traffic_us,
+			  int cap_ms)
 {
-	return epoll_wait(ep, ev, max, busy_poll_us && cg_now_us() - last_traffic_us < busy_poll_us ? 0 : -1);
+	int timeout = busy_poll_us && cg_now_us() - last_traffic_us < busy_poll_us ? 0 : -1;
+
+	if (cap_ms >= 0 && (timeout < 0 || cap_ms < timeout))
+		timeout = cap_ms;
+	return epoll_wait(ep, ev, max, timeout);
+}
+
+/* An epoll timeout, in ms, for something due in due_us: ceiled, so that the
+ * wait never ends before it, and at least 1 (0 only when it is due now). */
+static inline int cg_due_ms(int32_t due_us)
+{
+	return due_us <= 0 ? 0 : (int)(((int64_t)due_us + 999) / 1000);
 }
 
 static inline struct cg_hcfg cg_hcfg_of(const struct cg_config *cfg)
@@ -138,6 +161,21 @@ static inline struct cg_hcfg cg_hcfg_of(const struct cg_config *cfg)
 				 .settle_ms = cfg->mute_settle_ms,
 				 .min_active = cfg->min_active_links };
 }
+
+/* The reorderer's settings (reorder.h) from the configuration. */
+static inline struct cg_ro_cfg cg_ro_cfg_of(const struct cg_config *cfg)
+{
+	return (struct cg_ro_cfg){ .max_wait_us = cfg->reorder_max_wait_ms * 1000,
+				   .dup_wait_us = cfg->reorder_dup_wait_ms * 1000,
+				   .margin_us = cfg->reorder_margin_ms * 1000,
+				   .bypass_len = cfg->reorder_bypass };
+}
+
+/* A pool of reorder_pool_kb / 2 buffers (CG_RO_BUF bytes each), allocated
+ * once and never cleared: its pages cost memory only once a packet is held
+ * in them, so pure redundancy pays next to nothing. Returns 0 or -1. */
+int cg_ro_pool_alloc(struct cg_ro_pool *p, uint32_t pool_kb);
+void cg_ro_pool_free(struct cg_ro_pool *p);
 
 int cg_timerfd(unsigned interval_ms);
 int cg_random(void *buf, size_t len);

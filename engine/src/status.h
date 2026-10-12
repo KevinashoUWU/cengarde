@@ -39,6 +39,21 @@ struct cg_wgs;
 void cg_json_joint(struct cg_json *j, const char *key, const struct cg_arrivals *a);
 void cg_json_sizes(struct cg_json *j, const char *key, const struct cg_wgs *up, const struct cg_wgs *down);
 
+/* The receiver's reorderer (reorder.h), the same object at both ends: on or
+ * off, what it holds, and its counters and histograms. pool: the client's
+ * own pool, whose size and free buffers go in it too; NULL on the server,
+ * whose sessions share one pool (shown once, apart). Its 64-bit counters
+ * are read without a lock: only from the thread that delivers to
+ * WireGuard. */
+struct cg_reorder;
+struct cg_ro_pool;
+void cg_json_reorder(struct cg_json *j, const char *key, const struct cg_reorder *r, int enabled,
+		     const struct cg_ro_pool *pool);
+/* How far link's receive delay (as the reorderer measures it) is behind the
+ * fastest of the links in rset, ms (negative: ahead of them); null until
+ * the link and one of rset have a delay. */
+void cg_json_owd_spread(struct cg_json *j, const char *key, const struct cg_reorder *r, unsigned link, uint16_t rset);
+
 /* Writes data to path atomically. Returns 0 or -1 (errno set). */
 int cg_status_write(const char *path, const char *data, size_t len);
 

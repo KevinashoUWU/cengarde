@@ -145,6 +145,64 @@ void test_proto(void)
 	pkt[1] ^= CG_F_PASS; /* nobody on the way can turn it off */
 	CHECK(!cg_hdr_verify(pkt, CG_HDR_LEN + CG_PROBE_INFO_LEN, key_a));
 
+	/* The bonding tail (proto.h): 4 bytes after cg_probe_info, the same
+	 * version; a 40-byte peer has none, and what a reader does not know is
+	 * ignored. */
+	{
+		struct cg_probe_bond b = { .weight = 1000, .reorders = 1, .split_me = 1 }, r;
+		uint8_t tp[CG_PROBE_BOND_LEN + 8];
+
+		CHECK_EQ(CG_PROBE_BOND_LEN, 44);
+		memset(tp, 0xee, sizeof(tp));
+		cg_probe_info_write(tp, &pi);
+		cg_probe_bond_write(tp, &b);
+		CHECK(!memcmp(tp + CG_PROBE_INFO_LEN, "\x00\x03\x03\xe8", 4));
+		CHECK_EQ(tp[CG_PROBE_BOND_LEN], 0xee); /* nothing written after it */
+		CHECK_EQ(cg_probe_bond_read(&r, tp, CG_PROBE_BOND_LEN), 1);
+		CHECK(r.weight == 1000 && r.reorders == 1 && r.split_me == 1);
+		cg_probe_info_read(&po, tp); /* the info before it is untouched */
+		CHECK(po.echo_ts == 1 && po.tx_next == 0x99aabbcc);
+		/* Each bit on its own, and weights at the ends of the range. */
+		for (unsigned k = 0; k < 4; k++) {
+			b = (struct cg_probe_bond){ .weight = k == 3 ? 0 : (uint16_t)(k + 1), .reorders = k == 1, .split_me = k == 2 };
+			cg_probe_bond_write(tp, &b);
+			CHECK_EQ(cg_probe_bond_read(&r, tp, CG_PROBE_BOND_LEN), 1);
+			CHECK(r.weight == b.weight && r.reorders == b.reorders && r.split_me == b.split_me);
+		}
+		b = (struct cg_probe_bond){ .weight = 1023 }; /* above the range: written as the maximum */
+		cg_probe_bond_write(tp, &b);
+		CHECK(!memcmp(tp + CG_PROBE_INFO_LEN, "\x00\x00\x03\xe8", 4));
+		/* A newer peer: reserved bits set, a weight past 1000, a longer
+		 * payload. The known bits are read, the rest ignored. */
+		memcpy(tp + CG_PROBE_INFO_LEN, "\xff\xfc\xfc\x05", 4);
+		CHECK_EQ(cg_probe_bond_read(&r, tp, sizeof(tp)), 1);
+		CHECK(r.weight == 5 && !r.reorders && !r.split_me);
+		memcpy(tp + CG_PROBE_INFO_LEN, "\xff\xff\xff\xff", 4);
+		CHECK_EQ(cg_probe_bond_read(&r, tp, CG_PROBE_BOND_LEN), 1);
+		CHECK(r.weight == CG_BOND_WEIGHT_MAX && r.reorders && r.split_me);
+		/* An older peer: 40 bytes (or anything short of the tail) has none,
+		 * and reads as nothing asked. */
+		r.weight = 7;
+		r.reorders = r.split_me = 1;
+		CHECK_EQ(cg_probe_bond_read(&r, tp, CG_PROBE_INFO_LEN), 0);
+		CHECK(r.weight == 0 && !r.reorders && !r.split_me);
+		CHECK_EQ(cg_probe_bond_read(&r, tp, CG_PROBE_BOND_LEN - 1), 0);
+		/* A probe and a reply with it parse, and the MAC covers it. */
+		b = (struct cg_probe_bond){ .weight = 3, .reorders = 1 };
+		cg_probe_bond_write(tp, &b);
+		for (uint8_t t = CG_T_PROBE; t <= CG_T_PROBE_REPLY; t++) {
+			h.type = t;
+			cg_hdr_write(pkt, &h, key_a, tp, CG_PROBE_BOND_LEN);
+			memcpy(pkt + CG_HDR_LEN, tp, CG_PROBE_BOND_LEN);
+			CHECK_EQ(cg_hdr_parse(&p, pkt, CG_HDR_LEN + CG_PROBE_BOND_LEN), 0);
+			CHECK(cg_hdr_verify(pkt, CG_HDR_LEN + CG_PROBE_BOND_LEN, key_a));
+			CHECK(!cg_hdr_verify(pkt, CG_HDR_LEN + CG_PROBE_INFO_LEN, key_a)); /* cut to 40: no */
+			pkt[CG_HDR_LEN + CG_PROBE_BOND_LEN - 3] ^= 0x01; /* CG_BOND_REORDERS on the way */
+			CHECK(!cg_hdr_verify(pkt, CG_HDR_LEN + CG_PROBE_BOND_LEN, key_a));
+		}
+		h.type = CG_T_PROBE;
+	}
+
 	/* WireGuard message shapes (docs/historias/002). */
 	{
 		uint8_t wg[200] = { 0 };

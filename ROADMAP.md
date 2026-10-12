@@ -603,6 +603,18 @@ lista de comprobación de partida.
 > WireGuard, que `fieldrec.py` convierte en P(todos tarde) y el mejor par
 > para k-de-N. Las retransmisiones de `starlink15` resultaron pérdidas en
 > los cortes, no desorden (historia 012). Falta la semana de la Pi.
+>
+> **Paso 1 hecho (2026-10-12, paquetes 0.6.0):** un reordenador por la
+> secuencia de cengarde en los dos extremos (ventana de 4096, nunca
+> descarta; en redundancia no retiene nada) y un reparto experimental por
+> pesos (`split`, apagado por omisión, el VPS sigue al router), con
+> guardas: nunca por un enlace silenciado, fuera el que calla 3 sondas y el
+> que va más de `split_spread_ms` (30 ms) detrás del más rápido. En el
+> laboratorio, dos enlaces iguales dan 1,98× uno solo con TCP; con 50–150
+> ms de dispersión el reparto fijo se hunde (BBR a 1 Mbit/s) y la guarda
+> vuelve a duplicar. En redundancia el reordenador no cuesta nada medible
+> (10 corridas). Repartir bien con retardos distintos es el paso 3
+> (planificador por llegada esperada); detalle en la historia 012.
 
 - **k-de-N:** cada paquete va solo por los k mejores enlaces, lo que ahorra
   datos en enlaces móviles.

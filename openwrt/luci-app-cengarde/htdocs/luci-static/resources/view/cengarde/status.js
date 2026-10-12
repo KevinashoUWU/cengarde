@@ -66,6 +66,16 @@ function ms(v) {
 	return (v == null) ? '-' : '%.1f ms'.format(v);
 }
 
+// A two-column table of [ name, value ] rows.
+function rowsTable(rows) {
+	return E('table', { 'class': 'table' }, rows.map(function(r) {
+		return E('tr', { 'class': 'tr' }, [
+			E('td', { 'class': 'td left', 'width': '33%' }, [ r[0] ]),
+			E('td', { 'class': 'td left' }, [ r[1] ])
+		]);
+	}));
+}
+
 function badge(text, color, title) {
 	return E('span', {
 		'style': 'display:inline-block;padding:0 .5em;border-radius:.5em;color:#fff;background:' + color,
@@ -79,6 +89,13 @@ function badge(text, color, title) {
 // and carriers are often faster one way than the other.
 function direction(standby, title) {
 	return standby ? badge(_('standby'), '#68a', title) : _('in use');
+}
+
+// An uplink the split leaves out for its delay (the engine's split_share):
+// it still carries a copy of every packet, so in use, but without a share.
+function splitNote(l) {
+	return l.split_share == 'spread' ? [ ' ', badge(_('copies only'), '#68a',
+		_('More than the largest delay difference (Advanced tab) behind the fastest uplink: it carries a copy of every packet instead of a share of the split, until it catches up.')) ] : [];
 }
 
 function linkState(l) {
@@ -211,12 +228,42 @@ return view.extend({
 			rows.push([ _('Version'), st.protocol ? _('%s, protocol %d').format(e.version, st.protocol) : e.version ]);
 		}
 
-		return E('table', { 'class': 'table' }, rows.map(function(r) {
-			return E('tr', { 'class': 'tr' }, [
-				E('td', { 'class': 'td left', 'width': '33%' }, [ r[0] ]),
-				E('td', { 'class': 'td left' }, [ r[1] ])
-			]);
-		}));
+		return rowsTable(rows);
+	},
+
+	// Reordering at the receiver, from the engine's "reorder" object (counters
+	// since the engine started). An engine without the object has no box.
+	renderReorder: function(st) {
+		const r = st.engine && st.engine.reorder;
+		const n = function(v) { return (typeof v == 'number') ? v : 0; };
+		let lost, late, rows;
+
+		if (!r || typeof r != 'object')
+			return null;
+		if (r.enabled === false)
+			return E('p', { 'class': 'cbi-section-descr' }, [ _('Reordering is off (Advanced tab).') ]);
+
+		lost = r.lost || {};
+		late = r.late || {};
+		rows = [
+			[ _('Held now'), (typeof r.pool_buffers == 'number' && r.pool_buffers > 0)
+				? _('%d of %d').format(n(r.held), r.pool_buffers) : '%d'.format(n(r.held)) ],
+			[ _('Most held at once'), '%d'.format(n(r.held_max)) ],
+			[ _('Held in total'), '%d'.format(n(r.held_total)) ],
+			[ _('Missing packets given up on'), _('%d at the deadline, %d for lack of room').format(n(lost.cap), n(lost.overflow)) ],
+			[ _('Late after release'), E('span', {
+				'title': _('Arrived after the engine gave up on them: after the deadline %d, after running out of room %d, after the other uplinks had gone past %d, too old to tell %d.').format(
+					n(late.after_cap), n(late.after_overflow), n(late.after_rack), n(late.old))
+			}, [ '%d'.format(n(late.after_cap) + n(late.after_overflow) + n(late.after_rack) + n(late.old)) ]) ]
+		];
+		return E('div', {}, [
+			rowsTable(rows),
+			E('p', { 'class': 'cbi-section-descr' }, [
+				_('Held now: packets that arrived ahead of one that has not, out of how many there is room for. Most held at once and Held in total count since the engine started.'),
+				' ',
+				_('Missing packets given up on: the wait for the packet ended at its deadline, or the room ran out first. If it arrives afterwards it counts as late after release; many of those mean that the longest wait (Advanced tab) is too short for the slowest uplink.')
+			])
+		]);
 	},
 
 	renderLinks: function(st) {
@@ -251,8 +298,8 @@ return view.extend({
 				ms(out ? null : l.upload_behind_ms),
 				out ? '-' : vpsAddress(l),
 				(out || !l.path_mtu) ? '-' : '%d'.format(l.path_mtu),
-				out ? '-' : direction(l.upload == 'muted',
-					_('Behind the fastest uplink by more than the limit: the router sends through the others, and only probes through this one, until it catches up.')),
+				out ? '-' : E('span', {}, [ direction(l.upload == 'muted',
+					_('Behind the fastest uplink by more than the limit: the router sends through the others, and only probes through this one, until it catches up.')) ].concat(splitNote(l))),
 				out ? '-' : direction(l.download_muted,
 					_('Slower than the best uplink from the VPS: the VPS sends through the others, and only probes through this one, until it catches up.')),
 				firsts ? '%.0f %%'.format(100 * l.rx_first / firsts) : '-',
@@ -281,12 +328,14 @@ return view.extend({
 	},
 
 	update: function(node, st) {
+		let sections, reorder;
+
 		if (!st) {
 			dom.content(node, E('div', { 'class': 'alert-message error' },
 				[ _('Could not read the status (is the cengarde package installed?).') ]));
 			return;
 		}
-		dom.content(node, [
+		sections = [
 			this.renderProblems(st),
 			E('h3', {}, [ _('Status') ]),
 			this.renderSummary(st),
@@ -299,7 +348,12 @@ return view.extend({
 				' ',
 				_('VPS address: where the uplink sends to; "failover" when the first VPS address it can use did not answer. Path MTU: the largest packet the path to the VPS takes.')
 			])
-		]);
+		];
+		// Only an engine that reorders reports it.
+		reorder = this.renderReorder(st);
+		if (reorder)
+			sections.push(E('h3', {}, [ _('Reordering') ]), reorder);
+		dom.content(node, sections);
 	},
 
 	render: function(st) {
@@ -312,7 +366,7 @@ return view.extend({
 		return E([], [
 			E('h2', {}, [ _('cengarde') ]),
 			E('div', { 'class': 'cbi-map-descr' }, [
-				_('Every packet goes through all active uplinks; the VPS keeps the first copy.')
+				_('Every packet goes through all active uplinks and the other end keeps the first copy; with the split on, each big packet goes through one uplink and the other end puts them back in order.')
 			]),
 			node
 		]);
