@@ -349,9 +349,8 @@ configuración del router:
   más de 5 s con paquetes esperando, el estado lo avisa
   (`link_thread_stalled`).
 - **Reordenamiento y reparto** (pestaña *Avanzado*; historia
-  [012](../docs/historias/012-bonding.md)). Las opciones ya llegan al motor;
-  él las aplica a medida que se conectan los pasos 4 a 8 de su plan, y hasta
-  entonces solo las lee y las valida.
+  [012](../docs/historias/012-bonding.md); paquetes 0.6.0 o posteriores en
+  el router y en el VPS).
   - *Reordenar en el receptor* (`reorder`, activado): el extremo que recibe
     retiene un paquete que llega antes que otro que falta, hasta que llegue
     el que falta o hasta la *espera máxima* (`reorder_max_wait_ms`, 200 ms;
@@ -381,7 +380,9 @@ configuración del router:
     VPS hace lo mismo con la bajada, con su propio `split_spread_ms` (30).
     En el laboratorio, 50 ms entre dos enlaces ya se comían casi toda la
     ganancia del reparto y 150 ms la hundían (ver `engine/README.md`).
-  - **Hoy el reparto sale peor que copiar** (por eso viene apagado): un
+  - **El reparto protege menos que copiar** (por eso viene apagado),
+    aunque con enlaces de retardo parecido suma su velocidad (en el
+    laboratorio, dos enlaces iguales llevaron 1,98 veces lo de uno): un
     enlace que muere conserva su parte hasta que el motor lo saca (unos
     300 ms según la estimación; 1,5 s antes de esa protección) y los
     paquetes que le tocaron se pierden; el enlace más lento del reparto fija
