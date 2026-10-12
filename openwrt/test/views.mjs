@@ -6,8 +6,11 @@
 //
 // - config.js: the reordering and split options sit in the Advanced tab with
 //   the ranges of the engine, the weights of the split take NAME=WEIGHT for an
-//   uplink of the router, from 0 to 1000, once each, and the options that
-//   mean nothing without their switch depend on it;
+//   uplink of the router, from 0 to 1000, once each, both as they are typed
+//   and as the whole list LuCI checks (with an empty value) on every change
+//   and on save, which goes through with valid weights and says what is wrong
+//   with the first bad one; and the options that mean nothing without their
+//   switch depend on it;
 // - status.js: the "Reordering" box shows the engine's "reorder" object (and
 //   says so when the engine has it off) and is not there for an engine without
 //   it, in English and in Spanish (po/es), which also has to cover its strings.
@@ -70,7 +73,7 @@ const find = (n, pred, out = []) => {
 class Opt {
 	constructor(cls, tab, name, title, descr) { Object.assign(this, { cls, tab, name, title, descr, deps: [] }); }
 	getUIElement() { return this.ui || null; }
-	formvalue() { return this.ui ? this.ui.value : undefined; }
+	formvalue() { return this.ui ? this.ui.getValue() : undefined; }
 	depends(d, v) { this.deps.push(typeof d == 'string' ? { [d]: v } : d); }
 	value() {}
 }
@@ -79,6 +82,72 @@ class Flag extends Opt {}
 class DynamicList extends Opt { renderWidget() { return E('div'); } }
 class DummyValue extends Opt {}
 class ListValue extends Opt {}
+
+// LuCI's ui.DynamicList (ui.js, 25.12) as far as validation goes, with the
+// form.DynamicList option (opt) that hands it its validate: the items of the
+// list and the text box where the next one is typed.
+// - getValue(), and so the option's formvalue(): the items, and the text
+//   being typed when it is not blank, not marked invalid and not listed yet;
+// - the text box is checked on each keyup and on blur, with its text; LuCI's
+//   validator takes the invalid mark off it first, so the text is in
+//   getValue() while it is checked;
+// - the list is checked with '' (its <div> has no value): on each change of
+//   the list (an entry added or removed) and, through checkDepends and
+//   triggerValidation, each time the page is saved; parse() then refuses the
+//   save when that check failed (form.js), with the option's title and the
+//   message.
+class DynList {
+	constructor(opt, items = []) {
+		Object.assign(this, { opt, items: [ ...items ], text: '', textInvalid: false });
+		opt.ui = this;
+	}
+	getValue() {
+		const v = [ ...this.items ];
+
+		if (/\S/.test(this.text) && !this.textInvalid && !v.includes(this.text))
+			v.push(this.text);
+		return v;
+	}
+	// One check of the text box: its result.
+	checkText() {
+		this.textInvalid = false;
+		const r = this.opt.validate('main', this.text);
+		this.textInvalid = r !== true;
+		return r;
+	}
+	// Typed key by key, then the box loses the focus: the last result.
+	type(text) {
+		this.text = '';
+		for (const ch of text) {
+			this.text += ch;
+			this.checkText();
+		}
+		return this.checkText();
+	}
+	// The list's own check.
+	checkList() { return this.opt.validate('main', ''); }
+	// '+' (or Enter): a valid entry joins the list, which is checked, and the box empties.
+	add() {
+		if (!this.text.length || this.textInvalid)
+			return false;
+		if (!this.items.includes(this.text))
+			this.items.push(this.text);
+		this.checkList();
+		this.text = '';
+		return true;
+	}
+	remove(entry) {
+		this.items = this.items.filter((e) => e !== entry);
+		return this.checkList();
+	}
+	// Save: the list's check, then what gets written, or LuCI's refusal.
+	save() {
+		const r = this.checkList();
+
+		return r === true ? { saved: this.opt.formvalue('main') }
+			: { refused: `Option "${this.opt.title}" contains an invalid input value. ${r}` };
+	}
+}
 
 async function renderConfig(tr, uplinks) {
 	const options = {};
@@ -135,11 +204,10 @@ for (const [lang, tr] of [ [ 'en', english ], [ 'es', spanish ] ]) {
 		: [ 'experimental', '300 ms', 'latencia', 'cola', 'El VPS sigue' ])
 		assert.ok((o.split.title + o.split.descr).includes(word), `${lang}: the split option mentions "${word}"`);
 
-	// the weights: NAME=WEIGHT, an uplink of the router, 0 to 1000, once each
-	const check = (entry, listed = []) => {
-		o.split_weight.ui = { value: listed };
-		return o.split_weight.validate('main', entry);
-	};
+	// the weights: NAME=WEIGHT, an uplink of the router, 0 to 1000, once each,
+	// as typed in the text box
+	const widget = (listed = []) => new DynList(o.split_weight, listed);
+	const check = (entry, listed = []) => widget(listed).type(entry);
 	for (const good of [ 'wan=0', 'wan=1', 'wan=3', 'lte2=999', 'lte2=1000', 'wan=10', 'wan=100' ])
 		assert.equal(check(good), true, `${good} is valid`);
 	for (const bad of [ 'wan', 'wan=', '=3', 'wan=-1', 'wan=1001', 'wan=2000', 'wan=10000', 'wan=007', 'wan=01', 'wan=2.5', 'wan=x',
@@ -158,12 +226,55 @@ for (const [lang, tr] of [ [ 'en', english ], [ 'es', spanish ] ]) {
 	assert.ok(String(check('wan=2', [ 'wan=3' ])).includes('wan'), 'the repeated uplink is named');
 	// no uplinks chosen yet: nothing to weigh
 	const none = await renderConfig(tr, []);
-	none.split_weight.ui = { value: [] };
-	assert.notEqual(none.split_weight.validate('main', 'wan=2'), true, 'without uplinks no entry is valid');
+	assert.notEqual(new DynList(none.split_weight).type('wan=2'), true, 'without uplinks no entry is valid');
 	// a single uplink saved as a string, as UCI hands one over
 	const one = await renderConfig(tr, 'wan');
-	one.split_weight.ui = { value: [] };
-	assert.equal(one.split_weight.validate('main', 'wan=2'), true, 'a single uplink');
+	assert.equal(new DynList(one.split_weight).type('wan=2'), true, 'a single uplink');
+
+	// the whole list, as LuCI checks it (validate with '') on every change and
+	// on save: an empty list and a valid one save
+	let w = widget();
+	assert.equal(w.checkList(), true, 'an empty list is valid (each uplink weighs 1)');
+	assert.deepEqual(w.save(), { saved: [] }, 'the split on with no weights saves');
+	w = widget([ 'wan=3', 'lte2=0' ]);
+	assert.equal(w.checkList(), true, 'a valid list is valid');
+	assert.deepEqual(w.save(), { saved: [ 'wan=3', 'lte2=0' ] }, 'and saves as it is');
+	// typed and added with +, as luci.mjs does: the list stays valid at every step
+	w = widget();
+	assert.equal(w.type('wan=2'), true);
+	assert.ok(w.add() && w.checkList() === true, 'wan=2 added');
+	assert.equal(w.type('lte2=0'), true);
+	assert.ok(w.add() && w.checkList() === true, 'lte2=0 added');
+	assert.deepEqual(w.save(), { saved: [ 'wan=2', 'lte2=0' ] }, 'two weights entered save');
+	// a valid entry typed and not added yet goes with the save (LuCI's getValue)
+	w = widget([ 'wan=3' ]);
+	assert.equal(w.type('lte2=1'), true);
+	assert.deepEqual(w.save(), { saved: [ 'wan=3', 'lte2=1' ] }, 'the pending entry is saved too');
+	// one that is not valid stays out, and does not stop the save
+	w = widget([ 'wan=3' ]);
+	assert.notEqual(w.type('wan=1'), true);
+	assert.ok(!w.add(), '+ does not take a refused entry');
+	assert.deepEqual(w.save(), { saved: [ 'wan=3' ] }, 'a refused pending entry is left out');
+	// a saved list that went wrong (set through uci, or an uplink removed
+	// since): the save is refused with what is wrong, the first entry first
+	const refused = (list) => {
+		const r = widget(list).save();
+
+		assert.ok(r.refused, `${JSON.stringify(list)} is refused (${JSON.stringify(r)})`);
+		assert.ok(r.refused.startsWith(`Option "${o.split_weight.title}" contains an invalid input value. `), r.refused);
+		return r.refused;
+	};
+	assert.ok(refused([ 'wan=3', 'up9=2' ]).includes('up9'), 'an entry for an uplink the router does not have');
+	assert.ok(refused([ 'wan=3', 'lte2=1', 'wan=0' ]).includes('wan'), 'two entries for one uplink');
+	assert.ok(refused([ 'wan=007' ]).includes(String(check('wan=007'))), 'an entry that is not NAME=WEIGHT');
+	const first = refused([ 'up9=2', 'wan=3', 'wan=1' ]);
+	assert.ok(first.includes('up9') && !first.includes(String(check('wan=2', [ 'wan=3' ]))), `the first error only: ${first}`);
+	// removing the bad entry makes the list valid again
+	w = widget([ 'wan=3', 'up9=2' ]);
+	assert.notEqual(w.checkList(), true);
+	assert.equal(w.remove('up9=2'), true, 'valid once the bad entry is removed');
+	// with no uplinks chosen, any weight in the list is wrong
+	assert.notEqual(new DynList(none.split_weight, [ 'wan=2' ]).checkList(), true, 'no uplinks: a listed weight is refused');
 }
 
 // ---- status.js

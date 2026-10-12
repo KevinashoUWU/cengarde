@@ -19,6 +19,8 @@
 #     10.79.0.1/32 on the VPS side) and the ULA prefix of the IPv6 inside it
 #     (fdXX:XXXX:XXXX::2/128 on the router, ::1/128 on the VPS side);
 #  3. configures cengarde on the router from LuCI only (luci.mjs), which
+#     saves and applies once with the split on and two weights (the engine's
+#     configuration carries them) and again with it off, then
 #     waits for the tunnel, the three uplinks and IP pass on at the VPS,
 #     and pauses and resumes an uplink from the status page; up2 and up3
 #     get their DHCPv6 companions (up26, up36) on their devices, in the

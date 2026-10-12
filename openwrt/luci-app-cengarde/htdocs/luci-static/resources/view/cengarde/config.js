@@ -449,10 +449,24 @@ return view.extend({
 			_('One entry per uplink, as NAME=WEIGHT (for example wan=3), with NAME as in the list of uplinks of the General tab and a weight from 0 to 1000. An uplink gets a share of the split packets in proportion to its weight; with no entry its weight is 1. 0: the uplink carries a copy of every packet, split or not. The weights do not follow the speed of the uplinks: choose them in proportion to what each one carries.'));
 		o.placeholder = 'wan=2';
 		o.depends({ reorder: '1', split: '1' });
-		// The entry being typed: its weight, an uplink of this router, and not
-		// one that has a weight already.
+		// LuCI calls this with the entry being typed, and with '' for the list
+		// itself (its element has no value of its own) on each change of the
+		// list and when the page is saved. The entry: its weight, an uplink of
+		// this router, and not one that has a weight already. The list: the
+		// same for each entry, the first wrong one says why (one saved before
+		// its uplink was removed, a repeat set through uci).
 		o.validate = function(section_id, v) {
-			return checkSplitWeight(v, L.toArray(value(m, 'uplink')), L.toArray(this.formvalue(section_id)));
+			const uplinks = L.toArray(value(m, 'uplink')), list = L.toArray(this.formvalue(section_id));
+
+			if (v != null && v !== '')
+				return checkSplitWeight(v, uplinks, list);
+			for (let i = 0; i < list.length; i++) {
+				const r = checkSplitWeight(list[i], uplinks, list);
+
+				if (r !== true)
+					return r;
+			}
+			return true;
 		};
 
 		o = s.taboption('advanced', form.Value, 'probe_interval_ms', _('Probe interval (ms)'),
