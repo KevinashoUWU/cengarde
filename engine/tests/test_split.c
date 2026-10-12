@@ -568,6 +568,189 @@ static void test_split_tail(void)
 	CHECK(cg_split_tail_newer(&t, 0x10u + CG_SEQ_LEAP + 0x7fffffffu));
 }
 
+/* A link's send-direction delay as health.h holds it, fresh for an hour
+ * (reports that stop are tested apart); owd in us, from any origin (only
+ * differences mean anything). */
+static void delay(struct cg_hlink *h, unsigned link, uint32_t owd, uint64_t now_ms)
+{
+	h[link].owd = owd;
+	h[link].have_owd = 1;
+	h[link].fresh_until_ms = now_ms + 3600000;
+}
+
+#define MSUS 1000u
+#define SPREAD (30 * MSUS) /* split_spread_ms 30 */
+#define SETTLE 2000        /* mute_settle_ms 2000 */
+
+/* Guard G4 (cg_split_spread_eval): only links within split_spread_ms of the
+ * fastest share the split; the others carry a copy of every packet. */
+static void test_split_spread(void)
+{
+	static const uint16_t w1[CG_MAX_LINKS] = { 1, 1, 1, 1 };
+	struct cg_hlink h[CG_MAX_LINKS];
+	struct cg_spread sp;
+	struct cg_split s;
+	uint64_t t = 1000000;
+	uint16_t ch, dup;
+	unsigned count[CG_MAX_LINKS];
+	int changes;
+
+	memset(h, 0, sizeof(h));
+	memset(&sp, 0, sizeof(sp));
+	/* Off (0): every candidate is in, with or without a delay. */
+	CHECK_EQ(cg_split_spread_eval(&sp, h, 0x7, 0, SETTLE, t), 0);
+	CHECK_EQ(sp.in, 0x7);
+	CHECK_EQ(cg_split_spread_dup(&sp, 0x7, 0, 0), 0);
+	CHECK_EQ(cg_split_share(&sp, 2, 0x7, 0, 0), CG_SHARE_YES);
+
+	/* No delay yet: out, waiting, and in at once when it comes within the
+	 * spread (only a link that left waits to come back). */
+	cg_split_spread_eval(&sp, h, 0x7, SPREAD, SETTLE, t);
+	CHECK_EQ(sp.in, 0);
+	CHECK_EQ(cg_split_share(&sp, 0, 0x7, 0, SPREAD), CG_SHARE_WAITING);
+	CHECK_EQ(cg_split_spread_dup(&sp, 0x7, 0, SPREAD), 0x7);
+	delay(h, 0, 5000000, t);
+	delay(h, 1, 5000000 + 10 * MSUS, t); /* 10 ms behind: stays */
+	cg_split_spread_eval(&sp, h, 0x7, SPREAD, SETTLE, t);
+	CHECK_EQ(sp.in, 0x3);
+	CHECK_EQ(cg_split_share(&sp, 2, 0x7, 0, SPREAD), CG_SHARE_WAITING);
+	CHECK(sp.behind == 0x3 && sp.behind_us[0] == 0 && sp.behind_us[1] == 10 * (int32_t)MSUS);
+	/* 50 ms behind: leaves at once, carries copies; 30 exactly is within. */
+	delay(h, 2, 5000000 + 50 * MSUS, t);
+	ch = cg_split_spread_eval(&sp, h, 0x7, SPREAD, SETTLE, t);
+	CHECK_EQ(ch, 0x4);
+	CHECK_EQ(sp.left, 0x4);
+	CHECK_EQ(sp.in, 0x3);
+	CHECK_EQ(cg_split_share(&sp, 2, 0x7, 0, SPREAD), CG_SHARE_SPREAD);
+	CHECK_EQ(cg_split_share(&sp, 1, 0x7, 0, SPREAD), CG_SHARE_YES);
+	dup = cg_split_spread_dup(&sp, 0x7, 0, SPREAD);
+	CHECK_EQ(dup, 0x4);
+	/* The share goes to 0 and 1 only; 2 gets a copy of every split packet. */
+	cg_split_reset(&s);
+	memset(count, 0, sizeof(count));
+	for (int k = 0; k < 1000; k++) {
+		int p = cg_split_pick(&s, 0x7, dup, w1, CG_WGS_DATA, BIG, SMALL_LEN, NULL);
+
+		CHECK(p == 0 || p == 1);
+		if (p >= 0 && p < CG_MAX_LINKS)
+			count[p]++;
+		CHECK_EQ(cg_split_dst(p, 0x7, dup), bit((unsigned)p) | 0x4);
+	}
+	CHECK(count[0] == 500 && count[1] == 500);
+	delay(h, 1, 5000000 + SPREAD, t);
+	cg_split_spread_eval(&sp, h, 0x7, SPREAD, SETTLE, t);
+	CHECK_EQ(sp.in, 0x3);
+
+	/* Comes back only after settle within 3/4 of the spread (22.5 ms). */
+	delay(h, 2, 5000000 + 25 * MSUS, t);
+	for (int k = 0; k < 50; k++) /* 5 s at 25 ms: not close enough */
+		CHECK_EQ(cg_split_spread_eval(&sp, h, 0x7, SPREAD, SETTLE, t += 100), 0);
+	CHECK_EQ(sp.left, 0x4);
+	delay(h, 2, 5000000 + 22 * MSUS, t);
+	for (int k = 0; k < 20; k++) /* 1.9 s within: not yet */
+		CHECK_EQ(cg_split_spread_eval(&sp, h, 0x7, SPREAD, SETTLE, t += k ? 100 : 0), 0);
+	CHECK_EQ(sp.in, 0x3);
+	CHECK_EQ(cg_split_spread_eval(&sp, h, 0x7, SPREAD, SETTLE, t += 100), 0x4); /* 2 s */
+	CHECK_EQ(sp.in, 0x7);
+	CHECK_EQ(sp.left, 0);
+	/* Back in, it stays up to the spread itself. */
+	delay(h, 2, 5000000 + 29 * MSUS, t);
+	CHECK_EQ(cg_split_spread_eval(&sp, h, 0x7, SPREAD, SETTLE, t += 100), 0);
+	CHECK_EQ(sp.in, 0x7);
+
+	/* No flapping: a link whose delay swings across the edge (20 to 40 ms
+	 * behind, 300 ms each way) leaves once and stays out; one that swings
+	 * within 25 to 35 the same. The wait to come back starts over each time
+	 * it goes above 3/4 of the spread. */
+	for (int lo = 20; lo <= 25; lo += 5) {
+		memset(&sp, 0, sizeof(sp));
+		changes = 0;
+		for (int k = 0; k < 600; k++) { /* 60 s */
+			int up = (k / 3) % 2;
+
+			t += 100;
+			delay(h, 0, 5000000, t);
+			delay(h, 1, 5000000 + (uint32_t)(up ? (lo == 20 ? 40 : 35) : lo) * MSUS, t);
+			changes += cg_popcount16(cg_split_spread_eval(&sp, h, 0x3, SPREAD, SETTLE, t));
+		}
+		CHECK_EQ(changes, 1);
+		CHECK_EQ(sp.left, 0x2);
+		/* Only two links, one out: everything is duplicated (G2). */
+		CHECK_EQ(sp.in, 0x1);
+		dup = cg_split_spread_dup(&sp, 0x3, 0, SPREAD);
+		CHECK_EQ(cg_split_pick(&s, 0x3, dup, w1, CG_WGS_DATA, BIG, SMALL_LEN, NULL), -1);
+	}
+	/* Once it settles within 3/4 it comes back, and only once. */
+	changes = 0;
+	for (int k = 0; k < 100; k++) {
+		t += 100;
+		delay(h, 0, 5000000, t);
+		delay(h, 1, 5000000 + 15 * MSUS, t);
+		changes += cg_popcount16(cg_split_spread_eval(&sp, h, 0x3, SPREAD, SETTLE, t));
+	}
+	CHECK_EQ(changes, 1);
+	CHECK_EQ(sp.in, 0x3);
+
+	/* All but one out: duplicate everything. */
+	memset(&sp, 0, sizeof(sp));
+	delay(h, 0, 5000000, t);
+	delay(h, 1, 5000000 + 60 * MSUS, t);
+	delay(h, 2, 5000000 + 150 * MSUS, t);
+	cg_split_spread_eval(&sp, h, 0x7, SPREAD, SETTLE, t);
+	CHECK_EQ(sp.in, 0x1);
+	dup = cg_split_spread_dup(&sp, 0x7, 0, SPREAD);
+	CHECK_EQ(dup, 0x6);
+	CHECK_EQ(cg_split_pick(&s, 0x7, dup, w1, CG_WGS_DATA, BIG, SMALL_LEN, NULL), -1);
+
+	/* The fastest is the fastest candidate: when it is no longer one (stale,
+	 * muted, weight 0), the others are measured from the next. 2 left at 150;
+	 * from 1 it is 90 behind and stays out; 1 is now the fastest and comes
+	 * back after settle. */
+	ch = 0;
+	for (int k = 0; k <= SETTLE / 100; k++)
+		ch |= cg_split_spread_eval(&sp, h, 0x6, SPREAD, SETTLE, t += k ? 100 : 0);
+	CHECK_EQ(ch, 0x2);
+	CHECK_EQ(sp.in, 0x2);
+	CHECK_EQ(sp.behind_us[2], 90 * (int32_t)MSUS);
+	/* A delay that stops coming (stale) is no delay: out, and a wait to come
+	 * back starts over. */
+	memset(&sp, 0, sizeof(sp));
+	delay(h, 0, 5000000, t);
+	delay(h, 1, 5000000 + 5 * MSUS, t);
+	cg_split_spread_eval(&sp, h, 0x3, SPREAD, SETTLE, t);
+	CHECK_EQ(sp.in, 0x3);
+	h[1].fresh_until_ms = t; /* its last report runs out */
+	cg_split_spread_eval(&sp, h, 0x3, SPREAD, SETTLE, t + 1);
+	CHECK_EQ(sp.in, 0x1);
+	CHECK_EQ(cg_split_share(&sp, 1, 0x3, 0, SPREAD), CG_SHARE_WAITING);
+
+	/* Wrap-safe: raw delays around 2^32. */
+	memset(&sp, 0, sizeof(sp));
+	delay(h, 0, 0xfffff000u, t);
+	delay(h, 1, 0xfffff000u + 40 * MSUS, t); /* wraps */
+	cg_split_spread_eval(&sp, h, 0x3, SPREAD, SETTLE, t);
+	CHECK_EQ(sp.left, 0x2);
+	CHECK_EQ(sp.behind_us[1], 40 * (int32_t)MSUS);
+
+	/* A link that restarts has not left; one turned off (spread 0) neither. */
+	cg_split_spread_reset(&sp, 1);
+	CHECK_EQ(sp.left, 0);
+	cg_split_spread_eval(&sp, h, 0x3, SPREAD, SETTLE, t);
+	CHECK_EQ(sp.left, 0x2);
+	CHECK_EQ(cg_split_spread_eval(&sp, h, 0x3, 0, SETTLE, t), 0x2);
+	CHECK(sp.left == 0 && sp.in == 0x3);
+
+	/* The other reasons: not eligible, weight 0 (never measured, never
+	 * dup'd by the guard: it carries copies anyway). */
+	CHECK_EQ(cg_split_share(&sp, 3, 0x7, 0, SPREAD), CG_SHARE_NO);
+	CHECK_EQ(cg_split_share(&sp, 2, 0x7, 0x4, SPREAD), CG_SHARE_WEIGHT0);
+	CHECK_EQ(cg_split_spread_dup(&sp, 0x7, 0x4, SPREAD) & 0x4, 0);
+	CHECK(!strcmp(cg_split_share_name(CG_SHARE_SPREAD), "spread"));
+	CHECK(!strcmp(cg_split_share_name(CG_SHARE_YES), "yes") && !strcmp(cg_split_share_name(CG_SHARE_NO), "no"));
+	CHECK(!strcmp(cg_split_share_name(CG_SHARE_WAITING), "waiting"));
+	CHECK(!strcmp(cg_split_share_name(CG_SHARE_WEIGHT0), "weight 0") && !strcmp(cg_split_share_name(99), "?"));
+}
+
 void test_split(void)
 {
 	test_split_proportions();
@@ -580,4 +763,5 @@ void test_split(void)
 	test_split_stale();
 	test_split_modes();
 	test_split_tail();
+	test_split_spread();
 }

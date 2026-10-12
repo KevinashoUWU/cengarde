@@ -168,6 +168,7 @@ struct cg_config {
 	uint32_t reorder_pool_kb;     /* memory for the packets it holds; changing it restarts */
 	int split;                    /* enum cg_split_mode */
 	uint32_t split_small;         /* datagrams of up to this many bytes are never split */
+	uint32_t split_spread_ms;     /* only links this close to the fastest share the split (split.h G4); 0: off */
 
 	/* latency knobs */
 	uint32_t busy_poll_us; /* poll without sleeping this long after traffic */

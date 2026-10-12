@@ -434,8 +434,9 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
   depende del `split` del servidor. Con un extremo de una versión anterior,
   que no lo dice, no se reparte nada (`waiting for the peer`). Solo reciben
   parte los enlaces vivos y activos (ni silenciados ni en espera) cuyo otro
-  extremo respondió en los últimos tres intervalos de sondeo; con menos de
-  dos, todo va por todos.
+  extremo respondió en los últimos tres intervalos de sondeo y que no van
+  más de `split_spread_ms` detrás del más rápido; con menos de dos, todo va
+  por todos.
 - **Recarga:** apagar `split` vuelve a duplicar desde el lote siguiente en
   ese extremo. El cliente manda una sonda por cada enlace al recargar, así
   que el servidor deja de repartir la bajada (o empieza) en un viaje de ida
@@ -445,6 +446,30 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
 - **`split_small` (256; 0–2048 bytes):** los datagramas de hasta ese tamaño,
   los handshakes y todo lo que se envía con menos de dos enlaces aptos van
   siempre por todos los enlaces.
+- **`split_spread_ms` (30; 0–2000), en los dos extremos, para lo que cada
+  uno envía:** solo reciben parte los enlaces que van, en ese sentido, a lo
+  sumo esa diferencia de retraso detrás del más rápido de los que podrían
+  recibirla; los demás llevan copia de todos los paquetes, como un enlace de
+  peso 0, y si queda uno solo, todo va por todos. El retraso es el mismo que
+  usa el silenciado (el que informa el otro extremo, filtrado). Un enlace
+  sale en cuanto pasa la diferencia y vuelve cuando se mantiene dentro de
+  3/4 de ella durante `mute_settle_ms` (2000), para que no oscile en el
+  borde; uno que todavía no tiene medida de retraso lleva copias hasta
+  tenerla. Con 0 no hay guarda: es el reparto sin filtro, para medirlo en el
+  laboratorio. Se aplica en caliente. El porqué: el receptor entrega en
+  orden, así que un reparto va al paso de su enlace más lento. En el
+  laboratorio (`bond.yml` con netem, `split = force`, 3 repeticiones;
+  *medido en laboratorio*, no en campo), dos enlaces iguales dieron 1,98× un
+  enlace solo con Cubic y con BBR; con 50 ms de diferencia (`reorder50`),
+  Cubic unas 1,15×, BBR 1,47× y QUIC cayó a 1–4 Mbit/s; con 150 ms
+  (`reorder150`) cayeron todos (BBR ~1 Mbit/s, Cubic 7–59 Mbit/s), con los
+  contadores del reordenador limpios (nada soltado antes de tiempo, nada
+  tardío). Con el tubo casi vacío, los paquetes del enlace rápido no esperan
+  y el flujo de adentro mide el RTT rápido; con carga, todo espera al lento:
+  BBR dimensiona su ventana por el RTT mínimo y se hunde, y HyStart saca a
+  Cubic del arranque lento antes de tiempo (*razonado*). La solución de fondo
+  es el planificador por hora de llegada del paso 3; hasta entonces, esta
+  guarda.
 - **`weight` en `[link X]` (cliente; 1, de 0 a 1000):** la parte del reparto
   que lleva ese enlace con `split = on`, en la subida y en la bajada (el
   cliente se los manda al servidor en las sondas; `force` no los mira). Con
@@ -459,8 +484,9 @@ la redundancia, y por eso no es el valor por omisión:
   1,3–1,5 s (estimación). Uno que pasa más de tres intervalos de sondeo sin
   ningún paquete verificado del otro extremo deja de recibir parte, aunque
   sigue llevando los paquetes que van por todos.
-- El enlace más lento fija la latencia: hasta `mute_behind_ms` (150) más el
-  margen.
+- El enlace más lento fija la latencia: con la guarda, hasta
+  `split_spread_ms` (30) más el margen; sin ella (0), hasta `mute_behind_ms`
+  (150).
 - Los pesos son fijos. Uno por encima de lo que aguanta el enlace llena la
   cola del módem y lo hace oscilar; no hay pacing ni control de colas.
 
@@ -898,12 +924,19 @@ solo lo que llega a retener.
 Los paquetes repartidos: en el cliente, `upload.split` y, por enlace,
 `tx_split` (los que salieron por él: su parte, o todos con peso 0) y
 `weight`; en el servidor, `download_split` por sesión y `tx_split` por
-enlace. `upload.split_state` dice qué hace el cliente con la subida: `off`,
-`splitting`, `duplicating with < 2 links` (menos de dos enlaces aptos) o
-`waiting for the peer` (`split = on`, hasta que el servidor diga que
-reordena); `upload.server_reorders`, lo que dijo la respuesta más nueva
-(`null` sin cola: un servidor anterior). En cada sesión del servidor, `split_mode`
-dice qué hace con la bajada: `off`, `force`, `client` (reparte como pide el
+enlace. En los dos, por enlace, `split_share` dice qué hace en el reparto
+(`null` si ese extremo no reparte ahora): `yes` (recibe su parte), `spread`
+(está más de `split_spread_ms` detrás y lleva copias), `waiting` (sin medida
+de retraso todavía: lleva copias), `weight 0` (lleva copias por su peso) o
+`no` (no es apto: silenciado, en espera o sin respuesta reciente), y
+`split_behind_ms`, cuánto va detrás del más rápido según la guarda (`null`
+sin medida); el valor de `split_spread_ms` está en `upload` (cliente) y en
+cada sesión (servidor). `upload.split_state` dice qué hace el cliente con
+la subida: `off`, `splitting`, `duplicating with < 2 links` (menos de dos
+enlaces aptos) o `waiting for the peer` (`split = on`, hasta que el servidor
+diga que reordena); `upload.server_reorders`, lo que dijo la respuesta más
+nueva (`null` sin cola: un servidor anterior). En cada sesión del servidor,
+`split_mode` dice qué hace con la bajada: `off`, `force`, `client` (reparte como pide el
 cliente) o `duplicating` (`split = client`, pero el cliente no lo pide, no
 reordena o no lo dice); `client_reorders` y `client_asks_split`, lo que dijo
 su sonda más nueva (`null` sin cola: un cliente anterior), y por enlace

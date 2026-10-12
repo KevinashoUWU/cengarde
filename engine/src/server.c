@@ -155,6 +155,7 @@ struct session {
 	uint32_t rot; /* download batches sent: the first path of each rotates */
 	uint64_t down_split; /* of down_pkts, packets split (split.h) instead of copied to every path */
 	struct cg_split sp;  /* the split's round-robin credits */
+	struct cg_spread spread; /* guard G4: the paths of similar delay that share the split (split.h) */
 	uint32_t ro_pos;       /* its place in the server's ro_active, plus 1; 0: holds nothing */
 	/* The newest probe's bonding tail (proto.h): whether it had one, the
 	 * client reorders, and asks for a split download (split = client); and
@@ -684,6 +685,7 @@ static struct path *path_update(struct server *s, struct session *S, unsigned li
 		P->since_ms = now_ms;
 		P->interval_ms = DEFAULT_INTERVAL_MS;
 		cg_health_reset(&S->dh[link], now_ms);
+		cg_split_spread_reset(&S->spread, link);
 		cg_path_learn(&P->addr, &P->local, from, &got);
 		P->ctl_len = cg_local_cmsg(&P->local, s->lfamily, &P->ctl);
 		cg_info("%ssession %08x: link %u via %s%s%s", tag, S->id, link, cg_addr_str(from, a, sizeof(a)),
@@ -699,8 +701,10 @@ static struct path *path_update(struct server *s, struct session *S, unsigned li
 	if (ch & CG_PATH_NEW_LOCAL)
 		P->ctl_len = cg_local_cmsg(&P->local, s->lfamily, &P->ctl);
 	/* Its delays over the other family say nothing about this one. */
-	if (ch & CG_PATH_NEW_FAMILY)
+	if (ch & CG_PATH_NEW_FAMILY) {
 		cg_health_reset(&S->dh[link], now_ms);
+		cg_split_spread_reset(&S->spread, link);
+	}
 	P->moves++;
 	if (s->pktinfo)
 		cg_info("%ssession %08x: link %u moved %s (to %s) -> %s (to %s)", tag, S->id, link,
@@ -1254,12 +1258,14 @@ static void junk_read(struct server *s)
 /* Where a download batch of S goes: its paths present, live, and those
  * that carry every duplicated packet (health.h); and with the split
  * (split.h), the paths that may take a share, their weights and the
- * weight-0 ones, which carry every packet. */
+ * weight-0 ones, which carry every packet, as do the ones guard G4 keeps
+ * out of the share (dup). */
 struct dpaths {
 	uint16_t present, live, carry;
 	int split;       /* the download is split (cg_split_active) */
 	uint16_t elig;   /* see split_eligible */
-	uint16_t dup0;
+	uint16_t dup0;   /* weight 0 */
+	uint16_t dup;    /* dup0 and the eligible paths G4 keeps out: what the batch copies to */
 	uint16_t w[CG_MAX_LINKS];
 };
 
@@ -1296,6 +1302,7 @@ static struct dpaths down_paths(const struct server *s, const struct session *S,
 		if (s->cfg->split != CG_SPLIT_FORCE && S->path[p].bond_ok && !d.w[p])
 			d.dup0 |= (uint16_t)(1u << p);
 	}
+	d.dup = (uint16_t)(d.dup0 | cg_split_spread_dup(&S->spread, d.elig, d.dup0, s->cfg->split_spread_ms * 1000));
 	return d;
 }
 
@@ -1321,7 +1328,7 @@ static void down_prepare(struct server *s, struct session *S, int m, uint8_t *bu
 	struct cg_hdr h = { .type = CG_T_DATA, .hint = C->hint, .session = S->id, .ts = (uint32_t)now_us };
 
 	/* Before the header: CG_F_SPLIT is under the MAC. */
-	s->pick[m] = (int8_t)(d->split ? cg_split_pick(&S->sp, d->elig, d->dup0, d->w, buf[0], (uint32_t)len,
+	s->pick[m] = (int8_t)(d->split ? cg_split_pick(&S->sp, d->elig, d->dup, d->w, buf[0], (uint32_t)len,
 						       s->cfg->split_small, &h.flags)
 				       : -1);
 	S->down_split += s->pick[m] >= 0;
@@ -1358,7 +1365,7 @@ static void down_send(struct server *s, struct session *S, int m, uint64_t now_m
 
 		if (carry >> p & 1) {
 			for (int j = 0; j < m; j++)
-				if (cg_split_dst(s->pick[j], carry, d->dup0) >> p & 1)
+				if (cg_split_dst(s->pick[j], carry, d->dup) >> p & 1)
 					sel[k++] = j;
 		} else if ((live >> p & 1) && s->cfg->mute_trickle) {
 			for (int j = 0; j < m; j++)
@@ -1455,6 +1462,33 @@ static void wg_read(struct server *s, struct session *S)
 
 /* ---- housekeeping ---- */
 
+/* Guard G4 (split.h), after health: which candidates of S's download split
+ * are within split_spread_ms of the fastest. Logs a path that leaves or
+ * comes back. */
+static void spread_tick(struct server *s, struct session *S, const char *tag, uint64_t now_ms)
+{
+	struct dpaths d = down_paths(s, S, now_ms);
+	uint16_t changed = cg_split_spread_eval(&S->spread, S->dh, (uint16_t)(d.elig & ~d.dup0),
+						s->cfg->split_spread_ms * 1000, s->cfg->mute_settle_ms, now_ms);
+
+	for (int p = 0; changed; p++, changed >>= 1) {
+		int32_t ms = S->spread.behind_us[p] / 1000;
+
+		if (!(changed & 1))
+			continue;
+		if (S->spread.left >> p & 1)
+			cg_info("%ssession %08x link %d: leaves the download split, %d ms behind the fastest link "
+				"(split_spread_ms %u)",
+				tag, S->id, p, ms, s->cfg->split_spread_ms);
+		else if (!s->cfg->split_spread_ms)
+			cg_info("%ssession %08x link %d: back in the download split, split_spread_ms is 0", tag, S->id,
+				p);
+		else
+			cg_info("%ssession %08x link %d: back in the download split, within %d ms of the fastest link",
+				tag, S->id, p, ms > 0 ? ms : 0);
+	}
+}
+
 static void health_tick(struct server *s, uint64_t now_ms)
 {
 	for (uint32_t i = 0; i < s->cap; i++) {
@@ -1466,6 +1500,7 @@ static void health_tick(struct server *s, uint64_t now_ms)
 			continue;
 		path_masks(S, now_ms, &present, &live);
 		changed = cg_health_eval(S->dh, CG_MAX_LINKS, live, now_ms, &s->hcfg);
+		spread_tick(s, S, tag, now_ms);
 		for (int p = 0; changed; p++, changed >>= 1) {
 			const struct cg_hlink *h = &S->dh[p];
 
@@ -1675,11 +1710,13 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 	cg_json_arr(j, "sessions");
 	for (uint32_t i = 0; i < s->cap; i++) {
 		const struct session *S = &s->s[i];
+		struct dpaths d;
 		uint16_t rset;
 
 		if (!S->used)
 			continue;
 		rset = expect_mask(S, now_ms);
+		d = down_paths(s, S, now_ms); /* the download split, as a batch now would take it */
 		cg_json_obj(j, NULL);
 		snprintf(buf, sizeof(buf), "%08x", S->id);
 		cg_json_str(j, "id", buf);
@@ -1696,6 +1733,7 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 		/* What the server does with this download, and what the client's
 		 * newest probe asked (null: no tail, an older client). */
 		cg_json_str(j, "split_mode", split_mode(s, S));
+		cg_json_u64(j, "split_spread_ms", s->cfg->split_spread_ms);
 		if (S->peer_bond) {
 			cg_json_bool(j, "client_reorders", S->peer_reorders);
 			cg_json_bool(j, "client_asks_split", S->peer_asks);
@@ -1744,6 +1782,19 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 				cg_json_u64(j, "client_weight", P->bond_w);
 			else
 				cg_json_null(j, "client_weight");
+			/* What it does in the download split (null: not split now),
+			 * and its delay behind the fastest candidate as guard G4 last
+			 * saw it. */
+			if (d.split)
+				cg_json_str(j, "split_share",
+					    cg_split_share_name(cg_split_share(&S->spread, (unsigned)p, d.elig, d.dup0,
+										 s->cfg->split_spread_ms * 1000)));
+			else
+				cg_json_null(j, "split_share");
+			if (S->spread.behind >> p & 1)
+				cg_json_ms_signed(j, "split_behind_ms", S->spread.behind_us[p]);
+			else
+				cg_json_null(j, "split_behind_ms");
 			cg_json_u64(j, "moves", P->moves);
 			cg_json_u64(j, "local_errors", P->local_errors);
 			cg_json_u64(j, "rx_first", S->rx[p].wins);

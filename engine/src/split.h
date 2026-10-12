@@ -4,7 +4,9 @@
  * the server (client.c, server.c) call it once per packet.
  *
  * - Eligible links: the live, active (not muted) links with a weight above
- *   zero whose peer still answers on them (guard G3 below). The caller builds
+ *   zero whose peer still answers on them (guard G3 below), and of those the
+ *   ones within split_spread_ms of the fastest take a share (guard G4
+ *   below; the others carry a copy of every packet). The caller builds
  *   the mask from its link masks and health (health.h), not from
  *   cg_health_carriers: its fallbacks (a muted link when none is active, every
  *   link when none is live) must end in duplication, which is what a packet
@@ -48,6 +50,7 @@
 
 #include "arrival.h" /* CG_MAX_LINKS */
 #include "config.h"  /* enum cg_split_mode */
+#include "health.h"  /* struct cg_hlink: each link's delay */
 #include "proto.h"   /* CG_F_SPLIT, struct cg_probe_bond */
 #include "wgsize.h"  /* CG_WGS_DATA */
 
@@ -144,6 +147,151 @@ static inline int cg_split_active(int mode, int peer_reorders, int peer_asks)
 	default:
 		return 0;
 	}
+}
+
+/* Guard G4 (split_spread_ms): only links of similar delay share the split.
+ * The receiver hands packets on in sequence, so a split stream goes at the
+ * pace of its slowest link. In the lab (bond.yml with netem, split = force,
+ * 3 runs) two equal links gave 1.98x one link for Cubic and BBR; 50 ms apart
+ * (reorder50) Cubic got about 1.15x, BBR 1.47x and QUIC 1-4 Mbit/s, and 150 ms
+ * apart (reorder150) all of them collapsed (BBR about 1 Mbit/s, Cubic 7-59),
+ * with the reorderer's counters clean. While the pipe is nearly empty the
+ * packets on the fast link are not held and the inner flow measures the fast
+ * RTT; under load everything waits for the slow link: BBR sizes its window
+ * on the minimum RTT and spirals down, Cubic's HyStart leaves slow start
+ * early. Until a scheduler that sends by arrival time (step 3 of the plan),
+ * the split stays among links within spread of the fastest:
+ * - the delay is the send direction's, the one muting reads (health.h: what
+ *   the receiver reports, filtered), behind the fastest candidate with a
+ *   fresh one (candidates: the links that may take a share, G1 to G3);
+ * - a candidate more than spread behind leaves the split at once; one that
+ *   left comes back once it stays within 3/4 of spread for settle_ms (the
+ *   mute settle time), so that a link near the edge does not flap. A link
+ *   without a fresh delay is out until it has one, and then in at once if
+ *   within spread: only one that left waits;
+ * - a link out of the split carries a copy of every packet, as one of weight
+ *   0 does: it still delivers, later, and fills the others' gaps. Fewer than
+ *   2 links in duplicate everything (G2);
+ * - spread 0: no guard, every candidate takes its share, delay or not.
+ * Evaluated with health, every tick; the send path reads the result. */
+#define CG_SPLIT_REJOIN_NUM 3 /* a link that left comes back within 3/4 of the spread */
+#define CG_SPLIT_REJOIN_DEN 4
+
+struct cg_spread {
+	uint16_t in;      /* candidates in the split at the last evaluation */
+	uint16_t left;    /* links that left for their delay: they wait to come back */
+	uint16_t holding; /* of those, within 3/4 of the spread since since_ms */
+	uint16_t behind;  /* links whose behind_us the last evaluation measured */
+	int32_t behind_us[CG_MAX_LINKS]; /* their delay behind the fastest candidate */
+	uint64_t since_ms[CG_MAX_LINKS];
+};
+
+/* What a link has to do with the split, for the status. */
+enum cg_split_share {
+	CG_SHARE_NO = 0,  /* not eligible (G1 to G3): only the duplicated packets */
+	CG_SHARE_YES,     /* takes its share */
+	CG_SHARE_WEIGHT0, /* weight 0: a copy of every packet */
+	CG_SHARE_SPREAD,  /* left for its delay (G4): a copy of every packet */
+	CG_SHARE_WAITING, /* no delay measured yet (G4): a copy of every packet */
+};
+
+static inline const char *cg_split_share_name(int v)
+{
+	static const char *const n[] = { "no", "yes", "weight 0", "spread", "waiting" };
+
+	return v >= 0 && v <= CG_SHARE_WAITING ? n[v] : "?";
+}
+
+/* A link (re)starts: it has not left. */
+static inline void cg_split_spread_reset(struct cg_spread *s, unsigned link)
+{
+	uint16_t keep = (uint16_t)~(1u << link);
+
+	s->in &= keep;
+	s->left &= keep;
+	s->holding &= keep;
+	s->behind &= keep;
+}
+
+/* One evaluation of guard G4, every tick. cand: the links that may take a
+ * share otherwise (eligible, weight above 0); h: each link's send-direction
+ * health (its filtered delay); spread_us: split_spread_ms, 0 off; settle_ms:
+ * how long a link that left stays within 3/4 of the spread before it comes
+ * back. Sets s->in and returns the links that left or came back. */
+static inline uint16_t cg_split_spread_eval(struct cg_spread *s, const struct cg_hlink *h, uint16_t cand,
+					    uint32_t spread_us, uint32_t settle_ms, uint64_t now_ms)
+{
+	uint16_t fresh = 0, in = 0, was = s->left;
+	int32_t back = (int32_t)((uint64_t)spread_us * CG_SPLIT_REJOIN_NUM / CG_SPLIT_REJOIN_DEN);
+	int best;
+
+	s->behind = 0;
+	if (!spread_us) {
+		s->left = s->holding = 0;
+		s->in = cand;
+		return was;
+	}
+	for (int i = 0; i < CG_MAX_LINKS; i++)
+		if ((cand >> i & 1) && cg_health_fresh(&h[i], now_ms))
+			fresh |= (uint16_t)(1u << i);
+	best = cg_health_fastest(h, CG_MAX_LINKS, fresh, now_ms);
+	for (int i = 0; i < CG_MAX_LINKS; i++) {
+		uint16_t b = (uint16_t)(1u << i);
+		int32_t d;
+
+		if (!(fresh & b)) {
+			s->holding &= (uint16_t)~b; /* gone, or no delay: a wait starts over */
+			continue;
+		}
+		d = cg_owd_diff(h[i].owd, h[best].owd);
+		s->behind_us[i] = d;
+		s->behind |= b;
+		if (!(s->left & b)) {
+			if (d > (int32_t)spread_us)
+				s->left |= b;
+			else
+				in |= b;
+		} else if (d > back) {
+			s->holding &= (uint16_t)~b;
+		} else {
+			if (!(s->holding & b)) {
+				s->holding |= b;
+				s->since_ms[i] = now_ms;
+			}
+			if (now_ms - s->since_ms[i] >= settle_ms) {
+				s->left &= (uint16_t)~b;
+				s->holding &= (uint16_t)~b;
+				in |= b;
+			}
+		}
+	}
+	s->in = in;
+	return (uint16_t)(was ^ s->left);
+}
+
+/* The links that carry a copy of every packet of a split batch besides the
+ * weight-0 ones (dup0): the eligible ones the guard keeps out. OR it into
+ * the dup0 given to cg_split_pick and cg_split_dst. */
+static inline uint16_t cg_split_spread_dup(const struct cg_spread *s, uint16_t eligible, uint16_t dup0,
+					   uint32_t spread_us)
+{
+	return spread_us ? (uint16_t)(eligible & ~dup0 & ~s->in) : 0;
+}
+
+/* What link has to do with a split (the end splits): eligible and dup0 as
+ * for cg_split_pick. */
+static inline int cg_split_share(const struct cg_spread *s, unsigned link, uint16_t eligible, uint16_t dup0,
+				 uint32_t spread_us)
+{
+	uint16_t b = (uint16_t)(1u << link);
+
+	if (!(eligible & b))
+		return CG_SHARE_NO;
+	if (dup0 & b)
+		return CG_SHARE_WEIGHT0;
+	if (!spread_us || (s->in & b))
+		return CG_SHARE_YES;
+	return s->left & b ? CG_SHARE_SPREAD : CG_SHARE_WAITING;
 }
 
 /* Which bonding tail an end follows: the one of the newest control message

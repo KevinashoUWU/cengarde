@@ -158,6 +158,7 @@ struct client {
 	struct cg_split sp;  /* the split's round-robin credits */
 	uint16_t lw[CG_MAX_LINKS]; /* the [link] weights of the links in use (split = on), 1 without a section */
 	uint16_t dup0;             /* of those, the weight-0 links: they carry every packet */
+	struct cg_spread spread;   /* guard G4: the links of similar delay that share the split (split.h) */
 	int peer_bond;             /* the newest probe reply had a bonding tail (proto.h) */
 	int peer_reorders;         /* and it said the server reorders: split = on splits */
 	struct cg_split_tail tail; /* which reply that was (split.h) */
@@ -655,6 +656,7 @@ static void link_open(struct client *c, struct link *l, const struct cg_iface *i
 	l->rtt_us = l->unanswered = l->probe_announced = l->probe_before = 0;
 	l->have_down_owd = l->peer_muted = 0;
 	cg_health_reset(&c->uh[l - c->link], now_ms);
+	cg_split_spread_reset(&c->spread, (unsigned)(l - c->link));
 	if (pumped(c)) {
 		if (link_pump(c, l) < 0) {
 			/* Never handed over: still this loop's to close. */
@@ -949,6 +951,7 @@ static const char *split_state(const struct client *c, uint64_t now_ms)
 	link_masks(c, now_ms, &present, &live);
 	carry = cg_health_carriers(c->uh, CG_MAX_LINKS, present, live);
 	e = split_eligible(c, live, carry, now_ms);
+	dup0 |= cg_split_spread_dup(&c->spread, e, dup0, c->cfg->split_spread_ms * 1000);
 	for (int i = 0; i < CG_MAX_LINKS; i++)
 		n += (e >> i & 1) && w[i] && !(dup0 >> i & 1);
 	return n >= 2 ? "splitting" : "duplicating with < 2 links";
@@ -1030,6 +1033,8 @@ static void wg_read(struct client *c)
 		elig = split_eligible(c, live, carry, now_ms);
 		split = split_active(c);
 		w = split_weights(c, &dup0);
+		/* Guard G4: the links too far behind carry a copy of everything. */
+		dup0 |= cg_split_spread_dup(&c->spread, elig, dup0, c->cfg->split_spread_ms * 1000);
 		for (int i = 0; i < n; i++) {
 			size_t len = c->in.msg[i].msg_len;
 			uint8_t flags = 0;
@@ -1510,12 +1515,41 @@ static void send_probe(struct client *c, struct link *l, uint64_t now_us, uint32
 		l->first_unanswered_ms = now_ms;
 }
 
+/* Guard G4 (split.h), after health: which candidates of the upload split
+ * are within split_spread_ms of the fastest. Logs a link that leaves or
+ * comes back. */
+static void spread_tick(struct client *c, uint16_t present, uint16_t live, uint64_t now_ms)
+{
+	uint16_t carry, dup0, cand, changed;
+
+	carry = cg_health_carriers(c->uh, CG_MAX_LINKS, present, live);
+	split_weights(c, &dup0);
+	cand = (uint16_t)(split_eligible(c, live, carry, now_ms) & ~dup0);
+	changed = cg_split_spread_eval(&c->spread, c->uh, cand, c->cfg->split_spread_ms * 1000, c->cfg->mute_settle_ms,
+				       now_ms);
+	for (int i = 0; changed; i++, changed >>= 1) {
+		const char *name = c->link[i].ifname;
+		int32_t ms = c->spread.behind_us[i] / 1000;
+
+		if (!(changed & 1))
+			continue;
+		if (c->spread.left >> i & 1)
+			cg_info("link %s: leaves the upload split, %d ms behind the fastest link (split_spread_ms %u)", name,
+				ms, c->cfg->split_spread_ms);
+		else if (!c->cfg->split_spread_ms)
+			cg_info("link %s: back in the upload split, split_spread_ms is 0", name);
+		else
+			cg_info("link %s: back in the upload split, within %d ms of the fastest link", name, ms > 0 ? ms : 0);
+	}
+}
+
 static void health_tick(struct client *c, uint64_t now_ms)
 {
 	uint16_t present, live, changed;
 
 	link_masks(c, now_ms, &present, &live);
 	changed = cg_health_eval(c->uh, CG_MAX_LINKS, live, now_ms, &c->hcfg);
+	spread_tick(c, present, live, now_ms);
 	for (int i = 0; changed; i++, changed >>= 1) {
 		const struct cg_hlink *h = &c->uh[i];
 
@@ -1604,8 +1638,14 @@ static int vps_refusing(const struct client *c, uint64_t now_ms)
 
 static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 {
-	uint16_t rset = ro_rset(c, now_ms);
+	uint16_t rset = ro_rset(c, now_ms), present, live, s_elig, s_dup0;
+	uint32_t spread_us = c->cfg->split_spread_ms * 1000;
 	char buf[64];
+
+	/* The upload split's eligible links, as a batch now would take them. */
+	link_masks(c, now_ms, &present, &live);
+	s_elig = split_eligible(c, live, cg_health_carriers(c->uh, CG_MAX_LINKS, present, live), now_ms);
+	split_weights(c, &s_dup0);
 
 	cg_json_obj(j, NULL);
 	cg_json_str(j, "mode", "client");
@@ -1645,6 +1685,7 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 	/* Splitting the upload (split.h). */
 	cg_json_u64(j, "split", c->up_split);
 	cg_json_str(j, "split_state", split_state(c, now_ms));
+	cg_json_u64(j, "split_spread_ms", c->cfg->split_spread_ms);
 	/* What the newest probe reply says (null: no tail, an older server). */
 	if (c->peer_bond)
 		cg_json_bool(j, "server_reorders", c->peer_reorders);
@@ -1729,6 +1770,17 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 		cg_json_u64(j, "tx_errors", l->tx_errors);
 		cg_json_u64(j, "tx_split", l->tx_split);
 		cg_json_u64(j, "weight", c->lw[i]); /* its share with split = on */
+		/* What it does in the upload split (null: not split now), and its
+		 * delay behind the fastest candidate as guard G4 last saw it. */
+		if (split_active(c))
+			cg_json_str(j, "split_share",
+				    cg_split_share_name(cg_split_share(&c->spread, (unsigned)i, s_elig, s_dup0, spread_us)));
+		else
+			cg_json_null(j, "split_share");
+		if (c->spread.behind >> i & 1)
+			cg_json_ms_signed(j, "split_behind_ms", c->spread.behind_us[i]);
+		else
+			cg_json_null(j, "split_behind_ms");
 		cg_json_u64(j, "rx_first", c->rxs.rx[i].wins);
 		cg_json_u64(j, "rx_duplicate", c->rxs.rx[i].dups);
 		cg_json_u64(j, "rx_late", c->rxs.rx[i].late);
