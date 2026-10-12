@@ -9,11 +9,13 @@
 //   uplink of the router, from 0 to 1000, once each, both as they are typed
 //   and as the whole list LuCI checks (with an empty value) on every change
 //   and on save, which goes through with valid weights and says what is wrong
-//   with the first bad one; and the options that mean nothing without their
-//   switch depend on it;
+//   with the first bad one; the largest delay difference of the split has the
+//   engine's range and default and says what it does; and the options that
+//   mean nothing without their switch depend on it;
 // - status.js: the "Reordering" box shows the engine's "reorder" object (and
 //   says so when the engine has it off) and is not there for an engine without
-//   it, in English and in Spanish (po/es), which also has to cover its strings.
+//   it, and an uplink the split leaves out for its delay says so, in English
+//   and in Spanish (po/es), which also has to cover its strings.
 //
 // SPDX-License-Identifier: GPL-2.0-only
 
@@ -191,12 +193,22 @@ for (const [lang, tr] of [ [ 'en', english ], [ 'es', spanish ] ]) {
 	assert.equal(advanced('reorder_bypass').datatype, 'range(0,2048)');
 	assert.equal(o.reorder_bypass.placeholder, '128');
 	assert.equal(advanced('split_weight').cls, 'DynamicList');
+	assert.equal(advanced('split_spread_ms').cls, 'Value');
+	assert.equal(o.split_spread_ms.datatype, 'range(0,2000)', 'the engine\'s range');
+	assert.equal(o.split_spread_ms.placeholder, '30', 'the engine\'s default');
+	assert.equal(o.split_spread_ms.title, lang === 'en' ? 'Largest delay difference to split (ms)'
+		: 'Diferencia máxima de retardo para repartir (ms)');
+	// it says what it does with the others, why, and what 0 means
+	for (const word of lang === 'en' ? [ 'copy of every packet', 'three quarters', '50 ms', '150 ms', 'lab', '0: no limit' ]
+		: [ 'copia de todos los paquetes', 'tres cuartos', '50 ms', '150 ms', 'laboratorio', '0: sin límite' ])
+		assert.ok(o.split_spread_ms.descr.includes(word), `${lang}: the spread option mentions "${word}"`);
 
 	// what means nothing without its switch is hidden without it
 	assert.deepEqual(o.reorder_max_wait_ms.deps, [ { reorder: '1' } ]);
 	assert.deepEqual(o.reorder_bypass.deps, [ { reorder: '1' } ]);
 	assert.deepEqual(o.split.deps, [ { reorder: '1' } ]);
 	assert.deepEqual(o.split_weight.deps, [ { reorder: '1', split: '1' } ]);
+	assert.deepEqual(o.split_spread_ms.deps, [ { reorder: '1', split: '1' } ], 'shown with the split');
 	assert.deepEqual(o.reorder.deps, []);
 
 	// the experimental split says what it does badly, and that the VPS follows
@@ -282,8 +294,10 @@ for (const [lang, tr] of [ [ 'en', english ], [ 'es', spanish ] ]) {
 function loadStatus(tr) {
 	const dom = { content: (node, children) => { node.children = [].concat(children); } };
 	const factory = new Function('view', 'dom', 'fs', 'poll', 'ui', 'L', 'E', '_', 'cbi_update_table', view('status'));
+	// LuCI's cbi_update_table, as far as the text goes: a row per entry
+	const update = (table, rows) => { table.children.push(...rows.map((r) => E('tr', {}, r.map((c) => E('td', {}, [ c ]))))); };
 
-	return factory({ extend: (o) => o }, dom, {}, {}, { createHandlerFn: (t, f) => f }, { bind: (f) => f }, E, tr, () => {});
+	return factory({ extend: (o) => o }, dom, {}, {}, { createHandlerFn: (t, f) => f }, { bind: (f) => f }, E, tr, update);
 }
 
 const reorder = {
@@ -346,6 +360,23 @@ for (const [lang, tr] of [ [ 'en', english ], [ 'es', spanish ] ]) {
 	const last = node.children[node.children.length - 1];
 	assert.equal(text(last), L('Reordering is off (Advanced tab).', 'El reordenamiento está desactivado (pestaña Avanzado).'));
 	assert.equal(find(last, (n) => n.tag == 'tr').length, 0);
+
+	// an uplink out of the split for its delay says so in its upload cell;
+	// one with a share, or with the split off (null), does not
+	const uplinkRows = (links) => {
+		const n = E('div');
+
+		v.update(n, base({ links }));
+		return find(n, (x) => x.tag == 'table' && String(x.attrs.class).includes('cengarde-links'))[0].children.slice(1)
+			.map((r) => r.children.map(text));
+	};
+	const link = (name, share) => ({ name, label: name, state: 'live', upload: 'active', download_muted: false, rx_first: 1,
+		tx_bytes: 1, upload_mutes: 0, rtt_ms: 10, upload_behind_ms: 0, override: 'auto', split_share: share });
+	const urows = uplinkRows([ link('up1', 'yes'), link('up2', 'spread'), link('up3', null) ]);
+	const COPIES = L('copies only', 'solo copias');
+	assert.equal(urows.length, 3);
+	assert.ok(urows[1][6].includes(COPIES), `${lang}: up2 out of the split says so: ${urows[1][6]}`);
+	assert.ok(!urows[0][6].includes(COPIES) && !urows[2][6].includes(COPIES), `${lang}: the others do not`);
 
 	// the rest of the page is still there
 	const page = E('div');

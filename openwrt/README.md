@@ -373,12 +373,20 @@ configuración del router:
     no es de este router o un peso fuera de rango no se usa, y queda en
     `logread`. El VPS sigue al router: reparte la bajada con los mismos
     pesos si el router se lo pide, con su `split = client` de siempre, sin
-    tocar nada allí.
+    tocar nada allí. *Diferencia máxima de retardo para repartir*
+    (`split_spread_ms`, 30 ms; 0: sin límite): un enlace que va más de eso
+    detrás del más rápido (en su retardo hacia el VPS) deja su parte y lleva
+    una copia de todos los paquetes, como con peso 0, hasta que se mantiene
+    dentro de 3/4 de esa diferencia durante el tiempo de asentamiento. El
+    VPS hace lo mismo con la bajada, con su propio `split_spread_ms` (30).
+    En el laboratorio, 50 ms entre dos enlaces ya se comían casi toda la
+    ganancia del reparto y 150 ms la hundían (ver `engine/README.md`).
   - **Hoy el reparto sale peor que copiar** (por eso viene apagado): un
     enlace que muere conserva su parte hasta que el motor lo saca (unos
     300 ms según la estimación; 1,5 s antes de esa protección) y los
-    paquetes que le tocaron se pierden; el enlace más lento con peso fija la
-    latencia de todos; y un peso mayor que lo que aguanta un enlace llena la
+    paquetes que le tocaron se pierden; el enlace más lento del reparto fija
+    la latencia de todos (como mucho `split_spread_ms` detrás del más
+    rápido); y un peso mayor que lo que aguanta un enlace llena la
     cola de su módem. Los pesos son fijos y no hay control de colas.
 
 ## 5. Estado
@@ -608,9 +616,11 @@ cengarde-setup cloud-config > vps.yaml               # el user data del VPS
 - **Reordenamiento y reparto:** `uci set cengarde.main.reorder=0` lo
   apaga; `uci set cengarde.main.split=1` y `uci add_list
   cengarde.main.split_weight=wan=3` (uno por enlace) encienden el reparto
-  experimental. En el archivo del motor salen como `reorder = no`,
-  `split = on` y `weight = 3` en la sección del enlace; `split` nunca sale
-  como `force` (es del laboratorio).
+  experimental, y `uci set cengarde.main.split_spread_ms=50` cambia la
+  diferencia de retardo con la que un enlace sigue recibiendo parte. En el
+  archivo del motor salen como `reorder = no`, `split = on`,
+  `split_spread_ms = 50` y `weight = 3` en la sección del enlace; `split`
+  nunca sale como `force` (es del laboratorio).
 - **`config_file`:** usa un archivo INI propio en lugar del generado. Sirve,
   por ejemplo, para un servidor OpenWrt.
 - **Configuración que se genera:** `/var/etc/cengarde.conf`.

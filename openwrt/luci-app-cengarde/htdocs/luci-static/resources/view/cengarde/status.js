@@ -91,6 +91,13 @@ function direction(standby, title) {
 	return standby ? badge(_('standby'), '#68a', title) : _('in use');
 }
 
+// An uplink the split leaves out for its delay (the engine's split_share):
+// it still carries a copy of every packet, so in use, but without a share.
+function splitNote(l) {
+	return l.split_share == 'spread' ? [ ' ', badge(_('copies only'), '#68a',
+		_('More than the largest delay difference (Advanced tab) behind the fastest uplink: it carries a copy of every packet instead of a share of the split, until it catches up.')) ] : [];
+}
+
 function linkState(l) {
 	let b;
 
@@ -291,8 +298,8 @@ return view.extend({
 				ms(out ? null : l.upload_behind_ms),
 				out ? '-' : vpsAddress(l),
 				(out || !l.path_mtu) ? '-' : '%d'.format(l.path_mtu),
-				out ? '-' : direction(l.upload == 'muted',
-					_('Behind the fastest uplink by more than the limit: the router sends through the others, and only probes through this one, until it catches up.')),
+				out ? '-' : E('span', {}, [ direction(l.upload == 'muted',
+					_('Behind the fastest uplink by more than the limit: the router sends through the others, and only probes through this one, until it catches up.')) ].concat(splitNote(l))),
 				out ? '-' : direction(l.download_muted,
 					_('Slower than the best uplink from the VPS: the VPS sends through the others, and only probes through this one, until it catches up.')),
 				firsts ? '%.0f %%'.format(100 * l.rx_first / firsts) : '-',

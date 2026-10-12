@@ -441,7 +441,7 @@ return view.extend({
 		o.depends('reorder', '1');
 
 		o = s.taboption('advanced', form.Flag, 'split', _('Split large packets across the uplinks (experimental)'),
-			_('Instead of a copy over every uplink, each large packet (over 256 bytes, by default) goes over one uplink, chosen by weight; the small ones and the handshakes still go over all of them. This adds up the speed of the uplinks, but today it does worse than copying: an uplink that dies keeps its share of the packets until the engine takes it out (about 300 ms by estimate, 1.5 s before that), and the packets sent to it in the meantime are lost; the slowest uplink that has a weight sets the latency of all; and a weight above what an uplink can carry fills the queue of its modem and makes the uplink unstable. The VPS follows this router: it splits the download the same way, with the same weights, when the router asks for it, and needs no setting. It needs "Reorder at the receiver".'));
+			_('Instead of a copy over every uplink, each large packet (over 256 bytes, by default) goes over one uplink, chosen by weight; the small ones and the handshakes still go over all of them. This adds up the speed of the uplinks, but today it does worse than copying: an uplink that dies keeps its share of the packets until the engine takes it out (about 300 ms by estimate, 1.5 s before that), and the packets sent to it in the meantime are lost; the slowest uplink in the split sets the latency of all (see the largest delay difference below); and a weight above what an uplink can carry fills the queue of its modem and makes the uplink unstable. The VPS follows this router: it splits the download the same way, with the same weights, when the router asks for it, and needs no setting. It needs "Reorder at the receiver".'));
 		o.rmempty = false;
 		o.depends('reorder', '1');
 
@@ -468,6 +468,12 @@ return view.extend({
 			}
 			return true;
 		};
+
+		o = s.taboption('advanced', form.Value, 'split_spread_ms', _('Largest delay difference to split (ms)'),
+			_('Only the uplinks whose delay towards the VPS is at most this much behind the fastest one get a share of the split; the others carry a copy of every packet, as with weight 0, and get their share back once they stay within three quarters of it for the settle time. The VPS does the same with the download, with its own setting (30 ms unless changed there). Measured in the lab: two equal uplinks split give almost twice one uplink, but 50 ms apart most of that gain is lost, and 150 ms apart the speed collapses: the slowest uplink in the split sets the pace of all. 0: no limit.'));
+		o.datatype = 'range(0,2000)';
+		o.placeholder = '30';
+		o.depends({ reorder: '1', split: '1' });
 
 		o = s.taboption('advanced', form.Value, 'probe_interval_ms', _('Probe interval (ms)'),
 			_('While there is traffic; each idle link is probed every second, or at this interval if it is longer. The next VPS address is tried after three idle probes at the least.'));
