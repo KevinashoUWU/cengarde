@@ -366,7 +366,7 @@ return view.extend({
 		return E([], [
 			E('h2', {}, [ _('cengarde') ]),
 			E('div', { 'class': 'cbi-map-descr' }, [
-				_('Every packet goes through all active uplinks; the VPS keeps the first copy.')
+				_('Every packet goes through all active uplinks and the other end keeps the first copy; with the split on, each big packet goes through one uplink and the other end puts them back in order.')
 			]),
 			node
 		]);
