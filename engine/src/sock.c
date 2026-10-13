@@ -176,7 +176,11 @@ int cg_udp_link(const char *ifname, const struct sockaddr_storage *local, const 
 		goto fail;
 	}
 	return fd;
-fail:
+fail: {
+	int e = errno; /* the caller tells a missing route from the rest */
+
 	close(fd);
+	errno = e;
 	return -1;
+}
 }

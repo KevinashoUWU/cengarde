@@ -47,5 +47,11 @@ const struct cg_iface *cg_nl_find(const struct cg_nl *nl, const char *name);
  * primary first; IPv6 by RFC 6724 rank toward dst). Returns 0 or -1 when ifc
  * has no usable address of dst's family. */
 int cg_iface_pick(const struct cg_iface *ifc, const struct sockaddr_storage *dst, struct sockaddr_storage *out);
+/* The same, leaving out the addresses whose index has its bit set in skip;
+ * returns the index of the one in out, or -1. */
+int cg_iface_pick_skip(const struct cg_iface *ifc, const struct sockaddr_storage *dst, uint32_t skip,
+		       struct sockaddr_storage *out);
+/* Whether ip (port aside) is one of ifc's addresses. */
+int cg_iface_has(const struct cg_iface *ifc, const struct sockaddr_storage *ip);
 
 #endif

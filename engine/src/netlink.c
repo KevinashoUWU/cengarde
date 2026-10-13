@@ -275,7 +275,28 @@ void cg_nl_close(struct cg_nl *nl)
 
 int cg_iface_pick(const struct cg_iface *ifc, const struct sockaddr_storage *dst, struct sockaddr_storage *out)
 {
-	int k = cg_src_pick(ifc->addr, ifc->naddr, dst);
+	return cg_iface_pick_skip(ifc, dst, 0, out) < 0 ? -1 : 0;
+}
+
+int cg_iface_has(const struct cg_iface *ifc, const struct sockaddr_storage *ip)
+{
+	for (int i = 0; i < ifc->naddr; i++) {
+		if (ifc->addr[i].family != ip->ss_family)
+			continue;
+		if (ip->ss_family == AF_INET &&
+		    !memcmp(ifc->addr[i].addr, &((const struct sockaddr_in *)ip)->sin_addr, 4))
+			return 1;
+		if (ip->ss_family == AF_INET6 &&
+		    !memcmp(ifc->addr[i].addr, &((const struct sockaddr_in6 *)ip)->sin6_addr, 16))
+			return 1;
+	}
+	return 0;
+}
+
+int cg_iface_pick_skip(const struct cg_iface *ifc, const struct sockaddr_storage *dst, uint32_t skip,
+		       struct sockaddr_storage *out)
+{
+	int k = cg_src_pick_skip(ifc->addr, ifc->naddr, dst, skip);
 
 	if (k < 0)
 		return -1;
@@ -291,5 +312,5 @@ int cg_iface_pick(const struct cg_iface *ifc, const struct sockaddr_storage *dst
 		s->sin6_family = AF_INET6;
 		memcpy(&s->sin6_addr, ifc->addr[k].addr, 16);
 	}
-	return 0;
+	return k;
 }

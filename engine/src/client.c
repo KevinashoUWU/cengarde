@@ -92,8 +92,11 @@ struct link {
 	int fd;
 	int seen; /* still wanted in the current reconcile pass */
 	int why;  /* WHY_*: why it carries the tunnel or not, as of the last reconcile */
-	/* Of the last socket; kept once it closes, to tell a new local address. */
-	struct sockaddr_storage local, remote;
+	/* Of the last socket; kept once it closes, to tell a new local address.
+	 * pick is the source the interface's addresses put first toward
+	 * remote (addrpick.h), which local is unless that one had no route
+	 * through the interface (link_socket); a new pick is a new address. */
+	struct sockaddr_storage local, remote, pick;
 	/* The server address it uses (srvpick.h), kept by address; none: the
 	 * first candidate, as after an outage of the link (down, without an
 	 * address, or gone) or a new list. */
@@ -102,6 +105,13 @@ struct link {
 	unsigned families;      /* 1 << AF_* of the interface's usable addresses, as of the last reconcile */
 	uint32_t silent_moves;  /* failovers since the last reply: a dead round once every candidate had one */
 	int back_to_first;      /* a reply ended a dead round: the first candidate at the next reconcile */
+	/* A detour: the socket could not be opened toward want, the candidate
+	 * the link was due on, or not from its pick (no route through the
+	 * interface yet), and it took the next one that opened. Tried again
+	 * every RECONCILE_MS: a socket that opens costs no packet. */
+	int detour;
+	struct sockaddr_storage want;
+	uint64_t detour_retry_ms;
 	uint64_t cand_since_ms; /* when its socket to cand opened */
 	uint64_t failovers;
 	uint32_t path_mtu; /* IP_MTU or IPV6_MTU of its socket, read every RECONCILE_MS */
@@ -557,11 +567,39 @@ static int move_loud(struct link *l, int n, uint64_t now_ms)
 	return l->silent_moves <= (uint32_t)n || cg_ratelimit_ok(&l->rl_move, now_ms, 60000);
 }
 
+/* A socket on ifc to dst from the best of ifc's addresses the kernel
+ * routes there through ifc: its pick (addrpick.h), or, when connect finds
+ * no route from it, the next by rank (cg_src_noroute). netifd puts a
+ * prefix's source route on one interface, so when two uplinks get the same
+ * prefix, an address of it routes out through the other one only, and
+ * bound to its own interface the socket cannot connect from it; an
+ * address of the uplink's own (its DHCPv6 one) can. *pick gets the pick,
+ * *local the address bound. Returns the socket, or -1 with err (of the
+ * pick's try). */
+static int link_socket(const struct cg_iface *ifc, const struct sockaddr_storage *dst, struct sockaddr_storage *pick,
+		       struct sockaddr_storage *local, char *err, size_t errlen)
+{
+	char more[256];
+	uint32_t skip = 0;
+	int fd = -1, k;
+
+	for (int tries = 0; (k = cg_iface_pick_skip(ifc, dst, skip, local)) >= 0 && k < 32; tries++) {
+		if (!tries)
+			*pick = *local;
+		fd = cg_udp_link(ifc->name, local, dst, tries ? more : err, tries ? sizeof(more) : errlen);
+		if (fd >= 0 || !cg_src_noroute(errno))
+			break;
+		skip |= 1u << k;
+	}
+	return fd;
+}
+
 /* Points l at its server address among the candidates e of its interface
  * (srvpick.h) and opens its socket there, or keeps the one it has. When a
  * socket cannot be opened (an IPv6 address with no route, say: bound to
  * its interface, an IPv4 socket connects all the same), it tries the next
- * candidate at once, with failover on. */
+ * candidate at once, with failover on, and tries again later where it
+ * could not open (a detour). */
 static void link_open(struct client *c, struct link *l, const struct cg_iface *ifc, const struct cands *e,
 		      uint64_t now_ms)
 {
@@ -569,9 +607,9 @@ static void link_open(struct client *c, struct link *l, const struct cg_iface *i
 	const struct cg_link_cfg *lc = cg_config_link(cfg, ifc->name);
 	const struct sockaddr_storage *cur = &l->cand;
 	struct cg_srvlist list = servers_of(cfg, ifc->name);
-	struct sockaddr_storage local;
+	struct sockaddr_storage local, pick, bound;
 	char err[256], a[64], b[64];
-	int i, k, quiet = 0, skipped = 0;
+	int i, k, want, quiet = 0, skipped = 0, reopen = 0;
 
 	/* Back to the first candidate when a family the link gained or lost
 	 * changes its candidates, when its local address toward the server
@@ -583,15 +621,37 @@ static void link_open(struct client *c, struct link *l, const struct cg_iface *i
 		cur = NULL;
 		cg_info("link %s: the server answers again after a round of its addresses without replies, back to %s",
 			l->ifname, cg_addr_str(&e->a[0], a, sizeof(a)));
-	} else if (l->local.ss_family && cg_addr_equal(&l->remote, &l->cand) &&
-		   cg_iface_pick(ifc, &l->cand, &local) == 0 && !same_ip(&local, &l->local)) {
+	} else if (l->pick.ss_family && cg_addr_equal(&l->remote, &l->cand) &&
+		   cg_iface_pick(ifc, &l->cand, &local) == 0 &&
+		   (!same_ip(&local, &l->pick) || (l->fd >= 0 && !cg_iface_has(ifc, &l->local)))) {
 		cur = NULL;
+	} else if (l->fd >= 0 && l->detour && now_ms >= l->detour_retry_ms &&
+		   cg_cand_find(e->a, e->n, &l->want) >= 0) {
+		/* Where the link was due: if a socket opens there from its pick
+		 * now, the link moves there; else it stays on its detour. */
+		int fd = link_socket(ifc, &l->want, &pick, &bound, err, sizeof(err));
+
+		l->detour_retry_ms = now_ms + RECONCILE_MS;
+		if (fd >= 0) {
+			close(fd);
+			/* Better: the address it was due on, or its pick there. */
+			if (!cg_addr_equal(&l->want, &l->remote) || same_ip(&bound, &pick)) {
+				char d[64];
+
+				cg_info("link %s: a socket to %s opens from %s now, back there from %s", l->ifname,
+					cg_addr_str(&l->want, a, sizeof(a)), cg_addr_str(&bound, b, sizeof(b)),
+					cg_addr_str(&l->local, d, sizeof(d)));
+				l->cand = l->want;
+				reopen = 1;
+			}
+		}
 	}
 	l->families = e->families;
 	l->back_to_first = 0;
 	i = cur ? cg_cand_find(e->a, e->n, cur) : -1;
-	k = cg_srv_pick(e->a, e->n, cur, now_ms, l->cand_since_ms, l->last_reply_ms,
+	k = cg_srv_pick(e->a, e->n, cur, now_ms, reopen ? now_ms : l->cand_since_ms, l->last_reply_ms,
 			l->fd >= 0 ? cfg->server_failover_ms : 0, &l->silent_moves);
+	want = k;
 	if (i >= 0 && k != i) {
 		uint64_t since = l->last_reply_ms > l->cand_since_ms ? l->last_reply_ms : l->cand_since_ms;
 
@@ -608,15 +668,16 @@ static void link_open(struct client *c, struct link *l, const struct cg_iface *i
 		l->ncand = e->n;
 		if (cg_iface_pick(ifc, &l->cand, &local) < 0)
 			return; /* never: the candidates are of the families ifc has */
-		if (l->fd >= 0 && same_ip(&l->local, &local) && cg_addr_equal(&l->remote, &l->cand))
+		if (!reopen && l->fd >= 0 && same_ip(&l->pick, &local) && cg_addr_equal(&l->remote, &l->cand))
 			return;
-		if (l->fd >= 0 && quiet)
+		if (l->fd >= 0 && (quiet || reopen))
 			link_close(c, l, NULL);
 		else if (l->fd >= 0)
-			link_close(c, l, same_ip(&l->local, &local) ? "server address changed" : "address changed");
+			link_close(c, l, same_ip(&l->pick, &local) ? "server address changed" : "address changed");
+		reopen = 0;
 		if (now_ms < l->retry_ms)
 			return;
-		link_set_fd(l, cg_udp_link(ifc->name, &local, &l->cand, err, sizeof(err)));
+		link_set_fd(l, link_socket(ifc, &l->cand, &pick, &bound, err, sizeof(err)));
 		if (l->fd >= 0)
 			break;
 		if (e->n > 1 && cfg->server_failover_ms && tries < e->n) {
@@ -646,7 +707,15 @@ static void link_open(struct client *c, struct link *l, const struct cg_iface *i
 		getsockname(l->fd, (struct sockaddr *)&local, &len);
 	}
 	l->local = local;
+	l->pick = pick;
 	l->remote = l->cand;
+	l->want = e->a[want];
+	l->detour = k != want || !same_ip(&local, &pick);
+	l->detour_retry_ms = now_ms + RECONCILE_MS;
+	if (!same_ip(&local, &pick) && !quiet)
+		cg_info("link %s: no route from %s through it to %s, sending from %s", l->ifname,
+			cg_addr_str(&pick, a, sizeof(a)), cg_addr_str(&l->cand, b, sizeof(b)),
+			cg_addr_str(&local, err, sizeof(err)));
 	l->up_since_ms = l->cand_since_ms = now_ms;
 	l->path_mtu = sock_path_mtu(l->fd, l->remote.ss_family);
 	/* The newest packet of any link stays in rxs.newest_ms (epoch.h). */
@@ -1747,6 +1816,9 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 		else
 			cg_json_null(j, "candidate");
 		cg_json_u64(j, "candidates", (uint64_t)l->ncand);
+		/* Away from where it was due, or from its pick, because a socket
+		 * could not be opened there (link_open tries again). */
+		cg_json_bool(j, "detour", l->fd >= 0 && l->detour);
 		cg_json_u64(j, "failovers", l->failovers);
 		link_threads_json(c, l, j);
 		cg_json_u64(j, "path_mtu", l->fd >= 0 ? l->path_mtu : 0);

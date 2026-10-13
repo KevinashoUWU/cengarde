@@ -52,6 +52,7 @@ sudo bench/lab.sh deepq    # un camino del servidor con 20 MB de cola local no a
 sudo bench/lab.sh skew     # primeras llegadas repartidas entre enlaces idénticos, puerta C5 (lab.d, va en ci)
 sudo bench/lab.sh wgpoke   # un router con la hora atrasada: el servidor hace que WireGuard inicie el handshake (lab.d, va en ci)
 sudo bench/lab.sh wgport   # el socket del servidor hacia WireGuard nunca se queda con el puerto de WireGuard, con el rango efímero reducido a dos puertos (lab.d, va en ci)
+sudo bench/lab.sh srcroute # un enlace cuya IPv6 más nueva solo tiene ruta por otro enlace: sale desde otra suya, y vuelve de la IPv4 cuando la ruta vuelve (lab.d, va en ci; se omite sin IPv6)
 sudo LAB_UDPMEM=1 bench/lab.sh udpmem  # el presupuesto de recepción frente a net.ipv4.udp_mem (lab.d; baja el sysctl de toda la máquina unos segundos: solo en el CI)
 sudo bench/lab.sh mtstall  # un hilo de enlace sin CPU no frena a los demás (link_threads = on; lab.d, va en ci)
 sudo bench/lab.sh mtlat    # latencia y CPU de legacy, off, on y on con busy_poll a 2, 20 y 80 kpps (lab.d, a mano)

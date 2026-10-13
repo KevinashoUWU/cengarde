@@ -160,4 +160,55 @@ void test_addrpick(void)
 	CHECK_EQ(cg_src_families(a, 3), 1u << AF_INET | 1u << AF_INET6);
 	CHECK_EQ(cg_src_families(a + 1, 2), 1u << AF_INET6);
 	CHECK_EQ(cg_src_families(a, 0), 0);
+
+	/* With a source left out (a socket found no route from it): the next
+	 * by rank, ties to the kernel's order. eth1 of the e2e run that failed
+	 * (2026-10-11): SLAAC addresses of the first prefixes, whose source
+	 * routes netifd put on eth3, newest first, and the DHCPv6 ones, routed
+	 * through eth1, after them. */
+	{
+		struct sockaddr_storage d = dst("2001:db8::4");
+		uint32_t skip = 0;
+		int k;
+
+		a[0] = nla("fd00:1::5054:ff:fe00:101", 0, U);
+		a[1] = nla("2001:db8:1:0:5054:ff:fe00:101", 0, U);
+		a[2] = nla("2001:db8:100:0:5054:ff:fe00:101", 0, U);
+		a[3] = nla("fd00:1::acd", 0, U);
+		a[4] = nla("2001:db8:1::acd", 0, U);
+		a[5] = nla("2001:db8:100::acd", 0, U);
+		a[6] = nla("fe80::5054:ff:fe00:101", 0, RT_SCOPE_LINK);
+		a[7] = nla("10.1.1.104", 0, U);
+		CHECK_EQ(cg_src_pick_skip(a, 8, &d, 0), 1);
+		CHECK_EQ(cg_src_pick_skip(a, 8, &d, 1u << 1), 2);
+		CHECK_EQ(cg_src_pick_skip(a, 8, &d, 1u << 1 | 1u << 2), 4);
+		CHECK_EQ(cg_src_pick_skip(a, 8, &d, 1u << 1 | 1u << 2 | 1u << 4), 5);
+		/* the global ones gone, the ULAs last; never link-local or IPv4 */
+		CHECK_EQ(cg_src_pick_skip(a, 8, &d, 0x36), 0);
+		CHECK_EQ(cg_src_pick_skip(a, 8, &d, 0x37), 3);
+		CHECK_EQ(cg_src_pick_skip(a, 8, &d, 0x3f), -1);
+		/* every usable one in turn, each once, as link_socket goes */
+		for (int i = 0; i < 7 && (k = cg_src_pick_skip(a, 8, &d, skip)) >= 0; i++) {
+			CHECK(!(skip >> k & 1));
+			skip |= 1u << k;
+		}
+		CHECK_EQ(skip, 0x3fu);
+		CHECK_EQ(cg_src_pick_skip(a, 8, &d, 0), cg_src_pick(a, 8, &d));
+		/* IPv4 the same way: a secondary after the primary */
+		d = dst("1.2.3.4");
+		a[0] = nla("10.0.0.5", IFA_F_SECONDARY, U);
+		a[1] = nla("10.0.0.6", 0, U);
+		CHECK_EQ(cg_src_pick_skip(a, 2, &d, 0), 1);
+		CHECK_EQ(cg_src_pick_skip(a, 2, &d, 1u << 1), 0);
+		CHECK_EQ(cg_src_pick_skip(a, 2, &d, 3), -1);
+	}
+	/* What another source may fix, and what it cannot. */
+	CHECK(cg_src_noroute(ENETUNREACH));
+	CHECK(cg_src_noroute(EHOSTUNREACH));
+	CHECK(cg_src_noroute(EADDRNOTAVAIL));
+	CHECK(!cg_src_noroute(EPERM));
+	CHECK(!cg_src_noroute(EACCES));
+	CHECK(!cg_src_noroute(ENODEV));
+	CHECK(!cg_src_noroute(EMFILE));
+	CHECK(!cg_src_noroute(0));
 }

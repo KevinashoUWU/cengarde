@@ -29,8 +29,11 @@
  *     candidate without any reply, the link was dead, not the address (a
  *     cellular outage, the modem's lease kept), and the operator's order
  *     wins again (cg_srv_on_reply).
- * - No periodic retry of a preferred address: each try would cost
- *   failover_ms of loss while it stays broken.
+ * - No periodic retry of a preferred address that did not answer: each try
+ *   would cost failover_ms of loss while it stays broken. One whose socket
+ *   could not even be opened (no route through the link yet) is another
+ *   matter: client.c tries to open it again every 5 s, which costs no
+ *   packet, and moves back once it opens (a detour).
  *
  * Pure functions, no clock and no I/O.
  *
