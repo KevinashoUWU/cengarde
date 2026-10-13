@@ -41,7 +41,9 @@
 #   asks again), by cengarde-vps-setup and by install.sh (firewalld refused
 #   before anything changes, a build that fails before wg0 is touched, the
 #   old service stopped before systemd-sysusers, the nftables drop-in only
-#   when nftables is enabled, run twice); purge writes the secret, and
+#   when nftables is enabled, run twice), and on a server whose running
+#   engine refuses the new configuration (0.5.0 and before: no reload asked
+#   of it, the restart reads it); purge writes the secret, and
 #   whether the router holds IP pass, back for 0.4's install.sh;
 # - what systemd runs when it stops cengarde-nat.service (ExecStop) or 0.4's
 #   wg0 (PostDown) takes the admin lock, as PID 1's child, not the caller's:
@@ -784,6 +786,21 @@ check "its drop-in installed" [ -e "$R/etc/systemd/system/nftables.service.d/cen
 rm -f "$FAKE_STATE/enabled-nftables"
 check "nftables.service no longer enabled" inst
 check "its drop-in removed" [ ! -e "$R/etc/systemd/system/nftables.service.d/cengarde.conf" ]
+say "install.sh on a server whose running engine refuses the new configuration"
+# 0.4.5 to 0.5.0: the static user is there, so the old engine keeps running
+# until 6/6, and it refuses a configuration with [client] sections on a
+# reload ("key: expected the base64 of 32 bytes"). install.sh leaves the
+# configuration to the restart that follows.
+fresh inst05
+printf 'root:x:0:0::/root:/bin/sh\n' >"$R/etc/passwd"
+(umask 077 && echo "$S1" >"$R/etc/cengarde/secret")
+export FAKE_CTL=error
+check "install.sh, with the running engine refusing any reload" inst
+unset FAKE_CTL
+check "the router imported, with its [client] section" grep -qx '\[client router\]' "$R/etc/cengarde/cengarde.conf"
+check "no reload asked of the old engine, the old service not stopped" not called '^cengarde ctl .*reload$|^systemctl reload cengarde$|^systemctl stop cengarde$'
+check "the new engine checked the file, cengarde restarted" \
+	sh -c 'grep -q "^cengarde -t -c " "$1" && grep -q "^systemctl restart cengarde$" "$1"' sh "$CALLS"
 fresh instnew
 rm -f "$R/etc/cengarde/nat.conf"
 printf 'ENGINE_USER=root\n' >"$TMP/natconf.keep"

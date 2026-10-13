@@ -169,7 +169,10 @@ say "4/6: the firewall (cengarde-nat apply; cengarde 0.4's rules removed)"
 cengarde-nat apply
 
 say "5/6: the routers (cengarde-vps-setup)"
-cengarde-vps-setup
+# No reload: the engine still running is the old one, which may refuse the
+# new configuration (0.5.0 and before: no [client] sections), and 6/6
+# restarts the new one anyway. The new engine checks the file (-t) first.
+CENGARDE_NO_RELOAD=1 cengarde-vps-setup
 
 say "6/6: the services"
 systemctl enable cengarde-nat.service cengarde-nat-check.timer cengarde-passthrough.path cengarde.service

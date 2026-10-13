@@ -54,7 +54,9 @@
 # allow" frees one below 1024). The engine writes the outcome to its forward
 # table, /var/lib/cengarde/forward, and cengarde-passthrough.path has
 # cengarde-nat apply it. Settings: /etc/cengarde/nat.conf (see cengarde-nat).
-# CENGARDE_ROOT goes in front of every path (tests).
+# CENGARDE_ROOT goes in front of every path (tests). CENGARDE_NO_RELOAD=1
+# writes the configuration without asking the running engine to reload it
+# (install.sh, which restarts the engine right after).
 #
 # SPDX-License-Identifier: GPL-2.0-only
 set -eu
@@ -449,6 +451,14 @@ keys_of() { # NAME: CG_* of a configured router
 # is not running (or restarting) reads the file when it starts.
 reload() {
 	local ans rc
+	# install.sh restarts the engine right after (CENGARDE_NO_RELOAD=1): the
+	# one running may be older than this configuration (0.5.0 and before
+	# refuse [client] sections without a global key), and the new one reads
+	# it when it starts.
+	if [ "${CENGARDE_NO_RELOAD:-}" = 1 ]; then
+		RELOAD="left to the restart that follows"
+		return 0
+	fi
 	if ! systemctl is-active -q cengarde 2>/dev/null; then
 		RELOAD="cengarde is not running: it reads this configuration when it starts"
 		return 0

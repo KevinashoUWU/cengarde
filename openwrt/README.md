@@ -690,6 +690,14 @@ cengarde-setup cloud-config > vps.yaml               # el user data del VPS
     `status_interval_ms` en UCI y la hora de pared (`time_ms`) en el estado
     de los dos extremos.
 
+  Un VPS de la 0.4.5 a la 0.5.0 (antes de los varios routers por VPS) no
+  pasaba de la 0.6.0 o la 0.6.1: el paso 5/6 de `install.sh` pedía al motor
+  viejo, todavía en marcha, que recargara la configuración nueva, y la
+  rechazaba («key: expected the base64 of 32 bytes»; la anterior quedaba
+  en su lugar y el motor viejo seguía andando). Desde la 0.6.2, `install.sh`
+  deja la configuración al reinicio del paso 6/6. Si te pasó, vuelve a
+  correr la actualización con la 0.6.2 o posterior.
+
   En el VPS:
 
   ```sh
