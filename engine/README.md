@@ -444,17 +444,25 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
   repartir la subida con la respuesta siguiente, dentro de un intervalo de
   sondeo (100 ms con tráfico).
 - **`split_small` (256; 0–2048 bytes):** los datagramas de hasta ese tamaño,
-  los handshakes y todo lo que se envía con menos de dos enlaces aptos van
-  siempre por todos los enlaces.
+  los handshakes y todo lo que se envía sin ningún enlace apto van siempre
+  por todos los enlaces. Con un solo enlace apto, ese lleva todo lo que se
+  reparte (guarda G2).
 - **`split_spread_ms` (30; 0–2000), en los dos extremos, para lo que cada
   uno envía:** solo reciben parte los enlaces que van, en ese sentido, a lo
   sumo esa diferencia de retraso detrás del más rápido de los que podrían
-  recibirla; los demás llevan copia de todos los paquetes, como un enlace de
-  peso 0, y si queda uno solo, todo va por todos. El retraso es el mismo que
+  recibirla; los demás quedan fuera del reparto y llevan solo lo que va por
+  todos (handshakes y paquetes chicos), y si queda uno solo, ese lleva todo
+  lo que se reparte. Hasta la 0.6.2 los que quedaban fuera llevaban copia de
+  todos los paquetes, como uno de peso 0, y con uno solo todo iba por todos:
+  en la primera prueba en la Pi (historia 012, 2026-10-13, cuatro enlaces 5G
+  con colas profundas) eso cargaba con todo el flujo justo al enlace que ya
+  iba atrasado por su cola llena, que llegaba a 2,6 s de atraso, y el router
+  perdía de 4000 a 53000 envíos por prueba; sin la guarda no perdía
+  ninguno (*medido en campo*, dos tandas). El retraso es el mismo que
   usa el silenciado (el que informa el otro extremo, filtrado). Un enlace
   sale en cuanto pasa la diferencia y vuelve cuando se mantiene dentro de
   3/4 de ella durante `mute_settle_ms` (2000), para que no oscile en el
-  borde; uno que todavía no tiene medida de retraso lleva copias hasta
+  borde; uno que todavía no tiene medida de retraso queda fuera hasta
   tenerla. Con 0 no hay guarda: es el reparto sin filtro, para medirlo en el
   laboratorio. Se aplica en caliente. El porqué: el receptor entrega en
   orden, así que un reparto va al paso de su enlace más lento. En el
@@ -940,14 +948,16 @@ Los paquetes repartidos: en el cliente, `upload.split` y, por enlace,
 `weight`; en el servidor, `download_split` por sesión y `tx_split` por
 enlace. En los dos, por enlace, `split_share` dice qué hace en el reparto
 (`null` si ese extremo no reparte ahora): `yes` (recibe su parte), `spread`
-(está más de `split_spread_ms` detrás y lleva copias), `waiting` (sin medida
-de retraso todavía: lleva copias), `weight 0` (lleva copias por su peso) o
-`no` (no es apto: silenciado, en espera o sin respuesta reciente), y
+(está más de `split_spread_ms` detrás: fuera del reparto, solo lleva lo que
+va por todos), `waiting` (sin medida de retraso todavía: igual), `weight 0`
+(lleva copias por su peso) o `no` (no es apto: silenciado, en espera o sin
+respuesta reciente), y
 `split_behind_ms`, cuánto va detrás del más rápido según la guarda (`null`
 sin medida); el valor de `split_spread_ms` está en `upload` (cliente) y en
 cada sesión (servidor). `upload.split_state` dice qué hace el cliente con
-la subida: `off`, `splitting`, `duplicating with < 2 links` (menos de dos
-enlaces aptos) o `waiting for the peer` (`split = on`, hasta que el servidor
+la subida: `off`, `splitting`, `one link` (uno solo apto: lleva todo lo que
+se reparte), `duplicating` (ninguno apto; hasta la 0.6.2,
+`duplicating with < 2 links`) o `waiting for the peer` (`split = on`, hasta que el servidor
 diga que reordena); `upload.server_reorders`, lo que dijo la respuesta más
 nueva (`null` sin cola: un servidor anterior). En cada sesión del servidor,
 `split_mode` dice qué hace con la bajada: `off`, `force`, `client` (reparte como pide el

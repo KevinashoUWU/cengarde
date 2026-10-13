@@ -375,8 +375,11 @@ configuración del router:
     tocar nada allí. *Diferencia máxima de retardo para repartir*
     (`split_spread_ms`, 30 ms; 0: sin límite): un enlace que va más de eso
     detrás del más rápido (en su retardo hacia el VPS) deja su parte y lleva
-    una copia de todos los paquetes, como con peso 0, hasta que se mantiene
-    dentro de 3/4 de esa diferencia durante el tiempo de asentamiento. El
+    solo lo que va por todos (handshakes y paquetes chicos) hasta que se
+    mantiene dentro de 3/4 de esa diferencia durante el tiempo de
+    asentamiento; si queda uno solo en el reparto, ese lleva todo. Hasta la
+    0.6.2 llevaba una copia de todos los paquetes, y en terreno eso llenaba
+    aún más la cola del enlace que ya iba atrasado (historia 012). El
     VPS hace lo mismo con la bajada, con su propio `split_spread_ms` (30).
     En el laboratorio, 50 ms entre dos enlaces ya se comían casi toda la
     ganancia del reparto y 150 ms la hundían (ver `engine/README.md`).

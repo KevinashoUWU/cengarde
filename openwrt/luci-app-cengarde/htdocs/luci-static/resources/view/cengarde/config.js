@@ -470,7 +470,7 @@ return view.extend({
 		};
 
 		o = s.taboption('advanced', form.Value, 'split_spread_ms', _('Largest delay difference to split (ms)'),
-			_('Only the uplinks whose delay towards the VPS is at most this much behind the fastest one get a share of the split; the others carry a copy of every packet, as with weight 0, and get their share back once they stay within three quarters of it for the settle time. The VPS does the same with the download, with its own setting (30 ms unless changed there). Measured in the lab: two equal uplinks split give almost twice one uplink, but 50 ms apart most of that gain is lost, and 150 ms apart the speed collapses: the slowest uplink in the split sets the pace of all. 0: no limit.'));
+			_('Only the uplinks whose delay towards the VPS is at most this much behind the fastest one get a share of the split; the others carry only the small packets and the handshakes, which go on every uplink, and get their share back once they stay within three quarters of it for the settle time. With one uplink left in the split, it carries everything that is split. The VPS does the same with the download, with its own setting (30 ms unless changed there). Measured in the lab: two equal uplinks split give almost twice one uplink, but 50 ms apart most of that gain is lost, and 150 ms apart the speed collapses: the slowest uplink in the split sets the pace of all. 0: no limit.'));
 		o.datatype = 'range(0,2000)';
 		o.placeholder = '30';
 		o.depends({ reorder: '1', split: '1' });

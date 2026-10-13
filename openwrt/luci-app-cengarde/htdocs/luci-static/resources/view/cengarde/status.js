@@ -92,10 +92,11 @@ function direction(standby, title) {
 }
 
 // An uplink the split leaves out for its delay (the engine's split_share):
-// it still carries a copy of every packet, so in use, but without a share.
+// it still carries what goes on every uplink (the small packets, the
+// handshakes), so in use, but without a share.
 function splitNote(l) {
-	return l.split_share == 'spread' ? [ ' ', badge(_('copies only'), '#68a',
-		_('More than the largest delay difference (Advanced tab) behind the fastest uplink: it carries a copy of every packet instead of a share of the split, until it catches up.')) ] : [];
+	return l.split_share == 'spread' ? [ ' ', badge(_('out of the split'), '#68a',
+		_('More than the largest delay difference (Advanced tab) behind the fastest uplink: it carries only the small packets and the handshakes, which go on every uplink, instead of a share of the split, until it catches up.')) ] : [];
 }
 
 function linkState(l) {

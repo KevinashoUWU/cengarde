@@ -228,8 +228,8 @@ msgstr "Una entrada por enlace, como NOMBRE=PESO (por ejemplo wan=3), con NOMBRE
 msgid "Largest delay difference to split (ms)"
 msgstr "Diferencia máxima de retardo para repartir (ms)"
 
-msgid "Only the uplinks whose delay towards the VPS is at most this much behind the fastest one get a share of the split; the others carry a copy of every packet, as with weight 0, and get their share back once they stay within three quarters of it for the settle time. The VPS does the same with the download, with its own setting (30 ms unless changed there). Measured in the lab: two equal uplinks split give almost twice one uplink, but 50 ms apart most of that gain is lost, and 150 ms apart the speed collapses: the slowest uplink in the split sets the pace of all. 0: no limit."
-msgstr "Solo reciben parte del reparto los enlaces cuyo retardo hacia el VPS va a lo sumo esta cantidad detrás del más rápido; los demás llevan una copia de todos los paquetes, como con peso 0, y recuperan su parte cuando se mantienen dentro de tres cuartos de ella durante el tiempo de asentamiento. El VPS hace lo mismo con la bajada, con su propio ajuste (30 ms si no se cambia allí). Medido en laboratorio: dos enlaces iguales repartiendo dan casi el doble que uno solo, pero con 50 ms de diferencia se pierde casi toda esa ganancia, y con 150 ms la velocidad se desploma: el enlace más lento del reparto marca el paso de todos. 0: sin límite."
+msgid "Only the uplinks whose delay towards the VPS is at most this much behind the fastest one get a share of the split; the others carry only the small packets and the handshakes, which go on every uplink, and get their share back once they stay within three quarters of it for the settle time. With one uplink left in the split, it carries everything that is split. The VPS does the same with the download, with its own setting (30 ms unless changed there). Measured in the lab: two equal uplinks split give almost twice one uplink, but 50 ms apart most of that gain is lost, and 150 ms apart the speed collapses: the slowest uplink in the split sets the pace of all. 0: no limit."
+msgstr "Solo reciben parte del reparto los enlaces cuyo retardo hacia el VPS va a lo sumo esta cantidad detrás del más rápido; los demás llevan solo los paquetes chicos y los handshakes, que van por todos los enlaces, y recuperan su parte cuando se mantienen dentro de tres cuartos de ella durante el tiempo de asentamiento. Si en el reparto queda un solo enlace, ese lleva todo lo que se reparte. El VPS hace lo mismo con la bajada, con su propio ajuste (30 ms si no se cambia allí). Medido en laboratorio: dos enlaces iguales repartiendo dan casi el doble que uno solo, pero con 50 ms de diferencia se pierde casi toda esa ganancia, y con 150 ms la velocidad se desploma: el enlace más lento del reparto marca el paso de todos. 0: sin límite."
 
 msgid "Probe interval (ms)"
 msgstr "Intervalo de sondas (ms)"
@@ -366,11 +366,11 @@ msgstr "en reserva"
 msgid "in use"
 msgstr "en uso"
 
-msgid "copies only"
-msgstr "solo copias"
+msgid "out of the split"
+msgstr "fuera del reparto"
 
-msgid "More than the largest delay difference (Advanced tab) behind the fastest uplink: it carries a copy of every packet instead of a share of the split, until it catches up."
-msgstr "Va más atrás del más rápido que la diferencia máxima de retardo (pestaña Avanzado): lleva una copia de todos los paquetes en vez de una parte del reparto, hasta que se pone al día."
+msgid "More than the largest delay difference (Advanced tab) behind the fastest uplink: it carries only the small packets and the handshakes, which go on every uplink, instead of a share of the split, until it catches up."
+msgstr "Va más atrás del más rápido que la diferencia máxima de retardo (pestaña Avanzado): lleva solo los paquetes chicos y los handshakes, que van por todos los enlaces, en vez de una parte del reparto, hasta que se pone al día."
 
 msgid "paused"
 msgstr "en pausa"

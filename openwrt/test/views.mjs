@@ -199,8 +199,8 @@ for (const [lang, tr] of [ [ 'en', english ], [ 'es', spanish ] ]) {
 	assert.equal(o.split_spread_ms.title, lang === 'en' ? 'Largest delay difference to split (ms)'
 		: 'Diferencia máxima de retardo para repartir (ms)');
 	// it says what it does with the others, why, and what 0 means
-	for (const word of lang === 'en' ? [ 'copy of every packet', 'three quarters', '50 ms', '150 ms', 'lab', '0: no limit' ]
-		: [ 'copia de todos los paquetes', 'tres cuartos', '50 ms', '150 ms', 'laboratorio', '0: sin límite' ])
+	for (const word of lang === 'en' ? [ 'small packets', 'one uplink left', 'three quarters', '50 ms', '150 ms', 'lab', '0: no limit' ]
+		: [ 'paquetes chicos', 'un solo enlace', 'tres cuartos', '50 ms', '150 ms', 'laboratorio', '0: sin límite' ])
 		assert.ok(o.split_spread_ms.descr.includes(word), `${lang}: the spread option mentions "${word}"`);
 
 	// what means nothing without its switch is hidden without it
@@ -373,7 +373,7 @@ for (const [lang, tr] of [ [ 'en', english ], [ 'es', spanish ] ]) {
 	const link = (name, share) => ({ name, label: name, state: 'live', upload: 'active', download_muted: false, rx_first: 1,
 		tx_bytes: 1, upload_mutes: 0, rtt_ms: 10, upload_behind_ms: 0, override: 'auto', split_share: share });
 	const urows = uplinkRows([ link('up1', 'yes'), link('up2', 'spread'), link('up3', null) ]);
-	const COPIES = L('copies only', 'solo copias');
+	const COPIES = L('out of the split', 'fuera del reparto');
 	assert.equal(urows.length, 3);
 	assert.ok(urows[1][6].includes(COPIES), `${lang}: up2 out of the split says so: ${urows[1][6]}`);
 	assert.ok(!urows[0][6].includes(COPIES) && !urows[2][6].includes(COPIES), `${lang}: the others do not`);

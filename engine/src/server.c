@@ -1281,15 +1281,15 @@ struct dpaths {
 	int split;       /* the download is split (cg_split_active) */
 	uint16_t elig;   /* see split_eligible */
 	uint16_t dup0;   /* weight 0 */
-	uint16_t dup;    /* dup0 and the eligible paths G4 keeps out: what the batch copies to */
+	uint16_t share;  /* elig without the paths G4 keeps out: the ones a split packet may take */
 	uint16_t w[CG_MAX_LINKS];
 };
 
 /* The paths that may take a share of a split download (split.h): live and
  * carrying, not muted for delay (guard G1), and with a verified packet from
  * the client within CG_SPLIT_STALE_PROBES of the interval it announced on
- * that path (guard G3). Fewer than 2 with a weight make the split duplicate
- * everything (guard G2). */
+ * that path (guard G3). One with a weight takes every split packet, none
+ * makes the split duplicate everything (guard G2). */
 static uint16_t split_eligible(const struct session *S, const struct dpaths *d, uint64_t now_ms)
 {
 	uint16_t e = 0;
@@ -1318,7 +1318,7 @@ static struct dpaths down_paths(const struct server *s, const struct session *S,
 		if (s->cfg->split != CG_SPLIT_FORCE && S->path[p].bond_ok && !d.w[p])
 			d.dup0 |= (uint16_t)(1u << p);
 	}
-	d.dup = (uint16_t)(d.dup0 | cg_split_spread_dup(&S->spread, d.elig, d.dup0, s->cfg->split_spread_ms * 1000));
+	d.share = (uint16_t)(d.elig & ~cg_split_spread_out(&S->spread, d.elig, d.dup0, s->cfg->split_spread_ms * 1000));
 	return d;
 }
 
@@ -1344,8 +1344,8 @@ static void down_prepare(struct server *s, struct session *S, int m, uint8_t *bu
 	struct cg_hdr h = { .type = CG_T_DATA, .hint = C->hint, .session = S->id, .ts = (uint32_t)now_us };
 
 	/* Before the header: CG_F_SPLIT is under the MAC. */
-	s->pick[m] = (int8_t)(d->split ? cg_split_pick(&S->sp, d->elig, d->dup, d->w, buf[0], (uint32_t)len,
-						       s->cfg->split_small, &h.flags)
+	s->pick[m] = (int8_t)(d->split ? cg_split_pick(&S->sp, d->carry, d->share, d->dup0, d->w, buf[0],
+						       (uint32_t)len, s->cfg->split_small, &h.flags)
 				       : -1);
 	S->down_split += s->pick[m] >= 0;
 	h.seq = S->tx_seq++;
@@ -1381,7 +1381,7 @@ static void down_send(struct server *s, struct session *S, int m, uint64_t now_m
 
 		if (carry >> p & 1) {
 			for (int j = 0; j < m; j++)
-				if (cg_split_dst(s->pick[j], carry, d->dup) >> p & 1)
+				if (cg_split_dst(s->pick[j], carry, d->dup0) >> p & 1)
 					sel[k++] = j;
 		} else if ((live >> p & 1) && s->cfg->mute_trickle) {
 			for (int j = 0; j < m; j++)

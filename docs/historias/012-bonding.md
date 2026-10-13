@@ -294,14 +294,19 @@ Hecho en el PR #24 (paquetes 0.6.0). Lo que hay [código]:
     mensaje de control más nuevo.
 - **Guardas del reparto:**
   - G1 y G2: nunca por un enlace silenciado o en reserva, y con menos de 2
-    elegibles, duplica;
+    elegibles, duplica. ~~Con uno solo duplicaba~~ (corregido el
+    2026-10-13, paquetes 0.6.3): con uno solo elegible, ese lleva todo lo que
+    se reparte, y solo sin ninguno se duplica (abajo, «La espiral de las
+    guardas»);
   - G3: un enlace sin nada verificado del otro extremo durante 3
     intervalos de sonda deja de recibir parte (la ventana de un enlace
     muerto pasa de ~1,3 s a ~300 ms [estimación; MEDIR en `linkdeath`]);
   - G4, `split_spread_ms` (30 ms; 0 = sin límite; decidido como perilla
     por el dueño): un enlace que va más de eso detrás del más rápido en su
-    retardo de envío lleva copias en vez de parte, y vuelve tras quedarse
-    dentro de 3/4 de esa diferencia durante `mute_settle_ms`.
+    retardo de envío ~~lleva copias en vez de parte~~ queda fuera del reparto
+    y lleva solo lo que va por todos (handshakes y paquetes chicos; corregido
+    el 2026-10-13, paquetes 0.6.3), y vuelve tras quedarse dentro de 3/4 de
+    esa diferencia durante `mute_settle_ms`.
 - **Costo por paquete** [medido, `bench/robench.c`, un núcleo de Xeon a
   2,1 GHz del contenedor]: 15 ns en orden; 25 ns repartido con 50 ms de
   dispersión, y 47 ns contando la copia al pool. El laboratorio mide
@@ -359,7 +364,8 @@ reparto forzado en los dos extremos con la guarda G4 de 30 ms, y
     temprano de slow start [razonado].
 - **La guarda G4 evita el hundimiento:** con 50 y 150 ms el enlace lento
   pasa a llevar copias, nada se reparte (`split_rx` 0) y queda lo de un
-  enlace solo (1,00× en todas las celdas). Cuesta la ganancia que TCP
+  enlace solo (1,00× en todas las celdas). (Desde la 0.6.3 el lento ya no
+  lleva copias: el rápido lo lleva todo, marcado como repartido.) Cuesta la ganancia que TCP
   habría tenido con 50 ms; recuperarla sin hundir QUIC es trabajo del
   planificador por llegada esperada (paso 3), que reparte según cuándo
   llegará cada paquete y no por turnos.
