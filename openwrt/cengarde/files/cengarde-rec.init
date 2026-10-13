@@ -1,7 +1,8 @@
 #!/bin/sh /etc/rc.common
 # The field recorder (/usr/sbin/cengarde-rec, story 012), off unless
-# /etc/config/cengarde has a section "recorder" with enabled 1. It keeps the
-# engine's status file once a second in hourly gzip files, capped in size.
+# /etc/config/cengarde has a section "recorder" with enabled 1. It keeps
+# every new version of the engine's status file (status_interval_ms, read up
+# to 5 times a second) in hourly gzip files, capped in size.
 
 START=99
 STOP=05

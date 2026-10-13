@@ -10,7 +10,7 @@
 # with an older engine each line gets "t", this script's clock in seconds.
 # Nothing is chosen here: the analysis decides what to read, later.
 #
-# It never runs a command per poll but sleep: the status file is read with
+# It never runs a command per poll but the wait: the status file is read with
 # the shell's own read, and only a new version (its uptime_ms changed) is
 # written. Cost per hour with 5 links at 1 sample/s: ~14 MB uncompressed
 # while being written (the current file), ~0.7 MB compressed.
@@ -20,7 +20,9 @@
 #   -d  where to write (/tmp/cengarde-rec; a USB disk for a long campaign)
 #   -m  most MB of compressed files kept, the oldest go first (64)
 #   -r  seconds per file (3600)
-#   -p  seconds between reads (0.2; 1 where sleep takes no fractions)
+#   -p  seconds between reads (0.2). OpenWrt's busybox sleep takes whole
+#       seconds only: there the wait is ucode's sleep() (ucode comes with
+#       LuCI and rpcd), and without ucode it is 1 s.
 # SIGTERM or SIGINT closes and compresses the current file.
 
 STATUS=/var/run/cengarde.json
@@ -46,7 +48,22 @@ while getopts s:d:m:r:p:h o; do
 done
 case "$MAX_MB$ROTATE_S" in '' | *[!0-9]*) usage ;; esac
 mkdir -p "$DIR" || exit 1
-sleep "$POLL" 2>/dev/null || POLL=1
+# nap: waits POLL seconds, in the background so that a signal ends it.
+NAP_MS=
+if ! sleep "$POLL" 2>/dev/null; then
+	NAP_MS=$(awk -v p="$POLL" 'BEGIN { if (p + 0 > 0) printf "%d", p * 1000 + 0.5 }')
+	if [ -z "$NAP_MS" ] || ! ucode -e "sleep($NAP_MS)" 2>/dev/null; then
+		NAP_MS=
+		POLL=1
+	fi
+fi
+nap() {
+	if [ -n "$NAP_MS" ]; then
+		ucode -e "sleep($NAP_MS)" &
+	else
+		sleep "$POLL" &
+	fi
+}
 
 CUR=$DIR/current.jsonl
 N=0
@@ -113,6 +130,6 @@ while :; do
 		rotate
 		start=$now
 	fi
-	sleep "$POLL" &
+	nap
 	wait $!
 done
