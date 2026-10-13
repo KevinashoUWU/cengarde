@@ -20,7 +20,12 @@
 # 4. The client stops for longer than session_timeout_ms (5 s here) and
 #    knocks again: its new session takes the old one's port, so WireGuard's
 #    initiation reaches it directly.
-# 5. With wireguard_poke = none (a reload), a client that knocks after a
+# 5. The server restarts (an upgrade) while the client knocks, its clock
+#    still behind: the server read the port WireGuard knows the client by
+#    from wireguard_port_file, its new session binds it, and WireGuard's
+#    initiation reaches the router. Before 0.6.2 the port was in memory only,
+#    and nothing but a restart of WireGuard brought such a tunnel back.
+# 6. With wireguard_poke = none (a reload), a client that knocks after a
 #    restart is not poked for.
 LAB_CI=1
 
@@ -64,6 +69,19 @@ wgpoke_client() {
 	echo $! >"$RUN/client.pid"
 }
 
+# wgpoke_engine: the server engine, stopped and started again.
+wgpoke_engine() {
+	local pid i
+	pid=$(cat "$RUN/server.pid")
+	kill "$pid" 2>/dev/null
+	for i in $(seq 1 30); do
+		kill -0 "$pid" 2>/dev/null || break
+		sleep 0.1
+	done
+	ip netns exec srv "$CENGARDE_BIN" -c "$RUN/server.conf" >>"$RUN/server.log" 2>&1 &
+	echo $! >"$RUN/server.pid"
+}
+
 # wgpoke_server EXPR: a value of the server's status file, refreshed.
 wgpoke_server() {
 	sleep 1.2 # status_interval_ms
@@ -87,11 +105,12 @@ wgpoke_restart() {
 }
 
 wgpoke() {
-	local fail=0 v r n rn red port_b='' ports='' delay
+	local fail=0 v r n rn red port_b='' port_w='' ports='' delay
 	ENGINE=c NLINKS=3
-	SERVER_EXTRA="wireguard_poke = 127.0.0.1:59309;session_timeout_ms = 5000${SERVER_EXTRA:+;$SERVER_EXTRA}"
+	SERVER_EXTRA="wireguard_poke = 127.0.0.1:59309;session_timeout_ms = 5000;wireguard_port_file = $RUN/wg/ports${SERVER_EXTRA:+;$SERVER_EXTRA}"
 	trap 'pkill -f "$LAB/fakewg.py"; teardown' EXIT
 	trap 'pkill -f "$LAB/fakewg.py"; teardown; exit 130' INT TERM
+	rm -rf "$RUN/wg" # a previous run's ports
 	if ! { setup && start; }; then
 		echo "FAIL: the lab did not start"
 		echo "wgpoke: FAILED"
@@ -174,7 +193,36 @@ wgpoke() {
 	fi
 	[ "$(wgpoke_redirects)" = "$red" ] || { echo "FAIL: a redirect where none was needed"; fail=1; }
 
-	echo "   5. wireguard_poke = none"
+	echo "   5. the server restarts while the client knocks"
+	port_w=$(sed -n 's/^endpoint //p' "$v" | tail -1)
+	if [ -n "$port_w" ] && grep -qx "$port_w" "$RUN/wg/ports" 2>/dev/null; then
+		echo "   wireguard_port_file holds the port WireGuard knows ($port_w)"
+	else
+		echo "FAIL: wireguard_port_file does not hold port ${port_w:-?}: $(tr '\n' '|' <"$RUN/wg/ports" 2>/dev/null)"
+		fail=1
+	fi
+	wgpoke_router stop
+	n=$(wgpoke_lines "$v")
+	rn=$(wgpoke_lines "$r")
+	wgpoke_engine
+	wgpoke_router knock
+	if wgpoke_wait "$r" "$rn" '^got-initiation' $((KNOCK_S + 4)); then
+		echo "   WireGuard's initiation reached the router after the restart"
+	else
+		echo "FAIL: no initiation from WireGuard reached the router in $((KNOCK_S + 4)) s"
+		fail=1
+	fi
+	grep -q "WireGuard knew the client by port $port_w before the restart" "$RUN/server.log" ||
+		{ echo "FAIL: the server did not read the port back"; fail=1; }
+	ports=$(tail -n +$((n + 1)) "$v" | sed -n 's/^ignored //p' | sort -u | tr '\n' ' ')
+	if [ -n "$port_w" ] && [ "${ports% }" = "$port_w" ]; then
+		echo "   the new session took the port again ($port_w)"
+	else
+		echo "FAIL: the new session knocked from port(s) ${ports:-none}, not $port_w"
+		fail=1
+	fi
+
+	echo "   6. wireguard_poke = none"
 	sed -i 's/^wireguard_poke = .*/wireguard_poke = none/' "$RUN/server.conf"
 	kill -HUP "$(cat "$RUN/server.pid")"
 	sleep 1

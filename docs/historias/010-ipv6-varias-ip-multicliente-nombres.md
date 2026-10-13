@@ -1348,3 +1348,9 @@ resolvía al arrancar dejaba el motor sin arrancar): lo busca el cliente.
   archivo (`-t`) y lo lee al reiniciarse en el paso 6/6. `setup-dryrun.sh`
   lo prueba con un motor en marcha que rechaza toda recarga (falla sin el
   arreglo). Paquetes 0.6.2.
+- 2026-10-13: en la misma actualización el túnel del router no volvió: el
+  router venía 3 días atrasado y el motor nuevo del VPS había olvidado el
+  puerto por el que WireGuard lo conocía (historia 002). Ahora el servidor lo
+  guarda en `wireguard_port_file` (`/var/lib/cengarde/wg/ports`, que
+  `cengarde-vps-setup` escribe y siembra desde `wg show`), con una línea por
+  router.

@@ -19,6 +19,7 @@
  *
  *   mode = server
  *   forward_file = /var/lib/cengarde/forward
+ *   wireguard_port_file = /var/lib/cengarde/wg/ports
  *
  *   [client alpha]
  *   key = <the router's key>
@@ -215,6 +216,7 @@ struct cg_config {
 	struct cg_fwd_rule *forward;
 	int nforward;
 	char forward_file[256]; /* the forward table (fwdtable.h); "": none */
+	char wireguard_port_file[256]; /* each client's port WireGuard knows (wgport.h); "": none */
 	uint32_t lanes;             /* listen sockets steered by link id (steer.h); 1: one socket */
 	/* The client's address in the tunnel: a datagram there makes WireGuard
 	 * start a handshake when it ignores the client's (wgwatch.h). Family

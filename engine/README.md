@@ -740,6 +740,17 @@ Desde la 0.4.4, el servidor lo destraba solo, sin cambiar el protocolo:
   mientras la nueva llama en vano, o cuando la nueva empieza sin otras
   vivas. Así se destraba también un corte más largo que
   `session_timeout_ms`, o un WireGuard que contesta tarde.
+- **Guarda el puerto (0.6.2):** con `wireguard_port_file` el servidor
+  escribe el puerto de cada cliente en ese archivo, desde un hilo
+  (`cg-wgport`), y lo lee al arrancar: la primera sesión de cada cliente
+  vuelve a tomarlo. Antes vivía solo en memoria, y un reinicio del motor
+  (una actualización) con el router atrasado a la vez dejaba el túnel caído
+  hasta reiniciar WireGuard en el VPS. El formato (`src/wgport.h`) es una
+  cabecera con versión y una línea `PUERTO NOMBRE` por cliente (`PUERTO` a
+  secas con un solo cliente). `cengarde-vps-setup` lo pone en
+  `/var/lib/cengarde/wg/ports`, un directorio aparte porque
+  `cengarde-passthrough.path` vigila `/var/lib/cengarde`, y la primera vez lo
+  siembra desde `wg show`.
 - **Estado:** `wireguard.pokes` y `wireguard.redirected_handshakes`, y por
   sesión `wireguard_unanswered`.
 

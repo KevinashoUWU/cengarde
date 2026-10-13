@@ -79,6 +79,7 @@ int cg_status_writer_start(struct cg_status_writer *w, const char *path, const c
  * written yet. Never waits: returns -1, and keeps j, in the rare moment the
  * writer holds the lock to take the previous one. */
 int cg_status_writer_submit(struct cg_status_writer *w, struct cg_json *j);
+/* Writes what was handed over and not written yet, then ends the thread. */
 void cg_status_writer_stop(struct cg_status_writer *w);
 
 #endif
