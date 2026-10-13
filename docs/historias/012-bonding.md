@@ -483,6 +483,40 @@ perfil, y cada celda da el rango de las dos.
   próxima prueba de campo compara P7 (P6 sin copias) y P8 (P3 sin copias)
   con P6 y P3.
 
+#### `split_spread_copy` en el laboratorio [medido]
+
+Fuente: `bond.yml` por `workflow_dispatch`, commit `0ee36ed`, run
+38399231367: caso `bloat` (tres enlaces de 20–22 ms y 30, 20 y 8 Mbit/s,
+detrás de colas de 1, 1 y 2 s), 3 corridas de 10 s por celda, `split =
+force` en los dos extremos. Mediana en Mbit/s; «envíos por paquete» es lo
+que el extremo que envía mandó por paquete (3 = copia en los tres enlaces).
+
+| variante | sentido | Cubic | BBR | QUIC | envíos por paquete |
+| --- | --- | ---: | ---: | ---: | --- |
+| `redund` | subida / bajada | 26,4 / 26,4 | 26,2 / 26,4 | 25,7 / 25,7 | 2,0–2,3 |
+| `split-sp30` (copias) | subida / bajada | 27,0 / 26,9 | 26,2 / 26,4 | 26,0 / 26,0 | 2,8–3,0 |
+| `split-sp30-nc` | subida / bajada | 27,0 / 27,2 | 29,6 / 31,4 | 6,3 / 6,1 | 1,0–2,3 |
+| `split-sp250` (copias) | subida / bajada | 31,8 / 27,8 | 25,1 / 26,4 | 26,0 / 26,0 | 2,0–3,0 |
+| `split-sp250-nc` | subida / bajada | 26,7 / 26,3 | 21,4 / 21,1 | 6,5 / 6,1 | 1,0–1,2 |
+
+- **Con copias, el reparto en `bloat` es la redundancia:** casi todo va por
+  los tres enlaces (2,8–3,0 envíos por paquete) y da lo mismo que `redund`.
+- **Sin copias, BBR con spread 30 gana un 13–19 %** (29,6 y 31,4 frente a
+  26,2 y 26,4): manda por paquete 1,0–1,2 veces.
+- **Sin copias, QUIC se hunde a 6 Mbit/s en los dos spreads** (0,23–0,25×).
+  Declara perdidos el 4–7 % de los paquetes, y casi todos son espurios
+  (525 de 539 de subida con spread 30): es desorden, no pérdida. Es el
+  pendiente «por qué QUIC declara pérdidas espurias con el reparto». Las
+  copias lo esconden porque un paquete llega también por los enlaces
+  rápidos.
+- **Sin copias y con spread 250, Cubic retransmite 3–4 %** y BBR baja a 21
+  (0,80–0,85×).
+- **Ningún envío perdido en ninguna celda:** las colas de netem son
+  independientes y no hay socket que se llene. Lo que pasó en la Pi no se
+  reproduce aquí.
+- Con eso, `yes` sigue por omisión. El A/B de campo (P7 y P8) dice si en la
+  Pi pesa más la espiral o el costo para QUIC.
+
 ## Qué hacemos con esto
 
 ### Orden de la Fase 5 y criterios de salida

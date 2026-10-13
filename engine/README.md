@@ -489,9 +489,11 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
   15 al 30 % del tiempo duplicando; sin la guarda no perdía ninguno. El de
   `yes`: en el laboratorio (`bond`, caso `bloat`, colas de netem de 1000 a
   2000 paquetes, 3 repeticiones; *medido en laboratorio*), sacar las copias
-  subió BBR con `split_spread_ms` 30 de 26 a 29–32 Mbit/s, pero lo bajó a
-  21–24 con 250 y hundió QUIC de 26 a 7 Mbit/s; y el laboratorio no
-  reproduce los envíos perdidos del campo. Queda `yes` hasta que una prueba
+  subió BBR con `split_spread_ms` 30 de 26 a 30–31 Mbit/s, pero lo bajó a
+  21 con 250 y hundió QUIC de 26 a 6 Mbit/s, que declara perdido por desorden
+  lo que llega tarde por un solo enlace; y el laboratorio no reproduce los
+  envíos perdidos del campo (historia 012, «`split_spread_copy` en el
+  laboratorio»). Queda `yes` hasta que una prueba
   de campo A/B diga otra cosa. Se aplica en caliente.
 - **`weight` en `[link X]` (cliente; 1, de 0 a 1000):** la parte del reparto
   que lleva ese enlace con `split = on`, en la subida y en la bajada (el
