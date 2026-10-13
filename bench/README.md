@@ -855,6 +855,65 @@ guardar solo las claves que se leen y de compartir las cadenas repetidas eran
   archivos comprimidos, cada muestra una vez, una caída de 2 a 5 s en l2 y
   ninguna en l1 ni l3.
 
+### `fieldperf`: cuánto lleva cada enlace, con iperf3 (`fieldperf.sh`, `fieldperf.py`, `lab.d/fieldperf.sh`)
+
+El registrador dice qué hizo el motor; esto mide qué pueden llevar los
+enlaces y el túnel, en el router de verdad (historia 012). `fieldperf.sh`
+corre en el router (le basta el busybox de OpenWrt, más iperf3:
+`apk add iperf3` en la 25.12, `opkg install iperf3` en la 24.10) y prueba,
+con TCP y 4 flujos, subida y bajada:
+
+- `solo`: cada enlace solo, fuera del túnel (`iperf3 --bind-dev`, como el
+  motor ata sus sockets), contra la dirección del VPS que usa ese enlace;
+- `all`: todos los enlaces a la vez, fuera del túnel (un puerto del VPS por
+  enlace). Si la suma no llega a la de `solo`, el cuello está del lado del
+  router: el trunk, la Pi o un CPE que comparte puerto;
+- `tunnel`: a través del túnel, a 10.79.0.1, tal como está configurado el
+  motor (copia o reparto).
+
+Mientras corre cada prueba hace ping por cada enlace que carga (y por el
+túnel), y antes y después guarda los contadores que dicen dónde se pierde
+lo que el router no pudo mandar: `SndbufErrors` de UDP (`/proc/net/snmp`),
+`tx_dropped` de cada interfaz y de la que tiene debajo (la del trunk), la
+cola (`tc -s qdisc`, si está `tc-tiny`) y los `tx_drops` del motor.
+Antes de todo, 5 pings en reposo por enlace. Las marcas van a
+`marcas.txt`, como las de los perfiles, para cruzarlas con `cengarde-rec`.
+
+Gasta datos móviles a propósito: `plan` imprime las pruebas y una
+estimación de los MB (con 40 Mbit/s de subida y 100 de bajada por enlace,
+`-e` para otras; en copia, el túnel cuesta lo mismo en cada enlace), y
+`run` pregunta antes de empezar. Con 4 enlaces, 10 s por prueba y las tres
+pruebas son unos 2,1 GB (*estimación*). No se corre mientras se transmite.
+
+```sh
+# en el VPS (una vez; vps off al terminar): servidores iperf3 en 5201-5204,
+# el puerto abierto en ufw y reservado en cengarde-nat (con IP pass, todo
+# puerto desde 1024 que el VPS no escucha va al router)
+sudo sh fieldperf.sh vps on
+# en el router
+sh /tmp/fieldperf.sh plan
+sh /tmp/fieldperf.sh run              # o -m "solo all" sin el túnel, -t 5...
+tar czf /tmp/fieldperf.tgz -C /tmp fieldperf-FECHA
+# en el PC
+python3 bench/fieldperf.py fieldperf-FECHA --csv fieldperf.csv
+```
+
+`fieldperf.py` da una tabla por prueba y enlace (la fila `*`, la suma de la
+prueba): Mbit/s recibidos, retransmisiones, el RTT de TCP (en subida), el
+ping bajo carga contra el de reposo, lo que el motor mandó por cada enlace
+(en `tunnel`, cómo cayó la carga en cada uno) y las pérdidas de cada
+contador; `--csv` y `--json` dan las mismas filas. Los archivos tienen las
+direcciones del VPS y de los módems: no van al repositorio.
+
+`lab.d/fieldperf.sh` (en `ci`) lo prueba con `fieldperf_test.py`, sobre
+una corrida inventada con respuestas conocidas (pings de busybox y de
+iputils, uno sin respuestas, un iperf3 caído, los contadores de UDP en IPv4
+e IPv6, la cola raíz y no las hijas), y de punta a punta con 2 enlaces del
+laboratorio: servidores iperf3 en `srv`, `fieldperf.sh` (bajo `sh`) en
+`cli` tomando los enlaces y sus direcciones del estado del motor, `solo` y
+`all` (el laboratorio no tiene WireGuard, así que no `tunnel`). `plan` no
+puede correr nada y tiene que dar 210 MB.
+
 Paso a paso (pasa las mismas variables a `setup` y a `start`):
 
 ```sh
