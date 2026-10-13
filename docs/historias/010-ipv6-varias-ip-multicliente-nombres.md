@@ -1,6 +1,6 @@
 # 010 — IPv6, dirección de llegada, varios routers por VPS y nombres
 
-- **Fecha:** 2026-10-11
+- **Fecha:** 2026-10-11 (actualizada el 2026-10-12: origen sin ruta por su enlace)
 - **Estado:** vigente. PR 1 y PR 2 hechos (paquetes 0.4.1 y 0.4.2,
   protocolo v3 sin cambios). El PR 3 está hecho en cuatro partes: el 3d1
   (herramientas del VPS, aún v3; paquetes 0.4.5), el 3d2a (protocolo v4 en
@@ -521,6 +521,13 @@ router.
   última, luego las obsoletas, las temporales, y primero las estables.
   Entre iguales, la más nueva, como el kernel: así un prefijo nuevo
   (renumeración brusca, RFC 8978) se usa en marcha igual que al arrancar.
+  **Corregido el 2026-10-12:** si el socket no puede conectar desde esa
+  dirección por falta de ruta por su propio enlace (`ENETUNREACH`,
+  `EHOSTUNREACH`, `EADDRNOTAVAIL`), prueba la siguiente por rango antes de
+  pasar a la siguiente dirección del servidor; y un enlace que quedó
+  desviado (en otra dirección del servidor, u otro origen, porque el socket
+  no abría donde tocaba) lo vuelve a intentar cada 5 s y vuelve en cuanto
+  abre (`detour` en el estado). Ver «Cambios».
 - **MTU de camino:** cada 5 s lee `IP_MTU`/`IPV6_MTU` de cada socket y lo
   compara con el datagrama de WireGuard más grande de esos 5 s (un `if` por
   paquete); si no cabe, avisa cada 10 min por enlace con el MTU de
@@ -1311,3 +1318,22 @@ resolvía al arrancar dejaba el motor sin arrancar): lo busca el cliente.
   Lo vio una vez el CI (PR 6, el smoke de un paquete). Ahora el servidor lo
   descarta y pide otro, y `bench/lab.sh wgport` (en ci) lo prueba con el
   rango reducido a dos puertos.
+- 2026-10-12: la falla intermitente del bloque IPv6 del e2e (24.10.8, run
+  38174762288, una vez): eth1 se quedaba en `1.2.3.4` y nunca volvía a
+  `[2001:db8::4]`. Causa [código y log del CI]: eth3 del router recibió
+  también los prefijos de up1 (`2001:db8:1::/64`, `2001:db8:100::/64`,
+  `fd00:1::/64`), y netifd puso la ruta por origen de esos /64 en eth3. La
+  dirección SLAAC más nueva de eth1, la que el motor elige, solo salía por
+  eth3; atado a eth1 (`SO_BINDTODEVICE`), su `connect` daba «Network
+  unreachable» y el enlace pasaba a la IPv4, sin volver nunca: ni
+  reintentaba ni probaba otro origen, aunque las direcciones DHCPv6 de eth1
+  (`2001:db8:1::acd`) tenían su ruta por eth1. Cuál dirección es la más
+  nueva depende del orden en que llegan las RA y DHCPv6: de ahí lo
+  intermitente. Por qué el VPS de prueba anuncia los prefijos de up1 por
+  eth3 no está averiguado [MEDIR]; con dos uplinks del mismo operador
+  puede pasar lo mismo en terreno. Arreglo: `link_socket` (client.c) prueba
+  los orígenes por rango (`cg_src_pick_skip`, `cg_src_noroute` en
+  `addrpick.h`, con tests), el cambio de dirección se mide contra la
+  elegida y no contra la atada, y el desvío se reintenta. `bench/lab.sh
+  srcroute` (en ci; se omite sin IPv6) lo reproduce con rutas por origen en
+  netns.

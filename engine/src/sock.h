@@ -45,7 +45,7 @@ int cg_sock_drops(int fd, uint32_t *drops);
 int cg_udp_mem_read(uint64_t mem[3]);
 
 /* UDP socket for one uplink: SO_BINDTODEVICE(ifname), bound to local (port 0)
- * and connected to remote. */
+ * and connected to remote. On failure errno is the failing call's. */
 int cg_udp_link(const char *ifname, const struct sockaddr_storage *local, const struct sockaddr_storage *remote,
 		char *err, size_t errlen);
 

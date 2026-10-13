@@ -24,6 +24,11 @@
  *      IPV6_PREFER_SRC_PUBLIC), because a temporary address expires within
  *      a day and would move the path with it
  *
+ * The rank is a preference, not a promise of a route: when a link socket
+ * finds no route from the pick through its own interface (cg_src_noroute;
+ * a prefix whose source route netifd put on another uplink), client.c
+ * tries the next by rank (cg_src_pick_skip).
+ *
  * Pure functions over the addresses netlink reported, in the kernel's order
  * (cg_addr_slot); no I/O.
  *
@@ -31,6 +36,7 @@
 #ifndef CG_ADDRPICK_H
 #define CG_ADDRPICK_H
 
+#include <errno.h>
 #include <linux/if_addr.h>
 #include <linux/rtnetlink.h>
 #include <netinet/in.h>
@@ -70,8 +76,11 @@ static inline int cg_ip6_src_rank(const uint8_t addr[16], uint32_t ifa_flags, ui
 }
 
 /* The source for dst (its family and, for IPv6, its address) among the n
- * addresses of an interface: an index into a, or -1 when none is usable. */
-static inline int cg_src_pick(const struct cg_nl_addr *a, int n, const struct sockaddr_storage *dst)
+ * addresses of an interface, leaving out those whose bit is set in skip
+ * (the ones a socket could not be opened from, cg_src_noroute): an index
+ * into a, or -1 when none is usable. The best by rank, ties to the first. */
+static inline int cg_src_pick_skip(const struct cg_nl_addr *a, int n, const struct sockaddr_storage *dst,
+				   uint32_t skip)
 {
 	const uint8_t *d6 = ((const struct sockaddr_in6 *)dst)->sin6_addr.s6_addr;
 	int best = -1, best_rank = 0;
@@ -79,7 +88,7 @@ static inline int cg_src_pick(const struct cg_nl_addr *a, int n, const struct so
 	for (int i = 0; i < n; i++) {
 		int r;
 
-		if (a[i].family != dst->ss_family)
+		if (a[i].family != dst->ss_family || (i < 32 && (skip >> i & 1)))
 			continue;
 		if (a[i].family == AF_INET)
 			r = !cg_ipv4_usable(a[i].addr) ? 0 : a[i].flags & IFA_F_SECONDARY ? 1 : 2;
@@ -93,6 +102,22 @@ static inline int cg_src_pick(const struct cg_nl_addr *a, int n, const struct so
 		}
 	}
 	return best;
+}
+
+static inline int cg_src_pick(const struct cg_nl_addr *a, int n, const struct sockaddr_storage *dst)
+{
+	return cg_src_pick_skip(a, n, dst, 0);
+}
+
+/* Whether a socket that could not connect from one source (errno e) may
+ * work from another address of the same interface: the kernel found no
+ * route from that source (a source route of its prefix out through
+ * another interface, as netifd installs when two uplinks advertise the
+ * same prefix; or none at all yet), or the address is not there (gone, or
+ * tentative). Anything else fails the same from any source. */
+static inline int cg_src_noroute(int e)
+{
+	return e == ENETUNREACH || e == EHOSTUNREACH || e == EADDRNOTAVAIL;
 }
 
 /* Where netlink.c stores an address it has not seen, among the n it has.

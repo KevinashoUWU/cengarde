@@ -755,8 +755,11 @@ enlace:
   está pausado o forzado a mano (`override`) y RTT;
 - en el cliente, hacia dónde: `local`, `remote`, `family` (`ipv4` o `ipv6`),
   `candidate` (su lugar entre las direcciones del servidor de su familia: 0
-  es la primera; más, que hizo failover), `candidates`, `failovers` y
-  `path_mtu` (el MTU de camino de su socket, 0 si no se sabe);
+  es la primera; más, que hizo failover), `candidates`, `detour` (`true`
+  cuando el socket no abrió donde tocaba, por falta de ruta por el enlace,
+  y está en otra dirección del servidor o sale desde otra dirección suya; lo
+  reintenta cada 5 s), `failovers` y `path_mtu` (el MTU de camino de su
+  socket, 0 si no se sabe);
 - salud en el sentido que decide este extremo (`upload` en el cliente,
   `download` en el servidor): `active` o `muted`, cuánto va por detrás del
   más rápido (`*_behind_ms`), cuántas veces se silenció y desde cuándo;
