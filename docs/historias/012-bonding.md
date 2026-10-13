@@ -473,6 +473,7 @@ Los umbrales son propuestas [razonado] y se miden en `bench/`.
   - por qué QUIC declara pérdidas espurias con el reparto entre enlaces iguales;
   - `cengarde-vps-setup` no expone `split_spread_ms` (el VPS usa 30 ms);
   - probar `split = on` en la Pi con pesos por enlace, cuando el dueño lo decida.
+  - la espiral de las guardas con congestión: G4 le da copia de todo a un enlace que se atrasa y G2 duplica todo con menos de 2 elegibles, justo cuando las colas se llenan. En la primera prueba en la Pi (2026-10-13, un speedtest por perfil, 4 enlaces 5G, pesos 1) la subida dio 37,5 Mbit/s copiando, 52,0 y 37,1 con las guardas estrictas y medias (ratos «duplicating with < 2 links», miles de envíos perdidos por enlace, hasta 2,4 s de atraso) y 81,2 con `split_spread_ms` 250, sin silenciado ni mínimo de enlaces (reparto todo el rato, sin pérdidas, ≤ 30 ms de atraso); n = 1, la bajada no se repartió (el reordenador del router estaba apagado). Falta la corrida con repeticiones y los perfiles que separan G4 del silenciado (P5, P6), y después el gobernador (pasos 2–3).
 
 ## Cambios
 
@@ -482,3 +483,4 @@ Los umbrales son propuestas [razonado] y se miden en `bench/`.
 - 2026-10-11: paso 0 hecho salvo los datos de campo (PR 6, paquetes 0.5.5): QUIC y dispersión en `bond`, los instrumentos pasivos del motor y su análisis en `fieldrec.py`. Corregida la explicación de `starlink15` (era [razonado]): son pérdidas en los cortes, no desorden.
 - 2026-10-11: la corrida de 10 repeticiones («Medidas con dispersión»: dos modos en `reorder150` con Cubic y en `starlink15` con BBR) y `fieldrec.py --rf`, con las métricas de radio de `cell-monitor`.
 - 2026-10-12: paso 1 (PR #24, paquetes 0.6.0): el reordenador, el reparto experimental, la guarda `split_spread_ms` y sus medidas; el A/B del reordenador en redundancia (sin costo; `reorder_dup_wait_ms` queda en 0). Corregidas las referencias de código que el v4 dejó viejas (`CG_RXV_RESET`, la secuencia densa) y la ventana (4096, no 8192).
+- 2026-10-13: primera prueba de perfiles en la Pi (en Pendiente: la espiral de las guardas). `cengarde-rec` espera con el `sleep()` de `ucode` donde el `sleep` de busybox no acepta fracciones (el de OpenWrt): antes grababa una vez por segundo aunque el motor escribiera cada 200 ms.

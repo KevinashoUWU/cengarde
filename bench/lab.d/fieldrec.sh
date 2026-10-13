@@ -9,8 +9,37 @@
 # second. Passes when the recorder stops clean on SIGTERM leaving only
 # compressed files, every engine sample at most once and with time_ms, and
 # bench/fieldrec.py finds one outage of 2 to 5 s on l2 with download loss,
-# none on l1 and l3, and time with 2 of 3 links live.
+# none on l1 and l3, and time with 2 of 3 links live. Then 3 s more with a
+# sleep that takes whole seconds only, as OpenWrt's busybox: the recorder
+# waits with ucode's sleep() instead (a stand-in here) and still keeps 8
+# samples or more, where waiting 1 s would keep 3 or 4.
 LAB_CI=1
+
+# fieldrec_nap: the recorder under a sleep that refuses fractions, with a
+# stand-in ucode whose sleep(MS) it logs.
+fieldrec_nap() {
+	local bin="$RUN/nap-bin" dir="$RUN/rec-nap" real n rec
+	real=$(command -v sleep)
+	rm -rf "$bin" "$dir"
+	mkdir -p "$bin"
+	# shellcheck disable=SC2016 # the stand-ins expand their own variables
+	printf '#!/bin/sh\ncase $1 in *.*) echo "sleep: invalid number '"'"'$1'"'"'" >&2; exit 1 ;; esac\nexec %s "$@"\n' "$real" >"$bin/sleep"
+	# shellcheck disable=SC2016
+	printf '#!/bin/sh\necho "$*" >>"%s/ucode.log"\nms=${2#sleep(}\nms=${ms%%)}\nexec %s "$(awk -v m="$ms" '"'"'BEGIN { print m / 1000 }'"'"')"\n' "$RUN" "$real" >"$bin/ucode"
+	chmod +x "$bin/sleep" "$bin/ucode"
+	: >"$RUN/ucode.log"
+	PATH="$bin:$PATH" sh "$LAB/../openwrt/cengarde/files/cengarde-rec" -s "$RUN/client.json" -d "$dir" -p 0.05 &
+	rec=$!
+	sleep 3
+	kill -TERM "$rec"
+	wait "$rec"
+	n=$(gzip -dc "$dir"/rec-*.jsonl.gz 2>/dev/null | wc -l)
+	echo "   whole-second sleep: $n samples in 3 s, waits $(grep -c '^-e sleep(50)$' "$RUN/ucode.log") times with ucode"
+	if [ "$n" -lt 8 ] || ! grep -q '^-e sleep(50)$' "$RUN/ucode.log"; then
+		echo "FAIL: the recorder did not wait with ucode's sleep()"
+		return 1
+	fi
+}
 
 fieldrec() {
 	local fail=0 rec cut dir="$RUN/rec" out
@@ -76,6 +105,7 @@ for e in errs:
     print("FAIL: " + e)
 sys.exit(1 if errs else 0)
 EOF
+	fieldrec_nap || fail=1
 	teardown
 	if [ "$fail" = 0 ]; then
 		echo "fieldrec: ok"
