@@ -60,7 +60,10 @@
 #   NAME-spN     any of them with split_spread_ms = N; split-sp0 is the split
 #                without the delay guard, the raw round-robin (the engine's
 #                default, 30, keeps a link 50 ms behind out of the share)
-# Suffixes go in any order, each once (split-sp0-bp64).
+#   NAME-nc      any of them with split_spread_copy = no: a link the delay
+#                guard keeps out carries no copies, and one link left in the
+#                share takes it all (split-sp30-nc against split-sp30)
+# Suffixes go in any order, each once (split-sp0-bp64, split-sp250-nc).
 # BOND_VARIANTS empty is "bonded solo", solo in equal and het only: exactly the
 # runs from before the variants (the CI's time estimate counts them). With
 # BOND_VARIANTS given, solo also runs in reorder50 and reorder150, the
@@ -195,14 +198,15 @@ bond_settle() {
 # bond_variant NAME: the settings of a variant: BV_CLIENT and BV_SERVER
 # ("key = value;..."), BV_SOLO (1: the first link alone). 1 for a name it does not know.
 bond_variant() {
-	local v=$1 bp='' sp='' s
+	local v=$1 bp='' sp='' nc='' s
 	BV_CLIENT='' BV_SERVER='' BV_SOLO=0
-	# The suffixes, from the last: -bpN and -spN, each once.
+	# The suffixes, from the last: -bpN, -spN and -nc, each once.
 	while :; do
 		s=${v##*-}
 		case $s in
 		bp[0-9]*) [ -z "$bp" ] || return 1; bp=${s#bp} ;;
 		sp[0-9]*) [ -z "$sp" ] || return 1; sp=${s#sp} ;;
+		nc) [ -z "$nc" ] || return 1; nc=1 ;;
 		*) break ;;
 		esac
 		case ${s#??} in *[!0-9]*) return 1 ;; esac
@@ -219,6 +223,7 @@ bond_variant() {
 	esac
 	[ -n "$bp" ] && BV_CLIENT="${BV_CLIENT:+$BV_CLIENT;}reorder_bypass = $bp"
 	[ -n "$sp" ] && BV_CLIENT="${BV_CLIENT:+$BV_CLIENT;}split_spread_ms = $sp"
+	[ -n "$nc" ] && BV_CLIENT="${BV_CLIENT:+$BV_CLIENT;}split_spread_copy = no"
 	BV_SERVER=$BV_CLIENT
 	return 0
 }

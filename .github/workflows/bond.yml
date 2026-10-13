@@ -18,8 +18,10 @@ name: Bonding lab
 # "variants" input of a manual run it also runs redund-ro0 (reorder = no),
 # redund-dw20 (reorder_dup_wait_ms = 20), split (split = force at both ends,
 # muting off), splitnoro (split without the reorderer) and any of them with
-# -bpN (reorder_bypass = N) or -spN (split_spread_ms = N: split-sp0 is the
-# split without its delay guard, the raw round-robin); giving variants puts
+# -bpN (reorder_bypass = N), -spN (split_spread_ms = N: split-sp0 is the
+# split without its delay guard, the raw round-robin) or -nc
+# (split_spread_copy = no: the links the guard keeps out carry no copies);
+# giving variants puts
 # solo also in reorder50 and reorder150. The split and reorder settings need
 # the engine of step 1.
 #

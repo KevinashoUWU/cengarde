@@ -1,6 +1,6 @@
 # 012 — Bonding para cengarde: qué dice la evidencia y el plan de la Fase 5
 
-- **Fecha:** 2026-10-10 (actualizada el 2026-10-12 con el paso 1)
+- **Fecha:** 2026-10-10 (actualizada el 2026-10-12 con el paso 1 y el 2026-10-13 con la primera prueba de campo del reparto y `split_spread_copy`)
 - **Estado:** vigente. Plan de la Fase 5 (bonding). Paso 0 hecho salvo los datos de campo: el laboratorio `bench/lab.sh bond` con TCP y QUIC y su línea base, la dispersión con repeticiones, los instrumentos pasivos del motor (tardanza conjunta, pérdida en todos los enlaces, tamaños; paquetes 0.5.5) y el registrador de campo con su análisis (`cengarde-rec`, `bench/fieldrec.py`); falta la semana de datos de la Pi. Paso 1 hecho (paquetes 0.6.0): el reordenador en los dos extremos y el reparto experimental con sus guardas, medidos en el laboratorio.
 - **Fuentes:**
   - estudio con 103 agentes (2026-10-10): 60 fuentes primarias más 11 de huecos (normas RIST/SRT/MPTCP/MPQUIC/MP-DCCP/ATSSS/TR-348/RFC 8157, papers de planificadores y de FEC multicamino, código de SRTLA/MLVPN/glorytun/OpenMPTCProuter/ZeroTier/KCP, productos comerciales, medidas de 5G/LTE/Starlink, RACK-TLP/QUIC/WireGuard); la lista con acceso y veredictos está en [012-bonding/fuentes.md](012-bonding/fuentes.md) y las síntesis por eje en [012-bonding/ejes.md](012-bonding/ejes.md);
@@ -14,6 +14,7 @@
 - **Las retransmisiones de `starlink15` son pérdidas en los cortes, no desorden** [medido, 2026-10-11]: el 93–99 % son paquetes perdidos por todos los enlaces cuando, en cada corte de 1,5 s, el flujo de 80–90 Mbit/s cae sobre el enlace de 50 Mbit/s y su cola de 100 ms. Con dos enlaces FIFO, la redundancia no desordena. Lo que sí desordena, y es para el reordenador del paso 1, es la vuelta tras un corte: el enlace 5 ms más rápido adelanta a lo que fue solo por el otro.
 - **Sin reordenador no se puede repartir:** RACK, el QUIC de Chrome y Windows confunden un spread de 50–150 ms con pérdidas. El reordenador va sobre la **secuencia autenticada de cengarde** (32 bits, bajo el MAC), no sobre el contador de WireGuard como decía el ROADMAP.
 - **Paso 1, medido** [2026-10-12]: en redundancia el reordenador no cambia nada medible (10 corridas; esperar 20 ms en duplicado empeora QUIC, así que la espera queda en 0). Con el reordenador, el reparto de dos enlaces iguales da 1,98× uno solo con Cubic y BBR (QUIC 1,2–1,4×). Pero un reparto por turnos con 50–150 ms de dispersión se hunde (BBR a 1 Mbit/s, QUIC a 0,4) con el reordenador limpio: el receptor entrega al ritmo del enlace lento. La guarda `split_spread_ms` (30 ms) deja al lento con copias; repartir bien entre retardos distintos es el paso 3.
+- **El reparto en la Pi, medido en campo** [2026-10-13, 2 tandas de 7 perfiles, 4 enlaces 5G]: repartida y con guardas permisivas, la subida llegó al doble de pico que copiando (115–126 frente a 63–68 Mbit/s); la bajada repartida, a menos (90–114 frente a 126–129). Con `split_spread_ms` 30 las guardas entraron en espiral: copias sobre los enlaces que ya iban atrasados, miles de envíos perdidos en el router, hasta 2,6 s de atraso. El laboratorio no reproduce esas pérdidas, y ahí las copias ayudan a QUIC: queda la perilla `split_spread_copy` (por omisión, las copias de la 0.6.2) para un A/B en campo.
 - **En bonding un enlace caído pierde su parte:** el mudo de 1–1,5 s sirve para redundancia, no para repartir. Hace falta una exclusión rápida (~200–300 ms, el contador de entregas verificadas no avanza) separada del mudo, y control de cola (un AQM virtual en `cg_sched_mask`).
 - **El planificador es un candidato:** la llegada esperada (ETA = OWD + cola/capacidad) tiene que ganarles a un WRR por capacidad y a minRTT con tope. ARQ de un reintento, FEC XOR y k = 2 se comparan entre sí en el mismo paso; solo la FEC densa queda descartada.
 - **Proceso:** Haiku extrajo 542 afirmaciones; Sonnet verificó cada cita (78 % verificadas, 21 % matizadas, 0,4 % refutadas); Opus sintetizó, armó las matrices y una auditoría densa corrigió la de cengarde.
@@ -294,19 +295,18 @@ Hecho en el PR #24 (paquetes 0.6.0). Lo que hay [código]:
     mensaje de control más nuevo.
 - **Guardas del reparto:**
   - G1 y G2: nunca por un enlace silenciado o en reserva, y con menos de 2
-    elegibles, duplica. ~~Con uno solo duplicaba~~ (corregido el
-    2026-10-13, paquetes 0.6.3): con uno solo elegible, ese lleva todo lo que
-    se reparte, y solo sin ninguno se duplica (abajo, «La espiral de las
-    guardas»);
+    elegibles, duplica. Con `split_spread_copy = no` (2026-10-13, paquetes
+    0.6.3), con uno solo elegible ese lleva todo lo que se reparte, y solo
+    sin ninguno se duplica (abajo, «La espiral de las guardas, en la Pi»);
   - G3: un enlace sin nada verificado del otro extremo durante 3
     intervalos de sonda deja de recibir parte (la ventana de un enlace
     muerto pasa de ~1,3 s a ~300 ms [estimación; MEDIR en `linkdeath`]);
   - G4, `split_spread_ms` (30 ms; 0 = sin límite; decidido como perilla
     por el dueño): un enlace que va más de eso detrás del más rápido en su
-    retardo de envío ~~lleva copias en vez de parte~~ queda fuera del reparto
-    y lleva solo lo que va por todos (handshakes y paquetes chicos; corregido
-    el 2026-10-13, paquetes 0.6.3), y vuelve tras quedarse dentro de 3/4 de
-    esa diferencia durante `mute_settle_ms`.
+    retardo de envío lleva copias en vez de parte, o con
+    `split_spread_copy = no` solo lo que va por todos (handshakes y paquetes
+    chicos), y vuelve tras quedarse dentro de 3/4 de esa diferencia durante
+    `mute_settle_ms`.
 - **Costo por paquete** [medido, `bench/robench.c`, un núcleo de Xeon a
   2,1 GHz del contenedor]: 15 ns en orden; 25 ns repartido con 50 ms de
   dispersión, y 47 ns contando la copia al pool. El laboratorio mide
@@ -364,8 +364,9 @@ reparto forzado en los dos extremos con la guarda G4 de 30 ms, y
     temprano de slow start [razonado].
 - **La guarda G4 evita el hundimiento:** con 50 y 150 ms el enlace lento
   pasa a llevar copias, nada se reparte (`split_rx` 0) y queda lo de un
-  enlace solo (1,00× en todas las celdas). (Desde la 0.6.3 el lento ya no
-  lleva copias: el rápido lo lleva todo, marcado como repartido.) Cuesta la ganancia que TCP
+  enlace solo (1,00× en todas las celdas). (Con `split_spread_copy = no`,
+  desde la 0.6.3, el lento no lleva copias: el rápido lo lleva todo, marcado
+  como repartido.) Cuesta la ganancia que TCP
   habría tenido con 50 ms; recuperarla sin hundir QUIC es trabajo del
   planificador por llegada esperada (paso 3), que reparte según cuándo
   llegará cada paquete y no por turnos.
@@ -427,6 +428,61 @@ tráfico duplicado.
     los paquetes que la siguen].
   - Decisión: `reorder_dup_wait_ms` queda en 0.
 
+#### La espiral de las guardas, en la Pi [medido en campo]
+
+Fuente: dos tandas de 7 perfiles el 2026-10-13 de madrugada (UTC-3), en el
+orden P0 a P4 y de vuelta, con un speedtest por perfil y `cengarde-rec`
+cada 200 ms en el router y en el VPS (las grabaciones crudas tienen las IP
+de los módems y del VPS: no van al repo). Cuatro enlaces 5G (CLARO, ENTEL,
+MOVISTAR, WOM) por VLAN, pesos 1, reparto en los dos sentidos y
+`reorder_max_wait_ms` de 200 a 500. Las velocidades son el pico del túnel
+en ventanas de 2 s según el motor, no el resultado del speedtest; n = 2 por
+perfil, y cada celda da el rango de las dos.
+
+| perfil | guardas | subida pico | bajada pico | envíos perdidos (router) | atraso máx. de subida | subida duplicando |
+| --- | --- | --- | --- | --- | --- | --- |
+| P0 | copia, sin reparto | 63–68 | 126–129 | 2200–5491 | 2,4 s | — |
+| P1 | spread 30, mute 150, mín. 2 | 85–101 | 99–105 | 113–36 483 | 0,4–1,9 s | 0–30 % |
+| P6 | spread 30, sin mute, mín. 1 | 72–102 | 90–92 | 3957–52 882 | 2,6 s | 15–18 % |
+| P2 | spread 100, mute 300, mín. 2 | 105 | 98–105 | 0–15 268 | 0,07–1,9 s | 0 % |
+| P5 | spread 250, mute 300, mín. 2 | 117–124 | 93–102 | 30–16 444 | 0,15–2,6 s | 0 % |
+| P3 | spread 250, sin mute, mín. 1 | 116–126 | 107–114 | 0–190 | 0,15–0,23 s | 0 % |
+| P4 | sin guardas | 115–121 | 95–107 | 0 | 0,17–0,34 s | 0 % |
+
+- **Con `split_spread_ms` 30 (P1, P6) las guardas entran en espiral:** en
+  tres de cuatro corridas la subida pasó del 15 al 30 % del tiempo
+  duplicando, los sockets del router rechazaron miles de envíos
+  (`tx_drops`: `sendmmsg` con EAGAIN o ENOBUFS) y un enlace llegó a 2,6 s
+  de atraso. Con 250 o sin guarda (P3, P4), casi ningún envío perdido y
+  ningún enlace pasó de 340 ms. El mecanismo [razonado]: un enlace se
+  atrasa porque su cola se llena; G4 lo saca del reparto y le da copia de
+  todo, y con uno solo en el reparto G2 manda todo por todos. El flujo
+  entero cae justo sobre las colas llenas.
+- **Repartida y permisiva, la subida llega al doble de pico que copiando**
+  (P3 y P4: 115–126 frente a 63–68 Mbit/s).
+- **La bajada repartida queda por debajo de la copiada** (90–114 frente a
+  126–129). Copiando, cada enlace perdió ~41 % de la bajada en la
+  grabación completa, pero solo un 5–8 % se perdió en todos (`lost_all`):
+  la copia suma capacidad sin quererlo, porque las pérdidas de los enlaces
+  casi no coinciden, a costa de 4 veces el egreso del VPS [razonado]. Es la
+  idea de k de N (FEC entre enlaces) del paso 4, y un dato para ella.
+- **La copia también pierde envíos en el router** (P0: 2200–5491): no solo
+  el reparto llena algo del lado de la Pi. Qué lo llena (el socket, la cola
+  de la interfaz, la del trunk o el puerto del CPE) está sin medir [MEDIR:
+  `tc -s qdisc`, `SndbufErrors` de `/proc/net/snmp`, la velocidad de cada
+  puerto, iperf3 por enlace dentro y fuera del túnel].
+- **El laboratorio no reproduce el mecanismo:** el caso `bloat` de `bond`
+  (tres enlaces de 30, 20 y 8 Mbit/s detrás de colas de 1, 1 y 2 s) no
+  perdió ningún envío; las colas de netem son independientes y las copias
+  salen gratis. Ahí sacar las copias ayuda a BBR con spread 30 y hunde a
+  QUIC (tabla abajo, «`split_spread_copy` en el laboratorio»).
+- **Decisión** (con el dueño, 2026-10-13): las copias de G4 y el duplicado
+  de G2 pasan a ser una perilla, `split_spread_copy`, en los dos extremos.
+  Por omisión `yes`, como hasta la 0.6.2; con `no`, el enlace que queda
+  fuera lleva solo lo que va por todos y el que queda solo lleva todo. La
+  próxima prueba de campo compara P7 (P6 sin copias) y P8 (P3 sin copias)
+  con P6 y P3.
+
 ## Qué hacemos con esto
 
 ### Orden de la Fase 5 y criterios de salida
@@ -479,7 +535,7 @@ Los umbrales son propuestas [razonado] y se miden en `bench/`.
   - por qué QUIC declara pérdidas espurias con el reparto entre enlaces iguales;
   - `cengarde-vps-setup` no expone `split_spread_ms` (el VPS usa 30 ms);
   - probar `split = on` en la Pi con pesos por enlace, cuando el dueño lo decida.
-  - la espiral de las guardas con congestión: G4 le da copia de todo a un enlace que se atrasa y G2 duplica todo con menos de 2 elegibles, justo cuando las colas se llenan. En la primera prueba en la Pi (2026-10-13, un speedtest por perfil, 4 enlaces 5G, pesos 1) la subida dio 37,5 Mbit/s copiando, 52,0 y 37,1 con las guardas estrictas y medias (ratos «duplicating with < 2 links», miles de envíos perdidos por enlace, hasta 2,4 s de atraso) y 81,2 con `split_spread_ms` 250, sin silenciado ni mínimo de enlaces (reparto todo el rato, sin pérdidas, ≤ 30 ms de atraso); n = 1, la bajada no se repartió (el reordenador del router estaba apagado). Falta la corrida con repeticiones y los perfiles que separan G4 del silenciado (P5, P6), y después el gobernador (pasos 2–3).
+  - la espiral de las guardas con congestión: ~~falta la corrida con repeticiones y los perfiles que separan G4 del silenciado~~ (hecha: «La espiral de las guardas, en la Pi»). Falta el A/B de `split_spread_copy` en campo (P7 y P8 frente a P6 y P3, con el motor 0.6.3 en los dos extremos), saber qué rechaza los envíos en la Pi, y después el gobernador (pasos 2–3). La primera prueba (n = 1, la bajada sin repartir porque el reordenador del router estaba apagado) dio la misma forma: 37,5 Mbit/s de subida copiando, 52,0 y 37,1 con las guardas estrictas y medias, y 81,2 con `split_spread_ms` 250.
 
 ## Cambios
 
@@ -489,4 +545,5 @@ Los umbrales son propuestas [razonado] y se miden en `bench/`.
 - 2026-10-11: paso 0 hecho salvo los datos de campo (PR 6, paquetes 0.5.5): QUIC y dispersión en `bond`, los instrumentos pasivos del motor y su análisis en `fieldrec.py`. Corregida la explicación de `starlink15` (era [razonado]): son pérdidas en los cortes, no desorden.
 - 2026-10-11: la corrida de 10 repeticiones («Medidas con dispersión»: dos modos en `reorder150` con Cubic y en `starlink15` con BBR) y `fieldrec.py --rf`, con las métricas de radio de `cell-monitor`.
 - 2026-10-12: paso 1 (PR #24, paquetes 0.6.0): el reordenador, el reparto experimental, la guarda `split_spread_ms` y sus medidas; el A/B del reordenador en redundancia (sin costo; `reorder_dup_wait_ms` queda en 0). Corregidas las referencias de código que el v4 dejó viejas (`CG_RXV_RESET`, la secuencia densa) y la ventana (4096, no 8192).
-- 2026-10-13: primera prueba de perfiles en la Pi (en Pendiente: la espiral de las guardas). `cengarde-rec` espera con el `sleep()` de `ucode` donde el `sleep` de busybox no acepta fracciones (el de OpenWrt): antes grababa una vez por segundo aunque el motor escribiera cada 200 ms.
+- 2026-10-13: primera prueba de perfiles en la Pi (en Pendiente: la espiral de las guardas).
+- 2026-10-13: segunda prueba en la Pi, con dos tandas y la bajada repartida («La espiral de las guardas, en la Pi»), y el caso `bloat` en `bond`. `split_spread_copy` (paquetes 0.6.3): las copias de G4 y el duplicado de G2 con un solo enlace pasan a ser una perilla, por omisión como hasta la 0.6.2; `bond` suma el sufijo `-nc` y la tabla, los envíos por paquete y los envíos perdidos. `cengarde-rec` espera con el `sleep()` de `ucode` donde el `sleep` de busybox no acepta fracciones (el de OpenWrt): antes grababa una vez por segundo aunque el motor escribiera cada 200 ms.

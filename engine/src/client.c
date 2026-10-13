@@ -1007,13 +1007,23 @@ static uint16_t split_eligible(const struct client *c, uint16_t live, uint16_t c
 	return e;
 }
 
+/* The masks a batch is split with: guard G4 applied as split_spread_copy
+ * says (split.h). */
+static struct cg_split_masks split_masks(const struct client *c, uint16_t carry, uint16_t elig, uint16_t dup0)
+{
+	return cg_split_spread_apply(c->cfg->split_spread_copy,
+				     cg_split_spread_out(&c->spread, elig, dup0, c->cfg->split_spread_ms * 1000), carry,
+				     elig, dup0);
+}
+
 /* What the split does with the upload now, for the status: splitting
- * (2 links or more share it), one link (guard G2: the only one in the
- * split takes it) or duplicating (none). */
+ * (2 links or more share it), one link (guard G2 with split_spread_copy
+ * off: the only one in the split takes it) or duplicating. */
 static const char *split_state(const struct client *c, uint64_t now_ms)
 {
-	uint16_t present, live, carry, e, dup0;
+	uint16_t present, live, carry, dup0;
 	const uint16_t *w = split_weights(c, &dup0);
+	struct cg_split_masks k;
 	int n = 0;
 
 	if (c->cfg->split == CG_SPLIT_OFF)
@@ -1022,18 +1032,18 @@ static const char *split_state(const struct client *c, uint64_t now_ms)
 		return "waiting for the peer"; /* on: no reply yet says the server reorders */
 	link_masks(c, now_ms, &present, &live);
 	carry = cg_health_carriers(c->uh, CG_MAX_LINKS, present, live);
-	e = split_eligible(c, live, carry, now_ms);
-	e &= (uint16_t)~cg_split_spread_out(&c->spread, e, dup0, c->cfg->split_spread_ms * 1000);
+	k = split_masks(c, carry, split_eligible(c, live, carry, now_ms), dup0);
 	for (int i = 0; i < CG_MAX_LINKS; i++)
-		n += (e >> i & 1) && w[i] && !(dup0 >> i & 1);
-	return n >= 2 ? "splitting" : n ? "one link" : "duplicating";
+		n += (k.eligible >> i & 1) && w[i] && !(k.dup >> i & 1);
+	return n >= 2 ? "splitting" : n && k.carriers ? "one link" : "duplicating";
 }
 
 /* Sends the m packets prepared in hdr/oiov: each on the links pick[] says
- * (every carrying link, health.h, or its one link and the weight-0 links of
- * dup0 when split), and one duplicated packet in mute_trickle on the other
- * live links. live and carry as when the packets were picked. */
-static void send_links(struct client *c, int m, uint64_t now_ms, uint16_t live, uint16_t carry, uint16_t dup0)
+ * (every carrying link, health.h, or its one link and the links of dup
+ * when split: weight 0, and with split_spread_copy the ones G4 keeps out),
+ * and one duplicated packet in mute_trickle on the other live links. live
+ * and carry as when the packets were picked. */
+static void send_links(struct client *c, int m, uint64_t now_ms, uint16_t live, uint16_t carry, uint16_t dup)
 {
 	int ids[CG_MAX_LINKS], n = 0, first = 0;
 
@@ -1051,7 +1061,7 @@ static void send_links(struct client *c, int m, uint64_t now_ms, uint16_t live, 
 
 		if (carry >> i & 1) {
 			for (int j = 0; j < m; j++)
-				if (cg_split_dst(c->pick[j], carry, dup0) >> i & 1)
+				if (cg_split_dst(c->pick[j], carry, dup) >> i & 1)
 					sel[k++] = j;
 		} else if ((live >> i & 1) && c->cfg->mute_trickle) {
 			for (int j = 0; j < m; j++)
@@ -1090,7 +1100,8 @@ static void wg_read(struct client *c)
 {
 	for (int round = 0; round < CG_MAX_ROUNDS; round++) {
 		int n = cg_rx(c->wg_fd, &c->in), m = 0, split;
-		uint16_t present, live, carry, elig, dup0;
+		uint16_t present, live, carry, dup0;
+		struct cg_split_masks k;
 		const uint16_t *w;
 		uint64_t now_us, now_ms;
 
@@ -1102,11 +1113,9 @@ static void wg_read(struct client *c)
 		 * before its header (CG_F_SPLIT is under the MAC). */
 		link_masks(c, now_ms, &present, &live);
 		carry = cg_health_carriers(c->uh, CG_MAX_LINKS, present, live);
-		elig = split_eligible(c, live, carry, now_ms);
 		split = split_active(c);
 		w = split_weights(c, &dup0);
-		/* Guard G4: the links too far behind take no share. */
-		elig &= (uint16_t)~cg_split_spread_out(&c->spread, elig, dup0, c->cfg->split_spread_ms * 1000);
+		k = split_masks(c, carry, split_eligible(c, live, carry, now_ms), dup0);
 		for (int i = 0; i < n; i++) {
 			size_t len = c->in.msg[i].msg_len;
 			uint8_t flags = 0;
@@ -1128,8 +1137,9 @@ static void wg_read(struct client *c)
 				c->wg_peer = c->in.from[i];
 				c->have_peer = 1;
 			}
-			c->pick[m] = (int8_t)(split ? cg_split_pick(&c->sp, carry, elig, dup0, w, c->in.buf[i][0],
-								    (uint32_t)len, c->cfg->split_small, &flags)
+			c->pick[m] = (int8_t)(split ? cg_split_pick(&c->sp, k.carriers, k.eligible, k.dup, w,
+								    c->in.buf[i][0], (uint32_t)len, c->cfg->split_small,
+								    &flags)
 						    : -1);
 			c->up_split += c->pick[m] >= 0;
 			cg_up_header(&c->txs, c->hdr[m], CG_T_DATA, flags, 0, (uint32_t)now_us, c->in.buf[i], len);
@@ -1144,7 +1154,7 @@ static void wg_read(struct client *c)
 		}
 		if (m) {
 			c->last_traffic_ms = now_ms;
-			send_links(c, m, now_ms, live, carry, dup0);
+			send_links(c, m, now_ms, live, carry, k.dup);
 		}
 		if (n < CG_BATCH)
 			return;
@@ -1758,6 +1768,7 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 	cg_json_u64(j, "split", c->up_split);
 	cg_json_str(j, "split_state", split_state(c, now_ms));
 	cg_json_u64(j, "split_spread_ms", c->cfg->split_spread_ms);
+	cg_json_bool(j, "split_spread_copy", c->cfg->split_spread_copy);
 	/* What the newest probe reply says (null: no tail, an older server). */
 	if (c->peer_bond)
 		cg_json_bool(j, "server_reorders", c->peer_reorders);

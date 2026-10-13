@@ -411,6 +411,11 @@ def test_references(d):
     check(bondtab.references("split-sp0-bp64", {"split-sp0-bp64", "split", "solo"}) == ["split"],
           "references: else further down")
     check(bondtab.references("splitnoro-sp0", {"splitnoro-sp0", "solo"}) == ["solo"], "references: a control's -spN")
+    # -nc (split_spread_copy = no) against the same variant with the copies
+    check(bondtab.references("split-sp30-nc", {"split-sp30-nc", "split-sp30", "split"}) == ["split-sp30"],
+          "references: -nc against its copies")
+    check(bondtab.references("split-nc", {"split-nc", "split", "solo"}) == ["split"], "references: split-nc")
+    check(bondtab.references("split-ncx", {"split-ncx", "split", "solo"}) == ["solo"], "references: -ncx is no suffix")
     check(bondtab.references("solo", {"solo", "redund-ro0"}) == [], "references: solo")
     check(bondtab.references("split", {"split", "redund"}) == [], "references: nothing to compare with")
 

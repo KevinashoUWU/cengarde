@@ -1273,15 +1273,15 @@ static void junk_read(struct server *s)
 
 /* Where a download batch of S goes: its paths present, live, and those
  * that carry every duplicated packet (health.h); and with the split
- * (split.h), the paths that may take a share, their weights and the
- * weight-0 ones, which carry every packet, as do the ones guard G4 keeps
- * out of the share (dup). */
+ * (split.h), the paths that may take a share, their weights, the weight-0
+ * ones, which carry every packet, and what the picks take: guard G4
+ * applied as split_spread_copy says. */
 struct dpaths {
 	uint16_t present, live, carry;
-	int split;       /* the download is split (cg_split_active) */
-	uint16_t elig;   /* see split_eligible */
-	uint16_t dup0;   /* weight 0 */
-	uint16_t share;  /* elig without the paths G4 keeps out: the ones a split packet may take */
+	int split;               /* the download is split (cg_split_active) */
+	uint16_t elig;           /* see split_eligible */
+	uint16_t dup0;           /* weight 0 */
+	struct cg_split_masks k; /* for cg_split_pick and cg_split_dst */
 	uint16_t w[CG_MAX_LINKS];
 };
 
@@ -1318,7 +1318,9 @@ static struct dpaths down_paths(const struct server *s, const struct session *S,
 		if (s->cfg->split != CG_SPLIT_FORCE && S->path[p].bond_ok && !d.w[p])
 			d.dup0 |= (uint16_t)(1u << p);
 	}
-	d.share = (uint16_t)(d.elig & ~cg_split_spread_out(&S->spread, d.elig, d.dup0, s->cfg->split_spread_ms * 1000));
+	d.k = cg_split_spread_apply(s->cfg->split_spread_copy,
+				    cg_split_spread_out(&S->spread, d.elig, d.dup0, s->cfg->split_spread_ms * 1000), d.carry,
+				    d.elig, d.dup0);
 	return d;
 }
 
@@ -1344,7 +1346,7 @@ static void down_prepare(struct server *s, struct session *S, int m, uint8_t *bu
 	struct cg_hdr h = { .type = CG_T_DATA, .hint = C->hint, .session = S->id, .ts = (uint32_t)now_us };
 
 	/* Before the header: CG_F_SPLIT is under the MAC. */
-	s->pick[m] = (int8_t)(d->split ? cg_split_pick(&S->sp, d->carry, d->share, d->dup0, d->w, buf[0],
+	s->pick[m] = (int8_t)(d->split ? cg_split_pick(&S->sp, d->k.carriers, d->k.eligible, d->k.dup, d->w, buf[0],
 						       (uint32_t)len, s->cfg->split_small, &h.flags)
 				       : -1);
 	S->down_split += s->pick[m] >= 0;
@@ -1361,8 +1363,9 @@ static void down_prepare(struct server *s, struct session *S, int m, uint8_t *bu
 
 /* Sends the batch of m entries down the paths of S: each on the paths
  * pick[] says (every carrier, or its one path and the weight-0 ones when
- * split), and one duplicated entry in mute_trickle on the other live
- * paths. d: as when the entries were picked. */
+ * split, and with split_spread_copy the ones G4 keeps out), and one
+ * duplicated entry in mute_trickle on the other live paths. d: as when the
+ * entries were picked. */
 static void down_send(struct server *s, struct session *S, int m, uint64_t now_ms, const struct dpaths *d)
 {
 	int order[CG_MAX_LINKS], no = 0;
@@ -1381,7 +1384,7 @@ static void down_send(struct server *s, struct session *S, int m, uint64_t now_m
 
 		if (carry >> p & 1) {
 			for (int j = 0; j < m; j++)
-				if (cg_split_dst(s->pick[j], carry, d->dup0) >> p & 1)
+				if (cg_split_dst(s->pick[j], carry, d->k.dup) >> p & 1)
 					sel[k++] = j;
 		} else if ((live >> p & 1) && s->cfg->mute_trickle) {
 			for (int j = 0; j < m; j++)
@@ -1750,6 +1753,7 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 		 * newest probe asked (null: no tail, an older client). */
 		cg_json_str(j, "split_mode", split_mode(s, S));
 		cg_json_u64(j, "split_spread_ms", s->cfg->split_spread_ms);
+		cg_json_bool(j, "split_spread_copy", s->cfg->split_spread_copy);
 		if (S->peer_bond) {
 			cg_json_bool(j, "client_reorders", S->peer_reorders);
 			cg_json_bool(j, "client_asks_split", S->peer_asks);

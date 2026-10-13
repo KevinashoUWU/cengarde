@@ -470,9 +470,15 @@ return view.extend({
 		};
 
 		o = s.taboption('advanced', form.Value, 'split_spread_ms', _('Largest delay difference to split (ms)'),
-			_('Only the uplinks whose delay towards the VPS is at most this much behind the fastest one get a share of the split; the others carry only the small packets and the handshakes, which go on every uplink, and get their share back once they stay within three quarters of it for the settle time. With one uplink left in the split, it carries everything that is split. The VPS does the same with the download, with its own setting (30 ms unless changed there). Measured in the lab: two equal uplinks split give almost twice one uplink, but 50 ms apart most of that gain is lost, and 150 ms apart the speed collapses: the slowest uplink in the split sets the pace of all. 0: no limit.'));
+			_('Only the uplinks whose delay towards the VPS is at most this much behind the fastest one get a share of the split; the others leave it (the next option says what they carry), and get their share back once they stay within three quarters of it for the settle time. The VPS does the same with the download, with its own setting (30 ms unless changed there). Measured in the lab: two equal uplinks split give almost twice one uplink, but 50 ms apart most of that gain is lost, and 150 ms apart the speed collapses: the slowest uplink in the split sets the pace of all. 0: no limit.'));
 		o.datatype = 'range(0,2000)';
 		o.placeholder = '30';
+		o.depends({ reorder: '1', split: '1' });
+
+		o = s.taboption('advanced', form.Flag, 'split_spread_copy', _('Copies to the uplinks out of the split'),
+			_('On (as up to version 0.6.2): an uplink that leaves the split for its delay carries a copy of every packet, to fill the gaps of the others, and with fewer than two uplinks left in the split everything goes on every uplink. Off: it carries only the small packets and the handshakes, which go on every uplink, and one uplink left in the split carries everything that is split. An uplink falls behind most often because its modem\'s queue is full: in the first field test the copies loaded the late uplinks even more, and the router dropped thousands of packets; in the lab they helped QUIC. Only for the upload: the VPS has its own setting (on unless changed there).'));
+		o.default = '1';
+		o.rmempty = false;
 		o.depends({ reorder: '1', split: '1' });
 
 		o = s.taboption('advanced', form.Value, 'probe_interval_ms', _('Probe interval (ms)'),

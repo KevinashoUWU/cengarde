@@ -425,6 +425,7 @@ static void test_config_bonding(void)
 	CHECK_EQ(c.split, CG_SPLIT_OFF);
 	CHECK_EQ(c.split_small, 256);
 	CHECK_EQ(c.split_spread_ms, 30);
+	CHECK_EQ(c.split_spread_copy, 1);
 	CHECK(warn[0] == '\0');
 	cg_config_free(&c);
 	CHECK_EQ(cg_config_parse(&c, SERVER, err, sizeof(err), warn, sizeof(warn)), 0);
@@ -437,6 +438,7 @@ static void test_config_bonding(void)
 	CHECK_EQ(c.split, CG_SPLIT_CLIENT);
 	CHECK_EQ(c.split_small, 256);
 	CHECK_EQ(c.split_spread_ms, 30);
+	CHECK_EQ(c.split_spread_copy, 1);
 	CHECK(warn[0] == '\0');
 	cg_config_free(&c);
 	CHECK(!strcmp(cg_split_name(CG_SPLIT_OFF), "off") && !strcmp(cg_split_name(CG_SPLIT_ON), "on") &&
@@ -445,7 +447,8 @@ static void test_config_bonding(void)
 	/* All of them, in each mode (the same keys, no warning). */
 #define KNOBS                                                                                      \
 	"reorder = no\nreorder_max_wait_ms = 400\nreorder_dup_wait_ms = 20\nreorder_margin_ms = 25\n" \
-	"reorder_bypass = 256\nreorder_pool_kb = 1024\nsplit_small = 512\nsplit_spread_ms = 0\n"
+	"reorder_bypass = 256\nreorder_pool_kb = 1024\nsplit_small = 512\nsplit_spread_ms = 0\n" \
+	"split_spread_copy = no\n"
 	CHECK_EQ(cg_config_parse(&c, CLIENT KNOBS "split = force\n", err, sizeof(err), warn, sizeof(warn)), 0);
 	CHECK_EQ(c.reorder, 0);
 	CHECK_EQ(c.reorder_max_wait_ms, 400);
@@ -456,6 +459,7 @@ static void test_config_bonding(void)
 	CHECK_EQ(c.split_small, 512);
 	CHECK_EQ(c.split, CG_SPLIT_FORCE);
 	CHECK_EQ(c.split_spread_ms, 0);
+	CHECK_EQ(c.split_spread_copy, 0);
 	CHECK(warn[0] == '\0');
 	cg_config_free(&c);
 	CHECK_EQ(cg_config_parse(&c, SERVER KNOBS "split = off\n", err, sizeof(err), warn, sizeof(warn)), 0);
@@ -468,11 +472,12 @@ static void test_config_bonding(void)
 	CHECK_EQ(c.split_small, 512);
 	CHECK_EQ(c.split, CG_SPLIT_OFF);
 	CHECK_EQ(c.split_spread_ms, 0);
+	CHECK_EQ(c.split_spread_copy, 0);
 	CHECK(warn[0] == '\0');
 	cg_config_free(&c);
 #undef KNOBS
 
-	/* reorder is a yes or no. */
+	/* reorder and split_spread_copy are a yes or no. */
 	{
 		static const char *const yes[] = { "yes", "true", "on", "1" }, *const no[] = { "no", "false", "off", "0" };
 		char text[160];
@@ -486,9 +491,18 @@ static void test_config_bonding(void)
 			CHECK_EQ(cg_config_parse(&c, text, err, sizeof(err), warn, sizeof(warn)), 0);
 			CHECK_EQ(c.reorder, 0);
 			cg_config_free(&c);
+			snprintf(text, sizeof(text), CLIENT "split_spread_copy = %s\n", no[i]);
+			CHECK_EQ(cg_config_parse(&c, text, err, sizeof(err), warn, sizeof(warn)), 0);
+			CHECK_EQ(c.split_spread_copy, 0);
+			cg_config_free(&c);
+			snprintf(text, sizeof(text), SERVER "split_spread_ms = 0\nsplit_spread_copy = %s\n", yes[i]);
+			CHECK_EQ(cg_config_parse(&c, text, err, sizeof(err), warn, sizeof(warn)), 0);
+			CHECK_EQ(c.split_spread_copy, 1);
+			cg_config_free(&c);
 		}
 		bad(CLIENT "reorder = maybe\n", "reorder", "yes or no");
 		bad(SERVER "reorder = \n", "reorder", "yes or no");
+		bad(SERVER "split_spread_copy = copy\n", "split_spread_copy", "yes or no");
 	}
 
 	/* The ranges, edge by edge, in a client and a server alike. */
@@ -630,7 +644,7 @@ static void test_config_bonding(void)
 	CHECK_EQ(cg_config_parse(&o,
 				 CLIENT "reorder = no\nreorder_max_wait_ms = 300\nreorder_dup_wait_ms = 10\n"
 					"reorder_margin_ms = 40\nreorder_bypass = 0\nsplit = force\nsplit_small = 64\n"
-					"split_spread_ms = 100\n[link eth1]\nweight = 7\n",
+					"split_spread_ms = 100\nsplit_spread_copy = no\n[link eth1]\nweight = 7\n",
 				 err, sizeof(err), warn, sizeof(warn)),
 		 0);
 	CHECK(cg_config_restart_needed(&c, &o) == NULL);
@@ -650,7 +664,7 @@ static void test_config_bonding(void)
 	cg_config_free(&c);
 	CHECK_EQ(cg_config_parse(&c, SERVER, err, sizeof(err), warn, sizeof(warn)), 0);
 	CHECK_EQ(cg_config_parse(&o, SERVER "reorder = no\nsplit = force\nreorder_max_wait_ms = 50\nsplit_small = 0\n"
-					   "split_spread_ms = 0\n",
+					   "split_spread_ms = 0\nsplit_spread_copy = no\n",
 				 err, sizeof(err), warn, sizeof(warn)),
 		 0);
 	CHECK(cg_config_restart_needed(&c, &o) == NULL);

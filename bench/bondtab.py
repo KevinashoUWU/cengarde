@@ -559,7 +559,8 @@ FAMILY_REFS = {
     "solo": (),
 }
 DEFAULT_REFS = ("solo", "redund-ro0", "splitnoro")
-SUFFIX = re.compile(r"^(.+)-(?:bp|sp)[0-9]+$")  # bond.sh's -bpN (reorder_bypass), -spN (split_spread_ms)
+# bond.sh's -bpN (reorder_bypass), -spN (split_spread_ms) and -nc (split_spread_copy = no)
+SUFFIX = re.compile(r"^(.+)-(?:(?:bp|sp)[0-9]+|nc)$")
 
 
 def references(variant, present, refs=None):
@@ -568,7 +569,7 @@ def references(variant, present, refs=None):
 
     - refs (--ref A,B): the first of them the group has, for every variant (the rule
       before the families);
-    - a variant with suffixes (-bpN, -spN): the nearest of the variants without
+    - a variant with suffixes (-bpN, -spN, -nc): the nearest of the variants without
       its last ones that the group has (split-sp0-bp64: split-sp0, else split),
       else as the variant without any;
     - the variant's FAMILY_REFS the group has;

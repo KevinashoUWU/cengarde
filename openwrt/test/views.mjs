@@ -198,10 +198,17 @@ for (const [lang, tr] of [ [ 'en', english ], [ 'es', spanish ] ]) {
 	assert.equal(o.split_spread_ms.placeholder, '30', 'the engine\'s default');
 	assert.equal(o.split_spread_ms.title, lang === 'en' ? 'Largest delay difference to split (ms)'
 		: 'Diferencia máxima de retardo para repartir (ms)');
-	// it says what it does with the others, why, and what 0 means
-	for (const word of lang === 'en' ? [ 'small packets', 'one uplink left', 'three quarters', '50 ms', '150 ms', 'lab', '0: no limit' ]
-		: [ 'paquetes chicos', 'un solo enlace', 'tres cuartos', '50 ms', '150 ms', 'laboratorio', '0: sin límite' ])
+	// it says when the others come back, why, and what 0 means
+	for (const word of lang === 'en' ? [ 'next option', 'three quarters', '50 ms', '150 ms', 'lab', '0: no limit' ]
+		: [ 'opción siguiente', 'tres cuartos', '50 ms', '150 ms', 'laboratorio', '0: sin límite' ])
 		assert.ok(o.split_spread_ms.descr.includes(word), `${lang}: the spread option mentions "${word}"`);
+	// what the ones out of the split carry: copies unless turned off, as the engine
+	assert.equal(advanced('split_spread_copy').cls, 'Flag');
+	assert.equal(o.split_spread_copy.default, '1', 'the engine\'s default: copies');
+	assert.equal(o.split_spread_copy.rmempty, false);
+	for (const word of lang === 'en' ? [ '0.6.2', 'copy of every packet', 'small packets', 'one uplink left', 'field test', 'QUIC', 'VPS' ]
+		: [ '0.6.2', 'copia de todos los paquetes', 'paquetes chicos', 'un solo enlace', 'prueba de campo', 'QUIC', 'VPS' ])
+		assert.ok(o.split_spread_copy.descr.includes(word), `${lang}: the copy option mentions "${word}"`);
 
 	// what means nothing without its switch is hidden without it
 	assert.deepEqual(o.reorder_max_wait_ms.deps, [ { reorder: '1' } ]);
@@ -209,6 +216,7 @@ for (const [lang, tr] of [ [ 'en', english ], [ 'es', spanish ] ]) {
 	assert.deepEqual(o.split.deps, [ { reorder: '1' } ]);
 	assert.deepEqual(o.split_weight.deps, [ { reorder: '1', split: '1' } ]);
 	assert.deepEqual(o.split_spread_ms.deps, [ { reorder: '1', split: '1' } ], 'shown with the split');
+	assert.deepEqual(o.split_spread_copy.deps, [ { reorder: '1', split: '1' } ], 'shown with the split');
 	assert.deepEqual(o.reorder.deps, []);
 
 	// the experimental split says what it does badly, and that the VPS follows
@@ -361,22 +369,31 @@ for (const [lang, tr] of [ [ 'en', english ], [ 'es', spanish ] ]) {
 	assert.equal(text(last), L('Reordering is off (Advanced tab).', 'El reordenamiento está desactivado (pestaña Avanzado).'));
 	assert.equal(find(last, (n) => n.tag == 'tr').length, 0);
 
-	// an uplink out of the split for its delay says so in its upload cell;
-	// one with a share, or with the split off (null), does not
-	const uplinkRows = (links) => {
+	// an uplink out of the split for its delay says so in its upload cell,
+	// and what it carries: copies unless the engine says split_spread_copy
+	// is off (an engine up to 0.6.2 says nothing, and copied); one with a
+	// share, or with the split off (null), says nothing
+	const uplinkRows = (links, upload) => {
 		const n = E('div');
 
-		v.update(n, base({ links }));
+		v.update(n, base(upload ? { links, upload } : { links }));
 		return find(n, (x) => x.tag == 'table' && String(x.attrs.class).includes('cengarde-links'))[0].children.slice(1)
 			.map((r) => r.children.map(text));
 	};
 	const link = (name, share) => ({ name, label: name, state: 'live', upload: 'active', download_muted: false, rx_first: 1,
 		tx_bytes: 1, upload_mutes: 0, rtt_ms: 10, upload_behind_ms: 0, override: 'auto', split_share: share });
-	const urows = uplinkRows([ link('up1', 'yes'), link('up2', 'spread'), link('up3', null) ]);
-	const COPIES = L('out of the split', 'fuera del reparto');
-	assert.equal(urows.length, 3);
-	assert.ok(urows[1][6].includes(COPIES), `${lang}: up2 out of the split says so: ${urows[1][6]}`);
-	assert.ok(!urows[0][6].includes(COPIES) && !urows[2][6].includes(COPIES), `${lang}: the others do not`);
+	const OUT = L('out of the split', 'fuera del reparto'), COPIES = L('copies only', 'solo copias');
+	const three = [ link('up1', 'yes'), link('up2', 'spread'), link('up3', null) ];
+	for (const [upload, says, not] of [ [ null, COPIES, OUT ], [ { split_spread_copy: true }, COPIES, OUT ],
+		[ { split_spread_copy: false }, OUT, COPIES ] ]) {
+		const urows = uplinkRows(three, upload);
+		const how = JSON.stringify(upload);
+
+		assert.equal(urows.length, 3);
+		assert.ok(urows[1][6].includes(says) && !urows[1][6].includes(not), `${lang} ${how}: up2 says ${says}: ${urows[1][6]}`);
+		for (const r of [ urows[0], urows[2] ])
+			assert.ok(!r[6].includes(OUT) && !r[6].includes(COPIES), `${lang} ${how}: the others say nothing`);
+	}
 
 	// the rest of the page is still there
 	const page = E('div');

@@ -433,10 +433,11 @@ tuyos, si los hay, vienen después):
 | `redund` | los valores por defecto |
 | `redund-ro0` | `reorder = no` |
 | `redund-dw20` | `reorder_dup_wait_ms = 20` |
-| `split` | `split = force`, `mute_behind_ms = 0` y `reorder_max_wait_ms = 400` (con el silenciado el enlace lento de `reorder150` saldría del reparto y se escondería la diferencia). Con la guarda de retardo del motor (`split_spread_ms`, 30 ms por omisión), en `reorder50` y `reorder150` el enlace lento sale igual del reparto y lleva copias: es el modo de campo; el reparto sin filtro es `split-sp0` |
+| `split` | `split = force`, `mute_behind_ms = 0` y `reorder_max_wait_ms = 400` (con el silenciado el enlace lento de `reorder150` saldría del reparto y se escondería la diferencia). Con la guarda de retardo del motor (`split_spread_ms`, 30 ms por omisión), en `reorder50` y `reorder150` el enlace lento sale igual del reparto y lleva copias (`split_spread_copy`, por omisión): es el modo de campo; el reparto sin filtro es `split-sp0` |
 | `splitnoro` | `split` con `reorder = no`: el control de `split` |
 | `NOMBRE-bpN` | cualquiera de ellas con `reorder_bypass = N` |
-| `NOMBRE-spN` | cualquiera de ellas con `split_spread_ms = N`. `split-sp0` es el reparto sin la guarda de retardo, el round-robin crudo: con el valor por omisión del motor (30 ms), en `reorder50` y `reorder150` el enlace lento deja su parte y lleva copias, así que `split` ya no mide el reparto sin filtro. Los sufijos van en cualquier orden, una vez cada uno (`split-sp0-bp64`) |
+| `NOMBRE-spN` | cualquiera de ellas con `split_spread_ms = N`. `split-sp0` es el reparto sin la guarda de retardo, el round-robin crudo: con el valor por omisión del motor (30 ms), en `reorder50` y `reorder150` el enlace lento deja su parte y lleva copias, así que `split` ya no mide el reparto sin filtro |
+| `NOMBRE-nc` | cualquiera de ellas con `split_spread_copy = no`: el enlace que la guarda de retardo deja fuera no lleva copias, y si queda uno solo en el reparto, ese lleva todo (`split-sp30-nc` frente a `split-sp30`). Los sufijos van en cualquier orden, una vez cada uno (`split-sp0-bp64`, `split-sp250-nc`) |
 
 Sin `BOND_VARIANTS` corren `bonded` y `solo`, esta última solo en `equal` y
 `het`: exactamente lo que había antes de las variantes, así que las tablas
@@ -684,7 +685,8 @@ Markdown (`--json` guarda además el resumen). El informe trae:
   enlace;
 - si el router repartió la subida, qué hizo cada enlace en el reparto
   mientras repartía (`split_share`: su parte, fuera por su retardo con
-  `split_spread_ms` y llevando copias, esperando una medida de retardo...),
+  `split_spread_ms`, con copias o sin ellas según `split_spread_copy`,
+  esperando una medida de retardo...),
   cuántas veces la guarda lo sacó y cuánto iba detrás del más rápido.
 
 Un enlace está caído si su estado no es `live`, o si no llegó nada por él

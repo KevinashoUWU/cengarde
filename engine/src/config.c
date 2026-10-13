@@ -745,6 +745,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	c->split = c->mode == CG_MODE_SERVER ? CG_SPLIT_CLIENT : CG_SPLIT_OFF;
 	c->split_small = 256;
 	c->split_spread_ms = 30;
+	c->split_spread_copy = 1;
 	c->cpu = -1;
 	c->probe_interval_ms = 100;
 	c->probe_idle_ms = 1000;
@@ -794,7 +795,8 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	    get_u32(&ini, "", "reorder_pool_kb", 256, 131070, &c->reorder_pool_kb, err, errlen) ||
 	    get_split(&ini, c, err, errlen) ||
 	    get_u32(&ini, "", "split_small", 0, 2048, &c->split_small, err, errlen) ||
-	    get_u32(&ini, "", "split_spread_ms", 0, 2000, &c->split_spread_ms, err, errlen))
+	    get_u32(&ini, "", "split_spread_ms", 0, 2000, &c->split_spread_ms, err, errlen) ||
+	    get_bool(&ini, "", "split_spread_copy", &c->split_spread_copy, err, errlen))
 		goto out;
 	if (cg_ini_get(&ini, "", "cpu")) {
 		u = 0;
