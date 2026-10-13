@@ -92,10 +92,17 @@ function direction(standby, title) {
 }
 
 // An uplink the split leaves out for its delay (the engine's split_share):
-// it still carries a copy of every packet, so in use, but without a share.
-function splitNote(l) {
-	return l.split_share == 'spread' ? [ ' ', badge(_('copies only'), '#68a',
-		_('More than the largest delay difference (Advanced tab) behind the fastest uplink: it carries a copy of every packet instead of a share of the split, until it catches up.')) ] : [];
+// in use, but without a share. It carries a copy of every packet with
+// split_spread_copy (the engine's default, and what an engine up to 0.6.2
+// did, which does not say), or only what goes on every uplink (the small
+// packets, the handshakes) without it.
+function splitNote(l, copy) {
+	if (l.split_share != 'spread')
+		return [];
+	return [ ' ', copy ? badge(_('copies only'), '#68a',
+		_('More than the largest delay difference (Advanced tab) behind the fastest uplink: it carries a copy of every packet instead of a share of the split, until it catches up.'))
+		: badge(_('out of the split'), '#68a',
+		_('More than the largest delay difference (Advanced tab) behind the fastest uplink: it carries only the small packets and the handshakes, which go on every uplink, instead of a share of the split, until it catches up.')) ];
 }
 
 function linkState(l) {
@@ -268,6 +275,8 @@ return view.extend({
 
 	renderLinks: function(st) {
 		const links = (st.engine && st.engine.links) || [];
+		const up = (st.engine && st.engine.upload) || {};
+		const copy = up.split_spread_copy !== false;
 		let firsts = 0;
 		const table = E('table', { 'class': 'table cengarde-links' }, [
 			E('tr', { 'class': 'tr table-titles' }, [
@@ -299,7 +308,7 @@ return view.extend({
 				out ? '-' : vpsAddress(l),
 				(out || !l.path_mtu) ? '-' : '%d'.format(l.path_mtu),
 				out ? '-' : E('span', {}, [ direction(l.upload == 'muted',
-					_('Behind the fastest uplink by more than the limit: the router sends through the others, and only probes through this one, until it catches up.')) ].concat(splitNote(l))),
+					_('Behind the fastest uplink by more than the limit: the router sends through the others, and only probes through this one, until it catches up.')) ].concat(splitNote(l, copy))),
 				out ? '-' : direction(l.download_muted,
 					_('Slower than the best uplink from the VPS: the VPS sends through the others, and only probes through this one, until it catches up.')),
 				firsts ? '%.0f %%'.format(100 * l.rx_first / firsts) : '-',

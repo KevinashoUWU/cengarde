@@ -35,6 +35,11 @@
 #               link 2 steady (50 Mbit/s, 30 ms)
 #   deepq       link 1 at 20 Mbit/s behind 500 ms of queue, link 2 at
 #               50 Mbit/s with 100 ms; both 25 ms
+#   bloat       bufferbloat as on the Pi's 5G modems (story 012, 2026-10-13):
+#               3 links of similar delay (20, 20 and 22 ms) and unequal rate
+#               (30, 20 and 8 Mbit/s) behind deep queues (1, 1 and 2 s). A
+#               split with equal weights fills the 8 Mbit/s queue first; what
+#               the delay guard does then is what this case is for
 #
 # Variants (BOND_VARIANTS): what runs in each case. The engine settings of a
 # variant go to both ends through CLIENT_EXTRA and SERVER_EXTRA (yours, if any,
@@ -55,7 +60,10 @@
 #   NAME-spN     any of them with split_spread_ms = N; split-sp0 is the split
 #                without the delay guard, the raw round-robin (the engine's
 #                default, 30, keeps a link 50 ms behind out of the share)
-# Suffixes go in any order, each once (split-sp0-bp64).
+#   NAME-nc      any of them with split_spread_copy = no: a link the delay
+#                guard keeps out carries no copies, and one link left in the
+#                share takes it all (split-sp30-nc against split-sp30)
+# Suffixes go in any order, each once (split-sp0-bp64, split-sp250-nc).
 # BOND_VARIANTS empty is "bonded solo", solo in equal and het only: exactly the
 # runs from before the variants (the CI's time estimate counts them). With
 # BOND_VARIANTS given, solo also runs in reorder50 and reorder150, the
@@ -80,8 +88,10 @@
 # before and after (the engine writes them every second: a wait of 1.1 s per run;
 # the after of a run is the before of the next), and its JSON line carries the
 # differences: "eng" for cli and srv (the reorder counters, too_old,
-# wireguard_drops and lost_all; null from an engine without them) and
-# "wg_rx_dropped". A second ping, of 1200-byte packets (the ones a reorderer
+# wireguard_drops and lost_all; null from an engine without them; and what
+# the end sent: data packets, their sends over all its links and the sends a
+# full queue refused, which the table shows as sends per packet and send
+# drops at the end that sent the bulk) and "wg_rx_dropped". A second ping, of 1200-byte packets (the ones a reorderer
 # holds: the 84-byte one bypasses it), gives rtt_big_p50 and rtt_big_p99.
 # "retrans" is TCP's retransmissions or, for quic, the packets the sender
 # declared lost ("spurious": the ones that arrived after all); retrans_pct is
@@ -94,7 +104,7 @@ BOND_CC=${BOND_CC:-} # empty: cubic bbr quic (bond_ccs)
 BOND_QUIC_CC=${BOND_QUIC_CC:-cubic}
 BOND_QUIC_MTU=${BOND_QUIC_MTU:-1350}
 BOND_DIRS=${BOND_DIRS:-up down}
-BOND_CASES=${BOND_CASES:-equal het reorder50 reorder150 linkdeath starlink15 ltespike deepq}
+BOND_CASES=${BOND_CASES:-equal het reorder50 reorder150 linkdeath starlink15 ltespike deepq bloat}
 BOND_VARIANTS=${BOND_VARIANTS:-} # empty: bonded solo (bond_settle)
 BOND_SOLO_CASES=${BOND_SOLO_CASES:-} # empty: equal het (bond_settle)
 BOND_SMALL=${BOND_SMALL:-0}
@@ -188,14 +198,15 @@ bond_settle() {
 # bond_variant NAME: the settings of a variant: BV_CLIENT and BV_SERVER
 # ("key = value;..."), BV_SOLO (1: the first link alone). 1 for a name it does not know.
 bond_variant() {
-	local v=$1 bp='' sp='' s
+	local v=$1 bp='' sp='' nc='' s
 	BV_CLIENT='' BV_SERVER='' BV_SOLO=0
-	# The suffixes, from the last: -bpN and -spN, each once.
+	# The suffixes, from the last: -bpN, -spN and -nc, each once.
 	while :; do
 		s=${v##*-}
 		case $s in
 		bp[0-9]*) [ -z "$bp" ] || return 1; bp=${s#bp} ;;
 		sp[0-9]*) [ -z "$sp" ] || return 1; sp=${s#sp} ;;
+		nc) [ -z "$nc" ] || return 1; nc=1 ;;
 		*) break ;;
 		esac
 		case ${s#??} in *[!0-9]*) return 1 ;; esac
@@ -212,6 +223,7 @@ bond_variant() {
 	esac
 	[ -n "$bp" ] && BV_CLIENT="${BV_CLIENT:+$BV_CLIENT;}reorder_bypass = $bp"
 	[ -n "$sp" ] && BV_CLIENT="${BV_CLIENT:+$BV_CLIENT;}split_spread_ms = $sp"
+	[ -n "$nc" ] && BV_CLIENT="${BV_CLIENT:+$BV_CLIENT;}split_spread_copy = no"
 	BV_SERVER=$BV_CLIENT
 	return 0
 }
@@ -349,13 +361,14 @@ bond_shape() {
 	starlink15sw) bond_link 1 25 100 && bond_link 2 20 50 ;;
 	ltespike) bond_link 1 25 50 && bond_link 2 30 50 ;;
 	deepq) bond_link 1 25 20 500 && bond_link 2 25 50 ;;
+	bloat) bond_link 1 20 30 1000 && bond_link 2 20 20 1000 && bond_link 3 22 8 2000 ;;
 	*) return 1 ;;
 	esac
 }
 
 bond_nlinks() {
 	case $1 in
-	het | linkdeath) echo 3 ;;
+	het | linkdeath | bloat) echo 3 ;;
 	*) echo 2 ;;
 	esac
 }
@@ -496,7 +509,7 @@ bond_plan() {
 	for w in ${BOND_CC:-cubic bbr quic}; do ccs=$((ccs + 1)); done
 	for c in $BOND_CASES; do
 		case $c in
-		equal | het | reorder50 | reorder150 | linkdeath | starlink15 | starlink15sw | ltespike | deepq) ;;
+		equal | het | reorder50 | reorder150 | linkdeath | starlink15 | starlink15sw | ltespike | deepq | bloat) ;;
 		*)
 			echo "bond: unknown case $c"
 			return 1

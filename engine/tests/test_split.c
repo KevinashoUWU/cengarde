@@ -12,7 +12,7 @@
 /* One WireGuard data packet of BIG bytes. */
 static int pick(struct cg_split *s, uint16_t eligible, uint16_t dup0, const uint16_t *w)
 {
-	return cg_split_pick(s, eligible, dup0, w, CG_WGS_DATA, BIG, SMALL_LEN, NULL);
+	return cg_split_pick(s, (uint16_t)(eligible | dup0), eligible, dup0, w, CG_WGS_DATA, BIG, SMALL_LEN, NULL);
 }
 
 static uint16_t bit(unsigned i)
@@ -202,7 +202,7 @@ static void test_split_credits(void)
 
 	/* Link 2 leaves: its credit goes at the next call, even one that
 	 * duplicates the packet (a small one, here). */
-	CHECK_EQ(cg_split_pick(&s, bit(0) | bit(1), 0, w, CG_WGS_DATA, 40, SMALL_LEN, NULL), -1);
+	CHECK_EQ(cg_split_pick(&s, bit(0) | bit(1), bit(0) | bit(1), 0, w, CG_WGS_DATA, 40, SMALL_LEN, NULL), -1);
 	CHECK_EQ(s.cur[2], 0);
 
 	/* And it comes back at zero: its first turn is a plain 0 + weight. */
@@ -269,30 +269,30 @@ static void test_split_duplicate(void)
 		CHECK_EQ(pick(&s, bit(1), 0, wz), -1);
 		CHECK(pick(&s, bit(0) | bit(1) | bit(2), 0, wz) >= 0);
 	}
-	CHECK_EQ(cg_split_pick(&s, bit(2), 0, w, CG_WGS_DATA, BIG, SMALL_LEN, &flags), -1);
+	CHECK_EQ(cg_split_pick(&s, bit(2), bit(2), 0, w, CG_WGS_DATA, BIG, SMALL_LEN, &flags), -1);
 	CHECK_EQ(flags, CG_F_ECN); /* untouched */
 	CHECK(pick(&s, bit(0) | bit(1), 0, w) >= 0);
 
 	/* WireGuard's other messages (handshakes, types 1 to 3) and anything
 	 * that is not WireGuard, whatever their size. */
 	for (unsigned t = 0; t < 256; t++)
-		CHECK_EQ(cg_split_pick(&s, 0xf, 0, w, (uint8_t)t, 1400, SMALL_LEN, NULL) == -1, t != CG_WGS_DATA);
-	CHECK_EQ(cg_split_pick(&s, 0xf, 0, w, 1, 148, SMALL_LEN, &flags), -1); /* an initiation */
-	CHECK_EQ(cg_split_pick(&s, 0xf, 0, w, 2, 92, SMALL_LEN, &flags), -1);  /* a response */
-	CHECK_EQ(cg_split_pick(&s, 0xf, 0, w, 3, 64, SMALL_LEN, &flags), -1);  /* a cookie reply */
+		CHECK_EQ(cg_split_pick(&s, 0xf, 0xf, 0, w, (uint8_t)t, 1400, SMALL_LEN, NULL) == -1, t != CG_WGS_DATA);
+	CHECK_EQ(cg_split_pick(&s, 0xf, 0xf, 0, w, 1, 148, SMALL_LEN, &flags), -1); /* an initiation */
+	CHECK_EQ(cg_split_pick(&s, 0xf, 0xf, 0, w, 2, 92, SMALL_LEN, &flags), -1);  /* a response */
+	CHECK_EQ(cg_split_pick(&s, 0xf, 0xf, 0, w, 3, 64, SMALL_LEN, &flags), -1);  /* a cookie reply */
 	CHECK_EQ(flags, CG_F_ECN);
 
 	/* Small datagrams (keepalives, empty ACKs): up to split_small, inclusive. */
-	CHECK_EQ(cg_split_pick(&s, 0xf, 0, w, CG_WGS_DATA, 0, SMALL_LEN, NULL), -1);
-	CHECK_EQ(cg_split_pick(&s, 0xf, 0, w, CG_WGS_DATA, 32, SMALL_LEN, NULL), -1); /* a keepalive */
-	CHECK_EQ(cg_split_pick(&s, 0xf, 0, w, CG_WGS_DATA, 96, SMALL_LEN, NULL), -1); /* an empty ACK */
-	CHECK_EQ(cg_split_pick(&s, 0xf, 0, w, CG_WGS_DATA, SMALL_LEN, SMALL_LEN, NULL), -1);
-	CHECK(cg_split_pick(&s, 0xf, 0, w, CG_WGS_DATA, SMALL_LEN + 1, SMALL_LEN, NULL) >= 0);
-	CHECK(cg_split_pick(&s, 0xf, 0, w, CG_WGS_DATA, 1440, SMALL_LEN, NULL) >= 0);
+	CHECK_EQ(cg_split_pick(&s, 0xf, 0xf, 0, w, CG_WGS_DATA, 0, SMALL_LEN, NULL), -1);
+	CHECK_EQ(cg_split_pick(&s, 0xf, 0xf, 0, w, CG_WGS_DATA, 32, SMALL_LEN, NULL), -1); /* a keepalive */
+	CHECK_EQ(cg_split_pick(&s, 0xf, 0xf, 0, w, CG_WGS_DATA, 96, SMALL_LEN, NULL), -1); /* an empty ACK */
+	CHECK_EQ(cg_split_pick(&s, 0xf, 0xf, 0, w, CG_WGS_DATA, SMALL_LEN, SMALL_LEN, NULL), -1);
+	CHECK(cg_split_pick(&s, 0xf, 0xf, 0, w, CG_WGS_DATA, SMALL_LEN + 1, SMALL_LEN, NULL) >= 0);
+	CHECK(cg_split_pick(&s, 0xf, 0xf, 0, w, CG_WGS_DATA, 1440, SMALL_LEN, NULL) >= 0);
 	/* split_small 0 duplicates only the empty datagram; 2048, everything. */
-	CHECK(cg_split_pick(&s, 0xf, 0, w, CG_WGS_DATA, 1, 0, NULL) >= 0);
-	CHECK_EQ(cg_split_pick(&s, 0xf, 0, w, CG_WGS_DATA, 0, 0, NULL), -1);
-	CHECK_EQ(cg_split_pick(&s, 0xf, 0, w, CG_WGS_DATA, 1440, 2048, NULL), -1);
+	CHECK(cg_split_pick(&s, 0xf, 0xf, 0, w, CG_WGS_DATA, 1, 0, NULL) >= 0);
+	CHECK_EQ(cg_split_pick(&s, 0xf, 0xf, 0, w, CG_WGS_DATA, 0, 0, NULL), -1);
+	CHECK_EQ(cg_split_pick(&s, 0xf, 0xf, 0, w, CG_WGS_DATA, 1440, 2048, NULL), -1);
 
 	/* A duplicated packet takes no turn: the picks that follow are the same
 	 * as without it. */
@@ -300,8 +300,8 @@ static void test_split_duplicate(void)
 	cg_split_reset(&ref);
 	for (int k = 0; k < 50; k++) {
 		if (k % 3 == 0) {
-			cg_split_pick(&s, 0xf, 0, w, CG_WGS_DATA, 40, SMALL_LEN, NULL);
-			cg_split_pick(&s, 0xf, 0, w, 2, BIG, SMALL_LEN, NULL);
+			cg_split_pick(&s, 0xf, 0xf, 0, w, CG_WGS_DATA, 40, SMALL_LEN, NULL);
+			cg_split_pick(&s, 0xf, 0xf, 0, w, 2, BIG, SMALL_LEN, NULL);
 		}
 		CHECK_EQ(pick(&s, 0xf, 0, w), pick(&ref, 0xf, 0, w));
 	}
@@ -326,7 +326,7 @@ static void test_split_dst(void)
 	for (unsigned k = 0; k < n; k++) {
 		/* Every third packet is a keepalive. */
 		uint32_t len = k % 3 ? BIG : 32;
-		int p = cg_split_pick(&s, eligible, dup0, w, CG_WGS_DATA, len, SMALL_LEN, NULL);
+		int p = cg_split_pick(&s, (uint16_t)(eligible | dup0), eligible, dup0, w, CG_WGS_DATA, len, SMALL_LEN, NULL);
 		uint16_t dst = cg_split_dst(p, carriers, dup0);
 
 		CHECK(dst & dup0); /* the weight-0 link has a copy of every packet */
@@ -352,7 +352,27 @@ static void test_split_dst(void)
 	/* One eligible link and a weight-0 one: nothing to share, every
 	 * carrier has every packet. */
 	cg_split_reset(&s);
-	CHECK_EQ(cg_split_pick(&s, bit(0), bit(3), w, CG_WGS_DATA, BIG, SMALL_LEN, NULL), -1);
+	CHECK_EQ(cg_split_pick(&s, bit(0) | bit(3), bit(0), bit(3), w, CG_WGS_DATA, BIG, SMALL_LEN, NULL), -1);
+	/* G2: one eligible link among more carriers (the others late, muted or
+	 * not answering) takes every split packet, flagged; the small and the
+	 * handshakes still go everywhere. None eligible: everything everywhere. */
+	{
+		uint8_t f = 0;
+
+		CHECK_EQ(cg_split_pick(&s, bit(0) | bit(1) | bit(2), bit(1), 0, w, CG_WGS_DATA, BIG, SMALL_LEN, &f), 1);
+		CHECK_EQ(f, CG_F_SPLIT);
+		CHECK_EQ(cg_split_dst(1, bit(0) | bit(1) | bit(2), 0), bit(1));
+		CHECK_EQ(cg_split_pick(&s, bit(0) | bit(1) | bit(3), bit(1), bit(3), w, CG_WGS_DATA, BIG, SMALL_LEN, NULL),
+			 1);
+		CHECK_EQ(cg_split_dst(1, bit(0) | bit(1) | bit(3), bit(3)), bit(1) | bit(3));
+		CHECK_EQ(cg_split_pick(&s, bit(0) | bit(1), bit(1), 0, w, CG_WGS_DATA, 40, SMALL_LEN, NULL), -1);
+		CHECK_EQ(cg_split_pick(&s, bit(0) | bit(1), bit(1), 0, w, 1, 148, SMALL_LEN, NULL), -1);
+		CHECK_EQ(cg_split_pick(&s, bit(0) | bit(1), 0, 0, w, CG_WGS_DATA, BIG, SMALL_LEN, NULL), -1);
+		/* The one link that carries anything: nothing to skip. */
+		f = 0;
+		CHECK_EQ(cg_split_pick(&s, bit(2), bit(2), 0, w, CG_WGS_DATA, BIG, SMALL_LEN, &f), -1);
+		CHECK_EQ(f, 0);
+	}
 }
 
 /* CG_F_SPLIT: set when the packet skips a carrier, for every shape of the
@@ -387,8 +407,8 @@ static void test_split_flag(void)
 					continue;
 				for (unsigned t = 0; t < CG_ARRAY_SIZE(kind); t++) {
 					uint8_t flags = kind[t].flags;
-					int p = cg_split_pick(&s, (uint16_t)elig, (uint16_t)zero, w, kind[t].type, kind[t].len,
-							      SMALL_LEN, &flags);
+					int p = cg_split_pick(&s, carriers, (uint16_t)elig, (uint16_t)zero, w, kind[t].type,
+							      kind[t].len, SMALL_LEN, &flags);
 					uint16_t dst = cg_split_dst(p, carriers, (uint16_t)zero);
 					int skipped = (carriers & ~dst) != 0;
 
@@ -415,8 +435,8 @@ static void test_split_flag(void)
 		cg_split_reset(&a);
 		cg_split_reset(&b);
 		for (int k = 0; k < 40; k++)
-			CHECK_EQ(cg_split_pick(&a, 0x1f, 0, w, CG_WGS_DATA, BIG, SMALL_LEN, NULL),
-				 cg_split_pick(&b, 0x1f, 0, w, CG_WGS_DATA, BIG, SMALL_LEN, &f));
+			CHECK_EQ(cg_split_pick(&a, 0x1f, 0x1f, 0, w, CG_WGS_DATA, BIG, SMALL_LEN, NULL),
+				 cg_split_pick(&b, 0x1f, 0x1f, 0, w, CG_WGS_DATA, BIG, SMALL_LEN, &f));
 	}
 }
 
@@ -583,7 +603,7 @@ static void delay(struct cg_hlink *h, unsigned link, uint32_t owd, uint64_t now_
 #define SETTLE 2000        /* mute_settle_ms 2000 */
 
 /* Guard G4 (cg_split_spread_eval): only links within split_spread_ms of the
- * fastest share the split; the others carry a copy of every packet. */
+ * fastest share the split; the others carry only the duplicated packets. */
 static void test_split_spread(void)
 {
 	static const uint16_t w1[CG_MAX_LINKS] = { 1, 1, 1, 1 };
@@ -591,7 +611,7 @@ static void test_split_spread(void)
 	struct cg_spread sp;
 	struct cg_split s;
 	uint64_t t = 1000000;
-	uint16_t ch, dup;
+	uint16_t ch, out;
 	unsigned count[CG_MAX_LINKS];
 	int changes;
 
@@ -600,7 +620,7 @@ static void test_split_spread(void)
 	/* Off (0): every candidate is in, with or without a delay. */
 	CHECK_EQ(cg_split_spread_eval(&sp, h, 0x7, 0, SETTLE, t), 0);
 	CHECK_EQ(sp.in, 0x7);
-	CHECK_EQ(cg_split_spread_dup(&sp, 0x7, 0, 0), 0);
+	CHECK_EQ(cg_split_spread_out(&sp, 0x7, 0, 0), 0);
 	CHECK_EQ(cg_split_share(&sp, 2, 0x7, 0, 0), CG_SHARE_YES);
 
 	/* No delay yet: out, waiting, and in at once when it comes within the
@@ -608,14 +628,14 @@ static void test_split_spread(void)
 	cg_split_spread_eval(&sp, h, 0x7, SPREAD, SETTLE, t);
 	CHECK_EQ(sp.in, 0);
 	CHECK_EQ(cg_split_share(&sp, 0, 0x7, 0, SPREAD), CG_SHARE_WAITING);
-	CHECK_EQ(cg_split_spread_dup(&sp, 0x7, 0, SPREAD), 0x7);
+	CHECK_EQ(cg_split_spread_out(&sp, 0x7, 0, SPREAD), 0x7);
 	delay(h, 0, 5000000, t);
 	delay(h, 1, 5000000 + 10 * MSUS, t); /* 10 ms behind: stays */
 	cg_split_spread_eval(&sp, h, 0x7, SPREAD, SETTLE, t);
 	CHECK_EQ(sp.in, 0x3);
 	CHECK_EQ(cg_split_share(&sp, 2, 0x7, 0, SPREAD), CG_SHARE_WAITING);
 	CHECK(sp.behind == 0x3 && sp.behind_us[0] == 0 && sp.behind_us[1] == 10 * (int32_t)MSUS);
-	/* 50 ms behind: leaves at once, carries copies; 30 exactly is within. */
+	/* 50 ms behind: leaves at once; 30 exactly is within. */
 	delay(h, 2, 5000000 + 50 * MSUS, t);
 	ch = cg_split_spread_eval(&sp, h, 0x7, SPREAD, SETTLE, t);
 	CHECK_EQ(ch, 0x4);
@@ -623,20 +643,23 @@ static void test_split_spread(void)
 	CHECK_EQ(sp.in, 0x3);
 	CHECK_EQ(cg_split_share(&sp, 2, 0x7, 0, SPREAD), CG_SHARE_SPREAD);
 	CHECK_EQ(cg_split_share(&sp, 1, 0x7, 0, SPREAD), CG_SHARE_YES);
-	dup = cg_split_spread_dup(&sp, 0x7, 0, SPREAD);
-	CHECK_EQ(dup, 0x4);
-	/* The share goes to 0 and 1 only; 2 gets a copy of every split packet. */
+	out = cg_split_spread_out(&sp, 0x7, 0, SPREAD);
+	CHECK_EQ(out, 0x4);
+	/* The share goes to 0 and 1 only; without split_spread_copy 2 carries
+	 * none of the split packets, only the duplicated ones (with it, a copy
+	 * of each: test_split_spread_copy). */
 	cg_split_reset(&s);
 	memset(count, 0, sizeof(count));
 	for (int k = 0; k < 1000; k++) {
-		int p = cg_split_pick(&s, 0x7, dup, w1, CG_WGS_DATA, BIG, SMALL_LEN, NULL);
+		int p = cg_split_pick(&s, 0x7, (uint16_t)(0x7 & ~out), 0, w1, CG_WGS_DATA, BIG, SMALL_LEN, NULL);
 
 		CHECK(p == 0 || p == 1);
 		if (p >= 0 && p < CG_MAX_LINKS)
 			count[p]++;
-		CHECK_EQ(cg_split_dst(p, 0x7, dup), bit((unsigned)p) | 0x4);
+		CHECK_EQ(cg_split_dst(p, 0x7, 0), bit((unsigned)p));
 	}
 	CHECK(count[0] == 500 && count[1] == 500);
+	CHECK_EQ(cg_split_pick(&s, 0x7, (uint16_t)(0x7 & ~out), 0, w1, CG_WGS_DATA, 40, SMALL_LEN, NULL), -1);
 	delay(h, 1, 5000000 + SPREAD, t);
 	cg_split_spread_eval(&sp, h, 0x7, SPREAD, SETTLE, t);
 	CHECK_EQ(sp.in, 0x3);
@@ -675,10 +698,11 @@ static void test_split_spread(void)
 		}
 		CHECK_EQ(changes, 1);
 		CHECK_EQ(sp.left, 0x2);
-		/* Only two links, one out: everything is duplicated (G2). */
+		/* Only two links, one out: the other takes every split packet (G2,
+		 * without split_spread_copy). */
 		CHECK_EQ(sp.in, 0x1);
-		dup = cg_split_spread_dup(&sp, 0x3, 0, SPREAD);
-		CHECK_EQ(cg_split_pick(&s, 0x3, dup, w1, CG_WGS_DATA, BIG, SMALL_LEN, NULL), -1);
+		out = cg_split_spread_out(&sp, 0x3, 0, SPREAD);
+		CHECK_EQ(cg_split_pick(&s, 0x3, (uint16_t)(0x3 & ~out), 0, w1, CG_WGS_DATA, BIG, SMALL_LEN, NULL), 0);
 	}
 	/* Once it settles within 3/4 it comes back, and only once. */
 	changes = 0;
@@ -691,16 +715,18 @@ static void test_split_spread(void)
 	CHECK_EQ(changes, 1);
 	CHECK_EQ(sp.in, 0x3);
 
-	/* All but one out: duplicate everything. */
+	/* All but one out: the fastest takes every split packet (G2, without
+	 * split_spread_copy). */
 	memset(&sp, 0, sizeof(sp));
 	delay(h, 0, 5000000, t);
 	delay(h, 1, 5000000 + 60 * MSUS, t);
 	delay(h, 2, 5000000 + 150 * MSUS, t);
 	cg_split_spread_eval(&sp, h, 0x7, SPREAD, SETTLE, t);
 	CHECK_EQ(sp.in, 0x1);
-	dup = cg_split_spread_dup(&sp, 0x7, 0, SPREAD);
-	CHECK_EQ(dup, 0x6);
-	CHECK_EQ(cg_split_pick(&s, 0x7, dup, w1, CG_WGS_DATA, BIG, SMALL_LEN, NULL), -1);
+	out = cg_split_spread_out(&sp, 0x7, 0, SPREAD);
+	CHECK_EQ(out, 0x6);
+	CHECK_EQ(cg_split_pick(&s, 0x7, (uint16_t)(0x7 & ~out), 0, w1, CG_WGS_DATA, BIG, SMALL_LEN, NULL), 0);
+	CHECK_EQ(cg_split_dst(0, 0x7, 0), 0x1);
 
 	/* The fastest is the fastest candidate: when it is no longer one (stale,
 	 * muted, weight 0), the others are measured from the next. 2 left at 150;
@@ -741,14 +767,146 @@ static void test_split_spread(void)
 	CHECK(sp.left == 0 && sp.in == 0x3);
 
 	/* The other reasons: not eligible, weight 0 (never measured, never
-	 * dup'd by the guard: it carries copies anyway). */
+	 * taken out by the guard: it carries copies anyway). */
 	CHECK_EQ(cg_split_share(&sp, 3, 0x7, 0, SPREAD), CG_SHARE_NO);
 	CHECK_EQ(cg_split_share(&sp, 2, 0x7, 0x4, SPREAD), CG_SHARE_WEIGHT0);
-	CHECK_EQ(cg_split_spread_dup(&sp, 0x7, 0x4, SPREAD) & 0x4, 0);
+	CHECK_EQ(cg_split_spread_out(&sp, 0x7, 0x4, SPREAD) & 0x4, 0);
 	CHECK(!strcmp(cg_split_share_name(CG_SHARE_SPREAD), "spread"));
 	CHECK(!strcmp(cg_split_share_name(CG_SHARE_YES), "yes") && !strcmp(cg_split_share_name(CG_SHARE_NO), "no"));
 	CHECK(!strcmp(cg_split_share_name(CG_SHARE_WAITING), "waiting"));
 	CHECK(!strcmp(cg_split_share_name(CG_SHARE_WEIGHT0), "weight 0") && !strcmp(cg_split_share_name(99), "?"));
+}
+
+/* The pick of 0.6.2 (git 412b785^), the reference for split_spread_copy:
+ * the caller put the links G4 kept out in dup0, and fewer than 2 links in
+ * the share duplicated everything. */
+static int pick_062(struct cg_split *s, uint16_t eligible, uint16_t dup0, const uint16_t w[CG_MAX_LINKS],
+		    uint8_t wgtype, uint32_t len, uint8_t *flags)
+{
+	uint16_t set = 0, keep;
+	int32_t total = 0;
+	int best = -1;
+
+	for (int i = 0; i < CG_MAX_LINKS; i++)
+		if ((eligible >> i & 1) && !(dup0 >> i & 1) && w[i])
+			set |= (uint16_t)(1u << i);
+	keep = set & (set - 1) ? set : 0;
+	for (int i = 0; i < CG_MAX_LINKS; i++)
+		if (!(keep >> i & 1))
+			s->cur[i] = 0;
+	if (wgtype != CG_WGS_DATA || len <= SMALL_LEN || !keep)
+		return -1;
+	for (int i = 0; i < CG_MAX_LINKS; i++) {
+		if (!(keep >> i & 1))
+			continue;
+		s->cur[i] += w[i];
+		total += w[i];
+		if (best < 0 || s->cur[i] > s->cur[best])
+			best = i;
+	}
+	s->cur[best] -= total;
+	if (flags)
+		*flags |= CG_F_SPLIT;
+	return best;
+}
+
+/* split_spread_copy (cg_split_spread_apply): with it, every pick and every
+ * packet's links are 0.6.2's, for every shape of the links; without it, the
+ * links G4 keeps out get none of the split packets and one link left takes
+ * them (G2). */
+static void test_split_spread_copy(void)
+{
+	static const uint16_t w[CG_MAX_LINKS] = { 1, 2, 0, 3, 1 };
+	static const struct {
+		uint8_t type;
+		uint32_t len;
+	} kind[] = { { CG_WGS_DATA, BIG }, { CG_WGS_DATA, BIG }, { CG_WGS_DATA, 40 }, { 1, 148 }, { CG_WGS_DATA, BIG } };
+	struct cg_split a, b, c;
+	struct cg_split_masks m;
+	unsigned shapes = 0, split_old = 0, split_new = 0, lone = 0;
+
+	m = cg_split_spread_apply(1, 0x4, 0xf, 0x7, 0x8);
+	CHECK(m.carriers == 0 && m.eligible == 0x7 && m.dup == 0xc);
+	m = cg_split_spread_apply(0, 0x4, 0xf, 0x7, 0x8);
+	CHECK(m.carriers == 0xf && m.eligible == 0x3 && m.dup == 0x8);
+	m = cg_split_spread_apply(1, 0, 0xf, 0x7, 0x8);
+	CHECK(m.carriers == 0 && m.eligible == 0x7 && m.dup == 0x8);
+	m = cg_split_spread_apply(0, 0, 0xf, 0x7, 0x8);
+	CHECK(m.carriers == 0xf && m.eligible == 0x7 && m.dup == 0x8);
+
+	/* Links 0 to 4, each one of 7 ways: no carrier; a carrier without a
+	 * share; weight 0 (dup0), carrying or not; eligible with dup0; eligible
+	 * and kept out by G4; eligible and in. a follows the copy, b 0.6.2 and c
+	 * the copy's absence, each with its own credits. */
+	cg_split_reset(&a);
+	cg_split_reset(&b);
+	cg_split_reset(&c);
+	for (unsigned code = 0; code < 7 * 7 * 7 * 7 * 7; code++) {
+		uint16_t carry = 0, elig = 0, dup0 = 0, out = 0;
+
+		for (unsigned i = 0, x = code; i < 5; i++, x /= 7) {
+			uint16_t one = bit(i);
+
+			switch (x % 7) {
+			case 1: carry |= one; break;
+			case 2: dup0 |= one; break;
+			case 3: carry |= one, dup0 |= one; break;
+			case 4: carry |= one, elig |= one, dup0 |= one; break;
+			case 5: carry |= one, elig |= one, out |= one; break;
+			case 6: carry |= one, elig |= one; break;
+			default: break;
+			}
+		}
+		shapes++;
+		for (unsigned t = 0; t < CG_ARRAY_SIZE(kind); t++) {
+			struct cg_split_masks y = cg_split_spread_apply(1, out, carry, elig, dup0);
+			struct cg_split_masks n = cg_split_spread_apply(0, out, carry, elig, dup0);
+			uint8_t fa = 0, fb = 0, fc = 0;
+			int pa = cg_split_pick(&a, y.carriers, y.eligible, y.dup, w, kind[t].type, kind[t].len, SMALL_LEN,
+					       &fa);
+			int pb = pick_062(&b, elig, (uint16_t)(dup0 | out), w, kind[t].type, kind[t].len, &fb);
+			int pc = cg_split_pick(&c, n.carriers, n.eligible, n.dup, w, kind[t].type, kind[t].len, SMALL_LEN,
+					       &fc);
+			uint16_t share = (uint16_t)(elig & ~dup0 & ~out), dc = cg_split_dst(pc, carry, n.dup);
+
+			/* The copy is 0.6.2, pick, flag and links. */
+			CHECK_EQ(pa, pb);
+			CHECK_EQ(fa, fb);
+			CHECK_EQ(cg_split_dst(pa, carry, y.dup), cg_split_dst(pb, carry, (uint16_t)(dup0 | out)));
+			split_old += pa >= 0;
+			/* Without it: a split packet goes to one link of the share
+			 * (and weight 0), never to one G4 keeps out... */
+			CHECK_EQ(!!fc, pc >= 0);
+			if (pc >= 0) {
+				CHECK(share >> pc & 1);
+				CHECK(w[pc] != 0);
+				CHECK_EQ(dc & out, 0);
+				CHECK_EQ(dc, (bit((unsigned)pc) | dup0) & carry);
+				split_new++;
+			} else {
+				CHECK_EQ(dc, carry);
+			}
+			/* ...and one link left in the share takes every big data
+			 * packet, when that skips a carrier (G2). */
+			if (kind[t].type == CG_WGS_DATA && kind[t].len > SMALL_LEN) {
+				uint16_t weighted = 0;
+
+				for (unsigned i = 0; i < 5; i++)
+					if ((share >> i & 1) && w[i])
+						weighted |= bit(i);
+				if (weighted && !(weighted & (weighted - 1)) &&
+				    (carry & ~(weighted | dup0 | (elig & ~out & ~dup0)))) {
+					CHECK_EQ(dc, (uint16_t)((weighted | dup0) & carry));
+					lone++;
+				}
+				/* With 2 links or more to share, both split it. */
+				if (weighted & (weighted - 1))
+					CHECK(pc >= 0 && pa >= 0);
+			}
+		}
+	}
+	CHECK_EQ(shapes, 16807u);
+	CHECK(split_old > 0 && split_new > split_old && lone > 0);
 }
 
 void test_split(void)
@@ -764,4 +922,5 @@ void test_split(void)
 	test_split_modes();
 	test_split_tail();
 	test_split_spread();
+	test_split_spread_copy();
 }

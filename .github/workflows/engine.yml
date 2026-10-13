@@ -114,6 +114,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build and unit tests (warnings are errors)
         run: make -C engine CFLAGS="-O2 -g -Werror" all test
+      - name: iperf3, for the fieldperf scenario
+        run: sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends iperf3
       - name: Lab scenarios in network namespaces
         run: sudo ENGINE=c bench/lab.sh build && sudo bench/lab.sh ci
       - name: Again with LL/SC atomics (ARMv8.0, no LSE)
@@ -135,6 +137,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build the lab (udpgen and cengarde)
         run: sudo ENGINE=c bench/lab.sh build
+      - name: iperf3, for the fieldperf scenario
+        run: sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends iperf3
       # smoke; health (a link with a 500 ms queue is muted and comes back);
       # control (pause, reloads and IP pass under traffic, no loss, same
       # session); and every bench/lab.d scenario with LAB_CI=1, udpmem

@@ -279,6 +279,15 @@ def row(case, var, dirn, cc, rep, mbps, retrans, pct, rtt=50.0, big=None, cpu=(1
     return r
 
 
+def test_sends():
+    c = bondtab.flat_client({"upload": {"packets": 10},
+                             "links": [{"tx_packets": 7, "tx_drops": 1}, {"tx_packets": 8, "tx_drops": 0}]})
+    check(c["sent"] == 10 and c["tx_links"] == 15 and c["tx_drops"] == 1, "the client's sends: " + str(c))
+    s = bondtab.flat_session({"download_packets": 4, "links": [{"tx_packets": 4, "tx_drops": 2}, {"tx_drops": 0}]})
+    check(s["sent"] == 4 and s["tx_links"] is None and s["tx_drops"] == 2, "a link without tx_packets: unknown: " + str(s))
+    check(bondtab.flat_client({})["tx_links"] is None, "no links: unknown")
+
+
 def test_tables(d):
     rows = []
     zero_side = {k: 0 for k in bondtab.NAMES}
@@ -286,7 +295,7 @@ def test_tables(d):
         # solo: steady. split: twice the goodput, a retransmission rate in two modes, reordering counters
         rows.append(row("reorder150", "solo", "up", "cubic", i + 1, 43.5, 30 + i, 0.03 + i / 1000, rtt=100.0, big=101.0))
         low = i < 5
-        eng = {"cli": dict(zero_side, wireguard_drops=0, lost_all=1),
+        eng = {"cli": dict(zero_side, wireguard_drops=0, lost_all=1, sent=1000, tx_links=1500, tx_drops=3),
                "srv": dict(zero_side, held_total=1000 + i, bypassed=500, lost_cap=7, late_after_cap=7, held_max=40, max_burst=12,
                            too_old=0, wireguard_drops=0, lost_all=2)}
         rows.append(row("reorder150", "split", "up", "cubic", i + 1, 80.0 + i / 10, 100 + i if low else 900 + 10 * i,
@@ -305,6 +314,9 @@ def test_tables(d):
     check("Engine counters per run" in text, "the engine table")
     check("| reorder150 | split | up | cubic | 10 | 1004 | 500 | 0 | 0/7/0/0 | 0/7/0/0 | 0/0/0 | 40/12 | 0/0 | 0/0 | 1/2 | 0/0 |" in text,
           "engine medians at the receiving end (server for up): " + str([ln for ln in text.splitlines() if "| split |" in ln]))
+    check("| 1/2 | 0/0 | 1.50 | 3 |" in text,
+          "sends per packet and send drops at the sending end (client for up): "
+          + str([ln for ln in text.splitlines() if "| split |" in ln]))
     check("Against the reference variant" in text and "| reorder150 | split | up | cubic | solo | 1.85× |" in text,
           "the comparison against solo: " + str([ln for ln in text.splitlines() if "| solo |" in ln]))
     check("| 0.001 |" in text or "| 0.000 |" in text, "a rank-test p-value for the goodput")
@@ -399,6 +411,11 @@ def test_references(d):
     check(bondtab.references("split-sp0-bp64", {"split-sp0-bp64", "split", "solo"}) == ["split"],
           "references: else further down")
     check(bondtab.references("splitnoro-sp0", {"splitnoro-sp0", "solo"}) == ["solo"], "references: a control's -spN")
+    # -nc (split_spread_copy = no) against the same variant with the copies
+    check(bondtab.references("split-sp30-nc", {"split-sp30-nc", "split-sp30", "split"}) == ["split-sp30"],
+          "references: -nc against its copies")
+    check(bondtab.references("split-nc", {"split-nc", "split", "solo"}) == ["split"], "references: split-nc")
+    check(bondtab.references("split-ncx", {"split-ncx", "split", "solo"}) == ["solo"], "references: -ncx is no suffix")
     check(bondtab.references("solo", {"solo", "redund-ro0"}) == [], "references: solo")
     check(bondtab.references("split", {"split", "redund"}) == [], "references: nothing to compare with")
 
@@ -409,6 +426,7 @@ def main():
         test_line(d)
         test_modes()
         test_mwu()
+        test_sends()
         test_tables(d)
         test_references(d)
     print(f"bondtab_test: {checks - fails}/{checks} ok" if not fails else f"bondtab_test: {fails} of {checks} FAILED")

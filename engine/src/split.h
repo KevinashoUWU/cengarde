@@ -6,11 +6,12 @@
  * - Eligible links: the live, active (not muted) links with a weight above
  *   zero whose peer still answers on them (guard G3 below), and of those the
  *   ones within split_spread_ms of the fastest take a share (guard G4
- *   below; the others carry a copy of every packet). The caller builds
- *   the mask from its link masks and health (health.h), not from
- *   cg_health_carriers: its fallbacks (a muted link when none is active, every
- *   link when none is live) must end in duplication, which is what a packet
- *   gets here when fewer than 2 links are eligible.
+ *   below; the others carry a copy of every packet, or with
+ *   split_spread_copy off only what every carrier carries: the
+ *   duplicated packets). The caller builds the mask from its link masks and
+ *   health (health.h), not from cg_health_carriers: its fallbacks (a muted
+ *   link when none is active, every link when none is live) must end in
+ *   duplication, which is what a packet gets here when no link is eligible.
  * - Smooth weighted round-robin (nginx's): each pick adds every eligible
  *   link's weight to its credit, takes the link with the most credit and
  *   charges it the sum of the weights. Weights 5:1:1 give a a b a c a a, not
@@ -20,8 +21,16 @@
  * - Duplicated packets (pick -1): WireGuard's handshake messages (types 1 to
  *   3: a lost one costs a retry of seconds), small datagrams (keepalives, TCP
  *   ACKs: their loss costs more than the bytes saved) and everything while
- *   fewer than 2 links are eligible. They go to every carrier, as without a
- *   split.
+ *   no link is eligible. They go to every carrier, as without a split.
+ * - Guard G2: with fewer than 2 eligible links everything goes to every
+ *   carrier, as up to 0.6.2. With split_spread_copy off, one eligible link
+ *   takes every packet that would be split instead, so long as it is not
+ *   every carrier there is (then nothing would be skipped, and the packet
+ *   is a duplicated one): the others are out for a reason, late (G4), muted
+ *   (G1) or not answering (G3), and on the Pi's 5G links (story 012,
+ *   2026-10-13) copying loaded the links that were already late with the
+ *   whole stream: their queues grew to 2.5 s, the sockets refused thousands
+ *   of packets and the split fell apart.
  * - Weight 0 (libRIST's meaning): the link carries a copy of every packet,
  *   split or not. These links are dup0 and are never picked.
  * - CG_F_SPLIT (proto.h) marks a packet that skips at least one carrier. It
@@ -71,28 +80,36 @@ static inline void cg_split_reset(struct cg_split *s)
 	memset(s, 0, sizeof(*s));
 }
 
-/* Where one packet goes. eligible: the links that may take a share (above);
- * dup0: the weight-0 links, which carry every packet (any of them in
- * eligible is ignored); w: the weights (0: none); wgtype and len: the
- * WireGuard message type (its first byte, 0 for an empty datagram) and the
- * datagram's length, 32 bytes of overhead included as in wgsize.h; small_len:
- * datagrams of up to this many bytes are duplicated.
+/* Where one packet goes, given the masks of cg_split_spread_apply.
+ * carriers: the links that carry payload at all (cg_health_carriers), for
+ * G2, or 0 when one link left must not take a packet alone (then it goes to
+ * every carrier); eligible: the links that may take a share (above); dup0:
+ * the links that carry every packet (weight 0, and with split_spread_copy
+ * the ones G4 keeps out; any of them in eligible is ignored); w: the weights
+ * (0: none); wgtype and len: the WireGuard message type (its first byte, 0
+ * for an empty datagram) and the datagram's length, 32 bytes of overhead
+ * included as in wgsize.h; small_len: datagrams of up to this many bytes
+ * are duplicated.
  *
  * Returns the link that carries the packet, to which cg_split_dst adds the
  * weight-0 links, and ORs CG_F_SPLIT into *flags (NULL: not asked), the
  * other bits left as they are. Returns -1, with *flags untouched, when the
  * packet goes to every carrier. */
-static inline int cg_split_pick(struct cg_split *s, uint16_t eligible, uint16_t dup0,
+static inline int cg_split_pick(struct cg_split *s, uint16_t carriers, uint16_t eligible, uint16_t dup0,
 				const uint16_t w[CG_MAX_LINKS], uint8_t wgtype, uint32_t len,
 				uint32_t small_len, uint8_t *flags)
 {
-	uint16_t set = 0, keep;
+	uint16_t set = 0, keep, copies = dup0;
 	int32_t total = 0;
 	int best = -1;
 
 	for (int i = 0; i < CG_MAX_LINKS; i++)
-		if ((eligible >> i & 1) && !(dup0 >> i & 1) && w[i])
-			set |= (uint16_t)(1u << i);
+		if ((eligible >> i & 1) && !(dup0 >> i & 1)) {
+			if (w[i])
+				set |= (uint16_t)(1u << i);
+			else
+				copies |= (uint16_t)(1u << i); /* weight 0 as well, named in dup0 or not */
+		}
 
 	/* Nothing to share out among fewer than 2 links: start even when a
 	 * second one comes. */
@@ -101,8 +118,19 @@ static inline int cg_split_pick(struct cg_split *s, uint16_t eligible, uint16_t 
 		if (!(keep >> i & 1))
 			s->cur[i] = 0;
 
-	if (wgtype != CG_WGS_DATA || len <= small_len || !keep)
+	if (wgtype != CG_WGS_DATA || len <= small_len || !set)
 		return -1;
+	if (!keep) {
+		/* G2: the one link left takes the packet, when that skips a carrier
+		 * (never with carriers 0: split_spread_copy). */
+		for (best = 0; !(set >> best & 1); best++)
+			;
+		if (!(carriers & (uint16_t)~((1u << best) | copies)))
+			return -1;
+		if (flags)
+			*flags |= CG_F_SPLIT;
+		return best;
+	}
 
 	for (int i = 0; i < CG_MAX_LINKS; i++) {
 		if (!(keep >> i & 1))
@@ -169,9 +197,19 @@ static inline int cg_split_active(int mode, int peer_reorders, int peer_asks)
  *   mute settle time), so that a link near the edge does not flap. A link
  *   without a fresh delay is out until it has one, and then in at once if
  *   within spread: only one that left waits;
- * - a link out of the split carries a copy of every packet, as one of weight
- *   0 does: it still delivers, later, and fills the others' gaps. Fewer than
- *   2 links in duplicate everything (G2);
+ * - a link out of the split carries a copy of every packet, as one of
+ *   weight 0 does, to fill the others' gaps (split_spread_copy, the
+ *   default, as up to 0.6.2). With split_spread_copy off it carries only
+ *   the duplicated packets (handshakes and small datagrams), as one that is
+ *   not eligible does, and one link left in the split takes every packet
+ *   (G2): a link falls behind most often because its queue is full, and the
+ *   whole stream on top of its share then makes it worse. In the first
+ *   field test (story 012, 2026-10-13, 4 links of 5G with deep queues) a
+ *   link that left kept falling behind, up to 2.6 s, and the sockets of the
+ *   router refused 4000 to 53000 packets a run, where a split without the
+ *   guard refused none; in the lab (bond "bloat", netem queues of 1 to 2 s)
+ *   leaving the copies out helped BBR with spread 30 and hurt QUIC, so the
+ *   old way stays the default until the field says otherwise;
  * - spread 0: no guard, every candidate takes its share, delay or not.
  * Evaluated with health, every tick; the send path reads the result. */
 #define CG_SPLIT_REJOIN_NUM 3 /* a link that left comes back within 3/4 of the spread */
@@ -191,8 +229,8 @@ enum cg_split_share {
 	CG_SHARE_NO = 0,  /* not eligible (G1 to G3): only the duplicated packets */
 	CG_SHARE_YES,     /* takes its share */
 	CG_SHARE_WEIGHT0, /* weight 0: a copy of every packet */
-	CG_SHARE_SPREAD,  /* left for its delay (G4): a copy of every packet */
-	CG_SHARE_WAITING, /* no delay measured yet (G4): a copy of every packet */
+	CG_SHARE_SPREAD,  /* left for its delay (G4): a copy of every packet, or only the duplicated ones */
+	CG_SHARE_WAITING, /* no delay measured yet (G4): the same */
 };
 
 static inline const char *cg_split_share_name(int v)
@@ -269,13 +307,39 @@ static inline uint16_t cg_split_spread_eval(struct cg_spread *s, const struct cg
 	return (uint16_t)(was ^ s->left);
 }
 
-/* The links that carry a copy of every packet of a split batch besides the
- * weight-0 ones (dup0): the eligible ones the guard keeps out. OR it into
- * the dup0 given to cg_split_pick and cg_split_dst. */
-static inline uint16_t cg_split_spread_dup(const struct cg_spread *s, uint16_t eligible, uint16_t dup0,
+/* The eligible links the guard keeps out of the split (dup0, the weight-0
+ * ones, aside), for cg_split_spread_apply. */
+static inline uint16_t cg_split_spread_out(const struct cg_spread *s, uint16_t eligible, uint16_t dup0,
 					   uint32_t spread_us)
 {
 	return spread_us ? (uint16_t)(eligible & ~dup0 & ~s->in) : 0;
+}
+
+/* The masks cg_split_pick and cg_split_dst take. */
+struct cg_split_masks {
+	uint16_t carriers; /* for G2: 0 when one link left must not take a packet alone */
+	uint16_t eligible;
+	uint16_t dup; /* the links that carry every packet */
+};
+
+/* What split_spread_copy (config.h) makes of the links G4 keeps out (out,
+ * cg_split_spread_out) and of G2. copy (the default, as up to 0.6.2): they
+ * carry a copy of every packet, as the weight-0 ones (dup0) do, and fewer
+ * than 2 links in the split duplicate everything. Not copy: they leave the
+ * eligible links and carry only the duplicated packets, and one link left
+ * takes every split packet. carriers and eligible as for cg_split_pick. */
+static inline struct cg_split_masks cg_split_spread_apply(int copy, uint16_t out, uint16_t carriers,
+							  uint16_t eligible, uint16_t dup0)
+{
+	struct cg_split_masks m = { carriers, eligible, dup0 };
+
+	if (copy) {
+		m.carriers = 0;
+		m.dup = (uint16_t)(dup0 | out);
+	} else {
+		m.eligible = (uint16_t)(eligible & ~out);
+	}
+	return m;
 }
 
 /* What link has to do with a split (the end splits): eligible and dup0 as

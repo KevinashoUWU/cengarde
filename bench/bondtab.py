@@ -57,8 +57,13 @@ RO_PATHS = {
 }
 GAUGES = ("held_max", "max_burst")  # maxima since the engine started: not differences
 HISTS = ("wait", "late_by")  # 10 buckets each
-COUNTERS = [k for k in RO_PATHS if k not in GAUGES] + ["too_old", "wireguard_drops", "lost_all"]
-NAMES = list(RO_PATHS) + ["too_old", "wireguard_drops", "lost_all"]
+# What an end sent: data packets ("sent"), the sends of them over all its links
+# ("tx_links": sent once per link a packet went on) and the sends a link's socket
+# refused for a full queue ("tx_drops"). tx_links over sent is how many times a
+# packet went out: 1 for a pure split, the number of links when copied.
+SENDS = ["sent", "tx_links", "tx_drops"]
+COUNTERS = [k for k in RO_PATHS if k not in GAUGES] + ["too_old", "wireguard_drops", "lost_all"] + SENDS
+NAMES = list(RO_PATHS) + ["too_old", "wireguard_drops", "lost_all"] + SENDS
 
 
 def num(v):
@@ -91,11 +96,22 @@ def flat_reorder(ro):
     return out
 
 
+def link_sum(links, key):
+    """The sum of key over a status "links" list, None when a link lacks it."""
+    if not isinstance(links, list) or not links:
+        return None
+    vs = [num(dig(l, key)) for l in links]
+    return None if any(v is None for v in vs) else sum(vs)
+
+
 def flat_client(d):
     out = flat_reorder(dig(d, "reorder"))
     out["too_old"] = num(dig(d, "download", "too_old"))
     out["wireguard_drops"] = num(dig(d, "download", "wireguard_drops"))
     out["lost_all"] = num(dig(d, "lost_all"))
+    out["sent"] = num(dig(d, "upload", "packets"))
+    out["tx_links"] = link_sum(dig(d, "links"), "tx_packets")
+    out["tx_drops"] = link_sum(dig(d, "links"), "tx_drops")
     return out
 
 
@@ -104,6 +120,9 @@ def flat_session(s):
     out["wireguard_drops"] = num(dig(s, "wireguard_drops"))
     out["lost_all"] = num(dig(s, "lost_all"))
     out["too_old"] = None  # the server counts it for all sessions: rx.too_old
+    out["sent"] = num(dig(s, "download_packets"))
+    out["tx_links"] = link_sum(dig(s, "links"), "tx_packets")
+    out["tx_drops"] = link_sum(dig(s, "links"), "tx_drops")
     return out
 
 
@@ -477,7 +496,8 @@ def tables(rows, refs):
         if ro:
             head += ["held", "bypassed", "split_rx", "lost rack/cap/ovf/flush", "late rack/cap/ovf/old",
                      "far/resyncs/pool_full", "held max/burst"]
-        head += ["too_old cli/srv", "wg drops cli/srv", "lost_all cli/srv", "wg rx_dropped cli/srv"]
+        head += ["too_old cli/srv", "wg drops cli/srv", "lost_all cli/srv", "wg rx_dropped cli/srv",
+                 "sends per packet", "send drops"]
         body = []
         for k in keys:
             rs = by[k]
@@ -501,7 +521,14 @@ def tables(rows, refs):
                           slash(["lost_rack", "lost_cap", "lost_overflow", "lost_flush"]),
                           slash(["late_after_rack", "late_after_cap", "late_after_overflow", "late_old"]),
                           slash(["far", "resyncs", "pool_full"]), slash(["held_max", "max_burst"])]
-            body.append(cells + [pair("too_old"), pair("wireguard_drops"), pair("lost_all"), wgp])
+            # At the end that sent the bulk: the client for upload, the server for download.
+            tx = "cli" if side == "srv" else "srv"
+            per = []
+            for r in rs:
+                e = (r.get("eng") or {}).get(tx) or {}
+                per.append(e["tx_links"] / e["sent"] if e.get("tx_links") is not None and e.get("sent") else None)
+            body.append(cells + [pair("too_old"), pair("wireguard_drops"), pair("lost_all"), wgp,
+                                 cell(per, 2, spread=False), cell(eng(tx, "tx_drops"), 0, spread=False)])
         out += md_table(head, body)
         bad = []
         for k in keys:
@@ -532,7 +559,8 @@ FAMILY_REFS = {
     "solo": (),
 }
 DEFAULT_REFS = ("solo", "redund-ro0", "splitnoro")
-SUFFIX = re.compile(r"^(.+)-(?:bp|sp)[0-9]+$")  # bond.sh's -bpN (reorder_bypass), -spN (split_spread_ms)
+# bond.sh's -bpN (reorder_bypass), -spN (split_spread_ms) and -nc (split_spread_copy = no)
+SUFFIX = re.compile(r"^(.+)-(?:(?:bp|sp)[0-9]+|nc)$")
 
 
 def references(variant, present, refs=None):
@@ -541,7 +569,7 @@ def references(variant, present, refs=None):
 
     - refs (--ref A,B): the first of them the group has, for every variant (the rule
       before the families);
-    - a variant with suffixes (-bpN, -spN): the nearest of the variants without
+    - a variant with suffixes (-bpN, -spN, -nc): the nearest of the variants without
       its last ones that the group has (split-sp0-bp64: split-sp0, else split),
       else as the variant without any;
     - the variant's FAMILY_REFS the group has;

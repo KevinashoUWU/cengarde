@@ -15,8 +15,8 @@ bonding of Fase 5 needs from the field:
   (story 012 assumes 1.5 s of loss at each, still to be measured);
 - per hour of the day, each link's outages, RTT and loss;
 - while the client split its upload, what each link did in the split
-  (links[].split_share: a share, out for its delay with split_spread_ms and
-  carrying copies, waiting for a delay...), how often the delay guard took
+  (links[].split_share: a share, out for its delay with split_spread_ms,
+  with copies or without as split_spread_copy says, waiting for a delay...), how often the delay guard took
   it out and how far behind the fastest it saw it.
 
 A link is out while its state is not "live" or nothing came from it for
@@ -1317,7 +1317,8 @@ def report(s, notes, utc_offset_h):
     if split:
         w("\n## The upload split\n")
         w("While the client split its upload: what each link did there (links[].split_share; yes: a share; spread: "
-          "out for its delay, split_spread_ms, carrying copies; waiting: no delay measured yet), how often the delay guard "
+          "out for its delay, split_spread_ms, with copies unless split_spread_copy is off; waiting: no delay measured "
+          "yet), how often the delay guard "
           "took it out, and how far behind the fastest the guard saw it.\n")
         w("| link | h | yes % | spread % | waiting % | weight 0 % | no % | taken out | behind p50/p99 ms |")
         w("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |")

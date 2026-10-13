@@ -170,6 +170,7 @@ struct cg_config {
 	int split;                    /* enum cg_split_mode */
 	uint32_t split_small;         /* datagrams of up to this many bytes are never split */
 	uint32_t split_spread_ms;     /* only links this close to the fastest share the split (split.h G4); 0: off */
+	int split_spread_copy;        /* links out of the split get every packet, as up to 0.6.2 (split.h) */
 
 	/* latency knobs */
 	uint32_t busy_poll_us; /* poll without sleeping this long after traffic */
