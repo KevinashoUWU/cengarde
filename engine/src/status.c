@@ -339,7 +339,9 @@ static void *writer_main(void *arg)
 
 		while (!w->buf && !w->stop)
 			pthread_cond_wait(&w->cv, &w->mu);
-		if (w->stop)
+		/* What was handed on before the stop is written first: the last
+		 * port WireGuard knows a client by has to outlive the engine. */
+		if (!w->buf)
 			break;
 		buf = w->buf;
 		len = w->len;

@@ -28,7 +28,10 @@
   peer. Una Pi (sin reloj con batería) que se reinicia vuelve con la hora
   atrasada, y el VPS la ignora; con todo por el túnel, el NTP no puede
   corregirla. Desde la 0.4.4, el servidor nota las iniciaciones sin
-  respuesta y hace que el WireGuard del VPS inicie él (`wgwatch.h`).
+  respuesta y hace que el WireGuard del VPS inicie él (`wgwatch.h`). Desde
+  la 0.6.2 guarda en disco el puerto por el que WireGuard conoce a cada
+  router (`wireguard_port_file`, `wgport.h`), para que también funcione
+  tras un reinicio del motor.
 
 ## Hallazgos
 
@@ -191,9 +194,16 @@ contadores.
 
 - Verificar los tres puntos del kernel antes de diseñar en función de ellos.
 - **Reloj del router, lo que el arreglo no cubre:**
-  - **Reinicio del motor del VPS** mientras el router está caído: el
+  - ~~**Reinicio del motor del VPS** mientras el router está caído: el
     servidor olvida el puerto que WireGuard conoce y el empujón no llega.
-    Reiniciar la interfaz WireGuard del VPS lo destraba.
+    Reiniciar la interfaz WireGuard del VPS lo destraba.~~ Le pasó al
+    usuario el 2026-10-13, al actualizar el VPS a la 0.6.0 con el router
+    3 días atrasado: el WireGuard del VPS seguía apuntando al puerto de la
+    sesión del motor viejo. Arreglado en la 0.6.2: el puerto se guarda en
+    `wireguard_port_file` y la primera sesión tras el arranque lo retoma;
+    `cengarde-vps-setup` siembra el archivo desde `wg show` la primera vez,
+    para que la propia actualización desde la 0.6.1 no lo pierda
+    (`bench/lab.sh wgpoke`, fase 5).
   - **Protocolo v4 (PR 3d2):** la sesión activa por cliente, con un socket
     por cliente hacia WireGuard, hace innecesarias la redirección y el
     reuso del puerto. El empujón sigue sirviendo.
@@ -204,3 +214,5 @@ contadores.
 - 2026-10-05: el timestamp de la iniciación frente al reloj de un router sin
   batería (el «2344 h» de la Pi y el bloqueo, medidos en QEMU), y el arreglo
   del servidor en la 0.4.4.
+- 2026-10-13: el reinicio del motor del VPS ya no pierde el puerto que
+  conoce WireGuard (0.6.2, `wireguard_port_file`); tachado de Pendiente.

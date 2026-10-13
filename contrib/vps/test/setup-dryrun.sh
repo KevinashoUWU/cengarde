@@ -41,7 +41,9 @@
 #   asks again), by cengarde-vps-setup and by install.sh (firewalld refused
 #   before anything changes, a build that fails before wg0 is touched, the
 #   old service stopped before systemd-sysusers, the nftables drop-in only
-#   when nftables is enabled, run twice); purge writes the secret, and
+#   when nftables is enabled, run twice), and on a server whose running
+#   engine refuses the new configuration (0.5.0 and before: no reload asked
+#   of it, the restart reads it); purge writes the secret, and
 #   whether the router holds IP pass, back for 0.4's install.sh;
 # - what systemd runs when it stops cengarde-nat.service (ExecStop) or 0.4's
 #   wg0 (PostDown) takes the admin lock, as PID 1's child, not the caller's:
@@ -216,11 +218,19 @@ case "$*" in
 esac
 exit 0
 EOF
+# wg show cg-NAME endpoints: NAME's endpoint from FAKE_WG_ENDPOINTS
+# ("NAME=PORT ..."), on 127.0.0.1 as the engine's sockets are; none without.
 cat >"$BIN/wg" <<'EOF'
 #!/bin/sh
 echo "wg $*" >>"$CALLS"
 case $1 in
 pubkey | genkey) exec "$REAL_WG" "$@" ;;
+show)
+	[ "${3:-}" = endpoints ] || exit 0
+	for e in ${FAKE_WG_ENDPOINTS:-}; do
+		[ "cg-${e%%=*}" = "$2" ] && printf 'cHViS2V5PQ==\t127.0.0.1:%s\n' "${e#*=}"
+	done
+	;;
 esac
 exit 0
 EOF
@@ -784,6 +794,41 @@ check "its drop-in installed" [ -e "$R/etc/systemd/system/nftables.service.d/cen
 rm -f "$FAKE_STATE/enabled-nftables"
 check "nftables.service no longer enabled" inst
 check "its drop-in removed" [ ! -e "$R/etc/systemd/system/nftables.service.d/cengarde.conf" ]
+say "the ports WireGuard knows the routers by, read from WireGuard until the engine writes them"
+fresh wgports
+check "add router, WireGuard with no endpoint for it" add router "$S1"
+check "the engine's configuration names the port file" \
+	grep -qx 'wireguard_port_file = /var/lib/cengarde/wg/ports' "$R/etc/cengarde/cengarde.conf"
+check "no port file: nothing to seed it with" [ ! -e "$R/var/lib/cengarde/wg/ports" ]
+export FAKE_WG_ENDPOINTS="router=34604 office=40000"
+check "add office, WireGuard knowing router by 34604 (an engine older than 0.6.2)" add office "$S2"
+F=$R/var/lib/cengarde/wg/ports
+check "the file says so, in the engine's format" \
+	sh -c 'head -n 1 "$1" | grep -q "^# cengarde WireGuard ports 1, " && grep -qx "34604 router" "$1" && grep -qx "40000 office" "$1" && [ "$(wc -l <"$1")" = 3 ]' sh "$F"
+check "and it said so" sh -c 'printf "%s\n" "$1" | grep -q "the ports WireGuard knows the routers by: .*34604 router" && printf "%s\n" "$1" | grep -q "by: .*40000 office"' sh "$OUT"
+check "in a directory of its own, the engine's, no leftovers" \
+	sh -c '[ "$(stat -c %U "${1%/*}")" = root ] && [ "$(ls -A "${1%/*}")" = ports ]' sh "$F"
+export FAKE_WG_ENDPOINTS="router=50000 office=50001"
+check "add third" add third "$S3"
+check "an existing file is the engine's: left alone" \
+	sh -c 'grep -qx "34604 router" "$1" && ! grep -q 50000 "$1"' sh "$F"
+unset FAKE_WG_ENDPOINTS
+
+say "install.sh on a server whose running engine refuses the new configuration"
+# 0.4.5 to 0.5.0: the static user is there, so the old engine keeps running
+# until 6/6, and it refuses a configuration with [client] sections on a
+# reload ("key: expected the base64 of 32 bytes"). install.sh leaves the
+# configuration to the restart that follows.
+fresh inst05
+printf 'root:x:0:0::/root:/bin/sh\n' >"$R/etc/passwd"
+(umask 077 && echo "$S1" >"$R/etc/cengarde/secret")
+export FAKE_CTL=error
+check "install.sh, with the running engine refusing any reload" inst
+unset FAKE_CTL
+check "the router imported, with its [client] section" grep -qx '\[client router\]' "$R/etc/cengarde/cengarde.conf"
+check "no reload asked of the old engine, the old service not stopped" not called '^cengarde ctl .*reload$|^systemctl reload cengarde$|^systemctl stop cengarde$'
+check "the new engine checked the file, cengarde restarted" \
+	sh -c 'grep -q "^cengarde -t -c " "$1" && grep -q "^systemctl restart cengarde$" "$1"' sh "$CALLS"
 fresh instnew
 rm -f "$R/etc/cengarde/nat.conf"
 printf 'ENGINE_USER=root\n' >"$TMP/natconf.keep"

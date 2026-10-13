@@ -325,11 +325,16 @@ cuando lo empujan; el del router la contesta.
 - **4:** el cliente para 8 s, más que `session_timeout_ms` (5 s aquí), y
   vuelve a llamar: la sesión nueva retoma el puerto de la anterior y la
   iniciación le llega directo.
-- **5:** con `wireguard_poke = none` (recarga), un cliente que llama tras un
+- **5:** el servidor se reinicia (una actualización) mientras el cliente
+  llama con la hora todavía atrasada: lee de `wireguard_port_file` el puerto
+  que conoce WireGuard, su sesión nueva lo toma y la iniciación de WireGuard
+  llega al router.
+- **6:** con `wireguard_poke = none` (recarga), un cliente que llama tras un
   reinicio no provoca empujones.
 
 El motor de antes del arreglo falla las fases 2, 3 y 4; sin el traspaso del
-puerto, falla la 3.
+puerto, falla la 3; sin `wireguard_port_file` (0.6.1 y antes), falla la 5
+(comprobado quitando la clave del escenario el 2026-10-13).
 
 ### `multiip`: el servidor con varias direcciones (`lab.d/multiip.sh`)
 

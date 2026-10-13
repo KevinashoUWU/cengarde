@@ -53,8 +53,14 @@
 # which IP pass's range leaves to them; never a reserved port ("forward
 # allow" frees one below 1024). The engine writes the outcome to its forward
 # table, /var/lib/cengarde/forward, and cengarde-passthrough.path has
-# cengarde-nat apply it. Settings: /etc/cengarde/nat.conf (see cengarde-nat).
-# CENGARDE_ROOT goes in front of every path (tests).
+# cengarde-nat apply it. The port WireGuard knows each router by goes to
+# /var/lib/cengarde/wg/ports, so that it outlives a restart of the engine (a
+# router whose clock went back needs it); the first time, before an engine
+# that writes it ever ran (0.6.1 and older), it is read from WireGuard here.
+# Settings: /etc/cengarde/nat.conf (see cengarde-nat).
+# CENGARDE_ROOT goes in front of every path (tests). CENGARDE_NO_RELOAD=1
+# writes the configuration without asking the running engine to reload it
+# (install.sh, which restarts the engine right after).
 #
 # SPDX-License-Identifier: GPL-2.0-only
 set -eu
@@ -89,6 +95,8 @@ WG_DIR=$R/etc/wireguard
 STATE_DIR=$R/var/lib/cengarde
 PASS_FILE=$STATE_DIR/passthrough
 FWD_FILE=$STATE_DIR/forward
+# A directory of its own: cengarde-passthrough.path watches STATE_DIR.
+WG_PORT_FILE=$STATE_DIR/wg/ports
 OLD_PASS=$R/var/lib/cengarde-nat/passthrough
 NAT_STATE=$R/run/cengarde-nat
 SOCK=$R/run/cengarde/cengarde.sock
@@ -414,6 +422,8 @@ engine_conf() {
 		# What each router gets of this server's ports (IP pass, and its
 		# rules); cengarde-passthrough.path has cengarde-nat apply it.
 		forward_file = /var/lib/cengarde/forward
+		# The port WireGuard knows each router by, across restarts.
+		wireguard_port_file = /var/lib/cengarde/wg/ports
 	EOF
 	for n in $(routers); do
 		load "$n"
@@ -449,6 +459,14 @@ keys_of() { # NAME: CG_* of a configured router
 # is not running (or restarting) reads the file when it starts.
 reload() {
 	local ans rc
+	# install.sh restarts the engine right after (CENGARDE_NO_RELOAD=1): the
+	# one running may be older than this configuration (0.5.0 and before
+	# refuse [client] sections without a global key), and the new one reads
+	# it when it starts.
+	if [ "${CENGARDE_NO_RELOAD:-}" = 1 ]; then
+		RELOAD="left to the restart that follows"
+		return 0
+	fi
 	if ! systemctl is-active -q cengarde 2>/dev/null; then
 		RELOAD="cengarde is not running: it reads this configuration when it starts"
 		return 0
@@ -474,6 +492,34 @@ reload() {
 	return 1
 }
 
+# seed_wg_ports: the port WireGuard knows each router by, read from
+# WireGuard, while no engine has written WG_PORT_FILE yet (one older than
+# 0.6.2 kept it in memory only): the engine that starts next binds it again
+# (engine/src/wgport.h), so a router whose clock went back still gets
+# WireGuard's handshakes after the upgrade. From then on the file is the
+# engine's.
+seed_wg_ports() {
+	local n port out="" dir="${WG_PORT_FILE%/*}"
+	[ ! -e "$WG_PORT_FILE" ] || return 0
+	for n in $(routers); do
+		port=$(wg show "cg-$n" endpoints 2>/dev/null |
+			sed -n 's/^[^[:space:]]*[[:space:]][[:space:]]*127\.0\.0\.1:\([1-9][0-9]*\)$/\1/p' | head -n 1)
+		[ -z "$port" ] || out="$out$port $n
+"
+	done
+	[ -n "$out" ] || return 0
+	mkdir -p "$dir"
+	chown "$ENGINE_USER:$ENGINE_GROUP" "$dir" 2>/dev/null || :
+	chmod 0750 "$dir"
+	{
+		echo "# cengarde WireGuard ports 1, read from WireGuard by $ME: data only"
+		printf '%s' "$out"
+	} >"$dir/.ports.new" || die "cannot write $dir/.ports.new"
+	chown "$ENGINE_USER:$ENGINE_GROUP" "$dir/.ports.new" 2>/dev/null || :
+	mv "$dir/.ports.new" "$WG_PORT_FILE"
+	say "the ports WireGuard knows the routers by: $(printf '%s' "$out" | tr '\n' ' ' | sed 's/ $//') ($WG_PORT_FILE)"
+}
+
 # write_conf: the engine's configuration, checked by the engine before it
 # goes in place, then reloaded; the previous file back on any error.
 write_conf() {
@@ -497,6 +543,7 @@ write_conf() {
 	[ ! -e "$ENGINE_CONF" ] || cp -p "$ENGINE_CONF" "$old"
 	mv "$new" "$ENGINE_CONF"
 	TMPF=
+	[ "$(nrouters)" -eq 0 ] || seed_wg_ports
 	if ! reload; then
 		if [ -e "$old" ]; then
 			mv "$old" "$ENGINE_CONF"

@@ -67,7 +67,9 @@
  * WireGuard into starting one of its own (wgwatch.h); WireGuard sends it to
  * the session it knows, so after a restart it goes down the newest one, and
  * the port WireGuard knows passes on to the newest: when its older session
- * closes, or when it starts alone.
+ * closes, or when it starts alone. That port outlives the engine: the server
+ * writes each client's to wireguard_port_file (wgport.h), from a thread, and
+ * the first session after a restart binds it again.
  *
  * SPDX-License-Identifier: GPL-2.0-only */
 #include <errno.h>
@@ -97,6 +99,7 @@
 #include "steer.h"
 #include "thrplan.h" /* cg_cpuwin */
 #include "util.h"
+#include "wgport.h"
 #include "wgsize.h"
 #include "wgwatch.h"
 
@@ -199,6 +202,8 @@ struct lane {
 
 /* Forward tables are small: cengarde-nat refuses one over 64 KiB. */
 #define FWD_TABLE_MAX 65536
+/* A line per client in wireguard_port_file: "65535 NAME\n" (wgport.h). */
+#define WGPORT_MAX (sizeof(CG_WGPORT_HEADER) + CG_MAX_CLIENTS * (7 + CG_CLIENT_NAME))
 
 struct server {
 	struct cg_config *cfg; /* replaced by a reload */
@@ -228,7 +233,8 @@ struct server {
 	struct cg_status_writer sw;
 	struct cg_status_writer pw; /* passthrough_file */
 	struct cg_status_writer fw; /* forward_file */
-	struct cg_cpuwin cpu[4];    /* this loop, sw, pw and fw, for "ctl threads" */
+	struct cg_status_writer gw; /* wireguard_port_file */
+	struct cg_cpuwin cpu[5];    /* this loop, sw, pw, fw and gw, for "ctl threads" */
 	uint64_t next_cpu_ms;
 	int pass_written; /* one client: last IP pass handed to pw, -1 none */
 	/* Several clients: the forward table (fwdtable.h). */
@@ -238,6 +244,12 @@ struct server {
 	size_t fw_len;   /* length of fw_text */
 	char fw_text[FWD_TABLE_MAX]; /* that table */
 	char fw_next[FWD_TABLE_MAX];
+	/* The port WireGuard knows each client by (wgport.h). */
+	int gw_dirty;   /* a client's wg_port, or the clients, changed */
+	int gw_written; /* gw_text was handed on, or is what the file says */
+	size_t gw_len;
+	char gw_text[WGPORT_MAX];
+	char gw_next[WGPORT_MAX];
 	struct cg_ctl ctl;
 	struct cg_loader loader;
 	int reload_again;
@@ -476,6 +488,7 @@ static void session_rehome(struct server *s, struct session *N, uint16_t port)
 	close(N->wg_fd);
 	N->wg_fd = fd;
 	N->wg_port = C->wg_port = port;
+	s->gw_dirty = 1;
 	cg_info("%ssession %08x: takes over the port WireGuard knew its client by", C->tag, N->id);
 }
 
@@ -567,8 +580,10 @@ static void session_destroy(struct server *s, struct session *S, const char *why
 		if (s->s[i].used && s->s[i].client == S->client &&
 		    (C->newest < 0 || s->s[i].created_ms > s->s[C->newest].created_ms))
 			C->newest = (int32_t)i;
-	if (C->newest >= 0)
+	if (C->newest >= 0) {
 		C->wg_port = s->s[C->newest].wg_port;
+		s->gw_dirty = 1;
+	}
 }
 
 /* Closes every session of client C. */
@@ -650,6 +665,7 @@ static struct session *session_create(struct server *s, struct client *C, const 
 	s->nsess++;
 	C->newest = (int32_t)(S - s->s);
 	C->wg_port = S->wg_port;
+	s->gw_dirty = 1;
 	cg_info("%ssession %08x: new client from %s", C->tag, id, cg_addr_str(from, a, sizeof(a)));
 	return S;
 }
@@ -1989,6 +2005,71 @@ static void fwd_load(struct server *s)
 		}
 }
 
+/* Hands every client's port WireGuard knows to gw when one changed and the
+ * file would say something else. */
+static void wgport_sync(struct server *s)
+{
+	const char *names[CG_MAX_CLIENTS];
+	uint16_t ports[CG_MAX_CLIENTS];
+	struct cg_json j;
+	int len, n = 0;
+
+	if (!s->gw_dirty || !s->gw.running)
+		return;
+	for (int i = 0; i < CG_MAX_CLIENTS; i++)
+		if (s->c[i].used) {
+			names[n] = s->c[i].name;
+			ports[n++] = ntohs(s->c[i].wg_port);
+		}
+	len = cg_wgport_table(s->gw_next, sizeof(s->gw_next), names, ports, n);
+	if (len < 0) {
+		s->gw_dirty = 0; /* cannot happen: WGPORT_MAX has room for every client */
+		return;
+	}
+	if (s->gw_written && (size_t)len == s->gw_len && !memcmp(s->gw_next, s->gw_text, (size_t)len)) {
+		s->gw_dirty = 0;
+		return;
+	}
+	cg_json_init(&j);
+	cg_json_raw(&j, "%s", s->gw_next);
+	if (cg_status_writer_submit(&s->gw, &j) == 0) {
+		memcpy(s->gw_text, s->gw_next, (size_t)len + 1);
+		s->gw_len = (size_t)len;
+		s->gw_written = 1;
+		s->gw_dirty = 0;
+	}
+	cg_json_free(&j);
+}
+
+/* The ports a previous run left, once at start: each client's first session
+ * binds its port again, where WireGuard still sends (wgport.h). */
+static void wgport_load(struct server *s)
+{
+	FILE *f = fopen(s->cfg->wireguard_port_file, "r");
+	size_t n;
+
+	s->gw_dirty = 1;
+	if (!f)
+		return;
+	n = fread(s->gw_text, 1, sizeof(s->gw_text) - 1, f);
+	fclose(f);
+	s->gw_text[n] = '\0';
+	if (n == sizeof(s->gw_text) - 1 || strlen(s->gw_text) != n)
+		return;
+	s->gw_len = n;
+	s->gw_written = 1;
+	for (int i = 0; i < CG_MAX_CLIENTS; i++) {
+		struct client *C = &s->c[i];
+		uint16_t port = C->used ? cg_wgport_find(s->gw_text, C->name) : 0;
+
+		if (!port)
+			continue;
+		C->wg_port = htons(port);
+		cg_info("%sWireGuard knew %s by port %u before the restart, as %s says", C->tag,
+			s->multi ? "it" : "the client", port, s->cfg->wireguard_port_file);
+	}
+}
+
 /* WireGuard ignores the handshakes of C's newest session S, most likely
  * because the client's clock went back: a datagram to the client's address
  * in the tunnel makes it start one of its own, which the client takes
@@ -2028,6 +2109,8 @@ static void threads_sample(struct server *s, uint64_t now_ms)
 		cg_cpuwin_add(&s->cpu[2], now_ms, cg_thread_cpu_ns(s->pw.thread, 0));
 	if (s->fw.running)
 		cg_cpuwin_add(&s->cpu[3], now_ms, cg_thread_cpu_ns(s->fw.thread, 0));
+	if (s->gw.running)
+		cg_cpuwin_add(&s->cpu[4], now_ms, cg_thread_cpu_ns(s->gw.thread, 0));
 	s->next_cpu_ms = now_ms + 1000;
 }
 
@@ -2041,6 +2124,8 @@ static void threads_text(struct server *s, struct cg_json *j)
 		cg_threads_row(j, s->pw.name, s->pw.tid, cg_thread_cpu_ns(s->pw.thread, 0), cg_cpuwin_permille(&s->cpu[2]));
 	if (s->fw.running)
 		cg_threads_row(j, s->fw.name, s->fw.tid, cg_thread_cpu_ns(s->fw.thread, 0), cg_cpuwin_permille(&s->cpu[3]));
+	if (s->gw.running)
+		cg_threads_row(j, s->gw.name, s->gw.tid, cg_thread_cpu_ns(s->gw.thread, 0), cg_cpuwin_permille(&s->cpu[4]));
 }
 
 /* What became due in the sessions holding packets while nothing arrived (a
@@ -2105,6 +2190,7 @@ static void tick(struct server *s)
 		fwd_sync(s, now_ms);
 	else
 		pass_sync(s);
+	wgport_sync(s);
 	if (s->sw.running && now_ms >= s->next_status_ms) {
 		write_status(s, now_ms);
 		s->next_status_ms = now_ms + s->cfg->status_interval_ms;
@@ -2429,6 +2515,11 @@ static void apply_config(struct server *s, struct cg_config *next)
 		writer_restart(&s->fw, next->forward_file, "cg-forward");
 		s->fw_written = 0; /* write it again, there */
 	}
+	if (strcmp(old->wireguard_port_file, next->wireguard_port_file)) {
+		writer_restart(&s->gw, next->wireguard_port_file, "cg-wgport");
+		s->gw_written = 0; /* write it again, there */
+	}
+	s->gw_dirty = 1; /* clients may have come or gone */
 	rcvbuf_apply(s, old->rcvbuf != next->rcvbuf);
 	cg_config_free(old);
 	free(old);
@@ -2475,6 +2566,8 @@ static int reload_done(struct server *s)
 	cg_status_writer_stop(&s->sw);
 	cg_status_writer_stop(&s->pw);
 	cg_status_writer_stop(&s->fw);
+	wgport_sync(s); /* the last change, written before the thread ends */
+	cg_status_writer_stop(&s->gw);
 	cg_ctl_close(&s->ctl, s->ep);
 	cg_reexec(s->run->argv);
 	cg_err("restart: %s", strerror(errno));
@@ -2629,6 +2722,11 @@ int cg_server_run(struct cg_config *cfg, const struct cg_run *run)
 		if (cg_status_writer_start(&s->fw, cfg->forward_file, "cg-forward") < 0)
 			cg_warn("%s: cannot start the writer thread", cfg->forward_file);
 	}
+	if (cfg->wireguard_port_file[0]) {
+		wgport_load(s);
+		if (cg_status_writer_start(&s->gw, cfg->wireguard_port_file, "cg-wgport") < 0)
+			cg_warn("%s: cannot start the writer thread", cfg->wireguard_port_file);
+	}
 	if (s->multi)
 		cg_info("server %s: listening on %s%s, %d clients, up to %u sessions", CG_VERSION, s->laddr,
 			s->pktinfo ? ", replying from each packet's arrival address" : "", cfg->nclients, s->max);
@@ -2707,6 +2805,8 @@ out:
 	cg_status_writer_stop(&s->sw);
 	cg_status_writer_stop(&s->pw);
 	cg_status_writer_stop(&s->fw);
+	wgport_sync(s); /* the last change, written before the thread ends */
+	cg_status_writer_stop(&s->gw);
 	cg_ctl_close(&s->ctl, s->ep);
 	cg_loader_free(&s->loader);
 	for (uint32_t i = 0; s->s && i < s->cap; i++)

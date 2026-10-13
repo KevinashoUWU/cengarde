@@ -885,7 +885,9 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 		    get_u32(&ini, "", "path_timeout_ms", 1000, 3600000, &c->path_timeout_ms, err, errlen) ||
 		    get_str(&ini, "", "passthrough_file", c->passthrough_file, sizeof(c->passthrough_file), err,
 			    errlen) ||
-		    get_str(&ini, "", "forward_file", c->forward_file, sizeof(c->forward_file), err, errlen))
+		    get_str(&ini, "", "forward_file", c->forward_file, sizeof(c->forward_file), err, errlen) ||
+		    get_str(&ini, "", "wireguard_port_file", c->wireguard_port_file, sizeof(c->wireguard_port_file),
+			    err, errlen))
 			goto out;
 		/* One client asks for IP pass in passthrough_file; several share
 		 * the forward table. */

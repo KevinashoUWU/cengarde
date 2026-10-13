@@ -16,7 +16,8 @@
 # - reloads that leave alpha alone (its session, and 1000 pps up with
 #   nothing lost): bravo disabled (refused: vps_refusing) and enabled again,
 #   charlie removed (its session closed, its probes no longer verify);
-# - "cengarde ctl links" with a CLIENT column.
+# - "cengarde ctl links" with a CLIENT column;
+# - wireguard_port_file: a line per router while it is configured.
 LAB_CI=1
 
 MC_LIVE_S=${MC_LIVE_S:-3}
@@ -60,6 +61,7 @@ mc_server_conf() {
 		control_socket = $RUN/server.sock
 		status_interval_ms = 100
 		forward_file = $RUN/forward
+		wireguard_port_file = $RUN/wg-ports
 		[client alpha]
 		key = $(mc_key alpha)
 		wireguard = 127.0.0.1:59301
@@ -272,7 +274,7 @@ multiclient() {
 	trap mc_teardown EXIT
 	trap 'mc_teardown; exit 130' INT TERM
 	setup || return 1
-	rm -f "$RUN/forward"
+	rm -f "$RUN/forward" "$RUN/wg-ports"
 	mc_server_conf >"$RUN/server.conf"
 	for name in $MC_ROUTERS; do
 		mc_conf "$name" >"$RUN/$name.conf"
@@ -297,6 +299,12 @@ multiclient() {
 	for name in $MC_ROUTERS; do
 		grep -q "^$name " "$RUN/links.txt" || { echo "FAIL: $name not in ctl links"; fail=1; }
 	done
+
+	for name in $MC_ROUTERS; do
+		grep -Eq "^[1-9][0-9]* $name\$" "$RUN/wg-ports" 2>/dev/null ||
+			{ echo "FAIL: no port for $name in wireguard_port_file"; fail=1; }
+	done
+	echo "   wireguard_port_file: $(grep -v '^#' "$RUN/wg-ports" 2>/dev/null | tr '\n' ' ')"
 
 	mc_traffic up || fail=1
 	mc_traffic down || fail=1
@@ -343,6 +351,7 @@ multiclient() {
 	sleep 1
 	grep -q "charlie: session [0-9a-f]* closed: the client was removed" "$RUN/server.log" ||
 		{ echo "FAIL: charlie's session not closed when it was removed"; fail=1; }
+	! grep -q " charlie$" "$RUN/wg-ports" || { echo "FAIL: charlie still in wireguard_port_file"; fail=1; }
 	wait "$traffic"
 	sent=$(sed -n 's/.*sent=\([0-9]*\).*/\1/p' "$RUN/tx-alpha.out")
 	uniq=$(sed -n 's/.*uniq=\([0-9]*\).*/\1/p' "$RUN/rx-alpha.out")

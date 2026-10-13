@@ -62,6 +62,15 @@ static void test_config_reload(void)
 				 sizeof(warn)),
 		 0);
 	CHECK(!strcmp(a.passthrough_file, "/run/cengarde/passthrough"));
+	CHECK(!strcmp(a.wireguard_port_file, "")); /* none by default */
+	cg_config_free(&a);
+	CHECK_EQ(cg_config_parse(&a, SERVER "wireguard_port_file = /var/lib/cengarde/wg/ports\n", err, sizeof(err), warn,
+				 sizeof(warn)),
+		 0);
+	CHECK(!strcmp(a.wireguard_port_file, "/var/lib/cengarde/wg/ports"));
+	cg_config_free(&a);
+	CHECK_EQ(cg_config_parse(&a, CLIENT "wireguard_port_file = /run/w\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK(strstr(warn, "unknown key 'wireguard_port_file'") != NULL); /* a server setting */
 	cg_config_free(&a);
 	CHECK_EQ(cg_config_parse(&a, SERVER "passthrough = yes\n", err, sizeof(err), warn, sizeof(warn)), 0);
 	CHECK(strstr(warn, "unknown key 'passthrough'") != NULL); /* a client setting */
@@ -143,7 +152,7 @@ static void test_config_reload(void)
 /* How the client handles its link sockets (pump.h): legacy by default. */
 #define KEY2 "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=" /* bytes 1..32 */
 #define KEY3 "AgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4fICE=" /* bytes 2..33 */
-#define MULTI "mode = server\nforward_file = /var/lib/cengarde/forward\n"
+#define MULTI "mode = server\nforward_file = /var/lib/cengarde/forward\nwireguard_port_file = /var/lib/cengarde/wg/ports\n"
 #define ALPHA "[client alpha]\nkey = " KEY "\nwireguard = 127.0.0.1:65501\n"
 #define BRAVO "[client bravo]\nkey = " KEY2 "\nwireguard = 127.0.0.1:65502\n"
 
@@ -184,6 +193,7 @@ static void test_config_clients(void)
 	CHECK_EQ(a.forward[3].client, 1);
 	CHECK_EQ(a.forward[3].last, 5010);
 	CHECK(!strcmp(a.forward_file, "/var/lib/cengarde/forward"));
+	CHECK(!strcmp(a.wireguard_port_file, "/var/lib/cengarde/wg/ports"));
 	CHECK_EQ(a.max_sessions, 64); /* at least CG_CLIENT_SESSIONS per client */
 
 	/* Changes to the clients apply in place; going from one client to

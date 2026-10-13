@@ -1337,3 +1337,20 @@ resolvía al arrancar dejaba el motor sin arrancar): lo busca el cliente.
   elegida y no contra la atada, y el desvío se reintenta. `bench/lab.sh
   srcroute` (en ci; se omite sin IPv6) lo reproduce con rutas por origen en
   netns.
+- 2026-10-13: actualizar un VPS de la 0.4.5 a la 0.5.0 a la 0.6.0 fallaba en
+  el paso 5/6 de `install.sh` (lo vio el dueño en su VPS):
+  `cengarde-vps-setup` escribía la configuración con secciones `[client]`
+  y pedía al motor que corría, todavía el viejo, que la recargara; un motor
+  anterior a los varios routers exige una `key` global y la rechazaba. La
+  prueba de systemd sube desde la 0.4.2, cuyo servicio `install.sh` detiene
+  antes (usuario dinámico), así que no lo veía. Ahora `install.sh` corre
+  `cengarde-vps-setup` con `CENGARDE_NO_RELOAD=1`: el motor nuevo revisa el
+  archivo (`-t`) y lo lee al reiniciarse en el paso 6/6. `setup-dryrun.sh`
+  lo prueba con un motor en marcha que rechaza toda recarga (falla sin el
+  arreglo). Paquetes 0.6.2.
+- 2026-10-13: en la misma actualización el túnel del router no volvió: el
+  router venía 3 días atrasado y el motor nuevo del VPS había olvidado el
+  puerto por el que WireGuard lo conocía (historia 002). Ahora el servidor lo
+  guarda en `wireguard_port_file` (`/var/lib/cengarde/wg/ports`, que
+  `cengarde-vps-setup` escribe y siembra desde `wg show`), con una línea por
+  router.
