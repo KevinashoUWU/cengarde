@@ -737,6 +737,15 @@ con y sin `governor` en el cliente (solo la subida; el VPS sin gobernador),
   del reparto casi todo el tiempo [hipótesis: con el gobernador, las
   copias a los enlaces fuera del reparto anulan la reducción de su peso;
   PROBAR con `split_spread_copy = off`].
+- **Con `split_spread_copy = off`** en A y en B (11:30–11:47): sin
+  gobernador 33,3 / 20,5 / 36,0 / 39,6 Mbit/s (media 32,4); con
+  gobernador 38,6 / 40,7 / 32,3 / 38,9 (media 37,6; Mann-Whitney
+  unilateral p = 0,24). Sin las copias, el enlace al que el gobernador
+  baja el peso sí se descarga (Entel, 7–20 % de los bytes con colas de
+  30–100 ms). Pero Claro se cayó desde las 11:37 (su watchdog subió del
+  `ifup` al reinicio del módem, y el módem volvió sin sesión de datos):
+  cinco de las ocho corridas fueron con tres enlaces. Queda repetirlo
+  con los cuatro.
 
 ## Qué hacemos con esto
 
