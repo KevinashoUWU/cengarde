@@ -204,3 +204,12 @@ entrega LuCI sigue al interruptor; el mensaje de control queda pendiente.
   a IPv6 (historia 010).
 - 2026-10-04: la unidad de systemd no arrancaba en Ubuntu 22.04 (`%d` en
   `ExecStart`); ahora usa `${CREDENTIALS_DIRECTORY}` (historia 010).
+- 2026-10-14: actualizar el paquete no reiniciaba el motor. El
+  `default_postinst` de OpenWrt solo hace `start` de cada servicio, y procd
+  lo ignora mientras la instancia corre con la misma línea de comando: la
+  Pi siguió con el motor 0.6.0 después de instalar la 0.6.3, hasta un
+  `restart` a mano. Desde la 0.6.3-r2, un `postinst` reinicia `cengarde` y
+  `cengarde-rec` si estaban corriendo, solo al actualizar. Con apk (25.12)
+  el `postinst` del paquete se agrega después de `default_postinst`; con
+  opkg (24.10) corre dentro de él, antes del `start` [código, visto en la
+  Pi].

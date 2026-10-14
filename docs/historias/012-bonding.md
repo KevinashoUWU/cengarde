@@ -517,6 +517,134 @@ que el extremo que envía mandó por paquete (3 = copia en los tres enlaces).
 - Con eso, `yes` sigue por omisión. El A/B de campo (P7 y P8) dice si en la
   Pi pesa más la espiral o el costo para QUIC.
 
+#### El banco en la casa: la bajada la limitaba la NIC USB de la Pi [medido en banco]
+
+Fuente: 2026-10-14 de madrugada, el banco montado en la mesa (la Pi, los
+tres CPEs y el VPS de siempre, y un PC en el trunk del Omada con una VLAN
+por enlace, historia 004). `bench/fieldperf.sh` con iperf3 a 4 flujos,
+10 s por prueba, fuera del túnel: cada enlace solo y los cuatro a la vez,
+desde la Pi y desde el PC por las mismas VLAN; `bench/radiorec.py` leyendo
+la radio de los cuatro módems cada segundo. Una corrida de cada cosa
+(n = 1): las cifras son del banco, no del campo, y la radio cambia entre
+corridas.
+
+| bajada (Mbit/s) | Pi, NIC USB | Pi, NIC integrada | PC |
+| --- | ---: | ---: | ---: |
+| Claro solo / con los cuatro | 36 / 27 | 92 / 104 | 100 / 93 |
+| Entel solo / con los cuatro | 70 / 66 | 100 / 105 | 119 / 100 |
+| Movistar solo / con los cuatro | 74 / 7 | 39 / 77 | 49 / 46 |
+| WOM solo / con los cuatro | 57 / 28 | 56 / 53 | 263 / 243 |
+| suma solo / con los cuatro | 237 / 128 | 287 / 338 | 532 / 483 |
+
+- **La NIC USB gigabit de los enlaces enganchaba a 480 Mbit/s (USB 2.0)**,
+  en un puerto azul de la Pi y también en uno USB 3 del PC: el adaptador
+  (TP-Link `2357:0601`) o su cable no hacen enlace USB 3.0. El 5G entrega
+  la bajada a ráfagas que el switch pasa a 1 Gbit/s, y el adaptador las
+  vacía por USB 2.0: se desborda antes de que Linux vea los paquetes
+  [razonado; `rx_dropped` y `softnet_stat` limpios, pero el VPS retransmitió
+  7000–12 000 segmentos por bajada desde la Pi y 2–6 desde el PC].
+- **Con los enlaces en la NIC integrada** (`eth0`, `bcmgenet`) y la LAN en el
+  adaptador, la bajada con los cuatro a la vez pasó de 128 a 338 Mbit/s,
+  Claro y Entel rinden como desde el PC y Movistar ya no colapsa. Es un
+  arreglo transitorio: la LAN queda en USB 2.0 hasta un adaptador nuevo.
+- **WOM no era la Pi:** en las bajadas del PC (263 y 243 Mbit/s) tenía la
+  pata NR n78 en todos los segundos; en las de la Pi, en 3 de 13 y después
+  en ninguno. Es la red sumando o no la 5G, y solo se ve con la radio al
+  lado.
+- **La subida es de los módems:** 113–132 Mbit/s en total desde la Pi y
+  desde el PC, y el mismo bufferbloat en los dos (Entel, 300–700 ms de ping
+  con su subida cargada).
+- **El estado de `AT+QENG` no sirve para saber si un módem transmite:**
+  dijo `NOCONN` incluso con WOM bajando 263 Mbit/s.
+- **La primera prueba de campo (2026-10-13) corrió con este cuello**: sus
+  bajadas repartidas y copiadas estaban limitadas por la Pi, no solo por las
+  guardas. Las conclusiones sobre la espiral de la subida se mantienen (la
+  subida no cambió); las de la bajada hay que repetirlas.
+
+#### `split_spread_copy` por el túnel, en el banco [medido en banco]
+
+Fuente: el banco de la casa, 2026-10-14, con los enlaces ya en la NIC
+integrada de la Pi (arriba). Cada perfil en los dos extremos, y el túnel
+cargado con `fieldperf -m tunnel` desde la Pi (iperf3 a 10.79.0.1, 4
+flujos, 10 s por sentido); dos rondas en orden inverso (n = 2), con los
+tres registradores encendidos. Mbit/s y ping por el túnel bajo carga (p50).
+
+| perfil | subida | ping subida | bajada | ping bajada | subida repartida |
+| --- | --- | --- | --- | --- | --- |
+| P0 copia | 33,6 / 33,1 | 173 / 240 ms | 143 / 125 | 131 / 90 ms | 0 % |
+| P6 spread 30, copias | 27,8 / 56,6 | 38 / 36 ms | 135 / 117 | 82 / 82 ms | 99,8 / 91,5 % |
+| P7 spread 30, sin copias | 56,9 / 37,4 | 40 / 35 ms | 103 / 167 | 42 / 64 ms | 99,9 / 99,9 % |
+| P3 spread 250, copias | 35,0 / 38,9 | 34 / 35 ms | 160 / 154 | 41 / 40 ms | 99,8 / 99,9 % |
+| P8 spread 250, sin copias | 22,4 / 36,7 | 37 / 37 ms | 129 / 179 | 38 / 50 ms | 99,7 / 99,8 % |
+
+- **Las copias contra su ausencia no se distinguen con n = 2:** las dos
+  rondas de un mismo perfil difieren hasta en un 60 % (P6, P7 y P8 en
+  subida), más que cualquier diferencia entre perfiles.
+- **Ningún envío perdido en la Pi** (22 en una sola corrida), contra los
+  miles de la prueba de campo del 2026-10-13. La guarda de 30 ms sacó a un
+  enlace en casi todas las corridas, y la espiral apareció una sola vez
+  (P6-2 terminó duplicando, con el 91,5 % repartido). Hipótesis [MEDIR en
+  campo]: los envíos perdidos del campo venían en parte de la NIC USB a
+  USB 2.0, que también llevaba la subida (cuatro copias de cada paquete);
+  con los enlaces en la NIC integrada ya no aparecen.
+- **Repartir baja mucho la latencia bajo carga de subida:** 34–40 ms de
+  ping por el túnel contra 173–240 ms copiando, con una subida parecida.
+  Copiando, el túnel va al paso de la cola más llena de las cuatro.
+- **Pendiente:** repetir con n ≥ 5 y en el campo, ahora sin el cuello de
+  la NIC, antes de cambiar el valor por omisión de `split_spread_copy`.
+- **Con más fierro, lo mismo** [medido en banco, n = 2]: el PC del banco
+  (i9, NIC PCIe) como segundo router del mismo VPS, con las mismas cuatro
+  VLAN y el mismo motor, dio por el túnel 44/41 de subida y 105/118 de
+  bajada copiando, y 38–56 de subida y 123–152 de bajada repartiendo (P3 y
+  P8): lo mismo que la Pi. El techo del túnel no es la CPU ni la NIC de la
+  Pi (ya en la integrada), sino el reparto: copiando rinde lo del mejor
+  enlace, y repartiendo por turnos con pesos iguales un ~30 % de los
+  480 Mbit/s de bajada y un ~40 % de los ~120 de subida que los cuatro
+  enlaces dan juntos fuera del túnel. Es el trabajo de los pasos 2 y 3
+  (pesos por capacidad, planificador por llegada esperada).
+
+#### El A/B desde el PC, con n = 5–7 y la radio cruzada [medido en banco]
+
+Fuente: el PC del banco como router (CPU de sobra), los perfiles P0, P6,
+P7, P3 y P8 en los dos extremos, el túnel cargado con `fieldperf -m tunnel`
+en 5 rondas de orden alternado (más 2 rondas previas de P0, P3 y P8:
+n = 7, 5, 5, 7 y 7), con el estado del motor cada 200 ms y `radiorec`
+cruzados por la hora. Informe con gráficos: `~/campo/2026-10-14/
+informe-ab-pc.html` en el PC del banco (sin IP; el script, al lado).
+
+| perfil | subida Mbit/s | ping subida | bajada Mbit/s | ping bajada |
+| --- | --- | --- | --- | --- |
+| P0 copia | 35 (30–44) | 154 ms | 125 (105–179) | 83 ms |
+| P6 spread 30, copias | 50 (43–53) | 34 ms | 107 (89–149) | 81 ms |
+| P7 spread 30, sin copias | 43 (37–56) | 34 ms | 134 (104–137) | 55 ms |
+| P3 spread 250, copias | 47 (26–56) | 35 ms | 128 (119–183) | 38 ms |
+| P8 spread 250, sin copias | 34 (19–56) | 34 ms | 143 (118–164) | 39 ms |
+
+Medianas, (mín–máx) y ping p50 por el túnel bajo carga.
+
+- **Repartir baja la latencia bajo carga**, con significancia: con la
+  subida cargada, 154 ms copiando contra 34–35 con cualquier reparto
+  (Mann-Whitney p ≈ 0,001); con la bajada cargada, 83 contra 38 con spread
+  250 (p ≈ 0,002). Spread 30 no mejora la bajada: con los enlaces en la NIC
+  integrada, la guarda de 30 ms saca enlaces de más.
+- **Con o sin copias no cambia nada medible** (ningún p < 0,05; lo más
+  cercano, la subida de P3 frente a P8, 47 contra 34, p = 0,07): el valor
+  por omisión se queda.
+- **Ningún envío perdido en 31 corridas.**
+- **El reparto ignora la capacidad:** con pesos iguales cada enlace lleva
+  el 23–27 % de la subida; Claro y Entel acumulan cola (atraso p95 de 119
+  y 154 ms) y Movistar y WOM no (55 ms). En la bajada, el RTT p95 por
+  enlace llega a 1,6 s en WOM y Movistar.
+- **La radio adelanta la cola de bajada:** SINR y CQI bajos van con RTT
+  altos en ese enlace (ρ de Spearman −0,47 y −0,39, p < 0,001, n = 98).
+  En la subida, Claro y WOM llegan a 21–22 dBm de potencia, casi el máximo
+  de 23 dBm: subida limitada por potencia; la correlación de la potencia
+  con el atraso es débil (ρ = +0,22, p = 0,05). El RM502Q de Movistar no da
+  CQI ni potencia. La pata NR de WOM no apareció en ninguna prueba.
+- **Para el gobernador (pasos 2–3):** pesos por la capacidad medida de cada
+  enlace y sentido; SINR y CQI como señal adelantada de la bajada; la
+  potencia en el techo como aviso de subida saturada.
+
 ## Qué hacemos con esto
 
 ### Orden de la Fase 5 y criterios de salida
@@ -581,3 +709,8 @@ Los umbrales son propuestas [razonado] y se miden en `bench/`.
 - 2026-10-12: paso 1 (PR #24, paquetes 0.6.0): el reordenador, el reparto experimental, la guarda `split_spread_ms` y sus medidas; el A/B del reordenador en redundancia (sin costo; `reorder_dup_wait_ms` queda en 0). Corregidas las referencias de código que el v4 dejó viejas (`CG_RXV_RESET`, la secuencia densa) y la ventana (4096, no 8192).
 - 2026-10-13: primera prueba de perfiles en la Pi (en Pendiente: la espiral de las guardas).
 - 2026-10-13: segunda prueba en la Pi, con dos tandas y la bajada repartida («La espiral de las guardas, en la Pi»), y el caso `bloat` en `bond`. `split_spread_copy` (paquetes 0.6.3): las copias de G4 y el duplicado de G2 con un solo enlace pasan a ser una perilla, por omisión como hasta la 0.6.2; `bond` suma el sufijo `-nc` y la tabla, los envíos por paquete y los envíos perdidos. `bench/fieldperf.sh` y `fieldperf.py`: iperf3 en campo, por enlace y por el túnel, con los contadores que dicen dónde se pierde un envío. `cengarde-rec` espera con el `sleep()` de `ucode` donde el `sleep` de busybox no acepta fracciones (el de OpenWrt): antes grababa una vez por segundo aunque el motor escribiera cada 200 ms.
+- 2026-10-14: `bench/radiorec.py`: la radio de cada módem cada segundo desde el PC del banco (celda servidora, portadoras agregadas, la pata NR), en el formato de `cell-monitor`, para cruzarla con `fieldrec.py --rf`. Los cuatro módems del banco anclan en LTE y WOM suma NR n78 en NSA, así que la falla conjunta de «los NSA caen juntos y el SA no» no se puede probar aquí; sí la de dos operadoras en la misma banda de anclaje (Entel y Movistar, B7). Historia 004.
+- 2026-10-14: el banco en la casa («El banco en la casa»): la bajada de la Pi la limitaba su NIC USB, enganchada a USB 2.0; con los enlaces en la NIC integrada la bajada con los cuatro a la vez pasó de 128 a 338 Mbit/s. WOM rindió 263 Mbit/s solo con la pata NR encima.
+- 2026-10-14: el A/B de `split_spread_copy` por el túnel en el banco («`split_spread_copy` por el túnel, en el banco»): sin diferencia visible con n = 2, ningún envío perdido con los enlaces en la NIC integrada, y repartir baja el ping bajo carga de subida de ~200 a ~37 ms.
+- 2026-10-14: el PC del banco como segundo router (`pc`): por el túnel rinde lo mismo que la Pi, así que el techo es el reparto, no el fierro de la Pi.
+- 2026-10-14: el A/B desde el PC con n = 5–7 y la radio cruzada («El A/B desde el PC»): repartir baja el ping bajo carga de 154 a 34 ms en subida (p ≈ 0,001); con o sin copias no cambia nada medible; la radio (SINR, CQI) adelanta la cola de bajada.

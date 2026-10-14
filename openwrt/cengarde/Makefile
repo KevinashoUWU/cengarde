@@ -16,7 +16,7 @@ PKG_NAME:=cengarde
 # 0.4: protocol v3 (IP pass asked of the VPS), control socket, changes
 # applied without a restart. Both ends must run the same protocol version.
 PKG_VERSION:=0.6.3
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 PKG_LICENSE:=GPL-2.0-only
 PKG_LICENSE_FILES:=LICENSE.txt
@@ -78,6 +78,23 @@ define Package/cengarde/install
 	$(INSTALL_DATA) ./files/nat66.nft $(1)/usr/share/cengarde/
 	sed 's/CENGARDE_REF=master;/CENGARDE_REF=$(if $(GIT_REV),$(GIT_REV),master);/' \
 		$(ENGINE_DIR)/../contrib/vps/cloud-config.yaml > $(1)/usr/share/cengarde/cloud-config.yaml
+endef
+
+# An upgrade replaces the files, not the engine that runs them: OpenWrt's
+# default_postinst only "start"s each service, which procd ignores while the
+# instance runs with the same command line, so the old engine went on until
+# the next reboot (the Pi kept 0.6.0 after installing 0.6.3). Restart what
+# was running, on upgrades only; the tunnel stops for a few seconds. With
+# apk (25.12) this runs after default_postinst, with opkg (24.10) inside it,
+# before its "start": either way the service ends up restarted once.
+define Package/cengarde/postinst
+#!/bin/sh
+if [ -z "$${IPKG_INSTROOT}" ] && [ "$${PKG_UPGRADE}" = 1 ]; then
+	for s in cengarde cengarde-rec; do
+		/etc/init.d/$$s running && /etc/init.d/$$s restart
+	done
+fi
+exit 0
 endef
 
 # Removal undoes the tunnel, firewall, uplink and UPnP settings it made.

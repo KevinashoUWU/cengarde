@@ -2,7 +2,8 @@
 # The field recorder end to end: "bench/lab.sh fieldrec" (story 012).
 #
 # First bench/fieldrec_test.py: the analysis on a made-up recording whose
-# answers are known. Then the real thing: 3 links, status_interval_ms 250
+# answers are known (and bench/radiorec_test.py: the radio recorder's
+# parsers on the bench modems' real answers). Then the real thing: 3 links, status_interval_ms 250
 # and probe_idle_ms 100, cengarde-rec (openwrt/cengarde/files, under sh)
 # recording the client's status file in 4 s files, 1000 pps down for 12 s
 # while s2, the server's end of link 2, goes down for 3 s from the 4th
@@ -50,6 +51,12 @@ fieldrec() {
 	if ! out=$(python3 "$LAB/fieldrec_test.py"); then
 		echo "$out" | grep -v '^ok'
 		echo "FAIL: bench/fieldrec_test.py"
+		fail=1
+	fi
+	# the radio recorder's parsers, and its lines read back here
+	if ! out=$(python3 "$LAB/radiorec_test.py"); then
+		echo "$out"
+		echo "FAIL: bench/radiorec_test.py"
 		fail=1
 	fi
 	setup && start || return 1

@@ -770,6 +770,35 @@ bench/fieldrec.py /ruta/a/cengarde-rec --utc-offset -3 --rf radio.csv --json cam
   con `cell-monitor -n` que el SINR sale en dB (de −20 a 30): algunos módems
   lo dan en 1/5 de dB, de 0 a 250, y el informe lo avisa si pasa de 50.
 
+#### Radio cada segundo desde un PC (`radiorec.py`)
+
+`cell-monitor` mide cada 5 s, y una cola de módem se llena en menos de uno.
+`radiorec.py` corre en un PC que llega por ssh a los CPEs (claves cargadas)
+y pregunta cada segundo a cada módem Quectel, por un puerto AT que nadie
+más use (`cell-monitor` y `cell-watchdog` tienen los suyos), solo comandos
+de consulta: `AT+QENG="servingcell"` (celda servidora LTE, y la pata NR en
+NSA o la celda en SA), `AT+QCAINFO` (cada portadora agregada) y
+`AT+QNWINFO`. Escribe en el mismo line protocol que `cell-monitor`, con su
+hora de pared (NTP, como la Pi), así que `fieldrec.py --rf` lo cruza sin
+cambios; la etiqueta `leg` es la del enlace de cengarde. También guarda
+cada respuesta cruda (`.raw.jsonl`), para reinterpretar lo que el parser
+haya entendido mal. La potencia de transmisión (`tx_power`) viene en
+décimas de dBm; en reposo (`NOCONN`) algunos módems no la dan.
+
+```sh
+# el banco: Entel y WOM en el CPE de dos módems, Movistar y Claro
+python3 bench/radiorec.py -o ~/campo/radio \
+    -m cpe1:/dev/ttyUSB2:ENTEL -m cpe1:/dev/ttyUSB6:WOM \
+    -m cpe2:/dev/ttyUSB2:MOVISTAR -m cpe3:/dev/ttyUSB2:CLARO
+bench/fieldrec.py /ruta/a/cengarde-rec --rf ~/campo/radio/radio-*.lp
+```
+
+`radiorec_test.py` (en `lab.d/fieldrec.sh`) lo prueba con las respuestas
+reales de los cuatro módems del banco (2026-10-14: LTE solo, EN-DC con su
+línea NR5G-NSA, tres portadoras LTE agregadas, una NR secundaria, una
+portadora configurada y sin activar), más la forma SA del manual, y que lo
+que escribe vuelva a leerse por `fieldrec.py`.
+
 #### Exportar para R o pandas (`--export`)
 
 `--export DIR` escribe, mientras analiza, CSV planos en formato largo (una

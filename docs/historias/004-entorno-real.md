@@ -94,3 +94,17 @@
 - 2026-10-11: primer uso real (Tierra Amarilla, 2026-10-10): Claro en B5 y
   WOM llevaron el tráfico, Movistar y Entel en reserva; la semana de campo
   con las métricas de radio pasa a Pendiente.
+- 2026-10-14: el banco en la casa, visto por AT (solo consultas). El CPE de
+  dos módems lleva Entel (VLAN 10) y WOM (VLAN 20), los dos RM520N-GL con
+  firmware A04; el de Movistar (VLAN 30) es un **RM502Q-AE**, no un
+  RM520N; el de Claro (VLAN 40), un RM520N-GL con firmware A03. La gestión
+  de los tres CPEs va por la VLAN 99 (99.1, 99.2 y 99.3). Los cuatro anclan
+  en LTE: Entel en B7 con B2 y B28 agregadas, WOM en B66 con NR n78 (5G
+  NSA, no SA: el 13 de `AT+COPS?` es EN-DC), Movistar en B7 sola y Claro en
+  B2 con B5 configurada. Entel y Movistar comparten la banda de anclaje.
+  `bench/radiorec.py` los registra cada segundo (historia 012).
+- 2026-10-14: la NIC USB gigabit de la Pi (TP-Link `2357:0601`) engancha
+  a 480 Mbit/s (USB 2.0) en cualquier puerto, también en un PC: limitaba la
+  bajada (historia 012). Transitorio: los enlaces (las VLAN 10–40) pasaron
+  a la NIC integrada `eth0` y la LAN (`br-lan`, 192.168.50.1) al
+  adaptador, hasta reemplazarlo por uno USB 3.0.
