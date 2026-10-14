@@ -814,6 +814,34 @@ con la build de la rama (0.6.4).
   la interfaz del túnel ve los flujos de adentro y les da turno. Muestra
   chica (32 pings por corrida, uno por segundo).
 
+#### El gobernador de bajada y `cake`, en la Pi [medido en la Pi, red de pruebas]
+
+Fuente: la Pi con 0.6.4 (paquete del CI de `master`), 2026-10-14 de 13:10 a
+13:28; P3 en la Pi (`uci`), el VPS con y sin gobernador; 4 rondas de 30 s
+de bajada y luego 4 corridas con y sin `cake` en `wgcg` con el gobernador
+del VPS encendido; watchdogs de los CPE en pausa.
+
+- **La primera ronda no vale, aquí ni en el PC:** el `cengarde-nat check`
+  del VPS (cada 5 min) vio que `fieldperf.sh vps on` había cambiado los
+  puertos reservados y regeneró la configuración del motor
+  (`cengarde-vps-setup refresh`), lo que borró el perfil del A/B a mitad
+  de la corrida (13:13:04). Desde ahora `vps on` y `vps off` corren ese
+  check en el momento. Además, la Pi recién recargada tardó ~2,5 min en
+  pedir la bajada repartida (`client_asks_split`), así que B-1 fue casi
+  todo copiado [PENDIENTE: por qué tarda].
+- **Gobernador de bajada, rondas 2–4:** sin gobernador 94,4 / 122,9 /
+  113,2 Mbit/s; con gobernador 137,4 / 157,0 / 155,6: gana las tres
+  (+24 % a +46 %), como en el PC. El ping por el túnel durante la bajada
+  sube un poco con él (p90 67–69 ms frente a 48–64).
+- **`cake` en `wgcg`** (40 Mbit/s de subida, 130 de bajada con IFB): en la
+  subida el ping ya era bueno sin `cake` en la Pi (p90 42–51 ms; en el PC
+  92–169) y con `cake` queda en 40–42; el caudal igual (34–38). En la
+  bajada, `cake` baja el caudal de 139–161 a 87–88 Mbit/s (el tope era
+  130) y el ping solo de p90 54–69 a 46–47. En la Pi, `cake` de bajada
+  con IFB cuesta demasiado [hipótesis: la CPU que atiende IFB, `cake`,
+  WireGuard y el motor; PROBAR la bajada en la salida de `br-lan`, sin
+  IFB, o solo `cake` de subida].
+
 ## Qué hacemos con esto
 
 ### Orden de la Fase 5 y criterios de salida
