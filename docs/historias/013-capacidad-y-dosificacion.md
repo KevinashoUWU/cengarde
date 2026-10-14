@@ -151,6 +151,22 @@ dan MCS, RI, CQI y PMI):
   de PCI a la macro y antenas más grandes; medir antes y después];
 - WOM y Claro, parejas; Movistar engancha NR además de LTE, con RSRQ −20
   en las cuatro ramas de LTE (celda cargada).
+- **Bloqueo de PCI de Entel** (`AT+QNWLOCK="common/4g",4,675,P,1125,P,3100,P,9485,P`
+  y reinicio de la interfaz, no del módem; Entel solo, 15 s por sentido):
+
+  | Celda | Ancla | 5G | Bajada | Subida |
+  | --- | --- | --- | --- | --- |
+  | monoposte, PCI 152 (sin bloqueo) | B7 −78 dBm + B2 + B2 | no | 27,4 | 15,3 |
+  | macro, PCI 37 | B7 −96 dBm, SINR −3 a −5; B2 en la PCI 15 (SINR −10) | NSA n78, PCI 27 | 51,8 y 32,2 | 14,5 y 10,0 |
+  | PCI 36 | no aparece en esas frecuencias: cae a 3G | — | — | — |
+  | otra macro, PCI 15 | B28 −104 dBm | NSA n78, PCI 27 | 24,8 | 2,4 |
+
+  Con la 37 el 5G engancha al instante (MCS 9–30, rank 2) y la bajada
+  sube cuando el NR da bien, pero la subida sigue por LTE B7, que en la
+  macro llega débil: no mejora. Con n = 2 no se puede decir que la 37 le
+  gane al monoposte. Queda puesta la 37 (decisión del usuario), a la
+  espera de las antenas más grandes, que deberían subir el LTE de la
+  macro.
 
 ## Qué hacemos con esto (diseño)
 
