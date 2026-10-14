@@ -63,6 +63,99 @@
 - **Latencia:** el VPS en Santiago queda cerca de los cuatro operadores
   chilenos (RTT esperado bajo en 5G; medirlo con las sondas de cengarde).
 
+- **Las celdas del banco** (2026-10-14, medido con `AT+QCAINFO`,
+  `AT+QENG`, `AT+QRSRP`/`AT+QSINR` y el CSI, más iperf3 por cada VLAN):
+  - **Entel:** un monoposte a ~100 m (Villa El Escorial; PCI 151/152, sin
+    5G, alterna entre las dos) y una macrocelda en un cerro a ~1 km (PCI 37 en B2 675 y 1125,
+    B7 3100 y B28 9485; NSA n78 con PCI 27; 256QAM de subida y 4x4). La PCI
+    36 no aparece en esas frecuencias y la 15 es otra macro (la primera que
+    llegó con 5G). Bloqueada en la 37, el 5G entra al instante pero el LTE
+    llega débil (B7 −96 dBm, SINR negativo): sin bloqueo por ahora, hasta
+    instalar 4 LPDA en diamante apuntadas a la macro (historia 013);
+  - **Claro:** en hora peak quedó anclado en **B28, PCI 465 (de una minera)**,
+    SINR −6/−7: 1,5 Mbit/s de bajada y 5,7 de subida. Tras un reinicio del
+    módem (`AT+CFUN=1,1`) enganchó **B2 20 MHz + B4, PCI 90 (planta de
+    fundición Paipote, ENAMI)**, SINR 12–14: 95 Mbit/s de bajada y 25 de
+    subida. **Fijado al sitio de ENAMI** (eNB 0x19EE:
+    `AT+QNWLOCK="common/4g",4,850,90,2050,90,2536,330,9610,330` y reinicio
+    de la interfaz): ancla en B2 y agrega B4 (que el módem muestra como
+    B66 66536) y B5 (PCI 330); 53 Mbit/s de bajada y 23 de subida esa noche.
+    El B7 de Claro que se ve (2900, PCI 142) es de otro sitio y llega muy
+    débil (−115 a −119 dBm);
+  - **El escaneo (`AT+QSCAN=3,1` en los cuatro módems, 2026-10-14 de
+    noche; el identificador de celda dice el sitio: eNB = id >> 8):**
+
+    | Operador | Banda | EARFCN | PCI | eNB | RSRP |
+    | --- | --- | --- | --- | --- | --- |
+    | Claro | B2 20 MHz | 850 | 90 | 19EE (ENAMI Paipote) | −96 |
+    | Claro | B4 10 MHz | 2050 (66536) | 90 | 19EE | −97 |
+    | Claro | B5 10 MHz | 2536 (8926) | 330 | 19EE | — |
+    | Claro | B28 10 MHz | 9610 | 330 | 19EE | −92 a −99 |
+    | Claro | B28 10 MHz | 9610 | 465 | D5E (minera) | −92 a −97 |
+    | Claro | B7 20 MHz | 2900 | 142 | D73 | −115 a −119 |
+    | Claro | B42 20 MHz | 42990 | 277 | D49A | −104 a −112 |
+    | Entel | B7 20 MHz | 3100 | 152 | 864D (monoposte) | −78 a −87 |
+    | Entel | B2 15 MHz | 675, 1125 | 152 | 864D | −72 a −81 |
+    | Entel | B28 15 MHz | 9485 | 15 | 2C22 | −93 a −105 |
+    | Entel | n78 | 620736 | 27 | — | — |
+    | WOM | B66 20 MHz | 66936 | 109 | 41C8 | −95 a −99 |
+    | WOM | B4 20 MHz | 66736 | 109, 223 | 41C8, 16C38 | −96 a −97 |
+    | WOM | B28 10 MHz | 9260 | 314 | 16C38 | −86 a −95 |
+    | Movistar | B7 20 MHz | 3300 | 91, 227 | 9B147, 9B54A | −93 a −101 |
+    | Movistar | B28 10 MHz | 9360 | 91, 230 | 9B147, 9B54A | −83 a −93 |
+    | Movistar | B2 10 MHz | 1000 (8440) | 20 | 9B147 | −87 a −93 |
+    | 302-300 | B40 10 MHz | 38800 | 1 | ABAE1 | −109 a −117 |
+
+    Entre paréntesis, el mismo canal con la numeración de otra banda (B66,
+    B26, B25). La PCI 37 de la macro de Entel no apareció en este escaneo.
+    La B42 de Claro no acepta la SIM (bloqueado ahí, el módem queda en 3G
+    sin registro LTE): probablemente reservada para banda ancha hogar
+    inalámbrica. La red 302-300 en B40 es una red privada de IoT
+    (probablemente de una minera de la zona, vista desde 2021);
+  - **WOM:** B66 + NSA n78, cuatro ramas parejas. Sitios, por PCI (datos
+    del usuario y del identificador de celda): **109** = eNB 41C8, antena
+    de la subida a la población Luis Uribe; **223** = eNB 16C38, Mina
+    Tránsito, línea de vista a ~8 km, con 5G (la que usa de noche: B66
+    66936 + 66736); **314** (B28 9260) es del mismo eNB 16C38, o sea Mina
+    Tránsito, no Las Flores; **24** = calle Las Flores, cerca del estadio de
+    Tierra Amarilla, con 5G: aparece solo entre las vecinas, en 66936 y
+    66736, a −103 dBm (5–6 dB bajo la 223), y su B28 no se vio. Otras
+    vecinas en 66736: 112, 333, 274 (−101 a −106). **Comparadas bloqueadas**
+    (2026-10-14, hora peak, WOM solo por la VLAN 20, 15 s):
+
+    | Celda | LTE | 5G | Bajada | Subida | Ping |
+    | --- | --- | --- | --- | --- | --- |
+    | 223 (Mina Tránsito) | B66 2 × 20 MHz, −98 dBm, SINR −9 a 4 | no enganchó | 43,8 y 29,5 | 14,6 | 40–64 ms |
+    | 24 (Las Flores) | B66 20 MHz, −105 dBm, SINR −8 | n78 641664, −93 a −105, SINR 10–14, rank 2 | 32,3 | 17,0 | 63–73 ms |
+
+    La 24 trae 5G pero su ancla LTE llega débil y sin agregación; la 223
+    da más bajada y mejor ping. **Queda bloqueado al sitio de Mina
+    Tránsito** (`AT+QNWLOCK="common/4g",3,66936,223,66736,223,9260,314`),
+    para que no salte de celda a mitad de las medidas; la 24 queda para
+    probar de nuevo con las LPDA;
+  - **Movistar:** B7, con NR a ratos; RSRQ −20 en las cuatro ramas de LTE
+    (celda cargada). Su sitio es la **«palmera falsa» del Hostal Atacama**
+    (eNB 9B147): B7 3300 PCI 91, B2 1000 PCI 20 (agregada), B28 9360 PCI 91 y
+    NR n78 628334 PCI 125 (NSA). El otro sitio que se ve es el eNB 9B54A
+    (PCI 227 en B7 3300, 230 en B28 9360); en B2 1000 también la PCI 194.
+  - **Bloqueos para las medidas** (2026-10-14 de noche, para que ningún
+    módem salte de celda a mitad de una prueba): Claro al sitio de ENAMI,
+    WOM al de Mina Tránsito, Entel al monoposte de Villa El Escorial
+    (`AT+QNWLOCK="common/4g",3,3100,152,675,152,1125,152`: B2 + B7 + B2) y
+    Movistar a la palmera (`AT+QNWLOCK="common/4g",3,3300,91,1000,20,9360,91`).
+    Movistar, probado en hora peak (solo, 15 s):
+
+    | Bloqueo | Ancla y agregación | 5G | Bajada | Subida |
+    | --- | --- | --- | --- | --- |
+    | sitio completo, 1.ª vez | B28 + B7 | no | 23,5 | — |
+    | B7 + B2 | B2 sola | no | 8,0 | 13,7 |
+    | solo B7 | B7 sola | no | 10,9 | 27,5 |
+    | sitio completo, 2.ª vez | B7 + B2 | **n78 PCI 125** | 14,4 | 26,1 |
+
+    El ancla que toma depende del momento en que engancha; el 5G viene con
+    la B7 como ancla. Queda el bloqueo del sitio completo
+    (`AT+QNWLOCK="common/4g",3,3300,91,1000,20,9360,91`).
+
 ## Qué hacemos con esto
 
 - **Objetivos de rendimiento** de la Fase 1/2: la Pi 4 con 4 enlaces tiene que
@@ -108,3 +201,5 @@
   bajada (historia 012). Transitorio: los enlaces (las VLAN 10–40) pasaron
   a la NIC integrada `eth0` y la LAN (`br-lan`, 192.168.50.1) al
   adaptador, hasta reemplazarlo por uno USB 3.0.
+- 2026-10-14: las celdas de cada operador en el banco (PCI y bandas), el
+  bloqueo de Entel probado y Claro entre la PCI 465 y la 90.
