@@ -1009,11 +1009,13 @@ historia 013): `delivery_mbit`, lo que el otro extremo dice haber
 recibido por él entre dos de sus informes (los paquetes de `rx`, por el
 tamaño medio de lo enviado, en al menos 500 ms), suavizado (un cuarto de
 cada muestra nueva); `capacity_mbit`, el
-mayor `delivery_mbit` de la ventana de `governor_window_ms`, salvo que su
-cola (`queue_ms`, el retardo de ida sobre su mínimo de la ventana) pase
-de `governor_target_ms`: entonces lo que entrega ahora. Un enlace al que
-se le manda menos de lo que lleva entrega lo que se le manda, y su
-capacidad baja a eso al cabo de una ventana. Con `capacity_weights`, de
+mayor `delivery_mbit` visto, salvo que su cola (`queue_ms`, el retardo
+de ida sobre su mínimo de `governor_window_ms`) pase de
+`governor_target_ms`: entonces lo que entrega ahora. Un enlace al que se
+le manda menos de lo que lleva entrega lo que se le manda, y eso no dice
+nada de lo que lleva: su capacidad se mantiene, y solo una cola la baja
+(con `capacity_weights`, que bajara sola dejaba enlaces al mínimo:
+historia 013). Con `capacity_weights`, de
 ella salen los pesos del reparto (arriba); sin, solo se informa.
 `shape_mbit` (en `upload` en el cliente, por sesión en el servidor) es el
 ritmo para un `cake` delante del túnel que no se fija a mano

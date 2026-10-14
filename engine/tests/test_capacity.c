@@ -60,7 +60,8 @@ static void run(struct sim *s, int steps, double send_mbit, double cap_mbit)
 }
 
 /* A link sent below its capacity delivers what it is sent; above it, its
- * capacity; the capacity holds a window after the load drops, then decays. */
+ * capacity; the capacity holds while the load is low: only a queue says a
+ * link carries less. */
 static void test_capacity_rates(void)
 {
 	static struct sim s;
@@ -73,9 +74,9 @@ static void test_capacity_rates(void)
 	/* 10 for 6 s: it delivers 10, and still carries 30 */
 	run(&s, 60, 10, 50);
 	CHECK(near(s.l.rate_bps, 10, 0.1) && near(cg_cap_bps(&s.l), 30, 0.05));
-	/* a window and more of 10: the old maximum is forgotten */
-	run(&s, 120, 10, 50);
-	CHECK(near(cg_cap_bps(&s.l), 10, 0.05));
+	/* a minute of 10: still 30, it was never full */
+	run(&s, 600, 10, 50);
+	CHECK(near(s.l.rate_bps, 10, 0.05) && near(cg_cap_bps(&s.l), 30, 0.05));
 }
 
 /* Above the link's rate the queue grows: past sat_us the capacity is what
