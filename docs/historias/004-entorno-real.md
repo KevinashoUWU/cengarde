@@ -76,12 +76,42 @@
     SINR −6/−7: 1,5 Mbit/s de bajada y 5,7 de subida. Tras un reinicio del
     módem (`AT+CFUN=1,1`) enganchó **B2 20 MHz + B4, PCI 90 (planta de
     fundición Paipote, ENAMI)**, SINR 12–14: 95 Mbit/s de bajada y 25 de
-    subida. **Fijado a la PCI 90** (`AT+QNWLOCK="common/4g",4,850,90,2050,90,2536,90,9610,90`
-    y reinicio de la interfaz): ancla en B4 y agrega B2. EARFCN de Claro
-    vistos en las vecinas: B2 850 (PCI 90 y 142), B4 2050 (PCI 90, 92 y
-    142), B5 2536 (PCI 330 y 465), B28 9610 (PCI 465). La 90 tiene también
-    B5, B28 y B7 según el usuario; su B7 no aparece entre las vecinas
-    [PENDIENTE: su EARFCN, para sumarlo al bloqueo];
+    subida. **Fijado al sitio de ENAMI** (eNB 0x19EE:
+    `AT+QNWLOCK="common/4g",4,850,90,2050,90,2536,330,9610,330` y reinicio
+    de la interfaz): ancla en B2 y agrega B4 (que el módem muestra como
+    B66 66536) y B5 (PCI 330); 53 Mbit/s de bajada y 23 de subida esa noche.
+    El B7 de Claro que se ve (2900, PCI 142) es de otro sitio y llega muy
+    débil (−115 a −119 dBm);
+  - **El escaneo (`AT+QSCAN=3,1` en los cuatro módems, 2026-10-14 de
+    noche; el identificador de celda dice el sitio: eNB = id >> 8):**
+
+    | Operador | Banda | EARFCN | PCI | eNB | RSRP |
+    | --- | --- | --- | --- | --- | --- |
+    | Claro | B2 20 MHz | 850 | 90 | 19EE (ENAMI Paipote) | −96 |
+    | Claro | B4 10 MHz | 2050 (66536) | 90 | 19EE | −97 |
+    | Claro | B5 10 MHz | 2536 (8926) | 330 | 19EE | — |
+    | Claro | B28 10 MHz | 9610 | 330 | 19EE | −92 a −99 |
+    | Claro | B28 10 MHz | 9610 | 465 | D5E (minera) | −92 a −97 |
+    | Claro | B7 20 MHz | 2900 | 142 | D73 | −115 a −119 |
+    | Claro | B42 20 MHz | 42990 | 277 | D49A | −104 a −112 |
+    | Entel | B7 20 MHz | 3100 | 152 | 864D (monoposte) | −78 a −87 |
+    | Entel | B2 15 MHz | 675, 1125 | 152 | 864D | −72 a −81 |
+    | Entel | B28 15 MHz | 9485 | 15 | 2C22 | −93 a −105 |
+    | Entel | n78 | 620736 | 27 | — | — |
+    | WOM | B66 20 MHz | 66936 | 109 | 41C8 | −95 a −99 |
+    | WOM | B4 20 MHz | 66736 | 109, 223 | 41C8, 16C38 | −96 a −97 |
+    | WOM | B28 10 MHz | 9260 | 314 | 16C38 | −86 a −95 |
+    | Movistar | B7 20 MHz | 3300 | 91, 227 | 9B147, 9B54A | −93 a −101 |
+    | Movistar | B28 10 MHz | 9360 | 91, 230 | 9B147, 9B54A | −83 a −93 |
+    | Movistar | B2 10 MHz | 1000 (8440) | 20 | 9B147 | −87 a −93 |
+    | 302-300 | B40 10 MHz | 38800 | 1 | ABAE1 | −109 a −117 |
+
+    Entre paréntesis, el mismo canal con la numeración de otra banda (B66,
+    B26, B25). La PCI 37 de la macro de Entel no apareció en este escaneo.
+    La B42 de Claro no acepta la SIM (bloqueado ahí, el módem queda en 3G
+    sin registro LTE): probablemente reservada para banda ancha hogar
+    inalámbrica. La red 302-300 en B40 es una red privada de IoT
+    (probablemente de una minera de la zona, vista desde 2021);
   - **WOM:** B66 + NSA n78, cuatro ramas parejas;
   - **Movistar:** B7, con NR a ratos; RSRQ −20 en las cuatro ramas de LTE
     (celda cargada).
