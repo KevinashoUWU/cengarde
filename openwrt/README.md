@@ -91,6 +91,14 @@ Las dependencias salen de los repositorios oficiales: WireGuard
 `--allow-untrusted` hace falta porque los paquetes no vienen de un feed
 firmado (pendiente).
 
+Para **actualizar** se instalan igual, encima. Desde la 0.6.3-r2, el paquete
+reinicia el motor (y el registrador, si estaba grabando) al terminar: el
+túnel se corta unos segundos, así que no actualices mientras transmites.
+Hasta la 0.6.3-r1 no lo hacía, y el motor viejo seguía en marcha hasta el
+próximo reinicio aunque el paquete nuevo estuviera instalado: después de
+instalar la r2 sobre una versión anterior, `cengarde ctl status | grep
+version` tiene que decir la nueva (si no, `/etc/init.d/cengarde restart`).
+
 ## 2. Los enlaces
 
 Una interfaz por módem o VLAN, con DHCP: *Red → Interfaces → Añadir
