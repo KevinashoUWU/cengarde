@@ -1021,9 +1021,9 @@ ritmo para un `cake` delante del túnel que no se fija a mano
 pero con las medidas del motor: `null` hasta que la cola de un enlace
 pasa de `governor_target_ms` (sin cola no hace falta frenar); entonces
 9/10 de lo que entregan los enlaces, para que la cola se forme en `cake`
-y no en los módems; sube un 1 % por tick (cada 100 ms) mientras entregan
-al menos 4/5 de ese ritmo sin cola (el freno podría ser `cake` mismo);
-se mantiene en reposo. Solo vale repartiendo: copiando, un enlace
+y no en los módems; sube (ticks de 100 ms) mientras entregan
+al menos 4/5 de ese ritmo sin cola (el freno podría ser `cake` mismo), un 1/32 por tick;
+se mantiene en reposo; solo baja con cola y con los enlaces a más de la mitad de su capacidad. Solo vale repartiendo: copiando, un enlace
 atrasado no cuenta lo que recibe.
 
 Los paquetes repartidos: en el cliente, `upload.split` y, por enlace,

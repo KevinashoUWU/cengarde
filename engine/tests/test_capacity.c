@@ -236,8 +236,9 @@ static void test_capacity_converges(void)
 	CHECK(maxq_late < 100.0);
 }
 
-/* The shaper's rate: none until a queue, then 9/10 of what is delivered,
- * up 1 % a tick while full and without a queue, held while idle. */
+/* The shaper's rate: none until a queue under load, then 9/10 of what is
+ * delivered, up 1/32 a tick while full and without a queue, held while
+ * idle. */
 static void test_capacity_total(void)
 {
 	struct cg_cap_link l[CG_MAX_LINKS];
@@ -253,24 +254,31 @@ static void test_capacity_total(void)
 	measured(&l[2], 500, 500); /* not in the mask */
 	cg_cap_total_tick(&t, l, 0x3, 20 * MS);
 	CHECK(cg_cap_shape_bps(&t) == 0); /* no queue: no shaping */
+	/* a queue on an idle link (its delay swings): nothing */
+	measured(&l[1], 40, 50);
+	l[1].rate_bps = 1 * MBIT;
+	l[0].rate_bps = 2 * MBIT;
+	cg_cap_total_tick(&t, l, 0x3, 20 * MS);
+	CHECK(cg_cap_shape_bps(&t) == 0);
+	measured(&l[0], 60, 5);
 	measured(&l[1], 40, 50);          /* a queue: 9/10 of 100 */
 	cg_cap_total_tick(&t, l, 0x3, 20 * MS);
 	CHECK(t.bps == 90 * MBIT);
 	cg_cap_total_tick(&t, l, 0x3, 20 * MS); /* still: not higher than before */
 	CHECK(t.bps == 90 * MBIT);
-	/* behind the shaper: 90 delivered, no queue: up 1 % a tick */
+	/* behind the shaper: 90 delivered, no queue: up 1/32 a tick */
 	measured(&l[0], 54, 5);
 	measured(&l[1], 36, 5);
 	cg_cap_total_tick(&t, l, 0x3, 20 * MS);
-	CHECK(t.bps == 90 * MBIT + 900000);
-	for (int i = 0; i < 9; i++)
+	CHECK(t.bps == 90 * MBIT + 90 * MBIT / 32);
+	for (int i = 0; i < 2; i++)
 		cg_cap_total_tick(&t, l, 0x3, 20 * MS);
-	CHECK(t.bps > 99 * MBIT && t.bps < 100 * MBIT);
+	CHECK(t.bps > 98 * MBIT && t.bps < 100 * MBIT);
 	/* idle: held */
 	measured(&l[0], 5, 0);
 	measured(&l[1], 5, 0);
 	cg_cap_total_tick(&t, l, 0x3, 20 * MS);
-	CHECK(t.bps > 99 * MBIT && t.bps < 100 * MBIT);
+	CHECK(t.bps > 98 * MBIT && t.bps < 100 * MBIT);
 	/* a queue at less: down to 9/10 of it */
 	measured(&l[0], 30, 50);
 	measured(&l[1], 20, 50);

@@ -37,12 +37,15 @@
  *
  * cg_cap_total_tick keeps the rate a shaper in front of the tunnel should
  * hold (story 013, PR 4), as cake-autorate does but from the engine's own
- * measures: nothing until a link's queue goes above sat_us (no queue, no
- * need to shape); then 9/10 of what the links deliver, so that the queue
- * forms in the shaper and not in the modems; up by 1 % a tick while they
- * deliver at least 4/5 of the rate and no queue appears (the shaper may be
- * what holds them: a rate set from what they deliver behind it would only
- * ever go down); held otherwise (an idle tunnel says nothing). The engine
+ * measures: nothing until a link's queue goes above sat_us while the links
+ * carry at least half their capacity (no queue, no need to shape; and an
+ * idle link's delay swings above its minimum: on the testnet that alone set
+ * the rate to 2 Mbit/s); then 9/10 of what the links deliver, so that the
+ * queue forms in the shaper and not in the modems; up by 1/32 a tick
+ * (about a third a second) while they deliver at least 4/5 of the rate and
+ * no queue appears (the shaper may be what holds them: a rate set from what
+ * they deliver behind it would only ever go down); held otherwise (an idle
+ * tunnel says nothing). The engine
  * only says the rate; a service outside it applies cake.
  *
  * Pure: no clock, no I/O, no allocation.
@@ -222,25 +225,26 @@ struct cg_cap_total {
 static inline void cg_cap_total_tick(struct cg_cap_total *t, const struct cg_cap_link l[CG_MAX_LINKS], uint16_t mask,
 				     uint32_t sat_us)
 {
-	uint64_t del = 0;
+	uint64_t del = 0, cap = 0;
 	int sat = 0, any = 0;
 
 	for (unsigned i = 0; i < CG_MAX_LINKS; i++)
 		if ((mask >> i & 1) && l[i].have_rate) {
 			del += l[i].rate_bps;
+			cap += cg_cap_bps(&l[i]);
 			any = 1;
 			if (l[i].queue_us >= 0 && (uint32_t)l[i].queue_us > sat_us)
 				sat = 1;
 		}
 	if (!any)
 		return;
-	if (sat) {
+	if (sat && del * 2 >= cap) {
 		uint64_t to = del / 10 * 9;
 
 		if (to && (!t->bps || to < t->bps))
 			t->bps = to;
 	} else if (t->bps && del * 5 >= t->bps * 4) {
-		t->bps += t->bps / 100 ? t->bps / 100 : 1;
+		t->bps += t->bps / 32 ? t->bps / 32 : 1;
 	}
 }
 
