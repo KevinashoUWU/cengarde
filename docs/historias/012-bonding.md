@@ -829,7 +829,10 @@ del VPS encendido; watchdogs de los CPE en pausa.
   check en el momento. (La Pi pidió la bajada repartida en el segundo
   siguiente a su recarga: una primera lectura que decía 2,5 min miraba
   su sesión anterior, que el VPS lista hasta que caduca. B-1 vale: 133,7
-  Mbit/s con gobernador.)
+  Mbit/s con gobernador.) Desde las 13:35 la red de pruebas queda así: la
+  Pi con P3 por UCI y el VPS con P3 y el gobernador en
+  `/etc/cengarde/engine.local` (nuevo: `cengarde-vps-setup` lo copia en la
+  configuración que genera).
 - **Gobernador de bajada, rondas 2–4:** sin gobernador 94,4 / 122,9 /
   113,2 Mbit/s; con gobernador 137,4 / 157,0 / 155,6: gana las tres
   (+24 % a +46 %), como en el PC. El ping por el túnel durante la bajada
@@ -842,6 +845,20 @@ del VPS encendido; watchdogs de los CPE en pausa.
   con IFB cuesta demasiado [hipótesis: la CPU que atiende IFB, `cake`,
   WireGuard y el motor; PROBAR la bajada en la salida de `br-lan`, sin
   IFB, o solo `cake` de subida].
+- **`cake` de bajada en la salida de `br-lan`** (sin IFB; la subida en la
+  salida de `wgcg`), medido desde el PC como equipo de la LAN detrás de
+  la Pi (13:45, 2 corridas con y 2 sin, 30 s por sentido, la red de
+  pruebas ya con P3 y el gobernador del VPS): bajada 127 y 173 Mbit/s sin
+  `cake`, 97 y 84 con él (tope 130); ping p90 70–80 ms sin `cake`, 52–55
+  con él; p99 101–111 frente a 68–71. Cuesta menos que con IFB pero
+  todavía ~35 % del caudal: con enlaces que entregan entre 85 y 230
+  Mbit/s según la hora, un tope fijo o deja caudal o no controla la
+  cola. Es el argumento para que el tope lo fije el propio cengarde con
+  su estimación de capacidad (el paso siguiente del plan), en vez de un
+  número a mano. La subida desde la LAN dio solo 14 Mbit/s en las cuatro
+  corridas (`cake` de 40 no llegó a actuar), frente a 24 desde la Pi
+  misma en ese momento, con retransmisiones en los dos [PENDIENTE: por
+  qué la subida reenviada rinde menos que la de la Pi].
 
 ## Qué hacemos con esto
 
