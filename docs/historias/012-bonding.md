@@ -700,14 +700,28 @@ con y sin `governor` en el cliente (solo la subida; el VPS sin gobernador),
   ninguna respuesta verificada del VPS por ese enlace en tres intervalos
   de sonda)**. WOM pasó toda la corrida B-4 fuera (con peso 1000 del
   gobernador), y los dos, cerca de la mitad de A-2 y A-3. Movistar y
-  Claro, cada uno en su CPE, casi nunca. Con la subida cargada, lo que
-  vuelve por el CPE doble se atrasa o se pierde [hipótesis: su CPU o su
-  puerto compartido; MEDIR con la carga del CPE durante una prueba].
+  Claro, cada uno en su CPE, casi nunca.
+- **El CPE doble se reinicia** (medido el mismo día): arrancó a las
+  10:40:57, en medio de B-4, y durante las pruebas el registrador de radio
+  lo perdió por minutos (09:25–09:43 y 10:35–10:41). Con una carga solo
+  por ese CPE (iperf3 por las VLAN 10 y 20, fuera del túnel), la bajada
+  (45 + 233 Mbit/s, 20 s) pasa con su ping de gestión en 0,3–1 ms y sin
+  cortes. A los 13 s de la subida por los dos módems a la vez (~20 + ~40
+  Mbit/s), el CPE se apaga de golpe: el ping seguía bajo 1 ms en la
+  respuesta anterior y volvió a arrancar. No es la CPU (la bajada, con
+  cinco veces más paquetes, no la mueve) ni la temperatura (55 °C, corte
+  a 115–125 °C). Lo que cambia con la subida es la potencia de
+  transmisión de los dos módems, que en ese CPE llegan a 21–22 dBm
+  [hipótesis: la fuente o la alimentación de la placa se cae con los dos
+  módems transmitiendo al máximo; CONFIRMAR con otra fuente, o con un
+  solo módem subiendo]. Los módems informan 3,80–3,82 V en reposo
+  (`AT+CBC`).
 - La única corrida con los cuatro enlaces dentro todo el tiempo (B-1) dio
   59 Mbit/s, con pesos que siguen las colas (Entel, la más cargada, 327;
   WOM 892).
 - Hasta resolver lo del CPE doble, el gobernador no se puede juzgar en el
-  banco; en el laboratorio sí ayuda (arriba).
+  banco (ni ninguna prueba de subida con los cuatro enlaces); en el
+  laboratorio sí ayuda (arriba).
 
 ## Qué hacemos con esto
 
