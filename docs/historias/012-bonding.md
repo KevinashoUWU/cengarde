@@ -517,6 +517,50 @@ que el extremo que envía mandó por paquete (3 = copia en los tres enlaces).
 - Con eso, `yes` sigue por omisión. El A/B de campo (P7 y P8) dice si en la
   Pi pesa más la espiral o el costo para QUIC.
 
+#### El banco en la casa: la bajada la limitaba la NIC USB de la Pi [medido en banco]
+
+Fuente: 2026-10-14 de madrugada, el banco montado en la mesa (la Pi, los
+tres CPEs y el VPS de siempre, y un PC en el trunk del Omada con una VLAN
+por enlace, historia 004). `bench/fieldperf.sh` con iperf3 a 4 flujos,
+10 s por prueba, fuera del túnel: cada enlace solo y los cuatro a la vez,
+desde la Pi y desde el PC por las mismas VLAN; `bench/radiorec.py` leyendo
+la radio de los cuatro módems cada segundo. Una corrida de cada cosa
+(n = 1): las cifras son del banco, no del campo, y la radio cambia entre
+corridas.
+
+| bajada (Mbit/s) | Pi, NIC USB | Pi, NIC integrada | PC |
+| --- | ---: | ---: | ---: |
+| Claro solo / con los cuatro | 36 / 27 | 92 / 104 | 100 / 93 |
+| Entel solo / con los cuatro | 70 / 66 | 100 / 105 | 119 / 100 |
+| Movistar solo / con los cuatro | 74 / 7 | 39 / 77 | 49 / 46 |
+| WOM solo / con los cuatro | 57 / 28 | 56 / 53 | 263 / 243 |
+| suma solo / con los cuatro | 237 / 128 | 287 / 338 | 532 / 483 |
+
+- **La NIC USB gigabit de los enlaces enganchaba a 480 Mbit/s (USB 2.0)**,
+  en un puerto azul de la Pi y también en uno USB 3 del PC: el adaptador
+  (TP-Link `2357:0601`) o su cable no hacen enlace USB 3.0. El 5G entrega
+  la bajada a ráfagas que el switch pasa a 1 Gbit/s, y el adaptador las
+  vacía por USB 2.0: se desborda antes de que Linux vea los paquetes
+  [razonado; `rx_dropped` y `softnet_stat` limpios, pero el VPS retransmitió
+  7000–12 000 segmentos por bajada desde la Pi y 2–6 desde el PC].
+- **Con los enlaces en la NIC integrada** (`eth0`, `bcmgenet`) y la LAN en el
+  adaptador, la bajada con los cuatro a la vez pasó de 128 a 338 Mbit/s,
+  Claro y Entel rinden como desde el PC y Movistar ya no colapsa. Es un
+  arreglo transitorio: la LAN queda en USB 2.0 hasta un adaptador nuevo.
+- **WOM no era la Pi:** en las bajadas del PC (263 y 243 Mbit/s) tenía la
+  pata NR n78 en todos los segundos; en las de la Pi, en 3 de 13 y después
+  en ninguno. Es la red sumando o no la 5G, y solo se ve con la radio al
+  lado.
+- **La subida es de los módems:** 113–132 Mbit/s en total desde la Pi y
+  desde el PC, y el mismo bufferbloat en los dos (Entel, 300–700 ms de ping
+  con su subida cargada).
+- **El estado de `AT+QENG` no sirve para saber si un módem transmite:**
+  dijo `NOCONN` incluso con WOM bajando 263 Mbit/s.
+- **La primera prueba de campo (2026-10-13) corrió con este cuello**: sus
+  bajadas repartidas y copiadas estaban limitadas por la Pi, no solo por las
+  guardas. Las conclusiones sobre la espiral de la subida se mantienen (la
+  subida no cambió); las de la bajada hay que repetirlas.
+
 ## Qué hacemos con esto
 
 ### Orden de la Fase 5 y criterios de salida
@@ -582,3 +626,4 @@ Los umbrales son propuestas [razonado] y se miden en `bench/`.
 - 2026-10-13: primera prueba de perfiles en la Pi (en Pendiente: la espiral de las guardas).
 - 2026-10-13: segunda prueba en la Pi, con dos tandas y la bajada repartida («La espiral de las guardas, en la Pi»), y el caso `bloat` en `bond`. `split_spread_copy` (paquetes 0.6.3): las copias de G4 y el duplicado de G2 con un solo enlace pasan a ser una perilla, por omisión como hasta la 0.6.2; `bond` suma el sufijo `-nc` y la tabla, los envíos por paquete y los envíos perdidos. `bench/fieldperf.sh` y `fieldperf.py`: iperf3 en campo, por enlace y por el túnel, con los contadores que dicen dónde se pierde un envío. `cengarde-rec` espera con el `sleep()` de `ucode` donde el `sleep` de busybox no acepta fracciones (el de OpenWrt): antes grababa una vez por segundo aunque el motor escribiera cada 200 ms.
 - 2026-10-14: `bench/radiorec.py`: la radio de cada módem cada segundo desde el PC del banco (celda servidora, portadoras agregadas, la pata NR), en el formato de `cell-monitor`, para cruzarla con `fieldrec.py --rf`. Los cuatro módems del banco anclan en LTE y WOM suma NR n78 en NSA, así que la falla conjunta de «los NSA caen juntos y el SA no» no se puede probar aquí; sí la de dos operadoras en la misma banda de anclaje (Entel y Movistar, B7). Historia 004.
+- 2026-10-14: el banco en la casa («El banco en la casa»): la bajada de la Pi la limitaba su NIC USB, enganchada a USB 2.0; con los enlaces en la NIC integrada la bajada con los cuatro a la vez pasó de 128 a 338 Mbit/s. WOM rindió 263 Mbit/s solo con la pata NR encima.

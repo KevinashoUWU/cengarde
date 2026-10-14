@@ -103,3 +103,8 @@
   NSA, no SA: el 13 de `AT+COPS?` es EN-DC), Movistar en B7 sola y Claro en
   B2 con B5 configurada. Entel y Movistar comparten la banda de anclaje.
   `bench/radiorec.py` los registra cada segundo (historia 012).
+- 2026-10-14: la NIC USB gigabit de la Pi (TP-Link `2357:0601`) engancha
+  a 480 Mbit/s (USB 2.0) en cualquier puerto, también en un PC: limitaba la
+  bajada (historia 012). Transitorio: los enlaces (las VLAN 10–40) pasaron
+  a la NIC integrada `eth0` y la LAN (`br-lan`, 192.168.50.1) al
+  adaptador, hasta reemplazarlo por uno USB 3.0.
