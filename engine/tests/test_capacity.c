@@ -167,7 +167,8 @@ static void test_capacity_weights(void)
 	measured(&l[2], 100, 2); /* room: 125 */
 	measured(&l[3], 1, 50);  /* below the floor */
 	cg_cap_weights(l, 0, NULL, 10 * MS, w);
-	CHECK(w[0] == CG_GOV_MAX && w[1] == 100 && w[2] == 625 && w[3] == CG_GOV_MIN);
+	/* 100 with room: 125 and 1/16 of 200, 137.5 */
+	CHECK(w[0] == CG_GOV_MAX && w[1] == 100 && w[2] == 687 && w[3] == CG_GOV_MIN);
 	CHECK(w[4] == CG_GOV_MAX); /* not measured */
 	measured(&l[6], 0, 900); /* measured, delivering nothing: the floor */
 	cg_cap_weights(l, 0, NULL, 10 * MS, w);
@@ -175,7 +176,7 @@ static void test_capacity_weights(void)
 	/* a probing link above the others sets the scale */
 	measured(&l[2], 200, 2);
 	cg_cap_weights(l, 0, NULL, 10 * MS, w);
-	CHECK(w[2] == CG_GOV_MAX && w[0] == 800 && w[1] == 80);
+	CHECK(w[2] == CG_GOV_MAX && w[0] == 761 && w[1] == 76);
 	/* dup0 keeps 0 and does not set the scale */
 	measured(&l[5], 1000, 50);
 	cg_cap_weights(l, 1u << 5, NULL, 10 * MS, w);
@@ -186,7 +187,12 @@ static void test_capacity_weights(void)
 	gov[0] = 500;
 	gov[1] = 10;
 	cg_cap_weights(l, 1u << 5, gov, 10 * MS, w);
-	CHECK(w[0] == 400 && w[1] == CG_GOV_MIN && w[2] == CG_GOV_MAX);
+	CHECK(w[0] == 380 && w[1] == CG_GOV_MIN && w[2] == CG_GOV_MAX);
+	/* a link left at 0.1 Mbit/s by a queue that has gone: 1/16 of the
+	 * largest keeps it in the split, so that it can show more */
+	measured(&l[1], 0.1, 2);
+	cg_cap_weights(l, 1u << 5, NULL, 10 * MS, w);
+	CHECK(w[1] > 40 && w[1] < 60);
 }
 
 /* Two links of 30 and 8 Mbit/s take 30 between them, split by these
