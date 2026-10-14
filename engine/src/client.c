@@ -69,6 +69,7 @@
 #include "pump.h"
 #include "replay.h"
 #include "sock.h"
+#include "capacity.h"
 #include "govern.h"
 #include "split.h"
 #include "srvpick.h"
@@ -153,6 +154,7 @@ struct client {
 	struct cg_nl nl;
 	struct link link[CG_MAX_LINKS];
 	struct cg_hlink uh[CG_MAX_LINKS]; /* upload health, by link id */
+	struct cg_cap_link cap[CG_MAX_LINKS]; /* each link's upload capacity (capacity.h), by link id */
 	struct cg_hcfg hcfg;
 	struct cg_status_writer sw;
 	struct cg_ctl ctl;
@@ -730,6 +732,7 @@ static void link_open(struct client *c, struct link *l, const struct cg_iface *i
 	cg_health_reset(&c->uh[l - c->link], now_ms);
 	cg_split_spread_reset(&c->spread, (unsigned)(l - c->link));
 	cg_gov_link_reset(&c->gov, (unsigned)(l - c->link));
+	cg_cap_reset(&c->cap[l - c->link]);
 	if (pumped(c)) {
 		if (link_pump(c, l) < 0) {
 			/* Never handed over: still this loop's to close. */
@@ -1668,6 +1671,21 @@ static void gov_tick(struct client *c, uint16_t present, uint16_t live, uint64_t
 	cg_gov_weights(&c->gov, dup0, c->gw);
 }
 
+/* Each link's upload capacity (capacity.h), from what the server says it
+ * received on it: status only. */
+static void cap_tick(struct client *c, uint64_t now_ms)
+{
+	struct cg_cap_cfg cc = { .window_ms = c->cfg->governor_window_ms, .sat_us = c->cfg->governor_target_ms * 1000 };
+
+	for (int i = 0; i < CG_MAX_LINKS; i++) {
+		struct link *l = &c->link[i];
+
+		if (l->fd >= 0)
+			cg_cap_tick(&c->cap[i], now_ms, l->peer_view_ms, l->peer_view.rx, l->tx_pkts, l->tx_bytes, &c->uh[i],
+				    &cc);
+	}
+}
+
 static void health_tick(struct client *c, uint64_t now_ms)
 {
 	uint16_t present, live, changed;
@@ -1676,6 +1694,7 @@ static void health_tick(struct client *c, uint64_t now_ms)
 	changed = cg_health_eval(c->uh, CG_MAX_LINKS, live, now_ms, &c->hcfg);
 	spread_tick(c, present, live, now_ms);
 	gov_tick(c, present, live, now_ms);
+	cap_tick(c, now_ms);
 	for (int i = 0; changed; i++, changed >>= 1) {
 		const struct cg_hlink *h = &c->uh[i];
 
@@ -1932,6 +1951,7 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 		cg_json_owd_spread(j, "rx_owd_spread_ms", &c->rxs.ro, (unsigned)i, rset);
 		cg_json_owd_swing(j, "rx_owd_swing_ms", &c->rxs.ro, (unsigned)i);
 		cg_json_u64(j, "rx_reorder_late", c->rxs.ro.link[i].late);
+		cg_json_capacity(j, &c->cap[i]);
 		cg_json_obj(j, "server_view");
 		cg_json_u64(j, "age_ms", l->peer_view_ms ? now_ms - l->peer_view_ms : 0);
 		cg_json_u64(j, "rx", l->peer_view.rx);
@@ -2438,6 +2458,8 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 	}
 	c->lt = cg_lt_resolve(cfg->link_threads, CG_LT_ARCH_MEASURED, c->ncpus, cfg->cpu >= 0, CG_LT_AUTO_ON);
 	cg_gov_reset(&c->gov);
+	for (int i = 0; i < CG_MAX_LINKS; i++)
+		cg_cap_reset(&c->cap[i]);
 	cg_gov_weights(&c->gov, 0, c->gw);
 	c->txs.k_tx = cfg->key;
 	c->txs.hint = cg_client_hint(cfg->key);

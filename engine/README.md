@@ -987,6 +987,18 @@ paquetes que el enlace trajo después de que su hueco se diera por perdido
 81 KiB (en el servidor, por sesión: ~5 MiB con 64, *cálculo*), y el pool,
 solo lo que llega a retener.
 
+La capacidad de cada enlace en el sentido en que envía este extremo (la
+subida en el cliente, la bajada por camino en el servidor; `capacity.h`,
+historia 013): `delivery_mbit`, lo que el otro extremo dice haber
+recibido por él entre dos de sus informes (los paquetes de `rx`, por el
+tamaño medio de lo enviado, en al menos 250 ms); `capacity_mbit`, el
+mayor `delivery_mbit` de la ventana de `governor_window_ms`, salvo que su
+cola (`queue_ms`, el retardo de ida sobre su mínimo de la ventana) pase
+de `governor_target_ms`: entonces lo que entrega ahora. Un enlace al que
+se le manda menos de lo que lleva entrega lo que se le manda, y su
+capacidad baja a eso al cabo de una ventana. Por ahora solo se informa:
+no cambia el reparto.
+
 Los paquetes repartidos: en el cliente, `upload.split` y, por enlace,
 `tx_split` (los que salieron por él: su parte, o todos con peso 0) y
 `weight`; en el servidor, `download_split` por sesión y `tx_split` por
