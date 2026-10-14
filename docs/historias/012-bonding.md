@@ -760,6 +760,21 @@ con y sin `governor` en el cliente (solo la subida; el VPS sin gobernador),
   corridas (27–57) que entre A y B. Conclusión provisional: el gobernador,
   con `split_spread_copy = off`, no estorba y empareja los enlaces; para
   ver si sube el caudal hacen falta corridas más largas y n mayor.
+- **Tanda larga** (12:30–13:00, n = 6 por brazo, 60 s de subida, copias
+  apagadas en los dos, watchdogs en pausa): sin gobernador 51,7 / 52,9 /
+  54,2 / 53,0 / 50,5 / 30,0 Mbit/s (mediana 52,3); con gobernador 49,5 /
+  51,8 / 52,6 / 50,4 / 47,8 / 48,5 (mediana 50,0; p = 0,24). El peor
+  atraso de reparto entre los cuatro enlaces baja con el gobernador
+  (mediana por corrida 95 → 66 ms, p = 0,12 unilateral; p90 214 → 193,
+  p = 0,09), el ping por el túnel no cambia (39–47 ms). Con 60 s las dos
+  ramas dan ~50 en vez de ~40: TCP tarda en llenar el túnel.
+  **Conclusión: el gobernador por cola empareja algo los enlaces pero no
+  sube el caudal; repartir según la cola no es lo que limita.** El paso
+  siguiente es estimar la capacidad de cada enlace (lo que el otro
+  extremo dice haber recibido por él) y dosificar el envío por enlace
+  bajo esa capacidad, para que la cola quede en el router y no en el
+  módem. Con el gobernador, `split_spread_copy` pasa a `no` por omisión
+  (0.6.4): con copias, el gobernador se anula (arriba).
 
 ## Qué hacemos con esto
 
