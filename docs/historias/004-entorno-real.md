@@ -76,7 +76,12 @@
     SINR −6/−7: 1,5 Mbit/s de bajada y 5,7 de subida. Tras un reinicio del
     módem (`AT+CFUN=1,1`) enganchó **B2 20 MHz + B4, PCI 90 (planta de
     fundición Paipote, ENAMI)**, SINR 12–14: 95 Mbit/s de bajada y 25 de
-    subida. Candidata a fijar si vuelve a caer en la 465;
+    subida. **Fijado a la PCI 90** (`AT+QNWLOCK="common/4g",4,850,90,2050,90,2536,90,9610,90`
+    y reinicio de la interfaz): ancla en B4 y agrega B2. EARFCN de Claro
+    vistos en las vecinas: B2 850 (PCI 90 y 142), B4 2050 (PCI 90, 92 y
+    142), B5 2536 (PCI 330 y 465), B28 9610 (PCI 465). La 90 tiene también
+    B5, B28 y B7 según el usuario; su B7 no aparece entre las vecinas
+    [PENDIENTE: su EARFCN, para sumarlo al bloqueo];
   - **WOM:** B66 + NSA n78, cuatro ramas parejas;
   - **Movistar:** B7, con NR a ratos; RSRQ −20 en las cuatro ramas de LTE
     (celda cargada).
