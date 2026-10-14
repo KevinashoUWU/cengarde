@@ -776,6 +776,44 @@ con y sin `governor` en el cliente (solo la subida; el VPS sin gobernador),
   módem. Con el gobernador, `split_spread_copy` pasa a `no` por omisión
   (0.6.4): con copias, el gobernador se anula (arriba).
 
+#### El gobernador en la bajada y `cake` sobre el túnel, en el banco [medido en banco]
+
+Fuente: el PC del banco como router, 2026-10-14 de 12:40 a 13:00; el VPS
+con la build de la rama (0.6.4).
+
+- **Gobernador de bajada** (P3 en los dos extremos, copias apagadas, el
+  gobernador solo en el VPS; 5 rondas alternadas de 30 s de bajada,
+  watchdogs de los CPE en pausa): sin gobernador 162,9 / 129,5 / 66,9 /
+  74,1 / 58,2 Mbit/s; con gobernador 152,6 / 158,0 / 134,0 / 154,0 /
+  100,6. A-1 no vale: el VPS aún corría la configuración anterior (copias
+  y spread 30; su ping fue 166 ms frente a 37–43 en las demás). En las
+  otras cuatro rondas, la corrida con gobernador gana a la de su ronda
+  las cuatro veces (+22 % a +108 %; signos 4/4, p = 0,06), aunque Claro
+  se cayó en B-5. Las bajadas de los enlaces son muy desiguales (WOM
+  188–233 Mbit/s solo, Movistar ~20): con pesos iguales WOM lleva el
+  32–40 % de los bytes, y con gobernador el 39–54 % (81 % en B-5, sin
+  Claro), mientras Entel baja del 28 % al 12–19 %. En la subida, con
+  enlaces de 20–30 Mbit/s cada uno, no había nada que redistribuir; en la
+  bajada sí. Movistar queda fuera del reparto por atraso (`spread`) la
+  mayor parte del tiempo en las dos ramas (cola de 0,2–0,7 s).
+- **Claro y el USB del CPE:** a las 12:52, con la bajada cargada, el
+  kernel de `cpe3` (MT7621) registró `xhci-mtk: ERROR unknown event type
+  37` y luego `qmi_wwan wwan0: NETDEV WATCHDOG: transmit queue 0 timed
+  out`: el módem (RM520N-GL, fw A03) dejó de transmitir por USB con la
+  interfaz arriba. No fue el watchdog del CPE (estaba en pausa)
+  [hipótesis: el controlador xHCI del MT7621 con el módem a 5 Gbit/s;
+  PROBAR con el firmware nuevo del módem o con el puerto a USB 2.0].
+- **`cake` sobre el túnel** (la interfaz WireGuard del PC: 40 Mbit/s de
+  subida, 130 de bajada con IFB; P3 sin gobernador; 2 corridas con y 2
+  sin, 30 s por sentido; con tres enlaces, Claro caído): el ping por el
+  túnel durante la subida, p90 169 y 92 ms sin `cake`, 53 y 46 con él;
+  p99 281 y 392 sin `cake`, 61 y 52 con él; el caudal igual (33–37
+  Mbit/s). En la bajada el ping ya era bueno sin `cake` (p90 48–50) y
+  no cambia. Sin `cake` todo el túnel es un solo flujo UDP hacia el VPS
+  y el ping espera detrás de la carga en la cola del enlace; `cake` en
+  la interfaz del túnel ve los flujos de adentro y les da turno. Muestra
+  chica (32 pings por corrida, uno por segundo).
+
 ## Qué hacemos con esto
 
 ### Orden de la Fase 5 y criterios de salida
