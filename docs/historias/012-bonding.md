@@ -685,6 +685,30 @@ Fuente: `bench/lab.sh bond` en el PC del banco (WireGuard y netem reales),
   20–30 % de pérdidas espurias): no son los pesos, es el desorden; es el
   pendiente más grande del reparto.
 
+#### El gobernador en el banco: el reparto no lo dejan ver los enlaces que entran y salen [medido en banco]
+
+Fuente: el PC del banco como router, 2026-10-14 de mañana, P3 (spread 250)
+con y sin `governor` en el cliente (solo la subida; el VPS sin gobernador),
+4 rondas alternadas de 20 s por sentido, con el estado del motor cada
+200 ms.
+
+- Subida sin gobernador: 40,5 / 41,0 / 38,8 / 41,7 Mbit/s; con
+  gobernador: 59,1 / 36,1 / 24,9 / 38,8. El ping por el túnel, ~40 ms en
+  las dos. La bajada (control, sin gobernador en las dos): 90–193.
+- Lo que explica la dispersión no son los pesos: **los dos módems del CPE
+  doble (Entel y WOM) salen del reparto como no elegibles (guarda G3:
+  ninguna respuesta verificada del VPS por ese enlace en tres intervalos
+  de sonda)**. WOM pasó toda la corrida B-4 fuera (con peso 1000 del
+  gobernador), y los dos, cerca de la mitad de A-2 y A-3. Movistar y
+  Claro, cada uno en su CPE, casi nunca. Con la subida cargada, lo que
+  vuelve por el CPE doble se atrasa o se pierde [hipótesis: su CPU o su
+  puerto compartido; MEDIR con la carga del CPE durante una prueba].
+- La única corrida con los cuatro enlaces dentro todo el tiempo (B-1) dio
+  59 Mbit/s, con pesos que siguen las colas (Entel, la más cargada, 327;
+  WOM 892).
+- Hasta resolver lo del CPE doble, el gobernador no se puede juzgar en el
+  banco; en el laboratorio sí ayuda (arriba).
+
 ## Qué hacemos con esto
 
 ### Orden de la Fase 5 y criterios de salida
