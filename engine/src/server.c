@@ -154,6 +154,7 @@ struct session {
 	struct cg_hlink dh[CG_MAX_LINKS]; /* download health, by link id */
 	struct cg_cap_link cap[CG_MAX_LINKS]; /* each path's download capacity (capacity.h), by link id */
 	uint16_t cw[CG_MAX_LINKS];            /* the weights from them, with capacity_weights */
+	struct cg_cap_total ctot;             /* their total, for a shaper on the router's interface */
 	struct cg_replay replay; /* DATA up; its lost: lost on every link (lost_all) */
 	struct cg_replay ctl;    /* probes */
 	struct cg_arrivals arr;  /* by link, and joint lateness (joint) */
@@ -1552,7 +1553,7 @@ static void gov_tick(struct server *s, struct session *S, uint64_t now_ms)
 /* Each path's download capacity (capacity.h), from what the client says it
  * received on it, and with capacity_weights the split's weights from them
  * (scaled by the governor's, with governor), after the governor's tick. */
-static void cap_tick(struct server *s, struct session *S, uint64_t now_ms)
+static void cap_tick(struct server *s, struct session *S, uint16_t live, uint64_t now_ms)
 {
 	struct cg_cap_cfg cc = { .window_ms = s->cfg->governor_window_ms, .sat_us = s->cfg->governor_target_ms * 1000 };
 
@@ -1568,6 +1569,7 @@ static void cap_tick(struct server *s, struct session *S, uint64_t now_ms)
 
 		cg_cap_weights(S->cap, d.dup0, s->cfg->governor ? S->gw : NULL, cc.sat_us / 2, S->cw);
 	}
+	cg_cap_total_tick(&S->ctot, S->cap, live, cc.sat_us);
 }
 
 static void health_tick(struct server *s, uint64_t now_ms)
@@ -1583,7 +1585,7 @@ static void health_tick(struct server *s, uint64_t now_ms)
 		changed = cg_health_eval(S->dh, CG_MAX_LINKS, live, now_ms, &s->hcfg);
 		spread_tick(s, S, tag, now_ms);
 		gov_tick(s, S, now_ms);
-		cap_tick(s, S, now_ms);
+		cap_tick(s, S, live, now_ms);
 		for (int p = 0; changed; p++, changed >>= 1) {
 			const struct cg_hlink *h = &S->dh[p];
 
@@ -1820,6 +1822,11 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 		cg_json_bool(j, "split_spread_copy", s->cfg->split_spread_copy);
 		cg_json_bool(j, "governor", s->cfg->governor);
 		cg_json_bool(j, "capacity_weights", s->cfg->capacity_weights);
+		/* For a shaper on the router's WireGuard interface (capacity.h). */
+		if (cg_cap_shape_bps(&S->ctot))
+			cg_json_ms(j, "shape_mbit", cg_cap_shape_bps(&S->ctot) / 1000);
+		else
+			cg_json_null(j, "shape_mbit");
 		if (S->peer_bond) {
 			cg_json_bool(j, "client_reorders", S->peer_reorders);
 			cg_json_bool(j, "client_asks_split", S->peer_asks);

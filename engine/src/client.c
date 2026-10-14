@@ -156,6 +156,7 @@ struct client {
 	struct cg_hlink uh[CG_MAX_LINKS]; /* upload health, by link id */
 	struct cg_cap_link cap[CG_MAX_LINKS]; /* each link's upload capacity (capacity.h), by link id */
 	uint16_t cw[CG_MAX_LINKS];            /* the weights from them, with capacity_weights */
+	struct cg_cap_total ctot;             /* their total, for a shaper on the tunnel (upload) */
 	struct cg_hcfg hcfg;
 	struct cg_status_writer sw;
 	struct cg_ctl ctl;
@@ -1677,7 +1678,7 @@ static void gov_tick(struct client *c, uint16_t present, uint16_t live, uint64_t
 /* Each link's upload capacity (capacity.h), from what the server says it
  * received on it, and with capacity_weights the split's weights from them
  * (scaled by the governor's, with governor), after the governor's tick. */
-static void cap_tick(struct client *c, uint64_t now_ms)
+static void cap_tick(struct client *c, uint16_t live, uint64_t now_ms)
 {
 	struct cg_cap_cfg cc = { .window_ms = c->cfg->governor_window_ms, .sat_us = c->cfg->governor_target_ms * 1000 };
 
@@ -1691,6 +1692,7 @@ static void cap_tick(struct client *c, uint64_t now_ms)
 	if (c->cfg->capacity_weights)
 		cg_cap_weights(c->cap, c->cfg->split == CG_SPLIT_FORCE ? 0 : c->dup0, c->cfg->governor ? c->gw : NULL,
 			       cc.sat_us / 2, c->cw);
+	cg_cap_total_tick(&c->ctot, c->cap, live, cc.sat_us);
 }
 
 static void health_tick(struct client *c, uint64_t now_ms)
@@ -1701,7 +1703,7 @@ static void health_tick(struct client *c, uint64_t now_ms)
 	changed = cg_health_eval(c->uh, CG_MAX_LINKS, live, now_ms, &c->hcfg);
 	spread_tick(c, present, live, now_ms);
 	gov_tick(c, present, live, now_ms);
-	cap_tick(c, now_ms);
+	cap_tick(c, live, now_ms);
 	for (int i = 0; changed; i++, changed >>= 1) {
 		const struct cg_hlink *h = &c->uh[i];
 
@@ -1841,6 +1843,11 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 	cg_json_bool(j, "split_spread_copy", c->cfg->split_spread_copy);
 	cg_json_bool(j, "governor", c->cfg->governor);
 	cg_json_bool(j, "capacity_weights", c->cfg->capacity_weights);
+	/* For a shaper on the tunnel (capacity.h): null until measured. */
+	if (cg_cap_shape_bps(&c->ctot))
+		cg_json_ms(j, "shape_mbit", cg_cap_shape_bps(&c->ctot) / 1000);
+	else
+		cg_json_null(j, "shape_mbit");
 	/* What the newest probe reply says (null: no tail, an older server). */
 	if (c->peer_bond)
 		cg_json_bool(j, "server_reorders", c->peer_reorders);

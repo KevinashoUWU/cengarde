@@ -236,8 +236,111 @@ static void test_capacity_converges(void)
 	CHECK(maxq_late < 100.0);
 }
 
+/* The shaper's rate: none until a queue under load, then 9/10 of what is
+ * delivered, up 1/32 a tick while full and without a queue, held while
+ * idle. */
+static void test_capacity_total(void)
+{
+	struct cg_cap_link l[CG_MAX_LINKS];
+	struct cg_cap_total t;
+
+	memset(&t, 0, sizeof(t));
+	for (unsigned i = 0; i < CG_MAX_LINKS; i++)
+		cg_cap_reset(&l[i]);
+	cg_cap_total_tick(&t, l, 0xffff, 20 * MS);
+	CHECK(cg_cap_shape_bps(&t) == 0);
+	measured(&l[0], 60, 5);
+	measured(&l[1], 40, 5);
+	measured(&l[2], 500, 500); /* not in the mask */
+	cg_cap_total_tick(&t, l, 0x3, 20 * MS);
+	CHECK(cg_cap_shape_bps(&t) == 0); /* no queue: no shaping */
+	/* queues on an idle tunnel (delays swing): nothing */
+	measured(&l[0], 0.5, 50);
+	measured(&l[1], 1, 50);
+	cg_cap_total_tick(&t, l, 0x3, 20 * MS);
+	CHECK(cg_cap_shape_bps(&t) == 0);
+	/* a queue on the link that carries less: for the weights, not here */
+	measured(&l[0], 60, 5);
+	measured(&l[1], 40, 50);
+	cg_cap_total_tick(&t, l, 0x3, 20 * MS);
+	CHECK(cg_cap_shape_bps(&t) == 0);
+	measured(&l[0], 60, 50);
+	/* queues on both: 9/10 of 100 */
+	cg_cap_total_tick(&t, l, 0x3, 20 * MS);
+	CHECK(t.bps == 90 * MBIT);
+	cg_cap_total_tick(&t, l, 0x3, 20 * MS); /* still: not higher than before */
+	CHECK(t.bps == 90 * MBIT);
+	/* behind the shaper: 90 delivered, no queue: up 1/32 a tick */
+	measured(&l[0], 54, 5);
+	measured(&l[1], 36, 5);
+	cg_cap_total_tick(&t, l, 0x3, 20 * MS);
+	CHECK(t.bps == 90 * MBIT + 90 * MBIT / 32);
+	for (int i = 0; i < 2; i++)
+		cg_cap_total_tick(&t, l, 0x3, 20 * MS);
+	CHECK(t.bps > 98 * MBIT && t.bps < 100 * MBIT);
+	/* idle: held */
+	measured(&l[0], 5, 0);
+	measured(&l[1], 5, 0);
+	cg_cap_total_tick(&t, l, 0x3, 20 * MS);
+	CHECK(t.bps > 98 * MBIT && t.bps < 100 * MBIT);
+	/* a queue at less: down to 9/10 of it */
+	measured(&l[0], 30, 50);
+	measured(&l[1], 20, 50);
+	cg_cap_total_tick(&t, l, 0x3, 20 * MS);
+	CHECK(t.bps == 45 * MBIT);
+}
+
+/* A tunnel of 30 Mbit/s that becomes 50 after 30 s, which a flow would
+ * fill to 80, behind the shaper: the rate follows it up (the probing) and
+ * settles just under 50, and the queue stays short, where without it the
+ * links' queues would grow without end. */
+static void test_capacity_shapes(void)
+{
+	struct cg_cap_link l[CG_MAX_LINKS];
+	struct cg_hlink h[CG_MAX_LINKS];
+	struct cg_cap_total tot;
+	double q = 0, maxq_late = 0, rate_late = 0;
+	uint64_t tx_p = 0, tx_b = 0, t = 1000;
+	uint32_t rx = 0;
+
+	memset(h, 0, sizeof(h));
+	memset(&tot, 0, sizeof(tot));
+	for (unsigned i = 0; i < CG_MAX_LINKS; i++)
+		cg_cap_reset(&l[i]);
+	for (int k = 0; k < 1200; k++) { /* 120 s */
+		double off = 80.0, out, cap = k < 300 ? 3.0 : 5.0; /* Mbit a tick */
+		uint64_t pk;
+
+		if (tot.bps && off > (double)tot.bps / MBIT)
+			off = (double)tot.bps / MBIT; /* the shaper holds the rest, ahead of the link */
+		off *= 0.1;
+		pk = (uint64_t)(off * MBIT / 8 / 1000);
+		q += off;
+		out = q < cap ? q : cap;
+		q -= out;
+		t += 100;
+		tx_p += pk;
+		tx_b += pk * 1000;
+		rx += (uint32_t)(out * MBIT / 8 / 1000);
+		h[0].owd = 20000u + (uint32_t)(q / (cap * 10) * 1000 * MS);
+		h[0].have_owd = 1;
+		h[0].fresh_until_ms = t + 3000;
+		cg_cap_tick(&l[0], t, t, rx, tx_p, tx_b, &h[0], &CFG);
+		cg_cap_total_tick(&tot, l, 0x1, CFG.sat_us);
+		if (k >= 600) {
+			if (q / 50.0 * 1000 > maxq_late)
+				maxq_late = q / 50.0 * 1000;
+			rate_late += (double)tot.bps / MBIT / 600;
+		}
+	}
+	CHECK(rate_late > 40 && rate_late < 52);
+	CHECK(maxq_late < 100);
+}
+
 void test_capacity(void)
 {
+	test_capacity_total();
+	test_capacity_shapes();
 	test_capacity_converges();
 	test_capacity_weights();
 	test_capacity_rates();
