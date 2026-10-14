@@ -826,9 +826,10 @@ del VPS encendido; watchdogs de los CPE en pausa.
   puertos reservados y regeneró la configuración del motor
   (`cengarde-vps-setup refresh`), lo que borró el perfil del A/B a mitad
   de la corrida (13:13:04). Desde ahora `vps on` y `vps off` corren ese
-  check en el momento. Además, la Pi recién recargada tardó ~2,5 min en
-  pedir la bajada repartida (`client_asks_split`), así que B-1 fue casi
-  todo copiado [PENDIENTE: por qué tarda].
+  check en el momento. (La Pi pidió la bajada repartida en el segundo
+  siguiente a su recarga: una primera lectura que decía 2,5 min miraba
+  su sesión anterior, que el VPS lista hasta que caduca. B-1 vale: 133,7
+  Mbit/s con gobernador.)
 - **Gobernador de bajada, rondas 2–4:** sin gobernador 94,4 / 122,9 /
   113,2 Mbit/s; con gobernador 137,4 / 157,0 / 155,6: gana las tres
   (+24 % a +46 %), como en el PC. El ping por el túnel durante la bajada
