@@ -895,6 +895,13 @@ engine_conf() {
 	0 | off | no | false | disabled) echo "split_eta = no" ;;
 	*) log "split_eta '$v': expected 0 or 1, left out" ;;
 	esac
+	config_get v main pacing
+	case "$v" in
+	'') ;;
+	1 | on | yes | true | enabled) echo "pacing = yes" ;;
+	0 | off | no | false | disabled) echo "pacing = no" ;;
+	*) log "pacing '$v': expected 0 or 1, left out" ;;
+	esac
 	config_get v main split_spread_copy
 	case "$v" in
 	'') ;;

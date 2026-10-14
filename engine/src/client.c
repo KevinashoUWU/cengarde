@@ -70,6 +70,7 @@
 #include "replay.h"
 #include "sock.h"
 #include "capacity.h"
+#include "pace.h"
 #include "govern.h"
 #include "split.h"
 #include "srvpick.h"
@@ -130,6 +131,7 @@ struct link {
 	int peer_muted; /* the server carries no download on this link */
 	uint64_t tx_pkts, tx_bytes, tx_drops, tx_errors;
 	uint64_t tx_split; /* of tx_pkts, split packets (split.h): its share, or all of them with weight 0 */
+	uint64_t paced;    /* the pacing rate set on its socket, bytes/s (pace.h); CG_PACE_NONE: none */
 	struct cg_probe_info peer_view; /* server's view of this path (upload) */
 	uint64_t peer_view_ms;
 	struct cg_rxl rxl; /* as the download sees it: generation, last packet, probe echoes */
@@ -736,6 +738,7 @@ static void link_open(struct client *c, struct link *l, const struct cg_iface *i
 	cg_split_spread_reset(&c->spread, (unsigned)(l - c->link));
 	cg_gov_link_reset(&c->gov, (unsigned)(l - c->link));
 	cg_cap_reset(&c->cap[l - c->link]);
+	l->paced = CG_PACE_NONE; /* a new socket is not paced */
 	if (pumped(c)) {
 		if (link_pump(c, l) < 0) {
 			/* Never handed over: still this loop's to close. */
@@ -1676,6 +1679,18 @@ static void gov_tick(struct client *c, uint16_t present, uint16_t live, uint64_t
 	cg_gov_weights(&c->gov, dup0, c->gw);
 }
 
+/* SO_MAX_PACING_RATE on a link's socket (pace.h): fq on its way out paces
+ * it. Kernels that take only 32 bits get it capped. */
+static void pace_set(struct link *l, uint64_t rate)
+{
+	uint32_t r32 = rate > UINT32_MAX ? UINT32_MAX : (uint32_t)rate;
+
+	if (setsockopt(l->fd, SOL_SOCKET, SO_MAX_PACING_RATE, &rate, sizeof(rate)) < 0 &&
+	    setsockopt(l->fd, SOL_SOCKET, SO_MAX_PACING_RATE, &r32, sizeof(r32)) < 0)
+		return;
+	l->paced = rate;
+}
+
 /* Each link's upload capacity (capacity.h), from what the server says it
  * received on it, and with capacity_weights the split's weights from them
  * (scaled by the governor's, with governor), after the governor's tick. */
@@ -1696,6 +1711,17 @@ static void cap_tick(struct client *c, uint16_t live, uint64_t now_ms)
 	cg_cap_total_tick(&c->ctot, c->cap, live, cc.sat_us);
 	if (c->cfg->split_eta)
 		cg_cap_eta(&c->eta, c->cap, live, now_ms * 1000);
+	/* With pacing, each link's socket at about its rate; without, as it
+	 * was set, back to none (a reload turned it off). */
+	for (int i = 0; i < CG_MAX_LINKS; i++) {
+		struct link *l = &c->link[i];
+		uint64_t r = c->cfg->pacing ? cg_pace_rate(c->cap[i].have_rate ? cg_cap_bps(&c->cap[i]) : 0,
+							   c->cap[i].queue_us, cc.sat_us)
+					    : CG_PACE_NONE;
+
+		if (l->fd >= 0 && cg_pace_changed(l->paced, r))
+			pace_set(l, r);
+	}
 }
 
 static void health_tick(struct client *c, uint64_t now_ms)
@@ -1847,6 +1873,7 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 	cg_json_bool(j, "governor", c->cfg->governor);
 	cg_json_bool(j, "capacity_weights", c->cfg->capacity_weights);
 	cg_json_bool(j, "split_eta", c->cfg->split_eta);
+	cg_json_bool(j, "pacing", c->cfg->pacing);
 	/* For a shaper on the tunnel (capacity.h): null until measured. */
 	if (cg_cap_shape_bps(&c->ctot))
 		cg_json_ms(j, "shape_mbit", cg_cap_shape_bps(&c->ctot) / 1000);
@@ -1975,6 +2002,10 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 		cg_json_owd_swing(j, "rx_owd_swing_ms", &c->rxs.ro, (unsigned)i);
 		cg_json_u64(j, "rx_reorder_late", c->rxs.ro.link[i].late);
 		cg_json_capacity(j, &c->cap[i]);
+		if (l->paced != CG_PACE_NONE)
+			cg_json_ms(j, "pace_mbit", l->paced * 8 / 1000);
+		else
+			cg_json_null(j, "pace_mbit");
 		/* What the split by expected arrival sees of it (null: off, or no rate). */
 		if (c->cfg->split_eta && c->eta.l[i].bps) {
 			cg_json_ms(j, "eta_base_ms", c->eta.l[i].base_us);

@@ -447,7 +447,7 @@ section() { conf | sed -n "/^\[link $1\]/,/^\$/p"; }
 clear() {
 	for o in reorder reorder_max_wait_ms reorder_dup_wait_ms reorder_margin_ms reorder_bypass reorder_pool_kb \
 		split split_small split_weight split_spread_ms split_spread_copy governor governor_target_ms \
-		capacity_weights split_eta; do
+		capacity_weights split_eta pacing; do
 		uci -q delete "cengarde.main.$o"
 	done
 	uci commit cengarde
@@ -468,6 +468,7 @@ uci set cengarde.main.governor=1
 uci set cengarde.main.governor_target_ms=15
 uci set cengarde.main.capacity_weights=1
 uci set cengarde.main.split_eta=1
+uci set cengarde.main.pacing=1
 uci add_list cengarde.main.split_weight=up1=3
 uci add_list cengarde.main.split_weight=up3=0
 uci add_list cengarde.main.split_weight=up9=2
@@ -475,7 +476,7 @@ uci add_list cengarde.main.split_weight=up2=1001
 uci commit cengarde
 for kv in 'reorder = yes' 'reorder_max_wait_ms = 300' 'reorder_dup_wait_ms = 20' 'reorder_bypass = 64' 'split = on' \
 	'split_small = 300' 'split_spread_ms = 50' 'split_spread_copy = no' 'governor = yes' 'governor_target_ms = 15' \
-	'capacity_weights = yes' 'split_eta = yes'; do
+	'capacity_weights = yes' 'split_eta = yes' 'pacing = yes'; do
 	conf | grep -qxF "$kv" || { echo "missing: $kv"; r=1; }
 done
 section eth1 | grep -qx 'weight = 3' || { echo "up1 (eth1) has no weight 3"; r=1; }
