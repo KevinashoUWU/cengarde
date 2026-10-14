@@ -1975,6 +1975,14 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 		cg_json_owd_swing(j, "rx_owd_swing_ms", &c->rxs.ro, (unsigned)i);
 		cg_json_u64(j, "rx_reorder_late", c->rxs.ro.link[i].late);
 		cg_json_capacity(j, &c->cap[i]);
+		/* What the split by expected arrival sees of it (null: off, or no rate). */
+		if (c->cfg->split_eta && c->eta.l[i].bps) {
+			cg_json_ms(j, "eta_base_ms", c->eta.l[i].base_us);
+			cg_json_ms(j, "eta_mbit", c->eta.l[i].bps / 1000);
+		} else {
+			cg_json_null(j, "eta_base_ms");
+			cg_json_null(j, "eta_mbit");
+		}
 		cg_json_obj(j, "server_view");
 		cg_json_u64(j, "age_ms", l->peer_view_ms ? now_ms - l->peer_view_ms : 0);
 		cg_json_u64(j, "rx", l->peer_view.rx);
