@@ -201,6 +201,7 @@ struct cg_ro_link {
 	uint32_t hw;  /* newest DATA sequence it brought (serial max) */
 	uint32_t owd; /* its delay, raw (local clock minus the sender's ts), EWMA 1/8 */
 	uint32_t dev; /* mean of |sample - owd|, gain 1/4 (us) */
+	uint32_t late; /* packets it brought after their gap was given up (wraps) */
 	uint8_t hw_ok, owd_ok;
 };
 
@@ -564,6 +565,8 @@ static inline enum cg_ro_v cg_ro_late(struct cg_reorder *r, const struct cg_ro_p
 		r->st.late_old++;
 		return CG_RO_NOW;
 	}
+	if (k->link < CG_MAX_LINKS)
+		r->link[k->link].late++;
 	if (s->state == CG_RO_LOST_RACK)
 		r->st.late_rack++;
 	else if (s->state == CG_RO_LOST_CAP)

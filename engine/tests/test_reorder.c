@@ -458,6 +458,9 @@ static void sc_swing(const struct base *b)
 	CHECK_EQ(drain(212 * MS), 1);
 	CHECK_EQ(R.r.st.lost_cap, 1);
 	CHECK(OUT_IS(0, 2));
+	/* It comes after all: late, and counted on the link that brought it. */
+	in(1, 1 * MS, 300 * MS, 1, SPLIT, DATA, BIG);
+	CHECK(R.r.st.late_cap == 1 && R.r.link[1].late == 1 && R.r.link[0].late == 0);
 }
 
 /* 4: RACK. */

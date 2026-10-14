@@ -1931,6 +1931,7 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 		 * for, from the probe replies and the first copies. */
 		cg_json_owd_spread(j, "rx_owd_spread_ms", &c->rxs.ro, (unsigned)i, rset);
 		cg_json_owd_swing(j, "rx_owd_swing_ms", &c->rxs.ro, (unsigned)i);
+		cg_json_u64(j, "rx_reorder_late", c->rxs.ro.link[i].late);
 		cg_json_obj(j, "server_view");
 		cg_json_u64(j, "age_ms", l->peer_view_ms ? now_ms - l->peer_view_ms : 0);
 		cg_json_u64(j, "rx", l->peer_view.rx);
