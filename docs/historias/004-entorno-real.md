@@ -140,8 +140,12 @@
     (PCI 227 en B7 3300, 230 en B28 9360); en B2 1000 también la PCI 194.
   - **Bloqueos para las medidas** (2026-10-14 de noche, para que ningún
     módem salte de celda a mitad de una prueba): Claro al sitio de ENAMI,
-    WOM al de Mina Tránsito y Entel al monoposte de Villa El Escorial
-    (`AT+QNWLOCK="common/4g",3,3100,152,675,152,1125,152`: B2 + B7 + B2).
+    WOM al de Mina Tránsito, Entel al monoposte de Villa El Escorial
+    (`AT+QNWLOCK="common/4g",3,3100,152,675,152,1125,152`: B2 + B7 + B2) y
+    Movistar a la palmera (`AT+QNWLOCK="common/4g",3,3300,91,1000,20,9360,91`).
+    Con el bloqueo de Movistar ancla en B28 y agrega B7, sin B2 ni NR: el
+    5G de ese sitio entró cuando el ancla era la B7 [PROBAR sin la B28 en el
+    bloqueo, si el 5G importa más que el alcance].
 
 ## Qué hacemos con esto
 
