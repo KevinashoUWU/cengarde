@@ -744,8 +744,22 @@ con y sin `governor` en el cliente (solo la subida; el VPS sin gobernador),
   baja el peso sí se descarga (Entel, 7–20 % de los bytes con colas de
   30–100 ms). Pero Claro se cayó desde las 11:37 (su watchdog subió del
   `ifup` al reinicio del módem, y el módem volvió sin sesión de datos):
-  cinco de las ocho corridas fueron con tres enlaces. Queda repetirlo
-  con los cuatro.
+  cinco de las ocho corridas fueron con tres enlaces.
+- **Con los cuatro enlaces y los watchdogs de los CPE en pausa**
+  (12:00–12:16; los watchdogs confunden la cola de nuestra carga con un
+  enlace sin tráfico y lo bajan con `ifup`, que fue lo que dejó caído a
+  Claro): sin gobernador 27,9 / 52,0 / 43,9 / 43,8 Mbit/s (media 41,9);
+  con gobernador 56,6 / 35,7 / 56,3 / 26,7 (media 43,8; p = 0,89). Los
+  cuatro enlaces quedan dentro del reparto el 95–100 % del tiempo en las
+  ocho corridas. **El caudal no cambia; el atraso entre enlaces, sí:** el
+  peor atraso de reparto entre los cuatro (`split_behind_ms`, cada
+  200 ms) tiene mediana 16 / 47 / 54 / 90 ms sin gobernador y
+  49 / 15 / 19 / 22 con él, y p90 58–182 frente a 36–132. Es lo que el
+  gobernador busca (igualar las colas), pero el ping por el túnel no lo
+  refleja (37–48 ms en las dos) y el caudal de subida varía más entre
+  corridas (27–57) que entre A y B. Conclusión provisional: el gobernador,
+  con `split_spread_copy = off`, no estorba y empareja los enlaces; para
+  ver si sube el caudal hacen falta corridas más largas y n mayor.
 
 ## Qué hacemos con esto
 
