@@ -5,13 +5,11 @@
 static void test_pace_rate(void)
 {
 	/* no capacity: no limit */
-	CHECK(cg_pace_rate(0, 5000, 20000) == CG_PACE_NONE);
-	/* 40 Mbit/s: 5 MB/s, 5/4 of it with room, itself with a queue or none known */
-	CHECK_EQ(cg_pace_rate(40000000, 5000, 20000), 6250000);
-	CHECK_EQ(cg_pace_rate(40000000, 15000, 20000), 5000000);
-	CHECK_EQ(cg_pace_rate(40000000, 90000, 20000), 5000000);
-	CHECK_EQ(cg_pace_rate(40000000, -1, 20000), 5000000);
-	CHECK_EQ(cg_pace_rate(1, 0, 20000), 1); /* never 0: that would stop it */
+	CHECK(cg_pace_rate(0) == CG_PACE_NONE);
+	/* 40 Mbit/s: twice, 10 MB/s */
+	CHECK_EQ(cg_pace_rate(40000000), 10000000);
+	/* an idle link's near-nothing: the floor, 20 Mbit/s */
+	CHECK_EQ(cg_pace_rate(50000), CG_PACE_FLOOR);
 }
 
 static void test_pace_changed(void)

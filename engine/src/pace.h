@@ -8,13 +8,16 @@
  * and the reorderer still held 80 % of the download). Paced, a link takes
  * its packets at about the rate it carries them and its queue stays short.
  *
- * The rate is the link's capacity (capacity.h) times 5/4 while its queue
- * is under half the target, and the capacity itself above it: pacing
- * smooths the bursts, it does not hold the link below what it can show (a
- * pace below the capacity would bring what the link delivers, and with it
- * the capacity, down: the shaper of PR 4 did that). No capacity yet, no
- * pacing. The engine keeps no queue of its own: the kernel does, per
- * socket, in fq.
+ * The rate is twice the link's capacity (capacity.h), and never under
+ * CG_PACE_FLOOR: pacing is for breaking the bursts at the local network's
+ * speed into something near the link's, not for holding the link. A first
+ * rule at 5/4 of the capacity sank on the testnet: right after a restart
+ * the capacity is what an idle link delivers, near nothing; the probes,
+ * paced on the same socket, took the pacing for the link's queue; and the
+ * capacity, measured behind the pacing, stayed at it (the upload went to
+ * 0-2 Mbit/s). Twice the capacity is never under what the link delivers.
+ * No capacity yet, no pacing. The engine keeps no queue of its own: the
+ * kernel does, per socket, in fq.
  *
  * Pure: no clock, no I/O, no allocation.
  *
@@ -25,21 +28,19 @@
 #include <stdint.h>
 
 #define CG_PACE_NONE UINT64_MAX /* SO_MAX_PACING_RATE's "no limit" */
+#define CG_PACE_FLOOR 2500000ull /* bytes/s: 20 Mbit/s */
 
 /* The pacing rate in bytes/s for a link of capacity cap_bps (bits/s, 0:
- * unknown) whose queue is queue_us (-1: unknown), against target_us. */
-static inline uint64_t cg_pace_rate(uint64_t cap_bps, int32_t queue_us, uint32_t target_us)
+ * unknown). */
+static inline uint64_t cg_pace_rate(uint64_t cap_bps)
 {
 	uint64_t r;
 
 	if (!cap_bps)
 		return CG_PACE_NONE;
-	r = cap_bps / 8;
-	if (queue_us >= 0 && (uint32_t)queue_us < target_us / 2)
-		r += r / 4;
-	return r ? r : 1;
+	r = cap_bps / 4; /* twice, in bytes */
+	return r > CG_PACE_FLOOR ? r : CG_PACE_FLOOR;
 }
-
 /* Whether a rate set before, old, should be set again to now: a change of
  * more than 1/16 either way, or to or from no limit. */
 static inline int cg_pace_changed(uint64_t old, uint64_t now)

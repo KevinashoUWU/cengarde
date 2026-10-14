@@ -546,10 +546,12 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
   bajada eran espurias (DSACK). Apaga las copias por omisión. El estado
   muestra `split_eta` en `upload` (cliente) y en cada sesión (servidor).
 - **`pacing` (`no`; `yes` o `no`), en el cliente (experimental):** el
-  socket de cada enlace se dosifica a su ritmo (`SO_MAX_PACING_RATE`,
-  `pace.h`, historia 013): su capacidad, y 5/4 de ella mientras su cola es
-  corta (dosificar alisa las ráfagas; frenar bajo la capacidad la hundiría,
-  como pasó con el tope de `cake`). Sin capacidad medida, sin límite. El
+  socket de cada enlace se dosifica (`SO_MAX_PACING_RATE`, `pace.h`,
+  historia 013) al doble de su capacidad y nunca bajo 20 Mbit/s: rompe las
+  ráfagas a la velocidad de la red local sin frenar el enlace (a 5/4 de la
+  capacidad se hundía: tras un reinicio la capacidad es casi nada, las
+  sondas van por el mismo socket y la capacidad medida tras la dosificación
+  se quedaba ahí). Sin capacidad medida, sin límite. El
   motor no guarda colas: las guarda el kernel, por socket, en el qdisc `fq`,
   que tiene que estar por donde salen los enlaces (en OpenWrt, el
   dispositivo bajo las subidas: `tc qdisc replace dev eth0 root fq`); sin

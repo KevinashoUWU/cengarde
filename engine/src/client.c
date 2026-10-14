@@ -1715,8 +1715,7 @@ static void cap_tick(struct client *c, uint16_t live, uint64_t now_ms)
 	 * was set, back to none (a reload turned it off). */
 	for (int i = 0; i < CG_MAX_LINKS; i++) {
 		struct link *l = &c->link[i];
-		uint64_t r = c->cfg->pacing ? cg_pace_rate(c->cap[i].have_rate ? cg_cap_bps(&c->cap[i]) : 0,
-							   c->cap[i].queue_us, cc.sat_us)
+		uint64_t r = c->cfg->pacing ? cg_pace_rate(c->cap[i].have_rate ? cg_cap_bps(&c->cap[i]) : 0)
 					    : CG_PACE_NONE;
 
 		if (l->fd >= 0 && cg_pace_changed(l->paced, r))
