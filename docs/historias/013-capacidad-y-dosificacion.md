@@ -1,7 +1,7 @@
 # 013 — Capacidad por enlace y dosificación (paso 4 del bonding)
 
 - **Fecha:** 2026-10-14
-- **Estado:** vigente. PR 1 hecho (PR #32, 0.6.5): el plazo del reordenador según la oscilación de cada enlace, medido en la red de pruebas. PR 2 a 4 por hacer.
+- **Estado:** vigente. PR 1 hecho (PR #32, 0.6.5): el plazo del reordenador según la oscilación de cada enlace. PR 2 hecho (PR #33, 0.6.6): la capacidad de cada enlace, solo en el estado. Los dos medidos en la red de pruebas. PR 3 y 4 por hacer.
 - **Fuentes:**
   - las medidas del 2026-10-14 en el banco y en la Pi, en [012](012-bonding.md) («El gobernador en el banco…», «El gobernador en la bajada y `cake`…», «… en la Pi»);
   - código leído: `engine/src/reorder.h` (plazo de un hueco, líneas 70–80 del comentario), `govern.h`, `split.h`, `health.h`, `proto.h` (`struct cg_probe_info`: `rx` por camino), `clientpath.h`, `server.c` (`peer_asks`, `apply_config`);
@@ -102,6 +102,56 @@ extremos:
   pérdida falsa que queda está en los enlaces que se atoran, no en el
   plazo.
 
+### PR 2, medido [red de pruebas, 2026-10-14 de tarde]
+
+El estimador de capacidad (PR #33, 0.6.6), validado con un enlace por
+vez dentro del túnel (los otros tres en pausa con `cengarde ctl link
+NOMBRE off`), 15 s de subida y 15 s de bajada cada uno, con el estado de
+los dos extremos leído cada ~1 s:
+
+- **La primera versión sobreestimaba:** con muestras de 250 ms y su
+  máximo, la capacidad salía 1,5–2 veces lo que el enlace llevaba. Ahora
+  cada muestra cubre al menos 500 ms, el ritmo se suaviza (un cuarto de
+  cada muestra nueva) y la capacidad es el máximo de eso.
+- **Dos fallas corregidas:**
+  - un enlace que vacía su cola entrega en un intervalo más de lo que se
+    le mandó en él; el estimador lo tomaba como contadores nuevos y
+    reiniciaba. Ahora compara los totales;
+  - copiando por los cuatro, un enlace con segundos de atraso solo trae
+    copias viejas que el receptor descarta antes de contarlas: para medir
+    capacidad, el enlace tiene que llevar paquetes propios (repartir o
+    ir solo).
+
+| Enlace | Bajada: túnel / capacidad | Subida: lo que entregó el enlace / capacidad |
+| --- | --- | --- |
+| Claro | 81,9 / 90,8 (+11 %) | 18,8 / 17,2 |
+| Entel | 35,6 / 35,8 (+1 %) | 18,6 / 18,1 |
+| Movistar | 6,5 / 5,3 (−19 %) | 25,5 / 25,2 |
+| WOM | 97,0 / 103,4 (+7 %) | 32,3 / 31,3 |
+
+En la subida, el iperf del túnel dio menos (10–24 Mbit/s) porque por el
+mismo túnel pasaba otro tráfico de la Pi: lo que cuenta es lo que el
+enlace llevó (sus bytes enviados y lo que el VPS dice haber recibido,
+que coinciden). Contra eso, el estimador queda dentro del 1–9 %. Cumple
+el criterio de la historia (±20 %).
+
+### Ramas de antena y CSI [medido, 2026-10-14]
+
+Con `AT+QRSRP`/`AT+QSINR` (por rama) y el reporte CSI activado
+(`AT+QNWCFG="csi_ctrl",1,1` en los cuatro módems; `lte_csi` y `nr5g_csi`
+dan MCS, RI, CQI y PMI):
+
+- en reposo, Entel y Claro muestran −140 en las ramas 3 y 4: el módem
+  las apaga sin tráfico; con carga vuelven las cuatro. Para ver una
+  antena rota hay que medir con carga;
+- Entel, con carga: la rama principal 15–18 dB bajo las otras tres
+  (−86 a −89 frente a −71 a −81 dBm) y SINR 2–10 frente a 9–20. Engancha
+  un monoposte a ~100 m (PCI 151/152, sin 5G) que alterna; hay una
+  macrocelda a ~1 km con 5G, 256QAM de subida y 4x4. [PROBAR el bloqueo
+  de PCI a la macro y antenas más grandes; medir antes y después];
+- WOM y Claro, parejas; Movistar engancha NR además de LTE, con RSRQ −20
+  en las cuatro ramas de LTE (celda cargada).
+
 ## Qué hacemos con esto (diseño)
 
 ### Piezas
@@ -152,3 +202,4 @@ extremos:
 
 - 2026-10-14: creada, con el diseño del paso 4 y la investigación del reordenador y de la subida desde la LAN.
 - 2026-10-14: el PR 1 medido en los dos extremos; el reloj de los plazos con `link_threads`; los tardíos por enlace.
+- 2026-10-14: el PR 2 validado enlace por enlace; las ramas de antena y el CSI de los cuatro módems.
