@@ -991,7 +991,8 @@ La capacidad de cada enlace en el sentido en que envía este extremo (la
 subida en el cliente, la bajada por camino en el servidor; `capacity.h`,
 historia 013): `delivery_mbit`, lo que el otro extremo dice haber
 recibido por él entre dos de sus informes (los paquetes de `rx`, por el
-tamaño medio de lo enviado, en al menos 250 ms); `capacity_mbit`, el
+tamaño medio de lo enviado, en al menos 500 ms), suavizado (un cuarto de
+cada muestra nueva); `capacity_mbit`, el
 mayor `delivery_mbit` de la ventana de `governor_window_ms`, salvo que su
 cola (`queue_ms`, el retardo de ida sobre su mínimo de la ventana) pase
 de `governor_target_ms`: entonces lo que entrega ahora. Un enlace al que

@@ -6,14 +6,15 @@
  * - delivered: the change in rx, times the mean size of what was sent on
  *   that link meanwhile (the peer counts packets, not bytes);
  * - the delivery rate: delivered over the time between the two reports, as
- *   this end received them. A sample spans at least CG_CAP_MIN_MS, so that
- *   a report's own delay and what is still in flight weigh little;
+ *   this end received them, smoothed (gain 1/4). A sample spans at least
+ *   CG_CAP_MIN_MS, so that a report's own delay and what is still in flight
+ *   weigh little; raw samples of 250 ms swung so much that their maximum
+ *   was 1.5-2 times what the link carried (story 013, the testnet);
  * - the capacity: the largest delivery rate of the last window_ms (two
  *   half windows, like BBR's bottleneck bandwidth): a link carries at least
  *   what it once delivered. Unless the link's queue is above sat_us: then
- *   it carries what it delivers while the queue lasts and no more, so the
- *   window starts again when the queue appears, from the rates measured
- *   with it. The queue is the link's one-way delay over its own minimum of
+ *   it carries what it delivers now and no more, and the window starts
+ *   again from there (the smoothing keeps one bad sample from sinking it). The queue is the link's one-way delay over its own minimum of
  *   the window (govern.h's cg_gov_base).
  *
  * A link sent less than it could carry delivers what it was sent: its
@@ -37,7 +38,8 @@
 #include "govern.h"  /* cg_gov_base, struct cg_gov_link */
 #include "health.h"  /* struct cg_hlink, cg_health_fresh, cg_owd_diff */
 
-#define CG_CAP_MIN_MS 250 /* a sample spans at least this */
+#define CG_CAP_MIN_MS 500 /* a sample spans at least this */
+#define CG_CAP_GAIN 4     /* the delivery rate's smoothing: 1/4 of each sample */
 /* More delivered than sent by this much (packets), and the report is not
  * of this run of the counters: probes and what was in flight at the start
  * make a few packets of difference, never this many. */
@@ -55,14 +57,13 @@ struct cg_cap_link {
 	uint64_t tx0;               /* tx_pkts at the start of this run of the counters */
 	uint64_t rx_total;          /* received since then */
 	uint32_t size;              /* mean size of what was sent, bytes */
-	uint64_t rate_bps;          /* the last delivery rate */
+	uint64_t rate_bps;          /* the delivery rate, smoothed */
 	uint64_t max_cur, max_prev; /* the largest rate of the current and the previous half window */
 	uint64_t half_ms;           /* when the current half window started */
 	struct cg_gov_link q;       /* the delay's minimum, for the queue */
 	int32_t queue_us;           /* the last queue seen, -1: none */
 	uint8_t have;               /* a report taken as the start */
 	uint8_t have_rate;          /* a rate measured */
-	uint8_t sat;                /* samples taken with a queue above sat_us, up to 2 */
 };
 
 static inline void cg_cap_reset(struct cg_cap_link *l)
@@ -133,19 +134,21 @@ static inline void cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint64_t 
 	l->tx_pkts = tx_pkts;
 	l->tx_bytes = tx_bytes;
 	l->rx_total += drx;
-	l->rate_bps = rate;
+	if (l->have_rate) {
+		if (rate >= l->rate_bps)
+			l->rate_bps += (rate - l->rate_bps) / CG_CAP_GAIN;
+		else
+			l->rate_bps -= (l->rate_bps - rate) / CG_CAP_GAIN;
+		rate = l->rate_bps;
+	} else {
+		l->rate_bps = rate;
+	}
 	l->have_rate = 1;
 	sat = l->queue_us >= 0 && (uint32_t)l->queue_us > cfg->sat_us;
-	if (sat && l->sat < 2) {
-		/* A queue appeared: what the link delivered before it no longer says
-		 * what it carries. The first sample with it may still span some of
-		 * the time before (the old rate), so the second one replaces it. */
+	if (sat) {
+		/* The link gives no more than it delivers now (smoothed), and the
+		 * window starts again from there. */
 		l->max_cur = l->max_prev = rate;
-		l->half_ms = report_ms;
-	} else if (sat) {
-		if (rate > l->max_cur)
-			l->max_cur = rate;
-		l->max_prev = l->max_cur;
 		l->half_ms = report_ms;
 	} else if (report_ms - l->half_ms >= half) {
 		l->max_prev = l->max_cur;
@@ -154,7 +157,6 @@ static inline void cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint64_t 
 	} else if (rate > l->max_cur) {
 		l->max_cur = rate;
 	}
-	l->sat = sat ? (uint8_t)(l->sat < 2 ? l->sat + 1 : 2) : 0;
 }
 
 #endif
