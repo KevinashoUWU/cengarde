@@ -155,6 +155,7 @@ struct session {
 	struct cg_cap_link cap[CG_MAX_LINKS]; /* each path's download capacity (capacity.h), by link id */
 	uint16_t cw[CG_MAX_LINKS];            /* the weights from them, with capacity_weights */
 	struct cg_cap_total ctot;             /* their total, for a shaper on the router's interface */
+	struct cg_eta eta;                    /* the split by expected arrival, with split_eta */
 	struct cg_replay replay; /* DATA up; its lost: lost on every link (lost_all) */
 	struct cg_replay ctl;    /* probes */
 	struct cg_arrivals arr;  /* by link, and joint lateness (joint) */
@@ -1372,8 +1373,9 @@ static void down_prepare(struct server *s, struct session *S, int m, uint8_t *bu
 	struct cg_hdr h = { .type = CG_T_DATA, .hint = C->hint, .session = S->id, .ts = (uint32_t)now_us };
 
 	/* Before the header: CG_F_SPLIT is under the MAC. */
-	s->pick[m] = (int8_t)(d->split ? cg_split_pick(&S->sp, d->k.carriers, d->k.eligible, d->k.dup, d->w, buf[0],
-						       (uint32_t)len, s->cfg->split_small, &h.flags)
+	s->pick[m] = (int8_t)(d->split ? cg_split_pick_eta(&S->sp, s->cfg->split_eta ? &S->eta : NULL, now_us,
+							   d->k.carriers, d->k.eligible, d->k.dup, d->w, buf[0],
+							   (uint32_t)len, s->cfg->split_small, &h.flags)
 				       : -1);
 	S->down_split += s->pick[m] >= 0;
 	S->last_down_ms = now_us / 1000;
@@ -1570,6 +1572,8 @@ static void cap_tick(struct server *s, struct session *S, uint16_t live, uint64_
 		cg_cap_weights(S->cap, d.dup0, s->cfg->governor ? S->gw : NULL, cc.sat_us / 2, S->cw);
 	}
 	cg_cap_total_tick(&S->ctot, S->cap, live, cc.sat_us);
+	if (s->cfg->split_eta)
+		cg_cap_eta(&S->eta, S->cap, live, now_ms * 1000);
 }
 
 static void health_tick(struct server *s, uint64_t now_ms)
@@ -1822,6 +1826,7 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 		cg_json_bool(j, "split_spread_copy", s->cfg->split_spread_copy);
 		cg_json_bool(j, "governor", s->cfg->governor);
 		cg_json_bool(j, "capacity_weights", s->cfg->capacity_weights);
+		cg_json_bool(j, "split_eta", s->cfg->split_eta);
 		/* For a shaper on the router's WireGuard interface (capacity.h). */
 		if (cg_cap_shape_bps(&S->ctot))
 			cg_json_ms(j, "shape_mbit", cg_cap_shape_bps(&S->ctot) / 1000);

@@ -801,6 +801,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	    get_bool(&ini, "", "split_spread_copy", &c->split_spread_copy, err, errlen) ||
 	    get_bool(&ini, "", "governor", &c->governor, err, errlen) ||
 	    get_bool(&ini, "", "capacity_weights", &c->capacity_weights, err, errlen) ||
+	    get_bool(&ini, "", "split_eta", &c->split_eta, err, errlen) ||
 	    get_u32(&ini, "", "governor_target_ms", 1, 1000, &c->governor_target_ms, err, errlen) ||
 	    get_u32(&ini, "", "governor_window_ms", 1000, 120000, &c->governor_window_ms, err, errlen))
 		goto out;
@@ -809,7 +810,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	 * the queue of a link whose weight it turns down (story 012, the
 	 * bench, 2026-10-14). */
 	if (c->split_spread_copy < 0)
-		c->split_spread_copy = !c->governor && !c->capacity_weights;
+		c->split_spread_copy = !c->governor && !c->capacity_weights && !c->split_eta;
 	if (cg_ini_get(&ini, "", "cpu")) {
 		u = 0;
 		if (get_u32(&ini, "", "cpu", 0, 1023, &u, err, errlen))

@@ -67,6 +67,7 @@
 #include <string.h>
 
 #include "arrival.h" /* CG_MAX_LINKS */
+#include "eta.h"     /* struct cg_eta */
 #include "govern.h"  /* cg_gov_base, struct cg_gov_link */
 #include "health.h"  /* struct cg_hlink, cg_health_fresh, cg_owd_diff */
 
@@ -223,6 +224,37 @@ static inline void cg_cap_weights(const struct cg_cap_link l[CG_MAX_LINKS], uint
 }
 
 #define CG_CAP_SHAPE_MIN 2000000ull /* bps: below this a tunnel is idle */
+
+/* A tick's measures into the split by expected arrival (eta.h): each link of
+ * mask's capacity, its delay without a queue (the minimum of its delays,
+ * over the smallest of the links') and its queue; a link without a
+ * capacity or a delay yet gets rate 0, and the split goes by weights. */
+static inline void cg_cap_eta(struct cg_eta *e, const struct cg_cap_link l[CG_MAX_LINKS], uint16_t mask,
+			      uint64_t now_us)
+{
+	uint32_t ref = 0, mins[CG_MAX_LINKS];
+	int any = 0;
+
+	for (unsigned i = 0; i < CG_MAX_LINKS; i++) {
+		const struct cg_gov_link *q = &l[i].q;
+
+		mins[i] = cg_owd_diff(q->min_prev, q->min_cur) < 0 ? q->min_prev : q->min_cur;
+		if ((mask >> i & 1) && l[i].have_rate && q->have_min && (!any || cg_owd_diff(mins[i], ref) < 0)) {
+			ref = mins[i];
+			any = 1;
+		}
+	}
+	for (unsigned i = 0; i < CG_MAX_LINKS; i++) {
+		uint64_t bps = cg_cap_bps(&l[i]);
+
+		if (!(mask >> i & 1) || !l[i].have_rate || !l[i].q.have_min || !bps || !any) {
+			cg_eta_set(e, i, 0, 0, 0, now_us);
+			continue;
+		}
+		cg_eta_set(e, i, bps, (uint32_t)cg_owd_diff(mins[i], ref), l[i].queue_us > 0 ? (uint32_t)l[i].queue_us : 0,
+			   now_us);
+	}
+}
 
 struct cg_cap_total {
 	uint64_t bps; /* the shaper's rate, 0: none yet */

@@ -530,6 +530,21 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
   paquetes llegan tarde al reordenador (historia 013). El estado muestra
   `cap_weight` por enlace y `capacity_weights` en `upload` (cliente) y en
   cada sesión (servidor). Se aplica en caliente.
+- **`split_eta` (`no`; `yes` o `no`), en los dos extremos, para lo que cada
+  uno envía (experimental):** cada paquete repartido va por el enlace donde
+  llegaría antes (`eta.h`, historia 013, y el eje 5 del estudio de la
+  historia 012): su retardo sin cola (el mínimo del suyo sobre el menor de
+  los enlaces), más lo que tiene encolado y el paquete sobre su capacidad
+  (`capacity_mbit`). Lo encolado es una cola virtual que se vacía a la
+  capacidad entre paquete y paquete y se vuelve a fijar cada 100 ms con la
+  cola que mide el enlace. Así los paquetes enviados en orden llegan casi en
+  orden, y un enlace más lento recibe tráfico solo cuando la cola de los
+  rápidos haría llegar un paquete más tarde que por él. Mientras un enlace
+  no tiene capacidad medida, reparte por los pesos. El porqué: por pesos,
+  los paquetes salían por enlaces con decenas de ms de diferencia, el
+  reordenador soltaba huecos y el 72 % de las retransmisiones de TCP de la
+  bajada eran espurias (DSACK). Apaga las copias por omisión. El estado
+  muestra `split_eta` en `upload` (cliente) y en cada sesión (servidor).
 - **`weight` en `[link X]` (cliente; 1, de 0 a 1000):** la parte del reparto
   que lleva ese enlace con `split = on`, en la subida y en la bajada (el
   cliente se los manda al servidor en las sondas; `force` no los mira). Con

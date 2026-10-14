@@ -157,6 +157,7 @@ struct client {
 	struct cg_cap_link cap[CG_MAX_LINKS]; /* each link's upload capacity (capacity.h), by link id */
 	uint16_t cw[CG_MAX_LINKS];            /* the weights from them, with capacity_weights */
 	struct cg_cap_total ctot;             /* their total, for a shaper on the tunnel (upload) */
+	struct cg_eta eta;                    /* the split by expected arrival, with split_eta */
 	struct cg_hcfg hcfg;
 	struct cg_status_writer sw;
 	struct cg_ctl ctl;
@@ -1147,9 +1148,9 @@ static void wg_read(struct client *c)
 				c->wg_peer = c->in.from[i];
 				c->have_peer = 1;
 			}
-			c->pick[m] = (int8_t)(split ? cg_split_pick(&c->sp, k.carriers, k.eligible, k.dup, w,
-								    c->in.buf[i][0], (uint32_t)len, c->cfg->split_small,
-								    &flags)
+			c->pick[m] = (int8_t)(split ? cg_split_pick_eta(&c->sp, c->cfg->split_eta ? &c->eta : NULL, now_us,
+									k.carriers, k.eligible, k.dup, w, c->in.buf[i][0],
+									(uint32_t)len, c->cfg->split_small, &flags)
 						    : -1);
 			c->up_split += c->pick[m] >= 0;
 			cg_up_header(&c->txs, c->hdr[m], CG_T_DATA, flags, 0, (uint32_t)now_us, c->in.buf[i], len);
@@ -1693,6 +1694,8 @@ static void cap_tick(struct client *c, uint16_t live, uint64_t now_ms)
 		cg_cap_weights(c->cap, c->cfg->split == CG_SPLIT_FORCE ? 0 : c->dup0, c->cfg->governor ? c->gw : NULL,
 			       cc.sat_us / 2, c->cw);
 	cg_cap_total_tick(&c->ctot, c->cap, live, cc.sat_us);
+	if (c->cfg->split_eta)
+		cg_cap_eta(&c->eta, c->cap, live, now_ms * 1000);
 }
 
 static void health_tick(struct client *c, uint64_t now_ms)
@@ -1843,6 +1846,7 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 	cg_json_bool(j, "split_spread_copy", c->cfg->split_spread_copy);
 	cg_json_bool(j, "governor", c->cfg->governor);
 	cg_json_bool(j, "capacity_weights", c->cfg->capacity_weights);
+	cg_json_bool(j, "split_eta", c->cfg->split_eta);
 	/* For a shaper on the tunnel (capacity.h): null until measured. */
 	if (cg_cap_shape_bps(&c->ctot))
 		cg_json_ms(j, "shape_mbit", cg_cap_shape_bps(&c->ctot) / 1000);
