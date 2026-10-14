@@ -592,6 +592,16 @@ tres registradores encendidos. Mbit/s y ping por el túnel bajo carga (p50).
   Copiando, el túnel va al paso de la cola más llena de las cuatro.
 - **Pendiente:** repetir con n ≥ 5 y en el campo, ahora sin el cuello de
   la NIC, antes de cambiar el valor por omisión de `split_spread_copy`.
+- **Con más fierro, lo mismo** [medido en banco, n = 2]: el PC del banco
+  (i9, NIC PCIe) como segundo router del mismo VPS, con las mismas cuatro
+  VLAN y el mismo motor, dio por el túnel 44/41 de subida y 105/118 de
+  bajada copiando, y 38–56 de subida y 123–152 de bajada repartiendo (P3 y
+  P8): lo mismo que la Pi. El techo del túnel no es la CPU ni la NIC de la
+  Pi (ya en la integrada), sino el reparto: copiando rinde lo del mejor
+  enlace, y repartiendo por turnos con pesos iguales un ~30 % de los
+  480 Mbit/s de bajada y un ~40 % de los ~120 de subida que los cuatro
+  enlaces dan juntos fuera del túnel. Es el trabajo de los pasos 2 y 3
+  (pesos por capacidad, planificador por llegada esperada).
 
 ## Qué hacemos con esto
 
@@ -660,3 +670,4 @@ Los umbrales son propuestas [razonado] y se miden en `bench/`.
 - 2026-10-14: `bench/radiorec.py`: la radio de cada módem cada segundo desde el PC del banco (celda servidora, portadoras agregadas, la pata NR), en el formato de `cell-monitor`, para cruzarla con `fieldrec.py --rf`. Los cuatro módems del banco anclan en LTE y WOM suma NR n78 en NSA, así que la falla conjunta de «los NSA caen juntos y el SA no» no se puede probar aquí; sí la de dos operadoras en la misma banda de anclaje (Entel y Movistar, B7). Historia 004.
 - 2026-10-14: el banco en la casa («El banco en la casa»): la bajada de la Pi la limitaba su NIC USB, enganchada a USB 2.0; con los enlaces en la NIC integrada la bajada con los cuatro a la vez pasó de 128 a 338 Mbit/s. WOM rindió 263 Mbit/s solo con la pata NR encima.
 - 2026-10-14: el A/B de `split_spread_copy` por el túnel en el banco («`split_spread_copy` por el túnel, en el banco»): sin diferencia visible con n = 2, ningún envío perdido con los enlaces en la NIC integrada, y repartir baja el ping bajo carga de subida de ~200 a ~37 ms.
+- 2026-10-14: el PC del banco como segundo router (`pc`): por el túnel rinde lo mismo que la Pi, así que el techo es el reparto, no el fierro de la Pi.
