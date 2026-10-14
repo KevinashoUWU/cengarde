@@ -1,7 +1,7 @@
 # 013 — Capacidad por enlace y dosificación (paso 4 del bonding)
 
 - **Fecha:** 2026-10-14
-- **Estado:** vigente. PR 1 hecho (PR #32, 0.6.5): el plazo del reordenador según la oscilación de cada enlace. PR 2 hecho (PR #33, 0.6.6): la capacidad de cada enlace. PR 3 (PR #34, 0.6.7): los pesos según la capacidad (`capacity_weights`), +50 % en la bajada (n = 5, p = 0,075). Medidos en la red de pruebas. PR 4 por hacer.
+- **Estado:** vigente. PR 1 hecho (PR #32, 0.6.5): el plazo del reordenador según la oscilación de cada enlace. PR 2 hecho (PR #33, 0.6.6): la capacidad de cada enlace. PR 3 (PR #34, 0.6.7): los pesos según la capacidad (`capacity_weights`), +50 % en la bajada (n = 5, p = 0,075). Medidos en la red de pruebas. PR 4 (PR #35, 0.6.8): `shape_mbit` y `bench/shaper.sh`, experimental; todavía cuesta ~40 % de la bajada.
 - **Fuentes:**
   - las medidas del 2026-10-14 en el banco y en la Pi, en [012](012-bonding.md) («El gobernador en el banco…», «El gobernador en la bajada y `cake`…», «… en la Pi»);
   - código leído: `engine/src/reorder.h` (plazo de un hueco, líneas 70–80 del comentario), `govern.h`, `split.h`, `health.h`, `proto.h` (`struct cg_probe_info`: `rx` por camino), `clientpath.h`, `server.c` (`peer_asks`, `apply_config`);
@@ -166,6 +166,31 @@ gobernador solo que tenía la red de pruebas; 5 rondas alternadas de 30 s:
   pérdida y 60–250 ms de ping en reposo; capacidad medida 0–3 Mbit/s): los
   pesos por capacidad lo dejaron al piso, que es lo esperado.
 
+### PR 4, primeras medidas [red de pruebas, 2026-10-14 de noche]
+
+`shape_mbit` (PR #35) aplicado por `bench/shaper.sh` como `cake` en
+`cg-router` del VPS (la bajada de la Pi), contra sin `cake`; 4 rondas
+alternadas de 30 s, con la Pi y el VPS con `capacity_weights`:
+
+- **Primera regla (85 % de la suma de capacidades): se hunde sola.** Detrás
+  de un `cake` a ese ritmo los enlaces no entregan más, su capacidad pasa a
+  ser eso y el ritmo siguiente es el 85 % de eso; en reposo publicaba casi
+  0. Rehecha como `cake-autorate`: nada hasta que hay cola; entonces 9/10
+  de lo entregado; sube mientras va lleno sin cola.
+- **Segunda y tercera: arrancaban en pocos Mbit/s.** El retardo de un
+  enlace en reposo oscila sobre su mínimo, y la cola de un solo enlace lento
+  (Movistar, con los pesos por capacidad) bastaba para bajar el ritmo de
+  todo el túnel. Ahora baja solo cuando los enlaces con cola llevan la
+  mayor parte de lo entregado y eso pasa de 2 Mbit/s, y sube 1/32 por tick.
+- **Con eso:** bajada 134 / 102 / 94 / 99 Mbit/s sin `cake` (media 107) y
+  73 / 73 / 33 / 69 con él (media 62); ping p90 59–73 ms sin, 45–58 con; p99
+  66–88 sin, 46–63 con. **No cumple** el criterio (≥ 90 % del caudal): el
+  ritmo oscila entre 80 y 125 Mbit/s, porque cada vez que aparece cola baja
+  al 90 % de lo entregado, y lo entregado ya viene frenado por el propio
+  `cake`. [PENDIENTE: bajar menos (95 %), solo con cola sostenida, y seguir
+  lo entregado sin suavizar al subir; o dejar el tope fijo con margen y
+  ajustar solo hacia abajo cuando los enlaces se degradan.]
+
 ### Ramas de antena y CSI [medido, 2026-10-14]
 
 Con `AT+QRSRP`/`AT+QSINR` (por rama) y el reporte CSI activado
@@ -250,4 +275,4 @@ dan MCS, RI, CQI y PMI):
 - 2026-10-14: creada, con el diseño del paso 4 y la investigación del reordenador y de la subida desde la LAN.
 - 2026-10-14: el PR 1 medido en los dos extremos; el reloj de los plazos con `link_threads`; los tardíos por enlace.
 - 2026-10-14: el PR 2 validado enlace por enlace; las ramas de antena y el CSI de los cuatro módems.
-- 2026-10-14: el PR 3 (pesos según la capacidad) medido en la bajada.
+- 2026-10-14: el PR 3 (pesos según la capacidad) medido en la bajada y la subida; las primeras medidas del PR 4.
