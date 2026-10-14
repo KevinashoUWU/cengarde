@@ -514,6 +514,22 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
   cola. El estado muestra, por enlace, `gov_weight` y `gov_queue_ms`, y
   `governor` en `upload` (cliente) y en cada sesión (servidor). Se aplica en
   caliente.
+- **`capacity_weights` (`no`; `yes` o `no`), en los dos extremos, para lo
+  que cada uno envía (experimental):** los pesos del reparto salen de la
+  capacidad medida de cada enlace (`capacity_mbit`, abajo; `capacity.h`,
+  historia 013): la parte de cada enlace es su capacidad, y 5/4 de ella
+  mientras su cola está bajo la mitad de `governor_target_ms`, para que
+  muestre más si puede (el sondeo de BBR). Un enlace aún sin medida lleva
+  la parte mayor, para medirlo; uno que no entrega nada mientras otros sí,
+  el piso (10 de 1000), que le deja un hilo y con él su medida. Con
+  `governor` además, el peso del gobernador escala cada parte. Pesa más que
+  `governor` y que `weight`, salvo los pesos 0. Como `governor`, apaga por
+  omisión las copias a los enlaces fuera del reparto (`split_spread_copy`).
+  El porqué: las bajadas de los enlaces van de 7 a 230 Mbit/s según el
+  operador y la hora, y con pesos iguales los lentos se atoran y sus
+  paquetes llegan tarde al reordenador (historia 013). El estado muestra
+  `cap_weight` por enlace y `capacity_weights` en `upload` (cliente) y en
+  cada sesión (servidor). Se aplica en caliente.
 - **`weight` en `[link X]` (cliente; 1, de 0 a 1000):** la parte del reparto
   que lleva ese enlace con `split = on`, en la subida y en la bajada (el
   cliente se los manda al servidor en las sondas; `force` no los mira). Con
@@ -997,8 +1013,8 @@ mayor `delivery_mbit` de la ventana de `governor_window_ms`, salvo que su
 cola (`queue_ms`, el retardo de ida sobre su mínimo de la ventana) pase
 de `governor_target_ms`: entonces lo que entrega ahora. Un enlace al que
 se le manda menos de lo que lleva entrega lo que se le manda, y su
-capacidad baja a eso al cabo de una ventana. Por ahora solo se informa:
-no cambia el reparto.
+capacidad baja a eso al cabo de una ventana. Con `capacity_weights`, de
+ella salen los pesos del reparto (arriba); sin, solo se informa.
 
 Los paquetes repartidos: en el cliente, `upload.split` y, por enlace,
 `tx_split` (los que salieron por él: su parte, o todos con peso 0) y
