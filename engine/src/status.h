@@ -53,6 +53,9 @@ void cg_json_reorder(struct cg_json *j, const char *key, const struct cg_reorder
  * fastest of the links in rset, ms (negative: ahead of them); null until
  * the link and one of rset have a delay. */
 void cg_json_owd_spread(struct cg_json *j, const char *key, const struct cg_reorder *r, unsigned link, uint16_t rset);
+/* How far above its mean receive delay the reorderer waits for link's
+ * packets (CG_RO_DEV_K deviations), ms; null until it has a delay. */
+void cg_json_owd_swing(struct cg_json *j, const char *key, const struct cg_reorder *r, unsigned link);
 
 /* Writes data to path atomically. Returns 0 or -1 (errno set). */
 int cg_status_write(const char *path, const char *data, size_t len);

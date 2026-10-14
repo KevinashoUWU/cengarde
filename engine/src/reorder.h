@@ -70,11 +70,17 @@
  * Deadline of the head gap, from s, the lowest held packet above it:
  *   C  = max_wait if s is split (CG_F_SPLIT) or a split packet arrived
  *        within max_wait of s, else dup_wait;
- *   dl = min(s.ts + M + margin, s.t_arr + C), M the largest delay of the
- *        links of rset when all of them have one; else s.t_arr + C.
+ *   dl = min(s.ts + M + margin, s.t_arr + C), M the largest of the links
+ *        of rset of their delay plus CG_RO_DEV_K times its deviation, when
+ *        all of them have one; else s.t_arr + C.
  * The sender writes sequence and ts together, in order, so the gap was sent
  * no later than s.ts and the slowest link brings it by s.ts + M; the delays
- * carry the clock offset between the ends, which s.ts + M cancels. With the
+ * carry the clock offset between the ends, which s.ts + M cancels. The
+ * delay is a mean, and under load a cellular link's swings tens of ms above
+ * it: with M the mean alone and a 10 ms margin, 4-10 % of the split packets
+ * had their gap given up and then came, most within 50 ms (story 013, the
+ * bench, 2026-10-14). The deviation (the mean of |sample - delay|, gain
+ * 1/4, TCP's RTTVAR) widens the deadline as much as the link swings. With the
  * delays as measured, a held packet waits at most C plus how far its link
  * is ahead of the slowest (M - its own delay): a packet before it may
  * arrive that much after it and set the deadline from its own arrival. A
@@ -133,6 +139,7 @@
 #define CG_RO_NOBUF 0xffffu
 #define CG_RO_HIST 10                   /* buckets of wait and late_by */
 #define CG_RO_WG_DATA 4                 /* WireGuard's data message type */
+#define CG_RO_DEV_K 4                   /* deviations of a link's delay a gap waits beyond it */
 /* A link's newest sequence this far behind the head, or a split packet this
  * long ago (us), is forgotten before serial arithmetic would read it as
  * ahead again. */
@@ -193,6 +200,7 @@ _Static_assert(sizeof(struct cg_ro_slot) == 20, "cg_ro_slot is 20 bytes");
 struct cg_ro_link {
 	uint32_t hw;  /* newest DATA sequence it brought (serial max) */
 	uint32_t owd; /* its delay, raw (local clock minus the sender's ts), EWMA 1/8 */
+	uint32_t dev; /* mean of |sample - owd|, gain 1/4 (us) */
 	uint8_t hw_ok, owd_ok;
 };
 
@@ -315,9 +323,15 @@ static inline void cg_ro_owd_sample(struct cg_ro_link *l, uint32_t raw)
 {
 	if (!l->owd_ok) {
 		l->owd = raw;
+		l->dev = 0;
 		l->owd_ok = 1;
 	} else {
-		l->owd += (uint32_t)((int32_t)(raw - l->owd) / 8); /* divided, never shifted: it may be negative */
+		int32_t d = (int32_t)(raw - l->owd);
+		uint32_t a = d < 0 ? (uint32_t)-(int64_t)d : (uint32_t)d;
+
+		/* The deviation first, against the delay before this sample. */
+		l->dev = l->dev - l->dev / 4 + a / 4;
+		l->owd += (uint32_t)(d / 8); /* divided, never shifted: it may be negative */
 	}
 }
 
@@ -407,15 +421,23 @@ static inline int cg_ro_rack(const struct cg_reorder *r, uint16_t rset, uint32_t
 	return 1;
 }
 
-/* M: the largest delay of the links of rset, compared wrap-safe against the
- * first. 0 when rset is empty or a link of it has none. */
+/* How late a link may bring a packet beyond its mean delay. */
+static inline uint32_t cg_ro_swing(const struct cg_ro_link *l)
+{
+	return l->dev > UINT32_MAX / CG_RO_DEV_K / 2 ? UINT32_MAX / 2 : CG_RO_DEV_K * l->dev;
+}
+
+/* M: the largest delay plus swing of the links of rset, compared wrap-safe
+ * against the first's delay. 0 when rset is empty or a link of it has none. */
 static inline int cg_ro_owd_max(const struct cg_reorder *r, uint16_t rset, uint32_t *m)
 {
 	uint32_t ref = 0;
-	int32_t top = 0;
+	int64_t top = 0;
 	int any = 0;
 
 	for (unsigned i = 0; rset; i++, rset >>= 1) {
+		int64_t v;
+
 		if (!(rset & 1))
 			continue;
 		if (!r->link[i].owd_ok)
@@ -423,10 +445,13 @@ static inline int cg_ro_owd_max(const struct cg_reorder *r, uint16_t rset, uint3
 		if (!any) {
 			ref = r->link[i].owd;
 			any = 1;
-		} else if ((int32_t)(r->link[i].owd - ref) > top) {
-			top = (int32_t)(r->link[i].owd - ref);
 		}
+		v = (int64_t)(int32_t)(r->link[i].owd - ref) + cg_ro_swing(&r->link[i]);
+		if (v > top)
+			top = v;
 	}
+	if (top > INT32_MAX)
+		top = INT32_MAX;
 	if (!any)
 		return 0;
 	*m = ref + (uint32_t)top;

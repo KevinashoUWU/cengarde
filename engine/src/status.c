@@ -293,6 +293,16 @@ void cg_json_owd_spread(struct cg_json *j, const char *k, const struct cg_reorde
 		cg_json_ms_signed(j, k, (int32_t)(l->owd - fastest));
 }
 
+void cg_json_owd_swing(struct cg_json *j, const char *k, const struct cg_reorder *r, unsigned link)
+{
+	const struct cg_ro_link *l = link < CG_MAX_LINKS ? &r->link[link] : NULL;
+
+	if (!l || !l->owd_ok)
+		cg_json_null(j, k);
+	else
+		cg_json_ms(j, k, cg_ro_swing(l));
+}
+
 int cg_status_write(const char *path, const char *data, size_t len)
 {
 	char tmp[512];
