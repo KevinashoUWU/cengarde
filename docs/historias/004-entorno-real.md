@@ -143,9 +143,18 @@
     WOM al de Mina Tránsito, Entel al monoposte de Villa El Escorial
     (`AT+QNWLOCK="common/4g",3,3100,152,675,152,1125,152`: B2 + B7 + B2) y
     Movistar a la palmera (`AT+QNWLOCK="common/4g",3,3300,91,1000,20,9360,91`).
-    Con el bloqueo de Movistar ancla en B28 y agrega B7, sin B2 ni NR: el
-    5G de ese sitio entró cuando el ancla era la B7 [PROBAR sin la B28 en el
-    bloqueo, si el 5G importa más que el alcance].
+    Movistar, probado en hora peak (solo, 15 s):
+
+    | Bloqueo | Ancla y agregación | 5G | Bajada | Subida |
+    | --- | --- | --- | --- | --- |
+    | sitio completo, 1.ª vez | B28 + B7 | no | 23,5 | — |
+    | B7 + B2 | B2 sola | no | 8,0 | 13,7 |
+    | solo B7 | B7 sola | no | 10,9 | 27,5 |
+    | sitio completo, 2.ª vez | B7 + B2 | **n78 PCI 125** | 14,4 | 26,1 |
+
+    El ancla que toma depende del momento en que engancha; el 5G viene con
+    la B7 como ancla. Queda el bloqueo del sitio completo
+    (`AT+QNWLOCK="common/4g",3,3300,91,1000,20,9360,91`).
 
 ## Qué hacemos con esto
 
