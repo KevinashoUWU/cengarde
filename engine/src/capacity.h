@@ -10,15 +10,20 @@
  *   CG_CAP_MIN_MS, so that a report's own delay and what is still in flight
  *   weigh little; raw samples of 250 ms swung so much that their maximum
  *   was 1.5-2 times what the link carried (story 013, the testnet);
- * - the capacity: the largest delivery rate of the last window_ms (two
- *   half windows, like BBR's bottleneck bandwidth): a link carries at least
+ * - the capacity: the largest delivery rate seen: a link carries at least
  *   what it once delivered. Unless the link's queue is above sat_us: then
- *   it carries what it delivers now and no more, and the window starts
- *   again from there (the smoothing keeps one bad sample from sinking it). The queue is the link's one-way delay over its own minimum of
- *   the window (govern.h's cg_gov_base).
+ *   it carries what it delivers now and no more (the smoothing keeps one
+ *   bad sample from sinking it). The queue is the link's one-way delay
+ *   over its own minimum of window_ms (govern.h's cg_gov_base).
  *
- * A link sent less than it could carry delivers what it was sent: its
- * capacity then holds for a window and decays to what it delivers. A
+ * A link sent less than it could carry delivers what it was sent, and that
+ * says nothing about what it carries: its capacity holds. Only a queue
+ * brings it down. (It used to decay to what the link delivered after a
+ * window, like BBR's bottleneck bandwidth; with capacity_weights that fed
+ * on itself: a link given a small share delivered little, its capacity
+ * became that and its share smaller, and on the testnet two or three of
+ * the four links ended at the floor, the tunnel at 40-50 % of what the
+ * links gave outside it; story 013.) A
  * report whose rx went back, or that says more arrived than was sent (the
  * other end restarted its counters: a new session, a new path), starts the
  * link again; a link that delivers more than was sent in one interval is
@@ -28,9 +33,12 @@
  * into the split's weights (story 013, PR 3): each link's share as its
  * capacity, so that a link of 20 Mbit/s next to one of 200 is not given a
  * quarter of the flow. A link whose queue is below half sat_us takes 5/4
- * of its capacity: offered more than it has shown, it shows more if it can
- * (BBR's probing), and if it cannot its queue grows and its capacity is
- * what it delivers. A link not measured yet takes the largest share, so
+ * of its capacity and 1/16 of the largest one's: offered more than it has
+ * shown, it shows more if it can (BBR's probing), and if it cannot its
+ * queue grows and its capacity is what it delivers. The added 1/16 is for
+ * a link whose capacity was measured under a queue that has gone: from its
+ * own 5/4 alone, a link at 0.1 Mbit/s took the floor and never delivered
+ * more than that (Entel on the testnet, 11 Mbit/s outside the tunnel). A link not measured yet takes the largest share, so
  * that it gets measured; none goes below CG_GOV_MIN, so that a link keeps
  * a trickle and with it a measure. With governor too, its weight from the
  * queue (govern.h) scales each share.
@@ -82,8 +90,7 @@ struct cg_cap_link {
 	uint64_t rx_total;          /* received since then */
 	uint32_t size;              /* mean size of what was sent, bytes */
 	uint64_t rate_bps;          /* the delivery rate, smoothed */
-	uint64_t max_cur, max_prev; /* the largest rate of the current and the previous half window */
-	uint64_t half_ms;           /* when the current half window started */
+	uint64_t max_cur, max_prev; /* the capacity: both the same (the largest rate, or the rate under a queue) */
 	struct cg_gov_link q;       /* the delay's minimum, for the queue */
 	int32_t queue_us;           /* the last queue seen, -1: none */
 	uint8_t have;               /* a report taken as the start */
@@ -109,7 +116,7 @@ static inline void cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint64_t 
 			       uint64_t tx_bytes, const struct cg_hlink *h, const struct cg_cap_cfg *cfg)
 {
 	uint64_t dt, dpk, dby, bytes, rate;
-	uint32_t drx, half = cfg->window_ms / 2 ? cfg->window_ms / 2 : 1;
+	uint32_t drx;
 	int sat;
 
 	if (h && cg_health_fresh(h, now_ms)) {
@@ -173,13 +180,8 @@ static inline void cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint64_t 
 		/* The link gives no more than it delivers now (smoothed), and the
 		 * window starts again from there. */
 		l->max_cur = l->max_prev = rate;
-		l->half_ms = report_ms;
-	} else if (report_ms - l->half_ms >= half) {
-		l->max_prev = l->max_cur;
-		l->max_cur = rate;
-		l->half_ms = report_ms;
 	} else if (rate > l->max_cur) {
-		l->max_cur = rate;
+		l->max_cur = l->max_prev = rate;
 	}
 }
 
@@ -190,13 +192,16 @@ static inline void cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint64_t 
 static inline void cg_cap_weights(const struct cg_cap_link l[CG_MAX_LINKS], uint16_t dup0, const uint16_t *gov,
 				  uint32_t probe_us, uint16_t w[CG_MAX_LINKS])
 {
-	uint64_t eff[CG_MAX_LINKS], top = 0;
+	uint64_t eff[CG_MAX_LINKS], top = 0, big = 0;
 
+	for (unsigned i = 0; i < CG_MAX_LINKS; i++)
+		if (!(dup0 >> i & 1) && l[i].have_rate && cg_cap_bps(&l[i]) > big)
+			big = cg_cap_bps(&l[i]);
 	for (unsigned i = 0; i < CG_MAX_LINKS; i++) {
 		uint64_t c = l[i].have_rate ? cg_cap_bps(&l[i]) : 0;
 
-		if (c && l[i].queue_us >= 0 && (uint32_t)l[i].queue_us < probe_us)
-			c += c / 4;
+		if (l[i].have_rate && l[i].queue_us >= 0 && (uint32_t)l[i].queue_us < probe_us)
+			c += c / 4 + big / 16;
 		eff[i] = c;
 		if (!(dup0 >> i & 1) && c > top)
 			top = c;
