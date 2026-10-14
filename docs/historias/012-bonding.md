@@ -857,8 +857,24 @@ del VPS encendido; watchdogs de los CPE en pausa.
   su estimación de capacidad (el paso siguiente del plan), en vez de un
   número a mano. La subida desde la LAN dio solo 14 Mbit/s en las cuatro
   corridas (`cake` de 40 no llegó a actuar), frente a 24 desde la Pi
-  misma en ese momento, con retransmisiones en los dos [PENDIENTE: por
-  qué la subida reenviada rinde menos que la de la Pi].
+  misma en ese momento, con retransmisiones en los dos.
+- **Por qué la subida desde la LAN rinde menos que la de la Pi** (14:00,
+  alternando PC y Pi, 15 s cada una, 4 flujos TCP): el PC (Cubic) 7–16
+  Mbit/s con 200–450 retransmisiones; la Pi misma 18–40 con 30–530. No
+  es la CPU de la Pi (ningún núcleo pasa del 15 %), ni la LAN (los
+  contadores `nft` de los dos extremos dan los mismos bytes), ni la Pi
+  (sin descartes en `wgcg`, `br-lan`, `eth1` ni en el motor): los
+  paquetes se pierden más allá, en los enlaces. Lo que cambia es el
+  emisor: con `fq` en la interfaz del PC (TCP marca su ritmo) Cubic
+  sube de 15–16 a 29 Mbit/s, y con BBR a 19–45, cerca de la Pi (35–40 en
+  esas mismas rondas); la Pi, que emite por su propia cola local, ya se
+  autorregula. `cake` sobre `wgcg` a 25–30 Mbit/s, que alisa el total,
+  apenas mueve el caudal (12–15 frente a 10). Lectura [hipótesis]: lo
+  que se pierde son ráfagas de un emisor de la LAN que, ya repartidas,
+  llenan la cola de un módem; alisar el total no basta, hay que dosificar
+  cada enlace por debajo de lo que lleva. Es el paso siguiente del plan
+  (capacidad por enlace y dosificación); mientras tanto, un equipo de la
+  LAN con BBR o `fq` sube mejor.
 
 ## Qué hacemos con esto
 
