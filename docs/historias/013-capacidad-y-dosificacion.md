@@ -191,6 +191,69 @@ alternadas de 30 s, con la Pi y el VPS con `capacity_weights`:
   lo entregado sin suavizar al subir; o dejar el tope fijo con margen y
   ajustar solo hacia abajo cuando los enlaces se degradan.]
 
+### Cuánto del techo usa el túnel, y por qué no más [red de pruebas, 2026-10-14 de noche]
+
+- **El techo, medido al mismo tiempo:** los cuatro enlaces cargados a la
+  vez fuera del túnel dan 70–80 Mbit/s de subida y 156–326 de bajada
+  (según la hora). Por el túnel de la Pi, al principio: 30–31 de subida
+  (~40 %) y 73–104 de bajada (~47–50 %).
+- **La capacidad se retroalimentaba (PR #36):** con `capacity_weights`, un
+  enlace con poca parte entregaba poco, su capacidad (el máximo de la
+  ventana) bajaba a eso y su parte se achicaba: dos o tres enlaces al piso
+  (Claro y Entel a 0,1 Mbit/s en la subida, WOM a 1–5 en la bajada). Ahora
+  la capacidad se mantiene y solo una cola la baja, y un enlace sin cola
+  recibe además 1/16 de la mayor para mostrar lo que da. Con eso el túnel
+  usa los cuatro: bajada 175–187 contra 326 (54–57 %), subida ~49 %.
+- **Los enlaces no pierden; TCP retransmite por desorden:** en la bajada,
+  contando en reposo antes y después, los enlaces entregan el 99,5–100 %
+  (Movistar 95–99 % sobre una parte chica), pero TCP retransmite el 3–6 %
+  y el 72 % de eso es espurio (DSACK). Un margen de 100 ms en el
+  reordenador de la Pi baja los huecos soltados a ~1 % pero también el
+  caudal (124–126 contra 139–143) y no las espurias: esperar más agrega
+  retardo variable. Con 16 o 32 flujos TCP en vez de 4 el túnel no sube
+  (113–158): el límite no es la dinámica de pocos flujos.
+- **`split_eta` (PR #37):** cada paquete al enlace donde llega antes. En
+  simulación, 1,2 % de los paquetes fuera de orden contra 79 % por pesos;
+  en la red de pruebas, +5 % (171 contra 163, n = 4, sin significancia) y
+  el reordenador de la Pi retiene lo mismo (77–82 %). Los retardos sin
+  cola de los enlaces difieren solo 2–6 ms: lo que desordena son colas que
+  cambian más rápido que las medidas cada 100 ms. Queda experimental.
+- **`pacing` (PR #38):** el socket de cada enlace dosificado
+  (`SO_MAX_PACING_RATE`, `fq` en `eth0` de la Pi). A 5/4 de la capacidad
+  se hundió (subida a 0–2 Mbit/s: tras un reinicio la capacidad es casi
+  nada, las sondas van por el mismo socket y la capacidad tras la
+  dosificación se quedaba ahí). Al doble de la capacidad con piso de 20
+  Mbit/s: subida 33,5 / 31,7 / 36,6 / 35,8 contra 22,7 / 30,7 / 35,3 / 39,9
+  sin (medias 34,4 y 32,2, n = 4, sin significancia); las retransmisiones
+  de la Pi bajan a la mitad (0,2–0,6 % contra 0,7–1,7 %, DSACK 0–0,3 %
+  contra 0,5–1,5 %), pero el reordenador del VPS retiene lo mismo
+  (65–74 %). Queda experimental. [PENDIENTE: dónde está el resto del techo
+  en la subida, con pocas retransmisiones y enlaces que no se llenan.]
+- **Buscando el freno de la subida** (con un agente que revisó el código y
+  medidas en vivo):
+  - el código del cliente no tiene topes: lee 512 datagramas por despertar
+    y nunca espera al enviar;
+  - la CPU de la Pi, 9–16 % por núcleo; sin descartes en UDP, `fq` ni en
+    el motor; los enlaces pasan paquetes de 1500 bytes (sin
+    fragmentación); TCP con RTT medio de 150–175 ms (mínimo ~60) por las
+    colas de WOM y Entel (89–114 ms) mientras Movistar, con poca cola, se
+    usa a la mitad: el reparto por capacidad sobrecarga a los que se llenan
+    y la capacidad de los otros crece lento. El gobernador encima de los
+    pesos por capacidad: 41 / 24 / 35 contra 33 / 20 / 33 Mbit/s (+16 %, sin
+    significancia: los enlaces variaban mucho);
+  - UDP por el túnel: la subida se queda en ~47 Mbit/s pidiendo 70 o 100;
+    la bajada a 100 Mbit/s pierde 11–31 %, en parte porque un enlace con la
+    cola llena (Claro, luego Movistar) sigue recibiendo su parte y todo lo
+    suyo llega tarde para el anti-replay (`too_old`), y en parte porque a
+    esa hora los enlaces daban menos de 100 en total (colas de 0,4–2,4 s).
+    Unos 4000 errores de buffer de recepción en UDP por prueba en la Pi
+    (2500 en el VPS) no se van con `rmem_default` de 4 MB.
+  - [PENDIENTE: repetir de día con el techo medido al mismo tiempo; un
+    enlace cuyas respuestas no vuelven no debe conservar su parte.]
+- **Relojes:** chrony en el VPS y en la Pi contra `ntp.shoa.cl` (SHOA,
+  stratum 1; quedan en stratum 2, ±2 ms el VPS y ±18 ms la Pi, que
+  sincroniza por el túnel); `sysntpd` apagado en la Pi.
+
 ### Ramas de antena y CSI [medido, 2026-10-14]
 
 Con `AT+QRSRP`/`AT+QSINR` (por rama) y el reporte CSI activado
@@ -276,3 +339,4 @@ dan MCS, RI, CQI y PMI):
 - 2026-10-14: el PR 1 medido en los dos extremos; el reloj de los plazos con `link_threads`; los tardíos por enlace.
 - 2026-10-14: el PR 2 validado enlace por enlace; las ramas de antena y el CSI de los cuatro módems.
 - 2026-10-14: el PR 3 (pesos según la capacidad) medido en la bajada y la subida; las primeras medidas del PR 4.
+- 2026-10-14: el techo contra el túnel; la capacidad que se retroalimentaba (PR #36); `split_eta` (PR #37) y `pacing` (PR #38), experimentales; chrony con SHOA.

@@ -545,6 +545,21 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
   reordenador soltaba huecos y el 72 % de las retransmisiones de TCP de la
   bajada eran espurias (DSACK). Apaga las copias por omisión. El estado
   muestra `split_eta` en `upload` (cliente) y en cada sesión (servidor).
+- **`pacing` (`no`; `yes` o `no`), en el cliente (experimental):** el
+  socket de cada enlace se dosifica (`SO_MAX_PACING_RATE`, `pace.h`,
+  historia 013) al doble de su capacidad y nunca bajo 20 Mbit/s: rompe las
+  ráfagas a la velocidad de la red local sin frenar el enlace (a 5/4 de la
+  capacidad se hundía: tras un reinicio la capacidad es casi nada, las
+  sondas van por el mismo socket y la capacidad medida tras la dosificación
+  se quedaba ahí). Sin capacidad medida, sin límite. El
+  motor no guarda colas: las guarda el kernel, por socket, en el qdisc `fq`,
+  que tiene que estar por donde salen los enlaces (en OpenWrt, el
+  dispositivo bajo las subidas: `tc qdisc replace dev eth0 root fq`); sin
+  `fq` el ritmo se fija y nada dosifica. El porqué: un lote sale por un
+  enlace de una vez, a la velocidad de la red local, espera en la cola del
+  módem y el retardo de ese enlace salta decenas de ms mientras se vacía;
+  los demás enlaces llegan entonces fuera de orden. El estado muestra
+  `pace_mbit` por enlace y `pacing` en `upload`.
 - **`weight` en `[link X]` (cliente; 1, de 0 a 1000):** la parte del reparto
   que lleva ese enlace con `split = on`, en la subida y en la bajada (el
   cliente se los manda al servidor en las sondas; `force` no los mira). Con
