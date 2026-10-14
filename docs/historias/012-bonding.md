@@ -712,16 +712,19 @@ con y sin `governor` en el cliente (solo la subida; el VPS sin gobernador),
   cinco veces más paquetes, no la mueve) ni la temperatura (55 °C, corte
   a 115–125 °C). Lo que cambia con la subida es la potencia de
   transmisión de los dos módems, que en ese CPE llegan a 21–22 dBm
-  [hipótesis: la fuente o la alimentación de la placa se cae con los dos
-  módems transmitiendo al máximo; CONFIRMAR con otra fuente, o con un
-  solo módem subiendo]. Los módems informan 3,80–3,82 V en reposo
-  (`AT+CBC`).
+  Los módems informan 3,80–3,82 V en reposo (`AT+CBC`). **Era la
+  fuente** (confirmado el mismo día): la del CPE daba 1,5 A medidos a
+  12 V; con una de 2,5 A, la misma prueba pasa entera (bajada 96 + 201,
+  subida por los dos módems los 20 s) sin reinicio y con el ping de
+  gestión sin una sola pérdida en 75 s. Un CPE con dos módems 5G
+  necesita una fuente de al menos 2,5 A a 12 V.
 - La única corrida con los cuatro enlaces dentro todo el tiempo (B-1) dio
   59 Mbit/s, con pesos que siguen las colas (Entel, la más cargada, 327;
   WOM 892).
-- Hasta resolver lo del CPE doble, el gobernador no se puede juzgar en el
-  banco (ni ninguna prueba de subida con los cuatro enlaces); en el
-  laboratorio sí ayuda (arriba).
+- Con el CPE doble reiniciándose, el gobernador no se pudo juzgar en el
+  banco (ni ninguna prueba de subida anterior con los cuatro enlaces); en
+  el laboratorio sí ayuda (arriba). Queda repetir el A/B con la fuente
+  nueva.
 
 ## Qué hacemos con esto
 
