@@ -94,9 +94,14 @@ vps() {
 		fi
 		# With IP pass, every port from 1024 goes to the router but those
 		# this box listens on: cengarde-nat reserves them when it syncs.
+		# Its check then rewrites the engine's configuration with the new
+		# reserved set (cengarde-vps-setup refresh): now, not at its next
+		# 5-minute timer in the middle of a test, where it also undid hand
+		# edits to that configuration.
 		sleep 1
 		if command -v cengarde-nat >/dev/null; then
 			cengarde-nat sync >/dev/null || die "cengarde-nat sync"
+			cengarde-nat check >/dev/null || die "cengarde-nat check"
 		fi
 		vps status
 		echo "If the provider has a firewall of its own (Vultr's firewall groups), open TCP $PORT-$last there too."
@@ -110,6 +115,7 @@ vps() {
 		fi
 		if command -v cengarde-nat >/dev/null; then
 			cengarde-nat sync >/dev/null || die "cengarde-nat sync"
+			cengarde-nat check >/dev/null || die "cengarde-nat check"
 		fi
 		vps status
 		;;

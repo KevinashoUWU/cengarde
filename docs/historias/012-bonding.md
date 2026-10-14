@@ -814,6 +814,68 @@ con la build de la rama (0.6.4).
   la interfaz del túnel ve los flujos de adentro y les da turno. Muestra
   chica (32 pings por corrida, uno por segundo).
 
+#### El gobernador de bajada y `cake`, en la Pi [medido en la Pi, red de pruebas]
+
+Fuente: la Pi con 0.6.4 (paquete del CI de `master`), 2026-10-14 de 13:10 a
+13:28; P3 en la Pi (`uci`), el VPS con y sin gobernador; 4 rondas de 30 s
+de bajada y luego 4 corridas con y sin `cake` en `wgcg` con el gobernador
+del VPS encendido; watchdogs de los CPE en pausa.
+
+- **La primera ronda no vale, aquí ni en el PC:** el `cengarde-nat check`
+  del VPS (cada 5 min) vio que `fieldperf.sh vps on` había cambiado los
+  puertos reservados y regeneró la configuración del motor
+  (`cengarde-vps-setup refresh`), lo que borró el perfil del A/B a mitad
+  de la corrida (13:13:04). Desde ahora `vps on` y `vps off` corren ese
+  check en el momento. (La Pi pidió la bajada repartida en el segundo
+  siguiente a su recarga: una primera lectura que decía 2,5 min miraba
+  su sesión anterior, que el VPS lista hasta que caduca. B-1 vale: 133,7
+  Mbit/s con gobernador.) Desde las 13:35 la red de pruebas queda así: la
+  Pi con P3 por UCI y el VPS con P3 y el gobernador en
+  `/etc/cengarde/engine.local` (nuevo: `cengarde-vps-setup` lo copia en la
+  configuración que genera).
+- **Gobernador de bajada, rondas 2–4:** sin gobernador 94,4 / 122,9 /
+  113,2 Mbit/s; con gobernador 137,4 / 157,0 / 155,6: gana las tres
+  (+24 % a +46 %), como en el PC. El ping por el túnel durante la bajada
+  sube un poco con él (p90 67–69 ms frente a 48–64).
+- **`cake` en `wgcg`** (40 Mbit/s de subida, 130 de bajada con IFB): en la
+  subida el ping ya era bueno sin `cake` en la Pi (p90 42–51 ms; en el PC
+  92–169) y con `cake` queda en 40–42; el caudal igual (34–38). En la
+  bajada, `cake` baja el caudal de 139–161 a 87–88 Mbit/s (el tope era
+  130) y el ping solo de p90 54–69 a 46–47. En la Pi, `cake` de bajada
+  con IFB cuesta demasiado [hipótesis: la CPU que atiende IFB, `cake`,
+  WireGuard y el motor; PROBAR la bajada en la salida de `br-lan`, sin
+  IFB, o solo `cake` de subida].
+- **`cake` de bajada en la salida de `br-lan`** (sin IFB; la subida en la
+  salida de `wgcg`), medido desde el PC como equipo de la LAN detrás de
+  la Pi (13:45, 2 corridas con y 2 sin, 30 s por sentido, la red de
+  pruebas ya con P3 y el gobernador del VPS): bajada 127 y 173 Mbit/s sin
+  `cake`, 97 y 84 con él (tope 130); ping p90 70–80 ms sin `cake`, 52–55
+  con él; p99 101–111 frente a 68–71. Cuesta menos que con IFB pero
+  todavía ~35 % del caudal: con enlaces que entregan entre 85 y 230
+  Mbit/s según la hora, un tope fijo o deja caudal o no controla la
+  cola. Es el argumento para que el tope lo fije el propio cengarde con
+  su estimación de capacidad (el paso siguiente del plan), en vez de un
+  número a mano. La subida desde la LAN dio solo 14 Mbit/s en las cuatro
+  corridas (`cake` de 40 no llegó a actuar), frente a 24 desde la Pi
+  misma en ese momento, con retransmisiones en los dos.
+- **Por qué la subida desde la LAN rinde menos que la de la Pi** (14:00,
+  alternando PC y Pi, 15 s cada una, 4 flujos TCP): el PC (Cubic) 7–16
+  Mbit/s con 200–450 retransmisiones; la Pi misma 18–40 con 30–530. No
+  es la CPU de la Pi (ningún núcleo pasa del 15 %), ni la LAN (los
+  contadores `nft` de los dos extremos dan los mismos bytes), ni la Pi
+  (sin descartes en `wgcg`, `br-lan`, `eth1` ni en el motor): los
+  paquetes se pierden más allá, en los enlaces. Lo que cambia es el
+  emisor: con `fq` en la interfaz del PC (TCP marca su ritmo) Cubic
+  sube de 15–16 a 29 Mbit/s, y con BBR a 19–45, cerca de la Pi (35–40 en
+  esas mismas rondas); la Pi, que emite por su propia cola local, ya se
+  autorregula. `cake` sobre `wgcg` a 25–30 Mbit/s, que alisa el total,
+  apenas mueve el caudal (12–15 frente a 10). Lectura [hipótesis]: lo
+  que se pierde son ráfagas de un emisor de la LAN que, ya repartidas,
+  llenan la cola de un módem; alisar el total no basta, hay que dosificar
+  cada enlace por debajo de lo que lleva. Es el paso siguiente del plan
+  (capacidad por enlace y dosificación); mientras tanto, un equipo de la
+  LAN con BBR o `fq` sube mejor.
+
 ## Qué hacemos con esto
 
 ### Orden de la Fase 5 y criterios de salida
