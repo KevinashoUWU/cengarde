@@ -29,6 +29,15 @@
  * link again; a link that delivers more than was sent in one interval is
  * emptying a queue, so the check is on the totals since that start.
  *
+ * A link that delivers less than half of what it is sent for
+ * CG_CAP_SHORT_N samples in a row (at least CG_CAP_SHORT_MIN packets each)
+ * counts as full even when its delay says nothing: a link whose queue has
+ * grown to seconds stops answering in time, its last measured queue is the
+ * one from before, and its packets arrive too late for the anti-replay
+ * window (which the other end does not count in rx). On the testnet Claro
+ * kept its share that way while nearly nothing of it arrived in time
+ * (story 013).
+ *
  * With capacity_weights (config.h), cg_cap_weights turns the capacities
  * into the split's weights (story 013, PR 3): each link's share as its
  * capacity, so that a link of 20 Mbit/s next to one of 200 is not given a
@@ -72,6 +81,8 @@
 
 #define CG_CAP_MIN_MS 500 /* a sample spans at least this */
 #define CG_CAP_GAIN 4     /* the delivery rate's smoothing: 1/4 of each sample */
+#define CG_CAP_SHORT_N 2  /* samples in a row delivering under half of what was sent: full */
+#define CG_CAP_SHORT_MIN 64 /* packets sent in a sample for it to count */
 /* More delivered than sent by this much (packets), and the report is not
  * of this run of the counters: probes and what was in flight at the start
  * make a few packets of difference, never this many. */
@@ -95,6 +106,7 @@ struct cg_cap_link {
 	int32_t queue_us;           /* the last queue seen, -1: none */
 	uint8_t have;               /* a report taken as the start */
 	uint8_t have_rate;          /* a rate measured */
+	uint8_t short_n;            /* samples in a row that delivered under half of what was sent */
 };
 
 static inline void cg_cap_reset(struct cg_cap_link *l)
@@ -175,7 +187,11 @@ static inline void cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint64_t 
 		l->rate_bps = rate;
 	}
 	l->have_rate = 1;
-	sat = l->queue_us >= 0 && (uint32_t)l->queue_us > cfg->sat_us;
+	if (dpk >= CG_CAP_SHORT_MIN && (uint64_t)drx * 2 < dpk)
+		l->short_n = l->short_n < 255 ? (uint8_t)(l->short_n + 1) : 255;
+	else
+		l->short_n = 0;
+	sat = (l->queue_us >= 0 && (uint32_t)l->queue_us > cfg->sat_us) || l->short_n >= CG_CAP_SHORT_N;
 	if (sat) {
 		/* The link gives no more than it delivers now (smoothed), and the
 		 * window starts again from there. */
