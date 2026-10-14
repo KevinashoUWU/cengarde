@@ -94,6 +94,7 @@
 #include "rcvbudget.h"
 #include "replay.h"
 #include "sock.h"
+#include "govern.h"
 #include "split.h"
 #include "status.h"
 #include "steer.h"
@@ -159,6 +160,9 @@ struct session {
 	uint64_t down_split; /* of down_pkts, packets split (split.h) instead of copied to every path */
 	struct cg_split sp;  /* the split's round-robin credits */
 	struct cg_spread spread; /* guard G4: the paths of similar delay that share the split (split.h) */
+	struct cg_gov gov;       /* the download's weights from each path's queue (govern.h), with governor */
+	uint16_t gw[CG_MAX_LINKS];
+	uint64_t last_down_ms;   /* the newest download packet: the governor moves while traffic goes */
 	uint32_t ro_pos;       /* its place in the server's ro_active, plus 1; 0: holds nothing */
 	/* The newest probe's bonding tail (proto.h): whether it had one, the
 	 * client reorders, and asks for a split download (split = client); and
@@ -644,6 +648,8 @@ static struct session *session_create(struct server *s, struct client *C, const 
 		return NULL;
 	}
 	memset(S, 0, sizeof(*S));
+	cg_gov_reset(&S->gov);
+	cg_gov_weights(&S->gov, 0, S->gw);
 	S->used = 1;
 	S->id = id;
 	S->client = (int)(C - s->c);
@@ -702,6 +708,7 @@ static struct path *path_update(struct server *s, struct session *S, unsigned li
 		P->interval_ms = DEFAULT_INTERVAL_MS;
 		cg_health_reset(&S->dh[link], now_ms);
 		cg_split_spread_reset(&S->spread, link);
+		cg_gov_link_reset(&S->gov, link);
 		cg_path_learn(&P->addr, &P->local, from, &got);
 		P->ctl_len = cg_local_cmsg(&P->local, s->lfamily, &P->ctl);
 		cg_info("%ssession %08x: link %u via %s%s%s", tag, S->id, link, cg_addr_str(from, a, sizeof(a)),
@@ -720,6 +727,7 @@ static struct path *path_update(struct server *s, struct session *S, unsigned li
 	if (ch & CG_PATH_NEW_FAMILY) {
 		cg_health_reset(&S->dh[link], now_ms);
 		cg_split_spread_reset(&S->spread, link);
+		cg_gov_link_reset(&S->gov, link);
 	}
 	P->moves++;
 	if (s->pktinfo)
@@ -1318,6 +1326,10 @@ static struct dpaths down_paths(const struct server *s, const struct session *S,
 		if (s->cfg->split != CG_SPLIT_FORCE && S->path[p].bond_ok && !d.w[p])
 			d.dup0 |= (uint16_t)(1u << p);
 	}
+	/* With governor, its weights (govern.h); the client's weight-0 paths kept. */
+	if (s->cfg->governor)
+		for (int p = 0; p < CG_MAX_LINKS; p++)
+			d.w[p] = (d.dup0 >> p & 1) ? 0 : S->gw[p];
 	d.k = cg_split_spread_apply(s->cfg->split_spread_copy,
 				    cg_split_spread_out(&S->spread, d.elig, d.dup0, s->cfg->split_spread_ms * 1000), d.carry,
 				    d.elig, d.dup0);
@@ -1350,6 +1362,7 @@ static void down_prepare(struct server *s, struct session *S, int m, uint8_t *bu
 						       (uint32_t)len, s->cfg->split_small, &h.flags)
 				       : -1);
 	S->down_split += s->pick[m] >= 0;
+	S->last_down_ms = now_us / 1000;
 	h.seq = S->tx_seq++;
 	cg_hdr_write(s->hdr[m], &h, C->key + CG_SIPHASH_KEY_LEN, buf, len);
 	s->oiov[m][0].iov_base = s->hdr[m];
@@ -1508,6 +1521,21 @@ static void spread_tick(struct server *s, struct session *S, const char *tag, ui
 	}
 }
 
+/* The governor (govern.h), after health: the download's weights from each
+ * path's queue, while the download is split and carries traffic. */
+static void gov_tick(struct server *s, struct session *S, uint64_t now_ms)
+{
+	struct cg_gov_cfg gc = { .target_us = s->cfg->governor_target_ms * 1000, .window_ms = s->cfg->governor_window_ms };
+	struct dpaths d;
+
+	if (!s->cfg->governor)
+		return;
+	d = down_paths(s, S, now_ms);
+	cg_gov_tick(&S->gov, S->dh, (uint16_t)(d.elig & ~d.dup0), d.split && S->last_down_ms && now_ms - S->last_down_ms < 1000,
+		    now_ms, &gc);
+	cg_gov_weights(&S->gov, d.dup0, S->gw);
+}
+
 static void health_tick(struct server *s, uint64_t now_ms)
 {
 	for (uint32_t i = 0; i < s->cap; i++) {
@@ -1520,6 +1548,7 @@ static void health_tick(struct server *s, uint64_t now_ms)
 		path_masks(S, now_ms, &present, &live);
 		changed = cg_health_eval(S->dh, CG_MAX_LINKS, live, now_ms, &s->hcfg);
 		spread_tick(s, S, tag, now_ms);
+		gov_tick(s, S, now_ms);
 		for (int p = 0; changed; p++, changed >>= 1) {
 			const struct cg_hlink *h = &S->dh[p];
 
@@ -1754,6 +1783,7 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 		cg_json_str(j, "split_mode", split_mode(s, S));
 		cg_json_u64(j, "split_spread_ms", s->cfg->split_spread_ms);
 		cg_json_bool(j, "split_spread_copy", s->cfg->split_spread_copy);
+		cg_json_bool(j, "governor", s->cfg->governor);
 		if (S->peer_bond) {
 			cg_json_bool(j, "client_reorders", S->peer_reorders);
 			cg_json_bool(j, "client_asks_split", S->peer_asks);
@@ -1802,6 +1832,16 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 				cg_json_u64(j, "client_weight", P->bond_w);
 			else
 				cg_json_null(j, "client_weight");
+			/* The governor's weight and the queue it measures (null: off,
+			 * or no delay yet). */
+			if (s->cfg->governor)
+				cg_json_u64(j, "gov_weight", S->gw[p]);
+			else
+				cg_json_null(j, "gov_weight");
+			if (s->cfg->governor && S->gov.l[p].have_queue)
+				cg_json_ms(j, "gov_queue_ms", (uint64_t)S->gov.l[p].queue_us);
+			else
+				cg_json_null(j, "gov_queue_ms");
 			/* What it does in the download split (null: not split now),
 			 * and its delay behind the fastest candidate as guard G4 last
 			 * saw it. */

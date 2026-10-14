@@ -69,6 +69,7 @@
 #include "pump.h"
 #include "replay.h"
 #include "sock.h"
+#include "govern.h"
 #include "split.h"
 #include "srvpick.h"
 #include "status.h"
@@ -169,6 +170,8 @@ struct client {
 	uint16_t lw[CG_MAX_LINKS]; /* the [link] weights of the links in use (split = on), 1 without a section */
 	uint16_t dup0;             /* of those, the weight-0 links: they carry every packet */
 	struct cg_spread spread;   /* guard G4: the links of similar delay that share the split (split.h) */
+	struct cg_gov gov;         /* the upload's weights from each link's queue (govern.h), with governor */
+	uint16_t gw[CG_MAX_LINKS]; /* what it set at the last tick */
 	int peer_bond;             /* the newest probe reply had a bonding tail (proto.h) */
 	int peer_reorders;         /* and it said the server reorders: split = on splits */
 	struct cg_split_tail tail; /* which reply that was (split.h) */
@@ -726,6 +729,7 @@ static void link_open(struct client *c, struct link *l, const struct cg_iface *i
 	l->have_down_owd = l->peer_muted = 0;
 	cg_health_reset(&c->uh[l - c->link], now_ms);
 	cg_split_spread_reset(&c->spread, (unsigned)(l - c->link));
+	cg_gov_link_reset(&c->gov, (unsigned)(l - c->link));
 	if (pumped(c)) {
 		if (link_pump(c, l) < 0) {
 			/* Never handed over: still this loop's to close. */
@@ -970,15 +974,14 @@ static int split_active(const struct client *c)
 }
 
 /* The weights of the split and its weight-0 links: even with force, the
- * [link] weights with on. */
+ * [link] weights with on; with governor, the governor's (govern.h), the
+ * weight-0 links of on kept. */
 static const uint16_t *split_weights(const struct client *c, uint16_t *dup0)
 {
-	if (c->cfg->split == CG_SPLIT_FORCE) {
-		*dup0 = 0;
-		return split_equal;
-	}
-	*dup0 = c->dup0;
-	return c->lw;
+	*dup0 = c->cfg->split == CG_SPLIT_FORCE ? 0 : c->dup0;
+	if (c->cfg->governor)
+		return c->gw;
+	return c->cfg->split == CG_SPLIT_FORCE ? split_equal : c->lw;
 }
 
 /* The links that may take a share of a split upload (split.h): live and
@@ -1625,6 +1628,24 @@ static void spread_tick(struct client *c, uint16_t present, uint16_t live, uint6
 	}
 }
 
+/* The governor (govern.h), after health: the upload's weights from each
+ * link's queue, while the upload is split and carries traffic. */
+static void gov_tick(struct client *c, uint16_t present, uint16_t live, uint64_t now_ms)
+{
+	struct cg_gov_cfg gc = { .target_us = c->cfg->governor_target_ms * 1000, .window_ms = c->cfg->governor_window_ms };
+	uint16_t carry, dup0, cand;
+	int active;
+
+	if (!c->cfg->governor)
+		return;
+	carry = cg_health_carriers(c->uh, CG_MAX_LINKS, present, live);
+	split_weights(c, &dup0);
+	cand = (uint16_t)(split_eligible(c, live, carry, now_ms) & ~dup0);
+	active = split_active(c) && c->last_traffic_ms && now_ms - c->last_traffic_ms < 1000;
+	cg_gov_tick(&c->gov, c->uh, cand, active, now_ms, &gc);
+	cg_gov_weights(&c->gov, dup0, c->gw);
+}
+
 static void health_tick(struct client *c, uint64_t now_ms)
 {
 	uint16_t present, live, changed;
@@ -1632,6 +1653,7 @@ static void health_tick(struct client *c, uint64_t now_ms)
 	link_masks(c, now_ms, &present, &live);
 	changed = cg_health_eval(c->uh, CG_MAX_LINKS, live, now_ms, &c->hcfg);
 	spread_tick(c, present, live, now_ms);
+	gov_tick(c, present, live, now_ms);
 	for (int i = 0; changed; i++, changed >>= 1) {
 		const struct cg_hlink *h = &c->uh[i];
 
@@ -1769,6 +1791,7 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 	cg_json_str(j, "split_state", split_state(c, now_ms));
 	cg_json_u64(j, "split_spread_ms", c->cfg->split_spread_ms);
 	cg_json_bool(j, "split_spread_copy", c->cfg->split_spread_copy);
+	cg_json_bool(j, "governor", c->cfg->governor);
 	/* What the newest probe reply says (null: no tail, an older server). */
 	if (c->peer_bond)
 		cg_json_bool(j, "server_reorders", c->peer_reorders);
@@ -1856,6 +1879,16 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 		cg_json_u64(j, "tx_errors", l->tx_errors);
 		cg_json_u64(j, "tx_split", l->tx_split);
 		cg_json_u64(j, "weight", c->lw[i]); /* its share with split = on */
+		/* The governor's weight and the queue it measures (null: off, or
+		 * no delay yet). */
+		if (c->cfg->governor)
+			cg_json_u64(j, "gov_weight", c->gw[i]);
+		else
+			cg_json_null(j, "gov_weight");
+		if (c->cfg->governor && c->gov.l[i].have_queue)
+			cg_json_ms(j, "gov_queue_ms", (uint64_t)c->gov.l[i].queue_us);
+		else
+			cg_json_null(j, "gov_queue_ms");
 		/* What it does in the upload split (null: not split now), and its
 		 * delay behind the fastest candidate as guard G4 last saw it. */
 		if (split_active(c))
@@ -2380,6 +2413,8 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 		c->ncpus = n > 0 ? (int)n : 1;
 	}
 	c->lt = cg_lt_resolve(cfg->link_threads, CG_LT_ARCH_MEASURED, c->ncpus, cfg->cpu >= 0, CG_LT_AUTO_ON);
+	cg_gov_reset(&c->gov);
+	cg_gov_weights(&c->gov, 0, c->gw);
 	c->txs.k_tx = cfg->key;
 	c->txs.hint = cg_client_hint(cfg->key);
 	c->rxs.k_rx = cfg->key + CG_SIPHASH_KEY_LEN;

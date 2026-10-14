@@ -60,6 +60,9 @@
 #   NAME-spN     any of them with split_spread_ms = N; split-sp0 is the split
 #                without the delay guard, the raw round-robin (the engine's
 #                default, 30, keeps a link 50 ms behind out of the share)
+#   NAME-gov     any of them with governor = yes: each link's weight from its
+#                own queue (govern.h) at both ends (split-sp250-gov against
+#                split-sp250)
 #   NAME-nc      any of them with split_spread_copy = no: a link the delay
 #                guard keeps out carries no copies, and one link left in the
 #                share takes it all (split-sp30-nc against split-sp30)
@@ -198,18 +201,23 @@ bond_settle() {
 # bond_variant NAME: the settings of a variant: BV_CLIENT and BV_SERVER
 # ("key = value;..."), BV_SOLO (1: the first link alone). 1 for a name it does not know.
 bond_variant() {
-	local v=$1 bp='' sp='' nc='' s
+	local v=$1 bp='' sp='' nc='' gov='' s
 	BV_CLIENT='' BV_SERVER='' BV_SOLO=0
-	# The suffixes, from the last: -bpN, -spN and -nc, each once.
+	# The suffixes, from the last: -bpN, -spN, -nc and -gov, each once.
 	while :; do
 		s=${v##*-}
 		case $s in
-		bp[0-9]*) [ -z "$bp" ] || return 1; bp=${s#bp} ;;
-		sp[0-9]*) [ -z "$sp" ] || return 1; sp=${s#sp} ;;
+		bp[0-9]* | sp[0-9]*)
+			case ${s#??} in *[!0-9]*) return 1 ;; esac
+			case $s in
+			bp*) [ -z "$bp" ] || return 1; bp=${s#bp} ;;
+			*) [ -z "$sp" ] || return 1; sp=${s#sp} ;;
+			esac
+			;;
 		nc) [ -z "$nc" ] || return 1; nc=1 ;;
+		gov) [ -z "$gov" ] || return 1; gov=1 ;;
 		*) break ;;
 		esac
-		case ${s#??} in *[!0-9]*) return 1 ;; esac
 		v=${v%-*}
 	done
 	case $v in
@@ -224,6 +232,7 @@ bond_variant() {
 	[ -n "$bp" ] && BV_CLIENT="${BV_CLIENT:+$BV_CLIENT;}reorder_bypass = $bp"
 	[ -n "$sp" ] && BV_CLIENT="${BV_CLIENT:+$BV_CLIENT;}split_spread_ms = $sp"
 	[ -n "$nc" ] && BV_CLIENT="${BV_CLIENT:+$BV_CLIENT;}split_spread_copy = no"
+	[ -n "$gov" ] && BV_CLIENT="${BV_CLIENT:+$BV_CLIENT;}governor = yes"
 	BV_SERVER=$BV_CLIENT
 	return 0
 }
@@ -243,7 +252,7 @@ bond_variants_check() {
 	mkdir -p "$RUN"
 	for v in $BOND_VARIANTS; do
 		bond_variant "$v" || {
-			echo "FAIL: unknown variant $v (bonded solo redund redund-ro0 redund-dw20 split splitnoro, and any with -bpN or -spN)"
+			echo "FAIL: unknown variant $v (bonded solo redund redund-ro0 redund-dw20 split splitnoro, and any with -bpN, -spN, -nc or -gov)"
 			return 1
 		}
 		[ -x "$CENGARDE_BIN" ] || continue

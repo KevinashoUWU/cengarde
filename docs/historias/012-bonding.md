@@ -645,6 +645,46 @@ Medianas, (mín–máx) y ping p50 por el túnel bajo carga.
   enlace y sentido; SINR y CQI como señal adelantada de la bajada; la
   potencia en el techo como aviso de subida saturada.
 
+#### El gobernador base, en el laboratorio [medido en laboratorio]
+
+`govern.h` (paso 2 del plan, experimental, `governor = yes` en cada
+extremo): cada extremo pesa los enlaces de lo que envía por su cola, el
+retraso de envío de cada enlace menos su mínimo de los últimos 10 s. La
+primera regla (bajar el peso de un enlace con más de 20 ms de cola, subirlo
+con menos de 10) falló en la traza de un BBR de subida: cuando el flujo
+llena todo, todos los enlaces pasan el objetivo y bajan juntos, y como los
+pesos solo cuentan como proporción, el reparto no cambia (los tres llegaron
+al piso a los 10 s). La regla que quedó compara cada cola con la más corta
+de los enlaces del reparto: baja 1/8 por tick el peso de un enlace con más
+de 20 ms de cola por encima de esa, sube el que queda a menos de 10. Iguala
+los retrasos, y saturados los pesos quedan como las capacidades (en la
+traza: 30, 20 y 8 Mbit/s → pesos altos, medios y bajos).
+
+Fuente: `bench/lab.sh bond` en el PC del banco (WireGuard y netem reales),
+2026-10-14, n = 3 corridas de 10 s, medianas en Mbit/s subida / bajada:
+
+| caso | variante | Cubic | BBR | QUIC |
+| --- | --- | ---: | ---: | ---: |
+| `bloat` | `redund` | 26,4 / 26,5 | 26,3 / 26,5 | 25,7 / 25,7 |
+| | `split-sp250` | 28,0 / 27,1 | 26,4 / 26,4 | 26,0 / 26,0 |
+| | `split-sp250-gov` | 34,4 / 31,1 | 26,3 / 26,5 | 26,0 / 26,0 |
+| `het` | `redund` | 52,7 / 52,8 | 52,7 / 52,9 | 52,1 / 52,1 |
+| | `split-sp250` | 21,4 / 21,3 | 25,1 / 25,3 | 1,6 / 2,0 |
+| | `split-sp250-gov` | 38,0 / 37,2 | 28,7 / 28,7 | 1,9 / 2,2 |
+| `reorder50` | `redund` | 44,0 / 44,2 | 43,9 / 44,1 | 43,4 / 43,5 |
+| | `split-sp250` | 57,3 / 48,3 | 68,3 / 67,6 | 3,9 / 3,7 |
+| | `split-sp250-gov` | 57,2 / 48,8 | 69,0 / 69,1 | 3,6 / 3,8 |
+
+- Ayuda donde los enlaces son distintos: Cubic +23 % en `bloat` (con
+  ~1 % de retransmisiones) y de 21 a 38 en `het`; BBR en `het` de 25 a
+  29 de mediana, con corridas de 42–45: en 10 s apenas converge (unos
+  5 s).
+- No empeora donde son iguales (`reorder50`).
+- Todavía no le gana a la redundancia en `het` (38 contra 53).
+- QUIC se hunde con cualquier reparto, con o sin gobernador (2–4 Mbit/s,
+  20–30 % de pérdidas espurias): no son los pesos, es el desorden; es el
+  pendiente más grande del reparto.
+
 ## Qué hacemos con esto
 
 ### Orden de la Fase 5 y criterios de salida
@@ -714,3 +754,4 @@ Los umbrales son propuestas [razonado] y se miden en `bench/`.
 - 2026-10-14: el A/B de `split_spread_copy` por el túnel en el banco («`split_spread_copy` por el túnel, en el banco»): sin diferencia visible con n = 2, ningún envío perdido con los enlaces en la NIC integrada, y repartir baja el ping bajo carga de subida de ~200 a ~37 ms.
 - 2026-10-14: el PC del banco como segundo router (`pc`): por el túnel rinde lo mismo que la Pi, así que el techo es el reparto, no el fierro de la Pi.
 - 2026-10-14: el A/B desde el PC con n = 5–7 y la radio cruzada («El A/B desde el PC»): repartir baja el ping bajo carga de 154 a 34 ms en subida (p ≈ 0,001); con o sin copias no cambia nada medible; la radio (SINR, CQI) adelanta la cola de bajada.
+- 2026-10-14: el gobernador base (`govern.h`, `governor`), experimental y apagado por omisión, con sus medidas de laboratorio («El gobernador base, en el laboratorio»).
