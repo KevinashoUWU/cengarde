@@ -236,8 +236,43 @@ static void test_capacity_converges(void)
 	CHECK(maxq_late < 100.0);
 }
 
+/* The shaper's rate: the sum while busy, held while idle, the links of
+ * mask only. */
+static void test_capacity_total(void)
+{
+	struct cg_cap_link l[CG_MAX_LINKS];
+	struct cg_cap_total t;
+
+	memset(&t, 0, sizeof(t));
+	for (unsigned i = 0; i < CG_MAX_LINKS; i++)
+		cg_cap_reset(&l[i]);
+	cg_cap_total_tick(&t, l, 0xffff);
+	CHECK(!t.have && cg_cap_shape_bps(&t) == 0);
+	measured(&l[0], 60, 5);
+	measured(&l[1], 40, 5);
+	measured(&l[2], 500, 5); /* not in the mask */
+	cg_cap_total_tick(&t, l, 0x3);
+	CHECK(t.have && t.bps == 100 * MBIT && cg_cap_shape_bps(&t) == 85 * MBIT);
+	/* idle: the capacities still say 100 but the links carry 10: held */
+	l[0].rate_bps = 5 * MBIT;
+	l[1].rate_bps = 5 * MBIT;
+	l[0].max_cur = l[0].max_prev = 20 * MBIT; /* and decaying */
+	cg_cap_total_tick(&t, l, 0x3);
+	CHECK(t.bps == 100 * MBIT);
+	/* busy again at a lower capacity: followed down */
+	measured(&l[0], 30, 50);
+	measured(&l[1], 20, 50);
+	cg_cap_total_tick(&t, l, 0x3);
+	CHECK(t.bps == 50 * MBIT);
+	/* and up */
+	measured(&l[1], 70, 2);
+	cg_cap_total_tick(&t, l, 0x3);
+	CHECK(t.bps == 100 * MBIT);
+}
+
 void test_capacity(void)
 {
+	test_capacity_total();
 	test_capacity_converges();
 	test_capacity_weights();
 	test_capacity_rates();

@@ -35,6 +35,15 @@
  * a trickle and with it a measure. With governor too, its weight from the
  * queue (govern.h) scales each share.
  *
+ * cg_cap_total_tick keeps the rate a shaper in front of the tunnel should
+ * hold (story 013, PR 4): the sum of the capacities, followed up and down
+ * while the links carry at least half of it, and held while they carry
+ * less (an idle tunnel's capacities decay to what it carries: a shaper set
+ * to that would throttle the next burst). CG_CAP_SHAPE_PCT of it leaves
+ * room for the tunnel's own overhead, so that the queue forms in the
+ * shaper and not in the modems. The engine only says the rate; a service
+ * outside it applies cake.
+ *
  * Pure: no clock, no I/O, no allocation.
  *
  * SPDX-License-Identifier: GPL-2.0-only */
@@ -201,6 +210,37 @@ static inline void cg_cap_weights(const struct cg_cap_link l[CG_MAX_LINKS], uint
 			v = v * gov[i] / CG_GOV_MAX;
 		w[i] = (uint16_t)(v < CG_GOV_MIN ? CG_GOV_MIN : v > CG_GOV_MAX ? CG_GOV_MAX : v);
 	}
+}
+
+#define CG_CAP_SHAPE_PCT 85 /* of the links' total capacity, for a shaper */
+
+struct cg_cap_total {
+	uint64_t bps; /* the links' total capacity, as last seen busy */
+	uint8_t have;
+};
+
+/* One tick: mask, the links that carry (the split's, or every live one). */
+static inline void cg_cap_total_tick(struct cg_cap_total *t, const struct cg_cap_link l[CG_MAX_LINKS], uint16_t mask)
+{
+	uint64_t cap = 0, del = 0;
+
+	for (unsigned i = 0; i < CG_MAX_LINKS; i++)
+		if ((mask >> i & 1) && l[i].have_rate) {
+			cap += cg_cap_bps(&l[i]);
+			del += l[i].rate_bps;
+		}
+	if (!cap)
+		return;
+	if (!t->have || del * 2 >= cap) {
+		t->bps = cap;
+		t->have = 1;
+	}
+}
+
+/* The shaper's rate, bps; 0 until known. */
+static inline uint64_t cg_cap_shape_bps(const struct cg_cap_total *t)
+{
+	return t->have ? t->bps * CG_CAP_SHAPE_PCT / 100 : 0;
 }
 
 #endif
