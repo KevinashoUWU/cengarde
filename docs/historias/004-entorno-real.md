@@ -112,7 +112,15 @@
     sin registro LTE): probablemente reservada para banda ancha hogar
     inalámbrica. La red 302-300 en B40 es una red privada de IoT
     (probablemente de una minera de la zona, vista desde 2021);
-  - **WOM:** B66 + NSA n78, cuatro ramas parejas;
+  - **WOM:** B66 + NSA n78, cuatro ramas parejas. Sitios, por PCI (datos
+    del usuario y del identificador de celda): **109** = eNB 41C8, antena
+    de la subida a la población Luis Uribe; **223** = eNB 16C38, Mina
+    Tránsito, línea de vista a ~8 km, con 5G (la que usa de noche: B66
+    66936 + 66736); **314** (B28 9260) es del mismo eNB 16C38, o sea Mina
+    Tránsito, no Las Flores; **24** = calle Las Flores, cerca del estadio de
+    Tierra Amarilla, con 5G: aparece solo entre las vecinas, en 66936 y
+    66736, a −103 dBm (5–6 dB bajo la 223), y su B28 no se vio. Otras
+    vecinas en 66736: 112, 333, 274 (−101 a −106);
   - **Movistar:** B7, con NR a ratos; RSRQ −20 en las cuatro ramas de LTE
     (celda cargada).
 
