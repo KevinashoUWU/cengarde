@@ -156,6 +156,12 @@ gobernador solo que tenía la red de pruebas; 5 rondas alternadas de 30 s:
   (25–38) la mitad o menos, Movistar (1–9) un 2–14 %, y Entel, al piso.
   Con el gobernador solo, Claro y WOM quedan casi parejos aunque uno
   entrega el doble.
+- **En la subida** (la Pi con y sin `capacity_weights`, el VPS con los
+  suyos; 5 rondas de 30 s): 30,0 / 42,8 / 46,3 / 51,6 / 46,4 Mbit/s sin,
+  41,1 / 47,8 / 59,2 / 48,9 / 44,9 con (medias 43,4 y 48,4: +11 %,
+  p = 0,27). Poco, como el gobernador: los cuatro enlaces suben parecido.
+  No empeora nada; queda encendido en los dos extremos de la red de
+  pruebas.
 - Entel estaba enfermo en ese momento (bloqueado en la PCI 37: 20 % de
   pérdida y 60–250 ms de ping en reposo; capacidad medida 0–3 Mbit/s): los
   pesos por capacidad lo dejaron al piso, que es lo esperado.
