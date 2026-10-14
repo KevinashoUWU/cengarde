@@ -603,6 +603,48 @@ tres registradores encendidos. Mbit/s y ping por el túnel bajo carga (p50).
   enlaces dan juntos fuera del túnel. Es el trabajo de los pasos 2 y 3
   (pesos por capacidad, planificador por llegada esperada).
 
+#### El A/B desde el PC, con n = 5–7 y la radio cruzada [medido en banco]
+
+Fuente: el PC del banco como router (CPU de sobra), los perfiles P0, P6,
+P7, P3 y P8 en los dos extremos, el túnel cargado con `fieldperf -m tunnel`
+en 5 rondas de orden alternado (más 2 rondas previas de P0, P3 y P8:
+n = 7, 5, 5, 7 y 7), con el estado del motor cada 200 ms y `radiorec`
+cruzados por la hora. Informe con gráficos: `~/campo/2026-10-14/
+informe-ab-pc.html` en el PC del banco (sin IP; el script, al lado).
+
+| perfil | subida Mbit/s | ping subida | bajada Mbit/s | ping bajada |
+| --- | --- | --- | --- | --- |
+| P0 copia | 35 (30–44) | 154 ms | 125 (105–179) | 83 ms |
+| P6 spread 30, copias | 50 (43–53) | 34 ms | 107 (89–149) | 81 ms |
+| P7 spread 30, sin copias | 43 (37–56) | 34 ms | 134 (104–137) | 55 ms |
+| P3 spread 250, copias | 47 (26–56) | 35 ms | 128 (119–183) | 38 ms |
+| P8 spread 250, sin copias | 34 (19–56) | 34 ms | 143 (118–164) | 39 ms |
+
+Medianas, (mín–máx) y ping p50 por el túnel bajo carga.
+
+- **Repartir baja la latencia bajo carga**, con significancia: con la
+  subida cargada, 154 ms copiando contra 34–35 con cualquier reparto
+  (Mann-Whitney p ≈ 0,001); con la bajada cargada, 83 contra 38 con spread
+  250 (p ≈ 0,002). Spread 30 no mejora la bajada: con los enlaces en la NIC
+  integrada, la guarda de 30 ms saca enlaces de más.
+- **Con o sin copias no cambia nada medible** (ningún p < 0,05; lo más
+  cercano, la subida de P3 frente a P8, 47 contra 34, p = 0,07): el valor
+  por omisión se queda.
+- **Ningún envío perdido en 31 corridas.**
+- **El reparto ignora la capacidad:** con pesos iguales cada enlace lleva
+  el 23–27 % de la subida; Claro y Entel acumulan cola (atraso p95 de 119
+  y 154 ms) y Movistar y WOM no (55 ms). En la bajada, el RTT p95 por
+  enlace llega a 1,6 s en WOM y Movistar.
+- **La radio adelanta la cola de bajada:** SINR y CQI bajos van con RTT
+  altos en ese enlace (ρ de Spearman −0,47 y −0,39, p < 0,001, n = 98).
+  En la subida, Claro y WOM llegan a 21–22 dBm de potencia, casi el máximo
+  de 23 dBm: subida limitada por potencia; la correlación de la potencia
+  con el atraso es débil (ρ = +0,22, p = 0,05). El RM502Q de Movistar no da
+  CQI ni potencia. La pata NR de WOM no apareció en ninguna prueba.
+- **Para el gobernador (pasos 2–3):** pesos por la capacidad medida de cada
+  enlace y sentido; SINR y CQI como señal adelantada de la bajada; la
+  potencia en el techo como aviso de subida saturada.
+
 ## Qué hacemos con esto
 
 ### Orden de la Fase 5 y criterios de salida
@@ -671,3 +713,4 @@ Los umbrales son propuestas [razonado] y se miden en `bench/`.
 - 2026-10-14: el banco en la casa («El banco en la casa»): la bajada de la Pi la limitaba su NIC USB, enganchada a USB 2.0; con los enlaces en la NIC integrada la bajada con los cuatro a la vez pasó de 128 a 338 Mbit/s. WOM rindió 263 Mbit/s solo con la pata NR encima.
 - 2026-10-14: el A/B de `split_spread_copy` por el túnel en el banco («`split_spread_copy` por el túnel, en el banco»): sin diferencia visible con n = 2, ningún envío perdido con los enlaces en la NIC integrada, y repartir baja el ping bajo carga de subida de ~200 a ~37 ms.
 - 2026-10-14: el PC del banco como segundo router (`pc`): por el túnel rinde lo mismo que la Pi, así que el techo es el reparto, no el fierro de la Pi.
+- 2026-10-14: el A/B desde el PC con n = 5–7 y la radio cruzada («El A/B desde el PC»): repartir baja el ping bajo carga de 154 a 34 ms en subida (p ≈ 0,001); con o sin copias no cambia nada medible; la radio (SINR, CQI) adelanta la cola de bajada.
