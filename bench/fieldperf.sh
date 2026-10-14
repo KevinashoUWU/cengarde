@@ -30,6 +30,7 @@
 #   -T ADDR               the VPS inside the tunnel (10.79.0.1)
 #   -S FILE               the engine's status (/var/run/cengarde.json)
 #   -t SECS               each test (10); -P STREAMS: TCP streams (4)
+#   -d "up down"          the directions of each test (both)
 #   -p PORT               the first iperf3 port (5201): "all" takes one per
 #                         link, PORT to PORT+n-1
 #   -e UP:DOWN            Mbit/s per link for the estimate (40:100)
@@ -49,6 +50,7 @@ TADDR=10.79.0.1
 STATUS=/var/run/cengarde.json
 SECS=10
 STREAMS=4
+DIRS="up down"
 PORT=5201
 EST=40:100
 OUT=
@@ -234,7 +236,7 @@ plan() {
 	while read -r dev label host; do
 		echo "  $label ($dev) to $host"
 	done <"$WORK/links"
-	echo "Each test $SECS s, $STREAMS TCP streams, upload then download; ping on every link it loads."
+	echo "Each test $SECS s, $STREAMS TCP streams, $DIRS; ping on every link it loads."
 	echo "Estimate with $up Mbit/s up and $down down per link (an estimate, not a measure):"
 	mb=0
 	for m in $MODES; do
@@ -244,6 +246,8 @@ plan() {
 		# copying, each link carries the whole tunnel: the worst case
 		tunnel) w="through the tunnel to $TADDR, as the engine is set (estimated as copying: every link carries it all)" n=$NLINKS ;;
 		esac
+		case " $DIRS " in *" up "*) ;; *) up=0 ;; esac
+		case " $DIRS " in *" down "*) ;; *) down=0 ;; esac
 		v=$(awk -v n="$n" -v u="$up" -v d="$down" -v s="$SECS" 'BEGIN { printf "%d", n * (u + d) * s / 8 }')
 		echo "  $m: $w, about $v MB"
 		mb=$((mb + v))
@@ -251,7 +255,9 @@ plan() {
 	echo "  idle pings first, 5 s per link: next to nothing"
 	tests=0
 	for m in $MODES; do
-		case $m in solo) tests=$((tests + 2 * NLINKS)) ;; *) tests=$((tests + 2)) ;; esac
+		for w in $DIRS; do
+			case $m in solo) tests=$((tests + NLINKS)) ;; *) tests=$((tests + 1)) ;; esac
+		done
 	done
 	echo "Total: about $mb MB of mobile data, in about $((5 + tests * (SECS + 5))) s."
 	echo "The VPS first: sudo sh fieldperf.sh vps on -p $PORT -n $SERVERS (vps off afterwards)."
@@ -395,13 +401,15 @@ run() {
 		case $m in
 		solo)
 			while read -r dev label host; do
-				run_test solo up "$dev" "$label" "$host"
-				run_test solo down "$dev" "$label" "$host"
+				for w in $DIRS; do
+					run_test solo "$w" "$dev" "$label" "$host"
+				done
 			done <"$WORK/links"
 			;;
 		all | tunnel)
-			run_test "$m" up
-			run_test "$m" down
+			for w in $DIRS; do
+				run_test "$m" "$w"
+			done
 			;;
 		esac
 	done
@@ -434,7 +442,7 @@ case $cmd in
 plan | run) ;;
 *) sed -n '2,41s/^# \{0,1\}//p' "$0" >&2 && exit 2 ;;
 esac
-while getopts m:l:s:T:S:t:P:p:e:o:y o; do
+while getopts m:l:s:T:S:t:P:p:e:d:o:y o; do
 	case $o in
 	m) MODES=$OPTARG ;;
 	l) LINKS=$OPTARG ;;
@@ -445,6 +453,7 @@ while getopts m:l:s:T:S:t:P:p:e:o:y o; do
 	P) STREAMS=$OPTARG ;;
 	p) PORT=$OPTARG ;;
 	e) EST=$OPTARG ;;
+	d) DIRS=$OPTARG ;;
 	o) OUT=$OPTARG ;;
 	y) YES=1 ;;
 	*) die "see: sh $0" ;;
@@ -454,6 +463,10 @@ num "$SECS" -t
 num "$STREAMS" -P
 num "$PORT" -p
 [ -n "$MODES" ] || die "-m: nothing to run"
+[ -n "$DIRS" ] || die "-d: no direction"
+for w in $DIRS; do
+	case $w in up | down) ;; *) die "-d: unknown direction '$w' (up, down)" ;; esac
+done
 for m in $MODES; do
 	case $m in solo | all | tunnel) ;; *) die "-m: unknown mode '$m' (solo, all, tunnel)" ;; esac
 done

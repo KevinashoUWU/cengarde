@@ -495,6 +495,25 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
   envíos perdidos del campo (historia 012, «`split_spread_copy` en el
   laboratorio»). Queda `yes` hasta que una prueba
   de campo A/B diga otra cosa. Se aplica en caliente.
+- **`governor` (`no`; `yes` o `no`), en los dos extremos, para lo que cada
+  uno envía (experimental):** los pesos del reparto salen de la cola de cada
+  enlace en vez de `weight` (`govern.h`). La cola es el retraso de envío del
+  enlace (el que usa el silenciado) menos su propio mínimo de los últimos
+  `governor_window_ms` (10000; 1000–120000): los relojes no están en hora,
+  pero el desfase es constante, así que la diferencia es lo que espera en la
+  cola del módem. Cada 100 ms, mientras ese extremo reparte y hay tráfico,
+  el peso de un enlace baja 1/8 si su cola pasa de `governor_target_ms` (20;
+  1–1000) y sube 20 (de 1000) si queda bajo la mitad; entre medio se
+  mantiene, y nunca baja de 10, para que el enlace siga diciendo cuándo se
+  vació su cola. Así cada enlace termina llevando lo que puede sin hacer
+  cola. Un peso 0 sigue siendo una copia de todo. El cliente gobierna la
+  subida y el servidor la bajada, cada uno con su propia medida: no cambia
+  el protocolo. El porqué: con pesos iguales, en el banco (historia 012,
+  2026-10-14) cada enlace llevaba el 23–27 % de la subida aunque sus
+  capacidades eran distintas, y los más débiles acumulaban 120–150 ms de
+  cola. El estado muestra, por enlace, `gov_weight` y `gov_queue_ms`, y
+  `governor` en `upload` (cliente) y en cada sesión (servidor). Se aplica en
+  caliente.
 - **`weight` en `[link X]` (cliente; 1, de 0 a 1000):** la parte del reparto
   que lleva ese enlace con `split = on`, en la subida y en la bajada (el
   cliente se los manda al servidor en las sondas; `force` no los mira). Con

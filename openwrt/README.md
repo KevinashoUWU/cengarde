@@ -385,7 +385,8 @@ configuración del router:
     detrás del más rápido (en su retardo hacia el VPS) deja su parte hasta
     que se mantiene dentro de 3/4 de esa diferencia durante el tiempo de
     asentamiento. *Copias a los enlaces fuera del reparto*
-    (`split_spread_copy`, activado como hasta la 0.6.2): mientras está
+    (`split_spread_copy`, activado como hasta la 0.6.2, salvo con el
+    gobernador): mientras está
     fuera lleva una copia de todos los paquetes, y si quedan menos de dos
     en el reparto todo va por todos. Desactivado, lleva solo lo que va por
     todos (handshakes y paquetes chicos) y, si queda uno solo en el
@@ -393,7 +394,8 @@ configuración del router:
     del enlace que ya iba atrasado, y en el laboratorio ayudaron a QUIC
     (historia 012), así que está para probar las dos cosas en campo. El VPS
     hace lo mismo con la bajada, con su propio `split_spread_ms` (30) y su
-    propio `split_spread_copy` (activado), en su `cengarde.conf`.
+    propio `split_spread_copy` (activado, salvo con su gobernador), en su
+    `cengarde.conf`.
     En el laboratorio, 50 ms entre dos enlaces ya se comían casi toda la
     ganancia del reparto y 150 ms la hundían (ver `engine/README.md`).
   - **El reparto protege menos que copiar** (por eso viene apagado),

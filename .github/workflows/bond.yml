@@ -38,6 +38,8 @@ name: Bonding lab
 
 on:
   push:
+    # branches only through their PR (pull_request below)
+    branches: [master]
     paths:
       - 'engine/**'
       - 'bench/**'
@@ -64,6 +66,12 @@ on:
       netem_inflight:
         description: '1: the limit of netem also covers the packets in the delay (bond_link); it changes the step 0 baseline, and a split needs it in reorder150'
         default: '0'
+
+concurrency:
+  # A newer push to the same PR or branch cancels the run it makes stale;
+  # releases (tags) and manual runs are never cancelled.
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')) }}
 
 permissions:
   contents: read

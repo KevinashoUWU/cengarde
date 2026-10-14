@@ -559,8 +559,8 @@ FAMILY_REFS = {
     "solo": (),
 }
 DEFAULT_REFS = ("solo", "redund-ro0", "splitnoro")
-# bond.sh's -bpN (reorder_bypass), -spN (split_spread_ms) and -nc (split_spread_copy = no)
-SUFFIX = re.compile(r"^(.+)-(?:(?:bp|sp)[0-9]+|nc)$")
+# bond.sh's -bpN (reorder_bypass), -spN (split_spread_ms), -nc (split_spread_copy = no), -gov (governor)
+SUFFIX = re.compile(r"^(.+)-(?:(?:bp|sp)[0-9]+|nc|gov)$")
 
 
 def references(variant, present, refs=None):

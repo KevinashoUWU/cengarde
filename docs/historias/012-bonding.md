@@ -645,6 +645,175 @@ Medianas, (mín–máx) y ping p50 por el túnel bajo carga.
   enlace y sentido; SINR y CQI como señal adelantada de la bajada; la
   potencia en el techo como aviso de subida saturada.
 
+#### El gobernador base, en el laboratorio [medido en laboratorio]
+
+`govern.h` (paso 2 del plan, experimental, `governor = yes` en cada
+extremo): cada extremo pesa los enlaces de lo que envía por su cola, el
+retraso de envío de cada enlace menos su mínimo de los últimos 10 s. La
+primera regla (bajar el peso de un enlace con más de 20 ms de cola, subirlo
+con menos de 10) falló en la traza de un BBR de subida: cuando el flujo
+llena todo, todos los enlaces pasan el objetivo y bajan juntos, y como los
+pesos solo cuentan como proporción, el reparto no cambia (los tres llegaron
+al piso a los 10 s). La regla que quedó compara cada cola con la más corta
+de los enlaces del reparto: baja 1/8 por tick el peso de un enlace con más
+de 20 ms de cola por encima de esa, sube el que queda a menos de 10. Iguala
+los retrasos, y saturados los pesos quedan como las capacidades (en la
+traza: 30, 20 y 8 Mbit/s → pesos altos, medios y bajos).
+
+Fuente: `bench/lab.sh bond` en el PC del banco (WireGuard y netem reales),
+2026-10-14, n = 3 corridas de 10 s, medianas en Mbit/s subida / bajada:
+
+| caso | variante | Cubic | BBR | QUIC |
+| --- | --- | ---: | ---: | ---: |
+| `bloat` | `redund` | 26,4 / 26,5 | 26,3 / 26,5 | 25,7 / 25,7 |
+| | `split-sp250` | 28,0 / 27,1 | 26,4 / 26,4 | 26,0 / 26,0 |
+| | `split-sp250-gov` | 34,4 / 31,1 | 26,3 / 26,5 | 26,0 / 26,0 |
+| `het` | `redund` | 52,7 / 52,8 | 52,7 / 52,9 | 52,1 / 52,1 |
+| | `split-sp250` | 21,4 / 21,3 | 25,1 / 25,3 | 1,6 / 2,0 |
+| | `split-sp250-gov` | 38,0 / 37,2 | 28,7 / 28,7 | 1,9 / 2,2 |
+| `reorder50` | `redund` | 44,0 / 44,2 | 43,9 / 44,1 | 43,4 / 43,5 |
+| | `split-sp250` | 57,3 / 48,3 | 68,3 / 67,6 | 3,9 / 3,7 |
+| | `split-sp250-gov` | 57,2 / 48,8 | 69,0 / 69,1 | 3,6 / 3,8 |
+
+- Ayuda donde los enlaces son distintos: Cubic +23 % en `bloat` (con
+  ~1 % de retransmisiones) y de 21 a 38 en `het`; BBR en `het` de 25 a
+  29 de mediana, con corridas de 42–45: en 10 s apenas converge (unos
+  5 s).
+- No empeora donde son iguales (`reorder50`).
+- Todavía no le gana a la redundancia en `het` (38 contra 53).
+- QUIC se hunde con cualquier reparto, con o sin gobernador (2–4 Mbit/s,
+  20–30 % de pérdidas espurias): no son los pesos, es el desorden; es el
+  pendiente más grande del reparto.
+
+#### El gobernador en el banco: el reparto no lo dejan ver los enlaces que entran y salen [medido en banco]
+
+Fuente: el PC del banco como router, 2026-10-14 de mañana, P3 (spread 250)
+con y sin `governor` en el cliente (solo la subida; el VPS sin gobernador),
+4 rondas alternadas de 20 s por sentido, con el estado del motor cada
+200 ms.
+
+- Subida sin gobernador: 40,5 / 41,0 / 38,8 / 41,7 Mbit/s; con
+  gobernador: 59,1 / 36,1 / 24,9 / 38,8. El ping por el túnel, ~40 ms en
+  las dos. La bajada (control, sin gobernador en las dos): 90–193.
+- Lo que explica la dispersión no son los pesos: **los dos módems del CPE
+  doble (Entel y WOM) salen del reparto como no elegibles (guarda G3:
+  ninguna respuesta verificada del VPS por ese enlace en tres intervalos
+  de sonda)**. WOM pasó toda la corrida B-4 fuera (con peso 1000 del
+  gobernador), y los dos, cerca de la mitad de A-2 y A-3. Movistar y
+  Claro, cada uno en su CPE, casi nunca.
+- **El CPE doble se reinicia** (medido el mismo día): arrancó a las
+  10:40:57, en medio de B-4, y durante las pruebas el registrador de radio
+  lo perdió por minutos (09:25–09:43 y 10:35–10:41). Con una carga solo
+  por ese CPE (iperf3 por las VLAN 10 y 20, fuera del túnel), la bajada
+  (45 + 233 Mbit/s, 20 s) pasa con su ping de gestión en 0,3–1 ms y sin
+  cortes. A los 13 s de la subida por los dos módems a la vez (~20 + ~40
+  Mbit/s), el CPE se apaga de golpe: el ping seguía bajo 1 ms en la
+  respuesta anterior y volvió a arrancar. No es la CPU (la bajada, con
+  cinco veces más paquetes, no la mueve) ni la temperatura (55 °C, corte
+  a 115–125 °C). Lo que cambia con la subida es la potencia de
+  transmisión de los dos módems, que en ese CPE llegan a 21–22 dBm
+  Los módems informan 3,80–3,82 V en reposo (`AT+CBC`). **Era la
+  fuente** (confirmado el mismo día): la del CPE daba 1,5 A medidos a
+  12 V; con una de 2,5 A, la misma prueba pasa entera (bajada 96 + 201,
+  subida por los dos módems los 20 s) sin reinicio y con el ping de
+  gestión sin una sola pérdida en 75 s. Un CPE con dos módems 5G
+  necesita una fuente de al menos 2,5 A a 12 V.
+- La única corrida con los cuatro enlaces dentro todo el tiempo (B-1) dio
+  59 Mbit/s, con pesos que siguen las colas (Entel, la más cargada, 327;
+  WOM 892).
+- Con el CPE doble reiniciándose, el gobernador no se pudo juzgar en el
+  banco (ni ninguna prueba de subida anterior con los cuatro enlaces); en
+  el laboratorio sí ayuda (arriba).
+- **Repetido con la fuente nueva** (el mismo día, 11:00–11:17, el CPE
+  doble sin reinicios): subida sin gobernador 35,5 / 32,8 / 40,9 / 28,7
+  Mbit/s (media 34,5); con gobernador 33,8 / 35,0 / 31,3 / 18,7 (media
+  29,7). La bajada (control) 145–207. **El gobernador no mejora la
+  subida en el banco** (n = 4, sin diferencia significativa). En dos
+  corridas con gobernador un enlace acumuló colas de 0,6–1 s (Entel en
+  B-1, con peso 11 y fuera del reparto, pero con el 42 % de los bytes
+  enviados: las copias de `split_spread_copy` a los enlaces atrasados
+  siguen llenando su cola), y en B-4 los pesos quedaron casi iguales y la
+  subida cayó a 18,7. Sin gobernador, los cuatro enlaces quedan dentro
+  del reparto casi todo el tiempo [hipótesis: con el gobernador, las
+  copias a los enlaces fuera del reparto anulan la reducción de su peso;
+  PROBAR con `split_spread_copy = off`].
+- **Con `split_spread_copy = off`** en A y en B (11:30–11:47): sin
+  gobernador 33,3 / 20,5 / 36,0 / 39,6 Mbit/s (media 32,4); con
+  gobernador 38,6 / 40,7 / 32,3 / 38,9 (media 37,6; Mann-Whitney
+  unilateral p = 0,24). Sin las copias, el enlace al que el gobernador
+  baja el peso sí se descarga (Entel, 7–20 % de los bytes con colas de
+  30–100 ms). Pero Claro se cayó desde las 11:37 (su watchdog subió del
+  `ifup` al reinicio del módem, y el módem volvió sin sesión de datos):
+  cinco de las ocho corridas fueron con tres enlaces.
+- **Con los cuatro enlaces y los watchdogs de los CPE en pausa**
+  (12:00–12:16; los watchdogs confunden la cola de nuestra carga con un
+  enlace sin tráfico y lo bajan con `ifup`, que fue lo que dejó caído a
+  Claro): sin gobernador 27,9 / 52,0 / 43,9 / 43,8 Mbit/s (media 41,9);
+  con gobernador 56,6 / 35,7 / 56,3 / 26,7 (media 43,8; p = 0,89). Los
+  cuatro enlaces quedan dentro del reparto el 95–100 % del tiempo en las
+  ocho corridas. **El caudal no cambia; el atraso entre enlaces, sí:** el
+  peor atraso de reparto entre los cuatro (`split_behind_ms`, cada
+  200 ms) tiene mediana 16 / 47 / 54 / 90 ms sin gobernador y
+  49 / 15 / 19 / 22 con él, y p90 58–182 frente a 36–132. Es lo que el
+  gobernador busca (igualar las colas), pero el ping por el túnel no lo
+  refleja (37–48 ms en las dos) y el caudal de subida varía más entre
+  corridas (27–57) que entre A y B. Conclusión provisional: el gobernador,
+  con `split_spread_copy = off`, no estorba y empareja los enlaces; para
+  ver si sube el caudal hacen falta corridas más largas y n mayor.
+- **Tanda larga** (12:30–13:00, n = 6 por brazo, 60 s de subida, copias
+  apagadas en los dos, watchdogs en pausa): sin gobernador 51,7 / 52,9 /
+  54,2 / 53,0 / 50,5 / 30,0 Mbit/s (mediana 52,3); con gobernador 49,5 /
+  51,8 / 52,6 / 50,4 / 47,8 / 48,5 (mediana 50,0; p = 0,24). El peor
+  atraso de reparto entre los cuatro enlaces baja con el gobernador
+  (mediana por corrida 95 → 66 ms, p = 0,12 unilateral; p90 214 → 193,
+  p = 0,09), el ping por el túnel no cambia (39–47 ms). Con 60 s las dos
+  ramas dan ~50 en vez de ~40: TCP tarda en llenar el túnel.
+  **Conclusión: el gobernador por cola empareja algo los enlaces pero no
+  sube el caudal; repartir según la cola no es lo que limita.** El paso
+  siguiente es estimar la capacidad de cada enlace (lo que el otro
+  extremo dice haber recibido por él) y dosificar el envío por enlace
+  bajo esa capacidad, para que la cola quede en el router y no en el
+  módem. Con el gobernador, `split_spread_copy` pasa a `no` por omisión
+  (0.6.4): con copias, el gobernador se anula (arriba).
+
+#### El gobernador en la bajada y `cake` sobre el túnel, en el banco [medido en banco]
+
+Fuente: el PC del banco como router, 2026-10-14 de 12:40 a 13:00; el VPS
+con la build de la rama (0.6.4).
+
+- **Gobernador de bajada** (P3 en los dos extremos, copias apagadas, el
+  gobernador solo en el VPS; 5 rondas alternadas de 30 s de bajada,
+  watchdogs de los CPE en pausa): sin gobernador 162,9 / 129,5 / 66,9 /
+  74,1 / 58,2 Mbit/s; con gobernador 152,6 / 158,0 / 134,0 / 154,0 /
+  100,6. A-1 no vale: el VPS aún corría la configuración anterior (copias
+  y spread 30; su ping fue 166 ms frente a 37–43 en las demás). En las
+  otras cuatro rondas, la corrida con gobernador gana a la de su ronda
+  las cuatro veces (+22 % a +108 %; signos 4/4, p = 0,06), aunque Claro
+  se cayó en B-5. Las bajadas de los enlaces son muy desiguales (WOM
+  188–233 Mbit/s solo, Movistar ~20): con pesos iguales WOM lleva el
+  32–40 % de los bytes, y con gobernador el 39–54 % (81 % en B-5, sin
+  Claro), mientras Entel baja del 28 % al 12–19 %. En la subida, con
+  enlaces de 20–30 Mbit/s cada uno, no había nada que redistribuir; en la
+  bajada sí. Movistar queda fuera del reparto por atraso (`spread`) la
+  mayor parte del tiempo en las dos ramas (cola de 0,2–0,7 s).
+- **Claro y el USB del CPE:** a las 12:52, con la bajada cargada, el
+  kernel de `cpe3` (MT7621) registró `xhci-mtk: ERROR unknown event type
+  37` y luego `qmi_wwan wwan0: NETDEV WATCHDOG: transmit queue 0 timed
+  out`: el módem (RM520N-GL, fw A03) dejó de transmitir por USB con la
+  interfaz arriba. No fue el watchdog del CPE (estaba en pausa)
+  [hipótesis: el controlador xHCI del MT7621 con el módem a 5 Gbit/s;
+  PROBAR con el firmware nuevo del módem o con el puerto a USB 2.0].
+- **`cake` sobre el túnel** (la interfaz WireGuard del PC: 40 Mbit/s de
+  subida, 130 de bajada con IFB; P3 sin gobernador; 2 corridas con y 2
+  sin, 30 s por sentido; con tres enlaces, Claro caído): el ping por el
+  túnel durante la subida, p90 169 y 92 ms sin `cake`, 53 y 46 con él;
+  p99 281 y 392 sin `cake`, 61 y 52 con él; el caudal igual (33–37
+  Mbit/s). En la bajada el ping ya era bueno sin `cake` (p90 48–50) y
+  no cambia. Sin `cake` todo el túnel es un solo flujo UDP hacia el VPS
+  y el ping espera detrás de la carga en la cola del enlace; `cake` en
+  la interfaz del túnel ve los flujos de adentro y les da turno. Muestra
+  chica (32 pings por corrida, uno por segundo).
+
 ## Qué hacemos con esto
 
 ### Orden de la Fase 5 y criterios de salida
@@ -714,3 +883,4 @@ Los umbrales son propuestas [razonado] y se miden en `bench/`.
 - 2026-10-14: el A/B de `split_spread_copy` por el túnel en el banco («`split_spread_copy` por el túnel, en el banco»): sin diferencia visible con n = 2, ningún envío perdido con los enlaces en la NIC integrada, y repartir baja el ping bajo carga de subida de ~200 a ~37 ms.
 - 2026-10-14: el PC del banco como segundo router (`pc`): por el túnel rinde lo mismo que la Pi, así que el techo es el reparto, no el fierro de la Pi.
 - 2026-10-14: el A/B desde el PC con n = 5–7 y la radio cruzada («El A/B desde el PC»): repartir baja el ping bajo carga de 154 a 34 ms en subida (p ≈ 0,001); con o sin copias no cambia nada medible; la radio (SINR, CQI) adelanta la cola de bajada.
+- 2026-10-14: el gobernador base (`govern.h`, `governor`), experimental y apagado por omisión, con sus medidas de laboratorio («El gobernador base, en el laboratorio»).
