@@ -975,7 +975,15 @@ subida:
   ventana se desborda y sale todo junto.
 Por enlace, `rx_owd_spread_ms` es cuánto va su retraso de llegada (bajada
 en el cliente, subida en el servidor) por detrás del más rápido de los
-enlaces que espera el reordenador (`null` sin medida). Su ventana ocupa
+enlaces que espera el reordenador (`null` sin medida), y
+`rx_owd_swing_ms` cuánto espera el reordenador por encima de su retraso
+medio: cuatro veces la desviación de ese retraso (la media de lo que
+cada medida se aparta de él, como el RTTVAR de TCP). El plazo de un hueco
+es el peor retraso más esa espera, más `reorder_margin_ms`, entre los
+enlaces que espera: un enlace celular cargado trae paquetes decenas de ms
+por encima de su media (historia 013). `rx_reorder_late` cuenta los
+paquetes que el enlace trajo después de que su hueco se diera por perdido
+(cualquier motivo): dice qué enlace llega tarde. Su ventana ocupa
 81 KiB (en el servidor, por sesión: ~5 MiB con 64, *cálculo*), y el pool,
 solo lo que llega a retener.
 

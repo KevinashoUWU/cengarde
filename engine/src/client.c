@@ -1383,6 +1383,27 @@ static void ro_reply(struct client *c, uint16_t *rset, uint32_t now, uint64_t no
 	ro_drain(c, *rset, now, 0, now_ms);
 }
 
+/* The clock a gap's deadline is judged by: now, or the read time of the
+ * oldest slot a pump holds that this loop has not taken yet, if earlier.
+ * A packet waiting there arrived before now; judged by now, its gap would
+ * be given up and the packet would come late a moment after (story 013:
+ * half of the Pi's lost.cap came less than 1 ms late). By arrival times, a
+ * gap given up at the clock is one whose packet had not come by then. */
+static uint64_t ro_clock(struct client *c, uint64_t now_us)
+{
+	for (int k = 0; k < c->npumps; k++) {
+		struct cg_pump *p = c->pump[k];
+
+		if (cg_pump_rx_avail(p)) {
+			uint64_t t = cg_pump_rx_slot(p, 0)->t_us;
+
+			if (t < now_us)
+				now_us = t;
+		}
+	}
+	return now_us;
+}
+
 /* What became due while nothing arrived (a deadline, or the rest of a
  * drain the budget cut): after every loop pass, and every tick. */
 static void ro_service(struct client *c)
@@ -1393,7 +1414,7 @@ static void ro_service(struct client *c)
 		return;
 	now_us = cg_now_us();
 	now_ms = now_us / 1000;
-	ro_drain(c, ro_rset(c, now_ms), (uint32_t)now_us, 0, now_ms);
+	ro_drain(c, ro_rset(c, now_ms), (uint32_t)ro_clock(c, now_us), 0, now_ms);
 	dout_flush(c, now_ms);
 }
 
@@ -1477,7 +1498,8 @@ static void link_read(struct client *c, struct link *l)
 
 /* One slot a pump read, judged; a first copy goes on (down_deliver). now:
  * the pass's clock, for what the reorderer releases. */
-static void hub_slot(struct client *c, struct cg_rxslot *sl, uint16_t *expect, uint16_t *rset, uint64_t now_us)
+/* clock_us: what the reorderer judges deadlines by (ro_clock). */
+static void hub_slot(struct client *c, struct cg_rxslot *sl, uint16_t *expect, uint16_t *rset, uint64_t clock_us)
 {
 	struct link *l = &c->link[sl->link];
 	uint64_t now_ms = sl->t_us / 1000;
@@ -1487,7 +1509,7 @@ static void hub_slot(struct client *c, struct cg_rxslot *sl, uint16_t *expect, u
 
 	if (v == CG_RXV_DATA) {
 		down_deliver(c, &h, sl->link, sl->buf + CG_HDR_LEN, sl->len - CG_HDR_LEN, (uint32_t)sl->t_us, *rset,
-			     (uint32_t)now_us, now_us / 1000);
+			     (uint32_t)clock_us, clock_us / 1000);
 		return;
 	}
 	if (v == CG_RXV_DROP)
@@ -1496,7 +1518,7 @@ static void hub_slot(struct client *c, struct cg_rxslot *sl, uint16_t *expect, u
 	if (v == CG_RXV_REPLY) {
 		on_probe_reply(c, l, &h, sl->buf + CG_HDR_LEN, (size_t)sl->len - CG_HDR_LEN, (uint32_t)sl->t_us, now_ms);
 		*expect = expect_mask(c);
-		ro_reply(c, rset, (uint32_t)now_us, now_us / 1000);
+		ro_reply(c, rset, (uint32_t)clock_us, clock_us / 1000);
 	} else if (v == CG_RXV_HELLO) {
 		on_hello(c, l, cg_now_us());
 	}
@@ -1512,7 +1534,7 @@ static void hub_slot(struct client *c, struct cg_rxslot *sl, uint16_t *expect, u
 static int hub_drain(struct client *c)
 {
 	uint32_t took[CG_MAX_PUMPS];
-	uint64_t now_us = cg_now_us();
+	uint64_t now_us = cg_now_us(), clock = ro_clock(c, now_us);
 	uint16_t expect = expect_mask(c), rset = c->cfg->reorder ? ro_rset(c, now_us / 1000) : 0;
 	int total = 0;
 
@@ -1532,7 +1554,7 @@ static int hub_drain(struct client *c)
 				stamp = sl->t_us;
 				cg_hist_add(&c->hop[pi], now_us > stamp ? (uint32_t)(now_us - stamp) : 0);
 			}
-			hub_slot(c, sl, &expect, &rset, now_us);
+			hub_slot(c, sl, &expect, &rset, clock);
 		}
 		took[pi] = n;
 		total += (int)n;
@@ -1908,6 +1930,8 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 		/* Its download delay behind the fastest link the reorderer waits
 		 * for, from the probe replies and the first copies. */
 		cg_json_owd_spread(j, "rx_owd_spread_ms", &c->rxs.ro, (unsigned)i, rset);
+		cg_json_owd_swing(j, "rx_owd_swing_ms", &c->rxs.ro, (unsigned)i);
+		cg_json_u64(j, "rx_reorder_late", c->rxs.ro.link[i].late);
 		cg_json_obj(j, "server_view");
 		cg_json_u64(j, "age_ms", l->peer_view_ms ? now_ms - l->peer_view_ms : 0);
 		cg_json_u64(j, "rx", l->peer_view.rx);

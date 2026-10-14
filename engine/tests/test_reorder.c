@@ -421,6 +421,48 @@ static void sc_spread(const struct base *b)
 	CHECK_EQ(drain(52 * MS), 1);
 }
 
+/* 3b: a link whose delay swings: its packets come up to tens of ms above
+ * its mean, and the deadline waits for them (story 013); a packet lost on
+ * it still goes, by the cap at the latest. */
+static void sc_swing(const struct base *b)
+{
+	uint32_t m;
+
+	rig(CG_RO_SLOTS, b, 200 * MS, 0, 10 * MS, 128, 0x3);
+	R.delay[0] = 10 * MS;
+	for (int i = 0; i < 40; i++) {
+		owd(0, 10 * MS);
+		owd(1, (i & 1 ? 80 : 40) * MS); /* a mean of 60, 20 off either way */
+	}
+	CHECK(R.r.link[0].dev == 0 && R.r.link[1].dev > 18 * MS && R.r.link[1].dev < 23 * MS);
+	CHECK(cg_ro_owd_max(&R.r, 0x3, &m) && m - (R.b.tb - R.b.tsb) > 120 * MS);
+	sendp(0, 0, 0, SPLIT);
+	CHECK_EQ(sendp(2, 2 * MS, 0, SPLIT), CG_RO_HOLD);
+	/* Seq 1, on the slow link 35 ms above its mean: past the old deadline
+	 * (ts(2) + 60 + 10 = 72 ms), within the new one. */
+	CHECK_EQ(drain(95 * MS), 0);
+	in(1, 1 * MS, 96 * MS, 1, SPLIT, DATA, BIG);
+	CHECK(OUT_IS(0, 1, 2));
+	CHECK_EQ(lost(&R.r.st), 0);
+
+	/* Lost for good: it goes at its deadline, never after the cap. */
+	rig(CG_RO_SLOTS, b, 200 * MS, 0, 10 * MS, 128, 0x3);
+	R.delay[0] = 10 * MS;
+	for (int i = 0; i < 40; i++) {
+		owd(0, 10 * MS);
+		owd(1, (i & 1 ? 80 : 40) * MS);
+	}
+	sendp(0, 0, 0, SPLIT);
+	sendp(2, 2 * MS, 0, SPLIT);
+	CHECK(due(12 * MS) > (int32_t)(100 * MS) && due(12 * MS) <= (int32_t)(200 * MS));
+	CHECK_EQ(drain(212 * MS), 1);
+	CHECK_EQ(R.r.st.lost_cap, 1);
+	CHECK(OUT_IS(0, 2));
+	/* It comes after all: late, and counted on the link that brought it. */
+	in(1, 1 * MS, 300 * MS, 1, SPLIT, DATA, BIG);
+	CHECK(R.r.st.late_cap == 1 && R.r.link[1].late == 1 && R.r.link[0].late == 0);
+}
+
 /* 4: RACK. */
 static void sc_rack(const struct base *b)
 {
@@ -970,6 +1012,9 @@ static void sc_owd(const struct base *b)
 	CHECK_EQ(r->link[1].owd, 100);
 	cg_ro_owd(r, 1, 20);
 	CHECK_EQ(r->link[1].owd, 90);
+	/* The deviation, against the delay before each sample: 0, then 7 / 4,
+	 * then 1 - 1 / 4 + 80 / 4. */
+	CHECK_EQ(r->link[1].dev, 21);
 	cg_ro_owd(r, 16, 5);
 	cg_ro_owd(r, 255, 5);
 	CHECK(!r->link[2].owd_ok);
@@ -1268,6 +1313,7 @@ static struct {
 	uint8_t wst[CG_RO_SLOTS];
 	uint64_t hw[CG_MAX_LINKS];
 	int64_t owd[CG_MAX_LINKS];
+	uint64_t dev[CG_MAX_LINKS];
 	uint8_t hw_ok[CG_MAX_LINKS], owd_ok[CG_MAX_LINKS];
 	uint16_t tick;
 	uint32_t burst;
@@ -1321,9 +1367,13 @@ static void m_owd_sample(unsigned l, int64_t raw)
 {
 	if (!M.owd_ok[l]) {
 		M.owd[l] = raw;
+		M.dev[l] = 0;
 		M.owd_ok[l] = 1;
 	} else {
-		M.owd[l] += (raw - M.owd[l]) / 8;
+		int64_t d = raw - M.owd[l];
+
+		M.dev[l] = M.dev[l] - M.dev[l] / 4 + (uint64_t)(d < 0 ? -d : d) / 4;
+		M.owd[l] += d / 8;
 	}
 }
 
@@ -1395,10 +1445,13 @@ static int64_t m_deadline(const struct cg_ro_cfg *cf, uint16_t rset, const struc
 	for (unsigned i = 0; i < CG_MAX_LINKS; i++) {
 		if (!(rset >> i & 1))
 			continue;
+		int64_t v;
+
 		if (!M.owd_ok[i])
 			return dl;
-		if (M.owd[i] > top)
-			top = M.owd[i];
+		v = M.owd[i] + (int64_t)(M.dev[i] > UINT32_MAX / CG_RO_DEV_K / 2 ? UINT32_MAX / 2 : CG_RO_DEV_K * M.dev[i]);
+		if (v > top)
+			top = v;
 	}
 	if (rset && (int64_t)p->ts + top + cf->margin_us < dl)
 		dl = (int64_t)p->ts + top + cf->margin_us;
@@ -2012,6 +2065,7 @@ void test_reorder(void)
 		sc_in_order(b);
 		sc_permute(b);
 		sc_spread(b);
+		sc_swing(b);
 		sc_rack(b);
 		sc_deadline(b);
 		sc_late(b);
