@@ -120,7 +120,19 @@
     Tránsito, no Las Flores; **24** = calle Las Flores, cerca del estadio de
     Tierra Amarilla, con 5G: aparece solo entre las vecinas, en 66936 y
     66736, a −103 dBm (5–6 dB bajo la 223), y su B28 no se vio. Otras
-    vecinas en 66736: 112, 333, 274 (−101 a −106);
+    vecinas en 66736: 112, 333, 274 (−101 a −106). **Comparadas bloqueadas**
+    (2026-10-14, hora peak, WOM solo por la VLAN 20, 15 s):
+
+    | Celda | LTE | 5G | Bajada | Subida | Ping |
+    | --- | --- | --- | --- | --- | --- |
+    | 223 (Mina Tránsito) | B66 2 × 20 MHz, −98 dBm, SINR −9 a 4 | no enganchó | 43,8 y 29,5 | 14,6 | 40–64 ms |
+    | 24 (Las Flores) | B66 20 MHz, −105 dBm, SINR −8 | n78 641664, −93 a −105, SINR 10–14, rank 2 | 32,3 | 17,0 | 63–73 ms |
+
+    La 24 trae 5G pero su ancla LTE llega débil y sin agregación; la 223
+    da más bajada y mejor ping. **Queda bloqueado al sitio de Mina
+    Tránsito** (`AT+QNWLOCK="common/4g",3,66936,223,66736,223,9260,314`),
+    para que no salte de celda a mitad de las medidas; la 24 queda para
+    probar de nuevo con las LPDA;
   - **Movistar:** B7, con NR a ratos; RSRQ −20 en las cuatro ramas de LTE
     (celda cargada).
 
