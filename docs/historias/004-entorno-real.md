@@ -63,6 +63,24 @@
 - **Latencia:** el VPS en Santiago queda cerca de los cuatro operadores
   chilenos (RTT esperado bajo en 5G; medirlo con las sondas de cengarde).
 
+- **Las celdas del banco** (2026-10-14, medido con `AT+QCAINFO`,
+  `AT+QENG`, `AT+QRSRP`/`AT+QSINR` y el CSI, más iperf3 por cada VLAN):
+  - **Entel:** un monoposte a ~100 m (PCI 151/152, sin 5G, alterna entre
+    las dos) y una macrocelda en un cerro a ~1 km (PCI 37 en B2 675 y 1125,
+    B7 3100 y B28 9485; NSA n78 con PCI 27; 256QAM de subida y 4x4). La PCI
+    36 no aparece en esas frecuencias y la 15 es otra macro (la primera que
+    llegó con 5G). Bloqueada en la 37, el 5G entra al instante pero el LTE
+    llega débil (B7 −96 dBm, SINR negativo): sin bloqueo por ahora, hasta
+    instalar 4 LPDA en diamante apuntadas a la macro (historia 013);
+  - **Claro:** en hora peak quedó anclado en **B28, PCI 465 (de una minera)**,
+    SINR −6/−7: 1,5 Mbit/s de bajada y 5,7 de subida. Tras un reinicio del
+    módem (`AT+CFUN=1,1`) enganchó **B2 20 MHz + B4, PCI 90 (planta de
+    fundición Paipote, ENAMI)**, SINR 12–14: 95 Mbit/s de bajada y 25 de
+    subida. Candidata a fijar si vuelve a caer en la 465;
+  - **WOM:** B66 + NSA n78, cuatro ramas parejas;
+  - **Movistar:** B7, con NR a ratos; RSRQ −20 en las cuatro ramas de LTE
+    (celda cargada).
+
 ## Qué hacemos con esto
 
 - **Objetivos de rendimiento** de la Fase 1/2: la Pi 4 con 4 enlaces tiene que
@@ -108,3 +126,5 @@
   bajada (historia 012). Transitorio: los enlaces (las VLAN 10–40) pasaron
   a la NIC integrada `eth0` y la LAN (`br-lan`, 192.168.50.1) al
   adaptador, hasta reemplazarlo por uno USB 3.0.
+- 2026-10-14: las celdas de cada operador en el banco (PCI y bandas), el
+  bloqueo de Entel probado y Claro entre la PCI 465 y la 90.
