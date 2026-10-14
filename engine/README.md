@@ -1023,7 +1023,7 @@ pasa de `governor_target_ms` (sin cola no hace falta frenar); entonces
 9/10 de lo que entregan los enlaces, para que la cola se forme en `cake`
 y no en los módems; sube (ticks de 100 ms) mientras entregan
 al menos 4/5 de ese ritmo sin cola (el freno podría ser `cake` mismo), un 1/32 por tick;
-se mantiene en reposo; solo baja con cola y con los enlaces a más de la mitad de su capacidad. Solo vale repartiendo: copiando, un enlace
+se mantiene en reposo; solo baja cuando los enlaces con cola llevan la mayor parte de lo entregado y eso pasa de 2 Mbit/s (la cola de un solo enlace lento es para los pesos). Solo vale repartiendo: copiando, un enlace
 atrasado no cuenta lo que recibe.
 
 Los paquetes repartidos: en el cliente, `upload.split` y, por enlace,

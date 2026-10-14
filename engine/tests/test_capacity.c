@@ -254,14 +254,18 @@ static void test_capacity_total(void)
 	measured(&l[2], 500, 500); /* not in the mask */
 	cg_cap_total_tick(&t, l, 0x3, 20 * MS);
 	CHECK(cg_cap_shape_bps(&t) == 0); /* no queue: no shaping */
-	/* a queue on an idle link (its delay swings): nothing */
-	measured(&l[1], 40, 50);
-	l[1].rate_bps = 1 * MBIT;
-	l[0].rate_bps = 2 * MBIT;
+	/* queues on an idle tunnel (delays swing): nothing */
+	measured(&l[0], 0.5, 50);
+	measured(&l[1], 1, 50);
 	cg_cap_total_tick(&t, l, 0x3, 20 * MS);
 	CHECK(cg_cap_shape_bps(&t) == 0);
+	/* a queue on the link that carries less: for the weights, not here */
 	measured(&l[0], 60, 5);
-	measured(&l[1], 40, 50);          /* a queue: 9/10 of 100 */
+	measured(&l[1], 40, 50);
+	cg_cap_total_tick(&t, l, 0x3, 20 * MS);
+	CHECK(cg_cap_shape_bps(&t) == 0);
+	measured(&l[0], 60, 50);
+	/* queues on both: 9/10 of 100 */
 	cg_cap_total_tick(&t, l, 0x3, 20 * MS);
 	CHECK(t.bps == 90 * MBIT);
 	cg_cap_total_tick(&t, l, 0x3, 20 * MS); /* still: not higher than before */
