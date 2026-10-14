@@ -153,6 +153,7 @@ struct session {
 	struct path path[CG_MAX_LINKS];
 	struct cg_hlink dh[CG_MAX_LINKS]; /* download health, by link id */
 	struct cg_cap_link cap[CG_MAX_LINKS]; /* each path's download capacity (capacity.h), by link id */
+	uint16_t cw[CG_MAX_LINKS];            /* the weights from them, with capacity_weights */
 	struct cg_replay replay; /* DATA up; its lost: lost on every link (lost_all) */
 	struct cg_replay ctl;    /* probes */
 	struct cg_arrivals arr;  /* by link, and joint lateness (joint) */
@@ -652,8 +653,10 @@ static struct session *session_create(struct server *s, struct client *C, const 
 	memset(S, 0, sizeof(*S));
 	cg_gov_reset(&S->gov);
 	cg_gov_weights(&S->gov, 0, S->gw);
-	for (int i = 0; i < CG_MAX_LINKS; i++)
+	for (int i = 0; i < CG_MAX_LINKS; i++) {
 		cg_cap_reset(&S->cap[i]);
+		S->cw[i] = CG_GOV_MAX;
+	}
 	S->used = 1;
 	S->id = id;
 	S->client = (int)(C - s->c);
@@ -1336,6 +1339,10 @@ static struct dpaths down_paths(const struct server *s, const struct session *S,
 	if (s->cfg->governor)
 		for (int p = 0; p < CG_MAX_LINKS; p++)
 			d.w[p] = (d.dup0 >> p & 1) ? 0 : S->gw[p];
+	/* With capacity_weights, from each path's capacity (capacity.h). */
+	if (s->cfg->capacity_weights)
+		for (int p = 0; p < CG_MAX_LINKS; p++)
+			d.w[p] = (d.dup0 >> p & 1) ? 0 : S->cw[p];
 	d.k = cg_split_spread_apply(s->cfg->split_spread_copy,
 				    cg_split_spread_out(&S->spread, d.elig, d.dup0, s->cfg->split_spread_ms * 1000), d.carry,
 				    d.elig, d.dup0);
@@ -1543,7 +1550,8 @@ static void gov_tick(struct server *s, struct session *S, uint64_t now_ms)
 }
 
 /* Each path's download capacity (capacity.h), from what the client says it
- * received on it: status only. */
+ * received on it, and with capacity_weights the split's weights from them
+ * (scaled by the governor's, with governor), after the governor's tick. */
 static void cap_tick(struct server *s, struct session *S, uint64_t now_ms)
 {
 	struct cg_cap_cfg cc = { .window_ms = s->cfg->governor_window_ms, .sat_us = s->cfg->governor_target_ms * 1000 };
@@ -1554,6 +1562,11 @@ static void cap_tick(struct server *s, struct session *S, uint64_t now_ms)
 		if (P->used)
 			cg_cap_tick(&S->cap[p], now_ms, P->peer_view_ms, P->peer_view.rx, P->tx_pkts, P->tx_bytes,
 				    &S->dh[p], &cc);
+	}
+	if (s->cfg->capacity_weights) {
+		struct dpaths d = down_paths(s, S, now_ms);
+
+		cg_cap_weights(S->cap, d.dup0, s->cfg->governor ? S->gw : NULL, cc.sat_us / 2, S->cw);
 	}
 }
 
@@ -1806,6 +1819,7 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 		cg_json_u64(j, "split_spread_ms", s->cfg->split_spread_ms);
 		cg_json_bool(j, "split_spread_copy", s->cfg->split_spread_copy);
 		cg_json_bool(j, "governor", s->cfg->governor);
+		cg_json_bool(j, "capacity_weights", s->cfg->capacity_weights);
 		if (S->peer_bond) {
 			cg_json_bool(j, "client_reorders", S->peer_reorders);
 			cg_json_bool(j, "client_asks_split", S->peer_asks);
@@ -1864,6 +1878,10 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 				cg_json_ms(j, "gov_queue_ms", (uint64_t)S->gov.l[p].queue_us);
 			else
 				cg_json_null(j, "gov_queue_ms");
+			if (s->cfg->capacity_weights)
+				cg_json_u64(j, "cap_weight", S->cw[p]);
+			else
+				cg_json_null(j, "cap_weight");
 			/* What it does in the download split (null: not split now),
 			 * and its delay behind the fastest candidate as guard G4 last
 			 * saw it. */

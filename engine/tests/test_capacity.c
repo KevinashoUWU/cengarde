@@ -140,8 +140,106 @@ static void test_capacity_edges(void)
 	CHECK(l.have_rate && l.rate_bps == 0);
 }
 
+/* A link measured at rate r Mbit/s with queue q ms. */
+static void measured(struct cg_cap_link *l, double r, int q)
+{
+	cg_cap_reset(l);
+	l->have = l->have_rate = 1;
+	l->rate_bps = l->max_cur = l->max_prev = (uint64_t)(r * MBIT);
+	l->queue_us = q < 0 ? -1 : q * (int32_t)MS;
+}
+
+/* The weights: shares as the capacities, 5/4 below the probe queue, the
+ * unmeasured at the top, the floor, dup0 and the governor's scale. */
+static void test_capacity_weights(void)
+{
+	struct cg_cap_link l[CG_MAX_LINKS];
+	uint16_t w[CG_MAX_LINKS], gov[CG_MAX_LINKS];
+
+	for (unsigned i = 0; i < CG_MAX_LINKS; i++)
+		cg_cap_reset(&l[i]);
+	cg_cap_weights(l, 0, NULL, 10 * MS, w); /* nothing measured: all at the top */
+	CHECK(w[0] == CG_GOV_MAX && w[15] == CG_GOV_MAX);
+
+	measured(&l[0], 200, 50); /* full: no probe */
+	measured(&l[1], 20, 50);
+	measured(&l[2], 100, 2); /* room: 125 */
+	measured(&l[3], 1, 50);  /* below the floor */
+	cg_cap_weights(l, 0, NULL, 10 * MS, w);
+	CHECK(w[0] == CG_GOV_MAX && w[1] == 100 && w[2] == 625 && w[3] == CG_GOV_MIN);
+	CHECK(w[4] == CG_GOV_MAX); /* not measured */
+	measured(&l[6], 0, 900); /* measured, delivering nothing: the floor */
+	cg_cap_weights(l, 0, NULL, 10 * MS, w);
+	CHECK(w[6] == CG_GOV_MIN && w[4] == CG_GOV_MAX);
+	/* a probing link above the others sets the scale */
+	measured(&l[2], 200, 2);
+	cg_cap_weights(l, 0, NULL, 10 * MS, w);
+	CHECK(w[2] == CG_GOV_MAX && w[0] == 800 && w[1] == 80);
+	/* dup0 keeps 0 and does not set the scale */
+	measured(&l[5], 1000, 50);
+	cg_cap_weights(l, 1u << 5, NULL, 10 * MS, w);
+	CHECK(w[5] == 0 && w[2] == CG_GOV_MAX);
+	/* the governor scales each share */
+	for (unsigned i = 0; i < CG_MAX_LINKS; i++)
+		gov[i] = CG_GOV_MAX;
+	gov[0] = 500;
+	gov[1] = 10;
+	cg_cap_weights(l, 1u << 5, gov, 10 * MS, w);
+	CHECK(w[0] == 400 && w[1] == CG_GOV_MIN && w[2] == CG_GOV_MAX);
+}
+
+/* Two links of 30 and 8 Mbit/s take 30 between them, split by these
+ * weights, each behind a FIFO queue; reports every 100 ms. Equal weights
+ * give the slow one 15 and its queue runs away; from the capacities it
+ * ends with about its share and both queues stay short. */
+static void test_capacity_converges(void)
+{
+	struct cg_cap_link l[CG_MAX_LINKS];
+	struct cg_hlink h[CG_MAX_LINKS];
+	uint16_t w[CG_MAX_LINKS];
+	const double cap[2] = { 30.0, 8.0 }, load = 30.0;
+	double q[2] = { 0, 0 }, maxq_late = 0, share1 = 0; /* queued Mbit; ms */
+	uint64_t tx_p[2] = { 0, 0 }, tx_b[2] = { 0, 0 }, t = 1000;
+	uint32_t rx[2] = { 0, 0 };
+
+	memset(h, 0, sizeof(h));
+	for (unsigned i = 0; i < CG_MAX_LINKS; i++)
+		cg_cap_reset(&l[i]);
+	for (int k = 0; k < 600; k++) { /* 60 s */
+		double tot;
+
+		cg_cap_weights(l, 0xfffc, NULL, CFG.sat_us / 2, w); /* links 2-15 out (dup0) */
+		tot = (double)w[0] + w[1];
+		t += 100;
+		for (int i = 0; i < 2; i++) {
+			double in = load * w[i] / tot * 0.1, out; /* Mbit this tick */
+			uint64_t pk = (uint64_t)(in * MBIT / 8 / 1000);
+
+			q[i] += in;
+			out = q[i] < cap[i] * 0.1 ? q[i] : cap[i] * 0.1;
+			q[i] -= out;
+			tx_p[i] += pk;
+			tx_b[i] += pk * 1000;
+			rx[i] += (uint32_t)(out * MBIT / 8 / 1000);
+			h[i].owd = 20000u + (uint32_t)(q[i] / cap[i] * 1000 * MS);
+			h[i].have_owd = 1;
+			h[i].fresh_until_ms = t + 3000;
+			cg_cap_tick(&l[i], t, t, rx[i], tx_p[i], tx_b[i], &h[i], &CFG);
+			if (k >= 300 && q[i] / cap[i] * 1000 > maxq_late)
+				maxq_late = q[i] / cap[i] * 1000;
+		}
+		if (k >= 300)
+			share1 += w[1] / tot / 300.0;
+	}
+	/* 8 of 38: 0.21 of the load, give or take the probing */
+	CHECK(share1 > 0.12 && share1 < 0.30);
+	CHECK(maxq_late < 100.0);
+}
+
 void test_capacity(void)
 {
+	test_capacity_converges();
+	test_capacity_weights();
 	test_capacity_rates();
 	test_capacity_saturated();
 	test_capacity_edges();

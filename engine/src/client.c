@@ -155,6 +155,7 @@ struct client {
 	struct link link[CG_MAX_LINKS];
 	struct cg_hlink uh[CG_MAX_LINKS]; /* upload health, by link id */
 	struct cg_cap_link cap[CG_MAX_LINKS]; /* each link's upload capacity (capacity.h), by link id */
+	uint16_t cw[CG_MAX_LINKS];            /* the weights from them, with capacity_weights */
 	struct cg_hcfg hcfg;
 	struct cg_status_writer sw;
 	struct cg_ctl ctl;
@@ -982,6 +983,8 @@ static int split_active(const struct client *c)
 static const uint16_t *split_weights(const struct client *c, uint16_t *dup0)
 {
 	*dup0 = c->cfg->split == CG_SPLIT_FORCE ? 0 : c->dup0;
+	if (c->cfg->capacity_weights)
+		return c->cw;
 	if (c->cfg->governor)
 		return c->gw;
 	return c->cfg->split == CG_SPLIT_FORCE ? split_equal : c->lw;
@@ -1672,7 +1675,8 @@ static void gov_tick(struct client *c, uint16_t present, uint16_t live, uint64_t
 }
 
 /* Each link's upload capacity (capacity.h), from what the server says it
- * received on it: status only. */
+ * received on it, and with capacity_weights the split's weights from them
+ * (scaled by the governor's, with governor), after the governor's tick. */
 static void cap_tick(struct client *c, uint64_t now_ms)
 {
 	struct cg_cap_cfg cc = { .window_ms = c->cfg->governor_window_ms, .sat_us = c->cfg->governor_target_ms * 1000 };
@@ -1684,6 +1688,9 @@ static void cap_tick(struct client *c, uint64_t now_ms)
 			cg_cap_tick(&c->cap[i], now_ms, l->peer_view_ms, l->peer_view.rx, l->tx_pkts, l->tx_bytes, &c->uh[i],
 				    &cc);
 	}
+	if (c->cfg->capacity_weights)
+		cg_cap_weights(c->cap, c->cfg->split == CG_SPLIT_FORCE ? 0 : c->dup0, c->cfg->governor ? c->gw : NULL,
+			       cc.sat_us / 2, c->cw);
 }
 
 static void health_tick(struct client *c, uint64_t now_ms)
@@ -1833,6 +1840,7 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 	cg_json_u64(j, "split_spread_ms", c->cfg->split_spread_ms);
 	cg_json_bool(j, "split_spread_copy", c->cfg->split_spread_copy);
 	cg_json_bool(j, "governor", c->cfg->governor);
+	cg_json_bool(j, "capacity_weights", c->cfg->capacity_weights);
 	/* What the newest probe reply says (null: no tail, an older server). */
 	if (c->peer_bond)
 		cg_json_bool(j, "server_reorders", c->peer_reorders);
@@ -1930,6 +1938,10 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 			cg_json_ms(j, "gov_queue_ms", (uint64_t)c->gov.l[i].queue_us);
 		else
 			cg_json_null(j, "gov_queue_ms");
+		if (c->cfg->capacity_weights)
+			cg_json_u64(j, "cap_weight", c->cw[i]);
+		else
+			cg_json_null(j, "cap_weight");
 		/* What it does in the upload split (null: not split now), and its
 		 * delay behind the fastest candidate as guard G4 last saw it. */
 		if (split_active(c))
@@ -2458,8 +2470,10 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 	}
 	c->lt = cg_lt_resolve(cfg->link_threads, CG_LT_ARCH_MEASURED, c->ncpus, cfg->cpu >= 0, CG_LT_AUTO_ON);
 	cg_gov_reset(&c->gov);
-	for (int i = 0; i < CG_MAX_LINKS; i++)
+	for (int i = 0; i < CG_MAX_LINKS; i++) {
 		cg_cap_reset(&c->cap[i]);
+		c->cw[i] = CG_GOV_MAX;
+	}
 	cg_gov_weights(&c->gov, 0, c->gw);
 	c->txs.k_tx = cfg->key;
 	c->txs.hint = cg_client_hint(cfg->key);

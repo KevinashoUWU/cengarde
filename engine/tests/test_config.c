@@ -427,6 +427,7 @@ static void test_config_bonding(void)
 	CHECK_EQ(c.split_spread_ms, 30);
 	CHECK_EQ(c.split_spread_copy, 1);
 	CHECK(c.governor == 0 && c.governor_target_ms == 20 && c.governor_window_ms == 10000);
+	CHECK(c.capacity_weights == 0);
 	CHECK(warn[0] == '\0');
 	cg_config_free(&c);
 	CHECK_EQ(cg_config_parse(&c, SERVER, err, sizeof(err), warn, sizeof(warn)), 0);
@@ -441,6 +442,7 @@ static void test_config_bonding(void)
 	CHECK_EQ(c.split_spread_ms, 30);
 	CHECK_EQ(c.split_spread_copy, 1);
 	CHECK(c.governor == 0 && c.governor_target_ms == 20 && c.governor_window_ms == 10000);
+	CHECK(c.capacity_weights == 0);
 	CHECK(warn[0] == '\0');
 	cg_config_free(&c);
 	CHECK(!strcmp(cg_split_name(CG_SPLIT_OFF), "off") && !strcmp(cg_split_name(CG_SPLIT_ON), "on") &&
@@ -450,7 +452,8 @@ static void test_config_bonding(void)
 #define KNOBS                                                                                      \
 	"reorder = no\nreorder_max_wait_ms = 400\nreorder_dup_wait_ms = 20\nreorder_margin_ms = 25\n" \
 	"reorder_bypass = 256\nreorder_pool_kb = 1024\nsplit_small = 512\nsplit_spread_ms = 0\n" \
-	"split_spread_copy = no\ngovernor = yes\ngovernor_target_ms = 35\ngovernor_window_ms = 30000\n"
+	"split_spread_copy = no\ngovernor = yes\ngovernor_target_ms = 35\ngovernor_window_ms = 30000\n" \
+	"capacity_weights = yes\n"
 	CHECK_EQ(cg_config_parse(&c, CLIENT KNOBS "split = force\n", err, sizeof(err), warn, sizeof(warn)), 0);
 	CHECK_EQ(c.reorder, 0);
 	CHECK_EQ(c.reorder_max_wait_ms, 400);
@@ -463,6 +466,7 @@ static void test_config_bonding(void)
 	CHECK_EQ(c.split_spread_ms, 0);
 	CHECK_EQ(c.split_spread_copy, 0);
 	CHECK(c.governor == 1 && c.governor_target_ms == 35 && c.governor_window_ms == 30000);
+	CHECK(c.capacity_weights == 1);
 	CHECK(warn[0] == '\0');
 	cg_config_free(&c);
 	CHECK_EQ(cg_config_parse(&c, SERVER KNOBS "split = off\n", err, sizeof(err), warn, sizeof(warn)), 0);
@@ -477,6 +481,7 @@ static void test_config_bonding(void)
 	CHECK_EQ(c.split_spread_ms, 0);
 	CHECK_EQ(c.split_spread_copy, 0);
 	CHECK(c.governor == 1 && c.governor_target_ms == 35 && c.governor_window_ms == 30000);
+	CHECK(c.capacity_weights == 1);
 	CHECK(warn[0] == '\0');
 	cg_config_free(&c);
 #undef KNOBS
@@ -496,6 +501,10 @@ static void test_config_bonding(void)
 	cg_config_free(&c);
 	CHECK_EQ(cg_config_parse(&c, CLIENT "governor = no\n", err, sizeof(err), warn, sizeof(warn)), 0);
 	CHECK(c.governor == 0 && c.split_spread_copy == 1);
+	cg_config_free(&c);
+	/* capacity_weights too: the copies would keep filling its links */
+	CHECK_EQ(cg_config_parse(&c, SERVER "capacity_weights = yes\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK(c.capacity_weights == 1 && c.split_spread_copy == 0);
 	cg_config_free(&c);
 
 	/* reorder and split_spread_copy are a yes or no. */
@@ -525,6 +534,7 @@ static void test_config_bonding(void)
 		bad(SERVER "reorder = \n", "reorder", "yes or no");
 		bad(SERVER "split_spread_copy = copy\n", "split_spread_copy", "yes or no");
 		bad(CLIENT "governor = maybe\n", "governor", "yes or no");
+		bad(SERVER "capacity_weights = maybe\n", "capacity_weights", "yes or no");
 	}
 
 	/* The ranges, edge by edge, in a client and a server alike. */
