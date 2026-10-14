@@ -814,6 +814,24 @@ check "an existing file is the engine's: left alone" \
 	sh -c 'grep -qx "34604 router" "$1" && ! grep -q 50000 "$1"' sh "$F"
 unset FAKE_WG_ENDPOINTS
 
+say "engine.local: the engine's global settings by hand, kept by every run"
+fresh local
+add router "$S1" >/dev/null
+printf 'governor = yes\nsplit_spread_ms = 250\n' >"$R/etc/cengarde/engine.local"
+check "refresh with an engine.local" setup refresh
+check "its settings in the configuration, before the [client] sections" sh -c '
+	awk "/^\\[client /{exit} {print}" "$1" | grep -qx "governor = yes" &&
+	grep -qx "split_spread_ms = 250" "$1"' sh "$R/etc/cengarde/cengarde.conf"
+check "a second refresh changes nothing" sh -c 'cp "$1" "$1.before" && env CENGARDE_ROOT="$2" PATH="$3" CENGARDE_CTL_TIMEOUT=2 sh "$4" refresh >/dev/null 2>&1 && cmp -s "$1" "$1.before"' \
+	sh "$R/etc/cengarde/cengarde.conf" "$R" "$BIN:$PATH" "$SETUP"
+printf 'governor = yes\n[client x]\nkey = y\n' >"$R/etc/cengarde/engine.local"
+check "an engine.local with a [section] refused" not setup refresh
+check "with the reason" said "no [section]"
+check "and the configuration as it was" grep -qx "split_spread_ms = 250" "$R/etc/cengarde/cengarde.conf"
+rm -f "$R/etc/cengarde/engine.local"
+check "engine.local removed: refresh" setup refresh
+check "its settings gone" not grep -q "^governor" "$R/etc/cengarde/cengarde.conf"
+
 say "install.sh on a server whose running engine refuses the new configuration"
 # 0.4.5 to 0.5.0: the static user is there, so the old engine keeps running
 # until 6/6, and it refuses a configuration with [client] sections on a

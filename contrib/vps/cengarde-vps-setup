@@ -57,7 +57,12 @@
 # /var/lib/cengarde/wg/ports, so that it outlives a restart of the engine (a
 # router whose clock went back needs it); the first time, before an engine
 # that writes it ever ran (0.6.1 and older), it is read from WireGuard here.
-# Settings: /etc/cengarde/nat.conf (see cengarde-nat).
+# Settings: /etc/cengarde/nat.conf (see cengarde-nat). The engine's own
+# global settings by hand (governor, split_spread_ms...: see
+# engine/examples/server.conf) go in /etc/cengarde/engine.local, one
+# "key = value" per line, no [sections]: every run copies it into the
+# configuration it writes, which is regenerated from scratch and so would
+# lose an edit made there.
 # CENGARDE_ROOT goes in front of every path (tests). CENGARDE_NO_RELOAD=1
 # writes the configuration without asking the running engine to reload it
 # (install.sh, which restarts the engine right after).
@@ -91,6 +96,7 @@ CLIENTS=$ETC/clients
 SECRET_FILE=$ETC/secret
 IDLE_KEY=$ETC/idle-key
 ENGINE_CONF=$ETC/cengarde.conf
+LOCAL_CONF=$ETC/engine.local
 WG_DIR=$R/etc/wireguard
 STATE_DIR=$R/var/lib/cengarde
 PASS_FILE=$STATE_DIR/passthrough
@@ -397,7 +403,7 @@ engine_conf() {
 	reserved=$(echo "$reserved" | tr '\n' ' ' | sed 's/ $//')
 	cat <<-EOF
 		# Written by cengarde-vps-setup from $CLIENTS; run it again instead of
-		# editing. Other settings: engine/examples/server.conf.
+		# editing. Other settings: $LOCAL_CONF (engine/examples/server.conf).
 		mode = server
 		listen = *:$CENGARDE_PORT
 		status_file = /run/cengarde/status.json
@@ -410,6 +416,12 @@ engine_conf() {
 		# Lower latency for more CPU (docs/historias/006); fine on dedicated vCPUs.
 		#busy_poll_us = 50
 	EOF
+	if [ -s "$LOCAL_CONF" ]; then
+		# Before the [client] sections, which would take its keys.
+		! grep -q '^[[:space:]]*\[' "$LOCAL_CONF" || die "$LOCAL_CONF: the engine's global settings only, no [section]"
+		echo "# By hand, from $LOCAL_CONF:"
+		cat "$LOCAL_CONF"
+	fi
 	if [ "$(nrouters)" -eq 0 ]; then
 		cat <<-EOF
 			# No router yet ("cengarde-vps-setup add"): a key that serves nobody.

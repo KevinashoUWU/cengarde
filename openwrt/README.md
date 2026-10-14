@@ -394,8 +394,10 @@ configuración del router:
     del enlace que ya iba atrasado, y en el laboratorio ayudaron a QUIC
     (historia 012), así que está para probar las dos cosas en campo. El VPS
     hace lo mismo con la bajada, con su propio `split_spread_ms` (30) y su
-    propio `split_spread_copy` (activado, salvo con su gobernador), en su
-    `cengarde.conf`.
+    propio `split_spread_copy` (activado, salvo con su gobernador), y su
+    propio `governor`: van en `/etc/cengarde/engine.local` del VPS, que
+    `cengarde-vps-setup` copia en el `cengarde.conf` que genera (editar
+    `cengarde.conf` no sirve: cada `refresh` lo vuelve a escribir).
     En el laboratorio, 50 ms entre dos enlaces ya se comían casi toda la
     ganancia del reparto y 150 ms la hundían (ver `engine/README.md`).
   - **El reparto protege menos que copiar** (por eso viene apagado),
