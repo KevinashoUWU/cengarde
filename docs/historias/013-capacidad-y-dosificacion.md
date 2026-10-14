@@ -1,7 +1,7 @@
 # 013 — Capacidad por enlace y dosificación (paso 4 del bonding)
 
 - **Fecha:** 2026-10-14
-- **Estado:** vigente. PR 1 hecho (PR #32, 0.6.5): el plazo del reordenador según la oscilación de cada enlace. PR 2 hecho (PR #33, 0.6.6): la capacidad de cada enlace, solo en el estado. Los dos medidos en la red de pruebas. PR 3 y 4 por hacer.
+- **Estado:** vigente. PR 1 hecho (PR #32, 0.6.5): el plazo del reordenador según la oscilación de cada enlace. PR 2 hecho (PR #33, 0.6.6): la capacidad de cada enlace. PR 3 (PR #34, 0.6.7): los pesos según la capacidad (`capacity_weights`), +50 % en la bajada (n = 5, p = 0,075). Medidos en la red de pruebas. PR 4 por hacer.
 - **Fuentes:**
   - las medidas del 2026-10-14 en el banco y en la Pi, en [012](012-bonding.md) («El gobernador en el banco…», «El gobernador en la bajada y `cake`…», «… en la Pi»);
   - código leído: `engine/src/reorder.h` (plazo de un hueco, líneas 70–80 del comentario), `govern.h`, `split.h`, `health.h`, `proto.h` (`struct cg_probe_info`: `rx` por camino), `clientpath.h`, `server.c` (`peer_asks`, `apply_config`);
@@ -135,6 +135,31 @@ enlace llevó (sus bytes enviados y lo que el VPS dice haber recibido,
 que coinciden). Contra eso, el estimador queda dentro del 1–9 %. Cumple
 el criterio de la historia (±20 %).
 
+### PR 3, medido [red de pruebas, 2026-10-14 al anochecer]
+
+`capacity_weights` en el VPS (la bajada de la Pi, repartida), contra el
+gobernador solo que tenía la red de pruebas; 5 rondas alternadas de 30 s:
+
+| Ronda | Gobernador (A) | Gobernador + `capacity_weights` (B) |
+| --- | --- | --- |
+| 1 | 60,8 | 107,6 |
+| 2 | 46,6 | 102,1 |
+| 3 | 55,6 | 55,2 |
+| 4 | 48,1 | 85,4 |
+| 5 | 61,6 | 59,5 |
+| media | 54,5 Mbit/s | 82,0 Mbit/s (+50 %; Mann-Whitney unilateral p = 0,075) |
+
+- B gana tres rondas por mucho y empata dos; el ping por el túnel, igual
+  (medias 38–48 ms); `lost.cap` en la Pi, 0,8–5,1 % en B frente a
+  1,0–7,5 % en A.
+- Lo que hace: WOM (capacidad 45–87 Mbit/s) lleva el peso mayor, Claro
+  (25–38) la mitad o menos, Movistar (1–9) un 2–14 %, y Entel, al piso.
+  Con el gobernador solo, Claro y WOM quedan casi parejos aunque uno
+  entrega el doble.
+- Entel estaba enfermo en ese momento (bloqueado en la PCI 37: 20 % de
+  pérdida y 60–250 ms de ping en reposo; capacidad medida 0–3 Mbit/s): los
+  pesos por capacidad lo dejaron al piso, que es lo esperado.
+
 ### Ramas de antena y CSI [medido, 2026-10-14]
 
 Con `AT+QRSRP`/`AT+QSINR` (por rama) y el reporte CSI activado
@@ -219,3 +244,4 @@ dan MCS, RI, CQI y PMI):
 - 2026-10-14: creada, con el diseño del paso 4 y la investigación del reordenador y de la subida desde la LAN.
 - 2026-10-14: el PR 1 medido en los dos extremos; el reloj de los plazos con `link_threads`; los tardíos por enlace.
 - 2026-10-14: el PR 2 validado enlace por enlace; las ramas de antena y el CSI de los cuatro módems.
+- 2026-10-14: el PR 3 (pesos según la capacidad) medido en la bajada.
