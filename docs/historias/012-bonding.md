@@ -561,6 +561,38 @@ corridas.
   guardas. Las conclusiones sobre la espiral de la subida se mantienen (la
   subida no cambió); las de la bajada hay que repetirlas.
 
+#### `split_spread_copy` por el túnel, en el banco [medido en banco]
+
+Fuente: el banco de la casa, 2026-10-14, con los enlaces ya en la NIC
+integrada de la Pi (arriba). Cada perfil en los dos extremos, y el túnel
+cargado con `fieldperf -m tunnel` desde la Pi (iperf3 a 10.79.0.1, 4
+flujos, 10 s por sentido); dos rondas en orden inverso (n = 2), con los
+tres registradores encendidos. Mbit/s y ping por el túnel bajo carga (p50).
+
+| perfil | subida | ping subida | bajada | ping bajada | subida repartida |
+| --- | --- | --- | --- | --- | --- |
+| P0 copia | 33,6 / 33,1 | 173 / 240 ms | 143 / 125 | 131 / 90 ms | 0 % |
+| P6 spread 30, copias | 27,8 / 56,6 | 38 / 36 ms | 135 / 117 | 82 / 82 ms | 99,8 / 91,5 % |
+| P7 spread 30, sin copias | 56,9 / 37,4 | 40 / 35 ms | 103 / 167 | 42 / 64 ms | 99,9 / 99,9 % |
+| P3 spread 250, copias | 35,0 / 38,9 | 34 / 35 ms | 160 / 154 | 41 / 40 ms | 99,8 / 99,9 % |
+| P8 spread 250, sin copias | 22,4 / 36,7 | 37 / 37 ms | 129 / 179 | 38 / 50 ms | 99,7 / 99,8 % |
+
+- **Las copias contra su ausencia no se distinguen con n = 2:** las dos
+  rondas de un mismo perfil difieren hasta en un 60 % (P6, P7 y P8 en
+  subida), más que cualquier diferencia entre perfiles.
+- **Ningún envío perdido en la Pi** (22 en una sola corrida), contra los
+  miles de la prueba de campo del 2026-10-13. La guarda de 30 ms sacó a un
+  enlace en casi todas las corridas, y la espiral apareció una sola vez
+  (P6-2 terminó duplicando, con el 91,5 % repartido). Hipótesis [MEDIR en
+  campo]: los envíos perdidos del campo venían en parte de la NIC USB a
+  USB 2.0, que también llevaba la subida (cuatro copias de cada paquete);
+  con los enlaces en la NIC integrada ya no aparecen.
+- **Repartir baja mucho la latencia bajo carga de subida:** 34–40 ms de
+  ping por el túnel contra 173–240 ms copiando, con una subida parecida.
+  Copiando, el túnel va al paso de la cola más llena de las cuatro.
+- **Pendiente:** repetir con n ≥ 5 y en el campo, ahora sin el cuello de
+  la NIC, antes de cambiar el valor por omisión de `split_spread_copy`.
+
 ## Qué hacemos con esto
 
 ### Orden de la Fase 5 y criterios de salida
@@ -627,3 +659,4 @@ Los umbrales son propuestas [razonado] y se miden en `bench/`.
 - 2026-10-13: segunda prueba en la Pi, con dos tandas y la bajada repartida («La espiral de las guardas, en la Pi»), y el caso `bloat` en `bond`. `split_spread_copy` (paquetes 0.6.3): las copias de G4 y el duplicado de G2 con un solo enlace pasan a ser una perilla, por omisión como hasta la 0.6.2; `bond` suma el sufijo `-nc` y la tabla, los envíos por paquete y los envíos perdidos. `bench/fieldperf.sh` y `fieldperf.py`: iperf3 en campo, por enlace y por el túnel, con los contadores que dicen dónde se pierde un envío. `cengarde-rec` espera con el `sleep()` de `ucode` donde el `sleep` de busybox no acepta fracciones (el de OpenWrt): antes grababa una vez por segundo aunque el motor escribiera cada 200 ms.
 - 2026-10-14: `bench/radiorec.py`: la radio de cada módem cada segundo desde el PC del banco (celda servidora, portadoras agregadas, la pata NR), en el formato de `cell-monitor`, para cruzarla con `fieldrec.py --rf`. Los cuatro módems del banco anclan en LTE y WOM suma NR n78 en NSA, así que la falla conjunta de «los NSA caen juntos y el SA no» no se puede probar aquí; sí la de dos operadoras en la misma banda de anclaje (Entel y Movistar, B7). Historia 004.
 - 2026-10-14: el banco en la casa («El banco en la casa»): la bajada de la Pi la limitaba su NIC USB, enganchada a USB 2.0; con los enlaces en la NIC integrada la bajada con los cuatro a la vez pasó de 128 a 338 Mbit/s. WOM rindió 263 Mbit/s solo con la pata NR encima.
+- 2026-10-14: el A/B de `split_spread_copy` por el túnel en el banco («`split_spread_copy` por el túnel, en el banco»): sin diferencia visible con n = 2, ningún envío perdido con los enlaces en la NIC integrada, y repartir baja el ping bajo carga de subida de ~200 a ~37 ms.
