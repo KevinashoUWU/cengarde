@@ -229,6 +229,27 @@ alternadas de 30 s, con la Pi y el VPS con `capacity_weights`:
   contra 0,5–1,5 %), pero el reordenador del VPS retiene lo mismo
   (65–74 %). Queda experimental. [PENDIENTE: dónde está el resto del techo
   en la subida, con pocas retransmisiones y enlaces que no se llenan.]
+- **Buscando el freno de la subida** (con un agente que revisó el código y
+  medidas en vivo):
+  - el código del cliente no tiene topes: lee 512 datagramas por despertar
+    y nunca espera al enviar;
+  - la CPU de la Pi, 9–16 % por núcleo; sin descartes en UDP, `fq` ni en
+    el motor; los enlaces pasan paquetes de 1500 bytes (sin
+    fragmentación); TCP con RTT medio de 150–175 ms (mínimo ~60) por las
+    colas de WOM y Entel (89–114 ms) mientras Movistar, con poca cola, se
+    usa a la mitad: el reparto por capacidad sobrecarga a los que se llenan
+    y la capacidad de los otros crece lento. El gobernador encima de los
+    pesos por capacidad: 41 / 24 / 35 contra 33 / 20 / 33 Mbit/s (+16 %, sin
+    significancia: los enlaces variaban mucho);
+  - UDP por el túnel: la subida se queda en ~47 Mbit/s pidiendo 70 o 100;
+    la bajada a 100 Mbit/s pierde 11–31 %, en parte porque un enlace con la
+    cola llena (Claro, luego Movistar) sigue recibiendo su parte y todo lo
+    suyo llega tarde para el anti-replay (`too_old`), y en parte porque a
+    esa hora los enlaces daban menos de 100 en total (colas de 0,4–2,4 s).
+    Unos 4000 errores de buffer de recepción en UDP por prueba en la Pi
+    (2500 en el VPS) no se van con `rmem_default` de 4 MB.
+  - [PENDIENTE: repetir de día con el techo medido al mismo tiempo; un
+    enlace cuyas respuestas no vuelven no debe conservar su parte.]
 - **Relojes:** chrony en el VPS y en la Pi contra `ntp.shoa.cl` (SHOA,
   stratum 1; quedan en stratum 2, ±2 ms el VPS y ±18 ms la Pi, que
   sincroniza por el túnel); `sysntpd` apagado en la Pi.
