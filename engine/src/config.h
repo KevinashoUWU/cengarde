@@ -173,6 +173,7 @@ struct cg_config {
 	int split_spread_copy;        /* links out of the split get every packet (split.h); default: not with governor */
 	int governor;                 /* the split's weights from each link's queue (govern.h) */
 	int capacity_weights;         /* the split's weights from each link's capacity (capacity.h) */
+	int split_eta;                /* split by expected arrival (eta.h) */
 	uint32_t governor_target_ms;  /* the queue a link may hold */
 	uint32_t governor_window_ms;  /* of each link's minimum delay */
 

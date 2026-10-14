@@ -476,6 +476,10 @@ after_upgrade() {
 	check "cg-router listens on 65501 (0.4's WireGuard port)" [ "$(wg show cg-router listen-port 2>/dev/null)" = 65501 ]
 	check "no rule of 0.4 is left" not legacy_rules
 	check "the static user cengarde exists" grep -q '^cengarde:' /etc/passwd
+	# Right after the units turn active the main PID may still be a
+	# moment off (0 between a stop and a start reads as root): wait for it.
+	engine_is_cengarde() { [ "$(engine_user)" = cengarde ]; }
+	wait_for 10 engine_is_cengarde
 	check "the engine runs as cengarde (it says: $(engine_user))" [ "$(engine_user)" = cengarde ]
 	check "cengarde.conf is 0640 root:cengarde" [ "$(stat -c '%a %U %G' /etc/cengarde/cengarde.conf)" = "640 root cengarde" ]
 	check "the secret file was imported and deleted" [ ! -e "$SECRET" ]

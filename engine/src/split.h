@@ -57,7 +57,8 @@
 #include <stdint.h>
 #include <string.h>
 
-#include "arrival.h" /* CG_MAX_LINKS */
+#include "arrival.h"
+#include "eta.h" /* CG_MAX_LINKS */
 #include "config.h"  /* enum cg_split_mode */
 #include "health.h"  /* struct cg_hlink: each link's delay */
 #include "proto.h"   /* CG_F_SPLIT, struct cg_probe_bond */
@@ -94,10 +95,14 @@ static inline void cg_split_reset(struct cg_split *s)
  * Returns the link that carries the packet, to which cg_split_dst adds the
  * weight-0 links, and ORs CG_F_SPLIT into *flags (NULL: not asked), the
  * other bits left as they are. Returns -1, with *flags untouched, when the
- * packet goes to every carrier. */
-static inline int cg_split_pick(struct cg_split *s, uint16_t carriers, uint16_t eligible, uint16_t dup0,
-				const uint16_t w[CG_MAX_LINKS], uint8_t wgtype, uint32_t len,
-				uint32_t small_len, uint8_t *flags)
+ * packet goes to every carrier.
+ *
+ * With eta (not NULL), among 2 or more links the packet goes where it
+ * arrives first (eta.h), sent at now_us; by the weights when a link has no
+ * rate yet. */
+static inline int cg_split_pick_eta(struct cg_split *s, struct cg_eta *eta, uint64_t now_us, uint16_t carriers,
+				    uint16_t eligible, uint16_t dup0, const uint16_t w[CG_MAX_LINKS], uint8_t wgtype,
+				    uint32_t len, uint32_t small_len, uint8_t *flags)
 {
 	uint16_t set = 0, keep, copies = dup0;
 	int32_t total = 0;
@@ -132,6 +137,15 @@ static inline int cg_split_pick(struct cg_split *s, uint16_t carriers, uint16_t 
 		return best;
 	}
 
+	if (eta) {
+		int k = cg_eta_pick(eta, keep, len, now_us);
+
+		if (k >= 0) {
+			if (flags)
+				*flags |= CG_F_SPLIT;
+			return k;
+		}
+	}
 	for (int i = 0; i < CG_MAX_LINKS; i++) {
 		if (!(keep >> i & 1))
 			continue;
@@ -148,6 +162,13 @@ static inline int cg_split_pick(struct cg_split *s, uint16_t carriers, uint16_t 
 	if (flags)
 		*flags |= CG_F_SPLIT;
 	return best;
+}
+
+static inline int cg_split_pick(struct cg_split *s, uint16_t carriers, uint16_t eligible, uint16_t dup0,
+				const uint16_t w[CG_MAX_LINKS], uint8_t wgtype, uint32_t len, uint32_t small_len,
+				uint8_t *flags)
+{
+	return cg_split_pick_eta(s, NULL, 0, carriers, eligible, dup0, w, wgtype, len, small_len, flags);
 }
 
 /* The links a packet is sent on, given what cg_split_pick returned: every
