@@ -89,12 +89,23 @@ static void test_capacity_saturated(void)
 		sim_step(&s, 40, 25); /* the link drops to 25: a queue builds */
 	CHECK(s.l.queue_us > (int32_t)(20 * MS));
 	CHECK(near(cg_cap_bps(&s.l), 25, 0.05));
-	/* the queue gone and the link back at 50: the capacity follows */
-	for (int i = 0; i < 40; i++)
+	/* one bad half second while the queue lasts does not sink it */
+	for (int i = 0; i < 5; i++)
+		sim_step(&s, 40, 2);
+	for (int i = 0; i < 5; i++)
+		sim_step(&s, 40, 25);
+	CHECK(near(cg_cap_bps(&s.l), 25, 0.05));
+	/* the queue empties: more delivered than sent in an interval, and no
+	 * new start for that; then the link back at 50: the capacity follows */
+	for (int i = 0; i < 6; i++)
+		sim_step(&s, 0, 50);
+	CHECK(s.l.have_rate && s.l.rate_bps > 20 * MBIT);
+	for (int i = 0; i < 34; i++)
 		sim_step(&s, 0, 50);
 	for (int i = 0; i < 20; i++)
 		sim_step(&s, 45, 50);
-	CHECK(near(cg_cap_bps(&s.l), 45, 0.05));
+	/* the queue emptied at the link's 50: that is what it carries */
+	CHECK(near(cg_cap_bps(&s.l), 50, 0.05) && near(s.l.rate_bps, 45, 0.05));
 }
 
 /* Samples span CG_CAP_MIN_MS; counters from another run start again. */
