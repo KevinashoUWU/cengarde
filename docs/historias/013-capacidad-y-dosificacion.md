@@ -1,7 +1,7 @@
 # 013 — Capacidad por enlace y dosificación (paso 4 del bonding)
 
 - **Fecha:** 2026-10-14
-- **Estado:** vigente. Diseño; nada implementado todavía salvo el margen del reordenador puesto a mano en la red de pruebas.
+- **Estado:** vigente. PR 1 hecho (PR #32, 0.6.5): el plazo del reordenador según la oscilación de cada enlace, medido en la red de pruebas. PR 2 a 4 por hacer.
 - **Fuentes:**
   - las medidas del 2026-10-14 en el banco y en la Pi, en [012](012-bonding.md) («El gobernador en el banco…», «El gobernador en la bajada y `cake`…», «… en la Pi»);
   - código leído: `engine/src/reorder.h` (plazo de un hueco, líneas 70–80 del comentario), `govern.h`, `split.h`, `health.h`, `proto.h` (`struct cg_probe_info`: `rx` por camino), `clientpath.h`, `server.c` (`peer_asks`, `apply_config`);
@@ -66,6 +66,42 @@ Cada sonda lleva `rx`: los paquetes verificados que ese extremo recibió por ese
 
 El ritmo de entrega es la capacidad solo cuando el enlace va lleno; si se le manda menos, mide lo que se le mandó. La cola (el OWD sobre su mínimo, `govern.h`) dice cuál de los dos casos es: con cola creciendo, el enlace va lleno.
 
+### PR 1, medido [red de pruebas, 2026-10-14 de tarde]
+
+El plazo según la oscilación de cada enlace (PR #32, 0.6.5), en los dos
+extremos:
+
+- **Subida (el reordenador del VPS),** alternando la 0.6.4 con margen 10 y
+  50 ms y la nueva con 10 ms, 3 corridas de 15 s cada una:
+
+  | VPS | `lost.cap` (Pi / PC) | Subida de la Pi (Mbit/s) |
+  | --- | --- | --- |
+  | 0.6.4, margen 10 | 3,9–6,3 % / 7,5–8,8 % | 26,4 / 39,2 / 35,9 |
+  | 0.6.4, margen 50 | 0,6–0,9 % / 0,7–1,1 % | 42,5 / 43,5 / 49,3 |
+  | nueva, margen 10 | 0,15–0,6 % / 0,2–1,05 % | 52,6 / 46,8 / 42,3 |
+
+  Cumple el criterio (< 1 %) sin margen fijo: la espera sobre la media
+  (`rx_owd_swing_ms`) va de 8 a 80 ms según el enlace y la hora. El ping
+  no cuenta aquí: va en paquetes chicos, que el reordenador no retiene.
+  El PC por la Pi sigue en 11–15 Mbit/s con las tres (su problema es
+  otro, arriba).
+- **Bajada (el reordenador de la Pi):** con la 0.6.4, `lost.cap` de 6,3–12 %;
+  con el plazo nuevo, 2,6–7 %. La mitad de lo que quedaba llegaba menos
+  de 1 ms tarde: con `link_threads`, el hilo central juzgaba los plazos
+  con la hora del principio de la pasada, mientras el paquete del hueco
+  esperaba en el anillo de otro enlace. Juzgados por la lectura más vieja
+  que aún espera, esos casi desaparecen (8375 → 1739 por corrida) y queda
+  2,6–6,4 %. El contador nuevo por enlace (`rx_reorder_late`) dice de
+  dónde viene el resto: de Movistar (19 % de lo que trae llega tarde,
+  con colas de 0,4–1,3 s y fuera del reparto) y de Claro (6 %, cuando su
+  retardo salta de 5 a 650 ms). No es oscilación sino colas que se
+  llenan de golpe: lo que ya iba en camino llega más tarde que
+  `reorder_max_wait_ms`. Eso no lo arregla esperar más sino no llenar el
+  enlace: es el PR 3 (pesos según la capacidad).
+- La bajada se queda en 120–175 Mbit/s con la 0.6.4 y con la nueva: la
+  pérdida falsa que queda está en los enlaces que se atoran, no en el
+  plazo.
+
 ## Qué hacemos con esto (diseño)
 
 ### Piezas
@@ -109,9 +145,10 @@ El ritmo de entrega es la capacidad solo cuando el enlace va lleno; si se le man
 ## Pendiente
 
 - El misterio del PC (arriba): ver los ACK que vuelven repartidos y reordenados por la Pi; probar con el reordenador de la Pi con margen más largo.
-- Poner el margen también en la Pi, o esperar al PR 1: la bajada tiene la cola de tardanza más larga.
+- Los tardíos de la bajada que quedan vienen de enlaces que se atoran (Movistar, Claro): PR 3.
 - Volver a medir el gobernador de subida con el reordenador corregido: sus A/B se midieron con un 4–8 % de pérdidas falsas.
 
 ## Cambios
 
 - 2026-10-14: creada, con el diseño del paso 4 y la investigación del reordenador y de la subida desde la LAN.
+- 2026-10-14: el PR 1 medido en los dos extremos; el reloj de los plazos con `link_threads`; los tardíos por enlace.
