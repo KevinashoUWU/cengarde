@@ -723,8 +723,20 @@ con y sin `governor` en el cliente (solo la subida; el VPS sin gobernador),
   WOM 892).
 - Con el CPE doble reiniciándose, el gobernador no se pudo juzgar en el
   banco (ni ninguna prueba de subida anterior con los cuatro enlaces); en
-  el laboratorio sí ayuda (arriba). Queda repetir el A/B con la fuente
-  nueva.
+  el laboratorio sí ayuda (arriba).
+- **Repetido con la fuente nueva** (el mismo día, 11:00–11:17, el CPE
+  doble sin reinicios): subida sin gobernador 35,5 / 32,8 / 40,9 / 28,7
+  Mbit/s (media 34,5); con gobernador 33,8 / 35,0 / 31,3 / 18,7 (media
+  29,7). La bajada (control) 145–207. **El gobernador no mejora la
+  subida en el banco** (n = 4, sin diferencia significativa). En dos
+  corridas con gobernador un enlace acumuló colas de 0,6–1 s (Entel en
+  B-1, con peso 11 y fuera del reparto, pero con el 42 % de los bytes
+  enviados: las copias de `split_spread_copy` a los enlaces atrasados
+  siguen llenando su cola), y en B-4 los pesos quedaron casi iguales y la
+  subida cayó a 18,7. Sin gobernador, los cuatro enlaces quedan dentro
+  del reparto casi todo el tiempo [hipótesis: con el gobernador, las
+  copias a los enlaces fuera del reparto anulan la reducción de su peso;
+  PROBAR con `split_spread_copy = off`].
 
 ## Qué hacemos con esto
 
