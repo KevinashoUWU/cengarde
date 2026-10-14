@@ -65,8 +65,8 @@
 
 - **Las celdas del banco** (2026-10-14, medido con `AT+QCAINFO`,
   `AT+QENG`, `AT+QRSRP`/`AT+QSINR` y el CSI, más iperf3 por cada VLAN):
-  - **Entel:** un monoposte a ~100 m (PCI 151/152, sin 5G, alterna entre
-    las dos) y una macrocelda en un cerro a ~1 km (PCI 37 en B2 675 y 1125,
+  - **Entel:** un monoposte a ~100 m (Villa El Escorial; PCI 151/152, sin
+    5G, alterna entre las dos) y una macrocelda en un cerro a ~1 km (PCI 37 en B2 675 y 1125,
     B7 3100 y B28 9485; NSA n78 con PCI 27; 256QAM de subida y 4x4). La PCI
     36 no aparece en esas frecuencias y la 15 es otra macro (la primera que
     llegó con 5G). Bloqueada en la 37, el 5G entra al instante pero el LTE
@@ -134,7 +134,14 @@
     para que no salte de celda a mitad de las medidas; la 24 queda para
     probar de nuevo con las LPDA;
   - **Movistar:** B7, con NR a ratos; RSRQ −20 en las cuatro ramas de LTE
-    (celda cargada).
+    (celda cargada). Su sitio es la **«palmera falsa» del Hostal Atacama**
+    (eNB 9B147): B7 3300 PCI 91, B2 1000 PCI 20 (agregada), B28 9360 PCI 91 y
+    NR n78 628334 PCI 125 (NSA). El otro sitio que se ve es el eNB 9B54A
+    (PCI 227 en B7 3300, 230 en B28 9360); en B2 1000 también la PCI 194.
+  - **Bloqueos para las medidas** (2026-10-14 de noche, para que ningún
+    módem salte de celda a mitad de una prueba): Claro al sitio de ENAMI,
+    WOM al de Mina Tránsito y Entel al monoposte de Villa El Escorial
+    (`AT+QNWLOCK="common/4g",3,3100,152,675,152,1125,152`: B2 + B7 + B2).
 
 ## Qué hacemos con esto
 
