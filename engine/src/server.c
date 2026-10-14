@@ -94,6 +94,7 @@
 #include "rcvbudget.h"
 #include "replay.h"
 #include "sock.h"
+#include "capacity.h"
 #include "govern.h"
 #include "split.h"
 #include "status.h"
@@ -151,6 +152,7 @@ struct session {
 	uint64_t created_ms, last_rx_ms;
 	struct path path[CG_MAX_LINKS];
 	struct cg_hlink dh[CG_MAX_LINKS]; /* download health, by link id */
+	struct cg_cap_link cap[CG_MAX_LINKS]; /* each path's download capacity (capacity.h), by link id */
 	struct cg_replay replay; /* DATA up; its lost: lost on every link (lost_all) */
 	struct cg_replay ctl;    /* probes */
 	struct cg_arrivals arr;  /* by link, and joint lateness (joint) */
@@ -650,6 +652,8 @@ static struct session *session_create(struct server *s, struct client *C, const 
 	memset(S, 0, sizeof(*S));
 	cg_gov_reset(&S->gov);
 	cg_gov_weights(&S->gov, 0, S->gw);
+	for (int i = 0; i < CG_MAX_LINKS; i++)
+		cg_cap_reset(&S->cap[i]);
 	S->used = 1;
 	S->id = id;
 	S->client = (int)(C - s->c);
@@ -709,6 +713,7 @@ static struct path *path_update(struct server *s, struct session *S, unsigned li
 		cg_health_reset(&S->dh[link], now_ms);
 		cg_split_spread_reset(&S->spread, link);
 		cg_gov_link_reset(&S->gov, link);
+		cg_cap_reset(&S->cap[link]);
 		cg_path_learn(&P->addr, &P->local, from, &got);
 		P->ctl_len = cg_local_cmsg(&P->local, s->lfamily, &P->ctl);
 		cg_info("%ssession %08x: link %u via %s%s%s", tag, S->id, link, cg_addr_str(from, a, sizeof(a)),
@@ -728,6 +733,7 @@ static struct path *path_update(struct server *s, struct session *S, unsigned li
 		cg_health_reset(&S->dh[link], now_ms);
 		cg_split_spread_reset(&S->spread, link);
 		cg_gov_link_reset(&S->gov, link);
+		cg_cap_reset(&S->cap[link]);
 	}
 	P->moves++;
 	if (s->pktinfo)
@@ -1536,6 +1542,21 @@ static void gov_tick(struct server *s, struct session *S, uint64_t now_ms)
 	cg_gov_weights(&S->gov, d.dup0, S->gw);
 }
 
+/* Each path's download capacity (capacity.h), from what the client says it
+ * received on it: status only. */
+static void cap_tick(struct server *s, struct session *S, uint64_t now_ms)
+{
+	struct cg_cap_cfg cc = { .window_ms = s->cfg->governor_window_ms, .sat_us = s->cfg->governor_target_ms * 1000 };
+
+	for (int p = 0; p < CG_MAX_LINKS; p++) {
+		const struct path *P = &S->path[p];
+
+		if (P->used)
+			cg_cap_tick(&S->cap[p], now_ms, P->peer_view_ms, P->peer_view.rx, P->tx_pkts, P->tx_bytes,
+				    &S->dh[p], &cc);
+	}
+}
+
 static void health_tick(struct server *s, uint64_t now_ms)
 {
 	for (uint32_t i = 0; i < s->cap; i++) {
@@ -1549,6 +1570,7 @@ static void health_tick(struct server *s, uint64_t now_ms)
 		changed = cg_health_eval(S->dh, CG_MAX_LINKS, live, now_ms, &s->hcfg);
 		spread_tick(s, S, tag, now_ms);
 		gov_tick(s, S, now_ms);
+		cap_tick(s, S, now_ms);
 		for (int p = 0; changed; p++, changed >>= 1) {
 			const struct cg_hlink *h = &S->dh[p];
 
@@ -1867,6 +1889,7 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 			cg_json_owd_spread(j, "rx_owd_spread_ms", &S->ro, (unsigned)p, rset);
 			cg_json_owd_swing(j, "rx_owd_swing_ms", &S->ro, (unsigned)p);
 			cg_json_u64(j, "rx_reorder_late", p < CG_MAX_LINKS ? S->ro.link[p].late : 0);
+			cg_json_capacity(j, &S->cap[p]);
 			cg_json_obj(j, "client_view");
 			cg_json_u64(j, "age_ms", P->peer_view_ms ? now_ms - P->peer_view_ms : 0);
 			cg_json_u64(j, "rx", P->peer_view.rx);

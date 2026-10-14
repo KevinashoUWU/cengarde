@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 #include "status.h"
 
+#include "capacity.h"
+
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
@@ -301,6 +303,22 @@ void cg_json_owd_swing(struct cg_json *j, const char *k, const struct cg_reorder
 		cg_json_null(j, k);
 	else
 		cg_json_ms(j, k, cg_ro_swing(l));
+}
+
+void cg_json_capacity(struct cg_json *j, const struct cg_cap_link *l)
+{
+	/* bps / 1000 as "ms" prints Mbit/s with three decimals. */
+	if (l->have_rate) {
+		cg_json_ms(j, "capacity_mbit", cg_cap_bps(l) / 1000);
+		cg_json_ms(j, "delivery_mbit", l->rate_bps / 1000);
+	} else {
+		cg_json_null(j, "capacity_mbit");
+		cg_json_null(j, "delivery_mbit");
+	}
+	if (l->queue_us >= 0)
+		cg_json_ms(j, "queue_ms", (uint64_t)l->queue_us);
+	else
+		cg_json_null(j, "queue_ms");
 }
 
 int cg_status_write(const char *path, const char *data, size_t len)

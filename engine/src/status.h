@@ -56,6 +56,11 @@ void cg_json_owd_spread(struct cg_json *j, const char *key, const struct cg_reor
 /* How far above its mean receive delay the reorderer waits for link's
  * packets (CG_RO_DEV_K deviations), ms; null until it has a delay. */
 void cg_json_owd_swing(struct cg_json *j, const char *key, const struct cg_reorder *r, unsigned link);
+/* A link's capacity in the direction this end sends (capacity.h):
+ * capacity_mbit, delivery_mbit (null until measured) and queue_ms (null
+ * until a delay). */
+struct cg_cap_link;
+void cg_json_capacity(struct cg_json *j, const struct cg_cap_link *l);
 
 /* Writes data to path atomically. Returns 0 or -1 (errno set). */
 int cg_status_write(const char *path, const char *data, size_t len);
