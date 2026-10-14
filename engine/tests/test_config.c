@@ -481,6 +481,23 @@ static void test_config_bonding(void)
 	cg_config_free(&c);
 #undef KNOBS
 
+	/* split_spread_copy: yes by default, no by default with governor, as
+	 * set either way. */
+	CHECK_EQ(cg_config_parse(&c, CLIENT "governor = yes\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK(c.governor == 1 && c.split_spread_copy == 0);
+	cg_config_free(&c);
+	CHECK_EQ(cg_config_parse(&c, SERVER "governor = yes\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK(c.governor == 1 && c.split_spread_copy == 0);
+	cg_config_free(&c);
+	CHECK_EQ(cg_config_parse(&c, CLIENT "governor = yes\nsplit_spread_copy = yes\n", err, sizeof(err), warn,
+				 sizeof(warn)),
+		 0);
+	CHECK(c.governor == 1 && c.split_spread_copy == 1);
+	cg_config_free(&c);
+	CHECK_EQ(cg_config_parse(&c, CLIENT "governor = no\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK(c.governor == 0 && c.split_spread_copy == 1);
+	cg_config_free(&c);
+
 	/* reorder and split_spread_copy are a yes or no. */
 	{
 		static const char *const yes[] = { "yes", "true", "on", "1" }, *const no[] = { "no", "false", "off", "0" };

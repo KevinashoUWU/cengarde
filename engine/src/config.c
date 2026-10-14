@@ -745,7 +745,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	c->split = c->mode == CG_MODE_SERVER ? CG_SPLIT_CLIENT : CG_SPLIT_OFF;
 	c->split_small = 256;
 	c->split_spread_ms = 30;
-	c->split_spread_copy = 1;
+	c->split_spread_copy = -1; /* by governor, below */
 	c->governor_target_ms = 20;
 	c->governor_window_ms = 10000;
 	c->cpu = -1;
@@ -803,6 +803,12 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	    get_u32(&ini, "", "governor_target_ms", 1, 1000, &c->governor_target_ms, err, errlen) ||
 	    get_u32(&ini, "", "governor_window_ms", 1000, 120000, &c->governor_window_ms, err, errlen))
 		goto out;
+	/* By default the links out of the split get a copy of every packet,
+	 * as up to 0.6.2, but not with the governor: the copies keep filling
+	 * the queue of a link whose weight it turns down (story 012, the
+	 * bench, 2026-10-14). */
+	if (c->split_spread_copy < 0)
+		c->split_spread_copy = !c->governor;
 	if (cg_ini_get(&ini, "", "cpu")) {
 		u = 0;
 		if (get_u32(&ini, "", "cpu", 0, 1023, &u, err, errlen))
