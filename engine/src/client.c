@@ -1692,7 +1692,7 @@ static void cap_tick(struct client *c, uint16_t live, uint64_t now_ms)
 	if (c->cfg->capacity_weights)
 		cg_cap_weights(c->cap, c->cfg->split == CG_SPLIT_FORCE ? 0 : c->dup0, c->cfg->governor ? c->gw : NULL,
 			       cc.sat_us / 2, c->cw);
-	cg_cap_total_tick(&c->ctot, c->cap, live);
+	cg_cap_total_tick(&c->ctot, c->cap, live, cc.sat_us);
 }
 
 static void health_tick(struct client *c, uint64_t now_ms)

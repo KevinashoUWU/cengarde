@@ -36,13 +36,14 @@
  * queue (govern.h) scales each share.
  *
  * cg_cap_total_tick keeps the rate a shaper in front of the tunnel should
- * hold (story 013, PR 4): the sum of the capacities, followed up and down
- * while the links carry at least half of it, and held while they carry
- * less (an idle tunnel's capacities decay to what it carries: a shaper set
- * to that would throttle the next burst). CG_CAP_SHAPE_PCT of it leaves
- * room for the tunnel's own overhead, so that the queue forms in the
- * shaper and not in the modems. The engine only says the rate; a service
- * outside it applies cake.
+ * hold (story 013, PR 4), as cake-autorate does but from the engine's own
+ * measures: nothing until a link's queue goes above sat_us (no queue, no
+ * need to shape); then 9/10 of what the links deliver, so that the queue
+ * forms in the shaper and not in the modems; up by 1 % a tick while they
+ * deliver at least 4/5 of the rate and no queue appears (the shaper may be
+ * what holds them: a rate set from what they deliver behind it would only
+ * ever go down); held otherwise (an idle tunnel says nothing). The engine
+ * only says the rate; a service outside it applies cake.
  *
  * Pure: no clock, no I/O, no allocation.
  *
@@ -212,35 +213,41 @@ static inline void cg_cap_weights(const struct cg_cap_link l[CG_MAX_LINKS], uint
 	}
 }
 
-#define CG_CAP_SHAPE_PCT 85 /* of the links' total capacity, for a shaper */
-
 struct cg_cap_total {
-	uint64_t bps; /* the links' total capacity, as last seen busy */
-	uint8_t have;
+	uint64_t bps; /* the shaper's rate, 0: none yet */
 };
 
-/* One tick: mask, the links that carry (the split's, or every live one). */
-static inline void cg_cap_total_tick(struct cg_cap_total *t, const struct cg_cap_link l[CG_MAX_LINKS], uint16_t mask)
+/* One tick: mask, the links that carry (every live one); sat_us, the queue
+ * that says a link is full. */
+static inline void cg_cap_total_tick(struct cg_cap_total *t, const struct cg_cap_link l[CG_MAX_LINKS], uint16_t mask,
+				     uint32_t sat_us)
 {
-	uint64_t cap = 0, del = 0;
+	uint64_t del = 0;
+	int sat = 0, any = 0;
 
 	for (unsigned i = 0; i < CG_MAX_LINKS; i++)
 		if ((mask >> i & 1) && l[i].have_rate) {
-			cap += cg_cap_bps(&l[i]);
 			del += l[i].rate_bps;
+			any = 1;
+			if (l[i].queue_us >= 0 && (uint32_t)l[i].queue_us > sat_us)
+				sat = 1;
 		}
-	if (!cap)
+	if (!any)
 		return;
-	if (!t->have || del * 2 >= cap) {
-		t->bps = cap;
-		t->have = 1;
+	if (sat) {
+		uint64_t to = del / 10 * 9;
+
+		if (to && (!t->bps || to < t->bps))
+			t->bps = to;
+	} else if (t->bps && del * 5 >= t->bps * 4) {
+		t->bps += t->bps / 100 ? t->bps / 100 : 1;
 	}
 }
 
-/* The shaper's rate, bps; 0 until known. */
+/* The shaper's rate, bps; 0: no shaping yet. */
 static inline uint64_t cg_cap_shape_bps(const struct cg_cap_total *t)
 {
-	return t->have ? t->bps * CG_CAP_SHAPE_PCT / 100 : 0;
+	return t->bps;
 }
 
 #endif

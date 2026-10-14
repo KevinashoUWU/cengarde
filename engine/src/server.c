@@ -1569,7 +1569,7 @@ static void cap_tick(struct server *s, struct session *S, uint16_t live, uint64_
 
 		cg_cap_weights(S->cap, d.dup0, s->cfg->governor ? S->gw : NULL, cc.sat_us / 2, S->cw);
 	}
-	cg_cap_total_tick(&S->ctot, S->cap, live);
+	cg_cap_total_tick(&S->ctot, S->cap, live, cc.sat_us);
 }
 
 static void health_tick(struct server *s, uint64_t now_ms)

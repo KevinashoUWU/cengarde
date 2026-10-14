@@ -1014,14 +1014,17 @@ cola (`queue_ms`, el retardo de ida sobre su mínimo de la ventana) pase
 de `governor_target_ms`: entonces lo que entrega ahora. Un enlace al que
 se le manda menos de lo que lleva entrega lo que se le manda, y su
 capacidad baja a eso al cabo de una ventana. Con `capacity_weights`, de
-ella salen los pesos del reparto (arriba); sin, solo se informa. La suma
-de las capacidades (de los enlaces vivos) da `shape_mbit` (en `upload` en
-el cliente, por sesión en el servidor): el 85 % de esa suma, seguida
-mientras los enlaces llevan al menos la mitad de ella y retenida mientras
-llevan menos (un túnel ocioso no la baja), para un `cake` delante del
-túnel que no se fija a mano (`bench/shaper.sh`, experimental; historia
-013). Solo vale repartiendo: copiando, un enlace atrasado no cuenta lo que
-recibe y su capacidad se queda corta.
+ella salen los pesos del reparto (arriba); sin, solo se informa.
+`shape_mbit` (en `upload` en el cliente, por sesión en el servidor) es el
+ritmo para un `cake` delante del túnel que no se fija a mano
+(`bench/shaper.sh`, experimental; historia 013), como `cake-autorate`
+pero con las medidas del motor: `null` hasta que la cola de un enlace
+pasa de `governor_target_ms` (sin cola no hace falta frenar); entonces
+9/10 de lo que entregan los enlaces, para que la cola se forme en `cake`
+y no en los módems; sube un 1 % por tick (cada 100 ms) mientras entregan
+al menos 4/5 de ese ritmo sin cola (el freno podría ser `cake` mismo);
+se mantiene en reposo. Solo vale repartiendo: copiando, un enlace
+atrasado no cuenta lo que recibe.
 
 Los paquetes repartidos: en el cliente, `upload.split` y, por enlace,
 `tx_split` (los que salieron por él: su parte, o todos con peso 0) y
