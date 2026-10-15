@@ -57,7 +57,7 @@
 # Needs root (files owned by root, as on a server), wg (wireguard-tools),
 # script (util-linux), python3 and a C compiler for the engine.
 #
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 set -u
 
 HERE=$(cd "$(dirname "$0")" && pwd)

@@ -37,7 +37,7 @@
  *
  * Pure functions, no clock and no I/O.
  *
- * SPDX-License-Identifier: GPL-2.0-only */
+ * SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef CG_SRVPICK_H
 #define CG_SRVPICK_H
 

@@ -1,7 +1,7 @@
 /* Map from a 32-bit id (session id) to a small index: open addressing with
  * linear probing and backward-shift deletion (no tombstones). The table has
  * at least twice as many slots as entries, so probes always end.
- * SPDX-License-Identifier: GPL-2.0-only */
+ * SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef CG_IDMAP_H
 #define CG_IDMAP_H
 

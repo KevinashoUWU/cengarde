@@ -21,7 +21,7 @@
 # cake qdisc (kmod-sched-cake on OpenWrt). An experiment for now: the
 # measures decide whether it becomes a service of the package.
 #
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 set -u
 IFACE='' STATUS='' CLIENT='' PERIOD=2 DELTA=10 MIN=2000
 while getopts i:s:c:p:d:m:f o; do

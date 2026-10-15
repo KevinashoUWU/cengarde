@@ -32,7 +32,7 @@
  * Pure functions over the addresses netlink reported, in the kernel's order
  * (cg_addr_slot); no I/O.
  *
- * SPDX-License-Identifier: GPL-2.0-only */
+ * SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef CG_ADDRPICK_H
 #define CG_ADDRPICK_H
 

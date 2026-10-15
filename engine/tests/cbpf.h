@@ -4,7 +4,7 @@
  * SO_REUSEPORT program, on the UDP payload: a load past the end ends it
  * with 0.
  *
- * SPDX-License-Identifier: GPL-2.0-only */
+ * SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef CG_TEST_CBPF_H
 #define CG_TEST_CBPF_H
 

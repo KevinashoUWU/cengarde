@@ -1,6 +1,6 @@
 /* Status snapshot as JSON, written atomically (temp file + rename) so a web
  * UI or LuCI can read it without the daemon opening any port.
- * SPDX-License-Identifier: GPL-2.0-only */
+ * SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef CG_STATUS_H
 #define CG_STATUS_H
 

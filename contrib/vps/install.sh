@@ -18,7 +18,7 @@
 # and tunnel address, and the service gets a static user. Back to 0.4: "sudo cengarde-vps-setup purge", then the 0.4
 # checkout's install.sh. firewalld is not supported yet: it stops here.
 #
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 set -eu
 
 SRC=$(cd "$(dirname "$0")/../.." && pwd)

@@ -21,7 +21,7 @@
  * 3.2 MiB each. udp_mem itself is left alone: raising it on a small box
  * trades UDP drops for the OOM killer.
  *
- * SPDX-License-Identifier: GPL-2.0-only */
+ * SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef CG_RCVBUDGET_H
 #define CG_RCVBUDGET_H
 

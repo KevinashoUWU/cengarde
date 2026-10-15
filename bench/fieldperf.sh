@@ -40,7 +40,7 @@
 # The results hold the addresses of the VPS and of the modems: send the
 # directory (tar czf) to whoever reads it, never to a public place.
 #
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ME=fieldperf
 MODES="solo all tunnel"

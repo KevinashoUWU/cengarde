@@ -71,7 +71,7 @@
  * writes each client's to wireguard_port_file (wgport.h), from a thread, and
  * the first session after a restart binds it again.
  *
- * SPDX-License-Identifier: GPL-2.0-only */
+ * SPDX-License-Identifier: GPL-3.0-or-later */
 #include <errno.h>
 #include <inttypes.h>
 #include <signal.h>

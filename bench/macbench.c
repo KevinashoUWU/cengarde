@@ -43,7 +43,7 @@
  * hardening flags), and only the loop is timed, never a syscall or a
  * socket. Nothing here includes receiving, the replay window or the send.
  *
- * SPDX-License-Identifier: GPL-2.0-only */
+ * SPDX-License-Identifier: GPL-3.0-or-later */
 #define _GNU_SOURCE
 #include <getopt.h>
 #include <netinet/in.h>

@@ -15,7 +15,7 @@
  * here: musl's CMSG_NXTHDR warns under -Wextra, and nothing says a control
  * buffer is aligned for the structures in it. Pure functions, no I/O.
  *
- * SPDX-License-Identifier: GPL-2.0-only */
+ * SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef CG_PKTINFO_H
 #define CG_PKTINFO_H
 

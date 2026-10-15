@@ -1,5 +1,5 @@
 /* Minimal test harness: each suite is a function, CHECK records failures.
- * SPDX-License-Identifier: GPL-2.0-only */
+ * SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef CG_TEST_H
 #define CG_TEST_H
 

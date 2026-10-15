@@ -11,7 +11,7 @@
 // since the start; mono: CLOCK_MONOTONIC, to match other tools' clocks),
 // then one summary line per CPU.
 //
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 #define _GNU_SOURCE
 #include <pthread.h>
 #include <sched.h>

@@ -31,7 +31,7 @@ Each column, per test and link:
 The raw files hold the addresses of the VPS and of the modems: they stay
 with whoever ran the test, and so does this output.
 
-SPDX-License-Identifier: GPL-2.0-only
+SPDX-License-Identifier: GPL-3.0-or-later
 """
 import argparse
 import csv

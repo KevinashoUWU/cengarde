@@ -1,5 +1,5 @@
 /* SipHash-2-4 (Aumasson & Bernstein), incremental API.
- * SPDX-License-Identifier: GPL-2.0-only */
+ * SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef CG_SIPHASH_H
 #define CG_SIPHASH_H
 

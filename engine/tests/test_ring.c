@@ -1,6 +1,6 @@
 /* The ring's pure parts and its single-thread behaviour; the atomics under
  * concurrency are in test_threads.c.
- * SPDX-License-Identifier: GPL-2.0-only */
+ * SPDX-License-Identifier: GPL-3.0-or-later */
 #include <stdint.h>
 #include <string.h>
 

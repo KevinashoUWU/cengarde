@@ -27,7 +27,7 @@
  *   wireguard_poke = 10.79.12.34:9
  *   forward = tcp:9000=22 udp:5000-5010
  *
- * SPDX-License-Identifier: GPL-2.0-only */
+ * SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef CG_CONFIG_H
 #define CG_CONFIG_H
 

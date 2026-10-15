@@ -26,7 +26,7 @@
  *
  * Pure: no clock, no I/O, no allocation (the caller owns the memory).
  *
- * SPDX-License-Identifier: GPL-2.0-only */
+ * SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef CG_RESCUE_H
 #define CG_RESCUE_H
 

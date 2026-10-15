@@ -31,7 +31,7 @@ answer came (keep it on NTP, as the Pi). Files in DIR:
 No AT command here changes anything in the modem. A lost ssh comes back
 with backoff (2 s doubling to 30 s). SIGINT or SIGTERM stops it cleanly.
 
-SPDX-License-Identifier: GPL-2.0-only
+SPDX-License-Identifier: GPL-3.0-or-later
 """
 import argparse
 import json

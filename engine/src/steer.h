@@ -23,7 +23,7 @@
  * lanes per router (one comparison per hint, design PR 3d2); for now one
  * group serves every client.
  *
- * SPDX-License-Identifier: GPL-2.0-only */
+ * SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef CG_STEER_H
 #define CG_STEER_H
 

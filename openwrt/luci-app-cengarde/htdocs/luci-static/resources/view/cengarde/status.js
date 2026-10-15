@@ -5,7 +5,7 @@
 'require poll';
 'require ui';
 
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 const MTU_MIN = 1280; // the smallest tunnel MTU config.js takes
 

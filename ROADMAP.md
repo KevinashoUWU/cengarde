@@ -744,7 +744,7 @@ Con engarde, la Pi se quedaba en ~30 Mbit/s con 4 enlaces, por CPU
 | El secreto viaja en el user data del VPS | El túnel no llega a los metadatos (0.4.1, probado en netns); el motor tampoco (`IPAddressDeny`, sin probar aún en un systemd real; PR 2); los secretos de los demás routers nunca van en el user data (historia 010) |
 | La IPv6 de la LAN sale por fuera del túnel si un enlace tiene en el router una interfaz DHCPv6 que delega su prefijo (Starlink) | Desde 0.4.2, con todo el tráfico por el túnel, cengarde pone `delegate 0` en esas interfaces (y en los enlaces PPP o de módem) y avisa si la LAN aún tiene un prefijo público (`ipv6_leak`); probado en QEMU con un prefijo delegado (historia 010) |
 | Varios routers por VPS exigen cambiar el protocolo (v4) | Un solo cambio de formato, en el PR 3, con paquetes 0.5.0 en los dos extremos; la migración desde 0.4 se probará en el CI con systemd real |
-| Licencia | Al derivar de engarde (GPLv2), cengarde es GPLv2. Programas BPF con licencia "GPL" o dual BSD/GPL; libbpf (LGPL-2.1 o BSD-2) es compatible |
+| Licencia | GPL-3.0-or-later desde 2026-10-15 (antes GPLv2, como engarde, cuyo código ya no está en el árbol). Programas BPF con licencia "GPL" o dual BSD/GPL; libbpf (LGPL-2.1 o BSD-2) es compatible |
 
 ## 9. Referencias y proyectos parecidos
 

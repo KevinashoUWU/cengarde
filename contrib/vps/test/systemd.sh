@@ -64,7 +64,7 @@
 # tested too;
 # 10.250.80.0/23, 198.51.100.7 and 10.79.0.0/16 must be free here.
 #
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 set -u
 
 HERE=$(cd "$(dirname "$0")" && pwd)

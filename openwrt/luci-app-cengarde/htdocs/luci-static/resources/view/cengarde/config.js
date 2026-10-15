@@ -6,7 +6,7 @@
 'require uci';
 'require tools.widgets as widgets';
 
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 const TEMPLATE = '/usr/share/cengarde/cloud-config.yaml';
 const MAX_SERVERS = 8; // the engine's CG_MAX_SERVERS

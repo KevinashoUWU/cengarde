@@ -39,7 +39,7 @@
  * in place, keeping the session; what was set up only once makes the process
  * start again (cg_config_restart_needed).
  *
- * SPDX-License-Identifier: GPL-2.0-only */
+ * SPDX-License-Identifier: GPL-3.0-or-later */
 #include <errno.h>
 #include <net/if.h>
 #include <signal.h>

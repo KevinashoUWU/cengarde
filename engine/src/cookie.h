@@ -23,7 +23,7 @@
  *
  * Pure: the caller brings the clock and the random key bytes.
  *
- * SPDX-License-Identifier: GPL-2.0-only */
+ * SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef CG_COOKIE_H
 #define CG_COOKIE_H
 

@@ -6,7 +6,7 @@
 #   make package/luci-app-cengarde/compile
 # It also builds luci-i18n-cengarde-es (Spanish).
 #
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 include $(TOPDIR)/rules.mk
 
@@ -18,7 +18,7 @@ LUCI_MAINTAINER:=cengarde contributors
 
 PKG_VERSION:=0.7.1
 PKG_RELEASE:=1
-PKG_LICENSE:=GPL-2.0-only
+PKG_LICENSE:=GPL-3.0-or-later
 
 include $(TOPDIR)/feeds/luci/luci.mk
 

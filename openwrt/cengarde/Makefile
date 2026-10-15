@@ -8,7 +8,7 @@
 # fine): the sources are taken from ../../engine and ../../contrib. Set
 # ENGINE_DIR otherwise.
 #
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 include $(TOPDIR)/rules.mk
 
@@ -18,7 +18,7 @@ PKG_NAME:=cengarde
 PKG_VERSION:=0.7.1
 PKG_RELEASE:=1
 
-PKG_LICENSE:=GPL-2.0-only
+PKG_LICENSE:=GPL-3.0-or-later
 PKG_LICENSE_FILES:=LICENSE.txt
 
 ENGINE_DIR ?= $(CURDIR)/../../engine

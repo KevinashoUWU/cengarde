@@ -69,7 +69,7 @@
 # (cengarde_peerdns, cengarde_delegate, cengarde_network6,
 # cengarde_ra_default) so that disable takes back exactly that.
 #
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 . /lib/functions.sh
 . /lib/functions/network.sh
