@@ -10,7 +10,7 @@
 #   again (nothing changes), a new secret (refused, then --replace: its new
 #   address, WireGuard restarted, the engine restarting), --rename, a second
 #   router (its own slot, port and address), a tunnel address taken, the
-#   33rd router, an engine of protocol 3 and --proto 6 refused (with the
+#   33rd router, an engine of protocol 3 and --proto 7 refused (with the
 #   upgrade command), WireGuard ports out of range; remove, the last one
 #   leaving a key that serves nobody; list and forward with each router's
 #   sessions;
@@ -378,7 +378,7 @@ say "limits of the routers and of the ports"
 before=$(fingerprint)
 check "a tunnel address taken is refused" not add shop "$S4" --tunnel-addr "$A2"
 check "it says whose" said "router home has the tunnel address $A2"
-check "--proto 6 (a newer router) is refused with the upgrade command" not add shop "$S4" --proto 6
+check "--proto 7 (a newer router) is refused with the upgrade command" not add shop "$S4" --proto 7
 check "it prints the upgrade command" said "contrib/vps/install.sh"
 check "an engine of protocol 3 is refused" not env FAKE_PROTO=3 sh -c 'printf "%s\n" "$1" | env CENGARDE_ROOT="$2" PATH="$3" sh "$4" add shop' \
 	sh "$S4" "$R" "$BIN:$PATH" "$SETUP"

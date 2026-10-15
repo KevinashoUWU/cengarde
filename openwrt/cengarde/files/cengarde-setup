@@ -860,7 +860,7 @@ engine_conf() {
 	for k in server_failover_ms mute_behind_ms unmute_behind_ms mute_settle_ms mute_trickle min_active_links \
 		probe_interval_ms probe_idle_ms status_interval_ms busy_poll_us cpu rt_priority sndbuf link_threads \
 		io_queue description reorder_max_wait_ms reorder_dup_wait_ms reorder_margin_ms reorder_bypass \
-		reorder_pool_kb rescue_kb rescue_pct rescue_tries rescue_wait_ms split_small split_spread_ms governor_target_ms governor_window_ms; do
+		reorder_pool_kb rescue_kb rescue_pct rescue_tries rescue_wait_ms fec_wait_ms split_small split_spread_ms governor_target_ms governor_window_ms; do
 		config_get v main "$k"
 		[ -n "$v" ] && echo "$k = $v"
 	done
@@ -901,6 +901,13 @@ engine_conf() {
 	1 | on | yes | true | enabled) echo "reorder_by_link = yes" ;;
 	0 | off | no | false | disabled) echo "reorder_by_link = no" ;;
 	*) log "reorder_by_link '$v': expected 0 or 1, left out" ;;
+	esac
+	config_get v main fec
+	case "$v" in
+	'') ;;
+	1 | on | yes | true | enabled) echo "fec = yes" ;;
+	0 | off | no | false | disabled) echo "fec = no" ;;
+	*) log "fec '$v': expected 0 or 1, left out" ;;
 	esac
 	config_get v main split_eta
 	case "$v" in

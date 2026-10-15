@@ -85,6 +85,9 @@ int cg_hdr_parse(struct cg_hdr *h, const uint8_t *buf, size_t len)
 				       plen >= 1 + 12 * (size_t)buf[CG_HDR_LEN]
 			       ? 0
 			       : -1;
+	case CG_T_FEC:
+		/* base, count, lengths' XOR and one byte at least (fec.h) */
+		return plen >= 8 ? 0 : -1;
 	default:
 		return -1;
 	}

@@ -57,7 +57,7 @@
 
 #include "siphash.h"
 
-#define CG_PROTO_VERSION 5
+#define CG_PROTO_VERSION 6
 #define CG_HDR_LEN 24
 #define CG_MAC_OFF 16
 #define CG_HINT_OFF 2
@@ -70,13 +70,22 @@ enum cg_type {
 	CG_T_PROBE_REPLY = 3, /* server -> client, same path; payload: cg_probe_info */
 	CG_T_HELLO = 4,       /* server -> client, to a probe it cannot take yet; payload: cg_hello */
 	CG_T_NACK = 5,        /* either way, one link; payload: DATA sequences to send again */
+	CG_T_FEC = 6,         /* either way, one link; payload: the parity of a group of DATA (fec.h) */
 };
 
-/* Probes, replies and NACKs count in the control sequence, DATA in its own. */
+/* Probes, replies, NACKs and parities count in the control sequence, DATA
+ * in its own. */
 static inline int cg_type_ctl(uint8_t type)
 {
-	return type == CG_T_PROBE || type == CG_T_PROBE_REPLY || type == CG_T_NACK;
+	return type == CG_T_PROBE || type == CG_T_PROBE_REPLY || type == CG_T_NACK || type == CG_T_FEC;
 }
+
+/* FEC (version 6, story 013: the spatial parity, fec.h): the sender of
+ * split DATA sends, after each group of packets that went one per link, a
+ * parity of them on a link outside the group; the receiver rebuilds one
+ * packet of the group lost or late from it, before the rescue asks.
+ * Payload: fec.h's (base sequence, count, lengths' XOR, the payloads' XOR).
+ * A receiver without fec drops it, counted. */
 
 /* NACK (version 5, story 013: the rescue): the receiver's reorderer is about
  * to give up these DATA sequences, and asks the sender, which keeps what it
