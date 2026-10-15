@@ -497,6 +497,32 @@ con 4 flujos y 20 s, 3 rondas alternadas, salvo que se diga otra cosa.
   su capacidad); NACK por dos caminos, reintento a ~1 RTT, NACK con máscara
   de bits; la copia de rescate por dos caminos.
 
+### 2026-10-15: el arranque rápido (PR #56)
+
+- **El problema [red de pruebas]:** en reposo el VPS estimaba
+  [96,7 / 1,4 / 0,3 / 7,9] Mbit/s para la bajada hacia la Pi, y una bajada
+  tardaba 3–4 s en darles ~20 a los enlaces; desde el notebook, «varía al
+  principio y después arranca como ferrari».
+- **El cambio (`capacity.h`):** cada enlace recuerda su mejor capacidad de
+  5 min; tras 10 s sin llenarse vuelve al menos a la mitad de ella, y bajo
+  esa mitad el reparto le ofrece el doble en vez de 5/4 (el arranque de BBR).
+- **Terreno, una sola corrida con B [red de pruebas]:** tras 40 s de reposo
+  las capacidades quedaron en 29 / 25 / 18 / 16; bajada 45 en el primer
+  segundo, 87 en el 1–3 y 118 de media en 10 s. Sin A intercalado (el
+  usuario se llevó la Pi). Más tarde, con la sesión del router en reposo,
+  33 y 63: la memoria se sostiene.
+- **Laboratorio, A/B ABBAAB [medido]:** `lab.sh bond` con `BOND_WARM=8`,
+  `BOND_REST=40` (perillas nuevas), `het` y `bloat`, 4 flujos Cubic,
+  `split-sp250-gov`. **Neutro:** `het` bajada, mediana de 10 s 75,2 (A) y
+  76,1 (B), primer segundo 52,4 y 53,3; `bloat` bajada 33,4 y 34,2; subida
+  sin cambio. El laboratorio no reproduce el enfriamiento: en reposo A casi
+  siempre conservó sus capacidades (25–27 en el enlace de 30). En el campo
+  las capacidades caían en reposo y aquí no; lo que las bajaba ahí (un
+  vaivén del retardo que parece cola, o las rotaciones del máximo) está por
+  ver, y con él si `full_ms` llega a quedar quieto 10 s en un enlace celular.
+- **Pendiente:** el A/B en la red de pruebas cuando vuelvan los módems
+  (`fastab.sh`: reinicio, carga de 8 s, reposo de 40 s y la rampa).
+
 ## Qué hacemos con esto (diseño)
 
 ### Piezas
@@ -552,3 +578,4 @@ con 4 flujos y 20 s, 3 rondas alternadas, salvo que se diga otra cosa.
 - 2026-10-14: el techo contra el túnel; la capacidad que se retroalimentaba (PR #36); `split_eta` (PR #37) y `pacing` (PR #38), experimentales; chrony con SHOA.
 - 2026-10-15: los A/B de ETA y de la dosificación, MPTCP, el falso hundimiento por `tcp_mem` del VPS, speedtest y la capacidad con cola (PR 5).
 - 2026-10-15: el PR 5 medido en la red de pruebas: neutro; la bajada de 16 flujos llega a 280–344 con los enlaces de la mañana.
+- 2026-10-15: el arranque rápido (PR #56): neutro en el laboratorio, que no reproduce el enfriamiento; el A/B en terreno, pendiente.

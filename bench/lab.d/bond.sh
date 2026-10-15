@@ -88,7 +88,11 @@
 # lines to), BOND_SMALL (pps of a flow of datagrams of BOND_SMALL_SIZE bytes,
 # 160, through the tunnel alongside the transfer, 0: none) and
 # BOND_NETEM_INFLIGHT (1: netem's limit also covers the packets in the delay,
-# see bond_link; 0 is the step 0 baseline). Needs iperf3, wg
+# see bond_link; 0 is the step 0 baseline), BOND_WARM and BOND_REST (the start
+# from rest, story 013: before each run, BOND_WARM seconds of the same transfer
+# and BOND_REST of nothing, so the run starts on links measured and then left
+# idle; 0: none) and BOND_KEEP (a directory to keep each run's iperf3 JSON in,
+# with intervals of 0.5 s: the ramp of its first seconds). Needs iperf3, wg
 # (wireguard-tools), ping and netem; WireGuard from the kernel, or
 # wireguard-go named by WG_GO when the kernel has none.
 # Without netem the links only get a rate (tbf) and the delays are skipped,
@@ -122,6 +126,9 @@ BOND_SMALL=${BOND_SMALL:-0}
 BOND_SMALL_SIZE=${BOND_SMALL_SIZE:-160}
 BOND_NETEM_INFLIGHT=${BOND_NETEM_INFLIGHT:-0}
 BOND_OUT=${BOND_OUT:-}
+BOND_WARM=${BOND_WARM:-0}
+BOND_REST=${BOND_REST:-0}
+BOND_KEEP=${BOND_KEEP:-}
 WG_GO=${WG_GO:-}
 BOND_NEED_NETEM=${BOND_NEED_NETEM:-0}
 BOND_NEED_QUIC=${BOND_NEED_QUIC:-0}
@@ -433,6 +440,14 @@ bond_small_start() {
 bond_run() {
 	local c=$1 v=$2 dir=$3 cc=$4 rep=$5 s=$6 cp sp c0 s0 c1 s1 res err rc=0 small=()
 	cp=$(cat "$RUN/client.pid") sp=$(cat "$RUN/server.pid")
+	if [ "$BOND_REST" -gt 0 ] && [ "$cc" != quic ]; then
+		# shellcheck disable=SC2046 # -R or nothing
+		[ "$BOND_WARM" -gt 0 ] && ip netns exec cli iperf3 -c 10.79.0.1 -t "$BOND_WARM" -C "$cc" -P "$BOND_P" \
+			$([ "$dir" = down ] && echo -R) >/dev/null 2>&1
+		sleep "$BOND_REST"
+		bond_snap "$RUN/snap-before"
+		[ -n "$BOND_KEEP" ] && mkdir -p "$BOND_KEEP" && cp "$RUN/server.json" "$BOND_KEEP/$c-$v-$dir-$cc-$rep.rest-server.json"
+	fi
 	BOND_BG=
 	c0=$(cpu_ticks "$cp") s0=$(cpu_ticks "$sp")
 	ip netns exec cli ping -n -i 0.1 -w $((s + 1)) 10.79.0.1 >"$RUN/ping.out" 2>&1 &
@@ -452,7 +467,9 @@ bond_run() {
 	else
 		res=$RUN/iperf.json err=$RUN/iperf.err
 		# shellcheck disable=SC2046 # -R or nothing
-		ip netns exec cli iperf3 -c 10.79.0.1 -t "$s" -C "$cc" -P "$BOND_P" -J $([ "$dir" = down ] && echo -R) >"$res" 2>"$err" || rc=1
+		ip netns exec cli iperf3 -c 10.79.0.1 -t "$s" -C "$cc" -P "$BOND_P" -J ${BOND_KEEP:+-i 0.5} \
+			$([ "$dir" = down ] && echo -R) >"$res" 2>"$err" || rc=1
+		[ -n "$BOND_KEEP" ] && mkdir -p "$BOND_KEEP" && cp "$res" "$BOND_KEEP/$c-$v-$dir-$cc-$rep.json"
 	fi
 	c1=$(cpu_ticks "$cp") s1=$(cpu_ticks "$sp")
 	# The engine writes its status every second: what it counted until now is in
