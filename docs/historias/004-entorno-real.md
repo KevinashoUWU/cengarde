@@ -185,6 +185,14 @@
     Con pausa, la cola que antes se perdía se forma en el switch y en los
     módems: el ping con carga de subida sube a 111–198 ms. El arreglo de
     fondo es el adaptador USB 3.0 nuevo.
+  - **La pausa no sobrevive un reinicio de la Pi** (2026-10-15, medido): el
+    driver `r8152` vuelve con la pausa apagada (`ethtool -a eth1`: RX/TX off)
+    aunque el puerto 23 la tenga; la subida desde la LAN volvió a 13–16
+    Mbit/s con ~400 retransmisiones y `rx_missed` creciendo. `ethtool -A eth1
+    rx on tx on` solo no basta: hay que renegociar (`ethtool -r eth1`, ~3 s
+    sin LAN) para que el switch la oiga; con eso, 66–88 Mbit/s y `rx_missed`
+    quieto. Queda fijo en `/etc/hotplug.d/net/30-eth1-pause` (y en
+    `sysupgrade.conf`).
   - **Consola del switch:** el cable micro-USB es un PL2303G con ID de
     TP-Link (`2357:0701`), que ningún driver toma solo; en el CPE2 va con
     `kmod-usb-serial-pl2303` y `/etc/hotplug.d/usb/30-tplink-console`
@@ -253,3 +261,4 @@
   minera (PCI 465: 17,9 / 19,6 con 758 ms de cola); bloqueado otra vez a
   ENAMI, engancha B28 PCI 330 + B2 PCI 90 de 20 MHz + B4 PCI 90 de 10 MHz
   y da **167,5 de bajada** y 18,4 de subida.
+- 2026-10-15: la pausa del adaptador USB de la LAN se perdía al reiniciar la Pi; queda fija con un script de hotplug.
