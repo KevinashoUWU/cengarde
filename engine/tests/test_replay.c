@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-only */
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "replay.h"
 
 #define CG_SEQ_LEAP_TEST (1u << 20)

@@ -1,6 +1,6 @@
 /* SipHash-2-4, written from the reference description
  * (https://131002.net/siphash/siphash.pdf).
- * SPDX-License-Identifier: GPL-2.0-only */
+ * SPDX-License-Identifier: GPL-3.0-or-later */
 #include "siphash.h"
 
 #include <string.h>

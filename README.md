@@ -9,8 +9,8 @@ OpenWrt routers. Documentation in Spanish.*
 - En el otro extremo gana la primera copia que llega. Si un enlace se corta
   o se atrasa, la conexión sigue como si nada.
 
-Es una reescritura en C de [engarde](https://github.com/porech/engarde),
-pensada para routers OpenWrt (una Raspberry Pi 4, un PC x86) y configurable
+Nació como fork de [engarde](https://github.com/porech/engarde) y hoy es
+un motor nuevo en C con protocolo propio, pensado para routers OpenWrt (una Raspberry Pi 4, un PC x86) y configurable
 entera desde LuCI.
 
 ```
@@ -173,4 +173,9 @@ El código Go original sigue en el historial de este repositorio (commit
 `3492df9`), y el laboratorio lo compila desde ahí cuando hace falta
 compararse.
 
-Licencia GPL-2.0, como engarde: [LICENSE.txt](LICENSE.txt).
+Licencia: GPL-3.0 o posterior (`GPL-3.0-or-later`), [LICENSE.txt](LICENSE.txt).
+Hasta el cambio de licencia, cengarde se publicó bajo GPL-2.0, como
+engarde. Del código de engarde no queda nada en el árbol: el motor, el
+protocolo, los paquetes de OpenWrt y LuCI, el laboratorio y la
+documentación son trabajo nuevo de este proyecto. La historia de git
+conserva los commits de engarde con su licencia original.

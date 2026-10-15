@@ -23,7 +23,7 @@
  * The control window counts too, but nobody reads it: a probe goes on one
  * link only, so its loss is no loss on every link. reset() zeroes it.
  *
- * SPDX-License-Identifier: GPL-2.0-only */
+ * SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef CG_REPLAY_H
 #define CG_REPLAY_H
 

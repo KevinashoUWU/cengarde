@@ -35,7 +35,7 @@
  * which the producer may not have set yet (that interleaving would lose the
  * wake-up for good; test_threads forces it).
  *
- * SPDX-License-Identifier: GPL-2.0-only */
+ * SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef CG_RING_H
 #define CG_RING_H
 

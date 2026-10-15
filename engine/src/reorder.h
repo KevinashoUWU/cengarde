@@ -119,7 +119,7 @@
  * Pure: no clock, no I/O, no log, no allocation (docs/historias/012). The
  * instance is zeroed memory (cg_ro_init or memset); about 322 KiB.
  *
- * SPDX-License-Identifier: GPL-2.0-only */
+ * SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef CG_REORDER_H
 #define CG_REORDER_H
 

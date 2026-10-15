@@ -29,7 +29,7 @@
 // e2e.sh: vps.test with its address and how long ago the DNS answered, and
 // nope.test, which nobody knows, as a problem.
 //
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 import { chromium } from 'playwright';
 import { execFileSync } from 'node:child_process';

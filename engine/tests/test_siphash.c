@@ -1,6 +1,6 @@
 /* Vectors cross-checked against OpenSSL 3.0 (EVP_MAC SIPHASH, size 8) and
  * the example in the SipHash paper (appendix A).
- * SPDX-License-Identifier: GPL-2.0-only */
+ * SPDX-License-Identifier: GPL-3.0-or-later */
 #include <string.h>
 
 #include "siphash.h"

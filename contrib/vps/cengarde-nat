@@ -61,7 +61,7 @@
 # goes in front of every path (tests). Admin commands take
 # /run/lock/cengarde-admin.lock, shared with cengarde-vps-setup.
 #
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 set -u
 
 PATH=$PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin

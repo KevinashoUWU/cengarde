@@ -4,7 +4,7 @@
  * resolver, and closes it with the answer or after CG_RS_TIMEOUT_MS; at most
  * two per name in flight (A and AAAA), never on the data path.
  *
- * SPDX-License-Identifier: GPL-2.0-only */
+ * SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef CG_NAMES_H
 #define CG_NAMES_H
 

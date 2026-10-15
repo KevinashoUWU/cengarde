@@ -7,7 +7,7 @@
  * WireGuard private keys come out clamped, as "wg genkey" prints them.
  * The router's tunnel addresses come from the same formula, so nobody has
  * to pick them (cg_pair_tunnel4, cg_pair_tunnel_ula).
- * SPDX-License-Identifier: GPL-2.0-only */
+ * SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef CG_PAIR_H
 #define CG_PAIR_H
 

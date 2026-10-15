@@ -82,7 +82,7 @@
  *
  * Pure: no clock, no I/O, no allocation.
  *
- * SPDX-License-Identifier: GPL-2.0-only */
+ * SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef CG_CAPACITY_H
 #define CG_CAPACITY_H
 

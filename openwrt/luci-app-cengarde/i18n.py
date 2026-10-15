@@ -7,7 +7,7 @@ some string has no Spanish translation, so CI catches it.
 
     python3 openwrt/luci-app-cengarde/i18n.py
 
-SPDX-License-Identifier: GPL-2.0-only
+SPDX-License-Identifier: GPL-3.0-or-later
 """
 import glob
 import json

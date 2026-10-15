@@ -18,7 +18,7 @@
  * Pure, and with no allocation: the server rebuilds the index on every
  * reload.
  *
- * SPDX-License-Identifier: GPL-2.0-only */
+ * SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef CG_CLIENTS_H
 #define CG_CLIENTS_H
 

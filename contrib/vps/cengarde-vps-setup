@@ -67,7 +67,7 @@
 # writes the configuration without asking the running engine to reload it
 # (install.sh, which restarts the engine right after).
 #
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 set -eu
 
 PATH=$PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin

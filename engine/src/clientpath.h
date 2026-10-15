@@ -35,7 +35,7 @@
  * Pure: no clock, no I/O, no log; the caller sends and logs what the verdict
  * says. tests/test_client_rx.c checks the order with a fake link.
  *
- * SPDX-License-Identifier: GPL-2.0-only */
+ * SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef CG_CLIENTPATH_H
 #define CG_CLIENTPATH_H
 

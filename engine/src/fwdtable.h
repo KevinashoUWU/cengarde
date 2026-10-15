@@ -51,7 +51,7 @@
  * No allocation, no I/O: the caller brings the state, the clock and the
  * buffers.
  *
- * SPDX-License-Identifier: GPL-2.0-only */
+ * SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef CG_FWDTABLE_H
 #define CG_FWDTABLE_H
 

@@ -2,7 +2,7 @@
  * plan, each run at two bases (the second wraps sequences, arrival times and
  * the sender's clock within its first second), then random streams against
  * a slow model of the same rules.
- * SPDX-License-Identifier: GPL-2.0-only */
+ * SPDX-License-Identifier: GPL-3.0-or-later */
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>

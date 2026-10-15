@@ -20,7 +20,7 @@
  * Pure: no clock, no I/O, no log. tests/test_wgsize.c checks the table
  * against the edges.
  *
- * SPDX-License-Identifier: GPL-2.0-only */
+ * SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef CG_WGSIZE_H
 #define CG_WGSIZE_H
 

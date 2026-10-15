@@ -33,7 +33,7 @@
  * pump thread stops reading its sockets (the kernel keeps the backlog and
  * drops only that link's copies) through the space handshake of ring.h.
  *
- * SPDX-License-Identifier: GPL-2.0-only */
+ * SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef CG_PUMP_H
 #define CG_PUMP_H
 

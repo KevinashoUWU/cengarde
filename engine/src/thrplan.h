@@ -18,7 +18,7 @@
  *   polling on every data thread when they do not fit the CPUs with one to
  *   spare (then only the hub polls), two pumps pinned to one CPU.
  *
- * SPDX-License-Identifier: GPL-2.0-only */
+ * SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef CG_THRPLAN_H
 #define CG_THRPLAN_H
 

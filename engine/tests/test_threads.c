@@ -22,7 +22,7 @@
  *   link_cmd uses it): only the newest state waits, a socket the pump never
  *   saw goes back to the hub to close, the one the pump holds never does,
  *   and the newest state reaches the pump once it runs again.
- * SPDX-License-Identifier: GPL-2.0-only */
+ * SPDX-License-Identifier: GPL-3.0-or-later */
 #include <arpa/inet.h>
 #include <dirent.h>
 #include <fcntl.h>

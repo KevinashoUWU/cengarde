@@ -1,7 +1,7 @@
 /* The control socket (ctl.h): accepting, reading the command line and
  * sending the reply never block the event loop.
  *
- * SPDX-License-Identifier: GPL-2.0-only */
+ * SPDX-License-Identifier: GPL-3.0-or-later */
 #include "ctl.h"
 
 #include <errno.h>

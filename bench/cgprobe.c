@@ -16,7 +16,7 @@
  * "reply", "data", "none", "bad-mac TYPE" or "bad-echo". Exit 0 unless it
  * could not send.
  *
- * SPDX-License-Identifier: GPL-2.0-only */
+ * SPDX-License-Identifier: GPL-3.0-or-later */
 #include <errno.h>
 #include <poll.h>
 #include <stdio.h>

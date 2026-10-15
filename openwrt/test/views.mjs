@@ -17,7 +17,7 @@
 //   it, and an uplink the split leaves out for its delay says so, in English
 //   and in Spanish (po/es), which also has to cover its strings.
 //
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';

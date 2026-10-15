@@ -1,7 +1,7 @@
 /* cg_rx_entry and cg_up_header (clientpath.h): the router's per-packet
  * decisions, the same in every link_threads mode, with a fake link and
  * window, and the arrival ring's expected links for a split packet.
- * SPDX-License-Identifier: GPL-2.0-only */
+ * SPDX-License-Identifier: GPL-3.0-or-later */
 #include <string.h>
 
 #include "clientpath.h"

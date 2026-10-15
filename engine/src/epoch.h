@@ -17,7 +17,7 @@
  * 6.4 s of probes every 100 ms, so an answer still matches on a link with
  * seconds of queue. Pure functions, no clock and no I/O.
  *
- * SPDX-License-Identifier: GPL-2.0-only */
+ * SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef CG_EPOCH_H
 #define CG_EPOCH_H
 

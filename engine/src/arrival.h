@@ -37,7 +37,7 @@
  * 8 KiB: 24 KiB more for each cg_arrivals (the router has one, the server
  * one per session).
  *
- * SPDX-License-Identifier: GPL-2.0-only */
+ * SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef CG_ARRIVAL_H
 #define CG_ARRIVAL_H
 

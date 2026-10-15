@@ -18,7 +18,7 @@
  * The command parser and the table of manual overrides are pure functions
  * with unit tests (tests/test_ctl.c); the socket itself is in ctl.c.
  *
- * SPDX-License-Identifier: GPL-2.0-only */
+ * SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef CG_CTL_H
 #define CG_CTL_H
 

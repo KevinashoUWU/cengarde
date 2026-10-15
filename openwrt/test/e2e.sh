@@ -71,7 +71,7 @@
 # Screenshots and logs go to OUT_DIR (default ./e2e-out). Needs qemu-system-x86,
 # ssh and node with "npm install" done in this directory.
 #
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 set -eu
 
 HERE=$(cd "$(dirname "$0")" && pwd)

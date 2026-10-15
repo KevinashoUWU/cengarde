@@ -26,7 +26,7 @@
  * counting towards its mute). Pure functions, no clock and no I/O
  * (docs/historias/006).
  *
- * SPDX-License-Identifier: GPL-2.0-only */
+ * SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef CG_HEALTH_H
 #define CG_HEALTH_H
 

@@ -2,7 +2,7 @@
  * (key 00..1f, message 00..n-1) and Python's hashlib.blake2s for the rest.
  * Pairing vectors (keys, tunnel addresses and the client hint) from
  * hashlib.blake2s with the derivations in pair.h.
- * SPDX-License-Identifier: GPL-2.0-only */
+ * SPDX-License-Identifier: GPL-3.0-or-later */
 #include <string.h>
 
 #include "blake2s.h"

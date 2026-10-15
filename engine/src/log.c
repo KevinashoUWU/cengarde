@@ -1,7 +1,7 @@
 /* Logs go to stderr; procd and systemd add timestamps and route them. Each
  * line is a single write, so lines from the status writer thread and the
  * event loop never interleave.
- * SPDX-License-Identifier: GPL-2.0-only */
+ * SPDX-License-Identifier: GPL-3.0-or-later */
 #include "log.h"
 
 #include <stdarg.h>

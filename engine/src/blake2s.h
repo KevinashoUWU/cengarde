@@ -1,7 +1,7 @@
 /* BLAKE2s (RFC 7693), keyed and unkeyed, incremental API. Used to derive
  * every key of a client/server pair from one secret (pair.h); not on the
  * data path.
- * SPDX-License-Identifier: GPL-2.0-only */
+ * SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef CG_BLAKE2S_H
 #define CG_BLAKE2S_H
 
