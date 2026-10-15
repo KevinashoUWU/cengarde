@@ -98,7 +98,8 @@
 #define CG_CAP_GAIN 4     /* the delivery rate's smoothing: 1/4 of each sample */
 #define CG_CAP_SHORT_N 2  /* samples in a row delivering under half of what was sent: full */
 #define CG_CAP_SHORT_MIN 64 /* packets sent in a sample for it to count */
-#define CG_CAP_SAT_N 2    /* samples in a row with a queue above sat_us: full */
+#define CG_CAP_SAT_N 2    /* samples in a row with a queue above sat_us, loaded: full */
+#define CG_CAP_SAT_LONG 4 /* samples in a row with a queue above sat_us, loaded or not: full */
 #define CG_CAP_W_ONE 1024u /* cg_cap_rescue_w's full weight */
 #define CG_CAP_BEST_MS 300000u /* fast start: a link's best capacity, over this long */
 #define CG_CAP_REST_MS 10000u  /* fast start: this long without being full, it comes back to half its best */
@@ -130,6 +131,7 @@ struct cg_cap_link {
 	uint8_t have_rate;          /* a rate measured */
 	uint8_t short_n;            /* samples in a row that delivered under half of what was sent */
 	uint8_t sat_n;              /* samples in a row with a queue above sat_us */
+	uint8_t sat_load_n;         /* of them, in a row, sent at least 3/4 of its capacity */
 	/* fast start: the best capacity over CG_CAP_BEST_MS (in two halves),
 	 * and the last sample that found the link full */
 	uint64_t best_cur, best_prev, best_ms, full_ms;
@@ -244,8 +246,9 @@ static inline void cg_cap_best(struct cg_cap_link *l, uint64_t now_ms)
 static inline void cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint64_t report_ms, uint32_t rx, uint64_t tx_pkts,
 			       uint64_t tx_bytes, const struct cg_hlink *h, const struct cg_cap_cfg *cfg)
 {
-	uint64_t dt, dpk, dby, bytes, rate, raw;
+	uint64_t dt, dpk, dby, bytes, rate, raw, ref;
 	uint32_t drx;
+	int loaded;
 
 	if (h && cg_health_fresh(h, now_ms)) {
 		int32_t q = cg_owd_diff(h->owd, cg_gov_base(&l->q, h->owd, now_ms, cfg->window_ms));
@@ -319,6 +322,15 @@ static inline void cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint64_t 
 		l->short_n = l->short_n < 255 ? (uint8_t)(l->short_n + 1) : 255;
 	else
 		l->short_n = 0;
+	/* Loaded: sent at least 3/4 of its capacity (or of half its best, for a
+	 * link brought down before). A queue then is the link's limit; at a
+	 * light load it is a hiccup of the radio's scheduling (story 013: every
+	 * cellular link stalls 100-600 ms now and then, at any load and for any
+	 * protocol), and it counts only once it lasts CG_CAP_SAT_LONG samples:
+	 * counted at once, Movistar's capacity fell to the 1.6 Mbit/s of an
+	 * 8 Mbit/s stream's share, and its queue's blips kept it there. */
+	ref = cg_cap_bps(l) > cg_cap_best_bps(l) / 2 ? cg_cap_bps(l) : cg_cap_best_bps(l) / 2;
+	loaded = dby * 8 * 1000 / dt * 4 >= ref * 3;
 	if (l->queue_us >= 0 && (uint32_t)l->queue_us > cfg->sat_us) {
 		/* Until the first sample full from start to end (the queue formed
 		 * during the one before), each sample starts it again. */
@@ -329,10 +341,11 @@ static inline void cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint64_t 
 		else
 			l->sat_bps -= (l->sat_bps - raw) / CG_CAP_GAIN;
 		l->sat_n = l->sat_n < 255 ? (uint8_t)(l->sat_n + 1) : 255;
+		l->sat_load_n = loaded ? (uint8_t)(l->sat_load_n < 255 ? l->sat_load_n + 1 : 255) : 0;
 	} else {
-		l->sat_n = 0;
+		l->sat_n = l->sat_load_n = 0;
 	}
-	if (l->sat_n >= CG_CAP_SAT_N) {
+	if (l->sat_load_n >= CG_CAP_SAT_N || l->sat_n >= CG_CAP_SAT_LONG) {
 		/* Full: the link gives no more than it delivers while full. */
 		l->max_cur = l->max_prev = l->sat_bps;
 		l->full_ms = report_ms;

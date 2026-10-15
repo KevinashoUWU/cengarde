@@ -249,6 +249,28 @@ static void measured(struct cg_cap_link *l, double r, int q)
 	l->queue_us = q < 0 ? -1 : q * (int32_t)MS;
 }
 
+/* A queue at a light load: a hiccup of the radio (1 s with a 20th of its
+ * capacity) leaves the capacity as it was; the same lasting 4 s lowers it
+ * to what the link delivers. */
+static void test_capacity_hiccup(void)
+{
+	struct sim s;
+
+	sim_start(&s);
+	run(&s, 20, 30, 40); /* measured at 30 */
+	CHECK(near(cg_cap_bps(&s.l), 30, 0.05));
+	run(&s, 20, 3, 40); /* an 8 Mbit/s stream's share: 3 */
+	run(&s, 10, 3, 1.5); /* the radio stalls 1 s */
+	CHECK(s.l.queue_us > (int32_t)(20 * MS));
+	CHECK(near(cg_cap_bps(&s.l), 30, 0.05));
+	CHECK(s.l.full_ms == 0);
+	run(&s, 10, 3, 40);
+	CHECK(near(cg_cap_bps(&s.l), 30, 0.05));
+	run(&s, 40, 3, 1.5); /* and now for good */
+	CHECK(cg_cap_bps(&s.l) < 3 * MBIT);
+	CHECK(s.l.full_ms != 0);
+}
+
 /* Fast start: a link measured at 50, then found full at 10, comes back to
  * half its best (25) after CG_CAP_REST_MS without being full, never before;
  * the best is forgotten after CG_CAP_BEST_MS. */
@@ -490,6 +512,7 @@ void test_capacity(void)
 	test_capacity_total();
 	test_capacity_shapes();
 	test_capacity_converges();
+	test_capacity_hiccup();
 	test_capacity_fast_start();
 	test_capacity_probe();
 	test_capacity_weights();
