@@ -316,7 +316,7 @@ void cg_json_owd_swing(struct cg_json *j, const char *k, const struct cg_reorder
 		cg_json_ms(j, k, cg_ro_swing(l));
 }
 
-void cg_json_capacity(struct cg_json *j, const struct cg_cap_link *l)
+void cg_json_capacity(struct cg_json *j, const struct cg_cap_link *l, uint32_t target_us)
 {
 	/* bps / 1000 as "ms" prints Mbit/s with three decimals. */
 	if (l->have_rate) {
@@ -330,6 +330,12 @@ void cg_json_capacity(struct cg_json *j, const struct cg_cap_link *l)
 		cg_json_ms(j, "queue_ms", (uint64_t)l->queue_us);
 	else
 		cg_json_null(j, "queue_ms");
+	/* the queue's slope (ms per second) and the rescue's weight, 0 to 1 */
+	if (l->have_s1)
+		cg_json_ms_signed(j, "queue_slope_ms_s", l->s1);
+	else
+		cg_json_null(j, "queue_slope_ms_s");
+	cg_json_ms(j, "rescue_weight", (uint64_t)cg_cap_rescue_w(l, target_us) * 1000 / CG_CAP_W_ONE);
 }
 
 int cg_status_write(const char *path, const char *data, size_t len)

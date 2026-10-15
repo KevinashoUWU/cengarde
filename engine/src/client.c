@@ -1183,7 +1183,14 @@ static void wg_read(struct client *c)
 
 				memcpy(e, c->hdr[m], CG_HDR_LEN);
 				memcpy(e + CG_HDR_LEN, c->in.buf[i], len);
-				cg_resc_earn(&c->resc_b, (uint32_t)len, c->cfg->rescue_pct);
+				/* the budget grows with the link's weight (capacity.h) */
+				cg_resc_earn(&c->resc_b,
+					     c->prev_only ? (uint32_t)((uint64_t)len *
+								       cg_cap_rescue_w(&c->cap[c->prev_only - 1],
+										       c->cfg->governor_target_ms * 1000) /
+								       CG_CAP_W_ONE)
+							  : (uint32_t)len,
+					     c->cfg->rescue_pct);
 			}
 			c->oiov[m][0].iov_base = c->hdr[m];
 			c->oiov[m][0].iov_len = CG_HDR_LEN;
@@ -1426,11 +1433,11 @@ static void send_nacks(struct client *c, uint64_t now_ms)
 }
 
 /* Whether link i's upload is full, so that what it loses is congestion for
- * TCP to see, not a loss to send again (rescue.h): its queue above the
- * governor's target. */
+ * TCP to see, not a loss to send again (rescue.h): its rescue weight
+ * (capacity.h's cg_cap_rescue_w) is 0. */
 static int up_full(const struct client *c, unsigned i)
 {
-	return c->cap[i].queue_us >= 0 && (uint32_t)c->cap[i].queue_us > c->cfg->governor_target_ms * 1000;
+	return cg_cap_rescue_w(&c->cap[i], c->cfg->governor_target_ms * 1000) == 0;
 }
 
 /* A verified NACK from the server (rescue.h): each sequence the ring still
@@ -2183,7 +2190,7 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 		cg_json_owd_spread(j, "rx_owd_spread_ms", &c->rxs.ro, (unsigned)i, rset);
 		cg_json_owd_swing(j, "rx_owd_swing_ms", &c->rxs.ro, (unsigned)i);
 		cg_json_u64(j, "rx_reorder_late", c->rxs.ro.link[i].late);
-		cg_json_capacity(j, &c->cap[i]);
+		cg_json_capacity(j, &c->cap[i], c->cfg->governor_target_ms * 1000);
 		if (l->paced != CG_PACE_NONE)
 			cg_json_ms(j, "pace_mbit", l->paced * 8 / 1000);
 		else

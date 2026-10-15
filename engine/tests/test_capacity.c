@@ -149,6 +149,34 @@ static void test_capacity_swing(void)
 	CHECK(near(cg_cap_bps(&s.l), 40, 0.05));
 }
 
+/* The rescue's weight (cg_cap_rescue_w): all of it while the queue is low
+ * and still; less as the queue grows, before it is over the target (its
+ * slope and its slope's slope look a second ahead); none once full. */
+static void test_capacity_rescue_w(void)
+{
+	static struct sim s;
+	int fell_early = 0;
+
+	sim_start(&s);
+	CHECK_EQ(cg_cap_rescue_w(&s.l, 20 * MS), CG_CAP_W_ONE); /* nothing measured */
+	run(&s, 50, 30, 50);
+	CHECK_EQ(cg_cap_rescue_w(&s.l, 20 * MS), CG_CAP_W_ONE);
+	/* sent 55 into 50: the queue grows 10 ms each second */
+	for (int i = 0; i < 40; i++) {
+		sim_step(&s, 55, 50);
+		if (s.l.ql_us < (int32_t)(20 * MS) && cg_cap_rescue_w(&s.l, 20 * MS) < CG_CAP_W_ONE)
+			fell_early = 1;
+	}
+	CHECK(fell_early); /* it gave less before the queue passed the target */
+	CHECK(s.l.s1 > 0);
+	run(&s, 100, 70, 50); /* far over: full */
+	CHECK_EQ(cg_cap_rescue_w(&s.l, 20 * MS), 0);
+	/* the load stops: the queue drains, and the weight comes back */
+	run(&s, 100, 0, 50);
+	run(&s, 50, 10, 50);
+	CHECK_EQ(cg_cap_rescue_w(&s.l, 20 * MS), CG_CAP_W_ONE);
+}
+
 /* A link that stops delivering what it is sent, while its delay says
  * nothing (its replies stopped coming in time): after two samples of less
  * than half, its capacity is what it delivers. A link ramping up, its
@@ -426,5 +454,6 @@ void test_capacity(void)
 	test_capacity_saturated();
 	test_capacity_ramp();
 	test_capacity_swing();
+	test_capacity_rescue_w();
 	test_capacity_edges();
 }

@@ -1213,15 +1213,13 @@ static void up_deliver(struct server *s, int *nq, struct session *S, const struc
 }
 
 /* Whether path p of S is full, so that what it loses is congestion, for TCP
- * to see, not a loss to send again (rescue.h): its queue above the
- * governor's target. (Delivering 9/10 of its capacity, as a second sign,
- * took the rescue off links lossy at random as well: in the lab, 18 Mbit/s
- * against 50 with the queue alone; story 013.) */
+ * to see, not a loss to send again (rescue.h): its rescue weight
+ * (capacity.h's cg_cap_rescue_w, from where its queue will be in a second)
+ * is 0. (Delivering 9/10 of its capacity, as a sign, took the rescue off
+ * links lossy at random as well; story 013.) */
 static int path_full(const struct server *s, const struct session *S, unsigned p)
 {
-	const struct cg_cap_link *c = &S->cap[p];
-
-	return c->queue_us >= 0 && (uint32_t)c->queue_us > s->cfg->governor_target_ms * 1000;
+	return cg_cap_rescue_w(&S->cap[p], s->cfg->governor_target_ms * 1000) == 0;
 }
 
 /* A verified NACK of S (rescue.h): each sequence it names that the ring
@@ -1587,7 +1585,14 @@ static void down_prepare(struct server *s, struct session *S, int m, uint8_t *bu
 
 		memcpy(e, s->hdr[m], CG_HDR_LEN);
 		memcpy(e + CG_HDR_LEN, buf, len);
-		cg_resc_earn(&S->resc_b, (uint32_t)len, s->cfg->rescue_pct);
+		/* the budget grows with the path's weight (capacity.h): less as it
+		 * nears congestion */
+		cg_resc_earn(&S->resc_b,
+			     only < 0 ? (uint32_t)len
+				      : (uint32_t)((uint64_t)len *
+						   cg_cap_rescue_w(&S->cap[only], s->cfg->governor_target_ms * 1000) /
+						   CG_CAP_W_ONE),
+			     s->cfg->rescue_pct);
 	}
 	s->oiov[m][0].iov_base = s->hdr[m];
 	s->oiov[m][0].iov_len = CG_HDR_LEN;
@@ -2141,7 +2146,7 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 			cg_json_owd_spread(j, "rx_owd_spread_ms", &S->ro, (unsigned)p, rset);
 			cg_json_owd_swing(j, "rx_owd_swing_ms", &S->ro, (unsigned)p);
 			cg_json_u64(j, "rx_reorder_late", p < CG_MAX_LINKS ? S->ro.link[p].late : 0);
-			cg_json_capacity(j, &S->cap[p]);
+			cg_json_capacity(j, &S->cap[p], s->cfg->governor_target_ms * 1000);
 			/* What the split by expected arrival sees of it (null: off, or no rate). */
 			if (s->cfg->split_eta && S->eta.l[p].bps) {
 				cg_json_ms(j, "eta_base_ms", S->eta.l[p].base_us);

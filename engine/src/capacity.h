@@ -99,6 +99,9 @@
 #define CG_CAP_SHORT_N 2  /* samples in a row delivering under half of what was sent: full */
 #define CG_CAP_SHORT_MIN 64 /* packets sent in a sample for it to count */
 #define CG_CAP_SAT_N 2    /* samples in a row with a queue above sat_us: full */
+#define CG_CAP_W_ONE 1024u /* cg_cap_rescue_w's full weight */
+#define CG_CAP_TREND_MS 100 /* the queue's trend takes samples at least this far apart */
+#define CG_CAP_LONG_MS 60000 /* the rescue's queue: over the delay's minimum of this long */
 /* More delivered than sent by this much (packets), and the report is not
  * of this run of the counters: probes and what was in flight at the start
  * make a few packets of difference, never this many. */
@@ -125,17 +128,71 @@ struct cg_cap_link {
 	uint8_t have_rate;          /* a rate measured */
 	uint8_t short_n;            /* samples in a row that delivered under half of what was sent */
 	uint8_t sat_n;              /* samples in a row with a queue above sat_us */
+	/* The queue's trend, for the rescue's weight (cg_cap_rescue_w): its
+	 * slope (us of queue per second) and the slope's slope (per second
+	 * squared), smoothed (1/4), from samples at least CG_CAP_TREND_MS apart. */
+	struct cg_gov_link ql;      /* the delay's minimum over CG_CAP_LONG_MS */
+	int32_t ql_us;              /* the queue over it, -1: none */
+	int32_t q_last;
+	uint64_t q_t_ms;
+	int64_t s1, s2;
+	uint8_t have_trend, have_s1;
 };
 
 static inline void cg_cap_reset(struct cg_cap_link *l)
 {
 	memset(l, 0, sizeof(*l));
-	l->queue_us = -1;
+	l->queue_us = l->ql_us = -1;
 }
 
 static inline uint64_t cg_cap_bps(const struct cg_cap_link *l)
 {
 	return l->max_cur > l->max_prev ? l->max_cur : l->max_prev;
+}
+
+/* The queue's slope and the slope's slope, from a new queue_us at now_ms. */
+static inline void cg_cap_trend(struct cg_cap_link *l, uint64_t now_ms)
+{
+	int64_t d1, s1;
+	uint64_t dt;
+
+	if (!l->have_trend) {
+		l->q_last = l->ql_us;
+		l->q_t_ms = now_ms;
+		l->have_trend = 1;
+		return;
+	}
+	dt = now_ms - l->q_t_ms;
+	if (dt < CG_CAP_TREND_MS)
+		return;
+	d1 = ((int64_t)l->ql_us - l->q_last) * 1000 / (int64_t)dt;
+	s1 = l->have_s1 ? l->s1 + (d1 - l->s1) / 4 : d1;
+	if (l->have_s1)
+		l->s2 += ((s1 - l->s1) * 1000 / (int64_t)dt - l->s2) / 4;
+	l->s1 = s1;
+	l->have_s1 = 1;
+	l->q_last = l->ql_us;
+	l->q_t_ms = now_ms;
+}
+
+/* How much of the rescue a link may have (rescue.h), 0 to CG_CAP_W_ONE,
+ * from where its queue will be in a second: the queue now, plus its slope,
+ * plus half its slope's slope (the second derivative says it fills before
+ * the queue says so). Up to target_us, all of it; from 4 x target_us
+ * (full: what it loses is congestion, for TCP to see), none; a straight
+ * line between. Without a queue measured, all of it. */
+static inline uint32_t cg_cap_rescue_w(const struct cg_cap_link *l, uint32_t target_us)
+{
+	int64_t pred, lo = target_us, hi = 4 * (int64_t)target_us;
+
+	if (l->ql_us < 0)
+		return CG_CAP_W_ONE;
+	pred = (int64_t)l->ql_us + (l->have_s1 ? l->s1 + l->s2 / 2 : 0);
+	if (pred <= lo)
+		return CG_CAP_W_ONE;
+	if (pred >= hi)
+		return 0;
+	return (uint32_t)((hi - pred) * CG_CAP_W_ONE / (hi - lo));
 }
 
 /* One tick for one link. report_ms: when this end received the other's
@@ -152,6 +209,11 @@ static inline void cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint64_t 
 		int32_t q = cg_owd_diff(h->owd, cg_gov_base(&l->q, h->owd, now_ms, cfg->window_ms));
 
 		l->queue_us = q > 0 ? q : 0;
+		/* over a minute's minimum: a link full for longer than window_ms
+		 * measures queue_us against a minimum that has the queue in it */
+		q = cg_owd_diff(h->owd, cg_gov_base(&l->ql, h->owd, now_ms, CG_CAP_LONG_MS));
+		l->ql_us = q > 0 ? q : 0;
+		cg_cap_trend(l, now_ms);
 	}
 	if (!report_ms)
 		return;
@@ -170,14 +232,21 @@ static inline void cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint64_t 
 	dpk = tx_pkts - l->tx_pkts;
 	dby = tx_bytes - l->tx_bytes;
 	if (tx_pkts < l->tx_pkts || (int32_t)drx < 0 || l->rx_total + drx > tx_pkts - l->tx0 + CG_CAP_SLACK) {
-		/* Counters from another run: start again from this report. */
-		struct cg_gov_link q = l->q;
-
-		int32_t queue = l->queue_us;
+		/* Counters from another run: start again from this report; the
+		 * delay's measures (queue, its trend) are the link's, and stay. */
+		struct cg_cap_link keep = *l;
 
 		cg_cap_reset(l);
-		l->q = q;
-		l->queue_us = queue;
+		l->q = keep.q;
+		l->queue_us = keep.queue_us;
+		l->ql = keep.ql;
+		l->ql_us = keep.ql_us;
+		l->q_last = keep.q_last;
+		l->q_t_ms = keep.q_t_ms;
+		l->s1 = keep.s1;
+		l->s2 = keep.s2;
+		l->have_trend = keep.have_trend;
+		l->have_s1 = keep.have_s1;
 		l->t_ms = report_ms;
 		l->rx = rx;
 		l->tx_pkts = l->tx0 = tx_pkts;
