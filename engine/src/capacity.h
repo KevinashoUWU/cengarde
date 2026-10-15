@@ -99,6 +99,7 @@
 #define CG_CAP_SHORT_N 2  /* samples in a row delivering under half of what was sent: full */
 #define CG_CAP_SHORT_MIN 64 /* packets sent in a sample for it to count */
 #define CG_CAP_SAT_N 2    /* samples in a row with a queue above sat_us: full */
+#define CG_CAP_LONG_MS 60000 /* cg_cap_full's queue: over the delay's minimum of this long */
 /* More delivered than sent by this much (packets), and the report is not
  * of this run of the counters: probes and what was in flight at the start
  * make a few packets of difference, never this many. */
@@ -120,6 +121,12 @@ struct cg_cap_link {
 	uint64_t sat_bps;           /* the delivery rate over the samples with a queue, smoothed */
 	uint64_t max_cur, max_prev; /* the capacity: both the same (the largest rate, or the rate under a queue) */
 	struct cg_gov_link q;       /* the delay's minimum, for the queue */
+	struct cg_gov_link ql;      /* the minimum over CG_CAP_LONG_MS, for cg_cap_full */
+	int32_t qm_us;              /* that queue, smoothed (gain 1/8) */
+	uint32_t qd_us;             /* its mean deviation (gain 1/4) */
+	int32_t qx_cur, qx_prev;    /* the smoothed queue's maximum over CG_CAP_LONG_MS, in two halves */
+	uint64_t qx_ms;             /* when the current half started */
+	uint8_t have_q;
 	int32_t queue_us;           /* the last queue seen, -1: none */
 	uint8_t have;               /* a report taken as the start */
 	uint8_t have_rate;          /* a rate measured */
@@ -138,6 +145,54 @@ static inline uint64_t cg_cap_bps(const struct cg_cap_link *l)
 	return l->max_cur > l->max_prev ? l->max_cur : l->max_prev;
 }
 
+/* The queue cg_cap_full reads, from a delay sample: over the minimum of
+ * CG_CAP_LONG_MS (a link full for longer than window_ms measures its queue
+ * against a minimum that already has the queue in it), smoothed, with its
+ * mean deviation. */
+static inline void cg_cap_queue_long(struct cg_cap_link *l, uint32_t owd, uint64_t now_ms)
+{
+	int32_t q = cg_owd_diff(owd, cg_gov_base(&l->ql, owd, now_ms, CG_CAP_LONG_MS)), e;
+
+	if (q < 0)
+		q = 0;
+	if (!l->have_q) {
+		l->qm_us = l->qx_cur = l->qx_prev = q;
+		l->qd_us = 0;
+		l->qx_ms = now_ms;
+		l->have_q = 1;
+		return;
+	}
+	e = q - l->qm_us;
+	l->qm_us += e / 8;
+	l->qd_us = (uint32_t)((int32_t)l->qd_us + ((e < 0 ? -e : e) - (int32_t)l->qd_us) / 4);
+	if (now_ms - l->qx_ms >= CG_CAP_LONG_MS / 2) {
+		l->qx_prev = l->qx_cur;
+		l->qx_cur = l->qm_us;
+		l->qx_ms = now_ms;
+	} else if (l->qm_us > l->qx_cur) {
+		l->qx_cur = l->qm_us;
+	}
+}
+
+/* Whether the link is full, so that what it loses is congestion, for TCP to
+ * see, and not a loss to send again (rescue.h): its queue is over target_us,
+ * stays there (more than twice its swing), and is near the most it held
+ * lately (3/4 of its maximum over CG_CAP_LONG_MS: the buffer is at its top,
+ * where a modem drops for want of room; RED's and ECN's reading). A modem
+ * whose radio loses and retransmits (HARQ) has a queue that jumps and
+ * drains: on the testnet Entel on a lossy B2 was taken for full by a queue
+ * over 20 ms alone. A link losing at random keeps losing at any height of
+ * its queue: in the lab, with the rescue hiding that loss TCP filled the
+ * queue, a rule without the maximum took it for full, and the rescue gave
+ * nothing (11 Mbit/s against 50). */
+static inline int cg_cap_full(const struct cg_cap_link *l, uint32_t target_us)
+{
+	int32_t qx = l->qx_cur > l->qx_prev ? l->qx_cur : l->qx_prev;
+
+	return l->have_q && l->qm_us > (int32_t)target_us && (uint32_t)l->qm_us > 2 * l->qd_us &&
+	       (int64_t)l->qm_us * 4 >= (int64_t)qx * 3;
+}
+
 /* One tick for one link. report_ms: when this end received the other's
  * newest report on it (0: none yet), rx: what that report says; tx_pkts,
  * tx_bytes: what this end has sent on it so far; h: its health in this
@@ -152,6 +207,7 @@ static inline void cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint64_t 
 		int32_t q = cg_owd_diff(h->owd, cg_gov_base(&l->q, h->owd, now_ms, cfg->window_ms));
 
 		l->queue_us = q > 0 ? q : 0;
+		cg_cap_queue_long(l, h->owd, now_ms);
 	}
 	if (!report_ms)
 		return;
@@ -171,13 +227,18 @@ static inline void cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint64_t 
 	dby = tx_bytes - l->tx_bytes;
 	if (tx_pkts < l->tx_pkts || (int32_t)drx < 0 || l->rx_total + drx > tx_pkts - l->tx0 + CG_CAP_SLACK) {
 		/* Counters from another run: start again from this report. */
-		struct cg_gov_link q = l->q;
-
-		int32_t queue = l->queue_us;
+		struct cg_cap_link keep = *l;
 
 		cg_cap_reset(l);
-		l->q = q;
-		l->queue_us = queue;
+		l->q = keep.q;
+		l->queue_us = keep.queue_us;
+		l->ql = keep.ql;
+		l->qm_us = keep.qm_us;
+		l->qd_us = keep.qd_us;
+		l->qx_cur = keep.qx_cur;
+		l->qx_prev = keep.qx_prev;
+		l->qx_ms = keep.qx_ms;
+		l->have_q = keep.have_q;
 		l->t_ms = report_ms;
 		l->rx = rx;
 		l->tx_pkts = l->tx0 = tx_pkts;

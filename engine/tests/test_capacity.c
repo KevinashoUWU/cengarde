@@ -149,6 +149,33 @@ static void test_capacity_swing(void)
 	CHECK(near(cg_cap_bps(&s.l), 40, 0.05));
 }
 
+/* cg_cap_full: a queue that sits high and steady is a full link; one that
+ * jumps and drains as a modem's HARQ makes it is not, nor a light load. */
+static void test_capacity_full(void)
+{
+	static struct sim s;
+
+	/* sent 60 into 50: the queue grows and stays */
+	sim_start(&s);
+	run(&s, 50, 60, 50);
+	CHECK(cg_cap_full(&s.l, 20 * MS));
+	/* light, but the delay jumps 0 / 80 ms from step to step */
+	sim_start(&s);
+	for (int i = 0; i < 200; i++) {
+		s.jitter_us = i % 2 ? 80 * MS : 0;
+		sim_step(&s, 10, 50);
+	}
+	CHECK(s.l.qm_us > (int32_t)(20 * MS)); /* its mean is over the target */
+	CHECK(!cg_cap_full(&s.l, 20 * MS));    /* but it swings as much */
+	/* light and quiet */
+	sim_start(&s);
+	run(&s, 200, 10, 50);
+	CHECK(!cg_cap_full(&s.l, 20 * MS));
+	/* nothing measured yet */
+	sim_start(&s);
+	CHECK(!cg_cap_full(&s.l, 20 * MS));
+}
+
 /* A link that stops delivering what it is sent, while its delay says
  * nothing (its replies stopped coming in time): after two samples of less
  * than half, its capacity is what it delivers. A link ramping up, its
@@ -426,5 +453,6 @@ void test_capacity(void)
 	test_capacity_saturated();
 	test_capacity_ramp();
 	test_capacity_swing();
+	test_capacity_full();
 	test_capacity_edges();
 }

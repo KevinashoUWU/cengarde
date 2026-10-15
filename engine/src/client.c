@@ -1415,7 +1415,7 @@ static void send_nacks(struct client *c, uint64_t now_ms)
  * governor's target. */
 static int up_full(const struct client *c, unsigned i)
 {
-	return c->cap[i].queue_us >= 0 && (uint32_t)c->cap[i].queue_us > c->cfg->governor_target_ms * 1000;
+	return cg_cap_full(&c->cap[i], c->cfg->governor_target_ms * 1000);
 }
 
 /* A verified NACK from the server (rescue.h): each sequence the ring still

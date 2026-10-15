@@ -1187,9 +1187,7 @@ static void up_deliver(struct server *s, int *nq, struct session *S, const struc
  * against 50 with the queue alone; story 013.) */
 static int path_full(const struct server *s, const struct session *S, unsigned p)
 {
-	const struct cg_cap_link *c = &S->cap[p];
-
-	return c->queue_us >= 0 && (uint32_t)c->queue_us > s->cfg->governor_target_ms * 1000;
+	return cg_cap_full(&S->cap[p], s->cfg->governor_target_ms * 1000);
 }
 
 /* A verified NACK of S (rescue.h): each sequence it names that the ring

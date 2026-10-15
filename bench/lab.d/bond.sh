@@ -35,6 +35,12 @@
 #               link 2 steady (50 Mbit/s, 30 ms)
 #   deepq       link 1 at 20 Mbit/s behind 500 ms of queue, link 2 at
 #               50 Mbit/s with 100 ms; both 25 ms
+#   spikeloss   not in the default list: 2 links of 50 Mbit/s, 25 and 30 ms,
+#               each losing 1 % at random, link 1 jumping by 80 ms for 0.5 s
+#               every 2 s: a modem whose radio loses and retransmits (HARQ),
+#               its queue jumping and draining, as Entel on its lone B2; the
+#               rescue should take it for lossy, not full (capacity.h's
+#               cg_cap_full)
 #   lossy       not in the default list: 3 links (60 Mbit/s 20 ms, 30 Mbit/s
 #               35 ms, 50 Mbit/s 25 ms), each losing 1 % at random in both
 #               directions: the loss on every link of a split packet that the
@@ -363,6 +369,14 @@ bond_events() {
 			bond_link 1 25 50
 		done
 		;;
+	spikeloss)
+		for t in $(seq 2 2 "$s"); do
+			sleep 1.5
+			bond_link 1 105 50 100 1
+			sleep 0.5
+			bond_link 1 25 50 100 1
+		done
+		;;
 	esac
 }
 
@@ -377,6 +391,7 @@ bond_shape() {
 	starlink15) bond_link 1 25 50 && bond_link 2 20 100 ;;
 	starlink15sw) bond_link 1 25 100 && bond_link 2 20 50 ;;
 	ltespike) bond_link 1 25 50 && bond_link 2 30 50 ;;
+	spikeloss) bond_link 1 25 50 100 1 && bond_link 2 30 50 100 1 ;;
 	deepq) bond_link 1 25 20 500 && bond_link 2 25 50 ;;
 	bloat) bond_link 1 20 30 1000 && bond_link 2 20 20 1000 && bond_link 3 22 8 2000 ;;
 	lossy) bond_link 1 20 60 100 1 && bond_link 2 35 30 100 1 && bond_link 3 25 50 100 1 ;;
@@ -527,7 +542,7 @@ bond_plan() {
 	for w in ${BOND_CC:-cubic bbr quic}; do ccs=$((ccs + 1)); done
 	for c in $BOND_CASES; do
 		case $c in
-		equal | het | reorder50 | reorder150 | linkdeath | starlink15 | starlink15sw | ltespike | deepq | bloat) ;;
+		equal | het | reorder50 | reorder150 | linkdeath | starlink15 | starlink15sw | ltespike | deepq | bloat | lossy | spikeloss) ;;
 		*)
 			echo "bond: unknown case $c"
 			return 1
