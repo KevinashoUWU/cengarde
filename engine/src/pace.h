@@ -19,6 +19,12 @@
  * No capacity yet, no pacing. The engine keeps no queue of its own: the
  * kernel does, per socket, in fq.
  *
+ * The server paces its lanes (story 013): with at least as many lanes as
+ * paths, the download of each path leaves from its own socket, and a lane
+ * that carries several (paths p and p + lanes, or the same path of several
+ * sessions) is paced at the sum of their rates; one of them without a rate
+ * leaves the lane without a limit.
+ *
  * Pure: no clock, no I/O, no allocation.
  *
  * SPDX-License-Identifier: GPL-2.0-only */
@@ -41,6 +47,15 @@ static inline uint64_t cg_pace_rate(uint64_t cap_bps)
 	r = cap_bps / 4; /* twice, in bytes */
 	return r > CG_PACE_FLOOR ? r : CG_PACE_FLOOR;
 }
+/* The rate of a socket that carries a link of rate rate besides those
+ * summed in sum (start at 0); CG_PACE_NONE in either is no limit. */
+static inline uint64_t cg_pace_add(uint64_t sum, uint64_t rate)
+{
+	if (sum == CG_PACE_NONE || rate == CG_PACE_NONE)
+		return CG_PACE_NONE;
+	return sum + rate;
+}
+
 /* Whether a rate set before, old, should be set again to now: a change of
  * more than 1/16 either way, or to or from no limit. */
 static inline int cg_pace_changed(uint64_t old, uint64_t now)
