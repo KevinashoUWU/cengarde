@@ -95,6 +95,7 @@
 #include "replay.h"
 #include "sock.h"
 #include "capacity.h"
+#include "fec.h"
 #include "pace.h"
 #include "tcpfree.h"
 #include "rescue.h"
@@ -160,6 +161,9 @@ struct session {
 	uint64_t resc_congested; /* not sent again: lost on a full path (TCP has to see it) */
 	int peer_rescue;          /* the client keeps what it sends up: its reorder asks (rescue.h) */
 	uint64_t nacks_sent;      /* NACKs sent to the client for the upload */
+	struct cg_fec_rx *fec;    /* the upload's parities and DATA kept for them (fec.h), NULL: no fec */
+	uint64_t fec_dups;        /* rebuilt packets that had arrived (or been given up) meanwhile */
+	uint64_t fec_unused;      /* parities taken without fec on this end */
 	uint64_t resc_gone_tx, resc_gone_rx; /* CG_F_GONE said to the client; asked gaps it said were gone */
 	struct cg_ro_cfg rocf;    /* the server's reorder settings, with its rescue */
 	uint32_t tx_ctl; /* next probe reply sequence */
@@ -324,6 +328,10 @@ struct server {
 	 * its session closed meanwhile), and probe replies */
 	uint32_t q_sess[CG_BATCH];
 	uint16_t q_pool[CG_BATCH];
+	/* Packets rebuilt from parities (fec.h), queued like the listen
+	 * batch's until q_flush; fec_nout of them in use. */
+	uint8_t fec_out[CG_BATCH][CG_FEC_PLEN_MAX];
+	int fec_nout;
 	int8_t pick[CG_BATCH]; /* per packet of a download batch: its one path (split), or -1 (every carrier) */
 	uint8_t reply[CG_BATCH][CG_HDR_LEN + CG_PROBE_BOND_LEN];
 	struct sockaddr_storage reply_to[CG_BATCH];
@@ -627,6 +635,8 @@ static void session_destroy(struct server *s, struct session *S, const char *why
 	cg_idmap_del(&s->ids, cg_sesskey(C->mix, S->id));
 	free(S->resc_idx);
 	S->resc_idx = NULL;
+	free(S->fec);
+	S->fec = NULL;
 	S->used = 0;
 	if (!--C->nsess)
 		C->alone_ms = now_ms;
@@ -671,6 +681,7 @@ static void client_close(struct server *s, struct client *C, const char *why, ui
  * CG_CLIENT_SESSIONS: a new one replaces the one heard from least recently
  * (a router restarting in a loop leaves one behind each time). */
 static void rescue_apply(const struct server *s, struct session *S);
+static struct cg_fec_rx *fec_rx_new(void);
 
 static struct session *session_create(struct server *s, struct client *C, const struct cg_hdr *h,
 				      const struct cg_probe_info *pi, const struct sockaddr_storage *from,
@@ -744,6 +755,7 @@ static struct session *session_create(struct server *s, struct client *C, const 
 	/* Its index into the rescue ring; without memory, no rescue for it. */
 	if (s->resc.n)
 		S->resc_idx = calloc(CG_RESC_IDX, sizeof(*S->resc_idx));
+	S->fec = s->cfg->fec ? fec_rx_new() : NULL;
 	C->nsess++;
 	s->nsess++;
 	C->newest = (int32_t)(S - s->s);
@@ -1110,6 +1122,7 @@ static void q_flush(struct server *s, int *nq)
 		if (s->q_pool[j] != CG_RO_NOBUF)
 			cg_ro_pool_put(&s->pool, s->q_pool[j]);
 	*nq = 0;
+	s->fec_nout = 0;
 }
 
 /* Queues a payload for S's WireGuard, after what S has queued already;
@@ -1169,7 +1182,7 @@ static int send_path(struct server *s, struct session *S, int p, const uint8_t *
 static void rescue_apply(const struct server *s, struct session *S)
 {
 	S->rocf = s->rocf;
-	S->rocf.rescue_us = s->cfg->reorder && S->peer_rescue ? s->cfg->rescue_wait_ms * 1000 : 0;
+	S->rocf.rescue_us = s->cfg->reorder && S->peer_rescue ? cg_rescue_wait_ms(s->cfg) * 1000 : 0;
 }
 
 /* The upload gaps S's reorderer asked for, as NACKs down its live path of
@@ -1267,6 +1280,67 @@ static void up_deliver(struct server *s, int *nq, struct session *S, const struc
 		q_add(s, nq, S, payload, len, CG_RO_NOBUF); /* NOW (a second AGAIN cannot be: never dropped) */
 	up_drain(s, nq, S, rset, now, 0);
 	ro_track(s, S);
+}
+
+/* A receiver's FEC memory (fec.h): the parities and a ring of the DATA it
+ * got lately, in one block; NULL without memory (no fec for the session). */
+static struct cg_fec_rx *fec_rx_new(void)
+{
+	size_t n = CG_FEC_RING;
+	uint8_t *b = calloc(1, sizeof(struct cg_fec_rx) + n * (sizeof(uint32_t) + sizeof(uint16_t) + 2) +
+				   n * CG_FEC_PLEN_MAX);
+	struct cg_fec_rx *r = (struct cg_fec_rx *)b;
+
+	if (!b)
+		return NULL;
+	b += sizeof(*r);
+	r->seq = (uint32_t *)b;
+	b += n * sizeof(uint32_t);
+	r->len = (uint16_t *)b;
+	b += n * sizeof(uint16_t);
+	r->have = b;
+	b += n;
+	r->pidx = b;
+	b += n;
+	r->mem = b;
+	return r;
+}
+
+/* S's DATA seq rebuilt from a parity (len bytes at p): on to WireGuard as
+ * if it had come up path link at now, unless it did come meanwhile, or
+ * was given up (the replay window says). */
+static void fec_deliver(struct server *s, int *nq, struct session *S, uint32_t seq, const uint8_t *p, uint16_t len,
+			uint8_t link, uint32_t ts, uint32_t now, uint64_t now_ms)
+{
+	struct cg_hdr h = { .type = CG_T_DATA, .link = link, .session = S->id, .seq = seq, .ts = ts };
+	uint8_t *out;
+
+	if (cg_replay_check(&S->replay, seq) != CG_RP_NEW) {
+		S->fec_dups++;
+		return;
+	}
+	cg_replay_mark(&S->replay, seq);
+	if (s->fec_nout == CG_BATCH)
+		q_flush(s, nq);
+	out = s->fec_out[s->fec_nout++];
+	memcpy(out, p, len);
+	cg_wgw_from_client(&S->wgw, cg_wg_handshake(out, len), now_ms);
+	S->up_pkts++;
+	S->up_bytes += len;
+	cg_wgs_add(&s->wgs_up, out, len);
+	up_deliver(s, nq, S, &h, out, len, expect_mask(S, now_ms), now);
+}
+
+/* Tries S's parity slot k (fec.h) and hands on what it rebuilds. */
+static void fec_try(struct server *s, int *nq, struct session *S, int k, uint8_t link, uint32_t ts, uint32_t now,
+		    uint64_t now_ms)
+{
+	uint8_t buf[CG_FEC_PLEN_MAX];
+	uint32_t seq;
+	uint16_t len;
+
+	if (k >= 0 && cg_fec_rx_try(S->fec, k, buf, &seq, &len) == 1)
+		fec_deliver(s, nq, S, seq, buf, len, link, ts, now, now_ms);
 }
 
 /* Whether path p of S is full, so that what it loses is congestion, for TCP
@@ -1397,7 +1471,7 @@ static void listen_read(struct server *s, struct lane *ln)
 				continue;
 			}
 			if (cg_hdr_parse(&h, b, len) < 0 ||
-			    (h.type != CG_T_DATA && h.type != CG_T_PROBE && h.type != CG_T_NACK) ||
+			    (h.type != CG_T_DATA && h.type != CG_T_PROBE && h.type != CG_T_NACK && h.type != CG_T_FEC) ||
 			    h.link >= CG_MAX_LINKS) {
 				s->rx_malformed++;
 				if (cg_ratelimit_ok(&s->rl_auth, now_ms, 10000))
@@ -1485,6 +1559,17 @@ static void listen_read(struct server *s, struct lane *ln)
 				on_nack(s, S, h.flags, b + CG_HDR_LEN, len - CG_HDR_LEN, now_ms);
 				continue;
 			}
+			if (h.type == CG_T_FEC) {
+				/* A parity of the upload (fec.h): kept, and what it
+				 * can rebuild now goes on. */
+				if (!S->fec) {
+					S->fec_unused++;
+					continue;
+				}
+				fec_try(s, &nq, S, cg_fec_rx_parity(S->fec, b + CG_HDR_LEN, (unsigned)(len - CG_HDR_LEN)),
+					h.link, h.ts, now32, now_ms);
+				continue;
+			}
 			P = &S->path[h.link];
 			if (h.type == CG_T_PROBE) {
 				/* A new link, or an address the path never used:
@@ -1523,6 +1608,15 @@ static void listen_read(struct server *s, struct lane *ln)
 			S->up_pkts++;
 			S->up_bytes += len - CG_HDR_LEN;
 			cg_wgs_add(&s->wgs_up, b + CG_HDR_LEN, len - CG_HDR_LEN);
+			if (S->fec) {
+				/* Kept for the parities (fec.h); one waiting for
+				 * this packet may rebuild another now. */
+				int k = cg_fec_rx_put(S->fec, h.seq, b + CG_HDR_LEN, (uint16_t)(len - CG_HDR_LEN));
+
+				up_deliver(s, &nq, S, &h, b + CG_HDR_LEN, len - CG_HDR_LEN, expect, now32);
+				fec_try(s, &nq, S, k, h.link, h.ts, now32, now_ms);
+				continue;
+			}
 			up_deliver(s, &nq, S, &h, b + CG_HDR_LEN, len - CG_HDR_LEN, expect, now32);
 		}
 		q_flush(s, &nq);
@@ -2296,6 +2390,16 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 		cg_json_u64(j, "nacks_sent", S->nacks_sent);
 		cg_json_u64(j, "gone_sent", S->resc_gone_tx);
 		cg_json_u64(j, "gone_received", S->resc_gone_rx);
+		cg_json_end(j, '}');
+		/* the upload's parities (fec.h) */
+		cg_json_obj(j, "fec");
+		cg_json_bool(j, "on", S->fec != NULL);
+		cg_json_u64(j, "parities", S->fec ? S->fec->parities : 0);
+		cg_json_u64(j, "recovered", S->fec ? S->fec->recovered : 0);
+		cg_json_u64(j, "unrecovered", S->fec ? S->fec->unrecovered : 0);
+		cg_json_u64(j, "malformed", S->fec ? S->fec->bad : 0);
+		cg_json_u64(j, "already_there", S->fec_dups);
+		cg_json_u64(j, "unused", S->fec_unused);
 		cg_json_end(j, '}');
 		cg_json_joint(j, "joint", &S->arr);
 		cg_json_reorder(j, "reorder", &S->ro, s->cfg->reorder, NULL);
@@ -3432,8 +3536,10 @@ out:
 		close(s->tfd);
 	if (s->ep >= 0)
 		close(s->ep);
-	for (uint32_t i = 0; s->s && i < s->cap; i++)
+	for (uint32_t i = 0; s->s && i < s->cap; i++) {
 		free(s->s[i].resc_idx);
+		free(s->s[i].fec);
+	}
 	free(s->s);
 	free(s->ro_active);
 	cg_ro_pool_free(&s->pool);

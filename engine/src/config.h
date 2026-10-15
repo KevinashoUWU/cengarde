@@ -212,6 +212,8 @@ struct cg_config {
 	uint32_t reorder_pool_kb;     /* memory for the packets it holds; changing it restarts */
 	int tcp_aware;                /* native: mark inner TCP's retransmissions and ACKs free (tcpfree.h) */
 	uint32_t reorder_retx_release_ms; /* a TCP retransmission gives up the gaps held this long before it; 0: off */
+	int fec;                      /* send a parity of each group of split DATA, rebuild from it (fec.h) */
+	uint32_t fec_wait_ms;         /* a group's parity goes at the latest this long after its first packet */
 	int split;                    /* enum cg_split_mode */
 	uint32_t split_small;         /* datagrams of up to this many bytes are never split */
 	uint32_t split_spread_ms;     /* only links this close to the fastest share the split (split.h G4); 0: off */
@@ -312,5 +314,16 @@ const char *cg_config_restart_needed(const struct cg_config *a, const struct cg_
  * of it (and without resolving any name in it). Returns 0, 1 when the key
  * is not there, or -1 with err set. */
 int cg_config_peek(const char *path, const char *key, char *out, size_t outlen, char *err, size_t errlen);
+
+/* How long a gap waits before the rescue asks for it (rescue_wait_ms, 0:
+ * never): with fec, never less than a group's deadline twice and 20 ms,
+ * so that what a parity can rebuild is rebuilt first and not asked for
+ * (fec.h). */
+static inline uint32_t cg_rescue_wait_ms(const struct cg_config *c)
+{
+	uint32_t f = 2 * c->fec_wait_ms + 20;
+
+	return c->rescue_wait_ms && c->fec && c->rescue_wait_ms < f ? f : c->rescue_wait_ms;
+}
 
 #endif
