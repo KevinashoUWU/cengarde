@@ -155,6 +155,49 @@
     El ancla que toma depende del momento en que engancha; el 5G viene con
     la B7 como ancla. Queda el bloqueo del sitio completo
     (`AT+QNWLOCK="common/4g",3,3300,91,1000,20,9360,91`).
+- **La LAN de la Pi pierde lo que entra por el adaptador USB dañado**
+  (2026-10-15, medido). Desde la Pi misma el túnel subía 53 Mbit/s; desde
+  cualquier equipo de la LAN (el PC del banco y un notebook Windows),
+  15–25, y speedtest daba 33–48 de bajada y 19–25 de subida contra EdgeUno,
+  Entel y PIT Chile. Solo la LAN (PC → Pi, sin túnel): 291 Mbit/s con 8655
+  retransmisiones en 8 s, y 3721 aun a 60 Mbit/s; al revés (Pi → PC), 0.
+  - **Causa:** el RTL8153 (`r8152`, en el bus USB 2.0 porque el adaptador
+    está dañado y no engancha a 5 Gbit/s) desborda su FIFO de hardware: el
+    switch le entrega ráfagas a 1 Gbit/s y el USB las vacía a ~300 Mbit/s.
+    Lo delata **`rx_missed` de `ethtool -S eth1`** (~490 por segundo a
+    60 Mbit/s, igual que las retransmisiones); `dropped` de `ip -s link`
+    y los contadores del kernel no lo ven.
+  - **No sirvieron:** subir el anillo de recepción (`ethtool -G eth1 rx`
+    de 100 a 2048: está después del FIFO) ni intercambiar los puertos
+    (ya probado antes: las VLAN de los módems en el adaptador es peor).
+  - **Parche: control de flujo en el puerto 23 del switch** (el de la LAN
+    de la Pi, solo ese). La pausa queda negociada en los dos sentidos
+    (`ethtool -a eth1`) y el adaptador frena al switch en vez de descartar:
+
+    | Medida | Sin pausa | Con pausa |
+    | --- | --- | --- |
+    | LAN libre (PC → Pi) | 291, 8655 retrans. | 307, 206 retrans. |
+    | LAN a 60 Mbit/s | 3721 retrans. | 62 retrans. |
+    | Túnel vía la Pi (iperf3, subida) | 16,8 | 41,9 |
+    | speedtest vía la Pi, bajada / subida | 33–48 / 19–25 | 49–71 / 60–78 |
+    | `rx_missed` | ~490 por segundo | 30 en toda la prueba |
+
+    Con pausa, la cola que antes se perdía se forma en el switch y en los
+    módems: el ping con carga de subida sube a 111–198 ms. El arreglo de
+    fondo es el adaptador USB 3.0 nuevo.
+  - **La pausa no sobrevive un reinicio de la Pi** (2026-10-15, medido): el
+    driver `r8152` vuelve con la pausa apagada (`ethtool -a eth1`: RX/TX off)
+    aunque el puerto 23 la tenga; la subida desde la LAN volvió a 13–16
+    Mbit/s con ~400 retransmisiones y `rx_missed` creciendo. `ethtool -A eth1
+    rx on tx on` solo no basta: hay que renegociar (`ethtool -r eth1`, ~3 s
+    sin LAN) para que el switch la oiga; con eso, 66–88 Mbit/s y `rx_missed`
+    quieto. Queda fijo en `/etc/hotplug.d/net/30-eth1-pause` (y en
+    `sysupgrade.conf`).
+  - **Consola del switch:** el cable micro-USB es un PL2303G con ID de
+    TP-Link (`2357:0701`), que ningún driver toma solo; en el CPE2 va con
+    `kmod-usb-serial-pl2303` y `/etc/hotplug.d/usb/30-tplink-console`
+    (`/dev/ttyUSB4`, 38400 8N1). Usuario y clave: los de la cuenta de
+    dispositivo del sitio en el OC200, no los del controlador.
 
 ## Qué hacemos con esto
 
@@ -203,3 +246,19 @@
   adaptador, hasta reemplazarlo por uno USB 3.0.
 - 2026-10-14: las celdas de cada operador en el banco (PCI y bandas), el
   bloqueo de Entel probado y Claro entre la PCI 465 y la 90.
+- 2026-10-15: la LAN de la Pi perdía la subida en el FIFO del adaptador
+  USB dañado (`rx_missed`); el control de flujo en el puerto 23 del switch
+  la lleva de 15–25 a 42–78 Mbit/s. Consola del switch desde el CPE2.
+- 2026-10-15: Claro, bloqueado a las cuatro portadoras de ENAMI, cayó a 3G
+  (WCDMA 850, UARFCN 4437) y no volvía a LTE: 9 Mbit/s de bajada y 2,5 de
+  subida con más de 1 s de cola. Sin el bloqueo (`AT+QNWLOCK="common/4g",0`)
+  vuelve al mismo sitio (eNB 19EE0B: B2 850 PCI 90 de 20 MHz más B5 2536
+  PCI 330) y da 107 de bajada y 30,5 de subida en speedtest. **La caída a
+  3G la provoca una llamada entrante:** sin VoLTE el módem hace CSFB, y con
+  el bloqueo LTE no vuelve. Los cuatro módems quedan en
+  `AT+QNWPREFCFG="mode_pref",LTE:NR5G` (sin 3G ni 2G): una llamada ya no
+  saca el enlace de LTE. Sin bloqueo, Claro se fue a la B28 sola de la
+  minera (PCI 465: 17,9 / 19,6 con 758 ms de cola); bloqueado otra vez a
+  ENAMI, engancha B28 PCI 330 + B2 PCI 90 de 20 MHz + B4 PCI 90 de 10 MHz
+  y da **167,5 de bajada** y 18,4 de subida.
+- 2026-10-15: la pausa del adaptador USB de la LAN se perdía al reiniciar la Pi; queda fija con un script de hotplug.
