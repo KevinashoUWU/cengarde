@@ -259,6 +259,11 @@ void cg_json_reorder(struct cg_json *j, const char *k, const struct cg_reorder *
 	cg_json_u64(j, "overflow", st->lost_overflow);
 	cg_json_u64(j, "flush", st->lost_flush);
 	cg_json_end(j, '}');
+	/* adaptive: each link's learned margin, by link id */
+	cg_json_arr(j, "adapt_ms");
+	for (unsigned i = 0; i < CG_MAX_LINKS; i++)
+		cg_json_ms(j, NULL, r->link[i].adapt_us);
+	cg_json_end(j, ']');
 	cg_json_obj(j, "late");
 	cg_json_u64(j, "after_rack", st->late_rack);
 	cg_json_u64(j, "after_cap", st->late_cap);
@@ -268,6 +273,13 @@ void cg_json_reorder(struct cg_json *j, const char *k, const struct cg_reorder *
 	cg_json_u64(j, "far", st->far);
 	cg_json_u64(j, "resyncs", st->resyncs);
 	cg_json_u64(j, "pool_full", st->pool_full);
+	/* The rescue (rescue.h): gaps asked for again, that came, that did not. */
+	cg_json_obj(j, "rescue");
+	cg_json_u64(j, "asked", st->asked);
+	cg_json_u64(j, "rescued", st->rescued);
+	cg_json_u64(j, "lost", st->ask_lost);
+	cg_json_u64(j, "refused", st->ask_refused);
+	cg_json_end(j, '}');
 	cg_json_u64(j, "max_burst", st->max_burst);
 	cg_json_arr(j, "edges_ms");
 	for (unsigned i = 0; i < CG_RO_HIST - 1; i++)
@@ -305,7 +317,7 @@ void cg_json_owd_swing(struct cg_json *j, const char *k, const struct cg_reorder
 		cg_json_ms(j, k, cg_ro_swing(l));
 }
 
-void cg_json_capacity(struct cg_json *j, const struct cg_cap_link *l)
+void cg_json_capacity(struct cg_json *j, const struct cg_cap_link *l, uint32_t target_us)
 {
 	/* bps / 1000 as "ms" prints Mbit/s with three decimals. */
 	if (l->have_rate) {
@@ -319,6 +331,12 @@ void cg_json_capacity(struct cg_json *j, const struct cg_cap_link *l)
 		cg_json_ms(j, "queue_ms", (uint64_t)l->queue_us);
 	else
 		cg_json_null(j, "queue_ms");
+	/* the queue's slope (ms per second) and the rescue's weight, 0 to 1 */
+	if (l->have_s1)
+		cg_json_ms_signed(j, "queue_slope_ms_s", l->s1);
+	else
+		cg_json_null(j, "queue_slope_ms_s");
+	cg_json_ms(j, "rescue_weight", (uint64_t)cg_cap_rescue_w(l, target_us) * 1000 / CG_CAP_W_ONE);
 }
 
 int cg_status_write(const char *path, const char *data, size_t len)

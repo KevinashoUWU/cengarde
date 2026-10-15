@@ -145,7 +145,8 @@ static struct cg_ro_pkt pkt(uint32_t seq, uint32_t ts, uint32_t at, unsigned lin
 			    uint16_t len)
 {
 	return (struct cg_ro_pkt){ .seq = R.b.sb + seq, .ts = R.b.tsb + ts, .t_arr = R.b.tb + at, .len = len,
-				   .link = (uint8_t)link, .flags = flags, .wgtype = type };
+				   .link = (uint8_t)link, .flags = flags, .wgtype = type,
+				   .prev = (uint8_t)(cg_prev_link(flags) + 1) };
 }
 
 /* cg_ro_in alone, as a caller that has not drained yet. */
@@ -464,6 +465,210 @@ static void sc_swing(const struct base *b)
 }
 
 /* 4: RACK. */
+/* by_link (CG_F_PREV): a gap waits for the link the packet after it names,
+ * not the slowest of rset. Links 0 (10 ms) and 1 (150 ms). */
+static void sc_by_link(const struct base *b)
+{
+	const uint8_t SP = SPLIT;
+
+	for (int on = 0; on < 2; on++) {
+		/* A: seq 1 went on the fast link and is lost; seq 2, on the slow one,
+		 * names it. With by_link the gap is past link 0's deadline when seq 2
+		 * comes (2 + 10 + 10 ms): it goes at once. Without, it waits for the
+		 * slowest (2 + 150 + 10 ms). */
+		rig(CG_RO_SLOTS, b, 400 * MS, 0, 10 * MS, 0, 0x3);
+		R.cf.by_link = (uint8_t)on;
+		owd(0, 10 * MS);
+		owd(1, 150 * MS);
+		CHECK_EQ(in(0, 0, 10 * MS, 0, SP, DATA, BIG), CG_RO_NOW);
+		CHECK_EQ(in(2, 2 * MS, 152 * MS, 1, SP | cg_prev_flags(0), DATA, BIG), on ? CG_RO_NOW : CG_RO_HOLD);
+		CHECK_EQ(R.r.st.lost_cap, (uint64_t)on);
+		if (!on) {
+			CHECK(due(152 * MS) > 0);
+			drain(163 * MS);
+			CHECK_EQ(R.r.st.lost_cap, 1);
+		}
+		CHECK_EQ(R.r.head, b->sb + 3);
+
+		/* B: seq 1 lost on link 0, and link 0 brings seq 2 (FIFO): the gap is
+		 * lost now (RACK on its link), where the slow link still says nothing. */
+		rig(CG_RO_SLOTS, b, 400 * MS, 0, 10 * MS, 0, 0x3);
+		R.cf.by_link = (uint8_t)on;
+		owd(0, 10 * MS);
+		owd(1, 150 * MS);
+		CHECK_EQ(in(0, 0, 10 * MS, 0, SP, DATA, BIG), CG_RO_NOW);
+		CHECK_EQ(in(2, 2 * MS, 12 * MS, 0, SP | cg_prev_flags(0), DATA, BIG), on ? CG_RO_NOW : CG_RO_HOLD);
+		CHECK_EQ(R.r.st.lost_rack, (uint64_t)on);
+		if (on)
+			CHECK_EQ(due(12 * MS), INT32_MAX);
+
+		/* C: seq 1 went on the slow link and comes: named, it waits for that
+		 * link, as without by_link, and nothing is lost. */
+		rig(CG_RO_SLOTS, b, 400 * MS, 0, 10 * MS, 0, 0x3);
+		R.cf.by_link = (uint8_t)on;
+		owd(0, 10 * MS);
+		owd(1, 150 * MS);
+		CHECK_EQ(in(0, 0, 10 * MS, 0, SP, DATA, BIG), CG_RO_NOW);
+		CHECK_EQ(in(2, 2 * MS, 12 * MS, 0, SP | cg_prev_flags(1), DATA, BIG), CG_RO_HOLD);
+		CHECK(due(12 * MS) > (int32_t)(100 * MS));
+		CHECK_EQ(drain(100 * MS), 0);
+		CHECK_EQ(in(1, 1 * MS, 151 * MS, 1, SP | cg_prev_flags(0), DATA, BIG), CG_RO_NOW);
+		CHECK_EQ(R.r.head, b->sb + 3);
+		CHECK_EQ(R.r.st.lost_cap + R.r.st.lost_rack, 0);
+		CHECK_EQ(R.nout, 3);
+	}
+}
+
+/* Rescue: a gap about to be given up is asked for (r.ask), and waits
+ * rescue_us more. Links 0 (10 ms) and 1 (30 ms). */
+static void sc_rescue(const struct base *b)
+{
+	for (int come = 0; come < 2; come++) {
+		/* seq 1 lost; seq 2 at 12 ms waits until 2 + 30 + 10 = 42 ms. */
+		rig(CG_RO_SLOTS, b, 400 * MS, 0, 10 * MS, 0, 0x3);
+		R.cf.rescue_us = 60 * MS;
+		owd(0, 10 * MS);
+		owd(1, 30 * MS);
+		CHECK_EQ(in(0, 0, 10 * MS, 0, SPLIT, DATA, BIG), CG_RO_NOW);
+		CHECK_EQ(in(2, 2 * MS, 12 * MS, 0, SPLIT, DATA, BIG), CG_RO_HOLD);
+		CHECK_EQ(R.r.nask, 0);
+		CHECK_EQ(drain(41 * MS), 0);
+		CHECK_EQ(R.r.nask, 0);
+		/* Due: asked for, not given up. */
+		CHECK_EQ(drain(43 * MS), 0);
+		CHECK_EQ(R.r.nask, 1);
+		CHECK_EQ(R.r.ask[0], b->sb + 1);
+		CHECK_EQ(R.r.st.asked, 1);
+		CHECK_EQ(R.r.st.lost_cap, 0);
+		CHECK(due(43 * MS) > (int32_t)(55 * MS) && due(43 * MS) <= (int32_t)(60 * MS));
+		R.r.nask = 0; /* the caller sent the NACK */
+		CHECK_EQ(drain(80 * MS), 0);
+		CHECK_EQ(R.r.nask, 0); /* asked once */
+		if (come) {
+			/* The copy comes on the fast link: in order, nothing lost. */
+			CHECK_EQ(in(1, 1 * MS, 90 * MS, 0, SPLIT, DATA, BIG), CG_RO_NOW);
+			CHECK_EQ(R.r.st.rescued, 1);
+			CHECK_EQ(R.r.st.lost_cap + R.r.st.lost_rack + R.r.st.ask_lost, 0);
+		} else {
+			/* It does not come: given up at 43 + 60 ms, as due then (cap). */
+			CHECK_EQ(drain(102 * MS), 0);
+			CHECK_EQ(drain(104 * MS), 1);
+			CHECK_EQ(R.r.st.ask_lost, 1);
+			CHECK_EQ(R.r.st.lost_cap, 1);
+			CHECK_EQ(R.r.st.rescued, 0);
+		}
+		CHECK_EQ(R.r.head, b->sb + 3);
+	}
+
+	/* rescue_tries 2: asked for again at half the wait (ask2), once. */
+	rig(CG_RO_SLOTS, b, 400 * MS, 0, 10 * MS, 0, 0x3);
+	R.cf.rescue_us = 60 * MS;
+	R.cf.rescue_tries = 2;
+	owd(0, 10 * MS);
+	owd(1, 30 * MS);
+	CHECK_EQ(in(0, 0, 10 * MS, 0, SPLIT, DATA, BIG), CG_RO_NOW);
+	CHECK_EQ(in(2, 2 * MS, 12 * MS, 0, SPLIT, DATA, BIG), CG_RO_HOLD);
+	CHECK_EQ(drain(43 * MS), 0);
+	CHECK(R.r.nask == 1 && R.r.nask2 == 0);
+	R.r.nask = 0;
+	CHECK(due(43 * MS) > 0 && due(43 * MS) <= (int32_t)(30 * MS)); /* the retry at 73 ms */
+	CHECK_EQ(drain(72 * MS), 0);
+	CHECK_EQ(R.r.nask2, 0);
+	CHECK_EQ(drain(74 * MS), 0);
+	CHECK_EQ(R.r.nask2, 1);
+	CHECK_EQ(R.r.ask2[0], b->sb + 1);
+	R.r.nask2 = 0;
+	CHECK_EQ(drain(90 * MS), 0);
+	CHECK_EQ(R.r.nask2, 0); /* twice at most */
+	CHECK_EQ(R.r.st.asked, 2);
+	CHECK_EQ(drain(104 * MS), 1); /* given up at 43 + 60 ms */
+	CHECK_EQ(R.r.st.ask_lost, 1);
+
+	/* The sender says it will not come (CG_F_GONE): it goes at once, not
+	 * at 43 + 60 ms, and is asked for no more. */
+	rig(CG_RO_SLOTS, b, 400 * MS, 0, 10 * MS, 0, 0x3);
+	R.cf.rescue_us = 60 * MS;
+	R.cf.rescue_tries = 2;
+	owd(0, 10 * MS);
+	owd(1, 30 * MS);
+	CHECK_EQ(in(0, 0, 10 * MS, 0, SPLIT, DATA, BIG), CG_RO_NOW);
+	CHECK_EQ(in(2, 2 * MS, 12 * MS, 0, SPLIT, DATA, BIG), CG_RO_HOLD);
+	CHECK_EQ(drain(43 * MS), 0);
+	R.r.nask = 0;
+	CHECK(!cg_ro_refused(&R.r, &R.cf, b->sb + 5, R.b.tb + 50 * MS)); /* not asked for */
+	CHECK(cg_ro_refused(&R.r, &R.cf, b->sb + 1, R.b.tb + 50 * MS));
+	CHECK(!cg_ro_refused(&R.r, &R.cf, b->sb + 1, R.b.tb + 50 * MS)); /* once */
+	CHECK_EQ(due(50 * MS), 0);
+	CHECK_EQ(drain(50 * MS), 1);
+	CHECK(R.r.st.ask_refused == 1 && R.r.st.ask_lost == 1 && R.r.nask2 == 0);
+	CHECK_EQ(R.r.head, b->sb + 3);
+
+	/* Several gaps before the held packet: asked for together. */
+	rig(CG_RO_SLOTS, b, 400 * MS, 0, 10 * MS, 0, 0x3);
+	R.cf.rescue_us = 60 * MS;
+	owd(0, 10 * MS);
+	owd(1, 30 * MS);
+	CHECK_EQ(in(0, 0, 10 * MS, 0, SPLIT, DATA, BIG), CG_RO_NOW);
+	CHECK_EQ(in(4, 4 * MS, 14 * MS, 0, SPLIT, DATA, BIG), CG_RO_HOLD);
+	CHECK_EQ(drain(50 * MS), 0);
+	CHECK_EQ(R.r.nask, 3);
+	CHECK(R.r.ask[0] == b->sb + 1 && R.r.ask[1] == b->sb + 2 && R.r.ask[2] == b->sb + 3);
+
+	/* Nothing waits (redundancy, dup_wait 0): a gap goes at once, unasked. */
+	rig(CG_RO_SLOTS, b, 400 * MS, 0, 10 * MS, 0, 0x3);
+	R.cf.rescue_us = 60 * MS;
+	owd(0, 10 * MS);
+	owd(1, 30 * MS);
+	CHECK_EQ(in(0, 0, 10 * MS, 0, 0, DATA, BIG), CG_RO_NOW);
+	CHECK_EQ(in(2, 2 * MS, 12 * MS, 0, 0, DATA, BIG), CG_RO_NOW);
+	CHECK_EQ(R.r.st.asked, 0);
+	CHECK_EQ(R.r.st.lost_cap, 1);
+}
+
+/* adaptive: a link's margin grows to how late its late packets come, and
+ * halves after CG_RO_ADAPT_DECAY_US without one. Links 0 (10 ms) and 1
+ * (30 ms); margin 10 ms, cap 400 ms. */
+static void sc_adapt(const struct base *b)
+{
+	rig(CG_RO_SLOTS, b, 400 * MS, 0, 10 * MS, 0, 0x3);
+	R.cf.adaptive = 1;
+	owd(0, 10 * MS);
+	owd(1, 30 * MS);
+	CHECK_EQ(in(0, 0, 10 * MS, 0, SPLIT, DATA, BIG), CG_RO_NOW);
+	/* seq 1, on link 1, comes 200 ms after its gap went (2 + 30 + 10 ms) */
+	CHECK_EQ(in(2, 2 * MS, 12 * MS, 0, SPLIT, DATA, BIG), CG_RO_HOLD);
+	CHECK_EQ(drain(43 * MS), 1);
+	CHECK_EQ(R.r.st.lost_cap, 1);
+	CHECK_EQ(in(1, 1 * MS, 243 * MS, 1, SPLIT, DATA, BIG), CG_RO_NOW);
+	CHECK_EQ(R.r.st.late_cap, 1);
+	CHECK_EQ(R.r.link[1].adapt_us, 250 * MS); /* 200 ms and a quarter */
+	CHECK_EQ(R.r.link[0].adapt_us, 0);
+	/* The next gap waits for link 1's delay and that: seq 4 at 260 ms is
+	 * still held at 270 + 30 + 250 + 10 - 1 ms, and seq 3 comes. */
+	CHECK_EQ(in(4, 260 * MS, 270 * MS, 0, SPLIT, DATA, BIG), CG_RO_HOLD);
+	CHECK_EQ(drain(549 * MS), 0);
+	CHECK_EQ(in(3, 259 * MS, 520 * MS, 1, SPLIT, DATA, BIG), CG_RO_NOW);
+	CHECK_EQ(R.r.st.lost_cap, 1);
+	CHECK_EQ(R.r.head, b->sb + 5);
+	/* Never past the cap: a packet 1 s late teaches 400 ms. */
+	CHECK_EQ(in(6, 600 * MS, 610 * MS, 0, SPLIT, DATA, BIG), CG_RO_HOLD);
+	CHECK_EQ(drain(1100 * MS), 1);
+	CHECK_EQ(in(5, 599 * MS, 2100 * MS, 1, SPLIT, DATA, BIG), CG_RO_NOW);
+	CHECK_EQ(R.r.link[1].adapt_us, 400 * MS);
+	/* 5 s without a late packet on link 1: half. */
+	CHECK_EQ(in(7, 7100 * MS, 7130 * MS, 1, SPLIT, DATA, BIG), CG_RO_NOW);
+	CHECK_EQ(R.r.link[1].adapt_us, 200 * MS);
+	/* Off: nothing learned. */
+	rig(CG_RO_SLOTS, b, 400 * MS, 0, 10 * MS, 0, 0x3);
+	owd(0, 10 * MS);
+	owd(1, 30 * MS);
+	CHECK_EQ(in(0, 0, 10 * MS, 0, SPLIT, DATA, BIG), CG_RO_NOW);
+	CHECK_EQ(in(2, 2 * MS, 12 * MS, 0, SPLIT, DATA, BIG), CG_RO_HOLD);
+	CHECK_EQ(drain(43 * MS), 1);
+	CHECK_EQ(in(1, 1 * MS, 243 * MS, 1, SPLIT, DATA, BIG), CG_RO_NOW);
+	CHECK_EQ(R.r.link[1].adapt_us, 0);
+}
+
 static void sc_rack(const struct base *b)
 {
 	uint64_t held_total;
@@ -754,7 +959,7 @@ static void sc_overflow(const struct base *b)
 		unsigned m = i % 12;
 		uint16_t len = m < 7 ? SMALL : m < 11 ? 576 : BIG;
 		unsigned link = len == SMALL ? 0 : nb++ % 2;
-		uint32_t ts = i * 28;
+		uint32_t ts = i * 28 / (CG_RO_SLOTS / 4096); /* 140 ms of spread over more than the window */
 
 		e[i] = pkt(i, ts, ts + (link ? 150 * MS : 10 * MS), link, len == SMALL ? 0 : SPLIT, DATA, len);
 	}
@@ -1665,7 +1870,9 @@ static int m_flush(struct m_pkt *out)
 /* A trial: packets sent over links of random delay, jitter and loss, in
  * redundancy or split, received in time order, first copies only, through
  * an emulated anti-replay window; timers from cg_ro_due_us. */
-#define T_PKTS 6000
+/* Scaled with the window, so that the trials that overflow it still do. */
+#define T_SCALE (CG_RO_SLOTS / 4096)
+#define T_PKTS (6000 * T_SCALE)
 #define T_LINKS 4
 #define T_EVS (T_PKTS * T_LINKS + 20000)
 
@@ -1911,12 +2118,12 @@ static void trial(int idx)
 
 	if (ovf && nl < 2)
 		nl = 2 + rn(T_LINKS - 1);
-	T.cf.max_wait_us = ovf ? 200 * MS + rn(200 * MS) : max_waits[rn(4)];
+	T.cf.max_wait_us = ovf ? (200 * MS + rn(200 * MS)) * T_SCALE : max_waits[rn(4)];
 	T.cf.dup_wait_us = rn(3) ? 0 : rn(2) ? T.cf.max_wait_us : T.cf.max_wait_us / 4;
 	T.cf.margin_us = margins[rn(3)];
 	T.cf.bypass_len = bypasses[rn(3)];
 	if (!rn(4)) {
-		static const unsigned lens[] = { 100, 3000, 5000, 9000 };
+		static const unsigned lens[] = { 100, 3000 * T_SCALE, 5000 * T_SCALE, 9000 * T_SCALE };
 
 		out_a = rn(npk);
 		out_len = lens[rn(4)];
@@ -1926,7 +2133,7 @@ static void trial(int idx)
 	T.toff = idx % 2 ? (uint32_t)(0u - (uint32_t)t - rn(2000000)) : rnd();
 	T.tsoff = rnd();
 	for (unsigned l = 0; l < nl; l++) {
-		base_d[l] = ovf ? (l ? 100 * MS + rn(100 * MS) : rn(2 * MS)) : rn(5) ? rn(150 * MS) : rn(2 * MS);
+		base_d[l] = ovf ? (l ? (100 * MS + rn(100 * MS)) * T_SCALE : rn(2 * MS)) : rn(5) ? rn(150 * MS) : rn(2 * MS);
 		jit[l] = rn(4) ? rn(3 * MS) : 0;
 		loss[l] = rn(3) ? rn(30) : 0; /* per mille */
 		fifo[l] = rn(6) != 0;
@@ -2067,6 +2274,9 @@ void test_reorder(void)
 		sc_spread(b);
 		sc_swing(b);
 		sc_rack(b);
+		sc_by_link(b);
+		sc_rescue(b);
+		sc_adapt(b);
 		sc_deadline(b);
 		sc_late(b);
 		sc_overflow(b);

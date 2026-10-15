@@ -337,8 +337,191 @@ con 4 flujos y 20 s, 3 rondas alternadas, salvo que se diga otra cosa.
   los 18–26 del promedio) y `test_capacity_swing`. En el laboratorio, con
   16 flujos (`BOND_P=16`), da lo mismo que antes (het: 51,5 frente a 50,7
   de bajada; bloat: 25,6 frente a 26,3): sus enlaces tienen tasa fija y la
-  rampa pesa poco. Falta el A/B en la red de pruebas, contra la medición
-  de las 3:33 del 2026-10-15.
+  rampa pesa poco.
+- **El PR 5 en la red de pruebas (2026-10-15): neutro, la hipótesis no se
+  confirmó.** Con la misma medición que la línea base de las 3:33, a las
+  6:23 da lo mismo: túnel de bajada 202 / 229 (antes 225 / 198), speedtest
+  157 / 193 / 131 (antes 140 / 170 / 160). El A/B intercalado en el VPS
+  (el motor anterior y el nuevo alternados, 16 flujos de bajada por el
+  túnel del PC, 20 s, 3 rondas) da 320 de media con el anterior (344, 325,
+  290) y 312 con el nuevo (332, 281, 325), con caídas parecidas. La
+  capacidad que caía con la cola era real, pero no era lo que limitaba la
+  bajada: con 16 flujos, la misma prueba que anoche daba 104–119 hoy da
+  280–344, porque los enlaces dan más (sumados solos: 446–568 contra
+  414–443; Movistar 123 de bajada contra 63–77). Queda desplegado: no
+  empeora nada y un vaivén del retardo ya no vacía la capacidad.
+- **De dónde salen las retransmisiones de la bajada** (16 flujos, 20 s,
+  2026-10-15 en la mañana). En el VPS: 7.099 retransmisiones de 318.268
+  segmentos (2,2 %), solo ~21 % espurias (DSACK). En el cliente:
+  `lost_all` 5.404 (1,7 %, pérdida real en las colas celulares) y 15.225
+  huecos abandonados por el reordenador (RACK 5.423, plazo 8.285, desborde
+  1.517), de los que 9.821 llegaron después, 4.426 con más de 500 ms. Por
+  enlace, Claro lleva el 59 % y la mayoría de los tardíos (8,5 % de lo
+  suyo); Movistar llegó a 2,6 s de cola en el VPS con la capacidad
+  estimada en 0–22. El reordenador no es la causa: los paquetes llegan
+  medio segundo tarde porque a algunos enlaces se les mete más de lo que
+  drenan, y esperar más solo sumaría latencia.
+- **Silenciar al atrasado no ayuda:** `mute_behind_ms` 0 contra 150 en el
+  VPS, intercalado, 3 rondas: 167,8 contra 150,7 de media. Queda en 0.
+- **UDP contra TCP fuera del túnel** (por si un operador limita el UDP):
+  Movistar TCP 52,7, UDP a 30 Mbit/s 27,6 con 2,6 % de pérdida; Entel TCP
+  36,8, UDP a 60 Mbit/s 57,0 con 1,8 %. Sin evidencia de un límite al UDP.
+  El VPS abre 5201–5204/udp (reservados con `forward reserve`).
+- **Lo que queda:** dosificar en el servidor cada enlace a su capacidad, para
+  que la cola se forme en el VPS y no en la celda. En el servidor todos los
+  enlaces comparten un socket, y `SO_MAX_PACING_RATE` es por socket: hace
+  falta la hora de salida por paquete (`SO_TXTIME` y `fq`, que traba los
+  enlaces entre sí en un mismo flujo) o un socket por enlace. En la subida,
+  la dosificación del cliente empeoró (arriba); en la bajada no se ha
+  probado.
+
+### 2026-10-15: la ventana del reordenador (PR #46)
+
+- **El desborde era el reordenador, no la red.** A ~27.000 paquetes por
+  segundo, la ventana de 4.096 posiciones cubría ~150 ms: de 635 mil
+  huecos abandonados en el PC, 231 mil fueron desbordes, y el 43 % de los
+  tardíos llegó menos de 1 ms después de abandonado su hueco. La ventana
+  anti-replay de 8.192 además rechazaba como viejo un paquete 300 ms tarde.
+- **PR #46:** `CG_RO_SLOTS` 16.384 y `CG_REPLAY_BITS` 32.768 (~600 ms a esa
+  tasa; un reordenador pasa de ~81 a ~322 KiB), con el pool en 32 MB.
+- **A/B intercalado en el cliente del PC** (16 flujos de bajada, 20 s, 3
+  rondas):
+
+  | Variante | Mbit/s (media) | Retransmisiones | Desbordes |
+  | --- | --- | --- | --- |
+  | `master`, plazo 500 ms | 152,3 (133, 181, 143) | 16.922 | 1.468–15.972 |
+  | ventana nueva, plazo 500 ms | 124,2 (125, 131, 117) | 5.445 | 0 |
+  | `master`, plazo 500 ms (2.ª tanda) | 152,6 (158, 164, 136) | 9.227 | 823–11.715 |
+  | ventana nueva, plazo 150 ms | 140,4 (112, 150, 160) | 12.698 | 0 |
+
+  La ventana grande quita los desbordes y, con el plazo de 500 ms, baja
+  las retransmisiones a un tercio, pero rinde menos: el reordenador
+  retiene ahora hasta el plazo, y TCP ve un RTT más largo. El desborde
+  soltaba los huecos a los ~150 ms y TCP avanzaba antes, aun
+  retransmitiendo más. Con 150 ms tampoco gana. **Lo que manda el
+  rendimiento es cuánto se retiene, no cuántas retransmisiones hay**: el
+  PR queda abierto, sin mergear, hasta probar un plazo que siga al
+  enlace (el desvío de cada uno, `CG_RO_DEV_K`) en vez de uno fijo.
+- **El plazo por enlace (PR #47, protocolo v5, `reorder_by_link`):** cada
+  paquete dice por qué enlace salió la secuencia anterior cuando salió por
+  uno solo (`CG_F_PREV`), y el reordenador espera un hueco lo que tarda ese
+  enlace, no el más lento, y lo suelta apenas ese enlace trae una
+  secuencia posterior (RACK por enlace). A/B intercalado en el cliente del
+  PC, ventana de 16.384 y pool de 32 MB en los dos lados, 16 flujos de
+  bajada, 20 s, 3 rondas: 151,2 sin la opción (145, 150, 159) contra 141,5
+  con ella (148, 137, 139). Suelta antes, como se esperaba (abandonos por
+  RACK 8–16 mil contra 5–11 mil), pero ni el rendimiento ni las
+  retransmisiones mejoran. Queda apagada por omisión; el protocolo v5 queda
+  desplegado.
+- **Lo que dicen las tres pruebas del reordenador juntas** (ventana, plazo
+  fijo más corto, plazo por enlace): con 16 flujos y la red de la mañana,
+  ninguna saca al túnel del rango de 125–160 Mbit/s, y la variación entre
+  rondas iguales (±15 %) es mayor que cualquier efecto. El reordenador ya no
+  parece ser lo que limita la bajada; lo que queda sin tocar es la pérdida
+  real (`lost_all`, 1–11 mil paquetes por corrida de 20 s), que es lo que
+  ataca el ARQ de rescate (historia 012: estilo XLINK, reinyectar por el
+  enlace más rápido cuando el plazo se agota).
+
+### 2026-10-15: el rescate (PR #48, ARQ estilo XLINK)
+
+- **Qué es:** el reordenador del cliente pide (`CG_T_NACK`) el hueco que va
+  a abandonar; el VPS guarda lo enviado (`rescue_kb`, `rescue.h`) y lo
+  reenvía por su ruta más rápida, con presupuesto (`rescue_pct`). No se
+  rescata la pérdida en una ruta con la cola llena (congestión: TCP tiene
+  que verla), y las respuestas lo avisan por ruta (`CG_BOND_FULL`).
+- **Laboratorio** (4 flujos Cubic de bajada, 3 rondas): con 1 % de pérdida
+  al azar por enlace (`lossy`), de 10–11 a ~50 Mbit/s y de ~1 % a 0,04 % de
+  retransmisiones; donde la pérdida es de un enlace lleno (`het`), cuesta
+  ~15 %. Tres errores de diseño, medidos y corregidos: pedir solo en la
+  cabeza serializaba los pedidos (esperas de 200–500 ms; ahora se pide en
+  cuanto el enlace del hueco trae algo posterior); rescatar la congestión
+  dejaba a TCP sin frenar (esperas de segundos); y un hueco pedido podía
+  esperar más que el tope del reordenador.
+- **Red de pruebas** (A/B intercalado en el cliente del PC, 16 flujos de
+  bajada, 20 s, 3 rondas, `rescue_wait_ms` 60 contra 0): 86,4 contra 91,0
+  Mbit/s. El VPS recibió ~8.000 pedidos y rechazó 5.143 por congestión y
+  1.181 por presupuesto; se rescató el 10–20 % de lo pedido. **Bajo carga,
+  la pérdida de la red real es casi toda de colas llenas, no de radio**, y
+  esa no conviene taparla. El aviso de ruta llena llega tarde respecto de
+  cuándo se llena la cola, así que el cliente pide y espera en vano.
+- **Pendiente:** medirlo donde la pérdida es de radio y no de congestión:
+  tráfico a tasa fija (un stream de 20–30 Mbit/s, la radio, video), no
+  iperf saturando. El rescate de la subida. Queda apagado por omisión.
+
+### 2026-10-15: MPEG-TS crudo, el margen adaptativo y el rescate de la subida
+
+- **MPEG-TS crudo por UDP** (HEVC NVENC 1080p60 CBR 15 Mbit/s + AAC, 60 s,
+  del PC al VPS por su túnel): con `reorder_margin_ms` 10, 106 errores al
+  decodificar sin un solo paquete perdido en todos los enlaces: 705 huecos
+  abandonados cuyos paquetes llegaron 100–500 ms después (Claro y WOM, ~6
+  Mbit/s cada uno, cerca de su capacidad de subida). Con 400, 0 errores. RTMP
+  (TCP) con el mismo video pasó limpio: 3.600 cuadros, saltos de a lo más
+  17 ms.
+- **El margen adaptativo (PR #49, `reorder_adaptive`)** pierde contra el fijo
+  de 400 (56 y 116 errores contra 3 y 6): aprende después de equivocarse y
+  olvidaba a la mitad cada 5 s, más rápido de lo que vuelven los saltos de
+  cola de un módem cargado. Para transmitir, el fijo; el adaptativo pide
+  olvidar mucho más lento.
+- **El rescate de la subida (PR #50):** en el laboratorio, `lossy` de 10,4 a
+  50,7 Mbit/s (94 % rescatado), `het` de 62,6 a 54,3. En el TS crudo de campo
+  la pérdida real desaparece (`lost_all` de 96 a 0), pero los errores no
+  bajan (10, 24 y 71 en tres corridas: sin rescate, margen 10 + rescate,
+  margen 400 + rescate), con Entel anclado en su B2 sola, que es lossy en
+  la subida como PCC (medido por el usuario): el HARQ del módem le sube la
+  cola, la regla «cola sobre 20 ms = congestión» la toma por congestión y
+  no se rescata justo la pérdida de radio. Una corrida por variante con la
+  red así no decide nada.
+- **La regla de congestión, probada (PR #51, borrador):** una cola pareja
+  contra el mínimo de 60 s, y además cerca de su máximo de 60 s (la lectura de
+  RED y ECN). En el laboratorio ninguna sirve con TCP saturando: tapar la
+  pérdida aleatoria deja que TCP llene el buffer del enlace, y cualquier
+  señal de cola lo ve lleno y apaga el rescate (`lossy` vuelve a 11 Mbit/s;
+  `het` llegó a 32 con esperas de 2,4 s). El buen `lossy` de la regla
+  instantánea venía en parte de que no veía esa cola. **El rescate y TCP
+  saturando compiten; su lugar es el tráfico a tasa fija** (la radio, SRT,
+  RIST, video, llamadas), donde nadie acelera hasta llenar el buffer. Las
+  ráfagas largas de pérdida, que cualquier regla leerá como congestión, son
+  de la FEC con HARQ (historia 012). Entel quedó anclado en B7 (3CA: B7 + B2
+  + B28), fuera de su B2 lossy.
+- **MPEG-TS crudo con rescate, Entel ya en B7** (60 s cada uno, dos rondas
+  intercaladas): margen 400 sin rescate, 108 errores en un mal momento
+  (`lost_all` 294) y 0 en uno tranquilo; **margen 10 + rescate (60 ms), 0 y
+  0**, con todo lo pedido rescatado (26 de 26, 11 de 11) y la menor espera
+  (3,0–3,8 % de los retenidos sobre 50 ms, contra 3,5–9,2 % de las otras);
+  margen 400 + rescate, 0 y 0. Para transmitir: **margen corto y rescate**,
+  no margen largo; ningún margen cubre la pérdida real. Lo siguiente es un
+  rescate graduado por enlace (menos presupuesto cuanto más cerca de
+  congestionarse), en vez de encendido o apagado.
+- **Lo pendiente del rescate:** una regla de congestión que no confunda el
+  HARQ con una cola llena (la cola sube y además el enlace entrega al tope de
+  su capacidad); NACK por dos caminos, reintento a ~1 RTT, NACK con máscara
+  de bits; la copia de rescate por dos caminos.
+
+### 2026-10-15: el arranque rápido (PR #56)
+
+- **El problema [red de pruebas]:** en reposo el VPS estimaba
+  [96,7 / 1,4 / 0,3 / 7,9] Mbit/s para la bajada hacia la Pi, y una bajada
+  tardaba 3–4 s en darles ~20 a los enlaces; desde el notebook, «varía al
+  principio y después arranca como ferrari».
+- **El cambio (`capacity.h`):** cada enlace recuerda su mejor capacidad de
+  5 min; tras 10 s sin llenarse vuelve al menos a la mitad de ella, y bajo
+  esa mitad el reparto le ofrece el doble en vez de 5/4 (el arranque de BBR).
+- **Terreno, una sola corrida con B [red de pruebas]:** tras 40 s de reposo
+  las capacidades quedaron en 29 / 25 / 18 / 16; bajada 45 en el primer
+  segundo, 87 en el 1–3 y 118 de media en 10 s. Sin A intercalado (el
+  usuario se llevó la Pi). Más tarde, con la sesión del router en reposo,
+  33 y 63: la memoria se sostiene.
+- **Laboratorio, A/B ABBAAB [medido]:** `lab.sh bond` con `BOND_WARM=8`,
+  `BOND_REST=40` (perillas nuevas), `het` y `bloat`, 4 flujos Cubic,
+  `split-sp250-gov`. **Neutro:** `het` bajada, mediana de 10 s 75,2 (A) y
+  76,1 (B), primer segundo 52,4 y 53,3; `bloat` bajada 33,4 y 34,2; subida
+  sin cambio. El laboratorio no reproduce el enfriamiento: en reposo A casi
+  siempre conservó sus capacidades (25–27 en el enlace de 30). En el campo
+  las capacidades caían en reposo y aquí no; lo que las bajaba ahí (un
+  vaivén del retardo que parece cola, o las rotaciones del máximo) está por
+  ver, y con él si `full_ms` llega a quedar quieto 10 s en un enlace celular.
+- **Pendiente:** el A/B en la red de pruebas cuando vuelvan los módems
+  (`fastab.sh`: reinicio, carga de 8 s, reposo de 40 s y la rampa).
 
 ## Qué hacemos con esto (diseño)
 
@@ -394,3 +577,5 @@ con 4 flujos y 20 s, 3 rondas alternadas, salvo que se diga otra cosa.
 - 2026-10-14: el PR 3 (pesos según la capacidad) medido en la bajada y la subida; las primeras medidas del PR 4.
 - 2026-10-14: el techo contra el túnel; la capacidad que se retroalimentaba (PR #36); `split_eta` (PR #37) y `pacing` (PR #38), experimentales; chrony con SHOA.
 - 2026-10-15: los A/B de ETA y de la dosificación, MPTCP, el falso hundimiento por `tcp_mem` del VPS, speedtest y la capacidad con cola (PR 5).
+- 2026-10-15: el PR 5 medido en la red de pruebas: neutro; la bajada de 16 flujos llega a 280–344 con los enlaces de la mañana.
+- 2026-10-15: el arranque rápido (PR #56): neutro en el laboratorio, que no reproduce el enfriamiento; el A/B en terreno, pendiente.

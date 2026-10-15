@@ -70,6 +70,7 @@
 #include "replay.h"
 #include "sock.h"
 #include "capacity.h"
+#include "rescue.h"
 #include "pace.h"
 #include "govern.h"
 #include "split.h"
@@ -173,6 +174,7 @@ struct client {
 
 	uint64_t up_pkts, up_bytes, up_toobig;
 	uint64_t up_split;   /* of up_pkts, packets split (split.h) instead of copied to every link */
+	uint8_t prev_only;   /* 1 + the link the previous one went on alone, 0: several (proto.h) */
 	struct cg_split sp;  /* the split's round-robin credits */
 	uint16_t lw[CG_MAX_LINKS]; /* the [link] weights of the links in use (split = on), 1 without a section */
 	uint16_t dup0;             /* of those, the weight-0 links: they carry every packet */
@@ -181,6 +183,8 @@ struct client {
 	uint16_t gw[CG_MAX_LINKS]; /* what it set at the last tick */
 	int peer_bond;             /* the newest probe reply had a bonding tail (proto.h) */
 	int peer_reorders;         /* and it said the server reorders: split = on splits */
+	int peer_rescue;           /* and that it sends DATA again on a NACK (rescue.h) */
+	uint64_t nacks_sent;       /* NACK messages sent, for the rescue */
 	struct cg_split_tail tail; /* which reply that was (split.h) */
 	int8_t pick[CG_BATCH]; /* per packet of an upload batch: its one link (split), or -1 (every carrier) */
 	uint32_t up_max;     /* largest WireGuard datagram since the last path check */
@@ -225,6 +229,13 @@ struct client {
 	 * pool of held packets, allocated once, its settings, and the releases
 	 * left in this loop pass (CG_RO_PASS_MAX). */
 	struct cg_ro_pool pool;
+	/* The upload's rescue (rescue.h): what it sent lately, kept for the
+	 * server's NACKs (rescue_kb), and what it may cost. */
+	struct cg_resc_ring resc;
+	uint32_t *resc_idx;
+	struct cg_resc_budget resc_b;
+	uint64_t nacks_rx, resc_sent, resc_miss, resc_budget, resc_congested;
+	uint64_t resc_gone_tx, resc_gone_rx; /* CG_F_GONE said to the server; asked gaps it said were gone */
 	struct cg_ro_cfg rocf;
 	uint32_t ro_budget;
 
@@ -1156,7 +1167,32 @@ static void wg_read(struct client *c)
 									(uint32_t)len, c->cfg->split_small, &flags)
 						    : -1);
 			c->up_split += c->pick[m] >= 0;
+			/* The link the previous sequence went on alone (CG_F_PREV), then
+			 * this one's (send_links: cg_split_dst of the same masks; with
+			 * mute_trickle a copied packet goes on the other live links too). */
+			flags |= cg_prev_flags((int)c->prev_only - 1);
+			c->prev_only = (uint8_t)(1 + (c->pick[m] < 0 && c->cfg->mute_trickle
+							      ? -1
+							      : cg_split_only(c->pick[m], carry, k.dup)));
 			cg_up_header(&c->txs, c->hdr[m], CG_T_DATA, flags, 0, (uint32_t)now_us, c->in.buf[i], len);
+			/* Kept for the server's NACKs (rescue.h), with the one link it
+			 * goes on, and its share of the rescue budget. */
+			if (c->resc_idx && CG_HDR_LEN + len <= CG_RESC_ENTRY) {
+				uint8_t *e = cg_resc_put(&c->resc, c->resc_idx, c->txs.session, c->txs.seq - 1,
+							 (uint16_t)(CG_HDR_LEN + len),
+							 c->prev_only ? (uint8_t)(c->prev_only - 1) : CG_RESC_NOLINK);
+
+				memcpy(e, c->hdr[m], CG_HDR_LEN);
+				memcpy(e + CG_HDR_LEN, c->in.buf[i], len);
+				/* the budget grows with the link's weight (capacity.h) */
+				cg_resc_earn(&c->resc_b,
+					     c->prev_only ? (uint32_t)((uint64_t)len *
+								       cg_cap_rescue_w(&c->cap[c->prev_only - 1],
+										       c->cfg->governor_target_ms * 1000) /
+								       CG_CAP_W_ONE)
+							  : (uint32_t)len,
+					     c->cfg->rescue_pct);
+			}
 			c->oiov[m][0].iov_base = c->hdr[m];
 			c->oiov[m][0].iov_len = CG_HDR_LEN;
 			c->oiov[m][1].iov_base = c->in.buf[i];
@@ -1175,6 +1211,8 @@ static void wg_read(struct client *c)
 	}
 }
 
+static void rescue_apply(struct client *c);
+
 /* A verified probe reply on l: payload, plen bytes (at least
  * CG_PROBE_INFO_LEN), read at now32 / now_ms. */
 static void on_probe_reply(struct client *c, struct link *l, const struct cg_hdr *h, const uint8_t *payload,
@@ -1192,6 +1230,19 @@ static void on_probe_reply(struct client *c, struct link *l, const struct cg_hdr
 	if (cg_split_tail_newer(&c->tail, h->seq)) {
 		c->peer_bond = cg_probe_bond_read(&pb, payload, plen);
 		c->peer_reorders = pb.reorders;
+		c->peer_rescue = pb.rescue;
+		rescue_apply(c);
+	}
+	/* This path's losses the server will not send again now (CG_BOND_FULL):
+	 * the reorderer does not ask for them. */
+	{
+		struct cg_probe_bond fb;
+		uint16_t bit = (uint16_t)(1u << (l - c->link));
+
+		if (cg_probe_bond_read(&fb, payload, plen) && fb.full)
+			c->rxs.ro.full |= bit;
+		else
+			c->rxs.ro.full &= (uint16_t)~bit;
 	}
 	/* Each probe is answered once: a copy of this reply replayed later
 	 * cannot count for epoch.h. */
@@ -1332,6 +1383,147 @@ static void dout_add(struct client *c, uint8_t *payload, size_t len, uint16_t bu
 		c->dbuf[c->dnbuf++] = buf;
 }
 
+/* The rescue (rescue.h): the reorderer asks for a gap about to go only
+ * when rescue_wait_ms is set and the server said it keeps what it sent. */
+static void rescue_apply(struct client *c)
+{
+	c->rocf.rescue_us = c->cfg->reorder && c->peer_rescue ? c->cfg->rescue_wait_ms * 1000 : 0;
+}
+
+/* The gaps the reorderer asked for, as NACKs on the live link of least
+ * RTT (the request waits for its answer: the fastest way there). */
+static void send_nacks(struct client *c, uint64_t now_ms)
+{
+	struct cg_reorder *r = &c->rxs.ro;
+	uint16_t present, live;
+	struct link *best[2] = { NULL, NULL };
+
+	link_masks(c, now_ms, &present, &live);
+	for (int i = 0; i < CG_MAX_LINKS; i++) {
+		struct link *l = &c->link[i];
+
+		if (!(live >> i & 1) || l->fd < 0 || !l->srtt8_us)
+			continue;
+		if (!best[0] || l->srtt8_us < best[0]->srtt8_us) {
+			best[1] = best[0];
+			best[0] = l;
+		} else if (!best[1] || l->srtt8_us < best[1]->srtt8_us) {
+			best[1] = l;
+		}
+	}
+	/* First asks, then retries (CG_F_RETRY), each on the two fastest links. */
+	for (int list = 0; best[0] && list < 2; list++) {
+		const uint32_t *seq = list ? r->ask2 : r->ask;
+		uint32_t n = list ? r->nask2 : r->nask;
+
+		for (uint32_t i = 0; i < n;) {
+			uint8_t pkt[CG_HDR_LEN + CG_NACK_LEN];
+			unsigned used;
+			size_t plen = cg_nack_write(pkt + CG_HDR_LEN, seq + i, n - i, &used);
+
+			i += used;
+			for (int b = 0; b < 2 && best[b]; b++) {
+				cg_up_header(&c->txs, pkt, CG_T_NACK, list ? CG_F_RETRY : 0, (uint8_t)(best[b] - c->link),
+					     (uint32_t)cg_now_us(), pkt + CG_HDR_LEN, plen);
+				if (send(best[b]->fd, pkt, CG_HDR_LEN + plen, MSG_DONTWAIT) == (ssize_t)(CG_HDR_LEN + plen))
+					c->nacks_sent++;
+			}
+		}
+	}
+	r->nask = r->nask2 = 0;
+}
+
+/* Whether link i's upload is full, so that what it loses is congestion for
+ * TCP to see, not a loss to send again (rescue.h): its rescue weight
+ * (capacity.h's cg_cap_rescue_w) is 0. */
+static int up_full(const struct client *c, unsigned i)
+{
+	return cg_cap_rescue_w(&c->cap[i], c->cfg->governor_target_ms * 1000) == 0;
+}
+
+/* A verified NACK from the server (rescue.h): each sequence the ring still
+ * keeps goes again, within the budget, on the live link of least RTT;
+ * not one lost on a full link. */
+static void on_nack(struct client *c, uint8_t flags, const uint8_t *payload, size_t plen, uint64_t now_ms)
+{
+	uint32_t seq[CG_NACK_SEQ_MAX];
+	unsigned n = cg_nack_read(seq, CG_NACK_SEQ_MAX, payload, plen);
+	uint16_t present, live;
+	struct link *best[2] = { NULL, NULL };
+
+	uint32_t gone[CG_NACK_SEQ_MAX];
+	unsigned ngone = 0;
+
+	c->nacks_rx++;
+	/* The server will not send these again: the reorderer gives them up
+	 * now instead of waiting for them. */
+	if (flags & CG_F_GONE) {
+		for (unsigned i = 0; i < n; i++)
+			c->resc_gone_rx += cg_ro_refused(&c->rxs.ro, &c->rocf, seq[i], (uint32_t)cg_now_us());
+		return;
+	}
+	if (!c->resc_idx)
+		return;
+	link_masks(c, now_ms, &present, &live);
+	for (int i = 0; i < CG_MAX_LINKS; i++) {
+		struct link *l = &c->link[i];
+
+		if (!(live >> i & 1) || l->fd < 0 || !l->srtt8_us)
+			continue;
+		if (!best[0] || l->srtt8_us < best[0]->srtt8_us) {
+			best[1] = best[0];
+			best[0] = l;
+		} else if (!best[1] || l->srtt8_us < best[1]->srtt8_us) {
+			best[1] = l;
+		}
+	}
+	for (unsigned i = 0; best[0] && i < n; i++) {
+		uint16_t len;
+		uint8_t went;
+		uint8_t *e = (uint8_t *)cg_resc_get(&c->resc, c->resc_idx, c->txs.session, seq[i], &len, &went);
+
+		if (!e) {
+			c->resc_miss++;
+			gone[ngone++] = seq[i];
+			continue;
+		}
+		if (cg_resc_dup(&c->resc, c->resc_idx, seq[i], (uint32_t)now_ms))
+			continue;
+		if (went < CG_MAX_LINKS && up_full(c, went)) {
+			c->resc_congested++;
+			gone[ngone++] = seq[i];
+			continue;
+		}
+		/* A retry goes on the two fastest links. */
+		for (int b = 0; b < ((flags & CG_F_RETRY) ? 2 : 1) && best[b]; b++) {
+			if (!cg_resc_spend(&c->resc_b, len - CG_HDR_LEN)) {
+				c->resc_budget++;
+				if (!b)
+					gone[ngone++] = seq[i];
+				break;
+			}
+			cg_hdr_set_link(e, (uint8_t)(best[b] - c->link));
+			if (send(best[b]->fd, e, len, MSG_DONTWAIT) == (ssize_t)len) {
+				best[b]->tx_pkts++;
+				best[b]->tx_bytes += len - CG_HDR_LEN;
+				c->resc_sent++;
+			}
+		}
+	}
+	/* What will not come again, said back so the server does not wait. */
+	for (unsigned i = 0; best[0] && i < ngone;) {
+		uint8_t pkt[CG_HDR_LEN + CG_NACK_LEN];
+		unsigned used;
+		size_t glen = cg_nack_write(pkt + CG_HDR_LEN, gone + i, ngone - i, &used);
+
+		i += used;
+		cg_up_header(&c->txs, pkt, CG_T_NACK, CG_F_GONE, (uint8_t)(best[0] - c->link), (uint32_t)cg_now_us(),
+			     pkt + CG_HDR_LEN, glen);
+		if (send(best[0]->fd, pkt, CG_HDR_LEN + glen, MSG_DONTWAIT) == (ssize_t)(CG_HDR_LEN + glen))
+			c->resc_gone_tx++;
+	}
+}
+
 /* What the reorderer may hand on at now (the pass's clock, as its arrival
  * times), after what the batch holds: everything with all (a window
  * overflow, taken again right after), else up to the pass's budget; the
@@ -1348,6 +1540,8 @@ static void ro_drain(struct client *c, uint16_t rset, uint32_t now, int all, uin
 			c->ro_budget--;
 	}
 	cg_ro_burst_end(&c->rxs.ro);
+	if (c->rxs.ro.nask || c->rxs.ro.nask2)
+		send_nacks(c, now_ms);
 }
 
 /* A first copy for WireGuard, payload (len bytes) of DATA h from link,
@@ -1363,7 +1557,8 @@ static void down_deliver(struct client *c, const struct cg_hdr *h, unsigned link
 			       .len = (uint16_t)len,
 			       .link = (uint8_t)link,
 			       .flags = h->flags,
-			       .wgtype = len ? payload[0] : 0 };
+			       .wgtype = len ? payload[0] : 0,
+			       .prev = (uint8_t)(cg_prev_link(h->flags) + 1) };
 	enum cg_ro_v v;
 	uint16_t buf;
 
@@ -1496,6 +1691,8 @@ static void link_read(struct client *c, struct link *l)
 					ro_reply(c, &rset, now32, now_ms);
 				} else if (v == CG_RXV_HELLO) {
 					on_hello(c, l, now_us);
+				} else if (v == CG_RXV_NACK) {
+					on_nack(c, h.flags, b + CG_HDR_LEN, len - CG_HDR_LEN, now_ms);
 				}
 				continue;
 			}
@@ -1532,6 +1729,8 @@ static void hub_slot(struct client *c, struct cg_rxslot *sl, uint16_t *expect, u
 		ro_reply(c, rset, (uint32_t)clock_us, clock_us / 1000);
 	} else if (v == CG_RXV_HELLO) {
 		on_hello(c, l, cg_now_us());
+	} else if (v == CG_RXV_NACK) {
+		on_nack(c, h.flags, sl->buf + CG_HDR_LEN, (size_t)sl->len - CG_HDR_LEN, now_ms);
 	}
 }
 
@@ -1601,6 +1800,10 @@ static void send_probe(struct client *c, struct link *l, uint64_t now_us, uint32
 	/* The bonding tail (proto.h): this link's weight, whether this end
 	 * reorders, and with split = on the request for a split download. */
 	struct cg_probe_bond pb = cg_split_probe_tail(c->cfg->split, c->cfg->reorder, c->lw[id]);
+	/* The upload's rescue: it keeps what it sends; but not what this link
+	 * loses now (full, or out of budget). */
+	pb.rescue = c->resc_idx != NULL;
+	pb.full = pb.rescue && (cg_resc_low(&c->resc_b) || up_full(c, id));
 	const struct cg_link_rx *rx = &c->rxs.rx[id];
 	/* The cookie, and where our windows stand, for a server that has to
 	 * take the session up (proto.h). */
@@ -1899,6 +2102,22 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 	/* Download: lost on every link, joint lateness, and the reorderer
 	 * (story 012). */
 	cg_json_u64(j, "lost_all", c->rxs.replay.lost);
+	/* The rescue: whether the reorderer asks (rescue_wait_ms, and the server
+	 * keeps what it sent), and the NACKs sent. */
+	cg_json_obj(j, "rescue");
+	cg_json_bool(j, "on", c->rocf.rescue_us != 0);
+	cg_json_bool(j, "server_keeps", c->peer_rescue);
+	cg_json_u64(j, "nacks_sent", c->nacks_sent);
+	/* the upload's: what it kept and sent again for the server's NACKs */
+	cg_json_bool(j, "keeps", c->resc_idx != NULL);
+	cg_json_u64(j, "nacks_rx", c->nacks_rx);
+	cg_json_u64(j, "sent", c->resc_sent);
+	cg_json_u64(j, "missing", c->resc_miss);
+	cg_json_u64(j, "over_budget", c->resc_budget);
+	cg_json_u64(j, "congested", c->resc_congested);
+	cg_json_u64(j, "gone_sent", c->resc_gone_tx);
+	cg_json_u64(j, "gone_received", c->resc_gone_rx);
+	cg_json_end(j, '}');
 	cg_json_joint(j, "joint", &c->rxs.arr);
 	cg_json_reorder(j, "reorder", &c->rxs.ro, c->cfg->reorder, &c->pool);
 	cg_json_sizes(j, "sizes", &c->wgs_up, &c->wgs_down);
@@ -2000,7 +2219,7 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 		cg_json_owd_spread(j, "rx_owd_spread_ms", &c->rxs.ro, (unsigned)i, rset);
 		cg_json_owd_swing(j, "rx_owd_swing_ms", &c->rxs.ro, (unsigned)i);
 		cg_json_u64(j, "rx_reorder_late", c->rxs.ro.link[i].late);
-		cg_json_capacity(j, &c->cap[i]);
+		cg_json_capacity(j, &c->cap[i], c->cfg->governor_target_ms * 1000);
 		if (l->paced != CG_PACE_NONE)
 			cg_json_ms(j, "pace_mbit", l->paced * 8 / 1000);
 		else
@@ -2150,6 +2369,7 @@ static void apply_config(struct client *c, struct cg_config *next, uint64_t now_
 	/* The reorderer's knobs apply from the next packet; turned off, what
 	 * it holds goes on at once, in order. */
 	c->rocf = cg_ro_cfg_of(next);
+	rescue_apply(c);
 	if (old->reorder && !next->reorder)
 		ro_flush(c, now_ms);
 	if (old->split != next->split)
@@ -2582,7 +2802,25 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 		cg_err("reorder_pool_kb = %u: out of memory", cfg->reorder_pool_kb);
 		goto out;
 	}
+	if (cfg->rescue_kb) {
+		uint32_t n = (uint32_t)((uint64_t)cfg->rescue_kb * 1024 / CG_RESC_ENTRY);
+
+		c->resc.mem = malloc((size_t)n * CG_RESC_ENTRY);
+		c->resc.sess = calloc(n, sizeof(*c->resc.sess));
+		c->resc.seq = calloc(n, sizeof(*c->resc.seq));
+		c->resc.len = calloc(n, sizeof(*c->resc.len));
+		c->resc.link = calloc(n, sizeof(*c->resc.link));
+		c->resc.sent = calloc(n, sizeof(*c->resc.sent));
+		c->resc_idx = calloc(CG_RESC_IDX, sizeof(*c->resc_idx));
+		if (!c->resc.mem || !c->resc.sess || !c->resc.seq || !c->resc.len || !c->resc.link || !c->resc.sent ||
+		    !c->resc_idx) {
+			cg_err("rescue_kb = %u: out of memory", cfg->rescue_kb);
+			goto out;
+		}
+		c->resc.n = n;
+	}
 	c->rocf = cg_ro_cfg_of(cfg);
+	rescue_apply(c);
 	/* The control socket is a convenience: the tunnel runs without it. */
 	if (cfg->control_socket[0] && cg_ctl_open(&c->ctl, cfg->control_socket, c->ep, err, sizeof(err)) < 0)
 		cg_warn("control socket: %s", err);
@@ -2706,6 +2944,13 @@ out:
 	pumps_stop(c);
 	pumps_free(c); /* they close the link sockets they hold */
 	cg_ro_pool_free(&c->pool);
+	free(c->resc.mem);
+	free(c->resc.sess);
+	free(c->resc.seq);
+	free(c->resc.len);
+	free(c->resc.link);
+	free(c->resc.sent);
+	free(c->resc_idx);
 	if (c->wg_fd >= 0)
 		close(c->wg_fd);
 	if (c->tfd >= 0)

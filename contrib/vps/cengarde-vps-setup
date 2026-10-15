@@ -758,8 +758,12 @@ check_ports() {
 
 check_proto() {
 	P=$(engine_proto)
-	[ "$P" = 4 ] ||
-		die "this cengarde-vps-setup writes configurations of protocol 4 (cengarde 0.5.2, a [client NAME] section per router), and the engine says protocol ${P:-unknown}: install both from one checkout (contrib/vps/install.sh)"
+	# Protocol 5 only adds the previous link to DATA's flags: the same
+	# configurations.
+	case "$P" in
+	4 | 5) ;;
+	*) die "this cengarde-vps-setup writes configurations of protocol 4 or 5 (cengarde 0.5.2 on, a [client NAME] section per router), and the engine says protocol ${P:-unknown}: install both from one checkout (contrib/vps/install.sh)" ;;
+	esac
 }
 
 # import: /etc/cengarde/secret (cloud-config) as the first router, only

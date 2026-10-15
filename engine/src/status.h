@@ -60,7 +60,7 @@ void cg_json_owd_swing(struct cg_json *j, const char *key, const struct cg_reord
  * capacity_mbit, delivery_mbit (null until measured) and queue_ms (null
  * until a delay). */
 struct cg_cap_link;
-void cg_json_capacity(struct cg_json *j, const struct cg_cap_link *l);
+void cg_json_capacity(struct cg_json *j, const struct cg_cap_link *l, uint32_t target_us);
 
 /* Writes data to path atomically. Returns 0 or -1 (errno set). */
 int cg_status_write(const char *path, const char *data, size_t len);

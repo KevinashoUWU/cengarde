@@ -22,12 +22,24 @@ void test_proto(void)
 	for (int i = 0; i < 64; i++)
 		payload[i] = (uint8_t)(i * 3);
 
+	/* The previous link in DATA's flags (version 5): every link id, beside
+	 * the split and ECN bits, and none when not said. */
+	for (int l = 0; l < 16; l++) {
+		uint8_t f = (uint8_t)(cg_prev_flags(l) | CG_F_SPLIT | 0x03);
+
+		CHECK_EQ(cg_prev_link(f), l);
+		CHECK((f & CG_F_SPLIT) && (f & 0x03) == 0x03);
+	}
+	CHECK_EQ(cg_prev_flags(-1), 0);
+	CHECK_EQ(cg_prev_flags(16), 0);
+	CHECK_EQ(cg_prev_link(CG_F_SPLIT | 0x03), -1);
+
 	cg_hdr_write(pkt, &h, key_a, payload, sizeof(payload));
 	memcpy(pkt + CG_HDR_LEN, payload, sizeof(payload));
 
 	/* Layout: version/type, the client hint at byte 2, link at byte 3,
 	 * session, seq and ts in network order. */
-	CHECK_EQ(pkt[0], 0x41);
+	CHECK_EQ(pkt[0], 0x51);
 	CHECK_EQ(pkt[2], 0x5a);
 	CHECK_EQ(pkt[3], 5);
 	CHECK(!memcmp(pkt + 4, "\xde\xad\xbe\xef\x01\x02\x03\x04\xa0\xb0\xc0\xd0", 12));
@@ -68,9 +80,11 @@ void test_proto(void)
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
 	pkt[0] = 0x31; /* version 3 (no hint, cookies or control sequence) too */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
-	pkt[0] = 0x4f; /* unknown type */
+	pkt[0] = 0x41; /* version 4 (no previous link in DATA's flags) too */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
-	pkt[0] = 0x41;
+	pkt[0] = 0x5f; /* unknown type */
+	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
+	pkt[0] = 0x51;
 	pkt[2] = 0xff; /* any hint parses: the server judges it */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), 0);
 	CHECK_EQ(p.hint, 0xff);
@@ -232,4 +246,61 @@ void test_proto(void)
 	CHECK_EQ(cg_outer_len(AF_INET6, 1380 + CG_WG_OVERHEAD), 1484);
 	CHECK_EQ(1500 - cg_outer_len(AF_INET6, CG_WG_OVERHEAD), 1396);
 	CHECK_EQ(cg_outer_len(AF_INET, 0), CG_HDR_LEN + 28);
+
+	/* The rescue bit of a reply's bonding tail (version 5). */
+	{
+		struct cg_probe_bond b = { .rescue = 1 }, r;
+		uint8_t tp[CG_PROBE_BOND_LEN];
+
+		cg_probe_bond_write(tp, &b);
+		CHECK(!memcmp(tp + CG_PROBE_INFO_LEN, "\x00\x04\x00\x00", 4));
+		CHECK_EQ(cg_probe_bond_read(&r, tp, CG_PROBE_BOND_LEN), 1);
+		CHECK(r.rescue && !r.reorders && !r.split_me && !r.weight);
+	}
+
+	/* NACK: ranges of a base and a 64-bit mask, under the MAC; a count of 0,
+	 * past CG_NACK_RANGES or longer than the payload does not parse. */
+	{
+		uint32_t seq[200], got[CG_NACK_SEQ_MAX];
+		uint8_t nb[CG_HDR_LEN + CG_NACK_LEN];
+		struct cg_hdr nh = { .type = CG_T_NACK, .flags = CG_F_RETRY, .hint = 0x5a, .session = 7, .seq = 9, .ts = 1 },
+			      np;
+		unsigned used, n = 0;
+		size_t nl;
+
+		/* 70 sequences in a row across the wrap, then 3 far apart */
+		for (unsigned i = 0; i < 70; i++)
+			seq[n++] = 0xffffffe0u + i;
+		seq[n++] = 5000;
+		seq[n++] = 5064; /* 64 after 5000: in its mask */
+		seq[n++] = 5065; /* 65 after: a range of its own */
+		CHECK(cg_type_ctl(CG_T_NACK));
+		nl = cg_nack_write(nb + CG_HDR_LEN, seq, n, &used);
+		CHECK_EQ(used, n);
+		CHECK_EQ(nb[CG_HDR_LEN], 4); /* 0xffffffe0 + 64 more, 6 more, 5000 (+5064), 5065 */
+		CHECK_EQ(nl, 1 + 12 * 4);
+		cg_hdr_write(nb, &nh, key_a, nb + CG_HDR_LEN, nl);
+		CHECK_EQ(cg_hdr_parse(&np, nb, CG_HDR_LEN + nl), 0);
+		CHECK(np.type == CG_T_NACK && np.flags == CG_F_RETRY);
+		CHECK(cg_hdr_verify(nb, CG_HDR_LEN + nl, key_a));
+		CHECK_EQ(cg_nack_read(got, CG_NACK_SEQ_MAX, nb + CG_HDR_LEN, nl), n);
+		CHECK(!memcmp(got, seq, n * sizeof(seq[0])));
+		CHECK_EQ(cg_nack_read(got, 10, nb + CG_HDR_LEN, nl), 10); /* at most max */
+		CHECK_EQ(cg_hdr_parse(&np, nb, CG_HDR_LEN + nl - 1), -1); /* short by a byte */
+		/* 20 sequences 100 apart: 16 ranges, the rest for the next NACK */
+		for (unsigned i = 0; i < 20; i++)
+			seq[i] = 100 * i;
+		nl = cg_nack_write(nb + CG_HDR_LEN, seq, 20, &used);
+		CHECK_EQ(used, CG_NACK_RANGES);
+		CHECK_EQ(nl, CG_NACK_LEN);
+		CHECK_EQ(cg_nack_read(got, CG_NACK_SEQ_MAX, nb + CG_HDR_LEN, nl), CG_NACK_RANGES);
+		CHECK_EQ(got[CG_NACK_RANGES - 1], 100 * (CG_NACK_RANGES - 1));
+		nl = cg_nack_write(nb + CG_HDR_LEN, seq, 1, &used);
+		CHECK(used == 1 && nl == 13);
+		CHECK_EQ(cg_hdr_parse(&np, nb, CG_HDR_LEN + nl), 0);
+		nb[CG_HDR_LEN] = 0;
+		CHECK_EQ(cg_hdr_parse(&np, nb, CG_HDR_LEN + nl), -1);
+		nb[CG_HDR_LEN] = CG_NACK_RANGES + 1;
+		CHECK_EQ(cg_hdr_parse(&np, nb, sizeof(nb)), -1);
+	}
 }

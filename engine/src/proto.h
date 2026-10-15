@@ -1,6 +1,6 @@
-/* cengarde wire protocol, version 4 (version 1 had no delay reports,
+/* cengarde wire protocol, version 5 (version 1 had no delay reports,
  * version 2 no IP pass flags, version 3 no client hint, cookies or separate
- * control sequence).
+ * control sequence, version 4 no previous link in DATA's flags).
  *
  * Every datagram between client and server carries a 24-byte header followed
  * by the payload (a WireGuard datagram for DATA). All integers are big-endian.
@@ -57,7 +57,7 @@
 
 #include "siphash.h"
 
-#define CG_PROTO_VERSION 4
+#define CG_PROTO_VERSION 5
 #define CG_HDR_LEN 24
 #define CG_MAC_OFF 16
 #define CG_HINT_OFF 2
@@ -69,13 +69,33 @@ enum cg_type {
 	CG_T_PROBE = 2,       /* client -> server, one link; payload: cg_probe_info */
 	CG_T_PROBE_REPLY = 3, /* server -> client, same path; payload: cg_probe_info */
 	CG_T_HELLO = 4,       /* server -> client, to a probe it cannot take yet; payload: cg_hello */
+	CG_T_NACK = 5,        /* either way, one link; payload: DATA sequences to send again */
 };
 
-/* Probes and replies count in the control sequence, DATA in its own. */
+/* Probes, replies and NACKs count in the control sequence, DATA in its own. */
 static inline int cg_type_ctl(uint8_t type)
 {
-	return type == CG_T_PROBE || type == CG_T_PROBE_REPLY;
+	return type == CG_T_PROBE || type == CG_T_PROBE_REPLY || type == CG_T_NACK;
 }
+
+/* NACK (version 5, story 013: the rescue): the receiver's reorderer is about
+ * to give up these DATA sequences, and asks the sender, which keeps what it
+ * sent for a while (CG_BOND_RESCUE in its probes or replies), to send them
+ * again on its fastest path: the client for the download, the server for
+ * the upload. It goes on the receiver's two fastest links (one may lose it),
+ * and the sender sends a sequence once for both. Payload: a count k of
+ * ranges (1 to CG_NACK_RANGES), then k ranges of 12 bytes: a big-endian
+ * sequence, asked for, and a big-endian 64-bit mask whose bit i asks for
+ * that sequence + 1 + i. CG_F_RETRY: these were asked for before and did not
+ * come; the sender sends each on two paths. */
+#define CG_NACK_RANGES 16
+#define CG_NACK_LEN (1 + 12 * CG_NACK_RANGES)
+#define CG_NACK_SEQ_MAX (65 * CG_NACK_RANGES) /* sequences one NACK can ask for */
+#define CG_F_RETRY 0x01 /* NACK: asked for again */
+/* NACK, from the one asked: these will not be sent again (not kept, lost on
+ * a full path, out of budget); the asker gives them up at once instead of
+ * waiting out rescue_wait_ms for what never comes. */
+#define CG_F_GONE 0x02
 
 /* Header flags on DATA, for bonding (story 012). CG_F_ECN is reserved:
  * senders write 0 for now and receivers ignore it. CG_F_SPLIT is written
@@ -85,6 +105,26 @@ static inline int cg_type_ctl(uint8_t type)
  * copy"). */
 #define CG_F_ECN 0x03   /* the ECN field of the WireGuard datagram (RFC 3168 codepoint) */
 #define CG_F_SPLIT 0x04 /* this packet skips at least one carrier */
+/* The link the previous DATA sequence went on, when it went on that link
+ * alone (version 5, story 013): CG_F_PREV, and its id in the high 4 bits.
+ * The receiver's reorderer then waits for that gap as long as that link
+ * may take, not the slowest, and gives it up as soon as that link brings a
+ * later sequence (links are FIFO). Under the MAC, as every flag. */
+#define CG_F_PREV 0x08
+#define CG_F_PREV_SHIFT 4
+
+/* DATA flags for a packet whose previous sequence went on link alone
+ * (0-15), or on several (-1). */
+static inline uint8_t cg_prev_flags(int link)
+{
+	return link < 0 || link > 15 ? 0 : (uint8_t)(CG_F_PREV | link << CG_F_PREV_SHIFT);
+}
+
+/* The link the previous sequence went on alone, from DATA flags; -1: not said. */
+static inline int cg_prev_link(uint8_t flags)
+{
+	return flags & CG_F_PREV ? flags >> CG_F_PREV_SHIFT : -1;
+}
 
 /* Header flags on HELLO. */
 #define CG_F_REFUSED 0x01 /* the server will not take the session (limit, client off) */
@@ -161,6 +201,11 @@ struct cg_probe_info {
  *   16   CG_BOND_REORDERS: the sender's receive side puts DATA back in
  *        sequence (reorder.h);
  *   17   CG_BOND_SPLIT_ME: the sender asks to receive split DATA;
+ *   18   CG_BOND_RESCUE: the sender keeps the DATA it sent and sends it
+ *        again on a NACK (version 5);
+ *   19   CG_BOND_FULL: but not what is lost on this path now: its queue is
+ *        full (that loss is for TCP to see) or the rescue budget is spent,
+ *        so the other end does not ask and wait;
  * and every other bit is reserved: written 0, ignored when read, so that a
  * newer peer can use them. A client sends it in every probe; a server
  * answers with one only a probe that had one, so that a reply is never
@@ -171,11 +216,15 @@ struct cg_probe_info {
 #define CG_BOND_WEIGHT_MAX 1000
 #define CG_BOND_REORDERS (1u << 16)
 #define CG_BOND_SPLIT_ME (1u << 17)
+#define CG_BOND_RESCUE (1u << 18) /* the sender sends DATA again on a NACK */
+#define CG_BOND_FULL (1u << 19)   /* but not what is lost on this path now (full, or out of budget) */
 
 struct cg_probe_bond {
 	uint16_t weight;  /* 0 to CG_BOND_WEIGHT_MAX */
 	uint8_t reorders; /* CG_BOND_REORDERS */
 	uint8_t split_me; /* CG_BOND_SPLIT_ME */
+	uint8_t rescue;   /* CG_BOND_RESCUE */
+	uint8_t full;     /* CG_BOND_FULL */
 };
 
 /* HELLO payload: the server answers a probe it cannot take yet. echo_ts ties
@@ -213,6 +262,15 @@ void cg_probe_bond_write(uint8_t *payload, const struct cg_probe_bond *b);
  * weight above CG_BOND_WEIGHT_MAX read as the maximum; 0 with *b zeroed when
  * the payload has none (a peer without it, plen < CG_PROBE_BOND_LEN). */
 int cg_probe_bond_read(struct cg_probe_bond *b, const uint8_t *payload, size_t plen);
+
+/* A NACK payload (at most CG_NACK_LEN bytes into out) for seq[0..n) (n >=
+ * 1), as ranges in their order: a sequence within 64 after a range's base
+ * goes in its mask, any other starts a range. *used: how many it took (all
+ * of them, or as many as CG_NACK_RANGES ranges hold). Returns its length. */
+size_t cg_nack_write(uint8_t *out, const uint32_t *seq, unsigned n, unsigned *used);
+/* The sequences of a NACK payload of plen bytes (cg_hdr_parse checked it)
+ * into seq, at most max; returns how many. */
+unsigned cg_nack_read(uint32_t *seq, unsigned max, const uint8_t *payload, size_t plen);
 void cg_hello_write(uint8_t out[CG_HELLO_LEN], const struct cg_hello *hl);
 void cg_hello_read(struct cg_hello *hl, const uint8_t in[CG_HELLO_LEN]);
 

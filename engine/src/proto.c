@@ -16,6 +16,17 @@ static inline uint32_t get32(const uint8_t *p)
 	return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3];
 }
 
+static inline void put64(uint8_t *p, uint64_t v)
+{
+	put32(p, (uint32_t)(v >> 32));
+	put32(p + 4, (uint32_t)v);
+}
+
+static inline uint64_t get64(const uint8_t *p)
+{
+	return (uint64_t)get32(p) << 32 | get32(p + 4);
+}
+
 static uint64_t mac(const uint8_t *hdr, const uint8_t key[CG_SIPHASH_KEY_LEN], const void *payload,
 		    size_t plen)
 {
@@ -69,6 +80,11 @@ int cg_hdr_parse(struct cg_hdr *h, const uint8_t *buf, size_t len)
 		return plen >= CG_PROBE_INFO_LEN ? 0 : -1;
 	case CG_T_HELLO:
 		return plen >= CG_HELLO_LEN ? 0 : -1;
+	case CG_T_NACK:
+		return plen >= 1 && buf[CG_HDR_LEN] >= 1 && buf[CG_HDR_LEN] <= CG_NACK_RANGES &&
+				       plen >= 1 + 12 * (size_t)buf[CG_HDR_LEN]
+			       ? 0
+			       : -1;
 	default:
 		return -1;
 	}
@@ -137,8 +153,9 @@ void cg_probe_bond_write(uint8_t *payload, const struct cg_probe_bond *b)
 {
 	uint32_t w = b->weight > CG_BOND_WEIGHT_MAX ? CG_BOND_WEIGHT_MAX : b->weight;
 
-	put32(payload + CG_PROBE_INFO_LEN,
-	      w | (b->reorders ? CG_BOND_REORDERS : 0) | (b->split_me ? CG_BOND_SPLIT_ME : 0));
+	put32(payload + CG_PROBE_INFO_LEN, w | (b->reorders ? CG_BOND_REORDERS : 0) |
+						   (b->split_me ? CG_BOND_SPLIT_ME : 0) | (b->rescue ? CG_BOND_RESCUE : 0) |
+						   (b->full ? CG_BOND_FULL : 0));
 }
 
 int cg_probe_bond_read(struct cg_probe_bond *b, const uint8_t *payload, size_t plen)
@@ -153,7 +170,60 @@ int cg_probe_bond_read(struct cg_probe_bond *b, const uint8_t *payload, size_t p
 	b->weight = (uint16_t)(w > CG_BOND_WEIGHT_MAX ? CG_BOND_WEIGHT_MAX : w);
 	b->reorders = !!(v & CG_BOND_REORDERS);
 	b->split_me = !!(v & CG_BOND_SPLIT_ME);
+	b->rescue = !!(v & CG_BOND_RESCUE);
+	b->full = !!(v & CG_BOND_FULL);
 	return 1;
+}
+
+size_t cg_nack_write(uint8_t *out, const uint32_t *seq, unsigned n, unsigned *used)
+{
+	unsigned k = 0, i;
+	uint32_t base = 0;
+	uint64_t mask = 0;
+
+	for (i = 0; i < n; i++) {
+		uint32_t d = seq[i] - base;
+
+		if (k && d >= 1 && d <= 64) {
+			mask |= 1ULL << (d - 1);
+			continue;
+		}
+		if (k) {
+			put32(out + 1 + 12 * (k - 1), base);
+			put64(out + 5 + 12 * (k - 1), mask);
+		}
+		if (k == CG_NACK_RANGES)
+			break;
+		base = seq[i];
+		mask = 0;
+		k++;
+	}
+	if (i == n && k) {
+		put32(out + 1 + 12 * (k - 1), base);
+		put64(out + 5 + 12 * (k - 1), mask);
+	}
+	*used = i;
+	out[0] = (uint8_t)k;
+	return 1 + 12 * (size_t)k;
+}
+
+unsigned cg_nack_read(uint32_t *seq, unsigned max, const uint8_t *payload, size_t plen)
+{
+	unsigned k = payload[0], n = 0;
+
+	if (k > CG_NACK_RANGES || plen < 1 + 12 * (size_t)k)
+		return 0;
+	for (unsigned r = 0; r < k; r++) {
+		uint32_t base = get32(payload + 1 + 12 * r);
+		uint64_t mask = get64(payload + 5 + 12 * r);
+
+		if (n < max)
+			seq[n++] = base;
+		for (unsigned b = 0; b < 64 && n < max; b++)
+			if (mask >> b & 1)
+				seq[n++] = base + 1 + b;
+	}
+	return n;
 }
 
 void cg_hello_write(uint8_t out[CG_HELLO_LEN], const struct cg_hello *hl)

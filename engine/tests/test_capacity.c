@@ -149,6 +149,34 @@ static void test_capacity_swing(void)
 	CHECK(near(cg_cap_bps(&s.l), 40, 0.05));
 }
 
+/* The rescue's weight (cg_cap_rescue_w): all of it while the queue is low
+ * and still; less as the queue grows, before it is over the target (its
+ * slope and its slope's slope look a second ahead); none once full. */
+static void test_capacity_rescue_w(void)
+{
+	static struct sim s;
+	int fell_early = 0;
+
+	sim_start(&s);
+	CHECK_EQ(cg_cap_rescue_w(&s.l, 20 * MS), CG_CAP_W_ONE); /* nothing measured */
+	run(&s, 50, 30, 50);
+	CHECK_EQ(cg_cap_rescue_w(&s.l, 20 * MS), CG_CAP_W_ONE);
+	/* sent 55 into 50: the queue grows 10 ms each second */
+	for (int i = 0; i < 40; i++) {
+		sim_step(&s, 55, 50);
+		if (s.l.ql_us < (int32_t)(20 * MS) && cg_cap_rescue_w(&s.l, 20 * MS) < CG_CAP_W_ONE)
+			fell_early = 1;
+	}
+	CHECK(fell_early); /* it gave less before the queue passed the target */
+	CHECK(s.l.s1 > 0);
+	run(&s, 100, 70, 50); /* far over: full */
+	CHECK_EQ(cg_cap_rescue_w(&s.l, 20 * MS), 0);
+	/* the load stops: the queue drains, and the weight comes back */
+	run(&s, 100, 0, 50);
+	run(&s, 50, 10, 50);
+	CHECK_EQ(cg_cap_rescue_w(&s.l, 20 * MS), CG_CAP_W_ONE);
+}
+
 /* A link that stops delivering what it is sent, while its delay says
  * nothing (its replies stopped coming in time): after two samples of less
  * than half, its capacity is what it delivers. A link ramping up, its
@@ -219,6 +247,69 @@ static void measured(struct cg_cap_link *l, double r, int q)
 	l->have = l->have_rate = 1;
 	l->rate_bps = l->max_cur = l->max_prev = (uint64_t)(r * MBIT);
 	l->queue_us = q < 0 ? -1 : q * (int32_t)MS;
+}
+
+/* A queue at a light load: a hiccup of the radio (1 s with a 20th of its
+ * capacity) leaves the capacity as it was; the same lasting 4 s lowers it
+ * to what the link delivers. */
+static void test_capacity_hiccup(void)
+{
+	struct sim s;
+
+	sim_start(&s);
+	run(&s, 20, 30, 40); /* measured at 30 */
+	CHECK(near(cg_cap_bps(&s.l), 30, 0.05));
+	run(&s, 20, 3, 40); /* an 8 Mbit/s stream's share: 3 */
+	run(&s, 10, 3, 1.5); /* the radio stalls 1 s */
+	CHECK(s.l.queue_us > (int32_t)(20 * MS));
+	CHECK(near(cg_cap_bps(&s.l), 30, 0.05));
+	CHECK(s.l.full_ms == 0);
+	run(&s, 10, 3, 40);
+	CHECK(near(cg_cap_bps(&s.l), 30, 0.05));
+	run(&s, 40, 3, 1.5); /* and now for good */
+	CHECK(cg_cap_bps(&s.l) < 3 * MBIT);
+	CHECK(s.l.full_ms != 0);
+}
+
+/* Fast start: a link measured at 50, then found full at 10, comes back to
+ * half its best (25) after CG_CAP_REST_MS without being full, never before;
+ * the best is forgotten after CG_CAP_BEST_MS. */
+static void test_capacity_fast_start(void)
+{
+	struct sim s;
+
+	sim_start(&s);
+	run(&s, 20, 50, 60); /* 2 s at 50 */
+	CHECK(near(cg_cap_bps(&s.l), 50, 0.05) && near(cg_cap_best_bps(&s.l), 50, 0.05));
+	run(&s, 30, 12, 10); /* full at 10 */
+	CHECK(near(cg_cap_bps(&s.l), 10, 0.1));
+	run(&s, 50, 0.5, 10); /* idle 5 s: not yet */
+	CHECK(cg_cap_bps(&s.l) < 12 * MBIT);
+	run(&s, 60, 0.5, 10); /* past 10 s: half its best */
+	CHECK(near(cg_cap_bps(&s.l), 25, 0.05));
+	/* full again at 10: it measures 10 again, and holds it 10 s */
+	run(&s, 30, 12, 10);
+	CHECK(near(cg_cap_bps(&s.l), 10, 0.1));
+	run(&s, 50, 0, 10);
+	CHECK(cg_cap_bps(&s.l) < 12 * MBIT);
+	/* five minutes later, at most 10 for longer than CG_CAP_BEST_MS: the
+	 * 50 is forgotten */
+	run(&s, 3200, 0.5, 10);
+	CHECK(cg_cap_best_bps(&s.l) < 30 * MBIT);
+}
+
+/* The probe: 5/4 and 1/16 of the largest; twice while under half its best. */
+static void test_capacity_probe(void)
+{
+	struct cg_cap_link l;
+
+	measured(&l, 20, 2);
+	CHECK(cg_cap_probe(&l, 20 * MBIT, 160 * MBIT) == 35 * MBIT);
+	l.best_cur = 50 * MBIT; /* 20 under 25 */
+	CHECK(cg_cap_probe(&l, 20 * MBIT, 160 * MBIT) == 50 * MBIT);
+	l.best_cur = 0;
+	l.best_prev = 40 * MBIT; /* 20 not under 20 */
+	CHECK(cg_cap_probe(&l, 20 * MBIT, 160 * MBIT) == 35 * MBIT);
 }
 
 /* The weights: shares as the capacities, 5/4 below the probe queue, the
@@ -421,10 +512,14 @@ void test_capacity(void)
 	test_capacity_total();
 	test_capacity_shapes();
 	test_capacity_converges();
+	test_capacity_hiccup();
+	test_capacity_fast_start();
+	test_capacity_probe();
 	test_capacity_weights();
 	test_capacity_rates();
 	test_capacity_saturated();
 	test_capacity_ramp();
 	test_capacity_swing();
+	test_capacity_rescue_w();
 	test_capacity_edges();
 }
