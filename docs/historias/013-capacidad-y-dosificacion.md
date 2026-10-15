@@ -374,6 +374,19 @@ con 4 flujos y 20 s, 3 rondas alternadas, salvo que se diga otra cosa.
   enlaces entre sí en un mismo flujo) o un socket por enlace. En la subida,
   la dosificación del cliente empeoró (arriba); en la bajada no se ha
   probado.
+- **La dosificación en el servidor (prototipo, rama `claude/server-pacing`):
+  neutra.** Con 8 lanes, la bajada de cada ruta ya sale por su propio
+  socket (`down_send`: la lane `p & (lanes − 1)`), así que basta
+  `SO_MAX_PACING_RATE` en cada lane, a la suma de `cg_pace_rate` de las
+  rutas que salen por ella (`cg_pace_add` en `pace.h`), con `fq` en la
+  salida del VPS. El `fq` por omisión trae `flow_limit 100p`, y cada lane
+  es un solo flujo: descartó 3.285 paquetes hasta subirlo a 2000. A/B
+  intercalado con el mismo `fq` en los dos lados, 16 flujos de bajada, 20 s,
+  3 rondas, con la red de la mañana congestionada: 82,5 sin dosificar
+  contra 80,4 dosificando, con retransmisiones parecidas. No se mergea:
+  dosificar al doble de la capacidad no evita las colas celulares de
+  segundos, que crecen cuando un enlace baja de golpe y los paquetes ya
+  están en camino.
 
 ## Qué hacemos con esto (diseño)
 
