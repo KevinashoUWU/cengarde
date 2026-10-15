@@ -18,6 +18,7 @@ struct sim {
 	uint32_t rx;
 	double backlog; /* packets sent and not yet delivered */
 	int stale;      /* its delay reports stopped: no queue measured */
+	uint32_t jitter_us; /* added to the delay, as a cellular link's swings */
 };
 
 static void sim_start(struct sim *s)
@@ -41,7 +42,7 @@ static void sim_step(struct sim *s, double send_mbit, double cap_mbit)
 	out = s->backlog < can ? s->backlog : can;
 	s->backlog -= (double)(uint32_t)out;
 	s->rx += (uint32_t)out;
-	s->h.owd = 30000u + (uint32_t)(s->backlog / can * 100 * MS); /* queue: backlog over the rate */
+	s->h.owd = 30000u + s->jitter_us + (uint32_t)(s->backlog / can * 100 * MS); /* queue: backlog over the rate */
 	s->h.have_owd = 1;
 	s->h.fresh_until_ms = s->t + 3000;
 	cg_cap_tick(&s->l, s->t, s->t, s->rx, s->tx_pkts, s->tx_bytes, s->stale ? NULL : &s->h, &CFG);
@@ -105,6 +106,47 @@ static void test_capacity_saturated(void)
 	run(&s, 34, 0, 50);
 	run(&s, 80, 45, 50);
 	CHECK(near(s.l.rate_bps, 45, 0.05) && cg_cap_bps(&s.l) >= 44 * MBIT);
+}
+
+/* Senders speeding up into a link of 50 (TCP's slow start, many flows at
+ * once): its queue passes sat_us while the smoothed delivery rate still
+ * carries the samples from before. Full, it is measured by what it
+ * delivers while full: 50, not the 16-27 of the way up (story 013: with 16
+ * flows down, a link of 72 fell to 27). */
+static void test_capacity_ramp(void)
+{
+	static struct sim s;
+
+	sim_start(&s);
+	run(&s, 40, 5, 50); /* sent 5: it delivers 5 */
+	CHECK(near(cg_cap_bps(&s.l), 5, 0.05));
+	run(&s, 10, 80, 50); /* two samples full */
+	CHECK(s.l.queue_us > (int32_t)(20 * MS));
+	CHECK(s.l.sat_n >= CG_CAP_SAT_N);
+	CHECK(near(cg_cap_bps(&s.l), 50, 0.1));
+	run(&s, 30, 80, 50);
+	CHECK(near(cg_cap_bps(&s.l), 50, 0.05));
+}
+
+/* One sample whose delay swings over sat_us is not a full link: the
+ * capacity holds (a lightly loaded link took what it was sent, 10). Two in
+ * a row are. */
+static void test_capacity_swing(void)
+{
+	static struct sim s;
+
+	sim_start(&s);
+	run(&s, 40, 40, 50);
+	run(&s, 60, 10, 50);
+	CHECK(near(cg_cap_bps(&s.l), 40, 0.05));
+	s.jitter_us = 30 * MS;
+	run(&s, 5, 10, 50);
+	CHECK_EQ(s.l.sat_n, 1);
+	CHECK(near(cg_cap_bps(&s.l), 40, 0.05));
+	s.jitter_us = 0;
+	run(&s, 5, 10, 50);
+	CHECK_EQ(s.l.sat_n, 0);
+	CHECK(near(cg_cap_bps(&s.l), 40, 0.05));
 }
 
 /* A link that stops delivering what it is sent, while its delay says
@@ -382,5 +424,7 @@ void test_capacity(void)
 	test_capacity_weights();
 	test_capacity_rates();
 	test_capacity_saturated();
+	test_capacity_ramp();
+	test_capacity_swing();
 	test_capacity_edges();
 }

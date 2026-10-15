@@ -11,10 +11,24 @@
  *   weigh little; raw samples of 250 ms swung so much that their maximum
  *   was 1.5-2 times what the link carried (story 013, the testnet);
  * - the capacity: the largest delivery rate seen: a link carries at least
- *   what it once delivered. Unless the link's queue is above sat_us: then
- *   it carries what it delivers now and no more (the smoothing keeps one
- *   bad sample from sinking it). The queue is the link's one-way delay
- *   over its own minimum of window_ms (govern.h's cg_gov_base).
+ *   what it once delivered. Unless the link's queue is above sat_us for
+ *   CG_CAP_SAT_N samples in a row: then it carries what it delivers while
+ *   full and no more. The queue is the link's one-way delay over its own
+ *   minimum of window_ms (govern.h's cg_gov_base).
+ *
+ * What a full link delivers is its own average, over the samples with a
+ * queue only, started at the second of them (the queue formed during the
+ * first, part of which the link was not full; gain 1/4 too: one bad sample
+ * does not sink it). A full link is busy the whole sample, so each of those
+ * samples measures it; the delivery rate above also carries the samples
+ * from before the queue, when the link was sent less than it carries. Taken
+ * from that, a link whose senders were still speeding up when its queue
+ * formed fell to what it delivered on the way up: on the testnet, with 16
+ * TCP flows down, a link of 72 Mbit/s fell to 27 as its queue passed
+ * 20 ms, the split by expected arrival sent it less, and the download sank
+ * to 16-70 Mbit/s against 160 with 4 flows (story 013). Two samples in a row,
+ * so that one swing of a cellular link's delay over sat_us is not a full
+ * link.
  *
  * A link sent less than it could carry delivers what it was sent, and that
  * says nothing about what it carries: its capacity holds. Only a queue
@@ -84,6 +98,7 @@
 #define CG_CAP_GAIN 4     /* the delivery rate's smoothing: 1/4 of each sample */
 #define CG_CAP_SHORT_N 2  /* samples in a row delivering under half of what was sent: full */
 #define CG_CAP_SHORT_MIN 64 /* packets sent in a sample for it to count */
+#define CG_CAP_SAT_N 2    /* samples in a row with a queue above sat_us: full */
 /* More delivered than sent by this much (packets), and the report is not
  * of this run of the counters: probes and what was in flight at the start
  * make a few packets of difference, never this many. */
@@ -102,12 +117,14 @@ struct cg_cap_link {
 	uint64_t rx_total;          /* received since then */
 	uint32_t size;              /* mean size of what was sent, bytes */
 	uint64_t rate_bps;          /* the delivery rate, smoothed */
+	uint64_t sat_bps;           /* the delivery rate over the samples with a queue, smoothed */
 	uint64_t max_cur, max_prev; /* the capacity: both the same (the largest rate, or the rate under a queue) */
 	struct cg_gov_link q;       /* the delay's minimum, for the queue */
 	int32_t queue_us;           /* the last queue seen, -1: none */
 	uint8_t have;               /* a report taken as the start */
 	uint8_t have_rate;          /* a rate measured */
 	uint8_t short_n;            /* samples in a row that delivered under half of what was sent */
+	uint8_t sat_n;              /* samples in a row with a queue above sat_us */
 };
 
 static inline void cg_cap_reset(struct cg_cap_link *l)
@@ -128,9 +145,8 @@ static inline uint64_t cg_cap_bps(const struct cg_cap_link *l)
 static inline void cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint64_t report_ms, uint32_t rx, uint64_t tx_pkts,
 			       uint64_t tx_bytes, const struct cg_hlink *h, const struct cg_cap_cfg *cfg)
 {
-	uint64_t dt, dpk, dby, bytes, rate;
+	uint64_t dt, dpk, dby, bytes, rate, raw;
 	uint32_t drx;
-	int sat;
 
 	if (h && cg_health_fresh(h, now_ms)) {
 		int32_t q = cg_owd_diff(h->owd, cg_gov_base(&l->q, h->owd, now_ms, cfg->window_ms));
@@ -172,7 +188,7 @@ static inline void cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint64_t 
 	if (dpk)
 		l->size = (uint32_t)(dby / dpk);
 	bytes = (uint64_t)drx * l->size;
-	rate = bytes * 8 * 1000 / dt;
+	rate = raw = bytes * 8 * 1000 / dt;
 	l->t_ms = report_ms;
 	l->rx = rx;
 	l->tx_pkts = tx_pkts;
@@ -192,10 +208,24 @@ static inline void cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint64_t 
 		l->short_n = l->short_n < 255 ? (uint8_t)(l->short_n + 1) : 255;
 	else
 		l->short_n = 0;
-	sat = (l->queue_us >= 0 && (uint32_t)l->queue_us > cfg->sat_us) || l->short_n >= CG_CAP_SHORT_N;
-	if (sat) {
-		/* The link gives no more than it delivers now (smoothed), and the
-		 * window starts again from there. */
+	if (l->queue_us >= 0 && (uint32_t)l->queue_us > cfg->sat_us) {
+		/* Until the first sample full from start to end (the queue formed
+		 * during the one before), each sample starts it again. */
+		if (l->sat_n + 1 <= CG_CAP_SAT_N)
+			l->sat_bps = raw;
+		else if (raw >= l->sat_bps)
+			l->sat_bps += (raw - l->sat_bps) / CG_CAP_GAIN;
+		else
+			l->sat_bps -= (l->sat_bps - raw) / CG_CAP_GAIN;
+		l->sat_n = l->sat_n < 255 ? (uint8_t)(l->sat_n + 1) : 255;
+	} else {
+		l->sat_n = 0;
+	}
+	if (l->sat_n >= CG_CAP_SAT_N) {
+		/* Full: the link gives no more than it delivers while full. */
+		l->max_cur = l->max_prev = l->sat_bps;
+	} else if (l->short_n >= CG_CAP_SHORT_N) {
+		/* Its packets stop arriving: no more than it delivers now. */
 		l->max_cur = l->max_prev = rate;
 	} else if (rate > l->max_cur) {
 		l->max_cur = l->max_prev = rate;
