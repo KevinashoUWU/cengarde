@@ -471,6 +471,18 @@ con 4 flujos y 20 s, 3 rondas alternadas, salvo que se diga otra cosa.
   cola, la regla «cola sobre 20 ms = congestión» la toma por congestión y
   no se rescata justo la pérdida de radio. Una corrida por variante con la
   red así no decide nada.
+- **La regla de congestión, probada (PR #51, borrador):** una cola pareja
+  contra el mínimo de 60 s, y además cerca de su máximo de 60 s (la lectura de
+  RED y ECN). En el laboratorio ninguna sirve con TCP saturando: tapar la
+  pérdida aleatoria deja que TCP llene el buffer del enlace, y cualquier
+  señal de cola lo ve lleno y apaga el rescate (`lossy` vuelve a 11 Mbit/s;
+  `het` llegó a 32 con esperas de 2,4 s). El buen `lossy` de la regla
+  instantánea venía en parte de que no veía esa cola. **El rescate y TCP
+  saturando compiten; su lugar es el tráfico a tasa fija** (la radio, SRT,
+  RIST, video, llamadas), donde nadie acelera hasta llenar el buffer. Las
+  ráfagas largas de pérdida, que cualquier regla leerá como congestión, son
+  de la FEC con HARQ (historia 012). Entel quedó anclado en B7 (3CA: B7 + B2
+  + B28), fuera de su B2 lossy.
 - **Lo pendiente del rescate:** una regla de congestión que no confunda el
   HARQ con una cola llena (la cola sube y además el enlace entrega al tope de
   su capacidad); NACK por dos caminos, reintento a ~1 RTT, NACK con máscara
