@@ -95,6 +95,7 @@
 #include "replay.h"
 #include "sock.h"
 #include "capacity.h"
+#include "pace.h"
 #include "govern.h"
 #include "split.h"
 #include "status.h"
@@ -207,6 +208,7 @@ struct lane {
 	int fd;
 	uint64_t rx;    /* datagrams read */
 	uint16_t links; /* link ids of the verified packets read from it */
+	uint64_t paced; /* the pacing rate set on it, bytes/s (pace.h); CG_PACE_NONE: none */
 };
 
 /* Forward tables are small: cengarde-nat refuses one over 64 KiB. */
@@ -1576,6 +1578,53 @@ static void cap_tick(struct server *s, struct session *S, uint16_t live, uint64_
 		cg_cap_eta(&S->eta, S->cap, live, cc.sat_us / 2, now_ms * 1000);
 }
 
+/* SO_MAX_PACING_RATE on a lane's socket (pace.h): fq on the way out paces
+ * it. Kernels that take only 32 bits get it capped. */
+static void lane_pace_set(struct lane *ln, uint64_t rate)
+{
+	uint32_t r32 = rate > UINT32_MAX ? UINT32_MAX : (uint32_t)rate;
+
+	if (setsockopt(ln->fd, SOL_SOCKET, SO_MAX_PACING_RATE, &rate, sizeof(rate)) < 0 &&
+	    setsockopt(ln->fd, SOL_SOCKET, SO_MAX_PACING_RATE, &r32, sizeof(r32)) < 0)
+		return;
+	ln->paced = rate;
+}
+
+/* With pacing, each lane at the sum of the rates of the paths whose
+ * downloads leave from it (down_send: path p from lane p & (lanes - 1)),
+ * over every session; a lane none leaves from, or one lane for all, is not
+ * paced. Without, as it was set, back to none (a reload turned it off). */
+static void pace_lanes(struct server *s)
+{
+	uint64_t r[CG_MAX_LANES];
+	int on = s->cfg->pacing && s->nlanes > 1, any[CG_MAX_LANES];
+
+	for (uint32_t l = 0; l < s->nlanes; l++) {
+		r[l] = 0;
+		any[l] = 0;
+	}
+	for (uint32_t i = 0; on && i < s->cap; i++) {
+		const struct session *S = &s->s[i];
+
+		if (!S->used)
+			continue;
+		for (unsigned p = 0; p < CG_MAX_LINKS; p++) {
+			unsigned l = p & (s->nlanes - 1);
+
+			if (!S->path[p].used)
+				continue;
+			r[l] = cg_pace_add(r[l], cg_pace_rate(S->cap[p].have_rate ? cg_cap_bps(&S->cap[p]) : 0));
+			any[l] = 1;
+		}
+	}
+	for (uint32_t l = 0; l < s->nlanes; l++) {
+		uint64_t rate = on && any[l] ? r[l] : CG_PACE_NONE;
+
+		if (s->lane[l].fd >= 0 && cg_pace_changed(s->lane[l].paced, rate))
+			lane_pace_set(&s->lane[l], rate);
+	}
+}
+
 static void health_tick(struct server *s, uint64_t now_ms)
 {
 	for (uint32_t i = 0; i < s->cap; i++) {
@@ -1663,6 +1712,10 @@ static void lanes_json(struct server *s, struct cg_json *j)
 		cg_json_u64(j, "group", 0);
 		cg_json_u64(j, "rx", ln->rx);
 		json_drops(j, ln->fd);
+		if (ln->paced != CG_PACE_NONE)
+			cg_json_ms(j, "pace_mbit", ln->paced * 8 / 1000);
+		else
+			cg_json_null(j, "pace_mbit");
 		cg_json_arr(j, "links");
 		for (unsigned l = 0; l < CG_MAX_LINKS; l++)
 			if (ln->links >> l & 1)
@@ -2286,6 +2339,7 @@ static void tick(struct server *s)
 	if (now_ms >= s->next_cpu_ms)
 		threads_sample(s, now_ms);
 	health_tick(s, now_ms);
+	pace_lanes(s);
 	for (int i = 0; i < CG_MAX_CLIENTS; i++)
 		if (s->c[i].used && s->c[i].newest >= 0)
 			wg_poke(s, &s->c[i], &s->s[s->c[i].newest], now_ms);
@@ -2365,6 +2419,7 @@ static void lanes_close(struct server *s)
 static int lane_single(struct server *s, char *err, size_t errlen)
 {
 	s->lane[0].fd = cg_udp_bind_opts(&s->cfg->listen, 0, 0, &s->pktinfo, &s->lfamily, err, errlen);
+	s->lane[0].paced = CG_PACE_NONE;
 	if (s->lane[0].fd < 0)
 		return -1;
 	s->nlanes = 1;
@@ -2407,6 +2462,7 @@ static int lanes_open(struct server *s, char *err, size_t errlen)
 		}
 		if (i < cfg->lanes) {
 			s->lane[i].fd = fd;
+			s->lane[i].paced = CG_PACE_NONE;
 			s->nlanes = i + 1;
 			if (!pk)
 				s->pktinfo = 0;
