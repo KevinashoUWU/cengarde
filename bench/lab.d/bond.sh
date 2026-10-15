@@ -73,7 +73,9 @@
 # baselines of split; BOND_SOLO_CASES says it by hand.
 #
 # Knobs: BOND_S (seconds per run, 10; starlink15 takes at least 31), BOND_N
-# (repetitions, 1; the table then gives the median and the spread), BOND_CC
+# (repetitions, 1; the table then gives the median and the spread), BOND_P
+# (TCP flows in parallel, 1; speedtest opens many, and many flows starting
+# at once fill the links' queues as one does not; story 013), BOND_CC
 # ("cubic bbr quic"; quic only when aioquic imports, else a note),
 # BOND_NEED_QUIC (1: no aioquic is a failure, the CI), BOND_QUIC_CC (cubic or
 # reno, what the QUIC sender runs) and BOND_QUIC_MTU (QUIC datagram, 1350: the
@@ -103,6 +105,7 @@
 
 BOND_S=${BOND_S:-10}
 BOND_N=${BOND_N:-1}
+BOND_P=${BOND_P:-1}
 BOND_CC=${BOND_CC:-} # empty: cubic bbr quic (bond_ccs)
 BOND_QUIC_CC=${BOND_QUIC_CC:-cubic}
 BOND_QUIC_MTU=${BOND_QUIC_MTU:-1350}
@@ -443,7 +446,7 @@ bond_run() {
 	else
 		res=$RUN/iperf.json err=$RUN/iperf.err
 		# shellcheck disable=SC2046 # -R or nothing
-		ip netns exec cli iperf3 -c 10.79.0.1 -t "$s" -C "$cc" -J $([ "$dir" = down ] && echo -R) >"$res" 2>"$err" || rc=1
+		ip netns exec cli iperf3 -c 10.79.0.1 -t "$s" -C "$cc" -P "$BOND_P" -J $([ "$dir" = down ] && echo -R) >"$res" 2>"$err" || rc=1
 	fi
 	c1=$(cpu_ticks "$cp") s1=$(cpu_ticks "$sp")
 	# The engine writes its status every second: what it counted until now is in

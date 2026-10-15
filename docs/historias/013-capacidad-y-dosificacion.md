@@ -287,6 +287,59 @@ dan MCS, RI, CQI y PMI):
   espera de las antenas más grandes, que deberían subir el LTE de la
   macro.
 
+### 2026-10-14/15: ETA, dosificación, MPTCP, speedtest y la capacidad con cola
+
+Medido en la red de pruebas con las celdas bloqueadas (historia 004); TCP
+con 4 flujos y 20 s, 3 rondas alternadas, salvo que se diga otra cosa.
+
+| A/B | Sin | Con | Lectura |
+| --- | --- | --- | --- |
+| `split_eta`, bajada | media 109 | media 157 | +44 % |
+| `split_eta`, subida | media 56 | media 70 | +25 % |
+| `pacing`, subida | media 57 | media 40 | empeora: queda experimental y apagado |
+| `reorder_max_wait_ms` 500 frente a 150, bajada | 103 | 99,5 | igual |
+
+- **El falso hundimiento después de MPTCP no era cengarde.** La subida por
+  el túnel caía a 0,2–3 Mbit/s tras una o dos corridas MPTCP, y volvía en
+  30–60 s. Ninguno de los dos motores perdía nada; la captura en `cg-router`
+  mostró que el receptor TCP del VPS anunciaba ventanas de 6 KB y de 0. Los
+  sockets MPTCP, al cerrarse, retenían hasta 180 MB de memoria TCP, y el VPS
+  de 2 GB entra en presión de memoria con `tcp_mem` a ~111 MB. Con
+  `tcp_mem` en 384/512/768 MB (`/etc/sysctl.d/90-cengarde-tcpmem.conf`)
+  desaparece. Solo afecta a las pruebas que terminan en el VPS: en uso real
+  el VPS reenvía con NAT.
+- **MPTCP (fuera del túnel, 4 subflujos) frente a cengarde con ETA**, ya
+  sin ese efecto: subida pareja (MPTCP 59–84, cengarde 53–64), bajada para
+  cengarde (128–148 contra 56–58). Se queda el reparto por paquete.
+- **speedtest** (Ookla, servidor EdgeUno de Santiago), desde la LAN de la
+  Pi una vez arreglada (historia 004: el adaptador USB y el control de
+  flujo), y por el túnel propio del PC del banco con el mismo motor:
+  - Subida 60–91 Mbit/s: la suma de los enlaces medidos solos (~94). Un
+    notebook en la LAN midió 200/100 contra Grupo GTD.
+  - Bajada 93–132 en speedtest y 196 en iperf3, contra ~389 de la suma de
+    los enlaces solos (Entel 93, WOM 66, Movistar 63, Claro 167 con tres
+    portadoras). Con carga, el ping del túnel queda en 60–90 ms; el de cada
+    enlace solo, en 300–760 ms.
+  - Reparto contra duplicación en la bajada: 66–70 frente a 63–75, igual.
+    El desorden del reparto no es lo que la limita.
+  - Con 16 flujos (`iperf3 -R -P 16`) la bajada se vuelve inestable
+    (179 → 86 → 16 → 69). En el VPS, las colas suben a 30–80 ms y la
+    capacidad del mejor enlace cae de 72 a 27 Mbit/s: con la cola sobre
+    `sat_us`, la capacidad pasaba a ser el ritmo de entrega suavizado,
+    que arrastra las muestras de antes de la cola, cuando los flujos aún
+    aceleraban.
+- **La capacidad con cola (PR 5, `capacity.h`).** Un enlace lleno se mide
+  por lo que entrega mientras está lleno: su propio promedio de las muestras
+  con cola, que parte de la segunda (en la primera la cola se formó a
+  mitad de muestra), y lleno recién con 2 muestras seguidas sobre `sat_us`
+  (un vaivén del retardo celular no lo vacía). Tests nuevos:
+  `test_capacity_ramp` (de 5 a 80 sobre un enlace de 50: queda en 50, no en
+  los 18–26 del promedio) y `test_capacity_swing`. En el laboratorio, con
+  16 flujos (`BOND_P=16`), da lo mismo que antes (het: 51,5 frente a 50,7
+  de bajada; bloat: 25,6 frente a 26,3): sus enlaces tienen tasa fija y la
+  rampa pesa poco. Falta el A/B en la red de pruebas, contra la medición
+  de las 3:33 del 2026-10-15.
+
 ## Qué hacemos con esto (diseño)
 
 ### Piezas
@@ -340,3 +393,4 @@ dan MCS, RI, CQI y PMI):
 - 2026-10-14: el PR 2 validado enlace por enlace; las ramas de antena y el CSI de los cuatro módems.
 - 2026-10-14: el PR 3 (pesos según la capacidad) medido en la bajada y la subida; las primeras medidas del PR 4.
 - 2026-10-14: el techo contra el túnel; la capacidad que se retroalimentaba (PR #36); `split_eta` (PR #37) y `pacing` (PR #38), experimentales; chrony con SHOA.
+- 2026-10-15: los A/B de ETA y de la dosificación, MPTCP, el falso hundimiento por `tcp_mem` del VPS, speedtest y la capacidad con cola (PR 5).
