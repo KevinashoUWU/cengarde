@@ -244,12 +244,25 @@ static inline void cg_cap_weights(const struct cg_cap_link l[CG_MAX_LINKS], uint
 /* A tick's measures into the split by expected arrival (eta.h): each link of
  * mask's capacity, its delay without a queue (the minimum of its delays,
  * over the smallest of the links') and its queue; a link without a
- * capacity or a delay yet gets rate 0, and the split goes by weights. */
+ * capacity or a delay yet gets rate 0, and the split goes by weights.
+ *
+ * A link whose queue is under probe_us is taken at 5/4 of its capacity and
+ * 1/16 of the largest one's, as cg_cap_weights does: the capacity only
+ * grows when the link delivers more than it, and a split that gives it no
+ * more than its capacity never lets it show more. On the testnet, after
+ * MPTCP traffic had filled the same modems, the four capacities stayed at
+ * 5-7 Mbit/s against 15-30 and the upload under split_eta fell to 3 Mbit/s
+ * (story 013). */
 static inline void cg_cap_eta(struct cg_eta *e, const struct cg_cap_link l[CG_MAX_LINKS], uint16_t mask,
-			      uint64_t now_us)
+			      uint32_t probe_us, uint64_t now_us)
 {
 	uint32_t ref = 0, mins[CG_MAX_LINKS];
+	uint64_t big = 0;
 	int any = 0;
+
+	for (unsigned i = 0; i < CG_MAX_LINKS; i++)
+		if ((mask >> i & 1) && l[i].have_rate && cg_cap_bps(&l[i]) > big)
+			big = cg_cap_bps(&l[i]);
 
 	for (unsigned i = 0; i < CG_MAX_LINKS; i++) {
 		const struct cg_gov_link *q = &l[i].q;
@@ -267,6 +280,8 @@ static inline void cg_cap_eta(struct cg_eta *e, const struct cg_cap_link l[CG_MA
 			cg_eta_set(e, i, 0, 0, 0, now_us);
 			continue;
 		}
+		if (l[i].queue_us >= 0 && (uint32_t)l[i].queue_us < probe_us)
+			bps += bps / 4 + big / 16;
 		cg_eta_set(e, i, bps, (uint32_t)cg_owd_diff(mins[i], ref), l[i].queue_us > 0 ? (uint32_t)l[i].queue_us : 0,
 			   now_us);
 	}

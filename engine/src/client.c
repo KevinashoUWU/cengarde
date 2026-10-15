@@ -1710,7 +1710,7 @@ static void cap_tick(struct client *c, uint16_t live, uint64_t now_ms)
 			       cc.sat_us / 2, c->cw);
 	cg_cap_total_tick(&c->ctot, c->cap, live, cc.sat_us);
 	if (c->cfg->split_eta)
-		cg_cap_eta(&c->eta, c->cap, live, now_ms * 1000);
+		cg_cap_eta(&c->eta, c->cap, live, cc.sat_us / 2, now_ms * 1000);
 	/* With pacing, each link's socket at about its rate; without, as it
 	 * was set, back to none (a reload turned it off). */
 	for (int i = 0; i < CG_MAX_LINKS; i++) {
