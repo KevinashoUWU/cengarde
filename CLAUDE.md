@@ -58,9 +58,9 @@ routers por VPS, nombres con DNS dinámico) en QEMU; falta hardware real.
   aquí solo se añade una línea al índice.
 - Antes de investigar algo, busca si ya hay historia. Si cambian los hechos,
   actualiza la historia existente (fecha y qué cambió) en vez de crear otra.
-- Basta con leer el TL;DR de cada historia; el resto, solo si la tarea lo pide.
-- Si el índice pasa de ~15 entradas, las historias cerradas se mueven al
-  archivo de `docs/historias/README.md`.
+- Basta con leer el TL;DR de cada historia. Estancado o buscando ideas: lee
+  el estudio `012-bonding/ejes.md` y marca ahí lo probado, medido o descartado.
+- Con más de ~15 entradas en el índice, las cerradas van al archivo del README.
 
 ## Índice de historias
 
