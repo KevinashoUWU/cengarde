@@ -422,6 +422,32 @@ con 4 flujos y 20 s, 3 rondas alternadas, salvo que se diga otra cosa.
   ataca el ARQ de rescate (historia 012: estilo XLINK, reinyectar por el
   enlace más rápido cuando el plazo se agota).
 
+### 2026-10-15: el rescate (PR #48, ARQ estilo XLINK)
+
+- **Qué es:** el reordenador del cliente pide (`CG_T_NACK`) el hueco que va
+  a abandonar; el VPS guarda lo enviado (`rescue_kb`, `rescue.h`) y lo
+  reenvía por su ruta más rápida, con presupuesto (`rescue_pct`). No se
+  rescata la pérdida en una ruta con la cola llena (congestión: TCP tiene
+  que verla), y las respuestas lo avisan por ruta (`CG_BOND_FULL`).
+- **Laboratorio** (4 flujos Cubic de bajada, 3 rondas): con 1 % de pérdida
+  al azar por enlace (`lossy`), de 10–11 a ~50 Mbit/s y de ~1 % a 0,04 % de
+  retransmisiones; donde la pérdida es de un enlace lleno (`het`), cuesta
+  ~15 %. Tres errores de diseño, medidos y corregidos: pedir solo en la
+  cabeza serializaba los pedidos (esperas de 200–500 ms; ahora se pide en
+  cuanto el enlace del hueco trae algo posterior); rescatar la congestión
+  dejaba a TCP sin frenar (esperas de segundos); y un hueco pedido podía
+  esperar más que el tope del reordenador.
+- **Red de pruebas** (A/B intercalado en el cliente del PC, 16 flujos de
+  bajada, 20 s, 3 rondas, `rescue_wait_ms` 60 contra 0): 86,4 contra 91,0
+  Mbit/s. El VPS recibió ~8.000 pedidos y rechazó 5.143 por congestión y
+  1.181 por presupuesto; se rescató el 10–20 % de lo pedido. **Bajo carga,
+  la pérdida de la red real es casi toda de colas llenas, no de radio**, y
+  esa no conviene taparla. El aviso de ruta llena llega tarde respecto de
+  cuándo se llena la cola, así que el cliente pide y espera en vano.
+- **Pendiente:** medirlo donde la pérdida es de radio y no de congestión:
+  tráfico a tasa fija (un stream de 20–30 Mbit/s, la radio, video), no
+  iperf saturando. El rescate de la subida. Queda apagado por omisión.
+
 ## Qué hacemos con esto (diseño)
 
 ### Piezas
