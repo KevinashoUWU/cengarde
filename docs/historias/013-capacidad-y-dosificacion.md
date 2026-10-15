@@ -191,6 +191,30 @@ alternadas de 30 s, con la Pi y el VPS con `capacity_weights`:
   lo entregado sin suavizar al subir; o dejar el tope fijo con margen y
   ajustar solo hacia abajo cuando los enlaces se degradan.]
 
+### En hora peak con las celdas fijas: el bonding lleva casi todo, TCP pierde el resto [red de pruebas, 2026-10-14 ~21:00]
+
+Con los cuatro módems bloqueados a su mejor sitio (historia 004), la Pi
+con `capacity_weights` y el VPS con `capacity_weights`, gobernador y el
+PR #40:
+
+| | Techo (los 4 a la vez, fuera) | Túnel, TCP (4 flujos) | Túnel, UDP |
+| --- | --- | --- | --- |
+| Subida | 78–93 Mbit/s | 42 (~54 %) | **69,4 sin pérdida** |
+| Bajada | 165–234 Mbit/s | 93–132 (40–67 %) | **150 con 0,34 %** (a 200, 32 %) |
+
+- Ningún enlace va lleno con TCP (colas de 5–15 ms) y cada uno lleva
+  bastante menos que solo: el freno no son los enlaces sino los flujos
+  TCP, que no empujan más (RTT inflado por las colas y la espera del
+  reordenador, retransmisiones espurias por desorden).
+- Con UDP el túnel entrega el ~65–90 % del techo. Antes de fijar las
+  celdas la subida UDP se trababa en ~47 Mbit/s, y la bajada UDP a 80–100
+  perdía 11–31 % (Claro anclado en la celda de una minera, casi sin
+  entregar).
+- WireGuard cifra los flujos de adentro: el motor no los ve y no puede
+  fijar cada flujo a un enlace (lo que haría MPTCP o un ECMP por flujo).
+  [PENDIENTE: qué hace lento a TCP sobre el bonding y qué se puede hacer
+  desde el motor.]
+
 ### Ramas de antena y CSI [medido, 2026-10-14]
 
 Con `AT+QRSRP`/`AT+QSINR` (por rama) y el reporte CSI activado
