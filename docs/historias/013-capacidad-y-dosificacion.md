@@ -337,8 +337,43 @@ con 4 flujos y 20 s, 3 rondas alternadas, salvo que se diga otra cosa.
   los 18–26 del promedio) y `test_capacity_swing`. En el laboratorio, con
   16 flujos (`BOND_P=16`), da lo mismo que antes (het: 51,5 frente a 50,7
   de bajada; bloat: 25,6 frente a 26,3): sus enlaces tienen tasa fija y la
-  rampa pesa poco. Falta el A/B en la red de pruebas, contra la medición
-  de las 3:33 del 2026-10-15.
+  rampa pesa poco.
+- **El PR 5 en la red de pruebas (2026-10-15): neutro, la hipótesis no se
+  confirmó.** Con la misma medición que la línea base de las 3:33, a las
+  6:23 da lo mismo: túnel de bajada 202 / 229 (antes 225 / 198), speedtest
+  157 / 193 / 131 (antes 140 / 170 / 160). El A/B intercalado en el VPS
+  (el motor anterior y el nuevo alternados, 16 flujos de bajada por el
+  túnel del PC, 20 s, 3 rondas) da 320 de media con el anterior (344, 325,
+  290) y 312 con el nuevo (332, 281, 325), con caídas parecidas. La
+  capacidad que caía con la cola era real, pero no era lo que limitaba la
+  bajada: con 16 flujos, la misma prueba que anoche daba 104–119 hoy da
+  280–344, porque los enlaces dan más (sumados solos: 446–568 contra
+  414–443; Movistar 123 de bajada contra 63–77). Queda desplegado: no
+  empeora nada y un vaivén del retardo ya no vacía la capacidad.
+- **De dónde salen las retransmisiones de la bajada** (16 flujos, 20 s,
+  2026-10-15 en la mañana). En el VPS: 7.099 retransmisiones de 318.268
+  segmentos (2,2 %), solo ~21 % espurias (DSACK). En el cliente:
+  `lost_all` 5.404 (1,7 %, pérdida real en las colas celulares) y 15.225
+  huecos abandonados por el reordenador (RACK 5.423, plazo 8.285, desborde
+  1.517), de los que 9.821 llegaron después, 4.426 con más de 500 ms. Por
+  enlace, Claro lleva el 59 % y la mayoría de los tardíos (8,5 % de lo
+  suyo); Movistar llegó a 2,6 s de cola en el VPS con la capacidad
+  estimada en 0–22. El reordenador no es la causa: los paquetes llegan
+  medio segundo tarde porque a algunos enlaces se les mete más de lo que
+  drenan, y esperar más solo sumaría latencia.
+- **Silenciar al atrasado no ayuda:** `mute_behind_ms` 0 contra 150 en el
+  VPS, intercalado, 3 rondas: 167,8 contra 150,7 de media. Queda en 0.
+- **UDP contra TCP fuera del túnel** (por si un operador limita el UDP):
+  Movistar TCP 52,7, UDP a 30 Mbit/s 27,6 con 2,6 % de pérdida; Entel TCP
+  36,8, UDP a 60 Mbit/s 57,0 con 1,8 %. Sin evidencia de un límite al UDP.
+  El VPS abre 5201–5204/udp (reservados con `forward reserve`).
+- **Lo que queda:** dosificar en el servidor cada enlace a su capacidad, para
+  que la cola se forme en el VPS y no en la celda. En el servidor todos los
+  enlaces comparten un socket, y `SO_MAX_PACING_RATE` es por socket: hace
+  falta la hora de salida por paquete (`SO_TXTIME` y `fq`, que traba los
+  enlaces entre sí en un mismo flujo) o un socket por enlace. En la subida,
+  la dosificación del cliente empeoró (arriba); en la bajada no se ha
+  probado.
 
 ## Qué hacemos con esto (diseño)
 
@@ -394,3 +429,4 @@ con 4 flujos y 20 s, 3 rondas alternadas, salvo que se diga otra cosa.
 - 2026-10-14: el PR 3 (pesos según la capacidad) medido en la bajada y la subida; las primeras medidas del PR 4.
 - 2026-10-14: el techo contra el túnel; la capacidad que se retroalimentaba (PR #36); `split_eta` (PR #37) y `pacing` (PR #38), experimentales; chrony con SHOA.
 - 2026-10-15: los A/B de ETA y de la dosificación, MPTCP, el falso hundimiento por `tcp_mem` del VPS, speedtest y la capacidad con cola (PR 5).
+- 2026-10-15: el PR 5 medido en la red de pruebas: neutro; la bajada de 16 flujos llega a 280–344 con los enlaces de la mañana.
