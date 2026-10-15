@@ -30,6 +30,8 @@
 #include <stdint.h>
 #include <string.h>
 
+/* 32768 sequences: a packet 300 ms late at 27 000 a second is still in it
+ * (it was not at 8192), and the reorderer's window fits under it. */
 #define CG_REPLAY_BITS 32768
 #define CG_REPLAY_BLOCKS (CG_REPLAY_BITS / 64)
 #define CG_REPLAY_WINDOW (CG_REPLAY_BITS - 64) /* sequences accepted behind the top */
