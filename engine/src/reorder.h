@@ -227,6 +227,7 @@ struct cg_ro_stats {
 	uint64_t late_rack, late_cap, late_overflow, late_old;
 	uint64_t far, resyncs, pool_full;
 	uint64_t asked, rescued, ask_lost; /* rescue: gaps asked for, that came, that did not */
+	uint64_t ask_refused;             /* of ask_lost, those the sender said would not come */
 	uint32_t held_max, max_burst;
 	uint64_t wait[CG_RO_HIST], late_by[CG_RO_HIST];
 };
@@ -719,6 +720,21 @@ static inline void cg_ro_pend_take(struct cg_reorder *r, unsigned l, uint32_t se
 		r->pend[l].first = (uint8_t)((r->pend[l].first + 1) % CG_RO_PEND);
 		r->pend[l].n--;
 	}
+}
+
+/* Rescue: the sender says seq will not come again (CG_F_GONE): if it is
+ * still an asked-for gap, it goes at the next drain, as if its wait were
+ * over, and is asked for no more. Returns 1 when it was. */
+static inline int cg_ro_refused(struct cg_reorder *r, const struct cg_ro_cfg *cf, uint32_t seq, uint32_t now)
+{
+	struct cg_ro_slot *s = &r->slot[seq % CG_RO_SLOTS];
+
+	if (s->seq != seq || s->state != CG_RO_ASKED || s->link == 0xff)
+		return 0;
+	s->t_arr = now - cf->rescue_us;
+	s->link = 0xff;
+	r->st.ask_refused++;
+	return 1;
 }
 
 /* A packet that came for a gap asked for: rescued. */

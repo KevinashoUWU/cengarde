@@ -155,6 +155,7 @@ struct session {
 	uint64_t resc_congested; /* not sent again: lost on a full path (TCP has to see it) */
 	int peer_rescue;          /* the client keeps what it sends up: its reorder asks (rescue.h) */
 	uint64_t nacks_sent;      /* NACKs sent to the client for the upload */
+	uint64_t resc_gone_tx, resc_gone_rx; /* CG_F_GONE said to the client; asked gaps it said were gone */
 	struct cg_ro_cfg rocf;    /* the server's reorder settings, with its rescue */
 	uint32_t tx_ctl; /* next probe reply sequence */
 	int pass; /* IP pass its probes ask for: -1 nothing */
@@ -1232,7 +1233,17 @@ static void on_nack(struct server *s, struct session *S, uint8_t flags, const ui
 	unsigned n = cg_nack_read(seq, CG_NACK_SEQ_MAX, payload, plen);
 	int best[2];
 
+	uint32_t gone[CG_NACK_SEQ_MAX];
+	unsigned ngone = 0;
+
 	S->nacks++;
+	/* The client will not send these again: the reorderer gives them up
+	 * now instead of waiting for them. */
+	if (flags & CG_F_GONE) {
+		for (unsigned i = 0; i < n; i++)
+			S->resc_gone_rx += cg_ro_refused(&S->ro, &S->rocf, seq[i], (uint32_t)cg_now_us());
+		return;
+	}
 	if (!S->resc_idx)
 		return;
 	best_paths(S, now_ms, best);
@@ -1243,6 +1254,7 @@ static void on_nack(struct server *s, struct session *S, uint8_t flags, const ui
 
 		if (!e) {
 			S->resc_miss++;
+			gone[ngone++] = seq[i];
 			continue;
 		}
 		if (cg_resc_dup(&s->resc, S->resc_idx, seq[i], (uint32_t)now_ms))
@@ -1250,6 +1262,7 @@ static void on_nack(struct server *s, struct session *S, uint8_t flags, const ui
 		/* Lost where the path is full: congestion, for TCP to see. */
 		if (went < CG_MAX_LINKS && path_full(s, S, went)) {
 			S->resc_congested++;
+			gone[ngone++] = seq[i];
 			continue;
 		}
 		/* A retry goes on the two fastest paths. */
@@ -1258,6 +1271,8 @@ static void on_nack(struct server *s, struct session *S, uint8_t flags, const ui
 
 			if (!cg_resc_spend(&S->resc_b, len - CG_HDR_LEN)) {
 				S->resc_budget++;
+				if (!b)
+					gone[ngone++] = seq[i];
 				break;
 			}
 			cg_hdr_set_link(e, (uint8_t)best[b]);
@@ -1270,6 +1285,25 @@ static void on_nack(struct server *s, struct session *S, uint8_t flags, const ui
 			P->tx_bytes += len - CG_HDR_LEN;
 			S->resc_sent++;
 		}
+	}
+	/* What will not come again, said back so the client does not wait. */
+	for (unsigned i = 0; best[0] >= 0 && i < ngone;) {
+		const struct client *C = client_of(s, S);
+		uint8_t pkt[CG_HDR_LEN + CG_NACK_LEN];
+		unsigned used;
+		size_t glen = cg_nack_write(pkt + CG_HDR_LEN, gone + i, ngone - i, &used);
+		struct cg_hdr h = { .type = CG_T_NACK,
+				    .flags = CG_F_GONE,
+				    .hint = C->hint,
+				    .link = (uint8_t)best[0],
+				    .session = S->id,
+				    .seq = S->tx_ctl++,
+				    .ts = (uint32_t)cg_now_us() };
+
+		i += used;
+		cg_hdr_write(pkt, &h, C->key + CG_SIPHASH_KEY_LEN, pkt + CG_HDR_LEN, glen);
+		if (!send_path(s, S, best[0], pkt, CG_HDR_LEN + glen))
+			S->resc_gone_tx++;
 	}
 }
 
@@ -2071,6 +2105,8 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 		cg_json_bool(j, "client_keeps", S->peer_rescue);
 		cg_json_bool(j, "asks", S->rocf.rescue_us != 0);
 		cg_json_u64(j, "nacks_sent", S->nacks_sent);
+		cg_json_u64(j, "gone_sent", S->resc_gone_tx);
+		cg_json_u64(j, "gone_received", S->resc_gone_rx);
 		cg_json_end(j, '}');
 		cg_json_joint(j, "joint", &S->arr);
 		cg_json_reorder(j, "reorder", &S->ro, s->cfg->reorder, NULL);

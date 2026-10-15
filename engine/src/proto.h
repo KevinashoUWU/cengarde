@@ -92,6 +92,10 @@ static inline int cg_type_ctl(uint8_t type)
 #define CG_NACK_LEN (1 + 12 * CG_NACK_RANGES)
 #define CG_NACK_SEQ_MAX (65 * CG_NACK_RANGES) /* sequences one NACK can ask for */
 #define CG_F_RETRY 0x01 /* NACK: asked for again */
+/* NACK, from the one asked: these will not be sent again (not kept, lost on
+ * a full path, out of budget); the asker gives them up at once instead of
+ * waiting out rescue_wait_ms for what never comes. */
+#define CG_F_GONE 0x02
 
 /* Header flags on DATA, for bonding (story 012). CG_F_ECN is reserved:
  * senders write 0 for now and receivers ignore it. CG_F_SPLIT is written

@@ -235,6 +235,7 @@ struct client {
 	uint32_t *resc_idx;
 	struct cg_resc_budget resc_b;
 	uint64_t nacks_rx, resc_sent, resc_miss, resc_budget, resc_congested;
+	uint64_t resc_gone_tx, resc_gone_rx; /* CG_F_GONE said to the server; asked gaps it said were gone */
 	struct cg_ro_cfg rocf;
 	uint32_t ro_budget;
 
@@ -1450,7 +1451,17 @@ static void on_nack(struct client *c, uint8_t flags, const uint8_t *payload, siz
 	uint16_t present, live;
 	struct link *best[2] = { NULL, NULL };
 
+	uint32_t gone[CG_NACK_SEQ_MAX];
+	unsigned ngone = 0;
+
 	c->nacks_rx++;
+	/* The server will not send these again: the reorderer gives them up
+	 * now instead of waiting for them. */
+	if (flags & CG_F_GONE) {
+		for (unsigned i = 0; i < n; i++)
+			c->resc_gone_rx += cg_ro_refused(&c->rxs.ro, &c->rocf, seq[i], (uint32_t)cg_now_us());
+		return;
+	}
 	if (!c->resc_idx)
 		return;
 	link_masks(c, now_ms, &present, &live);
@@ -1473,18 +1484,22 @@ static void on_nack(struct client *c, uint8_t flags, const uint8_t *payload, siz
 
 		if (!e) {
 			c->resc_miss++;
+			gone[ngone++] = seq[i];
 			continue;
 		}
 		if (cg_resc_dup(&c->resc, c->resc_idx, seq[i], (uint32_t)now_ms))
 			continue;
 		if (went < CG_MAX_LINKS && up_full(c, went)) {
 			c->resc_congested++;
+			gone[ngone++] = seq[i];
 			continue;
 		}
 		/* A retry goes on the two fastest links. */
 		for (int b = 0; b < ((flags & CG_F_RETRY) ? 2 : 1) && best[b]; b++) {
 			if (!cg_resc_spend(&c->resc_b, len - CG_HDR_LEN)) {
 				c->resc_budget++;
+				if (!b)
+					gone[ngone++] = seq[i];
 				break;
 			}
 			cg_hdr_set_link(e, (uint8_t)(best[b] - c->link));
@@ -1494,6 +1509,18 @@ static void on_nack(struct client *c, uint8_t flags, const uint8_t *payload, siz
 				c->resc_sent++;
 			}
 		}
+	}
+	/* What will not come again, said back so the server does not wait. */
+	for (unsigned i = 0; best[0] && i < ngone;) {
+		uint8_t pkt[CG_HDR_LEN + CG_NACK_LEN];
+		unsigned used;
+		size_t glen = cg_nack_write(pkt + CG_HDR_LEN, gone + i, ngone - i, &used);
+
+		i += used;
+		cg_up_header(&c->txs, pkt, CG_T_NACK, CG_F_GONE, (uint8_t)(best[0] - c->link), (uint32_t)cg_now_us(),
+			     pkt + CG_HDR_LEN, glen);
+		if (send(best[0]->fd, pkt, CG_HDR_LEN + glen, MSG_DONTWAIT) == (ssize_t)(CG_HDR_LEN + glen))
+			c->resc_gone_tx++;
 	}
 }
 
@@ -2088,6 +2115,8 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 	cg_json_u64(j, "missing", c->resc_miss);
 	cg_json_u64(j, "over_budget", c->resc_budget);
 	cg_json_u64(j, "congested", c->resc_congested);
+	cg_json_u64(j, "gone_sent", c->resc_gone_tx);
+	cg_json_u64(j, "gone_received", c->resc_gone_rx);
 	cg_json_end(j, '}');
 	cg_json_joint(j, "joint", &c->rxs.arr);
 	cg_json_reorder(j, "reorder", &c->rxs.ro, c->cfg->reorder, &c->pool);

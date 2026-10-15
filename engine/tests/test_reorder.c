@@ -584,6 +584,25 @@ static void sc_rescue(const struct base *b)
 	CHECK_EQ(drain(104 * MS), 1); /* given up at 43 + 60 ms */
 	CHECK_EQ(R.r.st.ask_lost, 1);
 
+	/* The sender says it will not come (CG_F_GONE): it goes at once, not
+	 * at 43 + 60 ms, and is asked for no more. */
+	rig(CG_RO_SLOTS, b, 400 * MS, 0, 10 * MS, 0, 0x3);
+	R.cf.rescue_us = 60 * MS;
+	R.cf.rescue_tries = 2;
+	owd(0, 10 * MS);
+	owd(1, 30 * MS);
+	CHECK_EQ(in(0, 0, 10 * MS, 0, SPLIT, DATA, BIG), CG_RO_NOW);
+	CHECK_EQ(in(2, 2 * MS, 12 * MS, 0, SPLIT, DATA, BIG), CG_RO_HOLD);
+	CHECK_EQ(drain(43 * MS), 0);
+	R.r.nask = 0;
+	CHECK(!cg_ro_refused(&R.r, &R.cf, b->sb + 5, R.b.tb + 50 * MS)); /* not asked for */
+	CHECK(cg_ro_refused(&R.r, &R.cf, b->sb + 1, R.b.tb + 50 * MS));
+	CHECK(!cg_ro_refused(&R.r, &R.cf, b->sb + 1, R.b.tb + 50 * MS)); /* once */
+	CHECK_EQ(due(50 * MS), 0);
+	CHECK_EQ(drain(50 * MS), 1);
+	CHECK(R.r.st.ask_refused == 1 && R.r.st.ask_lost == 1 && R.r.nask2 == 0);
+	CHECK_EQ(R.r.head, b->sb + 3);
+
 	/* Several gaps before the held packet: asked for together. */
 	rig(CG_RO_SLOTS, b, 400 * MS, 0, 10 * MS, 0, 0x3);
 	R.cf.rescue_us = 60 * MS;
