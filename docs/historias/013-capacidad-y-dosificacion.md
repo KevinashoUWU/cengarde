@@ -375,6 +375,34 @@ con 4 flujos y 20 s, 3 rondas alternadas, salvo que se diga otra cosa.
   la dosificación del cliente empeoró (arriba); en la bajada no se ha
   probado.
 
+### 2026-10-15: la ventana del reordenador (PR #46)
+
+- **El desborde era el reordenador, no la red.** A ~27.000 paquetes por
+  segundo, la ventana de 4.096 posiciones cubría ~150 ms: de 635 mil
+  huecos abandonados en el PC, 231 mil fueron desbordes, y el 43 % de los
+  tardíos llegó menos de 1 ms después de abandonado su hueco. La ventana
+  anti-replay de 8.192 además rechazaba como viejo un paquete 300 ms tarde.
+- **PR #46:** `CG_RO_SLOTS` 16.384 y `CG_REPLAY_BITS` 32.768 (~600 ms a esa
+  tasa; un reordenador pasa de ~81 a ~322 KiB), con el pool en 32 MB.
+- **A/B intercalado en el cliente del PC** (16 flujos de bajada, 20 s, 3
+  rondas):
+
+  | Variante | Mbit/s (media) | Retransmisiones | Desbordes |
+  | --- | --- | --- | --- |
+  | `master`, plazo 500 ms | 152,3 (133, 181, 143) | 16.922 | 1.468–15.972 |
+  | ventana nueva, plazo 500 ms | 124,2 (125, 131, 117) | 5.445 | 0 |
+  | `master`, plazo 500 ms (2.ª tanda) | 152,6 (158, 164, 136) | 9.227 | 823–11.715 |
+  | ventana nueva, plazo 150 ms | 140,4 (112, 150, 160) | 12.698 | 0 |
+
+  La ventana grande quita los desbordes y, con el plazo de 500 ms, baja
+  las retransmisiones a un tercio, pero rinde menos: el reordenador
+  retiene ahora hasta el plazo, y TCP ve un RTT más largo. El desborde
+  soltaba los huecos a los ~150 ms y TCP avanzaba antes, aun
+  retransmitiendo más. Con 150 ms tampoco gana. **Lo que manda el
+  rendimiento es cuánto se retiene, no cuántas retransmisiones hay**: el
+  PR queda abierto, sin mergear, hasta probar un plazo que siga al
+  enlace (el desvío de cada uno, `CG_RO_DEV_K`) en vez de uno fijo.
+
 ## Qué hacemos con esto (diseño)
 
 ### Piezas
