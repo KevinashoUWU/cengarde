@@ -9,11 +9,11 @@ la salud de los enlaces en
 [`docs/historias/006-salud-de-enlaces.md`](../docs/historias/006-salud-de-enlaces.md).
 
 **No es compatible en el cable con engarde Go:** usa su propia cabecera
-autenticada (protocolo v4), así que los dos extremos tienen que ser cengarde
+autenticada (protocolo v5), así que los dos extremos tienen que ser cengarde
 de la misma versión de protocolo. `cengarde version` la muestra al final, por
-ejemplo `cengarde 0.5.0-r1-g<commit> (protocol 4)` en OpenWrt. El formato
-está en [`src/proto.h`](src/proto.h) y lo que cambió el v4 en la sección
-[Protocolo v4](#protocolo-v4).
+ejemplo `cengarde 0.5.0-r1-g<commit> (protocol 5)` en OpenWrt. El formato
+está en [`src/proto.h`](src/proto.h) y lo que cambió el v4 y el v5 en las
+secciones [Protocolo v4](#protocolo-v4) y [Protocolo v5](#protocolo-v5).
 
 ## Compilar
 
@@ -411,7 +411,9 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
   espera un hueco solo lo que tarda ese enlace (su retraso más cuatro
   desvíos, más `reorder_margin_ms`), en vez del enlace más lento, y lo da
   por perdido apenas ese enlace trae una secuencia posterior (los enlaces
-  entregan en orden). Sin el dato, como siempre (historia 013).
+  entregan en orden). Sin el dato, como siempre. Medido, no mejoró el
+  rendimiento (16 flujos de bajada, 3 rondas: 151,2 Mbit/s sin la opción y
+  141,5 con ella), aunque suelta antes, como se esperaba (historia 013).
 - **`reorder_adaptive` (`no`; `yes` o `no`), experimental:** el margen de
   cada enlace aprende de sus tardíos, como la ventana de reordenamiento de
   RACK (RFC 8985): cuando un paquete llega por un enlace después de que se
@@ -420,21 +422,29 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
   5 s sin tardíos. El estado lo muestra en `reorder.adapt_ms`, por enlace.
   Con un margen fijo de 10 ms, MPEG-TS crudo por el túnel llegaba con
   errores (los paquetes de un módem con la cola en un salto llegaban
-  100–500 ms tarde); con uno fijo de 400, limpio, pero cada hueco espera más
-  (historia 013).
+  100–500 ms tarde); con uno fijo de 400, limpio, pero cada hueco espera más.
+  El adaptativo perdió contra el fijo de 400 (56 y 116 errores contra 3 y 6):
+  aprende después de equivocarse y olvida más rápido de lo que vuelven los
+  saltos de cola de un módem cargado (historia 013).
 - **El rescate (experimental, protocolo v5; `rescue.h`, historia 013):**
   un ARQ que rescata un paquete antes de que TCP note que se perdió.
   Cuando el reordenador del cliente va a abandonar un hueco, lo pide al
   servidor (`CG_T_NACK`, por el enlace de menor RTT), y el servidor lo
   reenvía por su ruta más rápida. Se pide apenas se sabe perdido (el enlace
   por el que iba trajo algo posterior) o al vencer su plazo, y se espera
-  `rescue_wait_ms` más, nunca más allá del tope de siempre.
-  - **`rescue_kb` (servidor; 0, apagado; hasta 262144):** el anillo de lo
-    enviado hace poco, en entradas de 2 KiB (32768: unos 16 mil paquetes,
-    ~0,6 s a 300 Mbit/s); con él, las respuestas a las sondas lo anuncian.
-    Solo cambia al reiniciar.
-  - **`rescue_pct` (servidor; 5; 1–50):** el presupuesto, en % de lo que
-    baja: lo que se reenvía sale de ahí.
+  `rescue_wait_ms` más, nunca más allá del tope de siempre. Su lugar es el
+  tráfico de tasa fija (radio, video, llamadas): con TCP saturando, tapar la
+  pérdida deja que TCP llene el búfer del enlace, y en la red de pruebas
+  (16 flujos de bajada) rindió algo menos con él (86,4 contra 91,0 Mbit/s);
+  con MPEG-TS crudo, un margen de 10 ms más el rescate dio 0 errores en dos
+  rondas de 60 s (historia 013). Apagado por omisión.
+  - **`rescue_kb` (0, apagado; hasta 262144):** el anillo de lo enviado
+    hace poco, en entradas de 2 KiB (32768: unos 16 mil paquetes, ~0,6 s a
+    300 Mbit/s); con él, las sondas y sus respuestas lo anuncian
+    (`CG_BOND_RESCUE`). En el servidor rescata la bajada; en el cliente, la
+    subida. Solo cambia al reiniciar.
+  - **`rescue_pct` (5; 1–50):** el presupuesto, en % de lo que se envía en
+    ese sentido: lo que se reenvía sale de ahí.
   - **`rescue_wait_ms` (el que recibe; 0, no pide; hasta 1000):** cuánto
     espera un hueco pedido; el cliente para la bajada, el servidor para la
     subida (el otro extremo necesita `rescue_kb`). Con un intento, ~1,5 RTT
@@ -445,16 +455,31 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
     librist). Cada NACK sale por los dos enlaces más rápidos, en rangos (una
     secuencia y una máscara de 64 bits); el que reenvía manda una vez por los
     dos, y un reintento (`CG_F_RETRY`) lo manda por dos caminos.
-  - **No se rescata la congestión:** lo que se pierde en una ruta con la
-    cola sobre `governor_target_ms`, o con el presupuesto agotado, no se
-    reenvía, y el cliente ni lo pide (`CG_BOND_FULL`): esa pérdida es la que
-    hace frenar a TCP. En el laboratorio, con 1 % de pérdida al azar por
-    enlace, la bajada pasa de 10 a 50 Mbit/s; donde la pérdida es de un
-    enlace lleno, cuesta ~15 %. En redundancia (`split` apagado) solo pide
-    con `reorder_dup_wait_ms` mayor que 0.
-  - Estado: `rescue` en el cliente (`on`, `server_keeps`, `nacks_sent`) y
-    en cada sesión del servidor (`nacks`, `sent`, `missing`, `over_budget`,
-    `congested`); `reorder.rescue` (`asked`, `rescued`, `lost`).
+  - **No se rescata la congestión:** lo que se pierde en una ruta llena, o
+    con el presupuesto agotado, no se reenvía, y el cliente ni lo pide
+    (`CG_BOND_FULL`): esa pérdida es la que hace frenar a TCP. En el
+    laboratorio, con 1 % de pérdida al azar por enlace, la bajada pasa de
+    10 a 50 Mbit/s; donde la pérdida es de un enlace lleno, cuesta ~15 %.
+    En redundancia (`split` apagado) solo pide con `reorder_dup_wait_ms`
+    mayor que 0.
+  - **El gobernador del rescate:** cada enlace tiene un peso de 0 a 1
+    (`rescue_weight` en el estado; `cg_cap_rescue_w`, `capacity.h`) según
+    dónde estará su cola dentro de 1 s: la cola de ahora (sobre el mínimo
+    de su retardo en 60 s), más su pendiente y la mitad de la pendiente de
+    la pendiente (`queue_slope_ms_s` es la pendiente). Hasta `governor_target_ms`, el peso es 1; desde 4 veces
+    `governor_target_ms`, 0 (lleno: lo que pierde es congestión, y no se
+    rescata); entre medio, una recta. Sin cola medida, 1.
+  - **Lo que no vendrá (`CG_F_GONE`):** el extremo al que se pide avisa qué
+    secuencias no volverá a enviar (ya no las guarda, se perdieron en una
+    ruta llena o el presupuesto no alcanza), y el reordenador las da por
+    perdidas al instante en vez de esperar `rescue_wait_ms`.
+  - Estado: `rescue` en el cliente (`on`, `server_keeps`, `nacks_sent`; de
+    la subida: `keeps`, `nacks_rx`, `sent`, `missing`, `over_budget`,
+    `congested`) y en cada sesión del servidor (`on`, `nacks`, `sent`,
+    `missing`, `over_budget`, `congested`; de la subida: `client_keeps`,
+    `asks`, `nacks_sent`); en los dos, `gone_sent` y `gone_received`.
+    `reorder.rescue` (`asked`, `rescued`, `lost` y `refused`, los perdidos
+    que el otro extremo avisó que no vendrían).
 - **`reorder_pool_kb` (8192; 256–131070):** memoria para los paquetes
   retenidos, en bloques de 2 KiB, reservada al arrancar; solo ocupa RAM lo
   que llega a usarse. En el servidor la comparten todas las sesiones (cada
@@ -465,8 +490,8 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
 - **Sin bloquear:** el plazo del hueco más antiguo es el tiempo de espera
   del bucle (no el tic de 100 ms), y una pasada entrega como mucho 512
   retenidos (la siguiente viene enseguida), para no desbordar la cola de
-  descifrado de WireGuard (1024 por par). Un desborde de la ventana (4096
-  secuencias) se entrega entero.
+  descifrado de WireGuard (1024 por par). Un desborde de la ventana (16384
+  secuencias, `CG_RO_SLOTS`) se entrega entero.
 - **`split`:** reparte la subida (cliente) o la bajada (servidor) entre los
   enlaces en vez de copiar cada paquete por todos: un paquete grande viaja
   por un solo enlace, elegido según los pesos. El cliente admite `off` (por
@@ -568,8 +593,9 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
   que cada uno envía (experimental):** los pesos del reparto salen de la
   capacidad medida de cada enlace (`capacity_mbit`, abajo; `capacity.h`,
   historia 013): la parte de cada enlace es su capacidad, y 5/4 de ella
-  mientras su cola está bajo la mitad de `governor_target_ms`, para que
-  muestre más si puede (el sondeo de BBR). Un enlace aún sin medida lleva
+  mientras su cola está bajo la mitad de `governor_target_ms` (el doble si
+  está bajo la mitad de su mejor capacidad de los últimos 5 min: el arranque
+  rápido, abajo), para que muestre más si puede (el sondeo de BBR). Un enlace aún sin medida lleva
   la parte mayor, para medirlo; uno que no entrega nada mientras otros sí,
   el piso (10 de 1000), que le deja un hilo y con él su medida. Con
   `governor` además, el peso del gobernador escala cada parte. Pesa más que
@@ -1015,7 +1041,8 @@ nunca deciden nada; las toma el registrador de campo (`cengarde-rec`,
   llegar por ningún enlace, es decir, lo que el túnel perdió en todos. Se
   cuenta desde la primera secuencia que vio la ventana (o desde donde siguió
   un salto mayor que la ventana, como el de un servidor que retoma la sesión
-  2^20 más adelante) y va unas 8200 secuencias por detrás.
+  2^20 más adelante) y va unas 32800 secuencias por detrás (la ventana
+  anti-replay, `CG_REPLAY_BITS`, es de 32768).
 - `joint`: la tardanza conjunta. Cuando su casilla se reutiliza (4096
   secuencias después), cada paquete suma uno en `expect`, por la máscara de
   enlaces que debían traer una copia, y uno en cada objeto de `late`, por la
@@ -1051,7 +1078,7 @@ subida:
   búfer);
 - cada paquete verificado cuenta en uno solo de `in_order`, `held_total`
   (retenido hasta que llegó lo anterior), `bypassed` (pequeño o handshake:
-  al instante), `late.*`, `far` (un salto de 8192 secuencias o más
+  al instante), `late.*`, `far` (un salto de 32768 secuencias o más
   mientras retenía, como el de un servidor que retoma la sesión),
   `resyncs` y `pool_full` (sin búfer libre: al instante); `split_rx` cuenta
   los repartidos;
@@ -1080,8 +1107,11 @@ enlaces que espera: un enlace celular cargado trae paquetes decenas de ms
 por encima de su media (historia 013). `rx_reorder_late` cuenta los
 paquetes que el enlace trajo después de que su hueco se diera por perdido
 (cualquier motivo): dice qué enlace llega tarde. Su ventana ocupa
-81 KiB (en el servidor, por sesión: ~5 MiB con 64, *cálculo*), y el pool,
-solo lo que llega a retener.
+322 KiB (en el servidor, por sesión: ~20 MiB con 64, *cálculo*), y el pool,
+solo lo que llega a retener. La ventana del reordenador (16384) y la
+anti-replay (32768) cubren ~600 ms a ~27.000 paquetes por segundo; con las
+anteriores (4096 y 8192) un paquete 300 ms tarde ya se rechazaba como viejo
+y el desborde soltaba huecos a los ~150 ms (historia 013, PR #46).
 
 La capacidad de cada enlace en el sentido en que envía este extremo (la
 subida en el cliente, la bajada por camino en el servidor; `capacity.h`,
@@ -1098,8 +1128,21 @@ nada de lo que lleva: su capacidad se mantiene, y solo una cola la baja
 un enlace atorado deja de responder a tiempo y su retardo medido queda
 viejo)
 (con `capacity_weights`, que bajara sola dejaba enlaces al mínimo:
-historia 013). Con `capacity_weights`, de
-ella salen los pesos del reparto (arriba); sin, solo se informa.
+historia 013). Una cola cuenta como enlace lleno con 2 muestras seguidas
+si se le enviaba al menos 3/4 de su capacidad (`CG_CAP_SAT_N`); con menos
+carga, solo con 4 seguidas (`CG_CAP_SAT_LONG`): un enlace celular se
+detiene 100–600 ms de vez en cuando, con cualquier carga, y esa cola es un
+tropiezo de la radio, no el límite del enlace (historia 013, PR #57).
+**Arranque rápido** (PR #56): cada enlace recuerda su mejor capacidad de
+los últimos 5 min; tras 10 s sin llenarse vuelve al menos a la mitad de
+ella, y mientras está bajo esa mitad el reparto le ofrece el doble de su
+capacidad, en vez de 5/4 (el arranque de BBR). Así un enlace que quedó en
+reposo con una cifra baja no tarda segundos en volver a recibir su parte;
+si de verdad lleva menos, su cola lo dice al instante. Con
+`capacity_weights`, de
+ella salen los pesos del reparto (arriba); sin, solo se informa. El estado
+trae además, por enlace, `queue_slope_ms_s` (la pendiente de su cola, `null`
+sin medida) y `rescue_weight` (arriba).
 `shape_mbit` (en `upload` en el cliente, por sesión en el servidor) es el
 ritmo para un `cake` delante del túnel que no se fija a mano
 (`bench/shaper.sh`, experimental; historia 013), como `cake-autorate`
@@ -1183,6 +1226,33 @@ Desde la 0.5.0 (historia 010, PR 3d2). La cabecera sigue midiendo 24 bytes:
 
 `sudo bench/lab.sh replay` lo prueba con `bench/cgprobe`, que fabrica sondas
 con la clave del laboratorio.
+
+## Protocolo v5
+
+Historia 013, PR #47 (el enlace anterior) y #48 (el NACK). La cabecera sigue midiendo 24
+bytes, y `cengarde-vps-setup` escribe las mismas configuraciones que con el
+v4. Cliente y servidor tienen que ser v5: un motor descarta lo que trae otra
+versión.
+
+- **El enlace anterior en DATA (`CG_F_PREV`, 0x08):** cuando la secuencia
+  anterior salió por un solo enlace, el paquete dice cuál (su id, en los 4
+  bits altos de las banderas). Es lo que usa `reorder_by_link`; se envía
+  siempre, y bajo el MAC como toda bandera.
+- **NACK (`CG_T_NACK`, tipo 5):** en cualquier sentido, por un enlace; pide
+  que se envíen otra vez secuencias de DATA (el rescate). Cuenta en la
+  secuencia de control. La carga es un número k de rangos (1 a 16) y k
+  rangos de 12 bytes: una secuencia base y una máscara de 64 bits cuyo bit i
+  pide la base + 1 + i; con 16 rangos, un NACK pide hasta 1040 secuencias.
+  Banderas: `CG_F_RETRY` (0x01) dice que ya se pidieron y no llegaron
+  (quien reenvía las manda por dos caminos) y `CG_F_GONE` (0x02) es la
+  respuesta de quien no las enviará (ver el rescate).
+- **Las sondas anuncian el rescate:** en la cola de bonding, el bit 18
+  (`CG_BOND_RESCUE`: guardo lo que envío y lo reenvío si me lo piden) y el
+  19 (`CG_BOND_FULL`: no lo de esta ruta ahora, porque está llena o el
+  presupuesto se agotó). Los demás bits siguen reservados.
+- **Ventanas:** el reordenador y la anti-replay son más grandes (16384 y
+  32768 secuencias; ver el estado del reordenador), y no son parte del
+  formato.
 
 ## Limitaciones conocidas
 

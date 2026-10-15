@@ -415,6 +415,7 @@ tasa y una cola de 100 ms a esa tasa.
 | `starlink15` | 50/25 y 100/20 | cada 15 s, l2 pierde todo 1,5 s y su retardo cambia entre 20 y 50 ms (un patrón supuesto: el real está por medir) |
 | `ltespike` | 50/25 y 50/30 | cada 5 s, l1 sube 300 ms durante 1 s |
 | `deepq` | 20/25 con 500 ms de cola y 50/25 con 100 ms | nada |
+| `lossy` | 60/20, 30/35 y 50/25 | cada enlace pierde el 1 % al azar en los dos sentidos: la pérdida que el rescate (`rescue_kb`, `rescue_wait_ms`) tapa; no está en la lista por defecto (`BOND_CASES`); córrelo con `CLIENT_EXTRA` `rescue_wait_ms = 60` y `SERVER_EXTRA` `rescue_kb = 32768` |
 | `starlink15sw` | 100/25 y 50/20 | como `starlink15` con las capacidades cambiadas; no está en la lista por defecto (`BOND_CASES`) |
 
 Así queda medido lo que hoy da la redundancia (cada paquete por todos los
@@ -577,6 +578,9 @@ python3 bench/bondtab_test.py                           # pruebas de las tablas,
 | `BOND_SMALL` | 0 | pps de un flujo de datagramas pequeños por el túnel durante la corrida (0: ninguno) |
 | `BOND_SMALL_SIZE` | 160 | bytes de esos datagramas (un datagrama de WireGuard de 224) |
 | `BOND_NETEM_INFLIGHT` | 0 | 1: el límite de netem cuenta también lo que cabe en el retardo (arriba); cambia la línea base del paso 0 |
+| `BOND_WARM` | 0 | segundos de la misma transferencia antes de cada corrida, para que arranque con los enlaces medidos (el arranque rápido, historia 013); solo con `BOND_REST` > 0 y sin `quic` |
+| `BOND_REST` | 0 | segundos sin tráfico entre ese calentamiento y la corrida: arranca desde el reposo (0: ninguno) |
+| `BOND_KEEP` | vacío | directorio donde guardar el JSON de iperf3 de cada corrida, con intervalos de 0,5 s (la rampa de los primeros segundos) |
 | `BOND_S` | 10 | segundos por corrida (`starlink15`, al menos 31) |
 | `BOND_N` | 1 | repeticiones; la tabla da la mediana y el rango |
 | `BOND_CC` | `cubic bbr quic` | controles de congestión; `quic` solo si importa aioquic, y si no se avisa |

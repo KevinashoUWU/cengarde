@@ -223,7 +223,7 @@ sumar este router a **un VPS que ya atiende a otros**, LuCI (pestaña *VPS*,
 nombre, la dirección y el protocolo del motor de este router:
 
 ```sh
-sudo cengarde-vps-setup add casa --tunnel-addr 10.79.131.76 --proto 4
+sudo cengarde-vps-setup add casa --tunnel-addr 10.79.131.76 --proto 5
 ```
 
 - **El VPS pide el secreto:** pega el de la misma pestaña. Nunca va en la
@@ -400,6 +400,29 @@ configuración del router:
     `cengarde.conf` no sirve: cada `refresh` lo vuelve a escribir).
     En el laboratorio, 50 ms entre dos enlaces ya se comían casi toda la
     ganancia del reparto y 150 ms la hundían (ver `engine/README.md`).
+  - **El rescate y otros ajustes del reordenador (experimentales, solo UCI,
+    apagados por omisión; historia
+    [013](../docs/historias/013-capacidad-y-dosificacion.md)).** Necesitan
+    el protocolo v5 en el router y en el VPS; el detalle está en
+    `engine/README.md`.
+    - `rescue_wait_ms` (0–1000; 0: no pide): antes de dar por perdido un
+      paquete, el reordenador lo pide al otro extremo (un NACK) y espera
+      tanto por él. Con `rescue_tries` (2; 1–4) intentos dentro de ese
+      tiempo.
+    - `rescue_kb` (0: no guarda) y `rescue_pct` (5; 1–50): lo que este
+      extremo guarda de lo que envía para reenviarlo cuando se lo piden, y
+      el presupuesto, en % de lo enviado. Cambiar `rescue_kb` reinicia el
+      motor.
+    - Para rescatar la **bajada**: `rescue_wait_ms` en el router y
+      `rescue_kb` en el VPS (en su `engine.local`). Para la **subida**,
+      al revés: `rescue_kb` en el router y `rescue_wait_ms` en el VPS.
+    - No rescata la congestión (una ruta con la cola llena), y sirve sobre
+      todo para tráfico de tasa fija (video, radio), no con TCP saturando.
+    - `reorder_by_link` y `reorder_adaptive`: el plazo de un hueco según el
+      enlace por el que iba, y el margen de cada enlace que aprende de sus
+      paquetes tardíos. Ninguno mejoró el rendimiento medido.
+    - Por ejemplo: `uci set cengarde.main.rescue_wait_ms=60` y
+      `uci set cengarde.main.rescue_kb=32768`.
   - **El reparto protege menos que copiar** (por eso viene apagado),
     aunque con enlaces de retardo parecido suma su velocidad (en el
     laboratorio, dos enlaces iguales llevaron 1,98 veces lo de uno): un
@@ -671,7 +694,12 @@ cengarde-setup cloud-config > vps.yaml               # el user data del VPS
   en el túnel sale del secreto, cambia con él: guarda y aplica en LuCI y usa
   el comando que muestra (lleva la nueva `--tunnel-addr`). La ULA de la IPv6
   por el túnel sale siempre del secreto y cambia también.
-- **Actualizar:** router y VPS con el mismo commit. La 0.5.3 no cambia el
+- **Actualizar:** router y VPS con el mismo commit. El protocolo es ahora
+  el v5 (el enlace anterior en cada paquete de datos y el NACK del rescate):
+  un router y un VPS de protocolos distintos no se hablan, así que se
+  actualizan juntos, primero el VPS. `cengarde-vps-setup add` se niega si el
+  protocolo del router (`--proto`) no es el del motor del VPS. La 0.5.3 no
+  cambia el
   protocolo: suma el interruptor de IPv6 por el túnel, apagado. La 0.5.2
   saca la dirección del túnel del secreto (sección «Nombre y dirección de cada
   router»): un router que se actualiza conserva la `10.79.0.2` y sigue

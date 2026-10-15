@@ -31,6 +31,25 @@ LAN ── router OpenWrt ───┼══ enlace 2 (5G) ══┼─── VP
     recupera;
   - sigue sondeándose y no corta el túnel;
   - siempre quedan al menos dos enlaces activos.
+- **Reordena lo que recibe:** cada extremo pone en secuencia los paquetes
+  antes de entregarlos a WireGuard (activado), con ventanas que cubren
+  ~600 ms a ~27.000 paquetes por segundo. Con redundancia pura no retiene
+  nada.
+- **Experimental, apagado por omisión:**
+  - **repartir** los paquetes grandes entre los enlaces en vez de copiarlos
+    por todos (`split`);
+  - **el rescate:** si el reordenador va a dar un paquete por perdido, lo
+    pide al otro extremo (un NACK, por los dos enlaces más rápidos, con
+    reintentos), que lo reenvía por su camino más rápido, en la bajada y en
+    la subida. No tapa la congestión (esa pérdida es la que hace frenar a
+    TCP) y sirve sobre todo con tráfico de tasa fija (`rescue_wait_ms`,
+    `rescue_kb`; ver [`engine/README.md`](engine/README.md));
+  - plazos del reordenador por enlace (`reorder_by_link`) y adaptativos
+    (`reorder_adaptive`).
+- **Arranque rápido de la capacidad:** cada enlace recuerda su mejor
+  capacidad de los últimos 5 min y, tras 10 s sin llenarse, vuelve al menos
+  a la mitad de ella, para que un enlace en reposo recupere su parte sin
+  esperar segundos.
 - **Seguro:**
   - protocolo propio autenticado (SipHash-2-4) con ventana anti-replay;
   - el servidor solo atiende paquetes autenticados;
@@ -72,6 +91,12 @@ VM Xeon de 2,1 GHz, cada motor en ambos extremos (historias
 
 - Un enlace con 500 ms de cola se aparta en 3–3,6 s, sin que el túnel pierda
   nada.
+- **El rescate, en el laboratorio** (3 enlaces con 1 % de pérdida al azar
+  cada uno, 4 flujos Cubic de bajada, 3 rondas): de 10–11 a ~50 Mbit/s; donde
+  la pérdida es de un enlace lleno, cuesta ~15 %. En la red de pruebas, con
+  16 flujos de bajada saturando, no mejoró (86,4 contra 91,0 Mbit/s): la
+  pérdida bajo carga es casi toda de colas llenas, no de radio (historia
+  [013](docs/historias/013-capacidad-y-dosificacion.md)).
 - **Falta medir en la Pi 4.** Con engarde, el usuario la vio quedarse en
   20–30 Mbit/s con 4 enlaces, por CPU
   ([historia 004](docs/historias/004-entorno-real.md)).
@@ -106,7 +131,7 @@ Las configuraciones de cliente y servidor se explican en
 
 - **Motor:** listo lo esencial:
   - redundancia;
-  - protocolo propio v3;
+  - protocolo propio v5;
   - salud de los enlaces;
   - perillas de baja latencia;
   - recarga en caliente y socket de control (`cengarde ctl`).
@@ -135,7 +160,7 @@ Lo que viene; el detalle está en [ROADMAP.md](ROADMAP.md):
 - **Más allá de la redundancia** (Fase 5):
   - usar solo los k mejores enlaces;
   - sumar enlaces (bonding);
-  - FEC y retransmisiones.
+  - FEC (las retransmisiones ya están, como el rescate experimental).
 
 ## Estructura
 
