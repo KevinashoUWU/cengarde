@@ -49,17 +49,17 @@ static void test_lost(void)
 	CHECK_EQ(r.lost, 0);
 
 	/* Holes count once the window is past them, not before: 1..64 with
-	 * 10, 20, .. 60 missing, counted when the top enters the block 128
-	 * blocks after theirs (block 0 here). */
+	 * 10, 20, .. 60 missing, counted when the top enters the block
+	 * CG_REPLAY_BLOCKS blocks after theirs (block 0 here). */
 	cg_replay_reset(&r);
-	miss = run(1, 64 * 128 - 1, 10);
-	CHECK_EQ(miss, (64 * 128 - 1) / 10);
+	miss = run(1, 64 * CG_REPLAY_BLOCKS - 1, 10);
+	CHECK_EQ(miss, (64 * CG_REPLAY_BLOCKS - 1) / 10);
 	CHECK_EQ(r.lost, 0); /* all of it still in the ring */
-	accept(64 * 128);
+	accept(64 * CG_REPLAY_BLOCKS);
 	CHECK_EQ(r.lost, 6); /* block 0: 10, 20, .. 60; 0 came before the first */
-	accept(64 * 129);
+	accept(64 * (CG_REPLAY_BLOCKS + 1));
 	CHECK_EQ(r.lost, 6 + 6); /* block 1: 70, .. 120 */
-	run(64 * 129 + 1, 64 * 140, 0);
+	run(64 * (CG_REPLAY_BLOCKS + 1) + 1, 64 * (CG_REPLAY_BLOCKS + 12), 0);
 	CHECK_EQ(r.lost, 83); /* blocks 0-12: 10, 20, .. 830 */
 	/* A late copy that came back inside the window is no loss. */
 	cg_replay_reset(&r);
@@ -230,8 +230,10 @@ static void test_verdicts(void)
 	unsigned bad = 0;
 
 	for (int trial = 0; trial < 24; trial++) {
-		uint64_t base = 0xffff0000u - (uint64_t)(rnd() % 4096) - 20000, top, from, expect = 0;
-		uint64_t s = base + 20000;
+		/* The start this far over base: the window's edge never reaches below it. */
+		uint64_t lead = 2 * CG_REPLAY_BITS;
+		uint64_t base = 0xffff0000u - (uint64_t)(rnd() % 4096) - lead, top, from, expect = 0;
+		uint64_t s = base + lead;
 		int born_marked = trial % 3 == 2;
 
 		memset(marked, 0, sizeof(marked));

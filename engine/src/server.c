@@ -174,7 +174,7 @@ struct session {
 	 * which probe that was (split.h). */
 	uint8_t peer_bond, peer_reorders, peer_asks;
 	struct cg_split_tail tail;
-	struct cg_reorder ro;  /* the upload, back in sequence (reorder.h); about 81 KiB */
+	struct cg_reorder ro;  /* the upload, back in sequence (reorder.h); about 322 KiB */
 };
 
 /* A client: a [client NAME] section, or the global key of a server with one

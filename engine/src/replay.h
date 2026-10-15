@@ -30,7 +30,7 @@
 #include <stdint.h>
 #include <string.h>
 
-#define CG_REPLAY_BITS 8192
+#define CG_REPLAY_BITS 32768
 #define CG_REPLAY_BLOCKS (CG_REPLAY_BITS / 64)
 #define CG_REPLAY_WINDOW (CG_REPLAY_BITS - 64) /* sequences accepted behind the top */
 

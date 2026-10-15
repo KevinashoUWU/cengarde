@@ -754,7 +754,7 @@ static void sc_overflow(const struct base *b)
 		unsigned m = i % 12;
 		uint16_t len = m < 7 ? SMALL : m < 11 ? 576 : BIG;
 		unsigned link = len == SMALL ? 0 : nb++ % 2;
-		uint32_t ts = i * 28;
+		uint32_t ts = i * 28 / (CG_RO_SLOTS / 4096); /* 140 ms of spread over more than the window */
 
 		e[i] = pkt(i, ts, ts + (link ? 150 * MS : 10 * MS), link, len == SMALL ? 0 : SPLIT, DATA, len);
 	}
@@ -1665,7 +1665,9 @@ static int m_flush(struct m_pkt *out)
 /* A trial: packets sent over links of random delay, jitter and loss, in
  * redundancy or split, received in time order, first copies only, through
  * an emulated anti-replay window; timers from cg_ro_due_us. */
-#define T_PKTS 6000
+/* Scaled with the window, so that the trials that overflow it still do. */
+#define T_SCALE (CG_RO_SLOTS / 4096)
+#define T_PKTS (6000 * T_SCALE)
 #define T_LINKS 4
 #define T_EVS (T_PKTS * T_LINKS + 20000)
 
@@ -1911,12 +1913,12 @@ static void trial(int idx)
 
 	if (ovf && nl < 2)
 		nl = 2 + rn(T_LINKS - 1);
-	T.cf.max_wait_us = ovf ? 200 * MS + rn(200 * MS) : max_waits[rn(4)];
+	T.cf.max_wait_us = ovf ? (200 * MS + rn(200 * MS)) * T_SCALE : max_waits[rn(4)];
 	T.cf.dup_wait_us = rn(3) ? 0 : rn(2) ? T.cf.max_wait_us : T.cf.max_wait_us / 4;
 	T.cf.margin_us = margins[rn(3)];
 	T.cf.bypass_len = bypasses[rn(3)];
 	if (!rn(4)) {
-		static const unsigned lens[] = { 100, 3000, 5000, 9000 };
+		static const unsigned lens[] = { 100, 3000 * T_SCALE, 5000 * T_SCALE, 9000 * T_SCALE };
 
 		out_a = rn(npk);
 		out_len = lens[rn(4)];
@@ -1926,7 +1928,7 @@ static void trial(int idx)
 	T.toff = idx % 2 ? (uint32_t)(0u - (uint32_t)t - rn(2000000)) : rnd();
 	T.tsoff = rnd();
 	for (unsigned l = 0; l < nl; l++) {
-		base_d[l] = ovf ? (l ? 100 * MS + rn(100 * MS) : rn(2 * MS)) : rn(5) ? rn(150 * MS) : rn(2 * MS);
+		base_d[l] = ovf ? (l ? (100 * MS + rn(100 * MS)) * T_SCALE : rn(2 * MS)) : rn(5) ? rn(150 * MS) : rn(2 * MS);
 		jit[l] = rn(4) ? rn(3 * MS) : 0;
 		loss[l] = rn(3) ? rn(30) : 0; /* per mille */
 		fifo[l] = rn(6) != 0;

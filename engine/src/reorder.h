@@ -117,7 +117,7 @@
  * so with cg_ro_burst_end(); the rest then goes in a later drain of its own.
  *
  * Pure: no clock, no I/O, no log, no allocation (docs/historias/012). The
- * instance is zeroed memory (cg_ro_init or memset); about 81 KiB.
+ * instance is zeroed memory (cg_ro_init or memset); about 322 KiB.
  *
  * SPDX-License-Identifier: GPL-2.0-only */
 #ifndef CG_REORDER_H
@@ -131,7 +131,12 @@
 #include "proto.h"   /* CG_F_SPLIT */
 #include "replay.h"  /* CG_REPLAY_WINDOW */
 
-#define CG_RO_SLOTS 4096u               /* the window: a power of two, under CG_REPLAY_WINDOW */
+/* The window, in packets: a power of two, under CG_REPLAY_WINDOW. At 300
+ * Mbit/s of 1400-byte packets (27 000 a second) it holds about 600 ms, so
+ * that reorder_max_wait_ms, not the window, says how long a gap waits; at
+ * 4096 the window held 150 ms, and on the testnet 36 % of the gaps given up
+ * were forced by it (story 013). */
+#define CG_RO_SLOTS 16384u
 #define CG_RO_FAR (2u * CG_RO_SLOTS)    /* a packet this far ahead, while holding, passes through */
 #define CG_RO_WORDS (CG_RO_SLOTS / 64)  /* of the held bitmap */
 #define CG_RO_BUF 2048u                 /* bytes per pool buffer: CG_BUF (engine.h) */
