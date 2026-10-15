@@ -245,5 +245,11 @@
   (WCDMA 850, UARFCN 4437) y no volvía a LTE: 9 Mbit/s de bajada y 2,5 de
   subida con más de 1 s de cola. Sin el bloqueo (`AT+QNWLOCK="common/4g",0`)
   vuelve al mismo sitio (eNB 19EE0B: B2 850 PCI 90 de 20 MHz más B5 2536
-  PCI 330) y da 107 de bajada y 30,5 de subida en speedtest. Claro queda
-  sin bloqueo: con el bloqueo, una caída a 3G no se recupera sola.
+  PCI 330) y da 107 de bajada y 30,5 de subida en speedtest. **La caída a
+  3G la provoca una llamada entrante:** sin VoLTE el módem hace CSFB, y con
+  el bloqueo LTE no vuelve. Los cuatro módems quedan en
+  `AT+QNWPREFCFG="mode_pref",LTE:NR5G` (sin 3G ni 2G): una llamada ya no
+  saca el enlace de LTE. Sin bloqueo, Claro se fue a la B28 sola de la
+  minera (PCI 465: 17,9 / 19,6 con 758 ms de cola); bloqueado otra vez a
+  ENAMI, engancha B28 PCI 330 + B2 PCI 90 de 20 MHz + B4 PCI 90 de 10 MHz
+  y da **167,5 de bajada** y 18,4 de subida.
