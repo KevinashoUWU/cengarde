@@ -147,6 +147,7 @@
 #define CG_RO_DEV_K 4                   /* deviations of a link's delay a gap waits beyond it */
 #define CG_RO_ASK_MAX 64                /* gaps asked for in one drain, at most */
 #define CG_RO_PEND 64                   /* rescue: gaps a link is known to carry, waiting for its next packet */
+#define CG_RO_ADAPT_DECAY_US 5000000u   /* adaptive: a link's learned margin halves after this long with no late packet */
 /* A link's newest sequence this far behind the head, or a split packet this
  * long ago (us), is forgotten before serial arithmetic would read it as
  * ahead again. */
@@ -178,6 +179,7 @@ struct cg_ro_cfg {
 	uint32_t bypass_len;  /* WireGuard data up to this length is never held */
 	uint8_t by_link;      /* a gap whose link the next packet names waits for that link only */
 	uint32_t rescue_us;   /* a gap about to be given up is asked for and waits this long; 0: never */
+	uint8_t adaptive;     /* each link's margin learns from its late packets (RACK's reo_wnd) */
 };
 
 struct cg_ro_pkt {
@@ -213,6 +215,8 @@ struct cg_ro_link {
 	uint32_t owd; /* its delay, raw (local clock minus the sender's ts), EWMA 1/8 */
 	uint32_t dev; /* mean of |sample - owd|, gain 1/4 (us) */
 	uint32_t late; /* packets it brought after their gap was given up (wraps) */
+	uint32_t adapt_us; /* adaptive: margin learned from how late its late packets came */
+	uint32_t adapt_t;  /* when it last grew or halved */
 	uint8_t hw_ok, owd_ok;
 };
 
@@ -386,6 +390,11 @@ static inline void cg_ro_learn(struct cg_reorder *r, const struct cg_ro_pkt *k)
 			l->hw_ok = 1;
 		}
 		cg_ro_owd_sample(l, k->t_arr - k->ts);
+		/* adaptive: no late packet for a while, half of what it learned */
+		if (l->adapt_us && k->t_arr - l->adapt_t >= CG_RO_ADAPT_DECAY_US) {
+			l->adapt_us /= 2;
+			l->adapt_t = k->t_arr;
+		}
 	}
 	if (k->flags & CG_F_SPLIT) {
 		r->last_split_t = k->t_arr;
@@ -469,7 +478,7 @@ static inline int cg_ro_owd_max(const struct cg_reorder *r, uint16_t rset, uint3
 			ref = r->link[i].owd;
 			any = 1;
 		}
-		v = (int64_t)(int32_t)(r->link[i].owd - ref) + cg_ro_swing(&r->link[i]);
+		v = (int64_t)(int32_t)(r->link[i].owd - ref) + cg_ro_swing(&r->link[i]) + r->link[i].adapt_us;
 		if (v > top)
 			top = v;
 	}
@@ -536,7 +545,7 @@ static inline uint32_t cg_ro_deadline_link(const struct cg_reorder *r, const str
 	uint32_t dl = t_arr + c, sw = cg_ro_swing(k);
 
 	if (k->owd_ok && sw < INT32_MAX / 2) {
-		uint32_t e = ts + k->owd + sw + cf->margin_us;
+		uint32_t e = ts + k->owd + sw + k->adapt_us + cf->margin_us;
 
 		if ((int32_t)(e - dl) < 0)
 			dl = e;
@@ -721,7 +730,7 @@ static inline void cg_ro_burst_end(struct cg_reorder *r)
 	r->burst = 0;
 }
 
-static inline enum cg_ro_v cg_ro_late(struct cg_reorder *r, const struct cg_ro_pkt *k)
+static inline enum cg_ro_v cg_ro_late(struct cg_reorder *r, const struct cg_ro_cfg *cf, const struct cg_ro_pkt *k)
 {
 	struct cg_ro_slot *s = &r->slot[k->seq % CG_RO_SLOTS];
 
@@ -738,6 +747,24 @@ static inline enum cg_ro_v cg_ro_late(struct cg_reorder *r, const struct cg_ro_p
 	else
 		r->st.late_overflow++;
 	cg_ro_hist_add(r->st.late_by, k->t_arr, s->t_arr);
+	/* adaptive (RACK's reordering window, RFC 8985): its link waits as long
+	 * as this one came late after its gap was given up, and a quarter
+	 * more, within the hold cap; it halves after CG_RO_ADAPT_DECAY_US
+	 * with no late packet (cg_ro_learn). A fixed margin of 10 ms gave up
+	 * gaps whose packets came 100-500 ms later when a modem's queue
+	 * jumped, and raw MPEG-TS over the tunnel came out corrupt; one of 400
+	 * held every packet longer (story 013). */
+	if (cf->adaptive && k->link < CG_MAX_LINKS && s->state != CG_RO_LOST_OVF) {
+		struct cg_ro_link *l = &r->link[k->link];
+		uint32_t by = k->t_arr - s->t_arr, need = by + by / 4;
+
+		if (by < INT32_MAX && need > cf->max_wait_us)
+			need = cf->max_wait_us;
+		if (by < INT32_MAX && need > l->adapt_us) {
+			l->adapt_us = need;
+			l->adapt_t = k->t_arr;
+		}
+	}
 	/* Not PASSED: behind the head a mark would outlive its sequence (see
 	 * the top). EMPTY says as much to a second copy: old. */
 	s->state = CG_RO_EMPTY;
@@ -841,7 +868,7 @@ static inline enum cg_ro_v cg_ro_in(struct cg_reorder *r, struct cg_ro_pool *p, 
 		return CG_RO_NOW;
 	}
 	if (d < 0)
-		return cg_ro_late(r, k);
+		return cg_ro_late(r, cf, k);
 	if (d >= (int32_t)CG_RO_SLOTS) {
 		if (r->held) {
 			r->st.far++;

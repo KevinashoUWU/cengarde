@@ -582,6 +582,50 @@ static void sc_rescue(const struct base *b)
 	CHECK_EQ(R.r.st.lost_cap, 1);
 }
 
+/* adaptive: a link's margin grows to how late its late packets come, and
+ * halves after CG_RO_ADAPT_DECAY_US without one. Links 0 (10 ms) and 1
+ * (30 ms); margin 10 ms, cap 400 ms. */
+static void sc_adapt(const struct base *b)
+{
+	rig(CG_RO_SLOTS, b, 400 * MS, 0, 10 * MS, 0, 0x3);
+	R.cf.adaptive = 1;
+	owd(0, 10 * MS);
+	owd(1, 30 * MS);
+	CHECK_EQ(in(0, 0, 10 * MS, 0, SPLIT, DATA, BIG), CG_RO_NOW);
+	/* seq 1, on link 1, comes 200 ms after its gap went (2 + 30 + 10 ms) */
+	CHECK_EQ(in(2, 2 * MS, 12 * MS, 0, SPLIT, DATA, BIG), CG_RO_HOLD);
+	CHECK_EQ(drain(43 * MS), 1);
+	CHECK_EQ(R.r.st.lost_cap, 1);
+	CHECK_EQ(in(1, 1 * MS, 243 * MS, 1, SPLIT, DATA, BIG), CG_RO_NOW);
+	CHECK_EQ(R.r.st.late_cap, 1);
+	CHECK_EQ(R.r.link[1].adapt_us, 250 * MS); /* 200 ms and a quarter */
+	CHECK_EQ(R.r.link[0].adapt_us, 0);
+	/* The next gap waits for link 1's delay and that: seq 4 at 260 ms is
+	 * still held at 270 + 30 + 250 + 10 - 1 ms, and seq 3 comes. */
+	CHECK_EQ(in(4, 260 * MS, 270 * MS, 0, SPLIT, DATA, BIG), CG_RO_HOLD);
+	CHECK_EQ(drain(549 * MS), 0);
+	CHECK_EQ(in(3, 259 * MS, 520 * MS, 1, SPLIT, DATA, BIG), CG_RO_NOW);
+	CHECK_EQ(R.r.st.lost_cap, 1);
+	CHECK_EQ(R.r.head, b->sb + 5);
+	/* Never past the cap: a packet 1 s late teaches 400 ms. */
+	CHECK_EQ(in(6, 600 * MS, 610 * MS, 0, SPLIT, DATA, BIG), CG_RO_HOLD);
+	CHECK_EQ(drain(1100 * MS), 1);
+	CHECK_EQ(in(5, 599 * MS, 2100 * MS, 1, SPLIT, DATA, BIG), CG_RO_NOW);
+	CHECK_EQ(R.r.link[1].adapt_us, 400 * MS);
+	/* 5 s without a late packet on link 1: half. */
+	CHECK_EQ(in(7, 7100 * MS, 7130 * MS, 1, SPLIT, DATA, BIG), CG_RO_NOW);
+	CHECK_EQ(R.r.link[1].adapt_us, 200 * MS);
+	/* Off: nothing learned. */
+	rig(CG_RO_SLOTS, b, 400 * MS, 0, 10 * MS, 0, 0x3);
+	owd(0, 10 * MS);
+	owd(1, 30 * MS);
+	CHECK_EQ(in(0, 0, 10 * MS, 0, SPLIT, DATA, BIG), CG_RO_NOW);
+	CHECK_EQ(in(2, 2 * MS, 12 * MS, 0, SPLIT, DATA, BIG), CG_RO_HOLD);
+	CHECK_EQ(drain(43 * MS), 1);
+	CHECK_EQ(in(1, 1 * MS, 243 * MS, 1, SPLIT, DATA, BIG), CG_RO_NOW);
+	CHECK_EQ(R.r.link[1].adapt_us, 0);
+}
+
 static void sc_rack(const struct base *b)
 {
 	uint64_t held_total;
@@ -2189,6 +2233,7 @@ void test_reorder(void)
 		sc_rack(b);
 		sc_by_link(b);
 		sc_rescue(b);
+		sc_adapt(b);
 		sc_deadline(b);
 		sc_late(b);
 		sc_overflow(b);

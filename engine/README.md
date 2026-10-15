@@ -412,6 +412,16 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
   desvíos, más `reorder_margin_ms`), en vez del enlace más lento, y lo da
   por perdido apenas ese enlace trae una secuencia posterior (los enlaces
   entregan en orden). Sin el dato, como siempre (historia 013).
+- **`reorder_adaptive` (`no`; `yes` o `no`), experimental:** el margen de
+  cada enlace aprende de sus tardíos, como la ventana de reordenamiento de
+  RACK (RFC 8985): cuando un paquete llega por un enlace después de que se
+  abandonó su hueco, ese enlace espera desde entonces ese atraso y un cuarto
+  más (dentro de `reorder_max_wait_ms`), y lo aprendido baja a la mitad tras
+  5 s sin tardíos. El estado lo muestra en `reorder.adapt_ms`, por enlace.
+  Con un margen fijo de 10 ms, MPEG-TS crudo por el túnel llegaba con
+  errores (los paquetes de un módem con la cola en un salto llegaban
+  100–500 ms tarde); con uno fijo de 400, limpio, pero cada hueco espera más
+  (historia 013).
 - **El rescate (experimental, protocolo v5; `rescue.h`, historia 013):**
   un ARQ que rescata un paquete antes de que TCP note que se perdió.
   Cuando el reordenador del cliente va a abandonar un hueco, lo pide al

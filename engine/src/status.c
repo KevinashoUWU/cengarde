@@ -259,6 +259,11 @@ void cg_json_reorder(struct cg_json *j, const char *k, const struct cg_reorder *
 	cg_json_u64(j, "overflow", st->lost_overflow);
 	cg_json_u64(j, "flush", st->lost_flush);
 	cg_json_end(j, '}');
+	/* adaptive: each link's learned margin, by link id */
+	cg_json_arr(j, "adapt_ms");
+	for (unsigned i = 0; i < CG_MAX_LINKS; i++)
+		cg_json_ms(j, NULL, r->link[i].adapt_us);
+	cg_json_end(j, ']');
 	cg_json_obj(j, "late");
 	cg_json_u64(j, "after_rack", st->late_rack);
 	cg_json_u64(j, "after_cap", st->late_cap);
