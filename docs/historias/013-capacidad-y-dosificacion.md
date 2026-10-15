@@ -448,6 +448,34 @@ con 4 flujos y 20 s, 3 rondas alternadas, salvo que se diga otra cosa.
   tráfico a tasa fija (un stream de 20–30 Mbit/s, la radio, video), no
   iperf saturando. El rescate de la subida. Queda apagado por omisión.
 
+### 2026-10-15: MPEG-TS crudo, el margen adaptativo y el rescate de la subida
+
+- **MPEG-TS crudo por UDP** (HEVC NVENC 1080p60 CBR 15 Mbit/s + AAC, 60 s,
+  del PC al VPS por su túnel): con `reorder_margin_ms` 10, 106 errores al
+  decodificar sin un solo paquete perdido en todos los enlaces: 705 huecos
+  abandonados cuyos paquetes llegaron 100–500 ms después (Claro y WOM, ~6
+  Mbit/s cada uno, cerca de su capacidad de subida). Con 400, 0 errores. RTMP
+  (TCP) con el mismo video pasó limpio: 3.600 cuadros, saltos de a lo más
+  17 ms.
+- **El margen adaptativo (PR #49, `reorder_adaptive`)** pierde contra el fijo
+  de 400 (56 y 116 errores contra 3 y 6): aprende después de equivocarse y
+  olvidaba a la mitad cada 5 s, más rápido de lo que vuelven los saltos de
+  cola de un módem cargado. Para transmitir, el fijo; el adaptativo pide
+  olvidar mucho más lento.
+- **El rescate de la subida (PR #50):** en el laboratorio, `lossy` de 10,4 a
+  50,7 Mbit/s (94 % rescatado), `het` de 62,6 a 54,3. En el TS crudo de campo
+  la pérdida real desaparece (`lost_all` de 96 a 0), pero los errores no
+  bajan (10, 24 y 71 en tres corridas: sin rescate, margen 10 + rescate,
+  margen 400 + rescate), con Entel anclado en su B2 sola, que es lossy en
+  la subida como PCC (medido por el usuario): el HARQ del módem le sube la
+  cola, la regla «cola sobre 20 ms = congestión» la toma por congestión y
+  no se rescata justo la pérdida de radio. Una corrida por variante con la
+  red así no decide nada.
+- **Lo pendiente del rescate:** una regla de congestión que no confunda el
+  HARQ con una cola llena (la cola sube y además el enlace entrega al tope de
+  su capacidad); NACK por dos caminos, reintento a ~1 RTT, NACK con máscara
+  de bits; la copia de rescate por dos caminos.
+
 ## Qué hacemos con esto (diseño)
 
 ### Piezas
