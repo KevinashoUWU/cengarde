@@ -241,3 +241,9 @@
 - 2026-10-15: la LAN de la Pi perdía la subida en el FIFO del adaptador
   USB dañado (`rx_missed`); el control de flujo en el puerto 23 del switch
   la lleva de 15–25 a 42–78 Mbit/s. Consola del switch desde el CPE2.
+- 2026-10-15: Claro, bloqueado a las cuatro portadoras de ENAMI, cayó a 3G
+  (WCDMA 850, UARFCN 4437) y no volvía a LTE: 9 Mbit/s de bajada y 2,5 de
+  subida con más de 1 s de cola. Sin el bloqueo (`AT+QNWLOCK="common/4g",0`)
+  vuelve al mismo sitio (eNB 19EE0B: B2 850 PCI 90 de 20 MHz más B5 2536
+  PCI 330) y da 107 de bajada y 30,5 de subida en speedtest. Claro queda
+  sin bloqueo: con el bloqueo, una caída a 3G no se recupera sola.
