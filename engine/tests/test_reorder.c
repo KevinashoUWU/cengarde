@@ -519,6 +519,69 @@ static void sc_by_link(const struct base *b)
 	}
 }
 
+/* Rescue: a gap about to be given up is asked for (r.ask), and waits
+ * rescue_us more. Links 0 (10 ms) and 1 (30 ms). */
+static void sc_rescue(const struct base *b)
+{
+	for (int come = 0; come < 2; come++) {
+		/* seq 1 lost; seq 2 at 12 ms waits until 2 + 30 + 10 = 42 ms. */
+		rig(CG_RO_SLOTS, b, 400 * MS, 0, 10 * MS, 0, 0x3);
+		R.cf.rescue_us = 60 * MS;
+		owd(0, 10 * MS);
+		owd(1, 30 * MS);
+		CHECK_EQ(in(0, 0, 10 * MS, 0, SPLIT, DATA, BIG), CG_RO_NOW);
+		CHECK_EQ(in(2, 2 * MS, 12 * MS, 0, SPLIT, DATA, BIG), CG_RO_HOLD);
+		CHECK_EQ(R.r.nask, 0);
+		CHECK_EQ(drain(41 * MS), 0);
+		CHECK_EQ(R.r.nask, 0);
+		/* Due: asked for, not given up. */
+		CHECK_EQ(drain(43 * MS), 0);
+		CHECK_EQ(R.r.nask, 1);
+		CHECK_EQ(R.r.ask[0], b->sb + 1);
+		CHECK_EQ(R.r.st.asked, 1);
+		CHECK_EQ(R.r.st.lost_cap, 0);
+		CHECK(due(43 * MS) > (int32_t)(55 * MS) && due(43 * MS) <= (int32_t)(60 * MS));
+		R.r.nask = 0; /* the caller sent the NACK */
+		CHECK_EQ(drain(80 * MS), 0);
+		CHECK_EQ(R.r.nask, 0); /* asked once */
+		if (come) {
+			/* The copy comes on the fast link: in order, nothing lost. */
+			CHECK_EQ(in(1, 1 * MS, 90 * MS, 0, SPLIT, DATA, BIG), CG_RO_NOW);
+			CHECK_EQ(R.r.st.rescued, 1);
+			CHECK_EQ(R.r.st.lost_cap + R.r.st.lost_rack + R.r.st.ask_lost, 0);
+		} else {
+			/* It does not come: given up at 43 + 60 ms, as due then (cap). */
+			CHECK_EQ(drain(102 * MS), 0);
+			CHECK_EQ(drain(104 * MS), 1);
+			CHECK_EQ(R.r.st.ask_lost, 1);
+			CHECK_EQ(R.r.st.lost_cap, 1);
+			CHECK_EQ(R.r.st.rescued, 0);
+		}
+		CHECK_EQ(R.r.head, b->sb + 3);
+	}
+
+	/* Several gaps before the held packet: asked for together. */
+	rig(CG_RO_SLOTS, b, 400 * MS, 0, 10 * MS, 0, 0x3);
+	R.cf.rescue_us = 60 * MS;
+	owd(0, 10 * MS);
+	owd(1, 30 * MS);
+	CHECK_EQ(in(0, 0, 10 * MS, 0, SPLIT, DATA, BIG), CG_RO_NOW);
+	CHECK_EQ(in(4, 4 * MS, 14 * MS, 0, SPLIT, DATA, BIG), CG_RO_HOLD);
+	CHECK_EQ(drain(50 * MS), 0);
+	CHECK_EQ(R.r.nask, 3);
+	CHECK(R.r.ask[0] == b->sb + 1 && R.r.ask[1] == b->sb + 2 && R.r.ask[2] == b->sb + 3);
+
+	/* Nothing waits (redundancy, dup_wait 0): a gap goes at once, unasked. */
+	rig(CG_RO_SLOTS, b, 400 * MS, 0, 10 * MS, 0, 0x3);
+	R.cf.rescue_us = 60 * MS;
+	owd(0, 10 * MS);
+	owd(1, 30 * MS);
+	CHECK_EQ(in(0, 0, 10 * MS, 0, 0, DATA, BIG), CG_RO_NOW);
+	CHECK_EQ(in(2, 2 * MS, 12 * MS, 0, 0, DATA, BIG), CG_RO_NOW);
+	CHECK_EQ(R.r.st.asked, 0);
+	CHECK_EQ(R.r.st.lost_cap, 1);
+}
+
 static void sc_rack(const struct base *b)
 {
 	uint64_t held_total;
@@ -2125,6 +2188,7 @@ void test_reorder(void)
 		sc_swing(b);
 		sc_rack(b);
 		sc_by_link(b);
+		sc_rescue(b);
 		sc_deadline(b);
 		sc_late(b);
 		sc_overflow(b);

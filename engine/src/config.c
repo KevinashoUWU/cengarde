@@ -742,6 +742,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	c->reorder_margin_ms = 10;
 	c->reorder_bypass = 128;
 	c->reorder_pool_kb = 8192;
+	c->rescue_pct = 5;
 	c->split = c->mode == CG_MODE_SERVER ? CG_SPLIT_CLIENT : CG_SPLIT_OFF;
 	c->split_small = 256;
 	c->split_spread_ms = 30;
@@ -795,6 +796,9 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	    get_u32(&ini, "", "reorder_margin_ms", 0, 1000, &c->reorder_margin_ms, err, errlen) ||
 	    get_u32(&ini, "", "reorder_bypass", 0, 2048, &c->reorder_bypass, err, errlen) ||
 	    get_bool(&ini, "", "reorder_by_link", &c->reorder_by_link, err, errlen) ||
+	    get_u32(&ini, "", "rescue_kb", 0, 262144, &c->rescue_kb, err, errlen) ||
+	    get_u32(&ini, "", "rescue_pct", 1, 50, &c->rescue_pct, err, errlen) ||
+	    get_u32(&ini, "", "rescue_wait_ms", 0, 1000, &c->rescue_wait_ms, err, errlen) ||
 	    get_u32(&ini, "", "reorder_pool_kb", 256, 131070, &c->reorder_pool_kb, err, errlen) ||
 	    get_split(&ini, c, err, errlen) ||
 	    get_u32(&ini, "", "split_small", 0, 2048, &c->split_small, err, errlen) ||
@@ -1069,6 +1073,8 @@ const char *cg_config_restart_needed(const struct cg_config *a, const struct cg_
 		return "rt_priority";
 	if (a->reorder_pool_kb != b->reorder_pool_kb)
 		return "reorder_pool_kb"; /* the pool is allocated once */
+	if (a->rescue_kb != b->rescue_kb)
+		return "rescue_kb"; /* the ring too */
 	if (a->mode == CG_MODE_CLIENT && a->link_threads != b->link_threads)
 		return "link_threads";
 	if (a->mode == CG_MODE_CLIENT && a->io_queue != b->io_queue)

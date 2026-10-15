@@ -35,6 +35,11 @@
 #               link 2 steady (50 Mbit/s, 30 ms)
 #   deepq       link 1 at 20 Mbit/s behind 500 ms of queue, link 2 at
 #               50 Mbit/s with 100 ms; both 25 ms
+#   lossy       not in the default list: 3 links (60 Mbit/s 20 ms, 30 Mbit/s
+#               35 ms, 50 Mbit/s 25 ms), each losing 1 % at random in both
+#               directions: the loss on every link of a split packet that the
+#               rescue (rescue.h) answers; run it with CLIENT_EXTRA
+#               "rescue_wait_ms = 60" and SERVER_EXTRA "rescue_kb = 32768"
 #   bloat       bufferbloat as on the Pi's 5G modems (story 012, 2026-10-13):
 #               3 links of similar delay (20, 20 and 22 ms) and unequal rate
 #               (30, 20 and 8 Mbit/s) behind deep queues (1, 1 and 2 s). A
@@ -374,13 +379,14 @@ bond_shape() {
 	ltespike) bond_link 1 25 50 && bond_link 2 30 50 ;;
 	deepq) bond_link 1 25 20 500 && bond_link 2 25 50 ;;
 	bloat) bond_link 1 20 30 1000 && bond_link 2 20 20 1000 && bond_link 3 22 8 2000 ;;
+	lossy) bond_link 1 20 60 100 1 && bond_link 2 35 30 100 1 && bond_link 3 25 50 100 1 ;;
 	*) return 1 ;;
 	esac
 }
 
 bond_nlinks() {
 	case $1 in
-	het | linkdeath | bloat) echo 3 ;;
+	het | linkdeath | bloat | lossy) echo 3 ;;
 	*) echo 2 ;;
 	esac
 }

@@ -412,6 +412,32 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
   desvíos, más `reorder_margin_ms`), en vez del enlace más lento, y lo da
   por perdido apenas ese enlace trae una secuencia posterior (los enlaces
   entregan en orden). Sin el dato, como siempre (historia 013).
+- **El rescate (experimental, protocolo v5; `rescue.h`, historia 013):**
+  un ARQ que rescata un paquete antes de que TCP note que se perdió.
+  Cuando el reordenador del cliente va a abandonar un hueco, lo pide al
+  servidor (`CG_T_NACK`, por el enlace de menor RTT), y el servidor lo
+  reenvía por su ruta más rápida. Se pide apenas se sabe perdido (el enlace
+  por el que iba trajo algo posterior) o al vencer su plazo, y se espera
+  `rescue_wait_ms` más, nunca más allá del tope de siempre.
+  - **`rescue_kb` (servidor; 0, apagado; hasta 262144):** el anillo de lo
+    enviado hace poco, en entradas de 2 KiB (32768: unos 16 mil paquetes,
+    ~0,6 s a 300 Mbit/s); con él, las respuestas a las sondas lo anuncian.
+    Solo cambia al reiniciar.
+  - **`rescue_pct` (servidor; 5; 1–50):** el presupuesto, en % de lo que
+    baja: lo que se reenvía sale de ahí.
+  - **`rescue_wait_ms` (cliente; 0, no pide; hasta 1000):** cuánto espera
+    un hueco pedido. Unos 1,5 RTT del enlace más rápido (60 en la red de
+    pruebas).
+  - **No se rescata la congestión:** lo que se pierde en una ruta con la
+    cola sobre `governor_target_ms`, o con el presupuesto agotado, no se
+    reenvía, y el cliente ni lo pide (`CG_BOND_FULL`): esa pérdida es la que
+    hace frenar a TCP. En el laboratorio, con 1 % de pérdida al azar por
+    enlace, la bajada pasa de 10 a 50 Mbit/s; donde la pérdida es de un
+    enlace lleno, cuesta ~15 %. En redundancia (`split` apagado) solo pide
+    con `reorder_dup_wait_ms` mayor que 0.
+  - Estado: `rescue` en el cliente (`on`, `server_keeps`, `nacks_sent`) y
+    en cada sesión del servidor (`nacks`, `sent`, `missing`, `over_budget`,
+    `congested`); `reorder.rescue` (`asked`, `rescued`, `lost`).
 - **`reorder_pool_kb` (8192; 256–131070):** memoria para los paquetes
   retenidos, en bloques de 2 KiB, reservada al arrancar; solo ocupa RAM lo
   que llega a usarse. En el servidor la comparten todas las sesiones (cada

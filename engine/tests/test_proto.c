@@ -246,4 +246,45 @@ void test_proto(void)
 	CHECK_EQ(cg_outer_len(AF_INET6, 1380 + CG_WG_OVERHEAD), 1484);
 	CHECK_EQ(1500 - cg_outer_len(AF_INET6, CG_WG_OVERHEAD), 1396);
 	CHECK_EQ(cg_outer_len(AF_INET, 0), CG_HDR_LEN + 28);
+
+	/* The rescue bit of a reply's bonding tail (version 5). */
+	{
+		struct cg_probe_bond b = { .rescue = 1 }, r;
+		uint8_t tp[CG_PROBE_BOND_LEN];
+
+		cg_probe_bond_write(tp, &b);
+		CHECK(!memcmp(tp + CG_PROBE_INFO_LEN, "\x00\x04\x00\x00", 4));
+		CHECK_EQ(cg_probe_bond_read(&r, tp, CG_PROBE_BOND_LEN), 1);
+		CHECK(r.rescue && !r.reorders && !r.split_me && !r.weight);
+	}
+
+	/* NACK: a count and that many sequences, under the MAC; a count of 0,
+	 * past CG_NACK_MAX or longer than the payload does not parse. */
+	{
+		uint32_t seq[CG_NACK_MAX], got[CG_NACK_MAX];
+		uint8_t nb[CG_HDR_LEN + 1 + 4 * CG_NACK_MAX];
+		struct cg_hdr nh = { .type = CG_T_NACK, .hint = 0x5a, .session = 7, .seq = 9, .ts = 1 }, np;
+		size_t nl;
+
+		for (unsigned i = 0; i < CG_NACK_MAX; i++)
+			seq[i] = 0xfffffff0u + i * 3; /* across the wrap */
+		CHECK(cg_type_ctl(CG_T_NACK));
+		nl = cg_nack_write(nb + CG_HDR_LEN, seq, CG_NACK_MAX);
+		CHECK_EQ(nl, 1 + 4 * CG_NACK_MAX);
+		cg_hdr_write(nb, &nh, key_a, nb + CG_HDR_LEN, nl);
+		CHECK_EQ(cg_hdr_parse(&np, nb, CG_HDR_LEN + nl), 0);
+		CHECK_EQ(np.type, CG_T_NACK);
+		CHECK(cg_hdr_verify(nb, CG_HDR_LEN + nl, key_a));
+		CHECK_EQ(cg_nack_read(got, nb + CG_HDR_LEN, nl), CG_NACK_MAX);
+		CHECK(!memcmp(got, seq, sizeof(seq)));
+		CHECK_EQ(cg_hdr_parse(&np, nb, CG_HDR_LEN + nl - 1), -1); /* short by a byte */
+		nl = cg_nack_write(nb + CG_HDR_LEN, seq, 1);
+		CHECK_EQ(cg_hdr_parse(&np, nb, CG_HDR_LEN + nl), 0);
+		CHECK_EQ(cg_nack_read(got, nb + CG_HDR_LEN, nl), 1);
+		CHECK_EQ(got[0], seq[0]);
+		nb[CG_HDR_LEN] = 0;
+		CHECK_EQ(cg_hdr_parse(&np, nb, CG_HDR_LEN + nl), -1);
+		nb[CG_HDR_LEN] = CG_NACK_MAX + 1;
+		CHECK_EQ(cg_hdr_parse(&np, nb, CG_HDR_LEN + 1 + 4 * (CG_NACK_MAX + 1)), -1);
+	}
 }

@@ -69,6 +69,11 @@ int cg_hdr_parse(struct cg_hdr *h, const uint8_t *buf, size_t len)
 		return plen >= CG_PROBE_INFO_LEN ? 0 : -1;
 	case CG_T_HELLO:
 		return plen >= CG_HELLO_LEN ? 0 : -1;
+	case CG_T_NACK:
+		return plen >= 1 && buf[CG_HDR_LEN] >= 1 && buf[CG_HDR_LEN] <= CG_NACK_MAX &&
+				       plen >= 1 + 4 * (size_t)buf[CG_HDR_LEN]
+			       ? 0
+			       : -1;
 	default:
 		return -1;
 	}
@@ -137,8 +142,9 @@ void cg_probe_bond_write(uint8_t *payload, const struct cg_probe_bond *b)
 {
 	uint32_t w = b->weight > CG_BOND_WEIGHT_MAX ? CG_BOND_WEIGHT_MAX : b->weight;
 
-	put32(payload + CG_PROBE_INFO_LEN,
-	      w | (b->reorders ? CG_BOND_REORDERS : 0) | (b->split_me ? CG_BOND_SPLIT_ME : 0));
+	put32(payload + CG_PROBE_INFO_LEN, w | (b->reorders ? CG_BOND_REORDERS : 0) |
+						   (b->split_me ? CG_BOND_SPLIT_ME : 0) | (b->rescue ? CG_BOND_RESCUE : 0) |
+						   (b->full ? CG_BOND_FULL : 0));
 }
 
 int cg_probe_bond_read(struct cg_probe_bond *b, const uint8_t *payload, size_t plen)
@@ -153,7 +159,28 @@ int cg_probe_bond_read(struct cg_probe_bond *b, const uint8_t *payload, size_t p
 	b->weight = (uint16_t)(w > CG_BOND_WEIGHT_MAX ? CG_BOND_WEIGHT_MAX : w);
 	b->reorders = !!(v & CG_BOND_REORDERS);
 	b->split_me = !!(v & CG_BOND_SPLIT_ME);
+	b->rescue = !!(v & CG_BOND_RESCUE);
+	b->full = !!(v & CG_BOND_FULL);
 	return 1;
+}
+
+size_t cg_nack_write(uint8_t *out, const uint32_t *seq, unsigned n)
+{
+	out[0] = (uint8_t)n;
+	for (unsigned i = 0; i < n; i++)
+		put32(out + 1 + 4 * i, seq[i]);
+	return 1 + 4 * (size_t)n;
+}
+
+unsigned cg_nack_read(uint32_t seq[CG_NACK_MAX], const uint8_t *payload, size_t plen)
+{
+	unsigned n = payload[0];
+
+	if (n > CG_NACK_MAX || plen < 1 + 4 * (size_t)n)
+		return 0;
+	for (unsigned i = 0; i < n; i++)
+		seq[i] = get32(payload + 1 + 4 * i);
+	return n;
 }
 
 void cg_hello_write(uint8_t out[CG_HELLO_LEN], const struct cg_hello *hl)

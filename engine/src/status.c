@@ -268,6 +268,12 @@ void cg_json_reorder(struct cg_json *j, const char *k, const struct cg_reorder *
 	cg_json_u64(j, "far", st->far);
 	cg_json_u64(j, "resyncs", st->resyncs);
 	cg_json_u64(j, "pool_full", st->pool_full);
+	/* The rescue (rescue.h): gaps asked for again, that came, that did not. */
+	cg_json_obj(j, "rescue");
+	cg_json_u64(j, "asked", st->asked);
+	cg_json_u64(j, "rescued", st->rescued);
+	cg_json_u64(j, "lost", st->ask_lost);
+	cg_json_end(j, '}');
 	cg_json_u64(j, "max_burst", st->max_burst);
 	cg_json_arr(j, "edges_ms");
 	for (unsigned i = 0; i < CG_RO_HIST - 1; i++)

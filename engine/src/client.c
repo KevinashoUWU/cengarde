@@ -182,6 +182,8 @@ struct client {
 	uint16_t gw[CG_MAX_LINKS]; /* what it set at the last tick */
 	int peer_bond;             /* the newest probe reply had a bonding tail (proto.h) */
 	int peer_reorders;         /* and it said the server reorders: split = on splits */
+	int peer_rescue;           /* and that it sends DATA again on a NACK (rescue.h) */
+	uint64_t nacks_sent;       /* NACK messages sent, for the rescue */
 	struct cg_split_tail tail; /* which reply that was (split.h) */
 	int8_t pick[CG_BATCH]; /* per packet of an upload batch: its one link (split), or -1 (every carrier) */
 	uint32_t up_max;     /* largest WireGuard datagram since the last path check */
@@ -1183,6 +1185,8 @@ static void wg_read(struct client *c)
 	}
 }
 
+static void rescue_apply(struct client *c);
+
 /* A verified probe reply on l: payload, plen bytes (at least
  * CG_PROBE_INFO_LEN), read at now32 / now_ms. */
 static void on_probe_reply(struct client *c, struct link *l, const struct cg_hdr *h, const uint8_t *payload,
@@ -1200,6 +1204,19 @@ static void on_probe_reply(struct client *c, struct link *l, const struct cg_hdr
 	if (cg_split_tail_newer(&c->tail, h->seq)) {
 		c->peer_bond = cg_probe_bond_read(&pb, payload, plen);
 		c->peer_reorders = pb.reorders;
+		c->peer_rescue = pb.rescue;
+		rescue_apply(c);
+	}
+	/* This path's losses the server will not send again now (CG_BOND_FULL):
+	 * the reorderer does not ask for them. */
+	{
+		struct cg_probe_bond fb;
+		uint16_t bit = (uint16_t)(1u << (l - c->link));
+
+		if (cg_probe_bond_read(&fb, payload, plen) && fb.full)
+			c->rxs.ro.full |= bit;
+		else
+			c->rxs.ro.full &= (uint16_t)~bit;
 	}
 	/* Each probe is answered once: a copy of this reply replayed later
 	 * cannot count for epoch.h. */
@@ -1340,6 +1357,41 @@ static void dout_add(struct client *c, uint8_t *payload, size_t len, uint16_t bu
 		c->dbuf[c->dnbuf++] = buf;
 }
 
+/* The rescue (rescue.h): the reorderer asks for a gap about to go only
+ * when rescue_wait_ms is set and the server said it keeps what it sent. */
+static void rescue_apply(struct client *c)
+{
+	c->rocf.rescue_us = c->cfg->reorder && c->peer_rescue ? c->cfg->rescue_wait_ms * 1000 : 0;
+}
+
+/* The gaps the reorderer asked for, as NACKs on the live link of least
+ * RTT (the request waits for its answer: the fastest way there). */
+static void send_nacks(struct client *c, uint64_t now_ms)
+{
+	struct cg_reorder *r = &c->rxs.ro;
+	uint16_t present, live;
+	struct link *best = NULL;
+
+	link_masks(c, now_ms, &present, &live);
+	for (int i = 0; i < CG_MAX_LINKS; i++) {
+		struct link *l = &c->link[i];
+
+		if ((live >> i & 1) && l->fd >= 0 && l->srtt8_us && (!best || l->srtt8_us < best->srtt8_us))
+			best = l;
+	}
+	for (uint32_t i = 0; best && i < r->nask; i += CG_NACK_MAX) {
+		uint8_t pkt[CG_HDR_LEN + 1 + 4 * CG_NACK_MAX];
+		unsigned n = r->nask - i < CG_NACK_MAX ? r->nask - i : CG_NACK_MAX;
+		size_t plen = cg_nack_write(pkt + CG_HDR_LEN, r->ask + i, n);
+
+		cg_up_header(&c->txs, pkt, CG_T_NACK, 0, (uint8_t)(best - c->link), (uint32_t)cg_now_us(),
+			     pkt + CG_HDR_LEN, plen);
+		if (send(best->fd, pkt, CG_HDR_LEN + plen, MSG_DONTWAIT) == (ssize_t)(CG_HDR_LEN + plen))
+			c->nacks_sent++;
+	}
+	r->nask = 0;
+}
+
 /* What the reorderer may hand on at now (the pass's clock, as its arrival
  * times), after what the batch holds: everything with all (a window
  * overflow, taken again right after), else up to the pass's budget; the
@@ -1356,6 +1408,8 @@ static void ro_drain(struct client *c, uint16_t rset, uint32_t now, int all, uin
 			c->ro_budget--;
 	}
 	cg_ro_burst_end(&c->rxs.ro);
+	if (c->rxs.ro.nask)
+		send_nacks(c, now_ms);
 }
 
 /* A first copy for WireGuard, payload (len bytes) of DATA h from link,
@@ -1908,6 +1962,13 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 	/* Download: lost on every link, joint lateness, and the reorderer
 	 * (story 012). */
 	cg_json_u64(j, "lost_all", c->rxs.replay.lost);
+	/* The rescue: whether the reorderer asks (rescue_wait_ms, and the server
+	 * keeps what it sent), and the NACKs sent. */
+	cg_json_obj(j, "rescue");
+	cg_json_bool(j, "on", c->rocf.rescue_us != 0);
+	cg_json_bool(j, "server_keeps", c->peer_rescue);
+	cg_json_u64(j, "nacks_sent", c->nacks_sent);
+	cg_json_end(j, '}');
 	cg_json_joint(j, "joint", &c->rxs.arr);
 	cg_json_reorder(j, "reorder", &c->rxs.ro, c->cfg->reorder, &c->pool);
 	cg_json_sizes(j, "sizes", &c->wgs_up, &c->wgs_down);
@@ -2159,6 +2220,7 @@ static void apply_config(struct client *c, struct cg_config *next, uint64_t now_
 	/* The reorderer's knobs apply from the next packet; turned off, what
 	 * it holds goes on at once, in order. */
 	c->rocf = cg_ro_cfg_of(next);
+	rescue_apply(c);
 	if (old->reorder && !next->reorder)
 		ro_flush(c, now_ms);
 	if (old->split != next->split)
@@ -2592,6 +2654,7 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 		goto out;
 	}
 	c->rocf = cg_ro_cfg_of(cfg);
+	rescue_apply(c);
 	/* The control socket is a convenience: the tunnel runs without it. */
 	if (cfg->control_socket[0] && cg_ctl_open(&c->ctl, cfg->control_socket, c->ep, err, sizeof(err)) < 0)
 		cg_warn("control socket: %s", err);
