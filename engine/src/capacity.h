@@ -100,6 +100,8 @@
 #define CG_CAP_SHORT_MIN 64 /* packets sent in a sample for it to count */
 #define CG_CAP_SAT_N 2    /* samples in a row with a queue above sat_us: full */
 #define CG_CAP_W_ONE 1024u /* cg_cap_rescue_w's full weight */
+#define CG_CAP_BEST_MS 300000u /* fast start: a link's best capacity, over this long */
+#define CG_CAP_REST_MS 10000u  /* fast start: this long without being full, it comes back to half its best */
 #define CG_CAP_TREND_MS 100 /* the queue's trend takes samples at least this far apart */
 #define CG_CAP_LONG_MS 60000 /* the rescue's queue: over the delay's minimum of this long */
 /* More delivered than sent by this much (packets), and the report is not
@@ -128,6 +130,9 @@ struct cg_cap_link {
 	uint8_t have_rate;          /* a rate measured */
 	uint8_t short_n;            /* samples in a row that delivered under half of what was sent */
 	uint8_t sat_n;              /* samples in a row with a queue above sat_us */
+	/* fast start: the best capacity over CG_CAP_BEST_MS (in two halves),
+	 * and the last sample that found the link full */
+	uint64_t best_cur, best_prev, best_ms, full_ms;
 	/* The queue's trend, for the rescue's weight (cg_cap_rescue_w): its
 	 * slope (us of queue per second) and the slope's slope (per second
 	 * squared), smoothed (1/4), from samples at least CG_CAP_TREND_MS apart. */
@@ -148,6 +153,21 @@ static inline void cg_cap_reset(struct cg_cap_link *l)
 static inline uint64_t cg_cap_bps(const struct cg_cap_link *l)
 {
 	return l->max_cur > l->max_prev ? l->max_cur : l->max_prev;
+}
+
+/* The best capacity of the last CG_CAP_BEST_MS. */
+static inline uint64_t cg_cap_best_bps(const struct cg_cap_link *l)
+{
+	return l->best_cur > l->best_prev ? l->best_cur : l->best_prev;
+}
+
+/* What the split offers a link whose queue is short, to see if it carries
+ * more (BBR's probing): 5/4 of its capacity and 1/16 of the largest link's;
+ * twice its capacity while it is under half its best (fast start, as BBR's
+ * startup). */
+static inline uint64_t cg_cap_probe(const struct cg_cap_link *l, uint64_t c, uint64_t big)
+{
+	return (2 * c < cg_cap_best_bps(l) ? 2 * c : c + c / 4) + big / 16;
 }
 
 /* The queue's slope and the slope's slope, from a new queue_us at now_ms. */
@@ -193,6 +213,28 @@ static inline uint32_t cg_cap_rescue_w(const struct cg_cap_link *l, uint32_t tar
 	if (pred >= hi)
 		return 0;
 	return (uint32_t)((hi - pred) * CG_CAP_W_ONE / (hi - lo));
+}
+
+/* Fast start: the best capacity of the last CG_CAP_BEST_MS, and a link that
+ * has not been full for CG_CAP_REST_MS back to half of it at least. A
+ * capacity is lowered only while the link is full, and an idle link is not
+ * measured again: on the testnet three of four links waited at 0.3-8 Mbit/s,
+ * measured full minutes before, and a download took 3-4 s to give them their
+ * 20 (story 013). If it really carries less now, its queue says so at once. */
+static inline void cg_cap_best(struct cg_cap_link *l, uint64_t now_ms)
+{
+	uint64_t cap = cg_cap_bps(l), best;
+
+	if (now_ms - l->best_ms >= CG_CAP_BEST_MS / 2) {
+		l->best_prev = l->best_cur;
+		l->best_cur = cap;
+		l->best_ms = now_ms;
+	} else if (cap > l->best_cur) {
+		l->best_cur = cap;
+	}
+	best = cg_cap_best_bps(l);
+	if (cap < best / 2 && (!l->full_ms || now_ms - l->full_ms >= CG_CAP_REST_MS))
+		l->max_cur = l->max_prev = best / 2;
 }
 
 /* One tick for one link. report_ms: when this end received the other's
@@ -293,12 +335,15 @@ static inline void cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint64_t 
 	if (l->sat_n >= CG_CAP_SAT_N) {
 		/* Full: the link gives no more than it delivers while full. */
 		l->max_cur = l->max_prev = l->sat_bps;
+		l->full_ms = report_ms;
 	} else if (l->short_n >= CG_CAP_SHORT_N) {
 		/* Its packets stop arriving: no more than it delivers now. */
 		l->max_cur = l->max_prev = rate;
+		l->full_ms = report_ms;
 	} else if (rate > l->max_cur) {
 		l->max_cur = l->max_prev = rate;
 	}
+	cg_cap_best(l, report_ms);
 }
 
 /* The split's weights (cg_split_pick: up to CG_GOV_MAX) from l's
@@ -317,7 +362,7 @@ static inline void cg_cap_weights(const struct cg_cap_link l[CG_MAX_LINKS], uint
 		uint64_t c = l[i].have_rate ? cg_cap_bps(&l[i]) : 0;
 
 		if (l[i].have_rate && l[i].queue_us >= 0 && (uint32_t)l[i].queue_us < probe_us)
-			c += c / 4 + big / 16;
+			c = cg_cap_probe(&l[i], c, big);
 		eff[i] = c;
 		if (!(dup0 >> i & 1) && c > top)
 			top = c;
@@ -380,7 +425,7 @@ static inline void cg_cap_eta(struct cg_eta *e, const struct cg_cap_link l[CG_MA
 			continue;
 		}
 		if (l[i].queue_us >= 0 && (uint32_t)l[i].queue_us < probe_us)
-			bps += bps / 4 + big / 16;
+			bps = cg_cap_probe(&l[i], bps, big);
 		cg_eta_set(e, i, bps, (uint32_t)cg_owd_diff(mins[i], ref), l[i].queue_us > 0 ? (uint32_t)l[i].queue_us : 0,
 			   now_us);
 	}

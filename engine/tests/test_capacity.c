@@ -249,6 +249,47 @@ static void measured(struct cg_cap_link *l, double r, int q)
 	l->queue_us = q < 0 ? -1 : q * (int32_t)MS;
 }
 
+/* Fast start: a link measured at 50, then found full at 10, comes back to
+ * half its best (25) after CG_CAP_REST_MS without being full, never before;
+ * the best is forgotten after CG_CAP_BEST_MS. */
+static void test_capacity_fast_start(void)
+{
+	struct sim s;
+
+	sim_start(&s);
+	run(&s, 20, 50, 60); /* 2 s at 50 */
+	CHECK(near(cg_cap_bps(&s.l), 50, 0.05) && near(cg_cap_best_bps(&s.l), 50, 0.05));
+	run(&s, 30, 12, 10); /* full at 10 */
+	CHECK(near(cg_cap_bps(&s.l), 10, 0.1));
+	run(&s, 50, 0.5, 10); /* idle 5 s: not yet */
+	CHECK(cg_cap_bps(&s.l) < 12 * MBIT);
+	run(&s, 60, 0.5, 10); /* past 10 s: half its best */
+	CHECK(near(cg_cap_bps(&s.l), 25, 0.05));
+	/* full again at 10: it measures 10 again, and holds it 10 s */
+	run(&s, 30, 12, 10);
+	CHECK(near(cg_cap_bps(&s.l), 10, 0.1));
+	run(&s, 50, 0, 10);
+	CHECK(cg_cap_bps(&s.l) < 12 * MBIT);
+	/* five minutes later, at most 10 for longer than CG_CAP_BEST_MS: the
+	 * 50 is forgotten */
+	run(&s, 3200, 0.5, 10);
+	CHECK(cg_cap_best_bps(&s.l) < 30 * MBIT);
+}
+
+/* The probe: 5/4 and 1/16 of the largest; twice while under half its best. */
+static void test_capacity_probe(void)
+{
+	struct cg_cap_link l;
+
+	measured(&l, 20, 2);
+	CHECK(cg_cap_probe(&l, 20 * MBIT, 160 * MBIT) == 35 * MBIT);
+	l.best_cur = 50 * MBIT; /* 20 under 25 */
+	CHECK(cg_cap_probe(&l, 20 * MBIT, 160 * MBIT) == 50 * MBIT);
+	l.best_cur = 0;
+	l.best_prev = 40 * MBIT; /* 20 not under 20 */
+	CHECK(cg_cap_probe(&l, 20 * MBIT, 160 * MBIT) == 35 * MBIT);
+}
+
 /* The weights: shares as the capacities, 5/4 below the probe queue, the
  * unmeasured at the top, the floor, dup0 and the governor's scale. */
 static void test_capacity_weights(void)
@@ -449,6 +490,8 @@ void test_capacity(void)
 	test_capacity_total();
 	test_capacity_shapes();
 	test_capacity_converges();
+	test_capacity_fast_start();
+	test_capacity_probe();
 	test_capacity_weights();
 	test_capacity_rates();
 	test_capacity_saturated();
