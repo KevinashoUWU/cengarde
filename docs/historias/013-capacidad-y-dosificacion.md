@@ -402,6 +402,25 @@ con 4 flujos y 20 s, 3 rondas alternadas, salvo que se diga otra cosa.
   rendimiento es cuánto se retiene, no cuántas retransmisiones hay**: el
   PR queda abierto, sin mergear, hasta probar un plazo que siga al
   enlace (el desvío de cada uno, `CG_RO_DEV_K`) en vez de uno fijo.
+- **El plazo por enlace (PR #47, protocolo v5, `reorder_by_link`):** cada
+  paquete dice por qué enlace salió la secuencia anterior cuando salió por
+  uno solo (`CG_F_PREV`), y el reordenador espera un hueco lo que tarda ese
+  enlace, no el más lento, y lo suelta apenas ese enlace trae una
+  secuencia posterior (RACK por enlace). A/B intercalado en el cliente del
+  PC, ventana de 16.384 y pool de 32 MB en los dos lados, 16 flujos de
+  bajada, 20 s, 3 rondas: 151,2 sin la opción (145, 150, 159) contra 141,5
+  con ella (148, 137, 139). Suelta antes, como se esperaba (abandonos por
+  RACK 8–16 mil contra 5–11 mil), pero ni el rendimiento ni las
+  retransmisiones mejoran. Queda apagada por omisión; el protocolo v5 queda
+  desplegado.
+- **Lo que dicen las tres pruebas del reordenador juntas** (ventana, plazo
+  fijo más corto, plazo por enlace): con 16 flujos y la red de la mañana,
+  ninguna saca al túnel del rango de 125–160 Mbit/s, y la variación entre
+  rondas iguales (±15 %) es mayor que cualquier efecto. El reordenador ya no
+  parece ser lo que limita la bajada; lo que queda sin tocar es la pérdida
+  real (`lost_all`, 1–11 mil paquetes por corrida de 20 s), que es lo que
+  ataca el ARQ de rescate (historia 012: estilo XLINK, reinyectar por el
+  enlace más rápido cuando el plazo se agota).
 
 ## Qué hacemos con esto (diseño)
 
