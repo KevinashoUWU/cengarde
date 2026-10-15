@@ -153,6 +153,9 @@ struct session {
 	struct cg_resc_budget resc_b;
 	uint64_t nacks, resc_sent, resc_miss, resc_budget; /* NACKs taken; sequences sent again, not kept, over budget */
 	uint64_t resc_congested; /* not sent again: lost on a full path (TCP has to see it) */
+	int peer_rescue;          /* the client keeps what it sends up: its reorder asks (rescue.h) */
+	uint64_t nacks_sent;      /* NACKs sent to the client for the upload */
+	struct cg_ro_cfg rocf;    /* the server's reorder settings, with its rescue */
 	uint32_t tx_ctl; /* next probe reply sequence */
 	int pass; /* IP pass its probes ask for: -1 nothing */
 	uint64_t created_ms, last_rx_ms;
@@ -617,6 +620,8 @@ static void client_close(struct server *s, struct client *C, const char *why, ui
  * with what the client sent marked (proto.h). A client holds at most
  * CG_CLIENT_SESSIONS: a new one replaces the one heard from least recently
  * (a router restarting in a loop leaves one behind each time). */
+static void rescue_apply(const struct server *s, struct session *S);
+
 static struct session *session_create(struct server *s, struct client *C, const struct cg_hdr *h,
 				      const struct cg_probe_info *pi, const struct sockaddr_storage *from,
 				      uint64_t now_ms)
@@ -685,6 +690,7 @@ static struct session *session_create(struct server *s, struct client *C, const 
 		return NULL;
 	}
 	cg_idmap_put(&s->ids, key, (int32_t)(S - s->s));
+	rescue_apply(s, S);
 	/* Its index into the rescue ring; without memory, no rescue for it. */
 	if (s->resc.n)
 		S->resc_idx = calloc(CG_RESC_IDX, sizeof(*S->resc_idx));
@@ -988,7 +994,18 @@ static void on_probe(struct server *s, struct session *S, struct path *P, unsign
 		S->peer_bond = pb != NULL;
 		S->peer_reorders = pb && pb->reorders;
 		S->peer_asks = pb && pb->split_me;
+		/* Whether it keeps what it sends up, for the upload's rescue. */
+		if (S->peer_rescue != (pb && pb->rescue)) {
+			S->peer_rescue = pb && pb->rescue;
+			rescue_apply(s, S);
+		}
 	}
+	/* This path's losses it will not send again now (CG_BOND_FULL): the
+	 * reorderer does not ask for them. */
+	if (pb && pb->full)
+		S->ro.full |= (uint16_t)(1u << link);
+	else
+		S->ro.full &= (uint16_t)~(1u << link);
 	if (pb && (!P->bond_ok || P->bond_w != pb->weight))
 		cg_split_reset(&S->sp);
 	P->bond_ok = pb != NULL;
@@ -1055,6 +1072,58 @@ static void q_add(struct server *s, int *nq, struct session *S, uint8_t *payload
 	(*nq)++;
 }
 
+/* S's reorder settings: the server's, and with rescue_wait_ms the rescue of
+ * the upload when the client said it keeps what it sends (rescue.h). */
+static void rescue_apply(const struct server *s, struct session *S)
+{
+	S->rocf = s->rocf;
+	S->rocf.rescue_us = s->cfg->reorder && S->peer_rescue ? s->cfg->rescue_wait_ms * 1000 : 0;
+}
+
+/* The upload gaps S's reorderer asked for, as NACKs down its live path of
+ * least delay. now_ms: the wall clock of the live mask (not the
+ * reorderer's 32-bit one). */
+static void send_nacks(struct server *s, struct session *S, uint64_t now_ms)
+{
+	const struct client *C = client_of(s, S);
+	struct cg_reorder *r = &S->ro;
+	uint16_t present, live;
+	int best = -1;
+
+	path_masks(S, now_ms, &present, &live);
+	for (int p = 0; p < CG_MAX_LINKS; p++)
+		if ((live >> p & 1) && S->path[p].used && S->dh[p].have_owd &&
+		    (best < 0 || cg_owd_diff(S->dh[p].owd, S->dh[best].owd) < 0))
+			best = p;
+	for (uint32_t i = 0; best >= 0 && i < r->nask; i += CG_NACK_MAX) {
+		struct path *P = &S->path[best];
+		uint8_t pkt[CG_HDR_LEN + 1 + 4 * CG_NACK_MAX];
+		unsigned n = r->nask - i < CG_NACK_MAX ? r->nask - i : CG_NACK_MAX;
+		size_t plen = cg_nack_write(pkt + CG_HDR_LEN, r->ask + i, n);
+		struct cg_hdr h = { .type = CG_T_NACK,
+				    .hint = C->hint,
+				    .link = (uint8_t)best,
+				    .session = S->id,
+				    .seq = S->tx_ctl++,
+				    .ts = (uint32_t)cg_now_us() };
+		struct msghdr mh = { 0 };
+		struct iovec iov = { .iov_base = pkt, .iov_len = CG_HDR_LEN + plen };
+
+		cg_hdr_write(pkt, &h, C->key + CG_SIPHASH_KEY_LEN, pkt + CG_HDR_LEN, plen);
+		mh.msg_name = &P->addr;
+		mh.msg_namelen = cg_addr_len(&P->addr);
+		mh.msg_iov = &iov;
+		mh.msg_iovlen = 1;
+		if (P->ctl_len) {
+			mh.msg_control = P->ctl.b;
+			mh.msg_controllen = P->ctl_len;
+		}
+		if (sendmsg(s->lane[(unsigned)best & (s->nlanes - 1)].fd, &mh, MSG_DONTWAIT) >= 0)
+			S->nacks_sent++;
+	}
+	r->nask = 0;
+}
+
 /* What S's reorderer may hand on at now (the loop's clock, as its arrival
  * times), queued after what is there: everything with all (a window
  * overflow), else up to the pass's budget; the next pass comes at once for
@@ -1065,12 +1134,14 @@ static void up_drain(struct server *s, int *nq, struct session *S, uint16_t rset
 {
 	struct cg_ro_out o;
 
-	while ((all || s->ro_budget) && cg_ro_next(&S->ro, &s->rocf, rset, now, &o)) {
+	while ((all || s->ro_budget) && cg_ro_next(&S->ro, &S->rocf, rset, now, &o)) {
 		q_add(s, nq, S, cg_ro_pool_buf(&s->pool, o.buf), o.len, o.buf);
 		if (s->ro_budget)
 			s->ro_budget--;
 	}
 	cg_ro_burst_end(&S->ro);
+	if (S->ro.nask)
+		send_nacks(s, S, cg_now_ms());
 }
 
 /* A verified first copy of S's DATA h (payload, len bytes) from path link,
@@ -1094,12 +1165,12 @@ static void up_deliver(struct server *s, int *nq, struct session *S, const struc
 		q_add(s, nq, S, payload, len, CG_RO_NOBUF);
 		return;
 	}
-	v = cg_ro_in(&S->ro, &s->pool, &s->rocf, &k, rset, &buf);
+	v = cg_ro_in(&S->ro, &s->pool, &S->rocf, &k, rset, &buf);
 	if (v == CG_RO_AGAIN) {
 		/* The window overflowed: the gaps it forces out go, with what was
 		 * held behind them, all of it; then the packet is taken. */
 		up_drain(s, nq, S, rset, now, 1);
-		v = cg_ro_in(&S->ro, &s->pool, &s->rocf, &k, rset, &buf);
+		v = cg_ro_in(&S->ro, &s->pool, &S->rocf, &k, rset, &buf);
 	}
 	if (v == CG_RO_HOLD)
 		memcpy(cg_ro_pool_buf(&s->pool, buf), payload, len);
@@ -1971,6 +2042,10 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 		cg_json_u64(j, "missing", S->resc_miss);
 		cg_json_u64(j, "over_budget", S->resc_budget);
 		cg_json_u64(j, "congested", S->resc_congested);
+		/* the upload's: the client keeps what it sends, NACKs sent to it */
+		cg_json_bool(j, "client_keeps", S->peer_rescue);
+		cg_json_bool(j, "asks", S->rocf.rescue_us != 0);
+		cg_json_u64(j, "nacks_sent", S->nacks_sent);
 		cg_json_end(j, '}');
 		cg_json_joint(j, "joint", &S->arr);
 		cg_json_reorder(j, "reorder", &S->ro, s->cfg->reorder, NULL);
@@ -2397,7 +2472,7 @@ static int ro_timeout(struct server *s)
 	now_us = cg_now_us();
 	for (uint32_t i = 0; i < s->nactive && due > 0; i++) {
 		const struct session *S = &s->s[s->ro_active[i]];
-		int32_t d = cg_ro_due_us(&S->ro, &s->rocf, expect_mask(S, now_us / 1000), (uint32_t)now_us);
+		int32_t d = cg_ro_due_us(&S->ro, &S->rocf, expect_mask(S, now_us / 1000), (uint32_t)now_us);
 
 		if (d < due)
 			due = d;
@@ -2721,6 +2796,9 @@ static void apply_config(struct server *s, struct cg_config *next)
 	 * each session holds goes on at once, in order, and every window
 	 * starts again when it is turned back on. */
 	s->rocf = cg_ro_cfg_of(next);
+	for (uint32_t i = 0; i < s->cap; i++)
+		if (s->s[i].used)
+			rescue_apply(s, &s->s[i]);
 	if (old->split != next->split)
 		for (uint32_t i = 0; i < s->cap; i++)
 			cg_split_reset(&s->s[i].sp);

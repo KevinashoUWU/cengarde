@@ -69,7 +69,7 @@ enum cg_type {
 	CG_T_PROBE = 2,       /* client -> server, one link; payload: cg_probe_info */
 	CG_T_PROBE_REPLY = 3, /* server -> client, same path; payload: cg_probe_info */
 	CG_T_HELLO = 4,       /* server -> client, to a probe it cannot take yet; payload: cg_hello */
-	CG_T_NACK = 5,        /* client -> server, one link; payload: DATA sequences to send again */
+	CG_T_NACK = 5,        /* either way, one link; payload: DATA sequences to send again */
 };
 
 /* Probes, replies and NACKs count in the control sequence, DATA in its own. */
@@ -78,11 +78,12 @@ static inline int cg_type_ctl(uint8_t type)
 	return type == CG_T_PROBE || type == CG_T_PROBE_REPLY || type == CG_T_NACK;
 }
 
-/* NACK (version 5, story 013: the rescue): the client's reorderer is about
- * to give up these DATA sequences, and asks the server, which keeps what it
- * sent for a while (CG_BOND_RESCUE in its replies), to send them again on
- * its fastest path. Payload: a count n (1 to CG_NACK_MAX), then n
- * big-endian sequences. */
+/* NACK (version 5, story 013: the rescue): the receiver's reorderer is about
+ * to give up these DATA sequences, and asks the sender, which keeps what it
+ * sent for a while (CG_BOND_RESCUE in its probes or replies), to send them
+ * again on its fastest path: the client for the download, the server for
+ * the upload. Payload: a count n (1 to CG_NACK_MAX), then n big-endian
+ * sequences. */
 #define CG_NACK_MAX 32
 
 /* Header flags on DATA, for bonding (story 012). CG_F_ECN is reserved:
@@ -189,11 +190,11 @@ struct cg_probe_info {
  *   16   CG_BOND_REORDERS: the sender's receive side puts DATA back in
  *        sequence (reorder.h);
  *   17   CG_BOND_SPLIT_ME: the sender asks to receive split DATA;
- *   18   CG_BOND_RESCUE: (a reply) the server keeps the DATA it sent and
- *        sends it again on a NACK (version 5);
- *   19   CG_BOND_FULL: (a reply) but not what is lost on the reply's path
- *        now: its queue is full (that loss is for TCP to see) or the
- *        rescue budget is spent, so the client does not ask and wait;
+ *   18   CG_BOND_RESCUE: the sender keeps the DATA it sent and sends it
+ *        again on a NACK (version 5);
+ *   19   CG_BOND_FULL: but not what is lost on this path now: its queue is
+ *        full (that loss is for TCP to see) or the rescue budget is spent,
+ *        so the other end does not ask and wait;
  * and every other bit is reserved: written 0, ignored when read, so that a
  * newer peer can use them. A client sends it in every probe; a server
  * answers with one only a probe that had one, so that a reply is never
@@ -204,8 +205,8 @@ struct cg_probe_info {
 #define CG_BOND_WEIGHT_MAX 1000
 #define CG_BOND_REORDERS (1u << 16)
 #define CG_BOND_SPLIT_ME (1u << 17)
-#define CG_BOND_RESCUE (1u << 18) /* a reply: the server sends DATA again on a NACK */
-#define CG_BOND_FULL (1u << 19)   /* a reply: but not what is lost on this path now (full, or out of budget) */
+#define CG_BOND_RESCUE (1u << 18) /* the sender sends DATA again on a NACK */
+#define CG_BOND_FULL (1u << 19)   /* but not what is lost on this path now (full, or out of budget) */
 
 struct cg_probe_bond {
 	uint16_t weight;  /* 0 to CG_BOND_WEIGHT_MAX */

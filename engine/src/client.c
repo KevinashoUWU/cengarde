@@ -70,6 +70,7 @@
 #include "replay.h"
 #include "sock.h"
 #include "capacity.h"
+#include "rescue.h"
 #include "pace.h"
 #include "govern.h"
 #include "split.h"
@@ -228,6 +229,12 @@ struct client {
 	 * pool of held packets, allocated once, its settings, and the releases
 	 * left in this loop pass (CG_RO_PASS_MAX). */
 	struct cg_ro_pool pool;
+	/* The upload's rescue (rescue.h): what it sent lately, kept for the
+	 * server's NACKs (rescue_kb), and what it may cost. */
+	struct cg_resc_ring resc;
+	uint32_t *resc_idx;
+	struct cg_resc_budget resc_b;
+	uint64_t nacks_rx, resc_sent, resc_miss, resc_budget, resc_congested;
 	struct cg_ro_cfg rocf;
 	uint32_t ro_budget;
 
@@ -1167,6 +1174,17 @@ static void wg_read(struct client *c)
 							      ? -1
 							      : cg_split_only(c->pick[m], carry, k.dup)));
 			cg_up_header(&c->txs, c->hdr[m], CG_T_DATA, flags, 0, (uint32_t)now_us, c->in.buf[i], len);
+			/* Kept for the server's NACKs (rescue.h), with the one link it
+			 * goes on, and its share of the rescue budget. */
+			if (c->resc_idx && CG_HDR_LEN + len <= CG_RESC_ENTRY) {
+				uint8_t *e = cg_resc_put(&c->resc, c->resc_idx, c->txs.session, c->txs.seq - 1,
+							 (uint16_t)(CG_HDR_LEN + len),
+							 c->prev_only ? (uint8_t)(c->prev_only - 1) : CG_RESC_NOLINK);
+
+				memcpy(e, c->hdr[m], CG_HDR_LEN);
+				memcpy(e + CG_HDR_LEN, c->in.buf[i], len);
+				cg_resc_earn(&c->resc_b, (uint32_t)len, c->cfg->rescue_pct);
+			}
 			c->oiov[m][0].iov_base = c->hdr[m];
 			c->oiov[m][0].iov_len = CG_HDR_LEN;
 			c->oiov[m][1].iov_base = c->in.buf[i];
@@ -1392,6 +1410,60 @@ static void send_nacks(struct client *c, uint64_t now_ms)
 	r->nask = 0;
 }
 
+/* Whether link i's upload is full, so that what it loses is congestion for
+ * TCP to see, not a loss to send again (rescue.h): its queue above the
+ * governor's target. */
+static int up_full(const struct client *c, unsigned i)
+{
+	return c->cap[i].queue_us >= 0 && (uint32_t)c->cap[i].queue_us > c->cfg->governor_target_ms * 1000;
+}
+
+/* A verified NACK from the server (rescue.h): each sequence the ring still
+ * keeps goes again, within the budget, on the live link of least RTT;
+ * not one lost on a full link. */
+static void on_nack(struct client *c, const uint8_t *payload, size_t plen, uint64_t now_ms)
+{
+	uint32_t seq[CG_NACK_MAX];
+	unsigned n = cg_nack_read(seq, payload, plen);
+	uint16_t present, live;
+	struct link *best = NULL;
+
+	c->nacks_rx++;
+	if (!c->resc_idx)
+		return;
+	link_masks(c, now_ms, &present, &live);
+	for (int i = 0; i < CG_MAX_LINKS; i++) {
+		struct link *l = &c->link[i];
+
+		if ((live >> i & 1) && l->fd >= 0 && l->srtt8_us && (!best || l->srtt8_us < best->srtt8_us))
+			best = l;
+	}
+	for (unsigned i = 0; best && i < n; i++) {
+		uint16_t len;
+		uint8_t went;
+		uint8_t *e = (uint8_t *)cg_resc_get(&c->resc, c->resc_idx, c->txs.session, seq[i], &len, &went);
+
+		if (!e) {
+			c->resc_miss++;
+			continue;
+		}
+		if (went < CG_MAX_LINKS && up_full(c, went)) {
+			c->resc_congested++;
+			continue;
+		}
+		if (!cg_resc_spend(&c->resc_b, len - CG_HDR_LEN)) {
+			c->resc_budget++;
+			continue;
+		}
+		cg_hdr_set_link(e, (uint8_t)(best - c->link));
+		if (send(best->fd, e, len, MSG_DONTWAIT) == (ssize_t)len) {
+			best->tx_pkts++;
+			best->tx_bytes += len - CG_HDR_LEN;
+			c->resc_sent++;
+		}
+	}
+}
+
 /* What the reorderer may hand on at now (the pass's clock, as its arrival
  * times), after what the batch holds: everything with all (a window
  * overflow, taken again right after), else up to the pass's budget; the
@@ -1559,6 +1631,8 @@ static void link_read(struct client *c, struct link *l)
 					ro_reply(c, &rset, now32, now_ms);
 				} else if (v == CG_RXV_HELLO) {
 					on_hello(c, l, now_us);
+				} else if (v == CG_RXV_NACK) {
+					on_nack(c, b + CG_HDR_LEN, len - CG_HDR_LEN, now_ms);
 				}
 				continue;
 			}
@@ -1595,6 +1669,8 @@ static void hub_slot(struct client *c, struct cg_rxslot *sl, uint16_t *expect, u
 		ro_reply(c, rset, (uint32_t)clock_us, clock_us / 1000);
 	} else if (v == CG_RXV_HELLO) {
 		on_hello(c, l, cg_now_us());
+	} else if (v == CG_RXV_NACK) {
+		on_nack(c, sl->buf + CG_HDR_LEN, (size_t)sl->len - CG_HDR_LEN, now_ms);
 	}
 }
 
@@ -1664,6 +1740,10 @@ static void send_probe(struct client *c, struct link *l, uint64_t now_us, uint32
 	/* The bonding tail (proto.h): this link's weight, whether this end
 	 * reorders, and with split = on the request for a split download. */
 	struct cg_probe_bond pb = cg_split_probe_tail(c->cfg->split, c->cfg->reorder, c->lw[id]);
+	/* The upload's rescue: it keeps what it sends; but not what this link
+	 * loses now (full, or out of budget). */
+	pb.rescue = c->resc_idx != NULL;
+	pb.full = pb.rescue && (cg_resc_low(&c->resc_b) || up_full(c, id));
 	const struct cg_link_rx *rx = &c->rxs.rx[id];
 	/* The cookie, and where our windows stand, for a server that has to
 	 * take the session up (proto.h). */
@@ -1968,6 +2048,13 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 	cg_json_bool(j, "on", c->rocf.rescue_us != 0);
 	cg_json_bool(j, "server_keeps", c->peer_rescue);
 	cg_json_u64(j, "nacks_sent", c->nacks_sent);
+	/* the upload's: what it kept and sent again for the server's NACKs */
+	cg_json_bool(j, "keeps", c->resc_idx != NULL);
+	cg_json_u64(j, "nacks_rx", c->nacks_rx);
+	cg_json_u64(j, "sent", c->resc_sent);
+	cg_json_u64(j, "missing", c->resc_miss);
+	cg_json_u64(j, "over_budget", c->resc_budget);
+	cg_json_u64(j, "congested", c->resc_congested);
 	cg_json_end(j, '}');
 	cg_json_joint(j, "joint", &c->rxs.arr);
 	cg_json_reorder(j, "reorder", &c->rxs.ro, c->cfg->reorder, &c->pool);
@@ -2653,6 +2740,21 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 		cg_err("reorder_pool_kb = %u: out of memory", cfg->reorder_pool_kb);
 		goto out;
 	}
+	if (cfg->rescue_kb) {
+		uint32_t n = (uint32_t)((uint64_t)cfg->rescue_kb * 1024 / CG_RESC_ENTRY);
+
+		c->resc.mem = malloc((size_t)n * CG_RESC_ENTRY);
+		c->resc.sess = calloc(n, sizeof(*c->resc.sess));
+		c->resc.seq = calloc(n, sizeof(*c->resc.seq));
+		c->resc.len = calloc(n, sizeof(*c->resc.len));
+		c->resc.link = calloc(n, sizeof(*c->resc.link));
+		c->resc_idx = calloc(CG_RESC_IDX, sizeof(*c->resc_idx));
+		if (!c->resc.mem || !c->resc.sess || !c->resc.seq || !c->resc.len || !c->resc.link || !c->resc_idx) {
+			cg_err("rescue_kb = %u: out of memory", cfg->rescue_kb);
+			goto out;
+		}
+		c->resc.n = n;
+	}
 	c->rocf = cg_ro_cfg_of(cfg);
 	rescue_apply(c);
 	/* The control socket is a convenience: the tunnel runs without it. */
@@ -2778,6 +2880,12 @@ out:
 	pumps_stop(c);
 	pumps_free(c); /* they close the link sockets they hold */
 	cg_ro_pool_free(&c->pool);
+	free(c->resc.mem);
+	free(c->resc.sess);
+	free(c->resc.seq);
+	free(c->resc.len);
+	free(c->resc.link);
+	free(c->resc_idx);
 	if (c->wg_fd >= 0)
 		close(c->wg_fd);
 	if (c->tfd >= 0)
