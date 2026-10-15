@@ -3205,11 +3205,11 @@ out:
 		close(s->tfd);
 	if (s->ep >= 0)
 		close(s->ep);
+	for (uint32_t i = 0; s->s && i < s->cap; i++)
+		free(s->s[i].resc_idx);
 	free(s->s);
 	free(s->ro_active);
 	cg_ro_pool_free(&s->pool);
-	for (uint32_t i = 0; s->s && i < s->cap; i++)
-		free(s->s[i].resc_idx);
 	free(s->resc.mem);
 	free(s->resc.sess);
 	free(s->resc.seq);
