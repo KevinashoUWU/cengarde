@@ -483,6 +483,15 @@ con 4 flujos y 20 s, 3 rondas alternadas, salvo que se diga otra cosa.
   ráfagas largas de pérdida, que cualquier regla leerá como congestión, son
   de la FEC con HARQ (historia 012). Entel quedó anclado en B7 (3CA: B7 + B2
   + B28), fuera de su B2 lossy.
+- **MPEG-TS crudo con rescate, Entel ya en B7** (60 s cada uno, dos rondas
+  intercaladas): margen 400 sin rescate, 108 errores en un mal momento
+  (`lost_all` 294) y 0 en uno tranquilo; **margen 10 + rescate (60 ms), 0 y
+  0**, con todo lo pedido rescatado (26 de 26, 11 de 11) y la menor espera
+  (3,0–3,8 % de los retenidos sobre 50 ms, contra 3,5–9,2 % de las otras);
+  margen 400 + rescate, 0 y 0. Para transmitir: **margen corto y rescate**,
+  no margen largo; ningún margen cubre la pérdida real. Lo siguiente es un
+  rescate graduado por enlace (menos presupuesto cuanto más cerca de
+  congestionarse), en vez de encendido o apagado.
 - **Lo pendiente del rescate:** una regla de congestión que no confunda el
   HARQ con una cola llena (la cola sube y además el enlace entrega al tope de
   su capacidad); NACK por dos caminos, reintento a ~1 RTT, NACK con máscara
