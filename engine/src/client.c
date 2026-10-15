@@ -1388,26 +1388,41 @@ static void send_nacks(struct client *c, uint64_t now_ms)
 {
 	struct cg_reorder *r = &c->rxs.ro;
 	uint16_t present, live;
-	struct link *best = NULL;
+	struct link *best[2] = { NULL, NULL };
 
 	link_masks(c, now_ms, &present, &live);
 	for (int i = 0; i < CG_MAX_LINKS; i++) {
 		struct link *l = &c->link[i];
 
-		if ((live >> i & 1) && l->fd >= 0 && l->srtt8_us && (!best || l->srtt8_us < best->srtt8_us))
-			best = l;
+		if (!(live >> i & 1) || l->fd < 0 || !l->srtt8_us)
+			continue;
+		if (!best[0] || l->srtt8_us < best[0]->srtt8_us) {
+			best[1] = best[0];
+			best[0] = l;
+		} else if (!best[1] || l->srtt8_us < best[1]->srtt8_us) {
+			best[1] = l;
+		}
 	}
-	for (uint32_t i = 0; best && i < r->nask; i += CG_NACK_MAX) {
-		uint8_t pkt[CG_HDR_LEN + 1 + 4 * CG_NACK_MAX];
-		unsigned n = r->nask - i < CG_NACK_MAX ? r->nask - i : CG_NACK_MAX;
-		size_t plen = cg_nack_write(pkt + CG_HDR_LEN, r->ask + i, n);
+	/* First asks, then retries (CG_F_RETRY), each on the two fastest links. */
+	for (int list = 0; best[0] && list < 2; list++) {
+		const uint32_t *seq = list ? r->ask2 : r->ask;
+		uint32_t n = list ? r->nask2 : r->nask;
 
-		cg_up_header(&c->txs, pkt, CG_T_NACK, 0, (uint8_t)(best - c->link), (uint32_t)cg_now_us(),
-			     pkt + CG_HDR_LEN, plen);
-		if (send(best->fd, pkt, CG_HDR_LEN + plen, MSG_DONTWAIT) == (ssize_t)(CG_HDR_LEN + plen))
-			c->nacks_sent++;
+		for (uint32_t i = 0; i < n;) {
+			uint8_t pkt[CG_HDR_LEN + CG_NACK_LEN];
+			unsigned used;
+			size_t plen = cg_nack_write(pkt + CG_HDR_LEN, seq + i, n - i, &used);
+
+			i += used;
+			for (int b = 0; b < 2 && best[b]; b++) {
+				cg_up_header(&c->txs, pkt, CG_T_NACK, list ? CG_F_RETRY : 0, (uint8_t)(best[b] - c->link),
+					     (uint32_t)cg_now_us(), pkt + CG_HDR_LEN, plen);
+				if (send(best[b]->fd, pkt, CG_HDR_LEN + plen, MSG_DONTWAIT) == (ssize_t)(CG_HDR_LEN + plen))
+					c->nacks_sent++;
+			}
+		}
 	}
-	r->nask = 0;
+	r->nask = r->nask2 = 0;
 }
 
 /* Whether link i's upload is full, so that what it loses is congestion for
@@ -1421,12 +1436,12 @@ static int up_full(const struct client *c, unsigned i)
 /* A verified NACK from the server (rescue.h): each sequence the ring still
  * keeps goes again, within the budget, on the live link of least RTT;
  * not one lost on a full link. */
-static void on_nack(struct client *c, const uint8_t *payload, size_t plen, uint64_t now_ms)
+static void on_nack(struct client *c, uint8_t flags, const uint8_t *payload, size_t plen, uint64_t now_ms)
 {
-	uint32_t seq[CG_NACK_MAX];
-	unsigned n = cg_nack_read(seq, payload, plen);
+	uint32_t seq[CG_NACK_SEQ_MAX];
+	unsigned n = cg_nack_read(seq, CG_NACK_SEQ_MAX, payload, plen);
 	uint16_t present, live;
-	struct link *best = NULL;
+	struct link *best[2] = { NULL, NULL };
 
 	c->nacks_rx++;
 	if (!c->resc_idx)
@@ -1435,10 +1450,16 @@ static void on_nack(struct client *c, const uint8_t *payload, size_t plen, uint6
 	for (int i = 0; i < CG_MAX_LINKS; i++) {
 		struct link *l = &c->link[i];
 
-		if ((live >> i & 1) && l->fd >= 0 && l->srtt8_us && (!best || l->srtt8_us < best->srtt8_us))
-			best = l;
+		if (!(live >> i & 1) || l->fd < 0 || !l->srtt8_us)
+			continue;
+		if (!best[0] || l->srtt8_us < best[0]->srtt8_us) {
+			best[1] = best[0];
+			best[0] = l;
+		} else if (!best[1] || l->srtt8_us < best[1]->srtt8_us) {
+			best[1] = l;
+		}
 	}
-	for (unsigned i = 0; best && i < n; i++) {
+	for (unsigned i = 0; best[0] && i < n; i++) {
 		uint16_t len;
 		uint8_t went;
 		uint8_t *e = (uint8_t *)cg_resc_get(&c->resc, c->resc_idx, c->txs.session, seq[i], &len, &went);
@@ -1447,19 +1468,24 @@ static void on_nack(struct client *c, const uint8_t *payload, size_t plen, uint6
 			c->resc_miss++;
 			continue;
 		}
+		if (cg_resc_dup(&c->resc, c->resc_idx, seq[i], (uint32_t)now_ms))
+			continue;
 		if (went < CG_MAX_LINKS && up_full(c, went)) {
 			c->resc_congested++;
 			continue;
 		}
-		if (!cg_resc_spend(&c->resc_b, len - CG_HDR_LEN)) {
-			c->resc_budget++;
-			continue;
-		}
-		cg_hdr_set_link(e, (uint8_t)(best - c->link));
-		if (send(best->fd, e, len, MSG_DONTWAIT) == (ssize_t)len) {
-			best->tx_pkts++;
-			best->tx_bytes += len - CG_HDR_LEN;
-			c->resc_sent++;
+		/* A retry goes on the two fastest links. */
+		for (int b = 0; b < ((flags & CG_F_RETRY) ? 2 : 1) && best[b]; b++) {
+			if (!cg_resc_spend(&c->resc_b, len - CG_HDR_LEN)) {
+				c->resc_budget++;
+				break;
+			}
+			cg_hdr_set_link(e, (uint8_t)(best[b] - c->link));
+			if (send(best[b]->fd, e, len, MSG_DONTWAIT) == (ssize_t)len) {
+				best[b]->tx_pkts++;
+				best[b]->tx_bytes += len - CG_HDR_LEN;
+				c->resc_sent++;
+			}
 		}
 	}
 }
@@ -1480,7 +1506,7 @@ static void ro_drain(struct client *c, uint16_t rset, uint32_t now, int all, uin
 			c->ro_budget--;
 	}
 	cg_ro_burst_end(&c->rxs.ro);
-	if (c->rxs.ro.nask)
+	if (c->rxs.ro.nask || c->rxs.ro.nask2)
 		send_nacks(c, now_ms);
 }
 
@@ -1632,7 +1658,7 @@ static void link_read(struct client *c, struct link *l)
 				} else if (v == CG_RXV_HELLO) {
 					on_hello(c, l, now_us);
 				} else if (v == CG_RXV_NACK) {
-					on_nack(c, b + CG_HDR_LEN, len - CG_HDR_LEN, now_ms);
+					on_nack(c, h.flags, b + CG_HDR_LEN, len - CG_HDR_LEN, now_ms);
 				}
 				continue;
 			}
@@ -1670,7 +1696,7 @@ static void hub_slot(struct client *c, struct cg_rxslot *sl, uint16_t *expect, u
 	} else if (v == CG_RXV_HELLO) {
 		on_hello(c, l, cg_now_us());
 	} else if (v == CG_RXV_NACK) {
-		on_nack(c, sl->buf + CG_HDR_LEN, (size_t)sl->len - CG_HDR_LEN, now_ms);
+		on_nack(c, h.flags, sl->buf + CG_HDR_LEN, (size_t)sl->len - CG_HDR_LEN, now_ms);
 	}
 }
 
@@ -2748,8 +2774,10 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 		c->resc.seq = calloc(n, sizeof(*c->resc.seq));
 		c->resc.len = calloc(n, sizeof(*c->resc.len));
 		c->resc.link = calloc(n, sizeof(*c->resc.link));
+		c->resc.sent = calloc(n, sizeof(*c->resc.sent));
 		c->resc_idx = calloc(CG_RESC_IDX, sizeof(*c->resc_idx));
-		if (!c->resc.mem || !c->resc.sess || !c->resc.seq || !c->resc.len || !c->resc.link || !c->resc_idx) {
+		if (!c->resc.mem || !c->resc.sess || !c->resc.seq || !c->resc.len || !c->resc.link || !c->resc.sent ||
+		    !c->resc_idx) {
 			cg_err("rescue_kb = %u: out of memory", cfg->rescue_kb);
 			goto out;
 		}
@@ -2885,6 +2913,7 @@ out:
 	free(c->resc.seq);
 	free(c->resc.len);
 	free(c->resc.link);
+	free(c->resc.sent);
 	free(c->resc_idx);
 	if (c->wg_fd >= 0)
 		close(c->wg_fd);

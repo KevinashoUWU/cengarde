@@ -170,7 +170,8 @@ static inline struct cg_ro_cfg cg_ro_cfg_of(const struct cg_config *cfg)
 				   .margin_us = cfg->reorder_margin_ms * 1000,
 				   .bypass_len = cfg->reorder_bypass,
 				   .by_link = (uint8_t)!!cfg->reorder_by_link,
-				   .adaptive = (uint8_t)!!cfg->reorder_adaptive };
+				   .adaptive = (uint8_t)!!cfg->reorder_adaptive,
+				   .rescue_tries = (uint8_t)cfg->rescue_tries };
 }
 
 /* A pool of reorder_pool_kb / 2 buffers (CG_RO_BUF bytes each), allocated

@@ -560,6 +560,30 @@ static void sc_rescue(const struct base *b)
 		CHECK_EQ(R.r.head, b->sb + 3);
 	}
 
+	/* rescue_tries 2: asked for again at half the wait (ask2), once. */
+	rig(CG_RO_SLOTS, b, 400 * MS, 0, 10 * MS, 0, 0x3);
+	R.cf.rescue_us = 60 * MS;
+	R.cf.rescue_tries = 2;
+	owd(0, 10 * MS);
+	owd(1, 30 * MS);
+	CHECK_EQ(in(0, 0, 10 * MS, 0, SPLIT, DATA, BIG), CG_RO_NOW);
+	CHECK_EQ(in(2, 2 * MS, 12 * MS, 0, SPLIT, DATA, BIG), CG_RO_HOLD);
+	CHECK_EQ(drain(43 * MS), 0);
+	CHECK(R.r.nask == 1 && R.r.nask2 == 0);
+	R.r.nask = 0;
+	CHECK(due(43 * MS) > 0 && due(43 * MS) <= (int32_t)(30 * MS)); /* the retry at 73 ms */
+	CHECK_EQ(drain(72 * MS), 0);
+	CHECK_EQ(R.r.nask2, 0);
+	CHECK_EQ(drain(74 * MS), 0);
+	CHECK_EQ(R.r.nask2, 1);
+	CHECK_EQ(R.r.ask2[0], b->sb + 1);
+	R.r.nask2 = 0;
+	CHECK_EQ(drain(90 * MS), 0);
+	CHECK_EQ(R.r.nask2, 0); /* twice at most */
+	CHECK_EQ(R.r.st.asked, 2);
+	CHECK_EQ(drain(104 * MS), 1); /* given up at 43 + 60 ms */
+	CHECK_EQ(R.r.st.ask_lost, 1);
+
 	/* Several gaps before the held packet: asked for together. */
 	rig(CG_RO_SLOTS, b, 400 * MS, 0, 10 * MS, 0, 0x3);
 	R.cf.rescue_us = 60 * MS;

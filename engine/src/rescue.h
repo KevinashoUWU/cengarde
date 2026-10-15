@@ -37,6 +37,7 @@
 #define CG_RESC_IDX 32768u           /* a session's index, by sequence: a power of two */
 #define CG_RESC_CREDIT_MAX 1048576ull /* bytes: the most a burst of rescues may send */
 #define CG_RESC_NOLINK 0xffu
+#define CG_RESC_DUP_MS 20u /* a sequence asked for again within this: the same NACK on another path */
 
 _Static_assert(!(CG_RESC_IDX & (CG_RESC_IDX - 1)), "CG_RESC_IDX is a power of two");
 
@@ -46,6 +47,7 @@ struct cg_resc_ring {
 	uint32_t *seq;  /* and sequence */
 	uint16_t *len;  /* and length, 0: empty */
 	uint8_t *link;  /* and the one path it went on, CG_RESC_NOLINK: several */
+	uint32_t *sent; /* and when it was last sent again (ms, low bits | 1), 0: never */
 	uint32_t n, next;
 };
 
@@ -66,6 +68,7 @@ static inline uint8_t *cg_resc_put(struct cg_resc_ring *r, uint32_t *idx, uint32
 	r->seq[i] = seq;
 	r->len[i] = len;
 	r->link[i] = link;
+	r->sent[i] = 0;
 	idx[seq & (CG_RESC_IDX - 1)] = i + 1;
 	return r->mem + (size_t)i * CG_RESC_ENTRY;
 }
@@ -84,6 +87,19 @@ static inline const uint8_t *cg_resc_get(const struct cg_resc_ring *r, const uin
 	*len = r->len[e];
 	*link = r->link[e];
 	return r->mem + (size_t)e * CG_RESC_ENTRY;
+}
+
+/* Whether session sess's packet seq (kept) was sent again within
+ * CG_RESC_DUP_MS: the NACK goes on two paths, and its second copy asks for
+ * nothing new. If not, it is marked sent at now_ms. */
+static inline int cg_resc_dup(struct cg_resc_ring *r, const uint32_t *idx, uint32_t seq, uint32_t now_ms)
+{
+	uint32_t e = idx[seq & (CG_RESC_IDX - 1)] - 1;
+
+	if (r->sent[e] && now_ms - r->sent[e] < CG_RESC_DUP_MS)
+		return 1;
+	r->sent[e] = now_ms | 1;
+	return 0;
 }
 
 /* A packet of bytes sent down: pct % of it to the credit. */

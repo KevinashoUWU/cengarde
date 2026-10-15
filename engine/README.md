@@ -435,9 +435,16 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
     Solo cambia al reiniciar.
   - **`rescue_pct` (servidor; 5; 1–50):** el presupuesto, en % de lo que
     baja: lo que se reenvía sale de ahí.
-  - **`rescue_wait_ms` (cliente; 0, no pide; hasta 1000):** cuánto espera
-    un hueco pedido. Unos 1,5 RTT del enlace más rápido (60 en la red de
-    pruebas).
+  - **`rescue_wait_ms` (el que recibe; 0, no pide; hasta 1000):** cuánto
+    espera un hueco pedido; el cliente para la bajada, el servidor para la
+    subida (el otro extremo necesita `rescue_kb`). Con un intento, ~1,5 RTT
+    del enlace más rápido; con `rescue_tries` intentos, al menos ese número
+    de RTT (60 en la red de pruebas, RTT ~35 ms).
+  - **`rescue_tries` (2; 1–4):** cuántas veces se pide un hueco dentro de
+    `rescue_wait_ms`, repartidas (como el mínimo y el máximo de reintentos de
+    librist). Cada NACK sale por los dos enlaces más rápidos, en rangos (una
+    secuencia y una máscara de 64 bits); el que reenvía manda una vez por los
+    dos, y un reintento (`CG_F_RETRY`) lo manda por dos caminos.
   - **No se rescata la congestión:** lo que se pierde en una ruta con la
     cola sobre `governor_target_ms`, o con el presupuesto agotado, no se
     reenvía, y el cliente ni lo pide (`CG_BOND_FULL`): esa pérdida es la que

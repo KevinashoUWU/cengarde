@@ -82,9 +82,16 @@ static inline int cg_type_ctl(uint8_t type)
  * to give up these DATA sequences, and asks the sender, which keeps what it
  * sent for a while (CG_BOND_RESCUE in its probes or replies), to send them
  * again on its fastest path: the client for the download, the server for
- * the upload. Payload: a count n (1 to CG_NACK_MAX), then n big-endian
- * sequences. */
-#define CG_NACK_MAX 32
+ * the upload. It goes on the receiver's two fastest links (one may lose it),
+ * and the sender sends a sequence once for both. Payload: a count k of
+ * ranges (1 to CG_NACK_RANGES), then k ranges of 12 bytes: a big-endian
+ * sequence, asked for, and a big-endian 64-bit mask whose bit i asks for
+ * that sequence + 1 + i. CG_F_RETRY: these were asked for before and did not
+ * come; the sender sends each on two paths. */
+#define CG_NACK_RANGES 16
+#define CG_NACK_LEN (1 + 12 * CG_NACK_RANGES)
+#define CG_NACK_SEQ_MAX (65 * CG_NACK_RANGES) /* sequences one NACK can ask for */
+#define CG_F_RETRY 0x01 /* NACK: asked for again */
 
 /* Header flags on DATA, for bonding (story 012). CG_F_ECN is reserved:
  * senders write 0 for now and receivers ignore it. CG_F_SPLIT is written
@@ -252,12 +259,14 @@ void cg_probe_bond_write(uint8_t *payload, const struct cg_probe_bond *b);
  * the payload has none (a peer without it, plen < CG_PROBE_BOND_LEN). */
 int cg_probe_bond_read(struct cg_probe_bond *b, const uint8_t *payload, size_t plen);
 
-/* A NACK payload for seq[0..n) (1 <= n <= CG_NACK_MAX) into out (at least
- * 1 + 4 n bytes); returns its length. */
-size_t cg_nack_write(uint8_t *out, const uint32_t *seq, unsigned n);
+/* A NACK payload (at most CG_NACK_LEN bytes into out) for seq[0..n) (n >=
+ * 1), as ranges in their order: a sequence within 64 after a range's base
+ * goes in its mask, any other starts a range. *used: how many it took (all
+ * of them, or as many as CG_NACK_RANGES ranges hold). Returns its length. */
+size_t cg_nack_write(uint8_t *out, const uint32_t *seq, unsigned n, unsigned *used);
 /* The sequences of a NACK payload of plen bytes (cg_hdr_parse checked it)
- * into seq; returns how many. */
-unsigned cg_nack_read(uint32_t seq[CG_NACK_MAX], const uint8_t *payload, size_t plen);
+ * into seq, at most max; returns how many. */
+unsigned cg_nack_read(uint32_t *seq, unsigned max, const uint8_t *payload, size_t plen);
 void cg_hello_write(uint8_t out[CG_HELLO_LEN], const struct cg_hello *hl);
 void cg_hello_read(struct cg_hello *hl, const uint8_t in[CG_HELLO_LEN]);
 

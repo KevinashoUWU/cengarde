@@ -10,6 +10,7 @@ static uint8_t mem[N * CG_RESC_ENTRY];
 static uint32_t sess[N], seqs[N], ia[CG_RESC_IDX], ib[CG_RESC_IDX];
 static uint16_t lens[N];
 static uint8_t links[N];
+static uint32_t sents[N];
 
 static void put(struct cg_resc_ring *r, uint32_t *idx, uint32_t s, uint32_t q)
 {
@@ -29,7 +30,7 @@ static int has(const struct cg_resc_ring *r, const uint32_t *idx, uint32_t s, ui
 
 void test_rescue(void)
 {
-	struct cg_resc_ring r = { .mem = mem, .sess = sess, .seq = seqs, .len = lens, .link = links, .n = N };
+	struct cg_resc_ring r = { .mem = mem, .sess = sess, .seq = seqs, .len = lens, .link = links, .sent = sents, .n = N };
 	struct cg_resc_budget b = { 0 };
 
 	memset(lens, 0, sizeof(lens));
@@ -63,6 +64,15 @@ void test_rescue(void)
 	put(&r, ia, 1, 3 + CG_RESC_IDX);
 	CHECK(has(&r, ia, 1, 3 + CG_RESC_IDX));
 	CHECK(!has(&r, ia, 1, 3));
+
+	/* A NACK on two paths: the second asks for nothing new within
+	 * CG_RESC_DUP_MS; a retry after it does. */
+	CHECK(has(&r, ia, 1, 4));
+	CHECK(!cg_resc_dup(&r, ia, 4, 1000));
+	CHECK(cg_resc_dup(&r, ia, 4, 1005));
+	CHECK(!cg_resc_dup(&r, ia, 4, 1000 + CG_RESC_DUP_MS + 1));
+	put(&r, ia, 1, 4 + CG_RESC_IDX); /* a new packet in that entry: never sent again yet */
+	CHECK(!cg_resc_dup(&r, ia, 4 + CG_RESC_IDX, 1006));
 
 	/* The budget: pct % of what goes down, up to the cap. */
 	cg_resc_earn(&b, 1400, 5);

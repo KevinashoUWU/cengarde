@@ -170,7 +170,8 @@ struct cg_config {
 	int reorder_adaptive;         /* each link's margin learns from its late packets (reorder.h) */
 	uint32_t rescue_kb;           /* server: the ring of DATA sent lately, for NACKs (rescue.h); 0: none */
 	uint32_t rescue_pct;          /* server: what a rescue may cost, % of the download */
-	uint32_t rescue_wait_ms;      /* client: a gap about to go is asked for and waits this long; 0: never */
+	uint32_t rescue_wait_ms;      /* a gap about to go is asked for and waits this long; 0: never */
+	uint32_t rescue_tries;        /* asked for this many times within rescue_wait_ms */
 	uint32_t reorder_pool_kb;     /* memory for the packets it holds; changing it restarts */
 	int split;                    /* enum cg_split_mode */
 	uint32_t split_small;         /* datagrams of up to this many bytes are never split */

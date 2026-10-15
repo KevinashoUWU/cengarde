@@ -1072,6 +1072,43 @@ static void q_add(struct server *s, int *nq, struct session *S, uint8_t *payload
 	(*nq)++;
 }
 
+/* S's two live paths of least delay down (best[0] first), -1: none. */
+static void best_paths(const struct session *S, uint64_t now_ms, int best[2])
+{
+	uint16_t present, live;
+
+	best[0] = best[1] = -1;
+	path_masks(S, now_ms, &present, &live);
+	for (int p = 0; p < CG_MAX_LINKS; p++) {
+		if (!(live >> p & 1) || !S->path[p].used || !S->dh[p].have_owd)
+			continue;
+		if (best[0] < 0 || cg_owd_diff(S->dh[p].owd, S->dh[best[0]].owd) < 0) {
+			best[1] = best[0];
+			best[0] = p;
+		} else if (best[1] < 0 || cg_owd_diff(S->dh[p].owd, S->dh[best[1]].owd) < 0) {
+			best[1] = p;
+		}
+	}
+}
+
+/* One datagram (len bytes at b) down path p of S. */
+static int send_path(struct server *s, struct session *S, int p, const uint8_t *b, size_t len)
+{
+	struct path *P = &S->path[p];
+	struct msghdr mh = { 0 };
+	struct iovec iov = { .iov_base = (void *)b, .iov_len = len };
+
+	mh.msg_name = &P->addr;
+	mh.msg_namelen = cg_addr_len(&P->addr);
+	mh.msg_iov = &iov;
+	mh.msg_iovlen = 1;
+	if (P->ctl_len) {
+		mh.msg_control = P->ctl.b;
+		mh.msg_controllen = P->ctl_len;
+	}
+	return sendmsg(s->lane[(unsigned)p & (s->nlanes - 1)].fd, &mh, MSG_DONTWAIT) < 0 ? -1 : 0;
+}
+
 /* S's reorder settings: the server's, and with rescue_wait_ms the rescue of
  * the upload when the client said it keeps what it sends (rescue.h). */
 static void rescue_apply(const struct server *s, struct session *S)
@@ -1087,41 +1124,36 @@ static void send_nacks(struct server *s, struct session *S, uint64_t now_ms)
 {
 	const struct client *C = client_of(s, S);
 	struct cg_reorder *r = &S->ro;
-	uint16_t present, live;
-	int best = -1;
+	int best[2];
 
-	path_masks(S, now_ms, &present, &live);
-	for (int p = 0; p < CG_MAX_LINKS; p++)
-		if ((live >> p & 1) && S->path[p].used && S->dh[p].have_owd &&
-		    (best < 0 || cg_owd_diff(S->dh[p].owd, S->dh[best].owd) < 0))
-			best = p;
-	for (uint32_t i = 0; best >= 0 && i < r->nask; i += CG_NACK_MAX) {
-		struct path *P = &S->path[best];
-		uint8_t pkt[CG_HDR_LEN + 1 + 4 * CG_NACK_MAX];
-		unsigned n = r->nask - i < CG_NACK_MAX ? r->nask - i : CG_NACK_MAX;
-		size_t plen = cg_nack_write(pkt + CG_HDR_LEN, r->ask + i, n);
-		struct cg_hdr h = { .type = CG_T_NACK,
-				    .hint = C->hint,
-				    .link = (uint8_t)best,
-				    .session = S->id,
-				    .seq = S->tx_ctl++,
-				    .ts = (uint32_t)cg_now_us() };
-		struct msghdr mh = { 0 };
-		struct iovec iov = { .iov_base = pkt, .iov_len = CG_HDR_LEN + plen };
+	best_paths(S, now_ms, best);
+	/* First asks, then retries (CG_F_RETRY), each on the two fastest paths. */
+	for (int list = 0; best[0] >= 0 && list < 2; list++) {
+		const uint32_t *seq = list ? r->ask2 : r->ask;
+		uint32_t n = list ? r->nask2 : r->nask;
 
-		cg_hdr_write(pkt, &h, C->key + CG_SIPHASH_KEY_LEN, pkt + CG_HDR_LEN, plen);
-		mh.msg_name = &P->addr;
-		mh.msg_namelen = cg_addr_len(&P->addr);
-		mh.msg_iov = &iov;
-		mh.msg_iovlen = 1;
-		if (P->ctl_len) {
-			mh.msg_control = P->ctl.b;
-			mh.msg_controllen = P->ctl_len;
+		for (uint32_t i = 0; i < n;) {
+			uint8_t pkt[CG_HDR_LEN + CG_NACK_LEN];
+			unsigned used;
+			size_t plen = cg_nack_write(pkt + CG_HDR_LEN, seq + i, n - i, &used);
+
+			i += used;
+			for (int b = 0; b < 2 && best[b] >= 0; b++) {
+				struct cg_hdr h = { .type = CG_T_NACK,
+						    .flags = list ? CG_F_RETRY : 0,
+						    .hint = C->hint,
+						    .link = (uint8_t)best[b],
+						    .session = S->id,
+						    .seq = S->tx_ctl++,
+						    .ts = (uint32_t)cg_now_us() };
+
+				cg_hdr_write(pkt, &h, C->key + CG_SIPHASH_KEY_LEN, pkt + CG_HDR_LEN, plen);
+				if (!send_path(s, S, best[b], pkt, CG_HDR_LEN + plen))
+					S->nacks_sent++;
+			}
 		}
-		if (sendmsg(s->lane[(unsigned)best & (s->nlanes - 1)].fd, &mh, MSG_DONTWAIT) >= 0)
-			S->nacks_sent++;
 	}
-	r->nask = 0;
+	r->nask = r->nask2 = 0;
 }
 
 /* What S's reorderer may hand on at now (the loop's clock, as its arrival
@@ -1140,7 +1172,7 @@ static void up_drain(struct server *s, int *nq, struct session *S, uint16_t rset
 			s->ro_budget--;
 	}
 	cg_ro_burst_end(&S->ro);
-	if (S->ro.nask)
+	if (S->ro.nask || S->ro.nask2)
 		send_nacks(s, S, cg_now_ms());
 }
 
@@ -1195,27 +1227,18 @@ static int path_full(const struct server *s, const struct session *S, unsigned p
 /* A verified NACK of S (rescue.h): each sequence it names that the ring
  * still keeps goes again, within S's budget, on its live path of least
  * delay (the delays of one session's paths share the client's clock). */
-static void on_nack(struct server *s, struct session *S, const uint8_t *payload, size_t plen, uint64_t now_ms)
+static void on_nack(struct server *s, struct session *S, uint8_t flags, const uint8_t *payload, size_t plen,
+		    uint64_t now_ms)
 {
-	uint32_t seq[CG_NACK_MAX];
-	unsigned n = cg_nack_read(seq, payload, plen);
-	uint16_t present, live;
-	int best = -1;
+	uint32_t seq[CG_NACK_SEQ_MAX];
+	unsigned n = cg_nack_read(seq, CG_NACK_SEQ_MAX, payload, plen);
+	int best[2];
 
 	S->nacks++;
 	if (!S->resc_idx)
 		return;
-	path_masks(S, now_ms, &present, &live);
-	for (int p = 0; p < CG_MAX_LINKS; p++)
-		if ((live >> p & 1) && S->path[p].used && S->dh[p].have_owd &&
-		    (best < 0 || cg_owd_diff(S->dh[p].owd, S->dh[best].owd) < 0))
-			best = p;
-	if (best < 0)
-		return;
-	for (unsigned i = 0; i < n; i++) {
-		struct path *P = &S->path[best];
-		struct msghdr mh = { 0 };
-		struct iovec iov;
+	best_paths(S, now_ms, best);
+	for (unsigned i = 0; best[0] >= 0 && i < n; i++) {
 		uint16_t len;
 		uint8_t went;
 		uint8_t *e = (uint8_t *)cg_resc_get(&s->resc, S->resc_idx, S->id, seq[i], &len, &went);
@@ -1224,34 +1247,31 @@ static void on_nack(struct server *s, struct session *S, const uint8_t *payload,
 			S->resc_miss++;
 			continue;
 		}
+		if (cg_resc_dup(&s->resc, S->resc_idx, seq[i], (uint32_t)now_ms))
+			continue;
 		/* Lost where the path is full: congestion, for TCP to see. */
 		if (went < CG_MAX_LINKS && path_full(s, S, went)) {
 			S->resc_congested++;
 			continue;
 		}
-		if (!cg_resc_spend(&S->resc_b, len - CG_HDR_LEN)) {
-			S->resc_budget++;
-			continue;
+		/* A retry goes on the two fastest paths. */
+		for (int b = 0; b < ((flags & CG_F_RETRY) ? 2 : 1) && best[b] >= 0; b++) {
+			struct path *P = &S->path[best[b]];
+
+			if (!cg_resc_spend(&S->resc_b, len - CG_HDR_LEN)) {
+				S->resc_budget++;
+				break;
+			}
+			cg_hdr_set_link(e, (uint8_t)best[b]);
+			if (send_path(s, S, best[b], e, len) < 0) {
+				P->tx_drops++;
+				send_failed(s, S, (unsigned)best[b], errno, 1, now_ms);
+				continue;
+			}
+			P->tx_pkts++;
+			P->tx_bytes += len - CG_HDR_LEN;
+			S->resc_sent++;
 		}
-		cg_hdr_set_link(e, (uint8_t)best);
-		iov.iov_base = e;
-		iov.iov_len = len;
-		mh.msg_name = &P->addr;
-		mh.msg_namelen = cg_addr_len(&P->addr);
-		mh.msg_iov = &iov;
-		mh.msg_iovlen = 1;
-		if (P->ctl_len) {
-			mh.msg_control = P->ctl.b;
-			mh.msg_controllen = P->ctl_len;
-		}
-		if (sendmsg(s->lane[(unsigned)best & (s->nlanes - 1)].fd, &mh, MSG_DONTWAIT) < 0) {
-			P->tx_drops++;
-			send_failed(s, S, (unsigned)best, errno, 1, now_ms);
-			continue;
-		}
-		P->tx_pkts++;
-		P->tx_bytes += len - CG_HDR_LEN;
-		S->resc_sent++;
 	}
 }
 
@@ -1374,7 +1394,7 @@ static void listen_read(struct server *s, struct lane *ln)
 			ln->links |= (uint16_t)(1u << h.link);
 			S->last_rx_ms = now_ms;
 			if (h.type == CG_T_NACK) {
-				on_nack(s, S, b + CG_HDR_LEN, len - CG_HDR_LEN, now_ms);
+				on_nack(s, S, h.flags, b + CG_HDR_LEN, len - CG_HDR_LEN, now_ms);
 				continue;
 			}
 			P = &S->path[h.link];
@@ -2993,7 +3013,8 @@ int cg_server_run(struct cg_config *cfg, const struct cg_run *run)
 		s->resc.seq = calloc(n, sizeof(*s->resc.seq));
 		s->resc.len = calloc(n, sizeof(*s->resc.len));
 		s->resc.link = calloc(n, sizeof(*s->resc.link));
-		if (!s->resc.mem || !s->resc.sess || !s->resc.seq || !s->resc.len || !s->resc.link) {
+		s->resc.sent = calloc(n, sizeof(*s->resc.sent));
+		if (!s->resc.mem || !s->resc.sess || !s->resc.seq || !s->resc.len || !s->resc.link || !s->resc.sent) {
 			cg_err("rescue_kb = %u: out of memory", cfg->rescue_kb);
 			goto out;
 		}
@@ -3153,6 +3174,7 @@ out:
 	free(s->resc.seq);
 	free(s->resc.len);
 	free(s->resc.link);
+	free(s->resc.sent);
 	cg_idmap_free(&s->ids);
 	cg_config_free(s->cfg);
 	free(s->cfg);

@@ -258,33 +258,49 @@ void test_proto(void)
 		CHECK(r.rescue && !r.reorders && !r.split_me && !r.weight);
 	}
 
-	/* NACK: a count and that many sequences, under the MAC; a count of 0,
-	 * past CG_NACK_MAX or longer than the payload does not parse. */
+	/* NACK: ranges of a base and a 64-bit mask, under the MAC; a count of 0,
+	 * past CG_NACK_RANGES or longer than the payload does not parse. */
 	{
-		uint32_t seq[CG_NACK_MAX], got[CG_NACK_MAX];
-		uint8_t nb[CG_HDR_LEN + 1 + 4 * CG_NACK_MAX];
-		struct cg_hdr nh = { .type = CG_T_NACK, .hint = 0x5a, .session = 7, .seq = 9, .ts = 1 }, np;
+		uint32_t seq[200], got[CG_NACK_SEQ_MAX];
+		uint8_t nb[CG_HDR_LEN + CG_NACK_LEN];
+		struct cg_hdr nh = { .type = CG_T_NACK, .flags = CG_F_RETRY, .hint = 0x5a, .session = 7, .seq = 9, .ts = 1 },
+			      np;
+		unsigned used, n = 0;
 		size_t nl;
 
-		for (unsigned i = 0; i < CG_NACK_MAX; i++)
-			seq[i] = 0xfffffff0u + i * 3; /* across the wrap */
+		/* 70 sequences in a row across the wrap, then 3 far apart */
+		for (unsigned i = 0; i < 70; i++)
+			seq[n++] = 0xffffffe0u + i;
+		seq[n++] = 5000;
+		seq[n++] = 5064; /* 64 after 5000: in its mask */
+		seq[n++] = 5065; /* 65 after: a range of its own */
 		CHECK(cg_type_ctl(CG_T_NACK));
-		nl = cg_nack_write(nb + CG_HDR_LEN, seq, CG_NACK_MAX);
-		CHECK_EQ(nl, 1 + 4 * CG_NACK_MAX);
+		nl = cg_nack_write(nb + CG_HDR_LEN, seq, n, &used);
+		CHECK_EQ(used, n);
+		CHECK_EQ(nb[CG_HDR_LEN], 4); /* 0xffffffe0 + 64 more, 6 more, 5000 (+5064), 5065 */
+		CHECK_EQ(nl, 1 + 12 * 4);
 		cg_hdr_write(nb, &nh, key_a, nb + CG_HDR_LEN, nl);
 		CHECK_EQ(cg_hdr_parse(&np, nb, CG_HDR_LEN + nl), 0);
-		CHECK_EQ(np.type, CG_T_NACK);
+		CHECK(np.type == CG_T_NACK && np.flags == CG_F_RETRY);
 		CHECK(cg_hdr_verify(nb, CG_HDR_LEN + nl, key_a));
-		CHECK_EQ(cg_nack_read(got, nb + CG_HDR_LEN, nl), CG_NACK_MAX);
-		CHECK(!memcmp(got, seq, sizeof(seq)));
+		CHECK_EQ(cg_nack_read(got, CG_NACK_SEQ_MAX, nb + CG_HDR_LEN, nl), n);
+		CHECK(!memcmp(got, seq, n * sizeof(seq[0])));
+		CHECK_EQ(cg_nack_read(got, 10, nb + CG_HDR_LEN, nl), 10); /* at most max */
 		CHECK_EQ(cg_hdr_parse(&np, nb, CG_HDR_LEN + nl - 1), -1); /* short by a byte */
-		nl = cg_nack_write(nb + CG_HDR_LEN, seq, 1);
+		/* 20 sequences 100 apart: 16 ranges, the rest for the next NACK */
+		for (unsigned i = 0; i < 20; i++)
+			seq[i] = 100 * i;
+		nl = cg_nack_write(nb + CG_HDR_LEN, seq, 20, &used);
+		CHECK_EQ(used, CG_NACK_RANGES);
+		CHECK_EQ(nl, CG_NACK_LEN);
+		CHECK_EQ(cg_nack_read(got, CG_NACK_SEQ_MAX, nb + CG_HDR_LEN, nl), CG_NACK_RANGES);
+		CHECK_EQ(got[CG_NACK_RANGES - 1], 100 * (CG_NACK_RANGES - 1));
+		nl = cg_nack_write(nb + CG_HDR_LEN, seq, 1, &used);
+		CHECK(used == 1 && nl == 13);
 		CHECK_EQ(cg_hdr_parse(&np, nb, CG_HDR_LEN + nl), 0);
-		CHECK_EQ(cg_nack_read(got, nb + CG_HDR_LEN, nl), 1);
-		CHECK_EQ(got[0], seq[0]);
 		nb[CG_HDR_LEN] = 0;
 		CHECK_EQ(cg_hdr_parse(&np, nb, CG_HDR_LEN + nl), -1);
-		nb[CG_HDR_LEN] = CG_NACK_MAX + 1;
-		CHECK_EQ(cg_hdr_parse(&np, nb, CG_HDR_LEN + 1 + 4 * (CG_NACK_MAX + 1)), -1);
+		nb[CG_HDR_LEN] = CG_NACK_RANGES + 1;
+		CHECK_EQ(cg_hdr_parse(&np, nb, sizeof(nb)), -1);
 	}
 }

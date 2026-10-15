@@ -743,6 +743,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	c->reorder_bypass = 128;
 	c->reorder_pool_kb = 8192;
 	c->rescue_pct = 5;
+	c->rescue_tries = 2;
 	c->split = c->mode == CG_MODE_SERVER ? CG_SPLIT_CLIENT : CG_SPLIT_OFF;
 	c->split_small = 256;
 	c->split_spread_ms = 30;
@@ -800,6 +801,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	    get_u32(&ini, "", "rescue_kb", 0, 262144, &c->rescue_kb, err, errlen) ||
 	    get_u32(&ini, "", "rescue_pct", 1, 50, &c->rescue_pct, err, errlen) ||
 	    get_u32(&ini, "", "rescue_wait_ms", 0, 1000, &c->rescue_wait_ms, err, errlen) ||
+	    get_u32(&ini, "", "rescue_tries", 1, 4, &c->rescue_tries, err, errlen) ||
 	    get_u32(&ini, "", "reorder_pool_kb", 256, 131070, &c->reorder_pool_kb, err, errlen) ||
 	    get_split(&ini, c, err, errlen) ||
 	    get_u32(&ini, "", "split_small", 0, 2048, &c->split_small, err, errlen) ||

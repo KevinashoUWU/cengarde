@@ -160,7 +160,7 @@ enum cg_ro_state {
 	CG_RO_EMPTY = 0,
 	CG_RO_HELD,
 	CG_RO_PASSED,    /* handed on ahead (bypass, pool full) or late */
-	CG_RO_ASKED,     /* a gap asked for again (rescue): t_arr when, flags why it was due */
+	CG_RO_ASKED,     /* a gap asked for again (rescue): t_arr when, flags why it was due, link how often */
 	CG_RO_LOST_RACK, /* a gap given up, and why */
 	CG_RO_LOST_CAP,
 	CG_RO_LOST_OVF,
@@ -180,6 +180,7 @@ struct cg_ro_cfg {
 	uint8_t by_link;      /* a gap whose link the next packet names waits for that link only */
 	uint32_t rescue_us;   /* a gap about to be given up is asked for and waits this long; 0: never */
 	uint8_t adaptive;     /* each link's margin learns from its late packets (RACK's reo_wnd) */
+	uint8_t rescue_tries; /* asks for a gap within rescue_us, evenly spaced (librist's retries); 0, 1: once */
 };
 
 struct cg_ro_pkt {
@@ -243,6 +244,8 @@ struct cg_reorder {
 	struct cg_ro_stats st;
 	uint32_t ask[CG_RO_ASK_MAX]; /* rescue: the sequences to ask for, nask of them; the caller empties it */
 	uint32_t nask;
+	uint32_t ask2[CG_RO_ASK_MAX]; /* and those to ask for again (CG_F_RETRY), nask2 of them */
+	uint32_t nask2;
 	uint16_t full; /* rescue: links whose losses the sender will not send again (CG_BOND_FULL): not asked */
 	/* rescue: per link, the gaps the packet after them said went on it
 	 * (CG_F_PREV), oldest first: when the link brings a later sequence, they
@@ -634,6 +637,7 @@ static inline int cg_ro_ask_one(struct cg_reorder *r, uint32_t x, uint8_t why, u
 	s->state = CG_RO_ASKED;
 	s->t_arr = now;
 	s->flags = why;
+	s->link = 1;
 	r->ask[r->nask++] = x;
 	r->st.asked++;
 	return 1;
@@ -655,10 +659,43 @@ static inline int cg_ro_ask(struct cg_reorder *r, uint32_t g, uint8_t why, uint3
 		s->state = CG_RO_ASKED;
 		s->t_arr = now;
 		s->flags = why;
+		s->link = 1;
 		r->ask[r->nask++] = x;
 		r->st.asked++;
 	}
 	return 1;
+}
+
+/* When an asked-for gap (its slot s) is asked for again: rescue_tries times
+ * within rescue_us, evenly spaced; UINT32_MAX when no more. */
+static inline uint32_t cg_ro_retry_at(const struct cg_ro_cfg *cf, const struct cg_ro_slot *s)
+{
+	unsigned tries = cf->rescue_tries > 1 ? cf->rescue_tries : 1;
+
+	if (s->link >= tries)
+		return UINT32_MAX;
+	return s->t_arr + cf->rescue_us / tries * s->link;
+}
+
+/* Rescue: the asked-for gaps from g up to the lowest held packet whose next
+ * try is due at now are asked for again (ask2), as far as it has room. */
+static inline void cg_ro_retry(struct cg_reorder *r, const struct cg_ro_cfg *cf, uint32_t g, uint32_t now)
+{
+	uint32_t top = r->held ? cg_ro_lowest(r) : g + 1;
+
+	for (uint32_t x = g; x != top && r->nask2 < CG_RO_ASK_MAX; x++) {
+		struct cg_ro_slot *s = &r->slot[x % CG_RO_SLOTS];
+		uint32_t at;
+
+		if (s->seq != x || s->state != CG_RO_ASKED)
+			continue;
+		at = cg_ro_retry_at(cf, s);
+		if (at == UINT32_MAX || (int32_t)(now - at) < 0)
+			continue;
+		s->link++;
+		r->ask2[r->nask2++] = x;
+		r->st.asked++;
+	}
 }
 
 /* Rescue: link l brought seq, so (FIFO) the gaps it was known to carry
@@ -978,8 +1015,10 @@ static inline int cg_ro_next(struct cg_reorder *r, const struct cg_ro_cfg *cf, u
 			uint32_t c = cg_ro_cap(r, cf, n->flags, n->t_arr);
 
 			if ((int32_t)(now - s->t_arr) < (int32_t)cf->rescue_us &&
-			    (!c || (int32_t)(now - (n->t_arr + c)) < 0))
+			    (!c || (int32_t)(now - (n->t_arr + c)) < 0)) {
+				cg_ro_retry(r, cf, g, now);
 				break;
+			}
 			why = s->flags;
 			r->st.ask_lost++;
 		} else if (cg_ro_gap_link(r, cf, g) >= 0) {
@@ -1049,9 +1088,13 @@ static inline int32_t cg_ro_due_us(const struct cg_reorder *r, const struct cg_r
 		uint32_t c = cg_ro_cap(r, cf, n->flags, n->t_arr);
 		int32_t cap_left = (int32_t)(n->t_arr + c - now);
 
+		uint32_t at = cg_ro_retry_at(cf, s);
+
 		left = (int32_t)(s->t_arr + cf->rescue_us - now);
 		if (c && cap_left < left)
 			left = cap_left;
+		if (at != UINT32_MAX && (int32_t)(at - now) < left)
+			left = (int32_t)(at - now);
 		return left < 0 ? 0 : left;
 	}
 	if (cg_ro_forced(r, r->head) || cg_ro_rack(r, rset, &lim))
