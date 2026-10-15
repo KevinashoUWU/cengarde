@@ -12,6 +12,17 @@ static void test_pace_rate(void)
 	CHECK_EQ(cg_pace_rate(50000), CG_PACE_FLOOR);
 }
 
+static void test_pace_add(void)
+{
+	uint64_t r = 0;
+
+	r = cg_pace_add(r, cg_pace_rate(40000000));
+	r = cg_pace_add(r, cg_pace_rate(80000000));
+	CHECK_EQ(r, 30000000);
+	CHECK(cg_pace_add(r, cg_pace_rate(0)) == CG_PACE_NONE); /* a path not measured yet */
+	CHECK(cg_pace_add(CG_PACE_NONE, 1000) == CG_PACE_NONE);
+}
+
 static void test_pace_changed(void)
 {
 	CHECK(!cg_pace_changed(1000, 1000));
@@ -23,5 +34,6 @@ static void test_pace_changed(void)
 void test_pace(void)
 {
 	test_pace_rate();
+	test_pace_add();
 	test_pace_changed();
 }
