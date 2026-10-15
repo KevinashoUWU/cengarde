@@ -145,7 +145,8 @@ static struct cg_ro_pkt pkt(uint32_t seq, uint32_t ts, uint32_t at, unsigned lin
 			    uint16_t len)
 {
 	return (struct cg_ro_pkt){ .seq = R.b.sb + seq, .ts = R.b.tsb + ts, .t_arr = R.b.tb + at, .len = len,
-				   .link = (uint8_t)link, .flags = flags, .wgtype = type };
+				   .link = (uint8_t)link, .flags = flags, .wgtype = type,
+				   .prev = (uint8_t)(cg_prev_link(flags) + 1) };
 }
 
 /* cg_ro_in alone, as a caller that has not drained yet. */
@@ -464,6 +465,60 @@ static void sc_swing(const struct base *b)
 }
 
 /* 4: RACK. */
+/* by_link (CG_F_PREV): a gap waits for the link the packet after it names,
+ * not the slowest of rset. Links 0 (10 ms) and 1 (150 ms). */
+static void sc_by_link(const struct base *b)
+{
+	const uint8_t SP = SPLIT;
+
+	for (int on = 0; on < 2; on++) {
+		/* A: seq 1 went on the fast link and is lost; seq 2, on the slow one,
+		 * names it. With by_link the gap is past link 0's deadline when seq 2
+		 * comes (2 + 10 + 10 ms): it goes at once. Without, it waits for the
+		 * slowest (2 + 150 + 10 ms). */
+		rig(CG_RO_SLOTS, b, 400 * MS, 0, 10 * MS, 0, 0x3);
+		R.cf.by_link = (uint8_t)on;
+		owd(0, 10 * MS);
+		owd(1, 150 * MS);
+		CHECK_EQ(in(0, 0, 10 * MS, 0, SP, DATA, BIG), CG_RO_NOW);
+		CHECK_EQ(in(2, 2 * MS, 152 * MS, 1, SP | cg_prev_flags(0), DATA, BIG), on ? CG_RO_NOW : CG_RO_HOLD);
+		CHECK_EQ(R.r.st.lost_cap, (uint64_t)on);
+		if (!on) {
+			CHECK(due(152 * MS) > 0);
+			drain(163 * MS);
+			CHECK_EQ(R.r.st.lost_cap, 1);
+		}
+		CHECK_EQ(R.r.head, b->sb + 3);
+
+		/* B: seq 1 lost on link 0, and link 0 brings seq 2 (FIFO): the gap is
+		 * lost now (RACK on its link), where the slow link still says nothing. */
+		rig(CG_RO_SLOTS, b, 400 * MS, 0, 10 * MS, 0, 0x3);
+		R.cf.by_link = (uint8_t)on;
+		owd(0, 10 * MS);
+		owd(1, 150 * MS);
+		CHECK_EQ(in(0, 0, 10 * MS, 0, SP, DATA, BIG), CG_RO_NOW);
+		CHECK_EQ(in(2, 2 * MS, 12 * MS, 0, SP | cg_prev_flags(0), DATA, BIG), on ? CG_RO_NOW : CG_RO_HOLD);
+		CHECK_EQ(R.r.st.lost_rack, (uint64_t)on);
+		if (on)
+			CHECK_EQ(due(12 * MS), INT32_MAX);
+
+		/* C: seq 1 went on the slow link and comes: named, it waits for that
+		 * link, as without by_link, and nothing is lost. */
+		rig(CG_RO_SLOTS, b, 400 * MS, 0, 10 * MS, 0, 0x3);
+		R.cf.by_link = (uint8_t)on;
+		owd(0, 10 * MS);
+		owd(1, 150 * MS);
+		CHECK_EQ(in(0, 0, 10 * MS, 0, SP, DATA, BIG), CG_RO_NOW);
+		CHECK_EQ(in(2, 2 * MS, 12 * MS, 0, SP | cg_prev_flags(1), DATA, BIG), CG_RO_HOLD);
+		CHECK(due(12 * MS) > (int32_t)(100 * MS));
+		CHECK_EQ(drain(100 * MS), 0);
+		CHECK_EQ(in(1, 1 * MS, 151 * MS, 1, SP | cg_prev_flags(0), DATA, BIG), CG_RO_NOW);
+		CHECK_EQ(R.r.head, b->sb + 3);
+		CHECK_EQ(R.r.st.lost_cap + R.r.st.lost_rack, 0);
+		CHECK_EQ(R.nout, 3);
+	}
+}
+
 static void sc_rack(const struct base *b)
 {
 	uint64_t held_total;
@@ -2069,6 +2124,7 @@ void test_reorder(void)
 		sc_spread(b);
 		sc_swing(b);
 		sc_rack(b);
+		sc_by_link(b);
 		sc_deadline(b);
 		sc_late(b);
 		sc_overflow(b);

@@ -173,6 +173,7 @@ struct cg_ro_cfg {
 	uint32_t dup_wait_us; /* hold cap otherwise; at most max_wait_us */
 	uint32_t margin_us;   /* added to the slowest link's delay */
 	uint32_t bypass_len;  /* WireGuard data up to this length is never held */
+	uint8_t by_link;      /* a gap whose link the next packet names waits for that link only */
 };
 
 struct cg_ro_pkt {
@@ -182,6 +183,7 @@ struct cg_ro_pkt {
 	uint8_t link;     /* ids from CG_MAX_LINKS up take no per-link state */
 	uint8_t flags;    /* verified header flags */
 	uint8_t wgtype;   /* the datagram's first byte, 0 when empty */
+	uint8_t prev;     /* 1 + the link seq - 1 went on alone (CG_F_PREV), 0: not said */
 };
 
 struct cg_ro_out {
@@ -198,7 +200,7 @@ struct cg_ro_slot {
 	uint8_t state;
 	uint8_t link;
 	uint8_t flags;
-	uint8_t pad;
+	uint8_t gap_link; /* EMPTY with seq: 1 + the link this gap went on alone, 0: not known */
 };
 _Static_assert(sizeof(struct cg_ro_slot) == 20, "cg_ro_slot is 20 bytes");
 
@@ -491,6 +493,62 @@ static inline uint32_t cg_ro_deadline(const struct cg_reorder *r, const struct c
 	return dl;
 }
 
+/* With by_link, the link gap g went on alone, as the packet after it said
+ * (CG_F_PREV); -1 when not known. */
+static inline int cg_ro_gap_link(const struct cg_reorder *r, const struct cg_ro_cfg *cf, uint32_t g)
+{
+	const struct cg_ro_slot *s = &r->slot[g % CG_RO_SLOTS];
+
+	if (!cf->by_link || s->seq != g || s->state != CG_RO_EMPTY || !s->gap_link)
+		return -1;
+	return s->gap_link - 1;
+}
+
+/* RACK on gap g's own link l: it brought a later sequence, so (FIFO) it
+ * will not bring g. */
+static inline int cg_ro_link_rack(const struct cg_reorder *r, int l, uint32_t g)
+{
+	return l >= 0 && l < CG_MAX_LINKS && r->link[l].hw_ok && (int32_t)(r->link[l].hw - g) > 0;
+}
+
+/* dl of a gap that went on link l alone, whose lowest held packet above is
+ * (ts, t_arr), with cap c: that link's delay plus swing instead of the
+ * slowest's (cg_ro_deadline), so never later than it. */
+static inline uint32_t cg_ro_deadline_link(const struct cg_reorder *r, const struct cg_ro_cfg *cf, int l, uint32_t ts,
+					   uint32_t t_arr, uint32_t c)
+{
+	const struct cg_ro_link *k = &r->link[l];
+	uint32_t dl = t_arr + c, sw = cg_ro_swing(k);
+
+	if (k->owd_ok && sw < INT32_MAX / 2) {
+		uint32_t e = ts + k->owd + sw + cf->margin_us;
+
+		if ((int32_t)(e - dl) < 0)
+			dl = e;
+	}
+	return dl;
+}
+
+/* Whether gap g goes when a packet (ts, t_arr) with cap c arrives at its
+ * end and nothing is held: forced, given up by RACK (its own link's when
+ * known, else every link's: rack and lim), or past its deadline. *why says
+ * which. */
+static inline int cg_ro_gap_gone(const struct cg_reorder *r, const struct cg_ro_cfg *cf, uint16_t rset, uint32_t g,
+				 int rack, uint32_t lim, uint32_t ts, uint32_t t_arr, uint32_t c, uint8_t *why)
+{
+	int l = cg_ro_gap_link(r, cf, g);
+
+	*why = CG_RO_LOST_OVF;
+	if (cg_ro_forced(r, g))
+		return 1;
+	*why = CG_RO_LOST_RACK;
+	if (l >= 0 ? cg_ro_link_rack(r, l, g) : rack && (int32_t)(lim - g) > 0)
+		return 1;
+	*why = CG_RO_LOST_CAP;
+	return !c || (int32_t)(t_arr - (l >= 0 ? cg_ro_deadline_link(r, cf, l, ts, t_arr, c)
+					       : cg_ro_deadline(r, cf, rset, ts, t_arr, c))) >= 0;
+}
+
 /* The lowest held sequence (held > 0): the first HELD bit from the head's
  * slot on, around once. */
 static inline uint32_t cg_ro_lowest(const struct cg_reorder *r)
@@ -518,6 +576,7 @@ static inline void cg_ro_lose(struct cg_reorder *r, uint32_t g, uint8_t why, uin
 	s->seq = g;
 	s->state = why;
 	s->t_arr = when;
+	s->gap_link = 0;
 	if (why == CG_RO_LOST_RACK)
 		r->st.lost_rack++;
 	else if (why == CG_RO_LOST_CAP)
@@ -531,6 +590,7 @@ static inline void cg_ro_pass(struct cg_reorder *r, struct cg_ro_slot *s, uint32
 {
 	s->seq = seq;
 	s->state = CG_RO_PASSED;
+	s->gap_link = 0;
 	r->passed_ahead++;
 }
 
@@ -590,12 +650,41 @@ static inline enum cg_ro_v cg_ro_late(struct cg_reorder *r, const struct cg_ro_p
 static inline int cg_ro_skip(struct cg_reorder *r, const struct cg_ro_cfg *cf, const struct cg_ro_pkt *k,
 			     uint16_t rset)
 {
-	uint32_t lim = 0, last = k->seq - 1, c;
+	uint32_t lim = 0, c = cg_ro_cap(r, cf, k->flags, k->t_arr), last = k->seq - 1;
 	int rack = cg_ro_rack(r, rset, &lim);
+	uint8_t why;
 
-	if (!cg_ro_forced(r, last) && !(rack && (int32_t)(lim - last) > 0)) {
-		c = cg_ro_cap(r, cf, k->flags, k->t_arr);
-		if (c && (int32_t)(k->t_arr - cg_ro_deadline(r, cf, rset, k->ts, k->t_arr, c)) < 0)
+	if (!cf->by_link) {
+		/* The whole gap at once, as the last sequence before k says. */
+		if (!cg_ro_forced(r, last) && !(rack && (int32_t)(lim - last) > 0) && c &&
+		    (int32_t)(k->t_arr - cg_ro_deadline(r, cf, rset, k->ts, k->t_arr, c)) < 0)
+			return 0;
+		for (uint32_t g = r->head; g != k->seq; g++) {
+			struct cg_ro_slot *s = &r->slot[g % CG_RO_SLOTS];
+
+			if (s->seq == g && s->state == CG_RO_PASSED) {
+				s->state = CG_RO_EMPTY;
+				r->passed_ahead--;
+			} else {
+				cg_ro_lose(r, g,
+					   cg_ro_forced(r, g)                   ? CG_RO_LOST_OVF
+					   : rack && (int32_t)(lim - g) > 0 ? CG_RO_LOST_RACK
+										: CG_RO_LOST_CAP,
+					   k->t_arr);
+			}
+		}
+		r->head = k->seq + 1;
+		r->st.in_order++;
+		cg_ro_moved(r);
+		return 1;
+	}
+	/* by_link: gap by gap, each with its own link when named; one that
+	 * would still wait keeps k held. */
+	for (uint32_t g = r->head; g != k->seq; g++) {
+		const struct cg_ro_slot *s = &r->slot[g % CG_RO_SLOTS];
+
+		if (!(s->seq == g && s->state == CG_RO_PASSED) &&
+		    !cg_ro_gap_gone(r, cf, rset, g, rack, lim, k->ts, k->t_arr, c, &why))
 			return 0;
 	}
 	for (uint32_t g = r->head; g != k->seq; g++) {
@@ -605,11 +694,8 @@ static inline int cg_ro_skip(struct cg_reorder *r, const struct cg_ro_cfg *cf, c
 			s->state = CG_RO_EMPTY;
 			r->passed_ahead--;
 		} else {
-			cg_ro_lose(r, g,
-				   cg_ro_forced(r, g)                   ? CG_RO_LOST_OVF
-				   : rack && (int32_t)(lim - g) > 0 ? CG_RO_LOST_RACK
-									: CG_RO_LOST_CAP,
-				   k->t_arr);
+			cg_ro_gap_gone(r, cf, rset, g, rack, lim, k->ts, k->t_arr, c, &why);
+			cg_ro_lose(r, g, why, k->t_arr);
 		}
 	}
 	r->head = k->seq + 1;
@@ -660,6 +746,17 @@ static inline enum cg_ro_v cg_ro_in(struct cg_reorder *r, struct cg_ro_pool *p, 
 		r->force = 0;
 		return CG_RO_NOW;
 	}
+	/* The gap just before k (d >= 1: at or after the head) went on the link
+	 * k names: it waits for that link only (by_link). */
+	if (cf->by_link && k->prev && k->prev <= CG_MAX_LINKS) {
+		struct cg_ro_slot *g = &r->slot[(k->seq - 1) % CG_RO_SLOTS];
+
+		if (g->seq != k->seq - 1 || g->state == CG_RO_EMPTY || g->state >= CG_RO_LOST_RACK) {
+			g->seq = k->seq - 1;
+			g->state = CG_RO_EMPTY;
+			g->gap_link = k->prev;
+		}
+	}
 	s = &r->slot[k->seq % CG_RO_SLOTS];
 	if (cg_ro_bypass(cf, k->wgtype, k->len)) {
 		cg_ro_pass(r, s, k->seq);
@@ -684,6 +781,7 @@ static inline enum cg_ro_v cg_ro_in(struct cg_reorder *r, struct cg_ro_pool *p, 
 	s->state = CG_RO_HELD;
 	s->link = k->link;
 	s->flags = k->flags;
+	s->gap_link = 0;
 	r->held_bits[(k->seq % CG_RO_SLOTS) / 64] |= 1ULL << (k->seq % 64);
 	r->held++;
 	r->st.held_total++;
@@ -729,6 +827,19 @@ static inline int cg_ro_next(struct cg_reorder *r, const struct cg_ro_cfg *cf, u
 			why = CG_RO_LOST_OVF;
 		} else if (!r->held) {
 			break;
+		} else if (cg_ro_gap_link(r, cf, g) >= 0) {
+			int l = cg_ro_gap_link(r, cf, g);
+
+			if (cg_ro_link_rack(r, l, g)) {
+				why = CG_RO_LOST_RACK;
+			} else {
+				const struct cg_ro_slot *n = cg_ro_lowest_slot(r);
+
+				if ((int32_t)(now - cg_ro_deadline_link(r, cf, l, n->ts, n->t_arr,
+									cg_ro_cap(r, cf, n->flags, n->t_arr))) < 0)
+					break;
+				why = CG_RO_LOST_CAP;
+			}
 		} else {
 			if (rack < 0)
 				rack = cg_ro_rack(r, rset, &lim);
@@ -763,6 +874,7 @@ static inline int32_t cg_ro_due_us(const struct cg_reorder *r, const struct cg_r
 	const struct cg_ro_slot *s;
 	uint32_t lim;
 	int32_t left;
+	int l;
 
 	if (!r->held)
 		return INT32_MAX;
@@ -771,8 +883,13 @@ static inline int32_t cg_ro_due_us(const struct cg_reorder *r, const struct cg_r
 		return 0;
 	if (cg_ro_forced(r, r->head) || cg_ro_rack(r, rset, &lim))
 		return 0;
+	l = cg_ro_gap_link(r, cf, r->head);
+	if (l >= 0 && cg_ro_link_rack(r, l, r->head))
+		return 0;
 	s = cg_ro_lowest_slot(r);
-	left = (int32_t)(cg_ro_deadline(r, cf, rset, s->ts, s->t_arr, cg_ro_cap(r, cf, s->flags, s->t_arr)) - now);
+	left = (int32_t)((l >= 0 ? cg_ro_deadline_link(r, cf, l, s->ts, s->t_arr, cg_ro_cap(r, cf, s->flags, s->t_arr))
+				 : cg_ro_deadline(r, cf, rset, s->ts, s->t_arr, cg_ro_cap(r, cf, s->flags, s->t_arr))) -
+			 now);
 	return left == INT32_MAX ? INT32_MAX - 1 : left;
 }
 

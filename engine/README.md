@@ -405,10 +405,17 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
 - **`reorder_bypass` (128; 0–2048 bytes):** los datagramas de datos de
   WireGuard de hasta ese tamaño (keepalives, ACK de TCP vacíos) y los
   handshakes se entregan al instante, sin esperar. Con 0, solo los handshakes.
+- **`reorder_by_link` (`no`; `yes` o `no`), experimental:** cada paquete
+  de datos dice por qué enlace salió la secuencia anterior, cuando salió
+  por uno solo (protocolo v5, `CG_F_PREV`). Con `yes`, el reordenador
+  espera un hueco solo lo que tarda ese enlace (su retraso más cuatro
+  desvíos, más `reorder_margin_ms`), en vez del enlace más lento, y lo da
+  por perdido apenas ese enlace trae una secuencia posterior (los enlaces
+  entregan en orden). Sin el dato, como siempre (historia 013).
 - **`reorder_pool_kb` (8192; 256–131070):** memoria para los paquetes
   retenidos, en bloques de 2 KiB, reservada al arrancar; solo ocupa RAM lo
   que llega a usarse. En el servidor la comparten todas las sesiones (cada
-  una suma además unos 81 KiB de ventana); una sesión que no encuentra
+  una suma además unos 322 KiB de ventana); una sesión que no encuentra
   búfer entrega al instante y lo cuenta (`pool_full`). Es lo único de esta
   sección que reinicia el proceso al cambiarlo; el resto se aplica en
   caliente, y apagar `reorder` entrega en orden lo que estaba retenido.

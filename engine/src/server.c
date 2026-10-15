@@ -147,6 +147,7 @@ struct session {
 	uint16_t wg_port; /* wg_fd's own port (network order): WireGuard knows the client by it */
 	struct cg_wgw wgw; /* the client's handshakes WireGuard has not answered */
 	uint32_t tx_seq; /* next DATA sequence down */
+	uint8_t prev_only; /* 1 + the path the previous one went on alone, 0: several (proto.h) */
 	uint32_t tx_ctl; /* next probe reply sequence */
 	int pass; /* IP pass its probes ask for: -1 nothing */
 	uint64_t created_ms, last_rx_ms;
@@ -1068,7 +1069,8 @@ static void up_deliver(struct server *s, int *nq, struct session *S, const struc
 			       .len = (uint16_t)len,
 			       .link = h->link,
 			       .flags = h->flags,
-			       .wgtype = len ? payload[0] : 0 };
+			       .wgtype = len ? payload[0] : 0,
+			       .prev = (uint8_t)(cg_prev_link(h->flags) + 1) };
 	enum cg_ro_v v;
 	uint16_t buf;
 
@@ -1379,6 +1381,14 @@ static void down_prepare(struct server *s, struct session *S, int m, uint8_t *bu
 				       : -1);
 	S->down_split += s->pick[m] >= 0;
 	S->last_down_ms = now_us / 1000;
+	/* The path the previous sequence went on alone, for the client's
+	 * reorderer (CG_F_PREV); then this one's, for the next (down_send:
+	 * cg_split_dst of the same masks, and with mute_trickle a copied
+	 * packet goes on the other live paths too). */
+	h.flags |= cg_prev_flags((int)S->prev_only - 1);
+	S->prev_only = (uint8_t)(1 + (s->pick[m] < 0 && s->cfg->mute_trickle
+					      ? -1
+					      : cg_split_only(s->pick[m], d->carry, d->k.dup)));
 	h.seq = S->tx_seq++;
 	cg_hdr_write(s->hdr[m], &h, C->key + CG_SIPHASH_KEY_LEN, buf, len);
 	s->oiov[m][0].iov_base = s->hdr[m];

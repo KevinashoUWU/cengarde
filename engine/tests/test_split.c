@@ -321,6 +321,13 @@ static void test_split_dst(void)
 	CHECK_EQ(cg_split_dst(1, carriers, dup0), bit(1) | bit(3));
 	CHECK_EQ(cg_split_dst(0, carriers, 0), bit(0));
 	CHECK_EQ(cg_split_dst(2, bit(2) | bit(3), bit(3) | bit(5)), bit(2) | bit(3)); /* link 5 does not carry */
+	/* The one link a packet goes on, for the next packet's CG_F_PREV. */
+	CHECK_EQ(cg_split_only(0, carriers, 0), 0);
+	CHECK_EQ(cg_split_only(4, carriers, bit(5)), 4); /* link 5 does not carry */
+	CHECK_EQ(cg_split_only(1, carriers, dup0), -1);  /* and a copy on link 3 */
+	CHECK_EQ(cg_split_only(-1, carriers, dup0), -1); /* every carrier */
+	CHECK_EQ(cg_split_only(-1, bit(2), 0), 2);       /* one carrier only */
+	CHECK_EQ(cg_split_only(3, bit(1), 0), -1);       /* on none */
 
 	cg_split_reset(&s);
 	for (unsigned k = 0; k < n; k++) {

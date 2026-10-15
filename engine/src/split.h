@@ -181,6 +181,16 @@ static inline uint16_t cg_split_dst(int pick, uint16_t carriers, uint16_t dup0)
 	return (uint16_t)(((1u << pick) | dup0) & carriers);
 }
 
+/* The one link a packet goes on (cg_split_dst of the same arguments), or -1
+ * when it goes on several or none: what its next packet tells the receiver
+ * (cg_prev_flags, proto.h). */
+static inline int cg_split_only(int pick, uint16_t carriers, uint16_t dup0)
+{
+	uint16_t d = cg_split_dst(pick, carriers, dup0);
+
+	return d && !(d & (d - 1)) ? __builtin_ctz(d) : -1;
+}
+
 /* Whether an end with split setting mode (enum cg_split_mode) splits what it
  * sends, given the peer's newest probe tail: peer_reorders and peer_asks are
  * its CG_BOND_REORDERS and CG_BOND_SPLIT_ME (0 without a tail). */

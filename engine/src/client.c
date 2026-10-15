@@ -173,6 +173,7 @@ struct client {
 
 	uint64_t up_pkts, up_bytes, up_toobig;
 	uint64_t up_split;   /* of up_pkts, packets split (split.h) instead of copied to every link */
+	uint8_t prev_only;   /* 1 + the link the previous one went on alone, 0: several (proto.h) */
 	struct cg_split sp;  /* the split's round-robin credits */
 	uint16_t lw[CG_MAX_LINKS]; /* the [link] weights of the links in use (split = on), 1 without a section */
 	uint16_t dup0;             /* of those, the weight-0 links: they carry every packet */
@@ -1156,6 +1157,13 @@ static void wg_read(struct client *c)
 									(uint32_t)len, c->cfg->split_small, &flags)
 						    : -1);
 			c->up_split += c->pick[m] >= 0;
+			/* The link the previous sequence went on alone (CG_F_PREV), then
+			 * this one's (send_links: cg_split_dst of the same masks; with
+			 * mute_trickle a copied packet goes on the other live links too). */
+			flags |= cg_prev_flags((int)c->prev_only - 1);
+			c->prev_only = (uint8_t)(1 + (c->pick[m] < 0 && c->cfg->mute_trickle
+							      ? -1
+							      : cg_split_only(c->pick[m], carry, k.dup)));
 			cg_up_header(&c->txs, c->hdr[m], CG_T_DATA, flags, 0, (uint32_t)now_us, c->in.buf[i], len);
 			c->oiov[m][0].iov_base = c->hdr[m];
 			c->oiov[m][0].iov_len = CG_HDR_LEN;
@@ -1363,7 +1371,8 @@ static void down_deliver(struct client *c, const struct cg_hdr *h, unsigned link
 			       .len = (uint16_t)len,
 			       .link = (uint8_t)link,
 			       .flags = h->flags,
-			       .wgtype = len ? payload[0] : 0 };
+			       .wgtype = len ? payload[0] : 0,
+			       .prev = (uint8_t)(cg_prev_link(h->flags) + 1) };
 	enum cg_ro_v v;
 	uint16_t buf;
 

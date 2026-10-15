@@ -22,12 +22,24 @@ void test_proto(void)
 	for (int i = 0; i < 64; i++)
 		payload[i] = (uint8_t)(i * 3);
 
+	/* The previous link in DATA's flags (version 5): every link id, beside
+	 * the split and ECN bits, and none when not said. */
+	for (int l = 0; l < 16; l++) {
+		uint8_t f = (uint8_t)(cg_prev_flags(l) | CG_F_SPLIT | 0x03);
+
+		CHECK_EQ(cg_prev_link(f), l);
+		CHECK((f & CG_F_SPLIT) && (f & 0x03) == 0x03);
+	}
+	CHECK_EQ(cg_prev_flags(-1), 0);
+	CHECK_EQ(cg_prev_flags(16), 0);
+	CHECK_EQ(cg_prev_link(CG_F_SPLIT | 0x03), -1);
+
 	cg_hdr_write(pkt, &h, key_a, payload, sizeof(payload));
 	memcpy(pkt + CG_HDR_LEN, payload, sizeof(payload));
 
 	/* Layout: version/type, the client hint at byte 2, link at byte 3,
 	 * session, seq and ts in network order. */
-	CHECK_EQ(pkt[0], 0x41);
+	CHECK_EQ(pkt[0], 0x51);
 	CHECK_EQ(pkt[2], 0x5a);
 	CHECK_EQ(pkt[3], 5);
 	CHECK(!memcmp(pkt + 4, "\xde\xad\xbe\xef\x01\x02\x03\x04\xa0\xb0\xc0\xd0", 12));
@@ -68,9 +80,11 @@ void test_proto(void)
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
 	pkt[0] = 0x31; /* version 3 (no hint, cookies or control sequence) too */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
-	pkt[0] = 0x4f; /* unknown type */
+	pkt[0] = 0x41; /* version 4 (no previous link in DATA's flags) too */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
-	pkt[0] = 0x41;
+	pkt[0] = 0x5f; /* unknown type */
+	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
+	pkt[0] = 0x51;
 	pkt[2] = 0xff; /* any hint parses: the server judges it */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), 0);
 	CHECK_EQ(p.hint, 0xff);

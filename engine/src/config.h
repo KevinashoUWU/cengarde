@@ -166,6 +166,7 @@ struct cg_config {
 	uint32_t reorder_dup_wait_ms; /* the same where nothing is split (<= reorder_max_wait_ms) */
 	uint32_t reorder_margin_ms;   /* added to the slowest link's delay when waiting for a gap */
 	uint32_t reorder_bypass;      /* data datagrams of up to this many bytes skip the reorderer */
+	int reorder_by_link;          /* a gap waits for the link the next packet says it went on (reorder.h) */
 	uint32_t reorder_pool_kb;     /* memory for the packets it holds; changing it restarts */
 	int split;                    /* enum cg_split_mode */
 	uint32_t split_small;         /* datagrams of up to this many bytes are never split */

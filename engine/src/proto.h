@@ -1,6 +1,6 @@
-/* cengarde wire protocol, version 4 (version 1 had no delay reports,
+/* cengarde wire protocol, version 5 (version 1 had no delay reports,
  * version 2 no IP pass flags, version 3 no client hint, cookies or separate
- * control sequence).
+ * control sequence, version 4 no previous link in DATA's flags).
  *
  * Every datagram between client and server carries a 24-byte header followed
  * by the payload (a WireGuard datagram for DATA). All integers are big-endian.
@@ -57,7 +57,7 @@
 
 #include "siphash.h"
 
-#define CG_PROTO_VERSION 4
+#define CG_PROTO_VERSION 5
 #define CG_HDR_LEN 24
 #define CG_MAC_OFF 16
 #define CG_HINT_OFF 2
@@ -85,6 +85,26 @@ static inline int cg_type_ctl(uint8_t type)
  * copy"). */
 #define CG_F_ECN 0x03   /* the ECN field of the WireGuard datagram (RFC 3168 codepoint) */
 #define CG_F_SPLIT 0x04 /* this packet skips at least one carrier */
+/* The link the previous DATA sequence went on, when it went on that link
+ * alone (version 5, story 013): CG_F_PREV, and its id in the high 4 bits.
+ * The receiver's reorderer then waits for that gap as long as that link
+ * may take, not the slowest, and gives it up as soon as that link brings a
+ * later sequence (links are FIFO). Under the MAC, as every flag. */
+#define CG_F_PREV 0x08
+#define CG_F_PREV_SHIFT 4
+
+/* DATA flags for a packet whose previous sequence went on link alone
+ * (0-15), or on several (-1). */
+static inline uint8_t cg_prev_flags(int link)
+{
+	return link < 0 || link > 15 ? 0 : (uint8_t)(CG_F_PREV | link << CG_F_PREV_SHIFT);
+}
+
+/* The link the previous sequence went on alone, from DATA flags; -1: not said. */
+static inline int cg_prev_link(uint8_t flags)
+{
+	return flags & CG_F_PREV ? flags >> CG_F_PREV_SHIFT : -1;
+}
 
 /* Header flags on HELLO. */
 #define CG_F_REFUSED 0x01 /* the server will not take the session (limit, client off) */
