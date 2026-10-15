@@ -17,6 +17,7 @@ struct sim {
 	uint64_t t, tx_pkts, tx_bytes;
 	uint32_t rx;
 	double backlog; /* packets sent and not yet delivered */
+	int stale;      /* its delay reports stopped: no queue measured */
 };
 
 static void sim_start(struct sim *s)
@@ -43,7 +44,7 @@ static void sim_step(struct sim *s, double send_mbit, double cap_mbit)
 	s->h.owd = 30000u + (uint32_t)(s->backlog / can * 100 * MS); /* queue: backlog over the rate */
 	s->h.have_owd = 1;
 	s->h.fresh_until_ms = s->t + 3000;
-	cg_cap_tick(&s->l, s->t, s->t, s->rx, s->tx_pkts, s->tx_bytes, &s->h, &CFG);
+	cg_cap_tick(&s->l, s->t, s->t, s->rx, s->tx_pkts, s->tx_bytes, s->stale ? NULL : &s->h, &CFG);
 }
 
 static int near(uint64_t bps, double mbit, double tol)
@@ -104,6 +105,34 @@ static void test_capacity_saturated(void)
 	run(&s, 34, 0, 50);
 	run(&s, 80, 45, 50);
 	CHECK(near(s.l.rate_bps, 45, 0.05) && cg_cap_bps(&s.l) >= 44 * MBIT);
+}
+
+/* A link that stops delivering what it is sent, while its delay says
+ * nothing (its replies stopped coming in time): after two samples of less
+ * than half, its capacity is what it delivers. A link ramping up, its
+ * delivery a sample behind, is not taken for one. */
+static void test_capacity_short(void)
+{
+	static struct sim s;
+
+	sim_start(&s);
+	run(&s, 40, 30, 50); /* 30 delivered */
+	CHECK(near(cg_cap_bps(&s.l), 30, 0.02));
+	/* the link drops to 3, and its delay goes stale: no queue measured */
+	s.l.queue_us = 2000; /* the last queue it measured, from before */
+	s.stale = 1;
+	run(&s, 40, 30, 3);
+	CHECK(s.l.queue_us == 2000);
+	CHECK(s.l.short_n >= CG_CAP_SHORT_N);
+	CHECK(cg_cap_bps(&s.l) < 10 * MBIT);
+	/* a fresh start: 0 to 40 at once on a link of 50 */
+	sim_start(&s);
+	run(&s, 40, 10, 50);
+	for (int i = 0; i < 40; i++) {
+		sim_step(&s, 40, 50);
+		CHECK_EQ(s.l.short_n, 0);
+	}
+	CHECK(cg_cap_bps(&s.l) > 30 * MBIT);
 }
 
 /* Samples span CG_CAP_MIN_MS; counters from another run start again. */
@@ -346,6 +375,7 @@ static void test_capacity_shapes(void)
 
 void test_capacity(void)
 {
+	test_capacity_short();
 	test_capacity_total();
 	test_capacity_shapes();
 	test_capacity_converges();

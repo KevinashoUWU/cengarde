@@ -1044,6 +1044,9 @@ de ida sobre su mínimo de `governor_window_ms`) pase de
 `governor_target_ms`: entonces lo que entrega ahora. Un enlace al que se
 le manda menos de lo que lleva entrega lo que se le manda, y eso no dice
 nada de lo que lleva: su capacidad se mantiene, y solo una cola la baja
+(o entregar menos de la mitad de lo enviado durante dos muestras seguidas:
+un enlace atorado deja de responder a tiempo y su retardo medido queda
+viejo)
 (con `capacity_weights`, que bajara sola dejaba enlaces al mínimo:
 historia 013). Con `capacity_weights`, de
 ella salen los pesos del reparto (arriba); sin, solo se informa.
