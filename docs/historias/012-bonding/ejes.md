@@ -2,6 +2,28 @@
 
 Ocho ejes, escritos por cuatro sintetizadores sobre las fichas ya supervisadas. Son anteriores a la auditoría: lo que la auditoría corrigió está aplicado en las matrices finales, no aquí. En particular, la síntesis de **reordenamiento** se armó sobre una premisa falsa del contexto (que cengarde deduplica por el contador de WireGuard); el código usa una secuencia propia de 32 bits bajo el MAC, y la matriz de cengarde ya lo corrige.
 
+## Estado de las ideas (2026-10-15)
+
+Lo probado después del estudio, en la red de pruebas (Pi 4 y PC del banco, 4 módems LTE/5G de Entel, WOM, Movistar y Claro, VPS de Vultr en Santiago) y en el laboratorio (`bench/lab.sh bond`). El detalle está en la historia 013. En el texto, cada idea lleva una nota `**[Probado …]**`, `**[Hecho …]**`, `**[Descartado …]**` o `**[Pendiente …]**`.
+
+| Idea | Estado | Dónde | Resultado clave |
+| --- | --- | --- | --- |
+| Reparto por llegada esperada (`split_eta`) | Hecho | historia 013, PR #37 y #41 | +44 % en la bajada y +25 % en la subida en hora punta (TCP, 4 flujos) |
+| Pesos según la capacidad (`capacity_weights`, `capacity.h`) | Hecho | historia 013, PR #34, #36, #40 y #43 | se queda; el PR #43 (la capacidad de un enlace lleno es lo que entrega) es neutro: 312 frente a 320 Mbit/s, 16 flujos |
+| Pacing por enlace | Descartado | historia 013, PR #38 (cliente) y borrador PR #45 (colas del servidor) | subida 57 → 40 Mbit/s; en el servidor, neutro (82,5 frente a 80,4) |
+| Silenciar el enlace atrasado en el reparto (`mute_behind_ms`) | Descartado para el reparto | historia 013 | 150 ms frente a 0: 150,7 frente a 167,8 Mbit/s |
+| Ventana del reordenador 16384 y anti-replay 32768 | Probado, sin ganancia | historia 013, PR #46 | sin desbordes (eran el 36 % de las rendiciones) y un tercio de las retransmisiones, pero 124 frente a 152 Mbit/s: limita cuánto retiene |
+| Plazo por enlace con el enlace previo (v5, `CG_F_PREV`, `reorder_by_link`) | Apagado por omisión | historia 013, PR #47 | 141,5 frente a 151,2 Mbit/s |
+| Margen adaptativo tipo RACK (`reorder_adaptive`) | Apagado | historia 013, PR #49 | MPEG-TS crudo: 56/116 errores frente a 3/6 con 400 ms fijos; aprende tarde y olvida rápido |
+| MPEG-TS crudo por UDP (HEVC 1080p60, 15 Mbit/s, 60 s) | Probado | historia 013 | margen 10 ms: 106 errores sin pérdida real; margen 400 ms: 0; RTMP (TCP), limpio |
+| Rescate (ARQ estilo XLINK) | Hecho, para tráfico de tasa fija | historia 013, PR #48 (bajada) y #50 (subida) | laboratorio con 1 % de pérdida: 10–11 → 50–63 Mbit/s y retransmisiones de ~1 % a 0,04 %; con un enlace lleno cuesta 6–15 %; con TCP saturando en la red de pruebas, mismo caudal |
+| NACK por rangos, por los dos enlaces más rápidos, reintentos y copia en dos caminos | Hecho | historia 013, PR #52 | 63 frente a ~50 Mbit/s en el laboratorio |
+| Gobernador del rescate (cola prevista a 1 s) | Hecho | historia 013, PR #53 | `lossy` 60 frente a 11,8; `het` 56,2 frente a 59,6. Las reglas de cola pareja o casi máxima (borrador PR #51) se descartaron |
+| Aviso de huecos que no vendrán (`CG_F_GONE`) | Hecho | historia 013, PR #54 | rescatado 9 % → 78 %; el ping de bajada con carga vuelve a ~80 ms |
+| MPTCP fuera del túnel frente a cengarde | Probado | historia 013 | bajada: cengarde ~2× MPTCP; subida pareja; el usuario prefiere el reparto por paquete |
+| FEC (RS/RLC con redundancia incremental tipo HARQ) | Pendiente | — | las ráfagas parecen congestión a cualquier regla; la FEC es la herramienta para ellas |
+| Pérdida con carga en campo | Probado | historia 013 | casi toda es congestión (colas celulares de 0,5–2,6 s), no radio; Entel en una B2 sola confundía las reglas: se ancló en B7 |
+
 ---
 
 ## Reparto y planificación entre enlaces (planificadores, WRR por capacidad, k-de-N, duplicación selectiva)
@@ -66,7 +88,7 @@ Varias fuentes independientes llegan al mismo criterio: mandar cada paquete por 
 - El trabajo con realimentación retardada propone EDF cuando los retardos difieren, sin evaluarlo [F4-joint-sched-coding-delayed-feedback A6].
 - El BLEST del kernel es una versión de lo mismo [F3-blest N2].
 
-**Traducido a cengarde [razonado].** ETA_i = OWD_i + (bytes en la cola del enlace i + len)/C_i, y se elige el mínimo. Basta la OWD relativa entre enlaces, porque el desfase de reloj se cancela al comparar. Todo sale de datos que la regla de cengarde permite: la OWD de las sondas autenticadas, C_i estimada con las estadísticas de primeras copias, y la profundidad del anillo del hilo de cada enlace (diseño A.7).
+**Traducido a cengarde [razonado].** ETA_i = OWD_i + (bytes en la cola del enlace i + len)/C_i, y se elige el mínimo. Basta la OWD relativa entre enlaces, porque el desfase de reloj se cancela al comparar. Todo sale de datos que la regla de cengarde permite: la OWD de las sondas autenticadas, C_i estimada con las estadísticas de primeras copias, y la profundidad del anillo del hilo de cada enlace (diseño A.7). **[Hecho: `split_eta` (historia 013, PR #37 y #41): +44 % en la bajada y +25 % en la subida en hora punta (TCP, 4 flujos).]**
 
 Tiene tres propiedades:
 - (a) Con poca carga todo va por el enlace de menor OWD, que es la latencia mínima posible.
@@ -75,7 +97,7 @@ Tiene tres propiedades:
 
 En saturación, la latencia del agregado sube hasta la OWD del enlace más lento que se esté usando. Ningún planificador lo evita: es la regla de que el agregado hereda la peor latencia [F5-mlvpn A4], [F2-quic-multipath A5].
 
-Condición dura: la cola tiene que vivir en cengarde (pacing por enlace a C_i en el hilo de cada enlace) y no en el módem. Si C_i se sobrestima, la cola se va al CPE, la ETA miente y vuelve el problema de minRTT con bufferbloat [razonado][MEDIR]. Cech mostró que el tamaño de las colas intermedias invierte el ranking de planificadores [F3-cech-thesis A1, A2].
+~~Condición dura: la cola tiene que vivir en cengarde (pacing por enlace a C_i en el hilo de cada enlace) y no en el módem.~~ **[Descartado: el pacing por enlace empeoró la subida (57 → 40 Mbit/s, PR #38) y en las colas del servidor fue neutro (82,5 frente a 80,4, borrador PR #45); la ETA rinde sin él (historia 013).]** Si C_i se sobrestima, la cola se va al CPE, la ETA miente y vuelve el problema de minRTT con bufferbloat [razonado][MEDIR]. Cech mostró que el tamaño de las colas intermedias invierte el ranking de planificadores [F3-cech-thesis A1, A2].
 
 ### 6. WRR por capacidad y puntajes de ventana
 **WRR por capacidad.** Es lo que hacen:
@@ -83,7 +105,7 @@ Condición dura: la cola tiene que vivir en cengarde (pacing por enlace a C_i en
 - el BPF bpf_weight_rr de OpenMPTCProuter [F5-openmptcprouter A2];
 - libRIST.
 
-Lo prevén TR-348 y ATSSS [F2-bbf-tr348 A1], [F2-3gpp-ts24193-atsss A9]. Ninguna fuente mide WRR sobre enlaces de radio.
+Lo prevén TR-348 y ATSSS [F2-bbf-tr348 A1], [F2-3gpp-ts24193-atsss A9]. Ninguna fuente mide WRR sobre enlaces de radio. **[Hecho: pesos según la capacidad medida desde las sondas (`capacity_weights`, `capacity.h`; historia 013, PR #34, #36 y #40). El PR #43 fue neutro (312 frente a 320 Mbit/s, 16 flujos) y se queda.]**
 
 Con proporciones fijas, cada enlace con peso > 0 lleva tráfico también con poca carga. Con reordenador, todo el tráfico paga entonces la OWD del enlace más lento que tenga peso [razonado; F2-quic-multipath A5]. Peplink (vendedor) recomienda enlaces dentro de 50 % de ancho y 150 ms de latencia entre sí. Si la latencia varía mucho, aconseja dedicar al túnel los de baja latencia y dejar los demás de respaldo [F6-peplink-speedfusion-whitepaper N3, N6].
 
@@ -114,7 +136,7 @@ Ninguna fuente primaria mide k-de-N. Lo que hay:
 - ATSSS redundant: con acceso primario puede duplicar en el otro, «implementation dependent». Con umbral de pérdida, duplica solo si ambos accesos lo exceden; si no, usa el sano o el primario [F2-3gpp-ts24193-atsss A4]. Solo está en el espejo Rel-19, no en la V17.9.0, y no vale para ATSSS-LL [N1].
 - Speedify conmuta los flujos de streaming entre bonding y redundancia «según lo que funcione mejor», sin publicar el criterio [F6-speedify-bonding-mode A5], [F6-speedify-streaming-mode A1, A3].
 - TR-348 saca la telefonía del reparto por paquete y la manda por un solo camino, porque el retardo de reorden degrada la experiencia [F2-bbf-tr348 N1].
-- La única medición de producción es XLINK. Reinyectar sin control sumó 15 % de tráfico. Reinyectar solo cuando el buffer de reproducción baja de los umbrales (95, 80) costó 2,1 % y bajó el rebuffering entre 23 y 67 % frente a QUIC de un camino, en un A/B de Taobao con más de 100 mil participantes [F3-xlink A1, A2]. El 66 % de la Tabla 2 es un proxy del rebuffering [A3]. El multicamino sin control fue peor que un solo camino [F3-xlink, A8 corregida].
+- La única medición de producción es XLINK. Reinyectar sin control sumó 15 % de tráfico. Reinyectar solo cuando el buffer de reproducción baja de los umbrales (95, 80) costó 2,1 % y bajó el rebuffering entre 23 y 67 % frente a QUIC de un camino, en un A/B de Taobao con más de 100 mil participantes [F3-xlink A1, A2]. El 66 % de la Tabla 2 es un proxy del rebuffering [A3]. El multicamino sin control fue peor que un solo camino [F3-xlink, A8 corregida]. **[Hecho: el rescate estilo XLINK (historia 013, PR #48 y #50); en el laboratorio con 1 % de pérdida, 10–11 → 50–63 Mbit/s; con TCP saturando en la red de pruebas, mismo caudal.]**
 - Un respaldo que no puede llevar el bloque entero a tiempo sirve poco; es un resultado de modelo analítico [F4-joint-sched-coding-parallel A4].
 
 Lo que se sigue [razonado]:
@@ -138,10 +160,10 @@ El reparto por programa lineal, con reintento por el camino de menor latencia [F
 ### 11. Qué significa
 **cengarde [razonado].** cg_sched_mask(links, n, len, now) puede componerse en tres pasos puros y testeables:
 1. Clase por tamaño y tipo WireGuard: el control y los chicos van a una máscara de 2 enlaces (menor OWD, medios distintos).
-2. Los grandes van al mínimo de ETA entre los enlaces no silenciados, con tope de cola por enlace y pacing en el hilo de cada enlace.
+2. Los grandes van al mínimo de ETA entre los enlaces no silenciados, con tope de cola por enlace y pacing en el hilo de cada enlace. **[Hecho el mínimo de ETA (PR #37 y #41); el pacing se descartó (PR #38: subida 57 → 40 Mbit/s; historia 013).]**
 3. Con carga baja y CPU libre se puede seguir duplicando todo como hoy. Cuando la carga se acerca a la capacidad del mejor enlace, se pasa a repartir los grandes, con histéresis.
 
-El silenciado de la historia 006 ya acota el spread entre enlaces con datos (~150 ms). Todo usa OWD de sondas, capacidad desde primeras copias y profundidad de anillo, nunca datos sin MAC.
+El silenciado de la historia 006 ya acota el spread entre enlaces con datos (~150 ms). **[Descartado para el reparto: silenciar al atrasado empeora (`mute_behind_ms` 150 frente a 0: 150,7 frente a 167,8 Mbit/s; historia 013).]** Todo usa OWD de sondas, capacidad desde primeras copias y profundidad de anillo, nunca datos sin MAC.
 
 **SmoothStream.** Nada aquí reabre el WRR de libRIST, el peso 0 para audio ni el minimax de paridad. Lo que aporta a T7:
 - el patrón XLINK: subir redundancia solo cuando el margen del buffer se acorta, con dos umbrales que dan histéresis [F3-xlink A4, A5];
@@ -154,13 +176,13 @@ El WRR encaja con RIST porque su receptor ya fija la latencia, así que el repar
 
 - Spread de OWD entre los 5 enlaces (WOM, Entel, Claro, Movistar, Starlink) en ambos sentidos, en reposo y bajo carga: p50, p95 y p99 por hora. Cuánto sube la OWD con carga en cada enlace (cola del CPE o del módem).
 - Capacidad sostenida por enlace y por sentido, y cómo varía en el tiempo, incluidos los bordes de 15 s de Starlink y los handovers 5G. Cuánto se equivoca una C_i estimada con primeras copias.
-- Banco con netem y trazas reales, y después campo. Comparar duplicación total (hoy), WRR por capacidad estimada, ETA (OWD + cola/C_i) y minRTT con tope. Métricas: goodput de 1 y de N flujos TCP Cubic y BBR (Linux, Android, Windows, iOS) y QUIC; latencia bajo carga; retransmisiones espurias interiores; ocupación del reordenador; CPU por paquete en la Pi.
+- Banco con netem y trazas reales, y después campo. Comparar duplicación total (hoy), WRR por capacidad estimada, ETA (OWD + cola/C_i) y minRTT con tope. Métricas: goodput de 1 y de N flujos TCP Cubic y BBR (Linux, Android, Windows, iOS) y QUIC; latencia bajo carga; retransmisiones espurias interiores; ocupación del reordenador; CPU por paquete en la Pi. **[Probado 2026-10-15: ETA +44 % en la bajada y +25 % en la subida; frente a MPTCP fuera del túnel, cengarde da ~2× en la bajada y lo mismo en la subida (historia 013).]**
 - Objetivo del ROADMAP ≥1,8× con 2 enlaces iguales: medirlo con un flujo y con varios, con Cubic y con BBR, con y sin reordenador.
 - Histograma de tamaños y tipos de mensaje WireGuard en tráfico real, de subida y de bajada: qué fracción de paquetes y de bytes queda bajo cada umbral candidato para la duplicación selectiva.
 - Costo de CPU en la Pi de duplicar los paquetes chicos con k = 2 frente a k = N (envíos extra por segundo), y costo de la ETA por paquete (debería ser despreciable).
 - Correlación de pérdidas y de picos de OWD entre los 4 operadores y Starlink en Santiago, para elegir los k enlaces de la duplicación por diversidad de medio.
 - Umbral de carga (fracción de la capacidad del mejor enlace y de la CPU) para pasar de duplicar todo a repartir los grandes, con histéresis.
-- Si el pacing por enlace a C_i mantiene la cola dentro del anillo de cengarde y no en el módem: comparar la OWD con y sin pacing al 80–100 % de la capacidad.
+- Si el pacing por enlace a C_i mantiene la cola dentro del anillo de cengarde y no en el módem: comparar la OWD con y sin pacing al 80–100 % de la capacidad. **[Descartado: pacing en el cliente, subida 57 → 40 Mbit/s (PR #38); en las colas del servidor, 82,5 frente a 80,4 (borrador PR #45).]**
 - Tiempo de reacción de la ETA ante un pico de OWD de 5G (3× a 10× según dual-LTE) con sondas cada 100 ms, y cuántos paquetes quedan en vuelo por el enlace que se degrada.
 - SmoothStream (T7): margen del buffer RIST en el momento en que conviene subir redundancia (patrón XLINK) y dos umbrales con histéresis, medidos en fierro. Capacidad por pata para los pesos con la celda saturada.
 
@@ -205,7 +227,7 @@ Está diseñada para desorden dentro del RTT del camino más corto [N1]. Adaptar
 
 **Windows, iOS y macOS, y los QUIC de navegador:** nada en las fuentes [MEDIR].
 
-**Tráfico no fiable (RTP, VoIP, juegos).** MP-DCCP dice, en un apéndice informativo, que muchas aplicaciones no fiables procesan datos fuera de orden y que el reordenamiento puede no hacer falta [F2-mp-dccp A6]. TR-348, en cambio, saca la telefonía del reparto por paquete justamente por el retardo de reorden [F2-bbf-tr348 N1, A6].
+**Tráfico no fiable (RTP, VoIP, juegos).** MP-DCCP dice, en un apéndice informativo, que muchas aplicaciones no fiables procesan datos fuera de orden y que ~~el reordenamiento puede no hacer falta~~ [F2-mp-dccp A6]. **[Probado 2026-10-15: MPEG-TS crudo por UDP (HEVC 1080p60, 15 Mbit/s) con margen de 10 ms dio 106 errores de decodificación sin pérdida real (lo soltado llegaba 100–500 ms después); con 400 ms, 0. RTMP (TCP), limpio (historia 013).]** TR-348, en cambio, saca la telefonía del reparto por paquete justamente por el retardo de reorden [F2-bbf-tr348 N1, A6].
 
 ### 3. El tope duro: la ventana anti-replay de WireGuard
 WireGuard guarda el mayor contador recibido y una ventana de contadores previos, que se consulta solo después de verificar la etiqueta [F9-wireguard-paper A1, A2, A6]. El algoritmo es el del apéndice C de RFC 2401 o el de RFC 6479; el paper no dice cuál ni el tamaño [A3].
@@ -224,7 +246,7 @@ Lo que llegue con más atraso que eso es pérdida real, no desorden. Con un reor
 - Raiciu: Σx_i·RTT_max, doblado para seguir enviando durante una retransmisión rápida. Da 375 KB con 3G de 2 Mbit/s y 150 ms más WiFi de 8 Mbit/s y 20 ms [F3-raiciu-nsdi12 A1, N4]. Con buffer chico, una pérdida en el lento bloquea al rápido [A3]. Autoajustar midiendo el RTT de un camino con bufferbloat infla el buffer sin necesidad [A7].
 - Peplink usa un jitter buffer de 150 ms por defecto y dice que subirlo «puede ayudar» si las latencias difieren mucho (vendedor) [F6-peplink-speedfusion-whitepaper A7].
 
-**Para cengarde [razonado].** El factor 2 de Raiciu viene de la ARQ de MPTCP; cengarde no retransmite, así que la memoria es tasa × espera máxima. A 200 Mbit/s con 150 ms son ≈3,75 MB, unos 2700 datagramas de 1420 B. Caben en un anillo preasignado de 4096 entradas por índice, sin malloc por paquete. Como el contador es denso, el anillo se indexa por contador módulo N y la inserción es O(1). La búsqueda por lotes de Raiciu [A12] existe porque MPTCP ordena bytes.
+**Para cengarde [razonado].** El factor 2 de Raiciu viene de la ARQ de MPTCP; cengarde no retransmite, así que la memoria es tasa × espera máxima. A 200 Mbit/s con 150 ms son ≈3,75 MB, unos 2700 datagramas de 1420 B. Caben en un anillo preasignado de 4096 entradas por índice, sin malloc por paquete. **[Probado 2026-10-15: con carga, el 36 % de las rendiciones eran desbordes de 4096. Con 16384 y anti-replay 32768 (PR #46) desaparecen y las retransmisiones bajan a un tercio, pero el caudal cae (124 frente a 152 Mbit/s): limita cuánto retiene (historia 013).]** Como el contador es denso, el anillo se indexa por contador módulo N y la inserción es O(1). La búsqueda por lotes de Raiciu [A12] existe porque MPTCP ordena bytes.
 
 La espera máxima ya está acotada por lo hecho. El silenciado de la historia 006 saca de los datos a un enlace que va más de 150 ms detrás del más rápido durante 2 s. Entre enlaces con datos el spread queda en ≤ ~150 ms, salvo transitorios de hasta 2 s.
 
@@ -236,9 +258,9 @@ Las fuentes ofrecen tres maneras de soltar:
 - **Timer de inactividad (MLVPN).** Lo calcula como 2,2 × máx(srtt + 4·rttvar) de los enlaces activos, o 0,8 s sin medición [F5-mlvpn A2]. Pero lo rearma con cada inserción, así que con tráfico continuo el hueco se rompe por desborde de ventana y no por tiempo [A3]. Al expirar vacía todo y resetea [A2]. Su ventana sugerida de 64 paquetes cubre unos 7 ms a 100 Mbit/s [razonado].
 - **Diferencia de retardo entre caminos (MP-DCCP).** Da un hueco por perdido tras path_delta/2, solo con rutas simétricas y sin jitter [F2-mp-dccp A5].
 
-**Propuesta [razonado].** Aplicar el criterio de RACK [F9-rfc8985-rack-tlp N3] por enlace. Si cada enlace entrega en orden (FIFO), el contador c está perdido cuando todos los enlaces que llevan datos ya entregaron algún contador mayor que c. Así la pérdida real se resuelve en cuanto el enlace más lento con datos muestra un paquete posterior.
+**Propuesta [razonado].** Aplicar el criterio de RACK [F9-rfc8985-rack-tlp N3] por enlace. Si cada enlace entrega en orden (FIFO), el contador c está perdido cuando todos los enlaces que llevan datos ya entregaron algún contador mayor que c. Así la pérdida real se resuelve en cuanto el enlace más lento con datos muestra un paquete posterior. **[Descartado: el plazo por enlace con el enlace previo en la cabecera (protocolo v5, `CG_F_PREV`, `reorder_by_link`, PR #47) no mejoró (141,5 frente a 151,2 Mbit/s); apagado por omisión (historia 013).]**
 
-Además, un tope por hueco: llegada del primer contador > c + (OWD máxima de los enlaces con datos − OWD del enlace por el que llegó) + margen. La OWD sale de las sondas autenticadas; es el path_delta sin el /2, porque cengarde mide la ida.
+Además, un tope por hueco: llegada del primer contador > c + (OWD máxima de los enlaces con datos − OWD del enlace por el que llegó) + margen. La OWD sale de las sondas autenticadas; es el path_delta sin el /2, porque cengarde mide la ida. **[Probado 2026-10-14: con margen de 10 ms se soltaban huecos que igual llegaban (4–8 % en la subida); con 50 ms, 0,2–3 %, y la subida de la Pi pasa de 16–17 a 33–48 Mbit/s (historia 013, PR #32).]**
 
 Con planificación por llegada (eje 1) los huecos se cierran en pocos ms; con WRR fijo, en hasta el spread. El supuesto de FIFO por enlace hay que medirlo, porque los cambios de ruta LEO reordenan dentro de un mismo camino [F8-leo-reordering A1, A3].
 
@@ -281,7 +303,7 @@ RIST ya reordena con un buffer en tiempo. El presupuesto decidido (cierre + scat
 Detectar la pérdida a la entrada del buffer da la mínima latencia, pero con desorden dispara retransmisiones de más [A7]. El fec-nack-delay ya decidido tiene que cubrir también el desorden entre patas, no solo dar lugar a la FEC [razonado].
 
 Como idea a medir, no como cambio, dos patrones permitirían ajustar el retardo del NACK por pata:
-- el de RACK [F9-rfc8985-rack-tlp A1–A5]: empezar chico, crecer cuando se detecta un NACK espurio (el original llega después de pedirlo), tener tope y volver al inicio tras N recuperaciones;
+- el de RACK [F9-rfc8985-rack-tlp A1–A5]: empezar chico, crecer cuando se detecta un NACK espurio (el original llega después de pedirlo), tener tope y volver al inicio tras N recuperaciones; **[Probado 2026-10-15 en el reordenador de cengarde: el margen adaptativo tipo RACK (`reorder_adaptive`, PR #49) perdió contra 400 ms fijos con MPEG-TS crudo (56/116 frente a 3/6 errores): aprende tarde y olvida rápido. Apagado.]**
 - la regla de FIFO por pata de la sección 5.
 
 Lo demás de esta familia es coherente con lo decidido:
@@ -295,7 +317,7 @@ Lo demás de esta familia es coherente con lo decidido:
 - Tamaño efectivo de la ventana anti-replay en las implementaciones de WireGuard que se usan de verdad (kernel del OpenWrt de la Pi, kernel del VPS, wireguard-go si lo hubiera), leyendo el código.
 - Que el WireGuard emisor saque los contadores en orden aunque cifre en paralelo. Si no, el reordenador vería huecos falsos.
 - Comportamiento del reordenador en los rekeys de WireGuard (dos índices vivos a la vez) y con los mensajes sin contador.
-- Distribución del tiempo de retención por hueco, huecos soltados por tiempo, paquetes que llegan después de soltar y paquetes descartados por la ventana de WireGuard. Comparar la regla de FIFO por enlace con un timer fijo.
+- Distribución del tiempo de retención por hueco, huecos soltados por tiempo, paquetes que llegan después de soltar y paquetes descartados por la ventana de WireGuard. Comparar la regla de FIFO por enlace con un timer fijo. **[Probado 2026-10-15: el plazo por enlace (PR #47) no gana al fijo (141,5 frente a 151,2 Mbit/s); el 36 % de las rendiciones eran desbordes, que el PR #46 quita (historia 013).]**
 - Supuesto de FIFO por enlace: desorden dentro de un mismo enlace 5G y dentro de Starlink (bordes de 15 s, cambios de ruta).
 - Latencia añadida a los paquetes chicos (VoIP, ACK) por bloqueo de cabeza de línea, con y sin bypass, y efecto del bypass en QUIC.
 - CPU y memoria del anillo de reorden a la tasa máxima, en la Pi (bajada) y en el VPS (subida).
@@ -343,7 +365,7 @@ Lo demás de esta familia es coherente con lo decidido:
   - En Starlink la base cambia cada 15 s (§7). La ventana del mínimo tiene que ser menor que 15 s, o reiniciarse en cada borde. Un mínimo de 10 s como el de BBR leería el escalón como cola.
 
 ### 3. Cola y bufferbloat de cada enlace
-- **En celular la cola se llena sin que la pérdida avise.**
+- **En celular la cola se llena sin que la pérdida avise.** **[Probado 2026-10-15: con carga saturante, casi toda la pérdida en la red de pruebas es congestión, con colas celulares de 0,5–2,6 s, no radio (historia 013).]**
   - EVDO con 3,1 Mbps de pico y 150 ms de RTT mínimo tiene un BDP de ~58 KB. Aun así, con TCP basado en pérdida se ven latencias de hasta 10 s [F8-bufferbloat-3g4g A12].
   - Ajustar la ventana del receptor bajó el RTT entre 24 y 49 %, con throughput parecido (diferencia máxima de 4 %). Condiciones: redes de BDP chico, 2012 [F8-bufferbloat-3g4g A7, matizada].
   - LTE en movimiento: a alta velocidad, el 75 % de los paquetes MPTCP tiene hasta 1,7× el RTT de retraso de cola. Los autores lo atribuyen a la estación base [F8-dual-lte-mptcp A7].
@@ -359,7 +381,7 @@ Lo demás de esta familia es coherente con lo decidido:
 - **Dónde se controla.**
   - CoDel usa un objetivo de 5 ms, que no puede ser menor que el tiempo de un MTU al ritmo del enlace [F9-rfc8290-fq-codel A1]. Su intervalo es del orden del peor RTT del cuello: 100 ms por defecto [F9-rfc8290-fq-codel A2].
   - En cengarde la cola real está en el módem o en el operador (historia 006, pendiente «cola remota»). El anillo de cada hilo de enlace solo se llena si cengarde es el cuello.
-  - Para controlar desde la Pi el bufferbloat de 5G y Starlink en bonding hay que espaciar cada enlace un poco por debajo de su capacidad. Así la cola se forma en el anillo propio, y ahí se aplica un tiempo de permanencia tipo CoDel [razonado].
+  - Para controlar desde la Pi el bufferbloat de 5G y Starlink en bonding hay que espaciar cada enlace un poco por debajo de su capacidad. Así la cola se forma en el anillo propio, y ahí se aplica un tiempo de permanencia tipo CoDel [razonado]. **[Descartado: el pacing por enlace empeoró la subida (57 → 40 Mbit/s, PR #38); la cola queda en `cake` sobre el túnel (historia 013).]**
   - Ese lazo depende de estimar la capacidad (§4), y ninguna fuente independiente lo valida [MEDIR].
   - Las sondas deberían salir por delante del anillo de datos. Así el OWD mide la red, y la permanencia en el anillo mide la cola local [razonado].
 - **Redundancia frente a bonding.**
@@ -389,6 +411,7 @@ Lo demás de esta familia es coherente con lo decidido:
   - Esa tasa vale como capacidad solo cuando el exceso de OWD sube (enlace saturado). Con el exceso plano es solo una cota inferior.
   - En redundancia pura la tasa entregada es el mínimo entre lo ofrecido y la capacidad, y no hace falta más.
   - En bonding hay que sondear de a un enlace, subiendo su peso un rato, a costa de un pico de cola.
+  - **[Hecho: `capacity.h` saca la capacidad del `rx` de las sondas (historia 013, PR #33, #36 y #40); con el enlace lleno vale lo que entrega (PR #43, neutro: 312 frente a 320 Mbit/s).]**
 - **Ojo con el código actual.**
   - `cg_probe_info` ya lleva `rx`, `wins` y `lag_us`. Pero `rx` se llena con wins + dups, y las copias posteriores se cuentan antes del MAC.
   - `arrival.h` dice que esos números son solo para mostrar, y que un duplicado sin verificar puede quitarle el «win» a otro enlace [código: engine/src/arrival.h, client.c:1010, server.c:456].
@@ -503,7 +526,7 @@ Lo demás de esta familia es coherente con lo decidido:
   - Pérdida con el exceso de OWD plano: es del medio, y más FEC ayuda.
   - Exceso de OWD que sube, con o sin pérdida: es cola, y hay que bajar el peso o la tasa.
   - Un evento de radio en la misma ventana refuerza la lectura de medio.
-  - Hay que medirla en banco (netem: pérdida aleatoria frente a límite de tasa con cola) y en campo [MEDIR].
+  - Hay que medirla en banco (netem: pérdida aleatoria frente a límite de tasa con cola) y en campo [MEDIR]. **[Probado 2026-10-15: las reglas de cola pareja o casi máxima (borrador PR #51) apagaban el rescate también con pérdida aleatoria; Entel en una B2 sola con pérdida (cola de HARQ) las confundía, y se arregló anclando B7 (historia 013).]**
 
 **Qué medir:**
 
@@ -513,7 +536,7 @@ Lo demás de esta familia es coherente con lo decidido:
 - RRC en los CPE. Medir, en cada operador, el OWD del primer paquete tras 1, 5, 10 y 20 s de reposo, para fijar un valor seguro de `probe_idle_ms`.
 - En los CPE fijos: con qué frecuencia cambian de celda, de banda o de RAT, y qué pico de OWD y qué tiempo de recuperación trae cada cambio, por operador.
 - Estimador de capacidad (máximo de la tasa entregada verificada más el exceso de OWD) frente a iperf en cada enlace. Medir su error, su tiempo de reacción a un escalón de capacidad y su costo de CPU en la Pi.
-- Lazo de pacing más permanencia tipo CoDel en el anillo de cada enlace. Medir latencia y throughput frente a no hacer pacing, con un enlace 5G y uno Starlink saturados, y la CPU en la Pi con hilos por enlace.
+- Lazo de pacing más permanencia tipo CoDel en el anillo de cada enlace. Medir latencia y throughput frente a no hacer pacing, con un enlace 5G y uno Starlink saturados, y la CPU en la Pi con hilos por enlace. **[Descartado: pacing en el cliente 57 → 40 Mbit/s (PR #38); en el servidor, neutro (borrador PR #45).]**
 - Discriminador de RF y congestión, primero con netem: pérdida aleatoria frente a un límite de tasa con cola. Ver si separa bien la regla «pérdida con OWD plano» frente a «OWD que sube». Después, en campo.
 - SmoothStream: adelanto de la radio Quectel. Correlación cruzada entre SINR, RSRQ y eventos de celda, y el RTT, la pérdida y los NACK de cada pata, con resolución de 100 ms. Medir también el costo de leer por AT en el ARM.
 - SmoothStream: tiempo de reacción de rtt-drop (RTT suavizado de libRIST) ante un escalón de cola de 500 ms, en un escenario equivalente al «health» de cengarde.
@@ -602,7 +625,7 @@ Con pérdidas chicas, P(las dos) ≈ p1·p2 + c·√(p1·p2). El término correl
 
 ## FEC en multicamino
 
-**Estado de la evidencia.** Nadie mide FEC multicamino en una red real. Lo que hay son normas sin medidas (RFC 8681, RFC 9407), una emulación (QUIC-FEC), simulaciones (Chuat en ns-3, Garrido), un modelo analítico (Bedin) y código sin banco de pérdidas (kcp-go).
+**Estado de la evidencia.** Nadie mide FEC multicamino en una red real. Lo que hay son normas sin medidas (RFC 8681, RFC 9407), una emulación (QUIC-FEC), simulaciones (Chuat en ns-3, Garrido), un modelo analítico (Bedin) y código sin banco de pérdidas (kcp-go). **[Pendiente: la FEC (RS/RLC con redundancia incremental tipo HARQ) no se hizo. Es la herramienta para las ráfagas, que cualquier regla de cola confunde con congestión (historia 013).]**
 
 - **Spread de RTT.** Ninguna fuente prueba caminos con 100–150 ms de diferencia de RTT. QUIC-FEC usa «similar delays for both paths» (§7) [F4-quic-fec-mpquic], y Garrido supone el mismo retardo por camino [F4-joint-sched-coding-delayed-feedback].
 - **Reparto de la paridad.** Ninguna norma ni código revisado dice cómo repartirla entre caminos:
@@ -693,7 +716,7 @@ El minimax de SmoothStream sigue siendo trabajo propio.
 Lo que recupera la FEC no debe entrar en la medida del RTT ni en la ventana. kcp-go lo marca con otro tipo [F5-kcp-go A3], aunque sí genera ACK (A4).
 
 ### Qué significa para cengarde [razonado salvo cita]
-- **Qué compra la FEC.** Tapa el hueco hasta que reacciona la salud de enlaces: ~1–1,5 s para declarar MUDO, 2 s para silenciar, y los cortes de menos de 1 s de Starlink. Sin FEC ni duplicación, lo que iba por un enlace que muere se pierde en ráfaga y el TCP interior lo ve. La pérdida suelta ya la cubren el ARQ de la radio y el TCP interior.
+- **Qué compra la FEC.** Tapa el hueco hasta que reacciona la salud de enlaces: ~1–1,5 s para declarar MUDO, 2 s para silenciar, y los cortes de menos de 1 s de Starlink. Sin FEC ni duplicación, lo que iba por un enlace que muere se pierde en ráfaga y el TCP interior lo ve. ~~La pérdida suelta ya la cubren el ARQ de la radio y el TCP interior.~~ **[Probado 2026-10-15: en el laboratorio, con 1 % de pérdida aleatoria, el TCP interior queda en 10–11 Mbit/s y el rescate lo sube a 50–63 (PR #48 y #52). En la red de pruebas, casi toda la pérdida con carga es congestión.]**
 - **Forma barata.**
   - XOR (GF(2)) por grupos con a lo sumo un símbolo por enlace, y la paridad por el enlace de menor OWD.
   - El XOR va sobre la trama cengarde completa (cabecera con el byte de enlace a 0, más el payload). Así el paquete recuperado trae un MAC válido y pasa por la dedup y el anti-replay normales.
@@ -701,7 +724,7 @@ Lo que recupera la FEC no debe entrar en la medida del RTT ni en la ventana. kcp
   - Solo para los paquetes grandes: los chicos ya se duplican según el ROADMAP, y así se evita rellenar.
 - **Expansión.** Queda en ≤1,34× solo si el reparto es igual entre enlaces. Con pesos por capacidad desiguales sube a 1,5–1,7×, salvo que se tope la parte de cada enlace.
 - **Latencia.** El paquete recuperado llega con el último símbolo del grupo. Eso es hasta el spread entre los enlaces activos (≤150 ms por el silenciado), más lo que tarda en llenarse el grupo. Solo sirve si el buffer de reorden del receptor retiene al menos ese tiempo; si no, RACK (min_RTT/4) o QUIC (~RTT/8 extra) ya declararon la pérdida [resumen F9].
-- **Congestión.** Una FEC en el túnel tapa la congestión al Cubic interior [F4-rfc9407-tetrys §6.1], así que cengarde tiene que frenar por enlace con su propio OWD.
+- **Congestión.** Una FEC en el túnel tapa la congestión al Cubic interior [F4-rfc9407-tetrys §6.1], así que cengarde tiene que frenar por enlace con su propio OWD. **[Probado 2026-10-15 con el rescate: esconder la pérdida aleatoria deja que TCP llene las colas, y rescate y TCP saturante compiten (historia 013).]**
 - **CPU.** El XOR de 1400 B debería costar menos que el SipHash que ya se paga [MEDIR].
 
 ### Qué significa para SmoothStream
@@ -720,7 +743,7 @@ Lo que recupera la FEC no debe entrar en la medida del RTT ni en la ventana. kcp
 - [cengarde] CPU por paquete en la Pi 4 del XOR de grupo, frente al SipHash que ya se paga, a 20, 50 y 100 Mbit/s, con los hilos por enlace apagados y encendidos.
 - [cengarde] Throughput y retransmisiones espurias de TCP Cubic y BBR interiores (Linux, Android, Windows, iOS) durante la muerte de un enlace (hasta MUDO, ~1–1,5 s), en tres casos: FEC estructural, duplicación k = 2 y sin protección.
 - [cengarde] Relleno real del XOR con la mezcla de tamaños del tráfico, y cuánto se ahorra protegiendo solo los paquetes grandes.
-- [cengarde] Si la FEC esconde la congestión: con un enlace limitado por netem, ver si el TCP interior empuja más y sube el OWD de ese enlace.
+- [cengarde] Si la FEC esconde la congestión: con un enlace limitado por netem, ver si el TCP interior empuja más y sube el OWD de ese enlace. **[Probado 2026-10-15 con el rescate, no con FEC: con un enlace lleno (`het`) el rescate cuesta 6–15 % (historia 013).]**
 - [SmoothStream] Correlación de pérdidas entre las 4 patas en una celda saturada (estadio): fracción del tiempo con 2 o más patas perdiendo a la vez, y c por par. Decide entre FEC repartida, menos patas o duplicar en las dos mejores.
 - [SmoothStream] Clasificación de los eventos de pérdida con el log del Quectel: ver si sube antes el RTT/OWD (congestión) o si cae el SINR/RSRQ o hay handover sin subida del RTT (RF), y medir con cuánto adelanto avisa la radio.
 - [SmoothStream] Ganancia real de repartir RLC entre patas frente a hacerlo por pata, con el spread medido (100–150 ms), dado que QUIC-FEC ve poca ventaja de repartir con RLC.
@@ -773,7 +796,7 @@ Nada mide el ARQ multicamino con 100–150 ms de spread de RTT, ni sobre 5G o St
   - srtla reenvía por el enlace de mejor puntaje en ese momento [F5-belabox-srtla A6].
   - Es lo que ya hace libRIST en SmoothStream.
 - **Por el mismo reparto.** Es lo que manda RIST §5.3.3 [F1-vsf-tr06-1-simple A5].
-- **Reinyectar solo cuando el margen se agota** [F3-xlink].
+- **Reinyectar solo cuando el margen se agota** [F3-xlink]. **[Hecho: el rescate (historia 013, PR #48 bajada y #50 subida): el receptor pide los huecos y el emisor reenvía desde un anillo por el camino más rápido, dentro de un presupuesto.]**
   - XLINK reinyecta lo no confirmado solo cuando el bloqueo multicamino amenaza la QoE (A7).
   - Con el umbral (95, 80) logra 66 % menos muestras con menos de 50 ms de reproducción por delante, con 2,1 % de tráfico extra (A3, corregida).
   - En producción, el multicamino sin control fue peor que un solo camino: p99 hasta 28 % peor y rebuffering 34–96 % peor (A8, corregida).
@@ -782,7 +805,7 @@ Nada mide el ARQ multicamino con 100–150 ms de spread de RTT, ni sobre 5G o St
   - Round-robin es el que más retransmite en el escenario de heterogeneidad intensa del preprint de 2025 (A7, matizada) [F3-mptcp-sched-eval-2025].
   - Raiciu reenvía por el subflujo con ventana libre el dato que retiene el borde de la ventana (A4) [F3-raiciu-nsdi12].
 - **El NACK.**
-  - srtla manda el NAK solo por el último enlace que entregó datos: si ese enlace cae, el pedido se pierde (A5) [F5-belabox-srtla].
+  - srtla manda el NAK solo por el último enlace que entregó datos: si ese enlace cae, el pedido se pierde (A5) [F5-belabox-srtla]. **[Hecho: NACK por rangos (base y máscara de 64 bits) por los dos enlaces más rápidos (historia 013, PR #52).]**
   - RIST permite mandarlo por varias conexiones [F1-vsf-tr06-1-simple A4].
   - Chuat confirma por el camino de menor retardo (A2), aunque admite que un RTT preciso por camino exige confirmar por el mismo camino (§VIII-C).
 
@@ -790,11 +813,11 @@ Nada mide el ARQ multicamino con 100–150 ms de spread de RTT, ni sobre 5G o St
 - **Timeout por par de caminos** [F4-deadline-aware-multipath].
   - Con retardo fijo, t_i = d_i + d_min (A1). Tiene que ser lo bastante chico para entrar en el plazo y lo bastante grande para no adelantarse al ACK (A3, matizada).
   - En ns-3, con caminos de 400 y 100 ms, el margen fue de +100 ms para cubrir una desviación medida de hasta 50 ms.
-  - El paper prevé 2 o 3 reintentos como máximo, porque más suelen exceder la vida del dato (A12, corregida).
+  - El paper prevé 2 o 3 reintentos como máximo, porque más suelen exceder la vida del dato (A12, corregida). **[Hecho: `rescue_tries`, como libRIST, y el reintento copiado por dos caminos (PR #52): 63 frente a ~50 Mbit/s en el laboratorio (historia 013).]**
 - **Garrido** (simulación de un camino, d en slots) [F4-joint-sched-coding-delayed-feedback]:
   - con ARQ, el retardo crece linealmente con el retardo de realimentación d, y desde d > 40 slots (a = 0,9, p = 0,1) es peor que los esquemas predictivos; con d chico gana el ARQ (A1, corregida);
   - con 3 caminos y p = 0,2, la propuesta supera claramente a round-robin con ARQ, aunque solo en curvas (A5).
-- **Descartar a tiempo.** SRT descarta a 1,25× la latencia [F1-srt-draft A5]. Dejero tira paquetes para cumplir la latencia máxima (N4). Tetrys abandona la ráfaga que no puede recuperar para salvar las siguientes [F4-rfc9407-tetrys A6].
+- **Descartar a tiempo.** SRT descarta a 1,25× la latencia [F1-srt-draft A5]. Dejero tira paquetes para cumplir la latencia máxima (N4). Tetrys abandona la ráfaga que no puede recuperar para salvar las siguientes [F4-rfc9407-tetrys A6]. **[Hecho: `CG_F_GONE` (PR #54): el emisor avisa qué huecos pedidos no vendrán; rescatado 9 % → 78 % y ping de bajada con carga de vuelta a ~80 ms. libRIST no tiene esa señal: lo aprende por plazo (historia 013).]**
 - **Bloqueo de cabeza de línea.** El ARQ lo tiene [F4-joint-sched-coding-parallel A3].
 
 ### 4. Relación con la FEC
@@ -811,7 +834,7 @@ Nada mide el ARQ multicamino con 100–150 ms de spread de RTT, ni sobre 5G o St
   - el feedback es opcional, y perderlo solo encarece (A5);
   - los coeficientes son Vandermonde deterministas (N1).
 - **Garrido** decide si mandar un paquete de información o uno codificado según una realimentación retardada. Pierde menos del 5 % de capacidad (A2) y no gasta redundancia si d < 1/p (A3); es simulación.
-- **Nadie mide HARQ II frente a la retransmisión.**
+- **Nadie mide HARQ II frente a la retransmisión.** **[Pendiente: la FEC con redundancia incremental tipo HARQ no se hizo; es lo que falta para las ráfagas (historia 013).]**
 - **Cómo encaja en RLC** [razonado]:
   - cualquier reparación nueva sobre una ventana que contiene m huecos es una ecuación útil para cualquiera de ellos;
   - ante un NACK, m reparaciones nuevas cuestan lo mismo que m retransmisiones;
@@ -831,16 +854,16 @@ Nada mide el ARQ multicamino con 100–150 ms de spread de RTT, ni sobre 5G o St
   - un ARQ del túnel tarda al menos detección + OWD del NACK + OWD del reenvío, o sea ≥1 RTT del túnel más el spread;
   - el TCP interior tolera ~RTT_interior/4 extra, y QUIC ~RTT_interior/8;
   - con el VPS en Santiago, el RTT interior a destinos cercanos es casi el del túnel, así que el reintento del túnel llega después de que el emisor interior ya reintentó;
-  - solo gana con destinos lejanos, o con UDP sin recuperación propia y con un jitter buffer holgado.
+  - solo gana con destinos lejanos, o con UDP sin recuperación propia y con un jitter buffer holgado. **[Probado 2026-10-15: con TCP saturando en la red de pruebas, el rescate no movió el caudal; con MPEG-TS crudo, margen 10 ms más rescate dio 0 errores con la menor espera. Su lugar es el tráfico de tasa fija (historia 013).]**
 
 ### Qué significa para cengarde [razonado salvo cita]
-- **Prioridad.** El ARQ opcional del ROADMAP («1–2 enlaces más recuperación por el mejor») va detrás de la FEC liviana y de la duplicación selectiva: para tráfico interactivo cercano, casi nunca llega a tiempo.
+- **Prioridad.** El ARQ opcional del ROADMAP («1–2 enlaces más recuperación por el mejor») va detrás de la FEC liviana y de la duplicación selectiva: para tráfico interactivo cercano, casi nunca llega a tiempo. **[Hecho antes que la FEC: el rescate (PR #48, #50, #52, #53), apagado por omisión y pensado para tráfico de tasa fija (historia 013).]**
 - **Si se hace, barato:**
   - reenviar la trama original guardada: la cabecera y el MAC no cambian, solo el byte de enlace, que está fuera del MAC; no hay costo criptográfico y la dedup tira los duplicados;
   - un anillo preasignado en el emisor, de ~1,9 MB para 150 ms a 100 Mbit/s;
   - el NACK como mensaje v4 con MAC, por los dos enlaces de menor OWD;
-  - el reenvío por el enlace de menor OWD;
-  - un solo intento, con plazo igual al hold del buffer de reorden.
+  - el reenvío por el enlace de menor OWD; **[Hecho, con un gobernador por enlace (PR #53): peso 0..1 según la cola prevista a 1 s; laboratorio `lossy` 60 frente a 11,8, `het` 56,2 frente a 59,6. Las reglas de cola pareja o casi máxima (borrador PR #51) se descartaron.]**
+  - ~~un solo intento~~, con plazo igual al hold del buffer de reorden. **[Probado 2026-10-15: varios intentos y copia en dos caminos (PR #52) dan 63 frente a ~50 Mbit/s en el laboratorio (historia 013).]**
 - **Detectar la pérdida.** Con la secuencia global compartida, un hueco es pérdida cuando todos los enlaces activos ya entregaron un número mayor. Eso supone que cada enlace es FIFO, y Starlink puede reordenar dentro de un enlace en un cambio de ruta [F8-leo-reordering] [MEDIR]. Para detectarla antes hace falta un contador por enlace, como los espacios por camino de QUIC multipath [F2-quic-multipath A3].
 - **Anti-replay.** El reintento tardío tiene que caer dentro de la ventana de cengarde (~8128 paquetes) y de la de WireGuard (8192). A 100 Mbit/s con paquetes de 1400 B (~8900 pps) son ~0,9 s.
 
@@ -854,10 +877,10 @@ Nada mide el ARQ multicamino con 100–150 ms de spread de RTT, ni sobre 5G o St
 **Qué medir:**
 
 - [cengarde] RTT del túnel por enlace (router–VPS en Santiago) frente al RTT interior a destinos típicos: si el RTT detrás del VPS es mucho menor que el del túnel, el ARQ del túnel llega tarde para RACK y QUIC.
-- [cengarde] Retransmisiones espurias y DSACK del TCP interior, y pérdidas declaradas por QUIC, con bonding y con o sin ARQ del túnel, en Linux, Android, Windows e iOS.
+- [cengarde] Retransmisiones espurias y DSACK del TCP interior, y pérdidas declaradas por QUIC, con bonding y con o sin ARQ del túnel, en Linux, Android, Windows e iOS. **[Probado 2026-10-15 en Linux: con 1 % de pérdida en el laboratorio, el rescate baja las retransmisiones de ~1 % a 0,04 % (historia 013, PR #48).]**
 - [cengarde] Si cada enlace es FIFO, sin reorden interno, sobre todo Starlink en cambios de ruta. Es la condición para declarar la pérdida cuando todos los enlaces activos pasaron el número.
 - [cengarde] Tasa de pérdida de NACK por enlace, y costo del anillo de reenvío en la Pi (memoria y CPU).
-- [cengarde] Si el kernel descarta reintentos tardíos por la ventana anti-replay de WireGuard (8192) a la tasa máxima.
+- [cengarde] Si el kernel descarta reintentos tardíos por la ventana anti-replay de WireGuard (8192) a la tasa máxima. **[Hecho en cengarde: anti-replay de 32768 y reordenador de 16384 (PR #46), sin ganancia de caudal (124 frente a 152 Mbit/s; historia 013).]**
 - [SmoothStream] Pérdida de NACK en la pata que reveló el hueco durante un fade, y si duplicar el NACK por las dos mejores patas sube la recuperación.
 - [SmoothStream] Éxito del reenvío según la pata elegida (sana frente a original), y tiempo hasta la recuperación.
 - [SmoothStream] Validar el corte k* = RTT × tasa de reparación con el RTT real de cada pata, en audio y en video.
@@ -917,7 +940,7 @@ Estas señales tienen límites:
 - **Dejero.** Compara lo que envía cada interfaz con lo que el servidor dice haber recibido. Un cociente de ~90 % basta para una conexión sana; si baja, esa interfaz reduce su tasa [F7-dejero-us10028163, texto l.1203]. Comprobé la cita en esta síntesis; el supervisor no la revisó, y solo la respalda la patente.
 - **Plazos.** El ancho de cada camino puede tomarse de la salida del control de congestión, por ejemplo PCC [F4-deadline-aware-multipath A8].
 
-[razonado] Para cengarde lo viable es que la respuesta de sonda (ya cada 100 ms con tráfico) lleve, autenticados, los bytes de paquetes verificados recibidos por cada enlace. Con eso el emisor calcula la tasa entregada y el cociente enviado/recibido de cada enlace. La tasa entregada solo revela la capacidad cuando el enlace es el cuello de botella:
+[razonado] Para cengarde lo viable es que la respuesta de sonda (ya cada 100 ms con tráfico) lleve, autenticados, los bytes de paquetes verificados recibidos por cada enlace. Con eso el emisor calcula la tasa entregada y el cociente enviado/recibido de cada enlace. **[Hecho: el `rx` de las sondas (protocolo v4) alimenta `capacity.h` (historia 013, PR #33).]** La tasa entregada solo revela la capacidad cuando el enlace es el cuello de botella:
 - En modo redundancia todos los enlaces llevan todo, así que esa prueba sale gratis.
 - En bonding hay que sondear de vez en cuando por encima de la estimación, pagando algo de cola.
 
@@ -952,14 +975,14 @@ Estas señales tienen límites:
 
 ### Qué significa para cada producto
 **cengarde** [razonado]. cengarde no controla la fuente, que es el TCP/QUIC de adentro. Su trabajo es doble:
-- (a) No meter por ningún enlace más de lo que ese enlace drena, para que la cola quede en la Pi y no en el módem.
+- (a) No meter por ningún enlace más de lo que ese enlace drena, para que la cola quede en la Pi y no en el módem. **[Descartado en el motor: el pacing por enlace empeoró la subida (57 → 40 Mbit/s, PR #38); la cola queda en `cake` sobre el túnel (historia 013).]**
 - (b) Dejar que el control de congestión interior vea el retardo o la pérdida, sin esconderlos.
 
 Diseño mínimo, en funciones puras:
 - Un estimador por enlace alimentado por los bytes verificados recibidos (en la respuesta de sonda), el OWD mínimo y el actual, la profundidad del anillo y los EAGAIN.
 - Congestión cuando OWD − OWD_mín supera un umbral durante un intervalo. Empezar entre 2× y 3× la base, o entre +5 y +15 ms, y MEDIR. El umbral tiene que quedar por debajo del de silenciado (150 ms detrás del más rápido), para frenar antes de silenciar.
-- Las tasas estimadas son los pesos de capacidad del WRR de `cg_sched_mask`.
-- Pacing solo en los enlaces que están cerca de su tope.
+- Las tasas estimadas son los pesos de capacidad del WRR de `cg_sched_mask`. **[Hecho: `capacity_weights` (historia 013, PR #34, #36 y #40).]**
+- Pacing solo en los enlaces que están cerca de su tope. **[Descartado: PR #38 (subida 57 → 40 Mbit/s) y borrador PR #45 en el servidor (82,5 frente a 80,4).]**
 
 En modo redundancia no cambia nada: el silenciado ya actúa como control grueso. Ojo con una FEC liviana: si repara descartes de congestión, el TCP interior no frena [F4-rfc9407-tetrys A12].
 
@@ -984,9 +1007,9 @@ Ninguna fuente valida esa regla. La forma del lazo descansa en una patente y en 
 - Exactitud de la tasa entregada, estimada con los bytes verificados por enlace que lleva la respuesta de sonda, frente a iperf3 en cada enlace.
 - Umbral de congestión por OWD (2× y 3× la base, +5 ms, +15 ms): goodput y RTT del TCP interior (Cubic y BBR; Linux, Android y Windows) a través del túnel en bonding.
 - Escalones de 15 s de Starlink: su magnitud en OWD y en throughput, y si disparan el umbral de congestión o el silenciado.
-- CPU de la Pi 4 con pacing por enlace a 20, 50 y 100 Mbit/s, con un solo hilo y con un hilo por enlace.
+- CPU de la Pi 4 con pacing por enlace a 20, 50 y 100 Mbit/s, con un solo hilo y con un hilo por enlace. **[Descartado: el pacing se cayó antes por caudal (PR #38: 57 → 40 Mbit/s; historia 013).]**
 - Si una FEC liviana bajo WireGuard enmascara las pérdidas de congestión: RTT y cola del TCP interior con y sin FEC.
-- SQM/cake sobre las VLAN 5G en OpenWrt: si limita el agregado o pelea con el pacing de cengarde.
+- SQM/cake sobre las VLAN 5G en OpenWrt: si limita el agregado o pelea con el pacing de cengarde. **[Probado 2026-10-14: un `cake` con tope fijo cuesta 35–40 % del caudal de bajada, porque la capacidad cambia con la hora (historia 013, PR #35, experimental).]**
 - SmoothStream: constantes de ataque y release del gobernador frente a fades y caídas medidos; ocupación de la cola de envío y retransmisión de libRIST como señal; cuánta capacidad de cada pata comen la paridad y el ARQ.
 - SmoothStream: cuánto se adelantan de verdad el SINR y el RSRP de los Quectel a la caída de capacidad, y si en la congestión del estadio el retardo de cada pata sube antes que la pérdida.
 
@@ -1104,11 +1127,11 @@ El resto son modos de falla que describen normas y papers. Tres lecciones se rep
 ### Qué significa para cada producto
 **cengarde** [razonado]:
 1. Antes de la Fase 5, probar la salud (historia 006) contra un escalón de OWD y un corte de más de 1 s que se repitan cada 15 s, como hace Starlink.
-2. Poner en el bonding una guarda de «no peor que el mejor enlace solo», medida con las sondas. La evidencia de campo (OMR, XLINK, dual-LTE) dice que juntar Starlink y celular puede salir peor.
-3. La ventana anti-replay de WireGuard es de 8192 paquetes. Con paquetes de 1400 B equivale a ~0,9 s a 100 Mbit/s y a ~1,8 s a 50 Mbit/s. Si un enlace con segundos de cola (bufferbloat celular) entra en el reparto, el kernel descartará sus paquetes. Hoy lo evita el silenciado a 150 ms; en bonding, la cola de cada enlace tiene que quedar muy por debajo de esa cifra.
+2. Poner en el bonding una guarda de «no peor que el mejor enlace solo», medida con las sondas. La evidencia de campo (OMR, XLINK, dual-LTE) dice que juntar Starlink y celular puede salir peor. **[Pendiente la guarda; medido 2026-10-15: con ETA, cengarde da ~2× MPTCP en la bajada y lo mismo en la subida (historia 013).]**
+3. La ventana anti-replay de WireGuard es de 8192 paquetes. Con paquetes de 1400 B equivale a ~0,9 s a 100 Mbit/s y a ~1,8 s a 50 Mbit/s. Si un enlace con segundos de cola (bufferbloat celular) entra en el reparto, el kernel descartará sus paquetes. Hoy lo evita el silenciado a 150 ms; en bonding, la cola de cada enlace tiene que quedar muy por debajo de esa cifra. **[Hecho: anti-replay de cengarde en 32768 (PR #46); en campo las colas celulares llegan a 0,5–2,6 s (historia 013).]**
 4. EAGAIN y los errores de envío nunca cuentan como caída. Cada cambio de sesión de WireGuard (rekey, índice nuevo) reinicia el contador: el estado por enlace y el reorden se indexan por (índice, contador), con test.
 5. Una FEC liviana no debe reparar las pérdidas de congestión. Todo feedback nuevo (NACK, FEC, pesos) va autenticado y con ventana acotada.
-6. En OpenWrt, revisar que un SQM/cake fijo sobre las VLAN 5G no pelee con el pacing. Lo sugirió el mantenedor de OMR, sin causa probada [MEDIR].
+6. En OpenWrt, revisar que un SQM/cake fijo sobre las VLAN 5G no pelee con el pacing. Lo sugirió el mantenedor de OMR, sin causa probada [MEDIR]. **[Probado 2026-10-14: `cake` con tope fijo cuesta 35–40 % de la bajada; el pacing se descartó (historia 013, PR #35 y #38).]**
 
 **SmoothStream** [razonado]:
 1. Contar en el receptor los paquetes descartados por llegar tarde y usar ese conteo como entrada del gobernador. No bajar el buffer por debajo del presupuesto (lección de SRT).
@@ -1122,7 +1145,7 @@ El resto son modos de falla que describen normas y papers. Tres lecciones se rep
 
 - Starlink del cliente: frecuencia y duración de los cortes de más de 1 s y de las ráfagas de pérdida, y el escalón de OWD en los bordes de 15 s. Para ver lo que dura menos de un segundo hace falta una prueba con sondas más densas que cada 100 ms.
 - En laboratorio (netem): respuesta de la salud de cengarde (silenciado, MUDO, espera que se duplica hasta 32 s) ante cortes de 0,5 s y de 1,5 s que se repiten cada 15 s.
-- Bonding frente al mejor enlace solo, con Starlink + 5G bajo carga (análogo a OMR #3026), con y sin SQM en OpenWrt.
+- Bonding frente al mejor enlace solo, con Starlink + 5G bajo carga (análogo a OMR #3026), con y sin SQM en OpenWrt. **[Probado 2026-10-15, sin Starlink: frente a MPTCP fuera del túnel, cengarde da ~2× en la bajada y lo mismo en la subida; en speedtest el usuario prefiere el reparto por paquete al por flujo (historia 013).]**
 - 5G en CPE fijo en Chile, por operador: tasa de handovers, cambios 5G↔LTE y SCG failure (leídos del módem), y su efecto en el OWD y la pérdida.
 - Correlación de pérdidas entre los cuatro operadores (en casa para cengarde, en el estadio para SmoothStream), con una definición como la de Salzburgo (no llegar dentro de X ms). Medir también la de los enlaces que comparten el adaptador USB.
 - Frecuencia de EAGAIN por enlace bajo carga en la Pi, y comprobar que nunca saca un enlace.
