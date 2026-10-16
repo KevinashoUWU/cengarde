@@ -27,6 +27,19 @@
  *   wireguard_poke = 10.79.12.34:9
  *   forward = tcp:9000=22 udp:5000-5010
  *
+ * tunnel = native (experimental) carries IP packets from a TUN device each
+ * end owns instead of WireGuard's datagrams: authenticated, not encrypted.
+ * Both ends take tun (cg0), tun_addr and tun_mtu; a server routes what the
+ * kernel puts in its TUN by tun_route, the prefixes each client owns (in
+ * its [client NAME] section; one client without it owns everything):
+ *
+ *   tunnel = native
+ *   tun_addr = 10.79.0.1/16
+ *
+ *   [client alpha]
+ *   key = <the router's key>
+ *   tun_route = 10.79.12.34/32 192.168.1.0/24
+ *
  * SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef CG_CONFIG_H
 #define CG_CONFIG_H
@@ -41,6 +54,7 @@
 #include "fwdtable.h" /* struct cg_fwd_rule */
 #include "proto.h"
 #include "srvpick.h" /* CG_MAX_CANDS */
+#include "tunroute.h" /* struct cg_pfx */
 
 #define CG_MAX_PATTERNS 32
 #define CG_MAX_LINK_CFG 32
@@ -70,6 +84,17 @@ void cg_ini_free(struct cg_ini *ini);
 /* ---- typed configuration ---- */
 
 enum cg_mode { CG_MODE_CLIENT = 1, CG_MODE_SERVER = 2 };
+
+/* What the tunnel carries (tunnel = ...): WireGuard's datagrams, between
+ * a local WireGuard and cengarde's UDP sockets (the default), or raw IP
+ * packets from a TUN device cengarde owns (native: authenticated by the
+ * MAC, not encrypted). */
+enum cg_tunnel { CG_TUNNEL_WIREGUARD = 0, CG_TUNNEL_NATIVE = 1 };
+
+#define CG_TUN_ADDRS 4         /* tun_addr entries */
+#define CG_TUN_MTU_DEFAULT 1420 /* 1500 - IPv6 - UDP - the cengarde header, rounded down */
+#define CG_TUN_MTU_MIN 576
+#define CG_TUN_MTU_MAX (2048 - CG_HDR_LEN) /* CG_MAX_PAYLOAD (engine.h) */
 
 /* How the client handles its link sockets (pump.h, thrplan.h): legacy is
  * the loop of 0.4 (the default until the per-link threads are measured on
@@ -137,6 +162,10 @@ struct cg_client_cfg {
 	int passthrough; /* may hold IP pass */
 	struct sockaddr_storage wireguard;
 	struct sockaddr_storage wireguard_poke; /* AF_UNSPEC: none */
+	/* tunnel = native: the prefixes it owns in the server's TUN
+	 * (tunroute.h). */
+	int ntun_route;
+	struct cg_pfx tun_route[CG_TUN_ROUTES];
 };
 
 struct cg_config {
@@ -149,6 +178,14 @@ struct cg_config {
 	char control_socket[108]; /* "": none (ctl.h) */
 	int rcvbuf;
 	int log_level;
+
+	/* The tunnel (enum cg_tunnel), and with native its TUN device: name,
+	 * addresses set on it ("": the system sets them) and MTU. */
+	int tunnel;
+	char tun[IFNAMSIZ];
+	int ntun_addr;
+	struct cg_pfx tun_addr[CG_TUN_ADDRS];
+	uint32_t tun_mtu;
 
 	/* link health, each end for its send direction (health.h) */
 	uint32_t mute_behind_ms; /* 0: never mute for delay */
@@ -235,6 +272,10 @@ struct cg_config {
 	 * start a handshake when it ignores the client's (wgwatch.h). Family
 	 * AF_UNSPEC: never. */
 	struct sockaddr_storage wireguard_poke;
+	/* tunnel = native, one client: the prefixes it owns in the TUN
+	 * (default 0.0.0.0/0 and ::/0); with [client] sections, each its own. */
+	int ntun_route;
+	struct cg_pfx tun_route[CG_TUN_ROUTES];
 
 	char *strings; /* storage behind include/exclude */
 };

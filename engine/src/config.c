@@ -244,6 +244,39 @@ static int get_str(struct cg_ini *ini, const char *sec, const char *key, char *o
 	return 0;
 }
 
+/* A list of at most max prefixes (tunroute.h) into out: routes, or with
+ * host_bits interface addresses (10.79.0.1/16). */
+static int get_pfxs(struct cg_ini *ini, const char *sec, const char *key, int host_bits, struct cg_pfx *out,
+		    int max, int *n, char *err, size_t errlen)
+{
+	const char *v = cg_ini_get(ini, sec, key);
+	char buf[1024], *items[CG_TUN_ROUTES * 2];
+	int count;
+
+	*n = 0;
+	if (!v)
+		return 0;
+	if (strlen(v) >= sizeof(buf)) {
+		snprintf(err, errlen, "%s: value too long", key);
+		return -1;
+	}
+	strcpy(buf, v);
+	count = cg_split_list(buf, items, (int)CG_ARRAY_SIZE(items));
+	if (count > max) {
+		snprintf(err, errlen, "%s: at most %d prefixes", key, max);
+		return -1;
+	}
+	for (int i = 0; i < count; i++)
+		if (cg_pfx_parse(items[i], &out[i], host_bits) < 0) {
+			snprintf(err, errlen, "%s: '%s' is not %s", key, items[i],
+				 host_bits ? "an address with its prefix length (10.79.0.1/16, fd00::1/64)"
+					   : "a prefix (10.79.12.34/32, 192.168.1.0/24, fd12:3456::/64)");
+			return -1;
+		}
+	*n = count;
+	return 0;
+}
+
 /* Parses a list of at most max entries into out, which holds cap addresses.
  * A name may stand for several addresses, at most CG_NAME_ADDRS of each
  * family, and takes the slots the later entries leave, so every entry is
@@ -621,7 +654,20 @@ static int parse_clients(struct cg_config *c, struct cg_ini *ini, char *err, siz
 			snprintf(err, errlen, "[%s] %s", sec, e);
 			return -1;
 		}
-		if (k->wireguard.ss_family == AF_UNSPEC) {
+		if (c->tunnel == CG_TUNNEL_NATIVE) {
+			/* No WireGuard to talk to or poke; the TUN routes by
+			 * these instead (tunroute.h). */
+			if (get_pfxs(ini, sec, "tun_route", 0, k->tun_route, CG_TUN_ROUTES, &k->ntun_route, e, sizeof(e))) {
+				snprintf(err, errlen, "[%s] %s", sec, e);
+				return -1;
+			}
+			if (!k->ntun_route) {
+				snprintf(err, errlen, "[%s] tun_route: required with tunnel = native (the client's "
+					 "address in the tunnel, and the networks behind it)", sec);
+				return -1;
+			}
+			k->wireguard_poke.ss_family = AF_UNSPEC;
+		} else if (k->wireguard.ss_family == AF_UNSPEC) {
 			if (c->wireguard.ss_family == AF_UNSPEC) {
 				snprintf(err, errlen, "[%s] wireguard: required (no global one)", sec);
 				return -1;
@@ -777,6 +823,24 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 		goto out;
 	}
 
+	v = cg_ini_get(&ini, "", "tunnel");
+	if (v && !strcmp(v, "native"))
+		c->tunnel = CG_TUNNEL_NATIVE;
+	else if (v && strcmp(v, "wireguard")) {
+		snprintf(err, errlen, "tunnel: expected wireguard or native, got '%s'", v);
+		goto out;
+	}
+	strcpy(c->tun, "cg0");
+	c->tun_mtu = CG_TUN_MTU_DEFAULT;
+	if (get_str(&ini, "", "tun", c->tun, sizeof(c->tun), err, errlen) ||
+	    get_pfxs(&ini, "", "tun_addr", 1, c->tun_addr, CG_TUN_ADDRS, &c->ntun_addr, err, errlen) ||
+	    get_u32(&ini, "", "tun_mtu", CG_TUN_MTU_MIN, CG_TUN_MTU_MAX, &c->tun_mtu, err, errlen))
+		goto out;
+	if (!c->tun[0] || strchr(c->tun, '/') || strchr(c->tun, ' ')) {
+		snprintf(err, errlen, "tun: expected an interface name");
+		goto out;
+	}
+
 	if (get_u32(&ini, "", "mute_behind_ms", 0, 60000, &c->mute_behind_ms, err, errlen))
 		goto out;
 	c->unmute_behind_ms = c->mute_behind_ms * 4 / 5;
@@ -895,7 +959,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	} else {
 		if (get_addrs(&ini, "", "wireguard", 0, &c->wireguard, 1, 1, &n, err, errlen))
 			goto out;
-		if (!n && !multi) {
+		if (!n && !multi && c->tunnel != CG_TUNNEL_NATIVE) {
 			snprintf(err, errlen, "wireguard: required in server mode (local WireGuard address)");
 			goto out;
 		}
@@ -919,9 +983,54 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 			snprintf(err, errlen, "passthrough_file: not with [client] sections, see forward_file");
 			goto out;
 		}
+		if (c->tunnel == CG_TUNNEL_NATIVE && c->wireguard_port_file[0]) {
+			snprintf(err, errlen, "wireguard_port_file: not with tunnel = native (no WireGuard)");
+			goto out;
+		}
 		if (!multi && c->forward_file[0]) {
 			snprintf(err, errlen, "forward_file: only with [client] sections (one client: passthrough_file)");
 			goto out;
+		}
+		if (multi && cg_ini_get(&ini, "", "tun_route")) {
+			snprintf(err, errlen, "tun_route: with [client] sections, in each of them");
+			goto out;
+		}
+		if (!multi && c->tunnel == CG_TUNNEL_NATIVE) {
+			/* One client: everything in the TUN is its, unless
+			 * tun_route says otherwise. */
+			if (get_pfxs(&ini, "", "tun_route", 0, c->tun_route, CG_TUN_ROUTES, &c->ntun_route, err, errlen))
+				goto out;
+			if (!c->ntun_route) {
+				cg_pfx_parse("0.0.0.0/0", &c->tun_route[0], 0);
+				cg_pfx_parse("::/0", &c->tun_route[1], 0);
+				c->ntun_route = 2;
+			}
+		}
+		if (multi && c->tunnel == CG_TUNNEL_NATIVE) {
+			struct cg_rt *rt = calloc(1, sizeof(*rt)); /* only to look for clashes */
+			char a[64];
+			int clash = 0;
+
+			if (!rt) {
+				snprintf(err, errlen, "out of memory");
+				goto out;
+			}
+			for (int i = 0; i < c->nclients; i++)
+				for (int j = 0; j < c->clients[i].ntun_route; j++)
+					cg_rt_add(rt, &c->clients[i].tun_route[j], (uint8_t)i);
+			for (int i = 0; i < rt->n && !clash; i++) {
+				int j = cg_rt_clash(rt, i);
+
+				if (j >= 0) {
+					snprintf(err, errlen, "tun_route: %s is in [client %s] and in [client %s]",
+						 cg_pfx_str(&rt->p[i], a, sizeof(a)), c->clients[rt->client[i]].name,
+						 c->clients[rt->client[j]].name);
+					clash = 1;
+				}
+			}
+			free(rt);
+			if (clash)
+				goto out;
 		}
 		if (multi && cg_ini_get(&ini, "", "wireguard_poke")) {
 			snprintf(err, errlen, "wireguard_poke: with [client] sections, in each of them (that client's "
@@ -943,7 +1052,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 		}
 		/* The router's end of the tunnel cengarde sets up (10.79.0.2/30). */
 		v = cg_ini_get(&ini, "", "wireguard_poke");
-		if (multi)
+		if (multi || c->tunnel == CG_TUNNEL_NATIVE)
 			;
 		else if (!v)
 			cg_addr_parse("10.79.0.2:9", 0, &c->wireguard_poke, 1, e, sizeof(e));
@@ -1088,6 +1197,16 @@ const char *cg_config_restart_needed(const struct cg_config *a, const struct cg_
 		return "wireguard";
 	if (a->mode == CG_MODE_SERVER && a->lanes != b->lanes)
 		return "lanes";
+	/* The TUN device is set up once. */
+	if (a->tunnel != b->tunnel)
+		return "tunnel";
+	if (a->tunnel == CG_TUNNEL_NATIVE && strcmp(a->tun, b->tun))
+		return "tun";
+	if (a->tunnel == CG_TUNNEL_NATIVE &&
+	    (a->ntun_addr != b->ntun_addr || memcmp(a->tun_addr, b->tun_addr, sizeof(a->tun_addr))))
+		return "tun_addr";
+	if (a->tunnel == CG_TUNNEL_NATIVE && a->tun_mtu != b->tun_mtu)
+		return "tun_mtu";
 	return NULL;
 }
 

@@ -985,6 +985,87 @@ static void test_config_names(void)
 	cg_hosts_path = saved;
 }
 
+/* tunnel = native: the TUN device, the server's routes, and what a reload
+ * cannot change in place. */
+static void test_config_native(void)
+{
+	static struct cg_config c, o;
+	char err[256], warn[512], buf[64];
+
+	/* The default: WireGuard, nothing about a TUN needed. */
+	CHECK_EQ(cg_config_parse(&c, CLIENT, err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(c.tunnel, CG_TUNNEL_WIREGUARD);
+	CHECK(!strcmp(c.tun, "cg0"));
+	CHECK_EQ(c.tun_mtu, CG_TUN_MTU_DEFAULT);
+	cg_config_free(&c);
+
+#define NATIVE CLIENT "tunnel = native\ntun = cgt\ntun_addr = 10.79.0.2/16 fd00:79::2/64\ntun_mtu = 1400\n"
+	CHECK_EQ(cg_config_parse(&c, NATIVE, err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(c.tunnel, CG_TUNNEL_NATIVE);
+	CHECK(!strcmp(c.tun, "cgt"));
+	CHECK_EQ(c.ntun_addr, 2);
+	CHECK(!strcmp(cg_pfx_str(&c.tun_addr[0], buf, sizeof(buf)), "10.79.0.2/16"));
+	CHECK(!strcmp(cg_pfx_str(&c.tun_addr[1], buf, sizeof(buf)), "fd00:79::2/64"));
+	CHECK_EQ(c.tun_mtu, 1400);
+	CHECK(!warn[0]);
+	/* every TUN setting restarts */
+	CHECK_EQ(cg_config_parse(&o, NATIVE, err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK(cg_config_restart_needed(&c, &o) == NULL);
+	o.tun_mtu = 1300;
+	CHECK(!strcmp(cg_config_restart_needed(&c, &o), "tun_mtu"));
+	o.tun_mtu = 1400;
+	o.ntun_addr = 1;
+	CHECK(!strcmp(cg_config_restart_needed(&c, &o), "tun_addr"));
+	o.tunnel = CG_TUNNEL_WIREGUARD;
+	CHECK(!strcmp(cg_config_restart_needed(&c, &o), "tunnel"));
+	cg_config_free(&c);
+	cg_config_free(&o);
+#undef NATIVE
+
+	bad(CLIENT "tunnel = tun\n", "tunnel", "wireguard or native");
+	bad(CLIENT "tunnel = native\ntun_mtu = 3000\n", "tun_mtu", NULL);
+	bad(CLIENT "tunnel = native\ntun_addr = 10.79.0.2/40\n", "tun_addr", NULL);
+	bad(CLIENT "tunnel = native\ntun = a/b\n", "tun", NULL);
+
+	/* A server with one client needs no WireGuard, and takes everything. */
+	CHECK_EQ(cg_config_parse(&c, "mode = server\nkey = " KEY "\ntunnel = native\ntun_addr = 10.79.0.1/16\n", err,
+				 sizeof(err), warn, sizeof(warn)),
+		 0);
+	CHECK_EQ(c.ntun_route, 2);
+	CHECK(!strcmp(cg_pfx_str(&c.tun_route[0], buf, sizeof(buf)), "0.0.0.0/0"));
+	CHECK(!strcmp(cg_pfx_str(&c.tun_route[1], buf, sizeof(buf)), "::/0"));
+	CHECK_EQ(c.wireguard_poke.ss_family, AF_UNSPEC); /* no WireGuard to poke */
+	cg_config_free(&c);
+	CHECK_EQ(cg_config_parse(&c, "mode = server\nkey = " KEY "\ntunnel = native\ntun_route = 10.79.0.2\n", err,
+				 sizeof(err), warn, sizeof(warn)),
+		 0);
+	CHECK_EQ(c.ntun_route, 1);
+	CHECK_EQ(c.tun_route[0].len, 32);
+	cg_config_free(&c);
+	bad("mode = server\nkey = " KEY "\ntunnel = native\ntun_route = 10.79.0.1/16\n", "tun_route", "a prefix");
+	/* WireGuard still required without native */
+	bad("mode = server\nkey = " KEY "\n", "wireguard", NULL);
+
+	/* Several clients: each its own routes, never the same prefix. */
+#define TWO(ra, rb)                                                                                     \
+	"mode = server\ntunnel = native\n[client alpha]\nkey = " KEY "\ntun_route = " ra "\n[client bravo]\n" \
+	"key = AQECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=\ntun_route = " rb "\n"
+	CHECK_EQ(cg_config_parse(&c, TWO("10.79.0.2/32 192.168.1.0/24", "10.79.0.3/32 fd12::/64"), err, sizeof(err),
+				 warn, sizeof(warn)),
+		 0);
+	CHECK_EQ(c.nclients, 2);
+	CHECK_EQ(c.clients[0].ntun_route, 2);
+	CHECK_EQ(c.clients[1].ntun_route, 2);
+	CHECK_EQ(c.clients[1].tun_route[1].family, AF_INET6);
+	cg_config_free(&c);
+	bad(TWO("10.79.0.2/32 192.168.1.0/24", "10.79.0.3/32 192.168.1.0/24"), "tun_route",
+	    "192.168.1.0/24 is in [client");
+	bad("mode = server\ntunnel = native\n[client alpha]\nkey = " KEY "\n", "[client alpha] tun_route", "required");
+	bad("mode = server\ntunnel = native\ntun_route = 0.0.0.0/0\n[client alpha]\nkey = " KEY "\ntun_route = 10.79.0.2\n",
+	    "tun_route", "in each");
+#undef TWO
+}
+
 void test_config(void)
 {
 	static struct cg_config c;
@@ -1148,6 +1229,7 @@ void test_config(void)
 	test_config_reload();
 	test_config_addrs();
 	test_config_names();
+	test_config_native();
 	test_config_threads();
 	test_config_clients();
 	test_config_bonding();
