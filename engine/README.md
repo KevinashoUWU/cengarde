@@ -621,6 +621,27 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
   reordenador soltaba huecos y el 72 % de las retransmisiones de TCP de la
   bajada eran espurias (DSACK). Apaga las copias por omisión. El estado
   muestra `split_eta` en `upload` (cliente) y en cada sesión (servidor).
+- **`split_predict` (`no`; `yes` o `no`), en los dos extremos, para lo que
+  cada uno envía (experimental; solo sirve con `capacity_weights` o
+  `split_eta`):** el reparto mira la cola de cada enlace dentro de un
+  segundo en vez de la de ahora (`capacity.h`, `predict.h`, historia 013):
+  la cola más lo que sube en un segundo. Con `split_eta`, eso es lo
+  encolado en el enlace; en los dos, un enlace cuya cola estará sobre la
+  mitad de `governor_target_ms` no recibe el 5/4 del sondeo. El porqué: con
+  un teléfono cargando la misma celda de Entel, la cola crecía 35–40 ms por
+  segundo durante 10 s y cruzaba los 50 ms 0,8–2,2 s después. Va
+  **amortiguado** (2026-10-16: sin amortiguar, en el campo movía el tráfico
+  más seguido, 52 saltos de reparto en 90 s contra 21–35, y el rescate pedía
+  el doble): se engancha solo con una pendiente fuerte (mínimos cuadrados
+  sobre 1,3 s, al menos 30 ms/s en 2 muestras seguidas: más que las rampas
+  cortas del barrio de 3–4 s hasta ~100 ms, menos que el interferente);
+  sigue enganchado hasta que la pendiente pasa 0,5 s bajo 5 ms/s, y suelto
+  no vuelve antes de 5 s (el doble tras un enganche de menos de 3 s, hasta
+  20 s, y se olvida tras 60 s sin enganches); lo que suma es la pendiente
+  en escalones de 20 ms, hasta 500 ms, cambiado como mucho cada 500 ms.
+  Las constantes son `CG_PRED_*` en `predict.h`, sin perilla en la
+  configuración. El estado muestra `split_predict` en `upload` (cliente) y
+  en cada sesión (servidor), y por enlace `queue_pred_ms` y `predict` (abajo).
 - **`pacing` (`no`; `yes` o `no`), en el cliente (experimental):** el
   socket de cada enlace se dosifica (`SO_MAX_PACING_RATE`, `pace.h`,
   historia 013) al doble de su capacidad y nunca bajo 20 Mbit/s: rompe las
@@ -1229,11 +1250,29 @@ los últimos 5 min; tras 10 s sin llenarse vuelve al menos a la mitad de
 ella, y mientras está bajo esa mitad el reparto le ofrece el doble de su
 capacidad, en vez de 5/4 (el arranque de BBR). Así un enlace que quedó en
 reposo con una cifra baja no tarda segundos en volver a recibir su parte;
-si de verdad lleva menos, su cola lo dice al instante. Con
+si de verdad lleva menos, su cola lo dice al instante. **Vuelta rápida**
+(2026-10-16): cada enlace recuerda su capacidad de antes de llenarse; si
+el episodio duró menos de 30 s (una contienda en la celda, no una celda
+más lenta) y su cola (sobre el mínimo de 60 s) lleva 1 s bajo la mitad de
+`governor_target_ms` sin subir, la recupera de una vez, sin esperar los
+10 s del arranque rápido ni el sondeo (en el campo, unos 20 s). Si al
+recuperarla se llena de nuevo antes de 5 s, la siguiente vuelta espera
+10 s, luego 20, hasta 80 s, para que un enlace que de verdad lleva menos
+no rebote. Y **sin rebote por vaciado**: una muestra en la que el enlace
+entregó más de lo que se le envió (más de 1/16) está vaciando una cola, al
+ritmo que la celda le dé entonces; cuenta para `delivery_mbit` pero no sube
+`capacity_mbit` (en el campo, tras una carga de 40 Mbit/s la capacidad subió
+a 24 Mbit/s contra unos 9 durante 10 s), y la capacidad no sube más de lo
+que entregó la propia muestra. Con
 `capacity_weights`, de
 ella salen los pesos del reparto (arriba); sin, solo se informa. El estado
 trae además, por enlace, `queue_slope_ms_s` (la pendiente de su cola, `null`
-sin medida) y `rescue_weight` (arriba).
+sin medida), `queue_pred_ms` (la cola que `split_predict` espera dentro de
+un segundo: la de ahora salvo con la predicción enganchada), `predict` (su
+estado, calculado aunque `split_predict` esté apagado, para contarlo en el
+campo: `on`, si está enganchada; `add_ms`, lo que suma; `slope_ms_s`, su
+pendiente de 1,3 s; `engaged` y `steps`, cuántas veces se enganchó y cuántas
+cambió lo que suma) y `rescue_weight` (arriba).
 `shape_mbit` (en `upload` en el cliente, por sesión en el servidor) es el
 ritmo para un `cake` delante del túnel que no se fija a mano
 (`bench/shaper.sh`, experimental; historia 013), como `cake-autorate`
