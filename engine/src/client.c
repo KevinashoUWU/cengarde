@@ -77,6 +77,8 @@
 #include "srvpick.h"
 #include "status.h"
 #include "thrplan.h"
+#include "ippkt.h"
+#include "tun.h"
 #include "util.h"
 #include "wgsize.h"
 
@@ -151,7 +153,10 @@ struct client {
 	uint32_t session;
 	struct cg_txs txs; /* sequence and key up */
 	struct cg_rxs rxs; /* window, arrivals and counters down (clientpath.h) */
+	/* wg_fd: the UDP socket WireGuard sends to, or with tunnel = native
+	 * (native) the TUN device, whose packets go the same way. */
 	int ep, wg_fd, tfd;
+	int native;
 	struct sockaddr_storage wg_peer;
 	int have_peer;
 	struct cg_nl nl;
@@ -190,6 +195,7 @@ struct client {
 	uint32_t up_max;     /* largest WireGuard datagram since the last path check */
 	uint32_t up_largest; /* the same over the last check period, for the status */
 	uint64_t down_pkts, down_bytes, down_wg_drops, down_no_peer;
+	uint64_t down_not_ip; /* native: DATA that was not an IP packet, never written to the TUN */
 	struct cg_wgs wgs_up, wgs_down; /* WireGuard's datagrams read, and first copies to it (wgsize.h) */
 	struct cg_ratelimit rl_auth, rl_big, rl_wg, rl_full, rl_hello, rl_refused;
 
@@ -975,7 +981,16 @@ static void path_check(struct client *c, uint64_t now_ms)
 		if (l->fd < 0)
 			continue;
 		l->path_mtu = sock_path_mtu(l->fd, f);
-		if (c->up_max && l->path_mtu && need > l->path_mtu && cg_ratelimit_ok(&l->rl_mtu, now_ms, 600000))
+		if (c->native)
+			wrap = cg_outer_len(f, 0);
+		if (c->up_max && l->path_mtu && need > l->path_mtu && c->native &&
+		    cg_ratelimit_ok(&l->rl_mtu, now_ms, 600000))
+			cg_warn("link %s: packets of %u bytes from the TUN make %u-byte packets over IPv%c, more than its "
+				"path MTU of %u: lower tun_mtu to %u",
+				l->ifname, c->up_max, need, f == AF_INET6 ? '6' : '4', l->path_mtu,
+				l->path_mtu > wrap ? l->path_mtu - wrap : 0);
+		else if (!c->native && c->up_max && l->path_mtu && need > l->path_mtu &&
+			 cg_ratelimit_ok(&l->rl_mtu, now_ms, 600000))
 			cg_warn("link %s: WireGuard datagrams of %u bytes make %u-byte packets over IPv%c, more than its path "
 				"MTU of %u: lower the WireGuard MTU to %u",
 				l->ifname, c->up_max, need, f == AF_INET6 ? '6' : '4', l->path_mtu,
@@ -1124,7 +1139,7 @@ static void send_links(struct client *c, int m, uint64_t now_ms, uint16_t live, 
 static void wg_read(struct client *c)
 {
 	for (int round = 0; round < CG_MAX_ROUNDS; round++) {
-		int n = cg_rx(c->wg_fd, &c->in), m = 0, split;
+		int n = c->native ? cg_tun_rx(c->wg_fd, &c->in) : cg_rx(c->wg_fd, &c->in), m = 0, split;
 		uint16_t present, live, carry, dup0;
 		struct cg_split_masks k;
 		const uint16_t *w;
@@ -1150,20 +1165,22 @@ static void wg_read(struct client *c)
 			if ((c->in.msg[i].msg_hdr.msg_flags & MSG_TRUNC) || len > CG_MAX_PAYLOAD) {
 				c->up_toobig++;
 				if (cg_ratelimit_ok(&c->rl_big, now_ms, 30000))
-					cg_warn("WireGuard datagram larger than %d bytes dropped: lower the WireGuard MTU",
-						CG_MAX_PAYLOAD);
+					cg_warn("%s larger than %d bytes dropped: lower the %s MTU",
+						c->native ? "packet" : "WireGuard datagram", CG_MAX_PAYLOAD,
+						c->native ? "TUN" : "WireGuard");
 				continue;
 			}
 			if (len > c->up_max)
 				c->up_max = (uint32_t)len; /* for the path MTU check */
 			/* Downstream goes back to whoever last sent something shaped like
-			 * WireGuard, not to any local sender. */
-			if (cg_looks_like_wg(c->in.buf[i], len)) {
+			 * WireGuard, not to any local sender. A TUN has no sender. */
+			if (!c->native && cg_looks_like_wg(c->in.buf[i], len)) {
 				c->wg_peer = c->in.from[i];
 				c->have_peer = 1;
 			}
 			c->pick[m] = (int8_t)(split ? cg_split_pick_eta(&c->sp, c->cfg->split_eta ? &c->eta : NULL, now_us,
-									k.carriers, k.eligible, k.dup, w, c->in.buf[i][0],
+									k.carriers, k.eligible, k.dup, w,
+									c->native ? CG_WGS_DATA : c->in.buf[i][0],
 									(uint32_t)len, c->cfg->split_small, &flags)
 						    : -1);
 			c->up_split += c->pick[m] >= 0;
@@ -1318,6 +1335,24 @@ static void wg_send(struct client *c, struct mmsghdr *m, int q, uint64_t now_ms)
 	int s;
 
 	c->last_traffic_ms = now_ms;
+	if (c->native) {
+		/* One write per packet, each checked first: the MAC says who
+		 * sent it, this that the kernel gets an IP packet. */
+		for (int i = 0; i < q; i++) {
+			const struct iovec *v = m[i].msg_hdr.msg_iov;
+
+			if (!cg_ip_check(v->iov_base, v->iov_len)) {
+				c->down_not_ip++;
+				continue;
+			}
+			if (cg_tun_tx(c->wg_fd, v->iov_base, v->iov_len) < 0) {
+				c->down_wg_drops++;
+				if (errno != EAGAIN && cg_ratelimit_ok(&c->rl_wg, now_ms, 10000))
+					cg_warn("write to %s: %s", c->cfg->tun, strerror(errno));
+			}
+		}
+		return;
+	}
 	if (!c->have_peer) {
 		c->down_no_peer += (uint64_t)q; /* WireGuard has not sent anything yet */
 		return;
@@ -1557,7 +1592,7 @@ static void down_deliver(struct client *c, const struct cg_hdr *h, unsigned link
 			       .len = (uint16_t)len,
 			       .link = (uint8_t)link,
 			       .flags = h->flags,
-			       .wgtype = len ? payload[0] : 0,
+			       .wgtype = c->native ? CG_RO_WG_DATA : len ? payload[0] : 0,
 			       .prev = (uint8_t)(cg_prev_link(h->flags) + 1) };
 	enum cg_ro_v v;
 	uint16_t buf;
@@ -2040,7 +2075,10 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 	cg_json_u64(j, "time_ms", cg_wall_ms());
 	snprintf(buf, sizeof(buf), "%08x", c->session);
 	cg_json_str(j, "session", buf);
-	cg_json_str(j, "wireguard", c->have_peer ? cg_addr_str(&c->wg_peer, buf, sizeof(buf)) : "");
+	cg_json_str(j, "tunnel", c->native ? "native" : "wireguard");
+	if (c->native)
+		cg_json_str(j, "tun", c->cfg->tun);
+	cg_json_str(j, "wireguard", c->have_peer && !c->native ? cg_addr_str(&c->wg_peer, buf, sizeof(buf)) : "");
 	cg_json_u64(j, "probe_interval_ms", probe_interval(c, now_ms));
 	cg_json_bool(j, "vps_refusing", vps_refusing(c, now_ms));
 	cg_json_str(j, "config_error", c->config_error);
@@ -2098,6 +2136,7 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 	cg_json_u64(j, "foreign_session", c->rxs.foreign);
 	cg_json_u64(j, "stale", c->rxs.stale_gen);
 	cg_json_u64(j, "wireguard_drops", c->down_wg_drops + c->down_no_peer);
+	cg_json_u64(j, "not_ip", c->down_not_ip);
 	cg_json_end(j, '}');
 	/* Download: lost on every link, joint lateness, and the reorderer
 	 * (story 012). */
@@ -2384,7 +2423,8 @@ static void apply_config(struct client *c, struct cg_config *next, uint64_t now_
 			cg_warn("status file %s: cannot start the writer thread", next->status_file);
 	}
 	if (old->rcvbuf != next->rcvbuf || old->sndbuf != next->sndbuf) {
-		cg_sock_buffers(c->wg_fd, next->rcvbuf, next->rcvbuf);
+		if (!c->native)
+			cg_sock_buffers(c->wg_fd, next->rcvbuf, next->rcvbuf);
 		for (int i = 0; i < CG_MAX_LINKS; i++)
 			if (c->link[i].fd >= 0)
 				cg_sock_buffers(c->link[i].fd, next->rcvbuf, next->sndbuf);
@@ -2772,14 +2812,25 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 	c->txs.session = c->rxs.session = c->session;
 	c->start_ms = cg_now_ms();
 
-	c->wg_fd = cg_udp_bind(&cfg->listen, 1, err, sizeof(err));
+	c->native = cfg->tunnel == CG_TUNNEL_NATIVE;
+	if (c->native) {
+		/* What comes down goes into the TUN: there is always somewhere
+		 * to send it. */
+		c->wg_fd = cg_tun_open(cfg, err, sizeof(err));
+		c->have_peer = 1;
+	} else {
+		c->wg_fd = cg_udp_bind(&cfg->listen, 1, err, sizeof(err));
+	}
 	if (c->wg_fd < 0) {
 		cg_err("%s", err);
 		goto out;
 	}
-	rcv = cg_sock_buffers(c->wg_fd, cfg->rcvbuf, cfg->rcvbuf);
-	if (rcv < (1 << 20))
-		cg_warn("receive buffer is only %d bytes; raise net.core.rmem_max or run with CAP_NET_ADMIN", rcv);
+	if (!c->native) {
+		rcv = cg_sock_buffers(c->wg_fd, cfg->rcvbuf, cfg->rcvbuf);
+		if (rcv < (1 << 20))
+			cg_warn("receive buffer is only %d bytes; raise net.core.rmem_max or run with CAP_NET_ADMIN",
+				rcv);
+	}
 	if (cg_nl_open(&c->nl, err, sizeof(err)) < 0) {
 		cg_err("%s", err);
 		goto out;
@@ -2826,8 +2877,13 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 		cg_warn("control socket: %s", err);
 	if (cfg->status_file[0] && cg_status_writer_start(&c->sw, cfg->status_file, "cg-status") < 0)
 		cg_warn("status file %s: cannot start the writer thread", cfg->status_file);
-	cg_info("client %s: session %08x, WireGuard endpoint %s, link_threads %s", CG_VERSION, c->session,
-		cg_addr_str(&cfg->listen, buf, sizeof(buf)), cg_lt_name(c->lt));
+	if (c->native)
+		cg_info("client %s: session %08x, native tunnel on %s (MTU %u; authenticated, not encrypted), "
+			"link_threads %s",
+			CG_VERSION, c->session, cfg->tun, cfg->tun_mtu, cg_lt_name(c->lt));
+	else
+		cg_info("client %s: session %08x, WireGuard endpoint %s, link_threads %s", CG_VERSION, c->session,
+			cg_addr_str(&cfg->listen, buf, sizeof(buf)), cg_lt_name(c->lt));
 	if (cfg->passthrough >= 0)
 		cg_info("asking the server for IP pass %s", cfg->passthrough ? "on" : "off");
 	busy = cg_tune(cfg);

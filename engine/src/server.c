@@ -102,6 +102,9 @@
 #include "status.h"
 #include "steer.h"
 #include "thrplan.h" /* cg_cpuwin */
+#include "ippkt.h"
+#include "tun.h"
+#include "tunroute.h"
 #include "util.h"
 #include "wgport.h"
 #include "wgsize.h"
@@ -145,7 +148,7 @@ struct session {
 	int used;
 	uint32_t id;
 	int client; /* its client's slot in server.c */
-	int wg_fd;
+	int wg_fd;        /* -1 with tunnel = native: the server's TUN instead */
 	uint16_t wg_port; /* wg_fd's own port (network order): WireGuard knows the client by it */
 	struct cg_wgw wgw; /* the client's handshakes WireGuard has not answered */
 	uint32_t tx_seq; /* next DATA sequence down */
@@ -172,6 +175,7 @@ struct session {
 	struct cg_arrivals arr;  /* by link, and joint lateness (joint) */
 	struct cg_link_rx rx[CG_MAX_LINKS];
 	uint64_t up_pkts, up_bytes, down_pkts, down_bytes, wg_drops, toobig;
+	uint64_t not_ip, spoofed; /* native: upload not written to the TUN (not IP; a source not the client's) */
 	uint32_t rot; /* download batches sent: the first path of each rotates */
 	uint64_t down_split; /* of down_pkts, packets split (split.h) instead of copied to every path */
 	struct cg_split sp;  /* the split's round-robin credits */
@@ -200,6 +204,8 @@ struct client {
 	uint8_t hint;            /* pair.h: picks it before any MAC (clients.h) */
 	int enabled, passthrough;
 	struct sockaddr_storage wireguard, poke; /* poke AF_UNSPEC: none */
+	int ntun_route; /* tunnel = native: the prefixes it owns (tunroute.h) */
+	struct cg_pfx tun_route[CG_TUN_ROUTES];
 	uint32_t mix;     /* its sessions' keys in the map (cg_sesskey) */
 	uint32_t nsess;   /* its sessions */
 	uint64_t alone_ms; /* since when it has none (at first, since it was configured) */
@@ -229,6 +235,12 @@ struct lane {
 struct server {
 	struct cg_config *cfg; /* replaced by a reload */
 	const struct cg_run *run;
+	/* tunnel = native: one TUN for every client, and which client owns
+	 * each address in it (tunroute.h), rebuilt with the clients. */
+	int native;
+	int tun_fd;
+	struct cg_rt rt;
+	uint64_t tun_rx, tun_bad, tun_no_route, tun_no_session;
 	struct client c[CG_MAX_CLIENTS];
 	struct cg_hintidx hx; /* hint -> clients (clients.h) */
 	int multi;            /* [client] sections: their names in the logs, the forward table */
@@ -498,8 +510,11 @@ static int wg_socket(struct server *s, const struct client *C, uint16_t port)
 static void session_rehome(struct server *s, struct session *N, uint16_t port)
 {
 	struct client *C = client_of(s, N);
-	int fd = wg_socket(s, C, port);
+	int fd;
 
+	if (s->native)
+		return;
+	fd = wg_socket(s, C, port);
 	if (fd < 0)
 		return;
 	if (local_port(fd) != port || cg_epoll_add(s->ep, fd, CG_EV(CG_EV_WG, N - s->s)) < 0) {
@@ -534,6 +549,24 @@ static void ro_track(struct server *s, struct session *S)
 	}
 }
 
+/* native: a packet of S's upload into the TUN, if it is an IP packet from
+ * an address of S's client (tunroute.h: as WireGuard's AllowedIPs). */
+static void tun_write(struct server *s, struct session *S, const uint8_t *p, size_t len)
+{
+	int ver = cg_ip_check(p, len);
+
+	if (!ver) {
+		S->not_ip++;
+		return;
+	}
+	if (cg_rt_lookup(&s->rt, ver == 4 ? AF_INET : AF_INET6, cg_ip_src(p, ver)) != S->client) {
+		S->spoofed++;
+		return;
+	}
+	if (cg_tun_tx(s->tun_fd, p, len) < 0)
+		S->wg_drops++;
+}
+
 /* Everything S holds, in order, straight to its WireGuard (its session
  * closes, or reorder was turned off), and its window starts again. Through
  * s->out, which only flush_wg and down_send use, never across this. */
@@ -555,7 +588,13 @@ static void ro_flush_session(struct server *s, struct session *S)
 			bufs[m++] = o.buf;
 		}
 		if (m == CG_BATCH || (!more && m)) {
-			sent = sendmmsg(S->wg_fd, s->out, (unsigned)m, MSG_DONTWAIT);
+			if (s->native) {
+				for (int x = 0; x < m; x++)
+					tun_write(s, S, iov[x].iov_base, iov[x].iov_len);
+				sent = m;
+			} else {
+				sent = sendmmsg(S->wg_fd, s->out, (unsigned)m, MSG_DONTWAIT);
+			}
 			if (sent < m)
 				S->wg_drops += (uint64_t)(m - (sent < 0 ? 0 : sent));
 			while (m)
@@ -575,8 +614,10 @@ static void session_destroy(struct server *s, struct session *S, const char *why
 	/* What it holds goes first, in order: its WireGuard socket closes now.
 	 * What a listen batch queued for it is dropped below, as before. */
 	ro_flush_session(s, S);
-	epoll_ctl(s->ep, EPOLL_CTL_DEL, S->wg_fd, NULL);
-	close(S->wg_fd);
+	if (S->wg_fd >= 0) {
+		epoll_ctl(s->ep, EPOLL_CTL_DEL, S->wg_fd, NULL);
+		close(S->wg_fd);
+	}
 	cg_idmap_del(&s->ids, cg_sesskey(C->mix, S->id));
 	free(S->resc_idx);
 	S->resc_idx = NULL;
@@ -664,8 +705,8 @@ static struct session *session_create(struct server *s, struct client *C, const 
 	 * handshakes included, which a router that came back with its clock
 	 * behind needs (wgwatch.h). */
 	alone = !C->nsess;
-	fd = wg_socket(s, C, alone ? C->wg_port : 0);
-	if (fd < 0) {
+	fd = s->native ? -1 : wg_socket(s, C, alone ? C->wg_port : 0);
+	if (fd < 0 && !s->native) {
 		cg_err("%ssession %08x: socket to WireGuard: %s", C->tag, id, strerror(errno));
 		return NULL;
 	}
@@ -680,14 +721,14 @@ static struct session *session_create(struct server *s, struct client *C, const 
 	S->id = id;
 	S->client = (int)(C - s->c);
 	S->wg_fd = fd;
-	S->wg_port = local_port(fd);
+	S->wg_port = fd >= 0 ? local_port(fd) : 0;
 	S->tx_seq = pi->rx_top + CG_SEQ_LEAP;
 	S->tx_ctl = pi->rx_top_ctl + CG_SEQ_LEAP;
 	S->created_ms = S->last_rx_ms = now_ms;
 	S->pass = -1;
 	cg_replay_init_marked(&S->replay, pi->tx_next - 1);
 	cg_replay_init_marked(&S->ctl, h->seq);
-	if (cg_epoll_add(s->ep, fd, CG_EV(CG_EV_WG, S - s->s)) < 0) {
+	if (fd >= 0 && cg_epoll_add(s->ep, fd, CG_EV(CG_EV_WG, S - s->s)) < 0) {
 		close(fd);
 		S->used = 0;
 		return NULL;
@@ -1041,6 +1082,11 @@ static void flush_wg(struct server *s, int nq)
 			m++;
 			s->q_sess[j] = UINT32_MAX;
 		}
+		if (s->native) {
+			for (int x = 0; x < m; x++)
+				tun_write(s, S, s->out[x].msg_hdr.msg_iov->iov_base, s->out[x].msg_hdr.msg_iov->iov_len);
+			continue;
+		}
 		sent = sendmmsg(S->wg_fd, s->out, (unsigned)m, MSG_DONTWAIT);
 		if (sent < m)
 			S->wg_drops += (uint64_t)(m - (sent < 0 ? 0 : sent));
@@ -1191,7 +1237,7 @@ static void up_deliver(struct server *s, int *nq, struct session *S, const struc
 			       .len = (uint16_t)len,
 			       .link = h->link,
 			       .flags = h->flags,
-			       .wgtype = len ? payload[0] : 0,
+			       .wgtype = s->native ? CG_RO_WG_DATA : len ? payload[0] : 0,
 			       .prev = (uint8_t)(cg_prev_link(h->flags) + 1) };
 	enum cg_ro_v v;
 	uint16_t buf;
@@ -1464,7 +1510,8 @@ static void listen_read(struct server *s, struct lane *ln)
 			expect = expect_mask(S, now_ms);
 			cg_arr_first(&S->arr, S->rx, h.seq, now32, h.link,
 				     h.flags & CG_F_SPLIT ? (uint16_t)(1u << h.link) : expect);
-			cg_wgw_from_client(&S->wgw, cg_wg_handshake(b + CG_HDR_LEN, len - CG_HDR_LEN), now_ms);
+			if (!s->native)
+				cg_wgw_from_client(&S->wgw, cg_wg_handshake(b + CG_HDR_LEN, len - CG_HDR_LEN), now_ms);
 			S->up_pkts++;
 			S->up_bytes += len - CG_HDR_LEN;
 			cg_wgs_add(&s->wgs_up, b + CG_HDR_LEN, len - CG_HDR_LEN);
@@ -1597,7 +1644,8 @@ static void down_prepare(struct server *s, struct session *S, int m, uint8_t *bu
 
 	/* Before the header: CG_F_SPLIT is under the MAC. */
 	s->pick[m] = (int8_t)(d->split ? cg_split_pick_eta(&S->sp, s->cfg->split_eta ? &S->eta : NULL, now_us,
-							   d->k.carriers, d->k.eligible, d->k.dup, d->w, buf[0],
+							   d->k.carriers, d->k.eligible, d->k.dup, d->w,
+							   s->native ? CG_WGS_DATA : buf[0],
 							   (uint32_t)len, s->cfg->split_small, &h.flags)
 				       : -1);
 	S->down_split += s->pick[m] >= 0;
@@ -1751,6 +1799,63 @@ static void wg_read(struct server *s, struct session *S)
 			if (cg_ratelimit_ok(&s->rl_redirect, now_ms, 60000))
 				cg_info("%ssession %08x: a handshake WireGuard started goes down session %08x, the "
 					"client's newest", client_of(s, S)->tag, S->id, N->id);
+		}
+		if (n < CG_BATCH)
+			return;
+	}
+}
+
+/* native: packets the kernel routed into the TUN, each down the newest
+ * session of the client that owns its destination (tunroute.h), a batch
+ * per session in the order they were read. */
+static void tun_read(struct server *s)
+{
+	for (int round = 0; round < CG_MAX_ROUNDS; round++) {
+		int n = cg_tun_rx(s->tun_fd, &s->in);
+		int32_t who[CG_BATCH];
+		uint64_t now_us, now_ms;
+
+		if (n <= 0)
+			return;
+		now_us = cg_now_us();
+		now_ms = now_us / 1000;
+		s->tun_rx += (uint64_t)n;
+		for (int i = 0; i < n; i++) {
+			size_t len = s->in.msg[i].msg_len;
+			const uint8_t *b = s->in.buf[i];
+			int ver = 0, k;
+
+			who[i] = -1;
+			if (len <= CG_MAX_PAYLOAD && !(s->in.msg[i].msg_hdr.msg_flags & MSG_TRUNC))
+				ver = cg_ip_check(b, len);
+			if (!ver) {
+				s->tun_bad++;
+				continue;
+			}
+			k = cg_rt_lookup(&s->rt, ver == 4 ? AF_INET : AF_INET6, cg_ip_dst(b, ver));
+			if (k < 0 || !s->c[k].used || !s->c[k].enabled)
+				s->tun_no_route++;
+			else if (s->c[k].newest < 0)
+				s->tun_no_session++;
+			else
+				who[i] = s->c[k].newest;
+		}
+		for (int i = 0; i < n; i++) {
+			int32_t idx = who[i];
+			struct session *S;
+			struct dpaths d;
+			int m = 0;
+
+			if (idx < 0)
+				continue;
+			S = &s->s[idx];
+			d = down_paths(s, S, now_ms);
+			for (int j = i; j < n; j++)
+				if (who[j] == idx) {
+					down_prepare(s, S, m++, s->in.buf[j], s->in.msg[j].msg_len, now_us, &d);
+					who[j] = -1;
+				}
+			down_send(s, S, m, now_ms, &d);
 		}
 		if (n < CG_BATCH)
 			return;
@@ -2082,6 +2187,16 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 	cg_json_u64(j, "refused", s->hellos_refused);
 	cg_json_u64(j, "over_budget", s->hellos_over);
 	cg_json_end(j, '}');
+	cg_json_str(j, "tunnel", s->native ? "native" : "wireguard");
+	if (s->native) {
+		cg_json_obj(j, "tun");
+		cg_json_str(j, "name", s->cfg->tun);
+		cg_json_u64(j, "rx", s->tun_rx);
+		cg_json_u64(j, "not_ip", s->tun_bad);
+		cg_json_u64(j, "no_route", s->tun_no_route);
+		cg_json_u64(j, "no_session", s->tun_no_session);
+		cg_json_end(j, '}');
+	}
 	cg_json_obj(j, "wireguard");
 	cg_json_u64(j, "pokes", s->wg_pokes);
 	cg_json_u64(j, "redirected_handshakes", s->wg_redirects);
@@ -2140,6 +2255,8 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 			cg_json_null(j, "client_asks_split");
 		}
 		cg_json_u64(j, "wireguard_drops", S->wg_drops);
+		cg_json_u64(j, "not_ip", S->not_ip);
+		cg_json_u64(j, "spoofed", S->spoofed);
 		cg_json_u64(j, "wireguard_unanswered", cg_wgw_knocking(&S->wgw, now_ms) ? S->wgw.unanswered : 0);
 		cg_json_u64(j, "too_big", S->toobig);
 		/* Upload: lost on every link, joint lateness, and the reorderer
@@ -2661,7 +2778,7 @@ static void rcvbuf_apply(struct server *s, int force)
 			s->rcv_eff = rcv;
 	}
 	for (uint32_t i = 0; i < s->cap; i++)
-		if (s->s[i].used)
+		if (s->s[i].used && s->s[i].wg_fd >= 0)
 			cg_sock_buffers(s->s[i].wg_fd, rb.per_socket, s->cfg->rcvbuf);
 }
 
@@ -2767,6 +2884,8 @@ static void client_set(struct server *s, struct client *C, const struct cg_clien
 	C->passthrough = k->passthrough;
 	C->wireguard = k->wireguard;
 	C->poke = k->wireguard_poke;
+	C->ntun_route = k->ntun_route;
+	memcpy(C->tun_route, k->tun_route, sizeof(C->tun_route));
 }
 
 /* Puts the clients of cfg in place. A client keeps its slot, its sessions
@@ -2788,6 +2907,8 @@ static void clients_apply(struct server *s, const struct cg_config *cfg, uint64_
 		one.enabled = one.passthrough = 1;
 		one.wireguard = cfg->wireguard;
 		one.wireguard_poke = cfg->wireguard_poke;
+		one.ntun_route = cfg->ntun_route;
+		memcpy(one.tun_route, cfg->tun_route, sizeof(one.tun_route));
 		list = &one;
 		n = 1;
 	}
@@ -2844,7 +2965,10 @@ static void clients_apply(struct server *s, const struct cg_config *cfg, uint64_
 		if (cg_random(&C->mix, sizeof(C->mix)) < 0)
 			C->mix = (uint32_t)cg_now_us() * 2654435761u;
 		client_set(s, C, &list[j]);
-		if (s->multi)
+		if (s->multi && cfg->tunnel == CG_TUNNEL_NATIVE)
+			cg_info("%sclient hint %02x, %d prefixes in the TUN%s", C->tag, C->hint, C->ntun_route,
+				C->enabled ? "" : ", disabled");
+		else if (s->multi)
 			cg_info("%sclient hint %02x, WireGuard at %s%s", C->tag, C->hint, cg_addr_str(&C->wireguard,
 				(char[64]){ 0 }, 64), C->enabled ? "" : ", disabled");
 	}
@@ -2853,6 +2977,12 @@ static void clients_apply(struct server *s, const struct cg_config *cfg, uint64_
 		used[i] = (uint8_t)s->c[i].used;
 	}
 	cg_hintidx_build(&s->hx, hint, used, CG_MAX_CLIENTS);
+	/* The TUN's routes, from the clients in place (the configuration
+	 * refused two with one prefix). */
+	memset(&s->rt, 0, sizeof(s->rt));
+	for (int i = 0; i < CG_MAX_CLIENTS; i++)
+		for (int r = 0; s->c[i].used && r < s->c[i].ntun_route; r++)
+			cg_rt_add(&s->rt, &s->c[i].tun_route[r], (uint8_t)i);
 }
 
 /* Room for max sessions: the session array and the map grow (never
@@ -3082,7 +3212,8 @@ int cg_server_run(struct cg_config *cfg, const struct cg_run *run)
 	}
 	s->cfg = cfg;
 	s->run = run;
-	s->ep = s->tfd = s->jfd = -1;
+	s->ep = s->tfd = s->jfd = s->tun_fd = -1;
+	s->native = cfg->tunnel == CG_TUNNEL_NATIVE;
 	for (uint32_t i = 0; i < CG_MAX_LANES; i++)
 		s->lane[i].fd = -1;
 	s->pass_written = s->holder = s->fw_holder = -1;
@@ -3147,7 +3278,15 @@ int cg_server_run(struct cg_config *cfg, const struct cg_run *run)
 			cg_err("epoll setup: %s", strerror(errno));
 			goto out;
 		}
-	if ((s->jfd >= 0 && cg_epoll_add(s->ep, s->jfd, CG_EV(CG_EV_JUNK, 0)) < 0) ||
+	if (s->native) {
+		s->tun_fd = cg_tun_open(cfg, err, sizeof(err));
+		if (s->tun_fd < 0) {
+			cg_err("%s", err);
+			goto out;
+		}
+	}
+	if ((s->tun_fd >= 0 && cg_epoll_add(s->ep, s->tun_fd, CG_EV(CG_EV_TUN, 0)) < 0) ||
+	    (s->jfd >= 0 && cg_epoll_add(s->ep, s->jfd, CG_EV(CG_EV_JUNK, 0)) < 0) ||
 	    cg_epoll_add(s->ep, s->tfd, CG_EV(CG_EV_TIMER, 0)) < 0 ||
 	    cg_epoll_add(s->ep, run->sigfd, CG_EV(CG_EV_SIG, 0)) < 0 ||
 	    cg_epoll_add(s->ep, s->loader.efd, CG_EV(CG_EV_LOAD, 0)) < 0) {
@@ -3171,7 +3310,12 @@ int cg_server_run(struct cg_config *cfg, const struct cg_run *run)
 		if (cg_status_writer_start(&s->gw, cfg->wireguard_port_file, "cg-wgport") < 0)
 			cg_warn("%s: cannot start the writer thread", cfg->wireguard_port_file);
 	}
-	if (s->multi)
+	if (s->native)
+		cg_info("server %s: listening on %s%s, native tunnel on %s (MTU %u; authenticated, not encrypted), "
+			"%d client%s, up to %u sessions",
+			CG_VERSION, s->laddr, s->pktinfo ? ", replying from each packet's arrival address" : "", cfg->tun,
+			cfg->tun_mtu, s->multi ? cfg->nclients : 1, s->multi && cfg->nclients > 1 ? "s" : "", s->max);
+	else if (s->multi)
 		cg_info("server %s: listening on %s%s, %d clients, up to %u sessions", CG_VERSION, s->laddr,
 			s->pktinfo ? ", replying from each packet's arrival address" : "", cfg->nclients, s->max);
 	else
@@ -3206,6 +3350,10 @@ int cg_server_run(struct cg_config *cfg, const struct cg_run *run)
 				break;
 			case CG_EV_JUNK:
 				junk_read(s);
+				break;
+			case CG_EV_TUN:
+				tun_read(s);
+				traffic = 1;
 				break;
 			case CG_EV_WG:
 				if (idx < s->cap && s->s[idx].used)
@@ -3254,8 +3402,10 @@ out:
 	cg_ctl_close(&s->ctl, s->ep);
 	cg_loader_free(&s->loader);
 	for (uint32_t i = 0; s->s && i < s->cap; i++)
-		if (s->s[i].used)
+		if (s->s[i].used && s->s[i].wg_fd >= 0)
 			close(s->s[i].wg_fd);
+	if (s->tun_fd >= 0)
+		close(s->tun_fd);
 	lanes_close(s);
 	if (s->tfd >= 0)
 		close(s->tfd);
