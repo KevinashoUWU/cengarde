@@ -55,6 +55,10 @@ write_files:
       # The routers' IPv6 through the tunnels, masqueraded out of this server
       # (the router's "IPv6 through the tunnel" switch fills it in).
       TUNNEL_IPV6=no
+      # What carries the tunnels: wireguard, or native (experimental: the
+      # engine's own TUN, not encrypted; the router's "tunnel mode" fills
+      # it in).
+      TUNNEL=wireguard
 
 runcmd:
   - CENGARDE_REF=master; git init -q /opt/cengarde && git -C /opt/cengarde fetch -q --depth 1 https://github.com/KevinashoUWU/cengarde "$CENGARDE_REF" && git -C /opt/cengarde checkout -q FETCH_HEAD
