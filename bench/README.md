@@ -631,7 +631,11 @@ de netem, que además desordena algunos de sus paquetes). Casos
 - `burst`: `IF_BURSTS` (3) cortes de 2 s, cada 8 s;
 - `drain`: 10 s cortado, 1 s a pleno (la cola se vacía al ritmo de la celda)
   y 10 s a la mitad (la celda sigue compartida): lo que la capacidad toma
-  del vaciado.
+  del vaciado;
+- `ramps`: `IF_RAMPS` (6) cortes parciales a `IF_RATE / IF_RAMP_DIV` (1,5;
+  se redondea a Mbit/s enteros) de `IF_RAMP_S` s (por turno, «2 3») cada
+  `IF_RAMP_EVERY` (7) s: las rampas cortas del barrio, que `split_predict`
+  no debe perseguir.
 
 La base del motor es `split = on`, `capacity_weights = yes` y `split_eta =
 yes`; `IF_EXTRA` suma ajustes a los dos extremos (p. ej. `split_predict =
@@ -644,8 +648,15 @@ le vuelve a ofrecer el 80 % de lo de antes), `cap_s` (lo mismo para su
 `capacity_mbit`), `cap_over` (en `drain`, la mayor capacidad mientras la
 celda da la mitad, sobre esa mitad: más de 1 es el rebote del vaciado),
 `q_ms` y `q100_s` (la mayor cola de l1 y cuánto pasó de 100 ms), y por
-corrida el RTT máximo de TCP y las retransmisiones (iperf3) y el p99 del
-ping. Una línea JSON por corrida va a `IF_OUT`; `interferer.py table
+corrida el RTT máximo de TCP y las retransmisiones (iperf3), el p99 del
+ping y lo que cuesta mover tráfico entre enlaces, como la tabla de campo
+del 2026-10-16: `flips` (saltos de reparto: veces que la parte de un enlace
+en lo ofrecido, sobre 0,5 s, subió 15 puntos o más en 1 s; como mucho uno
+por segundo), `asked` y `rack` (del reordenador del servidor:
+`reorder.rescue.asked` y `reorder.lost.rack`, que solo cuentan con el
+rescate puesto, `rescue_kb` y `rescue_wait_ms` en `IF_EXTRA`) y `engaged`
+(cuántas veces se enganchó la predicción amortiguada, `predict.engaged` de
+todos los enlaces; se calcula aunque `split_predict` esté apagado). Una línea JSON por corrida va a `IF_OUT`; `interferer.py table
 IF_OUT` da la mediana por variante y caso. No está en `ci` (cada corrida
 dura ~45 s). Ejemplo, antes y después:
 

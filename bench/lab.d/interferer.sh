@@ -18,6 +18,10 @@
 #   drain   for IF_S seconds, then 1 s at IF_RATE (its queue empties at the
 #           cell's full rate), then IF_S seconds at IF_RATE / 2 (the cell
 #           still shared): what the capacity takes from the drain
+#   ramps   IF_RAMPS times (6), a partial cut to IF_RATE / IF_RAMP_DIV (1.5)
+#           for IF_RAMP_S seconds (in turn, "2 3"), every IF_RAMP_EVERY s
+#           (7): the short ramps of a neighbourhood's cell, that
+#           split_predict should not chase (story 013, 2026-10-16)
 #
 # A sampler reads both links' netem counters every 100 ms (what the split
 # offered each link, and the queue: the backlog over the rate, less the
@@ -35,7 +39,17 @@
 #   q100_s   how long it was over 100 ms then (summed over the episodes)
 #
 # and per run iperf3's TCP RTT max and retransmissions and the ping's p99
-# and max. One JSON line per run goes to IF_OUT (if given) and a line of
+# and max, and what moving traffic between links costs (as the field's
+# table of 2026-10-16):
+#
+#   flips    split share jumps: times a link's share of what the split
+#            offers (over 0.5 s) grew by 15 points or more within 1 s
+#            (at most one a second)
+#   asked    the server's reorderer: gaps the rescue asked for again
+#   rack     and gaps it gave up waiting for (lost.rack)
+#   engaged  times split_predict's damping engaged, all links (status
+#            "predict"; none on a build without it)
+# One JSON line per run goes to IF_OUT (if given) and a line of
 # text to the terminal; IF_LABEL names the run. Compare builds with
 # CENGARDE_BIN (lab.sh), engine settings with IF_EXTRA (";"-separated, both
 # ends; the base is split = on, capacity_weights = yes, split_eta = yes).
@@ -59,6 +73,10 @@ IF_QUEUE_MS=${IF_QUEUE_MS:-2000}
 IF_WARM=${IF_WARM:-8}
 IF_TAIL=${IF_TAIL:-20}
 IF_JITTER_MS=${IF_JITTER_MS:-0}
+IF_RAMPS=${IF_RAMPS:-6}
+IF_RAMP_S=${IF_RAMP_S:-2 3}
+IF_RAMP_DIV=${IF_RAMP_DIV:-1.5}
+IF_RAMP_EVERY=${IF_RAMP_EVERY:-7}
 IF_EXTRA=${IF_EXTRA:-}
 IF_OUT=${IF_OUT:-}
 IF_LABEL=${IF_LABEL:-run}
@@ -118,11 +136,25 @@ if_events() {
 		if_link 1 20 "$IF_RATE" "$IF_QUEUE_MS" change
 		echo "end $(date +%s.%N)" >>"$RUN/if-marks"
 		;;
+	ramps)
+		# shellcheck disable=SC2206 # the durations, split on spaces
+		local ds=($IF_RAMP_S) d part
+		part=$(awk -v r="$IF_RATE" -v d="$IF_RAMP_DIV" 'BEGIN { printf "%d", r / d + 0.5 }')
+		for i in $(seq 0 $((IF_RAMPS - 1))); do
+			d=${ds[$((i % ${#ds[@]}))]}
+			echo "cut $(date +%s.%N)" >>"$RUN/if-marks"
+			if_link 1 20 "$part" "$IF_QUEUE_MS" change
+			sleep "$d"
+			if_link 1 20 "$IF_RATE" "$IF_QUEUE_MS" change
+			echo "end $(date +%s.%N)" >>"$RUN/if-marks"
+			[ "$i" -lt $((IF_RAMPS - 1)) ] && sleep $((IF_RAMP_EVERY - d))
+		done
+		;;
 	esac
 }
 
 interferer() {
-	local tool c rep secs fail=0 line ev
+	local tool c rep secs fail=0 line ev div
 	for tool in iperf3 ping python3; do
 		command -v "$tool" >/dev/null || { echo "interferer: needs $tool"; return 1; }
 	done
@@ -136,7 +168,8 @@ interferer() {
 		long) secs=$((IF_WARM + IF_S + IF_TAIL)) ;;
 		burst) secs=$((IF_WARM + IF_BURSTS * 8 - 6 + IF_TAIL)) ;;
 		drain) secs=$((IF_WARM + 2 * IF_S + 1 + IF_TAIL)) ;;
-		*) echo "interferer: no case $c (long, burst, drain)"; return 1 ;;
+		ramps) secs=$((IF_WARM + IF_RAMPS * IF_RAMP_EVERY + IF_TAIL)) ;;
+		*) echo "interferer: no case $c (long, burst, drain, ramps)"; return 1 ;;
 		esac
 		for rep in $(seq 1 "$IF_N"); do
 			setup && start || return 1
@@ -162,13 +195,15 @@ interferer() {
 			fi
 			wait "$ev"
 			if_stop
-			line=$(python3 "$LAB/interferer.py" measure "$RUN" "$c" "$rep" "$IF_LABEL" "$IF_RATE" "$IF_DIV" "$IF_EXTRA") ||
+			div=$IF_DIV
+			[ "$c" = ramps ] && div=$IF_RAMP_DIV
+			line=$(python3 "$LAB/interferer.py" measure "$RUN" "$c" "$rep" "$IF_LABEL" "$IF_RATE" "$div" "$IF_EXTRA") ||
 				{ echo "FAIL: no measure"; fail=1; }
 			[ -n "$IF_OUT" ] && [ -n "$line" ] && echo "$line" >>"$IF_OUT"
 			[ -n "$line" ] && python3 -c 'import json, sys; d = json.loads(sys.argv[1]); i = d["iperf3"]; p = d["ping"]
-print("   %s %s #%d: off %ss, back %ss (cap %ss, over x%s), queue %s ms (%ss over 100); TCP RTT max %s ms, %s retrans, %s Mbit/s; ping p99 %s ms" % (
+print("   %s %s #%d: off %ss, back %ss (cap %ss, over x%s), queue %s ms (%ss over 100); TCP RTT max %s ms, %s retrans, %s Mbit/s; ping p99 %s ms; flips %s, asked %s, rack %s, engaged %s" % (
     d["label"], d["case"], d["rep"], d["off_s"], d["back_s"], d["cap_s"], d["cap_over"], d["q_ms"], d["q100_s"],
-    i.get("rtt_max_ms"), i.get("retrans"), i.get("mbit"), p["p99_ms"]))' "$line"
+    i.get("rtt_max_ms"), i.get("retrans"), i.get("mbit"), p["p99_ms"], d["flips"], d["asked"], d["rack"], d["engaged"]))' "$line"
 			teardown
 		done
 	done
