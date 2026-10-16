@@ -347,6 +347,11 @@ void cg_json_capacity(struct cg_json *j, const struct cg_cap_link *l, uint32_t t
 		cg_json_ms_signed(j, "queue_slope_ms_s", l->s1);
 	else
 		cg_json_null(j, "queue_slope_ms_s");
+	/* where split_predict takes the queue to be in a second */
+	if (cg_cap_pred_us(l) >= 0)
+		cg_json_ms(j, "queue_pred_ms", (uint64_t)cg_cap_pred_us(l));
+	else
+		cg_json_null(j, "queue_pred_ms");
 	cg_json_ms(j, "rescue_weight", (uint64_t)cg_cap_rescue_w(l, target_us) * 1000 / CG_CAP_W_ONE);
 	/* How the capacity is decided: samples in a row with a queue and
 	 * short of what was sent, the last full sample, fast start's best,

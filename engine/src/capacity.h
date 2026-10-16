@@ -80,6 +80,52 @@
  * tunnel says nothing). The engine
  * only says the rate; a service outside it applies cake.
  *
+ * Three lessons of a controlled interferer (story 013, 2026-10-16: an RTMP
+ * stream of 8 Mbit/s up on Entel alone while a phone loaded the same cell).
+ * Only a load in the same direction hurt; the cell queued instead of
+ * dropping (an upload of 20 Mbit/s grew Entel's queue 35-40 ms each second,
+ * to 354-502 ms in 10 s; one of 40, to 2 s), shared the uplink about evenly,
+ * and drained in under 0.2 s when the load stopped. The queue passed 50 ms
+ * 0.8-2.2 s after the load started, while its slope said so at once; the
+ * capacity lagged the whole phase, came back in ~20 s, and after the
+ * 40 Mbit/s phase overshot to 24 Mbit/s (against ~9) for ~10 s.
+ *
+ * - Leaving earlier (split_predict, config.h, off by default): the queue
+ *   the split sees for each link, in cg_cap_eta and in the probe gate of
+ *   both splits, is where it will be in a second (cg_cap_pred_us: the
+ *   queue plus its slope plus half the slope's slope, between the queue
+ *   and CG_CAP_PRED_MAX_US over it), and a link whose queue will be over
+ *   probe_us is not probed. Only for a slope over CG_CAP_PRED_S1 for
+ *   CG_CAP_PRED_N trend samples in a row, and then while it stays above 0:
+ *   a cellular delay swings by tens of ms, and one swing makes a slope of
+ *   hundreds of ms a second for one sample; a rising queue keeps it. In
+ *   the unit tests, a delay swinging at random over 30 ms every 100 ms
+ *   turns it on under 1 % of the time, and a queue growing 40 ms a second
+ *   (the field's) under 20 ms of swing within 0.6-1 s.
+ * - Coming back after a short episode (cg_cap_back): the capacity from
+ *   before the link was found full is kept, and once the queue has stayed
+ *   under probe_us (sat_us / 2: Entel's idle queue alone was 5-6 ms, over
+ *   the 5 that a stricter sat_us / 4 would ask) with a slope under
+ *   CG_CAP_CALM_S1 for CG_CAP_CALM_MS, an episode (from the first sample
+ *   found full until the queue went) shorter than CG_CAP_EP_MS (a
+ *   contention, not a slower cell) gives it back at once,
+ *   not half the best after CG_CAP_REST_MS and the probing's ~20 s. A link
+ *   that really carries less fills again at once and the full logic takes
+ *   it down; a restore followed by another episode within CG_CAP_RETRY_MS
+ *   failed, and the next one waits twice as long each time (up to 16 times
+ *   CG_CAP_RETRY_MS), so that a slower link does not bounce. The queue
+ *   here is over the minimum of CG_CAP_LONG_MS (ql_us), as the trend's: a
+ *   queue that stands longer than window_ms is in queue_us's minimum, and
+ *   looks gone.
+ * - No overshoot from a drain: a sample in which the link delivered more
+ *   than it was sent by over 1/16 is emptying a queue, at whatever rate the
+ *   cell gives it then; it counts for the delivery rate, but it does not
+ *   raise the capacity, nor the average while full (it is held), and the
+ *   capacity rises by no more than the sample itself delivered (the
+ *   smoothed rate carries a drain into the samples after it). The check on
+ *   the totals since the counters' start (CG_CAP_SLACK) still holds: a
+ *   drain delivers what was sent before, never more than the total.
+ *
  * Pure: no clock, no I/O, no allocation.
  *
  * SPDX-License-Identifier: GPL-3.0-or-later */
@@ -109,6 +155,19 @@
  * of this run of the counters: probes and what was in flight at the start
  * make a few packets of difference, never this many. */
 #define CG_CAP_SLACK 64
+/* split_predict: a slope over this (us of queue per second) for this many
+ * trend samples in a row, and the prediction adds up to this much */
+#define CG_CAP_PRED_S1 10000
+#define CG_CAP_PRED_N 4
+#define CG_CAP_PRED_MAX_US 500000
+/* fast return: an episode shorter than this, calm (a slope under this, us
+ * per second) for this long; a restore followed by an episode within this
+ * failed, and the next waits twice as long, up to 1 << CG_CAP_FAIL_MAX */
+#define CG_CAP_EP_MS 30000u
+#define CG_CAP_CALM_S1 5000
+#define CG_CAP_CALM_MS 1000u
+#define CG_CAP_RETRY_MS 5000u
+#define CG_CAP_FAIL_MAX 4
 
 struct cg_cap_cfg {
 	uint32_t window_ms; /* of the capacity's maximum and of the queue's minimum */
@@ -150,6 +209,12 @@ struct cg_cap_link {
 	 * the counters. */
 	uint8_t cut;
 	uint64_t n_cut_full, n_cut_short, n_restore;
+	uint8_t rise_n;             /* trend samples in a row with s1 over CG_CAP_PRED_S1 */
+	/* fast return: when the episode started (0: none), the capacity before
+	 * it, when the link turned calm (0: not), the last restore, and how
+	 * many restores in a row failed */
+	uint64_t ep_ms, pre_bps, calm_ms, back_ms;
+	uint8_t fail_n;
 };
 
 /* What cg_cap_tick did, as bits of its return value. */
@@ -210,6 +275,11 @@ static inline void cg_cap_trend(struct cg_cap_link *l, uint64_t now_ms)
 		l->s2 += ((s1 - l->s1) * 1000 / (int64_t)dt - l->s2) / 4;
 	l->s1 = s1;
 	l->have_s1 = 1;
+	/* a rise once sustained lasts while the slope stays up at all */
+	if (s1 > CG_CAP_PRED_S1)
+		l->rise_n = l->rise_n < 255 ? (uint8_t)(l->rise_n + 1) : 255;
+	else if (s1 <= 0 || l->rise_n < CG_CAP_PRED_N)
+		l->rise_n = 0;
 	l->q_last = l->ql_us;
 	l->q_t_ms = now_ms;
 }
@@ -232,6 +302,75 @@ static inline uint32_t cg_cap_rescue_w(const struct cg_cap_link *l, uint32_t tar
 	if (pred >= hi)
 		return 0;
 	return (uint32_t)((hi - pred) * CG_CAP_W_ONE / (hi - lo));
+}
+
+/* split_predict: the queue in a second (us), for a queue that has been
+ * rising for CG_CAP_PRED_N trend samples; the queue now otherwise. -1: none
+ * measured. */
+static inline int32_t cg_cap_pred_us(const struct cg_cap_link *l)
+{
+	int64_t add;
+
+	if (l->queue_us < 0 || !l->have_s1 || l->rise_n < CG_CAP_PRED_N)
+		return l->queue_us;
+	add = l->s1 + l->s2 / 2;
+	if (add <= 0)
+		return l->queue_us;
+	if (add > CG_CAP_PRED_MAX_US)
+		add = CG_CAP_PRED_MAX_US;
+	return (int32_t)((int64_t)l->queue_us + add > INT32_MAX ? INT32_MAX : (int64_t)l->queue_us + add);
+}
+
+/* The queue the split goes by: the predicted one with predict. */
+static inline int32_t cg_cap_split_q(const struct cg_cap_link *l, int predict)
+{
+	return predict ? cg_cap_pred_us(l) : l->queue_us;
+}
+
+/* The link found full at t_ms: its capacity is bps. The first of an
+ * episode keeps the capacity from before it, for cg_cap_back; one within
+ * CG_CAP_RETRY_MS of a restore says that restore failed. */
+static inline void cg_cap_full(struct cg_cap_link *l, uint64_t bps, uint64_t t_ms)
+{
+	if (!l->ep_ms) {
+		l->ep_ms = t_ms ? t_ms : 1;
+		l->pre_bps = cg_cap_bps(l);
+		if (l->back_ms && t_ms - l->back_ms < CG_CAP_RETRY_MS)
+			l->fail_n = l->fail_n < CG_CAP_FAIL_MAX ? (uint8_t)(l->fail_n + 1) : CG_CAP_FAIL_MAX;
+		else
+			l->fail_n = 0;
+	}
+	l->max_cur = l->max_prev = bps;
+	l->full_ms = t_ms;
+}
+
+/* Fast return, at each fresh delay: an episode over (the queue over the
+ * long minimum under calm_us and its slope under CG_CAP_CALM_S1, since
+ * after the last full sample, for CG_CAP_CALM_MS) that lasted under
+ * CG_CAP_EP_MS until then gives the capacity from before it back, unless a
+ * failed restore says to wait. */
+static inline int cg_cap_back(struct cg_cap_link *l, uint64_t now_ms, uint32_t calm_us)
+{
+	int back = 0;
+
+	if (!l->ep_ms)
+		return 0;
+	if (l->ql_us < 0 || (uint32_t)l->ql_us >= calm_us || (l->have_s1 && l->s1 > CG_CAP_CALM_S1)) {
+		l->calm_ms = 0;
+		return 0;
+	}
+	if (!l->calm_ms || l->calm_ms <= l->full_ms)
+		l->calm_ms = now_ms;
+	if (now_ms - l->calm_ms < CG_CAP_CALM_MS)
+		return 0;
+	if (l->calm_ms - l->ep_ms < CG_CAP_EP_MS && l->pre_bps > cg_cap_bps(l) &&
+	    (!l->back_ms || now_ms - l->back_ms >= (uint64_t)CG_CAP_RETRY_MS << l->fail_n)) {
+		l->max_cur = l->max_prev = l->pre_bps;
+		l->back_ms = now_ms;
+		back = 1;
+	}
+	l->ep_ms = l->calm_ms = 0;
+	return back;
 }
 
 /* Fast start: the best capacity of the last CG_CAP_BEST_MS, and a link that
@@ -270,7 +409,7 @@ static inline unsigned cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint6
 {
 	uint64_t dt, dpk, dby, bytes, rate, raw, ref;
 	uint32_t drx;
-	int loaded;
+	int loaded, drain;
 	uint8_t cut;
 	unsigned ev = 0;
 
@@ -283,19 +422,23 @@ static inline unsigned cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint6
 		q = cg_owd_diff(h->owd, cg_gov_base(&l->ql, h->owd, now_ms, CG_CAP_LONG_MS));
 		l->ql_us = q > 0 ? q : 0;
 		cg_cap_trend(l, now_ms);
+		if (cg_cap_back(l, now_ms, cfg->sat_us / 2)) {
+			l->n_restore++; /* fast return: counted with fast start's */
+			ev |= CG_CAP_EV_RESTORE;
+		}
 	}
 	if (!report_ms)
-		return 0;
+		return ev;
 	if (!l->have) {
 		l->t_ms = report_ms;
 		l->rx = rx;
 		l->tx_pkts = l->tx0 = tx_pkts;
 		l->tx_bytes = tx_bytes;
 		l->have = 1;
-		return 0;
+		return ev;
 	}
 	if (report_ms <= l->t_ms || report_ms - l->t_ms < CG_CAP_MIN_MS)
-		return 0;
+		return ev;
 	dt = report_ms - l->t_ms;
 	drx = rx - l->rx;
 	dpk = tx_pkts - l->tx_pkts;
@@ -319,12 +462,13 @@ static inline unsigned cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint6
 		l->n_cut_full = keep.n_cut_full;
 		l->n_cut_short = keep.n_cut_short;
 		l->n_restore = keep.n_restore;
+		l->rise_n = keep.rise_n;
 		l->t_ms = report_ms;
 		l->rx = rx;
 		l->tx_pkts = l->tx0 = tx_pkts;
 		l->tx_bytes = tx_bytes;
 		l->have = 1;
-		return 0;
+		return ev;
 	}
 	if (dpk)
 		l->size = (uint32_t)(dby / dpk);
@@ -335,6 +479,8 @@ static inline unsigned cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint6
 	l->tx_pkts = tx_pkts;
 	l->tx_bytes = tx_bytes;
 	l->rx_total += drx;
+	/* emptying a queue: more delivered than sent, by over 1/16 */
+	drain = drx > dpk + dpk / 16;
 	if (l->have_rate) {
 		if (rate >= l->rate_bps)
 			l->rate_bps += (rate - l->rate_bps) / CG_CAP_GAIN;
@@ -361,8 +507,12 @@ static inline unsigned cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint6
 	if (l->queue_us >= 0 && (uint32_t)l->queue_us > cfg->sat_us) {
 		/* Until the first sample full from start to end (the queue formed
 		 * during the one before), each sample starts it again. */
+		uint64_t sent = dby * 8 * 1000 / dt;
+
 		if (l->sat_n + 1 <= CG_CAP_SAT_N)
-			l->sat_bps = raw;
+			l->sat_bps = drain && raw > sent ? sent : raw;
+		else if (drain)
+			; /* held: a drain is not what the link gives this end */
 		else if (raw >= l->sat_bps)
 			l->sat_bps += (raw - l->sat_bps) / CG_CAP_GAIN;
 		else
@@ -374,17 +524,16 @@ static inline unsigned cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint6
 	}
 	if (l->sat_load_n >= CG_CAP_SAT_N || l->sat_n >= CG_CAP_SAT_LONG) {
 		/* Full: the link gives no more than it delivers while full. */
-		l->max_cur = l->max_prev = l->sat_bps;
-		l->full_ms = report_ms;
+		cg_cap_full(l, l->sat_bps, report_ms);
 		cut = CG_CAP_CUT_FULL;
 	} else if (l->short_n >= CG_CAP_SHORT_N) {
 		/* Its packets stop arriving: no more than it delivers now. */
-		l->max_cur = l->max_prev = rate;
-		l->full_ms = report_ms;
+		cg_cap_full(l, rate, report_ms);
 		cut = CG_CAP_CUT_SHORT;
 	} else {
-		if (rate > l->max_cur)
-			l->max_cur = l->max_prev = rate;
+		/* not from a drain, nor from its echo in the smoothed rate */
+		if (!drain && (rate < raw ? rate : raw) > l->max_cur)
+			l->max_cur = l->max_prev = rate < raw ? rate : raw;
 		cut = CG_CAP_CUT_NONE;
 	}
 	if (cut != l->cut && cut == CG_CAP_CUT_FULL) {
@@ -403,9 +552,10 @@ static inline unsigned cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint6
 /* The split's weights (cg_split_pick: up to CG_GOV_MAX) from l's
  * capacities: dup0's links 0 (a copy of every packet, split.h); gov, when
  * not NULL, the governor's weights, each scaling its link's. probe_us:
- * below this queue a link takes 5/4. */
+ * below this queue a link takes 5/4; predict (split_predict): the queue in
+ * a second (cg_cap_pred_us) instead of the queue now. */
 static inline void cg_cap_weights(const struct cg_cap_link l[CG_MAX_LINKS], uint16_t dup0, const uint16_t *gov,
-				  uint32_t probe_us, uint16_t w[CG_MAX_LINKS])
+				  uint32_t probe_us, int predict, uint16_t w[CG_MAX_LINKS])
 {
 	uint64_t eff[CG_MAX_LINKS], top = 0, big = 0;
 
@@ -414,8 +564,9 @@ static inline void cg_cap_weights(const struct cg_cap_link l[CG_MAX_LINKS], uint
 			big = cg_cap_bps(&l[i]);
 	for (unsigned i = 0; i < CG_MAX_LINKS; i++) {
 		uint64_t c = l[i].have_rate ? cg_cap_bps(&l[i]) : 0;
+		int32_t q = cg_cap_split_q(&l[i], predict);
 
-		if (l[i].have_rate && l[i].queue_us >= 0 && (uint32_t)l[i].queue_us < probe_us)
+		if (l[i].have_rate && q >= 0 && (uint32_t)q < probe_us)
 			c = cg_cap_probe(&l[i], c, big);
 		eff[i] = c;
 		if (!(dup0 >> i & 1) && c > top)
@@ -450,9 +601,13 @@ static inline void cg_cap_weights(const struct cg_cap_link l[CG_MAX_LINKS], uint
  * more than its capacity never lets it show more. On the testnet, after
  * MPTCP traffic had filled the same modems, the four capacities stayed at
  * 5-7 Mbit/s against 15-30 and the upload under split_eta fell to 3 Mbit/s
- * (story 013). */
+ * (story 013).
+ *
+ * With predict (split_predict), the queue, for the probe and for the
+ * backlog, is where it will be in a second (cg_cap_pred_us): a link whose
+ * queue is rising takes less before it is full (story 013, 2026-10-16). */
 static inline void cg_cap_eta(struct cg_eta *e, const struct cg_cap_link l[CG_MAX_LINKS], uint16_t mask,
-			      uint32_t probe_us, uint64_t now_us)
+			      uint32_t probe_us, int predict, uint64_t now_us)
 {
 	uint32_t ref = 0, mins[CG_MAX_LINKS];
 	uint64_t big = 0;
@@ -473,15 +628,15 @@ static inline void cg_cap_eta(struct cg_eta *e, const struct cg_cap_link l[CG_MA
 	}
 	for (unsigned i = 0; i < CG_MAX_LINKS; i++) {
 		uint64_t bps = cg_cap_bps(&l[i]);
+		int32_t qu = cg_cap_split_q(&l[i], predict);
 
 		if (!(mask >> i & 1) || !l[i].have_rate || !l[i].q.have_min || !bps || !any) {
 			cg_eta_set(e, i, 0, 0, 0, now_us);
 			continue;
 		}
-		if (l[i].queue_us >= 0 && (uint32_t)l[i].queue_us < probe_us)
+		if (qu >= 0 && (uint32_t)qu < probe_us)
 			bps = cg_cap_probe(&l[i], bps, big);
-		cg_eta_set(e, i, bps, (uint32_t)cg_owd_diff(mins[i], ref), l[i].queue_us > 0 ? (uint32_t)l[i].queue_us : 0,
-			   now_us);
+		cg_eta_set(e, i, bps, (uint32_t)cg_owd_diff(mins[i], ref), qu > 0 ? (uint32_t)qu : 0, now_us);
 	}
 }
 
