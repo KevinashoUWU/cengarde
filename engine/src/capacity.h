@@ -93,15 +93,19 @@
  * - Leaving earlier (split_predict, config.h, off by default): the queue
  *   the split sees for each link, in cg_cap_eta and in the probe gate of
  *   both splits, is where it will be in a second (cg_cap_pred_us: the
- *   queue plus its slope plus half the slope's slope, between the queue
- *   and CG_CAP_PRED_MAX_US over it), and a link whose queue will be over
- *   probe_us is not probed. Only for a slope over CG_CAP_PRED_S1 for
- *   CG_CAP_PRED_N trend samples in a row, and then while it stays above 0:
- *   a cellular delay swings by tens of ms, and one swing makes a slope of
- *   hundreds of ms a second for one sample; a rising queue keeps it. In
- *   the unit tests, a delay swinging at random over 30 ms every 100 ms
- *   turns it on under 1 % of the time, and a queue growing 40 ms a second
- *   (the field's) under 20 ms of swing within 0.6-1 s.
+ *   queue plus predict.h's add_us while it is engaged), and a link whose
+ *   queue will be over probe_us is not probed. Damped (predict.h, story
+ *   013, 2026-10-16: undamped, it moved traffic more often in the field,
+ *   52 share jumps in 90 s against 21-35, and the rescue asked twice as
+ *   much): it engages only on a slope of at least CG_PRED_ON_S1 (30 ms/s,
+ *   least squares over CG_PRED_WIN_MS) for CG_PRED_ON_N samples in a row,
+ *   stays until the slope is under CG_PRED_OFF_S1 for CG_PRED_OFF_MS, then
+ *   does not engage again for CG_PRED_HOLD_MS; what it adds is the slope
+ *   over a second in steps of CG_PRED_Q_US, at most every CG_PRED_STEP_MS,
+ *   up to CG_PRED_MAX_US. In the unit tests, random swings of 30 ms never
+ *   engage it, a queue growing 35-40 ms a second under 20 ms of swing does
+ *   in 0.9-1.5 s. The state is computed with split_predict off too (the
+ *   status's "predict", per link), so the field can count it.
  * - Coming back after a short episode (cg_cap_back): the capacity from
  *   before the link was found full is kept, and once the queue has stayed
  *   under probe_us (sat_us / 2: Entel's idle queue alone was 5-6 ms, over
@@ -141,6 +145,7 @@
 #include "eta.h"     /* struct cg_eta */
 #include "govern.h"  /* cg_gov_base, struct cg_gov_link */
 #include "health.h"  /* struct cg_hlink, cg_health_fresh, cg_owd_diff */
+#include "predict.h" /* struct cg_pred, cg_pred_update */
 
 #define CG_CAP_MIN_MS 500 /* a sample spans at least this */
 #define CG_CAP_GAIN 4     /* the delivery rate's smoothing: 1/4 of each sample */
@@ -157,11 +162,6 @@
  * of this run of the counters: probes and what was in flight at the start
  * make a few packets of difference, never this many. */
 #define CG_CAP_SLACK 64
-/* split_predict: a slope over this (us of queue per second) for this many
- * trend samples in a row, and the prediction adds up to this much */
-#define CG_CAP_PRED_S1 10000
-#define CG_CAP_PRED_N 4
-#define CG_CAP_PRED_MAX_US 500000
 /* fast return: an episode shorter than this, calm (a slope under this, us
  * per second) for this long; a restore followed by an episode within this
  * failed, and the next waits twice as long, up to 1 << CG_CAP_FAIL_MAX */
@@ -205,7 +205,7 @@ struct cg_cap_link {
 	uint64_t q_t_ms;
 	int64_t s1, s2;
 	uint8_t have_trend, have_s1;
-	uint8_t rise_n;             /* trend samples in a row with s1 over CG_CAP_PRED_S1 */
+	struct cg_pred pred;        /* split_predict's (predict.h), from ql_us */
 	/* fast return: when the episode started (0: none), the capacity before
 	 * it, when the link turned calm (0: not), the last restore, and how
 	 * many restores in a row failed */
@@ -249,6 +249,7 @@ static inline void cg_cap_trend(struct cg_cap_link *l, uint64_t now_ms)
 		l->q_last = l->ql_us;
 		l->q_t_ms = now_ms;
 		l->have_trend = 1;
+		cg_pred_update(&l->pred, l->ql_us, now_ms);
 		return;
 	}
 	dt = now_ms - l->q_t_ms;
@@ -260,11 +261,7 @@ static inline void cg_cap_trend(struct cg_cap_link *l, uint64_t now_ms)
 		l->s2 += ((s1 - l->s1) * 1000 / (int64_t)dt - l->s2) / 4;
 	l->s1 = s1;
 	l->have_s1 = 1;
-	/* a rise once sustained lasts while the slope stays up at all */
-	if (s1 > CG_CAP_PRED_S1)
-		l->rise_n = l->rise_n < 255 ? (uint8_t)(l->rise_n + 1) : 255;
-	else if (s1 <= 0 || l->rise_n < CG_CAP_PRED_N)
-		l->rise_n = 0;
+	cg_pred_update(&l->pred, l->ql_us, now_ms);
 	l->q_last = l->ql_us;
 	l->q_t_ms = now_ms;
 }
@@ -289,21 +286,15 @@ static inline uint32_t cg_cap_rescue_w(const struct cg_cap_link *l, uint32_t tar
 	return (uint32_t)((hi - pred) * CG_CAP_W_ONE / (hi - lo));
 }
 
-/* split_predict: the queue in a second (us), for a queue that has been
- * rising for CG_CAP_PRED_N trend samples; the queue now otherwise. -1: none
+/* split_predict: the queue in a second (us) while predict.h is engaged
+ * (the queue now plus its damped add_us), the queue now otherwise. -1: none
  * measured. */
 static inline int32_t cg_cap_pred_us(const struct cg_cap_link *l)
 {
-	int64_t add;
-
-	if (l->queue_us < 0 || !l->have_s1 || l->rise_n < CG_CAP_PRED_N)
+	if (l->queue_us < 0 || !l->pred.on)
 		return l->queue_us;
-	add = l->s1 + l->s2 / 2;
-	if (add <= 0)
-		return l->queue_us;
-	if (add > CG_CAP_PRED_MAX_US)
-		add = CG_CAP_PRED_MAX_US;
-	return (int32_t)((int64_t)l->queue_us + add > INT32_MAX ? INT32_MAX : (int64_t)l->queue_us + add);
+	return (int32_t)((int64_t)l->queue_us + l->pred.add_us > INT32_MAX ? INT32_MAX
+									    : (int64_t)l->queue_us + l->pred.add_us);
 }
 
 /* The queue the split goes by: the predicted one with predict. */
@@ -430,7 +421,7 @@ static inline void cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint64_t 
 		l->s2 = keep.s2;
 		l->have_trend = keep.have_trend;
 		l->have_s1 = keep.have_s1;
-		l->rise_n = keep.rise_n;
+		l->pred = keep.pred;
 		l->t_ms = report_ms;
 		l->rx = rx;
 		l->tx_pkts = l->tx0 = tx_pkts;

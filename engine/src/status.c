@@ -341,6 +341,16 @@ void cg_json_capacity(struct cg_json *j, const struct cg_cap_link *l, uint32_t t
 		cg_json_ms(j, "queue_pred_ms", (uint64_t)cg_cap_pred_us(l));
 	else
 		cg_json_null(j, "queue_pred_ms");
+	/* split_predict's damping (predict.h), computed with it off too:
+	 * engaged now, what it adds, its slope (ms per second), and how many
+	 * times it engaged and changed what it adds */
+	cg_json_obj(j, "predict");
+	cg_json_bool(j, "on", l->pred.on);
+	cg_json_ms(j, "add_ms", (uint64_t)(l->pred.add_us > 0 ? l->pred.add_us : 0));
+	cg_json_ms_signed(j, "slope_ms_s", l->pred.slope);
+	cg_json_u64(j, "engaged", l->pred.engaged);
+	cg_json_u64(j, "steps", l->pred.steps);
+	cg_json_end(j, '}');
 	cg_json_ms(j, "rescue_weight", (uint64_t)cg_cap_rescue_w(l, target_us) * 1000 / CG_CAP_W_ONE);
 }
 

@@ -624,18 +624,24 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
 - **`split_predict` (`no`; `yes` o `no`), en los dos extremos, para lo que
   cada uno envía (experimental; solo sirve con `capacity_weights` o
   `split_eta`):** el reparto mira la cola de cada enlace dentro de un
-  segundo en vez de la de ahora (`capacity.h`, historia 013): la cola, más
-  su pendiente, más la mitad de la pendiente de la pendiente, entre la cola
-  de ahora y 500 ms sobre ella. Con `split_eta`, eso es lo encolado en el
-  enlace; en los dos, un enlace cuya cola estará sobre la mitad de
-  `governor_target_ms` no recibe el 5/4 del sondeo. Solo cuando la cola
-  lleva subiendo (más de 10 ms por segundo) 4 muestras seguidas (unos
-  400 ms), y mientras siga subiendo: el retardo celular oscila decenas de
-  ms y una sola oscilación no debe sacar a un enlace del reparto. El porqué:
-  con un teléfono cargando la misma celda de Entel, la cola crecía 35–40 ms
-  por segundo desde el principio, y cruzaba los 50 ms 0,8–2,2 s después
-  (historia 013, 2026-10-16). El estado muestra `split_predict` en `upload`
-  (cliente) y en cada sesión (servidor), y por enlace `queue_pred_ms`.
+  segundo en vez de la de ahora (`capacity.h`, `predict.h`, historia 013):
+  la cola más lo que sube en un segundo. Con `split_eta`, eso es lo
+  encolado en el enlace; en los dos, un enlace cuya cola estará sobre la
+  mitad de `governor_target_ms` no recibe el 5/4 del sondeo. El porqué: con
+  un teléfono cargando la misma celda de Entel, la cola crecía 35–40 ms por
+  segundo durante 10 s y cruzaba los 50 ms 0,8–2,2 s después. Va
+  **amortiguado** (2026-10-16: sin amortiguar, en el campo movía el tráfico
+  más seguido, 52 saltos de reparto en 90 s contra 21–35, y el rescate pedía
+  el doble): se engancha solo con una pendiente fuerte (mínimos cuadrados
+  sobre 1,3 s, al menos 30 ms/s en 2 muestras seguidas: más que las rampas
+  cortas del barrio de 3–4 s hasta ~100 ms, menos que el interferente);
+  sigue enganchado hasta que la pendiente pasa 0,5 s bajo 5 ms/s, y suelto
+  no vuelve antes de 5 s (el doble tras un enganche de menos de 3 s, hasta
+  20 s, y se olvida tras 60 s sin enganches); lo que suma es la pendiente
+  en escalones de 20 ms, hasta 500 ms, cambiado como mucho cada 500 ms.
+  Las constantes son `CG_PRED_*` en `predict.h`, sin perilla en la
+  configuración. El estado muestra `split_predict` en `upload` (cliente) y
+  en cada sesión (servidor), y por enlace `queue_pred_ms` y `predict` (abajo).
 - **`pacing` (`no`; `yes` o `no`), en el cliente (experimental):** el
   socket de cada enlace se dosifica (`SO_MAX_PACING_RATE`, `pace.h`,
   historia 013) al doble de su capacidad y nunca bajo 20 Mbit/s: rompe las
@@ -1239,8 +1245,11 @@ que entregó la propia muestra. Con
 ella salen los pesos del reparto (arriba); sin, solo se informa. El estado
 trae además, por enlace, `queue_slope_ms_s` (la pendiente de su cola, `null`
 sin medida), `queue_pred_ms` (la cola que `split_predict` espera dentro de
-un segundo: la de ahora salvo una subida sostenida) y `rescue_weight`
-(arriba).
+un segundo: la de ahora salvo con la predicción enganchada), `predict` (su
+estado, calculado aunque `split_predict` esté apagado, para contarlo en el
+campo: `on`, si está enganchada; `add_ms`, lo que suma; `slope_ms_s`, su
+pendiente de 1,3 s; `engaged` y `steps`, cuántas veces se enganchó y cuántas
+cambió lo que suma) y `rescue_weight` (arriba).
 `shape_mbit` (en `upload` en el cliente, por sesión en el servidor) es el
 ritmo para un `cake` delante del túnel que no se fija a mano
 (`bench/shaper.sh`, experimental; historia 013), como `cake-autorate`
