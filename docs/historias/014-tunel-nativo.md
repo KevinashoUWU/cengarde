@@ -22,6 +22,7 @@
   - **Laboratorio** (2 enlaces de 40 Mbit/s, reparto): 73,5 Mbit/s en cada sentido. Sin límite de enlaces: ~2,5 Gbit/s en el PC.
   - **Varios routers por VPS:** cada uno tiene su `tun_route` y el servidor comprueba el origen de cada paquete (como AllowedIPs).
   - `flow.h` deja listo el siguiente paso.
+- **`tcp_aware` (PR #65), corregido el 2026-10-16:** una retransmisión de TCP entregada al instante se adelantaba a lo retenido y TCP lo reenviaba todo (en la red de pruebas, 135 veces las retransmisiones rápidas). Ahora la retransmisión ocupa su lugar en la secuencia y solo los ACK van al instante. En el laboratorio, `on` queda como `off`.
 - **La Pi no trae `kmod-tun`.** El paquete de OpenWrt tendrá que depender de él.
 
 ## Por qué salir de WireGuard
@@ -98,11 +99,64 @@
   - OpenWrt y LuCI;
   - `cengarde-vps-setup` y `cengarde-nat` para la TUN.
 
+## `tcp_aware` y las retransmisiones adelantadas (2026-10-16)
+
+**Qué hace `tcp_aware` (PR #65, protocolo v6):** con el túnel nativo, el emisor marca `CG_F_FREE` los segmentos de TCP sin datos y las retransmisiones de TCP (`tcpfree.h`). El reordenador del otro extremo los entregaba al instante, sin esperar huecos.
+
+**Lo medido en la red de pruebas** (Pi ↔ VPS, `iperf3 -P 4 -R` 20 s, `nstat` del kernel del VPS, que es el que envía):
+
+| Contador del VPS | `tcp_aware` no | `tcp_aware` sí |
+| --- | ---: | ---: |
+| Rendimiento | 324 Mbit/s | 331 Mbit/s |
+| `TcpExtTCPFastRetrans` | 69 | 9327 |
+| `TcpExtTCPDSACKRecv` (retransmisiones de más) | 19 | 1814 |
+| `TcpExtTCPLostRetransmit` | 0 | 437 |
+| `TcpExtTCPTSReorder` | 16 | 819 |
+
+El rendimiento se sostiene, pero se gastan enlace y RTT.
+
+**El mecanismo:**
+- Una retransmisión lleva una secuencia de cengarde nueva. Entregada al instante, se adelanta a todo lo que el reordenador retiene detrás de un hueco, aunque se envió antes que ella.
+- El RACK de TCP (RFC 8985) ve entregado lo último enviado y no lo anterior. Pasado su RTT más la ventana de reordenamiento (~¼ del RTT mínimo), da lo anterior por perdido y lo reenvía. Esos reenvíos también van libres, así que se repite.
+- Después llegan los originales retenidos: duplicados (DSACK) y retransmisiones perdidas.
+- No hace falta un hueco largo: alcanza con que lo retenido espere más que esa ventana. Con dos enlaces de 20 y 30 ms bastan los ~10 ms de diferencia.
+
+**El arreglo (sin cambiar el protocolo):**
+- El receptor distingue la retransmisión del control mirando el segmento: un paquete libre con datos de TCP es una retransmisión (`cg_tcp_data` en `tcpfree.h`). Un fragmento o una cabecera corta cuentan como control.
+- La retransmisión ya no se adelanta: ocupa su lugar en la secuencia, como cualquier dato. Los segmentos sin datos siguen yendo al instante.
+- El estado cuenta las retransmisiones recibidas en `reorder.retx`.
+
+**Lo que se probó y no se adoptó:** que una retransmisión abandone los huecos anteriores a ella.
+- Primero se probó abandonándolos y entregando la retransmisión al instante. Con edad mínima 0 se abandonaron ~900 huecos de reparto por corrida (paquetes en vuelo en el enlace lento) y no bajaron los DSACK.
+- Después, reteniéndola en su lugar y abandonando solo huecos cuyo paquete retenido se envió al menos N ms antes:
+  - con pérdida aleatoria (escenario 1), 10 ms quedó igual que no abandonar nada;
+  - con un enlace cuya cola salta 200 ms (escenario 2), cualquier edad abandona paquetes en vuelo que después llegan duplicados: 34 Mbit/s con 10 ms, 39 con 50 y 43 con 150, contra 45 sin abandonar nada.
+- Quedó como perilla experimental apagada: `reorder_retx_release_ms` (0 por omisión), con `lost.retx` y `late.after_retx` en el estado.
+
+**Laboratorio** (`sudo bench/lab.sh tcpaware`: túnel nativo, `split = on`, `reorder_max_wait_ms = 500`, `iperf3 -R -P 4` 20 s, `nstat` en el netns del servidor; mediana de 3 corridas; antes = `master` en `5e44989`):
+- **Escenario 1:** 2 enlaces de 50 Mbit/s, de 20 y 30 ms, con 0,5 % de pérdida cada uno.
+- **Escenario 2:** 2 enlaces de 50 Mbit/s, de 25 y 30 ms, con 0,1 % de pérdida; el primero suma 200 ms durante 1 s de cada 4 (`TCPA_SPIKE=1:200:1:4`).
+
+| | Esc. 1: `off` | Esc. 1: `on` antes | Esc. 1: `on` ahora | Esc. 2: `off` | Esc. 2: `on` antes | Esc. 2: `on` ahora |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Mbit/s | 16,3 | 15,8 | 15,7 | 43,7 | 38,1 | 45,7 |
+| `TCPFastRetrans` | 145 | 673 | 152 | 669 | 1525 | 539 |
+| `TCPDSACKRecv` | 0 | 197 | 0 | 339 | 437 | 245 |
+| `TCPLostRetransmit` | 0 | 114 | 1 | 115 | 266 | 166 |
+
+- El laboratorio reproduce el defecto: en el escenario 1, `on` tiene 4,6 veces las retransmisiones rápidas de `off` y DSACK donde no había.
+- Con el arreglo, `on` queda como `off`. En el escenario 2, `on` queda algo mejor que `off`: los ACK siguen yendo libres.
+- El rendimiento del escenario 1 lo limita la pérdida (Cubic con 0,5 %), no el túnel.
+
+**Lo que falta:**
+- medirlo en la red de pruebas con la misma corrida de la tabla de arriba;
+- la fase 2 por flujo (abajo) choca con lo mismo: una retransmisión entregada al llegar se adelanta a lo retenido de su propio flujo, y RACK reenvía todo eso.
+
 ## Lo que sigue
 
 1. **Fase 2, reordenar por dependencia** (propuesta de la investigación, razonada):
    - cada dato lleva la secuencia del paquete anterior de su mismo flujo (`prev_seq`), y el receptor solo lo retiene si falta ese predecesor;
-   - el emisor reconoce una retransmisión de TCP (secuencia de TCP menor que la máxima de ese flujo) y la manda sin predecesor, así se entrega al llegar;
+   - el emisor reconoce una retransmisión de TCP (secuencia de TCP menor que la máxima de ese flujo) y la manda sin predecesor, así se entrega al llegar. **Ojo (2026-10-16):** adelantada a lo retenido de su flujo, RACK reenvía todo eso (ver `tcp_aware` arriba);
    - las retransmisiones de QUIC no se pueden reconocer.
 2. **Clases y prioridad:**
    - tiempo real por un enlace o duplicado;
@@ -117,3 +171,4 @@
 ## Cambios
 
 - 2026-10-15: creada. Decisión de salir de WireGuard, la investigación, las medidas en la Pi y la fase 1 (PR #61).
+- 2026-10-16: `tcp_aware` (PR #65) medido en la red de pruebas: las retransmisiones adelantadas hacían que TCP reenviara lo retenido. Arreglo: la retransmisión ocupa su lugar en la secuencia, sin cambiar el protocolo; `lab.sh tcpaware`, y `reorder_retx_release_ms`, que se probó y quedó apagado.

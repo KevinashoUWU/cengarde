@@ -102,4 +102,49 @@ void test_tcpfree(void)
 		b[32] = 4 << 4; /* data offset under 20 */
 		CHECK(!cg_tcpf_free(&T, &f, b, len));
 	}
+
+	/* The receiver's side: TCP data (a retransmission when marked free)
+	 * or not (an ACK, SYN, RST, anything else). */
+	{
+		uint8_t b[2048];
+		size_t len;
+
+		CHECK(cg_tcp_data(b, pkt(b, 0, 1000, 1, 0, 1000)));
+		CHECK(cg_tcp_data(b, pkt(b, 0, 1000, 1, CG_TCP_FIN, 1)));
+		CHECK(!cg_tcp_data(b, pkt(b, 0, 1000, 1, 0, 0)));          /* pure ACK */
+		CHECK(!cg_tcp_data(b, pkt(b, 0, 1000, 1, CG_TCP_FIN, 0))); /* FIN alone */
+		CHECK(!cg_tcp_data(b, pkt(b, 0, 1000, 1, CG_TCP_SYN, 100))); /* SYN with data (TFO) */
+		CHECK(!cg_tcp_data(b, pkt(b, 0, 1000, 1, CG_TCP_RST, 10)));
+		CHECK(!cg_tcp_data(b, pkt(b, 1, 1000, 0, 0, 1000))); /* UDP */
+		len = pkt(b, 0, 1000, 1, 0, 100);
+		b[6] = 0x20; /* a fragment */
+		CHECK(!cg_tcp_data(b, len));
+		len = pkt(b, 0, 1000, 1, 0, 100);
+		b[32] = 15 << 4; /* a 60-byte header: 60 bytes of data left */
+		CHECK(cg_tcp_data(b, len));
+		len = pkt(b, 0, 1000, 1, 0, 40);
+		b[32] = 15 << 4; /* 60-byte header: all of it, no data */
+		CHECK(!cg_tcp_data(b, len));
+		len = pkt(b, 0, 1000, 1, 0, 20);
+		b[32] = 15 << 4; /* past the end */
+		CHECK(!cg_tcp_data(b, len));
+		len = pkt(b, 0, 1000, 1, 0, 100);
+		b[32] = 4 << 4; /* under 20 */
+		CHECK(!cg_tcp_data(b, len));
+		CHECK(!cg_tcp_data(b, 10));
+		len = pkt(b, 0, 1000, 1, 0, 100);
+		CHECK(!cg_tcp_data(b, len - 1)); /* the IP length says otherwise */
+
+		/* IPv6, TCP with 100 bytes of data, then without */
+		memset(b, 0, 40 + 20 + 100);
+		b[0] = 0x60;
+		b[5] = 120;
+		b[6] = 6;
+		b[7] = 64;
+		b[40 + 12] = 5 << 4;
+		b[40 + 13] = 0x10;
+		CHECK(cg_tcp_data(b, 160));
+		b[5] = 20;
+		CHECK(!cg_tcp_data(b, 60));
+	}
 }
