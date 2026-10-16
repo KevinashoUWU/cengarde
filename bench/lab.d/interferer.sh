@@ -42,7 +42,9 @@
 # Knobs: IF_CASES ("long burst drain"), IF_N (repetitions, 1), IF_RATE (40),
 # IF_RATE2 (20), IF_DIV (3), IF_LOAD (24M), IF_S (10), IF_BURSTS (3),
 # IF_QUEUE_MS (2000),
-# IF_WARM (8 s before the first cut), IF_TAIL (20 s after the last).
+# IF_WARM (8 s before the first cut), IF_TAIL (20 s after the last),
+# IF_JITTER_MS (0: link 1's delay swings by this much, netem's jitter, as a
+# cellular link's; it also reorders some of its packets).
 # Needs iperf3, ping, netem and python3.
 
 IF_CASES=${IF_CASES:-long burst drain}
@@ -56,6 +58,7 @@ IF_BURSTS=${IF_BURSTS:-3}
 IF_QUEUE_MS=${IF_QUEUE_MS:-2000}
 IF_WARM=${IF_WARM:-8}
 IF_TAIL=${IF_TAIL:-20}
+IF_JITTER_MS=${IF_JITTER_MS:-0}
 IF_EXTRA=${IF_EXTRA:-}
 IF_OUT=${IF_OUT:-}
 IF_LABEL=${IF_LABEL:-run}
@@ -64,10 +67,12 @@ IF_LABEL=${IF_LABEL:-run}
 # with room for QUEUE_MS at the link's own rate (VERB change keeps its
 # queue: the cut must not empty it).
 if_link() {
-	local n=$1 d=$2 r=$3 q=$4 verb=${5:-replace} lim base=$IF_RATE
+	local n=$1 d=$2 r=$3 q=$4 verb=${5:-replace} lim base=$IF_RATE jit=""
 	[ "$n" = 2 ] && base=$IF_RATE2
+	[ "$n" = 1 ] && [ "$IF_JITTER_MS" != 0 ] && jit="${IF_JITTER_MS}ms"
 	lim=$((base * 1000000 * (q + d) / 8000 / 1400 + 10))
-	ip netns exec cli tc qdisc "$verb" dev "l$n" root netem delay "${d}ms" rate "${r}mbit" limit "$lim"
+	# shellcheck disable=SC2086 # jit: empty, or the jitter
+	ip netns exec cli tc qdisc "$verb" dev "l$n" root netem delay "${d}ms" $jit rate "${r}mbit" limit "$lim"
 }
 
 if_stop() {
