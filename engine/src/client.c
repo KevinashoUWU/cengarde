@@ -70,6 +70,7 @@
 #include "replay.h"
 #include "sock.h"
 #include "capacity.h"
+#include "tcpfree.h"
 #include "rescue.h"
 #include "pace.h"
 #include "govern.h"
@@ -196,6 +197,10 @@ struct client {
 	uint32_t up_largest; /* the same over the last check period, for the status */
 	uint64_t down_pkts, down_bytes, down_wg_drops, down_no_peer;
 	uint64_t down_not_ip; /* native: DATA that was not an IP packet, never written to the TUN */
+	/* native, tcp_aware: inner TCP's retransmissions and segments without
+	 * data go marked CG_F_FREE (tcpfree.h); the flow hash's seed */
+	struct cg_tcpf tcpf;
+	uint32_t flow_seed;
 	struct cg_wgs wgs_up, wgs_down; /* WireGuard's datagrams read, and first copies to it (wgsize.h) */
 	struct cg_ratelimit rl_auth, rl_big, rl_wg, rl_full, rl_hello, rl_refused;
 
@@ -1191,6 +1196,13 @@ static void wg_read(struct client *c)
 			c->prev_only = (uint8_t)(1 + (c->pick[m] < 0 && c->cfg->mute_trickle
 							      ? -1
 							      : cg_split_only(c->pick[m], carry, k.dup)));
+			if (c->native && c->cfg->tcp_aware) {
+				struct cg_flow f;
+
+				if (cg_flow_of(c->in.buf[i], len, c->flow_seed, &f) &&
+				    cg_tcpf_free(&c->tcpf, &f, c->in.buf[i], len))
+					flags |= CG_F_FREE;
+			}
 			cg_up_header(&c->txs, c->hdr[m], CG_T_DATA, flags, 0, (uint32_t)now_us, c->in.buf[i], len);
 			/* Kept for the server's NACKs (rescue.h), with the one link it
 			 * goes on, and its share of the rescue budget. */
@@ -2114,6 +2126,12 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 	cg_json_bool(j, "capacity_weights", c->cfg->capacity_weights);
 	cg_json_bool(j, "split_eta", c->cfg->split_eta);
 	cg_json_bool(j, "pacing", c->cfg->pacing);
+	/* native, tcp_aware: inner TCP marked free (tcpfree.h) */
+	cg_json_obj(j, "tcp_free");
+	cg_json_bool(j, "on", c->native && c->cfg->tcp_aware);
+	cg_json_u64(j, "control", c->tcpf.ctl);
+	cg_json_u64(j, "retransmissions", c->tcpf.retx);
+	cg_json_end(j, '}');
 	/* For a shaper on the tunnel (capacity.h): null until measured. */
 	if (cg_cap_shape_bps(&c->ctot))
 		cg_json_ms(j, "shape_mbit", cg_cap_shape_bps(&c->ctot) / 1000);
@@ -2768,6 +2786,8 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 		return 1;
 	}
 	memset(c, 0, sizeof(*c));
+	if (cg_random(&c->flow_seed, sizeof(c->flow_seed)) < 0)
+		c->flow_seed = (uint32_t)cg_now_us();
 	c->cfg = cfg;
 	c->run = run;
 	c->bell.efd = -1;

@@ -345,9 +345,9 @@ static inline void cg_ro_hist_add(uint64_t h[CG_RO_HIST], uint32_t later, uint32
 /* Never held, whatever the window: what is not WireGuard data (handshakes
  * above all), and data of at most bypass_len bytes (keepalives, pure ACKs).
  * len is the WireGuard datagram's, its 32 bytes of overhead included. */
-static inline int cg_ro_bypass(const struct cg_ro_cfg *cf, uint8_t wgtype, uint32_t len)
+static inline int cg_ro_bypass(const struct cg_ro_cfg *cf, uint8_t wgtype, uint32_t len, uint8_t flags)
 {
-	return wgtype != CG_RO_WG_DATA || len <= cf->bypass_len;
+	return wgtype != CG_RO_WG_DATA || len <= cf->bypass_len || (flags & CG_F_FREE);
 }
 
 static inline void cg_ro_owd_sample(struct cg_ro_link *l, uint32_t raw)
@@ -955,7 +955,7 @@ static inline enum cg_ro_v cg_ro_in(struct cg_reorder *r, struct cg_ro_pool *p, 
 		cg_ro_pend_take(r, k->link, k->seq, k->t_arr);
 	s = &r->slot[k->seq % CG_RO_SLOTS];
 	cg_ro_answered(r, s, k->seq);
-	if (cg_ro_bypass(cf, k->wgtype, k->len)) {
+	if (cg_ro_bypass(cf, k->wgtype, k->len, k->flags)) {
 		cg_ro_pass(r, s, k->seq);
 		r->st.bypassed++;
 		return CG_RO_NOW;

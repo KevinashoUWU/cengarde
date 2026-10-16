@@ -210,6 +210,7 @@ struct cg_config {
 	uint32_t rescue_wait_ms;      /* a gap about to go is asked for and waits this long; 0: never */
 	uint32_t rescue_tries;        /* asked for this many times within rescue_wait_ms */
 	uint32_t reorder_pool_kb;     /* memory for the packets it holds; changing it restarts */
+	int tcp_aware;                /* native: mark inner TCP's retransmissions and ACKs free (tcpfree.h) */
 	int split;                    /* enum cg_split_mode */
 	uint32_t split_small;         /* datagrams of up to this many bytes are never split */
 	uint32_t split_spread_ms;     /* only links this close to the fastest share the split (split.h G4); 0: off */

@@ -96,6 +96,7 @@
 #include "sock.h"
 #include "capacity.h"
 #include "pace.h"
+#include "tcpfree.h"
 #include "rescue.h"
 #include "govern.h"
 #include "split.h"
@@ -238,6 +239,11 @@ struct server {
 	/* tunnel = native: one TUN for every client, and which client owns
 	 * each address in it (tunroute.h), rebuilt with the clients. */
 	int native;
+	/* native, tcp_aware: the download's inner TCP retransmissions and
+	 * segments without data go marked CG_F_FREE (tcpfree.h); one table for
+	 * every session (a flow's hash includes its addresses) */
+	struct cg_tcpf tcpf;
+	uint32_t flow_seed;
 	int tun_fd;
 	struct cg_rt rt;
 	uint64_t tun_rx, tun_bad, tun_no_route, tun_no_session;
@@ -1655,6 +1661,12 @@ static void down_prepare(struct server *s, struct session *S, int m, uint8_t *bu
 	 * cg_split_dst of the same masks, and with mute_trickle a copied
 	 * packet goes on the other live paths too). */
 	h.flags |= cg_prev_flags((int)S->prev_only - 1);
+	if (s->native && s->cfg->tcp_aware) {
+		struct cg_flow f;
+
+		if (cg_flow_of(buf, len, s->flow_seed, &f) && cg_tcpf_free(&s->tcpf, &f, buf, len))
+			h.flags |= CG_F_FREE;
+	}
 	S->prev_only = (uint8_t)(1 + (s->pick[m] < 0 && s->cfg->mute_trickle
 					      ? -1
 					      : cg_split_only(s->pick[m], d->carry, d->k.dup)));
@@ -2188,6 +2200,11 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 	cg_json_u64(j, "over_budget", s->hellos_over);
 	cg_json_end(j, '}');
 	cg_json_str(j, "tunnel", s->native ? "native" : "wireguard");
+	cg_json_obj(j, "tcp_free");
+	cg_json_bool(j, "on", s->native && s->cfg->tcp_aware);
+	cg_json_u64(j, "control", s->tcpf.ctl);
+	cg_json_u64(j, "retransmissions", s->tcpf.retx);
+	cg_json_end(j, '}');
 	if (s->native) {
 		cg_json_obj(j, "tun");
 		cg_json_str(j, "name", s->cfg->tun);
@@ -3214,6 +3231,8 @@ int cg_server_run(struct cg_config *cfg, const struct cg_run *run)
 	s->run = run;
 	s->ep = s->tfd = s->jfd = s->tun_fd = -1;
 	s->native = cfg->tunnel == CG_TUNNEL_NATIVE;
+	if (cg_random(&s->flow_seed, sizeof(s->flow_seed)) < 0)
+		s->flow_seed = (uint32_t)cg_now_us();
 	for (uint32_t i = 0; i < CG_MAX_LANES; i++)
 		s->lane[i].fd = -1;
 	s->pass_written = s->holder = s->fw_holder = -1;
