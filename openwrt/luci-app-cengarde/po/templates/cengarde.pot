@@ -115,6 +115,18 @@ msgstr ""
 msgid "Creates the interface wgcg with the keys derived from the secret and this router's address in the tunnel (VPS tab), in the wan firewall zone. Off: set up WireGuard yourself, cengarde only listens on 127.0.0.1 at the VPS port."
 msgstr ""
 
+msgid "Tunnel mode"
+msgstr ""
+
+msgid "WireGuard: the tunnel goes through the interface wgcg, encrypted. Native (experimental): no WireGuard, cengarde carries the packets itself through the interface cg0, with the same addresses and routes; it is authenticated (nobody can inject or replay packets) but NOT encrypted, so the carriers see the traffic. The VPS has to be in the same mode, for every router it serves: \"sudo cengarde-vps-setup tunnel native\" (or wireguard to go back). A change restarts the engine."
+msgstr ""
+
+msgid "WireGuard"
+msgstr ""
+
+msgid "Native (experimental, not encrypted)"
+msgstr ""
+
 msgid "Route all traffic through the tunnel"
 msgstr ""
 
@@ -436,6 +448,9 @@ msgstr ""
 msgid "Service"
 msgstr ""
 
+msgid "connected"
+msgstr ""
+
 msgid "handshake before the clock was set"
 msgstr ""
 
@@ -445,10 +460,10 @@ msgstr ""
 msgid "no handshake for %s"
 msgstr ""
 
-msgid "connected"
+msgid "handshake %s"
 msgstr ""
 
-msgid "handshake %s"
+msgid "Native tunnel (not encrypted)"
 msgstr ""
 
 msgid "WireGuard tunnel"
