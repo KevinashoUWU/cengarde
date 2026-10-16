@@ -237,6 +237,14 @@
     buffers que en USB 2.0, donde anda; el desborde lo pone el VL805.
     Mientras tanto, la LAN de la Pi va por USB 2.0 (~300 Mbit/s), con
     cualquiera de los dos adaptadores.
+  - **El USB 3 de la Pi está sano para otros dispositivos** (control, el
+    mismo día): un SSD SATA Kingston A400 en caja RTL9201 (`uas`), recién
+    escrito, en el puerto azul de abajo: 4 GB a 261 MB/s de escritura y
+    365 MB/s de lectura, 0 errores del xHCI ni bajo voltaje (en el PC,
+    296 / 155). El atasco es de la pareja VL805 + RTL8153 al recibir, no
+    del controlador ni del puerto de abajo. (Leído antes de reescribirlo,
+    ese SSD daba 11,8 MB/s en cualquier equipo: el A400 sin DRAM lee lento
+    los datos viejos.)
 
 ## Qué hacemos con esto
 
