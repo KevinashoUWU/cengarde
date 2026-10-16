@@ -120,9 +120,11 @@
  * - No overshoot from a drain: a sample in which the link delivered more
  *   than it was sent by over 1/16 is emptying a queue, at whatever rate the
  *   cell gives it then; it counts for the delivery rate, but it does not
- *   raise the capacity, nor the average while full (it is held), and the
- *   capacity rises by no more than the sample itself delivered (the
- *   smoothed rate carries a drain into the samples after it). The check on
+ *   raise the capacity, and the capacity rises by no more than the sample
+ *   itself delivered (the smoothed rate carries a drain into the samples
+ *   after it). While full it still counts for the average under a queue: a
+ *   full link draining delivers what it carries (holding it there too was
+ *   tried in the lab: no better, story 013). The check on
  *   the totals since the counters' start (CG_CAP_SLACK) still holds: a
  *   drain delivers what was sent before, never more than the total.
  *
@@ -473,12 +475,8 @@ static inline void cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint64_t 
 	if (l->queue_us >= 0 && (uint32_t)l->queue_us > cfg->sat_us) {
 		/* Until the first sample full from start to end (the queue formed
 		 * during the one before), each sample starts it again. */
-		uint64_t sent = dby * 8 * 1000 / dt;
-
 		if (l->sat_n + 1 <= CG_CAP_SAT_N)
-			l->sat_bps = drain && raw > sent ? sent : raw;
-		else if (drain)
-			; /* held: a drain is not what the link gives this end */
+			l->sat_bps = raw;
 		else if (raw >= l->sat_bps)
 			l->sat_bps += (raw - l->sat_bps) / CG_CAP_GAIN;
 		else
