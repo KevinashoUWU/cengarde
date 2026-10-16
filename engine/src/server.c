@@ -1935,11 +1935,12 @@ static void cap_tick(struct server *s, struct session *S, uint16_t live, uint64_
 	if (s->cfg->capacity_weights) {
 		struct dpaths d = down_paths(s, S, now_ms);
 
-		cg_cap_weights(S->cap, d.dup0, s->cfg->governor ? S->gw : NULL, cc.sat_us / 2, S->cw);
+		cg_cap_weights(S->cap, d.dup0, s->cfg->governor ? S->gw : NULL, cc.sat_us / 2, s->cfg->split_predict,
+			       S->cw);
 	}
 	cg_cap_total_tick(&S->ctot, S->cap, live, cc.sat_us);
 	if (s->cfg->split_eta)
-		cg_cap_eta(&S->eta, S->cap, live, cc.sat_us / 2, now_ms * 1000);
+		cg_cap_eta(&S->eta, S->cap, live, cc.sat_us / 2, s->cfg->split_predict, now_ms * 1000);
 }
 
 /* SO_MAX_PACING_RATE on a lane's socket (pace.h): fq on the way out paces
@@ -2259,6 +2260,7 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 		cg_json_bool(j, "governor", s->cfg->governor);
 		cg_json_bool(j, "capacity_weights", s->cfg->capacity_weights);
 		cg_json_bool(j, "split_eta", s->cfg->split_eta);
+		cg_json_bool(j, "split_predict", s->cfg->split_predict);
 		/* For a shaper on the router's WireGuard interface (capacity.h). */
 		if (cg_cap_shape_bps(&S->ctot))
 			cg_json_ms(j, "shape_mbit", cg_cap_shape_bps(&S->ctot) / 1000);

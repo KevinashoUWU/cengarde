@@ -621,6 +621,21 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
   reordenador soltaba huecos y el 72 % de las retransmisiones de TCP de la
   bajada eran espurias (DSACK). Apaga las copias por omisión. El estado
   muestra `split_eta` en `upload` (cliente) y en cada sesión (servidor).
+- **`split_predict` (`no`; `yes` o `no`), en los dos extremos, para lo que
+  cada uno envía (experimental; solo sirve con `capacity_weights` o
+  `split_eta`):** el reparto mira la cola de cada enlace dentro de un
+  segundo en vez de la de ahora (`capacity.h`, historia 013): la cola, más
+  su pendiente, más la mitad de la pendiente de la pendiente, entre la cola
+  de ahora y 500 ms sobre ella. Con `split_eta`, eso es lo encolado en el
+  enlace; en los dos, un enlace cuya cola estará sobre la mitad de
+  `governor_target_ms` no recibe el 5/4 del sondeo. Solo cuando la cola
+  lleva subiendo (más de 10 ms por segundo) 4 muestras seguidas (unos
+  400 ms), y mientras siga subiendo: el retardo celular oscila decenas de
+  ms y una sola oscilación no debe sacar a un enlace del reparto. El porqué:
+  con un teléfono cargando la misma celda de Entel, la cola crecía 35–40 ms
+  por segundo desde el principio, y cruzaba los 50 ms 0,8–2,2 s después
+  (historia 013, 2026-10-16). El estado muestra `split_predict` en `upload`
+  (cliente) y en cada sesión (servidor), y por enlace `queue_pred_ms`.
 - **`pacing` (`no`; `yes` o `no`), en el cliente (experimental):** el
   socket de cada enlace se dosifica (`SO_MAX_PACING_RATE`, `pace.h`,
   historia 013) al doble de su capacidad y nunca bajo 20 Mbit/s: rompe las
@@ -1206,11 +1221,26 @@ los últimos 5 min; tras 10 s sin llenarse vuelve al menos a la mitad de
 ella, y mientras está bajo esa mitad el reparto le ofrece el doble de su
 capacidad, en vez de 5/4 (el arranque de BBR). Así un enlace que quedó en
 reposo con una cifra baja no tarda segundos en volver a recibir su parte;
-si de verdad lleva menos, su cola lo dice al instante. Con
+si de verdad lleva menos, su cola lo dice al instante. **Vuelta rápida**
+(2026-10-16): cada enlace recuerda su capacidad de antes de llenarse; si
+el episodio duró menos de 30 s (una contienda en la celda, no una celda
+más lenta) y su cola (sobre el mínimo de 60 s) lleva 1 s bajo la mitad de
+`governor_target_ms` sin subir, la recupera de una vez, sin esperar los
+10 s del arranque rápido ni el sondeo (en el campo, unos 20 s). Si al
+recuperarla se llena de nuevo antes de 5 s, la siguiente vuelta espera
+10 s, luego 20, hasta 80 s, para que un enlace que de verdad lleva menos
+no rebote. Y **sin rebote por vaciado**: una muestra en la que el enlace
+entregó más de lo que se le envió (más de 1/16) está vaciando una cola, al
+ritmo que la celda le dé entonces; cuenta para `delivery_mbit` pero no sube
+`capacity_mbit` (en el campo, tras una carga de 40 Mbit/s la capacidad subió
+a 24 Mbit/s contra unos 9 durante 10 s), y la capacidad no sube más de lo
+que entregó la propia muestra. Con
 `capacity_weights`, de
 ella salen los pesos del reparto (arriba); sin, solo se informa. El estado
 trae además, por enlace, `queue_slope_ms_s` (la pendiente de su cola, `null`
-sin medida) y `rescue_weight` (arriba).
+sin medida), `queue_pred_ms` (la cola que `split_predict` espera dentro de
+un segundo: la de ahora salvo una subida sostenida) y `rescue_weight`
+(arriba).
 `shape_mbit` (en `upload` en el cliente, por sesión en el servidor) es el
 ritmo para un `cake` delante del túnel que no se fija a mano
 (`bench/shaper.sh`, experimental; historia 013), como `cake-autorate`
