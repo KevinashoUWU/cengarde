@@ -48,6 +48,7 @@ sudo bench/lab.sh multiip  # servidor con varias direcciones: responde desde la 
 sudo bench/lab.sh fallback # varias direcciones del servidor por enlace: failover, IPv6 que se salta, vuelta tras un corte, MTU de camino (lab.d, va en ci)
 sudo bench/lab.sh names    # el servidor por nombre, con un DNS falso (fakedns.py): cambio de IP con tráfico (corte de ~3 s), DNS caído, TTL 0, NXDOMAIN (lab.d, va en ci)
 sudo bench/lab.sh lanes    # las colas del servidor: una por enlace, la basura aparte, un segundo servidor rechazado; y lanes = 1 (lab.d, va en ci)
+sudo bench/lab.sh native   # tunnel = native: ping (IPv4 e IPv6) e iperf3 TCP por el TUN con 2 enlaces y split, y dos routers con sus tun_route (lab.d, va en ci)
 sudo bench/lab.sh deepq    # un camino del servidor con 20 MB de cola local no afecta a los demás (lab.d, va en ci)
 sudo bench/lab.sh skew     # primeras llegadas repartidas entre enlaces idénticos, puerta C5 (lab.d, va en ci)
 sudo bench/lab.sh wgpoke   # un router con la hora atrasada: el servidor hace que WireGuard inicie el handshake (lab.d, va en ci)

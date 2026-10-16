@@ -920,6 +920,74 @@ Desde la 0.4.4, el servidor lo destraba solo, sin cambiar el protocolo:
 - **Estado:** `wireguard.pokes` y `wireguard.redirected_handshakes`, y por
   sesión `wireguard_unanswered`.
 
+## Túnel nativo (`tunnel = native`, experimental)
+
+Por omisión (`tunnel = wireguard`) cengarde lleva datagramas de WireGuard:
+como va por fuera de WireGuard, no ve los flujos de dentro. Con `tunnel =
+native` cada extremo abre un dispositivo TUN propio y lleva paquetes IP tal
+cual, con la misma autenticación de siempre (MAC SipHash y anti-replay, con
+las claves del secreto de emparejamiento). **No cifra:** quien mire los
+enlaces ve el tráfico; solo impide que alguien inyecte o repita paquetes. El
+cifrado llegará después, como opción. La razón de esta fase es ver los
+paquetes: el reordenador por flujo y la liberación según TCP vendrán
+encima (`src/flow.h` ya da la clave de flujo de un paquete y si es TCP, con
+pruebas, aunque aún no la usa nadie).
+
+Todo lo demás no cambia: el reparto, la duplicación, el rescate y el
+reordenador tratan cada paquete IP como un paquete de datos de WireGuard
+(los pequeños, hasta `split_small` y `reorder_bypass`, se duplican y no
+esperan, igual que antes). Lo que solo tiene sentido con WireGuard no
+corre: la detección de su formato, la vigilancia de handshakes,
+`wireguard_poke` y `wireguard_port_file` (este último se rechaza).
+
+Ajustes, en los dos extremos (cambiarlos reinicia el motor):
+
+- `tun`: el nombre del TUN, `cg0` por omisión.
+- `tun_addr`: hasta 4 direcciones con su prefijo que cengarde le pone
+  (`10.79.0.2/16 fd00:79::2/64`); sin ella, las pone el sistema.
+- `tun_mtu`: 1420 por omisión, lo que cabe en un enlace de 1500 por IPv6
+  (1500 − 40 − 8 − 24 de cabecera de cengarde = 1428). Si un enlace tiene
+  menos, el cliente avisa con la cifra que cabe.
+
+Las rutas por el TUN son del sistema (`ip route add … dev cg0`), como con
+cualquier interfaz. El servidor tiene **un solo TUN para todos los
+clientes**: un paquete que el kernel mete en él va a la sesión más nueva
+del cliente cuyo `tun_route` contiene su destino (el prefijo más largo
+gana, como `AllowedIPs` de WireGuard), y el paquete de un cliente entra al
+TUN solo si su origen es de ese cliente (si no, cuenta como `spoofed`). Con
+un solo cliente, `tun_route` es `0.0.0.0/0 ::/0` por omisión; con
+`[client NAME]`, cada sección lleva la suya (obligatoria) y dos clientes no
+pueden tener el mismo prefijo. Las rutas se aplican en caliente con una
+recarga.
+
+```ini
+# router
+mode = client
+key = …
+server = vps.example.com:59402
+tunnel = native
+tun_addr = 10.79.12.34/16
+# y en el sistema, p. ej.: ip route add default dev cg0 table 100
+
+# VPS
+mode = server
+tunnel = native
+tun_addr = 10.79.0.1/16
+[client alpha]
+key = …
+tun_route = 10.79.12.34/32 192.168.1.0/24
+```
+
+Requiere `CAP_NET_ADMIN` y `/dev/net/tun`. Estado: `tunnel` y `tun` en los
+dos extremos; en el cliente, `download.not_ip` (lo que no era IP y no se
+escribió); en el servidor, `tun` (`rx`, `not_ip`, `no_route`,
+`no_session`) y por sesión `not_ip` y `spoofed`. En el laboratorio
+(`sudo bench/lab.sh native`): ping por IPv4 e IPv6 sin pérdidas, iperf3 TCP
+por 2 enlaces de 40 Mbit/s con `split = on` a 73,5 Mbit/s de subida y 73,5
+de bajada (más de lo que da un enlace), y dos routers en un servidor, cada
+uno con su ruta, sin poder usar la dirección del otro. Sin límite en los
+veth, iperf3 pasa unos 2,5 Gbit/s en el PC del laboratorio (sin cifrar).
+
 ## Estado
 
 `status_file` escribe cada segundo (`status_interval_ms`), desde un hilo
