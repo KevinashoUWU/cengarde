@@ -669,8 +669,8 @@ static void test_capacity_backoff(void)
  * same cell, the capacity went to 24 against ~9 for ~10 s): a link sent 8
  * of the 24 it can carry is loaded down to 3 for 10 s, its queue grows to
  * seconds, and when the load goes it empties that queue at 24. Those
- * samples deliver more than was sent: they raise neither the capacity nor
- * the average while full. */
+ * samples deliver more than was sent: they do not raise the capacity, and
+ * the full logic brings it back to what the link gives. */
 static void test_capacity_drain(void)
 {
 	struct sim s;
