@@ -867,6 +867,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	    get_u32(&ini, "", "rescue_wait_ms", 0, 1000, &c->rescue_wait_ms, err, errlen) ||
 	    get_u32(&ini, "", "rescue_tries", 1, 4, &c->rescue_tries, err, errlen) ||
 	    get_u32(&ini, "", "reorder_pool_kb", 256, 131070, &c->reorder_pool_kb, err, errlen) ||
+	    get_bool(&ini, "", "tcp_aware", &c->tcp_aware, err, errlen) ||
 	    get_split(&ini, c, err, errlen) ||
 	    get_u32(&ini, "", "split_small", 0, 2048, &c->split_small, err, errlen) ||
 	    get_u32(&ini, "", "split_spread_ms", 0, 2000, &c->split_spread_ms, err, errlen) ||

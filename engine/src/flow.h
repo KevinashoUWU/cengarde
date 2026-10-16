@@ -34,6 +34,7 @@ struct cg_flow {
 	uint8_t tcp;    /* proto is TCP and its ports were read */
 	uint8_t frag;   /* a fragment: hashed without ports */
 	uint16_t sport, dport; /* host order; 0 when not read */
+	uint16_t l4off; /* where the transport header starts (with tcp or ports read) */
 };
 
 /* A 32-bit mix of one more word into h (murmur3's). */
@@ -70,6 +71,7 @@ static inline int cg_flow_of(const uint8_t *b, size_t len, uint32_t seed, struct
 		return 0;
 	f->tcp = f->frag = 0;
 	f->sport = f->dport = 0;
+	f->l4off = 0;
 	src = cg_ip_src(b, ver);
 	dst = cg_ip_dst(b, ver);
 	alen = ver == 4 ? 4 : 16;
@@ -111,6 +113,7 @@ static inline int cg_flow_of(const uint8_t *b, size_t len, uint32_t seed, struct
 		f->sport = (uint16_t)(b[off] << 8 | b[off + 1]);
 		f->dport = (uint16_t)(b[off + 2] << 8 | b[off + 3]);
 		f->tcp = f->proto == CG_IPPROTO_TCP;
+		f->l4off = (uint16_t)off;
 	}
 	h = cg_flow_mix(h, (uint32_t)f->proto << 16 | (uint32_t)ver);
 	h = cg_flow_mix(h, (uint32_t)f->sport << 16 | f->dport);

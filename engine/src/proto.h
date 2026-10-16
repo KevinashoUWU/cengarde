@@ -57,7 +57,7 @@
 
 #include "siphash.h"
 
-#define CG_PROTO_VERSION 5
+#define CG_PROTO_VERSION 6
 #define CG_HDR_LEN 24
 #define CG_MAC_OFF 16
 #define CG_HINT_OFF 2
@@ -103,7 +103,12 @@ static inline int cg_type_ctl(uint8_t type)
  * skips at least one carrier, some link that carries payload does not bring
  * this sequence (a weight-0 link may bring it too, so it is not "the only
  * copy"). */
-#define CG_F_ECN 0x03   /* the ECN field of the WireGuard datagram (RFC 3168 codepoint) */
+#define CG_F_ECN 0x02   /* reserved (was a 2-bit ECN field): written 0, ignored */
+/* Version 6 (story 014, tcpfree.h): the receiver's reorderer hands this
+ * packet on at once, never holding it nor waiting for a gap before it:
+ * with tunnel = native, the sender's mark on inner TCP's retransmissions
+ * and segments without data. */
+#define CG_F_FREE 0x01
 #define CG_F_SPLIT 0x04 /* this packet skips at least one carrier */
 /* The link the previous DATA sequence went on, when it went on that link
  * alone (version 5, story 013): CG_F_PREV, and its id in the high 4 bits.

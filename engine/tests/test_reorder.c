@@ -1149,11 +1149,13 @@ static void sc_bypass(const struct base *b)
 	CHECK_EQ(R.r.st.bypassed, 4);
 
 	R.cf.bypass_len = 128;
-	CHECK(cg_ro_bypass(&R.cf, DATA, 128));
-	CHECK(!cg_ro_bypass(&R.cf, DATA, 129));
-	CHECK(cg_ro_bypass(&R.cf, 1, 2000));
-	CHECK(cg_ro_bypass(&R.cf, 0, 0));
-	CHECK(cg_ro_bypass(&R.cf, 5, 1400));
+	CHECK(cg_ro_bypass(&R.cf, DATA, 128, 0));
+	CHECK(!cg_ro_bypass(&R.cf, DATA, 129, 0));
+	CHECK(cg_ro_bypass(&R.cf, DATA, 1400, CG_F_FREE)); /* marked free (tcpfree.h) */
+	CHECK(!cg_ro_bypass(&R.cf, DATA, 1400, CG_F_SPLIT));
+	CHECK(cg_ro_bypass(&R.cf, 1, 2000, 0));
+	CHECK(cg_ro_bypass(&R.cf, 0, 0, 0));
+	CHECK(cg_ro_bypass(&R.cf, 5, 1400, 0));
 }
 
 /* 12: a pool of 4: the 5th passes at once (pool_full) and the gap before

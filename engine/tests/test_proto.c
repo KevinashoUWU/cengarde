@@ -39,7 +39,7 @@ void test_proto(void)
 
 	/* Layout: version/type, the client hint at byte 2, link at byte 3,
 	 * session, seq and ts in network order. */
-	CHECK_EQ(pkt[0], 0x51);
+	CHECK_EQ(pkt[0], 0x61);
 	CHECK_EQ(pkt[2], 0x5a);
 	CHECK_EQ(pkt[3], 5);
 	CHECK(!memcmp(pkt + 4, "\xde\xad\xbe\xef\x01\x02\x03\x04\xa0\xb0\xc0\xd0", 12));
@@ -82,9 +82,11 @@ void test_proto(void)
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
 	pkt[0] = 0x41; /* version 4 (no previous link in DATA's flags) too */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
-	pkt[0] = 0x5f; /* unknown type */
+	pkt[0] = 0x51; /* version 5 (no CG_F_FREE) too */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
-	pkt[0] = 0x51;
+	pkt[0] = 0x6f; /* unknown type */
+	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
+	pkt[0] = 0x61;
 	pkt[2] = 0xff; /* any hint parses: the server judges it */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), 0);
 	CHECK_EQ(p.hint, 0xff);

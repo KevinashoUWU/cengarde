@@ -1038,6 +1038,13 @@ engine_conf() {
 	0 | off | no | false | disabled) echo "reorder_by_link = no" ;;
 	*) log "reorder_by_link '$v': expected 0 or 1, left out" ;;
 	esac
+	config_get v main tcp_aware
+	case "$v" in
+	'') ;;
+	1 | on | yes | true | enabled) echo "tcp_aware = yes" ;;
+	0 | off | no | false | disabled) echo "tcp_aware = no" ;;
+	*) log "tcp_aware '$v': expected 0 or 1, left out" ;;
+	esac
 	config_get v main split_eta
 	case "$v" in
 	'') ;;
