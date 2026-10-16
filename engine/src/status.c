@@ -253,11 +253,13 @@ void cg_json_reorder(struct cg_json *j, const char *k, const struct cg_reorder *
 	cg_json_u64(j, "held_total", st->held_total);
 	cg_json_u64(j, "bypassed", st->bypassed);
 	cg_json_u64(j, "split_rx", st->split_rx);
+	cg_json_u64(j, "retx", st->retx);
 	cg_json_obj(j, "lost");
 	cg_json_u64(j, "rack", st->lost_rack);
 	cg_json_u64(j, "cap", st->lost_cap);
 	cg_json_u64(j, "overflow", st->lost_overflow);
 	cg_json_u64(j, "flush", st->lost_flush);
+	cg_json_u64(j, "retx", st->lost_retx);
 	cg_json_end(j, '}');
 	/* adaptive: each link's learned margin, by link id */
 	cg_json_arr(j, "adapt_ms");
@@ -268,6 +270,7 @@ void cg_json_reorder(struct cg_json *j, const char *k, const struct cg_reorder *
 	cg_json_u64(j, "after_rack", st->late_rack);
 	cg_json_u64(j, "after_cap", st->late_cap);
 	cg_json_u64(j, "after_overflow", st->late_overflow);
+	cg_json_u64(j, "after_retx", st->late_retx);
 	cg_json_u64(j, "old", st->late_old);
 	cg_json_end(j, '}');
 	cg_json_u64(j, "far", st->far);

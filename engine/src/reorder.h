@@ -34,8 +34,8 @@
  *   - d >= FAR while holding: NOW (far) and the window stays: what is held
  *     goes at its deadlines, and the first one after that resyncs;
  *   - 0 < d < N and small (cg_ro_bypass: not WireGuard data, or data of at
- *     most bypass_len bytes): NOW, its slot PASSED so that the head steps
- *     over it later;
+ *     most bypass_len bytes, or marked free and not a TCP retransmission):
+ *     NOW, its slot PASSED so that the head steps over it later;
  *   - 0 < d < N with nothing held, when a drain at its arrival would give up
  *     the whole gap before it (the hold cap is 0, RACK, or forced): the gap
  *     is given up now and the packet goes NOW without a copy, so redundancy
@@ -50,9 +50,12 @@
  *   1. when forced (overflow, pool full): lost.overflow, held or not;
  *   2. never while nothing is held: a gap with nothing behind it costs
  *      nothing;
- *   3. when every link of rset brought a DATA packet after it (RACK; links
+ *   3. with retx_release_us, when a TCP retransmission came at or after the
+ *      packet held behind it, sent at least retx_release_us after that
+ *      packet: lost.retx (no rescue asked);
+ *   4. when every link of rset brought a DATA packet after it (RACK; links
  *      are FIFO, so none of them will bring it): lost.rack;
- *   4. at the deadline: lost.cap;
+ *   5. at the deadline: lost.cap;
  * else the walk stops. A gap given up keeps {seq, why, when} in its slot for
  * late attribution until the slot is reused. An overflow forces the gap N
  * behind the packet that forced it, whose slot that packet then takes: in a
@@ -66,6 +69,30 @@
  * head comes round to it 2^32 sequences later (a day or two of one session
  * at 30-50 kpps), and a stale mark would then step the head over a missing
  * packet without a wait or a count.
+ *
+ * TCP retransmissions (tcp_aware, story 014): the sender marks TCP's
+ * retransmissions free (tcpfree.h) as well as its segments without data;
+ * the caller tells them apart (k->retx: TCP data in a free packet). A
+ * retransmission is not handed on ahead: it takes its place in sequence,
+ * as any data. Ahead of the packets held behind a gap, sent before it, it
+ * made the sender's RACK (RFC 8985) take every one of those for lost once
+ * they were older than its RTT and reordering window: TCP sent them again
+ * (free, at once) and the held originals came as duplicates. On the
+ * testnet, iperf3 -R -P 4 with tcp_aware had 135 times the fast
+ * retransmissions and 95 times the DSACKs of tcp_aware off; in the lab,
+ * 4-5 times the fast retransmissions and about 200 DSACKs where there were
+ * none, which holding it in place took back to tcp_aware off.
+ *
+ * The release horizon (retx_release_us, 0: off, experimental): a
+ * retransmission says TCP took something sent before it for lost, so the
+ * gaps before it whose next held packet was sent at least retx_release_us
+ * before it (the gap went no later than that packet) are given up, gap by
+ * gap in the walk, and the retransmission goes in order right after what
+ * they held. With nothing held there is nothing to give up; the horizon
+ * stays for what is held next before it, and goes when the head reaches
+ * it. In the lab it costs where gaps are packets late on a slow link, not
+ * lost (a link whose delay jumps): their retransmissions give them up and
+ * the originals come late, as duplicates (story 014).
  *
  * Deadline of the head gap, from s, the lowest held packet above it:
  *   C  = max_wait if s is split (CG_F_SPLIT) or a split packet arrived
@@ -164,6 +191,7 @@ enum cg_ro_state {
 	CG_RO_LOST_RACK, /* a gap given up, and why */
 	CG_RO_LOST_CAP,
 	CG_RO_LOST_OVF,
+	CG_RO_LOST_RETX,
 };
 
 enum cg_ro_v {
@@ -181,6 +209,7 @@ struct cg_ro_cfg {
 	uint32_t rescue_us;   /* a gap about to be given up is asked for and waits this long; 0: never */
 	uint8_t adaptive;     /* each link's margin learns from its late packets (RACK's reo_wnd) */
 	uint8_t rescue_tries; /* asks for a gap within rescue_us, evenly spaced (librist's retries); 0, 1: once */
+	uint32_t retx_release_us; /* a TCP retransmission gives up the gaps held this long before it; 0: never */
 };
 
 struct cg_ro_pkt {
@@ -191,6 +220,7 @@ struct cg_ro_pkt {
 	uint8_t flags;    /* verified header flags */
 	uint8_t wgtype;   /* the datagram's first byte, 0 when empty */
 	uint8_t prev;     /* 1 + the link seq - 1 went on alone (CG_F_PREV), 0: not said */
+	uint8_t retx;     /* CG_F_FREE with TCP data: a TCP retransmission (tcpfree.h's cg_tcp_data) */
 };
 
 struct cg_ro_out {
@@ -223,8 +253,9 @@ struct cg_ro_link {
 
 struct cg_ro_stats {
 	uint64_t in_order, held_total, bypassed, split_rx;
-	uint64_t lost_rack, lost_cap, lost_overflow, lost_flush;
-	uint64_t late_rack, late_cap, late_overflow, late_old;
+	uint64_t lost_rack, lost_cap, lost_overflow, lost_flush, lost_retx;
+	uint64_t late_rack, late_cap, late_overflow, late_old, late_retx;
+	uint64_t retx; /* TCP retransmissions taken, whatever their verdict */
 	uint64_t far, resyncs, pool_full;
 	uint64_t asked, rescued, ask_lost; /* rescue: gaps asked for, that came, that did not */
 	uint64_t ask_refused;             /* of ask_lost, those the sender said would not come */
@@ -240,7 +271,9 @@ struct cg_reorder {
 	uint32_t last_split_t; /* with split_seen: arrival of the newest split packet */
 	uint32_t burst;        /* held packets handed on by this drain */
 	uint16_t tick;         /* packets taken, for the stale sweep */
-	uint8_t init, force, split_seen;
+	uint32_t retx_to;      /* with retx_on: gaps up to it, of packets held sent by retx_ts - release, go */
+	uint32_t retx_ts;      /* the sender's ts of the newest TCP retransmission */
+	uint8_t init, force, split_seen, retx_on;
 	struct cg_ro_link link[CG_MAX_LINKS];
 	struct cg_ro_stats st;
 	uint32_t ask[CG_RO_ASK_MAX]; /* rescue: the sequences to ask for, nask of them; the caller empties it */
@@ -343,7 +376,9 @@ static inline void cg_ro_hist_add(uint64_t h[CG_RO_HIST], uint32_t later, uint32
 }
 
 /* Never held, whatever the window: what is not WireGuard data (handshakes
- * above all), and data of at most bypass_len bytes (keepalives, pure ACKs).
+ * above all), data of at most bypass_len bytes (keepalives, pure ACKs), and
+ * what the sender marked free (CG_F_FREE; a TCP retransmission is held, see
+ * the top: the caller clears the flag).
  * len is the WireGuard datagram's, its 32 bytes of overhead included. */
 static inline int cg_ro_bypass(const struct cg_ro_cfg *cf, uint8_t wgtype, uint32_t len, uint8_t flags)
 {
@@ -400,6 +435,8 @@ static inline void cg_ro_learn(struct cg_reorder *r, const struct cg_ro_pkt *k)
 			l->adapt_t = k->t_arr;
 		}
 	}
+	if (k->retx)
+		r->st.retx++;
 	if (k->flags & CG_F_SPLIT) {
 		r->last_split_t = k->t_arr;
 		r->split_seen = 1;
@@ -429,6 +466,29 @@ static inline void cg_ro_moved(struct cg_reorder *r)
 {
 	if (r->force && (int32_t)(r->force_to - r->head) <= 0)
 		r->force = 0;
+	if (r->retx_on && (int32_t)(r->retx_to - r->head) <= 0)
+		r->retx_on = 0;
+}
+
+/* A TCP retransmission k ahead of the head, with retx_release_us: the
+ * horizon moves up to it (never back), its ts the newest. */
+static inline void cg_ro_retx_mark(struct cg_reorder *r, const struct cg_ro_pkt *k)
+{
+	if (!r->retx_on || (int32_t)(k->seq - r->retx_to) > 0) {
+		r->retx_to = k->seq;
+		r->retx_ts = k->ts;
+		r->retx_on = 1;
+	}
+}
+
+/* Whether the gap at the head goes for the release horizon: n (at n_seq),
+ * the lowest held packet above it, is at or before the horizon and was
+ * sent at least retx_release_us before the retransmission that set it. */
+static inline int cg_ro_retx_gone(const struct cg_reorder *r, const struct cg_ro_cfg *cf, uint32_t n_seq,
+				  const struct cg_ro_slot *n)
+{
+	return r->retx_on && (int32_t)(r->retx_to - n_seq) >= 0 &&
+	       (int32_t)(r->retx_ts - n->ts) >= (int32_t)(cf->retx_release_us > INT32_MAX ? INT32_MAX : cf->retx_release_us);
 }
 
 /* RACK: 1 and *lim when every link of rset brought a sequence after head,
@@ -609,6 +669,8 @@ static inline void cg_ro_lose(struct cg_reorder *r, uint32_t g, uint8_t why, uin
 		r->st.lost_rack++;
 	else if (why == CG_RO_LOST_CAP)
 		r->st.lost_cap++;
+	else if (why == CG_RO_LOST_RETX)
+		r->st.lost_retx++;
 	else
 		r->st.lost_overflow++;
 }
@@ -797,6 +859,8 @@ static inline enum cg_ro_v cg_ro_late(struct cg_reorder *r, const struct cg_ro_c
 		r->st.late_rack++;
 	else if (s->state == CG_RO_LOST_CAP)
 		r->st.late_cap++;
+	else if (s->state == CG_RO_LOST_RETX)
+		r->st.late_retx++;
 	else
 		r->st.late_overflow++;
 	cg_ro_hist_add(r->st.late_by, k->t_arr, s->t_arr);
@@ -806,8 +870,9 @@ static inline enum cg_ro_v cg_ro_late(struct cg_reorder *r, const struct cg_ro_c
 	 * with no late packet (cg_ro_learn). A fixed margin of 10 ms gave up
 	 * gaps whose packets came 100-500 ms later when a modem's queue
 	 * jumped, and raw MPEG-TS over the tunnel came out corrupt; one of 400
-	 * held every packet longer (story 013). */
-	if (cf->adaptive && k->link < CG_MAX_LINKS && s->state != CG_RO_LOST_OVF) {
+	 * held every packet longer (story 013). Not from a gap the window or a
+	 * retransmission forced out: that says nothing of the link's delay. */
+	if (cf->adaptive && k->link < CG_MAX_LINKS && s->state != CG_RO_LOST_OVF && s->state != CG_RO_LOST_RETX) {
 		struct cg_ro_link *l = &r->link[k->link];
 		uint32_t by = k->t_arr - s->t_arr, need = by + by / 4;
 
@@ -931,6 +996,7 @@ static inline enum cg_ro_v cg_ro_in(struct cg_reorder *r, struct cg_ro_pool *p, 
 		cg_ro_unmark(r);
 		r->head = k->seq + 1;
 		r->force = 0;
+		r->retx_on = 0;
 		return CG_RO_NOW;
 	}
 	/* The gap just before k (d >= 1: at or after the head) went on the link
@@ -955,7 +1021,9 @@ static inline enum cg_ro_v cg_ro_in(struct cg_reorder *r, struct cg_ro_pool *p, 
 		cg_ro_pend_take(r, k->link, k->seq, k->t_arr);
 	s = &r->slot[k->seq % CG_RO_SLOTS];
 	cg_ro_answered(r, s, k->seq);
-	if (cg_ro_bypass(cf, k->wgtype, k->len, k->flags)) {
+	if (k->retx && cf->retx_release_us)
+		cg_ro_retx_mark(r, k);
+	if (cg_ro_bypass(cf, k->wgtype, k->len, k->retx ? k->flags & ~CG_F_FREE : k->flags)) {
 		cg_ro_pass(r, s, k->seq);
 		r->st.bypassed++;
 		return CG_RO_NOW;
@@ -1024,6 +1092,10 @@ static inline int cg_ro_next(struct cg_reorder *r, const struct cg_ro_cfg *cf, u
 			why = CG_RO_LOST_OVF;
 		} else if (!r->held) {
 			break;
+		} else if (r->retx_on && cg_ro_retx_gone(r, cf, cg_ro_lowest(r), cg_ro_lowest_slot(r))) {
+			why = CG_RO_LOST_RETX;
+			if (s->seq == g && s->state == CG_RO_ASKED)
+				r->st.ask_lost++;
 		} else if (s->seq == g && s->state == CG_RO_ASKED) {
 			/* Asked for: it waits rescue_us from then, never past the
 			 * hold cap of the packet after it, and goes as it was due. */
@@ -1070,7 +1142,8 @@ static inline int cg_ro_next(struct cg_reorder *r, const struct cg_ro_cfg *cf, u
 		}
 		/* Rescue: a gap about to go is asked for once, and waits; not one
 		 * that nothing waits for (C 0) unless every link is past it. */
-		if (cf->rescue_us && why != CG_RO_LOST_OVF && !(s->seq == g && s->state == CG_RO_ASKED)) {
+		if (cf->rescue_us && why != CG_RO_LOST_OVF && why != CG_RO_LOST_RETX &&
+		    !(s->seq == g && s->state == CG_RO_ASKED)) {
 			const struct cg_ro_slot *n = cg_ro_lowest_slot(r);
 
 			if ((why == CG_RO_LOST_RACK || cg_ro_cap(r, cf, n->flags, n->t_arr)) && cg_ro_ask(r, g, why, now))
@@ -1098,6 +1171,8 @@ static inline int32_t cg_ro_due_us(const struct cg_reorder *r, const struct cg_r
 		return INT32_MAX;
 	s = &r->slot[r->head % CG_RO_SLOTS];
 	if (s->seq == r->head && (s->state == CG_RO_HELD || s->state == CG_RO_PASSED))
+		return 0;
+	if (r->retx_on && cg_ro_retx_gone(r, cf, cg_ro_lowest(r), cg_ro_lowest_slot(r)))
 		return 0;
 	if (s->seq == r->head && s->state == CG_RO_ASKED && !cg_ro_forced(r, r->head)) {
 		const struct cg_ro_slot *n = cg_ro_lowest_slot(r);
@@ -1162,6 +1237,7 @@ static inline int cg_ro_flush(struct cg_reorder *r, struct cg_ro_out *o)
 	r->force = 0;
 	r->force_to = 0;
 	r->split_seen = 0;
+	r->retx_on = 0;
 	cg_ro_burst_end(r);
 	for (unsigned i = 0; i < CG_MAX_LINKS; i++)
 		r->link[i].hw_ok = 0;

@@ -1244,7 +1244,9 @@ static void up_deliver(struct server *s, int *nq, struct session *S, const struc
 			       .link = h->link,
 			       .flags = h->flags,
 			       .wgtype = s->native ? CG_RO_WG_DATA : len ? payload[0] : 0,
-			       .prev = (uint8_t)(cg_prev_link(h->flags) + 1) };
+			       .prev = (uint8_t)(cg_prev_link(h->flags) + 1),
+			       /* free with TCP data: a retransmission (tcp_aware) */
+			       .retx = (uint8_t)(s->native && (h->flags & CG_F_FREE) && cg_tcp_data(payload, len)) };
 	enum cg_ro_v v;
 	uint16_t buf;
 
