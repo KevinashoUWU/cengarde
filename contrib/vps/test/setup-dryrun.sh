@@ -29,6 +29,14 @@
 #   WireGuard gets its ULA (::1 here, ::2 the router), TUNNEL_IPV6=yes in
 #   nat.conf and cengarde-nat applies it; off takes it back; the import of
 #   a cloud-config with TUNNEL_IPV6=yes;
+# - tunnel native|wireguard: native writes tunnel = native, the TUN's
+#   10.79.0.1/16 and each router's address as its tun_route (its ULA too
+#   with ipv6 on), a systemd drop-in that allows /dev/net/tun, restarts
+#   the engine (a reload would keep the old unit) and only then stops each
+#   router's WireGuard; a router added then gets no WireGuard; native again
+#   changes nothing; wireguard puts every file back as it was, drop-in gone;
+#   a TUNNEL that is neither refused; the import of a cloud-config with
+#   TUNNEL=native;
 # - forward add|del: one spelling of a rule, in the router's file and its
 #   section; refused: a reserved port (with the reason), an overlap with
 #   its own rule or another router's, past its limit, a bad rule; forward
@@ -669,6 +677,80 @@ mkdir -p "$R/proc/net"
 (umask 077 && echo "$S1" >"$R/etc/cengarde/secret")
 check "no arguments" setup
 check "router's WireGuard with its ULA" grep -qx "Address = 10.79.0.1/32, $U1::1/128" "$R/etc/wireguard/cg-router.conf"
+
+say "tunnel native|wireguard: the engine's TUN instead of each router's WireGuard"
+fresh native
+check "add zeta" add zeta "$S1"
+check "add alpha" add alpha "$S2"
+wg_before=$(cat "$R/etc/wireguard/cg-zeta.conf" "$R/etc/wireguard/cg-alpha.conf")
+conf_before=$(conf)
+DROPIN=$R/etc/systemd/system/cengarde.service.d/native.conf
+check "no drop-in in WireGuard mode" [ ! -e "$DROPIN" ]
+: >"$CALLS"
+check "tunnel native" setup tunnel native
+check "TUNNEL=\"native\" in nat.conf" grep -qx 'TUNNEL="native"' "$R/etc/cengarde/nat.conf"
+check "cengarde.conf: tunnel = native on cg0 at 10.79.0.1/16, no WireGuard port file" \
+	sh -c 'grep -qx "tunnel = native" "$1" && grep -qx "tun = cg0" "$1" && grep -qx "tun_addr = 10.79.0.1/16" "$1" &&
+		! grep -q "^wireguard" "$1"' sh "$R/etc/cengarde/cengarde.conf"
+check "[client zeta]: its key and its address as its tun_route, no WireGuard" \
+	sh -c '[ "$(printf "%s\n" "$1" | grep -v "^#" | grep .)" = "key = $2
+tun_route = $3/32" ]' sh "$(section zeta)" "$K1" "$A1"
+check "[client alpha] too" sh -c 'printf "%s\n" "$1" | grep -qx "tun_route = $2/32"' sh "$(section alpha)" "$A2"
+check "the engine checks it" called '^cengarde -t -c .*cengarde.conf.new'
+check "the drop-in lets the engine open /dev/net/tun, and nothing else" \
+	sh -c 'grep -qx "PrivateDevices=no" "$1" && grep -qx "DevicePolicy=closed" "$1" && grep -qx "DeviceAllow=/dev/net/tun rw" "$1"' sh "$DROPIN"
+check "systemd reloaded, the engine restarted rather than reloaded" \
+	sh -c 'grep -q "^systemctl daemon-reload$" "$1" && grep -q "^systemctl restart cengarde$" "$1" && ! grep -q "^cengarde ctl .*reload$" "$1"' sh "$CALLS"
+check "it says every router saw a cut" said "every router saw a cut"
+check "each router's WireGuard stopped and its file removed, after the engine" \
+	sh -c 'grep -q "^systemctl disable --now wg-quick@cg-zeta$" "$1" && grep -q "^systemctl disable --now wg-quick@cg-alpha$" "$1" &&
+		[ ! -e "$2/etc/wireguard/cg-zeta.conf" ] && [ ! -e "$2/etc/wireguard/cg-alpha.conf" ] &&
+		[ "$(grep -n -e "^systemctl restart cengarde$" -e "wg-quick@cg-zeta$" "$1" | head -n 1 | cut -d: -f2-)" = "systemctl restart cengarde" ]' sh "$CALLS" "$R"
+check "cengarde-nat applies it" called '^cengarde-nat apply$'
+check "list says so" sh -c 'env CENGARDE_ROOT="$1" PATH="$2" sh "$3" list 2>&1 | grep -q "tunnels: native"' sh "$R" "$BIN:$PATH" "$SETUP"
+before=$(fingerprint)
+: >"$CALLS"
+check "tunnel native again" setup tunnel native
+check "it says so, nothing changed, no restart" sh -c 'printf "%s\n" "$1" | grep -q "already" && ! grep -q "restart\|reload" "$2"' sh "$OUT" "$CALLS"
+check "the files are the same" [ "$(fingerprint)" = "$before" ]
+: >"$CALLS"
+check "a router added now" add omega "$S3"
+check "omega: its tun_route, no WireGuard, a reload (no restart)" \
+	sh -c 'printf "%s\n" "$1" | grep -qx "tun_route = $2/32" && [ ! -e "$3/etc/wireguard/cg-omega.conf" ] &&
+		! grep -q "wg-quick@cg-omega\|restart cengarde" "$4" && grep -q "^cengarde ctl .*reload$" "$4"' sh "$(section omega)" "$A3" "$R" "$CALLS"
+check "it says the router needs native too" said "Tunnel mode: native"
+mkdir -p "$R/proc/net"
+: >"$R/proc/net/if_inet6"
+check "ipv6 on, natively" setup ipv6 on
+check "the TUN gets fd79::1/8 (every router's ULA inside), each router its ULA ::2" \
+	sh -c 'grep -qx "tun_addr = 10.79.0.1/16 fd79::1/8" "$1" && printf "%s\n" "$2" | grep -qx "tun_route = $3/32 $4::2/128"' \
+	sh "$R/etc/cengarde/cengarde.conf" "$(section zeta)" "$A1" "$(ula_of "$S1")"
+check "still no WireGuard" [ ! -e "$R/etc/wireguard/cg-zeta.conf" ]
+check "ipv6 off" setup ipv6 off
+rm -rf "$R/proc"
+check "remove omega" setup remove omega
+: >"$CALLS"
+check "tunnel wireguard" setup tunnel wireguard
+check "TUNNEL=\"wireguard\"" grep -qx 'TUNNEL="wireguard"' "$R/etc/cengarde/nat.conf"
+check "the drop-in gone, systemd reloaded, the engine restarted" \
+	sh -c '[ ! -e "$1" ] && grep -q "^systemctl daemon-reload$" "$2" && grep -q "^systemctl restart cengarde$" "$2"' sh "$DROPIN" "$CALLS"
+check "each router's WireGuard back as it was" \
+	[ "$(cat "$R/etc/wireguard/cg-zeta.conf" "$R/etc/wireguard/cg-alpha.conf" 2>/dev/null)" = "$wg_before" ]
+check "and started" sh -c 'grep -q "^systemctl enable --now wg-quick@cg-zeta$" "$1" && grep -q "^systemctl enable --now wg-quick@cg-alpha$" "$1"' sh "$CALLS"
+check "cengarde.conf as before native" [ "$(conf)" = "$conf_before" ]
+check "tunnel gre is refused" not setup tunnel gre
+check "a TUNNEL in nat.conf that is neither is refused" \
+	not sh -c 'printf "TUNNEL=gre\n" >>"$1/etc/cengarde/nat.conf" && env CENGARDE_ROOT="$1" PATH="$2" sh "$3" list 2>/dev/null' sh "$R" "$BIN:$PATH" "$SETUP"
+say "  the import of a cloud-config with TUNNEL=native"
+fresh importn 'TUNNEL=native
+ROUTER_TUNNEL_ADDR=REPLACE_TUNNEL_ADDR
+'
+(umask 077 && echo "$S1" >"$R/etc/cengarde/secret")
+check "no arguments" setup
+check "router through the TUN, at its secret's address, no WireGuard, the drop-in" \
+	sh -c 'grep -qx "tunnel = native" "$1/etc/cengarde/cengarde.conf" && printf "%s\n" "$2" | grep -qx "tun_route = $3/32" &&
+		[ ! -e "$1/etc/wireguard/cg-router.conf" ] && [ -e "$1/etc/systemd/system/cengarde.service.d/native.conf" ]' sh "$R" "$(section router)" "$A1"
+check "no WireGuard started" not called 'wg-quick@'
 
 say "a 0.4 server, migrated by cengarde-vps-setup"
 fresh m04 'PASSTHROUGH=yes
