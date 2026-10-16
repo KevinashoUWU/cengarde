@@ -99,25 +99,30 @@ bad() {
 	fails=$((fails + 1))
 }
 
-# Log lines that a reload loop would keep adding: cengarde-setup changing
-# the configuration, and netifd taking interfaces up or down.
+# Log lines that a reload loop would keep adding since the marker MARK:
+# cengarde-setup changing the configuration, and netifd taking interfaces up
+# or down. Counted after a marker of its own, not as a total: once logd's ring
+# buffer is full, old lines leave it and a total can go down.
 churn() {
-	"$VM" ssh router 'logread | grep -cE "cengarde-setup: updated:|netifd: Interface .* is now (up|down)" || true'
+	"$VM" ssh router "logread | awk '/e2e-mark: $1\$/ { n = 0; on = 1; next }
+		on && /cengarde-setup: updated:|netifd: Interface .* is now (up|down)/ { n++ } END { print n + 0 }'"
 }
 
 # converged WHAT: "cengarde-setup apply" changes nothing more, and in the
 # next 60 s nothing reloads.
+CONVERGED=0
 converged() {
-	local before after
+	local mark n
 
-	before=$(churn)
-	"$VM" ssh router 'cengarde-setup apply'
+	CONVERGED=$((CONVERGED + 1))
+	mark=converged-$CONVERGED
+	"$VM" ssh router "logger -t e2e-mark $mark; cengarde-setup apply"
 	sleep 60
-	after=$(churn)
-	if [ "$before" = "$after" ]; then
+	n=$(churn "$mark")
+	if [ "$n" = 0 ]; then
 		ok "$1: apply changes nothing, no reloads in 60 s"
 	else
-		bad "$1: $((after - before)) new updates or interface changes"
+		bad "$1: $n new updates or interface changes"
 		"$VM" ssh router 'logread | grep -E "cengarde-setup|netifd" | tail -20'
 	fi
 }
@@ -1027,7 +1032,7 @@ tunnel_mode() {
 	"$VM" ssh router "uci set cengarde.main.tunnel_mode=$1; uci commit cengarde
 		ubus call service event '{\"type\":\"config.change\",\"data\":{\"package\":\"cengarde\"}}'"
 }
-cg0_up() { [ "$("$VM" ssh router "ubus call network.interface.cg0 status | jsonfilter -e '@.up'")" = true ]; }
+cg0_up() { [ "$("$VM" ssh router "ubus call network.interface.cg0 status 2>/dev/null | jsonfilter -e '@.up' 2>/dev/null")" = true ]; }
 native_back() { "$VM" ssh router 'ping -q -c 1 -W 2 -I cg0 10.79.0.1 >/dev/null 2>&1'; }
 tunnel_mode native
 if until_ok 90 cg0_up && until_ok 90 native_back && until_ok 60 all_live; then
@@ -1068,7 +1073,7 @@ else
 	bad "tunnel_mode native: the wan zone has $("$VM" ssh router "uci -q get firewall.$zone.network")"
 fi
 # Through the /1 routes to an address of the VPS: what the LAN's traffic does.
-"$VM" ssh router 'ping -q -c 20 -i 0.2 -W 2 1.2.3.5' > "$OUT/ping-native.txt" 2>&1 || true
+"$VM" ssh router 'ping -q -c 15 -W 2 1.2.3.5' > "$OUT/ping-native.txt" 2>&1 || true
 cat "$OUT/ping-native.txt"
 if grep -q ' 0% packet loss' "$OUT/ping-native.txt"; then
 	ok "tunnel_mode native: 1.2.3.5 answers through cg0 without loss"
@@ -1100,7 +1105,7 @@ converged "tunnel_mode native"
 
 say "native tunnel: IPv6 in it"
 tunnel_ipv6 1
-cg6_addr() { "$VM" ssh router "ip -6 addr show dev cg0 scope global | grep -Eq 'inet6 ${ula%%:*}:[0-9a-f:]*:2/128'"; }
+cg6_addr() { "$VM" ssh router "ip -6 addr show dev cg0 scope global 2>/dev/null | grep -Eq 'inet6 ${ula%%:*}:[0-9a-f:]*:2/128'"; }
 if until_ok 90 cg6_addr && until_ok 60 native_back &&
 	until_ok 60 "$VM" ssh router "ping -6 -q -c 3 -W 2 ${ula}::1 >/dev/null 2>&1" &&
 	"$VM" ssh router "ip -6 route | grep -q '^::/1 dev cg0' && ip -6 route | grep -q '^8000::/1 dev cg0'" &&
