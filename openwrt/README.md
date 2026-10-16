@@ -697,7 +697,7 @@ Un VPS nuevo no necesita el comando: el cloud-config de LuCI lleva
 `TUNNEL=native` cuando el router está en modo nativo.
 
 **Pasar un router y su VPS al modo nativo:**
-1. En el router, actualizar a un paquete con esta versión (0.7.2 o
+1. En el router, actualizar a un paquete con esta versión (0.8.1 o
    posterior), que instala `kmod-tun`.
 2. En el VPS, actualizar al mismo commit (`git -C /opt/cengarde fetch
    --depth 1 https://github.com/KevinashoUWU/cengarde COMMIT && git -C
