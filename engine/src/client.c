@@ -260,6 +260,8 @@ struct client {
 	} fecq[CG_FEC_Q];
 	int nfecq;
 	uint64_t fec_parities, fec_bytes, fec_nolink;
+	uint64_t fec_size[CG_FEC_KMAX + 1]; /* groups closed, by the packets in them */
+	uint64_t fec_why[4];               /* closed full, evicted (span or no slot), at the deadline, split off */
 	struct cg_ro_cfg rocf;
 	uint32_t ro_budget;
 
@@ -1192,58 +1194,77 @@ static void fec_send(struct client *c, uint64_t now_us)
 	c->nfecq = 0;
 }
 
-/* Closes the open group: its parity waits for the end of the batch. */
-static void fec_close(struct client *c, uint64_t now_us)
+/* Closes open group i (why: an index of fec_why): its parity waits for
+ * the end of the batch. */
+static void fec_close(struct client *c, int i, int why, uint64_t now_us)
 {
-	if (!c->fectx.n)
+	struct cg_fec_grp *g = &c->fectx.g[i];
+
+	if (!g->n)
 		return;
+	c->fec_size[g->n > CG_FEC_KMAX ? CG_FEC_KMAX : g->n]++;
+	c->fec_why[why]++;
+	/* A group of one has no partner: its parity would be a copy, which
+	 * the split chose not to send (when it sends most on one link, story
+	 * 013, groups of one were most of them, as many bytes as
+	 * duplicating); the rescue covers it. */
+	if (g->n < 2) {
+		g->n = 0;
+		return;
+	}
 	if (c->nfecq == CG_FEC_Q)
 		fec_send(c, now_us);
-	c->fecq[c->nfecq].mask = c->fectx.mask;
-	c->fecq[c->nfecq].plen = (uint16_t)cg_fec_tx_close(&c->fectx, c->fecq[c->nfecq].p + CG_HDR_LEN);
+	c->fecq[c->nfecq].mask = g->mask;
+	c->fecq[c->nfecq].plen = (uint16_t)cg_fec_grp_close(g, c->fecq[c->nfecq].p + CG_HDR_LEN);
 	c->nfecq++;
 }
 
-/* DATA seq (len bytes at p) went on link alone (-1: on several): into the
- * open group, which closes when it holds one packet of each split link but
- * one, the parity's (fec.h). elig: the links that share the split. */
+/* DATA seq (len bytes at p) went on link alone (-1: on several, which
+ * needs no parity): into the oldest open group without that link, which
+ * closes once it holds one packet of each split link but one, the
+ * parity's (fec.h). elig: the links that share the split. */
 static void fec_feed(struct client *c, uint32_t seq, int link, const uint8_t *p, size_t len, uint64_t now_us,
 		     uint16_t elig)
 {
 	unsigned n = (unsigned)__builtin_popcount(elig), k = n > CG_FEC_KMAX ? CG_FEC_KMAX : n - 1;
+	int i;
 
-	if (n < 2 || cg_fec_tx_breaks(&c->fectx, seq, link))
-		fec_close(c, now_us);
-	if (n < 2 || link < 0 || !(elig >> link & 1))
+	if (n < 2) {
+		for (i = 0; i < CG_FEC_OPEN; i++)
+			fec_close(c, i, 3, now_us);
 		return;
-	cg_fec_tx_add(&c->fectx, seq, link, p, (uint16_t)len, now_us);
-	if (c->fectx.n >= k)
-		fec_close(c, now_us);
+	}
+	if (link < 0 || link > 15 || !(elig >> link & 1))
+		return;
+	while ((i = cg_fec_tx_evict(&c->fectx, seq, link)) >= 0)
+		fec_close(c, i, 1, now_us);
+	i = cg_fec_tx_add(&c->fectx, seq, link, p, (uint16_t)len, now_us);
+	if (c->fectx.g[i].n >= k)
+		fec_close(c, i, 0, now_us);
 }
 
-/* A group open longer than fec_wait_ms closes, and its parity goes. */
+/* The groups open longer than fec_wait_ms close, and their parities go. */
 static void fec_service(struct client *c)
 {
-	uint64_t now_us;
+	uint64_t now_us = cg_now_us();
+	int i, any = 0;
 
-	if (!c->fectx.n)
-		return;
-	now_us = cg_now_us();
-	if (cg_fec_tx_due(&c->fectx, now_us, c->cfg->fec_wait_ms * 1000)) {
-		fec_close(c, now_us);
-		fec_send(c, now_us);
+	while ((i = cg_fec_tx_due(&c->fectx, now_us, c->cfg->fec_wait_ms * 1000)) >= 0) {
+		fec_close(c, i, 2, now_us);
+		any = 1;
 	}
+	if (any)
+		fec_send(c, now_us);
 }
 
-/* The ms until the open group's deadline, -1: none open. */
+/* The ms until the oldest open group's deadline, -1: none open. */
 static int fec_timeout(const struct client *c)
 {
-	uint64_t now_us, due;
+	uint64_t now_us, due = cg_fec_tx_next_us(&c->fectx, c->cfg->fec_wait_ms * 1000);
 
-	if (!c->fectx.n)
+	if (!due)
 		return -1;
 	now_us = cg_now_us();
-	due = c->fectx.t0_us + c->cfg->fec_wait_ms * 1000;
 	return due <= now_us ? 0 : (int)((due - now_us + 999) / 1000);
 }
 
@@ -2250,6 +2271,14 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 	cg_json_u64(j, "parities", c->fec_parities);
 	cg_json_u64(j, "bytes", c->fec_bytes);
 	cg_json_u64(j, "no_link", c->fec_nolink);
+	cg_json_arr(j, "sizes");
+	for (int i = 1; i <= CG_FEC_KMAX; i++)
+		cg_json_u64(j, NULL, c->fec_size[i]);
+	cg_json_end(j, ']');
+	cg_json_u64(j, "closed_full", c->fec_why[0]);
+	cg_json_u64(j, "closed_evicted", c->fec_why[1]);
+	cg_json_u64(j, "closed_deadline", c->fec_why[2]);
+	cg_json_u64(j, "closed_split_off", c->fec_why[3]);
 	cg_json_end(j, '}');
 	/* For a shaper on the tunnel (capacity.h): null until measured. */
 	if (cg_cap_shape_bps(&c->ctot))

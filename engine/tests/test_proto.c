@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include <string.h>
 
+#include "fec.h"
 #include "proto.h"
 #include "test.h"
 
@@ -88,9 +89,9 @@ void test_proto(void)
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
 	pkt[0] = 0x7f; /* unknown type */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
-	pkt[0] = 0x76; /* a parity (fec.h): eight bytes at least */
-	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), sizeof(pkt) >= CG_HDR_LEN + 8 ? 0 : -1);
-	CHECK_EQ(cg_hdr_parse(&p, pkt, CG_HDR_LEN + 7), -1);
+	pkt[0] = 0x76; /* a parity (fec.h): its header and a byte at least */
+	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), sizeof(pkt) > CG_HDR_LEN + CG_FEC_HDR ? 0 : -1);
+	CHECK_EQ(cg_hdr_parse(&p, pkt, CG_HDR_LEN + CG_FEC_HDR), -1);
 	pkt[0] = 0x71;
 	pkt[2] = 0xff; /* any hint parses: the server judges it */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), 0);
