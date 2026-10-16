@@ -39,7 +39,14 @@ def sample(run):
                     d = json.load(f)
                 rec["cap"] = [l.get("capacity_mbit") for l in d["links"]]
                 rec["qpred"] = [l.get("queue_pred_ms") for l in d["links"]]
+                rec["eng"] = sum((l.get("predict") or {}).get("engaged", 0) for l in d["links"])
             except (ValueError, KeyError, OSError):
+                pass
+            try:
+                with open(run + "/server.json") as f:
+                    ro = json.load(f)["sessions"][0]["reorder"]
+                rec["ro"] = [ro["rescue"]["asked"], ro["lost"]["rack"]]
+            except (ValueError, KeyError, IndexError, OSError):
                 pass
         out.write(json.dumps(rec) + "\n")
         out.flush()
@@ -97,6 +104,27 @@ def measure(run, case, rep, label, rate, div, extra):
         return off, q
 
     off1, q1 = series(1)
+    off2, _ = series(2)
+
+    # split share jumps: link 1's share of what the split offers (over the
+    # next 0.5 s), and a jump each time either link's grew by 15 points
+    # within 1 s (then none for 1 s)
+    o2 = dict(off2)
+    share = [(t, o / (o + o2[t])) for t, o in off1 if t in o2 and o + o2[t] > 1]
+    flips, last, j = 0, 0.0, 0
+    for i, (t, sh) in enumerate(share):
+        while j < len(share) and share[j][0] < t - 1:
+            j += 1
+        if t - last < 1:
+            continue
+        if any(abs(sh - s0) >= 0.15 for u, s0 in share[j:i]):
+            flips += 1
+            last = t
+
+    def delta(key, n):
+        v = [s[key][n] if n is not None else s[key] for s in samples if key in s]
+        return v[-1] - v[0] if len(v) >= 2 else None
+
     caps = [(s["t"], s["cap"][0]) for s in samples if s.get("cap") and s["cap"][0] is not None]
     eps = []
     for a, b in cuts:
@@ -149,6 +177,7 @@ def measure(run, case, rep, label, rate, div, extra):
             "cap_over": agg("cap_over"), "q_ms": agg("q_ms"),
             "q100_s": round(sum(e["q100_s"] or 0 for e in eps), 1),
             "missed_back": sum(1 for e in eps if e["back_s"] is None),
+            "flips": flips, "asked": delta("ro", 0), "rack": delta("ro", 1), "engaged": delta("eng", None),
             "iperf3": ip, "ping": pg}
 
 
@@ -167,17 +196,20 @@ def table(path):
         return "-" if x is None else "%g" % x
 
     out = ["| variant | case | n | off_s | back_s | cap_s | cap_over | q_ms | q100_s | TCP RTT max ms | retrans "
-           "| ping p99 ms | Mbit/s |",
-           "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"]
+           "| ping p99 ms | Mbit/s | flips | asked | rack | engaged |",
+           "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: "
+           "| ---: |"]
     for (lab, case), runs in rows.items():
-        out.append("| %s | %s | %d | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |" % (
+        out.append("| %s | %s | %d | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |" % (
             lab, case, len(runs), f(med([r["off_s"] for r in runs])),
             f(med([r["back_s"] if not r["missed_back"] else None for r in runs])),
             f(med([r["cap_s"] for r in runs])), f(med([r["cap_over"] for r in runs])),
             f(med([r["q_ms"] for r in runs])), f(med([r["q100_s"] for r in runs])),
             f(med([r["iperf3"].get("rtt_max_ms") for r in runs])),
             f(med([r["iperf3"].get("retrans") for r in runs])), f(med([r["ping"]["p99_ms"] for r in runs])),
-            f(med([r["iperf3"].get("mbit") for r in runs]))))
+            f(med([r["iperf3"].get("mbit") for r in runs])), f(med([r.get("flips") for r in runs])),
+            f(med([r.get("asked") for r in runs])), f(med([r.get("rack") for r in runs])),
+            f(med([r.get("engaged") for r in runs]))))
     return "\n".join(out)
 
 
