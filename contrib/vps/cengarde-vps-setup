@@ -35,6 +35,17 @@
 #                                    from its secret, ::1 here and ::2 on the
 #                                    router, masqueraded out (cengarde-nat);
 #                                    the router turns it on in LuCI too
+#   cengarde-vps-setup tunnel wireguard|native
+#                                    what carries every router's tunnel
+#                                    (TUNNEL): WireGuard, a cg-NAME each
+#                                    (the default), or native, experimental:
+#                                    no WireGuard, the engine's own TUN cg0
+#                                    for all of them (10.79.0.1/16 here, each
+#                                    router's tunnel address routed to it by
+#                                    the engine), authenticated but not
+#                                    encrypted. Every router of this server
+#                                    has to be in the same mode (LuCI, Tunnel
+#                                    tab); the engine restarts
 #   cengarde-vps-setup refresh       the engine's configuration again, reloaded
 #                                    if it changed (cengarde-nat check)
 #   cengarde-vps-setup purge [--all] the services of install.sh removed and the
@@ -84,6 +95,7 @@ FORWARD_RESERVED=
 FORWARD_UNRESERVE=
 FORWARD_MAX_PORTS=1024
 TUNNEL_IPV6=no
+TUNNEL=wireguard
 ROUTER_NAME=router
 # ROUTER_TUNNEL_ADDR, the cloud-config's router's tunnel address, is left
 # unset: a cloud-config without it is older than 0.5.2, and its router has
@@ -111,6 +123,13 @@ UNITS=$R/etc/systemd/system
 SYSUSERS=$R/etc/sysusers.d/cengarde.conf
 CTL_TIMEOUT=${CENGARDE_CTL_TIMEOUT:-15}
 SERVER_ADDR=10.79.0.1
+# TUNNEL=native: the engine's TUN, its addresses (every router's tunnel
+# address and ULA inside their prefixes), and the systemd drop-in that lets
+# the engine open /dev/net/tun (its unit has PrivateDevices=yes).
+TUN_DEV=cg0
+TUN_NET=$SERVER_ADDR/16
+TUN_NET6=fd79::1/8
+NATIVE_DROPIN=$UNITS/cengarde.service.d/native.conf
 LEGACY_TUNNEL=10.79.0.2 # every router set up before 0.5.2
 MAX_ROUTERS=32          # one WireGuard port each
 
@@ -157,6 +176,7 @@ fi
 : "${WG_PORT_BASE:=${WG_PORT:-65501}}"
 is_port "$CENGARDE_PORT" || die "CENGARDE_PORT in $CONF: not a port"
 is_port "$WG_PORT_BASE" || die "WG_PORT_BASE in $CONF: not a port"
+case $TUNNEL in wireguard | native) ;; *) die "TUNNEL in $CONF: wireguard or native" ;; esac
 # What IP pass forwards (cengarde-nat refuses a bad one).
 PASS_LO=${PASSTHROUGH_PORTS%%:*} PASS_HI=${PASSTHROUGH_PORTS#*:}
 is_port "$PASS_LO" && is_port "$PASS_HI" || PASS_LO=1024 PASS_HI=65000
@@ -416,6 +436,16 @@ engine_conf() {
 		# Lower latency for more CPU (docs/historias/006); fine on dedicated vCPUs.
 		#busy_poll_us = 50
 	EOF
+	if native; then
+		cat <<-EOF
+			# No WireGuard (cengarde-vps-setup tunnel wireguard brings it back): the
+			# routers' IP packets through one TUN, authenticated but not encrypted;
+			# each router's own addresses are its tun_route.
+			tunnel = native
+			tun = $TUN_DEV
+			tun_addr = $TUN_NET$(! tunnel_v6 || echo " $TUN_NET6")
+		EOF
+	fi
 	if [ -s "$LOCAL_CONF" ]; then
 		# Before the [client] sections, which would take its keys.
 		! grep -q '^[[:space:]]*\[' "$LOCAL_CONF" || die "$LOCAL_CONF: the engine's global settings only, no [section]"
@@ -426,14 +456,16 @@ engine_conf() {
 		cat <<-EOF
 			# No router yet ("cengarde-vps-setup add"): a key that serves nobody.
 			key = $(idle_key)
-			wireguard = 127.0.0.1:$WG_PORT_BASE
 		EOF
+		native || echo "wireguard = 127.0.0.1:$WG_PORT_BASE"
 		return 0
 	fi
 	cat <<-EOF
 		# What each router gets of this server's ports (IP pass, and its
 		# rules); cengarde-passthrough.path has cengarde-nat apply it.
 		forward_file = /var/lib/cengarde/forward
+	EOF
+	native || cat <<-EOF
 		# The port WireGuard knows each router by, across restarts.
 		wireguard_port_file = /var/lib/cengarde/wg/ports
 	EOF
@@ -445,10 +477,19 @@ engine_conf() {
 			[client $n]
 			# $CLIENTS/$n
 			key = $CG_LINK_KEY
-			wireguard = 127.0.0.1:$((WG_PORT_BASE + C_SLOT))
-			# A datagram to its tunnel address has WireGuard greet it.
-			wireguard_poke = $C_ADDR:9
 		EOF
+		if native; then
+			cat <<-EOF
+				# What the TUN hands this router, and what it may send from.
+				tun_route = $C_ADDR/32$(! tunnel_v6 || echo " $CG_TUNNEL_ULA::2/128")
+			EOF
+		else
+			cat <<-EOF
+				wireguard = 127.0.0.1:$((WG_PORT_BASE + C_SLOT))
+				# A datagram to its tunnel address has WireGuard greet it.
+				wireguard_poke = $C_ADDR:9
+			EOF
+		fi
 		# The engine takes 63 characters (0.5.1 took 64 here).
 		[ -z "$C_LABEL" ] || printf 'label = %.63s\n' "$C_LABEL"
 		if [ "$C_FORWARD" = no ]; then
@@ -481,6 +522,15 @@ reload() {
 	fi
 	if ! systemctl is-active -q cengarde 2>/dev/null; then
 		RELOAD="cengarde is not running: it reads this configuration when it starts"
+		return 0
+	fi
+	# Its unit changed (native_unit): only a restart takes it.
+	if [ -n "$UNIT_CHANGED" ]; then
+		systemctl restart cengarde || {
+			RELOAD="error: systemctl restart cengarde failed"
+			return 1
+		}
+		RELOAD="restarted (tunnel = $TUNNEL changes its systemd unit): every router saw a cut of a few seconds"
 		return 0
 	fi
 	if [ ! -S "$SOCK" ]; then
@@ -541,12 +591,15 @@ write_conf() {
 	(umask 027 && engine_conf >"$new") || die "cannot write $new"
 	chgrp "$ENGINE_GROUP" "$new" 2>/dev/null || :
 	chmod 0640 "$new"
+	native_unit
 	if [ -e "$ENGINE_CONF" ] && cmp -s "$new" "$ENGINE_CONF"; then
 		# Ownership and mode as they should be, from 0.4's 0600 root.
 		chgrp "$ENGINE_GROUP" "$ENGINE_CONF" 2>/dev/null || :
 		chmod 0640 "$ENGINE_CONF"
 		rm -f "$new"
 		TMPF=
+		# The same configuration, but not the same unit (put back by hand?).
+		[ -z "$UNIT_CHANGED" ] || reload || die "$RELOAD"
 		return 0
 	fi
 	out=$(cengarde -t -c "$new" 2>&1) || die "the engine refuses the new configuration, so the previous one stays: $out"
@@ -555,7 +608,7 @@ write_conf() {
 	[ ! -e "$ENGINE_CONF" ] || cp -p "$ENGINE_CONF" "$old"
 	mv "$new" "$ENGINE_CONF"
 	TMPF=
-	[ "$(nrouters)" -eq 0 ] || seed_wg_ports
+	[ "$(nrouters)" -eq 0 ] || native || seed_wg_ports
 	if ! reload; then
 		if [ -e "$old" ]; then
 			mv "$old" "$ENGINE_CONF"
@@ -575,6 +628,41 @@ write_conf() {
 		;;
 	esac
 	return 0
+}
+
+# native: the routers' tunnels are the engine's TUN (TUNNEL=native).
+native() { [ "$TUNNEL" = native ]; }
+
+# native_unit: the drop-in that lets the engine open /dev/net/tun while
+# TUNNEL=native, gone otherwise. Its unit has PrivateDevices=yes, whose /dev
+# has no net/tun: this one keeps every other device out with DevicePolicy
+# instead. UNIT_CHANGED=1 when it changed: systemd reloaded, and the engine
+# needs a restart (reload), not just a reload of its configuration.
+UNIT_CHANGED=
+native_unit() {
+	local new
+	if native; then
+		new=$(
+			cat <<-'EOF'
+				# Written by cengarde-vps-setup while TUNNEL=native (nat.conf): the
+				# engine opens /dev/net/tun for its TUN; every other device stays
+				# out, as with PrivateDevices.
+				[Service]
+				PrivateDevices=no
+				DevicePolicy=closed
+				DeviceAllow=/dev/net/tun rw
+			EOF
+		)
+		[ "$(cat "$NATIVE_DROPIN" 2>/dev/null)" != "$new" ] || return 0
+		mkdir -p "${NATIVE_DROPIN%/*}"
+		printf '%s\n' "$new" >"$NATIVE_DROPIN"
+		chmod 0644 "$NATIVE_DROPIN"
+	else
+		[ -e "$NATIVE_DROPIN" ] || return 0
+		rm -f "$NATIVE_DROPIN"
+	fi
+	systemctl daemon-reload 2>/dev/null || warn "systemctl daemon-reload failed"
+	UNIT_CHANGED=1
 }
 
 # have_v6: this box has IPv6.
@@ -648,6 +736,17 @@ wg_up() {
 wg_down() { # NAME
 	systemctl disable --now "wg-quick@cg-$1" 2>/dev/null || :
 	rm -f "$WG_DIR/cg-$1.conf"
+}
+
+# wg_native NAME: with TUNNEL=native the router has no WireGuard here: its
+# cg-NAME, if it had one, goes (with its route to the router's address,
+# which would win over the TUN's), and comes back with "tunnel wireguard".
+# WG says what was done.
+wg_native() {
+	WG=unchanged
+	[ -e "$WG_DIR/cg-$1.conf" ] || return 0
+	wg_down "$1"
+	WG="down (tunnel = native)"
 }
 
 nat_apply() {
@@ -816,14 +915,23 @@ import() {
 regen() {
 	local n
 	ensure_dirs
-	for n in $(routers); do
-		load "$n"
-		keys_of "$n"
-		wg_up
-		[ "$WG" = unchanged ] || say "cg-$n: $WG"
-	done
+	if ! native; then
+		for n in $(routers); do
+			load "$n"
+			keys_of "$n"
+			wg_up
+			[ "$WG" = unchanged ] || say "cg-$n: $WG"
+		done
+	fi
 	write_conf
 	[ "$RELOAD" = unchanged ] || say "engine: $RELOAD"
+	if native; then
+		# Once the engine took the configuration that does without them.
+		for n in $(routers); do
+			wg_native "$n"
+			[ "$WG" = unchanged ] || say "cg-$n: $WG"
+		done
+	fi
 	nat_apply
 }
 
@@ -953,10 +1061,18 @@ cmd_add() {
 		wg_down "$old"
 		say "router $old renamed to $C_NAME"
 	fi
-	wg_up
+	if native; then
+		wg_native "$C_NAME"
+	else
+		wg_up
+	fi
 	behind_nat
 	nat_apply
-	say "router $C_NAME: tunnel address $C_ADDR (the router's LuCI shows the same, VPS tab), WireGuard 127.0.0.1:$((WG_PORT_BASE + C_SLOT)) (cg-$C_NAME, $WG)"
+	if native; then
+		say "router $C_NAME: tunnel address $C_ADDR (the router's LuCI shows the same, VPS tab), through the engine's TUN $TUN_DEV (tunnel = native: the router needs \"Tunnel mode: native\" too)"
+	else
+		say "router $C_NAME: tunnel address $C_ADDR (the router's LuCI shows the same, VPS tab), WireGuard 127.0.0.1:$((WG_PORT_BASE + C_SLOT)) (cg-$C_NAME, $WG)"
+	fi
 	say "this server: $(ip -o addr show scope global 2>/dev/null | awk '{ sub(/\/.*/, "", $4); printf "%s ", $4 }')port $CENGARDE_PORT"
 	say "engine: $RELOAD"
 }
@@ -994,6 +1110,9 @@ cmd_list() {
 	done
 	[ "$(nrouters)" -gt 0 ] || say "no router (cengarde-vps-setup add NAME)"
 	[ ! -e "$NAT_STATE/applied" ] || say "IP pass: $(pass_view)"
+	if native; then
+		say "tunnels: native, the engine's TUN $TUN_DEV, not encrypted (cengarde-vps-setup tunnel wireguard)"
+	fi
 	if tunnel_v6; then
 		say "IPv6 through the tunnels: on (cengarde-vps-setup ipv6 off)"
 	elif [ "$TUNNEL_IPV6" = yes ]; then
@@ -1354,6 +1473,31 @@ cmd_ipv6() {
 	fi
 }
 
+# cmd_tunnel wireguard|native: TUNNEL in nat.conf, and the engine, the
+# routers' WireGuard interfaces, its unit and the firewall to match.
+cmd_tunnel() {
+	local v
+	case ${1:-} in
+	wireguard | native) v=$1 ;;
+	*) die "usage: tunnel wireguard|native" ;;
+	esac
+	check_proto
+	lock
+	if [ "$TUNNEL" = "$v" ]; then
+		say "the tunnels are $v already"
+		return 0
+	fi
+	keep "$CONF"
+	set_conf TUNNEL "$v"
+	regen
+	kept
+	if native; then
+		say "the routers' tunnels go through the engine's TUN $TUN_DEV now, authenticated but NOT encrypted; on each router choose \"Tunnel mode: native\" in LuCI (Tunnel tab), or: uci set cengarde.main.tunnel_mode=native && uci commit cengarde && /etc/init.d/cengarde reload"
+	else
+		say "the routers' tunnels are WireGuard again (cg-NAME each); on each router choose \"Tunnel mode: WireGuard\" in LuCI, or: uci set cengarde.main.tunnel_mode=wireguard && uci commit cengarde && /etc/init.d/cengarde reload"
+	fi
+}
+
 cmd_refresh() {
 	check_proto
 	lock
@@ -1445,6 +1589,10 @@ forward)
 ipv6)
 	shift
 	cmd_ipv6 "$@"
+	;;
+tunnel)
+	shift
+	cmd_tunnel "$@"
 	;;
 refresh) cmd_refresh ;;
 purge)
