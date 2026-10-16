@@ -230,8 +230,13 @@
   - **Siguiente:** el driver arma buffers de recepción de 16–48 KB y le
     programa al chip cuánto agrupar (`USB_RX_EARLY_SIZE`); el de Windows
     usa 6 URB de recepción. Probar el driver con `rx_buf_sz` de 16 KB y la
-    agrupación acorde. Mientras tanto, la LAN de la Pi va por USB 2.0
-    (~300 Mbit/s), con cualquiera de los dos adaptadores.
+    agrupación acorde. **Probado el mismo día: no sirvió.** Con el driver
+    de Realtek recompilado con 6 URB de recepción en vuelo (en vez de 10)
+    y buffers de 16 KB también en USB 3 (en vez de 32), el umbral es el
+    mismo: UDP de 1400 B pasa a 5 Mbit/s y cae a 50 con `-75`. Los mismos
+    buffers que en USB 2.0, donde anda; el desborde lo pone el VL805.
+    Mientras tanto, la LAN de la Pi va por USB 2.0 (~300 Mbit/s), con
+    cualquiera de los dos adaptadores.
 
 ## Qué hacemos con esto
 
