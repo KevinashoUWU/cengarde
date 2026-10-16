@@ -692,8 +692,9 @@ static void test_capacity_drain(void)
 	CHECK(near(cg_cap_bps(&s.l), 8, 0.1)); /* back to before */
 }
 
-/* split_predict: the queue in a second only for a rise that lasts; under
- * the swings of a cellular delay it stays the queue now. */
+/* split_predict: the queue in a second only while predict.h is engaged
+ * (its own tests: test_predict.c); under the swings of a cellular delay it
+ * stays the queue now, on a queue growing as the interferer's it leads. */
 static void test_capacity_predict(void)
 {
 	struct cg_cap_link l;
@@ -712,12 +713,10 @@ static void test_capacity_predict(void)
 		h.owd = 30000 + (seed >> 8) % (30 * MS + 1);
 		h.fresh_until_ms = t + 3000;
 		cg_cap_tick(&l, t, 0, 0, 0, 0, &h, &CFG);
-		CHECK(cg_cap_pred_us(&l) >= l.queue_us);
 		CHECK(cg_cap_split_q(&l, 0) == l.queue_us);
-		if (k > 700)
-			on += cg_cap_pred_us(&l) > l.queue_us;
+		on += cg_cap_pred_us(&l) != l.queue_us;
 	}
-	CHECK(on < 53); /* under 1 % */
+	CHECK_EQ(on, 0);
 	/* a queue growing 40 ms a second (the field's 20 Mbit/s upload) */
 	for (int k = 0; k < 40; k++) {
 		t += 100;
@@ -725,16 +724,16 @@ static void test_capacity_predict(void)
 		h.owd = 30000 + (seed >> 8) % (20 * MS + 1) + (uint32_t)k * 4 * MS;
 		h.fresh_until_ms = t + 3000;
 		cg_cap_tick(&l, t, 0, 0, 0, 0, &h, &CFG);
-		CHECK(cg_cap_pred_us(&l) <= l.queue_us + CG_CAP_PRED_MAX_US);
+		CHECK(cg_cap_pred_us(&l) <= l.queue_us + CG_PRED_MAX_US);
 		if (at < 0 && cg_cap_pred_us(&l) > l.queue_us)
 			at = k + 1;
 	}
-	CHECK(at > 0 && at <= 10);
-	CHECK(cg_cap_split_q(&l, 1) == cg_cap_pred_us(&l));
-	/* the clamp */
-	l.s1 = 10 * 1000 * 1000;
-	l.rise_n = CG_CAP_PRED_N;
-	CHECK(cg_cap_pred_us(&l) == l.queue_us + CG_CAP_PRED_MAX_US);
+	CHECK(at > 0 && at <= 15);
+	CHECK(l.pred.on && cg_cap_split_q(&l, 1) == l.queue_us + l.pred.add_us);
+	/* a counter reset keeps it */
+	cg_cap_tick(&l, t, t, 100, 1000, 1000 * 1000, NULL, &CFG);
+	cg_cap_tick(&l, t + 100, t + 100, 0, 10, 10000, NULL, &CFG);
+	CHECK(l.pred.on);
 	/* in the weights: a link whose queue is short but rising fast is not
 	 * probed with predict */
 	{
@@ -745,13 +744,54 @@ static void test_capacity_predict(void)
 			cg_cap_reset(&ls[i]);
 		measured(&ls[0], 20, 2);
 		measured(&ls[1], 20, 2);
-		ls[1].have_s1 = 1;
-		ls[1].s1 = 40 * MS;
-		ls[1].rise_n = CG_CAP_PRED_N;
+		ls[1].pred.on = 1;
+		ls[1].pred.add_us = 40 * MS;
 		cg_cap_weights(ls, 0xfffc, NULL, 10 * MS, 0, w);
 		CHECK(w[0] == w[1]);
 		cg_cap_weights(ls, 0xfffc, NULL, 10 * MS, 1, w);
 		CHECK(w[0] == CG_GOV_MAX && w[1] == 761); /* 20 against 25 + 20 / 16 */
+	}
+}
+
+/* No more share flips with split_predict: two links of 20 Mbit/s, link 1's
+ * queue oscillating (0-50 ms over 2-6 s, plus 20 ms of swing) for 10
+ * minutes; its weight changes as often with predict as without, give or
+ * take one step up and one down per engagement. */
+static void test_capacity_predict_flips(void)
+{
+	static const int periods[] = { 20, 40, 60 };
+
+	for (unsigned i = 0; i < sizeof(periods) / sizeof(periods[0]); i++) {
+		struct cg_cap_link ls[CG_MAX_LINKS];
+		struct cg_hlink h;
+		uint16_t w0[CG_MAX_LINKS], w1[CG_MAX_LINKS];
+		uint16_t p0 = 0, p1 = 0;
+		uint32_t seed = 99 + i, f0 = 0, f1 = 0;
+		uint64_t t = 1000;
+
+		for (unsigned k = 0; k < CG_MAX_LINKS; k++)
+			cg_cap_reset(&ls[k]);
+		measured(&ls[0], 20, 2);
+		measured(&ls[1], 20, 2);
+		memset(&h, 0, sizeof(h));
+		h.have_owd = 1;
+		for (int k = 0; k < 6000; k++) {
+			int ph = k % periods[i], half = periods[i] / 2;
+			uint32_t tri = (uint32_t)(ph < half ? 50 * (int)MS * ph / half : 50 * (int)MS * (periods[i] - ph) / half);
+
+			t += 100;
+			seed = seed * 1103515245u + 12345u;
+			h.owd = 30000 + tri + (seed >> 8) % (20 * MS + 1);
+			h.fresh_until_ms = t + 3000;
+			cg_cap_tick(&ls[1], t, 0, 0, 0, 0, &h, &CFG);
+			cg_cap_weights(ls, 0xfffc, NULL, 10 * MS, 0, w0);
+			cg_cap_weights(ls, 0xfffc, NULL, 10 * MS, 1, w1);
+			f0 += k && w0[1] != p0;
+			f1 += k && w1[1] != p1;
+			p0 = w0[1];
+			p1 = w1[1];
+		}
+		CHECK(f1 <= f0 + 2 * ls[1].pred.engaged);
 	}
 }
 
@@ -762,6 +802,7 @@ void test_capacity(void)
 	test_capacity_backoff();
 	test_capacity_drain();
 	test_capacity_predict();
+	test_capacity_predict_flips();
 	test_capacity_short();
 	test_capacity_total();
 	test_capacity_shapes();

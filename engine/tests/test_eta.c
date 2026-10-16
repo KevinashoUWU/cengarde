@@ -119,16 +119,15 @@ static void test_eta_feed(void)
 	cg_cap_eta(&e, l, 0x7, 10000, 0, 1000);
 	CHECK(e.l[0].bps == 30000000 + 7500000 + 1875000);
 	CHECK(e.l[1].bps == 8000000); /* its queue unknown: as measured */
-	/* split_predict: link 0's queue rising 40 ms a second, for long enough:
+	/* split_predict: link 0's queue rising 40 ms a second, engaged (predict.h):
 	 * not probed, and its backlog is the queue in a second (42 ms) */
-	l[0].have_s1 = 1;
-	l[0].s1 = 40000;
-	l[0].rise_n = CG_CAP_PRED_N;
+	l[0].pred.on = 1;
+	l[0].pred.add_us = 40000;
 	cg_cap_eta(&e, l, 0x7, 10000, 0, 1000); /* off: as before */
 	CHECK(e.l[0].bps == 30000000 + 7500000 + 1875000 && e.l[0].backlog == (30000000ull + 9375000) * 2000);
 	cg_cap_eta(&e, l, 0x7, 10000, 1, 1000);
 	CHECK(e.l[0].bps == 30000000 && e.l[0].backlog == 30000000ull * 42000);
-	l[0].rise_n = CG_CAP_PRED_N - 1; /* not sustained: the queue now */
+	l[0].pred.on = 0; /* not engaged: the queue now */
 	cg_cap_eta(&e, l, 0x7, 10000, 1, 1000);
 	CHECK(e.l[0].backlog == (30000000ull + 9375000) * 2000);
 }
