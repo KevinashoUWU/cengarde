@@ -1,5 +1,5 @@
 # Included at the start of firewall4's srcnat chain (the include section
 # firewall.cengarde_nat66, which cengarde-setup keeps while tunnel_ipv6 is on):
 # the LAN only has a ULA prefix, so its IPv6 enters the tunnel behind the
-# router's own address in it.
-meta nfproto ipv6 oifname "wgcg" masquerade comment "!cengarde: IPv6 into the tunnel"
+# router's own address in it, on wgcg (WireGuard) or cg0 (tunnel_mode native).
+meta nfproto ipv6 oifname { "wgcg", "cg0" } masquerade comment "!cengarde: IPv6 into the tunnel"

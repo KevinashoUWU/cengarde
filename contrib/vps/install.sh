@@ -152,6 +152,7 @@ if [ ! -e "$R/etc/cengarde/nat.conf" ]; then
 		#                         (cengarde-vps-setup forward add NAME tcp:443)
 		#FORWARD_MAX_PORTS=1024   ports a router may forward with its own rules
 		#TUNNEL_IPV6=no           the routers' IPv6 through the tunnels (cengarde-vps-setup ipv6 on)
+		#TUNNEL=wireguard         or native: the engine's TUN, not encrypted (cengarde-vps-setup tunnel native)
 		#FORWARD_RESERVED=""      more ports never forwarded: "udp:5000-5010"
 		#FORWARD_AUTO_RESERVE=yes this server's own listeners and Docker ports
 		#FORWARD_UNRESERVE=""     forwarded even though something listens there

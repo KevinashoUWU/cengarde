@@ -200,7 +200,12 @@ return view.extend({
 			service = badge(_('stopped'), '#c33');
 		rows.push([ _('Service'), service ]);
 
-		if (st.tunnel.handshake > 0) {
+		if (st.tunnel_mode == 'native') {
+			/* No handshakes: connected while some uplink is live. */
+			const live = e && Array.isArray(e.links) && e.links.some(function(l) { return l.state == 'live'; });
+
+			tunnel = live ? badge(_('connected'), '#393') : (st.enabled ? badge(_('waiting for the VPS'), '#d80') : '-');
+		} else if (st.tunnel.handshake > 0) {
 			const ago = st.tunnel.now - st.tunnel.handshake;
 
 			/* Older than the boot, or in the future: the clock was set after
@@ -214,7 +219,7 @@ return view.extend({
 		} else {
 			tunnel = st.enabled ? badge(_('waiting for the VPS'), '#d80') : '-';
 		}
-		rows.push([ _('WireGuard tunnel'), tunnel ]);
+		rows.push([ st.tunnel_mode == 'native' ? _('Native tunnel (not encrypted)') : _('WireGuard tunnel'), tunnel ]);
 
 		if (st.tunnel_addr)
 			rows.push([ _('Address in the tunnel'), st.tunnel_addr ]);

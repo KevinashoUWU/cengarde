@@ -7,6 +7,10 @@
 # - cengarde's UDP port open; WireGuard's ports (one per router, from
 #   WG_PORT_BASE) answer only on lo, where cengarde talks to them, in IPv4
 #   and, when the box has it, IPv6;
+# - the tunnels are the routers' WireGuard interfaces, cg-* (TUNNEL=wireguard,
+#   the default), or with TUNNEL=native the engine's one TUN for all of
+#   them, cg0, whose routes to each router's address the engine keeps; the
+#   rules below are the same for both, with cg0 in place of cg-*;
 # - nothing from the tunnels (cg-*) reaches 169.254.0.0/16, the provider's
 #   metadata service, whose user data hold the pairing secret;
 # - the routers reach the Internet through the server (MASQUERADE), and
@@ -82,7 +86,8 @@ FORWARD_UNRESERVE=    # forwarded even though something listens there
 FORWARD_MAX_PORTS=1024
 FORWARD_SKIP_SRC=     # sources never forwarded: "192.168.1.0/24"
 TUNNEL_IPV6=no        # the routers' IPv6 through the tunnels (yes or no)
-PUB_IF=               # optional: the only interface forwarded and masqueraded
+TUNNEL=wireguard      # wireguard (cg-NAME each) or native (one TUN, cg0)
+PUB_IF=              # optional: the only interface forwarded and masqueraded
 # shellcheck disable=SC2034 # for cengarde-vps-setup
 ROUTER_NAME=router
 CLIENT_IP=
@@ -166,6 +171,13 @@ if ! is_port "$PASS_LO" || ! is_port "$PASS_HI" || [ "$PASS_LO" -gt "$PASS_HI" ]
 fi
 case $PUB_IF in *[!A-Za-z0-9._@+-]*) die "PUB_IF in $CONF: not an interface name" ;; esac
 case $TUNNEL_IPV6 in yes | no) ;; *) die "TUNNEL_IPV6 in $CONF: yes or no" ;; esac
+# The routers' tunnels as iptables names them: one WireGuard interface each
+# (cg-NAME), or the engine's one TUN for all of them (tunnel = native).
+case $TUNNEL in
+wireguard) TUN_IF=cg-+ NFT_IF='cg-*' ;;
+native) TUN_IF=cg0 NFT_IF=cg0 ;;
+*) die "TUNNEL in $CONF: wireguard or native" ;;
+esac
 [ ${#PUB_IF} -le 15 ] || die "PUB_IF in $CONF: not an interface name"
 SKIP=
 for c in $FORWARD_SKIP_SRC; do
@@ -546,11 +558,11 @@ render4() {
 		:CG_FWD - [0:0]
 		-A CG_IN -p udp --dport $CENGARDE_PORT -j ACCEPT
 		-A CG_IN ! -i lo -p udp --dport $WG_PORT_BASE:$WG_PORT_LAST -j DROP
-		-A CG_FWD -i cg-+ -d 169.254.0.0/16 -j REJECT --reject-with icmp-net-prohibited
-		-A CG_FWD -o cg-+ -m conntrack --ctstate DNAT -j ACCEPT
-		-A CG_FWD -i cg-+ -o cg-+ -j DROP
-		-A CG_FWD -i cg-+ -j ACCEPT
-		-A CG_FWD -o cg-+ -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+		-A CG_FWD -i $TUN_IF -d 169.254.0.0/16 -j REJECT --reject-with icmp-net-prohibited
+		-A CG_FWD -o $TUN_IF -m conntrack --ctstate DNAT -j ACCEPT
+		-A CG_FWD -i $TUN_IF -o $TUN_IF -j DROP
+		-A CG_FWD -i $TUN_IF -j ACCEPT
+		-A CG_FWD -o $TUN_IF -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
 		COMMIT
 		*nat
 		:CG_PRE - [0:0]
@@ -564,11 +576,11 @@ render4() {
 		dnat) echo "-A CG_PRE -p $p --dport $(range "$lo" "$hi") -j DNAT --to-destination $(target "$lo" "$hi" "$a" "$to")" ;;
 		esac
 	done <"$1"
-	echo "-A CG_POST -s $TUNNEL_RANGE -o cg-+ -m conntrack --ctstate DNAT -j SNAT --to-source $SERVER_ADDR"
+	echo "-A CG_POST -s $TUNNEL_RANGE -o $TUN_IF -m conntrack --ctstate DNAT -j SNAT --to-source $SERVER_ADDR"
 	if [ -n "$PUB_IF" ]; then
 		echo "-A CG_POST -s $TUNNEL_RANGE -o $PUB_IF -j MASQUERADE"
 	else
-		echo "-A CG_POST -s $TUNNEL_RANGE ! -o cg-+ -j MASQUERADE"
+		echo "-A CG_POST -s $TUNNEL_RANGE ! -o $TUN_IF -j MASQUERADE"
 	fi
 	echo COMMIT
 }
@@ -583,9 +595,9 @@ render6() {
 	EOF
 	if [ "$TUNNEL_IPV6" = yes ]; then
 		cat <<-EOF
-			-A CG_FWD -i cg-+ -o cg-+ -j DROP
-			-A CG_FWD -i cg-+ -j ACCEPT
-			-A CG_FWD -o cg-+ -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+			-A CG_FWD -i $TUN_IF -o $TUN_IF -j DROP
+			-A CG_FWD -i $TUN_IF -j ACCEPT
+			-A CG_FWD -o $TUN_IF -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
 			COMMIT
 			*nat
 			:CG_POST - [0:0]
@@ -593,7 +605,7 @@ render6() {
 		if [ -n "$PUB_IF" ]; then
 			echo "-A CG_POST -s $TUNNEL_RANGE6 -o $PUB_IF -j MASQUERADE"
 		else
-			echo "-A CG_POST -s $TUNNEL_RANGE6 ! -o cg-+ -j MASQUERADE"
+			echo "-A CG_POST -s $TUNNEL_RANGE6 ! -o $TUN_IF -j MASQUERADE"
 		fi
 	fi
 	echo COMMIT
@@ -605,7 +617,7 @@ jumps4() {
 	echo "filter FORWARD -j CG_FWD"
 	if [ -n "$PUB_IF" ]; then
 		echo "nat PREROUTING -i $PUB_IF -m addrtype --dst-type LOCAL -j CG_PRE"
-		echo "nat PREROUTING -i cg-+ -m addrtype --dst-type LOCAL -j CG_PRE"
+		echo "nat PREROUTING -i $TUN_IF -m addrtype --dst-type LOCAL -j CG_PRE"
 	else
 		echo "nat PREROUTING -m addrtype --dst-type LOCAL -j CG_PRE"
 	fi
@@ -693,7 +705,7 @@ v6_forwarding() {
 	local f n
 	for f in /proc/sys/net/ipv6/conf/*/accept_ra; do
 		n=${f%/accept_ra}
-		case ${n##*/} in all | lo | cg-*) continue ;; esac
+		case ${n##*/} in all | lo | cg-* | cg0) continue ;; esac
 		if [ "$(cat "$f" 2>/dev/null)" = 1 ]; then
 			echo 2 >"$f" || return 1
 		fi
@@ -940,11 +952,11 @@ foreign() {
 				warn "  udp dport $CENGARDE_PORT accept"
 				;;
 			forward)
-				case $v in *'"cg-*"'*) continue ;; esac
+				case $v in *"\"$NFT_IF\""*) continue ;; esac
 				warn "nftables chain $fam $tab $ch drops what it does not accept on the forward hook, and iptables cannot override it: add to it"
-				warn '  iifname "cg-*" accept'
-				warn '  oifname "cg-*" ct state established,related accept'
-				warn '  oifname "cg-*" ct status dnat accept'
+				warn "  iifname \"$NFT_IF\" accept"
+				warn "  oifname \"$NFT_IF\" ct state established,related accept"
+				warn "  oifname \"$NFT_IF\" ct status dnat accept"
 				;;
 			esac
 		done
@@ -1034,6 +1046,11 @@ cmd_status() {
 		say "nothing forwarded"
 	fi
 	say "reserved: $(reserved_tokens | tr '\n' ' ')"
+	if [ "$TUNNEL" = native ]; then
+		say "the tunnels: the engine's TUN, $TUN_IF (TUNNEL=native; cengarde-vps-setup tunnel wireguard)"
+	else
+		say "the tunnels: a WireGuard interface per router, cg-NAME (TUNNEL=wireguard)"
+	fi
 	if [ "$TUNNEL_IPV6" = no ]; then
 		say "the routers' IPv6: not through the tunnels (TUNNEL_IPV6=no; cengarde-vps-setup ipv6 on)"
 	elif ! have_v6; then

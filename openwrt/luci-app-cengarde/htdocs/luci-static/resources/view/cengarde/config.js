@@ -57,9 +57,10 @@ function checkSplitWeight(entry, uplinks, others) {
 // Same substitutions as "cengarde-setup cloud-config", on the values in the
 // form, so the text follows unsaved changes. Without an address (a new secret
 // that is not saved yet) its placeholder stays, and the VPS derives it.
-function cloudConfig(template, secret, port, ipPass, ipv6, name, addr) {
+function cloudConfig(template, secret, port, ipPass, ipv6, name, addr, mode) {
 	return template
 		.replace(/^(\s+)REPLACE_SECRET$/m, '$1' + (secret || 'REPLACE_SECRET'))
+		.replace(/^(\s*TUNNEL=).*$/m, '$1' + (mode == 'native' ? 'native' : 'wireguard'))
 		.replace(/^(\s*CENGARDE_PORT=).*$/m, '$1' + (port || '65500'))
 		.replace(/^(\s*PASSTHROUGH=).*$/m, '$1' + (ipPass == '1' ? 'yes' : 'no'))
 		.replace(/^(\s*TUNNEL_IPV6=).*$/m, '$1' + (ipv6 == '1' ? 'yes' : 'no'))
@@ -134,7 +135,8 @@ return view.extend({
 			if (textarea)
 				textarea.value = cloudConfig(template, value(m, 'secret'), value(m, 'port'),
 					on('ip_pass', '0') && on('tunnel', '1') && on('route_all', '1') ? '1' : '0',
-					on('tunnel_ipv6', '0') && on('tunnel', '1') && on('route_all', '1') ? '1' : '0', name, addr);
+					on('tunnel_ipv6', '0') && on('tunnel', '1') && on('route_all', '1') ? '1' : '0', name, addr,
+					on('tunnel', '1') ? value(m, 'tunnel_mode') : 'wireguard');
 			if (addCommand) {
 				const ready = addr != null && isName(name);
 
@@ -197,7 +199,7 @@ return view.extend({
 			const companion = uci.get('network', value, 'cengarde_owned') == '1' ||
 				String(uci.get('network', value, 'device') || '').charAt(0) == '@';
 
-			return value != 'lan' && value != 'loopback' && value != 'wgcg' && (chosen || !companion);
+			return value != 'lan' && value != 'loopback' && value != 'wgcg' && value != 'cg0' && (chosen || !companion);
 		};
 
 		o = s.taboption('vps', form.Value, 'secret', _('Pairing secret'),
@@ -326,6 +328,14 @@ return view.extend({
 			_('Creates the interface wgcg with the keys derived from the secret and this router\'s address in the tunnel (VPS tab), in the wan firewall zone. Off: set up WireGuard yourself, cengarde only listens on 127.0.0.1 at the VPS port.'));
 		o.default = '1';
 		o.rmempty = false;
+		o.onchange = refresh;
+
+		o = s.taboption('tunnel', form.ListValue, 'tunnel_mode', _('Tunnel mode'),
+			_('WireGuard: the tunnel goes through the interface wgcg, encrypted. Native (experimental): no WireGuard, cengarde carries the packets itself through the interface cg0, with the same addresses and routes; it is authenticated (nobody can inject or replay packets) but NOT encrypted, so the carriers see the traffic. The VPS has to be in the same mode, for every router it serves: "sudo cengarde-vps-setup tunnel native" (or wireguard to go back). A change restarts the engine.'));
+		o.value('wireguard', _('WireGuard'));
+		o.value('native', _('Native (experimental, not encrypted)'));
+		o.default = 'wireguard';
+		o.depends('tunnel', '1');
 		o.onchange = refresh;
 
 		o = s.taboption('tunnel', form.Flag, 'route_all', _('Route all traffic through the tunnel'),

@@ -395,6 +395,19 @@ for (const [lang, tr] of [ [ 'en', english ], [ 'es', spanish ] ]) {
 			assert.ok(!r[6].includes(OUT) && !r[6].includes(COPIES), `${lang} ${how}: the others say nothing`);
 	}
 
+	// native mode: no handshake row, the native tunnel's instead
+	const summary = (st) => {
+		const n = E('div');
+
+		v.update(n, st);
+		return find(n, (x) => x.tag == 'tr').map((r) => r.children.map(text));
+	};
+	const NATIVE = L('Native tunnel (not encrypted)', 'Túnel nativo (sin cifrar)'), WG = L('WireGuard tunnel', 'Túnel WireGuard');
+	const nat = summary({ ...base({ links: [ link('up1', null) ] }), tunnel_mode: 'native' });
+	assert.ok(nat.some((r) => r[0] == NATIVE) && !nat.some((r) => r[0] == WG), `${lang}: native mode names its tunnel: ${JSON.stringify(nat)}`);
+	const wgRows = summary(base({ links: [] }));
+	assert.ok(wgRows.some((r) => r[0] == WG) && !wgRows.some((r) => r[0] == NATIVE), `${lang}: WireGuard mode as before`);
+
 	// the rest of the page is still there
 	const page = E('div');
 	v.update(page, base({ reorder }));

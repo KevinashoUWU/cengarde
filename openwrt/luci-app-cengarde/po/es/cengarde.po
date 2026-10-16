@@ -117,6 +117,18 @@ msgstr "Gestionar el túnel WireGuard"
 msgid "Creates the interface wgcg with the keys derived from the secret and this router's address in the tunnel (VPS tab), in the wan firewall zone. Off: set up WireGuard yourself, cengarde only listens on 127.0.0.1 at the VPS port."
 msgstr "Crea la interfaz wgcg con las claves derivadas del secreto y la dirección de este router en el túnel (pestaña VPS), en la zona wan del cortafuegos. Desactivado: configuras WireGuard tú, y cengarde solo escucha en 127.0.0.1 en el puerto del VPS."
 
+msgid "Tunnel mode"
+msgstr "Modo del túnel"
+
+msgid "WireGuard: the tunnel goes through the interface wgcg, encrypted. Native (experimental): no WireGuard, cengarde carries the packets itself through the interface cg0, with the same addresses and routes; it is authenticated (nobody can inject or replay packets) but NOT encrypted, so the carriers see the traffic. The VPS has to be in the same mode, for every router it serves: \"sudo cengarde-vps-setup tunnel native\" (or wireguard to go back). A change restarts the engine."
+msgstr "WireGuard: el túnel va por la interfaz wgcg, cifrado. Nativo (experimental): sin WireGuard, cengarde lleva él mismo los paquetes por la interfaz cg0, con las mismas direcciones y rutas; va autenticado (nadie puede inyectar ni repetir paquetes) pero NO cifrado, así que las operadoras ven el tráfico. El VPS tiene que estar en el mismo modo, para todos los routers que atiende: \"sudo cengarde-vps-setup tunnel native\" (o wireguard para volver). Un cambio reinicia el motor."
+
+msgid "WireGuard"
+msgstr "WireGuard"
+
+msgid "Native (experimental, not encrypted)"
+msgstr "Nativo (experimental, sin cifrar)"
+
 msgid "Route all traffic through the tunnel"
 msgstr "Enrutar todo el tráfico por el túnel"
 
@@ -438,6 +450,9 @@ msgstr "detenido"
 msgid "Service"
 msgstr "Servicio"
 
+msgid "connected"
+msgstr "conectado"
+
 msgid "handshake before the clock was set"
 msgstr "handshake anterior al ajuste de la hora"
 
@@ -447,11 +462,11 @@ msgstr "El router ajustó su hora después de este handshake: el siguiente, en u
 msgid "no handshake for %s"
 msgstr "sin handshake desde %s"
 
-msgid "connected"
-msgstr "conectado"
-
 msgid "handshake %s"
 msgstr "handshake %s"
+
+msgid "Native tunnel (not encrypted)"
+msgstr "Túnel nativo (sin cifrar)"
 
 msgid "WireGuard tunnel"
 msgstr "Túnel WireGuard"

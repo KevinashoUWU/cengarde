@@ -19,6 +19,10 @@
 #   the hairpin accept before the tunnels' DROP, and its SNAT; IPv6, and
 #   with TUNNEL_IPV6=yes the routers' IPv6 masqueraded (NAT66), without and
 #   with PUB_IF, and its jumps; a TUNNEL_IPV6 that is neither yes nor no;
+# - TUNNEL=native: the same rules with the engine's TUN, cg0, in place of
+#   the cg-* interfaces (IPv4 with two routers' forwarding, the jumps with
+#   and without PUB_IF, NAT66), and a TUNNEL that is neither wireguard nor
+#   native refused;
 # - a forward table with bad lines (fixtures/forward-bad): each skipped and
 #   logged by its number and reason, never its content; a table or IP pass
 #   file that is a symlink, a FIFO, someone else's or over 64 KiB: refused
@@ -345,6 +349,35 @@ check "it says so" err_has "TUNNEL_IPV6 in"
 root jumps
 printf 'PUB_IF="eth0;reboot"\n' >>"$R/etc/cengarde/nat.conf"
 check "a PUB_IF that is no interface name is refused" not nat rules 4
+
+say "TUNNEL=native: the engine's one TUN, cg0, in place of the cg-* interfaces"
+root native "TUNNEL=native
+FORWARD_FILE=$TMP/native/var/lib/cengarde/forward"
+cp "$FIX/forward-two-routers" "$R/var/lib/cengarde/forward"
+chown nobody "$R/var/lib/cengarde/forward"
+rules4 native "two routers' forwarding through cg0"
+check "no cg-* left" not sh -c 'printf "%s\n" "$1" | grep -q "cg-"' sh "$OUT"
+check "the same rules as with WireGuard, cg0 for cg-+" \
+	sh -c 'printf "%s\n" "$1" | sed "s/cg0/cg-+/g" | cmp -s - "$2"' sh "$OUT" "$GOLD/table.4"
+check "the routers not to each other, the hairpin's accept and SNAT, MASQUERADE out of anything but cg0" \
+	sh -c 'printf "%s\n" "$1" | grep -qx -- "-A CG_FWD -i cg0 -o cg0 -j DROP" &&
+		printf "%s\n" "$1" | grep -qx -- "-A CG_FWD -o cg0 -m conntrack --ctstate DNAT -j ACCEPT" &&
+		printf "%s\n" "$1" | grep -qx -- "-A CG_POST -s 10.79.0.0/16 -o cg0 -m conntrack --ctstate DNAT -j SNAT --to-source 10.79.0.1" &&
+		printf "%s\n" "$1" | grep -qx -- "-A CG_POST -s 10.79.0.0/16 ! -o cg0 -j MASQUERADE"' sh "$OUT"
+nat jumps 4
+check "jumps without PUB_IF: as with WireGuard" golden jumps.4
+root nativepub 'TUNNEL=native
+PUB_IF=eth0'
+nat jumps 4
+check "jumps with PUB_IF: from it and from cg0" golden jumps-native-pubif.4
+root native6 'TUNNEL=native
+TUNNEL_IPV6=yes'
+nat rules 6
+check "TUNNEL_IPV6=yes: the routers' IPv6 through cg0, masqueraded" golden rules-native-tunnel.6
+[ "$V6" = no ] || check "ip6tables-restore --test takes them" loads 6
+root nativebad 'TUNNEL=gre'
+check "a TUNNEL that is neither wireguard nor native is refused" not nat rules 4
+check "it says so" err_has "TUNNEL in"
 
 say "nat.conf"
 root conf
