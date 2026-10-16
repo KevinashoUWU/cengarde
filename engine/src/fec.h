@@ -10,12 +10,20 @@
  * more bytes; duplicating every packet costs three times more.
  *
  * The sender sends every DATA packet as it comes (no wait for the parity)
- * and adds it to the open group; the group closes, and its parity goes,
- * when it holds k packets (k: the links that carry, less the one for the
- * parity), when the next packet would go on a link it already holds or
- * would not follow it in sequence (a packet on several links needs none),
- * or at its deadline: at a low packet rate the deadline closes small
- * groups, at a high one they fill in a few ms.
+ * and adds it to the oldest open group that has nothing of its link yet;
+ * up to CG_FEC_OPEN groups are open at once, interleaved, and a group may
+ * take sequences up to CG_FEC_SPAN apart: the split sends runs of tens of
+ * packets on one link (a batch read from WireGuard goes where it arrives
+ * first), and groups of consecutive sequences closed with one packet each,
+ * a parity per packet, as many bytes as duplicating (story 013). A group
+ * closes, and its parity goes, when it holds k packets (k: the links that
+ * carry, less the one for the parity), when it would span more than
+ * CG_FEC_SPAN, when a packet finds every group open holding its link, or at
+ * its deadline: at a low packet rate the deadline closes small groups, at a
+ * high one they fill in a few ms. A packet on several links needs none,
+ * and a group closed with one packet sends none: its parity would be a
+ * copy, and when the split sends most on one link (88 % in the lab's
+ * lossy case) that was most groups (the rescue covers them).
  *
  * The receiver keeps a copy of the DATA it received lately (a ring by
  * sequence) and the parities it has not used; a group with all but one of
@@ -25,9 +33,11 @@
  * so the rescue only asks for what the parity cannot rebuild: two of a
  * group lost, or the parity itself.
  *
- * Parity payload (CG_T_FEC): a big-endian base sequence, the count n (1 to
- * CG_FEC_KMAX), the XOR of the n lengths (big-endian 16 bits), then the XOR
- * of the n payloads, each padded with zeros to the longest.
+ * Parity payload (CG_T_FEC): a big-endian base sequence (the group's
+ * first), the count n (1 to CG_FEC_KMAX), the XOR of the lengths
+ * (big-endian 16 bits), CG_FEC_KMAX - 1 big-endian 16-bit distances from
+ * the base, of the members after the first (the unused ones 0), then the
+ * XOR of the payloads, each padded with zeros to the longest.
  *
  * Pure: no clock, no I/O, no allocation (the caller owns the memory).
  *
@@ -39,35 +49,35 @@
 #include <string.h>
 
 #define CG_FEC_PLEN_MAX 2024 /* the largest DATA payload (engine.h's CG_MAX_PAYLOAD) */
-#define CG_FEC_HDR 7         /* base, n, lengths' XOR */
 #define CG_FEC_KMAX 15       /* packets in a group, at most */
-#define CG_FEC_RING 1024     /* DATA kept by the receiver: a power of two */
+#define CG_FEC_HDR (7 + 2 * (CG_FEC_KMAX - 1)) /* base, n, lengths' XOR, distances */
+#define CG_FEC_SPAN 512      /* a group's sequences, from its first: within this */
+#define CG_FEC_OPEN 32       /* groups the sender has open at once */
+#define CG_FEC_RING 1024     /* DATA kept by the receiver: a power of two, over CG_FEC_SPAN */
 #define CG_FEC_PAR 64        /* parities kept by the receiver */
 
 _Static_assert(!(CG_FEC_RING & (CG_FEC_RING - 1)), "CG_FEC_RING is a power of two");
+_Static_assert(CG_FEC_SPAN < CG_FEC_RING && CG_FEC_SPAN <= 65536, "a group fits the ring and 16-bit distances");
 
-/* The sender's open group. */
-struct cg_fec_tx {
-	uint32_t base;   /* its first sequence */
-	uint8_t n;       /* packets in it, 0: none open */
-	uint16_t mask;   /* the links they went on */
-	uint16_t lenx;   /* their lengths' XOR */
-	uint16_t maxlen; /* the longest */
-	uint64_t t0_us;  /* when its first packet went */
+/* One of the sender's open groups. */
+struct cg_fec_grp {
+	uint32_t base;              /* its first sequence */
+	uint16_t d[CG_FEC_KMAX];    /* its members' distances from base (d[0] = 0) */
+	uint8_t n;                  /* packets in it, 0: not open */
+	uint16_t mask;              /* the links they went on */
+	uint16_t lenx;              /* their lengths' XOR */
+	uint16_t maxlen;            /* the longest */
+	uint64_t t0_us;             /* when its first packet went */
 	uint8_t x[CG_FEC_PLEN_MAX];
 };
 
-/* Whether a packet seq going on link alone (-1: on several) cannot join
- * the open group, which must close first. */
-static inline int cg_fec_tx_breaks(const struct cg_fec_tx *g, uint32_t seq, int link)
-{
-	return g->n && (link < 0 || link > 15 || (g->mask >> link & 1) || seq != g->base + g->n);
-}
+/* The sender: its open groups. */
+struct cg_fec_tx {
+	struct cg_fec_grp g[CG_FEC_OPEN];
+};
 
-/* Adds a packet (seq, on link alone, len bytes at p) to the group, opening
- * one at now_us if none is; the caller closed it first if it breaks it. */
-static inline void cg_fec_tx_add(struct cg_fec_tx *g, uint32_t seq, int link, const uint8_t *p, uint16_t len,
-				 uint64_t now_us)
+static inline void cg_fec_grp_add(struct cg_fec_grp *g, uint32_t seq, int link, const uint8_t *p, uint16_t len,
+				  uint64_t now_us)
 {
 	if (!g->n) {
 		g->base = seq;
@@ -85,40 +95,109 @@ static inline void cg_fec_tx_add(struct cg_fec_tx *g, uint32_t seq, int link, co
 	for (uint16_t i = 0; i < len; i++)
 		g->x[i] ^= p[i];
 	g->lenx ^= len;
+	g->d[g->n] = (uint16_t)(seq - g->base);
 	g->mask |= (uint16_t)(1u << link);
 	g->n++;
 }
 
-/* Whether the open group is due at now_us: deadline_us after its first
- * packet. */
-static inline int cg_fec_tx_due(const struct cg_fec_tx *g, uint64_t now_us, uint32_t deadline_us)
+/* Closes group g: its parity payload into out (at least CG_FEC_HDR +
+ * CG_FEC_PLEN_MAX bytes); returns its length, 0 if it was not open. */
+static inline unsigned cg_fec_grp_close(struct cg_fec_grp *g, uint8_t *out)
 {
-	return g->n && now_us - g->t0_us >= deadline_us;
-}
-
-/* Closes the open group: its parity payload into out (at least CG_FEC_HDR
- * + CG_FEC_PLEN_MAX bytes); returns its length, 0 if none was open. */
-static inline unsigned cg_fec_tx_close(struct cg_fec_tx *g, uint8_t *out)
-{
-	unsigned n = g->n;
-
-	if (!n)
+	if (!g->n)
 		return 0;
 	out[0] = (uint8_t)(g->base >> 24);
 	out[1] = (uint8_t)(g->base >> 16);
 	out[2] = (uint8_t)(g->base >> 8);
 	out[3] = (uint8_t)g->base;
-	out[4] = (uint8_t)n;
+	out[4] = g->n;
 	out[5] = (uint8_t)(g->lenx >> 8);
 	out[6] = (uint8_t)g->lenx;
+	for (unsigned j = 1; j < CG_FEC_KMAX; j++) {
+		uint16_t d = j < g->n ? g->d[j] : 0;
+
+		out[7 + 2 * (j - 1)] = (uint8_t)(d >> 8);
+		out[8 + 2 * (j - 1)] = (uint8_t)d;
+	}
 	memcpy(out + CG_FEC_HDR, g->x, g->maxlen);
 	g->n = 0;
 	return CG_FEC_HDR + g->maxlen;
 }
 
+/* The open group that must close before a packet seq can go anywhere (it
+ * would span more than CG_FEC_SPAN), or the oldest open when every slot is
+ * open and none takes link; -1: none. Call until -1, closing each. */
+static inline int cg_fec_tx_evict(const struct cg_fec_tx *t, uint32_t seq, int link)
+{
+	int old = -1, room = 0;
+
+	for (int i = 0; i < CG_FEC_OPEN; i++) {
+		const struct cg_fec_grp *g = &t->g[i];
+
+		if (!g->n) {
+			room = 1;
+			continue;
+		}
+		if (seq - g->base >= CG_FEC_SPAN)
+			return i;
+		if (!(g->mask >> link & 1))
+			room = 1;
+		if (old < 0 || g->t0_us < t->g[old].t0_us)
+			old = i;
+	}
+	return room ? -1 : old;
+}
+
+/* Adds a packet (seq, on link alone, len bytes at p) at now_us to the oldest
+ * open group without link, or a new one (after cg_fec_tx_evict found
+ * nothing); returns its group, to close once it holds k. */
+static inline int cg_fec_tx_add(struct cg_fec_tx *t, uint32_t seq, int link, const uint8_t *p, uint16_t len,
+				uint64_t now_us)
+{
+	int best = -1, fresh = -1;
+
+	for (int i = 0; i < CG_FEC_OPEN; i++) {
+		const struct cg_fec_grp *g = &t->g[i];
+
+		if (!g->n) {
+			if (fresh < 0)
+				fresh = i;
+		} else if (!(g->mask >> link & 1) && (best < 0 || g->t0_us < t->g[best].t0_us)) {
+			best = i;
+		}
+	}
+	if (best < 0)
+		best = fresh;
+	cg_fec_grp_add(&t->g[best], seq, link, p, len, now_us);
+	return best;
+}
+
+/* An open group due at now_us (deadline_us after its first packet), -1:
+ * none. */
+static inline int cg_fec_tx_due(const struct cg_fec_tx *t, uint64_t now_us, uint32_t deadline_us)
+{
+	for (int i = 0; i < CG_FEC_OPEN; i++)
+		if (t->g[i].n && now_us - t->g[i].t0_us >= deadline_us)
+			return i;
+	return -1;
+}
+
+/* When the oldest open group is due (its first packet's time plus
+ * deadline_us); 0: none open. */
+static inline uint64_t cg_fec_tx_next_us(const struct cg_fec_tx *t, uint32_t deadline_us)
+{
+	uint64_t t0 = 0;
+
+	for (int i = 0; i < CG_FEC_OPEN; i++)
+		if (t->g[i].n && (!t0 || t->g[i].t0_us < t0))
+			t0 = t->g[i].t0_us;
+	return t0 ? t0 + deadline_us : 0;
+}
+
 /* A parity the receiver keeps until its group is whole or rebuilt. */
 struct cg_fec_par {
 	uint32_t base;
+	uint16_t d[CG_FEC_KMAX]; /* the members' distances from base */
 	uint8_t n;
 	uint8_t used;
 	uint16_t lenx;
@@ -147,12 +226,25 @@ static inline int cg_fec_rx_has(const struct cg_fec_rx *r, uint32_t seq)
 	return r->have[i] && r->seq[i] == seq;
 }
 
+/* Whether parity q covers seq. */
+static inline int cg_fec_par_has(const struct cg_fec_par *q, uint32_t seq)
+{
+	uint32_t d = seq - q->base;
+
+	if (d >= CG_FEC_SPAN)
+		return 0;
+	for (unsigned j = 0; j < q->n; j++)
+		if (q->d[j] == d)
+			return 1;
+	return 0;
+}
+
 /* The parity slot that covers seq, -1: none known. */
 static inline int cg_fec_rx_slot(const struct cg_fec_rx *r, uint32_t seq)
 {
 	int k = r->pidx[seq & (CG_FEC_RING - 1)] - 1;
 
-	if (k < 0 || !r->par[k].used || seq - r->par[k].base >= r->par[k].n)
+	if (k < 0 || !r->par[k].used || !cg_fec_par_has(&r->par[k], seq))
 		return -1;
 	return k;
 }
@@ -178,32 +270,41 @@ static inline int cg_fec_rx_put(struct cg_fec_rx *r, uint32_t seq, const uint8_t
 static inline int cg_fec_rx_parity(struct cg_fec_rx *r, const uint8_t *p, unsigned plen)
 {
 	struct cg_fec_par *q;
-	uint32_t base;
 	unsigned n, k;
 
 	if (plen < CG_FEC_HDR || plen > CG_FEC_HDR + CG_FEC_PLEN_MAX) {
 		r->bad++;
 		return -1;
 	}
-	base = (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3];
 	n = p[4];
 	if (!n || n > CG_FEC_KMAX) {
 		r->bad++;
 		return -1;
 	}
+	for (unsigned j = 1; j < n; j++) {
+		unsigned d = (unsigned)p[7 + 2 * (j - 1)] << 8 | p[8 + 2 * (j - 1)];
+
+		if (!d || d >= CG_FEC_SPAN) {
+			r->bad++;
+			return -1;
+		}
+	}
 	k = r->next++ % CG_FEC_PAR;
 	q = &r->par[k];
 	if (q->used)
 		r->unrecovered++;
-	q->base = base;
+	q->base = (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3];
 	q->n = (uint8_t)n;
 	q->lenx = (uint16_t)(p[5] << 8 | p[6]);
+	q->d[0] = 0;
+	for (unsigned j = 1; j < n; j++)
+		q->d[j] = (uint16_t)(p[7 + 2 * (j - 1)] << 8 | p[8 + 2 * (j - 1)]);
 	q->plen = (uint16_t)(plen - CG_FEC_HDR);
 	memcpy(q->x, p + CG_FEC_HDR, q->plen);
 	q->used = 1;
 	r->parities++;
 	for (unsigned j = 0; j < n; j++)
-		r->pidx[(base + j) & (CG_FEC_RING - 1)] = (uint8_t)(k + 1);
+		r->pidx[(q->base + q->d[j]) & (CG_FEC_RING - 1)] = (uint8_t)(k + 1);
 	return (int)k;
 }
 
@@ -223,8 +324,8 @@ static inline int cg_fec_rx_try(struct cg_fec_rx *r, int k, uint8_t *out, uint32
 		return -1;
 	q = &r->par[k];
 	for (unsigned j = 0; j < q->n; j++)
-		if (!cg_fec_rx_has(r, q->base + j)) {
-			miss = q->base + j;
+		if (!cg_fec_rx_has(r, q->base + q->d[j])) {
+			miss = q->base + q->d[j];
 			if (++nmiss > 1)
 				return 0;
 		}
@@ -236,7 +337,7 @@ static inline int cg_fec_rx_try(struct cg_fec_rx *r, int k, uint8_t *out, uint32
 	memcpy(out, q->x, q->plen);
 	memset(out + q->plen, 0, CG_FEC_PLEN_MAX - q->plen);
 	for (unsigned j = 0; j < q->n; j++) {
-		uint32_t s = q->base + j, i = s & (CG_FEC_RING - 1);
+		uint32_t s = q->base + q->d[j], i = s & (CG_FEC_RING - 1);
 		const uint8_t *m = r->mem + (size_t)i * CG_FEC_PLEN_MAX;
 
 		if (s == miss)
