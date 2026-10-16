@@ -988,6 +988,27 @@ de bajada (más de lo que da un enlace), y dos routers en un servidor, cada
 uno con su ruta, sin poder usar la dirección del otro. Sin límite en los
 veth, iperf3 pasa unos 2,5 Gbit/s en el PC del laboratorio (sin cifrar).
 
+**`tcp_aware` (`no`; `yes` o `no`), experimental, en el extremo que envía:**
+con el túnel nativo, el emisor marca `CG_F_FREE` (protocolo v6) los
+segmentos de TCP sin datos (ACK, SYN, FIN, RST) y las retransmisiones de
+TCP (`src/tcpfree.h`; en el estado, `tcp_free`: `control` y
+`retransmissions`). El reordenador del otro extremo entrega al instante
+los segmentos sin datos. Una retransmisión (marcada y con datos) **no** se
+adelanta: ocupa su lugar en la secuencia, como cualquier dato. Adelantada
+a lo retenido detrás de un hueco, el RACK de TCP daba por perdido todo lo
+enviado antes y lo reenviaba: en la red de pruebas, 135 veces las
+retransmisiones rápidas y 95 veces los DSACK de `tcp_aware = no`; en el
+laboratorio (`sudo bench/lab.sh tcpaware`), retenerla en su lugar las deja
+como sin `tcp_aware` (historia 014).
+
+- **`reorder_retx_release_ms` (0, apagado; 0–2000), experimental, en el
+  que recibe:** una retransmisión de TCP abandona los huecos anteriores a
+  ella cuyo paquete retenido se envió al menos ese tiempo antes que ella
+  (`lost.retx`), y sale en orden justo detrás. En el laboratorio no
+  conviene: donde el hueco es un paquete atrasado en un enlace lento (una
+  cola que salta), el original llega después como duplicado y el
+  rendimiento bajó de 45 a 34 Mbit/s (historia 014).
+
 ## Estado
 
 `status_file` escribe cada segundo (`status_interval_ms`), desde un hilo
@@ -1149,13 +1170,15 @@ subida:
   al instante), `late.*`, `far` (un salto de 32768 secuencias o más
   mientras retenía, como el de un servidor que retoma la sesión),
   `resyncs` y `pool_full` (sin búfer libre: al instante); `split_rx` cuenta
-  los repartidos;
+  los repartidos, y `retx` las retransmisiones de TCP marcadas por el otro
+  extremo (`tcp_aware`), sea cual sea su suerte;
 - `lost`: huecos que dejó de esperar, por qué: `rack` (todos los enlaces
   trajeron uno posterior), `cap` (el plazo), `overflow` (la ventana se
-  llenó) y `flush` (al apagarlo);
+  llenó), `flush` (al apagarlo) y `retx` (una retransmisión de TCP, con
+  `reorder_retx_release_ms`);
 - `late`: los que llegaron después de eso, por la regla que soltó su hueco
-  (`after_rack`, `after_cap`, `after_overflow`; `old`, si su casilla ya era
-  de otro). `after_rack` > 0 dice que un enlace no entrega en orden o que se
+  (`after_rack`, `after_cap`, `after_overflow`, `after_retx`; `old`, si su
+  casilla ya era de otro). `after_rack` > 0 dice que un enlace no entrega en orden o que se
   esperaba a uno equivocado; `after_cap`, que el plazo es corto;
 - `wait` (cuánto esperó cada retenido) y `late_by` (cuánto después de
   soltar su hueco llegó cada tardío): histogramas con los bordes de

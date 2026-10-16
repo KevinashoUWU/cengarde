@@ -1,11 +1,13 @@
 /* TCP-aware release (story 014, phase C): with tunnel = native the sender
- * sees inner TCP, and marks CG_F_FREE the segments the receiver's reorderer
- * must not hold: TCP's own retransmissions and its segments without data
- * (pure ACKs, SYN, FIN, RST). A retransmission is a new cengarde sequence;
- * held behind the gap of the packet it repairs, it waited for the tunnel to
- * give that gap up (on the testnet TCP repaired in ~30 ms and its
- * retransmission waited 500 ms, reorder_max_wait_ms): marked free it is
- * handed on at once, and TCP's repair works as it would without a tunnel.
+ * sees inner TCP, and marks CG_F_FREE its segments without data (pure ACKs,
+ * SYN, FIN, RST), which the receiver's reorderer hands on at once, and its
+ * retransmissions. A retransmission was handed on at once too, at first:
+ * held behind the gap of the packet it repairs, it waited for the tunnel
+ * to give that gap up (on the testnet TCP repaired in ~30 ms and its
+ * retransmission waited 500 ms, reorder_max_wait_ms). But ahead of what
+ * was held, sent before it, it made TCP take all of that for lost and send
+ * it again (story 014, 2026-10-16): the receiver now tells it apart
+ * (cg_tcp_data) and keeps it in sequence (reorder.h).
  *
  * Per flow (flow.h's hash, a direct-mapped table of CG_TCPF_N entries, no
  * allocation per packet) the highest sequence sent, its end: a segment that
@@ -78,6 +80,29 @@ static inline int cg_tcpf_free(struct cg_tcpf *t, const struct cg_flow *f, const
 	}
 	t->hi[i] = end;
 	return 0;
+}
+
+/* At the receiver, whether a packet marked CG_F_FREE is one of TCP's
+ * retransmissions rather than a segment without data: IP packet b (len
+ * bytes) is a TCP segment, not a fragment, without SYN or RST, that
+ * carries data. No state, and no change to the protocol: what was marked
+ * for which reason shows in the segment itself. A fragment, a short or
+ * malformed header, or anything not TCP reads as not one (as a free ACK:
+ * delivered at once and nothing more). */
+static inline int cg_tcp_data(const uint8_t *b, size_t len)
+{
+	struct cg_flow f;
+	size_t off, doff;
+
+	if (!cg_flow_of(b, len, 0, &f) || !f.tcp || f.frag)
+		return 0;
+	off = f.l4off;
+	if (off + 20 > len)
+		return 0;
+	doff = (size_t)(b[off + 12] >> 4) * 4;
+	if (doff < 20 || off + doff >= len)
+		return 0;
+	return !(b[off + 13] & (CG_TCP_SYN | CG_TCP_RST));
 }
 
 #endif
