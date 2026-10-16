@@ -623,7 +623,9 @@ Aquí: el túnel nativo (como `native`) sobre 2 enlaces con netem, l1 de
 constante (`iperf3 -b`, `IF_LOAD` = 24M, como un emisor RTMP), un ping por
 el túnel cada 100 ms, y la subida de l1 cortada a `IF_RATE / IF_DIV` (un
 tercio) solo del lado del cliente (en el campo solo dañaba la carga en el
-mismo sentido). Casos (`IF_CASES`):
+mismo sentido); `IF_JITTER_MS` hace oscilar el retardo de l1 (el `jitter`
+de netem, que además desordena algunos de sus paquetes). Casos
+(`IF_CASES`):
 
 - `long`: un corte de `IF_S` (10) s;
 - `burst`: `IF_BURSTS` (3) cortes de 2 s, cada 8 s;
