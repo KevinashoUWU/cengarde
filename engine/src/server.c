@@ -2104,7 +2104,7 @@ static void cap_tick(struct server *s, struct session *S, uint16_t live, uint64_
 		uint64_t tb[CG_MAX_LINKS];
 		uint16_t due;
 
-		cg_cap_eta(&S->eta, S->cap, live, cc.sat_us / 2, now_ms * 1000);
+		cg_cap_eta(&S->eta, S->cap, live, cc.sat_us / 2, s->cfg->split_stale_max, now_ms * 1000);
 		cg_cap_tickle(S->cap, live, now_ms, &due, tb);
 		cg_tickle_tick(&S->tk, now_ms * 1000, (uint64_t)s->cfg->split_tickle_ms * 1000, due, tb);
 	}
