@@ -105,6 +105,7 @@
 #define CG_CAP_REST_MS 10000u  /* fast start: this long without being full, it comes back to half its best */
 #define CG_CAP_TREND_MS 100 /* the queue's trend takes samples at least this far apart */
 #define CG_CAP_LONG_MS 60000 /* the rescue's queue: over the delay's minimum of this long */
+#define CG_CAP_STALE_MS 3000 /* a link not loaded for this long: its capacity grows for the ETA (cg_cap_stale) */
 /* More delivered than sent by this much (packets), and the report is not
  * of this run of the counters: probes and what was in flight at the start
  * make a few packets of difference, never this many. */
@@ -135,6 +136,7 @@ struct cg_cap_link {
 	/* fast start: the best capacity over CG_CAP_BEST_MS (in two halves),
 	 * and the last sample that found the link full */
 	uint64_t best_cur, best_prev, best_ms, full_ms;
+	uint64_t loaded_ms;         /* the last sample sent at least 3/4 of its capacity, or its first */
 	/* The queue's trend, for the rescue's weight (cg_cap_rescue_w): its
 	 * slope (us of queue per second) and the slope's slope (per second
 	 * squared), smoothed (1/4), from samples at least CG_CAP_TREND_MS apart. */
@@ -308,6 +310,18 @@ static inline void cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint64_t 
 	l->tx_pkts = tx_pkts;
 	l->tx_bytes = tx_bytes;
 	l->rx_total += drx;
+	/* Loaded: sent at least 3/4 of its capacity (or of half its best, for a
+	 * link brought down before); see below. */
+	ref = cg_cap_bps(l) > cg_cap_best_bps(l) / 2 ? cg_cap_bps(l) : cg_cap_best_bps(l) / 2;
+	loaded = dby * 8 * 1000 / dt * 4 >= ref * 3;
+	/* The first sample loaded after CG_CAP_STALE_MS without one (a tickle,
+	 * tickle.h) starts the smoothing again from itself: the smoothed rate
+	 * is then what the link was sent while idle, and a 600 ms tickle would
+	 * move it by a quarter, never over its capacity. */
+	if (loaded && l->have_rate && report_ms - l->loaded_ms >= CG_CAP_STALE_MS)
+		l->have_rate = 0;
+	if (loaded)
+		l->loaded_ms = report_ms;
 	if (l->have_rate) {
 		if (rate >= l->rate_bps)
 			l->rate_bps += (rate - l->rate_bps) / CG_CAP_GAIN;
@@ -318,19 +332,18 @@ static inline void cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint64_t 
 		l->rate_bps = rate;
 	}
 	l->have_rate = 1;
+	if (!l->loaded_ms)
+		l->loaded_ms = report_ms; /* its age counts from its first sample */
 	if (dpk >= CG_CAP_SHORT_MIN && (uint64_t)drx * 2 < dpk)
 		l->short_n = l->short_n < 255 ? (uint8_t)(l->short_n + 1) : 255;
 	else
 		l->short_n = 0;
-	/* Loaded: sent at least 3/4 of its capacity (or of half its best, for a
-	 * link brought down before). A queue then is the link's limit; at a
+	/* Loaded (above). A queue then is the link's limit; at a
 	 * light load it is a hiccup of the radio's scheduling (story 013: every
 	 * cellular link stalls 100-600 ms now and then, at any load and for any
 	 * protocol), and it counts only once it lasts CG_CAP_SAT_LONG samples:
 	 * counted at once, Movistar's capacity fell to the 1.6 Mbit/s of an
 	 * 8 Mbit/s stream's share, and its queue's blips kept it there. */
-	ref = cg_cap_bps(l) > cg_cap_best_bps(l) / 2 ? cg_cap_bps(l) : cg_cap_best_bps(l) / 2;
-	loaded = dby * 8 * 1000 / dt * 4 >= ref * 3;
 	if (l->queue_us >= 0 && (uint32_t)l->queue_us > cfg->sat_us) {
 		/* Until the first sample full from start to end (the queue formed
 		 * during the one before), each sample starts it again. */
@@ -398,6 +411,39 @@ static inline void cg_cap_weights(const struct cg_cap_link l[CG_MAX_LINKS], uint
 
 #define CG_CAP_SHAPE_MIN 2000000ull /* bps: below this a tunnel is idle */
 
+/* A link's capacity as the split by expected arrival takes it when the link
+ * has not been loaded (sent at least 3/4 of it) for CG_CAP_STALE_MS: twice
+ * it, and twice again every CG_CAP_STALE_MS more, up to ceil (the largest
+ * link's capacity, or its own best) and to max_mul times its own (1: never). The capacity only moves when the link
+ * is sent enough to show it, and the ETA sends a link nothing while the
+ * others' queues are short: a link measured low once was never given the
+ * traffic that would show more. On the testnet's download WOM sat at
+ * 9.5 Mbit/s and 0 % of an RTMP stream that Claro carried alone, with n78
+ * behind it (story 013). Taken as larger, it gets packets as soon as the
+ * others queue a little, and the samples that follow say what it carries;
+ * if it carries less, its queue says so at once (cg_cap_tick). */
+static inline uint64_t cg_cap_stale(const struct cg_cap_link *l, uint64_t bps, uint64_t ceil, uint64_t now_ms,
+				    uint32_t max_mul)
+{
+	uint64_t age, lim = cg_cap_best_bps(l) > ceil ? cg_cap_best_bps(l) : ceil;
+
+	if (max_mul > 1 && bps * max_mul < lim)
+		lim = bps * max_mul;
+	if (max_mul <= 1 || !l->loaded_ms || now_ms <= l->loaded_ms || now_ms - l->loaded_ms < CG_CAP_STALE_MS || bps >= lim)
+		return bps;
+	age = (now_ms - l->loaded_ms) / CG_CAP_STALE_MS; /* 1, 2, ... */
+	if (age > 16)
+		age = 16;
+	return bps << age < lim ? bps << age : lim;
+}
+
+/* Whether link l is due a probe (tickle.h): measured, and not loaded for
+ * CG_CAP_STALE_MS. */
+static inline int cg_cap_stale_p(const struct cg_cap_link *l, uint64_t now_ms)
+{
+	return l->have_rate && now_ms > l->loaded_ms && now_ms - l->loaded_ms >= CG_CAP_STALE_MS;
+}
+
 /* A tick's measures into the split by expected arrival (eta.h): each link of
  * mask's capacity, its delay without a queue (the minimum of its delays,
  * over the smallest of the links') and its queue; a link without a
@@ -411,7 +457,7 @@ static inline void cg_cap_weights(const struct cg_cap_link l[CG_MAX_LINKS], uint
  * 5-7 Mbit/s against 15-30 and the upload under split_eta fell to 3 Mbit/s
  * (story 013). */
 static inline void cg_cap_eta(struct cg_eta *e, const struct cg_cap_link l[CG_MAX_LINKS], uint16_t mask,
-			      uint32_t probe_us, uint64_t now_us)
+			      uint32_t probe_us, uint32_t stale_max, uint16_t no_stale, uint64_t now_us)
 {
 	uint32_t ref = 0, mins[CG_MAX_LINKS];
 	uint64_t big = 0;
@@ -439,8 +485,31 @@ static inline void cg_cap_eta(struct cg_eta *e, const struct cg_cap_link l[CG_MA
 		}
 		if (l[i].queue_us >= 0 && (uint32_t)l[i].queue_us < probe_us)
 			bps = cg_cap_probe(&l[i], bps, big);
+		bps = cg_cap_stale(&l[i], bps, big, now_us / 1000, no_stale >> i & 1 ? 1 : stale_max);
 		cg_eta_set(e, i, bps, (uint32_t)cg_owd_diff(mins[i], ref), l[i].queue_us > 0 ? (uint32_t)l[i].queue_us : 0,
 			   now_us);
+	}
+}
+
+/* What a tickle (tickle.h) needs from a tick: *due, the links of mask that
+ * are due one (cg_cap_stale_p), each one's rate, what cg_cap_probe offers
+ * it, and every link's capacity (to judge a tickle by). */
+static inline void cg_cap_tickle(const struct cg_cap_link l[CG_MAX_LINKS], uint16_t mask, uint64_t now_ms, uint16_t *due,
+				 uint64_t bps[CG_MAX_LINKS], uint64_t cap[CG_MAX_LINKS])
+{
+	uint64_t big = 0;
+
+	*due = 0;
+	for (unsigned i = 0; i < CG_MAX_LINKS; i++)
+		if ((mask >> i & 1) && l[i].have_rate && cg_cap_bps(&l[i]) > big)
+			big = cg_cap_bps(&l[i]);
+	for (unsigned i = 0; i < CG_MAX_LINKS; i++) {
+		bps[i] = 0;
+		cap[i] = l[i].have_rate ? cg_cap_bps(&l[i]) : 0;
+		if (!(mask >> i & 1) || !cg_cap_stale_p(&l[i], now_ms))
+			continue;
+		bps[i] = cg_cap_probe(&l[i], cg_cap_bps(&l[i]), big);
+		*due |= (uint16_t)(1u << i);
 	}
 }
 

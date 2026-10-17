@@ -70,6 +70,14 @@ static inline void cg_eta_drain(struct cg_eta_link *l, uint64_t now_us)
 	l->t_us = now_us;
 }
 
+/* A packet of len bytes put on link i at now_us by someone else (a probe,
+ * probe.h): counted in its backlog. */
+static inline void cg_eta_add(struct cg_eta *e, unsigned i, uint32_t len, uint64_t now_us)
+{
+	cg_eta_drain(&e->l[i], now_us);
+	e->l[i].backlog += (uint64_t)len * 8 * 1000000;
+}
+
 /* The link of set where a packet of len bytes sent at now_us arrives first,
  * which then counts it in its backlog; -1 when a link of set has no rate
  * (the caller splits by weights then). */
