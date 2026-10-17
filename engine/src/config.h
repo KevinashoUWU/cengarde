@@ -215,6 +215,7 @@ struct cg_config {
 	uint32_t reorder_retx_release_ms; /* a TCP retransmission gives up the gaps held this long before it; 0: off */
 	int fec;                      /* send a parity of each group of split DATA, rebuild from it (fec.h) */
 	uint32_t fec_wait_ms;         /* a group's parity goes at the latest this long after its first packet */
+	uint32_t fec_share_max;       /* with fec, no link takes over this % of the split DATA (fec.h); 0: no cap */
 	int split;                    /* enum cg_split_mode */
 	uint32_t split_small;         /* datagrams of up to this many bytes are never split */
 	uint32_t split_spread_ms;     /* only links this close to the fastest share the split (split.h G4); 0: off */

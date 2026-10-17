@@ -791,6 +791,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	c->rescue_pct = 5;
 	c->rescue_tries = 2;
 	c->fec_wait_ms = 10;
+	c->fec_share_max = 50;
 	c->split = c->mode == CG_MODE_SERVER ? CG_SPLIT_CLIENT : CG_SPLIT_OFF;
 	c->split_small = 256;
 	c->split_spread_ms = 30;
@@ -872,6 +873,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	    get_u32(&ini, "", "rescue_tries", 1, 4, &c->rescue_tries, err, errlen) ||
 	    get_bool(&ini, "", "fec", &c->fec, err, errlen) ||
 	    get_u32(&ini, "", "fec_wait_ms", 1, 200, &c->fec_wait_ms, err, errlen) ||
+	    get_u32(&ini, "", "fec_share_max", 0, 100, &c->fec_share_max, err, errlen) ||
 	    get_u32(&ini, "", "reorder_pool_kb", 256, 131070, &c->reorder_pool_kb, err, errlen) ||
 	    get_bool(&ini, "", "tcp_aware", &c->tcp_aware, err, errlen) ||
 	    get_u32(&ini, "", "reorder_idle_ms", 0, 60000, &c->reorder_idle_ms, err, errlen) ||

@@ -239,9 +239,64 @@ static void test_fec_bad(void)
 	CHECK_EQ(rx.unrecovered, 3);
 }
 
+/* The share cap: a link over cap_pct of the recent split DATA sits out,
+ * never leaving fewer than 2; the counts decay. */
+static void test_fec_share(void)
+{
+	struct cg_fec_share sh;
+
+	memset(&sh, 0, sizeof(sh));
+	CHECK_EQ(cg_fec_share_mask(&sh, 0x0f, 50), 0x0f); /* no history yet */
+	for (int i = 0; i < 40; i++)
+		cg_fec_share_note(&sh, i % 4 == 3 ? 1 : 0); /* link 0: 75 % */
+	CHECK_EQ(cg_fec_share_mask(&sh, 0x0f, 50), 0x0e);
+	CHECK_EQ(cg_fec_share_mask(&sh, 0x0f, 0), 0x0f);   /* no cap */
+	CHECK_EQ(cg_fec_share_mask(&sh, 0x0f, 100), 0x0f); /* no cap either */
+	CHECK_EQ(cg_fec_share_mask(&sh, 0x0f, 80), 0x0f);
+	/* Only links 0 and 1: dropping 0 leaves one, so both stay. */
+	CHECK_EQ(cg_fec_share_mask(&sh, 0x03, 50), 0x03);
+	/* Links 2 and 3 have sent nothing: they stay, 0 goes, 1 (25 %) stays. */
+	CHECK_EQ(cg_fec_share_mask(&sh, 0x07, 50), 0x06);
+	/* Decay: the total never grows past twice the window. */
+	for (int i = 0; i < 10 * CG_FEC_SHARE_WIN; i++)
+		cg_fec_share_note(&sh, i % 2 ? 2 : 3);
+	CHECK(sh.tot < 2 * CG_FEC_SHARE_WIN);
+	CHECK_EQ(cg_fec_share_mask(&sh, 0x0f, 50), 0x0f); /* 2 and 3 at 50 % each, 0 and 1 decayed */
+	CHECK_EQ(cg_fec_share_mask(&sh, 0x0f, 40), 0x03);
+	cg_fec_share_note(&sh, -1); /* ignored */
+	cg_fec_share_note(&sh, 16);
+}
+
+/* The deadline from the rate: twice k gaps, within bounds; the gap is an
+ * EWMA capped at an idle spell. */
+static void test_fec_deadline(void)
+{
+	uint32_t ia = 0;
+	uint64_t last = 0;
+
+	CHECK_EQ(cg_fec_deadline_us(0, 3, 1000, 10000), 10000);   /* unknown rate */
+	CHECK_EQ(cg_fec_deadline_us(500, 3, 1000, 10000), 3000);  /* 2 x 3 x 0.5 ms */
+	CHECK_EQ(cg_fec_deadline_us(100, 3, 1000, 10000), 1000);  /* floor */
+	CHECK_EQ(cg_fec_deadline_us(4000, 3, 1000, 10000), 10000); /* fec_wait_ms */
+	CHECK_EQ(cg_fec_deadline_us(500, 0, 1000, 10000), 1000);
+	cg_fec_gap_note(&ia, &last, 1000000, 10000);
+	CHECK_EQ(ia, 0); /* the first packet has no gap */
+	cg_fec_gap_note(&ia, &last, 1000400, 10000);
+	CHECK_EQ(ia, 400);
+	for (int i = 0; i < 100; i++)
+		cg_fec_gap_note(&ia, &last, last + 800, 10000);
+	CHECK(ia > 790 && ia <= 800);
+	cg_fec_gap_note(&ia, &last, last + 5000000, 10000); /* idle: counts as 10 ms */
+	CHECK(ia < 800 + 10000 / 8 + 1);
+	cg_fec_gap_note(&ia, &last, last - 5, 10000); /* the clock went back: ignored */
+	CHECK(ia > 0);
+}
+
 void test_fec(void)
 {
 	test_fec_interleave();
 	test_fec_rebuild();
 	test_fec_bad();
+	test_fec_share();
+	test_fec_deadline();
 }

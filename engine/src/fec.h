@@ -194,6 +194,81 @@ static inline uint64_t cg_fec_tx_next_us(const struct cg_fec_tx *t, uint32_t dea
 	return t0 ? t0 + deadline_us : 0;
 }
 
+/* Each link's recent share of the protected (split, one-link) DATA, for
+ * the cap: a single parity per group costs at least 1/(1 - s) of the
+ * bytes when one link carries a share s, and a group of one sends none (it
+ * goes unprotected), so with fec the split keeps every link at or under
+ * fec_share_max percent of it (story 012: FEC <= 1.34x on 4 links needs
+ * s <= 25 %). Counts decay by half every CG_FEC_SHARE_WIN packets. */
+#define CG_FEC_SHARE_WIN 64
+
+struct cg_fec_share {
+	uint16_t n[16]; /* recent packets per link */
+	uint16_t tot;   /* their sum */
+};
+
+static inline void cg_fec_share_note(struct cg_fec_share *s, int link)
+{
+	if (link < 0 || link > 15)
+		return;
+	s->n[link]++;
+	if (++s->tot >= 2 * CG_FEC_SHARE_WIN) {
+		s->tot = 0;
+		for (int i = 0; i < 16; i++) {
+			s->n[i] /= 2;
+			s->tot = (uint16_t)(s->tot + s->n[i]);
+		}
+	}
+}
+
+/* The links of elig that may take the next packet: those at or under
+ * cap_pct percent of the recent share; elig itself when cap_pct is 0, when
+ * there is too little history (under CG_FEC_SHARE_WIN / 2 packets) or when
+ * the cap would leave fewer than 2 (it never stops the upload). */
+static inline uint16_t cg_fec_share_mask(const struct cg_fec_share *s, uint16_t elig, unsigned cap_pct)
+{
+	uint16_t m = 0;
+
+	if (!cap_pct || cap_pct >= 100 || s->tot < CG_FEC_SHARE_WIN / 2)
+		return elig;
+	for (int i = 0; i < 16; i++)
+		if ((elig >> i & 1) && 100u * s->n[i] <= cap_pct * (unsigned)s->tot)
+			m |= (uint16_t)(1u << i);
+	return m & (m - 1) ? m : elig;
+}
+
+/* A group's deadline from the packet rate: twice the time k packets take at
+ * the mean gap ia_us between protected packets, within [min_us, max_us]
+ * (max_us: fec_wait_ms, which the receiver's rescue waits out). At a high
+ * rate a group missing a link that carries little would otherwise wait the
+ * whole fec_wait_ms for it, and its parity with it; ia_us 0 (unknown):
+ * max_us. */
+static inline uint32_t cg_fec_deadline_us(uint32_t ia_us, unsigned k, uint32_t min_us, uint32_t max_us)
+{
+	uint64_t d = 2ull * (k ? k : 1) * ia_us;
+
+	if (!ia_us || d > max_us)
+		return max_us;
+	return d < min_us ? min_us : (uint32_t)d;
+}
+
+/* The mean gap between protected packets: an EWMA of 1/8 of each gap,
+ * capped at cap_us (an idle spell is not a rate). */
+static inline void cg_fec_gap_note(uint32_t *ia_us, uint64_t *last_us, uint64_t now_us, uint32_t cap_us)
+{
+	uint64_t g;
+
+	if (!*last_us || now_us <= *last_us) {
+		*last_us = now_us;
+		return;
+	}
+	g = now_us - *last_us;
+	*last_us = now_us;
+	if (g > cap_us)
+		g = cap_us;
+	*ia_us = *ia_us ? (uint32_t)((7ull * *ia_us + g) / 8) : (uint32_t)g;
+}
+
 /* A parity the receiver keeps until its group is whole or rebuilt. */
 struct cg_fec_par {
 	uint32_t base;
