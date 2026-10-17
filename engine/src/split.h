@@ -286,7 +286,16 @@ static inline void cg_split_spread_reset(struct cg_spread *s, unsigned link)
  * share otherwise (eligible, weight above 0); h: each link's send-direction
  * health (its filtered delay); spread_us: split_spread_ms, 0 off; settle_ms:
  * how long a link that left stays within 3/4 of the spread before it comes
- * back. Sets s->in and returns the links that left or came back. */
+ * back. Sets s->in and returns the links that left or came back.
+ *
+ * The delays are measured behind the fastest link still in, not the
+ * fastest of all: a link that left and has since become the fastest is
+ * waiting settle_ms to come back, and measured against it every link in
+ * left too, the split was left with none and every packet went on every
+ * link, as the network filled (2.6 % of the packets of a 25 Mbit/s stream
+ * in a replay of the testnet's download, 0.5 % of its status samples; GPU
+ * sweep of 2026-10-17). With no fresh link in, the fastest is taken in at
+ * once: the split never empties while a link has a delay. */
 static inline uint16_t cg_split_spread_eval(struct cg_spread *s, const struct cg_hlink *h, uint16_t cand,
 					    uint32_t spread_us, uint32_t settle_ms, uint64_t now_ms)
 {
@@ -303,7 +312,13 @@ static inline uint16_t cg_split_spread_eval(struct cg_spread *s, const struct cg
 	for (int i = 0; i < CG_MAX_LINKS; i++)
 		if ((cand >> i & 1) && cg_health_fresh(&h[i], now_ms))
 			fresh |= (uint16_t)(1u << i);
-	best = cg_health_fastest(h, CG_MAX_LINKS, fresh, now_ms);
+	best = cg_health_fastest(h, CG_MAX_LINKS, (uint16_t)(fresh & ~s->left), now_ms);
+	if (best < 0 && fresh) {
+		/* every fresh link left: the fastest comes back now */
+		best = cg_health_fastest(h, CG_MAX_LINKS, fresh, now_ms);
+		s->left &= (uint16_t)~(1u << best);
+		s->holding &= (uint16_t)~(1u << best);
+	}
 	for (int i = 0; i < CG_MAX_LINKS; i++) {
 		uint16_t b = (uint16_t)(1u << i);
 		int32_t d;
