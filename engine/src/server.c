@@ -1942,12 +1942,12 @@ static void cap_tick(struct server *s, struct session *S, uint16_t live, uint64_
 	}
 	cg_cap_total_tick(&S->ctot, S->cap, live, cc.sat_us);
 	if (s->cfg->split_eta) {
-		uint64_t tb[CG_MAX_LINKS];
+		uint64_t tb[CG_MAX_LINKS], tc[CG_MAX_LINKS];
 		uint16_t due;
 
-		cg_cap_eta(&S->eta, S->cap, live, cc.sat_us / 2, s->cfg->split_stale_max, now_ms * 1000);
-		cg_cap_tickle(S->cap, live, now_ms, &due, tb);
-		cg_tickle_tick(&S->tk, now_ms * 1000, (uint64_t)s->cfg->split_tickle_ms * 1000, due, tb);
+		cg_cap_eta(&S->eta, S->cap, live, cc.sat_us / 2, s->cfg->split_stale_max, cg_tickle_backoff(&S->tk), now_ms * 1000);
+		cg_cap_tickle(S->cap, live, now_ms, &due, tb, tc);
+		cg_tickle_tick(&S->tk, now_ms * 1000, (uint64_t)s->cfg->split_tickle_ms * 1000, due, tb, tc);
 	}
 }
 
@@ -2272,6 +2272,12 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 		cg_json_u64(j, "every_ms", s->cfg->split_eta ? s->cfg->split_tickle_ms : 0);
 		cg_json_u64(j, "count", S->tk.count);
 		cg_json_u64(j, "packets", S->tk.pkts);
+		cg_json_u64(j, "grew", S->tk.grew);
+		cg_json_arr(j, "backoff"); /* each path's doublings of every_ms */
+		for (int p = 0; p < CG_MAX_LINKS; p++)
+			if (S->path[p].used)
+				cg_json_u64(j, NULL, S->tk.shift[p]);
+		cg_json_end(j, ']');
 		if (S->tk.link >= 0 && S->tk.count)
 			cg_json_u64(j, "link", (uint64_t)S->tk.link);
 		else

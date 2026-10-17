@@ -17,6 +17,15 @@
  * probe costs the flow at most that share of reordering for 600 ms, one
  * link at a time.
  *
+ * Backoff: CG_TICKLE_JUDGE_US after a tickle ends (a capacity sample later),
+ * a link whose capacity did not grow by 1/8 waits twice as long for its
+ * next one, up to CG_TICKLE_MAX_SHIFT doublings; one that grew is due at
+ * every_us again. A link that is really slow paid every tickle in queue and
+ * reordering for nothing: in the lab (bench bond, het: 10 Mbit/s behind
+ * 60 ms) a tickle every 2 s cost 3-6 % of the throughput and 268 RACK
+ * give-ups where there were none. A link in backoff is not grown by
+ * cg_cap_stale either (cg_tickle_backoff).
+ *
  * Pure: no clock, no I/O, no allocation.
  *
  * SPDX-License-Identifier: GPL-3.0-or-later */
@@ -31,6 +40,8 @@
 #define CG_TICKLE_WIN_US 600000u  /* a probe lasts this long: over a capacity sample */
 #define CG_TICKLE_MIN_BPS 1000000u /* a probe offers at least this */
 #define CG_TICKLE_BURST_US 20000u  /* the bucket holds at most this long of the rate */
+#define CG_TICKLE_JUDGE_US 1000000u /* a tickle is judged this long after it ends */
+#define CG_TICKLE_MAX_SHIFT 5        /* a link that never grows is tickled every every_us << 5 at most */
 
 struct cg_tickle {
 	int8_t link;      /* the link probed now, -1: none */
@@ -42,6 +53,13 @@ struct cg_tickle {
 	uint64_t tokens;   /* bits, times 10^6 */
 	uint64_t count;    /* probes started, for the status */
 	uint64_t pkts;     /* packets sent by probes */
+	uint64_t grew;     /* tickles after which the capacity grew */
+	/* per link: the backoff (every_us << shift), the earliest next tickle,
+	 * and the tickle waiting to be judged (its end and the capacity before) */
+	uint8_t shift[CG_MAX_LINKS];
+	uint64_t due_us[CG_MAX_LINKS];
+	uint64_t judge_us[CG_MAX_LINKS];
+	uint64_t cap0[CG_MAX_LINKS];
 };
 
 static inline void cg_tickle_reset(struct cg_tickle *p)
@@ -50,21 +68,51 @@ static inline void cg_tickle_reset(struct cg_tickle *p)
 	p->link = -1;
 }
 
-/* One tick at now_us: ends a probe past its window; starts one, every_us
- * after the last (0: never), on the next link of due (in turn) at bps[link]
- * (at least CG_TICKLE_MIN_BPS). */
-static inline void cg_tickle_tick(struct cg_tickle *p, uint64_t now_us, uint64_t every_us, uint16_t due,
-				 const uint64_t bps[CG_MAX_LINKS])
+/* The links in backoff (a tickle found nothing): cg_cap_stale leaves them
+ * as measured. */
+static inline uint16_t cg_tickle_backoff(const struct cg_tickle *p)
 {
-	if (p->link >= 0 && now_us >= p->until_us)
+	uint16_t m = 0;
+
+	for (unsigned i = 0; i < CG_MAX_LINKS; i++)
+		if (p->shift[i])
+			m |= (uint16_t)(1u << i);
+	return m;
+}
+
+/* One tick at now_us: ends a tickle past its window; judges the ones
+ * CG_TICKLE_JUDGE_US past theirs against cap[] (each link's capacity now);
+ * starts one, every_us after the last (0: never), on the next link of due
+ * (in turn) whose backoff is over, at bps[link] (at least
+ * CG_TICKLE_MIN_BPS). */
+static inline void cg_tickle_tick(struct cg_tickle *p, uint64_t now_us, uint64_t every_us, uint16_t due,
+				  const uint64_t bps[CG_MAX_LINKS], const uint64_t cap[CG_MAX_LINKS])
+{
+	if (p->link >= 0 && now_us >= p->until_us) {
+		if (p->until_us) /* not a zeroed struct's link 0 */
+			p->judge_us[p->link] = p->until_us + CG_TICKLE_JUDGE_US;
 		p->link = -1;
+	}
+	for (unsigned i = 0; i < CG_MAX_LINKS; i++) {
+		if (!p->judge_us[i] || now_us < p->judge_us[i])
+			continue;
+		p->judge_us[i] = 0;
+		if (cap[i] > p->cap0[i] + p->cap0[i] / 8) {
+			p->shift[i] = 0;
+			p->grew++;
+		} else if (p->shift[i] < CG_TICKLE_MAX_SHIFT) {
+			p->shift[i]++;
+		}
+		p->due_us[i] = now_us + (every_us << p->shift[i]);
+	}
 	if (p->link >= 0 || !every_us || !due || now_us < p->next_us)
 		return;
 	for (unsigned k = 0; k < CG_MAX_LINKS; k++) {
 		unsigned i = (p->next + k) % CG_MAX_LINKS;
 
-		if (!(due >> i & 1))
+		if (!(due >> i & 1) || p->judge_us[i] || now_us < p->due_us[i])
 			continue;
+		p->cap0[i] = cap[i];
 		p->link = (int8_t)i;
 		p->next = (uint8_t)((i + 1) % CG_MAX_LINKS);
 		p->bps = bps[i] > CG_TICKLE_MIN_BPS ? bps[i] : CG_TICKLE_MIN_BPS;

@@ -1963,12 +1963,12 @@ static void cap_tick(struct client *c, uint16_t live, uint64_t now_ms)
 			       cc.sat_us / 2, c->cw);
 	cg_cap_total_tick(&c->ctot, c->cap, live, cc.sat_us);
 	if (c->cfg->split_eta) {
-		uint64_t tb[CG_MAX_LINKS];
+		uint64_t tb[CG_MAX_LINKS], tc[CG_MAX_LINKS];
 		uint16_t due;
 
-		cg_cap_eta(&c->eta, c->cap, live, cc.sat_us / 2, c->cfg->split_stale_max, now_ms * 1000);
-		cg_cap_tickle(c->cap, live, now_ms, &due, tb);
-		cg_tickle_tick(&c->tk, now_ms * 1000, (uint64_t)c->cfg->split_tickle_ms * 1000, due, tb);
+		cg_cap_eta(&c->eta, c->cap, live, cc.sat_us / 2, c->cfg->split_stale_max, cg_tickle_backoff(&c->tk), now_ms * 1000);
+		cg_cap_tickle(c->cap, live, now_ms, &due, tb, tc);
+		cg_tickle_tick(&c->tk, now_ms * 1000, (uint64_t)c->cfg->split_tickle_ms * 1000, due, tb, tc);
 	}
 	/* With pacing, each link's socket at about its rate; without, as it
 	 * was set, back to none (a reload turned it off). */
@@ -2139,6 +2139,12 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 	cg_json_u64(j, "every_ms", c->cfg->split_eta ? c->cfg->split_tickle_ms : 0);
 	cg_json_u64(j, "count", c->tk.count);
 	cg_json_u64(j, "packets", c->tk.pkts);
+	cg_json_u64(j, "grew", c->tk.grew);
+	cg_json_arr(j, "backoff"); /* each link's doublings of every_ms */
+	for (int i = 0; i < CG_MAX_LINKS; i++)
+		if (c->link[i].fd >= 0)
+			cg_json_u64(j, NULL, c->tk.shift[i]);
+	cg_json_end(j, ']');
 	if (c->tk.link >= 0 && c->tk.count)
 		cg_json_u64(j, "link", (uint64_t)c->tk.link);
 	else
