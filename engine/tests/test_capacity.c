@@ -521,16 +521,18 @@ static void test_capacity_stale(void)
 	c = cg_cap_bps(&s.l);
 	CHECK(near(c, 10, 0.15));
 	CHECK(!cg_cap_stale_p(&s.l, s.t));
-	CHECK_EQ(cg_cap_stale(&s.l, c, 40 * MBIT, s.t), c);
+	CHECK_EQ(cg_cap_stale(&s.l, c, 40 * MBIT, s.t, 64), c);
 	run(&s, 20, 0.5, 100); /* 2 s at a twentieth: not stale yet */
-	CHECK_EQ(cg_cap_stale(&s.l, c, 40 * MBIT, s.t), c);
+	CHECK_EQ(cg_cap_stale(&s.l, c, 40 * MBIT, s.t, 64), c);
 	run(&s, 15, 0.5, 100); /* 3.5 s */
 	CHECK(cg_cap_stale_p(&s.l, s.t));
 	CHECK_EQ(cg_cap_bps(&s.l), c); /* the capacity itself holds */
-	CHECK_EQ(cg_cap_stale(&s.l, c, 40 * MBIT, s.t), 2 * c);
-	CHECK_EQ(cg_cap_stale(&s.l, c, 40 * MBIT, s.t + 3000), 4 * c);
-	CHECK_EQ(cg_cap_stale(&s.l, c, 40 * MBIT, s.t + 60000), 40 * MBIT); /* the ceiling */
-	CHECK_EQ(cg_cap_stale(&s.l, 50 * MBIT, 40 * MBIT, s.t + 60000), 50 * MBIT); /* over it: as is */
+	CHECK_EQ(cg_cap_stale(&s.l, c, 40 * MBIT, s.t, 64), 2 * c);
+	CHECK_EQ(cg_cap_stale(&s.l, c, 40 * MBIT, s.t + 3000, 64), 4 * c);
+	CHECK_EQ(cg_cap_stale(&s.l, c, 40 * MBIT, s.t + 60000, 64), 40 * MBIT); /* the ceiling */
+	CHECK_EQ(cg_cap_stale(&s.l, 50 * MBIT, 40 * MBIT, s.t + 60000, 64), 50 * MBIT); /* over it: as is */
+	CHECK_EQ(cg_cap_stale(&s.l, c, 40 * MBIT, s.t + 60000, 2), 2 * c); /* max_mul */
+	CHECK_EQ(cg_cap_stale(&s.l, c, 40 * MBIT, s.t + 60000, 1), c);     /* off */
 	memset(many, 0, sizeof(many));
 	many[0] = s.l;
 	cg_cap_reset(&many[1]); /* not measured: never due */
@@ -543,7 +545,7 @@ static void test_capacity_stale(void)
 	run(&s, 10, 12, 100); /* tickled: loaded again */
 	CHECK(!cg_cap_stale_p(&s.l, s.t));
 	CHECK(cg_cap_bps(&s.l) > c); /* and it showed more */
-	CHECK_EQ(cg_cap_stale(&s.l, cg_cap_bps(&s.l), 40 * MBIT, s.t), cg_cap_bps(&s.l));
+	CHECK_EQ(cg_cap_stale(&s.l, cg_cap_bps(&s.l), 40 * MBIT, s.t, 64), cg_cap_bps(&s.l));
 }
 
 void test_capacity(void)

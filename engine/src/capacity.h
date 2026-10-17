@@ -414,7 +414,7 @@ static inline void cg_cap_weights(const struct cg_cap_link l[CG_MAX_LINKS], uint
 /* A link's capacity as the split by expected arrival takes it when the link
  * has not been loaded (sent at least 3/4 of it) for CG_CAP_STALE_MS: twice
  * it, and twice again every CG_CAP_STALE_MS more, up to ceil (the largest
- * link's capacity, or its own best). The capacity only moves when the link
+ * link's capacity, or its own best) and to max_mul times its own (1: never). The capacity only moves when the link
  * is sent enough to show it, and the ETA sends a link nothing while the
  * others' queues are short: a link measured low once was never given the
  * traffic that would show more. On the testnet's download WOM sat at
@@ -422,11 +422,14 @@ static inline void cg_cap_weights(const struct cg_cap_link l[CG_MAX_LINKS], uint
  * behind it (story 013). Taken as larger, it gets packets as soon as the
  * others queue a little, and the samples that follow say what it carries;
  * if it carries less, its queue says so at once (cg_cap_tick). */
-static inline uint64_t cg_cap_stale(const struct cg_cap_link *l, uint64_t bps, uint64_t ceil, uint64_t now_ms)
+static inline uint64_t cg_cap_stale(const struct cg_cap_link *l, uint64_t bps, uint64_t ceil, uint64_t now_ms,
+				    uint32_t max_mul)
 {
 	uint64_t age, lim = cg_cap_best_bps(l) > ceil ? cg_cap_best_bps(l) : ceil;
 
-	if (!l->loaded_ms || now_ms <= l->loaded_ms || now_ms - l->loaded_ms < CG_CAP_STALE_MS || bps >= lim)
+	if (max_mul > 1 && bps * max_mul < lim)
+		lim = bps * max_mul;
+	if (max_mul <= 1 || !l->loaded_ms || now_ms <= l->loaded_ms || now_ms - l->loaded_ms < CG_CAP_STALE_MS || bps >= lim)
 		return bps;
 	age = (now_ms - l->loaded_ms) / CG_CAP_STALE_MS; /* 1, 2, ... */
 	if (age > 16)
@@ -454,7 +457,7 @@ static inline int cg_cap_stale_p(const struct cg_cap_link *l, uint64_t now_ms)
  * 5-7 Mbit/s against 15-30 and the upload under split_eta fell to 3 Mbit/s
  * (story 013). */
 static inline void cg_cap_eta(struct cg_eta *e, const struct cg_cap_link l[CG_MAX_LINKS], uint16_t mask,
-			      uint32_t probe_us, uint64_t now_us)
+			      uint32_t probe_us, uint32_t stale_max, uint64_t now_us)
 {
 	uint32_t ref = 0, mins[CG_MAX_LINKS];
 	uint64_t big = 0;
@@ -482,7 +485,7 @@ static inline void cg_cap_eta(struct cg_eta *e, const struct cg_cap_link l[CG_MA
 		}
 		if (l[i].queue_us >= 0 && (uint32_t)l[i].queue_us < probe_us)
 			bps = cg_cap_probe(&l[i], bps, big);
-		bps = cg_cap_stale(&l[i], bps, big, now_us / 1000);
+		bps = cg_cap_stale(&l[i], bps, big, now_us / 1000, stale_max);
 		cg_eta_set(e, i, bps, (uint32_t)cg_owd_diff(mins[i], ref), l[i].queue_us > 0 ? (uint32_t)l[i].queue_us : 0,
 			   now_us);
 	}
