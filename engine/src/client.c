@@ -262,6 +262,11 @@ struct client {
 	uint64_t fec_parities, fec_bytes, fec_nolink;
 	uint64_t fec_size[CG_FEC_KMAX + 1]; /* groups closed, by the packets in them */
 	uint64_t fec_why[4];               /* closed full, evicted (span or no slot), at the deadline, split off */
+	struct cg_fec_share fec_share;     /* each link's recent share, for fec_share_max */
+	uint64_t fec_capped;               /* split packets a link at the cap did not take */
+	uint32_t fec_ia_us;                /* mean gap between protected packets, for the deadline */
+	unsigned fec_k;                    /* members of a full group now */
+	uint64_t fec_last_us;
 	struct cg_ro_cfg rocf;
 	uint32_t ro_budget;
 
@@ -1234,8 +1239,11 @@ static void fec_feed(struct client *c, uint32_t seq, int link, const uint8_t *p,
 			fec_close(c, i, 3, now_us);
 		return;
 	}
+	c->fec_k = k;
 	if (link < 0 || link > 15 || !(elig >> link & 1))
 		return;
+	cg_fec_share_note(&c->fec_share, link);
+	cg_fec_gap_note(&c->fec_ia_us, &c->fec_last_us, now_us, c->cfg->fec_wait_ms * 1000);
 	while ((i = cg_fec_tx_evict(&c->fectx, seq, link)) >= 0)
 		fec_close(c, i, 1, now_us);
 	i = cg_fec_tx_add(&c->fectx, seq, link, p, (uint16_t)len, now_us);
@@ -1243,13 +1251,20 @@ static void fec_feed(struct client *c, uint32_t seq, int link, const uint8_t *p,
 		fec_close(c, i, 0, now_us);
 }
 
-/* The groups open longer than fec_wait_ms close, and their parities go. */
+/* A group's deadline now: from the packet rate, with k the members of a
+ * full group (fec.h), at most fec_wait_ms. */
+static uint32_t fec_deadline(const struct client *c)
+{
+	return cg_fec_deadline_us(c->fec_ia_us, c->fec_k, 1000, c->cfg->fec_wait_ms * 1000);
+}
+
+/* The groups open longer than their deadline close, and their parities go. */
 static void fec_service(struct client *c)
 {
 	uint64_t now_us = cg_now_us();
 	int i, any = 0;
 
-	while ((i = cg_fec_tx_due(&c->fectx, now_us, c->cfg->fec_wait_ms * 1000)) >= 0) {
+	while ((i = cg_fec_tx_due(&c->fectx, now_us, fec_deadline(c))) >= 0) {
 		fec_close(c, i, 2, now_us);
 		any = 1;
 	}
@@ -1260,7 +1275,7 @@ static void fec_service(struct client *c)
 /* The ms until the oldest open group's deadline, -1: none open. */
 static int fec_timeout(const struct client *c)
 {
-	uint64_t now_us, due = cg_fec_tx_next_us(&c->fectx, c->cfg->fec_wait_ms * 1000);
+	uint64_t now_us, due = cg_fec_tx_next_us(&c->fectx, fec_deadline(c));
 
 	if (!due)
 		return -1;
@@ -1290,6 +1305,7 @@ static void wg_read(struct client *c)
 		k = split_masks(c, carry, split_eligible(c, live, carry, now_ms), dup0);
 		for (int i = 0; i < n; i++) {
 			size_t len = c->in.msg[i].msg_len;
+			uint16_t elig;
 			uint8_t flags = 0;
 
 			if (!len)
@@ -1310,8 +1326,15 @@ static void wg_read(struct client *c)
 				c->wg_peer = c->in.from[i];
 				c->have_peer = 1;
 			}
+			/* With fec, a link over fec_share_max of the recent split DATA
+			 * sits this packet out (fec.h). */
+			elig = k.eligible;
+			if (c->cfg->fec && split) {
+				elig = cg_fec_share_mask(&c->fec_share, k.eligible, c->cfg->fec_share_max);
+				c->fec_capped += elig != k.eligible;
+			}
 			c->pick[m] = (int8_t)(split ? cg_split_pick_eta(&c->sp, c->cfg->split_eta ? &c->eta : NULL, now_us,
-									k.carriers, k.eligible, k.dup, w,
+									k.carriers, elig, k.dup, w,
 									c->native ? CG_WGS_DATA : c->in.buf[i][0],
 									(uint32_t)len, c->cfg->split_small, &flags)
 						    : -1);
@@ -2271,6 +2294,8 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 	cg_json_u64(j, "parities", c->fec_parities);
 	cg_json_u64(j, "bytes", c->fec_bytes);
 	cg_json_u64(j, "no_link", c->fec_nolink);
+	cg_json_u64(j, "capped", c->fec_capped);
+	cg_json_u64(j, "deadline_us", c->cfg->fec ? fec_deadline(c) : 0);
 	cg_json_arr(j, "sizes");
 	for (int i = 1; i <= CG_FEC_KMAX; i++)
 		cg_json_u64(j, NULL, c->fec_size[i]);
