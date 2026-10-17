@@ -168,6 +168,7 @@ struct client {
 	uint16_t cw[CG_MAX_LINKS];            /* the weights from them, with capacity_weights */
 	struct cg_cap_total ctot;             /* their total, for a shaper on the tunnel (upload) */
 	struct cg_eta eta;                    /* the split by expected arrival, with split_eta */
+	struct cg_tickle tk;                  /* with split_eta, an idle link tickled (tickle.h) */
 	struct cg_hcfg hcfg;
 	struct cg_status_writer sw;
 	struct cg_ctl ctl;
@@ -1205,7 +1206,7 @@ static void wg_read(struct client *c)
 			/* Under G4's stress, on its budget: a copy on every carrier. */
 			stress = split && cg_sdup(&c->sdup, c->spread.stress, (uint32_t)len,
 						  (unsigned)__builtin_popcount(carry), c->cfg->split_stress_dup);
-			c->pick[m] = (int8_t)(split ? cg_split_pick_eta(&c->sp, c->cfg->split_eta ? &c->eta : NULL, now_us,
+			c->pick[m] = (int8_t)(split ? cg_split_pick_eta(&c->sp, c->cfg->split_eta ? &c->eta : NULL, c->cfg->split_eta ? &c->tk : NULL, now_us,
 									k.carriers, stress ? 0 : cg_split_stress_elig(&c->spread, k.eligible, c->cfg->split_stress_single), k.dup, w,
 									c->native ? CG_WGS_DATA : c->in.buf[i][0],
 									(uint32_t)len, c->cfg->split_small, &flags)
@@ -2006,8 +2007,14 @@ static void cap_tick(struct client *c, uint16_t live, uint64_t now_ms)
 		cg_cap_weights(c->cap, c->cfg->split == CG_SPLIT_FORCE ? 0 : c->dup0, c->cfg->governor ? c->gw : NULL,
 			       cc.sat_us / 2, c->cw);
 	cg_cap_total_tick(&c->ctot, c->cap, live, cc.sat_us);
-	if (c->cfg->split_eta)
+	if (c->cfg->split_eta) {
+		uint64_t tb[CG_MAX_LINKS];
+		uint16_t due;
+
 		cg_cap_eta(&c->eta, c->cap, live, cc.sat_us / 2, now_ms * 1000);
+		cg_cap_tickle(c->cap, live, now_ms, &due, tb);
+		cg_tickle_tick(&c->tk, now_ms * 1000, (uint64_t)c->cfg->split_tickle_ms * 1000, due, tb);
+	}
 	/* With pacing, each link's socket at about its rate; without, as it
 	 * was set, back to none (a reload turned it off). */
 	for (int i = 0; i < CG_MAX_LINKS; i++) {
@@ -2204,6 +2211,16 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 		cg_json_null(j, "gov_qmin_ms");
 	cg_json_bool(j, "copies_dry", c->sdup.dry);
 	cg_json_decisions(j, &c->dec, now_ms);
+	/* Idle links tickled (tickle.h): how many times, the packets, the one now. */
+	cg_json_obj(j, "tickle");
+	cg_json_u64(j, "every_ms", c->cfg->split_eta ? c->cfg->split_tickle_ms : 0);
+	cg_json_u64(j, "count", c->tk.count);
+	cg_json_u64(j, "packets", c->tk.pkts);
+	if (c->tk.link >= 0 && c->tk.count)
+		cg_json_u64(j, "link", (uint64_t)c->tk.link);
+	else
+		cg_json_null(j, "link");
+	cg_json_end(j, '}');
 	cg_json_bool(j, "pacing", c->cfg->pacing);
 	/* native, tcp_aware: inner TCP marked free (tcpfree.h) */
 	cg_json_obj(j, "tcp_free");
