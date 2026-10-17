@@ -1889,8 +1889,9 @@ static void tun_read(struct server *s)
 static void spread_tick(struct server *s, struct session *S, const char *tag, uint64_t now_ms)
 {
 	struct dpaths d = down_paths(s, S, now_ms);
-	uint16_t changed = cg_split_spread_eval(&S->spread, S->dh, (uint16_t)(d.elig & ~d.dup0),
-						s->cfg->split_spread_ms * 1000, s->cfg->mute_settle_ms, now_ms);
+	uint16_t changed = cg_split_spread_eval_r(&S->spread, S->dh, (uint16_t)(d.elig & ~d.dup0),
+						  s->cfg->split_spread_ms * 1000, s->cfg->mute_settle_ms, now_ms,
+						  s->cfg->split_stress_rejoin);
 
 	for (int p = 0; changed; p++, changed >>= 1) {
 		int32_t ms = S->spread.behind_us[p] / 1000;
@@ -2265,6 +2266,9 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 		cg_json_obj(j, "stress_dup");
 		cg_json_u64(j, "pct", s->cfg->split_stress_dup);
 		cg_json_bool(j, "stress", S->spread.stress);
+		cg_json_bool(j, "recover", S->spread.recover);
+		cg_json_u64(j, "queue_leaves", S->spread.n_qleave);
+		cg_json_u64(j, "recoveries", S->spread.n_recover);
 		cg_json_u64(j, "packets", S->sdup.pkts);
 		cg_json_u64(j, "bytes", S->sdup.bytes);
 		cg_json_end(j, '}');

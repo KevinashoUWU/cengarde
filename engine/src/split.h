@@ -253,7 +253,10 @@ struct cg_spread {
 	uint16_t behind;  /* links whose behind_us the last evaluation measured */
 	int32_t behind_us[CG_MAX_LINKS]; /* their delay behind the fastest candidate */
 	uint64_t since_ms[CG_MAX_LINKS];
-	uint8_t stress;   /* the links' delays are coming apart (cg_split_spread_eval) */
+	uint8_t stress;   /* a link that was in left for its queue: copies help (cg_sdup) */
+	uint8_t recover;  /* the fastest link is one that left: it comes back now (rejoin) */
+	uint16_t qleft;   /* links that left after being in: their queue grew, not their base delay */
+	uint64_t n_recover, n_qleave; /* how often each kind of stress began, for the status */
 };
 
 /* What a link has to do with the split, for the status. */
@@ -304,8 +307,8 @@ static inline void cg_split_spread_reset(struct cg_spread *s, unsigned link)
  * empty split did by accident) carried a lab link that jumped by 300 ms, or
  * deep queues, 7-23 % faster than splitting, at 1.5-2.4 times the bytes;
  * cg_sdup gives it a budget. */
-static inline uint16_t cg_split_spread_eval(struct cg_spread *s, const struct cg_hlink *h, uint16_t cand,
-					    uint32_t spread_us, uint32_t settle_ms, uint64_t now_ms)
+static inline uint16_t cg_split_spread_eval_r(struct cg_spread *s, const struct cg_hlink *h, uint16_t cand,
+					      uint32_t spread_us, uint32_t settle_ms, uint64_t now_ms, int rejoin)
 {
 	uint16_t fresh = 0, in = 0, was = s->left;
 	int32_t back = (int32_t)((uint64_t)spread_us * CG_SPLIT_REJOIN_NUM / CG_SPLIT_REJOIN_DEN);
@@ -320,13 +323,26 @@ static inline uint16_t cg_split_spread_eval(struct cg_spread *s, const struct cg
 	for (int i = 0; i < CG_MAX_LINKS; i++)
 		if ((cand >> i & 1) && cg_health_fresh(&h[i], now_ms))
 			fresh |= (uint16_t)(1u << i);
-	s->stress = 0;
+	/* Recovery: the fastest link is one that left, and every link in is
+	 * more than the spread behind it (its delay came back while theirs
+	 * grew). With rejoin it comes back now instead of after settle_ms:
+	 * waiting, the split sent everything to the links that were queueing
+	 * (lab, ltespike: 40 Mbit/s and 300 TCP retransmissions, against 43
+	 * and 60 coming back at once). */
 	best = cg_health_fastest(h, CG_MAX_LINKS, fresh, now_ms);
-	if (best >= 0 && (s->left >> best & 1)) {
-		s->stress = 1;
-		for (int i = 0; i < CG_MAX_LINKS; i++)
+	{
+		uint8_t rec = best >= 0 && (s->left >> best & 1);
+
+		for (int i = 0; rec && i < CG_MAX_LINKS; i++)
 			if ((fresh & ~s->left) >> i & 1 && cg_owd_diff(h[i].owd, h[best].owd) <= (int32_t)spread_us)
-				s->stress = 0;
+				rec = 0;
+		s->n_recover += rec && !s->recover;
+		s->recover = rec;
+		if (rec && rejoin) {
+			s->left &= (uint16_t)~(1u << best);
+			s->holding &= (uint16_t)~(1u << best);
+			s->qleft &= (uint16_t)~(1u << best);
+		}
 	}
 	best = cg_health_fastest(h, CG_MAX_LINKS, (uint16_t)(fresh & ~s->left), now_ms);
 	if (best < 0 && fresh) {
@@ -341,16 +357,24 @@ static inline uint16_t cg_split_spread_eval(struct cg_spread *s, const struct cg
 
 		if (!(fresh & b)) {
 			s->holding &= (uint16_t)~b; /* gone, or no delay: a wait starts over */
+			s->qleft &= (uint16_t)~b;
 			continue;
 		}
 		d = cg_owd_diff(h[i].owd, h[best].owd);
 		s->behind_us[i] = d;
 		s->behind |= b;
 		if (!(s->left & b)) {
-			if (d > (int32_t)spread_us)
+			if (d > (int32_t)spread_us) {
 				s->left |= b;
-			else
+				/* it was in: its queue grew (a link slow by its base delay
+				 * never gets in, and copies to it would never stop) */
+				if (s->in & b) {
+					s->n_qleave += !s->qleft;
+					s->qleft |= b;
+				}
+			} else {
 				in |= b;
+			}
 		} else if (d > back) {
 			s->holding &= (uint16_t)~b;
 		} else {
@@ -361,11 +385,14 @@ static inline uint16_t cg_split_spread_eval(struct cg_spread *s, const struct cg
 			if (now_ms - s->since_ms[i] >= settle_ms) {
 				s->left &= (uint16_t)~b;
 				s->holding &= (uint16_t)~b;
+				s->qleft &= (uint16_t)~b;
 				in |= b;
 			}
 		}
 	}
 	s->in = in;
+	s->qleft &= s->left;
+	s->stress = s->qleft != 0;
 	return (uint16_t)(was ^ s->left);
 }
 
@@ -397,6 +424,12 @@ static inline int cg_sdup(struct cg_sdup *b, int stress, uint32_t len, unsigned 
 	b->pkts++;
 	b->bytes += cost;
 	return 1;
+}
+
+static inline uint16_t cg_split_spread_eval(struct cg_spread *s, const struct cg_hlink *h, uint16_t cand,
+					    uint32_t spread_us, uint32_t settle_ms, uint64_t now_ms)
+{
+	return cg_split_spread_eval_r(s, h, cand, spread_us, settle_ms, now_ms, 0);
 }
 
 /* The eligible links the guard keeps out of the split (dup0, the weight-0

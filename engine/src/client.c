@@ -1900,8 +1900,8 @@ static void spread_tick(struct client *c, uint16_t present, uint16_t live, uint6
 	carry = cg_health_carriers(c->uh, CG_MAX_LINKS, present, live);
 	split_weights(c, &dup0);
 	cand = (uint16_t)(split_eligible(c, live, carry, now_ms) & ~dup0);
-	changed = cg_split_spread_eval(&c->spread, c->uh, cand, c->cfg->split_spread_ms * 1000, c->cfg->mute_settle_ms,
-				       now_ms);
+	changed = cg_split_spread_eval_r(&c->spread, c->uh, cand, c->cfg->split_spread_ms * 1000, c->cfg->mute_settle_ms,
+					 now_ms, c->cfg->split_stress_rejoin);
 	for (int i = 0; changed; i++, changed >>= 1) {
 		const char *name = c->link[i].ifname;
 		int32_t ms = c->spread.behind_us[i] / 1000;
@@ -2132,6 +2132,9 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 	cg_json_obj(j, "stress_dup");
 	cg_json_u64(j, "pct", c->cfg->split_stress_dup);
 	cg_json_bool(j, "stress", c->spread.stress);
+	cg_json_bool(j, "recover", c->spread.recover);
+	cg_json_u64(j, "queue_leaves", c->spread.n_qleave);
+	cg_json_u64(j, "recoveries", c->spread.n_recover);
 	cg_json_u64(j, "packets", c->sdup.pkts);
 	cg_json_u64(j, "bytes", c->sdup.bytes);
 	cg_json_end(j, '}');

@@ -630,12 +630,12 @@ static void test_split_spread_lead(void)
 	cg_split_spread_eval(&sp, h, 0x7, SPREAD, SETTLE, t);
 	CHECK_EQ(sp.left, 0x4);
 	CHECK_EQ(sp.in, 0x3);
-	CHECK(!sp.stress);
+	CHECK(!sp.recover);
 	/* 2 is now 40 ms ahead of 0 (its queue drained, theirs filled): stress */
 	delay(h, 2, 5000000 - 40 * MSUS, t);
 	for (int k = 0; k < 20; k++) { /* 2 s: the wait starts at the first */
 		cg_split_spread_eval(&sp, h, 0x7, SPREAD, SETTLE, t += 100);
-		CHECK(sp.stress);
+		CHECK(sp.recover);
 		CHECK_EQ(sp.in, 0x3); /* 0 and 1 stay; 2 holds */
 		CHECK(sp.in != 0);
 	}
@@ -645,7 +645,7 @@ static void test_split_spread_lead(void)
 	cg_split_spread_eval(&sp, h, 0x7, SPREAD, SETTLE, t += 100);
 	CHECK_EQ(sp.in, 0x4);
 	CHECK_EQ(sp.left, 0x3);
-	CHECK(!sp.stress); /* the fastest is in again */
+	CHECK(!sp.recover); /* the fastest is in again */
 	/* 2 loses its delay (not fresh) and 0, 1 are out: the fastest of them is
 	 * taken in at once, the split is never empty */
 	h[2].fresh_until_ms = t;
@@ -679,6 +679,51 @@ static void test_split_sdup(void)
 	for (int k = 0; k < 100000; k++)
 		cg_sdup(&b, 0, 1500, 4, 400);
 	CHECK_EQ(b.tokens, CG_SDUP_CAP); /* capped */
+}
+
+/* The two kinds of G4 stress, told apart: a link that was in and left
+ * (its queue grew) arms the copies (stress, qleft) until it comes back; a
+ * link slow by its base delay, never in, does not. A recovery (the fastest
+ * link is one that left) with rejoin brings it back at once. */
+static void test_split_spread_kinds(void)
+{
+	struct cg_hlink h[CG_MAX_LINKS];
+	struct cg_spread sp;
+	uint64_t t = 1000000;
+
+	memset(h, 0, sizeof(h));
+	memset(&sp, 0, sizeof(sp));
+	delay(h, 0, 5000000, t);
+	delay(h, 1, 5000000 + 10 * MSUS, t);
+	delay(h, 2, 5000000 + 80 * MSUS, t); /* slow by base delay: never in */
+	cg_split_spread_eval_r(&sp, h, 0x7, SPREAD, SETTLE, t, 1);
+	CHECK_EQ(sp.in, 0x3);
+	CHECK_EQ(sp.left, 0x4);
+	CHECK(!sp.stress);
+	CHECK_EQ(sp.qleft, 0);
+	/* 1's queue grows: it leaves, having been in -> copies */
+	delay(h, 1, 5000000 + 60 * MSUS, t);
+	cg_split_spread_eval_r(&sp, h, 0x7, SPREAD, SETTLE, t += 100, 1);
+	CHECK_EQ(sp.in, 0x1);
+	CHECK_EQ(sp.qleft, 0x2);
+	CHECK(sp.stress);
+	CHECK_EQ(sp.n_qleave, 1);
+	/* still out a while later: still stress */
+	cg_split_spread_eval_r(&sp, h, 0x7, SPREAD, SETTLE, t += 100, 1);
+	CHECK(sp.stress);
+	/* its queue drains and it becomes the fastest while 0 queues: a
+	 * recovery, and with rejoin it is back at once, stress over */
+	delay(h, 1, 5000000 - 10 * MSUS, t);
+	delay(h, 0, 5000000 + 40 * MSUS, t);
+	cg_split_spread_eval_r(&sp, h, 0x7, SPREAD, SETTLE, t += 100, 1);
+	CHECK(sp.recover);
+	CHECK_EQ(sp.n_recover, 1);
+	CHECK(sp.in & 0x2);      /* back without settle_ms */
+	CHECK(!(sp.qleft & 0x2));
+	/* 0 was in and is now 50 ms behind 1: it left for its queue */
+	CHECK(sp.left & 0x1);
+	CHECK(sp.stress);
+	/* without rejoin the fastest waits settle_ms (test_split_spread_lead) */
 }
 
 static void test_split_spread(void)
@@ -1000,6 +1045,7 @@ void test_split(void)
 	test_split_tail();
 	test_split_spread();
 	test_split_spread_lead();
+	test_split_spread_kinds();
 	test_split_sdup();
 	test_split_spread_copy();
 }
