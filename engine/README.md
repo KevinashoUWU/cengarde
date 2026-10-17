@@ -480,6 +480,25 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
     `asks`, `nacks_sent`); en los dos, `gone_sent` y `gone_received`.
     `reorder.rescue` (`asked`, `rescued`, `lost` y `refused`, los perdidos
     que el otro extremo avisó que no vendrían).
+- **`fec` (no; protocolo 7):** la paridad espacial de la subida repartida
+  (`fec.h`). El cliente junta en grupos los paquetes que fueron cada uno por
+  un solo enlace, como mucho uno por enlace, y manda el XOR del grupo por un
+  enlace de fuera (`CG_T_FEC`). El servidor guarda lo recibido hace poco y
+  reconstruye un paquete que falte en un grupo antes de que el rescate lo
+  pida (con `fec`, un hueco espera al menos 2 × `fec_wait_ms` + 20 ms antes
+  del NACK). Un grupo de uno no manda paridad (sería una copia). Solo
+  cambia al reiniciar (el anillo del que recibe). Va en los dos extremos.
+  - **`fec_wait_ms` (10; 1–200):** el plazo máximo de un grupo. El plazo
+    real sale de la tasa: dos veces lo que tardan en salir k paquetes al
+    intervalo medio, entre 1 ms y `fec_wait_ms`.
+  - **`fec_share_max` (50; 0, sin tope; hasta 100):** con `fec`, ningún
+    enlace lleva más de este % de lo repartido reciente; el que lo pasa se
+    salta el paquete siguiente, sin dejar nunca menos de dos enlaces. Una
+    paridad por grupo cuesta al menos 1/(1 − s) cuando un enlace lleva una
+    parte s (historia 012).
+  - Estado: `fec` en el cliente (`parities`, `bytes`, `no_link`, `capped`,
+    `deadline_us`, `sizes` y por qué cerró cada grupo) y en cada sesión
+    del servidor (lo reconstruido y lo que no).
 - **`reorder_pool_kb` (8192; 256–131070):** memoria para los paquetes
   retenidos, en bloques de 2 KiB, reservada al arrancar; solo ocupa RAM lo
   que llega a usarse. En el servidor la comparten todas las sesiones (cada
