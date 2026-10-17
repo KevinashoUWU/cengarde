@@ -62,6 +62,7 @@
 #include "config.h"  /* enum cg_split_mode */
 #include "health.h"  /* struct cg_hlink: each link's delay */
 #include "proto.h"   /* CG_F_SPLIT, struct cg_probe_bond */
+#include "tickle.h"  /* struct cg_tickle */
 #include "wgsize.h"  /* CG_WGS_DATA */
 
 /* Guard G3: a link with no verified packet from the peer for more than this
@@ -99,8 +100,10 @@ static inline void cg_split_reset(struct cg_split *s)
  *
  * With eta (not NULL), among 2 or more links the packet goes where it
  * arrives first (eta.h), sent at now_us; by the weights when a link has no
- * rate yet. */
-static inline int cg_split_pick_eta(struct cg_split *s, struct cg_eta *eta, uint64_t now_us, uint16_t carriers,
+ * rate yet. With pr (not NULL), a link being tickled (tickle.h) takes the
+ * packet first, while its bucket lasts. */
+static inline int cg_split_pick_eta(struct cg_split *s, struct cg_eta *eta, struct cg_tickle *pr, uint64_t now_us,
+				    uint16_t carriers,
 				    uint16_t eligible, uint16_t dup0, const uint16_t w[CG_MAX_LINKS], uint8_t wgtype,
 				    uint32_t len, uint32_t small_len, uint8_t *flags)
 {
@@ -137,6 +140,17 @@ static inline int cg_split_pick_eta(struct cg_split *s, struct cg_eta *eta, uint
 		return best;
 	}
 
+	if (pr) {
+		int k = cg_tickle_take(pr, keep, len, now_us);
+
+		if (k >= 0) {
+			if (eta)
+				cg_eta_add(eta, (unsigned)k, len, now_us);
+			if (flags)
+				*flags |= CG_F_SPLIT;
+			return k;
+		}
+	}
 	if (eta) {
 		int k = cg_eta_pick(eta, keep, len, now_us);
 
@@ -168,7 +182,7 @@ static inline int cg_split_pick(struct cg_split *s, uint16_t carriers, uint16_t 
 				const uint16_t w[CG_MAX_LINKS], uint8_t wgtype, uint32_t len, uint32_t small_len,
 				uint8_t *flags)
 {
-	return cg_split_pick_eta(s, NULL, 0, carriers, eligible, dup0, w, wgtype, len, small_len, flags);
+	return cg_split_pick_eta(s, NULL, NULL, 0, carriers, eligible, dup0, w, wgtype, len, small_len, flags);
 }
 
 /* The links a packet is sent on, given what cg_split_pick returned: every
