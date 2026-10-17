@@ -245,6 +245,40 @@
     del controlador ni del puerto de abajo. (Leído antes de reescribirlo,
     ese SSD daba 11,8 MB/s en cualquier equipo: el A400 sin DRAM lee lento
     los datos viejos.)
+  - **Causa (2026-10-17, medido): incompatibilidad eléctrica de la pareja.**
+    Material, parches y notas del árbitro en `~/campo/2026-10-17/vl805-rtl8153/`
+    (`arbitro/analysis.md`), fuera del repo.
+    - **El `-75` es un babble del xHCI** (`COMP_BABBLE_DETECTED_ERROR`):
+      usbmon muestra que el VL805 acepta el paquete lleno de 1024 B y marca
+      babble en el corto que cierra la transferencia (1472 = 1024 + 448).
+      Sale en ~1 de cada 6700 transferencias de dos paquetes; por eso 200 B
+      nunca falla y no hay umbral de tasa.
+    - **El disparador es la forma en el cable:** UDP de 900 B (976 B por
+      USB, un paquete) da 0 fallos en 146 000 tramas; 1000 B (1024 + 48), 14
+      en 30 s al mismo pps. Descartados: las ráfagas (con `bMaxBurst` 0 en el
+      contexto del xHCI falla igual), el LPM (excepción `0x400` activa, U1/U2
+      en 0) y la forma del TD (TD de 1024 B: misma tasa).
+    - **El contador de errores de enlace (PORTLI) lo decide:**
+
+      | Pareja | Errores de enlace USB 3 |
+      | --- | --- |
+      | RTL8153 + Intel del PC | 0 en reposo y 0 tras 40 s a 719 Mbit/s (2,4 M paquetes) |
+      | SSD + puerto azul de la Pi | 0 en reposo y 0 con 2 GB de escritura y de lectura |
+      | RTL8153 + puerto azul de la Pi | ~1,5–3 por segundo, también en reposo |
+
+      Ninguno falla con otro compañero. El VL805 convierte un error de
+      enlace en la frontera lleno→corto en babble, y después el RTL8153 queda
+      colgado.
+    - **Por qué la LAN moría:** tras el babble el xHCI reinicia la secuencia
+      del endpoint solo del lado del host y espera un `usb_clear_halt()` que
+      ningún `r8152` hace (ni el del kernel ni el de Realtek): siguen 17 020
+      `-71` seguidos hasta el reset por watchdog. Un `r8152` parcheado que
+      hace clear-halt y, si falla, reset USB (`rx_recover`) mantiene la LAN
+      viva, con pérdidas: ~1,5 recuperaciones por segundo a 50 Mbit/s.
+    - **Remedios:** un hub USB 3 con alimentación propia (regenera la
+      señal), un alargador corto u otro adaptador (RTL8153B, RTL8156,
+      AX88179). Por software no hay arreglo del babble. La LAN de la Pi
+      sigue en USB 2.0 (~300 Mbit/s). Firmware del VL805: `0x138C0`.
 
 ## Qué hacemos con esto
 
@@ -262,7 +296,8 @@
 
 - Confirmar el número de vCPU del plan de Vultr y la cuota de transferencia.
 - MTU real de cada operador (para fijar el MTU de WireGuard; ver historia 005).
-- El RTL8153 en el USB 3 de la Pi (`Rx status -75`): probar el driver con buffers de recepción más chicos.
+- Una NIC USB 3 que se lleve con el VL805 (otro chip o un hub con
+  alimentación) y, para upstream, la recuperación del `r8152` tras un babble.
 - Una semana de campo con `cengarde-rec` y el `cell-monitor` de SmoothStream
   (RSRP, RSRQ, SINR, banda, RAT y celda de cada Quectel a InfluxDB), con los
   relojes sincronizados, para cruzar los cambios de RAT y el SINR con los
@@ -310,3 +345,4 @@
   y da **167,5 de bajada** y 18,4 de subida.
 - 2026-10-15: la pausa del adaptador USB de la LAN se perdía al reiniciar la Pi; queda fija con un script de hotplug.
 - 2026-10-16: el adaptador USB 3.0 nuevo (RTL8153) no recibe en el USB 3 de la Pi 4 (VL805): `Rx status -75`; anda en el PC (Linux y Windows) y en el USB 2.0 de la Pi; puerto azul de arriba apagado; bootloader actualizado.
+- 2026-10-17: la causa del `-75` es una incompatibilidad eléctrica de la pareja VL805 + RTL8153 (errores de enlace solo entre ellos; el VL805 los convierte en babble en la frontera lleno→corto); ni ráfagas, ni LPM, ni buffers. El `r8152` no se recupera de un babble; remedio: hub con alimentación u otro adaptador.
