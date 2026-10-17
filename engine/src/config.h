@@ -215,6 +215,7 @@ struct cg_config {
 	int split;                    /* enum cg_split_mode */
 	uint32_t split_small;         /* datagrams of up to this many bytes are never split */
 	uint32_t split_spread_ms;     /* only links this close to the fastest share the split (split.h G4); 0: off */
+	uint32_t split_stress_dup;    /* while G4 sees the delays come apart, copies may add this % of the bytes (cg_sdup); 0: never */
 	int split_spread_copy;        /* links out of the split get every packet (split.h); default: not with governor */
 	int governor;                 /* the split's weights from each link's queue (govern.h) */
 	int capacity_weights;         /* the split's weights from each link's capacity (capacity.h) */

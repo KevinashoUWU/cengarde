@@ -630,10 +630,12 @@ static void test_split_spread_lead(void)
 	cg_split_spread_eval(&sp, h, 0x7, SPREAD, SETTLE, t);
 	CHECK_EQ(sp.left, 0x4);
 	CHECK_EQ(sp.in, 0x3);
-	/* 2 is now 40 ms ahead of 0 (its queue drained, theirs filled) */
+	CHECK(!sp.stress);
+	/* 2 is now 40 ms ahead of 0 (its queue drained, theirs filled): stress */
 	delay(h, 2, 5000000 - 40 * MSUS, t);
 	for (int k = 0; k < 20; k++) { /* 2 s: the wait starts at the first */
 		cg_split_spread_eval(&sp, h, 0x7, SPREAD, SETTLE, t += 100);
+		CHECK(sp.stress);
 		CHECK_EQ(sp.in, 0x3); /* 0 and 1 stay; 2 holds */
 		CHECK(sp.in != 0);
 	}
@@ -643,12 +645,40 @@ static void test_split_spread_lead(void)
 	cg_split_spread_eval(&sp, h, 0x7, SPREAD, SETTLE, t += 100);
 	CHECK_EQ(sp.in, 0x4);
 	CHECK_EQ(sp.left, 0x3);
+	CHECK(!sp.stress); /* the fastest is in again */
 	/* 2 loses its delay (not fresh) and 0, 1 are out: the fastest of them is
 	 * taken in at once, the split is never empty */
 	h[2].fresh_until_ms = t;
 	cg_split_spread_eval(&sp, h, 0x7, SPREAD, SETTLE, t += 100);
 	CHECK_EQ(sp.in, 0x1);
 	CHECK_EQ(sp.left, 0x2);
+}
+
+/* cg_sdup: copies only under stress, only on its budget (pct % of the
+ * split bytes), never with pct 0 or one link. */
+static void test_split_sdup(void)
+{
+	struct cg_sdup b;
+	int n = 0;
+
+	memset(&b, 0, sizeof(b));
+	for (int k = 0; k < 100; k++) /* no stress: no copies, the budget grows */
+		CHECK(!cg_sdup(&b, 0, 1000, 4, 50));
+	CHECK_EQ(b.tokens, 50000);
+	for (int k = 0; k < 1000; k++) /* stress, 4 links: 3000 bytes a copy, 500 earned a packet */
+		n += cg_sdup(&b, 1, 1000, 4, 50);
+	/* 50000 saved + 1000 x 500 earned over 3000 a copy: about 183 */
+	CHECK(n >= 180 && n <= 186);
+	CHECK_EQ(b.pkts, (uint64_t)n);
+	CHECK_EQ(b.bytes, (uint64_t)n * 3000);
+	CHECK(b.bytes <= 50000 + 1000 * 500);
+	CHECK(!cg_sdup(&b, 1, 1000, 4, 0)); /* off */
+	memset(&b, 0, sizeof(b));
+	for (int k = 0; k < 100; k++)
+		CHECK(!cg_sdup(&b, 1, 1000, 1, 400)); /* one link: nothing to copy to */
+	for (int k = 0; k < 100000; k++)
+		cg_sdup(&b, 0, 1500, 4, 400);
+	CHECK_EQ(b.tokens, CG_SDUP_CAP); /* capped */
 }
 
 static void test_split_spread(void)
@@ -970,5 +1000,6 @@ void test_split(void)
 	test_split_tail();
 	test_split_spread();
 	test_split_spread_lead();
+	test_split_sdup();
 	test_split_spread_copy();
 }

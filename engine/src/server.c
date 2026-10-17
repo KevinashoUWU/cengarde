@@ -181,6 +181,7 @@ struct session {
 	uint64_t down_split; /* of down_pkts, packets split (split.h) instead of copied to every path */
 	struct cg_split sp;  /* the split's round-robin credits */
 	struct cg_spread spread; /* guard G4: the paths of similar delay that share the split (split.h) */
+	struct cg_sdup sdup;     /* copies under G4's stress, on a budget */
 	struct cg_gov gov;       /* the download's weights from each path's queue (govern.h), with governor */
 	uint16_t gw[CG_MAX_LINKS];
 	uint64_t last_down_ms;   /* the newest download packet: the governor moves while traffic goes */
@@ -1650,9 +1651,13 @@ static void down_prepare(struct server *s, struct session *S, int m, uint8_t *bu
 	const struct client *C = client_of(s, S);
 	struct cg_hdr h = { .type = CG_T_DATA, .hint = C->hint, .session = S->id, .ts = (uint32_t)now_us };
 
+	/* Under G4's stress, on its budget: a copy on every carrier. */
+	int stress = d->split && cg_sdup(&S->sdup, S->spread.stress, (uint32_t)len, (unsigned)__builtin_popcount(d->carry),
+					 s->cfg->split_stress_dup);
+
 	/* Before the header: CG_F_SPLIT is under the MAC. */
 	s->pick[m] = (int8_t)(d->split ? cg_split_pick_eta(&S->sp, s->cfg->split_eta ? &S->eta : NULL, now_us,
-							   d->k.carriers, d->k.eligible, d->k.dup, d->w,
+							   d->k.carriers, stress ? 0 : d->k.eligible, d->k.dup, d->w,
 							   s->native ? CG_WGS_DATA : buf[0],
 							   (uint32_t)len, s->cfg->split_small, &h.flags)
 				       : -1);
@@ -2257,6 +2262,12 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 		 * newest probe asked (null: no tail, an older client). */
 		cg_json_str(j, "split_mode", split_mode(s, S));
 		cg_json_u64(j, "split_spread_ms", s->cfg->split_spread_ms);
+		cg_json_obj(j, "stress_dup");
+		cg_json_u64(j, "pct", s->cfg->split_stress_dup);
+		cg_json_bool(j, "stress", S->spread.stress);
+		cg_json_u64(j, "packets", S->sdup.pkts);
+		cg_json_u64(j, "bytes", S->sdup.bytes);
+		cg_json_end(j, '}');
 		cg_json_bool(j, "split_spread_copy", s->cfg->split_spread_copy);
 		cg_json_bool(j, "governor", s->cfg->governor);
 		cg_json_bool(j, "capacity_weights", s->cfg->capacity_weights);

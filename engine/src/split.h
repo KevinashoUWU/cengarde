@@ -253,6 +253,7 @@ struct cg_spread {
 	uint16_t behind;  /* links whose behind_us the last evaluation measured */
 	int32_t behind_us[CG_MAX_LINKS]; /* their delay behind the fastest candidate */
 	uint64_t since_ms[CG_MAX_LINKS];
+	uint8_t stress;   /* the links' delays are coming apart (cg_split_spread_eval) */
 };
 
 /* What a link has to do with the split, for the status. */
@@ -295,7 +296,14 @@ static inline void cg_split_spread_reset(struct cg_spread *s, unsigned link)
  * link, as the network filled (2.6 % of the packets of a 25 Mbit/s stream
  * in a replay of the testnet's download, 0.5 % of its status samples; GPU
  * sweep of 2026-10-17). With no fresh link in, the fastest is taken in at
- * once: the split never empties while a link has a delay. */
+ * once: the split never empties while a link has a delay.
+ *
+ * What emptied it is kept as a signal, s->stress: the fastest link is one
+ * that left and every link in is more than the spread behind it, a queue
+ * drained while the others filled. Copying every packet then (what the
+ * empty split did by accident) carried a lab link that jumped by 300 ms, or
+ * deep queues, 7-23 % faster than splitting, at 1.5-2.4 times the bytes;
+ * cg_sdup gives it a budget. */
 static inline uint16_t cg_split_spread_eval(struct cg_spread *s, const struct cg_hlink *h, uint16_t cand,
 					    uint32_t spread_us, uint32_t settle_ms, uint64_t now_ms)
 {
@@ -312,6 +320,14 @@ static inline uint16_t cg_split_spread_eval(struct cg_spread *s, const struct cg
 	for (int i = 0; i < CG_MAX_LINKS; i++)
 		if ((cand >> i & 1) && cg_health_fresh(&h[i], now_ms))
 			fresh |= (uint16_t)(1u << i);
+	s->stress = 0;
+	best = cg_health_fastest(h, CG_MAX_LINKS, fresh, now_ms);
+	if (best >= 0 && (s->left >> best & 1)) {
+		s->stress = 1;
+		for (int i = 0; i < CG_MAX_LINKS; i++)
+			if ((fresh & ~s->left) >> i & 1 && cg_owd_diff(h[i].owd, h[best].owd) <= (int32_t)spread_us)
+				s->stress = 0;
+	}
 	best = cg_health_fastest(h, CG_MAX_LINKS, (uint16_t)(fresh & ~s->left), now_ms);
 	if (best < 0 && fresh) {
 		/* every fresh link left: the fastest comes back now */
@@ -351,6 +367,36 @@ static inline uint16_t cg_split_spread_eval(struct cg_spread *s, const struct cg
 	}
 	s->in = in;
 	return (uint16_t)(was ^ s->left);
+}
+
+/* Copies under stress (cg_split_spread_eval's s->stress), on a budget: each
+ * split packet adds pct % of its bytes, each copied one spends its extra
+ * copies' bytes, at most CG_SDUP_CAP saved. split_stress_dup (config.h) is
+ * pct: 0 never copies, 100 lets the copies double the bytes while the
+ * stress lasts. */
+#define CG_SDUP_CAP 1048576 /* bytes of copies the budget holds at most */
+
+struct cg_sdup {
+	uint64_t tokens;      /* bytes of copies allowed now */
+	uint64_t pkts, bytes; /* copied, and the extra bytes they cost */
+};
+
+/* Whether a split packet of len bytes is copied to its copies + 1 links. */
+static inline int cg_sdup(struct cg_sdup *b, int stress, uint32_t len, unsigned links, uint32_t pct)
+{
+	uint64_t cost = (uint64_t)len * (links > 1 ? links - 1 : 0);
+
+	if (!pct)
+		return 0;
+	b->tokens += (uint64_t)len * pct / 100;
+	if (b->tokens > CG_SDUP_CAP)
+		b->tokens = CG_SDUP_CAP;
+	if (!stress || !cost || b->tokens < cost)
+		return 0;
+	b->tokens -= cost;
+	b->pkts++;
+	b->bytes += cost;
+	return 1;
 }
 
 /* The eligible links the guard keeps out of the split (dup0, the weight-0
