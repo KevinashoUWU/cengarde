@@ -491,11 +491,14 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
   - **`fec_wait_ms` (10; 1–200):** el plazo máximo de un grupo. El plazo
     real sale de la tasa: dos veces lo que tardan en salir k paquetes al
     intervalo medio, entre 1 ms y `fec_wait_ms`.
-  - **`fec_share_max` (50; 0, sin tope; hasta 100):** con `fec`, ningún
+  - **`fec_share_max` (0, sin tope; hasta 100):** con `fec`, ningún
     enlace lleva más de este % de lo repartido reciente; el que lo pasa se
     salta el paquete siguiente, sin dejar nunca menos de dos enlaces. Una
     paridad por grupo cuesta al menos 1/(1 − s) cuando un enlace lleva una
-    parte s (historia 012).
+    parte s (historia 012). En la red de pruebas (RTMP de 8 Mbit/s,
+    2026-10-17) el tope de 50 % empeoró todo: más paridad (27–36 % de los
+    bytes frente a 12–21 %) y de 3 a 12 veces las retransmisiones de sin
+    tope, porque manda tráfico a los enlaces lentos. Apagado por omisión.
   - Estado: `fec` en el cliente (`parities`, `bytes`, `no_link`, `capped`,
     `deadline_us`, `sizes` y por qué cerró cada grupo) y en cada sesión
     del servidor (lo reconstruido y lo que no).
