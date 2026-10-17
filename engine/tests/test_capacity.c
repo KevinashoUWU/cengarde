@@ -513,7 +513,7 @@ static void test_capacity_stale(void)
 {
 	struct sim s;
 	struct cg_cap_link many[CG_MAX_LINKS];
-	uint64_t c, tb[CG_MAX_LINKS];
+	uint64_t c, tb[CG_MAX_LINKS], tc[CG_MAX_LINKS];
 	uint16_t due;
 
 	sim_start(&s);
@@ -536,11 +536,13 @@ static void test_capacity_stale(void)
 	memset(many, 0, sizeof(many));
 	many[0] = s.l;
 	cg_cap_reset(&many[1]); /* not measured: never due */
-	cg_cap_tickle(many, 0x3, s.t, &due, tb);
+	cg_cap_tickle(many, 0x3, s.t, &due, tb, tc);
 	CHECK_EQ(due, 0x1);
 	CHECK_EQ(tb[0], cg_cap_probe(&s.l, c, c));
 	CHECK_EQ(tb[1], 0);
-	cg_cap_tickle(many, 0x2, s.t, &due, tb); /* not in the mask */
+	CHECK_EQ(tc[0], c);
+	CHECK_EQ(tc[1], 0);
+	cg_cap_tickle(many, 0x2, s.t, &due, tb, tc); /* not in the mask */
 	CHECK_EQ(due, 0);
 	run(&s, 10, 12, 100); /* tickled: loaded again */
 	CHECK(!cg_cap_stale_p(&s.l, s.t));
