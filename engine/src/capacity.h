@@ -457,7 +457,7 @@ static inline int cg_cap_stale_p(const struct cg_cap_link *l, uint64_t now_ms)
  * 5-7 Mbit/s against 15-30 and the upload under split_eta fell to 3 Mbit/s
  * (story 013). */
 static inline void cg_cap_eta(struct cg_eta *e, const struct cg_cap_link l[CG_MAX_LINKS], uint16_t mask,
-			      uint32_t probe_us, uint32_t stale_max, uint64_t now_us)
+			      uint32_t probe_us, uint32_t stale_max, uint16_t no_stale, uint64_t now_us)
 {
 	uint32_t ref = 0, mins[CG_MAX_LINKS];
 	uint64_t big = 0;
@@ -485,17 +485,17 @@ static inline void cg_cap_eta(struct cg_eta *e, const struct cg_cap_link l[CG_MA
 		}
 		if (l[i].queue_us >= 0 && (uint32_t)l[i].queue_us < probe_us)
 			bps = cg_cap_probe(&l[i], bps, big);
-		bps = cg_cap_stale(&l[i], bps, big, now_us / 1000, stale_max);
+		bps = cg_cap_stale(&l[i], bps, big, now_us / 1000, no_stale >> i & 1 ? 1 : stale_max);
 		cg_eta_set(e, i, bps, (uint32_t)cg_owd_diff(mins[i], ref), l[i].queue_us > 0 ? (uint32_t)l[i].queue_us : 0,
 			   now_us);
 	}
 }
 
 /* What a tickle (tickle.h) needs from a tick: *due, the links of mask that
- * are due one (cg_cap_stale_p), and each one's rate, what cg_cap_probe
- * offers it. */
+ * are due one (cg_cap_stale_p), each one's rate, what cg_cap_probe offers
+ * it, and every link's capacity (to judge a tickle by). */
 static inline void cg_cap_tickle(const struct cg_cap_link l[CG_MAX_LINKS], uint16_t mask, uint64_t now_ms, uint16_t *due,
-				 uint64_t bps[CG_MAX_LINKS])
+				 uint64_t bps[CG_MAX_LINKS], uint64_t cap[CG_MAX_LINKS])
 {
 	uint64_t big = 0;
 
@@ -505,6 +505,7 @@ static inline void cg_cap_tickle(const struct cg_cap_link l[CG_MAX_LINKS], uint1
 			big = cg_cap_bps(&l[i]);
 	for (unsigned i = 0; i < CG_MAX_LINKS; i++) {
 		bps[i] = 0;
+		cap[i] = l[i].have_rate ? cg_cap_bps(&l[i]) : 0;
 		if (!(mask >> i & 1) || !cg_cap_stale_p(&l[i], now_ms))
 			continue;
 		bps[i] = cg_cap_probe(&l[i], cg_cap_bps(&l[i]), big);
