@@ -795,6 +795,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	c->split = c->mode == CG_MODE_SERVER ? CG_SPLIT_CLIENT : CG_SPLIT_OFF;
 	c->split_small = 256;
 	c->split_spread_ms = 30;
+	c->split_tickle_ms = 2000;
 	c->split_spread_copy = -1; /* by governor, below */
 	c->governor_target_ms = 20;
 	c->governor_window_ms = 10000;
@@ -881,6 +882,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	    get_bool(&ini, "", "governor", &c->governor, err, errlen) ||
 	    get_bool(&ini, "", "capacity_weights", &c->capacity_weights, err, errlen) ||
 	    get_bool(&ini, "", "split_eta", &c->split_eta, err, errlen) ||
+	    get_u32(&ini, "", "split_tickle_ms", 0, 60000, &c->split_tickle_ms, err, errlen) ||
 	    get_bool(&ini, "", "pacing", &c->pacing, err, errlen) ||
 	    get_u32(&ini, "", "governor_target_ms", 1, 1000, &c->governor_target_ms, err, errlen) ||
 	    get_u32(&ini, "", "governor_window_ms", 1000, 120000, &c->governor_window_ms, err, errlen))

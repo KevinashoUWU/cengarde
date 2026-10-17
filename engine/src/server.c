@@ -175,6 +175,7 @@ struct session {
 	uint16_t cw[CG_MAX_LINKS];            /* the weights from them, with capacity_weights */
 	struct cg_cap_total ctot;             /* their total, for a shaper on the router's interface */
 	struct cg_eta eta;                    /* the split by expected arrival, with split_eta */
+	struct cg_tickle tk;                  /* with split_eta, an idle link tickled (tickle.h) */
 	struct cg_replay replay; /* DATA up; its lost: lost on every link (lost_all) */
 	struct cg_replay ctl;    /* probes */
 	struct cg_arrivals arr;  /* by link, and joint lateness (joint) */
@@ -1745,7 +1746,7 @@ static void down_prepare(struct server *s, struct session *S, int m, uint8_t *bu
 	struct cg_hdr h = { .type = CG_T_DATA, .hint = C->hint, .session = S->id, .ts = (uint32_t)now_us };
 
 	/* Before the header: CG_F_SPLIT is under the MAC. */
-	s->pick[m] = (int8_t)(d->split ? cg_split_pick_eta(&S->sp, s->cfg->split_eta ? &S->eta : NULL, now_us,
+	s->pick[m] = (int8_t)(d->split ? cg_split_pick_eta(&S->sp, s->cfg->split_eta ? &S->eta : NULL, s->cfg->split_eta ? &S->tk : NULL, now_us,
 							   d->k.carriers, d->k.eligible, d->k.dup, d->w,
 							   s->native ? CG_WGS_DATA : buf[0],
 							   (uint32_t)len, s->cfg->split_small, &h.flags)
@@ -2034,8 +2035,14 @@ static void cap_tick(struct server *s, struct session *S, uint16_t live, uint64_
 		cg_cap_weights(S->cap, d.dup0, s->cfg->governor ? S->gw : NULL, cc.sat_us / 2, S->cw);
 	}
 	cg_cap_total_tick(&S->ctot, S->cap, live, cc.sat_us);
-	if (s->cfg->split_eta)
+	if (s->cfg->split_eta) {
+		uint64_t tb[CG_MAX_LINKS];
+		uint16_t due;
+
 		cg_cap_eta(&S->eta, S->cap, live, cc.sat_us / 2, now_ms * 1000);
+		cg_cap_tickle(S->cap, live, now_ms, &due, tb);
+		cg_tickle_tick(&S->tk, now_ms * 1000, (uint64_t)s->cfg->split_tickle_ms * 1000, due, tb);
+	}
 }
 
 /* SO_MAX_PACING_RATE on a lane's socket (pace.h): fq on the way out paces
@@ -2355,6 +2362,15 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 		cg_json_bool(j, "governor", s->cfg->governor);
 		cg_json_bool(j, "capacity_weights", s->cfg->capacity_weights);
 		cg_json_bool(j, "split_eta", s->cfg->split_eta);
+		cg_json_obj(j, "tickle");
+		cg_json_u64(j, "every_ms", s->cfg->split_eta ? s->cfg->split_tickle_ms : 0);
+		cg_json_u64(j, "count", S->tk.count);
+		cg_json_u64(j, "packets", S->tk.pkts);
+		if (S->tk.link >= 0 && S->tk.count)
+			cg_json_u64(j, "link", (uint64_t)S->tk.link);
+		else
+			cg_json_null(j, "link");
+		cg_json_end(j, '}');
 		/* For a shaper on the router's WireGuard interface (capacity.h). */
 		if (cg_cap_shape_bps(&S->ctot))
 			cg_json_ms(j, "shape_mbit", cg_cap_shape_bps(&S->ctot) / 1000);
