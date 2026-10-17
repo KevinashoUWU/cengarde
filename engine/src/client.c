@@ -2288,6 +2288,7 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 	cg_json_bool(j, "on", c->native && c->cfg->tcp_aware);
 	cg_json_u64(j, "control", c->tcpf.ctl);
 	cg_json_u64(j, "retransmissions", c->tcpf.retx);
+	cg_json_end(j, '}');
 	/* Its parities (fec.h). */
 	cg_json_obj(j, "fec");
 	cg_json_bool(j, "on", c->cfg->fec);
