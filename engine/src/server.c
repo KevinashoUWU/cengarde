@@ -260,6 +260,7 @@ struct server {
 	int multi;            /* [client] sections: their names in the logs, the forward table */
 	struct cg_cookie_keys ck;
 	int ep, tfd;
+	uint64_t ticks_missed, tick_max_us; /* timer expirations the tick ran late for, and its longest run */
 	struct lane lane[CG_MAX_LANES];
 	uint32_t nlanes;        /* listen sockets: 1 without a group */
 	int jfd;                /* the group's junk socket, -1 without a group */
@@ -2230,6 +2231,8 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 	cg_json_str(j, "version", CG_VERSION);
 	cg_json_str(j, "description", s->cfg->description);
 	cg_json_u64(j, "uptime_ms", now_ms - s->start_ms);
+	cg_json_u64(j, "ticks_missed", s->ticks_missed); /* the tick ran late (clockwork audit) */
+	cg_json_u64(j, "tick_max_us", s->tick_max_us);
 	cg_json_u64(j, "time_ms", cg_wall_ms());
 	cg_json_str(j, "config_error", s->config_error);
 	cg_json_str(j, "listen", s->laddr);
@@ -2331,6 +2334,12 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 		cg_json_bool(j, "governor", s->cfg->governor);
 		cg_json_bool(j, "capacity_weights", s->cfg->capacity_weights);
 		cg_json_bool(j, "split_eta", s->cfg->split_eta);
+		cg_json_obj(j, "split_by"); /* split.h, enum cg_split_by */
+		cg_json_u64(j, "eta", S->sp.n_by[CG_SPLIT_BY_ETA]);
+		cg_json_u64(j, "wrr", S->sp.n_by[CG_SPLIT_BY_WRR]);
+		cg_json_u64(j, "g2", S->sp.n_by[CG_SPLIT_BY_G2]);
+		cg_json_u64(j, "all", S->sp.n_by[CG_SPLIT_BY_ALL]);
+		cg_json_end(j, '}');
 		/* What picks the path of a split packet now (decrec.h): with "eta"
 		 * the gov_weight and cap_weight of the paths are not used. */
 		if (d.split)
@@ -2407,6 +2416,7 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 			cg_json_u64(j, "last_rx_ms_ago", now_ms - P->last_rx_ms);
 			cg_json_u64(j, "probe_interval_ms", P->interval_ms);
 			cg_json_str(j, "download", h->state == CG_H_MUTED ? "muted" : "active");
+			cg_json_u64(j, "mute_backoff", h->backoff); /* unmute wait = 2 x settle << it */
 			if (h->have_behind)
 				cg_json_ms_signed(j, "download_behind_ms", h->behind_us);
 			else
@@ -3483,11 +3493,19 @@ int cg_server_run(struct cg_config *cfg, const struct cg_run *run)
 				traffic = 1;
 				break;
 			case CG_EV_TIMER: {
-				uint64_t expirations;
+				uint64_t expirations = 0;
+
+				uint64_t t0;
 
 				if (read(s->tfd, &expirations, sizeof(expirations)) < 0 && errno != EAGAIN)
 					cg_warn("timerfd: %s", strerror(errno));
+				else if (expirations > 1)
+					s->ticks_missed += expirations - 1;
+				t0 = cg_now_us();
 				tick(s);
+				t0 = cg_now_us() - t0;
+				if (t0 > s->tick_max_us)
+					s->tick_max_us = t0;
 				break;
 			}
 			case CG_EV_CTL: {
