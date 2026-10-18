@@ -548,6 +548,13 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
   Cubic del arranque lento antes de tiempo (*razonado*). La solución de fondo
   es el planificador por hora de llegada del paso 3; hasta entonces, esta
   guarda.
+- **`split_dwell_ms` (`0`; de 0 a 5000), en los dos extremos (experimento,
+  auditoría C3):** un enlace que G4 devolvió por una recuperación (el más
+  rápido era uno que había salido) se queda dentro ese tiempo mientras
+  no pase el doble de `split_spread_ms`. Sin esto, la reentrada inmediata y
+  la salida por cola se turnaban sin histéresis. Aparte, y siempre, el
+  gobernador ya no mueve el peso de un enlace que G4 tiene fuera
+  (auditoría C8). `0`: sin permanencia.
 - **`split_spread_copy` (`yes`; `yes` o `no`), en los dos extremos, para lo
   que cada uno envía:** qué llevan los enlaces que la guarda de retraso deja
   fuera, y qué pasa cuando queda uno solo en el reparto. Con `yes`, como

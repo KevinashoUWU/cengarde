@@ -269,6 +269,7 @@ struct cg_spread {
 	uint8_t stress;   /* a link that was in left for its queue: copies help (cg_sdup) */
 	uint8_t recover;  /* the fastest link is one that left: it comes back now (rejoin) */
 	uint16_t qleft;   /* links that left after being in: their queue grew, not their base delay */
+	uint32_t dwell_ms; /* set by the caller (split_dwell_ms): a link back by a recovery stays in this long, 0: off */
 	uint64_t n_recover, n_qleave; /* how often each kind of stress began, for the status */
 	uint64_t n_stall; /* links that left in a stall (cg_split_stalled): no copies */
 	uint32_t owd_prev[CG_MAX_LINKS]; /* each link's delay at the last evaluation */
@@ -479,6 +480,15 @@ static inline uint16_t cg_split_spread_eval_r(struct cg_spread *s, const struct 
 		s->behind_us[i] = d;
 		s->behind |= b;
 		if (!(s->left & b)) {
+			/* back by a recovery a moment ago: it stays in while it is
+			 * within twice the spread (audit C3: the rejoin at once
+			 * and the leave for its queue took turns with no
+			 * hysteresis) */
+			if (d > (int32_t)spread_us && s->dwell_ms && s->ev[i] == CG_G4_REJOIN_RECOVER &&
+			    now_ms - s->ev_ms[i] < s->dwell_ms && d <= 2 * (int32_t)spread_us) {
+				in |= b;
+				continue;
+			}
 			if (d > (int32_t)spread_us) {
 				s->left |= b;
 				/* it was in: its queue grew (a link slow by its base delay
