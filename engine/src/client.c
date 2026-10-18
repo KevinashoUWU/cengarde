@@ -1420,10 +1420,16 @@ static void wg_msg(struct client *c, struct mmsghdr *m, struct iovec *iov, uint8
  * many only waits for the deadline. */
 static uint16_t ro_rset(const struct client *c, uint64_t now_ms)
 {
-	uint16_t present, live;
+	uint16_t present, live, m;
 
 	link_masks(c, now_ms, &present, &live);
-	return expect_mask(c) & live;
+	m = expect_mask(c) & live;
+	/* reorder_idle_ms: not a link that brought no data for that long (the
+	 * server's ETA may send it nothing; clockwork audit C2) */
+	for (int i = 0; c->cfg->reorder_idle_ms && i < CG_MAX_LINKS; i++)
+		if ((m >> i & 1) && cg_arr_idle(&c->rxs.rx[i], (uint32_t)(now_ms * 1000), c->cfg->reorder_idle_ms * 1000))
+			m &= (uint16_t)~(1u << i);
+	return m;
 }
 
 /* Sends the output batch to WireGuard, then gives back the pool buffers it
