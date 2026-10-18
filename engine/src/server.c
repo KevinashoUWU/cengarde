@@ -1941,6 +1941,8 @@ static void spread_tick(struct server *s, struct session *S, const char *tag, ui
 		cg_dec_edge(&S->dec, &S->dec_rfull, cg_resc_low(&S->resc_b), now_ms, CG_DEC_NOLINK,
 			    CG_DEC_RESCUE_FULL_ON, CG_DEC_RESCUE_FULL_OFF, (int64_t)S->resc_b.credit);
 	cg_decrec_g4_before(&S->spread, before);
+	S->spread.dwell_ms = s->cfg->split_dwell_ms;
+	S->spread.dwell_oq_us = (int32_t)(s->cfg->split_dwell_oq_ms * 1000);
 	changed = cg_split_spread_eval_r(&S->spread, S->dh, (uint16_t)(d.elig & ~d.dup0), s->cfg->split_spread_ms * 1000,
 					 s->cfg->mute_settle_ms, now_ms, s->cfg->split_stress_rejoin);
 	cg_decrec_g4(&S->dec, &S->spread, changed, before, &S->dec_stress, &S->dec_recover, now_ms);
@@ -2330,6 +2332,7 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 		cg_json_u64(j, "queue_leaves", S->spread.n_qleave);
 		cg_json_u64(j, "recoveries", S->spread.n_recover);
 		cg_json_u64(j, "stalls", S->spread.n_stall);
+		cg_json_u64(j, "dwells", S->spread.n_dwell);
 		cg_json_u64(j, "packets", S->sdup.pkts);
 		cg_json_u64(j, "bytes", S->sdup.bytes);
 		cg_json_end(j, '}');

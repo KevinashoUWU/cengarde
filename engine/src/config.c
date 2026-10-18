@@ -878,6 +878,8 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	    get_u32(&ini, "", "split_spread_ms", 0, 2000, &c->split_spread_ms, err, errlen) ||
 	    get_u32(&ini, "", "split_stress_dup", 0, 400, &c->split_stress_dup, err, errlen) ||
 	    get_bool(&ini, "", "split_stress_rejoin", &c->split_stress_rejoin, err, errlen) ||
+	    get_u32(&ini, "", "split_dwell_ms", 0, 5000, &c->split_dwell_ms, err, errlen) ||
+	    get_u32(&ini, "", "split_dwell_oq_ms", 0, 5000, &c->split_dwell_oq_ms, err, errlen) ||
 	    get_bool(&ini, "", "split_stress_single", &c->split_stress_single, err, errlen) ||
 	    get_bool(&ini, "", "split_spread_copy", &c->split_spread_copy, err, errlen) ||
 	    get_bool(&ini, "", "governor", &c->governor, err, errlen) ||

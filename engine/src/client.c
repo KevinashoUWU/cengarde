@@ -1936,6 +1936,8 @@ static void spread_tick(struct client *c, uint16_t present, uint16_t live, uint6
 		cg_dec_edge(&c->dec, &c->dec_rfull, cg_resc_low(&c->resc_b), now_ms, CG_DEC_NOLINK,
 			    CG_DEC_RESCUE_FULL_ON, CG_DEC_RESCUE_FULL_OFF, (int64_t)c->resc_b.credit);
 	cg_decrec_g4_before(&c->spread, before);
+	c->spread.dwell_ms = c->cfg->split_dwell_ms;
+	c->spread.dwell_oq_us = (int32_t)(c->cfg->split_dwell_oq_ms * 1000);
 	changed = cg_split_spread_eval_r(&c->spread, c->uh, cand, c->cfg->split_spread_ms * 1000, c->cfg->mute_settle_ms,
 					 now_ms, c->cfg->split_stress_rejoin);
 	cg_decrec_g4(&c->dec, &c->spread, changed, before, &c->dec_stress, &c->dec_recover, now_ms);
@@ -2179,6 +2181,7 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 	cg_json_u64(j, "queue_leaves", c->spread.n_qleave);
 	cg_json_u64(j, "recoveries", c->spread.n_recover);
 	cg_json_u64(j, "stalls", c->spread.n_stall);
+	cg_json_u64(j, "dwells", c->spread.n_dwell);
 	cg_json_u64(j, "packets", c->sdup.pkts);
 	cg_json_u64(j, "bytes", c->sdup.bytes);
 	cg_json_end(j, '}');
