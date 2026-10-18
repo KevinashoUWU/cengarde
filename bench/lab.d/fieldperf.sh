@@ -28,16 +28,16 @@ fieldperf() {
 	trap 'fieldperf_stop; teardown; exit 130' INT TERM
 	setup && start || return 1
 	for p in 5201 5202; do
-		ip netns exec srv iperf3 -s -p "$p" -D -I "$RUN/iperf3-$p.pid" || { echo "FAIL: iperf3 server on $p"; return 1; }
+		ip netns exec "$NS_SRV" iperf3 -s -p "$p" -D -I "$RUN/iperf3-$p.pid" || { echo "FAIL: iperf3 server on $p"; return 1; }
 	done
 	rm -rf "$out"
-	plan=$(ip netns exec cli sh "$LAB/fieldperf.sh" plan -S "$RUN/client.json" -t 2 -P 1 -o "$out" 2>&1)
+	plan=$(ip netns exec "$NS_CLI" sh "$LAB/fieldperf.sh" plan -S "$RUN/client.json" -t 2 -P 1 -o "$out" 2>&1)
 	printf '   %s\n' "${plan//$'\n'/$'\n'   }"
 	if ! echo "$plan" | grep -q '^Total: about 210 MB' || [ -e "$out" ]; then
 		echo "FAIL: plan: expected 210 MB (3 modes x 2 links x 140 Mbit/s x 2 s) and nothing run"
 		fail=1
 	fi
-	if ! ip netns exec cli sh "$LAB/fieldperf.sh" run -m "solo all" -S "$RUN/client.json" -t 2 -P 1 -o "$out" -y \
+	if ! ip netns exec "$NS_CLI" sh "$LAB/fieldperf.sh" run -m "solo all" -S "$RUN/client.json" -t 2 -P 1 -o "$out" -y \
 		>"$RUN/fieldperf.log" 2>&1; then
 		cat "$RUN/fieldperf.log"
 		echo "FAIL: fieldperf.sh run"

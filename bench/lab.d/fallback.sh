@@ -112,8 +112,8 @@ fallback() {
 	fb_list l1 "10.0.1.99:59402 10.0.1.2:59402"
 	fb_list l2 "[2001:db8::2]:59402 10.0.2.2:59402"
 	fb_list l3 "10.0.3.2:59402 10.0.3.20:59402"
-	ip -n srv addr add 10.0.3.20/32 dev s3
-	ip netns exec srv iptables -t nat -A PREROUTING -i s3 -d 10.0.3.20 -p udp --dport 59402 \
+	ip -n "$NS_SRV" addr add 10.0.3.20/32 dev s3
+	ip netns exec "$NS_SRV" iptables -t nat -A PREROUTING -i s3 -d 10.0.3.20 -p udp --dport 59402 \
 		-j DNAT --to-destination 10.0.3.2 || { echo "FAIL: iptables DNAT in the srv netns"; fail=1; }
 	start
 
@@ -127,10 +127,10 @@ fallback() {
 	echo "   l1, first address unreachable: live on the second after $out (failover $FAILOVER_MS ms)"
 	# l3: its first address blocked, then working again.
 	out=$(fb_wait l3 "$on3a" 3) || { echo "FAIL: l3 not live on its first address: $out"; fail=1; }
-	ip netns exec srv iptables -t raw -I PREROUTING -i s3 -d 10.0.3.2 -j DROP
+	ip netns exec "$NS_SRV" iptables -t raw -I PREROUTING -i s3 -d 10.0.3.2 -j DROP
 	out=$(fb_wait l3 "$on3b" "$((secs + 1))") || { echo "FAIL: l3 did not move to 10.0.3.20: $out"; fail=1; }
 	echo "   l3, first address blocked: live on the second after $out"
-	ip netns exec srv iptables -t raw -D PREROUTING -i s3 -d 10.0.3.2 -j DROP
+	ip netns exec "$NS_SRV" iptables -t raw -D PREROUTING -i s3 -d 10.0.3.2 -j DROP
 	moves1=$(fb_link l1 failovers) moves3=$(fb_link l3 failovers)
 	sleep $((2 * FAILOVER_MS / 1000 + 1))
 	# Sticky: both stay where replies come, the first address working or not.
@@ -154,7 +154,7 @@ fallback() {
 	echo "   l1, reloads with an IPv6 entry added and its two addresses swapped: stays on 10.0.1.2 without reopening"
 
 	# An outage of l3: every address of its server side gone for a while.
-	ip -n srv addr flush dev s3
+	ip -n "$NS_SRV" addr flush dev s3
 	SECONDS=0
 	sleep "$OUTAGE_S"
 	# Back once l3 has just moved onto its second address, so the first
@@ -164,8 +164,8 @@ fallback() {
 	out=$(fb_wait l3 'l["candidate"] == 0' "$secs") && out=$(fb_wait l3 'l["candidate"] == 1' "$secs") ||
 		{ echo "FAIL: l3 did not go through its addresses during the outage: $out"; fail=1; }
 	outage=$SECONDS
-	ip -n srv addr add 10.0.3.2/24 dev s3
-	ip -n srv addr add 10.0.3.20/32 dev s3
+	ip -n "$NS_SRV" addr add 10.0.3.2/24 dev s3
+	ip -n "$NS_SRV" addr add 10.0.3.20/32 dev s3
 	out=$(fb_wait l3 "$on3a" "$((secs + 3))") ||
 		{ echo "FAIL: l3 not back on its first address after the outage: $out"; fail=1; }
 	echo "   l3, after $outage s with no server address: back on the first after $out," \
@@ -176,22 +176,22 @@ fallback() {
 	# An outage of l3 itself, on 10.0.3.20 again: its own address gone and
 	# back, the same one. That is a change of its local address, so it
 	# comes back on the first at once, with no dead round.
-	ip netns exec srv iptables -t raw -I PREROUTING -i s3 -d 10.0.3.2 -j DROP
+	ip netns exec "$NS_SRV" iptables -t raw -I PREROUTING -i s3 -d 10.0.3.2 -j DROP
 	out=$(fb_wait l3 "$on3b" "$((secs + 1))") || { echo "FAIL: l3 did not move to 10.0.3.20 again: $out"; fail=1; }
-	ip netns exec srv iptables -t raw -D PREROUTING -i s3 -d 10.0.3.2 -j DROP
+	ip netns exec "$NS_SRV" iptables -t raw -D PREROUTING -i s3 -d 10.0.3.2 -j DROP
 	rounds=$(grep -c "link l3: the server answers again" "$RUN/client.log")
-	ip -n cli addr flush dev l3
+	ip -n "$NS_CLI" addr flush dev l3
 	out=$(fb_wait l3 'l["state"] == "down" and l["reason"] == "no address"' 3) ||
 		{ echo "FAIL: l3 not down without its address: $out"; fail=1; }
 	sleep 2
-	ip -n cli addr add 10.0.3.1/24 dev l3
+	ip -n "$NS_CLI" addr add 10.0.3.1/24 dev l3
 	out=$(fb_wait l3 "$on3a" 3) || { echo "FAIL: l3 not back on its first address after losing its own: $out"; fail=1; }
 	echo "   l3, its own address gone and back: on the first after $out"
 	[ "$(grep -c "link l3: the server answers again" "$RUN/client.log")" = "$rounds" ] ||
 		{ echo "FAIL: l3 came back through a dead round, not through its local address"; fail=1; }
 
 	# Path MTU: l2 at 1400 bytes while 1400-byte datagrams go up.
-	ip -n cli link set l2 mtu 1400
+	ip -n "$NS_CLI" link set l2 mtu 1400
 	up 2000 7 >"$RUN/traffic.txt"
 	echo "   tunnel: $(cat "$RUN/traffic.txt")"
 	sent=$(sed -n 's/.*sent=\([0-9]*\).*/\1/p' "$RUN/tx.out")

@@ -13,13 +13,25 @@
 # engarde (Go) baseline also needs go, git and curl.
 # Usage: sudo bench/lab.sh <function> [args]   (see bench/README.md)
 set -u
+export LC_NUMERIC=C # awk's and printf's decimals with a point, as the parsers expect
 LAB=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$LAB/.." && pwd)
-BIN=$LAB/bin
-RUN=$(realpath -ms "${RUN:-$LAB/run}") # configs, logs and control sockets (absolute; sun_path: at most 107 bytes)
+# LAB_ID: several labs side by side on one machine (bench/labq.py runs them).
+# Empty, the names of always: netns cli and srv, bench/run. LAB_ID=N names the
+# netns cli-N and srv-N and the run directory bench/run-N; teardown then
+# touches only those. Everything else (veths, addresses, ports, WireGuard
+# interfaces, sockets) lives inside the two netns or in RUN, so it keeps its
+# name: l1 in cli-1 and l1 in cli-2 are two interfaces.
+LAB_ID=${LAB_ID:-}
+case $LAB_ID in *[!0-9]*) echo "LAB_ID must be a number" >&2; exit 1 ;; esac
+NS_CLI=cli${LAB_ID:+-$LAB_ID}
+NS_SRV=srv${LAB_ID:+-$LAB_ID}
+export LAB_ID NS_CLI NS_SRV # for the Python helpers (health.py)
+BIN=${BIN:-$LAB/bin} # the bench tools and the engine "build" writes
+RUN=$(realpath -ms "${RUN:-$LAB/run${LAB_ID:+-$LAB_ID}}") # configs, logs and control sockets (absolute; sun_path: at most 107 bytes)
 CLIENT_BIN=${CLIENT_BIN:-$BIN/engarde-client}
 SERVER_BIN=${SERVER_BIN:-$BIN/engarde-server}
-CENGARDE_BIN=${CENGARDE_BIN:-$BIN/cengarde} # e.g. a wrapper that runs an OpenWrt build
+CENGARDE_BIN=${CENGARDE_BIN:-$BIN/cengarde} # e.g. a wrapper that runs an OpenWrt build, or a build of another revision
 NLINKS=${NLINKS:-3}
 SIZE=${SIZE:-1400}
 WRITE_TIMEOUT=${WRITE_TIMEOUT:-10}
@@ -75,17 +87,17 @@ need_go() {
 setup() {
 	teardown
 	mkdir -p "$RUN"
-	ip netns add cli || return 1
-	ip netns add srv || return 1
-	ip -n cli link set lo up
-	ip -n srv link set lo up
+	ip netns add "$NS_CLI" || return 1
+	ip netns add "$NS_SRV" || return 1
+	ip -n "$NS_CLI" link set lo up
+	ip -n "$NS_SRV" link set lo up
 	local i excl='"lo"' nveth=$((NLINKS > 3 ? NLINKS : 3))
 	for i in $(seq 1 "$nveth"); do
-		ip link add "l$i" netns cli type veth peer name "s$i" netns srv
-		ip -n cli addr add "10.0.$i.1/24" dev "l$i"
-		ip -n srv addr add "10.0.$i.2/24" dev "s$i"
-		ip -n cli link set "l$i" up
-		ip -n srv link set "s$i" up
+		ip link add "l$i" netns "$NS_CLI" type veth peer name "s$i" netns "$NS_SRV"
+		ip -n "$NS_CLI" addr add "10.0.$i.1/24" dev "l$i"
+		ip -n "$NS_SRV" addr add "10.0.$i.2/24" dev "s$i"
+		ip -n "$NS_CLI" link set "l$i" up
+		ip -n "$NS_SRV" link set "s$i" up
 		[ "$i" -gt "$NLINKS" ] && excl="$excl, \"l$i\""
 	done
 	cat >"$RUN/client.yml" <<EOF
@@ -136,14 +148,14 @@ EOF
 
 start() {
 	if [ "$ENGINE" = c ]; then
-		ip netns exec srv "$CENGARDE_BIN" -c "$RUN/server.conf" >"$RUN/server.log" 2>&1 &
+		ip netns exec "$NS_SRV" "$CENGARDE_BIN" -c "$RUN/server.conf" >"$RUN/server.log" 2>&1 &
 		echo $! >"$RUN/server.pid"
-		ip netns exec cli "$CENGARDE_BIN" -c "$RUN/client.conf" >"$RUN/client.log" 2>&1 &
+		ip netns exec "$NS_CLI" "$CENGARDE_BIN" -c "$RUN/client.conf" >"$RUN/client.log" 2>&1 &
 		echo $! >"$RUN/client.pid"
 		sleep 1.5 # links come up from netlink at once; give the first probes time
 		return
 	fi
-	ip netns exec srv "$SERVER_BIN" "$RUN/server.yml" >"$RUN/server.log" 2>&1 &
+	ip netns exec "$NS_SRV" "$SERVER_BIN" "$RUN/server.yml" >"$RUN/server.log" 2>&1 &
 	echo $! >"$RUN/server.pid"
 	if [ -n "$PROTO" ]; then
 		local i links="" dd=""
@@ -152,9 +164,9 @@ start() {
 			[ "$i" -le "$NLINKS" ] && links="$links -L l$i,10.0.$i.1,10.0.$i.2:59402"
 		done
 		# shellcheck disable=SC2086
-		ip netns exec cli "$BIN/protoclient" -l 127.0.0.1:59401 $dd $links >"$RUN/client.log" 2>&1 &
+		ip netns exec "$NS_CLI" "$BIN/protoclient" -l 127.0.0.1:59401 $dd $links >"$RUN/client.log" 2>&1 &
 	else
-		ip netns exec cli "$CLIENT_BIN" "$RUN/client.yml" >"$RUN/client.log" 2>&1 &
+		ip netns exec "$NS_CLI" "$CLIENT_BIN" "$RUN/client.yml" >"$RUN/client.log" 2>&1 &
 	fi
 	echo $! >"$RUN/client.pid"
 	sleep 2.5 # the Go client polls the interfaces once per second
@@ -169,20 +181,29 @@ stop() {
 	sleep 0.5
 }
 
+# ns_kill NETNS [NAME]: kills what runs in that netns (only the processes
+# called NAME, when given); other labs' processes are left alone.
+ns_kill() {
+	local p
+	for p in $(ip netns pids "$1" 2>/dev/null); do
+		[ -z "${2:-}" ] || [ "$(cat "/proc/$p/comm" 2>/dev/null)" = "$2" ] || continue
+		kill "$p" 2>/dev/null
+	done
+}
+
 teardown() {
 	stop 2>/dev/null
-	pkill -f "$BIN/udpgen" 2>/dev/null
-	pkill -f "$BIN/mgen" 2>/dev/null
-	pkill -f "$BIN/jitter" 2>/dev/null
-	ip netns del cli 2>/dev/null
-	ip netns del srv 2>/dev/null
+	ns_kill "$NS_CLI"
+	ns_kill "$NS_SRV"
+	ip netns del "$NS_CLI" 2>/dev/null
+	ip netns del "$NS_SRV" 2>/dev/null
 	return 0
 }
 
 # shape LINK RATE: limit the client side egress of a link (e.g. shape l3 5mbit).
 # The queue is local, like a USB modem or a slow WiFi uplink.
-shape() { ip netns exec cli tc qdisc replace dev "$1" root tbf rate "$2" burst 32kb limit 3mb; }
-unshape() { ip netns exec cli tc qdisc del dev "$1" root; }
+shape() { ip netns exec "$NS_CLI" tc qdisc replace dev "$1" root tbf rate "$2" burst 32kb limit 3mb; }
+unshape() { ip netns exec "$NS_CLI" tc qdisc del dev "$1" root; }
 
 cpu_ticks() { awk '{print $14+$15}' "/proc/$1/stat" 2>/dev/null || echo 0; }
 
@@ -190,11 +211,11 @@ cpu_ticks() { awk '{print $14+$15}' "/proc/$1/stat" 2>/dev/null || echo 0; }
 up() {
 	local pps=$1 secs=${2:-10} cp sp c0 s0 c1 s1 rx
 	cp=$(cat "$RUN/client.pid") sp=$(cat "$RUN/server.pid")
-	ip netns exec srv "$BIN/udpgen" -b 127.0.0.1:59301 -d "$secs" -g 3 >"$RUN/rx.out" &
+	ip netns exec "$NS_SRV" "$BIN/udpgen" -b 127.0.0.1:59301 -d "$secs" -g 3 >"$RUN/rx.out" &
 	rx=$!
 	sleep 0.3
 	c0=$(cpu_ticks "$cp") s0=$(cpu_ticks "$sp")
-	ip netns exec cli "$BIN/udpgen" -b 127.0.0.1:50000 -p 127.0.0.1:59401 -r "$pps" -s "$SIZE" -d "$secs" -g 1 >"$RUN/tx.out"
+	ip netns exec "$NS_CLI" "$BIN/udpgen" -b 127.0.0.1:50000 -p 127.0.0.1:59401 -r "$pps" -s "$SIZE" -d "$secs" -g 1 >"$RUN/tx.out"
 	c1=$(cpu_ticks "$cp") s1=$(cpu_ticks "$sp")
 	wait $rx
 	report "$pps" "$secs" $((c1 - c0)) $((s1 - s0))
@@ -205,11 +226,11 @@ up() {
 down() {
 	local pps=$1 secs=${2:-10} cp sp c0 s0 c1 s1 rx
 	cp=$(cat "$RUN/client.pid") sp=$(cat "$RUN/server.pid")
-	ip netns exec cli "$BIN/udpgen" -b 127.0.0.1:50000 -p 127.0.0.1:59401 -r 20 -s 64 -d $((secs + 2)) -g 2 >"$RUN/rx.out" &
+	ip netns exec "$NS_CLI" "$BIN/udpgen" -b 127.0.0.1:50000 -p 127.0.0.1:59401 -r 20 -s 64 -d $((secs + 2)) -g 2 >"$RUN/rx.out" &
 	rx=$!
 	sleep 1
 	c0=$(cpu_ticks "$cp") s0=$(cpu_ticks "$sp")
-	ip netns exec srv "$BIN/udpgen" -b 127.0.0.1:59301 -l -r "$pps" -s "$SIZE" -d "$secs" -g 1 >"$RUN/tx.out"
+	ip netns exec "$NS_SRV" "$BIN/udpgen" -b 127.0.0.1:59301 -l -r "$pps" -s "$SIZE" -d "$secs" -g 1 >"$RUN/tx.out"
 	c1=$(cpu_ticks "$cp") s1=$(cpu_ticks "$sp")
 	wait $rx
 	report "$pps" "$secs" $((c1 - c0)) $((s1 - s0))
@@ -290,7 +311,7 @@ demo_stranger() {
 	traffic=$!
 	sleep 2
 	echo "stranger 10.0.1.1:7777 sends one packet to the server port, then listens:"
-	ip netns exec cli "$BIN/udpgen" -b 10.0.1.1:7777 -p 10.0.1.2:59402 -r 2 -d 1 -g 5 | sed 's/ lat_avg.*//'
+	ip netns exec "$NS_CLI" "$BIN/udpgen" -b 10.0.1.1:7777 -p 10.0.1.2:59402 -r 2 -d 1 -g 5 | sed 's/ lat_avg.*//'
 	wait "$traffic"
 	teardown
 }
@@ -301,10 +322,10 @@ demo_webpanic() {
 	local squatter
 	need_go || return 1
 	setup
-	ip netns exec cli python3 -c 'import socket,time; s=socket.socket(); s.bind(("127.0.0.1",9001)); s.listen(1); time.sleep(5)' &
+	ip netns exec "$NS_CLI" python3 -c 'import socket,time; s=socket.socket(); s.bind(("127.0.0.1",9001)); s.listen(1); time.sleep(5)' &
 	squatter=$!
 	sleep 0.5
-	timeout 4 ip netns exec cli "$CLIENT_BIN" "$RUN/client.yml" >"$RUN/client.log" 2>&1
+	timeout 4 ip netns exec "$NS_CLI" "$CLIENT_BIN" "$RUN/client.yml" >"$RUN/client.log" 2>&1
 	echo "engarde-client exit code: $? (124 = still running after 4 s)"
 	grep -E "panic|level=error" "$RUN/client.log"
 	wait "$squatter"
@@ -320,9 +341,9 @@ demo_races() {
 	down 3000 5 >/dev/null &
 	traffic=$!
 	for i in $(seq 1 10); do
-		ip netns exec cli curl -s -m1 http://127.0.0.1:9001/api/v1/get-list >/dev/null
-		ip netns exec cli curl -s -m1 -X POST -d '{"interface":"l2"}' http://127.0.0.1:9001/api/v1/swap-exclusion >/dev/null
-		ip netns exec srv curl -s -m1 http://127.0.0.1:9002/api/v1/get-list >/dev/null
+		ip netns exec "$NS_CLI" curl -s -m1 http://127.0.0.1:9001/api/v1/get-list >/dev/null
+		ip netns exec "$NS_CLI" curl -s -m1 -X POST -d '{"interface":"l2"}' http://127.0.0.1:9001/api/v1/swap-exclusion >/dev/null
+		ip netns exec "$NS_SRV" curl -s -m1 http://127.0.0.1:9002/api/v1/get-list >/dev/null
 		sleep 0.6
 	done
 	wait "$traffic"
@@ -498,7 +519,7 @@ smoke() {
 	down 2000 4 >/dev/null &
 	traffic=$!
 	sleep 1
-	got=$(ip netns exec cli "$BIN/udpgen" -b 10.0.1.1:7777 -p 10.0.1.2:59402 -r 2 -d 1 -g 2 |
+	got=$(ip netns exec "$NS_CLI" "$BIN/udpgen" -b 10.0.1.1:7777 -p 10.0.1.2:59402 -r 2 -d 1 -g 2 |
 		sed -n 's/.*rx=\([0-9]*\).*/\1/p')
 	wait "$traffic"
 	if [ "$got" != 0 ]; then
