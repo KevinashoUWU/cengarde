@@ -130,6 +130,20 @@ static inline uint32_t cg_health_rps_milli(const struct cg_hlink *h, uint64_t no
 	return h->rps_milli;
 }
 
+/* How long a delay report stays fresh: CG_FRESH_PROBES of the interval the
+ * client probes at now, at most cap_ms (the old fixed window). Under traffic
+ * the client probes every 100 ms, and a report three seconds old said the
+ * link was fine while it had stalled for most of that (clockwork audit C6,
+ * 2026-10-17). interval_ms 0 (not known): cap_ms. */
+#define CG_FRESH_PROBES 5
+
+static inline uint32_t cg_health_valid_ms(uint32_t interval_ms, uint32_t cap_ms)
+{
+	uint64_t v = (uint64_t)CG_FRESH_PROBES * interval_ms;
+
+	return !interval_ms || v > cap_ms ? cap_ms : (uint32_t)v;
+}
+
 static inline int cg_health_fresh(const struct cg_hlink *h, uint64_t now_ms)
 {
 	return h->have_owd && now_ms <= h->fresh_until_ms;

@@ -1096,7 +1096,8 @@ static void on_probe(struct server *s, struct session *S, struct path *P, unsign
 	if (h->flags & CG_F_OWD) {
 		P->last_owd_ms = now_ms;
 		cg_health_report(&S->dh[link], P->peer_view.owd, now_ms,
-				 CG_STALL_PROBES * (P->interval_ms > DEFAULT_INTERVAL_MS ? P->interval_ms : DEFAULT_INTERVAL_MS));
+				 cg_health_valid_ms(P->interval_ms, CG_STALL_PROBES * (P->interval_ms > DEFAULT_INTERVAL_MS ?
+										      P->interval_ms : DEFAULT_INTERVAL_MS)));
 	}
 }
 
@@ -1700,7 +1701,11 @@ struct dpaths {
 /* The paths that may take a share of a split download (split.h): live and
  * carrying, not muted for delay (guard G1), and with a verified packet from
  * the client within CG_SPLIT_STALE_PROBES of the interval it announced on
- * that path (guard G3). One with a weight takes every split packet, none
+ * that path (guard G3), and a probe saying the client hears our replies on
+ * it as recently (last_owd_ms): the client's packets up a path keep
+ * last_rx_ms alive while the path down is stuck, which kept a stuck download
+ * path in the split ~1.3 s against 0.3 s for the upload (clockwork audit
+ * C6). One with a weight takes every split packet, none
  * makes the split duplicate everything (guard G2). */
 static uint16_t split_eligible_g3(const struct session *S, const struct dpaths *d, uint64_t now_ms, uint16_t *stale)
 {
@@ -1709,7 +1714,8 @@ static uint16_t split_eligible_g3(const struct session *S, const struct dpaths *
 	for (int p = 0; p < CG_MAX_LINKS; p++) {
 		if (!((d->live & d->carry) >> p & 1) || S->dh[p].state != CG_H_ACTIVE)
 			continue;
-		if (cg_split_stale(S->path[p].last_rx_ms, now_ms, S->path[p].interval_ms))
+		if (cg_split_stale(S->path[p].last_rx_ms, now_ms, S->path[p].interval_ms) ||
+		    cg_split_stale(S->path[p].last_owd_ms, now_ms, S->path[p].interval_ms))
 			st |= (uint16_t)(1u << p);
 		else
 			e |= (uint16_t)(1u << p);

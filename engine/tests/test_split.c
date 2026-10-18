@@ -726,6 +726,42 @@ static void test_split_spread_kinds(void)
 	/* without rejoin the fastest waits settle_ms (test_split_spread_lead) */
 }
 
+/* Audit C7: a link of qleft out of the candidates for a short G3 gap keeps
+ * the stress; out for CG_SPLIT_QLEFT_KEEP_MS it is gone. And C6: a delay
+ * report is fresh for CG_FRESH_PROBES of the probe interval. */
+static void test_split_qleft_gap(void)
+{
+	struct cg_hlink h[CG_MAX_LINKS];
+	struct cg_spread sp;
+	uint64_t t = 1000000;
+
+	memset(h, 0, sizeof(h));
+	memset(&sp, 0, sizeof(sp));
+	delay(h, 0, 5000000, t);
+	delay(h, 1, 5000000 + 10 * MSUS, t);
+	cg_split_spread_eval_r(&sp, h, 0x3, SPREAD, SETTLE, t, 1);
+	delay(h, 1, 5000000 + 60 * MSUS, t);
+	cg_split_spread_eval_r(&sp, h, 0x3, SPREAD, SETTLE, t += 100, 1);
+	CHECK_EQ(sp.qleft, 0x2);
+	/* 300 ms without replies on 1 (G3 drops it from the candidates) */
+	for (int k = 0; k < 3; k++)
+		cg_split_spread_eval_r(&sp, h, 0x1, SPREAD, SETTLE, t += 100, 1);
+	CHECK_EQ(sp.qleft, 0x2);
+	CHECK(sp.stress);
+	/* back as a candidate, still behind: still stress */
+	cg_split_spread_eval_r(&sp, h, 0x3, SPREAD, SETTLE, t += 100, 1);
+	CHECK(sp.stress);
+	/* gone for good */
+	cg_split_spread_eval_r(&sp, h, 0x1, SPREAD, SETTLE, t += 100, 1);
+	cg_split_spread_eval_r(&sp, h, 0x1, SPREAD, SETTLE, t += CG_SPLIT_QLEFT_KEEP_MS, 1);
+	CHECK_EQ(sp.qleft, 0);
+	CHECK(!sp.stress);
+
+	CHECK_EQ(cg_health_valid_ms(100, 3000), 500);
+	CHECK_EQ(cg_health_valid_ms(1000, 3000), 3000);
+	CHECK_EQ(cg_health_valid_ms(0, 3000), 3000);
+}
+
 /* A link that leaves in a stall (its delay grows as fast as time, or
  * jumps) arms no copies; one whose queue grows slower than time does. */
 static void test_split_spread_stall(void)
@@ -1122,6 +1158,7 @@ void test_split(void)
 	test_split_spread();
 	test_split_spread_lead();
 	test_split_spread_kinds();
+	test_split_qleft_gap();
 	test_split_spread_stall();
 	test_split_spread_base();
 	test_split_sdup();
