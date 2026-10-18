@@ -611,6 +611,62 @@ splitnoro` en `equal reorder50 reorder150`, unos 140. Cada corrida suma ahora
 la espera de 1,1 s por el estado del motor y un ping más, y la estimación
 cuenta 4 s de arranque y cierre por corrida (eran 3).
 
+### `interferer`: alguien más carga la celda de un enlace (`lab.d/interferer.sh`, `interferer.py`)
+
+El experimento de campo del 2026-10-16 (historia 013): un teléfono cargando
+la misma celda que uno de los enlaces no hace perder paquetes, los encola;
+la parte del enlace cae a la mitad o un tercio, su cola crece 35–40 ms por
+segundo mientras dura la carga y se vacía en menos de 0,2 s al terminar.
+Aquí: el túnel nativo (como `native`) sobre 2 enlaces con netem, l1 de
+`IF_RATE` (40) Mbit/s, 20 ms y 2 s de cola (`IF_QUEUE_MS`), y l2 de
+`IF_RATE2` (20) Mbit/s, 30 ms y 200 ms de cola; un TCP de subida a ritmo
+constante (`iperf3 -b`, `IF_LOAD` = 24M, como un emisor RTMP), un ping por
+el túnel cada 100 ms, y la subida de l1 cortada a `IF_RATE / IF_DIV` (un
+tercio) solo del lado del cliente (en el campo solo dañaba la carga en el
+mismo sentido); `IF_JITTER_MS` hace oscilar el retardo de l1 (el `jitter`
+de netem, que además desordena algunos de sus paquetes). Casos
+(`IF_CASES`):
+
+- `long`: un corte de `IF_S` (10) s;
+- `burst`: `IF_BURSTS` (3) cortes de 2 s, cada 8 s;
+- `drain`: 10 s cortado, 1 s a pleno (la cola se vacía al ritmo de la celda)
+  y 10 s a la mitad (la celda sigue compartida): lo que la capacidad toma
+  del vaciado;
+- `ramps`: `IF_RAMPS` (6) cortes parciales a `IF_RATE / IF_RAMP_DIV` (1,5;
+  se redondea a Mbit/s enteros) de `IF_RAMP_S` s (por turno, «2 3») cada
+  `IF_RAMP_EVERY` (7) s: las rampas cortas del barrio, que `split_predict`
+  no debe perseguir.
+
+La base del motor es `split = on`, `capacity_weights = yes` y `split_eta =
+yes`; `IF_EXTRA` suma ajustes a los dos extremos (p. ej. `split_predict =
+yes`) y `CENGARDE_BIN` compara binarios. `interferer.py sample` lee los
+contadores de netem de los dos enlaces cada 100 ms (lo ofrecido a cada uno
+y su cola) y el estado del cliente cada segundo; `measure` da por corte
+`off_s` (desde el corte hasta el primer segundo en que el reparto le ofrece
+a l1 no más que su nuevo ritmo), `back_s` (desde el fin del corte hasta que
+le vuelve a ofrecer el 80 % de lo de antes), `cap_s` (lo mismo para su
+`capacity_mbit`), `cap_over` (en `drain`, la mayor capacidad mientras la
+celda da la mitad, sobre esa mitad: más de 1 es el rebote del vaciado),
+`q_ms` y `q100_s` (la mayor cola de l1 y cuánto pasó de 100 ms), y por
+corrida el RTT máximo de TCP y las retransmisiones (iperf3), el p99 del
+ping y lo que cuesta mover tráfico entre enlaces, como la tabla de campo
+del 2026-10-16: `flips` (saltos de reparto: veces que la parte de un enlace
+en lo ofrecido, sobre 0,5 s, subió 15 puntos o más en 1 s; como mucho uno
+por segundo), `asked` y `rack` (del reordenador del servidor:
+`reorder.rescue.asked` y `reorder.lost.rack`, que solo cuentan con el
+rescate puesto, `rescue_kb` y `rescue_wait_ms` en `IF_EXTRA`) y `engaged`
+(cuántas veces se enganchó la predicción amortiguada, `predict.engaged` de
+todos los enlaces; se calcula aunque `split_predict` esté apagado). Una línea JSON por corrida va a `IF_OUT`; `interferer.py table
+IF_OUT` da la mediana por variante y caso. No está en `ci` (cada corrida
+dura ~45 s). Ejemplo, antes y después:
+
+```sh
+sudo CENGARDE_BIN=/tmp/cengarde-master IF_LABEL=master IF_N=3 IF_OUT=/tmp/if.jsonl bench/lab.sh interferer
+sudo IF_LABEL=predict IF_EXTRA="split_predict = yes" IF_N=3 IF_OUT=/tmp/if.jsonl bench/lab.sh interferer
+```
+
+Las medidas del 2026-10-16 están en la historia 013.
+
 ### `reorder`: el reordenador del receptor y el reparto (`lab.d/reorder.sh`, `robench`)
 
 Para el paso 1 de la Fase 5 (historia 012). `lab.d/reorder.sh` se escribió

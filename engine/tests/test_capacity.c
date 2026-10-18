@@ -281,14 +281,17 @@ static void test_capacity_fast_start(void)
 	sim_start(&s);
 	run(&s, 20, 50, 60); /* 2 s at 50 */
 	CHECK(near(cg_cap_bps(&s.l), 50, 0.05) && near(cg_cap_best_bps(&s.l), 50, 0.05));
-	run(&s, 30, 12, 10); /* full at 10 */
+	run(&s, 30, 12, 10); /* full at 10, for longer than CG_CAP_EP_MS: a */
+	run(&s, 300, 10.2, 10); /* slower link, not a contention (no fast return) */
 	CHECK(near(cg_cap_bps(&s.l), 10, 0.1));
+	CHECK(s.l.back_ms == 0);
 	run(&s, 50, 0.5, 10); /* idle 5 s: not yet */
 	CHECK(cg_cap_bps(&s.l) < 12 * MBIT);
-	run(&s, 60, 0.5, 10); /* past 10 s: half its best */
+	run(&s, 80, 0.5, 10); /* past 10 s: half its best */
 	CHECK(near(cg_cap_bps(&s.l), 25, 0.05));
-	/* full again at 10: it measures 10 again, and holds it 10 s */
+	/* full again at 10 for long: it measures 10 again, and holds it 10 s */
 	run(&s, 30, 12, 10);
+	run(&s, 300, 10.2, 10);
 	CHECK(near(cg_cap_bps(&s.l), 10, 0.1));
 	run(&s, 50, 0, 10);
 	CHECK(cg_cap_bps(&s.l) < 12 * MBIT);
@@ -321,39 +324,39 @@ static void test_capacity_weights(void)
 
 	for (unsigned i = 0; i < CG_MAX_LINKS; i++)
 		cg_cap_reset(&l[i]);
-	cg_cap_weights(l, 0, NULL, 10 * MS, w); /* nothing measured: all at the top */
+	cg_cap_weights(l, 0, NULL, 10 * MS, 0, w); /* nothing measured: all at the top */
 	CHECK(w[0] == CG_GOV_MAX && w[15] == CG_GOV_MAX);
 
 	measured(&l[0], 200, 50); /* full: no probe */
 	measured(&l[1], 20, 50);
 	measured(&l[2], 100, 2); /* room: 125 */
 	measured(&l[3], 1, 50);  /* below the floor */
-	cg_cap_weights(l, 0, NULL, 10 * MS, w);
+	cg_cap_weights(l, 0, NULL, 10 * MS, 0, w);
 	/* 100 with room: 125 and 1/16 of 200, 137.5 */
 	CHECK(w[0] == CG_GOV_MAX && w[1] == 100 && w[2] == 687 && w[3] == CG_GOV_MIN);
 	CHECK(w[4] == CG_GOV_MAX); /* not measured */
 	measured(&l[6], 0, 900); /* measured, delivering nothing: the floor */
-	cg_cap_weights(l, 0, NULL, 10 * MS, w);
+	cg_cap_weights(l, 0, NULL, 10 * MS, 0, w);
 	CHECK(w[6] == CG_GOV_MIN && w[4] == CG_GOV_MAX);
 	/* a probing link above the others sets the scale */
 	measured(&l[2], 200, 2);
-	cg_cap_weights(l, 0, NULL, 10 * MS, w);
+	cg_cap_weights(l, 0, NULL, 10 * MS, 0, w);
 	CHECK(w[2] == CG_GOV_MAX && w[0] == 761 && w[1] == 76);
 	/* dup0 keeps 0 and does not set the scale */
 	measured(&l[5], 1000, 50);
-	cg_cap_weights(l, 1u << 5, NULL, 10 * MS, w);
+	cg_cap_weights(l, 1u << 5, NULL, 10 * MS, 0, w);
 	CHECK(w[5] == 0 && w[2] == CG_GOV_MAX);
 	/* the governor scales each share */
 	for (unsigned i = 0; i < CG_MAX_LINKS; i++)
 		gov[i] = CG_GOV_MAX;
 	gov[0] = 500;
 	gov[1] = 10;
-	cg_cap_weights(l, 1u << 5, gov, 10 * MS, w);
+	cg_cap_weights(l, 1u << 5, gov, 10 * MS, 0, w);
 	CHECK(w[0] == 380 && w[1] == CG_GOV_MIN && w[2] == CG_GOV_MAX);
 	/* a link left at 0.1 Mbit/s by a queue that has gone: 1/16 of the
 	 * largest keeps it in the split, so that it can show more */
 	measured(&l[1], 0.1, 2);
-	cg_cap_weights(l, 1u << 5, NULL, 10 * MS, w);
+	cg_cap_weights(l, 1u << 5, NULL, 10 * MS, 0, w);
 	CHECK(w[1] > 40 && w[1] < 60);
 }
 
@@ -377,19 +380,21 @@ static void test_capacity_converges(void)
 	for (int k = 0; k < 600; k++) { /* 60 s */
 		double tot;
 
-		cg_cap_weights(l, 0xfffc, NULL, CFG.sat_us / 2, w); /* links 2-15 out (dup0) */
+		cg_cap_weights(l, 0xfffc, NULL, CFG.sat_us / 2, 0, w); /* links 2-15 out (dup0) */
 		tot = (double)w[0] + w[1];
 		t += 100;
 		for (int i = 0; i < 2; i++) {
 			double in = load * w[i] / tot * 0.1, out; /* Mbit this tick */
 			uint64_t pk = (uint64_t)(in * MBIT / 8 / 1000);
 
-			q[i] += in;
+			/* whole packets, so that no more arrive than were sent */
+			q[i] += (double)pk * 8000 / MBIT;
 			out = q[i] < cap[i] * 0.1 ? q[i] : cap[i] * 0.1;
+			out = (double)(uint64_t)(out * MBIT / 8000) * 8000 / MBIT;
 			q[i] -= out;
 			tx_p[i] += pk;
 			tx_b[i] += pk * 1000;
-			rx[i] += (uint32_t)(out * MBIT / 8 / 1000);
+			rx[i] += (uint32_t)(out * MBIT / 8000 + 0.5);
 			h[i].owd = 20000u + (uint32_t)(q[i] / cap[i] * 1000 * MS);
 			h[i].have_owd = 1;
 			h[i].fresh_until_ms = t + 3000;
@@ -506,8 +511,298 @@ static void test_capacity_shapes(void)
 	CHECK(maxq_late < 100);
 }
 
+/* What a split would offer a link (the probe, roughly): up to load, 5/4 of
+ * its capacity while its queue is short, 9/10 of it while it holds one. */
+static double offer(const struct sim *s, double load)
+{
+	double c = (double)cg_cap_bps(&s->l) / MBIT, o;
+
+	if (!s->l.have_rate)
+		return load;
+	o = s->l.queue_us >= 0 && s->l.queue_us < (int32_t)(10 * MS) ? c * 1.25 : c * 0.9;
+	return o < load ? o : load;
+}
+
+/* Steps until the capacity is back to at least mbit (-1: not in steps). */
+static int back_in(struct sim *s, int steps, double load, double cap_mbit, double mbit, uint64_t *peak)
+{
+	int at = -1;
+
+	for (int i = 0; i < steps; i++) {
+		sim_step(s, offer(s, load), cap_mbit);
+		if (at < 0 && cg_cap_bps(&s->l) >= (uint64_t)(mbit * MBIT))
+			at = i + 1;
+		if (peak && cg_cap_bps(&s->l) > *peak)
+			*peak = cg_cap_bps(&s->l);
+	}
+	return at;
+}
+
+/* Fast return (story 013, 2026-10-16): a link carrying 40 of its 50 has
+ * its cell loaded by someone else for 10 s (it gives 13): it is found full
+ * and brought down; once the load goes and its queue has stayed short for
+ * a second, its capacity from before is back at once, not after the 10 s
+ * of the fast start and the probing's ~20 (the field). The same for
+ * bursts of 2 s. An episode of over CG_CAP_EP_MS is a slower link: no. */
+static void test_capacity_fast_return(void)
+{
+	struct sim s;
+	uint64_t peak = 0;
+	int at;
+
+	sim_start(&s);
+	for (int i = 0; i < 200; i++)
+		sim_step(&s, offer(&s, 40), 50);
+	CHECK(near(cg_cap_bps(&s.l), 40, 0.05));
+	for (int i = 0; i < 100; i++)
+		sim_step(&s, offer(&s, 40), 13);
+	CHECK(cg_cap_bps(&s.l) < 16 * MBIT);
+	CHECK(s.l.ep_ms != 0 && near(s.l.pre_bps, 40, 0.05));
+	at = back_in(&s, 200, 40, 50, 32, &peak);
+	CHECK(at > 0 && at <= 25); /* 80 % within 2.5 s */
+	CHECK(s.l.back_ms != 0 && s.l.ep_ms == 0);
+	CHECK(peak < 42 * MBIT); /* and not more than before */
+	/* bursts of 2 s, 8 s apart */
+	for (int b = 0; b < 4; b++) {
+		for (int i = 0; i < 20; i++)
+			sim_step(&s, offer(&s, 40), 13);
+		at = back_in(&s, 80, 40, 50, 32, NULL);
+		CHECK(at > 0 && at <= 25);
+	}
+	/* 40 s at 13: a slower link, it waits for the fast start */
+	for (int i = 0; i < 400; i++)
+		sim_step(&s, offer(&s, 40), 13);
+	s.l.back_ms = 0;
+	at = back_in(&s, 50, 40, 50, 32, NULL);
+	CHECK(at < 0);
+	CHECK(s.l.back_ms == 0);
+}
+
+/* A link that really got slower (50 to 13 for good): probed at 5/4, its
+ * queue is never calm for a second, and it does not come back to its old
+ * capacity by this path (the fast start's half best, every CG_CAP_REST_MS,
+ * is the only bounce, as before). */
+static void test_capacity_no_bounce(void)
+{
+	struct sim s;
+	int restores = 0;
+	uint64_t last = 0;
+
+	sim_start(&s);
+	for (int i = 0; i < 200; i++)
+		sim_step(&s, offer(&s, 40), 50);
+	for (int i = 0; i < 1800; i++) { /* 3 min at 13 */
+		sim_step(&s, offer(&s, 40), 13);
+		if (s.l.back_ms != last) {
+			restores++;
+			last = s.l.back_ms;
+		}
+	}
+	CHECK(restores <= 1);
+	CHECK(cg_cap_bps(&s.l) <= 20 * MBIT + MBIT / 10);
+}
+
+/* The restore's backoff, step by step: calm for CG_CAP_CALM_MS gives the
+ * capacity back; full again within CG_CAP_RETRY_MS of it is a failed
+ * restore, and the next waits CG_CAP_RETRY_MS << failures; a restore that
+ * held clears them. A long episode gives nothing back. */
+static void test_capacity_backoff(void)
+{
+	struct cg_cap_link l;
+	uint64_t t = 100000, back;
+
+	measured(&l, 40, 0);
+	l.ql_us = 0;
+	cg_cap_back(&l, t, 10 * MS); /* no episode: nothing */
+	CHECK(l.calm_ms == 0 && cg_cap_bps(&l) == 40 * MBIT);
+	cg_cap_full(&l, 13 * MBIT, t);
+	CHECK(l.ep_ms == t && l.pre_bps == 40 * MBIT && cg_cap_bps(&l) == 13 * MBIT);
+	l.ql_us = 50 * MS; /* not calm */
+	cg_cap_back(&l, t + 500, 10 * MS);
+	CHECK(l.calm_ms == 0);
+	l.ql_us = 2 * MS;
+	l.have_s1 = 1;
+	l.s1 = 20 * MS; /* short, but still rising */
+	cg_cap_back(&l, t + 600, 10 * MS);
+	CHECK(l.calm_ms == 0);
+	l.s1 = 0;
+	cg_cap_back(&l, t + 700, 10 * MS);
+	CHECK(l.calm_ms == t + 700);
+	cg_cap_back(&l, t + 1600, 10 * MS);
+	CHECK(cg_cap_bps(&l) == 13 * MBIT);
+	cg_cap_back(&l, t + 1700, 10 * MS);
+	CHECK(cg_cap_bps(&l) == 40 * MBIT && l.back_ms == t + 1700 && l.ep_ms == 0);
+	back = t + 1700;
+	/* full again 1 s later: failed; calm again, but it waits 2 x 5 s */
+	cg_cap_full(&l, 13 * MBIT, back + 1000);
+	CHECK(l.fail_n == 1 && l.pre_bps == 40 * MBIT);
+	for (uint64_t k = back + 1100; k < back + 10000; k += 100)
+		cg_cap_back(&l, k, 10 * MS);
+	CHECK(cg_cap_bps(&l) == 13 * MBIT && l.back_ms == back);
+	/* the episode ended without a restore; probed back up to 40 meanwhile,
+	 * a new one starts */
+	l.max_cur = l.max_prev = 40 * MBIT;
+	cg_cap_full(&l, 13 * MBIT, back + 10000);
+	CHECK(l.fail_n == 0); /* 10 s after the restore: that one held */
+	/* again within 5 s of a restore, twice: 10 s, then 20 s */
+	l.fail_n = 1;
+	for (uint64_t k = back + 10100; k < back + 12000; k += 100)
+		cg_cap_back(&l, k, 10 * MS);
+	CHECK(cg_cap_bps(&l) == 40 * MBIT && l.back_ms > back + 11000);
+	back = l.back_ms;
+	cg_cap_full(&l, 13 * MBIT, back + 500);
+	CHECK(l.fail_n == 2);
+	l.fail_n = CG_CAP_FAIL_MAX;
+	for (uint64_t k = back + 600; k < back + (CG_CAP_RETRY_MS << CG_CAP_FAIL_MAX); k += 100)
+		cg_cap_back(&l, k, 10 * MS);
+	CHECK(cg_cap_bps(&l) == 13 * MBIT);
+	/* a long episode: calm only after CG_CAP_EP_MS, nothing back */
+	measured(&l, 40, 0);
+	cg_cap_full(&l, 13 * MBIT, t);
+	l.ql_us = 0;
+	cg_cap_back(&l, t + CG_CAP_EP_MS, 10 * MS);
+	cg_cap_back(&l, t + CG_CAP_EP_MS + CG_CAP_CALM_MS, 10 * MS);
+	CHECK(cg_cap_bps(&l) == 13 * MBIT && l.ep_ms == 0 && l.back_ms == 0);
+}
+
+/* No overshoot from a drain (the field: after a load of 40 Mbit/s on the
+ * same cell, the capacity went to 24 against ~9 for ~10 s): a link sent 8
+ * of the 24 it can carry is loaded down to 3 for 10 s, its queue grows to
+ * seconds, and when the load goes it empties that queue at 24. Those
+ * samples deliver more than was sent: they do not raise the capacity, and
+ * the full logic brings it back to what the link gives. */
+static void test_capacity_drain(void)
+{
+	struct sim s;
+	uint64_t peak = 0;
+
+	sim_start(&s);
+	run(&s, 200, 8, 24);
+	CHECK(near(cg_cap_bps(&s.l), 8, 0.05));
+	run(&s, 100, 8, 3);
+	CHECK(cg_cap_bps(&s.l) < 5 * MBIT);
+	CHECK(s.l.queue_us > (int32_t)(1000 * MS));
+	for (int i = 0; i < 200; i++) {
+		sim_step(&s, 8, 24);
+		if (cg_cap_bps(&s.l) > peak)
+			peak = cg_cap_bps(&s.l);
+	}
+	CHECK(s.l.rate_bps < 10 * MBIT); /* the drain counted for the rate */
+	CHECK(peak < 9 * MBIT);
+	CHECK(near(cg_cap_bps(&s.l), 8, 0.1)); /* back to before */
+}
+
+/* split_predict: the queue in a second only while predict.h is engaged
+ * (its own tests: test_predict.c); under the swings of a cellular delay it
+ * stays the queue now, on a queue growing as the interferer's it leads. */
+static void test_capacity_predict(void)
+{
+	struct cg_cap_link l;
+	struct cg_hlink h;
+	uint32_t seed = 12345;
+	uint64_t t = 1000;
+	int on = 0, at = -1;
+
+	cg_cap_reset(&l);
+	memset(&h, 0, sizeof(h));
+	CHECK(cg_cap_pred_us(&l) == -1);
+	h.have_owd = 1;
+	for (int k = 0; k < 6000; k++) { /* 10 min swinging over 30 ms */
+		t += 100;
+		seed = seed * 1103515245u + 12345u;
+		h.owd = 30000 + (seed >> 8) % (30 * MS + 1);
+		h.fresh_until_ms = t + 3000;
+		cg_cap_tick(&l, t, 0, 0, 0, 0, &h, &CFG);
+		CHECK(cg_cap_split_q(&l, 0) == l.queue_us);
+		on += cg_cap_pred_us(&l) != l.queue_us;
+	}
+	CHECK_EQ(on, 0);
+	/* a queue growing 40 ms a second (the field's 20 Mbit/s upload) */
+	for (int k = 0; k < 40; k++) {
+		t += 100;
+		seed = seed * 1103515245u + 12345u;
+		h.owd = 30000 + (seed >> 8) % (20 * MS + 1) + (uint32_t)k * 4 * MS;
+		h.fresh_until_ms = t + 3000;
+		cg_cap_tick(&l, t, 0, 0, 0, 0, &h, &CFG);
+		CHECK(cg_cap_pred_us(&l) <= l.queue_us + CG_PRED_MAX_US);
+		if (at < 0 && cg_cap_pred_us(&l) > l.queue_us)
+			at = k + 1;
+	}
+	CHECK(at > 0 && at <= 15);
+	CHECK(l.pred.on && cg_cap_split_q(&l, 1) == l.queue_us + l.pred.add_us);
+	/* a counter reset keeps it */
+	cg_cap_tick(&l, t, t, 100, 1000, 1000 * 1000, NULL, &CFG);
+	cg_cap_tick(&l, t + 100, t + 100, 0, 10, 10000, NULL, &CFG);
+	CHECK(l.pred.on);
+	/* in the weights: a link whose queue is short but rising fast is not
+	 * probed with predict */
+	{
+		struct cg_cap_link ls[CG_MAX_LINKS];
+		uint16_t w[CG_MAX_LINKS];
+
+		for (unsigned i = 0; i < CG_MAX_LINKS; i++)
+			cg_cap_reset(&ls[i]);
+		measured(&ls[0], 20, 2);
+		measured(&ls[1], 20, 2);
+		ls[1].pred.on = 1;
+		ls[1].pred.add_us = 40 * MS;
+		cg_cap_weights(ls, 0xfffc, NULL, 10 * MS, 0, w);
+		CHECK(w[0] == w[1]);
+		cg_cap_weights(ls, 0xfffc, NULL, 10 * MS, 1, w);
+		CHECK(w[0] == CG_GOV_MAX && w[1] == 761); /* 20 against 25 + 20 / 16 */
+	}
+}
+
+/* No more share flips with split_predict: two links of 20 Mbit/s, link 1's
+ * queue oscillating (0-50 ms over 2-6 s, plus 20 ms of swing) for 10
+ * minutes; its weight changes as often with predict as without, give or
+ * take one step up and one down per engagement. */
+static void test_capacity_predict_flips(void)
+{
+	static const int periods[] = { 20, 40, 60 };
+
+	for (unsigned i = 0; i < sizeof(periods) / sizeof(periods[0]); i++) {
+		struct cg_cap_link ls[CG_MAX_LINKS];
+		struct cg_hlink h;
+		uint16_t w0[CG_MAX_LINKS], w1[CG_MAX_LINKS];
+		uint16_t p0 = 0, p1 = 0;
+		uint32_t seed = 99 + i, f0 = 0, f1 = 0;
+		uint64_t t = 1000;
+
+		for (unsigned k = 0; k < CG_MAX_LINKS; k++)
+			cg_cap_reset(&ls[k]);
+		measured(&ls[0], 20, 2);
+		measured(&ls[1], 20, 2);
+		memset(&h, 0, sizeof(h));
+		h.have_owd = 1;
+		for (int k = 0; k < 6000; k++) {
+			int ph = k % periods[i], half = periods[i] / 2;
+			uint32_t tri = (uint32_t)(ph < half ? 50 * (int)MS * ph / half : 50 * (int)MS * (periods[i] - ph) / half);
+
+			t += 100;
+			seed = seed * 1103515245u + 12345u;
+			h.owd = 30000 + tri + (seed >> 8) % (20 * MS + 1);
+			h.fresh_until_ms = t + 3000;
+			cg_cap_tick(&ls[1], t, 0, 0, 0, 0, &h, &CFG);
+			cg_cap_weights(ls, 0xfffc, NULL, 10 * MS, 0, w0);
+			cg_cap_weights(ls, 0xfffc, NULL, 10 * MS, 1, w1);
+			f0 += k && w0[1] != p0;
+			f1 += k && w1[1] != p1;
+			p0 = w0[1];
+			p1 = w1[1];
+		}
+		CHECK(f1 <= f0 + 2 * ls[1].pred.engaged);
+	}
+}
+
 void test_capacity(void)
 {
+	test_capacity_fast_return();
+	test_capacity_no_bounce();
+	test_capacity_backoff();
+	test_capacity_drain();
+	test_capacity_predict();
+	test_capacity_predict_flips();
 	test_capacity_short();
 	test_capacity_total();
 	test_capacity_shapes();

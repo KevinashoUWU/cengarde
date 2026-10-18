@@ -1,7 +1,7 @@
 # 013 — Capacidad por enlace y dosificación (paso 4 del bonding)
 
 - **Fecha:** 2026-10-14
-- **Estado:** vigente. PR 1 hecho (PR #32, 0.6.5): el plazo del reordenador según la oscilación de cada enlace. PR 2 hecho (PR #33, 0.6.6): la capacidad de cada enlace. PR 3 (PR #34, 0.6.7): los pesos según la capacidad (`capacity_weights`), +50 % en la bajada (n = 5, p = 0,075). Medidos en la red de pruebas. PR 4 (PR #35, 0.6.8): `shape_mbit` y `bench/shaper.sh`, experimental; todavía cuesta ~40 % de la bajada.
+- **Estado:** vigente. PR 1 hecho (PR #32, 0.6.5): el plazo del reordenador según la oscilación de cada enlace. PR 2 hecho (PR #33, 0.6.6): la capacidad de cada enlace. PR 3 (PR #34, 0.6.7): los pesos según la capacidad (`capacity_weights`), +50 % en la bajada (n = 5, p = 0,075). Medidos en la red de pruebas. PR 4 (PR #35, 0.6.8): `shape_mbit` y `bench/shaper.sh`, experimental; todavía cuesta ~40 % de la bajada. 2026-10-16: la vuelta rápida de la capacidad, sin rebote por vaciado y `split_predict` (opcional), por el interferente controlado. Ese día, más tarde: `split_predict` amortiguado (`predict.h`), porque en el campo movía el tráfico más seguido.
 - **Fuentes:**
   - las medidas del 2026-10-14 en el banco y en la Pi, en [012](012-bonding.md) («El gobernador en el banco…», «El gobernador en la bajada y `cake`…», «… en la Pi»);
   - código leído: `engine/src/reorder.h` (plazo de un hueco, líneas 70–80 del comentario), `govern.h`, `split.h`, `health.h`, `proto.h` (`struct cg_probe_info`: `rx` por camino), `clientpath.h`, `server.c` (`peer_asks`, `apply_config`);
@@ -536,6 +536,218 @@ con 4 flujos y 20 s, 3 rondas alternadas, salvo que se diga otra cosa.
 - **Pendiente:** el A/B en la red de pruebas cuando vuelvan los módems
   (`fastab.sh`: reinicio, carga de 8 s, reposo de 40 s y la rampa).
 
+### 2026-10-16: el interferente controlado (la vuelta rápida, el vaciado y `split_predict`)
+
+- **El experimento [terreno, celda de Entel]:** nuestro RTMP de 8 Mbit/s
+  subiendo solo por Entel, y un teléfono cargando la misma celda.
+
+  | interferente | cola de Entel | RTT máx. de nuestro TCP (ms) |
+  | --- | ---: | ---: |
+  | bajada TCP 58–67 Mbit/s | 5–6 ms, sin efecto | 75–113 |
+  | subida UDP 5 / 10 | 9 ms | 59–71 |
+  | subida TCP ~20 Mbit/s, 10 s | crece lineal hasta 354–502 ms (35–40 ms por s) | 541–757 |
+  | subida UDP 20 | 435 ms | 523 |
+  | subida UDP 40 | 2023 ms | 3,5 s |
+  | subida TCP en ráfagas de 2 s | 107–150 ms | 176–217 |
+
+- **Lo aprendido:** solo daña la carga en el mismo sentido; la celda encola
+  (bufferbloat) en vez de tirar, así que la señal temprana es la
+  **pendiente** de la cola; el planificador reparte la subida más o menos
+  por igual; al parar el interferente la cola se vacía en menos de 0,2 s.
+  Nuestro detector de cola cruzó los 50 ms 0,8–2,2 s después de empezar la
+  carga, pero la capacidad estimada fue atrasada toda la fase, y tras la de
+  40 Mbit/s **se pasó a 24 Mbit/s (de verdad ~9) durante ~10 s** por la
+  ráfaga del vaciado. En una corrida RTMP anterior con 4 enlaces, Entel tardó
+  ~20 s en recuperar su parte tras cargarse su celda.
+- **Por qué, en el código (`capacity.h`):** tras un episodio lleno,
+  `cg_cap_best` devolvía la capacidad solo a la mitad de la mejor y solo
+  tras 10 s sin llenarse (`CG_CAP_REST_MS`), y después crecía sondeando
+  (ganancia 1/4 por muestra de 500 ms): los ~20 s. En `cg_cap_tick`, una
+  muestra en la que el enlace entregó más de lo enviado (vaciando su cola)
+  subía el máximo: el rebote. Y el reparto (`cg_cap_eta`, `cg_cap_weights`)
+  miraba la cola de ahora, con el 5/4 del sondeo para un enlace cuya cola
+  estaba subiendo.
+- **Los cambios (PR de esta fecha):**
+  1. **Vuelta rápida (siempre):** cada enlace guarda la capacidad de antes
+     de llenarse (`pre_bps`). Si el episodio (del primer lleno hasta que la
+     cola se fue) duró menos de 30 s y la cola sobre el mínimo de 60 s lleva
+     1 s bajo `probe_us` (la mitad de `governor_target_ms`; con la cuarta
+     parte, los 5–6 ms de Entel en reposo no la dejarían volver) con
+     pendiente bajo 5 ms/s, la recupera de una vez. Si se llena de nuevo
+     antes de 5 s, la vuelta falló y la siguiente espera 10, 20, 40, hasta
+     80 s. En los tests: 80 % de vuelta en ≤ 2,5 s tras 10 s de contienda y
+     tras ráfagas de 2 s; un enlace que de verdad bajó de 50 a 13 no
+     rebota (con el sondeo su cola nunca queda quieta 1 s); un episodio
+     de más de 30 s no vuelve por aquí.
+  2. **Sin rebote por vaciado (siempre):** una muestra que entregó más de
+     1/16 sobre lo enviado no sube el máximo, y el máximo no sube más de lo
+     que entregó la propia muestra (el ritmo suavizado arrastra el vaciado).
+     Sigue contando para `delivery_mbit` y, con el enlace lleno, para el
+     promedio bajo cola. Con la guarda de otra corrida de contadores
+     (`CG_CAP_SLACK`) no choca: compara totales desde el inicio, y un
+     vaciado entrega lo enviado antes.
+  3. **`split_predict` (opcional, apagado):** con `capacity_weights` o
+     `split_eta`, el reparto usa la cola dentro de un segundo (cola +
+     pendiente + la mitad de la pendiente de la pendiente, hasta 500 ms
+     sobre la cola), y sin el 5/4 del sondeo si esa cola pasa de `probe_us`.
+     Solo con la pendiente sobre 10 ms/s durante 4 muestras seguidas, y
+     mientras siga positiva. En los tests: con un retardo que oscila al azar
+     30 ms cada 100 ms se enciende < 1 % del tiempo; con una cola que crece
+     40 ms/s se enciende en 0,6–1 s. El estado muestra `queue_pred_ms`.
+- **Laboratorio [medido, `lab.sh interferer`, n = 3–6]:** túnel nativo,
+  l1 de 40 Mbit/s y 20 ms con 2 s de cola, l2 de 20 Mbit/s y 30 ms, TCP de
+  subida a 24 Mbit/s constantes, la subida de l1 cortada a un tercio
+  (`long`: 10 s; `burst`: 3 × 2 s; `drain`: 10 s, 1 s a pleno y 10 s a la
+  mitad), base `split = on`, `capacity_weights`, `split_eta`. Medianas:
+
+  | variante | caso | n | off_s | back_s | cap_s | cap_over | cola máx. ms | s > 100 ms | RTT máx. TCP ms | retrans. (mediana; corridas > 400) | ping p99 ms |
+  | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+  | master | long | 6 | 0,02 | 0,53 | 2,53 | – | 1602 | 8,5 | 250 | 78; 0/6 | 247 |
+  | rama | long | 3 | 0,02 | 0,53 | 2,53 | – | 1602 | 8,5 | 249 | 77; 0/3 | 247 |
+  | rama + `split_predict` | long | 3 | 0,02 | 0,53 | 2,53 | – | 1602 | 8,5 | 249 | 37; 0/3 | 248 |
+  | master | burst | 3 | 0,02 | 0,42 | 2,52 | – | 538 | 6,2 | 259 | 355; 0/3 | 249 |
+  | rama | burst | 3 | 0,02 | 0,41 | 2,52 | – | 682 | 6,6 | 265 | 188; 0/3 | 264 |
+  | rama + `split_predict` | burst | 3 | 0,02 | 0,62 | 2,52 | – | 686 | 6,5 | 255 | 258; 0/3 | 241 |
+  | master | drain | 6 | 0,02 | 0,03 | 1,53 | 0,95 | 1600 | 18,0 | 278 | 169; 1/6 | 265 |
+  | rama | drain | 9 | 0,02 | 0,03 | 1,53 | 0,96 | 1599 | 17,7 | 282 | 247; 4/9 | 266 |
+  | rama + `split_predict` | drain | 3 | 0,03 | 0,03 | 1,53 | 0,95 | 1606 | 18,0 | 264 | 159; 1/3 | 264 |
+
+  `off_s`: del corte hasta el primer segundo en que el reparto le ofrece a
+  l1 no más que su nuevo ritmo; `back_s`: del fin del corte hasta que le
+  ofrece el 80 % de antes; `cap_s`: lo mismo con `capacity_mbit` (resolución
+  de 1 s, el estado); `cap_over`: en `drain`, la mayor capacidad con la celda
+  a la mitad, sobre esa mitad. El caudal fue 24 Mbit/s en todas.
+
+  - **El laboratorio no reproduce lo que estos cambios arreglan:** con
+    master, `capacity_mbit` ya vuelve al 80 % en 1,5–2,5 s y no rebota
+    (`cap_over` 0,95). Aquí el `split_eta` le vuelve a cargar l1 apenas
+    termina el corte (TCP recupera su atraso), y esa muestra, sin vaciado,
+    ya mide 40; en el campo, con 4 enlaces con sitio, Entel quedaba con poca
+    parte y solo crecía sondeando. El rebote del campo tampoco aparece: el
+    vaciado del laboratorio ocurre con la cola aún sobre `sat_us`, y ahí
+    manda el promedio bajo cola.
+  - **Lo que sí muestra:** durante el corte el `split_eta` oscila con
+    período de ~4 s (le da todo a l1 cuando su cola medida es vieja, nada
+    cuando la ve): colas de 1,6–1,8 s y 8–9 s sobre 100 ms en `long`, igual
+    en master. Ahí se pierde lo que hay que ganar, y no es la capacidad
+    sino la realimentación atrasada de la cola (la sonda llega tarde por
+    la cola misma).
+  - **Retransmisiones bimodales:** cada corrida cae en un modo de ~30–250
+    o en uno de ~450–650 (con la cola de l1 en ~1,8 s en vez de ~1,6). En
+    `drain`, master cayó en el alto 1 de 6 veces y la rama 4 de 9; en
+    `long` y `burst`, ninguna de las dos. Con n tan chico (Fisher, p ≈ 0,3)
+    no se distingue de ruido, pero queda anotado. Una primera versión del
+    vaciado que además retenía el promedio bajo cola cayó en el alto 4 de 6
+    (y 2 de 4 sola, sin la vuelta rápida; la vuelta rápida sola, 0 de 4): se
+    quitó esa parte.
+- **Pendiente:** medir en el campo con el mismo interferente (el tiempo de
+  vuelta de Entel con 4 enlaces y el rebote tras 40 Mbit/s); ajustar los
+  umbrales (abajo); la oscilación de `split_eta` bajo un corte, que el
+  laboratorio sí muestra.
+
+### 2026-10-16 (tarde): `split_predict` amortiguado
+
+- **El campo [medido, n = 1 por condición]:** RTMP de 8 Mbit/s de subida
+  desde el cliente del PC por el túnel nativo sobre los 4 enlaces celulares,
+  de día, 90 s por condición. «Rampas»: la cola de un enlace de < 20 a
+  > 80 ms en ≤ 4 s; «saltos»: un enlace gana 15 puntos o más de la parte en
+  1 s; después de un salto, ¿subió la cola del que ganó más de 30 ms en 2 s?
+
+  | | rampas | saltos | cola subió tras el salto | rescate pedido | el reordenador se rindió (rack) | RTT máx. |
+  | --- | ---: | ---: | --- | ---: | ---: | ---: |
+  | master | 1 | 22 | 2/22 | 328 | 10 | 215 ms |
+  | PR #67 | 1 | 21 | 1/21 | 312 | 6 | 168 ms |
+  | PR #67 (repetición) | 2 | 35 | 7/35 | 434 | 12 | 252 ms |
+  | PR #67 + `split_predict` | 4 | **52** | 0/52 | **773** | **36** | 295 ms |
+
+  `split_predict` no sacaba el tráfico de los enlaces a punto de encolarse:
+  **lo movía más seguido**, y cada movida desordena las llegadas (huecos,
+  NACK del rescate, el reordenador que se rinde). Su predicción se adelantaba
+  solo 0–0,4 s a la cola real en las rampas cortas del barrio (picos de
+  82–179 ms subiendo en 1–4 s), porque pedía 4 muestras con pendiente
+  > 10 ms/s, y su término (pendiente más media segunda derivada, de una
+  media exponencial de diferencias) seguía cada oscilación del retardo. El
+  caso para el que está es el del interferente: la cola subiendo en línea
+  recta 35–40 ms/s durante 10 s hasta 350–500 ms (y 2 s a 40 Mbit/s).
+- **El cambio (`predict.h`, puro, solo para `split_predict`; los otros dos
+  cambios del PR quedan igual):**
+  1. **Una pendiente que mide:** mínimos cuadrados sobre las muestras de
+     los últimos 1,3 s (`CG_PRED_WIN_MS`), no la media exponencial: con un
+     retardo que oscila al azar 30 ms cada 100 ms, aquella oscila ~45 ms/s
+     (desviación estándar) y esta ~6. Sin segunda derivada.
+  2. **Solo pendiente fuerte:** se engancha con ≥ 30 ms/s
+     (`CG_PRED_ON_S1`) en 2 muestras seguidas. El umbral sale de la tabla:
+     las rampas del barrio de 3–4 s hasta ~100 ms suben 20–28 ms/s, el
+     interferente 35–40.
+  3. **Histéresis:** enganchada, sigue hasta que la pendiente pasa 0,5 s
+     bajo 5 ms/s; suelta, no vuelve antes de 5 s (`CG_PRED_HOLD_MS`); un
+     enganche de menos de 3 s fue una rampa corta y dobla la espera
+     siguiente, hasta 20 s, y se olvida tras 60 s sin enganches.
+  4. **Límite de ritmo:** lo que suma a la cola es la pendiente en
+     escalones de 20 ms (`CG_PRED_Q_US`, hasta 500 ms), fijado al
+     engancharse y cambiado como mucho cada 500 ms; entre escalones el
+     reparto ve la cola moverse igual que sin `split_predict`.
+  5. **Estado:** por enlace, `predict` (`on`, `add_ms`, `slope_ms_s`,
+     `engaged`, `steps`), calculado aunque `split_predict` esté apagado,
+     para contarlo en el campo. Sin cambio de formato.
+- **Tests unitarios [medido, `test_predict.c`, `test_capacity.c`]:**
+
+  | caso | resultado |
+  | --- | --- |
+  | oscilación al azar de 30 ms cada 100 ms, 10 min, 5 semillas | 0 enganches |
+  | rampa de 40 ms/s bajo 20 ms de oscilación (200 semillas) | se engancha en 1,0 s de mediana, p95 1,2 s, máx. 1,6 s; no se suelta durante la rampa; se suelta ≤ 1,5 s tras vaciarse; una segunda rampa espera 5 s |
+  | rampa de 35 ms/s | mediana 1,2 s, p95 1,6 s, máx. 2,0 s |
+  | rampa de 4 s hasta ~100 ms (21 ms/s, 500 semillas) | se engancha en el 5 % |
+  | rampas de 1, 2 y 3 s hasta ~100 ms | 100, 100 y 90 %: tan empinadas como el comienzo del interferente (28–85 ms/s), nada las distingue en el primer segundo; como mucho 1 enganche y ~4 escalones cada una, suelta ≤ 1,2 s después de bajar la cola |
+  | cola oscilando 0–50 ms con período de 2, 4 y 6 s más 20 ms de oscilación, 10 min | 28, 17 y 0 enganches y 67, 34 y 0 escalones, contra 1236, 843 y 321 cambios de ≥ 20 ms del término viejo; los pesos cambian con la predicción no más que sin ella más 2 por enganche |
+  | enganches cortos seguidos | la espera pasa de 5 a 10 y a 20 s y queda ahí; tras 60 s sin enganches, o tras un enganche largo, vuelve a 5 s |
+
+  Lo pedido («no se engancha con rampas de 1–4 s hasta ~100 ms») se cumple
+  para las de 4 s, no para las de 1–3 s: con 30 ms/s de umbral y ~1 s de
+  reacción no se pueden separar de forma causal. Lo que se acota es lo que
+  cuestan: un enganche, pocos escalones, y una espera que crece.
+- **Laboratorio [medido, `lab.sh interferer`, n = 2–3 por variante,
+  intercaladas]:** como arriba, con el rescate y el reordenador del cliente
+  del PC (`rescue_kb = 32768`, `rescue_wait_ms = 60`, `reorder_max_wait_ms
+  = 500`, `tcp_aware = yes`); «apagado» es este binario sin
+  `split_predict`, «viejo» el PR en `900da63` con él, «amortiguado» este con
+  él. Caso nuevo `ramps`: 6 cortes parciales de 2 y 3 s cada 7 s. Por
+  corrida:
+
+  | caso | variante | saltos | rescate pedido | rack | cola máx. de l1 (ms) | enganches |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | `ramps`, l1 a 16 Mbit/s | apagado | 32, 30, 32 | 359, 960, 873 | 386, 339, 467 | 621, 1064, 799 | (7, 7, 8) |
+  | | viejo | 34, 32, 35 | 593, 895, 1151 | 208, 468, 670 | 751, 799, 811 | – |
+  | | amortiguado | 34, 31, 33 | 509, 285, 265 | 261, 111, 274 | 716, 698, 840 | 7, 7, 7 |
+  | `ramps`, l1 a 20 Mbit/s | apagado | 6, 32, 6 | 0, 650, 0 | 0, 445, 0 | 220, 504, 247 | (2, 6, 2) |
+  | | viejo | 3, 8, 5 | 0 | 0 | 62, 247, 60 | – |
+  | | amortiguado | 3, 7, 33 | 0, 0, 356 | 0, 0, 260 | 60, 248, 494 | 1, 2, 6 |
+  | `ramps`, 20 Mbit/s, `IF_JITTER_MS = 10` | apagado | 2, 2, 2 | 0 | 0 | 30, 33, 34 | (0) |
+  | | viejo | 5, 2, 4 | 0 | 0 | 51, 35, 60 | – |
+  | | amortiguado | 5, 6, 2 | 0 | 0 | 54, 244, 36 | 0, 2, 0 |
+  | `long` (l1 a un tercio 10 s) | apagado | 14, 15 | 220, 89 | 113, 9 | 1452, 1763 | (3, 3) |
+  | | viejo | 14, 14 | 76, 59 | 11, 0 | 1829, 1765 | – |
+  | | amortiguado | 15, 15 | 192, 70 | 45, 0 | 1597, 1765 | 3, 3 |
+
+  (Entre paréntesis, los enganches que el estado cuenta con
+  `split_predict` apagado: no actúan.)
+
+  - **El laboratorio no reproduce el exceso de saltos del campo:** el
+    viejo salta tanto como el apagado (32–35 contra 30–32). Los saltos de
+    aquí son la oscilación de `split_eta` bajo un corte (período ~4 s, ya
+    anotada arriba), que es igual en las tres variantes, y las corridas son
+    bimodales (cada una cae en «l1 nunca se llena», ~0 rescates, o en
+    «se llena», cientos). Con 16 Mbit/s el amortiguado pidió menos rescates
+    en 2 de 3 corridas (265–509 contra 593–1151 del viejo), pero con n = 3 y
+    esa bimodalidad no es una diferencia.
+  - **Sí muestra que el amortiguado se engancha donde debe:** 7 veces en
+    los 6 cortes que llenan l1 (la cola sube cientos de ms), 0–2 en las
+    corridas en que no se llena (6 en la que sí), y 3 en `long` (el corte de 10 s), donde
+    sale de l1 igual de rápido que los otros (`off_s` 0,02 s).
+- **Pendiente:** medirlo en el campo (el mismo RTMP de 90 s, contando
+  saltos, rescate y `predict.engaged` por enlace), con y sin el
+  interferente controlado.
+
 ## Qué hacemos con esto (diseño)
 
 ### Piezas
@@ -592,3 +804,5 @@ con 4 flujos y 20 s, 3 rondas alternadas, salvo que se diga otra cosa.
 - 2026-10-15: los A/B de ETA y de la dosificación, MPTCP, el falso hundimiento por `tcp_mem` del VPS, speedtest y la capacidad con cola (PR 5).
 - 2026-10-15: el PR 5 medido en la red de pruebas: neutro; la bajada de 16 flujos llega a 280–344 con los enlaces de la mañana.
 - 2026-10-15: el arranque rápido (PR #56): neutro en el laboratorio, que no reproduce el enfriamiento; el A/B en terreno, pendiente.
+- 2026-10-16: el interferente controlado en el campo; la vuelta rápida tras un episodio corto, sin rebote por vaciado y `split_predict` (opcional); `lab.sh interferer`, que no reproduce el atraso del campo.
+- 2026-10-16: `split_predict` en el campo (más saltos de reparto y el doble de rescates) y su amortiguación (`predict.h`: pendiente por mínimos cuadrados, umbral de 30 ms/s, histéresis, escalones); `lab.sh interferer` con `ramps`, saltos y rescates.

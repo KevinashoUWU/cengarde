@@ -2004,10 +2004,10 @@ static void cap_tick(struct client *c, uint16_t live, uint64_t now_ms)
 	}
 	if (c->cfg->capacity_weights)
 		cg_cap_weights(c->cap, c->cfg->split == CG_SPLIT_FORCE ? 0 : c->dup0, c->cfg->governor ? c->gw : NULL,
-			       cc.sat_us / 2, c->cw);
+			       cc.sat_us / 2, c->cfg->split_predict, c->cw);
 	cg_cap_total_tick(&c->ctot, c->cap, live, cc.sat_us);
 	if (c->cfg->split_eta)
-		cg_cap_eta(&c->eta, c->cap, live, cc.sat_us / 2, now_ms * 1000);
+		cg_cap_eta(&c->eta, c->cap, live, cc.sat_us / 2, c->cfg->split_predict, now_ms * 1000);
 	/* With pacing, each link's socket at about its rate; without, as it
 	 * was set, back to none (a reload turned it off). */
 	for (int i = 0; i < CG_MAX_LINKS; i++) {
@@ -2204,6 +2204,7 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 		cg_json_null(j, "gov_qmin_ms");
 	cg_json_bool(j, "copies_dry", c->sdup.dry);
 	cg_json_decisions(j, &c->dec, now_ms);
+	cg_json_bool(j, "split_predict", c->cfg->split_predict);
 	cg_json_bool(j, "pacing", c->cfg->pacing);
 	/* native, tcp_aware: inner TCP marked free (tcpfree.h) */
 	cg_json_obj(j, "tcp_free");

@@ -1052,6 +1052,13 @@ engine_conf() {
 	0 | off | no | false | disabled) echo "split_eta = no" ;;
 	*) log "split_eta '$v': expected 0 or 1, left out" ;;
 	esac
+	config_get v main split_predict
+	case "$v" in
+	'') ;;
+	1 | on | yes | true | enabled) echo "split_predict = yes" ;;
+	0 | off | no | false | disabled) echo "split_predict = no" ;;
+	*) log "split_predict '$v': expected 0 or 1, left out" ;;
+	esac
 	config_get v main pacing
 	case "$v" in
 	'') ;;
