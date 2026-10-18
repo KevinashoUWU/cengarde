@@ -1189,7 +1189,7 @@ static void wg_read(struct client *c)
 			stress = split && cg_sdup(&c->sdup, c->spread.stress, (uint32_t)len,
 						  (unsigned)__builtin_popcount(carry), c->cfg->split_stress_dup);
 			c->pick[m] = (int8_t)(split ? cg_split_pick_eta(&c->sp, c->cfg->split_eta ? &c->eta : NULL, now_us,
-									k.carriers, stress ? 0 : k.eligible, k.dup, w,
+									k.carriers, stress ? 0 : cg_split_stress_elig(&c->spread, k.eligible, c->cfg->split_stress_single), k.dup, w,
 									c->native ? CG_WGS_DATA : c->in.buf[i][0],
 									(uint32_t)len, c->cfg->split_small, &flags)
 						    : -1);
@@ -2135,6 +2135,7 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 	cg_json_bool(j, "recover", c->spread.recover);
 	cg_json_u64(j, "queue_leaves", c->spread.n_qleave);
 	cg_json_u64(j, "recoveries", c->spread.n_recover);
+	cg_json_u64(j, "stalls", c->spread.n_stall);
 	cg_json_u64(j, "packets", c->sdup.pkts);
 	cg_json_u64(j, "bytes", c->sdup.bytes);
 	cg_json_end(j, '}');
