@@ -231,6 +231,7 @@ struct cg_config {
 	uint32_t eta_keep;            /* the ETA backlog over a stale queue: 1 the larger, 2 + net growth since, 3 half */
 	uint32_t eta_keep_ms;         /* eta_keep 2: how stale the queue measured is */
 	uint32_t cap_g4_episode;      /* a G4 leave for the queue: 1 a full episode, 2 if the capacity overshot, 3 2 for 3 s */
+	int rescue_by_owd;            /* the client's rescue on the link of least upload delay, not RTT (audit C10) */
 	uint32_t rescue_full_hyst;    /* the rescue's full bit: 1 off under 3x, 2 off under 3x only while not rising */
 	int pacing;                   /* each link's socket paced at its rate (pace.h) */
 	uint32_t governor_target_ms;  /* the queue a link may hold */

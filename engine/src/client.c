@@ -1542,7 +1542,21 @@ static void on_nack(struct client *c, uint8_t flags, const uint8_t *payload, siz
 	if (!c->resc_idx)
 		return;
 	link_masks(c, now_ms, &present, &live);
-	for (int i = 0; i < CG_MAX_LINKS; i++) {
+	/* rescue_by_owd (audit C10): the link of least upload delay, as the
+	 * server picks; by RTT while no link has one */
+	for (int i = 0; c->cfg->rescue_by_owd && i < CG_MAX_LINKS; i++) {
+		struct link *l = &c->link[i];
+
+		if (!(live >> i & 1) || l->fd < 0 || !c->uh[i].have_owd)
+			continue;
+		if (!best[0] || cg_owd_diff(c->uh[i].owd, c->uh[best[0] - c->link].owd) < 0) {
+			best[1] = best[0];
+			best[0] = l;
+		} else if (!best[1] || cg_owd_diff(c->uh[i].owd, c->uh[best[1] - c->link].owd) < 0) {
+			best[1] = l;
+		}
+	}
+	for (int i = 0, by_rtt = !best[0]; by_rtt && i < CG_MAX_LINKS; i++) {
 		struct link *l = &c->link[i];
 
 		if (!(live >> i & 1) || l->fd < 0 || !l->srtt8_us)
