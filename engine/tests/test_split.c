@@ -772,6 +772,36 @@ static void test_split_spread_stall(void)
 	CHECK_EQ(cg_split_stress_elig(&sp, 0x3, 1), 0x3); /* no stress */
 }
 
+/* Audit C1 (2026-10-17): a link slow by its base delay (40 ms more) gets in
+ * while the fast link queues, and when the fast one drains it is behind
+ * again: that is not its queue growing, and it must not leave as a queue
+ * (qleft, copies) nor keep G4 in stress. */
+static void test_split_spread_base(void)
+{
+	struct cg_hlink h[CG_MAX_LINKS];
+	struct cg_spread sp;
+	uint64_t t = 1000000;
+
+	memset(h, 0, sizeof(h));
+	memset(&sp, 0, sizeof(sp));
+	delay(h, 0, 5000000, t);              /* base 0 */
+	delay(h, 1, 5000000 + 40 * MSUS, t);  /* base +40 ms: out */
+	for (int k = 0; k < 50; k++)          /* 5 s of minima */
+		cg_split_spread_eval_r(&sp, h, 0x3, SPREAD, SETTLE, t += 100, 1);
+	CHECK_EQ(sp.in, 0x1);
+	/* 0 queues 25 ms: 1 within 15 ms of it, in after settle */
+	delay(h, 0, 5000000 + 25 * MSUS, t);
+	for (int k = 0; k < 25; k++)
+		cg_split_spread_eval_r(&sp, h, 0x3, SPREAD, SETTLE, t += 100, 1);
+	CHECK_EQ(sp.in, 0x3);
+	/* 0 drains: 1 is 40 ms behind again, its own delay unchanged */
+	delay(h, 0, 5000000, t);
+	cg_split_spread_eval_r(&sp, h, 0x3, SPREAD, SETTLE, t += 100, 1);
+	CHECK_EQ(sp.in, 0x1);
+	CHECK_EQ(sp.qleft, 0);   /* not a queue that grew */
+	CHECK(!sp.stress);
+}
+
 static void test_split_spread(void)
 {
 	static const uint16_t w1[CG_MAX_LINKS] = { 1, 1, 1, 1 };
@@ -1093,6 +1123,7 @@ void test_split(void)
 	test_split_spread_lead();
 	test_split_spread_kinds();
 	test_split_spread_stall();
+	test_split_spread_base();
 	test_split_sdup();
 	test_split_spread_copy();
 }

@@ -281,7 +281,37 @@ struct cg_spread {
 	uint8_t ev[CG_MAX_LINKS];
 	uint64_t ev_ms[CG_MAX_LINKS]; /* 0: none yet */
 	uint32_t n_ev[CG_MAX_LINKS][CG_G4_EVS];
+	/* each link's own delay minimum over CG_SPLIT_MIN_MS (two halves): what
+	 * its delay is over it is its own queue */
+	uint32_t min_cur[CG_MAX_LINKS], min_prev[CG_MAX_LINKS];
+	uint64_t min_t[CG_MAX_LINKS];
+	uint16_t have_min;
 };
+
+#define CG_SPLIT_MIN_MS 10000 /* the window of a link's own delay minimum */
+
+/* Link i's own queue (its delay over its own minimum), updating the minimum
+ * with the delay now. */
+static inline int32_t cg_split_ownq(struct cg_spread *s, unsigned i, uint32_t owd, uint64_t now_ms)
+{
+	uint16_t b = (uint16_t)(1u << i);
+	uint32_t m;
+
+	if (!(s->have_min & b)) {
+		s->min_cur[i] = s->min_prev[i] = owd;
+		s->min_t[i] = now_ms;
+		s->have_min |= b;
+	} else if (now_ms - s->min_t[i] >= CG_SPLIT_MIN_MS / 2) {
+		s->min_prev[i] = s->min_cur[i];
+		s->min_cur[i] = owd;
+		s->min_t[i] = now_ms;
+	} else if (cg_owd_diff(owd, s->min_cur[i]) < 0) {
+		s->min_cur[i] = owd;
+	}
+	m = cg_owd_diff(s->min_prev[i], s->min_cur[i]) < 0 ? s->min_prev[i] : s->min_cur[i];
+	return cg_owd_diff(owd, m);
+}
+
 
 static inline void cg_g4_mark(struct cg_spread *s, int link, int ev, uint64_t now_ms)
 {
@@ -437,7 +467,7 @@ static inline uint16_t cg_split_spread_eval_r(struct cg_spread *s, const struct 
 	}
 	for (int i = 0; i < CG_MAX_LINKS; i++) {
 		uint16_t b = (uint16_t)(1u << i);
-		int32_t d;
+		int32_t d, oq;
 
 		if (!(fresh & b)) {
 			s->holding &= (uint16_t)~b; /* gone, or no delay: a wait starts over */
@@ -445,6 +475,7 @@ static inline uint16_t cg_split_spread_eval_r(struct cg_spread *s, const struct 
 			continue;
 		}
 		d = cg_owd_diff(h[i].owd, h[best].owd);
+		oq = cg_split_ownq(s, (unsigned)i, h[i].owd, now_ms);
 		s->behind_us[i] = d;
 		s->behind |= b;
 		if (!(s->left & b)) {
@@ -452,11 +483,17 @@ static inline uint16_t cg_split_spread_eval_r(struct cg_spread *s, const struct 
 				s->left |= b;
 				/* it was in: its queue grew (a link slow by its base delay
 				 * never gets in, and copies to it would never stop); unless
-				 * it stalled, which the rejoin answers */
+				 * it stalled, which the rejoin answers, or its own queue
+				 * did not grow: a link slow by its base got in while the
+				 * reference queued, and the reference drained (audit C1,
+				 * 2026-10-17: copies and stress then never ended) */
 				if ((s->in & b) && (s->have_prev & b) && now_ms > s->t_prev_ms &&
 				    cg_split_stalled(s->owd_prev[i], h[i].owd, now_ms - s->t_prev_ms)) {
 					s->n_stall++;
 					cg_g4_mark(s, i, CG_G4_LEAVE_STALL, now_ms);
+				} else if ((s->in & b) && oq <= (int32_t)spread_us / 2) {
+					/* a reference that drained, not its queue (audit C1) */
+					cg_g4_mark(s, i, CG_G4_LEAVE_BASE, now_ms);
 				} else if (s->in & b) {
 					s->n_qleave += !s->qleft;
 					s->qleft |= b;
