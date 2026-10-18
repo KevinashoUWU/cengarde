@@ -50,6 +50,7 @@
 #define CG_GOV_MIN 10     /* the floor */
 #define CG_GOV_UP 20      /* added per tick below half the target: 2 % of the top */
 #define CG_GOV_SCALE 64   /* the weight is kept times this, for the 1/8 steps */
+#define CG_GOV_HALF (CG_GOV_MAX / 2) /* a weight crossing this is a decision (decision.h) */
 
 struct cg_gov_cfg {
 	uint32_t target_us; /* the queue a link may hold beyond the shortest one */
@@ -63,10 +64,13 @@ struct cg_gov_link {
 	int32_t queue_us;           /* the last queue measured (status) */
 	uint8_t have_min;
 	uint8_t have_queue;
+	int8_t dir;                 /* the last active tick: -1 down, 0 held, 1 up (status) */
+	uint64_t ticks_down, ticks_up, ticks_hold; /* active ticks of each kind (status) */
 };
 
 struct cg_gov {
 	struct cg_gov_link l[CG_MAX_LINKS];
+	int32_t qmin_us; /* the shortest queue of the candidates at the last tick, -1: none */
 };
 
 static inline void cg_gov_link_reset(struct cg_gov *g, unsigned i)
@@ -79,6 +83,17 @@ static inline void cg_gov_reset(struct cg_gov *g)
 {
 	for (unsigned i = 0; i < CG_MAX_LINKS; i++)
 		cg_gov_link_reset(g, i);
+	g->qmin_us = -1;
+}
+
+/* A weight's crossing of CG_GOV_HALF from prev to now: -1 down, 1 up, 0 none. */
+static inline int cg_gov_cross(uint32_t prev, uint32_t now)
+{
+	if (prev >= CG_GOV_HALF && now < CG_GOV_HALF)
+		return -1;
+	if (prev < CG_GOV_HALF && now >= CG_GOV_HALF)
+		return 1;
+	return 0;
 }
 
 /* The minimum delay of link l, given a new one: the windowed minimum. */
@@ -102,11 +117,12 @@ static inline uint32_t cg_gov_base(struct cg_gov_link *l, uint32_t owd, uint64_t
 
 /* One tick. h: each link's send-direction health (its filtered one-way
  * delay); cand: the links in the split (eligible, weight above 0); active:
- * the end splits now (the weights only move then). */
-static inline void cg_gov_tick(struct cg_gov *g, const struct cg_hlink *h, uint16_t cand, int active, uint64_t now_ms,
+ * the end splits now (the weights only move then). Returns the links whose
+ * weight crossed CG_GOV_HALF (cg_gov_cross), for the decisions. */
+static inline uint16_t cg_gov_tick(struct cg_gov *g, const struct cg_hlink *h, uint16_t cand, int active, uint64_t now_ms,
 			       const struct cg_gov_cfg *cfg)
 {
-	uint16_t fresh = 0;
+	uint16_t fresh = 0, crossed = 0;
 	int32_t qmin = INT32_MAX;
 
 	for (unsigned i = 0; i < CG_MAX_LINKS; i++) {
@@ -122,11 +138,12 @@ static inline void cg_gov_tick(struct cg_gov *g, const struct cg_hlink *h, uint1
 		if (l->queue_us < qmin)
 			qmin = l->queue_us;
 	}
+	g->qmin_us = fresh ? qmin : -1;
 	if (!active)
-		return;
+		return 0;
 	for (unsigned i = 0; i < CG_MAX_LINKS; i++) {
 		struct cg_gov_link *l = &g->l[i];
-		uint32_t excess;
+		uint32_t excess, was = l->x / CG_GOV_SCALE;
 
 		if (!(fresh >> i & 1))
 			continue;
@@ -135,12 +152,22 @@ static inline void cg_gov_tick(struct cg_gov *g, const struct cg_hlink *h, uint1
 			l->x -= l->x / 8;
 			if (l->x < CG_GOV_MIN * CG_GOV_SCALE)
 				l->x = CG_GOV_MIN * CG_GOV_SCALE;
+			l->dir = -1;
+			l->ticks_down++;
 		} else if (excess < cfg->target_us / 2) {
 			l->x += CG_GOV_UP * CG_GOV_SCALE;
 			if (l->x > CG_GOV_MAX * CG_GOV_SCALE)
 				l->x = CG_GOV_MAX * CG_GOV_SCALE;
+			l->dir = 1;
+			l->ticks_up++;
+		} else {
+			l->dir = 0;
+			l->ticks_hold++;
 		}
+		if (cg_gov_cross(was, l->x / CG_GOV_SCALE))
+			crossed |= (uint16_t)(1u << i);
 	}
+	return crossed;
 }
 
 /* The weights for cg_split_pick: each link's, 0 for the links of dup0. */

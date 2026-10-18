@@ -2,6 +2,8 @@
 #include "status.h"
 
 #include "capacity.h"
+#include "decision.h"
+#include "split.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -137,6 +139,12 @@ void cg_json_u64(struct cg_json *j, const char *k, uint64_t v)
 {
 	key(j, k);
 	put(j, "%" PRIu64, v);
+}
+
+void cg_json_i64(struct cg_json *j, const char *k, int64_t v)
+{
+	key(j, k);
+	put(j, "%" PRId64, v);
 }
 
 void cg_json_ms(struct cg_json *j, const char *k, uint64_t us)
@@ -320,7 +328,7 @@ void cg_json_owd_swing(struct cg_json *j, const char *k, const struct cg_reorder
 		cg_json_ms(j, k, cg_ro_swing(l));
 }
 
-void cg_json_capacity(struct cg_json *j, const struct cg_cap_link *l, uint32_t target_us)
+void cg_json_capacity(struct cg_json *j, const struct cg_cap_link *l, uint32_t target_us, uint64_t now_ms)
 {
 	/* bps / 1000 as "ms" prints Mbit/s with three decimals. */
 	if (l->have_rate) {
@@ -340,6 +348,89 @@ void cg_json_capacity(struct cg_json *j, const struct cg_cap_link *l, uint32_t t
 	else
 		cg_json_null(j, "queue_slope_ms_s");
 	cg_json_ms(j, "rescue_weight", (uint64_t)cg_cap_rescue_w(l, target_us) * 1000 / CG_CAP_W_ONE);
+	/* How the capacity is decided: samples in a row with a queue and
+	 * short of what was sent, the last full sample, fast start's best,
+	 * the queue over a minute's minimum, and the cuts and restores. */
+	cg_json_obj(j, "cap_diag");
+	cg_json_u64(j, "sat_n", l->sat_n);
+	cg_json_u64(j, "sat_load_n", l->sat_load_n);
+	cg_json_u64(j, "short_n", l->short_n);
+	cg_json_str(j, "cut", l->cut == CG_CAP_CUT_FULL ? "full" : l->cut == CG_CAP_CUT_SHORT ? "short" : "none");
+	if (l->full_ms && now_ms >= l->full_ms)
+		cg_json_u64(j, "full_age_ms", now_ms - l->full_ms);
+	else
+		cg_json_null(j, "full_age_ms");
+	if (l->have_rate)
+		cg_json_ms(j, "best_mbit", cg_cap_best_bps(l) / 1000);
+	else
+		cg_json_null(j, "best_mbit");
+	if (l->ql_us >= 0)
+		cg_json_ms(j, "ql_ms", (uint64_t)l->ql_us);
+	else
+		cg_json_null(j, "ql_ms");
+	cg_json_u64(j, "cut_full", l->n_cut_full);
+	cg_json_u64(j, "cut_short", l->n_cut_short);
+	cg_json_u64(j, "restore_rest", l->n_restore);
+	cg_json_end(j, '}');
+}
+
+void cg_json_decisions(struct cg_json *j, const struct cg_decring *r, uint64_t now_ms)
+{
+	cg_json_arr(j, "decisions");
+	for (unsigned k = 0; k < cg_dec_count(r); k++) {
+		const struct cg_dec *d = cg_dec_get(r, k);
+
+		cg_json_obj(j, NULL);
+		cg_json_u64(j, "t_ms", d->t_ms);
+		cg_json_u64(j, "age_ms", now_ms >= d->t_ms ? now_ms - d->t_ms : 0);
+		if (d->link == CG_DEC_NOLINK)
+			cg_json_null(j, "link");
+		else
+			cg_json_u64(j, "link", d->link);
+		cg_json_str(j, "mech", cg_dec_name(d->mech));
+		cg_json_i64(j, "from", d->from);
+		cg_json_i64(j, "to", d->to);
+		cg_json_i64(j, cg_dec_why_name(d->mech), d->why);
+		cg_json_end(j, '}');
+	}
+	cg_json_end(j, ']');
+	cg_json_obj(j, "decision_totals");
+	for (unsigned m = 0; m < CG_DEC_MECHS; m++)
+		cg_json_u64(j, cg_dec_name(m), r->total[m]);
+	cg_json_end(j, '}');
+}
+
+void cg_json_g4(struct cg_json *j, const struct cg_spread *s, unsigned link, uint64_t now_ms)
+{
+	const uint32_t *n = s->n_ev[link];
+
+	cg_json_obj(j, "g4");
+	cg_json_str(j, "state", cg_g4_state_name(cg_g4_state(s, link)));
+	if (s->ev_ms[link]) {
+		cg_json_str(j, "last", cg_dec_name(CG_DEC_LEAVE_QUEUE + s->ev[link]));
+		cg_json_u64(j, "age_ms", now_ms >= s->ev_ms[link] ? now_ms - s->ev_ms[link] : 0);
+	} else {
+		cg_json_null(j, "last");
+		cg_json_null(j, "age_ms");
+	}
+	cg_json_u64(j, "leave_queue", n[CG_G4_LEAVE_QUEUE]);
+	cg_json_u64(j, "leave_stall", n[CG_G4_LEAVE_STALL]);
+	cg_json_u64(j, "leave_base", n[CG_G4_LEAVE_BASE]);
+	cg_json_u64(j, "rejoin_settle", n[CG_G4_REJOIN_SETTLE]);
+	cg_json_u64(j, "rejoin_recover", n[CG_G4_REJOIN_RECOVER]);
+	cg_json_u64(j, "rejoin_empty", n[CG_G4_REJOIN_EMPTY]);
+	cg_json_u64(j, "rejoin_off", n[CG_G4_REJOIN_OFF]);
+	cg_json_end(j, '}');
+}
+
+void cg_json_owd_fresh(struct cg_json *j, const struct cg_hlink *h, uint64_t now_ms)
+{
+	if (h->report_ms && now_ms >= h->report_ms)
+		cg_json_u64(j, "owd_age_ms", now_ms - h->report_ms);
+	else
+		cg_json_null(j, "owd_age_ms");
+	/* reports a second, 3 decimals */
+	cg_json_ms(j, "owd_reports_per_s", cg_health_rps_milli(h, now_ms));
 }
 
 int cg_status_write(const char *path, const char *data, size_t len)

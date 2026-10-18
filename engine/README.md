@@ -1273,6 +1273,39 @@ de secuencia de control, no por la hora de llegada: tras una recarga, las
 sondas o respuestas que salieron antes por un enlace lento llegan después de
 las nuevas por uno rápido, y no deshacen lo que estas dijeron.
 
+**La relojería** (auditoría del 2026-10-17; `decision.h`, `decrec.h`): en
+`upload` (cliente) y en cada sesión (servidor), `decisions` son las últimas
+64 decisiones del sentido en que envía ese extremo, la más nueva primero:
+`t_ms` (reloj monótono del motor), `age_ms`, `link` (`null`: el sentido
+entero), `mech`, `from` y `to` (el estado o valor antes y después) y un
+motivo con su unidad como clave (`behind_us`, `queue_us`, `silent_ms`,
+`credit_bytes`, `queue_leaves`, `recoveries`). Los mecanismos: G1 (`mute`,
+`unmute`, `unmute_forced`; estados 0 activo, 1 silenciado), G3 (`stale`,
+`fresh`), G4 (`leave_queue`, `leave_stall`, `leave_base`: salió sin haber
+estado dentro; `rejoin_settle`, `rejoin_recover`, `rejoin_empty`,
+`rejoin_off`; estados como `g4.state`, en número: 0 `out`, 1 `waiting`,
+2 `in`, 3 `left`, 4 `holding`, 5 `qleft`), `stress_on/off` y
+`recover_on/off`, `copies_dry/ok` (el presupuesto de copias de `cg_sdup` se
+agotó bajo estrés; también `copies_dry`, el estado actual), la capacidad
+(`cut_full`, `cut_short`, `restore_rest`, el arranque rápido; en bps), el
+gobernador (`gov_down`, `gov_up`: su peso cruza la mitad del máximo) y el
+rescate (`rescue_full_on/off`: su presupuesto bajo, `CG_BOND_FULL`). Solo se
+anota cada transición, en los ticks, nunca por paquete; `decision_totals`
+cuenta cada mecanismo desde el arranque. Junto a ellas: `weights_used`
+(`eta` si el reparto por llegada tiene ritmo para todos los enlaces del
+reparto, y entonces `gov_weight` y `cap_weight` no se usan; si no,
+`capacity`, `governor` o `links`; `null` sin reparto), `lead` (el enlace
+más rápido dentro de G4) y `gov_qmin_ms` (la cola más corta del
+gobernador). Por enlace: `g4` (`state`: `in`, `left`, `holding`, `qleft`,
+`waiting` u `out`; `last`, la última transición, y `age_ms`; y los
+contadores `leave_queue`, `leave_stall`, `leave_base`, `rejoin_settle`,
+`rejoin_recover`, `rejoin_empty`, `rejoin_off`), `owd_age_ms` (desde el
+último informe de retardo) y `owd_reports_per_s`, `gov_ticks` (`down`,
+`up`, `hold`; `null` sin gobernador) y `cap_diag` (`sat_n`, `sat_load_n`,
+`short_n`, `cut`, `full_age_ms`, `best_mbit`, `ql_ms`, la cola sobre el
+mínimo de un minuto, y los contadores `cut_full`, `cut_short`,
+`restore_rest`).
+
 ## Protocolo v4
 
 Desde la 0.5.0 (historia 010, PR 3d2). La cabecera sigue midiendo 24 bytes:

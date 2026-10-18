@@ -24,6 +24,7 @@ void cg_json_arr(struct cg_json *j, const char *key);
 void cg_json_end(struct cg_json *j, char close);
 void cg_json_str(struct cg_json *j, const char *key, const char *val);
 void cg_json_u64(struct cg_json *j, const char *key, uint64_t v);
+void cg_json_i64(struct cg_json *j, const char *key, int64_t v);
 void cg_json_ms(struct cg_json *j, const char *key, uint64_t us); /* microseconds as ms with 3 decimals */
 void cg_json_ms_signed(struct cg_json *j, const char *key, int64_t us);
 void cg_json_bool(struct cg_json *j, const char *key, int v);
@@ -60,7 +61,19 @@ void cg_json_owd_swing(struct cg_json *j, const char *key, const struct cg_reord
  * capacity_mbit, delivery_mbit (null until measured) and queue_ms (null
  * until a delay). */
 struct cg_cap_link;
-void cg_json_capacity(struct cg_json *j, const struct cg_cap_link *l, uint32_t target_us);
+void cg_json_capacity(struct cg_json *j, const struct cg_cap_link *l, uint32_t target_us, uint64_t now_ms);
+/* The clockwork's last decisions (decision.h), newest first, as
+ * "decisions", and their totals by mechanism, as "decision_totals". */
+struct cg_decring;
+void cg_json_decisions(struct cg_json *j, const struct cg_decring *r, uint64_t now_ms);
+/* Guard G4 for one link (split.h), as "g4": its state, its last
+ * transition and how long ago, and how many of each. */
+struct cg_spread;
+void cg_json_g4(struct cg_json *j, const struct cg_spread *s, unsigned link, uint64_t now_ms);
+/* The freshness of a link's delay reports (health.h): owd_age_ms and
+ * owd_reports_per_s. */
+struct cg_hlink;
+void cg_json_owd_fresh(struct cg_json *j, const struct cg_hlink *h, uint64_t now_ms);
 
 /* Writes data to path atomically. Returns 0 or -1 (errno set). */
 int cg_status_write(const char *path, const char *data, size_t len);

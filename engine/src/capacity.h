@@ -144,6 +144,23 @@ struct cg_cap_link {
 	uint64_t q_t_ms;
 	int64_t s1, s2;
 	uint8_t have_trend, have_s1;
+	/* For the status: whether the last sample cut the capacity (enum
+	 * cg_cap_cut), and how often it began to (each run of full or short
+	 * samples once) or fast start restored it. Kept across a restart of
+	 * the counters. */
+	uint8_t cut;
+	uint64_t n_cut_full, n_cut_short, n_restore;
+};
+
+/* What cg_cap_tick did, as bits of its return value. */
+#define CG_CAP_EV_CUT_FULL 1u  /* a run of full samples began: the capacity is what it delivers full */
+#define CG_CAP_EV_CUT_SHORT 2u /* a run of samples whose packets stop arriving began */
+#define CG_CAP_EV_RESTORE 4u   /* fast start: back to half its best */
+
+enum cg_cap_cut {
+	CG_CAP_CUT_NONE = 0,
+	CG_CAP_CUT_FULL,
+	CG_CAP_CUT_SHORT,
 };
 
 static inline void cg_cap_reset(struct cg_cap_link *l)
@@ -223,7 +240,7 @@ static inline uint32_t cg_cap_rescue_w(const struct cg_cap_link *l, uint32_t tar
  * measured again: on the testnet three of four links waited at 0.3-8 Mbit/s,
  * measured full minutes before, and a download took 3-4 s to give them their
  * 20 (story 013). If it really carries less now, its queue says so at once. */
-static inline void cg_cap_best(struct cg_cap_link *l, uint64_t now_ms)
+static inline int cg_cap_best(struct cg_cap_link *l, uint64_t now_ms)
 {
 	uint64_t cap = cg_cap_bps(l), best;
 
@@ -235,20 +252,27 @@ static inline void cg_cap_best(struct cg_cap_link *l, uint64_t now_ms)
 		l->best_cur = cap;
 	}
 	best = cg_cap_best_bps(l);
-	if (cap < best / 2 && (!l->full_ms || now_ms - l->full_ms >= CG_CAP_REST_MS))
+	if (cap < best / 2 && (!l->full_ms || now_ms - l->full_ms >= CG_CAP_REST_MS)) {
 		l->max_cur = l->max_prev = best / 2;
+		l->n_restore++;
+		return 1;
+	}
+	return 0;
 }
 
 /* One tick for one link. report_ms: when this end received the other's
  * newest report on it (0: none yet), rx: what that report says; tx_pkts,
  * tx_bytes: what this end has sent on it so far; h: its health in this
- * direction (the delay, when fresh). */
-static inline void cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint64_t report_ms, uint32_t rx, uint64_t tx_pkts,
+ * direction (the delay, when fresh). Returns CG_CAP_EV_* bits: what the
+ * caller may record (decision.h). */
+static inline unsigned cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint64_t report_ms, uint32_t rx, uint64_t tx_pkts,
 			       uint64_t tx_bytes, const struct cg_hlink *h, const struct cg_cap_cfg *cfg)
 {
 	uint64_t dt, dpk, dby, bytes, rate, raw, ref;
 	uint32_t drx;
 	int loaded;
+	uint8_t cut;
+	unsigned ev = 0;
 
 	if (h && cg_health_fresh(h, now_ms)) {
 		int32_t q = cg_owd_diff(h->owd, cg_gov_base(&l->q, h->owd, now_ms, cfg->window_ms));
@@ -261,17 +285,17 @@ static inline void cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint64_t 
 		cg_cap_trend(l, now_ms);
 	}
 	if (!report_ms)
-		return;
+		return 0;
 	if (!l->have) {
 		l->t_ms = report_ms;
 		l->rx = rx;
 		l->tx_pkts = l->tx0 = tx_pkts;
 		l->tx_bytes = tx_bytes;
 		l->have = 1;
-		return;
+		return 0;
 	}
 	if (report_ms <= l->t_ms || report_ms - l->t_ms < CG_CAP_MIN_MS)
-		return;
+		return 0;
 	dt = report_ms - l->t_ms;
 	drx = rx - l->rx;
 	dpk = tx_pkts - l->tx_pkts;
@@ -292,12 +316,15 @@ static inline void cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint64_t 
 		l->s2 = keep.s2;
 		l->have_trend = keep.have_trend;
 		l->have_s1 = keep.have_s1;
+		l->n_cut_full = keep.n_cut_full;
+		l->n_cut_short = keep.n_cut_short;
+		l->n_restore = keep.n_restore;
 		l->t_ms = report_ms;
 		l->rx = rx;
 		l->tx_pkts = l->tx0 = tx_pkts;
 		l->tx_bytes = tx_bytes;
 		l->have = 1;
-		return;
+		return 0;
 	}
 	if (dpk)
 		l->size = (uint32_t)(dby / dpk);
@@ -349,14 +376,28 @@ static inline void cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint64_t 
 		/* Full: the link gives no more than it delivers while full. */
 		l->max_cur = l->max_prev = l->sat_bps;
 		l->full_ms = report_ms;
+		cut = CG_CAP_CUT_FULL;
 	} else if (l->short_n >= CG_CAP_SHORT_N) {
 		/* Its packets stop arriving: no more than it delivers now. */
 		l->max_cur = l->max_prev = rate;
 		l->full_ms = report_ms;
-	} else if (rate > l->max_cur) {
-		l->max_cur = l->max_prev = rate;
+		cut = CG_CAP_CUT_SHORT;
+	} else {
+		if (rate > l->max_cur)
+			l->max_cur = l->max_prev = rate;
+		cut = CG_CAP_CUT_NONE;
 	}
-	cg_cap_best(l, report_ms);
+	if (cut != l->cut && cut == CG_CAP_CUT_FULL) {
+		l->n_cut_full++;
+		ev |= CG_CAP_EV_CUT_FULL;
+	} else if (cut != l->cut && cut == CG_CAP_CUT_SHORT) {
+		l->n_cut_short++;
+		ev |= CG_CAP_EV_CUT_SHORT;
+	}
+	l->cut = cut;
+	if (cg_cap_best(l, report_ms))
+		ev |= CG_CAP_EV_RESTORE;
+	return ev;
 }
 
 /* The split's weights (cg_split_pick: up to CG_GOV_MAX) from l's
