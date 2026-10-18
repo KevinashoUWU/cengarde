@@ -506,9 +506,39 @@ static void test_capacity_shapes(void)
 	CHECK(maxq_late < 100);
 }
 
+/* The rescue's full (cg_cap_rfull, audit C11): on at 4 x target, off only
+ * under 3 x, so it does not flip around the edge. */
+static void test_capacity_rfull(void)
+{
+	struct cg_cap_link l;
+
+	cg_cap_reset(&l);
+	cg_cap_rfull(&l, 20 * MS);
+	CHECK(!l.rfull); /* nothing measured */
+	l.ql_us = 79 * MS;
+	cg_cap_rfull(&l, 20 * MS);
+	CHECK(!l.rfull);
+	l.ql_us = 80 * MS;
+	cg_cap_rfull(&l, 20 * MS);
+	CHECK(l.rfull);
+	l.ql_us = 70 * MS; /* between 3 and 4 x: stays */
+	cg_cap_rfull(&l, 20 * MS);
+	CHECK(l.rfull);
+	l.ql_us = 50 * MS; /* but the trend says 80 a second ahead */
+	l.have_s1 = 1;
+	l.s1 = 30 * MS;
+	cg_cap_rfull(&l, 20 * MS);
+	CHECK(l.rfull);
+	l.s1 = 0;
+	l.ql_us = 60 * MS;
+	cg_cap_rfull(&l, 20 * MS);
+	CHECK(!l.rfull);
+}
+
 void test_capacity(void)
 {
 	test_capacity_short();
+	test_capacity_rfull();
 	test_capacity_total();
 	test_capacity_shapes();
 	test_capacity_converges();

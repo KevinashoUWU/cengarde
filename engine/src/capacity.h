@@ -144,6 +144,7 @@ struct cg_cap_link {
 	uint64_t q_t_ms;
 	int64_t s1, s2;
 	uint8_t have_trend, have_s1;
+	uint8_t rfull;              /* the rescue's "full" (cg_cap_rfull), with hysteresis */
 	/* For the status: whether the last sample cut the capacity (enum
 	 * cg_cap_cut), and how often it began to (each run of full or short
 	 * samples once) or fast start restored it. Kept across a restart of
@@ -234,6 +235,27 @@ static inline uint32_t cg_cap_rescue_w(const struct cg_cap_link *l, uint32_t tar
 	return (uint32_t)((hi - pred) * CG_CAP_W_ONE / (hi - lo));
 }
 
+/* The rescue's "full" (what the link loses is congestion, for TCP to see):
+ * on once the queue a second ahead (as cg_cap_rescue_w) reaches 4 x
+ * target_us, its weight 0; off only under 3 x target_us. Without the
+ * hysteresis the bit flipped probe by probe around the edge, and the
+ * rescue took a link's losses for congestion and then not (clockwork audit
+ * C11, 2026-10-17). */
+static inline void cg_cap_rfull(struct cg_cap_link *l, uint32_t target_us)
+{
+	int64_t pred;
+
+	if (l->ql_us < 0) {
+		l->rfull = 0;
+		return;
+	}
+	pred = (int64_t)l->ql_us + (l->have_s1 ? l->s1 + l->s2 / 2 : 0);
+	if (pred >= 4 * (int64_t)target_us)
+		l->rfull = 1;
+	else if (pred <= 3 * (int64_t)target_us)
+		l->rfull = 0;
+}
+
 /* Fast start: the best capacity of the last CG_CAP_BEST_MS, and a link that
  * has not been full for CG_CAP_REST_MS back to half of it at least. A
  * capacity is lowered only while the link is full, and an idle link is not
@@ -283,6 +305,7 @@ static inline unsigned cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint6
 		q = cg_owd_diff(h->owd, cg_gov_base(&l->ql, h->owd, now_ms, CG_CAP_LONG_MS));
 		l->ql_us = q > 0 ? q : 0;
 		cg_cap_trend(l, now_ms);
+		cg_cap_rfull(l, cfg->sat_us);
 	}
 	if (!report_ms)
 		return 0;

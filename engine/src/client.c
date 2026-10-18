@@ -1513,7 +1513,7 @@ static void send_nacks(struct client *c, uint64_t now_ms)
  * (capacity.h's cg_cap_rescue_w) is 0. */
 static int up_full(const struct client *c, unsigned i)
 {
-	return cg_cap_rescue_w(&c->cap[i], c->cfg->governor_target_ms * 1000) == 0;
+	return c->cap[i].rfull; /* cg_cap_rescue_w 0, with hysteresis (cg_cap_rfull) */
 }
 
 /* A verified NACK from the server (rescue.h): each sequence the ring still

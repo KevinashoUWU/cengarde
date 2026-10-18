@@ -1296,7 +1296,7 @@ static void up_deliver(struct server *s, int *nq, struct session *S, const struc
  * links lossy at random as well; story 013.) */
 static int path_full(const struct server *s, const struct session *S, unsigned p)
 {
-	return cg_cap_rescue_w(&S->cap[p], s->cfg->governor_target_ms * 1000) == 0;
+	return S->cap[p].rfull; /* cg_cap_rescue_w 0, with hysteresis (cg_cap_rfull) */
 }
 
 /* A verified NACK of S (rescue.h): each sequence it names that the ring
