@@ -146,8 +146,24 @@ static void test_joint(void)
 	}
 }
 
+/* cg_arr_idle: a link idle for idle_us (no copy since), never with 0. */
+static void test_arrival_idle(void)
+{
+	struct cg_link_rx l;
+
+	memset(&l, 0, sizeof(l));
+	CHECK(!cg_arr_idle(&l, 1000000, 0));    /* off */
+	CHECK(cg_arr_idle(&l, 1000000, 500000)); /* never brought one */
+	l.last_us = 900000;
+	CHECK(!cg_arr_idle(&l, 1000000, 500000));
+	CHECK(cg_arr_idle(&l, 1500001, 500000));
+	l.last_us = 0xfffffff0u;                /* wraps */
+	CHECK(!cg_arr_idle(&l, 0x10, 500000));
+}
+
 void test_arrival(void)
 {
+	test_arrival_idle();
 	memset(&a, 0, sizeof(a));
 	memset(rx, 0, sizeof(rx));
 

@@ -373,6 +373,18 @@ static uint16_t expect_mask(const struct session *S, uint64_t now_ms)
 	return m;
 }
 
+/* The paths the upload's reorderer waits for: the expected ones, less those
+ * that brought no data for reorder_idle_ms (clockwork audit C2). */
+static uint16_t ro_rset(const struct server *s, const struct session *S, uint64_t now_ms)
+{
+	uint16_t m = expect_mask(S, now_ms);
+
+	for (int i = 0; s->cfg->reorder_idle_ms && i < CG_MAX_LINKS; i++)
+		if ((m >> i & 1) && cg_arr_idle(&S->rx[i], (uint32_t)(now_ms * 1000), s->cfg->reorder_idle_ms * 1000))
+			m &= (uint16_t)~(1u << i);
+	return m;
+}
+
 /* An address of ours as "a.b.c.d:port" or "[v6]:port", "" when unknown. */
 static const char *local_str(const struct server *s, const struct cg_local *l, char *buf, size_t len)
 {
@@ -1509,7 +1521,7 @@ static void listen_read(struct server *s, struct lane *ln)
 				 * the path may have changed its rset too. */
 				cg_ro_owd(&S->ro, h.link, now32 - h.ts);
 				if (s->cfg->reorder && S->ro.held) {
-					up_drain(s, &nq, S, expect_mask(S, now_ms), now32, 0);
+					up_drain(s, &nq, S, ro_rset(s, S, now_ms), now32, 0);
 					ro_track(s, S);
 				}
 				continue;
@@ -1531,7 +1543,8 @@ static void listen_read(struct server *s, struct lane *ln)
 			S->up_pkts++;
 			S->up_bytes += len - CG_HDR_LEN;
 			cg_wgs_add(&s->wgs_up, b + CG_HDR_LEN, len - CG_HDR_LEN);
-			up_deliver(s, &nq, S, &h, b + CG_HDR_LEN, len - CG_HDR_LEN, expect, now32);
+			up_deliver(s, &nq, S, &h, b + CG_HDR_LEN, len - CG_HDR_LEN,
+				   s->cfg->reorder_idle_ms ? ro_rset(s, S, now_ms) : expect, now32);
 		}
 		q_flush(s, &nq);
 		if (nr)
@@ -2285,7 +2298,7 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 
 		if (!S->used)
 			continue;
-		rset = expect_mask(S, now_ms);
+		rset = ro_rset(s, S, now_ms);
 		d = down_paths(s, S, now_ms); /* the download split, as a batch now would take it */
 		cg_json_obj(j, NULL);
 		snprintf(buf, sizeof(buf), "%08x", S->id);
@@ -2790,7 +2803,7 @@ static void ro_service(struct server *s)
 	for (uint32_t i = s->nactive; i-- > 0;) {
 		struct session *S = &s->s[s->ro_active[i]];
 
-		up_drain(s, &nq, S, expect_mask(S, now_ms), (uint32_t)now_us, 0);
+		up_drain(s, &nq, S, ro_rset(s, S, now_ms), (uint32_t)now_us, 0);
 		ro_track(s, S);
 	}
 	q_flush(s, &nq);
@@ -2810,7 +2823,7 @@ static int ro_timeout(struct server *s)
 	now_us = cg_now_us();
 	for (uint32_t i = 0; i < s->nactive && due > 0; i++) {
 		const struct session *S = &s->s[s->ro_active[i]];
-		int32_t d = cg_ro_due_us(&S->ro, &S->rocf, expect_mask(S, now_us / 1000), (uint32_t)now_us);
+		int32_t d = cg_ro_due_us(&S->ro, &S->rocf, ro_rset(s, S, now_us / 1000), (uint32_t)now_us);
 
 		if (d < due)
 			due = d;
