@@ -270,6 +270,12 @@ struct cg_spread {
 	uint8_t recover;  /* the fastest link is one that left: it comes back now (rejoin) */
 	uint16_t qleft;   /* links that left after being in: their queue grew, not their base delay */
 	uint64_t gone_ms[CG_MAX_LINKS]; /* a link of qleft not a candidate since then, 0: it is */
+	/* set by the caller (split_dwell_ms, split_dwell_oq_ms, an experiment):
+	 * a link back by a recovery stays in this long while within twice the
+	 * spread, and its own queue is at most dwell_oq_us (0: any); 0: off */
+	uint32_t dwell_ms;
+	int32_t dwell_oq_us;
+	uint64_t n_dwell; /* evaluations a link stayed in by the dwell, for the status */
 	uint64_t n_recover, n_qleave; /* how often each kind of stress began, for the status */
 	uint64_t n_stall; /* links that left in a stall (cg_split_stalled): no copies */
 	uint32_t owd_prev[CG_MAX_LINKS]; /* each link's delay at the last evaluation */
@@ -489,6 +495,19 @@ static inline uint16_t cg_split_spread_eval_r(struct cg_spread *s, const struct 
 		s->behind_us[i] = d;
 		s->behind |= b;
 		if (!(s->left & b)) {
+			/* Back by a recovery a moment ago: it stays in while within
+			 * twice the spread (audit C3: the rejoin at once and the
+			 * leave for its queue took turns with no hysteresis). With
+			 * dwell_oq_us only while its own queue is short: a link that
+			 * jumped or stalled and came back, not one filling a deep
+			 * queue (bloat's download: 3x the retransmissions). */
+			if (d > (int32_t)spread_us && s->dwell_ms && s->ev[i] == CG_G4_REJOIN_RECOVER &&
+			    now_ms - s->ev_ms[i] < s->dwell_ms && d <= 2 * (int32_t)spread_us &&
+			    (!s->dwell_oq_us || oq <= s->dwell_oq_us)) {
+				s->n_dwell++;
+				in |= b;
+				continue;
+			}
 			if (d > (int32_t)spread_us) {
 				s->left |= b;
 				/* it was in: its queue grew (a link slow by its base delay

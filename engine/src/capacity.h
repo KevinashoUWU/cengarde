@@ -105,6 +105,7 @@
 #define CG_CAP_REST_MS 10000u  /* fast start: this long without being full, it comes back to half its best */
 #define CG_CAP_TREND_MS 100 /* the queue's trend takes samples at least this far apart */
 #define CG_CAP_LONG_MS 60000 /* the rescue's queue: over the delay's minimum of this long */
+#define CG_CAP_EP_REST_MS 3000u /* cap_g4_episode 3: a G4 episode holds fast start back this long */
 /* More delivered than sent by this much (packets), and the report is not
  * of this run of the counters: probes and what was in flight at the start
  * make a few packets of difference, never this many. */
@@ -113,6 +114,7 @@
 struct cg_cap_cfg {
 	uint32_t window_ms; /* of the capacity's maximum and of the queue's minimum */
 	uint32_t sat_us;    /* a queue above this: the link gives no more */
+	uint8_t rfull_mode; /* rescue_full_hyst (config.h): the rescue's full bit, cg_cap_rfull */
 };
 
 struct cg_cap_link {
@@ -144,6 +146,11 @@ struct cg_cap_link {
 	uint64_t q_t_ms;
 	int64_t s1, s2;
 	uint8_t have_trend, have_s1;
+	uint8_t rfull;              /* the rescue's full bit with hysteresis (cg_cap_rfull) */
+	/* the last sample: what this end sent and what arrived, bps (cg_cap_episode) */
+	uint64_t last_tx_bps, last_rx_bps;
+	uint64_t ep_ms;             /* the last G4 episode counted (cap_g4_episode 3), 0: none */
+	uint64_t n_g4_ep;           /* G4 leaves counted as an episode, for the status */
 	/* For the status: whether the last sample cut the capacity (enum
 	 * cg_cap_cut), and how often it began to (each run of full or short
 	 * samples once) or fast start restored it. Kept across a restart of
@@ -234,6 +241,61 @@ static inline uint32_t cg_cap_rescue_w(const struct cg_cap_link *l, uint32_t tar
 	return (uint32_t)((hi - pred) * CG_CAP_W_ONE / (hi - lo));
 }
 
+/* The rescue's full bit with hysteresis (rescue_full_hyst, an experiment
+ * of the clockwork audit's second pass, C11): on once the queue a second
+ * ahead (as cg_cap_rescue_w) reaches 4 x target_us; mode 1 keeps it on
+ * until under 3 x target_us; mode 2 only while the queue is not rising
+ * (its slope at most 0: a spike or a loss passing, not a queue filling),
+ * and off at once under 4 x while it rises. Mode 1 helped spikeloss and
+ * hurt bloat: a full link kept refusing the rescue while it filled. */
+static inline void cg_cap_rfull(struct cg_cap_link *l, uint32_t target_us, unsigned mode)
+{
+	int64_t pred;
+
+	if (l->ql_us < 0) {
+		l->rfull = 0;
+		return;
+	}
+	pred = (int64_t)l->ql_us + (l->have_s1 ? l->s1 + l->s2 / 2 : 0);
+	if (pred >= 4 * (int64_t)target_us)
+		l->rfull = 1;
+	else if (pred <= 3 * (int64_t)target_us || (mode == 2 && l->have_s1 && l->s1 > 0))
+		l->rfull = 0;
+}
+
+/* Whether the rescue takes link l as full (what it loses is congestion,
+ * for TCP to see): its rescue weight 0, or with mode (rescue_full_hyst)
+ * the bit with hysteresis. */
+static inline int cg_cap_full(const struct cg_cap_link *l, uint32_t target_us, unsigned mode)
+{
+	return mode ? l->rfull : cg_cap_rescue_w(l, target_us) == 0;
+}
+
+/* Guard G4 took the link out because its queue grew (cap_g4_episode, an
+ * experiment of the clockwork audit, C5): mode 1, as a full sample for fast
+ * start; mode 2, only when the capacity overshot what the link carries: it
+ * was sent at least 3/4 of its capacity in the last sample and delivered
+ * under 7/8 of it (an overestimate that G4 cut short before the two full
+ * samples that lower it); mode 3, as 2 but holding fast start back for
+ * CG_CAP_EP_REST_MS only. Mode 1 cut het's download retransmissions by 4/5
+ * and raised deepq's upload ones: it also held back links whose capacity
+ * was right. Returns whether it counted. */
+static inline int cg_cap_episode(struct cg_cap_link *l, uint64_t now_ms, unsigned mode)
+{
+	uint64_t cap = cg_cap_bps(l);
+
+	if (!mode)
+		return 0;
+	if (mode >= 2 && !(l->have_rate && cap && l->last_tx_bps * 4 >= cap * 3 && l->last_rx_bps * 8 < cap * 7))
+		return 0;
+	if (mode == 3)
+		l->ep_ms = now_ms ? now_ms : 1;
+	else
+		l->full_ms = now_ms;
+	l->n_g4_ep++;
+	return 1;
+}
+
 /* Fast start: the best capacity of the last CG_CAP_BEST_MS, and a link that
  * has not been full for CG_CAP_REST_MS back to half of it at least. A
  * capacity is lowered only while the link is full, and an idle link is not
@@ -252,7 +314,8 @@ static inline int cg_cap_best(struct cg_cap_link *l, uint64_t now_ms)
 		l->best_cur = cap;
 	}
 	best = cg_cap_best_bps(l);
-	if (cap < best / 2 && (!l->full_ms || now_ms - l->full_ms >= CG_CAP_REST_MS)) {
+	if (cap < best / 2 && (!l->full_ms || now_ms - l->full_ms >= CG_CAP_REST_MS) &&
+	    (!l->ep_ms || now_ms - l->ep_ms >= CG_CAP_EP_REST_MS)) {
 		l->max_cur = l->max_prev = best / 2;
 		l->n_restore++;
 		return 1;
@@ -283,6 +346,7 @@ static inline unsigned cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint6
 		q = cg_owd_diff(h->owd, cg_gov_base(&l->ql, h->owd, now_ms, CG_CAP_LONG_MS));
 		l->ql_us = q > 0 ? q : 0;
 		cg_cap_trend(l, now_ms);
+		cg_cap_rfull(l, cfg->sat_us, cfg->rfull_mode);
 	}
 	if (!report_ms)
 		return 0;
@@ -319,6 +383,8 @@ static inline unsigned cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint6
 		l->n_cut_full = keep.n_cut_full;
 		l->n_cut_short = keep.n_cut_short;
 		l->n_restore = keep.n_restore;
+		l->n_g4_ep = keep.n_g4_ep;
+		l->rfull = keep.rfull;
 		l->t_ms = report_ms;
 		l->rx = rx;
 		l->tx_pkts = l->tx0 = tx_pkts;
@@ -330,6 +396,8 @@ static inline unsigned cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint6
 		l->size = (uint32_t)(dby / dpk);
 	bytes = (uint64_t)drx * l->size;
 	rate = raw = bytes * 8 * 1000 / dt;
+	l->last_rx_bps = raw;
+	l->last_tx_bps = dby * 8 * 1000 / dt;
 	l->t_ms = report_ms;
 	l->rx = rx;
 	l->tx_pkts = tx_pkts;
@@ -439,6 +507,29 @@ static inline void cg_cap_weights(const struct cg_cap_link l[CG_MAX_LINKS], uint
 
 #define CG_CAP_SHAPE_MIN 2000000ull /* bps: below this a tunnel is idle */
 
+/* Where link l's queue q_us will be in h_ms (split_qpred_ms, task #33, the
+ * rescue's prediction of cg_cap_rescue_w brought to the split): q_us plus
+ * the slope times h plus half the slope's slope times h squared, at least
+ * 0 and at most q_us + 1 s. mode 1: never under q_us (only a rising queue
+ * is moved: a draining one predicted empty took the split's whole flow and
+ * overshot, bloat's upload); mode 2: as 1 and at most 2 q_us. h_ms 0, or no
+ * trend yet: q_us. */
+static inline uint32_t cg_cap_qpred(const struct cg_cap_link *l, uint32_t q_us, uint32_t h_ms, unsigned mode)
+{
+	int64_t p, h = h_ms;
+
+	if (!h_ms || !l->have_s1)
+		return q_us;
+	p = (int64_t)q_us + l->s1 * h / 1000 + l->s2 / 2 * h * h / 1000000;
+	if (mode && p < (int64_t)q_us)
+		return q_us;
+	if (mode == 2 && p > 2 * (int64_t)q_us)
+		return 2 * q_us;
+	if (p < 0)
+		return 0;
+	return p > (int64_t)q_us + 1000000 ? q_us + 1000000 : (uint32_t)p;
+}
+
 /* A tick's measures into the split by expected arrival (eta.h): each link of
  * mask's capacity, its delay without a queue (the minimum of its delays,
  * over the smallest of the links') and its queue; a link without a
@@ -450,9 +541,12 @@ static inline void cg_cap_weights(const struct cg_cap_link l[CG_MAX_LINKS], uint
  * more than its capacity never lets it show more. On the testnet, after
  * MPTCP traffic had filled the same modems, the four capacities stayed at
  * 5-7 Mbit/s against 15-30 and the upload under split_eta fell to 3 Mbit/s
- * (story 013). */
+ * (story 013).
+ *
+ * pred_ms, pred_mode: the queue taken where it will be that far ahead
+ * (cg_cap_qpred), 0: the queue now. */
 static inline void cg_cap_eta(struct cg_eta *e, const struct cg_cap_link l[CG_MAX_LINKS], uint16_t mask,
-			      uint32_t probe_us, uint64_t now_us)
+			      uint32_t probe_us, uint32_t pred_ms, unsigned pred_mode, uint64_t now_us)
 {
 	uint32_t ref = 0, mins[CG_MAX_LINKS];
 	uint64_t big = 0;
@@ -480,8 +574,8 @@ static inline void cg_cap_eta(struct cg_eta *e, const struct cg_cap_link l[CG_MA
 		}
 		if (l[i].queue_us >= 0 && (uint32_t)l[i].queue_us < probe_us)
 			bps = cg_cap_probe(&l[i], bps, big);
-		cg_eta_set(e, i, bps, (uint32_t)cg_owd_diff(mins[i], ref), l[i].queue_us > 0 ? (uint32_t)l[i].queue_us : 0,
-			   now_us);
+		cg_eta_set(e, i, bps, (uint32_t)cg_owd_diff(mins[i], ref),
+			   cg_cap_qpred(&l[i], l[i].queue_us > 0 ? (uint32_t)l[i].queue_us : 0, pred_ms, pred_mode), now_us);
 	}
 }
 

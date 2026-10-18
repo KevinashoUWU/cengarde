@@ -223,6 +223,15 @@ struct cg_config {
 	int governor;                 /* the split's weights from each link's queue (govern.h) */
 	int capacity_weights;         /* the split's weights from each link's capacity (capacity.h) */
 	int split_eta;                /* split by expected arrival (eta.h) */
+	/* EXPERIMENTS of the clockwork audit's second pass (2026-10-18), all 0: off */
+	uint32_t split_dwell_ms;      /* G4 keeps a link back by a recovery in this long (within 2x the spread) */
+	uint32_t split_dwell_oq_ms;   /* ... only while its own queue is at most this; 0: any */
+	uint32_t split_qpred_ms;      /* split_eta takes each queue where its trend puts it this far ahead */
+	uint32_t split_qpred_mode;    /* 0: both ways, 1: rising queues only, 2: rising, at most twice the queue */
+	uint32_t eta_keep;            /* the ETA backlog over a stale queue: 1 the larger, 2 + net growth since, 3 half */
+	uint32_t eta_keep_ms;         /* eta_keep 2: how stale the queue measured is */
+	uint32_t cap_g4_episode;      /* a G4 leave for the queue: 1 a full episode, 2 if the capacity overshot, 3 2 for 3 s */
+	uint32_t rescue_full_hyst;    /* the rescue's full bit: 1 off under 3x, 2 off under 3x only while not rising */
 	int pacing;                   /* each link's socket paced at its rate (pace.h) */
 	uint32_t governor_target_ms;  /* the queue a link may hold */
 	uint32_t governor_window_ms;  /* of each link's minimum delay */

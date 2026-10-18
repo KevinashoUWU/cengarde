@@ -1297,7 +1297,7 @@ static void up_deliver(struct server *s, int *nq, struct session *S, const struc
  * links lossy at random as well; story 013.) */
 static int path_full(const struct server *s, const struct session *S, unsigned p)
 {
-	return cg_cap_rescue_w(&S->cap[p], s->cfg->governor_target_ms * 1000) == 0;
+	return cg_cap_full(&S->cap[p], s->cfg->governor_target_ms * 1000, s->cfg->rescue_full_hyst);
 }
 
 /* A verified NACK of S (rescue.h): each sequence it names that the ring
@@ -1941,9 +1941,14 @@ static void spread_tick(struct server *s, struct session *S, const char *tag, ui
 		cg_dec_edge(&S->dec, &S->dec_rfull, cg_resc_low(&S->resc_b), now_ms, CG_DEC_NOLINK,
 			    CG_DEC_RESCUE_FULL_ON, CG_DEC_RESCUE_FULL_OFF, (int64_t)S->resc_b.credit);
 	cg_decrec_g4_before(&S->spread, before);
+	S->spread.dwell_ms = s->cfg->split_dwell_ms;
+	S->spread.dwell_oq_us = (int32_t)(s->cfg->split_dwell_oq_ms * 1000);
 	changed = cg_split_spread_eval_r(&S->spread, S->dh, (uint16_t)(d.elig & ~d.dup0), s->cfg->split_spread_ms * 1000,
 					 s->cfg->mute_settle_ms, now_ms, s->cfg->split_stress_rejoin);
 	cg_decrec_g4(&S->dec, &S->spread, changed, before, &S->dec_stress, &S->dec_recover, now_ms);
+	for (int p = 0; p < CG_MAX_LINKS; p++)
+		if ((changed >> p & 1) && S->spread.ev[p] == CG_G4_LEAVE_QUEUE)
+			cg_cap_episode(&S->cap[p], now_ms, s->cfg->cap_g4_episode); /* audit C5 */
 
 	for (int p = 0; changed; p++, changed >>= 1) {
 		int32_t ms = S->spread.behind_us[p] / 1000;
@@ -1986,7 +1991,9 @@ static void gov_tick(struct server *s, struct session *S, uint64_t now_ms)
  * (scaled by the governor's, with governor), after the governor's tick. */
 static void cap_tick(struct server *s, struct session *S, uint16_t live, uint64_t now_ms)
 {
-	struct cg_cap_cfg cc = { .window_ms = s->cfg->governor_window_ms, .sat_us = s->cfg->governor_target_ms * 1000 };
+	struct cg_cap_cfg cc = { .window_ms = s->cfg->governor_window_ms,
+				 .sat_us = s->cfg->governor_target_ms * 1000,
+				 .rfull_mode = (uint8_t)s->cfg->rescue_full_hyst };
 
 	for (int p = 0; p < CG_MAX_LINKS; p++) {
 		const struct path *P = &S->path[p];
@@ -2005,8 +2012,13 @@ static void cap_tick(struct server *s, struct session *S, uint16_t live, uint64_
 		cg_cap_weights(S->cap, d.dup0, s->cfg->governor ? S->gw : NULL, cc.sat_us / 2, S->cw);
 	}
 	cg_cap_total_tick(&S->ctot, S->cap, live, cc.sat_us);
-	if (s->cfg->split_eta)
-		cg_cap_eta(&S->eta, S->cap, live, cc.sat_us / 2, now_ms * 1000);
+	if (s->cfg->split_eta) {
+		S->eta.keep = (uint8_t)s->cfg->eta_keep;
+		S->eta.keep_ms = s->cfg->eta_keep_ms;
+		S->eta.tick_ms = CG_TICK_MS;
+		cg_cap_eta(&S->eta, S->cap, live, cc.sat_us / 2, s->cfg->split_qpred_ms, s->cfg->split_qpred_mode,
+			   now_ms * 1000);
+	}
 }
 
 /* SO_MAX_PACING_RATE on a lane's socket (pace.h): fq on the way out paces
@@ -2330,6 +2342,7 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 		cg_json_u64(j, "queue_leaves", S->spread.n_qleave);
 		cg_json_u64(j, "recoveries", S->spread.n_recover);
 		cg_json_u64(j, "stalls", S->spread.n_stall);
+		cg_json_u64(j, "dwells", S->spread.n_dwell);
 		cg_json_u64(j, "packets", S->sdup.pkts);
 		cg_json_u64(j, "bytes", S->sdup.bytes);
 		cg_json_end(j, '}');

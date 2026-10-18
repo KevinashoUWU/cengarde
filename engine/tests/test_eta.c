@@ -109,20 +109,60 @@ static void test_eta_feed(void)
 	l[1].q.min_prev = 0x0000d000u;
 	l[0].queue_us = 2000;
 	l[1].queue_us = -1;
-	cg_cap_eta(&e, l, 0x7, 1000, 1000); /* probe under 1 ms: link 0 (2 ms) is not probed */
+	cg_cap_eta(&e, l, 0x7, 1000, 0, 0, 1000); /* probe under 1 ms: link 0 (2 ms) is not probed */
 	CHECK(e.l[0].bps == 30000000 && e.l[0].base_us == 0 && e.l[0].backlog == 30000000ull * 2000);
 	CHECK(e.l[1].bps == 8000000 && e.l[1].base_us == 0xc350u + 0x1000u && e.l[1].backlog == 0);
 	CHECK(e.l[2].bps == 0); /* no rate yet */
 	CHECK_EQ(cg_eta_pick(&e, 0x7, 1400, 1000), -1);
 	CHECK(cg_eta_pick(&e, 0x3, 1400, 1000) == 0);
 	/* with room (queue under 10 ms): 5/4 of its own and 1/16 of the largest */
-	cg_cap_eta(&e, l, 0x7, 10000, 1000);
+	cg_cap_eta(&e, l, 0x7, 10000, 0, 0, 1000);
 	CHECK(e.l[0].bps == 30000000 + 7500000 + 1875000);
 	CHECK(e.l[1].bps == 8000000); /* its queue unknown: as measured */
 }
 
+/* eta_keep: what the backlog keeps over a stale, smaller queue. */
+static void test_eta_keep(void)
+{
+	struct cg_eta e;
+	uint64_t bit = 1000000; /* the backlog's unit: bits times 10^6 */
+
+	for (unsigned mode = 0; mode <= 3; mode++) {
+		cg_eta_reset(&e);
+		e.keep = (uint8_t)mode;
+		e.keep_ms = 200;
+		e.tick_ms = 100;
+		cg_eta_set(&e, 0, 8000000, 0, 0, 0); /* 8 Mbit/s, empty */
+		/* 2000 packets of 1000 B at once: 16 Mbit, 2 s at its rate */
+		for (int k = 0; k < 2000; k++)
+			CHECK_EQ(cg_eta_pick(&e, 0x1, 1000, 0), 0);
+		/* 100 ms on, the report says the queue is 10 ms (stale) */
+		cg_eta_set(&e, 0, 8000000, 0, 10 * MS, 100 * MS);
+		if (mode == 0) /* the report, as it says */
+			CHECK_EQ(e.l[0].backlog, 8000000ull * 10 * MS);
+		else if (mode == 1) /* what is still counted: 1.9 s */
+			CHECK_EQ(e.l[0].backlog, 8000000ull * 1900 * MS);
+		else if (mode == 2) /* 10 ms + 16 Mbit put less 200 ms drained */
+			CHECK_EQ(e.l[0].backlog, 8000000ull * 10 * MS + 16000000 * bit - 8000000ull * 200 * MS);
+		else /* half of the 1.89 s over the report */
+			CHECK_EQ(e.l[0].backlog, 8000000ull * 10 * MS + 8000000ull * 945 * MS);
+	}
+	/* mode 2 with nothing put lately: the report */
+	cg_eta_reset(&e);
+	e.keep = 2;
+	e.keep_ms = 200;
+	e.tick_ms = 100;
+	cg_eta_set(&e, 0, 8000000, 0, 0, 0);
+	for (int k = 0; k < 2000; k++)
+		cg_eta_pick(&e, 0x1, 1000, 0);
+	for (int t = 1; t <= 3; t++)
+		cg_eta_set(&e, 0, 8000000, 0, 10 * MS, (uint64_t)t * 100 * MS);
+	CHECK_EQ(e.l[0].backlog, 8000000ull * 10 * MS);
+}
+
 void test_eta(void)
 {
+	test_eta_keep();
 	test_eta_feed();
 	test_eta_basics();
 	test_eta_order();

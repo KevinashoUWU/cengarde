@@ -355,6 +355,8 @@ void cg_json_capacity(struct cg_json *j, const struct cg_cap_link *l, uint32_t t
 	cg_json_u64(j, "sat_n", l->sat_n);
 	cg_json_u64(j, "sat_load_n", l->sat_load_n);
 	cg_json_u64(j, "short_n", l->short_n);
+	cg_json_u64(j, "g4_episodes", l->n_g4_ep);
+	cg_json_bool(j, "rescue_full", l->rfull);
 	cg_json_str(j, "cut", l->cut == CG_CAP_CUT_FULL ? "full" : l->cut == CG_CAP_CUT_SHORT ? "short" : "none");
 	if (l->full_ms && now_ms >= l->full_ms)
 		cg_json_u64(j, "full_age_ms", now_ms - l->full_ms);
