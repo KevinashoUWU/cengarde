@@ -885,12 +885,20 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	    get_bool(&ini, "", "split_eta", &c->split_eta, err, errlen) ||
 	    get_bool(&ini, "", "pacing", &c->pacing, err, errlen) ||
 	    get_u32(&ini, "", "governor_target_ms", 1, 1000, &c->governor_target_ms, err, errlen) ||
+	    get_u32(&ini, "", "capacity_sat_ms", 0, 1000, &c->capacity_sat_ms, err, errlen) ||
+	    get_u32(&ini, "", "rescue_target_ms", 0, 1000, &c->rescue_target_ms, err, errlen) ||
 	    get_u32(&ini, "", "governor_window_ms", 1000, 120000, &c->governor_window_ms, err, errlen))
 		goto out;
 	/* By default the links out of the split get a copy of every packet,
 	 * as up to 0.6.2, but not with the governor: the copies keep filling
 	 * the queue of a link whose weight it turns down (story 012, the
 	 * bench, 2026-10-14). */
+	/* governor_target_ms drove four loops at once (clockwork audit C12):
+	 * the capacity's full and the rescue's weight can have their own */
+	if (!c->capacity_sat_ms)
+		c->capacity_sat_ms = c->governor_target_ms;
+	if (!c->rescue_target_ms)
+		c->rescue_target_ms = c->governor_target_ms;
 	if (c->split_spread_copy < 0)
 		c->split_spread_copy = !c->governor && !c->capacity_weights && !c->split_eta;
 	if (cg_ini_get(&ini, "", "cpu")) {
