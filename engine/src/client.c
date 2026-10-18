@@ -2135,6 +2135,7 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 	cg_json_bool(j, "recover", c->spread.recover);
 	cg_json_u64(j, "queue_leaves", c->spread.n_qleave);
 	cg_json_u64(j, "recoveries", c->spread.n_recover);
+	cg_json_u64(j, "stalls", c->spread.n_stall);
 	cg_json_u64(j, "packets", c->sdup.pkts);
 	cg_json_u64(j, "bytes", c->sdup.bytes);
 	cg_json_end(j, '}');
