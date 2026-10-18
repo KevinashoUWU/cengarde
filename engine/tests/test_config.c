@@ -998,6 +998,10 @@ static void test_config_native(void)
 	CHECK(!strcmp(c.tun, "cg0"));
 	CHECK_EQ(c.tun_mtu, CG_TUN_MTU_DEFAULT);
 	cg_config_free(&c);
+	CHECK_EQ(cg_config_parse(&c, CLIENT "tun_txqueuelen = 5000\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(c.tun_txqueuelen, 5000);
+	cg_config_free(&c);
+	CHECK(cg_config_parse(&c, CLIENT "tun_txqueuelen = 200000\n", err, sizeof(err), warn, sizeof(warn)) < 0);
 
 #define NATIVE CLIENT "tunnel = native\ntun = cgt\ntun_addr = 10.79.0.2/16 fd00:79::2/64\ntun_mtu = 1400\n"
 	CHECK_EQ(cg_config_parse(&c, NATIVE, err, sizeof(err), warn, sizeof(warn)), 0);
@@ -1013,6 +1017,11 @@ static void test_config_native(void)
 	CHECK(cg_config_restart_needed(&c, &o) == NULL);
 	o.tun_mtu = 1300;
 	CHECK(!strcmp(cg_config_restart_needed(&c, &o), "tun_mtu"));
+	o.tun_mtu = c.tun_mtu;
+	CHECK_EQ(c.tun_txqueuelen, 0); /* the kernel's */
+	o.tun_txqueuelen = 5000;
+	CHECK(!strcmp(cg_config_restart_needed(&c, &o), "tun_txqueuelen"));
+	o.tun_txqueuelen = 0;
 	o.tun_mtu = 1400;
 	o.ntun_addr = 1;
 	CHECK(!strcmp(cg_config_restart_needed(&c, &o), "tun_addr"));

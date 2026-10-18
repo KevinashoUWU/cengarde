@@ -186,6 +186,7 @@ struct cg_config {
 	int ntun_addr;
 	struct cg_pfx tun_addr[CG_TUN_ADDRS];
 	uint32_t tun_mtu;
+	uint32_t tun_txqueuelen; /* the TUN's transmit queue, packets; 0: the kernel's (500) */
 
 	/* link health, each end for its send direction (health.h) */
 	uint32_t mute_behind_ms; /* 0: never mute for delay */

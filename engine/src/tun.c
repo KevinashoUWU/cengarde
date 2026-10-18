@@ -89,6 +89,16 @@ int cg_tun_open(const struct cg_config *cfg, char *err, size_t errlen)
 		snprintf(err, errlen, "tun %s: MTU %u: %s", name, cfg->tun_mtu, strerror(errno));
 		goto fail;
 	}
+	/* the transmit queue (tun_txqueuelen), instead of the kernel's 500
+	 * packets: the testnet's bench PC set 5000 by hand after each start
+	 * (task #36); not measured here */
+	if (cfg->tun_txqueuelen) {
+		ifr.ifr_qlen = (int)cfg->tun_txqueuelen;
+		if (ioctl(s, SIOCSIFTXQLEN, &ifr) < 0) {
+			snprintf(err, errlen, "tun %s: txqueuelen %u: %s", name, cfg->tun_txqueuelen, strerror(errno));
+			goto fail;
+		}
+	}
 	/* IPv4 addresses before it is up; IPv6 ones after, on a device that
 	 * has IPv6 by then. */
 	for (int i = 0; i < cfg->ntun_addr; i++)

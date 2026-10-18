@@ -837,7 +837,8 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	c->tun_mtu = CG_TUN_MTU_DEFAULT;
 	if (get_str(&ini, "", "tun", c->tun, sizeof(c->tun), err, errlen) ||
 	    get_pfxs(&ini, "", "tun_addr", 1, c->tun_addr, CG_TUN_ADDRS, &c->ntun_addr, err, errlen) ||
-	    get_u32(&ini, "", "tun_mtu", CG_TUN_MTU_MIN, CG_TUN_MTU_MAX, &c->tun_mtu, err, errlen))
+	    get_u32(&ini, "", "tun_mtu", CG_TUN_MTU_MIN, CG_TUN_MTU_MAX, &c->tun_mtu, err, errlen) ||
+	    get_u32(&ini, "", "tun_txqueuelen", 0, 100000, &c->tun_txqueuelen, err, errlen))
 		goto out;
 	if (!c->tun[0] || strchr(c->tun, '/') || strchr(c->tun, ' ')) {
 		snprintf(err, errlen, "tun: expected an interface name");
@@ -1216,6 +1217,8 @@ const char *cg_config_restart_needed(const struct cg_config *a, const struct cg_
 		return "tun_addr";
 	if (a->tunnel == CG_TUNNEL_NATIVE && a->tun_mtu != b->tun_mtu)
 		return "tun_mtu";
+	if (a->tunnel == CG_TUNNEL_NATIVE && a->tun_txqueuelen != b->tun_txqueuelen)
+		return "tun_txqueuelen";
 	return NULL;
 }
 
