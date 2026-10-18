@@ -2007,7 +2007,7 @@ static void cap_tick(struct client *c, uint16_t live, uint64_t now_ms)
 			       cc.sat_us / 2, c->cw);
 	cg_cap_total_tick(&c->ctot, c->cap, live, cc.sat_us);
 	if (c->cfg->split_eta)
-		cg_cap_eta(&c->eta, c->cap, live, cc.sat_us / 2, now_ms * 1000);
+		cg_cap_eta(&c->eta, c->cap, live, cc.sat_us / 2, c->cfg->split_qpred_ms, now_ms * 1000);
 	/* With pacing, each link's socket at about its rate; without, as it
 	 * was set, back to none (a reload turned it off). */
 	for (int i = 0; i < CG_MAX_LINKS; i++) {
@@ -2184,6 +2184,7 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 	cg_json_bool(j, "governor", c->cfg->governor);
 	cg_json_bool(j, "capacity_weights", c->cfg->capacity_weights);
 	cg_json_bool(j, "split_eta", c->cfg->split_eta);
+	cg_json_u64(j, "split_qpred_ms", c->cfg->split_qpred_ms);
 	/* What picks the link of a split packet now (decrec.h): with "eta" the
 	 * gov_weight and cap_weight of the links are not used. */
 	if (split_active(c))

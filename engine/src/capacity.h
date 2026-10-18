@@ -439,6 +439,22 @@ static inline void cg_cap_weights(const struct cg_cap_link l[CG_MAX_LINKS], uint
 
 #define CG_CAP_SHAPE_MIN 2000000ull /* bps: below this a tunnel is idle */
 
+/* Where link l's queue q_us will be in h_ms (task #33, the rescue's
+ * prediction of cg_cap_rescue_w brought to the split): q_us plus the slope
+ * times h plus half the slope's slope times h squared, at least 0 and at
+ * most q_us + 1 s. h_ms 0, or no trend yet: q_us. */
+static inline uint32_t cg_cap_qpred(const struct cg_cap_link *l, uint32_t q_us, uint32_t h_ms)
+{
+	int64_t p, h = h_ms;
+
+	if (!h_ms || !l->have_s1)
+		return q_us;
+	p = (int64_t)q_us + l->s1 * h / 1000 + l->s2 / 2 * h * h / 1000000;
+	if (p < 0)
+		return 0;
+	return p > (int64_t)q_us + 1000000 ? q_us + 1000000 : (uint32_t)p;
+}
+
 /* A tick's measures into the split by expected arrival (eta.h): each link of
  * mask's capacity, its delay without a queue (the minimum of its delays,
  * over the smallest of the links') and its queue; a link without a
@@ -450,9 +466,12 @@ static inline void cg_cap_weights(const struct cg_cap_link l[CG_MAX_LINKS], uint
  * more than its capacity never lets it show more. On the testnet, after
  * MPTCP traffic had filled the same modems, the four capacities stayed at
  * 5-7 Mbit/s against 15-30 and the upload under split_eta fell to 3 Mbit/s
- * (story 013). */
+ * (story 013).
+ *
+ * pred_ms: the queue taken where it will be that far ahead (cg_cap_qpred),
+ * 0: the queue now. */
 static inline void cg_cap_eta(struct cg_eta *e, const struct cg_cap_link l[CG_MAX_LINKS], uint16_t mask,
-			      uint32_t probe_us, uint64_t now_us)
+			      uint32_t probe_us, uint32_t pred_ms, uint64_t now_us)
 {
 	uint32_t ref = 0, mins[CG_MAX_LINKS];
 	uint64_t big = 0;
@@ -480,8 +499,8 @@ static inline void cg_cap_eta(struct cg_eta *e, const struct cg_cap_link l[CG_MA
 		}
 		if (l[i].queue_us >= 0 && (uint32_t)l[i].queue_us < probe_us)
 			bps = cg_cap_probe(&l[i], bps, big);
-		cg_eta_set(e, i, bps, (uint32_t)cg_owd_diff(mins[i], ref), l[i].queue_us > 0 ? (uint32_t)l[i].queue_us : 0,
-			   now_us);
+		cg_eta_set(e, i, bps, (uint32_t)cg_owd_diff(mins[i], ref),
+			   cg_cap_qpred(&l[i], l[i].queue_us > 0 ? (uint32_t)l[i].queue_us : 0, pred_ms), now_us);
 	}
 }
 

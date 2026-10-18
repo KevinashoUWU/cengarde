@@ -2000,7 +2000,7 @@ static void cap_tick(struct server *s, struct session *S, uint16_t live, uint64_
 	}
 	cg_cap_total_tick(&S->ctot, S->cap, live, cc.sat_us);
 	if (s->cfg->split_eta)
-		cg_cap_eta(&S->eta, S->cap, live, cc.sat_us / 2, now_ms * 1000);
+		cg_cap_eta(&S->eta, S->cap, live, cc.sat_us / 2, s->cfg->split_qpred_ms, now_ms * 1000);
 }
 
 /* SO_MAX_PACING_RATE on a lane's socket (pace.h): fq on the way out paces
@@ -2331,6 +2331,7 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 		cg_json_bool(j, "governor", s->cfg->governor);
 		cg_json_bool(j, "capacity_weights", s->cfg->capacity_weights);
 		cg_json_bool(j, "split_eta", s->cfg->split_eta);
+		cg_json_u64(j, "split_qpred_ms", s->cfg->split_qpred_ms);
 		/* What picks the path of a split packet now (decrec.h): with "eta"
 		 * the gov_weight and cap_weight of the paths are not used. */
 		if (d.split)

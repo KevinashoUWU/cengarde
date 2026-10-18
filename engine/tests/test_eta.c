@@ -109,21 +109,42 @@ static void test_eta_feed(void)
 	l[1].q.min_prev = 0x0000d000u;
 	l[0].queue_us = 2000;
 	l[1].queue_us = -1;
-	cg_cap_eta(&e, l, 0x7, 1000, 1000); /* probe under 1 ms: link 0 (2 ms) is not probed */
+	cg_cap_eta(&e, l, 0x7, 1000, 0, 1000); /* probe under 1 ms: link 0 (2 ms) is not probed */
 	CHECK(e.l[0].bps == 30000000 && e.l[0].base_us == 0 && e.l[0].backlog == 30000000ull * 2000);
 	CHECK(e.l[1].bps == 8000000 && e.l[1].base_us == 0xc350u + 0x1000u && e.l[1].backlog == 0);
 	CHECK(e.l[2].bps == 0); /* no rate yet */
 	CHECK_EQ(cg_eta_pick(&e, 0x7, 1400, 1000), -1);
 	CHECK(cg_eta_pick(&e, 0x3, 1400, 1000) == 0);
 	/* with room (queue under 10 ms): 5/4 of its own and 1/16 of the largest */
-	cg_cap_eta(&e, l, 0x7, 10000, 1000);
+	cg_cap_eta(&e, l, 0x7, 10000, 0, 1000);
 	CHECK(e.l[0].bps == 30000000 + 7500000 + 1875000);
 	CHECK(e.l[1].bps == 8000000); /* its queue unknown: as measured */
+}
+
+/* split_qpred_ms: the queue where its trend puts it, bounded. */
+static void test_eta_qpred(void)
+{
+	struct cg_cap_link l;
+
+	cg_cap_reset(&l);
+	CHECK_EQ(cg_cap_qpred(&l, 20000, 1000), 20000); /* no trend yet */
+	l.have_s1 = 1;
+	l.s1 = 30000; /* +30 ms per second */
+	l.s2 = 20000; /* +20 ms per second squared */
+	CHECK_EQ(cg_cap_qpred(&l, 20000, 0), 20000);
+	CHECK_EQ(cg_cap_qpred(&l, 20000, 1000), 20000 + 30000 + 10000); /* the rescue's 1 s */
+	CHECK_EQ(cg_cap_qpred(&l, 20000, 500), 20000 + 15000 + 2500);
+	l.s1 = -80000; /* draining: not under 0 */
+	l.s2 = 0;
+	CHECK_EQ(cg_cap_qpred(&l, 20000, 1000), 0);
+	l.s1 = 5000000; /* not more than 1 s over the queue */
+	CHECK_EQ(cg_cap_qpred(&l, 20000, 1000), 1020000);
 }
 
 void test_eta(void)
 {
 	test_eta_feed();
+	test_eta_qpred();
 	test_eta_basics();
 	test_eta_order();
 }

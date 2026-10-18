@@ -621,6 +621,14 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
   reordenador soltaba huecos y el 72 % de las retransmisiones de TCP de la
   bajada eran espurias (DSACK). Apaga las copias por omisión. El estado
   muestra `split_eta` en `upload` (cliente) y en cada sesión (servidor).
+- **`split_qpred_ms` (`0`; de 0 a 2000), en los dos extremos, con
+  `split_eta` (experimento, tarea #33):** el reparto por ETA toma la cola de
+  cada enlace donde su tendencia la pone dentro de ese plazo: la cola actual
+  más la pendiente por el plazo más media aceleración por el plazo al
+  cuadrado (la predicción del peso del rescate, `cg_cap_rescue_w`, que mira
+  1 s), entre 0 y la cola más 1 s. Un enlace cuya cola viene creciendo
+  recibe menos antes de llenarse; uno que se vacía, antes. `0`: la cola
+  actual.
 - **`pacing` (`no`; `yes` o `no`), en el cliente (experimental):** el
   socket de cada enlace se dosifica (`SO_MAX_PACING_RATE`, `pace.h`,
   historia 013) al doble de su capacidad y nunca bajo 20 Mbit/s: rompe las
