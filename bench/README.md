@@ -416,6 +416,7 @@ tasa y una cola de 100 ms a esa tasa.
 | `linkdeath` | 3 × 40 Mbit/s, 25 ms | l2 pierde todo durante el tercio central |
 | `starlink15` | 50/25 y 100/20 | cada 15 s, l2 pierde todo 1,5 s y su retardo cambia entre 20 y 50 ms (un patrón supuesto: el real está por medir) |
 | `ltespike` | 50/25 y 50/30 | cada 5 s, l1 sube 300 ms durante 1 s |
+| `ltespikerand` | 50/25 y 50/30 | como `ltespike`, pero con los saltos a 2–10 s al azar (el mismo sorteo para todas las variantes en la misma repetición, `BOND_SEED`); no está en la lista por defecto. Un salto cada 5 s exactos premiaba a un motor cuyo ciclo caía en fase con él (el G4 viejo copiaba todo justo cuando llegaba cada salto) |
 | `deepq` | 20/25 con 500 ms de cola y 50/25 con 100 ms | nada |
 | `lossy` | 60/20, 30/35 y 50/25 | cada enlace pierde el 1 % al azar en los dos sentidos: la pérdida que el rescate (`rescue_kb`, `rescue_wait_ms`) tapa; no está en la lista por defecto (`BOND_CASES`); córrelo con `CLIENT_EXTRA` `rescue_wait_ms = 60` y `SERVER_EXTRA` `rescue_kb = 32768` |
 | `starlink15sw` | 100/25 y 50/20 | como `starlink15` con las capacidades cambiadas; no está en la lista por defecto (`BOND_CASES`) |

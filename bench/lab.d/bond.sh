@@ -33,6 +33,13 @@
 #               of starlink15 come from the cuts, not from the redundancy)
 #   ltespike    link 1 (50 Mbit/s, 25 ms) jumps by 300 ms for 1 s every 5 s;
 #               link 2 steady (50 Mbit/s, 30 ms)
+#   ltespikerand  not in the default list: ltespike with the jumps 2 to 10 s
+#               apart at random (the same draw for every variant at the same
+#               repetition, from BOND_SEED and the repetition): a radio's
+#               stalls do not keep time, and every 5 s exactly an engine whose
+#               own cycle fell in step with it looked better than it was (the
+#               old empty split of G4 copied everything just when each jump
+#               came; 2026-10-17)
 #   deepq       link 1 at 20 Mbit/s behind 500 ms of queue, link 2 at
 #               50 Mbit/s with 100 ms; both 25 ms
 #   spikeloss   not in the default list: 2 links of 50 Mbit/s, 25 and 30 ms,
@@ -348,9 +355,9 @@ bond_link() {
 	done
 }
 
-# bond_events CASE SECS: what changes during a run (in the background).
+# bond_events CASE SECS [REP]: what changes during a run (in the background).
 bond_events() {
-	local c=$1 s=$2 t r2=100
+	local c=$1 s=$2 rep=${3:-1} t r2=100 gap
 	bond_netem_ok || return 0
 	case $c in
 	linkdeath)
@@ -371,6 +378,19 @@ bond_events() {
 	ltespike)
 		for t in $(seq 5 5 "$s"); do
 			sleep 4
+			bond_link 1 325 50
+			sleep 1
+			bond_link 1 25 50
+		done
+		;;
+	ltespikerand)
+		RANDOM=$((${BOND_SEED:-1} * 1000 + rep))
+		t=0
+		while :; do
+			gap=$((2 + RANDOM % 9)) # 2 to 10 s between jumps
+			t=$((t + gap))
+			[ "$t" -lt "$s" ] || break
+			sleep $((gap - 1))
 			bond_link 1 325 50
 			sleep 1
 			bond_link 1 25 50
@@ -397,7 +417,7 @@ bond_shape() {
 	linkdeath) bond_link 1 25 40 && bond_link 2 25 40 && bond_link 3 25 40 ;;
 	starlink15) bond_link 1 25 50 && bond_link 2 20 100 ;;
 	starlink15sw) bond_link 1 25 100 && bond_link 2 20 50 ;;
-	ltespike) bond_link 1 25 50 && bond_link 2 30 50 ;;
+	ltespike | ltespikerand) bond_link 1 25 50 && bond_link 2 30 50 ;;
 	spikeloss) bond_link 1 25 50 100 1 && bond_link 2 30 50 100 1 ;;
 	deepq) bond_link 1 25 20 500 && bond_link 2 25 50 ;;
 	bloat) bond_link 1 20 30 1000 && bond_link 2 20 20 1000 && bond_link 3 22 8 2000 ;;
@@ -469,7 +489,7 @@ bond_run() {
 	BOND_BG="$BOND_BG $!"
 	ip netns exec cli ping -n -i 0.1 -s 1200 -w $((s + 1)) 10.79.0.1 >"$RUN/pingbig.out" 2>&1 &
 	BOND_BG="$BOND_BG $!"
-	bond_events "$c" "$s" &
+	bond_events "$c" "$s" "$rep" &
 	BOND_BG="$BOND_BG $!"
 	if [ "$BOND_SMALL" -gt 0 ]; then
 		bond_small_start "$dir" "$s"
@@ -559,7 +579,7 @@ bond_plan() {
 	for w in ${BOND_CC:-cubic bbr quic}; do ccs=$((ccs + 1)); done
 	for c in $BOND_CASES; do
 		case $c in
-		equal | het | reorder50 | reorder150 | linkdeath | starlink15 | starlink15sw | ltespike | deepq | bloat | lossy | spikeloss) ;;
+		equal | het | reorder50 | reorder150 | linkdeath | starlink15 | starlink15sw | ltespike | ltespikerand | deepq | bloat | lossy | spikeloss) ;;
 		*)
 			echo "bond: unknown case $c"
 			return 1
