@@ -260,6 +260,16 @@ static inline int cg_cap_best(struct cg_cap_link *l, uint64_t now_ms)
 	return 0;
 }
 
+/* Guard G4 took the link out because its queue grew: as good as a full
+ * sample for fast start. G4 leaves at 30 ms of queue, before the two full
+ * samples (a second) that lower a capacity, so an overestimate was never
+ * corrected and fast start kept restoring it: a cycle of 3-10 s (clockwork
+ * audit C5, 2026-10-17). */
+static inline void cg_cap_episode(struct cg_cap_link *l, uint64_t now_ms)
+{
+	l->full_ms = now_ms;
+}
+
 /* One tick for one link. report_ms: when this end received the other's
  * newest report on it (0: none yet), rx: what that report says; tx_pkts,
  * tx_bytes: what this end has sent on it so far; h: its health in this

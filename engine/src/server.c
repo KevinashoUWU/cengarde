@@ -2038,6 +2038,9 @@ static void spread_tick(struct server *s, struct session *S, const char *tag, ui
 	changed = cg_split_spread_eval_r(&S->spread, S->dh, (uint16_t)(d.elig & ~d.dup0), s->cfg->split_spread_ms * 1000,
 					 s->cfg->mute_settle_ms, now_ms, s->cfg->split_stress_rejoin);
 	cg_decrec_g4(&S->dec, &S->spread, changed, before, &S->dec_stress, &S->dec_recover, now_ms);
+	for (int p = 0; p < CG_MAX_LINKS; p++)
+		if ((changed >> p & 1) && S->spread.ev[p] == CG_G4_LEAVE_QUEUE)
+			cg_cap_episode(&S->cap[p], now_ms); /* audit C5 */
 
 	for (int p = 0; changed; p++, changed >>= 1) {
 		int32_t ms = S->spread.behind_us[p] / 1000;

@@ -506,8 +506,28 @@ static void test_capacity_shapes(void)
 	CHECK(maxq_late < 100);
 }
 
+/* Audit C5: a G4 leave for the queue holds fast start off for
+ * CG_CAP_REST_MS, as a full sample does. */
+static void test_capacity_episode(void)
+{
+	struct cg_cap_link l;
+	uint64_t t = 100000;
+
+	cg_cap_reset(&l);
+	l.have_rate = 1;
+	l.best_cur = l.best_prev = 40000000;
+	l.best_ms = t;
+	l.max_cur = l.max_prev = 10000000;
+	cg_cap_episode(&l, t);
+	CHECK(!cg_cap_best(&l, t + CG_CAP_REST_MS - 1));
+	CHECK_EQ(cg_cap_bps(&l), 10000000);
+	CHECK(cg_cap_best(&l, t + CG_CAP_REST_MS));
+	CHECK_EQ(cg_cap_bps(&l), 20000000);
+}
+
 void test_capacity(void)
 {
+	test_capacity_episode();
 	test_capacity_short();
 	test_capacity_total();
 	test_capacity_shapes();
