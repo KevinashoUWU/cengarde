@@ -1657,7 +1657,7 @@ static void down_prepare(struct server *s, struct session *S, int m, uint8_t *bu
 
 	/* Before the header: CG_F_SPLIT is under the MAC. */
 	s->pick[m] = (int8_t)(d->split ? cg_split_pick_eta(&S->sp, s->cfg->split_eta ? &S->eta : NULL, now_us,
-							   d->k.carriers, stress ? 0 : d->k.eligible, d->k.dup, d->w,
+							   d->k.carriers, stress ? 0 : cg_split_stress_elig(&S->spread, d->k.eligible, s->cfg->split_stress_single), d->k.dup, d->w,
 							   s->native ? CG_WGS_DATA : buf[0],
 							   (uint32_t)len, s->cfg->split_small, &h.flags)
 				       : -1);

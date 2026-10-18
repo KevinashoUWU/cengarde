@@ -261,6 +261,7 @@ struct cg_spread {
 	uint32_t owd_prev[CG_MAX_LINKS]; /* each link's delay at the last evaluation */
 	uint16_t have_prev;
 	uint64_t t_prev_ms;
+	int8_t lead;      /* the fastest link in at the last evaluation, -1: none */
 };
 
 #define CG_SPLIT_STALL_NUM 3 /* a delay growing at least 3/5 as fast as time: a stall */
@@ -418,6 +419,7 @@ static inline uint16_t cg_split_spread_eval_r(struct cg_spread *s, const struct 
 		}
 	}
 	s->in = in;
+	s->lead = (int8_t)(best >= 0 && (in >> best & 1) ? best : -1);
 	s->have_prev = fresh;
 	for (int i = 0; i < CG_MAX_LINKS; i++)
 		if (fresh >> i & 1)
@@ -462,6 +464,20 @@ static inline uint16_t cg_split_spread_eval(struct cg_spread *s, const struct cg
 					    uint32_t spread_us, uint32_t settle_ms, uint64_t now_ms)
 {
 	return cg_split_spread_eval_r(s, h, cand, spread_us, settle_ms, now_ms, 0);
+}
+
+/* The links that may take a share of a split packet under G4's stress
+ * (either kind): only the fastest link in, while the links' delays are
+ * apart. Splitting between links 30-50 ms apart reordered: in the lab
+ * (ltespike down) the old empty split, which by accident copied everything
+ * or used one link and never split, had 44 TCP retransmissions where
+ * splitting had 700-800. elig otherwise; elig too when the lead is not in
+ * it. */
+static inline uint16_t cg_split_stress_elig(const struct cg_spread *s, uint16_t elig, int single)
+{
+	if (!single || !(s->stress || s->recover) || s->lead < 0 || !(elig >> s->lead & 1))
+		return elig;
+	return (uint16_t)(1u << s->lead);
 }
 
 /* The eligible links the guard keeps out of the split (dup0, the weight-0

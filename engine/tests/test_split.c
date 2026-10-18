@@ -763,6 +763,13 @@ static void test_split_spread_stall(void)
 	}
 	CHECK(sp.stress);
 	CHECK_EQ(sp.qleft, 0x2);
+	/* under stress the split takes the lead only (0 here), or as given */
+	CHECK_EQ(sp.lead, 0);
+	CHECK_EQ(cg_split_stress_elig(&sp, 0x3, 1), 0x1);
+	CHECK_EQ(cg_split_stress_elig(&sp, 0x3, 0), 0x3);
+	CHECK_EQ(cg_split_stress_elig(&sp, 0x2, 1), 0x2); /* lead not eligible */
+	sp.stress = sp.recover = 0;
+	CHECK_EQ(cg_split_stress_elig(&sp, 0x3, 1), 0x3); /* no stress */
 }
 
 static void test_split_spread(void)

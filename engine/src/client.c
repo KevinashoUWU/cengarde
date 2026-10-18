@@ -1189,7 +1189,7 @@ static void wg_read(struct client *c)
 			stress = split && cg_sdup(&c->sdup, c->spread.stress, (uint32_t)len,
 						  (unsigned)__builtin_popcount(carry), c->cfg->split_stress_dup);
 			c->pick[m] = (int8_t)(split ? cg_split_pick_eta(&c->sp, c->cfg->split_eta ? &c->eta : NULL, now_us,
-									k.carriers, stress ? 0 : k.eligible, k.dup, w,
+									k.carriers, stress ? 0 : cg_split_stress_elig(&c->spread, k.eligible, c->cfg->split_stress_single), k.dup, w,
 									c->native ? CG_WGS_DATA : c->in.buf[i][0],
 									(uint32_t)len, c->cfg->split_small, &flags)
 						    : -1);

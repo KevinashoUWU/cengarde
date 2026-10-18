@@ -217,6 +217,7 @@ struct cg_config {
 	uint32_t split_spread_ms;     /* only links this close to the fastest share the split (split.h G4); 0: off */
 	uint32_t split_stress_dup;    /* while G4 sees the delays come apart, copies may add this % of the bytes (cg_sdup); 0: never */
 	int split_stress_rejoin;      /* G4: the fastest link that left comes back at once, not after mute_settle_ms */
+	int split_stress_single;      /* G4: under stress the split uses the fastest link in only (cg_split_stress_elig) */
 	int split_spread_copy;        /* links out of the split get every packet (split.h); default: not with governor */
 	int governor;                 /* the split's weights from each link's queue (govern.h) */
 	int capacity_weights;         /* the split's weights from each link's capacity (capacity.h) */
