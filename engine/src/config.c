@@ -795,7 +795,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	c->split_spread_ms = 30;
 	c->split_stress_dup = 50;
 	c->split_stress_rejoin = 1;
-	c->split_stress_single = 1;
+	c->split_stress_single = 0;
 	c->split_spread_copy = -1; /* by governor, below */
 	c->governor_target_ms = 20;
 	c->governor_window_ms = 10000;
