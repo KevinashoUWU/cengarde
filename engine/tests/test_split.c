@@ -726,6 +726,45 @@ static void test_split_spread_kinds(void)
 	/* without rejoin the fastest waits settle_ms (test_split_spread_lead) */
 }
 
+/* A link that leaves in a stall (its delay grows as fast as time, or
+ * jumps) arms no copies; one whose queue grows slower than time does. */
+static void test_split_spread_stall(void)
+{
+	struct cg_hlink h[CG_MAX_LINKS];
+	struct cg_spread sp;
+	uint64_t t = 1000000;
+
+	CHECK(cg_split_stalled(5000000, 5000000 + 300 * MSUS, 100)); /* jump */
+	CHECK(cg_split_stalled(5000000, 5000000 + 80 * MSUS, 100));  /* as fast as time */
+	CHECK(!cg_split_stalled(5000000, 5000000 + 40 * MSUS, 100)); /* a queue */
+	CHECK(!cg_split_stalled(5000000, 5000000 - 40 * MSUS, 100));
+	memset(h, 0, sizeof(h));
+	memset(&sp, 0, sizeof(sp));
+	delay(h, 0, 5000000, t);
+	delay(h, 1, 5000000 + 10 * MSUS, t);
+	cg_split_spread_eval_r(&sp, h, 0x3, SPREAD, SETTLE, t, 1);
+	cg_split_spread_eval_r(&sp, h, 0x3, SPREAD, SETTLE, t += 100, 1);
+	CHECK_EQ(sp.in, 0x3);
+	/* 1 jumps by 300 ms in 100 ms: leaves, stalled, no copies */
+	delay(h, 1, 5000000 + 310 * MSUS, t);
+	cg_split_spread_eval_r(&sp, h, 0x3, SPREAD, SETTLE, t += 100, 1);
+	CHECK_EQ(sp.left, 0x2);
+	CHECK(!sp.stress);
+	CHECK_EQ(sp.n_stall, 1);
+	CHECK_EQ(sp.qleft, 0);
+	/* back; then its queue grows 10 ms per 100 ms: leaves past the spread, copies */
+	delay(h, 1, 5000000 + 10 * MSUS, t);
+	for (int k = 0; k < 25; k++)
+		cg_split_spread_eval_r(&sp, h, 0x3, SPREAD, SETTLE, t += 100, 1);
+	CHECK_EQ(sp.in, 0x3);
+	for (int k = 1; k <= 4 && !sp.stress; k++) {
+		delay(h, 1, 5000000 + (10 + 10 * (uint32_t)k) * MSUS, t);
+		cg_split_spread_eval_r(&sp, h, 0x3, SPREAD, SETTLE, t += 100, 1);
+	}
+	CHECK(sp.stress);
+	CHECK_EQ(sp.qleft, 0x2);
+}
+
 static void test_split_spread(void)
 {
 	static const uint16_t w1[CG_MAX_LINKS] = { 1, 1, 1, 1 };
@@ -1046,6 +1085,7 @@ void test_split(void)
 	test_split_spread();
 	test_split_spread_lead();
 	test_split_spread_kinds();
+	test_split_spread_stall();
 	test_split_sdup();
 	test_split_spread_copy();
 }

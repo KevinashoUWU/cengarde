@@ -257,7 +257,30 @@ struct cg_spread {
 	uint8_t recover;  /* the fastest link is one that left: it comes back now (rejoin) */
 	uint16_t qleft;   /* links that left after being in: their queue grew, not their base delay */
 	uint64_t n_recover, n_qleave; /* how often each kind of stress began, for the status */
+	uint64_t n_stall; /* links that left in a stall (cg_split_stalled): no copies */
+	uint32_t owd_prev[CG_MAX_LINKS]; /* each link's delay at the last evaluation */
+	uint16_t have_prev;
+	uint64_t t_prev_ms;
 };
+
+#define CG_SPLIT_STALL_NUM 3 /* a delay growing at least 3/5 as fast as time: a stall */
+#define CG_SPLIT_STALL_DEN 5
+
+/* Whether a link whose delay went from prev to now in dt_ms stalled (its
+ * service stopped: the packets just wait, and the delay grows as fast as
+ * time, or jumps) rather than queued (it serves, slower than it is sent:
+ * the delay grows at the excess's rate). The delay is health.h's, smoothed
+ * by a quarter each report: a jump of 300 ms shows as 75 in the first
+ * 100 ms, hence 3/5 and not 1. A stalled link's copies only pile
+ * up behind the stall and delay what it carries once it comes back: in the
+ * lab (ltespike, a link jumping by 300 ms) copies on it cost the download
+ * 9 % against coming back at once alone. */
+static inline int cg_split_stalled(uint32_t prev, uint32_t now, uint64_t dt_ms)
+{
+	int32_t g = cg_owd_diff(now, prev);
+
+	return g > 0 && (uint64_t)g * CG_SPLIT_STALL_DEN >= dt_ms * 1000 * CG_SPLIT_STALL_NUM;
+}
 
 /* What a link has to do with the split, for the status. */
 enum cg_split_share {
@@ -367,8 +390,12 @@ static inline uint16_t cg_split_spread_eval_r(struct cg_spread *s, const struct 
 			if (d > (int32_t)spread_us) {
 				s->left |= b;
 				/* it was in: its queue grew (a link slow by its base delay
-				 * never gets in, and copies to it would never stop) */
-				if (s->in & b) {
+				 * never gets in, and copies to it would never stop); unless
+				 * it stalled, which the rejoin answers */
+				if ((s->in & b) && (s->have_prev & b) && now_ms > s->t_prev_ms &&
+				    cg_split_stalled(s->owd_prev[i], h[i].owd, now_ms - s->t_prev_ms)) {
+					s->n_stall++;
+				} else if (s->in & b) {
 					s->n_qleave += !s->qleft;
 					s->qleft |= b;
 				}
@@ -391,6 +418,11 @@ static inline uint16_t cg_split_spread_eval_r(struct cg_spread *s, const struct 
 		}
 	}
 	s->in = in;
+	s->have_prev = fresh;
+	for (int i = 0; i < CG_MAX_LINKS; i++)
+		if (fresh >> i & 1)
+			s->owd_prev[i] = h[i].owd;
+	s->t_prev_ms = now_ms;
 	s->qleft &= s->left;
 	s->stress = s->qleft != 0;
 	return (uint16_t)(was ^ s->left);
