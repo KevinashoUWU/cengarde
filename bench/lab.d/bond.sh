@@ -31,6 +31,14 @@
 #               cuts. What a cut costs when the link left has room for the
 #               flow, to set against starlink15 (story 012: the retransmissions
 #               of starlink15 come from the cuts, not from the redundancy)
+#   starlink15ramp  not in the default list: starlink15 with the delay of
+#               link 2 drifting as in real life: within each 15 s slot it rises
+#               slowly (10 to 25 ms more, a step every 0.5 s) as the satellite
+#               moves away, and after the 1.5 s cut of the switch it starts the
+#               next slot again at the lowest (20 ms) or at an intermediate one
+#               (27 or 34 ms), drawn from BOND_SEED and the repetition like
+#               ltespikerand. The cuts are starlink15's, so the difference
+#               between the two is the drift alone
 #   ltespike    link 1 (50 Mbit/s, 25 ms) jumps by 300 ms for 1 s every 5 s;
 #               link 2 steady (50 Mbit/s, 30 ms)
 #   ltespikerand  not in the default list: ltespike with the jumps 2 to 10 s
@@ -378,6 +386,21 @@ bond_events() {
 			bond_link 2 "$([ $((t / 15 % 2)) = 1 ] && echo 50 || echo 20)" "$r2"
 		done
 		;;
+	starlink15ramp)
+		RANDOM=$((${BOND_SEED:-1} * 1000 + rep))
+		local d0=20 rise k
+		for t in $(seq 15 15 "$s"); do
+			rise=$((10 + RANDOM % 16))
+			for k in $(seq 1 27); do
+				sleep 0.5
+				bond_link 2 $((d0 + rise * k / 27)) 100
+			done
+			bond_link 2 $((d0 + rise)) 100 100 100
+			sleep 1.5
+			d0=$(echo "20 27 34" | cut -d' ' -f$((1 + RANDOM % 3)))
+			bond_link 2 "$d0" 100
+		done
+		;;
 	ltespike)
 		for t in $(seq 5 5 "$s"); do
 			sleep 4
@@ -418,7 +441,7 @@ bond_shape() {
 	reorder50) bond_link 1 20 50 && bond_link 2 70 50 ;;
 	reorder150) bond_link 1 20 50 && bond_link 2 170 50 ;;
 	linkdeath) bond_link 1 25 40 && bond_link 2 25 40 && bond_link 3 25 40 ;;
-	starlink15) bond_link 1 25 50 && bond_link 2 20 100 ;;
+	starlink15 | starlink15ramp) bond_link 1 25 50 && bond_link 2 20 100 ;;
 	starlink15sw) bond_link 1 25 100 && bond_link 2 20 50 ;;
 	ltespike | ltespikerand) bond_link 1 25 50 && bond_link 2 30 50 ;;
 	spikeloss) bond_link 1 25 50 100 1 && bond_link 2 30 50 100 1 ;;
@@ -582,7 +605,7 @@ bond_plan() {
 	for w in ${BOND_CC:-cubic bbr quic}; do ccs=$((ccs + 1)); done
 	for c in $BOND_CASES; do
 		case $c in
-		equal | het | reorder50 | reorder150 | linkdeath | starlink15 | starlink15sw | ltespike | ltespikerand | deepq | bloat | lossy | spikeloss) ;;
+		equal | het | reorder50 | reorder150 | linkdeath | starlink15 | starlink15sw | starlink15ramp | ltespike | ltespikerand | deepq | bloat | lossy | spikeloss) ;;
 		*)
 			echo "bond: unknown case $c"
 			return 1
