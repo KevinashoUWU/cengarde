@@ -68,7 +68,15 @@ struct cg_hlink {
 	uint64_t unmuted_ms; /* last unmute that was a try (0: none) */
 	uint64_t mutes;
 	uint32_t trickle_cnt;
+	/* The reports' freshness, for the status: the last one, and their
+	 * rate over windows of at least CG_H_RPS_MS (reports a second x 1000). */
+	uint64_t report_ms; /* 0: none yet */
+	uint64_t rps_t_ms;
+	uint32_t rps_n;
+	uint32_t rps_milli;
 };
+
+#define CG_H_RPS_MS 1000 /* the reports' rate is counted over windows of at least this */
 
 static inline void cg_health_reset(struct cg_hlink *h, uint64_t now_ms)
 {
@@ -93,6 +101,33 @@ static inline void cg_health_report(struct cg_hlink *h, uint32_t owd, uint64_t n
 		h->owd += (uint32_t)(cg_owd_diff(owd, h->owd) / 4);
 	}
 	h->fresh_until_ms = now_ms + valid_ms;
+	h->report_ms = now_ms;
+	if (!h->rps_t_ms) {
+		h->rps_t_ms = now_ms; /* the window starts at the first report */
+		h->rps_n = 0;
+		return;
+	}
+	h->rps_n++;
+	if (now_ms - h->rps_t_ms >= CG_H_RPS_MS) {
+		h->rps_milli = (uint32_t)((uint64_t)h->rps_n * 1000000 / (now_ms - h->rps_t_ms));
+		h->rps_t_ms = now_ms;
+		h->rps_n = 0;
+	}
+}
+
+/* Reports a second x 1000: the last full window's rate, or, once the
+ * current window has gone on for twice as long without closing (the
+ * reports slowed down or stopped), what it has counted so far. */
+static inline uint32_t cg_health_rps_milli(const struct cg_hlink *h, uint64_t now_ms)
+{
+	uint64_t dt;
+
+	if (!h->rps_t_ms || now_ms <= h->rps_t_ms)
+		return h->rps_milli;
+	dt = now_ms - h->rps_t_ms;
+	if (dt >= 2 * CG_H_RPS_MS)
+		return (uint32_t)((uint64_t)h->rps_n * 1000000 / dt);
+	return h->rps_milli;
 }
 
 static inline int cg_health_fresh(const struct cg_hlink *h, uint64_t now_ms)

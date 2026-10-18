@@ -246,6 +246,19 @@ static inline int cg_split_active(int mode, int peer_reorders, int peer_asks)
 #define CG_SPLIT_REJOIN_NUM 3 /* a link that left comes back within 3/4 of the spread */
 #define CG_SPLIT_REJOIN_DEN 4
 
+/* Why a link last left the split or came back (cg_spread's ev), in the
+ * order of decision.h's CG_DEC_LEAVE_QUEUE to CG_DEC_REJOIN_OFF. */
+enum cg_g4_ev {
+	CG_G4_LEAVE_QUEUE = 0, /* it was in and its queue grew */
+	CG_G4_LEAVE_STALL,     /* it was in and stalled (cg_split_stalled) */
+	CG_G4_LEAVE_BASE,      /* it was not in (new, or no delay before) and is too far behind */
+	CG_G4_REJOIN_SETTLE,   /* within 3/4 of the spread for settle_ms */
+	CG_G4_REJOIN_RECOVER,  /* it became the fastest, with rejoin */
+	CG_G4_REJOIN_EMPTY,    /* every fresh link had left: the fastest comes back */
+	CG_G4_REJOIN_OFF,      /* the spread went to 0 */
+	CG_G4_EVS
+};
+
 struct cg_spread {
 	uint16_t in;      /* candidates in the split at the last evaluation */
 	uint16_t left;    /* links that left for their delay: they wait to come back */
@@ -262,7 +275,48 @@ struct cg_spread {
 	uint16_t have_prev;
 	uint64_t t_prev_ms;
 	int8_t lead;      /* the fastest link in at the last evaluation, -1: none */
+	/* For the status: the candidates of the last evaluation, and each
+	 * link's last transition (enum cg_g4_ev), when, and how many of each. */
+	uint16_t cand;
+	uint8_t ev[CG_MAX_LINKS];
+	uint64_t ev_ms[CG_MAX_LINKS]; /* 0: none yet */
+	uint32_t n_ev[CG_MAX_LINKS][CG_G4_EVS];
 };
+
+static inline void cg_g4_mark(struct cg_spread *s, int link, int ev, uint64_t now_ms)
+{
+	s->ev[link] = (uint8_t)ev;
+	s->ev_ms[link] = now_ms;
+	s->n_ev[link][ev]++;
+}
+
+/* Where a link stands in guard G4, for the status and the decisions. */
+enum cg_g4_state {
+	CG_G4_OUT = 0, /* not a candidate (not eligible, weight 0, or the end does not split) */
+	CG_G4_WAITING, /* a candidate without a fresh delay: not in yet */
+	CG_G4_IN,      /* takes its share */
+	CG_G4_LEFT,    /* left for its delay, not within 3/4 of the spread */
+	CG_G4_HOLDING, /* left, within 3/4 of the spread: comes back after settle_ms */
+	CG_G4_QLEFT,   /* left after being in, for its queue (the stress) */
+};
+
+static inline int cg_g4_state(const struct cg_spread *s, unsigned link)
+{
+	uint16_t b = (uint16_t)(1u << link);
+
+	if (s->left & b)
+		return s->holding & b ? CG_G4_HOLDING : s->qleft & b ? CG_G4_QLEFT : CG_G4_LEFT;
+	if (s->in & b)
+		return CG_G4_IN;
+	return s->cand & b ? CG_G4_WAITING : CG_G4_OUT;
+}
+
+static inline const char *cg_g4_state_name(int v)
+{
+	static const char *const n[] = { "out", "waiting", "in", "left", "holding", "qleft" };
+
+	return v >= 0 && v <= CG_G4_QLEFT ? n[v] : "?";
+}
 
 #define CG_SPLIT_STALL_NUM 3 /* a delay growing at least 3/5 as fast as time: a stall */
 #define CG_SPLIT_STALL_DEN 5
@@ -339,7 +393,11 @@ static inline uint16_t cg_split_spread_eval_r(struct cg_spread *s, const struct 
 	int best;
 
 	s->behind = 0;
+	s->cand = cand;
 	if (!spread_us) {
+		for (int i = 0; i < CG_MAX_LINKS; i++)
+			if (was >> i & 1)
+				cg_g4_mark(s, i, CG_G4_REJOIN_OFF, now_ms);
 		s->left = s->holding = 0;
 		s->in = cand;
 		return was;
@@ -363,6 +421,7 @@ static inline uint16_t cg_split_spread_eval_r(struct cg_spread *s, const struct 
 		s->n_recover += rec && !s->recover;
 		s->recover = rec;
 		if (rec && rejoin) {
+			cg_g4_mark(s, best, CG_G4_REJOIN_RECOVER, now_ms);
 			s->left &= (uint16_t)~(1u << best);
 			s->holding &= (uint16_t)~(1u << best);
 			s->qleft &= (uint16_t)~(1u << best);
@@ -372,6 +431,7 @@ static inline uint16_t cg_split_spread_eval_r(struct cg_spread *s, const struct 
 	if (best < 0 && fresh) {
 		/* every fresh link left: the fastest comes back now */
 		best = cg_health_fastest(h, CG_MAX_LINKS, fresh, now_ms);
+		cg_g4_mark(s, best, CG_G4_REJOIN_EMPTY, now_ms);
 		s->left &= (uint16_t)~(1u << best);
 		s->holding &= (uint16_t)~(1u << best);
 	}
@@ -396,9 +456,13 @@ static inline uint16_t cg_split_spread_eval_r(struct cg_spread *s, const struct 
 				if ((s->in & b) && (s->have_prev & b) && now_ms > s->t_prev_ms &&
 				    cg_split_stalled(s->owd_prev[i], h[i].owd, now_ms - s->t_prev_ms)) {
 					s->n_stall++;
+					cg_g4_mark(s, i, CG_G4_LEAVE_STALL, now_ms);
 				} else if (s->in & b) {
 					s->n_qleave += !s->qleft;
 					s->qleft |= b;
+					cg_g4_mark(s, i, CG_G4_LEAVE_QUEUE, now_ms);
+				} else {
+					cg_g4_mark(s, i, CG_G4_LEAVE_BASE, now_ms);
 				}
 			} else {
 				in |= b;
@@ -411,6 +475,7 @@ static inline uint16_t cg_split_spread_eval_r(struct cg_spread *s, const struct 
 				s->since_ms[i] = now_ms;
 			}
 			if (now_ms - s->since_ms[i] >= settle_ms) {
+				cg_g4_mark(s, i, CG_G4_REJOIN_SETTLE, now_ms);
 				s->left &= (uint16_t)~b;
 				s->holding &= (uint16_t)~b;
 				s->qleft &= (uint16_t)~b;
@@ -440,6 +505,7 @@ static inline uint16_t cg_split_spread_eval_r(struct cg_spread *s, const struct 
 struct cg_sdup {
 	uint64_t tokens;      /* bytes of copies allowed now */
 	uint64_t pkts, bytes; /* copied, and the extra bytes they cost */
+	uint8_t dry;          /* the last packet under stress found the budget empty */
 };
 
 /* Whether a split packet of len bytes is copied to its copies + 1 links. */
@@ -447,13 +513,22 @@ static inline int cg_sdup(struct cg_sdup *b, int stress, uint32_t len, unsigned 
 {
 	uint64_t cost = (uint64_t)len * (links > 1 ? links - 1 : 0);
 
-	if (!pct)
+	if (!pct) {
+		b->dry = 0;
 		return 0;
+	}
 	b->tokens += (uint64_t)len * pct / 100;
 	if (b->tokens > CG_SDUP_CAP)
 		b->tokens = CG_SDUP_CAP;
-	if (!stress || !cost || b->tokens < cost)
+	if (!stress || !cost) {
+		b->dry = 0;
 		return 0;
+	}
+	if (b->tokens < cost) {
+		b->dry = 1;
+		return 0;
+	}
+	b->dry = 0;
 	b->tokens -= cost;
 	b->pkts++;
 	b->bytes += cost;

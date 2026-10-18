@@ -58,6 +58,7 @@
 #include "arrival.h"
 #include "clientpath.h"
 #include "ctl.h"
+#include "decrec.h"
 #include "engine.h"
 #include "epoch.h"
 #include "health.h"
@@ -186,6 +187,12 @@ struct client {
 	uint16_t dup0;             /* of those, the weight-0 links: they carry every packet */
 	struct cg_spread spread;   /* guard G4: the links of similar delay that share the split (split.h) */
 	struct cg_sdup sdup;       /* copies under G4's stress, on a budget */
+	/* The upload's last decisions (decision.h), and the 0/1 states they
+	 * were recorded at: G3 per link, G4's stress and recovery, the copies'
+	 * budget, the rescue's. */
+	struct cg_decring dec;
+	uint8_t dec_stale[CG_MAX_LINKS];
+	uint8_t dec_stress, dec_recover, dec_dry, dec_rfull;
 	struct cg_gov gov;         /* the upload's weights from each link's queue (govern.h), with governor */
 	uint16_t gw[CG_MAX_LINKS]; /* what it set at the last tick */
 	int peer_bond;             /* the newest probe reply had a bonding tail (proto.h) */
@@ -1036,21 +1043,31 @@ static const uint16_t *split_weights(const struct client *c, uint16_t *dup0)
  * one of the idle interval's. One with a weight takes every split packet,
  * none makes the split duplicate everything (guard G2). None while the
  * upload is not split. */
+static uint16_t split_eligible_g3(const struct client *c, uint16_t live, uint16_t carry, uint64_t now_ms,
+				  uint16_t *stale)
+{
+	uint16_t e = 0, st = 0;
+
+	if (split_active(c))
+		for (int i = 0; i < CG_MAX_LINKS; i++) {
+			const struct link *l = &c->link[i];
+			uint32_t every = l->probe_announced > l->probe_before ? l->probe_announced : l->probe_before;
+
+			if (!((live & carry) >> i & 1) || c->uh[i].state != CG_H_ACTIVE)
+				continue;
+			if (cg_split_stale(l->last_reply_ms, now_ms, every ? every : c->cfg->probe_interval_ms))
+				st |= (uint16_t)(1u << i);
+			else
+				e |= (uint16_t)(1u << i);
+		}
+	if (stale)
+		*stale = st;
+	return e;
+}
+
 static uint16_t split_eligible(const struct client *c, uint16_t live, uint16_t carry, uint64_t now_ms)
 {
-	uint16_t e = 0;
-
-	if (!split_active(c))
-		return 0;
-	for (int i = 0; i < CG_MAX_LINKS; i++) {
-		const struct link *l = &c->link[i];
-		uint32_t every = l->probe_announced > l->probe_before ? l->probe_announced : l->probe_before;
-
-		if (((live & carry) >> i & 1) && c->uh[i].state == CG_H_ACTIVE &&
-		    !cg_split_stale(l->last_reply_ms, now_ms, every ? every : c->cfg->probe_interval_ms))
-			e |= (uint16_t)(1u << i);
-	}
-	return e;
+	return split_eligible_g3(c, live, carry, now_ms, NULL);
 }
 
 /* The masks a batch is split with: guard G4 applied as split_spread_copy
@@ -1895,13 +1912,25 @@ static void send_probe(struct client *c, struct link *l, uint64_t now_us, uint32
  * comes back. */
 static void spread_tick(struct client *c, uint16_t present, uint16_t live, uint64_t now_ms)
 {
-	uint16_t carry, dup0, cand, changed;
+	uint16_t carry, dup0, cand, changed, stale;
+	uint8_t before[CG_MAX_LINKS];
 
 	carry = cg_health_carriers(c->uh, CG_MAX_LINKS, present, live);
 	split_weights(c, &dup0);
-	cand = (uint16_t)(split_eligible(c, live, carry, now_ms) & ~dup0);
+	cand = (uint16_t)(split_eligible_g3(c, live, carry, now_ms, &stale) & ~dup0);
+	/* G3, the copies' budget and the rescue's, as decisions (decision.h) */
+	for (int i = 0; i < CG_MAX_LINKS; i++)
+		cg_dec_edge(&c->dec, &c->dec_stale[i], stale >> i & 1, now_ms, (unsigned)i, CG_DEC_STALE, CG_DEC_FRESH,
+			    c->link[i].last_reply_ms ? (int64_t)(now_ms - c->link[i].last_reply_ms) : -1);
+	cg_dec_edge(&c->dec, &c->dec_dry, c->sdup.dry, now_ms, CG_DEC_NOLINK, CG_DEC_COPIES_DRY, CG_DEC_COPIES_OK,
+		    (int64_t)c->sdup.tokens);
+	if (c->resc_idx)
+		cg_dec_edge(&c->dec, &c->dec_rfull, cg_resc_low(&c->resc_b), now_ms, CG_DEC_NOLINK,
+			    CG_DEC_RESCUE_FULL_ON, CG_DEC_RESCUE_FULL_OFF, (int64_t)c->resc_b.credit);
+	cg_decrec_g4_before(&c->spread, before);
 	changed = cg_split_spread_eval_r(&c->spread, c->uh, cand, c->cfg->split_spread_ms * 1000, c->cfg->mute_settle_ms,
 					 now_ms, c->cfg->split_stress_rejoin);
+	cg_decrec_g4(&c->dec, &c->spread, changed, before, &c->dec_stress, &c->dec_recover, now_ms);
 	for (int i = 0; changed; i++, changed >>= 1) {
 		const char *name = c->link[i].ifname;
 		int32_t ms = c->spread.behind_us[i] / 1000;
@@ -1923,7 +1952,7 @@ static void spread_tick(struct client *c, uint16_t present, uint16_t live, uint6
 static void gov_tick(struct client *c, uint16_t present, uint16_t live, uint64_t now_ms)
 {
 	struct cg_gov_cfg gc = { .target_us = c->cfg->governor_target_ms * 1000, .window_ms = c->cfg->governor_window_ms };
-	uint16_t carry, dup0, cand;
+	uint16_t carry, dup0, cand, w0[CG_MAX_LINKS];
 	int active;
 
 	if (!c->cfg->governor)
@@ -1932,7 +1961,8 @@ static void gov_tick(struct client *c, uint16_t present, uint16_t live, uint64_t
 	split_weights(c, &dup0);
 	cand = (uint16_t)(split_eligible(c, live, carry, now_ms) & ~dup0);
 	active = split_active(c) && c->last_traffic_ms && now_ms - c->last_traffic_ms < 1000;
-	cg_gov_tick(&c->gov, c->uh, cand, active, now_ms, &gc);
+	cg_decrec_gov_before(&c->gov, w0);
+	cg_decrec_gov(&c->dec, &c->gov, cg_gov_tick(&c->gov, c->uh, cand, active, now_ms, &gc), w0, now_ms);
 	cg_gov_weights(&c->gov, dup0, c->gw);
 }
 
@@ -1958,9 +1988,13 @@ static void cap_tick(struct client *c, uint16_t live, uint64_t now_ms)
 	for (int i = 0; i < CG_MAX_LINKS; i++) {
 		struct link *l = &c->link[i];
 
-		if (l->fd >= 0)
-			cg_cap_tick(&c->cap[i], now_ms, l->peer_view_ms, l->peer_view.rx, l->tx_pkts, l->tx_bytes, &c->uh[i],
-				    &cc);
+		if (l->fd >= 0) {
+			uint64_t was = cg_cap_bps(&c->cap[i]);
+			unsigned ev = cg_cap_tick(&c->cap[i], now_ms, l->peer_view_ms, l->peer_view.rx, l->tx_pkts,
+						  l->tx_bytes, &c->uh[i], &cc);
+
+			cg_decrec_cap(&c->dec, &c->cap[i], (unsigned)i, ev, was, now_ms);
+		}
 	}
 	if (c->cfg->capacity_weights)
 		cg_cap_weights(c->cap, c->cfg->split == CG_SPLIT_FORCE ? 0 : c->dup0, c->cfg->governor ? c->gw : NULL,
@@ -1986,6 +2020,7 @@ static void health_tick(struct client *c, uint64_t now_ms)
 
 	link_masks(c, now_ms, &present, &live);
 	changed = cg_health_eval(c->uh, CG_MAX_LINKS, live, now_ms, &c->hcfg);
+	cg_decrec_health(&c->dec, c->uh, changed, now_ms);
 	spread_tick(c, present, live, now_ms);
 	gov_tick(c, present, live, now_ms);
 	cap_tick(c, live, now_ms);
@@ -2143,6 +2178,26 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 	cg_json_bool(j, "governor", c->cfg->governor);
 	cg_json_bool(j, "capacity_weights", c->cfg->capacity_weights);
 	cg_json_bool(j, "split_eta", c->cfg->split_eta);
+	/* What picks the link of a split packet now (decrec.h): with "eta" the
+	 * gov_weight and cap_weight of the links are not used. */
+	if (split_active(c))
+		cg_json_str(j, "weights_used",
+			    cg_weights_used(c->cfg->split_eta, &c->eta, (uint16_t)(c->spread.in & s_elig & ~s_dup0),
+					    c->cfg->capacity_weights, c->cfg->governor));
+	else
+		cg_json_null(j, "weights_used");
+	/* G4's fastest link in the split (null: none) and the governor's
+	 * shortest queue. */
+	if (c->spread.lead >= 0)
+		cg_json_u64(j, "lead", (uint64_t)c->spread.lead);
+	else
+		cg_json_null(j, "lead");
+	if (c->cfg->governor && c->gov.qmin_us >= 0)
+		cg_json_ms(j, "gov_qmin_ms", (uint64_t)c->gov.qmin_us);
+	else
+		cg_json_null(j, "gov_qmin_ms");
+	cg_json_bool(j, "copies_dry", c->sdup.dry);
+	cg_json_decisions(j, &c->dec, now_ms);
 	cg_json_bool(j, "pacing", c->cfg->pacing);
 	/* native, tcp_aware: inner TCP marked free (tcpfree.h) */
 	cg_json_obj(j, "tcp_free");
@@ -2269,6 +2324,15 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 			cg_json_ms(j, "gov_queue_ms", (uint64_t)c->gov.l[i].queue_us);
 		else
 			cg_json_null(j, "gov_queue_ms");
+		if (c->cfg->governor) {
+			cg_json_obj(j, "gov_ticks");
+			cg_json_u64(j, "down", c->gov.l[i].ticks_down);
+			cg_json_u64(j, "up", c->gov.l[i].ticks_up);
+			cg_json_u64(j, "hold", c->gov.l[i].ticks_hold);
+			cg_json_end(j, '}');
+		} else {
+			cg_json_null(j, "gov_ticks");
+		}
 		if (c->cfg->capacity_weights)
 			cg_json_u64(j, "cap_weight", c->cw[i]);
 		else
@@ -2284,6 +2348,8 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 			cg_json_ms_signed(j, "split_behind_ms", c->spread.behind_us[i]);
 		else
 			cg_json_null(j, "split_behind_ms");
+		cg_json_g4(j, &c->spread, (unsigned)i, now_ms);
+		cg_json_owd_fresh(j, h, now_ms);
 		cg_json_u64(j, "rx_first", c->rxs.rx[i].wins);
 		cg_json_u64(j, "rx_duplicate", c->rxs.rx[i].dups);
 		cg_json_u64(j, "rx_late", c->rxs.rx[i].late);
@@ -2294,7 +2360,7 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 		cg_json_owd_spread(j, "rx_owd_spread_ms", &c->rxs.ro, (unsigned)i, rset);
 		cg_json_owd_swing(j, "rx_owd_swing_ms", &c->rxs.ro, (unsigned)i);
 		cg_json_u64(j, "rx_reorder_late", c->rxs.ro.link[i].late);
-		cg_json_capacity(j, &c->cap[i], c->cfg->governor_target_ms * 1000);
+		cg_json_capacity(j, &c->cap[i], c->cfg->governor_target_ms * 1000, now_ms);
 		if (l->paced != CG_PACE_NONE)
 			cg_json_ms(j, "pace_mbit", l->paced * 8 / 1000);
 		else
