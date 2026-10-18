@@ -1517,8 +1517,11 @@ static int up_full(const struct client *c, unsigned i)
 }
 
 /* A verified NACK from the server (rescue.h): each sequence the ring still
- * keeps goes again, within the budget, on the live link of least RTT;
- * not one lost on a full link. */
+ * keeps goes again, within the budget, on the live link of least upload
+ * delay (the delays of the links share the server's clock), as the server
+ * does (best_paths); of least RTT while no link has a delay. The RTT has the
+ * download's queue in it, which the rescued packet does not cross (clockwork
+ * audit C10). Not one lost on a full link. */
 static void on_nack(struct client *c, uint8_t flags, const uint8_t *payload, size_t plen, uint64_t now_ms)
 {
 	uint32_t seq[CG_NACK_SEQ_MAX];
@@ -1541,6 +1544,18 @@ static void on_nack(struct client *c, uint8_t flags, const uint8_t *payload, siz
 		return;
 	link_masks(c, now_ms, &present, &live);
 	for (int i = 0; i < CG_MAX_LINKS; i++) {
+		struct link *l = &c->link[i];
+
+		if (!(live >> i & 1) || l->fd < 0 || !c->uh[i].have_owd)
+			continue;
+		if (!best[0] || cg_owd_diff(c->uh[i].owd, c->uh[best[0] - c->link].owd) < 0) {
+			best[1] = best[0];
+			best[0] = l;
+		} else if (!best[1] || cg_owd_diff(c->uh[i].owd, c->uh[best[1] - c->link].owd) < 0) {
+			best[1] = l;
+		}
+	}
+	for (int i = 0, by_rtt = !best[0]; by_rtt && i < CG_MAX_LINKS; i++) {
 		struct link *l = &c->link[i];
 
 		if (!(live >> i & 1) || l->fd < 0 || !l->srtt8_us)
