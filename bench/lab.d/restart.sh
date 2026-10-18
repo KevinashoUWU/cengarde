@@ -104,8 +104,8 @@ EOF
 
 # restart_proc client|server: stops that end and starts it again.
 restart_proc() {
-	local pid ns=cli i
-	[ "$1" = server ] && ns=srv
+	local pid ns=$NS_CLI i
+	[ "$1" = server ] && ns=$NS_SRV
 	pid=$(cat "$RUN/$1.pid")
 	kill "$pid" 2>/dev/null
 	for i in $(seq 1 30); do
@@ -195,11 +195,11 @@ restart() {
 		fail=1 ready=0
 	else
 		secs=$(((RESTARTS + 8) * (WEDGE_S + 10) + 10)) # killed by teardown long before
-		ip netns exec cli tc qdisc replace dev l3 root tbf rate 5mbit burst 32kb latency 800ms
-		ip netns exec srv "$BIN/udpgen" -b 10.0.3.2:7000 -d "$secs" -g 0 >/dev/null &
-		ip netns exec cli "$BIN/udpgen" -b 10.0.3.1:7000 -p 10.0.3.2:7000 -r 700 -s 1400 -d "$secs" -g 0 >/dev/null &
-		ip netns exec srv "$BIN/udpgen" -b 127.0.0.1:59301 -l -r 2000 -s "$SIZE" -d "$secs" -g 1 >/dev/null &
-		ip netns exec cli "$BIN/udpgen" -b 127.0.0.1:50000 -p 127.0.0.1:59401 -r 20 -s 64 -d "$secs" -g 1 >/dev/null &
+		ip netns exec "$NS_CLI" tc qdisc replace dev l3 root tbf rate 5mbit burst 32kb latency 800ms
+		ip netns exec "$NS_SRV" "$BIN/udpgen" -b 10.0.3.2:7000 -d "$secs" -g 0 >/dev/null &
+		ip netns exec "$NS_CLI" "$BIN/udpgen" -b 10.0.3.1:7000 -p 10.0.3.2:7000 -r 700 -s 1400 -d "$secs" -g 0 >/dev/null &
+		ip netns exec "$NS_SRV" "$BIN/udpgen" -b 127.0.0.1:59301 -l -r 2000 -s "$SIZE" -d "$secs" -g 1 >/dev/null &
+		ip netns exec "$NS_CLI" "$BIN/udpgen" -b 127.0.0.1:50000 -p 127.0.0.1:59401 -r 20 -s 64 -d "$secs" -g 1 >/dev/null &
 		sleep 4
 		if ! out=$(restart_watch "$(date +%s.%N)" 5); then
 			echo "FAIL: before any restart: $out"

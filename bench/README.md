@@ -611,6 +611,127 @@ splitnoro` en `equal reorder50 reorder150`, unos 140. Cada corrida suma ahora
 la espera de 1,1 s por el estado del motor y un ping más, y la estimación
 cuenta 4 s de arranque y cierre por corrida (eran 3).
 
+### Varios laboratorios a la vez: `LAB_ID` y `labq.py`
+
+**`LAB_ID`.** Con `LAB_ID=N`, `lab.sh` arma su laboratorio en los netns
+`cli-N` y `srv-N`, con `RUN` en `bench/run-N`, y su `teardown` solo mata los
+procesos de esos dos netns (`ip netns pids`) y solo los borra a ellos. Vacío
+(lo de siempre, lo que corren el CI y los scripts de hoy) son `cli`, `srv` y
+`bench/run`. Lo demás no cambia de nombre porque vive dentro de los netns o de
+`RUN`: los veth `l1`… y `s1`…, las direcciones 10.0.x.x y 10.79.0.x, los
+puertos, las interfaces `wgc` y `wgs`, las claves, los pid y los sockets de
+control. `l1` en `cli-1` y `l1` en `cli-2` son dos interfaces distintas, así
+que no hace falta correr subredes ni puertos ni acortar nombres (IFNAMSIZ).
+Lo único que comparten las instancias es la máquina: la CPU, `bench/bin` (las
+herramientas; el motor de cada una puede ser otro con `CENGARDE_BIN`, y `BIN`
+cambia dónde escribe `build`) y los sysctl globales. `udpmem` baja
+`net.ipv4.udp_mem` de toda la máquina y `mt.py` (y con él `mtlat` y
+`mtstall`) mide CPU: esos van solos, y `mt.py` se niega con `LAB_ID`.
+
+```sh
+sudo LAB_ID=1 BOND_CASES=equal BOND_VARIANTS=bonded BOND_CC=cubic bench/lab.sh bond &
+sudo LAB_ID=2 BOND_CASES=equal BOND_VARIANTS=bonded BOND_CC=cubic CENGARDE_BIN=/ruta/a/otro/cengarde bench/lab.sh bond &
+```
+
+**`labq.py`: una comparación repartida en varios laboratorios.** Sin root
+(llama a `lab.sh` con `sudo -n`) y solo con la biblioteca estándar. Un plan
+lista los brazos (las versiones del motor que se comparan) y la rejilla:
+
+```json
+{"arms": [{"name": "base", "rev": "origin/master"},
+          {"name": "idle50", "rev": "HEAD", "client_extra": "reorder_idle_ms = 50"}],
+ "grid": {"cases": ["equal", "het"], "dirs": ["down", "up"], "cc": ["cubic"],
+          "reps": 8, "secs": 30, "seed": 1},
+ "env": {"BOND_NETEM_INFLIGHT": "1"}}
+```
+
+```sh
+python3 -I bench/labq.py plan plan.json -j 4               # los trabajos, en orden, y el tiempo
+python3 -I bench/labq.py run plan.json -j 4 --out /tmp/cmp  # compila, corre; otra vez: sigue donde quedó
+python3 -I bench/bondtab.py table /tmp/cmp/all.jsonl --ref base   # cada brazo frente a base
+python3 -I bench/bondtab.py table /tmp/cmp/idle50.jsonl           # un brazo solo
+# lo mismo sin archivo:
+python3 -I bench/labq.py run --arm base=origin/master --arm idle50=HEAD \
+  --client idle50='reorder_idle_ms = 50' --cases equal,het --reps 8 --secs 30 -j 4 --out /tmp/cmp
+```
+
+- **Brazos.** `rev` se compila una vez por commit en `bench/labq-cache/SHA/`
+  (un `git worktree` aparte y `make`, sin tocar el árbol de trabajo); `bin`
+  da un motor ya compilado. Opcionales: `client_extra`, `server_extra`,
+  `variant` (una variante de `bond.sh`, `bonded` por defecto) y `env`. Los
+  scripts del laboratorio son siempre los de este árbol: solo cambia el motor.
+- **Trabajos.** Cada caso, sentido, control de congestión y repetición de un
+  brazo es una llamada a `lab.sh bond` con `BOND_N=1`, `BOND_REP0` (la
+  repetición menos uno; `bond.sh` numera desde ahí) y `BOND_SEED`: en la misma
+  repetición, `ltespikerand` sortea los mismos saltos para todos los brazos, y
+  los mismos que una corrida con `BOND_N`. El orden va por repetición, luego
+  caso, sentido y control de congestión, con los brazos uno al lado del otro
+  y su orden rotado en cada repetición: la deriva de las horas les toca a
+  todos por igual. Hasta `-j` laboratorios a la vez, `LAB_ID` 1 a `j`.
+- **Salida** (`--out`): `BRAZO.jsonl` y `all.jsonl`, las líneas de `bond.sh`
+  con `variant` = el nombre del brazo (la de `bond.sh` queda en
+  `bond_variant`), más `arm`, `sha` y `slot`; `logs/` con la salida de cada
+  trabajo, `plan.json` con el commit de cada brazo y `failed.txt`. Al volver a
+  correr con el mismo `--out` se saltan los trabajos hechos y se reintentan
+  los fallidos; si la revisión de un brazo apunta ahora a otro commit, se
+  niega (usa otro `--out`).
+- `--pin` le da a cada laboratorio sus núcleos (`taskset`, núcleos enteros
+  con sus hilos hermanos). No ayudó (abajo), así que va apagado.
+- `labq_test.py` prueba el plan, el orden, el entorno de cada trabajo, la
+  reanudación y el reparto de CPU, sin laboratorio (corre en `bond.yml`).
+
+**Fidelidad de `-j` (medido, 2026-10-18, i9-9900KF de 8 núcleos y 16 hilos,
+sin nada más corriendo).** El mismo binario, Cubic, 30 s; mediana [mín–máx].
+Primero `equal` y `het` con n = 4 en cada configuración:
+
+| caso | sentido | `-j` | Mbit/s | retrans | RTT p50 ms | RTT p99 ms | CPU cli/srv % |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| equal | down | 1 | 44,53 [44,52–44,53] | 42 [39–44] | 112 [112–112] | 132 [132–132] | 6,5/4,3 |
+| equal | down | 4 | 44,52 [44,52–44,53] | 41,5 [36–43] | 112 [112–112] | 132 [132–132] | 7,1/4,8 |
+| equal | down | 8 | 44,53 [44,52–44,53] | 39 [37–41] | 112 [112–112] | 132 [131–132] | 7,8/5,2 |
+| equal | up | 1 | 44,46 [44,46–44,47] | 38,5 [37–43] | 112 [112–112] | 132 [132–132] | 4,2/6,4 |
+| equal | up | 4 | 44,46 [44,46–44,46] | 37,5 [35–39] | 112 [112–112] | 132 [132–132] | 4,7/7,3 |
+| equal | up | 8 | 44,46 [44,46–44,46] | 40,5 [40–45] | 112 [112–113] | 132 [131–132] | 5,0/8,1 |
+| het | down | 1 | 53,51 [53,51–53,51] | 60 [50–71] | 105,5 [103–114] | 124,5 [122–126] | 7,9/6,8 |
+| het | down | 4 | 53,51 [53,51–53,54] | 82 [44–85] | 107 [105–112] | 125 [122–126] | 9,0/7,7 |
+| het | down | 4 `--pin` | 53,50 [53,50–53,51] | 90 [61–138] | 105,5 [95,9–116] | 126 [125–126] | 9,1/7,8 |
+| het | down | 8 | 53,52 [53,50–53,54] | 71,5 [47–149] | 110 [106–114] | 126 [123–126] | 9,7/8,2 |
+| het | down | 8 `--pin` | 53,50 [53,43–53,54] | 153,5 [54–307] | 108 [95,8–113] | 126 [126–126] | 10,2/8,9 |
+| het | up | 1 | 53,45 [53,44–53,46] | 49,5 [44–60] | 108 [108–109] | 127 [127–127] | 6,5/8,1 |
+| het | up | 4 | 53,45 [53,43–53,46] | 56,5 [51–59] | 108 [108–114] | 126,5 [126–127] | 7,4/9,3 |
+| het | up | 8 | 53,45 [53,38–53,46] | 71 [55–281] | 107 [93,7–108] | 126 [126–127] | 7,8/10,2 |
+
+Como las retransmisiones de `het` se movían, otra tanda solo de `het` con
+n = 8 en `-j` 1 a 4:
+
+| sentido | `-j` | Mbit/s | retrans | RTT p50 ms | RTT p99 ms | CPU cli/srv % |
+| --- | --- | --- | --- | --- | --- | --- |
+| down | 1 | 53,51 [53,33–53,51] | 129,5 [46–373] | 105,5 [78,8–113] | 126 [124–127] | 7,8/6,6 |
+| down | 2 | 53,51 [53,50–53,51] | 86,5 [52–159] | 108 [104–114] | 126 [123–127] | 8,2/7,1 |
+| down | 3 | 53,51 [53,50–53,51] | 63 [48–144] | 108 [105–113] | 124 [122–126] | 8,6/7,5 |
+| down | 4 | 53,50 [53,40–53,51] | 142,5 [78–315] | 110 [103–116] | 126 [123–126] | 9,1/7,8 |
+| up | 1 | 53,45 [53,43–53,46] | 51 [44–90] | 108 [98–109] | 127 [126–127] | 6,3/8,0 |
+| up | 2 | 53,45 [53,37–53,46] | 86 [51–291] | 108 [94,5–109] | 126 [126–127] | 6,8/8,5 |
+| up | 3 | 53,45 [53,38–53,46] | 48 [45–306] | 107 [95,8–108] | 126,5 [126–127] | 7,2/8,9 |
+| up | 4 | 53,45 [53,43–53,46] | 54,5 [43–122] | 108 [107–115] | 126 [126–127] | 7,5/9,4 |
+
+Lectura: Mbit/s y RTT p50 no se mueven con `-j`. Las retransmisiones de
+`het` tienen una cola larga ya con `-j 1` (46 a 373 en bajada): `-j 4` queda
+dentro de esa dispersión (Mann-Whitney, `-j 1` frente a `-j 4` juntando las
+dos tandas, n = 12 por lado: p = 0,42 en bajada y 0,20 en subida), y no
+crecen de forma monótona con `-j` (la mediana de `-j 3` es la más baja). El
+RTT p99 de `het` en subida baja ~1 ms con `-j` 2 a 4 (127 → 126, p = 0,004
+con `-j 4`): menos del 1 %, y sin explicación clara (pudo ser la deriva, ya
+que `-j 1` corrió primero). Lo que sí cambia es la CPU del motor: +10–15 % con
+`-j 4` y +20–25 % con `-j 8` (cachés y turbo compartidos). Con `-j 8` y con
+`--pin` aparecen colas de retransmisiones más largas (281, 307): fijar cada
+laboratorio a 4 hilos (o a 2 con `-j 8`) le quita la holgura que el planificador
+le da sin fijar, y no ayuda. **Recomendado: `-j 4` sin `--pin`**, ~3 veces
+más rápido que `-j 1` (16 trabajos de 30 s: 10 min contra 3). Las cifras de
+CPU solo se comparan dentro de una misma corrida de `labq.py` (mismo `-j`):
+los brazos van intercalados, así que lo que quede del efecto les toca a todos
+por igual.
+
 ### `reorder`: el reordenador del receptor y el reparto (`lab.d/reorder.sh`, `robench`)
 
 Para el paso 1 de la Fase 5 (historia 012). `lab.d/reorder.sh` se escribió
@@ -972,7 +1093,9 @@ sudo bench/lab.sh teardown
 | `CLIENT_BIN` / `SERVER_BIN` | `bench/bin/engarde-*` | probar otros binarios de engarde |
 | `CLIENT_EXTRA` / `SERVER_EXTRA` | vacío | ajustes extra de cengarde, `clave = valor` separados por `;` (p. ej. `busy_poll_us = 50`) |
 | `CENGARDE_BIN` | `bench/bin/cengarde` | otro binario de cengarde, p. ej. un envoltorio que ejecuta la compilación de OpenWrt con su musl (historia 007) |
-| `RUN` | `bench/run` | configs, logs, JSON de estado y sockets de control. Un `RUN` relativo se toma desde el directorio actual y pasa a ruta absoluta, porque el motor solo acepta un `control_socket` absoluto. La ruta de un socket Unix no pasa de 107 bytes (contando la ruta absoluta): si el repositorio está muy hondo, `control` falla con `socket path too long` y hay que usar un `RUN` más corto, p. ej. bajo `/tmp` |
+| `LAB_ID` | vacío | varios laboratorios a la vez: con `LAB_ID=N` los netns son `cli-N` y `srv-N`, `RUN` pasa a `bench/run-N` y `teardown` solo toca los suyos (ver «Varios laboratorios a la vez») |
+| `BIN` | `bench/bin` | dónde `build` deja las herramientas y el motor |
+| `RUN` | `bench/run` (`bench/run-N` con `LAB_ID`) | configs, logs, JSON de estado y sockets de control. Un `RUN` relativo se toma desde el directorio actual y pasa a ruta absoluta, porque el motor solo acepta un `control_socket` absoluto. La ruta de un socket Unix no pasa de 107 bytes (contando la ruta absoluta): si el repositorio está muy hondo, `control` falla con `socket path too long` y hay que usar un `RUN` más corto, p. ej. bajo `/tmp` |
 
 Demos de los problemas del engarde Go descritos en el roadmap (necesitan
 `ENGINE=go bench/lab.sh build`):

@@ -92,22 +92,22 @@ srcroute() {
 	trap teardown EXIT
 	trap 'teardown; exit 130' INT TERM
 	setup || { echo "srcroute: FAILED"; return 1; }
-	if ! ip netns exec cli test -d /proc/sys/net/ipv6; then
+	if ! ip netns exec "$NS_CLI" test -d /proc/sys/net/ipv6; then
 		teardown
 		echo "srcroute: skip (no IPv6 in this kernel)"
 		return 0
 	fi
-	ip -n srv addr add 2001:db8:1::1/64 dev s1 nodad
-	ip -n srv addr add "$SR_S/128" dev s1 nodad
-	ip -n cli addr add "$SR_B/64" dev l1 nodad noprefixroute
-	ip -n cli addr add "$SR_A/64" dev l1 nodad noprefixroute
-	ip -n cli addr add 2001:db8:2::10/64 dev l2 nodad
-	if ! ip -n cli -6 route add "$SR_S/128" from "$SR_A/128" dev l2 2>/dev/null; then
+	ip -n "$NS_SRV" addr add 2001:db8:1::1/64 dev s1 nodad
+	ip -n "$NS_SRV" addr add "$SR_S/128" dev s1 nodad
+	ip -n "$NS_CLI" addr add "$SR_B/64" dev l1 nodad noprefixroute
+	ip -n "$NS_CLI" addr add "$SR_A/64" dev l1 nodad noprefixroute
+	ip -n "$NS_CLI" addr add 2001:db8:2::10/64 dev l2 nodad
+	if ! ip -n "$NS_CLI" -6 route add "$SR_S/128" from "$SR_A/128" dev l2 2>/dev/null; then
 		teardown
 		echo "srcroute: skip (no IPv6 source routes in this kernel)"
 		return 0
 	fi
-	ip -n cli -6 route add "$SR_S/128" from "$SR_B/128" dev l1
+	ip -n "$NS_CLI" -6 route add "$SR_S/128" from "$SR_B/128" dev l1
 	sed -i "/^\[link l1\]\$/{n;s/^server = .*/server = [$SR_S]:59402 10.0.1.2:59402/}" "$RUN/client.conf"
 
 	echo "   1. A routes out through l2 only, B through l1"
@@ -121,15 +121,15 @@ srcroute() {
 	stop
 
 	echo "   2. B through l2 too: IPv4 until A routes through l1 again"
-	ip -n cli -6 route del "$SR_S/128" from "$SR_B/128" dev l1
-	ip -n cli -6 route add "$SR_S/128" from "$SR_B/128" dev l2
+	ip -n "$NS_CLI" -6 route del "$SR_S/128" from "$SR_B/128" dev l1
+	ip -n "$NS_CLI" -6 route add "$SR_S/128" from "$SR_B/128" dev l2
 	start
 	out=$(sr_wait "l['state'] == 'live' and l['remote'] == '10.0.1.2:59402' and l['candidate'] == 1 and l['detour']" 5) ||
 		{ echo "FAIL: l1 not live on 10.0.1.2 on a detour: $out"; fail=1; }
 	echo "      l1 live on 10.0.1.2 after $out"
 	grep -q "link l1: cannot use \[$SR_S\]:59402 (connect \[$SR_S\]:59402: " "$RUN/client.log" ||
 		{ echo "FAIL: no log line about the IPv6 address it could not use"; fail=1; }
-	ip -n cli -6 route replace "$SR_S/128" from "$SR_A/128" dev l1
+	ip -n "$NS_CLI" -6 route replace "$SR_S/128" from "$SR_A/128" dev l1
 	out=$(sr_wait "$on_a and l['candidate'] == 0 and not l['detour']" 12) ||
 		{ echo "FAIL: l1 not back on [$SR_S] from A: $out"; fail=1; }
 	echo "      route from A through l1: l1 back on [$SR_S] from $SR_A after $out"

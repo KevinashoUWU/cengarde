@@ -65,9 +65,9 @@ fieldrec() {
 	rec=$!
 	(
 		sleep 4
-		ip netns exec srv ip link set s2 down
+		ip netns exec "$NS_SRV" ip link set s2 down
 		sleep 3
-		ip netns exec srv ip link set s2 up
+		ip netns exec "$NS_SRV" ip link set s2 up
 	) &
 	cut=$!
 	down 1000 12 >"$RUN/traffic.txt"

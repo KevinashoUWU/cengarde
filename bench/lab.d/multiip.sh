@@ -162,9 +162,9 @@ multiip_run() {
 	local listen=$1 fail=0 t0 out sent uniq dup traffic
 	echo "   listen = $listen"
 	setup || return 1
-	ip -n srv addr add 10.0.1.20/24 dev s1
-	ip -n srv addr add 198.51.100.7/32 dev lo
-	ip -n cli route add 198.51.100.7/32 via 10.0.2.2 dev l2
+	ip -n "$NS_SRV" addr add 10.0.1.20/24 dev s1
+	ip -n "$NS_SRV" addr add 198.51.100.7/32 dev lo
+	ip -n "$NS_CLI" route add 198.51.100.7/32 via 10.0.2.2 dev l2
 	sed -i -e 's/10\.0\.1\.2:59402/10.0.1.20:59402/' -e 's/10\.0\.2\.2:59402/198.51.100.7:59402/' "$RUN/client.conf"
 	sed -i "s/^listen = .*/listen = $listen/" "$RUN/server.conf"
 	t0=$(date +%s.%N)
@@ -192,7 +192,7 @@ multiip_run() {
 	down 2000 6 >"$RUN/traffic.txt" &
 	traffic=$!
 	sleep 2.5
-	ip -n srv addr del 198.51.100.7/32 dev lo
+	ip -n "$NS_SRV" addr del 198.51.100.7/32 dev lo
 	wait "$traffic"
 	echo "   down, /32 deleted after 1.5 s: $(cat "$RUN/traffic.txt")"
 	sent=$(sed -n 's/.*sent=\([0-9]*\).*/\1/p' "$RUN/tx.out")
@@ -205,7 +205,7 @@ multiip_run() {
 	out=$(multiip_py errors) || { echo "FAIL: not only l2's local_errors grew, or l2's path is gone"; fail=1; }
 	echo "   $out"
 	grep -h "address removed or no route" "$RUN/server.log" | sed 's/^/   /'
-	ip -n srv addr add 198.51.100.7/32 dev lo
+	ip -n "$NS_SRV" addr add 198.51.100.7/32 dev lo
 	out=$(multiip_py live "$(date +%s.%N)" 5) || { echo "FAIL: l2 not back with the /32"; fail=1; }
 	echo "   /32 back: $out"
 	stop
@@ -218,9 +218,9 @@ multiip_failover() {
 	local fail=0 out
 	echo "   failover: l2 lists 198.51.100.7 and then 10.0.2.2"
 	setup || return 1
-	ip -n srv addr add 10.0.1.20/24 dev s1
-	ip -n srv addr add 198.51.100.7/32 dev lo
-	ip -n cli route add 198.51.100.7/32 via 10.0.2.2 dev l2
+	ip -n "$NS_SRV" addr add 10.0.1.20/24 dev s1
+	ip -n "$NS_SRV" addr add 198.51.100.7/32 dev lo
+	ip -n "$NS_CLI" route add 198.51.100.7/32 via 10.0.2.2 dev l2
 	sed -i -e 's/10\.0\.1\.2:59402/10.0.1.20:59402/' \
 		-e 's/10\.0\.2\.2:59402/198.51.100.7:59402 10.0.2.2:59402/' "$RUN/client.conf"
 	sed -i '1a server_failover_ms = 3000' "$RUN/client.conf"
@@ -228,7 +228,7 @@ multiip_failover() {
 	start
 	out=$(multiip_py live "$(date +%s.%N)" 3) || fail=1
 	echo "   $out"
-	ip -n srv addr del 198.51.100.7/32 dev lo
+	ip -n "$NS_SRV" addr del 198.51.100.7/32 dev lo
 	out=$(multiip_py moved "$(date +%s.%N)" 4) || { echo "FAIL: l2 not on 10.0.2.2 within 4 s"; fail=1; }
 	echo "   /32 deleted: $out"
 	grep -h "no reply from 198.51.100.7" "$RUN/client.log" | sed 's/^/   /'

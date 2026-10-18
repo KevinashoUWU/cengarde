@@ -109,7 +109,7 @@ stream_case() {
 	sh "$LAB/../openwrt/cengarde/files/cengarde-rec" -s "$RUN/client.json" -d "$dir/rec" -r 3600 -p 0.1 &
 	rec=$!
 	STREAM_PIDS="$rec"
-	ip netns exec srv "$LAB/stream/recv.sh" -1 -b 10.79.0.1 -P "$port" -k "$key" -o "$dir" -n "$c-$proto" "${rxopts[@]}" >"$dir/recv.out" 2>&1 &
+	ip netns exec "$NS_SRV" "$LAB/stream/recv.sh" -1 -b 10.79.0.1 -P "$port" -k "$key" -o "$dir" -n "$c-$proto" "${rxopts[@]}" >"$dir/recv.out" 2>&1 &
 	rx=$!
 	STREAM_PIDS="$STREAM_PIDS $rx"
 	local i
@@ -121,7 +121,7 @@ stream_case() {
 	stream_events "$c" "$s" &
 	ev=$!
 	STREAM_PIDS="$STREAM_PIDS $ev"
-	ip netns exec cli "$LAB/stream/send.sh" -e "$STREAM_ENC" -s "$STREAM_SIZE" -b "${STREAM_KBPS}k" -d "$s" -k "$key" -o "$dir" \
+	ip netns exec "$NS_CLI" "$LAB/stream/send.sh" -e "$STREAM_ENC" -s "$STREAM_SIZE" -b "${STREAM_KBPS}k" -d "$s" -k "$key" -o "$dir" \
 		-n "$c-$proto" -c "$RUN/client.json" "${snopts[@]}" "$dest" >"$dir/send.out" 2>&1 || {
 		echo "FAIL: $c $proto: send.sh failed: $(tail -n 3 "$dir/send.out" | tr '\n' ' ')"
 		rc=1

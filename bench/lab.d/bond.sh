@@ -91,7 +91,9 @@
 # baselines of split; BOND_SOLO_CASES says it by hand.
 #
 # Knobs: BOND_S (seconds per run, 10; starlink15 takes at least 31), BOND_N
-# (repetitions, 1; the table then gives the median and the spread), BOND_P
+# (repetitions, 1; the table then gives the median and the spread), BOND_REP0
+# (0: the first repetition's number minus one, for ltespikerand's draw and the
+# lines' rep; bench/labq.py runs repetition r alone as BOND_N=1 BOND_REP0=r-1), BOND_P
 # (TCP flows in parallel, 1; speedtest opens many, and many flows starting
 # at once fill the links' queues as one does not; story 013), BOND_CC
 # ("cubic bbr quic"; quic only when aioquic imports, else a note),
@@ -127,6 +129,7 @@
 
 BOND_S=${BOND_S:-10}
 BOND_N=${BOND_N:-1}
+BOND_REP0=${BOND_REP0:-0} # the repetitions are numbered from BOND_REP0 + 1 (labq.py runs one at a time)
 BOND_P=${BOND_P:-1}
 BOND_CC=${BOND_CC:-} # empty: cubic bbr quic (bond_ccs)
 BOND_QUIC_CC=${BOND_QUIC_CC:-cubic}
@@ -174,10 +177,10 @@ bond_tunnel() {
 	local i
 	wg genkey >"$RUN/wgc.key" && wg genkey >"$RUN/wgs.key" || return 1
 	chmod 600 "$RUN/wgc.key" "$RUN/wgs.key"
-	bond_wg srv wgs 59301 10.79.0.1 "$RUN/wgs.key" "$(wg pubkey <"$RUN/wgc.key")" 10.79.0.2 || return 1
-	bond_wg cli wgc 50000 10.79.0.2 "$RUN/wgc.key" "$(wg pubkey <"$RUN/wgs.key")" 10.79.0.1 127.0.0.1:59401 || return 1
+	bond_wg "$NS_SRV" wgs 59301 10.79.0.1 "$RUN/wgs.key" "$(wg pubkey <"$RUN/wgc.key")" 10.79.0.2 || return 1
+	bond_wg "$NS_CLI" wgc 50000 10.79.0.2 "$RUN/wgc.key" "$(wg pubkey <"$RUN/wgs.key")" 10.79.0.1 127.0.0.1:59401 || return 1
 	for i in $(seq 1 50); do
-		ip netns exec cli ping -q -c 1 -W 1 10.79.0.1 >/dev/null 2>&1 && return 0
+		ip netns exec "$NS_CLI" ping -q -c 1 -W 1 10.79.0.1 >/dev/null 2>&1 && return 0
 		sleep 0.2
 	done
 	echo "FAIL: no handshake through cengarde"
@@ -186,7 +189,7 @@ bond_tunnel() {
 
 bond_untunnel() {
 	local f
-	pkill -f "iperf3 -s -B 10.79.0.1" 2>/dev/null
+	ns_kill "$NS_SRV" iperf3
 	for f in "$RUN"/wgc.pid "$RUN"/wgs.pid "$RUN"/quic.pid; do
 		[ -f "$f" ] && kill "$(cat "$f")" 2>/dev/null
 		rm -f "$f"
@@ -309,7 +312,7 @@ bond_join() { echo "${1:+$1${2:+;}}$2"; }
 # the first run (it prints "listening" once it is bound).
 bond_quic_server() {
 	local i
-	ip netns exec srv python3 -I "$LAB/quicperf.py" server --bind 10.79.0.1 \
+	ip netns exec "$NS_SRV" python3 -I "$LAB/quicperf.py" server --bind 10.79.0.1 \
 		--cc "$BOND_QUIC_CC" --mtu "$BOND_QUIC_MTU" >"$RUN/quic-server.log" 2>&1 &
 	echo $! >"$RUN/quic.pid"
 	for i in $(seq 1 50); do
@@ -325,8 +328,8 @@ BOND_NETEM=
 bond_netem_ok() {
 	if [ -z "$BOND_NETEM" ]; then
 		BOND_NETEM=no
-		ip netns exec cli tc qdisc replace dev l1 root netem delay 1ms 2>/dev/null && BOND_NETEM=yes
-		ip netns exec cli tc qdisc del dev l1 root 2>/dev/null
+		ip netns exec "$NS_CLI" tc qdisc replace dev l1 root netem delay 1ms 2>/dev/null && BOND_NETEM=yes
+		ip netns exec "$NS_CLI" tc qdisc del dev l1 root 2>/dev/null
 		[ "$BOND_NETEM" = yes ] || echo "   note: no netem here: links get a rate only, no delay, loss or events"
 	fi
 	[ "$BOND_NETEM" = yes ]
@@ -345,8 +348,8 @@ bond_link() {
 	local n=$1 d=$2 r=$3 q=${4:-100} loss=${5:-0} lim ns dev inflight=0
 	lim=$((r * 1000000 * q / 8000 / 1400 + 10))
 	[ "${BOND_NETEM_INFLIGHT:-0}" = 1 ] && inflight=$((r * 1000000 * d / 8000 / 1400))
-	for ns in cli srv; do
-		dev=$([ "$ns" = cli ] && echo "l$n" || echo "s$n")
+	for ns in "$NS_CLI" "$NS_SRV"; do
+		dev=$([ "$ns" = "$NS_CLI" ] && echo "l$n" || echo "s$n")
 		if bond_netem_ok; then
 			ip netns exec "$ns" tc qdisc replace dev "$dev" root netem delay "${d}ms" rate "${r}mbit" limit $((lim + inflight)) loss "${loss}%"
 		else
@@ -439,8 +442,8 @@ bond_nlinks() {
 bond_snap() {
 	cp "$RUN/client.json" "$1.client.json" 2>/dev/null || : >"$1.client.json"
 	cp "$RUN/server.json" "$1.server.json" 2>/dev/null || : >"$1.server.json"
-	ip -n cli -s -j link show dev wgc >"$1.wgc.json" 2>/dev/null || : >"$1.wgc.json"
-	ip -n srv -s -j link show dev wgs >"$1.wgs.json" 2>/dev/null || : >"$1.wgs.json"
+	ip -n "$NS_CLI" -s -j link show dev wgc >"$1.wgc.json" 2>/dev/null || : >"$1.wgc.json"
+	ip -n "$NS_SRV" -s -j link show dev wgs >"$1.wgs.json" 2>/dev/null || : >"$1.wgs.json"
 }
 
 # bond_snap_roll: the after of a run is the before of the next.
@@ -456,9 +459,9 @@ bond_snap_roll() {
 bond_small_start() {
 	local tx rx txa rxa
 	if [ "$1" = up ]; then
-		tx=cli rx=srv txa=10.79.0.2 rxa=10.79.0.1
+		tx=$NS_CLI rx=$NS_SRV txa=10.79.0.2 rxa=10.79.0.1
 	else
-		tx=srv rx=cli txa=10.79.0.1 rxa=10.79.0.2
+		tx=$NS_SRV rx=$NS_CLI txa=10.79.0.1 rxa=10.79.0.2
 	fi
 	rm -f "$RUN/small-tx.out" "$RUN/small-rx.out"
 	ip netns exec "$rx" "$BIN/udpgen" -b "$rxa:7002" -d $(($2 + 1)) -g 1 >"$RUN/small-rx.out" &
@@ -477,7 +480,7 @@ bond_run() {
 	cp=$(cat "$RUN/client.pid") sp=$(cat "$RUN/server.pid")
 	if [ "$BOND_REST" -gt 0 ] && [ "$cc" != quic ]; then
 		# shellcheck disable=SC2046 # -R or nothing
-		[ "$BOND_WARM" -gt 0 ] && ip netns exec cli iperf3 -c 10.79.0.1 -t "$BOND_WARM" -C "$cc" -P "$BOND_P" \
+		[ "$BOND_WARM" -gt 0 ] && ip netns exec "$NS_CLI" iperf3 -c 10.79.0.1 -t "$BOND_WARM" -C "$cc" -P "$BOND_P" \
 			$([ "$dir" = down ] && echo -R) >/dev/null 2>&1
 		sleep "$BOND_REST"
 		bond_snap "$RUN/snap-before"
@@ -485,9 +488,9 @@ bond_run() {
 	fi
 	BOND_BG=
 	c0=$(cpu_ticks "$cp") s0=$(cpu_ticks "$sp")
-	ip netns exec cli ping -n -i 0.1 -w $((s + 1)) 10.79.0.1 >"$RUN/ping.out" 2>&1 &
+	ip netns exec "$NS_CLI" ping -n -i 0.1 -w $((s + 1)) 10.79.0.1 >"$RUN/ping.out" 2>&1 &
 	BOND_BG="$BOND_BG $!"
-	ip netns exec cli ping -n -i 0.1 -s 1200 -w $((s + 1)) 10.79.0.1 >"$RUN/pingbig.out" 2>&1 &
+	ip netns exec "$NS_CLI" ping -n -i 0.1 -s 1200 -w $((s + 1)) 10.79.0.1 >"$RUN/pingbig.out" 2>&1 &
 	BOND_BG="$BOND_BG $!"
 	bond_events "$c" "$s" "$rep" &
 	BOND_BG="$BOND_BG $!"
@@ -497,12 +500,12 @@ bond_run() {
 	fi
 	if [ "$cc" = quic ]; then
 		res=$RUN/quic.json err=$RUN/quic.err
-		ip netns exec cli python3 -I "$LAB/quicperf.py" client 10.79.0.1 --dir "$dir" --secs "$s" \
+		ip netns exec "$NS_CLI" python3 -I "$LAB/quicperf.py" client 10.79.0.1 --dir "$dir" --secs "$s" \
 			--cc "$BOND_QUIC_CC" --mtu "$BOND_QUIC_MTU" >"$res" 2>"$err" || rc=1
 	else
 		res=$RUN/iperf.json err=$RUN/iperf.err
 		# shellcheck disable=SC2046 # -R or nothing
-		ip netns exec cli iperf3 -c 10.79.0.1 -t "$s" -C "$cc" -P "$BOND_P" -J ${BOND_KEEP:+-i 0.5} \
+		ip netns exec "$NS_CLI" iperf3 -c 10.79.0.1 -t "$s" -C "$cc" -P "$BOND_P" -J ${BOND_KEEP:+-i 0.5} \
 			$([ "$dir" = down ] && echo -R) >"$res" 2>"$err" || rc=1
 		[ -n "$BOND_KEEP" ] && mkdir -p "$BOND_KEEP" && cp "$res" "$BOND_KEEP/$c-$v-$dir-$cc-$rep.json"
 	fi
@@ -542,11 +545,11 @@ bond_case() {
 	fi
 	bond_shape "$c" || return 1
 	bond_tunnel || return 1
-	ip netns exec srv iperf3 -s -B 10.79.0.1 -D || return 1
+	ip netns exec "$NS_SRV" iperf3 -s -B 10.79.0.1 -D || return 1
 	case " $BOND_CC " in *" quic "*) bond_quic_server || return 1 ;; esac
 	sleep 1.7 # and the status files hold the handshake: the first before
 	bond_snap "$RUN/snap-before"
-	for rep in $(seq 1 "$BOND_N"); do
+	for rep in $(seq $((BOND_REP0 + 1)) $((BOND_REP0 + BOND_N))); do
 		for dir in $BOND_DIRS; do
 			for cc in $BOND_CC; do
 				bond_run "$c" "$v" "$dir" "$cc" "$rep" "$s" || fail=1
