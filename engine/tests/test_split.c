@@ -765,6 +765,45 @@ static void test_split_spread_stall(void)
 	CHECK_EQ(sp.qleft, 0x2);
 }
 
+/* The rejoin at once happens at most once per link per settle_ms: a second
+ * recovery of the same link within it waits settle_ms (no ping-pong). */
+static void test_split_spread_rejoin_limit(void)
+{
+	struct cg_hlink h[CG_MAX_LINKS];
+	struct cg_spread sp;
+	uint64_t t = 1000000;
+
+	memset(h, 0, sizeof(h));
+	memset(&sp, 0, sizeof(sp));
+	delay(h, 0, 5000000, t);
+	delay(h, 1, 5000000 + 10 * MSUS, t);
+	cg_split_spread_eval_r(&sp, h, 0x3, SPREAD, SETTLE, t, 1);
+	/* 0 falls 50 ms behind (queue): leaves */
+	delay(h, 0, 5000000 + 60 * MSUS, t);
+	cg_split_spread_eval_r(&sp, h, 0x3, SPREAD, SETTLE, t += 100, 1);
+	CHECK_EQ(sp.left, 0x1);
+	/* 0 drains, 1 queues: recovery, 0 back at once */
+	delay(h, 0, 5000000, t);
+	delay(h, 1, 5000000 + 50 * MSUS, t);
+	cg_split_spread_eval_r(&sp, h, 0x3, SPREAD, SETTLE, t += 100, 1);
+	CHECK(sp.in & 0x1);
+	CHECK(sp.left & 0x2); /* 1 left behind it */
+	/* 0 queues again past 1 within settle_ms: 0 leaves, 1 recovers... */
+	delay(h, 0, 5000000 + 120 * MSUS, t);
+	delay(h, 1, 5000000 + 20 * MSUS, t);
+	cg_split_spread_eval_r(&sp, h, 0x3, SPREAD, SETTLE, t += 100, 1);
+	CHECK(sp.in & 0x2); /* 1's first rejoin: at once */
+	/* ...and 0 recovers again 300 ms after its rejoin: it waits now */
+	delay(h, 0, 5000000, t);
+	delay(h, 1, 5000000 + 50 * MSUS, t);
+	cg_split_spread_eval_r(&sp, h, 0x3, SPREAD, SETTLE, t += 100, 1);
+	CHECK(sp.recover);
+	CHECK(sp.left & 0x1); /* within settle_ms of its last rejoin: no rejoin at once */
+	for (int k = 0; k < 30 && (sp.left & 0x1); k++)
+		cg_split_spread_eval_r(&sp, h, 0x3, SPREAD, SETTLE, t += 100, 1);
+	CHECK(!(sp.left & 0x1)); /* back within about settle_ms */
+}
+
 static void test_split_spread(void)
 {
 	static const uint16_t w1[CG_MAX_LINKS] = { 1, 1, 1, 1 };
@@ -1086,6 +1125,7 @@ void test_split(void)
 	test_split_spread_lead();
 	test_split_spread_kinds();
 	test_split_spread_stall();
+	test_split_spread_rejoin_limit();
 	test_split_sdup();
 	test_split_spread_copy();
 }

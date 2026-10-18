@@ -261,6 +261,7 @@ struct cg_spread {
 	uint32_t owd_prev[CG_MAX_LINKS]; /* each link's delay at the last evaluation */
 	uint16_t have_prev;
 	uint64_t t_prev_ms;
+	uint64_t rejoin_ms[CG_MAX_LINKS]; /* each link's last rejoin at once (0: none) */
 };
 
 #define CG_SPLIT_STALL_NUM 3 /* a delay growing at least 3/5 as fast as time: a stall */
@@ -361,7 +362,15 @@ static inline uint16_t cg_split_spread_eval_r(struct cg_spread *s, const struct 
 				rec = 0;
 		s->n_recover += rec && !s->recover;
 		s->recover = rec;
-		if (rec && rejoin) {
+		/* At most once per link per settle_ms: rejoining at once every
+		 * time, two links traded places every 0.4-0.6 s after a jump (the
+		 * one back took everything and its copies, queued past the
+		 * spread and left, the other was back at once) and the split
+		 * between them reordered: lab, ltespike down, 790 TCP
+		 * retransmissions against 44 for the old empty split, which never
+		 * split (it copied everything or used one link). */
+		if (rec && rejoin && (!s->rejoin_ms[best] || now_ms - s->rejoin_ms[best] >= settle_ms)) {
+			s->rejoin_ms[best] = now_ms;
 			s->left &= (uint16_t)~(1u << best);
 			s->holding &= (uint16_t)~(1u << best);
 			s->qleft &= (uint16_t)~(1u << best);
