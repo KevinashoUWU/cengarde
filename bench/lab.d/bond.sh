@@ -39,6 +39,12 @@
 #               (27 or 34 ms), drawn from BOND_SEED and the repetition like
 #               ltespikerand. The cuts are starlink15's, so the difference
 #               between the two is the drift alone
+#   downstall   not in the default list: 3 links of 40 Mbit/s, 25, 25 and
+#               30 ms; link 2's download direction alone (the server's side)
+#               drops everything for 1.5 s, 3 to 8 s apart at random (seeded
+#               like ltespikerand), its upload untouched: the client's packets
+#               keep the path alive at the VPS while it carries nothing down
+#               (clockwork audit C6)
 #   ltespike    link 1 (50 Mbit/s, 25 ms) jumps by 300 ms for 1 s every 5 s;
 #               link 2 steady (50 Mbit/s, 30 ms)
 #   ltespikerand  not in the default list: ltespike with the jumps 2 to 10 s
@@ -366,6 +372,16 @@ bond_link() {
 	done
 }
 
+# bond_link_down N DELAY_MS RATE_MBIT [QUEUE_MS [LOSS_PCT]]: as bond_link,
+# the download direction of link N only (the server's side).
+bond_link_down() {
+	local n=$1 d=$2 r=$3 q=${4:-100} loss=${5:-0} lim inflight=0
+	bond_netem_ok || return 0
+	lim=$((r * 1000000 * q / 8000 / 1400 + 10))
+	[ "${BOND_NETEM_INFLIGHT:-0}" = 1 ] && inflight=$((r * 1000000 * d / 8000 / 1400))
+	ip netns exec "$NS_SRV" tc qdisc replace dev "s$n" root netem delay "${d}ms" rate "${r}mbit" limit $((lim + inflight)) loss "${loss}%"
+}
+
 # bond_events CASE SECS [REP]: what changes during a run (in the background).
 bond_events() {
 	local c=$1 s=$2 rep=${3:-1} t r2=100 gap
@@ -422,6 +438,19 @@ bond_events() {
 			bond_link 1 25 50
 		done
 		;;
+	downstall)
+		RANDOM=$((${BOND_SEED:-1} * 1000 + rep))
+		t=0
+		while :; do
+			gap=$((3 + RANDOM % 6))
+			t=$((t + gap))
+			[ "$t" -lt "$s" ] || break
+			sleep "$gap"
+			bond_link_down 2 25 40 100 100
+			sleep 1.5
+			bond_link_down 2 25 40
+		done
+		;;
 	spikeloss)
 		for t in $(seq 2 2 "$s"); do
 			sleep 1.5
@@ -441,6 +470,7 @@ bond_shape() {
 	reorder50) bond_link 1 20 50 && bond_link 2 70 50 ;;
 	reorder150) bond_link 1 20 50 && bond_link 2 170 50 ;;
 	linkdeath) bond_link 1 25 40 && bond_link 2 25 40 && bond_link 3 25 40 ;;
+	downstall) bond_link 1 25 40 && bond_link 2 25 40 && bond_link 3 30 40 ;;
 	starlink15 | starlink15ramp) bond_link 1 25 50 && bond_link 2 20 100 ;;
 	starlink15sw) bond_link 1 25 100 && bond_link 2 20 50 ;;
 	ltespike | ltespikerand) bond_link 1 25 50 && bond_link 2 30 50 ;;
@@ -454,7 +484,7 @@ bond_shape() {
 
 bond_nlinks() {
 	case $1 in
-	het | linkdeath | bloat | lossy) echo 3 ;;
+	het | linkdeath | downstall | bloat | lossy) echo 3 ;;
 	*) echo 2 ;;
 	esac
 }
@@ -605,7 +635,7 @@ bond_plan() {
 	for w in ${BOND_CC:-cubic bbr quic}; do ccs=$((ccs + 1)); done
 	for c in $BOND_CASES; do
 		case $c in
-		equal | het | reorder50 | reorder150 | linkdeath | starlink15 | starlink15sw | starlink15ramp | ltespike | ltespikerand | deepq | bloat | lossy | spikeloss) ;;
+		equal | het | reorder50 | reorder150 | linkdeath | downstall | starlink15 | starlink15sw | starlink15ramp | ltespike | ltespikerand | deepq | bloat | lossy | spikeloss) ;;
 		*)
 			echo "bond: unknown case $c"
 			return 1
