@@ -611,6 +611,121 @@ static void delay(struct cg_hlink *h, unsigned link, uint32_t owd, uint64_t now_
 
 /* Guard G4 (cg_split_spread_eval): only links within split_spread_ms of the
  * fastest share the split; the others carry only the duplicated packets. */
+/* G4 never empties the split: a link that left and became the fastest
+ * waits settle_ms to come back, and the links in are measured behind the
+ * fastest of them, not behind it (they all left with it, and every packet
+ * went on every link as the network filled); with every fresh link out,
+ * the fastest comes back at once. */
+static void test_split_spread_lead(void)
+{
+	struct cg_hlink h[CG_MAX_LINKS];
+	struct cg_spread sp;
+	uint64_t t = 1000000;
+
+	memset(h, 0, sizeof(h));
+	memset(&sp, 0, sizeof(sp));
+	delay(h, 0, 5000000, t);
+	delay(h, 1, 5000000 + 10 * MSUS, t);
+	delay(h, 2, 5000000 + 50 * MSUS, t); /* 50 ms behind: leaves */
+	cg_split_spread_eval(&sp, h, 0x7, SPREAD, SETTLE, t);
+	CHECK_EQ(sp.left, 0x4);
+	CHECK_EQ(sp.in, 0x3);
+	CHECK(!sp.recover);
+	/* 2 is now 40 ms ahead of 0 (its queue drained, theirs filled): stress */
+	delay(h, 2, 5000000 - 40 * MSUS, t);
+	for (int k = 0; k < 20; k++) { /* 2 s: the wait starts at the first */
+		cg_split_spread_eval(&sp, h, 0x7, SPREAD, SETTLE, t += 100);
+		CHECK(sp.recover);
+		CHECK_EQ(sp.in, 0x3); /* 0 and 1 stay; 2 holds */
+		CHECK(sp.in != 0);
+	}
+	CHECK_EQ(cg_split_spread_eval(&sp, h, 0x7, SPREAD, SETTLE, t += 100), 0x4);
+	CHECK_EQ(sp.in, 0x7); /* 2 back after settle */
+	/* now 0 and 1 are 40 and 50 ms behind the fastest link in: they leave */
+	cg_split_spread_eval(&sp, h, 0x7, SPREAD, SETTLE, t += 100);
+	CHECK_EQ(sp.in, 0x4);
+	CHECK_EQ(sp.left, 0x3);
+	CHECK(!sp.recover); /* the fastest is in again */
+	/* 2 loses its delay (not fresh) and 0, 1 are out: the fastest of them is
+	 * taken in at once, the split is never empty */
+	h[2].fresh_until_ms = t;
+	cg_split_spread_eval(&sp, h, 0x7, SPREAD, SETTLE, t += 100);
+	CHECK_EQ(sp.in, 0x1);
+	CHECK_EQ(sp.left, 0x2);
+}
+
+/* cg_sdup: copies only under stress, only on its budget (pct % of the
+ * split bytes), never with pct 0 or one link. */
+static void test_split_sdup(void)
+{
+	struct cg_sdup b;
+	int n = 0;
+
+	memset(&b, 0, sizeof(b));
+	for (int k = 0; k < 100; k++) /* no stress: no copies, the budget grows */
+		CHECK(!cg_sdup(&b, 0, 1000, 4, 50));
+	CHECK_EQ(b.tokens, 50000);
+	for (int k = 0; k < 1000; k++) /* stress, 4 links: 3000 bytes a copy, 500 earned a packet */
+		n += cg_sdup(&b, 1, 1000, 4, 50);
+	/* 50000 saved + 1000 x 500 earned over 3000 a copy: about 183 */
+	CHECK(n >= 180 && n <= 186);
+	CHECK_EQ(b.pkts, (uint64_t)n);
+	CHECK_EQ(b.bytes, (uint64_t)n * 3000);
+	CHECK(b.bytes <= 50000 + 1000 * 500);
+	CHECK(!cg_sdup(&b, 1, 1000, 4, 0)); /* off */
+	memset(&b, 0, sizeof(b));
+	for (int k = 0; k < 100; k++)
+		CHECK(!cg_sdup(&b, 1, 1000, 1, 400)); /* one link: nothing to copy to */
+	for (int k = 0; k < 100000; k++)
+		cg_sdup(&b, 0, 1500, 4, 400);
+	CHECK_EQ(b.tokens, CG_SDUP_CAP); /* capped */
+}
+
+/* The two kinds of G4 stress, told apart: a link that was in and left
+ * (its queue grew) arms the copies (stress, qleft) until it comes back; a
+ * link slow by its base delay, never in, does not. A recovery (the fastest
+ * link is one that left) with rejoin brings it back at once. */
+static void test_split_spread_kinds(void)
+{
+	struct cg_hlink h[CG_MAX_LINKS];
+	struct cg_spread sp;
+	uint64_t t = 1000000;
+
+	memset(h, 0, sizeof(h));
+	memset(&sp, 0, sizeof(sp));
+	delay(h, 0, 5000000, t);
+	delay(h, 1, 5000000 + 10 * MSUS, t);
+	delay(h, 2, 5000000 + 80 * MSUS, t); /* slow by base delay: never in */
+	cg_split_spread_eval_r(&sp, h, 0x7, SPREAD, SETTLE, t, 1);
+	CHECK_EQ(sp.in, 0x3);
+	CHECK_EQ(sp.left, 0x4);
+	CHECK(!sp.stress);
+	CHECK_EQ(sp.qleft, 0);
+	/* 1's queue grows: it leaves, having been in -> copies */
+	delay(h, 1, 5000000 + 60 * MSUS, t);
+	cg_split_spread_eval_r(&sp, h, 0x7, SPREAD, SETTLE, t += 100, 1);
+	CHECK_EQ(sp.in, 0x1);
+	CHECK_EQ(sp.qleft, 0x2);
+	CHECK(sp.stress);
+	CHECK_EQ(sp.n_qleave, 1);
+	/* still out a while later: still stress */
+	cg_split_spread_eval_r(&sp, h, 0x7, SPREAD, SETTLE, t += 100, 1);
+	CHECK(sp.stress);
+	/* its queue drains and it becomes the fastest while 0 queues: a
+	 * recovery, and with rejoin it is back at once, stress over */
+	delay(h, 1, 5000000 - 10 * MSUS, t);
+	delay(h, 0, 5000000 + 40 * MSUS, t);
+	cg_split_spread_eval_r(&sp, h, 0x7, SPREAD, SETTLE, t += 100, 1);
+	CHECK(sp.recover);
+	CHECK_EQ(sp.n_recover, 1);
+	CHECK(sp.in & 0x2);      /* back without settle_ms */
+	CHECK(!(sp.qleft & 0x2));
+	/* 0 was in and is now 50 ms behind 1: it left for its queue */
+	CHECK(sp.left & 0x1);
+	CHECK(sp.stress);
+	/* without rejoin the fastest waits settle_ms (test_split_spread_lead) */
+}
+
 static void test_split_spread(void)
 {
 	static const uint16_t w1[CG_MAX_LINKS] = { 1, 1, 1, 1 };
@@ -929,5 +1044,8 @@ void test_split(void)
 	test_split_modes();
 	test_split_tail();
 	test_split_spread();
+	test_split_spread_lead();
+	test_split_spread_kinds();
+	test_split_sdup();
 	test_split_spread_copy();
 }

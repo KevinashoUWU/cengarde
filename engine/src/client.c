@@ -185,6 +185,7 @@ struct client {
 	uint16_t lw[CG_MAX_LINKS]; /* the [link] weights of the links in use (split = on), 1 without a section */
 	uint16_t dup0;             /* of those, the weight-0 links: they carry every packet */
 	struct cg_spread spread;   /* guard G4: the links of similar delay that share the split (split.h) */
+	struct cg_sdup sdup;       /* copies under G4's stress, on a budget */
 	struct cg_gov gov;         /* the upload's weights from each link's queue (govern.h), with governor */
 	uint16_t gw[CG_MAX_LINKS]; /* what it set at the last tick */
 	int peer_bond;             /* the newest probe reply had a bonding tail (proto.h) */
@@ -1164,6 +1165,7 @@ static void wg_read(struct client *c)
 		for (int i = 0; i < n; i++) {
 			size_t len = c->in.msg[i].msg_len;
 			uint8_t flags = 0;
+			int stress;
 
 			if (!len)
 				continue;
@@ -1183,8 +1185,11 @@ static void wg_read(struct client *c)
 				c->wg_peer = c->in.from[i];
 				c->have_peer = 1;
 			}
+			/* Under G4's stress, on its budget: a copy on every carrier. */
+			stress = split && cg_sdup(&c->sdup, c->spread.stress, (uint32_t)len,
+						  (unsigned)__builtin_popcount(carry), c->cfg->split_stress_dup);
 			c->pick[m] = (int8_t)(split ? cg_split_pick_eta(&c->sp, c->cfg->split_eta ? &c->eta : NULL, now_us,
-									k.carriers, k.eligible, k.dup, w,
+									k.carriers, stress ? 0 : k.eligible, k.dup, w,
 									c->native ? CG_WGS_DATA : c->in.buf[i][0],
 									(uint32_t)len, c->cfg->split_small, &flags)
 						    : -1);
@@ -1895,8 +1900,8 @@ static void spread_tick(struct client *c, uint16_t present, uint16_t live, uint6
 	carry = cg_health_carriers(c->uh, CG_MAX_LINKS, present, live);
 	split_weights(c, &dup0);
 	cand = (uint16_t)(split_eligible(c, live, carry, now_ms) & ~dup0);
-	changed = cg_split_spread_eval(&c->spread, c->uh, cand, c->cfg->split_spread_ms * 1000, c->cfg->mute_settle_ms,
-				       now_ms);
+	changed = cg_split_spread_eval_r(&c->spread, c->uh, cand, c->cfg->split_spread_ms * 1000, c->cfg->mute_settle_ms,
+					 now_ms, c->cfg->split_stress_rejoin);
 	for (int i = 0; changed; i++, changed >>= 1) {
 		const char *name = c->link[i].ifname;
 		int32_t ms = c->spread.behind_us[i] / 1000;
@@ -2123,6 +2128,16 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 	cg_json_u64(j, "split", c->up_split);
 	cg_json_str(j, "split_state", split_state(c, now_ms));
 	cg_json_u64(j, "split_spread_ms", c->cfg->split_spread_ms);
+	/* Copies under G4's stress (cg_sdup): the budget, now, and spent. */
+	cg_json_obj(j, "stress_dup");
+	cg_json_u64(j, "pct", c->cfg->split_stress_dup);
+	cg_json_bool(j, "stress", c->spread.stress);
+	cg_json_bool(j, "recover", c->spread.recover);
+	cg_json_u64(j, "queue_leaves", c->spread.n_qleave);
+	cg_json_u64(j, "recoveries", c->spread.n_recover);
+	cg_json_u64(j, "packets", c->sdup.pkts);
+	cg_json_u64(j, "bytes", c->sdup.bytes);
+	cg_json_end(j, '}');
 	cg_json_bool(j, "split_spread_copy", c->cfg->split_spread_copy);
 	cg_json_bool(j, "governor", c->cfg->governor);
 	cg_json_bool(j, "capacity_weights", c->cfg->capacity_weights);
