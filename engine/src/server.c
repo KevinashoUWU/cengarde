@@ -1935,6 +1935,7 @@ static void spread_tick(struct server *s, struct session *S, const char *tag, ui
 		cg_dec_edge(&S->dec, &S->dec_rfull, cg_resc_low(&S->resc_b), now_ms, CG_DEC_NOLINK,
 			    CG_DEC_RESCUE_FULL_ON, CG_DEC_RESCUE_FULL_OFF, (int64_t)S->resc_b.credit);
 	cg_decrec_g4_before(&S->spread, before);
+	S->spread.dwell_ms = s->cfg->split_dwell_ms;
 	changed = cg_split_spread_eval_r(&S->spread, S->dh, (uint16_t)(d.elig & ~d.dup0), s->cfg->split_spread_ms * 1000,
 					 s->cfg->mute_settle_ms, now_ms, s->cfg->split_stress_rejoin);
 	cg_decrec_g4(&S->dec, &S->spread, changed, before, &S->dec_stress, &S->dec_recover, now_ms);
@@ -1969,7 +1970,7 @@ static void gov_tick(struct server *s, struct session *S, uint64_t now_ms)
 		return;
 	d = down_paths(s, S, now_ms);
 	cg_decrec_gov_before(&S->gov, w0);
-	crossed = cg_gov_tick(&S->gov, S->dh, (uint16_t)(d.elig & ~d.dup0),
+	crossed = cg_gov_tick(&S->gov, S->dh, (uint16_t)(d.elig & ~d.dup0 & ~S->spread.left), /* audit C8 */
 			      d.split && S->last_down_ms && now_ms - S->last_down_ms < 1000, now_ms, &gc);
 	cg_decrec_gov(&S->dec, &S->gov, crossed, w0, now_ms);
 	cg_gov_weights(&S->gov, d.dup0, S->gw);

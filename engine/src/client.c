@@ -1934,6 +1934,7 @@ static void spread_tick(struct client *c, uint16_t present, uint16_t live, uint6
 		cg_dec_edge(&c->dec, &c->dec_rfull, cg_resc_low(&c->resc_b), now_ms, CG_DEC_NOLINK,
 			    CG_DEC_RESCUE_FULL_ON, CG_DEC_RESCUE_FULL_OFF, (int64_t)c->resc_b.credit);
 	cg_decrec_g4_before(&c->spread, before);
+	c->spread.dwell_ms = c->cfg->split_dwell_ms;
 	changed = cg_split_spread_eval_r(&c->spread, c->uh, cand, c->cfg->split_spread_ms * 1000, c->cfg->mute_settle_ms,
 					 now_ms, c->cfg->split_stress_rejoin);
 	cg_decrec_g4(&c->dec, &c->spread, changed, before, &c->dec_stress, &c->dec_recover, now_ms);
@@ -1965,7 +1966,9 @@ static void gov_tick(struct client *c, uint16_t present, uint16_t live, uint64_t
 		return;
 	carry = cg_health_carriers(c->uh, CG_MAX_LINKS, present, live);
 	split_weights(c, &dup0);
-	cand = (uint16_t)(split_eligible(c, live, carry, now_ms) & ~dup0);
+	/* not the links G4 has out: raising their weight while out made them
+	 * leave again as soon as they came back (audit C8) */
+	cand = (uint16_t)(split_eligible(c, live, carry, now_ms) & ~dup0 & ~c->spread.left);
 	active = split_active(c) && c->last_traffic_ms && now_ms - c->last_traffic_ms < 1000;
 	cg_decrec_gov_before(&c->gov, w0);
 	cg_decrec_gov(&c->dec, &c->gov, cg_gov_tick(&c->gov, c->uh, cand, active, now_ms, &gc), w0, now_ms);

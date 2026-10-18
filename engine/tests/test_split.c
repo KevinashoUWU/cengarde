@@ -726,6 +726,38 @@ static void test_split_spread_kinds(void)
 	/* without rejoin the fastest waits settle_ms (test_split_spread_lead) */
 }
 
+/* Audit C3: with dwell_ms, a link back by a recovery stays in that long
+ * while within twice the spread; beyond it, or later, it leaves. */
+static void test_split_dwell(void)
+{
+	struct cg_hlink h[CG_MAX_LINKS];
+	struct cg_spread sp;
+	uint64_t t = 1000000;
+
+	memset(h, 0, sizeof(h));
+	memset(&sp, 0, sizeof(sp));
+	sp.dwell_ms = 500;
+	delay(h, 0, 5000000, t);
+	delay(h, 1, 5000000 + 10 * MSUS, t);
+	cg_split_spread_eval_r(&sp, h, 0x3, SPREAD, SETTLE, t, 1);
+	delay(h, 1, 5000000 + 60 * MSUS, t); /* 1 leaves for its queue */
+	cg_split_spread_eval_r(&sp, h, 0x3, SPREAD, SETTLE, t += 100, 1);
+	CHECK(sp.left & 0x2);
+	delay(h, 1, 5000000 - 10 * MSUS, t); /* 1 drains, 0 queues: 1 back */
+	delay(h, 0, 5000000 + 40 * MSUS, t);
+	cg_split_spread_eval_r(&sp, h, 0x3, SPREAD, SETTLE, t += 100, 1);
+	CHECK(sp.in & 0x2);
+	/* 0 drains, 1 is now 40 ms behind (over the spread, under twice it):
+	 * it stays in while it dwells */
+	delay(h, 0, 5000000 - 50 * MSUS, t);
+	cg_split_spread_eval_r(&sp, h, 0x3, SPREAD, SETTLE, t += 100, 1);
+	CHECK(sp.in & 0x2);
+	CHECK(!(sp.left & 0x2));
+	/* past the dwell: it leaves */
+	cg_split_spread_eval_r(&sp, h, 0x3, SPREAD, SETTLE, t += 500, 1);
+	CHECK(sp.left & 0x2);
+}
+
 /* A link that leaves in a stall (its delay grows as fast as time, or
  * jumps) arms no copies; one whose queue grows slower than time does. */
 static void test_split_spread_stall(void)
@@ -1122,6 +1154,7 @@ void test_split(void)
 	test_split_spread();
 	test_split_spread_lead();
 	test_split_spread_kinds();
+	test_split_dwell();
 	test_split_spread_stall();
 	test_split_spread_base();
 	test_split_sdup();
