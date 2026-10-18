@@ -452,6 +452,7 @@ def main(argv=None):
         print("labq: %d jobs (%d done), about %.0f min on %d lab(s)" % (len(todo), len(all_jobs) - len(todo),
               secs / 60 / max(labs, 1), labs))
         return 0
+    a.cache = os.path.abspath(a.cache)
     os.makedirs(a.cache, exist_ok=True)
     for arm in plan["arms"]:
         arm["path"] = build(arm, a.cache, os.cpu_count() or 4)
