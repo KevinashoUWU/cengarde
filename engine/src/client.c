@@ -2910,7 +2910,7 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 		link_threads_json(c, l, j);
 		cg_json_u64(j, "path_mtu", l->fd >= 0 ? l->path_mtu : 0);
 		cg_json_ms(j, "rtt_ms", l->srtt8_us / 8);
-		/* the raw probe replies, oldest first: [unix ms, up us, down us]
+		/* the raw probe replies, oldest first: [age ms, up us, down us]
 		 * (up and down carry the clocks' offset: their changes count) */
 		cg_json_arr(j, "probes");
 		for (int r = 0; r < CG_PROBE_RAW; r++) {
@@ -2919,7 +2919,7 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 			if (!l->raw_ms[x])
 				continue;
 			cg_json_arr(j, NULL);
-			cg_json_u64(j, NULL, l->raw_ms[x]);
+			cg_json_u64(j, NULL, now_ms - l->raw_ms[x]);
 			cg_json_u64(j, NULL, l->raw_up[x]);
 			cg_json_u64(j, NULL, l->raw_down[x]);
 			cg_json_end(j, ']');
