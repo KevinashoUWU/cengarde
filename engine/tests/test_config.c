@@ -446,6 +446,14 @@ static void test_config_bonding(void)
 	CHECK(c.capacity_weights == 0 && c.split_eta == 0 && c.pacing == 0);
 	CHECK(warn[0] == '\0');
 	cg_config_free(&c);
+	/* redund_pace_ms: off by default, 0-2000 */
+	CHECK_EQ(cg_config_parse(&c, CLIENT, err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(c.redund_pace_ms, 0);
+	cg_config_free(&c);
+	CHECK_EQ(cg_config_parse(&c, CLIENT "redund_pace_ms = 30\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(c.redund_pace_ms, 30);
+	cg_config_free(&c);
+	CHECK_EQ(cg_config_parse(&c, CLIENT "redund_pace_ms = 2001\n", err, sizeof(err), warn, sizeof(warn)), -1);
 	CHECK(!strcmp(cg_split_name(CG_SPLIT_OFF), "off") && !strcmp(cg_split_name(CG_SPLIT_ON), "on") &&
 	      !strcmp(cg_split_name(CG_SPLIT_CLIENT), "client") && !strcmp(cg_split_name(CG_SPLIT_FORCE), "force"));
 

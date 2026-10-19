@@ -122,4 +122,53 @@ static inline int cg_eta_pick(struct cg_eta *e, uint16_t set, uint32_t len, uint
 	return best;
 }
 
+#define CG_PACE_SMALL 300 /* bytes: a packet this small (an ACK, a handshake) goes on every carrier */
+
+/* Copies (redund_pace_ms; per link, linkmodel.h's pace_ms and
+ * pace_peers_ms): which of the links of set get a copy of a packet of len
+ * bytes sent at now_us that goes to every carrier. The link where it arrives
+ * first always does; another with a window (window_us[i], not 0) only if its
+ * copy would arrive within that of the first one: a copy behind a queue that
+ * grows without end (80 Mbit/s of copies into a 25 Mbit/s cellular link)
+ * arrives after the receiver gave its gap up and patches nothing, and it
+ * fills the queue the next copies wait behind (field, nostalgica,
+ * 2026-10-19: Entel's copies 72 % late, WOM's all). A link without a
+ * window, or without a rate, gets every copy. At a low load every queue is
+ * short and every link gets every copy, as without it. */
+static inline uint16_t cg_eta_copies(struct cg_eta *e, uint16_t set, uint32_t len, uint64_t now_us,
+				     const uint32_t window_us[CG_MAX_LINKS])
+{
+	uint64_t at[CG_MAX_LINKS], best = UINT64_MAX, bits = (uint64_t)len * 8 * 1000000;
+	uint16_t out = 0;
+	int b = -1;
+
+	for (unsigned i = 0; i < CG_MAX_LINKS; i++) {
+		struct cg_eta_link *l = &e->l[i];
+
+		if (!(set >> i & 1))
+			continue;
+		if (!l->bps) {
+			out |= (uint16_t)(1u << i);
+			continue;
+		}
+		cg_eta_drain(l, now_us);
+		at[i] = l->base_us + (l->backlog + bits) / l->bps;
+		if (at[i] < best) {
+			best = at[i];
+			b = (int)i;
+		}
+	}
+	for (unsigned i = 0; b >= 0 && i < CG_MAX_LINKS; i++) {
+		struct cg_eta_link *l = &e->l[i];
+
+		if (!(set >> i & 1) || !l->bps)
+			continue;
+		if ((int)i == b || !window_us[i] || at[i] - best <= window_us[i]) {
+			l->backlog += bits;
+			out |= (uint16_t)(1u << i);
+		}
+	}
+	return out;
+}
+
 #endif

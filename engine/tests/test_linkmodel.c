@@ -13,7 +13,8 @@
 static int same(const struct cg_link_model *a, const struct cg_link_model *b)
 {
 	return a->lossy_noprobe == b->lossy_noprobe && a->lossy_hold == b->lossy_hold &&
-	       a->hold_over_ms == b->hold_over_ms && a->loss_pct == b->loss_pct;
+	       a->hold_over_ms == b->hold_over_ms && a->loss_pct == b->loss_pct && a->pace_ms == b->pace_ms &&
+	       a->pace_peers_ms == b->pace_peers_ms;
 }
 
 /* The table: one entry per type, in wire order, with a name each; auto is
@@ -206,6 +207,91 @@ static void test_linkmodel_probe(void)
 	}
 }
 
+/* pace_peers_ms: the starlink preset paces the copies to the other links of
+ * its session, not its own; every link takes the smaller window set (its
+ * own pace_ms or a peer's pace_peers_ms); a session without one is as
+ * before (no window anywhere). */
+static void test_linkmodel_pace_windows(void)
+{
+	struct cg_link_model ms[CG_MAX_LINKS];
+	uint8_t type[CG_MAX_LINKS] = { 0 };
+	uint32_t w[CG_MAX_LINKS];
+	const struct cg_link_model st = cg_link_presets[CG_LTYPE_STARLINK].m;
+
+	CHECK(st.pace_ms == 0 && st.pace_peers_ms == CG_STARLINK_PACE_PEERS_MS);
+	CHECK_EQ(CG_STARLINK_PACE_PEERS_MS, 60);
+	for (unsigned t = 0; t < CG_LTYPE_COUNT; t++)
+		if (t != CG_LTYPE_STARLINK)
+			CHECK(cg_link_presets[t].m.pace_ms == 0 && cg_link_presets[t].m.pace_peers_ms == 0);
+	/* every link auto, or cellular: no window, the engine as before */
+	CHECK(!cg_link_pace_types(type, CG_MAX_LINKS, 0, w));
+	type[0] = type[1] = CG_LTYPE_CELLULAR;
+	CHECK(!cg_link_pace_types(type, CG_MAX_LINKS, 0, w));
+	for (unsigned i = 0; i < CG_MAX_LINKS; i++)
+		CHECK_EQ(w[i], 0);
+	/* a starlink link: the others paced at 60 ms, not itself */
+	type[2] = CG_LTYPE_STARLINK;
+	CHECK(cg_link_pace_types(type, CG_MAX_LINKS, 0, w));
+	CHECK(w[0] == 60 * MS && w[1] == 60 * MS && w[2] == 0 && w[3] == 60 * MS);
+	/* the global redund_pace_ms is every link's own, the smaller one wins */
+	CHECK(cg_link_pace_types(type, CG_MAX_LINKS, 30, w));
+	CHECK(w[0] == 30 * MS && w[2] == 30 * MS);
+	CHECK(cg_link_pace_types(type, CG_MAX_LINKS, 100, w));
+	CHECK(w[0] == 60 * MS && w[2] == 100 * MS);
+	type[2] = CG_LTYPE_AUTO;
+	CHECK(cg_link_pace_types(type, CG_MAX_LINKS, 100, w));
+	CHECK(w[0] == 100 * MS && w[2] == 100 * MS);
+	/* by models: the other links take it, the smaller one set */
+	memset(ms, 0, sizeof(ms));
+	ms[0].pace_peers_ms = 30;
+	ms[2].pace_ms = 50;
+	CHECK(cg_link_pace_windows(ms, 3, w));
+	CHECK(w[0] == 0 && w[1] == 30 * MS && w[2] == 30 * MS);
+	ms[2].pace_ms = 20;
+	cg_link_pace_windows(ms, 3, w);
+	CHECK(w[2] == 20 * MS);
+	ms[0].pace_peers_ms = 0; /* none: only link 2's own */
+	CHECK(cg_link_pace_windows(ms, 3, w));
+	CHECK(w[0] == 0 && w[1] == 0 && w[2] == 20 * MS);
+	ms[2].pace_ms = 0;
+	CHECK(!cg_link_pace_windows(ms, 3, w));
+}
+
+/* cg_eta_copies' windows: the fastest link always gets the copy; a slow one
+ * with a window only while its copy arrives within it; one without a window
+ * or without a rate, always. */
+static void test_linkmodel_copies(void)
+{
+	struct cg_eta e;
+	uint32_t w[CG_MAX_LINKS] = { 0, 30 * MS };
+	int n1 = 0;
+
+	cg_eta_reset(&e);
+	cg_eta_set(&e, 0, 80000000, 0, 0, 0);      /* 80 Mbit/s: 1000 B in 0.1 ms */
+	cg_eta_set(&e, 1, 8000000, 20 * MS, 0, 0); /* 8 Mbit/s, 20 ms further: 1 ms each */
+	/* at a low load (1 ms apart) both get every copy */
+	for (int i = 0; i < 10; i++)
+		CHECK_EQ(cg_eta_copies(&e, 0x3, 1000, (uint64_t)i * MS, w), 0x3);
+	/* 1000 at once: link 1 takes copies only while they arrive in the window */
+	for (int i = 0; i < 1000; i++) {
+		uint16_t m = cg_eta_copies(&e, 0x3, 1000, 20 * MS, w);
+
+		CHECK(m & 0x1);
+		n1 += m >> 1 & 1;
+	}
+	/* within 30 ms of the fast copy, which queues 0.1 ms each: 20 + n1 <= 30 + 0.1 k */
+	CHECK(n1 >= 100 && n1 <= 115);
+	/* without a window, link 1 gets every copy however late */
+	w[1] = 0;
+	CHECK_EQ(cg_eta_copies(&e, 0x3, 1000, 20 * MS, w), 0x3);
+	/* a link without a rate gets every copy */
+	w[1] = 30 * MS;
+	cg_eta_set(&e, 2, 0, 0, 0, 20 * MS);
+	CHECK(cg_eta_copies(&e, 0x7, 1000, 20 * MS, w) & 0x4);
+	/* a link outside the set gets none */
+	CHECK_EQ(cg_eta_copies(&e, 0x1, 1000, 20 * MS, w), 0x1);
+}
+
 void test_linkmodel(void)
 {
 	test_linkmodel_over();
@@ -213,4 +299,6 @@ void test_linkmodel(void)
 	test_linkmodel_table();
 	test_linkmodel_global();
 	test_linkmodel_eta_mask();
+	test_linkmodel_pace_windows();
+	test_linkmodel_copies();
 }

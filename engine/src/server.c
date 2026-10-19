@@ -178,6 +178,9 @@ struct session {
 	uint16_t cw[CG_MAX_LINKS];            /* the weights from them, with capacity_weights */
 	struct cg_cap_total ctot;             /* their total, for a shaper on the router's interface */
 	struct cg_eta eta;                    /* the split by expected arrival, with split_eta */
+	struct cg_eta pace;                   /* the copies' expected arrivals, with a path's copy window */
+	uint32_t pace_w[CG_MAX_LINKS];        /* each path's copy window (cg_link_pace_windows), us, 0: every copy */
+	uint8_t pace_any;                     /* a path with one */
 	struct cg_tickle tk;                  /* with split_eta, an idle link tickled (tickle.h) */
 	struct cg_replay replay; /* DATA up; its lost: lost on every link (lost_all) */
 	struct cg_replay ctl;    /* probes */
@@ -344,6 +347,7 @@ struct server {
 	uint8_t fec_out[CG_BATCH][CG_FEC_PLEN_MAX];
 	int fec_nout;
 	int8_t pick[CG_BATCH]; /* per packet of a download batch: its one path (split), or -1 (every carrier) */
+	uint16_t cmask[CG_BATCH]; /* with a copy window: the carriers a packet of every carrier goes on */
 	uint8_t reply[CG_BATCH][CG_HDR_LEN + CG_PROBE_BOND_LEN];
 	struct sockaddr_storage reply_to[CG_BATCH];
 	union cg_ctl_tx reply_ctl[CG_BATCH];
@@ -1859,6 +1863,18 @@ static void down_send(struct server *s, struct session *S, int m, uint64_t now_m
 	for (int p = 0; p < CG_MAX_LINKS; p++)
 		if ((carry >> p & 1) || ((live >> p & 1) && s->cfg->mute_trickle))
 			order[no++] = p;
+	/* With a copy window (redund_pace_ms, a starlink path's pace_peers_ms)
+	 * an entry of every carrier goes only on the carriers where it arrives
+	 * in time (cg_eta_copies); a small one, everywhere. */
+	if (S->pace_any) {
+		uint64_t now_us = cg_now_us();
+
+		for (int j = 0; j < m; j++)
+			s->cmask[j] = s->pick[j] >= 0 || s->oiov[j][1].iov_len < CG_PACE_SMALL
+					      ? 0xffff
+					      : cg_eta_copies(&S->pace, carry, (uint32_t)s->oiov[j][1].iov_len, now_us,
+							      S->pace_w);
+	}
 	for (int o = 0; o < no; o++) {
 		int p = order[(o + S->rot) % (unsigned)no];
 		struct path *P = &S->path[p];
@@ -1866,7 +1882,8 @@ static void down_send(struct server *s, struct session *S, int m, uint64_t now_m
 
 		if (carry >> p & 1) {
 			for (int j = 0; j < m; j++)
-				if (cg_split_dst(s->pick[j], carry, d->k.dup) >> p & 1)
+				if ((cg_split_dst(s->pick[j], carry, d->k.dup) >> p & 1) &&
+				    (!S->pace_any || (s->cmask[j] >> p & 1)))
 					sel[k++] = j;
 		} else if ((live >> p & 1) && s->cfg->mute_trickle) {
 			for (int j = 0; j < m; j++)
@@ -2125,6 +2142,12 @@ static void cap_tick(struct server *s, struct session *S, uint16_t live, uint64_
 		cg_cap_tickle(S->cap, live, now_ms, &due, tb, tc);
 		cg_tickle_tick(&S->tk, now_ms * 1000, (uint64_t)s->cfg->split_tickle_ms * 1000, due, tb, tc);
 	}
+	/* The copies' windows (redund_pace_ms, a starlink path's pace_peers_ms)
+	 * and, with one, their expected arrivals per path. */
+	S->pace_any = (uint8_t)cg_link_pace_types(type, CG_MAX_LINKS, s->cfg->redund_pace_ms, S->pace_w);
+	if (S->pace_any)
+		cg_cap_eta(&S->pace, S->cap, live, cc.sat_us / 2, s->cfg->split_stale_max, cg_tickle_backoff(&S->tk), 0,
+			   NULL, now_ms * 1000);
 }
 
 /* SO_MAX_PACING_RATE on a lane's socket (pace.h): fq on the way out paces

@@ -69,6 +69,15 @@ struct cg_link_model {
 	/* capacity_loss_pct for this link: loaded and losing more than this
 	 * (%) for CG_CAP_LOSS_N samples, it is full; 0: off. */
 	uint8_t loss_pct;
+	/* redund_pace_ms for this link: a copy goes on it only if it arrives
+	 * within this of the first (eta.h's cg_eta_copies); 0: every copy. */
+	uint16_t pace_ms;
+	/* In a session with a link of this type, every other link paces its
+	 * copies at this (as its pace_ms, the smaller of the two): the copies
+	 * to a deep-queued link next to Starlink arrive in time for its gaps
+	 * (cg_link_pace_windows), and a session without such a link is as
+	 * before. 0: off. */
+	uint16_t pace_peers_ms;
 };
 
 /* starlink's hold_over_ms (story 015, n = 8 against a null control): 40,
@@ -79,6 +88,15 @@ struct cg_link_model {
  * (shallowqdeep). */
 #define CG_STARLINK_OVER_MS 40
 
+/* starlink's pace_peers_ms (story 015, redundancy, n = 16 against a null
+ * control): the copies to the cellular links next to it only while they
+ * arrive within 60 ms of the first. The 1200 B ping's p99 in starsat fell
+ * from ~360 to ~95 ms, with a throughput within 5 % in every Starlink case;
+ * the cost is retransmissions (1.2-4x) where its queue is shallow. Pacing
+ * every cellular link instead (pace_ms) cost 8-18 % in het: hence only next
+ * to a Starlink. */
+#define CG_STARLINK_PACE_PEERS_MS 60
+
 struct cg_link_preset {
 	const char *name;
 	struct cg_link_model m;
@@ -86,14 +104,14 @@ struct cg_link_preset {
 
 /* The presets, by type. Only what measured as a win goes in (story 015,
  * n >= 8 against a null control); the rest keep auto's zeros as hooks.
- *                                       noprobe hold over_ms loss_pct */
+ *                          noprobe hold over_ms loss_pct pace_ms pace_peers_ms */
 static const struct cg_link_preset cg_link_presets[CG_LTYPE_COUNT] = {
-	[CG_LTYPE_AUTO] = { "auto", { 0, 0, 0, 0 } },
-	[CG_LTYPE_CELLULAR] = { "cellular", { 0, 0, 0, 0 } }, /* hook: the scheduler, the deep queue, the signal */
-	[CG_LTYPE_STARLINK] = { "starlink", { 1, 1, CG_STARLINK_OVER_MS, 0 } },
-	[CG_LTYPE_FIBER] = { "fiber", { 0, 0, 0, 0 } },       /* hook */
-	[CG_LTYPE_ETHERNET] = { "ethernet", { 0, 0, 0, 0 } }, /* hook */
-	[CG_LTYPE_RADIO] = { "radio", { 0, 0, 0, 0 } },       /* hook */
+	[CG_LTYPE_AUTO] = { "auto", { 0, 0, 0, 0, 0, 0 } },
+	[CG_LTYPE_CELLULAR] = { "cellular", { 0, 0, 0, 0, 0, 0 } }, /* hook: the scheduler, the deep queue, the signal */
+	[CG_LTYPE_STARLINK] = { "starlink", { 1, 1, CG_STARLINK_OVER_MS, 0, 0, CG_STARLINK_PACE_PEERS_MS } },
+	[CG_LTYPE_FIBER] = { "fiber", { 0, 0, 0, 0, 0, 0 } },       /* hook */
+	[CG_LTYPE_ETHERNET] = { "ethernet", { 0, 0, 0, 0, 0, 0 } }, /* hook */
+	[CG_LTYPE_RADIO] = { "radio", { 0, 0, 0, 0, 0, 0 } },       /* hook */
 };
 
 /* A type as read from the wire or a config: past the known ones, auto. */
@@ -129,6 +147,43 @@ static inline struct cg_link_model cg_link_model_of(unsigned type, int g_buffer,
 	if (g_loss_pct)
 		m.loss_pct = (uint8_t)(g_loss_pct > 100 ? 100 : g_loss_pct);
 	return m;
+}
+
+/* Each link's copy window into w_us[0..n) (n <= 16), cg_eta_copies': its
+ * own pace_ms or another link's pace_peers_ms, the smaller one set, in us;
+ * 0: every copy. Returns whether any link has one (redundancy then keeps an
+ * expected arrival per link). Links not in use are auto: they set nothing. */
+static inline int cg_link_pace_windows(const struct cg_link_model *m, unsigned n, uint32_t *w_us)
+{
+	int any = 0;
+
+	n = n > 16 ? 16 : n;
+	for (unsigned i = 0; i < n; i++) {
+		uint32_t v = m[i].pace_ms;
+
+		for (unsigned j = 0; j < n; j++)
+			if (j != i && m[j].pace_peers_ms && (!v || m[j].pace_peers_ms < v))
+				v = m[j].pace_peers_ms;
+		w_us[i] = v * 1000;
+		any |= v != 0;
+	}
+	return any;
+}
+
+/* The copy windows of the links of type[0..n) (n <= 16, at most 16 models),
+ * with the global redund_pace_ms (g_pace_ms, not 0) as every link's pace_ms
+ * over its preset: cg_link_pace_windows. */
+static inline int cg_link_pace_types(const uint8_t *type, unsigned n, uint32_t g_pace_ms, uint32_t *w_us)
+{
+	struct cg_link_model m[16];
+
+	n = n > 16 ? 16 : n;
+	for (unsigned i = 0; i < n; i++) {
+		m[i] = cg_link_presets[cg_link_type_norm(type[i])].m;
+		if (g_pace_ms)
+			m[i].pace_ms = (uint16_t)(g_pace_ms > 65535 ? 65535 : g_pace_ms);
+	}
+	return cg_link_pace_windows(m, n, w_us);
 }
 
 /* What capacity.h's tick takes from a model: whether it tracks the link's

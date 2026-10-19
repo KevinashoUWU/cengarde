@@ -180,6 +180,9 @@ struct client {
 	uint16_t cw[CG_MAX_LINKS];            /* the weights from them, with capacity_weights */
 	struct cg_cap_total ctot;             /* their total, for a shaper on the tunnel (upload) */
 	struct cg_eta eta;                    /* the split by expected arrival, with split_eta */
+	struct cg_eta pace;                   /* the copies' expected arrivals, with a link's copy window */
+	uint32_t pace_w[CG_MAX_LINKS];        /* each link's copy window (cg_link_pace_windows), us, 0: every copy */
+	uint8_t pace_any;                     /* a link with one */
 	struct cg_tickle tk;                  /* with split_eta, an idle link tickled (tickle.h) */
 	struct cg_hcfg hcfg;
 	struct cg_status_writer sw;
@@ -215,6 +218,7 @@ struct client {
 	uint64_t nacks_sent;       /* NACK messages sent, for the rescue */
 	struct cg_split_tail tail; /* which reply that was (split.h) */
 	int8_t pick[CG_BATCH]; /* per packet of an upload batch: its one link (split), or -1 (every carrier) */
+	uint16_t cmask[CG_BATCH]; /* with a copy window: the carriers a packet of every carrier goes on */
 	uint32_t up_max;     /* largest WireGuard datagram since the last path check */
 	uint32_t up_largest; /* the same over the last check period, for the status */
 	uint64_t down_pkts, down_bytes, down_wg_drops, down_no_peer;
@@ -1156,6 +1160,18 @@ static void send_links(struct client *c, int m, uint64_t now_ms, uint16_t live, 
 	 * first wins the race to the server on identical links. */
 	if (n && pumped(c))
 		first = (int)(c->send_first++ % (unsigned)n);
+	/* With a copy window (redund_pace_ms, a starlink link's pace_peers_ms)
+	 * a packet of every carrier goes only on the carriers where it arrives
+	 * in time (cg_eta_copies); a small one, everywhere. */
+	if (c->pace_any) {
+		uint64_t now_us = cg_now_us();
+
+		for (int j = 0; j < m; j++)
+			c->cmask[j] = c->pick[j] >= 0 || c->oiov[j][1].iov_len < CG_PACE_SMALL
+					      ? 0xffff
+					      : cg_eta_copies(&c->pace, carry, (uint32_t)c->oiov[j][1].iov_len, now_us,
+							      c->pace_w);
+	}
 	for (int x0 = 0; x0 < n; x0++) {
 		int i = ids[(first + x0) % n];
 		struct link *l = &c->link[i];
@@ -1163,7 +1179,7 @@ static void send_links(struct client *c, int m, uint64_t now_ms, uint16_t live, 
 
 		if (carry >> i & 1) {
 			for (int j = 0; j < m; j++)
-				if (cg_split_dst(c->pick[j], carry, dup) >> i & 1)
+				if ((cg_split_dst(c->pick[j], carry, dup) >> i & 1) && (!c->pace_any || (c->cmask[j] >> i & 1)))
 					sel[k++] = j;
 		} else if ((live >> i & 1) && c->cfg->mute_trickle) {
 			for (int j = 0; j < m; j++)
@@ -2210,6 +2226,12 @@ static void cap_tick(struct client *c, uint16_t live, uint64_t now_ms)
 		cg_cap_tickle(c->cap, live, now_ms, &due, tb, tc);
 		cg_tickle_tick(&c->tk, now_ms * 1000, (uint64_t)c->cfg->split_tickle_ms * 1000, due, tb, tc);
 	}
+	/* The copies' windows (redund_pace_ms, a starlink link's pace_peers_ms)
+	 * and, with one, their expected arrivals per link. */
+	c->pace_any = (uint8_t)cg_link_pace_types(c->ltype, CG_MAX_LINKS, c->cfg->redund_pace_ms, c->pace_w);
+	if (c->pace_any)
+		cg_cap_eta(&c->pace, c->cap, live, cc.sat_us / 2, c->cfg->split_stale_max, cg_tickle_backoff(&c->tk), 0,
+			   NULL, now_ms * 1000);
 	/* With pacing, each link's socket at about its rate; without, as it
 	 * was set, back to none (a reload turned it off). */
 	for (int i = 0; i < CG_MAX_LINKS; i++) {
