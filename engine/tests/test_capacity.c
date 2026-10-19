@@ -601,8 +601,29 @@ static void test_capacity_loss(void)
 	CHECK(l.cut == CG_CAP_CUT_NONE && l.loss_n == 0);
 }
 
+/* lossy only at the frontier: a link losing 2 % near its best is lossy; one
+ * losing 2 % at a tenth of its best (a misaligned dish) is not. */
+static void test_capacity_lossy_frontier(void)
+{
+	const struct cg_cap_cfg cf = { .window_ms = 10000, .sat_us = 20 * MS, .lossy = 1 };
+	struct cg_cap_link l;
+	uint64_t t = 1000, tx = 0;
+	uint32_t rx = 0;
+
+	cg_cap_reset(&l);
+	loss_feed(&l, &cf, &t, &rx, &tx, 4, 6000, 6000); /* best 96 Mbit/s */
+	loss_feed(&l, &cf, &t, &rx, &tx, 2, 6000, 5880);
+	CHECK(l.lossy);
+	cg_cap_reset(&l);
+	loss_feed(&l, &cf, &t, &rx, &tx, 4, 6000, 6000);
+	t += CG_CAP_LOSSY_MS;
+	loss_feed(&l, &cf, &t, &rx, &tx, 6, 600, 588);
+	CHECK(!l.lossy);
+}
+
 void test_capacity(void)
 {
+	test_capacity_lossy_frontier();
 	test_capacity_loss();
 	test_capacity_short();
 	test_capacity_total();

@@ -408,7 +408,12 @@ static inline unsigned cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint6
 	/* lost over loss_pct of what was sent in this sample (delivered drx
 	 * of dpk), while loaded: at a light load a loss is the radio's, not a
 	 * full link (lossy, spikeloss) */
-	if (dpk >= CG_CAP_SHORT_MIN && (uint64_t)drx * 1000 < dpk * (1000 - CG_CAP_LOSSY_PERMIL))
+	/* lossy: a loss at its frontier, near the best it carried; a link that
+	 * loses at any rate (a misaligned dish, nostalgica 2026-10-19: Starlink's
+	 * upload marked lossy for good, its probing stopped and its capacity down
+	 * to 3 Mbit/s against 30) is not held for it */
+	if (dpk >= CG_CAP_SHORT_MIN && (uint64_t)drx * 1000 < dpk * (1000 - CG_CAP_LOSSY_PERMIL) &&
+	    raw * 2 >= cg_cap_best_bps(l))
 		l->lossy_ms = report_ms;
 	l->lossy = cfg->lossy && l->lossy_ms && report_ms - l->lossy_ms < CG_CAP_LOSSY_MS;
 	l->noprobe = l->lossy && !cfg->lossy_probe;
