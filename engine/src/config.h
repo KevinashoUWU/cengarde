@@ -130,6 +130,9 @@ struct cg_link_cfg {
 	 * and, sent in the probes, down; force splits evenly. 0 makes it carry
 	 * a copy of every packet. An interface with no [link] section has 1. */
 	uint32_t weight;
+	/* Its link model, enum cg_link_type (linkmodel.h): the presets of the
+	 * capacity and split loops for it, sent to the server in the probes. */
+	uint8_t type;
 	int nsrv; /* entries of its "server" as written; 0: the global list */
 	struct cg_srvent srv[CG_MAX_SERVERS];
 	/* The list built from srv and the names' addresses (cg_config_build). */
@@ -224,8 +227,10 @@ struct cg_config {
 	int governor;                 /* the split's weights from each link's queue (govern.h) */
 	int capacity_weights;         /* the split's weights from each link's capacity (capacity.h) */
 	int split_eta;                /* split by expected arrival (eta.h) */
+	int eta_buffer;               /* EXPERIMENT: split_eta holds a link that drops to the highest queue it showed */
 	int pacing;                   /* each link's socket paced at its rate (pace.h) */
 	uint32_t governor_target_ms;  /* the queue a link may hold */
+	uint32_t capacity_loss_pct;   /* EXPERIMENT: a loaded link losing more than this (%) is full (capacity.h); 0: off */
 	uint32_t capacity_sat_ms;     /* the queue that says a link is full (capacity.h); 0 in the file: governor_target_ms */
 	uint32_t rescue_target_ms;    /* the rescue's weight starts falling here, full at 4 x (capacity.h); 0: governor_target_ms */
 	uint32_t governor_window_ms;  /* of each link's minimum delay */

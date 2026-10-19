@@ -44,6 +44,10 @@ GO_REPO=${GO_REPO:-https://github.com/porech/engarde}
 # Extra cengarde settings, "key = value" pairs separated by ";" (global section).
 CLIENT_EXTRA=${CLIENT_EXTRA:-}
 SERVER_EXTRA=${SERVER_EXTRA:-}
+# Each client link's type (story 015, linkmodel.h), in order: "starlink
+# cellular cellular" sets l1 starlink and l2, l3 cellular; empty or "-": none
+# written (auto). bond.sh takes it as BOND_LINK_TYPES.
+LINK_TYPES=${LINK_TYPES:-${BOND_LINK_TYPES:-}}
 KEY=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA= # lab-only shared key
 
 build() {
@@ -91,7 +95,7 @@ setup() {
 	ip netns add "$NS_SRV" || return 1
 	ip -n "$NS_CLI" link set lo up
 	ip -n "$NS_SRV" link set lo up
-	local i excl='"lo"' nveth=$((NLINKS > 3 ? NLINKS : 3))
+	local i t excl='"lo"' nveth=$((NLINKS > 3 ? NLINKS : 3))
 	for i in $(seq 1 "$nveth"); do
 		ip link add "l$i" netns "$NS_CLI" type veth peer name "s$i" netns "$NS_SRV"
 		ip -n "$NS_CLI" addr add "10.0.$i.1/24" dev "l$i"
@@ -134,6 +138,8 @@ EOF
 	for i in $(seq 1 "$nveth"); do
 		printf '[link l%s]\nserver = 10.0.%s.2:59402\nenabled = %s\n' "$i" "$i" \
 			"$([ "$i" -le "$NLINKS" ] && echo yes || echo no)" >>"$RUN/client.conf"
+		t=$(echo "$LINK_TYPES" | awk -v i="$i" '{ print $i }')
+		[ -n "$t" ] && [ "$t" != - ] && echo "type = $t" >>"$RUN/client.conf"
 	done
 	cat >"$RUN/server.conf" <<EOF
 mode = server

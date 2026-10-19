@@ -506,8 +506,81 @@ static void test_capacity_shapes(void)
 	CHECK(maxq_late < 100);
 }
 
+/* capacity_loss_pct: a loaded link that drops instead of queueing (no
+ * queue, 15 % lost) is full at what it delivers after CG_CAP_LOSS_N
+ * samples; off, or at a light load, it is not. */
+static void loss_feed(struct cg_cap_link *l, const struct cg_cap_cfg *cfg, uint64_t *t, uint32_t *rx, uint64_t *tx,
+		      int samples, uint32_t sent, uint32_t delivered)
+{
+	struct cg_hlink h;
+
+	memset(&h, 0, sizeof(h));
+	h.have_owd = 1;
+	h.owd = 30000; /* no queue at all */
+	for (int i = 0; i < samples; i++) {
+		*t += 500;
+		*tx += sent;
+		*rx += delivered;
+		h.fresh_until_ms = *t + 3000;
+		cg_cap_tick(l, *t, *t, *rx, *tx, *tx * 1000, &h, cfg);
+	}
+}
+
+static void test_capacity_loss(void)
+{
+	const struct cg_cap_cfg on = { .window_ms = 10000, .sat_us = 20 * MS, .loss_pct = 5 };
+	struct cg_cap_link l;
+	uint64_t t = 1000, tx = 0;
+	uint32_t rx = 0;
+
+	/* 6000 packets of 1000 B per 500 ms (96 Mbit/s), all delivered */
+	cg_cap_reset(&l);
+	loss_feed(&l, &on, &t, &rx, &tx, 4, 6000, 6000);
+	CHECK(near(cg_cap_bps(&l), 96, 0.02));
+	/* then 15 % lost, no queue: cut after CG_CAP_LOSS_N samples */
+	loss_feed(&l, &on, &t, &rx, &tx, CG_CAP_LOSS_N - 1, 6000, 5100);
+	CHECK(l.cut == CG_CAP_CUT_NONE);
+	loss_feed(&l, &on, &t, &rx, &tx, 1, 6000, 5100);
+	CHECK(l.cut == CG_CAP_CUT_LOSS);
+	CHECK_EQ(l.n_cut_loss, 1);
+	CHECK(cg_cap_bps(&l) <= 82 * MBIT); /* what it delivered, 81.6 */
+	CHECK(l.full_ms == t);             /* fast start waits */
+	/* off: the same loss never cuts */
+	cg_cap_reset(&l);
+	loss_feed(&l, &CFG, &t, &rx, &tx, 4, 6000, 6000);
+	loss_feed(&l, &CFG, &t, &rx, &tx, 6, 6000, 5100);
+	CHECK(l.cut == CG_CAP_CUT_NONE && near(cg_cap_bps(&l), 96, 0.02));
+	/* a light load (a tenth of its capacity) losing 15 %: the radio's, no cut */
+	cg_cap_reset(&l);
+	loss_feed(&l, &on, &t, &rx, &tx, 4, 6000, 6000);
+	loss_feed(&l, &on, &t, &rx, &tx, 6, 600, 510);
+	CHECK(l.cut == CG_CAP_CUT_NONE && l.loss_n == 0);
+}
+
+/* lossy only at the frontier: a link losing 2 % near its best is lossy; one
+ * losing 2 % at a tenth of its best (a misaligned dish) is not. */
+static void test_capacity_lossy_frontier(void)
+{
+	const struct cg_cap_cfg cf = { .window_ms = 10000, .sat_us = 20 * MS, .lossy = 1 };
+	struct cg_cap_link l;
+	uint64_t t = 1000, tx = 0;
+	uint32_t rx = 0;
+
+	cg_cap_reset(&l);
+	loss_feed(&l, &cf, &t, &rx, &tx, 4, 6000, 6000); /* best 96 Mbit/s */
+	loss_feed(&l, &cf, &t, &rx, &tx, 2, 6000, 5880);
+	CHECK(l.lossy);
+	cg_cap_reset(&l);
+	loss_feed(&l, &cf, &t, &rx, &tx, 4, 6000, 6000);
+	t += CG_CAP_LOSSY_MS;
+	loss_feed(&l, &cf, &t, &rx, &tx, 6, 600, 588);
+	CHECK(!l.lossy);
+}
+
 void test_capacity(void)
 {
+	test_capacity_lossy_frontier();
+	test_capacity_loss();
 	test_capacity_short();
 	test_capacity_total();
 	test_capacity_shapes();

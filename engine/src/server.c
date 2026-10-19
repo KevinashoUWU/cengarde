@@ -89,6 +89,7 @@
 #include "engine.h"
 #include "health.h"
 #include "idmap.h"
+#include "linkmodel.h"
 #include "log.h"
 #include "pair.h"
 #include "pktinfo.h"
@@ -138,6 +139,7 @@ struct path {
 	int peer_muted;       /* the client carries no upload on this path */
 	uint16_t bond_w;      /* the weight its newest probe's tail gives it (split = client) */
 	uint8_t bond_ok;      /* that probe had a tail */
+	uint8_t type;         /* the link type that tail says (linkmodel.h), auto without one */
 	uint64_t tx_pkts, tx_bytes, tx_drops;
 	uint64_t tx_split;     /* of tx_pkts, split packets (split.h): its share, or all of them with weight 0 */
 	uint64_t moves;        /* changes of address, at either end */
@@ -1081,6 +1083,9 @@ static void on_probe(struct server *s, struct session *S, struct path *P, unsign
 		cg_split_reset(&S->sp);
 	P->bond_ok = pb != NULL;
 	P->bond_w = pb ? pb->weight : 0;
+	/* Its type, for this path's download (story 015); auto from a client
+	 * that predates it, or a type this end does not know. */
+	P->type = pb ? (uint8_t)cg_link_type_norm(pb->type) : CG_LTYPE_AUTO;
 	/* The client timed our last reply's trip down this path. */
 	if (h->flags & CG_F_OWD) {
 		P->last_owd_ms = now_ms;
@@ -1984,18 +1989,29 @@ static void gov_tick(struct server *s, struct session *S, uint64_t now_ms)
 
 /* Each path's download capacity (capacity.h), from what the client says it
  * received on it, and with capacity_weights the split's weights from them
- * (scaled by the governor's, with governor), after the governor's tick. */
+ * (scaled by the governor's, with governor), after the governor's tick.
+ * Each path with the model of the type its client says (linkmodel.h), with
+ * the global eta_buffer and capacity_loss_pct on top. */
 static void cap_tick(struct server *s, struct session *S, uint16_t live, uint64_t now_ms)
 {
 	struct cg_cap_cfg cc = { .window_ms = s->cfg->governor_window_ms, .sat_us = s->cfg->capacity_sat_ms * 1000 };
+	uint8_t type[CG_MAX_LINKS];
+	uint32_t over[CG_MAX_LINKS];
 
 	for (int p = 0; p < CG_MAX_LINKS; p++) {
 		const struct path *P = &S->path[p];
 
+		type[p] = P->used ? P->type : CG_LTYPE_AUTO;
 		if (P->used) {
+			struct cg_link_model m = cg_link_model_of(P->type, s->cfg->eta_buffer, s->cfg->capacity_loss_pct);
 			uint64_t was = cg_cap_bps(&S->cap[p]);
-			unsigned ev = cg_cap_tick(&S->cap[p], now_ms, P->peer_view_ms, P->peer_view.rx, P->tx_pkts,
-						  P->tx_bytes, &S->dh[p], &cc);
+			unsigned ev;
+
+			cc.loss_pct = m.loss_pct;
+			cc.lossy = cg_link_tracks_loss(&m);
+			cc.lossy_probe = !m.lossy_noprobe;
+			ev = cg_cap_tick(&S->cap[p], now_ms, P->peer_view_ms, P->peer_view.rx, P->tx_pkts, P->tx_bytes,
+					 &S->dh[p], &cc);
 
 			cg_decrec_cap(&S->dec, &S->cap[p], (unsigned)p, ev, was, now_ms);
 		}
@@ -2007,7 +2023,8 @@ static void cap_tick(struct server *s, struct session *S, uint16_t live, uint64_
 	}
 	cg_cap_total_tick(&S->ctot, S->cap, live, cc.sat_us);
 	if (s->cfg->split_eta)
-		cg_cap_eta(&S->eta, S->cap, live, cc.sat_us / 2, now_ms * 1000);
+		cg_cap_eta(&S->eta, S->cap, live, cc.sat_us / 2, cg_link_hold(type, CG_MAX_LINKS, s->cfg->eta_buffer, over),
+			   over, now_ms * 1000);
 }
 
 /* SO_MAX_PACING_RATE on a lane's socket (pace.h): fq on the way out paces
@@ -2438,6 +2455,7 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 				cg_json_u64(j, "client_weight", P->bond_w);
 			else
 				cg_json_null(j, "client_weight");
+			cg_json_str(j, "type", cg_link_type_name(P->type)); /* the client's type of it (linkmodel.h) */
 			/* The governor's weight and the queue it measures (null: off,
 			 * or no delay yet). */
 			if (s->cfg->governor)

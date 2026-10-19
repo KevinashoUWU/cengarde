@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "arrival.h" /* CG_MAX_LINKS */
+#include "linkmodel.h" /* type */
 #include "log.h"
 #include "resolve.h" /* cg_hosts_find */
 #include "steer.h"   /* lanes */
@@ -518,7 +519,7 @@ const struct cg_link_cfg *cg_config_link(const struct cg_config *c, const char *
 static int parse_links(struct cg_config *c, struct cg_ini *ini, struct hosts *h, char *err, size_t errlen)
 {
 	for (int i = 0; i < ini->n; i++) {
-		const char *sec = ini->e[i].section, *name;
+		const char *sec = ini->e[i].section, *name, *v;
 		struct cg_link_cfg *l;
 
 		if (strncmp(sec, "link ", 5))
@@ -546,6 +547,18 @@ static int parse_links(struct cg_config *c, struct cg_ini *ini, struct hosts *h,
 			if (get_u32(ini, sec, "cpu", 0, 1023, &cpu, err, errlen))
 				return -1;
 			l->cpu = (int)cpu;
+		}
+		/* Its link model (linkmodel.h, story 015): auto by default. */
+		if ((v = cg_ini_get(ini, sec, "type"))) {
+			int t = cg_link_type_parse(v);
+
+			if (t < 0) {
+				snprintf(err, errlen,
+					 "type: expected auto, cellular, starlink, fiber, ethernet or radio, got '%s'",
+					 v);
+				return -1;
+			}
+			l->type = (uint8_t)t;
 		}
 		if (get_str(ini, sec, "label", l->label, sizeof(l->label), err, errlen) ||
 		    get_bool(ini, sec, "enabled", &l->enabled, err, errlen) ||
@@ -884,8 +897,10 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	    get_bool(&ini, "", "governor", &c->governor, err, errlen) ||
 	    get_bool(&ini, "", "capacity_weights", &c->capacity_weights, err, errlen) ||
 	    get_bool(&ini, "", "split_eta", &c->split_eta, err, errlen) ||
+	    get_bool(&ini, "", "eta_buffer", &c->eta_buffer, err, errlen) ||
 	    get_bool(&ini, "", "pacing", &c->pacing, err, errlen) ||
 	    get_u32(&ini, "", "governor_target_ms", 1, 1000, &c->governor_target_ms, err, errlen) ||
+	    get_u32(&ini, "", "capacity_loss_pct", 0, 50, &c->capacity_loss_pct, err, errlen) ||
 	    get_u32(&ini, "", "capacity_sat_ms", 0, 1000, &c->capacity_sat_ms, err, errlen) ||
 	    get_u32(&ini, "", "rescue_target_ms", 0, 1000, &c->rescue_target_ms, err, errlen) ||
 	    get_u32(&ini, "", "governor_window_ms", 1000, 120000, &c->governor_window_ms, err, errlen))
