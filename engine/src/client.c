@@ -169,6 +169,10 @@ struct client {
 	uint16_t cw[CG_MAX_LINKS];            /* the weights from them, with capacity_weights */
 	struct cg_cap_total ctot;             /* their total, for a shaper on the tunnel (upload) */
 	struct cg_eta eta;                    /* the split by expected arrival, with split_eta */
+	struct cg_eta pace;                   /* the copies' expected arrivals, with a link's pace_ms */
+	struct cg_link_model lm[CG_MAX_LINKS]; /* each link's model (link_models) */
+	uint32_t pace_w[CG_MAX_LINKS];        /* each link's copy window (pace_ms), us, 0: every copy */
+	uint8_t pace_any;                     /* a link with one */
 	struct cg_hcfg hcfg;
 	struct cg_status_writer sw;
 	struct cg_ctl ctl;
@@ -203,6 +207,7 @@ struct client {
 	uint64_t nacks_sent;       /* NACK messages sent, for the rescue */
 	struct cg_split_tail tail; /* which reply that was (split.h) */
 	int8_t pick[CG_BATCH]; /* per packet of an upload batch: its one link (split), or -1 (every carrier) */
+	uint16_t cmask[CG_BATCH]; /* with a link's pace_ms: the carriers a packet of every carrier goes on */
 	uint32_t up_max;     /* largest WireGuard datagram since the last path check */
 	uint32_t up_largest; /* the same over the last check period, for the status */
 	uint64_t down_pkts, down_bytes, down_wg_drops, down_no_peer;
@@ -1127,6 +1132,15 @@ static void send_links(struct client *c, int m, uint64_t now_ms, uint16_t live, 
 	 * first wins the race to the server on identical links. */
 	if (n && pumped(c))
 		first = (int)(c->send_first++ % (unsigned)n);
+	if (c->pace_any) {
+		uint64_t now_us = cg_now_us();
+
+		for (int j = 0; j < m; j++)
+			c->cmask[j] = c->pick[j] >= 0 || c->oiov[j][1].iov_len < CG_PACE_SMALL
+					      ? 0xffff
+					      : cg_eta_copies(&c->pace, carry, (uint32_t)c->oiov[j][1].iov_len, now_us,
+							      c->pace_w);
+	}
 	for (int x0 = 0; x0 < n; x0++) {
 		int i = ids[(first + x0) % n];
 		struct link *l = &c->link[i];
@@ -1134,7 +1148,7 @@ static void send_links(struct client *c, int m, uint64_t now_ms, uint16_t live, 
 
 		if (carry >> i & 1) {
 			for (int j = 0; j < m; j++)
-				if (cg_split_dst(c->pick[j], carry, dup) >> i & 1)
+				if ((cg_split_dst(c->pick[j], carry, dup) >> i & 1) && (!c->pace_any || (c->cmask[j] >> i & 1)))
 					sel[k++] = j;
 		} else if ((live >> i & 1) && c->cfg->mute_trickle) {
 			for (int j = 0; j < m; j++)
@@ -1525,7 +1539,7 @@ static void send_nacks(struct client *c, uint64_t now_ms)
  * (capacity.h's cg_cap_rescue_w) is 0. */
 static int up_full(const struct client *c, unsigned i)
 {
-	return cg_cap_rescue_w(&c->cap[i], c->cfg->governor_target_ms * 1000) == 0;
+	return cg_cap_full(&c->cap[i], c->cfg->governor_target_ms * 1000, c->lm[i].rfull_hyst);
 }
 
 /* A verified NACK from the server (rescue.h): each sequence the ring still
@@ -1552,7 +1566,21 @@ static void on_nack(struct client *c, uint8_t flags, const uint8_t *payload, siz
 	if (!c->resc_idx)
 		return;
 	link_masks(c, now_ms, &present, &live);
-	for (int i = 0; i < CG_MAX_LINKS; i++) {
+	/* rescue_by_owd (audit C10): the link of least upload delay, as the
+	 * server picks; by RTT while no link has one */
+	for (int i = 0; c->cfg->rescue_by_owd && i < CG_MAX_LINKS; i++) {
+		struct link *l = &c->link[i];
+
+		if (!(live >> i & 1) || l->fd < 0 || !c->uh[i].have_owd)
+			continue;
+		if (!best[0] || cg_owd_diff(c->uh[i].owd, c->uh[best[0] - c->link].owd) < 0) {
+			best[1] = best[0];
+			best[0] = l;
+		} else if (!best[1] || cg_owd_diff(c->uh[i].owd, c->uh[best[1] - c->link].owd) < 0) {
+			best[1] = l;
+		}
+	}
+	for (int i = 0, by_rtt = !best[0]; by_rtt && i < CG_MAX_LINKS; i++) {
 		struct link *l = &c->link[i];
 
 		if (!(live >> i & 1) || l->fd < 0 || !l->srtt8_us)
@@ -1948,9 +1976,16 @@ static void spread_tick(struct client *c, uint16_t present, uint16_t live, uint6
 		cg_dec_edge(&c->dec, &c->dec_rfull, cg_resc_low(&c->resc_b), now_ms, CG_DEC_NOLINK,
 			    CG_DEC_RESCUE_FULL_ON, CG_DEC_RESCUE_FULL_OFF, (int64_t)c->resc_b.credit);
 	cg_decrec_g4_before(&c->spread, before);
+	for (int i = 0; i < CG_MAX_LINKS; i++) {
+		c->spread.dwell_ms[i] = c->lm[i].dwell_ms;
+		c->spread.dwell_oq_us[i] = (int32_t)c->lm[i].dwell_oq_ms * 1000;
+	}
 	changed = cg_split_spread_eval_r(&c->spread, c->uh, cand, c->cfg->split_spread_ms * 1000, c->cfg->mute_settle_ms,
 					 now_ms, c->cfg->split_stress_rejoin);
 	cg_decrec_g4(&c->dec, &c->spread, changed, before, &c->dec_stress, &c->dec_recover, now_ms);
+	for (int i = 0; i < CG_MAX_LINKS; i++)
+		if ((changed >> i & 1) && c->spread.ev[i] == CG_G4_LEAVE_QUEUE)
+			cg_cap_episode(&c->cap[i], now_ms, c->lm[i].g4_episode); /* audit C5 */
 	for (int i = 0; changed; i++, changed >>= 1) {
 		const char *name = c->link[i].ifname;
 		int32_t ms = c->spread.behind_us[i] / 1000;
@@ -2001,25 +2036,23 @@ static void pace_set(struct link *l, uint64_t rate)
 /* Each link's upload capacity (capacity.h), from what the server says it
  * received on it, and with capacity_weights the split's weights from them
  * (scaled by the governor's, with governor), after the governor's tick.
- * Each link with its own model (linkmodel.h): its type's preset, with the
- * global eta_buffer and capacity_loss_pct on top. */
+ * Each link with its own model (c->lm, link_models). */
 static void cap_tick(struct client *c, uint16_t live, uint64_t now_ms)
 {
 	struct cg_cap_cfg cc = { .window_ms = c->cfg->governor_window_ms, .sat_us = c->cfg->governor_target_ms * 1000 };
-	uint32_t over[CG_MAX_LINKS];
-	uint16_t hold = cg_link_hold(c->ltype, CG_MAX_LINKS, c->cfg->eta_buffer, over);
 
 	for (int i = 0; i < CG_MAX_LINKS; i++) {
 		struct link *l = &c->link[i];
 
 		if (l->fd >= 0) {
-			struct cg_link_model m = cg_link_model_of(c->ltype[i], c->cfg->eta_buffer, c->cfg->capacity_loss_pct);
+			const struct cg_link_model *m = &c->lm[i];
 			uint64_t was = cg_cap_bps(&c->cap[i]);
 			unsigned ev;
 
-			cc.loss_pct = m.loss_pct;
-			cc.lossy = cg_link_tracks_loss(&m);
-			cc.lossy_probe = !m.lossy_noprobe;
+			cc.loss_pct = m->loss_pct;
+			cc.lossy = cg_link_tracks_loss(m);
+			cc.lossy_probe = !m->lossy_noprobe;
+			cc.rfull_mode = m->rfull_hyst;
 			ev = cg_cap_tick(&c->cap[i], now_ms, l->peer_view_ms, l->peer_view.rx, l->tx_pkts, l->tx_bytes,
 					 &c->uh[i], &cc);
 
@@ -2030,8 +2063,12 @@ static void cap_tick(struct client *c, uint16_t live, uint64_t now_ms)
 		cg_cap_weights(c->cap, c->cfg->split == CG_SPLIT_FORCE ? 0 : c->dup0, c->cfg->governor ? c->gw : NULL,
 			       cc.sat_us / 2, c->cw);
 	cg_cap_total_tick(&c->ctot, c->cap, live, cc.sat_us);
-	if (c->cfg->split_eta)
-		cg_cap_eta(&c->eta, c->cap, live, cc.sat_us / 2, hold, over, now_ms * 1000);
+	if (c->cfg->split_eta) {
+		c->eta.tick_ms = CG_TICK_MS;
+		cg_cap_eta(&c->eta, c->cap, live, cc.sat_us / 2, c->lm, now_ms * 1000);
+	}
+	if (c->pace_any) /* the copies' expected arrivals (redund_pace_ms, per link) */
+		cg_cap_eta(&c->pace, c->cap, live, cc.sat_us / 2, NULL, now_ms * 1000);
 	/* With pacing, each link's socket at about its rate; without, as it
 	 * was set, back to none (a reload turned it off). */
 	for (int i = 0; i < CG_MAX_LINKS; i++) {
@@ -2044,10 +2081,24 @@ static void cap_tick(struct client *c, uint16_t live, uint64_t now_ms)
 	}
 }
 
+/* Each link's model (linkmodel.h): its type's preset, with the global
+ * knobs on top (eta_buffer, capacity_loss_pct, the clockwork audit's
+ * experiments, exp_link_types); the loops of a tick read it. */
+static void link_models(struct client *c)
+{
+	struct cg_link_knobs k = cg_config_link_knobs(c->cfg);
+
+	cg_link_models(c->ltype, CG_MAX_LINKS, &k, c->lm);
+	for (int i = 0; i < CG_MAX_LINKS; i++)
+		c->pace_w[i] = (uint32_t)c->lm[i].pace_ms * 1000;
+	c->pace_any = (uint8_t)cg_link_any_pace(c->lm, CG_MAX_LINKS);
+}
+
 static void health_tick(struct client *c, uint64_t now_ms)
 {
 	uint16_t present, live, changed;
 
+	link_models(c);
 	link_masks(c, now_ms, &present, &live);
 	changed = cg_health_eval(c->uh, CG_MAX_LINKS, live, now_ms, &c->hcfg);
 	cg_decrec_health(&c->dec, c->uh, changed, now_ms);
@@ -2201,6 +2252,7 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 	cg_json_u64(j, "queue_leaves", c->spread.n_qleave);
 	cg_json_u64(j, "recoveries", c->spread.n_recover);
 	cg_json_u64(j, "stalls", c->spread.n_stall);
+	cg_json_u64(j, "dwells", c->spread.n_dwell);
 	cg_json_u64(j, "packets", c->sdup.pkts);
 	cg_json_u64(j, "bytes", c->sdup.bytes);
 	cg_json_end(j, '}');

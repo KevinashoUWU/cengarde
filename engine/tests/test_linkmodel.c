@@ -13,7 +13,10 @@
 static int same(const struct cg_link_model *a, const struct cg_link_model *b)
 {
 	return a->lossy_noprobe == b->lossy_noprobe && a->lossy_hold == b->lossy_hold &&
-	       a->hold_over_ms == b->hold_over_ms && a->loss_pct == b->loss_pct;
+	       a->hold_over_ms == b->hold_over_ms && a->loss_pct == b->loss_pct && a->g4_episode == b->g4_episode &&
+	       a->rfull_hyst == b->rfull_hyst && a->qpred_ms == b->qpred_ms && a->qpred_mode == b->qpred_mode &&
+	       a->dwell_ms == b->dwell_ms && a->dwell_oq_ms == b->dwell_oq_ms && a->eta_keep == b->eta_keep &&
+	       a->eta_keep_ms == b->eta_keep_ms && a->pace_ms == b->pace_ms;
 }
 
 /* The table: one entry per type, in wire order, with a name each; auto is
@@ -103,8 +106,22 @@ static void test_linkmodel_global(void)
 	CHECK(m.hold_over_ms > 0 && m.hold_over_ms * 1000ull < CG_ETA_OVER_US);
 }
 
+/* Models with lossy_hold on the links of mask, each with over[i] ms of
+ * cost (over NULL: 0, the last resort). */
+static const struct cg_link_model *hold_models(uint16_t mask, const uint16_t *over)
+{
+	static struct cg_link_model m[CG_MAX_LINKS];
+
+	memset(m, 0, sizeof(m));
+	for (unsigned i = 0; i < CG_MAX_LINKS; i++) {
+		m[i].lossy_hold = (uint8_t)(mask >> i & 1);
+		m[i].hold_over_ms = over ? over[i] : 0;
+	}
+	return m;
+}
+
 /* A lossy link is held to its highest queue only when its own model has the
- * buffer (cg_cap_eta's mask): the other links, lossy or not, are as before. */
+ * buffer (lossy_hold): the other links, lossy or not, are as before. */
 static void test_linkmodel_eta_mask(void)
 {
 	struct cg_cap_link l[CG_MAX_LINKS];
@@ -122,24 +139,26 @@ static void test_linkmodel_eta_mask(void)
 		l[i].lossy = 1;
 		l[i].qhi_cur = 12 * MS;
 	}
-	cg_cap_eta(&e, l, 0x3, 10 * MS, 0x0, NULL, 0);
+	cg_cap_eta(&e, l, 0x3, 10 * MS, NULL, 0); /* no models: auto */
 	CHECK(e.l[0].limit_us == 0 && e.l[1].limit_us == 0);
-	cg_cap_eta(&e, l, 0x3, 10 * MS, 0x1, NULL, 0);
+	cg_cap_eta(&e, l, 0x3, 10 * MS, hold_models(0x0, NULL), 0);
+	CHECK(e.l[0].limit_us == 0 && e.l[1].limit_us == 0);
+	cg_cap_eta(&e, l, 0x3, 10 * MS, hold_models(0x1, NULL), 0);
 	CHECK(e.l[0].limit_us == 12 * MS && e.l[1].limit_us == 0);
-	cg_cap_eta(&e, l, 0x3, 10 * MS, 0x2, NULL, 0);
+	cg_cap_eta(&e, l, 0x3, 10 * MS, hold_models(0x2, NULL), 0);
 	CHECK(e.l[0].limit_us == 0 && e.l[1].limit_us == 12 * MS);
-	cg_cap_eta(&e, l, 0x3, 10 * MS, 0x3, NULL, 0);
+	cg_cap_eta(&e, l, 0x3, 10 * MS, hold_models(0x3, NULL), 0);
 	CHECK(e.l[0].limit_us == 12 * MS && e.l[1].limit_us == 12 * MS);
 	/* in the mask but not lossy: no hold */
 	l[0].lossy = 0;
-	cg_cap_eta(&e, l, 0x3, 10 * MS, 0x3, NULL, 0);
+	cg_cap_eta(&e, l, 0x3, 10 * MS, hold_models(0x3, NULL), 0);
 	CHECK(e.l[0].limit_us == 0 && e.l[1].limit_us == 12 * MS);
 	CHECK(e.l[0].over_us == 0 && e.l[1].over_us == 0); /* NULL: the last resort */
 	/* each held link takes its own cost */
 	{
-		const uint32_t over[CG_MAX_LINKS] = { 0, 40 * MS };
+		const uint16_t over[CG_MAX_LINKS] = { 0, 40 };
 
-		cg_cap_eta(&e, l, 0x3, 10 * MS, 0x3, over, 0);
+		cg_cap_eta(&e, l, 0x3, 10 * MS, hold_models(0x3, over), 0);
 		CHECK(e.l[1].limit_us == 12 * MS && e.l[1].over_us == 40 * MS);
 	}
 }
@@ -206,8 +225,126 @@ static void test_linkmodel_probe(void)
 	}
 }
 
+/* The clockwork audit's knobs (cg_link_knobs): each set is the value of
+ * every link over its preset, with its companion; exp_link_types narrows
+ * them (and eta_buffer, capacity_loss_pct) to some types; none set, every
+ * model is its preset. */
+static void test_linkmodel_knobs(void)
+{
+	struct cg_link_knobs k = { 0 };
+	struct cg_link_model m, ms[CG_MAX_LINKS];
+	uint8_t type[CG_MAX_LINKS] = { CG_LTYPE_STARLINK, CG_LTYPE_CELLULAR, CG_LTYPE_AUTO };
+	uint32_t mask = 0;
+
+	for (unsigned t = 0; t < CG_LTYPE_COUNT; t++) {
+		m = cg_link_model_k(t, &k);
+		CHECK(same(&m, &cg_link_presets[t].m));
+		m = cg_link_model_k(t, NULL);
+		CHECK(same(&m, &cg_link_presets[t].m));
+	}
+	k.qpred_ms = 300;
+	k.qpred_mode = 1;
+	k.dwell_ms = 1000;
+	k.dwell_oq_ms = 0; /* the companion goes with it, 0 too */
+	k.eta_keep = 2;
+	k.eta_keep_ms = 400;
+	k.g4_episode = 9; /* clamped to the modes */
+	k.rfull_hyst = 2;
+	k.pace_ms = 70000; /* clamped to 16 bits */
+	m = cg_link_model_k(CG_LTYPE_CELLULAR, &k);
+	CHECK(m.qpred_ms == 300 && m.qpred_mode == 1 && m.dwell_ms == 1000 && m.dwell_oq_ms == 0);
+	CHECK(m.eta_keep == 2 && m.eta_keep_ms == 400 && m.g4_episode == 3 && m.rfull_hyst == 2);
+	CHECK_EQ(m.pace_ms, 65535);
+	m = cg_link_model_k(CG_LTYPE_STARLINK, &k); /* over its preset, which stays */
+	CHECK(m.lossy_hold == 1 && m.hold_over_ms == CG_STARLINK_OVER_MS && m.qpred_ms == 300);
+	/* only for starlink: the cellular and auto links keep their presets */
+	CHECK_EQ(cg_link_types_parse("starlink", &mask), 0);
+	k.types = mask;
+	k.loss_pct = 5;
+	k.buffer = 1;
+	cg_link_models(type, CG_MAX_LINKS, &k, ms);
+	CHECK(ms[0].qpred_ms == 300 && ms[0].loss_pct == 5 && ms[0].pace_ms == 65535);
+	CHECK(same(&ms[1], &cg_link_presets[CG_LTYPE_CELLULAR].m));
+	CHECK(same(&ms[2], &cg_link_presets[CG_LTYPE_AUTO].m));
+	CHECK(cg_link_any_pace(ms, CG_MAX_LINKS));
+	CHECK(!cg_link_any_pace(ms + 1, CG_MAX_LINKS - 1));
+	/* the list of types */
+	CHECK_EQ(cg_link_types_parse("cellular,starlink  radio", &mask), 0);
+	CHECK_EQ(mask, (1u << CG_LTYPE_CELLULAR) | (1u << CG_LTYPE_STARLINK) | (1u << CG_LTYPE_RADIO));
+	CHECK_EQ(cg_link_types_parse("", &mask), 0);
+	CHECK_EQ(mask, 0);
+	CHECK_EQ(cg_link_types_parse("starlink sat", &mask), -1);
+	CHECK_EQ(cg_link_types_parse("averyveryverylongname", &mask), -1);
+}
+
+/* redund_pace_ms per link (cg_eta_copies' windows): the fastest link always
+ * gets the copy; a slow one with a window only while its copy arrives within
+ * it; one without a window or without a rate, always. */
+static void test_linkmodel_copies(void)
+{
+	struct cg_eta e;
+	uint32_t w[CG_MAX_LINKS] = { 0, 30 * MS };
+	int n1 = 0;
+
+	cg_eta_reset(&e);
+	cg_eta_set(&e, 0, 80000000, 0, 0, 0);      /* 80 Mbit/s: 1000 B in 0.1 ms */
+	cg_eta_set(&e, 1, 8000000, 20 * MS, 0, 0); /* 8 Mbit/s, 20 ms further: 1 ms each */
+	/* at a low load (1 ms apart) both get every copy */
+	for (int i = 0; i < 10; i++)
+		CHECK_EQ(cg_eta_copies(&e, 0x3, 1000, (uint64_t)i * MS, w), 0x3);
+	/* 1000 at once: link 1 takes copies only while they arrive in the window */
+	for (int i = 0; i < 1000; i++) {
+		uint16_t m = cg_eta_copies(&e, 0x3, 1000, 20 * MS, w);
+
+		CHECK(m & 0x1);
+		n1 += m >> 1 & 1;
+	}
+	/* within 30 ms of the fast copy, which queues 0.1 ms each: 20 + n1 <= 30 + 0.1 k */
+	CHECK(n1 >= 100 && n1 <= 115);
+	/* without a window, link 1 gets every copy however late */
+	w[1] = 0;
+	CHECK_EQ(cg_eta_copies(&e, 0x3, 1000, 20 * MS, w), 0x3);
+	/* a link without a rate gets every copy */
+	w[1] = 30 * MS;
+	cg_eta_set(&e, 2, 0, 0, 0, 20 * MS);
+	CHECK(cg_eta_copies(&e, 0x7, 1000, 20 * MS, w) & 0x4);
+}
+
+/* The per-link ETA knobs through cg_cap_eta: a link's qpred and keep come
+ * from its own model only. */
+static void test_linkmodel_eta_knobs(void)
+{
+	struct cg_cap_link l[CG_MAX_LINKS];
+	struct cg_link_model m[CG_MAX_LINKS];
+	struct cg_eta e;
+
+	memset(m, 0, sizeof(m));
+	for (unsigned i = 0; i < CG_MAX_LINKS; i++)
+		cg_cap_reset(&l[i]);
+	cg_eta_reset(&e);
+	for (unsigned i = 0; i < 2; i++) {
+		l[i].have_rate = 1;
+		l[i].max_cur = l[i].max_prev = 8000000;
+		l[i].q.have_min = 1;
+		l[i].queue_us = 30 * MS; /* not probed */
+		l[i].have_s1 = 1;
+		l[i].s1 = 100 * MS; /* rising 100 ms a second */
+	}
+	m[1].qpred_ms = 500;
+	m[1].qpred_mode = 1;
+	m[1].eta_keep = 1;
+	m[1].eta_keep_ms = 400;
+	cg_cap_eta(&e, l, 0x3, 10 * MS, m, 0);
+	CHECK_EQ(e.l[0].backlog, 8000000ull * 30 * MS); /* its queue now */
+	CHECK_EQ(e.l[1].backlog, 8000000ull * 80 * MS); /* where it will be in 500 ms */
+	CHECK(e.l[0].keep == 0 && e.l[1].keep == 1 && e.l[1].keep_ms == 400);
+}
+
 void test_linkmodel(void)
 {
+	test_linkmodel_knobs();
+	test_linkmodel_copies();
+	test_linkmodel_eta_knobs();
 	test_linkmodel_over();
 	test_linkmodel_probe();
 	test_linkmodel_table();
