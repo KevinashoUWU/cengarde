@@ -115,7 +115,7 @@ EOF
 # udpmem_pair_rx SECS: receives on 127.0.0.1:59501 in srv for SECS, reading
 # every 250 ms; prints "rx=N".
 udpmem_pair_rx() {
-	ip netns exec srv python3 - "$1" <<'EOF2'
+	ip netns exec "$NS_SRV" python3 - "$1" <<'EOF2'
 import socket, sys, time
 
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -137,7 +137,7 @@ EOF2
 # udpmem_flood N: N protocol 6 datagrams (1400 bytes) on each link id 0-15,
 # from cli to the server's port: every lane gets 2 N.
 udpmem_flood() {
-	ip netns exec cli python3 - "$1" <<'EOF'
+	ip netns exec "$NS_CLI" python3 - "$1" <<'EOF'
 import socket, sys
 
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -175,11 +175,11 @@ udpmem() {
 	# The server, shown udp_mem in its own mount namespace (ip netns exec
 	# makes one); the client as start() runs it.
 	# shellcheck disable=SC2016 # expanded by that sh, from its arguments
-	ip netns exec srv sh -c 'mount -t tmpfs -o size=16k cg-udpmem /proc/sys/net/ipv4 &&
+	ip netns exec "$NS_SRV" sh -c 'mount -t tmpfs -o size=16k cg-udpmem /proc/sys/net/ipv4 &&
 		echo "$2" >/proc/sys/net/ipv4/udp_mem && exec "$0" -c "$1"' \
 		"$CENGARDE_BIN" "$RUN/server.conf" "$UDPMEM_SHOW" >"$RUN/server.log" 2>&1 &
 	echo $! >"$RUN/server.pid"
-	ip netns exec cli "$CENGARDE_BIN" -c "$RUN/client.conf" >"$RUN/client.log" 2>&1 &
+	ip netns exec "$NS_CLI" "$CENGARDE_BIN" -c "$RUN/client.conf" >"$RUN/client.log" 2>&1 &
 	echo $! >"$RUN/client.pid"
 	sleep 1.5
 	sp=$(cat "$RUN/server.pid")
@@ -191,14 +191,14 @@ udpmem() {
 	udpmem_pair_rx 8 >"$RUN/pair-rx.out" &
 	pair_rx=$!
 	sleep 0.5
-	ip netns exec srv "$BIN/udpgen" -b 127.0.0.1:59502 -p 127.0.0.1:59501 -r 100 -s 1400 -d 6 -g 1 \
+	ip netns exec "$NS_SRV" "$BIN/udpgen" -b 127.0.0.1:59502 -p 127.0.0.1:59501 -r 100 -s 1400 -d 6 -g 1 \
 		>"$RUN/pair-tx.out" &
 	sleep 1
 	kill -STOP "$sp"
 	udpmem_flood 1500
 	sleep 0.5
 	# A kernel without IPv6 has no udp6; cat still prints udp.
-	ip netns exec srv cat /proc/net/udp /proc/net/udp6 >"$RUN/udp.txt" 2>/dev/null
+	ip netns exec "$NS_SRV" cat /proc/net/udp /proc/net/udp6 >"$RUN/udp.txt" 2>/dev/null
 	out=$(udpmem_py full "$RUN/udp.txt") || { echo "FAIL: the lanes are not all full, or hold more than the budget"; fail=1; }
 	echo "   $out"
 	wait "$pair_rx"

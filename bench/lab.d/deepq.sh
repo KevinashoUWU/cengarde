@@ -49,7 +49,7 @@ deepq() {
 	trap teardown EXIT
 	trap 'teardown; exit 130' INT TERM
 	setup && start || return 1
-	ip netns exec srv tc qdisc replace dev s3 root tbf rate 5mbit burst 32kb limit 20mb || return 1
+	ip netns exec "$NS_SRV" tc qdisc replace dev s3 root tbf rate 5mbit burst 32kb limit 20mb || return 1
 	down "$DEEPQ_PPS" "$DEEPQ_S" >"$RUN/traffic.txt"
 	echo "   s3 at 5mbit, 20 MB queue: $(cat "$RUN/traffic.txt")"
 	sent=$(sed -n 's/.*sent=\([0-9]*\).*/\1/p' "$RUN/tx.out")

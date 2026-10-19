@@ -52,6 +52,7 @@
 #include "clients.h"  /* CG_MAX_CLIENTS */
 #include "dns.h"      /* CG_DNS_NAME_MAX */
 #include "fwdtable.h" /* struct cg_fwd_rule */
+#include "linkmodel.h" /* struct cg_link_knobs */
 #include "proto.h"
 #include "srvpick.h" /* CG_MAX_CANDS */
 #include "tunroute.h" /* struct cg_pfx */
@@ -130,6 +131,9 @@ struct cg_link_cfg {
 	 * and, sent in the probes, down; force splits evenly. 0 makes it carry
 	 * a copy of every packet. An interface with no [link] section has 1. */
 	uint32_t weight;
+	/* Its link model, enum cg_link_type (linkmodel.h): the presets of the
+	 * capacity and split loops for it, sent to the server in the probes. */
+	uint8_t type;
 	int nsrv; /* entries of its "server" as written; 0: the global list */
 	struct cg_srvent srv[CG_MAX_SERVERS];
 	/* The list built from srv and the names' addresses (cg_config_build). */
@@ -186,6 +190,7 @@ struct cg_config {
 	int ntun_addr;
 	struct cg_pfx tun_addr[CG_TUN_ADDRS];
 	uint32_t tun_mtu;
+	uint32_t tun_txqueuelen; /* the TUN's transmit queue, packets; 0: the kernel's (500) */
 
 	/* link health, each end for its send direction (health.h) */
 	uint32_t mute_behind_ms; /* 0: never mute for delay */
@@ -213,6 +218,9 @@ struct cg_config {
 	int tcp_aware;                /* native: mark inner TCP's retransmissions and ACKs free (tcpfree.h) */
 	uint32_t reorder_idle_ms;     /* EXPERIMENT: the reorderer stops waiting for a link that brought no data this long; 0: off */
 	uint32_t reorder_retx_release_ms; /* a TCP retransmission gives up the gaps held this long before it; 0: off */
+	int fec;                      /* send a parity of each group of split DATA, rebuild from it (fec.h) */
+	uint32_t fec_wait_ms;         /* a group's parity goes at the latest this long after its first packet */
+	uint32_t fec_share_max;       /* with fec, no link takes over this % of the split DATA (fec.h); 0 (default): no cap */
 	int split;                    /* enum cg_split_mode */
 	uint32_t split_small;         /* datagrams of up to this many bytes are never split */
 	uint32_t split_spread_ms;     /* only links this close to the fastest share the split (split.h G4); 0: off */
@@ -225,8 +233,28 @@ struct cg_config {
 	int split_eta;                /* split by expected arrival (eta.h) */
 	uint32_t split_tickle_ms;     /* with split_eta, an idle link is tickled every this long (tickle.h); 0: never */
 	uint32_t split_stale_max;     /* with split_eta, an idle link's capacity counts up to this many times (cg_cap_stale); 1: as measured */
+	int eta_buffer;               /* EXPERIMENT: split_eta holds a link that drops to the highest queue it showed */
+	/* EXPERIMENTS of the clockwork audit's second pass (2026-10-18), all 0: off */
+	uint32_t split_dwell_ms;      /* G4 keeps a link back by a recovery in this long (within 2x the spread) */
+	uint32_t split_dwell_oq_ms;   /* ... only while its own queue is at most this; 0: any */
+	uint32_t split_qpred_ms;      /* split_eta takes each queue where its trend puts it this far ahead */
+	uint32_t split_qpred_mode;    /* 0: both ways, 1: rising queues only, 2: rising, at most twice the queue */
+	uint32_t eta_keep;            /* the ETA backlog over a stale queue: 1 the larger, 2 + net growth since, 3 half */
+	uint32_t eta_keep_ms;         /* eta_keep 2: how stale the queue measured is */
+	uint32_t cap_g4_episode;      /* a G4 leave for the queue: 1 a full episode, 2 if the capacity overshot, 3 2 for 3 s */
+	int rescue_by_owd;            /* the client's rescue on the link of least upload delay, not RTT (audit C10) */
+	uint32_t rescue_full_hyst;    /* the rescue's full bit: 1 off under 3x, 2 off under 3x only while not rising */
+	uint32_t redund_pace_ms;      /* a copy goes on a link only if it arrives within this of the first (eta.h cg_eta_copies) */
+	/* The knobs above, eta_buffer and capacity_loss_pct are the value of
+	 * every link over its type's preset (linkmodel.h); with this mask (a bit
+	 * per type, exp_link_types = starlink ...) only of the links of those
+	 * types; 0: every link. */
+	uint32_t exp_link_types;
 	int pacing;                   /* each link's socket paced at its rate (pace.h) */
 	uint32_t governor_target_ms;  /* the queue a link may hold */
+	uint32_t capacity_loss_pct;   /* EXPERIMENT: a loaded link losing more than this (%) is full (capacity.h); 0: off */
+	uint32_t capacity_sat_ms;     /* the queue that says a link is full (capacity.h); 0 in the file: governor_target_ms */
+	uint32_t rescue_target_ms;    /* the rescue's weight starts falling here, full at 4 x (capacity.h); 0: governor_target_ms */
 	uint32_t governor_window_ms;  /* of each link's minimum delay */
 
 	/* latency knobs */
@@ -318,5 +346,37 @@ const char *cg_config_restart_needed(const struct cg_config *a, const struct cg_
  * of it (and without resolving any name in it). Returns 0, 1 when the key
  * is not there, or -1 with err set. */
 int cg_config_peek(const char *path, const char *key, char *out, size_t outlen, char *err, size_t errlen);
+
+/* How long a gap waits before the rescue asks for it (rescue_wait_ms, 0:
+ * never): with fec, never less than a group's deadline twice and 20 ms,
+ * so that what a parity can rebuild is rebuilt first and not asked for
+ * (fec.h). */
+static inline uint32_t cg_rescue_wait_ms(const struct cg_config *c)
+{
+	uint32_t f = 2 * c->fec_wait_ms + 20;
+
+	return c->rescue_wait_ms && c->fec && c->rescue_wait_ms < f ? f : c->rescue_wait_ms;
+}
+
+/* The global knobs that reach each link's model (linkmodel.h). */
+static inline struct cg_link_knobs cg_config_link_knobs(const struct cg_config *c)
+{
+	struct cg_link_knobs k = {
+		.buffer = c->eta_buffer,
+		.loss_pct = c->capacity_loss_pct,
+		.g4_episode = c->cap_g4_episode,
+		.rfull_hyst = c->rescue_full_hyst,
+		.qpred_ms = c->split_qpred_ms,
+		.qpred_mode = c->split_qpred_mode,
+		.dwell_ms = c->split_dwell_ms,
+		.dwell_oq_ms = c->split_dwell_oq_ms,
+		.eta_keep = c->eta_keep,
+		.eta_keep_ms = c->eta_keep_ms,
+		.pace_ms = c->redund_pace_ms,
+		.types = c->exp_link_types,
+	};
+
+	return k;
+}
 
 #endif

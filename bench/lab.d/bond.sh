@@ -31,6 +31,35 @@
 #               cuts. What a cut costs when the link left has room for the
 #               flow, to set against starlink15 (story 012: the retransmissions
 #               of starlink15 come from the cuts, not from the redundancy)
+#   starlink15ramp  not in the default list: starlink15 with the delay of
+#               link 2 drifting as in real life: within each 15 s slot it rises
+#               slowly (10 to 25 ms more, a step every 0.5 s) as the satellite
+#               moves away, and after the 1.5 s cut of the switch it starts the
+#               next slot again at the lowest (20 ms) or at an intermediate one
+#               (27 or 34 ms), drawn from BOND_SEED and the repetition like
+#               ltespikerand. The cuts are starlink15's, so the difference
+#               between the two is the drift alone
+#   downstall   not in the default list: 3 links of 40 Mbit/s, 25, 25 and
+#               30 ms; link 2's download direction alone (the server's side)
+#               drops everything for 1.5 s, 3 to 8 s apart at random (seeded
+#               like ltespikerand), its upload untouched: the client's packets
+#               keep the path alive at the VPS while it carries nothing down
+#               (clockwork audit C6)
+#   shallowq    not in the default list: like nostalgica's links, Starlink with a
+#               shallow queue: link 1 60 Mbit/s, 20 ms, 15 ms of queue (it drops
+#               instead of queueing); links 2 and 3 cellular, 25 and 18 Mbit/s,
+#               45 and 50 ms, 300 ms of queue. A capacity that only falls on a
+#               queue never sees link 1 full (field, 2026-10-18: 15 % lost on
+#               Starlink while its queue stayed under 40 ms)
+#   shallowqd   not in the default list: shallowq with the cellular links at
+#               Starlink's 20 ms (no reordering between them: what the delay
+#               difference costs)
+#   shallowqdeep  not in the default list: shallowq with Starlink behind 300 ms
+#               of queue (no burst loss: what the shallow queue costs)
+#   starsat     not in the default list: shallowq with link 1 as Starlink in time:
+#               its rate drawn per 15 s slot from 45, 60 and 75 Mbit/s (seeded
+#               like ltespikerand), its delay rising 0 to 15 ms within the slot,
+#               and 0.3 s of total loss at each switch
 #   ltespike    link 1 (50 Mbit/s, 25 ms) jumps by 300 ms for 1 s every 5 s;
 #               link 2 steady (50 Mbit/s, 30 ms)
 #   ltespikerand  not in the default list: ltespike with the jumps 2 to 10 s
@@ -91,7 +120,11 @@
 # baselines of split; BOND_SOLO_CASES says it by hand.
 #
 # Knobs: BOND_S (seconds per run, 10; starlink15 takes at least 31), BOND_N
-# (repetitions, 1; the table then gives the median and the spread), BOND_P
+# (repetitions, 1; the table then gives the median and the spread), BOND_REP0
+# (0: the first repetition's number minus one, for ltespikerand's draw and the
+# lines' rep; bench/labq.py runs repetition r alone as BOND_N=1 BOND_REP0=r-1),
+# BOND_LINK_TYPES (each client link's type, story 015: "starlink cellular
+# cellular" for links 1..3, "-" or nothing: auto; lab.sh's LINK_TYPES), BOND_P
 # (TCP flows in parallel, 1; speedtest opens many, and many flows starting
 # at once fill the links' queues as one does not; story 013), BOND_CC
 # ("cubic bbr quic"; quic only when aioquic imports, else a note),
@@ -127,6 +160,7 @@
 
 BOND_S=${BOND_S:-10}
 BOND_N=${BOND_N:-1}
+BOND_REP0=${BOND_REP0:-0} # the repetitions are numbered from BOND_REP0 + 1 (labq.py runs one at a time)
 BOND_P=${BOND_P:-1}
 BOND_CC=${BOND_CC:-} # empty: cubic bbr quic (bond_ccs)
 BOND_QUIC_CC=${BOND_QUIC_CC:-cubic}
@@ -174,10 +208,10 @@ bond_tunnel() {
 	local i
 	wg genkey >"$RUN/wgc.key" && wg genkey >"$RUN/wgs.key" || return 1
 	chmod 600 "$RUN/wgc.key" "$RUN/wgs.key"
-	bond_wg srv wgs 59301 10.79.0.1 "$RUN/wgs.key" "$(wg pubkey <"$RUN/wgc.key")" 10.79.0.2 || return 1
-	bond_wg cli wgc 50000 10.79.0.2 "$RUN/wgc.key" "$(wg pubkey <"$RUN/wgs.key")" 10.79.0.1 127.0.0.1:59401 || return 1
+	bond_wg "$NS_SRV" wgs 59301 10.79.0.1 "$RUN/wgs.key" "$(wg pubkey <"$RUN/wgc.key")" 10.79.0.2 || return 1
+	bond_wg "$NS_CLI" wgc 50000 10.79.0.2 "$RUN/wgc.key" "$(wg pubkey <"$RUN/wgs.key")" 10.79.0.1 127.0.0.1:59401 || return 1
 	for i in $(seq 1 50); do
-		ip netns exec cli ping -q -c 1 -W 1 10.79.0.1 >/dev/null 2>&1 && return 0
+		ip netns exec "$NS_CLI" ping -q -c 1 -W 1 10.79.0.1 >/dev/null 2>&1 && return 0
 		sleep 0.2
 	done
 	echo "FAIL: no handshake through cengarde"
@@ -186,7 +220,7 @@ bond_tunnel() {
 
 bond_untunnel() {
 	local f
-	pkill -f "iperf3 -s -B 10.79.0.1" 2>/dev/null
+	ns_kill "$NS_SRV" iperf3
 	for f in "$RUN"/wgc.pid "$RUN"/wgs.pid "$RUN"/quic.pid; do
 		[ -f "$f" ] && kill "$(cat "$f")" 2>/dev/null
 		rm -f "$f"
@@ -309,7 +343,7 @@ bond_join() { echo "${1:+$1${2:+;}}$2"; }
 # the first run (it prints "listening" once it is bound).
 bond_quic_server() {
 	local i
-	ip netns exec srv python3 -I "$LAB/quicperf.py" server --bind 10.79.0.1 \
+	ip netns exec "$NS_SRV" python3 -I "$LAB/quicperf.py" server --bind 10.79.0.1 \
 		--cc "$BOND_QUIC_CC" --mtu "$BOND_QUIC_MTU" >"$RUN/quic-server.log" 2>&1 &
 	echo $! >"$RUN/quic.pid"
 	for i in $(seq 1 50); do
@@ -325,8 +359,8 @@ BOND_NETEM=
 bond_netem_ok() {
 	if [ -z "$BOND_NETEM" ]; then
 		BOND_NETEM=no
-		ip netns exec cli tc qdisc replace dev l1 root netem delay 1ms 2>/dev/null && BOND_NETEM=yes
-		ip netns exec cli tc qdisc del dev l1 root 2>/dev/null
+		ip netns exec "$NS_CLI" tc qdisc replace dev l1 root netem delay 1ms 2>/dev/null && BOND_NETEM=yes
+		ip netns exec "$NS_CLI" tc qdisc del dev l1 root 2>/dev/null
 		[ "$BOND_NETEM" = yes ] || echo "   note: no netem here: links get a rate only, no delay, loss or events"
 	fi
 	[ "$BOND_NETEM" = yes ]
@@ -345,14 +379,24 @@ bond_link() {
 	local n=$1 d=$2 r=$3 q=${4:-100} loss=${5:-0} lim ns dev inflight=0
 	lim=$((r * 1000000 * q / 8000 / 1400 + 10))
 	[ "${BOND_NETEM_INFLIGHT:-0}" = 1 ] && inflight=$((r * 1000000 * d / 8000 / 1400))
-	for ns in cli srv; do
-		dev=$([ "$ns" = cli ] && echo "l$n" || echo "s$n")
+	for ns in "$NS_CLI" "$NS_SRV"; do
+		dev=$([ "$ns" = "$NS_CLI" ] && echo "l$n" || echo "s$n")
 		if bond_netem_ok; then
 			ip netns exec "$ns" tc qdisc replace dev "$dev" root netem delay "${d}ms" rate "${r}mbit" limit $((lim + inflight)) loss "${loss}%"
 		else
 			ip netns exec "$ns" tc qdisc replace dev "$dev" root tbf rate "${r}mbit" burst 32kb limit $((lim * 1500))
 		fi
 	done
+}
+
+# bond_link_down N DELAY_MS RATE_MBIT [QUEUE_MS [LOSS_PCT]]: as bond_link,
+# the download direction of link N only (the server's side).
+bond_link_down() {
+	local n=$1 d=$2 r=$3 q=${4:-100} loss=${5:-0} lim inflight=0
+	bond_netem_ok || return 0
+	lim=$((r * 1000000 * q / 8000 / 1400 + 10))
+	[ "${BOND_NETEM_INFLIGHT:-0}" = 1 ] && inflight=$((r * 1000000 * d / 8000 / 1400))
+	ip netns exec "$NS_SRV" tc qdisc replace dev "s$n" root netem delay "${d}ms" rate "${r}mbit" limit $((lim + inflight)) loss "${loss}%"
 }
 
 # bond_events CASE SECS [REP]: what changes during a run (in the background).
@@ -373,6 +417,35 @@ bond_events() {
 			bond_link 2 20 "$r2" 100 100
 			sleep 1.5
 			bond_link 2 "$([ $((t / 15 % 2)) = 1 ] && echo 50 || echo 20)" "$r2"
+		done
+		;;
+	starlink15ramp)
+		RANDOM=$((${BOND_SEED:-1} * 1000 + rep))
+		local d0=20 rise k
+		for t in $(seq 15 15 "$s"); do
+			rise=$((10 + RANDOM % 16))
+			for k in $(seq 1 27); do
+				sleep 0.5
+				bond_link 2 $((d0 + rise * k / 27)) 100
+			done
+			bond_link 2 $((d0 + rise)) 100 100 100
+			sleep 1.5
+			d0=$(echo "20 27 34" | cut -d' ' -f$((1 + RANDOM % 3)))
+			bond_link 2 "$d0" 100
+		done
+		;;
+	starsat)
+		RANDOM=$((${BOND_SEED:-1} * 1000 + rep))
+		local r1=60 k
+		for t in $(seq 15 15 "$s"); do
+			for k in $(seq 1 29); do
+				sleep 0.5
+				bond_link 1 $((20 + 15 * k / 29)) "$r1" 15
+			done
+			bond_link 1 35 "$r1" 15 100
+			sleep 0.3
+			r1=$(echo "45 60 75" | cut -d' ' -f$((1 + RANDOM % 3)))
+			bond_link 1 20 "$r1" 15
 		done
 		;;
 	ltespike)
@@ -396,6 +469,19 @@ bond_events() {
 			bond_link 1 25 50
 		done
 		;;
+	downstall)
+		RANDOM=$((${BOND_SEED:-1} * 1000 + rep))
+		t=0
+		while :; do
+			gap=$((3 + RANDOM % 6))
+			t=$((t + gap))
+			[ "$t" -lt "$s" ] || break
+			sleep "$gap"
+			bond_link_down 2 25 40 100 100
+			sleep 1.5
+			bond_link_down 2 25 40
+		done
+		;;
 	spikeloss)
 		for t in $(seq 2 2 "$s"); do
 			sleep 1.5
@@ -415,7 +501,11 @@ bond_shape() {
 	reorder50) bond_link 1 20 50 && bond_link 2 70 50 ;;
 	reorder150) bond_link 1 20 50 && bond_link 2 170 50 ;;
 	linkdeath) bond_link 1 25 40 && bond_link 2 25 40 && bond_link 3 25 40 ;;
-	starlink15) bond_link 1 25 50 && bond_link 2 20 100 ;;
+	downstall) bond_link 1 25 40 && bond_link 2 25 40 && bond_link 3 30 40 ;;
+	starlink15 | starlink15ramp) bond_link 1 25 50 && bond_link 2 20 100 ;;
+	shallowq | starsat) bond_link 1 20 60 15 && bond_link 2 45 25 300 && bond_link 3 50 18 300 ;;
+	shallowqd) bond_link 1 20 60 15 && bond_link 2 20 25 300 && bond_link 3 20 18 300 ;;
+	shallowqdeep) bond_link 1 20 60 300 && bond_link 2 45 25 300 && bond_link 3 50 18 300 ;;
 	starlink15sw) bond_link 1 25 100 && bond_link 2 20 50 ;;
 	ltespike | ltespikerand) bond_link 1 25 50 && bond_link 2 30 50 ;;
 	spikeloss) bond_link 1 25 50 100 1 && bond_link 2 30 50 100 1 ;;
@@ -428,7 +518,7 @@ bond_shape() {
 
 bond_nlinks() {
 	case $1 in
-	het | linkdeath | bloat | lossy) echo 3 ;;
+	het | linkdeath | downstall | bloat | lossy | shallowq | shallowqd | shallowqdeep | starsat) echo 3 ;;
 	*) echo 2 ;;
 	esac
 }
@@ -439,8 +529,8 @@ bond_nlinks() {
 bond_snap() {
 	cp "$RUN/client.json" "$1.client.json" 2>/dev/null || : >"$1.client.json"
 	cp "$RUN/server.json" "$1.server.json" 2>/dev/null || : >"$1.server.json"
-	ip -n cli -s -j link show dev wgc >"$1.wgc.json" 2>/dev/null || : >"$1.wgc.json"
-	ip -n srv -s -j link show dev wgs >"$1.wgs.json" 2>/dev/null || : >"$1.wgs.json"
+	ip -n "$NS_CLI" -s -j link show dev wgc >"$1.wgc.json" 2>/dev/null || : >"$1.wgc.json"
+	ip -n "$NS_SRV" -s -j link show dev wgs >"$1.wgs.json" 2>/dev/null || : >"$1.wgs.json"
 }
 
 # bond_snap_roll: the after of a run is the before of the next.
@@ -456,9 +546,9 @@ bond_snap_roll() {
 bond_small_start() {
 	local tx rx txa rxa
 	if [ "$1" = up ]; then
-		tx=cli rx=srv txa=10.79.0.2 rxa=10.79.0.1
+		tx=$NS_CLI rx=$NS_SRV txa=10.79.0.2 rxa=10.79.0.1
 	else
-		tx=srv rx=cli txa=10.79.0.1 rxa=10.79.0.2
+		tx=$NS_SRV rx=$NS_CLI txa=10.79.0.1 rxa=10.79.0.2
 	fi
 	rm -f "$RUN/small-tx.out" "$RUN/small-rx.out"
 	ip netns exec "$rx" "$BIN/udpgen" -b "$rxa:7002" -d $(($2 + 1)) -g 1 >"$RUN/small-rx.out" &
@@ -477,7 +567,7 @@ bond_run() {
 	cp=$(cat "$RUN/client.pid") sp=$(cat "$RUN/server.pid")
 	if [ "$BOND_REST" -gt 0 ] && [ "$cc" != quic ]; then
 		# shellcheck disable=SC2046 # -R or nothing
-		[ "$BOND_WARM" -gt 0 ] && ip netns exec cli iperf3 -c 10.79.0.1 -t "$BOND_WARM" -C "$cc" -P "$BOND_P" \
+		[ "$BOND_WARM" -gt 0 ] && ip netns exec "$NS_CLI" iperf3 -c 10.79.0.1 -t "$BOND_WARM" -C "$cc" -P "$BOND_P" \
 			$([ "$dir" = down ] && echo -R) >/dev/null 2>&1
 		sleep "$BOND_REST"
 		bond_snap "$RUN/snap-before"
@@ -485,9 +575,9 @@ bond_run() {
 	fi
 	BOND_BG=
 	c0=$(cpu_ticks "$cp") s0=$(cpu_ticks "$sp")
-	ip netns exec cli ping -n -i 0.1 -w $((s + 1)) 10.79.0.1 >"$RUN/ping.out" 2>&1 &
+	ip netns exec "$NS_CLI" ping -n -i 0.1 -w $((s + 1)) 10.79.0.1 >"$RUN/ping.out" 2>&1 &
 	BOND_BG="$BOND_BG $!"
-	ip netns exec cli ping -n -i 0.1 -s 1200 -w $((s + 1)) 10.79.0.1 >"$RUN/pingbig.out" 2>&1 &
+	ip netns exec "$NS_CLI" ping -n -i 0.1 -s 1200 -w $((s + 1)) 10.79.0.1 >"$RUN/pingbig.out" 2>&1 &
 	BOND_BG="$BOND_BG $!"
 	bond_events "$c" "$s" "$rep" &
 	BOND_BG="$BOND_BG $!"
@@ -497,12 +587,12 @@ bond_run() {
 	fi
 	if [ "$cc" = quic ]; then
 		res=$RUN/quic.json err=$RUN/quic.err
-		ip netns exec cli python3 -I "$LAB/quicperf.py" client 10.79.0.1 --dir "$dir" --secs "$s" \
+		ip netns exec "$NS_CLI" python3 -I "$LAB/quicperf.py" client 10.79.0.1 --dir "$dir" --secs "$s" \
 			--cc "$BOND_QUIC_CC" --mtu "$BOND_QUIC_MTU" >"$res" 2>"$err" || rc=1
 	else
 		res=$RUN/iperf.json err=$RUN/iperf.err
 		# shellcheck disable=SC2046 # -R or nothing
-		ip netns exec cli iperf3 -c 10.79.0.1 -t "$s" -C "$cc" -P "$BOND_P" -J ${BOND_KEEP:+-i 0.5} \
+		ip netns exec "$NS_CLI" iperf3 -c 10.79.0.1 -t "$s" -C "$cc" -P "$BOND_P" -J ${BOND_KEEP:+-i 0.5} \
 			$([ "$dir" = down ] && echo -R) >"$res" 2>"$err" || rc=1
 		[ -n "$BOND_KEEP" ] && mkdir -p "$BOND_KEEP" && cp "$res" "$BOND_KEEP/$c-$v-$dir-$cc-$rep.json"
 	fi
@@ -528,7 +618,7 @@ bond_run() {
 # link alone), every direction, congestion control and repetition.
 bond_case() {
 	local c=$1 v=$2 s=$BOND_S dir cc rep fail=0
-	case $c in starlink15*) [ "$s" -lt 31 ] && s=31 ;; esac
+	case $c in starlink15* | starsat) [ "$s" -lt 31 ] && s=31 ;; esac
 	ENGINE=c
 	NLINKS=$(bond_nlinks "$c")
 	bond_variant "$v" || return 1
@@ -542,11 +632,11 @@ bond_case() {
 	fi
 	bond_shape "$c" || return 1
 	bond_tunnel || return 1
-	ip netns exec srv iperf3 -s -B 10.79.0.1 -D || return 1
+	ip netns exec "$NS_SRV" iperf3 -s -B 10.79.0.1 -D || return 1
 	case " $BOND_CC " in *" quic "*) bond_quic_server || return 1 ;; esac
 	sleep 1.7 # and the status files hold the handshake: the first before
 	bond_snap "$RUN/snap-before"
-	for rep in $(seq 1 "$BOND_N"); do
+	for rep in $(seq $((BOND_REP0 + 1)) $((BOND_REP0 + BOND_N))); do
 		for dir in $BOND_DIRS; do
 			for cc in $BOND_CC; do
 				bond_run "$c" "$v" "$dir" "$cc" "$rep" "$s" || fail=1
@@ -579,14 +669,14 @@ bond_plan() {
 	for w in ${BOND_CC:-cubic bbr quic}; do ccs=$((ccs + 1)); done
 	for c in $BOND_CASES; do
 		case $c in
-		equal | het | reorder50 | reorder150 | linkdeath | starlink15 | starlink15sw | ltespike | ltespikerand | deepq | bloat | lossy | spikeloss) ;;
+		equal | het | reorder50 | reorder150 | linkdeath | downstall | shallowq | shallowqd | shallowqdeep | starsat | starlink15 | starlink15sw | starlink15ramp | ltespike | ltespikerand | deepq | bloat | lossy | spikeloss) ;;
 		*)
 			echo "bond: unknown case $c"
 			return 1
 			;;
 		esac
 		dur=$BOND_S
-		case $c in starlink15*) [ "$dur" -lt 31 ] && dur=31 ;; esac
+		case $c in starlink15* | starsat) [ "$dur" -lt 31 ] && dur=31 ;; esac
 		for v in $BOND_VARIANTS; do
 			bond_applies "$c" "$v" || continue
 			pairs=$((pairs + 1))

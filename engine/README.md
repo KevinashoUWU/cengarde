@@ -480,6 +480,28 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
     `asks`, `nacks_sent`); en los dos, `gone_sent` y `gone_received`.
     `reorder.rescue` (`asked`, `rescued`, `lost` y `refused`, los perdidos
     que el otro extremo avisó que no vendrían).
+- **`fec` (no; protocolo 7):** la paridad espacial de la subida repartida
+  (`fec.h`). El cliente junta en grupos los paquetes que fueron cada uno por
+  un solo enlace, como mucho uno por enlace, y manda el XOR del grupo por un
+  enlace de fuera (`CG_T_FEC`). El servidor guarda lo recibido hace poco y
+  reconstruye un paquete que falte en un grupo antes de que el rescate lo
+  pida (con `fec`, un hueco espera al menos 2 × `fec_wait_ms` + 20 ms antes
+  del NACK). Un grupo de uno no manda paridad (sería una copia). Solo
+  cambia al reiniciar (el anillo del que recibe). Va en los dos extremos.
+  - **`fec_wait_ms` (10; 1–200):** el plazo máximo de un grupo. El plazo
+    real sale de la tasa: dos veces lo que tardan en salir k paquetes al
+    intervalo medio, entre 1 ms y `fec_wait_ms`.
+  - **`fec_share_max` (0, sin tope; hasta 100):** con `fec`, ningún
+    enlace lleva más de este % de lo repartido reciente; el que lo pasa se
+    salta el paquete siguiente, sin dejar nunca menos de dos enlaces. Una
+    paridad por grupo cuesta al menos 1/(1 − s) cuando un enlace lleva una
+    parte s (historia 012). En la red de pruebas (RTMP de 8 Mbit/s,
+    2026-10-17) el tope de 50 % empeoró todo: más paridad (27–36 % de los
+    bytes frente a 12–21 %) y de 3 a 12 veces las retransmisiones de sin
+    tope, porque manda tráfico a los enlaces lentos. Apagado por omisión.
+  - Estado: `fec` en el cliente (`parities`, `bytes`, `no_link`, `capped`,
+    `deadline_us`, `sizes` y por qué cerró cada grupo) y en cada sesión
+    del servidor (lo reconstruido y lo que no).
 - **`reorder_pool_kb` (8192; 256–131070):** memoria para los paquetes
   retenidos, en bloques de 2 KiB, reservada al arrancar; solo ocupa RAM lo
   que llega a usarse. En el servidor la comparten todas las sesiones (cada
@@ -570,6 +592,14 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
   envíos perdidos del campo (historia 012, «`split_spread_copy` en el
   laboratorio»). Queda `yes` hasta que una prueba
   de campo A/B diga otra cosa. Se aplica en caliente.
+- **`capacity_sat_ms` y `rescue_target_ms` (`0`: lo que diga
+  `governor_target_ms`; de 0 a 1000), en los dos extremos (auditoría C12):**
+  `governor_target_ms` movía cuatro lazos a la vez. `capacity_sat_ms` es la
+  cola que dice que un enlace está lleno para la capacidad (`capacity.h`:
+  los cortes, la sonda bajo la mitad, `cake`, el ETA); `rescue_target_ms`,
+  donde empieza a bajar el peso del rescate (lleno a 4 veces). Sin ellas,
+  todo sigue como antes; sirven para afinar cada lazo por separado (la
+  búsqueda de presets).
 - **`governor` (`no`; `yes` o `no`), en los dos extremos, para lo que cada
   uno envía (experimental):** los pesos del reparto salen de la cola de cada
   enlace en vez de `weight` (`govern.h`). La cola es el retraso de envío del
@@ -621,6 +651,17 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
   reordenador soltaba huecos y el 72 % de las retransmisiones de TCP de la
   bajada eran espurias (DSACK). Apaga las copias por omisión. El estado
   muestra `split_eta` en `upload` (cliente) y en cada sesión (servidor).
+  - **`split_tickle_ms` (0, nunca; hasta 60000) y `split_stale_max` (1,
+    apagado; 1–64), experimentales:** un enlace que lleva 3 s sin cargarse
+    (sin recibir 3/4 de su capacidad) no muestra si da más, y el reparto
+    por llegada no le manda nada mientras los otros tengan cola corta.
+    Con `split_tickle_ms`, cada ese tiempo uno de esos enlaces recibe los
+    paquetes repartidos durante 600 ms a la tasa de sondeo (5/4 de su
+    capacidad, `tickle.h`); si su capacidad no creció, espera el doble la
+    vez siguiente. Con `split_stale_max`,
+    su capacidad cuenta para el reparto el doble cada 3 s sin carga, hasta
+    ese múltiplo y la del mayor enlace (`cg_cap_stale`). El estado muestra
+    `tickle` y `split_by.tickle`.
 - **`pacing` (`no`; `yes` o `no`), en el cliente (experimental):** el
   socket de cada enlace se dosifica (`SO_MAX_PACING_RATE`, `pace.h`,
   historia 013) al doble de su capacidad y nunca bajo 20 Mbit/s: rompe las
@@ -641,6 +682,57 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
   cliente se los manda al servidor en las sondas; `force` no los mira). Con
   0, el enlace lleva copia de todos los paquetes, repartidos o no. Una
   interfaz sin sección `[link]` pesa 1.
+- **`type` en `[link X]` (cliente; `auto`; `auto`, `cellular`, `starlink`,
+  `fiber`, `ethernet` o `radio`):** qué clase de enlace es (`linkmodel.h`,
+  historia 015). Cada tipo tiene un preset de lo que los lazos de capacidad
+  y de reparto hacen con ese enlace, en la subida; el cliente manda el tipo
+  de cada enlace al servidor en las sondas (bits 20–22 de la cola de
+  bonding, reservados hasta ahora: sin versión nueva de protocolo), y el
+  servidor aplica el mismo preset a la bajada de ese camino. `auto` es el
+  motor de antes. Hoy solo cambia `starlink`, y solo con `split_eta`: mientras
+  pierde más del 0,3 % de lo que se le manda (`lossy`), no se sondea a 5/4
+  y se retiene en la cola más alta que mostró en 10 s; lo que pase de ahí
+  va por otro enlace mientras llegue por él a menos de 40 ms de lo que
+  tardaría por Starlink (y si no, por Starlink, donde TCP ve la pérdida).
+  En el laboratorio (Starlink de cola corta y dos celulares más lentos,
+  n = 8; *medido en laboratorio*), el reparto pasó de 41,6 a 56,8 Mbit/s de
+  bajada y de 40,3 a 51,1 de subida, sin costo con retardos iguales ni con
+  cola profunda. En redundancia, un enlace `starlink` hace que los demás
+  enlaces de su sesión lleven una copia solo si llegaría a menos de 60 ms
+  de la primera (`pace_peers_ms`): con los celulares de cola de 300 ms, el
+  p99 del ping de 1200 bytes en `starsat` bajó de ~360 a ~95 ms, con el
+  caudal a ±5 % en todos los casos con Starlink (*medido en laboratorio*,
+  historia 015); una sesión sin Starlink no cambia. `cellular`, `fiber`,
+  `ethernet` y `radio` se comportan
+  como `auto` hasta que una medida diga otra cosa. El
+  estado muestra `type` en cada enlace (cliente) y camino (servidor), y
+  `lossy` y `lossy_noprobe` en su `cap_diag`. Se aplica en caliente.
+- **`eta_buffer` (`no`; `yes` o `no`) y `capacity_loss_pct` (0; 0–50), en
+  los dos extremos, para lo que cada uno envía (experimentales):** las
+  perillas globales de lo que hacen los presets, para todos los enlaces a
+  la vez, encima del tipo de cada uno. `eta_buffer`: un enlace que perdió
+  más del 0,3 % de lo enviado en los últimos 5 s (`lossy`) no se sondea a
+  5/4 y, con `split_eta`, se retiene en la cola más alta que mostró en 10 s
+  (al menos 5 ms): lo que pase de ahí va por otro enlace. `capacity_loss_pct`:
+  un enlace cargado que pierde más de ese porcentaje en 3 muestras seguidas
+  está lleno, aunque su cola no lo diga. Aplicado a todos, `eta_buffer`
+  cuesta en enlaces sin Starlink (en `het`, −15 % de subida, n = 4; los
+  celulares también quedan `lossy`): para un solo enlace, mejor su `type`.
+- **Las correcciones mixtas de la auditoría de relojería (experimentales, en
+  los dos extremos, todas 0 = apagadas):** `split_qpred_ms` y
+  `split_qpred_mode` (#33), `split_dwell_ms` y `split_dwell_oq_ms` (C3),
+  `cap_g4_episode` (C5), `eta_keep` y `eta_keep_ms` (C9),
+  `rescue_full_hyst` (C11) y `redund_pace_ms` (una copia va por un enlace
+  solo si llegaría a menos de eso de la primera). Cada una es un campo del
+  modelo de cada enlace (`linkmodel.h`); la perilla global lo fija en todos
+  los enlaces, encima del preset de su tipo. `rescue_by_owd` (C10, solo el
+  cliente) sigue global. Ninguna entró en un preset salvo lo dicho de
+  `starlink` (historia 015, tabla por tipo).
+- **`exp_link_types` (vacío; nombres de tipo):** las perillas globales de
+  arriba (y `eta_buffer` y `capacity_loss_pct`) solo para los enlaces de
+  esos tipos, para probar una antes de ponerla en un preset; vacío: todos.
+  `exp_link_types = cellular` con `redund_pace_ms = 60` en una sesión con
+  un Starlink es lo que hace el preset de `starlink`.
 
 **El reparto es experimental.** Sin los pasos que siguen en el plan (detección
 de pérdidas por enlace, control de las colas de los módems) reparte peor que
@@ -948,6 +1040,10 @@ Ajustes, en los dos extremos (cambiarlos reinicia el motor):
 - `tun_mtu`: 1420 por omisión, lo que cabe en un enlace de 1500 por IPv6
   (1500 − 40 − 8 − 24 de cabecera de cengarde = 1428). Si un enlace tiene
   menos, el cliente avisa con la cifra que cabe.
+- `tun_txqueuelen`: la cola de transmisión del TUN, en paquetes; `0` (por
+  omisión) deja la del kernel (500). El PC de la testnet usa 5000, que
+  antes ponía a mano con `ip link set cgpc txqueuelen 5000` después de cada
+  arranque. No se recarga en caliente (como `tun_mtu`).
 
 Las rutas por el TUN son del sistema (`ip route add … dev cg0`), como con
 cualquier interfaz. El servidor tiene **un solo TUN para todos los
@@ -1268,7 +1364,9 @@ nueva (`null` sin cola: un servidor anterior). En cada sesión del servidor,
 cliente) o `duplicating` (`split = client`, pero el cliente no lo pide, no
 reordena o no lo dice); `client_reorders` y `client_asks_split`, lo que dijo
 su sonda más nueva (`null` sin cola: un cliente anterior), y por enlace
-`client_weight`, el peso que manda el cliente. «Más nueva» es por su número
+`client_weight`, el peso que manda el cliente, y `type`, el tipo que dice
+para ese camino (`auto` sin él; en el cliente, `type` de cada enlace es el
+de su `[link]`). «Más nueva» es por su número
 de secuencia de control, no por la hora de llegada: tras una recarga, las
 sondas o respuestas que salieron antes por un enlace lento llegan después de
 las nuevas por uno rápido, y no deshacen lo que estas dijeron.
@@ -1302,8 +1400,10 @@ contadores `leave_queue`, `leave_stall`, `leave_base`, `rejoin_settle`,
 `rejoin_recover`, `rejoin_empty`, `rejoin_off`), `owd_age_ms` (desde el
 último informe de retardo) y `owd_reports_per_s`, `gov_ticks` (`down`,
 `up`, `hold`; `null` sin gobernador) y `cap_diag` (`sat_n`, `sat_load_n`,
-`short_n`, `cut`, `full_age_ms`, `best_mbit`, `ql_ms`, la cola sobre el
-mínimo de un minuto, y los contadores `cut_full`, `cut_short`,
+`short_n`, `lossy` y `lossy_noprobe` (perdió lo bastante hace poco, y si
+por eso no se sondea; solo con un tipo o `eta_buffer` que lo siga), `cut`,
+`full_age_ms`, `best_mbit`, `ql_ms`, la cola sobre el
+mínimo de un minuto, y los contadores `cut_full`, `cut_short`, `cut_loss`,
 `restore_rest`).
 
 ## Protocolo v4

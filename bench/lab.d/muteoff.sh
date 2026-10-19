@@ -41,9 +41,9 @@ muteoff() {
 	trap 'teardown; exit 130' INT TERM
 	for dir in up down; do
 		if [ "$dir" = up ]; then
-			end=client ns=cli dev=l3
+			end=client ns=$NS_CLI dev=l3
 		else
-			end=server ns=srv dev=s3
+			end=server ns=$NS_SRV dev=s3
 		fi
 		setup && start || return 1
 		pid=$(cat "$RUN/$end.pid")

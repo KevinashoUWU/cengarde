@@ -6,6 +6,7 @@
 #include <unistd.h>
 
 #include "config.h"
+#include "linkmodel.h"
 #include "test.h"
 #include "util.h"
 
@@ -428,6 +429,7 @@ static void test_config_bonding(void)
 	CHECK_EQ(c.split_spread_copy, 1);
 	CHECK(c.governor == 0 && c.governor_target_ms == 20 && c.governor_window_ms == 10000);
 	CHECK(c.capacity_weights == 0 && c.split_eta == 0 && c.pacing == 0);
+	CHECK(c.capacity_sat_ms == c.governor_target_ms && c.rescue_target_ms == c.governor_target_ms);
 	CHECK(warn[0] == '\0');
 	cg_config_free(&c);
 	CHECK_EQ(cg_config_parse(&c, SERVER, err, sizeof(err), warn, sizeof(warn)), 0);
@@ -453,8 +455,10 @@ static void test_config_bonding(void)
 	"reorder = no\nreorder_max_wait_ms = 400\nreorder_dup_wait_ms = 20\nreorder_margin_ms = 25\n" \
 	"reorder_bypass = 256\nreorder_pool_kb = 1024\nsplit_small = 512\nsplit_spread_ms = 0\n" \
 	"split_spread_copy = no\ngovernor = yes\ngovernor_target_ms = 35\ngovernor_window_ms = 30000\n" \
-	"capacity_weights = yes\nsplit_eta = yes\npacing = yes\n"
+	"capacity_weights = yes\nsplit_eta = yes\npacing = yes\ncapacity_sat_ms = 50\n"
 	CHECK_EQ(cg_config_parse(&c, CLIENT KNOBS "split = force\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(c.capacity_sat_ms, 50);  /* its own */
+	CHECK_EQ(c.rescue_target_ms, 35); /* governor_target_ms's */
 	CHECK_EQ(c.reorder, 0);
 	CHECK_EQ(c.reorder_max_wait_ms, 400);
 	CHECK_EQ(c.reorder_dup_wait_ms, 20);
@@ -665,6 +669,49 @@ static void test_config_bonding(void)
 	bad(CLIENT "[link eth1]\nweight = 1001\n", "weight", "between 0 and 1000, got '1001'");
 	bad(CLIENT "[link eth1]\nweight = -1\n", "weight", "got '-1'");
 	bad(CLIENT "[link eth1]\nweight = heavy\n", "weight", "got 'heavy'");
+	/* type, per link (linkmodel.h, story 015): auto by default, one of the
+	 * names, anything else refused with the list; a server has none (its
+	 * client's probes say them). */
+	CHECK_EQ(cg_config_parse(&c,
+				 CLIENT "[link eth1]\nlabel = A\n[link eth2]\ntype = starlink\n[link eth3]\ntype = cellular\n"
+					"[link eth4]\ntype = auto\n[link eth5]\ntype = radio\n[link eth6]\ntype = fiber\n"
+					"[link eth7]\ntype = ethernet\n",
+				 err, sizeof(err), warn, sizeof(warn)),
+		 0);
+	CHECK(warn[0] == '\0');
+	CHECK(cg_config_link(&c, "eth1")->type == CG_LTYPE_AUTO);
+	CHECK(cg_config_link(&c, "eth2")->type == CG_LTYPE_STARLINK);
+	CHECK(cg_config_link(&c, "eth3")->type == CG_LTYPE_CELLULAR);
+	CHECK(cg_config_link(&c, "eth4")->type == CG_LTYPE_AUTO);
+	CHECK(cg_config_link(&c, "eth5")->type == CG_LTYPE_RADIO);
+	CHECK(cg_config_link(&c, "eth6")->type == CG_LTYPE_FIBER);
+	CHECK(cg_config_link(&c, "eth7")->type == CG_LTYPE_ETHERNET);
+	cg_config_free(&c);
+	bad(CLIENT "[link eth1]\ntype = satellite\n", "type",
+	    "expected auto, cellular, starlink, fiber, ethernet or radio, got 'satellite'");
+	bad(CLIENT "[link eth1]\ntype = Starlink\n", "type", "got 'Starlink'");
+	bad(CLIENT "[link eth1]\ntype = \n", "type", "got ''");
+	CHECK_EQ(cg_config_parse(&c, CLIENT "type = starlink\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK(strstr(warn, "unknown key 'type'") != NULL);
+	cg_config_free(&c);
+	CHECK_EQ(cg_config_parse(&c, SERVER "[link eth1]\ntype = starlink\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK(strstr(warn, "unknown key 'type' in [link eth1]") != NULL);
+	cg_config_free(&c);
+	/* exp_link_types: the types the global experiment knobs reach, on
+	 * either end; none by default (every link) */
+	CHECK_EQ(cg_config_parse(&c, SERVER "split_qpred_ms = 300\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK(c.exp_link_types == 0 && c.split_qpred_ms == 300 && c.redund_pace_ms == 0);
+	cg_config_free(&c);
+	CHECK_EQ(cg_config_parse(&c, CLIENT "exp_link_types = starlink, cellular\nredund_pace_ms = 30\n", err,
+				 sizeof(err), warn, sizeof(warn)),
+		 0);
+	CHECK(warn[0] == '\0');
+	CHECK_EQ(c.exp_link_types, (1u << CG_LTYPE_STARLINK) | (1u << CG_LTYPE_CELLULAR));
+	CHECK_EQ(c.redund_pace_ms, 30);
+	CHECK_EQ(cg_config_link_knobs(&c).types, c.exp_link_types);
+	CHECK_EQ(cg_config_link_knobs(&c).pace_ms, 30);
+	cg_config_free(&c);
+	bad(CLIENT "exp_link_types = starlink satellite\n", "exp_link_types", "got 'starlink satellite'");
 	/* The weight is a link's, not global; a server has no [link] weights (its
 	 * client's probes say them), and says so. */
 	CHECK_EQ(cg_config_parse(&c, CLIENT "weight = 2\n", err, sizeof(err), warn, sizeof(warn)), 0);
@@ -998,6 +1045,10 @@ static void test_config_native(void)
 	CHECK(!strcmp(c.tun, "cg0"));
 	CHECK_EQ(c.tun_mtu, CG_TUN_MTU_DEFAULT);
 	cg_config_free(&c);
+	CHECK_EQ(cg_config_parse(&c, CLIENT "tun_txqueuelen = 5000\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(c.tun_txqueuelen, 5000);
+	cg_config_free(&c);
+	CHECK(cg_config_parse(&c, CLIENT "tun_txqueuelen = 200000\n", err, sizeof(err), warn, sizeof(warn)) < 0);
 
 #define NATIVE CLIENT "tunnel = native\ntun = cgt\ntun_addr = 10.79.0.2/16 fd00:79::2/64\ntun_mtu = 1400\n"
 	CHECK_EQ(cg_config_parse(&c, NATIVE, err, sizeof(err), warn, sizeof(warn)), 0);
@@ -1013,6 +1064,11 @@ static void test_config_native(void)
 	CHECK(cg_config_restart_needed(&c, &o) == NULL);
 	o.tun_mtu = 1300;
 	CHECK(!strcmp(cg_config_restart_needed(&c, &o), "tun_mtu"));
+	o.tun_mtu = c.tun_mtu;
+	CHECK_EQ(c.tun_txqueuelen, 0); /* the kernel's */
+	o.tun_txqueuelen = 5000;
+	CHECK(!strcmp(cg_config_restart_needed(&c, &o), "tun_txqueuelen"));
+	o.tun_txqueuelen = 0;
 	o.tun_mtu = 1400;
 	o.ntun_addr = 1;
 	CHECK(!strcmp(cg_config_restart_needed(&c, &o), "tun_addr"));

@@ -11,7 +11,10 @@
 //   and on save, which goes through with valid weights and says what is wrong
 //   with the first bad one; the largest delay difference of the split has the
 //   engine's range and default and says what it does; and the options that
-//   mean nothing without their switch depend on it;
+//   mean nothing without their switch depend on it; each uplink has a
+//   dropdown of its type (the engine's [link] type) in the General tab, shown
+//   while it is in the list of uplinks, that reads and writes its entry of
+//   "list uplink_type 'UPLINK=TYPE'" and leaves the others alone;
 // - status.js: the "Reordering" box shows the engine's "reorder" object (and
 //   says so when the engine has it off) and is not there for an engine without
 //   it, and an uplink the split leaves out for its delay says so, in English
@@ -77,7 +80,7 @@ class Opt {
 	getUIElement() { return this.ui || null; }
 	formvalue() { return this.ui ? this.ui.getValue() : undefined; }
 	depends(d, v) { this.deps.push(typeof d == 'string' ? { [d]: v } : d); }
-	value() {}
+	value(k, t) { (this.values = this.values || []).push([ k, t ]); }
 }
 class Value extends Opt { renderWidget() { return E('input'); } }
 class Flag extends Opt {}
@@ -151,7 +154,7 @@ class DynList {
 	}
 }
 
-async function renderConfig(tr, uplinks) {
+async function renderConfig(tr, uplinks, extra = {}) {
 	const options = {};
 	class Map {
 		constructor() {
@@ -163,8 +166,18 @@ async function renderConfig(tr, uplinks) {
 	}
 	const form = { Map, NamedSection: class {}, Value, Flag, DynamicList, DummyValue, ListValue };
 	const document = { addEventListener() {}, getElementById() { return {}; }, body: E('body') };
-	const saved = { secret: 'A'.repeat(43) + '=', uplink: uplinks };
-	const uci = { get: (c, s, o) => (c === 'cengarde' && s === 'main' ? saved[o] : undefined), load: async () => {} };
+	const saved = { secret: 'A'.repeat(43) + '=', uplink: uplinks, ...extra };
+	// the router's interfaces: lan, loopback and the tunnel are never uplinks,
+	// nor an IPv6 companion (on top of another interface) not chosen yet
+	const network = { lan: {}, loopback: {}, wgcg: {}, wan: {}, lte2: {}, lte3: {}, wan6: { device: '@wan' } };
+	const uci = {
+		get: (c, s, o) => (c === 'cengarde' && s === 'main' ? saved[o] : c === 'network' && network[s] ? network[s][o] : undefined),
+		set: (c, s, o, v) => { if (c === 'cengarde' && s === 'main') saved[o] = v; },
+		unset: (c, s, o) => { if (c === 'cengarde' && s === 'main') delete saved[o]; },
+		sections: (c) => (c === 'network' ? Object.keys(network).map((n) => ({ '.name': n })) : []),
+		load: async () => {}
+	};
+	options.saved = saved;
 	const fs = { exec_direct: async () => ({}), read: async () => '' };
 	const L = { resolveDefault: (p, d) => p.catch(() => d), toArray: (x) => [].concat(x ?? []), bind: (f) => f };
 	const ui = { createHandlerFn: (t, f) => f, addTimeLimitedNotification() {} };
@@ -295,6 +308,54 @@ for (const [lang, tr] of [ [ 'en', english ], [ 'es', spanish ] ]) {
 	assert.equal(w.remove('up9=2'), true, 'valid once the bad entry is removed');
 	// with no uplinks chosen, any weight in the list is wrong
 	assert.notEqual(new DynList(none.split_weight, [ 'wan=2' ]).checkList(), true, 'no uplinks: a listed weight is refused');
+
+	// each uplink's type: a dropdown per interface that can be an uplink, in
+	// the General tab, shown while the interface is in the list of uplinks,
+	// in bonding and redundancy alike (no other switch)
+	const TYPES = [ 'auto', 'cellular', 'starlink', 'fiber', 'ethernet', 'radio' ];
+	for (const n of [ 'wan', 'lte2', 'lte3' ]) {
+		const t = o['uplink_type_' + n];
+
+		assert.ok(t, `a type for ${n}`);
+		assert.equal(t.tab, 'general');
+		assert.equal(t.cls, 'ListValue');
+		assert.equal(t.default, 'auto', 'auto unless set: the engine as before');
+		assert.deepEqual(t.values.map((v) => v[0]), TYPES, 'the engine\'s types, in order');
+		assert.deepEqual(t.deps, [ { uplink: n, '!contains': true } ], `${n}'s shows while ${n} is an uplink`);
+		assert.ok(t.title.includes(n), 'its title names the uplink');
+	}
+	for (const n of [ 'lan', 'loopback', 'wgcg', 'wan6' ])
+		assert.equal(o['uplink_type_' + n], undefined, `no type for ${n}`);
+	assert.ok(o.uplink_type_wan.descr.includes('Starlink'), `${lang}: it says what the type changes`);
+	// reads and writes its own entry of the list, the others untouched
+	const typed = await renderConfig(tr, [ 'wan', 'lte2' ], { uplink_type: [ 'wan=starlink', 'lte3=radio', 'lte2=bogus' ] });
+	assert.equal(typed.uplink_type_wan.cfgvalue('main'), 'starlink');
+	assert.equal(typed.uplink_type_lte3.cfgvalue('main'), 'radio');
+	assert.equal(typed.uplink_type_lte2.cfgvalue('main'), 'auto', 'a type cengarde-setup does not take reads as auto');
+	typed.uplink_type_lte2.write('main', 'cellular');
+	assert.deepEqual(typed.saved.uplink_type, [ 'wan=starlink', 'lte3=radio', 'lte2=cellular' ]);
+	typed.uplink_type_wan.write('main', 'fiber');
+	assert.deepEqual(typed.saved.uplink_type, [ 'lte3=radio', 'lte2=cellular', 'wan=fiber' ]);
+	typed.uplink_type_wan.write('main', 'auto');
+	assert.deepEqual(typed.saved.uplink_type, [ 'lte3=radio', 'lte2=cellular' ], 'auto writes nothing');
+	// an uplink taken out of the list (its option hidden, so LuCI removes it)
+	typed.uplink_type_lte3.remove('main');
+	assert.deepEqual(typed.saved.uplink_type, [ 'lte2=cellular' ]);
+	typed.uplink_type_lte2.remove('main');
+	assert.equal(typed.saved.uplink_type, undefined, 'the last one out unsets the list');
+	// a hidden uplink with no entry changes nothing (no change for LuCI to save)
+	const quiet = await renderConfig(tr, [ 'wan' ], { uplink_type: 'wan=starlink' });
+	const set0 = quiet.saved;
+	quiet.uplink_type_lte3.remove('main');
+	assert.equal(set0.uplink_type, 'wan=starlink', 'untouched, still as UCI handed it');
+	quiet.uplink_type_wan.write('main', 'starlink');
+	assert.equal(set0.uplink_type, 'wan=starlink', 'the same type: untouched');
+	// a single entry saved as a string, as UCI hands one over
+	const single = await renderConfig(tr, 'wan', { uplink_type: 'wan=starlink' });
+	assert.equal(single.uplink_type_wan.cfgvalue('main'), 'starlink');
+	// a chosen interface that is not in the network config still gets one
+	const gone = await renderConfig(tr, [ 'wan', 'old' ]);
+	assert.ok(gone.uplink_type_old, 'a chosen uplink always has its type');
 }
 
 // ---- status.js

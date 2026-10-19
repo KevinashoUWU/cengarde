@@ -89,6 +89,7 @@
 #include "engine.h"
 #include "health.h"
 #include "idmap.h"
+#include "linkmodel.h"
 #include "log.h"
 #include "pair.h"
 #include "pktinfo.h"
@@ -96,6 +97,7 @@
 #include "replay.h"
 #include "sock.h"
 #include "capacity.h"
+#include "fec.h"
 #include "pace.h"
 #include "tcpfree.h"
 #include "rescue.h"
@@ -138,6 +140,7 @@ struct path {
 	int peer_muted;       /* the client carries no upload on this path */
 	uint16_t bond_w;      /* the weight its newest probe's tail gives it (split = client) */
 	uint8_t bond_ok;      /* that probe had a tail */
+	uint8_t type;         /* the link type that tail says (linkmodel.h), auto without one */
 	uint64_t tx_pkts, tx_bytes, tx_drops;
 	uint64_t tx_split;     /* of tx_pkts, split packets (split.h): its share, or all of them with weight 0 */
 	uint64_t moves;        /* changes of address, at either end */
@@ -161,6 +164,9 @@ struct session {
 	uint64_t resc_congested; /* not sent again: lost on a full path (TCP has to see it) */
 	int peer_rescue;          /* the client keeps what it sends up: its reorder asks (rescue.h) */
 	uint64_t nacks_sent;      /* NACKs sent to the client for the upload */
+	struct cg_fec_rx *fec;    /* the upload's parities and DATA kept for them (fec.h), NULL: no fec */
+	uint64_t fec_dups;        /* rebuilt packets that had arrived (or been given up) meanwhile */
+	uint64_t fec_unused;      /* parities taken without fec on this end */
 	uint64_t resc_gone_tx, resc_gone_rx; /* CG_F_GONE said to the client; asked gaps it said were gone */
 	struct cg_ro_cfg rocf;    /* the server's reorder settings, with its rescue */
 	uint32_t tx_ctl; /* next probe reply sequence */
@@ -173,6 +179,10 @@ struct session {
 	struct cg_cap_total ctot;             /* their total, for a shaper on the router's interface */
 	struct cg_eta eta;                    /* the split by expected arrival, with split_eta */
 	struct cg_tickle tk;                  /* with split_eta, an idle link tickled (tickle.h) */
+	struct cg_eta pace;                   /* the copies' expected arrivals, with a path's pace_ms */
+	struct cg_link_model lm[CG_MAX_LINKS]; /* each path's model (path_models) */
+	uint32_t pace_w[CG_MAX_LINKS];        /* each path's copy window (cg_link_pace_windows), us, 0: every copy */
+	uint8_t pace_any;                     /* a path with one */
 	struct cg_replay replay; /* DATA up; its lost: lost on every link (lost_all) */
 	struct cg_replay ctl;    /* probes */
 	struct cg_arrivals arr;  /* by link, and joint lateness (joint) */
@@ -261,6 +271,7 @@ struct server {
 	int multi;            /* [client] sections: their names in the logs, the forward table */
 	struct cg_cookie_keys ck;
 	int ep, tfd;
+	uint64_t ticks_missed, tick_max_us; /* timer expirations the tick ran late for, and its longest run */
 	struct lane lane[CG_MAX_LANES];
 	uint32_t nlanes;        /* listen sockets: 1 without a group */
 	int jfd;                /* the group's junk socket, -1 without a group */
@@ -333,7 +344,12 @@ struct server {
 	 * its session closed meanwhile), and probe replies */
 	uint32_t q_sess[CG_BATCH];
 	uint16_t q_pool[CG_BATCH];
+	/* Packets rebuilt from parities (fec.h), queued like the listen
+	 * batch's until q_flush; fec_nout of them in use. */
+	uint8_t fec_out[CG_BATCH][CG_FEC_PLEN_MAX];
+	int fec_nout;
 	int8_t pick[CG_BATCH]; /* per packet of a download batch: its one path (split), or -1 (every carrier) */
+	uint16_t cmask[CG_BATCH]; /* with a path's pace_ms: the carriers a packet of every carrier goes on */
 	uint8_t reply[CG_BATCH][CG_HDR_LEN + CG_PROBE_BOND_LEN];
 	struct sockaddr_storage reply_to[CG_BATCH];
 	union cg_ctl_tx reply_ctl[CG_BATCH];
@@ -648,6 +664,8 @@ static void session_destroy(struct server *s, struct session *S, const char *why
 	cg_idmap_del(&s->ids, cg_sesskey(C->mix, S->id));
 	free(S->resc_idx);
 	S->resc_idx = NULL;
+	free(S->fec);
+	S->fec = NULL;
 	S->used = 0;
 	if (!--C->nsess)
 		C->alone_ms = now_ms;
@@ -692,6 +710,7 @@ static void client_close(struct server *s, struct client *C, const char *why, ui
  * CG_CLIENT_SESSIONS: a new one replaces the one heard from least recently
  * (a router restarting in a loop leaves one behind each time). */
 static void rescue_apply(const struct server *s, struct session *S);
+static struct cg_fec_rx *fec_rx_new(void);
 
 static struct session *session_create(struct server *s, struct client *C, const struct cg_hdr *h,
 				      const struct cg_probe_info *pi, const struct sockaddr_storage *from,
@@ -765,6 +784,7 @@ static struct session *session_create(struct server *s, struct client *C, const 
 	/* Its index into the rescue ring; without memory, no rescue for it. */
 	if (s->resc.n)
 		S->resc_idx = calloc(CG_RESC_IDX, sizeof(*S->resc_idx));
+	S->fec = s->cfg->fec ? fec_rx_new() : NULL;
 	C->nsess++;
 	s->nsess++;
 	C->newest = (int32_t)(S - s->s);
@@ -1081,11 +1101,15 @@ static void on_probe(struct server *s, struct session *S, struct path *P, unsign
 		cg_split_reset(&S->sp);
 	P->bond_ok = pb != NULL;
 	P->bond_w = pb ? pb->weight : 0;
+	/* Its type, for this path's download (story 015); auto from a client
+	 * that predates it, or a type this end does not know. */
+	P->type = pb ? (uint8_t)cg_link_type_norm(pb->type) : CG_LTYPE_AUTO;
 	/* The client timed our last reply's trip down this path. */
 	if (h->flags & CG_F_OWD) {
 		P->last_owd_ms = now_ms;
 		cg_health_report(&S->dh[link], P->peer_view.owd, now_ms,
-				 CG_STALL_PROBES * (P->interval_ms > DEFAULT_INTERVAL_MS ? P->interval_ms : DEFAULT_INTERVAL_MS));
+				 cg_health_valid_ms(P->interval_ms, CG_STALL_PROBES * (P->interval_ms > DEFAULT_INTERVAL_MS ?
+										      P->interval_ms : DEFAULT_INTERVAL_MS)));
 	}
 }
 
@@ -1131,6 +1155,7 @@ static void q_flush(struct server *s, int *nq)
 		if (s->q_pool[j] != CG_RO_NOBUF)
 			cg_ro_pool_put(&s->pool, s->q_pool[j]);
 	*nq = 0;
+	s->fec_nout = 0;
 }
 
 /* Queues a payload for S's WireGuard, after what S has queued already;
@@ -1190,7 +1215,7 @@ static int send_path(struct server *s, struct session *S, int p, const uint8_t *
 static void rescue_apply(const struct server *s, struct session *S)
 {
 	S->rocf = s->rocf;
-	S->rocf.rescue_us = s->cfg->reorder && S->peer_rescue ? s->cfg->rescue_wait_ms * 1000 : 0;
+	S->rocf.rescue_us = s->cfg->reorder && S->peer_rescue ? cg_rescue_wait_ms(s->cfg) * 1000 : 0;
 }
 
 /* The upload gaps S's reorderer asked for, as NACKs down its live path of
@@ -1290,6 +1315,67 @@ static void up_deliver(struct server *s, int *nq, struct session *S, const struc
 	ro_track(s, S);
 }
 
+/* A receiver's FEC memory (fec.h): the parities and a ring of the DATA it
+ * got lately, in one block; NULL without memory (no fec for the session). */
+static struct cg_fec_rx *fec_rx_new(void)
+{
+	size_t n = CG_FEC_RING;
+	uint8_t *b = calloc(1, sizeof(struct cg_fec_rx) + n * (sizeof(uint32_t) + sizeof(uint16_t) + 2) +
+				   n * CG_FEC_PLEN_MAX);
+	struct cg_fec_rx *r = (struct cg_fec_rx *)b;
+
+	if (!b)
+		return NULL;
+	b += sizeof(*r);
+	r->seq = (uint32_t *)b;
+	b += n * sizeof(uint32_t);
+	r->len = (uint16_t *)b;
+	b += n * sizeof(uint16_t);
+	r->have = b;
+	b += n;
+	r->pidx = b;
+	b += n;
+	r->mem = b;
+	return r;
+}
+
+/* S's DATA seq rebuilt from a parity (len bytes at p): on to WireGuard as
+ * if it had come up path link at now, unless it did come meanwhile, or
+ * was given up (the replay window says). */
+static void fec_deliver(struct server *s, int *nq, struct session *S, uint32_t seq, const uint8_t *p, uint16_t len,
+			uint8_t link, uint32_t ts, uint32_t now, uint64_t now_ms)
+{
+	struct cg_hdr h = { .type = CG_T_DATA, .link = link, .session = S->id, .seq = seq, .ts = ts };
+	uint8_t *out;
+
+	if (cg_replay_check(&S->replay, seq) != CG_RP_NEW) {
+		S->fec_dups++;
+		return;
+	}
+	cg_replay_mark(&S->replay, seq);
+	if (s->fec_nout == CG_BATCH)
+		q_flush(s, nq);
+	out = s->fec_out[s->fec_nout++];
+	memcpy(out, p, len);
+	cg_wgw_from_client(&S->wgw, cg_wg_handshake(out, len), now_ms);
+	S->up_pkts++;
+	S->up_bytes += len;
+	cg_wgs_add(&s->wgs_up, out, len);
+	up_deliver(s, nq, S, &h, out, len, expect_mask(S, now_ms), now);
+}
+
+/* Tries S's parity slot k (fec.h) and hands on what it rebuilds. */
+static void fec_try(struct server *s, int *nq, struct session *S, int k, uint8_t link, uint32_t ts, uint32_t now,
+		    uint64_t now_ms)
+{
+	uint8_t buf[CG_FEC_PLEN_MAX];
+	uint32_t seq;
+	uint16_t len;
+
+	if (k >= 0 && cg_fec_rx_try(S->fec, k, buf, &seq, &len) == 1)
+		fec_deliver(s, nq, S, seq, buf, len, link, ts, now, now_ms);
+}
+
 /* Whether path p of S is full, so that what it loses is congestion, for TCP
  * to see, not a loss to send again (rescue.h): its rescue weight
  * (capacity.h's cg_cap_rescue_w, from where its queue will be in a second)
@@ -1297,7 +1383,7 @@ static void up_deliver(struct server *s, int *nq, struct session *S, const struc
  * links lossy at random as well; story 013.) */
 static int path_full(const struct server *s, const struct session *S, unsigned p)
 {
-	return cg_cap_rescue_w(&S->cap[p], s->cfg->governor_target_ms * 1000) == 0;
+	return cg_cap_full(&S->cap[p], s->cfg->rescue_target_ms * 1000, S->lm[p].rfull_hyst);
 }
 
 /* A verified NACK of S (rescue.h): each sequence it names that the ring
@@ -1410,7 +1496,7 @@ static void listen_read(struct server *s, struct lane *ln)
 			struct path *P;
 			struct cg_hdr h;
 			int verified = 0, fresh = 0, c;
-			uint16_t expect;
+			uint16_t expect, rs;
 			char a[64];
 
 			if (s->in.msg[i].msg_hdr.msg_flags & MSG_TRUNC) {
@@ -1418,7 +1504,7 @@ static void listen_read(struct server *s, struct lane *ln)
 				continue;
 			}
 			if (cg_hdr_parse(&h, b, len) < 0 ||
-			    (h.type != CG_T_DATA && h.type != CG_T_PROBE && h.type != CG_T_NACK) ||
+			    (h.type != CG_T_DATA && h.type != CG_T_PROBE && h.type != CG_T_NACK && h.type != CG_T_FEC) ||
 			    h.link >= CG_MAX_LINKS) {
 				s->rx_malformed++;
 				if (cg_ratelimit_ok(&s->rl_auth, now_ms, 10000))
@@ -1506,6 +1592,17 @@ static void listen_read(struct server *s, struct lane *ln)
 				on_nack(s, S, h.flags, b + CG_HDR_LEN, len - CG_HDR_LEN, now_ms);
 				continue;
 			}
+			if (h.type == CG_T_FEC) {
+				/* A parity of the upload (fec.h): kept, and what it
+				 * can rebuild now goes on. */
+				if (!S->fec) {
+					S->fec_unused++;
+					continue;
+				}
+				fec_try(s, &nq, S, cg_fec_rx_parity(S->fec, b + CG_HDR_LEN, (unsigned)(len - CG_HDR_LEN)),
+					h.link, h.ts, now32, now_ms);
+				continue;
+			}
 			P = &S->path[h.link];
 			if (h.type == CG_T_PROBE) {
 				/* A new link, or an address the path never used:
@@ -1544,8 +1641,17 @@ static void listen_read(struct server *s, struct lane *ln)
 			S->up_pkts++;
 			S->up_bytes += len - CG_HDR_LEN;
 			cg_wgs_add(&s->wgs_up, b + CG_HDR_LEN, len - CG_HDR_LEN);
-			up_deliver(s, &nq, S, &h, b + CG_HDR_LEN, len - CG_HDR_LEN,
-				   s->cfg->reorder_idle_ms ? ro_rset(s, S, now_ms) : expect, now32);
+			rs = s->cfg->reorder_idle_ms ? ro_rset(s, S, now_ms) : expect;
+			if (S->fec) {
+				/* Kept for the parities (fec.h); one waiting for
+				 * this packet may rebuild another now. */
+				int k = cg_fec_rx_put(S->fec, h.seq, b + CG_HDR_LEN, (uint16_t)(len - CG_HDR_LEN));
+
+				up_deliver(s, &nq, S, &h, b + CG_HDR_LEN, len - CG_HDR_LEN, rs, now32);
+				fec_try(s, &nq, S, k, h.link, h.ts, now32, now_ms);
+				continue;
+			}
+			up_deliver(s, &nq, S, &h, b + CG_HDR_LEN, len - CG_HDR_LEN, rs, now32);
 		}
 		q_flush(s, &nq);
 		if (nr)
@@ -1607,7 +1713,11 @@ struct dpaths {
 /* The paths that may take a share of a split download (split.h): live and
  * carrying, not muted for delay (guard G1), and with a verified packet from
  * the client within CG_SPLIT_STALE_PROBES of the interval it announced on
- * that path (guard G3). One with a weight takes every split packet, none
+ * that path (guard G3), and a probe saying the client hears our replies on
+ * it as recently (last_owd_ms): the client's packets up a path keep
+ * last_rx_ms alive while the path down is stuck, which kept a stuck download
+ * path in the split ~1.3 s against 0.3 s for the upload (clockwork audit
+ * C6). One with a weight takes every split packet, none
  * makes the split duplicate everything (guard G2). */
 static uint16_t split_eligible_g3(const struct session *S, const struct dpaths *d, uint64_t now_ms, uint16_t *stale)
 {
@@ -1616,7 +1726,8 @@ static uint16_t split_eligible_g3(const struct session *S, const struct dpaths *
 	for (int p = 0; p < CG_MAX_LINKS; p++) {
 		if (!((d->live & d->carry) >> p & 1) || S->dh[p].state != CG_H_ACTIVE)
 			continue;
-		if (cg_split_stale(S->path[p].last_rx_ms, now_ms, S->path[p].interval_ms))
+		if (cg_split_stale(S->path[p].last_rx_ms, now_ms, S->path[p].interval_ms) ||
+		    cg_split_stale(S->path[p].last_owd_ms, now_ms, S->path[p].interval_ms))
 			st |= (uint16_t)(1u << p);
 		else
 			e |= (uint16_t)(1u << p);
@@ -1688,7 +1799,8 @@ static void down_prepare(struct server *s, struct session *S, int m, uint8_t *bu
 					 s->cfg->split_stress_dup);
 
 	/* Before the header: CG_F_SPLIT is under the MAC. */
-	s->pick[m] = (int8_t)(d->split ? cg_split_pick_eta(&S->sp, s->cfg->split_eta ? &S->eta : NULL, s->cfg->split_eta ? &S->tk : NULL, now_us,
+	s->pick[m] = (int8_t)(d->split ? cg_split_pick_eta(&S->sp, s->cfg->split_eta ? &S->eta : NULL,
+							   s->cfg->split_eta ? &S->tk : NULL, now_us,
 							   d->k.carriers, stress ? 0 : cg_split_stress_elig(&S->spread, d->k.eligible, s->cfg->split_stress_single), d->k.dup, d->w,
 							   s->native ? CG_WGS_DATA : buf[0],
 							   (uint32_t)len, s->cfg->split_small, &h.flags)
@@ -1725,7 +1837,7 @@ static void down_prepare(struct server *s, struct session *S, int m, uint8_t *bu
 		cg_resc_earn(&S->resc_b,
 			     only < 0 ? (uint32_t)len
 				      : (uint32_t)((uint64_t)len *
-						   cg_cap_rescue_w(&S->cap[only], s->cfg->governor_target_ms * 1000) /
+						   cg_cap_rescue_w(&S->cap[only], s->cfg->rescue_target_ms * 1000) /
 						   CG_CAP_W_ONE),
 			     s->cfg->rescue_pct);
 	}
@@ -1754,6 +1866,15 @@ static void down_send(struct server *s, struct session *S, int m, uint64_t now_m
 	for (int p = 0; p < CG_MAX_LINKS; p++)
 		if ((carry >> p & 1) || ((live >> p & 1) && s->cfg->mute_trickle))
 			order[no++] = p;
+	if (S->pace_any) {
+		uint64_t now_us = cg_now_us();
+
+		for (int j = 0; j < m; j++)
+			s->cmask[j] = s->pick[j] >= 0 || s->oiov[j][1].iov_len < CG_PACE_SMALL
+					      ? 0xffff
+					      : cg_eta_copies(&S->pace, carry, (uint32_t)s->oiov[j][1].iov_len, now_us,
+							      S->pace_w);
+	}
 	for (int o = 0; o < no; o++) {
 		int p = order[(o + S->rot) % (unsigned)no];
 		struct path *P = &S->path[p];
@@ -1761,7 +1882,8 @@ static void down_send(struct server *s, struct session *S, int m, uint64_t now_m
 
 		if (carry >> p & 1) {
 			for (int j = 0; j < m; j++)
-				if (cg_split_dst(s->pick[j], carry, d->k.dup) >> p & 1)
+				if ((cg_split_dst(s->pick[j], carry, d->k.dup) >> p & 1) &&
+				    (!S->pace_any || (s->cmask[j] >> p & 1)))
 					sel[k++] = j;
 		} else if ((live >> p & 1) && s->cfg->mute_trickle) {
 			for (int j = 0; j < m; j++)
@@ -1936,9 +2058,16 @@ static void spread_tick(struct server *s, struct session *S, const char *tag, ui
 		cg_dec_edge(&S->dec, &S->dec_rfull, cg_resc_low(&S->resc_b), now_ms, CG_DEC_NOLINK,
 			    CG_DEC_RESCUE_FULL_ON, CG_DEC_RESCUE_FULL_OFF, (int64_t)S->resc_b.credit);
 	cg_decrec_g4_before(&S->spread, before);
+	for (int p = 0; p < CG_MAX_LINKS; p++) {
+		S->spread.dwell_ms[p] = S->lm[p].dwell_ms;
+		S->spread.dwell_oq_us[p] = (int32_t)S->lm[p].dwell_oq_ms * 1000;
+	}
 	changed = cg_split_spread_eval_r(&S->spread, S->dh, (uint16_t)(d.elig & ~d.dup0), s->cfg->split_spread_ms * 1000,
 					 s->cfg->mute_settle_ms, now_ms, s->cfg->split_stress_rejoin);
 	cg_decrec_g4(&S->dec, &S->spread, changed, before, &S->dec_stress, &S->dec_recover, now_ms);
+	for (int p = 0; p < CG_MAX_LINKS; p++)
+		if ((changed >> p & 1) && S->spread.ev[p] == CG_G4_LEAVE_QUEUE)
+			cg_cap_episode(&S->cap[p], now_ms, S->lm[p].g4_episode); /* audit C5 */
 
 	for (int p = 0; changed; p++, changed >>= 1) {
 		int32_t ms = S->spread.behind_us[p] / 1000;
@@ -1978,18 +2107,27 @@ static void gov_tick(struct server *s, struct session *S, uint64_t now_ms)
 
 /* Each path's download capacity (capacity.h), from what the client says it
  * received on it, and with capacity_weights the split's weights from them
- * (scaled by the governor's, with governor), after the governor's tick. */
+ * (scaled by the governor's, with governor), after the governor's tick.
+ * Each path with the model of the type its client says (S->lm,
+ * path_models). */
 static void cap_tick(struct server *s, struct session *S, uint16_t live, uint64_t now_ms)
 {
-	struct cg_cap_cfg cc = { .window_ms = s->cfg->governor_window_ms, .sat_us = s->cfg->governor_target_ms * 1000 };
+	struct cg_cap_cfg cc = { .window_ms = s->cfg->governor_window_ms, .sat_us = s->cfg->capacity_sat_ms * 1000 };
 
 	for (int p = 0; p < CG_MAX_LINKS; p++) {
 		const struct path *P = &S->path[p];
 
 		if (P->used) {
+			const struct cg_link_model *m = &S->lm[p];
 			uint64_t was = cg_cap_bps(&S->cap[p]);
-			unsigned ev = cg_cap_tick(&S->cap[p], now_ms, P->peer_view_ms, P->peer_view.rx, P->tx_pkts,
-						  P->tx_bytes, &S->dh[p], &cc);
+			unsigned ev;
+
+			cc.loss_pct = m->loss_pct;
+			cc.lossy = cg_link_tracks_loss(m);
+			cc.lossy_probe = !m->lossy_noprobe;
+			cc.rfull_mode = m->rfull_hyst;
+			ev = cg_cap_tick(&S->cap[p], now_ms, P->peer_view_ms, P->peer_view.rx, P->tx_pkts, P->tx_bytes,
+					 &S->dh[p], &cc);
 
 			cg_decrec_cap(&S->dec, &S->cap[p], (unsigned)p, ev, was, now_ms);
 		}
@@ -2004,10 +2142,15 @@ static void cap_tick(struct server *s, struct session *S, uint16_t live, uint64_
 		uint64_t tb[CG_MAX_LINKS], tc[CG_MAX_LINKS];
 		uint16_t due;
 
-		cg_cap_eta(&S->eta, S->cap, live, cc.sat_us / 2, s->cfg->split_stale_max, cg_tickle_backoff(&S->tk), now_ms * 1000);
+		S->eta.tick_ms = CG_TICK_MS;
+		cg_cap_eta(&S->eta, S->cap, live, cc.sat_us / 2, S->lm, s->cfg->split_stale_max,
+			   cg_tickle_backoff(&S->tk), now_ms * 1000);
 		cg_cap_tickle(S->cap, live, now_ms, &due, tb, tc);
 		cg_tickle_tick(&S->tk, now_ms * 1000, (uint64_t)s->cfg->split_tickle_ms * 1000, due, tb, tc);
 	}
+	if (S->pace_any) /* the copies' expected arrivals (redund_pace_ms, per path) */
+		cg_cap_eta(&S->pace, S->cap, live, cc.sat_us / 2, NULL, s->cfg->split_stale_max,
+			   cg_tickle_backoff(&S->tk), now_ms * 1000);
 }
 
 /* SO_MAX_PACING_RATE on a lane's socket (pace.h): fq on the way out paces
@@ -2057,6 +2200,21 @@ static void pace_lanes(struct server *s)
 	}
 }
 
+/* Each path's model (linkmodel.h): the preset of the type its client says,
+ * with the global knobs on top (eta_buffer, capacity_loss_pct, the
+ * clockwork audit's experiments, exp_link_types); the loops of a tick read
+ * it. */
+static void path_models(const struct server *s, struct session *S)
+{
+	struct cg_link_knobs k = cg_config_link_knobs(s->cfg);
+	uint8_t type[CG_MAX_LINKS];
+
+	for (int p = 0; p < CG_MAX_LINKS; p++)
+		type[p] = S->path[p].used ? S->path[p].type : CG_LTYPE_AUTO;
+	cg_link_models(type, CG_MAX_LINKS, &k, S->lm);
+	S->pace_any = (uint8_t)cg_link_pace_windows(S->lm, CG_MAX_LINKS, S->pace_w);
+}
+
 static void health_tick(struct server *s, uint64_t now_ms)
 {
 	for (uint32_t i = 0; i < s->cap; i++) {
@@ -2066,6 +2224,7 @@ static void health_tick(struct server *s, uint64_t now_ms)
 
 		if (!S->used)
 			continue;
+		path_models(s, S);
 		path_masks(S, now_ms, &present, &live);
 		changed = cg_health_eval(S->dh, CG_MAX_LINKS, live, now_ms, &s->hcfg);
 		cg_decrec_health(&S->dec, S->dh, changed, now_ms);
@@ -2237,6 +2396,8 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 	cg_json_str(j, "version", CG_VERSION);
 	cg_json_str(j, "description", s->cfg->description);
 	cg_json_u64(j, "uptime_ms", now_ms - s->start_ms);
+	cg_json_u64(j, "ticks_missed", s->ticks_missed); /* the tick ran late (clockwork audit) */
+	cg_json_u64(j, "tick_max_us", s->tick_max_us);
 	cg_json_u64(j, "time_ms", cg_wall_ms());
 	cg_json_str(j, "config_error", s->config_error);
 	cg_json_str(j, "listen", s->laddr);
@@ -2331,6 +2492,7 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 		cg_json_u64(j, "queue_leaves", S->spread.n_qleave);
 		cg_json_u64(j, "recoveries", S->spread.n_recover);
 		cg_json_u64(j, "stalls", S->spread.n_stall);
+		cg_json_u64(j, "dwells", S->spread.n_dwell);
 		cg_json_u64(j, "packets", S->sdup.pkts);
 		cg_json_u64(j, "bytes", S->sdup.bytes);
 		cg_json_end(j, '}');
@@ -2338,6 +2500,13 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 		cg_json_bool(j, "governor", s->cfg->governor);
 		cg_json_bool(j, "capacity_weights", s->cfg->capacity_weights);
 		cg_json_bool(j, "split_eta", s->cfg->split_eta);
+		cg_json_obj(j, "split_by"); /* split.h, enum cg_split_by */
+		cg_json_u64(j, "eta", S->sp.n_by[CG_SPLIT_BY_ETA]);
+		cg_json_u64(j, "wrr", S->sp.n_by[CG_SPLIT_BY_WRR]);
+		cg_json_u64(j, "g2", S->sp.n_by[CG_SPLIT_BY_G2]);
+		cg_json_u64(j, "all", S->sp.n_by[CG_SPLIT_BY_ALL]);
+		cg_json_u64(j, "tickle", S->sp.n_by[CG_SPLIT_BY_TICKLE]);
+		cg_json_end(j, '}');
 		/* What picks the path of a split packet now (decrec.h): with "eta"
 		 * the gov_weight and cap_weight of the paths are not used. */
 		if (d.split)
@@ -2409,6 +2578,16 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 		cg_json_u64(j, "gone_sent", S->resc_gone_tx);
 		cg_json_u64(j, "gone_received", S->resc_gone_rx);
 		cg_json_end(j, '}');
+		/* the upload's parities (fec.h) */
+		cg_json_obj(j, "fec");
+		cg_json_bool(j, "on", S->fec != NULL);
+		cg_json_u64(j, "parities", S->fec ? S->fec->parities : 0);
+		cg_json_u64(j, "recovered", S->fec ? S->fec->recovered : 0);
+		cg_json_u64(j, "unrecovered", S->fec ? S->fec->unrecovered : 0);
+		cg_json_u64(j, "malformed", S->fec ? S->fec->bad : 0);
+		cg_json_u64(j, "already_there", S->fec_dups);
+		cg_json_u64(j, "unused", S->fec_unused);
+		cg_json_end(j, '}');
 		cg_json_joint(j, "joint", &S->arr);
 		cg_json_reorder(j, "reorder", &S->ro, s->cfg->reorder, NULL);
 		cg_json_arr(j, "links");
@@ -2429,6 +2608,7 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 			cg_json_u64(j, "last_rx_ms_ago", now_ms - P->last_rx_ms);
 			cg_json_u64(j, "probe_interval_ms", P->interval_ms);
 			cg_json_str(j, "download", h->state == CG_H_MUTED ? "muted" : "active");
+			cg_json_u64(j, "mute_backoff", h->backoff); /* unmute wait = 2 x settle << it */
 			if (h->have_behind)
 				cg_json_ms_signed(j, "download_behind_ms", h->behind_us);
 			else
@@ -2444,6 +2624,7 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 				cg_json_u64(j, "client_weight", P->bond_w);
 			else
 				cg_json_null(j, "client_weight");
+			cg_json_str(j, "type", cg_link_type_name(P->type)); /* the client's type of it (linkmodel.h) */
 			/* The governor's weight and the queue it measures (null: off,
 			 * or no delay yet). */
 			if (s->cfg->governor)
@@ -2494,7 +2675,7 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 			cg_json_owd_spread(j, "rx_owd_spread_ms", &S->ro, (unsigned)p, rset);
 			cg_json_owd_swing(j, "rx_owd_swing_ms", &S->ro, (unsigned)p);
 			cg_json_u64(j, "rx_reorder_late", p < CG_MAX_LINKS ? S->ro.link[p].late : 0);
-			cg_json_capacity(j, &S->cap[p], s->cfg->governor_target_ms * 1000, now_ms);
+			cg_json_capacity(j, &S->cap[p], s->cfg->rescue_target_ms * 1000, now_ms);
 			/* What the split by expected arrival sees of it (null: off, or no rate). */
 			if (s->cfg->split_eta && S->eta.l[p].bps) {
 				cg_json_ms(j, "eta_base_ms", S->eta.l[p].base_us);
@@ -3505,11 +3686,19 @@ int cg_server_run(struct cg_config *cfg, const struct cg_run *run)
 				traffic = 1;
 				break;
 			case CG_EV_TIMER: {
-				uint64_t expirations;
+				uint64_t expirations = 0;
+
+				uint64_t t0;
 
 				if (read(s->tfd, &expirations, sizeof(expirations)) < 0 && errno != EAGAIN)
 					cg_warn("timerfd: %s", strerror(errno));
+				else if (expirations > 1)
+					s->ticks_missed += expirations - 1;
+				t0 = cg_now_us();
 				tick(s);
+				t0 = cg_now_us() - t0;
+				if (t0 > s->tick_max_us)
+					s->tick_max_us = t0;
 				break;
 			}
 			case CG_EV_CTL: {
@@ -3555,8 +3744,10 @@ out:
 		close(s->tfd);
 	if (s->ep >= 0)
 		close(s->ep);
-	for (uint32_t i = 0; s->s && i < s->cap; i++)
+	for (uint32_t i = 0; s->s && i < s->cap; i++) {
 		free(s->s[i].resc_idx);
+		free(s->s[i].fec);
+	}
 	free(s->s);
 	free(s->ro_active);
 	cg_ro_pool_free(&s->pool);

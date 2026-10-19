@@ -726,6 +726,87 @@ static void test_split_spread_kinds(void)
 	/* without rejoin the fastest waits settle_ms (test_split_spread_lead) */
 }
 
+/* Audit C7: a link of qleft out of the candidates for a short G3 gap keeps
+ * the stress; out for CG_SPLIT_QLEFT_KEEP_MS it is gone. And C6: a delay
+ * report is fresh for CG_FRESH_PROBES of the probe interval. */
+static void test_split_qleft_gap(void)
+{
+	struct cg_hlink h[CG_MAX_LINKS];
+	struct cg_spread sp;
+	uint64_t t = 1000000;
+
+	memset(h, 0, sizeof(h));
+	memset(&sp, 0, sizeof(sp));
+	delay(h, 0, 5000000, t);
+	delay(h, 1, 5000000 + 10 * MSUS, t);
+	cg_split_spread_eval_r(&sp, h, 0x3, SPREAD, SETTLE, t, 1);
+	delay(h, 1, 5000000 + 60 * MSUS, t);
+	cg_split_spread_eval_r(&sp, h, 0x3, SPREAD, SETTLE, t += 100, 1);
+	CHECK_EQ(sp.qleft, 0x2);
+	/* 300 ms without replies on 1 (G3 drops it from the candidates) */
+	for (int k = 0; k < 3; k++)
+		cg_split_spread_eval_r(&sp, h, 0x1, SPREAD, SETTLE, t += 100, 1);
+	CHECK_EQ(sp.qleft, 0x2);
+	CHECK(sp.stress);
+	/* back as a candidate, still behind: still stress */
+	cg_split_spread_eval_r(&sp, h, 0x3, SPREAD, SETTLE, t += 100, 1);
+	CHECK(sp.stress);
+	/* gone for good */
+	cg_split_spread_eval_r(&sp, h, 0x1, SPREAD, SETTLE, t += 100, 1);
+	cg_split_spread_eval_r(&sp, h, 0x1, SPREAD, SETTLE, t += CG_SPLIT_QLEFT_KEEP_MS, 1);
+	CHECK_EQ(sp.qleft, 0);
+	CHECK(!sp.stress);
+
+	CHECK_EQ(cg_health_valid_ms(100, 3000), 500);
+	CHECK_EQ(cg_health_valid_ms(1000, 3000), 3000);
+	CHECK_EQ(cg_health_valid_ms(0, 3000), 3000);
+}
+
+/* Audit C3: with dwell_ms, a link back by a recovery stays in that long
+ * while within twice the spread; beyond it, or later, it leaves; with
+ * dwell_oq_us, only while its own queue is at most that. */
+static void test_split_dwell(void)
+{
+	for (int guard = 0; guard < 3; guard++) {
+		struct cg_hlink h[CG_MAX_LINKS];
+		struct cg_spread sp;
+		uint64_t t = 1000000;
+		/* guard 2: link 1's own queue grows 30 ms after it is back */
+		int32_t own = guard == 2 ? 30 * MSUS : 0;
+
+		memset(h, 0, sizeof(h));
+		memset(&sp, 0, sizeof(sp));
+		sp.dwell_ms[1] = 500; /* link 1's (its model's dwell_ms) */
+		sp.dwell_oq_us[1] = guard ? 20 * MSUS : 0;
+		delay(h, 0, 5000000, t);
+		delay(h, 1, 5000000 + 10 * MSUS, t);
+		cg_split_spread_eval_r(&sp, h, 0x3, SPREAD, SETTLE, t, 1);
+		delay(h, 1, 5000000 + 60 * MSUS, t); /* 1 leaves for its queue */
+		cg_split_spread_eval_r(&sp, h, 0x3, SPREAD, SETTLE, t += 100, 1);
+		CHECK(sp.left & 0x2);
+		delay(h, 1, 5000000 - 10 * MSUS, t); /* 1 drains, 0 queues: 1 back */
+		delay(h, 0, 5000000 + 40 * MSUS, t);
+		cg_split_spread_eval_r(&sp, h, 0x3, SPREAD, SETTLE, t += 100, 1);
+		CHECK(sp.in & 0x2);
+		/* 0 drains, 1 is now 40 ms behind (over the spread, under twice
+		 * it): it stays in while it dwells, unless its own queue grew */
+		delay(h, 0, 5000000 - 50 * MSUS + own, t);
+		delay(h, 1, 5000000 - 10 * MSUS + own, t);
+		cg_split_spread_eval_r(&sp, h, 0x3, SPREAD, SETTLE, t += 100, 1);
+		if (guard == 2) {
+			CHECK(sp.behind_us[1] == 40 * MSUS); /* within twice the spread */
+			CHECK(sp.left & 0x2);
+			continue;
+		}
+		CHECK(sp.in & 0x2);
+		CHECK(!(sp.left & 0x2));
+		CHECK(sp.n_dwell == 1);
+		/* past the dwell: it leaves */
+		cg_split_spread_eval_r(&sp, h, 0x3, SPREAD, SETTLE, t += 500, 1);
+		CHECK(sp.left & 0x2);
+	}
+}
+
 /* A link that leaves in a stall (its delay grows as fast as time, or
  * jumps) arms no copies; one whose queue grows slower than time does. */
 static void test_split_spread_stall(void)
@@ -1122,6 +1203,8 @@ void test_split(void)
 	test_split_spread();
 	test_split_spread_lead();
 	test_split_spread_kinds();
+	test_split_dwell();
+	test_split_qleft_gap();
 	test_split_spread_stall();
 	test_split_spread_base();
 	test_split_sdup();

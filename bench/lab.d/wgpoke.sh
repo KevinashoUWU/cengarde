@@ -50,7 +50,7 @@ wgpoke_router() {
 	pkill -f "$LAB/fakewg.py router" 2>/dev/null
 	sleep 0.2
 	[ "$1" = stop ] && return
-	ip netns exec cli python3 "$LAB/fakewg.py" router 127.0.0.1:50000 127.0.0.1:59401 "$1" >>"$RUN/router-wg.log" 2>&1 &
+	ip netns exec "$NS_CLI" python3 "$LAB/fakewg.py" router 127.0.0.1:50000 127.0.0.1:59401 "$1" >>"$RUN/router-wg.log" 2>&1 &
 }
 
 # wgpoke_client stop|start|restart: the client engine (a new session each start).
@@ -65,7 +65,7 @@ wgpoke_client() {
 		done
 	fi
 	[ "$1" = stop ] && return
-	ip netns exec cli "$CENGARDE_BIN" -c "$RUN/client.conf" >>"$RUN/client.log" 2>&1 &
+	ip netns exec "$NS_CLI" "$CENGARDE_BIN" -c "$RUN/client.conf" >>"$RUN/client.log" 2>&1 &
 	echo $! >"$RUN/client.pid"
 }
 
@@ -78,7 +78,7 @@ wgpoke_engine() {
 		kill -0 "$pid" 2>/dev/null || break
 		sleep 0.1
 	done
-	ip netns exec srv "$CENGARDE_BIN" -c "$RUN/server.conf" >>"$RUN/server.log" 2>&1 &
+	ip netns exec "$NS_SRV" "$CENGARDE_BIN" -c "$RUN/server.conf" >>"$RUN/server.log" 2>&1 &
 	echo $! >"$RUN/server.pid"
 }
 
@@ -120,7 +120,7 @@ wgpoke() {
 	: >"$v"
 	: >"$r"
 	echo 0 >"$delay"
-	ip netns exec srv python3 "$LAB/fakewg.py" vps 127.0.0.1:59301 127.0.0.1:59309 "$delay" >>"$v" 2>&1 &
+	ip netns exec "$NS_SRV" python3 "$LAB/fakewg.py" vps 127.0.0.1:59301 127.0.0.1:59309 "$delay" >>"$v" 2>&1 &
 
 	echo "   1. data flows"
 	wgpoke_router data

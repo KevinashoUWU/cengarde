@@ -65,10 +65,10 @@ mt_run() {
 		return 1
 	fi
 	taskset -p -c "$cpu" "$tid" >/dev/null
-	ip netns exec srv "$BIN/udpgen" -b 127.0.0.1:59301 -l -r 2000 -s "$SIZE" -d "$MTSTALL_S" -g 2 >"$RUN/srv.out" &
+	ip netns exec "$NS_SRV" "$BIN/udpgen" -b 127.0.0.1:59301 -l -r 2000 -s "$SIZE" -d "$MTSTALL_S" -g 2 >"$RUN/srv.out" &
 	gs=$!
 	sleep 0.3 # as in up(): else the server hands the first packets to an unbound port
-	ip netns exec cli "$BIN/udpgen" -b 127.0.0.1:50000 -p 127.0.0.1:59401 -r 2000 -s "$SIZE" -d "$MTSTALL_S" -g 2 \
+	ip netns exec "$NS_CLI" "$BIN/udpgen" -b 127.0.0.1:50000 -p 127.0.0.1:59401 -r 2000 -s "$SIZE" -d "$MTSTALL_S" -g 2 \
 		>"$RUN/cli.out" &
 	gc=$!
 	sleep 1

@@ -26,7 +26,7 @@ replay_probe() {
 	local bind=$1 srv
 	shift
 	srv=${bind%.1:*}.2:59402
-	ip netns exec cli "$BIN/cgprobe" -k "$KEY" -s "$srv" -b "$bind" "$@"
+	ip netns exec "$NS_CLI" "$BIN/cgprobe" -k "$KEY" -s "$srv" -b "$bind" "$@"
 }
 
 # replay_srv EXPR: a value of the server's status (its file is fresh every 200 ms).
@@ -62,7 +62,7 @@ replay_server_restart() {
 	kill "$(cat "$RUN/server.pid")" 2>/dev/null
 	sleep 0.5
 	rm -f "$RUN/passthrough"
-	ip netns exec srv "$CENGARDE_BIN" -c "$RUN/server.conf" >>"$RUN/server.log" 2>&1 &
+	ip netns exec "$NS_SRV" "$CENGARDE_BIN" -c "$RUN/server.conf" >>"$RUN/server.log" 2>&1 &
 	echo $! >"$RUN/server.pid"
 	sleep 0.5
 }
@@ -119,7 +119,7 @@ replay() {
 	out=$(replay_probe 10.0.1.1:47004 -H $((hint ^ 1)) probe c0ffee03 0)
 	replay_expect "another client's hint" "$out" "none" || fail=1
 	replay_expect "rx.other_hint" "$(replay_srv "d['rx']['other_hint']")" "[1-9]*" || fail=1
-	out=$(ip netns exec cli "$BIN/cgprobe" -k "$(printf '%032d' 7 | base64 | head -c 44)" -H "$hint" \
+	out=$(ip netns exec "$NS_CLI" "$BIN/cgprobe" -k "$(printf '%032d' 7 | base64 | head -c 44)" -H "$hint" \
 		-s 10.0.1.2:59402 -b 10.0.1.1:47004 probe c0ffee03 0)
 	replay_expect "another key, our hint" "$out" "none" || fail=1
 	replay_expect "rx.auth_failures" "$(replay_srv "d['rx']['auth_failures']")" "[1-9]*" || fail=1

@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include <string.h>
 
+#include "fec.h"
 #include "proto.h"
 #include "test.h"
 
@@ -39,7 +40,7 @@ void test_proto(void)
 
 	/* Layout: version/type, the client hint at byte 2, link at byte 3,
 	 * session, seq and ts in network order. */
-	CHECK_EQ(pkt[0], 0x61);
+	CHECK_EQ(pkt[0], 0x71);
 	CHECK_EQ(pkt[2], 0x5a);
 	CHECK_EQ(pkt[3], 5);
 	CHECK(!memcmp(pkt + 4, "\xde\xad\xbe\xef\x01\x02\x03\x04\xa0\xb0\xc0\xd0", 12));
@@ -84,9 +85,14 @@ void test_proto(void)
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
 	pkt[0] = 0x51; /* version 5 (no CG_F_FREE) too */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
-	pkt[0] = 0x6f; /* unknown type */
+	pkt[0] = 0x61; /* version 6 (no FEC parity) too */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
-	pkt[0] = 0x61;
+	pkt[0] = 0x7f; /* unknown type */
+	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
+	pkt[0] = 0x76; /* a parity (fec.h): its header and a byte at least */
+	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), sizeof(pkt) > CG_HDR_LEN + CG_FEC_HDR ? 0 : -1);
+	CHECK_EQ(cg_hdr_parse(&p, pkt, CG_HDR_LEN + CG_FEC_HDR), -1);
+	pkt[0] = 0x71;
 	pkt[2] = 0xff; /* any hint parses: the server judges it */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), 0);
 	CHECK_EQ(p.hint, 0xff);
@@ -260,6 +266,43 @@ void test_proto(void)
 		CHECK(r.rescue && !r.reorders && !r.split_me && !r.weight);
 	}
 
+	/* The link type in the bonding tail (bits 20-22, story 015): written
+	 * and read back, next to every other field and untouched by them; a
+	 * writer that predates it writes the bits 0 (auto); a reader that
+	 * predates it masks them off as reserved, its fields the same. */
+	{
+		struct cg_probe_bond b = { .weight = 1000, .reorders = 1, .split_me = 1, .rescue = 1, .full = 1 }, r;
+		uint8_t tp[CG_PROBE_BOND_LEN];
+		uint32_t v;
+
+		CHECK_EQ(CG_BOND_TYPE, 0x00700000u);
+		for (uint8_t t = 0; t <= 7; t++) {
+			b.type = t;
+			cg_probe_bond_write(tp, &b);
+			v = (uint32_t)tp[CG_PROBE_INFO_LEN] << 24 | (uint32_t)tp[CG_PROBE_INFO_LEN + 1] << 16 |
+			    (uint32_t)tp[CG_PROBE_INFO_LEN + 2] << 8 | tp[CG_PROBE_INFO_LEN + 3];
+			CHECK_EQ(v >> 23, 0); /* bits 23+ stay reserved */
+			CHECK_EQ((v >> 20) & 7, t);
+			/* What an older reader knows of the word: bits 0-19 only, the same for every type */
+			CHECK_EQ(v & 0xfffffu, 1000u | CG_BOND_REORDERS | CG_BOND_SPLIT_ME | CG_BOND_RESCUE | CG_BOND_FULL);
+			CHECK_EQ(cg_probe_bond_read(&r, tp, CG_PROBE_BOND_LEN), 1);
+			CHECK(r.type == t && r.weight == 1000 && r.reorders && r.split_me && r.rescue && r.full);
+		}
+		b.type = 9; /* past 3 bits: only the low 3 go, never the bits above */
+		cg_probe_bond_write(tp, &b);
+		CHECK_EQ(tp[CG_PROBE_INFO_LEN] & 0xff, 0x00);
+		CHECK_EQ(cg_probe_bond_read(&r, tp, CG_PROBE_BOND_LEN), 1);
+		CHECK_EQ(r.type, 1);
+		/* An older writer: the word without bits 20-22, read as auto */
+		memcpy(tp + CG_PROBE_INFO_LEN, "\x00\x0f\x03\xe8", 4);
+		CHECK_EQ(cg_probe_bond_read(&r, tp, CG_PROBE_BOND_LEN), 1);
+		CHECK(r.type == 0 && r.weight == 1000 && r.full);
+		/* No tail at all (a 40-byte peer): auto */
+		r.type = 5;
+		CHECK_EQ(cg_probe_bond_read(&r, tp, CG_PROBE_INFO_LEN), 0);
+		CHECK_EQ(r.type, 0);
+	}
+
 	/* NACK: ranges of a base and a 64-bit mask, under the MAC; a count of 0,
 	 * past CG_NACK_RANGES or longer than the payload does not parse. */
 	{
@@ -277,6 +320,7 @@ void test_proto(void)
 		seq[n++] = 5064; /* 64 after 5000: in its mask */
 		seq[n++] = 5065; /* 65 after: a range of its own */
 		CHECK(cg_type_ctl(CG_T_NACK));
+		CHECK(cg_type_ctl(CG_T_FEC));
 		nl = cg_nack_write(nb + CG_HDR_LEN, seq, n, &used);
 		CHECK_EQ(used, n);
 		CHECK_EQ(nb[CG_HDR_LEN], 4); /* 0xffffffe0 + 64 more, 6 more, 5000 (+5064), 5065 */

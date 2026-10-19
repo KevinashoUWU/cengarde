@@ -73,6 +73,8 @@ static void test_tickle_split(void)
 		n1 += k == 1;
 	}
 	CHECK_EQ(n1, 0); /* the ETA alone never picks the slow link here */
+	CHECK_EQ(n0, 100);
+	CHECK_EQ(sp.n_by[CG_SPLIT_BY_TICKLE], 0);
 	bps[1] = 20000000;
 	now += S;
 	cg_tickle_tick(&t, now, 2 * S, 0x2, bps, cap);
@@ -87,6 +89,7 @@ static void test_tickle_split(void)
 	}
 	/* 20 Mbit/s of 40 offered (1000 B every 200 us) */
 	CHECK(n1 >= 45 && n1 <= 55);
+	CHECK_EQ(sp.n_by[CG_SPLIT_BY_TICKLE], (uint64_t)n1); /* counted as the tickle's (status split_by) */
 	CHECK(e.l[1].backlog > 0);
 	/* the link left the split's set: the tickle takes nothing */
 	CHECK_EQ(cg_split_pick_eta(&sp, &e, &t, now + 30000, 0x1, 0x1, 0, w, CG_WGS_DATA, 1000, 100, NULL), -1);

@@ -87,8 +87,8 @@ reorder_ready() {
 # in the delay against its limit).
 reorder_link() {
 	local ns dev
-	for ns in cli srv; do
-		dev=$([ "$ns" = cli ] && echo "l$1" || echo "s$1")
+	for ns in "$NS_CLI" "$NS_SRV"; do
+		dev=$([ "$ns" = "$NS_CLI" ] && echo "l$1" || echo "s$1")
 		ip netns exec "$ns" tc qdisc replace dev "$dev" root netem delay "${2}ms" limit 60000 || return 1
 	done
 }

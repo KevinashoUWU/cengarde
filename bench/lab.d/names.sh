@@ -105,7 +105,7 @@ def live_on(s, addr=None):
 
 
 def ip(*a):
-    subprocess.run(["ip", "-n", "srv", *a], check=True)
+    subprocess.run(["ip", "-n", os.environ.get("NS_SRV", "srv"), *a], check=True)
 
 
 if check == "live":
@@ -223,9 +223,9 @@ names_queries() {
 # names_traffic SECS: 1000 pps down and up for SECS seconds, in the background;
 # names_traffic_wait waits for the end and names_loss reads what came of it.
 names_traffic() {
-	ip netns exec srv "$BIN/udpgen" -b 127.0.0.1:59301 -l -r 1000 -s "$SIZE" -d "$1" -g 2 >"$RUN/names-srv.out" &
+	ip netns exec "$NS_SRV" "$BIN/udpgen" -b 127.0.0.1:59301 -l -r 1000 -s "$SIZE" -d "$1" -g 2 >"$RUN/names-srv.out" &
 	NAMES_PIDS=("$!")
-	ip netns exec cli "$BIN/udpgen" -b 127.0.0.1:50000 -p 127.0.0.1:59401 -r 1000 -s "$SIZE" -d "$1" -g 2 >"$RUN/names-cli.out" &
+	ip netns exec "$NS_CLI" "$BIN/udpgen" -b 127.0.0.1:50000 -p 127.0.0.1:59401 -r 1000 -s "$SIZE" -d "$1" -g 2 >"$RUN/names-cli.out" &
 	NAMES_PIDS+=("$!")
 }
 names_traffic_wait() {
@@ -369,7 +369,7 @@ names_e() {
 # names_e_gone: NXDOMAIN and no server: nothing left to keep.
 names_e_gone() {
 	local t0 row state addrs err next reasons="" took
-	ip -n srv addr del "$NAMES_CUR/32" dev lo
+	ip -n "$NS_SRV" addr del "$NAMES_CUR/32" dev lo
 	t0=$(date +%s.%N)
 	while [ "$(names_ms "$t0")" -lt 20000 ]; do
 		row=$(names_row) && IFS='|' read -r state _ <<<"$row"
@@ -391,7 +391,7 @@ names_e_gone() {
 # live again within NAMES_RECOVER_S s.
 names_e_back() {
 	local out
-	ip -n srv addr add "$NAMES_CUR/32" dev lo
+	ip -n "$NS_SRV" addr add "$NAMES_CUR/32" dev lo
 	names_zone "$NAMES_NAME A $NAMES_CUR 30"
 	if out=$(names_py live "$(date +%s.%N)" "$NAMES_RECOVER_S" "$NAMES_CUR"); then
 		names_case "e3 the server comes back" ok "$out after the record and the address came back (limit ${NAMES_RECOVER_S} s)"
@@ -422,13 +422,13 @@ names() {
 	done
 	for a in "${NAMES_ADDRS[@]}"; do
 		for i in 1 2 3; do
-			ip -n cli route add "$a/32" via "10.0.$i.2" dev "l$i" metric "$i"
+			ip -n "$NS_CLI" route add "$a/32" via "10.0.$i.2" dev "l$i" metric "$i"
 		done
 	done
-	ip -n srv addr add "$NAMES_CUR/32" dev lo
+	ip -n "$NS_SRV" addr add "$NAMES_CUR/32" dev lo
 	names_zone "$NAMES_NAME A $NAMES_CUR 30"
 	: >"$RUN/dns.log"
-	FAKEDNS_LOG="$RUN/dns.log" ip netns exec srv python3 -I "$LAB/fakedns.py" "$RUN/zone" 5353 0.0.0.0 >"$RUN/fakedns.log" 2>&1 &
+	FAKEDNS_LOG="$RUN/dns.log" ip netns exec "$NS_SRV" python3 -I "$LAB/fakedns.py" "$RUN/zone" 5353 0.0.0.0 >"$RUN/fakedns.log" 2>&1 &
 	echo $! >"$RUN/fakedns.pid"
 	sleep 0.5
 	t0=$(date +%s.%N)

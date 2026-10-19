@@ -42,16 +42,16 @@ soak_events() {
 	local t=0 netem=1 i=0 out
 	local -a shapes=("loss 2% delay 20ms" "delay 60ms 10ms" "loss 10%" "delay 5ms")
 	local -a rates=(5mbit 20mbit 2mbit 50mbit)
-	ip netns exec cli tc qdisc replace dev l3 root netem delay 1ms 2>/dev/null || netem=0
+	ip netns exec "$NS_CLI" tc qdisc replace dev l3 root netem delay 1ms 2>/dev/null || netem=0
 	while [ "$t" -lt "$1" ]; do
 		sleep 10
 		t=$((t + 10))
 		if [ $((t % 120)) = 0 ]; then
 			if [ "$netem" = 1 ]; then
 				# shellcheck disable=SC2086 # the shape is several words
-				ip netns exec cli tc qdisc replace dev l3 root netem ${shapes[i % 4]}
+				ip netns exec "$NS_CLI" tc qdisc replace dev l3 root netem ${shapes[i % 4]}
 			else
-				ip netns exec cli tc qdisc replace dev l3 root tbf rate "${rates[i % 4]}" burst 32kb limit 3mb
+				ip netns exec "$NS_CLI" tc qdisc replace dev l3 root tbf rate "${rates[i % 4]}" burst 32kb limit 3mb
 			fi
 			i=$((i + 1))
 			echo "$t shape" >>"$RUN/soak-done.txt"
@@ -63,10 +63,10 @@ soak_events() {
 			echo "$t reload" >>"$RUN/soak-done.txt"
 		fi
 		if [ $((t % 600)) = 0 ]; then
-			ip -n cli link set l2 down
+			ip -n "$NS_CLI" link set l2 down
 			sleep 10
 			t=$((t + 10))
-			ip -n cli link set l2 up
+			ip -n "$NS_CLI" link set l2 up
 			echo "$t l2" >>"$RUN/soak-done.txt"
 		fi
 	done
@@ -84,7 +84,7 @@ soak_events() {
 soak_counts() {
 	"$CENGARDE_BIN" ctl -s "$RUN/client.sock" status >"$RUN/soak-client.json" 2>/dev/null
 	"$CENGARDE_BIN" ctl -s "$RUN/server.sock" status >"$RUN/soak-server.json" 2>/dev/null
-	python3 - "$RUN" <<'EOF'
+	python3 - "$RUN" "$NS_CLI" "$NS_SRV" <<'EOF'
 import json, subprocess, sys
 
 def out(*cmd):
@@ -123,16 +123,16 @@ def veth(ns, dev):
 def qdisc(ns, dev):
     return sum(q.get('drops', 0) for q in parse(out('tc', '-n', ns, '-s', '-j', 'qdisc', 'show', 'dev', dev), []))
 
-run = sys.argv[1]
+run, CLI, SRV = sys.argv[1:4]
 c, s = load(run + '/soak-client.json'), load(run + '/soak-server.json')
-(ce, cn), (se, sn) = snmp('cli'), snmp('srv')
-cwg, swg = wg_socket('cli', 1, 59401), wg_socket('srv', 2, 59301)
+(ce, cn), (se, sn) = snmp(CLI), snmp(SRV)
+cwg, swg = wg_socket(CLI, 1, 59401), wg_socket(SRV, 2, 59301)
 up, down = [], []
 for i in (1, 2, 3):
     up.append(sum(l['tx_drops'] + l['tx_errors'] for l in c.get('links', []) if l.get('name') == 'l%d' % i) +
-              veth('cli', 'l%d' % i) + qdisc('cli', 'l%d' % i))
+              veth(CLI, 'l%d' % i) + qdisc(CLI, 'l%d' % i))
     down.append(sum(l['tx_drops'] for x in s.get('sessions', []) for l in x.get('links', [])
-                    if l.get('address', '').startswith('10.0.%d.1:' % i)) + veth('srv', 's%d' % i))
+                    if l.get('address', '').startswith('10.0.%d.1:' % i)) + veth(SRV, 's%d' % i))
 print(se - swg + sn + cwg, ce - cwg + cn + swg, sum(x.get('wireguard_drops', 0) for x in s.get('sessions', [])),
       c.get('download', {}).get('wireguard_drops', 0), *up, *down)
 EOF
@@ -165,10 +165,10 @@ soak_mode() {
 	while [ $((SECONDS + SOAK_SEG)) -le "$end" ]; do
 		rate=${rates[seg % 4]} size=${sizes[seg / 4 % 3]}
 		read -ra a < <(soak_counts)
-		ip netns exec srv "$BIN/udpgen" -b 127.0.0.1:59301 -l -r "$rate" -s "$size" -d "$SOAK_SEG" -g 2 >"$RUN/srv.out" &
+		ip netns exec "$NS_SRV" "$BIN/udpgen" -b 127.0.0.1:59301 -l -r "$rate" -s "$size" -d "$SOAK_SEG" -g 2 >"$RUN/srv.out" &
 		gs=$!
 		sleep 0.3 # as in up(): else the server hands the first packets to an unbound port
-		ip netns exec cli "$BIN/udpgen" -b 127.0.0.1:50000 -p 127.0.0.1:59401 -r "$rate" -s "$size" -d "$SOAK_SEG" \
+		ip netns exec "$NS_CLI" "$BIN/udpgen" -b 127.0.0.1:50000 -p 127.0.0.1:59401 -r "$rate" -s "$size" -d "$SOAK_SEG" \
 			-g 2 >"$RUN/cli.out" &
 		gc=$!
 		wait "$gs" "$gc"

@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
+#include "fec.h"
 #include "proto.h"
 
 #include <string.h>
@@ -85,6 +86,9 @@ int cg_hdr_parse(struct cg_hdr *h, const uint8_t *buf, size_t len)
 				       plen >= 1 + 12 * (size_t)buf[CG_HDR_LEN]
 			       ? 0
 			       : -1;
+	case CG_T_FEC:
+		/* fec.h's header and one byte at least */
+		return plen > CG_FEC_HDR ? 0 : -1;
 	default:
 		return -1;
 	}
@@ -155,7 +159,8 @@ void cg_probe_bond_write(uint8_t *payload, const struct cg_probe_bond *b)
 
 	put32(payload + CG_PROBE_INFO_LEN, w | (b->reorders ? CG_BOND_REORDERS : 0) |
 						   (b->split_me ? CG_BOND_SPLIT_ME : 0) | (b->rescue ? CG_BOND_RESCUE : 0) |
-						   (b->full ? CG_BOND_FULL : 0));
+						   (b->full ? CG_BOND_FULL : 0) |
+						   ((uint32_t)(b->type & 7) << CG_BOND_TYPE_SHIFT));
 }
 
 int cg_probe_bond_read(struct cg_probe_bond *b, const uint8_t *payload, size_t plen)
@@ -172,6 +177,7 @@ int cg_probe_bond_read(struct cg_probe_bond *b, const uint8_t *payload, size_t p
 	b->split_me = !!(v & CG_BOND_SPLIT_ME);
 	b->rescue = !!(v & CG_BOND_RESCUE);
 	b->full = !!(v & CG_BOND_FULL);
+	b->type = (uint8_t)((v & CG_BOND_TYPE) >> CG_BOND_TYPE_SHIFT);
 	return 1;
 }
 

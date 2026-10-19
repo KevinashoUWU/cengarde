@@ -134,7 +134,7 @@ lanes_traffic() {
 # lanes_send WHAT: one datagram from cli to the server's port: "short"
 # (10 bytes) or "v3" (a protocol 3 header and payload: an older router).
 lanes_send() {
-	ip netns exec cli python3 - "$1" <<'EOF'
+	ip netns exec "$NS_CLI" python3 - "$1" <<'EOF'
 import socket, sys
 
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -157,9 +157,9 @@ lanes() {
 	trap teardown EXIT
 	trap 'teardown; exit 130' INT TERM
 	setup || return 1
-	ip -n srv addr add 10.0.1.20/24 dev s1
-	ip -n srv addr add 198.51.100.7/32 dev lo
-	ip -n cli route add 198.51.100.7/32 via 10.0.2.2 dev l2
+	ip -n "$NS_SRV" addr add 10.0.1.20/24 dev s1
+	ip -n "$NS_SRV" addr add 198.51.100.7/32 dev lo
+	ip -n "$NS_CLI" route add 198.51.100.7/32 via 10.0.2.2 dev l2
 	sed -i -e 's/10\.0\.1\.2:59402/10.0.1.20:59402/' -e 's/10\.0\.2\.2:59402/198.51.100.7:59402/' "$RUN/client.conf"
 	t0=$(date +%s.%N)
 	start
@@ -183,7 +183,7 @@ lanes() {
 	# A second server on the same port: refused, not a member of the group.
 	sed -e "s|$RUN/server.sock|$RUN/server2.sock|" -e "s|$RUN/server.json|$RUN/server2.json|" \
 		"$RUN/server.conf" >"$RUN/server2.conf"
-	ip netns exec srv "$CENGARDE_BIN" -c "$RUN/server2.conf" >"$RUN/server2.log" 2>&1 &
+	ip netns exec "$NS_SRV" "$CENGARDE_BIN" -c "$RUN/server2.conf" >"$RUN/server2.log" 2>&1 &
 	pid2=$!
 	sleep 1
 	if kill -0 "$pid2" 2>/dev/null; then

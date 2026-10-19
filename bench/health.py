@@ -11,6 +11,7 @@ after the queue is gone (a mute decided within SETTLE of GOOD_AT still counts
 the queue).
 """
 import json
+import os
 import subprocess
 import sys
 import time
@@ -41,7 +42,7 @@ def tc(ns, *args):
 def main():
     direction, run = sys.argv[1], sys.argv[2]
     secs, bad_at, good_at = (float(a) for a in sys.argv[3:6])
-    ns, dev = ("cli", "l3") if direction == "up" else ("srv", "s3")
+    ns, dev = (os.environ.get("NS_CLI", "cli"), "l3") if direction == "up" else (os.environ.get("NS_SRV", "srv"), "s3")
     samples, shaped, recovered = [], False, False
     t0 = time.monotonic()
     while (t := time.monotonic() - t0) < secs:
