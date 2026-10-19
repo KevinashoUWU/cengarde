@@ -101,6 +101,7 @@
 #define CG_CAP_QHI_MS 10000   /* the window of a link's highest queue (eta_buffer) */
 #define CG_CAP_LOSSY_MS 5000  /* a link that lost this recently is held to its highest queue (eta_buffer) */
 #define CG_CAP_QHI_MIN_US 5000 /* the least queue it is held to */
+#define CG_CAP_LOSSY_PERMIL 3  /* a sample losing more than this per mille of what was sent: lossy */
 #define CG_CAP_SHORT_MIN 64 /* packets sent in a sample for it to count */
 #define CG_CAP_SAT_N 2    /* samples in a row with a queue above sat_us, loaded: full */
 #define CG_CAP_SAT_LONG 4 /* samples in a row with a queue above sat_us, loaded or not: full */
@@ -118,6 +119,7 @@ struct cg_cap_cfg {
 	uint32_t window_ms; /* of the capacity's maximum and of the queue's minimum */
 	uint32_t sat_us;    /* a queue above this: the link gives no more */
 	uint32_t loss_pct;  /* loaded and losing more than this, CG_CAP_LOSS_N samples: full; 0: off */
+	int lossy;          /* track l->lossy (eta_buffer): a lossy link is not probed */
 };
 
 struct cg_cap_link {
@@ -140,6 +142,7 @@ struct cg_cap_link {
 	 * the last sample that lost over 1 % of what was sent */
 	uint32_t qhi_cur, qhi_prev;
 	uint64_t qhi_t_ms, lossy_ms;
+	uint8_t lossy;              /* lost over CG_CAP_LOSSY_PERMIL in the last CG_CAP_LOSSY_MS */
 	uint8_t sat_n;              /* samples in a row with a queue above sat_us */
 	uint8_t sat_load_n;         /* of them, in a row, sent at least 3/4 of its capacity */
 	/* fast start: the best capacity over CG_CAP_BEST_MS (in two halves),
@@ -198,7 +201,7 @@ static inline uint64_t cg_cap_best_bps(const struct cg_cap_link *l)
  * (shallowq: Starlink at 75 Mbit/s for the split against 60). */
 static inline int cg_cap_may_probe(const struct cg_cap_link *l, uint32_t probe_us)
 {
-	return l->queue_us >= 0 && (uint32_t)l->queue_us < probe_us && l->cut != CG_CAP_CUT_LOSS;
+	return l->queue_us >= 0 && (uint32_t)l->queue_us < probe_us && l->cut != CG_CAP_CUT_LOSS && !l->lossy;
 }
 
 /* What the split offers a link whose queue is short, to see if it carries
@@ -390,8 +393,9 @@ static inline unsigned cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint6
 	/* lost over loss_pct of what was sent in this sample (delivered drx
 	 * of dpk), while loaded: at a light load a loss is the radio's, not a
 	 * full link (lossy, spikeloss) */
-	if (dpk >= CG_CAP_SHORT_MIN && (uint64_t)drx * 100 < dpk * 99)
+	if (dpk >= CG_CAP_SHORT_MIN && (uint64_t)drx * 1000 < dpk * (1000 - CG_CAP_LOSSY_PERMIL))
 		l->lossy_ms = report_ms;
+	l->lossy = cfg->lossy && l->lossy_ms && report_ms - l->lossy_ms < CG_CAP_LOSSY_MS;
 	if (cfg->loss_pct && loaded && dpk >= CG_CAP_SHORT_MIN && (uint64_t)drx * 100 < dpk * (100 - cfg->loss_pct))
 		l->loss_n = l->loss_n < 255 ? (uint8_t)(l->loss_n + 1) : 255;
 	else
@@ -502,8 +506,8 @@ static inline void cg_cap_weights(const struct cg_cap_link l[CG_MAX_LINKS], uint
  * 5-7 Mbit/s against 15-30 and the upload under split_eta fell to 3 Mbit/s
  * (story 013).
  *
- * buffer (eta_buffer): a link that lost over 1 % of what it was sent in the
- * last CG_CAP_LOSSY_MS is held to the highest queue it showed over
+ * buffer (eta_buffer): a link that lost over CG_CAP_LOSSY_PERMIL of what it
+ * was sent in the last CG_CAP_LOSSY_MS (l->lossy) is held to the highest queue it showed over
  * CG_CAP_QHI_MS (at least CG_CAP_QHI_MIN_US): past it a packet would be
  * dropped, and it goes on another link unless every one is past its own.
  * Starlink drops at 15-40 ms of queue; the split sent it everything until
@@ -541,7 +545,7 @@ static inline void cg_cap_eta(struct cg_eta *e, const struct cg_cap_link l[CG_MA
 			bps = cg_cap_probe(&l[i], bps, big);
 		cg_eta_set(e, i, bps, (uint32_t)cg_owd_diff(mins[i], ref), l[i].queue_us > 0 ? (uint32_t)l[i].queue_us : 0,
 			   now_us);
-		if (buffer && l[i].lossy_ms && now_us / 1000 - l[i].lossy_ms < CG_CAP_LOSSY_MS) {
+		if (buffer && l[i].lossy) {
 			uint32_t hi = l[i].qhi_cur > l[i].qhi_prev ? l[i].qhi_cur : l[i].qhi_prev;
 
 			e->l[i].limit_us = hi > CG_CAP_QHI_MIN_US ? hi : CG_CAP_QHI_MIN_US;
