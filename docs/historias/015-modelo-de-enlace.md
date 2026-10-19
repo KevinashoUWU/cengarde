@@ -1,7 +1,7 @@
 # 015 — Modelo de enlace: cada enlace con su tipo
 
 - **Fecha:** 2026-10-19
-- **Estado:** vigente. Hecho: el tipo por enlace (`type` en `[link]`, `list uplink_type` en OpenWrt, el desplegable de LuCI), su envío al VPS en la cola de bonding de las sondas y los ajustes por tipo (`linkmodel.h`); el preset de `starlink` medido en laboratorio. Falta medirlo en campo (rama `claude/link-model-field` para el router de radio, protocolo 7).
+- **Estado:** vigente. Hecho: el tipo por enlace (`type` en `[link]`, `list uplink_type` en OpenWrt, el desplegable de LuCI), su envío al VPS en la cola de bonding de las sondas y los ajustes por tipo (`linkmodel.h`); el preset de `starlink` medido en laboratorio; las correcciones mixtas de la auditoría de relojería como campos del modelo por enlace, probadas por tipo (entra solo `pace_peers_ms` en `starlink`). Falta medirlo en campo (rama `claude/link-model-field` para el router de radio, protocolo 7).
 - **Fuentes:**
   - la prueba de campo del 2026-10-18 en el router «nostalgica» (Starlink y dos LTE);
   - los casos `shallowq`, `shallowqd`, `shallowqdeep` y `starsat` de `bench/lab.d/bond.sh` (rama `claude/labq-nodes`, PR #77), la ablación del 2026-10-18 y el A/B de `eta_buffer` global (`~/.claude/jobs/1c68aec3/tmp/sat4/out/all.jsonl`);
@@ -14,6 +14,7 @@
 - **El diseño:** `type` en cada `[link]` (`auto`, `cellular`, `starlink`, `fiber`, `ethernet`, `radio`; `linkmodel.h`), un preset por tipo para los lazos de capacidad y reparto, y el tipo de cada camino al VPS en los bits 20–22 de la cola de bonding de las sondas (reservados: **sin versión nueva**, compatible con pares del protocolo 7). `auto` es exactamente el motor de antes; los demás tipos, salvo `starlink`, también, como ganchos.
 - **El preset de `starlink`** [laboratorio, n = 8, control nulo]: mientras pierde (>0,3 %), no se sondea y se retiene en la cola que mostró; lo que pasa de ahí va a otro enlace solo mientras llegue a menos de **40 ms** de lo que tardaría por Starlink. En los casos de campo, +27 a +45 % (`shallowq` bajada 41,6 → 56,8; `starsat` bajada 36,0 → 52,1), por encima de Starlink solo; sin costo de caudal con retardos iguales (`shallowqd`) ni con cola profunda (`shallowqdeep`). La revisión final lo repite (+26 a +52 %, control nulo dentro de ±7 %). Lo que cuesta es latencia: el ping de 1200 bytes pasa de ~50 a ~100 ms, porque los celulares cargan más. Sin regresión con todo `auto` o todo `cellular` (`het`, `bloat`, `ltespikerand`, ±3 %), y compatible en los dos sentidos con un par del protocolo 7 sin el tipo.
 - **Lo que no sirvió:** retenerlo como último recurso (`eta_buffer`, global o solo en Starlink): todo lo que sobra va a las colas de 300 ms de los celulares (ping grande de 52 a ~200 ms) y la subida pierde 17–18 %. Costos de 100 y 200 ms: más ganancia en `shallowq`, pero −10 % y −38 % con retardos iguales.
+- **Las correcciones mixtas de la auditoría, por tipo** [laboratorio, n = 16–24, control nulo]: C3, C5, C9, C11, #33, `redund_pace_ms` y el corte por pérdida son ahora campos del modelo de cada enlace (perillas globales encima del preset, `exp_link_types` para probarlas por tipo). Para lo celular no entra ninguna: en `het`, `bloat`, `deepq`, `ltespikerand`, `spikeloss` y `lossy` nada pasa el criterio. En `starlink` entra una: en redundancia pide que los **otros** enlaces de su sesión lleven copia solo si llega a menos de 60 ms de la primera (`pace_peers_ms`). En `starsat`, el p99 del ping grande baja de ~360 a ~95 ms, con el caudal a ±5 % (−4 % en `shallowqd`) y 1,1–3× de retransmisiones. Aplicado a todos los celulares, `het` perdía 8–18 %. El corte por pérdida, C9 y C11 en Starlink no suman o cuestan (sección 6).
 - **OpenWrt:** `list uplink_type 'ENLACE=TIPO'` y un desplegable por enlace en LuCI.
 - **Falta:** campo; detectores (el diente de sierra de 15 s de Starlink, el planificador PF/RR de la celda) y presets afinados por tipo (búsqueda en PyTorch).
 
@@ -154,6 +155,81 @@ Todo dentro de ±3 %. `auto` y `cellular` hacen exactamente lo mismo que el moto
 
 **Compatibilidad, en el laboratorio:** un cliente nuevo (rama `claude/link-model-field`, protocolo 7) contra un servidor de `claude/field-tickle` (`1739127`, sin el tipo), y al revés, en `shallowq` con `starlink cellular cellular`: los dos túneles andan (42,6 y 42,5 Mbit/s de bajada, lo de siempre sin el preset en el VPS). El servidor viejo ignora los bits; el cliente viejo avisa `unknown key 'type'` y su servidor nuevo ve `auto` en cada camino.
 
+### 6. Las correcciones mixtas de la auditoría, por tipo (2026-10-19, tarde)
+
+Las correcciones de la auditoría de relojería que habían salido «mixtas» (`~/campo/2026-10-17/relojeria/analysis.md`, `~/campo/2026-10-18/hallazgos.md`) pasaron a ser campos de `struct cg_link_model`: cada lazo las lee **por enlace**, la perilla global las fija en todos los enlaces encima del preset, y `exp_link_types` limita las perillas globales a algunos tipos. Así cada una se probó solo en el tipo de enlace que la hipótesis señalaba.
+
+| Mecanismo | Perilla | Campo del modelo | Dónde actúa |
+| --- | --- | --- | --- |
+| C3, permanencia tras volver por una recuperación, con guarda de cola propia | `split_dwell_ms`, `split_dwell_oq_ms` | `dwell_ms`, `dwell_oq_ms` | G4 (`split.h`), por enlace |
+| C5, una salida de G4 por cola cuenta para el arranque rápido (solo si sobrestimó) | `cap_g4_episode` | `g4_episode` | capacidad, por enlace |
+| C9, el backlog del ETA sobre una cola vieja | `eta_keep`, `eta_keep_ms` | `eta_keep`, `eta_keep_ms` | ETA, por enlace |
+| C11, histéresis del «lleno» del rescate (modo 2: solo mientras la cola no sube) | `rescue_full_hyst` | `rfull_hyst` | rescate, por enlace |
+| #33, la cola prevista por su tendencia (modo 1: solo si sube) | `split_qpred_ms`, `split_qpred_mode` | `qpred_ms`, `qpred_mode` | ETA, por enlace |
+| Copias a tiempo en redundancia | `redund_pace_ms` | `pace_ms`; `pace_peers_ms` para los demás enlaces de la sesión | `cg_eta_copies` (`eta.h`), por enlace |
+| Corte de capacidad por pérdida | `capacity_loss_pct` | `loss_pct` | capacidad, por enlace |
+| C10, el rescate del cliente por el OWD de subida | `rescue_by_owd` | — (global, solo el cliente) | rescate |
+
+**Método.** `labq.py`, solo este PC, `--node local:6`, perfil de campo, cubic, 30 s, `BOND_NETEM_INFLIGHT=1`. Control: la revisión nueva sin perillas (`5c14ff3`). Control nulo: el PR #87 (`0751504`), compilado aparte; también sirve de control de «sin cambio», porque sin perillas los dos hacen lo mismo. Mann-Whitney de dos colas. Cribado con n = 8. Lo celular se juntó con las rondas del 2026-10-18 (`~/campo/2026-10-18/clk2/` A, B, D), donde el control era `c6c7` y `x0` el nulo: con `auto` y `cellular`, el código que corre es el mismo. Lo que entra se extendió a n = 16, y se verificó con la revisión del preset (`0706761`, n = 8 más). Planes y salidas en `/tmp/lmx` (scratch de la sesión). Criterio: entra con más del 5 % de caudal, retrans por debajo de 0,5× o una ganancia clara de latencia, con p < 0,05 y sin costar más del 5 % en los demás casos de su tipo. [medido en laboratorio]
+
+#### Celular (`BOND_LINK_TYPES="cellular cellular cellular"`, bonding; n = 16–24 juntando rondas)
+
+Razón frente al control (p). Lo significativo, en negrita:
+
+| Mecanismo | Lo mejor | Lo peor | Veredicto |
+| --- | --- | --- | --- |
+| #33 `qp300r` (300 ms, solo cola que sube) | `bloat` subida retrans **0,60× (p = 0,009)**; `spikeloss` bajada retrans 0,69× (p = 0,016, n = 8: 54 → 38) | `het` bajada retrans **3,84× (p = 0,015)**; `deepq` subida caudal **0,98× (p = 0,001)** y bajada 0,99× (p = 0,046) | fuera: no llega a 0,5× y cuesta en `het` |
+| C5 `c5g2` (solo si sobrestimó) | `lossy` bajada 1,11× (p = 0,07) | `bloat` bajada p99 del ping grande 1,12× (p = 0,04); `deepq` bajada retrans 1,19× (p = 0,05) | fuera: nada significativo a favor |
+| C11 `c11g` (modo 2) | `spikeloss` 1,04–1,07× (p ≥ 0,18; el +59 % de la primera ronda era ruido: el nulo mueve `spikeloss` ±15–29 %) | nada significativo | fuera: neutro |
+| C3 `dw300q60` (300 ms, cola propia ≤ 60 ms) | `het` subida retrans 0,44× (p = 0,12) | `lossy` bajada 0,81× (p = 0,08, n = 8) | fuera: neutro; lo del `ltespike` periódico era un artefacto |
+| C9 `eta_keep = 2` (ronda del 2026-10-18, n = 8) | `bloat` **+19–21 %** (p = 0,001) | RTT p50 de 42 a 150–200 ms en `bloat` y de 55 a 100 en `deepq`; `het` subida −5 % | fuera: cambia latencia por caudal, y `het` pierde |
+
+Ninguna mejora lo celular. `cellular` sigue con los ceros de `auto`.
+
+#### Starlink con dos celulares, bonding (`BOND_LINK_TYPES="starlink cellular cellular"`, perilla solo en el enlace Starlink, n = 8)
+
+| Mecanismo | `shallowq` ↓/↑ | `starsat` ↓/↑ | `shallowqd` ↓/↑ | `shallowqdeep` ↓/↑ | Veredicto |
+| --- | --- | --- | --- | --- | --- |
+| Corte por pérdida, `capacity_loss_pct = 5` | 1,08 (p = 0,02) / 0,97 | 1,01 / 0,94 (p = 0,13) | 1,01 / 0,98 | 1,02 / 0,98 | fuera: +8 % en un solo sentido, con el nulo en +5 %, y cuesta 6 % en `starsat` subida |
+| C9, `eta_keep = 2` | **0,77 / 0,68** | **0,84 / 0,69** | **0,57 / 0,52** | **0,84 / 0,60** | fuera: −16 a −48 %, todo p ≤ 0,04 (el ETA cree a Starlink más lleno y vacía el enlace rápido) |
+| C11, `rescue_full_hyst = 2` | 1,04 / 0,99 | 1,07 / 1,02 | 1,02 / 1,00 | 1,04 / 1,01 (retrans 0,19×, p = 0,03) | fuera: un solo caso, el de cola profunda (no es Starlink), y retrans 1,89× en `starsat` subida (p = 0,08) |
+| Control nulo (`0751504`) | 1,05 / 1,02 | 1,04 / 0,99 | 1,02 / 1,04 | 1,03 / 1,00 | — |
+
+Con la pérdida tomada solo en la frontera (`0751504`), el corte por pérdida ya no se dispara a lo loco, pero tampoco suma: lo que hace falta lo hace la retención del preset.
+
+#### Redundancia: copias a tiempo (`redund_pace_ms`)
+
+Cribado con la perilla solo en los enlaces celulares (`exp_link_types = cellular`), n = 8:
+
+| Sesión | Caso | Caudal 30 ms / 60 ms | p99 del ping grande, 60 ms |
+| --- | --- | ---: | ---: |
+| Starlink + 2 celulares | `starsat` | 0,89–1,01 / 1,02–1,06 | 0,24–0,27× (p = 0,001) |
+| solo celulares | `het` | **0,82–0,92 / 0,82–0,88** (p = 0,001) | 1,00 |
+| solo celulares | `bloat` | **0,92–0,93 / 0,95–0,99** (p = 0,001) | 0,23–0,28×, retrans 3–7× |
+
+Gana latencia con Starlink. En sesiones solo celulares, `het` pierde 8–18 %. De ahí la guarda `pace_peers_ms`: es el enlace `starlink` el que pide que **los demás enlaces de su sesión** lleven copia solo si llegaría a menos de 60 ms de la primera. Una sesión sin Starlink no cambia. 60 ms y no 30: la misma latencia, y en `starsat` 1,02–1,06 de caudal frente a 0,89. Junto (cribado y extensión con la perilla, más la verificación con el preset en `0706761`), n = 24 por brazo (16 del nulo):
+
+| Caso | Sentido | Mbit/s control → preset (×, p) | Control nulo × (p) | Retrans × (p) | 1200 B p50 | 1200 B p99 control → preset (×, p) |
+| --- | --- | --- | --- | --- | --- | --- |
+| `shallowq` | bajada | 53,5 → 53,5 (1,00) | 1,00 (0,19) | 1,27 (< 0,001) | 54 → 54 ms | 58 → 58 ms (1,00) |
+| `shallowq` | subida | 53,4 → 53,4 (1,00) | 1,00 (0,60) | 1,95 (< 0,001) | 54 → 53 ms | 58 → 58 ms (1,00) |
+| `starsat` | bajada | 52,0 → 51,4 (0,99, p = 0,85) | 0,88 (0,09) | 1,08 (0,05) | 58 → 55 ms | **361 → 97 ms (0,27, p < 0,001)** |
+| `starsat` | subida | 53,1 → 49,5 (0,93, p = 0,15) | 0,86 (0,02) | 1,05 (0,24) | 57 → 55 ms | **272 → 92 ms (0,34, p < 0,001)** |
+| `shallowqd` | bajada | 53,5 → 51,5 (**0,96**, p < 0,001) | 1,00 (0,20) | 2,75 (< 0,001) | 54 → 46 ms | 58 → 57 ms (0,99) |
+| `shallowqd` | subida | 53,4 → 51,2 (**0,96**, p < 0,001) | 1,00 (0,26) | 3,05 (< 0,001) | 54 → 44 ms | 58 → 57 ms (0,98) |
+| `shallowqdeep` | bajada | 53,5 → 53,3 (1,00) | 1,00 (0,52) | 2,55 (< 0,001) | 281 → 138 ms | **358 → 232 ms (0,65, p < 0,001)** |
+| `shallowqdeep` | subida | 53,4 → 53,3 (1,00) | 1,00 (0,94) | 2,42 (< 0,001) | 279 → 168 ms | **358 → 256 ms (0,71, p < 0,001)** |
+
+- **Lo que gana:** el p99 del ping grande en `starsat`, de ~360 a ~95 ms. Es lo que pasa en campo cuando Starlink corta: las copias celulares ya no esperan detrás de 300 ms de cola. En `shallowqdeep`, también la mediana.
+- **Lo que cuesta:**
+  - caudal: −4 % en `shallowqd`, y el −7 % de `starsat` subida, no significativo (el nulo solo mueve `starsat` −14 %);
+  - retransmisiones: 1,1–3× (de 20 a 40 en `shallowq`, de 60 a 150 en `shallowqd`), por los huecos que la copia celular ya no tapa.
+- La verificación con la revisión del preset sola (`0706761`, n = 8) dio `starsat` subida −14 % (p = 0,03). Dentro del nulo de esta tanda (−14 %, p = 0,02), y junto con el resto queda en −7 % (p = 0,15).
+
+**Sin cambio donde no toca** (`0706761` frente al PR #87, n = 8): todo `auto` en bonding, `het` 1,01/0,99 y `shallowq` 0,96/1,01 (p ≥ 0,27); `starlink cellular cellular` en bonding, `shallowq` 1,00/1,04 y `starsat` 0,88/1,05 (p ≥ 0,13): el preset solo toca las copias de redundancia; todo `cellular` en redundancia, `het` 1,00/1,00.
+
+**El preset de `starlink` queda en:** `lossy_noprobe` + `lossy_hold` + `hold_over_ms = 40` + `pace_peers_ms = 60`. Lo demás queda como ganchos apagados: las perillas globales, `exp_link_types` y los campos del modelo en cero.
+
 ## Lo que falta
 
 La visión: con un modelo por tipo, el reparto sabe cómo se comporta cada rama y encuentra la mejor manera de repartir entre un Starlink y celulares sin oscilar.
@@ -174,3 +250,4 @@ La visión: con un modelo por tipo, el reparto sabe cómo se comporta cada rama 
 ## Cambios
 
 - 2026-10-19: creada.
+- 2026-10-19 (tarde): las correcciones mixtas de la auditoría por tipo de enlace (sección 6, rama `claude/link-model-presets`); `pace_peers_ms = 60` en el preset de `starlink`.
