@@ -186,6 +186,16 @@ static inline uint64_t cg_cap_best_bps(const struct cg_cap_link *l)
 	return l->best_cur > l->best_prev ? l->best_cur : l->best_prev;
 }
 
+/* Whether a link whose queue is short may be probed (cg_cap_probe): not
+ * while it is losing what it is sent (CG_CAP_CUT_LOSS). Its queue is short
+ * because it drops instead of queueing: probing it raised the capacity the
+ * split used to 5/4 of what it carried, and the link dropped the rest
+ * (shallowq: Starlink at 75 Mbit/s for the split against 60). */
+static inline int cg_cap_may_probe(const struct cg_cap_link *l, uint32_t probe_us)
+{
+	return l->queue_us >= 0 && (uint32_t)l->queue_us < probe_us && l->cut != CG_CAP_CUT_LOSS;
+}
+
 /* What the split offers a link whose queue is short, to see if it carries
  * more (BBR's probing): 5/4 of its capacity and 1/16 of the largest link's;
  * twice its capacity while it is under half its best (fast start, as BBR's
@@ -452,7 +462,7 @@ static inline void cg_cap_weights(const struct cg_cap_link l[CG_MAX_LINKS], uint
 	for (unsigned i = 0; i < CG_MAX_LINKS; i++) {
 		uint64_t c = l[i].have_rate ? cg_cap_bps(&l[i]) : 0;
 
-		if (l[i].have_rate && l[i].queue_us >= 0 && (uint32_t)l[i].queue_us < probe_us)
+		if (l[i].have_rate && cg_cap_may_probe(&l[i], probe_us))
 			c = cg_cap_probe(&l[i], c, big);
 		eff[i] = c;
 		if (!(dup0 >> i & 1) && c > top)
@@ -548,7 +558,7 @@ static inline void cg_cap_eta(struct cg_eta *e, const struct cg_cap_link l[CG_MA
 			cg_eta_set(e, i, 0, 0, 0, now_us);
 			continue;
 		}
-		if (l[i].queue_us >= 0 && (uint32_t)l[i].queue_us < probe_us)
+		if (cg_cap_may_probe(&l[i], probe_us))
 			bps = cg_cap_probe(&l[i], bps, big);
 		bps = cg_cap_stale(&l[i], bps, big, now_us / 1000, no_stale >> i & 1 ? 1 : stale_max);
 		cg_eta_set(e, i, bps, (uint32_t)cg_owd_diff(mins[i], ref), l[i].queue_us > 0 ? (uint32_t)l[i].queue_us : 0,
