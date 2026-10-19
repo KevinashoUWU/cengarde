@@ -552,7 +552,7 @@ static inline void cg_cap_eta(struct cg_eta *e, const struct cg_cap_link l[CG_MA
 		if ((buffer >> i & 1) && l[i].lossy) {
 			uint32_t hi = l[i].qhi_cur > l[i].qhi_prev ? l[i].qhi_cur : l[i].qhi_prev;
 
-			e->l[i].limit_us = hi > CG_CAP_QHI_MIN_US ? hi : CG_CAP_QHI_MIN_US;
+			e->l[i].limit_us = (hi > CG_CAP_QHI_MIN_US ? hi : CG_CAP_QHI_MIN_US) + 10000;
 		}
 	}
 }
