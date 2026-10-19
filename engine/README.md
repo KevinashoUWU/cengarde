@@ -641,6 +641,36 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
   cliente se los manda al servidor en las sondas; `force` no los mira). Con
   0, el enlace lleva copia de todos los paquetes, repartidos o no. Una
   interfaz sin sección `[link]` pesa 1.
+- **`type` en `[link X]` (cliente; `auto`; `auto`, `cellular`, `starlink`,
+  `fiber`, `ethernet` o `radio`):** qué clase de enlace es (`linkmodel.h`,
+  historia 015). Cada tipo tiene un preset de lo que los lazos de capacidad
+  y de reparto hacen con ese enlace, en la subida; el cliente manda el tipo
+  de cada enlace al servidor en las sondas (bits 20–22 de la cola de
+  bonding, reservados hasta ahora: sin versión nueva de protocolo), y el
+  servidor aplica el mismo preset a la bajada de ese camino. `auto` es el
+  motor de antes. Hoy solo cambia `starlink`, y solo con `split_eta`: mientras
+  pierde más del 0,3 % de lo que se le manda (`lossy`), no se sondea a 5/4
+  y se retiene en la cola más alta que mostró en 10 s; lo que pase de ahí
+  va por otro enlace mientras llegue por él a menos de 40 ms de lo que
+  tardaría por Starlink (y si no, por Starlink, donde TCP ve la pérdida).
+  En el laboratorio (Starlink de cola corta y dos celulares más lentos,
+  n = 8; *medido en laboratorio*), el reparto pasó de 41,6 a 56,8 Mbit/s de
+  bajada y de 40,3 a 51,1 de subida, sin costo con retardos iguales ni con
+  cola profunda. `cellular`, `fiber`, `ethernet` y `radio` se comportan
+  como `auto` hasta que una medida diga otra cosa. El
+  estado muestra `type` en cada enlace (cliente) y camino (servidor), y
+  `lossy` y `lossy_noprobe` en su `cap_diag`. Se aplica en caliente.
+- **`eta_buffer` (`no`; `yes` o `no`) y `capacity_loss_pct` (0; 0–50), en
+  los dos extremos, para lo que cada uno envía (experimentales):** las
+  perillas globales de lo que hacen los presets, para todos los enlaces a
+  la vez, encima del tipo de cada uno. `eta_buffer`: un enlace que perdió
+  más del 0,3 % de lo enviado en los últimos 5 s (`lossy`) no se sondea a
+  5/4 y, con `split_eta`, se retiene en la cola más alta que mostró en 10 s
+  (al menos 5 ms): lo que pase de ahí va por otro enlace. `capacity_loss_pct`:
+  un enlace cargado que pierde más de ese porcentaje en 3 muestras seguidas
+  está lleno, aunque su cola no lo diga. Aplicado a todos, `eta_buffer`
+  cuesta en enlaces sin Starlink (en `het`, −15 % de subida, n = 4; los
+  celulares también quedan `lossy`): para un solo enlace, mejor su `type`.
 
 **El reparto es experimental.** Sin los pasos que siguen en el plan (detección
 de pérdidas por enlace, control de las colas de los módems) reparte peor que
@@ -1268,7 +1298,9 @@ nueva (`null` sin cola: un servidor anterior). En cada sesión del servidor,
 cliente) o `duplicating` (`split = client`, pero el cliente no lo pide, no
 reordena o no lo dice); `client_reorders` y `client_asks_split`, lo que dijo
 su sonda más nueva (`null` sin cola: un cliente anterior), y por enlace
-`client_weight`, el peso que manda el cliente. «Más nueva» es por su número
+`client_weight`, el peso que manda el cliente, y `type`, el tipo que dice
+para ese camino (`auto` sin él; en el cliente, `type` de cada enlace es el
+de su `[link]`). «Más nueva» es por su número
 de secuencia de control, no por la hora de llegada: tras una recarga, las
 sondas o respuestas que salieron antes por un enlace lento llegan después de
 las nuevas por uno rápido, y no deshacen lo que estas dijeron.
@@ -1302,8 +1334,10 @@ contadores `leave_queue`, `leave_stall`, `leave_base`, `rejoin_settle`,
 `rejoin_recover`, `rejoin_empty`, `rejoin_off`), `owd_age_ms` (desde el
 último informe de retardo) y `owd_reports_per_s`, `gov_ticks` (`down`,
 `up`, `hold`; `null` sin gobernador) y `cap_diag` (`sat_n`, `sat_load_n`,
-`short_n`, `cut`, `full_age_ms`, `best_mbit`, `ql_ms`, la cola sobre el
-mínimo de un minuto, y los contadores `cut_full`, `cut_short`,
+`short_n`, `lossy` y `lossy_noprobe` (perdió lo bastante hace poco, y si
+por eso no se sondea; solo con un tipo o `eta_buffer` que lo siga), `cut`,
+`full_age_ms`, `best_mbit`, `ql_ms`, la cola sobre el
+mínimo de un minuto, y los contadores `cut_full`, `cut_short`, `cut_loss`,
 `restore_rest`).
 
 ## Protocolo v4
