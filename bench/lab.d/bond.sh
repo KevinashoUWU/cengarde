@@ -117,7 +117,9 @@
 # Knobs: BOND_S (seconds per run, 10; starlink15 takes at least 31), BOND_N
 # (repetitions, 1; the table then gives the median and the spread), BOND_REP0
 # (0: the first repetition's number minus one, for ltespikerand's draw and the
-# lines' rep; bench/labq.py runs repetition r alone as BOND_N=1 BOND_REP0=r-1), BOND_P
+# lines' rep; bench/labq.py runs repetition r alone as BOND_N=1 BOND_REP0=r-1),
+# BOND_LINK_TYPES (each client link's type, story 015: "starlink cellular
+# cellular" for links 1..3, "-" or nothing: auto; lab.sh's LINK_TYPES), BOND_P
 # (TCP flows in parallel, 1; speedtest opens many, and many flows starting
 # at once fill the links' queues as one does not; story 013), BOND_CC
 # ("cubic bbr quic"; quic only when aioquic imports, else a note),

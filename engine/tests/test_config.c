@@ -6,6 +6,7 @@
 #include <unistd.h>
 
 #include "config.h"
+#include "linkmodel.h"
 #include "test.h"
 #include "util.h"
 
@@ -665,6 +666,34 @@ static void test_config_bonding(void)
 	bad(CLIENT "[link eth1]\nweight = 1001\n", "weight", "between 0 and 1000, got '1001'");
 	bad(CLIENT "[link eth1]\nweight = -1\n", "weight", "got '-1'");
 	bad(CLIENT "[link eth1]\nweight = heavy\n", "weight", "got 'heavy'");
+	/* type, per link (linkmodel.h, story 015): auto by default, one of the
+	 * names, anything else refused with the list; a server has none (its
+	 * client's probes say them). */
+	CHECK_EQ(cg_config_parse(&c,
+				 CLIENT "[link eth1]\nlabel = A\n[link eth2]\ntype = starlink\n[link eth3]\ntype = cellular\n"
+					"[link eth4]\ntype = auto\n[link eth5]\ntype = radio\n[link eth6]\ntype = fiber\n"
+					"[link eth7]\ntype = ethernet\n",
+				 err, sizeof(err), warn, sizeof(warn)),
+		 0);
+	CHECK(warn[0] == '\0');
+	CHECK(cg_config_link(&c, "eth1")->type == CG_LTYPE_AUTO);
+	CHECK(cg_config_link(&c, "eth2")->type == CG_LTYPE_STARLINK);
+	CHECK(cg_config_link(&c, "eth3")->type == CG_LTYPE_CELLULAR);
+	CHECK(cg_config_link(&c, "eth4")->type == CG_LTYPE_AUTO);
+	CHECK(cg_config_link(&c, "eth5")->type == CG_LTYPE_RADIO);
+	CHECK(cg_config_link(&c, "eth6")->type == CG_LTYPE_FIBER);
+	CHECK(cg_config_link(&c, "eth7")->type == CG_LTYPE_ETHERNET);
+	cg_config_free(&c);
+	bad(CLIENT "[link eth1]\ntype = satellite\n", "type",
+	    "expected auto, cellular, starlink, fiber, ethernet or radio, got 'satellite'");
+	bad(CLIENT "[link eth1]\ntype = Starlink\n", "type", "got 'Starlink'");
+	bad(CLIENT "[link eth1]\ntype = \n", "type", "got ''");
+	CHECK_EQ(cg_config_parse(&c, CLIENT "type = starlink\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK(strstr(warn, "unknown key 'type'") != NULL);
+	cg_config_free(&c);
+	CHECK_EQ(cg_config_parse(&c, SERVER "[link eth1]\ntype = starlink\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK(strstr(warn, "unknown key 'type' in [link eth1]") != NULL);
+	cg_config_free(&c);
 	/* The weight is a link's, not global; a server has no [link] weights (its
 	 * client's probes say them), and says so. */
 	CHECK_EQ(cg_config_parse(&c, CLIENT "weight = 2\n", err, sizeof(err), warn, sizeof(warn)), 0);

@@ -260,6 +260,43 @@ void test_proto(void)
 		CHECK(r.rescue && !r.reorders && !r.split_me && !r.weight);
 	}
 
+	/* The link type in the bonding tail (bits 20-22, story 015): written
+	 * and read back, next to every other field and untouched by them; a
+	 * writer that predates it writes the bits 0 (auto); a reader that
+	 * predates it masks them off as reserved, its fields the same. */
+	{
+		struct cg_probe_bond b = { .weight = 1000, .reorders = 1, .split_me = 1, .rescue = 1, .full = 1 }, r;
+		uint8_t tp[CG_PROBE_BOND_LEN];
+		uint32_t v;
+
+		CHECK_EQ(CG_BOND_TYPE, 0x00700000u);
+		for (uint8_t t = 0; t <= 7; t++) {
+			b.type = t;
+			cg_probe_bond_write(tp, &b);
+			v = (uint32_t)tp[CG_PROBE_INFO_LEN] << 24 | (uint32_t)tp[CG_PROBE_INFO_LEN + 1] << 16 |
+			    (uint32_t)tp[CG_PROBE_INFO_LEN + 2] << 8 | tp[CG_PROBE_INFO_LEN + 3];
+			CHECK_EQ(v >> 23, 0); /* bits 23+ stay reserved */
+			CHECK_EQ((v >> 20) & 7, t);
+			/* What an older reader knows of the word: bits 0-19 only, the same for every type */
+			CHECK_EQ(v & 0xfffffu, 1000u | CG_BOND_REORDERS | CG_BOND_SPLIT_ME | CG_BOND_RESCUE | CG_BOND_FULL);
+			CHECK_EQ(cg_probe_bond_read(&r, tp, CG_PROBE_BOND_LEN), 1);
+			CHECK(r.type == t && r.weight == 1000 && r.reorders && r.split_me && r.rescue && r.full);
+		}
+		b.type = 9; /* past 3 bits: only the low 3 go, never the bits above */
+		cg_probe_bond_write(tp, &b);
+		CHECK_EQ(tp[CG_PROBE_INFO_LEN] & 0xff, 0x00);
+		CHECK_EQ(cg_probe_bond_read(&r, tp, CG_PROBE_BOND_LEN), 1);
+		CHECK_EQ(r.type, 1);
+		/* An older writer: the word without bits 20-22, read as auto */
+		memcpy(tp + CG_PROBE_INFO_LEN, "\x00\x0f\x03\xe8", 4);
+		CHECK_EQ(cg_probe_bond_read(&r, tp, CG_PROBE_BOND_LEN), 1);
+		CHECK(r.type == 0 && r.weight == 1000 && r.full);
+		/* No tail at all (a 40-byte peer): auto */
+		r.type = 5;
+		CHECK_EQ(cg_probe_bond_read(&r, tp, CG_PROBE_INFO_LEN), 0);
+		CHECK_EQ(r.type, 0);
+	}
+
 	/* NACK: ranges of a base and a 64-bit mask, under the MAC; a count of 0,
 	 * past CG_NACK_RANGES or longer than the payload does not parse. */
 	{

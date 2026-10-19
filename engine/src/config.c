@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "arrival.h" /* CG_MAX_LINKS */
+#include "linkmodel.h" /* type */
 #include "log.h"
 #include "resolve.h" /* cg_hosts_find */
 #include "steer.h"   /* lanes */
@@ -518,7 +519,7 @@ const struct cg_link_cfg *cg_config_link(const struct cg_config *c, const char *
 static int parse_links(struct cg_config *c, struct cg_ini *ini, struct hosts *h, char *err, size_t errlen)
 {
 	for (int i = 0; i < ini->n; i++) {
-		const char *sec = ini->e[i].section, *name;
+		const char *sec = ini->e[i].section, *name, *v;
 		struct cg_link_cfg *l;
 
 		if (strncmp(sec, "link ", 5))
@@ -546,6 +547,18 @@ static int parse_links(struct cg_config *c, struct cg_ini *ini, struct hosts *h,
 			if (get_u32(ini, sec, "cpu", 0, 1023, &cpu, err, errlen))
 				return -1;
 			l->cpu = (int)cpu;
+		}
+		/* Its link model (linkmodel.h, story 015): auto by default. */
+		if ((v = cg_ini_get(ini, sec, "type"))) {
+			int t = cg_link_type_parse(v);
+
+			if (t < 0) {
+				snprintf(err, errlen,
+					 "type: expected auto, cellular, starlink, fiber, ethernet or radio, got '%s'",
+					 v);
+				return -1;
+			}
+			l->type = (uint8_t)t;
 		}
 		if (get_str(ini, sec, "label", l->label, sizeof(l->label), err, errlen) ||
 		    get_bool(ini, sec, "enabled", &l->enabled, err, errlen) ||
