@@ -948,6 +948,10 @@ Ajustes, en los dos extremos (cambiarlos reinicia el motor):
 - `tun_mtu`: 1420 por omisión, lo que cabe en un enlace de 1500 por IPv6
   (1500 − 40 − 8 − 24 de cabecera de cengarde = 1428). Si un enlace tiene
   menos, el cliente avisa con la cifra que cabe.
+- `tun_txqueuelen`: la cola de transmisión del TUN, en paquetes; `0` (por
+  omisión) deja la del kernel (500). El PC de la testnet usa 5000, que
+  antes ponía a mano con `ip link set cgpc txqueuelen 5000` después de cada
+  arranque. No se recarga en caliente (como `tun_mtu`).
 
 Las rutas por el TUN son del sistema (`ip route add … dev cg0`), como con
 cualquier interfaz. El servidor tiene **un solo TUN para todos los
