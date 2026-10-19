@@ -230,6 +230,7 @@ struct cg_config {
 	uint32_t split_stale_max;     /* with split_eta, an idle link's capacity counts up to this many times (cg_cap_stale); 1: as measured */
 	int pacing;                   /* each link's socket paced at its rate (pace.h) */
 	uint32_t governor_target_ms;  /* the queue a link may hold */
+	uint32_t capacity_loss_pct;   /* EXPERIMENT: a loaded link losing more than this (%) is full (capacity.h); 0: off */
 	uint32_t governor_window_ms;  /* of each link's minimum delay */
 
 	/* latency knobs */

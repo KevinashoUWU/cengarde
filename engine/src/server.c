@@ -2081,7 +2081,8 @@ static void gov_tick(struct server *s, struct session *S, uint64_t now_ms)
  * (scaled by the governor's, with governor), after the governor's tick. */
 static void cap_tick(struct server *s, struct session *S, uint16_t live, uint64_t now_ms)
 {
-	struct cg_cap_cfg cc = { .window_ms = s->cfg->governor_window_ms, .sat_us = s->cfg->governor_target_ms * 1000 };
+	struct cg_cap_cfg cc = { .window_ms = s->cfg->governor_window_ms, .sat_us = s->cfg->governor_target_ms * 1000,
+				.loss_pct = s->cfg->capacity_loss_pct };
 
 	for (int p = 0; p < CG_MAX_LINKS; p++) {
 		const struct path *P = &S->path[p];

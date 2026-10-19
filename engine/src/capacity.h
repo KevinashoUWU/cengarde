@@ -97,6 +97,7 @@
 #define CG_CAP_MIN_MS 500 /* a sample spans at least this */
 #define CG_CAP_GAIN 4     /* the delivery rate's smoothing: 1/4 of each sample */
 #define CG_CAP_SHORT_N 2  /* samples in a row delivering under half of what was sent: full */
+#define CG_CAP_LOSS_N 3   /* samples in a row, loaded, losing over loss_pct (cfg): full */
 #define CG_CAP_SHORT_MIN 64 /* packets sent in a sample for it to count */
 #define CG_CAP_SAT_N 2    /* samples in a row with a queue above sat_us, loaded: full */
 #define CG_CAP_SAT_LONG 4 /* samples in a row with a queue above sat_us, loaded or not: full */
@@ -114,6 +115,7 @@
 struct cg_cap_cfg {
 	uint32_t window_ms; /* of the capacity's maximum and of the queue's minimum */
 	uint32_t sat_us;    /* a queue above this: the link gives no more */
+	uint32_t loss_pct;  /* loaded and losing more than this, CG_CAP_LOSS_N samples: full; 0: off */
 };
 
 struct cg_cap_link {
@@ -131,6 +133,7 @@ struct cg_cap_link {
 	uint8_t have;               /* a report taken as the start */
 	uint8_t have_rate;          /* a rate measured */
 	uint8_t short_n;            /* samples in a row that delivered under half of what was sent */
+	uint8_t loss_n;             /* samples in a row, loaded, that lost over cfg->loss_pct */
 	uint8_t sat_n;              /* samples in a row with a queue above sat_us */
 	uint8_t sat_load_n;         /* of them, in a row, sent at least 3/4 of its capacity */
 	/* fast start: the best capacity over CG_CAP_BEST_MS (in two halves),
@@ -151,7 +154,7 @@ struct cg_cap_link {
 	 * samples once) or fast start restored it. Kept across a restart of
 	 * the counters. */
 	uint8_t cut;
-	uint64_t n_cut_full, n_cut_short, n_restore;
+	uint64_t n_cut_full, n_cut_short, n_cut_loss, n_restore;
 };
 
 /* What cg_cap_tick did, as bits of its return value. */
@@ -163,6 +166,7 @@ enum cg_cap_cut {
 	CG_CAP_CUT_NONE = 0,
 	CG_CAP_CUT_FULL,
 	CG_CAP_CUT_SHORT,
+	CG_CAP_CUT_LOSS,
 };
 
 static inline void cg_cap_reset(struct cg_cap_link *l)
@@ -320,6 +324,7 @@ static inline unsigned cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint6
 		l->have_s1 = keep.have_s1;
 		l->n_cut_full = keep.n_cut_full;
 		l->n_cut_short = keep.n_cut_short;
+		l->n_cut_loss = keep.n_cut_loss;
 		l->n_restore = keep.n_restore;
 		l->t_ms = report_ms;
 		l->rx = rx;
@@ -371,6 +376,13 @@ static inline unsigned cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint6
 	 * protocol), and it counts only once it lasts CG_CAP_SAT_LONG samples:
 	 * counted at once, Movistar's capacity fell to the 1.6 Mbit/s of an
 	 * 8 Mbit/s stream's share, and its queue's blips kept it there. */
+	/* lost over loss_pct of what was sent in this sample (delivered drx
+	 * of dpk), while loaded: at a light load a loss is the radio's, not a
+	 * full link (lossy, spikeloss) */
+	if (cfg->loss_pct && loaded && dpk >= CG_CAP_SHORT_MIN && (uint64_t)drx * 100 < dpk * (100 - cfg->loss_pct))
+		l->loss_n = l->loss_n < 255 ? (uint8_t)(l->loss_n + 1) : 255;
+	else
+		l->loss_n = 0;
 	if (l->queue_us >= 0 && (uint32_t)l->queue_us > cfg->sat_us) {
 		/* Until the first sample full from start to end (the queue formed
 		 * during the one before), each sample starts it again. */
@@ -395,12 +407,24 @@ static inline unsigned cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint6
 		l->max_cur = l->max_prev = rate;
 		l->full_ms = report_ms;
 		cut = CG_CAP_CUT_SHORT;
+	} else if (cfg->loss_pct && l->loss_n >= CG_CAP_LOSS_N) {
+		/* Loaded and losing: full without a queue. Starlink drops what it
+		 * cannot carry instead of queueing it (field, 2026-10-18: 15 % lost
+		 * while its queue stayed under 40 ms, its capacity kept at 86 Mbit/s
+		 * against ~60, the bond under Starlink alone): no more than it
+		 * delivered in this sample. */
+		l->max_cur = l->max_prev = raw < rate ? raw : rate;
+		l->full_ms = report_ms;
+		cut = CG_CAP_CUT_LOSS;
 	} else {
 		if (rate > l->max_cur)
 			l->max_cur = l->max_prev = rate;
 		cut = CG_CAP_CUT_NONE;
 	}
-	if (cut != l->cut && cut == CG_CAP_CUT_FULL) {
+	if (cut != l->cut && cut == CG_CAP_CUT_LOSS) {
+		l->n_cut_loss++;
+		ev |= CG_CAP_EV_CUT_SHORT; /* a run of samples that lost what was sent, for the decisions */
+	} else if (cut != l->cut && cut == CG_CAP_CUT_FULL) {
 		l->n_cut_full++;
 		ev |= CG_CAP_EV_CUT_FULL;
 	} else if (cut != l->cut && cut == CG_CAP_CUT_SHORT) {
