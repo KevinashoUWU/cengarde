@@ -2090,6 +2090,7 @@ static void cap_tick(struct server *s, struct session *S, uint16_t live, uint64_
 {
 	struct cg_cap_cfg cc = { .window_ms = s->cfg->governor_window_ms, .sat_us = s->cfg->governor_target_ms * 1000 };
 	uint8_t type[CG_MAX_LINKS];
+	uint32_t over[CG_MAX_LINKS];
 
 	for (int p = 0; p < CG_MAX_LINKS; p++) {
 		const struct path *P = &S->path[p];
@@ -2120,7 +2121,7 @@ static void cap_tick(struct server *s, struct session *S, uint16_t live, uint64_
 		uint16_t due;
 
 		cg_cap_eta(&S->eta, S->cap, live, cc.sat_us / 2, s->cfg->split_stale_max, cg_tickle_backoff(&S->tk),
-			   cg_link_hold_mask(type, CG_MAX_LINKS, s->cfg->eta_buffer), now_ms * 1000);
+			   cg_link_hold(type, CG_MAX_LINKS, s->cfg->eta_buffer, over), over, now_ms * 1000);
 		cg_cap_tickle(S->cap, live, now_ms, &due, tb, tc);
 		cg_tickle_tick(&S->tk, now_ms * 1000, (uint64_t)s->cfg->split_tickle_ms * 1000, due, tb, tc);
 	}

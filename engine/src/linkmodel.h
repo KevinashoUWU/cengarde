@@ -60,10 +60,19 @@ struct cg_link_model {
 	 * to the highest queue it showed over CG_CAP_QHI_MS: past it a packet
 	 * would be dropped. */
 	uint8_t lossy_hold;
+	/* What going past that queue costs a packet in the split by expected
+	 * arrival, in ms (eta.h's over_us): it goes on another link while it
+	 * would arrive there within this of what it would here. 0: last
+	 * resort (eta_buffer's), and the other links' deep queues took it all:
+	 * the cellular links filled to 150-220 ms (story 015). */
+	uint16_t hold_over_ms;
 	/* capacity_loss_pct for this link: loaded and losing more than this
 	 * (%) for CG_CAP_LOSS_N samples, it is full; 0: off. */
 	uint8_t loss_pct;
 };
+
+/* starlink's hold_over_ms: measured in the lab at 40, 100 and 200 (story 015) */
+#define CG_STARLINK_OVER_MS 100
 
 struct cg_link_preset {
 	const char *name;
@@ -72,14 +81,14 @@ struct cg_link_preset {
 
 /* The presets, by type. Only what measured as a win goes in (story 015,
  * n >= 8 against a null control); the rest keep auto's zeros as hooks.
- *                                       noprobe hold loss_pct */
+ *                                       noprobe hold over_ms loss_pct */
 static const struct cg_link_preset cg_link_presets[CG_LTYPE_COUNT] = {
-	[CG_LTYPE_AUTO] = { "auto", { 0, 0, 0 } },
-	[CG_LTYPE_CELLULAR] = { "cellular", { 0, 0, 0 } }, /* hook: the scheduler, the deep queue, the signal */
-	[CG_LTYPE_STARLINK] = { "starlink", { 1, 1, 0 } },
-	[CG_LTYPE_FIBER] = { "fiber", { 0, 0, 0 } },       /* hook */
-	[CG_LTYPE_ETHERNET] = { "ethernet", { 0, 0, 0 } }, /* hook */
-	[CG_LTYPE_RADIO] = { "radio", { 0, 0, 0 } },       /* hook */
+	[CG_LTYPE_AUTO] = { "auto", { 0, 0, 0, 0 } },
+	[CG_LTYPE_CELLULAR] = { "cellular", { 0, 0, 0, 0 } }, /* hook: the scheduler, the deep queue, the signal */
+	[CG_LTYPE_STARLINK] = { "starlink", { 1, 1, CG_STARLINK_OVER_MS, 0 } },
+	[CG_LTYPE_FIBER] = { "fiber", { 0, 0, 0, 0 } },       /* hook */
+	[CG_LTYPE_ETHERNET] = { "ethernet", { 0, 0, 0, 0 } }, /* hook */
+	[CG_LTYPE_RADIO] = { "radio", { 0, 0, 0, 0 } },       /* hook */
 };
 
 /* A type as read from the wire or a config: past the known ones, auto. */
@@ -125,14 +134,19 @@ static inline int cg_link_tracks_loss(const struct cg_link_model *m)
 }
 
 /* The links of type[0..n) (n <= 16) whose model holds them to their queue
- * (lossy_hold): cg_cap_eta's mask. */
-static inline uint16_t cg_link_hold_mask(const uint8_t *type, unsigned n, int g_buffer)
+ * (lossy_hold), cg_cap_eta's mask, and in over_us[0..n) what going past it
+ * costs each, in us (0: last resort). */
+static inline uint16_t cg_link_hold(const uint8_t *type, unsigned n, int g_buffer, uint32_t *over_us)
 {
 	uint16_t m = 0;
 
-	for (unsigned i = 0; i < n && i < 16; i++)
-		if (cg_link_model_of(type[i], g_buffer, 0).lossy_hold)
+	for (unsigned i = 0; i < n && i < 16; i++) {
+		struct cg_link_model lm = cg_link_model_of(type[i], g_buffer, 0);
+
+		over_us[i] = (uint32_t)lm.hold_over_ms * 1000;
+		if (lm.lossy_hold)
 			m |= (uint16_t)(1u << i);
+	}
 	return m;
 }
 
