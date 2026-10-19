@@ -37,7 +37,7 @@ struct cg_eta_link {
 	uint32_t limit_us; /* the queue it holds before it drops (eta_buffer), 0: no limit */
 };
 
-#define CG_ETA_OVER_US 10000000ull /* added to the arrival of a packet past a link's limit_us */
+#define CG_ETA_OVER_US 40000ull /* added to the arrival of a packet past a link's limit_us */
 
 struct cg_eta {
 	struct cg_eta_link l[CG_MAX_LINKS];
