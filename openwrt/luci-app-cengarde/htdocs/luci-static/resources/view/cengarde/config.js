@@ -54,6 +54,34 @@ function checkSplitWeight(entry, uplinks, others) {
 	return true;
 }
 
+// The types an uplink can be (the engine's [link] type, story 015), as
+// cengarde-setup takes them in "list uplink_type 'UPLINK=TYPE'".
+const LINK_TYPES = [ 'auto', 'cellular', 'starlink', 'fiber', 'ethernet', 'radio' ];
+
+// The type of uplink in a list of UPLINK=TYPE entries: the last valid entry
+// for it (as cengarde-setup reads them), 'auto' without one.
+function uplinkType(list, uplink) {
+	let t = 'auto';
+
+	L.toArray(list).forEach(function(e) {
+		const i = String(e).indexOf('=');
+
+		if (i > 0 && String(e).substring(0, i) == uplink && LINK_TYPES.indexOf(String(e).substring(i + 1)) >= 0)
+			t = String(e).substring(i + 1);
+	});
+	return t;
+}
+
+// The list with uplink set to type: its entries out, then UPLINK=TYPE at the
+// end unless the type is auto (the engine's default, nothing to write).
+function setUplinkType(list, uplink, type) {
+	const out = L.toArray(list).filter(function(e) { return String(e).indexOf(uplink + '=') != 0; });
+
+	if (type && type != 'auto')
+		out.push(uplink + '=' + type);
+	return out;
+}
+
 // Same substitutions as "cengarde-setup cloud-config", on the values in the
 // form, so the text follows unsaved changes. Without an address (a new secret
 // that is not saved yet) its placeholder stays, and the VPS derives it.
@@ -201,6 +229,43 @@ return view.extend({
 
 			return value != 'lan' && value != 'loopback' && value != 'wgcg' && value != 'cg0' && (chosen || !companion);
 		};
+		const uplinkFilter = o.filter;
+
+		// Each uplink's type, a dropdown under the list for each uplink in it
+		// (one option per interface that could be an uplink, shown while it
+		// is chosen), kept in "list uplink_type 'UPLINK=TYPE'". In bonding and
+		// redundancy alike: the engine measures each uplink by its type, and
+		// tells the VPS.
+		uci.sections('network', 'interface').map(function(n) { return n['.name']; })
+			.concat(L.toArray(uci.get('cengarde', 'main', 'uplink')))
+			.filter(function(n, i, all) { return all.indexOf(n) == i && uplinkFilter('main', n); })
+			.forEach(function(name) {
+				o = s.taboption('general', form.ListValue, 'uplink_type_' + name, _('Type of %s').format(name),
+					_('What kind of link it is. Today only Starlink changes anything, and only when large packets are split across the uplinks by expected arrival (split and split_eta): Starlink drops instead of queueing when it is full, so cengarde holds it to the queue it has shown and sends the rest over the other uplinks while they deliver it soon enough, and the VPS does the same with the download (in the lab, with Starlink and two cellular uplinks, 41 to 60 Mbit/s). The other types behave as Automatic for now.'));
+				o.value('auto', _('Automatic'));
+				o.value('cellular', _('Cellular (LTE/5G)'));
+				o.value('starlink', _('Starlink'));
+				o.value('fiber', _('Fiber'));
+				o.value('ethernet', _('Cable, DSL or Ethernet'));
+				o.value('radio', _('Radio link (point to point)'));
+				o.default = 'auto';
+				o.depends({ uplink: name, '!contains': true });
+				o.cfgvalue = function(section_id) {
+					return uplinkType(uci.get('cengarde', section_id, 'uplink_type'), name);
+				};
+				o.write = function(section_id, v) {
+					uci.set('cengarde', section_id, 'uplink_type',
+						setUplinkType(uci.get('cengarde', section_id, 'uplink_type'), name, v));
+				};
+				o.remove = function(section_id) {
+					const list = setUplinkType(uci.get('cengarde', section_id, 'uplink_type'), name, 'auto');
+
+					if (list.length)
+						uci.set('cengarde', section_id, 'uplink_type', list);
+					else
+						uci.unset('cengarde', section_id, 'uplink_type');
+				};
+			});
 
 		o = s.taboption('vps', form.Value, 'secret', _('Pairing secret'),
 			_('Every key of the tunnel, and its address unless you set one, derives from it: the VPS only needs this value, which goes in its cloud-config. A new secret means updating the VPS too.'));

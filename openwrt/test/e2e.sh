@@ -454,8 +454,10 @@ fi
 
 # Reordering and the experimental split: the options of /etc/config/cengarde
 # reach the engine's file (the split as "on", never "force"; a weight only in
-# the section of an uplink of the router, from 0 to 1000; the entries that
-# are not valid are left out and logged), and the engine takes that file. The
+# the section of an uplink of the router, from 0 to 1000; a type, story 015,
+# only in the section of an uplink and one the engine knows, auto written as
+# nothing; the entries that are not valid are left out and logged), and the
+# engine takes that file. The
 # options are cleared first and after, so that nothing else runs with them.
 if "$VM" ssh router sh -s <<'EOF'
 conf() { cengarde-setup engine-conf; }
@@ -463,7 +465,7 @@ section() { conf | sed -n "/^\[link $1\]/,/^\$/p"; }
 clear() {
 	for o in reorder reorder_max_wait_ms reorder_dup_wait_ms reorder_margin_ms reorder_bypass reorder_pool_kb \
 		split split_small split_weight split_spread_ms split_spread_copy governor governor_target_ms \
-		capacity_weights split_eta pacing; do
+		capacity_weights split_eta pacing uplink_type; do
 		uci -q delete "cengarde.main.$o"
 	done
 	uci commit cengarde
@@ -471,7 +473,7 @@ clear() {
 r=0
 clear
 # nothing set: none of the keys (the engine's defaults rule)
-conf | grep -qE '^(reorder|split|weight)' && { echo "keys without options"; r=1; }
+conf | grep -qE '^(reorder|split|weight|type)' && { echo "keys without options"; r=1; }
 uci set cengarde.main.reorder=1
 uci set cengarde.main.reorder_max_wait_ms=300
 uci set cengarde.main.reorder_dup_wait_ms=20
@@ -489,6 +491,11 @@ uci add_list cengarde.main.split_weight=up1=3
 uci add_list cengarde.main.split_weight=up3=0
 uci add_list cengarde.main.split_weight=up9=2
 uci add_list cengarde.main.split_weight=up2=1001
+uci add_list cengarde.main.uplink_type=up1=starlink
+uci add_list cengarde.main.uplink_type=up2=cellular
+uci add_list cengarde.main.uplink_type=up3=auto
+uci add_list cengarde.main.uplink_type=up9=radio
+uci add_list cengarde.main.uplink_type=up3=satellite
 uci commit cengarde
 for kv in 'reorder = yes' 'reorder_max_wait_ms = 300' 'reorder_dup_wait_ms = 20' 'reorder_bypass = 64' 'split = on' \
 	'split_small = 300' 'split_spread_ms = 50' 'split_spread_copy = no' 'governor = yes' 'governor_target_ms = 15' \
@@ -501,6 +508,12 @@ section eth2 | grep -q '^weight' && { echo "up2 (eth2) has a weight"; r=1; }
 [ "$(conf | grep -c '^weight')" = 2 ] || { echo "not two weights"; r=1; }
 logread | grep -q "split_weight 'up9=2'" || { echo "up9=2 not logged"; r=1; }
 logread | grep -q "split_weight 'up2=1001'" || { echo "up2=1001 not logged"; r=1; }
+section eth1 | grep -qx 'type = starlink' || { echo "up1 (eth1) is not starlink"; r=1; }
+section eth2 | grep -qx 'type = cellular' || { echo "up2 (eth2) is not cellular"; r=1; }
+section eth3 | grep -q '^type' && { echo "up3 (eth3) has a type (auto is written as nothing)"; r=1; }
+[ "$(conf | grep -c '^type')" = 2 ] || { echo "not two types"; r=1; }
+logread | grep -q "uplink_type 'up9=radio'" || { echo "up9=radio not logged"; r=1; }
+logread | grep -q "uplink_type 'up3=satellite'" || { echo "up3=satellite not logged"; r=1; }
 # the engine's own parser takes the file; its shape is checked too
 (umask 077 && conf > /tmp/split.conf)
 cengarde -t -c /tmp/split.conf || r=1
@@ -512,11 +525,11 @@ uci set cengarde.main.split=0
 uci commit cengarde
 conf | grep -q '^split = ' && { echo "split 0 is written"; r=1; }
 clear
-conf | grep -qE '^(reorder|split|weight)' && { echo "keys left after clearing"; r=1; }
+conf | grep -qE '^(reorder|split|weight|type)' && { echo "keys left after clearing"; r=1; }
 exit $r
 EOF
 then
-	ok "engine-conf: reordering and split options and per-uplink weights reach the engine's file, which it takes"
+	ok "engine-conf: reordering and split options and per-uplink weights and types reach the engine's file, which it takes"
 else
 	bad "engine-conf: reordering and split options or weights"
 fi

@@ -57,6 +57,30 @@ msgstr "Enlaces"
 msgid "The interfaces to bond: one per modem or VLAN, each with its own default route. cengarde gives them a metric of their own if they share one and puts them in the wan firewall zone."
 msgstr "Las interfaces que se suman: una por módem o VLAN, cada una con su propia ruta por defecto. cengarde les da una métrica propia si comparten una y las pone en la zona wan del cortafuegos."
 
+msgid "Type of %s"
+msgstr "Tipo de %s"
+
+msgid "What kind of link it is. Today only Starlink changes anything, and only when large packets are split across the uplinks by expected arrival (split and split_eta): Starlink drops instead of queueing when it is full, so cengarde holds it to the queue it has shown and sends the rest over the other uplinks while they deliver it soon enough, and the VPS does the same with the download (in the lab, with Starlink and two cellular uplinks, 41 to 60 Mbit/s). The other types behave as Automatic for now."
+msgstr "Qué clase de enlace es. Hoy solo Starlink cambia algo, y solo cuando los paquetes grandes se reparten entre los enlaces por llegada esperada (split y split_eta): Starlink, lleno, descarta en vez de encolar, así que cengarde lo retiene en la cola que mostró y manda el resto por los otros enlaces mientras lo entreguen a tiempo, y el VPS hace lo mismo con la bajada (en el laboratorio, con Starlink y dos enlaces celulares, de 41 a 60 Mbit/s). Los demás tipos se comportan como Automático por ahora."
+
+msgid "Automatic"
+msgstr "Automático"
+
+msgid "Cellular (LTE/5G)"
+msgstr "Celular (LTE/5G)"
+
+msgid "Starlink"
+msgstr "Starlink"
+
+msgid "Fiber"
+msgstr "Fibra"
+
+msgid "Cable, DSL or Ethernet"
+msgstr "Cable, DSL o Ethernet"
+
+msgid "Radio link (point to point)"
+msgstr "Radioenlace (punto a punto)"
+
 msgid "Pairing secret"
 msgstr "Secreto de emparejamiento"
 
@@ -572,9 +596,6 @@ msgstr "Saca el enlace hasta que lo reanudes o cengarde se reinicie"
 
 msgid "Resume"
 msgstr "Reanudar"
-
-msgid "Automatic"
-msgstr "Automático"
 
 msgid "Pause"
 msgstr "Pausar"
