@@ -51,6 +51,11 @@
 #               45 and 50 ms, 300 ms of queue. A capacity that only falls on a
 #               queue never sees link 1 full (field, 2026-10-18: 15 % lost on
 #               Starlink while its queue stayed under 40 ms)
+#   shallowqd   not in the default list: shallowq with the cellular links at
+#               Starlink's 20 ms (no reordering between them: what the delay
+#               difference costs)
+#   shallowqdeep  not in the default list: shallowq with Starlink behind 300 ms
+#               of queue (no burst loss: what the shallow queue costs)
 #   starsat     not in the default list: shallowq with link 1 as Starlink in time:
 #               its rate drawn per 15 s slot from 45, 60 and 75 Mbit/s (seeded
 #               like ltespikerand), its delay rising 0 to 15 ms within the slot,
@@ -499,6 +504,8 @@ bond_shape() {
 	downstall) bond_link 1 25 40 && bond_link 2 25 40 && bond_link 3 30 40 ;;
 	starlink15 | starlink15ramp) bond_link 1 25 50 && bond_link 2 20 100 ;;
 	shallowq | starsat) bond_link 1 20 60 15 && bond_link 2 45 25 300 && bond_link 3 50 18 300 ;;
+	shallowqd) bond_link 1 20 60 15 && bond_link 2 20 25 300 && bond_link 3 20 18 300 ;;
+	shallowqdeep) bond_link 1 20 60 300 && bond_link 2 45 25 300 && bond_link 3 50 18 300 ;;
 	starlink15sw) bond_link 1 25 100 && bond_link 2 20 50 ;;
 	ltespike | ltespikerand) bond_link 1 25 50 && bond_link 2 30 50 ;;
 	spikeloss) bond_link 1 25 50 100 1 && bond_link 2 30 50 100 1 ;;
@@ -511,7 +518,7 @@ bond_shape() {
 
 bond_nlinks() {
 	case $1 in
-	het | linkdeath | downstall | bloat | lossy | shallowq | starsat) echo 3 ;;
+	het | linkdeath | downstall | bloat | lossy | shallowq | shallowqd | shallowqdeep | starsat) echo 3 ;;
 	*) echo 2 ;;
 	esac
 }
@@ -662,7 +669,7 @@ bond_plan() {
 	for w in ${BOND_CC:-cubic bbr quic}; do ccs=$((ccs + 1)); done
 	for c in $BOND_CASES; do
 		case $c in
-		equal | het | reorder50 | reorder150 | linkdeath | downstall | shallowq | starsat | starlink15 | starlink15sw | starlink15ramp | ltespike | ltespikerand | deepq | bloat | lossy | spikeloss) ;;
+		equal | het | reorder50 | reorder150 | linkdeath | downstall | shallowq | shallowqd | shallowqdeep | starsat | starlink15 | starlink15sw | starlink15ramp | ltespike | ltespikerand | deepq | bloat | lossy | spikeloss) ;;
 		*)
 			echo "bond: unknown case $c"
 			return 1
