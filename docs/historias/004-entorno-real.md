@@ -198,6 +198,87 @@
     `kmod-usb-serial-pl2303` y `/etc/hotplug.d/usb/30-tplink-console`
     (`/dev/ttyUSB4`, 38400 8N1). Usuario y clave: los de la cuenta de
     dispositivo del sitio en el OC200, no los del controlador.
+- **El adaptador USB 3.0 nuevo no recibe en el USB 3 de la Pi**
+  (2026-10-16, medido). Es otro RTL8153 (`0bda:8153`, sin marca), en el bus
+  USB 3 de la Pi a 5000 Mbit/s y Ethernet a 1000 Full. Transmite a
+  941 Mbit/s, pero al recibir ráfagas de paquetes grandes el VL805 (el
+  controlador USB 3 de la Pi 4, PCI `1106:3483`) da `Rx status -75`
+  (overflow), luego `Tx timeout` y reinicia el dispositivo USB.
+
+  | Dónde | Driver | PC → Pi o bajada |
+  | --- | --- | --- |
+  | PC, Windows, xHCI Intel Cannon Lake | Realtek (Windows) | 940/940 (speedtest, fibra) |
+  | PC, Linux, el mismo xHCI | `r8152` del kernel 6.12 | 890/920, 0 errores |
+  | Pi 4, USB 3 (VL805) | `r8152` del kernel 6.12.94 (v1.12.13) | se cae |
+  | Pi 4, USB 3 (VL805) | Realtek r8152 v2.22.1 (compilado con el SDK 25.12.5) | se cae |
+  | Pi 4, USB 2.0 (puerto negro) | Realtek v2.22.1 | 307 / 270, 0 errores |
+
+  - **El umbral no es la tasa sino paquetes grandes seguidos.** UDP de
+    200 B a 5 Mbit/s y pings de 1472 B de a 5 por segundo pasan; UDP de
+    1400 B a 5 Mbit/s ya cae. Con `ethtool -C eth1 rx-usecs 0` aguanta 5
+    y cae a 50. Un límite de tasa en el switch no sirve.
+  - **No sirvieron:** excepción LPM de usbcore (`0bda:8153:k`), autosuspend
+    (ya estaba en `on`), `r8152-firmware`, el driver de Realtek, el otro
+    puerto azul ni actualizar el bootloader (2025-05-08 → 2026-09-23, que
+    lleva el firmware del VL805 en la Pi 4 Rev 1.5).
+  - **El puerto azul de arriba** además tira al dispositivo del bus cada
+    35–95 s aun en reposo (`USB disconnect`, 0 sobrecorrientes): su parte
+    USB 3 queda apagada en `/etc/rc.local`
+    (`…/usb2-port1/disable`); su lado USB 2.0 sigue andando.
+  - **El switch está limpio:** el puerto 23 en 1000 Full, pausa activa, 0
+    errores y 0 descartes en los dos sentidos.
+  - **Siguiente:** el driver arma buffers de recepción de 16–48 KB y le
+    programa al chip cuánto agrupar (`USB_RX_EARLY_SIZE`); el de Windows
+    usa 6 URB de recepción. Probar el driver con `rx_buf_sz` de 16 KB y la
+    agrupación acorde. **Probado el mismo día: no sirvió.** Con el driver
+    de Realtek recompilado con 6 URB de recepción en vuelo (en vez de 10)
+    y buffers de 16 KB también en USB 3 (en vez de 32), el umbral es el
+    mismo: UDP de 1400 B pasa a 5 Mbit/s y cae a 50 con `-75`. Los mismos
+    buffers que en USB 2.0, donde anda; el desborde lo pone el VL805.
+    Mientras tanto, la LAN de la Pi va por USB 2.0 (~300 Mbit/s), con
+    cualquiera de los dos adaptadores.
+  - **El USB 3 de la Pi está sano para otros dispositivos** (control, el
+    mismo día): un SSD SATA Kingston A400 en caja RTL9201 (`uas`), recién
+    escrito, en el puerto azul de abajo: 4 GB a 261 MB/s de escritura y
+    365 MB/s de lectura, 0 errores del xHCI ni bajo voltaje (en el PC,
+    296 / 155). El atasco es de la pareja VL805 + RTL8153 al recibir, no
+    del controlador ni del puerto de abajo. (Leído antes de reescribirlo,
+    ese SSD daba 11,8 MB/s en cualquier equipo: el A400 sin DRAM lee lento
+    los datos viejos.)
+  - **Causa (2026-10-17, medido): incompatibilidad eléctrica de la pareja.**
+    Material, parches y notas del árbitro en `~/campo/2026-10-17/vl805-rtl8153/`
+    (`arbitro/analysis.md`), fuera del repo.
+    - **El `-75` es un babble del xHCI** (`COMP_BABBLE_DETECTED_ERROR`):
+      usbmon muestra que el VL805 acepta el paquete lleno de 1024 B y marca
+      babble en el corto que cierra la transferencia (1472 = 1024 + 448).
+      Sale en ~1 de cada 6700 transferencias de dos paquetes; por eso 200 B
+      nunca falla y no hay umbral de tasa.
+    - **El disparador es la forma en el cable:** UDP de 900 B (976 B por
+      USB, un paquete) da 0 fallos en 146 000 tramas; 1000 B (1024 + 48), 14
+      en 30 s al mismo pps. Descartados: las ráfagas (con `bMaxBurst` 0 en el
+      contexto del xHCI falla igual), el LPM (excepción `0x400` activa, U1/U2
+      en 0) y la forma del TD (TD de 1024 B: misma tasa).
+    - **El contador de errores de enlace (PORTLI) lo decide:**
+
+      | Pareja | Errores de enlace USB 3 |
+      | --- | --- |
+      | RTL8153 + Intel del PC | 0 en reposo y 0 tras 40 s a 719 Mbit/s (2,4 M paquetes) |
+      | SSD + puerto azul de la Pi | 0 en reposo y 0 con 2 GB de escritura y de lectura |
+      | RTL8153 + puerto azul de la Pi | ~1,5–3 por segundo, también en reposo |
+
+      Ninguno falla con otro compañero. El VL805 convierte un error de
+      enlace en la frontera lleno→corto en babble, y después el RTL8153 queda
+      colgado.
+    - **Por qué la LAN moría:** tras el babble el xHCI reinicia la secuencia
+      del endpoint solo del lado del host y espera un `usb_clear_halt()` que
+      ningún `r8152` hace (ni el del kernel ni el de Realtek): siguen 17 020
+      `-71` seguidos hasta el reset por watchdog. Un `r8152` parcheado que
+      hace clear-halt y, si falla, reset USB (`rx_recover`) mantiene la LAN
+      viva, con pérdidas: ~1,5 recuperaciones por segundo a 50 Mbit/s.
+    - **Remedios:** un hub USB 3 con alimentación propia (regenera la
+      señal), un alargador corto u otro adaptador (RTL8153B, RTL8156,
+      AX88179). Por software no hay arreglo del babble. La LAN de la Pi
+      sigue en USB 2.0 (~300 Mbit/s). Firmware del VL805: `0x138C0`.
 
 ## Qué hacemos con esto
 
@@ -215,7 +296,8 @@
 
 - Confirmar el número de vCPU del plan de Vultr y la cuota de transferencia.
 - MTU real de cada operador (para fijar el MTU de WireGuard; ver historia 005).
-- Modelo del adaptador USB (driver) y si la NIC soporta offloads con VLAN.
+- Una NIC USB 3 que se lleve con el VL805 (otro chip o un hub con
+  alimentación) y, para upstream, la recuperación del `r8152` tras un babble.
 - Una semana de campo con `cengarde-rec` y el `cell-monitor` de SmoothStream
   (RSRP, RSRQ, SINR, banda, RAT y celda de cada Quectel a InfluxDB), con los
   relojes sincronizados, para cruzar los cambios de RAT y el SINR con los
@@ -262,3 +344,5 @@
   ENAMI, engancha B28 PCI 330 + B2 PCI 90 de 20 MHz + B4 PCI 90 de 10 MHz
   y da **167,5 de bajada** y 18,4 de subida.
 - 2026-10-15: la pausa del adaptador USB de la LAN se perdía al reiniciar la Pi; queda fija con un script de hotplug.
+- 2026-10-16: el adaptador USB 3.0 nuevo (RTL8153) no recibe en el USB 3 de la Pi 4 (VL805): `Rx status -75`; anda en el PC (Linux y Windows) y en el USB 2.0 de la Pi; puerto azul de arriba apagado; bootloader actualizado.
+- 2026-10-17: la causa del `-75` es una incompatibilidad eléctrica de la pareja VL805 + RTL8153 (errores de enlace solo entre ellos; el VL805 los convierte en babble en la frontera lleno→corto); ni ráfagas, ni LPM, ni buffers. El `r8152` no se recupera de un babble; remedio: hub con alimentación u otro adaptador.
