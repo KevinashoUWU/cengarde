@@ -225,6 +225,7 @@ struct cg_config {
 	int split_eta;                /* split by expected arrival (eta.h) */
 	int pacing;                   /* each link's socket paced at its rate (pace.h) */
 	uint32_t governor_target_ms;  /* the queue a link may hold */
+	uint32_t capacity_loss_pct;   /* EXPERIMENT: a loaded link losing more than this (%) is full (capacity.h); 0: off */
 	uint32_t governor_window_ms;  /* of each link's minimum delay */
 
 	/* latency knobs */

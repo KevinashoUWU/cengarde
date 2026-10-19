@@ -1991,7 +1991,8 @@ static void pace_set(struct link *l, uint64_t rate)
  * (scaled by the governor's, with governor), after the governor's tick. */
 static void cap_tick(struct client *c, uint16_t live, uint64_t now_ms)
 {
-	struct cg_cap_cfg cc = { .window_ms = c->cfg->governor_window_ms, .sat_us = c->cfg->governor_target_ms * 1000 };
+	struct cg_cap_cfg cc = { .window_ms = c->cfg->governor_window_ms, .sat_us = c->cfg->governor_target_ms * 1000,
+				.loss_pct = c->cfg->capacity_loss_pct };
 
 	for (int i = 0; i < CG_MAX_LINKS; i++) {
 		struct link *l = &c->link[i];
