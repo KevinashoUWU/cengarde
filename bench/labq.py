@@ -32,6 +32,16 @@ over the hours hits every arm alike. Up to -j labs run at once, LAB_ID 1..j
 (run as root, or through sudo -n); --pin gives each lab its own CPU cores
 (taskset), whole cores split evenly.
 
+Other machines join with --node USER@HOST:N[,key=PATH][,root=DIR] (and the
+local labs with --node local:N; without --node, -j N local labs): a node is a
+box prepared like ~/cengarde-lab (iperf3 and wg in ROOT/prefix/bin, a venv in
+ROOT/venv with aioquic, the repository in ROOT/repo; passwordless sudo). Before
+running, the lab's scripts (bench/) and each arm's engine are copied there with
+rsync, so every node runs the same binary and scripts; a job there is one
+"lab.sh bond" over ssh, and its JSON line comes back the same way. Jobs are not
+tied to a node: the arms interleave on every one of them. A node whose ssh
+fails gives its job back to the queue (once) and leaves the pool.
+
 Output in --out DIR: ARM.jsonl per arm and all.jsonl, bond.sh's JSON lines with
 "variant" set to the arm's name ("bond_variant" keeps bond.sh's), "arm", "sha"
 and "slot" added: "bondtab.py table DIR/all.jsonl --ref base" compares the arms.
@@ -233,11 +243,66 @@ def read_done(out):
     return done, shas
 
 
-def job_env(plan, arm, j, slot):
+def parse_node(spec, default_key):
+    """--node local:N or USER@HOST:N[,key=PATH][,root=DIR]."""
+    head, *opts = spec.split(",")
+    host, _, n = head.rpartition(":")
+    if not host or not n.isdigit() or int(n) < 1:
+        die("--node HOST:N (N labs on it): " + spec)
+    node = {"host": host, "n": int(n), "key": default_key, "root": "cengarde-lab"}
+    for o in opts:
+        k, _, v = o.partition("=")
+        if k not in ("key", "root") or not v:
+            die("--node option key=PATH or root=DIR: " + o)
+        node[k] = os.path.expanduser(v) if k == "key" else v
+    node["local"] = host == "local"
+    node["name"] = "local" if node["local"] else host.split("@")[-1]
+    return node
+
+
+def ssh_cmd(node):
+    c = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=15"]
+    if node["key"]:
+        c += ["-i", node["key"]]
+    return c + [node["host"]]
+
+
+def remote_bin(node, arm):
+    return "%s/labq-bin/%s/cengarde" % (node["home"], arm["sha"][:12] if not arm["sha"].startswith("bin:") else
+                                        re.sub(r"[^A-Za-z0-9._-]", "_", arm["name"]))
+
+
+def sync_node(node, arms):
+    """Copies bench/ and each arm's engine to a remote node; its home directory."""
+    home = subprocess.run(ssh_cmd(node) + ["echo $HOME"], capture_output=True, text=True, timeout=30)
+    if home.returncode:
+        die("node %s: ssh failed: %s" % (node["host"], home.stderr.strip()[-300:]))
+    node["home"] = home.stdout.strip() + "/" + node["root"]
+    e = "ssh -o BatchMode=yes" + (" -i " + shlex.quote(node["key"]) if node["key"] else "")
+    r = subprocess.run(["rsync", "-a", "-e", e, "--exclude", "run*", "--exclude", "labq-cache",
+                        HERE + "/", "%s:%s/repo/bench/" % (node["host"], node["home"])], capture_output=True, text=True)
+    if r.returncode:
+        die("node %s: rsync of bench/ failed: %s" % (node["host"], r.stderr.strip()[-300:]))
+    for arm in arms:
+        dst = remote_bin(node, arm)
+        subprocess.run(ssh_cmd(node) + ["mkdir -p " + shlex.quote(os.path.dirname(dst))], check=True,
+                       capture_output=True)
+        r = subprocess.run(["rsync", "-a", "-e", e, arm["path"], "%s:%s" % (node["host"], dst)], capture_output=True,
+                           text=True)
+        if r.returncode:
+            die("node %s: rsync of %s failed: %s" % (node["host"], arm["name"], r.stderr.strip()[-300:]))
+    print("labq: node %s ready (%d labs, %s)" % (node["name"], node["n"], node["home"]), flush=True)
+
+
+def job_env(plan, arm, j, slot, node=None):
     g = plan["grid"]
     env = dict(plan["env"])
     env.update({k: str(v) for k, v in arm.get("env", {}).items()})
-    env.update({"LAB_ID": str(slot), "RUN": os.path.join(HERE, "run-%d" % slot), "CENGARDE_BIN": arm["path"],
+    if node and not node["local"]:
+        run, binp = "%s/repo/bench/run-%d" % (node["home"], slot), remote_bin(node, arm)
+    else:
+        run, binp = os.path.join(HERE, "run-%d" % slot), arm["path"]
+    env.update({"LAB_ID": str(slot), "RUN": run, "CENGARDE_BIN": binp,
                 "BOND_CASES": j["case"], "BOND_DIRS": j["dir"], "BOND_CC": j["cc"], "BOND_VARIANTS": arm["variant"],
                 "BOND_N": "1", "BOND_REP0": str(j["rep"] - 1), "BOND_SEED": str(g["seed"]), "BOND_S": str(g["secs"]),
                 "CLIENT_EXTRA": arm.get("client_extra", ""), "SERVER_EXTRA": arm.get("server_extra", "")})
@@ -245,13 +310,15 @@ def job_env(plan, arm, j, slot):
 
 
 class Runner:
-    def __init__(self, plan, out, todo, nslots, pins):
+    def __init__(self, plan, out, todo, nodes, pins):
         self.plan, self.out, self.todo, self.pins = plan, out, list(todo), pins
         self.arms = {a["name"]: a for a in plan["arms"]}
         self.lock = threading.Lock()
         self.stop = False
         self.n, self.ok, self.failed, self.t0 = len(todo), 0, [], time.monotonic()
-        self.slots = list(range(1, nslots + 1))
+        self.slots = [(node, s) for node in nodes for s in range(1, node["n"] + 1)]
+        self.down = set()   # nodes out of the pool
+        self.retried = set()
 
     def next_job(self):
         with self.lock:
@@ -259,54 +326,81 @@ class Runner:
                 return None
             return self.todo.pop(0)
 
-    def worker(self, slot):
-        while (j := self.next_job()) is not None:
-            self.run_job(j, slot)
+    def worker(self, node, slot):
+        while node["name"] not in self.down and (j := self.next_job()) is not None:
+            self.run_job(j, node, slot)
 
-    def run_job(self, j, slot):
+    def run_job(self, j, node, slot):
         arm = self.arms[j["arm"]]
-        env = job_env(self.plan, arm, j, slot)
-        cmd = ([] if os.geteuid() == 0 else ["sudo", "-n"])
-        if self.pins:
-            cmd += ["taskset", "-c", self.pins[slot - 1]]
-        cmd += ["env"] + ["%s=%s" % kv for kv in sorted(env.items())] + [os.path.join(HERE, "lab.sh"), "bond"]
+        env = job_env(self.plan, arm, j, slot, node)
+        where = "%s:%d" % (node["name"], slot)
         log = os.path.join(self.out, "logs", job_id(j) + ".log")
         t = time.monotonic()
+        if node["local"]:
+            cmd = ([] if os.geteuid() == 0 else ["sudo", "-n"])
+            if self.pins:
+                cmd += ["taskset", "-c", self.pins[slot - 1]]
+            cmd += ["env"] + ["%s=%s" % kv for kv in sorted(env.items())] + [os.path.join(HERE, "lab.sh"), "bond"]
+        else:
+            path = "%s/prefix/bin:%s/venv/bin:/usr/sbin:/sbin:/usr/bin:/bin" % (node["home"], node["home"])
+            env["PATH"] = path
+            remote = "cd %s/repo && sudo -n env %s bench/lab.sh bond; rc=$?; echo '@@BOND@@'; cat %s/bond.jsonl 2>/dev/null; exit $rc" % (
+                shlex.quote(node["home"]), " ".join(shlex.quote("%s=%s" % kv) for kv in sorted(env.items())),
+                shlex.quote(env["RUN"]))
+            cmd = ssh_cmd(node) + [remote]
         with open(log, "w") as f:
-            f.write("# " + " ".join(shlex.quote(c) for c in cmd) + "\n")
+            f.write("# " + where + " " + " ".join(shlex.quote(c) for c in cmd) + "\n")
             f.flush()
-            rc = subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL).returncode
+            if node["local"]:
+                rc = subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL).returncode
+                text = ""
+            else:
+                r = subprocess.run(cmd, capture_output=True, text=True, stdin=subprocess.DEVNULL)
+                rc, text = r.returncode, r.stdout
+                f.write(text.split("@@BOND@@")[0] + r.stderr)
         lines = []
         try:
-            with open(os.path.join(env["RUN"], "bond.jsonl")) as f:
-                lines = [json.loads(ln) for ln in f if ln.strip()]
+            if node["local"]:
+                with open(os.path.join(env["RUN"], "bond.jsonl")) as f:
+                    lines = [json.loads(ln) for ln in f if ln.strip()]
+            elif "@@BOND@@" in text:
+                lines = [json.loads(ln) for ln in text.split("@@BOND@@", 1)[1].splitlines() if ln.strip()]
         except (OSError, ValueError):
-            pass
+            lines = []
         took = time.monotonic() - t
         with self.lock:
+            if rc == 255 and not node["local"]:
+                # ssh itself failed: the node leaves, the job goes back (once)
+                self.down.add(node["name"])
+                k = job_id(j)
+                if k not in self.retried:
+                    self.retried.add(k)
+                    self.todo.insert(0, j)
+                    print("labq: node %s lost (ssh), %s back to the queue" % (node["name"], k), flush=True)
+                    return
             if rc != 0 or len(lines) != 1:
                 self.failed.append(j)
                 with open(os.path.join(self.out, "failed.txt"), "a") as f:
                     f.write("%s rc=%d lines=%d log=%s\n" % (job_id(j), rc, len(lines), log))
-                print("labq: [%d/%d] %s slot %d: FAILED (rc %d), see %s" % (self.ok + len(self.failed), self.n,
-                      job_id(j), slot, rc, log), flush=True)
+                print("labq: [%d/%d] %s %s: FAILED (rc %d), see %s" % (self.ok + len(self.failed), self.n,
+                      job_id(j), where, rc, log), flush=True)
                 return
             d = lines[0]
             d["bond_variant"], d["variant"] = d.get("variant"), arm["name"]
-            d.update(arm=arm["name"], sha=arm["sha"], slot=slot, rep=j["rep"])
+            d.update(arm=arm["name"], sha=arm["sha"], slot=slot, node=node["name"], rep=j["rep"])
             row = json.dumps(d) + "\n"
             for name in (arm["name"] + ".jsonl", "all.jsonl"):
                 with open(os.path.join(self.out, name), "a") as f:
                     f.write(row)
             self.ok += 1
-            print("labq: [%d/%d] %-40s slot %d %6.1f Mbit/s retrans %s rtt p50 %s p99 %s (%.0f s)" % (
-                self.ok + len(self.failed), self.n, job_id(j), slot, d.get("mbps", 0), d.get("retrans"),
+            print("labq: [%d/%d] %-40s %-12s %6.1f Mbit/s retrans %s rtt p50 %s p99 %s (%.0f s)" % (
+                self.ok + len(self.failed), self.n, job_id(j), where, d.get("mbps", 0), d.get("retrans"),
                 d.get("rtt_p50"), d.get("rtt_p99"), took), flush=True)
 
     def run(self):
         threads = []
-        for slot in self.slots:
-            th = threading.Thread(target=self.worker, args=(slot,), daemon=True)
+        for node, slot in self.slots:
+            th = threading.Thread(target=self.worker, args=(node, slot), daemon=True)
             th.start()
             threads.append(th)
             time.sleep(1)  # the labs' set-ups a little apart
@@ -337,6 +431,8 @@ def main(argv=None):
     p.add_argument("--cases"), p.add_argument("--dirs"), p.add_argument("--cc")
     p.add_argument("--reps", type=int), p.add_argument("--secs", type=int), p.add_argument("--seed", type=int)
     p.add_argument("-j", type=int, default=1, help="labs at once (LAB_ID 1..j)")
+    p.add_argument("--node", action="append", help="local:N or USER@HOST:N[,key=PATH][,root=DIR] (see the docstring)")
+    p.add_argument("--key", default=None, help="the ssh key for the nodes (default: ssh's own)")
     p.add_argument("--pin", action="store_true", help="each lab on its own cores (taskset)")
     p.add_argument("--out", help="the output directory (needed by run)")
     p.add_argument("--cache", default=os.path.join(HERE, "labq-cache"), help="where builds go (bench/labq-cache)")
@@ -347,13 +443,16 @@ def main(argv=None):
     all_jobs = jobs(plan)
     done, shas = read_done(a.out) if a.out else (set(), {})
     todo = [j for j in all_jobs if tuple(j[k] for k in KEY) not in done]
+    nodes = [parse_node(s, a.key) for s in a.node] if a.node else [parse_node("local:%d" % a.j, a.key)]
+    labs = sum(n["n"] for n in nodes)
     if a.cmd == "plan":
         for j in todo:
             print(job_id(j))
         secs = sum(job_secs(plan, j) for j in todo)
-        print("labq: %d jobs (%d done), about %.0f min with -j %d" % (len(todo), len(all_jobs) - len(todo),
-              secs / 60 / max(a.j, 1), a.j))
+        print("labq: %d jobs (%d done), about %.0f min on %d lab(s)" % (len(todo), len(all_jobs) - len(todo),
+              secs / 60 / max(labs, 1), labs))
         return 0
+    a.cache = os.path.abspath(a.cache)
     os.makedirs(a.cache, exist_ok=True)
     for arm in plan["arms"]:
         arm["path"] = build(arm, a.cache, os.cpu_count() or 4)
@@ -371,15 +470,19 @@ def main(argv=None):
     with open(os.path.join(a.out, "plan.json"), "w") as f:
         json.dump(plan, f, indent=1)
     pins = None
-    if a.pin:
-        pins = cpu_sets(a.j)
+    local = [n for n in nodes if n["local"]]
+    if a.pin and local:
+        pins = cpu_sets(local[0]["n"])
         if pins is None:
             die("--pin: fewer cores than labs")
-    print("labq: %d jobs to run (%d done) on %d lab(s)%s" % (len(todo), len(all_jobs) - len(todo), a.j,
-          " pinned to " + " | ".join(pins) if pins else ""), flush=True)
+    for n in nodes:
+        if not n["local"]:
+            sync_node(n, plan["arms"])
+    print("labq: %d jobs to run (%d done) on %d lab(s): %s%s" % (len(todo), len(all_jobs) - len(todo), labs,
+          ", ".join("%s x%d" % (n["name"], n["n"]) for n in nodes), " (local pinned)" if pins else ""), flush=True)
     if not todo:
         return 0
-    return Runner(plan, a.out, todo, a.j, pins).run()
+    return Runner(plan, a.out, todo, nodes, pins).run()
 
 
 if __name__ == "__main__":
