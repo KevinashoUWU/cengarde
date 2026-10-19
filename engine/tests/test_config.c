@@ -429,6 +429,7 @@ static void test_config_bonding(void)
 	CHECK_EQ(c.split_spread_copy, 1);
 	CHECK(c.governor == 0 && c.governor_target_ms == 20 && c.governor_window_ms == 10000);
 	CHECK(c.capacity_weights == 0 && c.split_eta == 0 && c.pacing == 0);
+	CHECK(c.capacity_sat_ms == c.governor_target_ms && c.rescue_target_ms == c.governor_target_ms);
 	CHECK(warn[0] == '\0');
 	cg_config_free(&c);
 	CHECK_EQ(cg_config_parse(&c, SERVER, err, sizeof(err), warn, sizeof(warn)), 0);
@@ -454,8 +455,10 @@ static void test_config_bonding(void)
 	"reorder = no\nreorder_max_wait_ms = 400\nreorder_dup_wait_ms = 20\nreorder_margin_ms = 25\n" \
 	"reorder_bypass = 256\nreorder_pool_kb = 1024\nsplit_small = 512\nsplit_spread_ms = 0\n" \
 	"split_spread_copy = no\ngovernor = yes\ngovernor_target_ms = 35\ngovernor_window_ms = 30000\n" \
-	"capacity_weights = yes\nsplit_eta = yes\npacing = yes\n"
+	"capacity_weights = yes\nsplit_eta = yes\npacing = yes\ncapacity_sat_ms = 50\n"
 	CHECK_EQ(cg_config_parse(&c, CLIENT KNOBS "split = force\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(c.capacity_sat_ms, 50);  /* its own */
+	CHECK_EQ(c.rescue_target_ms, 35); /* governor_target_ms's */
 	CHECK_EQ(c.reorder, 0);
 	CHECK_EQ(c.reorder_max_wait_ms, 400);
 	CHECK_EQ(c.reorder_dup_wait_ms, 20);
@@ -1027,6 +1030,10 @@ static void test_config_native(void)
 	CHECK(!strcmp(c.tun, "cg0"));
 	CHECK_EQ(c.tun_mtu, CG_TUN_MTU_DEFAULT);
 	cg_config_free(&c);
+	CHECK_EQ(cg_config_parse(&c, CLIENT "tun_txqueuelen = 5000\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(c.tun_txqueuelen, 5000);
+	cg_config_free(&c);
+	CHECK(cg_config_parse(&c, CLIENT "tun_txqueuelen = 200000\n", err, sizeof(err), warn, sizeof(warn)) < 0);
 
 #define NATIVE CLIENT "tunnel = native\ntun = cgt\ntun_addr = 10.79.0.2/16 fd00:79::2/64\ntun_mtu = 1400\n"
 	CHECK_EQ(cg_config_parse(&c, NATIVE, err, sizeof(err), warn, sizeof(warn)), 0);
@@ -1042,6 +1049,11 @@ static void test_config_native(void)
 	CHECK(cg_config_restart_needed(&c, &o) == NULL);
 	o.tun_mtu = 1300;
 	CHECK(!strcmp(cg_config_restart_needed(&c, &o), "tun_mtu"));
+	o.tun_mtu = c.tun_mtu;
+	CHECK_EQ(c.tun_txqueuelen, 0); /* the kernel's */
+	o.tun_txqueuelen = 5000;
+	CHECK(!strcmp(cg_config_restart_needed(&c, &o), "tun_txqueuelen"));
+	o.tun_txqueuelen = 0;
 	o.tun_mtu = 1400;
 	o.ntun_addr = 1;
 	CHECK(!strcmp(cg_config_restart_needed(&c, &o), "tun_addr"));
