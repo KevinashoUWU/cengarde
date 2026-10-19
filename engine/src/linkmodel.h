@@ -71,8 +71,13 @@ struct cg_link_model {
 	uint8_t loss_pct;
 };
 
-/* starlink's hold_over_ms: measured in the lab at 40, 100 and 200 (story 015) */
-#define CG_STARLINK_OVER_MS 100
+/* starlink's hold_over_ms (story 015, n = 8 against a null control): 40,
+ * 100 and 200 all gained 27-58 % where Starlink's queue is shallow and its
+ * base delay shorter (shallowq, starsat), but 100 lost 6-10 % and 200
+ * 20-38 % where the delays are equal (shallowqd), the cellular queues
+ * filled; 40 stayed even or better there (+2-5 %) and behind a deep queue
+ * (shallowqdeep). */
+#define CG_STARLINK_OVER_MS 40
 
 struct cg_link_preset {
 	const char *name;
