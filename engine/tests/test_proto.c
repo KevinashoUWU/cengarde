@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include <string.h>
 
+#include "fec.h"
 #include "proto.h"
 #include "test.h"
 
@@ -39,7 +40,7 @@ void test_proto(void)
 
 	/* Layout: version/type, the client hint at byte 2, link at byte 3,
 	 * session, seq and ts in network order. */
-	CHECK_EQ(pkt[0], 0x61);
+	CHECK_EQ(pkt[0], 0x71);
 	CHECK_EQ(pkt[2], 0x5a);
 	CHECK_EQ(pkt[3], 5);
 	CHECK(!memcmp(pkt + 4, "\xde\xad\xbe\xef\x01\x02\x03\x04\xa0\xb0\xc0\xd0", 12));
@@ -84,9 +85,14 @@ void test_proto(void)
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
 	pkt[0] = 0x51; /* version 5 (no CG_F_FREE) too */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
-	pkt[0] = 0x6f; /* unknown type */
+	pkt[0] = 0x61; /* version 6 (no FEC parity) too */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
-	pkt[0] = 0x61;
+	pkt[0] = 0x7f; /* unknown type */
+	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
+	pkt[0] = 0x76; /* a parity (fec.h): its header and a byte at least */
+	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), sizeof(pkt) > CG_HDR_LEN + CG_FEC_HDR ? 0 : -1);
+	CHECK_EQ(cg_hdr_parse(&p, pkt, CG_HDR_LEN + CG_FEC_HDR), -1);
+	pkt[0] = 0x71;
 	pkt[2] = 0xff; /* any hint parses: the server judges it */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), 0);
 	CHECK_EQ(p.hint, 0xff);
@@ -314,6 +320,7 @@ void test_proto(void)
 		seq[n++] = 5064; /* 64 after 5000: in its mask */
 		seq[n++] = 5065; /* 65 after: a range of its own */
 		CHECK(cg_type_ctl(CG_T_NACK));
+		CHECK(cg_type_ctl(CG_T_FEC));
 		nl = cg_nack_write(nb + CG_HDR_LEN, seq, n, &used);
 		CHECK_EQ(used, n);
 		CHECK_EQ(nb[CG_HDR_LEN], 4); /* 0xffffffe0 + 64 more, 6 more, 5000 (+5064), 5065 */

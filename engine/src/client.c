@@ -73,6 +73,7 @@
 #include "sock.h"
 #include "capacity.h"
 #include "tcpfree.h"
+#include "fec.h"
 #include "rescue.h"
 #include "pace.h"
 #include "govern.h"
@@ -149,6 +150,8 @@ struct link {
 	struct cg_pump_cmd pend;
 	struct cg_ratelimit rl, rl_move, rl_mtu;
 };
+
+#define CG_FEC_Q (CG_BATCH + 1) /* parities of one batch: at most one a packet, and the group before it */
 
 struct client {
 	struct cg_config *cfg; /* replaced by a reload */
@@ -263,6 +266,23 @@ struct client {
 	struct cg_resc_budget resc_b;
 	uint64_t nacks_rx, resc_sent, resc_miss, resc_budget, resc_congested;
 	uint64_t resc_gone_tx, resc_gone_rx; /* CG_F_GONE said to the server; asked gaps it said were gone */
+	/* The upload's parities (fec.h): the open group, and the parities of
+	 * the groups closed in this batch, sent after its DATA. */
+	struct cg_fec_tx fectx;
+	struct {
+		uint16_t mask; /* the links of its group */
+		uint16_t plen;
+		uint8_t p[CG_HDR_LEN + CG_FEC_HDR + CG_FEC_PLEN_MAX];
+	} fecq[CG_FEC_Q];
+	int nfecq;
+	uint64_t fec_parities, fec_bytes, fec_nolink;
+	uint64_t fec_size[CG_FEC_KMAX + 1]; /* groups closed, by the packets in them */
+	uint64_t fec_why[4];               /* closed full, evicted (span or no slot), at the deadline, split off */
+	struct cg_fec_share fec_share;     /* each link's recent share, for fec_share_max */
+	uint64_t fec_capped;               /* split packets a link at the cap did not take */
+	uint32_t fec_ia_us;                /* mean gap between protected packets, for the deadline */
+	unsigned fec_k;                    /* members of a full group now */
+	uint64_t fec_last_us;
 	struct cg_ro_cfg rocf;
 	uint32_t ro_budget;
 
@@ -1184,6 +1204,128 @@ static void send_links(struct client *c, int m, uint64_t now_ms, uint16_t live, 
 	}
 }
 
+/* The parities of the groups closed in this batch (fec.h), each on the
+ * live link of least RTT outside its group (the parity goes after the
+ * DATA, so that the DATA never waits for it). */
+static void fec_send(struct client *c, uint64_t now_us)
+{
+	uint16_t present, live;
+
+	link_masks(c, now_us / 1000, &present, &live);
+	for (int q = 0; q < c->nfecq; q++) {
+		struct link *best = NULL;
+
+		for (int i = 0; i < CG_MAX_LINKS; i++) {
+			struct link *l = &c->link[i];
+
+			if (!(live >> i & 1) || (c->fecq[q].mask >> i & 1) || l->fd < 0)
+				continue;
+			if (!best || (l->srtt8_us && (!best->srtt8_us || l->srtt8_us < best->srtt8_us)))
+				best = l;
+		}
+		if (!best) {
+			c->fec_nolink++;
+			continue;
+		}
+		cg_up_header(&c->txs, c->fecq[q].p, CG_T_FEC, 0, (uint8_t)(best - c->link), (uint32_t)now_us,
+			     c->fecq[q].p + CG_HDR_LEN, c->fecq[q].plen);
+		if (send(best->fd, c->fecq[q].p, CG_HDR_LEN + c->fecq[q].plen, MSG_DONTWAIT) ==
+		    (ssize_t)(CG_HDR_LEN + c->fecq[q].plen)) {
+			c->fec_parities++;
+			c->fec_bytes += c->fecq[q].plen;
+			best->tx_pkts++;
+			best->tx_bytes += c->fecq[q].plen;
+		} else {
+			best->tx_drops++;
+		}
+	}
+	c->nfecq = 0;
+}
+
+/* Closes open group i (why: an index of fec_why): its parity waits for
+ * the end of the batch. */
+static void fec_close(struct client *c, int i, int why, uint64_t now_us)
+{
+	struct cg_fec_grp *g = &c->fectx.g[i];
+
+	if (!g->n)
+		return;
+	c->fec_size[g->n > CG_FEC_KMAX ? CG_FEC_KMAX : g->n]++;
+	c->fec_why[why]++;
+	/* A group of one has no partner: its parity would be a copy, which
+	 * the split chose not to send (when it sends most on one link, story
+	 * 013, groups of one were most of them, as many bytes as
+	 * duplicating); the rescue covers it. */
+	if (g->n < 2) {
+		g->n = 0;
+		return;
+	}
+	if (c->nfecq == CG_FEC_Q)
+		fec_send(c, now_us);
+	c->fecq[c->nfecq].mask = g->mask;
+	c->fecq[c->nfecq].plen = (uint16_t)cg_fec_grp_close(g, c->fecq[c->nfecq].p + CG_HDR_LEN);
+	c->nfecq++;
+}
+
+/* DATA seq (len bytes at p) went on link alone (-1: on several, which
+ * needs no parity): into the oldest open group without that link, which
+ * closes once it holds one packet of each split link but one, the
+ * parity's (fec.h). elig: the links that share the split. */
+static void fec_feed(struct client *c, uint32_t seq, int link, const uint8_t *p, size_t len, uint64_t now_us,
+		     uint16_t elig)
+{
+	unsigned n = (unsigned)__builtin_popcount(elig), k = n > CG_FEC_KMAX ? CG_FEC_KMAX : n - 1;
+	int i;
+
+	if (n < 2) {
+		for (i = 0; i < CG_FEC_OPEN; i++)
+			fec_close(c, i, 3, now_us);
+		return;
+	}
+	c->fec_k = k;
+	if (link < 0 || link > 15 || !(elig >> link & 1))
+		return;
+	cg_fec_share_note(&c->fec_share, link);
+	cg_fec_gap_note(&c->fec_ia_us, &c->fec_last_us, now_us, c->cfg->fec_wait_ms * 1000);
+	while ((i = cg_fec_tx_evict(&c->fectx, seq, link)) >= 0)
+		fec_close(c, i, 1, now_us);
+	i = cg_fec_tx_add(&c->fectx, seq, link, p, (uint16_t)len, now_us);
+	if (c->fectx.g[i].n >= k)
+		fec_close(c, i, 0, now_us);
+}
+
+/* A group's deadline now: from the packet rate, with k the members of a
+ * full group (fec.h), at most fec_wait_ms. */
+static uint32_t fec_deadline(const struct client *c)
+{
+	return cg_fec_deadline_us(c->fec_ia_us, c->fec_k, 1000, c->cfg->fec_wait_ms * 1000);
+}
+
+/* The groups open longer than their deadline close, and their parities go. */
+static void fec_service(struct client *c)
+{
+	uint64_t now_us = cg_now_us();
+	int i, any = 0;
+
+	while ((i = cg_fec_tx_due(&c->fectx, now_us, fec_deadline(c))) >= 0) {
+		fec_close(c, i, 2, now_us);
+		any = 1;
+	}
+	if (any)
+		fec_send(c, now_us);
+}
+
+/* The ms until the oldest open group's deadline, -1: none open. */
+static int fec_timeout(const struct client *c)
+{
+	uint64_t now_us, due = cg_fec_tx_next_us(&c->fectx, fec_deadline(c));
+
+	if (!due)
+		return -1;
+	now_us = cg_now_us();
+	return due <= now_us ? 0 : (int)((due - now_us + 999) / 1000);
+}
+
 static void wg_read(struct client *c)
 {
 	for (int round = 0; round < CG_MAX_ROUNDS; round++) {
@@ -1206,6 +1348,7 @@ static void wg_read(struct client *c)
 		k = split_masks(c, carry, split_eligible(c, live, carry, now_ms), dup0);
 		for (int i = 0; i < n; i++) {
 			size_t len = c->in.msg[i].msg_len;
+			uint16_t elig;
 			uint8_t flags = 0;
 			int stress;
 
@@ -1227,11 +1370,20 @@ static void wg_read(struct client *c)
 				c->wg_peer = c->in.from[i];
 				c->have_peer = 1;
 			}
+			/* With fec, a link over fec_share_max of the recent split DATA
+			 * sits this packet out (fec.h). */
+			elig = cg_split_stress_elig(&c->spread, k.eligible, c->cfg->split_stress_single);
+			if (c->cfg->fec && split) {
+				uint16_t e = cg_fec_share_mask(&c->fec_share, elig, c->cfg->fec_share_max);
+
+				c->fec_capped += e != elig;
+				elig = e;
+			}
 			/* Under G4's stress, on its budget: a copy on every carrier. */
 			stress = split && cg_sdup(&c->sdup, c->spread.stress, (uint32_t)len,
 						  (unsigned)__builtin_popcount(carry), c->cfg->split_stress_dup);
 			c->pick[m] = (int8_t)(split ? cg_split_pick_eta(&c->sp, c->cfg->split_eta ? &c->eta : NULL, now_us,
-									k.carriers, stress ? 0 : cg_split_stress_elig(&c->spread, k.eligible, c->cfg->split_stress_single), k.dup, w,
+									k.carriers, stress ? 0 : elig, k.dup, w,
 									c->native ? CG_WGS_DATA : c->in.buf[i][0],
 									(uint32_t)len, c->cfg->split_small, &flags)
 						    : -1);
@@ -1251,6 +1403,9 @@ static void wg_read(struct client *c)
 					flags |= CG_F_FREE;
 			}
 			cg_up_header(&c->txs, c->hdr[m], CG_T_DATA, flags, 0, (uint32_t)now_us, c->in.buf[i], len);
+			if (c->cfg->fec && split)
+				fec_feed(c, c->txs.seq - 1, c->prev_only ? c->prev_only - 1 : -1, c->in.buf[i], len, now_us,
+					 k.eligible);
 			/* Kept for the server's NACKs (rescue.h), with the one link it
 			 * goes on, and its share of the rescue budget. */
 			if (c->resc_idx && CG_HDR_LEN + len <= CG_RESC_ENTRY) {
@@ -1282,6 +1437,8 @@ static void wg_read(struct client *c)
 			c->last_traffic_ms = now_ms;
 			send_links(c, m, now_ms, live, carry, k.dup);
 		}
+		if (c->nfecq)
+			fec_send(c, now_us);
 		if (n < CG_BATCH)
 			return;
 	}
@@ -1489,7 +1646,7 @@ static void dout_add(struct client *c, uint8_t *payload, size_t len, uint16_t bu
  * when rescue_wait_ms is set and the server said it keeps what it sent. */
 static void rescue_apply(struct client *c)
 {
-	c->rocf.rescue_us = c->cfg->reorder && c->peer_rescue ? c->cfg->rescue_wait_ms * 1000 : 0;
+	c->rocf.rescue_us = c->cfg->reorder && c->peer_rescue ? cg_rescue_wait_ms(c->cfg) * 1000 : 0;
 }
 
 /* The gaps the reorderer asked for, as NACKs on the live link of least
@@ -2295,6 +2452,23 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 	cg_json_u64(j, "control", c->tcpf.ctl);
 	cg_json_u64(j, "retransmissions", c->tcpf.retx);
 	cg_json_end(j, '}');
+	/* Its parities (fec.h). */
+	cg_json_obj(j, "fec");
+	cg_json_bool(j, "on", c->cfg->fec);
+	cg_json_u64(j, "parities", c->fec_parities);
+	cg_json_u64(j, "bytes", c->fec_bytes);
+	cg_json_u64(j, "no_link", c->fec_nolink);
+	cg_json_u64(j, "capped", c->fec_capped);
+	cg_json_u64(j, "deadline_us", c->cfg->fec ? fec_deadline(c) : 0);
+	cg_json_arr(j, "sizes");
+	for (int i = 1; i <= CG_FEC_KMAX; i++)
+		cg_json_u64(j, NULL, c->fec_size[i]);
+	cg_json_end(j, ']');
+	cg_json_u64(j, "closed_full", c->fec_why[0]);
+	cg_json_u64(j, "closed_evicted", c->fec_why[1]);
+	cg_json_u64(j, "closed_deadline", c->fec_why[2]);
+	cg_json_u64(j, "closed_split_off", c->fec_why[3]);
+	cg_json_end(j, '}');
 	/* For a shaper on the tunnel (capacity.h): null until measured. */
 	if (cg_cap_shape_bps(&c->ctot))
 		cg_json_ms(j, "shape_mbit", cg_cap_shape_bps(&c->ctot) / 1000);
@@ -3090,12 +3264,15 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 	for (;;) {
 		struct epoll_event ev[32];
 		int timeout = busy && cg_now_us() - last_traffic_us < busy ? 0 : -1, armed = 0, n, traffic = 0;
-		int due = ro_timeout(c);
+		int due = ro_timeout(c), fdue = fec_timeout(c);
 
 		/* The reorderer's next deadline wakes the loop up, if nothing
-		 * else does before (CG_TICK_MS is too coarse for it). */
+		 * else does before (CG_TICK_MS is too coarse for it); and an
+		 * open FEC group's. */
 		if (due >= 0 && (timeout < 0 || due < timeout))
 			timeout = due;
+		if (fdue >= 0 && (timeout < 0 || fdue < timeout))
+			timeout = fdue;
 		c->ro_budget = CG_RO_PASS_MAX;
 		/* link_threads = on: the pumps ring this loop's bell when they
 		 * publish and it said it sleeps (ring.h), for good or until a
@@ -3190,6 +3367,7 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 		for (int r = 0; c->lt == CG_LT_ON && r < CG_MAX_ROUNDS && hub_drain(c) > 0; r++)
 			traffic = 1;
 		ro_service(c);
+		fec_service(c);
 		if (traffic && busy)
 			last_traffic_us = cg_now_us();
 	}

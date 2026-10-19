@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
+#include "fec.h"
 #include "proto.h"
 
 #include <string.h>
@@ -85,6 +86,9 @@ int cg_hdr_parse(struct cg_hdr *h, const uint8_t *buf, size_t len)
 				       plen >= 1 + 12 * (size_t)buf[CG_HDR_LEN]
 			       ? 0
 			       : -1;
+	case CG_T_FEC:
+		/* fec.h's header and one byte at least */
+		return plen > CG_FEC_HDR ? 0 : -1;
 	default:
 		return -1;
 	}
