@@ -1240,7 +1240,7 @@ static void wg_read(struct client *c)
 				cg_resc_earn(&c->resc_b,
 					     c->prev_only ? (uint32_t)((uint64_t)len *
 								       cg_cap_rescue_w(&c->cap[c->prev_only - 1],
-										       c->cfg->governor_target_ms * 1000) /
+										       c->cfg->rescue_target_ms * 1000) /
 								       CG_CAP_W_ONE)
 							  : (uint32_t)len,
 					     c->cfg->rescue_pct);
@@ -1516,7 +1516,7 @@ static void send_nacks(struct client *c, uint64_t now_ms)
  * (capacity.h's cg_cap_rescue_w) is 0. */
 static int up_full(const struct client *c, unsigned i)
 {
-	return cg_cap_rescue_w(&c->cap[i], c->cfg->governor_target_ms * 1000) == 0;
+	return cg_cap_rescue_w(&c->cap[i], c->cfg->rescue_target_ms * 1000) == 0;
 }
 
 /* A verified NACK from the server (rescue.h): each sequence the ring still
@@ -1992,7 +1992,7 @@ static void pace_set(struct link *l, uint64_t rate)
  * (scaled by the governor's, with governor), after the governor's tick. */
 static void cap_tick(struct client *c, uint16_t live, uint64_t now_ms)
 {
-	struct cg_cap_cfg cc = { .window_ms = c->cfg->governor_window_ms, .sat_us = c->cfg->governor_target_ms * 1000 };
+	struct cg_cap_cfg cc = { .window_ms = c->cfg->governor_window_ms, .sat_us = c->cfg->capacity_sat_ms * 1000 };
 
 	for (int i = 0; i < CG_MAX_LINKS; i++) {
 		struct link *l = &c->link[i];
@@ -2379,7 +2379,7 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 		cg_json_owd_spread(j, "rx_owd_spread_ms", &c->rxs.ro, (unsigned)i, rset);
 		cg_json_owd_swing(j, "rx_owd_swing_ms", &c->rxs.ro, (unsigned)i);
 		cg_json_u64(j, "rx_reorder_late", c->rxs.ro.link[i].late);
-		cg_json_capacity(j, &c->cap[i], c->cfg->governor_target_ms * 1000, now_ms);
+		cg_json_capacity(j, &c->cap[i], c->cfg->rescue_target_ms * 1000, now_ms);
 		if (l->paced != CG_PACE_NONE)
 			cg_json_ms(j, "pace_mbit", l->paced * 8 / 1000);
 		else

@@ -1298,7 +1298,7 @@ static void up_deliver(struct server *s, int *nq, struct session *S, const struc
  * links lossy at random as well; story 013.) */
 static int path_full(const struct server *s, const struct session *S, unsigned p)
 {
-	return cg_cap_rescue_w(&S->cap[p], s->cfg->governor_target_ms * 1000) == 0;
+	return cg_cap_rescue_w(&S->cap[p], s->cfg->rescue_target_ms * 1000) == 0;
 }
 
 /* A verified NACK of S (rescue.h): each sequence it names that the ring
@@ -1731,7 +1731,7 @@ static void down_prepare(struct server *s, struct session *S, int m, uint8_t *bu
 		cg_resc_earn(&S->resc_b,
 			     only < 0 ? (uint32_t)len
 				      : (uint32_t)((uint64_t)len *
-						   cg_cap_rescue_w(&S->cap[only], s->cfg->governor_target_ms * 1000) /
+						   cg_cap_rescue_w(&S->cap[only], s->cfg->rescue_target_ms * 1000) /
 						   CG_CAP_W_ONE),
 			     s->cfg->rescue_pct);
 	}
@@ -1987,7 +1987,7 @@ static void gov_tick(struct server *s, struct session *S, uint64_t now_ms)
  * (scaled by the governor's, with governor), after the governor's tick. */
 static void cap_tick(struct server *s, struct session *S, uint16_t live, uint64_t now_ms)
 {
-	struct cg_cap_cfg cc = { .window_ms = s->cfg->governor_window_ms, .sat_us = s->cfg->governor_target_ms * 1000 };
+	struct cg_cap_cfg cc = { .window_ms = s->cfg->governor_window_ms, .sat_us = s->cfg->capacity_sat_ms * 1000 };
 
 	for (int p = 0; p < CG_MAX_LINKS; p++) {
 		const struct path *P = &S->path[p];
@@ -2488,7 +2488,7 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 			cg_json_owd_spread(j, "rx_owd_spread_ms", &S->ro, (unsigned)p, rset);
 			cg_json_owd_swing(j, "rx_owd_swing_ms", &S->ro, (unsigned)p);
 			cg_json_u64(j, "rx_reorder_late", p < CG_MAX_LINKS ? S->ro.link[p].late : 0);
-			cg_json_capacity(j, &S->cap[p], s->cfg->governor_target_ms * 1000, now_ms);
+			cg_json_capacity(j, &S->cap[p], s->cfg->rescue_target_ms * 1000, now_ms);
 			/* What the split by expected arrival sees of it (null: off, or no rate). */
 			if (s->cfg->split_eta && S->eta.l[p].bps) {
 				cg_json_ms(j, "eta_base_ms", S->eta.l[p].base_us);

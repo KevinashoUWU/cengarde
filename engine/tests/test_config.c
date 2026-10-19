@@ -428,6 +428,7 @@ static void test_config_bonding(void)
 	CHECK_EQ(c.split_spread_copy, 1);
 	CHECK(c.governor == 0 && c.governor_target_ms == 20 && c.governor_window_ms == 10000);
 	CHECK(c.capacity_weights == 0 && c.split_eta == 0 && c.pacing == 0);
+	CHECK(c.capacity_sat_ms == c.governor_target_ms && c.rescue_target_ms == c.governor_target_ms);
 	CHECK(warn[0] == '\0');
 	cg_config_free(&c);
 	CHECK_EQ(cg_config_parse(&c, SERVER, err, sizeof(err), warn, sizeof(warn)), 0);
@@ -453,8 +454,10 @@ static void test_config_bonding(void)
 	"reorder = no\nreorder_max_wait_ms = 400\nreorder_dup_wait_ms = 20\nreorder_margin_ms = 25\n" \
 	"reorder_bypass = 256\nreorder_pool_kb = 1024\nsplit_small = 512\nsplit_spread_ms = 0\n" \
 	"split_spread_copy = no\ngovernor = yes\ngovernor_target_ms = 35\ngovernor_window_ms = 30000\n" \
-	"capacity_weights = yes\nsplit_eta = yes\npacing = yes\n"
+	"capacity_weights = yes\nsplit_eta = yes\npacing = yes\ncapacity_sat_ms = 50\n"
 	CHECK_EQ(cg_config_parse(&c, CLIENT KNOBS "split = force\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(c.capacity_sat_ms, 50);  /* its own */
+	CHECK_EQ(c.rescue_target_ms, 35); /* governor_target_ms's */
 	CHECK_EQ(c.reorder, 0);
 	CHECK_EQ(c.reorder_max_wait_ms, 400);
 	CHECK_EQ(c.reorder_dup_wait_ms, 20);

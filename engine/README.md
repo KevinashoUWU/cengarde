@@ -570,6 +570,14 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
   envíos perdidos del campo (historia 012, «`split_spread_copy` en el
   laboratorio»). Queda `yes` hasta que una prueba
   de campo A/B diga otra cosa. Se aplica en caliente.
+- **`capacity_sat_ms` y `rescue_target_ms` (`0`: lo que diga
+  `governor_target_ms`; de 0 a 1000), en los dos extremos (auditoría C12):**
+  `governor_target_ms` movía cuatro lazos a la vez. `capacity_sat_ms` es la
+  cola que dice que un enlace está lleno para la capacidad (`capacity.h`:
+  los cortes, la sonda bajo la mitad, `cake`, el ETA); `rescue_target_ms`,
+  donde empieza a bajar el peso del rescate (lleno a 4 veces). Sin ellas,
+  todo sigue como antes; sirven para afinar cada lazo por separado (la
+  búsqueda de presets).
 - **`governor` (`no`; `yes` o `no`), en los dos extremos, para lo que cada
   uno envía (experimental):** los pesos del reparto salen de la cola de cada
   enlace en vez de `weight` (`govern.h`). La cola es el retraso de envío del
