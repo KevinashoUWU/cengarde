@@ -231,6 +231,8 @@ struct cg_config {
 	int governor;                 /* the split's weights from each link's queue (govern.h) */
 	int capacity_weights;         /* the split's weights from each link's capacity (capacity.h) */
 	int split_eta;                /* split by expected arrival (eta.h) */
+	uint32_t split_tickle_ms;     /* with split_eta, an idle link is tickled every this long (tickle.h); 0: never */
+	uint32_t split_stale_max;     /* with split_eta, an idle link's capacity counts up to this many times (cg_cap_stale); 1: as measured */
 	int eta_buffer;               /* EXPERIMENT: split_eta holds a link that drops to the highest queue it showed */
 	/* EXPERIMENTS of the clockwork audit's second pass (2026-10-18), all 0: off */
 	uint32_t split_dwell_ms;      /* G4 keeps a link back by a recovery in this long (within 2x the spread) */

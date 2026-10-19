@@ -651,6 +651,17 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
   reordenador soltaba huecos y el 72 % de las retransmisiones de TCP de la
   bajada eran espurias (DSACK). Apaga las copias por omisión. El estado
   muestra `split_eta` en `upload` (cliente) y en cada sesión (servidor).
+  - **`split_tickle_ms` (0, nunca; hasta 60000) y `split_stale_max` (1,
+    apagado; 1–64), experimentales:** un enlace que lleva 3 s sin cargarse
+    (sin recibir 3/4 de su capacidad) no muestra si da más, y el reparto
+    por llegada no le manda nada mientras los otros tengan cola corta.
+    Con `split_tickle_ms`, cada ese tiempo uno de esos enlaces recibe los
+    paquetes repartidos durante 600 ms a la tasa de sondeo (5/4 de su
+    capacidad, `tickle.h`); si su capacidad no creció, espera el doble la
+    vez siguiente. Con `split_stale_max`,
+    su capacidad cuenta para el reparto el doble cada 3 s sin carga, hasta
+    ese múltiplo y la del mayor enlace (`cg_cap_stale`). El estado muestra
+    `tickle` y `split_by.tickle`.
 - **`pacing` (`no`; `yes` o `no`), en el cliente (experimental):** el
   socket de cada enlace se dosifica (`SO_MAX_PACING_RATE`, `pace.h`,
   historia 013) al doble de su capacidad y nunca bajo 20 Mbit/s: rompe las

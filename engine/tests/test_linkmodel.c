@@ -141,26 +141,26 @@ static void test_linkmodel_eta_mask(void)
 		l[i].lossy = 1;
 		l[i].qhi_cur = 12 * MS;
 	}
-	cg_cap_eta(&e, l, 0x3, 10 * MS, NULL, 0); /* no models: auto */
+	cg_cap_eta(&e, l, 0x3, 10 * MS, NULL, 1, 0, 0); /* no models: auto */
 	CHECK(e.l[0].limit_us == 0 && e.l[1].limit_us == 0);
-	cg_cap_eta(&e, l, 0x3, 10 * MS, hold_models(0x0, NULL), 0);
+	cg_cap_eta(&e, l, 0x3, 10 * MS, hold_models(0x0, NULL), 1, 0, 0);
 	CHECK(e.l[0].limit_us == 0 && e.l[1].limit_us == 0);
-	cg_cap_eta(&e, l, 0x3, 10 * MS, hold_models(0x1, NULL), 0);
+	cg_cap_eta(&e, l, 0x3, 10 * MS, hold_models(0x1, NULL), 1, 0, 0);
 	CHECK(e.l[0].limit_us == 12 * MS && e.l[1].limit_us == 0);
-	cg_cap_eta(&e, l, 0x3, 10 * MS, hold_models(0x2, NULL), 0);
+	cg_cap_eta(&e, l, 0x3, 10 * MS, hold_models(0x2, NULL), 1, 0, 0);
 	CHECK(e.l[0].limit_us == 0 && e.l[1].limit_us == 12 * MS);
-	cg_cap_eta(&e, l, 0x3, 10 * MS, hold_models(0x3, NULL), 0);
+	cg_cap_eta(&e, l, 0x3, 10 * MS, hold_models(0x3, NULL), 1, 0, 0);
 	CHECK(e.l[0].limit_us == 12 * MS && e.l[1].limit_us == 12 * MS);
 	/* in the mask but not lossy: no hold */
 	l[0].lossy = 0;
-	cg_cap_eta(&e, l, 0x3, 10 * MS, hold_models(0x3, NULL), 0);
+	cg_cap_eta(&e, l, 0x3, 10 * MS, hold_models(0x3, NULL), 1, 0, 0);
 	CHECK(e.l[0].limit_us == 0 && e.l[1].limit_us == 12 * MS);
 	CHECK(e.l[0].over_us == 0 && e.l[1].over_us == 0); /* NULL: the last resort */
 	/* each held link takes its own cost */
 	{
 		const uint16_t over[CG_MAX_LINKS] = { 0, 40 };
 
-		cg_cap_eta(&e, l, 0x3, 10 * MS, hold_models(0x3, over), 0);
+		cg_cap_eta(&e, l, 0x3, 10 * MS, hold_models(0x3, over), 1, 0, 0);
 		CHECK(e.l[1].limit_us == 12 * MS && e.l[1].over_us == 40 * MS);
 	}
 }
@@ -354,7 +354,7 @@ static void test_linkmodel_eta_knobs(void)
 	m[1].qpred_mode = 1;
 	m[1].eta_keep = 1;
 	m[1].eta_keep_ms = 400;
-	cg_cap_eta(&e, l, 0x3, 10 * MS, m, 0);
+	cg_cap_eta(&e, l, 0x3, 10 * MS, m, 1, 0, 0);
 	CHECK_EQ(e.l[0].backlog, 8000000ull * 30 * MS); /* its queue now */
 	CHECK_EQ(e.l[1].backlog, 8000000ull * 80 * MS); /* where it will be in 500 ms */
 	CHECK(e.l[0].keep == 0 && e.l[1].keep == 1 && e.l[1].keep_ms == 400);

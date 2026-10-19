@@ -77,6 +77,15 @@ static inline void cg_eta_drain(struct cg_eta_link *l, uint64_t now_us)
 	l->t_us = now_us;
 }
 
+/* A packet of len bytes put on link i at now_us by someone else (a probe,
+ * probe.h): counted in its backlog. */
+static inline void cg_eta_add(struct cg_eta *e, unsigned i, uint32_t len, uint64_t now_us)
+{
+	cg_eta_drain(&e->l[i], now_us);
+	e->l[i].backlog += (uint64_t)len * 8 * 1000000;
+	e->l[i].put_now += (uint64_t)len * 8 * 1000000;
+}
+
 /* A tick's measures of link i: its rate (bps, 0: unknown), its delay without
  * a queue over the smallest of the links (us), and its queue now (us, the
  * time what is in it takes to leave).

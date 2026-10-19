@@ -173,6 +173,7 @@ struct client {
 	uint16_t cw[CG_MAX_LINKS];            /* the weights from them, with capacity_weights */
 	struct cg_cap_total ctot;             /* their total, for a shaper on the tunnel (upload) */
 	struct cg_eta eta;                    /* the split by expected arrival, with split_eta */
+	struct cg_tickle tk;                  /* with split_eta, an idle link tickled (tickle.h) */
 	struct cg_eta pace;                   /* the copies' expected arrivals, with a link's pace_ms */
 	struct cg_link_model lm[CG_MAX_LINKS]; /* each link's model (link_models) */
 	uint32_t pace_w[CG_MAX_LINKS];        /* each link's copy window (cg_link_pace_windows), us, 0: every copy */
@@ -1382,7 +1383,8 @@ static void wg_read(struct client *c)
 			/* Under G4's stress, on its budget: a copy on every carrier. */
 			stress = split && cg_sdup(&c->sdup, c->spread.stress, (uint32_t)len,
 						  (unsigned)__builtin_popcount(carry), c->cfg->split_stress_dup);
-			c->pick[m] = (int8_t)(split ? cg_split_pick_eta(&c->sp, c->cfg->split_eta ? &c->eta : NULL, now_us,
+			c->pick[m] = (int8_t)(split ? cg_split_pick_eta(&c->sp, c->cfg->split_eta ? &c->eta : NULL,
+									c->cfg->split_eta ? &c->tk : NULL, now_us,
 									k.carriers, stress ? 0 : elig, k.dup, w,
 									c->native ? CG_WGS_DATA : c->in.buf[i][0],
 									(uint32_t)len, c->cfg->split_small, &flags)
@@ -2222,11 +2224,18 @@ static void cap_tick(struct client *c, uint16_t live, uint64_t now_ms)
 			       cc.sat_us / 2, c->cw);
 	cg_cap_total_tick(&c->ctot, c->cap, live, cc.sat_us);
 	if (c->cfg->split_eta) {
+		uint64_t tb[CG_MAX_LINKS], tc[CG_MAX_LINKS];
+		uint16_t due;
+
 		c->eta.tick_ms = CG_TICK_MS;
-		cg_cap_eta(&c->eta, c->cap, live, cc.sat_us / 2, c->lm, now_ms * 1000);
+		cg_cap_eta(&c->eta, c->cap, live, cc.sat_us / 2, c->lm, c->cfg->split_stale_max,
+			   cg_tickle_backoff(&c->tk), now_ms * 1000);
+		cg_cap_tickle(c->cap, live, now_ms, &due, tb, tc);
+		cg_tickle_tick(&c->tk, now_ms * 1000, (uint64_t)c->cfg->split_tickle_ms * 1000, due, tb, tc);
 	}
 	if (c->pace_any) /* the copies' expected arrivals (redund_pace_ms, per link) */
-		cg_cap_eta(&c->pace, c->cap, live, cc.sat_us / 2, NULL, now_ms * 1000);
+		cg_cap_eta(&c->pace, c->cap, live, cc.sat_us / 2, NULL, c->cfg->split_stale_max,
+			   cg_tickle_backoff(&c->tk), now_ms * 1000);
 	/* With pacing, each link's socket at about its rate; without, as it
 	 * was set, back to none (a reload turned it off). */
 	for (int i = 0; i < CG_MAX_LINKS; i++) {
@@ -2424,6 +2433,7 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 	cg_json_u64(j, "wrr", c->sp.n_by[CG_SPLIT_BY_WRR]);
 	cg_json_u64(j, "g2", c->sp.n_by[CG_SPLIT_BY_G2]);
 	cg_json_u64(j, "all", c->sp.n_by[CG_SPLIT_BY_ALL]);
+	cg_json_u64(j, "tickle", c->sp.n_by[CG_SPLIT_BY_TICKLE]);
 	cg_json_end(j, '}');
 	/* What picks the link of a split packet now (decrec.h): with "eta" the
 	 * gov_weight and cap_weight of the links are not used. */
@@ -2445,6 +2455,22 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 		cg_json_null(j, "gov_qmin_ms");
 	cg_json_bool(j, "copies_dry", c->sdup.dry);
 	cg_json_decisions(j, &c->dec, now_ms);
+	/* Idle links tickled (tickle.h): how many times, the packets, the one now. */
+	cg_json_obj(j, "tickle");
+	cg_json_u64(j, "every_ms", c->cfg->split_eta ? c->cfg->split_tickle_ms : 0);
+	cg_json_u64(j, "count", c->tk.count);
+	cg_json_u64(j, "packets", c->tk.pkts);
+	cg_json_u64(j, "grew", c->tk.grew);
+	cg_json_arr(j, "backoff"); /* each link's doublings of every_ms */
+	for (int i = 0; i < CG_MAX_LINKS; i++)
+		if (c->link[i].fd >= 0)
+			cg_json_u64(j, NULL, c->tk.shift[i]);
+	cg_json_end(j, ']');
+	if (c->tk.link >= 0 && c->tk.count)
+		cg_json_u64(j, "link", (uint64_t)c->tk.link);
+	else
+		cg_json_null(j, "link");
+	cg_json_end(j, '}');
 	cg_json_bool(j, "pacing", c->cfg->pacing);
 	/* native, tcp_aware: inner TCP marked free (tcpfree.h) */
 	cg_json_obj(j, "tcp_free");

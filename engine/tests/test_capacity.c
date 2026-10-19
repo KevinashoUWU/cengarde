@@ -506,6 +506,50 @@ static void test_capacity_shapes(void)
 	CHECK(maxq_late < 100);
 }
 
+/* A link not loaded for CG_CAP_STALE_MS: the ETA takes its capacity as
+ * twice, then twice again every CG_CAP_STALE_MS, up to the ceiling; loaded
+ * again, its own. cg_cap_tickle names it due, at cg_cap_probe's rate. */
+static void test_capacity_stale(void)
+{
+	struct sim s;
+	struct cg_cap_link many[CG_MAX_LINKS];
+	uint64_t c, tb[CG_MAX_LINKS], tc[CG_MAX_LINKS];
+	uint16_t due;
+
+	sim_start(&s);
+	run(&s, 30, 10, 100); /* loaded: 10 of a capacity of 10 */
+	c = cg_cap_bps(&s.l);
+	CHECK(near(c, 10, 0.15));
+	CHECK(!cg_cap_stale_p(&s.l, s.t));
+	CHECK_EQ(cg_cap_stale(&s.l, c, 40 * MBIT, s.t, 64), c);
+	run(&s, 20, 0.5, 100); /* 2 s at a twentieth: not stale yet */
+	CHECK_EQ(cg_cap_stale(&s.l, c, 40 * MBIT, s.t, 64), c);
+	run(&s, 15, 0.5, 100); /* 3.5 s */
+	CHECK(cg_cap_stale_p(&s.l, s.t));
+	CHECK_EQ(cg_cap_bps(&s.l), c); /* the capacity itself holds */
+	CHECK_EQ(cg_cap_stale(&s.l, c, 40 * MBIT, s.t, 64), 2 * c);
+	CHECK_EQ(cg_cap_stale(&s.l, c, 40 * MBIT, s.t + 3000, 64), 4 * c);
+	CHECK_EQ(cg_cap_stale(&s.l, c, 40 * MBIT, s.t + 60000, 64), 40 * MBIT); /* the ceiling */
+	CHECK_EQ(cg_cap_stale(&s.l, 50 * MBIT, 40 * MBIT, s.t + 60000, 64), 50 * MBIT); /* over it: as is */
+	CHECK_EQ(cg_cap_stale(&s.l, c, 40 * MBIT, s.t + 60000, 2), 2 * c); /* max_mul */
+	CHECK_EQ(cg_cap_stale(&s.l, c, 40 * MBIT, s.t + 60000, 1), c);     /* off */
+	memset(many, 0, sizeof(many));
+	many[0] = s.l;
+	cg_cap_reset(&many[1]); /* not measured: never due */
+	cg_cap_tickle(many, 0x3, s.t, &due, tb, tc);
+	CHECK_EQ(due, 0x1);
+	CHECK_EQ(tb[0], cg_cap_probe(&s.l, c, c));
+	CHECK_EQ(tb[1], 0);
+	CHECK_EQ(tc[0], c);
+	CHECK_EQ(tc[1], 0);
+	cg_cap_tickle(many, 0x2, s.t, &due, tb, tc); /* not in the mask */
+	CHECK_EQ(due, 0);
+	run(&s, 10, 12, 100); /* tickled: loaded again */
+	CHECK(!cg_cap_stale_p(&s.l, s.t));
+	CHECK(cg_cap_bps(&s.l) > c); /* and it showed more */
+	CHECK_EQ(cg_cap_stale(&s.l, cg_cap_bps(&s.l), 40 * MBIT, s.t, 64), cg_cap_bps(&s.l));
+}
+
 /* capacity_loss_pct: a loaded link that drops instead of queueing (no
  * queue, 15 % lost) is full at what it delivers after CG_CAP_LOSS_N
  * samples; off, or at a light load, it is not. */
@@ -719,4 +763,5 @@ void test_capacity(void)
 	test_capacity_swing();
 	test_capacity_rescue_w();
 	test_capacity_edges();
+	test_capacity_stale();
 }

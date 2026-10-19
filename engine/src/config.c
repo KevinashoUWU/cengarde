@@ -811,6 +811,8 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	c->split_stress_dup = 50;
 	c->split_stress_rejoin = 1;
 	c->split_stress_single = 0;
+	c->split_tickle_ms = 0;
+	c->split_stale_max = 1;
 	c->eta_keep_ms = 400;
 	c->split_spread_copy = -1; /* by governor, below */
 	c->governor_target_ms = 20;
@@ -908,6 +910,8 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	    get_bool(&ini, "", "governor", &c->governor, err, errlen) ||
 	    get_bool(&ini, "", "capacity_weights", &c->capacity_weights, err, errlen) ||
 	    get_bool(&ini, "", "split_eta", &c->split_eta, err, errlen) ||
+	    get_u32(&ini, "", "split_tickle_ms", 0, 60000, &c->split_tickle_ms, err, errlen) ||
+	    get_u32(&ini, "", "split_stale_max", 1, 64, &c->split_stale_max, err, errlen) ||
 	    get_bool(&ini, "", "eta_buffer", &c->eta_buffer, err, errlen) ||
 	    get_u32(&ini, "", "split_dwell_ms", 0, 5000, &c->split_dwell_ms, err, errlen) ||
 	    get_u32(&ini, "", "split_dwell_oq_ms", 0, 5000, &c->split_dwell_oq_ms, err, errlen) ||

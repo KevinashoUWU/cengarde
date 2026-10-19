@@ -178,6 +178,7 @@ struct session {
 	uint16_t cw[CG_MAX_LINKS];            /* the weights from them, with capacity_weights */
 	struct cg_cap_total ctot;             /* their total, for a shaper on the router's interface */
 	struct cg_eta eta;                    /* the split by expected arrival, with split_eta */
+	struct cg_tickle tk;                  /* with split_eta, an idle link tickled (tickle.h) */
 	struct cg_eta pace;                   /* the copies' expected arrivals, with a path's pace_ms */
 	struct cg_link_model lm[CG_MAX_LINKS]; /* each path's model (path_models) */
 	uint32_t pace_w[CG_MAX_LINKS];        /* each path's copy window (cg_link_pace_windows), us, 0: every copy */
@@ -1798,7 +1799,8 @@ static void down_prepare(struct server *s, struct session *S, int m, uint8_t *bu
 					 s->cfg->split_stress_dup);
 
 	/* Before the header: CG_F_SPLIT is under the MAC. */
-	s->pick[m] = (int8_t)(d->split ? cg_split_pick_eta(&S->sp, s->cfg->split_eta ? &S->eta : NULL, now_us,
+	s->pick[m] = (int8_t)(d->split ? cg_split_pick_eta(&S->sp, s->cfg->split_eta ? &S->eta : NULL,
+							   s->cfg->split_eta ? &S->tk : NULL, now_us,
 							   d->k.carriers, stress ? 0 : cg_split_stress_elig(&S->spread, d->k.eligible, s->cfg->split_stress_single), d->k.dup, d->w,
 							   s->native ? CG_WGS_DATA : buf[0],
 							   (uint32_t)len, s->cfg->split_small, &h.flags)
@@ -2137,11 +2139,18 @@ static void cap_tick(struct server *s, struct session *S, uint16_t live, uint64_
 	}
 	cg_cap_total_tick(&S->ctot, S->cap, live, cc.sat_us);
 	if (s->cfg->split_eta) {
+		uint64_t tb[CG_MAX_LINKS], tc[CG_MAX_LINKS];
+		uint16_t due;
+
 		S->eta.tick_ms = CG_TICK_MS;
-		cg_cap_eta(&S->eta, S->cap, live, cc.sat_us / 2, S->lm, now_ms * 1000);
+		cg_cap_eta(&S->eta, S->cap, live, cc.sat_us / 2, S->lm, s->cfg->split_stale_max,
+			   cg_tickle_backoff(&S->tk), now_ms * 1000);
+		cg_cap_tickle(S->cap, live, now_ms, &due, tb, tc);
+		cg_tickle_tick(&S->tk, now_ms * 1000, (uint64_t)s->cfg->split_tickle_ms * 1000, due, tb, tc);
 	}
 	if (S->pace_any) /* the copies' expected arrivals (redund_pace_ms, per path) */
-		cg_cap_eta(&S->pace, S->cap, live, cc.sat_us / 2, NULL, now_ms * 1000);
+		cg_cap_eta(&S->pace, S->cap, live, cc.sat_us / 2, NULL, s->cfg->split_stale_max,
+			   cg_tickle_backoff(&S->tk), now_ms * 1000);
 }
 
 /* SO_MAX_PACING_RATE on a lane's socket (pace.h): fq on the way out paces
@@ -2496,6 +2505,7 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 		cg_json_u64(j, "wrr", S->sp.n_by[CG_SPLIT_BY_WRR]);
 		cg_json_u64(j, "g2", S->sp.n_by[CG_SPLIT_BY_G2]);
 		cg_json_u64(j, "all", S->sp.n_by[CG_SPLIT_BY_ALL]);
+		cg_json_u64(j, "tickle", S->sp.n_by[CG_SPLIT_BY_TICKLE]);
 		cg_json_end(j, '}');
 		/* What picks the path of a split packet now (decrec.h): with "eta"
 		 * the gov_weight and cap_weight of the paths are not used. */
@@ -2517,6 +2527,21 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 			cg_json_null(j, "gov_qmin_ms");
 		cg_json_bool(j, "copies_dry", S->sdup.dry);
 		cg_json_decisions(j, &S->dec, now_ms);
+		cg_json_obj(j, "tickle");
+		cg_json_u64(j, "every_ms", s->cfg->split_eta ? s->cfg->split_tickle_ms : 0);
+		cg_json_u64(j, "count", S->tk.count);
+		cg_json_u64(j, "packets", S->tk.pkts);
+		cg_json_u64(j, "grew", S->tk.grew);
+		cg_json_arr(j, "backoff"); /* each path's doublings of every_ms */
+		for (int p = 0; p < CG_MAX_LINKS; p++)
+			if (S->path[p].used)
+				cg_json_u64(j, NULL, S->tk.shift[p]);
+		cg_json_end(j, ']');
+		if (S->tk.link >= 0 && S->tk.count)
+			cg_json_u64(j, "link", (uint64_t)S->tk.link);
+		else
+			cg_json_null(j, "link");
+		cg_json_end(j, '}');
 		/* For a shaper on the router's WireGuard interface (capacity.h). */
 		if (cg_cap_shape_bps(&S->ctot))
 			cg_json_ms(j, "shape_mbit", cg_cap_shape_bps(&S->ctot) / 1000);
