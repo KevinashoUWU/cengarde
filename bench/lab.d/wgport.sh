@@ -19,7 +19,7 @@ wgport() {
 	local fail=0 fired=0 r i dir sent uniq dup
 	ENGINE=c
 	setup || return 1
-	ip netns exec srv sysctl -qw net.ipv4.ip_local_port_range="59301 59302" || {
+	ip netns exec "$NS_SRV" sysctl -qw net.ipv4.ip_local_port_range="59301 59302" || {
 		echo "FAIL: cannot narrow the ephemeral range"
 		teardown
 		return 1
@@ -33,10 +33,10 @@ wgport() {
 		if ! grep -q "new client" "$RUN/server.log"; then
 			echo "FAIL: round $r: no session"
 			fail=1
-		elif ip netns exec srv ss -Hlun 'sport = :59301' | grep -q . ||
-			ip netns exec srv ss -Hun 'sport = :59301' | grep -q .; then
+		elif ip netns exec "$NS_SRV" ss -Hlun 'sport = :59301' | grep -q . ||
+			ip netns exec "$NS_SRV" ss -Hun 'sport = :59301' | grep -q .; then
 			echo "FAIL: round $r: the server holds WireGuard's port 59301"
-			ip netns exec srv ss -Huanp
+			ip netns exec "$NS_SRV" ss -Huanp
 			fail=1
 		fi
 		for dir in up down; do

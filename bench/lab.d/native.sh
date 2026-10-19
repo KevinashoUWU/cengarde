@@ -31,7 +31,7 @@ native_stop_iperf() {
 
 # native_iperf ARGS...: Mbit/s received by the other end, from iperf3's JSON.
 native_iperf() {
-	ip netns exec cli iperf3 -c 10.79.0.1 -t "$NATIVE_S" -J "$@" >"$RUN/iperf3.json" 2>&1 || return 1
+	ip netns exec "$NS_CLI" iperf3 -c 10.79.0.1 -t "$NATIVE_S" -J "$@" >"$RUN/iperf3.json" 2>&1 || return 1
 	python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); print("%.1f" % (d["end"]["sum_received"]["bits_per_second"] / 1e6))' \
 		"$RUN/iperf3.json"
 }
@@ -49,20 +49,20 @@ native() {
 	trap 'native_stop_iperf; teardown; exit 130' INT TERM
 	setup && start || return 1
 	for i in 1 2; do
-		ip netns exec cli tc qdisc replace dev "l$i" root tbf rate "${NATIVE_RATE}mbit" burst 32kb latency 50ms || return 1
-		ip netns exec srv tc qdisc replace dev "s$i" root tbf rate "${NATIVE_RATE}mbit" burst 32kb latency 50ms || return 1
+		ip netns exec "$NS_CLI" tc qdisc replace dev "l$i" root tbf rate "${NATIVE_RATE}mbit" burst 32kb latency 50ms || return 1
+		ip netns exec "$NS_SRV" tc qdisc replace dev "s$i" root tbf rate "${NATIVE_RATE}mbit" burst 32kb latency 50ms || return 1
 	done
 
-	loss=$(ip netns exec cli ping -c 20 -i 0.05 -W 1 10.79.0.1 | sed -n 's/.* \([0-9.]*\)% packet loss.*/\1/p')
+	loss=$(ip netns exec "$NS_CLI" ping -c 20 -i 0.05 -W 1 10.79.0.1 | sed -n 's/.* \([0-9.]*\)% packet loss.*/\1/p')
 	echo "   ping 10.79.0.1 through the TUN: ${loss:-?}% loss"
 	[ "$loss" = 0 ] || { echo "FAIL: ping over IPv4 lost packets"; fail=1; }
 	if [ -n "$v6" ]; then
-		loss=$(ip netns exec cli ping -6 -c 20 -i 0.05 -W 1 fd00:79::1 | sed -n 's/.* \([0-9.]*\)% packet loss.*/\1/p')
+		loss=$(ip netns exec "$NS_CLI" ping -6 -c 20 -i 0.05 -W 1 fd00:79::1 | sed -n 's/.* \([0-9.]*\)% packet loss.*/\1/p')
 		echo "   ping fd00:79::1 through the TUN: ${loss:-?}% loss"
 		[ "$loss" = 0 ] || { echo "FAIL: ping over IPv6 lost packets"; fail=1; }
 	fi
 
-	ip netns exec srv iperf3 -s -B 10.79.0.1 -D -I "$RUN/iperf3.pid" || return 1
+	ip netns exec "$NS_SRV" iperf3 -s -B 10.79.0.1 -D -I "$RUN/iperf3.pid" || return 1
 	sleep 0.3
 	up=$(native_iperf) || { echo "FAIL: iperf3 up: $(tail -3 "$RUN/iperf3.json")"; fail=1; }
 	down=$(native_iperf -R) || { echo "FAIL: iperf3 down: $(tail -3 "$RUN/iperf3.json")"; fail=1; }
@@ -98,7 +98,7 @@ native() {
 
 # native_ping TUN DST: % lost of 10 pings through TUN.
 native_ping() {
-	ip netns exec cli ping -c 10 -i 0.05 -W 1 -I "$1" "$2" 2>/dev/null | sed -n 's/.* \([0-9.]*\)% packet loss.*/\1/p'
+	ip netns exec "$NS_CLI" ping -c 10 -i 0.05 -W 1 -I "$1" "$2" 2>/dev/null | sed -n 's/.* \([0-9.]*\)% packet loss.*/\1/p'
 }
 
 # native_multi EXTRA: the routers get EXTRA too (CLIENT_EXTRA as given).
@@ -131,10 +131,10 @@ native_multi() {
 			[ -n "$1" ] && echo "$1" | tr ';' '\n'
 		} >"$RUN/$name.conf"
 	done
-	ip netns exec srv "$CENGARDE_BIN" -c "$RUN/server.conf" >"$RUN/server.log" 2>&1 &
+	ip netns exec "$NS_SRV" "$CENGARDE_BIN" -c "$RUN/server.conf" >"$RUN/server.log" 2>&1 &
 	echo $! >"$RUN/server.pid"
 	for name in alpha bravo; do
-		ip netns exec cli "$CENGARDE_BIN" -c "$RUN/$name.conf" >"$RUN/$name.log" 2>&1 &
+		ip netns exec "$NS_CLI" "$CENGARDE_BIN" -c "$RUN/$name.conf" >"$RUN/$name.log" 2>&1 &
 		echo $! >"$RUN/$name.pid"
 	done
 	sleep 1.5
@@ -144,8 +144,8 @@ native_multi() {
 		[ "$loss" = 0 ] || { echo "FAIL: $name's ping lost packets"; fail=1; }
 	done
 	# bravo's TUN, alpha's source: the server drops it.
-	ip -n cli route add 10.79.0.1/32 dev cgb src 10.79.0.2
-	loss=$(ip netns exec cli ping -c 5 -i 0.05 -W 1 10.79.0.1 2>/dev/null | sed -n 's/.* \([0-9.]*\)% packet loss.*/\1/p')
+	ip -n "$NS_CLI" route add 10.79.0.1/32 dev cgb src 10.79.0.2
+	loss=$(ip netns exec "$NS_CLI" ping -c 5 -i 0.05 -W 1 10.79.0.1 2>/dev/null | sed -n 's/.* \([0-9.]*\)% packet loss.*/\1/p')
 	sleep 0.5
 	v=$(jget "$RUN/server.json" 'sum(s["spoofed"] for s in d["sessions"] if s["client"] == "bravo")')
 	echo "   bravo with alpha's address: ${loss:-?}% loss, $v dropped as spoofed at the server"

@@ -159,7 +159,8 @@ void cg_probe_bond_write(uint8_t *payload, const struct cg_probe_bond *b)
 
 	put32(payload + CG_PROBE_INFO_LEN, w | (b->reorders ? CG_BOND_REORDERS : 0) |
 						   (b->split_me ? CG_BOND_SPLIT_ME : 0) | (b->rescue ? CG_BOND_RESCUE : 0) |
-						   (b->full ? CG_BOND_FULL : 0));
+						   (b->full ? CG_BOND_FULL : 0) |
+						   ((uint32_t)(b->type & 7) << CG_BOND_TYPE_SHIFT));
 }
 
 int cg_probe_bond_read(struct cg_probe_bond *b, const uint8_t *payload, size_t plen)
@@ -176,6 +177,7 @@ int cg_probe_bond_read(struct cg_probe_bond *b, const uint8_t *payload, size_t p
 	b->split_me = !!(v & CG_BOND_SPLIT_ME);
 	b->rescue = !!(v & CG_BOND_RESCUE);
 	b->full = !!(v & CG_BOND_FULL);
+	b->type = (uint8_t)((v & CG_BOND_TYPE) >> CG_BOND_TYPE_SHIFT);
 	return 1;
 }
 

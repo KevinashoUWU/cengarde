@@ -19,8 +19,9 @@
 // split on and two weights entered, the settings save and apply (LuCI checks
 // the list of weights as a whole when it saves), and the engine's
 // configuration on the router (read over ssh with vm.sh, as e2e.sh does)
-// carries the split and the two weights; then the split goes off again
-// before the final save and apply.
+// carries the split and the two weights, and the type of up1, set to
+// Starlink in the dropdown each uplink gets in the General tab (the others
+// stay auto); then the split goes off again before the final save and apply.
 // Fails on any JavaScript error after logging in.
 //
 //   node luci.mjs BASE_URL SCREENSHOT_DIR names
@@ -197,6 +198,15 @@ try {
 	await flag('enabled', true);
 	await shot('02-settings-general');
 
+	step('General tab: a type dropdown for each uplink chosen, auto unless set; up1 is Starlink');
+	const linkType = (up) => page.locator(id(`widget.cbid.cengarde.main.uplink_type_${up}`));
+	for (const up of UPLINKS) {
+		check(await linkType(up).isVisible(), `${up} has a type dropdown`);
+		check(await linkType(up).inputValue() === 'auto', `${up} is auto by default`);
+	}
+	await linkType('up1').selectOption('starlink');
+	check(await linkType('up1').inputValue() === 'starlink', 'up1 set to starlink');
+
 	step('VPS tab: secret and cloud-config');
 	await tab('vps');
 	const secret = await page.inputValue(id('widget.cbid.cengarde.main.secret'));
@@ -347,6 +357,8 @@ try {
 	check(/^weight = 3$/m.test(linkSection(conf, 'eth1')) && /^weight = 0$/m.test(linkSection(conf, 'eth2')) &&
 		!/^weight/m.test(linkSection(conf, 'eth3')) && (conf.match(/^weight = /mg) || []).length === 2,
 	`engine-conf: weight 3 on up1 (eth1) and 0 on up2 (eth2), none on up3:\n${conf.replace(/^key = .*$/m, 'key = ...')}`);
+	check(/^type = starlink$/m.test(linkSection(conf, 'eth1')) && (conf.match(/^type = /mg) || []).length === 1,
+		'engine-conf: type starlink on up1 (eth1), none on the others (auto)');
 	await until(async () => onRouter("grep -c '^weight = ' /var/etc/cengarde.conf || true").trim() === '2',
 		'the engine running with the two weights', 30000);
 	await page.waitForTimeout(3000); // LuCI reloads the page after an apply
@@ -355,6 +367,10 @@ try {
 	await tab('advanced');
 	check(await split.isChecked() && JSON.stringify(await listedWeights()) === '["up1=3","up2=0"]',
 		'the page shows the split and the weights as saved');
+	await tab('general');
+	check(await linkType('up1').inputValue() === 'starlink' && await linkType('up2').inputValue() === 'auto',
+		'the page shows up1 as Starlink and up2 as auto, as saved');
+	await tab('advanced');
 	await flag('reorder', false);
 	check(!await split.isVisible() && !await maxWait.isVisible(), 'without reordering the split and its settings are hidden');
 	await flag('reorder', true);

@@ -718,4 +718,6 @@ def cmd_table(argv):
 
 
 if __name__ == '__main__':
+    if os.environ.get('LAB_ID'):
+        sys.exit('mt.py: the default lab only (LAB_ID empty): it measures CPU and wants the machine to itself')
     globals()['cmd_' + sys.argv[1]](sys.argv[2:])

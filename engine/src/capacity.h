@@ -93,10 +93,19 @@
 #include "eta.h"     /* struct cg_eta */
 #include "govern.h"  /* cg_gov_base, struct cg_gov_link */
 #include "health.h"  /* struct cg_hlink, cg_health_fresh, cg_owd_diff */
+#include "linkmodel.h" /* struct cg_link_model */
 
 #define CG_CAP_MIN_MS 500 /* a sample spans at least this */
 #define CG_CAP_GAIN 4     /* the delivery rate's smoothing: 1/4 of each sample */
 #define CG_CAP_SHORT_N 2  /* samples in a row delivering under half of what was sent: full */
+#define CG_CAP_LOSS_N 3   /* samples in a row, loaded, losing over loss_pct (cfg): full */
+#define CG_CAP_QHI_MS 10000   /* the window of a link's highest queue (eta_buffer) */
+#define CG_CAP_LOSSY_MS 5000  /* a link that lost this recently is held to its highest queue (eta_buffer) */
+#define CG_CAP_QHI_MIN_US 5000 /* the least queue it is held to */
+#define CG_CAP_PEAK_DECAY 512 /* peak_bps loses 1/this a sample: half in ~3 min at a sample each 0.5 s */
+#define CG_CAP_TXH 16       /* ticks of sent counts a link keeps (cg_cap_tx_at) */
+#define CG_CAP_LAG_MS 250   /* a sample's loss counts what was sent this long before its report */
+#define CG_CAP_LOSSY_PERMIL 3  /* a sample losing more than this per mille of what was sent: lossy */
 #define CG_CAP_SHORT_MIN 64 /* packets sent in a sample for it to count */
 #define CG_CAP_SAT_N 2    /* samples in a row with a queue above sat_us, loaded: full */
 #define CG_CAP_SAT_LONG 4 /* samples in a row with a queue above sat_us, loaded or not: full */
@@ -105,6 +114,7 @@
 #define CG_CAP_REST_MS 10000u  /* fast start: this long without being full, it comes back to half its best */
 #define CG_CAP_TREND_MS 100 /* the queue's trend takes samples at least this far apart */
 #define CG_CAP_LONG_MS 60000 /* the rescue's queue: over the delay's minimum of this long */
+#define CG_CAP_EP_REST_MS 3000u /* cap_g4_episode 3: a G4 episode holds fast start back this long */
 /* More delivered than sent by this much (packets), and the report is not
  * of this run of the counters: probes and what was in flight at the start
  * make a few packets of difference, never this many. */
@@ -113,6 +123,10 @@
 struct cg_cap_cfg {
 	uint32_t window_ms; /* of the capacity's maximum and of the queue's minimum */
 	uint32_t sat_us;    /* a queue above this: the link gives no more */
+	uint32_t loss_pct;  /* loaded and losing more than this, CG_CAP_LOSS_N samples: full; 0: off */
+	int lossy;          /* track l->lossy (eta_buffer, or this link's model): a lossy link is not probed */
+	int lossy_probe;    /* but with this, a lossy link is probed still (its model holds it only) */
+	uint8_t rfull_mode; /* rescue_full_hyst (config.h): the rescue's full bit, cg_cap_rfull */
 };
 
 struct cg_cap_link {
@@ -130,6 +144,20 @@ struct cg_cap_link {
 	uint8_t have;               /* a report taken as the start */
 	uint8_t have_rate;          /* a rate measured */
 	uint8_t short_n;            /* samples in a row that delivered under half of what was sent */
+	uint8_t loss_n;             /* samples in a row, loaded, that lost over cfg->loss_pct */
+	/* eta_buffer: the highest queue over CG_CAP_QHI_MS (two halves), and
+	 * the last sample that lost over 1 % of what was sent */
+	uint32_t qhi_cur, qhi_prev;
+	uint64_t qhi_t_ms, lossy_ms;
+	uint64_t peak_bps;          /* the best it delivered, forgotten slowly (CG_CAP_PEAK_DECAY): the frontier's reference */
+	/* what it had sent at each tick, for the loss of a sample: the peer's
+	 * count against what was sent CG_CAP_LAG_MS before, not what is still
+	 * in flight (cg_cap_tx_at) */
+	uint64_t txh_t[CG_CAP_TXH], txh_n[CG_CAP_TXH];
+	uint64_t txl_prev;
+	uint8_t txh_at, have_txl;
+	uint8_t lossy;              /* lost over CG_CAP_LOSSY_PERMIL in the last CG_CAP_LOSSY_MS */
+	uint8_t noprobe;            /* lossy, and not probed for it (!cfg->lossy_probe) */
 	uint8_t sat_n;              /* samples in a row with a queue above sat_us */
 	uint8_t sat_load_n;         /* of them, in a row, sent at least 3/4 of its capacity */
 	/* fast start: the best capacity over CG_CAP_BEST_MS (in two halves),
@@ -144,12 +172,17 @@ struct cg_cap_link {
 	uint64_t q_t_ms;
 	int64_t s1, s2;
 	uint8_t have_trend, have_s1;
+	uint8_t rfull;              /* the rescue's full bit with hysteresis (cg_cap_rfull) */
+	/* the last sample: what this end sent and what arrived, bps (cg_cap_episode) */
+	uint64_t last_tx_bps, last_rx_bps;
+	uint64_t ep_ms;             /* the last G4 episode counted (cap_g4_episode 3), 0: none */
+	uint64_t n_g4_ep;           /* G4 leaves counted as an episode, for the status */
 	/* For the status: whether the last sample cut the capacity (enum
 	 * cg_cap_cut), and how often it began to (each run of full or short
 	 * samples once) or fast start restored it. Kept across a restart of
 	 * the counters. */
 	uint8_t cut;
-	uint64_t n_cut_full, n_cut_short, n_restore;
+	uint64_t n_cut_full, n_cut_short, n_cut_loss, n_restore;
 };
 
 /* What cg_cap_tick did, as bits of its return value. */
@@ -161,6 +194,7 @@ enum cg_cap_cut {
 	CG_CAP_CUT_NONE = 0,
 	CG_CAP_CUT_FULL,
 	CG_CAP_CUT_SHORT,
+	CG_CAP_CUT_LOSS,
 };
 
 static inline void cg_cap_reset(struct cg_cap_link *l)
@@ -178,6 +212,16 @@ static inline uint64_t cg_cap_bps(const struct cg_cap_link *l)
 static inline uint64_t cg_cap_best_bps(const struct cg_cap_link *l)
 {
 	return l->best_cur > l->best_prev ? l->best_cur : l->best_prev;
+}
+
+/* Whether a link whose queue is short may be probed (cg_cap_probe): not
+ * while it is losing what it is sent (CG_CAP_CUT_LOSS). Its queue is short
+ * because it drops instead of queueing: probing it raised the capacity the
+ * split used to 5/4 of what it carried, and the link dropped the rest
+ * (shallowq: Starlink at 75 Mbit/s for the split against 60). */
+static inline int cg_cap_may_probe(const struct cg_cap_link *l, uint32_t probe_us)
+{
+	return l->queue_us >= 0 && (uint32_t)l->queue_us < probe_us && l->cut != CG_CAP_CUT_LOSS && !l->noprobe;
 }
 
 /* What the split offers a link whose queue is short, to see if it carries
@@ -234,6 +278,61 @@ static inline uint32_t cg_cap_rescue_w(const struct cg_cap_link *l, uint32_t tar
 	return (uint32_t)((hi - pred) * CG_CAP_W_ONE / (hi - lo));
 }
 
+/* The rescue's full bit with hysteresis (rescue_full_hyst, an experiment
+ * of the clockwork audit's second pass, C11): on once the queue a second
+ * ahead (as cg_cap_rescue_w) reaches 4 x target_us; mode 1 keeps it on
+ * until under 3 x target_us; mode 2 only while the queue is not rising
+ * (its slope at most 0: a spike or a loss passing, not a queue filling),
+ * and off at once under 4 x while it rises. Mode 1 helped spikeloss and
+ * hurt bloat: a full link kept refusing the rescue while it filled. */
+static inline void cg_cap_rfull(struct cg_cap_link *l, uint32_t target_us, unsigned mode)
+{
+	int64_t pred;
+
+	if (l->ql_us < 0) {
+		l->rfull = 0;
+		return;
+	}
+	pred = (int64_t)l->ql_us + (l->have_s1 ? l->s1 + l->s2 / 2 : 0);
+	if (pred >= 4 * (int64_t)target_us)
+		l->rfull = 1;
+	else if (pred <= 3 * (int64_t)target_us || (mode == 2 && l->have_s1 && l->s1 > 0))
+		l->rfull = 0;
+}
+
+/* Whether the rescue takes link l as full (what it loses is congestion,
+ * for TCP to see): its rescue weight 0, or with mode (rescue_full_hyst)
+ * the bit with hysteresis. */
+static inline int cg_cap_full(const struct cg_cap_link *l, uint32_t target_us, unsigned mode)
+{
+	return mode ? l->rfull : cg_cap_rescue_w(l, target_us) == 0;
+}
+
+/* Guard G4 took the link out because its queue grew (cap_g4_episode, an
+ * experiment of the clockwork audit, C5): mode 1, as a full sample for fast
+ * start; mode 2, only when the capacity overshot what the link carries: it
+ * was sent at least 3/4 of its capacity in the last sample and delivered
+ * under 7/8 of it (an overestimate that G4 cut short before the two full
+ * samples that lower it); mode 3, as 2 but holding fast start back for
+ * CG_CAP_EP_REST_MS only. Mode 1 cut het's download retransmissions by 4/5
+ * and raised deepq's upload ones: it also held back links whose capacity
+ * was right. Returns whether it counted. */
+static inline int cg_cap_episode(struct cg_cap_link *l, uint64_t now_ms, unsigned mode)
+{
+	uint64_t cap = cg_cap_bps(l);
+
+	if (!mode)
+		return 0;
+	if (mode >= 2 && !(l->have_rate && cap && l->last_tx_bps * 4 >= cap * 3 && l->last_rx_bps * 8 < cap * 7))
+		return 0;
+	if (mode == 3)
+		l->ep_ms = now_ms ? now_ms : 1;
+	else
+		l->full_ms = now_ms;
+	l->n_g4_ep++;
+	return 1;
+}
+
 /* Fast start: the best capacity of the last CG_CAP_BEST_MS, and a link that
  * has not been full for CG_CAP_REST_MS back to half of it at least. A
  * capacity is lowered only while the link is full, and an idle link is not
@@ -252,12 +351,29 @@ static inline int cg_cap_best(struct cg_cap_link *l, uint64_t now_ms)
 		l->best_cur = cap;
 	}
 	best = cg_cap_best_bps(l);
-	if (cap < best / 2 && (!l->full_ms || now_ms - l->full_ms >= CG_CAP_REST_MS)) {
+	if (cap < best / 2 && (!l->full_ms || now_ms - l->full_ms >= CG_CAP_REST_MS) &&
+	    (!l->ep_ms || now_ms - l->ep_ms >= CG_CAP_EP_REST_MS)) {
 		l->max_cur = l->max_prev = best / 2;
 		l->n_restore++;
 		return 1;
 	}
 	return 0;
+}
+
+/* What link l had sent by t_ms (the newest tick at or before it), 0 with
+ * *ok 0 when its ticks do not go back that far. */
+static inline uint64_t cg_cap_tx_at(const struct cg_cap_link *l, uint64_t t_ms, int *ok)
+{
+	uint64_t best_t = 0, n = 0;
+
+	*ok = 0;
+	for (unsigned k = 0; k < CG_CAP_TXH; k++)
+		if (l->txh_t[k] && l->txh_t[k] <= t_ms && l->txh_t[k] >= best_t) {
+			best_t = l->txh_t[k];
+			n = l->txh_n[k];
+			*ok = 1;
+		}
+	return n;
 }
 
 /* One tick for one link. report_ms: when this end received the other's
@@ -268,7 +384,7 @@ static inline int cg_cap_best(struct cg_cap_link *l, uint64_t now_ms)
 static inline unsigned cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint64_t report_ms, uint32_t rx, uint64_t tx_pkts,
 			       uint64_t tx_bytes, const struct cg_hlink *h, const struct cg_cap_cfg *cfg)
 {
-	uint64_t dt, dpk, dby, bytes, rate, raw, ref;
+	uint64_t dt, dpk, dby, bytes, rate, raw, ref, dlost;
 	uint32_t drx;
 	int loaded;
 	uint8_t cut;
@@ -283,6 +399,23 @@ static inline unsigned cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint6
 		q = cg_owd_diff(h->owd, cg_gov_base(&l->ql, h->owd, now_ms, CG_CAP_LONG_MS));
 		l->ql_us = q > 0 ? q : 0;
 		cg_cap_trend(l, now_ms);
+		if (now_ms - l->qhi_t_ms >= CG_CAP_QHI_MS / 2) {
+			l->qhi_prev = l->qhi_cur;
+			l->qhi_cur = (uint32_t)l->queue_us;
+			l->qhi_t_ms = now_ms;
+		} else if ((uint32_t)l->queue_us > l->qhi_cur) {
+			l->qhi_cur = (uint32_t)l->queue_us;
+		}
+		cg_cap_rfull(l, cfg->sat_us, cfg->rfull_mode);
+	}
+	{
+		unsigned last = (l->txh_at + CG_CAP_TXH - 1) % CG_CAP_TXH;
+
+		if (!l->txh_t[last] || now_ms >= l->txh_t[last] + 40) {
+			l->txh_t[l->txh_at] = now_ms;
+			l->txh_n[l->txh_at] = tx_pkts;
+			l->txh_at = (uint8_t)((l->txh_at + 1) % CG_CAP_TXH);
+		}
 	}
 	if (!report_ms)
 		return 0;
@@ -318,7 +451,11 @@ static inline unsigned cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint6
 		l->have_s1 = keep.have_s1;
 		l->n_cut_full = keep.n_cut_full;
 		l->n_cut_short = keep.n_cut_short;
+		l->peak_bps = keep.peak_bps;
+		l->n_cut_loss = keep.n_cut_loss;
 		l->n_restore = keep.n_restore;
+		l->n_g4_ep = keep.n_g4_ep;
+		l->rfull = keep.rfull;
 		l->t_ms = report_ms;
 		l->rx = rx;
 		l->tx_pkts = l->tx0 = tx_pkts;
@@ -330,6 +467,8 @@ static inline unsigned cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint6
 		l->size = (uint32_t)(dby / dpk);
 	bytes = (uint64_t)drx * l->size;
 	rate = raw = bytes * 8 * 1000 / dt;
+	l->last_rx_bps = raw;
+	l->last_tx_bps = dby * 8 * 1000 / dt;
 	l->t_ms = report_ms;
 	l->rx = rx;
 	l->tx_pkts = tx_pkts;
@@ -345,6 +484,13 @@ static inline unsigned cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint6
 		l->rate_bps = rate;
 	}
 	l->have_rate = 1;
+	/* the frontier's reference: a capacity that fell while the link was
+	 * held unprobed must not become its frontier (nostalgica, 2026-10-19:
+	 * Starlink's upload kept at 8 Mbit/s against 34-40, its 30 s best
+	 * falling with it) */
+	l->peak_bps -= l->peak_bps / CG_CAP_PEAK_DECAY;
+	if (rate > l->peak_bps)
+		l->peak_bps = rate;
 	if (dpk >= CG_CAP_SHORT_MIN && (uint64_t)drx * 2 < dpk)
 		l->short_n = l->short_n < 255 ? (uint8_t)(l->short_n + 1) : 255;
 	else
@@ -358,6 +504,41 @@ static inline unsigned cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint6
 	 * 8 Mbit/s stream's share, and its queue's blips kept it there. */
 	ref = cg_cap_bps(l) > cg_cap_best_bps(l) / 2 ? cg_cap_bps(l) : cg_cap_best_bps(l) / 2;
 	loaded = dby * 8 * 1000 / dt * 4 >= ref * 3;
+	/* lost over loss_pct of what was sent in this sample (delivered drx
+	 * of dpk), while loaded: at a light load a loss is the radio's, not a
+	 * full link (lossy, spikeloss) */
+	/* lossy: a loss at its frontier, near the best it carried; a link that
+	 * loses at any rate (a misaligned dish, nostalgica 2026-10-19: Starlink's
+	 * upload marked lossy for good, its probing stopped and its capacity down
+	 * to 3 Mbit/s against 30) is not held for it */
+	/* what was sent and could have arrived: CG_CAP_LAG_MS before each
+	 * report; a sample's own sent count has what is still in flight, 1-5 %
+	 * at 30 Mbit/s and 25 ms (nostalgica 2026-10-19: Starlink's clean upload,
+	 * 0 % lost by UDP up to 38 Mbit/s, marked lossy all the time) */
+	{
+		int ok;
+		uint64_t txl = report_ms > CG_CAP_LAG_MS ? cg_cap_tx_at(l, report_ms - CG_CAP_LAG_MS, &ok) : (ok = 0, 0);
+
+		if (ok && l->have_txl && txl >= l->txl_prev)
+			dlost = txl - l->txl_prev;
+		else
+			dlost = UINT64_MAX; /* not known: no loss counted */
+		if (ok) {
+			l->txl_prev = txl;
+			l->have_txl = 1;
+		}
+	}
+	if (dlost != UINT64_MAX && dlost >= CG_CAP_SHORT_MIN &&
+	    (uint64_t)drx * 1000 < dlost * (1000 - CG_CAP_LOSSY_PERMIL) &&
+	    raw * 2 >= (l->peak_bps > cg_cap_best_bps(l) ? l->peak_bps : cg_cap_best_bps(l)))
+		l->lossy_ms = report_ms;
+	l->lossy = cfg->lossy && l->lossy_ms && report_ms - l->lossy_ms < CG_CAP_LOSSY_MS;
+	l->noprobe = l->lossy && !cfg->lossy_probe;
+	if (cfg->loss_pct && loaded && dlost != UINT64_MAX && dlost >= CG_CAP_SHORT_MIN &&
+	    (uint64_t)drx * 100 < dlost * (100 - cfg->loss_pct))
+		l->loss_n = l->loss_n < 255 ? (uint8_t)(l->loss_n + 1) : 255;
+	else
+		l->loss_n = 0;
 	if (l->queue_us >= 0 && (uint32_t)l->queue_us > cfg->sat_us) {
 		/* Until the first sample full from start to end (the queue formed
 		 * during the one before), each sample starts it again. */
@@ -382,12 +563,24 @@ static inline unsigned cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint6
 		l->max_cur = l->max_prev = rate;
 		l->full_ms = report_ms;
 		cut = CG_CAP_CUT_SHORT;
+	} else if (cfg->loss_pct && l->loss_n >= CG_CAP_LOSS_N) {
+		/* Loaded and losing: full without a queue. Starlink drops what it
+		 * cannot carry instead of queueing it (field, 2026-10-18: 15 % lost
+		 * while its queue stayed under 40 ms, its capacity kept at 86 Mbit/s
+		 * against ~60, the bond under Starlink alone): no more than it
+		 * delivered in this sample. */
+		l->max_cur = l->max_prev = raw < rate ? raw : rate;
+		l->full_ms = report_ms;
+		cut = CG_CAP_CUT_LOSS;
 	} else {
 		if (rate > l->max_cur)
 			l->max_cur = l->max_prev = rate;
 		cut = CG_CAP_CUT_NONE;
 	}
-	if (cut != l->cut && cut == CG_CAP_CUT_FULL) {
+	if (cut != l->cut && cut == CG_CAP_CUT_LOSS) {
+		l->n_cut_loss++;
+		ev |= CG_CAP_EV_CUT_SHORT; /* a run of samples that lost what was sent, for the decisions */
+	} else if (cut != l->cut && cut == CG_CAP_CUT_FULL) {
 		l->n_cut_full++;
 		ev |= CG_CAP_EV_CUT_FULL;
 	} else if (cut != l->cut && cut == CG_CAP_CUT_SHORT) {
@@ -415,7 +608,7 @@ static inline void cg_cap_weights(const struct cg_cap_link l[CG_MAX_LINKS], uint
 	for (unsigned i = 0; i < CG_MAX_LINKS; i++) {
 		uint64_t c = l[i].have_rate ? cg_cap_bps(&l[i]) : 0;
 
-		if (l[i].have_rate && l[i].queue_us >= 0 && (uint32_t)l[i].queue_us < probe_us)
+		if (l[i].have_rate && cg_cap_may_probe(&l[i], probe_us))
 			c = cg_cap_probe(&l[i], c, big);
 		eff[i] = c;
 		if (!(dup0 >> i & 1) && c > top)
@@ -439,6 +632,29 @@ static inline void cg_cap_weights(const struct cg_cap_link l[CG_MAX_LINKS], uint
 
 #define CG_CAP_SHAPE_MIN 2000000ull /* bps: below this a tunnel is idle */
 
+/* Where link l's queue q_us will be in h_ms (split_qpred_ms, task #33, the
+ * rescue's prediction of cg_cap_rescue_w brought to the split): q_us plus
+ * the slope times h plus half the slope's slope times h squared, at least
+ * 0 and at most q_us + 1 s. mode 1: never under q_us (only a rising queue
+ * is moved: a draining one predicted empty took the split's whole flow and
+ * overshot, bloat's upload); mode 2: as 1 and at most 2 q_us. h_ms 0, or no
+ * trend yet: q_us. */
+static inline uint32_t cg_cap_qpred(const struct cg_cap_link *l, uint32_t q_us, uint32_t h_ms, unsigned mode)
+{
+	int64_t p, h = h_ms;
+
+	if (!h_ms || !l->have_s1)
+		return q_us;
+	p = (int64_t)q_us + l->s1 * h / 1000 + l->s2 / 2 * h * h / 1000000;
+	if (mode && p < (int64_t)q_us)
+		return q_us;
+	if (mode == 2 && p > 2 * (int64_t)q_us)
+		return 2 * q_us;
+	if (p < 0)
+		return 0;
+	return p > (int64_t)q_us + 1000000 ? q_us + 1000000 : (uint32_t)p;
+}
+
 /* A tick's measures into the split by expected arrival (eta.h): each link of
  * mask's capacity, its delay without a queue (the minimum of its delays,
  * over the smallest of the links') and its queue; a link without a
@@ -450,9 +666,24 @@ static inline void cg_cap_weights(const struct cg_cap_link l[CG_MAX_LINKS], uint
  * more than its capacity never lets it show more. On the testnet, after
  * MPTCP traffic had filled the same modems, the four capacities stayed at
  * 5-7 Mbit/s against 15-30 and the upload under split_eta fell to 3 Mbit/s
- * (story 013). */
+ * (story 013).
+ *
+ * m (NULL: every link auto), each link's model (linkmodel.h):
+ * - lossy_hold: such a link that lost over CG_CAP_LOSSY_PERMIL of what it
+ *   was sent in the last CG_CAP_LOSSY_MS (l->lossy) is held to the highest
+ *   queue it showed over CG_CAP_QHI_MS (at least CG_CAP_QHI_MIN_US): past
+ *   it a packet would be dropped, and it goes on another link unless every
+ *   one is past its own (hold_over_ms: or while it arrives there within
+ *   that, eta.h's over_us). Starlink drops at 15-40 ms of queue; the split
+ *   sent it everything until its queue passed the cellular links' 25-30 ms
+ *   more of base delay, so the cellular links stayed idle and Starlink
+ *   dropped the bursts (shallowq, starsat; field, 2026-10-18).
+ * - qpred_ms, qpred_mode: its queue taken where it will be that far ahead
+ *   (cg_cap_qpred), 0: the queue now.
+ * - eta_keep, eta_keep_ms: what the backlog keeps over a stale queue
+ *   (eta.h's cg_eta_set). */
 static inline void cg_cap_eta(struct cg_eta *e, const struct cg_cap_link l[CG_MAX_LINKS], uint16_t mask,
-			      uint32_t probe_us, uint64_t now_us)
+			      uint32_t probe_us, const struct cg_link_model *m, uint64_t now_us)
 {
 	uint32_t ref = 0, mins[CG_MAX_LINKS];
 	uint64_t big = 0;
@@ -478,10 +709,22 @@ static inline void cg_cap_eta(struct cg_eta *e, const struct cg_cap_link l[CG_MA
 			cg_eta_set(e, i, 0, 0, 0, now_us);
 			continue;
 		}
-		if (l[i].queue_us >= 0 && (uint32_t)l[i].queue_us < probe_us)
+		if (cg_cap_may_probe(&l[i], probe_us))
 			bps = cg_cap_probe(&l[i], bps, big);
-		cg_eta_set(e, i, bps, (uint32_t)cg_owd_diff(mins[i], ref), l[i].queue_us > 0 ? (uint32_t)l[i].queue_us : 0,
+		if (m) {
+			e->l[i].keep = m[i].eta_keep;
+			e->l[i].keep_ms = m[i].eta_keep_ms;
+		}
+		cg_eta_set(e, i, bps, (uint32_t)cg_owd_diff(mins[i], ref),
+			   cg_cap_qpred(&l[i], l[i].queue_us > 0 ? (uint32_t)l[i].queue_us : 0, m ? m[i].qpred_ms : 0,
+					m ? m[i].qpred_mode : 0),
 			   now_us);
+		if (m && m[i].lossy_hold && l[i].lossy) {
+			uint32_t hi = l[i].qhi_cur > l[i].qhi_prev ? l[i].qhi_cur : l[i].qhi_prev;
+
+			e->l[i].limit_us = hi > CG_CAP_QHI_MIN_US ? hi : CG_CAP_QHI_MIN_US;
+			e->l[i].over_us = (uint32_t)m[i].hold_over_ms * 1000;
+		}
 	}
 }
 

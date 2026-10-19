@@ -71,14 +71,25 @@
  * its share by that second. */
 #define CG_SPLIT_STALE_PROBES 3
 
+/* What decided each split packet, for the status (clockwork audit, the
+ * metrics: which mechanism a share came from). */
+enum cg_split_by {
+	CG_SPLIT_BY_ETA = 0, /* the earliest arrival (eta.h) */
+	CG_SPLIT_BY_WRR,     /* the weights' round-robin */
+	CG_SPLIT_BY_G2,      /* the one link left in the set */
+	CG_SPLIT_BY_ALL,     /* not split: every carrier (small, not data, or no set) */
+	CG_SPLIT_BYS
+};
+
 struct cg_split {
 	int32_t cur[CG_MAX_LINKS]; /* the credits of the smooth round-robin */
+	uint64_t n_by[CG_SPLIT_BYS]; /* packets by what decided them, kept across a reset */
 };
 
 /* Back to an even start, e.g. when the weights change. */
 static inline void cg_split_reset(struct cg_split *s)
 {
-	memset(s, 0, sizeof(*s));
+	memset(s->cur, 0, sizeof(s->cur));
 }
 
 /* Where one packet goes, given the masks of cg_split_spread_apply.
@@ -123,15 +134,20 @@ static inline int cg_split_pick_eta(struct cg_split *s, struct cg_eta *eta, uint
 		if (!(keep >> i & 1))
 			s->cur[i] = 0;
 
-	if (wgtype != CG_WGS_DATA || len <= small_len || !set)
+	if (wgtype != CG_WGS_DATA || len <= small_len || !set) {
+		s->n_by[CG_SPLIT_BY_ALL]++;
 		return -1;
+	}
 	if (!keep) {
 		/* G2: the one link left takes the packet, when that skips a carrier
 		 * (never with carriers 0: split_spread_copy). */
 		for (best = 0; !(set >> best & 1); best++)
 			;
-		if (!(carriers & (uint16_t)~((1u << best) | copies)))
+		if (!(carriers & (uint16_t)~((1u << best) | copies))) {
+			s->n_by[CG_SPLIT_BY_ALL]++;
 			return -1;
+		}
+		s->n_by[CG_SPLIT_BY_G2]++;
 		if (flags)
 			*flags |= CG_F_SPLIT;
 		return best;
@@ -141,6 +157,7 @@ static inline int cg_split_pick_eta(struct cg_split *s, struct cg_eta *eta, uint
 		int k = cg_eta_pick(eta, keep, len, now_us);
 
 		if (k >= 0) {
+			s->n_by[CG_SPLIT_BY_ETA]++;
 			if (flags)
 				*flags |= CG_F_SPLIT;
 			return k;
@@ -154,9 +171,12 @@ static inline int cg_split_pick_eta(struct cg_split *s, struct cg_eta *eta, uint
 		if (best < 0 || s->cur[i] > s->cur[best])
 			best = i;
 	}
-	if (best < 0)
+	if (best < 0) {
+		s->n_by[CG_SPLIT_BY_ALL]++;
 		return -1;
+	}
 	s->cur[best] -= total;
+	s->n_by[CG_SPLIT_BY_WRR]++;
 
 	/* At least 2 links share the set, so the other one is skipped. */
 	if (flags)
@@ -269,6 +289,13 @@ struct cg_spread {
 	uint8_t stress;   /* a link that was in left for its queue: copies help (cg_sdup) */
 	uint8_t recover;  /* the fastest link is one that left: it comes back now (rejoin) */
 	uint16_t qleft;   /* links that left after being in: their queue grew, not their base delay */
+	uint64_t gone_ms[CG_MAX_LINKS]; /* a link of qleft not a candidate since then, 0: it is */
+	/* set by the caller per link (split_dwell_ms, split_dwell_oq_ms, an experiment):
+	 * a link back by a recovery stays in this long while within twice the
+	 * spread, and its own queue is at most dwell_oq_us (0: any); 0: off */
+	uint32_t dwell_ms[CG_MAX_LINKS];
+	int32_t dwell_oq_us[CG_MAX_LINKS];
+	uint64_t n_dwell; /* evaluations a link stayed in by the dwell, for the status */
 	uint64_t n_recover, n_qleave; /* how often each kind of stress began, for the status */
 	uint64_t n_stall; /* links that left in a stall (cg_split_stalled): no copies */
 	uint32_t owd_prev[CG_MAX_LINKS]; /* each link's delay at the last evaluation */
@@ -289,6 +316,7 @@ struct cg_spread {
 };
 
 #define CG_SPLIT_MIN_MS 10000 /* the window of a link's own delay minimum */
+#define CG_SPLIT_QLEFT_KEEP_MS 2000 /* a link of qleft out of the candidates this long is gone: no stress for it */
 
 /* Link i's own queue (its delay over its own minimum), updating the minimum
  * with the delay now. */
@@ -392,6 +420,8 @@ static inline void cg_split_spread_reset(struct cg_spread *s, unsigned link)
 	s->left &= keep;
 	s->holding &= keep;
 	s->behind &= keep;
+	s->qleft &= keep;
+	s->gone_ms[link] = 0;
 }
 
 /* One evaluation of guard G4, every tick. cand: the links that may take a
@@ -471,14 +501,33 @@ static inline uint16_t cg_split_spread_eval_r(struct cg_spread *s, const struct 
 
 		if (!(fresh & b)) {
 			s->holding &= (uint16_t)~b; /* gone, or no delay: a wait starts over */
-			s->qleft &= (uint16_t)~b;
+			/* a short gap of G3 (300 ms without replies) is the link
+			 * at its worst, not gone: the stress stays (audit C7) */
+			if (!s->gone_ms[i])
+				s->gone_ms[i] = now_ms;
+			if (now_ms - s->gone_ms[i] >= CG_SPLIT_QLEFT_KEEP_MS)
+				s->qleft &= (uint16_t)~b;
 			continue;
 		}
+		s->gone_ms[i] = 0;
 		d = cg_owd_diff(h[i].owd, h[best].owd);
 		oq = cg_split_ownq(s, (unsigned)i, h[i].owd, now_ms);
 		s->behind_us[i] = d;
 		s->behind |= b;
 		if (!(s->left & b)) {
+			/* Back by a recovery a moment ago: it stays in while within
+			 * twice the spread (audit C3: the rejoin at once and the
+			 * leave for its queue took turns with no hysteresis). With
+			 * dwell_oq_us only while its own queue is short: a link that
+			 * jumped or stalled and came back, not one filling a deep
+			 * queue (bloat's download: 3x the retransmissions). */
+			if (d > (int32_t)spread_us && s->dwell_ms[i] && s->ev[i] == CG_G4_REJOIN_RECOVER &&
+			    now_ms - s->ev_ms[i] < s->dwell_ms[i] && d <= 2 * (int32_t)spread_us &&
+			    (!s->dwell_oq_us[i] || oq <= s->dwell_oq_us[i])) {
+				s->n_dwell++;
+				in |= b;
+				continue;
+			}
 			if (d > (int32_t)spread_us) {
 				s->left |= b;
 				/* it was in: its queue grew (a link slow by its base delay

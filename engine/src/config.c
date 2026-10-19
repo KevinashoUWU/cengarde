@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "arrival.h" /* CG_MAX_LINKS */
+#include "linkmodel.h" /* type */
 #include "log.h"
 #include "resolve.h" /* cg_hosts_find */
 #include "steer.h"   /* lanes */
@@ -518,7 +519,7 @@ const struct cg_link_cfg *cg_config_link(const struct cg_config *c, const char *
 static int parse_links(struct cg_config *c, struct cg_ini *ini, struct hosts *h, char *err, size_t errlen)
 {
 	for (int i = 0; i < ini->n; i++) {
-		const char *sec = ini->e[i].section, *name;
+		const char *sec = ini->e[i].section, *name, *v;
 		struct cg_link_cfg *l;
 
 		if (strncmp(sec, "link ", 5))
@@ -546,6 +547,18 @@ static int parse_links(struct cg_config *c, struct cg_ini *ini, struct hosts *h,
 			if (get_u32(ini, sec, "cpu", 0, 1023, &cpu, err, errlen))
 				return -1;
 			l->cpu = (int)cpu;
+		}
+		/* Its link model (linkmodel.h, story 015): auto by default. */
+		if ((v = cg_ini_get(ini, sec, "type"))) {
+			int t = cg_link_type_parse(v);
+
+			if (t < 0) {
+				snprintf(err, errlen,
+					 "type: expected auto, cellular, starlink, fiber, ethernet or radio, got '%s'",
+					 v);
+				return -1;
+			}
+			l->type = (uint8_t)t;
 		}
 		if (get_str(ini, sec, "label", l->label, sizeof(l->label), err, errlen) ||
 		    get_bool(ini, sec, "enabled", &l->enabled, err, errlen) ||
@@ -798,6 +811,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	c->split_stress_dup = 50;
 	c->split_stress_rejoin = 1;
 	c->split_stress_single = 0;
+	c->eta_keep_ms = 400;
 	c->split_spread_copy = -1; /* by governor, below */
 	c->governor_target_ms = 20;
 	c->governor_window_ms = 10000;
@@ -827,6 +841,11 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 		snprintf(err, errlen, "log_level: expected error, warn, info or debug");
 		goto out;
 	}
+	v = cg_ini_get(&ini, "", "exp_link_types");
+	if (v && cg_link_types_parse(v, &c->exp_link_types) < 0) {
+		snprintf(err, errlen, "exp_link_types: expected link types (auto, cellular, starlink, ...), got '%s'", v);
+		goto out;
+	}
 
 	v = cg_ini_get(&ini, "", "tunnel");
 	if (v && !strcmp(v, "native"))
@@ -839,7 +858,8 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	c->tun_mtu = CG_TUN_MTU_DEFAULT;
 	if (get_str(&ini, "", "tun", c->tun, sizeof(c->tun), err, errlen) ||
 	    get_pfxs(&ini, "", "tun_addr", 1, c->tun_addr, CG_TUN_ADDRS, &c->ntun_addr, err, errlen) ||
-	    get_u32(&ini, "", "tun_mtu", CG_TUN_MTU_MIN, CG_TUN_MTU_MAX, &c->tun_mtu, err, errlen))
+	    get_u32(&ini, "", "tun_mtu", CG_TUN_MTU_MIN, CG_TUN_MTU_MAX, &c->tun_mtu, err, errlen) ||
+	    get_u32(&ini, "", "tun_txqueuelen", 0, 100000, &c->tun_txqueuelen, err, errlen))
 		goto out;
 	if (!c->tun[0] || strchr(c->tun, '/') || strchr(c->tun, ' ')) {
 		snprintf(err, errlen, "tun: expected an interface name");
@@ -888,14 +908,34 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	    get_bool(&ini, "", "governor", &c->governor, err, errlen) ||
 	    get_bool(&ini, "", "capacity_weights", &c->capacity_weights, err, errlen) ||
 	    get_bool(&ini, "", "split_eta", &c->split_eta, err, errlen) ||
+	    get_bool(&ini, "", "eta_buffer", &c->eta_buffer, err, errlen) ||
+	    get_u32(&ini, "", "split_dwell_ms", 0, 5000, &c->split_dwell_ms, err, errlen) ||
+	    get_u32(&ini, "", "split_dwell_oq_ms", 0, 5000, &c->split_dwell_oq_ms, err, errlen) ||
+	    get_u32(&ini, "", "split_qpred_ms", 0, 2000, &c->split_qpred_ms, err, errlen) ||
+	    get_u32(&ini, "", "split_qpred_mode", 0, 2, &c->split_qpred_mode, err, errlen) ||
+	    get_u32(&ini, "", "eta_keep", 0, 3, &c->eta_keep, err, errlen) ||
+	    get_u32(&ini, "", "eta_keep_ms", 0, 2000, &c->eta_keep_ms, err, errlen) ||
+	    get_u32(&ini, "", "cap_g4_episode", 0, 3, &c->cap_g4_episode, err, errlen) ||
+	    get_bool(&ini, "", "rescue_by_owd", &c->rescue_by_owd, err, errlen) ||
+	    get_u32(&ini, "", "rescue_full_hyst", 0, 2, &c->rescue_full_hyst, err, errlen) ||
+	    get_u32(&ini, "", "redund_pace_ms", 0, 2000, &c->redund_pace_ms, err, errlen) ||
 	    get_bool(&ini, "", "pacing", &c->pacing, err, errlen) ||
 	    get_u32(&ini, "", "governor_target_ms", 1, 1000, &c->governor_target_ms, err, errlen) ||
+	    get_u32(&ini, "", "capacity_loss_pct", 0, 50, &c->capacity_loss_pct, err, errlen) ||
+	    get_u32(&ini, "", "capacity_sat_ms", 0, 1000, &c->capacity_sat_ms, err, errlen) ||
+	    get_u32(&ini, "", "rescue_target_ms", 0, 1000, &c->rescue_target_ms, err, errlen) ||
 	    get_u32(&ini, "", "governor_window_ms", 1000, 120000, &c->governor_window_ms, err, errlen))
 		goto out;
 	/* By default the links out of the split get a copy of every packet,
 	 * as up to 0.6.2, but not with the governor: the copies keep filling
 	 * the queue of a link whose weight it turns down (story 012, the
 	 * bench, 2026-10-14). */
+	/* governor_target_ms drove four loops at once (clockwork audit C12):
+	 * the capacity's full and the rescue's weight can have their own */
+	if (!c->capacity_sat_ms)
+		c->capacity_sat_ms = c->governor_target_ms;
+	if (!c->rescue_target_ms)
+		c->rescue_target_ms = c->governor_target_ms;
 	if (c->split_spread_copy < 0)
 		c->split_spread_copy = !c->governor && !c->capacity_weights && !c->split_eta;
 	if (cg_ini_get(&ini, "", "cpu")) {
@@ -1223,6 +1263,8 @@ const char *cg_config_restart_needed(const struct cg_config *a, const struct cg_
 		return "tun_addr";
 	if (a->tunnel == CG_TUNNEL_NATIVE && a->tun_mtu != b->tun_mtu)
 		return "tun_mtu";
+	if (a->tunnel == CG_TUNNEL_NATIVE && a->tun_txqueuelen != b->tun_txqueuelen)
+		return "tun_txqueuelen";
 	return NULL;
 }
 

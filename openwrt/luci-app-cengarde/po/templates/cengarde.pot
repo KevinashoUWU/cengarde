@@ -55,6 +55,30 @@ msgstr ""
 msgid "The interfaces to bond: one per modem or VLAN, each with its own default route. cengarde gives them a metric of their own if they share one and puts them in the wan firewall zone."
 msgstr ""
 
+msgid "Type of %s"
+msgstr ""
+
+msgid "What kind of link it is. Today only Starlink changes anything, and only when large packets are split across the uplinks by expected arrival (split and split_eta): Starlink drops instead of queueing when it is full, so cengarde holds it to the queue it has shown and sends the rest over the other uplinks while they deliver it soon enough, and the VPS does the same with the download (in the lab, with Starlink and two cellular uplinks, 41 to 60 Mbit/s). The other types behave as Automatic for now."
+msgstr ""
+
+msgid "Automatic"
+msgstr ""
+
+msgid "Cellular (LTE/5G)"
+msgstr ""
+
+msgid "Starlink"
+msgstr ""
+
+msgid "Fiber"
+msgstr ""
+
+msgid "Cable, DSL or Ethernet"
+msgstr ""
+
+msgid "Radio link (point to point)"
+msgstr ""
+
 msgid "Pairing secret"
 msgstr ""
 
@@ -569,9 +593,6 @@ msgid "Takes the uplink out until you resume it or cengarde restarts"
 msgstr ""
 
 msgid "Resume"
-msgstr ""
-
-msgid "Automatic"
 msgstr ""
 
 msgid "Pause"

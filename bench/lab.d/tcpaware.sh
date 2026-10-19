@@ -43,8 +43,8 @@ TCPA_SPIKE=${TCPA_SPIKE:-}
 tcpa_link() {
 	local n=$1 d=$2 r=$3 loss=$4 lim ns dev
 	lim=$((r * 1000000 * (100 + d) / 8000 / 1400 + 10))
-	for ns in cli srv; do
-		dev=$([ "$ns" = cli ] && echo "l$n" || echo "s$n")
+	for ns in "$NS_CLI" "$NS_SRV"; do
+		dev=$([ "$ns" = "$NS_CLI" ] && echo "l$n" || echo "s$n")
 		ip netns exec "$ns" tc qdisc replace dev "$dev" root netem delay "${d}ms" rate "${r}mbit" \
 			limit "$lim" loss "${loss}%" || return 1
 	done
@@ -93,19 +93,19 @@ tcpa_run() {
 	SERVER_EXTRA="tunnel = native;tun_addr = 10.79.0.1/16;status_interval_ms = 200;$TCPA_CONF;$conf"
 	setup && start || return 1
 	tcpa_links || return 1
-	ip netns exec srv iperf3 -s -B 10.79.0.1 -D -I "$RUN/iperf3.pid" || return 1
+	ip netns exec "$NS_SRV" iperf3 -s -B 10.79.0.1 -D -I "$RUN/iperf3.pid" || return 1
 	sleep 0.5
 	nst=$RUN/nstat.srv
 	rm -f "$nst"
-	ip netns exec srv env NSTAT_HISTORY="$nst" nstat -n
-	ip netns exec cli ping -q -s 1200 -i 0.1 -w "$TCPA_S" 10.79.0.1 >"$RUN/ping.out" 2>&1 &
+	ip netns exec "$NS_SRV" env NSTAT_HISTORY="$nst" nstat -n
+	ip netns exec "$NS_CLI" ping -q -s 1200 -i 0.1 -w "$TCPA_S" 10.79.0.1 >"$RUN/ping.out" 2>&1 &
 	ping=$!
 	tcpa_spikes &
 	spikes=$!
-	timeout $((TCPA_S + 15)) ip netns exec cli iperf3 -c 10.79.0.1 -R -P "$TCPA_P" -t "$TCPA_S" \
+	timeout $((TCPA_S + 15)) ip netns exec "$NS_CLI" iperf3 -c 10.79.0.1 -R -P "$TCPA_P" -t "$TCPA_S" \
 		--connect-timeout 3000 -J >"$RUN/iperf3.json" 2>&1
 	wait "$ping" "$spikes"
-	ip netns exec srv env NSTAT_HISTORY="$nst" nstat -az >"$RUN/nstat.out"
+	ip netns exec "$NS_SRV" env NSTAT_HISTORY="$nst" nstat -az >"$RUN/nstat.out"
 	sleep 0.5 # the status file, every 200 ms
 	[ -f "$RUN/iperf3.pid" ] && kill "$(cat "$RUN/iperf3.pid")" 2>/dev/null
 	rm -f "$RUN/iperf3.pid"

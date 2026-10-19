@@ -77,10 +77,10 @@ mc_server_conf() {
 
 mc_start() {
 	local name
-	ip netns exec srv "$CENGARDE_BIN" -c "$RUN/server.conf" >"$RUN/server.log" 2>&1 &
+	ip netns exec "$NS_SRV" "$CENGARDE_BIN" -c "$RUN/server.conf" >"$RUN/server.log" 2>&1 &
 	echo $! >"$RUN/server.pid"
 	for name in $MC_ROUTERS; do
-		ip netns exec cli "$CENGARDE_BIN" -c "$RUN/$name.conf" >"$RUN/$name.log" 2>&1 &
+		ip netns exec "$NS_CLI" "$CENGARDE_BIN" -c "$RUN/$name.conf" >"$RUN/$name.log" 2>&1 &
 		echo $! >"$RUN/$name.pid"
 	done
 }
@@ -228,9 +228,9 @@ mc_traffic() {
 	for name in $names; do
 		n=$(mc_n "$name")
 		if [ "$dir" = up ]; then
-			ip netns exec srv "$BIN/udpgen" -b "127.0.0.1:5930$n" -d 3 -g 3 >"$RUN/rx-$name.out" &
+			ip netns exec "$NS_SRV" "$BIN/udpgen" -b "127.0.0.1:5930$n" -d 3 -g 3 >"$RUN/rx-$name.out" &
 		else
-			ip netns exec cli "$BIN/udpgen" -b "127.0.0.1:5000$n" -p "127.0.0.1:594${n}1" -r 20 -s 64 -d 5 -g 2 \
+			ip netns exec "$NS_CLI" "$BIN/udpgen" -b "127.0.0.1:5000$n" -p "127.0.0.1:594${n}1" -r 20 -s 64 -d 5 -g 2 \
 				>"$RUN/rx-$name.out" &
 		fi
 		pids="$pids $!"
@@ -239,10 +239,10 @@ mc_traffic() {
 	for name in $names; do
 		n=$(mc_n "$name")
 		if [ "$dir" = up ]; then
-			ip netns exec cli "$BIN/udpgen" -b "127.0.0.1:5000$n" -p "127.0.0.1:594${n}1" -r "$MC_PPS" -s "$SIZE" \
+			ip netns exec "$NS_CLI" "$BIN/udpgen" -b "127.0.0.1:5000$n" -p "127.0.0.1:594${n}1" -r "$MC_PPS" -s "$SIZE" \
 				-d 3 -g 1 >"$RUN/tx-$name.out" &
 		else
-			ip netns exec srv "$BIN/udpgen" -b "127.0.0.1:5930$n" -l -r "$MC_PPS" -s "$SIZE" -d 3 -g 1 \
+			ip netns exec "$NS_SRV" "$BIN/udpgen" -b "127.0.0.1:5930$n" -l -r "$MC_PPS" -s "$SIZE" -d 3 -g 1 \
 				>"$RUN/tx-$name.out" &
 		fi
 		pids="$pids $!"
@@ -332,10 +332,10 @@ multiclient() {
 
 	# Server reloads under alpha's traffic.
 	sess=$(mc_py session alpha)
-	ip netns exec srv "$BIN/udpgen" -b 127.0.0.1:59301 -d 9 -g 3 >"$RUN/rx-alpha.out" &
+	ip netns exec "$NS_SRV" "$BIN/udpgen" -b 127.0.0.1:59301 -d 9 -g 3 >"$RUN/rx-alpha.out" &
 	traffic=$!
 	sleep 0.3
-	ip netns exec cli "$BIN/udpgen" -b 127.0.0.1:50001 -p 127.0.0.1:59411 -r "$MC_PPS" -s "$SIZE" -d 9 -g 1 \
+	ip netns exec "$NS_CLI" "$BIN/udpgen" -b 127.0.0.1:50001 -p 127.0.0.1:59411 -r "$MC_PPS" -s "$SIZE" -d 9 -g 1 \
 		>"$RUN/tx-alpha.out" &
 	sleep 1
 	sed -i '/^\[client bravo\]$/a enabled = no' "$RUN/server.conf"

@@ -506,8 +506,205 @@ static void test_capacity_shapes(void)
 	CHECK(maxq_late < 100);
 }
 
+/* capacity_loss_pct: a loaded link that drops instead of queueing (no
+ * queue, 15 % lost) is full at what it delivers after CG_CAP_LOSS_N
+ * samples; off, or at a light load, it is not. */
+static void loss_feed(struct cg_cap_link *l, const struct cg_cap_cfg *cfg, uint64_t *t, uint32_t *rx, uint64_t *tx,
+		      int samples, uint32_t sent, uint32_t delivered)
+{
+	struct cg_hlink h;
+
+	memset(&h, 0, sizeof(h));
+	h.have_owd = 1;
+	h.owd = 30000; /* no queue at all */
+	for (int i = 0; i < samples; i++) {
+		*t += 500;
+		*tx += sent;
+		*rx += delivered;
+		h.fresh_until_ms = *t + 3000;
+		cg_cap_tick(l, *t, *t, *rx, *tx, *tx * 1000, &h, cfg);
+	}
+}
+
+static void test_capacity_loss(void)
+{
+	const struct cg_cap_cfg on = { .window_ms = 10000, .sat_us = 20 * MS, .loss_pct = 5 };
+	struct cg_cap_link l;
+	uint64_t t = 1000, tx = 0;
+	uint32_t rx = 0;
+
+	/* 6000 packets of 1000 B per 500 ms (96 Mbit/s), all delivered */
+	cg_cap_reset(&l);
+	loss_feed(&l, &on, &t, &rx, &tx, 4, 6000, 6000);
+	CHECK(near(cg_cap_bps(&l), 96, 0.02));
+	/* then 15 % lost, no queue: cut after CG_CAP_LOSS_N samples */
+	loss_feed(&l, &on, &t, &rx, &tx, CG_CAP_LOSS_N - 1, 6000, 5100);
+	CHECK(l.cut == CG_CAP_CUT_NONE);
+	loss_feed(&l, &on, &t, &rx, &tx, 1, 6000, 5100);
+	CHECK(l.cut == CG_CAP_CUT_LOSS);
+	CHECK_EQ(l.n_cut_loss, 1);
+	CHECK(cg_cap_bps(&l) <= 82 * MBIT); /* what it delivered, 81.6 */
+	CHECK(l.full_ms == t);             /* fast start waits */
+	/* off: the same loss never cuts */
+	cg_cap_reset(&l);
+	loss_feed(&l, &CFG, &t, &rx, &tx, 4, 6000, 6000);
+	loss_feed(&l, &CFG, &t, &rx, &tx, 6, 6000, 5100);
+	CHECK(l.cut == CG_CAP_CUT_NONE && near(cg_cap_bps(&l), 96, 0.02));
+	/* a light load (a tenth of its capacity) losing 15 %: the radio's, no cut */
+	cg_cap_reset(&l);
+	loss_feed(&l, &on, &t, &rx, &tx, 4, 6000, 6000);
+	loss_feed(&l, &on, &t, &rx, &tx, 6, 600, 510);
+	CHECK(l.cut == CG_CAP_CUT_NONE && l.loss_n == 0);
+}
+
+/* lossy only at the frontier: a link losing 2 % near its best is lossy; one
+ * losing 2 % at a tenth of its best (a misaligned dish) is not. */
+static void test_capacity_lossy_frontier(void)
+{
+	const struct cg_cap_cfg cf = { .window_ms = 10000, .sat_us = 20 * MS, .lossy = 1 };
+	struct cg_cap_link l;
+	uint64_t t = 1000, tx = 0;
+	uint32_t rx = 0;
+
+	cg_cap_reset(&l);
+	loss_feed(&l, &cf, &t, &rx, &tx, 4, 6000, 6000); /* best 96 Mbit/s */
+	loss_feed(&l, &cf, &t, &rx, &tx, 2, 6000, 5880);
+	CHECK(l.lossy);
+	cg_cap_reset(&l);
+	loss_feed(&l, &cf, &t, &rx, &tx, 4, 6000, 6000);
+	t += CG_CAP_LOSSY_MS;
+	loss_feed(&l, &cf, &t, &rx, &tx, 6, 600, 588);
+	CHECK(!l.lossy);
+	t += 40000;
+	loss_feed(&l, &cf, &t, &rx, &tx, 6, 600, 588);
+	CHECK(!l.lossy);
+	CHECK(l.peak_bps > 80000000ull);
+}
+
+/* The audit's second pass: the rescue's full bit with hysteresis, the G4
+ * episode for fast start and the predicted queue, each by its mode. */
+static void test_capacity_clock2(void)
+{
+	struct cg_cap_link l;
+	uint32_t t = 20 * MS;
+
+	/* rfull: on at 4 x, mode 1 off under 3 x only, mode 2 off at once
+	 * while rising */
+	cg_cap_reset(&l);
+	l.ql_us = 85 * MS;
+	cg_cap_rfull(&l, t, 1);
+	CHECK(l.rfull);
+	l.ql_us = 70 * MS; /* between 3 x and 4 x, not rising: kept */
+	cg_cap_rfull(&l, t, 1);
+	CHECK(l.rfull);
+	CHECK(cg_cap_full(&l, t, 1));
+	CHECK(!cg_cap_full(&l, t, 0)); /* the old bit: off under 4 x */
+	l.ql_us = 55 * MS;
+	cg_cap_rfull(&l, t, 1);
+	CHECK(!l.rfull);
+	l.ql_us = 85 * MS;
+	cg_cap_rfull(&l, t, 2);
+	CHECK(l.rfull);
+	l.ql_us = 75 * MS; /* falling (s1 < 0): held */
+	l.have_s1 = 1;
+	l.s1 = -10000;
+	l.s2 = 0;
+	cg_cap_rfull(&l, t, 2);
+	CHECK(l.rfull);
+	l.ql_us = 65 * MS; /* rising: off at once */
+	l.s1 = 5 * MS;
+	cg_cap_rfull(&l, t, 2);
+	CHECK(!l.rfull);
+
+	/* episode: mode 1 always; 2 and 3 only when the capacity overshot */
+	cg_cap_reset(&l);
+	l.have_rate = 1;
+	l.max_cur = l.max_prev = 40 * MBIT;
+	l.last_tx_bps = 40 * MBIT;
+	l.last_rx_bps = 38 * MBIT; /* carries what it is sent: right */
+	CHECK(!cg_cap_episode(&l, 5000, 2));
+	CHECK(!cg_cap_episode(&l, 5000, 0));
+	CHECK(cg_cap_episode(&l, 5000, 1) && l.full_ms == 5000);
+	l.full_ms = 0;
+	l.last_rx_bps = 30 * MBIT; /* sent 40, carries 30: an overestimate */
+	CHECK(cg_cap_episode(&l, 6000, 2) && l.full_ms == 6000);
+	l.full_ms = 0;
+	l.last_tx_bps = 20 * MBIT; /* not sent its capacity: says nothing */
+	CHECK(!cg_cap_episode(&l, 6000, 3));
+	l.last_tx_bps = 40 * MBIT;
+	CHECK(cg_cap_episode(&l, 7000, 3) && l.ep_ms == 7000 && !l.full_ms);
+	/* mode 3 holds fast start back CG_CAP_EP_REST_MS only */
+	l.best_cur = l.best_prev = 100 * MBIT;
+	l.best_ms = 7000;
+	CHECK(!cg_cap_best(&l, 7000 + CG_CAP_EP_REST_MS - 1));
+	CHECK(cg_cap_best(&l, 7000 + CG_CAP_EP_REST_MS));
+	CHECK_EQ(l.n_g4_ep, 3);
+
+	/* qpred: mode 0 both ways, 1 never under the queue, 2 at most twice */
+	cg_cap_reset(&l);
+	l.have_s1 = 1;
+	l.s1 = -40000; /* draining 40 ms a second */
+	l.s2 = 0;
+	CHECK_EQ(cg_cap_qpred(&l, 30 * MS, 500, 0), 10 * MS);
+	CHECK_EQ(cg_cap_qpred(&l, 30 * MS, 500, 1), 30 * MS);
+	l.s1 = 100 * MS;
+	CHECK_EQ(cg_cap_qpred(&l, 30 * MS, 500, 1), 80 * MS);
+	CHECK_EQ(cg_cap_qpred(&l, 30 * MS, 500, 2), 60 * MS);
+	CHECK_EQ(cg_cap_qpred(&l, 30 * MS, 0, 2), 30 * MS);
+}
+
+/* A sample's loss counts what was sent CG_CAP_LAG_MS before its report:
+ * a link ramping up with 100 ms of packets in flight, none lost, is not
+ * lossy (its own sent count is 20 % ahead of what arrived). */
+static void test_capacity_inflight(void)
+{
+	const struct cg_cap_cfg cf = { .window_ms = 10000, .sat_us = 20 * MS, .lossy = 1 };
+	struct cg_cap_link l;
+	struct cg_hlink h;
+	uint64_t t = 1000, tx = 0, sent_at[64];
+	uint32_t n = 0;
+
+	memset(&h, 0, sizeof(h));
+	h.have_owd = 1;
+	h.owd = 30000;
+	cg_cap_reset(&l);
+	/* ticks each 100 ms, a report each 500 ms; rate rising 1000 to 4000 a tick */
+	for (int k = 0; k < 60; k++) {
+		uint32_t rx;
+
+		t += 100;
+		tx += 1000 + 50 * (uint64_t)k;
+		sent_at[k] = tx;
+		rx = k ? (uint32_t)sent_at[k - 1] : 0; /* what was sent a tick (100 ms) before */
+		h.fresh_until_ms = t + 3000;
+		cg_cap_tick(&l, t, k % 5 == 4 ? t : 0, rx, tx, tx * 1000, &h, &cf);
+		n += l.lossy;
+	}
+	CHECK_EQ(n, 0);
+	/* the same with 5 % of it lost: lossy */
+	cg_cap_reset(&l);
+	n = 0;
+	tx = 0;
+	for (int k = 0; k < 60; k++) {
+		uint32_t rx;
+
+		t += 100;
+		tx += 3000;
+		sent_at[k] = tx;
+		rx = k ? (uint32_t)(sent_at[k - 1] * 95 / 100) : 0;
+		h.fresh_until_ms = t + 3000;
+		cg_cap_tick(&l, t, k % 5 == 4 ? t : 0, rx, tx, tx * 1000, &h, &cf);
+		n += l.lossy;
+	}
+	CHECK(n > 0);
+}
+
 void test_capacity(void)
 {
+	test_capacity_inflight();
+	test_capacity_lossy_frontier();
+	test_capacity_loss();
+	test_capacity_clock2();
 	test_capacity_short();
 	test_capacity_total();
 	test_capacity_shapes();
