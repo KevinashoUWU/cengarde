@@ -31,6 +31,30 @@
 #               cuts. What a cut costs when the link left has room for the
 #               flow, to set against starlink15 (story 012: the retransmissions
 #               of starlink15 come from the cuts, not from the redundancy)
+#   starlink15ramp  not in the default list: starlink15 with the delay of
+#               link 2 drifting as in real life: within each 15 s slot it rises
+#               slowly (10 to 25 ms more, a step every 0.5 s) as the satellite
+#               moves away, and after the 1.5 s cut of the switch it starts the
+#               next slot again at the lowest (20 ms) or at an intermediate one
+#               (27 or 34 ms), drawn from BOND_SEED and the repetition like
+#               ltespikerand. The cuts are starlink15's, so the difference
+#               between the two is the drift alone
+#   downstall   not in the default list: 3 links of 40 Mbit/s, 25, 25 and
+#               30 ms; link 2's download direction alone (the server's side)
+#               drops everything for 1.5 s, 3 to 8 s apart at random (seeded
+#               like ltespikerand), its upload untouched: the client's packets
+#               keep the path alive at the VPS while it carries nothing down
+#               (clockwork audit C6)
+#   shallowq    not in the default list: like nostalgica's links, Starlink with a
+#               shallow queue: link 1 60 Mbit/s, 20 ms, 15 ms of queue (it drops
+#               instead of queueing); links 2 and 3 cellular, 25 and 18 Mbit/s,
+#               45 and 50 ms, 300 ms of queue. A capacity that only falls on a
+#               queue never sees link 1 full (field, 2026-10-18: 15 % lost on
+#               Starlink while its queue stayed under 40 ms)
+#   starsat     not in the default list: shallowq with link 1 as Starlink in time:
+#               its rate drawn per 15 s slot from 45, 60 and 75 Mbit/s (seeded
+#               like ltespikerand), its delay rising 0 to 15 ms within the slot,
+#               and 0.3 s of total loss at each switch
 #   ltespike    link 1 (50 Mbit/s, 25 ms) jumps by 300 ms for 1 s every 5 s;
 #               link 2 steady (50 Mbit/s, 30 ms)
 #   ltespikerand  not in the default list: ltespike with the jumps 2 to 10 s
@@ -358,6 +382,16 @@ bond_link() {
 	done
 }
 
+# bond_link_down N DELAY_MS RATE_MBIT [QUEUE_MS [LOSS_PCT]]: as bond_link,
+# the download direction of link N only (the server's side).
+bond_link_down() {
+	local n=$1 d=$2 r=$3 q=${4:-100} loss=${5:-0} lim inflight=0
+	bond_netem_ok || return 0
+	lim=$((r * 1000000 * q / 8000 / 1400 + 10))
+	[ "${BOND_NETEM_INFLIGHT:-0}" = 1 ] && inflight=$((r * 1000000 * d / 8000 / 1400))
+	ip netns exec "$NS_SRV" tc qdisc replace dev "s$n" root netem delay "${d}ms" rate "${r}mbit" limit $((lim + inflight)) loss "${loss}%"
+}
+
 # bond_events CASE SECS [REP]: what changes during a run (in the background).
 bond_events() {
 	local c=$1 s=$2 rep=${3:-1} t r2=100 gap
@@ -376,6 +410,35 @@ bond_events() {
 			bond_link 2 20 "$r2" 100 100
 			sleep 1.5
 			bond_link 2 "$([ $((t / 15 % 2)) = 1 ] && echo 50 || echo 20)" "$r2"
+		done
+		;;
+	starlink15ramp)
+		RANDOM=$((${BOND_SEED:-1} * 1000 + rep))
+		local d0=20 rise k
+		for t in $(seq 15 15 "$s"); do
+			rise=$((10 + RANDOM % 16))
+			for k in $(seq 1 27); do
+				sleep 0.5
+				bond_link 2 $((d0 + rise * k / 27)) 100
+			done
+			bond_link 2 $((d0 + rise)) 100 100 100
+			sleep 1.5
+			d0=$(echo "20 27 34" | cut -d' ' -f$((1 + RANDOM % 3)))
+			bond_link 2 "$d0" 100
+		done
+		;;
+	starsat)
+		RANDOM=$((${BOND_SEED:-1} * 1000 + rep))
+		local r1=60 k
+		for t in $(seq 15 15 "$s"); do
+			for k in $(seq 1 29); do
+				sleep 0.5
+				bond_link 1 $((20 + 15 * k / 29)) "$r1" 15
+			done
+			bond_link 1 35 "$r1" 15 100
+			sleep 0.3
+			r1=$(echo "45 60 75" | cut -d' ' -f$((1 + RANDOM % 3)))
+			bond_link 1 20 "$r1" 15
 		done
 		;;
 	ltespike)
@@ -399,6 +462,19 @@ bond_events() {
 			bond_link 1 25 50
 		done
 		;;
+	downstall)
+		RANDOM=$((${BOND_SEED:-1} * 1000 + rep))
+		t=0
+		while :; do
+			gap=$((3 + RANDOM % 6))
+			t=$((t + gap))
+			[ "$t" -lt "$s" ] || break
+			sleep "$gap"
+			bond_link_down 2 25 40 100 100
+			sleep 1.5
+			bond_link_down 2 25 40
+		done
+		;;
 	spikeloss)
 		for t in $(seq 2 2 "$s"); do
 			sleep 1.5
@@ -418,7 +494,9 @@ bond_shape() {
 	reorder50) bond_link 1 20 50 && bond_link 2 70 50 ;;
 	reorder150) bond_link 1 20 50 && bond_link 2 170 50 ;;
 	linkdeath) bond_link 1 25 40 && bond_link 2 25 40 && bond_link 3 25 40 ;;
-	starlink15) bond_link 1 25 50 && bond_link 2 20 100 ;;
+	downstall) bond_link 1 25 40 && bond_link 2 25 40 && bond_link 3 30 40 ;;
+	starlink15 | starlink15ramp) bond_link 1 25 50 && bond_link 2 20 100 ;;
+	shallowq | starsat) bond_link 1 20 60 15 && bond_link 2 45 25 300 && bond_link 3 50 18 300 ;;
 	starlink15sw) bond_link 1 25 100 && bond_link 2 20 50 ;;
 	ltespike | ltespikerand) bond_link 1 25 50 && bond_link 2 30 50 ;;
 	spikeloss) bond_link 1 25 50 100 1 && bond_link 2 30 50 100 1 ;;
@@ -431,7 +509,7 @@ bond_shape() {
 
 bond_nlinks() {
 	case $1 in
-	het | linkdeath | bloat | lossy) echo 3 ;;
+	het | linkdeath | downstall | bloat | lossy | shallowq | starsat) echo 3 ;;
 	*) echo 2 ;;
 	esac
 }
@@ -531,7 +609,7 @@ bond_run() {
 # link alone), every direction, congestion control and repetition.
 bond_case() {
 	local c=$1 v=$2 s=$BOND_S dir cc rep fail=0
-	case $c in starlink15*) [ "$s" -lt 31 ] && s=31 ;; esac
+	case $c in starlink15* | starsat) [ "$s" -lt 31 ] && s=31 ;; esac
 	ENGINE=c
 	NLINKS=$(bond_nlinks "$c")
 	bond_variant "$v" || return 1
@@ -582,14 +660,14 @@ bond_plan() {
 	for w in ${BOND_CC:-cubic bbr quic}; do ccs=$((ccs + 1)); done
 	for c in $BOND_CASES; do
 		case $c in
-		equal | het | reorder50 | reorder150 | linkdeath | starlink15 | starlink15sw | ltespike | ltespikerand | deepq | bloat | lossy | spikeloss) ;;
+		equal | het | reorder50 | reorder150 | linkdeath | downstall | shallowq | starsat | starlink15 | starlink15sw | starlink15ramp | ltespike | ltespikerand | deepq | bloat | lossy | spikeloss) ;;
 		*)
 			echo "bond: unknown case $c"
 			return 1
 			;;
 		esac
 		dur=$BOND_S
-		case $c in starlink15*) [ "$dur" -lt 31 ] && dur=31 ;; esac
+		case $c in starlink15* | starsat) [ "$dur" -lt 31 ] && dur=31 ;; esac
 		for v in $BOND_VARIANTS; do
 			bond_applies "$c" "$v" || continue
 			pairs=$((pairs + 1))
