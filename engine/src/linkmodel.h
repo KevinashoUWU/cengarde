@@ -17,8 +17,9 @@
  * starlink differs from auto, and cellular, fiber, ethernet and radio are
  * hooks to tune from measurements: they keep auto's values.
  *
- * The global knobs (eta_buffer, capacity_loss_pct) still apply to every
- * link, on top of the preset: cg_link_model_of.
+ * The global knobs (eta_buffer, capacity_loss_pct and the clockwork
+ * audit's experiments) still apply to every link, on top of the preset, or
+ * with exp_link_types only to the links of some types: cg_link_model_k.
  *
  * Pure: no clock, no I/O, no allocation.
  *
@@ -69,6 +70,26 @@ struct cg_link_model {
 	/* capacity_loss_pct for this link: loaded and losing more than this
 	 * (%) for CG_CAP_LOSS_N samples, it is full; 0: off. */
 	uint8_t loss_pct;
+
+	/* The clockwork audit's mixed fixes (2026-10-17/18), each brought down
+	 * to the links where it helps (story 015, "las correcciones mixtas por
+	 * tipo"). Each is the global knob of the same name for this link; 0
+	 * everywhere is the engine without them. */
+	uint8_t g4_episode;   /* cap_g4_episode: a G4 leave for the queue counts for fast start (capacity.h) */
+	uint8_t rfull_hyst;   /* rescue_full_hyst: the rescue's full bit with hysteresis (capacity.h) */
+	uint8_t qpred_mode;   /* split_qpred_mode */
+	uint8_t eta_keep;     /* eta_keep: the ETA backlog over a stale queue (eta.h) */
+	uint16_t qpred_ms;    /* split_qpred_ms: the ETA takes its queue where its trend puts it */
+	uint16_t dwell_ms;    /* split_dwell_ms: G4 keeps it in this long once back by a recovery (split.h) */
+	uint16_t dwell_oq_ms; /* split_dwell_oq_ms: ... only while its own queue is at most this, 0: any */
+	uint16_t eta_keep_ms; /* eta_keep_ms */
+	uint16_t pace_ms;     /* redund_pace_ms: a copy goes on it only if it arrives within this of the first (eta.h) */
+	/* In a session with a link of this type, every other link paces its
+	 * copies at this (as its pace_ms, the smaller of the two): the copies
+	 * to a deep-queued link next to Starlink arrive in time for its gaps
+	 * (cg_link_pace_windows), and a session without such a link is as
+	 * before. 0: off. */
+	uint16_t pace_peers_ms;
 };
 
 /* starlink's hold_over_ms (story 015, n = 8 against a null control): 40,
@@ -79,21 +100,31 @@ struct cg_link_model {
  * (shallowqdeep). */
 #define CG_STARLINK_OVER_MS 40
 
+/* starlink's pace_peers_ms (story 015, redundancy, n = 16 against a null
+ * control): the copies to the cellular links next to it only while they
+ * arrive within 60 ms of the first. The 1200 B ping's p99 in starsat fell
+ * from ~360 to ~95 ms, with a throughput within 5 % in every Starlink case;
+ * the cost is retransmissions (1.2-4x) where its queue is shallow. Pacing
+ * every cellular link instead (pace_ms) cost 8-18 % in het: hence only next
+ * to a Starlink. */
+#define CG_STARLINK_PACE_PEERS_MS 60
+
 struct cg_link_preset {
 	const char *name;
 	struct cg_link_model m;
 };
 
 /* The presets, by type. Only what measured as a win goes in (story 015,
- * n >= 8 against a null control); the rest keep auto's zeros as hooks.
- *                                       noprobe hold over_ms loss_pct */
+ * n >= 8 against a null control); the rest keep auto's zeros as hooks. */
 static const struct cg_link_preset cg_link_presets[CG_LTYPE_COUNT] = {
-	[CG_LTYPE_AUTO] = { "auto", { 0, 0, 0, 0 } },
-	[CG_LTYPE_CELLULAR] = { "cellular", { 0, 0, 0, 0 } }, /* hook: the scheduler, the deep queue, the signal */
-	[CG_LTYPE_STARLINK] = { "starlink", { 1, 1, CG_STARLINK_OVER_MS, 0 } },
-	[CG_LTYPE_FIBER] = { "fiber", { 0, 0, 0, 0 } },       /* hook */
-	[CG_LTYPE_ETHERNET] = { "ethernet", { 0, 0, 0, 0 } }, /* hook */
-	[CG_LTYPE_RADIO] = { "radio", { 0, 0, 0, 0 } },       /* hook */
+	[CG_LTYPE_AUTO] = { "auto", { 0 } },
+	[CG_LTYPE_CELLULAR] = { "cellular", { 0 } }, /* hook: the scheduler, the deep queue, the signal */
+	[CG_LTYPE_STARLINK] = { "starlink",
+				{ .lossy_noprobe = 1, .lossy_hold = 1, .hold_over_ms = CG_STARLINK_OVER_MS,
+				  .pace_peers_ms = CG_STARLINK_PACE_PEERS_MS } },
+	[CG_LTYPE_FIBER] = { "fiber", { 0 } },       /* hook */
+	[CG_LTYPE_ETHERNET] = { "ethernet", { 0 } }, /* hook */
+	[CG_LTYPE_RADIO] = { "radio", { 0 } },       /* hook */
 };
 
 /* A type as read from the wire or a config: past the known ones, auto. */
@@ -116,19 +147,109 @@ static inline int cg_link_type_parse(const char *s)
 	return -1;
 }
 
-/* A link's model: its type's preset, with the global knobs on top. A
- * global eta_buffer turns lossy_noprobe and lossy_hold on for every link
- * (what it did before the types); a global capacity_loss_pct (not 0) is
- * every link's, over its preset's. */
+/* The global knobs that reach a link's model (config.h): each set (not 0)
+ * is the value of every link of the types in types, over its preset's. */
+struct cg_link_knobs {
+	int buffer;          /* eta_buffer: lossy_noprobe and lossy_hold */
+	uint32_t loss_pct;   /* capacity_loss_pct */
+	uint32_t g4_episode; /* cap_g4_episode */
+	uint32_t rfull_hyst; /* rescue_full_hyst */
+	uint32_t qpred_ms;   /* split_qpred_ms, with split_qpred_mode */
+	uint32_t qpred_mode;
+	uint32_t dwell_ms; /* split_dwell_ms, with split_dwell_oq_ms */
+	uint32_t dwell_oq_ms;
+	uint32_t eta_keep; /* eta_keep, with eta_keep_ms */
+	uint32_t eta_keep_ms;
+	uint32_t pace_ms; /* redund_pace_ms */
+	/* exp_link_types: a bit per type (1 << CG_LTYPE_...) the knobs above
+	 * apply to; 0: every type, as before the types. To try a knob on one
+	 * type of link before it goes in that type's preset. */
+	uint32_t types;
+};
+
+static inline uint16_t cg_link_u16(uint32_t v)
+{
+	return (uint16_t)(v > 65535 ? 65535 : v);
+}
+
+static inline uint8_t cg_link_u8(uint32_t v, uint32_t max)
+{
+	return (uint8_t)(v > max ? max : v);
+}
+
+/* A link's model: its type's preset, with the global knobs k (NULL: none)
+ * on top. A global eta_buffer turns lossy_noprobe and lossy_hold on (what
+ * it did before the types); any other knob set (not 0) is the link's value
+ * over its preset's, and a knob's companion (split_qpred_mode,
+ * split_dwell_oq_ms, eta_keep_ms) goes with it. All of it only for the
+ * types in k->types (0: every one). */
+static inline struct cg_link_model cg_link_model_k(unsigned type, const struct cg_link_knobs *k)
+{
+	unsigned t = cg_link_type_norm(type);
+	struct cg_link_model m = cg_link_presets[t].m;
+
+	if (!k || (k->types && !(k->types >> t & 1)))
+		return m;
+	if (k->buffer)
+		m.lossy_noprobe = m.lossy_hold = 1;
+	if (k->loss_pct)
+		m.loss_pct = cg_link_u8(k->loss_pct, 100);
+	if (k->g4_episode)
+		m.g4_episode = cg_link_u8(k->g4_episode, 3);
+	if (k->rfull_hyst)
+		m.rfull_hyst = cg_link_u8(k->rfull_hyst, 2);
+	if (k->qpred_ms) {
+		m.qpred_ms = cg_link_u16(k->qpred_ms);
+		m.qpred_mode = cg_link_u8(k->qpred_mode, 2);
+	}
+	if (k->dwell_ms) {
+		m.dwell_ms = cg_link_u16(k->dwell_ms);
+		m.dwell_oq_ms = cg_link_u16(k->dwell_oq_ms);
+	}
+	if (k->eta_keep) {
+		m.eta_keep = cg_link_u8(k->eta_keep, 3);
+		m.eta_keep_ms = cg_link_u16(k->eta_keep_ms);
+	}
+	if (k->pace_ms)
+		m.pace_ms = cg_link_u16(k->pace_ms);
+	return m;
+}
+
+/* The same with only eta_buffer and capacity_loss_pct as globals. */
 static inline struct cg_link_model cg_link_model_of(unsigned type, int g_buffer, uint32_t g_loss_pct)
 {
-	struct cg_link_model m = cg_link_presets[cg_link_type_norm(type)].m;
+	struct cg_link_knobs k = { .buffer = g_buffer, .loss_pct = g_loss_pct };
 
-	if (g_buffer)
-		m.lossy_noprobe = m.lossy_hold = 1;
-	if (g_loss_pct)
-		m.loss_pct = (uint8_t)(g_loss_pct > 100 ? 100 : g_loss_pct);
-	return m;
+	return cg_link_model_k(type, &k);
+}
+
+/* The models of the links of type[0..n) (n <= 16) into m[0..n). */
+static inline void cg_link_models(const uint8_t *type, unsigned n, const struct cg_link_knobs *k,
+				  struct cg_link_model *m)
+{
+	for (unsigned i = 0; i < n && i < 16; i++)
+		m[i] = cg_link_model_k(type[i], k);
+}
+
+/* Each link's copy window into w_us[0..n) (n <= 16), cg_eta_copies': its
+ * own pace_ms or another link's pace_peers_ms, the smaller one set, in us;
+ * 0: every copy. Returns whether any link has one (redundancy then keeps an
+ * expected arrival per link). Links not in use are auto: they set nothing. */
+static inline int cg_link_pace_windows(const struct cg_link_model *m, unsigned n, uint32_t *w_us)
+{
+	int any = 0;
+
+	n = n > 16 ? 16 : n;
+	for (unsigned i = 0; i < n; i++) {
+		uint32_t v = m[i].pace_ms;
+
+		for (unsigned j = 0; j < n; j++)
+			if (j != i && m[j].pace_peers_ms && (!v || m[j].pace_peers_ms < v))
+				v = m[j].pace_peers_ms;
+		w_us[i] = v * 1000;
+		any |= v != 0;
+	}
+	return any;
 }
 
 /* What capacity.h's tick takes from a model: whether it tracks the link's
@@ -138,21 +259,62 @@ static inline int cg_link_tracks_loss(const struct cg_link_model *m)
 	return m->lossy_noprobe || m->lossy_hold;
 }
 
-/* The links of type[0..n) (n <= 16) whose model holds them to their queue
- * (lossy_hold), cg_cap_eta's mask, and in over_us[0..n) what going past it
- * costs each, in us (0: last resort). */
-static inline uint16_t cg_link_hold(const uint8_t *type, unsigned n, int g_buffer, uint32_t *over_us)
+/* The links of m[0..n) (n <= 16) whose model holds them to their queue
+ * (lossy_hold), and in over_us[0..n) what going past it costs each, in us
+ * (0: last resort). */
+static inline uint16_t cg_link_hold_m(const struct cg_link_model *m, unsigned n, uint32_t *over_us)
 {
-	uint16_t m = 0;
+	uint16_t h = 0;
 
 	for (unsigned i = 0; i < n && i < 16; i++) {
-		struct cg_link_model lm = cg_link_model_of(type[i], g_buffer, 0);
-
-		over_us[i] = (uint32_t)lm.hold_over_ms * 1000;
-		if (lm.lossy_hold)
-			m |= (uint16_t)(1u << i);
+		over_us[i] = (uint32_t)m[i].hold_over_ms * 1000;
+		if (m[i].lossy_hold)
+			h |= (uint16_t)(1u << i);
 	}
-	return m;
+	return h;
+}
+
+/* The same from the links' types and a global eta_buffer. */
+static inline uint16_t cg_link_hold(const uint8_t *type, unsigned n, int g_buffer, uint32_t *over_us)
+{
+	struct cg_link_model m[16];
+	struct cg_link_knobs k = { .buffer = g_buffer };
+
+	n = n > 16 ? 16 : n;
+	cg_link_models(type, n, &k, m);
+	return cg_link_hold_m(m, n, over_us);
+}
+
+/* exp_link_types' mask from a list of type names ("starlink cellular",
+ * spaces or commas): 0, and the mask in *mask; -1 for a name it does not
+ * know. */
+static inline int cg_link_types_parse(const char *s, uint32_t *mask)
+{
+	char w[16];
+	uint32_t m = 0;
+
+	while (*s) {
+		size_t n = 0;
+		int t;
+
+		while (*s == ' ' || *s == ',' || *s == '\t')
+			s++;
+		if (!*s)
+			break;
+		while (s[n] && s[n] != ' ' && s[n] != ',' && s[n] != '\t')
+			n++;
+		if (n >= sizeof(w))
+			return -1;
+		memcpy(w, s, n);
+		w[n] = 0;
+		s += n;
+		t = cg_link_type_parse(w);
+		if (t < 0)
+			return -1;
+		m |= 1u << t;
+	}
+	*mask = m;
+	return 0;
 }
 
 #endif

@@ -697,6 +697,21 @@ static void test_config_bonding(void)
 	CHECK_EQ(cg_config_parse(&c, SERVER "[link eth1]\ntype = starlink\n", err, sizeof(err), warn, sizeof(warn)), 0);
 	CHECK(strstr(warn, "unknown key 'type' in [link eth1]") != NULL);
 	cg_config_free(&c);
+	/* exp_link_types: the types the global experiment knobs reach, on
+	 * either end; none by default (every link) */
+	CHECK_EQ(cg_config_parse(&c, SERVER "split_qpred_ms = 300\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK(c.exp_link_types == 0 && c.split_qpred_ms == 300 && c.redund_pace_ms == 0);
+	cg_config_free(&c);
+	CHECK_EQ(cg_config_parse(&c, CLIENT "exp_link_types = starlink, cellular\nredund_pace_ms = 30\n", err,
+				 sizeof(err), warn, sizeof(warn)),
+		 0);
+	CHECK(warn[0] == '\0');
+	CHECK_EQ(c.exp_link_types, (1u << CG_LTYPE_STARLINK) | (1u << CG_LTYPE_CELLULAR));
+	CHECK_EQ(c.redund_pace_ms, 30);
+	CHECK_EQ(cg_config_link_knobs(&c).types, c.exp_link_types);
+	CHECK_EQ(cg_config_link_knobs(&c).pace_ms, 30);
+	cg_config_free(&c);
+	bad(CLIENT "exp_link_types = starlink satellite\n", "exp_link_types", "got 'starlink satellite'");
 	/* The weight is a link's, not global; a server has no [link] weights (its
 	 * client's probes say them), and says so. */
 	CHECK_EQ(cg_config_parse(&c, CLIENT "weight = 2\n", err, sizeof(err), warn, sizeof(warn)), 0);

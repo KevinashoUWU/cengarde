@@ -575,12 +575,136 @@ static void test_capacity_lossy_frontier(void)
 	t += CG_CAP_LOSSY_MS;
 	loss_feed(&l, &cf, &t, &rx, &tx, 6, 600, 588);
 	CHECK(!l.lossy);
+	t += 40000;
+	loss_feed(&l, &cf, &t, &rx, &tx, 6, 600, 588);
+	CHECK(!l.lossy);
+	CHECK(l.peak_bps > 80000000ull);
+}
+
+/* The audit's second pass: the rescue's full bit with hysteresis, the G4
+ * episode for fast start and the predicted queue, each by its mode. */
+static void test_capacity_clock2(void)
+{
+	struct cg_cap_link l;
+	uint32_t t = 20 * MS;
+
+	/* rfull: on at 4 x, mode 1 off under 3 x only, mode 2 off at once
+	 * while rising */
+	cg_cap_reset(&l);
+	l.ql_us = 85 * MS;
+	cg_cap_rfull(&l, t, 1);
+	CHECK(l.rfull);
+	l.ql_us = 70 * MS; /* between 3 x and 4 x, not rising: kept */
+	cg_cap_rfull(&l, t, 1);
+	CHECK(l.rfull);
+	CHECK(cg_cap_full(&l, t, 1));
+	CHECK(!cg_cap_full(&l, t, 0)); /* the old bit: off under 4 x */
+	l.ql_us = 55 * MS;
+	cg_cap_rfull(&l, t, 1);
+	CHECK(!l.rfull);
+	l.ql_us = 85 * MS;
+	cg_cap_rfull(&l, t, 2);
+	CHECK(l.rfull);
+	l.ql_us = 75 * MS; /* falling (s1 < 0): held */
+	l.have_s1 = 1;
+	l.s1 = -10000;
+	l.s2 = 0;
+	cg_cap_rfull(&l, t, 2);
+	CHECK(l.rfull);
+	l.ql_us = 65 * MS; /* rising: off at once */
+	l.s1 = 5 * MS;
+	cg_cap_rfull(&l, t, 2);
+	CHECK(!l.rfull);
+
+	/* episode: mode 1 always; 2 and 3 only when the capacity overshot */
+	cg_cap_reset(&l);
+	l.have_rate = 1;
+	l.max_cur = l.max_prev = 40 * MBIT;
+	l.last_tx_bps = 40 * MBIT;
+	l.last_rx_bps = 38 * MBIT; /* carries what it is sent: right */
+	CHECK(!cg_cap_episode(&l, 5000, 2));
+	CHECK(!cg_cap_episode(&l, 5000, 0));
+	CHECK(cg_cap_episode(&l, 5000, 1) && l.full_ms == 5000);
+	l.full_ms = 0;
+	l.last_rx_bps = 30 * MBIT; /* sent 40, carries 30: an overestimate */
+	CHECK(cg_cap_episode(&l, 6000, 2) && l.full_ms == 6000);
+	l.full_ms = 0;
+	l.last_tx_bps = 20 * MBIT; /* not sent its capacity: says nothing */
+	CHECK(!cg_cap_episode(&l, 6000, 3));
+	l.last_tx_bps = 40 * MBIT;
+	CHECK(cg_cap_episode(&l, 7000, 3) && l.ep_ms == 7000 && !l.full_ms);
+	/* mode 3 holds fast start back CG_CAP_EP_REST_MS only */
+	l.best_cur = l.best_prev = 100 * MBIT;
+	l.best_ms = 7000;
+	CHECK(!cg_cap_best(&l, 7000 + CG_CAP_EP_REST_MS - 1));
+	CHECK(cg_cap_best(&l, 7000 + CG_CAP_EP_REST_MS));
+	CHECK_EQ(l.n_g4_ep, 3);
+
+	/* qpred: mode 0 both ways, 1 never under the queue, 2 at most twice */
+	cg_cap_reset(&l);
+	l.have_s1 = 1;
+	l.s1 = -40000; /* draining 40 ms a second */
+	l.s2 = 0;
+	CHECK_EQ(cg_cap_qpred(&l, 30 * MS, 500, 0), 10 * MS);
+	CHECK_EQ(cg_cap_qpred(&l, 30 * MS, 500, 1), 30 * MS);
+	l.s1 = 100 * MS;
+	CHECK_EQ(cg_cap_qpred(&l, 30 * MS, 500, 1), 80 * MS);
+	CHECK_EQ(cg_cap_qpred(&l, 30 * MS, 500, 2), 60 * MS);
+	CHECK_EQ(cg_cap_qpred(&l, 30 * MS, 0, 2), 30 * MS);
+}
+
+/* A sample's loss counts what was sent CG_CAP_LAG_MS before its report:
+ * a link ramping up with 100 ms of packets in flight, none lost, is not
+ * lossy (its own sent count is 20 % ahead of what arrived). */
+static void test_capacity_inflight(void)
+{
+	const struct cg_cap_cfg cf = { .window_ms = 10000, .sat_us = 20 * MS, .lossy = 1 };
+	struct cg_cap_link l;
+	struct cg_hlink h;
+	uint64_t t = 1000, tx = 0, sent_at[64];
+	uint32_t n = 0;
+
+	memset(&h, 0, sizeof(h));
+	h.have_owd = 1;
+	h.owd = 30000;
+	cg_cap_reset(&l);
+	/* ticks each 100 ms, a report each 500 ms; rate rising 1000 to 4000 a tick */
+	for (int k = 0; k < 60; k++) {
+		uint32_t rx;
+
+		t += 100;
+		tx += 1000 + 50 * (uint64_t)k;
+		sent_at[k] = tx;
+		rx = k ? (uint32_t)sent_at[k - 1] : 0; /* what was sent a tick (100 ms) before */
+		h.fresh_until_ms = t + 3000;
+		cg_cap_tick(&l, t, k % 5 == 4 ? t : 0, rx, tx, tx * 1000, &h, &cf);
+		n += l.lossy;
+	}
+	CHECK_EQ(n, 0);
+	/* the same with 5 % of it lost: lossy */
+	cg_cap_reset(&l);
+	n = 0;
+	tx = 0;
+	for (int k = 0; k < 60; k++) {
+		uint32_t rx;
+
+		t += 100;
+		tx += 3000;
+		sent_at[k] = tx;
+		rx = k ? (uint32_t)(sent_at[k - 1] * 95 / 100) : 0;
+		h.fresh_until_ms = t + 3000;
+		cg_cap_tick(&l, t, k % 5 == 4 ? t : 0, rx, tx, tx * 1000, &h, &cf);
+		n += l.lossy;
+	}
+	CHECK(n > 0);
 }
 
 void test_capacity(void)
 {
+	test_capacity_inflight();
 	test_capacity_lossy_frontier();
 	test_capacity_loss();
+	test_capacity_clock2();
 	test_capacity_short();
 	test_capacity_total();
 	test_capacity_shapes();

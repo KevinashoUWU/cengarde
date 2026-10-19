@@ -52,6 +52,7 @@
 #include "clients.h"  /* CG_MAX_CLIENTS */
 #include "dns.h"      /* CG_DNS_NAME_MAX */
 #include "fwdtable.h" /* struct cg_fwd_rule */
+#include "linkmodel.h" /* struct cg_link_knobs */
 #include "proto.h"
 #include "srvpick.h" /* CG_MAX_CANDS */
 #include "tunroute.h" /* struct cg_pfx */
@@ -228,6 +229,22 @@ struct cg_config {
 	int capacity_weights;         /* the split's weights from each link's capacity (capacity.h) */
 	int split_eta;                /* split by expected arrival (eta.h) */
 	int eta_buffer;               /* EXPERIMENT: split_eta holds a link that drops to the highest queue it showed */
+	/* EXPERIMENTS of the clockwork audit's second pass (2026-10-18), all 0: off */
+	uint32_t split_dwell_ms;      /* G4 keeps a link back by a recovery in this long (within 2x the spread) */
+	uint32_t split_dwell_oq_ms;   /* ... only while its own queue is at most this; 0: any */
+	uint32_t split_qpred_ms;      /* split_eta takes each queue where its trend puts it this far ahead */
+	uint32_t split_qpred_mode;    /* 0: both ways, 1: rising queues only, 2: rising, at most twice the queue */
+	uint32_t eta_keep;            /* the ETA backlog over a stale queue: 1 the larger, 2 + net growth since, 3 half */
+	uint32_t eta_keep_ms;         /* eta_keep 2: how stale the queue measured is */
+	uint32_t cap_g4_episode;      /* a G4 leave for the queue: 1 a full episode, 2 if the capacity overshot, 3 2 for 3 s */
+	int rescue_by_owd;            /* the client's rescue on the link of least upload delay, not RTT (audit C10) */
+	uint32_t rescue_full_hyst;    /* the rescue's full bit: 1 off under 3x, 2 off under 3x only while not rising */
+	uint32_t redund_pace_ms;      /* a copy goes on a link only if it arrives within this of the first (eta.h cg_eta_copies) */
+	/* The knobs above, eta_buffer and capacity_loss_pct are the value of
+	 * every link over its type's preset (linkmodel.h); with this mask (a bit
+	 * per type, exp_link_types = starlink ...) only of the links of those
+	 * types; 0: every link. */
+	uint32_t exp_link_types;
 	int pacing;                   /* each link's socket paced at its rate (pace.h) */
 	uint32_t governor_target_ms;  /* the queue a link may hold */
 	uint32_t capacity_loss_pct;   /* EXPERIMENT: a loaded link losing more than this (%) is full (capacity.h); 0: off */
@@ -324,5 +341,26 @@ const char *cg_config_restart_needed(const struct cg_config *a, const struct cg_
  * of it (and without resolving any name in it). Returns 0, 1 when the key
  * is not there, or -1 with err set. */
 int cg_config_peek(const char *path, const char *key, char *out, size_t outlen, char *err, size_t errlen);
+
+/* The global knobs that reach each link's model (linkmodel.h). */
+static inline struct cg_link_knobs cg_config_link_knobs(const struct cg_config *c)
+{
+	struct cg_link_knobs k = {
+		.buffer = c->eta_buffer,
+		.loss_pct = c->capacity_loss_pct,
+		.g4_episode = c->cap_g4_episode,
+		.rfull_hyst = c->rescue_full_hyst,
+		.qpred_ms = c->split_qpred_ms,
+		.qpred_mode = c->split_qpred_mode,
+		.dwell_ms = c->split_dwell_ms,
+		.dwell_oq_ms = c->split_dwell_oq_ms,
+		.eta_keep = c->eta_keep,
+		.eta_keep_ms = c->eta_keep_ms,
+		.pace_ms = c->redund_pace_ms,
+		.types = c->exp_link_types,
+	};
+
+	return k;
+}
 
 #endif

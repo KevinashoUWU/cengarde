@@ -809,6 +809,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	c->split_stress_dup = 50;
 	c->split_stress_rejoin = 1;
 	c->split_stress_single = 0;
+	c->eta_keep_ms = 400;
 	c->split_spread_copy = -1; /* by governor, below */
 	c->governor_target_ms = 20;
 	c->governor_window_ms = 10000;
@@ -836,6 +837,11 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	v = cg_ini_get(&ini, "", "log_level");
 	if (v && (c->log_level = cg_log_level_parse(v)) < 0) {
 		snprintf(err, errlen, "log_level: expected error, warn, info or debug");
+		goto out;
+	}
+	v = cg_ini_get(&ini, "", "exp_link_types");
+	if (v && cg_link_types_parse(v, &c->exp_link_types) < 0) {
+		snprintf(err, errlen, "exp_link_types: expected link types (auto, cellular, starlink, ...), got '%s'", v);
 		goto out;
 	}
 
@@ -898,6 +904,16 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	    get_bool(&ini, "", "capacity_weights", &c->capacity_weights, err, errlen) ||
 	    get_bool(&ini, "", "split_eta", &c->split_eta, err, errlen) ||
 	    get_bool(&ini, "", "eta_buffer", &c->eta_buffer, err, errlen) ||
+	    get_u32(&ini, "", "split_dwell_ms", 0, 5000, &c->split_dwell_ms, err, errlen) ||
+	    get_u32(&ini, "", "split_dwell_oq_ms", 0, 5000, &c->split_dwell_oq_ms, err, errlen) ||
+	    get_u32(&ini, "", "split_qpred_ms", 0, 2000, &c->split_qpred_ms, err, errlen) ||
+	    get_u32(&ini, "", "split_qpred_mode", 0, 2, &c->split_qpred_mode, err, errlen) ||
+	    get_u32(&ini, "", "eta_keep", 0, 3, &c->eta_keep, err, errlen) ||
+	    get_u32(&ini, "", "eta_keep_ms", 0, 2000, &c->eta_keep_ms, err, errlen) ||
+	    get_u32(&ini, "", "cap_g4_episode", 0, 3, &c->cap_g4_episode, err, errlen) ||
+	    get_bool(&ini, "", "rescue_by_owd", &c->rescue_by_owd, err, errlen) ||
+	    get_u32(&ini, "", "rescue_full_hyst", 0, 2, &c->rescue_full_hyst, err, errlen) ||
+	    get_u32(&ini, "", "redund_pace_ms", 0, 2000, &c->redund_pace_ms, err, errlen) ||
 	    get_bool(&ini, "", "pacing", &c->pacing, err, errlen) ||
 	    get_u32(&ini, "", "governor_target_ms", 1, 1000, &c->governor_target_ms, err, errlen) ||
 	    get_u32(&ini, "", "capacity_loss_pct", 0, 50, &c->capacity_loss_pct, err, errlen) ||

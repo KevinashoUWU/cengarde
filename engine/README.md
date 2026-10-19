@@ -664,7 +664,13 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
   En el laboratorio (Starlink de cola corta y dos celulares más lentos,
   n = 8; *medido en laboratorio*), el reparto pasó de 41,6 a 56,8 Mbit/s de
   bajada y de 40,3 a 51,1 de subida, sin costo con retardos iguales ni con
-  cola profunda. `cellular`, `fiber`, `ethernet` y `radio` se comportan
+  cola profunda. En redundancia, un enlace `starlink` hace que los demás
+  enlaces de su sesión lleven una copia solo si llegaría a menos de 60 ms
+  de la primera (`pace_peers_ms`): con los celulares de cola de 300 ms, el
+  p99 del ping de 1200 bytes en `starsat` bajó de ~360 a ~95 ms, con el
+  caudal a ±5 % en todos los casos con Starlink (*medido en laboratorio*,
+  historia 015); una sesión sin Starlink no cambia. `cellular`, `fiber`,
+  `ethernet` y `radio` se comportan
   como `auto` hasta que una medida diga otra cosa. El
   estado muestra `type` en cada enlace (cliente) y camino (servidor), y
   `lossy` y `lossy_noprobe` en su `cap_diag`. Se aplica en caliente.
@@ -679,6 +685,21 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
   está lleno, aunque su cola no lo diga. Aplicado a todos, `eta_buffer`
   cuesta en enlaces sin Starlink (en `het`, −15 % de subida, n = 4; los
   celulares también quedan `lossy`): para un solo enlace, mejor su `type`.
+- **Las correcciones mixtas de la auditoría de relojería (experimentales, en
+  los dos extremos, todas 0 = apagadas):** `split_qpred_ms` y
+  `split_qpred_mode` (#33), `split_dwell_ms` y `split_dwell_oq_ms` (C3),
+  `cap_g4_episode` (C5), `eta_keep` y `eta_keep_ms` (C9),
+  `rescue_full_hyst` (C11) y `redund_pace_ms` (una copia va por un enlace
+  solo si llegaría a menos de eso de la primera). Cada una es un campo del
+  modelo de cada enlace (`linkmodel.h`); la perilla global lo fija en todos
+  los enlaces, encima del preset de su tipo. `rescue_by_owd` (C10, solo el
+  cliente) sigue global. Ninguna entró en un preset salvo lo dicho de
+  `starlink` (historia 015, tabla por tipo).
+- **`exp_link_types` (vacío; nombres de tipo):** las perillas globales de
+  arriba (y `eta_buffer` y `capacity_loss_pct`) solo para los enlaces de
+  esos tipos, para probar una antes de ponerla en un preset; vacío: todos.
+  `exp_link_types = cellular` con `redund_pace_ms = 60` en una sesión con
+  un Starlink es lo que hace el preset de `starlink`.
 
 **El reparto es experimental.** Sin los pasos que siguen en el plan (detección
 de pérdidas por enlace, control de las colas de los módems) reparte peor que

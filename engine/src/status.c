@@ -357,6 +357,8 @@ void cg_json_capacity(struct cg_json *j, const struct cg_cap_link *l, uint32_t t
 	cg_json_u64(j, "short_n", l->short_n);
 	cg_json_bool(j, "lossy", l->lossy); /* tracked by its model (linkmodel.h) and lost lately */
 	cg_json_bool(j, "lossy_noprobe", l->noprobe);
+	cg_json_u64(j, "g4_episodes", l->n_g4_ep);
+	cg_json_bool(j, "rescue_full", l->rfull);
 	cg_json_str(j, "cut", l->cut == CG_CAP_CUT_FULL    ? "full"
 			      : l->cut == CG_CAP_CUT_SHORT ? "short"
 			      : l->cut == CG_CAP_CUT_LOSS  ? "loss"
