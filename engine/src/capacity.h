@@ -100,6 +100,8 @@
 #define CG_CAP_LOSS_N 3   /* samples in a row, loaded, losing over loss_pct (cfg): full */
 #define CG_CAP_QHI_MS 10000   /* the window of a link's highest queue (eta_buffer) */
 #define CG_CAP_LOSSY_MS 5000  /* a link that lost this recently is held to its highest queue (eta_buffer) */
+#define CG_CAP_TXH 16       /* ticks of sent counts a link keeps (cg_cap_tx_at) */
+#define CG_CAP_LAG_MS 250   /* a sample's loss counts what was sent this long before its report */
 #define CG_CAP_PEAK_DECAY 512 /* peak_bps loses 1/this a sample: half in ~3 min at a sample each 0.5 s */
 #define CG_CAP_QHI_MIN_US 5000 /* the least queue it is held to */
 #define CG_CAP_LOSSY_PERMIL 3  /* a sample losing more than this per mille of what was sent: lossy */
@@ -146,6 +148,12 @@ struct cg_cap_link {
 	uint32_t qhi_cur, qhi_prev;
 	uint64_t qhi_t_ms, lossy_ms;
 	uint64_t peak_bps;          /* the best it delivered, forgotten slowly (CG_CAP_PEAK_DECAY): the frontier's reference */
+	/* what it had sent at each tick, for the loss of a sample: the peer's
+	 * count against what was sent CG_CAP_LAG_MS before, not what is still
+	 * in flight (cg_cap_tx_at) */
+	uint64_t txh_t[CG_CAP_TXH], txh_n[CG_CAP_TXH];
+	uint64_t txl_prev;
+	uint8_t txh_at, have_txl;
 	uint8_t lossy;              /* lost over CG_CAP_LOSSY_PERMIL in the last CG_CAP_LOSSY_MS */
 	uint8_t noprobe;            /* lossy, and not probed for it (!cfg->lossy_probe) */
 	uint8_t sat_n;              /* samples in a row with a queue above sat_us */
@@ -290,6 +298,22 @@ static inline int cg_cap_best(struct cg_cap_link *l, uint64_t now_ms)
 	return 0;
 }
 
+/* What link l had sent by t_ms (the newest tick at or before it), 0 with
+ * *ok 0 when its ticks do not go back that far. */
+static inline uint64_t cg_cap_tx_at(const struct cg_cap_link *l, uint64_t t_ms, int *ok)
+{
+	uint64_t best_t = 0, n = 0;
+
+	*ok = 0;
+	for (unsigned k = 0; k < CG_CAP_TXH; k++)
+		if (l->txh_t[k] && l->txh_t[k] <= t_ms && l->txh_t[k] >= best_t) {
+			best_t = l->txh_t[k];
+			n = l->txh_n[k];
+			*ok = 1;
+		}
+	return n;
+}
+
 /* One tick for one link. report_ms: when this end received the other's
  * newest report on it (0: none yet), rx: what that report says; tx_pkts,
  * tx_bytes: what this end has sent on it so far; h: its health in this
@@ -298,7 +322,7 @@ static inline int cg_cap_best(struct cg_cap_link *l, uint64_t now_ms)
 static inline unsigned cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint64_t report_ms, uint32_t rx, uint64_t tx_pkts,
 			       uint64_t tx_bytes, const struct cg_hlink *h, const struct cg_cap_cfg *cfg)
 {
-	uint64_t dt, dpk, dby, bytes, rate, raw, ref;
+	uint64_t dt, dpk, dby, bytes, rate, raw, ref, dlost;
 	uint32_t drx;
 	int loaded;
 	uint8_t cut;
@@ -319,6 +343,15 @@ static inline unsigned cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint6
 			l->qhi_t_ms = now_ms;
 		} else if ((uint32_t)l->queue_us > l->qhi_cur) {
 			l->qhi_cur = (uint32_t)l->queue_us;
+		}
+	}
+	{
+		unsigned last = (l->txh_at + CG_CAP_TXH - 1) % CG_CAP_TXH;
+
+		if (!l->txh_t[last] || now_ms >= l->txh_t[last] + 40) {
+			l->txh_t[l->txh_at] = now_ms;
+			l->txh_n[l->txh_at] = tx_pkts;
+			l->txh_at = (uint8_t)((l->txh_at + 1) % CG_CAP_TXH);
 		}
 	}
 	if (!report_ms)
@@ -422,12 +455,32 @@ static inline unsigned cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint6
 	 * loses at any rate (a misaligned dish, nostalgica 2026-10-19: Starlink's
 	 * upload marked lossy for good, its probing stopped and its capacity down
 	 * to 3 Mbit/s against 30) is not held for it */
-	if (dpk >= CG_CAP_SHORT_MIN && (uint64_t)drx * 1000 < dpk * (1000 - CG_CAP_LOSSY_PERMIL) &&
+	/* what was sent and could have arrived: CG_CAP_LAG_MS before each
+	 * report; a sample's own sent count has what is still in flight, 1-5 %
+	 * at 30 Mbit/s and 25 ms (nostalgica 2026-10-19: Starlink's clean upload,
+	 * 0 % lost by UDP up to 38 Mbit/s, marked lossy all the time) */
+	{
+		int ok;
+		uint64_t txl = report_ms > CG_CAP_LAG_MS ? cg_cap_tx_at(l, report_ms - CG_CAP_LAG_MS, &ok) : (ok = 0, 0);
+
+		dlost = 0;
+		if (ok && l->have_txl && txl >= l->txl_prev)
+			dlost = txl - l->txl_prev;
+		else
+			dlost = UINT64_MAX; /* not known: no loss counted */
+		if (ok) {
+			l->txl_prev = txl;
+			l->have_txl = 1;
+		}
+	}
+	if (dlost != UINT64_MAX && dlost >= CG_CAP_SHORT_MIN &&
+	    (uint64_t)drx * 1000 < dlost * (1000 - CG_CAP_LOSSY_PERMIL) &&
 	    raw * 2 >= (l->peak_bps > cg_cap_best_bps(l) ? l->peak_bps : cg_cap_best_bps(l)))
 		l->lossy_ms = report_ms;
 	l->lossy = cfg->lossy && l->lossy_ms && report_ms - l->lossy_ms < CG_CAP_LOSSY_MS;
 	l->noprobe = l->lossy && !cfg->lossy_probe;
-	if (cfg->loss_pct && loaded && dpk >= CG_CAP_SHORT_MIN && (uint64_t)drx * 100 < dpk * (100 - cfg->loss_pct))
+	if (cfg->loss_pct && loaded && dlost != UINT64_MAX && dlost >= CG_CAP_SHORT_MIN &&
+	    (uint64_t)drx * 100 < dlost * (100 - cfg->loss_pct))
 		l->loss_n = l->loss_n < 255 ? (uint8_t)(l->loss_n + 1) : 255;
 	else
 		l->loss_n = 0;
