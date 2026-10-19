@@ -10,7 +10,8 @@
 #   cengarde-setup engine-conf    print the engine configuration, with each
 #                                 uplink's DNS servers (resolver) for the
 #                                 VPS names, which the engine looks up itself,
-#                                 and its weight in the split (split_weight)
+#                                 its weight in the split (split_weight) and
+#                                 its type (uplink_type)
 #   cengarde-setup cloud-config   print the VPS user data, with the secret, the
 #                                 router's name (vps_name) and its tunnel address
 #   cengarde-setup companions     the uplinks' IPv6 interfaces (init triggers)
@@ -949,8 +950,46 @@ split_weight_of() {
 	echo "$w"
 }
 
+# The uplinks' types (story 015, the engine's [link] type), from "list
+# uplink_type 'UPLINK=TYPE'": LTYPES gets " UPLINK=TYPE ..." with the entries
+# that are valid. TYPE is auto, cellular, starlink, fiber, ethernet or radio
+# and UPLINK one of this router's uplinks; anything else is left out and
+# logged, so that the uplink keeps the engine's type, auto. The last entry
+# for an uplink wins.
+uplink_types() {
+	local e u t
+
+	LTYPES=
+	for e in $UPLINK_TYPE; do
+		case "$e" in
+		*=*) u=${e%%=*} t=${e#*=} ;;
+		*) u=$e t= ;;
+		esac
+		case "$t" in
+		auto | cellular | starlink | fiber | ethernet | radio)
+			if list_has "$UPLINKS" "$u"; then
+				LTYPES="$LTYPES $u=$t"
+			else
+				log "uplink_type '$e': $u is not one of the uplinks, left out"
+			fi
+			;;
+		*) log "uplink_type '$e': expected UPLINK=TYPE with a type of auto, cellular, starlink, fiber, ethernet or radio, left out" ;;
+		esac
+	done
+}
+
+# The type of uplink $1 in LTYPES, empty when it has none.
+uplink_type_of() {
+	local e t=
+
+	for e in $LTYPES; do
+		case "$e" in "$1="*) t=${e#*=} ;; esac
+	done
+	echo "$t"
+}
+
 engine_conf() {
-	local s dev seen='' server='' a k v r w tun_addr
+	local s dev seen='' server='' a k v r w t tun_addr
 
 	load
 	derive_keys || die "no valid secret (uci get cengarde.main.secret)"
@@ -1074,6 +1113,8 @@ engine_conf() {
 	esac
 	config_get SPLIT_WEIGHT main split_weight
 	split_weights
+	config_get UPLINK_TYPE main uplink_type
+	uplink_types
 	for s in $UPLINKS; do
 		dev=$(uplink_device "$s") || continue
 		list_has "$seen" "$dev" && continue
@@ -1081,6 +1122,8 @@ engine_conf() {
 		printf '\n[link %s]\nlabel = %s\n' "$dev" "$s"
 		w=$(split_weight_of "$s")
 		[ -z "$w" ] || echo "weight = $w"
+		t=$(uplink_type_of "$s")
+		[ -z "$t" ] || [ "$t" = auto ] || echo "type = $t"
 		r=$(uplink_resolvers "$s")
 		[ -z "$r" ] || echo "resolver = $r"
 	done

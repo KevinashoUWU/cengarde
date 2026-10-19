@@ -358,6 +358,16 @@ configuración del router:
   reinicia el motor (unos segundos sin túnel). Si un hilo se queda parado
   más de 5 s con paquetes esperando, el estado lo avisa
   (`link_thread_stalled`).
+- **Tipo de cada enlace** (pestaña *General*, un desplegable por enlace
+  elegido; historia [015](../docs/historias/015-modelo-de-enlace.md)):
+  *Automático* (por omisión), *Celular (LTE/5G)*, *Starlink*, *Fibra*,
+  *Cable, DSL o Ethernet* o *Radioenlace*. Se guarda como `list uplink_type
+  'ENLACE=TIPO'` y llega al motor como `type = ...` en la sección del
+  enlace; el motor se lo dice al VPS, que trata igual la bajada de ese
+  enlace. Vale en redundancia y en reparto. Hoy solo *Starlink* cambia algo
+  (STARLINK_PENDIENTE); los demás se comportan como *Automático* hasta
+  medirlos. Una entrada con un enlace que no es de este router o un tipo
+  desconocido no se usa, y queda en `logread`.
 - **Reordenamiento y reparto** (pestaña *Avanzado*; historia
   [012](../docs/historias/012-bonding.md); paquetes 0.6.0 o posteriores en
   el router y en el VPS).
@@ -739,6 +749,7 @@ como estaba. En el modo WireGuard nada cambia respecto de antes.
 uci add_list cengarde.main.server='203.0.113.10'     # la IP del VPS
 uci add_list cengarde.main.server='2001:db8::10'     # opcional: su IPv6
 uci add_list cengarde.main.uplink='wom'              # uno por enlace
+uci add_list cengarde.main.uplink_type='wom=cellular' # opcional: el tipo de cada enlace
 uci set cengarde.main.enabled='1'
 uci commit cengarde && /etc/init.d/cengarde reload
 cengarde-setup cloud-config > vps.yaml               # el user data del VPS
