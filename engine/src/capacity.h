@@ -98,6 +98,9 @@
 #define CG_CAP_GAIN 4     /* the delivery rate's smoothing: 1/4 of each sample */
 #define CG_CAP_SHORT_N 2  /* samples in a row delivering under half of what was sent: full */
 #define CG_CAP_LOSS_N 3   /* samples in a row, loaded, losing over loss_pct (cfg): full */
+#define CG_CAP_QHI_MS 10000   /* the window of a link's highest queue (eta_buffer) */
+#define CG_CAP_LOSSY_MS 5000  /* a link that lost this recently is held to its highest queue (eta_buffer) */
+#define CG_CAP_QHI_MIN_US 5000 /* the least queue it is held to */
 #define CG_CAP_SHORT_MIN 64 /* packets sent in a sample for it to count */
 #define CG_CAP_SAT_N 2    /* samples in a row with a queue above sat_us, loaded: full */
 #define CG_CAP_SAT_LONG 4 /* samples in a row with a queue above sat_us, loaded or not: full */
@@ -134,6 +137,10 @@ struct cg_cap_link {
 	uint8_t have_rate;          /* a rate measured */
 	uint8_t short_n;            /* samples in a row that delivered under half of what was sent */
 	uint8_t loss_n;             /* samples in a row, loaded, that lost over cfg->loss_pct */
+	/* eta_buffer: the highest queue over CG_CAP_QHI_MS (two halves), and
+	 * the last sample that lost over 1 % of what was sent */
+	uint32_t qhi_cur, qhi_prev;
+	uint64_t qhi_t_ms, lossy_ms;
 	uint8_t sat_n;              /* samples in a row with a queue above sat_us */
 	uint8_t sat_load_n;         /* of them, in a row, sent at least 3/4 of its capacity */
 	/* fast start: the best capacity over CG_CAP_BEST_MS (in two halves),
@@ -299,6 +306,13 @@ static inline unsigned cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint6
 		q = cg_owd_diff(h->owd, cg_gov_base(&l->ql, h->owd, now_ms, CG_CAP_LONG_MS));
 		l->ql_us = q > 0 ? q : 0;
 		cg_cap_trend(l, now_ms);
+		if (now_ms - l->qhi_t_ms >= CG_CAP_QHI_MS / 2) {
+			l->qhi_prev = l->qhi_cur;
+			l->qhi_cur = (uint32_t)l->queue_us;
+			l->qhi_t_ms = now_ms;
+		} else if ((uint32_t)l->queue_us > l->qhi_cur) {
+			l->qhi_cur = (uint32_t)l->queue_us;
+		}
 	}
 	if (!report_ms)
 		return 0;
@@ -389,6 +403,8 @@ static inline unsigned cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint6
 	/* lost over loss_pct of what was sent in this sample (delivered drx
 	 * of dpk), while loaded: at a light load a loss is the radio's, not a
 	 * full link (lossy, spikeloss) */
+	if (dpk >= CG_CAP_SHORT_MIN && (uint64_t)drx * 100 < dpk * 99)
+		l->lossy_ms = report_ms;
 	if (cfg->loss_pct && loaded && dpk >= CG_CAP_SHORT_MIN && (uint64_t)drx * 100 < dpk * (100 - cfg->loss_pct))
 		l->loss_n = l->loss_n < 255 ? (uint8_t)(l->loss_n + 1) : 255;
 	else
@@ -530,9 +546,18 @@ static inline int cg_cap_stale_p(const struct cg_cap_link *l, uint64_t now_ms)
  * more than its capacity never lets it show more. On the testnet, after
  * MPTCP traffic had filled the same modems, the four capacities stayed at
  * 5-7 Mbit/s against 15-30 and the upload under split_eta fell to 3 Mbit/s
- * (story 013). */
+ * (story 013).
+ *
+ * buffer (eta_buffer): a link that lost over 1 % of what it was sent in the
+ * last CG_CAP_LOSSY_MS is held to the highest queue it showed over
+ * CG_CAP_QHI_MS (at least CG_CAP_QHI_MIN_US): past it a packet would be
+ * dropped, and it goes on another link unless every one is past its own.
+ * Starlink drops at 15-40 ms of queue; the split sent it everything until
+ * its queue passed the cellular links' 25-30 ms more of base delay, so the
+ * cellular links stayed idle and Starlink dropped the bursts (shallowq,
+ * starsat; field, 2026-10-18). */
 static inline void cg_cap_eta(struct cg_eta *e, const struct cg_cap_link l[CG_MAX_LINKS], uint16_t mask,
-			      uint32_t probe_us, uint32_t stale_max, uint16_t no_stale, uint64_t now_us)
+			      uint32_t probe_us, uint32_t stale_max, uint16_t no_stale, int buffer, uint64_t now_us)
 {
 	uint32_t ref = 0, mins[CG_MAX_LINKS];
 	uint64_t big = 0;
@@ -563,6 +588,11 @@ static inline void cg_cap_eta(struct cg_eta *e, const struct cg_cap_link l[CG_MA
 		bps = cg_cap_stale(&l[i], bps, big, now_us / 1000, no_stale >> i & 1 ? 1 : stale_max);
 		cg_eta_set(e, i, bps, (uint32_t)cg_owd_diff(mins[i], ref), l[i].queue_us > 0 ? (uint32_t)l[i].queue_us : 0,
 			   now_us);
+		if (buffer && l[i].lossy_ms && now_us / 1000 - l[i].lossy_ms < CG_CAP_LOSSY_MS) {
+			uint32_t hi = l[i].qhi_cur > l[i].qhi_prev ? l[i].qhi_cur : l[i].qhi_prev;
+
+			e->l[i].limit_us = hi > CG_CAP_QHI_MIN_US ? hi : CG_CAP_QHI_MIN_US;
+		}
 	}
 }
 
