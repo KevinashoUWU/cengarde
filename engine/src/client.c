@@ -2006,6 +2006,8 @@ static void pace_set(struct link *l, uint64_t rate)
 static void cap_tick(struct client *c, uint16_t live, uint64_t now_ms)
 {
 	struct cg_cap_cfg cc = { .window_ms = c->cfg->governor_window_ms, .sat_us = c->cfg->governor_target_ms * 1000 };
+	uint32_t over[CG_MAX_LINKS];
+	uint16_t hold = cg_link_hold(c->ltype, CG_MAX_LINKS, c->cfg->eta_buffer, over);
 
 	for (int i = 0; i < CG_MAX_LINKS; i++) {
 		struct link *l = &c->link[i];
@@ -2029,8 +2031,7 @@ static void cap_tick(struct client *c, uint16_t live, uint64_t now_ms)
 			       cc.sat_us / 2, c->cw);
 	cg_cap_total_tick(&c->ctot, c->cap, live, cc.sat_us);
 	if (c->cfg->split_eta)
-		cg_cap_eta(&c->eta, c->cap, live, cc.sat_us / 2, cg_link_hold_mask(c->ltype, CG_MAX_LINKS, c->cfg->eta_buffer),
-			   now_ms * 1000);
+		cg_cap_eta(&c->eta, c->cap, live, cc.sat_us / 2, hold, over, now_ms * 1000);
 	/* With pacing, each link's socket at about its rate; without, as it
 	 * was set, back to none (a reload turned it off). */
 	for (int i = 0; i < CG_MAX_LINKS; i++) {

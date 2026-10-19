@@ -35,9 +35,15 @@ struct cg_eta_link {
 	uint64_t bps;     /* its rate, 0: not known */
 	uint32_t base_us; /* its delay without a queue, over the smallest */
 	uint32_t limit_us; /* the queue it holds before it drops (eta_buffer), 0: no limit */
+	uint32_t over_us;  /* added to the arrival of a packet past limit_us, 0: CG_ETA_OVER_US */
 };
 
-#define CG_ETA_OVER_US 10000000ull /* added to the arrival of a packet past a link's limit_us */
+/* What a packet past a link's limit_us costs by default: last resort, it
+ * goes there only when every link is past its own. A link's model may set
+ * less (over_us, linkmodel.h): then it goes elsewhere only while it would
+ * arrive there within over_us of what it would here, and the links it
+ * spills to do not fill their deep queues with it (story 015). */
+#define CG_ETA_OVER_US 10000000ull
 
 struct cg_eta {
 	struct cg_eta_link l[CG_MAX_LINKS];
@@ -60,6 +66,7 @@ static inline void cg_eta_set(struct cg_eta *e, unsigned i, uint64_t bps, uint32
 	l->base_us = base_us;
 	l->backlog = bps * queue_us; /* the bits in the queue, times 10^6 */
 	l->limit_us = 0;
+	l->over_us = 0;
 	l->t_us = now_us;
 }
 
@@ -93,9 +100,10 @@ static inline int cg_eta_pick(struct cg_eta *e, uint16_t set, uint32_t len, uint
 		cg_eta_drain(l, now_us);
 		/* us: base + (backlog + 8 len 10^6) / bps */
 		eta = l->base_us + (l->backlog + (uint64_t)len * 8 * 1000000) / l->bps;
-		/* past the queue it holds it would be dropped: last resort */
+		/* past the queue it holds it would be dropped: over_us later, last
+		 * resort by default */
 		if (l->limit_us && eta - l->base_us > l->limit_us)
-			eta += CG_ETA_OVER_US;
+			eta += l->over_us ? l->over_us : CG_ETA_OVER_US;
 		if (eta < best_eta) {
 			best_eta = eta;
 			best = (int)i;

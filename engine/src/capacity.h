@@ -510,7 +510,8 @@ static inline void cg_cap_weights(const struct cg_cap_link l[CG_MAX_LINKS], uint
  * (story 013).
  *
  * buffer (eta_buffer), a mask of links (lossy_hold in their model,
- * linkmodel.h): such a link that lost over CG_CAP_LOSSY_PERMIL of what it
+ * linkmodel.h), and over_us (NULL: none), what going past it costs each
+ * (eta.h's over_us, 0: last resort): such a link that lost over CG_CAP_LOSSY_PERMIL of what it
  * was sent in the last CG_CAP_LOSSY_MS (l->lossy) is held to the highest queue it showed over
  * CG_CAP_QHI_MS (at least CG_CAP_QHI_MIN_US): past it a packet would be
  * dropped, and it goes on another link unless every one is past its own.
@@ -519,7 +520,8 @@ static inline void cg_cap_weights(const struct cg_cap_link l[CG_MAX_LINKS], uint
  * cellular links stayed idle and Starlink dropped the bursts (shallowq,
  * starsat; field, 2026-10-18). */
 static inline void cg_cap_eta(struct cg_eta *e, const struct cg_cap_link l[CG_MAX_LINKS], uint16_t mask,
-			      uint32_t probe_us, uint16_t buffer, uint64_t now_us)
+			      uint32_t probe_us, uint16_t buffer, const uint32_t *over_us,
+			      uint64_t now_us)
 {
 	uint32_t ref = 0, mins[CG_MAX_LINKS];
 	uint64_t big = 0;
@@ -553,6 +555,7 @@ static inline void cg_cap_eta(struct cg_eta *e, const struct cg_cap_link l[CG_MA
 			uint32_t hi = l[i].qhi_cur > l[i].qhi_prev ? l[i].qhi_cur : l[i].qhi_prev;
 
 			e->l[i].limit_us = hi > CG_CAP_QHI_MIN_US ? hi : CG_CAP_QHI_MIN_US;
+			e->l[i].over_us = over_us ? over_us[i] : 0;
 		}
 	}
 }

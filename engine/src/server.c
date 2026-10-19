@@ -1995,6 +1995,7 @@ static void cap_tick(struct server *s, struct session *S, uint16_t live, uint64_
 {
 	struct cg_cap_cfg cc = { .window_ms = s->cfg->governor_window_ms, .sat_us = s->cfg->governor_target_ms * 1000 };
 	uint8_t type[CG_MAX_LINKS];
+	uint32_t over[CG_MAX_LINKS];
 
 	for (int p = 0; p < CG_MAX_LINKS; p++) {
 		const struct path *P = &S->path[p];
@@ -2021,8 +2022,8 @@ static void cap_tick(struct server *s, struct session *S, uint16_t live, uint64_
 	}
 	cg_cap_total_tick(&S->ctot, S->cap, live, cc.sat_us);
 	if (s->cfg->split_eta)
-		cg_cap_eta(&S->eta, S->cap, live, cc.sat_us / 2, cg_link_hold_mask(type, CG_MAX_LINKS, s->cfg->eta_buffer),
-			   now_ms * 1000);
+		cg_cap_eta(&S->eta, S->cap, live, cc.sat_us / 2, cg_link_hold(type, CG_MAX_LINKS, s->cfg->eta_buffer, over),
+			   over, now_ms * 1000);
 }
 
 /* SO_MAX_PACING_RATE on a lane's socket (pace.h): fq on the way out paces
