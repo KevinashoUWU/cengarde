@@ -71,14 +71,25 @@
  * its share by that second. */
 #define CG_SPLIT_STALE_PROBES 3
 
+/* What decided each split packet, for the status (clockwork audit, the
+ * metrics: which mechanism a share came from). */
+enum cg_split_by {
+	CG_SPLIT_BY_ETA = 0, /* the earliest arrival (eta.h) */
+	CG_SPLIT_BY_WRR,     /* the weights' round-robin */
+	CG_SPLIT_BY_G2,      /* the one link left in the set */
+	CG_SPLIT_BY_ALL,     /* not split: every carrier (small, not data, or no set) */
+	CG_SPLIT_BYS
+};
+
 struct cg_split {
 	int32_t cur[CG_MAX_LINKS]; /* the credits of the smooth round-robin */
+	uint64_t n_by[CG_SPLIT_BYS]; /* packets by what decided them, kept across a reset */
 };
 
 /* Back to an even start, e.g. when the weights change. */
 static inline void cg_split_reset(struct cg_split *s)
 {
-	memset(s, 0, sizeof(*s));
+	memset(s->cur, 0, sizeof(s->cur));
 }
 
 /* Where one packet goes, given the masks of cg_split_spread_apply.
@@ -123,15 +134,20 @@ static inline int cg_split_pick_eta(struct cg_split *s, struct cg_eta *eta, uint
 		if (!(keep >> i & 1))
 			s->cur[i] = 0;
 
-	if (wgtype != CG_WGS_DATA || len <= small_len || !set)
+	if (wgtype != CG_WGS_DATA || len <= small_len || !set) {
+		s->n_by[CG_SPLIT_BY_ALL]++;
 		return -1;
+	}
 	if (!keep) {
 		/* G2: the one link left takes the packet, when that skips a carrier
 		 * (never with carriers 0: split_spread_copy). */
 		for (best = 0; !(set >> best & 1); best++)
 			;
-		if (!(carriers & (uint16_t)~((1u << best) | copies)))
+		if (!(carriers & (uint16_t)~((1u << best) | copies))) {
+			s->n_by[CG_SPLIT_BY_ALL]++;
 			return -1;
+		}
+		s->n_by[CG_SPLIT_BY_G2]++;
 		if (flags)
 			*flags |= CG_F_SPLIT;
 		return best;
@@ -141,6 +157,7 @@ static inline int cg_split_pick_eta(struct cg_split *s, struct cg_eta *eta, uint
 		int k = cg_eta_pick(eta, keep, len, now_us);
 
 		if (k >= 0) {
+			s->n_by[CG_SPLIT_BY_ETA]++;
 			if (flags)
 				*flags |= CG_F_SPLIT;
 			return k;
@@ -154,9 +171,12 @@ static inline int cg_split_pick_eta(struct cg_split *s, struct cg_eta *eta, uint
 		if (best < 0 || s->cur[i] > s->cur[best])
 			best = i;
 	}
-	if (best < 0)
+	if (best < 0) {
+		s->n_by[CG_SPLIT_BY_ALL]++;
 		return -1;
+	}
 	s->cur[best] -= total;
+	s->n_by[CG_SPLIT_BY_WRR]++;
 
 	/* At least 2 links share the set, so the other one is skipped. */
 	if (flags)

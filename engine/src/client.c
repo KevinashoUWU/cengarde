@@ -159,6 +159,7 @@ struct client {
 	/* wg_fd: the UDP socket WireGuard sends to, or with tunnel = native
 	 * (native) the TUN device, whose packets go the same way. */
 	int ep, wg_fd, tfd;
+	uint64_t ticks_missed, tick_max_us; /* timer expirations the tick ran late for, and its longest run */
 	int native;
 	struct sockaddr_storage wg_peer;
 	int have_peer;
@@ -1263,7 +1264,7 @@ static void wg_read(struct client *c)
 				cg_resc_earn(&c->resc_b,
 					     c->prev_only ? (uint32_t)((uint64_t)len *
 								       cg_cap_rescue_w(&c->cap[c->prev_only - 1],
-										       c->cfg->governor_target_ms * 1000) /
+										       c->cfg->rescue_target_ms * 1000) /
 								       CG_CAP_W_ONE)
 							  : (uint32_t)len,
 					     c->cfg->rescue_pct);
@@ -1539,7 +1540,7 @@ static void send_nacks(struct client *c, uint64_t now_ms)
  * (capacity.h's cg_cap_rescue_w) is 0. */
 static int up_full(const struct client *c, unsigned i)
 {
-	return cg_cap_full(&c->cap[i], c->cfg->governor_target_ms * 1000, c->lm[i].rfull_hyst);
+	return cg_cap_full(&c->cap[i], c->cfg->rescue_target_ms * 1000, c->lm[i].rfull_hyst);
 }
 
 /* A verified NACK from the server (rescue.h): each sequence the ring still
@@ -2039,7 +2040,7 @@ static void pace_set(struct link *l, uint64_t rate)
  * Each link with its own model (c->lm, link_models). */
 static void cap_tick(struct client *c, uint16_t live, uint64_t now_ms)
 {
-	struct cg_cap_cfg cc = { .window_ms = c->cfg->governor_window_ms, .sat_us = c->cfg->governor_target_ms * 1000 };
+	struct cg_cap_cfg cc = { .window_ms = c->cfg->governor_window_ms, .sat_us = c->cfg->capacity_sat_ms * 1000 };
 
 	for (int i = 0; i < CG_MAX_LINKS; i++) {
 		struct link *l = &c->link[i];
@@ -2205,6 +2206,8 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 	cg_json_str(j, "version", CG_VERSION);
 	cg_json_str(j, "description", c->cfg->description);
 	cg_json_u64(j, "uptime_ms", now_ms - c->start_ms);
+	cg_json_u64(j, "ticks_missed", c->ticks_missed); /* the tick ran late (clockwork audit) */
+	cg_json_u64(j, "tick_max_us", c->tick_max_us);
 	cg_json_u64(j, "time_ms", cg_wall_ms());
 	snprintf(buf, sizeof(buf), "%08x", c->session);
 	cg_json_str(j, "session", buf);
@@ -2258,6 +2261,13 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 	cg_json_bool(j, "governor", c->cfg->governor);
 	cg_json_bool(j, "capacity_weights", c->cfg->capacity_weights);
 	cg_json_bool(j, "split_eta", c->cfg->split_eta);
+	/* what decided each split packet so far (split.h, enum cg_split_by) */
+	cg_json_obj(j, "split_by");
+	cg_json_u64(j, "eta", c->sp.n_by[CG_SPLIT_BY_ETA]);
+	cg_json_u64(j, "wrr", c->sp.n_by[CG_SPLIT_BY_WRR]);
+	cg_json_u64(j, "g2", c->sp.n_by[CG_SPLIT_BY_G2]);
+	cg_json_u64(j, "all", c->sp.n_by[CG_SPLIT_BY_ALL]);
+	cg_json_end(j, '}');
 	/* What picks the link of a split packet now (decrec.h): with "eta" the
 	 * gov_weight and cap_weight of the links are not used. */
 	if (split_active(c))
@@ -2377,6 +2387,7 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 		cg_json_ms(j, "rtt_ms", l->srtt8_us / 8);
 		cg_json_u64(j, "last_rx_ms_ago", l->rxl.last_rx_ms ? now_ms - l->rxl.last_rx_ms : 0);
 		cg_json_str(j, "upload", h->state == CG_H_MUTED ? "muted" : "active");
+		cg_json_u64(j, "mute_backoff", h->backoff); /* unmute wait = 2 x settle << it */
 		if (h->have_behind)
 			cg_json_ms_signed(j, "upload_behind_ms", h->behind_us);
 		else
@@ -2441,7 +2452,7 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 		cg_json_owd_spread(j, "rx_owd_spread_ms", &c->rxs.ro, (unsigned)i, rset);
 		cg_json_owd_swing(j, "rx_owd_swing_ms", &c->rxs.ro, (unsigned)i);
 		cg_json_u64(j, "rx_reorder_late", c->rxs.ro.link[i].late);
-		cg_json_capacity(j, &c->cap[i], c->cfg->governor_target_ms * 1000, now_ms);
+		cg_json_capacity(j, &c->cap[i], c->cfg->rescue_target_ms * 1000, now_ms);
 		if (l->paced != CG_PACE_NONE)
 			cg_json_ms(j, "pace_mbit", l->paced * 8 / 1000);
 		else
@@ -3128,11 +3139,19 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 				}
 				break;
 			case CG_EV_TIMER: {
-				uint64_t expirations;
+				uint64_t expirations = 0;
+
+				uint64_t t0;
 
 				if (read(c->tfd, &expirations, sizeof(expirations)) < 0 && errno != EAGAIN)
 					cg_warn("timerfd: %s", strerror(errno));
+				else if (expirations > 1)
+					c->ticks_missed += expirations - 1;
+				t0 = cg_now_us();
 				tick(c);
+				t0 = cg_now_us() - t0;
+				if (t0 > c->tick_max_us)
+					c->tick_max_us = t0;
 				break;
 			}
 			case CG_EV_CTL: {

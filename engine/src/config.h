@@ -190,6 +190,7 @@ struct cg_config {
 	int ntun_addr;
 	struct cg_pfx tun_addr[CG_TUN_ADDRS];
 	uint32_t tun_mtu;
+	uint32_t tun_txqueuelen; /* the TUN's transmit queue, packets; 0: the kernel's (500) */
 
 	/* link health, each end for its send direction (health.h) */
 	uint32_t mute_behind_ms; /* 0: never mute for delay */
@@ -247,6 +248,8 @@ struct cg_config {
 	int pacing;                   /* each link's socket paced at its rate (pace.h) */
 	uint32_t governor_target_ms;  /* the queue a link may hold */
 	uint32_t capacity_loss_pct;   /* EXPERIMENT: a loaded link losing more than this (%) is full (capacity.h); 0: off */
+	uint32_t capacity_sat_ms;     /* the queue that says a link is full (capacity.h); 0 in the file: governor_target_ms */
+	uint32_t rescue_target_ms;    /* the rescue's weight starts falling here, full at 4 x (capacity.h); 0: governor_target_ms */
 	uint32_t governor_window_ms;  /* of each link's minimum delay */
 
 	/* latency knobs */
