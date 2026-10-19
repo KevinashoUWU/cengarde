@@ -158,6 +158,7 @@ struct client {
 	/* wg_fd: the UDP socket WireGuard sends to, or with tunnel = native
 	 * (native) the TUN device, whose packets go the same way. */
 	int ep, wg_fd, tfd;
+	uint64_t ticks_missed, tick_max_us; /* timer expirations the tick ran late for, and its longest run */
 	int native;
 	struct sockaddr_storage wg_peer;
 	int have_peer;
@@ -2134,6 +2135,8 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 	cg_json_str(j, "version", CG_VERSION);
 	cg_json_str(j, "description", c->cfg->description);
 	cg_json_u64(j, "uptime_ms", now_ms - c->start_ms);
+	cg_json_u64(j, "ticks_missed", c->ticks_missed); /* the tick ran late (clockwork audit) */
+	cg_json_u64(j, "tick_max_us", c->tick_max_us);
 	cg_json_u64(j, "time_ms", cg_wall_ms());
 	snprintf(buf, sizeof(buf), "%08x", c->session);
 	cg_json_str(j, "session", buf);
@@ -2186,6 +2189,13 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 	cg_json_bool(j, "governor", c->cfg->governor);
 	cg_json_bool(j, "capacity_weights", c->cfg->capacity_weights);
 	cg_json_bool(j, "split_eta", c->cfg->split_eta);
+	/* what decided each split packet so far (split.h, enum cg_split_by) */
+	cg_json_obj(j, "split_by");
+	cg_json_u64(j, "eta", c->sp.n_by[CG_SPLIT_BY_ETA]);
+	cg_json_u64(j, "wrr", c->sp.n_by[CG_SPLIT_BY_WRR]);
+	cg_json_u64(j, "g2", c->sp.n_by[CG_SPLIT_BY_G2]);
+	cg_json_u64(j, "all", c->sp.n_by[CG_SPLIT_BY_ALL]);
+	cg_json_end(j, '}');
 	/* What picks the link of a split packet now (decrec.h): with "eta" the
 	 * gov_weight and cap_weight of the links are not used. */
 	if (split_active(c))
@@ -2305,6 +2315,7 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 		cg_json_ms(j, "rtt_ms", l->srtt8_us / 8);
 		cg_json_u64(j, "last_rx_ms_ago", l->rxl.last_rx_ms ? now_ms - l->rxl.last_rx_ms : 0);
 		cg_json_str(j, "upload", h->state == CG_H_MUTED ? "muted" : "active");
+		cg_json_u64(j, "mute_backoff", h->backoff); /* unmute wait = 2 x settle << it */
 		if (h->have_behind)
 			cg_json_ms_signed(j, "upload_behind_ms", h->behind_us);
 		else
@@ -3055,11 +3066,19 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 				}
 				break;
 			case CG_EV_TIMER: {
-				uint64_t expirations;
+				uint64_t expirations = 0;
+
+				uint64_t t0;
 
 				if (read(c->tfd, &expirations, sizeof(expirations)) < 0 && errno != EAGAIN)
 					cg_warn("timerfd: %s", strerror(errno));
+				else if (expirations > 1)
+					c->ticks_missed += expirations - 1;
+				t0 = cg_now_us();
 				tick(c);
+				t0 = cg_now_us() - t0;
+				if (t0 > c->tick_max_us)
+					c->tick_max_us = t0;
 				break;
 			}
 			case CG_EV_CTL: {
