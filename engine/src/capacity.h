@@ -100,6 +100,7 @@
 #define CG_CAP_LOSS_N 3   /* samples in a row, loaded, losing over loss_pct (cfg): full */
 #define CG_CAP_QHI_MS 10000   /* the window of a link's highest queue (eta_buffer) */
 #define CG_CAP_LOSSY_MS 5000  /* a link that lost this recently is held to its highest queue (eta_buffer) */
+#define CG_CAP_PEAK_DECAY 512 /* peak_bps loses 1/this a sample: half in ~3 min at a sample each 0.5 s */
 #define CG_CAP_QHI_MIN_US 5000 /* the least queue it is held to */
 #define CG_CAP_LOSSY_PERMIL 3  /* a sample losing more than this per mille of what was sent: lossy */
 #define CG_CAP_SHORT_MIN 64 /* packets sent in a sample for it to count */
@@ -144,6 +145,7 @@ struct cg_cap_link {
 	 * the last sample that lost over 1 % of what was sent */
 	uint32_t qhi_cur, qhi_prev;
 	uint64_t qhi_t_ms, lossy_ms;
+	uint64_t peak_bps;          /* the best it delivered, forgotten slowly (CG_CAP_PEAK_DECAY): the frontier's reference */
 	uint8_t lossy;              /* lost over CG_CAP_LOSSY_PERMIL in the last CG_CAP_LOSSY_MS */
 	uint8_t noprobe;            /* lossy, and not probed for it (!cfg->lossy_probe) */
 	uint8_t sat_n;              /* samples in a row with a queue above sat_us */
@@ -353,6 +355,7 @@ static inline unsigned cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint6
 		l->have_s1 = keep.have_s1;
 		l->n_cut_full = keep.n_cut_full;
 		l->n_cut_short = keep.n_cut_short;
+		l->peak_bps = keep.peak_bps;
 		l->n_cut_loss = keep.n_cut_loss;
 		l->n_restore = keep.n_restore;
 		l->t_ms = report_ms;
@@ -393,6 +396,13 @@ static inline unsigned cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint6
 		l->rate_bps = rate;
 	}
 	l->have_rate = 1;
+	/* the frontier's reference: a capacity that fell while the link was
+	 * held unprobed must not become its frontier (nostalgica, 2026-10-19:
+	 * Starlink's upload kept at 8 Mbit/s against 34-40, its 30 s best
+	 * falling with it) */
+	l->peak_bps -= l->peak_bps / CG_CAP_PEAK_DECAY;
+	if (rate > l->peak_bps)
+		l->peak_bps = rate;
 	if (!l->loaded_ms)
 		l->loaded_ms = report_ms; /* its age counts from its first sample */
 	if (dpk >= CG_CAP_SHORT_MIN && (uint64_t)drx * 2 < dpk)
@@ -413,7 +423,7 @@ static inline unsigned cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint6
 	 * upload marked lossy for good, its probing stopped and its capacity down
 	 * to 3 Mbit/s against 30) is not held for it */
 	if (dpk >= CG_CAP_SHORT_MIN && (uint64_t)drx * 1000 < dpk * (1000 - CG_CAP_LOSSY_PERMIL) &&
-	    raw * 2 >= cg_cap_best_bps(l))
+	    raw * 2 >= (l->peak_bps > cg_cap_best_bps(l) ? l->peak_bps : cg_cap_best_bps(l)))
 		l->lossy_ms = report_ms;
 	l->lossy = cfg->lossy && l->lossy_ms && report_ms - l->lossy_ms < CG_CAP_LOSSY_MS;
 	l->noprobe = l->lossy && !cfg->lossy_probe;

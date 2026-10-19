@@ -619,6 +619,12 @@ static void test_capacity_lossy_frontier(void)
 	t += CG_CAP_LOSSY_MS;
 	loss_feed(&l, &cf, &t, &rx, &tx, 6, 600, 588);
 	CHECK(!l.lossy);
+	/* the peak, not the 30 s best, is the reference: 40 s at a tenth of
+	 * its rate, its best long forgotten, a 2 % loss is still not lossy */
+	t += 40000;
+	loss_feed(&l, &cf, &t, &rx, &tx, 6, 600, 588);
+	CHECK(!l.lossy);
+	CHECK(l.peak_bps > 80000000ull);
 }
 
 void test_capacity(void)
