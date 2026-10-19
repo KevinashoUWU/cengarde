@@ -343,6 +343,13 @@ for (const [lang, tr] of [ [ 'en', english ], [ 'es', spanish ] ]) {
 	assert.deepEqual(typed.saved.uplink_type, [ 'lte2=cellular' ]);
 	typed.uplink_type_lte2.remove('main');
 	assert.equal(typed.saved.uplink_type, undefined, 'the last one out unsets the list');
+	// a hidden uplink with no entry changes nothing (no change for LuCI to save)
+	const quiet = await renderConfig(tr, [ 'wan' ], { uplink_type: 'wan=starlink' });
+	const set0 = quiet.saved;
+	quiet.uplink_type_lte3.remove('main');
+	assert.equal(set0.uplink_type, 'wan=starlink', 'untouched, still as UCI handed it');
+	quiet.uplink_type_wan.write('main', 'starlink');
+	assert.equal(set0.uplink_type, 'wan=starlink', 'the same type: untouched');
 	// a single entry saved as a string, as UCI hands one over
 	const single = await renderConfig(tr, 'wan', { uplink_type: 'wan=starlink' });
 	assert.equal(single.uplink_type_wan.cfgvalue('main'), 'starlink');

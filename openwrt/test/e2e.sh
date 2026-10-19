@@ -19,8 +19,8 @@
 #     10.79.0.1/32 on the VPS side) and the ULA prefix of the IPv6 inside it
 #     (fdXX:XXXX:XXXX::2/128 on the router, ::1/128 on the VPS side);
 #  3. configures cengarde on the router from LuCI only (luci.mjs), which
-#     saves and applies once with the split on and two weights (the engine's
-#     configuration carries them) and again with it off, then
+#     saves and applies once with the split on, two weights and up1 as
+#     Starlink (the engine's configuration carries them) and again with it off, then
 #     waits for the tunnel, the three uplinks and IP pass on at the VPS,
 #     and pauses and resumes an uplink from the status page; up2 and up3
 #     get their DHCPv6 companions (up26, up36) on their devices, in the
@@ -31,8 +31,8 @@
 #     address, and an invalid tunnel_addr is refused; the engine
 #     configuration gives each link the DNS server its uplink got by DHCP
 #     (the VPS's dnsmasq, 10.1.N.1) as its resolver, and carries the
-#     reordering and split options and the weight of each uplink (invalid
-#     ones left out), in a file the engine takes;
+#     reordering and split options and the weight and type of each uplink
+#     (invalid ones left out), in a file the engine takes;
 #  4. turns IP pass off while pinging through the tunnel: the engine takes
 #     the change without a restart and without loss, and the VPS follows;
 #  5. pings through the tunnel while one uplink goes down: no loss allowed;

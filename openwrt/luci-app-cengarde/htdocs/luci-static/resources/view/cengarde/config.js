@@ -253,18 +253,21 @@ return view.extend({
 				o.cfgvalue = function(section_id) {
 					return uplinkType(uci.get('cengarde', section_id, 'uplink_type'), name);
 				};
-				o.write = function(section_id, v) {
-					uci.set('cengarde', section_id, 'uplink_type',
-						setUplinkType(uci.get('cengarde', section_id, 'uplink_type'), name, v));
-				};
-				o.remove = function(section_id) {
-					const list = setUplinkType(uci.get('cengarde', section_id, 'uplink_type'), name, 'auto');
+				// The list with this uplink's entry changed; nothing touched
+				// when it stays the same (a hidden uplink without an entry).
+				const store = function(section_id, v) {
+					const was = L.toArray(uci.get('cengarde', section_id, 'uplink_type'));
+					const list = setUplinkType(was, name, v);
 
+					if (JSON.stringify(list) == JSON.stringify(was))
+						return;
 					if (list.length)
 						uci.set('cengarde', section_id, 'uplink_type', list);
 					else
 						uci.unset('cengarde', section_id, 'uplink_type');
 				};
+				o.write = store;
+				o.remove = function(section_id) { store(section_id, 'auto'); };
 			});
 
 		o = s.taboption('vps', form.Value, 'secret', _('Pairing secret'),

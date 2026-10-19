@@ -364,8 +364,11 @@ configuración del router:
   *Cable, DSL o Ethernet* o *Radioenlace*. Se guarda como `list uplink_type
   'ENLACE=TIPO'` y llega al motor como `type = ...` en la sección del
   enlace; el motor se lo dice al VPS, que trata igual la bajada de ese
-  enlace. Vale en redundancia y en reparto. Hoy solo *Starlink* cambia algo
-  (STARLINK_PENDIENTE); los demás se comportan como *Automático* hasta
+  enlace. Se elige en redundancia y en reparto, pero hoy solo *Starlink*
+  cambia algo, y solo con el reparto por llegada esperada, `split_eta`: se
+  retiene en la cola que mostró y lo demás va por los otros enlaces mientras
+  lleguen a tiempo; en el laboratorio, de 41,6 a 56,8 Mbit/s de bajada con
+  Starlink y dos celulares; los demás se comportan como *Automático* hasta
   medirlos. Una entrada con un enlace que no es de este router o un tipo
   desconocido no se usa, y queda en `logread`.
 - **Reordenamiento y reparto** (pestaña *Avanzado*; historia
