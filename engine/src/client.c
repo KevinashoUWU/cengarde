@@ -2151,7 +2151,8 @@ static void pace_set(struct link *l, uint64_t rate)
 static void cap_tick(struct client *c, uint16_t live, uint64_t now_ms)
 {
 	struct cg_cap_cfg cc = { .window_ms = c->cfg->governor_window_ms, .sat_us = c->cfg->governor_target_ms * 1000,
-				.loss_pct = c->cfg->capacity_loss_pct };
+				.loss_pct = c->cfg->capacity_loss_pct,
+				.lossy = c->cfg->eta_buffer };
 
 	for (int i = 0; i < CG_MAX_LINKS; i++) {
 		struct link *l = &c->link[i];
