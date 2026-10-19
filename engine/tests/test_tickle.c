@@ -73,6 +73,7 @@ static void test_tickle_split(void)
 		n1 += k == 1;
 	}
 	CHECK_EQ(n1, 0); /* the ETA alone never picks the slow link here */
+	CHECK_EQ(n0, 100);
 	bps[1] = 20000000;
 	now += S;
 	cg_tickle_tick(&t, now, 2 * S, 0x2, bps, cap);
