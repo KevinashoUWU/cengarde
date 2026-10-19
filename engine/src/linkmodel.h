@@ -76,7 +76,7 @@ struct cg_link_preset {
 static const struct cg_link_preset cg_link_presets[CG_LTYPE_COUNT] = {
 	[CG_LTYPE_AUTO] = { "auto", { 0, 0, 0 } },
 	[CG_LTYPE_CELLULAR] = { "cellular", { 0, 0, 0 } }, /* hook: the scheduler, the deep queue, the signal */
-	[CG_LTYPE_STARLINK] = { "starlink", { 1, 1, 0 } },
+	[CG_LTYPE_STARLINK] = { "starlink", { 1, 0, 0 } },
 	[CG_LTYPE_FIBER] = { "fiber", { 0, 0, 0 } },       /* hook */
 	[CG_LTYPE_ETHERNET] = { "ethernet", { 0, 0, 0 } }, /* hook */
 	[CG_LTYPE_RADIO] = { "radio", { 0, 0, 0 } },       /* hook */
