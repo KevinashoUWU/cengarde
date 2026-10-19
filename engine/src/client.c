@@ -171,7 +171,7 @@ struct client {
 	struct cg_eta eta;                    /* the split by expected arrival, with split_eta */
 	struct cg_eta pace;                   /* the copies' expected arrivals, with a link's pace_ms */
 	struct cg_link_model lm[CG_MAX_LINKS]; /* each link's model (link_models) */
-	uint32_t pace_w[CG_MAX_LINKS];        /* each link's copy window (pace_ms), us, 0: every copy */
+	uint32_t pace_w[CG_MAX_LINKS];        /* each link's copy window (cg_link_pace_windows), us, 0: every copy */
 	uint8_t pace_any;                     /* a link with one */
 	struct cg_hcfg hcfg;
 	struct cg_status_writer sw;
@@ -2089,9 +2089,7 @@ static void link_models(struct client *c)
 	struct cg_link_knobs k = cg_config_link_knobs(c->cfg);
 
 	cg_link_models(c->ltype, CG_MAX_LINKS, &k, c->lm);
-	for (int i = 0; i < CG_MAX_LINKS; i++)
-		c->pace_w[i] = (uint32_t)c->lm[i].pace_ms * 1000;
-	c->pace_any = (uint8_t)cg_link_any_pace(c->lm, CG_MAX_LINKS);
+	c->pace_any = (uint8_t)cg_link_pace_windows(c->lm, CG_MAX_LINKS, c->pace_w);
 }
 
 static void health_tick(struct client *c, uint64_t now_ms)

@@ -84,6 +84,12 @@ struct cg_link_model {
 	uint16_t dwell_oq_ms; /* split_dwell_oq_ms: ... only while its own queue is at most this, 0: any */
 	uint16_t eta_keep_ms; /* eta_keep_ms */
 	uint16_t pace_ms;     /* redund_pace_ms: a copy goes on it only if it arrives within this of the first (eta.h) */
+	/* In a session with a link of this type, every other link paces its
+	 * copies at this (as its pace_ms, the smaller of the two): the copies
+	 * to a deep-queued link next to Starlink arrive in time for its gaps
+	 * (cg_link_pace_windows), and a session without such a link is as
+	 * before. 0: off. */
+	uint16_t pace_peers_ms;
 };
 
 /* starlink's hold_over_ms (story 015, n = 8 against a null control): 40,
@@ -215,14 +221,25 @@ static inline void cg_link_models(const uint8_t *type, unsigned n, const struct 
 		m[i] = cg_link_model_k(type[i], k);
 }
 
-/* Whether any of m[0..n) paces its copies (pace_ms): redundancy then keeps
- * an expected arrival per link (cg_eta_copies). */
-static inline int cg_link_any_pace(const struct cg_link_model *m, unsigned n)
+/* Each link's copy window into w_us[0..n) (n <= 16), cg_eta_copies': its
+ * own pace_ms or another link's pace_peers_ms, the smaller one set, in us;
+ * 0: every copy. Returns whether any link has one (redundancy then keeps an
+ * expected arrival per link). Links not in use are auto: they set nothing. */
+static inline int cg_link_pace_windows(const struct cg_link_model *m, unsigned n, uint32_t *w_us)
 {
-	for (unsigned i = 0; i < n && i < 16; i++)
-		if (m[i].pace_ms)
-			return 1;
-	return 0;
+	int any = 0;
+
+	n = n > 16 ? 16 : n;
+	for (unsigned i = 0; i < n; i++) {
+		uint32_t v = m[i].pace_ms;
+
+		for (unsigned j = 0; j < n; j++)
+			if (j != i && m[j].pace_peers_ms && (!v || m[j].pace_peers_ms < v))
+				v = m[j].pace_peers_ms;
+		w_us[i] = v * 1000;
+		any |= v != 0;
+	}
+	return any;
 }
 
 /* What capacity.h's tick takes from a model: whether it tracks the link's

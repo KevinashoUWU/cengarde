@@ -176,7 +176,7 @@ struct session {
 	struct cg_eta eta;                    /* the split by expected arrival, with split_eta */
 	struct cg_eta pace;                   /* the copies' expected arrivals, with a path's pace_ms */
 	struct cg_link_model lm[CG_MAX_LINKS]; /* each path's model (path_models) */
-	uint32_t pace_w[CG_MAX_LINKS];        /* each path's copy window (pace_ms), us, 0: every copy */
+	uint32_t pace_w[CG_MAX_LINKS];        /* each path's copy window (cg_link_pace_windows), us, 0: every copy */
 	uint8_t pace_any;                     /* a path with one */
 	struct cg_replay replay; /* DATA up; its lost: lost on every link (lost_all) */
 	struct cg_replay ctl;    /* probes */
@@ -2108,9 +2108,7 @@ static void path_models(const struct server *s, struct session *S)
 	for (int p = 0; p < CG_MAX_LINKS; p++)
 		type[p] = S->path[p].used ? S->path[p].type : CG_LTYPE_AUTO;
 	cg_link_models(type, CG_MAX_LINKS, &k, S->lm);
-	for (int p = 0; p < CG_MAX_LINKS; p++)
-		S->pace_w[p] = (uint32_t)S->lm[p].pace_ms * 1000;
-	S->pace_any = (uint8_t)cg_link_any_pace(S->lm, CG_MAX_LINKS);
+	S->pace_any = (uint8_t)cg_link_pace_windows(S->lm, CG_MAX_LINKS, S->pace_w);
 }
 
 static void health_tick(struct server *s, uint64_t now_ms)

@@ -16,7 +16,7 @@ static int same(const struct cg_link_model *a, const struct cg_link_model *b)
 	       a->hold_over_ms == b->hold_over_ms && a->loss_pct == b->loss_pct && a->g4_episode == b->g4_episode &&
 	       a->rfull_hyst == b->rfull_hyst && a->qpred_ms == b->qpred_ms && a->qpred_mode == b->qpred_mode &&
 	       a->dwell_ms == b->dwell_ms && a->dwell_oq_ms == b->dwell_oq_ms && a->eta_keep == b->eta_keep &&
-	       a->eta_keep_ms == b->eta_keep_ms && a->pace_ms == b->pace_ms;
+	       a->eta_keep_ms == b->eta_keep_ms && a->pace_ms == b->pace_ms && a->pace_peers_ms == b->pace_peers_ms;
 }
 
 /* The table: one entry per type, in wire order, with a name each; auto is
@@ -266,8 +266,25 @@ static void test_linkmodel_knobs(void)
 	CHECK(ms[0].qpred_ms == 300 && ms[0].loss_pct == 5 && ms[0].pace_ms == 65535);
 	CHECK(same(&ms[1], &cg_link_presets[CG_LTYPE_CELLULAR].m));
 	CHECK(same(&ms[2], &cg_link_presets[CG_LTYPE_AUTO].m));
-	CHECK(cg_link_any_pace(ms, CG_MAX_LINKS));
-	CHECK(!cg_link_any_pace(ms + 1, CG_MAX_LINKS - 1));
+	{
+		uint32_t w[CG_MAX_LINKS];
+
+		CHECK(cg_link_pace_windows(ms, CG_MAX_LINKS, w));
+		CHECK(w[0] == 65535000u && w[1] == 0 && w[2] == 0);
+		CHECK(!cg_link_pace_windows(ms + 1, CG_MAX_LINKS - 1, w));
+		/* pace_peers_ms: the other links take it, the smaller one set */
+		ms[0].pace_ms = 0;
+		ms[0].pace_peers_ms = 30;
+		ms[2].pace_ms = 50;
+		CHECK(cg_link_pace_windows(ms, 3, w));
+		CHECK(w[0] == 0 && w[1] == 30000 && w[2] == 30000);
+		ms[2].pace_ms = 20;
+		cg_link_pace_windows(ms, 3, w);
+		CHECK(w[2] == 20000);
+		ms[0].pace_peers_ms = 0; /* none: only link 2's own */
+		ms[2].pace_ms = 0;
+		CHECK(!cg_link_pace_windows(ms, 3, w));
+	}
 	/* the list of types */
 	CHECK_EQ(cg_link_types_parse("cellular,starlink  radio", &mask), 0);
 	CHECK_EQ(mask, (1u << CG_LTYPE_CELLULAR) | (1u << CG_LTYPE_STARLINK) | (1u << CG_LTYPE_RADIO));
