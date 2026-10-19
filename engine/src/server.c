@@ -2007,7 +2007,7 @@ static void cap_tick(struct server *s, struct session *S, uint16_t live, uint64_
 	}
 	cg_cap_total_tick(&S->ctot, S->cap, live, cc.sat_us);
 	if (s->cfg->split_eta)
-		cg_cap_eta(&S->eta, S->cap, live, cc.sat_us / 2, now_ms * 1000);
+		cg_cap_eta(&S->eta, S->cap, live, cc.sat_us / 2, s->cfg->eta_buffer, now_ms * 1000);
 }
 
 /* SO_MAX_PACING_RATE on a lane's socket (pace.h): fq on the way out paces

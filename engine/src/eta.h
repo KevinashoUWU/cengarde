@@ -34,7 +34,10 @@ struct cg_eta_link {
 	uint64_t t_us;    /* when backlog was last drained */
 	uint64_t bps;     /* its rate, 0: not known */
 	uint32_t base_us; /* its delay without a queue, over the smallest */
+	uint32_t limit_us; /* the queue it holds before it drops (eta_buffer), 0: no limit */
 };
+
+#define CG_ETA_OVER_US 10000000ull /* added to the arrival of a packet past a link's limit_us */
 
 struct cg_eta {
 	struct cg_eta_link l[CG_MAX_LINKS];
@@ -56,6 +59,7 @@ static inline void cg_eta_set(struct cg_eta *e, unsigned i, uint64_t bps, uint32
 	l->bps = bps;
 	l->base_us = base_us;
 	l->backlog = bps * queue_us; /* the bits in the queue, times 10^6 */
+	l->limit_us = 0;
 	l->t_us = now_us;
 }
 
@@ -89,6 +93,9 @@ static inline int cg_eta_pick(struct cg_eta *e, uint16_t set, uint32_t len, uint
 		cg_eta_drain(l, now_us);
 		/* us: base + (backlog + 8 len 10^6) / bps */
 		eta = l->base_us + (l->backlog + (uint64_t)len * 8 * 1000000) / l->bps;
+		/* past the queue it holds it would be dropped: last resort */
+		if (l->limit_us && eta - l->base_us > l->limit_us)
+			eta += CG_ETA_OVER_US;
 		if (eta < best_eta) {
 			best_eta = eta;
 			best = (int)i;

@@ -223,6 +223,7 @@ struct cg_config {
 	int governor;                 /* the split's weights from each link's queue (govern.h) */
 	int capacity_weights;         /* the split's weights from each link's capacity (capacity.h) */
 	int split_eta;                /* split by expected arrival (eta.h) */
+	int eta_buffer;               /* EXPERIMENT: split_eta holds a link that drops to the highest queue it showed */
 	int pacing;                   /* each link's socket paced at its rate (pace.h) */
 	uint32_t governor_target_ms;  /* the queue a link may hold */
 	uint32_t capacity_loss_pct;   /* EXPERIMENT: a loaded link losing more than this (%) is full (capacity.h); 0: off */
