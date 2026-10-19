@@ -1326,7 +1326,9 @@ static void on_probe_reply(struct client *c, struct link *l, const struct cg_hdr
 	/* The server timed our probe's trip up this link; we time the reply's
 	 * trip down and report it in the next probe. */
 	if (h->flags & CG_F_OWD)
-		cg_health_report(&c->uh[l - c->link], pi.owd, now_ms, CG_STALL_PROBES * c->cfg->probe_idle_ms);
+		cg_health_report(&c->uh[l - c->link], pi.owd, now_ms,
+				 cg_health_valid_ms(l->probe_announced > l->probe_before ? l->probe_announced : l->probe_before,
+						    CG_STALL_PROBES * c->cfg->probe_idle_ms));
 	l->down_owd = now32 - h->ts;
 	l->have_down_owd = 1;
 	/* The same trip for the reorderer's deadlines, on the clock of its

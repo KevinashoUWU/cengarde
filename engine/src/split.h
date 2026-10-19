@@ -269,6 +269,7 @@ struct cg_spread {
 	uint8_t stress;   /* a link that was in left for its queue: copies help (cg_sdup) */
 	uint8_t recover;  /* the fastest link is one that left: it comes back now (rejoin) */
 	uint16_t qleft;   /* links that left after being in: their queue grew, not their base delay */
+	uint64_t gone_ms[CG_MAX_LINKS]; /* a link of qleft not a candidate since then, 0: it is */
 	uint64_t n_recover, n_qleave; /* how often each kind of stress began, for the status */
 	uint64_t n_stall; /* links that left in a stall (cg_split_stalled): no copies */
 	uint32_t owd_prev[CG_MAX_LINKS]; /* each link's delay at the last evaluation */
@@ -289,6 +290,7 @@ struct cg_spread {
 };
 
 #define CG_SPLIT_MIN_MS 10000 /* the window of a link's own delay minimum */
+#define CG_SPLIT_QLEFT_KEEP_MS 2000 /* a link of qleft out of the candidates this long is gone: no stress for it */
 
 /* Link i's own queue (its delay over its own minimum), updating the minimum
  * with the delay now. */
@@ -392,6 +394,8 @@ static inline void cg_split_spread_reset(struct cg_spread *s, unsigned link)
 	s->left &= keep;
 	s->holding &= keep;
 	s->behind &= keep;
+	s->qleft &= keep;
+	s->gone_ms[link] = 0;
 }
 
 /* One evaluation of guard G4, every tick. cand: the links that may take a
@@ -471,9 +475,15 @@ static inline uint16_t cg_split_spread_eval_r(struct cg_spread *s, const struct 
 
 		if (!(fresh & b)) {
 			s->holding &= (uint16_t)~b; /* gone, or no delay: a wait starts over */
-			s->qleft &= (uint16_t)~b;
+			/* a short gap of G3 (300 ms without replies) is the link
+			 * at its worst, not gone: the stress stays (audit C7) */
+			if (!s->gone_ms[i])
+				s->gone_ms[i] = now_ms;
+			if (now_ms - s->gone_ms[i] >= CG_SPLIT_QLEFT_KEEP_MS)
+				s->qleft &= (uint16_t)~b;
 			continue;
 		}
+		s->gone_ms[i] = 0;
 		d = cg_owd_diff(h[i].owd, h[best].owd);
 		oq = cg_split_ownq(s, (unsigned)i, h[i].owd, now_ms);
 		s->behind_us[i] = d;
