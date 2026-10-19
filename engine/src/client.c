@@ -98,6 +98,8 @@
 static const uint16_t split_equal[CG_MAX_LINKS] = { 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 };
 _Static_assert(CG_MAX_LINKS == 16, "split_equal has a weight per link");
 
+#define CG_PROBE_RAW 16 /* raw probe replies a link keeps for the status */
+
 struct link {
 	int used;
 	char ifname[IFNAMSIZ];
@@ -136,6 +138,12 @@ struct link {
 	uint32_t probe_announced; /* interval_ms of the last probe */
 	uint32_t probe_before;    /* and of the one before it */
 	uint32_t down_owd;        /* trip of the newest reply, for the next probe */
+	/* the last CG_PROBE_RAW probe replies, raw (unsmoothed) for the status and
+	 * the recorder: when, the trip up (the server's clock minus ours) and down;
+	 * a Starlink slot's delay ramp hides in the smoothed figures */
+	uint64_t raw_ms[CG_PROBE_RAW];
+	uint32_t raw_up[CG_PROBE_RAW], raw_down[CG_PROBE_RAW];
+	uint8_t raw_at;
 	int have_down_owd;
 	int peer_muted; /* the server carries no download on this link */
 	uint64_t tx_pkts, tx_bytes, tx_drops, tx_errors;
@@ -1751,6 +1759,10 @@ static void on_probe_reply(struct client *c, struct link *l, const struct cg_hdr
 						    CG_STALL_PROBES * c->cfg->probe_idle_ms));
 	l->down_owd = now32 - h->ts;
 	l->have_down_owd = 1;
+	l->raw_ms[l->raw_at] = now_ms;
+	l->raw_up[l->raw_at] = (h->flags & CG_F_OWD) ? pi.owd : 0;
+	l->raw_down[l->raw_at] = l->down_owd;
+	l->raw_at = (uint8_t)((l->raw_at + 1) % CG_PROBE_RAW);
 	/* The same trip for the reorderer's deadlines, on the clock of its
 	 * arrival times (reorder.h): its own filter, so that a quiet download
 	 * still knows how far apart the links are. */
@@ -2898,6 +2910,21 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 		link_threads_json(c, l, j);
 		cg_json_u64(j, "path_mtu", l->fd >= 0 ? l->path_mtu : 0);
 		cg_json_ms(j, "rtt_ms", l->srtt8_us / 8);
+		/* the raw probe replies, oldest first: [unix ms, up us, down us]
+		 * (up and down carry the clocks' offset: their changes count) */
+		cg_json_arr(j, "probes");
+		for (int r = 0; r < CG_PROBE_RAW; r++) {
+			int x = (l->raw_at + r) % CG_PROBE_RAW;
+
+			if (!l->raw_ms[x])
+				continue;
+			cg_json_arr(j, NULL);
+			cg_json_u64(j, NULL, l->raw_ms[x]);
+			cg_json_u64(j, NULL, l->raw_up[x]);
+			cg_json_u64(j, NULL, l->raw_down[x]);
+			cg_json_end(j, ']');
+		}
+		cg_json_end(j, ']');
 		cg_json_u64(j, "last_rx_ms_ago", l->rxl.last_rx_ms ? now_ms - l->rxl.last_rx_ms : 0);
 		cg_json_str(j, "upload", h->state == CG_H_MUTED ? "muted" : "active");
 		cg_json_u64(j, "mute_backoff", h->backoff); /* unmute wait = 2 x settle << it */
