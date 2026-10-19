@@ -575,6 +575,10 @@ static void test_capacity_lossy_frontier(void)
 	t += CG_CAP_LOSSY_MS;
 	loss_feed(&l, &cf, &t, &rx, &tx, 6, 600, 588);
 	CHECK(!l.lossy);
+	t += 40000;
+	loss_feed(&l, &cf, &t, &rx, &tx, 6, 600, 588);
+	CHECK(!l.lossy);
+	CHECK(l.peak_bps > 80000000ull);
 }
 
 /* The audit's second pass: the rescue's full bit with hysteresis, the G4
@@ -649,8 +653,55 @@ static void test_capacity_clock2(void)
 	CHECK_EQ(cg_cap_qpred(&l, 30 * MS, 0, 2), 30 * MS);
 }
 
+/* A sample's loss counts what was sent CG_CAP_LAG_MS before its report:
+ * a link ramping up with 100 ms of packets in flight, none lost, is not
+ * lossy (its own sent count is 20 % ahead of what arrived). */
+static void test_capacity_inflight(void)
+{
+	const struct cg_cap_cfg cf = { .window_ms = 10000, .sat_us = 20 * MS, .lossy = 1 };
+	struct cg_cap_link l;
+	struct cg_hlink h;
+	uint64_t t = 1000, tx = 0, sent_at[64];
+	uint32_t n = 0;
+
+	memset(&h, 0, sizeof(h));
+	h.have_owd = 1;
+	h.owd = 30000;
+	cg_cap_reset(&l);
+	/* ticks each 100 ms, a report each 500 ms; rate rising 1000 to 4000 a tick */
+	for (int k = 0; k < 60; k++) {
+		uint32_t rx;
+
+		t += 100;
+		tx += 1000 + 50 * (uint64_t)k;
+		sent_at[k] = tx;
+		rx = k ? (uint32_t)sent_at[k - 1] : 0; /* what was sent a tick (100 ms) before */
+		h.fresh_until_ms = t + 3000;
+		cg_cap_tick(&l, t, k % 5 == 4 ? t : 0, rx, tx, tx * 1000, &h, &cf);
+		n += l.lossy;
+	}
+	CHECK_EQ(n, 0);
+	/* the same with 5 % of it lost: lossy */
+	cg_cap_reset(&l);
+	n = 0;
+	tx = 0;
+	for (int k = 0; k < 60; k++) {
+		uint32_t rx;
+
+		t += 100;
+		tx += 3000;
+		sent_at[k] = tx;
+		rx = k ? (uint32_t)(sent_at[k - 1] * 95 / 100) : 0;
+		h.fresh_until_ms = t + 3000;
+		cg_cap_tick(&l, t, k % 5 == 4 ? t : 0, rx, tx, tx * 1000, &h, &cf);
+		n += l.lossy;
+	}
+	CHECK(n > 0);
+}
+
 void test_capacity(void)
 {
+	test_capacity_inflight();
 	test_capacity_lossy_frontier();
 	test_capacity_loss();
 	test_capacity_clock2();
