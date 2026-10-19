@@ -104,6 +104,8 @@ static void test_linkmodel_global(void)
 	m = cg_link_presets[CG_LTYPE_STARLINK].m;
 	CHECK(m.lossy_noprobe == 1 && m.lossy_hold == 1 && m.loss_pct == 0);
 	CHECK(m.hold_over_ms > 0 && m.hold_over_ms * 1000ull < CG_ETA_OVER_US);
+	/* and it paces the copies to the other links of its session, not its own */
+	CHECK(m.pace_ms == 0 && m.pace_peers_ms == CG_STARLINK_PACE_PEERS_MS);
 }
 
 /* Models with lossy_hold on the links of mask, each with over[i] ms of
@@ -270,7 +272,8 @@ static void test_linkmodel_knobs(void)
 		uint32_t w[CG_MAX_LINKS];
 
 		CHECK(cg_link_pace_windows(ms, CG_MAX_LINKS, w));
-		CHECK(w[0] == 65535000u && w[1] == 0 && w[2] == 0);
+		/* its own, and its preset paces the others */
+		CHECK(w[0] == 65535000u && w[1] == CG_STARLINK_PACE_PEERS_MS * 1000u && w[2] == w[1]);
 		CHECK(!cg_link_pace_windows(ms + 1, CG_MAX_LINKS - 1, w));
 		/* pace_peers_ms: the other links take it, the smaller one set */
 		ms[0].pace_ms = 0;

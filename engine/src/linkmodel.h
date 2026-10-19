@@ -100,6 +100,15 @@ struct cg_link_model {
  * (shallowqdeep). */
 #define CG_STARLINK_OVER_MS 40
 
+/* starlink's pace_peers_ms (story 015, redundancy, n = 16 against a null
+ * control): the copies to the cellular links next to it only while they
+ * arrive within 60 ms of the first. The 1200 B ping's p99 in starsat fell
+ * from ~360 to ~95 ms, with a throughput within 5 % in every Starlink case;
+ * the cost is retransmissions (1.2-4x) where its queue is shallow. Pacing
+ * every cellular link instead (pace_ms) cost 8-18 % in het: hence only next
+ * to a Starlink. */
+#define CG_STARLINK_PACE_PEERS_MS 60
+
 struct cg_link_preset {
 	const char *name;
 	struct cg_link_model m;
@@ -111,7 +120,8 @@ static const struct cg_link_preset cg_link_presets[CG_LTYPE_COUNT] = {
 	[CG_LTYPE_AUTO] = { "auto", { 0 } },
 	[CG_LTYPE_CELLULAR] = { "cellular", { 0 } }, /* hook: the scheduler, the deep queue, the signal */
 	[CG_LTYPE_STARLINK] = { "starlink",
-				{ .lossy_noprobe = 1, .lossy_hold = 1, .hold_over_ms = CG_STARLINK_OVER_MS } },
+				{ .lossy_noprobe = 1, .lossy_hold = 1, .hold_over_ms = CG_STARLINK_OVER_MS,
+				  .pace_peers_ms = CG_STARLINK_PACE_PEERS_MS } },
 	[CG_LTYPE_FIBER] = { "fiber", { 0 } },       /* hook */
 	[CG_LTYPE_ETHERNET] = { "ethernet", { 0 } }, /* hook */
 	[CG_LTYPE_RADIO] = { "radio", { 0 } },       /* hook */
