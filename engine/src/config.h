@@ -130,6 +130,9 @@ struct cg_link_cfg {
 	 * and, sent in the probes, down; force splits evenly. 0 makes it carry
 	 * a copy of every packet. An interface with no [link] section has 1. */
 	uint32_t weight;
+	/* Its link model, enum cg_link_type (linkmodel.h): the presets of the
+	 * capacity and split loops for it, sent to the server in the probes. */
+	uint8_t type;
 	int nsrv; /* entries of its "server" as written; 0: the global list */
 	struct cg_srvent srv[CG_MAX_SERVERS];
 	/* The list built from srv and the names' addresses (cg_config_build). */

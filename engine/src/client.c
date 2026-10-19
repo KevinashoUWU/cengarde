@@ -63,6 +63,7 @@
 #include "epoch.h"
 #include "health.h"
 #include "hist.h"
+#include "linkmodel.h"
 #include "log.h"
 #include "names.h"
 #include "netlink.h"
@@ -189,6 +190,7 @@ struct client {
 	struct cg_split sp;  /* the split's round-robin credits */
 	uint16_t lw[CG_MAX_LINKS]; /* the [link] weights of the links in use (split = on), 1 without a section */
 	uint16_t dup0;             /* of those, the weight-0 links: they carry every packet */
+	uint8_t ltype[CG_MAX_LINKS]; /* the [link] types of the links in use (linkmodel.h), auto without a section */
 	struct cg_spread spread;   /* guard G4: the links of similar delay that share the split (split.h) */
 	struct cg_sdup sdup;       /* copies under G4's stress, on a budget */
 	/* The upload's last decisions (decision.h), and the 0/1 states they
@@ -815,8 +817,9 @@ static void link_open(struct client *c, struct link *l, const struct cg_iface *i
 }
 
 /* The [link] weights of the links in use, for split = on (1 without a
- * section), and the weight-0 ones. Returns 1 when they changed, which
- * starts the round-robin even again. */
+ * section), and the weight-0 ones; and their types (auto without a
+ * section). Returns 1 when the weights changed, which starts the
+ * round-robin even again. */
 static int weights_update(struct client *c)
 {
 	uint16_t w[CG_MAX_LINKS] = { 0 }, dup0 = 0;
@@ -832,6 +835,13 @@ static int weights_update(struct client *c)
 			dup0 |= (uint16_t)(1u << i);
 	}
 	c->dup0 = dup0;
+	/* Their types too, which change no weight: the capacity and split
+	 * loops read them each tick, the probes send them. */
+	for (int i = 0; i < CG_MAX_LINKS; i++) {
+		const struct cg_link_cfg *lc = c->link[i].used ? cg_config_link(c->cfg, c->link[i].ifname) : NULL;
+
+		c->ltype[i] = lc ? lc->type : CG_LTYPE_AUTO;
+	}
 	if (!memcmp(w, c->lw, sizeof(w)))
 		return 0;
 	memcpy(c->lw, w, sizeof(w));
@@ -2042,6 +2052,8 @@ static void send_probe(struct client *c, struct link *l, uint64_t now_us, uint32
 	 * loses now (full, or out of budget). */
 	pb.rescue = c->resc_idx != NULL;
 	pb.full = pb.rescue && (cg_resc_low(&c->resc_b) || up_full(c, id));
+	/* Its type, so that the server treats its download alike (story 015). */
+	pb.type = c->ltype[id];
 	const struct cg_link_rx *rx = &c->rxs.rx[id];
 	/* The cookie, and where our windows stand, for a server that has to
 	 * take the session up (proto.h). */
@@ -2147,20 +2159,26 @@ static void pace_set(struct link *l, uint64_t rate)
 
 /* Each link's upload capacity (capacity.h), from what the server says it
  * received on it, and with capacity_weights the split's weights from them
- * (scaled by the governor's, with governor), after the governor's tick. */
+ * (scaled by the governor's, with governor), after the governor's tick.
+ * Each link with its own model (linkmodel.h): its type's preset, with the
+ * global eta_buffer and capacity_loss_pct on top. */
 static void cap_tick(struct client *c, uint16_t live, uint64_t now_ms)
 {
-	struct cg_cap_cfg cc = { .window_ms = c->cfg->governor_window_ms, .sat_us = c->cfg->governor_target_ms * 1000,
-				.loss_pct = c->cfg->capacity_loss_pct,
-				.lossy = c->cfg->eta_buffer };
+	struct cg_cap_cfg cc = { .window_ms = c->cfg->governor_window_ms, .sat_us = c->cfg->governor_target_ms * 1000 };
 
 	for (int i = 0; i < CG_MAX_LINKS; i++) {
 		struct link *l = &c->link[i];
 
 		if (l->fd >= 0) {
+			struct cg_link_model m = cg_link_model_of(c->ltype[i], c->cfg->eta_buffer, c->cfg->capacity_loss_pct);
 			uint64_t was = cg_cap_bps(&c->cap[i]);
-			unsigned ev = cg_cap_tick(&c->cap[i], now_ms, l->peer_view_ms, l->peer_view.rx, l->tx_pkts,
-						  l->tx_bytes, &c->uh[i], &cc);
+			unsigned ev;
+
+			cc.loss_pct = m.loss_pct;
+			cc.lossy = cg_link_tracks_loss(&m);
+			cc.lossy_probe = !m.lossy_noprobe;
+			ev = cg_cap_tick(&c->cap[i], now_ms, l->peer_view_ms, l->peer_view.rx, l->tx_pkts, l->tx_bytes,
+					 &c->uh[i], &cc);
 
 			cg_decrec_cap(&c->dec, &c->cap[i], (unsigned)i, ev, was, now_ms);
 		}
@@ -2174,7 +2192,7 @@ static void cap_tick(struct client *c, uint16_t live, uint64_t now_ms)
 		uint16_t due;
 
 		cg_cap_eta(&c->eta, c->cap, live, cc.sat_us / 2, c->cfg->split_stale_max, cg_tickle_backoff(&c->tk),
-			   c->cfg->eta_buffer, now_ms * 1000);
+			   cg_link_hold_mask(c->ltype, CG_MAX_LINKS, c->cfg->eta_buffer), now_ms * 1000);
 		cg_cap_tickle(c->cap, live, now_ms, &due, tb, tc);
 		cg_tickle_tick(&c->tk, now_ms * 1000, (uint64_t)c->cfg->split_tickle_ms * 1000, due, tb, tc);
 	}
@@ -2523,6 +2541,7 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 		cg_json_u64(j, "tx_errors", l->tx_errors);
 		cg_json_u64(j, "tx_split", l->tx_split);
 		cg_json_u64(j, "weight", c->lw[i]); /* its share with split = on */
+		cg_json_str(j, "type", cg_link_type_name(c->ltype[i])); /* its link model (linkmodel.h) */
 		/* The governor's weight and the queue it measures (null: off, or
 		 * no delay yet). */
 		if (c->cfg->governor)

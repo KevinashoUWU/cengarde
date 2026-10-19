@@ -220,8 +220,16 @@ struct cg_probe_info {
  *   19   CG_BOND_FULL: but not what is lost on this path now: its queue is
  *        full (that loss is for TCP to see) or the rescue budget is spent,
  *        so the other end does not ask and wait;
+ *   20-22 CG_BOND_TYPE: the client's type of this link (linkmodel.h, story
+ *        015), so that the server treats its download alike; 0 is auto,
+ *        today's behaviour, and a reply writes 0;
  * and every other bit is reserved: written 0, ignored when read, so that a
- * newer peer can use them. A client sends it in every probe; a server
+ * newer peer can use them. CG_BOND_TYPE is the first such use, and why it
+ * needs no new version: a peer that predates it reads those bits as
+ * reserved and ignores them (auto, as before), and one that has it reads 0
+ * (auto) from a peer that wrote them 0, as reserved bits are written. The
+ * MAC covers them either way. Bits 20+ are reserved alike in versions 6
+ * and 7, so it is the same in both. A client sends it in every probe; a server
  * answers with one only a probe that had one, so that a reply is never
  * larger than its probe, and a reply's weight and CG_BOND_SPLIT_ME are 0
  * (the client's upload split depends only on the server reordering). */
@@ -232,6 +240,8 @@ struct cg_probe_info {
 #define CG_BOND_SPLIT_ME (1u << 17)
 #define CG_BOND_RESCUE (1u << 18) /* the sender sends DATA again on a NACK */
 #define CG_BOND_FULL (1u << 19)   /* but not what is lost on this path now (full, or out of budget) */
+#define CG_BOND_TYPE_SHIFT 20
+#define CG_BOND_TYPE (7u << CG_BOND_TYPE_SHIFT) /* the client's type of this link (linkmodel.h), 0: auto */
 
 struct cg_probe_bond {
 	uint16_t weight;  /* 0 to CG_BOND_WEIGHT_MAX */
@@ -239,6 +249,7 @@ struct cg_probe_bond {
 	uint8_t split_me; /* CG_BOND_SPLIT_ME */
 	uint8_t rescue;   /* CG_BOND_RESCUE */
 	uint8_t full;     /* CG_BOND_FULL */
+	uint8_t type;     /* CG_BOND_TYPE: enum cg_link_type, 0 to 7 as written (a reader normalizes it) */
 };
 
 /* HELLO payload: the server answers a probe it cannot take yet. echo_ts ties
