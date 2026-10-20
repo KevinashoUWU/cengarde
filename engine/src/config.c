@@ -817,6 +817,10 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	c->split_spread_copy = -1; /* by governor, below */
 	c->governor_target_ms = 20;
 	c->governor_window_ms = 10000;
+	c->capacity_seq_lag = 1;
+	c->starlink_edge_ms = CG_SLOT_EDGE_MS;
+	c->starlink_edge_pre_ms = CG_SLOT_PRE_MS;
+	c->starlink_edge_post_ms = CG_SLOT_POST_MS;
 	c->cpu = -1;
 	c->probe_interval_ms = 100;
 	c->probe_idle_ms = 1000;
@@ -924,6 +928,13 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	    get_u32(&ini, "", "rescue_full_hyst", 0, 2, &c->rescue_full_hyst, err, errlen) ||
 	    get_u32(&ini, "", "redund_pace_ms", 0, 2000, &c->redund_pace_ms, err, errlen) ||
 	    get_u32(&ini, "", "split_dominant_pct", 0, 65535, &c->split_dominant_pct, err, errlen) ||
+	    get_u32(&ini, "", "split_dominant_hold", 0, 2, &c->split_dominant_hold, err, errlen) ||
+	    get_bool(&ini, "", "capacity_seq_lag", &c->capacity_seq_lag, err, errlen) ||
+	    get_u32(&ini, "", "starlink_slot_clock", 0, 2, &c->starlink_slot_clock, err, errlen) ||
+	    get_u32(&ini, "", "starlink_edge_ms", 0, CG_SLOT_PERIOD_MS - 1, &c->starlink_edge_ms, err, errlen) ||
+	    get_u32(&ini, "", "starlink_edge_pre_ms", 0, 5000, &c->starlink_edge_pre_ms, err, errlen) ||
+	    get_u32(&ini, "", "starlink_edge_post_ms", 0, 5000, &c->starlink_edge_post_ms, err, errlen) ||
+	    get_bool(&ini, "", "starlink_edge_copies", &c->starlink_edge_copies, err, errlen) ||
 	    get_bool(&ini, "", "pacing", &c->pacing, err, errlen) ||
 	    get_u32(&ini, "", "governor_target_ms", 1, 1000, &c->governor_target_ms, err, errlen) ||
 	    get_u32(&ini, "", "capacity_loss_pct", 0, 50, &c->capacity_loss_pct, err, errlen) ||

@@ -743,8 +743,126 @@ static void test_capacity_inflight(void)
 	CHECK(n > 0);
 }
 
+/* A link 15 ms away whose sending rate falls, none lost: by CG_CAP_LAG_MS
+ * (250 ms behind, against 15) every sample counts a loss; by sequence
+ * (capacity_seq_lag), none. tick: the packets sent in each 100 ms tick, the
+ * sequence the same count (one link). lost: per mille lost. Returns the
+ * samples marked lossy, and the last state in *l. */
+static unsigned seq_feed(struct cg_cap_link *l, struct cg_cap_cfg *cf, unsigned lost, int falling)
+{
+	struct cg_hlink h;
+	uint64_t t = 100000, tx = 0, at[128];
+	unsigned n = 0;
+
+	memset(&h, 0, sizeof(h));
+	h.have_owd = 1;
+	h.owd = 30000;
+	cg_cap_reset(l);
+	for (int k = 0; k < 120; k++) {
+		uint64_t arrived;
+
+		t += 100;
+		/* 3000 a tick, then falling 1 % a tick, or steady */
+		at[k] = tx += falling && k > 20 ? 3000 - 15 * (uint64_t)(k - 20) : 3000;
+		/* what arrived by now: what was sent 15 ms ago (between the ticks) */
+		arrived = k ? at[k - 1] + (at[k] - at[k - 1]) * 85 / 100 : 0;
+		cf->tx_seq = (uint32_t)tx;
+		cf->rx_top = (uint32_t)arrived; /* the newest: sequence arrived - 1, + 1 for 0 none */
+		h.fresh_until_ms = t + 3000;
+		cg_cap_tick(l, t, k % 5 == 4 ? t : 0, (uint32_t)(arrived - arrived * lost / 1000), tx, tx * 1000, &h, cf);
+		n += k > 30 && l->lossy;
+	}
+	return n;
+}
+
+static void test_capacity_seq_lag(void)
+{
+	struct cg_cap_cfg cf = { .window_ms = 10000, .sat_us = 20 * MS, .lossy = 1 };
+	struct cg_cap_link l;
+
+	/* by CG_CAP_LAG_MS: a falling rate reads as a loss */
+	CHECK(seq_feed(&l, &cf, 0, 1) > 0);
+	/* by sequence: none */
+	cf.seq_lag = 1;
+	CHECK_EQ(seq_feed(&l, &cf, 0, 1), 0);
+	CHECK_EQ(seq_feed(&l, &cf, 0, 0), 0);
+	CHECK(!l.lost_ms);
+	/* and 1 % lost is a loss */
+	CHECK(seq_feed(&l, &cf, 10, 0) > 0);
+	CHECK(l.lost_ms);
+	/* a slower link: behind_us moves what could have arrived back */
+	cf.behind_us = 20000;
+	CHECK_EQ(seq_feed(&l, &cf, 0, 0), 0);
+	cf.behind_us = 0;
+	/* no rx_top (an old peer): CG_CAP_LAG_MS as before */
+	{
+		struct cg_cap_cfg c2 = cf;
+		struct cg_hlink h;
+		uint64_t t = 1000, tx = 0;
+		uint32_t rx = 0;
+
+		memset(&h, 0, sizeof(h));
+		cg_cap_reset(&l);
+		for (int k = 0; k < 40; k++) {
+			t += 100;
+			tx += 3000;
+			rx = (uint32_t)(tx - 3000);
+			c2.tx_seq = (uint32_t)tx;
+			c2.rx_top = 0;
+			cg_cap_tick(&l, t, k % 5 == 4 ? t : 0, rx, tx, tx * 1000, &h, &c2);
+		}
+		CHECK(!l.lossy);
+	}
+}
+
+/* Starlink's slot clock (slot.h): a sample sent across an edge's window
+ * counts no loss; the same loss in the middle of a slot does. */
+static void test_capacity_slot(void)
+{
+	const struct cg_slot slot = { .edge_ms = CG_SLOT_EDGE_MS, .pre_ms = CG_SLOT_PRE_MS, .post_ms = CG_SLOT_POST_MS };
+	struct cg_cap_cfg cf = { .window_ms = 10000, .sat_us = 20 * MS, .lossy = 1, .seq_lag = 1 };
+	struct cg_hlink h;
+	struct cg_cap_link l;
+
+	memset(&h, 0, sizeof(h));
+	h.have_owd = 1;
+	h.owd = 30000;
+	for (int with = 0; with < 2; with++) {
+		uint64_t t = 100000, tx = 0, gone = 0, lossy_n = 0;
+
+		/* the wall clock: now_ms 100000 is :11.000 */
+		cf.real_off_ms = 1700000000000ll + 11000 - 100000 - 1700000000000ll % 60000;
+		cf.slot = with ? &slot : NULL;
+		cg_cap_reset(&l);
+		for (int k = 0; k < 400; k++) { /* 40 s: the edges at :12, :27 and :42 */
+			uint64_t wall;
+
+			t += 100;
+			tx += 3000;
+			wall = (uint64_t)((int64_t)t + cf.real_off_ms);
+			/* 3 % of a tick lost at each switch (:12, :27...) */
+			if (cg_slot_since(&slot, wall) < 100)
+				gone += 90;
+			cf.tx_seq = (uint32_t)tx;
+			cf.rx_top = (uint32_t)(tx - 3000);
+			h.fresh_until_ms = t + 3000;
+			cg_cap_tick(&l, t, k % 5 == 4 ? t : 0, (uint32_t)(tx - 3000 - gone), tx, tx * 1000, &h, &cf);
+			lossy_n += l.lossy;
+		}
+		if (with) {
+			CHECK_EQ(lossy_n, 0);
+			CHECK(l.n_edge >= 3);
+			CHECK(!l.lost_ms);
+		} else {
+			CHECK(lossy_n > 0);
+		}
+	}
+}
+
 void test_capacity(void)
 {
+	test_capacity_seq_lag();
+	test_capacity_slot();
 	test_capacity_inflight();
 	test_capacity_lossy_frontier();
 	test_capacity_loss();

@@ -94,6 +94,7 @@
 #include "govern.h"  /* cg_gov_base, struct cg_gov_link */
 #include "health.h"  /* struct cg_hlink, cg_health_fresh, cg_owd_diff */
 #include "linkmodel.h" /* struct cg_link_model */
+#include "slot.h"      /* struct cg_slot, cg_slot_touches */
 
 #define CG_CAP_MIN_MS 500 /* a sample spans at least this */
 #define CG_CAP_GAIN 4     /* the delivery rate's smoothing: 1/4 of each sample */
@@ -128,6 +129,19 @@ struct cg_cap_cfg {
 	int lossy;          /* track l->lossy (eta_buffer, or this link's model): a lossy link is not probed */
 	int lossy_probe;    /* but with this, a lossy link is probed still (its model holds it only) */
 	uint8_t rfull_mode; /* rescue_full_hyst (config.h): the rescue's full bit, cg_cap_rfull */
+	/* The loss by sequence (capacity_seq_lag): a sample's loss counts what
+	 * was sent before the newest DATA the report says arrived (rx_top), and
+	 * on a link behind_us slower than the fastest, that much before it,
+	 * instead of CG_CAP_LAG_MS before the report. */
+	uint8_t seq_lag;
+	uint32_t tx_seq;   /* this end's next DATA sequence now */
+	uint32_t rx_top;   /* the report's newest DATA sequence received, 0: none */
+	int32_t behind_us; /* the link's delay behind the fastest (health.h) */
+	/* Not NULL: the link keeps Starlink's slot clock (slot.h), and a
+	 * sample whose packets were sent in an edge's window counts no loss;
+	 * real_off_ms, the wall clock minus now_ms. */
+	const struct cg_slot *slot;
+	int64_t real_off_ms;
 };
 
 struct cg_cap_link {
@@ -155,7 +169,11 @@ struct cg_cap_link {
 	 * count against what was sent CG_CAP_LAG_MS before, not what is still
 	 * in flight (cg_cap_tx_at) */
 	uint64_t txh_t[CG_CAP_TXH], txh_n[CG_CAP_TXH];
+	uint32_t txh_s[CG_CAP_TXH]; /* and the next DATA sequence then (capacity_seq_lag) */
 	uint64_t txl_prev;
+	uint64_t txl_t_prev;        /* when what txl_prev counts was sent (slot) */
+	uint64_t lost_ms;           /* the last sample that lost over CG_CAP_LOSSY_PERMIL, at any rate (dominant.h) */
+	uint64_t n_edge;            /* samples whose loss an edge's window took out (slot) */
 	uint8_t txh_at, have_txl;
 	uint8_t lossy;              /* lost over CG_CAP_LOSSY_PERMIL in the last CG_CAP_LOSSY_MS */
 	uint8_t noprobe;            /* lossy, and not probed for it (!cfg->lossy_probe) */
@@ -378,6 +396,57 @@ static inline uint64_t cg_cap_tx_at(const struct cg_cap_link *l, uint64_t t_ms, 
 	return n;
 }
 
+/* What link l had sent by t_ms, between the ticks around it in proportion
+ * to the time (cg_cap_tx_at the newest at or before it otherwise); *ok 0
+ * when its ticks do not go back that far. */
+static inline uint64_t cg_cap_tx_ati(const struct cg_cap_link *l, uint64_t t_ms, int *ok)
+{
+	uint64_t n = cg_cap_tx_at(l, t_ms, ok), bt = 0, at = 0, an = 0;
+
+	if (!*ok)
+		return 0;
+	for (unsigned k = 0; k < CG_CAP_TXH; k++)
+		if (l->txh_t[k] && l->txh_t[k] <= t_ms && l->txh_t[k] >= bt)
+			bt = l->txh_t[k];
+	for (unsigned k = 0; k < CG_CAP_TXH; k++)
+		if (l->txh_t[k] > t_ms && (!at || l->txh_t[k] < at)) {
+			at = l->txh_t[k];
+			an = l->txh_n[k];
+		}
+	if (!at || an < n)
+		return n;
+	return n + (an - n) * (t_ms - bt) / (at - bt);
+}
+
+/* When (now_ms's clock) this end sent DATA sequence seq: between the ticks
+ * around it in proportion to the sequence; *ok 0 when its ticks do not go
+ * back that far. Sent after the newest tick: that tick. */
+static inline uint64_t cg_cap_seq_t(const struct cg_cap_link *l, uint32_t seq, int *ok)
+{
+	uint64_t bt = 0, at = 0;
+	uint32_t bs = 0, as = 0;
+
+	*ok = 0;
+	/* the newest tick that had not sent it yet (its next sequence <= seq) */
+	for (unsigned k = 0; k < CG_CAP_TXH; k++)
+		if (l->txh_t[k] && (int32_t)(seq - l->txh_s[k]) >= 0 && l->txh_t[k] >= bt) {
+			bt = l->txh_t[k];
+			bs = l->txh_s[k];
+		}
+	if (!bt)
+		return 0;
+	*ok = 1;
+	/* the oldest that had */
+	for (unsigned k = 0; k < CG_CAP_TXH; k++)
+		if (l->txh_t[k] > bt && (int32_t)(seq - l->txh_s[k]) < 0 && (!at || l->txh_t[k] < at)) {
+			at = l->txh_t[k];
+			as = l->txh_s[k];
+		}
+	if (!at)
+		return bt;
+	return bt + (at - bt) * (uint64_t)(seq - bs + 1) / (uint32_t)(as - bs);
+}
+
 /* One tick for one link. report_ms: when this end received the other's
  * newest report on it (0: none yet), rx: what that report says; tx_pkts,
  * tx_bytes: what this end has sent on it so far; h: its health in this
@@ -416,6 +485,7 @@ static inline unsigned cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint6
 		if (!l->txh_t[last] || now_ms >= l->txh_t[last] + 40) {
 			l->txh_t[l->txh_at] = now_ms;
 			l->txh_n[l->txh_at] = tx_pkts;
+			l->txh_s[l->txh_at] = cfg->tx_seq;
 			l->txh_at = (uint8_t)((l->txh_at + 1) % CG_CAP_TXH);
 		}
 	}
@@ -454,6 +524,8 @@ static inline unsigned cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint6
 		l->n_cut_full = keep.n_cut_full;
 		l->n_cut_short = keep.n_cut_short;
 		l->peak_bps = keep.peak_bps;
+		l->lost_ms = keep.lost_ms;
+		l->n_edge = keep.n_edge;
 		l->n_cut_loss = keep.n_cut_loss;
 		l->n_restore = keep.n_restore;
 		l->n_g4_ep = keep.n_g4_ep;
@@ -529,18 +601,47 @@ static inline unsigned cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint6
 	 * at 30 Mbit/s and 25 ms (nostalgica 2026-10-19: Starlink's clean upload,
 	 * 0 % lost by UDP up to 38 Mbit/s, marked lossy all the time) */
 	{
-		int ok;
-		uint64_t txl = report_ms > CG_CAP_LAG_MS ? cg_cap_tx_at(l, report_ms - CG_CAP_LAG_MS, &ok) : (ok = 0, 0);
+		int ok = 0, edge = 0;
+		uint64_t txl = 0, xt = 0;
 
+		/* by sequence: what was sent before the newest packet that arrived
+		 * (by the time the report left), on this link that much earlier as
+		 * it is slower; a sample's own sent count has what is still in
+		 * flight, and CG_CAP_LAG_MS (250 ms, 350 with the ticks) against a
+		 * 25 ms Starlink counted any fall of the sending rate as a loss */
+		if (cfg->seq_lag && cfg->rx_top) {
+			xt = cg_cap_seq_t(l, cfg->rx_top, &ok);
+			if (ok && cfg->behind_us > 0)
+				xt = xt > (uint64_t)cfg->behind_us / 1000 ? xt - (uint64_t)cfg->behind_us / 1000 : 0;
+			if (ok)
+				txl = cg_cap_tx_ati(l, xt, &ok);
+		}
+		if (!ok && report_ms > CG_CAP_LAG_MS) {
+			xt = report_ms - CG_CAP_LAG_MS;
+			txl = cg_cap_tx_at(l, xt, &ok);
+		}
 		if (ok && l->have_txl && txl >= l->txl_prev)
 			dlost = txl - l->txl_prev;
 		else
 			dlost = UINT64_MAX; /* not known: no loss counted */
+		/* sent in an edge's window: the switch's loss, not the link's */
+		if (ok && l->have_txl && cfg->slot && dlost != UINT64_MAX &&
+		    cg_slot_touches(cfg->slot, (uint64_t)((int64_t)l->txl_t_prev + cfg->real_off_ms),
+				    (uint64_t)((int64_t)xt + cfg->real_off_ms)))
+			edge = 1;
 		if (ok) {
 			l->txl_prev = txl;
+			l->txl_t_prev = xt;
 			l->have_txl = 1;
 		}
+		if (edge) {
+			l->n_edge++;
+			dlost = UINT64_MAX;
+		}
 	}
+	if (dlost != UINT64_MAX && dlost >= CG_CAP_SHORT_MIN &&
+	    (uint64_t)drx * 1000 < dlost * (1000 - CG_CAP_LOSSY_PERMIL))
+		l->lost_ms = report_ms;
 	if (dlost != UINT64_MAX && dlost >= CG_CAP_SHORT_MIN &&
 	    (uint64_t)drx * 1000 < dlost * (1000 - CG_CAP_LOSSY_PERMIL) &&
 	    raw * 2 >= (l->peak_bps > cg_cap_best_bps(l) ? l->peak_bps : cg_cap_best_bps(l)))

@@ -17,7 +17,7 @@ static int same(const struct cg_link_model *a, const struct cg_link_model *b)
 	       a->rfull_hyst == b->rfull_hyst && a->qpred_ms == b->qpred_ms && a->qpred_mode == b->qpred_mode &&
 	       a->dwell_ms == b->dwell_ms && a->dwell_oq_ms == b->dwell_oq_ms && a->eta_keep == b->eta_keep &&
 	       a->eta_keep_ms == b->eta_keep_ms && a->pace_ms == b->pace_ms && a->pace_peers_ms == b->pace_peers_ms &&
-	       a->dominant_pct == b->dominant_pct;
+	       a->dominant_pct == b->dominant_pct && a->dominant_hold == b->dominant_hold && a->slot_clock == b->slot_clock;
 }
 
 /* The table: one entry per type, in wire order, with a name each; auto is
@@ -109,6 +109,9 @@ static void test_linkmodel_global(void)
 	CHECK(m.pace_ms == 0 && m.pace_peers_ms == CG_STARLINK_PACE_PEERS_MS);
 	/* and, far above the links slower than it, it keeps them out (dominant.h) */
 	CHECK_EQ(m.dominant_pct, CG_STARLINK_DOMINANT_PCT);
+	/* and keeps Starlink's slot clock (slot.h), not dominant.h's hold */
+	CHECK_EQ(m.slot_clock, 1);
+	CHECK_EQ(m.dominant_hold, 0);
 }
 
 /* Models with lossy_hold on the links of mask, each with over[i] ms of

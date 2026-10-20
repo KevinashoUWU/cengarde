@@ -358,6 +358,7 @@ void cg_json_capacity(struct cg_json *j, const struct cg_cap_link *l, uint32_t t
 	cg_json_u64(j, "short_n", l->short_n);
 	cg_json_bool(j, "lossy", l->lossy); /* tracked by its model (linkmodel.h) and lost lately */
 	cg_json_bool(j, "lossy_noprobe", l->noprobe);
+	cg_json_u64(j, "edge_samples", l->n_edge); /* samples whose loss a Starlink switch took out (slot.h) */
 	cg_json_u64(j, "g4_episodes", l->n_g4_ep);
 	cg_json_bool(j, "rescue_full", l->rfull);
 	cg_json_str(j, "cut", l->cut == CG_CAP_CUT_FULL    ? "full"
@@ -368,6 +369,10 @@ void cg_json_capacity(struct cg_json *j, const struct cg_cap_link *l, uint32_t t
 		cg_json_u64(j, "full_age_ms", now_ms - l->full_ms);
 	else
 		cg_json_null(j, "full_age_ms");
+	if (l->lost_ms && now_ms >= l->lost_ms) /* a sample lost over 0.3 %, at any rate (dominant.h) */
+		cg_json_u64(j, "lost_age_ms", now_ms - l->lost_ms);
+	else
+		cg_json_null(j, "lost_age_ms");
 	if (l->have_rate)
 		cg_json_ms(j, "best_mbit", cg_cap_best_bps(l) / 1000);
 	else
@@ -441,6 +446,12 @@ void cg_json_dominant(struct cg_json *j, const struct cg_dom *d)
 		cg_json_null(j, "link");
 	/* bps / 1000 as "ms": Mbit/s with three decimals */
 	cg_json_ms(j, "best_mbit", (d->hi_cur > d->hi_prev ? d->hi_cur : d->hi_prev) / 1000);
+	cg_json_bool(j, "presumed", d->presumed);
+	{
+		static const char *const why[] = { "none", "idle", "wait", "unknown", "no_slower", "rate", "hold" };
+
+		cg_json_str(j, "why", d->why < sizeof(why) / sizeof(why[0]) ? why[d->why] : "?");
+	}
 	cg_json_arr(j, "out");
 	for (unsigned i = 0; i < CG_MAX_LINKS; i++)
 		if (d->out >> i & 1)

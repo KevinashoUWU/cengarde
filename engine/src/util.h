@@ -23,8 +23,9 @@ static inline uint64_t cg_now_ms(void)
 	return cg_now_us() / 1000u;
 }
 
-/* Wall-clock time in milliseconds since the epoch, for the status file only
- * (a router without an RTC jumps when NTP sets it): timers use cg_now_ms. */
+/* Wall-clock time in milliseconds since the epoch, for the status file and
+ * Starlink's slot clock (slot.h) only (a router without an RTC jumps when
+ * NTP sets it): timers use cg_now_ms. */
 static inline uint64_t cg_wall_ms(void)
 {
 	struct timespec ts;
@@ -32,6 +33,9 @@ static inline uint64_t cg_wall_ms(void)
 	clock_gettime(CLOCK_REALTIME, &ts);
 	return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
 }
+
+/* Before this (2024-01-01) the wall clock was not set yet: no slot clock. */
+#define CG_WALL_SET_MS 1704067200000ull
 
 /* How much a 32-bit counter grew from last to now, across its wrap: counters
  * read across threads are 32-bit (MIPS32 has no 64-bit atomics), and their

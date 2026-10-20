@@ -740,6 +740,26 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
   los enlaces, encima del preset de su tipo. `rescue_by_owd` (C10, solo el
   cliente) sigue global. Ninguna entró en un preset salvo lo dicho de
   `starlink` (historia 015, tabla por tipo).
+- **Los engranes de Starlink (historia 015, sección 9; los dos extremos):**
+  `capacity_seq_lag` (`yes`) cuenta la pérdida de cada muestra contra lo
+  enviado antes del paquete más nuevo que el otro extremo dice haber recibido
+  (su `rx_top`), atrasado lo que el enlace va detrás del más rápido, y no
+  contra lo enviado 250 ms antes del reporte. `starlink_slot_clock` (0: el
+  preset, encendido en `starlink`; 1 sí, 2 no) lleva el reloj de las ranuras
+  de Starlink (`slot.h`): a los :12, :27, :42 y :57 de cada minuto
+  (`starlink_edge_ms`, 12000) cambia de satélite, y lo que se envía de
+  `starlink_edge_pre_ms` (100) antes a `starlink_edge_post_ms` (50) después
+  no cuenta como pérdida del enlace. Usa la hora del sistema: hace falta NTP
+  en el router y el VPS. `starlink_edge_copies` (`no`): en redundancia, fuera
+  de esa ventana un paquete grande va solo por Starlink, como dato repartido
+  que el otro extremo pide de nuevo si se pierde (`rescue_kb`); dentro, o con
+  Starlink sin reportes o perdiendo, va por todos (≈ −65 % de datos en los
+  celulares con un stream de 8 Mbit/s, sin pérdida, y el p99 del ping
+  grande hasta +30 %). `split_dominant_hold` (0: apagado; 1 sí) mantiene el
+  modo dominante mientras Starlink no pierde y lo presume en reposo si su
+  historia lo muestra dominante; no ganó en el laboratorio y costó en
+  `shallowq`, por eso queda como perilla. El estado dice `edge_samples` y
+  `lost_age_ms` en `cap_diag`, y `presumed` y `why` en `dominant`.
 - **`exp_link_types` (vacío; nombres de tipo):** las perillas globales de
   arriba (y `eta_buffer` y `capacity_loss_pct`) solo para los enlaces de
   esos tipos, para probar una antes de ponerla en un preset; vacío: todos.
