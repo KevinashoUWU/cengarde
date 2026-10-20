@@ -245,6 +245,7 @@ struct cg_config {
 	int rescue_by_owd;            /* the client's rescue on the link of least upload delay, not RTT (audit C10) */
 	uint32_t rescue_full_hyst;    /* the rescue's full bit: 1 off under 3x, 2 off under 3x only while not rising */
 	uint32_t redund_pace_ms;      /* a copy goes on a link only if it arrives within this of the first (eta.h cg_eta_copies) */
+	uint32_t split_dominant_pct;  /* dominant.h's threshold over the preset's (starlink: 250), a large value: off */
 	/* The knobs above, eta_buffer and capacity_loss_pct are the value of
 	 * every link over its type's preset (linkmodel.h); with this mask (a bit
 	 * per type, exp_link_types = starlink ...) only of the links of those
@@ -373,6 +374,7 @@ static inline struct cg_link_knobs cg_config_link_knobs(const struct cg_config *
 		.eta_keep = c->eta_keep,
 		.eta_keep_ms = c->eta_keep_ms,
 		.pace_ms = c->redund_pace_ms,
+		.dominant_pct = c->split_dominant_pct,
 		.types = c->exp_link_types,
 	};
 

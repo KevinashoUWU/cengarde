@@ -97,6 +97,7 @@
 #include "replay.h"
 #include "sock.h"
 #include "capacity.h"
+#include "dominant.h"
 #include "fec.h"
 #include "pace.h"
 #include "tcpfree.h"
@@ -180,6 +181,7 @@ struct session {
 	struct cg_eta eta;                    /* the split by expected arrival, with split_eta */
 	struct cg_tickle tk;                  /* with split_eta, an idle link tickled (tickle.h) */
 	struct cg_eta pace;                   /* the copies' expected arrivals, with a path's pace_ms */
+	struct cg_dom dom;                    /* the dominant path (dominant.h): while on, the split steps aside */
 	struct cg_link_model lm[CG_MAX_LINKS]; /* each path's model (path_models) */
 	uint32_t pace_w[CG_MAX_LINKS];        /* each path's copy window (cg_link_pace_windows), us, 0: every copy */
 	uint8_t pace_any;                     /* a path with one */
@@ -758,6 +760,7 @@ static struct session *session_create(struct server *s, struct client *C, const 
 	}
 	memset(S, 0, sizeof(*S));
 	cg_gov_reset(&S->gov);
+	cg_dom_reset(&S->dom);
 	cg_gov_weights(&S->gov, 0, S->gw);
 	for (int i = 0; i < CG_MAX_LINKS; i++) {
 		cg_cap_reset(&S->cap[i]);
@@ -1798,8 +1801,10 @@ static void down_prepare(struct server *s, struct session *S, int m, uint8_t *bu
 	int stress = d->split && cg_sdup(&S->sdup, S->spread.stress, (uint32_t)len, (unsigned)__builtin_popcount(d->carry),
 					 s->cfg->split_stress_dup);
 
-	/* Before the header: CG_F_SPLIT is under the MAC. */
-	s->pick[m] = (int8_t)(d->split ? cg_split_pick_eta(&S->sp, s->cfg->split_eta ? &S->eta : NULL,
+	/* Before the header: CG_F_SPLIT is under the MAC. A dominant path
+	 * (dominant.h): the split steps aside, every packet goes as in
+	 * redundancy (the copies paced, eta.h). */
+	s->pick[m] = (int8_t)(d->split && !S->dom.out ? cg_split_pick_eta(&S->sp, s->cfg->split_eta ? &S->eta : NULL,
 							   s->cfg->split_eta ? &S->tk : NULL, now_us,
 							   d->k.carriers, stress ? 0 : cg_split_stress_elig(&S->spread, d->k.eligible, s->cfg->split_stress_single), d->k.dup, d->w,
 							   s->native ? CG_WGS_DATA : buf[0],
@@ -2138,6 +2143,7 @@ static void cap_tick(struct server *s, struct session *S, uint16_t live, uint64_
 		cg_cap_weights(S->cap, d.dup0, s->cfg->governor ? S->gw : NULL, cc.sat_us / 2, S->cw);
 	}
 	cg_cap_total_tick(&S->ctot, S->cap, live, cc.sat_us);
+	cg_dom_tick(&S->dom, S->cap, S->lm, live, now_ms);
 	if (s->cfg->split_eta) {
 		uint64_t tb[CG_MAX_LINKS], tc[CG_MAX_LINKS];
 		uint16_t due;
@@ -2542,6 +2548,7 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 		else
 			cg_json_null(j, "link");
 		cg_json_end(j, '}');
+		cg_json_dominant(j, &S->dom);
 		/* For a shaper on the router's WireGuard interface (capacity.h). */
 		if (cg_cap_shape_bps(&S->ctot))
 			cg_json_ms(j, "shape_mbit", cg_cap_shape_bps(&S->ctot) / 1000);

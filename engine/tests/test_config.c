@@ -712,6 +712,15 @@ static void test_config_bonding(void)
 	CHECK_EQ(cg_config_link_knobs(&c).pace_ms, 30);
 	cg_config_free(&c);
 	bad(CLIENT "exp_link_types = starlink satellite\n", "exp_link_types", "got 'starlink satellite'");
+	/* split_dominant_pct: 0 (the preset's) by default, any end */
+	CHECK_EQ(cg_config_parse(&c, SERVER "\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(cg_config_link_knobs(&c).dominant_pct, 0);
+	cg_config_free(&c);
+	CHECK_EQ(cg_config_parse(&c, CLIENT "split_dominant_pct = 400\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK(warn[0] == '\0');
+	CHECK_EQ(cg_config_link_knobs(&c).dominant_pct, 400);
+	cg_config_free(&c);
+	bad(SERVER "split_dominant_pct = 70000\n", "split_dominant_pct", "70000");
 	/* The weight is a link's, not global; a server has no [link] weights (its
 	 * client's probes say them), and says so. */
 	CHECK_EQ(cg_config_parse(&c, CLIENT "weight = 2\n", err, sizeof(err), warn, sizeof(warn)), 0);
