@@ -146,7 +146,8 @@
 # BOND_NEED_QUIC (1: no aioquic is a failure, the CI), BOND_QUIC_CC (cubic or
 # reno, what the QUIC sender runs) and BOND_QUIC_MTU (QUIC datagram, 1350: the
 # tunnel is 1380), BOND_DIRS ("up down"), BOND_OUT (a file to append the JSON
-# lines to), BOND_SMALL (pps of a flow of datagrams of BOND_SMALL_SIZE bytes,
+# lines to), BOND_RATE (iperf3 -b: the flow capped, 8M a stream; empty: none),
+# BOND_SMALL (pps of a flow of datagrams of BOND_SMALL_SIZE bytes,
 # 160, through the tunnel alongside the transfer, 0: none) and
 # BOND_NETEM_INFLIGHT (1: netem's limit also covers the packets in the delay,
 # see bond_link; 0 is the step 0 baseline), BOND_WARM and BOND_REST (the start
@@ -190,6 +191,7 @@ BOND_CASES=${BOND_CASES:-equal het reorder50 reorder150 linkdeath starlink15 lte
 BOND_VARIANTS=${BOND_VARIANTS:-} # empty: bonded solo (bond_settle)
 BOND_SOLO_CASES=${BOND_SOLO_CASES:-} # empty: equal het (bond_settle)
 BOND_SMALL=${BOND_SMALL:-0}
+BOND_RATE=${BOND_RATE:-} # iperf3 -b: the TCP flow capped at this (8M: a stream), empty: as fast as it goes
 BOND_SMALL_SIZE=${BOND_SMALL_SIZE:-160}
 BOND_NETEM_INFLIGHT=${BOND_NETEM_INFLIGHT:-0}
 BOND_OUT=${BOND_OUT:-}
@@ -632,7 +634,7 @@ bond_run() {
 		res=$RUN/iperf.json err=$RUN/iperf.err
 		# shellcheck disable=SC2046 # -R or nothing
 		ip netns exec "$NS_CLI" iperf3 -c 10.79.0.1 -t "$s" -C "$cc" -P "$BOND_P" -J ${BOND_KEEP:+-i 0.5} \
-			$([ "$dir" = down ] && echo -R) >"$res" 2>"$err" || rc=1
+			${BOND_RATE:+-b "$BOND_RATE"} $([ "$dir" = down ] && echo -R) >"$res" 2>"$err" || rc=1
 		[ -n "$BOND_KEEP" ] && mkdir -p "$BOND_KEEP" && cp "$res" "$BOND_KEEP/$c-$v-$dir-$cc-$rep.json"
 	fi
 	c1=$(cpu_ticks "$cp") s1=$(cpu_ticks "$sp")
@@ -668,12 +670,17 @@ bond_case() {
 	[ "$BV_SOLO" = 1 ] && NLINKS=1
 	CLIENT_EXTRA=$(bond_join "$BV_CLIENT" "$CLIENT_EXTRA")
 	SERVER_EXTRA=$(bond_join "$BV_SERVER" "$SERVER_EXTRA")
-	setup && start || return 1
+	setup || return 1
+	# the links' delays before the engines start: started on bare veths, the
+	# engines learned a base delay of ~0 for every link and kept it for a
+	# window (governor_window_ms, 10 s), the first seconds of every run
+	# without the links' real order (dominant.h saw none slower)
 	if [ "$BOND_NEED_NETEM" = 1 ] && ! bond_netem_ok; then
 		echo "FAIL: no netem (BOND_NEED_NETEM=1)"
 		return 1
 	fi
 	bond_shape "$c" || return 1
+	start || return 1
 	bond_tunnel || return 1
 	ip netns exec "$NS_SRV" iperf3 -s -B 10.79.0.1 -D || return 1
 	case " $BOND_CC " in *" quic "*) bond_quic_server || return 1 ;; esac
