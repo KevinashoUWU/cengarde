@@ -420,11 +420,32 @@ tasa y una cola de 100 ms a esa tasa.
 | `deepq` | 20/25 con 500 ms de cola y 50/25 con 100 ms | nada |
 | `lossy` | 60/20, 30/35 y 50/25 | cada enlace pierde el 1 % al azar en los dos sentidos: la pérdida que el rescate (`rescue_kb`, `rescue_wait_ms`) tapa; no está en la lista por defecto (`BOND_CASES`); córrelo con `CLIENT_EXTRA` `rescue_wait_ms = 60` y `SERVER_EXTRA` `rescue_kb = 32768` |
 | `starlink15sw` | 100/25 y 50/20 | como `starlink15` con las capacidades cambiadas; no está en la lista por defecto (`BOND_CASES`) |
+| `starlink15ramp` | 50/25 y 100/20 | como `starlink15` (sus cortes de 1,5 s), con el retardo de l2 que deriva como en «nostalgica» (`starslot.py`): un nivel propio por ranura (−2,5 a +2,9 ms de un sentido) y una deriva lenta en cualquier sentido; no está en la lista por defecto |
+| `shallowq` | 60/20 con 15 ms de cola; 25/45 y 18/50 con 300 ms | Starlink de cola corta y dos celulares (historia 015); no está en la lista por defecto |
+| `starsat` | como `shallowq` | l1 como Starlink en el tiempo, con las ranuras medidas en «nostalgica» (`starslot.py`, historia 015): nivel y deriva por ranura de 15 s, ~45 ms parado en cada cambio (25 perdidos, 20 retenidos 55 ms), los cortes del plato (1,45 por hora, 0,24–0,9 s); la tasa sorteada por ranura entre 45, 60 y 75 Mbit/s (sin medir); no está en la lista por defecto |
+| `dominant` | Starlink 400 abajo y 40 arriba, 11 ms, 15 ms de cola; 25/25 y 18/27 con 300 ms | «nostalgica» el 2026-10-19: Starlink muy por encima de los celulares, sus ranuras como `starsat` (tasa por ranura 3/4, 1 y 5/4 de `BOND_DOM_MBIT`); no está en la lista por defecto (historia 015) |
 
 Así queda medido lo que hoy da la redundancia (cada paquete por todos los
 enlaces, gana la primera copia) y, en `equal` y `het`, lo que daría el mejor
 enlace solo. El bonding tendrá que superar esas cifras. El caso `deepq` de
 aquí no es el escenario `deepq` de arriba, que mide las colas del servidor.
+
+**Starlink en el tiempo (`starslot.py`, `starfield.py`).** `starsat`,
+`starlink15ramp` y `dominant` mueven su enlace Starlink con `starslot.py`:
+un programa de eventos (retardo, tasa por sentido, pérdida) por ranura de
+15 s, sorteado con `BOND_SEED` y la repetición, que aplica con `tc` a
+tiempo de reloj (no se atrasa con lo que tarda cada `tc`). Sus parámetros
+salen de `starfield.py`, que lee los archivos del registrador de campo
+(`rec-*.jsonl.gz`, con las sondas crudas de cada enlace) y da el nivel por
+ranura, la deriva, el escalón en cada cambio, las sondas perdidas por fase
+y los cortes. `starslot.py plan` imprime el programa sin aplicarlo, y
+`--model ramp` reproduce la conjetura de antes de medir (historia 015).
+
+```sh
+python3 -I bench/starfield.py ~/campo/2026-10-19/rec/rec-0000{27,28,29}-*.jsonl.gz
+python3 -I bench/starslot.py plan --secs 31 --seed 1001 --delay 11 --up "30 40 50" --down "300 400 500"
+python3 bench/starslot_test.py && python3 bench/starfield_test.py
+```
 
 **Variantes (`BOND_VARIANTS`).** Qué corre en cada caso. Los ajustes de la
 variante van a los dos extremos por `CLIENT_EXTRA` y `SERVER_EXTRA` (los
@@ -583,7 +604,9 @@ python3 bench/bondtab_test.py                           # pruebas de las tablas,
 | `BOND_NETEM_INFLIGHT` | 0 | 1: el límite de netem cuenta también lo que cabe en el retardo (arriba); cambia la línea base del paso 0 |
 | `BOND_WARM` | 0 | segundos de la misma transferencia antes de cada corrida, para que arranque con los enlaces medidos (el arranque rápido, historia 013); solo con `BOND_REST` > 0 y sin `quic` |
 | `BOND_REST` | 0 | segundos sin tráfico entre ese calentamiento y la corrida: arranca desde el reposo (0: ninguno) |
-| `BOND_KEEP` | vacío | directorio donde guardar el JSON de iperf3 de cada corrida, con intervalos de 0,5 s (la rampa de los primeros segundos) |
+| `BOND_KEEP` | vacío | directorio donde guardar el JSON de iperf3 de cada corrida, con intervalos de 0,5 s (la rampa de los primeros segundos); con `BOND_SAMPLE`, también sus muestras |
+| `BOND_SAMPLE` | 0 | 1: el estado de los dos motores y los contadores de netem cada segundo; la línea JSON suma `links` (por enlace, en la segunda mitad de la corrida: parte de los bytes, capacidad, cola, tiempo `lossy` y pérdidas de netem en el extremo que envía; copias tardías en el que recibe) y `tail` (los huecos del reordenador en esa mitad). `mbps_tail`, el caudal de la segunda mitad (el régimen, tras arrancar las capacidades de cero), va siempre |
+| `BOND_DOM_MBIT` | 400 | `dominant`: la bajada de Starlink, para barrer la relación con los celulares |
 | `BOND_S` | 10 | segundos por corrida (`starlink15`, al menos 31) |
 | `BOND_N` | 1 | repeticiones; la tabla da la mediana y el rango |
 | `BOND_CC` | `cubic bbr quic` | controles de congestión; `quic` solo si importa aioquic, y si no se avisa |
@@ -677,6 +700,9 @@ python3 -I bench/labq.py run --arm base=origin/master --arm idle50=HEAD \
   niega (usa otro `--out`).
 - `--pin` le da a cada laboratorio sus núcleos (`taskset`, núcleos enteros
   con sus hilos hermanos). No ayudó (abajo), así que va apagado.
+- `--lab-offset N` numera los laboratorios locales desde `N + 1`: dos colas
+  en la misma máquina (una con `--node local:4`, otra con `--node local:2
+  --lab-offset 4`) no se pisan los `netns` ni los directorios `run-N`.
 - `labq_test.py` prueba el plan, el orden, el entorno de cada trabajo, la
   reanudación y el reparto de CPU, sin laboratorio (corre en `bond.yml`).
 

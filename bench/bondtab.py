@@ -233,11 +233,111 @@ def udpgen_fields(path):
     return {k: int(v) for k, v in re.findall(r"(\w+)=(\d+)", text)}
 
 
+def tail_mbps(j, secs):
+    """iperf3's throughput over the run's second half (its 1 s intervals), None when
+    it has none: the steady state, after the start from zero of the capacities."""
+    try:
+        iv = [x["sum"] for x in j.get("intervals", []) if x["sum"]["start"] >= secs / 2]
+        t = sum(x["seconds"] for x in iv)
+        return round(sum(x["bytes"] for x in iv) * 8 / t / 1e6, 2) if t > 0 else None
+    except (KeyError, TypeError, AttributeError):
+        return None
+
+
+def end_links(d, side):
+    """The links of an end's status: the client's, or the server's busiest session's."""
+    if not isinstance(d, dict):
+        return None
+    if side == "cli":
+        return d.get("links") if isinstance(d.get("links"), list) else None
+    best = None
+    for s in d.get("sessions") or []:
+        if isinstance(s, dict) and isinstance(s.get("links"), list):
+            v = (num(s.get("download_bytes")) or 0) + (num(s.get("upload_bytes")) or 0)
+            if best is None or v > best[0]:
+                best = (v, s)
+    return best[1]["links"] if best else None
+
+
+def end_reorder(d, side):
+    if not isinstance(d, dict):
+        return None
+    if side == "cli":
+        return flat_client(d)
+    for s in d.get("sessions") or []:
+        if isinstance(s, dict) and isinstance(s.get("links"), list):
+            return flat_session(s)
+    return None
+
+
+def samples_summary(sdir, secs, direction):
+    """Each link over the run's second half, from BOND_SAMPLE's status files (cN.json,
+    sN.json, one a second): at the end that sends the bulk (the client up, the server
+    down) its share of the bytes, mean capacity, queue and expected-arrival rate, and
+    the fraction of samples it was lossy (capacity.h); at the receiving end its late
+    copies (rx_late) and the reorderer's gaps given up and late arrivals."""
+    tx, rx = ("cli", "srv") if direction == "up" else ("srv", "cli")
+    pre = {"cli": "c", "srv": "s"}
+    first = int(secs / 2) + 1
+    snaps = {k: [load(f"{sdir}/{pre[k]}{i}.json") for i in range(first, int(secs) + 1)] for k in ("cli", "srv")}
+    snaps = {k: [x for x in v if isinstance(x, dict)] for k, v in snaps.items()}
+    if len(snaps[tx]) < 2:
+        return None, None
+    a, b = end_links(snaps[tx][0], tx), end_links(snaps[tx][-1], tx)
+    if not a or not b or len(a) != len(b):
+        return None, None
+    sent = [max(0, (num(y.get("tx_bytes")) or 0) - (num(x.get("tx_bytes")) or 0)) for x, y in zip(a, b)]
+    total = sum(sent) or 1
+    out = []
+    for i, l in enumerate(b):
+        def mean(key, sub=None, i=i):
+            vs = []
+            for snap in snaps[tx]:
+                ls = end_links(snap, tx)
+                if ls and i < len(ls):
+                    v = ls[i].get(sub, {}).get(key) if sub else ls[i].get(key)
+                    if isinstance(v, bool):
+                        v = 1.0 if v else 0.0
+                    if num(v) is not None:
+                        vs.append(v)
+            return round(sum(vs) / len(vs), 3) if vs else None
+        out.append({"type": l.get("type"), "share": round(sent[i] / total, 3), "mbit": round(sent[i] * 8 / 1e6 / max(1, len(snaps[tx]) - 1), 2),
+                    "cap": mean("capacity_mbit"), "eta": mean("eta_mbit"), "queue": mean("queue_ms"),
+                    "lossy": mean("lossy", "cap_diag")})
+    # netem's own drops on each link, the sending side (bond.sh's lN in cli, sN in srv)
+    tq = [load(f"{sdir}/t{pre[tx]}{i}.json") for i in (first, int(secs))]
+    if all(isinstance(x, list) for x in tq):
+        def qd(snap, dev):
+            for q in snap:
+                if isinstance(q, dict) and q.get("dev") == dev and q.get("kind") == "netem":
+                    return num(q.get("drops")), num(q.get("packets"))
+            return None, None
+        for k, o in enumerate(out):
+            dev = ("l%d" if tx == "cli" else "s%d") % (k + 1)
+            (d0, p0), (d1, p1) = qd(tq[0], dev), qd(tq[1], dev)
+            if None not in (d0, p0, d1, p1):
+                o["drops"] = d1 - d0
+                o["drop_pct"] = round(100 * (d1 - d0) / max(1, (p1 - p0) + (d1 - d0)), 3)
+    ra = end_links(snaps[rx][0], rx) if len(snaps[rx]) >= 2 else None
+    rb = end_links(snaps[rx][-1], rx) if len(snaps[rx]) >= 2 else None
+    if ra and rb and len(ra) == len(rb) == len(out):
+        for o, x, y in zip(out, ra, rb):
+            for k in ("rx_late", "rx_reorder_late", "rx_first"):
+                vx, vy = num(x.get(k)), num(y.get(k))
+                o[k] = None if vx is None or vy is None else vy - vx
+    tail = None
+    if len(snaps[rx]) >= 2:
+        d = sub(end_reorder(snaps[rx][-1], rx) or {}, end_reorder(snaps[rx][0], rx) or {})
+        tail = {k: d.get(k) for k in ("held_total", "lost_rack", "lost_cap", "lost_overflow", "late_after_rack",
+                                      "late_after_cap", "late_old")}
+    return out, tail
+
+
 def line(a):
     # What does not apply to a kind of run stays null: TCP does not say how many
     # packets it sent, and QUIC has no "retransmits" but the packets it declared lost.
     extra = {"pkts_sent": None, "spurious": None, "srtt_ms": None, "min_rtt_ms": None, "quic_cc": None}
-    segs = retrans_pct = None
+    segs = retrans_pct = mbps_tail = None
     try:
         j = json.load(open(a.result))
         if a.cc == "quic":
@@ -249,6 +349,7 @@ def line(a):
         else:
             end = j["end"]
             mbps = end["sum_received"]["bits_per_second"] / 1e6
+            mbps_tail = tail_mbps(j, int(a.secs))
             retrans = end["sum_sent"].get("retransmits")
             snd = end["streams"][0]["sender"]  # the sender's TCP_INFO RTTs, in microseconds
             us = lambda k: round(snd[k] / 1000, 2) if snd.get(k) else None
@@ -265,7 +366,7 @@ def line(a):
     rtts = pings(a.ping)
     big = pings(a.ping_big) if a.ping_big else []
     out = {"case": a.case, "variant": a.variant, "dir": a.dir, "cc": a.cc, "rep": int(a.rep), "secs": int(a.secs),
-           "mbps": round(mbps, 2), "retrans": retrans, **extra, "segs": segs, "retrans_pct": retrans_pct,
+           "mbps": round(mbps, 2), "mbps_tail": mbps_tail, "retrans": retrans, **extra, "segs": segs, "retrans_pct": retrans_pct,
            "rtt_p50": pct(rtts, 0.5), "rtt_p99": pct(rtts, 0.99), "pings": len(rtts),
            "rtt_big_p50": pct(big, 0.5), "rtt_big_p99": pct(big, 0.99), "pings_big": len(big),
            "cpu_client_pct": round(100 * int(a.cpu_client) / int(a.hz) / int(a.secs), 1),
@@ -276,6 +377,8 @@ def line(a):
                         "p99_us": rx.get("p99_us"), "reord": rx.get("reord")} if rx else None
     if a.before and a.after:
         out.update(delta(a.before, a.after))
+    if a.samples:  # BOND_SAMPLE: each link over the second half
+        out["links"], out["tail"] = samples_summary(a.samples, int(a.secs), a.dir)
     print(json.dumps(out))
     return 0 if mbps > 0.5 and rtts else 1
 
@@ -657,6 +760,7 @@ def main(argv):
     p.add_argument("--small-rx")
     p.add_argument("--before")
     p.add_argument("--after")
+    p.add_argument("--samples", help="BOND_SAMPLE's directory of status files, one a second")
     for n in ("case", "variant", "dir", "cc", "rep", "secs", "cpu-client", "cpu-server", "hz", "netem"):
         p.add_argument("--" + n, required=True)
     p = sp.add_parser("show")

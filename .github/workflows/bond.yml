@@ -109,7 +109,7 @@ jobs:
             }
           done
       - name: Test the tables of the lab
-        run: python3 bench/bondtab_test.py && python3 bench/labq_test.py
+        run: python3 bench/bondtab_test.py && python3 bench/labq_test.py && python3 bench/starslot_test.py && python3 bench/starfield_test.py
       - name: Build the lab (udpgen and cengarde)
         run: sudo ENGINE=c bench/lab.sh build
       - name: Bonding lab

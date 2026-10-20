@@ -77,6 +77,12 @@ with tempfile.TemporaryDirectory() as tmp:
     check(done == {("a", "equal", "down", "cubic", 1)} and shas == {"a": "s1"}, "resume: the done jobs and commits")
     check(labq.read_done(os.path.join(tmp, "none")) == (set(), {}), "resume: nothing done")
 
+local = labq.parse_node("local:2", None)
+local["off"] = 4
+remote = labq.parse_node("u@h:1", None)
+r = labq.Runner(plan, "/tmp", [], [local, remote], None)
+check([s for _, s in r.slots] == [5, 6, 1], "--lab-offset: the local labs from N+1, the remote ones as before")
+
 sets = labq.cpu_sets(1)
 check(sets is not None and len(sets) == 1, "one lab: all the CPUs")
 n = len(os.sched_getaffinity(0))

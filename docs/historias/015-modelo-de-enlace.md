@@ -1,11 +1,12 @@
 # 015 — Modelo de enlace: cada enlace con su tipo
 
 - **Fecha:** 2026-10-19
-- **Estado:** vigente. Hecho: el tipo por enlace (`type` en `[link]`, `list uplink_type` en OpenWrt, el desplegable de LuCI), su envío al VPS en la cola de bonding de las sondas y los ajustes por tipo (`linkmodel.h`); el preset de `starlink` medido en laboratorio; las correcciones mixtas de la auditoría de relojería como campos del modelo por enlace, probadas por tipo (entra solo `pace_peers_ms` en `starlink`). Falta medirlo en campo (rama `claude/link-model-field` para el router de radio, protocolo 7).
+- **Estado:** vigente. Hecho: el tipo por enlace (`type` en `[link]`, `list uplink_type` en OpenWrt, el desplegable de LuCI), su envío al VPS en la cola de bonding de las sondas y los ajustes por tipo (`linkmodel.h`); el preset de `starlink` medido en laboratorio; las correcciones mixtas de la auditoría de relojería como campos del modelo por enlace, probadas por tipo (entra solo `pace_peers_ms` en `starlink`). Falta medirlo en campo (rama `claude/link-model-field` para el router de radio, protocolo 7). 2026-10-20: las ranuras de Starlink medidas en «nostalgica» y llevadas al laboratorio (`starslot.py`, sección 7).
 - **Fuentes:**
   - la prueba de campo del 2026-10-18 en el router «nostalgica» (Starlink y dos LTE);
   - los casos `shallowq`, `shallowqd`, `shallowqdeep` y `starsat` de `bench/lab.d/bond.sh` (rama `claude/labq-nodes`, PR #77), la ablación del 2026-10-18 y el A/B de `eta_buffer` global (`~/.claude/jobs/1c68aec3/tmp/sat4/out/all.jsonl`);
   - código: `engine/src/linkmodel.h`, `capacity.h` (`cg_cap_tick`, `cg_cap_may_probe`, `cg_cap_eta`), `eta.h` (`limit_us`), `proto.h` (`CG_BOND_TYPE`);
+  - las ranuras (sección 7): `~/campo/2026-10-19/rec/rec-0000{27,28,29}-*.jsonl.gz` y `dish/history-0356.json`, analizados con `bench/starfield.py`;
   - las corridas de esta historia: `python3 -I bench/labq.py run PLAN --node local:6` (`local:3` en la verificación final), planes y salidas en `/tmp/lm/lab1` a `lab7` (scratch de la sesión, se pierde al reiniciar); las revisiones de los brazos experimentales quedan en las ramas `claude/link-model-exp*` (`-exp`: solo sin sondeo; `-exp2`: margen de 10 ms; `-exp-p40`, `-exp-p100`, `-exp-p200`: el costo en `eta.h`).
 
 ## TL;DR
@@ -16,6 +17,7 @@
 - **Lo que no sirvió:** retenerlo como último recurso (`eta_buffer`, global o solo en Starlink): todo lo que sobra va a las colas de 300 ms de los celulares (ping grande de 52 a ~200 ms) y la subida pierde 17–18 %. Costos de 100 y 200 ms: más ganancia en `shallowq`, pero −10 % y −38 % con retardos iguales.
 - **Las correcciones mixtas de la auditoría, por tipo** [laboratorio, n = 16–24, control nulo]: C3, C5, C9, C11, #33, `redund_pace_ms` y el corte por pérdida son ahora campos del modelo de cada enlace (perillas globales encima del preset, `exp_link_types` para probarlas por tipo). Para lo celular no entra ninguna: en `het`, `bloat`, `deepq`, `ltespikerand`, `spikeloss` y `lossy` nada pasa el criterio. En `starlink` entra una: en redundancia pide que los **otros** enlaces de su sesión lleven copia solo si llega a menos de 60 ms de la primera (`pace_peers_ms`). En `starsat`, el p99 del ping grande baja de ~360 a ~95 ms, con el caudal a ±5 % (−4 % en `shallowqd`) y 1,1–3× de retransmisiones. Aplicado a todos los celulares, `het` perdía 8–18 %. El corte por pérdida, C9 y C11 en Starlink no suman o cuestan (sección 6).
 - **OpenWrt:** `list uplink_type 'ENLACE=TIPO'` y un desplegable por enlace en LuCI.
+- **Las ranuras de Starlink, medidas** [campo, 2 h de sondas a 10 Hz, 479 ranuras] (sección 7): borde a los :12/:27/:42/:57 (±50 ms); en cada borde, ~45 ms parado en la subida (25 perdidos, 20 retenidos 55 ms); un nivel nuevo por ranura (RTT p5 16, p50 21, p95 26 ms; escalón p50 2,3 ms, a un valor intermedio), sin rampa dentro de la ranura (±1 ms, p90 4,6); cortes de 0,24–0,9 s, 1,45 por hora. El laboratorio exageraba todo eso diez veces; `starsat` y `starlink15ramp` ahora usan lo medido.
 - **Falta:** campo; detectores (el diente de sierra de 15 s de Starlink, el planificador PF/RR de la celda) y presets afinados por tipo (búsqueda en PyTorch).
 
 ## Contexto
@@ -230,6 +232,28 @@ Gana latencia con Starlink. En sesiones solo celulares, `het` pierde 8–18 %. D
 
 **El preset de `starlink` queda en:** `lossy_noprobe` + `lossy_hold` + `hold_over_ms = 40` + `pace_peers_ms = 60`. Lo demás queda como ganchos apagados: las perillas globales, `exp_link_types` y los campos del modelo en cero.
 
+### 7. Las ranuras de Starlink, medidas en «nostalgica» (2026-10-19, noche)
+
+**Fuentes.** Las copias de `~/campo/2026-10-19/`: el registrador del motor (`rec-000027` a `rec-000029`, 19:24–21:56 UTC, 2,0 h con sondas: el motor en redundancia y el túnel casi ocioso), donde cada enlace guarda sus 16 últimas respuestas de sonda a ~10 Hz como `[edad ms, ida us, vuelta us]`, y el historial del plato (`dish/history-0356.json`: 900 s de `popPingLatencyMs` y `popPingDropRate` a 1 Hz, 06:41–06:56 UTC, y los 12 cortes desde su arranque, con su causa). El router no se tocó.
+
+**Método** (`bench/starfield.py`, que lo repite con más archivos). La ida y la vuelta llevan la diferencia de relojes con signo contrario: su suma módulo 2³² us es el RTT de la sonda. Cada respuesta aparece en varios registros: se cuenta una vez (mismas ida y vuelta, a menos de 50 ms). La fase es la hora de la sonda (`time_ms` − edad, reloj del router con NTP) menos :12 s, módulo 15 s. El nivel de una ranura es la mediana, en sus segundos 1 a 14, del percentil 10 de cada segundo (el piso, sin la fluctuación de la subida); la deriva, la recta por esos segundos. 479 ranuras. [medido en campo]
+
+| Qué | Medido | El laboratorio antes |
+| --- | --- | --- |
+| Borde de ranura | a los :11,95–:12,00, :26,95… (reloj del router): 208 de 215 huecos de sonda en el borde caen en la misma décima | `starsat`: cada 15 s desde el arranque |
+| Nivel por ranura (RTT) | p5 16,1, p25 19,6, p50 21,0, p75 22,5, p95 26,0 ms; autocorrelación entre ranuras seguidas 0,20 (casi independientes; los LTE, en ventanas de 15 s, 0,72) | `starlink15ramp`: 20, 27 o 34 ms de un sentido |
+| Escalón en el cambio | \|Δ\| p50 2,3, p90 6,6 ms de RTT; la ranura nueva cae en el medio: en el rango de los 5 min anteriores, mediana 0,37 (0 = el más bajo), p10 0,06, p90 0,83. No vuelve al más bajo | `starlink15`: 20 ↔ 50 ms (60 de RTT); `starlink15ramp`: vuelve al más bajo o a uno intermedio |
+| Deriva dentro de la ranura | ninguna sistemática: p10 −0,23, p50 0,00, p90 +0,22 ms/s de RTT; en los 13 s, \|Δ\| p50 1,0 y p90 4,6 ms; sube en el 22 % de las ranuras, baja en el 20 % | `starsat`: +15 ms de un sentido (30 de RTT) en cada ranura; `starlink15ramp`: +10 a +25 |
+| El cambio | ~45 ms parado, en la subida: las sondas enviadas entre 45 y 20 ms antes del borde se pierden (8 de ~100 volvieron), las de los últimos 20 ms tardan 56 ms más (p90 70) en subir; la bajada no se demora. Una sonda perdida en el 45 % de los bordes, nunca dos | `starsat`: 0,3 s de pérdida total; `starlink15`: 1,5 s |
+| Pérdida | 0,51 % de las sondas; el 63 % de lo perdido, en el borde (−46 a −13 ms, p10–p90); fuera del borde, 0,19 % | — |
+| Cortes | el plato, en 7,6 h: 11 tras el arranque (1,45 por hora): `NO_DOWNLINK` 0,46–0,50 s ×3, los tres en el borde (fase 0,02–0,04 s); `OBSTRUCTED` 0,68–0,90 s ×4; `NO_PINGS` 0,24–0,80 s ×4. En las 2 h de sondas, un hueco de 0,79 s a mitad de ranura | ninguno |
+| Fluctuación en reposo, sobre el piso de la ranura | subida p50 1,5, p90 12,4, p99 35,5 ms, en saltos de ~4 ms (la concesión de la subida); bajada p50 1,1, p90 5,1, p99 9,8 | ninguna |
+| `popPingLatencyMs` del plato (1 Hz) | mediana 21,3 ms, plana en la fase (21,1–21,4 por segundo de la ranura) | — |
+
+**Lo que no se pudo medir:** la tasa por ranura y la pérdida con carga (el túnel estaba ocioso). `starsat` y `dominant` siguen sorteando la tasa por ranura (3/4, 1 y 5/4 de la nominal) como supuesto. Hacen falta los archivos del registrador de las horas de las pruebas (las de bonding y redundancia del 2026-10-19) y el `dish-rec` de esas horas.
+
+**Lo que cambió en el laboratorio** (`bench/starslot.py`, con `starslot_test.py`): `starsat` y `dominant` sortean por ranura un nivel (los 16 cuantiles medidos, de un sentido), una deriva (ídem), y en cada borde 25 ms de pérdida total seguidos de 20 ms con 55 ms más de retardo (netem con tasa respeta el orden: es una retención); los cortes del plato con su frecuencia y sus duraciones. `starlink15ramp` toma el nivel y la deriva medidos y conserva los cortes de 1,5 s de `starlink15` (su razón de ser: la diferencia entre los dos es la deriva); la conjetura de antes queda como `starslot.py --model ramp`. Los eventos van a hora de reloj (antes, cada `tc` atrasaba la ranura unos ms). **La conclusión de fondo:** el laboratorio exageraba la dinámica de las ranuras en un orden de magnitud (cortes de 0,3–1,5 s contra ~45 ms; rampas de 30 ms contra ±1–5), y lo que sí importa de Starlink es su cola corta y su capacidad.
+
 ## Lo que falta
 
 La visión: con un modelo por tipo, el reparto sabe cómo se comporta cada rama y encuentra la mejor manera de repartir entre un Starlink y celulares sin oscilar.
@@ -237,9 +261,9 @@ La visión: con un modelo por tipo, el reparto sabe cómo se comporta cada rama 
 - **Starlink:**
   - medir su frontera: la tasa a la que empieza a perder, y un techo de capacidad aprendido del comienzo de la pérdida y no de la cola;
   - ser cauto en cuanto empieza a perder;
-  - los microcortes y cambios de satélite: las ranuras de reconfiguración de 15 s, que se informan a los :12, :27, :42 y :57 s de cada minuto (UTC), por verificar con el registrador de «nostalgica»; armar la FEC o mover tráfico justo antes del borde de una ranura;
-  - modelar la rampa de retardo dentro de una ranura (geometría, curvatura de la Tierra);
-  - un detector que reconozca el diente de sierra de 15 s, para no depender de que el usuario elija el tipo.
+  - las ranuras ya están medidas en reposo (sección 7): falta la tasa por ranura y la pérdida con carga (los archivos del registrador y del `dish-rec` de las horas de las pruebas); con ~45 ms de parada por borde, armar la FEC o mover tráfico antes del borde vale poco (los :11,95 ya se saben);
+  - no hay rampa dentro de la ranura que modelar (±1 ms; p90 4,6);
+  - un detector del tipo (el nivel nuevo cada 15 s, autocorrelación 0,2 entre ranuras contra 0,7 de un LTE), para no depender de que el usuario elija el tipo.
 - **Celular:**
   - saber cómo responde el planificador de la celda (PF, RR o tasa máxima): un detector, con ns-3 5G-LENA como referencia;
   - colas profundas y bufferbloat;
@@ -251,3 +275,4 @@ La visión: con un modelo por tipo, el reparto sabe cómo se comporta cada rama 
 
 - 2026-10-19: creada.
 - 2026-10-19 (tarde): las correcciones mixtas de la auditoría por tipo de enlace (sección 6, rama `claude/link-model-presets`); `pace_peers_ms = 60` en el preset de `starlink`.
+- 2026-10-20: las ranuras de Starlink medidas en «nostalgica» (sección 7, `bench/starslot.py` y `starfield.py`; `starsat` y `starlink15ramp` recalibrados; caso `dominant` y muestras por enlace en el laboratorio).
