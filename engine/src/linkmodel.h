@@ -172,8 +172,10 @@ static inline int cg_link_pace_windows(const struct cg_link_model *m, unsigned n
 
 /* The copy windows of the links of type[0..n) (n <= 16, at most 16 models),
  * with the global redund_pace_ms (g_pace_ms, not 0) as every link's pace_ms
- * over its preset: cg_link_pace_windows. */
-static inline int cg_link_pace_types(const uint8_t *type, unsigned n, uint32_t g_pace_ms, uint32_t *w_us)
+ * over its preset, and the global pace_peers_ms (peers_ms, >= 0; 0: off) as
+ * the pace_peers_ms of the types whose preset has one: cg_link_pace_windows. */
+static inline int cg_link_pace_types(const uint8_t *type, unsigned n, uint32_t g_pace_ms, int32_t peers_ms,
+				     uint32_t *w_us)
 {
 	struct cg_link_model m[16];
 
@@ -182,6 +184,8 @@ static inline int cg_link_pace_types(const uint8_t *type, unsigned n, uint32_t g
 		m[i] = cg_link_presets[cg_link_type_norm(type[i])].m;
 		if (g_pace_ms)
 			m[i].pace_ms = (uint16_t)(g_pace_ms > 65535 ? 65535 : g_pace_ms);
+		if (peers_ms >= 0 && m[i].pace_peers_ms)
+			m[i].pace_peers_ms = (uint16_t)(peers_ms > 65535 ? 65535 : peers_ms);
 	}
 	return cg_link_pace_windows(m, n, w_us);
 }

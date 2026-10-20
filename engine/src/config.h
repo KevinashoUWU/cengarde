@@ -236,6 +236,7 @@ struct cg_config {
 	uint32_t governor_target_ms;  /* the queue a link may hold */
 	uint32_t capacity_loss_pct;   /* EXPERIMENT: a loaded link losing more than this (%) is full (capacity.h); 0: off */
 	uint32_t redund_pace_ms;      /* a copy goes on a link only if it arrives within this of the first (eta.h cg_eta_copies); 0: off */
+	int32_t pace_peers_ms;        /* client: over the starlink preset's pace_peers_ms (60); -1: the preset's, 0: off */
 	uint32_t governor_window_ms;  /* of each link's minimum delay */
 
 	/* latency knobs */

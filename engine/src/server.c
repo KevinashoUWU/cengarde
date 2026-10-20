@@ -2144,7 +2144,7 @@ static void cap_tick(struct server *s, struct session *S, uint16_t live, uint64_
 	}
 	/* The copies' windows (redund_pace_ms, a starlink path's pace_peers_ms)
 	 * and, with one, their expected arrivals per path. */
-	S->pace_any = (uint8_t)cg_link_pace_types(type, CG_MAX_LINKS, s->cfg->redund_pace_ms, S->pace_w);
+	S->pace_any = (uint8_t)cg_link_pace_types(type, CG_MAX_LINKS, s->cfg->redund_pace_ms, -1, S->pace_w);
 	if (S->pace_any)
 		cg_cap_eta(&S->pace, S->cap, live, cc.sat_us / 2, s->cfg->split_stale_max, cg_tickle_backoff(&S->tk), 0,
 			   NULL, now_ms * 1000);

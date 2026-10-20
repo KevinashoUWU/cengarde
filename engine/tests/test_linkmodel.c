@@ -224,22 +224,29 @@ static void test_linkmodel_pace_windows(void)
 		if (t != CG_LTYPE_STARLINK)
 			CHECK(cg_link_presets[t].m.pace_ms == 0 && cg_link_presets[t].m.pace_peers_ms == 0);
 	/* every link auto, or cellular: no window, the engine as before */
-	CHECK(!cg_link_pace_types(type, CG_MAX_LINKS, 0, w));
+	CHECK(!cg_link_pace_types(type, CG_MAX_LINKS, 0, -1, w));
 	type[0] = type[1] = CG_LTYPE_CELLULAR;
-	CHECK(!cg_link_pace_types(type, CG_MAX_LINKS, 0, w));
+	CHECK(!cg_link_pace_types(type, CG_MAX_LINKS, 0, -1, w));
 	for (unsigned i = 0; i < CG_MAX_LINKS; i++)
 		CHECK_EQ(w[i], 0);
 	/* a starlink link: the others paced at 60 ms, not itself */
 	type[2] = CG_LTYPE_STARLINK;
-	CHECK(cg_link_pace_types(type, CG_MAX_LINKS, 0, w));
+	CHECK(cg_link_pace_types(type, CG_MAX_LINKS, 0, -1, w));
 	CHECK(w[0] == 60 * MS && w[1] == 60 * MS && w[2] == 0 && w[3] == 60 * MS);
 	/* the global redund_pace_ms is every link's own, the smaller one wins */
-	CHECK(cg_link_pace_types(type, CG_MAX_LINKS, 30, w));
+	CHECK(cg_link_pace_types(type, CG_MAX_LINKS, 30, -1, w));
 	CHECK(w[0] == 30 * MS && w[2] == 30 * MS);
-	CHECK(cg_link_pace_types(type, CG_MAX_LINKS, 100, w));
+	CHECK(cg_link_pace_types(type, CG_MAX_LINKS, 100, -1, w));
 	CHECK(w[0] == 60 * MS && w[2] == 100 * MS);
+	/* pace_peers_ms over the preset: wider, or off */
+	CHECK(cg_link_pace_types(type, CG_MAX_LINKS, 0, 250, w));
+	CHECK(w[0] == 250 * MS && w[1] == 250 * MS && w[2] == 0);
+	CHECK(!cg_link_pace_types(type, CG_MAX_LINKS, 0, 0, w));
+	CHECK(w[0] == 0 && w[1] == 0);
 	type[2] = CG_LTYPE_AUTO;
-	CHECK(cg_link_pace_types(type, CG_MAX_LINKS, 100, w));
+	/* it only touches a preset that has one */
+	CHECK(!cg_link_pace_types(type, CG_MAX_LINKS, 0, 250, w));
+	CHECK(cg_link_pace_types(type, CG_MAX_LINKS, 100, -1, w));
 	CHECK(w[0] == 100 * MS && w[2] == 100 * MS);
 	/* by models: the other links take it, the smaller one set */
 	memset(ms, 0, sizeof(ms));

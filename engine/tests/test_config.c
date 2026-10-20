@@ -446,6 +446,14 @@ static void test_config_bonding(void)
 	CHECK(c.capacity_weights == 0 && c.split_eta == 0 && c.pacing == 0);
 	CHECK(warn[0] == '\0');
 	cg_config_free(&c);
+	/* pace_peers_ms: the preset's by default (-1), 0-2000 */
+	CHECK_EQ(cg_config_parse(&c, CLIENT, err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(c.pace_peers_ms, -1);
+	CHECK_EQ(cg_config_parse(&c, CLIENT "pace_peers_ms = 250\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(c.pace_peers_ms, 250);
+	CHECK_EQ(cg_config_parse(&c, CLIENT "pace_peers_ms = 0\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(c.pace_peers_ms, 0);
+	CHECK_EQ(cg_config_parse(&c, CLIENT "pace_peers_ms = 2001\n", err, sizeof(err), warn, sizeof(warn)), -1);
 	/* redund_pace_ms: off by default, 0-2000 */
 	CHECK_EQ(cg_config_parse(&c, CLIENT, err, sizeof(err), warn, sizeof(warn)), 0);
 	CHECK_EQ(c.redund_pace_ms, 0);
