@@ -1,7 +1,7 @@
 # 015 — Modelo de enlace: cada enlace con su tipo
 
 - **Fecha:** 2026-10-19
-- **Estado:** vigente. Hecho: el tipo por enlace (`type` en `[link]`, `list uplink_type` en OpenWrt, el desplegable de LuCI), su envío al VPS en la cola de bonding de las sondas y los ajustes por tipo (`linkmodel.h`); el preset de `starlink` medido en laboratorio; las correcciones mixtas de la auditoría de relojería como campos del modelo por enlace, probadas por tipo (entra solo `pace_peers_ms` en `starlink`). Falta medirlo en campo (rama `claude/link-model-field` para el router de radio, protocolo 7). 2026-10-20: las ranuras de Starlink medidas en «nostalgica» y llevadas al laboratorio (`starslot.py`, sección 7); el enlace dominante (`dominant.h`, sección 8): con Starlink muy por encima de los celulares, el reparto se hace a un lado.
+- **Estado:** vigente. Hecho: el tipo por enlace (`type` en `[link]`, `list uplink_type` en OpenWrt, el desplegable de LuCI), su envío al VPS en la cola de bonding de las sondas y los ajustes por tipo (`linkmodel.h`); el preset de `starlink` medido en laboratorio; las correcciones mixtas de la auditoría de relojería como campos del modelo por enlace, probadas por tipo (entra solo `pace_peers_ms` en `starlink`). Falta medirlo en campo (rama `claude/link-model-field` para el router de radio, protocolo 7). 2026-10-20: las ranuras de Starlink medidas en «nostalgica» y llevadas al laboratorio (`starslot.py`, sección 7); el enlace dominante (`dominant.h`, sección 8): con Starlink muy por encima de los celulares, el reparto se hace a un lado; los engranes de Starlink (sección 9): la pérdida por secuencia y el reloj de las ranuras, encendidos, y dos perillas.
 - **Fuentes:**
   - la prueba de campo del 2026-10-18 en el router «nostalgica» (Starlink y dos LTE);
   - los casos `shallowq`, `shallowqd`, `shallowqdeep` y `starsat` de `bench/lab.d/bond.sh` (rama `claude/labq-nodes`, PR #77), la ablación del 2026-10-18 y el A/B de `eta_buffer` global (`~/.claude/jobs/1c68aec3/tmp/sat4/out/all.jsonl`);
@@ -20,6 +20,7 @@
 - **OpenWrt:** `list uplink_type 'ENLACE=TIPO'` y un desplegable por enlace en LuCI.
 - **El enlace dominante** [laboratorio, n = 16, control nulo] (sección 8): con Starlink a 400 Mbit/s y los celulares a 25 y 18 (caso `dominant`, como «nostalgica» el 2026-10-19), el bonding daba 135 contra 294 de Starlink solo y 275 de redundancia, como en campo (~140 contra 264–352). El receptor retiene los paquetes de Starlink por los de los celulares, los suelta en ráfagas y la cola corta de Starlink tira lo que TCP manda en respuesta (2–4 % perdido a 100–150 Mbit/s); su capacidad queda en la mitad (`lossy` todo el tiempo, sin sondeo). Ahora, mientras un enlace `starlink` entrega al menos 2,5 veces lo que pueden los más lentos juntos, el reparto se hace a un lado y todo va como en redundancia: **135 → 241 Mbit/s** de bajada (p < 0,001; a 200 Mbit/s, 101 → 155), sin cambio en la subida, en `shallowq`, `starsat`, `shallowqd`, `shallowqdeep` ni en los celulares (±6 %). La subida de campo (bonding peor) no se reproduce.
 - **Las ranuras de Starlink, medidas** [campo, 2 h de sondas a 10 Hz, 479 ranuras] (sección 7): borde a los :12/:27/:42/:57 (±50 ms); en cada borde, ~45 ms parado en la subida (25 perdidos, 20 retenidos 55 ms); un nivel nuevo por ranura (RTT p5 16, p50 21, p95 26 ms; escalón p50 2,3 ms, a un valor intermedio), sin rampa dentro de la ranura (±1 ms, p90 4,6); cortes de 0,24–0,9 s, 1,45 por hora. El laboratorio exageraba todo eso diez veces; `starsat` y `starlink15ramp` ahora usan lo medido.
+- **Los engranes de Starlink** [laboratorio, n = 12–16] (sección 9): la pérdida se cuenta por secuencia (`rx_top`) y no por un retraso fijo de 250 ms, y el reloj de las ranuras (:12/:27/:42/:57, `slot.h`) saca las pérdidas del cambio de satélite: Starlink marcado `lossy` el 93 % del tiempo → 17 %, el caudal igual; los dos encendidos. Las copias solo en el borde con rescate (perilla) bajan los datos por los celulares de 3 a ~1,05 copias por paquete sin pérdida en un stream de 8 Mbit/s (+8 a +32 % de p99). La retención del dominante (perilla) no ganó y costó 17 % en `shallowq` subida. `bond.sh` arrancaba los motores antes de netem: el costo de arranque del dominante era ese artefacto.
 - **Falta:** campo; detectores (el diente de sierra de 15 s de Starlink, el planificador PF/RR de la celda) y presets afinados por tipo (búsqueda en PyTorch).
 
 ## Contexto
@@ -328,6 +329,31 @@ Todo dentro de ±6 %, sin RTT que cambie. Con todo `cellular` el código que cor
 - Para afinar después, con datos: la subida (medir la subida de los LTE; si es de ~10 Mbit/s cada uno, Starlink domina también arriba y entra solo), y el arranque (los primeros segundos reparten).
 - No va: el corte por `lossy` falso (abajo); se mide aparte.
 
+### 9. Los engranes de Starlink: la pérdida por secuencia, el reloj de las ranuras, la retención del dominante y las copias solo en el borde (tareas #63–#65, 2026-10-20) [medido en laboratorio]
+
+Con las ranuras medidas (sección 7) se afinaron cuatro piezas, cada una con su perilla para medirla aparte (`labq.py` en este PC, `--node local:5`, n = 12–16 con control nulo; planes y salidas en `~/campo/2026-10-20/gears/`, análisis `an.py`).
+
+**Un artefacto del laboratorio, corregido.** `bond.sh` arrancaba los motores (`start`) antes de poner los retardos de netem (`bond_shape`): el mínimo del retardo de cada enlace se aprendía con ~0 ms y duraba una ventana (`governor_window_ms`, 10 s), así que en los primeros segundos de cada corrida los tres enlaces parecían igual de rápidos y `dominant.h` no veía ninguno más lento (`why: no_slower`). Ahora netem va antes que los motores. Con eso, el PR #90 solo ya da 231–242 Mbit/s en `dominant` bajada contra 253 de redundancia (p 0,34–0,42): el «costo de los primeros segundos» de la sección 8 era casi todo el artefacto.
+
+**1. La pérdida por secuencia (`capacity_seq_lag`, encendida).** El informe del otro extremo trae `rx_top`, la secuencia DATA más nueva que recibió. La pérdida de una muestra se cuenta contra lo que este extremo había enviado por ese enlace al enviar esa secuencia (interpolado entre ticks), atrasado lo que el enlace va detrás del más rápido (`behind_us`), y no contra lo enviado 250 ms (250–350 con los ticks) antes del informe: con un RTT de 25 ms, cualquier baja de la tasa de envío contaba como pérdida (`test_capacity_seq_lag` lo reproduce). Sin `rx_top` (un par viejo), como antes.
+
+**2. El reloj de las ranuras (`slot.h`, `slot_clock` en el preset de `starlink`).** A los :12, :27, :42 y :57 de la hora del sistema (`starlink_edge_ms`), una muestra cuyos paquetes salieron entre 100 ms antes y 50 ms después de un borde no cuenta pérdida: es el cambio de satélite, no un enlace lleno (`edge_samples` en el estado). `starslot.py` ahora alinea sus ranuras con el reloj real (salvo `--free`), como en campo. En `dominant` bajada, Starlink marcado `lossy` el 93 % del tiempo pasa a 38 % con la secuencia y a 17 % con las dos; el caudal, igual (+4–5 %, el control nulo +8 %).
+
+**3. La retención del dominante (`split_dominant_hold`, perilla apagada).** Mientras Starlink no pierde (`lost_ms`, cualquier tasa, sin los bordes), su entrega no dice lo que puede y el modo dominante se mantiene; en reposo se presume si su historia lo muestra dominante (pico ≥ 2,5 × lo mejor de los demás). En frío (cada corrida del laboratorio) daba +12 % en `dominant` bajada (p 0,048, el nulo +8 %) pero −5 a −10 % en `shallowq` subida; con la evidencia y en caliente (`BOND_WARM=10 BOND_REST=5`), +6 % en `dominant` bajada (p 0,89) y **−17 % en `shallowq` subida** (p 0,010): en redundancia los celulares no se cargan y su capacidad queda corta, y Starlink parece dominante donde no lo es. No entra al preset. El estado dice `presumed` y `why` (la rama de la última decisión), útil igual sin la perilla.
+
+**4. Las copias solo en el borde (`starlink_edge_copies`, perilla apagada).** En redundancia (o en el modo dominante), fuera de la ventana de un borde un paquete de 300 bytes o más va solo por Starlink si reportó en los últimos 300 ms y no perdió en 2 s; dentro, o si no, por todos. Primero como «copia solo por Starlink»: 2,99 → 1,02 copias por paquete con un stream de 8 Mbit/s, pero 0,11 % de datagramas perdidos (el 37 % de las pérdidas de Starlink no cae en los bordes). Después como dato repartido (`CG_F_SPLIT`, `cg_slot_pick`) cuando el otro extremo reordena y guarda para el rescate: un hueco se pide (NACK) y vuelve por otro enlace.
+
+| Caso (8 Mbit/s TCP + 400 datagramas/s de 1200 B, n = 12) | Copias por paquete red / borde / borde+rescate | Datagramas perdidos | p99 del ping grande |
+| --- | --- | --- | --- |
+| `starsat` bajada | 2,96 / 1,02 / 1,09 | 0 / 0,104 % / **0** | 65 / 65 / 71 ms |
+| `starsat` subida | 2,98 / 1,02 / 1,06 | 0 / 0,115 % / **0** | 65 / 64 / 85 ms |
+| `dominant` bajada | 2,99 / 1,02 / 1,02 | 0 / 0,113 % / **0** | 28 / 27 / 31 ms |
+| `dominant` subida | 2,99 / 1,48 / 2,03 | 0 / 0,058 % / 0,013 % | 79 / 48 / 80 ms |
+
+Dos tercios menos de datos por los celulares, sin pérdida, a cambio de hasta +30 % de p99 en el ping grande (lo que tarda un rescate). Es una elección (datos contra latencia del peor caso), por eso perilla. En `dominant` subida Starlink va al límite y pierde: vuelven las copias.
+
+**Lo que no se probó todavía:** campo (hace falta NTP en el router; «nostalgica» congelada hasta después del vivo del 2026-10-20), los cortes de 0,24–0,9 s con las copias en el borde (1,45 por hora: el rescate o el silenciado tardan), y la API del plato para adelantarse a ellos.
+
 ## Lo que falta
 
 La visión: con un modelo por tipo, el reparto sabe cómo se comporta cada rama y encuentra la mejor manera de repartir entre un Starlink y celulares sin oscilar.
@@ -335,11 +361,12 @@ La visión: con un modelo por tipo, el reparto sabe cómo se comporta cada rama 
 - **Starlink:**
   - medir su frontera: la tasa a la que empieza a perder, y un techo de capacidad aprendido del comienzo de la pérdida y no de la cola;
   - ser cauto en cuanto empieza a perder;
-  - **el `lossy` falso:** la pérdida de una muestra compara lo enviado hasta 250 ms antes del informe con lo recibido, y el RTT de Starlink es de ~25 ms: cada vez que el reparto le manda menos que antes, parece pérdida. Starlink queda `lossy` siempre y sin sondeo, y su capacidad estimada se queda en la mitad (`dominant`: 165 contra 400) o en 2/3 (`shallowq`: 42 contra 60). Probar un retraso por enlace (su RTT con margen) con n = 16; puede costar en `shallowq`/`starsat`, donde el preset gana con ese mismo `lossy`;
+  - el `lossy` falso: hecho (sección 9, la pérdida por secuencia y el reloj de las ranuras); falta medirlo en campo;
   - las ranuras ya están medidas en reposo (sección 7): falta la tasa por ranura y la pérdida con carga (los archivos del registrador y del `dish-rec` de las horas de las pruebas); con ~45 ms de parada por borde, armar la FEC o mover tráfico antes del borde vale poco (los :11,95 ya se saben);
   - no hay rampa dentro de la ranura que modelar (±1 ms; p90 4,6);
   - un detector del tipo (el nivel nuevo cada 15 s, autocorrelación 0,2 entre ranuras contra 0,7 de un LTE), para no depender de que el usuario elija el tipo;
-  - el enlace dominante: el arranque (los primeros segundos reparten hasta que entra) y la subida de campo.
+  - el enlace dominante: la subida de campo (el arranque era el artefacto del laboratorio, sección 9);
+  - las copias en el borde en campo, y la API del plato (obstrucción, cortes) para adelantarse a los cortes de 0,24–0,9 s.
 - **Celular:**
   - saber cómo responde el planificador de la celda (PF, RR o tasa máxima): un detector, con ns-3 5G-LENA como referencia;
   - colas profundas y bufferbloat;
@@ -351,4 +378,5 @@ La visión: con un modelo por tipo, el reparto sabe cómo se comporta cada rama 
 
 - 2026-10-19: creada.
 - 2026-10-19 (tarde): las correcciones mixtas de la auditoría por tipo de enlace (sección 6, rama `claude/link-model-presets`); `pace_peers_ms = 60` en el preset de `starlink`.
+- 2026-10-20 (tarde): los engranes de Starlink (sección 9): `capacity_seq_lag` y el reloj de las ranuras (`slot.h`) encendidos; `split_dominant_hold` y `starlink_edge_copies` como perillas; netem antes de los motores en `bond.sh`.
 - 2026-10-20: las ranuras de Starlink medidas en «nostalgica» (sección 7, `bench/starslot.py` y `starfield.py`, `starsat` y `starlink15ramp` recalibrados) y el enlace dominante (sección 8, `dominant.h`, caso `dominant`, `dominant_pct = 250` en el preset de `starlink`).
