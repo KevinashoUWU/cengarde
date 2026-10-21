@@ -1,0 +1,77 @@
+---
+tags: [mapa, glosario]
+archivos:
+  - engine/src/health.h
+  - engine/src/split.h
+  - engine/src/capacity.h
+  - engine/src/reorder.h
+sello: a2131a09b4cba495
+---
+# Glosario
+
+Términos del proyecto, en español, con el nombre del código entre paréntesis. «Cosquilla», «presunto», «bomba» y «carril» son traducciones de este mapa; el código dice *tickle*, *presumed*, *pump* y *lane*.
+
+## Enlaces y salud
+- **Enlace / camino:** un enlace es una subida del router; en el servidor, un camino es sesión + enlace. → [[Sondas y cola de bonding (proto.h)]]
+- **Sonda / respuesta:** mensaje de control por enlace que trae las medidas del otro extremo. → [[Sondas y cola de bonding (proto.h)]]
+- **Cola de bonding (bonding tail):** 4 bytes al final de cada sonda: peso, si reordena, si pide reparto, rescate, lleno, tipo. → [[Sondas y cola de bonding (proto.h)]]
+- **OWD (retardo de ida):** reloj del receptor menos el ts del emisor; solo las diferencias entre enlaces significan algo. → [[Salud y silenciado (health.h)]]
+- **Silenciado (muted), G1:** enlace muy atrasado que conserva socket y sondas pero no lleva datos. → [[Salud y silenciado (health.h)]]
+- **Mudo (stall):** enlace que dejó de responder; no lleva nada hasta que vuelve. → [[Salud y silenciado (health.h)]]
+- **Goteo (trickle):** un paquete de cada N por un enlace silenciado. → [[Mapa/Perillas/mute_trickle|mute_trickle]]
+- **Portador (carrier):** enlace que lleva todo lo que se duplica. → [[Salud y silenciado (health.h)]]
+- **Modelo de enlace / tipo / preset:** clase del enlace (`auto`, `cellular`, `starlink`…) y sus parámetros. → [[Modelo de enlace (linkmodel.h)]]
+
+## Reparto
+- **Redundancia:** cada paquete por todos los enlaces; el receptor se queda con la primera copia. → [[Anti-replay (replay.h)]]
+- **Reparto (split) / bonding:** cada paquete por un solo enlace. → [[Reparto (split.h)]]
+- **Elegible / candidato:** enlace que puede recibir parte del reparto. → [[Reparto (split.h)]]
+- **Peso / peso 0 (dup0):** la parte de un enlace; con 0, copia de todo. → [[Reparto (split.h)]]
+- **G2:** con menos de dos elegibles, todo va por todos. → [[Reparto (split.h)]]
+- **G3:** enlace sin nada verificado del otro extremo en 3 intervalos de sonda. → [[G3 enlace sin respuesta (split.h)]]
+- **G4 / dispersión (spread):** solo comparten el reparto los enlaces a `split_spread_ms` del más rápido. → [[G4 guarda de dispersión (split.h)]]
+- **Estrés (stress):** el más rápido es uno que salió y todos los de dentro van lejos detrás. → [[G4 guarda de dispersión (split.h)]]
+- **Recuperación (recover):** vuelta de un enlace que pasó a ser el más rápido. → [[G4 guarda de dispersión (split.h)]]
+- **Copias bajo estrés (sdup):** copias con presupuesto mientras dura el estrés. → [[Copias bajo estrés (split.h)]]
+- **Gobernador:** pesos desde la cola de cada enlace. → [[Gobernador (govern.h)]]
+- **ETA (llegada esperada):** cada paquete por donde llegaría antes. → [[ETA (eta.h)]]
+- **Backlog:** la cola virtual de cada enlace en el ETA. → [[ETA (eta.h)]]
+- **Cosquilla (tickle):** carga breve a un enlace ocioso para volver a medirlo. → [[Cosquilla (tickle.h)]]
+- **Dominante:** enlace que entrega mucho más que los lentos juntos; el reparto se hace a un lado. → [[Enlace dominante (dominant.h)]]
+- **Presunto (presumed):** dominante supuesto en reposo, por su historia. → [[Enlace dominante (dominant.h)]]
+- **Copias a tiempo:** copia solo si llegaría cerca de la primera (`pace_ms`, `pace_peers_ms`). → [[Copias a tiempo (eta.h)]]
+
+## Medidas
+- **Cola:** retardo de ida menos su propio mínimo de ventana. → [[Cola por enlace (cg_gov_base)]]
+- **Base:** el retardo sin cola (el mínimo). → [[Cola por enlace (cg_gov_base)]]
+- **Capacidad:** lo más que entregó un enlace; baja solo lleno. → [[Capacidad (capacity.h)]]
+- **Lleno (full, sat):** cola sobre `capacity_sat_ms`, entregas cortas o pérdida con carga. → [[Capacidad (capacity.h)]]
+- **Corte / arranque rápido:** bajar la capacidad al llenarse / volver a la mitad de la mejor tras 10 s. → [[Capacidad (capacity.h)]]
+- **Sondeo a 5/4 (probe):** ofrecer más de lo medido a un enlace de cola corta. → [[Capacidad (capacity.h)]]
+- **Con pérdida (lossy):** pierde más del 0,3 % en 5 s. → [[Capacidad (capacity.h)]]
+- **Frontera:** la tasa donde un enlace empieza a perder (planeado para Starlink). → [[Modelo de enlace (linkmodel.h)]]
+- **Retención (lossy_hold) / costo de pasarse (hold_over_ms):** el ETA no llena un enlace que pierde más allá de su cola más alta. → [[ETA (eta.h)]]
+- **Ranura (slot) / borde (edge) / ventana:** los 15 s de Starlink, el instante del cambio (:12, :27, :42, :57) y el margen alrededor. → [[Ranuras de Starlink (slot.h)]]
+- **Tope de cake:** la tasa para un shaper delante del túnel. → [[Tope para cake (capacity.h)]]
+- **Tardanza conjunta:** probabilidad de que todos los enlaces de un grupo lleguen tarde. → [[Llegadas (arrival.h)]]
+
+## Recepción y recuperación
+- **Reordenador / hueco / plazo / margen:** pone en orden; un hueco es una secuencia que falta; el plazo es cuánto se la espera. → [[Reordenador (reorder.h)]]
+- **RACK:** abandonar un hueco cuando todos los enlaces trajeron algo posterior. → [[Reordenador (reorder.h)]]
+- **Tardío (late):** llegó después de abandonado su hueco. → [[Reordenador (reorder.h)]]
+- **rset:** los enlaces que el reordenador espera. → [[Reordenador (reorder.h)]]
+- **Rescate / NACK / GONE:** pedir de nuevo un hueco; el aviso de que no vendrá. → [[Rescate (rescue.h)]]
+- **FEC / paridad / grupo:** XOR de un paquete por enlace, que reconstruye uno perdido. → [[FEC (fec.h)]]
+- **Liberación (CG_F_FREE):** paquetes que el reordenador no retiene. → [[Liberación TCP (tcpfree.h)]]
+
+## Infraestructura
+- **Dosificación (pacing):** el kernel limita la tasa del socket de cada enlace. → [[Dosificación (pace.h)]]
+- **Carril (lane) / basura:** sockets del servidor por número de enlace; el de lo que no es protocolo. → [[Colas del servidor (steer.h)]]
+- **Hub / bomba (pump):** el hilo con la sesión / los hilos que leen los enlaces. → [[Hilos por enlace (thrplan.h)]]
+- **Pista de cliente / cookie / HELLO:** cómo el servidor halla la clave y acepta caminos nuevos. → [[Varios clientes (clients.h)]], [[Cookies y HELLO (cookie.h)]]
+- **IP pass:** todos los puertos públicos del VPS a un router. → [[Tabla de reenvío (fwdtable.h)]]
+- **Túnel nativo:** paquetes IP de una TUN propia en vez de WireGuard. → [[Rutas del túnel nativo (tunroute.h)]]
+- **Relojería:** la auditoría de cómo se pisan los lazos (C1–C13). → [[Bitácora de decisiones (decision.h)]], [[audit-pending]]
+- **Control nulo:** el mismo código compilado aparte, para medir el ruido de un A/B. → [[015-modelo-de-enlace]]
+
+Volver a [[Mapa del motor]].

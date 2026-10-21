@@ -1,0 +1,44 @@
+---
+tags: [mapa, pieza]
+archivos:
+  - engine/src/proto.h
+  - engine/src/proto.c
+  - engine/tests/test_proto.c
+sello: ed8430537adf250e
+---
+# Sondas y cola de bonding (proto.h)
+
+**Grupo:** Medir — [[Mapa del motor]]
+
+## Qué hace
+Es la fuente de casi todas las medidas. El cliente manda una sonda por enlace; el servidor responde por el mismo enlace. Cada sonda o respuesta lleva lo que el otro extremo midió: el retardo de ida (`owd`), los paquetes verificados recibidos por ese camino (`rx`), la secuencia DATA más nueva recibida (`rx_top`) y el intervalo hasta la próxima sonda. Al final va la «cola de bonding» (`cg_probe_bond`), 4 bytes con el peso del enlace, si el extremo reordena, si pide reparto, si guarda para el rescate, si la ruta está llena y el tipo del enlace.
+
+## Lee
+- El reloj monotónico del emisor (timestamp de la cabecera) y lo recibido por cada camino.
+- [[Salud y silenciado (health.h)]] marca `CG_F_MUTED`; [[Rescate (rescue.h)]] fija `CG_BOND_RESCUE` y `CG_BOND_FULL`; [[Modelo de enlace (linkmodel.h)]] da `CG_BOND_TYPE` (bits 20–22).
+
+## Decide / escribe
+- `owd` → [[Salud y silenciado (health.h)]] (filtro EWMA 1/4), y desde ahí [[Cola por enlace (cg_gov_base)]], [[G4 guarda de dispersión (split.h)]], [[Gobernador (govern.h)]], [[Capacidad (capacity.h)]], [[ETA (eta.h)]].
+- `rx` y `rx_top` → [[Capacidad (capacity.h)]] (lo entregado y la pérdida por secuencia).
+- La cola de bonding → `cg_split_active` en [[Reparto (split.h)]] (vale solo la del mensaje de control más nuevo, `cg_split_tail_newer`).
+- Respuestas verificadas → [[G3 enlace sin respuesta (split.h)]] (`last_reply_ms`) y el retardo de cada enlace para el [[Reordenador (reorder.h)]] (`cg_ro_owd`).
+
+## Perillas
+- [[Mapa/Perillas/probe_interval_ms|probe_interval_ms]]: 100; 100–60000 (con tráfico).
+- [[Mapa/Perillas/probe_idle_ms|probe_idle_ms]]: 1000; hasta 600000 (en reposo).
+- [[Mapa/Perillas/split|split]], [[Mapa/Perillas/reorder|reorder]], [[Mapa/Perillas/weight|weight]], [[Mapa/Perillas/type|type]]: lo que viaja en la cola.
+
+## Dónde se midió
+- [[006-salud-de-enlaces]]: el retardo de ida relativo como señal (protocolo v2), sondeo cada 100 ms con tráfico y cada segundo en reposo.
+- [[012-bonding]]: la cola de 4 B de las sondas, sin subir la versión.
+- [[015-modelo-de-enlace]]: el tipo en los bits 20–22, sin versión nueva.
+
+## Choques conocidos
+- Un solo sensor alimenta siete lazos: el OWD llega tarde (el del sentido contrario, más una sonda, más ~300–400 ms de EWMA) y todos actúan sobre la misma máscara (auditoría de relojería, `~/campo/2026-10-17/relojeria/analysis.md`; ver [[audit-pending]]).
+- C2: la máscara de enlaces activos del emisor no viaja en la sonda; arreglarlo sube `CG_PROTO_VERSION` ([[audit-pending]]).
+- El comentario de cabecera dice «version 5» y `CG_PROTO_VERSION` vale 7 (ver [[Mapa del motor#Contradicciones]]).
+
+## Archivos
+- `engine/src/proto.h` (`struct cg_probe_info`, `CG_BOND_*`, `CG_F_*`), `proto.c`.
+- Tests: `engine/tests/test_proto.c`.
+- `client.c`: `send_probe`, `on_probe_reply`, `on_hello`. `server.c`: `on_probe`, `queue_reply`, `queue_hello`.

@@ -7,11 +7,13 @@ on:
     paths:
       - 'engine/**'
       - 'bench/**'
+      - 'docs/mapa/**'
       - '.github/workflows/engine.yml'
   pull_request:
     paths:
       - 'engine/**'
       - 'bench/**'
+      - 'docs/mapa/**'
       - '.github/workflows/engine.yml'
   workflow_dispatch:
 
@@ -25,6 +27,16 @@ permissions:
   contents: read
 
 jobs:
+  # The engine map (docs/mapa) at HEAD: every engine file in a note, every
+  # note sealed against its files' current code, the knob table complete and
+  # its numeric defaults equal to the parser's (docs/mapa/mapa.py).
+  map:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: The engine map is not behind the code
+        run: python3 docs/mapa/mapa.py check
+
   test:
     runs-on: ubuntu-24.04
     strategy:

@@ -18,7 +18,8 @@ routers por VPS, nombres con DNS dinámico) en QEMU; falta hardware real.
 - `engine/`: motor C (`src/`, `tests/`, `examples/`, `README.md`).
 - `openwrt/`: paquetes `cengarde` y `luci-app-cengarde`, `test/` (VMs QEMU
   y Playwright) y guía; `contrib/`: VPS (cloud-init, NAT) y systemd.
-- `bench/`: laboratorio netns/veth con `udpgen` (WireGuard falso); `docs/historias/`: investigación (índice abajo).
+- `bench/`: laboratorio netns/veth con `udpgen` (WireGuard falso); `docs/historias/`: investigación (índice abajo);
+  `docs/mapa/`: mapa del motor (una nota por pieza y por perilla; bóveda Obsidian `~/Obsidian/cengarde`).
 
 ## Comandos
 
@@ -50,6 +51,9 @@ routers por VPS, nombres con DNS dinámico) en QEMU; falta hardware real.
   funciones puras dentro de cabeceras pequeñas, con tests unitarios aislados
   (patrón de libRIST, historia 003).
 - **Compilar:** el motor tiene que compilar sin warnings con gcc y clang.
+- **Mapa (`docs/mapa`), al día con HEAD:** léelo antes de tocar una pieza. Un PR que la cambia
+  actualiza su nota y la re-sella (`docs/mapa/mapa.py sello "NOTA.md"`); una perilla nueva va en
+  `perillas.py` (`mapa.py perillas`). El CI (`mapa.py check`) falla si el mapa queda atrás.
 
 ## Memoria del proyecto: historias
 
