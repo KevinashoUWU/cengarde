@@ -32,13 +32,14 @@
 #               flow, to set against starlink15 (story 012: the retransmissions
 #               of starlink15 come from the cuts, not from the redundancy)
 #   starlink15ramp  not in the default list: starlink15 with the delay of
-#               link 2 drifting as in real life: within each 15 s slot it rises
-#               slowly (10 to 25 ms more, a step every 0.5 s) as the satellite
-#               moves away, and after the 1.5 s cut of the switch it starts the
-#               next slot again at the lowest (20 ms) or at an intermediate one
-#               (27 or 34 ms), drawn from BOND_SEED and the repetition like
-#               ltespikerand. The cuts are starlink15's, so the difference
-#               between the two is the drift alone
+#               link 2 drifting as measured on nostalgica (2026-10-19,
+#               bench/starslot.py, story 015): each 15 s slot draws its own
+#               base delay (one-way -2.5 to +2.9 ms around 20) and a slow drift
+#               either way (at most ~0.2 ms/s), from BOND_SEED and the
+#               repetition like ltespikerand. The cuts are starlink15's, so the
+#               difference between the two is the drift alone (the lab's guess
+#               before the field data, a rise of 10 to 25 ms per slot, is
+#               starslot.py --model ramp)
 #   downstall   not in the default list: 3 links of 40 Mbit/s, 25, 25 and
 #               30 ms; link 2's download direction alone (the server's side)
 #               drops everything for 1.5 s, 3 to 8 s apart at random (seeded
@@ -56,10 +57,24 @@
 #               difference costs)
 #   shallowqdeep  not in the default list: shallowq with Starlink behind 300 ms
 #               of queue (no burst loss: what the shallow queue costs)
-#   starsat     not in the default list: shallowq with link 1 as Starlink in time:
-#               its rate drawn per 15 s slot from 45, 60 and 75 Mbit/s (seeded
-#               like ltespikerand), its delay rising 0 to 15 ms within the slot,
-#               and 0.3 s of total loss at each switch
+#   starsat     not in the default list: shallowq with link 1 as Starlink in time,
+#               its slots as measured on nostalgica (2026-10-19,
+#               bench/starslot.py, story 015): a base delay per 15 s slot and
+#               a slow drift, ~45 ms stopped at each switch (25 lost, 20 held
+#               55 ms), the dish's outages (1.45 an hour, 0.24-0.9 s); its rate
+#               drawn per slot from 45, 60 and 75 Mbit/s (not measured yet).
+#               Seeded like ltespikerand. Before the field data: a rise of 15 ms
+#               within each slot and 0.3 s of total loss at each switch
+#   dominant    not in the default list: nostalgica on 2026-10-19, Starlink far
+#               above the cellular links: link 1 Starlink 400 Mbit/s down and
+#               40 up, 11 ms (22 ms RTT, the field's floor), 15 ms of queue, its
+#               slots as starsat's with the rate drawn from 300/400/500 down
+#               and 30/40/50 up; links 2 and 3 cellular, 25 and 18 Mbit/s, 25
+#               and 27 ms (28-32 ms more RTT, the field's medians), 300 ms of
+#               queue. Down, spilling to the cellular links can add 10 % of
+#               capacity for their 30 ms of reordering (field: the bond ~140
+#               Mbit/s against 264-352 for redundancy); up, the three are alike.
+#               BOND_DOM_MBIT (400) sets Starlink's download, to sweep the ratio
 #   ltespike    link 1 (50 Mbit/s, 25 ms) jumps by 300 ms for 1 s every 5 s;
 #               link 2 steady (50 Mbit/s, 30 ms)
 #   ltespikerand  not in the default list: ltespike with the jumps 2 to 10 s
@@ -138,7 +153,12 @@
 # from rest, story 013: before each run, BOND_WARM seconds of the same transfer
 # and BOND_REST of nothing, so the run starts on links measured and then left
 # idle; 0: none) and BOND_KEEP (a directory to keep each run's iperf3 JSON in,
-# with intervals of 0.5 s: the ramp of its first seconds). Needs iperf3, wg
+# with intervals of 0.5 s: the ramp of its first seconds) and BOND_SAMPLE (1:
+# the engine's status every second, and in the JSON line "links", each link's
+# share, capacity, queue and time lossy at the sending end and its late
+# arrivals at the receiving one, and "tail", the throughput and the
+# receiver's gaps, both over the run's second half: the steady state, after
+# the capacities' start from zero). Needs iperf3, wg
 # (wireguard-tools), ping and netem; WireGuard from the kernel, or
 # wireguard-go named by WG_GO when the kernel has none.
 # Without netem the links only get a rate (tbf) and the delays are skipped,
@@ -176,6 +196,8 @@ BOND_OUT=${BOND_OUT:-}
 BOND_WARM=${BOND_WARM:-0}
 BOND_REST=${BOND_REST:-0}
 BOND_KEEP=${BOND_KEEP:-}
+BOND_SAMPLE=${BOND_SAMPLE:-0}
+BOND_DOM_MBIT=${BOND_DOM_MBIT:-400} # dominant: Starlink's download, Mbit/s (its slots draw 3/4, 1 and 5/4 of it)
 WG_GO=${WG_GO:-}
 BOND_NEED_NETEM=${BOND_NEED_NETEM:-0}
 BOND_NEED_QUIC=${BOND_NEED_QUIC:-0}
@@ -399,6 +421,12 @@ bond_link_down() {
 	ip netns exec "$NS_SRV" tc qdisc replace dev "s$n" root netem delay "${d}ms" rate "${r}mbit" limit $((lim + inflight)) loss "${loss}%"
 }
 
+# bond_link_ud N DELAY_MS UP_MBIT DOWN_MBIT [QUEUE_MS [LOSS_PCT]]: as
+# bond_link with a rate per direction (Starlink: ~450 down, ~44 up).
+bond_link_ud() {
+	bond_link "$1" "$2" "$3" "${5:-100}" "${6:-0}" && bond_link_down "$1" "$2" "$4" "${5:-100}" "${6:-0}"
+}
+
 # bond_events CASE SECS [REP]: what changes during a run (in the background).
 bond_events() {
 	local c=$1 s=$2 rep=${3:-1} t r2=100 gap
@@ -420,33 +448,21 @@ bond_events() {
 		done
 		;;
 	starlink15ramp)
-		RANDOM=$((${BOND_SEED:-1} * 1000 + rep))
-		local d0=20 rise k
-		for t in $(seq 15 15 "$s"); do
-			rise=$((10 + RANDOM % 16))
-			for k in $(seq 1 27); do
-				sleep 0.5
-				bond_link 2 $((d0 + rise * k / 27)) 100
-			done
-			bond_link 2 $((d0 + rise)) 100 100 100
-			sleep 1.5
-			d0=$(echo "20 27 34" | cut -d' ' -f$((1 + RANDOM % 3)))
-			bond_link 2 "$d0" 100
-		done
+		# the drift measured on nostalgica (starslot.py), starlink15's cuts
+		python3 -I "$LAB/starslot.py" run --ns-cli "$NS_CLI" --ns-srv "$NS_SRV" --link 2 --secs "$s" \
+			--seed $((${BOND_SEED:-1} * 1000 + rep)) --delay 20 --up 100 --queue 100 --cut-ms 1500 --no-outages \
+			--inflight "${BOND_NETEM_INFLIGHT:-0}"
 		;;
 	starsat)
-		RANDOM=$((${BOND_SEED:-1} * 1000 + rep))
-		local r1=60 k
-		for t in $(seq 15 15 "$s"); do
-			for k in $(seq 1 29); do
-				sleep 0.5
-				bond_link 1 $((20 + 15 * k / 29)) "$r1" 15
-			done
-			bond_link 1 35 "$r1" 15 100
-			sleep 0.3
-			r1=$(echo "45 60 75" | cut -d' ' -f$((1 + RANDOM % 3)))
-			bond_link 1 20 "$r1" 15
-		done
+		python3 -I "$LAB/starslot.py" run --ns-cli "$NS_CLI" --ns-srv "$NS_SRV" --link 1 --secs "$s" \
+			--seed $((${BOND_SEED:-1} * 1000 + rep)) --delay 20 --up "45 60 75" --queue 15 \
+			--inflight "${BOND_NETEM_INFLIGHT:-0}"
+		;;
+	dominant)
+		python3 -I "$LAB/starslot.py" run --ns-cli "$NS_CLI" --ns-srv "$NS_SRV" --link 1 --secs "$s" \
+			--seed $((${BOND_SEED:-1} * 1000 + rep)) --delay 11 --up "30 40 50" --queue 15 \
+			--down "$((BOND_DOM_MBIT * 3 / 4)) $BOND_DOM_MBIT $((BOND_DOM_MBIT * 5 / 4))" \
+			--inflight "${BOND_NETEM_INFLIGHT:-0}"
 		;;
 	ltespike)
 		for t in $(seq 5 5 "$s"); do
@@ -504,6 +520,7 @@ bond_shape() {
 	downstall) bond_link 1 25 40 && bond_link 2 25 40 && bond_link 3 30 40 ;;
 	starlink15 | starlink15ramp) bond_link 1 25 50 && bond_link 2 20 100 ;;
 	shallowq | starsat) bond_link 1 20 60 15 && bond_link 2 45 25 300 && bond_link 3 50 18 300 ;;
+	dominant) bond_link_ud 1 11 40 "$BOND_DOM_MBIT" 15 && bond_link 2 25 25 300 && bond_link 3 27 18 300 ;;
 	shallowqd) bond_link 1 20 60 15 && bond_link 2 20 25 300 && bond_link 3 20 18 300 ;;
 	shallowqdeep) bond_link 1 20 60 300 && bond_link 2 45 25 300 && bond_link 3 50 18 300 ;;
 	starlink15sw) bond_link 1 25 100 && bond_link 2 20 50 ;;
@@ -518,7 +535,7 @@ bond_shape() {
 
 bond_nlinks() {
 	case $1 in
-	het | linkdeath | downstall | bloat | lossy | shallowq | shallowqd | shallowqdeep | starsat) echo 3 ;;
+	het | linkdeath | downstall | bloat | lossy | shallowq | shallowqd | shallowqdeep | starsat | dominant) echo 3 ;;
 	*) echo 2 ;;
 	esac
 }
@@ -559,6 +576,24 @@ bond_small_start() {
 	BOND_BG="$BOND_BG $!"
 }
 
+# bond_sample_start SECS: the engine's status files every second of the run
+# into $RUN/samples (BOND_SAMPLE=1), for bondtab.py's per-link summary of the
+# run's second half; the pid goes to BOND_BG.
+bond_sample_start() {
+	rm -rf "$RUN/samples"
+	mkdir -p "$RUN/samples"
+	(
+		for i in $(seq 1 "$1"); do
+			sleep 1
+			cp "$RUN/client.json" "$RUN/samples/c$i.json" 2>/dev/null
+			cp "$RUN/server.json" "$RUN/samples/s$i.json" 2>/dev/null
+			ip netns exec "$NS_CLI" tc -s -j qdisc show >"$RUN/samples/tc$i.json" 2>/dev/null
+			ip netns exec "$NS_SRV" tc -s -j qdisc show >"$RUN/samples/ts$i.json" 2>/dev/null
+		done
+	) &
+	BOND_BG="$BOND_BG $!"
+}
+
 # bond_run CASE VARIANT DIR CC REP SECS: one run (iperf3, or quicperf for cc
 # quic) with two pings alongside (84 and 1200 bytes); appends a JSON line to
 # $RUN/bond.jsonl and prints a short one.
@@ -585,6 +620,10 @@ bond_run() {
 		bond_small_start "$dir" "$s"
 		small=(--small-tx "$RUN/small-tx.out" --small-rx "$RUN/small-rx.out")
 	fi
+	if [ "$BOND_SAMPLE" = 1 ]; then
+		bond_sample_start "$s"
+		small+=(--samples "$RUN/samples")
+	fi
 	if [ "$cc" = quic ]; then
 		res=$RUN/quic.json err=$RUN/quic.err
 		ip netns exec "$NS_CLI" python3 -I "$LAB/quicperf.py" client 10.79.0.1 --dir "$dir" --secs "$s" \
@@ -609,6 +648,10 @@ bond_run() {
 		--cpu-client $((c1 - c0)) --cpu-server $((s1 - s0)) --hz "$(getconf CLK_TCK)" --netem "$BOND_NETEM" \
 		--before "$RUN/snap-before" --after "$RUN/snap-after" ${small[@]+"${small[@]}"} >>"$RUN/bond.jsonl" || rc=1
 	bond_snap_roll
+	if [ -n "$BOND_KEEP" ] && [ "$BOND_SAMPLE" = 1 ]; then
+		rm -rf "$BOND_KEEP/$c-$v-$dir-$cc-$rep.samples"
+		cp -r "$RUN/samples" "$BOND_KEEP/$c-$v-$dir-$cc-$rep.samples"
+	fi
 	python3 -I "$LAB/bondtab.py" show "$RUN/bond.jsonl"
 	[ "$rc" = 0 ] || echo "FAIL: $c $v $dir $cc #$rep: no traffic or no ping through the tunnel ($(head -c 200 "$err"))"
 	return "$rc"
@@ -618,7 +661,7 @@ bond_run() {
 # link alone), every direction, congestion control and repetition.
 bond_case() {
 	local c=$1 v=$2 s=$BOND_S dir cc rep fail=0
-	case $c in starlink15* | starsat) [ "$s" -lt 31 ] && s=31 ;; esac
+	case $c in starlink15* | starsat | dominant) [ "$s" -lt 31 ] && s=31 ;; esac
 	ENGINE=c
 	NLINKS=$(bond_nlinks "$c")
 	bond_variant "$v" || return 1
@@ -669,14 +712,14 @@ bond_plan() {
 	for w in ${BOND_CC:-cubic bbr quic}; do ccs=$((ccs + 1)); done
 	for c in $BOND_CASES; do
 		case $c in
-		equal | het | reorder50 | reorder150 | linkdeath | downstall | shallowq | shallowqd | shallowqdeep | starsat | starlink15 | starlink15sw | starlink15ramp | ltespike | ltespikerand | deepq | bloat | lossy | spikeloss) ;;
+		equal | het | reorder50 | reorder150 | linkdeath | downstall | shallowq | shallowqd | shallowqdeep | starsat | dominant | starlink15 | starlink15sw | starlink15ramp | ltespike | ltespikerand | deepq | bloat | lossy | spikeloss) ;;
 		*)
 			echo "bond: unknown case $c"
 			return 1
 			;;
 		esac
 		dur=$BOND_S
-		case $c in starlink15* | starsat) [ "$dur" -lt 31 ] && dur=31 ;; esac
+		case $c in starlink15* | starsat | dominant) [ "$dur" -lt 31 ] && dur=31 ;; esac
 		for v in $BOND_VARIANTS; do
 			bond_applies "$c" "$v" || continue
 			pairs=$((pairs + 1))

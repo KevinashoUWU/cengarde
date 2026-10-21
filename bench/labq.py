@@ -30,7 +30,8 @@ BOND_N run would). Jobs go repetition by repetition, then case, direction and
 cc, the arms side by side and their order rotated at each repetition, so drift
 over the hours hits every arm alike. Up to -j labs run at once, LAB_ID 1..j
 (run as root, or through sudo -n); --pin gives each lab its own CPU cores
-(taskset), whole cores split evenly.
+(taskset), whole cores split evenly; --lab-offset N numbers the local labs
+from N+1, so that two queues share a machine.
 
 Other machines join with --node USER@HOST:N[,key=PATH][,root=DIR] (and the
 local labs with --node local:N; without --node, -j N local labs): a node is a
@@ -316,7 +317,7 @@ class Runner:
         self.lock = threading.Lock()
         self.stop = False
         self.n, self.ok, self.failed, self.t0 = len(todo), 0, [], time.monotonic()
-        self.slots = [(node, s) for node in nodes for s in range(1, node["n"] + 1)]
+        self.slots = [(node, node.get("off", 0) + s) for node in nodes for s in range(1, node["n"] + 1)]
         self.down = set()   # nodes out of the pool
         self.retried = set()
 
@@ -339,7 +340,7 @@ class Runner:
         if node["local"]:
             cmd = ([] if os.geteuid() == 0 else ["sudo", "-n"])
             if self.pins:
-                cmd += ["taskset", "-c", self.pins[slot - 1]]
+                cmd += ["taskset", "-c", self.pins[slot - node.get("off", 0) - 1]]
             cmd += ["env"] + ["%s=%s" % kv for kv in sorted(env.items())] + [os.path.join(HERE, "lab.sh"), "bond"]
         else:
             path = "%s/prefix/bin:%s/venv/bin:/usr/sbin:/sbin:/usr/bin:/bin" % (node["home"], node["home"])
@@ -434,6 +435,8 @@ def main(argv=None):
     p.add_argument("--node", action="append", help="local:N or USER@HOST:N[,key=PATH][,root=DIR] (see the docstring)")
     p.add_argument("--key", default=None, help="the ssh key for the nodes (default: ssh's own)")
     p.add_argument("--pin", action="store_true", help="each lab on its own cores (taskset)")
+    p.add_argument("--lab-offset", type=int, default=0,
+                   help="the local labs are LAB_ID N+1.. (another queue on this machine uses 1..N)")
     p.add_argument("--out", help="the output directory (needed by run)")
     p.add_argument("--cache", default=os.path.join(HERE, "labq-cache"), help="where builds go (bench/labq-cache)")
     a = p.parse_args(argv)
@@ -444,6 +447,9 @@ def main(argv=None):
     done, shas = read_done(a.out) if a.out else (set(), {})
     todo = [j for j in all_jobs if tuple(j[k] for k in KEY) not in done]
     nodes = [parse_node(s, a.key) for s in a.node] if a.node else [parse_node("local:%d" % a.j, a.key)]
+    for n in nodes:
+        if n["local"]:
+            n["off"] = a.lab_offset
     labs = sum(n["n"] for n in nodes)
     if a.cmd == "plan":
         for j in todo:
