@@ -8,7 +8,8 @@
 # half of the pressure threshold (engine/src/rcvbudget.h). Here udp_mem is lowered to UDPMEM
 # pages (8192 12288 16384: 64 MiB at most for the whole machine) and put
 # back by a trap, the server is stopped with SIGSTOP so that nothing
-# drains, and a flood of protocol 6 datagrams on every link id fills every
+# drains, and a flood of DATA datagrams of the engine's protocol version
+# (CG_PROTO_VERSION, read from proto.h) on every link id fills every
 # lane, while a separate UDP pair exchanges 100 pps. Its receiver reads
 # every 250 ms, so it holds a backlog like any busy UDP socket of the
 # machine. With 8 lanes at the default 4 MiB (8 MiB once doubled) the
@@ -134,16 +135,21 @@ print(f"rx={n}")
 EOF2
 }
 
-# udpmem_flood N: N protocol 6 datagrams (1400 bytes) on each link id 0-15,
-# from cli to the server's port: every lane gets 2 N.
+# udpmem_flood N: N DATA datagrams (1400 bytes) on each link id 0-15, from
+# cli to the server's port: every lane gets 2 N. Their version nibble is the
+# engine's: the steering program sends any other version to the junk socket
+# (steer.h), and a fixed one stopped filling the lanes when the protocol
+# went from 6 to 7.
 udpmem_flood() {
-	ip netns exec "$NS_CLI" python3 - "$1" <<'EOF'
+	local v
+	v=$(sed -n 's/^#define CG_PROTO_VERSION \([0-9]*\).*/\1/p' "$REPO/engine/src/proto.h")
+	ip netns exec "$NS_CLI" python3 - "$1" "$v" <<'EOF'
 import socket, sys
 
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 s.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1 << 20)
 for link in range(16):
-    pkt = bytes([0x61, 0, 0, link]) + bytes(1396)  # protocol 6, DATA
+    pkt = bytes([int(sys.argv[2]) << 4 | 1, 0, 0, link]) + bytes(1396)  # DATA
     for _ in range(int(sys.argv[1])):
         try:
             s.sendto(pkt, ("10.0.1.2", 59402))
