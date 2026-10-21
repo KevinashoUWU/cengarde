@@ -702,11 +702,21 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
   de la primera (`pace_peers_ms`): con los celulares de cola de 300 ms, el
   p99 del ping de 1200 bytes en `starsat` bajó de ~360 a ~95 ms, con el
   caudal a ±5 % en todos los casos con Starlink (*medido en laboratorio*,
-  historia 015); una sesión sin Starlink no cambia. `cellular`, `fiber`,
+  historia 015); una sesión sin Starlink no cambia. En bonding, un enlace
+  `starlink` que entrega al menos 2,5 veces lo que pueden juntos los
+  enlaces más lentos que él (`dominant.h`; 2 ms o más de retardo base por
+  encima) hace que el reparto se haga a un lado: cada paquete va como en
+  redundancia, con las copias a tiempo de arriba, hasta que entrega menos
+  de 2 veces eso. Con Starlink a 400 Mbit/s y dos celulares de 25 y 18, el
+  bonding pasó de 135 a 241 Mbit/s de bajada (n = 16, p < 0,001; Starlink
+  solo, 294; redundancia, 275; *medido en laboratorio*, caso `dominant`,
+  historia 015); a 200, de 101 a 155; a 100 no entra. `cellular`, `fiber`,
   `ethernet` y `radio` se comportan
   como `auto` hasta que una medida diga otra cosa. El
-  estado muestra `type` en cada enlace (cliente) y camino (servidor), y
-  `lossy` y `lossy_noprobe` en su `cap_diag`. Se aplica en caliente.
+  estado muestra `type` en cada enlace (cliente) y camino (servidor),
+  `lossy` y `lossy_noprobe` en su `cap_diag`, y `dominant` (el enlace, su
+  mejor entrega en 10 s y los enlaces que domina) en `upload` del cliente y
+  en cada sesión del servidor. Se aplica en caliente.
 - **`eta_buffer` (`no`; `yes` o `no`) y `capacity_loss_pct` (0; 0–50), en
   los dos extremos, para lo que cada uno envía (experimentales):** las
   perillas globales de lo que hacen los presets, para todos los enlaces a
@@ -723,7 +733,9 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
   `split_qpred_mode` (#33), `split_dwell_ms` y `split_dwell_oq_ms` (C3),
   `cap_g4_episode` (C5), `eta_keep` y `eta_keep_ms` (C9),
   `rescue_full_hyst` (C11) y `redund_pace_ms` (una copia va por un enlace
-  solo si llegaría a menos de eso de la primera). Cada una es un campo del
+  solo si llegaría a menos de eso de la primera). `split_dominant_pct` (0:
+  el del preset, 250 en `starlink`) mueve el umbral del enlace dominante
+  solo donde el preset lo tiene; un valor grande (65535) lo apaga. Cada una es un campo del
   modelo de cada enlace (`linkmodel.h`); la perilla global lo fija en todos
   los enlaces, encima del preset de su tipo. `rescue_by_owd` (C10, solo el
   cliente) sigue global. Ninguna entró en un preset salvo lo dicho de

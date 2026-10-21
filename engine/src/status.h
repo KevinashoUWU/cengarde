@@ -70,6 +70,11 @@ void cg_json_decisions(struct cg_json *j, const struct cg_decring *r, uint64_t n
  * transition and how long ago, and how many of each. */
 struct cg_spread;
 void cg_json_g4(struct cg_json *j, const struct cg_spread *s, unsigned link, uint64_t now_ms);
+/* The dominant link (dominant.h), as "dominant": its index (null: none),
+ * its best delivery over the window and the slower links it dominates
+ * (not empty: the split steps aside). */
+struct cg_dom;
+void cg_json_dominant(struct cg_json *j, const struct cg_dom *d);
 /* The freshness of a link's delay reports (health.h): owd_age_ms and
  * owd_reports_per_s. */
 struct cg_hlink;

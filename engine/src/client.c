@@ -72,6 +72,7 @@
 #include "replay.h"
 #include "sock.h"
 #include "capacity.h"
+#include "dominant.h"
 #include "tcpfree.h"
 #include "fec.h"
 #include "rescue.h"
@@ -175,6 +176,7 @@ struct client {
 	struct cg_eta eta;                    /* the split by expected arrival, with split_eta */
 	struct cg_tickle tk;                  /* with split_eta, an idle link tickled (tickle.h) */
 	struct cg_eta pace;                   /* the copies' expected arrivals, with a link's pace_ms */
+	struct cg_dom dom;                    /* the dominant link (dominant.h): while on, the split steps aside */
 	struct cg_link_model lm[CG_MAX_LINKS]; /* each link's model (link_models) */
 	uint32_t pace_w[CG_MAX_LINKS];        /* each link's copy window (cg_link_pace_windows), us, 0: every copy */
 	uint8_t pace_any;                     /* a link with one */
@@ -1383,7 +1385,10 @@ static void wg_read(struct client *c)
 			/* Under G4's stress, on its budget: a copy on every carrier. */
 			stress = split && cg_sdup(&c->sdup, c->spread.stress, (uint32_t)len,
 						  (unsigned)__builtin_popcount(carry), c->cfg->split_stress_dup);
-			c->pick[m] = (int8_t)(split ? cg_split_pick_eta(&c->sp, c->cfg->split_eta ? &c->eta : NULL,
+			/* A dominant link (dominant.h): the split steps aside, every
+			 * packet goes as in redundancy (the copies paced, eta.h). */
+			c->pick[m] = (int8_t)(split && !c->dom.out
+						      ? cg_split_pick_eta(&c->sp, c->cfg->split_eta ? &c->eta : NULL,
 									c->cfg->split_eta ? &c->tk : NULL, now_us,
 									k.carriers, stress ? 0 : elig, k.dup, w,
 									c->native ? CG_WGS_DATA : c->in.buf[i][0],
@@ -2223,6 +2228,7 @@ static void cap_tick(struct client *c, uint16_t live, uint64_t now_ms)
 		cg_cap_weights(c->cap, c->cfg->split == CG_SPLIT_FORCE ? 0 : c->dup0, c->cfg->governor ? c->gw : NULL,
 			       cc.sat_us / 2, c->cw);
 	cg_cap_total_tick(&c->ctot, c->cap, live, cc.sat_us);
+	cg_dom_tick(&c->dom, c->cap, c->lm, live, now_ms);
 	if (c->cfg->split_eta) {
 		uint64_t tb[CG_MAX_LINKS], tc[CG_MAX_LINKS];
 		uint16_t due;
@@ -2471,6 +2477,7 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 	else
 		cg_json_null(j, "link");
 	cg_json_end(j, '}');
+	cg_json_dominant(j, &c->dom);
 	cg_json_bool(j, "pacing", c->cfg->pacing);
 	/* native, tcp_aware: inner TCP marked free (tcpfree.h) */
 	cg_json_obj(j, "tcp_free");
@@ -3175,6 +3182,7 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 	}
 	c->lt = cg_lt_resolve(cfg->link_threads, CG_LT_ARCH_MEASURED, c->ncpus, cfg->cpu >= 0, CG_LT_AUTO_ON);
 	cg_gov_reset(&c->gov);
+	cg_dom_reset(&c->dom);
 	for (int i = 0; i < CG_MAX_LINKS; i++) {
 		cg_cap_reset(&c->cap[i]);
 		c->cw[i] = CG_GOV_MAX;

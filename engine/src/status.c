@@ -3,6 +3,7 @@
 
 #include "capacity.h"
 #include "decision.h"
+#include "dominant.h"
 #include "split.h"
 
 #include <errno.h>
@@ -428,6 +429,23 @@ void cg_json_g4(struct cg_json *j, const struct cg_spread *s, unsigned link, uin
 	cg_json_u64(j, "rejoin_recover", n[CG_G4_REJOIN_RECOVER]);
 	cg_json_u64(j, "rejoin_empty", n[CG_G4_REJOIN_EMPTY]);
 	cg_json_u64(j, "rejoin_off", n[CG_G4_REJOIN_OFF]);
+	cg_json_end(j, '}');
+}
+
+void cg_json_dominant(struct cg_json *j, const struct cg_dom *d)
+{
+	cg_json_obj(j, "dominant");
+	if (d->link >= 0)
+		cg_json_u64(j, "link", (uint64_t)d->link);
+	else
+		cg_json_null(j, "link");
+	/* bps / 1000 as "ms": Mbit/s with three decimals */
+	cg_json_ms(j, "best_mbit", (d->hi_cur > d->hi_prev ? d->hi_cur : d->hi_prev) / 1000);
+	cg_json_arr(j, "out");
+	for (unsigned i = 0; i < CG_MAX_LINKS; i++)
+		if (d->out >> i & 1)
+			cg_json_u64(j, NULL, i);
+	cg_json_end(j, ']');
 	cg_json_end(j, '}');
 }
 

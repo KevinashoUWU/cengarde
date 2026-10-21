@@ -923,6 +923,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	    get_bool(&ini, "", "rescue_by_owd", &c->rescue_by_owd, err, errlen) ||
 	    get_u32(&ini, "", "rescue_full_hyst", 0, 2, &c->rescue_full_hyst, err, errlen) ||
 	    get_u32(&ini, "", "redund_pace_ms", 0, 2000, &c->redund_pace_ms, err, errlen) ||
+	    get_u32(&ini, "", "split_dominant_pct", 0, 65535, &c->split_dominant_pct, err, errlen) ||
 	    get_bool(&ini, "", "pacing", &c->pacing, err, errlen) ||
 	    get_u32(&ini, "", "governor_target_ms", 1, 1000, &c->governor_target_ms, err, errlen) ||
 	    get_u32(&ini, "", "capacity_loss_pct", 0, 50, &c->capacity_loss_pct, err, errlen) ||
