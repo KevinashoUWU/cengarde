@@ -721,6 +721,29 @@ static void test_config_bonding(void)
 	CHECK_EQ(cg_config_link_knobs(&c).dominant_pct, 400);
 	cg_config_free(&c);
 	bad(SERVER "split_dominant_pct = 70000\n", "split_dominant_pct", "70000");
+	/* the Starlink gears (task #63-#65): seq lag on, the slot clock at
+	 * :12 +- 100/50 ms, hold and edge copies off, by default */
+	CHECK_EQ(cg_config_parse(&c, SERVER "\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(c.capacity_seq_lag, 1);
+	CHECK_EQ(c.starlink_edge_ms, 12000);
+	CHECK_EQ(c.starlink_edge_pre_ms, 100);
+	CHECK_EQ(c.starlink_edge_post_ms, 50);
+	CHECK_EQ(c.starlink_edge_copies, 0);
+	CHECK_EQ(cg_config_link_knobs(&c).dominant_hold, 0);
+	CHECK_EQ(cg_config_link_knobs(&c).slot_clock, 0);
+	cg_config_free(&c);
+	CHECK_EQ(cg_config_parse(&c, CLIENT "capacity_seq_lag = no\nstarlink_slot_clock = 2\nsplit_dominant_hold = 1\n"
+				      "starlink_edge_ms = 11950\nstarlink_edge_copies = yes\n",
+				 err, sizeof(err), warn, sizeof(warn)),
+		 0);
+	CHECK_EQ(c.capacity_seq_lag, 0);
+	CHECK_EQ(c.starlink_edge_ms, 11950);
+	CHECK_EQ(c.starlink_edge_copies, 1);
+	CHECK_EQ(cg_config_link_knobs(&c).slot_clock, 2);
+	CHECK_EQ(cg_config_link_knobs(&c).dominant_hold, 1);
+	cg_config_free(&c);
+	bad(SERVER "starlink_edge_ms = 15000\n", "starlink_edge_ms", "15000");
+	bad(CLIENT "split_dominant_hold = 3\n", "split_dominant_hold", "3");
 	/* The weight is a link's, not global; a server has no [link] weights (its
 	 * client's probes say them), and says so. */
 	CHECK_EQ(cg_config_parse(&c, CLIENT "weight = 2\n", err, sizeof(err), warn, sizeof(warn)), 0);

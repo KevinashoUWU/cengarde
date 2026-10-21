@@ -1140,6 +1140,30 @@ static const char *split_state(const struct client *c, uint64_t now_ms)
 	return n >= 2 ? "splitting" : n && k.carriers ? "one link" : "duplicating";
 }
 
+/* starlink_edge_copies (slot.h): the Starlink links a copied packet goes
+ * on alone now, 0: every carrier. */
+static uint16_t edge_solo(const struct client *c, uint16_t carry, uint64_t now_ms)
+{
+	struct cg_slot s = cg_config_slot(c->cfg);
+	uint64_t wall = cg_wall_ms();
+	uint16_t sl = 0, fit = 0;
+
+	if (wall < CG_WALL_SET_MS)
+		return 0;
+	for (int i = 0; i < CG_MAX_LINKS; i++) {
+		const struct cg_hlink *h = &c->uh[i];
+		const struct cg_cap_link *k = &c->cap[i];
+
+		if (!c->lm[i].slot_clock)
+			continue;
+		sl |= (uint16_t)(1u << i);
+		if (h->state == CG_H_ACTIVE && h->report_ms && now_ms - h->report_ms < CG_SLOT_FIT_MS &&
+		    !(k->lost_ms && now_ms - k->lost_ms < CG_SLOT_LOST_MS))
+			fit |= (uint16_t)(1u << i);
+	}
+	return cg_slot_solo(&s, wall, sl, fit, carry);
+}
+
 /* Sends the m packets prepared in hdr/oiov: each on the links pick[] says
  * (every carrying link, health.h, or its one link and the links of dup
  * when split: weight 0, and with split_spread_copy the ones G4 keeps out),
@@ -1164,6 +1188,13 @@ static void send_links(struct client *c, int m, uint64_t now_ms, uint16_t live, 
 					      ? 0xffff
 					      : cg_eta_copies(&c->pace, carry, (uint32_t)c->oiov[j][1].iov_len, now_us,
 							      c->pace_w);
+		if (c->cfg->starlink_edge_copies && !(c->peer_reorders && c->resc_idx)) {
+			uint16_t solo = edge_solo(c, carry, now_ms);
+
+			for (int j = 0; solo && j < m; j++)
+				if (c->pick[j] < 0 && c->oiov[j][1].iov_len >= CG_PACE_SMALL)
+					c->cmask[j] &= solo;
+		}
 	}
 	for (int x0 = 0; x0 < n; x0++) {
 		int i = ids[(first + x0) % n];
@@ -1333,7 +1364,7 @@ static void wg_read(struct client *c)
 {
 	for (int round = 0; round < CG_MAX_ROUNDS; round++) {
 		int n = c->native ? cg_tun_rx(c->wg_fd, &c->in) : cg_rx(c->wg_fd, &c->in), m = 0, split;
-		uint16_t present, live, carry, dup0;
+		uint16_t present, live, carry, dup0, esolo;
 		struct cg_split_masks k;
 		const uint16_t *w;
 		uint64_t now_us, now_ms;
@@ -1349,6 +1380,9 @@ static void wg_read(struct client *c)
 		split = split_active(c);
 		w = split_weights(c, &dup0);
 		k = split_masks(c, carry, split_eligible(c, live, carry, now_ms), dup0);
+		/* starlink_edge_copies with a server that reorders: outside an
+		 * edge's window on Starlink alone, as split DATA (cg_slot_pick) */
+		esolo = c->cfg->starlink_edge_copies && c->peer_reorders && c->resc_idx ? edge_solo(c, carry, now_ms) : 0;
 		for (int i = 0; i < n; i++) {
 			size_t len = c->in.msg[i].msg_len;
 			uint16_t elig;
@@ -1393,7 +1427,7 @@ static void wg_read(struct client *c)
 									k.carriers, stress ? 0 : elig, k.dup, w,
 									c->native ? CG_WGS_DATA : c->in.buf[i][0],
 									(uint32_t)len, c->cfg->split_small, &flags)
-						    : -1);
+						    : cg_slot_pick(esolo, (uint32_t)len, CG_PACE_SMALL, &flags));
 			c->up_split += c->pick[m] >= 0;
 			/* The link the previous sequence went on alone (CG_F_PREV), then
 			 * this one's (send_links: cg_split_dst of the same masks; with
@@ -2205,6 +2239,12 @@ static void pace_set(struct link *l, uint64_t rate)
 static void cap_tick(struct client *c, uint16_t live, uint64_t now_ms)
 {
 	struct cg_cap_cfg cc = { .window_ms = c->cfg->governor_window_ms, .sat_us = c->cfg->capacity_sat_ms * 1000 };
+	struct cg_slot slot = cg_config_slot(c->cfg);
+	uint64_t wall = cg_wall_ms();
+
+	cc.seq_lag = (uint8_t)c->cfg->capacity_seq_lag;
+	cc.tx_seq = c->txs.seq;
+	cc.real_off_ms = (int64_t)wall - (int64_t)now_ms;
 
 	for (int i = 0; i < CG_MAX_LINKS; i++) {
 		struct link *l = &c->link[i];
@@ -2218,6 +2258,9 @@ static void cap_tick(struct client *c, uint16_t live, uint64_t now_ms)
 			cc.lossy = cg_link_tracks_loss(m);
 			cc.lossy_probe = !m->lossy_noprobe;
 			cc.rfull_mode = m->rfull_hyst;
+			cc.rx_top = l->peer_view.rx_top;
+			cc.behind_us = c->uh[i].have_behind ? c->uh[i].behind_us : 0;
+			cc.slot = m->slot_clock && wall >= CG_WALL_SET_MS ? &slot : NULL;
 			ev = cg_cap_tick(&c->cap[i], now_ms, l->peer_view_ms, l->peer_view.rx, l->tx_pkts, l->tx_bytes,
 					 &c->uh[i], &cc);
 

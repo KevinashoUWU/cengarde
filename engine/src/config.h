@@ -53,6 +53,7 @@
 #include "dns.h"      /* CG_DNS_NAME_MAX */
 #include "fwdtable.h" /* struct cg_fwd_rule */
 #include "linkmodel.h" /* struct cg_link_knobs */
+#include "slot.h"     /* struct cg_slot */
 #include "proto.h"
 #include "srvpick.h" /* CG_MAX_CANDS */
 #include "tunroute.h" /* struct cg_pfx */
@@ -246,6 +247,12 @@ struct cg_config {
 	uint32_t rescue_full_hyst;    /* the rescue's full bit: 1 off under 3x, 2 off under 3x only while not rising */
 	uint32_t redund_pace_ms;      /* a copy goes on a link only if it arrives within this of the first (eta.h cg_eta_copies) */
 	uint32_t split_dominant_pct;  /* dominant.h's threshold over the preset's (starlink: 250), a large value: off */
+	uint32_t split_dominant_hold; /* dominant.h's hold: 1 on, 2 off, 0 the preset's */
+	int capacity_seq_lag;         /* a sample's loss against what was sent before the newest arrival (capacity.h); default yes */
+	uint32_t starlink_slot_clock; /* Starlink's slot clock (slot.h) on starlink links: 1 on, 2 off, 0 the preset's */
+	uint32_t starlink_edge_ms;    /* the slots' edge in each 15 s of the wall clock (12000: :12, :27, :42, :57) */
+	uint32_t starlink_edge_pre_ms, starlink_edge_post_ms; /* the window around it */
+	int starlink_edge_copies;     /* redundancy: copies to a starlink link's peers only in an edge's window */
 	/* The knobs above, eta_buffer and capacity_loss_pct are the value of
 	 * every link over its type's preset (linkmodel.h); with this mask (a bit
 	 * per type, exp_link_types = starlink ...) only of the links of those
@@ -375,10 +382,21 @@ static inline struct cg_link_knobs cg_config_link_knobs(const struct cg_config *
 		.eta_keep_ms = c->eta_keep_ms,
 		.pace_ms = c->redund_pace_ms,
 		.dominant_pct = c->split_dominant_pct,
+		.dominant_hold = c->split_dominant_hold,
+		.slot_clock = c->starlink_slot_clock,
 		.types = c->exp_link_types,
 	};
 
 	return k;
+}
+
+/* Starlink's slot clock (slot.h) from c. */
+static inline struct cg_slot cg_config_slot(const struct cg_config *c)
+{
+	struct cg_slot s = { .edge_ms = c->starlink_edge_ms, .pre_ms = c->starlink_edge_pre_ms,
+			     .post_ms = c->starlink_edge_post_ms };
+
+	return s;
 }
 
 #endif

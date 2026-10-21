@@ -29,6 +29,16 @@
  * obstruction, a slot of low rate). Links as fast as it do not count: no
  * reordering, the spill costs nothing (shallowqd).
  *
+ * With hold (the model's dominant_hold, task #64) the dominant link's
+ * delivery is taken for what it can carry only while it loses (the last
+ * CG_DOM_LOST_MS, capacity.h's lost_ms, the switches' losses out): not
+ * losing, it carried all it was given and the demand was the limit, so its
+ * best remembered (peak_bps) stands for it, and the split does not come
+ * back for a slow start or a light load. Every transfer after the dominant
+ * link went idle (sent under CG_DOM_IDLE_BPS) starts with the others out
+ * (presumed) when its history says it dominates (cg_dom_evidence), and a
+ * link that does not dominate shows it as soon as it loses.
+ *
  * Pure: no clock, no I/O, no allocation.
  *
  * SPDX-License-Identifier: GPL-3.0-or-later */
@@ -45,12 +55,26 @@
 #define CG_DOM_BASE_US 2000  /* a link this much slower in base delay arrives behind it */
 #define CG_DOM_OUT_NUM 4     /* it keeps them out down to 4/5 of its dominant_pct */
 #define CG_DOM_OUT_DEN 5
+#define CG_DOM_LOST_MS 5000u /* hold: a loss this recent says the dominant link is at its limit */
+#define CG_DOM_IDLE_BPS 2000000ull /* hold: sending under this, the dominant link is idle (presumed) */
 
 struct cg_dom {
 	uint64_t hi_cur, hi_prev; /* the dominant link's best delivery rate (bps), in two halves of CG_DOM_WIN_MS */
 	uint64_t hi_ms;           /* when the current half began */
 	int8_t link;              /* the candidate, -1: none */
 	uint16_t out;             /* the slower links it dominates; not 0: the split steps aside */
+	uint8_t presumed;         /* hold: out before the link was measured */
+	uint8_t why;              /* the last tick's reason, CG_DOM_WHY_* (the status) */
+};
+
+enum {
+	CG_DOM_WHY_NONE,     /* no link with dominant_pct */
+	CG_DOM_WHY_IDLE,     /* hold: it is idle, presumed */
+	CG_DOM_WHY_WAIT,     /* hold: a slower link not measured yet, as it was */
+	CG_DOM_WHY_UNKNOWN,  /* a slower link not measured yet: nothing out */
+	CG_DOM_WHY_NOSLOWER, /* no link slower than it */
+	CG_DOM_WHY_RATE,     /* by its delivery against the threshold (in or out) */
+	CG_DOM_WHY_HOLD,     /* hold: not losing, kept out */
 };
 
 static inline void cg_dom_reset(struct cg_dom *d)
@@ -65,6 +89,32 @@ static inline uint32_t cg_dom_base(const struct cg_cap_link *l)
 	return cg_owd_diff(l->q.min_prev, l->q.min_cur) < 0 ? l->q.min_prev : l->q.min_cur;
 }
 
+/* hold's evidence for presuming (task #64): the best link dl ever
+ * delivered (peak_bps, or its best capacity) at least pct % of the other
+ * links' bests together, each of them measured. In the bench every run
+ * starts cold, and presumed on nothing the split came back only after
+ * seconds of redundancy where Starlink did not dominate (shallowq up -10 %
+ * over the second half); with this a session presumes only what its
+ * history showed, cold it is as without hold. */
+static inline int cg_dom_evidence(const struct cg_cap_link l[CG_MAX_LINKS], int dl, uint16_t mask, uint32_t pct)
+{
+	uint64_t top = l[dl].peak_bps > cg_cap_best_bps(&l[dl]) ? l[dl].peak_bps : cg_cap_best_bps(&l[dl]), sum = 0;
+	int any = 0;
+
+	for (unsigned i = 0; i < CG_MAX_LINKS; i++) {
+		uint64_t b;
+
+		if (!(mask >> i & 1) || (int)i == dl)
+			continue;
+		if (!l[i].have_rate)
+			return 0;
+		b = cg_cap_best_bps(&l[i]) > cg_cap_bps(&l[i]) ? cg_cap_best_bps(&l[i]) : cg_cap_bps(&l[i]);
+		sum += b;
+		any = 1;
+	}
+	return any && top * 100 >= sum * pct;
+}
+
 /* One tick (after the capacities'): mask, the links that carry; m, each
  * link's model (dominant_pct, with the global knob over the preset).
  * Returns the slower links it dominates (0: none, the split goes on), also
@@ -73,12 +123,12 @@ static inline uint16_t cg_dom_tick(struct cg_dom *d, const struct cg_cap_link l[
 				   const struct cg_link_model *m, uint16_t mask, uint64_t now_ms)
 {
 	uint64_t best = 0, hi, sum = 0;
-	uint16_t slower = 0;
+	uint16_t slower = 0, nomin = 0, norate = 0;
 	uint32_t base, pct;
-	int dl = -1;
+	int dl = -1, hold, losing;
 
 	/* the dominant candidate: of the links with dominant_pct, the one that
-	 * delivers most */
+	 * delivers most; with hold, one not measured yet presumes */
 	for (unsigned i = 0; i < CG_MAX_LINKS; i++)
 		if ((mask >> i & 1) && m[i].dominant_pct && l[i].have_rate && l[i].q.have_min &&
 		    (dl < 0 || l[i].rate_bps > best)) {
@@ -89,11 +139,16 @@ static inline uint16_t cg_dom_tick(struct cg_dom *d, const struct cg_cap_link l[
 		cg_dom_reset(d);
 		return 0;
 	}
+	d->why = CG_DOM_WHY_RATE;
 	if (dl != d->link) {
+		uint16_t was = d->presumed ? d->out : 0;
+
 		cg_dom_reset(d);
 		d->link = (int8_t)dl;
 		d->hi_ms = now_ms;
+		d->out = was;
 	}
+	d->presumed = 0;
 	if (now_ms - d->hi_ms >= CG_DOM_WIN_MS / 2) {
 		d->hi_prev = d->hi_cur;
 		d->hi_cur = l[dl].rate_bps;
@@ -102,23 +157,62 @@ static inline uint16_t cg_dom_tick(struct cg_dom *d, const struct cg_cap_link l[
 		d->hi_cur = l[dl].rate_bps;
 	}
 	hi = d->hi_cur > d->hi_prev ? d->hi_cur : d->hi_prev;
+	hold = m[dl].dominant_hold;
+	losing = l[dl].lost_ms && now_ms - l[dl].lost_ms < CG_DOM_LOST_MS;
+	if (hold && !losing && l[dl].peak_bps > hi)
+		hi = l[dl].peak_bps; /* not at its limit: what it carried at best */
 	base = cg_dom_base(&l[dl]);
 	for (unsigned i = 0; i < CG_MAX_LINKS; i++) {
-		if (!(mask >> i & 1) || (int)i == dl || !l[i].q.have_min ||
-		    cg_owd_diff(cg_dom_base(&l[i]), base) < CG_DOM_BASE_US)
+		if (!(mask >> i & 1) || (int)i == dl)
 			continue;
-		if (!l[i].have_rate)
-			return d->out = 0; /* not measured yet: what it adds is not known */
+		if (!l[i].q.have_min) {
+			nomin |= (uint16_t)(1u << i);
+			continue;
+		}
+		if (cg_owd_diff(cg_dom_base(&l[i]), base) < CG_DOM_BASE_US)
+			continue;
+		if (!l[i].have_rate) {
+			norate |= (uint16_t)(1u << i);
+			continue;
+		}
 		slower |= (uint16_t)(1u << i);
 		sum += cg_cap_bps(&l[i]);
 	}
+	if (hold) {
+		uint16_t maybe = (uint16_t)(slower | nomin | norate);
+
+		/* idle: what it carries says nothing; with the evidence of its
+		 * history, the next transfer starts with every other link aside
+		 * (as fast as it or not: copies cost a reorder nothing) */
+		if (l[dl].last_tx_bps < CG_DOM_IDLE_BPS && cg_dom_evidence(l, dl, mask, m[dl].dominant_pct)) {
+			d->presumed = 1;
+			d->why = CG_DOM_WHY_IDLE;
+			return d->out = (uint16_t)(mask & ~(1u << dl));
+		}
+		/* not at its limit: what is out stays out, it carries what it is
+		 * given (a link as fast as it too, until it loses) */
+		if (d->out && !losing) {
+			d->why = CG_DOM_WHY_HOLD;
+			return d->out = (uint16_t)((d->out | maybe) & mask & ~(1u << dl));
+		}
+		if ((nomin | norate) && d->out) { /* not measured yet: as it was */
+			d->why = CG_DOM_WHY_WAIT;
+			return d->out = maybe;
+		}
+	}
+	if (norate) {
+		d->why = CG_DOM_WHY_UNKNOWN;
+		return d->out = 0; /* not measured yet: what it adds is not known */
+	}
 	pct = m[dl].dominant_pct;
-	if (!slower)
+	if (!slower) {
+		d->why = CG_DOM_WHY_NOSLOWER;
 		d->out = 0;
-	else if (!d->out)
+	} else if (!d->out) {
 		d->out = hi * 100 >= sum * pct ? slower : 0;
-	else
+	} else {
 		d->out = hi * 100 * CG_DOM_OUT_DEN >= sum * pct * CG_DOM_OUT_NUM ? slower : 0;
+	}
 	return d->out;
 }
 

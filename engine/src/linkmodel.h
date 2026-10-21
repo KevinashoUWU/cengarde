@@ -95,6 +95,12 @@ struct cg_link_model {
 	 * every packet goes as in redundancy; 0: off. The knob
 	 * (split_dominant_pct) only changes it on a link whose preset has it. */
 	uint16_t dominant_pct;
+	/* dominant.h's hold: the split stays aside while the dominant link is
+	 * not losing, and a session starts with it aside (presumed). */
+	uint8_t dominant_hold;
+	/* Starlink's slot clock (slot.h): a sample sent in an edge's window
+	 * counts no loss (capacity.h). */
+	uint8_t slot_clock;
 };
 
 /* starlink's hold_over_ms (story 015, n = 8 against a null control): 40,
@@ -123,6 +129,14 @@ struct cg_link_model {
  * shallowq and starsat (60 against 43) keep the split, within 2 %. */
 #define CG_STARLINK_DOMINANT_PCT 250
 
+/* starlink's slot_clock (slot.h, task #63, bench dominant, n = 16 against a
+ * null control): with the loss counted by sequence (capacity_seq_lag), the
+ * switches' losses out of the lossy test; Starlink marked lossy 93 % of the
+ * time down before, 17 % with both, the throughput even (+4 %, the null
+ * +8 %). dominant_hold stays off (a knob): in the bench fixed (netem before
+ * the engines) it did not gain where Starlink dominates and cost 17 % up in
+ * shallowq, where it does not. */
+
 struct cg_link_preset {
 	const char *name;
 	struct cg_link_model m;
@@ -135,7 +149,8 @@ static const struct cg_link_preset cg_link_presets[CG_LTYPE_COUNT] = {
 	[CG_LTYPE_CELLULAR] = { "cellular", { 0 } }, /* hook: the scheduler, the deep queue, the signal */
 	[CG_LTYPE_STARLINK] = { "starlink",
 				{ .lossy_noprobe = 1, .lossy_hold = 1, .hold_over_ms = CG_STARLINK_OVER_MS,
-				  .pace_peers_ms = CG_STARLINK_PACE_PEERS_MS, .dominant_pct = CG_STARLINK_DOMINANT_PCT } },
+				  .pace_peers_ms = CG_STARLINK_PACE_PEERS_MS, .dominant_pct = CG_STARLINK_DOMINANT_PCT,
+				  .slot_clock = 1 } },
 	[CG_LTYPE_FIBER] = { "fiber", { 0 } },       /* hook */
 	[CG_LTYPE_ETHERNET] = { "ethernet", { 0 } }, /* hook */
 	[CG_LTYPE_RADIO] = { "radio", { 0 } },       /* hook */
@@ -176,6 +191,8 @@ struct cg_link_knobs {
 	uint32_t eta_keep_ms;
 	uint32_t pace_ms; /* redund_pace_ms */
 	uint32_t dominant_pct; /* split_dominant_pct: dominant.h's threshold where the preset has one; large: off */
+	uint32_t dominant_hold; /* split_dominant_hold: 1 on, 2 off, where the preset has dominant_pct; 0: the preset's */
+	uint32_t slot_clock;    /* starlink_slot_clock: 1 on, 2 off, on starlink links; 0: the preset's */
 	/* exp_link_types: a bit per type (1 << CG_LTYPE_...) the knobs above
 	 * apply to; 0: every type, as before the types. To try a knob on one
 	 * type of link before it goes in that type's preset. */
@@ -229,6 +246,10 @@ static inline struct cg_link_model cg_link_model_k(unsigned type, const struct c
 		m.pace_ms = cg_link_u16(k->pace_ms);
 	if (k->dominant_pct && m.dominant_pct)
 		m.dominant_pct = cg_link_u16(k->dominant_pct);
+	if (k->dominant_hold && m.dominant_pct)
+		m.dominant_hold = k->dominant_hold == 1;
+	if (k->slot_clock && t == CG_LTYPE_STARLINK)
+		m.slot_clock = k->slot_clock == 1;
 	return m;
 }
 

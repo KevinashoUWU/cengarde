@@ -22,6 +22,10 @@ slots, and the dish's own history), and what this models:
 - outages (the dish's history, 7.6 h): 1.45 an hour, 0.24 to 0.90 s
   (NO_DOWNLINK at a switch, OBSTRUCTED, NO_PINGS): OUTAGE_PER_SLOT, OUTAGE_S.
 
+The slots follow the wall clock (run, unless --free): a switch falls at :12,
+:27, :42 and :57 as in the field, where the engine's slot clock (slot.h,
+starlink_slot_clock) expects it.
+
 Not measured (the field data were idle): the rate per slot. The case gives a
 list of rates per direction (--up, --down, Mbit/s), one drawn per slot with
 the same index for both (starsat's 45, 60 and 75 of old).
@@ -42,6 +46,7 @@ import time
 sys.dont_write_bytecode = True
 
 SLOT_S = 15.0
+EDGE_S = 12.0  # the edges' offset in each minute, UTC
 STEP_S = 0.5  # how often the delay moves within a slot
 # One-way, ms, relative to the median slot: the 16 quantiles (1/32, 3/32, ...)
 # of the slots' RTT floor over 2, nostalgica 2026-10-19 (477 slots).
@@ -138,6 +143,14 @@ def tc_args(ns, dev, delay, rate, queue_ms, loss, inflight):
 
 def run(a, ev):
     t0 = time.monotonic()
+    if not a.free:
+        # the slots on the wall clock, as in the field: slot 0 began at the
+        # last edge (:12, :27, :42, :57), and what it held before now is
+        # applied at once (the engine's slot clock, slot.h, sees them there)
+        t0 -= (time.time() - EDGE_S) % SLOT_S
+        now = time.monotonic() - t0
+        past = [e for e in ev if e["t"] <= now]
+        ev = past[-1:] + [e for e in ev if e["t"] > now]
     prev = None
     for e in ev:
         wait = t0 + e["t"] - time.monotonic()
@@ -170,13 +183,17 @@ def main(argv=None):
     p.add_argument("--cut-ms", type=int, default=None, help="a total cut of this at each switch instead of the field's")
     p.add_argument("--no-outages", action="store_true")
     p.add_argument("--inflight", type=int, default=0, help="BOND_NETEM_INFLIGHT")
+    p.add_argument("--free", action="store_true",
+                   help="slot 0 starts now, not at the wall clock's last edge (:12, :27, :42, :57)")
     p.add_argument("--ns-cli"), p.add_argument("--ns-srv"), p.add_argument("--link", type=int, default=1)
     a = p.parse_args(argv)
     up = rates(a.up)
     down = rates(a.down) if a.down else up
     if len(up) != len(down):
         sys.exit("starslot: --up and --down need as many rates")
-    ev = plan(a.secs, a.seed, a.delay, up, down, a.model, a.cut_ms, not a.no_outages)
+    # aligned, the run starts up to a slot into the plan
+    secs = a.secs if a.cmd == "plan" or a.free else a.secs + SLOT_S
+    ev = plan(secs, a.seed, a.delay, up, down, a.model, a.cut_ms, not a.no_outages)
     if a.cmd == "plan":
         for e in ev:
             print(json.dumps(e))

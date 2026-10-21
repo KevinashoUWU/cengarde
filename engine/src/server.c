@@ -1711,7 +1711,32 @@ struct dpaths {
 	uint16_t dup0;           /* weight 0 */
 	struct cg_split_masks k; /* for cg_split_pick and cg_split_dst */
 	uint16_t w[CG_MAX_LINKS];
+	uint16_t esolo;          /* starlink_edge_copies with a client that reorders: cg_slot_pick's */
 };
+
+/* starlink_edge_copies (slot.h): the Starlink paths a copied packet goes
+ * on alone now, 0: every carrier. */
+static uint16_t edge_solo(const struct server *s, const struct session *S, uint16_t carry, uint64_t now_ms)
+{
+	struct cg_slot sl_ = cg_config_slot(s->cfg);
+	uint64_t wall = cg_wall_ms();
+	uint16_t sl = 0, fit = 0;
+
+	if (wall < CG_WALL_SET_MS)
+		return 0;
+	for (int i = 0; i < CG_MAX_LINKS; i++) {
+		const struct cg_hlink *h = &S->dh[i];
+		const struct cg_cap_link *k = &S->cap[i];
+
+		if (!S->lm[i].slot_clock)
+			continue;
+		sl |= (uint16_t)(1u << i);
+		if (h->state == CG_H_ACTIVE && h->report_ms && now_ms - h->report_ms < CG_SLOT_FIT_MS &&
+		    !(k->lost_ms && now_ms - k->lost_ms < CG_SLOT_LOST_MS))
+			fit |= (uint16_t)(1u << i);
+	}
+	return cg_slot_solo(&sl_, wall, sl, fit, carry);
+}
 
 /* The paths that may take a share of a split download (split.h): live and
  * carrying, not muted for delay (guard G1), and with a verified packet from
@@ -1753,6 +1778,8 @@ static struct dpaths down_paths(const struct server *s, const struct session *S,
 	path_masks(S, now_ms, &d.present, &d.live);
 	d.carry = cg_health_carriers(S->dh, CG_MAX_LINKS, d.present, d.live);
 	d.split = cg_split_active(s->cfg->split, S->peer_reorders, S->peer_asks);
+	if (s->cfg->starlink_edge_copies && S->peer_reorders && S->resc_idx)
+		d.esolo = edge_solo(s, S, d.carry, now_ms);
 	if (!d.split)
 		return d;
 	d.elig = split_eligible(S, &d, now_ms);
@@ -1809,7 +1836,7 @@ static void down_prepare(struct server *s, struct session *S, int m, uint8_t *bu
 							   d->k.carriers, stress ? 0 : cg_split_stress_elig(&S->spread, d->k.eligible, s->cfg->split_stress_single), d->k.dup, d->w,
 							   s->native ? CG_WGS_DATA : buf[0],
 							   (uint32_t)len, s->cfg->split_small, &h.flags)
-				       : -1);
+				       : cg_slot_pick(d->esolo, (uint32_t)len, CG_PACE_SMALL, &h.flags));
 	S->down_split += s->pick[m] >= 0;
 	S->last_down_ms = now_us / 1000;
 	/* The path the previous sequence went on alone, for the client's
@@ -1879,6 +1906,13 @@ static void down_send(struct server *s, struct session *S, int m, uint64_t now_m
 					      ? 0xffff
 					      : cg_eta_copies(&S->pace, carry, (uint32_t)s->oiov[j][1].iov_len, now_us,
 							      S->pace_w);
+		if (s->cfg->starlink_edge_copies && !(S->peer_reorders && S->resc_idx)) {
+			uint16_t solo = edge_solo(s, S, carry, now_ms);
+
+			for (int j = 0; solo && j < m; j++)
+				if (s->pick[j] < 0 && s->oiov[j][1].iov_len >= CG_PACE_SMALL)
+					s->cmask[j] &= solo;
+		}
 	}
 	for (int o = 0; o < no; o++) {
 		int p = order[(o + S->rot) % (unsigned)no];
@@ -2118,6 +2152,12 @@ static void gov_tick(struct server *s, struct session *S, uint64_t now_ms)
 static void cap_tick(struct server *s, struct session *S, uint16_t live, uint64_t now_ms)
 {
 	struct cg_cap_cfg cc = { .window_ms = s->cfg->governor_window_ms, .sat_us = s->cfg->capacity_sat_ms * 1000 };
+	struct cg_slot slot = cg_config_slot(s->cfg);
+	uint64_t wall = cg_wall_ms();
+
+	cc.seq_lag = (uint8_t)s->cfg->capacity_seq_lag;
+	cc.tx_seq = S->tx_seq;
+	cc.real_off_ms = (int64_t)wall - (int64_t)now_ms;
 
 	for (int p = 0; p < CG_MAX_LINKS; p++) {
 		const struct path *P = &S->path[p];
@@ -2131,6 +2171,9 @@ static void cap_tick(struct server *s, struct session *S, uint16_t live, uint64_
 			cc.lossy = cg_link_tracks_loss(m);
 			cc.lossy_probe = !m->lossy_noprobe;
 			cc.rfull_mode = m->rfull_hyst;
+			cc.rx_top = P->peer_view.rx_top;
+			cc.behind_us = S->dh[p].have_behind ? S->dh[p].behind_us : 0;
+			cc.slot = m->slot_clock && wall >= CG_WALL_SET_MS ? &slot : NULL;
 			ev = cg_cap_tick(&S->cap[p], now_ms, P->peer_view_ms, P->peer_view.rx, P->tx_pkts, P->tx_bytes,
 					 &S->dh[p], &cc);
 
