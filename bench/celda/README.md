@@ -38,6 +38,15 @@ bench/celda/celda.sh stop
 - `escenario.py "GANANCIA,..." "MBIT_OTROS,..." [PISO]`: nuestro teléfono
   (1 Mb/s y pings, como las copias de cengarde) con cada ganancia, mientras
   el teléfono 1 carga la celda.
+- `cengarde.py run "GANANCIA,..." "redund,bond" [N]`: cengarde encima de
+  la celda (con `NUE=1`). El cliente, en `ue1`, tiene dos enlaces: `lte`
+  (`tun_srsue`, hacia 172.16.0.1) y `fijo` (un veth al netns raíz con
+  netem, `FIJO_NETEM`); el servidor corre en el netns raíz, con túnel
+  nativo (`cgcel`, 10.81.0.1/24). En cada punto sube TCP 20 s por el túnel
+  con pings dentro y, a los 3 s, baja la ganancia del teléfono 0: mide si
+  cengarde saca al LTE del acantilado y en cuánto tiempo, el TCP, el RTT,
+  la capacidad que estima y lo que ve la estación base. `cengarde.py up
+  [redund|bond]` y `down` lo levantan y lo quitan a mano.
 
 ## Cuidado
 
