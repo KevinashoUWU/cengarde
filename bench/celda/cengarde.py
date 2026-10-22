@@ -27,9 +27,15 @@ at the end. A UE that detaches is brought back by restarting the cell.
 Needs the cell up (celda.sh start, NUE=1, LOGS as here), iperf3, ping, tc
 with netem and sudo -n. Knobs (environment): LOGS (/tmp/celda), PRB (for
 a cell restart, 50), FLOOR (the eNB's noise floor, 300), SECS (20), PRE (3),
-SETTLE (6), FIJO_NETEM (netem on each direction of fijo: "delay 15ms rate
-10mbit loss 1% limit 100", ~110 ms of queue), FIJO_TYPE (fijo's link type,
-auto), CENGARDE_BIN (engine/cengarde), CLIENT_EXTRA and SERVER_EXTRA
+RET (seconds from the start at which the gain goes back up, the return
+phase; 0: none), RET_GAIN (the gain then, 1; the tail is then the TCP up to
+RET, and "ret" says what the LTE link did after it: its capacity, share,
+RTT, when it carried again, and the TCP), SETTLE (6), ARMS (more modes,
+"name=base:client extra|server extra" separated by "/", base one of MODES,
+e.g. "redq=redund:min_active_links = 1;mute_queue = yes|mute_queue = yes"),
+FIJO_NETEM (netem on each direction of fijo: "delay 15ms rate 10mbit loss
+1% limit 100", ~110 ms of queue), FIJO_TYPE (fijo's link type, auto),
+CENGARDE_BIN (engine/cengarde), CLIENT_EXTRA and SERVER_EXTRA
 ("k = v;..." added to both modes)."""
 import json
 import os
@@ -49,6 +55,8 @@ BIN = os.environ.get("CENGARDE_BIN", os.path.join(REPO, "engine", "cengarde"))
 FLOOR = float(os.environ.get("FLOOR", "300"))
 SECS = int(os.environ.get("SECS", "20"))
 PRE = float(os.environ.get("PRE", "3"))
+RET = float(os.environ.get("RET", "0"))
+RET_GAIN = float(os.environ.get("RET_GAIN", "1"))
 SETTLE = float(os.environ.get("SETTLE", "6"))
 FIJO_NETEM = os.environ.get("FIJO_NETEM", "delay 15ms rate 10mbit loss 1% limit 100")
 FIJO_TYPE = os.environ.get("FIJO_TYPE", "auto")
@@ -66,6 +74,12 @@ MODES = {
              "split_eta = yes;capacity_weights = yes;governor = yes;split_spread_ms = 250;split_spread_copy = no;"
              "rescue_wait_ms = 60;rescue_kb = 32768;reorder_margin_ms = 10"),
 }
+for _a in filter(None, os.environ.get("ARMS", "").split("/")):
+    _n, _rest = _a.split("=", 1)
+    _base, _ex = _rest.split(":", 1)
+    _cx, _sx = (_ex.split("|", 1) + [""])[:2]
+    MODES[_n.strip()] = (";".join(x for x in (MODES[_base.strip()][0], _cx) if x),
+                         ";".join(x for x in (MODES[_base.strip()][1], _sx) if x))
 
 
 def sh(cmd, timeout=60, check=False):
@@ -148,7 +162,11 @@ def link_view(c, s):
     for ln in (c or {}).get("links", []):
         n = NAMES.get(ln.get("name"), ln.get("name"))
         sv = ln.get("server_view") or {}
+        cap = ln.get("cap_diag") or {}
         out[n] = dict(state=ln.get("state"), up=ln.get("upload"), mutes=ln.get("upload_mutes"),
+                      behind_ms=ln.get("upload_behind_ms"), late_ms=ln.get("upload_late_ms"),
+                      expired=cap.get("expired"), restored=cap.get("restore_rest"), full_age=cap.get("full_age_ms"),
+                      best=cap.get("best_mbit"),
                       rtt_ms=ln.get("rtt_ms"), cap=ln.get("capacity_mbit"), queue_ms=ln.get("queue_ms"),
                       share=ln.get("split_share"), tx=ln.get("tx_packets"),
                       sv_first=sv.get("first"), sv_rx=sv.get("rx"))
@@ -212,12 +230,15 @@ def one(mode, gain, rep):
                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
     png = subprocess.Popen(ns(f"ping -D -i 0.2 -W 3 -w {SECS} 10.81.0.1"), shell=True, stdout=subprocess.PIPE,
                            stderr=subprocess.DEVNULL, text=True)
-    samples, t_drop = [], None
+    samples, t_drop, t_ret = [], None, None
     while time.time() - t_start < SECS + 1:
         t = time.time() - t_start
         if t_drop is None and t >= PRE:
             ch().set_ul_gain(gain, 0)
             t_drop = time.time()
+        if RET and t_ret is None and t >= RET:
+            ch().set_ul_gain(RET_GAIN, 0)
+            t_ret = time.time()
         samples.append((round(t, 1), link_view(status("client"), status("server"))))
         time.sleep(0.5)
     tcp_out = tcp.communicate(timeout=60)[0]
@@ -230,16 +251,16 @@ def one(mode, gain, rep):
         mbit = round(d["end"]["sum_received"]["bits_per_second"] / 1e6, 2)
         retr = d["end"]["sum_sent"].get("retransmits")
         ivals = [round(x["sum"]["bits_per_second"] / 1e6, 1) for x in d["intervals"]]
-        tail = round(st.mean(ivals[int(PRE) + 3:]), 2) if len(ivals) > PRE + 3 else None
+        tail = round(st.mean(ivals[int(PRE) + 3:int(RET) if RET else None]), 2) if len(ivals) > PRE + 3 else None
     except (ValueError, KeyError):
         mbit = retr = tail = None
         ivals = []
     # pings after the drop only, by their -D timestamps
     rtts, sent_after = [], 0
     for m in re.finditer(r"\[([\d.]+)\].*icmp_seq=(\d+).*time=([\d.]+)", png_out):
-        if float(m.group(1)) >= t_drop:
+        if float(m.group(1)) >= t_drop and (t_ret is None or float(m.group(1)) < t_ret):
             rtts.append(float(m.group(3)))
-    sent_after = int((SECS - PRE) / 0.2)
+    sent_after = int(((RET or SECS) - PRE) / 0.2)
     rtts.sort()
     rep_e = report_since(t_drop + 1)
     enb = None
@@ -251,9 +272,37 @@ def one(mode, gain, rep):
     # the LTE link after the drop: when it first left the upload (muted or not
     # live, or out of the split share), how much of the time it was out, and
     # its last capacity and RTT
-    after = [(t, v.get("lte", {})) for t, v in samples if t >= PRE]
+    after = [(t, v.get("lte", {})) for t, v in samples if t >= PRE and (not RET or t < RET)]
     out_t = [t for t, l in after if l.get("up") == "muted" or l.get("state") != "live" or l.get("share") in ("no", "spread")]
     lte_last = after[-1][1] if after else {}
+    # the guard: when the LTE link was first muted, and how often it went
+    # from active to muted (flaps) after the drop
+    muted_t = [t for t, l in after if l.get("up") == "muted"]
+    ups = [l.get("up") for _, l in after]
+    flaps = sum(1 for a, b in zip(ups, ups[1:]) if a == "active" and b == "muted")
+    m0 = (after[0][1].get("mutes") or 0) if after else 0
+    mutes = (after[-1][1].get("mutes") or 0) - m0 if after else 0
+    # the return phase: the LTE link's capacity at the restore and its
+    # first values after, its share of the sends, its queue, and the TCP
+    ret = None
+    if RET and t_ret is not None:
+        back = [(t, v.get("lte", {})) for t, v in samples if t >= RET]
+        rs = []
+        for (t0_, a), (t1_, b) in zip(samples, samples[1:]):
+            if t1_ >= RET:
+                d = {n: (b.get(n, {}).get("tx") or 0) - (a.get(n, {}).get("tx") or 0) for n in ("lte", "fijo")}
+                if d["lte"] + d["fijo"] > 0:
+                    rs.append((d["lte"], d["lte"] + d["fijo"]))
+        ret_iv = ivals[int(RET) + 2:] if len(ivals) > RET + 2 else []
+        cap_at = [l.get("cap") for t, l in back]
+        rtts_b = [l.get("rtt_ms") for t, l in back if l.get("rtt_ms") is not None]
+        live_back = [t for t, l in back if l.get("state") == "live" and l.get("up") == "active"]
+        ret = dict(cap=cap_at[:6], cap_end=cap_at[-1] if cap_at else None,
+                   expired=(back[0][1].get("expired") if back else None),
+                   share=round(sum(x for x, _ in rs) / sum(y for _, y in rs), 2) if rs else None,
+                   lte_rtt_max=max(rtts_b) if rtts_b else None,
+                   in_after_s=round(live_back[0] - RET, 1) if live_back else None,
+                   tcp=round(st.mean(ret_iv), 2) if ret_iv else None)
     first = {n: (samples[-1][1].get(n, {}).get("sv_first") or 0) - (samples[0][1].get(n, {}).get("sv_first") or 0)
              for n in ("lte", "fijo")} if samples else {}
     caps = [l.get("cap") for _, l in after if l.get("cap") is not None]
@@ -272,11 +321,14 @@ def one(mode, gain, rep):
     if srv_end:
         ss = [x for x in srv_end.get("sessions", []) if x.get("newest")]
         sess = ss[0] if ss else None
-    row = dict(mode=mode, gain=gain, floor=FLOOR, rep=rep, secs=SECS, pre=PRE, fijo=FIJO_NETEM,
+    row = dict(mode=mode, gain=gain, ret_at=RET, ret_gain=RET_GAIN, floor=FLOOR, rep=rep, secs=SECS, pre=PRE, fijo=FIJO_NETEM,
                tcp_mbit=mbit, tcp_tail_mbit=tail, retrans=retr, tcp_ivals=ivals,
                rtt=[pct(rtts, .5), pct(rtts, .9), rtts[-1] if rtts else None],
                ping_loss=round(100 * (1 - len(rtts) / sent_after), 1) if sent_after else None,
                lte_out_after_s=round(out_t[0] - PRE, 1) if out_t else None,
+               lte_muted_after_s=round(muted_t[0] - PRE, 1) if muted_t else None,
+               lte_muted_frac=round(len(muted_t) / len(after), 2) if after else None,
+               flaps=flaps, mutes=mutes, ret=ret,
                lte_out_frac=round(len(out_t) / len(after), 2) if after else None,
                lte_tx_share=lte_share, lte_low_after_s=round(t_low - PRE, 1) if t_low is not None else None,
                lte_last=lte_last, lte_cap=[min(caps), max(caps), caps[-1]] if caps else None,

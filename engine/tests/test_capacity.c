@@ -31,7 +31,14 @@ static void sim_start(struct sim *s)
 
 /* 100 ms: send at send_mbit, deliver up to cap_mbit (the rest queues), the
  * delay = base + queue, and a report. */
+static void sim_step_cfg(struct sim *s, double send_mbit, double cap_mbit, const struct cg_cap_cfg *cfg);
+
 static void sim_step(struct sim *s, double send_mbit, double cap_mbit)
+{
+	sim_step_cfg(s, send_mbit, cap_mbit, &CFG);
+}
+
+static void sim_step_cfg(struct sim *s, double send_mbit, double cap_mbit, const struct cg_cap_cfg *cfg)
 {
 	double sent = send_mbit * MBIT / 8 / 1000 / 10, can = cap_mbit * MBIT / 8 / 1000 / 10, out;
 
@@ -45,7 +52,7 @@ static void sim_step(struct sim *s, double send_mbit, double cap_mbit)
 	s->h.owd = 30000u + s->jitter_us + (uint32_t)(s->backlog / can * 100 * MS); /* queue: backlog over the rate */
 	s->h.have_owd = 1;
 	s->h.fresh_until_ms = s->t + 3000;
-	cg_cap_tick(&s->l, s->t, s->t, s->rx, s->tx_pkts, s->tx_bytes, s->stale ? NULL : &s->h, &CFG);
+	cg_cap_tick(&s->l, s->t, s->t, s->rx, s->tx_pkts, s->tx_bytes, s->stale ? NULL : &s->h, cfg);
 }
 
 static int near(uint64_t bps, double mbit, double tol)
@@ -859,8 +866,100 @@ static void test_capacity_slot(void)
 	}
 }
 
+/* capacity_expire_ms: 100 ms ticks of a link out of the send set, with no
+ * new report (muted or stalled: nothing of it is measured). Returns how
+ * many halved. */
+static int out_ticks(struct sim *s, int steps, const struct cg_cap_cfg *cfg)
+{
+	int n = 0;
+
+	for (int i = 0; i < steps; i++) {
+		s->t += 100;
+		if (cg_cap_tick(&s->l, s->t, s->l.t_ms, s->rx, s->tx_pkts, s->tx_bytes, NULL, cfg) & CG_CAP_EV_EXPIRE)
+			n++;
+	}
+	return n;
+}
+
+/* A link out of the send set for expire_ms with nothing measured has its
+ * capacity halved, and again every expire_ms, down to 1/16 of its best; on
+ * its return fast start holds back for CG_CAP_REST_MS and the probe offers
+ * twice its capacity (story 016: an LTE link off the SNR cliff kept the
+ * 16 Mbit/s of before while out). Off (0) or in the send set: frozen. */
+static void test_capacity_expire(void)
+{
+	struct sim s;
+	struct cg_cap_cfg out = CFG, in = CFG;
+
+	out.expire_ms = in.expire_ms = 2000;
+	out.out = 1;
+
+	/* off: 30 s out changes nothing */
+	sim_start(&s);
+	run(&s, 30, 16, 20);
+	CHECK(near(cg_cap_bps(&s.l), 16, 0.05));
+	{
+		struct cg_cap_cfg off = out;
+
+		off.expire_ms = 0;
+		CHECK_EQ(out_ticks(&s, 300, &off), 0);
+		CHECK(near(cg_cap_bps(&s.l), 16, 0.05));
+		CHECK_EQ(s.l.out_ms, 0);
+	}
+
+	/* in the send set (no traffic): nothing either */
+	sim_start(&s);
+	run(&s, 30, 16, 20);
+	CHECK_EQ(out_ticks(&s, 300, &in), 0);
+	CHECK(near(cg_cap_bps(&s.l), 16, 0.05));
+
+	/* out: halved after 2 s, not before (its first tick out counts from
+	 * itself); every 2 s; down to best / 16 */
+	sim_start(&s);
+	run(&s, 30, 16, 20);
+	CHECK_EQ(out_ticks(&s, 20, &out), 0);
+	CHECK(near(cg_cap_bps(&s.l), 16, 0.05));
+	CHECK_EQ(out_ticks(&s, 1, &out), 1);
+	CHECK(near(cg_cap_bps(&s.l), 8, 0.05));
+	CHECK(s.l.rate_bps <= cg_cap_bps(&s.l)); /* the next sample does not bring the old rate back */
+	CHECK_EQ(out_ticks(&s, 19, &out), 0);
+	CHECK_EQ(out_ticks(&s, 1, &out), 1);
+	CHECK(near(cg_cap_bps(&s.l), 4, 0.05));
+	CHECK_EQ(out_ticks(&s, 100, &out), 2); /* 2, then 1 = 16 / 16 */
+	CHECK(near(cg_cap_bps(&s.l), 1, 0.05));
+	CHECK_EQ(out_ticks(&s, 100, &out), 0);
+	CHECK_EQ(s.l.n_expire, 4);
+	CHECK(near(cg_cap_best_bps(&s.l), 16, 0.05)); /* its best is kept */
+
+	/* back in: fast start waits CG_CAP_REST_MS (the last halving counts as
+	 * a full sample), the probe offers twice it, and it measures again */
+	CHECK_EQ(out_ticks(&s, 1, &in), 0);
+	CHECK_EQ(s.l.out_ms, 0);
+	CHECK(cg_cap_probe(&s.l, cg_cap_bps(&s.l), 0) == 2 * cg_cap_bps(&s.l));
+	{
+		uint64_t c0 = cg_cap_bps(&s.l);
+
+		for (int i = 0; i < 20; i++) /* 2 s at 2 x the capacity, a link of 3 */
+			sim_step_cfg(&s, 2 * (double)c0 / MBIT, 3, &in);
+		CHECK(cg_cap_bps(&s.l) < 4 * MBIT); /* no jump back to half its best (8) */
+		CHECK(cg_cap_bps(&s.l) > c0);       /* it measured more */
+	}
+
+	/* a loaded sample while out (a tickle) counts as measured: no halving
+	 * for expire_ms after it */
+	sim_start(&s);
+	run(&s, 30, 16, 20);
+	CHECK_EQ(out_ticks(&s, 5, &out), 0);
+	for (int i = 0; i < 10; i++)
+		sim_step_cfg(&s, 16, 20, &out);
+	CHECK_EQ(out_ticks(&s, 10, &out), 0); /* 2.5 s out, 1.4 s after the last loaded sample */
+	CHECK(near(cg_cap_bps(&s.l), 16, 0.05));
+	CHECK_EQ(out_ticks(&s, 10, &out), 1);
+}
+
 void test_capacity(void)
 {
+	test_capacity_expire();
 	test_capacity_seq_lag();
 	test_capacity_slot();
 	test_capacity_inflight();

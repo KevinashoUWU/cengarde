@@ -2236,7 +2236,7 @@ static void pace_set(struct link *l, uint64_t rate)
  * received on it, and with capacity_weights the split's weights from them
  * (scaled by the governor's, with governor), after the governor's tick.
  * Each link with its own model (c->lm, link_models). */
-static void cap_tick(struct client *c, uint16_t live, uint64_t now_ms)
+static void cap_tick(struct client *c, uint16_t live, uint16_t in, uint64_t now_ms)
 {
 	struct cg_cap_cfg cc = { .window_ms = c->cfg->governor_window_ms, .sat_us = c->cfg->capacity_sat_ms * 1000 };
 	struct cg_slot slot = cg_config_slot(c->cfg);
@@ -2244,6 +2244,7 @@ static void cap_tick(struct client *c, uint16_t live, uint64_t now_ms)
 
 	cc.seq_lag = (uint8_t)c->cfg->capacity_seq_lag;
 	cc.tx_seq = c->txs.seq;
+	cc.expire_ms = c->cfg->capacity_expire_ms;
 	cc.real_off_ms = (int64_t)wall - (int64_t)now_ms;
 
 	for (int i = 0; i < CG_MAX_LINKS; i++) {
@@ -2261,6 +2262,7 @@ static void cap_tick(struct client *c, uint16_t live, uint64_t now_ms)
 			cc.rx_top = l->peer_view.rx_top;
 			cc.behind_us = c->uh[i].have_behind ? c->uh[i].behind_us : 0;
 			cc.slot = m->slot_clock && wall >= CG_WALL_SET_MS ? &slot : NULL;
+			cc.out = !(in >> i & 1);
 			ev = cg_cap_tick(&c->cap[i], now_ms, l->peer_view_ms, l->peer_view.rx, l->tx_pkts, l->tx_bytes,
 					 &c->uh[i], &cc);
 
@@ -2308,17 +2310,54 @@ static void link_models(struct client *c)
 	c->pace_any = (uint8_t)cg_link_pace_windows(c->lm, CG_MAX_LINKS, c->pace_w);
 }
 
+/* The links that carry the upload now, for the capacity's expiry
+ * (capacity_expire_ms): live and carrying (not muted), and when the upload
+ * is split, in the split or taking a copy of every packet. */
+static uint16_t send_set(const struct client *c, uint16_t present, uint16_t live, uint64_t now_ms)
+{
+	uint16_t carry = (uint16_t)(cg_health_carriers(c->uh, CG_MAX_LINKS, present, live) & live), dup0;
+	struct cg_split_masks k;
+
+	if (!split_active(c))
+		return carry;
+	split_weights(c, &dup0);
+	k = split_masks(c, carry, split_eligible(c, live, carry, now_ms), dup0);
+	return (uint16_t)((k.eligible | k.dup) & carry);
+}
+
+/* mute_queue's inputs (health.h): each link's queue over its minute's
+ * minimum (capacity.h, the last tick's) and the bound from its unanswered
+ * probes over the fastest live link's round trip. */
+static void health_inputs(struct client *c, uint16_t live, uint64_t now_ms)
+{
+	uint32_t ref = 0;
+	int any = 0;
+
+	for (int i = 0; i < CG_MAX_LINKS; i++)
+		if ((live >> i & 1) && c->link[i].srtt8_us && (!any || srtt_ms(&c->link[i]) < ref)) {
+			ref = srtt_ms(&c->link[i]);
+			any = 1;
+		}
+	for (int i = 0; i < CG_MAX_LINKS; i++) {
+		const struct link *l = &c->link[i];
+
+		c->uh[i].queue_us = l->fd >= 0 ? c->cap[i].ql_us : -1;
+		c->uh[i].silent_us = l->fd >= 0 && any ? cg_health_silent_us(l->unanswered, l->first_unanswered_ms, now_ms, ref) : 0;
+	}
+}
+
 static void health_tick(struct client *c, uint64_t now_ms)
 {
 	uint16_t present, live, changed;
 
 	link_models(c);
 	link_masks(c, now_ms, &present, &live);
+	health_inputs(c, live, now_ms);
 	changed = cg_health_eval(c->uh, CG_MAX_LINKS, live, now_ms, &c->hcfg);
 	cg_decrec_health(&c->dec, c->uh, changed, now_ms);
 	spread_tick(c, present, live, now_ms);
 	gov_tick(c, present, live, now_ms);
-	cap_tick(c, live, now_ms);
+	cap_tick(c, live, send_set(c, present, live, now_ms), now_ms);
 	for (int i = 0; changed; i++, changed >>= 1) {
 		const struct cg_hlink *h = &c->uh[i];
 
@@ -2326,7 +2365,7 @@ static void health_tick(struct client *c, uint64_t now_ms)
 			continue;
 		if (h->state == CG_H_MUTED)
 			cg_info("link %s: upload muted, %d ms behind the fastest link", c->link[i].ifname,
-				h->behind_us / 1000);
+				(h->have_late ? h->late_us : h->behind_us) / 1000);
 		else if (h->unmuted_ms == now_ms)
 			cg_info("link %s: upload unmuted, within %d ms of the fastest link", c->link[i].ifname,
 				h->behind_us > 0 ? h->behind_us / 1000 : 0);
@@ -2642,6 +2681,11 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 			cg_json_ms_signed(j, "upload_behind_ms", h->behind_us);
 		else
 			cg_json_null(j, "upload_behind_ms");
+		/* mute_queue: the lateness the guard compared (health.h) */
+		if (h->have_late)
+			cg_json_ms_signed(j, "upload_late_ms", h->late_us);
+		else
+			cg_json_null(j, "upload_late_ms");
 		cg_json_u64(j, "upload_mutes", h->mutes);
 		cg_json_u64(j, "upload_state_ms", now_ms - h->changed_ms);
 		cg_json_bool(j, "download_muted", l->peer_muted);

@@ -22,8 +22,15 @@
   42–112 ms, ~20 veces mejor (22-10, 11:39).
 - **cengarde contra el acantilado** (LTE + un fijo de 10 Mb/s con 1 %):
   el bonding saca al LTE del reparto en 1,2–1,7 s y el TCP del túnel queda
-  en 8–11 Mb/s; la redundancia no lo silencia hasta BLER ≥ 60 % y el TCP
-  cae a 3,5–4,6 Mb/s (la copia tardía no repara la pérdida del fijo).
+  en 8–11 Mb/s; la redundancia no lo silencia nunca (con dos enlaces,
+  `min_active_links = 2` no deja; lo que parecía silenciado eran mudos) y
+  el TCP cae a 3,5–4,6 Mb/s (la copia tardía no repara la pérdida del fijo).
+- **Silenciar por la cola y caducar la capacidad** (`mute_queue`,
+  `capacity_expire_ms`, 22-10): con un enlace menos de mínimo, el LTE se
+  silencia a los 3,3 s en vez de 3,8–7,9 s o nunca, y su capacidad vuelve
+  baja; pero el TCP no mejora (lo limita el fijo), la vuelta de la señal
+  cuesta (espera exponencial, capacidad que sube despacio) y el laboratorio
+  queda igual. Las dos quedan como perillas apagadas.
 - Límites: el scheduler de srsRAN es más amable que el de un operador (sin
   colas hondas), su SNR no es el SINR del módem (1 antena frente a 4) y no hay
   4×4 ni 256QAM en subida.
@@ -108,10 +115,11 @@ silenciado o fuera del reparto por primera vez, y qué parte del tiempo;
   solo con su pérdida:** 3,5–4,6 Mb/s de cola, lo que predice Mathis para
   1 % a 30 ms (~4,7), aunque el fijo da 10. La copia del LTE llega tarde
   (su cola sube a 1–4 s, RTT del enlace 0,9–6,8 s) y no repara la pérdida
-  del fijo. Con 3,6 y 2 dB (BLER 5 %) nunca se silencia: la guarda mira
-  cuánto va detrás, no la cola, y el ping del túnel va bien (lo trae el
-  fijo). Recién con BLER ≥ 60 % se silencia, a los ~2,2 s, y vuelve y se
-  va (fuera 11 % del tiempo con 1,2 dB, 89 % con 0,7 dB).
+  del fijo. Nunca se silencia (corregido el 22-10, sección siguiente: con
+  dos enlaces `min_active_links = 2` no lo deja), y el ping del túnel va
+  bien (lo trae el fijo). Con BLER ≥ 60 % enmudece (sondas sin respuesta)
+  a los ~2,2 s, y vuelve y se va (fuera 11 % del tiempo con 1,2 dB, 89 %
+  con 0,7 dB).
 - **El bonding saca al LTE del reparto en 1,2–1,7 s** (su parte cae bajo
   10 % a los 1,7 s desde 2 dB hacia abajo) y saca **2× el TCP de la
   redundancia** (8–11 Mb/s, casi todo el fijo) con 4–6 veces menos
@@ -125,6 +133,117 @@ silenciado o fuera del reparto por primera vez, y qué parte del tiempo;
   valor de antes de la caída (8–16 Mb/s), sin muestras nuevas. Un enlace
   que vuelve de silenciado con esa capacidad vieja recibe de más hasta que
   la mide de nuevo.
+
+### Silenciar por la cola y caducar la capacidad (22-10)
+
+**Lo que de verdad pasaba.** Releídas las muestras de la tabla anterior, el
+LTE en redundancia nunca estuvo silenciado (`upload_mutes` 0 en las 30
+corridas): con dos enlaces, `min_active_links = 2` (historia 006: «con 2
+enlaces, nada se silencia») no deja silenciar ninguno. Lo que la tabla
+contaba como «fuera» eran mudos (sondas sin respuesta 2 RTT + 1 s). La
+guarda tampoco habría fallado por mirar el atraso y no la cola: con 1–4 s
+de cola el LTE iba 0,9–2,4 s detrás del fijo. Lo que sí la frenaba: entre
+dos ráfagas de respuestas el informe del LTE quedaba viejo (vale 5
+intervalos de sonda, 500 ms) y cada hueco reiniciaba su espera de 2 s.
+
+**Diseño** (sin lazos nuevos: la decisión de siempre con mejores entradas):
+
+- `mute_queue` (`health.h`, `cg_health_late`): el silenciado compara el
+  **atraso**, el mayor entre lo que va detrás del más rápido, su cola propia
+  (retardo sobre su mínimo de 60 s, el `ql_us` de la capacidad, el mismo
+  sensor que el rescate) menos la del más rápido, y, en el cliente, cuánto
+  lleva sin respuesta su sonda más vieja menos el RTT del enlace vivo más
+  rápido (`cg_health_silent_us`). Un informe viejo con esa cota sobre
+  `mute_behind_ms` no reinicia la espera. Volver pide el mismo atraso bajo
+  `unmute_behind_ms`; la histéresis, la espera exponencial y
+  `min_active_links` no cambian. No se usó la llegada esperada (ETA): en
+  redundancia no se calcula, y la cola propia ya la contiene.
+- `capacity_expire_ms` (`capacity.h`, `cg_cap_expire`): un enlace fuera del
+  envío (silenciado, mudo o fuera del reparto) ese tiempo sin una muestra
+  cargada ve su capacidad (y su entrega suavizada) a la mitad, y otra vez
+  cada tanto, hasta 1/16 de su mejor. Reusa el arranque rápido: cada mitad
+  cuenta como muestra llena (no vuelve a la mitad de su mejor hasta 10 s
+  sin llenarse) y como medida para el ETA (`cg_cap_stale` no la agranda en
+  3 s); al volver, el sondeo al doble de siempre la sube.
+
+**Celda** (como arriba, 30 s, la ganancia baja a los 3 s y vuelve a 1 a
+los 18; n = 3, medianas; `redund`: de fábrica; `red1`: con
+`min_active_links = 1`, para que haya qué silenciar; `redq`: `red1` con
+`mute_queue` y `capacity_expire_ms = 2000`; `bond` y `bondx`, el perfil de
+terreno sin y con las dos). «TCP» es el promedio de la caída (desde 3 s
+después hasta la vuelta); «silencio», cuándo quedó silenciado y qué parte
+de la caída estuvo fuera (silenciado o mudo); «capacidad», la del LTE al
+volver la señal; «vuelta», cuándo volvió a llevar y el TCP de los 10 s
+siguientes. Resultados en `~/sdr/resultados/mqce/` (`cell.jsonl`,
+`cell_an.txt`).
+
+| Ganancia (SNR, BLER) | Modo | TCP | Retx | Silencio: s / fuera | Vaivenes | Capacidad | Vuelta: s / TCP |
+|---|---|---|---|---|---|---|---|
+| 0,15 (3,8 dB, 4 %) | redund | 5,0 | 404 | nunca / 0 % | 0 | 3,0 | 0,2 / 20,1 |
+| | red1 | 4,7 | 410 | 3,8 / 55 % | 2 | 2,0 | 6,5 / 12,7 |
+| | redq | 5,0 | 399 | 3,3 / 62 % | 2 | 1,3 | 5,9 / 13,4 |
+| | bond / bondx | 10,5 / 10,6 | 37 / 35 | — | 0 | 2,8 / 2,8 | 0,2 / 23,7 – 21,9 |
+| 0,10 (4,2 dB, 4 %) | redund | 3,8 | 466 | nunca (mudo 6,9) / 24 % | 0 | 2,3 | 0,2 / 20,0 |
+| | red1 | 4,6 | 542 | 7,9 / 48 % | 1 | 1,5 | 0,2 / 19,5 |
+| | redq | 4,3 | 406 | 3,3 / 62 % | 2 | 1,1 | 9,0 / 8,7 |
+| | bond / bondx | 8,6 / 8,3 | 38 / 68 | — | 0 | 1,0 / 0,5 | 0,2 / 20,0 – 20,3 |
+| 0,07 (1,3 dB, 60 %) | redund | 3,6 | 501 | nunca (mudo 3,8) / 14 % | 0 | 1,6 | 0,2 / 20,2 |
+| | red1 | 3,9 | 597 | nunca (mudo 3,8) / 14 % | 0 | 2,0 | 0,2 / 19,9 |
+| | redq | 4,8 | 628 | 3,3 / 79 % | 1 | 0,65 | 0,2 / 19,2 |
+| | bond / bondx | 7,8 / 7,9 | 77 / 63 | — | 0 | 0,15 / 0,13 | 0,2 / 21,2 – 21,1 |
+| 0,05 (0,7 dB, 99 %) | red1 | 3,6 | 526 | mudo 2,2 / 86 % | 0 | **20,9** | 1,2 / 19,9 |
+| | redq | 3,4 | 604 | mudo 2,2 / 86 % | 0 | **1,3** | 1,3 / 19,8 |
+| | bond / bondx | 8,0 / 8,0 | 108 / 85 | — | 0 | **3,6 / 0,35** | 0,7 / 23,0 – 20,8 |
+| 0,05, vuelve a 0,15 | red1 / redq | 3,8 / 3,6 | | | | 20,9 / 1,3 | 1,3 / 4,3 – 4,4 |
+| | bond / bondx | 8,1 / 8,3 | | | | 5,8 / 0,32 | 1,2 / 10,1 – 9,8 |
+
+Con ganancia 1 (sin caída) los cinco modos quedan iguales (redundancia
+20,1–20,2 Mb/s; bonding 24,9 frente a 24,8). Con n = 3 ningún cambio de TCP
+llega a p < 0,05 (Mann-Whitney; los más claros: `redq` frente a `red1` con
+0,07 dB, 4,8 frente a 3,9 durante la caída, p = 0,07, y en la vuelta con
+0,10, 8,7 frente a 19,5, p = 0,10; `bondx` frente a `bond` en la vuelta
+con 0,05, 20,8 frente a 23,0, p = 0,10).
+
+- **`mute_queue` hace lo que se pidió:** silencia a los 3,3 s siempre
+  (también con BLER 60 %, donde sin ella nunca se silencia y solo enmudece
+  a ratos), y el ping del túnel no cambia. **Pero no le sirve al TCP de la
+  redundancia:** con el LTE silenciado el túnel es el fijo solo, con su 1 %
+  de pérdida (4–5 Mb/s, lo mismo que con la copia tardía). Lo que repara
+  esa pérdida es el bonding (el rescate), no silenciar.
+- **Silenciar tiene un costo al volver la señal:** el silenciado vuelve tras
+  2 × `mute_settle_ms` multiplicado por la espera exponencial (los vaivenes
+  durante la caída la subieron), y el túnel pierde el LTE 6–9 s ya bueno
+  (TCP 9–13 Mb/s frente a 20). Le pasa también a `red1`: es del
+  silenciado, no de la perilla; `mute_queue` lo hace más frecuente porque
+  silencia más.
+- **`capacity_expire_ms` hace lo que se pidió:** el LTE vuelve con 0,3–1,3
+  Mb/s y no con 3,6–21 de antes de caer. **Pero la capacidad vieja no hacía
+  daño:** si la señal vuelve entera, la vieja acierta y la caducada tarda
+  ~5 s en subir (bonding 20,8 frente a 23,0 Mb/s en los 10 s siguientes);
+  si vuelve débil (a 0,15), los cortes de siempre (lleno, entregas cortas)
+  bajan la vieja en 1,5–2,5 s y el TCP queda igual (10,1 frente a 9,8). El
+  bonding ya sacaba al LTE del reparto por G3/G4 antes de que su capacidad
+  importara.
+
+**Laboratorio** (`bench/labq.py`, `lab.sh bond`, 5 laboratorios, casos
+`shallowq`, `starsat`, `het` y `dominant`, subida y bajada, cubic, 30 s,
+n = 8; `soff`/`snull`/`son`: el perfil de terreno con `split`, sin, sin otra
+vez como control y con las dos perillas; `roff`/`ron`: la redundancia de
+fábrica sin y con; plan y resultados en `~/campo/2026-10-22/mqce/`):
+ningún caso cambia el caudal (de 0,96× a 1,06×, todos p ≥ 0,2; el control
+nulo varía lo mismo, 0,96–1,05×). Lo único con p < 0,05: menos
+retransmisiones en `starsat` de bajada con `son` (488 frente a 1034,
+p = 0,015) y el p99 del ping en `het` de subida (0,84×, p = 0,05, pero el
+control nulo da 0,85×, p = 0,015: ruido). En redundancia con tres enlaces
+el silenciado ya actuaba igual (`ron` frente a `roff`: 1,00× en `het`,
+`shallowq` y `starsat`; `dominant` de bajada 0,96×, p = 0,65).
+
+**Decisión:** las dos quedan **apagadas** por omisión, como experimentos.
+No empeoran nada en el laboratorio, pero en la celda no ganan TCP y
+cuestan en la vuelta. Si algún día la redundancia de terreno usa
+`mute_behind_ms`, `mute_queue` es el arreglo correcto del hueco de los
+informes viejos; `capacity_expire_ms` solo tendría sentido con un enlace
+que vuelve débil y sin los cortes de la capacidad.
 
 ## Qué hacemos con esto
 
@@ -145,10 +264,12 @@ silenciado o fuera del reparto por primera vez, y qué parte del tiempo;
   la cola de WOM con buen SNR.
 - Varios teléfonos como enlaces de cengarde (hoy uno, más un fijo con
   netem), el rescate, y una caída lenta del SNR en vez de un escalón.
-- La redundancia no silencia un LTE con 1–4 s de cola y BLER 5 % (la copia
-  llega tarde y no repara nada): mirar si la guarda de silenciado debe
-  contar la cola, y si la capacidad vieja de un enlace silenciado debe
-  caducar.
+- Con dos enlaces, `min_active_links = 2` impide silenciar: una copia
+  1–4 s tarde no es redundancia. Si importa, que un enlace atrasado más de
+  lo que sirve deje de contar para el mínimo; en terreno hay 4–5 enlaces y
+  no pesa.
+- La espera exponencial del silenciado deja fuera 6–9 s a un enlace que ya
+  volvió: mirar una vuelta más rápida cuando el atraso cae de golpe.
 - 64QAM en subida, 2×2 en bajada y agregación de portadoras en srsRAN, para
   acercarse a una macro de Entel.
 
@@ -157,3 +278,6 @@ silenciado o fuera del reparto por primera vez, y qué parte del tiempo;
 - 2026-10-22: creada.
 - 2026-10-22: cengarde encima de la celda (`cengarde.py`): redundancia
   frente a bonding con el LTE cayendo al acantilado, n = 3.
+- 2026-10-22: `mute_queue` y `capacity_expire_ms` (apagadas), la fase de
+  vuelta en `cengarde.py` (`RET`, `RET_GAIN`, `ARMS`) y la corrección: en
+  redundancia con dos enlaces el LTE nunca estuvo silenciado (eran mudos).

@@ -48,7 +48,7 @@ H = {
     "002": "002-wireguard-para-cengarde", "005": "005-motor-c-v1", "006": "006-salud-de-enlaces",
     "008": "008-luci-uci-y-emparejamiento", "009": "009-recarga-control-e-ip-pass",
     "010": "010-ipv6-varias-ip-multicliente-nombres", "011": "011-hilos", "012": "012-bonding",
-    "013": "013-capacidad-y-dosificacion", "014": "014-tunel-nativo", "015": "015-modelo-de-enlace",
+    "013": "013-capacidad-y-dosificacion", "014": "014-tunel-nativo", "015": "015-modelo-de-enlace", "016": "016-celda-virtual",
     "audit": "audit-pending",
 }
 
@@ -84,6 +84,7 @@ T = {
  "mute_settle_ms": ([G], BOTH, "2000", "100–600000", [SALUD, G4], ["006", "012"], "Cuánto tiene que durar la condición para silenciar (y el doble para volver). G4 lo usa para la vuelta al reparto."),
  "mute_trickle": ([G], BOTH, "0", "0–1000000", [SALUD], ["006"], "Un enlace silenciado lleva un paquete duplicado de cada tantos (0: ninguno)."),
  "min_active_links": ([G], BOTH, "2", "1–16", [SALUD], ["006"], "Enlaces vivos que siempre llevan todo; el silenciado se detiene ahí."),
+ "mute_queue": ([G], BOTH, "`no`", "`yes` o `no`", [SALUD, COLA], ["016"], "EXPERIMENTO: el silenciado compara el atraso, la cola propia sobre la del más rápido y las sondas sin respuesta (el mayor); un informe viejo de un enlace callado no reinicia la espera."),
  # --- probes / servers (client) ---
  "probe_interval_ms": ([G], CLI, "100", "100–60000", [SONDAS, SALUD, G3], ["006"], "Intervalo de sondas con tráfico. G3 y el mudo cuentan en intervalos de sonda."),
  "probe_idle_ms": ([G], CLI, "1000", "`probe_interval_ms`–600000", [SONDAS], ["006"], "Intervalo de sondas en reposo."),
@@ -151,6 +152,7 @@ T = {
  "capacity_sat_ms": ([G], BOTH, "20 (el de `governor_target_ms`; 0 lo sigue)", "0–1000", [CAP, CAKE, ETA], ["audit"], "La cola que dice que un enlace está lleno (C12)."),
  "capacity_loss_pct": ([G], BOTH, "0 (apagado)", "0–50", [CAP, MODEL], ["015"], "EXPERIMENTO: un enlace cargado que pierde más de esto está lleno."),
  "capacity_seq_lag": ([G], BOTH, "`yes`", "`yes` o `no`", [CAP], ["015"], "La pérdida de una muestra se cuenta por secuencia (`rx_top`), no 250 ms antes del informe."),
+ "capacity_expire_ms": ([G], BOTH, "0 (apagado)", "0–600000", [CAP], ["016"], "EXPERIMENTO: un enlace fuera del envío (silenciado, mudo o fuera del reparto) tanto tiempo sin medirse ve su capacidad a la mitad, y otra vez cada tanto, hasta 1/16 de su mejor."),
  "cap_g4_episode": ([G], BOTH, "0 (apagado)", "0–3", [CAP, G4, MODEL], ["015", "audit"], "C5: una salida de G4 por cola cuenta para el arranque rápido."),
  "split_eta": ([G], BOTH, "`no`", "`yes` o `no`", [ETA], ["013"], "Reparto por llegada esperada."),
  "split_tickle_ms": ([G], BOTH, "0 (nunca)", "0–60000", [TICKLE], ["013"], "Con `split_eta`, cada este tiempo se le da carga a un enlace ocioso."),
@@ -221,7 +223,7 @@ def generate():
                                "label", "enabled", "weight", "type"]),
         ("Servidor", ["wireguard", "wireguard_poke", "wireguard_port_file", "max_sessions", "session_timeout_ms",
                       "path_timeout_ms", "passthrough_file", "forward_file", "forward", "lanes"]),
-        ("Salud", ["mute_behind_ms", "unmute_behind_ms", "mute_settle_ms", "mute_trickle", "min_active_links"]),
+        ("Salud", ["mute_behind_ms", "unmute_behind_ms", "mute_settle_ms", "mute_trickle", "min_active_links", "mute_queue"]),
         ("Reordenador", ["reorder", "reorder_max_wait_ms", "reorder_dup_wait_ms", "reorder_margin_ms", "reorder_bypass",
                          "reorder_by_link", "reorder_adaptive", "reorder_pool_kb", "reorder_idle_ms",
                          "reorder_retx_release_ms", "tcp_aware"]),
@@ -230,7 +232,8 @@ def generate():
         ("Reparto y guardas", ["split", "split_small", "split_spread_ms", "split_spread_copy", "split_stress_dup",
                                "split_stress_rejoin", "split_stress_single", "split_dwell_ms", "split_dwell_oq_ms"]),
         ("Gobernador y capacidad", ["governor", "governor_target_ms", "governor_window_ms", "capacity_weights",
-                                    "capacity_sat_ms", "capacity_loss_pct", "capacity_seq_lag", "cap_g4_episode"]),
+                                    "capacity_sat_ms", "capacity_loss_pct", "capacity_seq_lag", "capacity_expire_ms",
+                                    "cap_g4_episode"]),
         ("ETA, cosquilla, copias, dosificación", ["split_eta", "split_tickle_ms", "split_stale_max", "eta_buffer",
                                "split_qpred_ms", "split_qpred_mode", "eta_keep", "eta_keep_ms", "redund_pace_ms", "pacing"]),
         ("Modelo de enlace y Starlink", ["exp_link_types", "split_dominant_pct", "split_dominant_hold",
