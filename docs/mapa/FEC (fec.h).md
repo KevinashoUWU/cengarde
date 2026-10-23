@@ -12,11 +12,13 @@ sello: 6774eb5315b72b74
 ## Qué hace
 Una paridad XOR «espacial» sobre un grupo de DATA repartidos, como mucho uno por enlace; la paridad va por un enlace de fuera del grupo. Así el atasco de un enlace deja cada grupo con un paquete de menos, que la paridad reconstruye apenas llega el resto (código (n+1, n)). El emisor manda cada DATA al instante y lo suma al grupo abierto más viejo sin nada de su enlace (hasta 32 grupos abiertos). Un grupo cierra con k paquetes, al pasar 512 secuencias, o en su plazo; un grupo de uno no manda paridad. El receptor reconstruye antes de que el rescate pida.
 
+En **redundancia** no hace nada: cada paquete va por todos los enlaces y ninguno queda solo en uno (medido: 0 paridades, [[020-copias-parciales-y-paridad]]). Ahí la paridad la arma [[Lo que sobra (spare.h)]] (`redund_spare = parity` o `mix`) con estas mismas funciones (`cg_fec_grp_add`, `cg_fec_grp_close`): un grupo de k paquetes del primer enlace, todos de él, y su paridad por otro. El receptor no distingue: rehace igual.
+
 ## Lee
 - Lo que el [[Reparto (split.h)]] mandó por un solo enlace, y los enlaces portadores.
 
 ## Decide / escribe
-- Paridades `CG_T_FEC` por el enlace vivo de menor RTT fuera del grupo (`fec_send`).
+- Paridades `CG_T_FEC` por el enlace vivo de menor RTT fuera del grupo (`fec_send`). Desde [[020-copias-parciales-y-paridad]] no cuentan en `tx_packets`/`tx_bytes` del enlace (van en `tx_fec_packets`/`tx_fec_bytes`): el servidor cuenta solo DATA por camino, y [[Capacidad (capacity.h)]] las tomaba por perdidas (el enlace que solo llevaba paridad caía a la mitad cada muestra).
 - `cg_fec_share_mask` (con `fec_share_max`) recorta los elegibles del [[Reparto (split.h)]].
 - El receptor entrega lo reconstruido como si hubiera llegado → [[Reordenador (reorder.h)]]; lo que no puede, lo pide el [[Rescate (rescue.h)]].
 
@@ -28,6 +30,7 @@ Una paridad XOR «espacial» sobre un grupo de DATA repartidos, como mucho uno p
 ## Dónde se midió
 - `fec.h`: con la traza de 120 s de los cuatro módems, las 29 esperas de más de 100 ms del reparto pasaron a ninguna, con un tercio más de bytes; duplicar cuesta tres veces más.
 - [[engine-README]]: con `fec_share_max` 50 en la red de pruebas (RTMP de 8 Mbit/s), más paridad y de 3 a 12 veces las retransmisiones.
+- [[020-copias-parciales-y-paridad]]: en redundancia, `fec = yes` es igual a no tenerla (celda virtual, n = 3).
 
 ## Choques conocidos
 - C10: la paridad elige enlace por RTT, no por OWD, y no se cuenta en el ETA ni en `cake` ([[audit-pending]]).

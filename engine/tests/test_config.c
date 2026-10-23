@@ -768,6 +768,25 @@ static void test_config_bonding(void)
 	cg_config_free(&c);
 	bad(CLIENT "capacity_loss_queue_ms = 1001\n", "capacity_loss_queue_ms", "1001");
 	bad(SERVER "capacity_stand = 3\n", "capacity_stand", "3");
+	/* redund_spare (story 020): off by default, a 50 ms target */
+	CHECK_EQ(cg_config_parse(&c, CLIENT "\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(c.redund_spare, 0);
+	CHECK_EQ(c.redund_spare_ms, 50);
+	cg_config_free(&c);
+	CHECK_EQ(cg_config_parse(&c, CLIENT "redund_spare = parity\nredund_spare_ms = 80\n", err, sizeof(err), warn,
+				 sizeof(warn)),
+		 0);
+	CHECK_EQ(c.redund_spare, 2);
+	CHECK_EQ(c.redund_spare_ms, 80);
+	cg_config_free(&c);
+	CHECK_EQ(cg_config_parse(&c, CLIENT "redund_spare = mix\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(c.redund_spare, 3);
+	cg_config_free(&c);
+	CHECK_EQ(cg_config_parse(&c, CLIENT "redund_spare = off\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(c.redund_spare, 0);
+	cg_config_free(&c);
+	bad(CLIENT "redund_spare = all\n", "redund_spare", "all");
+	bad(CLIENT "redund_spare_ms = 0\n", "redund_spare_ms", "0");
 	bad(CLIENT "split_dominant_hold = 3\n", "split_dominant_hold", "3");
 	/* The weight is a link's, not global; a server has no [link] weights (its
 	 * client's probes say them), and says so. */
