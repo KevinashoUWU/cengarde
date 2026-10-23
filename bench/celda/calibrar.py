@@ -15,8 +15,10 @@ import sys
 import time
 import xmlrpc.client
 
+import perfil
+
 LOGS = os.environ.get("LOGS", "/tmp/celda")
-REPORT = os.path.join(LOGS, "enb_report.json")
+PORT, PIDF = 5231, os.path.join(LOGS, "iperf5231.pid")  # 5201 is this PC's iperf3 service
 ch = xmlrpc.client.ServerProxy("http://127.0.0.1:8765")
 
 
@@ -25,30 +27,15 @@ def sh(cmd, **kw):
 
 
 def report_since(t0):
-    """The eNB's per-UE metrics written after t0 (the report is a stream of
-    JSON objects)."""
-    txt = sh(f"sudo -n cat {REPORT}")
-    dec, i, out = json.JSONDecoder(), 0, []
-    while True:
-        j = txt.find("{", i)
-        if j < 0:
-            break
-        try:
-            obj, i = dec.raw_decode(txt, j)
-        except ValueError:
-            break
-        if obj.get("type") == "metrics" and obj.get("timestamp", 0) >= t0:
-            for c in obj.get("cell_list", []):
-                for u in c["cell_container"].get("ue_list", []):
-                    out.append(u["ue_container"])
-    return out
+    """The eNB's per-UE metrics written after t0, all UEs in one list."""
+    return [u for us in perfil.report_since(t0, LOGS).values() for u in us]
 
 
 def udp(rate_mbit, secs):
     """(offered, received Mb/s, loss %) of a UDP flow from the UE to the core."""
-    sh("iperf3 -s -B 172.16.0.1 -D -1")
-    time.sleep(0.4)
-    o = sh(f"sudo -n ip netns exec ue1 iperf3 -c 172.16.0.1 -u -b {rate_mbit}M -t {secs} -l 1200 -J", timeout=secs + 30)
+    perfil.iperf_server(PORT, PIDF)
+    o = sh(f"sudo -n ip netns exec ue1 iperf3 -c 172.16.0.1 -p {PORT} -u -b {rate_mbit}M -t {secs} -l 1200 -J", timeout=secs + 30)
+    perfil.kill_pidfile(PIDF)
     try:
         s = json.loads(o)["end"]["sum"]
         lost = s.get("lost_percent", 100.0)
@@ -62,14 +49,14 @@ def ping_during(rate_mbit, secs=8):
     of rate_mbit runs (0: no flow)."""
     flow = None
     if rate_mbit > 0:
-        sh("iperf3 -s -B 172.16.0.1 -D -1")
-        time.sleep(0.4)
-        flow = subprocess.Popen(f"sudo -n ip netns exec ue1 iperf3 -c 172.16.0.1 -u -b {rate_mbit}M -t {secs + 2} -l 1200",
+        perfil.iperf_server(PORT, PIDF)
+        flow = subprocess.Popen(f"sudo -n ip netns exec ue1 iperf3 -c 172.16.0.1 -p {PORT} -u -b {rate_mbit}M -t {secs + 2} -l 1200",
                                 shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         time.sleep(1.5)
     o = sh(f"sudo -n ip netns exec ue1 ping -c {secs * 4} -i 0.25 -W 3 172.16.0.1", timeout=secs + 20)
     if flow:
         flow.wait(timeout=30)
+        perfil.kill_pidfile(PIDF)
     rtts = sorted(float(x) for x in re.findall(r"time=([\d.]+)", o))
     m = re.search(r"([\d.]+)% packet loss", o)
     loss = float(m.group(1)) if m else 100.0

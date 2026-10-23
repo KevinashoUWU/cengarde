@@ -1,0 +1,92 @@
+--- a/lib/include/srsran/rlc/rlc_um_base.h
++++ b/lib/include/srsran/rlc/rlc_um_base.h
+@@ -112,6 +112,9 @@
+ 
+     // TX SDU buffers
+     byte_buffer_queue    tx_sdu_queue;
++    // cengarde bench: a byte cap on the SDU queue (SRSRAN_UM_TX_QUEUE_BYTES,
++    // 0: srsRAN's own cap of tx_queue_length SDUs only)
++    uint32_t max_queue_bytes = 0;
+     unique_byte_buffer_t tx_sdu;
+ 
+     // Mutexes
+--- a/lib/src/rlc/rlc_um_base.cc
++++ b/lib/src/rlc/rlc_um_base.cc
+@@ -21,6 +21,7 @@
+ 
+ #include "srsran/rlc/rlc_um_base.h"
+ #include "srsran/interfaces/ue_rrc_interfaces.h"
++#include <cstdlib>
+ #include <sstream>
+ 
+ namespace srsran {
+@@ -233,7 +234,11 @@
+ 
+ rlc_um_base::rlc_um_base_tx::rlc_um_base_tx(rlc_um_base* parent_) :
+   logger(parent_->logger), pool(parent_->pool), parent(parent_)
+-{}
++{
++  // cengarde bench: an operator-like deep uplink queue in the modem, in bytes
++  const char* q = getenv("SRSRAN_UM_TX_QUEUE_BYTES");
++  max_queue_bytes = q ? (uint32_t)strtoul(q, nullptr, 10) : 0;
++}
+ 
+ rlc_um_base::rlc_um_base_tx::~rlc_um_base_tx() {}
+ 
+@@ -287,6 +292,11 @@
+   if (sdu) {
+     uint8_t*                                 msg_ptr   = sdu->msg;
+     uint32_t                                 nof_bytes = sdu->N_bytes;
++    if (max_queue_bytes > 0 && tx_sdu_queue.size_bytes() + nof_bytes > max_queue_bytes) {
++      RlcInfo("[Dropped SDU] %s Tx SDU (%d B), queue at its byte cap (%d of %d B)",
++              rb_name.c_str(), nof_bytes, tx_sdu_queue.size_bytes(), max_queue_bytes);
++      return SRSRAN_ERROR;
++    }
+     srsran::error_type<unique_byte_buffer_t> ret       = tx_sdu_queue.try_write(std::move(sdu));
+     if (ret) {
+       RlcHexInfo(msg_ptr, nof_bytes, "Tx SDU (%d B, tx_sdu_queue_len=%d)", nof_bytes, tx_sdu_queue.size());
+@@ -323,7 +333,7 @@
+ 
+ bool rlc_um_base::rlc_um_base_tx::sdu_queue_is_full()
+ {
+-  return tx_sdu_queue.is_full();
++  return tx_sdu_queue.is_full() || (max_queue_bytes > 0 && tx_sdu_queue.size_bytes() >= max_queue_bytes);
+ }
+ 
+ uint32_t rlc_um_base::rlc_um_base_tx::build_data_pdu(uint8_t* payload, uint32_t nof_bytes)
+--- a/lib/src/rlc/rlc_um_lte.cc
++++ b/lib/src/rlc/rlc_um_lte.cc
+@@ -114,7 +114,11 @@
+     return false;
+   }
+ 
+-  tx_sdu_queue.resize(cnfg_.tx_queue_length);
++  // cengarde bench: with a byte cap, room for it in SDUs of ~400 B (the pool
++  // is 8192 buffers then, see srsue's main)
++  tx_sdu_queue.resize(max_queue_bytes > 0
++                          ? std::min(std::max(max_queue_bytes / 400, cnfg_.tx_queue_length), 6144u)
++                          : cnfg_.tx_queue_length);
+ 
+   rb_name = rb_name_;
+ 
+--- a/srsue/src/main.cc
++++ b/srsue/src/main.cc
+@@ -19,6 +19,7 @@
+  *
+  */
+ 
++#include "srsran/common/buffer_pool.h"
+ #include "srsran/common/common_helper.h"
+ #include "srsran/common/config_file.h"
+ #include "srsran/common/crash_handler.h"
+@@ -723,6 +724,10 @@
+ 
+ int main(int argc, char* argv[])
+ {
++  // cengarde bench: a deep UL queue needs more buffers than the default 4096
++  if (getenv("SRSRAN_UM_TX_QUEUE_BYTES") != nullptr) {
++    srsran::byte_buffer_pool::get_instance(8192);
++  }
+   srsran_register_signal_handler(signal_handler);
+   add_emergency_cleanup_handler(emergency_cleanup_handler, nullptr);
+   srsran_debug_handle_crash(argc, argv);
