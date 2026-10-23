@@ -2245,6 +2245,8 @@ static void cap_tick(struct client *c, uint16_t live, uint16_t in, uint64_t now_
 	cc.seq_lag = (uint8_t)c->cfg->capacity_seq_lag;
 	cc.tx_seq = c->txs.seq;
 	cc.expire_ms = c->cfg->capacity_expire_ms;
+	cc.lossq_us = c->cfg->capacity_loss_queue_ms * 1000;
+	cc.stand = (uint8_t)c->cfg->capacity_stand;
 	cc.real_off_ms = (int64_t)wall - (int64_t)now_ms;
 
 	for (int i = 0; i < CG_MAX_LINKS; i++) {
@@ -2257,6 +2259,7 @@ static void cap_tick(struct client *c, uint16_t live, uint16_t in, uint64_t now_
 
 			cc.loss_pct = m->loss_pct;
 			cc.lossy = cg_link_tracks_loss(m);
+			cc.lossq_loaded = (uint8_t)cc.lossy; /* Starlink's preset: its loss without a queue is held, not cut */
 			cc.lossy_probe = !m->lossy_noprobe;
 			cc.rfull_mode = m->rfull_hyst;
 			cc.rx_top = l->peer_view.rx_top;

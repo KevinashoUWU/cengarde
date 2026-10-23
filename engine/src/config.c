@@ -932,6 +932,8 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	    get_u32(&ini, "", "split_dominant_hold", 0, 2, &c->split_dominant_hold, err, errlen) ||
 	    get_bool(&ini, "", "capacity_seq_lag", &c->capacity_seq_lag, err, errlen) ||
 	    get_u32(&ini, "", "capacity_expire_ms", 0, 600000, &c->capacity_expire_ms, err, errlen) ||
+	    get_u32(&ini, "", "capacity_loss_queue_ms", 0, 1000, &c->capacity_loss_queue_ms, err, errlen) ||
+	    get_u32(&ini, "", "capacity_stand", 0, 2, &c->capacity_stand, err, errlen) ||
 	    get_u32(&ini, "", "starlink_slot_clock", 0, 2, &c->starlink_slot_clock, err, errlen) ||
 	    get_u32(&ini, "", "starlink_edge_ms", 0, CG_SLOT_PERIOD_MS - 1, &c->starlink_edge_ms, err, errlen) ||
 	    get_u32(&ini, "", "starlink_edge_pre_ms", 0, 5000, &c->starlink_edge_pre_ms, err, errlen) ||

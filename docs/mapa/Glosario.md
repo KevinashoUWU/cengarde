@@ -5,7 +5,7 @@ archivos:
   - engine/src/split.h
   - engine/src/capacity.h
   - engine/src/reorder.h
-sello: 26079aa8ad7360a1
+sello: 7a539e067bd09a22
 ---
 # Glosario
 
@@ -47,6 +47,8 @@ Términos del proyecto, en español, con el nombre del código entre paréntesis
 - **Cola:** retardo de ida menos su propio mínimo de ventana. → [[Cola por enlace (cg_gov_base)]]
 - **Base:** el retardo sin cola (el mínimo). → [[Cola por enlace (cg_gov_base)]]
 - **Capacidad:** lo más que entregó un enlace; baja solo lleno. → [[Capacidad (capacity.h)]]
+- **Pérdida con cola (`capacity_loss_queue_ms`):** pierde ≥ 1 % con cola sobre el mínimo de 60 s: lleno a cualquier carga. → [[Capacidad (capacity.h)]]
+- **Cola permanente (`capacity_stand`):** la cola sobre el mínimo de 60 s que el de 10 s ya tomó de base; frena el arranque rápido. → [[Capacidad (capacity.h)]]
 - **Lleno (full, sat):** cola sobre `capacity_sat_ms`, entregas cortas o pérdida con carga. → [[Capacidad (capacity.h)]]
 - **Corte / arranque rápido:** bajar la capacidad al llenarse / volver a la mitad de la mejor tras 10 s. → [[Capacidad (capacity.h)]]
 - **Sondeo a 5/4 (probe):** ofrecer más de lo medido a un enlace de cola corta. → [[Capacidad (capacity.h)]]

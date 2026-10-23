@@ -785,6 +785,27 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
   cortes de siempre bajan la vieja en 1,5–2,5 s); en el laboratorio, igual
   (*medido*, historia 016). El estado cuenta las mitades en `cap_diag`
   (`expired`) y en las decisiones (`cap_expire`).
+- **`capacity_loss_queue_ms` (0, apagado; 0–1000; sugerido 10) y
+  `capacity_stand` (0, apagado; 0–2), experimentales, en los dos extremos
+  (historia 019):** `capacity_loss_queue_ms` toma como lleno, a cualquier
+  carga, un enlace que en dos muestras seguidas pierde al menos el 1 % de
+  lo enviado, recibe más de lo que entrega y tiene una cola sobre su mínimo
+  de 60 s de al menos ese valor: su capacidad pasa a lo que entrega. Es el
+  búfer corto de un operador delante de un TCP: la cola no pasa de
+  `capacity_sat_ms` y el enlace nunca está «cargado» frente a una capacidad
+  vieja. Con el preset de Starlink (que descarta sin cola y se retiene por
+  eso) solo cuenta cargado. `capacity_stand = 1` frena el arranque rápido
+  mientras la cola sobre el mínimo de 60 s pasa `capacity_sat_ms` (4
+  muestras): una cola que dura más que `governor_window_ms` se vuelve base y
+  el arranque rápido devolvía la capacidad a la mitad de la mejor (choque C5
+  de la auditoría). `capacity_stand = 2` además deja ir el arranque rápido
+  antes de los 10 s si el enlace entrega 9/8 de su capacidad, sin pérdida ni
+  cola, dos muestras. En las trazas de ns-3 (LTE, 10 KB de RLC, emisor AIMD)
+  la capacidad pasó de +275–510 % de error a −2 % en 1,0–1,4 s, sin cortes
+  en pérdida aleatoria sin cola, y la cola permanente de +523 % a +3 %; en
+  la celda calibrada la capacidad se corrige antes, pero ni ahí ni en el
+  laboratorio cambia el TCP, por eso quedan apagadas (*medido*, historia
+  019). El estado cuenta `cut_lossq` y `restore_room` en `cap_diag`.
 - **`exp_link_types` (vacío; nombres de tipo):** las perillas globales de
   arriba (y `eta_buffer` y `capacity_loss_pct`) solo para los enlaces de
   esos tipos, para probar una antes de ponerla en un preset; vacío: todos.
