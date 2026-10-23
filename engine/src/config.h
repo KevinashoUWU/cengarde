@@ -247,6 +247,7 @@ struct cg_config {
 	int rescue_by_owd;            /* the client's rescue on the link of least upload delay, not RTT (audit C10) */
 	uint32_t rescue_full_hyst;    /* the rescue's full bit: 1 off under 3x, 2 off under 3x only while not rising */
 	uint32_t redund_pace_ms;      /* a copy goes on a link only if it arrives within this of the first (eta.h cg_eta_copies) */
+	int32_t pace_peers_ms;        /* both ends: over the starlink preset's pace_peers_ms (60), the copies to its peers; -1: the preset's, 0: off */
 	uint32_t split_dominant_pct;  /* dominant.h's threshold over the preset's (starlink: 250), a large value: off */
 	uint32_t split_dominant_hold; /* dominant.h's hold: 1 on, 2 off, 0 the preset's */
 	uint32_t capacity_expire_ms;  /* out of the send set this long: the capacity halves (capacity.h, story 016); 0: off */
@@ -387,6 +388,7 @@ static inline struct cg_link_knobs cg_config_link_knobs(const struct cg_config *
 		.eta_keep = c->eta_keep,
 		.eta_keep_ms = c->eta_keep_ms,
 		.pace_ms = c->redund_pace_ms,
+		.pace_peers = c->pace_peers_ms < 0 ? 0 : (uint32_t)c->pace_peers_ms + 1,
 		.dominant_pct = c->split_dominant_pct,
 		.dominant_hold = c->split_dominant_hold,
 		.slot_clock = c->starlink_slot_clock,

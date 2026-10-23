@@ -830,6 +830,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	c->split_stress_rejoin = 1;
 	c->split_stress_single = 0;
 	c->split_tickle_ms = 0;
+	c->pace_peers_ms = -1;
 	c->split_stale_max = 1;
 	c->eta_keep_ms = 400;
 	c->split_spread_copy = -1; /* by governor, below */
@@ -978,6 +979,17 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 		c->rescue_target_ms = c->governor_target_ms;
 	if (c->split_spread_copy < 0)
 		c->split_spread_copy = !c->governor && !c->capacity_weights && !c->split_eta;
+	/* Over the starlink preset's 60 ms (field, nostalgica, 2026-10-20: WOM
+	 * kept 36-60 % of the upload's copies and Starlink's losses on the rest
+	 * reached the server, 0.19-0.29 %; 250 ms, 0.002 %, story 017): a copy
+	 * that arrives before the receiver gives its gap up still patches a
+	 * loss. */
+	if (cg_ini_get(&ini, "", "pace_peers_ms")) {
+		u = 0;
+		if (get_u32(&ini, "", "pace_peers_ms", 0, 2000, &u, err, errlen))
+			goto out;
+		c->pace_peers_ms = (int32_t)u;
+	}
 	if (cg_ini_get(&ini, "", "cpu")) {
 		u = 0;
 		if (get_u32(&ini, "", "cpu", 0, 1023, &u, err, errlen))

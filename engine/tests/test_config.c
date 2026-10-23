@@ -731,7 +731,18 @@ static void test_config_bonding(void)
 	CHECK_EQ(c.starlink_edge_copies, 0);
 	CHECK_EQ(cg_config_link_knobs(&c).dominant_hold, 0);
 	CHECK_EQ(cg_config_link_knobs(&c).slot_clock, 0);
+	CHECK_EQ(c.pace_peers_ms, -1); /* the preset's */
+	CHECK_EQ(cg_config_link_knobs(&c).pace_peers, 0);
 	cg_config_free(&c);
+	CHECK_EQ(cg_config_parse(&c, CLIENT "pace_peers_ms = 250\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(c.pace_peers_ms, 250);
+	CHECK_EQ(cg_config_link_knobs(&c).pace_peers, 251);
+	cg_config_free(&c);
+	CHECK_EQ(cg_config_parse(&c, SERVER "pace_peers_ms = 0\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(c.pace_peers_ms, 0); /* off */
+	CHECK_EQ(cg_config_link_knobs(&c).pace_peers, 1);
+	cg_config_free(&c);
+	bad(CLIENT "pace_peers_ms = 2001\n", "pace_peers_ms", "2001");
 	CHECK_EQ(cg_config_parse(&c, CLIENT "capacity_seq_lag = no\nstarlink_slot_clock = 2\nsplit_dominant_hold = 1\n"
 				      "starlink_edge_ms = 11950\nstarlink_edge_copies = yes\n",
 				 err, sizeof(err), warn, sizeof(warn)),
