@@ -216,11 +216,81 @@ static void test_spare_first(void)
 	q[1] = 1000;
 	CHECK_EQ(cg_spare_first(base, 7, q, 3, 5, 0, 200000, 0, 1), 0);
 	CHECK_EQ(cg_spare_first(base, 7, q, 3, 0, 0, 200000, -1, 0), -1); /* none */
+	/* choked by its base with no queue over its (climbed) minimum: out */
+	base[0] = 0;
+	base[1] = 600000;
+	base[2] = 30000;
+	q[0] = q[1] = q[2] = 0;
+	CHECK_EQ(cg_spare_first(base, 7, q, 3, 6, 0, 200000, -1, 0), 2);
+}
+
+/* The current first link: held in a microcut, banned when choked (its
+ * queue or its base), even while it loses. */
+static void test_spare_keep(void)
+{
+	uint64_t cut = 0;
+
+	CHECK(!cg_spare_choked(-1, 0, 200000));
+	CHECK(!cg_spare_choked(150000, 150000, 200000));
+	CHECK(cg_spare_choked(250000, 0, 200000));
+	CHECK(cg_spare_choked(0, 670000, 200000)); /* the NUC's Claro: q ~0, 670 ms behind */
+	/* a microcut (loss, no queue, its base where it was): held, and for
+	 * CG_SPARE_HOLD_CUT_MS after its last losing sample */
+	CHECK_EQ(cg_spare_keep(1, 0, 1000, &cut), CG_SPARE_KEEP_HOLD);
+	CHECK_EQ(cut, 1000);
+	CHECK_EQ(cg_spare_keep(0, 0, 1000 + CG_SPARE_HOLD_CUT_MS - 1, &cut), CG_SPARE_KEEP_HOLD);
+	CHECK_EQ(cg_spare_keep(0, 0, 1000 + CG_SPARE_HOLD_CUT_MS, &cut), CG_SPARE_KEEP_FREE);
+	CHECK_EQ(cg_spare_keep(0, 0, 9000, &cut), CG_SPARE_KEEP_FREE);
+	/* choked and losing to its own queue: banned, the hold cleared */
+	CHECK_EQ(cg_spare_keep(1, 0, 10000, &cut), CG_SPARE_KEEP_HOLD);
+	CHECK_EQ(cg_spare_keep(1, cg_spare_choked(900000, 0, 200000), 10100, &cut), CG_SPARE_KEEP_BAN);
+	CHECK_EQ(cut, 0);
+	CHECK_EQ(cg_spare_keep(0, 0, 10200, &cut), CG_SPARE_KEEP_FREE);
+	/* choked by its base with q ~0, losing: banned */
+	CHECK_EQ(cg_spare_keep(1, cg_spare_choked(0, 670000, 200000), 20000, &cut), CG_SPARE_KEEP_BAN);
+	/* and replaced: the ban takes it out of the first link's choice */
+	{
+		uint32_t base[3] = { 670000, 20000, 30000 };
+		int32_t q[3] = { 0, 1000, 5000 };
+
+		CHECK_EQ(cg_spare_first(base, 7, q, 3, 7, 1, 200000, 0, 0), 1);
+	}
+}
+
+/* A pinned first link: it while clear, the automatic choice while it is
+ * choked, banned, unmeasured or down, and back once clear. */
+static void test_spare_pinned(void)
+{
+	CHECK_EQ(cg_spare_pinned(-1, 2, 7, 7, 0, 0), 2);  /* none pinned */
+	CHECK_EQ(cg_spare_pinned(0, 2, 7, 7, 0, 0), 0);   /* pinned, clear: stays */
+	CHECK_EQ(cg_spare_pinned(0, 2, 7, 7, 0, 1), 2);   /* choked: the automatic one */
+	CHECK_EQ(cg_spare_pinned(0, 2, 7, 7, 1, 0), 2);   /* banned (choked as first) */
+	CHECK_EQ(cg_spare_pinned(0, 2, 6, 7, 0, 0), 2);   /* down */
+	CHECK_EQ(cg_spare_pinned(0, 2, 7, 6, 0, 0), 2);   /* not measured yet */
+	CHECK_EQ(cg_spare_pinned(0, 2, 7, 7, 0, 0), 0);   /* clear again: back */
+	CHECK_EQ(cg_spare_pinned(20, 2, 7, 7, 0, 0), 2);  /* out of range */
+	/* the round trip: pinned first chokes, is banned, the ban holds it out
+	 * while clear, then it returns */
+	{
+		uint64_t cut = 0;
+		uint16_t banned = 0;
+		int f = 0;
+
+		if (cg_spare_keep(1, cg_spare_choked(0, 600000, 200000), 1000, &cut) == CG_SPARE_KEEP_BAN)
+			banned |= 1;
+		f = cg_spare_pinned(0, 1, 7, 7, banned, 1);
+		CHECK_EQ(f, 1);
+		CHECK_EQ(cg_spare_pinned(0, 1, 7, 7, banned, 0), 1); /* clear but banned: no flap */
+		banned = 0;                                           /* CG_SPARE_BAN_MS later */
+		CHECK_EQ(cg_spare_pinned(0, 1, 7, 7, banned, 0), 0);
+	}
 }
 
 void test_spare(void)
 {
+	test_spare_pinned();
 	test_spare_first();
+	test_spare_keep();
 	test_spare_tick();
 	test_spare_take();
 	test_spare_k_how();

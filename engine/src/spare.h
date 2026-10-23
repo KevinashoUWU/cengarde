@@ -151,6 +151,17 @@ static inline unsigned cg_spare_k(uint64_t data_bps, uint64_t spare_bps, unsigne
 	return k > kmax ? kmax : (unsigned)k;
 }
 
+/* A link is choked: its queue over the minute's minimum (q_us, -1 not
+ * known) or its delay without a queue over the fastest link's (base_us)
+ * past choke_us. The base is what shows a load that lasts: the minute's
+ * minimum climbs with the queue and q reads near 0 (the NUC, 2026-10-23:
+ * Claro on B5, ~5 Mbit/s carrying all the upload as the first link, RTT
+ * 900 ms with q ~0). */
+static inline int cg_spare_choked(int32_t q_us, uint32_t base_us, uint32_t choke_us)
+{
+	return (q_us >= 0 && (uint32_t)q_us > choke_us) || base_us > choke_us;
+}
+
 /* The first link, the one the others protect: of the links of set (n at
  * most 16) whose delay without a queue is known (base_us[i], over the
  * smallest; known bit i) and that are not banned, those without a standing
@@ -182,7 +193,7 @@ static inline int cg_spare_first(const uint32_t *base_us, uint16_t known, const 
 	if (hold && cur >= 0 && cur < (int)n)
 		return cur;
 	for (unsigned i = 0; i < n; i++)
-		if ((set & known & ~banned) >> i & 1 && (q_us[i] < 0 || (uint32_t)q_us[i] <= choke_us))
+		if ((set & known & ~banned) >> i & 1 && !cg_spare_choked(q_us[i], base_us[i], choke_us))
 			cand |= (uint16_t)(1u << i);
 	for (unsigned i = 0; i < n; i++)
 		if ((cand >> i & 1) && (best < 0 || base_us[i] < base_us[best]))
@@ -199,6 +210,40 @@ static inline int cg_spare_first(const uint32_t *base_us, uint16_t known, const 
 	    base_us[cur] <= base_us[best] + CG_SPARE_FIRST_HYST_US)
 		return cur;
 	return best;
+}
+
+/* The first link with one pinned (redund_spare_first, pin; -1: none): the
+ * pinned link while it is in set, measured (known), not banned and not
+ * choked, else the automatic choice (auto_f, cg_spare_first). A pinned link
+ * that chokes as the first is banned (cg_spare_keep): it comes back once
+ * the ban (CG_SPARE_BAN_MS) is over and it is clear, at most once a ban. */
+static inline int cg_spare_pinned(int pin, int auto_f, uint16_t set, uint16_t known, uint16_t banned, int choked)
+{
+	if (pin >= 0 && pin < 16 && ((set & known & ~banned) >> pin & 1) && !choked)
+		return pin;
+	return auto_f;
+}
+
+/* What becomes of the current first link this tick: CG_SPARE_KEEP_HOLD
+ * while it is in a microcut (until CG_SPARE_HOLD_CUT_MS after a sample
+ * losing over CG_SPARE_MIX_PM, lost; *cut_ms the last such tick, 0: none),
+ * CG_SPARE_KEEP_BAN if it is choked (cg_spare_choked), else
+ * CG_SPARE_KEEP_FREE. A microcut loses without a queue and without moving
+ * its base (Starlink past the dish, story 017); a choked link loses to its
+ * own full queue, so its loss is no microcut: it is banned and the hold
+ * cleared, or that loss renewed the hold every tick and kept the choked
+ * link first for good. */
+enum { CG_SPARE_KEEP_FREE = 0, CG_SPARE_KEEP_HOLD = 1, CG_SPARE_KEEP_BAN = 2 };
+
+static inline int cg_spare_keep(int lost, int choked, uint64_t now_ms, uint64_t *cut_ms)
+{
+	if (choked) {
+		*cut_ms = 0;
+		return CG_SPARE_KEEP_BAN;
+	}
+	if (lost)
+		*cut_ms = now_ms;
+	return *cut_ms && now_ms - *cut_ms < CG_SPARE_HOLD_CUT_MS ? CG_SPARE_KEEP_HOLD : CG_SPARE_KEEP_FREE;
 }
 
 /* What a packet is protected with on the other links, by mode: 1 copies,

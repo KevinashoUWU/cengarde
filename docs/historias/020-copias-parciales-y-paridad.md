@@ -309,6 +309,37 @@ TCP cubic sin tope (Mbit/s; retransmisiones), contra `full`:
 - n = 3 en la celda (p mínimo 0,1): repetir los brazos finales con n = 8 si
   se va a decidir un preset.
 
+### El primero ahogado que se quedaba (NUC, 2026-10-23)
+
+En el NUC (cuatro celulares, `mix`), Claro en B5 (5 MHz, ~5–8 Mbit/s) tenía
+el menor retardo sin carga y quedó de primero cargando toda la subida: RTT
+900 ms, 670 ms atrás. Dos cosas lo dejaban ahí: su pérdida por cola llena
+pasaba por un microcorte (más de 5 % en una muestra) y renovaba la
+retención en cada tick, y la retención saltaba el veto; además, con la
+carga larga su mínimo de 60 s subió con la cola y la cola sobre ese mínimo
+se leía ~0. Arreglo (`spare.h`): `cg_spare_choked` (cola o base sobre 4 ×
+`redund_spare_ms`), `cg_spare_keep` (un primero ahogado se veta aunque
+pierda, y se borra la retención; un microcorte sigue reteniendo) y
+`cg_spare_pinned` con la perilla nueva `redund_spare_first` (fijar, p. ej.,
+Entel a 70 m de su torre; si se ahoga, la elección automática, y vuelve al
+despejarse y terminar su veto).
+
+Laboratorio, caso nuevo `protectslow` (enlace 1 a 10 ms pero 5 Mbit/s, 2 s
+de cola y 8 % de pérdida; enlace 2 a 25 ms y 20 Mbit/s), `mix`, antes
+(`fbb2565`) y después:
+
+| Caso | Flujo perdido % (n) | Ping 1200 B p99 ms | Enlace 1 primero | TCP Mbit/s (n = 4) |
+|---|---|---:|---:|---:|
+| `protectslow` antes | 0,590 (8) | 945 | 100 % del tiempo | 14,5 |
+| `protectslow` después | **0,212** (8; todas bajo todas las de antes) | **362** | 3 % | 15,4 |
+| `protect` antes / después | 0,007 / 0,013 (16; A/A con `fbb2565` dinámico: 0,011) | 38 / 38 | 100 % | 15,9 / 15,7 |
+| `protectcut` antes / después | 7,65 / 7,86 (4) | 371 / 409 | 99 % | 13,7 / 13,8 |
+
+En `protect` y `protectcut` la decisión es la misma (el enlace 1 no se
+ahoga): las diferencias son ruido. Datos en `~/campo/2026-10-23/spare/lab2/`.
+
 ## Cambios
 
 - 2026-10-23: creada.
+- 2026-10-23: el primero ahogado que se quedaba (NUC), `cg_spare_choked`,
+  `cg_spare_keep`, `redund_spare_first` y el caso `protectslow`.

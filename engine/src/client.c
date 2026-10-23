@@ -1536,17 +1536,31 @@ static void spare_tick(struct client *c, uint16_t live, uint64_t now_ms)
 	for (int i = 0; i < CG_MAX_LINKS; i++)
 		base[i] = known >> i & 1 ? (uint32_t)cg_owd_diff(mins[i], ref) : 0;
 	/* The first link in a microcut (or CG_SPARE_HOLD_CUT_MS after one) stays
-	 * the first; one with a standing queue is banned (spare.h). */
+	 * the first; a choked one is banned, lost or not (spare.h). */
 	f = c->sp_first1 - 1;
-	if (f >= 0 && c->cap[f].loss_pm_ms && now_ms - c->cap[f].loss_pm_ms < CG_SPARE_HOLD_CUT_MS &&
-	    c->cap[f].loss_pm > CG_SPARE_MIX_PM)
-		c->sp_cut_ms = now_ms;
-	hold = f >= 0 && c->sp_cut_ms && now_ms - c->sp_cut_ms < CG_SPARE_HOLD_CUT_MS;
-	if (f >= 0 && !hold && q[f] >= 0 && (uint32_t)q[f] > choke) {
-		c->sp_ban_ms[f] = now_ms;
-		banned |= (uint16_t)(1u << f);
+	hold = 0;
+	if (f >= 0) {
+		int lost = c->cap[f].loss_pm_ms && now_ms - c->cap[f].loss_pm_ms < CG_SPARE_HOLD_CUT_MS &&
+			   c->cap[f].loss_pm > CG_SPARE_MIX_PM;
+		int keep = cg_spare_keep(lost, cg_spare_choked(q[f], base[f], choke), now_ms, &c->sp_cut_ms);
+
+		if (keep == CG_SPARE_KEEP_BAN) {
+			c->sp_ban_ms[f] = now_ms;
+			banned |= (uint16_t)(1u << f);
+		}
+		hold = keep == CG_SPARE_KEEP_HOLD;
 	}
 	f = cg_spare_first(base, known, q, CG_MAX_LINKS, (uint16_t)(live & c->sp_carry), banned, choke, f, hold);
+	if (c->cfg->redund_spare_first[0]) {
+		int p = -1;
+
+		for (int i = 0; i < CG_MAX_LINKS && p < 0; i++)
+			if (c->link[i].used && c->link[i].fd >= 0 && !strcmp(c->link[i].ifname, c->cfg->redund_spare_first))
+				p = i;
+		if (p >= 0)
+			f = cg_spare_pinned(p, f, (uint16_t)(live & c->sp_carry), known, banned,
+					    cg_spare_choked(q[p], base[p], choke));
+	}
 	c->sp_first1 = (uint8_t)(f + 1);
 	for (int i = 0; i < CG_MAX_LINKS; i++) {
 		if (c->link[i].fd < 0 || !(live >> i & 1) || i == f)
@@ -2792,6 +2806,7 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 		cg_json_str(j, "now", how[c->sp_how & 3]);
 		cg_json_u64(j, "k", c->sp_k);
 		cg_json_i64(j, "first", c->sp_first1 - 1);
+		cg_json_str(j, "pinned", c->cfg->redund_spare_first);
 		cg_json_ms(j, "data_mbit", c->sp_data_bps / 1000); /* as capacity_mbit */
 		cg_json_u64(j, "copies", c->sp_copies);
 		cg_json_u64(j, "copies_skipped", c->sp_copy_skip);

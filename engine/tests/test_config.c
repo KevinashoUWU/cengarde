@@ -798,6 +798,16 @@ static void test_config_bonding(void)
 	cg_config_free(&c);
 	bad(CLIENT "redund_spare = all\n", "redund_spare", "all");
 	bad(CLIENT "redund_spare_ms = 0\n", "redund_spare_ms", "0");
+	/* redund_spare_first: none by default, a [link NAME] of the file */
+	CHECK_EQ(cg_config_parse(&c, CLIENT "redund_spare = mix\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(c.redund_spare_first[0], '\0');
+	cg_config_free(&c);
+	CHECK_EQ(cg_config_parse(&c, CLIENT "redund_spare = mix\nredund_spare_first = ENTEL\n[link ENTEL]\nlabel = LTE_NR_01\n[link WOM]\nweight = 1\n", err,
+				 sizeof(err), warn, sizeof(warn)),
+		 0);
+	CHECK(!strcmp(c.redund_spare_first, "ENTEL"));
+	cg_config_free(&c);
+	bad(CLIENT "redund_spare_first = CLARO\n[link ENTEL]\n", "redund_spare_first", "CLARO");
 	bad(CLIENT "split_dominant_hold = 3\n", "split_dominant_hold", "3");
 	/* The weight is a link's, not global; a server has no [link] weights (its
 	 * client's probes say them), and says so. */

@@ -1061,6 +1061,16 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 		}
 		if (parse_links(c, &ini, &hosts, err, errlen))
 			goto out;
+		/* redund_spare_first: a link of the file, by its [link NAME] (the
+		 * NUC, 2026-10-23: Entel at 70 m from its tower, in line of sight) */
+		v = cg_ini_get(&ini, "", "redund_spare_first");
+		if (v && *v) {
+			if (strlen(v) >= sizeof(c->redund_spare_first) || !cg_config_link(c, v)) {
+				snprintf(err, errlen, "redund_spare_first: no [link %s] section", v);
+				goto out;
+			}
+			strcpy(c->redund_spare_first, v);
+		}
 		cg_config_build(c, NULL);
 	} else {
 		if (get_addrs(&ini, "", "wireguard", 0, &c->wireguard, 1, 1, &n, err, errlen))

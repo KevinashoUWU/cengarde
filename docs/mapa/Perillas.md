@@ -7,7 +7,7 @@ archivos:
 
 # Perillas
 
-Las 111 claves que `engine/src/config.c` lee (comprobado al generar esta nota: ni falta ni sobra ninguna).
+Las 112 claves que `engine/src/config.c` lee (comprobado al generar esta nota: ni falta ni sobra ninguna).
 Por omisión y rango salen de `cg_config_parse`; el significado, de los comentarios de `config.h` y de [[engine-README]].
 Las perillas marcadas como experimento están apagadas por omisión.
 
@@ -183,5 +183,6 @@ Secciones: «global» es la parte sin sección; `[link NOMBRE]` es del cliente; 
 | --- | --- | --- | --- |
 | [[Mapa/Perillas/redund_spare\|redund_spare]] | `no` | [[Lo que sobra (spare.h)]], [[Copias a tiempo (eta.h)]], [[FEC (fec.h)]] | [[020-copias-parciales-y-paridad]] |
 | [[Mapa/Perillas/redund_spare_ms\|redund_spare_ms]] | 50 | [[Lo que sobra (spare.h)]] | [[020-copias-parciales-y-paridad]] |
+| [[Mapa/Perillas/redund_spare_first\|redund_spare_first]] | vacío (el de menor retardo sin cola) | [[Lo que sobra (spare.h)]] | [[020-copias-parciales-y-paridad]] |
 
 Volver a [[Mapa del motor]].

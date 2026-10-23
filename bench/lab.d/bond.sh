@@ -106,6 +106,11 @@
 #   protectcut  not in the default list: protect with a microcut (story 017:
 #               20-40 s of 50-77 % lost on Starlink): link 1 loses 60 % for the
 #               middle third of the run
+#   protectslow not in the default list: the NUC's Claro on B5 (2026-10-23),
+#               the link of least delay is the narrow one: link 1 at 10 ms but
+#               5 Mbit/s behind 2 s of queue and losing 8 % at random (a weak
+#               radio), link 2 at 25 ms and 20 Mbit/s. redund_spare took link 1
+#               first; its loss held it there while it choked
 #   bloat       bufferbloat as on the Pi's 5G modems (story 012, 2026-10-13):
 #               3 links of similar delay (20, 20 and 22 ms) and unequal rate
 #               (30, 20 and 8 Mbit/s) behind deep queues (1, 1 and 2 s). A
@@ -547,6 +552,7 @@ bond_shape() {
 	bloat) bond_link 1 20 30 1000 && bond_link 2 20 20 1000 && bond_link 3 22 8 2000 ;;
 	lossy) bond_link 1 20 60 100 1 && bond_link 2 35 30 100 1 && bond_link 3 25 50 100 1 ;;
 	protect | protectcut) bond_link 1 10 60 15 0.7 && bond_link 2 25 5 2000 ;;
+	protectslow) bond_link 1 10 5 2000 8 && bond_link 2 25 20 100 ;;
 	*) return 1 ;;
 	esac
 }
@@ -735,7 +741,7 @@ bond_plan() {
 	for w in ${BOND_CC:-cubic bbr quic}; do ccs=$((ccs + 1)); done
 	for c in $BOND_CASES; do
 		case $c in
-		equal | het | reorder50 | reorder150 | linkdeath | downstall | shallowq | shallowqd | shallowqdeep | starsat | dominant | starlink15 | starlink15sw | starlink15ramp | ltespike | ltespikerand | deepq | bloat | lossy | spikeloss | protect | protectcut) ;;
+		equal | het | reorder50 | reorder150 | linkdeath | downstall | shallowq | shallowqd | shallowqdeep | starsat | dominant | starlink15 | starlink15sw | starlink15ramp | ltespike | ltespikerand | deepq | bloat | lossy | spikeloss | protect | protectcut | protectslow) ;;
 		*)
 			echo "bond: unknown case $c"
 			return 1

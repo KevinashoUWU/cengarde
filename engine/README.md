@@ -550,8 +550,18 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
   omisión.
   - **`redund_spare_ms` (50; 1–2000):** la cola a la que sostiene cada
     enlace lo que lleva. 150 no mejoró nada medible (historia 020).
+  - **`redund_spare_first` (vacío; el nombre de un `[link NAME]`):** fija el
+    primer enlace (p. ej. un celular a la vista de su torre) mientras esté
+    vivo, medido y sin ahogarse; si se ahoga queda vetado 60 s y manda la
+    elección automática; vuelve cuando se despeja. Un nombre sin su sección
+    `[link]` es un error de configuración.
+  - Ahogado es una cola sobre el mínimo de 60 s, o un retardo sin cola sobre
+    el del más rápido, de más de 4 × `redund_spare_ms`: con una carga larga
+    el mínimo sube con la cola, y la base lo delata. Un primero ahogado se
+    veta aunque esté perdiendo (antes su pérdida lo retenía como en un
+    microcorte).
   - Estado: `upload.spare` del cliente (`mode`, `now`, `k`, `first`,
-    `data_mbit`, `copies`, `copies_skipped`, `fed`, `parities`,
+    `pinned`, `data_mbit`, `copies`, `copies_skipped`, `fed`, `parities`,
     `parities_skipped`, `parities_no_link`) y `spare` por enlace (`mbit`,
     `cuts`, `taken`, `skipped`); lo rehecho, en `fec` de la sesión del
     servidor.
