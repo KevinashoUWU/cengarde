@@ -4,7 +4,7 @@ archivos:
   - engine/src/eta.h
   - engine/src/linkmodel.h
   - engine/tests/test_eta.c
-sello: 03b2ea1e34bb4b0e
+sello: 47a8105b39d022de
 ---
 # Copias a tiempo (eta.h)
 
@@ -24,7 +24,7 @@ En redundancia (o en el modo dominante), decide qué enlaces reciben copia de un
 
 ## Perillas
 - [[Mapa/Perillas/redund_pace_ms|redund_pace_ms]]: 0 (apagado); 0–2000.
-- Preset `starlink`: `pace_peers_ms = 60` (no es perilla).
+- Preset `starlink`: `pace_peers_ms = 60`; encima, [[Mapa/Perillas/pace_peers_ms|pace_peers_ms]] (-1: el del preset, 0: apagado; 0–2000). En terreno, 250 (historia 017).
 - [[Mapa/Perillas/starlink_edge_copies|starlink_edge_copies]].
 
 ## Dónde se midió

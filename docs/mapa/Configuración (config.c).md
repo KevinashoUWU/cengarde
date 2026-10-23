@@ -4,7 +4,7 @@ archivos:
   - engine/src/config.c
   - engine/src/config.h
   - engine/tests/test_config.c
-sello: c49100d276533d1a
+sello: c6dde4e8f648bb26
 ---
 # Configuración (config.c)
 

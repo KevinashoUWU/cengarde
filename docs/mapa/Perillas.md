@@ -7,7 +7,7 @@ archivos:
 
 # Perillas
 
-Las 110 claves que `engine/src/config.c` lee (comprobado al generar esta nota: ni falta ni sobra ninguna).
+Las 111 claves que `engine/src/config.c` lee (comprobado al generar esta nota: ni falta ni sobra ninguna).
 Por omisión y rango salen de `cg_config_parse`; el significado, de los comentarios de `config.h` y de [[engine-README]].
 Las perillas marcadas como experimento están apagadas por omisión.
 
@@ -161,6 +161,7 @@ Secciones: «global» es la parte sin sección; `[link NOMBRE]` es del cliente; 
 | [[Mapa/Perillas/eta_keep\|eta_keep]] | 0 (apagado) | [[ETA (eta.h)]], [[Modelo de enlace (linkmodel.h)]] | [[015-modelo-de-enlace]], [[audit-pending]] |
 | [[Mapa/Perillas/eta_keep_ms\|eta_keep_ms]] | 400 | [[ETA (eta.h)]], [[Modelo de enlace (linkmodel.h)]] | [[015-modelo-de-enlace]] |
 | [[Mapa/Perillas/redund_pace_ms\|redund_pace_ms]] | 0 (apagado) | [[Copias a tiempo (eta.h)]], [[Modelo de enlace (linkmodel.h)]] | [[015-modelo-de-enlace]] |
+| [[Mapa/Perillas/pace_peers_ms\|pace_peers_ms]] | -1 (el del preset: 60 ms en `starlink`) | [[Copias a tiempo (eta.h)]], [[Modelo de enlace (linkmodel.h)]] | [[015-modelo-de-enlace]], [[017-terreno-nostalgica]] |
 | [[Mapa/Perillas/pacing\|pacing]] | `no` | [[Dosificación (pace.h)]] | [[013-capacidad-y-dosificacion]] |
 
 ## Modelo de enlace y Starlink

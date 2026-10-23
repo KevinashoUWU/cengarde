@@ -3,7 +3,7 @@ tags: [mapa, pieza]
 archivos:
   - engine/src/linkmodel.h
   - engine/tests/test_linkmodel.c
-sello: 473de8bb41b65a75
+sello: 607b3150c0b3c126
 ---
 # Modelo de enlace (linkmodel.h)
 
@@ -29,7 +29,7 @@ Preset `starlink`: `lossy_noprobe`, `lossy_hold`, `hold_over_ms = 40`, `pace_pee
 ## Perillas
 - [[Mapa/Perillas/type|type]] (`[link]`): `auto`.
 - [[Mapa/Perillas/exp_link_types|exp_link_types]]: vacía (todos).
-- Encima del preset: [[Mapa/Perillas/eta_buffer|eta_buffer]], [[Mapa/Perillas/capacity_loss_pct|capacity_loss_pct]], [[Mapa/Perillas/cap_g4_episode|cap_g4_episode]], [[Mapa/Perillas/rescue_full_hyst|rescue_full_hyst]], [[Mapa/Perillas/split_qpred_ms|split_qpred_ms]], [[Mapa/Perillas/split_qpred_mode|split_qpred_mode]], [[Mapa/Perillas/split_dwell_ms|split_dwell_ms]], [[Mapa/Perillas/split_dwell_oq_ms|split_dwell_oq_ms]], [[Mapa/Perillas/eta_keep|eta_keep]], [[Mapa/Perillas/eta_keep_ms|eta_keep_ms]], [[Mapa/Perillas/redund_pace_ms|redund_pace_ms]], [[Mapa/Perillas/split_dominant_pct|split_dominant_pct]], [[Mapa/Perillas/split_dominant_hold|split_dominant_hold]], [[Mapa/Perillas/starlink_slot_clock|starlink_slot_clock]].
+- Encima del preset: [[Mapa/Perillas/eta_buffer|eta_buffer]], [[Mapa/Perillas/capacity_loss_pct|capacity_loss_pct]], [[Mapa/Perillas/cap_g4_episode|cap_g4_episode]], [[Mapa/Perillas/rescue_full_hyst|rescue_full_hyst]], [[Mapa/Perillas/split_qpred_ms|split_qpred_ms]], [[Mapa/Perillas/split_qpred_mode|split_qpred_mode]], [[Mapa/Perillas/split_dwell_ms|split_dwell_ms]], [[Mapa/Perillas/split_dwell_oq_ms|split_dwell_oq_ms]], [[Mapa/Perillas/eta_keep|eta_keep]], [[Mapa/Perillas/eta_keep_ms|eta_keep_ms]], [[Mapa/Perillas/redund_pace_ms|redund_pace_ms]], [[Mapa/Perillas/pace_peers_ms|pace_peers_ms]] (`pace_peers` = ms + 1, solo donde el preset tiene uno), [[Mapa/Perillas/split_dominant_pct|split_dominant_pct]], [[Mapa/Perillas/split_dominant_hold|split_dominant_hold]], [[Mapa/Perillas/starlink_slot_clock|starlink_slot_clock]].
 
 ## Dónde se midió
 - [[015-modelo-de-enlace]]: el preset `starlink` dio +27 a +45 % en los casos de campo del laboratorio (`shallowq` bajada 41,6 → 56,8 Mbit/s), sin costo con retardos iguales; cuesta latencia (ping de 1200 B de ~50 a ~100 ms).
