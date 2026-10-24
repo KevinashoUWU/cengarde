@@ -65,7 +65,7 @@ build() {
 	make -s -C "$REPO/engine" cengarde && cp "$REPO/engine/cengarde" "$BIN/cengarde" || return 1
 	# the erasure codes' cost (story 021), on the engine's Leopard objects
 	gcc -O2 -Wall -Wextra -I"$REPO/engine/src" -I"$REPO/engine/third_party/leopard" -o "$BIN/fecbench" \
-		"$LAB/fecbench.c" "$REPO/engine/src/rs.c" "$REPO"/engine/obj/leopard-plain/*.o -lpthread || return 1
+		"$LAB/fecbench.c" "$REPO/engine/src/rs.c" "$REPO"/engine/leo-plain-[!p]*.o -lpthread || return 1
 	[ "$ENGINE" = go ] || return 0 # ENGINE=go also builds the Go baseline
 	# engarde (Go) at GO_REF, with a stub web UI.
 	local tmp t

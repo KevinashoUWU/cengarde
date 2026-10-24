@@ -108,7 +108,7 @@ static void test_rs_mds(void)
 static void test_rs_block(void)
 {
 	struct cg_rep_ring ring = ring_new();
-	struct cg_rep_hdr h, g;
+	struct cg_rep_hdr h = { 0 }, g = { 0 };
 	uint8_t *sym[CG_RS_MMAX], p[CG_SYM_PLEN], wire[CG_REP_HDR + CG_RS_BYTES_MAX];
 	uint32_t out[CG_RS_KMAX];
 	unsigned bytes, m, got = 0, slen = 0;
@@ -158,7 +158,7 @@ static void test_rs_block(void)
 static void test_rs_short_late(void)
 {
 	struct cg_rep_ring ring = ring_new();
-	struct cg_rep_hdr h;
+	struct cg_rep_hdr h = { 0 };
 	uint8_t *sym[CG_RS_MMAX], p[CG_SYM_PLEN], keep[2][CG_RS_BYTES_MAX];
 	uint32_t out[CG_RS_KMAX];
 	unsigned bytes, m;

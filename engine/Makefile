@@ -45,7 +45,9 @@ endif
 # paths, but the compiler may use SSSE3 anywhere in them).
 LEOPARD ?= 1
 ifeq ($(origin CXX),default)
-CXX = $(if $(findstring clang,$(CC)),$(subst clang,clang++,$(CC)),$(if $(findstring gcc,$(CC)),$(subst gcc,g++,$(CC)),c++))
+CC_DIR = $(patsubst ./,,$(dir $(CC)))
+CC_NAME = $(notdir $(CC))
+CXX = $(CC_DIR)$(if $(findstring clang,$(CC_NAME)),$(subst clang,clang++,$(CC_NAME)),$(if $(findstring gcc,$(CC_NAME)),$(subst gcc,g++,$(CC_NAME)),c++))
 endif
 CXXFLAGS ?= -O2 -g
 LEO_DIR = third_party/leopard
@@ -63,13 +65,15 @@ endif
 # (UBSan's object-size check: off for Leopard, whose FFT indexes its tables
 # through a pointer one before them, FFTSkew - 1; ASan still checks every
 # access against the real objects)
-# one object directory per kind of build: sanitizers and compilers do not mix
-LEO_OBJDIR = obj/leopard-$(if $(SANITIZE),san$(SANITIZE),plain)$(if $(LEO_PORTABLE),-portable)
+# one set of objects per kind of build (sanitizers do not mix), in this
+# directory and not in one of their own: bench/lab.sh build runs make as
+# root, and a directory root made could not be cleaned by its user (CI)
+LEO_TAG = leo-$(if $(SANITIZE),san$(SANITIZE),plain)$(if $(LEO_PORTABLE),-portable)
 ifeq ($(LEOPARD),0)
 LEO_OBJ =
 CG_CFLAGS += -DCG_NO_LEOPARD
 else
-LEO_OBJ = $(patsubst $(LEO_DIR)/%.cpp,$(LEO_OBJDIR)/%.o,$(LEO_SRC))
+LEO_OBJ = $(patsubst $(LEO_DIR)/%.cpp,$(LEO_TAG)-%.o,$(LEO_SRC))
 CG_CFLAGS += -I$(LEO_DIR)
 endif
 
@@ -88,8 +92,7 @@ cengarde: src/main.c $(CORE) $(THR) $(NET) $(wildcard src/*.h) $(LEO_OBJ)
 cengarde-test: $(TESTS) $(CORE) $(THR) $(wildcard src/*.h tests/*.h) $(LEO_OBJ)
 	$(CC) $(CG_CFLAGS) $(CPPFLAGS) $(CFLAGS) -Isrc -o $@ $(TESTS) $(CORE) $(THR) $(LEO_OBJ) $(LDFLAGS) $(CG_LDFLAGS)
 
-$(LEO_OBJDIR)/%.o: $(LEO_DIR)/%.cpp $(wildcard $(LEO_DIR)/*.h) Makefile
-	@mkdir -p $(LEO_OBJDIR)
+$(LEO_TAG)-%.o: $(LEO_DIR)/%.cpp $(wildcard $(LEO_DIR)/*.h) Makefile
 	$(CXX) $(CG_CXXFLAGS) $(CPPFLAGS) $(CXXFLAGS) -c -o $@ $<
 
 test: cengarde-test
@@ -100,6 +103,6 @@ install: cengarde
 
 clean:
 	rm -f cengarde cengarde-test
-	rm -rf obj
+	rm -f leo-*.o
 
 .PHONY: all test install clean

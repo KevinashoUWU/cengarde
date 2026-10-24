@@ -162,7 +162,7 @@ static unsigned rlc_run(uint32_t seq0, unsigned n, unsigned every, unsigned w, i
 			back += cg_rlc_rx_data(&G, &R, &ring, s, out, CG_RLC_EQ);
 		}
 		if ((i + 1) % every == 0) {
-			struct cg_rep_hdr h;
+			struct cg_rep_hdr h = { 0 };
 			unsigned sl = cg_rlc_tx_repair(&G, &T, w, &h, sym), got;
 
 			CHECK(sl > 2);
@@ -235,7 +235,7 @@ static void test_rlc_late(void)
 	struct cg_rep_ring ring = ring_new();
 	uint8_t p[CG_SYM_PLEN], sym[CG_SYM_MAX];
 	uint32_t out[8];
-	struct cg_rep_hdr h;
+	struct cg_rep_hdr h = { 0 };
 	unsigned sl;
 
 	memset(&T, 0, sizeof(T));
@@ -277,7 +277,7 @@ static void test_rlc_span_age(void)
 	struct cg_rep_ring ring = ring_new();
 	uint8_t p[CG_SYM_PLEN], sym[CG_SYM_MAX];
 	uint32_t out[8];
-	struct cg_rep_hdr h;
+	struct cg_rep_hdr h = { 0 };
 	unsigned sl;
 
 	memset(&T, 0, sizeof(T));

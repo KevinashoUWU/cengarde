@@ -8,7 +8,7 @@ archivos:
   - engine/src/rs.c
   - engine/tests/test_rlc.c
   - engine/tests/test_rs.c
-sello: 992a55b1cac95499
+sello: c47427da45013c12
 ---
 # Códigos de borrado (rs.h, rlc.h)
 
