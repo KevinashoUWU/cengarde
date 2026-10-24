@@ -98,6 +98,7 @@
 #include "sock.h"
 #include "capacity.h"
 #include "dominant.h"
+#include "linksig.h"
 #include "fec.h"
 #include "gf256.h"
 #include "repair.h"
@@ -185,6 +186,7 @@ struct session {
 	struct path path[CG_MAX_LINKS];
 	struct cg_hlink dh[CG_MAX_LINKS]; /* download health, by link id */
 	struct cg_cap_link cap[CG_MAX_LINKS]; /* each path's download capacity (capacity.h), by link id */
+	struct cg_sig_link sig[CG_MAX_LINKS]; /* whose its queue is, what kind of loss (linksig.h): status only */
 	uint16_t cw[CG_MAX_LINKS];            /* the weights from them, with capacity_weights */
 	struct cg_cap_total ctot;             /* their total, for a shaper on the router's interface */
 	struct cg_eta eta;                    /* the split by expected arrival, with split_eta */
@@ -783,6 +785,7 @@ static struct session *session_create(struct server *s, struct client *C, const 
 	cg_gov_weights(&S->gov, 0, S->gw);
 	for (int i = 0; i < CG_MAX_LINKS; i++) {
 		cg_cap_reset(&S->cap[i]);
+		cg_sig_reset(&S->sig[i]);
 		S->cw[i] = CG_GOV_MAX;
 	}
 	S->used = 1;
@@ -851,6 +854,7 @@ static struct path *path_update(struct server *s, struct session *S, unsigned li
 		cg_split_spread_reset(&S->spread, link);
 		cg_gov_link_reset(&S->gov, link);
 		cg_cap_reset(&S->cap[link]);
+		cg_sig_reset(&S->sig[link]);
 		cg_path_learn(&P->addr, &P->local, from, &got);
 		P->ctl_len = cg_local_cmsg(&P->local, s->lfamily, &P->ctl);
 		cg_info("%ssession %08x: link %u via %s%s%s", tag, S->id, link, cg_addr_str(from, a, sizeof(a)),
@@ -871,6 +875,7 @@ static struct path *path_update(struct server *s, struct session *S, unsigned li
 		cg_split_spread_reset(&S->spread, link);
 		cg_gov_link_reset(&S->gov, link);
 		cg_cap_reset(&S->cap[link]);
+		cg_sig_reset(&S->sig[link]);
 	}
 	P->moves++;
 	if (s->pktinfo)
@@ -2312,6 +2317,7 @@ static void cap_tick(struct server *s, struct session *S, uint16_t live, uint64_
 			cc.out = !(in >> p & 1);
 			ev = cg_cap_tick(&S->cap[p], now_ms, P->peer_view_ms, P->peer_view.rx, P->tx_pkts, P->tx_bytes,
 					 &S->dh[p], &cc);
+			cg_sig_cap(&S->sig[p], &S->cap[p], now_ms);
 
 			cg_decrec_cap(&S->dec, &S->cap[p], (unsigned)p, ev, was, now_ms);
 		}
@@ -2902,6 +2908,7 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 			cg_json_owd_swing(j, "rx_owd_swing_ms", &S->ro, (unsigned)p);
 			cg_json_u64(j, "rx_reorder_late", p < CG_MAX_LINKS ? S->ro.link[p].late : 0);
 			cg_json_capacity(j, &S->cap[p], s->cfg->rescue_target_ms * 1000, now_ms);
+			cg_json_sig(j, &S->sig[p], now_ms);
 			/* What the split by expected arrival sees of it (null: off, or no rate). */
 			if (s->cfg->split_eta && S->eta.l[p].bps) {
 				cg_json_ms(j, "eta_base_ms", S->eta.l[p].base_us);

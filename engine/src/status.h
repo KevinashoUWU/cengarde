@@ -62,6 +62,11 @@ void cg_json_owd_swing(struct cg_json *j, const char *key, const struct cg_reord
  * until a delay). */
 struct cg_cap_link;
 void cg_json_capacity(struct cg_json *j, const struct cg_cap_link *l, uint32_t target_us, uint64_t now_ms);
+/* A link's observations (linksig.h), as "sig": queue_owner, loss_kind,
+ * the last verdict's delivery_drop_pct, how long each has stood
+ * (since_ms, loss_since_ms; null: never changed) and the counts. */
+struct cg_sig_link;
+void cg_json_sig(struct cg_json *j, const struct cg_sig_link *s, uint64_t now_ms);
 /* The clockwork's last decisions (decision.h), newest first, as
  * "decisions", and their totals by mechanism, as "decision_totals". */
 struct cg_decring;

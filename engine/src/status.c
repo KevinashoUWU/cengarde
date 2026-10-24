@@ -4,6 +4,7 @@
 #include "capacity.h"
 #include "decision.h"
 #include "dominant.h"
+#include "linksig.h"
 #include "split.h"
 
 #include <errno.h>
@@ -388,6 +389,41 @@ void cg_json_capacity(struct cg_json *j, const struct cg_cap_link *l, uint32_t t
 	cg_json_u64(j, "expired", l->n_expire); /* capacity_expire_ms halvings */
 	cg_json_u64(j, "cut_lossq", l->n_cut_lossq); /* capacity_loss_queue_ms cuts (also in cut_loss) */
 	cg_json_u64(j, "restore_room", l->n_room);   /* capacity_stand 2: fast start before its rest (also in restore_rest) */
+	cg_json_end(j, '}');
+}
+
+void cg_json_sig(struct cg_json *j, const struct cg_sig_link *s, uint64_t now_ms)
+{
+	cg_json_obj(j, "sig");
+	cg_json_str(j, "queue_owner", cg_sig_owner_str(s->owner));
+	cg_json_str(j, "loss_kind", cg_sig_kind_str(s->kind));
+	if (s->have_drop)
+		cg_json_i64(j, "delivery_drop_pct", s->drop_pct);
+	else
+		cg_json_null(j, "delivery_drop_pct");
+	if (s->owner_ms && now_ms >= s->owner_ms)
+		cg_json_u64(j, "since_ms", now_ms - s->owner_ms);
+	else
+		cg_json_null(j, "since_ms");
+	if (s->kind_ms && now_ms >= s->kind_ms)
+		cg_json_u64(j, "loss_since_ms", now_ms - s->kind_ms);
+	else
+		cg_json_null(j, "loss_since_ms");
+	cg_json_u64(j, "episodes_mine", s->n_mine);
+	cg_json_u64(j, "episodes_others", s->n_others);
+	cg_json_u64(j, "episodes_unknown", s->n_unknown);
+	cg_json_u64(j, "samples_random", s->n_random);
+	cg_json_u64(j, "samples_congestive", s->n_congestive);
+	/* the last sample whose loss was known: its loss and its highest
+	 * queue over the minute's minimum */
+	if (s->last_pm >= 0)
+		cg_json_u64(j, "last_loss_pm", (uint64_t)s->last_pm);
+	else
+		cg_json_null(j, "last_loss_pm");
+	if (s->last_qmax >= 0)
+		cg_json_ms(j, "last_ql_ms", (uint64_t)s->last_qmax);
+	else
+		cg_json_null(j, "last_ql_ms");
 	cg_json_end(j, '}');
 }
 

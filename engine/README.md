@@ -1554,6 +1554,26 @@ por eso no se sondea; solo con un tipo o `eta_buffer` que lo siga), `cut`,
 mínimo de un minuto, y los contadores `cut_full`, `cut_short`, `cut_loss`,
 `restore_rest`).
 
+**Observaciones del enlace** (`linksig.h`, historia 018): por enlace, en el
+sentido en que envía ese extremo (la subida en el cliente, la bajada en cada
+camino del servidor), `sig` trae dos lecturas que ninguna decisión del motor
+usa todavía. `queue_owner`: `mine` (la cola la hace nuestra carga: al subir,
+la entrega no cayó más de 15 % frente a la de 2–4 s antes), `others` (cayó
+más: otros usuarios de la celda se llevan su parte) o `unknown` (sin cola de
+más de 20 ms en los últimos 10 s, o sin entrega de referencia);
+`delivery_drop_pct` es la caída del último veredicto (negativa si subió).
+`loss_kind`: `random` (las muestras con pérdida de más de 5 por mil la tienen
+con la cola sobre el mínimo de un minuto en 10 ms o menos y menos de 10 % de
+pérdida: pierde sin cola, como Starlink), `congestive` (con cola, o mucha
+pérdida: un celular cuya cola honda se llena) o `none` (sin pérdida en 10 s);
+cambia con dos muestras con pérdida seguidas que coinciden. `since_ms` y
+`loss_since_ms`, cuánto lleva cada una (`null` si nunca cambió);
+`episodes_mine`, `episodes_others`, `episodes_unknown`, `samples_random` y
+`samples_congestive` cuentan desde el arranque; `last_loss_pm` y
+`last_ql_ms`, la pérdida y la cola de la última muestra con pérdida conocida.
+En ns-3 aciertan 86 % (`queue_owner`, sobre los episodios que el motor ve) y
+94,5 % (`loss_kind`, sobre las ventanas con una muestra con pérdida).
+
 ## Protocolo v4
 
 Desde la 0.5.0 (historia 010, PR 3d2). La cabecera sigue midiendo 24 bytes:
