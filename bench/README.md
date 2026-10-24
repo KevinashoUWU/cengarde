@@ -424,6 +424,9 @@ tasa y una cola de 100 ms a esa tasa.
 | `shallowq` | 60/20 con 15 ms de cola; 25/45 y 18/50 con 300 ms | Starlink de cola corta y dos celulares (historia 015); no está en la lista por defecto |
 | `starsat` | como `shallowq` | l1 como Starlink en el tiempo, con las ranuras medidas en «nostalgica» (`starslot.py`, historia 015): nivel y deriva por ranura de 15 s, ~45 ms parado en cada cambio (25 perdidos, 20 retenidos 55 ms), los cortes del plato (1,45 por hora, 0,24–0,9 s); la tasa sorteada por ranura entre 45, 60 y 75 Mbit/s (sin medir); no está en la lista por defecto |
 | `dominant` | Starlink 400 abajo y 40 arriba, 11 ms, 15 ms de cola; 25/25 y 18/27 con 300 ms | «nostalgica» el 2026-10-19: Starlink muy por encima de los celulares, sus ranuras como `starsat` (tasa por ranura 3/4, 1 y 5/4 de `BOND_DOM_MBIT`); no está en la lista por defecto (historia 015) |
+| `sigrand` | 50/20 perdiendo 2 % al azar; 50/30 | flujo de 20 Mbit/s (`BOND_RATE`, si no se da): pérdida aleatoria sin cola, l1 debe leer `loss_kind` `random` (`linksig.h`, historia 018); no está en la lista por defecto |
+| `sigdeep` | 10/25 con 1 s de cola; 20/25 con 200 ms | TCP sin tope llena las dos colas: `queue_owner` `mine`, `loss_kind` `congestive` en l1; no está en la lista por defecto |
+| `sigothers` | 20/25 con 500 ms de cola; 20/30 | flujo de 8 Mbit/s; a la mitad, l1 baja a 5 Mbit/s (otros se llevan la celda): `queue_owner` `others`; no está en la lista por defecto |
 
 Así queda medido lo que hoy da la redundancia (cada paquete por todos los
 enlaces, gana la primera copia) y, en `equal` y `het`, lo que daría el mejor
@@ -605,7 +608,7 @@ python3 bench/bondtab_test.py                           # pruebas de las tablas,
 | `BOND_WARM` | 0 | segundos de la misma transferencia antes de cada corrida, para que arranque con los enlaces medidos (el arranque rápido, historia 013); solo con `BOND_REST` > 0 y sin `quic` |
 | `BOND_REST` | 0 | segundos sin tráfico entre ese calentamiento y la corrida: arranca desde el reposo (0: ninguno) |
 | `BOND_KEEP` | vacío | directorio donde guardar el JSON de iperf3 de cada corrida, con intervalos de 0,5 s (la rampa de los primeros segundos); con `BOND_SAMPLE`, también sus muestras |
-| `BOND_SAMPLE` | 0 | 1: el estado de los dos motores y los contadores de netem cada segundo; la línea JSON suma `links` (por enlace, en la segunda mitad de la corrida: parte de los bytes, capacidad, cola, tiempo `lossy` y pérdidas de netem en el extremo que envía; copias tardías en el que recibe) y `tail` (los huecos del reordenador en esa mitad). `mbps_tail`, el caudal de la segunda mitad (el régimen, tras arrancar las capacidades de cero), va siempre |
+| `BOND_SAMPLE` | 0 | 1: el estado de los dos motores y los contadores de netem cada segundo; la línea JSON suma `links` (por enlace, en la segunda mitad de la corrida: parte de los bytes, capacidad, cola, tiempo `lossy`, pérdidas de netem y, con un motor que las tiene, `sig`: la fracción del tiempo con cada `queue_owner` y `loss_kind` y los veredictos de toda la corrida, `linksig.h`, en el extremo que envía; copias tardías en el que recibe) y `tail` (los huecos del reordenador en esa mitad). `mbps_tail`, el caudal de la segunda mitad (el régimen, tras arrancar las capacidades de cero), va siempre |
 | `BOND_DOM_MBIT` | 400 | `dominant`: la bajada de Starlink, para barrer la relación con los celulares |
 | `BOND_S` | 10 | segundos por corrida (`starlink15`, al menos 31) |
 | `BOND_N` | 1 | repeticiones; la tabla da la mediana y el rango |

@@ -73,6 +73,7 @@
 #include "sock.h"
 #include "capacity.h"
 #include "dominant.h"
+#include "linksig.h"
 #include "tcpfree.h"
 #include "fec.h"
 #include "rescue.h"
@@ -181,6 +182,7 @@ struct client {
 	struct link link[CG_MAX_LINKS];
 	struct cg_hlink uh[CG_MAX_LINKS]; /* upload health, by link id */
 	struct cg_cap_link cap[CG_MAX_LINKS]; /* each link's upload capacity (capacity.h), by link id */
+	struct cg_sig_link sig[CG_MAX_LINKS]; /* whose its queue is, what kind of loss (linksig.h): status only */
 	uint16_t cw[CG_MAX_LINKS];            /* the weights from them, with capacity_weights */
 	struct cg_cap_total ctot;             /* their total, for a shaper on the tunnel (upload) */
 	struct cg_eta eta;                    /* the split by expected arrival, with split_eta */
@@ -834,6 +836,7 @@ static void link_open(struct client *c, struct link *l, const struct cg_iface *i
 	cg_split_spread_reset(&c->spread, (unsigned)(l - c->link));
 	cg_gov_link_reset(&c->gov, (unsigned)(l - c->link));
 	cg_cap_reset(&c->cap[l - c->link]);
+	cg_sig_reset(&c->sig[l - c->link]);
 	/* redund_spare: a new socket is measured afresh, its ban from first
 	 * and its allowance with it (spare.h) */
 	c->sp_ban_ms[l - c->link] = 0;
@@ -2528,6 +2531,7 @@ static void cap_tick(struct client *c, uint16_t live, uint16_t in, uint64_t now_
 			cc.out = !(in >> i & 1);
 			ev = cg_cap_tick(&c->cap[i], now_ms, l->peer_view_ms, l->peer_view.rx, l->tx_pkts, l->tx_bytes,
 					 &c->uh[i], &cc);
+			cg_sig_cap(&c->sig[i], &c->cap[i], now_ms);
 
 			cg_decrec_cap(&c->dec, &c->cap[i], (unsigned)i, ev, was, now_ms);
 		}
@@ -3081,6 +3085,7 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 		cg_json_owd_swing(j, "rx_owd_swing_ms", &c->rxs.ro, (unsigned)i);
 		cg_json_u64(j, "rx_reorder_late", c->rxs.ro.link[i].late);
 		cg_json_capacity(j, &c->cap[i], c->cfg->rescue_target_ms * 1000, now_ms);
+		cg_json_sig(j, &c->sig[i], now_ms);
 		if (l->paced != CG_PACE_NONE)
 			cg_json_ms(j, "pace_mbit", l->paced * 8 / 1000);
 		else
@@ -3606,6 +3611,7 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 	cg_dom_reset(&c->dom);
 	for (int i = 0; i < CG_MAX_LINKS; i++) {
 		cg_cap_reset(&c->cap[i]);
+		cg_sig_reset(&c->sig[i]);
 		c->cw[i] = CG_GOV_MAX;
 	}
 	cg_gov_weights(&c->gov, 0, c->gw);
