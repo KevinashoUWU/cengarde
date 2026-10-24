@@ -3,7 +3,7 @@ tags: [mapa, pieza]
 archivos:
   - engine/src/capacity.h
   - engine/tests/test_capacity.c
-sello: 0fd08a4ba35b28b1
+sello: 5daba1864deeebb2
 ---
 # Tope para cake (capacity.h)
 

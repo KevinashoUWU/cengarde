@@ -92,6 +92,31 @@
  * split's probing (twice its capacity under half its best) brings it up
  * as fast as it shows it carries more.
  *
+ * With lossq_us (capacity_loss_queue_ms, story 019), a link that loses at
+ * least CG_CAP_LQ_PCT % of what it was sent in CG_CAP_LQ_N samples in a
+ * row while its queue over the minute's minimum (ql_us) reached lossq_us
+ * in each is full at any load: its capacity is what it delivers then
+ * (smoothed 1/4 from the second such sample, as sat_bps), a CG_CAP_CUT_LOSS.
+ * An operator's short buffer in front of a sender that adapts (TCP) never
+ * shows a queue over sat_us nor a load of 3/4 of an overestimated
+ * capacity: in ns-3 (LTE, 10 KB of RLC, AIMD) the capacity stayed at 3-6
+ * times what the link carried for 40 s, and the loss with a queue cut it
+ * to within 2 % in 1.0-1.4 s; random loss without a queue (1-3 %, iid and
+ * Gilbert-Elliott) never cut (cg_cap_lossq). A link that tracks its loss
+ * (linkmodel.h: Starlink's preset, which drops instead of queueing and is
+ * held to its highest queue for it) is cut so only while loaded: its
+ * delay shifts by slots, and a light load's loss is the dish's.
+ *
+ * With stand (capacity_stand, story 019), a standing queue holds fast
+ * start back: ql_us above sat_us for CG_CAP_SAT_LONG samples in a row is
+ * a full sample for it. A queue that lasts longer than window_ms becomes
+ * queue_us's base, the cut lets go and fast start brought the capacity
+ * back to half its best: in ns-3, 9.96 Mbit/s against 0.73 carried (the
+ * clockwork audit's C5). Mode 2 also lets fast start go before
+ * CG_CAP_REST_MS once the link shows room: CG_CAP_ROOM_N samples in a row
+ * delivering at least 9/8 of its capacity with no loss and a queue under
+ * sat_us (cg_cap_room).
+ *
  * Pure: no clock, no I/O, no allocation.
  *
  * SPDX-License-Identifier: GPL-3.0-or-later */
@@ -130,6 +155,9 @@
 #define CG_CAP_STALE_MS 3000 /* a link not loaded for this long: its capacity grows for the ETA (cg_cap_stale) */
 #define CG_CAP_EP_REST_MS 3000u /* cap_g4_episode 3: a G4 episode holds fast start back this long */
 #define CG_CAP_EXP_FLOOR 64000u /* bps: capacity_expire_ms halves a capacity down to no less than this */
+#define CG_CAP_LQ_PCT 1  /* capacity_loss_queue_ms: a sample losing at least this % of what was sent */
+#define CG_CAP_LQ_N 2    /* in a row, each with ql_us reaching lossq_us: full at any load */
+#define CG_CAP_ROOM_N 2  /* capacity_stand 2: samples in a row showing room before fast start may go */
 /* More delivered than sent by this much (packets), and the report is not
  * of this run of the counters: probes and what was in flight at the start
  * make a few packets of difference, never this many. */
@@ -159,6 +187,12 @@ struct cg_cap_cfg {
 	 * set this tick (cg_cap_expire) */
 	uint32_t expire_ms;
 	uint8_t out;
+	/* capacity_loss_queue_ms in us (0: off), and capacity_stand (0 off, 1
+	 * a standing queue holds fast start back, 2 and fast start goes once
+	 * the link shows room) */
+	uint32_t lossq_us;
+	uint8_t lossq_loaded; /* the link tracks its loss (linkmodel.h): lossq only while loaded */
+	uint8_t stand;
 };
 
 struct cg_cap_link {
@@ -223,6 +257,17 @@ struct cg_cap_link {
 	/* capacity_expire_ms: since when it is out of the send set (0: in),
 	 * its last halving, and how many */
 	uint64_t out_ms, exp_ms, n_expire;
+	/* capacity_loss_queue_ms: the highest ql_us since the last sample, the
+	 * samples in a row that lost with a queue, what they delivered
+	 * (smoothed), and how often a run of them cut the capacity */
+	int32_t ql_max;
+	uint8_t lq_n;
+	uint64_t lq_bps, n_cut_lossq;
+	/* capacity_stand: samples in a row with ql_us above sat_us, and (mode
+	 * 2) samples in a row showing room; how often fast start went early */
+	uint8_t stand_n, room_n;
+	uint64_t room_bps; /* the capacity when the run showing room began */
+	uint64_t n_room;
 };
 
 /* What cg_cap_tick did, as bits of its return value. */
@@ -241,7 +286,7 @@ enum cg_cap_cut {
 static inline void cg_cap_reset(struct cg_cap_link *l)
 {
 	memset(l, 0, sizeof(*l));
-	l->queue_us = l->ql_us = -1;
+	l->queue_us = l->ql_us = l->ql_max = -1;
 }
 
 static inline uint64_t cg_cap_bps(const struct cg_cap_link *l)
@@ -382,6 +427,7 @@ static inline int cg_cap_episode(struct cg_cap_link *l, uint64_t now_ms, unsigne
  * 20 (story 013). If it really carries less now, its queue says so at once. */
 static inline int cg_cap_best(struct cg_cap_link *l, uint64_t now_ms)
 {
+	int room = l->room_n >= CG_CAP_ROOM_N;
 	uint64_t cap = cg_cap_bps(l), best;
 
 	if (now_ms - l->best_ms >= CG_CAP_BEST_MS / 2) {
@@ -392,9 +438,13 @@ static inline int cg_cap_best(struct cg_cap_link *l, uint64_t now_ms)
 		l->best_cur = cap;
 	}
 	best = cg_cap_best_bps(l);
-	if (cap < best / 2 && (!l->full_ms || now_ms - l->full_ms >= CG_CAP_REST_MS) &&
+	if (cap < best / 2 && (!l->full_ms || now_ms - l->full_ms >= CG_CAP_REST_MS || room) &&
 	    (!l->ep_ms || now_ms - l->ep_ms >= CG_CAP_EP_REST_MS)) {
+		/* early: it showed room (capacity_stand 2) */
+		if (room && l->full_ms && now_ms - l->full_ms < CG_CAP_REST_MS)
+			l->n_room++;
 		l->max_cur = l->max_prev = best / 2;
+		l->room_n = 0;
 		l->n_restore++;
 		return 1;
 	}
@@ -447,6 +497,77 @@ static inline int cg_cap_expire(struct cg_cap_link *l, uint64_t now_ms, int out,
 		l->sat_bps = cap;
 	l->n_expire++;
 	return 1;
+}
+
+/* capacity_loss_queue_ms: one sample of link l that was sent dpk packets
+ * and delivered drx of dlost that could have arrived (UINT64_MAX: not
+ * known), at raw bps, loaded or not. A loss of at least CG_CAP_LQ_PCT % (of
+ * at least CG_CAP_SHORT_MIN packets) while ql_us reached lossq_us since the
+ * last sample counts, unless it delivered more than it was sent (a queue
+ * emptying: its loss is from before, and part of the sample it had nothing
+ * to carry; in ns-3 a CBR of 18 then 4 Mbit/s took a link of 12.6 to 6.9
+ * so); what such samples deliver is smoothed as sat_bps (each of the first
+ * CG_CAP_LQ_N starts it again). Returns whether CG_CAP_LQ_N in a row have:
+ * the link is full, whatever its load (with lossq_loaded, only loaded
+ * samples count). */
+static inline int cg_cap_lossq(struct cg_cap_link *l, uint64_t dpk, uint64_t dlost, uint32_t drx, uint64_t raw,
+			       int loaded, const struct cg_cap_cfg *cfg)
+{
+	int32_t qmax = l->ql_max;
+
+	l->ql_max = -1; /* the next sample's, from its ticks */
+	if (!cfg->lossq_us || dlost == UINT64_MAX || dlost < CG_CAP_SHORT_MIN ||
+	    (uint64_t)drx * 100 > dlost * (100 - CG_CAP_LQ_PCT) || qmax < 0 || (uint32_t)qmax < cfg->lossq_us ||
+	    dpk * 100 < (uint64_t)drx * (100 + CG_CAP_LQ_PCT) || (cfg->lossq_loaded && !loaded)) {
+		l->lq_n = 0;
+		return 0;
+	}
+	if (l->lq_n + 1 <= CG_CAP_LQ_N)
+		l->lq_bps = raw;
+	else if (raw >= l->lq_bps)
+		l->lq_bps += (raw - l->lq_bps) / CG_CAP_GAIN;
+	else
+		l->lq_bps -= (l->lq_bps - raw) / CG_CAP_GAIN;
+	l->lq_n = l->lq_n < 255 ? (uint8_t)(l->lq_n + 1) : 255;
+	return l->lq_n >= CG_CAP_LQ_N;
+}
+
+/* capacity_stand: one sample of link l at report_ms. Its queue over the
+ * minute's minimum above sat_us for CG_CAP_SAT_LONG samples in a row is a
+ * standing queue, and a full sample for fast start (full_ms), though
+ * queue_us has taken it into its base. */
+static inline void cg_cap_stand(struct cg_cap_link *l, uint64_t report_ms, const struct cg_cap_cfg *cfg)
+{
+	if (cfg->stand && l->ql_us >= 0 && (uint32_t)l->ql_us > cfg->sat_us)
+		l->stand_n = l->stand_n < 255 ? (uint8_t)(l->stand_n + 1) : 255;
+	else
+		l->stand_n = 0;
+	if (l->stand_n >= CG_CAP_SAT_LONG)
+		l->full_ms = report_ms;
+}
+
+/* capacity_stand 2: one sample of link l showing room or not: it delivered
+ * raw >= 9/8 of its capacity cap as it was before the run's first sample
+ * (the capacity follows what it delivers up, a quarter at a time), lost under
+ * CG_CAP_LOSSY_PERMIL of dlost (known, at least CG_CAP_SHORT_MIN), and its
+ * queue over the minute's minimum is at most sat_us. CG_CAP_ROOM_N in a row
+ * let fast start go without waiting CG_CAP_REST_MS (cg_cap_best): a link
+ * cut while it was full or losing that now carries more than its capacity
+ * says has room again (in ns-3 an AIMD sender's link waited 10 s at the
+ * capacity of its bad time after its signal came back). */
+static inline void cg_cap_room(struct cg_cap_link *l, uint64_t dlost, uint32_t drx, uint64_t raw, uint64_t cap,
+			       const struct cg_cap_cfg *cfg)
+{
+	uint64_t ref = l->room_n ? l->room_bps : cap;
+
+	if (cfg->stand >= 2 && dlost != UINT64_MAX && dlost >= CG_CAP_SHORT_MIN &&
+	    (uint64_t)drx * 1000 >= dlost * (1000 - CG_CAP_LOSSY_PERMIL) && l->ql_us >= 0 &&
+	    (uint32_t)l->ql_us <= cfg->sat_us && ref && raw * 8 >= ref * 9) {
+		l->room_bps = ref;
+		l->room_n = l->room_n < 255 ? (uint8_t)(l->room_n + 1) : 255;
+	} else {
+		l->room_n = 0;
+	}
 }
 
 /* What link l had sent by t_ms (the newest tick at or before it), 0 with
@@ -524,9 +645,9 @@ static inline uint64_t cg_cap_seq_t(const struct cg_cap_link *l, uint32_t seq, i
 static inline unsigned cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint64_t report_ms, uint32_t rx, uint64_t tx_pkts,
 			       uint64_t tx_bytes, const struct cg_hlink *h, const struct cg_cap_cfg *cfg)
 {
-	uint64_t dt, dpk, dby, bytes, rate, raw, ref, dlost;
+	uint64_t dt, dpk, dby, bytes, rate, raw, ref, dlost, cap0;
 	uint32_t drx;
-	int loaded;
+	int loaded, lossq;
 	uint8_t cut;
 	unsigned ev = 0;
 
@@ -540,6 +661,8 @@ static inline unsigned cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint6
 		 * measures queue_us against a minimum that has the queue in it */
 		q = cg_owd_diff(h->owd, cg_gov_base(&l->ql, h->owd, now_ms, CG_CAP_LONG_MS));
 		l->ql_us = q > 0 ? q : 0;
+		if (l->ql_us > l->ql_max)
+			l->ql_max = l->ql_us;
 		cg_cap_trend(l, now_ms);
 		if (now_ms - l->qhi_t_ms >= CG_CAP_QHI_MS / 2) {
 			l->qhi_prev = l->qhi_cur;
@@ -601,6 +724,8 @@ static inline unsigned cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint6
 		l->n_restore = keep.n_restore;
 		l->n_g4_ep = keep.n_g4_ep;
 		l->n_expire = keep.n_expire;
+		l->n_cut_lossq = keep.n_cut_lossq;
+		l->n_room = keep.n_room;
 		l->out_ms = keep.out_ms;
 		l->exp_ms = keep.exp_ms;
 		l->rfull = keep.rfull;
@@ -617,6 +742,7 @@ static inline unsigned cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint6
 	rate = raw = bytes * 8 * 1000 / dt;
 	l->last_rx_bps = raw;
 	l->last_tx_bps = dby * 8 * 1000 / dt;
+	cap0 = cg_cap_bps(l);
 	l->t_ms = report_ms;
 	l->rx = rx;
 	l->tx_pkts = tx_pkts;
@@ -727,6 +853,9 @@ static inline unsigned cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint6
 		l->loss_n = l->loss_n < 255 ? (uint8_t)(l->loss_n + 1) : 255;
 	else
 		l->loss_n = 0;
+	lossq = cg_cap_lossq(l, dpk, dlost, drx, raw, loaded, cfg);
+	cg_cap_stand(l, report_ms, cfg);
+	cg_cap_room(l, dlost, drx, raw, cap0, cfg);
 	if (l->queue_us >= 0 && (uint32_t)l->queue_us > cfg->sat_us) {
 		/* Until the first sample full from start to end (the queue formed
 		 * during the one before), each sample starts it again. */
@@ -764,6 +893,20 @@ static inline unsigned cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint6
 		if (rate > l->max_cur)
 			l->max_cur = l->max_prev = rate;
 		cut = CG_CAP_CUT_NONE;
+	}
+	/* Losing with a queue (capacity_loss_queue_ms): full at any load, and
+	 * no more than it delivers so, below a full sample's smoothed rate too
+	 * (that one fell from 0.87 to 0.25 Mbit/s over 4 s on a link that
+	 * delivered 0.02-0.17, ns-3 with fading); while the run lasts, what it
+	 * delivers so, up or down. */
+	if (lossq && (l->lq_bps < cg_cap_bps(l) || (cut == CG_CAP_CUT_NONE && l->cut == CG_CAP_CUT_LOSS))) {
+		if (cut == CG_CAP_CUT_NONE) {
+			if (l->cut != CG_CAP_CUT_LOSS)
+				l->n_cut_lossq++;
+			cut = CG_CAP_CUT_LOSS;
+		}
+		l->max_cur = l->max_prev = l->lq_bps;
+		l->full_ms = report_ms;
 	}
 	if (cut != l->cut && cut == CG_CAP_CUT_LOSS) {
 		l->n_cut_loss++;

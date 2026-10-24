@@ -2160,6 +2160,8 @@ static void cap_tick(struct server *s, struct session *S, uint16_t live, uint64_
 	cc.tx_seq = S->tx_seq;
 	cc.real_off_ms = (int64_t)wall - (int64_t)now_ms;
 	cc.expire_ms = s->cfg->capacity_expire_ms;
+	cc.lossq_us = s->cfg->capacity_loss_queue_ms * 1000;
+	cc.stand = (uint8_t)s->cfg->capacity_stand;
 	if (cc.expire_ms) {
 		/* the paths that carry the download now (capacity_expire_ms):
 		 * live carriers, and when it is split, in the split or taking a
@@ -2181,6 +2183,7 @@ static void cap_tick(struct server *s, struct session *S, uint16_t live, uint64_
 
 			cc.loss_pct = m->loss_pct;
 			cc.lossy = cg_link_tracks_loss(m);
+			cc.lossq_loaded = (uint8_t)cc.lossy; /* Starlink's preset: its loss without a queue is held, not cut */
 			cc.lossy_probe = !m->lossy_noprobe;
 			cc.rfull_mode = m->rfull_hyst;
 			cc.rx_top = P->peer_view.rx_top;

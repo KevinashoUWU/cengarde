@@ -49,6 +49,7 @@ H = {
     "008": "008-luci-uci-y-emparejamiento", "009": "009-recarga-control-e-ip-pass",
     "010": "010-ipv6-varias-ip-multicliente-nombres", "011": "011-hilos", "012": "012-bonding",
     "013": "013-capacidad-y-dosificacion", "014": "014-tunel-nativo", "015": "015-modelo-de-enlace", "016": "016-celda-virtual",
+    "019": "019-perdida-con-cola",
     "audit": "audit-pending",
 }
 
@@ -153,6 +154,8 @@ T = {
  "capacity_loss_pct": ([G], BOTH, "0 (apagado)", "0–50", [CAP, MODEL], ["015"], "EXPERIMENTO: un enlace cargado que pierde más de esto está lleno."),
  "capacity_seq_lag": ([G], BOTH, "`yes`", "`yes` o `no`", [CAP], ["015"], "La pérdida de una muestra se cuenta por secuencia (`rx_top`), no 250 ms antes del informe."),
  "capacity_expire_ms": ([G], BOTH, "0 (apagado)", "0–600000", [CAP], ["016"], "EXPERIMENTO: un enlace fuera del envío (silenciado, mudo o fuera del reparto) tanto tiempo sin medirse ve su capacidad a la mitad, y otra vez cada tanto, hasta 1/16 de su mejor."),
+ "capacity_loss_queue_ms": ([G], BOTH, "0 (apagado)", "0–1000", [CAP, COLA, MODEL], ["019"], "EXPERIMENTO: un enlace que pierde al menos 1 % de lo enviado, mandándole más de lo que entrega, con la cola sobre su mínimo de 60 s en al menos esto, dos muestras seguidas, está lleno a cualquier carga (con el preset de Starlink, solo cargado). Sugerido: 10."),
+ "capacity_stand": ([G], BOTH, "0 (apagado)", "0–2", [CAP, COLA], ["019"], "EXPERIMENTO: 1, una cola permanente (sobre el mínimo de 60 s, sobre `capacity_sat_ms`, 4 muestras) frena el arranque rápido; 2, además el arranque rápido va antes de 10 s si el enlace entrega 9/8 de su capacidad sin pérdida ni cola, dos muestras."),
  "cap_g4_episode": ([G], BOTH, "0 (apagado)", "0–3", [CAP, G4, MODEL], ["015", "audit"], "C5: una salida de G4 por cola cuenta para el arranque rápido."),
  "split_eta": ([G], BOTH, "`no`", "`yes` o `no`", [ETA], ["013"], "Reparto por llegada esperada."),
  "split_tickle_ms": ([G], BOTH, "0 (nunca)", "0–60000", [TICKLE], ["013"], "Con `split_eta`, cada este tiempo se le da carga a un enlace ocioso."),
@@ -233,7 +236,7 @@ def generate():
                                "split_stress_rejoin", "split_stress_single", "split_dwell_ms", "split_dwell_oq_ms"]),
         ("Gobernador y capacidad", ["governor", "governor_target_ms", "governor_window_ms", "capacity_weights",
                                     "capacity_sat_ms", "capacity_loss_pct", "capacity_seq_lag", "capacity_expire_ms",
-                                    "cap_g4_episode"]),
+                                    "capacity_loss_queue_ms", "capacity_stand", "cap_g4_episode"]),
         ("ETA, cosquilla, copias, dosificación", ["split_eta", "split_tickle_ms", "split_stale_max", "eta_buffer",
                                "split_qpred_ms", "split_qpred_mode", "eta_keep", "eta_keep_ms", "redund_pace_ms", "pacing"]),
         ("Modelo de enlace y Starlink", ["exp_link_types", "split_dominant_pct", "split_dominant_hold",
