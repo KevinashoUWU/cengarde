@@ -731,20 +731,27 @@ static int parse_lists(struct cg_config *c, struct cg_ini *ini)
 
 /* split: off, on or force in a client; off, client or force in a server
  * (enum cg_split_mode). c->mode is set. */
-/* redund_spare: no (off), copies, parity or mix (spare.h). */
+/* redund_spare: no (off), copies, parity, mix, rs or rlc (spare.h); rs
+ * needs Leopard (make LEOPARD=0 builds without it). */
 static int get_spare(struct cg_ini *ini, struct cg_config *c, char *err, size_t errlen)
 {
-	static const char *const names[] = { "no", "copies", "parity", "mix" };
+	static const char *const names[] = { "no", "copies", "parity", "mix", "rs", "rlc" };
 	const char *v = cg_ini_get(ini, "", "redund_spare");
 
 	if (!v)
 		return 0;
 	for (unsigned i = 0; i < sizeof(names) / sizeof(names[0]); i++)
 		if (!strcmp(v, names[i]) || (!i && !strcmp(v, "off"))) {
+#ifdef CG_NO_LEOPARD
+			if (i == 4) {
+				snprintf(err, errlen, "redund_spare: rs needs Leopard (this build has LEOPARD=0); rlc does without");
+				return -1;
+			}
+#endif
 			c->redund_spare = i;
 			return 0;
 		}
-	snprintf(err, errlen, "redund_spare: expected no, copies, parity or mix, got '%s'", v);
+	snprintf(err, errlen, "redund_spare: expected no, copies, parity, mix, rs or rlc, got '%s'", v);
 	return -1;
 }
 
@@ -822,6 +829,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	c->rescue_tries = 2;
 	c->fec_wait_ms = 10;
 	c->redund_spare_ms = 50;
+	c->redund_spare_code_ms = 30;
 	c->fec_share_max = 0;
 	c->split = c->mode == CG_MODE_SERVER ? CG_SPLIT_CLIENT : CG_SPLIT_OFF;
 	c->split_small = 256;
@@ -960,6 +968,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	    get_bool(&ini, "", "starlink_edge_copies", &c->starlink_edge_copies, err, errlen) ||
 	    get_spare(&ini, c, err, errlen) ||
 	    get_u32(&ini, "", "redund_spare_ms", 1, 2000, &c->redund_spare_ms, err, errlen) ||
+	    get_u32(&ini, "", "redund_spare_code_ms", 1, 500, &c->redund_spare_code_ms, err, errlen) ||
 	    get_bool(&ini, "", "pacing", &c->pacing, err, errlen) ||
 	    get_u32(&ini, "", "governor_target_ms", 1, 1000, &c->governor_target_ms, err, errlen) ||
 	    get_u32(&ini, "", "capacity_loss_pct", 0, 50, &c->capacity_loss_pct, err, errlen) ||

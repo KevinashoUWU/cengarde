@@ -423,8 +423,63 @@ static void test_spare_restart(void)
 	CHECK_EQ(l.n_take, 1);
 }
 
+/* The erasure codes' plan (story 021): k from the horizon, m the fewest
+ * repairs whose block fails under CG_SPARE_CODE_TAIL, copies with the whole
+ * upload in the allowance or a microcut that the code would not fit. */
+static void test_spare_plan(void)
+{
+	struct cg_spare_plan pl;
+	double t = cg_spare_tail(10, 0, 0.1);
+
+	CHECK(t > 0.6512 && t < 0.6514); /* 1 - 0.9^10 */
+	CHECK(cg_spare_tail(10, 10, 0.5) == 0);
+	CHECK(cg_spare_tail(20, 3, 0.01) < cg_spare_tail(20, 2, 0.01));
+	/* WOM's 4.4 of a 7 Mbit/s upload, the fixed link losing 0.7 %: 729
+	 * packets a second, 30 ms: k 21, p 1.4 % (twice the average) */
+	pl = cg_spare_plan(CG_SPARE_RS, 7000000, 4400000, 7, 7, 729, 30, 64, 32);
+	CHECK_EQ(pl.how, CG_SPARE_RS);
+	CHECK_EQ(pl.k, 21);
+	CHECK(cg_spare_tail(21, pl.m, 0.014) <= CG_SPARE_CODE_TAIL);
+	CHECK(cg_spare_tail(21, pl.m - 1, 0.014) > CG_SPARE_CODE_TAIL);
+	CHECK_EQ(pl.m, pl.need);
+	CHECK(pl.m >= 2 && pl.m <= 5);
+	/* the loss floor: nothing lost lately still plans for 0.5 % */
+	pl = cg_spare_plan(CG_SPARE_RLC, 7000000, 4400000, 0, 0, 729, 30, 64, 32);
+	CHECK_EQ(pl.how, CG_SPARE_RLC);
+	CHECK(cg_spare_tail(21, pl.m, 0.005) <= CG_SPARE_CODE_TAIL);
+	CHECK(pl.m >= 1);
+	/* Entel's 1.3: 7/8 of it is 3 repairs per 21; the loss of 3 % asks
+	 * more, so the whole allowance's, rounded up: 21 x 1.3 / 7 = 3.9, 4
+	 * (the bucket trims, the allowance may grow) */
+	pl = cg_spare_plan(CG_SPARE_RS, 7000000, 1300000, 30, 30, 729, 30, 64, 32);
+	CHECK_EQ(pl.how, CG_SPARE_RS);
+	CHECK(pl.need > 4);
+	CHECK_EQ(pl.m, 4);
+	/* WOM's allowance stuck low (the cell): 21 x 0.633 / 7 = 1.9, 2, not 1 */
+	pl = cg_spare_plan(CG_SPARE_RLC, 7000000, 633000, 7, 7, 729, 30, 64, 32);
+	CHECK_EQ(pl.m, 2);
+	/* a microcut that does not fit: copies */
+	pl = cg_spare_plan(CG_SPARE_RS, 7000000, 4400000, 600, 50, 729, 30, 64, 32);
+	CHECK_EQ(pl.how, CG_SPARE_COPIES);
+	/* 20 % that fits (k 21, 60 % of it in repairs): the code */
+	pl = cg_spare_plan(CG_SPARE_RS, 7000000, 6900000, 200, 20, 729, 30, 64, 32);
+	CHECK_EQ(pl.how, CG_SPARE_RS);
+	CHECK(pl.m > 8 && pl.m <= 17);
+	/* the whole upload fits: copies; a slow stream: k at least 4, m at most k */
+	pl = cg_spare_plan(CG_SPARE_RS, 7000000, 7000000, 7, 7, 729, 30, 64, 32);
+	CHECK_EQ(pl.how, CG_SPARE_COPIES);
+	pl = cg_spare_plan(CG_SPARE_RS, 400000, 200000, 7, 7, 40, 30, 64, 32);
+	CHECK_EQ(pl.k, CG_SPARE_CODE_KMIN);
+	CHECK(pl.m <= pl.k);
+	/* k at most kmax, m at most mmax */
+	pl = cg_spare_plan(CG_SPARE_RS, 100000000, 90000000, 100, 100, 10000, 30, 64, 32);
+	CHECK_EQ(pl.k, 64);
+	CHECK(pl.m <= 32);
+}
+
 void test_spare(void)
 {
+	test_spare_plan();
 	test_spare_pinned();
 	test_spare_pin_jumps();
 	test_spare_lag();

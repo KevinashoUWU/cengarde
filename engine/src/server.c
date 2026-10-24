@@ -99,6 +99,10 @@
 #include "capacity.h"
 #include "dominant.h"
 #include "fec.h"
+#include "gf256.h"
+#include "repair.h"
+#include "rlc.h"
+#include "rs.h"
 #include "pace.h"
 #include "tcpfree.h"
 #include "rescue.h"
@@ -168,6 +172,11 @@ struct session {
 	struct cg_fec_rx *fec;    /* the upload's parities and DATA kept for them (fec.h), NULL: no fec */
 	uint64_t fec_dups;        /* rebuilt packets that had arrived (or been given up) meanwhile */
 	uint64_t fec_unused;      /* parities taken without fec on this end */
+	/* the erasure codes' receivers (story 021, repair.h): with fec, over
+	 * fec's ring of DATA; rsx NULL without Leopard */
+	struct cg_rlc_rx *rlc;
+	struct cg_rs_rx *rsx;
+	uint64_t rep_unused, rep_bad; /* repairs without fec (or Leopard here), malformed */
 	uint64_t resc_gone_tx, resc_gone_rx; /* CG_F_GONE said to the client; asked gaps it said were gone */
 	struct cg_ro_cfg rocf;    /* the server's reorder settings, with its rescue */
 	uint32_t tx_ctl; /* next probe reply sequence */
@@ -257,6 +266,11 @@ struct lane {
 struct server {
 	struct cg_config *cfg; /* replaced by a reload */
 	const struct cg_run *run;
+	/* the erasure codes (story 021): GF(2^8)'s tables (rlc.h) and the
+	 * scratch of a Reed-Solomon decode (rs.h), made with the first session
+	 * that has fec */
+	struct cg_gf *gf;
+	struct cg_rs_scratch *rs_x;
 	/* tunnel = native: one TUN for every client, and which client owns
 	 * each address in it (tunroute.h), rebuilt with the clients. */
 	int native;
@@ -668,6 +682,10 @@ static void session_destroy(struct server *s, struct session *S, const char *why
 	S->resc_idx = NULL;
 	free(S->fec);
 	S->fec = NULL;
+	free(S->rlc);
+	S->rlc = NULL;
+	free(S->rsx);
+	S->rsx = NULL;
 	S->used = 0;
 	if (!--C->nsess)
 		C->alone_ms = now_ms;
@@ -713,6 +731,7 @@ static void client_close(struct server *s, struct client *C, const char *why, ui
  * (a router restarting in a loop leaves one behind each time). */
 static void rescue_apply(const struct server *s, struct session *S);
 static struct cg_fec_rx *fec_rx_new(void);
+static void rep_rx_new(struct server *s, struct session *S);
 
 static struct session *session_create(struct server *s, struct client *C, const struct cg_hdr *h,
 				      const struct cg_probe_info *pi, const struct sockaddr_storage *from,
@@ -788,6 +807,7 @@ static struct session *session_create(struct server *s, struct client *C, const 
 	if (s->resc.n)
 		S->resc_idx = calloc(CG_RESC_IDX, sizeof(*S->resc_idx));
 	S->fec = s->cfg->fec ? fec_rx_new() : NULL;
+	rep_rx_new(s, S);
 	C->nsess++;
 	s->nsess++;
 	C->newest = (int32_t)(S - s->s);
@@ -1379,6 +1399,98 @@ static void fec_try(struct server *s, int *nq, struct session *S, int k, uint8_t
 		fec_deliver(s, nq, S, seq, buf, len, link, ts, now, now_ms);
 }
 
+/* The erasure codes' receivers of a new session (story 021): with fec,
+ * over its ring; the server's field tables and decode scratch made once
+ * (not per packet). Without memory, no repairs for it (counted unused). */
+static void rep_rx_new(struct server *s, struct session *S)
+{
+	S->rlc = NULL;
+	S->rsx = NULL;
+	if (!S->fec)
+		return;
+	if (!s->gf) {
+		s->gf = calloc(1, sizeof(*s->gf));
+		if (s->gf)
+			cg_gf_init(s->gf);
+	}
+	if (!s->rs_x && cg_rs_ready())
+		s->rs_x = aligned_alloc(64, sizeof(*s->rs_x));
+	if (s->gf)
+		S->rlc = calloc(1, sizeof(*S->rlc));
+	if (s->rs_x)
+		S->rsx = aligned_alloc(64, sizeof(*S->rsx));
+	if (S->rsx)
+		memset(S->rsx, 0, sizeof(*S->rsx));
+}
+
+static struct cg_rep_ring rep_ring(const struct session *S)
+{
+	struct cg_rep_ring r = { S->fec->seq, S->fec->len, S->fec->have, S->fec->mem };
+
+	return r;
+}
+
+_Static_assert(CG_REP_RING == CG_FEC_RING && CG_SYM_PLEN == CG_FEC_PLEN_MAX, "the codes share fec's ring");
+
+/* The DATA rebuilt into the ring (seqs, n of them) on to WireGuard. */
+static void rep_deliver(struct server *s, int *nq, struct session *S, const uint32_t *seqs, unsigned n, uint8_t link,
+			uint32_t ts, uint32_t now, uint64_t now_ms)
+{
+	struct cg_rep_ring r = rep_ring(S);
+
+	for (unsigned i = 0; i < n; i++) {
+		uint16_t len;
+		const uint8_t *p = cg_rep_data(&r, seqs[i], &len);
+
+		fec_deliver(s, nq, S, seqs[i], p, len, link, ts, now, now_ms);
+	}
+}
+
+/* A repair of S's upload (plen bytes at p, repair.h). */
+static void rep_take(struct server *s, int *nq, struct session *S, const uint8_t *p, unsigned plen, uint8_t link,
+		     uint32_t ts, uint32_t now, uint64_t now_ms)
+{
+	struct cg_rep_hdr h;
+	struct cg_rep_ring r;
+	uint32_t out[CG_RS_KMAX];
+	unsigned slen, n = 0;
+
+	if (!S->fec) {
+		S->rep_unused++;
+		return;
+	}
+	if (cg_rep_get(p, plen, &h, &slen) < 0) {
+		S->rep_bad++;
+		return;
+	}
+	r = rep_ring(S);
+	if (h.kind == CG_REP_RLC && S->rlc)
+		n = cg_rlc_rx_repair(s->gf, S->rlc, &r, &h, p + CG_REP_HDR, slen, out, CG_RS_KMAX);
+	else if (h.kind == CG_REP_RS && S->rsx)
+		n = cg_rs_rx_repair(S->rsx, s->rs_x, &r, &h, p + CG_REP_HDR, slen, out, CG_RS_KMAX);
+	else
+		S->rep_unused++;
+	rep_deliver(s, nq, S, out, n, link, ts, now, now_ms);
+}
+
+/* DATA seq of S went into fec's ring: the codes' pending repairs. */
+static void rep_data(struct server *s, int *nq, struct session *S, uint32_t seq, uint8_t link, uint32_t ts, uint32_t now,
+		     uint64_t now_ms)
+{
+	struct cg_rep_ring r;
+	uint32_t out[CG_RS_KMAX];
+	unsigned n = 0;
+
+	if (!S->rlc && !S->rsx)
+		return;
+	r = rep_ring(S);
+	if (S->rlc)
+		n = cg_rlc_rx_data(s->gf, S->rlc, &r, seq, out, CG_RS_KMAX);
+	if (S->rsx)
+		n += cg_rs_rx_data(S->rsx, s->rs_x, &r, seq, out + n, CG_RS_KMAX - n);
+	rep_deliver(s, nq, S, out, n, link, ts, now, now_ms);
+}
+
 /* Whether path p of S is full, so that what it loses is congestion, for TCP
  * to see, not a loss to send again (rescue.h): its rescue weight
  * (capacity.h's cg_cap_rescue_w, from where its queue will be in a second)
@@ -1507,7 +1619,8 @@ static void listen_read(struct server *s, struct lane *ln)
 				continue;
 			}
 			if (cg_hdr_parse(&h, b, len) < 0 ||
-			    (h.type != CG_T_DATA && h.type != CG_T_PROBE && h.type != CG_T_NACK && h.type != CG_T_FEC) ||
+			    (h.type != CG_T_DATA && h.type != CG_T_PROBE && h.type != CG_T_NACK && h.type != CG_T_FEC &&
+			     h.type != CG_T_REPAIR) ||
 			    h.link >= CG_MAX_LINKS) {
 				s->rx_malformed++;
 				if (cg_ratelimit_ok(&s->rl_auth, now_ms, 10000))
@@ -1606,6 +1719,12 @@ static void listen_read(struct server *s, struct lane *ln)
 					h.link, h.ts, now32, now_ms);
 				continue;
 			}
+			if (h.type == CG_T_REPAIR) {
+				/* A repair of the upload (repair.h): kept, and what
+				 * it can rebuild now goes on. */
+				rep_take(s, &nq, S, b + CG_HDR_LEN, (unsigned)(len - CG_HDR_LEN), h.link, h.ts, now32, now_ms);
+				continue;
+			}
 			P = &S->path[h.link];
 			if (h.type == CG_T_PROBE) {
 				/* A new link, or an address the path never used:
@@ -1652,6 +1771,7 @@ static void listen_read(struct server *s, struct lane *ln)
 
 				up_deliver(s, &nq, S, &h, b + CG_HDR_LEN, len - CG_HDR_LEN, rs, now32);
 				fec_try(s, &nq, S, k, h.link, h.ts, now32, now_ms);
+				rep_data(s, &nq, S, h.seq, h.link, h.ts, now32, now_ms);
 				continue;
 			}
 			up_deliver(s, &nq, S, &h, b + CG_HDR_LEN, len - CG_HDR_LEN, rs, now32);
@@ -2659,6 +2779,37 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 		cg_json_u64(j, "already_there", S->fec_dups);
 		cg_json_u64(j, "unused", S->fec_unused);
 		cg_json_end(j, '}');
+		/* the erasure codes' repairs (repair.h, story 021) */
+		cg_json_obj(j, "repair");
+		cg_json_u64(j, "unused", S->rep_unused);
+		cg_json_u64(j, "malformed", S->rep_bad);
+		cg_json_u64(j, "recovered", (S->rlc ? S->rlc->recovered : 0) + (S->rsx ? S->rsx->recovered : 0));
+		if (S->rlc) {
+			cg_json_obj(j, "rlc");
+			cg_json_u64(j, "repairs", S->rlc->repairs);
+			cg_json_u64(j, "useless", S->rlc->useless);
+			cg_json_u64(j, "kept", S->rlc->kept);
+			cg_json_u64(j, "recovered", S->rlc->recovered);
+			cg_json_u64(j, "dropped", S->rlc->dropped);
+			cg_json_u64(j, "bad", S->rlc->bad);
+			cg_json_end(j, '}');
+		} else {
+			cg_json_null(j, "rlc");
+		}
+		if (S->rsx) {
+			cg_json_obj(j, "rs");
+			cg_json_u64(j, "repairs", S->rsx->repairs);
+			cg_json_u64(j, "useless", S->rsx->useless);
+			cg_json_u64(j, "decodes", S->rsx->decodes);
+			cg_json_u64(j, "failed", S->rsx->failed);
+			cg_json_u64(j, "recovered", S->rsx->recovered);
+			cg_json_u64(j, "dropped", S->rsx->dropped);
+			cg_json_u64(j, "bad", S->rsx->bad);
+			cg_json_end(j, '}');
+		} else {
+			cg_json_null(j, "rs");
+		}
+		cg_json_end(j, '}');
 		cg_json_joint(j, "joint", &S->arr);
 		cg_json_reorder(j, "reorder", &S->ro, s->cfg->reorder, NULL);
 		cg_json_arr(j, "links");
@@ -3595,6 +3746,8 @@ static int signals(struct server *s)
 int cg_server_run(struct cg_config *cfg, const struct cg_run *run)
 {
 	struct server *s = calloc(1, sizeof(*s));
+
+	cg_rs_init(); /* Leopard's tables, before any thread (rs.h); rs repairs go unused without it */
 	struct sockaddr_storage bound;
 	socklen_t blen = sizeof(bound);
 	char err[256], wg[64];
@@ -3822,7 +3975,11 @@ out:
 	for (uint32_t i = 0; s->s && i < s->cap; i++) {
 		free(s->s[i].resc_idx);
 		free(s->s[i].fec);
+		free(s->s[i].rlc);
+		free(s->s[i].rsx);
 	}
+	free(s->gf);
+	free(s->rs_x);
 	free(s->s);
 	free(s->ro_active);
 	cg_ro_pool_free(&s->pool);

@@ -15,7 +15,7 @@ except ImportError:  # the table without p
 
 UDP = [("lost_pct", "perdido %", 3), ("lost_out_pct", "fuera del corte %", 3), ("lost_ep_pct", "en el corte %", 2),
        ("owd.1", "OWD p99 ms", 0), ("lte_rtt.1", "RTT LTE p95 ms", 0), ("cost", "bytes LTE/fijo", 2),
-       ("fec_rec", "rehechos", 0)]
+       ("fec_rec", "rehechos", 0), ("late_out.1", "tarde fuera p50 ms", 0), ("late_out.2", "tarde fuera p95 ms", 0)]
 TCP = [("tcp_mbit", "TCP Mbit/s", 2), ("tcp_ep_mbit", "en el corte", 2), ("retrans", "retrans.", 0),
        ("ping.1", "ping p99 ms", 0), ("lte_rtt.1", "RTT LTE p95 ms", 0), ("cost", "bytes LTE/fijo", 2)]
 

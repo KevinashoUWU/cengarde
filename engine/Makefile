@@ -36,7 +36,44 @@ CG_CFLAGS += $(HARDEN)
 CG_LDFLAGS += $(HARDEN_LDFLAGS)
 endif
 
-CORE = src/siphash.c src/proto.c src/util.c src/log.c src/config.c src/blake2s.c src/pair.c
+# Leopard-RS (third_party/leopard, BSD-3, story 021): redund_spare = rs. C++
+# compiled without exceptions, RTTI or the C++ library (its objects need
+# only libc, linked by $(CC)); LEOPARD=0 builds without it (no C++ compiler
+# needed; rs refused by the configuration). CXX follows a cross CC
+# (aarch64-linux-gnu-gcc: aarch64-linux-gnu-g++) unless given. On x86 its
+# files are built with SSSE3 (it checks the CPU at run time for its fast
+# paths, but the compiler may use SSSE3 anywhere in them).
+LEOPARD ?= 1
+ifeq ($(origin CXX),default)
+CXX = $(patsubst %clang,%clang++,$(patsubst %gcc,%g++,$(patsubst %cc,%c++,$(CC))))
+endif
+CXXFLAGS ?= -O2 -g
+LEO_DIR = third_party/leopard
+LEO_SRC = $(LEO_DIR)/leopard.cpp $(LEO_DIR)/LeopardCommon.cpp $(LEO_DIR)/LeopardFF8.cpp
+LEO_ARCH := $(shell $(CC) -dumpmachine 2>/dev/null)
+LEO_SIMD = $(if $(filter x86_64% i386% i486% i586% i686%,$(LEO_ARCH)),-mssse3)
+CG_CXXFLAGS = -std=c++11 -fno-exceptions -fno-rtti -fno-threadsafe-statics $(LEO_SIMD) $(LEO_PORTABLE)
+ifeq ($(SANITIZE),1)
+CG_CXXFLAGS += -fsanitize=address,undefined -fno-sanitize=vptr,object-size -fno-omit-frame-pointer -fno-sanitize-recover=all
+else ifeq ($(SANITIZE),thread)
+CG_CXXFLAGS += -fsanitize=thread -fno-omit-frame-pointer
+else
+CG_CXXFLAGS += $(HARDEN)
+endif
+# (UBSan's object-size check: off for Leopard, whose FFT indexes its tables
+# through a pointer one before them, FFTSkew - 1; ASan still checks every
+# access against the real objects)
+# one object directory per kind of build: sanitizers and compilers do not mix
+LEO_OBJDIR = obj/leopard-$(if $(SANITIZE),san$(SANITIZE),plain)$(if $(LEO_PORTABLE),-portable)
+ifeq ($(LEOPARD),0)
+LEO_OBJ =
+CG_CFLAGS += -DCG_NO_LEOPARD
+else
+LEO_OBJ = $(patsubst $(LEO_DIR)/%.cpp,$(LEO_OBJDIR)/%.o,$(LEO_SRC))
+CG_CFLAGS += -I$(LEO_DIR)
+endif
+
+CORE = src/siphash.c src/proto.c src/util.c src/log.c src/config.c src/blake2s.c src/pair.c src/rs.c
 NET = src/netlink.c src/sock.c src/tun.c src/status.c src/os.c src/ctl.c src/names.c src/client.c src/server.c
 # The router's link pumps: threads the unit tests run too (test_threads).
 THR = src/pump.c
@@ -45,11 +82,15 @@ TESTS = $(wildcard tests/test_*.c)
 
 all: cengarde
 
-cengarde: src/main.c $(CORE) $(THR) $(NET) $(wildcard src/*.h)
-	$(CC) $(CG_CFLAGS) $(CPPFLAGS) $(CFLAGS) -o $@ src/main.c $(CORE) $(THR) $(NET) $(LDFLAGS) $(CG_LDFLAGS)
+cengarde: src/main.c $(CORE) $(THR) $(NET) $(wildcard src/*.h) $(LEO_OBJ)
+	$(CC) $(CG_CFLAGS) $(CPPFLAGS) $(CFLAGS) -o $@ src/main.c $(CORE) $(THR) $(NET) $(LEO_OBJ) $(LDFLAGS) $(CG_LDFLAGS)
 
-cengarde-test: $(TESTS) $(CORE) $(THR) $(wildcard src/*.h tests/*.h)
-	$(CC) $(CG_CFLAGS) $(CPPFLAGS) $(CFLAGS) -Isrc -o $@ $(TESTS) $(CORE) $(THR) $(LDFLAGS) $(CG_LDFLAGS)
+cengarde-test: $(TESTS) $(CORE) $(THR) $(wildcard src/*.h tests/*.h) $(LEO_OBJ)
+	$(CC) $(CG_CFLAGS) $(CPPFLAGS) $(CFLAGS) -Isrc -o $@ $(TESTS) $(CORE) $(THR) $(LEO_OBJ) $(LDFLAGS) $(CG_LDFLAGS)
+
+$(LEO_OBJDIR)/%.o: $(LEO_DIR)/%.cpp $(wildcard $(LEO_DIR)/*.h) Makefile
+	@mkdir -p $(LEO_OBJDIR)
+	$(CXX) $(CG_CXXFLAGS) $(CPPFLAGS) $(CXXFLAGS) -c -o $@ $<
 
 test: cengarde-test
 	./cengarde-test
@@ -59,5 +100,6 @@ install: cengarde
 
 clean:
 	rm -f cengarde cengarde-test
+	rm -rf obj
 
 .PHONY: all test install clean

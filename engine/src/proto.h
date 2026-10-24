@@ -57,7 +57,7 @@
 
 #include "siphash.h"
 
-#define CG_PROTO_VERSION 7
+#define CG_PROTO_VERSION 8
 #define CG_HDR_LEN 24
 #define CG_MAC_OFF 16
 #define CG_HINT_OFF 2
@@ -71,14 +71,24 @@ enum cg_type {
 	CG_T_HELLO = 4,       /* server -> client, to a probe it cannot take yet; payload: cg_hello */
 	CG_T_NACK = 5,        /* either way, one link; payload: DATA sequences to send again */
 	CG_T_FEC = 6,         /* either way, one link; payload: the parity of a group of DATA (fec.h) */
+	CG_T_REPAIR = 7,      /* client -> server, one link; payload: an erasure code's repair (repair.h) */
 };
 
 /* Probes, replies, NACKs and parities count in the control sequence, DATA
  * in its own. */
 static inline int cg_type_ctl(uint8_t type)
 {
-	return type == CG_T_PROBE || type == CG_T_PROBE_REPLY || type == CG_T_NACK || type == CG_T_FEC;
+	return type == CG_T_PROBE || type == CG_T_PROBE_REPLY || type == CG_T_NACK || type == CG_T_FEC ||
+	       type == CG_T_REPAIR;
 }
+
+/* REPAIR (version 8, story 021: redund_spare = rs | rlc): a repair of an
+ * erasure code over DATA the client sent on its first link alone, carried
+ * on another link's spare (spare.h): a Reed-Solomon block's (Leopard, rs.h)
+ * or a sliding window's (rlc.h); the server rebuilds the DATA missing once
+ * it has enough of them. Payload: repair.h's (base sequence, members' map,
+ * kind, m, index or seed, the symbol). A server without fec drops it,
+ * counted. */
 
 /* FEC (version 7, story 013: the spatial parity, fec.h): the sender of
  * split DATA sends, after each group of packets that went one per link, a

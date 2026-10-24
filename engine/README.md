@@ -493,7 +493,7 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
     `asks`, `nacks_sent`); en los dos, `gone_sent` y `gone_received`.
     `reorder.rescue` (`asked`, `rescued`, `lost` y `refused`, los perdidos
     que el otro extremo avisó que no vendrían).
-- **`fec` (no; protocolo 7):** la paridad espacial de la subida repartida
+- **`fec` (no; protocolo 7; las reparaciones, 8):** la paridad espacial de la subida repartida
   (`fec.h`). El cliente junta en grupos los paquetes que fueron cada uno por
   un solo enlace, como mucho uno por enlace, y manda el XOR del grupo por un
   enlace de fuera (`CG_T_FEC`). El servidor guarda lo recibido hace poco y
@@ -522,7 +522,7 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
     las lleva (van en `tx_fec_packets`/`tx_fec_bytes`): el servidor cuenta
     solo DATA por camino, y una paridad contada como enviada parecía
     perdida a la capacidad (`short` y la pérdida de la muestra).
-- **`redund_spare` (no; `copies`, `parity` o `mix`; solo el cliente,
+- **`redund_spare` (no; `copies`, `parity`, `mix`, `rs` o `rlc`; solo el cliente,
   experimental):** en redundancia, protege al primer enlace (el de menor
   retardo sin una cola parada; un Starlink que pierde) con lo que les sobra
   a los demás (un celular ahogado sobre su codo), sin llenarles la cola
@@ -565,6 +565,26 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
     `parities_skipped`, `parities_no_link`) y `spare` por enlace (`mbit`,
     `cuts`, `taken`, `skipped`); lo rehecho, en `fec` de la sesión del
     servidor.
+  - **`rs` y `rlc` (protocolo 8, historia 021):** la mezcla con un código
+    de borrado en vez del XOR, sobre los paquetes que fueron solo por el
+    primero: bloques **Reed-Solomon** (`rs`, sobre Leopard-RS vendorizado en
+    `third_party/leopard`; cualquier k de los k + m rehacen el bloque) o una
+    **ventana deslizante** de combinaciones aleatorias (`rlc`; una reparación
+    cada k/m paquetes sobre los últimos k). k son los paquetes de
+    `redund_spare_code_ms`; m, las reparaciones con las que un bloque pierde
+    más de m con probabilidad bajo 10⁻⁴ (con el doble de la pérdida media
+    del primero, al menos 0,5 %); si no caben en la suma de las
+    asignaciones, copias en un microcorte o las que caben. Las reparaciones
+    (`CG_T_REPAIR`) se reparten por los respaldos según su balde; el
+    servidor rehace con `fec = yes`. *Medido* en el laboratorio
+    (`protect`, n = 6–8): la misma pérdida que `mix` con un tercio de los
+    bytes de respaldo (0,17–0,18 contra 0,49 por byte útil), y TCP de 43
+    (`rlc`) y 36 (`rs`) Mbit/s contra 16 con `mix` y 7 con 250 ms de
+    copias; en el microcorte, como `mix`. Ver la historia para la celda.
+    Estado: `upload.spare.code` y `repair` en la sesión del servidor.
+    `make LEOPARD=0` compila sin Leopard (sin C++): `rs` queda rechazado.
+    - **`redund_spare_code_ms` (30; 1–500):** cuánto abarca un bloque (o la
+      ventana); 10 y 60 dieron menos TCP con `rs` (21 y 29 contra 36 Mbit/s).
 - **`reorder_pool_kb` (8192; 256–131070):** memoria para los paquetes
   retenidos, en bloques de 2 KiB, reservada al arrancar; solo ocupa RAM lo
   que llega a usarse. En el servidor la comparten todas las sesiones (cada

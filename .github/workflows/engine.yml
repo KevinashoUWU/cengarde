@@ -48,6 +48,12 @@ jobs:
         run: make -C engine CC=${{ matrix.cc }} CFLAGS="-O2 -g -Werror" all test
       - name: Unit tests with ASan and UBSan
         run: make -C engine clean && make -C engine CC=${{ matrix.cc }} SANITIZE=1 test
+      # Leopard-RS's portable path (armhf, MIPS) on x86: it had a bug
+      # upstream (story 021), and only test_rs sees it
+      - name: Unit tests with Leopard's portable path
+        run: make -C engine clean && make -C engine CC=${{ matrix.cc }} LEO_PORTABLE=-DCG_LEO_PORTABLE test
+      - name: Build without Leopard (no C++)
+        run: make -C engine clean && make -C engine CC=${{ matrix.cc }} CFLAGS="-O2 -Werror" LEOPARD=0 cengarde
       # TSAN does not model standalone fences (rule R1). gcc's -Wtsan catches
       # atomic_thread_fence in gcc's TSAN build; this grep catches it with any
       # compiler, and __sync_synchronize, which -Wtsan never reports.
@@ -119,7 +125,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install cross compiler and qemu
-        run: sudo apt-get update && sudo apt-get install -y gcc-${{ matrix.triplet }} qemu-user
+        # g++ for Leopard-RS (engine/third_party/leopard), built without the
+        # C++ library: the binary needs only libc
+        run: sudo apt-get update && sudo apt-get install -y gcc-${{ matrix.triplet }} g++-${{ matrix.triplet }} qemu-user
       - name: Build and run unit tests under qemu
         run: |
           make -C engine CC=${{ matrix.triplet }}-gcc CFLAGS="-O2 -Werror" all cengarde-test

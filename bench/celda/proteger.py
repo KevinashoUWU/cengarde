@@ -70,6 +70,8 @@ ARMS = {
     "pcopy": ("redund_spare = copies", "fec = yes"),    # D: partial copies in the spare
     "parity": ("redund_spare = parity", "fec = yes"),   # E: parity in the spare
     "mix": ("redund_spare = mix", "fec = yes"),         # F: the mix
+    "rs": ("redund_spare = rs", "fec = yes"),           # G: Reed-Solomon (Leopard) in the spare (story 021)
+    "rlc": ("redund_spare = rlc", "fec = yes"),         # H: the sliding-window RLC in the spare (story 021)
 }
 for _a in filter(None, os.environ.get("ARMS_EXTRA", "").split("/")):
     _n, _rest = _a.split("=", 1)
@@ -101,8 +103,10 @@ def sample(t):
         ss = [x for x in s.get("sessions", []) if x.get("newest")] or s.get("sessions", [])
         if ss:
             f = ss[0].get("fec") or {}
-            out["srv"] = dict(lost_all=ss[0].get("lost_all"), rec=f.get("recovered"), par=f.get("parities"),
-                              unrec=f.get("unrecovered"), there=f.get("already_there"))
+            rp = ss[0].get("repair") or {}
+            out["srv"] = dict(lost_all=ss[0].get("lost_all"),
+                              rec=(f.get("recovered") or 0) + (rp.get("recovered") or 0), par=f.get("parities"),
+                              unrec=f.get("unrecovered"), there=f.get("already_there"), rep=rp)
     return out
 
 
@@ -184,7 +188,11 @@ def one(arm, kind, rep):
         if r:
             ls = r["lost_s"]
             pps = RATE * 1e6 / 8 / 1200
-            row.update(sent=r["sent"], lost=r["lost"], lost_pct=r["lost_pct"], owd=r["owd"], dup=r["dup"])
+            row.update(sent=r["sent"], lost=r["lost"], lost_pct=r["lost_pct"], owd=r["owd"], dup=r["dup"],
+                       late=r.get("late"))
+            if not EP_SECS:
+                lo = sorted(x for _, x in r.get("late_t", []))
+                row["late_out"] = [len(lo), pct(lo, .5), pct(lo, .95), lo[-1] if lo else None]
             if EP_SECS:
                 # the episode by the stream's send time, with a second each
                 # side (the netem change and the stream's start are not to
@@ -196,11 +204,16 @@ def one(arm, kind, rep):
                 rest = r["lost"] - ep
                 row["lost_out_pct"] = round(100.0 * rest / max(1, r["sent"] - pps * (b - a)), 4)
                 row["owd_ep_p99"] = pct(r["owd_s"][a:b], .5)
+                # the late ones (rebuilt, or copies that came first on a
+                # slower link) outside the episode: how much later (ms)
+                lo = sorted(x for s, x in r.get("late_t", []) if not a <= s < b)
+                row["late_out"] = [len(lo), pct(lo, .5), pct(lo, .95), lo[-1] if lo else None]
             row["lost_s"] = ls
             row["owd_s"] = r["owd_s"]
     rtts = sorted(float(m.group(1)) for m in re.finditer(r"time=([\d.]+)", png_out))
     sent_p = int(SECS / 0.2)
     row["ping"] = [pct(rtts, .5), pct(rtts, .99)]
+    row["ping95"] = pct(rtts, .95)
     row["ping_loss"] = round(100.0 * (1 - len(rtts) / sent_p), 1)
     lte = [s.get("lte", {}) for s in samples if s.get("lte")]
     row["lte_rtt"] = [pct([x.get("rtt") for x in lte], .5), pct([x.get("rtt") for x in lte], .95),
@@ -219,6 +232,7 @@ def one(arm, kind, rep):
         row["lost_all"] = sv.get("lost_all")
         row["fec_rec"], row["fec_par"], row["fec_unrec"] = sv.get("rec"), sv.get("par"), sv.get("unrec")
         row["client_parities"] = b.get("cfec")
+        row["repair"] = sv.get("rep")
         row["spare_end"] = b.get("spare")
     cg.engines_stop()
     row["samples"] = samples

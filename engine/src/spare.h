@@ -31,6 +31,11 @@
  *            copies); copies while the first link loses over
  *            CG_SPARE_MIX_PM (a microcut: a parity over k loses two), and
  *            parity the rest of the time.
+ *   rs, rlc  as mix, with an erasure code instead of the XOR (story 021,
+ *            repair.h): Reed-Solomon blocks (rs.h, Leopard) or a sliding
+ *            window (rlc.h), k and m from the first link's loss and the
+ *            allowance (cg_spare_plan); copies while the code would not fit
+ *            the loss (a microcut), or the allowance holds everything.
  *
  * The deadline is the target: what the bucket lets through waits at most
  * about target_us in the link's queue; the eta.h window (redund_pace_ms)
@@ -44,7 +49,7 @@
 
 #include <stdint.h>
 
-enum { CG_SPARE_OFF = 0, CG_SPARE_COPIES = 1, CG_SPARE_PARITY = 2, CG_SPARE_MIX = 3 };
+enum { CG_SPARE_OFF = 0, CG_SPARE_COPIES = 1, CG_SPARE_PARITY = 2, CG_SPARE_MIX = 3, CG_SPARE_RS = 4, CG_SPARE_RLC = 5 };
 
 #define CG_SPARE_MIN_BPS 128000u /* the allowance's floor */
 #define CG_SPARE_STEP 64000u     /* its additive growth a tick, with a sixteenth */
@@ -380,4 +385,101 @@ static inline int cg_spare_how(int mode, uint64_t data_bps, uint64_t spare_bps, 
 	return loss_pm > CG_SPARE_MIX_PM ? CG_SPARE_COPIES : CG_SPARE_PARITY;
 }
 
+/* The erasure codes' plan (redund_spare = rs | rlc, story 021): how the
+ * next packets are protected, and with what k (source packets per block,
+ * or the window) and m (repairs per k). Inputs: data_bps the upload, spare_bps
+ * the other links' allowance (all of it: the repairs are spread over them,
+ * by their buckets), loss_pm the first link's last sample's loss and
+ * avg_pm its average (permil), pps the packets that go on the first link
+ * alone each second, horizon_ms how long a block may take to fill
+ * (redund_spare_code_ms).
+ *
+ *   - copies while the allowance holds the whole upload (as every mode);
+ *   - k: the packets of the horizon, in [CG_SPARE_CODE_KMIN, kmax];
+ *   - the loss planned for, p: the larger of twice the average and the last
+ *     sample, and at least CG_SPARE_CODE_FLOOR_PM (losses come in bunches,
+ *     and a sample of a second holds a few);
+ *   - m: the fewest repairs for which a block of k loses more than m with a
+ *     probability under CG_SPARE_CODE_TAIL (binomial), at most mmax and k;
+ *   - when that m does not fit 7/8 of the allowance (a repair costs about a
+ *     packet), copies if the first link loses over CG_SPARE_MIX_PM (a
+ *     microcut: the copies that fit protect what they carry, a short code
+ *     nothing), or under it the whole allowance's m, rounded up (at least
+ *     1, at most the need): the bucket trims the last one, and the
+ *     allowance, which grows only while 3/4 of it is in use (cg_spare_tick),
+ *     can grow. Rounded down, WOM's 0.63 Mbit/s held one repair per 21 of a
+ *     7 Mbit/s upload (0.33 Mbit/s, half of it) and never grew: the cell,
+ *     m 1 against a need of 4, 0.07 % lost outside the microcut.
+ *
+ * Doubles: once a tick, not per packet. */
+#define CG_SPARE_CODE_TAIL 1e-4
+#define CG_SPARE_CODE_FLOOR_PM 5
+#define CG_SPARE_CODE_KMIN 4
+
+struct cg_spare_plan {
+	int how;        /* CG_SPARE_COPIES, or the code (CG_SPARE_RS or CG_SPARE_RLC) */
+	unsigned k, m;
+	unsigned need;  /* the m the loss asks for (for the status) */
+};
+
+/* P(X > m) for X ~ Bin(k, p). */
+static inline double cg_spare_tail(unsigned k, unsigned m, double p)
+{
+	double q = 1 - p, f, cdf = 0;
+
+	if (m >= k)
+		return 0;
+	f = 1;
+	for (unsigned i = 0; i < k; i++)
+		f *= q; /* P(X = 0) */
+	for (unsigned i = 0; i <= m; i++) {
+		cdf += f;
+		f = f * (double)(k - i) / (double)(i + 1) * p / q;
+	}
+	return cdf >= 1 ? 0 : 1 - cdf;
+}
+
+static inline struct cg_spare_plan cg_spare_plan(int mode, uint64_t data_bps, uint64_t spare_bps, unsigned loss_pm,
+						 unsigned avg_pm, uint64_t pps, uint32_t horizon_ms, unsigned kmax,
+						 unsigned mmax)
+{
+	struct cg_spare_plan pl = { CG_SPARE_COPIES, 0, 0, 0 };
+	uint64_t k = pps * horizon_ms / 1000, mb;
+	unsigned p_pm = 2 * avg_pm > loss_pm ? 2 * avg_pm : loss_pm, top;
+
+	if (!data_bps || spare_bps >= data_bps)
+		return pl;
+	if (k < CG_SPARE_CODE_KMIN)
+		k = CG_SPARE_CODE_KMIN;
+	if (k > kmax)
+		k = kmax;
+	if (p_pm < CG_SPARE_CODE_FLOOR_PM)
+		p_pm = CG_SPARE_CODE_FLOOR_PM;
+	if (p_pm > 900)
+		p_pm = 900;
+	top = (unsigned)k < mmax ? (unsigned)k : mmax;
+	pl.need = top + 1;
+	for (unsigned m = 1; m <= top; m++)
+		if (cg_spare_tail((unsigned)k, m, p_pm / 1000.0) <= CG_SPARE_CODE_TAIL) {
+			pl.need = m;
+			break;
+		}
+	mb = k * (spare_bps * 7 / 8) / data_bps;
+	pl.k = (unsigned)k;
+	if (pl.need <= mb) {
+		pl.m = pl.need;
+	} else if (loss_pm > CG_SPARE_MIX_PM) {
+		pl.k = 0;
+		return pl;
+	} else {
+		mb = (k * spare_bps + data_bps - 1) / data_bps;
+		if (mb > pl.need)
+			mb = pl.need;
+		pl.m = mb < 1 ? 1 : mb > top ? top : (unsigned)mb;
+	}
+	pl.how = mode;
+	return pl;
+}
+
 #endif
+
