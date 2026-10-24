@@ -18,11 +18,29 @@ configuraciones en `~/sdr/conf` (`CONF=...` para otra carpeta).
 PRB=75 EARFCN=1125 NUE=2 LOGS=/tmp/celda bench/celda/celda.sh start   # B2, 15 MHz, como Entel
 sudo ip netns exec ue1 ping 172.16.0.1                               # el teléfono 0 hacia el núcleo
 bench/celda/celda.sh stop
+PERFIL=entel_b2 bench/celda/celda.sh start                           # o una celda calibrada (abajo)
 ```
 
 - `PRB`: 50 (10 MHz), 75 (15 MHz) o 100 (20 MHz). `EARFCN`: 3350 (banda 7)
   por omisión; 1125 es la B2 de Entel. `NUE`: cantidad de teléfonos; el
-  teléfono `k` está en el netns `ue(k+1)` y el núcleo en 172.16.0.1.
+  teléfono `k` está en el netns `ue(k+1)` y el núcleo en 172.16.0.1 (con
+  varios, el teléfono 0 no siempre es 172.16.0.2).
+- **La cola honda del módem** (`QUEUE_BYTES`): la cola de subida del
+  teléfono, en bytes, con descarte por cola llena, donde la tiene un módem
+  real (su búfer RLC/PDCP, que vacían las concesiones de la estación base).
+  Un valor es la del teléfono 0 (`QUEUE_BYTES=220000`); una lista, una por
+  teléfono (`QUEUE_BYTES=2000000,0`); 0 es la de srsRAN (256 paquetes,
+  ~300 KB de paquetes de 1200 B: 0,5 s a 5 Mb/s). Necesita srsRAN con
+  `srsran-cola.patch` (lo aplica `setup.sh`; sin la variable, srsRAN queda
+  igual que el original).
+- **Perfiles calibrados** (`perfiles.json`, `perfil.py lista`):
+  `PERFIL=entel_b2` (B2 de Entel en el borde: ~2 dB, BLER ~5 %, ~1,3 Mb/s,
+  cola de 220 KB) y `PERFIL=wom` (WOM: ~12 dB, codo cerca de 5 Mb/s, cola
+  de 2 MB). Ponen `PRB`, `EARFCN`, `NUE` y `QUEUE_BYTES` (el entorno manda
+  si se da), y al conectarse el canal (piso y ganancias), la carga de los
+  otros usuarios (UDP desde el teléfono 1) y un retardo fijo de 35 ms del
+  lado del núcleo (el camino al VPS). `celda.sh stop` quita la carga.
+  Calibración en la historia 016 («Cola honda de operador»).
 - **El canal** (`canal.py`, XML-RPC en 127.0.0.1:8765): en la subida, cada
   teléfono llega con su ganancia (`set_ul_gain(g, ue)`, su pérdida de
   trayecto) y la estación base suma un piso de ruido común
@@ -38,8 +56,15 @@ bench/celda/celda.sh stop
 - `escenario.py "GANANCIA,..." "MBIT_OTROS,..." [PISO]`: nuestro teléfono
   (1 Mb/s y pings, como las copias de cengarde) con cada ganancia, mientras
   el teléfono 1 carga la celda.
+- `PERFIL=... escenario.py tasa "TASA,..." [N]`: con la celda levantada
+  con ese perfil, mide nuestra capacidad (lo que llega con la cola llena)
+  y, para cada tasa ofrecida (Mb/s, o `x1.2`: 1,2 veces la capacidad), un
+  flujo UDP de `SECS` s (30) con 4 pings por segundo; el RTT y la pérdida
+  cuentan desde `WARM` s (10), cuando la cola ya se llenó.
 - `cengarde.py run "GANANCIA,..." "redund,bond" [N]`: cengarde encima de
-  la celda (con `NUE=1`). El cliente, en `ue1`, tiene dos enlaces: `lte`
+  la celda (con `NUE=1`, o con `PERFIL=...`: su piso, su ganancia del
+  teléfono 0 como punto de partida, `BASE_GAIN`, y su `NUE` al reiniciar
+  la celda). El cliente, en `ue1`, tiene dos enlaces: `lte`
   (`tun_srsue`, hacia 172.16.0.1) y `fijo` (un veth al netns raíz con
   netem, `FIJO_NETEM`); el servidor corre en el netns raíz, con túnel
   nativo (`cgcel`, 10.81.0.1/24). En cada punto sube TCP 20 s por el túnel
@@ -54,6 +79,11 @@ bench/celda/celda.sh stop
   agregan con la celda detenida.
 - No uses `pkill -f` con la ruta de `canal.py`: mata la shell que lo llama.
   `celda.sh stop` lo detiene por su PID.
+- Este PC tiene su propio servicio `iperf3` en el puerto 5201, en todas
+  las direcciones: los guiones usan 5231–5232 (`escenario.py`,
+  `calibrar.py`), 5241.. (los otros usuarios) y 5290 (`cengarde.py`), y
+  detienen sus servidores por su PID, nunca por nombre.
+- La celda es una sola (puertos ZMQ fijos): un solo dueño a la vez.
 - Límites del modelo en la historia 016: el scheduler de srsRAN es más
   amable que el de un operador, su SNR no es el SINR del módem y no hay 4×4
   ni 256QAM en subida.

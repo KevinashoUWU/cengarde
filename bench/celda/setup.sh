@@ -3,13 +3,18 @@
 # writes the configs celda.sh uses into $CONF (default ~/sdr/conf). Debian 13:
 # srsRAN is not packaged, GNU Radio 3.10 with gr-zeromq is. Needs sudo.
 #   SRSRAN_REV  the srsRAN_4G revision (default bef8680, tested 2026-10-22)
+# It applies srsran-cola.patch: a byte cap on the UE's RLC UM queue, read
+# from SRSRAN_UM_TX_QUEUE_BYTES (celda.sh's QUEUE_BYTES); unset, srsRAN
+# behaves as upstream.
 set -e
+D=$(cd "$(dirname "$0")" && pwd)
 SRC=${SRC:-$HOME/sdr/srsRAN_4G}; CONF=${CONF:-$HOME/sdr/conf}; REV=${SRSRAN_REV:-bef8680}
 sudo apt-get install -y build-essential cmake git libfftw3-dev libmbedtls-dev libboost-program-options-dev \
 	libconfig++-dev libsctp-dev libzmq3-dev libyaml-cpp-dev libgtest-dev libpcsclite-dev pkg-config \
 	gnuradio iperf3
 [ -d "$SRC" ] || git clone https://github.com/srsran/srsRAN_4G.git "$SRC"
 cd "$SRC" && git fetch -q origin && git checkout -q "$REV"
+git apply --check "$D/srsran-cola.patch" 2>/dev/null && git apply "$D/srsran-cola.patch"
 mkdir -p build && cd build
 # -Werror off: gcc 14 rejects one of srsRAN's own tests (block_test.c)
 cmake -DCMAKE_BUILD_TYPE=Release -DENABLE_ZEROMQ=ON -DENABLE_UHD=OFF -DENABLE_BLADERF=OFF -DENABLE_SOAPYSDR=OFF \

@@ -1,0 +1,25 @@
+{
+  "_nota": "Perfiles calibrados de la celda virtual (historia 016, «Cola honda de operador»). queue_bytes, gain y otros van por teléfono (el 0 es el nuestro). otros: carga UDP de los teléfonos 1.., mbit y, si on_s > 0, encendido/apagado con períodos exponenciales. camino_ms: retardo fijo del lado del núcleo (el camino al VPS).",
+  "entel_b2": {
+    "descripcion": "Entel en B2 (SINR −6 a −2 por antena): borde del acantilado (~2,5 dB en la estación base, MCS 0, BLER ~5 %), ~1,3 Mb/s de capacidad, cola de 220 KB (~1,3 s llena)",
+    "prb": 75,
+    "earfcn": 1125,
+    "nue": 2,
+    "queue_bytes": [220000, 0],
+    "floor": 300,
+    "gain": [0.075, 1.0],
+    "otros": [{"mbit": 15}],
+    "camino_ms": 35
+  },
+  "wom": {
+    "descripcion": "WOM (SINR ~10): ~12 dB con la celda compartida, codo cerca de 5 Mb/s, cola de 2 MB (~3 s llena)",
+    "prb": 50,
+    "earfcn": 3350,
+    "nue": 2,
+    "queue_bytes": [2000000, 0],
+    "floor": 300,
+    "gain": [0.28, 1.0],
+    "otros": [{"mbit": 10}],
+    "camino_ms": 35
+  }
+}

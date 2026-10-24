@@ -25,10 +25,13 @@ drop. One JSON line per point to stdout and $LOGS/cengarde.jsonl; a table
 at the end. A UE that detaches is brought back by restarting the cell.
 
 Needs the cell up (celda.sh start, NUE=1, LOGS as here), iperf3, ping, tc
-with netem and sudo -n. Knobs (environment): LOGS (/tmp/celda), PRB (for
-a cell restart, 50), FLOOR (the eNB's noise floor, 300), SECS (20), PRE (3),
+with netem and sudo -n. Knobs (environment): LOGS (/tmp/celda), PERFIL (the
+cell started as a profile of perfiles.json: its floor and UE 0's gain are
+the defaults of FLOOR and BASE_GAIN, the gain before the drop, and a
+restart brings the profile back), PRB (for a cell restart, 50), FLOOR (the
+eNB's noise floor, 300), BASE_GAIN (1), SECS (20), PRE (3),
 RET (seconds from the start at which the gain goes back up, the return
-phase; 0: none), RET_GAIN (the gain then, 1; the tail is then the TCP up to
+phase; 0: none), RET_GAIN (the gain then, BASE_GAIN; the tail is then the TCP up to
 RET, and "ret" says what the LTE link did after it: its capacity, share,
 RTT, when it carried again, and the TCP), SETTLE (6), ARMS (more modes,
 "name=base:client extra|server extra" separated by "/", base one of MODES,
@@ -47,22 +50,30 @@ import threading
 import time
 import xmlrpc.client
 
+import perfil
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
 LOGS = os.environ.get("LOGS", "/tmp/celda")
 RUN = os.path.join(LOGS, "cg")
 BIN = os.environ.get("CENGARDE_BIN", os.path.join(REPO, "engine", "cengarde"))
-FLOOR = float(os.environ.get("FLOOR", "300"))
+# PERFIL: a profile of perfiles.json the cell was started with (its floor,
+# UE 0's gain as the base before the drop, its NUE for a restart)
+PERFIL = os.environ.get("PERFIL", "")
+PROF = perfil.load(PERFIL) if PERFIL else {}
+FLOOR = float(os.environ.get("FLOOR", PROF.get("floor", 300)))
+BASE_GAIN = float(os.environ.get("BASE_GAIN", (PROF.get("gain") or [1.0])[0]))
 SECS = int(os.environ.get("SECS", "20"))
 PRE = float(os.environ.get("PRE", "3"))
 RET = float(os.environ.get("RET", "0"))
-RET_GAIN = float(os.environ.get("RET_GAIN", "1"))
+RET_GAIN = float(os.environ.get("RET_GAIN", BASE_GAIN))
 SETTLE = float(os.environ.get("SETTLE", "6"))
 FIJO_NETEM = os.environ.get("FIJO_NETEM", "delay 15ms rate 10mbit loss 1% limit 100")
 FIJO_TYPE = os.environ.get("FIJO_TYPE", "auto")
 KEY = "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA="  # lab-only shared key
 PORT = 59480
 LTE, FIJO = "tun_srsue", "fijo"
+IPERF_PID = os.path.join(RUN, "iperf.pid")  # stopped by PID: 5201 is this PC's iperf3 service
 NAMES = {LTE: "lte", FIJO: "fijo"}
 
 # What each mode adds at both ends. bond is the field profile (the testnet's
@@ -176,35 +187,22 @@ def link_view(c, s):
 
 
 def report_since(t0):
-    """The eNB's metrics per RNTI since t0 (as escenario.py)."""
-    txt = sh(f"sudo -n cat {LOGS}/enb_report.json")
-    dec, i, out = json.JSONDecoder(), 0, {}
-    while True:
-        j = txt.find("{", i)
-        if j < 0:
-            break
-        try:
-            obj, i = dec.raw_decode(txt, j)
-        except ValueError:
-            break
-        if obj.get("type") == "metrics" and obj.get("timestamp", 0) >= t0:
-            for c in obj.get("cell_list", []):
-                for u in c["cell_container"].get("ue_list", []):
-                    u = u["ue_container"]
-                    out.setdefault(u["ue_rnti"], []).append(u)
-    return out
+    """The eNB's metrics per RNTI since t0 (perfil.report_since)."""
+    return perfil.report_since(t0, LOGS)
 
 
 def ue_attached():
-    return "172.16.0.2" in sh("sudo -n ip -n ue1 -br addr show tun_srsue 2>/dev/null")
+    # with several UEs, UE 0 is not always 172.16.0.2
+    return "172.16.0." in sh("sudo -n ip -n ue1 -br addr show tun_srsue 2>/dev/null")
 
 
 def cell_restart():
-    env = dict(os.environ, LOGS=LOGS, NUE="1")
+    env = dict(os.environ, LOGS=LOGS, NUE=str(PROF.get("nue", 1)))
     subprocess.run([os.path.join(HERE, "celda.sh"), "stop"], env=env, capture_output=True)
     subprocess.run([os.path.join(HERE, "celda.sh"), "start"], env=env, capture_output=True, timeout=120)
     time.sleep(2)
     ch().set_ul_noise(FLOOR)
+    ch().set_ul_gain(BASE_GAIN, 0)
 
 
 def ch():
@@ -219,12 +217,10 @@ def one(mode, gain, rep):
     if not ue_attached():
         cell_restart()
     ch().set_ul_noise(FLOOR)
-    ch().set_ul_gain(1.0, 0)
+    ch().set_ul_gain(BASE_GAIN, 0)
     engines_start(mode)
     time.sleep(SETTLE)
-    sh("sudo -n pkill -x iperf3")
-    sh("sudo -n iperf3 -s -B 10.81.0.1 -p 5290 -D -1")
-    time.sleep(0.5)
+    perfil.iperf_server(5290, IPERF_PID, bind="10.81.0.1")
     t_start = time.time()
     tcp = subprocess.Popen(ns(f"iperf3 -c 10.81.0.1 -p 5290 -t {SECS} -C cubic -J"), shell=True,
                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
@@ -244,7 +240,8 @@ def one(mode, gain, rep):
     tcp_out = tcp.communicate(timeout=60)[0]
     png_out = png.communicate(timeout=30)[0]
     srv_end = status("server")
-    ch().set_ul_gain(1.0, 0)
+    perfil.kill_pidfile(IPERF_PID)
+    ch().set_ul_gain(BASE_GAIN, 0)
     engines_stop()
     try:
         d = json.loads(tcp_out)
@@ -265,7 +262,7 @@ def one(mode, gain, rep):
     rep_e = report_since(t_drop + 1)
     enb = None
     if rep_e:
-        us = max(rep_e.values(), key=len)
+        us = perfil.ours(rep_e) or max(rep_e.values(), key=len)
         enb = dict(snr=round(st.median(u["ul_snr"] for u in us), 1), mcs=round(st.median(u["ul_mcs"] for u in us), 1),
                    bler=round(st.median(u["ul_bler"] for u in us), 3),
                    mbit=round(st.median(u["ul_bitrate"] for u in us) / 1e6, 2))
@@ -354,7 +351,7 @@ def table(rows):
 
 def down():
     engines_stop()
-    sh("sudo -n pkill -x iperf3")
+    perfil.kill_pidfile(IPERF_PID)
     sh("sudo -n ip link del fijo-r 2>/dev/null")
 
 
@@ -368,6 +365,7 @@ def main():
     veth_up()
     if cmd == "up":
         ch().set_ul_noise(FLOOR)
+        ch().set_ul_gain(BASE_GAIN, 0)
         engines_start(sys.argv[2] if len(sys.argv) > 2 else "redund")
         return
     gains = [float(x) for x in (sys.argv[2] if len(sys.argv) > 2 else "1,0.15,0.1,0.07,0.05").split(",")]
@@ -386,8 +384,8 @@ def main():
                     print(json.dumps({k: v for k, v in r.items() if k != "samples"}), flush=True)
     finally:
         try:
-            ch().set_ul_gain(1.0, 0)
-            ch().set_ul_noise(0)
+            ch().set_ul_gain(BASE_GAIN, 0)
+            ch().set_ul_noise(FLOOR if PERFIL else 0)
         except OSError:
             pass
         down()
