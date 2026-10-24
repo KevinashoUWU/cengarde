@@ -224,6 +224,8 @@ struct cg_cap_link {
 	uint64_t txl_prev;
 	uint64_t txl_t_prev;        /* when what txl_prev counts was sent (slot) */
 	uint64_t lost_ms;           /* the last sample that lost over CG_CAP_LOSSY_PERMIL, at any rate (dominant.h) */
+	uint16_t loss_pm;           /* the last sample's loss whose sent count was known, permil (spare.h's mix) */
+	uint64_t loss_pm_ms;        /* its report's time, 0: none yet */
 	uint64_t n_edge;            /* samples whose loss an edge's window took out (slot) */
 	uint8_t txh_at, have_txl;
 	uint8_t lossy;              /* lost over CG_CAP_LOSSY_PERMIL in the last CG_CAP_LOSSY_MS */
@@ -838,6 +840,10 @@ static inline unsigned cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint6
 			l->n_edge++;
 			dlost = UINT64_MAX;
 		}
+	}
+	if (dlost != UINT64_MAX && dlost >= CG_CAP_SHORT_MIN) {
+		l->loss_pm = (uint16_t)(drx >= dlost ? 0 : (dlost - drx) * 1000 / dlost);
+		l->loss_pm_ms = report_ms;
 	}
 	if (dlost != UINT64_MAX && dlost >= CG_CAP_SHORT_MIN &&
 	    (uint64_t)drx * 1000 < dlost * (1000 - CG_CAP_LOSSY_PERMIL))

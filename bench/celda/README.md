@@ -72,6 +72,16 @@ PERFIL=entel_b2 bench/celda/celda.sh start                           # o una cel
   cengarde saca al LTE del acantilado y en cuánto tiempo, el TCP, el RTT,
   la capacidad que estima y lo que ve la estación base. `cengarde.py up
   [redund|bond]` y `down` lo levantan y lo quitan a mano.
+- `PERFIL=wom proteger.py run "BRAZO,..." "udp,tcp" [N]`: el mismo montaje
+  con `fijo` como el enlace principal que pierde (como Starlink: `delay 5ms
+  rate 30mbit loss 0.7%`, más rápido que la subida de la celda) y la celda
+  como el respaldo ahogado, en redundancia (historia 020). Por corrida, 40 s
+  de un flujo UDP fijo (`cbr.py`, 7 Mbit/s de 1200 B, con secuencia y hora
+  de envío: lo perdido por segundo y el retardo de ida) o TCP, pings en el
+  túnel y un microcorte (`EP_AT`, `EP_SECS`, `EP_LOSS`: 15 s, 10 s, 60 %).
+  Brazos (`proteger.py arms`): `all`, `full` (250), `cut` (60), `fec`,
+  `pcopy`, `parity`, `mix` (`redund_spare`) y los de `ARMS_EXTRA`.
+  `proteger_an.py ARCHIVO.jsonl [REF]` hace las tablas con Mann-Whitney.
 
 ## Cuidado
 
