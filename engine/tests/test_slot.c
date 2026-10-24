@@ -56,10 +56,22 @@ void test_slot(void)
 		CHECK_EQ(cg_slot_pick(0x4, 1200, 300, &fl), 2);
 		CHECK_EQ(fl, CG_F_SPLIT);
 		fl = 0;
-		CHECK_EQ(cg_slot_pick(0x6, 1200, 300, &fl), 1);
+		/* two dishes fit: a copy on both, not split DATA on the first */
+		CHECK_EQ(cg_slot_pick(0x6, 1200, 300, &fl), -1);
+		CHECK_EQ(fl, 0);
+		CHECK_EQ(cg_slot_pick(0x8, 1200, 300, &fl), 3);
 		fl = 0;
 		CHECK_EQ(cg_slot_pick(0x4, 100, 300, &fl), -1);
 		CHECK_EQ(cg_slot_pick(0, 1200, 300, &fl), -1);
 		CHECK_EQ(fl, 0);
 	}
+	/* the copies' mask: solo without a reordering peer, or with two dishes
+	 * or more; one dish with a reordering peer goes as split DATA, its
+	 * copies (small packets) on every carrier */
+	CHECK_EQ(cg_slot_copy_mask(0, 0), 0xffff);
+	CHECK_EQ(cg_slot_copy_mask(0, 1), 0xffff);
+	CHECK_EQ(cg_slot_copy_mask(0x4, 0), 0x4);
+	CHECK_EQ(cg_slot_copy_mask(0x4, 1), 0xffff);
+	CHECK_EQ(cg_slot_copy_mask(0x6, 1), 0x6);
+	CHECK_EQ(cg_slot_copy_mask(0x6, 0), 0x6);
 }

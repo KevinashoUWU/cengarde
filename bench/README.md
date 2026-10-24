@@ -425,6 +425,7 @@ tasa y una cola de 100 ms a esa tasa.
 | `shallowq` | 60/20 con 15 ms de cola; 25/45 y 18/50 con 300 ms | Starlink de cola corta y dos celulares (historia 015); no está en la lista por defecto |
 | `starsat` | como `shallowq` | l1 como Starlink en el tiempo, con las ranuras medidas en «nostalgica» (`starslot.py`, historia 015): nivel y deriva por ranura de 15 s, ~45 ms parado en cada cambio (25 perdidos, 20 retenidos 55 ms), los cortes del plato (1,45 por hora, 0,24–0,9 s); la tasa sorteada por ranura entre 45, 60 y 75 Mbit/s (sin medir); no está en la lista por defecto |
 | `dominant` | Starlink 400 abajo y 40 arriba, 11 ms, 15 ms de cola; 25/25 y 18/27 con 300 ms | «nostalgica» el 2026-10-19: Starlink muy por encima de los celulares, sus ranuras como `starsat` (tasa por ranura 3/4, 1 y 5/4 de `BOND_DOM_MBIT`); no está en la lista por defecto (historia 015) |
+| `msl1`, `msl2`, `msl3`, `msl2c`, `msl3c` | 1, 2 o 3 platos (l1..l3: tasa por ranura de `MSL_UP`, 20/30/40 en la historia 022, 15 ms de cola, 15/16/17 ms); `msl2c` y `msl3c` suman dos celulares (10/30 con 1 s de cola y 0,1 % de pérdida; 5/35 con 2 s) | varios Starlink (historia 022, Manto Verde): cada plato como `starsat` en el tiempo, con sus propias ranuras, y lo que hace su pérdida compartida o no (`multisl.py`): `MSL_IND`, `MSL_EP`, `MSL_RHO`, `MSL_EDGE`, `MSL_CUT`; los tipos `starlink` y `cellular` salvo que `BOND_LINK_TYPES` diga otra cosa; no está en la lista por defecto |
 | `sigrand` | 50/20 perdiendo 2 % al azar; 50/30 | flujo de 20 Mbit/s (`BOND_RATE`, si no se da): pérdida aleatoria sin cola, l1 debe leer `loss_kind` `random` (`linksig.h`, historia 018); no está en la lista por defecto |
 | `sigdeep` | 10/25 con 1 s de cola; 20/25 con 200 ms | TCP sin tope llena las dos colas: `queue_owner` `mine`, `loss_kind` `congestive` en l1; no está en la lista por defecto |
 | `sigothers` | 20/25 con 500 ms de cola; 20/30 | flujo de 8 Mbit/s; a la mitad, l1 baja a 5 Mbit/s (otros se llevan la celda): `queue_owner` `others`; no está en la lista por defecto |
@@ -449,6 +450,30 @@ y los cortes. `starslot.py plan` imprime el programa sin aplicarlo, y
 python3 -I bench/starfield.py ~/campo/2026-10-19/rec/rec-0000{27,28,29}-*.jsonl.gz
 python3 -I bench/starslot.py plan --secs 31 --seed 1001 --delay 11 --up "30 40 50" --down "300 400 500"
 python3 bench/starslot_test.py && python3 bench/starfield_test.py
+```
+
+**Varios platos (`multisl.py`, historia 022).** Los casos `msl*` mueven
+cada plato con `multisl.py`, que sortea para cada uno sus ranuras como
+`starslot.py` (nivel, deriva y tasa por ranura; cada plato su propio
+sorteo) y le suma cuatro piezas de pérdida, cada una con su variable:
+`MSL_IND` (% de pérdida aleatoria propia de cada plato, la de netem por
+paquete), `MSL_EP` (% del tiempo de cada plato en apagones de 10–60 ms) con
+`MSL_RHO` (la parte de esos apagones que cae en todos los platos a la vez:
+mismo PoP, mismo camino al VPS; cada plato pierde lo mismo con cualquier
+ρ), `MSL_EDGE` (la probabilidad de que un plato se pare en un borde de
+ranura, :12/:27/:42/:57 del reloj de pared, sorteada por plato: con 1, todos
+en todos los bordes) y `MSL_CUT` (`one` o `all`: un microcorte de
+`MSL_CUT_LOSS` %, 60, en el primer plato o en todos, el tercio del medio de
+la corrida). Los cambios van a dos `tc -batch` (uno por netns), así un
+apagón compartido empieza en todos los platos a la vez. `multisl.py joint`
+da lo que pierde el programa solo, por plato y en todos a la vez, sin
+correr nada:
+
+```sh
+python3 -I bench/multisl.py joint --secs 600 --seed 3 --dishes 3 --ep 0.6 --rho 0.5 --edge 0
+python3 bench/multisl_test.py
+sudo MSL_EP=0.6 MSL_RHO=0.5 MSL_EDGE=0 BOND_CASES=msl2 BOND_VARIANTS=redund BOND_S=60 \
+    BOND_SMALL=940 BOND_SMALL_SIZE=1200 BOND_RATE=1M BOND_DIRS=up BOND_CC=cubic bench/lab.sh bond
 ```
 
 **Variantes (`BOND_VARIANTS`).** Qué corre en cada caso. Los ajustes de la

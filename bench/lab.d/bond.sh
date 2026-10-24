@@ -136,6 +136,21 @@
 #               given): at half the run link 1 falls to
 #               5 Mbit/s (the same queue in packets, 2 s at that rate) and its
 #               queue rises while its delivery falls: others
+#   msl1 msl2 msl3 msl2c msl3c  not in the default list: story 022, several
+#               Starlink dishes (Manto Verde): 1, 2 or 3 dishes (links 1..3),
+#               msl2c and msl3c with two cellular links after them (10 Mbit/s,
+#               30 ms, 1 s of queue, 0.1 % lost; 5 Mbit/s, 35 ms, 2 s of queue:
+#               WOM over its knee). Each dish as starsat's in time (its own
+#               slots, levels and rate per slot, MSL_UP and MSL_DOWN, Mbit/s,
+#               15 ms of queue, one-way MSL_DELAY per dish) and what makes the
+#               dishes' losses shared or not (bench/multisl.py): MSL_IND %
+#               random loss per dish, MSL_EP % of the time in blackouts of 10-60
+#               ms with MSL_RHO of them on every dish at once, MSL_EDGE the
+#               probability that a dish stops at a slot edge (:12/:27/:42/:57,
+#               every dish at the same edges), MSL_CUT none, one or all: a
+#               microcut of MSL_CUT_LOSS % (60) on the first dish or on every
+#               one for the run's middle third. The links' types default to
+#               starlink (and cellular) unless BOND_LINK_TYPES says otherwise
 #   bloat       bufferbloat as on the Pi's 5G modems (story 012, 2026-10-13):
 #               3 links of similar delay (20, 20 and 22 ms) and unequal rate
 #               (30, 20 and 8 Mbit/s) behind deep queues (1, 1 and 2 s). A
@@ -238,6 +253,15 @@ BOND_WARM=${BOND_WARM:-0}
 BOND_REST=${BOND_REST:-0}
 BOND_KEEP=${BOND_KEEP:-}
 BOND_SAMPLE=${BOND_SAMPLE:-0}
+MSL_IND=${MSL_IND:-0}   # msl*: random loss per dish, %
+MSL_EP=${MSL_EP:-0}     # msl*: each dish's time in blackouts, %
+MSL_RHO=${MSL_RHO:-0}   # msl*: the share of the blackouts on every dish at once
+MSL_EDGE=${MSL_EDGE:-1} # msl*: each dish's probability of stopping at a slot edge
+MSL_CUT=${MSL_CUT:-none} # msl*: none, one or all: a microcut in the middle third
+MSL_CUT_LOSS=${MSL_CUT_LOSS:-60}
+MSL_UP=${MSL_UP:-15 25 35}
+MSL_DOWN=${MSL_DOWN:-100 150 200}
+MSL_DELAY=${MSL_DELAY:-15 16 17}
 BOND_DOM_MBIT=${BOND_DOM_MBIT:-400} # dominant: Starlink's download, Mbit/s (its slots draw 3/4, 1 and 5/4 of it)
 WG_GO=${WG_GO:-}
 BOND_NEED_NETEM=${BOND_NEED_NETEM:-0}
@@ -505,6 +529,12 @@ bond_events() {
 			--down "$((BOND_DOM_MBIT * 3 / 4)) $BOND_DOM_MBIT $((BOND_DOM_MBIT * 5 / 4))" \
 			--inflight "${BOND_NETEM_INFLIGHT:-0}"
 		;;
+	msl*)
+		python3 -I "$LAB/multisl.py" run --ns-cli "$NS_CLI" --ns-srv "$NS_SRV" --links "$(bond_msl_dishes "$c")" \
+			--secs "$s" --seed $((${BOND_SEED:-1} * 1000 + rep)) --delay "$MSL_DELAY" --up "$MSL_UP" \
+			--down "$MSL_DOWN" --queue 15 --ind "$MSL_IND" --ep "$MSL_EP" --rho "$MSL_RHO" --edge "$MSL_EDGE" \
+			--cut "$MSL_CUT" --cut-loss "$MSL_CUT_LOSS" --inflight "${BOND_NETEM_INFLIGHT:-0}"
+		;;
 	ltespike)
 		for t in $(seq 5 5 "$s"); do
 			sleep 4
@@ -607,13 +637,40 @@ bond_shape() {
 	protect | protectcut) bond_link 1 10 60 15 0.7 && bond_link 2 25 5 2000 ;;
 	protectslow) bond_link 1 10 5 2000 8 && bond_link 2 25 20 100 ;;
 	protectpin) bond_link 1 10 20 && bond_link 2 15 20 && bond_link 3 22 20 ;;
+	msl1 | msl2 | msl3 | msl2c | msl3c)
+		for i in $(bond_msl_dishes "$1"); do bond_link "$i" 15 25 15 || return 1; done
+		case $1 in
+		msl2c) bond_link 3 30 10 1000 0.1 && bond_link 4 35 5 2000 ;;
+		msl3c) bond_link 4 30 10 1000 0.1 && bond_link 5 35 5 2000 ;;
+		esac
+		;;
 	*) return 1 ;;
 	esac
 }
 
+# bond_msl_dishes CASE: the links that are dishes in an msl case.
+bond_msl_dishes() {
+	case $1 in
+	msl1) echo 1 ;;
+	msl2 | msl2c) echo 1 2 ;;
+	*) echo 1 2 3 ;;
+	esac
+}
+
+# bond_msl_types CASE: the links' types of an msl case (lab.sh's LINK_TYPES).
+bond_msl_types() {
+	local i t=""
+	for i in $(bond_msl_dishes "$1"); do t="$t starlink"; done
+	case $1 in *c) t="$t cellular cellular" ;; esac
+	echo "${t# }"
+}
+
 bond_nlinks() {
 	case $1 in
-	het | linkdeath | downstall | bloat | lossy | shallowq | shallowqd | shallowqdeep | starsat | dominant | protectpin) echo 3 ;;
+	het | linkdeath | downstall | bloat | lossy | shallowq | shallowqd | shallowqdeep | starsat | dominant | protectpin | msl3) echo 3 ;;
+	msl1) echo 1 ;;
+	msl2c) echo 4 ;;
+	msl3c) echo 5 ;;
 	*) echo 2 ;;
 	esac
 }
@@ -739,7 +796,8 @@ bond_run() {
 # link alone), every direction, congestion control and repetition.
 bond_case() {
 	local c=$1 v=$2 s=$BOND_S dir cc rep fail=0
-	case $c in starlink15* | starsat | dominant) [ "$s" -lt 31 ] && s=31 ;; esac
+	case $c in starlink15* | starsat | dominant | msl*) [ "$s" -lt 31 ] && s=31 ;; esac
+	case $c in msl*) [ -n "$LINK_TYPES" ] || LINK_TYPES=$(bond_msl_types "$c") ;; esac
 	ENGINE=c
 	NLINKS=$(bond_nlinks "$c")
 	bond_variant "$v" || return 1
@@ -799,14 +857,14 @@ bond_plan() {
 	for w in ${BOND_CC:-cubic bbr quic}; do ccs=$((ccs + 1)); done
 	for c in $BOND_CASES; do
 		case $c in
-		equal | het | reorder50 | reorder150 | linkdeath | downstall | shallowq | shallowqd | shallowqdeep | starsat | dominant | starlink15 | starlink15sw | starlink15ramp | ltespike | ltespikerand | deepq | bloat | lossy | spikeloss | protect | protectcut | protectslow | protectpin | sigrand | sigdeep | sigothers) ;;
+		equal | het | reorder50 | reorder150 | linkdeath | downstall | shallowq | shallowqd | shallowqdeep | starsat | dominant | starlink15 | starlink15sw | starlink15ramp | ltespike | ltespikerand | deepq | bloat | lossy | spikeloss | protect | protectcut | protectslow | protectpin | sigrand | sigdeep | sigothers | msl1 | msl2 | msl3 | msl2c | msl3c) ;;
 		*)
 			echo "bond: unknown case $c"
 			return 1
 			;;
 		esac
 		dur=$BOND_S
-		case $c in starlink15* | starsat | dominant) [ "$dur" -lt 31 ] && dur=31 ;; esac
+		case $c in starlink15* | starsat | dominant | msl*) [ "$dur" -lt 31 ] && dur=31 ;; esac
 		for v in $BOND_VARIANTS; do
 			bond_applies "$c" "$v" || continue
 			pairs=$((pairs + 1))
