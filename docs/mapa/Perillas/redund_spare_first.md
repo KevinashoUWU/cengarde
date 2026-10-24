@@ -7,7 +7,7 @@ archivos:
 
 # `redund_spare_first`
 
-Con `redund_spare`, el primer enlace (el que los demás protegen) fijado: ese mientras esté vivo, medido y sin ahogarse; si se ahoga queda vetado 60 s y manda la elección automática, y vuelve cuando se despeja.
+Con `redund_spare`, el primer enlace (el que los demás protegen) fijado: ese mientras esté vivo y llevando, medido ahora y sin ahogarse; si se ahoga como primero queda vetado 15 s y manda la elección automática, y vuelve cuando se despeja; mientras los demás copian toda la subida, solo tras 2 s seguidos de ahogo (un salto de retardo más corto no lo saca). El estado dice por qué no es el primero (`upload.spare.pin`).
 
 - **Sección:** global
 - **Extremo:** cliente

@@ -188,77 +188,134 @@ static void test_spare_parity(void)
  * within the hysteresis. */
 static void test_spare_first(void)
 {
-	uint32_t base[3] = { 35000, 0, 30000 };
+	uint32_t base[3] = { 35000, 0, 30000 }, lag[3] = { 0, 0, 0 };
 	int32_t q[3] = { 2000, 1000, 5000 };
 
-	CHECK_EQ(cg_spare_first(base, 7, q, 3, 7, 0, 200000, -1, 0), 1);
-	CHECK_EQ(cg_spare_first(base, 7, q, 3, 5, 0, 200000, -1, 0), 2);  /* link 1 not in the set */
-	CHECK_EQ(cg_spare_first(base, 5, q, 3, 7, 0, 200000, -1, 0), 2);  /* link 1 not measured */
-	CHECK_EQ(cg_spare_first(base, 7, q, 3, 5, 0, 200000, 0, 0), 0);   /* 5 ms worse: stays */
+	CHECK_EQ(cg_spare_first(base, 7, q, lag, 3, 7, 0, 200000, -1, 0), 1);
+	CHECK_EQ(cg_spare_first(base, 7, q, lag, 3, 5, 0, 200000, -1, 0), 2);  /* link 1 not in the set */
+	CHECK_EQ(cg_spare_first(base, 5, q, lag, 3, 7, 0, 200000, -1, 0), 2);  /* link 1 not measured */
+	CHECK_EQ(cg_spare_first(base, 7, q, lag, 3, 5, 0, 200000, 0, 0), 0);   /* 5 ms worse: stays */
 	base[0] = 36000;
-	CHECK_EQ(cg_spare_first(base, 7, q, 3, 5, 0, 200000, 0, 0), 2);   /* over the hysteresis */
+	CHECK_EQ(cg_spare_first(base, 7, q, lag, 3, 5, 0, 200000, 0, 0), 2);   /* over the hysteresis */
 	/* the least delay but a standing queue (it carries everything and
 	 * cannot): out, and the caller bans it */
 	q[1] = 900000;
-	CHECK_EQ(cg_spare_first(base, 7, q, 3, 7, 0, 200000, 1, 0), 2);
+	CHECK_EQ(cg_spare_first(base, 7, q, lag, 3, 7, 0, 200000, 1, 0), 2);
 	q[1] = 1000;
-	CHECK_EQ(cg_spare_first(base, 7, q, 3, 7, 2, 200000, 2, 0), 2);   /* banned: still out */
-	CHECK_EQ(cg_spare_first(base, 7, q, 3, 7, 0, 200000, 2, 0), 1);   /* the ban over: back */
+	CHECK_EQ(cg_spare_first(base, 7, q, lag, 3, 7, 2, 200000, 2, 0), 2);   /* banned: still out */
+	CHECK_EQ(cg_spare_first(base, 7, q, lag, 3, 7, 0, 200000, 2, 0), 1);   /* the ban over: back */
 	q[2] = -1;
-	CHECK_EQ(cg_spare_first(base, 7, q, 3, 5, 0, 200000, -1, 0), 2);  /* no queue known: counts as none */
+	CHECK_EQ(cg_spare_first(base, 7, q, lag, 3, 5, 0, 200000, -1, 0), 2);  /* no queue known: counts as none */
 	/* none without a queue: as it was, or the least queue */
 	q[0] = 300000;
 	q[1] = 900000;
 	q[2] = 250000;
-	CHECK_EQ(cg_spare_first(base, 7, q, 3, 7, 0, 200000, 1, 0), 1);
-	CHECK_EQ(cg_spare_first(base, 7, q, 3, 7, 0, 200000, -1, 0), 2);
+	CHECK_EQ(cg_spare_first(base, 7, q, lag, 3, 7, 0, 200000, 1, 0), 1);
+	CHECK_EQ(cg_spare_first(base, 7, q, lag, 3, 7, 0, 200000, -1, 0), 2);
 	/* held (a microcut on it): stays, even out of the set */
 	q[1] = 1000;
-	CHECK_EQ(cg_spare_first(base, 7, q, 3, 5, 0, 200000, 0, 1), 0);
-	CHECK_EQ(cg_spare_first(base, 7, q, 3, 0, 0, 200000, -1, 0), -1); /* none */
+	CHECK_EQ(cg_spare_first(base, 7, q, lag, 3, 5, 0, 200000, 0, 1), 0);
+	CHECK_EQ(cg_spare_first(base, 7, q, lag, 3, 0, 0, 200000, -1, 0), -1); /* none */
 	/* choked by its base with no queue over its (climbed) minimum: out */
 	base[0] = 0;
 	base[1] = 600000;
 	base[2] = 30000;
 	q[0] = q[1] = q[2] = 0;
-	CHECK_EQ(cg_spare_first(base, 7, q, 3, 6, 0, 200000, -1, 0), 2);
+	CHECK_EQ(cg_spare_first(base, 7, q, lag, 3, 6, 0, 200000, -1, 0), 2);
 }
 
-/* The current first link: held in a microcut, banned when choked (its
- * queue or its base), even while it loses. */
+/* The current first link: held in a microcut, kept while choked for less
+ * than CG_SPARE_CHOKE_MS, banned once choked that long (its queue, its
+ * base or its lag), even while it loses. */
 static void test_spare_keep(void)
 {
-	uint64_t cut = 0;
+	uint64_t cut = 0, ch = 0;
 
-	CHECK(!cg_spare_choked(-1, 0, 200000));
-	CHECK(!cg_spare_choked(150000, 150000, 200000));
-	CHECK(cg_spare_choked(250000, 0, 200000));
-	CHECK(cg_spare_choked(0, 670000, 200000)); /* the NUC's Claro: q ~0, 670 ms behind */
+	CHECK(!cg_spare_choked(-1, 0, 0, 200000));
+	CHECK(!cg_spare_choked(150000, 150000, 150000, 200000));
+	CHECK(cg_spare_choked(250000, 0, 0, 200000));
+	CHECK(cg_spare_choked(0, 670000, 0, 200000)); /* the NUC's Claro: q ~0, 670 ms behind */
+	CHECK(cg_spare_choked(3000, 0, 8900000, 200000)); /* the NUC's Claro: q ~3 ms, an RTT of 8.9 s */
+	CHECK(!cg_spare_choked(3000, 0, 900000, 200000)); /* 0.9 s: a download's queue in the round trip */
+	CHECK(cg_spare_choked(3000, 0, CG_SPARE_LAG_US + 1, 200000));
+	CHECK(cg_spare_choked(3000, 0, 2100000, 2000000) == 1); /* past a larger choke too */
+	CHECK(!cg_spare_choked(3000, 0, 1900000, 2000000));
 	/* a microcut (loss, no queue, its base where it was): held, and for
 	 * CG_SPARE_HOLD_CUT_MS after its last losing sample */
-	CHECK_EQ(cg_spare_keep(1, 0, 1000, &cut), CG_SPARE_KEEP_HOLD);
+	CHECK_EQ(cg_spare_keep(1, 0, 1, 1000, &cut, &ch), CG_SPARE_KEEP_HOLD);
 	CHECK_EQ(cut, 1000);
-	CHECK_EQ(cg_spare_keep(0, 0, 1000 + CG_SPARE_HOLD_CUT_MS - 1, &cut), CG_SPARE_KEEP_HOLD);
-	CHECK_EQ(cg_spare_keep(0, 0, 1000 + CG_SPARE_HOLD_CUT_MS, &cut), CG_SPARE_KEEP_FREE);
-	CHECK_EQ(cg_spare_keep(0, 0, 9000, &cut), CG_SPARE_KEEP_FREE);
-	/* choked and losing to its own queue: banned, the hold cleared */
-	CHECK_EQ(cg_spare_keep(1, 0, 10000, &cut), CG_SPARE_KEEP_HOLD);
-	CHECK_EQ(cg_spare_keep(1, cg_spare_choked(900000, 0, 200000), 10100, &cut), CG_SPARE_KEEP_BAN);
+	CHECK_EQ(cg_spare_keep(0, 0, 1, 1000 + CG_SPARE_HOLD_CUT_MS - 1, &cut, &ch), CG_SPARE_KEEP_HOLD);
+	CHECK_EQ(cg_spare_keep(0, 0, 1, 1000 + CG_SPARE_HOLD_CUT_MS, &cut, &ch), CG_SPARE_KEEP_FREE);
+	CHECK_EQ(cg_spare_keep(0, 0, 1, 9000, &cut, &ch), CG_SPARE_KEEP_FREE);
+	/* choked and losing to its own queue: the hold cleared at once, kept
+	 * (waiting) and banned once choked for CG_SPARE_CHOKE_MS */
+	CHECK_EQ(cg_spare_keep(1, 0, 1, 10000, &cut, &ch), CG_SPARE_KEEP_HOLD);
+	CHECK_EQ(cg_spare_keep(1, cg_spare_choked(900000, 0, 0, 200000), 1, 10100, &cut, &ch), CG_SPARE_KEEP_WAIT);
 	CHECK_EQ(cut, 0);
-	CHECK_EQ(cg_spare_keep(0, 0, 10200, &cut), CG_SPARE_KEEP_FREE);
-	/* choked by its base with q ~0, losing: banned */
-	CHECK_EQ(cg_spare_keep(1, cg_spare_choked(0, 670000, 200000), 20000, &cut), CG_SPARE_KEEP_BAN);
+	CHECK_EQ(ch, 10100);
+	CHECK_EQ(cg_spare_keep(1, 1, 1, 10100 + CG_SPARE_CHOKE_MS - 1, &cut, &ch), CG_SPARE_KEEP_WAIT);
+	CHECK_EQ(cg_spare_keep(1, 1, 1, 10100 + CG_SPARE_CHOKE_MS, &cut, &ch), CG_SPARE_KEEP_BAN);
+	CHECK_EQ(ch, 0);
+	CHECK_EQ(cg_spare_keep(0, 0, 1, 13000, &cut, &ch), CG_SPARE_KEEP_FREE);
+	/* choked by its base with q ~0, losing: banned once it lasts */
+	CHECK_EQ(cg_spare_keep(1, cg_spare_choked(0, 670000, 0, 200000), 1, 20000, &cut, &ch), CG_SPARE_KEEP_WAIT);
+	CHECK_EQ(cg_spare_keep(1, cg_spare_choked(0, 670000, 0, 200000), 1, 20000 + CG_SPARE_CHOKE_MS, &cut, &ch),
+		 CG_SPARE_KEEP_BAN);
+	/* a jump that does not last (a radio's promotion from idle, the lab's
+	 * 300 ms for 1 s): kept, never banned, and the count starts again */
+	for (uint64_t t = 30000; t < 30000 + CG_SPARE_CHOKE_MS - 100; t += 100)
+		CHECK_EQ(cg_spare_keep(0, cg_spare_choked(300000, 0, 0, 200000), 1, t, &cut, &ch), CG_SPARE_KEEP_WAIT);
+	CHECK_EQ(cg_spare_keep(0, 0, 1, 32000, &cut, &ch), CG_SPARE_KEEP_FREE);
+	CHECK_EQ(ch, 0);
+	CHECK_EQ(cg_spare_keep(0, 1, 1, 32100, &cut, &ch), CG_SPARE_KEEP_WAIT);
+	CHECK_EQ(cg_spare_keep(0, 1, 1, 32100 + CG_SPARE_CHOKE_MS - 1, &cut, &ch), CG_SPARE_KEEP_WAIT);
+	/* under a load the others do not copy whole: banned at once, as before */
+	ch = 0;
+	CHECK_EQ(cg_spare_keep(0, 1, 0, 40000, &cut, &ch), CG_SPARE_KEEP_BAN);
+	CHECK_EQ(ch, 0);
+	CHECK_EQ(cg_spare_keep(1, 1, 0, 40100, &cut, &ch), CG_SPARE_KEEP_BAN);
+	CHECK_EQ(cut, 0);
+	CHECK_EQ(cg_spare_keep(0, 1, 1, 41000, &cut, &ch), CG_SPARE_KEEP_WAIT); /* quiet again: waits */
+	CHECK_EQ(cg_spare_keep(0, 1, 0, 41100, &cut, &ch), CG_SPARE_KEEP_BAN);  /* loaded meanwhile */
 	/* and replaced: the ban takes it out of the first link's choice */
 	{
-		uint32_t base[3] = { 670000, 20000, 30000 };
+		uint32_t base[3] = { 670000, 20000, 30000 }, lag[3] = { 0, 0, 0 };
 		int32_t q[3] = { 0, 1000, 5000 };
 
-		CHECK_EQ(cg_spare_first(base, 7, q, 3, 7, 1, 200000, 0, 0), 1);
+		CHECK_EQ(cg_spare_first(base, 7, q, lag, 3, 7, 1, 200000, 0, 0), 1);
 	}
 }
 
+/* A link seconds behind by its probes, its one-way measures stale and
+ * clear: not the first, and among choked links the least late. */
+static void test_spare_lag(void)
+{
+	uint32_t base[3] = { 0, 2000, 6000 }, lag[3];
+	int32_t q[3] = { 3000, 1000, 5000 };
+
+	CHECK(!cg_spare_fresh(0, 5000)); /* no report yet */
+	CHECK(cg_spare_fresh(5000, 5000 + CG_SPARE_FRESH_MS));
+	CHECK(!cg_spare_fresh(5000, 5001 + CG_SPARE_FRESH_MS));
+	CHECK(cg_spare_fresh(5000, 5600)); /* a microcut's first second: still measured */
+	CHECK_EQ(cg_spare_lag(43000, 30000), 13000);
+	CHECK_EQ(cg_spare_lag(20000, 30000), 0);
+	lag[0] = cg_spare_lag(8900000, 30000); /* Claro, RTT 8.9 s */
+	lag[1] = cg_spare_lag(30000, 30000);
+	lag[2] = cg_spare_lag(43000, 30000);
+	CHECK_EQ(cg_spare_first(base, 7, q, lag, 3, 7, 0, 200000, -1, 0), 1);
+	CHECK_EQ(cg_spare_first(base, 7, q, lag, 3, 7, 0, 200000, 0, 0), 1); /* not kept either */
+	/* every one choked: cur if in the set, else the least late, not the
+	 * least queue (Claro's 3 ms) */
+	base[1] = base[2] = 300000;
+	CHECK_EQ(cg_spare_first(base, 7, q, lag, 3, 7, 0, 200000, -1, 0), 1);
+	CHECK_EQ(cg_spare_late(-1, 0, 0), 0);
+	CHECK_EQ(cg_spare_late(3000, 0, 8870000), 8870000);
+	CHECK_EQ(cg_spare_late(250000, 300000, 13000), 300000);
+}
+
 /* A pinned first link: it while clear, the automatic choice while it is
- * choked, banned, unmeasured or down, and back once clear. */
+ * choked, banned, unmeasured or down, and back once clear; why, for the
+ * status. */
 static void test_spare_pinned(void)
 {
 	CHECK_EQ(cg_spare_pinned(-1, 2, 7, 7, 0, 0), 2);  /* none pinned */
@@ -269,26 +326,109 @@ static void test_spare_pinned(void)
 	CHECK_EQ(cg_spare_pinned(0, 2, 7, 6, 0, 0), 2);   /* not measured yet */
 	CHECK_EQ(cg_spare_pinned(0, 2, 7, 7, 0, 0), 0);   /* clear again: back */
 	CHECK_EQ(cg_spare_pinned(20, 2, 7, 7, 0, 0), 2);  /* out of range */
-	/* the round trip: pinned first chokes, is banned, the ban holds it out
-	 * while clear, then it returns */
+	CHECK_EQ(cg_spare_pin_why(-1, 7, 7, 0, 0), CG_SPARE_PIN_NONE);
+	CHECK_EQ(cg_spare_pin_why(16, 7, 7, 0, 0), CG_SPARE_PIN_ABSENT); /* named, no socket */
+	CHECK_EQ(cg_spare_pin_why(3, 7, 15, 0, 0), CG_SPARE_PIN_DOWN);
+	CHECK_EQ(cg_spare_pin_why(3, 15, 7, 0, 0), CG_SPARE_PIN_UNKNOWN);
+	CHECK_EQ(cg_spare_pin_why(3, 15, 15, 8, 0), CG_SPARE_PIN_BANNED);
+	CHECK_EQ(cg_spare_pin_why(3, 15, 15, 0, 1), CG_SPARE_PIN_CHOKED);
+	CHECK_EQ(cg_spare_pin_why(3, 15, 15, 0, 0), CG_SPARE_PIN_OK);
+	CHECK_EQ(cg_spare_ban_ms(1), CG_SPARE_PIN_BAN_MS);
+	CHECK_EQ(cg_spare_ban_ms(0), CG_SPARE_BAN_MS);
+	CHECK(CG_SPARE_PIN_BAN_MS < CG_SPARE_BAN_MS);
+	/* the round trip: pinned first chokes for CG_SPARE_CHOKE_MS, is
+	 * banned, the ban holds it out while clear, then it returns */
 	{
-		uint64_t cut = 0;
+		uint64_t cut = 0, ch = 0;
 		uint16_t banned = 0;
-		int f = 0;
+		int f = 0, k;
 
-		if (cg_spare_keep(1, cg_spare_choked(0, 600000, 200000), 1000, &cut) == CG_SPARE_KEEP_BAN)
-			banned |= 1;
+		for (uint64_t t = 1000; !(banned & 1) && t < 1000 + 2 * CG_SPARE_CHOKE_MS; t += 100) {
+			k = cg_spare_keep(1, cg_spare_choked(0, 600000, 0, 200000), 1, t, &cut, &ch);
+			if (k == CG_SPARE_KEEP_BAN)
+				banned |= 1;
+			else
+				CHECK_EQ(k, CG_SPARE_KEEP_WAIT); /* kept the first meanwhile */
+		}
+		CHECK(banned & 1);
 		f = cg_spare_pinned(0, 1, 7, 7, banned, 1);
 		CHECK_EQ(f, 1);
 		CHECK_EQ(cg_spare_pinned(0, 1, 7, 7, banned, 0), 1); /* clear but banned: no flap */
-		banned = 0;                                           /* CG_SPARE_BAN_MS later */
+		banned = 0;                                           /* CG_SPARE_PIN_BAN_MS later */
 		CHECK_EQ(cg_spare_pinned(0, 1, 7, 7, banned, 0), 0);
 	}
+}
+
+/* The NUC's quiet tunnel, tick by tick as client.c's spare_tick: Entel
+ * (link 3) pinned, its delay jumping by 300 ms for a second every 20 s.
+ * Before, the first tick of each jump banned it for a minute (the lab,
+ * the same jumps: Entel the first 31 s of 90). Now it stays the first. */
+static void test_spare_pin_jumps(void)
+{
+	uint32_t base[4] = { 0, 3000, 5000, 6000 }, lag[4] = { 0, 0, 0, 0 };
+	int32_t q[4] = { 2000, 2000, 2000, 2000 };
+	uint64_t cut = 0, ch = 0, ban[4] = { 0, 0, 0, 0 };
+	unsigned on = 0, n = 0;
+	int f = -1;
+
+	for (uint64_t t = 100; t <= 180000; t += 100, n++) {
+		uint16_t banned = 0;
+		int hold = 0, k, choked;
+
+		/* the jump: 300 ms read for ~1.3 s (the filter follows and falls back) */
+		q[3] = t % 20000 >= 15000 && t % 20000 < 16300 ? 300000 : 2000;
+		for (int i = 0; i < 4; i++)
+			if (ban[i] && t - ban[i] < cg_spare_ban_ms(i == 3))
+				banned |= (uint16_t)(1u << i);
+		if (f >= 0) {
+			k = cg_spare_keep(0, cg_spare_choked(q[f], base[f], lag[f], 200000), 1, t, &cut, &ch);
+			if (k == CG_SPARE_KEEP_BAN) {
+				ban[f] = t;
+				banned |= (uint16_t)(1u << f);
+			}
+			hold = k == CG_SPARE_KEEP_HOLD || k == CG_SPARE_KEEP_WAIT;
+		}
+		k = cg_spare_first(base, 15, q, lag, 4, 15, banned, 200000, f, hold);
+		choked = cg_spare_choked(q[3], base[3], lag[3], 200000);
+		if (cg_spare_pin_why(3, 15, 15, banned, choked) == CG_SPARE_PIN_OK)
+			k = 3;
+		if (k != f)
+			ch = 0;
+		f = k;
+		on += f == 3;
+	}
+	CHECK_EQ(on, n);
+	/* a choke that lasts is still banned (CG_SPARE_PIN_BAN_MS), then back */
+	q[3] = 300000;
+	for (uint64_t t = 200000; t < 200000 + CG_SPARE_CHOKE_MS + 100; t += 100)
+		if (cg_spare_keep(0, cg_spare_choked(q[3], base[3], lag[3], 200000), 1, t, &cut, &ch) == CG_SPARE_KEEP_BAN)
+			ban[3] = t;
+	CHECK_EQ(ban[3], 200000 + CG_SPARE_CHOKE_MS);
+}
+
+/* A link measured afresh (its socket reopened after a pause or an
+ * ifdown): its allowance starts again, its counters stay. */
+static void test_spare_restart(void)
+{
+	struct cg_spare_link l = { 0 };
+
+	cg_spare_tick(&l, 1000, 100, 1000, 50000, 8000000, 4000000);
+	cg_spare_take(&l, 1000000, 12000, 0, 0);
+	CHECK(l.rate_bps);
+	CHECK_EQ(l.n_take, 1);
+	cg_spare_restart(&l);
+	CHECK_EQ(l.rate_bps, 0);
+	CHECK_EQ(l.tok, 0);
+	CHECK_EQ(l.t_us, 0);
+	CHECK_EQ(l.n_take, 1);
 }
 
 void test_spare(void)
 {
 	test_spare_pinned();
+	test_spare_pin_jumps();
+	test_spare_lag();
+	test_spare_restart();
 	test_spare_first();
 	test_spare_keep();
 	test_spare_tick();

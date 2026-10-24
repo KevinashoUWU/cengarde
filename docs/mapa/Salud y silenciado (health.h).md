@@ -19,7 +19,7 @@ Decide qué enlaces llevan cada paquete en el sentido que envía este extremo (e
 
 ## Decide / escribe
 - Estado por enlace (`CG_H_ACTIVE` / `CG_H_MUTED`), `behind_us`, el `owd` filtrado y su frescura.
-- `cg_health_carriers`: los que llevan todo → [[Reparto (split.h)]] y el envío.
+- `cg_health_carriers`: los que llevan todo → [[Reparto (split.h)]], el envío y, en cada tick, el primer enlace de [[Lo que sobra (spare.h)]] (que además solo cuenta enlaces con un reporte en los últimos 3 s, `report_ms`).
 - El `owd` filtrado lo leen [[Cola por enlace (cg_gov_base)]], [[G4 guarda de dispersión (split.h)]], [[Gobernador (govern.h)]], [[Capacidad (capacity.h)]] y [[ETA (eta.h)]].
 - Los cambios van a la [[Bitácora de decisiones (decision.h)]] (G1).
 

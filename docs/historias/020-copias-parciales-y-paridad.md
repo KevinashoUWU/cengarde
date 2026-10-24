@@ -8,8 +8,9 @@
   `spare_feed`, `spare_close`, `spare_tick`); celda virtual
   (`bench/celda/proteger.py`, `cbr.py`, `proteger_an.py`; historia 016) con
   los resultados en `~/campo/2026-10-23/spare/cell*/` del PC del banco;
-  laboratorio de bonding (`bench/lab.d/bond.sh`, casos `protect` y
-  `protectcut`; `~/campo/2026-10-23/spare/lab/`); terreno (historia 017).
+  laboratorio de bonding (`bench/lab.d/bond.sh`, casos `protect`,
+  `protectcut`, `protectslow` y `protectpin`;
+  `~/campo/2026-10-23/spare/lab*/`); terreno (historia 017).
 
 ## TL;DR
 
@@ -338,8 +339,99 @@ de cola y 8 % de pérdida; enlace 2 a 25 ms y 20 Mbit/s), `mix`, antes
 En `protect` y `protectcut` la decisión es la misma (el enlace 1 no se
 ahoga): las diferencias son ruido. Datos en `~/campo/2026-10-23/spare/lab2/`.
 
+### El fijado que nunca quedaba primero (NUC, 2026-10-23, noche)
+
+Con `36b22f6`, `mix` y `redund_spare_first = ENTEL`, con el túnel casi
+quieto (0,0–0,4 Mbit/s) el primero (`upload.spare.first`) saltaba entre
+Movistar y Claro y nunca era Entel, vivo a 43 ms de RTT; Claro llegó a ser
+primero con un RTT de 8,9 s (su cola sobre el mínimo de 60 s, ~3 ms).
+
+**Causa** (reproducida en el laboratorio; el estado de `36b22f6` no
+mostraba vetos ni ahogos, así que en terreno queda por confirmar con los
+campos nuevos):
+
+1. **Un tick ahogado vetaba un minuto.** `cg_spare_keep` vetaba 60 s al
+   primero en el primer tick (100 ms) en que se leía ahogado, y
+   `cg_spare_pinned` respetaba el veto. La cola de un celular sobre su
+   mínimo de 60 s salta cientos de ms por un momento (la promoción de la
+   radio desde reposo, un traspaso) aunque el túnel esté quieto: cada
+   salto sacaba al fijado un minuto, y los automáticos caían por turno (el
+   ir y venir entre Movistar y Claro). El veto además sobrevivía a la
+   pausa y vuelta del enlace: el socket nuevo heredaba el del viejo.
+2. **Medidas viejas contaban como medidas.** `spare_tick` tomaba por
+   medido a todo enlace con socket y mínimo, con su reporte de retardo
+   fresco o no. Uno cuyas respuestas se cortan o llegan segundos tarde
+   guarda la cola y el mínimo de su último reporte (la capacidad solo los
+   mueve con un reporte fresco): se leía despejado y podía ser primero
+   (Claro con 8,9 s), y su mínimo viejo hacía de referencia de las bases.
+   El RTT no contaba.
+
+Descartado, con pruebas (laboratorio, cuatro enlaces de 10, 15, 20 y
+22 ms, `l4` fijado, n = 1 por binario): la pausa en sí (`ctl link l4 off`
+y la interfaz abajo 15 s, arriba y `auto`: el fijado vuelve a primero en
+menos de 1 s con los dos binarios) y el nombre (las ranuras se reusan por
+nombre y `used` no se borra nunca). Los portadores del último lote en
+reposo tampoco lo dejaban afuera (el fijado era primero con el túnel
+quieto), aunque se cambiaron por los del tick.
+
+**Arreglo** (`spare.h`, `spare_tick`):
+
+- Un primero ahogado se veta al momento si los demás no copian toda la
+  subida (ahí su ahogo es suyo), y mientras la copian entera (con el
+  túnel quieto: ser el primero no le suma carga) solo tras 2 s seguidos
+  (`CG_SPARE_CHOKE_MS`, `CG_SPARE_KEEP_WAIT`, sigue de primero
+  entretanto). Esperar también con carga le costaba a `protectslow` 0,60 %
+  de su flujo contra 0,21 % (n = 8). Al fijado se lo veta 15 s
+  (`CG_SPARE_PIN_BAN_MS`), no 60.
+- Cuentan solo los enlaces vivos con un reporte en los últimos 3 s
+  (`cg_spare_fresh`): con la frescura de la salud (500 ms con tráfico) el
+  primero se iba en el primer segundo de un microcorte, antes de que su
+  pérdida lo retuviera (`protectcut`: 98 % primero).
+- El **atraso** por el RTT (`cg_spare_lag`: el suavizado, o el último si
+  es mayor, sobre el menor suavizado) ahoga si pasa del umbral y de 1 s
+  (`CG_SPARE_LAG_US`: es ida y vuelta, con la cola de bajada). Con el
+  suavizado solo, las primeras respuestas atrasadas lo movían 1/8 y el
+  enlace lento volvía 2 s; con las sondas sin respuesta en la cuenta, un
+  microcorte (60 % perdido) vetaba al enlace que la retención cuida
+  (`protectcut`: ping de 1200 B p99 1,8 s contra 0,37). Entre ahogados, el
+  menos atrasado (`cg_spare_late`), no la menor cola.
+- El conjunto es el de los portadores del tick; un socket nuevo borra su
+  veto y reinicia su asignación (`cg_spare_restart`).
+- Estado: `upload.spare.pin` (`first`, `down`, `unmeasured`, `banned`,
+  `choked`, `absent`, `none`) y por enlace `spare.fresh`, `base_ms`,
+  `lag_ms`, `choked`, `banned`.
+
+Laboratorio, `36b22f6` contra el arreglo:
+
+| Prueba | n | `36b22f6` | Arreglo |
+|---|---:|---|---|
+| `l4` fijado, salto de 300 ms 1 s cada 20 s, túnel quieto | 1 | primero 31 de 90 s | **90 de 90** |
+| bajada de `l1` (el de menor base) a 4,5 s, sin fijar | 1 | `l1` primero 23 de 44 s tras el cambio | **0** (1 s de transición) |
+
+Caso nuevo `protectpin` (`bond.sh`: tres enlaces de 20 Mbit/s a 10, 15 y
+22 ms, `l3` fijado con saltos de 300 ms 1 s cada 10 s y en pausa el tercio
+del medio, por el socket de control), y los de siempre, `mix`, 30 s
+(`~/campo/2026-10-23/spare/lab3/`, brazo final `fix4`):
+
+| Caso | Flujo 6 Mbit/s perdido %, mediana (n = 8) | Ping 1200 B p99 ms, media | Primero | TCP Mbit/s (n = 4) |
+|---|---|---:|---|---:|
+| `protect` antes / después | 0,011 / 0,000 | 29 / 34 | `l1` 100 / 100 % | 16,3 / 16,6 |
+| `protectcut` antes / después | 8,20 / 8,06 | 373 / 414 (medianas 386 / 383) | `l1` 100 / 100 % | 12,8 / 12,8 |
+| `protectslow` antes / después | 0,213 / 0,200 | 380 / 398 | `l1` 3 / 3 % | 15,2 / 15,2 |
+| `protectpin` antes / después | 0 / 0 | 34 / 37 | `l3` fuera de la pausa: **30 / 100 %** (TCP: 30 / 95 %) | 17,1 / 17,1 |
+
+En `protect`, `protectcut` y `protectslow` el arreglo no cambia nada
+medible; en `protectpin` el fijado es el primero todo el tiempo fuera de
+la pausa con el flujo (con TCP sin tope, que los demás no copian entero,
+un salto lo veta al momento, 15 s, y queda 95 %). Con `36b22f6` el primer
+salto lo vetaba y no volvía en el resto de la corrida, ni tras la pausa.
+
 ## Cambios
 
 - 2026-10-23: creada.
 - 2026-10-23: el primero ahogado que se quedaba (NUC), `cg_spare_choked`,
   `cg_spare_keep`, `redund_spare_first` y el caso `protectslow`.
+- 2026-10-23: el fijado que nunca quedaba primero (NUC): veto tras 2 s de
+  ahogo con el túnel copiado entero, 15 s al fijado, solo medidas de los
+  últimos 3 s, atraso por el RTT, `upload.spare.pin` y el caso
+  `protectpin`.
