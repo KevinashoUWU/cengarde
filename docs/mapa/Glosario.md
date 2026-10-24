@@ -68,6 +68,7 @@ Términos del proyecto, en español, con el nombre del código entre paréntesis
 - **rset:** los enlaces que el reordenador espera. → [[Reordenador (reorder.h)]]
 - **Rescate / NACK / GONE:** pedir de nuevo un hueco; el aviso de que no vendrá. → [[Rescate (rescue.h)]]
 - **FEC / paridad / grupo:** XOR de un paquete por enlace, que reconstruye uno perdido. → [[FEC (fec.h)]]
+- **Código de borrado / reparación (`rs`, `rlc`):** k paquetes fuente y m reparaciones (Reed-Solomon en bloques, o una ventana deslizante de combinaciones aleatorias) que rehacen hasta m perdidos. → [[Códigos de borrado (rs.h, rlc.h)]]
 - **Liberación (CG_F_FREE):** paquetes que el reordenador no retiene. → [[Liberación TCP (tcpfree.h)]]
 
 ## Infraestructura

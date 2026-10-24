@@ -2,7 +2,8 @@
 
 - **Fecha:** 2026-10-03 (actualizada el mismo día con datos de campo, y el
   2026-10-04)
-- **Estado:** vigente
+- **Estado:** cerrada (2026-10-23): el motor Go salió del árbol (`3492df9`);
+  queda como línea base histórica, en el archivo de `docs/historias/README.md`
 - **Fuentes:** código Go en `cmd/` del commit 3492df9 (ya no está en el
   árbol: `git show 3492df9:cmd/...`); laboratorio `bench/`
   (`sudo ENGINE=go bench/lab.sh build`, luego `suite` y las demos); resumen en

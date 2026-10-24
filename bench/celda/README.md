@@ -80,7 +80,11 @@ PERFIL=entel_b2 bench/celda/celda.sh start                           # o una cel
   de envío: lo perdido por segundo y el retardo de ida) o TCP, pings en el
   túnel y un microcorte (`EP_AT`, `EP_SECS`, `EP_LOSS`: 15 s, 10 s, 60 %).
   Brazos (`proteger.py arms`): `all`, `full` (250), `cut` (60), `fec`,
-  `pcopy`, `parity`, `mix` (`redund_spare`) y los de `ARMS_EXTRA`.
+  `pcopy`, `parity`, `mix`, `rs`, `rlc` (`redund_spare`, historias 020 y
+  021) y los de `ARMS_EXTRA`. Del flujo UDP también los paquetes que
+  llegaron después de uno posterior (rehechos, o copias por el enlace lento):
+  cuántos y cuánto más tarde que la mediana (`late`; `late_out` fuera del
+  corte, o todos con `EP_SECS=0`); el ping, p50/p95/p99.
   `proteger_an.py ARCHIVO.jsonl [REF]` hace las tablas con Mann-Whitney.
 
 ## Cuidado

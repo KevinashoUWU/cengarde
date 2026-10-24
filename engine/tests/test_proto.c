@@ -2,6 +2,7 @@
 #include <string.h>
 
 #include "fec.h"
+#include "repair.h"
 #include "proto.h"
 #include "test.h"
 
@@ -40,7 +41,7 @@ void test_proto(void)
 
 	/* Layout: version/type, the client hint at byte 2, link at byte 3,
 	 * session, seq and ts in network order. */
-	CHECK_EQ(pkt[0], 0x71);
+	CHECK_EQ(pkt[0], 0x81);
 	CHECK_EQ(pkt[2], 0x5a);
 	CHECK_EQ(pkt[3], 5);
 	CHECK(!memcmp(pkt + 4, "\xde\xad\xbe\xef\x01\x02\x03\x04\xa0\xb0\xc0\xd0", 12));
@@ -87,12 +88,18 @@ void test_proto(void)
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
 	pkt[0] = 0x61; /* version 6 (no FEC parity) too */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
-	pkt[0] = 0x7f; /* unknown type */
+	pkt[0] = 0x71; /* version 7 (no repairs) too */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
-	pkt[0] = 0x76; /* a parity (fec.h): its header and a byte at least */
+	pkt[0] = 0x8f; /* unknown type */
+	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
+	pkt[0] = 0x86; /* a parity (fec.h): its header and a byte at least */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), sizeof(pkt) > CG_HDR_LEN + CG_FEC_HDR ? 0 : -1);
 	CHECK_EQ(cg_hdr_parse(&p, pkt, CG_HDR_LEN + CG_FEC_HDR), -1);
-	pkt[0] = 0x71;
+	pkt[0] = 0x87; /* a repair (repair.h): its header and a byte at least */
+	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), sizeof(pkt) > CG_HDR_LEN + CG_REP_HDR ? 0 : -1);
+	CHECK_EQ(cg_hdr_parse(&p, pkt, CG_HDR_LEN + CG_REP_HDR), -1);
+	CHECK(cg_type_ctl(CG_T_REPAIR));
+	pkt[0] = 0x81;
 	pkt[2] = 0xff; /* any hint parses: the server judges it */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), 0);
 	CHECK_EQ(p.hint, 0xff);

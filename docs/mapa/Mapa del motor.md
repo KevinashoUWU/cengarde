@@ -20,7 +20,7 @@ El motor de cengarde (`engine/src`, C) lleva un túnel por varios enlaces a la v
 5. `send_links` manda por cada enlace: las [[Copias a tiempo (eta.h)]], las copias del borde ([[Ranuras de Starlink (slot.h)]]) y lo que sobra a los enlaces que no son el primero ([[Lo que sobra (spare.h)]]: copias parciales o paridad) deciden qué copias salen; el socket va dosificado ([[Dosificación (pace.h)]]), desde la [[Dirección de origen (addrpick.h)]] hacia la dirección de la [[Elección de servidor (srvpick.h)]] ([[Nombres del servidor (resolve.h)]]).
 6. En el VPS, el kernel deja cada datagrama en el carril de su enlace ([[Colas del servidor (steer.h)]], con el [[Presupuesto de recepción (rcvbudget.h)]]).
 7. El servidor halla la clave por la pista ([[Varios clientes (clients.h)]]), acepta caminos nuevos solo con cookie ([[Cookies y HELLO (cookie.h)]]), mira el [[Anti-replay (replay.h)]] antes del MAC y marca después; anota en [[Llegadas (arrival.h)]] y [[Tamaños (wgsize.h)]].
-8. [[FEC (fec.h)]] reconstruye lo que puede; el [[Reordenador (reorder.h)]] pone en orden y pide los huecos al [[Rescate (rescue.h)]] del cliente; sale a WireGuard o a la TUN ([[Rutas del túnel nativo (tunroute.h)]], que comprueba el origen).
+8. [[FEC (fec.h)]] y los [[Códigos de borrado (rs.h, rlc.h)]] reconstruyen lo que pueden; el [[Reordenador (reorder.h)]] pone en orden y pide los huecos al [[Rescate (rescue.h)]] del cliente; sale a WireGuard o a la TUN ([[Rutas del túnel nativo (tunroute.h)]], que comprueba el origen).
 
 ### Bajada (servidor → cliente)
 1. `wg_read` o `tun_read` del servidor ([[Rutas del túnel nativo (tunroute.h)]] elige la sesión); `down_prepare` usa las mismas piezas que el paso 2–4 de la subida, con la salud y la capacidad medidas en este sentido y el tipo de cada camino que mandó el cliente ([[Modelo de enlace (linkmodel.h)]]).
@@ -66,7 +66,7 @@ flowchart LR
 - **Decidir:** [[Modelo de enlace (linkmodel.h)]], [[Gobernador (govern.h)]], [[Reparto (split.h)]], [[G3 enlace sin respuesta (split.h)]], [[G4 guarda de dispersión (split.h)]], [[Copias bajo estrés (split.h)]], [[ETA (eta.h)]], [[Copias a tiempo (eta.h)]], [[Lo que sobra (spare.h)]], [[Cosquilla (tickle.h)]], [[Enlace dominante (dominant.h)]].
 - **Enviar:** [[Dosificación (pace.h)]], [[Liberación TCP (tcpfree.h)]], [[Elección de servidor (srvpick.h)]], [[Dirección de origen (addrpick.h)]], [[Dirección de llegada (pktinfo.h)]], [[Nombres del servidor (resolve.h)]].
 - **Recibir:** [[Camino del router (clientpath.h)]], [[Anti-replay (replay.h)]], [[Reordenador (reorder.h)]], [[Colas del servidor (steer.h)]], [[Presupuesto de recepción (rcvbudget.h)]], [[Hilos por enlace (thrplan.h)]], [[Eco de sondas (epoch.h)]], [[Cookies y HELLO (cookie.h)]], [[Varios clientes (clients.h)]], [[Rutas del túnel nativo (tunroute.h)]].
-- **Recuperar:** [[Rescate (rescue.h)]], [[FEC (fec.h)]], [[Lo que sobra (spare.h)]], [[Reloj atrasado de WireGuard (wgwatch.h)]].
+- **Recuperar:** [[Rescate (rescue.h)]], [[FEC (fec.h)]], [[Códigos de borrado (rs.h, rlc.h)]], [[Lo que sobra (spare.h)]], [[Reloj atrasado de WireGuard (wgwatch.h)]].
 - **Configurar:** [[Configuración (config.c)]], [[Perillas]], [[Tabla de reenvío (fwdtable.h)]].
 - **Observar:** [[Llegadas (arrival.h)]], [[Tamaños (wgsize.h)]], [[Bitácora de decisiones (decision.h)]].
 - **Otros:** [[Utilidades]], [[Glosario]].

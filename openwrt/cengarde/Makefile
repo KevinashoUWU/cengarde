@@ -18,8 +18,8 @@ PKG_NAME:=cengarde
 PKG_VERSION:=0.8.1
 PKG_RELEASE:=1
 
-PKG_LICENSE:=GPL-3.0-or-later
-PKG_LICENSE_FILES:=LICENSE.txt
+PKG_LICENSE:=GPL-3.0-or-later BSD-3-Clause
+PKG_LICENSE_FILES:=LICENSE.txt third_party/leopard/License.md
 
 ENGINE_DIR ?= $(CURDIR)/../../engine
 GIT_REV := $(shell git -C $(ENGINE_DIR) rev-parse HEAD 2>/dev/null)
@@ -50,7 +50,7 @@ endef
 
 define Build/Prepare
 	mkdir -p $(PKG_BUILD_DIR)
-	$(CP) $(ENGINE_DIR)/Makefile $(ENGINE_DIR)/src $(ENGINE_DIR)/../LICENSE.txt $(PKG_BUILD_DIR)/
+	$(CP) $(ENGINE_DIR)/Makefile $(ENGINE_DIR)/src $(ENGINE_DIR)/third_party $(ENGINE_DIR)/../LICENSE.txt $(PKG_BUILD_DIR)/
 endef
 
 # The SDK brings its own hardening flags: drop the engine's defaults.
@@ -58,6 +58,8 @@ define Build/Compile
 	$(MAKE) -C $(PKG_BUILD_DIR) \
 		CC="$(TARGET_CC)" \
 		CFLAGS="$(TARGET_CFLAGS)" \
+		CXX="$(TARGET_CXX)" \
+		CXXFLAGS="$(TARGET_CXXFLAGS)" \
 		CPPFLAGS="$(TARGET_CPPFLAGS)" \
 		LDFLAGS="$(TARGET_LDFLAGS)" \
 		HARDEN= HARDEN_LDFLAGS= \

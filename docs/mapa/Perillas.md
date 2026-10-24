@@ -7,7 +7,7 @@ archivos:
 
 # Perillas
 
-Las 112 claves que `engine/src/config.c` lee (comprobado al generar esta nota: ni falta ni sobra ninguna).
+Las 113 claves que `engine/src/config.c` lee (comprobado al generar esta nota: ni falta ni sobra ninguna).
 Por omisión y rango salen de `cg_config_parse`; el significado, de los comentarios de `config.h` y de [[engine-README]].
 Las perillas marcadas como experimento están apagadas por omisión.
 
@@ -114,7 +114,7 @@ Secciones: «global» es la parte sin sección; `[link NOMBRE]` es del cliente; 
 | [[Mapa/Perillas/rescue_target_ms\|rescue_target_ms]] | 20 (el de `governor_target_ms`; 0 lo sigue) | [[Rescate (rescue.h)]], [[Capacidad (capacity.h)]] | [[audit-pending]] |
 | [[Mapa/Perillas/rescue_by_owd\|rescue_by_owd]] | `no` | [[Rescate (rescue.h)]] | [[015-modelo-de-enlace]], [[audit-pending]] |
 | [[Mapa/Perillas/rescue_full_hyst\|rescue_full_hyst]] | 0 (apagado) | [[Rescate (rescue.h)]], [[Capacidad (capacity.h)]], [[Modelo de enlace (linkmodel.h)]] | [[015-modelo-de-enlace]], [[audit-pending]] |
-| [[Mapa/Perillas/fec\|fec]] | `no` | [[FEC (fec.h)]] | [[013-capacidad-y-dosificacion]] |
+| [[Mapa/Perillas/fec\|fec]] | `no` | [[FEC (fec.h)]], [[Códigos de borrado (rs.h, rlc.h)]] | [[013-capacidad-y-dosificacion]], [[021-fec-v2]] |
 | [[Mapa/Perillas/fec_wait_ms\|fec_wait_ms]] | 10 | [[FEC (fec.h)]], [[Rescate (rescue.h)]] | [[013-capacidad-y-dosificacion]] |
 | [[Mapa/Perillas/fec_share_max\|fec_share_max]] | 0 (sin tope) | [[FEC (fec.h)]], [[Reparto (split.h)]] | [[012-bonding]], [[013-capacidad-y-dosificacion]] |
 
@@ -181,8 +181,9 @@ Secciones: «global» es la parte sin sección; `[link NOMBRE]` es del cliente; 
 
 | Perilla | Por omisión | Pieza | Historia |
 | --- | --- | --- | --- |
-| [[Mapa/Perillas/redund_spare\|redund_spare]] | `no` | [[Lo que sobra (spare.h)]], [[Copias a tiempo (eta.h)]], [[FEC (fec.h)]] | [[020-copias-parciales-y-paridad]] |
+| [[Mapa/Perillas/redund_spare\|redund_spare]] | `no` | [[Lo que sobra (spare.h)]], [[Copias a tiempo (eta.h)]], [[FEC (fec.h)]], [[Códigos de borrado (rs.h, rlc.h)]] | [[020-copias-parciales-y-paridad]], [[021-fec-v2]] |
 | [[Mapa/Perillas/redund_spare_ms\|redund_spare_ms]] | 50 | [[Lo que sobra (spare.h)]] | [[020-copias-parciales-y-paridad]] |
 | [[Mapa/Perillas/redund_spare_first\|redund_spare_first]] | vacío (el de menor retardo sin cola) | [[Lo que sobra (spare.h)]] | [[020-copias-parciales-y-paridad]] |
+| [[Mapa/Perillas/redund_spare_code_ms\|redund_spare_code_ms]] | 30 | [[Códigos de borrado (rs.h, rlc.h)]], [[Lo que sobra (spare.h)]] | [[021-fec-v2]] |
 
 Volver a [[Mapa del motor]].

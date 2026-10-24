@@ -76,6 +76,10 @@
 #include "linksig.h"
 #include "tcpfree.h"
 #include "fec.h"
+#include "gf256.h"
+#include "repair.h"
+#include "rlc.h"
+#include "rs.h"
 #include "rescue.h"
 #include "spare.h"
 #include "pace.h"
@@ -164,6 +168,9 @@ struct link {
 };
 
 #define CG_FEC_Q (CG_BATCH + 1) /* parities of one batch: at most one a packet, and the group before it */
+/* a queued parity or repair's payload, at most */
+#define CG_FECQ_PLEN (CG_FEC_HDR + CG_FEC_PLEN_MAX > CG_REP_HDR + CG_RS_BYTES_MAX ? CG_FEC_HDR + CG_FEC_PLEN_MAX \
+										    : CG_REP_HDR + CG_RS_BYTES_MAX)
 
 struct client {
 	struct cg_config *cfg; /* replaced by a reload */
@@ -287,7 +294,8 @@ struct client {
 	struct {
 		uint16_t mask; /* the links of its group */
 		uint16_t plen;
-		uint8_t p[CG_HDR_LEN + CG_FEC_HDR + CG_FEC_PLEN_MAX];
+		uint8_t type;  /* CG_T_FEC, or CG_T_REPAIR (redund_spare = rs | rlc) */
+		uint8_t p[CG_HDR_LEN + CG_FECQ_PLEN];
 	} fecq[CG_FEC_Q];
 	int nfecq;
 	uint64_t fec_parities, fec_bytes, fec_nolink;
@@ -321,6 +329,19 @@ struct client {
 	unsigned sp_k;  /* the parity's group size */
 	struct cg_fec_grp sp_grp;
 	uint64_t sp_parities, sp_par_skip, sp_par_nolink, sp_copies, sp_copy_skip, sp_fed;
+	/* redund_spare = rs | rlc (story 021): the plan of the last tick
+	 * (spare.h), the first link's average loss (permil x 16) and the time
+	 * of the capacity sample it last took, the packets that went on the
+	 * first link alone (a rate per tick), the open block or the window,
+	 * and the repairs' counts */
+	struct cg_spare_plan sp_plan;
+	uint32_t sp_loss16;
+	uint64_t sp_loss_ms;
+	uint64_t sp_pkts, sp_pps;
+	struct cg_rs_tx sp_rs;
+	struct cg_rlc_tx sp_rlc;
+	struct cg_gf sp_gf;
+	uint64_t sp_rep_sent, sp_rep_bytes, sp_rep_skip, sp_rep_nolink, sp_rep_fail;
 	uint32_t sseq[CG_BATCH];
 	uint8_t prio[CG_BATCH];
 	struct cg_ro_cfg rocf;
@@ -1208,6 +1229,8 @@ static uint16_t edge_solo(const struct client *c, uint16_t carry, uint64_t now_m
 
 static void spare_masks(struct client *c, int m, uint16_t carry, uint64_t now_us, const int8_t *first);
 static void spare_close(struct client *c, uint64_t now_us);
+static int code_service(struct client *c, uint64_t now_us);
+static uint64_t code_due(const struct client *c);
 
 /* Sends the m packets prepared in hdr/oiov: each on the links pick[] says
  * (every carrying link, health.h, or its one link and the links of dup
@@ -1314,12 +1337,17 @@ static void fec_send(struct client *c, uint64_t now_us)
 			c->fec_nolink++;
 			continue;
 		}
-		cg_up_header(&c->txs, c->fecq[q].p, CG_T_FEC, 0, (uint8_t)(best - c->link), (uint32_t)now_us,
+		cg_up_header(&c->txs, c->fecq[q].p, c->fecq[q].type, 0, (uint8_t)(best - c->link), (uint32_t)now_us,
 			     c->fecq[q].p + CG_HDR_LEN, c->fecq[q].plen);
 		if (send(best->fd, c->fecq[q].p, CG_HDR_LEN + c->fecq[q].plen, MSG_DONTWAIT) ==
 		    (ssize_t)(CG_HDR_LEN + c->fecq[q].plen)) {
-			c->fec_parities++;
-			c->fec_bytes += c->fecq[q].plen;
+			if (c->fecq[q].type == CG_T_REPAIR) {
+				c->sp_rep_sent++;
+				c->sp_rep_bytes += c->fecq[q].plen;
+			} else {
+				c->fec_parities++;
+				c->fec_bytes += c->fecq[q].plen;
+			}
 			/* apart from DATA: the server counts a path's DATA (its
 			 * rx in the probes), and a parity counted as sent looked
 			 * lost to the capacity (capacity.h's short and loss) */
@@ -1353,6 +1381,7 @@ static void fec_close(struct client *c, int i, int why, uint64_t now_us)
 	if (c->nfecq == CG_FEC_Q)
 		fec_send(c, now_us);
 	c->fecq[c->nfecq].mask = g->mask;
+	c->fecq[c->nfecq].type = CG_T_FEC;
 	c->fecq[c->nfecq].plen = (uint16_t)cg_fec_grp_close(g, c->fecq[c->nfecq].p + CG_HDR_LEN);
 	c->nfecq++;
 }
@@ -1405,6 +1434,7 @@ static void fec_service(struct client *c)
 		spare_close(c, now_us); /* redund_spare's parity group */
 		any = 1;
 	}
+	any |= code_service(c, now_us); /* rs | rlc: the block's or the window's deadline */
 	if (any)
 		fec_send(c, now_us);
 }
@@ -1416,6 +1446,12 @@ static int fec_timeout(const struct client *c)
 
 	if (c->sp_grp.n && (!due || c->sp_grp.t0_us + (uint64_t)c->cfg->fec_wait_ms * 1000 < due))
 		due = c->sp_grp.t0_us + (uint64_t)c->cfg->fec_wait_ms * 1000;
+	{
+		uint64_t cd = code_due(c);
+
+		if (cd && (!due || cd < due))
+			due = cd;
+	}
 	if (!due)
 		return -1;
 	now_us = cg_now_us();
@@ -1450,6 +1486,7 @@ static void spare_close(struct client *c, uint64_t now_us)
 		return;
 	}
 	c->fecq[c->nfecq].mask = (uint16_t)~(1u << best); /* fec_send: the one link out of the mask */
+	c->fecq[c->nfecq].type = CG_T_FEC;
 	c->fecq[c->nfecq].plen = (uint16_t)plen;
 	c->nfecq++;
 	c->sp_parities++;
@@ -1468,6 +1505,123 @@ static void spare_feed(struct client *c, uint32_t seq, int link, const uint8_t *
 	c->sp_fed++;
 	if (g->n >= c->sp_k)
 		spare_close(c, now_us);
+}
+
+/* redund_spare = rs | rlc (story 021): a repair (header h, its symbol
+ * of slen bytes at sym, or already in place in the queue when sym is
+ * NULL) on the link other than the first (f) with the most room in its
+ * bucket, if that has room for it (a priority take), after the batch's
+ * DATA. The repairs of a block spread over the links by their buckets. */
+static void code_send(struct client *c, struct cg_rep_hdr *h, const uint8_t *sym, unsigned slen, int f, uint64_t now_us)
+{
+	int best = -1;
+	uint8_t *p;
+
+	for (int i = 0; i < CG_MAX_LINKS; i++)
+		if ((c->sp_carry >> i & 1) && i != f && c->link[i].fd >= 0 &&
+		    (best < 0 || c->spare[i].tok > c->spare[best].tok))
+			best = i;
+	if (best < 0) {
+		c->sp_rep_nolink++;
+		return;
+	}
+	if (!cg_spare_take(&c->spare[best], now_us, (CG_HDR_LEN + CG_REP_HDR + slen) * 8, 1, 0)) {
+		c->sp_rep_skip++;
+		return;
+	}
+	p = c->fecq[c->nfecq].p + CG_HDR_LEN;
+	cg_rep_put(p, h);
+	if (sym)
+		memcpy(p + CG_REP_HDR, sym, slen);
+	c->fecq[c->nfecq].mask = (uint16_t)~(1u << best);
+	c->fecq[c->nfecq].type = CG_T_REPAIR;
+	c->fecq[c->nfecq].plen = (uint16_t)(CG_REP_HDR + slen);
+	c->nfecq++;
+}
+
+/* rs: the open block closes, and its repairs go (code_send). */
+static void code_rs_close(struct client *c, int f, uint64_t now_us)
+{
+	struct cg_rep_hdr h;
+	uint8_t *sym[CG_RS_MMAX];
+	unsigned bytes = 0, m;
+
+	if (!c->sp_rs.k)
+		return;
+	m = cg_rs_tx_close(&c->sp_rs, &h, sym, &bytes);
+	if (!m)
+		c->sp_rep_fail++;
+	for (unsigned j = 0; j < m; j++) {
+		if (c->nfecq == CG_FEC_Q)
+			fec_send(c, now_us);
+		h.idx = (uint16_t)j;
+		code_send(c, &h, sym[j], bytes, f, now_us);
+	}
+}
+
+/* rlc: a repair over the window, built in the queue's next slot. */
+static void code_rlc_repair(struct client *c, int f, uint64_t now_us)
+{
+	struct cg_rep_hdr h;
+	unsigned slen;
+
+	if (c->nfecq == CG_FEC_Q)
+		fec_send(c, now_us);
+	slen = cg_rlc_tx_repair(&c->sp_gf, &c->sp_rlc, c->sp_plan.k,
+				&h, c->fecq[c->nfecq].p + CG_HDR_LEN + CG_REP_HDR);
+	if (slen)
+		code_send(c, &h, NULL, slen, f, now_us);
+}
+
+/* DATA seq (len bytes at p) went on the first link f alone: into the block
+ * (closed at the plan's k, or when seq would not fit it) or the window (a
+ * repair every k/m packets, the credit of rlc.h). */
+static void code_feed(struct client *c, uint32_t seq, int f, const uint8_t *p, uint32_t len, uint64_t now_us)
+{
+	uint16_t l = (uint16_t)(len > CG_SYM_PLEN ? CG_SYM_PLEN : len);
+
+	c->sp_fed++;
+	if (c->sp_how == CG_SPARE_RS) {
+		if (!cg_rs_tx_fits(&c->sp_rs, seq))
+			code_rs_close(c, f, now_us);
+		cg_rs_tx_add(&c->sp_rs, seq, p, l, c->sp_plan.m, now_us);
+		if (c->sp_rs.k >= c->sp_plan.k)
+			code_rs_close(c, f, now_us);
+		return;
+	}
+	cg_rlc_tx_add(&c->sp_rlc, seq, p, l, now_us);
+	for (unsigned n = cg_rlc_tx_owed(&c->sp_rlc, c->sp_plan.k ? 256 * c->sp_plan.m / c->sp_plan.k : 0); n; n--)
+		code_rlc_repair(c, f, now_us);
+}
+
+/* When the block (rs) or the oldest packet without a repair (rlc) is due:
+ * redund_spare_code_ms after its first packet; 0: nothing waits. */
+static uint64_t code_due(const struct client *c)
+{
+	uint64_t w = (uint64_t)c->cfg->redund_spare_code_ms * 1000;
+
+	if (c->sp_rs.k)
+		return c->sp_rs.t0_us + w;
+	if (c->sp_rlc.fresh && c->sp_rlc.n)
+		return c->sp_rlc.fresh_us + w;
+	return 0;
+}
+
+/* The deadline: the block closes short, or the window gets a repair;
+ * returns whether a repair was queued. */
+static int code_service(struct client *c, uint64_t now_us)
+{
+	uint64_t due = code_due(c);
+	int f = c->sp_first1 - 1, n = c->nfecq;
+
+	if (!due || now_us < due)
+		return 0;
+	if (c->sp_rs.k)
+		code_rs_close(c, f, now_us);
+	else
+		code_rlc_repair(c, f, now_us);
+	c->sp_rlc.fresh = 0; /* due once, even when no link took it */
+	return c->nfecq != n;
 }
 
 /* redund_spare (spare.h): of the m packets of a batch that go to every
@@ -1508,8 +1662,12 @@ static void spare_masks(struct client *c, int m, uint16_t carry, uint64_t now_us
 				cg_eta_unadd(&c->pace, (unsigned)i, len);
 		}
 		c->cmask[j] = mask;
+		if (!small)
+			c->sp_pkts++;
 		if (c->sp_how == CG_SPARE_PARITY && !small && mask == (uint16_t)(1u << f))
 			spare_feed(c, c->sseq[j], f, c->oiov[j][1].iov_base, len, now_us);
+		else if ((c->sp_how == CG_SPARE_RS || c->sp_how == CG_SPARE_RLC) && !small && mask == (uint16_t)(1u << f))
+			code_feed(c, c->sseq[j], f, c->oiov[j][1].iov_base, len, now_us);
 	}
 }
 
@@ -1614,6 +1772,28 @@ static void spare_tick(struct client *c, uint16_t live, uint64_t now_ms)
 	c->sp_full = room >= c->sp_data_bps;
 	c->sp_how = cg_spare_how((int)c->cfg->redund_spare, c->sp_data_bps, room, loss);
 	c->sp_k = cg_spare_k(c->sp_data_bps, room, CG_FEC_KMAX);
+	c->sp_pps = c->sp_pps ? c->sp_pps - c->sp_pps / 4 + c->sp_pkts * 1000 / dt / 4 : c->sp_pkts * 1000 / dt;
+	c->sp_pkts = 0;
+	if (c->cfg->redund_spare == CG_SPARE_RS || c->cfg->redund_spare == CG_SPARE_RLC) {
+		uint64_t all = 0;
+		int code = c->cfg->redund_spare == CG_SPARE_RS && cg_rs_ready() ? CG_SPARE_RS : CG_SPARE_RLC;
+
+		/* the first link's average loss, a sample at a time */
+		if (f >= 0 && c->cap[f].loss_pm_ms && c->cap[f].loss_pm_ms != c->sp_loss_ms) {
+			c->sp_loss_ms = c->cap[f].loss_pm_ms;
+			c->sp_loss16 = c->sp_loss16 - c->sp_loss16 / 8 + c->cap[f].loss_pm * 2;
+		}
+		for (int i = 0; i < CG_MAX_LINKS; i++)
+			if (c->link[i].fd >= 0 && (live >> i & 1) && i != f)
+				all += c->spare[i].rate_bps;
+		c->sp_plan = cg_spare_plan(code, c->sp_data_bps, all, loss, c->sp_loss16 / 16, c->sp_pps,
+					   c->cfg->redund_spare_code_ms, code == CG_SPARE_RS ? CG_RS_KMAX : CG_RLC_WMAX,
+					   CG_RS_MMAX);
+		c->sp_how = c->sp_plan.how;
+		/* the block of a code no longer in use, or of another first link, closes */
+		if (c->sp_rs.k && (c->sp_how != CG_SPARE_RS || f != f0))
+			code_rs_close(c, f0, cg_now_us());
+	}
 }
 
 static void wg_read(struct client *c)
@@ -2840,11 +3020,11 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 	cg_json_end(j, '}');
 	/* redund_spare (spare.h): what the links after the first carry. */
 	if (c->cfg->redund_spare) {
-		static const char *const how[] = { "off", "copies", "parity", "mix" };
+		static const char *const how[] = { "off", "copies", "parity", "mix", "rs", "rlc" };
 
 		cg_json_obj(j, "spare");
-		cg_json_str(j, "mode", how[c->cfg->redund_spare & 3]);
-		cg_json_str(j, "now", how[c->sp_how & 3]);
+		cg_json_str(j, "mode", how[c->cfg->redund_spare <= CG_SPARE_RLC ? c->cfg->redund_spare : 0]);
+		cg_json_str(j, "now", how[c->sp_how >= 0 && c->sp_how <= CG_SPARE_RLC ? c->sp_how : 0]);
 		cg_json_u64(j, "k", c->sp_k);
 		cg_json_i64(j, "first", c->sp_first1 - 1);
 		cg_json_str(j, "pinned", c->cfg->redund_spare_first);
@@ -2861,6 +3041,19 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 		cg_json_u64(j, "parities", c->sp_parities);
 		cg_json_u64(j, "parities_skipped", c->sp_par_skip);
 		cg_json_u64(j, "parities_no_link", c->sp_par_nolink);
+		/* rs | rlc (story 021): the plan and the repairs */
+		cg_json_obj(j, "code");
+		cg_json_u64(j, "k", c->sp_plan.k);
+		cg_json_u64(j, "m", c->sp_plan.m);
+		cg_json_u64(j, "need", c->sp_plan.need);
+		cg_json_u64(j, "pps", c->sp_pps);
+		cg_json_u64(j, "loss_avg_pm", c->sp_loss16 / 16);
+		cg_json_u64(j, "repairs", c->sp_rep_sent);
+		cg_json_u64(j, "repair_bytes", c->sp_rep_bytes);
+		cg_json_u64(j, "skipped", c->sp_rep_skip);
+		cg_json_u64(j, "no_link", c->sp_rep_nolink);
+		cg_json_u64(j, "failed", c->sp_rep_fail);
+		cg_json_end(j, '}');
 		cg_json_end(j, '}');
 	} else {
 		cg_json_null(j, "spare");
@@ -3595,6 +3788,11 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 		return 1;
 	}
 	memset(c, 0, sizeof(*c));
+	/* the erasure codes (story 021): GF(2^8)'s tables (rlc.h) and Leopard
+	 * (rs.h), before any thread; rs falls back to rlc without Leopard */
+	cg_gf_init(&c->sp_gf);
+	if (cg_rs_init() < 0 && cfg->redund_spare == CG_SPARE_RS)
+		cg_warn("redund_spare = rs: no Leopard here, rlc instead");
 	if (cg_random(&c->flow_seed, sizeof(c->flow_seed)) < 0)
 		c->flow_seed = (uint32_t)cg_now_us();
 	c->cfg = cfg;

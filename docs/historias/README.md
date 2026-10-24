@@ -43,4 +43,8 @@ Tres a seis viñetas con lo que hay que saber aunque no se lea el resto.
 
 ## Archivo
 
-Historias cerradas o sustituidas: ninguna todavía.
+Historias cerradas o sustituidas:
+
+| # | Tema | Léela cuando… |
+| --- | --- | --- |
+| [001](001-diagnostico-engarde-go.md) | Diagnóstico medido del engarde Go (cerrada el 2026-10-23: el motor Go salió del árbol en `3492df9`) | quieras saber qué no repetir o comparar con la línea base |

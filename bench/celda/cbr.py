@@ -13,7 +13,11 @@ delay. The summary: sent (the highest sequence + 1), unique and duplicate
 packets, the lost ones per second of the send time ("lost_s": a list, one
 count per second from the first packet) and the one-way delay's p50, p99
 and maximum in ms ("owd"), and per second ("owd_s": the p99 of each
-second). The sender stops at SECS; the receiver should start first."""
+second), and "late": the packets that arrived after a later one (rebuilt
+from a parity or a repair, or a copy that came first on a slower link;
+story 021): how many, and how much later than the median one-way delay
+they came (p50, p95, max, ms). The sender stops at SECS; the receiver
+should start first."""
 import json
 import socket
 import struct
@@ -62,6 +66,8 @@ def rx(bind, secs, out):
     seen = {}
     dup = 0
     t_first = None
+    top = -1
+    late = []
     while time.monotonic() < end:
         try:
             b = s.recv(4096)
@@ -75,6 +81,9 @@ def rx(bind, secs, out):
             dup += 1
             continue
         seen[seq] = (ts, now)
+        if seq < top:
+            late.append((ts, (now - ts) / 1e6))
+        top = max(top, seq)
         if t_first is None or ts < t_first:
             t_first = ts
     sent = max(seen) + 1 if seen else 0
@@ -103,6 +112,14 @@ def rx(bind, secs, out):
                owd=[round(pct(owd, .5), 1) if owd else None, round(pct(owd, .99), 1) if owd else None,
                     round(owd[-1], 1) if owd else None],
                lost_s=lost_s, owd_s=owd_s)
+    if owd:
+        med = pct(owd, .5)
+        lx = sorted(x - med for _, x in late)
+        res["late"] = [len(lx), round(pct(lx, .5), 1) if lx else None, round(pct(lx, .95), 1) if lx else None,
+                       round(lx[-1], 1) if lx else None]
+        # each late one: its second of the send time and how late (for the
+        # caller to split inside and outside an episode)
+        res["late_t"] = [[int((t - t_first) / 1e9), round(x - med, 1)] for t, x in late]
     with open(out, "w") as f:
         json.dump(res, f)
 

@@ -44,13 +44,14 @@ TUNR = "Rutas del túnel nativo (tunroute.h)"
 DEC = "Bitácora de decisiones (decision.h)"
 CONF = "Configuración (config.c)"
 SPARE = "Lo que sobra (spare.h)"
+CODES = "Códigos de borrado (rs.h, rlc.h)"
 
 H = {
     "002": "002-wireguard-para-cengarde", "005": "005-motor-c-v1", "006": "006-salud-de-enlaces",
     "008": "008-luci-uci-y-emparejamiento", "009": "009-recarga-control-e-ip-pass",
     "010": "010-ipv6-varias-ip-multicliente-nombres", "011": "011-hilos", "012": "012-bonding",
     "013": "013-capacidad-y-dosificacion", "014": "014-tunel-nativo", "015": "015-modelo-de-enlace", "016": "016-celda-virtual",
-    "017": "017-terreno-nostalgica", "019": "019-perdida-con-cola", "020": "020-copias-parciales-y-paridad",
+    "017": "017-terreno-nostalgica", "019": "019-perdida-con-cola", "020": "020-copias-parciales-y-paridad", "021": "021-fec-v2",
     "audit": "audit-pending",
 }
 
@@ -134,7 +135,7 @@ T = {
  "rescue_target_ms": ([G], BOTH, "20 (el de `governor_target_ms`; 0 lo sigue)", "0–1000", [RESC, CAP], ["audit"], "Cola donde empieza a bajar el peso del rescate (cero a 4 veces). Auditoría C12."),
  "rescue_by_owd": ([G], CLI, "`no`", "`yes` o `no`", [RESC], ["015", "audit"], "El rescate del cliente por el enlace de menor retardo de subida, no de RTT (C10). Experimento."),
  "rescue_full_hyst": ([G], BOTH, "0 (apagado)", "0–2", [RESC, CAP, MODEL], ["015", "audit"], "Histéresis del bit `full` del rescate (C11). Experimento, campo del modelo."),
- "fec": ([G], BOTH, "`no`", "`yes` o `no`", [FEC], ["013"], "Paridad XOR de cada grupo de DATA repartido."),
+ "fec": ([G], BOTH, "`no`", "`yes` o `no`", [FEC, CODES], ["013", "021"], "Paridad XOR de cada grupo de DATA repartido. En el servidor, también la memoria con la que usa las paridades y las reparaciones de `redund_spare` (`parity`, `mix`, `rs`, `rlc`)."),
  "fec_wait_ms": ([G], BOTH, "10", "1–200", [FEC, RESC], ["013"], "Plazo máximo de un grupo antes de mandar su paridad."),
  "fec_share_max": ([G], BOTH, "0 (sin tope)", "0–100", [FEC, SPLIT], ["012", "013"], "Con `fec`, ningún enlace lleva más de este % de lo repartido reciente."),
  # --- split ---
@@ -176,7 +177,8 @@ T = {
  "starlink_edge_pre_ms": ([G], BOTH, "100", "0–5000", [SLOT], ["015"], "La ventana empieza este tiempo antes del borde."),
  "starlink_edge_post_ms": ([G], BOTH, "50", "0–5000", [SLOT], ["015"], "La ventana termina este tiempo después del borde."),
  "starlink_edge_copies": ([G], BOTH, "`no`", "`yes` o `no`", [SLOT, COPIAS], ["015"], "En redundancia, copias a los demás enlaces solo dentro de la ventana del borde."),
- "redund_spare": ([G], CLI, "`no`", "`no`, `copies`, `parity` o `mix`", [SPARE, COPIAS, FEC], ["020"], "EXPERIMENTO: en redundancia, lo que llevan los enlaces que no son el primero, en lo que les sobra (su cola bajo `redund_spare_ms`): copias parciales, paridad XOR sobre k paquetes del primero (el servidor necesita `fec = yes`) o la mezcla (copias si cabe todo o en un microcorte, paridad si no)."),
+ "redund_spare": ([G], CLI, "`no`", "`no`, `copies`, `parity`, `mix`, `rs` o `rlc`", [SPARE, COPIAS, FEC, CODES], ["020", "021"], "EXPERIMENTO: en redundancia, lo que llevan los enlaces que no son el primero, en lo que les sobra (su cola bajo `redund_spare_ms`): copias parciales, paridad XOR sobre k paquetes del primero (el servidor necesita `fec = yes`), la mezcla (copias si cabe todo o en un microcorte, paridad si no), o como la mezcla con un código de borrado en vez del XOR: bloques Reed-Solomon (`rs`, Leopard) o una ventana deslizante (`rlc`), con k y m según la pérdida del primero (protocolo 8; el servidor necesita `fec = yes`)."),
+ "redund_spare_code_ms": ([G], CLI, "30", "1–500", [CODES, SPARE], ["021"], "Con `redund_spare = rs` o `rlc`, cuánto abarca un bloque (o la ventana) de paquetes fuente: k son los paquetes de ese tiempo (de 4 a 64), y un bloque que no se llena cierra a ese plazo (la ventana manda una reparación)."),
  "redund_spare_ms": ([G], CLI, "50", "1–2000", [SPARE], ["020"], "Con `redund_spare`, la cola (sobre el mínimo de 60 s) en la que cada enlace que no es el primero sostiene lo que lleva."),
  "redund_spare_first": ([G], CLI, "vacío (el de menor retardo sin cola)", "el nombre de un `[link NAME]` del archivo", [SPARE], ["020"], "Con `redund_spare`, el primer enlace (el que los demás protegen) fijado: ese mientras esté vivo y llevando, medido ahora y sin ahogarse; si se ahoga como primero queda vetado 15 s y manda la elección automática, y vuelve cuando se despeja; mientras los demás copian toda la subida, solo tras 2 s seguidos de ahogo (un salto de retardo más corto no lo saca). El estado dice por qué no es el primero (`upload.spare.pin`)."),
  "exp_link_types": ([G], BOTH, "vacía (todos los tipos)", "nombres de tipo", [MODEL], ["015"], "Limita las perillas globales del modelo a los enlaces de esos tipos."),
@@ -247,7 +249,7 @@ def generate():
         ("Modelo de enlace y Starlink", ["exp_link_types", "split_dominant_pct", "split_dominant_hold",
                                "starlink_slot_clock", "starlink_edge_ms", "starlink_edge_pre_ms",
                                "starlink_edge_post_ms", "starlink_edge_copies"]),
-        ("Lo que sobra (redundancia)", ["redund_spare", "redund_spare_ms", "redund_spare_first"]),
+        ("Lo que sobra (redundancia)", ["redund_spare", "redund_spare_ms", "redund_spare_first", "redund_spare_code_ms"]),
     ]
     seen = [k for _, ks in groups for k in ks]
     unplaced = sorted(set(T) - set(seen))

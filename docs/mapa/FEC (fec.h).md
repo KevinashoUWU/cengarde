@@ -12,7 +12,7 @@ sello: 6774eb5315b72b74
 ## Qué hace
 Una paridad XOR «espacial» sobre un grupo de DATA repartidos, como mucho uno por enlace; la paridad va por un enlace de fuera del grupo. Así el atasco de un enlace deja cada grupo con un paquete de menos, que la paridad reconstruye apenas llega el resto (código (n+1, n)). El emisor manda cada DATA al instante y lo suma al grupo abierto más viejo sin nada de su enlace (hasta 32 grupos abiertos). Un grupo cierra con k paquetes, al pasar 512 secuencias, o en su plazo; un grupo de uno no manda paridad. El receptor reconstruye antes de que el rescate pida.
 
-En **redundancia** no hace nada: cada paquete va por todos los enlaces y ninguno queda solo en uno (medido: 0 paridades, [[020-copias-parciales-y-paridad]]). Ahí la paridad la arma [[Lo que sobra (spare.h)]] (`redund_spare = parity` o `mix`) con estas mismas funciones (`cg_fec_grp_add`, `cg_fec_grp_close`): un grupo de k paquetes del primer enlace, todos de él, y su paridad por otro. El receptor no distingue: rehace igual.
+En **redundancia** no hace nada: cada paquete va por todos los enlaces y ninguno queda solo en uno (medido: 0 paridades, [[020-copias-parciales-y-paridad]]). Ahí la paridad la arma [[Lo que sobra (spare.h)]] (`redund_spare = parity` o `mix`) con estas mismas funciones (`cg_fec_grp_add`, `cg_fec_grp_close`): un grupo de k paquetes del primer enlace, todos de él, y su paridad por otro. El receptor no distingue: rehace igual. Su anillo de DATA lo usan también los [[Códigos de borrado (rs.h, rlc.h)]] del servidor (`redund_spare = rs | rlc`).
 
 ## Lee
 - Lo que el [[Reparto (split.h)]] mandó por un solo enlace, y los enlaces portadores.

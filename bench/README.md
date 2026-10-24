@@ -61,6 +61,7 @@ sudo bench/lab.sh mtlat    # latencia y CPU de legacy, off, on y on con busy_pol
 sudo bench/lab.sh soak     # 1 h por modo (off y on): tráfico variado, pérdidas, enlaces que caen, recargas (lab.d, a mano)
 sudo bench/lab.sh reorder  # el reordenador del receptor y el reparto (paso 1 de la Fase 5): IMIX con desbordes y cabeza de línea; sin ellos en el motor, "skip" (lab.d, a mano)
 bench/bin/robench          # ns por paquete de engine/src/reorder.h solo: en orden, 50/50 con 50 ms de diferencia, IMIX con bypass y desborde (1 s, sin root)
+bench/bin/fecbench         # µs por paquete de los códigos de redund_spare (historia 021): XOR, Reed-Solomon (Leopard) y RLC, codificar y decodificar (sin root)
 sudo CLIENT_EXTRA="link_threads = on" bench/lab.sh ci   # el ci con los hilos por enlace (el CI corre legacy, off y on)
 
 sudo ENGINE=go bench/lab.sh build  # además, el engarde Go (normal y -race)

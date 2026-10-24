@@ -4,7 +4,7 @@ archivos:
   - engine/src/proto.h
   - engine/src/proto.c
   - engine/tests/test_proto.c
-sello: ed8430537adf250e
+sello: 790a7760d4266e9e
 ---
 # Sondas y cola de bonding (proto.h)
 
@@ -32,6 +32,7 @@ Es la fuente de casi todas las medidas. El cliente manda una sonda por enlace; e
 - [[006-salud-de-enlaces]]: el retardo de ida relativo como señal (protocolo v2), sondeo cada 100 ms con tráfico y cada segundo en reposo.
 - [[012-bonding]]: la cola de 4 B de las sondas, sin subir la versión.
 - [[015-modelo-de-enlace]]: el tipo en los bits 20–22, sin versión nueva.
+- [[021-fec-v2]]: protocolo 8, el tipo `CG_T_REPAIR` (7) de los códigos de borrado (`repair.h`, [[Códigos de borrado (rs.h, rlc.h)]]): cuenta en la secuencia de control, como la paridad; `cg_hdr_parse` exige su cabecera y un byte.
 
 ## Choques conocidos
 - Un solo sensor alimenta siete lazos: el OWD llega tarde (el del sentido contrario, más una sonda, más ~300–400 ms de EWMA) y todos actúan sobre la misma máscara (auditoría de relojería, `~/campo/2026-10-17/relojeria/analysis.md`; ver [[audit-pending]]).

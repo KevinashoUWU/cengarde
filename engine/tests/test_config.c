@@ -795,6 +795,26 @@ static void test_config_bonding(void)
 	cg_config_free(&c);
 	CHECK_EQ(cg_config_parse(&c, CLIENT "redund_spare = off\n", err, sizeof(err), warn, sizeof(warn)), 0);
 	CHECK_EQ(c.redund_spare, 0);
+	/* the erasure codes (story 021) and their horizon */
+	CHECK_EQ(c.redund_spare_code_ms, 30);
+	cg_config_free(&c);
+	CHECK_EQ(cg_config_parse(&c, CLIENT "redund_spare = rlc\nredund_spare_code_ms = 60\n", err, sizeof(err), warn,
+				 sizeof(warn)),
+		 0);
+	CHECK_EQ(c.redund_spare, 5);
+	CHECK_EQ(c.redund_spare_code_ms, 60);
+	cg_config_free(&c);
+#ifdef CG_NO_LEOPARD
+	CHECK_EQ(cg_config_parse(&c, CLIENT "\n", err, sizeof(err), warn, sizeof(warn)), 0);
+#endif
+#ifndef CG_NO_LEOPARD
+	CHECK_EQ(cg_config_parse(&c, CLIENT "redund_spare = rs\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(c.redund_spare, 4);
+#else
+	bad(CLIENT "redund_spare = rs\n", "redund_spare", "Leopard");
+#endif
+	bad(CLIENT "redund_spare_code_ms = 0\n", "redund_spare_code_ms", NULL);
+	bad(CLIENT "redund_spare = fountain\n", "redund_spare", "rlc");
 	cg_config_free(&c);
 	bad(CLIENT "redund_spare = all\n", "redund_spare", "all");
 	bad(CLIENT "redund_spare_ms = 0\n", "redund_spare_ms", "0");
