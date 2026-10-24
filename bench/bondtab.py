@@ -270,12 +270,34 @@ def end_reorder(d, side):
     return None
 
 
+def sig_summary(sdir, secs, tx, i, half):
+    """Link i's observations (linksig.h): the fraction of the second half's samples
+    (half) with each queue_owner and loss_kind, and its verdicts from the run's first
+    sample to its last (ep_mine, ep_others, ep_unknown)."""
+    pre = {"cli": "c", "srv": "s"}[tx]
+    out = {}
+    sigs = [ls[i]["sig"] for ls in (end_links(s, tx) for s in half)
+            if ls and i < len(ls) and isinstance(ls[i].get("sig"), dict)]
+    for key, vals in (("queue_owner", ("mine", "others", "unknown")), ("loss_kind", ("random", "congestive", "none"))):
+        for v in vals:
+            out[v] = round(sum(1 for s in sigs if s.get(key) == v) / len(sigs), 3) if sigs else None
+    run = [load(f"{sdir}/{pre}{k}.json") for k in range(1, int(secs) + 1)]
+    run = [ls[i]["sig"] for ls in (end_links(s, tx) for s in run if isinstance(s, dict))
+           if ls and i < len(ls) and isinstance(ls[i].get("sig"), dict)]
+    for k in ("mine", "others", "unknown"):
+        a, b = (num(run[0].get("episodes_" + k)), num(run[-1].get("episodes_" + k))) if len(run) >= 2 else (None, None)
+        out["ep_" + k] = None if a is None or b is None else b - a
+    return out
+
+
 def samples_summary(sdir, secs, direction):
     """Each link over the run's second half, from BOND_SAMPLE's status files (cN.json,
     sN.json, one a second): at the end that sends the bulk (the client up, the server
     down) its share of the bytes, mean capacity, queue and expected-arrival rate, and
-    the fraction of samples it was lossy (capacity.h); at the receiving end its late
-    copies (rx_late) and the reorderer's gaps given up and late arrivals."""
+    the fraction of samples it was lossy (capacity.h) and, when the engine has them,
+    its observations (linksig.h): the fraction of samples with each queue_owner and
+    loss_kind, and its verdicts over the whole run (ep_*); at the receiving end its
+    late copies (rx_late) and the reorderer's gaps given up and late arrivals."""
     tx, rx = ("cli", "srv") if direction == "up" else ("srv", "cli")
     pre = {"cli": "c", "srv": "s"}
     first = int(secs / 2) + 1
@@ -304,6 +326,8 @@ def samples_summary(sdir, secs, direction):
         out.append({"type": l.get("type"), "share": round(sent[i] / total, 3), "mbit": round(sent[i] * 8 / 1e6 / max(1, len(snaps[tx]) - 1), 2),
                     "cap": mean("capacity_mbit"), "eta": mean("eta_mbit"), "queue": mean("queue_ms"),
                     "lossy": mean("lossy", "cap_diag")})
+        if isinstance(l.get("sig"), dict):
+            out[-1]["sig"] = sig_summary(sdir, secs, tx, i, snaps[tx])
     # netem's own drops on each link, the sending side (bond.sh's lN in cli, sN in srv)
     tq = [load(f"{sdir}/t{pre[tx]}{i}.json") for i in (first, int(secs))]
     if all(isinstance(x, list) for x in tq):

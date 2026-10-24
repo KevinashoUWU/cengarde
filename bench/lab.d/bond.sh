@@ -120,6 +120,22 @@
 #               ctl link l3 off" and its interface down, then up and "auto").
 #               What the pin is worth is the share of the run with link 3
 #               first (BOND_SAMPLE=1: upload.spare.first in the samples)
+#   sigrand     not in the default list: story 018's loss signature, random loss
+#               without a queue (linksig.h): link 1 50 Mbit/s, 20 ms, losing 2 %
+#               at random each way; link 2 50 Mbit/s, 30 ms, clean. The flow is
+#               capped at 20 Mbit/s (BOND_RATE, unless given): neither link
+#               fills, link 1's loss_kind should read random and its
+#               queue_owner stay unknown
+#   sigdeep     not in the default list: a deep queue overflowing under our own
+#               load: link 1 10 Mbit/s behind 1 s of queue, link 2 20 Mbit/s
+#               behind 200 ms, both 25 ms; uncapped TCP fills both: mine and
+#               congestive
+#   sigothers   not in the default list: other users of the cell take its share:
+#               link 1 20 Mbit/s, 25 ms, 500 ms of queue; link 2 20 Mbit/s,
+#               30 ms. The flow is capped at 8 Mbit/s (BOND_RATE, unless
+#               given): at half the run link 1 falls to
+#               5 Mbit/s (the same queue in packets, 2 s at that rate) and its
+#               queue rises while its delivery falls: others
 #   bloat       bufferbloat as on the Pi's 5G modems (story 012, 2026-10-13):
 #               3 links of similar delay (20, 20 and 22 ms) and unequal rate
 #               (30, 20 and 8 Mbit/s) behind deep queues (1, 1 and 2 s). A
@@ -550,6 +566,10 @@ bond_events() {
 		sleep "$(awk -v s="$s" 'BEGIN { print s / 3 }')"
 		bond_link 1 10 60 15 0.7
 		;;
+	sigothers)
+		sleep "$(awk -v s="$s" 'BEGIN { print s / 2 }')"
+		bond_link 1 25 5 2000
+		;;
 	spikeloss)
 		for t in $(seq 2 2 "$s"); do
 			sleep 1.5
@@ -580,6 +600,9 @@ bond_shape() {
 	spikeloss) bond_link 1 25 50 100 1 && bond_link 2 30 50 100 1 ;;
 	deepq) bond_link 1 25 20 500 && bond_link 2 25 50 ;;
 	bloat) bond_link 1 20 30 1000 && bond_link 2 20 20 1000 && bond_link 3 22 8 2000 ;;
+	sigrand) bond_link 1 20 50 100 2 && bond_link 2 30 50 ;;
+	sigdeep) bond_link 1 25 10 1000 && bond_link 2 25 20 200 ;;
+	sigothers) bond_link 1 25 20 500 && bond_link 2 30 20 ;;
 	lossy) bond_link 1 20 60 100 1 && bond_link 2 35 30 100 1 && bond_link 3 25 50 100 1 ;;
 	protect | protectcut) bond_link 1 10 60 15 0.7 && bond_link 2 25 5 2000 ;;
 	protectslow) bond_link 1 10 5 2000 8 && bond_link 2 25 20 100 ;;
@@ -721,6 +744,8 @@ bond_case() {
 	NLINKS=$(bond_nlinks "$c")
 	bond_variant "$v" || return 1
 	[ "$BV_SOLO" = 1 ] && NLINKS=1
+	# story 018's cases cap the flow so that the link they watch fills (or not) as they say
+	case $c in sigrand) BOND_RATE=${BOND_RATE:-20M} ;; sigothers) BOND_RATE=${BOND_RATE:-8M} ;; esac
 	CLIENT_EXTRA=$(bond_join "$BV_CLIENT" "$CLIENT_EXTRA")
 	SERVER_EXTRA=$(bond_join "$BV_SERVER" "$SERVER_EXTRA")
 	# protectpin: link 3 pinned first, paused and resumed through the control socket
@@ -774,7 +799,7 @@ bond_plan() {
 	for w in ${BOND_CC:-cubic bbr quic}; do ccs=$((ccs + 1)); done
 	for c in $BOND_CASES; do
 		case $c in
-		equal | het | reorder50 | reorder150 | linkdeath | downstall | shallowq | shallowqd | shallowqdeep | starsat | dominant | starlink15 | starlink15sw | starlink15ramp | ltespike | ltespikerand | deepq | bloat | lossy | spikeloss | protect | protectcut | protectslow | protectpin) ;;
+		equal | het | reorder50 | reorder150 | linkdeath | downstall | shallowq | shallowqd | shallowqdeep | starsat | dominant | starlink15 | starlink15sw | starlink15ramp | ltespike | ltespikerand | deepq | bloat | lossy | spikeloss | protect | protectcut | protectslow | protectpin | sigrand | sigdeep | sigothers) ;;
 		*)
 			echo "bond: unknown case $c"
 			return 1

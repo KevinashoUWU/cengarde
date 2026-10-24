@@ -420,6 +420,23 @@ def test_references(d):
     check(bondtab.references("split", {"split", "redund"}) == [], "references: nothing to compare with")
 
 
+def test_sig(d):
+    """linksig.h's observations in BOND_SAMPLE's per-link summary (bond.sh's sig* cases)."""
+    sd = os.path.join(d, "sigsamples")
+    os.makedirs(sd, exist_ok=True)
+    for i in range(1, 11):
+        sig = {"queue_owner": "others" if i >= 8 else "mine", "loss_kind": "random" if i >= 6 else "none",
+               "episodes_mine": 2, "episodes_others": 1 if i >= 8 else 0, "episodes_unknown": 0}
+        write(os.path.join(sd, f"c{i}.json"), {"links": [{"tx_bytes": 1000 * i, "sig": sig}, {"tx_bytes": 1000 * i}]})
+        write(os.path.join(sd, f"s{i}.json"), {"sessions": [{"links": [{}, {}]}]})
+    out, _ = bondtab.samples_summary(sd, 10, "up")
+    g = out[0]["sig"]
+    check(approx(g["others"], 0.6) and approx(g["mine"], 0.4) and g["unknown"] == 0, "sig: queue_owner over the second half")
+    check(g["random"] == 1 and g["none"] == 0, "sig: loss_kind over the second half")
+    check(g["ep_mine"] == 0 and g["ep_others"] == 1 and g["ep_unknown"] == 0, "sig: verdicts over the whole run")
+    check("sig" not in out[1], "sig: an engine without it, no key")
+
+
 def main():
     with tempfile.TemporaryDirectory() as d:
         test_delta(d)
@@ -429,6 +446,7 @@ def main():
         test_sends()
         test_tables(d)
         test_references(d)
+        test_sig(d)
     print(f"bondtab_test: {checks - fails}/{checks} ok" if not fails else f"bondtab_test: {fails} of {checks} FAILED")
     return 1 if fails else 0
 

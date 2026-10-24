@@ -28,6 +28,7 @@ Estima cuánto lleva cada enlace en el sentido que envía este extremo. Entre do
 - El peso del rescate (`cg_cap_rescue_w`) y su bit `full` → [[Rescate (rescue.h)]].
 - La tasa para `cake` → [[Tope para cake (capacity.h)]].
 - Su `ql_us` → `mute_queue` de [[Salud y silenciado (health.h)]].
+- Sus colas (`queue_us`, `ql_us`) y la entrega, lo enviado y la pérdida de cada muestra → [[Observaciones del enlace (linksig.h)]] (solo el estado).
 - Cortes y restauraciones → [[Bitácora de decisiones (decision.h)]].
 
 ## Perillas

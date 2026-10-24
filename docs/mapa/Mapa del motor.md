@@ -29,7 +29,7 @@ El motor de cengarde (`engine/src`, C) lleva un túnel por varios enlaces a la v
 4. El [[Reordenador (reorder.h)]] del cliente entrega en orden y pide (NACK) al [[Rescate (rescue.h)]] del servidor. Si WireGuard del VPS ignora al router, [[Reloj atrasado de WireGuard (wgwatch.h)]].
 
 ### Los ticks (~10 por segundo, cada extremo)
-[[Sondas y cola de bonding (proto.h)]] traen las medidas → `health_tick`: [[Modelo de enlace (linkmodel.h)]] → [[Salud y silenciado (health.h)]] → `spread_tick` ([[G3 enlace sin respuesta (split.h)]], [[G4 guarda de dispersión (split.h)]]) → `gov_tick` ([[Gobernador (govern.h)]]) → `cap_tick` ([[Capacidad (capacity.h)]], [[Tope para cake (capacity.h)]], [[Enlace dominante (dominant.h)]], [[ETA (eta.h)]], [[Cosquilla (tickle.h)]], [[Dosificación (pace.h)]], [[Lo que sobra (spare.h)]]). Todo cambio va a la [[Bitácora de decisiones (decision.h)]]. Casi todo cuelga de un solo sensor: [[Cola por enlace (cg_gov_base)]].
+[[Sondas y cola de bonding (proto.h)]] traen las medidas → `health_tick`: [[Modelo de enlace (linkmodel.h)]] → [[Salud y silenciado (health.h)]] → `spread_tick` ([[G3 enlace sin respuesta (split.h)]], [[G4 guarda de dispersión (split.h)]]) → `gov_tick` ([[Gobernador (govern.h)]]) → `cap_tick` ([[Capacidad (capacity.h)]], [[Observaciones del enlace (linksig.h)]], [[Tope para cake (capacity.h)]], [[Enlace dominante (dominant.h)]], [[ETA (eta.h)]], [[Cosquilla (tickle.h)]], [[Dosificación (pace.h)]], [[Lo que sobra (spare.h)]]). Todo cambio va a la [[Bitácora de decisiones (decision.h)]]. Casi todo cuelga de un solo sensor: [[Cola por enlace (cg_gov_base)]].
 
 ```mermaid
 flowchart LR
@@ -62,7 +62,7 @@ flowchart LR
 
 ## Piezas por grupo
 
-- **Medir:** [[Sondas y cola de bonding (proto.h)]], [[Salud y silenciado (health.h)]], [[Cola por enlace (cg_gov_base)]], [[Capacidad (capacity.h)]], [[Tope para cake (capacity.h)]], [[Ranuras de Starlink (slot.h)]], [[Flujos (flow.h)]].
+- **Medir:** [[Sondas y cola de bonding (proto.h)]], [[Salud y silenciado (health.h)]], [[Cola por enlace (cg_gov_base)]], [[Capacidad (capacity.h)]], [[Observaciones del enlace (linksig.h)]], [[Tope para cake (capacity.h)]], [[Ranuras de Starlink (slot.h)]], [[Flujos (flow.h)]].
 - **Decidir:** [[Modelo de enlace (linkmodel.h)]], [[Gobernador (govern.h)]], [[Reparto (split.h)]], [[G3 enlace sin respuesta (split.h)]], [[G4 guarda de dispersión (split.h)]], [[Copias bajo estrés (split.h)]], [[ETA (eta.h)]], [[Copias a tiempo (eta.h)]], [[Lo que sobra (spare.h)]], [[Cosquilla (tickle.h)]], [[Enlace dominante (dominant.h)]].
 - **Enviar:** [[Dosificación (pace.h)]], [[Liberación TCP (tcpfree.h)]], [[Elección de servidor (srvpick.h)]], [[Dirección de origen (addrpick.h)]], [[Dirección de llegada (pktinfo.h)]], [[Nombres del servidor (resolve.h)]].
 - **Recibir:** [[Camino del router (clientpath.h)]], [[Anti-replay (replay.h)]], [[Reordenador (reorder.h)]], [[Colas del servidor (steer.h)]], [[Presupuesto de recepción (rcvbudget.h)]], [[Hilos por enlace (thrplan.h)]], [[Eco de sondas (epoch.h)]], [[Cookies y HELLO (cookie.h)]], [[Varios clientes (clients.h)]], [[Rutas del túnel nativo (tunroute.h)]].
