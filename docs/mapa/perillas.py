@@ -50,7 +50,7 @@ H = {
     "008": "008-luci-uci-y-emparejamiento", "009": "009-recarga-control-e-ip-pass",
     "010": "010-ipv6-varias-ip-multicliente-nombres", "011": "011-hilos", "012": "012-bonding",
     "013": "013-capacidad-y-dosificacion", "014": "014-tunel-nativo", "015": "015-modelo-de-enlace", "016": "016-celda-virtual",
-    "019": "019-perdida-con-cola", "020": "020-copias-parciales-y-paridad",
+    "017": "017-terreno-nostalgica", "019": "019-perdida-con-cola", "020": "020-copias-parciales-y-paridad",
     "audit": "audit-pending",
 }
 
@@ -167,6 +167,7 @@ T = {
  "eta_keep": ([G], BOTH, "0 (apagado)", "0–3", [ETA, MODEL], ["015", "audit"], "C9: qué guarda el backlog del ETA sobre una cola vieja."),
  "eta_keep_ms": ([G], BOTH, "400", "0–2000", [ETA, MODEL], ["015"], "Con `eta_keep = 2`, cuán vieja es la cola medida."),
  "redund_pace_ms": ([G], BOTH, "0 (apagado)", "0–2000", [COPIAS, MODEL], ["015"], "Una copia va por un enlace solo si llega a menos de esto de la primera."),
+ "pace_peers_ms": ([G], BOTH, "-1 (el del preset: 60 ms en `starlink`)", "0–2000 (0: apagado)", [COPIAS, MODEL], ["015", "017"], "La ventana de las copias hacia los demás enlaces de una sesión con Starlink, sobre los 60 ms del preset; el cliente para la subida, el servidor para la bajada."),
  "pacing": ([G], BOTH, "`no`", "`yes` o `no`", [PACE], ["013"], "Dosifica el socket de cada enlace (o cada carril del servidor) al doble de su capacidad."),
  "split_dominant_pct": ([G], BOTH, "0 (el del preset: 250 en `starlink`)", "0–65535 (grande: apagado)", [DOM, MODEL], ["015"], "Umbral del enlace dominante, solo donde el preset lo tiene."),
  "split_dominant_hold": ([G], BOTH, "0 (el del preset: apagado)", "0–2 (1 sí, 2 no)", [DOM, MODEL], ["015"], "Mantener el modo dominante mientras no pierde, y presumirlo en reposo."),
@@ -177,6 +178,7 @@ T = {
  "starlink_edge_copies": ([G], BOTH, "`no`", "`yes` o `no`", [SLOT, COPIAS], ["015"], "En redundancia, copias a los demás enlaces solo dentro de la ventana del borde."),
  "redund_spare": ([G], CLI, "`no`", "`no`, `copies`, `parity` o `mix`", [SPARE, COPIAS, FEC], ["020"], "EXPERIMENTO: en redundancia, lo que llevan los enlaces que no son el primero, en lo que les sobra (su cola bajo `redund_spare_ms`): copias parciales, paridad XOR sobre k paquetes del primero (el servidor necesita `fec = yes`) o la mezcla (copias si cabe todo o en un microcorte, paridad si no)."),
  "redund_spare_ms": ([G], CLI, "50", "1–2000", [SPARE], ["020"], "Con `redund_spare`, la cola (sobre el mínimo de 60 s) en la que cada enlace que no es el primero sostiene lo que lleva."),
+ "redund_spare_first": ([G], CLI, "vacío (el de menor retardo sin cola)", "el nombre de un `[link NAME]` del archivo", [SPARE], ["020"], "Con `redund_spare`, el primer enlace (el que los demás protegen) fijado: ese mientras esté vivo y llevando, medido ahora y sin ahogarse; si se ahoga como primero queda vetado 15 s y manda la elección automática, y vuelve cuando se despeja; mientras los demás copian toda la subida, solo tras 2 s seguidos de ahogo (un salto de retardo más corto no lo saca). El estado dice por qué no es el primero (`upload.spare.pin`)."),
  "exp_link_types": ([G], BOTH, "vacía (todos los tipos)", "nombres de tipo", [MODEL], ["015"], "Limita las perillas globales del modelo a los enlaces de esos tipos."),
 }
 
@@ -241,11 +243,11 @@ def generate():
                                     "capacity_sat_ms", "capacity_loss_pct", "capacity_seq_lag", "capacity_expire_ms",
                                     "capacity_loss_queue_ms", "capacity_stand", "cap_g4_episode"]),
         ("ETA, cosquilla, copias, dosificación", ["split_eta", "split_tickle_ms", "split_stale_max", "eta_buffer",
-                               "split_qpred_ms", "split_qpred_mode", "eta_keep", "eta_keep_ms", "redund_pace_ms", "pacing"]),
+                               "split_qpred_ms", "split_qpred_mode", "eta_keep", "eta_keep_ms", "redund_pace_ms", "pace_peers_ms", "pacing"]),
         ("Modelo de enlace y Starlink", ["exp_link_types", "split_dominant_pct", "split_dominant_hold",
                                "starlink_slot_clock", "starlink_edge_ms", "starlink_edge_pre_ms",
                                "starlink_edge_post_ms", "starlink_edge_copies"]),
-        ("Lo que sobra (redundancia)", ["redund_spare", "redund_spare_ms"]),
+        ("Lo que sobra (redundancia)", ["redund_spare", "redund_spare_ms", "redund_spare_first"]),
     ]
     seen = [k for _, ks in groups for k in ks]
     unplaced = sorted(set(T) - set(seen))
