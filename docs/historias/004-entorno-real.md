@@ -346,3 +346,14 @@
 - 2026-10-15: la pausa del adaptador USB de la LAN se perdía al reiniciar la Pi; queda fija con un script de hotplug.
 - 2026-10-16: el adaptador USB 3.0 nuevo (RTL8153) no recibe en el USB 3 de la Pi 4 (VL805): `Rx status -75`; anda en el PC (Linux y Windows) y en el USB 2.0 de la Pi; puerto azul de arriba apagado; bootloader actualizado.
 - 2026-10-17: la causa del `-75` es una incompatibilidad eléctrica de la pareja VL805 + RTL8153 (errores de enlace solo entre ellos; el VL805 los convierte en babble en la frontera lleno→corto); ni ráfagas, ni LPM, ni buffers. El `r8152` no se recupera de un babble; remedio: hub con alimentación u otro adaptador.
+- 2026-10-23: en Villa El Escorial (Festival de la Canción, transmisión en
+  vivo por el NUC en redundancia), subida directa de cada módem (iperf3, 4
+  flujos, 12 s, el enlace pausado en cengarde mientras se mide). **Movistar
+  en B28** (9360, PCI 91, −91/−10, SINR 3–4) sube 23,6–28,7 Mbit/s con 187 ms
+  de ping cargado, contra su ancla automática en B2 de 10 MHz (−98/−19, con
+  n78 agregado): 10,0–10,6 Mbit/s y 292–350 ms; quedó bloqueado en B28 y
+  pasó a entregar primero el 67 % de la subida. Claro probado en B28 (PCI
+  465, −100/−16: 4,5–5,4) y en B4 (−113/−20: 4,4–7,5); vuelve a **B5**
+  (−98/−11: 3,7–7,4, 64–89 ms). Entel, al pie del monoposte (PCI 152,
+  −65 de RSRP), ancla en B7 con SINR de 1 dB y sus B2 en 9 y 15: dos
+  sectores del mismo eNB (151 y 152) se pisan en B7.
