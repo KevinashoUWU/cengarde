@@ -91,7 +91,9 @@ estaban congelados; los cambios se hicieron en ventanas autorizadas.
 
 - La perilla en el servidor para la bajada, y su despliegue en el VPS.
 - Copias parciales o paridad por el enlace ahogado (WOM sobre su codo).
-- El rescate: por qué el reordenador no retiene los huecos.
+- ~~El rescate: por qué el reordenador no retiene los huecos.~~ Hecho en la
+  historia 023: la pista `CG_F_PREV` se escribía antes de quitar copias y en
+  redundancia nada se retenía; falta probarlo aquí.
 - IPv6 por Starlink: el NUC tiene v6 nativo; el VPS no. Comparar un día v4 y v6
   con el registrador de pings antes de usarlo.
 - `lost_all` con la hora del hueco; `rx_missed` contra lo que el emisor mandó.
@@ -99,3 +101,7 @@ estaban congelados; los cambios se hicieron en ventanas autorizadas.
 ## Cambios
 
 - 2026-10-23: creada.
+- 2026-10-24: el rescate casi mudo, explicado y arreglado (historia 023: la
+  pista antes de las copias, nada retenido en redundancia, lo pedido sin
+  espera al tope); en el laboratorio, `protect` con copias de 250 ms pasa de
+  0,275 a 0,005 % perdido y el TCP de 7,6 a 14,4 Mbit/s.

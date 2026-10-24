@@ -45,6 +45,7 @@ DEC = "Bitácora de decisiones (decision.h)"
 CONF = "Configuración (config.c)"
 SPARE = "Lo que sobra (spare.h)"
 CODES = "Códigos de borrado (rs.h, rlc.h)"
+HARQ = "Reparación coherente (harq.h)"
 
 H = {
     "002": "002-wireguard-para-cengarde", "005": "005-motor-c-v1", "006": "006-salud-de-enlaces",
@@ -52,6 +53,7 @@ H = {
     "010": "010-ipv6-varias-ip-multicliente-nombres", "011": "011-hilos", "012": "012-bonding",
     "013": "013-capacidad-y-dosificacion", "014": "014-tunel-nativo", "015": "015-modelo-de-enlace", "016": "016-celda-virtual",
     "017": "017-terreno-nostalgica", "019": "019-perdida-con-cola", "020": "020-copias-parciales-y-paridad", "021": "021-fec-v2",
+    "023": "023-reparacion-coherente",
     "audit": "audit-pending",
 }
 
@@ -130,8 +132,12 @@ T = {
  # --- rescue / fec ---
  "rescue_kb": ([G], BOTH, "0 (apagado)", "0–262144", [RESC], ["013"], "Anillo de lo enviado hace poco, para los NACK (servidor: bajada; cliente: subida)."),
  "rescue_pct": ([G], BOTH, "5", "1–50", [RESC], ["013"], "Presupuesto del rescate, en % de lo enviado."),
- "rescue_wait_ms": ([G], BOTH, "0 (no pide)", "0–1000", [RESC, RO], ["013"], "Cuánto espera un hueco pedido. Con `fec`, al menos 2 × `fec_wait_ms` + 20."),
+ "rescue_wait_ms": ([G], BOTH, "0 (no pide)", "0–1000", [RESC, RO, HARQ], ["013", "023"], "Cuánto espera un hueco pedido. Con `fec`, al menos 2 × `fec_wait_ms` + 20; con un código protegiendo, más `rescue_code_ms`; con TCP adentro, nunca más que su presupuesto (`rescue_tcp_race`)."),
  "rescue_tries": ([G], BOTH, "2", "1–4", [RESC, RO], ["013"], "Cuántas veces se pide un hueco dentro de `rescue_wait_ms`."),
+ "rescue_code_ms": ([G], SRVS, "100", "0–1000", [HARQ, RESC], ["023"], "Con un código protegiendo (sus reparaciones o paridades llegan), cuánto espera un hueco a que lo rehaga antes de pedir; se suma a `rescue_wait_ms`. En la práctica decide el sello: una reparación cuya base pasó el hueco."),
+ "parq": ([G], SRVS, "`yes`", "`yes` o `no`", [HARQ, CODES], ["023"], "Un hueco que el código no rehízo pide su déficit de rango en paridad (`CG_T_PARQ`: combinaciones nuevas de RLC o índices nuevos del bloque RS), no los paquetes. Con `no`, el paquete (NACK)."),
+ "rescue_tcp_race": ([G], BOTH, "`yes`", "`yes` o `no`", [HARQ, TCPF], ["023"], "Con TCP adentro (túnel nativo), ningún hueco se retiene ni se pide más allá del presupuesto de TCP (su RTT más un cuarto, RACK): lo que no llega antes queda para la retransmisión de TCP."),
+ "tcp_retx_one": ([G], BOTH, "`yes`", "`yes` o `no`", [TCPF, HARQ], ["023"], "Con `tcp_aware`, en redundancia la primera retransmisión de un segmento va por un solo enlace (el más rápido), no copiada; una segunda del mismo, copiada."),
  "rescue_target_ms": ([G], BOTH, "20 (el de `governor_target_ms`; 0 lo sigue)", "0–1000", [RESC, CAP], ["audit"], "Cola donde empieza a bajar el peso del rescate (cero a 4 veces). Auditoría C12."),
  "rescue_by_owd": ([G], CLI, "`no`", "`yes` o `no`", [RESC], ["015", "audit"], "El rescate del cliente por el enlace de menor retardo de subida, no de RTT (C10). Experimento."),
  "rescue_full_hyst": ([G], BOTH, "0 (apagado)", "0–2", [RESC, CAP, MODEL], ["015", "audit"], "Histéresis del bit `full` del rescate (C11). Experimento, campo del modelo."),
@@ -238,7 +244,8 @@ def generate():
                          "reorder_by_link", "reorder_adaptive", "reorder_pool_kb", "reorder_idle_ms",
                          "reorder_retx_release_ms", "tcp_aware"]),
         ("Rescate y FEC", ["rescue_kb", "rescue_pct", "rescue_wait_ms", "rescue_tries", "rescue_target_ms",
-                           "rescue_by_owd", "rescue_full_hyst", "fec", "fec_wait_ms", "fec_share_max"]),
+                           "rescue_by_owd", "rescue_full_hyst", "rescue_code_ms", "parq", "rescue_tcp_race",
+                           "tcp_retx_one", "fec", "fec_wait_ms", "fec_share_max"]),
         ("Reparto y guardas", ["split", "split_small", "split_spread_ms", "split_spread_copy", "split_stress_dup",
                                "split_stress_rejoin", "split_stress_single", "split_dwell_ms", "split_dwell_oq_ms"]),
         ("Gobernador y capacidad", ["governor", "governor_target_ms", "governor_window_ms", "capacity_weights",

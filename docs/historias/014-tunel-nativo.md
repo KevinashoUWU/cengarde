@@ -172,3 +172,9 @@ El rendimiento se sostiene, pero se gastan enlace y RTT.
 
 - 2026-10-15: creada. Decisión de salir de WireGuard, la investigación, las medidas en la Pi y la fase 1 (PR #61).
 - 2026-10-16: `tcp_aware` (PR #65) medido en la red de pruebas: las retransmisiones adelantadas hacían que TCP reenviara lo retenido. Arreglo: la retransmisión ocupa su lugar en la secuencia, sin cambiar el protocolo; `lab.sh tcpaware`, y `reorder_retx_release_ms`, que se probó y quedó apagado.
+- 2026-10-24: historia 023. `tcpfree.h` distingue la primera retransmisión
+  de unos bytes de una repetida: en redundancia la primera va por un enlace
+  (`tcp_retx_one`); el extremo por donde sale TCP mide el RTT de sus flujos
+  (SYN a SYN-ACK) para no competirle con el rescate (`rescue_tcp_race`) y
+  cuenta las pérdidas más allá del túnel por SACK (`tcp_e2e`). `flow.h` da
+  el hash de la dirección contraria (`cg_flow_of_dir`).

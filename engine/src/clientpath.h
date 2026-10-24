@@ -80,6 +80,7 @@ enum cg_rxv {
 	CG_RXV_AUTH,     /* dropped: its MAC failed (the caller warns, rate-limited) */
 	CG_RXV_NACK,     /* a verified NACK: the caller sends those sequences again (rescue.h) */
 	CG_RXV_FEC,      /* a verified parity: the caller may rebuild DATA from it (fec.h) */
+	CG_RXV_PARQ,     /* a verified PARQ: the caller sends the repairs it asks for (harq.h) */
 };
 
 /* The upload side of the session. */
@@ -143,7 +144,7 @@ static inline enum cg_rxv cg_rx_entry(struct cg_rxs *r, struct cg_rxl *l, unsign
 	}
 	if (cg_hdr_parse(h, b, len) < 0 ||
 	    (h->type != CG_T_DATA && h->type != CG_T_PROBE_REPLY && h->type != CG_T_HELLO && h->type != CG_T_NACK &&
-	     h->type != CG_T_FEC)) {
+	     h->type != CG_T_FEC && h->type != CG_T_PARQ)) {
 		r->malformed++;
 		return CG_RXV_DROP;
 	}
@@ -179,6 +180,8 @@ static inline enum cg_rxv cg_rx_entry(struct cg_rxs *r, struct cg_rxl *l, unsign
 		return CG_RXV_NACK;
 	if (h->type == CG_T_FEC)
 		return CG_RXV_FEC;
+	if (h->type == CG_T_PARQ)
+		return CG_RXV_PARQ;
 	/* A split packet (split.h) comes on its one link: the others do not
 	 * miss it, and are not late for it. */
 	cg_arr_first(&r->arr, r->rx, h->seq, now32, link, h->flags & CG_F_SPLIT ? (uint16_t)(1u << link) : expect);
@@ -200,6 +203,26 @@ static inline uint32_t cg_up_header(struct cg_txs *t, uint8_t out[CG_HDR_LEN], u
 
 	cg_hdr_write(out, &h, t->k_tx, payload, len);
 	return h.seq;
+}
+
+/* The next DATA sequence going up, its header written later (cg_up_seal):
+ * the router decides a packet's copies after its sequence, and what the
+ * next packet says of them is under the MAC (story 023). */
+static inline uint32_t cg_up_next(struct cg_txs *t)
+{
+	return t->seq++;
+}
+
+/* Writes the header of a packet going up with sequence seq (cg_up_next),
+ * MAC included. */
+static inline void cg_up_seal(const struct cg_txs *t, uint8_t out[CG_HDR_LEN], uint8_t type, uint8_t flags,
+			      uint8_t link, uint32_t seq, uint32_t ts, const void *payload, size_t len)
+{
+	struct cg_hdr h = {
+		.type = type, .flags = flags, .hint = t->hint, .link = link, .session = t->session, .seq = seq, .ts = ts
+	};
+
+	cg_hdr_write(out, &h, t->k_tx, payload, len);
 }
 
 #endif

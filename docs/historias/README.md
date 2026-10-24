@@ -48,3 +48,4 @@ Historias cerradas o sustituidas:
 | # | Tema | Léela cuando… |
 | --- | --- | --- |
 | [001](001-diagnostico-engarde-go.md) | Diagnóstico medido del engarde Go (cerrada el 2026-10-23: el motor Go salió del árbol en `3492df9`) | quieras saber qué no repetir o comparar con la línea base |
+| [005](005-motor-c-v1.md) | Motor C v1: protocolo, arquitectura y medidas (cerrada el 2026-10-24: el protocolo va por la v9 y la política de envío la sustituyó la 006; lo pendiente sigue en 011 y 007) | quieras ver la arquitectura y las medidas de la primera versión del motor |

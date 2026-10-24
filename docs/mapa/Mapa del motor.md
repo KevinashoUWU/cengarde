@@ -66,7 +66,7 @@ flowchart LR
 - **Decidir:** [[Modelo de enlace (linkmodel.h)]], [[Gobernador (govern.h)]], [[Reparto (split.h)]], [[G3 enlace sin respuesta (split.h)]], [[G4 guarda de dispersión (split.h)]], [[Copias bajo estrés (split.h)]], [[ETA (eta.h)]], [[Copias a tiempo (eta.h)]], [[Lo que sobra (spare.h)]], [[Cosquilla (tickle.h)]], [[Enlace dominante (dominant.h)]].
 - **Enviar:** [[Dosificación (pace.h)]], [[Liberación TCP (tcpfree.h)]], [[Elección de servidor (srvpick.h)]], [[Dirección de origen (addrpick.h)]], [[Dirección de llegada (pktinfo.h)]], [[Nombres del servidor (resolve.h)]].
 - **Recibir:** [[Camino del router (clientpath.h)]], [[Anti-replay (replay.h)]], [[Reordenador (reorder.h)]], [[Colas del servidor (steer.h)]], [[Presupuesto de recepción (rcvbudget.h)]], [[Hilos por enlace (thrplan.h)]], [[Eco de sondas (epoch.h)]], [[Cookies y HELLO (cookie.h)]], [[Varios clientes (clients.h)]], [[Rutas del túnel nativo (tunroute.h)]].
-- **Recuperar:** [[Rescate (rescue.h)]], [[FEC (fec.h)]], [[Códigos de borrado (rs.h, rlc.h)]], [[Lo que sobra (spare.h)]], [[Reloj atrasado de WireGuard (wgwatch.h)]].
+- **Recuperar:** [[Rescate (rescue.h)]], [[Reparación coherente (harq.h)]], [[FEC (fec.h)]], [[Códigos de borrado (rs.h, rlc.h)]], [[Lo que sobra (spare.h)]], [[Reloj atrasado de WireGuard (wgwatch.h)]].
 - **Configurar:** [[Configuración (config.c)]], [[Perillas]], [[Tabla de reenvío (fwdtable.h)]].
 - **Observar:** [[Llegadas (arrival.h)]], [[Tamaños (wgsize.h)]], [[Bitácora de decisiones (decision.h)]].
 - **Otros:** [[Utilidades]], [[Glosario]].
@@ -77,7 +77,7 @@ Fuera del mapa: [[engine-README]] (perillas con medidas), [[ROADMAP]], [[012-bon
 
 Entre el código, sus comentarios y las historias (2026-10-21):
 - `reorder.h` dice «la ventana, N = 4096, queda bajo la anti-replay (8128)»; el código tiene `CG_RO_SLOTS` 16384 y `CG_REPLAY_BITS` 32768 (PR #46, [[013-capacidad-y-dosificacion]]; [[engine-README]] ya dice 16384). `replay.h` también habla de «8129 a 8255 secuencias».
-- `proto.h` empieza con «protocol, version 5»; `CG_PROTO_VERSION` es 7 (FEC). `steer.h` habla de «cengarde protocol 4» para el socket de basura.
+- `steer.h` habla de «cengarde protocol 4» para el socket de basura.
 - `slot.h`: 477 ranuras en 1,7 h; [[015-modelo-de-enlace]] (TL;DR): 479 ranuras en 2 h.
 - `arrival.h`: «ninguna decisión lo lee»; `reorder_idle_ms` (experimento C2) usa `cg_arr_idle` para el `rset` del reordenador.
 - [[engine-README]]: el peso del rescate y el sondeo de `capacity_weights` se describen con `governor_target_ms`; desde C12 son `rescue_target_ms` y `capacity_sat_ms` (mismo valor por omisión). Dice que `pacing` es del cliente, pero el servidor también dosifica sus carriles (`pace.h`, `pace_lanes`). Para `split_dominant_hold` da «0 apagado, 1 sí»; `config.h` dice «0 el del preset, 1 sí, 2 no».

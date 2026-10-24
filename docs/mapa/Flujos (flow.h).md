@@ -2,14 +2,14 @@
 tags: [mapa, pieza]
 archivos:
   - engine/src/flow.h
-sello: 2baee99e342e2dc1
+sello: b3518362434750fc
 ---
 # Flujos (flow.h)
 
 **Grupo:** Medir — [[Mapa del motor]]
 
 ## Qué hace
-Con `tunnel = native`, da el flujo de un paquete IP: un hash de 32 bits de su 5-tupla (direcciones, protocolo, puertos) y si es TCP. Recorre hasta `CG_FLOW_EXT_MAX` cabeceras de extensión de IPv6; los fragmentos se hashean sin puertos para que compartan flujo. Es el gancho para un reordenamiento por flujo que todavía no existe.
+Con `tunnel = native`, da el flujo de un paquete IP: un hash de 32 bits de su 5-tupla (direcciones, protocolo, puertos) y si es TCP. Recorre hasta `CG_FLOW_EXT_MAX` cabeceras de extensión de IPv6; los fragmentos se hashean sin puertos para que compartan flujo. `cg_flow_of_dir` con `rev` da el hash de la dirección contraria (un ACK encuentra el flujo de sus datos, [[023-reparacion-coherente]]). Es el gancho para un reordenamiento por flujo que todavía no existe.
 
 ## Lee
 - El paquete IP leído de la TUN.

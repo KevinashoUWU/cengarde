@@ -111,6 +111,11 @@
 #               5 Mbit/s behind 2 s of queue and losing 8 % at random (a weak
 #               radio), link 2 at 25 ms and 20 Mbit/s. redund_spare took link 1
 #               first; its loss held it there while it choked
+#   beyond      not in the default list: story 023, protect's links with TCP
+#               losing BOND_BEYOND_LOSS % (1) after it leaves the tunnel (each
+#               end's host drops it at random from the TUN, iptables): losses
+#               beyond the tunnel, which TCP repairs and the tunnel must not
+#               copy N times nor count against a link. Native tunnel always
 #   protectpin  not in the default list: the NUC's pinned Entel (2026-10-23):
 #               3 links of 20 Mbit/s, 10, 15 and 22 ms; the client pins link 3
 #               (redund_spare_first = l3, the case adds it and a control
@@ -182,6 +187,9 @@
 # (TCP flows in parallel, 1; speedtest opens many, and many flows starting
 # at once fill the links' queues as one does not; story 013), BOND_CC
 # ("cubic bbr quic"; quic only when aioquic imports, else a note),
+# BOND_TUNNEL (wireguard, or native: cengarde's TUN, needed by tcp_aware;
+# beyond always runs native, losing BOND_BEYOND_LOSS %; BOND_FAR_MS, native
+# only: the server's host that far beyond the tunnel, a far leg for TCP),
 # BOND_NEED_QUIC (1: no aioquic is a failure, the CI), BOND_QUIC_CC (cubic or
 # reno, what the QUIC sender runs) and BOND_QUIC_MTU (QUIC datagram, 1350: the
 # tunnel is 1380), BOND_DIRS ("up down"), BOND_OUT (a file to append the JSON
@@ -241,6 +249,8 @@ BOND_SAMPLE=${BOND_SAMPLE:-0}
 BOND_DOM_MBIT=${BOND_DOM_MBIT:-400} # dominant: Starlink's download, Mbit/s (its slots draw 3/4, 1 and 5/4 of it)
 WG_GO=${WG_GO:-}
 BOND_NEED_NETEM=${BOND_NEED_NETEM:-0}
+BOND_TUNNEL=${BOND_TUNNEL:-wireguard} # native: cengarde's own tunnel (TUN, story 014) instead of WireGuard
+BOND_BEYOND_LOSS=${BOND_BEYOND_LOSS:-1} # beyond: % the download loses before the server's tunnel
 BOND_NEED_QUIC=${BOND_NEED_QUIC:-0}
 
 # bond_wg NETNS IF LISTEN ADDR KEYFILE PEERPUB PEERADDR [ENDPOINT]: a
@@ -269,6 +279,30 @@ bond_wg() {
 # cengarde client and the server's learning the cengarde server's address.
 bond_tunnel() {
 	local i
+	if [ "$BOND_TUNNEL" = native ]; then
+		# BOND_FAR_MS: the server's host as far as that beyond the tunnel
+		# (what it sends into the TUN waits: an upload's ACKs, a download)
+		if [ "${BOND_FAR_MS:-0}" -gt 0 ]; then
+			ip netns exec "$NS_SRV" tc qdisc replace dev cg0 root netem delay "${BOND_FAR_MS}ms" limit 100000 || return 1
+		fi
+		# beyond: TCP loses BOND_BEYOND_LOSS % after it leaves the tunnel
+		# (each end's host drops it at random as it comes in from the TUN),
+		# a lossy path beyond the server (or the router)
+		if [ "${BOND_CASE:-}" = beyond ]; then
+			local p ns
+			p=$(awk -v l="$BOND_BEYOND_LOSS" 'BEGIN { printf "%.4f", l / 100 }')
+			for ns in "$NS_CLI" "$NS_SRV"; do
+				ip netns exec "$ns" iptables -w -A INPUT -i cg0 -p tcp -m statistic --mode random \
+					--probability "$p" -j DROP || return 1
+			done
+		fi
+		for i in $(seq 1 50); do
+			ip netns exec "$NS_CLI" ping -q -c 1 -W 1 10.79.0.1 >/dev/null 2>&1 && return 0
+			sleep 0.2
+		done
+		echo "FAIL: no ping through the native tunnel"
+		return 1
+	fi
 	wg genkey >"$RUN/wgc.key" && wg genkey >"$RUN/wgs.key" || return 1
 	chmod 600 "$RUN/wgc.key" "$RUN/wgs.key"
 	bond_wg "$NS_SRV" wgs 59301 10.79.0.1 "$RUN/wgs.key" "$(wg pubkey <"$RUN/wgc.key")" 10.79.0.2 || return 1
@@ -604,7 +638,7 @@ bond_shape() {
 	sigdeep) bond_link 1 25 10 1000 && bond_link 2 25 20 200 ;;
 	sigothers) bond_link 1 25 20 500 && bond_link 2 30 20 ;;
 	lossy) bond_link 1 20 60 100 1 && bond_link 2 35 30 100 1 && bond_link 3 25 50 100 1 ;;
-	protect | protectcut) bond_link 1 10 60 15 0.7 && bond_link 2 25 5 2000 ;;
+	protect | protectcut | beyond) bond_link 1 10 60 15 0.7 && bond_link 2 25 5 2000 ;;
 	protectslow) bond_link 1 10 5 2000 8 && bond_link 2 25 20 100 ;;
 	protectpin) bond_link 1 10 20 && bond_link 2 15 20 && bond_link 3 22 20 ;;
 	*) return 1 ;;
@@ -748,6 +782,13 @@ bond_case() {
 	case $c in sigrand) BOND_RATE=${BOND_RATE:-20M} ;; sigothers) BOND_RATE=${BOND_RATE:-8M} ;; esac
 	CLIENT_EXTRA=$(bond_join "$BV_CLIENT" "$CLIENT_EXTRA")
 	SERVER_EXTRA=$(bond_join "$BV_SERVER" "$SERVER_EXTRA")
+	# beyond needs the native tunnel (its loss is on the server's TUN)
+	[ "$c" = beyond ] && BOND_TUNNEL=native
+	BOND_CASE=$c
+	if [ "$BOND_TUNNEL" = native ]; then
+		CLIENT_EXTRA=$(bond_join "tunnel = native;tun_addr = 10.79.0.2/16" "$CLIENT_EXTRA")
+		SERVER_EXTRA=$(bond_join "tunnel = native;tun_addr = 10.79.0.1/16" "$SERVER_EXTRA")
+	fi
 	# protectpin: link 3 pinned first, paused and resumed through the control socket
 	[ "$c" = protectpin ] && CLIENT_EXTRA=$(bond_join "$CLIENT_EXTRA" "redund_spare_first = l3;control_socket = $RUN/client.sock")
 	setup || return 1
@@ -799,7 +840,7 @@ bond_plan() {
 	for w in ${BOND_CC:-cubic bbr quic}; do ccs=$((ccs + 1)); done
 	for c in $BOND_CASES; do
 		case $c in
-		equal | het | reorder50 | reorder150 | linkdeath | downstall | shallowq | shallowqd | shallowqdeep | starsat | dominant | starlink15 | starlink15sw | starlink15ramp | ltespike | ltespikerand | deepq | bloat | lossy | spikeloss | protect | protectcut | protectslow | protectpin | sigrand | sigdeep | sigothers) ;;
+		equal | het | reorder50 | reorder150 | linkdeath | downstall | shallowq | shallowqd | shallowqdeep | starsat | dominant | starlink15 | starlink15sw | starlink15ramp | ltespike | ltespikerand | deepq | bloat | lossy | spikeloss | protect | protectcut | protectslow | protectpin | beyond | sigrand | sigdeep | sigothers) ;;
 		*)
 			echo "bond: unknown case $c"
 			return 1

@@ -392,4 +392,131 @@ static inline unsigned cg_rlc_rx_data(const struct cg_gf *g, struct cg_rlc_rx *r
 	return cg_rlc_rx_solve(g, r, ring, out, nout);
 }
 
+
+/* ---- the parity asked for again (harq.h, story 023) ---- */
+
+/* A combination over members given by the caller (the sender's rescue
+ * ring, not its window): seed, and for each bit d of map (from base) the
+ * payload p[i] of len[i] bytes, i counting the bits in order; its symbol
+ * into out (CG_SYM_MAX bytes), its header in *h; the symbol's length. */
+static inline unsigned cg_rlc_combine(const struct cg_gf *g, uint32_t base, uint64_t map, uint16_t seed,
+				      const uint8_t *const *p, const uint16_t *len, struct cg_rep_hdr *h, uint8_t *out)
+{
+	unsigned slen = 0, i = 0;
+
+	for (uint64_t m = map; m; m &= m - 1, i++)
+		if ((unsigned)len[i] + 2 > slen)
+			slen = len[i] + 2u;
+	memset(out, 0, slen);
+	i = 0;
+	for (uint64_t m = map; m; m &= m - 1, i++)
+		cg_gf_madd_sym(g, out, p[i], len[i], cg_rlc_coef(seed, (unsigned)__builtin_ctzll(m)));
+	h->base = base;
+	h->map = map;
+	h->kind = CG_REP_RLC;
+	h->m = 0;
+	h->idx = seed;
+	return slen;
+}
+
+/* The rank deficit of the equations that miss seq, and of those that share
+ * unknowns with them: their unknowns in *base and *map (within CG_REP_SPAN
+ * of *base), and how many more independent equations would settle all of
+ * them. An equation whose unknowns do not fit that span is left out (the
+ * deficit is then larger: more is asked than needed, never less). 0 when
+ * no equation misses seq. */
+static inline unsigned cg_rlc_rx_need(const struct cg_gf *g, const struct cg_rlc_rx *r, uint32_t seq, uint32_t *base,
+				      uint64_t *map)
+{
+	uint8_t a[CG_RLC_EQ][CG_REP_SPAN];
+	uint8_t in[CG_RLC_EQ] = { 0 };
+	uint32_t lo = seq;
+	uint64_t u = 1; /* unknowns, bit i: lo + i */
+	unsigned n = 0, rank = 0, grew = 1;
+	int any = 0;
+
+	if (!r->want[seq & (CG_REP_RING - 1)])
+		return 0;
+	while (grew) {
+		grew = 0;
+		for (unsigned k = 0; k < CG_RLC_EQ; k++) {
+			const struct cg_rlc_eq *e = &r->eq[k];
+			uint32_t elo, nlo;
+			uint64_t em, nu;
+			int touch = 0;
+
+			if (in[k] || !e->used || !e->miss)
+				continue;
+			elo = e->base + (unsigned)__builtin_ctzll(e->miss);
+			em = e->miss >> __builtin_ctzll(e->miss);
+			/* shares an unknown with u? */
+			for (uint64_t m = em; m && !touch; m &= m - 1) {
+				uint32_t d = elo + (unsigned)__builtin_ctzll(m) - lo;
+
+				touch = d < CG_REP_SPAN && (u >> d & 1);
+			}
+			if (!touch)
+				continue;
+			/* u and its unknowns in one span from the lower of the two */
+			nlo = (int32_t)(elo - lo) < 0 ? elo : lo;
+			if (lo - nlo >= CG_REP_SPAN || (lo - nlo && (u >> (CG_REP_SPAN - (lo - nlo))))) {
+				in[k] = 2; /* does not fit: left out */
+				continue;
+			}
+			nu = u << (lo - nlo);
+			if (elo - nlo >= CG_REP_SPAN || (elo - nlo && (em >> (CG_REP_SPAN - (elo - nlo))))) {
+				in[k] = 2;
+				continue;
+			}
+			nu |= em << (elo - nlo);
+			u = nu;
+			lo = nlo;
+			in[k] = 1;
+			any = 1;
+			grew = 1;
+		}
+	}
+	if (!any)
+		return 0;
+	/* the coefficient rows over u's columns, then their rank */
+	for (unsigned k = 0; k < CG_RLC_EQ; k++) {
+		const struct cg_rlc_eq *e = &r->eq[k];
+
+		if (in[k] != 1)
+			continue;
+		memset(a[n], 0, sizeof(a[n]));
+		for (uint64_t m = e->miss; m; m &= m - 1) {
+			unsigned d = (unsigned)__builtin_ctzll(m);
+
+			a[n][e->base + d - lo] = e->c[d];
+		}
+		n++;
+	}
+	for (unsigned c = 0; c < CG_REP_SPAN && rank < n; c++) {
+		unsigned p = rank;
+
+		if (!(u >> c & 1))
+			continue;
+		while (p < n && !a[p][c])
+			p++;
+		if (p == n)
+			continue;
+		if (p != rank) {
+			uint8_t tmp[CG_REP_SPAN];
+
+			memcpy(tmp, a[p], CG_REP_SPAN);
+			memcpy(a[p], a[rank], CG_REP_SPAN);
+			memcpy(a[rank], tmp, CG_REP_SPAN);
+		}
+		cg_gf_scale(g, a[rank], g->inv[a[rank][c]], CG_REP_SPAN);
+		for (unsigned i = rank + 1; i < n; i++)
+			if (a[i][c])
+				cg_gf_madd(g, a[i], a[rank], a[i][c], CG_REP_SPAN);
+		rank++;
+	}
+	*base = lo;
+	*map = u;
+	return (unsigned)__builtin_popcountll(u) - rank;
+}
+
 #endif

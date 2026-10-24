@@ -97,7 +97,7 @@ unsigned cg_rs_tx_close(struct cg_rs_tx *t, struct cg_rep_hdr *h, uint8_t **sym,
 {
 	const uint8_t *orig[CG_RS_KMAX];
 	uint8_t *work[CG_RS_WORK_ENC];
-	unsigned k = t->k, m = t->m < k ? t->m : k, b = cg_rs_bytes(t->slen);
+	unsigned k = t->k, m = t->m < k ? t->m : k, b = cg_rs_bytes(t->slen), mh = cg_rs_mhdr(k, m);
 
 	t->k = 0;
 	if (!k)
@@ -111,12 +111,12 @@ unsigned cg_rs_tx_close(struct cg_rs_tx *t, struct cg_rep_hdr *h, uint8_t **sym,
 	}
 	for (unsigned j = 0; j < CG_RS_WORK_ENC; j++)
 		work[j] = t->work[j];
-	if (cg_rs_encode(k, m, b, orig, work) < 0)
+	if (cg_rs_encode(k, mh, b, orig, work) < 0)
 		return 0;
 	h->base = t->base;
 	h->map = t->map;
 	h->kind = CG_REP_RS;
-	h->m = (uint8_t)m;
+	h->m = (uint8_t)mh;
 	h->idx = 0;
 	for (unsigned j = 0; j < m; j++)
 		sym[j] = t->work[j];

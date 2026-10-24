@@ -8,7 +8,7 @@ archivos:
   - engine/src/rs.c
   - engine/tests/test_rlc.c
   - engine/tests/test_rs.c
-sello: c47427da45013c12
+sello: eb87ad6bf0a93999
 ---
 # Códigos de borrado (rs.h, rlc.h)
 
@@ -38,6 +38,10 @@ Los dos receptores usan el anillo de DATA de la [[FEC (fec.h)]] del servidor (10
 ## Dónde se midió
 - Costo (`bench/fecbench.c`, x86 de este PC, paquetes de 1200 B, [[021-fec-v2]]): codificar 0,17 µs por paquete con Leopard SSSE3 (k 21, m 3), 0,72 µs con su camino portable, 1,5 µs con la RLC (W 21, 3 por 21) y 0,04 µs con el XOR; decodificar con pérdida 0,6, 2,2, 0,9 y 0,36 µs. A 10 Mbit/s, todo bajo 0,3 % de un núcleo; falta medirlo en la Pi y el NUC.
 - [[021-fec-v2]], laboratorio (`protect`, n = 6–8): la pérdida de `mix` con un tercio de los bytes de respaldo (0,17–0,18 contra 0,49), y TCP de 43 (`rlc`) y 36 (`rs`) Mbit/s contra 16 (`mix`); en el microcorte, como `mix`. Celda: sin corte, `rlc` 0,000 % y rehecho en 12 ms (`rs` 0,003 % y 28 ms; `mix` 0,014 % y 13 ms); Entel B2 fuera del corte, 0,005–0,015 % contra 0,071 (`mix`).
+
+## La paridad pedida (PARQ, [[023-reparacion-coherente]])
+- `cg_rlc_rx_need` da el déficit de rango de las ecuaciones que echan de menos un hueco (y las que comparten incógnitas, dentro de 64 secuencias); `cg_rlc_combine` arma una combinación sobre miembros dados (el anillo de rescate del emisor, no su ventana).
+- Un bloque RS declara en sus reparaciones su geometría `cg_rs_mhdr(k, m)` (el doble de m redondeado a potencia de dos, dentro de k y 32), no las m que manda: los índices de arriba quedan para pedirlos; `cg_rs_rx_need` da el déficit de un bloque y `cg_parq_rs_pick` los índices que el receptor no tiene. Lo arma [[Reparación coherente (harq.h)]].
 
 ## Choques conocidos
 - En un microcorte que el código no cubre (la pérdida pide más reparaciones de las que caben), el plan vuelve a copias, como `mix`.

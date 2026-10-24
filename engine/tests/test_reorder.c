@@ -638,6 +638,70 @@ static void sc_rescue(const struct base *b)
 	CHECK_EQ(in(2, 2 * MS, 12 * MS, 0, 0, DATA, BIG), CG_RO_NOW);
 	CHECK_EQ(R.r.st.asked, 0);
 	CHECK_EQ(R.r.st.lost_cap, 1);
+
+	/* Story 023: redundancy, nothing waits, but the packet after the gap
+	 * says it went on link 0 alone (its copies cut) and comes on link 0:
+	 * lost on every link, asked for at once, and what follows waits for
+	 * it, rescue_us; it comes (rescued), rebuilt (repaired), or not. */
+	for (int how = 0; how < 3; how++) {
+		struct cg_ro_pkt k;
+
+		rig(CG_RO_SLOTS, b, 400 * MS, 0, 10 * MS, 0, 0x3);
+		R.cf.rescue_us = 60 * MS;
+		owd(0, 10 * MS);
+		owd(1, 2000 * MS); /* a link seconds behind: its RACK never comes in time */
+		CHECK_EQ(in(0, 0, 10 * MS, 0, 0, DATA, BIG), CG_RO_NOW);
+		CHECK_EQ(in(2, 2 * MS, 12 * MS, 0, cg_prev_flags(0), DATA, BIG), CG_RO_HOLD);
+		CHECK_EQ(R.r.nask, 1);
+		CHECK_EQ(R.r.ask[0], b->sb + 1);
+		R.r.nask = 0;
+		CHECK_EQ(in(3, 3 * MS, 13 * MS, 0, 0, DATA, BIG), CG_RO_HOLD);
+		CHECK(due(13 * MS) > (int32_t)(50 * MS) && due(13 * MS) <= (int32_t)(59 * MS));
+		CHECK_EQ(drain(40 * MS), 0);
+		if (how < 2) {
+			k = pkt(1, 1 * MS, 45 * MS, 0, 0, DATA, BIG);
+			k.rebuilt = (uint8_t)how;
+			CHECK_EQ(in_pkt(k, 45 * MS), CG_RO_NOW);
+			CHECK_EQ(R.nout, 4);
+			CHECK(R.out[1] == 1 && R.out[2] == 2 && R.out[3] == 3);
+			CHECK_EQ(how ? R.r.st.ask_repaired : R.r.st.rescued, 1);
+			CHECK_EQ(how ? R.r.st.rescued : R.r.st.ask_repaired, 0);
+		} else {
+			CHECK_EQ(drain(71 * MS), 0);
+			CHECK_EQ(drain(73 * MS), 2); /* given up at 12 + 60 ms */
+			CHECK_EQ(R.r.st.ask_lost, 1);
+		}
+		CHECK_EQ(R.r.head, b->sb + 4);
+		CHECK(marks_ok(&R.r));
+	}
+	/* the hint on a packet from another link: nothing is known yet */
+	rig(CG_RO_SLOTS, b, 400 * MS, 0, 10 * MS, 0, 0x3);
+	R.cf.rescue_us = 60 * MS;
+	owd(0, 10 * MS);
+	owd(1, 30 * MS);
+	CHECK_EQ(in(0, 0, 10 * MS, 0, 0, DATA, BIG), CG_RO_NOW);
+	CHECK_EQ(in(2, 2 * MS, 32 * MS, 1, cg_prev_flags(0), DATA, BIG), CG_RO_NOW);
+	CHECK_EQ(R.r.st.asked, 0);
+
+	/* Asked at the hold cap (the slowest link seconds behind, split): it
+	 * still waits rescue_us beyond the cap, not nothing (before story 023
+	 * it went at once). */
+	rig(CG_RO_SLOTS, b, 100 * MS, 0, 10 * MS, 0, 0x3);
+	R.cf.rescue_us = 60 * MS;
+	owd(0, 10 * MS);
+	owd(1, 3000 * MS);
+	CHECK_EQ(in(0, 0, 10 * MS, 0, SPLIT, DATA, BIG), CG_RO_NOW);
+	CHECK_EQ(in(2, 2 * MS, 12 * MS, 0, SPLIT, DATA, BIG), CG_RO_HOLD);
+	CHECK_EQ(drain(111 * MS), 0);
+	CHECK_EQ(R.r.nask, 0);
+	CHECK_EQ(drain(113 * MS), 0); /* due at 12 + 100: asked */
+	CHECK_EQ(R.r.nask, 1);
+	R.r.nask = 0;
+	CHECK(due(113 * MS) > (int32_t)(55 * MS));
+	CHECK_EQ(drain(160 * MS), 0);
+	CHECK_EQ(in(1, 1 * MS, 165 * MS, 0, 0, DATA, BIG), CG_RO_NOW);
+	CHECK_EQ(R.r.st.rescued, 1);
+	CHECK_EQ(R.r.st.ask_lost, 0);
 }
 
 /* adaptive: a link's margin grows to how late its late packets come, and

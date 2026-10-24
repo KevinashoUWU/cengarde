@@ -6,6 +6,7 @@
 #include "dominant.h"
 #include "linksig.h"
 #include "split.h"
+#include "tcpfree.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -290,6 +291,7 @@ void cg_json_reorder(struct cg_json *j, const char *k, const struct cg_reorder *
 	cg_json_obj(j, "rescue");
 	cg_json_u64(j, "asked", st->asked);
 	cg_json_u64(j, "rescued", st->rescued);
+	cg_json_u64(j, "repaired", st->ask_repaired);
 	cg_json_u64(j, "lost", st->ask_lost);
 	cg_json_u64(j, "refused", st->ask_refused);
 	cg_json_end(j, '}');
@@ -300,6 +302,17 @@ void cg_json_reorder(struct cg_json *j, const char *k, const struct cg_reorder *
 	cg_json_end(j, ']');
 	json_hist(j, "wait", st->wait);
 	json_hist(j, "late_by", st->late_by);
+	cg_json_end(j, '}');
+}
+
+void cg_json_tcpe(struct cg_json *j, const char *k, const struct cg_tcpe *e)
+{
+	cg_json_obj(j, k);
+	cg_json_u64(j, "handshakes", e->legs);
+	cg_json_ms(j, "far_rtt_ms", e->leg_us);
+	cg_json_u64(j, "sack_holes", e->holes);
+	cg_json_u64(j, "beyond", e->beyond);
+	cg_json_u64(j, "tunnel", e->own);
 	cg_json_end(j, '}');
 }
 

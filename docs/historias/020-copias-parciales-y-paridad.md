@@ -435,3 +435,8 @@ salto lo vetaba y no volvía en el resto de la corrida, ni tras la pausa.
   ahogo con el túnel copiado entero, 15 s al fijado, solo medidas de los
   últimos 3 s, atraso por el RTT, `upload.spare.pin` y el caso
   `protectpin`.
+- 2026-10-24: con el rescate encendido, `mix` (la paridad XOR) ya no pide
+  un hueco mientras una paridad pueda rehacerlo (el sello, historia 023); la
+  pista `CG_F_PREV` dice ahora si un paquete quedó solo en el primer enlace
+  después de `spare_masks`. Con TCP visible, los huecos se sueltan para TCP:
+  `mix` igual que antes (18,0 contra 18,1 Mbit/s en `protect`).

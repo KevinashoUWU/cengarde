@@ -208,6 +208,72 @@ static void test_rs_short_late(void)
 	CHECK_EQ(R.bad, 1);
 }
 
+
+/* The parity asked for again (harq.h, story 023): the block's repairs
+ * declare its geometry (m 3 sent of 8); four members lost and one repair,
+ * so a deficit of 2 the receiver asks for. The sender encodes the block
+ * again from its copies, to the same symbols, and sends two indices the
+ * receiver has not: the four come back. */
+static void test_rs_parq(void)
+{
+	struct cg_rep_ring ring = ring_new();
+	struct cg_rep_hdr h = { 0 };
+	uint8_t *sym[CG_RS_MMAX], p[CG_SYM_PLEN], keep[3][CG_RS_BYTES_MAX], idx[CG_RS_MMAX];
+	const uint8_t *orig[CG_RS_KMAX];
+	uint8_t *work[CG_RS_WORK_ENC];
+	uint32_t out[CG_RS_KMAX], base = 0, have = 0;
+	uint64_t map = 0;
+	uint8_t mh = 0;
+	unsigned bytes, m, got = 0, n;
+	static uint8_t O2[20][CG_RS_BYTES_MAX] __attribute__((aligned(64)));
+
+	memset(&R, 0, sizeof(R));
+	for (uint32_t s = 500; s < 520; s++)
+		cg_rs_tx_add(&T, s, p, pkt(s, p), 3, 0);
+	m = cg_rs_tx_close(&T, &h, sym, &bytes);
+	CHECK_EQ(m, 3);
+	CHECK_EQ(h.m, cg_rs_mhdr(20, 3));
+	CHECK_EQ(h.m, 8);
+	for (unsigned j = 0; j < 3; j++)
+		memcpy(keep[j], sym[j], bytes);
+	for (uint32_t s = 500; s < 520; s++)
+		if (s != 502 && s != 509 && s != 510 && s != 517)
+			ring_put(&ring, s);
+	/* repairs 0 and 2 lost; 1 arrives */
+	h.idx = 1;
+	CHECK_EQ(cg_rs_rx_repair(&R, &X, &ring, &h, keep[1], bytes, out, CG_RS_KMAX), 0);
+	CHECK_EQ(cg_rs_rx_need(&R, 509, &base, &map, &mh, &have), 3);
+	h.idx = 0;
+	CHECK_EQ(cg_rs_rx_repair(&R, &X, &ring, &h, keep[0], bytes, out, CG_RS_KMAX), 0);
+	CHECK_EQ(cg_rs_rx_need(&R, 509, &base, &map, &mh, &have), 2);
+	CHECK_EQ(base, 500);
+	CHECK_EQ(map, 0xfffff);
+	CHECK_EQ(mh, 8);
+	CHECK_EQ(have, 0x3);
+	CHECK_EQ(cg_rs_rx_need(&R, 501, &base, &map, &mh, &have), 0);
+	/* the sender, again from its copies */
+	for (unsigned i = 0; i < 20; i++) {
+		uint16_t l = pkt(500 + i, O2[i] + 2);
+
+		O2[i][0] = (uint8_t)(l >> 8);
+		O2[i][1] = (uint8_t)l;
+		memset(O2[i] + 2 + l, 0, bytes - 2u - l);
+		orig[i] = O2[i];
+	}
+	for (unsigned j = 0; j < CG_RS_WORK_ENC; j++)
+		work[j] = T.work[j];
+	CHECK_EQ(cg_rs_encode(20, mh, bytes, orig, work), 0);
+	CHECK(!memcmp(work[0], keep[0], bytes) && !memcmp(work[2], keep[2], bytes)); /* the same symbols */
+	n = cg_parq_rs_pick(have, mh, 2, idx);
+	CHECK_EQ(n, 2);
+	for (unsigned i = 0; i < n; i++) {
+		h.idx = idx[i];
+		got += cg_rs_rx_repair(&R, &X, &ring, &h, work[idx[i]], bytes, out + got, CG_RS_KMAX - got);
+	}
+	CHECK_EQ(got, 4);
+	CHECK(ring_ok(&ring, 502) && ring_ok(&ring, 509) && ring_ok(&ring, 510) && ring_ok(&ring, 517));
+}
+
 void test_rs(void)
 {
 	if (cg_rs_init() < 0) {
@@ -219,4 +285,5 @@ void test_rs(void)
 	test_rs_mds();
 	test_rs_block();
 	test_rs_short_late();
+	test_rs_parq();
 }
