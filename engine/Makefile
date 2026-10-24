@@ -45,7 +45,7 @@ endif
 # paths, but the compiler may use SSSE3 anywhere in them).
 LEOPARD ?= 1
 ifeq ($(origin CXX),default)
-CXX = $(patsubst %clang,%clang++,$(patsubst %gcc,%g++,$(patsubst %cc,%c++,$(CC))))
+CXX = $(if $(findstring clang,$(CC)),$(subst clang,clang++,$(CC)),$(if $(findstring gcc,$(CC)),$(subst gcc,g++,$(CC)),c++))
 endif
 CXXFLAGS ?= -O2 -g
 LEO_DIR = third_party/leopard
