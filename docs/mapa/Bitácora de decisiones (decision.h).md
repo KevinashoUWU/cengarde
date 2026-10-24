@@ -4,7 +4,7 @@ archivos:
   - engine/src/decision.h
   - engine/src/decrec.h
   - engine/tests/test_decision.c
-sello: 7b678bd4f3be604a
+sello: 5d998947fdff916f
 ---
 # Bitácora de decisiones (decision.h)
 
@@ -14,11 +14,11 @@ sello: 7b678bd4f3be604a
 El registro de la «relojería»: las últimas 64 decisiones (`CG_DEC_N`) de un sentido (la subida del cliente, la bajada de cada sesión del servidor), para el estado. Cada guarda o medida que cambia cómo se reparten los paquetes deja una entrada cuando cambia de idea. Solo transiciones, desde los ticks (unos diez por segundo), nunca por paquete. `decrec.h` traduce lo que dicen las funciones puras a entradas.
 
 ## Lee
-- [[Salud y silenciado (health.h)]] (G1: silenciar, volver, forzado).
+- [[Salud y silenciado (health.h)]] (G1: silenciar, volver, forzado; con `mute_queue`, el porqué es el atraso que comparó).
 - [[G3 enlace sin respuesta (split.h)]] (callado / responde).
 - [[G4 guarda de dispersión (split.h)]] (sale por cola, atasco o base; vuelve; estrés; recuperación).
 - [[Copias bajo estrés (split.h)]] (sin presupuesto).
-- [[Capacidad (capacity.h)]] (corte por lleno o por entregas cortas, arranque rápido).
+- [[Capacidad (capacity.h)]] (corte por lleno o por entregas cortas, arranque rápido, caducidad con `capacity_expire_ms`: `cap_expire`).
 - [[Gobernador (govern.h)]] (cruce de la mitad del tope).
 - [[Rescate (rescue.h)]] (presupuesto bajo).
 

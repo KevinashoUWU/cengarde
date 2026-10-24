@@ -743,6 +743,31 @@ static void test_config_bonding(void)
 	CHECK_EQ(cg_config_link_knobs(&c).dominant_hold, 1);
 	cg_config_free(&c);
 	bad(SERVER "starlink_edge_ms = 15000\n", "starlink_edge_ms", "15000");
+	/* the virtual cell's knobs (story 016): off by default */
+	CHECK_EQ(cg_config_parse(&c, CLIENT "\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(c.mute_queue, 0);
+	CHECK_EQ(c.capacity_expire_ms, 0);
+	cg_config_free(&c);
+	CHECK_EQ(cg_config_parse(&c, SERVER "mute_queue = yes\ncapacity_expire_ms = 2000\n", err, sizeof(err), warn,
+				 sizeof(warn)),
+		 0);
+	CHECK_EQ(c.mute_queue, 1);
+	CHECK_EQ(c.capacity_expire_ms, 2000);
+	cg_config_free(&c);
+	bad(CLIENT "capacity_expire_ms = 600001\n", "capacity_expire_ms", "600001");
+	/* the ns-3 traces' knobs (story 019): off by default */
+	CHECK_EQ(cg_config_parse(&c, CLIENT "\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(c.capacity_loss_queue_ms, 0);
+	CHECK_EQ(c.capacity_stand, 0);
+	cg_config_free(&c);
+	CHECK_EQ(cg_config_parse(&c, SERVER "capacity_loss_queue_ms = 10\ncapacity_stand = 2\n", err, sizeof(err), warn,
+				 sizeof(warn)),
+		 0);
+	CHECK_EQ(c.capacity_loss_queue_ms, 10);
+	CHECK_EQ(c.capacity_stand, 2);
+	cg_config_free(&c);
+	bad(CLIENT "capacity_loss_queue_ms = 1001\n", "capacity_loss_queue_ms", "1001");
+	bad(SERVER "capacity_stand = 3\n", "capacity_stand", "3");
 	bad(CLIENT "split_dominant_hold = 3\n", "split_dominant_hold", "3");
 	/* The weight is a link's, not global; a server has no [link] weights (its
 	 * client's probes say them), and says so. */

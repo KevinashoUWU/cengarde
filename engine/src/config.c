@@ -879,6 +879,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	    get_u32(&ini, "", "mute_settle_ms", 100, 600000, &c->mute_settle_ms, err, errlen) ||
 	    get_u32(&ini, "", "mute_trickle", 0, 1000000, &c->mute_trickle, err, errlen) ||
 	    get_u32(&ini, "", "min_active_links", 1, CG_MAX_LINKS, &c->min_active_links, err, errlen) ||
+	    get_bool(&ini, "", "mute_queue", &c->mute_queue, err, errlen) ||
 	    get_u32(&ini, "", "busy_poll_us", 0, 1000000, &c->busy_poll_us, err, errlen) ||
 	    get_u32(&ini, "", "rt_priority", 0, 99, &c->rt_priority, err, errlen))
 		goto out;
@@ -930,6 +931,9 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	    get_u32(&ini, "", "split_dominant_pct", 0, 65535, &c->split_dominant_pct, err, errlen) ||
 	    get_u32(&ini, "", "split_dominant_hold", 0, 2, &c->split_dominant_hold, err, errlen) ||
 	    get_bool(&ini, "", "capacity_seq_lag", &c->capacity_seq_lag, err, errlen) ||
+	    get_u32(&ini, "", "capacity_expire_ms", 0, 600000, &c->capacity_expire_ms, err, errlen) ||
+	    get_u32(&ini, "", "capacity_loss_queue_ms", 0, 1000, &c->capacity_loss_queue_ms, err, errlen) ||
+	    get_u32(&ini, "", "capacity_stand", 0, 2, &c->capacity_stand, err, errlen) ||
 	    get_u32(&ini, "", "starlink_slot_clock", 0, 2, &c->starlink_slot_clock, err, errlen) ||
 	    get_u32(&ini, "", "starlink_edge_ms", 0, CG_SLOT_PERIOD_MS - 1, &c->starlink_edge_ms, err, errlen) ||
 	    get_u32(&ini, "", "starlink_edge_pre_ms", 0, 5000, &c->starlink_edge_pre_ms, err, errlen) ||

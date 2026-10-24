@@ -374,6 +374,19 @@ servidor la bajada):
   duplica cada vez que vuelve y no aguanta (hasta ×8).
 - **Mínimo:** al menos `min_active_links` (2) enlaces vivos llevan siempre
   todo. Si uno se queda mudo, el silenciado más rápido vuelve al instante.
+  Con dos enlaces, entonces, nada se silencia.
+- **`mute_queue` (`no`; `yes` o `no`), experimental, en los dos extremos:**
+  el silenciado compara, en vez de solo lo que un enlace va detrás del más
+  rápido, el mayor entre eso, su cola (su retardo sobre su mínimo de 60 s)
+  menos la del más rápido y, en el cliente, cuánto lleva sin respuesta su
+  sonda más vieja menos el RTT del enlace más rápido. Un enlace atrasado
+  cuyos informes llegan a ráfagas ya no reinicia su espera en cada hueco.
+  En la celda virtual (un LTE cayendo al acantilado del SNR junto a un
+  fijo, con `min_active_links = 1`) se silencia a los 3,3 s en vez de
+  3,8–7,9 s o nunca, pero el TCP de la redundancia no mejora y la vuelta de
+  la señal cuesta 6–9 s sin el LTE por la espera exponencial; en el
+  laboratorio no cambia nada (*medido*, historia 016). El estado dice
+  `upload_late_ms` (cliente) y `download_late_ms` (servidor).
 - `mute_behind_ms = 0` desactiva el silenciado y deja redundancia pura,
   también en una recarga: los enlaces que estaban silenciados vuelven al
   instante (`sudo bench/lab.sh muteoff`).
@@ -760,6 +773,39 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
   historia lo muestra dominante; no ganó en el laboratorio y costó en
   `shallowq`, por eso queda como perilla. El estado dice `edge_samples` y
   `lost_age_ms` en `cap_diag`, y `presumed` y `why` en `dominant`.
+- **`capacity_expire_ms` (0, apagado; 0–600000), experimental, en los dos
+  extremos:** un enlace fuera del envío (silenciado, mudo o fuera del
+  reparto) ese tiempo sin una muestra cargada ve su capacidad a la mitad, y
+  otra vez cada tanto, hasta 1/16 de su mejor; cada mitad cuenta como
+  muestra llena para el arranque rápido, y al volver lo sube el sondeo al
+  doble. Sin ella, la capacidad de un enlace fuera queda congelada en la de
+  antes. En la celda virtual el LTE volvió con 0,3–1,3 Mbit/s en vez de
+  3,6–21, pero eso costó cuando la señal volvió entera (bonding 20,8 frente
+  a 23,0 Mbit/s en los 10 s siguientes) y no ganó cuando volvió débil (los
+  cortes de siempre bajan la vieja en 1,5–2,5 s); en el laboratorio, igual
+  (*medido*, historia 016). El estado cuenta las mitades en `cap_diag`
+  (`expired`) y en las decisiones (`cap_expire`).
+- **`capacity_loss_queue_ms` (0, apagado; 0–1000; sugerido 10) y
+  `capacity_stand` (0, apagado; 0–2), experimentales, en los dos extremos
+  (historia 019):** `capacity_loss_queue_ms` toma como lleno, a cualquier
+  carga, un enlace que en dos muestras seguidas pierde al menos el 1 % de
+  lo enviado, recibe más de lo que entrega y tiene una cola sobre su mínimo
+  de 60 s de al menos ese valor: su capacidad pasa a lo que entrega. Es el
+  búfer corto de un operador delante de un TCP: la cola no pasa de
+  `capacity_sat_ms` y el enlace nunca está «cargado» frente a una capacidad
+  vieja. Con el preset de Starlink (que descarta sin cola y se retiene por
+  eso) solo cuenta cargado. `capacity_stand = 1` frena el arranque rápido
+  mientras la cola sobre el mínimo de 60 s pasa `capacity_sat_ms` (4
+  muestras): una cola que dura más que `governor_window_ms` se vuelve base y
+  el arranque rápido devolvía la capacidad a la mitad de la mejor (choque C5
+  de la auditoría). `capacity_stand = 2` además deja ir el arranque rápido
+  antes de los 10 s si el enlace entrega 9/8 de su capacidad, sin pérdida ni
+  cola, dos muestras. En las trazas de ns-3 (LTE, 10 KB de RLC, emisor AIMD)
+  la capacidad pasó de +275–510 % de error a −2 % en 1,0–1,4 s, sin cortes
+  en pérdida aleatoria sin cola, y la cola permanente de +523 % a +3 %; en
+  la celda calibrada la capacidad se corrige antes, pero ni ahí ni en el
+  laboratorio cambia el TCP, por eso quedan apagadas (*medido*, historia
+  019). El estado cuenta `cut_lossq` y `restore_room` en `cap_diag`.
 - **`exp_link_types` (vacío; nombres de tipo):** las perillas globales de
   arriba (y `eta_buffer` y `capacity_loss_pct`) solo para los enlaces de
   esos tipos, para probar una antes de ponerla en un preset; vacío: todos.

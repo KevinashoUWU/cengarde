@@ -199,6 +199,7 @@ struct cg_config {
 	uint32_t mute_settle_ms;
 	uint32_t mute_trickle;
 	uint32_t min_active_links;
+	int mute_queue;          /* mute by lateness: also the queue and unanswered probes (health.h, story 016); default no */
 
 	/* Reordering what arrives and splitting what is sent (story 012), both
 	 * ends. Each end reorders what it receives with them (reorder.h): the
@@ -248,6 +249,9 @@ struct cg_config {
 	uint32_t redund_pace_ms;      /* a copy goes on a link only if it arrives within this of the first (eta.h cg_eta_copies) */
 	uint32_t split_dominant_pct;  /* dominant.h's threshold over the preset's (starlink: 250), a large value: off */
 	uint32_t split_dominant_hold; /* dominant.h's hold: 1 on, 2 off, 0 the preset's */
+	uint32_t capacity_expire_ms;  /* out of the send set this long: the capacity halves (capacity.h, story 016); 0: off */
+	uint32_t capacity_loss_queue_ms; /* losing >= 1 % with a queue over the minute's minimum this long: full at any load (capacity.h, story 019); 0: off */
+	uint32_t capacity_stand;      /* a standing queue holds fast start back (1), and room lets it go early (2) (capacity.h, story 019); 0: off */
 	int capacity_seq_lag;         /* a sample's loss against what was sent before the newest arrival (capacity.h); default yes */
 	uint32_t starlink_slot_clock; /* Starlink's slot clock (slot.h) on starlink links: 1 on, 2 off, 0 the preset's */
 	uint32_t starlink_edge_ms;    /* the slots' edge in each 15 s of the wall clock (12000: :12, :27, :42, :57) */

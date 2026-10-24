@@ -2154,10 +2154,24 @@ static void cap_tick(struct server *s, struct session *S, uint16_t live, uint64_
 	struct cg_cap_cfg cc = { .window_ms = s->cfg->governor_window_ms, .sat_us = s->cfg->capacity_sat_ms * 1000 };
 	struct cg_slot slot = cg_config_slot(s->cfg);
 	uint64_t wall = cg_wall_ms();
+	uint16_t in = 0xffff;
 
 	cc.seq_lag = (uint8_t)s->cfg->capacity_seq_lag;
 	cc.tx_seq = S->tx_seq;
 	cc.real_off_ms = (int64_t)wall - (int64_t)now_ms;
+	cc.expire_ms = s->cfg->capacity_expire_ms;
+	cc.lossq_us = s->cfg->capacity_loss_queue_ms * 1000;
+	cc.stand = (uint8_t)s->cfg->capacity_stand;
+	if (cc.expire_ms) {
+		/* the paths that carry the download now (capacity_expire_ms):
+		 * live carriers, and when it is split, in the split or taking a
+		 * copy of every packet */
+		struct dpaths d = down_paths(s, S, now_ms);
+
+		in = (uint16_t)(d.carry & d.live);
+		if (d.split)
+			in &= (uint16_t)(d.k.eligible | d.k.dup);
+	}
 
 	for (int p = 0; p < CG_MAX_LINKS; p++) {
 		const struct path *P = &S->path[p];
@@ -2169,11 +2183,13 @@ static void cap_tick(struct server *s, struct session *S, uint16_t live, uint64_
 
 			cc.loss_pct = m->loss_pct;
 			cc.lossy = cg_link_tracks_loss(m);
+			cc.lossq_loaded = (uint8_t)cc.lossy; /* Starlink's preset: its loss without a queue is held, not cut */
 			cc.lossy_probe = !m->lossy_noprobe;
 			cc.rfull_mode = m->rfull_hyst;
 			cc.rx_top = P->peer_view.rx_top;
 			cc.behind_us = S->dh[p].have_behind ? S->dh[p].behind_us : 0;
 			cc.slot = m->slot_clock && wall >= CG_WALL_SET_MS ? &slot : NULL;
+			cc.out = !(in >> p & 1);
 			ev = cg_cap_tick(&S->cap[p], now_ms, P->peer_view_ms, P->peer_view.rx, P->tx_pkts, P->tx_bytes,
 					 &S->dh[p], &cc);
 
@@ -2275,6 +2291,11 @@ static void health_tick(struct server *s, uint64_t now_ms)
 			continue;
 		path_models(s, S);
 		path_masks(S, now_ms, &present, &live);
+		/* mute_queue's input (health.h): each path's queue over its
+		 * minute's minimum (capacity.h, the last tick's); the server has
+		 * no probes of its own to time out */
+		for (int p = 0; p < CG_MAX_LINKS; p++)
+			S->dh[p].queue_us = S->path[p].used ? S->cap[p].ql_us : -1;
 		changed = cg_health_eval(S->dh, CG_MAX_LINKS, live, now_ms, &s->hcfg);
 		cg_decrec_health(&S->dec, S->dh, changed, now_ms);
 		spread_tick(s, S, tag, now_ms);
@@ -2287,7 +2308,7 @@ static void health_tick(struct server *s, uint64_t now_ms)
 				continue;
 			if (h->state == CG_H_MUTED)
 				cg_info("%ssession %08x link %d: download muted, %d ms behind the fastest link", tag, S->id,
-					p, h->behind_us / 1000);
+					p, (h->have_late ? h->late_us : h->behind_us) / 1000);
 			else if (h->unmuted_ms == now_ms)
 				cg_info("%ssession %08x link %d: download unmuted, within %d ms of the fastest link", tag,
 					S->id, p, h->behind_us > 0 ? h->behind_us / 1000 : 0);
@@ -2663,6 +2684,10 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 				cg_json_ms_signed(j, "download_behind_ms", h->behind_us);
 			else
 				cg_json_null(j, "download_behind_ms");
+			if (h->have_late) /* mute_queue: the lateness the guard compared */
+				cg_json_ms_signed(j, "download_late_ms", h->late_us);
+			else
+				cg_json_null(j, "download_late_ms");
 			cg_json_u64(j, "download_mutes", h->mutes);
 			cg_json_u64(j, "download_state_ms", now_ms - h->changed_ms);
 			cg_json_bool(j, "upload_muted", P->peer_muted);

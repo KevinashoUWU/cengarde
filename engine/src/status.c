@@ -385,6 +385,9 @@ void cg_json_capacity(struct cg_json *j, const struct cg_cap_link *l, uint32_t t
 	cg_json_u64(j, "cut_short", l->n_cut_short);
 	cg_json_u64(j, "cut_loss", l->n_cut_loss);
 	cg_json_u64(j, "restore_rest", l->n_restore);
+	cg_json_u64(j, "expired", l->n_expire); /* capacity_expire_ms halvings */
+	cg_json_u64(j, "cut_lossq", l->n_cut_lossq); /* capacity_loss_queue_ms cuts (also in cut_loss) */
+	cg_json_u64(j, "restore_room", l->n_room);   /* capacity_stand 2: fast start before its rest (also in restore_rest) */
 	cg_json_end(j, '}');
 }
 
