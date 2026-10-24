@@ -2380,12 +2380,12 @@ static void down_send(struct server *s, struct session *S, int m, uint64_t now_m
 					      ? 0xffff
 					      : cg_eta_copies(&S->pace, carry, (uint32_t)s->oiov[j][1].iov_len, now_us,
 							      S->pace_w);
-		if (s->cfg->starlink_edge_copies && !(S->peer_reorders && S->resc_idx)) {
-			uint16_t solo = edge_solo(s, S, carry, now_ms);
+		if (s->cfg->starlink_edge_copies) {
+			uint16_t cm = cg_slot_copy_mask(edge_solo(s, S, carry, now_ms), S->peer_reorders && S->resc_idx);
 
-			for (int j = 0; solo && j < m; j++)
+			for (int j = 0; cm != 0xffff && j < m; j++)
 				if (s->pick[j] < 0 && s->oiov[j][1].iov_len >= CG_PACE_SMALL)
-					s->cmask[j] &= solo;
+					s->cmask[j] &= cm;
 		}
 	} else {
 		for (int j = 0; j < m; j++)

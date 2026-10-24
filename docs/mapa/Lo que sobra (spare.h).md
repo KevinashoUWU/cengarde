@@ -3,7 +3,7 @@ tags: [mapa, pieza]
 archivos:
   - engine/src/spare.h
   - engine/tests/test_spare.c
-sello: 9438d66c88cc543b
+sello: fed470a50085224b
 ---
 # Lo que sobra (spare.h)
 
@@ -22,7 +22,7 @@ El **primer enlace** (`cg_spare_first`) es el de menor retardo sin cola (el mín
 - La máscara de copias de [[Copias a tiempo (eta.h)]] (`cmask`, con `redund_pace_ms` si está) y la marca `CG_F_FREE` de [[Liberación TCP (tcpfree.h)]].
 
 ## Decide / escribe
-- La máscara final de cada paquete (`cmask`) → `send_links`.
+- La máscara final de cada paquete (`cmask`) → `send_links`. Parte de la ventana de copias **más el primer enlace siempre** (`cg_spare_mask`): la ventana toma como primero al que llega antes según su propia cuenta, y con dos enlaces parecidos (dos platos, [[022-multistarlink]]) el primero de `spare.h`, con la capacidad aún baja tras arrancar, quedaba fuera de la ventana y la asignación le sacaba la copia al otro: el paquete no salía por ningún enlace (4–7 % de un flujo de 9 Mbit/s perdido en sus primeros segundos). Lo que se agrega al primero se suma a su cola en [[ETA (eta.h)]] (`cg_eta_add`).
 - Con paridad, el grupo (`cg_fec_grp` de [[FEC (fec.h)]]) y su paridad `CG_T_FEC` por el enlace fuera del grupo con más lugar en su balde (`fec_send`); el servidor la usa como cualquier paridad (necesita `fec = yes`) y entrega lo rehecho → [[Reordenador (reorder.h)]].
 - Estado: `upload.spare` (`mode`, `now`, `k`, `first`, `pinned`, `pin` —por qué el fijado es o no el primero: `none`, `first`, `absent`, `down`, `unmeasured`, `banned`, `choked`—, `data_mbit`, `copies`, `copies_skipped`, `fed`, `parities`, `parities_skipped`, `parities_no_link` y, con `rs`/`rlc`, `code`) y por enlace `spare` (`mbit`, `cuts`, `taken`, `skipped`, y la elección del primero en el último tick: `fresh`, `base_ms`, `lag_ms`, `choked`, `banned`).
 
@@ -34,6 +34,7 @@ El **primer enlace** (`cg_spare_first`) es el de menor retardo sin cola (el mín
 - [[Mapa/Perillas/fec|fec]] en el servidor (para usar la paridad) y [[Mapa/Perillas/fec_wait_ms|fec_wait_ms]] (el plazo del grupo).
 
 ## Dónde se midió
+- [[022-multistarlink]]: `mix` y `rlc` con dos y tres platos (y celulares), antes y después de `cg_spare_mask`.
 - [[021-fec-v2]]: `rs` y `rlc` contra `mix`, `parity` y las copias de 250 ms, en el laboratorio y la celda.
 - [[020-copias-parciales-y-paridad]]: celda virtual (WOM y Entel B2 como enlace ahogado, un enlace fijo con pérdida como Starlink) y laboratorio de bonding (`protect`, `protectcut` y `protectslow`, el primero angosto y con pérdida; `protectpin`, el enlace fijado con saltos de retardo y una pausa a mano).
 

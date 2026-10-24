@@ -477,8 +477,21 @@ static void test_spare_plan(void)
 	CHECK(pl.m <= 32);
 }
 
+/* The first link always carries (story 022): the copies' window may leave
+ * it out when another link looks earlier, never the allowance's first. */
+static void test_spare_mask(void)
+{
+	CHECK_EQ(cg_spare_mask(0x2, 0x3, 0), 0x3);  /* the window took only link 1 */
+	CHECK_EQ(cg_spare_mask(0x3, 0x3, 0), 0x3);
+	CHECK_EQ(cg_spare_mask(0x6, 0x3, 0), 0x3);  /* not past carry */
+	CHECK_EQ(cg_spare_mask(0x2, 0x2, 0), 0x2);  /* the first not carrying: not added */
+	CHECK_EQ(cg_spare_mask(0x2, 0x3, -1), 0x2); /* not known */
+	CHECK_EQ(cg_spare_mask(0x0, 0xf, 3), 0x8);
+}
+
 void test_spare(void)
 {
+	test_spare_mask();
 	test_spare_plan();
 	test_spare_pinned();
 	test_spare_pin_jumps();

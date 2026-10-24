@@ -368,6 +368,26 @@ static inline int cg_spare_keep(int lost, int choked, int wait, uint64_t now_ms,
 	return *cut_ms && now_ms - *cut_ms < CG_SPARE_HOLD_CUT_MS ? CG_SPARE_KEEP_HOLD : CG_SPARE_KEEP_FREE;
 }
 
+/* The links a packet goes on before the allowances (spare_masks): the
+ * copies' window (cmask, eta.h's cg_eta_copies_first, among carry), and
+ * always the first link f (-1: not known) while it carries. The window
+ * takes the link where a packet arrives first by its own estimate, which
+ * is not always f: with two links alike (two Starlink dishes, story 022)
+ * the first link's estimated backlog, its capacity still low after the
+ * start (lossy, not probed), put it past the window, the allowance took
+ * the copy off the other one, and the packet went on no link: 4-7 % of a
+ * 9 Mbit/s stream lost in its first seconds (bench msl2, redund_spare =
+ * mix and rlc). The first link carries every packet; the window only trims
+ * the copies. */
+static inline uint16_t cg_spare_mask(uint16_t cmask, uint16_t carry, int f)
+{
+	uint16_t m = (uint16_t)(cmask & carry);
+
+	if (f >= 0 && f < 16 && (carry >> f & 1))
+		m |= (uint16_t)(1u << f);
+	return m;
+}
+
 /* What a packet is protected with on the other links, by mode: 1 copies,
  * 2 parity. Copies, in every mode, while the allowance holds the whole
  * upload (spare_bps at least data_bps): they cost what a parity of k = 1
