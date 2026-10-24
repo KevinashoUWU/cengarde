@@ -106,6 +106,20 @@
 #   protectcut  not in the default list: protect with a microcut (story 017:
 #               20-40 s of 50-77 % lost on Starlink): link 1 loses 60 % for the
 #               middle third of the run
+#   protectslow not in the default list: the NUC's Claro on B5 (2026-10-23),
+#               the link of least delay is the narrow one: link 1 at 10 ms but
+#               5 Mbit/s behind 2 s of queue and losing 8 % at random (a weak
+#               radio), link 2 at 25 ms and 20 Mbit/s. redund_spare took link 1
+#               first; its loss held it there while it choked
+#   protectpin  not in the default list: the NUC's pinned Entel (2026-10-23):
+#               3 links of 20 Mbit/s, 10, 15 and 22 ms; the client pins link 3
+#               (redund_spare_first = l3, the case adds it and a control
+#               socket). Link 3's delay jumps by 300 ms each way for 1 s at 5 s
+#               and every 10 s after (a radio's promotion from idle), and it is
+#               paused for the middle third of the run as by hand ("cengarde
+#               ctl link l3 off" and its interface down, then up and "auto").
+#               What the pin is worth is the share of the run with link 3
+#               first (BOND_SAMPLE=1: upload.spare.first in the samples)
 #   bloat       bufferbloat as on the Pi's 5G modems (story 012, 2026-10-13):
 #               3 links of similar delay (20, 20 and 22 ms) and unequal rate
 #               (30, 20 and 8 Mbit/s) behind deep queues (1, 1 and 2 s). A
@@ -509,6 +523,27 @@ bond_events() {
 			bond_link_down 2 25 40
 		done
 		;;
+	protectpin)
+		(
+			sleep 5
+			t=5
+			while [ "$t" -lt "$s" ]; do
+				bond_link 3 322 20
+				sleep 1
+				bond_link 3 22 20
+				sleep 9
+				t=$((t + 10))
+			done
+		) &
+		sleep "$(awk -v s="$s" 'BEGIN { print s / 3 }')"
+		"$CENGARDE_BIN" ctl -s "$RUN/client.sock" link l3 off >/dev/null
+		ip -n "$NS_CLI" link set l3 down
+		sleep "$(awk -v s="$s" 'BEGIN { print s / 3 }')"
+		ip -n "$NS_CLI" link set l3 up
+		ip -n "$NS_CLI" addr replace 10.0.3.1/24 dev l3
+		"$CENGARDE_BIN" ctl -s "$RUN/client.sock" link l3 auto >/dev/null
+		wait
+		;;
 	protectcut)
 		sleep "$(awk -v s="$s" 'BEGIN { print s / 3 }')"
 		bond_link 1 10 60 15 60
@@ -547,13 +582,15 @@ bond_shape() {
 	bloat) bond_link 1 20 30 1000 && bond_link 2 20 20 1000 && bond_link 3 22 8 2000 ;;
 	lossy) bond_link 1 20 60 100 1 && bond_link 2 35 30 100 1 && bond_link 3 25 50 100 1 ;;
 	protect | protectcut) bond_link 1 10 60 15 0.7 && bond_link 2 25 5 2000 ;;
+	protectslow) bond_link 1 10 5 2000 8 && bond_link 2 25 20 100 ;;
+	protectpin) bond_link 1 10 20 && bond_link 2 15 20 && bond_link 3 22 20 ;;
 	*) return 1 ;;
 	esac
 }
 
 bond_nlinks() {
 	case $1 in
-	het | linkdeath | downstall | bloat | lossy | shallowq | shallowqd | shallowqdeep | starsat | dominant) echo 3 ;;
+	het | linkdeath | downstall | bloat | lossy | shallowq | shallowqd | shallowqdeep | starsat | dominant | protectpin) echo 3 ;;
 	*) echo 2 ;;
 	esac
 }
@@ -686,6 +723,8 @@ bond_case() {
 	[ "$BV_SOLO" = 1 ] && NLINKS=1
 	CLIENT_EXTRA=$(bond_join "$BV_CLIENT" "$CLIENT_EXTRA")
 	SERVER_EXTRA=$(bond_join "$BV_SERVER" "$SERVER_EXTRA")
+	# protectpin: link 3 pinned first, paused and resumed through the control socket
+	[ "$c" = protectpin ] && CLIENT_EXTRA=$(bond_join "$CLIENT_EXTRA" "redund_spare_first = l3;control_socket = $RUN/client.sock")
 	setup || return 1
 	# the links' delays before the engines start: started on bare veths, the
 	# engines learned a base delay of ~0 for every link and kept it for a
@@ -735,7 +774,7 @@ bond_plan() {
 	for w in ${BOND_CC:-cubic bbr quic}; do ccs=$((ccs + 1)); done
 	for c in $BOND_CASES; do
 		case $c in
-		equal | het | reorder50 | reorder150 | linkdeath | downstall | shallowq | shallowqd | shallowqdeep | starsat | dominant | starlink15 | starlink15sw | starlink15ramp | ltespike | ltespikerand | deepq | bloat | lossy | spikeloss | protect | protectcut) ;;
+		equal | het | reorder50 | reorder150 | linkdeath | downstall | shallowq | shallowqd | shallowqdeep | starsat | dominant | starlink15 | starlink15sw | starlink15ramp | ltespike | ltespikerand | deepq | bloat | lossy | spikeloss | protect | protectcut | protectslow | protectpin) ;;
 		*)
 			echo "bond: unknown case $c"
 			return 1
