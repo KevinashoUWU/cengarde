@@ -160,7 +160,8 @@ static inline struct cg_hcfg cg_hcfg_of(const struct cg_config *cfg)
 	return (struct cg_hcfg){ .mute_behind_us = cfg->mute_behind_ms * 1000,
 				 .unmute_behind_us = cfg->unmute_behind_ms * 1000,
 				 .settle_ms = cfg->mute_settle_ms,
-				 .min_active = cfg->min_active_links };
+				 .min_active = cfg->min_active_links,
+				 .queue_mode = (uint8_t)!!cfg->mute_queue };
 }
 
 /* The reorderer's settings (reorder.h) from the configuration. */

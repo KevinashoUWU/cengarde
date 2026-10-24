@@ -731,7 +731,18 @@ static void test_config_bonding(void)
 	CHECK_EQ(c.starlink_edge_copies, 0);
 	CHECK_EQ(cg_config_link_knobs(&c).dominant_hold, 0);
 	CHECK_EQ(cg_config_link_knobs(&c).slot_clock, 0);
+	CHECK_EQ(c.pace_peers_ms, -1); /* the preset's */
+	CHECK_EQ(cg_config_link_knobs(&c).pace_peers, 0);
 	cg_config_free(&c);
+	CHECK_EQ(cg_config_parse(&c, CLIENT "pace_peers_ms = 250\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(c.pace_peers_ms, 250);
+	CHECK_EQ(cg_config_link_knobs(&c).pace_peers, 251);
+	cg_config_free(&c);
+	CHECK_EQ(cg_config_parse(&c, SERVER "pace_peers_ms = 0\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(c.pace_peers_ms, 0); /* off */
+	CHECK_EQ(cg_config_link_knobs(&c).pace_peers, 1);
+	cg_config_free(&c);
+	bad(CLIENT "pace_peers_ms = 2001\n", "pace_peers_ms", "2001");
 	CHECK_EQ(cg_config_parse(&c, CLIENT "capacity_seq_lag = no\nstarlink_slot_clock = 2\nsplit_dominant_hold = 1\n"
 				      "starlink_edge_ms = 11950\nstarlink_edge_copies = yes\n",
 				 err, sizeof(err), warn, sizeof(warn)),
@@ -743,6 +754,60 @@ static void test_config_bonding(void)
 	CHECK_EQ(cg_config_link_knobs(&c).dominant_hold, 1);
 	cg_config_free(&c);
 	bad(SERVER "starlink_edge_ms = 15000\n", "starlink_edge_ms", "15000");
+	/* the virtual cell's knobs (story 016): off by default */
+	CHECK_EQ(cg_config_parse(&c, CLIENT "\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(c.mute_queue, 0);
+	CHECK_EQ(c.capacity_expire_ms, 0);
+	cg_config_free(&c);
+	CHECK_EQ(cg_config_parse(&c, SERVER "mute_queue = yes\ncapacity_expire_ms = 2000\n", err, sizeof(err), warn,
+				 sizeof(warn)),
+		 0);
+	CHECK_EQ(c.mute_queue, 1);
+	CHECK_EQ(c.capacity_expire_ms, 2000);
+	cg_config_free(&c);
+	bad(CLIENT "capacity_expire_ms = 600001\n", "capacity_expire_ms", "600001");
+	/* the ns-3 traces' knobs (story 019): off by default */
+	CHECK_EQ(cg_config_parse(&c, CLIENT "\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(c.capacity_loss_queue_ms, 0);
+	CHECK_EQ(c.capacity_stand, 0);
+	cg_config_free(&c);
+	CHECK_EQ(cg_config_parse(&c, SERVER "capacity_loss_queue_ms = 10\ncapacity_stand = 2\n", err, sizeof(err), warn,
+				 sizeof(warn)),
+		 0);
+	CHECK_EQ(c.capacity_loss_queue_ms, 10);
+	CHECK_EQ(c.capacity_stand, 2);
+	cg_config_free(&c);
+	bad(CLIENT "capacity_loss_queue_ms = 1001\n", "capacity_loss_queue_ms", "1001");
+	bad(SERVER "capacity_stand = 3\n", "capacity_stand", "3");
+	/* redund_spare (story 020): off by default, a 50 ms target */
+	CHECK_EQ(cg_config_parse(&c, CLIENT "\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(c.redund_spare, 0);
+	CHECK_EQ(c.redund_spare_ms, 50);
+	cg_config_free(&c);
+	CHECK_EQ(cg_config_parse(&c, CLIENT "redund_spare = parity\nredund_spare_ms = 80\n", err, sizeof(err), warn,
+				 sizeof(warn)),
+		 0);
+	CHECK_EQ(c.redund_spare, 2);
+	CHECK_EQ(c.redund_spare_ms, 80);
+	cg_config_free(&c);
+	CHECK_EQ(cg_config_parse(&c, CLIENT "redund_spare = mix\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(c.redund_spare, 3);
+	cg_config_free(&c);
+	CHECK_EQ(cg_config_parse(&c, CLIENT "redund_spare = off\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(c.redund_spare, 0);
+	cg_config_free(&c);
+	bad(CLIENT "redund_spare = all\n", "redund_spare", "all");
+	bad(CLIENT "redund_spare_ms = 0\n", "redund_spare_ms", "0");
+	/* redund_spare_first: none by default, a [link NAME] of the file */
+	CHECK_EQ(cg_config_parse(&c, CLIENT "redund_spare = mix\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(c.redund_spare_first[0], '\0');
+	cg_config_free(&c);
+	CHECK_EQ(cg_config_parse(&c, CLIENT "redund_spare = mix\nredund_spare_first = ENTEL\n[link ENTEL]\nlabel = LTE_NR_01\n[link WOM]\nweight = 1\n", err,
+				 sizeof(err), warn, sizeof(warn)),
+		 0);
+	CHECK(!strcmp(c.redund_spare_first, "ENTEL"));
+	cg_config_free(&c);
+	bad(CLIENT "redund_spare_first = CLARO\n[link ENTEL]\n", "redund_spare_first", "CLARO");
 	bad(CLIENT "split_dominant_hold = 3\n", "split_dominant_hold", "3");
 	/* The weight is a link's, not global; a server has no [link] weights (its
 	 * client's probes say them), and says so. */

@@ -7,7 +7,7 @@ archivos:
 
 # Perillas
 
-Las 104 claves que `engine/src/config.c` lee (comprobado al generar esta nota: ni falta ni sobra ninguna).
+Las 112 claves que `engine/src/config.c` lee (comprobado al generar esta nota: ni falta ni sobra ninguna).
 Por omisión y rango salen de `cg_config_parse`; el significado, de los comentarios de `config.h` y de [[engine-README]].
 Las perillas marcadas como experimento están apagadas por omisión.
 
@@ -85,6 +85,7 @@ Secciones: «global» es la parte sin sección; `[link NOMBRE]` es del cliente; 
 | [[Mapa/Perillas/mute_settle_ms\|mute_settle_ms]] | 2000 | [[Salud y silenciado (health.h)]], [[G4 guarda de dispersión (split.h)]] | [[006-salud-de-enlaces]], [[012-bonding]] |
 | [[Mapa/Perillas/mute_trickle\|mute_trickle]] | 0 | [[Salud y silenciado (health.h)]] | [[006-salud-de-enlaces]] |
 | [[Mapa/Perillas/min_active_links\|min_active_links]] | 2 | [[Salud y silenciado (health.h)]] | [[006-salud-de-enlaces]] |
+| [[Mapa/Perillas/mute_queue\|mute_queue]] | `no` | [[Salud y silenciado (health.h)]], [[Cola por enlace (cg_gov_base)]] | [[016-celda-virtual]] |
 
 ## Reordenador
 
@@ -142,6 +143,9 @@ Secciones: «global» es la parte sin sección; `[link NOMBRE]` es del cliente; 
 | [[Mapa/Perillas/capacity_sat_ms\|capacity_sat_ms]] | 20 (el de `governor_target_ms`; 0 lo sigue) | [[Capacidad (capacity.h)]], [[Tope para cake (capacity.h)]], [[ETA (eta.h)]] | [[audit-pending]] |
 | [[Mapa/Perillas/capacity_loss_pct\|capacity_loss_pct]] | 0 (apagado) | [[Capacidad (capacity.h)]], [[Modelo de enlace (linkmodel.h)]] | [[015-modelo-de-enlace]] |
 | [[Mapa/Perillas/capacity_seq_lag\|capacity_seq_lag]] | `yes` | [[Capacidad (capacity.h)]] | [[015-modelo-de-enlace]] |
+| [[Mapa/Perillas/capacity_expire_ms\|capacity_expire_ms]] | 0 (apagado) | [[Capacidad (capacity.h)]] | [[016-celda-virtual]] |
+| [[Mapa/Perillas/capacity_loss_queue_ms\|capacity_loss_queue_ms]] | 0 (apagado) | [[Capacidad (capacity.h)]], [[Cola por enlace (cg_gov_base)]], [[Modelo de enlace (linkmodel.h)]] | [[019-perdida-con-cola]] |
+| [[Mapa/Perillas/capacity_stand\|capacity_stand]] | 0 (apagado) | [[Capacidad (capacity.h)]], [[Cola por enlace (cg_gov_base)]] | [[019-perdida-con-cola]] |
 | [[Mapa/Perillas/cap_g4_episode\|cap_g4_episode]] | 0 (apagado) | [[Capacidad (capacity.h)]], [[G4 guarda de dispersión (split.h)]], [[Modelo de enlace (linkmodel.h)]] | [[015-modelo-de-enlace]], [[audit-pending]] |
 
 ## ETA, cosquilla, copias, dosificación
@@ -157,6 +161,7 @@ Secciones: «global» es la parte sin sección; `[link NOMBRE]` es del cliente; 
 | [[Mapa/Perillas/eta_keep\|eta_keep]] | 0 (apagado) | [[ETA (eta.h)]], [[Modelo de enlace (linkmodel.h)]] | [[015-modelo-de-enlace]], [[audit-pending]] |
 | [[Mapa/Perillas/eta_keep_ms\|eta_keep_ms]] | 400 | [[ETA (eta.h)]], [[Modelo de enlace (linkmodel.h)]] | [[015-modelo-de-enlace]] |
 | [[Mapa/Perillas/redund_pace_ms\|redund_pace_ms]] | 0 (apagado) | [[Copias a tiempo (eta.h)]], [[Modelo de enlace (linkmodel.h)]] | [[015-modelo-de-enlace]] |
+| [[Mapa/Perillas/pace_peers_ms\|pace_peers_ms]] | -1 (el del preset: 60 ms en `starlink`) | [[Copias a tiempo (eta.h)]], [[Modelo de enlace (linkmodel.h)]] | [[015-modelo-de-enlace]], [[017-terreno-nostalgica]] |
 | [[Mapa/Perillas/pacing\|pacing]] | `no` | [[Dosificación (pace.h)]] | [[013-capacidad-y-dosificacion]] |
 
 ## Modelo de enlace y Starlink
@@ -171,5 +176,13 @@ Secciones: «global» es la parte sin sección; `[link NOMBRE]` es del cliente; 
 | [[Mapa/Perillas/starlink_edge_pre_ms\|starlink_edge_pre_ms]] | 100 | [[Ranuras de Starlink (slot.h)]] | [[015-modelo-de-enlace]] |
 | [[Mapa/Perillas/starlink_edge_post_ms\|starlink_edge_post_ms]] | 50 | [[Ranuras de Starlink (slot.h)]] | [[015-modelo-de-enlace]] |
 | [[Mapa/Perillas/starlink_edge_copies\|starlink_edge_copies]] | `no` | [[Ranuras de Starlink (slot.h)]], [[Copias a tiempo (eta.h)]] | [[015-modelo-de-enlace]] |
+
+## Lo que sobra (redundancia)
+
+| Perilla | Por omisión | Pieza | Historia |
+| --- | --- | --- | --- |
+| [[Mapa/Perillas/redund_spare\|redund_spare]] | `no` | [[Lo que sobra (spare.h)]], [[Copias a tiempo (eta.h)]], [[FEC (fec.h)]] | [[020-copias-parciales-y-paridad]] |
+| [[Mapa/Perillas/redund_spare_ms\|redund_spare_ms]] | 50 | [[Lo que sobra (spare.h)]] | [[020-copias-parciales-y-paridad]] |
+| [[Mapa/Perillas/redund_spare_first\|redund_spare_first]] | vacío (el de menor retardo sin cola) | [[Lo que sobra (spare.h)]] | [[020-copias-parciales-y-paridad]] |
 
 Volver a [[Mapa del motor]].

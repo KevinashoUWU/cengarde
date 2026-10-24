@@ -5,13 +5,14 @@ archivos:
   - engine/src/split.h
   - engine/src/capacity.h
   - engine/src/reorder.h
-sello: a2131a09b4cba495
+sello: c7197981df3331ab
 ---
 # Glosario
 
 Términos del proyecto, en español, con el nombre del código entre paréntesis. «Cosquilla», «presunto», «bomba» y «carril» son traducciones de este mapa; el código dice *tickle*, *presumed*, *pump* y *lane*.
 
 ## Enlaces y salud
+- **Atraso (`mute_queue`):** lo que compara el silenciado con esa perilla: el mayor entre lo que va detrás, la cola propia sobre la del más rápido y las sondas sin respuesta. → [[Salud y silenciado (health.h)]]
 - **Enlace / camino:** un enlace es una subida del router; en el servidor, un camino es sesión + enlace. → [[Sondas y cola de bonding (proto.h)]]
 - **Sonda / respuesta:** mensaje de control por enlace que trae las medidas del otro extremo. → [[Sondas y cola de bonding (proto.h)]]
 - **Cola de bonding (bonding tail):** 4 bytes al final de cada sonda: peso, si reordena, si pide reparto, rescate, lleno, tipo. → [[Sondas y cola de bonding (proto.h)]]
@@ -24,6 +25,8 @@ Términos del proyecto, en español, con el nombre del código entre paréntesis
 
 ## Reparto
 - **Redundancia:** cada paquete por todos los enlaces; el receptor se queda con la primera copia. → [[Anti-replay (replay.h)]]
+- **Primer enlace / lo que sobra (`redund_spare`):** en redundancia, el enlace protegido (el de menor retardo sin cola parada) y la asignación de cada otro enlace, la tasa que le cabe sin llenarle la cola, donde van copias parciales o paridad. → [[Lo que sobra (spare.h)]]
+- **Microcorte:** 20–40 s en que Starlink pierde 50–88 % de la subida (historia 017); un XOR no rehace ahí. → [[Lo que sobra (spare.h)]]
 - **Reparto (split) / bonding:** cada paquete por un solo enlace. → [[Reparto (split.h)]]
 - **Elegible / candidato:** enlace que puede recibir parte del reparto. → [[Reparto (split.h)]]
 - **Peso / peso 0 (dup0):** la parte de un enlace; con 0, copia de todo. → [[Reparto (split.h)]]
@@ -42,9 +45,12 @@ Términos del proyecto, en español, con el nombre del código entre paréntesis
 - **Copias a tiempo:** copia solo si llegaría cerca de la primera (`pace_ms`, `pace_peers_ms`). → [[Copias a tiempo (eta.h)]]
 
 ## Medidas
+- **Caducidad (`capacity_expire_ms`):** la capacidad de un enlace fuera del envío baja a la mitad cada tanto. → [[Capacidad (capacity.h)]]
 - **Cola:** retardo de ida menos su propio mínimo de ventana. → [[Cola por enlace (cg_gov_base)]]
 - **Base:** el retardo sin cola (el mínimo). → [[Cola por enlace (cg_gov_base)]]
 - **Capacidad:** lo más que entregó un enlace; baja solo lleno. → [[Capacidad (capacity.h)]]
+- **Pérdida con cola (`capacity_loss_queue_ms`):** pierde ≥ 1 % con cola sobre el mínimo de 60 s: lleno a cualquier carga. → [[Capacidad (capacity.h)]]
+- **Cola permanente (`capacity_stand`):** la cola sobre el mínimo de 60 s que el de 10 s ya tomó de base; frena el arranque rápido. → [[Capacidad (capacity.h)]]
 - **Lleno (full, sat):** cola sobre `capacity_sat_ms`, entregas cortas o pérdida con carga. → [[Capacidad (capacity.h)]]
 - **Corte / arranque rápido:** bajar la capacidad al llenarse / volver a la mitad de la mejor tras 10 s. → [[Capacidad (capacity.h)]]
 - **Sondeo a 5/4 (probe):** ofrecer más de lo medido a un enlace de cola corta. → [[Capacidad (capacity.h)]]

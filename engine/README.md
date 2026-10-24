@@ -374,6 +374,19 @@ servidor la bajada):
   duplica cada vez que vuelve y no aguanta (hasta ×8).
 - **Mínimo:** al menos `min_active_links` (2) enlaces vivos llevan siempre
   todo. Si uno se queda mudo, el silenciado más rápido vuelve al instante.
+  Con dos enlaces, entonces, nada se silencia.
+- **`mute_queue` (`no`; `yes` o `no`), experimental, en los dos extremos:**
+  el silenciado compara, en vez de solo lo que un enlace va detrás del más
+  rápido, el mayor entre eso, su cola (su retardo sobre su mínimo de 60 s)
+  menos la del más rápido y, en el cliente, cuánto lleva sin respuesta su
+  sonda más vieja menos el RTT del enlace más rápido. Un enlace atrasado
+  cuyos informes llegan a ráfagas ya no reinicia su espera en cada hueco.
+  En la celda virtual (un LTE cayendo al acantilado del SNR junto a un
+  fijo, con `min_active_links = 1`) se silencia a los 3,3 s en vez de
+  3,8–7,9 s o nunca, pero el TCP de la redundancia no mejora y la vuelta de
+  la señal cuesta 6–9 s sin el LTE por la espera exponencial; en el
+  laboratorio no cambia nada (*medido*, historia 016). El estado dice
+  `upload_late_ms` (cliente) y `download_late_ms` (servidor).
 - `mute_behind_ms = 0` desactiva el silenciado y deja redundancia pura,
   también en una recarga: los enlaces que estaban silenciados vuelven al
   instante (`sudo bench/lab.sh muteoff`).
@@ -502,6 +515,56 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
   - Estado: `fec` en el cliente (`parities`, `bytes`, `no_link`, `capped`,
     `deadline_us`, `sizes` y por qué cerró cada grupo) y en cada sesión
     del servidor (lo reconstruido y lo que no).
+  - En redundancia `fec` no hace nada: solo protege lo repartido (cada
+    paquete va por todos los enlaces y ninguno queda solo en uno; medido,
+    0 paridades, historia 020). Para eso está `redund_spare`.
+  - Las paridades ya no cuentan en `tx_packets`/`tx_bytes` del enlace que
+    las lleva (van en `tx_fec_packets`/`tx_fec_bytes`): el servidor cuenta
+    solo DATA por camino, y una paridad contada como enviada parecía
+    perdida a la capacidad (`short` y la pérdida de la muestra).
+- **`redund_spare` (no; `copies`, `parity` o `mix`; solo el cliente,
+  experimental):** en redundancia, protege al primer enlace (el de menor
+  retardo sin una cola parada; un Starlink que pierde) con lo que les sobra
+  a los demás (un celular ahogado sobre su codo), sin llenarles la cola
+  (`spare.h`, historia 020). El que como primero junta una cola de más de
+  4 × `redund_spare_ms` queda vetado 60 s; en un microcorte suyo el primero
+  no cambia. Cada enlace que no es el primero tiene una asignación que sigue
+  a su cola sobre el mínimo de 60 s: baja un cuarto si pasa de
+  `redund_spare_ms`, sube si está bajo la mitad y se usa. `copies` manda en
+  ella copias parciales (los paquetes chicos y, con `tcp_aware`, los ACK y
+  las retransmisiones de TCP primero); `parity`, un XOR de k paquetes del
+  primero (k de 2 a 15, el menor cuya paridad cabe; el servidor necesita
+  `fec = yes`, el mismo `CG_T_FEC`, sin protocolo nuevo); `mix`, copias en
+  un microcorte del primero (pierde más de 5 %; un XOR no rehace nada ahí)
+  y paridad si no. En los tres, copias cuando la asignación lleva todo.
+  *Medido* en la celda virtual (WOM ahogado con 7 Mbit/s, el fijo perdiendo
+  0,7 % y un microcorte de 10 s al 60 %; n = 3 contra `redund_pace_ms =
+  250`): `mix` bajó lo perdido fuera del corte de 0,239 a 0,066 % con 0,42
+  bytes en el celular por byte (0,68) y su RTT p95 de 411 a 192 ms, y subió
+  el TCP de 10,1 a 17,5 Mbit/s, igual en el corte; con Entel B2, de 0,584 a
+  0,061 %. En el laboratorio (`protect`, n = 8) el flujo de 6 Mbit/s pierde
+  0,011 % contra 0,280 % y el TCP sube de 6,9 a 16,8 Mbit/s. `parity` pierde
+  0,010 % fuera del corte pero en él no ayuda (50 % perdido). En el corte,
+  nada de lo que cabe iguala a las copias completas detrás de segundos de
+  cola (UDP: 26 % con `mix` frente a 19 % con 250). Por eso, apagada por
+  omisión.
+  - **`redund_spare_ms` (50; 1–2000):** la cola a la que sostiene cada
+    enlace lo que lleva. 150 no mejoró nada medible (historia 020).
+  - **`redund_spare_first` (vacío; el nombre de un `[link NAME]`):** fija el
+    primer enlace (p. ej. un celular a la vista de su torre) mientras esté
+    vivo, medido y sin ahogarse; si se ahoga queda vetado 60 s y manda la
+    elección automática; vuelve cuando se despeja. Un nombre sin su sección
+    `[link]` es un error de configuración.
+  - Ahogado es una cola sobre el mínimo de 60 s, o un retardo sin cola sobre
+    el del más rápido, de más de 4 × `redund_spare_ms`: con una carga larga
+    el mínimo sube con la cola, y la base lo delata. Un primero ahogado se
+    veta aunque esté perdiendo (antes su pérdida lo retenía como en un
+    microcorte).
+  - Estado: `upload.spare` del cliente (`mode`, `now`, `k`, `first`,
+    `pinned`, `data_mbit`, `copies`, `copies_skipped`, `fed`, `parities`,
+    `parities_skipped`, `parities_no_link`) y `spare` por enlace (`mbit`,
+    `cuts`, `taken`, `skipped`); lo rehecho, en `fec` de la sesión del
+    servidor.
 - **`reorder_pool_kb` (8192; 256–131070):** memoria para los paquetes
   retenidos, en bloques de 2 KiB, reservada al arrancar; solo ocupa RAM lo
   que llega a usarse. En el servidor la comparten todas las sesiones (cada
@@ -760,6 +823,39 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
   historia lo muestra dominante; no ganó en el laboratorio y costó en
   `shallowq`, por eso queda como perilla. El estado dice `edge_samples` y
   `lost_age_ms` en `cap_diag`, y `presumed` y `why` en `dominant`.
+- **`capacity_expire_ms` (0, apagado; 0–600000), experimental, en los dos
+  extremos:** un enlace fuera del envío (silenciado, mudo o fuera del
+  reparto) ese tiempo sin una muestra cargada ve su capacidad a la mitad, y
+  otra vez cada tanto, hasta 1/16 de su mejor; cada mitad cuenta como
+  muestra llena para el arranque rápido, y al volver lo sube el sondeo al
+  doble. Sin ella, la capacidad de un enlace fuera queda congelada en la de
+  antes. En la celda virtual el LTE volvió con 0,3–1,3 Mbit/s en vez de
+  3,6–21, pero eso costó cuando la señal volvió entera (bonding 20,8 frente
+  a 23,0 Mbit/s en los 10 s siguientes) y no ganó cuando volvió débil (los
+  cortes de siempre bajan la vieja en 1,5–2,5 s); en el laboratorio, igual
+  (*medido*, historia 016). El estado cuenta las mitades en `cap_diag`
+  (`expired`) y en las decisiones (`cap_expire`).
+- **`capacity_loss_queue_ms` (0, apagado; 0–1000; sugerido 10) y
+  `capacity_stand` (0, apagado; 0–2), experimentales, en los dos extremos
+  (historia 019):** `capacity_loss_queue_ms` toma como lleno, a cualquier
+  carga, un enlace que en dos muestras seguidas pierde al menos el 1 % de
+  lo enviado, recibe más de lo que entrega y tiene una cola sobre su mínimo
+  de 60 s de al menos ese valor: su capacidad pasa a lo que entrega. Es el
+  búfer corto de un operador delante de un TCP: la cola no pasa de
+  `capacity_sat_ms` y el enlace nunca está «cargado» frente a una capacidad
+  vieja. Con el preset de Starlink (que descarta sin cola y se retiene por
+  eso) solo cuenta cargado. `capacity_stand = 1` frena el arranque rápido
+  mientras la cola sobre el mínimo de 60 s pasa `capacity_sat_ms` (4
+  muestras): una cola que dura más que `governor_window_ms` se vuelve base y
+  el arranque rápido devolvía la capacidad a la mitad de la mejor (choque C5
+  de la auditoría). `capacity_stand = 2` además deja ir el arranque rápido
+  antes de los 10 s si el enlace entrega 9/8 de su capacidad, sin pérdida ni
+  cola, dos muestras. En las trazas de ns-3 (LTE, 10 KB de RLC, emisor AIMD)
+  la capacidad pasó de +275–510 % de error a −2 % en 1,0–1,4 s, sin cortes
+  en pérdida aleatoria sin cola, y la cola permanente de +523 % a +3 %; en
+  la celda calibrada la capacidad se corrige antes, pero ni ahí ni en el
+  laboratorio cambia el TCP, por eso quedan apagadas (*medido*, historia
+  019). El estado cuenta `cut_lossq` y `restore_room` en `cap_diag`.
 - **`exp_link_types` (vacío; nombres de tipo):** las perillas globales de
   arriba (y `eta_buffer` y `capacity_loss_pct`) solo para los enlaces de
   esos tipos, para probar una antes de ponerla en un preset; vacío: todos.

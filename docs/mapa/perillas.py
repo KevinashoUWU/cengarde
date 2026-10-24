@@ -43,12 +43,14 @@ FWD = "Tabla de reenvío (fwdtable.h)"
 TUNR = "Rutas del túnel nativo (tunroute.h)"
 DEC = "Bitácora de decisiones (decision.h)"
 CONF = "Configuración (config.c)"
+SPARE = "Lo que sobra (spare.h)"
 
 H = {
     "002": "002-wireguard-para-cengarde", "005": "005-motor-c-v1", "006": "006-salud-de-enlaces",
     "008": "008-luci-uci-y-emparejamiento", "009": "009-recarga-control-e-ip-pass",
     "010": "010-ipv6-varias-ip-multicliente-nombres", "011": "011-hilos", "012": "012-bonding",
-    "013": "013-capacidad-y-dosificacion", "014": "014-tunel-nativo", "015": "015-modelo-de-enlace",
+    "013": "013-capacidad-y-dosificacion", "014": "014-tunel-nativo", "015": "015-modelo-de-enlace", "016": "016-celda-virtual",
+    "017": "017-terreno-nostalgica", "019": "019-perdida-con-cola", "020": "020-copias-parciales-y-paridad",
     "audit": "audit-pending",
 }
 
@@ -84,6 +86,7 @@ T = {
  "mute_settle_ms": ([G], BOTH, "2000", "100–600000", [SALUD, G4], ["006", "012"], "Cuánto tiene que durar la condición para silenciar (y el doble para volver). G4 lo usa para la vuelta al reparto."),
  "mute_trickle": ([G], BOTH, "0", "0–1000000", [SALUD], ["006"], "Un enlace silenciado lleva un paquete duplicado de cada tantos (0: ninguno)."),
  "min_active_links": ([G], BOTH, "2", "1–16", [SALUD], ["006"], "Enlaces vivos que siempre llevan todo; el silenciado se detiene ahí."),
+ "mute_queue": ([G], BOTH, "`no`", "`yes` o `no`", [SALUD, COLA], ["016"], "EXPERIMENTO: el silenciado compara el atraso, la cola propia sobre la del más rápido y las sondas sin respuesta (el mayor); un informe viejo de un enlace callado no reinicia la espera."),
  # --- probes / servers (client) ---
  "probe_interval_ms": ([G], CLI, "100", "100–60000", [SONDAS, SALUD, G3], ["006"], "Intervalo de sondas con tráfico. G3 y el mudo cuentan en intervalos de sonda."),
  "probe_idle_ms": ([G], CLI, "1000", "`probe_interval_ms`–600000", [SONDAS], ["006"], "Intervalo de sondas en reposo."),
@@ -151,6 +154,9 @@ T = {
  "capacity_sat_ms": ([G], BOTH, "20 (el de `governor_target_ms`; 0 lo sigue)", "0–1000", [CAP, CAKE, ETA], ["audit"], "La cola que dice que un enlace está lleno (C12)."),
  "capacity_loss_pct": ([G], BOTH, "0 (apagado)", "0–50", [CAP, MODEL], ["015"], "EXPERIMENTO: un enlace cargado que pierde más de esto está lleno."),
  "capacity_seq_lag": ([G], BOTH, "`yes`", "`yes` o `no`", [CAP], ["015"], "La pérdida de una muestra se cuenta por secuencia (`rx_top`), no 250 ms antes del informe."),
+ "capacity_expire_ms": ([G], BOTH, "0 (apagado)", "0–600000", [CAP], ["016"], "EXPERIMENTO: un enlace fuera del envío (silenciado, mudo o fuera del reparto) tanto tiempo sin medirse ve su capacidad a la mitad, y otra vez cada tanto, hasta 1/16 de su mejor."),
+ "capacity_loss_queue_ms": ([G], BOTH, "0 (apagado)", "0–1000", [CAP, COLA, MODEL], ["019"], "EXPERIMENTO: un enlace que pierde al menos 1 % de lo enviado, mandándole más de lo que entrega, con la cola sobre su mínimo de 60 s en al menos esto, dos muestras seguidas, está lleno a cualquier carga (con el preset de Starlink, solo cargado). Sugerido: 10."),
+ "capacity_stand": ([G], BOTH, "0 (apagado)", "0–2", [CAP, COLA], ["019"], "EXPERIMENTO: 1, una cola permanente (sobre el mínimo de 60 s, sobre `capacity_sat_ms`, 4 muestras) frena el arranque rápido; 2, además el arranque rápido va antes de 10 s si el enlace entrega 9/8 de su capacidad sin pérdida ni cola, dos muestras."),
  "cap_g4_episode": ([G], BOTH, "0 (apagado)", "0–3", [CAP, G4, MODEL], ["015", "audit"], "C5: una salida de G4 por cola cuenta para el arranque rápido."),
  "split_eta": ([G], BOTH, "`no`", "`yes` o `no`", [ETA], ["013"], "Reparto por llegada esperada."),
  "split_tickle_ms": ([G], BOTH, "0 (nunca)", "0–60000", [TICKLE], ["013"], "Con `split_eta`, cada este tiempo se le da carga a un enlace ocioso."),
@@ -161,6 +167,7 @@ T = {
  "eta_keep": ([G], BOTH, "0 (apagado)", "0–3", [ETA, MODEL], ["015", "audit"], "C9: qué guarda el backlog del ETA sobre una cola vieja."),
  "eta_keep_ms": ([G], BOTH, "400", "0–2000", [ETA, MODEL], ["015"], "Con `eta_keep = 2`, cuán vieja es la cola medida."),
  "redund_pace_ms": ([G], BOTH, "0 (apagado)", "0–2000", [COPIAS, MODEL], ["015"], "Una copia va por un enlace solo si llega a menos de esto de la primera."),
+ "pace_peers_ms": ([G], BOTH, "-1 (el del preset: 60 ms en `starlink`)", "0–2000 (0: apagado)", [COPIAS, MODEL], ["015", "017"], "La ventana de las copias hacia los demás enlaces de una sesión con Starlink, sobre los 60 ms del preset; el cliente para la subida, el servidor para la bajada."),
  "pacing": ([G], BOTH, "`no`", "`yes` o `no`", [PACE], ["013"], "Dosifica el socket de cada enlace (o cada carril del servidor) al doble de su capacidad."),
  "split_dominant_pct": ([G], BOTH, "0 (el del preset: 250 en `starlink`)", "0–65535 (grande: apagado)", [DOM, MODEL], ["015"], "Umbral del enlace dominante, solo donde el preset lo tiene."),
  "split_dominant_hold": ([G], BOTH, "0 (el del preset: apagado)", "0–2 (1 sí, 2 no)", [DOM, MODEL], ["015"], "Mantener el modo dominante mientras no pierde, y presumirlo en reposo."),
@@ -169,6 +176,9 @@ T = {
  "starlink_edge_pre_ms": ([G], BOTH, "100", "0–5000", [SLOT], ["015"], "La ventana empieza este tiempo antes del borde."),
  "starlink_edge_post_ms": ([G], BOTH, "50", "0–5000", [SLOT], ["015"], "La ventana termina este tiempo después del borde."),
  "starlink_edge_copies": ([G], BOTH, "`no`", "`yes` o `no`", [SLOT, COPIAS], ["015"], "En redundancia, copias a los demás enlaces solo dentro de la ventana del borde."),
+ "redund_spare": ([G], CLI, "`no`", "`no`, `copies`, `parity` o `mix`", [SPARE, COPIAS, FEC], ["020"], "EXPERIMENTO: en redundancia, lo que llevan los enlaces que no son el primero, en lo que les sobra (su cola bajo `redund_spare_ms`): copias parciales, paridad XOR sobre k paquetes del primero (el servidor necesita `fec = yes`) o la mezcla (copias si cabe todo o en un microcorte, paridad si no)."),
+ "redund_spare_ms": ([G], CLI, "50", "1–2000", [SPARE], ["020"], "Con `redund_spare`, la cola (sobre el mínimo de 60 s) en la que cada enlace que no es el primero sostiene lo que lleva."),
+ "redund_spare_first": ([G], CLI, "vacío (el de menor retardo sin cola)", "el nombre de un `[link NAME]` del archivo", [SPARE], ["020"], "Con `redund_spare`, el primer enlace (el que los demás protegen) fijado: ese mientras esté vivo y llevando, medido ahora y sin ahogarse; si se ahoga como primero queda vetado 15 s y manda la elección automática, y vuelve cuando se despeja; mientras los demás copian toda la subida, solo tras 2 s seguidos de ahogo (un salto de retardo más corto no lo saca). El estado dice por qué no es el primero (`upload.spare.pin`)."),
  "exp_link_types": ([G], BOTH, "vacía (todos los tipos)", "nombres de tipo", [MODEL], ["015"], "Limita las perillas globales del modelo a los enlaces de esos tipos."),
 }
 
@@ -221,7 +231,7 @@ def generate():
                                "label", "enabled", "weight", "type"]),
         ("Servidor", ["wireguard", "wireguard_poke", "wireguard_port_file", "max_sessions", "session_timeout_ms",
                       "path_timeout_ms", "passthrough_file", "forward_file", "forward", "lanes"]),
-        ("Salud", ["mute_behind_ms", "unmute_behind_ms", "mute_settle_ms", "mute_trickle", "min_active_links"]),
+        ("Salud", ["mute_behind_ms", "unmute_behind_ms", "mute_settle_ms", "mute_trickle", "min_active_links", "mute_queue"]),
         ("Reordenador", ["reorder", "reorder_max_wait_ms", "reorder_dup_wait_ms", "reorder_margin_ms", "reorder_bypass",
                          "reorder_by_link", "reorder_adaptive", "reorder_pool_kb", "reorder_idle_ms",
                          "reorder_retx_release_ms", "tcp_aware"]),
@@ -230,12 +240,14 @@ def generate():
         ("Reparto y guardas", ["split", "split_small", "split_spread_ms", "split_spread_copy", "split_stress_dup",
                                "split_stress_rejoin", "split_stress_single", "split_dwell_ms", "split_dwell_oq_ms"]),
         ("Gobernador y capacidad", ["governor", "governor_target_ms", "governor_window_ms", "capacity_weights",
-                                    "capacity_sat_ms", "capacity_loss_pct", "capacity_seq_lag", "cap_g4_episode"]),
+                                    "capacity_sat_ms", "capacity_loss_pct", "capacity_seq_lag", "capacity_expire_ms",
+                                    "capacity_loss_queue_ms", "capacity_stand", "cap_g4_episode"]),
         ("ETA, cosquilla, copias, dosificación", ["split_eta", "split_tickle_ms", "split_stale_max", "eta_buffer",
-                               "split_qpred_ms", "split_qpred_mode", "eta_keep", "eta_keep_ms", "redund_pace_ms", "pacing"]),
+                               "split_qpred_ms", "split_qpred_mode", "eta_keep", "eta_keep_ms", "redund_pace_ms", "pace_peers_ms", "pacing"]),
         ("Modelo de enlace y Starlink", ["exp_link_types", "split_dominant_pct", "split_dominant_hold",
                                "starlink_slot_clock", "starlink_edge_ms", "starlink_edge_pre_ms",
                                "starlink_edge_post_ms", "starlink_edge_copies"]),
+        ("Lo que sobra (redundancia)", ["redund_spare", "redund_spare_ms", "redund_spare_first"]),
     ]
     seen = [k for _, ks in groups for k in ks]
     unplaced = sorted(set(T) - set(seen))

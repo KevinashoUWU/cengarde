@@ -294,6 +294,18 @@ static void test_linkmodel_knobs(void)
 		ms[2].pace_ms = 0;
 		CHECK(!cg_link_pace_windows(ms, 3, w));
 	}
+	/* pace_peers_ms (+ 1) over the preset that has one: wider, or off */
+	k = (struct cg_link_knobs){ .pace_peers = 251 };
+	m = cg_link_model_k(CG_LTYPE_STARLINK, &k);
+	CHECK_EQ(m.pace_peers_ms, 250);
+	m = cg_link_model_k(CG_LTYPE_CELLULAR, &k);
+	CHECK_EQ(m.pace_peers_ms, 0);
+	k.pace_peers = 1;
+	m = cg_link_model_k(CG_LTYPE_STARLINK, &k);
+	CHECK_EQ(m.pace_peers_ms, 0);
+	k.pace_peers = 0;
+	m = cg_link_model_k(CG_LTYPE_STARLINK, &k);
+	CHECK_EQ(m.pace_peers_ms, CG_STARLINK_PACE_PEERS_MS);
 	/* the list of types */
 	CHECK_EQ(cg_link_types_parse("cellular,starlink  radio", &mask), 0);
 	CHECK_EQ(mask, (1u << CG_LTYPE_CELLULAR) | (1u << CG_LTYPE_STARLINK) | (1u << CG_LTYPE_RADIO));

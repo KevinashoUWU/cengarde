@@ -34,7 +34,7 @@ static inline void cg_decrec_health(struct cg_decring *r, const struct cg_hlink 
 		else
 			m = CG_DEC_UNMUTE_FORCED;
 		cg_dec_add(r, now_ms, (unsigned)i, m, h[i].state == CG_H_MUTED ? CG_H_ACTIVE : CG_H_MUTED, h[i].state,
-			   h[i].have_behind ? h[i].behind_us : 0);
+			   h[i].have_late ? h[i].late_us : h[i].have_behind ? h[i].behind_us : 0);
 	}
 }
 
@@ -74,6 +74,8 @@ static inline void cg_decrec_cap(struct cg_decring *r, const struct cg_cap_link 
 		cg_dec_add(r, now_ms, link, CG_DEC_CUT_SHORT, (int64_t)before_bps, (int64_t)cg_cap_bps(l), q);
 	if (ev & CG_CAP_EV_RESTORE)
 		cg_dec_add(r, now_ms, link, CG_DEC_RESTORE_REST, (int64_t)before_bps, (int64_t)cg_cap_bps(l), q);
+	if (ev & CG_CAP_EV_EXPIRE)
+		cg_dec_add(r, now_ms, link, CG_DEC_CAP_EXPIRE, (int64_t)before_bps, (int64_t)cg_cap_bps(l), q);
 }
 
 /* The governor: the links whose weight crossed CG_GOV_HALF (cg_gov_tick),

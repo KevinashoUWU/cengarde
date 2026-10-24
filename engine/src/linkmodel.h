@@ -190,6 +190,7 @@ struct cg_link_knobs {
 	uint32_t eta_keep; /* eta_keep, with eta_keep_ms */
 	uint32_t eta_keep_ms;
 	uint32_t pace_ms; /* redund_pace_ms */
+	uint32_t pace_peers; /* pace_peers_ms + 1, where the preset has one (starlink); 0: the preset's */
 	uint32_t dominant_pct; /* split_dominant_pct: dominant.h's threshold where the preset has one; large: off */
 	uint32_t dominant_hold; /* split_dominant_hold: 1 on, 2 off, where the preset has dominant_pct; 0: the preset's */
 	uint32_t slot_clock;    /* starlink_slot_clock: 1 on, 2 off, on starlink links; 0: the preset's */
@@ -244,6 +245,8 @@ static inline struct cg_link_model cg_link_model_k(unsigned type, const struct c
 	}
 	if (k->pace_ms)
 		m.pace_ms = cg_link_u16(k->pace_ms);
+	if (k->pace_peers && m.pace_peers_ms)
+		m.pace_peers_ms = cg_link_u16(k->pace_peers - 1);
 	if (k->dominant_pct && m.dominant_pct)
 		m.dominant_pct = cg_link_u16(k->dominant_pct);
 	if (k->dominant_hold && m.dominant_pct)

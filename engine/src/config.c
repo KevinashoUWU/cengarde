@@ -731,6 +731,23 @@ static int parse_lists(struct cg_config *c, struct cg_ini *ini)
 
 /* split: off, on or force in a client; off, client or force in a server
  * (enum cg_split_mode). c->mode is set. */
+/* redund_spare: no (off), copies, parity or mix (spare.h). */
+static int get_spare(struct cg_ini *ini, struct cg_config *c, char *err, size_t errlen)
+{
+	static const char *const names[] = { "no", "copies", "parity", "mix" };
+	const char *v = cg_ini_get(ini, "", "redund_spare");
+
+	if (!v)
+		return 0;
+	for (unsigned i = 0; i < sizeof(names) / sizeof(names[0]); i++)
+		if (!strcmp(v, names[i]) || (!i && !strcmp(v, "off"))) {
+			c->redund_spare = i;
+			return 0;
+		}
+	snprintf(err, errlen, "redund_spare: expected no, copies, parity or mix, got '%s'", v);
+	return -1;
+}
+
 static int get_split(struct cg_ini *ini, struct cg_config *c, char *err, size_t errlen)
 {
 	const char *v = cg_ini_get(ini, "", "split");
@@ -804,6 +821,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	c->rescue_pct = 5;
 	c->rescue_tries = 2;
 	c->fec_wait_ms = 10;
+	c->redund_spare_ms = 50;
 	c->fec_share_max = 0;
 	c->split = c->mode == CG_MODE_SERVER ? CG_SPLIT_CLIENT : CG_SPLIT_OFF;
 	c->split_small = 256;
@@ -812,6 +830,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	c->split_stress_rejoin = 1;
 	c->split_stress_single = 0;
 	c->split_tickle_ms = 0;
+	c->pace_peers_ms = -1;
 	c->split_stale_max = 1;
 	c->eta_keep_ms = 400;
 	c->split_spread_copy = -1; /* by governor, below */
@@ -879,6 +898,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	    get_u32(&ini, "", "mute_settle_ms", 100, 600000, &c->mute_settle_ms, err, errlen) ||
 	    get_u32(&ini, "", "mute_trickle", 0, 1000000, &c->mute_trickle, err, errlen) ||
 	    get_u32(&ini, "", "min_active_links", 1, CG_MAX_LINKS, &c->min_active_links, err, errlen) ||
+	    get_bool(&ini, "", "mute_queue", &c->mute_queue, err, errlen) ||
 	    get_u32(&ini, "", "busy_poll_us", 0, 1000000, &c->busy_poll_us, err, errlen) ||
 	    get_u32(&ini, "", "rt_priority", 0, 99, &c->rt_priority, err, errlen))
 		goto out;
@@ -930,11 +950,16 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	    get_u32(&ini, "", "split_dominant_pct", 0, 65535, &c->split_dominant_pct, err, errlen) ||
 	    get_u32(&ini, "", "split_dominant_hold", 0, 2, &c->split_dominant_hold, err, errlen) ||
 	    get_bool(&ini, "", "capacity_seq_lag", &c->capacity_seq_lag, err, errlen) ||
+	    get_u32(&ini, "", "capacity_expire_ms", 0, 600000, &c->capacity_expire_ms, err, errlen) ||
+	    get_u32(&ini, "", "capacity_loss_queue_ms", 0, 1000, &c->capacity_loss_queue_ms, err, errlen) ||
+	    get_u32(&ini, "", "capacity_stand", 0, 2, &c->capacity_stand, err, errlen) ||
 	    get_u32(&ini, "", "starlink_slot_clock", 0, 2, &c->starlink_slot_clock, err, errlen) ||
 	    get_u32(&ini, "", "starlink_edge_ms", 0, CG_SLOT_PERIOD_MS - 1, &c->starlink_edge_ms, err, errlen) ||
 	    get_u32(&ini, "", "starlink_edge_pre_ms", 0, 5000, &c->starlink_edge_pre_ms, err, errlen) ||
 	    get_u32(&ini, "", "starlink_edge_post_ms", 0, 5000, &c->starlink_edge_post_ms, err, errlen) ||
 	    get_bool(&ini, "", "starlink_edge_copies", &c->starlink_edge_copies, err, errlen) ||
+	    get_spare(&ini, c, err, errlen) ||
+	    get_u32(&ini, "", "redund_spare_ms", 1, 2000, &c->redund_spare_ms, err, errlen) ||
 	    get_bool(&ini, "", "pacing", &c->pacing, err, errlen) ||
 	    get_u32(&ini, "", "governor_target_ms", 1, 1000, &c->governor_target_ms, err, errlen) ||
 	    get_u32(&ini, "", "capacity_loss_pct", 0, 50, &c->capacity_loss_pct, err, errlen) ||
@@ -954,6 +979,17 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 		c->rescue_target_ms = c->governor_target_ms;
 	if (c->split_spread_copy < 0)
 		c->split_spread_copy = !c->governor && !c->capacity_weights && !c->split_eta;
+	/* Over the starlink preset's 60 ms (field, nostalgica, 2026-10-20: WOM
+	 * kept 36-60 % of the upload's copies and Starlink's losses on the rest
+	 * reached the server, 0.19-0.29 %; 250 ms, 0.002 %, story 017): a copy
+	 * that arrives before the receiver gives its gap up still patches a
+	 * loss. */
+	if (cg_ini_get(&ini, "", "pace_peers_ms")) {
+		u = 0;
+		if (get_u32(&ini, "", "pace_peers_ms", 0, 2000, &u, err, errlen))
+			goto out;
+		c->pace_peers_ms = (int32_t)u;
+	}
 	if (cg_ini_get(&ini, "", "cpu")) {
 		u = 0;
 		if (get_u32(&ini, "", "cpu", 0, 1023, &u, err, errlen))
@@ -1025,6 +1061,16 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 		}
 		if (parse_links(c, &ini, &hosts, err, errlen))
 			goto out;
+		/* redund_spare_first: a link of the file, by its [link NAME] (the
+		 * NUC, 2026-10-23: Entel at 70 m from its tower, in line of sight) */
+		v = cg_ini_get(&ini, "", "redund_spare_first");
+		if (v && *v) {
+			if (strlen(v) >= sizeof(c->redund_spare_first) || !cg_config_link(c, v)) {
+				snprintf(err, errlen, "redund_spare_first: no [link %s] section", v);
+				goto out;
+			}
+			strcpy(c->redund_spare_first, v);
+		}
 		cg_config_build(c, NULL);
 	} else {
 		if (get_addrs(&ini, "", "wireguard", 0, &c->wireguard, 1, 1, &n, err, errlen))

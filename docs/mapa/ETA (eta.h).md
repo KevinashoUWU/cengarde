@@ -4,7 +4,7 @@ archivos:
   - engine/src/eta.h
   - engine/src/capacity.h
   - engine/tests/test_eta.c
-sello: 78e36e0ccc0b79c2
+sello: 3ebfbd97a446909d
 ---
 # ETA (eta.h)
 
@@ -20,7 +20,7 @@ El reparto por **llegada esperada**: cada paquete va por el enlace donde llegar�
 
 ## Decide / escribe
 - El enlace de cada paquete repartido → [[Reparto (split.h)]] (`cg_split_pick_eta`).
-- Con `pace_any`, una segunda instancia sirve a [[Copias a tiempo (eta.h)]].
+- Con `pace_any`, una segunda instancia sirve a [[Copias a tiempo (eta.h)]]; con `redund_spare` también, y de ella [[Lo que sobra (spare.h)]] toma el retardo sin cola de cada enlace para elegir el primero.
 
 ## Perillas
 - [[Mapa/Perillas/split_eta|split_eta]]: no. [[Mapa/Perillas/split_stale_max|split_stale_max]]: 1; 1–64.
@@ -31,7 +31,10 @@ El reparto por **llegada esperada**: cada paquete va por el enlace donde llegar�
 - [[013-capacidad-y-dosificacion]]: por pesos, el 72 % de las retransmisiones de TCP de la bajada eran espurias (DSACK); de ahí el ETA.
 - [[015-modelo-de-enlace]]: el ETA nunca desbordaba a los celulares, con 25–30 ms más de base que Starlink; lo resolvió el preset `starlink`. C9 (`eta_keep = 2`) en Starlink: −16 a −48 %.
 
+- [[020-copias-parciales-y-paridad]]: con el enlace lento ahogado, el ETA de cada paquete se daba vuelta a él unos paquetes por tick; por eso [[Lo que sobra (spare.h)]] elige su primer enlace por el retardo sin cola, no por esto.
+
 ## Choques conocidos
+- Con `capacity_expire_ms`, cada mitad de la caducidad cuenta como medida (`loaded_ms`): `cg_cap_stale` no la vuelve a agrandar durante `CG_CAP_STALE_MS` ([[Capacidad (capacity.h)]], [[016-celda-virtual]]).
 - C9: reinicia su cola cada tick con una cola de hace 300–500 ms, sin lo que está en vuelo; oscila con período de 0,6–1 s ([[audit-pending]]). `eta_keep` quedó apagado.
 - C2: con el ETA, los enlaces ociosos no avanzan y el RACK del [[Reordenador (reorder.h)]] los espera.
 - Sin carga un enlace no se mide: [[Cosquilla (tickle.h)]].

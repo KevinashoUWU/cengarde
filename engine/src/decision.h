@@ -54,6 +54,7 @@ enum cg_dec_mech {
 	CG_DEC_GOV_UP,        /* governor: back at half the top or above; the same */
 	CG_DEC_RESCUE_FULL_ON, /* rescue: its budget ran low (CG_BOND_FULL): 0 -> 1; why: credit, bytes */
 	CG_DEC_RESCUE_FULL_OFF, /* rescue: room again: 1 -> 0; the same */
+	CG_DEC_CAP_EXPIRE,    /* capacity: out of the send set too long, halved (capacity_expire_ms); from/to bps; why: queue_us */
 	CG_DEC_MECHS
 };
 
@@ -128,6 +129,7 @@ static inline const char *cg_dec_name(unsigned mech)
 		"rejoin_empty", "rejoin_off",     "stress_on",     "stress_off",     "recover_on",
 		"recover_off",  "copies_dry",     "copies_ok",     "cut_full",       "cut_short",
 		"restore_rest", "gov_down",       "gov_up",        "rescue_full_on", "rescue_full_off",
+		"cap_expire",
 	};
 
 	return mech < CG_DEC_MECHS ? n[mech] : "?";
@@ -165,6 +167,7 @@ static inline const char *cg_dec_why_name(unsigned mech)
 	case CG_DEC_CUT_FULL:
 	case CG_DEC_CUT_SHORT:
 	case CG_DEC_RESTORE_REST:
+	case CG_DEC_CAP_EXPIRE:
 	case CG_DEC_GOV_DOWN:
 	case CG_DEC_GOV_UP:
 		return "queue_us";

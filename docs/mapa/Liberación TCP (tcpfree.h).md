@@ -17,6 +17,7 @@ Con `tunnel = native` el emisor ve el TCP de adentro. Marca `CG_F_FREE` los segm
 
 ## Decide / escribe
 - `CG_F_FREE` en la cabecera → [[Reordenador (reorder.h)]] del otro extremo, que distingue (`cg_tcp_data`) una retransmisión (con datos) de un ACK.
+- Con `redund_spare`, la misma marca hace prioritario al paquete en lo que sobra de los otros enlaces ([[Lo que sobra (spare.h)]]).
 - Una retransmisión va **en su lugar** de la secuencia, no adelantada; con `reorder_retx_release_ms` suelta los huecos retenidos antes.
 
 ## Perillas
