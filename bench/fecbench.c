@@ -13,11 +13,12 @@
 //            every block (RS) or per repair interval (RLC; XOR: one per group)
 //
 // usage: fecbench [seconds-per-case (1)]
-// Build (bench/lab.sh build does it, after make -C engine):
+// Build (bench/lab.sh build does it): the engine's Leopard objects, which
+// make -C engine leo-objs builds and names (engine/leo-HASH-*.o), then
 //   gcc -O2 -I engine/src -I engine/third_party/leopard -o bench/bin/fecbench
-//       bench/fecbench.c engine/src/rs.c engine/leo-plain-*.o -lpthread
-// Leopard's portable path (as on armhf or MIPS): make -C engine
-// LEO_PORTABLE=-DCG_LEO_PORTABLE, and engine/leo-plain-portable-*.o.
+//       bench/fecbench.c engine/src/rs.c THOSE-OBJECTS -lpthread
+// Leopard's portable path (as on armhf or MIPS): make -C engine leo-objs
+// LEO_PORTABLE=-DCG_LEO_PORTABLE.
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>

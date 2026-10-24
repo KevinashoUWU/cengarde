@@ -64,8 +64,12 @@ build() {
 		"$REPO"/engine/src/{proto,siphash}.c || return 1
 	make -s -C "$REPO/engine" cengarde && cp "$REPO/engine/cengarde" "$BIN/cengarde" || return 1
 	# the erasure codes' cost (story 021), on the engine's Leopard objects
+	local leo o objs=
+	leo=$(make -s -C "$REPO/engine" leo-objs) || return 1
+	for o in $leo; do objs="$objs $REPO/engine/$o"; done
+	# shellcheck disable=SC2086 # the object list splits on spaces
 	gcc -O2 -Wall -Wextra -I"$REPO/engine/src" -I"$REPO/engine/third_party/leopard" -o "$BIN/fecbench" \
-		"$LAB/fecbench.c" "$REPO/engine/src/rs.c" "$REPO"/engine/leo-plain-[!p]*.o -lpthread || return 1
+		"$LAB/fecbench.c" "$REPO/engine/src/rs.c" $objs -lpthread || return 1
 	[ "$ENGINE" = go ] || return 0 # ENGINE=go also builds the Go baseline
 	# engarde (Go) at GO_REF, with a stub web UI.
 	local tmp t

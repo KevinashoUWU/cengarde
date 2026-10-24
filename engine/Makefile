@@ -56,19 +56,22 @@ LEO_ARCH := $(shell $(CC) -dumpmachine 2>/dev/null)
 LEO_SIMD = $(if $(filter x86_64% i386% i486% i586% i686%,$(LEO_ARCH)),-mssse3)
 CG_CXXFLAGS = -std=c++11 -fno-exceptions -fno-rtti -fno-threadsafe-statics $(LEO_SIMD) $(LEO_PORTABLE)
 ifeq ($(SANITIZE),1)
-CG_CXXFLAGS += -fsanitize=address,undefined -fno-sanitize=vptr,object-size -fno-omit-frame-pointer -fno-sanitize-recover=all
+CG_CXXFLAGS += -fsanitize=address,undefined -fno-sanitize=vptr,object-size,bounds -fno-omit-frame-pointer -fno-sanitize-recover=all
 else ifeq ($(SANITIZE),thread)
 CG_CXXFLAGS += -fsanitize=thread -fno-omit-frame-pointer
 else
 CG_CXXFLAGS += $(HARDEN)
 endif
-# (UBSan's object-size check: off for Leopard, whose FFT indexes its tables
-# through a pointer one before them, FFTSkew - 1; ASan still checks every
-# access against the real objects)
-# one set of objects per kind of build (sanitizers do not mix), in this
-# directory and not in one of their own: bench/lab.sh build runs make as
-# root, and a directory root made could not be cleaned by its user (CI)
-LEO_TAG = leo-$(if $(SANITIZE),san$(SANITIZE),plain)$(if $(LEO_PORTABLE),-portable)
+# (UBSan's object-size and bounds checks: off for Leopard, whose FFT
+# indexes its tables through a pointer one before them, FFTSkew - 1; ASan
+# still checks every access against the real objects)
+# one set of objects per compiler and flags (a cross build, an OpenWrt
+# toolchain without -fPIE, the sanitizers: none may be reused by another),
+# named by their checksum, in this directory and not in one of their own:
+# bench/lab.sh build runs make as root, and a directory root made could not
+# be cleaned by its user (CI). make leo-objs builds and prints them.
+LEO_KEY := $(shell printf '%s' '$(CXX) $(CG_CXXFLAGS) $(CPPFLAGS) $(CXXFLAGS)' | cksum | cut -d' ' -f1)
+LEO_TAG = leo-$(LEO_KEY)
 ifeq ($(LEOPARD),0)
 LEO_OBJ =
 CG_CFLAGS += -DCG_NO_LEOPARD
@@ -105,4 +108,7 @@ clean:
 	rm -f cengarde cengarde-test
 	rm -f leo-*.o
 
-.PHONY: all test install clean
+leo-objs: $(LEO_OBJ)
+	@echo $(LEO_OBJ)
+
+.PHONY: all test install clean leo-objs
