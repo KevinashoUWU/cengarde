@@ -3,7 +3,7 @@ tags: [mapa, pieza]
 archivos:
   - engine/src/slot.h
   - engine/tests/test_slot.c
-sello: 00d33fbb83357402
+sello: 97a4b82387fde755
 ---
 # Ranuras de Starlink (slot.h)
 
@@ -18,7 +18,7 @@ Cada 15 s, a los :12, :27, :42 y :57 de cada minuto (UTC), Starlink reconfigura 
 
 ## Decide / escribe
 - `cg_slot_touches` → [[Capacidad (capacity.h)]]: la muestra no cuenta pérdida (`n_edge`, `edge_samples` en el estado).
-- `cg_slot_solo` / `cg_slot_pick` → el envío: fuera de la ventana, un paquete de 300 B o más va solo por Starlink; si el otro extremo reordena y guarda, como DATA repartido (`CG_F_SPLIT`), para que un hueco se pida al [[Rescate (rescue.h)]].
+- `cg_slot_solo` / `cg_slot_pick` / `cg_slot_copy_mask` → el envío: fuera de la ventana, un paquete de 300 B o más va solo por Starlink; si el otro extremo reordena y guarda, como DATA repartido (`CG_F_SPLIT`), para que un hueco se pida al [[Rescate (rescue.h)]]. Con dos platos aptos o más, una copia en cada uno en vez de DATA repartido en el primero ([[022-multistarlink]]): los demás platos quedaban ociosos.
 
 ## Perillas
 - [[Mapa/Perillas/starlink_slot_clock|starlink_slot_clock]]: 0 (preset); 1 sí, 2 no.
@@ -30,6 +30,7 @@ Cada 15 s, a los :12, :27, :42 y :57 de cada minuto (UTC), Starlink reconfigura 
 - [[015-modelo-de-enlace]] §9: con la pérdida por secuencia, `lossy` 93 % → 17 % del tiempo, caudal igual. Copias en el borde con rescate: de ~3 a ~1,05 copias por paquete sin pérdida en un stream de 8 Mbit/s, a cambio de hasta +30 % de p99 del ping grande. Por eso es perilla.
 
 ## Choques conocidos
+- Varios platos ([[022-multistarlink]]): todos los platos tienen los mismos bordes (:12/:27/:42/:57). Si en un borde se paran todos, las copias entre platos no tapan nada; solo un enlace de otro tipo (celular) cubre ese borde.
 - Sin NTP en el router el reloj no sirve (`CG_WALL_SET_MS` lo apaga); falta probarlo en campo ([[015-modelo-de-enlace]] §9).
 - El 37 % de las pérdidas de Starlink no cae en los bordes: sin rescate, las copias solo en el borde pierden ~0,11 % de datagramas.
 - Cuenta de ranuras distinta entre `slot.h` (477 en 1,7 h) y la historia (479 en ~2 h): ver [[Mapa del motor#Contradicciones]].

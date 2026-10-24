@@ -1262,12 +1262,12 @@ static void send_links(struct client *c, int m, uint64_t now_ms, uint16_t live, 
 			/* redund_spare: the first link of the last tick (spare_tick) */
 			fl[j] = (int8_t)(c->cfg->redund_spare ? c->sp_first1 - 1 : f);
 		}
-		if (c->cfg->starlink_edge_copies && !(c->peer_reorders && c->resc_idx)) {
-			uint16_t solo = edge_solo(c, carry, now_ms);
+		if (c->cfg->starlink_edge_copies) {
+			uint16_t cm = cg_slot_copy_mask(edge_solo(c, carry, now_ms), c->peer_reorders && c->resc_idx);
 
-			for (int j = 0; solo && j < m; j++)
+			for (int j = 0; cm != 0xffff && j < m; j++)
 				if (c->pick[j] < 0 && c->oiov[j][1].iov_len >= CG_PACE_SMALL)
-					c->cmask[j] &= solo;
+					c->cmask[j] &= cm;
 		}
 		if (c->cfg->redund_spare)
 			spare_masks(c, m, carry, now_us, fl);
@@ -1640,7 +1640,9 @@ static void spare_masks(struct client *c, int m, uint16_t carry, uint64_t now_us
 
 		if (c->pick[j] >= 0 || f < 0 || !(carry >> f & 1))
 			continue;
-		mask = (uint16_t)(c->cmask[j] & carry);
+		mask = cg_spare_mask(c->cmask[j], carry, f);
+		if (!small && !(c->cmask[j] >> f & 1))
+			cg_eta_add(&c->pace, (unsigned)f, len, now_us); /* not counted by the window */
 		for (int i = 0; i < CG_MAX_LINKS; i++) {
 			int go;
 

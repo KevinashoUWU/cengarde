@@ -93,13 +93,28 @@ static inline uint16_t cg_slot_solo(const struct cg_slot *s, uint64_t real_ms, u
  * for it (rescue.h), and the sender keeps it for that. The losses of a slot
  * that are not at its edges (37 % on nostalgica) come back in a round trip
  * instead of being lost. Small packets (under small) keep their copies.
- * The link, or -1: a copy on every carrier. */
+ * With two fit Starlink links or more (several dishes, story 022) a copy
+ * on each of them instead: split DATA went on the first dish alone and left
+ * the others idle, where a copy on two dishes needs no round trip for what
+ * one loses alone. The link, or -1: a copy (on the links of
+ * cg_slot_copy_mask). */
 static inline int cg_slot_pick(uint16_t solo, uint32_t len, uint32_t small, uint8_t *flags)
 {
-	if (!solo || len < small)
+	if (!solo || len < small || (solo & (solo - 1)))
 		return -1;
 	*flags |= 0x04; /* CG_F_SPLIT (proto.h) */
 	return __builtin_ctz(solo);
+}
+
+/* The links a copied packet (not split DATA, not small) may go on under
+ * starlink_edge_copies: solo (cg_slot_solo) when its packets go as copies,
+ * without a peer that reorders (pick 0) or with two fit Starlink links or
+ * more (cg_slot_pick); else every carrier, 0xffff. */
+static inline uint16_t cg_slot_copy_mask(uint16_t solo, int pick)
+{
+	if (!solo || (pick && !(solo & (solo - 1))))
+		return 0xffff;
+	return solo;
 }
 
 #endif

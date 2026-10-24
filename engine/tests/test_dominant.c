@@ -175,7 +175,8 @@ static void test_dominant_slower(void)
 }
 
 /* Two links with dominant_pct: the one delivering most is the dominant one;
- * when it changes, the window starts again. */
+ * when it changes, the window starts again. The other is its peer, never a
+ * slower link (story 022). */
 static void test_dominant_two(void)
 {
 	struct cg_cap_link l[CG_MAX_LINKS];
@@ -188,15 +189,65 @@ static void test_dominant_two(void)
 	cg_link_models(type, CG_MAX_LINKS, NULL, m);
 	link_set(&l[2], 50, 60, 30);
 	cg_dom_reset(&d);
-	/* link 0 dominant: links 1 and 2 (slower) out, 400 >= 2.5 x 85 */
-	CHECK_EQ(cg_dom_tick(&d, l, m, 0x7, now), 0x6);
+	/* link 0 dominant: link 1 (slower) out, link 2 a peer though slower */
+	CHECK_EQ(cg_dom_tick(&d, l, m, 0x7, now), 0x2);
 	CHECK_EQ(d.link, 0);
-	/* link 2 now delivers most (link 0 obstructed): its window, link 1 slower */
+	/* link 2 now delivers most (link 0 obstructed): its window, link 1 faster
+	 * than it, nothing slower */
 	l[0].rate_bps = 10 * M;
 	l[2].rate_bps = 200 * M;
 	CHECK_EQ(cg_dom_tick(&d, l, m, 0x7, now + 100), 0);
 	CHECK_EQ(d.link, 2);
 	CHECK_EQ(d.hi_cur, 200 * M);
+}
+
+/* Several dishes (story 022): two Starlinks alike and a cellular link. The
+ * dish ahead used to sum the other (3 ms behind) and not dominate, the one
+ * behind to dominate: which one delivered more decided the split. Now the
+ * other dish is a peer, and the candidate holds until a peer delivers over
+ * 5/4 of it. */
+static void test_dominant_dishes(void)
+{
+	struct cg_cap_link l[CG_MAX_LINKS];
+	struct cg_link_model m[CG_MAX_LINKS];
+	static const uint8_t type[CG_MAX_LINKS] = { CG_LTYPE_STARLINK, CG_LTYPE_CELLULAR, CG_LTYPE_STARLINK,
+						     CG_LTYPE_STARLINK };
+	struct cg_dom d;
+	uint64_t now = 100000;
+
+	for (unsigned i = 0; i < CG_MAX_LINKS; i++)
+		cg_cap_reset(&l[i]);
+	link_set(&l[0], 200, 210, 11);
+	link_set(&l[1], 20, 25, 25);
+	link_set(&l[2], 190, 200, 14);
+	cg_link_models(type, CG_MAX_LINKS, NULL, m);
+	cg_dom_reset(&d);
+	CHECK_EQ(cg_dom_tick(&d, l, m, 0x7, now), 0x2);
+	CHECK_EQ(d.link, 0);
+	/* the dish behind delivers a little more: the candidate stays, and so
+	 * does what is out */
+	l[0].rate_bps = 190 * M;
+	l[2].rate_bps = 200 * M;
+	for (uint64_t t = now + 100; t < now + 3000; t += 100) {
+		CHECK_EQ(cg_dom_tick(&d, l, m, 0x7, t), 0x2);
+		CHECK_EQ(d.link, 0);
+	}
+	/* over 5/4 of it: the other dish takes over, the cellular link still out */
+	l[2].rate_bps = 240 * M;
+	CHECK_EQ(cg_dom_tick(&d, l, m, 0x7, now + 3000), 0x2);
+	CHECK_EQ(d.link, 2);
+	/* the candidate leaves the mask (muted): the other one at once */
+	CHECK_EQ(cg_dom_tick(&d, l, m, 0x3, now + 3100), 0x2);
+	CHECK_EQ(d.link, 0);
+	/* a third dish not measured yet does not hold anything back */
+	link_set(&l[3], 0, 0, 12);
+	l[3].have_rate = 0;
+	l[3].q.have_min = 0;
+	cg_dom_reset(&d);
+	CHECK_EQ(cg_dom_tick(&d, l, m, 0xf, now + 3200), 0x2);
+	/* only dishes: no slower link, nothing out (they split among them) */
+	CHECK_EQ(cg_dom_tick(&d, l, m, 0xd, now + 3300), 0);
+	CHECK_EQ(d.why, CG_DOM_WHY_NOSLOWER);
 }
 
 /* hold (task #64): presumed on idle only with the evidence of its history,
@@ -304,4 +355,5 @@ void test_dominant(void)
 	test_dominant_hysteresis();
 	test_dominant_slower();
 	test_dominant_two();
+	test_dominant_dishes();
 }

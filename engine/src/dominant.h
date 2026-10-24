@@ -29,6 +29,16 @@
  * obstruction, a slot of low rate). Links as fast as it do not count: no
  * reordering, the spill costs nothing (shallowqd).
  *
+ * Several dishes (story 022): the other links with dominant_pct (another
+ * Starlink) are its peers, never slower links: neither out nor in the sum.
+ * Counted, the dish ahead of the other by CG_DOM_BASE_US (each slot draws
+ * its own base delay, +-2.5 ms one-way) summed it and did not dominate, while
+ * the one behind did: the split came and went with which dish delivered
+ * more. And the candidate changes only for a peer delivering over
+ * CG_DOM_SWITCH_NUM/DEN of it: at each change the window starts again and
+ * the hysteresis is lost, and two dishes alike changed places every few
+ * ticks (bench msl2c).
+ *
  * With hold (the model's dominant_hold, task #64) the dominant link's
  * delivery is taken for what it can carry only while it loses (the last
  * CG_DOM_LOST_MS, capacity.h's lost_ms, the switches' losses out): not
@@ -57,6 +67,8 @@
 #define CG_DOM_OUT_DEN 5
 #define CG_DOM_LOST_MS 5000u /* hold: a loss this recent says the dominant link is at its limit */
 #define CG_DOM_IDLE_BPS 2000000ull /* hold: sending under this, the dominant link is idle (presumed) */
+#define CG_DOM_SWITCH_NUM 5 /* a peer takes the candidate's place delivering over 5/4 of it */
+#define CG_DOM_SWITCH_DEN 4
 
 struct cg_dom {
 	uint64_t hi_cur, hi_prev; /* the dominant link's best delivery rate (bps), in two halves of CG_DOM_WIN_MS */
@@ -115,6 +127,14 @@ static inline int cg_dom_evidence(const struct cg_cap_link l[CG_MAX_LINKS], int 
 	return any && top * 100 >= sum * pct;
 }
 
+/* Whether link i may be the dominant one: carrying, with dominant_pct, and
+ * measured. */
+static inline int cg_dom_can(const struct cg_cap_link l[CG_MAX_LINKS], const struct cg_link_model *m, uint16_t mask,
+			     int i)
+{
+	return (mask >> i & 1) && m[i].dominant_pct && l[i].have_rate && l[i].q.have_min;
+}
+
 /* One tick (after the capacities'): mask, the links that carry; m, each
  * link's model (dominant_pct, with the global knob over the preset).
  * Returns the slower links it dominates (0: none, the split goes on), also
@@ -130,11 +150,14 @@ static inline uint16_t cg_dom_tick(struct cg_dom *d, const struct cg_cap_link l[
 	/* the dominant candidate: of the links with dominant_pct, the one that
 	 * delivers most; with hold, one not measured yet presumes */
 	for (unsigned i = 0; i < CG_MAX_LINKS; i++)
-		if ((mask >> i & 1) && m[i].dominant_pct && l[i].have_rate && l[i].q.have_min &&
-		    (dl < 0 || l[i].rate_bps > best)) {
+		if (cg_dom_can(l, m, mask, (int)i) && (dl < 0 || l[i].rate_bps > best)) {
 			dl = (int)i;
 			best = l[i].rate_bps;
 		}
+	/* the candidate stays until a peer delivers clearly more */
+	if (dl >= 0 && d->link >= 0 && dl != d->link && cg_dom_can(l, m, mask, d->link) &&
+	    best * CG_DOM_SWITCH_DEN <= l[d->link].rate_bps * CG_DOM_SWITCH_NUM)
+		dl = d->link;
 	if (dl < 0) {
 		cg_dom_reset(d);
 		return 0;
@@ -163,8 +186,8 @@ static inline uint16_t cg_dom_tick(struct cg_dom *d, const struct cg_cap_link l[
 		hi = l[dl].peak_bps; /* not at its limit: what it carried at best */
 	base = cg_dom_base(&l[dl]);
 	for (unsigned i = 0; i < CG_MAX_LINKS; i++) {
-		if (!(mask >> i & 1) || (int)i == dl)
-			continue;
+		if (!(mask >> i & 1) || (int)i == dl || m[i].dominant_pct)
+			continue; /* a peer is never a slower link */
 		if (!l[i].q.have_min) {
 			nomin |= (uint16_t)(1u << i);
 			continue;
