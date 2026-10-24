@@ -5,7 +5,7 @@ archivos:
   - engine/src/split.h
   - engine/src/capacity.h
   - engine/src/reorder.h
-sello: 7a539e067bd09a22
+sello: c7197981df3331ab
 ---
 # Glosario
 
@@ -25,6 +25,8 @@ Términos del proyecto, en español, con el nombre del código entre paréntesis
 
 ## Reparto
 - **Redundancia:** cada paquete por todos los enlaces; el receptor se queda con la primera copia. → [[Anti-replay (replay.h)]]
+- **Primer enlace / lo que sobra (`redund_spare`):** en redundancia, el enlace protegido (el de menor retardo sin cola parada) y la asignación de cada otro enlace, la tasa que le cabe sin llenarle la cola, donde van copias parciales o paridad. → [[Lo que sobra (spare.h)]]
+- **Microcorte:** 20–40 s en que Starlink pierde 50–88 % de la subida (historia 017); un XOR no rehace ahí. → [[Lo que sobra (spare.h)]]
 - **Reparto (split) / bonding:** cada paquete por un solo enlace. → [[Reparto (split.h)]]
 - **Elegible / candidato:** enlace que puede recibir parte del reparto. → [[Reparto (split.h)]]
 - **Peso / peso 0 (dup0):** la parte de un enlace; con 0, copia de todo. → [[Reparto (split.h)]]

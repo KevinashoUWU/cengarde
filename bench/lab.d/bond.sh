@@ -97,6 +97,15 @@
 #               directions: the loss on every link of a split packet that the
 #               rescue (rescue.h) answers; run it with CLIENT_EXTRA
 #               "rescue_wait_ms = 60" and SERVER_EXTRA "rescue_kb = 32768"
+#   protect     not in the default list: story 020, a lossy primary protected by a
+#               choked secondary in redundancy: link 1 like Starlink (60 Mbit/s,
+#               10 ms, 15 ms of queue, losing 0.7 % at random each way), link 2
+#               like WOM over its knee (5 Mbit/s, 25 ms, 2 s of queue). With
+#               BOND_RATE and BOND_SMALL a stream over 5 Mbit/s that full
+#               copies cannot fit on link 2
+#   protectcut  not in the default list: protect with a microcut (story 017:
+#               20-40 s of 50-77 % lost on Starlink): link 1 loses 60 % for the
+#               middle third of the run
 #   bloat       bufferbloat as on the Pi's 5G modems (story 012, 2026-10-13):
 #               3 links of similar delay (20, 20 and 22 ms) and unequal rate
 #               (30, 20 and 8 Mbit/s) behind deep queues (1, 1 and 2 s). A
@@ -500,6 +509,12 @@ bond_events() {
 			bond_link_down 2 25 40
 		done
 		;;
+	protectcut)
+		sleep "$(awk -v s="$s" 'BEGIN { print s / 3 }')"
+		bond_link 1 10 60 15 60
+		sleep "$(awk -v s="$s" 'BEGIN { print s / 3 }')"
+		bond_link 1 10 60 15 0.7
+		;;
 	spikeloss)
 		for t in $(seq 2 2 "$s"); do
 			sleep 1.5
@@ -531,6 +546,7 @@ bond_shape() {
 	deepq) bond_link 1 25 20 500 && bond_link 2 25 50 ;;
 	bloat) bond_link 1 20 30 1000 && bond_link 2 20 20 1000 && bond_link 3 22 8 2000 ;;
 	lossy) bond_link 1 20 60 100 1 && bond_link 2 35 30 100 1 && bond_link 3 25 50 100 1 ;;
+	protect | protectcut) bond_link 1 10 60 15 0.7 && bond_link 2 25 5 2000 ;;
 	*) return 1 ;;
 	esac
 }
@@ -719,7 +735,7 @@ bond_plan() {
 	for w in ${BOND_CC:-cubic bbr quic}; do ccs=$((ccs + 1)); done
 	for c in $BOND_CASES; do
 		case $c in
-		equal | het | reorder50 | reorder150 | linkdeath | downstall | shallowq | shallowqd | shallowqdeep | starsat | dominant | starlink15 | starlink15sw | starlink15ramp | ltespike | ltespikerand | deepq | bloat | lossy | spikeloss) ;;
+		equal | het | reorder50 | reorder150 | linkdeath | downstall | shallowq | shallowqd | shallowqdeep | starsat | dominant | starlink15 | starlink15sw | starlink15ramp | ltespike | ltespikerand | deepq | bloat | lossy | spikeloss | protect | protectcut) ;;
 		*)
 			echo "bond: unknown case $c"
 			return 1

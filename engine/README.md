@@ -515,6 +515,46 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
   - Estado: `fec` en el cliente (`parities`, `bytes`, `no_link`, `capped`,
     `deadline_us`, `sizes` y por qué cerró cada grupo) y en cada sesión
     del servidor (lo reconstruido y lo que no).
+  - En redundancia `fec` no hace nada: solo protege lo repartido (cada
+    paquete va por todos los enlaces y ninguno queda solo en uno; medido,
+    0 paridades, historia 020). Para eso está `redund_spare`.
+  - Las paridades ya no cuentan en `tx_packets`/`tx_bytes` del enlace que
+    las lleva (van en `tx_fec_packets`/`tx_fec_bytes`): el servidor cuenta
+    solo DATA por camino, y una paridad contada como enviada parecía
+    perdida a la capacidad (`short` y la pérdida de la muestra).
+- **`redund_spare` (no; `copies`, `parity` o `mix`; solo el cliente,
+  experimental):** en redundancia, protege al primer enlace (el de menor
+  retardo sin una cola parada; un Starlink que pierde) con lo que les sobra
+  a los demás (un celular ahogado sobre su codo), sin llenarles la cola
+  (`spare.h`, historia 020). El que como primero junta una cola de más de
+  4 × `redund_spare_ms` queda vetado 60 s; en un microcorte suyo el primero
+  no cambia. Cada enlace que no es el primero tiene una asignación que sigue
+  a su cola sobre el mínimo de 60 s: baja un cuarto si pasa de
+  `redund_spare_ms`, sube si está bajo la mitad y se usa. `copies` manda en
+  ella copias parciales (los paquetes chicos y, con `tcp_aware`, los ACK y
+  las retransmisiones de TCP primero); `parity`, un XOR de k paquetes del
+  primero (k de 2 a 15, el menor cuya paridad cabe; el servidor necesita
+  `fec = yes`, el mismo `CG_T_FEC`, sin protocolo nuevo); `mix`, copias en
+  un microcorte del primero (pierde más de 5 %; un XOR no rehace nada ahí)
+  y paridad si no. En los tres, copias cuando la asignación lleva todo.
+  *Medido* en la celda virtual (WOM ahogado con 7 Mbit/s, el fijo perdiendo
+  0,7 % y un microcorte de 10 s al 60 %; n = 3 contra `redund_pace_ms =
+  250`): `mix` bajó lo perdido fuera del corte de 0,239 a 0,066 % con 0,42
+  bytes en el celular por byte (0,68) y su RTT p95 de 411 a 192 ms, y subió
+  el TCP de 10,1 a 17,5 Mbit/s, igual en el corte; con Entel B2, de 0,584 a
+  0,061 %. En el laboratorio (`protect`, n = 8) el flujo de 6 Mbit/s pierde
+  0,011 % contra 0,280 % y el TCP sube de 6,9 a 16,8 Mbit/s. `parity` pierde
+  0,010 % fuera del corte pero en él no ayuda (50 % perdido). En el corte,
+  nada de lo que cabe iguala a las copias completas detrás de segundos de
+  cola (UDP: 26 % con `mix` frente a 19 % con 250). Por eso, apagada por
+  omisión.
+  - **`redund_spare_ms` (50; 1–2000):** la cola a la que sostiene cada
+    enlace lo que lleva. 150 no mejoró nada medible (historia 020).
+  - Estado: `upload.spare` del cliente (`mode`, `now`, `k`, `first`,
+    `data_mbit`, `copies`, `copies_skipped`, `fed`, `parities`,
+    `parities_skipped`, `parities_no_link`) y `spare` por enlace (`mbit`,
+    `cuts`, `taken`, `skipped`); lo rehecho, en `fec` de la sesión del
+    servidor.
 - **`reorder_pool_kb` (8192; 256–131070):** memoria para los paquetes
   retenidos, en bloques de 2 KiB, reservada al arrancar; solo ocupa RAM lo
   que llega a usarse. En el servidor la comparten todas las sesiones (cada

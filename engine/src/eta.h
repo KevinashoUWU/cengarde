@@ -184,8 +184,9 @@ static inline int cg_eta_pick(struct cg_eta *e, uint16_t set, uint32_t len, uint
  * copies 72 % late, WOM's all). A link without a window, or without a rate,
  * gets every copy. At a low load every queue is short and every link gets
  * every copy, as without it. */
-static inline uint16_t cg_eta_copies(struct cg_eta *e, uint16_t set, uint32_t len, uint64_t now_us,
-				     const uint32_t window_us[CG_MAX_LINKS])
+/* *first (NULL: not wanted): the link where it arrives first, -1: none with a rate. */
+static inline uint16_t cg_eta_copies_first(struct cg_eta *e, uint16_t set, uint32_t len, uint64_t now_us,
+					   const uint32_t window_us[CG_MAX_LINKS], int *first)
 {
 	uint64_t at[CG_MAX_LINKS], best = UINT64_MAX, bits = (uint64_t)len * 8 * 1000000;
 	uint16_t out = 0;
@@ -217,7 +218,25 @@ static inline uint16_t cg_eta_copies(struct cg_eta *e, uint16_t set, uint32_t le
 			out |= (uint16_t)(1u << i);
 		}
 	}
+	if (first)
+		*first = b;
 	return out;
+}
+
+static inline uint16_t cg_eta_copies(struct cg_eta *e, uint16_t set, uint32_t len, uint64_t now_us,
+				     const uint32_t window_us[CG_MAX_LINKS])
+{
+	return cg_eta_copies_first(e, set, len, now_us, window_us, NULL);
+}
+
+/* A copy cg_eta_copies counted on link i that did not go after all
+ * (spare.h): its bits out of the link's backlog. */
+static inline void cg_eta_unadd(struct cg_eta *e, unsigned i, uint32_t len)
+{
+	uint64_t bits = (uint64_t)len * 8 * 1000000;
+
+	if (i < CG_MAX_LINKS)
+		e->l[i].backlog = e->l[i].backlog > bits ? e->l[i].backlog - bits : 0;
 }
 
 #endif

@@ -3,7 +3,7 @@ tags: [mapa, pieza]
 archivos:
   - engine/src/capacity.h
   - engine/tests/test_capacity.c
-sello: 5daba1864deeebb2
+sello: 1c21235f79bdca5f
 ---
 # Capacidad (capacity.h)
 
@@ -22,6 +22,7 @@ Estima cuánto lleva cada enlace en el sentido que envía este extremo. Entre do
 - Con `capacity_expire_ms`, si el enlace está en el envío (`out`): vivo y portador según [[Salud y silenciado (health.h)]] y, con reparto, en él o llevando copia de todo ([[Reparto (split.h)]], [[G4 guarda de dispersión (split.h)]]).
 
 ## Decide / escribe
+- `loss_pm` (la pérdida de la última muestra con lo enviado conocido, por mil) y su hora → [[Lo que sobra (spare.h)]] (la mezcla vuelve a copias en un microcorte).
 - La tasa por enlace → [[ETA (eta.h)]] (`cg_cap_eta`), [[Dosificación (pace.h)]], [[Enlace dominante (dominant.h)]], [[Cosquilla (tickle.h)]] (`cg_cap_tickle`).
 - Con `capacity_weights`, los pesos del reparto (`cg_cap_weights`) → [[Reparto (split.h)]]: su capacidad, 5/4 (y 1/16 del mayor) bajo media `sat_us`; el doble bajo la mitad de su mejor (arranque rápido); escalado por el [[Gobernador (govern.h)]] si está.
 - El peso del rescate (`cg_cap_rescue_w`) y su bit `full` → [[Rescate (rescue.h)]].
@@ -40,6 +41,7 @@ Estima cuánto lleva cada enlace en el sentido que envía este extremo. Entre do
 - [[013-capacidad-y-dosificacion]]: muestras de 250 ms oscilaban hasta 1,5–2× lo real; con el decaimiento tipo BBR, dos o tres de cuatro enlaces quedaban en el piso y el túnel en 40–50 %; el arranque rápido fue neutro en laboratorio.
 - [[016-celda-virtual]]: un LTE fuera por el acantilado del SNR guardaba 8–21 Mbit/s; con `capacity_expire_ms = 2000` vuelve con 0,3–1,3. Al volver la señal entera eso costó (bonding 23,0 → 20,8 Mbit/s en los 10 s siguientes); al volver débil, los cortes de siempre bajaron la vieja en 1,5–2,5 s y no hubo diferencia. Queda apagada.
 - [[019-perdida-con-cola]]: en trazas de ns-3 con verdad, un búfer corto con TCP dejaba la capacidad 3–6 veces arriba 40 s y `capacity_loss_queue_ms = 10` la corrige en 1,0–1,4 s (sin cortes en pérdida aleatoria sin cola); una cola permanente devolvía +523 % por el arranque rápido y `capacity_stand` lo evita. En la celda calibrada corrige antes, pero ni ahí ni en el laboratorio cambia el TCP: quedan apagadas.
+- [[020-copias-parciales-y-paridad]]: un enlace que solo llevaba paridad la contaba como enviada y no recibida (el servidor cuenta DATA por camino): su capacidad caía a la mitad cada muestra. Corregido en el cliente (`tx_fec_*` aparte).
 - [[015-modelo-de-enlace]] §9: con la pérdida por secuencia y el reloj de ranuras, Starlink marcado `lossy` pasa del 93 % del tiempo al 17 %, caudal igual.
 
 ## Choques conocidos

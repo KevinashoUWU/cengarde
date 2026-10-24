@@ -257,6 +257,8 @@ struct cg_config {
 	uint32_t starlink_edge_ms;    /* the slots' edge in each 15 s of the wall clock (12000: :12, :27, :42, :57) */
 	uint32_t starlink_edge_pre_ms, starlink_edge_post_ms; /* the window around it */
 	int starlink_edge_copies;     /* redundancy: copies to a starlink link's peers only in an edge's window */
+	uint32_t redund_spare;        /* client, redundancy: what the links after the first carry in their spare (spare.h, story 020): 0 off, 1 copies, 2 parity, 3 mix */
+	uint32_t redund_spare_ms;     /* ... the queue they hold it to (default 50) */
 	/* The knobs above, eta_buffer and capacity_loss_pct are the value of
 	 * every link over its type's preset (linkmodel.h); with this mask (a bit
 	 * per type, exp_link_types = starlink ...) only of the links of those

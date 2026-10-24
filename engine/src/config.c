@@ -731,6 +731,23 @@ static int parse_lists(struct cg_config *c, struct cg_ini *ini)
 
 /* split: off, on or force in a client; off, client or force in a server
  * (enum cg_split_mode). c->mode is set. */
+/* redund_spare: no (off), copies, parity or mix (spare.h). */
+static int get_spare(struct cg_ini *ini, struct cg_config *c, char *err, size_t errlen)
+{
+	static const char *const names[] = { "no", "copies", "parity", "mix" };
+	const char *v = cg_ini_get(ini, "", "redund_spare");
+
+	if (!v)
+		return 0;
+	for (unsigned i = 0; i < sizeof(names) / sizeof(names[0]); i++)
+		if (!strcmp(v, names[i]) || (!i && !strcmp(v, "off"))) {
+			c->redund_spare = i;
+			return 0;
+		}
+	snprintf(err, errlen, "redund_spare: expected no, copies, parity or mix, got '%s'", v);
+	return -1;
+}
+
 static int get_split(struct cg_ini *ini, struct cg_config *c, char *err, size_t errlen)
 {
 	const char *v = cg_ini_get(ini, "", "split");
@@ -804,6 +821,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	c->rescue_pct = 5;
 	c->rescue_tries = 2;
 	c->fec_wait_ms = 10;
+	c->redund_spare_ms = 50;
 	c->fec_share_max = 0;
 	c->split = c->mode == CG_MODE_SERVER ? CG_SPLIT_CLIENT : CG_SPLIT_OFF;
 	c->split_small = 256;
@@ -939,6 +957,8 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	    get_u32(&ini, "", "starlink_edge_pre_ms", 0, 5000, &c->starlink_edge_pre_ms, err, errlen) ||
 	    get_u32(&ini, "", "starlink_edge_post_ms", 0, 5000, &c->starlink_edge_post_ms, err, errlen) ||
 	    get_bool(&ini, "", "starlink_edge_copies", &c->starlink_edge_copies, err, errlen) ||
+	    get_spare(&ini, c, err, errlen) ||
+	    get_u32(&ini, "", "redund_spare_ms", 1, 2000, &c->redund_spare_ms, err, errlen) ||
 	    get_bool(&ini, "", "pacing", &c->pacing, err, errlen) ||
 	    get_u32(&ini, "", "governor_target_ms", 1, 1000, &c->governor_target_ms, err, errlen) ||
 	    get_u32(&ini, "", "capacity_loss_pct", 0, 50, &c->capacity_loss_pct, err, errlen) ||

@@ -4,7 +4,7 @@ archivos:
   - engine/src/eta.h
   - engine/src/linkmodel.h
   - engine/tests/test_eta.c
-sello: cada6f51e8ec33bc
+sello: 03b2ea1e34bb4b0e
 ---
 # Copias a tiempo (eta.h)
 
@@ -20,6 +20,7 @@ En redundancia (o en el modo dominante), decide qué enlaces reciben copia de un
 ## Decide / escribe
 - `cmask[]`, la máscara de copias de cada paquete → el envío (`send_links`, `down_send`).
 - Con `starlink_edge_copies`, [[Ranuras de Starlink (slot.h)]] recorta además esa máscara fuera del borde.
+- Con `redund_spare`, [[Lo que sobra (spare.h)]] recorta después la máscara de los enlaces que no son el primero según lo que les sobra (`cg_eta_copies_first` da además el enlace donde llega primero, y `cg_eta_unadd` saca de su cola virtual una copia que al final no salió); la perilla deja esta instancia activa aunque ningún enlace tenga ventana.
 
 ## Perillas
 - [[Mapa/Perillas/redund_pace_ms|redund_pace_ms]]: 0 (apagado); 0–2000.
@@ -29,11 +30,13 @@ En redundancia (o en el modo dominante), decide qué enlaces reciben copia de un
 ## Dónde se midió
 - [[015-modelo-de-enlace]] §6: con Starlink, el p99 del ping de 1200 B en `starsat` bajó de ~360 a ~95 ms, caudal ±5 %; cuesta 1,1–3× retransmisiones. Aplicado a todos los celulares, `het` perdía 8–18 %: por eso solo junto a un Starlink.
 - `eta.h`: en campo, las copias de Entel llegaban tarde el 72 % y las de WOM todas.
+- [[017-terreno-nostalgica]]: con 60 ms WOM llevaba 36–60 % de las copias y la subida perdía 0,19–0,29 % en todos los enlaces; con 250, ~90 % y 0,002 %.
+- [[020-copias-parciales-y-paridad]]: con el celular ahogado (celda virtual, WOM a 7 Mbit/s), 250 deja su cola en ~400 ms y pierde 0,18 % fuera de un microcorte; 60, ~160 ms y 0,24 %; todas las copias, 3 s y 0,16 %. `redund_spare = mix` lo bajó a 0,06 %.
 
 ## Choques conocidos
 - C10: copias, rescates y paridad no se cuentan en el ETA ni en el tope de `cake` ([[audit-pending]]).
 - [[Enlace dominante (dominant.h)]] usa estas copias a tiempo cuando se hace a un lado.
 
 ## Archivos
-- `eta.h` (`cg_eta_copies`), `linkmodel.h` (`cg_link_pace_windows`); tests `engine/tests/test_eta.c`, `test_linkmodel.c`.
+- `eta.h` (`cg_eta_copies`, `cg_eta_copies_first`, `cg_eta_unadd`), `linkmodel.h` (`cg_link_pace_windows`); tests `engine/tests/test_eta.c`, `test_linkmodel.c`.
 - `client.c`: `link_models`, `cap_tick` (`c->pace`), `send_links`. `server.c`: `path_models`, `down_send`.

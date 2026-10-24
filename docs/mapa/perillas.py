@@ -43,13 +43,14 @@ FWD = "Tabla de reenvío (fwdtable.h)"
 TUNR = "Rutas del túnel nativo (tunroute.h)"
 DEC = "Bitácora de decisiones (decision.h)"
 CONF = "Configuración (config.c)"
+SPARE = "Lo que sobra (spare.h)"
 
 H = {
     "002": "002-wireguard-para-cengarde", "005": "005-motor-c-v1", "006": "006-salud-de-enlaces",
     "008": "008-luci-uci-y-emparejamiento", "009": "009-recarga-control-e-ip-pass",
     "010": "010-ipv6-varias-ip-multicliente-nombres", "011": "011-hilos", "012": "012-bonding",
     "013": "013-capacidad-y-dosificacion", "014": "014-tunel-nativo", "015": "015-modelo-de-enlace", "016": "016-celda-virtual",
-    "019": "019-perdida-con-cola",
+    "019": "019-perdida-con-cola", "020": "020-copias-parciales-y-paridad",
     "audit": "audit-pending",
 }
 
@@ -174,6 +175,8 @@ T = {
  "starlink_edge_pre_ms": ([G], BOTH, "100", "0–5000", [SLOT], ["015"], "La ventana empieza este tiempo antes del borde."),
  "starlink_edge_post_ms": ([G], BOTH, "50", "0–5000", [SLOT], ["015"], "La ventana termina este tiempo después del borde."),
  "starlink_edge_copies": ([G], BOTH, "`no`", "`yes` o `no`", [SLOT, COPIAS], ["015"], "En redundancia, copias a los demás enlaces solo dentro de la ventana del borde."),
+ "redund_spare": ([G], CLI, "`no`", "`no`, `copies`, `parity` o `mix`", [SPARE, COPIAS, FEC], ["020"], "EXPERIMENTO: en redundancia, lo que llevan los enlaces que no son el primero, en lo que les sobra (su cola bajo `redund_spare_ms`): copias parciales, paridad XOR sobre k paquetes del primero (el servidor necesita `fec = yes`) o la mezcla (copias si cabe todo o en un microcorte, paridad si no)."),
+ "redund_spare_ms": ([G], CLI, "50", "1–2000", [SPARE], ["020"], "Con `redund_spare`, la cola (sobre el mínimo de 60 s) en la que cada enlace que no es el primero sostiene lo que lleva."),
  "exp_link_types": ([G], BOTH, "vacía (todos los tipos)", "nombres de tipo", [MODEL], ["015"], "Limita las perillas globales del modelo a los enlaces de esos tipos."),
 }
 
@@ -242,6 +245,7 @@ def generate():
         ("Modelo de enlace y Starlink", ["exp_link_types", "split_dominant_pct", "split_dominant_hold",
                                "starlink_slot_clock", "starlink_edge_ms", "starlink_edge_pre_ms",
                                "starlink_edge_post_ms", "starlink_edge_copies"]),
+        ("Lo que sobra (redundancia)", ["redund_spare", "redund_spare_ms"]),
     ]
     seen = [k for _, ks in groups for k in ks]
     unplaced = sorted(set(T) - set(seen))
