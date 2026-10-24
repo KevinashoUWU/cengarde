@@ -7,7 +7,7 @@ archivos:
 
 # Perillas
 
-Las 104 claves que `engine/src/config.c` lee (comprobado al generar esta nota: ni falta ni sobra ninguna).
+Las 106 claves que `engine/src/config.c` lee (comprobado al generar esta nota: ni falta ni sobra ninguna).
 Por omisión y rango salen de `cg_config_parse`; el significado, de los comentarios de `config.h` y de [[engine-README]].
 Las perillas marcadas como experimento están apagadas por omisión.
 
@@ -85,6 +85,7 @@ Secciones: «global» es la parte sin sección; `[link NOMBRE]` es del cliente; 
 | [[Mapa/Perillas/mute_settle_ms\|mute_settle_ms]] | 2000 | [[Salud y silenciado (health.h)]], [[G4 guarda de dispersión (split.h)]] | [[006-salud-de-enlaces]], [[012-bonding]] |
 | [[Mapa/Perillas/mute_trickle\|mute_trickle]] | 0 | [[Salud y silenciado (health.h)]] | [[006-salud-de-enlaces]] |
 | [[Mapa/Perillas/min_active_links\|min_active_links]] | 2 | [[Salud y silenciado (health.h)]] | [[006-salud-de-enlaces]] |
+| [[Mapa/Perillas/mute_queue\|mute_queue]] | `no` | [[Salud y silenciado (health.h)]], [[Cola por enlace (cg_gov_base)]] | [[016-celda-virtual]] |
 
 ## Reordenador
 
@@ -142,6 +143,7 @@ Secciones: «global» es la parte sin sección; `[link NOMBRE]` es del cliente; 
 | [[Mapa/Perillas/capacity_sat_ms\|capacity_sat_ms]] | 20 (el de `governor_target_ms`; 0 lo sigue) | [[Capacidad (capacity.h)]], [[Tope para cake (capacity.h)]], [[ETA (eta.h)]] | [[audit-pending]] |
 | [[Mapa/Perillas/capacity_loss_pct\|capacity_loss_pct]] | 0 (apagado) | [[Capacidad (capacity.h)]], [[Modelo de enlace (linkmodel.h)]] | [[015-modelo-de-enlace]] |
 | [[Mapa/Perillas/capacity_seq_lag\|capacity_seq_lag]] | `yes` | [[Capacidad (capacity.h)]] | [[015-modelo-de-enlace]] |
+| [[Mapa/Perillas/capacity_expire_ms\|capacity_expire_ms]] | 0 (apagado) | [[Capacidad (capacity.h)]] | [[016-celda-virtual]] |
 | [[Mapa/Perillas/cap_g4_episode\|cap_g4_episode]] | 0 (apagado) | [[Capacidad (capacity.h)]], [[G4 guarda de dispersión (split.h)]], [[Modelo de enlace (linkmodel.h)]] | [[015-modelo-de-enlace]], [[audit-pending]] |
 
 ## ETA, cosquilla, copias, dosificación

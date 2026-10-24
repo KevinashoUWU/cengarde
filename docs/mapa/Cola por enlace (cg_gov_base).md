@@ -4,7 +4,7 @@ archivos:
   - engine/src/govern.h
   - engine/src/capacity.h
   - engine/src/split.h
-sello: 7cbd50e75c6cdd46
+sello: 8d270becf0f03882
 ---
 # Cola por enlace (cg_gov_base)
 
@@ -22,6 +22,7 @@ La «cola» de un enlace es su retardo de ida menos su propio mínimo de una ven
 - [[ETA (eta.h)]]: la base (el mínimo, relativo al menor) y la cola, que fija el backlog cada tick.
 - [[G4 guarda de dispersión (split.h)]]: desde C1, la cola propia (`CG_SPLIT_MIN_MS`, 10 s) para clasificar por qué sale un enlace.
 - [[Enlace dominante (dominant.h)]]: la base para saber qué enlaces son más lentos.
+- [[Salud y silenciado (health.h)]]: con `mute_queue`, la cola sobre el mínimo de 60 s, menos la del más rápido.
 
 ## Perillas
 - [[Mapa/Perillas/governor_window_ms|governor_window_ms]]: 10000; 1000–120000. Ventana del mínimo para el gobernador y la capacidad.

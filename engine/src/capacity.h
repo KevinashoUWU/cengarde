@@ -80,6 +80,18 @@
  * tunnel says nothing). The engine
  * only says the rate; a service outside it applies cake.
  *
+ * With expire_ms (capacity_expire_ms, story 016), a link out of the send
+ * set (muted, stalled or out of the split: cfg->out) that has not been
+ * sent a loaded sample since for expire_ms has its capacity halved, and
+ * again every expire_ms while it stays out, down to 1/16 of its best (at
+ * least CG_CAP_EXP_FLOOR); each halving holds fast start back for
+ * CG_CAP_REST_MS as a full sample does (cg_cap_expire). Its capacity is
+ * otherwise frozen at what it was before it left: on the virtual cell an
+ * LTE link that fell off the SNR cliff and was out kept 8-16 Mbit/s against
+ * 0.2-1 it carried. On its return it starts from the halved value and the
+ * split's probing (twice its capacity under half its best) brings it up
+ * as fast as it shows it carries more.
+ *
  * Pure: no clock, no I/O, no allocation.
  *
  * SPDX-License-Identifier: GPL-3.0-or-later */
@@ -117,6 +129,7 @@
 #define CG_CAP_LONG_MS 60000 /* the rescue's queue: over the delay's minimum of this long */
 #define CG_CAP_STALE_MS 3000 /* a link not loaded for this long: its capacity grows for the ETA (cg_cap_stale) */
 #define CG_CAP_EP_REST_MS 3000u /* cap_g4_episode 3: a G4 episode holds fast start back this long */
+#define CG_CAP_EXP_FLOOR 64000u /* bps: capacity_expire_ms halves a capacity down to no less than this */
 /* More delivered than sent by this much (packets), and the report is not
  * of this run of the counters: probes and what was in flight at the start
  * make a few packets of difference, never this many. */
@@ -142,6 +155,10 @@ struct cg_cap_cfg {
 	 * real_off_ms, the wall clock minus now_ms. */
 	const struct cg_slot *slot;
 	int64_t real_off_ms;
+	/* capacity_expire_ms (0: off), and whether the link is out of the send
+	 * set this tick (cg_cap_expire) */
+	uint32_t expire_ms;
+	uint8_t out;
 };
 
 struct cg_cap_link {
@@ -203,12 +220,16 @@ struct cg_cap_link {
 	 * the counters. */
 	uint8_t cut;
 	uint64_t n_cut_full, n_cut_short, n_cut_loss, n_restore;
+	/* capacity_expire_ms: since when it is out of the send set (0: in),
+	 * its last halving, and how many */
+	uint64_t out_ms, exp_ms, n_expire;
 };
 
 /* What cg_cap_tick did, as bits of its return value. */
 #define CG_CAP_EV_CUT_FULL 1u  /* a run of full samples began: the capacity is what it delivers full */
 #define CG_CAP_EV_CUT_SHORT 2u /* a run of samples whose packets stop arriving began */
 #define CG_CAP_EV_RESTORE 4u   /* fast start: back to half its best */
+#define CG_CAP_EV_EXPIRE 8u    /* out of the send set too long: halved (capacity_expire_ms) */
 
 enum cg_cap_cut {
 	CG_CAP_CUT_NONE = 0,
@@ -380,6 +401,54 @@ static inline int cg_cap_best(struct cg_cap_link *l, uint64_t now_ms)
 	return 0;
 }
 
+/* capacity_expire_ms: link l is out of the send set (out) or not at now_ms.
+ * Out for expire_ms with no loaded sample since it left (a tickle that
+ * loaded it measured it), its capacity and smoothed rate are halved, and
+ * again every expire_ms while it stays out, to no less than 1/16 of its
+ * best and CG_CAP_EXP_FLOOR (nor than they are); full_ms is set, so that
+ * fast start does not bring it back to half its best before it has
+ * carried CG_CAP_REST_MS without being full, and loaded_ms, so that the
+ * split by expected arrival does not grow it back as an idle link's
+ * (cg_cap_stale) for CG_CAP_STALE_MS. Returns whether it halved. */
+static inline int cg_cap_expire(struct cg_cap_link *l, uint64_t now_ms, int out, uint32_t expire_ms)
+{
+	uint64_t since, cap, floor;
+
+	if (!out || !expire_ms) {
+		l->out_ms = 0;
+		return 0;
+	}
+	if (!l->out_ms) {
+		l->out_ms = now_ms ? now_ms : 1;
+		l->exp_ms = 0;
+	}
+	since = l->loaded_ms > l->out_ms ? l->loaded_ms : l->out_ms;
+	if (!l->have_rate || now_ms < since || now_ms - since < expire_ms ||
+	    (l->exp_ms && now_ms - l->exp_ms < expire_ms))
+		return 0;
+	cap = cg_cap_bps(l);
+	floor = cg_cap_best_bps(l) / 16;
+	if (floor < CG_CAP_EXP_FLOOR)
+		floor = CG_CAP_EXP_FLOOR;
+	l->exp_ms = now_ms;
+	l->full_ms = now_ms;
+	/* as measured now: the ETA's growth of an idle link's capacity
+	 * (cg_cap_stale) counts from here, not from before it left */
+	l->loaded_ms = now_ms;
+	if (cap <= floor)
+		return 0;
+	cap /= 2;
+	if (cap < floor)
+		cap = floor;
+	l->max_cur = l->max_prev = cap;
+	if (l->rate_bps > cap)
+		l->rate_bps = cap;
+	if (l->sat_bps > cap)
+		l->sat_bps = cap;
+	l->n_expire++;
+	return 1;
+}
+
 /* What link l had sent by t_ms (the newest tick at or before it), 0 with
  * *ok 0 when its ticks do not go back that far. */
 static inline uint64_t cg_cap_tx_at(const struct cg_cap_link *l, uint64_t t_ms, int *ok)
@@ -461,6 +530,8 @@ static inline unsigned cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint6
 	uint8_t cut;
 	unsigned ev = 0;
 
+	if (cg_cap_expire(l, now_ms, cfg->out, cfg->expire_ms))
+		ev |= CG_CAP_EV_EXPIRE;
 	if (h && cg_health_fresh(h, now_ms)) {
 		int32_t q = cg_owd_diff(h->owd, cg_gov_base(&l->q, h->owd, now_ms, cfg->window_ms));
 
@@ -490,17 +561,17 @@ static inline unsigned cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint6
 		}
 	}
 	if (!report_ms)
-		return 0;
+		return ev;
 	if (!l->have) {
 		l->t_ms = report_ms;
 		l->rx = rx;
 		l->tx_pkts = l->tx0 = tx_pkts;
 		l->tx_bytes = tx_bytes;
 		l->have = 1;
-		return 0;
+		return ev;
 	}
 	if (report_ms <= l->t_ms || report_ms - l->t_ms < CG_CAP_MIN_MS)
-		return 0;
+		return ev;
 	dt = report_ms - l->t_ms;
 	drx = rx - l->rx;
 	dpk = tx_pkts - l->tx_pkts;
@@ -529,13 +600,16 @@ static inline unsigned cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint6
 		l->n_cut_loss = keep.n_cut_loss;
 		l->n_restore = keep.n_restore;
 		l->n_g4_ep = keep.n_g4_ep;
+		l->n_expire = keep.n_expire;
+		l->out_ms = keep.out_ms;
+		l->exp_ms = keep.exp_ms;
 		l->rfull = keep.rfull;
 		l->t_ms = report_ms;
 		l->rx = rx;
 		l->tx_pkts = l->tx0 = tx_pkts;
 		l->tx_bytes = tx_bytes;
 		l->have = 1;
-		return 0;
+		return ev;
 	}
 	if (dpk)
 		l->size = (uint32_t)(dby / dpk);
