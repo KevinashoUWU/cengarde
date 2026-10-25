@@ -29,6 +29,7 @@ TICKLE = "Cosquilla (tickle.h)"
 DOM = "Enlace dominante (dominant.h)"
 PACE = "Dosificación (pace.h)"
 TCPF = "Liberación TCP (tcpfree.h)"
+TCPA = "Retransmisión según la evidencia (tcpack.h)"
 SRV = "Elección de servidor (srvpick.h)"
 NAMES = "Nombres del servidor (resolve.h)"
 RO = "Reordenador (reorder.h)"
@@ -137,7 +138,8 @@ T = {
  "rescue_code_ms": ([G], SRVS, "100", "0–1000", [HARQ, RESC], ["023"], "Con un código protegiendo (sus reparaciones o paridades llegan), cuánto espera un hueco a que lo rehaga antes de pedir; se suma a `rescue_wait_ms`. En la práctica decide el sello: una reparación cuya base pasó el hueco."),
  "parq": ([G], SRVS, "`yes`", "`yes` o `no`", [HARQ, CODES], ["023"], "Un hueco que el código no rehízo pide su déficit de rango en paridad (`CG_T_PARQ`: combinaciones nuevas de RLC o índices nuevos del bloque RS), no los paquetes. Con `no`, el paquete (NACK)."),
  "rescue_tcp_race": ([G], BOTH, "`yes`", "`yes` o `no`", [HARQ, TCPF], ["023"], "Con TCP adentro (túnel nativo), ningún hueco se retiene ni se pide más allá del presupuesto de TCP (su RTT más un cuarto, RACK): lo que no llega antes queda para la retransmisión de TCP."),
- "tcp_retx_one": ([G], BOTH, "`yes`", "`yes` o `no`", [TCPF, HARQ], ["023"], "Con `tcp_aware`, en redundancia la primera retransmisión de un segmento va por un solo enlace (el más rápido), no copiada; una segunda del mismo, copiada."),
+ "tcp_retx_one": ([G], BOTH, "`yes`", "`yes` o `no`", [TCPF, HARQ, TCPA], ["023"], "Con `tcp_aware`, en redundancia la primera retransmisión de un segmento va por un solo enlace (el más rápido), no copiada; una segunda del mismo, copiada. Con `no`, toda retransmisión va copiada (y `tcp_ack_rule` no cuenta)."),
+ "tcp_ack_rule": ([G], BOTH, "`yes`", "`yes` o `no`", [TCPA, TCPF], ["023"], "Con `tcp_retx_one`, los enlaces de una retransmisión según lo que se sabe de su original: ya ACK o SACK, por un enlace (también repetida); perdida por el túnel en todos los enlaces, copiada (también la primera); entregada por el túnel, en camino o nada sabido, como `tcp_retx_one`. Lo dicen los ACK que vuelven y la marca `CG_F_TUNHOLE` del otro extremo."),
  "rescue_target_ms": ([G], BOTH, "20 (el de `governor_target_ms`; 0 lo sigue)", "0–1000", [RESC, CAP], ["audit"], "Cola donde empieza a bajar el peso del rescate (cero a 4 veces). Auditoría C12."),
  "rescue_by_owd": ([G], CLI, "`no`", "`yes` o `no`", [RESC], ["015", "audit"], "El rescate del cliente por el enlace de menor retardo de subida, no de RTT (C10). Experimento."),
  "rescue_full_hyst": ([G], BOTH, "0 (apagado)", "0–2", [RESC, CAP, MODEL], ["015", "audit"], "Histéresis del bit `full` del rescate (C11). Experimento, campo del modelo."),
@@ -245,7 +247,7 @@ def generate():
                          "reorder_retx_release_ms", "tcp_aware"]),
         ("Rescate y FEC", ["rescue_kb", "rescue_pct", "rescue_wait_ms", "rescue_tries", "rescue_target_ms",
                            "rescue_by_owd", "rescue_full_hyst", "rescue_code_ms", "parq", "rescue_tcp_race",
-                           "tcp_retx_one", "fec", "fec_wait_ms", "fec_share_max"]),
+                           "tcp_retx_one", "tcp_ack_rule", "fec", "fec_wait_ms", "fec_share_max"]),
         ("Reparto y guardas", ["split", "split_small", "split_spread_ms", "split_spread_copy", "split_stress_dup",
                                "split_stress_rejoin", "split_stress_single", "split_dwell_ms", "split_dwell_oq_ms"]),
         ("Gobernador y capacidad", ["governor", "governor_target_ms", "governor_window_ms", "capacity_weights",

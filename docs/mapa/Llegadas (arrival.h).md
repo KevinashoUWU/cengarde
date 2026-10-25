@@ -3,7 +3,7 @@ tags: [mapa, pieza]
 archivos:
   - engine/src/arrival.h
   - engine/tests/test_arrival.c
-sello: 728b7b2be4b94adb
+sello: 9104292547cc3982
 ---
 # Llegadas (arrival.h)
 
@@ -18,9 +18,10 @@ Estadísticas de recepción por enlace en un flujo redundante: qué enlace trajo
 ## Decide / escribe
 - `wins`, `lag_us` en las sondas ([[Sondas y cola de bonding (proto.h)]]) y el estado; los histogramas para `bench/fieldrec.py`.
 - Excepción: con `reorder_idle_ms`, `cg_arr_idle` recorta el `rset` del [[Reordenador (reorder.h)]].
+- Otra: la secuencia más nueva que trajo cada enlace, de cualquier copia (`top`, `cg_arr_top`), y su `last_us` → el juicio de los huecos de TCP en el extremo de salida ([[Liberación TCP (tcpfree.h)]], `tcpe_view`): un hueco del túnel está perdido cuando cada enlace que podía traerlo trajo algo posterior ([[023-reparacion-coherente]]). Las copias tardías cuentan, y no se verifican: un `top` falso solo copiaría una retransmisión.
 
 ## Perillas
-- [[Mapa/Perillas/reorder_idle_ms|reorder_idle_ms]]: 0 (el único uso como entrada de decisión).
+- [[Mapa/Perillas/reorder_idle_ms|reorder_idle_ms]]: 0. [[Mapa/Perillas/tcp_ack_rule|tcp_ack_rule]]: sí (usa `top`).
 
 ## Dónde se midió
 - [[012-bonding]]: instrumentos pasivos del paso 0 (`joint`, `lost_all`, `sizes`) y el registrador de campo.
