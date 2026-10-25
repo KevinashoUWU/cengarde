@@ -145,7 +145,11 @@ void test_rebuilt(void)
 	memset(p, 0, 256);
 	p[0] = 4;
 	CHECK_EQ(cg_rebuilt_check(0, p, 32 + 1408), CG_RB_OK);
-	CHECK_EQ(cg_rebuilt_check(0, p, 32 + 1407), CG_RB_BAD);
+	CHECK_EQ(cg_rebuilt_check(0, p, 32 + 1000 + 7), CG_RB_BAD);
+	/* padded to the MTU, not to 16 (story 026): 1380's full packet */
+	CHECK_EQ(cg_rebuilt_check(0, p, 32 + 1380), CG_RB_OK);
+	CHECK_EQ(cg_rebuilt_check(0, p, 32 + 1420), CG_RB_OK);
+	CHECK_EQ(cg_rebuilt_check(0, p, 32 + 1279), CG_RB_BAD);
 	p[0] = 1;
 	CHECK_EQ(cg_rebuilt_check(0, p, 148), CG_RB_OK);
 	CHECK_EQ(cg_rebuilt_check(0, p, 149), CG_RB_BAD);

@@ -376,6 +376,7 @@ struct client {
 	struct cg_f3 f3;
 	uint16_t f3_links;
 	unsigned f3_span;
+	uint32_t f3_lag; /* the last repair's window ended this long before now, us (cg_f3_lag_us) */
 	uint8_t f3_dn;
 	uint64_t f3_rep, f3_bytes, f3_data, f3_tail, f3_guarded, f3_nolink, f3_empty, f3_gated;
 	uint32_t sseq[CG_BATCH];
@@ -2118,9 +2119,21 @@ static void f3_begin(struct client *c, const struct upctx *u)
 
 /* DATA seq (len bytes at p) into the window; its share of repairs, while
  * FEC v3 protects. */
+#ifdef CG_F3_DEBUG
+static FILE *f3dbg;
+static uint32_t f3h(const uint8_t *p, size_t n) { uint32_t h = 2166136261u; for (size_t i = 0; i < n; i++) h = (h ^ p[i]) * 16777619u; return h; }
+#endif
 static void f3_feed(struct client *c, uint32_t seq, const uint8_t *p, size_t len, uint64_t now_us)
 {
+#ifdef CG_F3_DEBUG
+	if (!f3dbg) f3dbg = fopen("/tmp/f3cli.txt", "w");
+	if (f3dbg) fprintf(f3dbg, "%u %zu %08x\n", seq, len, f3h(p, len));
+#endif
 	cg_rlcw_add(c->f3w, seq, p, (uint16_t)(len > CG_SYM_PLEN ? CG_SYM_PLEN : len), now_us);
+	/* the parity the server asks for again comes from this window too
+	 * (on_parq): without the rescue ring, the rescue's budget grows here */
+	if (!c->resc_idx)
+		cg_resc_earn(&c->resc_b, (uint32_t)len, c->cfg->rescue_pct);
 	if (c->f3.mode == CG_F3_OFF)
 		return;
 	cg_f3_earn(&c->f3, (uint32_t)len, c->cfg->fec_pct, now_us);
@@ -2136,6 +2149,7 @@ static void f3_repair(struct client *c, uint64_t now_us)
 	struct cg_rep_hdr h;
 	uint16_t cand = 0;
 	unsigned w, slen;
+	uint32_t top = 0, lag;
 	uint8_t *p;
 	int link;
 
@@ -2154,14 +2168,31 @@ static void f3_repair(struct client *c, uint64_t now_us)
 		cg_f3_spend(&c->f3, c->f3.cost ? c->f3.cost : CG_F3_COST0);
 		return;
 	}
-	w = cg_rlcw_window(c->f3w, now_us, win, CG_RLCW_SPAN);
+	{
+		/* its window ends where the DATA of slower links would still
+		 * be on their way when it arrives (cg_f3_lag_us), at most half
+		 * the window back */
+		int32_t behind[CG_MAX_LINKS];
+		uint16_t have = 0;
+
+		for (int i = 0; i < CG_MAX_LINKS; i++) {
+			behind[i] = c->uh[i].behind_us;
+			have |= (uint16_t)(c->uh[i].have_behind ? 1u << i : 0);
+		}
+		lag = cg_f3_lag_us(behind, have, c->f3_links, (unsigned)link, (uint32_t)(win / 2));
+	}
+	w = cg_rlcw_window(c->f3w, now_us > win ? now_us - win : 0, now_us - lag, CG_RLCW_SPAN, &top);
 	if (c->nfecq == CG_FEC_Q)
 		fec_send(c, now_us);
 	p = c->fecq[c->nfecq].p + CG_HDR_LEN;
-	slen = cg_rlcw_repair(&c->sp_gf, c->f3w, w, &h, p + CG_REP_HDR);
+	slen = w ? cg_rlcw_repair(&c->sp_gf, c->f3w, top, w, &h, p + CG_REP_HDR) : 0;
 	if (!slen) {
+		/* nothing sent between the window's start and its end (traffic
+		 * paused, or all of it newer than the lag): paid all the same, so
+		 * the credit does not pile up; what waits keeps waiting for the
+		 * tail repair */
 		c->f3_empty++;
-		cg_f3_idle(&c->f3); /* nothing within the window: no credit kept for it */
+		cg_f3_pay(&c->f3, c->f3.cost ? c->f3.cost : CG_F3_COST0);
 		return;
 	}
 	cg_rep_put(p, &h);
@@ -2176,6 +2207,7 @@ static void f3_repair(struct client *c, uint64_t now_us)
 		cg_eta_add(&c->eta, (unsigned)link, cg_f3_cost(slen), now_us);
 	c->f3_span = w;
 	c->f3_dn = h.dn;
+	c->f3_lag = lag;
 }
 
 /* After a batch: the repairs its DATA earned. */
@@ -2928,14 +2960,12 @@ static void parq_one(struct client *c, struct link *l, const struct cg_rep_hdr *
 	uint8_t pkt[CG_HDR_LEN + CG_REP_HDR + CG_RS_BYTES_MAX];
 	size_t plen = CG_REP_HDR + slen;
 
-	/* the rescue's budget; without the rescue ring (FEC v3 answers from
-	 * its window), the code's own credit, at most a repair in debt */
-	if (c->resc_idx ? !cg_resc_spend(&c->resc_b, (uint32_t)plen) : c->f3.credit < 0) {
+	/* the rescue's budget (rescue_pct of the DATA: without the rescue
+	 * ring, FEC v3's window earns it, f3_feed) */
+	if (!cg_resc_spend(&c->resc_b, (uint32_t)plen)) {
 		c->parq_budget++;
 		return;
 	}
-	if (!c->resc_idx)
-		cg_f3_pay(&c->f3, cg_f3_cost(slen));
 	cg_rep_put(pkt + CG_HDR_LEN, h);
 	memcpy(pkt + CG_HDR_LEN + CG_REP_HDR, sym, slen);
 	cg_up_header(&c->txs, pkt, CG_T_REPAIR, 0, (uint8_t)(l - c->link), (uint32_t)cg_now_us(), pkt + CG_HDR_LEN, plen);
@@ -3906,6 +3936,7 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 		cg_json_str(j, "single", single[c->cfg->fec_single >= 0 && c->cfg->fec_single <= 2 ? c->cfg->fec_single : 0]);
 		cg_json_u64(j, "links", (uint64_t)__builtin_popcount(c->f3_links));
 		cg_json_u64(j, "window", c->f3_span); /* the last repair's, sequences */
+		cg_json_ms(j, "lag_ms", c->f3_lag);   /* and how long before now it ended */
 		cg_json_u64(j, "density", c->f3_dn);
 		cg_json_u64(j, "repairs", c->f3_rep);
 		cg_json_u64(j, "repair_bytes", c->f3_bytes);

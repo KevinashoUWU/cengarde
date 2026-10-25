@@ -103,6 +103,22 @@ static void test_f3_guard(void)
 	CHECK(!cg_f3_guard(0, 0));
 }
 
+/* The lag: the slowest link of the set over the repair's own, never
+ * negative, capped; links whose delay is not known count as the fastest. */
+static void test_f3_lag(void)
+{
+	int32_t b[CG_F3_LINKS] = { 0, 8000, 3000, 30000 };
+
+	CHECK_EQ(cg_f3_lag_us(b, 0xf, 0xf, 0, 50000), 30000);
+	CHECK_EQ(cg_f3_lag_us(b, 0xf, 0xf, 3, 50000), 0);
+	CHECK_EQ(cg_f3_lag_us(b, 0xf, 0x7, 2, 50000), 5000); /* link 3 not in the set */
+	CHECK_EQ(cg_f3_lag_us(b, 0x7, 0xf, 0, 50000), 8000); /* link 3's not known */
+	CHECK_EQ(cg_f3_lag_us(b, 0xf, 0xf, 0, 10000), 10000);
+	b[0] = -2000;
+	CHECK_EQ(cg_f3_lag_us(b, 0xf, 0x3, 0, 50000), 10000);
+	CHECK_EQ(cg_f3_lag_us(b, 0, 0xf, 1, 50000), 0);
+}
+
 /* The lone link's gate: on at 2 per mille (or random loss), off under 1,
  * off in a cut (over half the repair rate), the knob over all of it. */
 static void test_f3_gate(void)
@@ -148,5 +164,6 @@ void test_fec3(void)
 	test_f3_credit();
 	test_f3_pick();
 	test_f3_guard();
+	test_f3_lag();
 	test_f3_gate();
 }

@@ -227,42 +227,64 @@ static inline const uint8_t *cg_rlcw_get(const struct cg_rlcw_tx *t, uint32_t se
 	return t->p[seq & (CG_RLCW_SPAN - 1)];
 }
 
-/* The window at now_us: how many of the newest sequences went within
- * span_us (at most max); 0 when even the newest is older. */
-static inline unsigned cg_rlcw_window(const struct cg_rlcw_tx *t, uint64_t now_us, uint64_t span_us, unsigned max)
+/* The window: the newest sequence sent at end_us or before (its top, in
+ * *top), and how many up to it went at start_us or after (at most max);
+ * 0 when none. A repair's window ends a little before now (end_us): the
+ * newest DATA on links slower than the repair's would arrive after it, and
+ * each would cost the receiver a column for nothing (fec3.h's lag). */
+static inline unsigned cg_rlcw_window(const struct cg_rlcw_tx *t, uint64_t start_us, uint64_t end_us, unsigned max,
+				      uint32_t *top)
 {
-	unsigned lo = 0, hi = t->n < max ? t->n : max; /* the answer is in [lo, hi] */
+	unsigned lo = 0, hi = t->n, back, w; /* back: the fewest of the newest to skip, in [lo, hi] */
 
-	/* the times grow with the sequence: the longest run of the newest
-	 * within span_us */
+	if (!t->n)
+		return 0;
+	/* the times grow with the sequence: skip the newest sent after end_us */
+	while (lo < hi) {
+		unsigned mid = (lo + hi) / 2;
+
+		if (t->t_us[(t->newest - mid) & (CG_RLCW_SPAN - 1)] <= end_us)
+			hi = mid;
+		else
+			lo = mid + 1;
+	}
+	back = lo;
+	if (back == t->n)
+		return 0;
+	*top = t->newest - back;
+	/* then the longest run back from the top sent at start_us or after */
+	lo = 0;
+	hi = t->n - back < max ? t->n - back : max;
 	while (lo < hi) {
 		unsigned mid = (lo + hi + 1) / 2;
-		uint64_t t0 = t->t_us[(t->newest - (mid - 1)) & (CG_RLCW_SPAN - 1)];
 
-		if (now_us - t0 <= span_us)
+		if (t->t_us[(*top - (mid - 1)) & (CG_RLCW_SPAN - 1)] >= start_us)
 			lo = mid;
 		else
 			hi = mid - 1;
 	}
-	return lo;
+	w = lo;
+	return w;
 }
 
-/* A repair over the newest w sequences (cg_rlcw_window; at most what is
+/* A repair over the w sequences up to top (cg_rlcw_window; within what is
  * kept): its header in *h, its symbol into out (CG_SYM_MAX bytes); returns
  * the symbol's length, 0: nothing to combine. */
-static inline unsigned cg_rlcw_repair(const struct cg_gf *g, struct cg_rlcw_tx *t, unsigned w, struct cg_rep_hdr *h,
-				      uint8_t *out)
+static inline unsigned cg_rlcw_repair(const struct cg_gf *g, struct cg_rlcw_tx *t, uint32_t top, unsigned w,
+				      struct cg_rep_hdr *h, uint8_t *out)
 {
 	uint16_t d[CG_RLCW_SPAN];
 	uint8_t c[CG_RLCW_SPAN], dn;
 	unsigned k = 0, slen = 0;
-	uint32_t base, s = 0;
+	uint32_t base, s = 0, back = t->newest - top;
 
-	if (w > t->n)
-		w = t->n;
+	if (!t->n || back >= t->n)
+		return 0;
+	if (w > t->n - back)
+		w = t->n - back;
 	if (!w)
 		return 0;
-	base = t->newest - w + 1;
+	base = top - w + 1;
 	dn = cg_rlcw_density(w);
 	/* a seed that picks nobody (a small window, a low density) is skipped */
 	for (int tries = 0; !k && tries < 16; tries++) {

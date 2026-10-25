@@ -641,8 +641,10 @@ static void test_rlcw_window(void)
 	uint8_t p[CG_SYM_PLEN];
 	uint16_t len;
 
+	uint32_t top = 0;
+
 	memset(&W, 0, sizeof(W));
-	CHECK_EQ(cg_rlcw_window(&W, 1000, 100, CG_RLCW_SPAN), 0);
+	CHECK_EQ(cg_rlcw_window(&W, 0, 1000, CG_RLCW_SPAN, &top), 0);
 	for (uint32_t s = 0xfffffffeu, i = 0; i < 2000; s++, i++)
 		cg_rlcw_add(&W, s, p, pkt(s, p), 1000ull * i);
 	CHECK_EQ(W.n, CG_RLCW_SPAN);
@@ -653,14 +655,21 @@ static void test_rlcw_window(void)
 
 		CHECK(q && len == pkt(0xfffffffeu + 1500, p) && !memcmp(q, p, len));
 	}
-	/* sent at 1 ms each: 50 ms back from the newest is 51 of them */
-	CHECK_EQ(cg_rlcw_window(&W, 1999000, 50000, CG_RLCW_SPAN), 51);
-	CHECK_EQ(cg_rlcw_window(&W, 1999000, 50000, 20), 20);
-	CHECK_EQ(cg_rlcw_window(&W, 1999000 + 60000, 50000, CG_RLCW_SPAN), 0);
-	CHECK_EQ(cg_rlcw_window(&W, 1999000, 5000000, CG_RLCW_SPAN), CG_RLCW_SPAN);
+	/* sent at 1 ms each: from 50 ms back to now is 51 of them, up to the newest */
+	CHECK_EQ(cg_rlcw_window(&W, 1949000, 1999000, CG_RLCW_SPAN, &top), 51);
+	CHECK_EQ(top, 0xfffffffeu + 1999);
+	CHECK_EQ(cg_rlcw_window(&W, 1949000, 1999000, 20, &top), 20);
+	CHECK_EQ(cg_rlcw_window(&W, 2009000, 2059000, CG_RLCW_SPAN, &top), 0); /* the newest is older */
+	CHECK_EQ(top, 0xfffffffeu + 1999);
+	CHECK_EQ(cg_rlcw_window(&W, 0, 1999000, CG_RLCW_SPAN, &top), CG_RLCW_SPAN);
+	/* ending 10 ms before now (a lag): the top is 10 back */
+	CHECK_EQ(cg_rlcw_window(&W, 1949000, 1989000, CG_RLCW_SPAN, &top), 41);
+	CHECK_EQ(top, 0xfffffffeu + 1989);
+	CHECK_EQ(cg_rlcw_window(&W, 0, 1000, CG_RLCW_SPAN, &top), 0); /* before everything kept */
 	cg_rlcw_add(&W, 5, p, pkt(5, p), 3000000); /* a jump: over */
 	CHECK_EQ(W.n, 1);
-	CHECK_EQ(cg_rlcw_window(&W, 3000000, 50000, CG_RLCW_SPAN), 1);
+	CHECK_EQ(cg_rlcw_window(&W, 2950000, 3000000, CG_RLCW_SPAN, &top), 1);
+	CHECK_EQ(top, 5);
 }
 
 /* n packets on k links round-robin, link 0 dead for packets [a, b); a wide
@@ -691,7 +700,7 @@ static unsigned rlcw_stall(unsigned n, unsigned k, unsigned a, unsigned b, unsig
 		}
 		if ((i + 1) % every == 0) {
 			struct cg_rep_hdr h;
-			unsigned sl = cg_rlcw_repair(&G, &W, w, &h, sym), link = nr++ % k;
+			unsigned sl = cg_rlcw_repair(&G, &W, W.newest, w, &h, sym), link = nr++ % k;
 
 			CHECK(sl > 2);
 			if (!(link == 0 && i >= a && i < b))
@@ -800,7 +809,12 @@ static void test_rlcw_random(void)
 		}
 		if (i % 8 == 7 && rlc_rand() % 5) {
 			struct cg_rep_hdr h;
-			unsigned w = cg_rlcw_window(&W, 200ull * i, 60000, CG_RLCW_SPAN), sl = cg_rlcw_repair(&G, &W, w, &h, sym);
+			uint32_t top = 0;
+			unsigned w = cg_rlcw_window(&W, 200ull * i - 60000, 200ull * i - 2000 * (i % 3), CG_RLCW_SPAN, &top);
+			unsigned sl = w ? cg_rlcw_repair(&G, &W, top, w, &h, sym) : 0;
+
+			if (!sl)
+				continue;
 
 			got += cg_rlc_rx_repair(&G, &R, &ring, &h, sym, sl, out + got, CG_RLC_COLS - got);
 		}

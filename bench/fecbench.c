@@ -258,7 +258,10 @@ static void bench_f3(unsigned mbit, unsigned pct, unsigned win_ms, int loss)
 		credit += 1400 * pct;
 		if (credit >= 1440 * 100) {
 			credit -= 1440 * 100;
-			sl = cg_rlcw_repair(&G, &WT, cg_rlcw_window(&WT, us, win_ms * 1000ull, CG_RLCW_SPAN), &h, sym);
+			uint32_t top = 0;
+			unsigned w = cg_rlcw_window(&WT, us - win_ms * 1000ull, us, CG_RLCW_SPAN, &top);
+
+			sl = w ? cg_rlcw_repair(&G, &WT, top, w, &h, sym) : 0;
 			reps++;
 		}
 		b = now();

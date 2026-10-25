@@ -194,6 +194,9 @@ struct session {
 	uint8_t rep_top_ok;
 	uint64_t rep_last_ms;
 	uint64_t f3_last_ms;   /* FEC v3's wide repairs came then (story 026): gaps wait for the code without the rescue */
+	uint32_t f3_top, f3_span; /* the newest wide repair's last member and window (harq.h's cg_harq_future) */
+	uint32_t f3_gap16;        /* sequences between wide repairs as they arrive, x 16, smoothed (1/8) */
+	uint8_t f3_have;
 	uint64_t hq_nonack;    /* asks the code could not answer, the client keeping no rescue ring: given up, no NACK */
 	uint64_t hq_waited, hq_none, hq_tcp, hq_full;  /* asks that waited for the code; not asked: here, decodable; left to TCP; no room */
 	uint64_t hq_released;                          /* of those that waited, not held (TCP flows), followed out of order */
@@ -1472,6 +1475,11 @@ static int harq_one(struct server *s, struct session *S, struct harq_batch *hb, 
 	}
 	g.age_us = (uint32_t)now_us - t_us;
 	g.horizon_us = s->cfg->rescue_code_ms * 1000;
+	/* FEC v3: the repairs still to come over it (cg_harq_future) */
+	if (kind == CG_REP_RLC && harq_wide(s, S, now_us / 1000) && S->f3_have) {
+		g.wide = 1;
+		g.future = cg_harq_future(seq, S->f3_top, S->f3_span, S->f3_gap16);
+	}
 	g.eta_us = harq_rtt_us(S, now_us / 1000);
 	g.budget_us = harq_budget_us(s, S, now_us);
 	if (!s->cfg->parq)
@@ -1501,8 +1509,19 @@ static int harq_one(struct server *s, struct session *S, struct harq_batch *hb, 
 				return 0; /* asked already, in this batch */
 		if (kind == CG_REP_RLC) {
 			/* RLC: the unknowns another request already asks for, out
-			 * (the free columns of one system, story 026) */
+			 * (the free columns of one system, story 026); a wide
+			 * window's, only what its coming repairs will not bring */
 			unsigned sh;
+
+			if (g.wide && !g.sealed && g.age_us < g.horizon_us && g.deficit > g.future) {
+				unsigned want = g.deficit - g.future;
+				uint64_t keep = 0, rest = map;
+
+				/* the oldest of them: due first */
+				for (unsigned k = 0; k < want && rest; k++, rest &= rest - 1)
+					keep |= rest & (~rest + 1);
+				map = keep;
+			}
 
 			for (unsigned i = 0; i < hb->nr; i++)
 				if (hb->req[i].kind == CG_REP_RLC)
@@ -1762,6 +1781,16 @@ static void fec_deliver(struct server *s, int *nq, struct session *S, uint32_t s
 	 * Refused, it is not marked (the packet itself, or the rescue's, may
 	 * still come), the ring forgets it and the RLC's equations, which may
 	 * hold it already, go. */
+#ifdef CG_F3_DEBUG
+	{
+		static FILE *f;
+		uint32_t hh = 2166136261u;
+
+		if (!f) f = fopen("/tmp/f3srv.txt", "w");
+		for (unsigned i = 0; i < len; i++) hh = (hh ^ p[i]) * 16777619u;
+		if (f) fprintf(f, "R %u %u %08x\n", seq, len, hh);
+	}
+#endif
 	rb = cg_rebuilt_check(s->native, p, len);
 	if (rb == CG_RB_OK) {
 		S->rb_ok++;
@@ -1877,8 +1906,28 @@ static void rep_take(struct server *s, int *nq, struct session *S, const uint8_t
 		S->f3_last_ms = now_ms;
 		harq_wait(s, S, now_ms * 1000);
 	}
-	if (h.kind == CG_REP_RLCW)
+	if (h.kind == CG_REP_RLCW) {
+		uint32_t top = h.base + h.span - 1u;
+
 		S->f3_last_ms = now_ms;
+		/* how far apart they come, for the repairs still to come
+		 * over a gap (cg_harq_future) */
+		if (!S->f3_have) {
+			S->f3_top = top;
+			S->f3_span = h.span;
+			S->f3_have = 1;
+		} else if ((int32_t)(top - S->f3_top) >= 0) {
+			uint32_t d = top - S->f3_top;
+
+			if (d < 65536) {
+				uint32_t g16 = d * 16;
+
+				S->f3_gap16 = S->f3_gap16 ? S->f3_gap16 - S->f3_gap16 / 8 + g16 / 8 : g16;
+			}
+			S->f3_top = top;
+			S->f3_span = h.span;
+		}
+	}
 	if ((h.kind == CG_REP_RLC || h.kind == CG_REP_RLCW) && S->rlc)
 		n = cg_rlc_rx_repair(s->gf, S->rlc, &r, &h, p + CG_REP_HDR, slen, out, CG_RLC_COLS);
 	else if (h.kind == CG_REP_RS && S->rsx)
@@ -2190,6 +2239,16 @@ static void listen_read(struct server *s, struct lane *ln)
 				/* Kept for the parities (fec.h); one waiting for
 				 * this packet may rebuild another now. */
 				int k = cg_fec_rx_put(S->fec, h.seq, b + CG_HDR_LEN, (uint16_t)(len - CG_HDR_LEN));
+#ifdef CG_F3_DEBUG
+				{
+					static FILE *f;
+					uint32_t hh = 2166136261u;
+
+					if (!f) f = fopen("/tmp/f3srvd.txt", "w");
+					for (size_t q = CG_HDR_LEN; q < len; q++) hh = (hh ^ b[q]) * 16777619u;
+					if (f) fprintf(f, "%u %zu %08x\n", h.seq, len - CG_HDR_LEN, hh);
+				}
+#endif
 
 				up_deliver(s, &nq, S, &h, b + CG_HDR_LEN, len - CG_HDR_LEN, rs, now32);
 				fec_try(s, &nq, S, k, h.link, h.ts, now32, now_ms);

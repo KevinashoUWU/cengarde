@@ -154,6 +154,24 @@ static inline int cg_f3_guard(int32_t ql_us, uint32_t window_us)
 	return ql_us >= 0 && (uint32_t)ql_us > window_us;
 }
 
+/* How much before now a repair on link `link` ends its window: the DATA
+ * sent since then on a slower link of set (behind[i]: its delay up over the
+ * fastest's, when have says it is known) would arrive after the repair, a
+ * column at the receiver for nothing until it does (under TCP the links'
+ * queues tell up to 100 ms apart in the lab, and every repair carried a
+ * hundred such members); at most cap_us. */
+static inline uint32_t cg_f3_lag_us(const int32_t *behind, uint16_t have, uint16_t set, unsigned link, uint32_t cap_us)
+{
+	int32_t mine = (have >> link & 1) ? behind[link] : 0, most = mine;
+
+	for (unsigned i = 0; i < CG_F3_LINKS; i++)
+		if ((set & have) >> i & 1 && behind[i] > most)
+			most = behind[i];
+	if (most - mine <= 0)
+		return 0;
+	return (uint32_t)(most - mine) < cap_us ? (uint32_t)(most - mine) : cap_us;
+}
+
 /* The link for the next repair among cand (a bit per link), by a smooth
  * weighted round-robin on f->w (every candidate weighs 1 when none has a
  * weight yet); -1: no candidate. */

@@ -165,6 +165,8 @@ struct cg_harq_gap {
 	uint32_t horizon_us; /* how long the code may take (rescue_code_ms) */
 	uint32_t eta_us;  /* how long an answer takes (the round trip of the fastest path) */
 	uint32_t budget_us; /* until TCP retransmits it from when it was found missing; 0: no TCP */
+	uint8_t wide;       /* FEC v3's wide windows protect it (story 026) */
+	uint16_t future;    /* wide: the repairs still to come over it, about (cg_harq_future) */
 };
 
 /* What to do with gap g now. */
@@ -177,6 +179,11 @@ static inline enum cg_harq_do cg_harq_route(const struct cg_harq_gap *g)
 		 * time to ask before TCP retransmits, TCP has it already */
 		if (g->budget_us && g->age_us + g->eta_us >= g->budget_us)
 			return CG_HARQ_TCP;
+		/* a wide window's coming repairs cannot close its deficit (a
+		 * stall longer than the code's share covers): the rest asked
+		 * for now, a round trip, not after the window has passed it */
+		if (g->wide && g->deficit > g->future)
+			return CG_HARQ_PARQ;
 		return CG_HARQ_WAIT;
 	}
 	if (g->budget_us && g->age_us + g->eta_us > g->budget_us)
@@ -184,6 +191,23 @@ static inline enum cg_harq_do cg_harq_route(const struct cg_harq_gap *g)
 	if (g->code && g->deficit)
 		return CG_HARQ_PARQ;
 	return CG_HARQ_NACK;
+}
+
+/* FEC v3 (story 026): the repairs still to come over gap seq, about: the
+ * newest wide repair covered up to top with a window of span sequences, so
+ * repairs go on covering seq until the newest sequence passes seq + span -
+ * 1; one comes every gap16 / 16 sequences (smoothed, as they arrive: those
+ * a stalled link took are not counted). At most 65535; 0 when gap16 is 0
+ * (not known yet). */
+static inline uint16_t cg_harq_future(uint32_t seq, uint32_t top, uint32_t span, uint32_t gap16)
+{
+	int32_t left = (int32_t)(seq + span - 1 - top);
+	uint64_t f;
+
+	if (left <= 0 || !gap16)
+		return 0;
+	f = (uint64_t)left * 16 / gap16;
+	return f > 65535 ? 65535 : (uint16_t)f;
 }
 
 /* Whether a gap waiting for the code holds what follows it: only without
