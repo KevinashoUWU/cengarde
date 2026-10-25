@@ -14,6 +14,9 @@ DIR holds, for this run:
     rss-I                           "NAME KB" for each proxy process, sample I
     kcp-before-SIDE.csv, kcp-after-SIDE.csv   kcptun's own counters (--snmplog,
                                     once a second), if any (SIDE: cli, srv)
+    status-before-SIDE.json, status-after-SIDE.json, status-SIDE-I
+                                    the engines' status files (mode cg, PEP
+                                    mode B: their "pep" object, story 025)
 
 Each netns has its own TCP counters, so the retransmissions split by leg (for
 an upload): lan is the sender's host (the whole path when transparent, the leg
@@ -28,6 +31,13 @@ rss_kb the proxies' resident memory at its peak; mid_rtt_ms and far_rtt_ms the
 median smoothed RTT of the split legs' senders (the redirector's socket to the
 VPS, the server end's sockets to the far host); cpu_*_pct the proxies' CPU
 (ticks over --hz and --secs).
+
+Mode cg (PEP mode B, the engines are the proxies): "cg" holds, per side, the
+engine's stream counters over the run (data messages sent, sent again,
+copied, timer expiries, duplicates and out-of-order arrivals), the peak of its
+streams' memory (the pool's chunks in use) and of the bytes they held each way,
+and the median smoothed RTT of its pacer (mid_rtt_ms, the router's for an
+upload).
 """
 
 import argparse
@@ -102,6 +112,49 @@ def rx_bytes(path, cc):
         return 0
 
 
+def status_pep(path):
+    """The "pep" object of an engine's status file, {} when missing."""
+    try:
+        j = json.load(open(path))
+    except (OSError, ValueError):
+        return {}
+    if isinstance(j, list):
+        j = j[0] if j else {}
+    return j.get("pep") or {}
+
+
+CG_COUNTERS = ("data_tx", "data_rx", "retx", "copies", "rto", "dup_frames", "ooo_frames", "drop_frames",
+               "acks_tx", "acks_rx", "opened", "closed", "rst_tx", "nomem", "sock_rx_bytes", "sock_tx_bytes")
+
+
+def cg_summary(d):
+    out = {}
+    for side in ("cli", "srv"):
+        b, e = status_pep(os.path.join(d, "status-before-%s.json" % side)), \
+            status_pep(os.path.join(d, "status-after-%s.json" % side))
+        if not e:
+            continue
+        o = {n: (e.get(n) or 0) - (b.get(n) or 0) for n in CG_COUNTERS}
+        mem, htx, hrx, srtt = [], [], [], []
+        for f in sorted(glob.glob(os.path.join(d, "status-%s-*" % side))):
+            p = status_pep(f)
+            if not p:
+                continue
+            mem.append(p.get("mem_bytes") or 0)
+            htx.append(p.get("held_tx_bytes") or 0)
+            hrx.append(p.get("held_rx_bytes") or 0)
+            for pc in p.get("pacers") or []:
+                if pc.get("srtt_ms"):
+                    srtt.append(pc["srtt_ms"])
+        o["mem_kb_peak"] = round(max(mem) / 1024) if mem else None
+        o["mem_peak_kb"] = round((e.get("mem_peak_bytes") or 0) / 1024)
+        o["held_tx_kb_peak"] = round(max(htx) / 1024) if htx else None
+        o["held_rx_kb_peak"] = round(max(hrx) / 1024) if hrx else None
+        o["srtt_ms"] = median(srtt)
+        out[side] = o
+    return out
+
+
 def summary(a):
     d = a.dir
     rx = rx_bytes(a.result, a.cc) if a.result else 0
@@ -158,7 +211,19 @@ def summary(a):
                                                                  "EarlyRetransSegs", "LostSegs", "RepeatSegs")}
     if kcp:
         out["kcp"] = kcp
+    if a.mode == "cg":
+        out["cg"] = cg_summary(d)
+        out["mid_rtt_ms"] = dig_srtt(out["cg"])
     return out
+
+
+def dig_srtt(cg):
+    """The router's pacer RTT (an upload's middle leg), else the VPS's."""
+    for side in ("cli", "srv"):
+        v = (cg.get(side) or {}).get("srtt_ms")
+        if v:
+            return v
+    return None
 
 
 def main(argv):

@@ -859,10 +859,12 @@ check_proto() {
 	P=$(engine_proto)
 	# Protocol 5 only adds the previous link to DATA's flags, 6 CG_F_FREE,
 	# 7 the FEC parity, 8 the erasure codes' repairs, 9 the parity requests
-	# (PARQ) and the hint sealed after the copies: the same configurations.
+	# (PARQ) and the hint sealed after the copies, 10 PEP mode B's streams
+	# (story 025; pep = yes is the engine's own knob): the same
+	# configurations.
 	case "$P" in
-	4 | 5 | 6 | 7 | 8 | 9) ;;
-	*) die "this cengarde-vps-setup writes configurations of protocol 4 to 9 (cengarde 0.5.2 on, a [client NAME] section per router), and the engine says protocol ${P:-unknown}: install both from one checkout (contrib/vps/install.sh)" ;;
+	4 | 5 | 6 | 7 | 8 | 9 | 10) ;;
+	*) die "this cengarde-vps-setup writes configurations of protocol 4 to 10 (cengarde 0.5.2 on, a [client NAME] section per router), and the engine says protocol ${P:-unknown}: install both from one checkout (contrib/vps/install.sh)" ;;
 	esac
 }
 

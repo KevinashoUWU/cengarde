@@ -222,6 +222,19 @@ struct cg_config {
 	int tcp_retx_one;             /* tcp_aware in redundancy: a first TCP retransmission on one link, not copied (story 023); default yes */
 	int tcp_ack_rule;             /* with tcp_retx_one: a retransmission's links from the ACKs and the exit end's marks (tcpack.h); default yes */
 	uint32_t reorder_pool_kb;     /* memory for the packets it holds; changing it restarts */
+	/* PEP mode B (story 025, pepio.h): TCP split at both ends, a reliable
+	 * stream of cengarde's in the middle; native tunnel only. Changing any
+	 * of these restarts the streams. */
+	int pep;                      /* router: take the LAN's TCP redirected to pep_port; VPS: open what routers ask */
+	uint32_t pep_port;            /* router: the listening port the firewall redirects to */
+	uint32_t pep_buf_kb;          /* each stream's buffer per direction, at most */
+	uint32_t pep_mem_mb;          /* every stream's buffers together */
+	uint32_t pep_max_flows;       /* streams at once */
+	uint32_t pep_queue_ms;        /* the queue the middle leg may build over its least round trip (pepcc.h) */
+	uint32_t pep_backlog_ms;      /* what a stream holds unsent or unwritten, in time at its rate */
+	uint32_t pep_dead_s;          /* a stream without progress this long, with something pending, is reset; 0: never */
+	uint32_t pep_reo_ms;          /* RACK's reordering window beyond a quarter of the round trip */
+	char pep_cc[16];              /* VPS: the congestion control toward the destination ("": the kernel's) */
 	int tcp_aware;                /* native: mark inner TCP's retransmissions and ACKs free (tcpfree.h) */
 	uint32_t reorder_idle_ms;     /* EXPERIMENT: the reorderer stops waiting for a link that brought no data this long; 0: off */
 	uint32_t reorder_retx_release_ms; /* a TCP retransmission gives up the gaps held this long before it; 0: off */

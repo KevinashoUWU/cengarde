@@ -832,6 +832,15 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	c->rescue_tcp_race = 1;
 	c->tcp_retx_one = 1;
 	c->tcp_ack_rule = 1;
+	c->pep_port = 7801;
+	c->pep_buf_kb = 1024;
+	c->pep_mem_mb = 64;
+	c->pep_max_flows = 256;
+	c->pep_queue_ms = 5;
+	c->pep_backlog_ms = 200;
+	c->pep_dead_s = 60;
+	c->pep_reo_ms = 10;
+	strcpy(c->pep_cc, "bbr");
 	c->fec_wait_ms = 10;
 	c->redund_spare_ms = 50;
 	c->redund_spare_code_ms = 30;
@@ -935,6 +944,16 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	    get_bool(&ini, "", "rescue_tcp_race", &c->rescue_tcp_race, err, errlen) ||
 	    get_bool(&ini, "", "tcp_retx_one", &c->tcp_retx_one, err, errlen) ||
 	    get_bool(&ini, "", "tcp_ack_rule", &c->tcp_ack_rule, err, errlen) ||
+	    get_bool(&ini, "", "pep", &c->pep, err, errlen) ||
+	    get_u32(&ini, "", "pep_port", 1, 65535, &c->pep_port, err, errlen) ||
+	    get_u32(&ini, "", "pep_buf_kb", 64, 4080, &c->pep_buf_kb, err, errlen) ||
+	    get_u32(&ini, "", "pep_mem_mb", 4, 4096, &c->pep_mem_mb, err, errlen) ||
+	    get_u32(&ini, "", "pep_max_flows", 1, 65535, &c->pep_max_flows, err, errlen) ||
+	    get_u32(&ini, "", "pep_queue_ms", 1, 1000, &c->pep_queue_ms, err, errlen) ||
+	    get_u32(&ini, "", "pep_backlog_ms", 10, 10000, &c->pep_backlog_ms, err, errlen) ||
+	    get_u32(&ini, "", "pep_dead_s", 0, 3600, &c->pep_dead_s, err, errlen) ||
+	    get_u32(&ini, "", "pep_reo_ms", 0, 1000, &c->pep_reo_ms, err, errlen) ||
+	    get_str(&ini, "", "pep_cc", c->pep_cc, sizeof(c->pep_cc), err, errlen) ||
 	    get_bool(&ini, "", "fec", &c->fec, err, errlen) ||
 	    get_u32(&ini, "", "fec_wait_ms", 1, 200, &c->fec_wait_ms, err, errlen) ||
 	    get_u32(&ini, "", "fec_share_max", 0, 100, &c->fec_share_max, err, errlen) ||
@@ -1196,6 +1215,12 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 			goto out;
 	}
 
+	/* PEP mode B's streams ride the native tunnel's DATA (story 025) */
+	if (c->pep && c->tunnel != CG_TUNNEL_NATIVE) {
+		snprintf(err, errlen, "pep: needs tunnel = native");
+		goto out;
+	}
+
 	for (int i = 0; i < ini.n; i++) {
 		size_t used;
 
@@ -1346,6 +1371,13 @@ const char *cg_config_restart_needed(const struct cg_config *a, const struct cg_
 		return "tun_mtu";
 	if (a->tunnel == CG_TUNNEL_NATIVE && a->tun_txqueuelen != b->tun_txqueuelen)
 		return "tun_txqueuelen";
+	/* PEP mode B's sockets, pool and pacers are set up once (story 025) */
+	if (a->pep != b->pep || (a->pep && (a->pep_port != b->pep_port || a->pep_buf_kb != b->pep_buf_kb ||
+					     a->pep_mem_mb != b->pep_mem_mb || a->pep_max_flows != b->pep_max_flows ||
+					     a->pep_queue_ms != b->pep_queue_ms || a->pep_backlog_ms != b->pep_backlog_ms ||
+					     a->pep_dead_s != b->pep_dead_s || a->pep_reo_ms != b->pep_reo_ms ||
+					     strcmp(a->pep_cc, b->pep_cc))))
+		return "pep";
 	return NULL;
 }
 

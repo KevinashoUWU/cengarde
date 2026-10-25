@@ -1,9 +1,10 @@
-/* cengarde wire protocol, version 9 (version 1 had no delay reports,
+/* cengarde wire protocol, version 10 (version 1 had no delay reports,
  * version 2 no IP pass flags, version 3 no client hint, cookies or separate
  * control sequence, version 4 no previous link in DATA's flags, version 5
  * no NACK, version 6 no CG_F_FREE, version 7 no parity, version 8 no
  * repairs of an erasure code, version 9 no parity asked for again and no
- * CG_F_PREV written after the copies were decided).
+ * CG_F_PREV written after the copies were decided; version 10 adds PEP
+ * mode B's streams in DATA, story 025: pep.h).
  *
  * Every datagram between client and server carries a 24-byte header followed
  * by the payload (a WireGuard datagram for DATA). All integers are big-endian.
@@ -60,7 +61,7 @@
 
 #include "siphash.h"
 
-#define CG_PROTO_VERSION 9
+#define CG_PROTO_VERSION 10
 #define CG_HDR_LEN 24
 #define CG_MAC_OFF 16
 #define CG_HINT_OFF 2

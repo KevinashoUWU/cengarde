@@ -261,6 +261,11 @@
 #                fresh TCP to the destination: three TCP connections
 #   kcp          the same with KCP (kcptun, Debian: ARQ over UDP, no FEC of its
 #                own, BOND_PEP_KCP) between ss-redir and ss-server instead of TCP
+#   cg           PEP mode B (story 025): the engines themselves, pep = yes at both
+#                ends (the router's iptables REDIRECT to BOND_PEP_PORT, 7801), a
+#                reliable stream of cengarde's in the middle and the VPS's TCP to
+#                the destination with BOND_PEP_CGCC (bbr, the engine's pep_cc);
+#                "pep" then carries the engines' streams too (pepstat.py)
 # BOND_PEP_MIDCC and BOND_PEP_FARCC (cubic): the congestion control of the
 # router's netns (the middle leg's sender in an upload) and the VPS's (the far
 # leg's); BOND_PEP_LANCC (empty: the run's cc for iperf3, cubic for live) the
@@ -328,6 +333,8 @@ BOND_PEP_FARCC=${BOND_PEP_FARCC:-cubic}
 BOND_PEP_LANCC=${BOND_PEP_LANCC:-}
 BOND_PEP_FAR_MS=${BOND_PEP_FAR_MS:-50}
 BOND_PEP_NEAR_MS=${BOND_PEP_NEAR_MS:-5}
+BOND_PEP_PORT=${BOND_PEP_PORT:-7801}
+BOND_PEP_CGCC=${BOND_PEP_CGCC:-bbr}
 BOND_PEP_KCP=${BOND_PEP_KCP:---mode fast --datashard 0 --parityshard 0 --nocomp --crypt none --mtu 1300}
 BOND_LIVE_MBIT=${BOND_LIVE_MBIT:-8}
 BOND_LIVE_DROP_MS=${BOND_LIVE_DROP_MS:-700}
@@ -595,6 +602,16 @@ bond_pep_start() {
 	local inrun='cd "$1" && shift && exec "$@"'
 	case $BOND_PEP in
 	transparent) return 0 ;;
+	cg)
+		ip netns exec "$NS_CLI" iptables -w -t nat -A PREROUTING -i lan0 -p tcp -j REDIRECT \
+			--to-ports "$BOND_PEP_PORT" || return 1
+		for i in $(seq 1 50); do
+			ip netns exec "$NS_LAN" timeout 2 bash -c 'exec 3<>/dev/tcp/172.30.1.2/5201' 2>/dev/null && return 0
+			sleep 0.2
+		done
+		echo "FAIL: no TCP through the engines' PEP ($(grep -i pep "$RUN/client.log" | tail -c 300))"
+		return 1
+		;;
 	tcp)
 		ip netns exec "$NS_SRV" ss-server -s 10.79.0.1 -p 8388 "${ssopt[@]}" >"$RUN/ss-server.log" 2>&1 &
 		echo $! >"$RUN/pep-ss-server.pid"
@@ -618,7 +635,7 @@ bond_pep_start() {
 		echo $! >"$RUN/pep-ss-redir.pid"
 		;;
 	*)
-		echo "FAIL: BOND_PEP is transparent, tcp or kcp, not $BOND_PEP"
+		echo "FAIL: BOND_PEP is transparent, tcp, kcp or cg, not $BOND_PEP"
 		return 1
 		;;
 	esac
@@ -655,6 +672,8 @@ bond_pep_snmp() {
 	for n in cli srv; do
 		[ -f "$RUN/kcp-$n.csv" ] && cp "$RUN/kcp-$n.csv" "$RUN/pep/kcp-$1-$n.csv"
 	done
+	cp "$RUN/client.json" "$RUN/pep/status-$1-cli.json" 2>/dev/null
+	cp "$RUN/server.json" "$RUN/pep/status-$1-srv.json" 2>/dev/null
 	return 0
 }
 
@@ -666,6 +685,10 @@ bond_pep_sample_start() {
 		for i in $(seq 1 $(($1 * 2))); do
 			ip netns exec "$NS_CLI" ss -tinmH >"$RUN/pep/ss-cli-$i" 2>/dev/null
 			ip netns exec "$NS_SRV" ss -tinmH >"$RUN/pep/ss-srv-$i" 2>/dev/null
+			if [ "$BOND_PEP" = cg ]; then
+				cp "$RUN/client.json" "$RUN/pep/status-cli-$i" 2>/dev/null
+				cp "$RUN/server.json" "$RUN/pep/status-srv-$i" 2>/dev/null
+			fi
 			for p in $(bond_pep_pids); do
 				echo "$(cat "/proc/$p/comm" 2>/dev/null) $(awk '/^VmRSS/ { print $2 }' "/proc/$p/status" 2>/dev/null)"
 			done >"$RUN/pep/rss-$i"
@@ -1123,6 +1146,10 @@ bond_case() {
 	# do story 024's hosts (the router masquerades into cg0)
 	[ "$c" = beyond ] && BOND_TUNNEL=native
 	[ -n "$BOND_PEP" ] && BOND_TUNNEL=native
+	if [ "$BOND_PEP" = cg ]; then
+		CLIENT_EXTRA=$(bond_join "pep = yes;pep_port = $BOND_PEP_PORT" "$CLIENT_EXTRA")
+		SERVER_EXTRA=$(bond_join "pep = yes;pep_cc = $BOND_PEP_CGCC" "$SERVER_EXTRA")
+	fi
 	BOND_CASE=$c
 	if [ "$BOND_TUNNEL" = native ]; then
 		CLIENT_EXTRA=$(bond_join "tunnel = native;tun_addr = 10.79.0.2/16" "$CLIENT_EXTRA")
