@@ -75,8 +75,11 @@
 #     the status, the engine and the cloud-config say native; after a
 #     restart of the engine netifd puts cg0 back with its address and routes;
 #     converged; IPv6 in it (the ULA on cg0 and in tun_addr, ::/1 and
-#     8000::/1, NAT66, the VPS answers) and off again; then both ends back to
-#     WireGuard: wgcg as before, nothing left of cg0, converged;
+#     8000::/1, NAT66, the VPS answers) and off again; the protocontroller
+#     (b, then a, at both ends: the redirect in cengarde_protoctl, the
+#     engine's protocontroller, a web page of the VPS fetched by the router
+#     through the split, then no and nothing left); then both ends back to WireGuard: wgcg as before, nothing left
+#     of cg0, converged;
 # 14. disables cengarde and checks that the router is back as it was (the
 #     LAN gets its prefix again), and converged again.
 # Screenshots and logs go to OUT_DIR (default ./e2e-out). Needs qemu-system-x86,
@@ -1141,6 +1144,57 @@ else
 	bad "tunnel_mode native, tunnel_ipv6 off: IPv6 left on cg0"
 	"$VM" ssh router 'uci show network | grep -E "route6|cg0"; ip -6 addr show dev cg0'
 fi
+
+# The protocontroller (story 025): the router's engine takes redirected TCP
+# and the VPS's opens it to the destination, through a stream of cengarde's
+# (b) or a plain TCP to the VPS's tunnel address (a). The firewall redirects
+# only what comes in from the LAN, so for the test the router's own TCP to
+# the VPS's web server (1.2.3.5:80, uhttpd) is redirected too, from a table
+# of the test's.
+say "native tunnel: the protocontroller, a TCP connection split at both ends (b, then a)"
+"$VM" ssh vps "sed -i '/^protocontroller/d' /etc/cengarde/server.conf &&
+	printf 'protocontroller = b\nprotocontroller_cc = cubic\n' >>/etc/cengarde/server.conf &&
+	/etc/init.d/cengarde restart"
+pctl_set() {
+	"$VM" ssh router "uci set cengarde.main.protocontroller=$1; uci commit cengarde
+		ubus call service event '{\"type\":\"config.change\",\"data\":{\"package\":\"cengarde\"}}'"
+}
+pctl_rule() { "$VM" ssh router "nft list chain inet fw4 cengarde_protoctl 2>/dev/null | grep -q 'redirect to :7801'"; }
+pctl_conf() { "$VM" ssh router "grep -qx 'protocontroller = $1' /var/etc/cengarde.conf"; }
+pctl_fetch() { "$VM" ssh router 'wget -q -T 10 -O - http://1.2.3.5/ 2>/dev/null | grep -qi "<html"'; }
+pctl_opened() { # KEY: both engines opened one
+	[ "$("$VM" ssh router "cengarde ctl status | jsonfilter -e '@.protocontroller.$1'")" -ge 1 ] 2>/dev/null &&
+		[ "$("$VM" ssh vps "cengarde ctl status | jsonfilter -e '@.protocontroller.$1'")" -ge 1 ] 2>/dev/null
+}
+for v in b a; do
+	pctl_set "$v"
+	if until_ok 90 pctl_rule && until_ok 30 pctl_conf "$v" && until_ok 90 native_back; then
+		ok "protocontroller $v: the LAN's TCP redirected to 7801 (fw4's chain cengarde_protoctl), the engine runs protocontroller = $v"
+	else
+		bad "protocontroller $v: no redirect in cengarde_protoctl, or not in the engine's configuration"
+		"$VM" ssh router 'nft list chain inet fw4 cengarde_protoctl; cat /etc/cengarde/protoctl.nft; grep protocontroller /var/etc/cengarde.conf; logread | grep -E "cengarde|firewall" | tail -20'
+	fi
+	"$VM" ssh router "nft add table ip cgpctltest && nft add chain ip cgpctltest out '{ type nat hook output priority -100; }' &&
+		nft add rule ip cgpctltest out ip daddr 1.2.3.5 tcp dport 80 redirect to :7801"
+	key=opened
+	[ "$v" = a ] && key=a_opened
+	if until_ok 30 pctl_fetch && pctl_opened "$key"; then
+		ok "protocontroller $v: a web page of the VPS through the split (both engines opened one)"
+	else
+		bad "protocontroller $v: no page through the split"
+		"$VM" ssh router "cengarde ctl status | jsonfilter -e '@.protocontroller'"
+		"$VM" ssh vps "cengarde ctl status | jsonfilter -e '@.protocontroller'; logread | grep cengarde | tail -10"
+	fi
+	"$VM" ssh router 'nft delete table ip cgpctltest' || true
+done
+pctl_set no
+if until_ok 90 eval '! pctl_rule' && until_ok 30 eval '! pctl_conf a' && until_ok 90 native_back &&
+	[ -z "$("$VM" ssh router 'uci show firewall | grep cengarde_protoctl' || true)" ]; then
+	ok "protocontroller no: no redirect, no include, the tunnel answers"
+else
+	bad "protocontroller no: the redirect or the include left behind"
+fi
+"$VM" ssh vps "sed -i '/^protocontroller/d' /etc/cengarde/server.conf && /etc/init.d/cengarde restart"
 
 say "native tunnel: back to WireGuard on both ends"
 "$VM" ssh vps 'cp /etc/cengarde/server-wg.conf /etc/cengarde/server.conf && ifup wg0 && sleep 2 && /etc/init.d/cengarde restart'

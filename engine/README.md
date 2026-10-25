@@ -1329,6 +1329,96 @@ extremo de salida `in_flight`, `unvouched` y `marked`.
   cola que salta), el original llega después como duplicado y el
   rendimiento bajó de 45 a 34 Mbit/s (historia 014).
 
+## Protocontrolador (`protocontroller`)
+
+El protocontrolador (historia 025): TCP partido en los dos extremos (lo que
+la RFC 3135 llama un PEP). **Solo con `tunnel = native`**, apagado por
+omisión (`protocontroller = no`), protocolo 10. Dos variantes:
+
+- **`a`:** el tramo del medio es un **TCP simple del kernel** por el túnel,
+  del router a la dirección del VPS en el túnel (`protocontroller_vps`; vacío:
+  la primera del prefijo de `tun_addr`, 10.79.0.1) y a
+  `protocontroller_port`. El router escribe primero una cabecera con el
+  destino; el VPS la lee y abre el destino. `protocontroller_mid_cc` (`bbr`;
+  vacío: el del kernel) es el control de congestión del medio, en cada
+  extremo para lo que envía: con cubic, la pérdida que el túnel no repara a
+  tiempo frena ese tramo. Sin proxies aparte, sin doble cifrado.
+- **`b` (experimental; nombre del protocolo pendiente):** cada conexión es un
+  **flujo fiable propio** dentro del túnel: sus mensajes (`OPEN`, `DATA`,
+  `ACK`, `RST`, `src/protoctl.h`) van como carga de DATA con el primer nibble
+  en `0xF` y una etiqueta SipHash de 4 bytes al final (descarta una
+  reconstrucción errada de la FEC), así que el MAC, el anti-replay, las
+  copias, la FEC y el rescate les aplican sin cambios; el receptor los
+  entrega al instante (el reordenador solo cuenta su secuencia).
+
+En los dos:
+
+- **El router** (`protocontroller = a` o `b`, `protocontroller_port`, 7801):
+  escucha en IPv4 e IPv6 lo que el firewall le redirige (`REDIRECT`; el
+  destino original sale de `SO_ORIGINAL_DST`, o con TPROXY de la dirección
+  local).
+- **El VPS** (`a` o `b`, da lo mismo: acepta las dos): abre un TCP nuevo
+  hacia el destino, no bloqueante, desde su propia dirección (sin NAT; el MSS
+  de cada tramo es el de su interfaz). No conecta a loopback, sin
+  especificar, multicast ni enlace local. Escucha la variante A en su
+  dirección del túnel y `protocontroller_port`, y solo acepta direcciones
+  del prefijo del túnel. `protocontroller_cc` (`auto`): el control de
+  congestión del kernel (cubic) hacia el destino y BBR en cuanto ese tramo
+  pierde (3 segmentos reenviados): BBR no toma la pérdida al azar por
+  congestión (historia 024), pero su ProbeRTT retenía un vivo 200 ms cada
+  10 s. Un nombre (`bbr`, `cubic`) lo fija.
+- **Memoria:** trozos de 16 KB de un fondo común (`protocontroller_mem_mb`,
+  64), hasta `protocontroller_buf_kb` (1024) por conexión y sentido;
+  `protocontroller_max_flows` (256) conexiones a la vez.
+
+Solo la variante B:
+
+- **Fiabilidad** (`src/stream.h`): RACK con una ventana de un cuarto de la
+  ida y vuelta más `protocontroller_reo_ms` (10, la reparación del túnel va
+  primero; cada duplicado que el receptor avisa la agranda 4 ms, hasta 100),
+  y un temporizador desde el envío más viejo. Nunca se rinde; un segmento
+  reenviado por segunda vez va como copia prioritaria por los enlaces sin
+  cola. El receptor guarda hasta 256 huecos y contesta cada 4 DATA o 2 ms (al
+  instante con un hueco nuevo o uno lleno, o el FIN).
+- **Ritmo** (`src/streamcc.h`): uno por par para todos sus flujos, en turnos.
+  Lo que el camino consume (entregado, y perdido mientras la cola es corta:
+  la pérdida al azar no frena), con la cola medida por el **retardo de ida**
+  que el receptor devuelve en cada ACK (no la ida y vuelta, que en un
+  microcorte llevaba las pérdidas del ACK de vuelta); arranque 3/2, ciclo
+  5/4–3/4–1, 3/4 mientras la cola pase `protocontroller_queue_ms` (5), y en
+  vuelo dos veces el camino más lo que RACK no declaró perdido todavía. La
+  capacidad del motor (`capacity.h`) es el comienzo y el techo cuando halla
+  lleno el enlace de los datos.
+- **Contrapresión:** el VPS escribe al destino con un `TCP_NOTSENT_LOWAT` de
+  100 ms a su ritmo (32–512 KB) y cierra el borde de su ventana cuando lo que
+  guarda en orden pasa `protocontroller_backlog_ms` (200) a su ritmo; el
+  router deja de leer la LAN cuando lo que tiene sin enviar pasa eso (al
+  menos 64 KB; 256 KB los primeros 2 s) o su búfer está lleno, y el emisor
+  siente la ventana de su TCP. Con el túnel caído, el ARQ espera; un flujo
+  sin avance en `protocontroller_dead_s` (60) se cierra con RST en los dos
+  lados.
+
+Despliegue:
+
+- **Interceptar** (OpenWrt, `cengarde-setup`): UCI `protocontroller`
+  (`no`, `a`, `b`), `protocontroller_port` (puertos de destino; vacío: todos)
+  y `protocontroller_dest` (prefijos; vacío: todo lo que no es privado ni
+  local): un include de firewall4 con una cadena propia,
+  `cengarde_protoctl`, enganchada justo antes de la `dstnat` de fw4, para lo
+  que entra por los dispositivos de la zona `lan`
+  (`/etc/cengarde/protoctl.nft`). En el VPS: `sudo cengarde-vps-setup
+  protocontroller on` (necesita `tunnel native`; carga `tcp_bbr` al arrancar
+  y abre a `cengarde-nat` el TCP 7801 desde `cg0` para la variante A).
+- **Estado:** `protocontroller` (`mode` en el router, conexiones, abiertas,
+  rehusadas por motivo, RST, mensajes, reenvíos, copias, duplicados,
+  `corrupt`, huecos del receptor por duración, esperas de envío y de
+  escritura, memoria y su pico, conexiones pasadas a BBR, `a_opened`,
+  `a_bytes_in`, `a_bytes_out` y `a_held_bytes` de la variante A, y por par el
+  estimador, el ritmo, `min_rtt`, `srtt`, en vuelo, ventana, modo y la
+  ventana de RACK).
+
+Toda perilla `protocontroller*` reinicia el proceso al cambiar.
+
 ## Estado
 
 `status_file` escribe cada segundo (`status_interval_ms`), desde un hilo
@@ -1729,6 +1819,15 @@ versión 9, el bit 23 (`CG_BOND_TCPMARK`: marco mis ACK de TCP) con la bandera
 0x02 de DATA, que estaba reservada (`CG_F_TUNHOLE`: un hueco SACK de este
 ACK lo perdió el túnel en todos los enlaces; ver `tcp_ack_rule`). Sin el bit 23 del par, la
 bandera no significa nada.
+
+## Protocolo 10
+
+Historia 025: los mensajes del protocontrolador (variante B) dentro de DATA
+(primer nibble `0xF`, `src/protoctl.h`); la cabecera no cambia. La versión
+sube porque un motor 9 los escribiría a la TUN (los descarta como no IP) y una
+conexión interceptada quedaría colgada sin aviso. La variante A no cambia nada
+del formato (su TCP es un paquete más de la TUN). `cengarde-vps-setup` escribe
+las mismas configuraciones que con el 9 (más `protocontroller on`).
 
 ## Limitaciones conocidas
 

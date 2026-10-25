@@ -8,6 +8,7 @@
 #include "config.h"
 #include "linkmodel.h"
 #include "test.h"
+#include "protoctlio.h"
 #include "util.h"
 
 #define KEY "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=" /* bytes 0..31 */
@@ -1237,6 +1238,36 @@ static void test_config_native(void)
 	bad("mode = server\ntunnel = native\ntun_route = 0.0.0.0/0\n[client alpha]\nkey = " KEY "\ntun_route = 10.79.0.2\n",
 	    "tun_route", "in each");
 #undef TWO
+
+	/* the protocontroller (story 025): no, a or b, native only */
+#define PNAT CLIENT "tunnel = native\ntun_addr = 10.79.0.2/16\n"
+	CHECK_EQ(cg_config_parse(&c, PNAT, err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(c.protocontroller, CG_PCTL_NO);
+	CHECK(!c.protocontroller_vps[0] && !strcmp(c.protocontroller_mid_cc, "bbr"));
+	CHECK(!strcmp(c.protocontroller_cc, "auto"));
+	cg_config_free(&c);
+	CHECK_EQ(cg_config_parse(&c, PNAT "protocontroller = a\nprotocontroller_vps = 10.79.0.9\nprotocontroller_mid_cc = cubic\n",
+				 err, sizeof(err), warn, sizeof(warn)),
+		 0);
+	CHECK_EQ(c.protocontroller, CG_PCTL_A);
+	CHECK(!strcmp(c.protocontroller_vps, "10.79.0.9"));
+	CHECK(!strcmp(c.protocontroller_mid_cc, "cubic"));
+	CHECK_EQ(cg_config_parse(&o, PNAT "protocontroller = b\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(o.protocontroller, CG_PCTL_B);
+	CHECK(!strcmp(cg_config_restart_needed(&c, &o), "protocontroller"));
+	cg_config_free(&o);
+	CHECK_EQ(cg_config_parse(&o, PNAT "protocontroller = a\nprotocontroller_vps = 10.79.0.9\n", err, sizeof(err), warn,
+				 sizeof(warn)),
+		 0);
+	CHECK(!strcmp(cg_config_restart_needed(&c, &o), "protocontroller")); /* mid_cc */
+	cg_config_free(&o);
+	cg_config_free(&c);
+	CHECK_EQ(cg_config_parse(&c, PNAT "protocontroller = no\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(c.protocontroller, CG_PCTL_NO);
+	cg_config_free(&c);
+	bad(PNAT "protocontroller = c\n", "protocontroller", "no, a or b");
+	bad(CLIENT "protocontroller = b\n", "protocontroller", "tunnel = native");
+#undef PNAT
 }
 
 void test_config(void)

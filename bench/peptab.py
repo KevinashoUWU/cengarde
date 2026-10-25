@@ -11,7 +11,12 @@ two-sided Mann-Whitney U against the reference arm of the same family (an arm
 NAME-SUFFIX against the first --ref with that suffix: T-copies for every
 *-copies, T-rlc for every *-rlc). Retransmissions are per leg (pepstat.py):
 "lan" the sender's host (the whole path when transparent), "mid" the router's
-(the split's middle leg), "far" the VPS's (the leg to the far host).
+(the split's middle leg), "far" the VPS's (the leg to the far host). The
+protocontroller (story 025; pep "mode" cga, variant A, and cgb or cg, variant
+B): for B "retx mid" is the engines' stream messages sent again (for cga the
+router's TCP, as for tcp); the memory adds the engines' buffers to the kernel's
+sockets, and "CPU total" is the engines' and the proxies' together (cga and
+cgb have no proxies; tcp and T have the engines too).
 """
 
 import argparse
@@ -55,14 +60,41 @@ def fmt_p(p):
     return ("%.3f" % p).replace(".", ",") if p >= 0.001 else "<0,001"
 
 
+def is_b(r):
+    return dig(r, "pep", "mode") in ("cg", "cgb")
+
+
+def retx_mid(r):
+    if is_b(r):
+        return (dig(r, "pep", "cg", "cli", "retx") or 0) + (dig(r, "pep", "cg", "srv", "retx") or 0)
+    return dig(r, "pep", "retrans", "cli")
+
+
+def mem(r, side):
+    k = dig(r, "pep", "mem_kb", side, "peak")
+    if k is None:
+        return None
+    return k + (dig(r, "pep", "cg", side, "mem_kb_peak") or 0)
+
+
+def cpu_proxies(r):
+    return (dig(r, "pep", "cpu_cli_pct") or 0) + (dig(r, "pep", "cpu_srv_pct") or 0)
+
+
+def cpu_engines(r):
+    return (r.get("cpu_client_pct") or 0) + (r.get("cpu_server_pct") or 0)
+
+
 BULK = [("Mbit/s", lambda r: r.get("mbps"), 1, True),
         ("retx lan", lambda r: dig(r, "pep", "retrans", "lan"), 0, False),
-        ("retx mid", lambda r: dig(r, "pep", "retrans", "cli"), 0, False),
+        ("retx mid", retx_mid, 0, False),
         ("retx far", lambda r: dig(r, "pep", "retrans", "srv"), 0, False),
         ("RTT p99", lambda r: r.get("rtt_p99"), 0, True),
-        ("mem router KB", lambda r: dig(r, "pep", "mem_kb", "cli", "peak"), 0, False),
-        ("mem VPS KB", lambda r: dig(r, "pep", "mem_kb", "srv", "peak"), 0, False),
-        ("CPU proxies %", lambda r: (dig(r, "pep", "cpu_cli_pct") or 0) + (dig(r, "pep", "cpu_srv_pct") or 0), 1, False)]
+        ("mem router KB", lambda r: mem(r, "cli"), 0, False),
+        ("mem VPS KB", lambda r: mem(r, "srv"), 0, False),
+        ("CPU proxies %", cpu_proxies, 1, False),
+        ("CPU engines %", cpu_engines, 1, False),
+        ("CPU total %", lambda r: cpu_proxies(r) + cpu_engines(r), 1, True)]
 
 
 def live_col(k, f):
@@ -80,12 +112,12 @@ LIVE = [("far Mbit/s", live_col("far", "mbps"), 2, True),
         ("near s p5", live_col("near", "sec_p5"), 2, False),
         ("near delay p99", live_col("near", "delay_p99"), 0, True),
         ("near dropped %", live_col("near", ("send", "drop_pct")), 2, False),
-        ("retx mid", lambda r: dig(r, "pep", "retrans", "cli"), 0, False),
+        ("retx mid", retx_mid, 0, False),
         ("retx far", lambda r: dig(r, "pep", "retrans", "srv") if dig(r, "pep", "mode") != "transparent"
          else dig(r, "pep", "retrans", "lan"), 0, False),
-        ("RTT p99", lambda r: r.get("rtt_p99"), 0, False),
-        ("mem router KB", lambda r: dig(r, "pep", "mem_kb", "cli", "peak"), 0, False),
-        ("mem VPS KB", lambda r: dig(r, "pep", "mem_kb", "srv", "peak"), 0, False)]
+        ("RTT p99", lambda r: r.get("rtt_p99"), 0, True),
+        ("mem router KB", lambda r: mem(r, "cli"), 0, False),
+        ("mem VPS KB", lambda r: mem(r, "srv"), 0, False)]
 
 
 def ref_of(arm, refs):
@@ -127,9 +159,12 @@ def main(argv):
     ap = argparse.ArgumentParser(prog="peptab.py")
     ap.add_argument("file")
     ap.add_argument("--ref", default="T-copies,T-rlc")
+    ap.add_argument("--dir", default=None, help="only runs of this direction (up, down)")
     ap.add_argument("--cases", default=None)
     a = ap.parse_args(argv)
     rows = [json.loads(ln) for ln in open(a.file) if ln.strip()]
+    if a.dir:
+        rows = [r for r in rows if r.get("dir") == a.dir]
     for r in rows:
         r.setdefault("arm", r.get("variant"))
     arms = []

@@ -47,6 +47,7 @@ CONF = "Configuración (config.c)"
 SPARE = "Lo que sobra (spare.h)"
 CODES = "Códigos de borrado (rs.h, rlc.h)"
 HARQ = "Reparación coherente (harq.h)"
+PCTL = "Protocontrolador (protoctl.c, stream.h, streamcc.h)"
 
 H = {
     "002": "002-wireguard-para-cengarde", "005": "005-motor-c-v1", "006": "006-salud-de-enlaces",
@@ -54,7 +55,7 @@ H = {
     "010": "010-ipv6-varias-ip-multicliente-nombres", "011": "011-hilos", "012": "012-bonding",
     "013": "013-capacidad-y-dosificacion", "014": "014-tunel-nativo", "015": "015-modelo-de-enlace", "016": "016-celda-virtual",
     "017": "017-terreno-nostalgica", "019": "019-perdida-con-cola", "020": "020-copias-parciales-y-paridad", "021": "021-fec-v2",
-    "023": "023-reparacion-coherente",
+    "023": "023-reparacion-coherente", "025": "025-protocontrolador",
     "audit": "audit-pending",
 }
 
@@ -190,11 +191,26 @@ T = {
  "redund_spare_ms": ([G], CLI, "50", "1–2000", [SPARE], ["020"], "Con `redund_spare`, la cola (sobre el mínimo de 60 s) en la que cada enlace que no es el primero sostiene lo que lleva."),
  "redund_spare_first": ([G], CLI, "vacío (el de menor retardo sin cola)", "el nombre de un `[link NAME]` del archivo", [SPARE], ["020"], "Con `redund_spare`, el primer enlace (el que los demás protegen) fijado: ese mientras esté vivo y llevando, medido ahora y sin ahogarse; si se ahoga como primero queda vetado 15 s y manda la elección automática, y vuelve cuando se despeja; mientras los demás copian toda la subida, solo tras 2 s seguidos de ahogo (un salto de retardo más corto no lo saca). El estado dice por qué no es el primero (`upload.spare.pin`)."),
  "exp_link_types": ([G], BOTH, "vacía (todos los tipos)", "nombres de tipo", [MODEL], ["015"], "Limita las perillas globales del modelo a los enlaces de esos tipos."),
+ # --- the protocontroller (story 025) ---
+ "protocontroller": ([G], BOTH, "`no`", "`no`, `a` o `b`", [PCTL], ["025"], "El protocontrolador (solo con `tunnel = native`): en el router, con `a` o `b`, el motor toma el TCP que el firewall redirige a `protocontroller_port` y lo lleva al VPS como un TCP simple por el túnel (`a`) o como flujo fiable propio (`b`); en el VPS, `a` o `b` da lo mismo: abre al destino el TCP que pidan los routers con cualquiera de las dos. Con `no`, un mensaje de flujo que llega se cuenta y se descarta."),
+ "protocontroller_port": ([G], BOTH, "7801", "1–65535", [PCTL], ["025"], "Puerto donde escucha el router (IPv4 e IPv6) lo que el firewall redirige (`REDIRECT`); en el VPS, el de la variante A en su dirección del túnel."),
+ "protocontroller_vps": ([G], CLI, "vacío (la primera dirección del prefijo de `tun_addr`)", "una dirección IP", [PCTL], ["025"], "Variante A: la dirección del VPS en el túnel, a la que el router abre el TCP del medio."),
+ "protocontroller_mid_cc": ([G], BOTH, "`bbr`", "un control de congestión del kernel, o vacío (el del kernel)", [PCTL], ["025"], "Variante A: el control de congestión del TCP del medio, en cada extremo para lo que envía (el router la subida, el VPS la bajada). Con cubic, la pérdida que el túnel no repara a tiempo lo frena (42 contra 54 Mbit/s en `protect`; 7 contra 50 de bajada); si el kernel no lo tiene, el suyo (un aviso)."),
+ "protocontroller_buf_kb": ([G], BOTH, "1024", "64–4080", [PCTL], ["025"], "Búfer de cada conexión por sentido, como tope: lo leído del socket y no confirmado (al enviar), lo llegado y no escrito (al recibir: su ventana); en la variante A, lo leído de un lado y no escrito en el otro."),
+ "protocontroller_mem_mb": ([G], BOTH, "64", "4–4096", [PCTL], ["025"], "Memoria de todas las conexiones juntas (trozos de 16 KB). Sin trozos libres, no se aceptan conexiones nuevas ni se lee más."),
+ "protocontroller_max_flows": ([G], BOTH, "256", "1–65535", [PCTL], ["025"], "Conexiones a la vez; la siguiente se rehúsa con RST."),
+ "protocontroller_queue_ms": ([G], BOTH, "5", "1–1000", [PCTL], ["025"], "Variante B: la cola que el tramo del medio puede armar sobre su menor ida y vuelta: más, y el ritmo baja a lo entregado (`streamcc.h`)."),
+ "protocontroller_backlog_ms": ([G], BOTH, "200", "10–10000", [PCTL], ["025"], "Variante B: lo que un flujo guarda sin enviar o sin escribir, en tiempo a su ritmo (al menos 64 KB): la contrapresión hacia el emisor."),
+ "protocontroller_dead_s": ([G], BOTH, "60", "0–3600", [PCTL], ["025"], "Variante B: un flujo sin avance este tiempo, con algo pendiente (el túnel caído), se cierra con RST en los dos lados; 0: nunca."),
+ "protocontroller_reo_ms": ([G], BOTH, "10", "0–1000", [PCTL], ["025"], "Variante B: la ventana de RACK sobre un cuarto de la ida y vuelta (la reparación del túnel va primero); un duplicado la agranda 4 ms (hasta 100) y vuelve sola."),
+ "protocontroller_cc": ([G], SRVS, "`auto`", "`auto`, un control de congestión del kernel, o vacío", [PCTL], ["025"], "Control de congestión del TCP del VPS hacia el destino; `auto`: el del kernel (cubic) y BBR en cuanto ese tramo pierde (sin el ProbeRTT de BBR para el vídeo en vivo); si el kernel no lo tiene, el suyo (un aviso)."),
 }
 
 RESTART = {"mode", "key", "listen", "control_socket", "busy_poll_us", "cpu", "rt_priority", "reorder_pool_kb",
            "rescue_kb", "fec", "link_threads", "io_queue", "lanes", "tunnel", "tun", "tun_addr", "tun_mtu",
-           "tun_txqueuelen"}
+           "tun_txqueuelen", "protocontroller", "protocontroller_port", "protocontroller_vps", "protocontroller_mid_cc",
+           "protocontroller_buf_kb", "protocontroller_mem_mb", "protocontroller_max_flows", "protocontroller_queue_ms",
+           "protocontroller_backlog_ms", "protocontroller_dead_s", "protocontroller_reo_ms", "protocontroller_cc"}
 
 def parsed_keys():
     s = open(SRC).read()
@@ -259,6 +275,10 @@ def generate():
                                "starlink_slot_clock", "starlink_edge_ms", "starlink_edge_pre_ms",
                                "starlink_edge_post_ms", "starlink_edge_copies"]),
         ("Lo que sobra (redundancia)", ["redund_spare", "redund_spare_ms", "redund_spare_first", "redund_spare_code_ms"]),
+        ("Protocontrolador", ["protocontroller", "protocontroller_port", "protocontroller_vps", "protocontroller_mid_cc",
+                              "protocontroller_buf_kb", "protocontroller_mem_mb", "protocontroller_max_flows",
+                              "protocontroller_queue_ms", "protocontroller_backlog_ms", "protocontroller_dead_s",
+                              "protocontroller_reo_ms", "protocontroller_cc"]),
     ]
     seen = [k for _, ks in groups for k in ks]
     unplaced = sorted(set(T) - set(seen))

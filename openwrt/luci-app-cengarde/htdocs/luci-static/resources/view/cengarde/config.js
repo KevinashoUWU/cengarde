@@ -419,6 +419,27 @@ return view.extend({
 		o.depends('tunnel', '1');
 		o.onchange = refresh;
 
+		o = s.taboption('tunnel', form.ListValue, 'protocontroller', _('Protocontroller'),
+			_('Native mode only. With A or B the router answers the TCP connections of the LAN itself and the VPS opens a fresh one to each destination (cubic, BBR once that leg loses). Between them each connection travels as a plain TCP through the tunnel (A) or, experimental, as a reliable stream of cengarde, paced by what the uplinks carry instead of by loss (B). It helps TCP uploads such as RTMP over lossy uplinks and long paths beyond the VPS. UDP, QUIC and the rest go through the tunnel as always. The VPS needs "sudo cengarde-vps-setup protocontroller on". A change restarts the engine.'));
+		o.value('no', _('No (the tunnel as always)'));
+		o.value('a', _('A: TCP in the middle'));
+		o.value('b', _('B: cengarde\'s stream in the middle (experimental)'));
+		o.default = 'no';
+		o.depends('tunnel_mode', 'native');
+		o.onchange = refresh;
+
+		o = s.taboption('tunnel', form.DynamicList, 'protocontroller_port', _('Protocontroller ports'),
+			_('Only the TCP to these destination ports (or ranges such as 8000-8100). Empty: every port.'));
+		o.datatype = 'or(port, portrange)';
+		o.depends('protocontroller', 'a');
+		o.depends('protocontroller', 'b');
+
+		o = s.taboption('tunnel', form.DynamicList, 'protocontroller_dest', _('Protocontroller destinations'),
+			_('Only the TCP to these addresses or prefixes. Empty: every address that is not private, local or link-local.'));
+		o.datatype = 'or(ipaddr, cidr)';
+		o.depends('protocontroller', 'a');
+		o.depends('protocontroller', 'b');
+
 		o = s.taboption('tunnel', form.Flag, 'ip_pass', _('IP pass'),
 			_('The VPS forwards TCP and UDP ports 1024-65000 to this router and UPnP hands them on to the LAN: devices and services here get the public IP of the VPS. The VPS follows this switch on its own, within a second of saving.') +
 			(hasUpnp ? '' : '<br /><strong>' + _('Needs miniupnpd-nftables (and luci-app-upnp to see the mappings).') + '</strong>'));

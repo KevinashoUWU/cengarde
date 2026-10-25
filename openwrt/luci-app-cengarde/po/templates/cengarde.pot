@@ -163,6 +163,33 @@ msgstr ""
 msgid "Carries IPv6 through the tunnel too, translated (NAT66) here and at the VPS: this router gets a ULA address in the tunnel, derived from the secret, and with \"Route all traffic through the tunnel\" the IPv6 of the router and of the LAN leaves through the VPS. The VPS needs IPv6 of its own and the command \"sudo cengarde-vps-setup ipv6 on\" (the cloud-config of a new VPS follows this switch when all traffic goes through the tunnel). The LAN needs a ULA prefix (Network > Interfaces > Global network options); its devices have only that, so they prefer IPv4 for sites that have both, and this serves mainly IPv6-only sites. Off until it has been tested on real hardware."
 msgstr ""
 
+msgid "Protocontroller"
+msgstr ""
+
+msgid "Native mode only. With A or B the router answers the TCP connections of the LAN itself and the VPS opens a fresh one to each destination (cubic, BBR once that leg loses). Between them each connection travels as a plain TCP through the tunnel (A) or, experimental, as a reliable stream of cengarde, paced by what the uplinks carry instead of by loss (B). It helps TCP uploads such as RTMP over lossy uplinks and long paths beyond the VPS. UDP, QUIC and the rest go through the tunnel as always. The VPS needs \"sudo cengarde-vps-setup protocontroller on\". A change restarts the engine."
+msgstr ""
+
+msgid "No (the tunnel as always)"
+msgstr ""
+
+msgid "A: TCP in the middle"
+msgstr ""
+
+msgid "B: cengarde's stream in the middle (experimental)"
+msgstr ""
+
+msgid "Protocontroller ports"
+msgstr ""
+
+msgid "Only the TCP to these destination ports (or ranges such as 8000-8100). Empty: every port."
+msgstr ""
+
+msgid "Protocontroller destinations"
+msgstr ""
+
+msgid "Only the TCP to these addresses or prefixes. Empty: every address that is not private, local or link-local."
+msgstr ""
+
 msgid "IP pass"
 msgstr ""
 

@@ -165,6 +165,33 @@ msgstr "IPv6 por el túnel"
 msgid "Carries IPv6 through the tunnel too, translated (NAT66) here and at the VPS: this router gets a ULA address in the tunnel, derived from the secret, and with \"Route all traffic through the tunnel\" the IPv6 of the router and of the LAN leaves through the VPS. The VPS needs IPv6 of its own and the command \"sudo cengarde-vps-setup ipv6 on\" (the cloud-config of a new VPS follows this switch when all traffic goes through the tunnel). The LAN needs a ULA prefix (Network > Interfaces > Global network options); its devices have only that, so they prefer IPv4 for sites that have both, and this serves mainly IPv6-only sites. Off until it has been tested on real hardware."
 msgstr "Lleva también la IPv6 por el túnel, traducida (NAT66) aquí y en el VPS: este router recibe en el túnel una dirección ULA, derivada del secreto, y con \"Enrutar todo el tráfico por el túnel\" la IPv6 del router y de la LAN sale por el VPS. El VPS necesita IPv6 propia y la orden \"sudo cengarde-vps-setup ipv6 on\" (el cloud-config de un VPS nuevo sigue este interruptor cuando todo el tráfico va por el túnel). La LAN necesita un prefijo ULA (Red > Interfaces > Opciones globales de red); sus equipos solo tienen ese, así que prefieren la IPv4 para los sitios que tienen las dos, y esto sirve sobre todo para sitios solo IPv6. Apagado hasta que se pruebe en hardware real."
 
+msgid "Protocontroller"
+msgstr "Protocontrolador"
+
+msgid "Native mode only. With A or B the router answers the TCP connections of the LAN itself and the VPS opens a fresh one to each destination (cubic, BBR once that leg loses). Between them each connection travels as a plain TCP through the tunnel (A) or, experimental, as a reliable stream of cengarde, paced by what the uplinks carry instead of by loss (B). It helps TCP uploads such as RTMP over lossy uplinks and long paths beyond the VPS. UDP, QUIC and the rest go through the tunnel as always. The VPS needs \"sudo cengarde-vps-setup protocontroller on\". A change restarts the engine."
+msgstr "Solo en modo nativo. Con A o B el router responde él mismo las conexiones TCP de la LAN y el VPS abre una nueva hacia cada destino (cubic, BBR en cuanto ese tramo pierde). Entre ellos, cada conexión viaja como un TCP simple por el túnel (A) o, experimental, como un flujo fiable de cengarde, dosificado por lo que llevan los enlaces y no por la pérdida (B). Ayuda a las subidas por TCP, como RTMP, con enlaces que pierden y caminos largos más allá del VPS. UDP, QUIC y lo demás van por el túnel como siempre. El VPS necesita \"sudo cengarde-vps-setup protocontroller on\". Un cambio reinicia el motor."
+
+msgid "No (the tunnel as always)"
+msgstr "No (el túnel como siempre)"
+
+msgid "A: TCP in the middle"
+msgstr "A: TCP en el medio"
+
+msgid "B: cengarde's stream in the middle (experimental)"
+msgstr "B: el flujo de cengarde en el medio (experimental)"
+
+msgid "Protocontroller ports"
+msgstr "Puertos del protocontrolador"
+
+msgid "Only the TCP to these destination ports (or ranges such as 8000-8100). Empty: every port."
+msgstr "Solo el TCP hacia estos puertos de destino (o rangos como 8000-8100). Vacío: todos los puertos."
+
+msgid "Protocontroller destinations"
+msgstr "Destinos del protocontrolador"
+
+msgid "Only the TCP to these addresses or prefixes. Empty: every address that is not private, local or link-local."
+msgstr "Solo el TCP hacia estas direcciones o prefijos. Vacío: toda dirección que no sea privada, local ni de enlace local."
+
 msgid "IP pass"
 msgstr "IP pass"
 

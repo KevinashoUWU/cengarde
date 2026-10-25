@@ -24,7 +24,8 @@ A record is --size bytes (1250: 800 a second at 8 Mbit/s), made in batches every
 10 ms; its first 24 bytes are the sequence number, the time it was made and
 the time the stream started (nanoseconds, network order).
 
-recv prints (or writes to --out) one JSON object, over the window from the
+recv prints (or writes to --out) one JSON object (and with --dump, each
+record's sequence, delay and arrival in ms, one per line), over the window from the
 stream's start to S seconds later (the receiver keeps reading S + 5 s at most):
 
     mbps        the goodput over the window (record bytes, by arrival)
@@ -187,6 +188,10 @@ def recv(a):
         prev = t
     stall = [g for g in gaps if g > a.stall_ms]
     delays = [(t - g) / 1e6 for t, _, g in arr]
+    if a.dump:
+        with open(a.dump, "w") as f:
+            for t, sq, g in arr:
+                f.write("%d %.2f %.2f\n" % (sq, (t - g) / 1e6, (t - t0) / 1e6))
     rps = a.mbit * 1e6 / 8 / a.size
     due_n = int(max(0, a.secs - 3) * rps)
     got_due = sum(1 for _, s, _ in arr if s < due_n)
@@ -234,6 +239,7 @@ def main(argv):
         else:
             p.add_argument("--bind", required=True)
             p.add_argument("--stall-ms", type=float, default=500.0)
+            p.add_argument("--dump", help="also write each record's sequence, delay and arrival (ms from the start)")
     a = ap.parse_args(argv)
     if a.size < HDR.size:
         sys.exit("livesim: --size at least %d" % HDR.size)

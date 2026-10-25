@@ -32,7 +32,7 @@ define Package/cengarde
   CATEGORY:=Network
   TITLE:=Redundant multi-link transport for WireGuard
   URL:=https://github.com/KevinashoUWU/cengarde
-  DEPENDS:=+wireguard-tools +kmod-tun
+  DEPENDS:=+wireguard-tools +kmod-tun +kmod-tcp-bbr
 endef
 
 define Package/cengarde/description

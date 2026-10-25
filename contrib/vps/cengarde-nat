@@ -11,6 +11,8 @@
 #   the default), or with TUNNEL=native the engine's one TUN for all of
 #   them, cg0, whose routes to each router's address the engine keeps; the
 #   rules below are the same for both, with cg0 in place of cg-*;
+# - with PROTOCONTROLLER=yes and the native tunnel, the routers' variant A
+#   connections (story 025) reach the engine on SERVER_ADDR, TCP 7801;
 # - nothing from the tunnels (cg-*) reaches 169.254.0.0/16, the provider's
 #   metadata service, whose user data hold the pairing secret;
 # - the routers reach the Internet through the server (MASQUERADE), and
@@ -87,6 +89,7 @@ FORWARD_MAX_PORTS=1024
 FORWARD_SKIP_SRC=     # sources never forwarded: "192.168.1.0/24"
 TUNNEL_IPV6=no        # the routers' IPv6 through the tunnels (yes or no)
 TUNNEL=wireguard      # wireguard (cg-NAME each) or native (one TUN, cg0)
+PROTOCONTROLLER=no    # with native: the routers' variant A connects to SERVER_ADDR, TCP 7801
 PUB_IF=              # optional: the only interface forwarded and masqueraded
 # shellcheck disable=SC2034 # for cengarde-vps-setup
 ROUTER_NAME=router
@@ -171,6 +174,7 @@ if ! is_port "$PASS_LO" || ! is_port "$PASS_HI" || [ "$PASS_LO" -gt "$PASS_HI" ]
 fi
 case $PUB_IF in *[!A-Za-z0-9._@+-]*) die "PUB_IF in $CONF: not an interface name" ;; esac
 case $TUNNEL_IPV6 in yes | no) ;; *) die "TUNNEL_IPV6 in $CONF: yes or no" ;; esac
+case $PROTOCONTROLLER in yes | no) ;; *) die "PROTOCONTROLLER in $CONF: yes or no" ;; esac
 # The routers' tunnels as iptables names them: one WireGuard interface each
 # (cg-NAME), or the engine's one TUN for all of them (tunnel = native).
 case $TUNNEL in
@@ -558,6 +562,10 @@ render4() {
 		:CG_FWD - [0:0]
 		-A CG_IN -p udp --dport $CENGARDE_PORT -j ACCEPT
 		-A CG_IN ! -i lo -p udp --dport $WG_PORT_BASE:$WG_PORT_LAST -j DROP
+	EOF
+	[ "$PROTOCONTROLLER" = yes ] && [ "$TUNNEL" = native ] &&
+		echo "-A CG_IN -i $TUN_IF -d $SERVER_ADDR -p tcp --dport 7801 -j ACCEPT"
+	cat <<-EOF
 		-A CG_FWD -i $TUN_IF -d 169.254.0.0/16 -j REJECT --reject-with icmp-net-prohibited
 		-A CG_FWD -o $TUN_IF -m conntrack --ctstate DNAT -j ACCEPT
 		-A CG_FWD -i $TUN_IF -o $TUN_IF -j DROP

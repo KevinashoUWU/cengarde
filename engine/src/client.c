@@ -58,6 +58,8 @@
 #include "arrival.h"
 #include "clientpath.h"
 #include "ctl.h"
+#include "protoctl.h"
+#include "protoctlio.h"
 #include "decrec.h"
 #include "engine.h"
 #include "epoch.h"
@@ -254,6 +256,8 @@ struct client {
 	uint32_t up_largest; /* the same over the last check period, for the status */
 	uint64_t down_pkts, down_bytes, down_wg_drops, down_no_peer;
 	uint64_t down_not_ip; /* native: DATA that was not an IP packet, never written to the TUN */
+	struct cg_pctl *pctl;   /* the protocontroller (variant B) (protoctlio.h, story 025), NULL: off */
+	uint64_t down_pctl_off; /* protocontroller stream messages that came with the protocontroller off */
 	/* native, tcp_aware: inner TCP's retransmissions and segments without
 	 * data go marked CG_F_FREE (tcpfree.h); the flow hash's seed */
 	struct cg_tcpf tcpf;
@@ -364,6 +368,8 @@ struct client {
 	uint8_t tcpk[CG_BATCH];   /* its class for tcp_aware (tcpfree.h's CG_TCPF_*) */
 	uint8_t tcpr[CG_BATCH];   /* a retransmission's row (tcpack.h's CG_TCPA_*) */
 	uint8_t prio[CG_BATCH];
+	uint8_t pnc[CG_BATCH]; /* a protocontroller stream's DATA: no copies of a microcut (its ARQ repairs it, story 025) */
+	uint8_t prc[CG_BATCH]; /* a protocontroller stream's DATA sent again a second time: a priority copy, on a link without a queue */
 	struct cg_ro_cfg rocf;
 	uint32_t ro_budget;
 
@@ -1740,6 +1746,12 @@ static void spare_masks(struct client *c, int m, uint16_t carry, uint64_t now_us
 		if (c->pick[j] >= 0 || f < 0 || !(carry >> f & 1))
 			continue;
 		mask = cg_spare_mask(c->cmask[j], carry, f);
+		/* a protocontroller stream's DATA in the copies of a microcut: its first link
+		 * only (story 025: its ARQ sends again what is lost; copied, a
+		 * stream that keeps its rate through the cut filled the cellular
+		 * queue to 2 s); its repairs, as any DATA's */
+		if (c->pnc[j] && c->sp_how == CG_SPARE_COPIES)
+			mask &= (uint16_t)(1u << f);
 		if (!small && !(c->cmask[j] >> f & 1))
 			cg_eta_add(&c->pace, (unsigned)f, len, now_us); /* not counted by the window */
 		for (int i = 0; i < CG_MAX_LINKS; i++) {
@@ -1747,6 +1759,14 @@ static void spare_masks(struct client *c, int m, uint16_t carry, uint64_t now_us
 
 			if (i == f || !(mask >> i & 1))
 				continue;
+			/* a protocontroller stream's repeat on a queued link would come after its
+			 * ARQ sends it again anyway (a microcut: 60 % lost, a repeat
+			 * for every other packet, the cellular queue at 1 s) */
+			if (c->prc[j] && c->cap[i].ql_us > (int32_t)(c->cfg->redund_spare_ms * 1000)) {
+				mask &= (uint16_t)~(1u << i);
+				c->sp_copy_skip++;
+				continue;
+			}
 			if (small)
 				go = cg_spare_take(&c->spare[i], now_us, bits, 1, 1);
 			else if (c->sp_how == CG_SPARE_COPIES)
@@ -1916,37 +1936,132 @@ static const struct cg_tcpe_view *tcpe_view(const struct client *c, uint32_t now
 	return v;
 }
 
+/* Where an upload batch goes, decided once per batch (wg_read, up_send). */
+struct upctx {
+	uint16_t present, live, carry, dup0, esolo;
+	int split;
+	struct cg_split_masks k;
+	const uint16_t *w;
+	struct cg_tcpe_view tv;
+	const struct cg_tcpe_view *tvp;
+	int tv_done;
+};
+
+static void up_begin(struct client *c, uint64_t now_ms, struct upctx *u)
+{
+	/* the split is decided per packet before its header (CG_F_SPLIT is
+	 * under the MAC) */
+	link_masks(c, now_ms, &u->present, &u->live);
+	u->carry = cg_health_carriers(c->uh, CG_MAX_LINKS, u->present, u->live);
+	u->split = split_active(c);
+	u->w = split_weights(c, &u->dup0);
+	u->k = split_masks(c, u->carry, split_eligible(c, u->live, u->carry, now_ms), u->dup0);
+	/* starlink_edge_copies with a server that reorders: outside an
+	 * edge's window on Starlink alone, as split DATA (cg_slot_pick) */
+	u->esolo = c->cfg->starlink_edge_copies && c->peer_reorders && c->resc_idx ? edge_solo(c, u->carry, now_ms) : 0;
+	u->tvp = NULL;
+	u->tv_done = 0;
+}
+
+/* Packet m of the batch: buf, len bytes (an IP packet from the TUN, a
+ * WireGuard datagram, or a protocontroller stream's message, story 025: copy, a
+ * priority copy where the links have room; split, on every carrier). */
+static void up_one(struct client *c, struct upctx *u, int m, uint8_t *buf, size_t len, uint64_t now_us, int copy)
+{
+	uint16_t elig;
+	uint8_t flags = 0;
+	int stress, split = u->split;
+
+	if (len > c->up_max)
+		c->up_max = (uint32_t)len; /* for the path MTU check */
+	/* With fec, a link over fec_share_max of the recent split DATA
+	 * sits this packet out (fec.h). */
+	elig = cg_split_stress_elig(&c->spread, u->k.eligible, c->cfg->split_stress_single);
+	if (c->cfg->fec && split) {
+		uint16_t e = cg_fec_share_mask(&c->fec_share, elig, c->cfg->fec_share_max);
+
+		c->fec_capped += e != elig;
+		elig = e;
+	}
+	/* Under G4's stress, on its budget: a copy on every carrier. */
+	stress = split && cg_sdup(&c->sdup, c->spread.stress, (uint32_t)len, (unsigned)__builtin_popcount(u->carry),
+				  c->cfg->split_stress_dup);
+	/* A dominant link (dominant.h): the split steps aside, every
+	 * packet goes as in redundancy (the copies paced, eta.h). */
+	c->pick[m] = (int8_t)(copy ? -1
+			      : split && !c->dom.out
+				      ? cg_split_pick_eta(&c->sp, c->cfg->split_eta ? &c->eta : NULL,
+							  c->cfg->split_eta ? &c->tk : NULL, now_us, u->k.carriers,
+							  stress ? 0 : elig, u->k.dup, u->w, c->native ? CG_WGS_DATA : buf[0],
+							  (uint32_t)len, c->cfg->split_small, &flags)
+				      : cg_slot_pick(u->esolo, (uint32_t)len, CG_PACE_SMALL, &flags));
+	c->up_split += c->pick[m] >= 0;
+	c->tcpk[m] = 0;
+	c->tcpr[m] = CG_TCPA_UNKNOWN;
+	if (c->native && c->cfg->tcp_aware) {
+		struct cg_flow f;
+
+		if (cg_flow_of(buf, len, c->flow_seed, &f)) {
+			c->tcpk[m] = (uint8_t)cg_tcpf_class(&c->tcpf, &f, buf, len);
+			if (c->tcpk[m])
+				flags |= CG_F_FREE;
+			/* what the ACKs said of a retransmission's original (tcpack.h) */
+			if ((c->tcpk[m] == CG_TCPF_RETX1 || c->tcpk[m] == CG_TCPF_RETXN) && c->cfg->tcp_ack_rule)
+				c->tcpr[m] = (uint8_t)cg_tcpa_retx(&c->tcpa, &f, buf, len);
+		}
+		/* a flow's ACKs (and SYN-ACK) into the tunnel (tcpfree.h),
+		 * marked when the download did not deliver their holes */
+		if (c->tcpk[m] == CG_TCPF_CTL && f.tcp && cg_flow_of_dir(buf, len, c->flow_seed, 1, &f)) {
+			if (!u->tv_done) { /* once a batch */
+				u->tvp = tcpe_view(c, (uint32_t)now_us, &u->tv);
+				u->tv_done = 1;
+			}
+			if (cg_tcpe_in(&c->tcpe, &f, buf, len, (uint32_t)now_us, u->tvp) >= CG_TCPE_OWN)
+				flags |= CG_F_TUNHOLE;
+		}
+	}
+	/* The header is sealed in send_links, once the copies are
+	 * decided: the link this one went on alone goes in the next
+	 * one's flags (CG_F_PREV, harq.h), under the MAC. */
+	c->sflags[m] = flags;
+	c->sts[m] = (uint32_t)now_us;
+	c->sseq[m] = cg_up_next(&c->txs);
+	/* a protocontroller stream's message sent again a second time: a priority copy,
+	 * on what the links have to spare (forced on every carrier, the copies
+	 * of a microcut filled the cellular queue to 2 s) */
+	c->prio[m] = (uint8_t)(len < CG_PACE_SMALL || (flags & CG_F_FREE) || copy);
+	c->pnc[m] = (uint8_t)(!copy && len >= CG_PACE_SMALL && cg_pctl_is(buf, len));
+	c->prc[m] = (uint8_t)copy;
+	c->sp_bytes += len;
+	if (c->cfg->fec && split) {
+		int only = cg_split_only(c->pick[m], u->carry, u->k.dup);
+
+		fec_feed(c, c->sseq[m], c->pick[m] < 0 && c->cfg->mute_trickle ? -1 : only, buf, len, now_us,
+			 u->k.eligible);
+	}
+	c->oiov[m][0].iov_base = c->hdr[m];
+	c->oiov[m][0].iov_len = CG_HDR_LEN;
+	c->oiov[m][1].iov_base = buf;
+	c->oiov[m][1].iov_len = len;
+	c->up_pkts++;
+	c->up_bytes += len;
+	cg_wgs_add(&c->wgs_up, buf, len);
+}
+
 static void wg_read(struct client *c)
 {
 	for (int round = 0; round < CG_MAX_ROUNDS; round++) {
-		int n = c->native ? cg_tun_rx(c->wg_fd, &c->in) : cg_rx(c->wg_fd, &c->in), m = 0, split;
-		uint16_t present, live, carry, dup0, esolo;
-		struct cg_split_masks k;
-		const uint16_t *w;
+		int n = c->native ? cg_tun_rx(c->wg_fd, &c->in) : cg_rx(c->wg_fd, &c->in), m = 0;
 		uint64_t now_us, now_ms;
-		struct cg_tcpe_view tv;
-		const struct cg_tcpe_view *tvp = NULL;
-		int tv_done = 0;
+		struct upctx u;
 
 		if (n <= 0)
 			return;
 		now_us = cg_now_us();
 		now_ms = now_us / 1000;
-		/* Where the batch goes, once: the split is decided per packet
-		 * before its header (CG_F_SPLIT is under the MAC). */
-		link_masks(c, now_ms, &present, &live);
-		carry = cg_health_carriers(c->uh, CG_MAX_LINKS, present, live);
-		split = split_active(c);
-		w = split_weights(c, &dup0);
-		k = split_masks(c, carry, split_eligible(c, live, carry, now_ms), dup0);
-		/* starlink_edge_copies with a server that reorders: outside an
-		 * edge's window on Starlink alone, as split DATA (cg_slot_pick) */
-		esolo = c->cfg->starlink_edge_copies && c->peer_reorders && c->resc_idx ? edge_solo(c, carry, now_ms) : 0;
+		up_begin(c, now_ms, &u);
 		for (int i = 0; i < n; i++) {
 			size_t len = c->in.msg[i].msg_len;
-			uint16_t elig;
-			uint8_t flags = 0;
-			int stress;
 
 			if (!len)
 				continue;
@@ -1958,93 +2073,143 @@ static void wg_read(struct client *c)
 						c->native ? "TUN" : "WireGuard");
 				continue;
 			}
-			if (len > c->up_max)
-				c->up_max = (uint32_t)len; /* for the path MTU check */
 			/* Downstream goes back to whoever last sent something shaped like
 			 * WireGuard, not to any local sender. A TUN has no sender. */
 			if (!c->native && cg_looks_like_wg(c->in.buf[i], len)) {
 				c->wg_peer = c->in.from[i];
 				c->have_peer = 1;
 			}
-			/* With fec, a link over fec_share_max of the recent split DATA
-			 * sits this packet out (fec.h). */
-			elig = cg_split_stress_elig(&c->spread, k.eligible, c->cfg->split_stress_single);
-			if (c->cfg->fec && split) {
-				uint16_t e = cg_fec_share_mask(&c->fec_share, elig, c->cfg->fec_share_max);
-
-				c->fec_capped += e != elig;
-				elig = e;
-			}
-			/* Under G4's stress, on its budget: a copy on every carrier. */
-			stress = split && cg_sdup(&c->sdup, c->spread.stress, (uint32_t)len,
-						  (unsigned)__builtin_popcount(carry), c->cfg->split_stress_dup);
-			/* A dominant link (dominant.h): the split steps aside, every
-			 * packet goes as in redundancy (the copies paced, eta.h). */
-			c->pick[m] = (int8_t)(split && !c->dom.out
-						      ? cg_split_pick_eta(&c->sp, c->cfg->split_eta ? &c->eta : NULL,
-									c->cfg->split_eta ? &c->tk : NULL, now_us,
-									k.carriers, stress ? 0 : elig, k.dup, w,
-									c->native ? CG_WGS_DATA : c->in.buf[i][0],
-									(uint32_t)len, c->cfg->split_small, &flags)
-						    : cg_slot_pick(esolo, (uint32_t)len, CG_PACE_SMALL, &flags));
-			c->up_split += c->pick[m] >= 0;
-			c->tcpk[m] = 0;
-			c->tcpr[m] = CG_TCPA_UNKNOWN;
-			if (c->native && c->cfg->tcp_aware) {
-				struct cg_flow f;
-
-				if (cg_flow_of(c->in.buf[i], len, c->flow_seed, &f)) {
-					c->tcpk[m] = (uint8_t)cg_tcpf_class(&c->tcpf, &f, c->in.buf[i], len);
-					if (c->tcpk[m])
-						flags |= CG_F_FREE;
-					/* what the ACKs said of a retransmission's original (tcpack.h) */
-					if ((c->tcpk[m] == CG_TCPF_RETX1 || c->tcpk[m] == CG_TCPF_RETXN) && c->cfg->tcp_ack_rule)
-						c->tcpr[m] = (uint8_t)cg_tcpa_retx(&c->tcpa, &f, c->in.buf[i], len);
-				}
-				/* a flow's ACKs (and SYN-ACK) into the tunnel (tcpfree.h),
-				 * marked when the download did not deliver their holes */
-				if (c->tcpk[m] == CG_TCPF_CTL && f.tcp &&
-				    cg_flow_of_dir(c->in.buf[i], len, c->flow_seed, 1, &f)) {
-					if (!tv_done) { /* once a batch */
-						tvp = tcpe_view(c, (uint32_t)now_us, &tv);
-						tv_done = 1;
-					}
-					if (cg_tcpe_in(&c->tcpe, &f, c->in.buf[i], len, (uint32_t)now_us, tvp) >= CG_TCPE_OWN)
-						flags |= CG_F_TUNHOLE;
-				}
-			}
-			/* The header is sealed in send_links, once the copies are
-			 * decided: the link this one went on alone goes in the next
-			 * one's flags (CG_F_PREV, harq.h), under the MAC. */
-			c->sflags[m] = flags;
-			c->sts[m] = (uint32_t)now_us;
-			c->sseq[m] = cg_up_next(&c->txs);
-			c->prio[m] = (uint8_t)(len < CG_PACE_SMALL || (flags & CG_F_FREE));
-			c->sp_bytes += len;
-			if (c->cfg->fec && split) {
-				int only = cg_split_only(c->pick[m], carry, k.dup);
-
-				fec_feed(c, c->sseq[m], c->pick[m] < 0 && c->cfg->mute_trickle ? -1 : only, c->in.buf[i],
-					 len, now_us, k.eligible);
-			}
-			c->oiov[m][0].iov_base = c->hdr[m];
-			c->oiov[m][0].iov_len = CG_HDR_LEN;
-			c->oiov[m][1].iov_base = c->in.buf[i];
-			c->oiov[m][1].iov_len = len;
-			c->up_pkts++;
-			c->up_bytes += len;
-			cg_wgs_add(&c->wgs_up, c->in.buf[i], len);
-			m++;
+			up_one(c, &u, m++, c->in.buf[i], len, now_us, 0);
 		}
 		if (m) {
 			c->last_traffic_ms = now_ms;
-			send_links(c, m, now_ms, live, carry, k.dup);
+			send_links(c, m, now_ms, u.live, u.carry, u.k.dup);
 		}
 		if (c->nfecq)
 			fec_send(c, now_us);
 		if (n < CG_BATCH)
 			return;
 	}
+}
+
+/* Variant A: where the middle TCP goes, the VPS's tunnel address
+ * (protocontroller_vps; empty: the first address of tun_addr's prefix, the
+ * VPS's by convention, story 010) and protocontroller_port. 0 or -1. */
+static int pctl_vps_addr(const struct cg_config *cfg, struct sockaddr_storage *a, char *err, size_t errlen)
+{
+	uint8_t ad[16];
+	int fam = 0;
+
+	memset(a, 0, sizeof(*a));
+	if (cfg->protocontroller_vps[0]) {
+		if (inet_pton(AF_INET, cfg->protocontroller_vps, ad) == 1)
+			fam = AF_INET;
+		else if (inet_pton(AF_INET6, cfg->protocontroller_vps, ad) == 1)
+			fam = AF_INET6;
+		else {
+			snprintf(err, errlen, "protocontroller_vps: '%s' is not an IP address", cfg->protocontroller_vps);
+			return -1;
+		}
+	} else {
+		for (int i = 0; i < cfg->ntun_addr && !fam; i++) {
+			const struct cg_pfx *t = &cfg->tun_addr[i];
+			unsigned n = t->family == AF_INET ? 4 : 16, len = t->len;
+
+			if (t->family == AF_INET6 && i + 1 < cfg->ntun_addr)
+				continue; /* IPv4 first */
+			if (len + 1 >= n * 8) { /* OpenWrt's /32: no prefix to take it from */
+				snprintf(err, errlen, "protocontroller = a: tun_addr is a single address; set protocontroller_vps");
+				return -1;
+			}
+			memcpy(ad, t->a, n);
+			for (unsigned b = len; b < n * 8; b++)
+				ad[b / 8] &= (uint8_t)~(0x80u >> (b % 8));
+			ad[n - 1] |= 1;
+			if (!memcmp(ad, t->a, n)) {
+				snprintf(err, errlen, "protocontroller = a: tun_addr is the VPS's own; set protocontroller_vps");
+				return -1;
+			}
+			fam = t->family;
+		}
+		if (!fam) {
+			snprintf(err, errlen, "protocontroller = a: no tun_addr to take the VPS's from; set protocontroller_vps");
+			return -1;
+		}
+	}
+	if (fam == AF_INET) {
+		struct sockaddr_in *s = (struct sockaddr_in *)a;
+
+		s->sin_family = AF_INET;
+		memcpy(&s->sin_addr, ad, 4);
+		s->sin_port = htons((uint16_t)cfg->protocontroller_port);
+	} else {
+		struct sockaddr_in6 *s = (struct sockaddr_in6 *)a;
+
+		s->sin6_family = AF_INET6;
+		memcpy(&s->sin6_addr, ad, 16);
+		s->sin6_port = htons((uint16_t)cfg->protocontroller_port);
+	}
+	return 0;
+}
+
+/* the protocontroller (variant B) (protoctlio.h): n stream messages into the tunnel, as one batch. */
+static void pctl_send(void *ctx, uint32_t peer, uint32_t sid, uint8_t *const *msg, const uint16_t *len,
+		     const uint8_t *copy, int n)
+{
+	struct client *c = ctx;
+	uint64_t now_us = cg_now_us(), now_ms = now_us / 1000;
+	struct upctx u;
+
+	(void)peer;
+	(void)sid;
+	if (n <= 0)
+		return;
+	up_begin(c, now_ms, &u);
+	for (int m = 0; m < n; m++)
+		up_one(c, &u, m, msg[m], len[m], now_us, copy[m]);
+	c->last_traffic_ms = now_ms;
+	send_links(c, n, now_ms, u.live, u.carry, u.k.dup);
+	if (c->nfecq)
+		fec_send(c, now_us);
+}
+
+/* The upload capacity of the links that carry the streams (capacity.h),
+ * bytes/s: split, the sum of those in the split; with redund_spare, the
+ * first link's (the others carry its repairs); else the largest carrier
+ * (in redundancy every packet goes on every carrier, the fastest
+ * delivers). Full: the engine found that capacity under a standing queue
+ * (CG_CAP_CUT_FULL), so it is what the link carries and no more; a loss
+ * cut (a microcut) is not a ceiling, the ARQ answers loss. */
+static void pctl_hint(void *ctx, uint32_t peer, uint32_t sid, uint64_t *bps, int *full)
+{
+	struct client *c = ctx;
+	uint64_t now_ms = cg_now_ms(), sum = 0, best = 0;
+	struct upctx u;
+	uint16_t set;
+	int nfull = 0, n = 0, bi = -1;
+
+	(void)peer;
+	(void)sid;
+	up_begin(c, now_ms, &u);
+	set = u.split ? (uint16_t)((u.k.eligible | u.k.dup) & u.carry) : u.carry;
+	if (!u.split && c->cfg->redund_spare && c->sp_first1 && (set >> (c->sp_first1 - 1) & 1))
+		set = (uint16_t)(1u << (c->sp_first1 - 1));
+	for (int i = 0; i < CG_MAX_LINKS; i++) {
+		uint64_t b;
+
+		if (!(set >> i & 1) || !c->cap[i].have_rate)
+			continue;
+		b = cg_cap_bps(&c->cap[i]) / 8;
+		sum += b;
+		n++;
+		nfull += c->cap[i].cut == CG_CAP_CUT_FULL;
+		if (b > best) {
+			best = b;
+			bi = i;
+		}
+	}
+	*bps = u.split ? sum : best;
+	*full = u.split ? n && nfull == n : bi >= 0 && c->cap[bi].cut == CG_CAP_CUT_FULL;
 }
 
 static void rescue_apply(struct client *c);
@@ -2628,6 +2793,27 @@ static void down_deliver(struct client *c, const struct cg_hdr *h, unsigned link
 			       .retx = (uint8_t)(c->native && (h->flags & CG_F_FREE) && cg_tcp_data(payload, len)) };
 	enum cg_ro_v v;
 	uint16_t buf;
+
+	/* A protocontroller stream's message (story 025): to its stream at once, its
+	 * sequence still counted by the reorderer (never held: it has its own
+	 * order). */
+	if (c->native && cg_pctl_is(payload, len)) {
+		if (!c->pctl) {
+			c->down_pctl_off++;
+			return;
+		}
+		if (c->cfg->reorder) {
+			k.wgtype = CG_RO_WG_DATA + 1;
+			if (cg_ro_in(&c->rxs.ro, &c->pool, &c->rocf, &k, rset, &buf) == CG_RO_AGAIN) {
+				ro_drain(c, rset, now, 1, now_ms);
+				cg_ro_in(&c->rxs.ro, &c->pool, &c->rocf, &k, rset, &buf);
+			}
+		}
+		cg_pctl_rx(c->pctl, 0, 0, payload, len);
+		if (c->cfg->reorder)
+			ro_drain(c, rset, now, 0, now_ms);
+		return;
+	}
 
 	/* free without data: the upload's ACKs, with the server's mark on
 	 * their holes (tcpack.h) */
@@ -3432,7 +3618,10 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 	cg_json_u64(j, "stale", c->rxs.stale_gen);
 	cg_json_u64(j, "wireguard_drops", c->down_wg_drops + c->down_no_peer);
 	cg_json_u64(j, "not_ip", c->down_not_ip);
+	cg_json_u64(j, "protocontroller_off", c->down_pctl_off);
 	cg_json_end(j, '}');
+	if (c->pctl)
+		cg_pctl_json(c->pctl, j);
 	/* Download: lost on every link, joint lateness, and the reorderer
 	 * (story 012). */
 	cg_json_u64(j, "lost_all", c->rxs.replay.lost);
@@ -4036,6 +4225,8 @@ static void tick(struct client *c)
 	}
 	health_tick(c, now_ms);
 	names_tick(c, now_ms);
+	if (c->pctl)
+		cg_pctl_tick(c->pctl);
 	if (failover || now_ms >= c->next_reconcile_ms)
 		reconcile(c, now_ms);
 	if (now_ms >= c->next_path_ms)
@@ -4255,6 +4446,36 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 	}
 	c->rocf = cg_ro_cfg_of(cfg);
 	rescue_apply(c);
+	if (cfg->protocontroller) {
+		struct cg_pctl_cfg pc = { .server = 0,
+					 .port = (uint16_t)cfg->protocontroller_port,
+					 .mss = cfg->tun_mtu - CG_PCTL_OVERHEAD,
+					 .buf_kb = cfg->protocontroller_buf_kb,
+					 .mem_mb = cfg->protocontroller_mem_mb,
+					 .max_flows = cfg->protocontroller_max_flows,
+					 .queue_ms = cfg->protocontroller_queue_ms,
+					 .backlog_ms = cfg->protocontroller_backlog_ms,
+					 .dead_s = cfg->protocontroller_dead_s,
+					 .reo_ms = cfg->protocontroller_reo_ms,
+					 .mode = cfg->protocontroller };
+		struct cg_pctl_ops ops = { .ctx = c, .send = pctl_send, .hint = pctl_hint };
+
+		snprintf(pc.mid_cc, sizeof(pc.mid_cc), "%s", cfg->protocontroller_mid_cc);
+		if (cfg->protocontroller == CG_PCTL_A && pctl_vps_addr(cfg, &pc.a_peer, err, sizeof(err)) < 0) {
+			cg_err("%s", err);
+			goto out;
+		}
+		if (!(c->pctl = cg_pctl_new(&pc, c->ep, &ops, err, sizeof(err)))) {
+			cg_err("%s", err);
+			goto out;
+		}
+		if (cfg->protocontroller == CG_PCTL_A)
+			cg_info("protocontroller: taking the TCP redirected to port %u, a TCP to %s through the tunnel for each (variant A, story 025)",
+				cfg->protocontroller_port, cg_addr_str(&pc.a_peer, buf, sizeof(buf)));
+		else
+			cg_info("protocontroller: taking the TCP redirected to port %u, a stream of cengarde's for each (variant B, story 025)",
+				cfg->protocontroller_port);
+	}
 	/* The control socket is a convenience: the tunnel runs without it. */
 	if (cfg->control_socket[0] && cg_ctl_open(&c->ctl, cfg->control_socket, c->ep, err, sizeof(err)) < 0)
 		cg_warn("control socket: %s", err);
@@ -4277,7 +4498,7 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 	for (;;) {
 		struct epoll_event ev[32];
 		int timeout = busy && cg_now_us() - last_traffic_us < busy ? 0 : -1, armed = 0, n, traffic = 0;
-		int due = ro_timeout(c), fdue = fec_timeout(c);
+		int due = ro_timeout(c), fdue = fec_timeout(c), pdue = c->pctl ? cg_pctl_timeout(c->pctl) : -1;
 
 		/* The reorderer's next deadline wakes the loop up, if nothing
 		 * else does before (CG_TICK_MS is too coarse for it); and an
@@ -4286,6 +4507,8 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 			timeout = due;
 		if (fdue >= 0 && (timeout < 0 || fdue < timeout))
 			timeout = fdue;
+		if (pdue >= 0 && (timeout < 0 || pdue < timeout))
+			timeout = pdue;
 		c->ro_budget = CG_RO_PASS_MAX;
 		/* link_threads = on: the pumps ring this loop's bell when they
 		 * publish and it said it sleeps (ring.h), for good or until a
@@ -4366,6 +4589,10 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 					names_changed(c, now_ms);
 				break;
 			}
+			case CG_EV_PCTL:
+				if (c->pctl)
+					cg_pctl_event(c->pctl, idx, ev[i].events);
+				break;
 			case CG_EV_SIG:
 				if (signals(c)) {
 					cg_info("client stopping");
@@ -4381,11 +4608,14 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 			traffic = 1;
 		ro_service(c);
 		fec_service(c);
+		if (c->pctl)
+			cg_pctl_service(c->pctl);
 		if (traffic && busy)
 			last_traffic_us = cg_now_us();
 	}
 out:
 	cg_status_writer_stop(&c->sw);
+	cg_pctl_free(c->pctl);
 	cg_ctl_close(&c->ctl, c->ep);
 	cg_names_close(&c->names, c->ep);
 	cg_loader_free(&c->loader);

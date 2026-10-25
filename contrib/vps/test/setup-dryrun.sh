@@ -10,7 +10,7 @@
 #   again (nothing changes), a new secret (refused, then --replace: its new
 #   address, WireGuard restarted, the engine restarting), --rename, a second
 #   router (its own slot, port and address), a tunnel address taken, the
-#   33rd router, an engine of protocol 3 and --proto 10 refused (with the
+#   33rd router, an engine of protocol 3 and --proto 11 refused (with the
 #   upgrade command), WireGuard ports out of range; remove, the last one
 #   leaving a key that serves nobody; list and forward with each router's
 #   sessions;
@@ -29,6 +29,8 @@
 #   WireGuard gets its ULA (::1 here, ::2 the router), TUNNEL_IPV6=yes in
 #   nat.conf and cengarde-nat applies it; off takes it back; the import of
 #   a cloud-config with TUNNEL_IPV6=yes;
+# - protocontroller on|off (native only): protocontroller = b, tcp_bbr at
+#   boot, PROTOCONTROLLER in nat.conf;
 # - tunnel native|wireguard: native writes tunnel = native, the TUN's
 #   10.79.0.1/16 and each router's address as its tun_route (its ULA too
 #   with ipv6 on), a systemd drop-in that allows /dev/net/tun, restarts
@@ -386,7 +388,7 @@ say "limits of the routers and of the ports"
 before=$(fingerprint)
 check "a tunnel address taken is refused" not add shop "$S4" --tunnel-addr "$A2"
 check "it says whose" said "router home has the tunnel address $A2"
-check "--proto 10 (a newer router) is refused with the upgrade command" not add shop "$S4" --proto 10
+check "--proto 11 (a newer router) is refused with the upgrade command" not add shop "$S4" --proto 11
 check "it prints the upgrade command" said "contrib/vps/install.sh"
 check "an engine of protocol 3 is refused" not env FAKE_PROTO=3 sh -c 'printf "%s\n" "$1" | env CENGARDE_ROOT="$2" PATH="$3" sh "$4" add shop' \
 	sh "$S4" "$R" "$BIN:$PATH" "$SETUP"
@@ -728,6 +730,14 @@ check "the TUN gets fd79::1/8 (every router's ULA inside), each router its ULA :
 check "still no WireGuard" [ ! -e "$R/etc/wireguard/cg-zeta.conf" ]
 check "ipv6 off" setup ipv6 off
 rm -rf "$R/proc"
+: >"$CALLS"
+check "protocontroller on, natively" setup protocontroller on
+check "cengarde.conf: protocontroller = b; PROTOCONTROLLER in nat.conf; tcp_bbr at boot" \
+	sh -c 'grep -qx "protocontroller = b" "$1" && grep -qx "PROTOCONTROLLER=\"yes\"" "$2" && grep -qx tcp_bbr "$3"' \
+	sh "$R/etc/cengarde/cengarde.conf" "$R/etc/cengarde/nat.conf" "$R/etc/modules-load.d/cengarde-bbr.conf"
+check "the engine takes it" called '^cengarde -t -c .*cengarde.conf.new'
+check "protocontroller off" setup protocontroller off
+check "no protocontroller in cengarde.conf" not grep -q "^protocontroller" "$R/etc/cengarde/cengarde.conf"
 check "remove omega" setup remove omega
 : >"$CALLS"
 check "tunnel wireguard" setup tunnel wireguard
@@ -739,6 +749,7 @@ check "each router's WireGuard back as it was" \
 check "and started" sh -c 'grep -q "^systemctl enable --now wg-quick@cg-zeta$" "$1" && grep -q "^systemctl enable --now wg-quick@cg-alpha$" "$1"' sh "$CALLS"
 check "cengarde.conf as before native" [ "$(conf)" = "$conf_before" ]
 check "tunnel gre is refused" not setup tunnel gre
+check "protocontroller on is refused without the native tunnel" not setup protocontroller on
 check "a TUNNEL in nat.conf that is neither is refused" \
 	not sh -c 'printf "TUNNEL=gre\n" >>"$1/etc/cengarde/nat.conf" && env CENGARDE_ROOT="$1" PATH="$2" sh "$3" list 2>/dev/null' sh "$R" "$BIN:$PATH" "$SETUP"
 say "  the import of a cloud-config with TUNNEL=native"

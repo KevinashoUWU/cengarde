@@ -92,6 +92,8 @@
 #include "linkmodel.h"
 #include "log.h"
 #include "pair.h"
+#include "protoctl.h"
+#include "protoctlio.h"
 #include "pktinfo.h"
 #include "rcvbudget.h"
 #include "replay.h"
@@ -311,6 +313,8 @@ struct server {
 	int tun_fd;
 	struct cg_rt rt;
 	uint64_t tun_rx, tun_bad, tun_no_route, tun_no_session;
+	struct cg_pctl *pctl;   /* the protocontroller (variant B) (protoctlio.h, story 025), NULL: off */
+	uint64_t pctl_off;     /* protocontroller stream messages that came with the protocontroller off */
 	struct client c[CG_MAX_CLIENTS];
 	struct cg_hintidx hx; /* hint -> clients (clients.h) */
 	int multi;            /* [client] sections: their names in the logs, the forward table */
@@ -703,6 +707,8 @@ static void session_destroy(struct server *s, struct session *S, const char *why
 	struct session *N;
 
 	cg_info("%ssession %08x closed: %s", C->tag, S->id, why);
+	if (s->pctl)
+		cg_pctl_peer_gone(s->pctl, (uint32_t)idx, S->id);
 	/* What it holds goes first, in order: its WireGuard socket closes now.
 	 * What a listen batch queued for it is dropped below, as before. */
 	ro_flush_session(s, S);
@@ -1618,6 +1624,29 @@ static void up_deliver(struct server *s, int *nq, struct session *S, const struc
 			       .rebuilt = S->rebuilding };
 	enum cg_ro_v v;
 	uint16_t buf;
+
+	/* A protocontroller stream's message (story 025): to its stream at once, its
+	 * sequence still counted by the reorderer (never held: it has its own
+	 * order). */
+	if (s->native && cg_pctl_is(payload, len)) {
+		if (!s->pctl) {
+			s->pctl_off++;
+			return;
+		}
+		if (s->cfg->reorder) {
+			k.wgtype = CG_RO_WG_DATA + 1;
+			if (cg_ro_in(&S->ro, &s->pool, &S->rocf, &k, rset, &buf) == CG_RO_AGAIN) {
+				up_drain(s, nq, S, rset, now, 1);
+				cg_ro_in(&S->ro, &s->pool, &S->rocf, &k, rset, &buf);
+			}
+		}
+		cg_pctl_rx(s->pctl, (uint32_t)(S - s->s), S->id, payload, len);
+		if (s->cfg->reorder) {
+			up_drain(s, nq, S, rset, now, 0);
+			ro_track(s, S);
+		}
+		return;
+	}
 
 	/* free without data: the download's ACKs, with the client's mark on
 	 * their holes (tcpack.h) */
@@ -2556,6 +2585,64 @@ static void wg_read(struct server *s, struct session *S)
 	}
 }
 
+/* the protocontroller (variant B) (protoctlio.h): n stream messages down session peer (id sid). */
+static void pctl_send(void *ctx, uint32_t peer, uint32_t sid, uint8_t *const *msg, const uint16_t *len,
+		     const uint8_t *copy, int n)
+{
+	struct server *s = ctx;
+	uint64_t now_us = cg_now_us();
+	struct session *S;
+	struct dpaths d;
+
+	if (peer >= s->cap || !(S = &s->s[peer])->used || S->id != sid || n <= 0)
+		return;
+	d = down_paths(s, S, now_us / 1000);
+	for (int m = 0; m < n; m++) {
+		down_prepare(s, S, m, msg[m], len[m], now_us, &d);
+		if (copy[m]) {
+			s->pick[m] = -1;
+			s->sflags[m] &= (uint8_t)~CG_F_SPLIT;
+		}
+	}
+	down_send(s, S, n, now_us / 1000, &d);
+}
+
+/* The download capacity of the paths that carry session peer's streams
+ * (capacity.h), bytes/s: split, the sum; else the largest carrier; full
+ * as the client's pctl_hint (CG_CAP_CUT_FULL on all of them). */
+static void pctl_hint(void *ctx, uint32_t peer, uint32_t sid, uint64_t *bps, int *full)
+{
+	struct server *s = ctx;
+	struct session *S;
+	struct dpaths d;
+	uint64_t sum = 0, best = 0;
+	uint16_t set;
+	int n = 0, nfull = 0, bi = -1;
+
+	*bps = 0;
+	*full = 0;
+	if (peer >= s->cap || !(S = &s->s[peer])->used || S->id != sid)
+		return;
+	d = down_paths(s, S, cg_now_ms());
+	set = d.split ? (uint16_t)((d.k.eligible | d.k.dup) & d.carry) : d.carry;
+	for (int i = 0; i < CG_MAX_LINKS; i++) {
+		uint64_t b;
+
+		if (!(set >> i & 1) || !S->cap[i].have_rate)
+			continue;
+		b = cg_cap_bps(&S->cap[i]) / 8;
+		sum += b;
+		n++;
+		nfull += S->cap[i].cut == CG_CAP_CUT_FULL;
+		if (b > best) {
+			best = b;
+			bi = i;
+		}
+	}
+	*bps = d.split ? sum : best;
+	*full = d.split ? n && nfull == n : bi >= 0 && S->cap[bi].cut == CG_CAP_CUT_FULL;
+}
+
 /* native: packets the kernel routed into the TUN, each down the newest
  * session of the client that owns its destination (tunroute.h), a batch
  * per session in the order they were read. */
@@ -3057,8 +3144,11 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 		cg_json_u64(j, "not_ip", s->tun_bad);
 		cg_json_u64(j, "no_route", s->tun_no_route);
 		cg_json_u64(j, "no_session", s->tun_no_session);
+		cg_json_u64(j, "protocontroller_off", s->pctl_off);
 		cg_json_end(j, '}');
 	}
+	if (s->pctl)
+		cg_pctl_json(s->pctl, j);
 	cg_json_obj(j, "wireguard");
 	cg_json_u64(j, "pokes", s->wg_pokes);
 	cg_json_u64(j, "redirected_handshakes", s->wg_redirects);
@@ -3731,6 +3821,8 @@ static void tick(struct server *s)
 		threads_sample(s, now_ms);
 	health_tick(s, now_ms);
 	pace_lanes(s);
+	if (s->pctl)
+		cg_pctl_tick(s->pctl);
 	for (int i = 0; i < CG_MAX_CLIENTS; i++)
 		if (s->c[i].used && s->c[i].newest >= 0)
 			wg_poke(s, &s->c[i], &s->s[s->c[i].newest], now_ms);
@@ -4032,6 +4124,8 @@ static int sessions_room(struct server *s, uint32_t max)
 	cg_idmap_free(&s->ids);
 	s->ids = nm;
 	s->cap = max;
+	if (s->pctl && cg_pctl_peers(s->pctl, max) < 0)
+		return -1;
 	return 0;
 }
 
@@ -4308,6 +4402,50 @@ int cg_server_run(struct cg_config *cfg, const struct cg_run *run)
 		cg_err("epoll setup: %s", strerror(errno));
 		goto out;
 	}
+	if (cfg->protocontroller) {
+		struct cg_pctl_cfg pc = { .server = 1,
+					 .mss = cfg->tun_mtu - CG_PCTL_OVERHEAD,
+					 .buf_kb = cfg->protocontroller_buf_kb,
+					 .mem_mb = cfg->protocontroller_mem_mb,
+					 .max_flows = cfg->protocontroller_max_flows,
+					 .queue_ms = cfg->protocontroller_queue_ms,
+					 .backlog_ms = cfg->protocontroller_backlog_ms,
+					 .dead_s = cfg->protocontroller_dead_s,
+					 .reo_ms = cfg->protocontroller_reo_ms,
+					 .peers = s->cap };
+		struct cg_pctl_ops ops = { .ctx = s, .send = pctl_send, .hint = pctl_hint };
+
+		snprintf(pc.cc, sizeof(pc.cc), "%s", cfg->protocontroller_cc);
+		snprintf(pc.mid_cc, sizeof(pc.mid_cc), "%s", cfg->protocontroller_mid_cc);
+		/* variant A's routers connect to the first tunnel address, IPv4 first */
+		for (int i = 0; i < cfg->ntun_addr; i++) {
+			const struct cg_pfx *t = &cfg->tun_addr[i];
+
+			if (pc.a_bind.ss_family == AF_INET || (pc.a_bind.ss_family && t->family == AF_INET6))
+				continue;
+			memset(&pc.a_bind, 0, sizeof(pc.a_bind));
+			if (t->family == AF_INET) {
+				struct sockaddr_in *b = (struct sockaddr_in *)&pc.a_bind;
+
+				b->sin_family = AF_INET;
+				memcpy(&b->sin_addr, t->a, 4);
+				b->sin_port = htons((uint16_t)cfg->protocontroller_port);
+			} else {
+				struct sockaddr_in6 *b = (struct sockaddr_in6 *)&pc.a_bind;
+
+				b->sin6_family = AF_INET6;
+				memcpy(&b->sin6_addr, t->a, 16);
+				b->sin6_port = htons((uint16_t)cfg->protocontroller_port);
+			}
+			pc.a_len = t->len;
+		}
+		if (!(s->pctl = cg_pctl_new(&pc, s->ep, &ops, err, sizeof(err)))) {
+			cg_err("%s", err);
+			goto out;
+		}
+		cg_info("protocontroller: opening the TCP connections routers ask for (variant B, and variant A's on port %u of the tunnel's address; story 025; %s toward them)",
+			cfg->protocontroller_port, cfg->protocontroller_cc[0] ? cfg->protocontroller_cc : "the kernel's congestion control");
+	}
 	/* The control socket is a convenience: the tunnel runs without it. */
 	if (cfg->control_socket[0] && cg_ctl_open(&s->ctl, cfg->control_socket, s->ep, err, sizeof(err)) < 0)
 		cg_warn("control socket: %s", err);
@@ -4348,7 +4486,13 @@ int cg_server_run(struct cg_config *cfg, const struct cg_run *run)
 
 		/* Until the reorderer's nearest deadline at most (CG_TICK_MS is
 		 * too coarse for it). */
-		n = cg_wait(s->ep, ev, 32, busy, last_traffic_us, ro_timeout(s));
+		{
+			int due = ro_timeout(s), pdue = s->pctl ? cg_pctl_timeout(s->pctl) : -1;
+
+			if (pdue >= 0 && (due < 0 || pdue < due))
+				due = pdue;
+			n = cg_wait(s->ep, ev, 32, busy, last_traffic_us, due);
+		}
 		s->ro_budget = CG_RO_PASS_MAX;
 		if (n < 0 && errno != EINTR) {
 			cg_err("epoll_wait: %s", strerror(errno));
@@ -4403,6 +4547,10 @@ int cg_server_run(struct cg_config *cfg, const struct cg_run *run)
 				if (reload_done(s) < 0)
 					goto out;
 				break;
+			case CG_EV_PCTL:
+				if (s->pctl)
+					cg_pctl_event(s->pctl, idx, ev[i].events);
+				break;
 			case CG_EV_SIG:
 				if (signals(s)) {
 					cg_info("server stopping");
@@ -4413,11 +4561,14 @@ int cg_server_run(struct cg_config *cfg, const struct cg_run *run)
 			}
 		}
 		ro_service(s);
+		if (s->pctl)
+			cg_pctl_service(s->pctl);
 		if (traffic && busy)
 			last_traffic_us = cg_now_us();
 	}
 out:
 	cg_status_writer_stop(&s->sw);
+	cg_pctl_free(s->pctl);
 	cg_status_writer_stop(&s->pw);
 	cg_status_writer_stop(&s->fw);
 	wgport_sync(s); /* the last change, written before the thread ends */

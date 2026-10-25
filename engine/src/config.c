@@ -10,6 +10,7 @@
 #include "arrival.h" /* CG_MAX_LINKS */
 #include "linkmodel.h" /* type */
 #include "log.h"
+#include "protoctlio.h" /* CG_PCTL_NO, _A, _B */
 #include "resolve.h" /* cg_hosts_find */
 #include "steer.h"   /* lanes */
 #include "util.h"
@@ -733,6 +734,29 @@ static int parse_lists(struct cg_config *c, struct cg_ini *ini)
  * (enum cg_split_mode). c->mode is set. */
 /* redund_spare: no (off), copies, parity, mix, rs or rlc (spare.h); rs
  * needs Leopard (make LEOPARD=0 builds without it). */
+/* protocontroller = no | a | b (story 025): no, the transparent tunnel;
+ * a, TCP split with a plain TCP through the tunnel in the middle; b, TCP
+ * split with cengarde's own reliable stream in the middle. A server takes
+ * both a and b from its routers with either. */
+static int get_protocontroller(struct cg_ini *ini, struct cg_config *c, char *err, size_t errlen)
+{
+	const char *v = cg_ini_get(ini, "", "protocontroller");
+
+	if (!v)
+		return 0;
+	if (!strcmp(v, "no") || !strcmp(v, "off") || !strcmp(v, "0"))
+		c->protocontroller = CG_PCTL_NO;
+	else if (!strcmp(v, "a") || !strcmp(v, "A"))
+		c->protocontroller = CG_PCTL_A;
+	else if (!strcmp(v, "b") || !strcmp(v, "B"))
+		c->protocontroller = CG_PCTL_B;
+	else {
+		snprintf(err, errlen, "protocontroller: expected no, a or b, got '%s'", v);
+		return -1;
+	}
+	return 0;
+}
+
 static int get_spare(struct cg_ini *ini, struct cg_config *c, char *err, size_t errlen)
 {
 	static const char *const names[] = { "no", "copies", "parity", "mix", "rs", "rlc" };
@@ -832,6 +856,16 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	c->rescue_tcp_race = 1;
 	c->tcp_retx_one = 1;
 	c->tcp_ack_rule = 1;
+	c->protocontroller_port = 7801;
+	c->protocontroller_buf_kb = 1024;
+	c->protocontroller_mem_mb = 64;
+	c->protocontroller_max_flows = 256;
+	c->protocontroller_queue_ms = 5;
+	c->protocontroller_backlog_ms = 200;
+	c->protocontroller_dead_s = 60;
+	c->protocontroller_reo_ms = 10;
+	strcpy(c->protocontroller_cc, "auto");
+	strcpy(c->protocontroller_mid_cc, "bbr");
 	c->fec_wait_ms = 10;
 	c->redund_spare_ms = 50;
 	c->redund_spare_code_ms = 30;
@@ -935,6 +969,18 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	    get_bool(&ini, "", "rescue_tcp_race", &c->rescue_tcp_race, err, errlen) ||
 	    get_bool(&ini, "", "tcp_retx_one", &c->tcp_retx_one, err, errlen) ||
 	    get_bool(&ini, "", "tcp_ack_rule", &c->tcp_ack_rule, err, errlen) ||
+	    get_protocontroller(&ini, c, err, errlen) ||
+	    get_u32(&ini, "", "protocontroller_port", 1, 65535, &c->protocontroller_port, err, errlen) ||
+	    get_u32(&ini, "", "protocontroller_buf_kb", 64, 4080, &c->protocontroller_buf_kb, err, errlen) ||
+	    get_u32(&ini, "", "protocontroller_mem_mb", 4, 4096, &c->protocontroller_mem_mb, err, errlen) ||
+	    get_u32(&ini, "", "protocontroller_max_flows", 1, 65535, &c->protocontroller_max_flows, err, errlen) ||
+	    get_u32(&ini, "", "protocontroller_queue_ms", 1, 1000, &c->protocontroller_queue_ms, err, errlen) ||
+	    get_u32(&ini, "", "protocontroller_backlog_ms", 10, 10000, &c->protocontroller_backlog_ms, err, errlen) ||
+	    get_u32(&ini, "", "protocontroller_dead_s", 0, 3600, &c->protocontroller_dead_s, err, errlen) ||
+	    get_u32(&ini, "", "protocontroller_reo_ms", 0, 1000, &c->protocontroller_reo_ms, err, errlen) ||
+	    get_str(&ini, "", "protocontroller_cc", c->protocontroller_cc, sizeof(c->protocontroller_cc), err, errlen) ||
+	    get_str(&ini, "", "protocontroller_mid_cc", c->protocontroller_mid_cc, sizeof(c->protocontroller_mid_cc), err, errlen) ||
+	    get_str(&ini, "", "protocontroller_vps", c->protocontroller_vps, sizeof(c->protocontroller_vps), err, errlen) ||
 	    get_bool(&ini, "", "fec", &c->fec, err, errlen) ||
 	    get_u32(&ini, "", "fec_wait_ms", 1, 200, &c->fec_wait_ms, err, errlen) ||
 	    get_u32(&ini, "", "fec_share_max", 0, 100, &c->fec_share_max, err, errlen) ||
@@ -1196,6 +1242,12 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 			goto out;
 	}
 
+	/* the protocontroller's streams ride the native tunnel's DATA (story 025) */
+	if (c->protocontroller && c->tunnel != CG_TUNNEL_NATIVE) {
+		snprintf(err, errlen, "protocontroller: needs tunnel = native");
+		goto out;
+	}
+
 	for (int i = 0; i < ini.n; i++) {
 		size_t used;
 
@@ -1346,6 +1398,15 @@ const char *cg_config_restart_needed(const struct cg_config *a, const struct cg_
 		return "tun_mtu";
 	if (a->tunnel == CG_TUNNEL_NATIVE && a->tun_txqueuelen != b->tun_txqueuelen)
 		return "tun_txqueuelen";
+	/* the protocontroller's sockets, pool and pacers are set up once (story 025) */
+	if (a->protocontroller != b->protocontroller || (a->protocontroller && (a->protocontroller_port != b->protocontroller_port || a->protocontroller_buf_kb != b->protocontroller_buf_kb ||
+					     a->protocontroller_mem_mb != b->protocontroller_mem_mb || a->protocontroller_max_flows != b->protocontroller_max_flows ||
+					     a->protocontroller_queue_ms != b->protocontroller_queue_ms || a->protocontroller_backlog_ms != b->protocontroller_backlog_ms ||
+					     a->protocontroller_dead_s != b->protocontroller_dead_s || a->protocontroller_reo_ms != b->protocontroller_reo_ms ||
+					     strcmp(a->protocontroller_cc, b->protocontroller_cc) ||
+					     strcmp(a->protocontroller_mid_cc, b->protocontroller_mid_cc) ||
+					     strcmp(a->protocontroller_vps, b->protocontroller_vps))))
+		return "protocontroller";
 	return NULL;
 }
 

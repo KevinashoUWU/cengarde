@@ -314,8 +314,11 @@ TCP ni en lo perdido en vivo (p ≥ 0,066) salvo `Af-rlc` en `protect`, 44,3 →
 
 ## Pendiente
 
-- **Bajada** (el VPS manda al router): no medida; el emisor del medio sería
-  `ss-server` y el lejano el host.
+- **Hecho en la 025:** el protocontrolador (`protocontroller = a | b`) hace
+  este corte dentro del motor; su variante A iguala a `Ab-rlc` en los tres
+  casos (53,9 / 53,0 / 36,2 Mbit/s) con menos memoria y mejor vivo cercano,
+  y la B rinde lo mismo con menos CPU y sin cola; la bajada se midió allí.
+- **Bajada** (el VPS manda al router): no medida aquí (ver la 025).
 - **La Pi:** CPU y memoria de los proxies en la Pi 4 (estimación arriba).
 - **Búferes acotados:** `A` con `TCP_NOTSENT_LOWAT` o `SO_RCVBUF` chicos en
   los proxies, para ver cuánto del atraso en vivo se convierte en
@@ -330,3 +333,4 @@ TCP ni en lo perdido en vivo (p ≥ 0,066) salvo `Af-rlc` en `protect`, 44,3 →
 ## Cambios
 
 - 2026-10-25: creada.
+- 2026-10-25: la 025 lo hace en el motor (variantes A y B) y mide contra estas cifras.

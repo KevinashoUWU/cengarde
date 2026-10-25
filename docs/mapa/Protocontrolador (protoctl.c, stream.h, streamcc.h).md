@@ -1,0 +1,41 @@
+---
+tags: [mapa, pieza]
+archivos:
+  - engine/src/protoctl.c
+  - engine/src/protoctlio.h
+  - engine/src/protoctl.h
+  - engine/src/stream.h
+  - engine/src/streamcc.h
+  - engine/tests/test_protoctl.c
+  - engine/tests/test_stream.c
+  - engine/tests/test_streamcc.c
+sello: 6c8402dcecdab125
+---
+# Protocontrolador (protoctl.c, stream.h, streamcc.h)
+
+**Grupo:** Enviar · Recibir · Recuperar — [[Mapa del motor]]
+
+## Qué hace
+El protocontrolador ([[025-protocontrolador]]): TCP partido en los dos extremos (lo que la RFC 3135 llama un PEP). Con `protocontroller = a` o `b` (solo con `tunnel = native`), el router acepta el TCP que el firewall redirige a `protocontroller_port` (destino original con `SO_ORIGINAL_DST`, o `getsockname` con TPROXY), y el VPS abre un TCP nuevo hacia ese destino (`protocontroller_cc`, `auto` por omisión: cubic y BBR desde 3 segmentos reenviados). Lo que no se intercepta (UDP, QUIC) sigue por la TUN. El VPS acepta las dos variantes con cualquiera de las dos.
+
+- **Variante A** (`a`): el tramo del medio es un **TCP simple del kernel** por el túnel, del router a la dirección del VPS en el túnel (`protocontroller_vps`, por omisión la primera del prefijo de `tun_addr`) y `protocontroller_port`; lo primero que escribe el router es una cabecera (`0xA5`, familia, puerto, dirección) con el destino. El VPS escucha ahí (`IP_FREEBIND`) y solo acepta direcciones del prefijo del túnel (`cg_pctl_in_pfx`). El motor solo copia bytes entre los dos sockets (`a_move`, con los trozos del fondo común y el tope `protocontroller_buf_kb` por sentido); `protocontroller_mid_cc` elige el control de congestión del medio en cada extremo.
+- **Variante B** (`b`): entre los dos, cada conexión es un **flujo de bytes fiable** dentro del túnel: sus mensajes van como carga de DATA con el primer nibble en `0xF` (protocolo 10), así que el MAC, el anti-replay, las copias, la FEC y el rescate les aplican sin cambios.
+- **`protoctl.h`** (puro): el formato (`OPEN`, `DATA` con el reloj del emisor, `ACK` con el menor retardo de ida desde el anterior y la bandera `DUP`, `RST`; una etiqueta SipHash de 4 bytes al final que descarta una reconstrucción errada de la FEC: `corrupt`), los destinos que el VPS no abre (loopback, sin especificar, multicast, enlace local: 169.254.169.254), el prefijo del túnel (`cg_pctl_in_pfx`), la tabla del servidor por (sesión, id), el borde de la ventana (`cg_pctl_edge`) y lo que un flujo guarda sin enviar (`cg_pctl_backlog`).
+- **`stream.h`** (puro): el búfer por trozos de 16 KB de un fondo común, el anillo de segmentos del emisor (un reenvío reusa su segmento; cada uno sabe si salió con cola), RACK y el temporizador desde el envío más viejo, el reensamblado del receptor (hasta 256 huecos; el ACK lleva primero el rango más nuevo y hasta 8), el FIN como un byte. Nunca se rinde.
+- **`streamcc.h`** (puro): el ritmo de todos los flujos B hacia un par: lo que el camino consume (entregado, y perdido de lo que salió sin cola, hasta 3 perdidos por 1 entregado, solo al sondear); la cola por el **retardo de ida** que devuelve el receptor (`cg_scc_owd`, sobre su mínimo de 10 s, el menor de cada ventana de una ida y vuelta; sin él, la ida y vuelta); arranque 3/2 que termina con la primera muestra con cola, ciclo 5/4–3/4–1, 3/4 mientras haya cola sobre `protocontroller_queue_ms`, una ventana entera con cola baja el estimador a lo entregado; en vuelo dos veces `bw × (min_rtt + protocontroller_queue_ms)` más `bw ×` la ventana de RACK; el estimador, el mayor de 1–2 s; arranque otra vez tras 1 s ocioso. De la [[Capacidad (capacity.h)]]: el comienzo (al menos 16 Mbit/s) y el techo cuando el motor halla lleno el enlace de los datos (`CG_CAP_CUT_FULL`), si no queda bajo la mitad del estimador (la capacidad de un enlace ocioso es la de sus sondas).
+- **`protoctl.c`**: los sockets (no bloqueantes; `TCP_NOTSENT_LOWAT` dinámico; `SO_RCVBUF` de 128 KB en el socket que escucha), la contrapresión, los tiempos (`protocontroller_dead_s`, 30 s para un `connect`), los ACK (cada 4 DATA o 2 ms; al instante con un hueco nuevo o lleno, o el FIN), las ventanas de RACK por par (cada `DUP` +4 ms hasta 100, −2 ms por segundo), la variante A (`a_open`, `a_accept`, `a_service`), el estado (`protocontroller` en el JSON, con los huecos del receptor por duración y las esperas de envío y de escritura; `a_opened`, `a_bytes_in`, `a_held_bytes` para A).
+
+## Lee
+- Del túnel (B): `down_deliver` (router) y `up_deliver` (VPS) le pasan cada mensaje al instante; el [[Reordenador (reorder.h)]] solo cuenta su secuencia (`wgtype` no es dato: nunca lo retiene). A no lee nada del túnel: su TCP del medio es un paquete más de la TUN.
+- Del motor, cada tick (`pctl_hint`): la capacidad de los enlaces que llevan los datos ([[Lo que sobra (spare.h)]]: el primero; repartido, la suma) y si están llenos.
+
+## Decide / escribe
+- Mensajes de B al túnel por el camino de siempre (`up_one`/`send_links` en el router, `down_prepare`/`down_send` en el VPS). En [[Lo que sobra (spare.h)]], los DATA del flujo no se copian en las copias de un microcorte (`pnc`: su ARQ reenvía), y un segmento reenviado por segunda vez es una copia prioritaria que no va a un enlace con cola sobre `redund_spare_ms` (`prc`); repartido, va por todos los portadores.
+- Contrapresión (B): el VPS cierra su borde cuando lo que tiene en orden sin escribir pasa `protocontroller_backlog_ms` a su ritmo; el router deja de leer la LAN cuando lo que tiene sin enviar pasa eso (al menos 256 KB) o el búfer está lleno. En A, la de los dos TCP del kernel y el tope del búfer.
+- Estado: `protocontroller` (`mode` en el router, flujos, abiertos, rehusados por motivo, RST, reenvíos, copias, duplicados, `corrupt`, `holes_ms`, `sendq_ms`, `writeq_ms`, memoria y su pico, `cc_to_bbr`, lo de A, y por par el ritmo, `min_rtt`, `srtt`, en vuelo, ventana, modo, ventana de RACK).
+
+## Perillas
+- [[Mapa/Perillas/protocontroller|protocontroller]], [[Mapa/Perillas/protocontroller_port|protocontroller_port]], [[Mapa/Perillas/protocontroller_vps|protocontroller_vps]], [[Mapa/Perillas/protocontroller_mid_cc|protocontroller_mid_cc]], [[Mapa/Perillas/protocontroller_buf_kb|protocontroller_buf_kb]], [[Mapa/Perillas/protocontroller_mem_mb|protocontroller_mem_mb]], [[Mapa/Perillas/protocontroller_max_flows|protocontroller_max_flows]], [[Mapa/Perillas/protocontroller_queue_ms|protocontroller_queue_ms]], [[Mapa/Perillas/protocontroller_backlog_ms|protocontroller_backlog_ms]], [[Mapa/Perillas/protocontroller_dead_s|protocontroller_dead_s]], [[Mapa/Perillas/protocontroller_reo_ms|protocontroller_reo_ms]], [[Mapa/Perillas/protocontroller_cc|protocontroller_cc]]. Todas reinician el proceso al cambiar.
+
+## Medido
+- [[025-protocontrolador]]: el laboratorio de la 024 (`protect`, `beyond`, `protectcut`, vivo, bajada, cuatro celulares) con A y B contra el túnel transparente y el A de la 024 (shadowsocks).

@@ -746,6 +746,42 @@ como estaba. En el modo WireGuard nada cambia respecto de antes.
   (`setup-dryrun.sh`, `nat-rules.sh`). No está probado todavía en la Pi ni
   en Vultr.
 
+## Protocontrolador (TCP partido, con el túnel nativo)
+
+Con el túnel nativo, el router puede responder él mismo el TCP de la LAN y
+el VPS abrir uno nuevo hacia cada destino (historia 025): el TCP de la LAN
+ya no siente la pérdida ni el retardo de los enlaces, y el tramo del VPS al
+destino (cubic, BBR en cuanto pierde) tampoco los del túnel. Ayuda a las
+subidas largas por TCP (RTMP a un ingest lejano, enlaces que pierden). UDP,
+QUIC y lo demás van por el túnel como siempre. Dos variantes:
+
+- **A** (`protocontroller 'a'`): entre los dos extremos, un TCP simple del
+  kernel por el túnel, del router a `10.79.0.1`. Sin proxies aparte.
+- **B** (`protocontroller 'b'`, experimental): entre los dos, un flujo
+  fiable propio de cengarde, dosificado por lo que llevan los enlaces y no
+  por la pérdida.
+
+**En el router** (pestaña *Túnel*, *Protocontrolador*, solo en modo
+nativo): `cengarde-setup` escribe `/etc/cengarde/protoctl.nft`, un include
+de firewall4 (`cengarde_protoctl`, una cadena propia justo antes de la
+`dstnat` de fw4) que redirige al motor (puerto 7801) el TCP que entra por la
+zona `lan` hacia `protocontroller_port` (vacío: todos los puertos) y
+`protocontroller_dest` (vacío: todo lo que no es privado ni local); nunca el
+del propio router. El motor recibe `protocontroller = a|b` y, para A, la
+dirección del VPS en el túnel (`protocontroller_vps = 10.79.0.1`: la del
+router es una `/32`). Un cambio reinicia el motor.
+
+**En el VPS:** `sudo cengarde-vps-setup protocontroller on` (necesita
+`tunnel native`): `protocontroller = b` en el motor (acepta A y B),
+`PROTOCONTROLLER="yes"` en `nat.conf` (abre el TCP 7801 desde `cg0` para la
+variante A) y `tcp_bbr` al arrancar. `protocontroller off` lo quita; un
+router que siga con A o B ve entonces sus conexiones rehusadas.
+
+**Comprobar:** en el router, `cengarde ctl status | jsonfilter -e
+'@.protocontroller'` (`opened` con B, `a_opened` con A, y `mode`); en el VPS,
+lo mismo. `test/e2e.sh` lo prueba con B y con A (una página del VPS a
+través del corte) y la vuelta a `no` sin restos.
+
 ## Por consola (sin LuCI)
 
 ```sh

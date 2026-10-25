@@ -222,6 +222,22 @@ struct cg_config {
 	int tcp_retx_one;             /* tcp_aware in redundancy: a first TCP retransmission on one link, not copied (story 023); default yes */
 	int tcp_ack_rule;             /* with tcp_retx_one: a retransmission's links from the ACKs and the exit end's marks (tcpack.h); default yes */
 	uint32_t reorder_pool_kb;     /* memory for the packets it holds; changing it restarts */
+	/* The protocontroller (story 025, protoctlio.h): TCP split at both
+	 * ends, a plain TCP (variant A) or a reliable stream of cengarde's
+	 * (variant B) in the middle; native tunnel only. Changing any of these
+	 * restarts the connections. */
+	int protocontroller;          /* CG_PCTL_NO, _A or _B (protoctlio.h): router, take the LAN's TCP redirected to protocontroller_port; VPS, open what routers ask (A and B) */
+	uint32_t protocontroller_port;            /* router: the listening port the firewall redirects to */
+	uint32_t protocontroller_buf_kb;          /* each stream's buffer per direction, at most */
+	uint32_t protocontroller_mem_mb;          /* every stream's buffers together */
+	uint32_t protocontroller_max_flows;       /* streams at once */
+	uint32_t protocontroller_queue_ms;        /* the queue the middle leg may build over its least round trip (streamcc.h) */
+	uint32_t protocontroller_backlog_ms;      /* what a stream holds unsent or unwritten, in time at its rate */
+	uint32_t protocontroller_dead_s;          /* a stream without progress this long, with something pending, is reset; 0: never */
+	uint32_t protocontroller_reo_ms;          /* RACK's reordering window beyond a quarter of the round trip */
+	char protocontroller_cc[16];              /* VPS: the congestion control toward the destination ("": the kernel's; auto: the kernel's, BBR once it loses) */
+	char protocontroller_mid_cc[16];          /* variant A: the middle TCP's congestion control, each end for what it sends (bbr; "": the kernel's) */
+	char protocontroller_vps[64];             /* router, variant A: the VPS's tunnel address ("": the tunnel prefix's first address) */
 	int tcp_aware;                /* native: mark inner TCP's retransmissions and ACKs free (tcpfree.h) */
 	uint32_t reorder_idle_ms;     /* EXPERIMENT: the reorderer stops waiting for a link that brought no data this long; 0: off */
 	uint32_t reorder_retx_release_ms; /* a TCP retransmission gives up the gaps held this long before it; 0: off */
