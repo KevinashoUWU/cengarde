@@ -264,17 +264,21 @@
 #                fresh TCP to the destination: three TCP connections
 #   kcp          the same with KCP (kcptun, Debian: ARQ over UDP, no FEC of its
 #                own, BOND_PEP_KCP) between ss-redir and ss-server instead of TCP
-#   cg           PEP mode B (story 025): the engines themselves, pep = yes at both
-#                ends (the router's iptables REDIRECT to BOND_PEP_PORT, 7801), a
-#                reliable stream of cengarde's in the middle and the VPS's TCP to
-#                the destination with BOND_PEP_CGCC (auto, the engine's pep_cc: cubic, BBR
-#                once that leg loses);
+#   cgb (cg)     the protocontroller's variant B (story 025): the engines
+#                themselves, protocontroller = b at the router (the router's
+#                iptables REDIRECT to BOND_PEP_PORT, 7801), a reliable stream of
+#                cengarde's in the middle and the VPS's TCP to the destination
+#                with BOND_PEP_CGCC (auto, the engine's protocontroller_cc:
+#                cubic, BBR once that leg loses);
 #                "pep" then carries the engines' streams too (pepstat.py)
+#   cga          the protocontroller's variant A: the same, protocontroller = a,
+#                a plain TCP of the engines' through the tunnel in the middle
+#                (the router's own, with its netns's cc, BOND_PEP_MIDCC)
 # BOND_PEP_MIDCC and BOND_PEP_FARCC (cubic): the congestion control of the
 # router's netns (the middle leg's sender in an upload) and the VPS's (the far
 # leg's); BOND_PEP_LANCC (empty: the run's cc for iperf3, cubic for live) the
 # LAN host's, the sender's (transparent with BBR end to end, the control of a
-# split with BBR on the far leg). The cc "soak" is "live" with pepchurn.py's short connections
+# split with BBR on the far leg). The cc "soak" is "live" with churn.py's short connections
 # next to it (story 025: BOND_SOAK_WORKERS at a time, some reset halfway). The cc "live" (tcp ones are iperf3 from peplan to pepfar) is two
 # live-video-like streams (bench/livesim.py, RTMP from OBS: BOND_LIVE_MBIT, 8,
 # each, the sender dropping what waited BOND_LIVE_DROP_MS, 700), one to the far
@@ -343,7 +347,7 @@ BOND_PEP_CGCC=${BOND_PEP_CGCC:-auto}
 BOND_PEP_KCP=${BOND_PEP_KCP:---mode fast --datashard 0 --parityshard 0 --nocomp --crypt none --mtu 1300}
 BOND_LIVE_MBIT=${BOND_LIVE_MBIT:-8}
 BOND_LIVE_DROP_MS=${BOND_LIVE_DROP_MS:-700}
-BOND_SOAK_WORKERS=${BOND_SOAK_WORKERS:-16} # cc soak: pepchurn.py's connections at a time
+BOND_SOAK_WORKERS=${BOND_SOAK_WORKERS:-16} # cc soak: churn.py's connections at a time
 BOND_LIVE_DUMP=${BOND_LIVE_DUMP:-} # set: livesim.py recv --dump, each record's delay (live-far-delays.txt, live-near-delays.txt)
 NS_LAN=peplan${LAB_ID:+-$LAB_ID}
 NS_FAR=pepfar${LAB_ID:+-$LAB_ID}
@@ -609,14 +613,14 @@ bond_pep_start() {
 	local inrun='cd "$1" && shift && exec "$@"'
 	case $BOND_PEP in
 	transparent) return 0 ;;
-	cg)
+	cg | cga | cgb)
 		ip netns exec "$NS_CLI" iptables -w -t nat -A PREROUTING -i lan0 -p tcp -j REDIRECT \
 			--to-ports "$BOND_PEP_PORT" || return 1
 		for i in $(seq 1 50); do
 			ip netns exec "$NS_LAN" timeout 2 bash -c 'exec 3<>/dev/tcp/172.30.1.2/5201' 2>/dev/null && return 0
 			sleep 0.2
 		done
-		echo "FAIL: no TCP through the engines' PEP ($(grep -i pep "$RUN/client.log" | tail -c 300))"
+		echo "FAIL: no TCP through the engines' protocontroller ($(grep -i protocontroller "$RUN/client.log" | tail -c 300))"
 		return 1
 		;;
 	tcp)
@@ -642,7 +646,7 @@ bond_pep_start() {
 		echo $! >"$RUN/pep-ss-redir.pid"
 		;;
 	*)
-		echo "FAIL: BOND_PEP is transparent, tcp, kcp or cg, not $BOND_PEP"
+		echo "FAIL: BOND_PEP is transparent, tcp, kcp, cga or cgb (cg), not $BOND_PEP"
 		return 1
 		;;
 	esac
@@ -692,7 +696,7 @@ bond_pep_sample_start() {
 		for i in $(seq 1 $(($1 * 2))); do
 			ip netns exec "$NS_CLI" ss -tinmH >"$RUN/pep/ss-cli-$i" 2>/dev/null
 			ip netns exec "$NS_SRV" ss -tinmH >"$RUN/pep/ss-srv-$i" 2>/dev/null
-			if [ "$BOND_PEP" = cg ]; then
+			if [ "${BOND_PEP#cg}" != "$BOND_PEP" ]; then
 				cp "$RUN/client.json" "$RUN/pep/status-cli-$i" 2>/dev/null
 				cp "$RUN/server.json" "$RUN/pep/status-srv-$i" 2>/dev/null
 			fi
@@ -720,12 +724,12 @@ bond_pep_traffic() {
 	fi
 	[ "$dir" = up ] || { echo "live runs up only" >"$err"; return 1; }
 	rm -f "$RUN"/live-*.json "$RUN/churn.json"
-	# soak (story 025): the two streams and, next to them, pepchurn.py's short
+	# soak (story 025): the two streams and, next to them, churn.py's short
 	# connections to the far host (BOND_SOAK_WORKERS at a time)
 	if [ "$cc" = soak ]; then
-		ip netns exec "$NS_FAR" python3 -I "$LAB/pepchurn.py" serve --bind 172.30.1.2:7200 --secs "$s" 2>>"$err" &
+		ip netns exec "$NS_FAR" python3 -I "$LAB/churn.py" serve --bind 172.30.1.2:7200 --secs "$s" 2>>"$err" &
 		rx+=($!)
-		(sleep 1 && ip netns exec "$NS_LAN" python3 -I "$LAB/pepchurn.py" run --to 172.30.1.2:7200 --secs "$((s - 5))" \
+		(sleep 1 && ip netns exec "$NS_LAN" python3 -I "$LAB/churn.py" run --to 172.30.1.2:7200 --secs "$((s - 5))" \
 			--workers "$BOND_SOAK_WORKERS" --out "$RUN/churn.json" 2>>"$err") &
 		rx+=($!)
 	fi
@@ -1172,10 +1176,14 @@ bond_case() {
 	# do story 024's hosts (the router masquerades into cg0)
 	[ "$c" = beyond ] && BOND_TUNNEL=native
 	[ -n "$BOND_PEP" ] && BOND_TUNNEL=native
-	if [ "$BOND_PEP" = cg ]; then
-		CLIENT_EXTRA=$(bond_join "pep = yes;pep_port = $BOND_PEP_PORT" "$CLIENT_EXTRA")
-		SERVER_EXTRA=$(bond_join "pep = yes;pep_cc = $BOND_PEP_CGCC" "$SERVER_EXTRA")
-	fi
+	case $BOND_PEP in
+	cg | cgb | cga)
+		local pv=b
+		[ "$BOND_PEP" = cga ] && pv=a
+		CLIENT_EXTRA=$(bond_join "protocontroller = $pv;protocontroller_port = $BOND_PEP_PORT" "$CLIENT_EXTRA")
+		SERVER_EXTRA=$(bond_join "protocontroller = $pv;protocontroller_port = $BOND_PEP_PORT;protocontroller_cc = $BOND_PEP_CGCC" "$SERVER_EXTRA")
+		;;
+	esac
 	BOND_CASE=$c
 	if [ "$BOND_TUNNEL" = native ]; then
 		CLIENT_EXTRA=$(bond_join "tunnel = native;tun_addr = 10.79.0.2/16" "$CLIENT_EXTRA")

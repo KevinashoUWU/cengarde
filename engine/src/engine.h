@@ -43,7 +43,7 @@ enum { CG_EV_SIG = 1, CG_EV_TIMER, CG_EV_NL, CG_EV_WG, CG_EV_LINK, CG_EV_LISTEN,
        CG_EV_BELL /* a doorbell (ring.h): a thread's rings have work */,
        CG_EV_DNS /* a lookup of a server name (names.h) */,
        CG_EV_TUN /* the server's TUN device (tunnel = native) */,
-       CG_EV_PEP /* PEP mode B's sockets (pepio.h) */ };
+       CG_EV_PCTL /* the protocontroller's sockets (protoctlio.h) */ };
 #define CG_EV(kind, idx) (((uint64_t)(kind) << 32) | (uint32_t)(idx))
 
 /* What a run needs besides its configuration: where that came from, to

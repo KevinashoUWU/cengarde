@@ -3,8 +3,8 @@
  * control sequence, version 4 no previous link in DATA's flags, version 5
  * no NACK, version 6 no CG_F_FREE, version 7 no parity, version 8 no
  * repairs of an erasure code, version 9 no parity asked for again and no
- * CG_F_PREV written after the copies were decided; version 10 adds PEP
- * mode B's streams in DATA, story 025: pep.h).
+ * CG_F_PREV written after the copies were decided; version 10 adds the
+ * protocontroller's streams in DATA, story 025: protoctl.h).
  *
  * Every datagram between client and server carries a 24-byte header followed
  * by the payload (a WireGuard datagram for DATA). All integers are big-endian.

@@ -92,7 +92,7 @@ void test_proto(void)
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
 	pkt[0] = 0x81; /* version 8 (no parity asked for again) too */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
-	pkt[0] = 0x91; /* version 9 (no PEP streams) too */
+	pkt[0] = 0x91; /* version 9 (no protocontroller streams) too */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
 	pkt[0] = 0xaf; /* unknown type */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);

@@ -697,7 +697,7 @@ Con `cg`, `pep` lleva además los contadores de los flujos de cada motor (`cg`:
 mensajes enviados y reenviados, copias, temporizadores, duplicados, la memoria
 de los flujos en su pico, el RTT del dosificador) y el JSON de estado de cada
 segundo queda en `pep/`. El `cc` `soak` es `live` más las conexiones cortas de
-`pepchurn.py` al host lejano (`BOND_SOAK_WORKERS`, 16 a la vez, algunas
+`churn.py` al host lejano (`BOND_SOAK_WORKERS`, 16 a la vez, algunas
 cortadas con RST a mitad: la tabla de flujos y la memoria bajo recambio), con el
 RSS de los motores en cada muestra. `BOND_LIVE_DUMP=1` deja la demora de cada
 registro (`live-far-delays.txt`, `live-near-delays.txt`). El caso `cell4`

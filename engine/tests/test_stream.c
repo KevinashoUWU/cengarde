@@ -1,4 +1,4 @@
-/* stream.h: the reliable byte stream of PEP mode B (story 025).
+/* stream.h: the reliable byte stream of the protocontroller (variant B) (story 025).
  * SPDX-License-Identifier: GPL-3.0-or-later */
 #include <stdlib.h>
 #include <string.h>

@@ -58,8 +58,8 @@
 #include "arrival.h"
 #include "clientpath.h"
 #include "ctl.h"
-#include "pep.h"
-#include "pepio.h"
+#include "protoctl.h"
+#include "protoctlio.h"
 #include "decrec.h"
 #include "engine.h"
 #include "epoch.h"
@@ -256,8 +256,8 @@ struct client {
 	uint32_t up_largest; /* the same over the last check period, for the status */
 	uint64_t down_pkts, down_bytes, down_wg_drops, down_no_peer;
 	uint64_t down_not_ip; /* native: DATA that was not an IP packet, never written to the TUN */
-	struct cg_pep *pep;   /* PEP mode B (pepio.h, story 025), NULL: off */
-	uint64_t down_pep_off; /* PEP stream messages that came with pep off */
+	struct cg_pctl *pctl;   /* the protocontroller (variant B) (protoctlio.h, story 025), NULL: off */
+	uint64_t down_pctl_off; /* protocontroller stream messages that came with the protocontroller off */
 	/* native, tcp_aware: inner TCP's retransmissions and segments without
 	 * data go marked CG_F_FREE (tcpfree.h); the flow hash's seed */
 	struct cg_tcpf tcpf;
@@ -368,8 +368,8 @@ struct client {
 	uint8_t tcpk[CG_BATCH];   /* its class for tcp_aware (tcpfree.h's CG_TCPF_*) */
 	uint8_t tcpr[CG_BATCH];   /* a retransmission's row (tcpack.h's CG_TCPA_*) */
 	uint8_t prio[CG_BATCH];
-	uint8_t pnc[CG_BATCH]; /* a PEP stream's DATA: no copies of a microcut (its ARQ repairs it, story 025) */
-	uint8_t prc[CG_BATCH]; /* a PEP stream's DATA sent again a second time: a priority copy, on a link without a queue */
+	uint8_t pnc[CG_BATCH]; /* a protocontroller stream's DATA: no copies of a microcut (its ARQ repairs it, story 025) */
+	uint8_t prc[CG_BATCH]; /* a protocontroller stream's DATA sent again a second time: a priority copy, on a link without a queue */
 	struct cg_ro_cfg rocf;
 	uint32_t ro_budget;
 
@@ -1746,7 +1746,7 @@ static void spare_masks(struct client *c, int m, uint16_t carry, uint64_t now_us
 		if (c->pick[j] >= 0 || f < 0 || !(carry >> f & 1))
 			continue;
 		mask = cg_spare_mask(c->cmask[j], carry, f);
-		/* a PEP stream's DATA in the copies of a microcut: its first link
+		/* a protocontroller stream's DATA in the copies of a microcut: its first link
 		 * only (story 025: its ARQ sends again what is lost; copied, a
 		 * stream that keeps its rate through the cut filled the cellular
 		 * queue to 2 s); its repairs, as any DATA's */
@@ -1759,7 +1759,7 @@ static void spare_masks(struct client *c, int m, uint16_t carry, uint64_t now_us
 
 			if (i == f || !(mask >> i & 1))
 				continue;
-			/* a PEP stream's repeat on a queued link would come after its
+			/* a protocontroller stream's repeat on a queued link would come after its
 			 * ARQ sends it again anyway (a microcut: 60 % lost, a repeat
 			 * for every other packet, the cellular queue at 1 s) */
 			if (c->prc[j] && c->cap[i].ql_us > (int32_t)(c->cfg->redund_spare_ms * 1000)) {
@@ -1964,7 +1964,7 @@ static void up_begin(struct client *c, uint64_t now_ms, struct upctx *u)
 }
 
 /* Packet m of the batch: buf, len bytes (an IP packet from the TUN, a
- * WireGuard datagram, or a PEP stream's message, story 025: copy, a
+ * WireGuard datagram, or a protocontroller stream's message, story 025: copy, a
  * priority copy where the links have room; split, on every carrier). */
 static void up_one(struct client *c, struct upctx *u, int m, uint8_t *buf, size_t len, uint64_t now_us, int copy)
 {
@@ -2026,11 +2026,11 @@ static void up_one(struct client *c, struct upctx *u, int m, uint8_t *buf, size_
 	c->sflags[m] = flags;
 	c->sts[m] = (uint32_t)now_us;
 	c->sseq[m] = cg_up_next(&c->txs);
-	/* a PEP stream's message sent again a second time: a priority copy,
+	/* a protocontroller stream's message sent again a second time: a priority copy,
 	 * on what the links have to spare (forced on every carrier, the copies
 	 * of a microcut filled the cellular queue to 2 s) */
 	c->prio[m] = (uint8_t)(len < CG_PACE_SMALL || (flags & CG_F_FREE) || copy);
-	c->pnc[m] = (uint8_t)(!copy && len >= CG_PACE_SMALL && cg_pep_is(buf, len));
+	c->pnc[m] = (uint8_t)(!copy && len >= CG_PACE_SMALL && cg_pctl_is(buf, len));
 	c->prc[m] = (uint8_t)copy;
 	c->sp_bytes += len;
 	if (c->cfg->fec && split) {
@@ -2092,8 +2092,64 @@ static void wg_read(struct client *c)
 	}
 }
 
-/* PEP mode B (pepio.h): n stream messages into the tunnel, as one batch. */
-static void pep_send(void *ctx, uint32_t peer, uint32_t sid, uint8_t *const *msg, const uint16_t *len,
+/* Variant A: where the middle TCP goes, the VPS's tunnel address
+ * (protocontroller_vps; empty: the first address of tun_addr's prefix, the
+ * VPS's by convention, story 010) and protocontroller_port. 0 or -1. */
+static int pctl_vps_addr(const struct cg_config *cfg, struct sockaddr_storage *a, char *err, size_t errlen)
+{
+	uint8_t ad[16];
+	int fam = 0;
+
+	memset(a, 0, sizeof(*a));
+	if (cfg->protocontroller_vps[0]) {
+		if (inet_pton(AF_INET, cfg->protocontroller_vps, ad) == 1)
+			fam = AF_INET;
+		else if (inet_pton(AF_INET6, cfg->protocontroller_vps, ad) == 1)
+			fam = AF_INET6;
+		else {
+			snprintf(err, errlen, "protocontroller_vps: '%s' is not an IP address", cfg->protocontroller_vps);
+			return -1;
+		}
+	} else {
+		for (int i = 0; i < cfg->ntun_addr && !fam; i++) {
+			const struct cg_pfx *t = &cfg->tun_addr[i];
+			unsigned n = t->family == AF_INET ? 4 : 16, len = t->len;
+
+			if (t->family == AF_INET6 && i + 1 < cfg->ntun_addr)
+				continue; /* IPv4 first */
+			memcpy(ad, t->a, n);
+			for (unsigned b = len; b < n * 8; b++)
+				ad[b / 8] &= (uint8_t)~(0x80u >> (b % 8));
+			ad[n - 1] |= 1;
+			if (!memcmp(ad, t->a, n)) {
+				snprintf(err, errlen, "protocontroller = a: tun_addr is the VPS's own; set protocontroller_vps");
+				return -1;
+			}
+			fam = t->family;
+		}
+		if (!fam) {
+			snprintf(err, errlen, "protocontroller = a: no tun_addr to take the VPS's from; set protocontroller_vps");
+			return -1;
+		}
+	}
+	if (fam == AF_INET) {
+		struct sockaddr_in *s = (struct sockaddr_in *)a;
+
+		s->sin_family = AF_INET;
+		memcpy(&s->sin_addr, ad, 4);
+		s->sin_port = htons((uint16_t)cfg->protocontroller_port);
+	} else {
+		struct sockaddr_in6 *s = (struct sockaddr_in6 *)a;
+
+		s->sin6_family = AF_INET6;
+		memcpy(&s->sin6_addr, ad, 16);
+		s->sin6_port = htons((uint16_t)cfg->protocontroller_port);
+	}
+	return 0;
+}
+
+/* the protocontroller (variant B) (protoctlio.h): n stream messages into the tunnel, as one batch. */
+static void pctl_send(void *ctx, uint32_t peer, uint32_t sid, uint8_t *const *msg, const uint16_t *len,
 		     const uint8_t *copy, int n)
 {
 	struct client *c = ctx;
@@ -2120,7 +2176,7 @@ static void pep_send(void *ctx, uint32_t peer, uint32_t sid, uint8_t *const *msg
  * delivers). Full: the engine found that capacity under a standing queue
  * (CG_CAP_CUT_FULL), so it is what the link carries and no more; a loss
  * cut (a microcut) is not a ceiling, the ARQ answers loss. */
-static void pep_hint(void *ctx, uint32_t peer, uint32_t sid, uint64_t *bps, int *full)
+static void pctl_hint(void *ctx, uint32_t peer, uint32_t sid, uint64_t *bps, int *full)
 {
 	struct client *c = ctx;
 	uint64_t now_ms = cg_now_ms(), sum = 0, best = 0;
@@ -2734,12 +2790,12 @@ static void down_deliver(struct client *c, const struct cg_hdr *h, unsigned link
 	enum cg_ro_v v;
 	uint16_t buf;
 
-	/* A PEP stream's message (story 025): to its stream at once, its
+	/* A protocontroller stream's message (story 025): to its stream at once, its
 	 * sequence still counted by the reorderer (never held: it has its own
 	 * order). */
-	if (c->native && cg_pep_is(payload, len)) {
-		if (!c->pep) {
-			c->down_pep_off++;
+	if (c->native && cg_pctl_is(payload, len)) {
+		if (!c->pctl) {
+			c->down_pctl_off++;
 			return;
 		}
 		if (c->cfg->reorder) {
@@ -2749,7 +2805,7 @@ static void down_deliver(struct client *c, const struct cg_hdr *h, unsigned link
 				cg_ro_in(&c->rxs.ro, &c->pool, &c->rocf, &k, rset, &buf);
 			}
 		}
-		cg_pep_rx(c->pep, 0, 0, payload, len);
+		cg_pctl_rx(c->pctl, 0, 0, payload, len);
 		if (c->cfg->reorder)
 			ro_drain(c, rset, now, 0, now_ms);
 		return;
@@ -3558,10 +3614,10 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 	cg_json_u64(j, "stale", c->rxs.stale_gen);
 	cg_json_u64(j, "wireguard_drops", c->down_wg_drops + c->down_no_peer);
 	cg_json_u64(j, "not_ip", c->down_not_ip);
-	cg_json_u64(j, "pep_off", c->down_pep_off);
+	cg_json_u64(j, "protocontroller_off", c->down_pctl_off);
 	cg_json_end(j, '}');
-	if (c->pep)
-		cg_pep_json(c->pep, j);
+	if (c->pctl)
+		cg_pctl_json(c->pctl, j);
 	/* Download: lost on every link, joint lateness, and the reorderer
 	 * (story 012). */
 	cg_json_u64(j, "lost_all", c->rxs.replay.lost);
@@ -4165,8 +4221,8 @@ static void tick(struct client *c)
 	}
 	health_tick(c, now_ms);
 	names_tick(c, now_ms);
-	if (c->pep)
-		cg_pep_tick(c->pep);
+	if (c->pctl)
+		cg_pctl_tick(c->pctl);
 	if (failover || now_ms >= c->next_reconcile_ms)
 		reconcile(c, now_ms);
 	if (now_ms >= c->next_path_ms)
@@ -4386,24 +4442,35 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 	}
 	c->rocf = cg_ro_cfg_of(cfg);
 	rescue_apply(c);
-	if (cfg->pep) {
-		struct cg_pep_cfg pc = { .server = 0,
-					 .port = (uint16_t)cfg->pep_port,
-					 .mss = cfg->tun_mtu - CG_PEP_OVERHEAD,
-					 .buf_kb = cfg->pep_buf_kb,
-					 .mem_mb = cfg->pep_mem_mb,
-					 .max_flows = cfg->pep_max_flows,
-					 .queue_ms = cfg->pep_queue_ms,
-					 .backlog_ms = cfg->pep_backlog_ms,
-					 .dead_s = cfg->pep_dead_s,
-					 .reo_ms = cfg->pep_reo_ms };
-		struct cg_pep_ops ops = { .ctx = c, .send = pep_send, .hint = pep_hint };
+	if (cfg->protocontroller) {
+		struct cg_pctl_cfg pc = { .server = 0,
+					 .port = (uint16_t)cfg->protocontroller_port,
+					 .mss = cfg->tun_mtu - CG_PCTL_OVERHEAD,
+					 .buf_kb = cfg->protocontroller_buf_kb,
+					 .mem_mb = cfg->protocontroller_mem_mb,
+					 .max_flows = cfg->protocontroller_max_flows,
+					 .queue_ms = cfg->protocontroller_queue_ms,
+					 .backlog_ms = cfg->protocontroller_backlog_ms,
+					 .dead_s = cfg->protocontroller_dead_s,
+					 .reo_ms = cfg->protocontroller_reo_ms,
+					 .mode = cfg->protocontroller };
+		struct cg_pctl_ops ops = { .ctx = c, .send = pctl_send, .hint = pctl_hint };
 
-		if (!(c->pep = cg_pep_new(&pc, c->ep, &ops, err, sizeof(err)))) {
+		snprintf(pc.mid_cc, sizeof(pc.mid_cc), "%s", cfg->protocontroller_mid_cc);
+		if (cfg->protocontroller == CG_PCTL_A && pctl_vps_addr(cfg, &pc.a_peer, err, sizeof(err)) < 0) {
 			cg_err("%s", err);
 			goto out;
 		}
-		cg_info("pep: taking the TCP redirected to port %u (PEP mode B, story 025)", cfg->pep_port);
+		if (!(c->pctl = cg_pctl_new(&pc, c->ep, &ops, err, sizeof(err)))) {
+			cg_err("%s", err);
+			goto out;
+		}
+		if (cfg->protocontroller == CG_PCTL_A)
+			cg_info("protocontroller: taking the TCP redirected to port %u, a TCP to %s through the tunnel for each (variant A, story 025)",
+				cfg->protocontroller_port, cg_addr_str(&pc.a_peer, buf, sizeof(buf)));
+		else
+			cg_info("protocontroller: taking the TCP redirected to port %u, a stream of cengarde's for each (variant B, story 025)",
+				cfg->protocontroller_port);
 	}
 	/* The control socket is a convenience: the tunnel runs without it. */
 	if (cfg->control_socket[0] && cg_ctl_open(&c->ctl, cfg->control_socket, c->ep, err, sizeof(err)) < 0)
@@ -4427,7 +4494,7 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 	for (;;) {
 		struct epoll_event ev[32];
 		int timeout = busy && cg_now_us() - last_traffic_us < busy ? 0 : -1, armed = 0, n, traffic = 0;
-		int due = ro_timeout(c), fdue = fec_timeout(c), pdue = c->pep ? cg_pep_timeout(c->pep) : -1;
+		int due = ro_timeout(c), fdue = fec_timeout(c), pdue = c->pctl ? cg_pctl_timeout(c->pctl) : -1;
 
 		/* The reorderer's next deadline wakes the loop up, if nothing
 		 * else does before (CG_TICK_MS is too coarse for it); and an
@@ -4518,9 +4585,9 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 					names_changed(c, now_ms);
 				break;
 			}
-			case CG_EV_PEP:
-				if (c->pep)
-					cg_pep_event(c->pep, idx, ev[i].events);
+			case CG_EV_PCTL:
+				if (c->pctl)
+					cg_pctl_event(c->pctl, idx, ev[i].events);
 				break;
 			case CG_EV_SIG:
 				if (signals(c)) {
@@ -4537,14 +4604,14 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 			traffic = 1;
 		ro_service(c);
 		fec_service(c);
-		if (c->pep)
-			cg_pep_service(c->pep);
+		if (c->pctl)
+			cg_pctl_service(c->pctl);
 		if (traffic && busy)
 			last_traffic_us = cg_now_us();
 	}
 out:
 	cg_status_writer_stop(&c->sw);
-	cg_pep_free(c->pep);
+	cg_pctl_free(c->pctl);
 	cg_ctl_close(&c->ctl, c->ep);
 	cg_names_close(&c->names, c->ep);
 	cg_loader_free(&c->loader);

@@ -81,7 +81,7 @@ CG_CFLAGS += -I$(LEO_DIR)
 endif
 
 CORE = src/siphash.c src/proto.c src/util.c src/log.c src/config.c src/blake2s.c src/pair.c src/rs.c
-NET = src/netlink.c src/sock.c src/tun.c src/status.c src/os.c src/ctl.c src/names.c src/pep.c src/client.c src/server.c
+NET = src/netlink.c src/sock.c src/tun.c src/status.c src/os.c src/ctl.c src/names.c src/protoctl.c src/client.c src/server.c
 # The router's link pumps: threads the unit tests run too (test_threads).
 THR = src/pump.c
 # Every tests/test_*.c; tests/suites.h lists the suites test_main.c runs.

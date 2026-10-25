@@ -1335,7 +1335,7 @@ El «protocontrolador» (historia 025): TCP partido en los dos extremos, con el
 protocolo de cengarde en el medio. **Solo con `tunnel = native`**, apagado por
 omisión (`pep = no`), protocolo 10.
 
-- **El router** (`pep = yes`, `pep_port`, 7801): escucha en IPv4 e IPv6 lo que
+- **El router** (`pep = yes`, `protocontroller_port`, 7801): escucha en IPv4 e IPv6 lo que
   el firewall le redirige (`REDIRECT`; el destino original sale de
   `SO_ORIGINAL_DST`, o con TPROXY de la dirección local). Cada conexión es un
   **flujo fiable** dentro del túnel: sus mensajes (`OPEN`, `DATA`, `ACK`,
@@ -1346,13 +1346,13 @@ omisión (`pep = no`), protocolo 10.
 - **El VPS** (`pep = yes`): abre un TCP nuevo hacia el destino, no bloqueante,
   desde su propia dirección (sin NAT; el MSS de cada tramo es el de su
   interfaz). No conecta a loopback, sin especificar, multicast ni enlace
-  local. `pep_cc` (`auto`): el control de congestión del kernel (cubic) hacia
+  local. `protocontroller_cc` (`auto`): el control de congestión del kernel (cubic) hacia
   el destino y BBR en cuanto ese tramo pierde (3 segmentos reenviados): BBR no
   toma la pérdida al azar por congestión (historia 024), pero su ProbeRTT
   retenía un vivo 200 ms cada 10 s. Un nombre (`bbr`, `cubic`) lo fija.
 - **Fiabilidad** (`src/stream.h`): búfer por trozos de 16 KB de un fondo común
-  (`pep_mem_mb`, 64), hasta `pep_buf_kb` (1024) por flujo y sentido; RACK con
-  una ventana de un cuarto de la ida y vuelta más `pep_reo_ms` (10, la
+  (`protocontroller_mem_mb`, 64), hasta `protocontroller_buf_kb` (1024) por flujo y sentido; RACK con
+  una ventana de un cuarto de la ida y vuelta más `protocontroller_reo_ms` (10, la
   reparación del túnel va primero; cada duplicado que el receptor avisa la
   agranda 4 ms, hasta 100), y un temporizador desde el envío más viejo. Nunca se
   rinde; un segmento reenviado por segunda vez va como copia prioritaria por
@@ -1363,16 +1363,16 @@ omisión (`pep = no`), protocolo 10.
   pérdida al azar no frena), con la cola medida por el **retardo de ida** que
   el receptor devuelve en cada ACK (no la ida y vuelta, que en un microcorte
   llevaba las pérdidas del ACK de vuelta); arranque 3/2, ciclo 5/4–3/4–1, 3/4
-  mientras la cola pase `pep_queue_ms` (5), y en vuelo dos veces el camino más
+  mientras la cola pase `protocontroller_queue_ms` (5), y en vuelo dos veces el camino más
   lo que RACK no declaró perdido todavía. La capacidad del motor (`capacity.h`)
   es el comienzo y el techo cuando halla lleno el enlace de los datos.
 - **Contrapresión:** el VPS escribe al destino con `TCP_NOTSENT_LOWAT` (128 KB)
   y cierra el borde de su ventana cuando lo que guarda en orden pasa
-  `pep_backlog_ms` (200) a su ritmo; el router deja de leer la LAN cuando lo que
+  `protocontroller_backlog_ms` (200) a su ritmo; el router deja de leer la LAN cuando lo que
   tiene sin enviar pasa eso (al menos 256 KB) o su búfer está lleno, y el
   emisor siente la ventana de su TCP. Con el túnel caído, el ARQ espera; un
-  flujo sin avance en `pep_dead_s` (60) se cierra con RST en los dos lados.
-- **Interceptar** (OpenWrt, `cengarde-setup`): UCI `pep`, `pep_port` (puertos
+  flujo sin avance en `protocontroller_dead_s` (60) se cierra con RST en los dos lados.
+- **Interceptar** (OpenWrt, `cengarde-setup`): UCI `pep`, `protocontroller_port` (puertos
   de destino; vacío: todos) y `pep_dest` (prefijos; vacío: todo lo que no es
   privado ni local): un include de firewall4 con una cadena propia,
   `cengarde_pep`, enganchada justo antes de la `dstnat` de fw4, para lo que

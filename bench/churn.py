@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""pepchurn: many short TCP connections for story 025's soak (PEP mode B): the
+"""churn: many short TCP connections for story 025's soak (the protocontroller): the
 streams' table, buffers and memory under churn, next to live-like streams.
 
-    python3 -I bench/pepchurn.py serve --bind ADDR:PORT --secs S
-    python3 -I bench/pepchurn.py run --to ADDR:PORT --secs S [--workers 16]
+    python3 -I bench/churn.py serve --bind ADDR:PORT --secs S
+    python3 -I bench/churn.py run --to ADDR:PORT --secs S [--workers 16]
                                      [--max-kb 256] [--abort-pct 5] [--out FILE]
 
 serve accepts connections and, for each, reads a 12-byte header (the bytes the
@@ -162,7 +162,7 @@ def run(a):
 
 
 def main(argv):
-    ap = argparse.ArgumentParser(prog="pepchurn.py")
+    ap = argparse.ArgumentParser(prog="churn.py")
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("serve")
     p.add_argument("--bind", required=True)

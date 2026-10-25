@@ -1,11 +1,11 @@
-/* A reliable byte stream inside the tunnel, for PEP mode B (story 025, the
+/* A reliable byte stream inside the tunnel, for the protocontroller (variant B) (story 025, the
  * "protocontrolador"): each TCP connection the router takes from its LAN is
  * one, to the VPS, which opens a fresh TCP to the destination. Each end of
  * a stream sends bytes (socket to tunnel: struct cg_st_tx) and receives
  * them (tunnel to socket: struct cg_st_rx), by 64-bit offsets.
  *
  * - The bytes live in a ring of 16 KB chunks (struct cg_st_buf) taken from
- *   one pool per process (struct cg_st_pool, pep_mem_mb): what was read
+ *   one pool per process (struct cg_st_pool, protocontroller_mem_mb): what was read
  *   from the socket and is not acknowledged yet on the sending side, what
  *   arrived and was not written to the socket yet on the receiving side
  *   (in order or not).
@@ -17,7 +17,7 @@
  *   is lost (cg_st_tx_rack); and a timer for the tail (cg_st_tx_rto: due
  *   rto after the oldest SENT segment's last transmission). It
  *   never gives up: a segment goes again until it arrives (the caller
- *   closes a stream that made no progress for pep_dead_s).
+ *   closes a stream that made no progress for protocontroller_dead_s).
  * - The receiver keeps the next byte in order (nxt) and up to
  *   CG_ST_RANGES ranges above it; more holes than that, and a frame that
  *   would need a new range is dropped (the sender sends it again). The FIN
@@ -30,7 +30,7 @@
  * - Offsets go on the wire as their low 32 bits (cg_st_unwrap): a window
  *   is at most CG_ST_SLOTS chunks, far under 2^31.
  *
- * The rate (pepcc.h) and the sockets (pep.c) are the caller's: this file
+ * The rate (streamcc.h) and the sockets (protoctl.c) are the caller's: this file
  * only keeps the stream's state, and each call returns what changed for
  * the rate controller (bytes delivered, lost, and the rate sample).
  *
@@ -400,10 +400,10 @@ enum { CG_ST_SENT = 0, CG_ST_SACKED, CG_ST_LOST };
 struct cg_st_seg {
 	uint64_t off;
 	uint64_t sent_us;       /* its last transmission */
-	uint64_t dl, dla, dl_us, ss; /* the rate controller's counters when it was sent (pepcc.h) */
+	uint64_t dl, dla, dl_us, ss; /* the rate controller's counters when it was sent (streamcc.h) */
 	uint16_t len;           /* bytes; the FIN, if any, after them */
 	uint8_t fin, st, tx, app;
-	uint8_t q;              /* sent while the path showed a queue (pepcc.h's cong) */
+	uint8_t q;              /* sent while the path showed a queue (streamcc.h's cong) */
 };
 
 /* The rate sample an ACK gives: from the newest-sent segment it delivered. */

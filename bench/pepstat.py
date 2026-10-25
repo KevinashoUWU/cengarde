@@ -15,8 +15,9 @@ DIR holds, for this run:
     kcp-before-SIDE.csv, kcp-after-SIDE.csv   kcptun's own counters (--snmplog,
                                     once a second), if any (SIDE: cli, srv)
     status-before-SIDE.json, status-after-SIDE.json, status-SIDE-I
-                                    the engines' status files (mode cg, PEP
-                                    mode B: their "pep" object, story 025)
+                                    the engines' status files (modes cga and
+                                    cgb, the protocontroller: their
+                                    "protocontroller" object, story 025)
 
 Each netns has its own TCP counters, so the retransmissions split by leg (for
 an upload): lan is the sender's host (the whole path when transparent, the leg
@@ -27,17 +28,19 @@ segments of payload delivered (what reached the far and near hosts, from
 the tunnel's MSS).
 mem_kb is each netns's TCP memory (rmem_alloc + wmem_queued over its sockets:
 the proxies' buffers, kernel side) at its peak and median over the samples;
-rss_kb the proxies' resident memory at its peak; mid_rtt_ms and far_rtt_ms the
+rss_kb the proxies' resident memory at its peak (eng_rss_kb the engines', first,
+largest and last sample); mid_rtt_ms and far_rtt_ms the
 median smoothed RTT of the split legs' senders (the redirector's socket to the
 VPS, the server end's sockets to the far host); cpu_*_pct the proxies' CPU
 (ticks over --hz and --secs).
 
-Mode cg (PEP mode B, the engines are the proxies): "cg" holds, per side, the
+Modes cga and cgb (cg) (the protocontroller, story 025: the engines are the
+proxies): "cg" holds, per side, the
 engine's stream counters over the run (data messages sent, sent again,
 copied, timer expiries, duplicates and out-of-order arrivals), the peak of its
 streams' memory (the pool's chunks in use) and of the bytes they held each way,
-and the median smoothed RTT of its pacer (mid_rtt_ms, the router's for an
-upload).
+and, for cgb, the median smoothed RTT of its pacer (mid_rtt_ms, the router's
+for an upload; cga's is its middle TCP's, from ss).
 """
 
 import argparse
@@ -113,18 +116,20 @@ def rx_bytes(path, cc):
 
 
 def status_pep(path):
-    """The "pep" object of an engine's status file, {} when missing."""
+    """The "protocontroller" object of an engine's status file ("pep" before
+    the rename), {} when missing."""
     try:
         j = json.load(open(path))
     except (OSError, ValueError):
         return {}
     if isinstance(j, list):
         j = j[0] if j else {}
-    return j.get("pep") or {}
+    return j.get("protocontroller") or j.get("pep") or {}
 
 
 CG_COUNTERS = ("data_tx", "data_rx", "retx", "copies", "rto", "dup_frames", "ooo_frames", "drop_frames",
-               "acks_tx", "acks_rx", "opened", "closed", "rst_tx", "nomem", "sock_rx_bytes", "sock_tx_bytes")
+               "acks_tx", "acks_rx", "opened", "closed", "rst_tx", "nomem", "sock_rx_bytes", "sock_tx_bytes",
+               "a_opened", "a_bytes_in", "a_bytes_out", "corrupt", "bad")
 
 
 def cg_summary(d):
@@ -177,20 +182,23 @@ def summary(a):
                 r = RTT.search(det)
                 if not r or "bytes_acked" not in det:
                     continue
-                if ns == "cli" and peer.endswith(":8388"):
+                if ns == "cli" and (peer.endswith(":8388") or peer == "10.79.0.1:7801"):
                     rtts["mid"].append(float(r.group(1)))
                 elif ns == "srv" and peer.startswith("172.30.1.2:"):
                     rtts["far"].append(float(r.group(1)))
                 elif ns == "srv" and peer.startswith("172.30.2.2:"):
                     rtts["near"].append(float(r.group(1)))
             mem[ns].append(tot)
-    rss = {}
-    for f in glob.glob(os.path.join(d, "rss-*")):
+    rss, eng = {}, {}
+    for f in sorted(glob.glob(os.path.join(d, "rss-*")), key=lambda x: int(x.rsplit("-", 1)[1])):
         try:
             for ln in open(f):
                 p = ln.split()
                 if len(p) == 2 and p[1].isdigit():
-                    rss[p[0]] = max(rss.get(p[0], 0), int(p[1]))
+                    if p[0].startswith("engine-"):
+                        eng.setdefault(p[0][7:], []).append(int(p[1]))
+                    else:
+                        rss[p[0]] = max(rss.get(p[0], 0), int(p[1]))
         except OSError:
             pass
     kb = lambda x: None if x is None else round(x / 1024)
@@ -198,6 +206,8 @@ def summary(a):
            "outsegs": outsegs,
            "mem_kb": {ns: {"peak": kb(max(v)) if v else None, "p50": kb(median(v))} for ns, v in mem.items()},
            "rss_kb": rss,
+           # the engines' RSS (cc soak, story 025): first, largest and last sample
+           "eng_rss_kb": {k: [v[0], max(v), v[-1]] for k, v in eng.items() if v},
            "mid_rtt_ms": median(rtts["mid"]), "far_rtt_ms": median(rtts["far"]), "near_rtt_ms": median(rtts["near"])}
     if a.hz:
         out["cpu_cli_pct"] = round(100.0 * a.cpu_cli / a.hz / a.secs, 1)
@@ -211,9 +221,11 @@ def summary(a):
                                                                  "EarlyRetransSegs", "LostSegs", "RepeatSegs")}
     if kcp:
         out["kcp"] = kcp
-    if a.mode == "cg":
+    if a.mode in ("cg", "cgb"):
         out["cg"] = cg_summary(d)
         out["mid_rtt_ms"] = dig_srtt(out["cg"])
+    elif a.mode == "cga":
+        out["cg"] = cg_summary(d)
     return out
 
 

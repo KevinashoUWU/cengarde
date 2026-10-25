@@ -11,11 +11,12 @@ two-sided Mann-Whitney U against the reference arm of the same family (an arm
 NAME-SUFFIX against the first --ref with that suffix: T-copies for every
 *-copies, T-rlc for every *-rlc). Retransmissions are per leg (pepstat.py):
 "lan" the sender's host (the whole path when transparent), "mid" the router's
-(the split's middle leg), "far" the VPS's (the leg to the far host). PEP mode B
-(arms with pep "mode" cg, story 025): "retx mid" is the engines' stream messages
-sent again, the memory adds the engines' streams to the kernel's sockets, and
-"CPU total" is the engines' and the proxies' together (B has no proxies; A and
-T have the engines too).
+(the split's middle leg), "far" the VPS's (the leg to the far host). The
+protocontroller (story 025; pep "mode" cga, variant A, and cgb or cg, variant
+B): for B "retx mid" is the engines' stream messages sent again (for cga the
+router's TCP, as for tcp); the memory adds the engines' buffers to the kernel's
+sockets, and "CPU total" is the engines' and the proxies' together (cga and
+cgb have no proxies; tcp and T have the engines too).
 """
 
 import argparse
@@ -60,7 +61,7 @@ def fmt_p(p):
 
 
 def is_b(r):
-    return dig(r, "pep", "mode") == "cg"
+    return dig(r, "pep", "mode") in ("cg", "cgb")
 
 
 def retx_mid(r):
