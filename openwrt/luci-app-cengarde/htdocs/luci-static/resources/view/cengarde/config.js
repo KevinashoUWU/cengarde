@@ -420,10 +420,10 @@ return view.extend({
 		o.onchange = refresh;
 
 		o = s.taboption('tunnel', form.ListValue, 'protocontroller', _('Protocontroller'),
-			_('Native mode only. With A or B the router answers the TCP connections of the LAN itself and the VPS opens a fresh one to each destination (cubic, BBR once that leg loses). Between them each connection travels as a plain TCP through the tunnel (A) or, experimental, as a reliable stream of cengarde, paced by what the uplinks carry instead of by loss (B). It helps TCP uploads such as RTMP over lossy uplinks and long paths beyond the VPS. UDP, QUIC and the rest go through the tunnel as always. The VPS needs "sudo cengarde-vps-setup protocontroller on". A change restarts the engine.'));
+			_('Native mode only. With A or B the router answers the TCP connections of the LAN itself and the VPS opens a fresh one to each destination (cubic, BBR once that leg loses). Between them each connection travels as a plain TCP through the tunnel (A) or, experimental, as GRIT, a reliable stream of cengarde paced by what the uplinks carry instead of by loss (B). It helps TCP uploads such as RTMP over lossy uplinks and long paths beyond the VPS. UDP, QUIC and the rest go through the tunnel as always. The VPS needs "sudo cengarde-vps-setup protocontroller on". A change restarts the engine.'));
 		o.value('no', _('No (the tunnel as always)'));
 		o.value('a', _('A: TCP in the middle'));
-		o.value('b', _('B: cengarde\'s stream in the middle (experimental)'));
+		o.value('b', _('B (GRIT): cengarde\'s stream in the middle (experimental)'));
 		o.default = 'no';
 		o.depends('tunnel_mode', 'native');
 		o.onchange = refresh;

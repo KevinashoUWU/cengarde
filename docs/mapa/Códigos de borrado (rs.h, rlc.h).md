@@ -6,9 +6,11 @@ archivos:
   - engine/src/rlc.h
   - engine/src/rs.h
   - engine/src/rs.c
+  - engine/src/rebuilt.h
   - engine/tests/test_rlc.c
   - engine/tests/test_rs.c
-sello: eb87ad6bf0a93999
+  - engine/tests/test_rebuilt.c
+sello: 54834e1554efb0f4
 ---
 # Códigos de borrado (rs.h, rlc.h)
 
@@ -20,7 +22,9 @@ Los códigos de `redund_spare = rs | rlc` ([[021-fec-v2]]): en redundancia, prot
 - **Reed-Solomon en bloques** (`rs.h`, `rs.c`, sobre **Leopard-RS**, `engine/third_party/leopard`, BSD-3, compilado sin libstdc++): k paquetes fuente (dentro de 64 secuencias) y m reparaciones; cualquier k de los k + m devuelven los k (MDS). El emisor copia cada miembro al pasar y calcula las m reparaciones al cerrar el bloque (k miembros, o `redund_spare_code_ms` desde el primero, o un miembro que no cabe en el mapa). Cada símbolo es la longitud del paquete (16 bits) y su carga, rellenado al más largo del bloque redondeado a 64 bytes (lo pide Leopard). Restricciones de Leopard: k + m ≤ 256 y m ≤ k (aquí k ≤ 64, m ≤ 32); sus búferes de trabajo los reserva quien llama, una vez (`CG_RS_WORK_ENC`, `CG_RS_WORK_DEC`). El receptor guarda las reparaciones de un bloque con miembros que faltan (un fondo de 64) hasta tener tantas como faltan y entonces decodifica (`cg_rs_decode`, con el `cg_rs_scratch` del servidor).
 - **RLC de ventana deslizante** (`rlc.h`, sobre `gf256.h`, tablas propias): cada reparación es una combinación aleatoria de los últimos W paquetes (coeficientes de una semilla de 16 bits en la cabecera), una cada k/m paquetes (un crédito en 1/256). Una pérdida espera la próxima reparación, no el fin de un bloque. El receptor guarda cada reparación con miembros que faltan como una ecuación (resta al llegar lo que ya tiene, y lo que llega después), elimina coeficientes (hasta 32 ecuaciones sobre 96 incógnitas) en cada cambio y rehace cada incógnita que queda sola en una fila.
 
-Los dos receptores usan el anillo de DATA de la [[FEC (fec.h)]] del servidor (1024 entradas, `cg_rep_ring`), escriben ahí lo que rehacen y lo entregan como la paridad (`fec_deliver`). Una reparación vieja (más de 384 secuencias detrás de la más nueva) se suelta.
+Los dos receptores usan el anillo de DATA de la [[FEC (fec.h)]] del servidor (1024 entradas, `cg_rep_ring`), escriben ahí lo que rehacen y lo entregan como la paridad (`fec_deliver`). Una reparación vieja (más de 384 secuencias detrás de la más nueva) se suelta. Lo rehecho nunca pisa en el anillo un DATA más nuevo de la misma ranura (`cg_rep_put_sym` devuelve −2, se cuenta en `dropped`).
+
+**La guarda de lo rehecho** (`rebuilt.h`, [[025-protocontrolador]]): el MAC del túnel cubre los miembros y las reparaciones, no la suma que hace el decodificador. Antes de entregar algo rehecho (por el XOR, el RS o la RLC), `fec_deliver` lo revisa con lo que trae (`cg_rebuilt_check`): túnel nativo, la forma IP de `ippkt.h` y una suma de verificación (TCP, UDP con suma, ICMP, ICMPv6 sobre todo el paquete; IPv4 sin ellas, la de la cabecera; IPv6 sin ellas no se puede confirmar), un mensaje del protocontrolador por su etiqueta; WireGuard, el tipo y el largo. Lo que no pasa no se marca en el anti-replay (el paquete o su rescate pueden llegar todavía), el anillo lo olvida y las ecuaciones de la RLC se sueltan (`cg_rlc_rx_clear`). Cuesta una pasada por paquete rehecho, no por DATA.
 
 ## Lee
 - Del cliente: el plan del tick de [[Lo que sobra (spare.h)]] (`cg_spare_plan`: k, m o la tasa) y los paquetes que `spare_masks` dejó solo en el primero.
@@ -28,7 +32,7 @@ Los dos receptores usan el anillo de DATA de la [[FEC (fec.h)]] del servidor (10
 
 ## Decide / escribe
 - Reparaciones `CG_T_REPAIR` (`repair.h`: base, mapa de 64 bits de los miembros, tipo, m, índice o semilla, el símbolo) por el enlace, no el primero, con más balde, como toma prioritaria (`code_send`); se cuentan en `tx_fec_packets`/`tx_fec_bytes` del enlace, no como DATA (como las paridades).
-- Estado del cliente: `upload.spare.code` (`k`, `m`, `need`, `pps`, `loss_avg_pm`, `repairs`, `repair_bytes`, `skipped`, `no_link`, `failed`). Del servidor, por sesión: `repair` (`recovered`, `unused`, `malformed`, y `rs`/`rlc`: `repairs`, `useless`, `kept` o `decodes`/`failed`, `recovered`, `dropped`, `bad`).
+- Estado del cliente: `upload.spare.code` (`k`, `m`, `need`, `pps`, `loss_avg_pm`, `repairs`, `repair_bytes`, `skipped`, `no_link`, `failed`). Del servidor, por sesión: `repair` (`recovered`, `unused`, `malformed`, y `rs`/`rlc`: `repairs`, `useless`, `kept` o `decodes`/`failed`, `recovered`, `dropped`, `bad`) y `rebuilt` (`ok`, `bad`, `unsure`: lo que la guarda dejó pasar, halló basura o no pudo confirmar).
 - Lo rehecho → [[Reordenador (reorder.h)]] (en redundancia no espera).
 
 ## Perillas
@@ -44,10 +48,11 @@ Los dos receptores usan el anillo de DATA de la [[FEC (fec.h)]] del servidor (10
 - Un bloque RS declara en sus reparaciones su geometría `cg_rs_mhdr(k, m)` (el doble de m redondeado a potencia de dos, dentro de k y 32), no las m que manda: los índices de arriba quedan para pedirlos; `cg_rs_rx_need` da el déficit de un bloque y `cg_parq_rs_pick` los índices que el receptor no tiene. Lo arma [[Reparación coherente (harq.h)]].
 
 ## Choques conocidos
+- **La RLC rehacía basura** (corregido, [[021-fec-v2]], [[025-protocontrolador]]): en la eliminación, `t[i][s]` dice cuánto de la fila *como se armó* tiene la fila i, pero al permutar filas también se permutaba `row_eq`, así que lo rehecho sumaba las ecuaciones que después ocuparon esas filas. Con varias pérdidas juntas (una permutación por columna sin pivote en su fila: la PARQ, los microcortes) el contador `bad` subía por miles y ~1 de cada 40 basuras pasaba el prefijo de longitud (`not_ip` 8–49 por corrida). `row_eq` ya no se permuta; `test_rlc_swap` lo reproduce y `test_rlc_random` (pérdidas en ráfaga, reparaciones perdidas, PARQ, el borde de 32 bits) lo cubre; el RS (`test_rs_random`) y el XOR no tenían ese error.
 - En un microcorte que el código no cubre (la pérdida pide más reparaciones de las que caben), el plan vuelve a copias, como `mix`.
 - El camino portable de Leopard (armhf, MIPS) tenía un error en el original (`RefMul` sumaba): corregido en la copia vendorizada; ver `engine/third_party/leopard/README.md`.
 - La reparación de un bloque RS lleva el símbolo redondeado a 64 bytes y 16 de cabecera: con DATA de 1420 B el datagrama pasa de 1500 (1540 con IP y UDP: fragmenta, como la paridad XOR con sus 35 de cabecera, 1507). La de la RLC no se redondea (1490: cabe).
 
 ## Archivos
-- `gf256.h`, `repair.h`, `rlc.h`, `rs.h`, `rs.c`; tests `engine/tests/test_rlc.c`, `engine/tests/test_rs.c`; costo `bench/fecbench.c`.
-- `client.c`: `code_feed`, `code_send`, `code_rs_close`, `code_rlc_repair`, `code_service`, `code_due`; `server.c`: `rep_rx_new`, `rep_take`, `rep_data`, `rep_deliver`.
+- `gf256.h`, `repair.h`, `rlc.h`, `rs.h`, `rs.c`, `rebuilt.h` (la guarda); tests `engine/tests/test_rlc.c`, `engine/tests/test_rs.c`, `engine/tests/test_rebuilt.c`; costo `bench/fecbench.c`.
+- `client.c`: `code_feed`, `code_send`, `code_rs_close`, `code_rlc_repair`, `code_service`, `code_due`; `server.c`: `rep_rx_new`, `rep_take`, `rep_data`, `rep_deliver`, `fec_deliver` (la guarda).

@@ -168,8 +168,8 @@ msgstr "Lleva también la IPv6 por el túnel, traducida (NAT66) aquí y en el VP
 msgid "Protocontroller"
 msgstr "Protocontrolador"
 
-msgid "Native mode only. With A or B the router answers the TCP connections of the LAN itself and the VPS opens a fresh one to each destination (cubic, BBR once that leg loses). Between them each connection travels as a plain TCP through the tunnel (A) or, experimental, as a reliable stream of cengarde, paced by what the uplinks carry instead of by loss (B). It helps TCP uploads such as RTMP over lossy uplinks and long paths beyond the VPS. UDP, QUIC and the rest go through the tunnel as always. The VPS needs \"sudo cengarde-vps-setup protocontroller on\". A change restarts the engine."
-msgstr "Solo en modo nativo. Con A o B el router responde él mismo las conexiones TCP de la LAN y el VPS abre una nueva hacia cada destino (cubic, BBR en cuanto ese tramo pierde). Entre ellos, cada conexión viaja como un TCP simple por el túnel (A) o, experimental, como un flujo fiable de cengarde, dosificado por lo que llevan los enlaces y no por la pérdida (B). Ayuda a las subidas por TCP, como RTMP, con enlaces que pierden y caminos largos más allá del VPS. UDP, QUIC y lo demás van por el túnel como siempre. El VPS necesita \"sudo cengarde-vps-setup protocontroller on\". Un cambio reinicia el motor."
+msgid "Native mode only. With A or B the router answers the TCP connections of the LAN itself and the VPS opens a fresh one to each destination (cubic, BBR once that leg loses). Between them each connection travels as a plain TCP through the tunnel (A) or, experimental, as GRIT, a reliable stream of cengarde paced by what the uplinks carry instead of by loss (B). It helps TCP uploads such as RTMP over lossy uplinks and long paths beyond the VPS. UDP, QUIC and the rest go through the tunnel as always. The VPS needs \"sudo cengarde-vps-setup protocontroller on\". A change restarts the engine."
+msgstr "Solo en modo nativo. Con A o B el router responde él mismo las conexiones TCP de la LAN y el VPS abre una nueva hacia cada destino (cubic, BBR en cuanto ese tramo pierde). Entre ellos, cada conexión viaja como un TCP simple por el túnel (A) o, experimental, como GRIT, un flujo fiable de cengarde dosificado por lo que llevan los enlaces y no por la pérdida (B). Ayuda a las subidas por TCP, como RTMP, con enlaces que pierden y caminos largos más allá del VPS. UDP, QUIC y lo demás van por el túnel como siempre. El VPS necesita \"sudo cengarde-vps-setup protocontroller on\". Un cambio reinicia el motor."
 
 msgid "No (the tunnel as always)"
 msgstr "No (el túnel como siempre)"
@@ -177,8 +177,8 @@ msgstr "No (el túnel como siempre)"
 msgid "A: TCP in the middle"
 msgstr "A: TCP en el medio"
 
-msgid "B: cengarde's stream in the middle (experimental)"
-msgstr "B: el flujo de cengarde en el medio (experimental)"
+msgid "B (GRIT): cengarde's stream in the middle (experimental)"
+msgstr "B (GRIT): el flujo de cengarde en el medio (experimental)"
 
 msgid "Protocontroller ports"
 msgstr "Puertos del protocontrolador"

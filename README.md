@@ -134,7 +134,11 @@ Las configuraciones de cliente y servidor se explican en
   - protocolo propio v5;
   - salud de los enlaces;
   - perillas de baja latencia;
-  - recarga en caliente y socket de control (`cengarde ctl`).
+  - recarga en caliente y socket de control (`cengarde ctl`);
+  - FEC en lo que sobra (`redund_spare = rlc | rs`, historia 021), con lo
+    rehecho revisado antes de entregarlo;
+  - el protocontrolador, TCP partido en el router y el VPS (historia 025):
+    A, un TCP simple en el medio; B, el protocolo GRIT (experimental).
 - **OpenWrt:** paquetes, LuCI, imágenes y emparejamiento con un solo secreto.
   Se prueba de punta a punta en QEMU en cada cambio: dos VMs, configuradas
   desde LuCI.

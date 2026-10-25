@@ -317,7 +317,9 @@ TCP ni en lo perdido en vivo (p ≥ 0,066) salvo `Af-rlc` en `protect`, 44,3 →
 - **Hecho en la 025:** el protocontrolador (`protocontroller = a | b`) hace
   este corte dentro del motor; su variante A iguala a `Ab-rlc` en los tres
   casos (53,9 / 53,0 / 36,2 Mbit/s) con menos memoria y mejor vivo cercano,
-  y la B rinde lo mismo con menos CPU y sin cola; la bajada se midió allí.
+  y la B (el protocolo GRIT) rinde lo mismo con menos CPU y sin cola; la
+  bajada se midió allí. Tras las correcciones del microcorte (025, 26-10),
+  GRIT supera a A en `protectcut` (ver la 025).
 - **Bajada** (el VPS manda al router): no medida aquí (ver la 025).
 - **La Pi:** CPU y memoria de los proxies en la Pi 4 (estimación arriba).
 - **Búferes acotados:** `A` con `TCP_NOTSENT_LOWAT` o `SO_RCVBUF` chicos en
@@ -334,3 +336,4 @@ TCP ni en lo perdido en vivo (p ≥ 0,066) salvo `Af-rlc` en `protect`, 44,3 →
 
 - 2026-10-25: creada.
 - 2026-10-25: la 025 lo hace en el motor (variantes A y B) y mide contra estas cifras.
+- 2026-10-26: la B se llama GRIT (*Guaranteed Redundant IP Transport*); referencia a sus cifras nuevas del microcorte en la 025.
