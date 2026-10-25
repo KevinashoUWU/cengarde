@@ -307,9 +307,15 @@ static inline void cg_scc_ack(struct cg_scc *p, const struct cg_scc_cfg *c, uint
 		if (p->cong) {
 			if (!p->cong_t) {
 				p->cong_t = now;
-			} else if (now - p->cong_t >= p->min_rtt) {
+			} else if (now - p->cong_t >= (p->srtt > p->min_rtt ? p->srtt : p->min_rtt)) {
 				uint64_t d = cg_scc_mul(p->dla - s_dla, 1000000, iv);
 
+				/* no lower than half a round trip ago: behind a hole
+				 * (60 % lost, a microcut) a sample delivers little,
+				 * and cut to it the rate fell to the floor and held
+				 * the hole's own repairs for seconds */
+				if (d < cg_scc_bw(p) / 2)
+					d = cg_scc_bw(p) / 2;
 				if (d < cg_scc_bw(p)) {
 					p->bw = d > CG_SCC_FLOOR ? d : CG_SCC_FLOOR;
 					p->bmax[0] = p->bmax[1] = p->bw;

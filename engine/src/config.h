@@ -236,7 +236,7 @@ struct cg_config {
 	uint32_t protocontroller_dead_s;          /* a stream without progress this long, with something pending, is reset; 0: never */
 	uint32_t protocontroller_reo_ms;          /* RACK's reordering window beyond a quarter of the round trip */
 	char protocontroller_cc[16];              /* VPS: the congestion control toward the destination ("": the kernel's; auto: the kernel's, BBR once it loses) */
-	char protocontroller_mid_cc[16];          /* variant A: the middle TCP's congestion control, each end for what it sends ("": the kernel's) */
+	char protocontroller_mid_cc[16];          /* variant A: the middle TCP's congestion control, each end for what it sends (bbr; "": the kernel's) */
 	char protocontroller_vps[64];             /* router, variant A: the VPS's tunnel address ("": the tunnel prefix's first address) */
 	int tcp_aware;                /* native: mark inner TCP's retransmissions and ACKs free (tcpfree.h) */
 	uint32_t reorder_idle_ms;     /* EXPERIMENT: the reorderer stops waiting for a link that brought no data this long; 0: off */

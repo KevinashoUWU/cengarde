@@ -5,15 +5,15 @@ archivos:
   - engine/src/config.h
 ---
 
-# `pep_mem_mb`
+# `protocontroller_backlog_ms`
 
-Memoria de todos los flujos juntos (trozos de 16 KB). Sin trozos libres, no se aceptan flujos nuevos ni se lee más.
+Variante B: lo que un flujo guarda sin enviar o sin escribir, en tiempo a su ritmo (al menos 64 KB): la contrapresión hacia el emisor.
 
 - **Sección:** global
 - **Extremo:** los dos
-- **Por omisión:** 64
-- **Rango:** 4–4096
-- **Pieza:** [[PEP modo B (pep.c, stream.h, pepcc.h)]]
+- **Por omisión:** 200
+- **Rango:** 10–10000
+- **Pieza:** [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]]
 - **Historia:** [[025-protocontrolador]]
 - **Recarga:** cambiarla reinicia el proceso (`cg_config_restart_needed`).
 

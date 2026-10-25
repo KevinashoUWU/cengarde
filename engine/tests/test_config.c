@@ -1243,15 +1243,15 @@ static void test_config_native(void)
 #define PNAT CLIENT "tunnel = native\ntun_addr = 10.79.0.2/16\n"
 	CHECK_EQ(cg_config_parse(&c, PNAT, err, sizeof(err), warn, sizeof(warn)), 0);
 	CHECK_EQ(c.protocontroller, CG_PCTL_NO);
-	CHECK(!c.protocontroller_vps[0] && !c.protocontroller_mid_cc[0]);
+	CHECK(!c.protocontroller_vps[0] && !strcmp(c.protocontroller_mid_cc, "bbr"));
 	CHECK(!strcmp(c.protocontroller_cc, "auto"));
 	cg_config_free(&c);
-	CHECK_EQ(cg_config_parse(&c, PNAT "protocontroller = a\nprotocontroller_vps = 10.79.0.9\nprotocontroller_mid_cc = bbr\n",
+	CHECK_EQ(cg_config_parse(&c, PNAT "protocontroller = a\nprotocontroller_vps = 10.79.0.9\nprotocontroller_mid_cc = cubic\n",
 				 err, sizeof(err), warn, sizeof(warn)),
 		 0);
 	CHECK_EQ(c.protocontroller, CG_PCTL_A);
 	CHECK(!strcmp(c.protocontroller_vps, "10.79.0.9"));
-	CHECK(!strcmp(c.protocontroller_mid_cc, "bbr"));
+	CHECK(!strcmp(c.protocontroller_mid_cc, "cubic"));
 	CHECK_EQ(cg_config_parse(&o, PNAT "protocontroller = b\n", err, sizeof(err), warn, sizeof(warn)), 0);
 	CHECK_EQ(o.protocontroller, CG_PCTL_B);
 	CHECK(!strcmp(cg_config_restart_needed(&c, &o), "protocontroller"));

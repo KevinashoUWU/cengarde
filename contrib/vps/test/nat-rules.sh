@@ -22,7 +22,8 @@
 # - TUNNEL=native: the same rules with the engine's TUN, cg0, in place of
 #   the cg-* interfaces (IPv4 with two routers' forwarding, the jumps with
 #   and without PUB_IF, NAT66), and a TUNNEL that is neither wireguard nor
-#   native refused;
+#   native refused; with PROTOCONTROLLER=yes, variant A's TCP to the
+#   engine (story 025) accepted from cg0 only;
 # - a forward table with bad lines (fixtures/forward-bad): each skipped and
 #   logged by its number and reason, never its content; a table or IP pass
 #   file that is a symlink, a FIFO, someone else's or over 64 KiB: refused
@@ -375,6 +376,17 @@ TUNNEL_IPV6=yes'
 nat rules 6
 check "TUNNEL_IPV6=yes: the routers' IPv6 through cg0, masqueraded" golden rules-native-tunnel.6
 [ "$V6" = no ] || check "ip6tables-restore --test takes them" loads 6
+root nativepctl 'TUNNEL=native
+PROTOCONTROLLER=yes'
+nat rules 4
+check "PROTOCONTROLLER=yes: variant A's TCP from cg0 to 10.79.0.1:7801 accepted" \
+	out_has "-A CG_IN -i cg0 -d 10.79.0.1 -p tcp --dport 7801 -j ACCEPT"
+check "iptables-restore --test takes it" loads 4
+root wgpctl 'PROTOCONTROLLER=yes'
+nat rules 4
+check "and not without the native tunnel" not out_has "-A CG_IN -i cg-+ -d 10.79.0.1 -p tcp --dport 7801 -j ACCEPT"
+root pctlbad 'PROTOCONTROLLER=b'
+check "a PROTOCONTROLLER that is neither yes nor no is refused" not nat rules 4
 root nativebad 'TUNNEL=gre'
 check "a TUNNEL that is neither wireguard nor native is refused" not nat rules 4
 check "it says so" err_has "TUNNEL in"

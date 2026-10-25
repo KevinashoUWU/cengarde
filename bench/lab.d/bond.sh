@@ -273,7 +273,8 @@
 #                "pep" then carries the engines' streams too (pepstat.py)
 #   cga          the protocontroller's variant A: the same, protocontroller = a,
 #                a plain TCP of the engines' through the tunnel in the middle
-#                (the router's own, with its netns's cc, BOND_PEP_MIDCC)
+#                with BOND_PEP_CGMIDCC (protocontroller_mid_cc at both ends;
+#                empty: the engine's own, bbr)
 # BOND_PEP_MIDCC and BOND_PEP_FARCC (cubic): the congestion control of the
 # router's netns (the middle leg's sender in an upload) and the VPS's (the far
 # leg's); BOND_PEP_LANCC (empty: the run's cc for iperf3, cubic for live) the
@@ -344,6 +345,7 @@ BOND_PEP_FAR_MS=${BOND_PEP_FAR_MS:-50}
 BOND_PEP_NEAR_MS=${BOND_PEP_NEAR_MS:-5}
 BOND_PEP_PORT=${BOND_PEP_PORT:-7801}
 BOND_PEP_CGCC=${BOND_PEP_CGCC:-auto}
+BOND_PEP_CGMIDCC=${BOND_PEP_CGMIDCC:-} # cga: protocontroller_mid_cc at both ends (empty: the engine's, bbr)
 BOND_PEP_KCP=${BOND_PEP_KCP:---mode fast --datashard 0 --parityshard 0 --nocomp --crypt none --mtu 1300}
 BOND_LIVE_MBIT=${BOND_LIVE_MBIT:-8}
 BOND_LIVE_DROP_MS=${BOND_LIVE_DROP_MS:-700}
@@ -1182,6 +1184,10 @@ bond_case() {
 		[ "$BOND_PEP" = cga ] && pv=a
 		CLIENT_EXTRA=$(bond_join "protocontroller = $pv;protocontroller_port = $BOND_PEP_PORT" "$CLIENT_EXTRA")
 		SERVER_EXTRA=$(bond_join "protocontroller = $pv;protocontroller_port = $BOND_PEP_PORT;protocontroller_cc = $BOND_PEP_CGCC" "$SERVER_EXTRA")
+		if [ -n "$BOND_PEP_CGMIDCC" ]; then
+			CLIENT_EXTRA=$(bond_join "$CLIENT_EXTRA" "protocontroller_mid_cc = $BOND_PEP_CGMIDCC")
+			SERVER_EXTRA=$(bond_join "$SERVER_EXTRA" "protocontroller_mid_cc = $BOND_PEP_CGMIDCC")
+		fi
 		;;
 	esac
 	BOND_CASE=$c

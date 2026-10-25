@@ -5,15 +5,15 @@ archivos:
   - engine/src/config.h
 ---
 
-# `pep_queue_ms`
+# `protocontroller_dead_s`
 
-La cola que el tramo del medio puede armar sobre su menor ida y vuelta: más, y el ritmo baja a lo entregado (`pepcc.h`).
+Variante B: un flujo sin avance este tiempo, con algo pendiente (el túnel caído), se cierra con RST en los dos lados; 0: nunca.
 
 - **Sección:** global
 - **Extremo:** los dos
-- **Por omisión:** 5
-- **Rango:** 1–1000
-- **Pieza:** [[PEP modo B (pep.c, stream.h, pepcc.h)]]
+- **Por omisión:** 60
+- **Rango:** 0–3600
+- **Pieza:** [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]]
 - **Historia:** [[025-protocontrolador]]
 - **Recarga:** cambiarla reinicia el proceso (`cg_config_restart_needed`).
 

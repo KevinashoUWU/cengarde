@@ -7,7 +7,7 @@ archivos:
 
 # Perillas
 
-Las 128 claves que `engine/src/config.c` lee (comprobado al generar esta nota: ni falta ni sobra ninguna).
+Las 130 claves que `engine/src/config.c` lee (comprobado al generar esta nota: ni falta ni sobra ninguna).
 Por omisión y rango salen de `cg_config_parse`; el significado, de los comentarios de `config.h` y de [[engine-README]].
 Las perillas marcadas como experimento están apagadas por omisión.
 
@@ -191,19 +191,21 @@ Secciones: «global» es la parte sin sección; `[link NOMBRE]` es del cliente; 
 | [[Mapa/Perillas/redund_spare_first\|redund_spare_first]] | vacío (el de menor retardo sin cola) | [[Lo que sobra (spare.h)]] | [[020-copias-parciales-y-paridad]] |
 | [[Mapa/Perillas/redund_spare_code_ms\|redund_spare_code_ms]] | 30 | [[Códigos de borrado (rs.h, rlc.h)]], [[Lo que sobra (spare.h)]] | [[021-fec-v2]] |
 
-## PEP modo B
+## Protocontrolador
 
 | Perilla | Por omisión | Pieza | Historia |
 | --- | --- | --- | --- |
-| [[Mapa/Perillas/pep\|pep]] | `no` | [[PEP modo B (pep.c, stream.h, pepcc.h)]] | [[025-protocontrolador]] |
-| [[Mapa/Perillas/pep_port\|pep_port]] | 7801 | [[PEP modo B (pep.c, stream.h, pepcc.h)]] | [[025-protocontrolador]] |
-| [[Mapa/Perillas/pep_buf_kb\|pep_buf_kb]] | 1024 | [[PEP modo B (pep.c, stream.h, pepcc.h)]] | [[025-protocontrolador]] |
-| [[Mapa/Perillas/pep_mem_mb\|pep_mem_mb]] | 64 | [[PEP modo B (pep.c, stream.h, pepcc.h)]] | [[025-protocontrolador]] |
-| [[Mapa/Perillas/pep_max_flows\|pep_max_flows]] | 256 | [[PEP modo B (pep.c, stream.h, pepcc.h)]] | [[025-protocontrolador]] |
-| [[Mapa/Perillas/pep_queue_ms\|pep_queue_ms]] | 5 | [[PEP modo B (pep.c, stream.h, pepcc.h)]] | [[025-protocontrolador]] |
-| [[Mapa/Perillas/pep_backlog_ms\|pep_backlog_ms]] | 200 | [[PEP modo B (pep.c, stream.h, pepcc.h)]] | [[025-protocontrolador]] |
-| [[Mapa/Perillas/pep_dead_s\|pep_dead_s]] | 60 | [[PEP modo B (pep.c, stream.h, pepcc.h)]] | [[025-protocontrolador]] |
-| [[Mapa/Perillas/pep_reo_ms\|pep_reo_ms]] | 10 | [[PEP modo B (pep.c, stream.h, pepcc.h)]] | [[025-protocontrolador]] |
-| [[Mapa/Perillas/pep_cc\|pep_cc]] | `bbr` | [[PEP modo B (pep.c, stream.h, pepcc.h)]] | [[025-protocontrolador]] |
+| [[Mapa/Perillas/protocontroller\|protocontroller]] | `no` | [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[025-protocontrolador]] |
+| [[Mapa/Perillas/protocontroller_port\|protocontroller_port]] | 7801 | [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[025-protocontrolador]] |
+| [[Mapa/Perillas/protocontroller_vps\|protocontroller_vps]] | vacío (la primera dirección del prefijo de `tun_addr`) | [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[025-protocontrolador]] |
+| [[Mapa/Perillas/protocontroller_mid_cc\|protocontroller_mid_cc]] | `bbr` | [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[025-protocontrolador]] |
+| [[Mapa/Perillas/protocontroller_buf_kb\|protocontroller_buf_kb]] | 1024 | [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[025-protocontrolador]] |
+| [[Mapa/Perillas/protocontroller_mem_mb\|protocontroller_mem_mb]] | 64 | [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[025-protocontrolador]] |
+| [[Mapa/Perillas/protocontroller_max_flows\|protocontroller_max_flows]] | 256 | [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[025-protocontrolador]] |
+| [[Mapa/Perillas/protocontroller_queue_ms\|protocontroller_queue_ms]] | 5 | [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[025-protocontrolador]] |
+| [[Mapa/Perillas/protocontroller_backlog_ms\|protocontroller_backlog_ms]] | 200 | [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[025-protocontrolador]] |
+| [[Mapa/Perillas/protocontroller_dead_s\|protocontroller_dead_s]] | 60 | [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[025-protocontrolador]] |
+| [[Mapa/Perillas/protocontroller_reo_ms\|protocontroller_reo_ms]] | 10 | [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[025-protocontrolador]] |
+| [[Mapa/Perillas/protocontroller_cc\|protocontroller_cc]] | `auto` | [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[025-protocontrolador]] |
 
 Volver a [[Mapa del motor]].

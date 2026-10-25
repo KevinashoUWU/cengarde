@@ -865,6 +865,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	c->protocontroller_dead_s = 60;
 	c->protocontroller_reo_ms = 10;
 	strcpy(c->protocontroller_cc, "auto");
+	strcpy(c->protocontroller_mid_cc, "bbr");
 	c->fec_wait_ms = 10;
 	c->redund_spare_ms = 50;
 	c->redund_spare_code_ms = 30;
