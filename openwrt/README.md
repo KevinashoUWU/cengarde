@@ -553,6 +553,48 @@ scp -O -r root@192.168.1.1:/mnt/usb/cengarde-rec .   # -O: dropbear no trae SFTP
 python3 bench/fieldrec.py --utc-offset -3 cengarde-rec > campo.md
 ```
 
+### La salud de los enlaces, la protección y el protocontrolador
+
+Desde la 0.10.1, la página de estado suma tres recuadros:
+
+- **Salud de los enlaces:** por enlace, su tipo, la capacidad que mide el
+  motor, la cola ahora y su p50 / p95 de los últimos cinco minutos (los ve
+  la página mientras está abierta), si la cola la causa el tráfico propio u
+  otros usuarios de la celda, y si pierde al azar sin cola (como Starlink) o
+  porque su cola rebalsa (como un módem celular).
+- **Protección** (motor 0.9 o más nuevo): el modo, el enlace principal, si
+  ahora va con copias completas o paridad, las copias y reparaciones
+  enviadas, los paquetes perdidos en todos los enlaces y el rescate.
+- **Protocontrolador:** solo cuando está en A o B: conexiones abiertas y en
+  total, bytes desde y hacia la LAN y lo reenviado en el medio.
+
+## Protección (copias, paridad y rescate)
+
+Pestaña *Protección*, mientras todos los enlaces llevan la subida (sin
+reparto):
+
+- **Modo de protección** (`redund_spare`): *Copias completas* (como
+  siempre, lo más seguro en un corte), *Mixta* (copias mientras caben,
+  paridad XOR en un enlace ahogado), *Paridad*, *RLC* o *Reed-Solomon*
+  (códigos de borrado que rehacen varios paquetes a la vez con lo que les
+  sobra a los respaldos) y *Copias parciales*. Todos menos copias completas
+  necesitan `fec = yes` en el `cengarde.conf` del VPS (historias 020 y 021).
+- **Enlace principal** (`redund_spare_first`): el que lleva todo mientras
+  los demás lo protegen; *Automático* elige el de menor retardo que no esté
+  ahogado.
+- **Ventana de copias junto a Starlink** (`pace_peers_ms`): con un enlace
+  Starlink, cuánto después del primero vale la pena una copia; 250 ms es lo
+  que funcionó en Nostálgica (historia 017).
+- **Rescatar paquetes faltantes** (`rescue`): pide de nuevo, dentro de
+  60 ms, lo que ningún enlace entregó (como paridad con un código de
+  borrado). El VPS necesita `rescue_kb` y `rescue_wait_ms` en su
+  `cengarde.conf` para su lado (historia 023).
+
+La pestaña *Funciones de capa 4* tiene el protocontrolador (abajo) y el
+**túnel consciente de TCP** (`tcp_aware`, solo nativo): los ACK del TCP de
+adentro no esperan detrás de un hueco, y una retransmisión de TCP se copia
+por todos los enlaces solo si el túnel perdió el original en todos.
+
 ## IP pass (la IP pública del VPS en terreno)
 
 **En el VPS:** el TCP y el UDP de los puertos 1024–65000 que llegan a su IP
@@ -762,7 +804,7 @@ QUIC y lo demás van por el túnel como siempre. Dos variantes:
   propio de cengarde, dosificado por lo que llevan los enlaces y no por la
   pérdida.
 
-**En el router** (pestaña *Túnel*, *Protocontrolador*, solo en modo
+**En el router** (pestaña *Funciones de capa 4*, *Protocontrolador*, solo en modo
 nativo): `cengarde-setup` escribe `/etc/cengarde/protoctl.nft`, un include
 de firewall4 (`cengarde_protoctl`, una cadena propia justo antes de la
 `dstnat` de fw4) que redirige al motor (puerto 7801) el TCP que entra por la

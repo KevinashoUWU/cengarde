@@ -15,9 +15,18 @@
 //   dropdown of its type (the engine's [link] type) in the General tab, shown
 //   while it is in the list of uplinks, that reads and writes its entry of
 //   "list uplink_type 'UPLINK=TYPE'" and leaves the others alone;
+//   the Protection tab holds the protection mode (the engine's redund_spare,
+//   full copies by default), its main uplink (automatic or one of the
+//   uplinks, only with a mode that protects), the copy window next to
+//   Starlink and the rescue switch; the Layer 4 features tab holds the
+//   protocontroller and the TCP-aware switch, native mode only;
 // - status.js: the "Reordering" box shows the engine's "reorder" object (and
 //   says so when the engine has it off) and is not there for an engine without
-//   it, and an uplink the split leaves out for its delay says so, in English
+//   it, the Uplink health table shows each uplink's type, capacity, queue now
+//   and its p50 / p95 over the samples the page saw, whose queue it is and how
+//   it loses, the Protection box (only for an engine that reports
+//   upload.spare) and the Protocontroller box (only when it is on) show,
+//   and an uplink the split leaves out for its delay says so, in English
 //   and in Spanish (po/es), which also has to cover its strings.
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -358,6 +367,33 @@ for (const [lang, tr] of [ [ 'en', english ], [ 'es', spanish ] ]) {
 	assert.ok(gone.uplink_type_old, 'a chosen uplink always has its type');
 }
 
+// The Protection and Layer 4 tabs: the protection mode and its main uplink
+// (one of the router's uplinks, or automatic), the copy window next to
+// Starlink, the rescue switch; the protocontroller and the TCP-aware switch
+// in Layer 4 features, which need the native tunnel.
+for (const [lang, tr] of [ [ 'en', english ], [ 'es', spanish ] ]) {
+	const o = await renderConfig(tr, [ 'wan', 'lte2' ]);
+	const tab = (name, t) => { assert.ok(o[name], `${lang}: ${name} exists`); assert.equal(o[name].tab, t, `${lang}: ${name} is in the ${t} tab`); return o[name]; };
+
+	assert.deepEqual(tab('redund_spare', 'protection').values.map((v) => v[0]), [ 'no', 'mix', 'parity', 'rlc', 'rs', 'copies' ],
+		'the engine\'s modes, full copies first');
+	assert.equal(o.redund_spare.default, 'no', 'full copies unless set: the engine as before');
+	assert.deepEqual(tab('redund_spare_first', 'protection').values.map((v) => v[0]), [ '', 'wan', 'lte2' ], 'automatic, or one of the uplinks');
+	assert.deepEqual(o.redund_spare_first.deps.map((d) => d.redund_spare).sort(), [ 'copies', 'mix', 'parity', 'rlc', 'rs' ],
+		'a main uplink only means something when the backups protect it');
+	assert.equal(tab('pace_peers_ms', 'protection').datatype, 'range(0,2000)', 'the engine\'s range');
+	assert.equal(o.pace_peers_ms.placeholder, '60', 'the Starlink preset\'s window');
+	assert.equal(tab('rescue', 'protection').cls, 'Flag');
+	assert.equal(o.rescue.default, '0', 'the rescue is off unless turned on');
+	for (const name of [ 'protocontroller', 'protocontroller_port', 'protocontroller_dest' ])
+		tab(name, 'layer4');
+	assert.deepEqual(o.protocontroller.values.map((v) => v[0]), [ 'no', 'a', 'b' ]);
+	assert.deepEqual(o.protocontroller.deps, [ { tunnel_mode: 'native' } ], 'native mode only');
+	assert.equal(tab('tcp_aware', 'layer4').default, '0', 'TCP-aware is off unless turned on, as in the engine');
+	assert.deepEqual(o.tcp_aware.deps, [ { tunnel_mode: 'native' } ], 'native mode only');
+	assert.equal(o.ip_pass.tab, 'tunnel', 'IP pass stays in the Tunnel tab');
+}
+
 // ---- status.js
 
 function loadStatus(tr) {
@@ -473,7 +509,47 @@ for (const [lang, tr] of [ [ 'en', english ], [ 'es', spanish ] ]) {
 	const page = E('div');
 	v.update(page, base({ reorder }));
 	assert.deepEqual(find(page, (n) => n.tag == 'h3').map(text),
-		L([ 'Status', 'Uplinks', 'Reordering' ], [ 'Estado', 'Enlaces', 'Reordenamiento' ]));
+		L([ 'Status', 'Uplinks', 'Uplink health', 'Reordering' ], [ 'Estado', 'Enlaces', 'Salud de los enlaces', 'Reordenamiento' ]));
+
+	// Uplink health: type, capacity, queue now and its p50 / p95 over what the
+	// page saw, whose queue it is and how the uplink loses
+	const hv = loadStatus(tr);
+	const hlink = (q) => ({ ...link('up1', null), id: 0, type: 'starlink', capacity_mbit: 42.25, queue_ms: q,
+		sig: { queue_owner: 'others', loss_kind: 'random' } });
+	let hn;
+	for (const q of [ 10, 20, 30, 40, 100 ]) {
+		hn = E('div');
+		hv.update(hn, base({ links: [ hlink(q) ] }));
+	}
+	const hrow = find(hn, (x) => x.tag == 'table' && String(x.attrs.class).includes('cengarde-health'))[0].children[1].children.map(text);
+	assert.equal(hrow[1], 'Starlink');
+	assert.equal(hrow[2], '42.25 Mbit/s', `${lang}: capacity`);
+	assert.equal(hrow[3], '100 ms', `${lang}: the queue now`);
+	assert.equal(hrow[4], '30 / 100 ms', `${lang}: p50 and p95 of the five samples`);
+	assert.equal(hrow[5], L('other users', 'otros usuarios'));
+	assert.equal(hrow[6], L('random', 'aleatorias'));
+
+	// Protection: a box only for an engine that reports upload.spare (null:
+	// full copies), with the main uplink by its label and the rescue
+	const heads = (st) => { const n = E('div'); v.update(n, st); return find(n, (x) => x.tag == 'h3').map(text); };
+	const PROT = L('Protection', 'Protección'), PCTL = L('Protocontroller', 'Protocontrolador');
+	assert.ok(!heads(base({ links: [] })).includes(PROT), `${lang}: no upload.spare (an old engine), no box`);
+	assert.ok(heads(base({ links: [], upload: { bytes: 1, spare: null } })).includes(PROT), `${lang}: spare null, the box says full copies`);
+	const pn = E('div');
+	v.update(pn, base({ links: [ { ...link('up1', null), id: 3, label: 'ENTEL' } ], lost_all: 7,
+		upload: { bytes: 1, spare: { mode: 'rlc', now: 'parity', k: 21, first: 3, copies: 5, copies_skipped: 9, parities: 11 } },
+		rescue: { on: true, nacks_sent: 4, sent: 2, left_to_tcp: 1, parq: { repairs: 6 } } }));
+	const prot = find(pn, (x) => x.tag == 'tr').map((r) => r.children.map(text));
+	const prow = (name) => (prot.find((r) => r[0] == name) || assert.fail(`${lang}: no row ${name}`))[1];
+	assert.equal(prow(L('Protection mode', 'Modo de protección')), L('RLC erasure code', 'Código de borrado RLC'));
+	assert.equal(prow(L('Main uplink', 'Enlace principal')), 'ENTEL');
+	assert.equal(prow(L('Now', 'Ahora')), L('parity, one every 21 packets', 'paridad, una cada 21 paquetes'));
+	assert.equal(prow(L('Lost on every uplink', 'Perdidos en todos los enlaces')), '7');
+	assert.ok(prow(L('Rescued', 'Rescates')).startsWith('4'), `${lang}: the rescue's counts`);
+
+	// Protocontroller: only when it is on
+	assert.ok(!heads(base({ links: [], protocontroller: { mode: 'no' } })).includes(PCTL), `${lang}: off, no box`);
+	assert.ok(heads(base({ links: [], protocontroller: { mode: 'b', flows: 3, opened: 10, closed: 7 } })).includes(PCTL), `${lang}: on, the box`);
 }
 assert.deepEqual([ ...new Set(missing) ], [], 'every string the views use has a Spanish translation');
 

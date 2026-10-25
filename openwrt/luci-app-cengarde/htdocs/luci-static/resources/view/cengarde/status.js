@@ -169,6 +169,70 @@ function sleep(ms) {
 	return new Promise(function(resolve) { window.setTimeout(resolve, ms); });
 }
 
+// How many queue samples per uplink the page keeps: one per refresh (every
+// 3 s), five minutes.
+const QUEUE_KEEP = 100;
+
+// The p-th percentile (0-100) of a list of numbers, or null for none.
+function percentile(list, p) {
+	const v = list.filter(function(x) { return typeof x == 'number'; }).sort(function(a, b) { return a - b; });
+
+	if (!v.length)
+		return null;
+	return v[Math.min(v.length - 1, Math.floor(p / 100 * v.length))];
+}
+
+function mbit(v) {
+	return (typeof v == 'number') ? '%.1f Mbit/s'.format(v) : '-';
+}
+
+// The link types as config.js names them.
+function linkType(t) {
+	switch (t) {
+	case 'cellular': return _('Cellular (LTE/5G)');
+	case 'starlink': return _('Starlink');
+	case 'fiber': return _('Fiber');
+	case 'ethernet': return _('Cable, DSL or Ethernet');
+	case 'radio': return _('Radio link (point to point)');
+	default: return _('Automatic');
+	}
+}
+
+// Whose queue it is (the engine's sig.queue_owner, story 018): this
+// router's own traffic, or other users of the cell.
+function queueOwner(sig) {
+	switch (sig && sig.queue_owner) {
+	case 'mine': return _('own traffic');
+	case 'others': return badge(_('other users'), '#d80',
+		_('The uplink delivered more than 15 % less when its queue grew: other users of the cell are taking its capacity.'));
+	default: return '-';
+	}
+}
+
+// How it loses (the engine's sig.loss_kind): at random without a queue, as
+// Starlink does, or when its queue overflows, as a cellular modem does.
+function lossKind(sig) {
+	switch (sig && sig.loss_kind) {
+	case 'random': return badge(_('random'), '#68a',
+		_('It loses packets with no queue, as Starlink does: repair data (parity or erasure codes) fixes this best.'));
+	case 'congestive': return badge(_('queue overflow'), '#d80',
+		_('It loses when its queue overflows: sending it less helps more than sending it repairs.'));
+	default: return _('none');
+	}
+}
+
+// What redund_spare does, in words (config.js's names).
+function spareMode(m) {
+	switch (m) {
+	case 'mix': return _('Mixed: copies, or parity when an uplink is choked');
+	case 'parity': return _('Parity (XOR)');
+	case 'rlc': return _('RLC erasure code');
+	case 'rs': return _('Reed-Solomon erasure code');
+	case 'copies': return _('Partial copies');
+	default: return _('Full copies on every uplink');
+	}
+}
+
 return view.extend({
 	load: function() {
 		return L.resolveDefault(fs.exec_direct('/usr/sbin/cengarde-setup', [ 'status' ], 'json'), null);
@@ -331,6 +395,99 @@ return view.extend({
 		return table;
 	},
 
+	// Each uplink's health: its type, the capacity the engine measures, its
+	// queue now and over the last minutes (p50 and p95 of what this page
+	// saw), whose queue it is and how it loses.
+	renderHealth: function(st) {
+		const links = (st.engine && st.engine.links) || [];
+		const hist = this.qhist || (this.qhist = {});
+		const table = E('table', { 'class': 'table cengarde-health' }, [
+			E('tr', { 'class': 'tr table-titles' }, [
+				E('th', { 'class': 'th' }, [ _('Uplink') ]),
+				E('th', { 'class': 'th' }, [ _('Type') ]),
+				E('th', { 'class': 'th' }, [ _('Capacity') ]),
+				E('th', { 'class': 'th' }, [ _('Queue now') ]),
+				E('th', { 'class': 'th' }, [ _('Queue p50 / p95') ]),
+				E('th', { 'class': 'th' }, [ _('Queue caused by') ]),
+				E('th', { 'class': 'th' }, [ _('Losses') ])
+			])
+		]);
+
+		cbi_update_table(table, links.map(function(l) {
+			const out = (l.state == 'paused' || l.state == 'down');
+			const h = hist[l.name] || (hist[l.name] = []);
+			let p50, p95;
+
+			if (!out && typeof l.queue_ms == 'number') {
+				h.push(l.queue_ms);
+				if (h.length > QUEUE_KEEP)
+					h.shift();
+			}
+			p50 = percentile(h, 50);
+			p95 = percentile(h, 95);
+			return [
+				E('span', { 'title': l.name }, [ l.label || l.name ]),
+				linkType(l.type),
+				out ? '-' : mbit(l.capacity_mbit),
+				out ? '-' : ms(l.queue_ms),
+				(p50 == null) ? '-' : '%.0f / %.0f ms'.format(p50, p95),
+				out ? '-' : queueOwner(l.sig),
+				out ? '-' : lossKind(l.sig)
+			];
+		}), E('em', {}, [ st.running ? _('No uplink is up yet.') : _('The engine is not running.') ]));
+		return table;
+	},
+
+	// The protection of the upload in redundancy (redund_spare) and the
+	// rescue, from the engine's upload.spare, rescue and lost_all. An engine
+	// without them (before 0.9) has no box.
+	renderProtection: function(st) {
+		const e = st.engine;
+		const n = function(v) { return (typeof v == 'number') ? v : 0; };
+		let sp, rows, first, rs;
+
+		if (!e || !e.upload || !('spare' in e.upload))
+			return null;
+		sp = e.upload.spare;
+		rs = e.rescue || {};
+		rows = [ [ _('Protection mode'), spareMode(sp ? sp.mode : 'no') ] ];
+		if (sp) {
+			first = (e.links || []).filter(function(l) { return l.id == sp.first; })[0];
+			rows.push([ _('Main uplink'), first ? (first.label || first.name) : '-' ]);
+			rows.push([ _('Now'), sp.now == 'parity' ? _('parity, one every %d packets').format(n(sp.k)) : _('full copies') ]);
+			rows.push([ _('Copies on the backup uplinks'), _('%d sent, %d left out').format(n(sp.copies), n(sp.copies_skipped)) ]);
+			rows.push([ _('Repair packets sent'), '%d'.format(n(sp.parities)) ]);
+		}
+		rows.push([ _('Lost on every uplink'), '%d'.format(n(e.lost_all)) ]);
+		rows.push([ _('Rescue'), rs.on ? badge(_('on'), '#393') : _('off') ]);
+		if (rs.on || rs.keeps)
+			rows.push([ _('Rescued'), _('%d asked of the VPS, %d sent again for the VPS, %d repair packets on request, %d left to TCP').format(
+				n(rs.nacks_sent), n(rs.sent), n(rs.parq && rs.parq.repairs), n(rs.left_to_tcp)) ]);
+		return E('div', {}, [
+			rowsTable(rows),
+			E('p', { 'class': 'cbi-section-descr' }, [
+				_('Lost on every uplink: packets that no uplink delivered and that nothing repaired, counted with a delay of up to a few minutes. The mode is set in the Protection tab.')
+			])
+		]);
+	},
+
+	// The protocontroller (Layer 4 features tab), from the engine's
+	// protocontroller object: none when it is off or the engine has none.
+	renderProtoctl: function(st) {
+		const p = st.engine && st.engine.protocontroller;
+		const n = function(v) { return (typeof v == 'number') ? v : 0; };
+
+		if (!p || typeof p != 'object' || !p.mode || p.mode == 'no')
+			return null;
+		return rowsTable([
+			[ _('Mode'), p.mode == 'b' ? _('B (GRIT): cengarde\'s stream in the middle') : _('A: TCP in the middle') ],
+			[ _('Connections now'), '%d'.format(n(p.flows)) ],
+			[ _('Connections in total'), _('%d opened, %d closed').format(n(p.opened), n(p.closed)) ],
+			[ _('From the LAN / to the LAN'), '%1024.2mB / %1024.2mB'.format(n(p.sock_rx_bytes), n(p.sock_tx_bytes)) ],
+			[ _('Sent again in the middle'), '%d'.format(n(p.retx)) ]
+		]);
+	},
+
 	renderProblems: function(st) {
 		const problems = st.problems.map(problemText);
 
@@ -342,7 +499,7 @@ return view.extend({
 	},
 
 	update: function(node, st) {
-		let sections, reorder;
+		let sections, reorder, protection, protoctl;
 
 		if (!st) {
 			dom.content(node, E('div', { 'class': 'alert-message error' },
@@ -363,6 +520,16 @@ return view.extend({
 				_('VPS address: where the uplink sends to; "failover" when the first VPS address it can use did not answer. Path MTU: the largest packet the path to the VPS takes.')
 			])
 		];
+		sections.push(E('h3', {}, [ _('Uplink health') ]), this.renderHealth(st),
+			E('p', { 'class': 'cbi-section-descr' }, [
+				_('Capacity: what the engine measures that the uplink carries now. Queue: how much longer than its fastest the uplink takes now, and its median and 95th percentile over the last five minutes on this page. Queue caused by: this router\'s own traffic, or other users of the cell. Losses: at random with no queue (repair data helps), or when the queue overflows (sending less helps).')
+			]));
+		protection = this.renderProtection(st);
+		if (protection)
+			sections.push(E('h3', {}, [ _('Protection') ]), protection);
+		protoctl = this.renderProtoctl(st);
+		if (protoctl)
+			sections.push(E('h3', {}, [ _('Protocontroller') ]), protoctl);
 		// Only an engine that reorders reports it.
 		reorder = this.renderReorder(st);
 		if (reorder)
