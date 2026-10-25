@@ -5,7 +5,7 @@ archivos:
   - engine/src/split.h
   - engine/src/capacity.h
   - engine/src/reorder.h
-sello: dfc58be455c1558d
+sello: 7a55fff237c62027
 ---
 # Glosario
 
@@ -18,7 +18,7 @@ Términos del proyecto, en español, con el nombre del código entre paréntesis
 - **Cola de bonding (bonding tail):** 4 bytes al final de cada sonda: peso, si reordena, si pide reparto, rescate, lleno, tipo. → [[Sondas y cola de bonding (proto.h)]]
 - **OWD (retardo de ida):** reloj del receptor menos el ts del emisor; solo las diferencias entre enlaces significan algo. → [[Salud y silenciado (health.h)]]
 - **Silenciado (muted), G1:** enlace muy atrasado que conserva socket y sondas pero no lleva datos. → [[Salud y silenciado (health.h)]]
-- **Mudo (stall):** enlace que dejó de responder; no lleva nada hasta que vuelve. → [[Salud y silenciado (health.h)]]
+- **Mudo (stall):** enlace que dejó de responder; no lleva nada hasta que vuelve, salvo que siga trayendo paquetes (lo que sube lo usa unos RTT más; el DATA del protocontrolador, un segundo). → [[Salud y silenciado (health.h)]]
 - **Goteo (trickle):** un paquete de cada N por un enlace silenciado. → [[Mapa/Perillas/mute_trickle|mute_trickle]]
 - **Portador (carrier):** enlace que lleva todo lo que se duplica. → [[Salud y silenciado (health.h)]]
 - **Modelo de enlace / tipo / preset:** clase del enlace (`auto`, `cellular`, `starlink`…) y sus parámetros. → [[Modelo de enlace (linkmodel.h)]]

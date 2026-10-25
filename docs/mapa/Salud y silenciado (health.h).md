@@ -3,7 +3,7 @@ tags: [mapa, pieza]
 archivos:
   - engine/src/health.h
   - engine/tests/test_health.c
-sello: 9b6de7adaa4c14d4
+sello: 796d27b3c8a0770a
 ---
 # Salud y silenciado (health.h)
 
@@ -16,6 +16,7 @@ Decide qué enlaces llevan cada paquete en el sentido que envía este extremo (e
 - `owd` de [[Sondas y cola de bonding (proto.h)]].
 - Con `mute_queue`: la cola sobre el mínimo de 60 s de [[Cola por enlace (cg_gov_base)]] (`ql_us` de [[Capacidad (capacity.h)]], del tick anterior) y, en el cliente, la sonda más vieja sin respuesta menos el RTT del enlace vivo más rápido (`cg_health_silent_us`).
 - Mudo: en el cliente, 3 sondas sin respuesta y la más vieja fuera hace 2 RTT + 1 s; en el servidor, 3 intervalos anunciados + 1 s sin paquete verificado.
+- **Mudo pero trayendo** ([[025-protocontrolador]]): para lo que sube (los datos, sus reparaciones y paridades, el rescate, la PARQ y el primer enlace de [[Lo que sobra (spare.h)]]: `link_masks_tx` en `client.c`), un enlace con las sondas detenidas sigue vivo si trajo un paquete verificado en los últimos 2 RTT + 100 ms y la detención tiene menos de 5 s (`cg_link_rx_alive`); para el DATA de un flujo del protocontrolador, que tiene ARQ, si trajo algo en el último segundo (`cg_link_rx_alive_arq`). Un microcorte que pierde 60 % en cada sentido deja 3 sondas seguidas sin respuesta durante un segundo de vez en cuando (0,84 por sonda: ~17 % por ventana), y dejarlo mandaba todo a la cola del celular. El estado del enlace (`live`/`stalled`), el reordenador y la salud siguen con el mudo de siempre.
 
 ## Decide / escribe
 - Estado por enlace (`CG_H_ACTIVE` / `CG_H_MUTED`), `behind_us`, el `owd` filtrado y su frescura.

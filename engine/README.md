@@ -612,6 +612,15 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
     copias; en el microcorte, como `mix`. Ver la historia para la celda.
     Estado: `upload.spare.code` y `repair` en la sesión del servidor.
     `make LEOPARD=0` compila sin Leopard (sin C++): `rs` queda rechazado.
+    **Lo rehecho se revisa** antes de entregarlo (`src/rebuilt.h`, para el
+    XOR, el RS y la RLC; historia 025): con el túnel nativo, la forma IP y
+    la suma de TCP, UDP, ICMP o ICMPv6 (o la de la cabecera IPv4), o la
+    etiqueta de un mensaje del protocontrolador; con WireGuard, el tipo y el
+    largo. Lo que no pasa no se entrega ni se marca como recibido (el
+    paquete o su rescate pueden llegar). Estado por sesión: `rebuilt`
+    (`ok`, `bad`, `unsure`). Hasta esta revisión la RLC rehacía a veces
+    basura (un error de la eliminación al permutar filas, corregido):
+    `repair.rlc.bad` por miles y `not_ip` en el servidor.
     - **`redund_spare_code_ms` (30; 1–500):** cuánto abarca un bloque (o la
       ventana); 10 y 60 dieron menos TCP con `rs` (21 y 29 contra 36 Mbit/s).
 - **`reorder_pool_kb` (8192; 256–131070):** memoria para los paquetes
@@ -1343,8 +1352,8 @@ omisión (`protocontroller = no`), protocolo 10. Dos variantes:
   vacío: el del kernel) es el control de congestión del medio, en cada
   extremo para lo que envía: con cubic, la pérdida que el túnel no repara a
   tiempo frena ese tramo. Sin proxies aparte, sin doble cifrado.
-- **`b` (experimental; nombre del protocolo pendiente):** cada conexión es un
-  **flujo fiable propio** dentro del túnel: sus mensajes (`OPEN`, `DATA`,
+- **`b` (experimental; protocolo GRIT, *Guaranteed Redundant IP
+  Transport*):** cada conexión es un **flujo fiable propio** dentro del túnel: sus mensajes (`OPEN`, `DATA`,
   `ACK`, `RST`, `src/protoctl.h`) van como carga de DATA con el primer nibble
   en `0xF` y una etiqueta SipHash de 4 bytes al final (descarta una
   reconstrucción errada de la FEC), así que el MAC, el anti-replay, las
@@ -1375,18 +1384,26 @@ Solo la variante B:
 
 - **Fiabilidad** (`src/stream.h`): RACK con una ventana de un cuarto de la
   ida y vuelta más `protocontroller_reo_ms` (10, la reparación del túnel va
-  primero; cada duplicado que el receptor avisa la agranda 4 ms, hasta 100),
-  y un temporizador desde el envío más viejo. Nunca se rinde; un segmento
-  reenviado por segunda vez va como copia prioritaria por los enlaces sin
-  cola. El receptor guarda hasta 256 huecos y contesta cada 4 DATA o 2 ms (al
+  primero; cada duplicado que el receptor avisa la agranda 4 ms, hasta 100;
+  con pérdida al azar pesada, más de 1 byte de cada 5 en 100 ms, vuelve a
+  `protocontroller_reo_ms`: las reparaciones del túnel no alcanzan), y un
+  temporizador desde el envío más viejo. Nunca se rinde; un segmento
+  reenviado por segunda vez, entre los 8 más viejos, va además como copia
+  por lo que sobra a otro enlace sin cola (dentro de su asignación). Con
+  `redund_spare`, los DATA de los flujos van por **un** enlace, el de menor
+  retardo sin cola (también uno con las sondas detenidas que trajo algo en
+  el último segundo), sin seguir al primero de las copias. El receptor guarda hasta 256 huecos y contesta cada 4 DATA o 2 ms (al
   instante con un hueco nuevo o uno lleno, o el FIN).
 - **Ritmo** (`src/streamcc.h`): uno por par para todos sus flujos, en turnos.
   Lo que el camino consume (entregado, y perdido mientras la cola es corta:
   la pérdida al azar no frena), con la cola medida por el **retardo de ida**
   que el receptor devuelve en cada ACK (no la ida y vuelta, que en un
-  microcorte llevaba las pérdidas del ACK de vuelta); arranque 3/2, ciclo
-  5/4–3/4–1, 3/4 mientras la cola pase `protocontroller_queue_ms` (5), y en
-  vuelo dos veces el camino más lo que RACK no declaró perdido todavía. La
+  microcorte llevaba las pérdidas del ACK de vuelta); cada muestra sobre lo
+  más largo entre el intervalo de los ACK y el vuelo del segmento; arranque
+  3/2, ciclo 5/4–3/4–1, 3/4 mientras la cola pase `protocontroller_queue_ms`
+  (5), la cola de una ida y vuelta baja el estimador (el primer corte a lo
+  más entregado hace poco, los siguientes a lo entregado), y en vuelo dos
+  veces el camino más lo que RACK no declaró perdido todavía. La
   capacidad del motor (`capacity.h`) es el comienzo y el techo cuando halla
   lleno el enlace de los datos.
 - **Contrapresión:** el VPS escribe al destino con un `TCP_NOTSENT_LOWAT` de
@@ -1414,8 +1431,9 @@ Despliegue:
   `corrupt`, huecos del receptor por duración, esperas de envío y de
   escritura, memoria y su pico, conexiones pasadas a BBR, `a_opened`,
   `a_bytes_in`, `a_bytes_out` y `a_held_bytes` de la variante A, y por par el
-  estimador, el ritmo, `min_rtt`, `srtt`, en vuelo, ventana, modo y la
-  ventana de RACK).
+  estimador, el ritmo, `min_rtt`, `srtt`, en vuelo, ventana, modo, la
+  ventana de RACK, `heavy_loss` y `heavy_windows`); `protocol` dice
+  `GRIT` con la variante B.
 
 Toda perilla `protocontroller*` reinicia el proceso al cambiar.
 

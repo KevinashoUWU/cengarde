@@ -166,7 +166,7 @@ msgstr ""
 msgid "Protocontroller"
 msgstr ""
 
-msgid "Native mode only. With A or B the router answers the TCP connections of the LAN itself and the VPS opens a fresh one to each destination (cubic, BBR once that leg loses). Between them each connection travels as a plain TCP through the tunnel (A) or, experimental, as a reliable stream of cengarde, paced by what the uplinks carry instead of by loss (B). It helps TCP uploads such as RTMP over lossy uplinks and long paths beyond the VPS. UDP, QUIC and the rest go through the tunnel as always. The VPS needs \"sudo cengarde-vps-setup protocontroller on\". A change restarts the engine."
+msgid "Native mode only. With A or B the router answers the TCP connections of the LAN itself and the VPS opens a fresh one to each destination (cubic, BBR once that leg loses). Between them each connection travels as a plain TCP through the tunnel (A) or, experimental, as GRIT, a reliable stream of cengarde paced by what the uplinks carry instead of by loss (B). It helps TCP uploads such as RTMP over lossy uplinks and long paths beyond the VPS. UDP, QUIC and the rest go through the tunnel as always. The VPS needs \"sudo cengarde-vps-setup protocontroller on\". A change restarts the engine."
 msgstr ""
 
 msgid "No (the tunnel as always)"
@@ -175,7 +175,7 @@ msgstr ""
 msgid "A: TCP in the middle"
 msgstr ""
 
-msgid "B: cengarde's stream in the middle (experimental)"
+msgid "B (GRIT): cengarde's stream in the middle (experimental)"
 msgstr ""
 
 msgid "Protocontroller ports"

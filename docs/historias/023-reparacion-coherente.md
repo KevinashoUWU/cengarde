@@ -171,7 +171,8 @@ subida:
 El cliente rehace lo pedido desde lo que guarda para el rescate
 (`rescue_kb`), dentro del crédito del rescate, y lo manda por un enlace
 **con lugar** (`parq_link`: vivo, no ahogado según `redund_spare` ni lleno
-según la capacidad, el de menor RTT). El reordenador cuenta por separado
+según la capacidad, el de menor RTT; desde el 26-10, si no hay ninguno no
+sale, ver «Cambios»). El reordenador cuenta por separado
 `rescued` (llegó el paquete) y `repaired` (lo rehizo un código); el servidor,
 `repair.parq` y los motivos de `rescue`.
 
@@ -500,3 +501,11 @@ usa), y los casos viejos quedan como estaban hasta revisarlos.
   `tcpack.h`, `CG_F_TUNHOLE` y `CG_BOND_TCPMARK` sin versión nueva), los
   casos `spurious` y `lossall`, y el límite de netem que achican los saltos
   de demora.
+- 2026-10-26: historia 025. La PARQ ya no va a un enlace ahogado o lleno
+  cuando no hay otro (`parq_link`: no sale; en un microcorte, 1 500
+  reparaciones por segundo llevaban la cola del celular a 1,6 s). Para lo
+  que sube (datos, paridades, el NACK y la PARQ, el primer enlace de
+  `redund_spare`), un enlace con las sondas detenidas que todavía trae
+  paquetes sigue vivo (`link_masks_tx`, `cg_link_rx_alive`). Las
+  combinaciones de la PARQ con la RLC destapaban el error de la
+  eliminación de la RLC (ver la 021): corregido.

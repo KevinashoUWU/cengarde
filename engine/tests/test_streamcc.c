@@ -186,6 +186,42 @@ void test_streamcc(void)
 		CHECK(q.hint_full);
 		CHECK_EQ(q.bw, 5000000);
 	}
+	/* a burst of SACKs after a hole fills: the sample is over the
+	 * segment's own flight, not the short ack interval (story 025: 300 to
+	 * 900 Mbit/s read on a 60 Mbit/s link) */
+	{
+		struct cg_scc q;
+
+		cg_scc_init(&q, 0);
+		q.mode = CG_SCC_PROBE_M;
+		q.sent = 200000;
+		/* 120 000 bytes delivered 1 ms after the delivery before its send,
+		 * the segment out for 20 ms, 120 000 sent meanwhile: 6 MB/s, not
+		 * 120 */
+		cg_scc_ack(&q, &c, 1000000, 120000, 1, 1, 0, 980000, 0, 0, 999000, 80000);
+		CHECK(q.bw <= 6000000);
+		CHECK(q.dmax[0] <= 6000000);
+	}
+	/* heavy random loss: more than 1 byte in 5 of a window declared lost
+	 * while the queue was short */
+	{
+		struct cg_scc q;
+
+		cg_scc_init(&q, 0);
+		cg_scc_lost(&q, 30000);
+		cg_scc_ack(&q, &c, 50000, 70000, 0, 0, 0, 0, 0, 0, 0, 0);
+		CHECK(!q.heavy); /* the window not over yet */
+		cg_scc_ack(&q, &c, CG_SCC_LOSSW_US + 1, 1000, 0, 0, 0, 0, 0, 0, 0, 0);
+		CHECK(q.heavy);  /* 30 000 lost of 100 000 */
+		cg_scc_lost(&q, 10000);
+		cg_scc_ack(&q, &c, 2 * CG_SCC_LOSSW_US + 2, 89000, 0, 0, 0, 0, 0, 0, 0, 0);
+		CHECK(q.heavy); /* that window: 10 000 of 11 000, the ACK after it */
+		cg_scc_ack(&q, &c, 3 * CG_SCC_LOSSW_US + 3, 1000, 0, 0, 0, 0, 0, 0, 0, 0);
+		CHECK(!q.heavy); /* 89 000 delivered, none lost */
+		cg_scc_ack(&q, &c, 4 * CG_SCC_LOSSW_US + 4, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+		CHECK(!q.heavy); /* few bytes and none lost: none */
+		CHECK_EQ(q.n_heavy, 2);
+	}
 	/* RACK's window widens the window: what is lost but not declared */
 	cg_scc_init(&p, 0);
 	p.min_rtt = 20000;

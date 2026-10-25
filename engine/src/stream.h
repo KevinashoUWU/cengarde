@@ -406,6 +406,13 @@ struct cg_st_seg {
 	uint8_t q;              /* sent while the path showed a queue (streamcc.h's cong) */
 };
 
+/* A segment sent again a second time or more goes as a copy (a priority
+ * copy on a link with room, client.c) only among the CG_ST_COPY_HEAD
+ * oldest: the holes that hold the stream's delivery and its buffer
+ * (story 025: every repeat copied, a bulk stream in a microcut filled the
+ * cellular link's queue to 300 KB and every ping waited behind it). */
+#define CG_ST_COPY_HEAD 8
+
 /* The rate sample an ACK gives: from the newest-sent segment it delivered. */
 struct cg_st_rs {
 	uint8_t have, tx, app;
@@ -440,6 +447,12 @@ static inline void cg_st_tx_init(struct cg_st_tx *t, struct cg_st_seg *seg, uint
 static inline struct cg_st_seg *cg_st_tx_seg(const struct cg_st_tx *t, uint32_t i)
 {
 	return &t->seg[(t->head + i) % t->cap];
+}
+
+/* Whether segment i (a repair: i < n) goes as a copy. */
+static inline int cg_st_tx_copy(const struct cg_st_tx *t, uint32_t i)
+{
+	return i < t->n && i < CG_ST_COPY_HEAD && cg_st_tx_seg(t, i)->tx >= 2;
 }
 
 static inline uint32_t cg_st_span(const struct cg_st_seg *s)

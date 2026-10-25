@@ -274,6 +274,76 @@ static void test_rs_parq(void)
 	CHECK(ring_ok(&ring, 502) && ring_ok(&ring, 509) && ring_ok(&ring, 510) && ring_ok(&ring, 517));
 }
 
+static uint64_t rs_rng = 0x2545f4914f6cdd1dull;
+
+static unsigned rs_rand(void)
+{
+	rs_rng ^= rs_rng << 13;
+	rs_rng ^= rs_rng >> 7;
+	rs_rng ^= rs_rng << 17;
+	return (unsigned)(rs_rng >> 16);
+}
+
+/* Bursty loss, lost repairs, blocks of 4 to 30 across the 32-bit wrap, and
+ * now and then the indices asked for again: every packet the receiver
+ * rebuilds is the packet, nothing counted bad (the class of story 025's
+ * wrong rebuilds, looked for in RS too). */
+static void test_rs_random(void)
+{
+	struct cg_rep_ring ring = ring_new();
+	struct cg_rep_hdr h = { 0 };
+	uint8_t *sym[CG_RS_MMAX], p[CG_SYM_PLEN];
+	uint32_t out[CG_RS_KMAX], s = 0xffff0000u;
+	unsigned burst = 0, wrong = 0, back = 0, nlost = 0, bytes, k = 0, want = 8, m = 3;
+
+	memset(&R, 0, sizeof(R));
+	memset(&T, 0, sizeof(T));
+	for (unsigned i = 0; i < 40000; i++, s++) {
+		unsigned got = 0;
+
+		cg_rs_tx_add(&T, s, p, pkt(s, p), m, i);
+		k++;
+		if (burst)
+			burst--;
+		else if (rs_rand() % 1000 < 30)
+			burst = 1 + rs_rand() % 4;
+		if (burst) {
+			nlost++;
+		} else {
+			ring_put(&ring, s);
+			got = cg_rs_rx_data(&R, &X, &ring, s, out, CG_RS_KMAX);
+		}
+		if (k >= want) {
+			unsigned n = cg_rs_tx_close(&T, &h, sym, &bytes);
+
+			for (unsigned j = 0; j < n && got < CG_RS_KMAX; j++) {
+				if (!(rs_rand() % 5))
+					continue;
+				h.idx = (uint16_t)j;
+				got += cg_rs_rx_repair(&R, &X, &ring, &h, sym[j], bytes, out + got, CG_RS_KMAX - got);
+			}
+			/* now and then, the block's other indices asked for again */
+			if (rs_rand() % 3 == 0 && got < CG_RS_KMAX)
+				for (unsigned j = n; j < h.m && got < CG_RS_KMAX; j++) {
+					h.idx = (uint16_t)j;
+					got += cg_rs_rx_repair(&R, &X, &ring, &h, T.work[j], bytes,
+							       out + got, CG_RS_KMAX - got);
+				}
+			k = 0;
+			want = 4 + rs_rand() % 27;
+			m = 1 + rs_rand() % 6;
+		}
+		for (unsigned j = 0; j < got; j++)
+			wrong += !ring_ok(&ring, out[j]);
+		back += got;
+	}
+	CHECK(nlost > 2000);
+	CHECK(back > nlost / 2);
+	CHECK_EQ(wrong, 0);
+	CHECK_EQ(R.bad, 0);
+	CHECK_EQ(R.failed, 0);
+}
+
 void test_rs(void)
 {
 	if (cg_rs_init() < 0) {
@@ -286,4 +356,5 @@ void test_rs(void)
 	test_rs_block();
 	test_rs_short_late();
 	test_rs_parq();
+	test_rs_random();
 }

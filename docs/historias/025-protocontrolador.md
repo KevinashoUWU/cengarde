@@ -1,13 +1,18 @@
-# 025 — El protocontrolador: TCP partido por el propio motor (variantes A y B)
+# 025 — El protocontrolador: TCP partido por el propio motor (variantes A y B, protocolo GRIT)
 
 - **Fecha:** 2026-10-25
-- **Estado:** implementado (A y B) y medido en el laboratorio; falta la Pi,
-  el VPS real y el terreno
+- **Estado:** implementado (A y B) y medido en el laboratorio; el
+  microcorte de B y la RLC que rehacía basura, corregidos (2026-10-26); falta
+  la Pi, el VPS real y el terreno
 - **Fuentes:** historia 024 (TCP partido con shadowsocks, las cifras a
   batir), 023 (rescate, PARQ, `harq.h`, reglas de TCP), 020/021
   (`redund_spare`, `rs`/`rlc`), 014 (túnel nativo), 013/019
   (`capacity.h`); tarea #71. Datos crudos: `~/campo/2026-10-25/pepb/`
-  (`plan*.json`, `out-plan*/all.jsonl`, `tables*.md`).
+  (`plan*.json`, `out-plan*/all.jsonl`, `tables*.md`); las correcciones del
+  26-10, `~/campo/2026-10-26/rlcfix/` (`planF.json` y `planY.json` el lote
+  final, `tablesF.md`, `cmp.py`, `tables.py`; `plan1`–`plan14` los
+  intentos; `tr*.log`/`ct*.log` las trazas; `planSoak.json`,
+  `planAsan.json` la resistencia).
 
 ## TL;DR
 
@@ -23,22 +28,36 @@
   (`protect` 53,9 contra 53,8 Mbit/s; `beyond` 53,0 contra 53,4;
   `protectcut` 36,2 contra 36,0) con menos memoria (2,1 contra 3,4 MB en el
   router) y mejor vivo cercano (`protect`, demora p99 44 contra 101 ms).
-- **B (nombre del protocolo pendiente):** el tramo del medio es un flujo
-  fiable propio dentro del túnel (protocolo 10), con ARQ que nunca se
+- **B, el protocolo GRIT** (*Guaranteed Redundant IP Transport*): el tramo
+  del medio es un flujo fiable propio dentro del túnel (protocolo 10), con ARQ que nunca se
   rinde, ritmo por el retardo de ida y la capacidad del motor, y las copias,
   la FEC y el rescate debajo. Mismo caudal que A (54,6 y 52,8 Mbit/s en
   `protect` y `beyond`) con menos CPU (12,8 contra 17,6 % de un núcleo, los
   dos motores), menos memoria en el router (1,3 MB) y menos cola (RTT p99 36
-  contra 43 ms; vivo cercano 38–40 contra 44–46 ms, p < 0,01). En el
-  microcorte pierde la mitad del vivo que A (8,8 contra 17,7 %, p 0,07) pero
-  con 2 cortes y la cola del celular llena (RTT p99 1,1 s).
+  contra 43 ms; vivo cercano 38–40 contra 44–46 ms, p < 0,01).
+- **El microcorte de GRIT, corregido (2026-10-26, n = 8):** TCP de 30,4 a
+  **40,2 Mbit/s** (p < 0,01; A 36,1, p 0,02) y el vivo de 19,5 % perdido y
+  2,5 cortes a **0,0 % y 0 cortes** (p < 0,01; A 18,4 %), demora p99 lejana
+  de 4,9 a 0,65 s. El RTT p99 de los pings (224 ms) queda como el de A
+  (198, p 0,64), no bajo los 145 de la meta. Lo que lo hundía: la ventana
+  de RACK inflada a 100 ms por las reparaciones tardías del túnel, muestras
+  de ritmo de 300–900 Mbit/s tras cada hueco, el flujo mandado al celular
+  cuando el primer enlace se veía detenido o «ahogado», y las copias de
+  cada reenvío llenando el celular.
+- **La RLC que rehacía basura** (falla del motor, de la 021): al permutar
+  filas en la eliminación también se permutaba la tabla de qué ecuación es
+  cada fila, y lo rehecho sumaba las ecuaciones equivocadas. Corregida (en
+  el lote final, de 16 344 `bad` y 115 `not_ip` en 144 corridas a 0), con
+  una guarda que revisa todo lo rehecho antes de entregarlo (`rebuilt.h`:
+  58 212 bien, 0 malos).
 - **Frente al túnel transparente (`no`):** las dos variantes llevan el TCP
   de 29 a 54 Mbit/s en `protect`, de 1,2 a 53 en `beyond` (1 % perdido más
   allá del VPS) y de 8,6 a 31–36 en `protectcut`; el vivo más allá del VPS
   pasa de 80 % perdido a 0 %.
 - **Qué usar:** A para todos (estable, sin formato nuevo: su TCP es un
-  paquete más de la TUN); B experimental, mejor en latencia y CPU, con el
-  microcorte y el nombre pendientes.
+  paquete más de la TUN); B (GRIT) experimental, mejor en latencia y CPU y
+  ahora también en el microcorte (más TCP, el vivo sin pérdida), con el RTT
+  de los pings en el corte como el de A.
 
 ## Contexto
 
@@ -52,8 +71,10 @@ corte dentro del motor: A con un TCP del kernel en el medio (la 024 sin
 proxies), B con el protocolo propio. Nombre: «protocontrolador» en los
 documentos, `protocontroller` en el código, la configuración, UCI, LuCI y el
 estado; nunca «pep» en un nombre visible (se confunde con el producto
-comercial). El nombre del protocolo de B está pendiente (en el código,
-`stream`).
+comercial). El protocolo de B se llama **GRIT** (*Guaranteed Redundant IP
+Transport*, decidido el 2026-10-26): así en los documentos, LuCI («B
+(GRIT)») y el estado (`protocol`); en el código sigue `stream.h`,
+`streamcc.h` y `protoctl.*`, y la perilla `no | a | b`.
 
 ## Diseño
 
@@ -153,12 +174,13 @@ Carga de un DATA del túnel (detrás de la cabecera de 24 B y bajo su MAC):
   lleva el estado completo. Bandera `DUP`: llegó un duplicado.
 - `RST`: motivo. Se contesta `RST` (con tope de ritmo) a un DATA con `EST` o
   a un ACK de un flujo desconocido: un extremo reiniciado limpia al otro.
-- **La etiqueta:** la RLC del túnel a veces reconstruye mal un paquete (su
-  contador `bad` sube por miles y la basura llega como `not_ip`); un DATA
-  así escribió un reloj falso en el retardo de ida (el ritmo se detuvo
-  2–10 s en `beyond`) y podía meter bytes falsos en un flujo. Un mensaje
-  cuya etiqueta no cuadra se descarta (`corrupt`). El MAC del túnel cubre lo
-  que viaja; la etiqueta, lo que la FEC rehace.
+- **La etiqueta:** la RLC del túnel reconstruía mal a veces (corregido el
+  26-10, ver Hallazgos); un DATA así escribió un reloj falso en el retardo
+  de ida (el ritmo se detuvo 2–10 s en `beyond`) y podía meter bytes falsos
+  en un flujo. Un mensaje cuya etiqueta no cuadra se descarta (`corrupt`).
+  El MAC del túnel cubre lo que viaja; la etiqueta, lo que la FEC rehace;
+  ahora el servidor también revisa la etiqueta de lo rehecho antes de
+  entregarlo (`rebuilt.h`).
 - Una versión 10 es necesaria porque un servidor 9 escribiría los mensajes a
   la TUN (los descarta como no IP, y la conexión quedaría colgada sin aviso).
   A no cambia nada del formato.
@@ -187,7 +209,11 @@ Carga de un DATA del túnel (detrás de la cabecera de 24 B y bajo su MAC):
   hasta 100 y vuelve sola: la reparación del túnel llega a veces después) y
   un temporizador desde el envío más viejo (`srtt + 4 rttvar`, al menos dos
   `min_rtt` más la ventana de RACK, retroceso doble hasta 2 s). Nunca se
-  rinde.
+  rinde. **Con pérdida al azar pesada** (`cg_scc_lossw`: en 100 ms, más de
+  1 byte de cada 5 declarado perdido con la cola corta), la ventana y el
+  temporizador vuelven a `protocontroller_reo_ms` y los duplicados no la
+  agrandan: las reparaciones del túnel no alcanzan, y con 100 ms el hueco
+  más viejo tardaba varias vueltas y llenaba el búfer (26-10).
 - **Receptor:** reensambla por desplazamiento (hasta 256 huecos; con 16, una
   ráfaga de pérdidas al arrancar se volvía una cascada de descartes),
   entrega en orden al socket; ACK cada 4 DATA o 2 ms, al instante con un
@@ -208,7 +234,11 @@ Carga de un DATA del túnel (detrás de la cabecera de 24 B y bajo su MAC):
 - **Ritmo** = estimador × ganancia: arranque 3/2 que termina con la primera
   muestra con cola; ciclo 5/4, 3/4, 1 × 6; 3/4 mientras haya cola sobre
   `protocontroller_queue_ms` (5 ms); una ida y vuelta entera con cola baja
-  el estimador a lo entregado. El estimador es el mayor de 1–2 s.
+  el estimador a lo entregado (desde el 26-10: el primer corte de una racha
+  a lo más entregado en esa ventana, los siguientes a lo entregado). El
+  estimador es el mayor de 1–2 s. Cada muestra es sobre lo más largo entre
+  el intervalo de los ACK y el vuelo del segmento (26-10: tras un hueco,
+  una ráfaga de SACK sobre un intervalo corto leía 300–900 Mbit/s).
 - **En vuelo:** dos veces `bw × (min_rtt + protocontroller_queue_ms)` más
   `bw ×` la ventana de RACK; los reenvíos solo esperan el ritmo.
 - **Del motor** (`capacity.h`): el comienzo (al menos 16 Mbit/s) y el techo
@@ -221,10 +251,15 @@ Carga de un DATA del túnel (detrás de la cabecera de 24 B y bajo su MAC):
 - Un DATA del flujo es un DATA del túnel: el modo decide (en `protect` con
   `rlc`, va por el primer enlace y la RLC repara por lo que sobra al
   segundo). El reordenador del receptor no lo retiene.
-- En las copias de un microcorte, los DATA del flujo no se copian (`pnc`: el
-  ARQ reenvía; copiado, un flujo llenó la cola del celular hasta 2 s); un
-  segmento reenviado por segunda vez es una copia prioritaria que no va a un
-  enlace con cola sobre `redund_spare_ms` (`prc`).
+- Con `redund_spare`, los DATA del flujo van por **un** enlace
+  (`pnc_first`, 26-10): el de menor retardo sin cola entre los portadores y
+  los enlaces con las sondas detenidas que trajeron algo en el último
+  segundo (`pnc_links`), sin mirar su pérdida ni si parece ahogado; en las
+  copias de un microcorte, solo ese (el ARQ reenvía; copiado, un flujo llenó
+  la cola del celular hasta 2 s). Un segmento reenviado por segunda vez,
+  entre los 8 más viejos (`cg_st_tx_copy`), es además una copia por lo que
+  sobra, dentro de la asignación, que no va a un enlace con cola sobre
+  `redund_spare_ms` (`prc`).
 
 #### Contrapresión
 
@@ -406,6 +441,226 @@ perdido 39,9 / 0 / 0 %, cercano 35 / 46 / 40 ms (p < 0,01).
 - La etiqueta de B descartó 151 mensajes (`corrupt`) en el VPS en los 30
   min: la RLC rehace mal (ver Hallazgos).
 
+## Las correcciones del 2026-10-26: la RLC y el microcorte de GRIT
+
+### La RLC que rehacía basura
+
+- **La causa** (`rlc.h`, `cg_rlc_rx_solve`): la eliminación lleva, junto a
+  los coeficientes, la matriz `t` (cuánto de cada fila *como se armó* tiene
+  cada fila ahora) y `row_eq` (qué ecuación es cada fila como se armó). Al
+  buscar un pivote fuera de su fila se permutaban las filas de los
+  coeficientes y de `t`, **y también `row_eq`**: las columnas de `t` nombran
+  las filas originales, así que lo rehecho sumaba los símbolos de las
+  ecuaciones que después ocuparon esas filas. Hace falta una permutación,
+  que aparece con varias pérdidas en las ventanas de ecuaciones distintas:
+  la PARQ (combinaciones de solo las que faltan) y los microcortes. El
+  prefijo de longitud de 16 bits atajaba casi todo (`bad` por miles) y ~1
+  de cada 40 basuras pasaba (`not_ip`, y la etiqueta de GRIT, `corrupt`);
+  lo rehecho mal se restaba además de las otras ecuaciones (más basura) y
+  quedaba marcado en el anti-replay (el paquete verdadero, o su rescate,
+  ya no entraba).
+- **Reproducido** en `test_rlc.c`: `test_rlc_swap` (cuatro pérdidas,
+  ecuaciones sobre {12, 14}, {20, 22}, {14, 20} y {22}: la tercera columna
+  pide un pivote dos filas abajo; antes rehacía 1 de 4 y 3 `bad`) y
+  `test_rlc_random` (200 000 paquetes, pérdidas en ráfaga de 3 %,
+  reparaciones perdidas, PARQ cada 7, a través del borde de 32 bits: antes
+  3 331 rehechos mal y 247 342 `bad`; ahora 0 y 0). `row_eq` ya no se
+  permuta.
+- **RS y XOR:** `test_rs_random` (bloques de 4 a 30, m de 1 a 6, índices
+  pedidos de nuevo, el borde de 32 bits) no halla nada; el XOR de `fec.h`
+  rehace uno por grupo sin eliminación. Además, lo rehecho nunca pisa en el
+  anillo un DATA más nuevo de la misma ranura (una ecuación vieja resuelta
+  tarde: `cg_rep_put_sym` devuelve −2, se cuenta en `dropped`).
+- **La guarda** (`rebuilt.h`, `test_rebuilt.c`): todo lo rehecho (XOR, RS,
+  RLC) se revisa antes de entregarlo, en `fec_deliver`: con el túnel
+  nativo, la forma IP (`ippkt.h`) y la suma de TCP, UDP (con suma), ICMP o
+  ICMPv6 sobre todo el paquete, o la de la cabecera IPv4 sin ellas (un
+  fragmento, otro protocolo); IPv6 sin una suma conocida no se puede
+  confirmar (`unsure`, tampoco se entrega); un mensaje de GRIT, su etiqueta;
+  con WireGuard, el tipo y el largo (su MAC revisa el resto). Lo que no
+  pasa no se marca en el anti-replay, el anillo lo olvida y las ecuaciones
+  de la RLC se sueltan. Cuesta una pasada por paquete rehecho (~0,2 µs por
+  1 400 B, estimación), no por DATA. Estado por sesión: `rebuilt` (`ok`,
+  `bad`, `unsure`). Sin cambio de formato: no sube la versión.
+
+### El microcorte de GRIT
+
+Trazas del ritmo por ACK y de los envíos por enlace cada 10 ms (un binario
+de laboratorio, no en la rama: `tr*.log`, `ct*.log`) mostraron, en orden:
+
+1. **La ventana de RACK en 100 ms** antes del corte: las reparaciones de la
+   RLC iban detrás de la cola del celular (100–200 ms, la asignación de lo
+   que sobra por encima de sus 5 Mbit/s), GRIT reenviaba antes, el receptor
+   avisaba duplicados y cada uno sumaba 4 ms (y bajaba 2 ms por segundo).
+   En el corte, cada vuelta de un hueco tardaba 120 ms y varias; el búfer de
+   1 MB (140 ms a 57 Mbit/s) se llenaba detrás del hueco más viejo y no
+   entraba nada nuevo: se mandaban 21–27 Mbit/s de un ritmo de 41–57.
+   → con pérdida pesada, la ventana y el temporizador vuelven a
+   `protocontroller_reo_ms`.
+2. **Muestras de 300–900 Mbit/s** tras cada hueco lleno: el intervalo era el
+   de los ACK (una ráfaga de SACK), no el del envío; el estimador las
+   seguía, los envíos desbordaban el enlace y la cola cortaba a casi nada.
+   → la muestra es sobre lo más largo de los dos intervalos (como BBR).
+3. **El flujo al celular:** cuando las sondas de `l1` quedaban sin respuesta
+   un segundo (0,84 por sonda con 60 % en cada sentido: ~17 % por ventana)
+   o el primer enlace de las copias cambiaba (la pérdida lo veta, o parece
+   ahogado por la cola del propio flujo), o no se conocía (todo copiado), el
+   flujo iba a `l2` a su ritmo de 60 Mbit/s: hasta 1 MB en la cola del
+   celular, su retardo de ida leído como cola, el ritmo al piso
+   (0,5 Mbit/s) y 5–8 s sin avanzar. → un enlace con las sondas detenidas
+   que sigue trayendo paquetes cuenta como vivo para lo que sube
+   (`cg_link_rx_alive`; para el DATA de GRIT, `cg_link_rx_alive_arq`, un
+   segundo), y el DATA de GRIT va por el enlace de menor retardo sin cola
+   (`pnc_first`). La PARQ ya no va a un enlace ahogado (1 500 reparaciones
+   por segundo lo llenaban).
+4. **Las copias de cada reenvío** (la segunda vez y más) como toma
+   prioritaria del balde de lo que sobra: con la ventana de RACK corta
+   son muchas. → solo las de los 8 segmentos más viejos, dentro de la
+   asignación.
+5. El primer corte de una racha de cola va a lo más entregado en la ventana
+   (no a lo de ese instante, detrás de un hueco).
+
+Probados y descartados (`plan2`–`plan14`, n = 6, `protectcut`): solo el
+mudo con el retardo de 2 RTT (`G`, sin efecto: el ritmo ya había caído y no
+volvían paquetes), sin copias de reenvíos (`H3`/`Q2`: RTT p99 282 ms pero
+el vivo 5,6 % y 2 cortes), copias como toma no prioritaria sin límite de
+cabeza (`H2`), el DATA de GRIT detrás del primero de las copias si no está
+ahogado (`P2`/`U`: el veto por pérdida lo mandaba al celular), mantener el
+enlace mientras el flujo entrega (`W`: sin mejora) y reiniciar el ritmo con
+la capacidad del enlace nuevo al cambiar (`X`: igual que sin él). Un techo
+en la asignación de lo que sobra (crece un sesentaicuatroavo cerca de donde
+la cola se pasó la última vez) bajó el RTT de A en `protect` (48 → 38 ms,
+p 0,02) pero subió la demora p99 cercana de su vivo en `beyond` (43 → 99 ms,
+p < 0,01): se quitó.
+
+### El lote final (n = 8)
+
+`bench/lab.sh bond` como arriba (redundancia, `redund_spare = rlc`,
+`tcp_aware`, rescate a 60 ms, túnel nativo, 30 s, subida), `origin/master`
+(`2107a89`) contra la rama (un binario de laboratorio, `091e90d`: el código
+final salvo el campo `protocol` del estado), los tres brazos; mediana y p de Mann-Whitney a dos
+colas de la rama contra `origin/master`. «RLC `bad`» y «rehecho bien /
+malo», del servidor (la guarda no existía en `origin/master`).
+
+#### `protect`, TCP
+
+| Brazo | n | Mbit/s | RTT p99 ms | RLC `bad` | rehecho bien / malo | p Mbit/s (Y/M) | p RTT |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| origin/master `no` | 8 | 28,6 | 38 | 0 | – |  |  |
+| rama `no` | 8 | 24,5 | 38 | 0 | 441 / 0 | 0,49 | 0,96 |
+| origin/master `a` | 8 | 53,9 | 48 | 34 | – |  |  |
+| rama `a` | 8 | 53,8 | 42 | 0 | 818 / 0 | 0,32 | 0,07 |
+| origin/master `b` | 8 | 53,9 | 36 | 0 | – |  |  |
+| rama `b` | 8 | 54,2 | 36 | 0 | 782 / 0 | 0,96 | 0,79 |
+
+#### `protect`, vivo
+
+| Brazo | n | perdido lejano % | cortes | demora p99 lejano ms | demora p99 cercano ms | RTT p99 ms | p perdido | p cortes |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| origin/master `no` | 8 | 0,0 | 0,0 | 245 | 37 | 35 |  |  |
+| rama `no` | 8 | 0,0 | 0,0 | 230 | 37 | 35 | 0,38 | 1 |
+| origin/master `a` | 8 | 0,0 | 0,0 | 269 | 47 | 35 |  |  |
+| rama `a` | 8 | 0,0 | 0,0 | 292 | 45 | 35 | 1 | 1 |
+| origin/master `b` | 8 | 0,0 | 0,0 | 248 | 39 | 35 |  |  |
+| rama `b` | 8 | 0,0 | 0,0 | 260 | 38 | 28 | 1 | 1 |
+
+#### `beyond`, TCP
+
+| Brazo | n | Mbit/s | RTT p99 ms | RLC `bad` | rehecho bien / malo | p Mbit/s (Y/M) | p RTT |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| origin/master `no` | 8 | 1,0 | 35 | 0 | – |  |  |
+| rama `no` | 8 | 1,1 | 21 | 0 | 4 / 0 | 1,00 | 0,34 |
+| origin/master `a` | 8 | 52,9 | 44 | 118 | – |  |  |
+| rama `a` | 8 | 53,2 | 38 | 0 | 891 / 0 | 0,23 | 0,11 |
+| origin/master `b` | 8 | 53,6 | 36 | 0 | – |  |  |
+| rama `b` | 8 | 53,3 | 34 | 0 | 788 / 0 | 0,37 | 0,87 |
+
+#### `beyond`, vivo
+
+| Brazo | n | perdido lejano % | cortes | demora p99 lejano ms | demora p99 cercano ms | RTT p99 ms | p perdido | p cortes |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| origin/master `no` | 8 | 81,5 | 0,0 | 5680 | 35 | 28 |  |  |
+| rama `no` | 8 | 80,2 | 0,0 | 4242 | 35 | 35 | 0,64 | 1 |
+| origin/master `a` | 8 | 0,0 | 0,0 | 366 | 43 | 35 |  |  |
+| rama `a` | 8 | 0,0 | 0,0 | 344 | 43 | 34 | 1 | 1 |
+| origin/master `b` | 8 | 0,0 | 0,0 | 349 | 42 | 35 |  |  |
+| rama `b` | 8 | 0,0 | 0,0 | 366 | 40 | 35 | 1 | 1 |
+
+#### `protectcut`, TCP
+
+| Brazo | n | Mbit/s | RTT p99 ms | RLC `bad` | rehecho bien / malo | p Mbit/s (Y/M) | p RTT |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| origin/master `no` | 8 | 6,7 | 53 | 35 | – |  |  |
+| rama `no` | 8 | 7,0 | 57 | 0 | 114 / 0 | 0,60 | 0,13 |
+| origin/master `a` | 8 | 35,8 | 176 | 227 | – |  |  |
+| rama `a` | 8 | 36,1 | 198 | 0 | 506 / 0 | 0,49 | 0,92 |
+| origin/master `b` | 8 | 30,4 | 330 | 0 | – |  |  |
+| rama `b` | 8 | 40,2 | 224 | 0 | 450 / 0 | < 0,01 | 0,71 |
+
+#### `protectcut`, vivo
+
+| Brazo | n | perdido lejano % | cortes | demora p99 lejano ms | demora p99 cercano ms | RTT p99 ms | p perdido | p cortes |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| origin/master `no` | 8 | 43,9 | 0,0 | 5270 | 1744 | 120 |  |  |
+| rama `no` | 8 | 45,1 | 0,0 | 5114 | 1915 | 118 | 0,43 | 0,38 |
+| origin/master `a` | 8 | 16,6 | 1,0 | 6071 | 6997 | 156 |  |  |
+| rama `a` | 8 | 18,4 | 0,0 | 7195 | 5905 | 167 | 0,19 | 0,05 |
+| origin/master `b` | 8 | 19,5 | 2,5 | 4941 | 4861 | 594 |  |  |
+| rama `b` | 8 | 0,0 | 0,0 | 650 | 602 | 450 | < 0,01 | < 0,01 |
+
+- **`protectcut`, GRIT:** TCP 30,4 → 40,2 Mbit/s (p < 0,01; contra A de la
+  rama, 36,1, p 0,02); vivo 19,5 → 0,0 % perdido y 2,5 → 0 cortes (p < 0,01;
+  A 18,4 %), demora p99 lejana 4 941 → 650 ms. El RTT p99 de los pings (en
+  el corte van por el celular cuando `l1` pierde su copia) queda en 224 ms
+  (p 0,71 contra `origin/master`, 0,64 contra A): la meta de 145 no se
+  alcanza; en las corridas por separado va de 60 a 2 000 ms según cuánto
+  llene el celular en el corte (lo que sobra y las reparaciones que siguen
+  al corte, también para A).
+- **Sin regresión** de `no` y A en ningún caso (p ≥ 0,05 en caudal,
+  pérdida, cortes y demoras; A en `protect`, RTT 48 → 42 ms, p 0,07), ni de
+  GRIT en `protect` y `beyond`.
+- **La RLC sin el protocontrolador** (`no`): el mismo caudal (`protect`
+  28,6 / 24,5 Mbit/s, p 0,49; `protectcut` 6,7 / 7,0, p 0,60): la corrección
+  no cuesta.
+- **En total** (144 corridas por lado): `origin/master` 16 344 `bad` de la
+  RLC, 115 `not_ip` y 15 `corrupt`; la rama 0, 0 y 0, con 58 212 paquetes
+  rehechos que pasaron la guarda y ninguno rechazado.
+
+### La celda virtual (la RLC sin el protocontrolador)
+
+`bench/celda/proteger.py`, perfil `wom`, brazo `rlc`, el fijo con 0,7 % y un
+microcorte de 60 % en 15–25 s, 40 s por corrida, n = 6 por tipo,
+`origin/master` contra la rama (`~/campo/2026-10-26/rlcfix/cell/`): TCP
+17,6 / 17,2 Mbit/s (p 0,20), en el corte 4,2 / 4,1 (p 0,75); UDP de 7 Mbit/s
+perdido fuera del corte 0,010 / 0,015 % (p 0,42) y en el corte 27,5 / 26,5 %
+(p 0,30); ping p99 con TCP 61 / 54 ms (p 0,15). La RLC de `origin/master`
+contó 1 329 `bad` en esas 12 corridas; la rama, 0. La corrección no cuesta
+caudal ni pérdida.
+
+### Resistencia
+
+- **30 min** (`protect`, `cc soak`: los dos vivos y 16 conexiones cortas a
+  la vez de `churn.py`, 5 % cortadas con RST a mitad; las tres a la vez,
+  `planSoak.json`):
+  - **GRIT, la rama:** 37 725 conexiones completas y 2 038 cortadas a
+    propósito, 0 fallidas ni cortas; 39 765 abiertas y cerradas en el router
+    y 39 764 en el VPS (la última, abierta al cortar la foto); sin `nomem`
+    ni `corrupt`; los vivos 0,0 % perdidos, sin cortes, demora p99 188 /
+    129 ms. El servidor: 42 956 paquetes rehechos, todos pasaron la guarda;
+    RLC `bad` 0, `not_ip` 0. RSS del motor al final: router 45,9 MB, VPS
+    75,1 MB (como el 25-10).
+  - **GRIT, `origin/master`:** 37 709 completas, 0 fallidas, pero 98 576
+    `bad` de la RLC, 818 `not_ip` y 154 mensajes descartados por su etiqueta
+    (`corrupt`; el 25-10 fueron 151).
+  - **La RLC sin el protocontrolador, la rama** (`no`): 26 165 conexiones
+    completas, 0 fallidas; 41 643 rehechos, 0 rechazados, `bad` 0,
+    `not_ip` 0.
+- **11 min con ASan y UBSan** (`make SANITIZE=1`, GRIT en `protect`, `cc
+  soak`, `planAsan.json`): ningún aviso de los sanitizadores en los dos
+  motores (`asan/client.log`, `asan/server.log`); 13 670 conexiones
+  completas, 715 cortadas a propósito, 0 fallidas, 14 387 abiertas y
+  cerradas en cada extremo; 15 610 rehechos, 0 rechazados.
+
 ## Hallazgos
 
 - **A iguala a la 024 sin proxies:** el caudal es el de `Ab` en los tres
@@ -420,9 +675,9 @@ perdido 39,9 / 0 / 0 %, cercano 35 / 46 / 40 ms (p < 0,01).
   menos memoria en el router y sin cola en los enlaces (RTT p99 de los demás
   paquetes 33–36 ms contra 38–152 de A): su ritmo sale del retardo de ida,
   no de llenar colas.
-- **El microcorte es el pendiente de B:** con 60 % perdido en el enlace
-  grande, B pierde la mitad del vivo que A pero tiene 2 cortes y la cola del
-  celular llena (RTT p99 1,1 s). Visto por segundo: el estimador sube con lo
+- **El microcorte era el pendiente de B** (corregido el 26-10, arriba): con
+  60 % perdido en el enlace grande, B perdía la mitad del vivo que A pero
+  tenía 2 cortes y la cola del celular llena (RTT p99 1,1 s). Visto por segundo: el estimador sube con lo
   perdido sin cola (60 → 69 Mbit/s), la cola aparece, el corte lo baja a lo
   entregado detrás de un hueco (0,5 Mbit/s) y los reenvíos esperan el ritmo;
   además, durante el corte el motor marca `l1` como detenido a ratos y las
@@ -430,12 +685,10 @@ perdido 39,9 / 0 / 0 %, cercano 35 / 46 / 40 ms (p < 0,01).
   descartados: no retroceder el temporizador mientras algo se entrega (más
   expiraciones, los mismos cortes) y cortar a no menos de la mitad
   (`B5`, arriba).
-- **La RLC reconstruye mal a veces** (falla del motor, anterior a esta
-  historia): en corridas con muchas reparaciones pedidas (PARQ), el
-  decodificador del servidor cuenta `bad` por miles y entrega basura
-  (`not_ip` 8–49). La etiqueta de B lo cubre para los flujos; el resto del
-  túnel lo entrega a la TUN, que lo descarta. Hay que buscarla en `rlc.h` /
-  `harq.h`.
+- **La RLC reconstruía mal a veces** (falla del motor, de la 021; corregida
+  el 26-10, arriba): al permutar filas en la eliminación se permutaba
+  también `row_eq`, y lo rehecho sumaba las ecuaciones equivocadas; `bad`
+  por miles y `not_ip` 8–49 en las corridas con PARQ.
 - **Sin regresión del túnel transparente** con el código nuevo y
   `protocontroller = no`.
 
@@ -444,18 +697,23 @@ perdido 39,9 / 0 / 0 %, cercano 35 / 46 / 40 ms (p < 0,01).
 - `protocontroller = a` es la opción para el usuario: el mismo resultado que
   el mejor A de la 024 sin instalar ni mantener proxies, en LuCI y en
   `cengarde-vps-setup`.
-- B queda experimental: mejor en latencia, CPU y memoria, con el microcorte
-  por resolver y el nombre del protocolo por decidir.
+- B (GRIT) queda experimental: mejor en latencia, CPU y memoria, y desde el
+  26-10 también en el microcorte; falta la Pi y el terreno.
 
 ## Pendiente
 
-- **B en el microcorte:** que el estimador no suba con lo perdido cuando la
-  pérdida pasa de ~50 %, y que el motor no deje sin el enlace grande a un
-  flujo con ARQ propio (prefiere perder y reenviar a esperar 1 s de cola).
-- **La RLC que reconstruye mal** (arriba).
+- **El RTT de los pings en el microcorte** (224 ms con GRIT, 198 con A,
+  meta 145): lo pone la cola del celular cuando `l1` pierde la copia de un
+  ping; la asignación de lo que sobra pasa de la capacidad del celular (un
+  techo bajaba el RTT pero empeoraba el vivo de A en `beyond`), y las
+  reparaciones que siguen al corte (la pérdida media aún alta pide m de
+  8–10 por 64).
+- **El estimador de GRIT sube con lo perdido** en una pérdida antes del
+  cuello de botella (netem): manda hasta 150 Mbit/s a un enlace de 60 que
+  pierde 60 % y, al terminar el corte, desborda una vez. En un enlace real
+  que pierde después del cuello, la cola lo frena antes. Sin cambiar.
 - **La Pi y el VPS reales:** CPU y memoria en la Pi 4; `e2e.sh` en QEMU
   cubre b y a con una página del VPS; falta el terreno con el RTMP real.
-- **El nombre del protocolo de B.**
 - **La demora del vivo con varios celulares** (los tres brazos): es del
   reparto del motor.
 
@@ -465,3 +723,11 @@ perdido 39,9 / 0 / 0 %, cercano 35 / 46 / 40 ms (p < 0,01).
   024; el nombre (protocontrolador, sin «pep» en nada visible); la variante
   A en el motor (`protocontroller = no | a | b`), medidas de A y B contra el
   túnel transparente, OpenWrt y VPS.
+- 2026-10-26: B se llama GRIT (documentos, LuCI, `protocol` en el estado).
+  La RLC que rehacía basura (`row_eq` permutado), corregida, con la guarda
+  de lo rehecho (`rebuilt.h`); el microcorte de GRIT: RACK corto con
+  pérdida pesada, muestras sobre el vuelo, el primer corte a lo más
+  entregado, el DATA de GRIT por un enlace (`pnc_first`, `pnc_links`), el
+  mudo que sigue trayendo vivo para lo que sube, la PARQ nunca a un enlace
+  ahogado, copias de los 8 reenvíos más viejos dentro de la asignación;
+  lote final n = 8 y resistencia.

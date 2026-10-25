@@ -440,6 +440,25 @@ static void link_masks(const struct client *c, uint64_t now_ms, uint16_t *presen
 	}
 }
 
+/* For what goes up (the data, its repairs, the rescue): a link whose
+ * probes stalled but that still brings packets down is live (health.h's
+ * cg_link_rx_alive: a microcut losing 60 % each way stalls the probes now
+ * and then; leaving it moved everything to the cellular queue). */
+static void link_masks_tx(const struct client *c, uint64_t now_ms, uint16_t *present, uint16_t *live)
+{
+	link_masks(c, now_ms, present, live);
+	for (int i = 0; i < CG_MAX_LINKS; i++) {
+		const struct link *l = &c->link[i];
+		uint64_t rx = l->rxl.last_rx_ms;
+
+		if (!(*present >> i & 1) || (*live >> i & 1) || !l->last_reply_ms || !rx || rx > now_ms)
+			continue;
+		if (cg_link_rx_alive((uint32_t)(now_ms - rx < UINT32_MAX ? now_ms - rx : UINT32_MAX),
+				     now_ms - l->first_unanswered_ms, srtt_ms(l)))
+			*live |= (uint16_t)(1u << i);
+	}
+}
+
 /* Links the server should be sending each download packet on. */
 static uint16_t expect_mask(const struct client *c)
 {
@@ -1229,6 +1248,60 @@ static const char *split_state(const struct client *c, uint64_t now_ms)
 	return n >= 2 ? "splitting" : n && k.carriers ? "one link" : "duplicating";
 }
 
+/* The links a protocontroller stream's DATA may go on: the carriers, and
+ * the links whose probes stalled that brought anything down lately
+ * (health.h's cg_link_rx_alive_arq). */
+static uint16_t pnc_links(const struct client *c, uint16_t carry, uint64_t now_ms)
+{
+	uint16_t m = carry;
+
+	for (int i = 0; i < CG_MAX_LINKS; i++) {
+		const struct link *l = &c->link[i];
+		uint64_t rx = l->rxl.last_rx_ms;
+
+		if ((m >> i & 1) || !link_up(l) || !l->last_reply_ms || !rx || rx > now_ms || !l->unanswered)
+			continue;
+		if (cg_link_rx_alive_arq((uint32_t)(now_ms - rx < UINT32_MAX ? now_ms - rx : UINT32_MAX),
+					 now_ms - l->first_unanswered_ms))
+			m |= (uint16_t)(1u << i);
+	}
+	return m;
+}
+
+/* Where a protocontroller stream's DATA goes with redund_spare (set: the
+ * links it may go on, pnc_links): the one of least delay without a queue
+ * (the minimum of its one-way delay, capacity.h), whatever its loss or
+ * its queue (the stream's rate answers its own queue, its ARQ the loss:
+ * following the first link of the copies, which leaves a link that loses
+ * or looks choked, the stream put up to 1 MB in the cellular link's queue
+ * at a microcut, story 025); by RTT before any minimum; -1: none. */
+static int pnc_first(const struct client *c, uint16_t set)
+{
+	int b = -1, br = -1;
+
+	for (int i = 0; i < CG_MAX_LINKS; i++) {
+		const struct cg_gov_link *g = &c->cap[i].q;
+		uint32_t mi, mb;
+
+		if (!(set >> i & 1))
+			continue;
+		if (c->link[i].srtt8_us && (br < 0 || c->link[i].srtt8_us < c->link[br].srtt8_us))
+			br = i;
+		if (!g->have_min)
+			continue;
+		mi = cg_owd_diff(g->min_prev, g->min_cur) < 0 ? g->min_prev : g->min_cur;
+		if (b >= 0) {
+			const struct cg_gov_link *h = &c->cap[b].q;
+
+			mb = cg_owd_diff(h->min_prev, h->min_cur) < 0 ? h->min_prev : h->min_cur;
+			if (cg_owd_diff(mi, mb) >= 0)
+				continue;
+		}
+		b = i;
+	}
+	return b >= 0 ? b : br;
+}
+
 /* starlink_edge_copies (slot.h): the Starlink links a copied packet goes
  * on alone now, 0: every carrier. */
 static uint16_t edge_solo(const struct client *c, uint16_t carry, uint64_t now_ms)
@@ -1426,7 +1499,7 @@ static void fec_send(struct client *c, uint64_t now_us)
 {
 	uint16_t present, live;
 
-	link_masks(c, now_us / 1000, &present, &live);
+	link_masks_tx(c, now_us / 1000, &present, &live);
 	for (int q = 0; q < c->nfecq; q++) {
 		struct link *best = NULL;
 
@@ -1737,21 +1810,42 @@ static int code_service(struct client *c, uint64_t now_us)
  * parity group. The copies' masks (cmask) come in from eta.h's windows. */
 static void spare_masks(struct client *c, int m, uint16_t carry, uint64_t now_us, const int8_t *first)
 {
+	uint16_t pset = 0;
+	int pset_done = 0;
+
 	c->sp_carry = carry;
 	for (int j = 0; j < m; j++) {
 		uint32_t len = (uint32_t)c->oiov[j][1].iov_len, bits = (len + CG_HDR_LEN) * 8;
 		int f = first[j], small = len < CG_PACE_SMALL;
 		uint16_t mask;
 
-		if (c->pick[j] >= 0 || f < 0 || !(carry >> f & 1))
+		if (c->pick[j] >= 0)
+			continue;
+		/* a protocontroller stream's DATA: on one link (pnc_first; its
+		 * ARQ answers loss: copied everywhere while no first link was
+		 * known, half a second of them filled the cellular queue to
+		 * 300 KB at a microcut's start, story 025); in the copies of a
+		 * microcut, that link only
+		 * (copied, a stream that keeps its rate through the cut filled
+		 * the cellular queue to 2 s); else, on the first, as any DATA
+		 * (its repairs too) */
+		if (c->pnc[j]) {
+			int pf;
+
+			if (!pset_done) {
+				pset = pnc_links(c, carry, now_us / 1000);
+				pset_done = 1;
+			}
+			pf = pnc_first(c, pset);
+
+			if (pf >= 0 && (pf != f || c->sp_how == CG_SPARE_COPIES)) {
+				c->cmask[j] = (uint16_t)(1u << pf);
+				continue;
+			}
+		}
+		if (f < 0 || !(carry >> f & 1))
 			continue;
 		mask = cg_spare_mask(c->cmask[j], carry, f);
-		/* a protocontroller stream's DATA in the copies of a microcut: its first link
-		 * only (story 025: its ARQ sends again what is lost; copied, a
-		 * stream that keeps its rate through the cut filled the cellular
-		 * queue to 2 s); its repairs, as any DATA's */
-		if (c->pnc[j] && c->sp_how == CG_SPARE_COPIES)
-			mask &= (uint16_t)(1u << f);
 		if (!small && !(c->cmask[j] >> f & 1))
 			cg_eta_add(&c->pace, (unsigned)f, len, now_us); /* not counted by the window */
 		for (int i = 0; i < CG_MAX_LINKS; i++) {
@@ -1767,12 +1861,15 @@ static void spare_masks(struct client *c, int m, uint16_t carry, uint64_t now_us
 				c->sp_copy_skip++;
 				continue;
 			}
+			/* a stream's repeat only within the allowance (not a
+			 * priority take: as one, the repeats of a microcut held
+			 * the cellular queue at 1 s, story 025) */
 			if (small)
 				go = cg_spare_take(&c->spare[i], now_us, bits, 1, 1);
 			else if (c->sp_how == CG_SPARE_COPIES)
-				go = cg_spare_take(&c->spare[i], now_us, bits, c->prio[j], 0);
+				go = cg_spare_take(&c->spare[i], now_us, bits, c->prio[j] && !c->prc[j], 0);
 			else
-				go = c->prio[j] && cg_spare_take(&c->spare[i], now_us, bits, 1, 0);
+				go = c->prio[j] && cg_spare_take(&c->spare[i], now_us, bits, !c->prc[j], 0);
 			if (go) {
 				c->sp_copies++;
 				continue;
@@ -1951,7 +2048,7 @@ static void up_begin(struct client *c, uint64_t now_ms, struct upctx *u)
 {
 	/* the split is decided per packet before its header (CG_F_SPLIT is
 	 * under the MAC) */
-	link_masks(c, now_ms, &u->present, &u->live);
+	link_masks_tx(c, now_ms, &u->present, &u->live);
 	u->carry = cg_health_carriers(c->uh, CG_MAX_LINKS, u->present, u->live);
 	u->split = split_active(c);
 	u->w = split_weights(c, &u->dup0);
@@ -2165,6 +2262,14 @@ static void pctl_send(void *ctx, uint32_t peer, uint32_t sid, uint8_t *const *ms
 	if (n <= 0)
 		return;
 	up_begin(c, now_ms, &u);
+	/* with redund_spare, also the links stalled that still bring
+	 * something down (pnc_links: the stream's ARQ answers their loss) */
+	if (c->cfg->redund_spare) {
+		uint16_t ps = (uint16_t)(pnc_links(c, u.carry, now_ms) & u.present);
+
+		u.live |= ps;
+		u.carry |= ps;
+	}
 	for (int m = 0; m < n; m++)
 		up_one(c, &u, m, msg[m], len[m], now_us, copy[m]);
 	c->last_traffic_ms = now_ms;
@@ -2542,7 +2647,7 @@ static void on_nack(struct client *c, uint8_t flags, const uint8_t *payload, siz
 	}
 	if (!c->resc_idx)
 		return;
-	link_masks(c, now_ms, &present, &live);
+	link_masks_tx(c, now_ms, &present, &live);
 	/* rescue_by_owd (audit C10): the link of least upload delay, as the
 	 * server picks; by RTT while no link has one */
 	for (int i = 0; c->cfg->rescue_by_owd && i < CG_MAX_LINKS; i++) {
@@ -2617,24 +2722,26 @@ static void on_nack(struct client *c, uint8_t flags, const uint8_t *payload, siz
 }
 
 /* The link a PARQ's repairs go on: live, not choked (spare.h) nor full
- * (capacity.h), of least RTT; any live one when none is; NULL: none. */
+ * (capacity.h), of least RTT; NULL: none. */
 static struct link *parq_link(struct client *c, uint64_t now_ms)
 {
 	uint16_t present, live;
 	struct link *best = NULL;
 
-	link_masks(c, now_ms, &present, &live);
-	for (int pass = 0; pass < 2 && !best; pass++)
-		for (int i = 0; i < CG_MAX_LINKS; i++) {
-			struct link *l = &c->link[i];
+	link_masks_tx(c, now_ms, &present, &live);
+	/* never a choked or full link: what is asked for again would come
+	 * after its queue, and fill it (a microcut: 1 500 repairs a second on
+	 * the cellular link, its queue at 1.6 s, story 025) */
+	for (int i = 0; i < CG_MAX_LINKS; i++) {
+		struct link *l = &c->link[i];
 
-			if (!(live >> i & 1) || l->fd < 0 || !l->srtt8_us)
-				continue;
-			if (!pass && ((c->sp_choked >> i & 1) || up_full(c, (unsigned)i)))
-				continue;
-			if (!best || l->srtt8_us < best->srtt8_us)
-				best = l;
-		}
+		if (!(live >> i & 1) || l->fd < 0 || !l->srtt8_us)
+			continue;
+		if ((c->sp_choked >> i & 1) || up_full(c, (unsigned)i))
+			continue;
+		if (!best || l->srtt8_us < best->srtt8_us)
+			best = l;
+	}
 	return best;
 }
 
@@ -3243,8 +3350,13 @@ static void cap_tick(struct client *c, uint16_t live, uint16_t in, uint64_t now_
 	if (c->pace_any) /* the copies' expected arrivals (redund_pace_ms, per link) */
 		cg_cap_eta(&c->pace, c->cap, live, cc.sat_us / 2, NULL, c->cfg->split_stale_max,
 			   cg_tickle_backoff(&c->tk), now_ms * 1000);
-	if (c->cfg->redund_spare)
-		spare_tick(c, live, now_ms);
+	if (c->cfg->redund_spare) {
+		uint16_t tpresent, tlive;
+
+		/* the links the data goes on (link_masks_tx), for its first */
+		link_masks_tx(c, now_ms, &tpresent, &tlive);
+		spare_tick(c, tlive, now_ms);
+	}
 	/* With pacing, each link's socket at about its rate; without, as it
 	 * was set, back to none (a reload turned it off). */
 	for (int i = 0; i < CG_MAX_LINKS; i++) {

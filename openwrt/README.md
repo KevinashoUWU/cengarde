@@ -757,9 +757,10 @@ QUIC y lo demás van por el túnel como siempre. Dos variantes:
 
 - **A** (`protocontroller 'a'`): entre los dos extremos, un TCP simple del
   kernel por el túnel, del router a `10.79.0.1`. Sin proxies aparte.
-- **B** (`protocontroller 'b'`, experimental): entre los dos, un flujo
-  fiable propio de cengarde, dosificado por lo que llevan los enlaces y no
-  por la pérdida.
+- **B** (`protocontroller 'b'`, experimental; en LuCI *B (GRIT)*): entre
+  los dos, **GRIT** (*Guaranteed Redundant IP Transport*), un flujo fiable
+  propio de cengarde, dosificado por lo que llevan los enlaces y no por la
+  pérdida.
 
 **En el router** (pestaña *Túnel*, *Protocontrolador*, solo en modo
 nativo): `cengarde-setup` escribe `/etc/cengarde/protoctl.nft`, un include
@@ -778,7 +779,8 @@ variante A) y `tcp_bbr` al arrancar. `protocontroller off` lo quita; un
 router que siga con A o B ve entonces sus conexiones rehusadas.
 
 **Comprobar:** en el router, `cengarde ctl status | jsonfilter -e
-'@.protocontroller'` (`opened` con B, `a_opened` con A, y `mode`); en el VPS,
+'@.protocontroller'` (`opened` con B, `a_opened` con A, `mode` y `protocol`:
+`GRIT` o `TCP`); en el VPS,
 lo mismo. `test/e2e.sh` lo prueba con B y con A (una página del VPS a
 través del corte) y la vuelta a `no` sin restos.
 
