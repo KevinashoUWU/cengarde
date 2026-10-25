@@ -381,6 +381,157 @@ static void test_rlc_parq(void)
 	CHECK(map == (1ull | 1ull << 5 | 1ull << 30));
 }
 
+/* A combination of the given members (bit d of map: base + d), from the
+ * made-up packets, kept by the receiver; how many it rebuilt (each checked
+ * byte for byte into *wrong when not the packet). */
+static unsigned rlc_feed_combo(struct cg_rep_ring *ring, uint32_t base, uint64_t map, uint16_t seed, unsigned *wrong)
+{
+	static uint8_t p[CG_REP_SPAN][CG_SYM_PLEN];
+	const uint8_t *mp[CG_REP_SPAN];
+	uint16_t ml[CG_REP_SPAN];
+	uint8_t sym[CG_SYM_MAX];
+	uint32_t out[CG_RLC_EQ];
+	struct cg_rep_hdr h;
+	unsigned k = 0, sl, got;
+
+	for (uint64_t m = map; m; m &= m - 1, k++) {
+		ml[k] = pkt(base + (unsigned)__builtin_ctzll(m), p[k]);
+		mp[k] = p[k];
+	}
+	sl = cg_rlc_combine(&G, base, map, seed, mp, ml, &h, sym);
+	got = cg_rlc_rx_repair(&G, &R, ring, &h, sym, sl, out, CG_RLC_EQ);
+	for (unsigned j = 0; j < got; j++)
+		*wrong += !ring_ok(ring, out[j]);
+	return got;
+}
+
+/* The elimination swaps rows: a rebuilt unknown is the sum of the
+ * equations its row came from (the combinations kept by row), never of the
+ * equations that later sat in those rows. Four losses, equations over
+ * {12, 14}, {20, 22}, {14, 20} and {22}: the third column's pivot is found
+ * two rows down, a swap; the fourth settles all four, each the packet. */
+static void test_rlc_swap(void)
+{
+	struct cg_rep_ring ring = ring_new();
+	uint8_t p[CG_SYM_PLEN];
+	unsigned wrong = 0, got = 0;
+
+	memset(&R, 0, sizeof(R));
+	for (uint32_t s = 10; s < 26; s++)
+		if (s != 12 && s != 14 && s != 20 && s != 22)
+			ring_put(&ring, s, p, pkt(s, p));
+	got += rlc_feed_combo(&ring, 12, 1ull | 1ull << 2, 0x8001, &wrong);
+	got += rlc_feed_combo(&ring, 20, 1ull | 1ull << 2, 0x8002, &wrong);
+	got += rlc_feed_combo(&ring, 14, 1ull | 1ull << 6, 0x8003, &wrong);
+	CHECK_EQ(got, 0);
+	got += rlc_feed_combo(&ring, 22, 1ull, 0x8004, &wrong);
+	CHECK_EQ(got, 4);
+	CHECK_EQ(wrong, 0);
+	CHECK_EQ(R.bad, 0);
+	CHECK(ring_ok(&ring, 12) && ring_ok(&ring, 14) && ring_ok(&ring, 20) && ring_ok(&ring, 22));
+}
+
+static uint64_t rlc_rng = 0x9e3779b97f4a7c15ull;
+
+static unsigned rlc_rand(void)
+{
+	rlc_rng ^= rlc_rng << 13;
+	rlc_rng ^= rlc_rng >> 7;
+	rlc_rng ^= rlc_rng << 17;
+	return (unsigned)(rlc_rng >> 16);
+}
+
+/* Bursty loss, lost repairs, a window of w across the 32-bit wrap, and now
+ * and then the parity asked for again (cg_rlc_rx_need, the sender's fresh
+ * combinations): every packet the receiver rebuilds is the packet, and
+ * nothing is counted bad (the lab's thousands of bad rebuilds, story 025). */
+static void test_rlc_random(void)
+{
+	static uint8_t hist[CG_REP_RING][CG_SYM_PLEN];
+	static uint16_t hlen[CG_REP_RING];
+	struct cg_rep_ring ring = ring_new();
+	uint8_t sym[CG_SYM_MAX];
+	uint32_t out[CG_RLC_EQ], s = 0xfffe0000u;
+	unsigned burst = 0, wrong = 0, back = 0, asked = 0, nlost = 0;
+	uint16_t seed = 0;
+
+	memset(&T, 0, sizeof(T));
+	memset(&R, 0, sizeof(R));
+	for (unsigned i = 0; i < 200000; i++, s++) {
+		uint32_t ix = s & (CG_REP_RING - 1);
+		unsigned got = 0;
+
+		hlen[ix] = pkt(s, hist[ix]);
+		cg_rlc_tx_add(&T, s, hist[ix], hlen[ix], i);
+		if (burst)
+			burst--;
+		else if (rlc_rand() % 1000 < 30)
+			burst = 1 + rlc_rand() % 6;
+		if (burst) {
+			nlost++;
+		} else {
+			ring_put(&ring, s, hist[ix], hlen[ix]);
+			got = cg_rlc_rx_data(&G, &R, &ring, s, out, CG_RLC_EQ);
+		}
+		if (i % 3 == 2 && rlc_rand() % 4) {
+			struct cg_rep_hdr h;
+			unsigned sl = cg_rlc_tx_repair(&G, &T, 21, &h, sym);
+
+			got += cg_rlc_rx_repair(&G, &R, &ring, &h, sym, sl, out + got, CG_RLC_EQ - got);
+		}
+		/* now and then, the deficit of a hole 30 behind, asked for again */
+		if (i % 7 == 0 && i > 64) {
+			uint32_t q = s - 30, base;
+			uint64_t map;
+			unsigned d = cg_rlc_rx_need(&G, &R, q, &base, &map);
+
+			for (unsigned j = 0; j < d && got < CG_RLC_EQ; j++) {
+				const uint8_t *mp[CG_REP_SPAN];
+				uint16_t ml[CG_REP_SPAN];
+				struct cg_rep_hdr h;
+				unsigned k = 0, sl;
+
+				for (uint64_t m = map; m; m &= m - 1, k++) {
+					uint32_t x = (base + (unsigned)__builtin_ctzll(m)) & (CG_REP_RING - 1);
+
+					mp[k] = hist[x];
+					ml[k] = hlen[x];
+				}
+				sl = cg_rlc_combine(&G, base, map, (uint16_t)(0x8000u | ++seed), mp, ml, &h, sym);
+				got += cg_rlc_rx_repair(&G, &R, &ring, &h, sym, sl, out + got, CG_RLC_EQ - got);
+				asked++;
+			}
+		}
+		for (unsigned j = 0; j < got; j++)
+			wrong += !ring_ok(&ring, out[j]);
+		back += got;
+	}
+	CHECK(nlost > 10000);
+	CHECK(asked > 100);
+	CHECK(back > nlost / 2);
+	CHECK_EQ(wrong, 0);
+	CHECK_EQ(R.bad, 0);
+	CHECK_EQ(R.recovered, back);
+}
+
+/* A rebuilt symbol never takes the ring's slot from a newer DATA (an old
+ * equation settled late, its sequence a ring's length behind). */
+static void test_rlc_ring_newer(void)
+{
+	struct cg_rep_ring ring = ring_new();
+	uint8_t p[CG_SYM_PLEN], sym[CG_SYM_MAX];
+	uint16_t len = pkt(5, p);
+
+	ring_put(&ring, 5 + CG_REP_RING, p, pkt(5 + CG_REP_RING, p));
+	len = pkt(5, p);
+	sym[0] = (uint8_t)(len >> 8);
+	sym[1] = (uint8_t)len;
+	memcpy(sym + 2, p, len);
+	CHECK_EQ(cg_rep_put_sym(&ring, 5, sym, len + 2u), -2);
+	CHECK(ring_ok(&ring, 5 + CG_REP_RING));
+	CHECK_EQ(cg_rep_put_sym(&ring, 5 + 2 * CG_REP_RING, sym, len + 2u), 0);
+}
+
 void test_rlc(void)
 {
 	test_gf();
@@ -389,4 +540,7 @@ void test_rlc(void)
 	test_rlc_late();
 	test_rlc_span_age();
 	test_rlc_parq();
+	test_rlc_swap();
+	test_rlc_random();
+	test_rlc_ring_newer();
 }

@@ -104,6 +104,7 @@
 #include "fec.h"
 #include "gf256.h"
 #include "repair.h"
+#include "rebuilt.h"
 #include "rlc.h"
 #include "rs.h"
 #include "pace.h"
@@ -198,6 +199,7 @@ struct session {
 	uint64_t nack_seqs;                            /* sequences asked for in NACKs */
 	struct cg_fec_rx *fec;    /* the upload's parities and DATA kept for them (fec.h), NULL: no fec */
 	uint64_t fec_dups;        /* rebuilt packets that had arrived (or been given up) meanwhile */
+	uint64_t rb_ok, rb_bad, rb_unsure; /* rebuilt packets (fec, rs, rlc) the guard passed, found garbage, could not confirm (rebuilt.h) */
 	uint64_t fec_unused;      /* parities taken without fec on this end */
 	/* the erasure codes' receivers (story 021, repair.h): with fec, over
 	 * fec's ring of DATA; rsx NULL without Leopard */
@@ -1708,9 +1710,32 @@ static void fec_deliver(struct server *s, int *nq, struct session *S, uint32_t s
 {
 	struct cg_hdr h = { .type = CG_T_DATA, .link = link, .session = S->id, .seq = seq, .ts = ts };
 	uint8_t *out;
+	int rb;
 
 	if (cg_replay_check(&S->replay, seq) != CG_RP_NEW) {
 		S->fec_dups++;
+		return;
+	}
+	/* The guard (rebuilt.h): what the codes rebuilt was not under the MAC.
+	 * Refused, it is not marked (the packet itself, or the rescue's, may
+	 * still come), the ring forgets it and the RLC's equations, which may
+	 * hold it already, go. */
+	rb = cg_rebuilt_check(s->native, p, len);
+	if (rb == CG_RB_OK) {
+		S->rb_ok++;
+	} else {
+		if (rb == CG_RB_BAD)
+			S->rb_bad++;
+		else
+			S->rb_unsure++;
+		if (S->fec) {
+			uint32_t i = seq & (CG_FEC_RING - 1);
+
+			if (S->fec->have[i] && S->fec->seq[i] == seq)
+				S->fec->have[i] = 0;
+		}
+		if (S->rlc)
+			cg_rlc_rx_clear(S->rlc);
 		return;
 	}
 	cg_replay_mark(&S->replay, seq);
@@ -3312,6 +3337,12 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 		cg_json_u64(j, "malformed", S->fec ? S->fec->bad : 0);
 		cg_json_u64(j, "already_there", S->fec_dups);
 		cg_json_u64(j, "unused", S->fec_unused);
+		cg_json_end(j, '}');
+		/* what the codes rebuilt, by the guard (rebuilt.h) */
+		cg_json_obj(j, "rebuilt");
+		cg_json_u64(j, "ok", S->rb_ok);
+		cg_json_u64(j, "bad", S->rb_bad);
+		cg_json_u64(j, "unsure", S->rb_unsure);
 		cg_json_end(j, '}');
 		/* the erasure codes' repairs (repair.h, story 021) */
 		cg_json_obj(j, "repair");

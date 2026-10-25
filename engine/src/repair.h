@@ -121,8 +121,10 @@ static inline const uint8_t *cg_rep_data(const struct cg_rep_ring *r, uint32_t s
 	return r->mem + (size_t)i * CG_SYM_PLEN;
 }
 
-/* A rebuilt symbol (slen bytes at s) into the ring as DATA seq: 0, or -1
- * when its length prefix does not fit it (counted bad by the caller). */
+/* A rebuilt symbol (slen bytes at s) into the ring as DATA seq: 0; -1
+ * when its length prefix does not fit it (counted bad by the caller); -2
+ * when the slot holds a newer DATA (an old equation settled late: the
+ * ring's newer entry stays, the rebuilt one is let go). */
 static inline int cg_rep_put_sym(struct cg_rep_ring *r, uint32_t seq, const uint8_t *s, unsigned slen)
 {
 	uint32_t i = seq & (CG_REP_RING - 1);
@@ -130,6 +132,8 @@ static inline int cg_rep_put_sym(struct cg_rep_ring *r, uint32_t seq, const uint
 
 	if (!len || len + 2 > slen || len > CG_SYM_PLEN)
 		return -1;
+	if (r->have[i] && (int32_t)(r->seq[i] - seq) > 0)
+		return -2;
 	r->seq[i] = seq;
 	r->len[i] = (uint16_t)len;
 	r->have[i] = 1;

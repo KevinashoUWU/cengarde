@@ -167,6 +167,17 @@ static inline void cg_rlc_eq_free(struct cg_rlc_rx *r, struct cg_rlc_eq *e)
 	e->used = 0;
 }
 
+/* Every equation let go (counted dropped): a rebuilt packet the guard
+ * refused (rebuilt.h) may have been subtracted from them already. */
+static inline void cg_rlc_rx_clear(struct cg_rlc_rx *r)
+{
+	for (unsigned k = 0; k < CG_RLC_EQ; k++)
+		if (r->eq[k].used) {
+			cg_rlc_eq_free(r, &r->eq[k]);
+			r->dropped++;
+		}
+}
+
 /* DATA seq is in the ring now (arrived, or rebuilt): out of every
  * equation missing it. Returns whether one changed. */
 static inline int cg_rlc_rx_sub(const struct cg_gf *g, struct cg_rlc_rx *r, const struct cg_rep_ring *ring, uint32_t seq)
@@ -210,8 +221,9 @@ static inline unsigned cg_rlc_rx_solve(const struct cg_gf *g, struct cg_rlc_rx *
 {
 	uint8_t a[CG_RLC_EQ][CG_RLC_UNK], t[CG_RLC_EQ][CG_RLC_EQ], sym[CG_SYM_MAX];
 	uint32_t col[CG_RLC_UNK];
-	int row_eq[CG_RLC_EQ], piv[CG_RLC_EQ];
+	int row_eq[CG_RLC_EQ], piv[CG_RLC_EQ]; /* row_eq[s]: the equation of row s as built (t's column s) */
 	unsigned n = 0, u = 0, rank = 0, got = 0;
+	int rc;
 
 	for (unsigned k = 0; k < CG_RLC_EQ; k++) {
 		struct cg_rlc_eq *e = &r->eq[k];
@@ -247,7 +259,8 @@ static inline unsigned cg_rlc_rx_solve(const struct cg_gf *g, struct cg_rlc_rx *
 	}
 	for (unsigned i = 0; i < n; i++)
 		t[i][i] = 1;
-	/* reduced row echelon form, t the rows' combinations */
+	/* reduced row echelon form, t[i][s]: how much of the built row s
+	 * (equation row_eq[s]) row i holds now */
 	for (unsigned c = 0; c < u && rank < n; c++) {
 		unsigned p = rank;
 		uint8_t iv;
@@ -258,16 +271,17 @@ static inline unsigned cg_rlc_rx_solve(const struct cg_gf *g, struct cg_rlc_rx *
 			continue;
 		if (p != rank) {
 			uint8_t tmp[CG_RLC_UNK > CG_RLC_EQ ? CG_RLC_UNK : CG_RLC_EQ];
-			int te = row_eq[p];
 
+			/* rows move, row_eq does not: t's columns name the
+			 * rows as they were built (swapping row_eq too
+			 * rebuilt from the wrong equations: story 025's bad
+			 * rebuilds) */
 			memcpy(tmp, a[p], u);
 			memcpy(a[p], a[rank], u);
 			memcpy(a[rank], tmp, u);
 			memcpy(tmp, t[p], n);
 			memcpy(t[p], t[rank], n);
 			memcpy(t[rank], tmp, n);
-			row_eq[p] = row_eq[rank];
-			row_eq[rank] = te;
 		}
 		iv = g->inv[a[rank][c]];
 		cg_gf_scale(g, a[rank], iv, u);
@@ -296,8 +310,11 @@ static inline unsigned cg_rlc_rx_solve(const struct cg_gf *g, struct cg_rlc_rx *
 		for (unsigned s = 0; s < n; s++)
 			if (t[i][s])
 				cg_gf_madd(g, sym, r->eq[row_eq[s]].x, t[i][s], r->eq[row_eq[s]].slen);
-		if (cg_rep_put_sym(ring, col[piv[i]], sym, slen) < 0) {
-			r->bad++;
+		if ((rc = cg_rep_put_sym(ring, col[piv[i]], sym, slen)) < 0) {
+			if (rc == -1)
+				r->bad++;
+			else
+				r->dropped++;
 			continue;
 		}
 		out[got++] = col[piv[i]];

@@ -180,8 +180,13 @@ static unsigned blk_decode(struct cg_rs_rx *r, struct cg_rs_scratch *x, struct c
 	for (i = 0; i < b->k; i++) {
 		if (orig[i])
 			continue;
-		if (cg_rep_put_sym(ring, seqs[i], work[i], b->bytes) < 0) {
-			r->bad++;
+		int rc = cg_rep_put_sym(ring, seqs[i], work[i], b->bytes);
+
+		if (rc < 0) {
+			if (rc == -1)
+				r->bad++;
+			else
+				r->dropped++;
 			continue;
 		}
 		r->recovered++;

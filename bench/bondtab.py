@@ -77,6 +77,12 @@ REPAIR = ["resc_sent", "repaired", "parq_asked", "parq_sent", "retx_one", "retx_
 RULE_ROWS = ["unknown", "spurious", "delivered", "tunnel"]
 E2E_MORE = [("e2e_marked", "marked"), ("e2e_own", "tunnel"), ("e2e_inflight", "in_flight"), ("e2e_unvouched", "unvouched")]
 REPAIR += ["tr_" + r for r in RULE_ROWS] + ["trc_" + r for r in RULE_ROWS] + [k for k, _ in E2E_MORE]
+# What the codes rebuilt wrong (story 025): the decoders' bad counts, what the
+# server did not write to the TUN for not being IP, and the guard on rebuilt
+# packets (rebuilt.h): passed, garbage, not confirmable. Server only.
+GUARD = [("rlc_bad", ("repair", "rlc", "bad")), ("rs_bad", ("repair", "rs", "bad")), ("not_ip", ("not_ip",)),
+         ("rb_ok", ("rebuilt", "ok")), ("rb_bad", ("rebuilt", "bad")), ("rb_unsure", ("rebuilt", "unsure"))]
+REPAIR += [k for k, _ in GUARD]
 COUNTERS = [k for k in RO_PATHS if k not in GAUGES] + ["too_old", "wireguard_drops", "lost_all"] + SENDS + REPAIR
 NAMES = list(RO_PATHS) + ["too_old", "wireguard_drops", "lost_all"] + SENDS + REPAIR
 
@@ -142,6 +148,8 @@ def flat_client(d):
         out["trc_" + r] = num(dig(d, "upload", "tcp", "rule", "copied", r))
     for k, j in E2E_MORE:
         out[k] = num(dig(d, "tcp_e2e", j))
+    for k, _ in GUARD:
+        out[k] = None
     return out
 
 
@@ -168,6 +176,8 @@ def flat_session(s):
         out["trc_" + r] = num(dig(s, "tcp", "rule", "copied", r))
     for k, _ in E2E_MORE:
         out[k] = None
+    for k, path in GUARD:
+        out[k] = num(dig(s, *path))
     return out
 
 
