@@ -473,8 +473,10 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
     (`CG_BOND_FULL`): esa pérdida es la que hace frenar a TCP. En el
     laboratorio, con 1 % de pérdida al azar por enlace, la bajada pasa de
     10 a 50 Mbit/s; donde la pérdida es de un enlace lleno, cuesta ~15 %.
-    En redundancia (`split` apagado) solo pide con `reorder_dup_wait_ms`
-    mayor que 0.
+    En redundancia (`split` apagado) pide lo que el paquete siguiente dice
+    que fue solo por un enlace que ya trajo algo posterior (`CG_F_PREV`,
+    escrito una vez decididas las copias), y retiene lo que sigue mientras
+    tanto; lo demás no espera (historia 023).
   - **El gobernador del rescate:** cada enlace tiene un peso de 0 a 1
     (`rescue_weight` en el estado; `cg_cap_rescue_w`, `capacity.h`) según
     dónde estará su cola dentro de 1 s: la cola de ahora (sobre el mínimo
@@ -491,8 +493,35 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
     `congested`) y en cada sesión del servidor (`on`, `nacks`, `sent`,
     `missing`, `over_budget`, `congested`; de la subida: `client_keeps`,
     `asks`, `nacks_sent`); en los dos, `gone_sent` y `gone_received`.
-    `reorder.rescue` (`asked`, `rescued`, `lost` y `refused`, los perdidos
-    que el otro extremo avisó que no vendrían).
+    `reorder.rescue` (`asked`, `rescued`, `repaired` —lo rehizo un código,
+    no llegó el paquete—, `lost` y `refused`, los perdidos que el otro
+    extremo avisó que no vendrían).
+  - **La reparación coherente (historia 023, `harq.h`, protocolo 9):** el
+    código, el rescate y el TCP de adentro no se hacen el trabajo unos a
+    otros. Con un código protegiendo la subida (`redund_spare = rs | rlc`,
+    o la paridad XOR, y `fec = yes` en el VPS), un hueco pedido no se pide
+    mientras puedan llegar reparaciones que lo cubran (hasta que llega una
+    cuya base lo pasó, o `rescue_code_ms`); si después sigue faltando con
+    ecuaciones o un bloque que lo echan de menos, el VPS pide el **déficit
+    de rango en paridad** (`CG_T_PARQ`): combinaciones nuevas de exactamente
+    lo que falta (RLC) o índices nuevos del mismo bloque (RS: sus
+    reparaciones declaran una geometría mayor que las que manda el plan). El
+    router las rehace desde su anillo de rescate (`rescue_kb`) y las manda
+    por un enlace con lugar. Sin código, el NACK de siempre. Con TCP adentro
+    (túnel nativo), nada se pide ni se retiene más allá del presupuesto de
+    TCP (el RTT de sus flujos más un cuarto: lo que tarda su propia
+    retransmisión).
+  - **`rescue_code_ms` (servidor; 100; 0–1000):** cuánto espera un hueco a
+    que un código lo rehaga antes de pedir; se suma a la espera del hueco.
+  - **`parq` (servidor; `yes`):** con `no`, lo que el código no rehízo se
+    pide como paquetes (NACK).
+  - **`rescue_tcp_race` (los dos; `yes`):** el presupuesto de TCP acota la
+    espera de los huecos pedidos y los pedidos que llegarían tarde se
+    sueltan (`rescue.left_to_tcp`). Mide el RTT de los flujos en el extremo
+    donde salen del túnel (del SYN al SYN-ACK, más el RTT del túnel).
+  - Estado: `rescue` por sesión (`waited_code`, `not_asked`, `left_to_tcp`,
+    `wait_ms`, `tcp_budget_ms`), `repair.parq` (`asked`, `repairs_asked`);
+    en el router `rescue.parq` (`requests`, `repairs`, `bytes`, `missing`).
 - **`fec` (no; protocolo 7; las reparaciones, 8):** la paridad espacial de la subida repartida
   (`fec.h`). El cliente junta en grupos los paquetes que fueron cada uno por
   un solo enlace, como mucho uno por enlace, y manda el XOR del grupo por un
@@ -1244,6 +1273,19 @@ enviado antes y lo reenviaba: en la red de pruebas, 135 veces las
 retransmisiones rápidas y 95 veces los DSACK de `tcp_aware = no`; en el
 laboratorio (`sudo bench/lab.sh tcpaware`), retenerla en su lugar las deja
 como sin `tcp_aware` (historia 014).
+
+**`tcp_retx_one` (`yes`; con `tcp_aware`, en el extremo que envía; historia
+023):** en redundancia, la primera retransmisión de un segmento va por un
+solo enlace, el más rápido, en vez de copiarse por todos: lo más probable es
+que el túnel ya hubiera entregado el original (se perdió más allá, o su ACK
+tardó), y N copias de cada retransmisión alimentaban los espirales de
+terreno. Una segunda retransmisión de los mismos bytes sí va copiada. Estado:
+`upload.tcp` en el router (`retx`, `retx_again`, `retx_one`, `retx_copied`),
+`tcp` por sesión en el VPS. El extremo donde TCP sale del túnel cuenta además
+los huecos que el host lejano declara con SACK (`tcp_e2e`: `sack_holes`;
+`beyond`, los que el túnel había entregado: pérdidas más allá del túnel, que
+no se cargan a ningún enlace; `tunnel`, los propios) y el RTT del tramo
+lejano (`far_rtt_ms`).
 
 - **`reorder_retx_release_ms` (0, apagado; 0–2000), experimental, en el
   que recibe:** una retransmisión de TCP abandona los huecos anteriores a

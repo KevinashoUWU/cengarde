@@ -5,7 +5,7 @@ archivos:
   - engine/src/split.h
   - engine/src/capacity.h
   - engine/src/reorder.h
-sello: c7197981df3331ab
+sello: da53fd67036dfc39
 ---
 # Glosario
 
@@ -67,6 +67,8 @@ Términos del proyecto, en español, con el nombre del código entre paréntesis
 - **Tardío (late):** llegó después de abandonado su hueco. → [[Reordenador (reorder.h)]]
 - **rset:** los enlaces que el reordenador espera. → [[Reordenador (reorder.h)]]
 - **Rescate / NACK / GONE:** pedir de nuevo un hueco; el aviso de que no vendrá. → [[Rescate (rescue.h)]]
+- **PARQ / sellado / déficit de rango:** pedir paridad en vez de paquetes; un hueco sellado ya no lo cubrirá ninguna reparación nueva del código; el déficit es cuántas reparaciones más lo rehacen. → [[Reparación coherente (harq.h)]]
+- **Presupuesto de TCP:** el RTT de los flujos más un cuarto (RACK): lo que tarda TCP en retransmitir un hueco; ninguna reparación del túnel se pide ni se retiene más allá. → [[Reparación coherente (harq.h)]]
 - **FEC / paridad / grupo:** XOR de un paquete por enlace, que reconstruye uno perdido. → [[FEC (fec.h)]]
 - **Código de borrado / reparación (`rs`, `rlc`):** k paquetes fuente y m reparaciones (Reed-Solomon en bloques, o una ventana deslizante de combinaciones aleatorias) que rehacen hasta m perdidos. → [[Códigos de borrado (rs.h, rlc.h)]]
 - **Liberación (CG_F_FREE):** paquetes que el reordenador no retiene. → [[Liberación TCP (tcpfree.h)]]

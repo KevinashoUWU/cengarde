@@ -827,6 +827,10 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	c->reorder_pool_kb = 8192;
 	c->rescue_pct = 5;
 	c->rescue_tries = 2;
+	c->rescue_code_ms = 100;
+	c->parq = 1;
+	c->rescue_tcp_race = 1;
+	c->tcp_retx_one = 1;
 	c->fec_wait_ms = 10;
 	c->redund_spare_ms = 50;
 	c->redund_spare_code_ms = 30;
@@ -925,6 +929,10 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	    get_u32(&ini, "", "rescue_pct", 1, 50, &c->rescue_pct, err, errlen) ||
 	    get_u32(&ini, "", "rescue_wait_ms", 0, 1000, &c->rescue_wait_ms, err, errlen) ||
 	    get_u32(&ini, "", "rescue_tries", 1, 4, &c->rescue_tries, err, errlen) ||
+	    get_u32(&ini, "", "rescue_code_ms", 0, 1000, &c->rescue_code_ms, err, errlen) ||
+	    get_bool(&ini, "", "parq", &c->parq, err, errlen) ||
+	    get_bool(&ini, "", "rescue_tcp_race", &c->rescue_tcp_race, err, errlen) ||
+	    get_bool(&ini, "", "tcp_retx_one", &c->tcp_retx_one, err, errlen) ||
 	    get_bool(&ini, "", "fec", &c->fec, err, errlen) ||
 	    get_u32(&ini, "", "fec_wait_ms", 1, 200, &c->fec_wait_ms, err, errlen) ||
 	    get_u32(&ini, "", "fec_share_max", 0, 100, &c->fec_share_max, err, errlen) ||

@@ -216,6 +216,10 @@ struct cg_config {
 	uint32_t rescue_pct;          /* server: what a rescue may cost, % of the download */
 	uint32_t rescue_wait_ms;      /* a gap about to go is asked for and waits this long; 0: never */
 	uint32_t rescue_tries;        /* asked for this many times within rescue_wait_ms */
+	uint32_t rescue_code_ms;      /* with a code's repairs coming (story 023), how long a gap waits for them before it is asked for */
+	int parq;                     /* a gap the code cannot rebuild asks for its rank deficit in parity, not the packets (harq.h); default yes */
+	int rescue_tcp_race;          /* no repair asked, and no gap held for one, past TCP's own retransmission (harq.h); default yes */
+	int tcp_retx_one;             /* tcp_aware in redundancy: a first TCP retransmission on one link, not copied (story 023); default yes */
 	uint32_t reorder_pool_kb;     /* memory for the packets it holds; changing it restarts */
 	int tcp_aware;                /* native: mark inner TCP's retransmissions and ACKs free (tcpfree.h) */
 	uint32_t reorder_idle_ms;     /* EXPERIMENT: the reorderer stops waiting for a link that brought no data this long; 0: off */

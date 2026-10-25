@@ -313,6 +313,74 @@ static void test_rlc_span_age(void)
 		CHECK(cg_rlc_coef((uint16_t)s, s % 64));
 }
 
+
+/* The parity asked for again (harq.h, story 023): three lost among 16, one
+ * repair kept, so a deficit of 2 over exactly those three; two fresh
+ * combinations of only them, built from the sender's copies (not its
+ * window), settle all three. An unknown linked through a second equation
+ * joins the set; an equation too far apart is left out. */
+static void test_rlc_parq(void)
+{
+	struct cg_rep_ring ring = ring_new();
+	uint8_t p[16][CG_SYM_PLEN], sym[CG_SYM_MAX];
+	const uint8_t *mp[CG_REP_SPAN];
+	uint16_t ml[CG_REP_SPAN], len[16];
+	uint32_t out[8], base = 0;
+	uint64_t map = 0;
+	struct cg_rep_hdr h = { 0 };
+	unsigned sl, k = 0, got = 0;
+
+	memset(&T, 0, sizeof(T));
+	memset(&R, 0, sizeof(R));
+	for (uint32_t s = 100; s < 116; s++) {
+		len[s - 100] = pkt(s, p[s - 100]);
+		cg_rlc_tx_add(&T, s, p[s - 100], len[s - 100], s);
+		if (s != 103 && s != 107 && s != 111)
+			ring_put(&ring, s, p[s - 100], len[s - 100]);
+	}
+	CHECK_EQ(cg_rlc_rx_need(&G, &R, 103, &base, &map), 0); /* no equation yet */
+	sl = cg_rlc_tx_repair(&G, &T, 16, &h, sym);
+	CHECK_EQ(cg_rlc_rx_repair(&G, &R, &ring, &h, sym, sl, out, 8), 0);
+	CHECK_EQ(cg_rlc_rx_need(&G, &R, 107, &base, &map), 2);
+	CHECK_EQ(base, 103);
+	CHECK(map == (1ull | 1ull << 4 | 1ull << 8));
+	CHECK_EQ(cg_rlc_rx_need(&G, &R, 104, &base, &map), 0); /* here: no equation misses it */
+	for (uint64_t m = map; m; m &= m - 1, k++) {
+		mp[k] = p[base + (unsigned)__builtin_ctzll(m) - 100];
+		ml[k] = len[base + (unsigned)__builtin_ctzll(m) - 100];
+	}
+	for (unsigned d = 0; d < 2; d++) {
+		sl = cg_rlc_combine(&G, base, map, (uint16_t)(0x8000 | (d + 1)), mp, ml, &h, sym);
+		CHECK_EQ(h.kind, CG_REP_RLC);
+		CHECK(h.map == map);
+		got += cg_rlc_rx_repair(&G, &R, &ring, &h, sym, sl, out + got, 8 - got);
+	}
+	CHECK_EQ(got, 3);
+	CHECK(ring_ok(&ring, 103) && ring_ok(&ring, 107) && ring_ok(&ring, 111));
+	CHECK_EQ(cg_rlc_rx_need(&G, &R, 107, &base, &map), 0);
+
+	/* linked: 200 and 205 in one equation, 205 and 230 in another; the set
+	 * is all three, deficit 1 */
+	ring = ring_new();
+	memset(&T, 0, sizeof(T));
+	memset(&R, 0, sizeof(R));
+	for (uint32_t s = 200; s < 240; s++) {
+		uint8_t q[CG_SYM_PLEN];
+		uint16_t l = pkt(s, q);
+
+		cg_rlc_tx_add(&T, s, q, l, s);
+		if (s != 200 && s != 205 && s != 230)
+			ring_put(&ring, s, q, l);
+		if (s == 210 || s == 235) {
+			sl = cg_rlc_tx_repair(&G, &T, s == 210 ? 11 : 31, &h, sym);
+			CHECK_EQ(cg_rlc_rx_repair(&G, &R, &ring, &h, sym, sl, out, 8), 0);
+		}
+	}
+	CHECK_EQ(cg_rlc_rx_need(&G, &R, 230, &base, &map), 1);
+	CHECK_EQ(base, 200);
+	CHECK(map == (1ull | 1ull << 5 | 1ull << 30));
+}
+
 void test_rlc(void)
 {
 	test_gf();
@@ -320,4 +388,5 @@ void test_rlc(void)
 	test_rlc_stream();
 	test_rlc_late();
 	test_rlc_span_age();
+	test_rlc_parq();
 }

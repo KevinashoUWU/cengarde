@@ -7,7 +7,7 @@ archivos:
 
 # Perillas
 
-Las 113 claves que `engine/src/config.c` lee (comprobado al generar esta nota: ni falta ni sobra ninguna).
+Las 117 claves que `engine/src/config.c` lee (comprobado al generar esta nota: ni falta ni sobra ninguna).
 Por omisión y rango salen de `cg_config_parse`; el significado, de los comentarios de `config.h` y de [[engine-README]].
 Las perillas marcadas como experimento están apagadas por omisión.
 
@@ -109,11 +109,15 @@ Secciones: «global» es la parte sin sección; `[link NOMBRE]` es del cliente; 
 | --- | --- | --- | --- |
 | [[Mapa/Perillas/rescue_kb\|rescue_kb]] | 0 (apagado) | [[Rescate (rescue.h)]] | [[013-capacidad-y-dosificacion]] |
 | [[Mapa/Perillas/rescue_pct\|rescue_pct]] | 5 | [[Rescate (rescue.h)]] | [[013-capacidad-y-dosificacion]] |
-| [[Mapa/Perillas/rescue_wait_ms\|rescue_wait_ms]] | 0 (no pide) | [[Rescate (rescue.h)]], [[Reordenador (reorder.h)]] | [[013-capacidad-y-dosificacion]] |
+| [[Mapa/Perillas/rescue_wait_ms\|rescue_wait_ms]] | 0 (no pide) | [[Rescate (rescue.h)]], [[Reordenador (reorder.h)]], [[Reparación coherente (harq.h)]] | [[013-capacidad-y-dosificacion]], [[023-reparacion-coherente]] |
 | [[Mapa/Perillas/rescue_tries\|rescue_tries]] | 2 | [[Rescate (rescue.h)]], [[Reordenador (reorder.h)]] | [[013-capacidad-y-dosificacion]] |
 | [[Mapa/Perillas/rescue_target_ms\|rescue_target_ms]] | 20 (el de `governor_target_ms`; 0 lo sigue) | [[Rescate (rescue.h)]], [[Capacidad (capacity.h)]] | [[audit-pending]] |
 | [[Mapa/Perillas/rescue_by_owd\|rescue_by_owd]] | `no` | [[Rescate (rescue.h)]] | [[015-modelo-de-enlace]], [[audit-pending]] |
 | [[Mapa/Perillas/rescue_full_hyst\|rescue_full_hyst]] | 0 (apagado) | [[Rescate (rescue.h)]], [[Capacidad (capacity.h)]], [[Modelo de enlace (linkmodel.h)]] | [[015-modelo-de-enlace]], [[audit-pending]] |
+| [[Mapa/Perillas/rescue_code_ms\|rescue_code_ms]] | 100 | [[Reparación coherente (harq.h)]], [[Rescate (rescue.h)]] | [[023-reparacion-coherente]] |
+| [[Mapa/Perillas/parq\|parq]] | `yes` | [[Reparación coherente (harq.h)]], [[Códigos de borrado (rs.h, rlc.h)]] | [[023-reparacion-coherente]] |
+| [[Mapa/Perillas/rescue_tcp_race\|rescue_tcp_race]] | `yes` | [[Reparación coherente (harq.h)]], [[Liberación TCP (tcpfree.h)]] | [[023-reparacion-coherente]] |
+| [[Mapa/Perillas/tcp_retx_one\|tcp_retx_one]] | `yes` | [[Liberación TCP (tcpfree.h)]], [[Reparación coherente (harq.h)]] | [[023-reparacion-coherente]] |
 | [[Mapa/Perillas/fec\|fec]] | `no` | [[FEC (fec.h)]], [[Códigos de borrado (rs.h, rlc.h)]] | [[013-capacidad-y-dosificacion]], [[021-fec-v2]] |
 | [[Mapa/Perillas/fec_wait_ms\|fec_wait_ms]] | 10 | [[FEC (fec.h)]], [[Rescate (rescue.h)]] | [[013-capacidad-y-dosificacion]] |
 | [[Mapa/Perillas/fec_share_max\|fec_share_max]] | 0 (sin tope) | [[FEC (fec.h)]], [[Reparto (split.h)]] | [[012-bonding]], [[013-capacidad-y-dosificacion]] |

@@ -1,6 +1,9 @@
-/* cengarde wire protocol, version 5 (version 1 had no delay reports,
+/* cengarde wire protocol, version 9 (version 1 had no delay reports,
  * version 2 no IP pass flags, version 3 no client hint, cookies or separate
- * control sequence, version 4 no previous link in DATA's flags).
+ * control sequence, version 4 no previous link in DATA's flags, version 5
+ * no NACK, version 6 no CG_F_FREE, version 7 no parity, version 8 no
+ * repairs of an erasure code, version 9 no parity asked for again and no
+ * CG_F_PREV written after the copies were decided).
  *
  * Every datagram between client and server carries a 24-byte header followed
  * by the payload (a WireGuard datagram for DATA). All integers are big-endian.
@@ -57,7 +60,7 @@
 
 #include "siphash.h"
 
-#define CG_PROTO_VERSION 8
+#define CG_PROTO_VERSION 9
 #define CG_HDR_LEN 24
 #define CG_MAC_OFF 16
 #define CG_HINT_OFF 2
@@ -72,6 +75,7 @@ enum cg_type {
 	CG_T_NACK = 5,        /* either way, one link; payload: DATA sequences to send again */
 	CG_T_FEC = 6,         /* either way, one link; payload: the parity of a group of DATA (fec.h) */
 	CG_T_REPAIR = 7,      /* client -> server, one link; payload: an erasure code's repair (repair.h) */
+	CG_T_PARQ = 8,        /* server -> client, one link; payload: repairs asked for again (harq.h) */
 };
 
 /* Probes, replies, NACKs and parities count in the control sequence, DATA
@@ -79,8 +83,21 @@ enum cg_type {
 static inline int cg_type_ctl(uint8_t type)
 {
 	return type == CG_T_PROBE || type == CG_T_PROBE_REPLY || type == CG_T_NACK || type == CG_T_FEC ||
-	       type == CG_T_REPAIR;
+	       type == CG_T_REPAIR || type == CG_T_PARQ;
 }
+
+/* PARQ (version 9, story 023: the parity asked for again): the server,
+ * whose reorderer misses DATA that the client's erasure code covered but
+ * could not rebuild (or whose repairs were lost), asks for the code's
+ * rank deficit instead of the packets: fresh combinations of exactly the
+ * missing members (RLC), or more indices of the same Reed-Solomon block
+ * (its repairs declare the block's geometry, m, larger than what the plan
+ * sends). The client rebuilds them from what it keeps for the rescue
+ * (rescue.h) and sends them as CG_T_REPAIR on a link with room. Payload:
+ * harq.h's (a count, then requests of CG_PARQ_REQ bytes). */
+#define CG_PARQ_REQ 20
+#define CG_PARQ_MAX 8
+#define CG_PARQ_LEN (1 + CG_PARQ_REQ * CG_PARQ_MAX)
 
 /* REPAIR (version 8, story 021: redund_spare = rs | rlc): a repair of an
  * erasure code over DATA the client sent on its first link alone, carried

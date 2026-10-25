@@ -93,6 +93,12 @@ int cg_hdr_parse(struct cg_hdr *h, const uint8_t *buf, size_t len)
 	case CG_T_REPAIR:
 		/* repair.h's header and one byte at least (the rest: cg_rep_get) */
 		return plen > CG_REP_HDR ? 0 : -1;
+	case CG_T_PARQ:
+		/* a count and that many requests (the rest: harq.h's cg_parq_read) */
+		return plen >= 1 + CG_PARQ_REQ && buf[CG_HDR_LEN] >= 1 && buf[CG_HDR_LEN] <= CG_PARQ_MAX &&
+				       plen == 1 + CG_PARQ_REQ * (size_t)buf[CG_HDR_LEN]
+			       ? 0
+			       : -1;
 	default:
 		return -1;
 	}

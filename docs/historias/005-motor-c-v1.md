@@ -2,9 +2,11 @@
 
 - **Fecha:** 2026-10-03 (actualizada el mismo día con la Fase 2, el
   2026-10-04 con las historias 009 y 010, y el 2026-10-05 con la 011)
-- **Estado:** vigente; la historia 006 sustituye la política de envío, las
-  sondas y el formato de `cg_probe_info` (protocolo v2), y la 009 suma las
-  banderas de IP pass (protocolo v3)
+- **Estado:** cerrada (2026-10-24, archivada); la historia 006 sustituye la
+  política de envío, las sondas y el formato de `cg_probe_info` (protocolo
+  v2), la 009 suma las banderas de IP pass (protocolo v3) y el protocolo va
+  por la v9 (historia 023); lo pendiente sigue en la 011 (hilos) y la 007
+  (hardware real)
 - **Fuentes:** `engine/` (código y tests), `sudo bench/lab.sh compare` y
   `smoke`, historias 001–004.
 
@@ -236,3 +238,5 @@ Rango de dos pasadas completas:
   OpenWrt x86_64 pasa de 97 a 110 KB (historia 010, PR 2).
 - 2026-10-05: el servidor escucha con un grupo `SO_REUSEPORT` de colas, una
   por enlace, todavía con un hilo (historia 011, PR 3a).
+- 2026-10-24: cerrada y archivada en el README de las historias, para que el
+  índice de `CLAUDE.md` no crezca (historia 023).

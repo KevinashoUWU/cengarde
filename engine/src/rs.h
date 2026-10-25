@@ -44,6 +44,40 @@ static inline unsigned cg_rs_bytes(unsigned slen)
 	return (slen + 63) / 64 * 64;
 }
 
+/* An RS block's geometry: the m its repairs declare and are computed for
+ * (Leopard's, rs.h), when the plan sends m of them: room above m for the
+ * parity asked for again (indices m.. of the same block, any of which
+ * fixes any member), within k, CG_RS_MMAX and twice m rounded up to a
+ * power of two. Leopard computes the whole power of two either way; the
+ * larger one costs ~40 % more to encode (0.14 to 0.20 us a packet, k 21
+ * m 3, story 023), decoding the same. */
+static inline unsigned cg_rs_mhdr(unsigned k, unsigned m)
+{
+	unsigned p = 1;
+
+	while (p < 2 * m)
+		p <<= 1;
+	if (p > CG_RS_MMAX)
+		p = CG_RS_MMAX;
+	if (p > k)
+		p = k;
+	return p < m ? m : p;
+}
+
+/* The indices to send for an RS request: d of them below mhdr that the
+ * receiver does not have, from the top (the plan sent the low ones, so the
+ * top ones are new to the wire); into out, how many (fewer when the block
+ * has no more). */
+static inline unsigned cg_parq_rs_pick(uint32_t have, unsigned mhdr, unsigned d, uint8_t *out)
+{
+	unsigned n = 0;
+
+	for (unsigned j = mhdr; j-- > 0 && n < d;)
+		if (!(have >> j & 1))
+			out[n++] = (uint8_t)j;
+	return n;
+}
+
 /* Encodes k originals of bytes each into the m repairs work[0..m-1]
  * (work: CG_RS_WORK_ENC buffers); 0, or -1. */
 int cg_rs_encode(unsigned k, unsigned m, unsigned bytes, const uint8_t *const *orig, uint8_t **work);
@@ -77,7 +111,9 @@ void cg_rs_tx_add(struct cg_rs_tx *t, uint32_t seq, const uint8_t *p, uint16_t l
 /* Closes the block: its repairs' header (h, index 0; the caller sets
  * idx for each) and symbols (sym[j], *bytes each, j < returned count) in
  * the block's work buffers; the count, at most m and k; 0 when nothing
- * was open or Leopard failed. */
+ * was open or Leopard failed. The header's m is the block's geometry
+ * (cg_rs_mhdr), not the count sent: the indices above are left for the
+ * parity asked for again (harq.h). */
 unsigned cg_rs_tx_close(struct cg_rs_tx *t, struct cg_rep_hdr *h, uint8_t **sym, unsigned *bytes);
 
 /* The receiver's scratch for a decode: the members it has, padded, and
@@ -107,6 +143,31 @@ struct cg_rs_rx {
 	uint64_t repairs, useless, recovered, dropped, bad, decodes, failed;
 	uint8_t rep[CG_RS_RXREP][CG_RS_BYTES_MAX] __attribute__((aligned(64)));
 };
+
+/* The rank deficit of the pending block that misses seq (its repairs
+ * still to come: as many as missing, less those it has), its header's
+ * base, map and m and the repairs it has (bit j) in the rest; 0 when no
+ * block misses it. */
+static inline unsigned cg_rs_rx_need(const struct cg_rs_rx *r, uint32_t seq, uint32_t *base, uint64_t *map,
+				     uint8_t *m, uint32_t *have)
+{
+	for (unsigned i = 0; i < CG_RS_RXB; i++) {
+		const struct cg_rs_blk *b = &r->b[i];
+		uint32_t d = seq - b->base;
+		unsigned miss, got;
+
+		if (!b->used || d >= CG_REP_SPAN || !(b->miss >> d & 1))
+			continue;
+		miss = (unsigned)__builtin_popcountll(b->miss);
+		got = (unsigned)__builtin_popcount(b->got);
+		*base = b->base;
+		*map = b->map;
+		*m = b->m;
+		*have = b->got;
+		return miss > got ? miss - got : 0;
+	}
+	return 0;
+}
 
 /* A repair (header h, slen bytes of symbol at s): kept while members of
  * its block are missing; once there are as many repairs as missing, the

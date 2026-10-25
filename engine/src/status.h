@@ -85,6 +85,12 @@ void cg_json_dominant(struct cg_json *j, const struct cg_dom *d);
 struct cg_hlink;
 void cg_json_owd_fresh(struct cg_json *j, const struct cg_hlink *h, uint64_t now_ms);
 
+/* Where TCP leaves the tunnel (tcpfree.h's struct cg_tcpe, story 023):
+ * handshakes timed, the far leg, SACK holes seen, beyond the tunnel and
+ * the tunnel's own. */
+struct cg_tcpe;
+void cg_json_tcpe(struct cg_json *j, const char *k, const struct cg_tcpe *e);
+
 /* Writes data to path atomically. Returns 0 or -1 (errno set). */
 int cg_status_write(const char *path, const char *data, size_t len);
 

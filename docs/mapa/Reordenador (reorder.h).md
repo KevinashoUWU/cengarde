@@ -3,7 +3,7 @@ tags: [mapa, pieza]
 archivos:
   - engine/src/reorder.h
   - engine/tests/test_reorder.c
-sello: 09f7953981deec1b
+sello: bf852640aa1dba7f
 ---
 # Reordenador (reorder.h)
 
@@ -19,7 +19,9 @@ Pone en orden de secuencia lo que llega antes de entregarlo a WireGuard o a la T
 
 ## Decide / escribe
 - La entrega en orden (`down_deliver` / `up_deliver`).
-- Huecos a punto de abandonarse → [[Rescate (rescue.h)]] (NACK); [[FEC (fec.h)]] reconstruye antes.
+- Huecos a punto de abandonarse → [[Rescate (rescue.h)]] (NACK), por [[Reparación coherente (harq.h)]]; [[FEC (fec.h)]] reconstruye antes.
+- Un hueco que la pista `CG_F_PREV` dio por perdido en todos los enlaces se pide al instante y retiene lo que sigue aunque el tope sea 0 (redundancia); un hueco pedido espera `rescue_us` desde el pedido, acotado por el tope **más** `rescue_us` (`cg_ro_ask_left`), no por el tope solo ([[023-reparacion-coherente]]).
+- Lo rehecho (`rebuilt`) que llena un hueco pedido cuenta en `rescue.repaired`, no en `rescued`.
 - Estadísticas `in_order`, `held_total`, `lost.*`, `late.*` → estado.
 
 ## Perillas
@@ -33,6 +35,7 @@ Pone en orden de secuencia lo que llega antes de entregarlo a WireGuard o a la T
 - [[013-capacidad-y-dosificacion]]: se rendía antes de tiempo: daba por perdido el 4–8 % de lo repartido y todo llegaba (60 % menos de 10 ms tarde); con margen 50 la subida pasó de 16–17 a 33–48 Mbit/s. `reorder_by_link` y el adaptativo no mejoraron.
 
 ## Choques conocidos
+- Antes de [[023-reparacion-coherente]], en redundancia no retenía nada y un hueco pedido al vencer su tope no esperaba nada: el rescate casi no actuaba.
 - C2: `rset` incluye todo enlace no silenciado; ni G4 ni el ETA viajan al receptor, y RACK espera a enlaces ociosos: cada hueco va al plazo. Abierto; necesita protocolo ([[audit-pending]]).
 - [[Liberación TCP (tcpfree.h)]]: una retransmisión adelantada hacía reenviar todo; ahora va en su lugar.
 - El comentario dice ventana N = 4096 bajo 8128; el código tiene 16384 y 32768 ([[Mapa del motor#Contradicciones]]).

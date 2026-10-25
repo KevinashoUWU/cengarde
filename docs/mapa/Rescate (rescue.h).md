@@ -16,6 +16,8 @@ Un ARQ estilo XLINK. El emisor guarda lo enviado hace poco en un anillo; cuando 
 - Los huecos que pide el reordenador (`send_nacks`), con `rescue_wait_ms` y `rescue_tries`.
 - El peso de cada enlace (`cg_cap_rescue_w`) y el bit `full` de [[Capacidad (capacity.h)]]: peso 1 hasta `rescue_target_ms`, 0 desde 4 veces, según dónde estará la cola en 1 s.
 - [[FEC (fec.h)]]: con `fec`, un hueco espera al menos 2 × `fec_wait_ms` + 20 ms antes del NACK.
+- [[Reparación coherente (harq.h)]]: con un código protegiendo, el servidor no pide hasta que el hueco queda sellado, pide la paridad (PARQ) cuando hay déficit y el paquete solo sin código; con TCP adentro, nada más allá de su presupuesto.
+- El enlace de cada paquete en el anillo (`went`) sale de las copias ya decididas (`seal_batch`, `down_seal`, historia 023).
 
 ## Decide / escribe
 - Qué se reenvía y por dónde (`on_nack`); `CG_BOND_RESCUE` y `CG_BOND_FULL` en la cola de bonding ([[Sondas y cola de bonding (proto.h)]]).
@@ -32,10 +34,11 @@ Un ARQ estilo XLINK. El emisor guarda lo enviado hace poco en un anillo; cuando 
 - `rescue.h`: sin control de congestión, en el laboratorio lo retenido esperaba segundos (un enlace de 10 Mbit/s junto a 60 y 30).
 
 ## Choques conocidos
+- Estaba casi mudo en redundancia (112 pedidos en un día de ~25 000 pérdidas, [[017-terreno-nostalgica]]): la pista `CG_F_PREV` se escribía antes de decidir las copias y nada se retenía con `reorder_dup_wait_ms` 0. Arreglado en [[023-reparacion-coherente]].
 - C10: el rescate del cliente elige enlace por SRTT, no por OWD; `rescue_by_owd` quedó neutro ([[audit-pending]]).
 - C11: el bit `full` parpadeaba; la histéresis quedó como perilla, mixta.
 - C12: su peso dependía de `governor_target_ms`; ahora `rescue_target_ms`.
 
 ## Archivos
 - `rescue.h`; tests `engine/tests/test_rescue.c`.
-- `client.c`: `wg_read` (`cg_resc_put`, `cg_resc_earn`), `send_nacks`, `on_nack`, `rescue_apply`. `server.c`: `down_prepare`, `send_nacks`, `on_nack`.
+- `client.c`: `seal_batch` (`cg_resc_put`, `cg_resc_earn`), `send_nacks`, `on_nack`, `on_parq`, `rescue_apply`. `server.c`: `down_seal`, `send_nacks`, `nack_send`, `on_nack`.

@@ -57,10 +57,12 @@ static inline uint32_t cg_flow_fin(uint32_t h)
 	return h ^ (h >> 16);
 }
 
-/* The flow of IP packet b (len bytes) into f. Returns 4 or 6, or 0 when b
- * is not a packet cg_ip_check takes (f untouched). seed varies the hash
- * (a per-process random value, so nobody can aim at one bucket). */
-static inline int cg_flow_of(const uint8_t *b, size_t len, uint32_t seed, struct cg_flow *f)
+/* The flow of IP packet b (len bytes) into f, its hash as if its
+ * addresses and ports were swapped when rev (the reply direction's: an ACK
+ * finds its data's flow, story 023). Returns 4 or 6, or 0 when b is not a
+ * packet cg_ip_check takes (f untouched). seed varies the hash (a
+ * per-process random value, so nobody can aim at one bucket). */
+static inline int cg_flow_of_dir(const uint8_t *b, size_t len, uint32_t seed, int rev, struct cg_flow *f)
 {
 	int ver = cg_ip_check(b, len);
 	size_t off, alen;
@@ -72,8 +74,8 @@ static inline int cg_flow_of(const uint8_t *b, size_t len, uint32_t seed, struct
 	f->tcp = f->frag = 0;
 	f->sport = f->dport = 0;
 	f->l4off = 0;
-	src = cg_ip_src(b, ver);
-	dst = cg_ip_dst(b, ver);
+	src = rev ? cg_ip_dst(b, ver) : cg_ip_src(b, ver);
+	dst = rev ? cg_ip_src(b, ver) : cg_ip_dst(b, ver);
 	alen = ver == 4 ? 4 : 16;
 	if (ver == 4) {
 		f->proto = b[9];
@@ -116,9 +118,15 @@ static inline int cg_flow_of(const uint8_t *b, size_t len, uint32_t seed, struct
 		f->l4off = (uint16_t)off;
 	}
 	h = cg_flow_mix(h, (uint32_t)f->proto << 16 | (uint32_t)ver);
-	h = cg_flow_mix(h, (uint32_t)f->sport << 16 | f->dport);
+	h = cg_flow_mix(h, rev ? (uint32_t)f->dport << 16 | f->sport : (uint32_t)f->sport << 16 | f->dport);
 	f->hash = cg_flow_fin(h);
 	return ver;
+}
+
+/* The flow of IP packet b (len bytes) into f (cg_flow_of_dir, as sent). */
+static inline int cg_flow_of(const uint8_t *b, size_t len, uint32_t seed, struct cg_flow *f)
+{
+	return cg_flow_of_dir(b, len, seed, 0, f);
 }
 
 #endif
