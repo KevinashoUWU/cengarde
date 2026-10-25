@@ -412,9 +412,14 @@ def line(a):
     # packets it sent, and QUIC has no "retransmits" but the packets it declared lost.
     extra = {"pkts_sent": None, "spurious": None, "srtt_ms": None, "min_rtt_ms": None, "quic_cc": None}
     segs = retrans_pct = mbps_tail = None
+    j = None
     try:
         j = json.load(open(a.result))
-        if a.cc == "quic":
+        if a.cc == "live":  # story 024: livesim.py merge's, the far stream's numbers
+            far = j["far"]
+            mbps, retrans = far["mbps"], far.get("send", {}).get("total_retrans")
+            extra["srtt_ms"] = far.get("send", {}).get("srtt_ms")
+        elif a.cc == "quic":
             mbps, retrans = j["mbps"], j["lost"]
             extra = {"pkts_sent": j["sent"], "spurious": j["spurious"], "srtt_ms": j["srtt_ms"],
                      "min_rtt_ms": j["min_rtt_ms"], "quic_cc": j["cc"]}
@@ -449,6 +454,13 @@ def line(a):
         rx, tx = udpgen_fields(a.small_rx), udpgen_fields(a.small_tx) if a.small_tx else {}
         out["small"] = {"sent": tx.get("sent"), "uniq": rx.get("uniq"), "p50_us": rx.get("p50_us"),
                         "p99_us": rx.get("p99_us"), "reord": rx.get("reord")} if rx else None
+    if a.cc == "live" and isinstance(j, dict):
+        out["live"] = j
+    if a.pep:  # story 024's hosts: each leg's retransmissions, the proxies' memory
+        try:
+            out["pep"] = json.load(open(a.pep))
+        except (OSError, ValueError):
+            out["pep"] = None
     if a.before and a.after:
         out.update(delta(a.before, a.after))
     if a.samples:  # BOND_SAMPLE: each link over the second half
@@ -835,6 +847,7 @@ def main(argv):
     p.add_argument("--before")
     p.add_argument("--after")
     p.add_argument("--samples", help="BOND_SAMPLE's directory of status files, one a second")
+    p.add_argument("--pep", help="pepstat.py's JSON (story 024's hosts, BOND_PEP)")
     for n in ("case", "variant", "dir", "cc", "rep", "secs", "cpu-client", "cpu-server", "hz", "netem"):
         p.add_argument("--" + n, required=True)
     p = sp.add_parser("show")

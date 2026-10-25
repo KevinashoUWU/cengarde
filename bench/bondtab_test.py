@@ -2,7 +2,8 @@
 """Tests for bench/bondtab.py on made-up status files and runs whose answers are
 known: the deltas of the engine's counters (client, server with sessions that come
 and go, an engine without the reorder object, a missing snapshot), a run's JSON
-line (iperf3 and quic, the 1200-byte ping, the flow of small packets), the rule for
+line (iperf3, quic and story 024's live streams with pepstat.py's legs, the
+1200-byte ping, the flow of small packets), the rule for
 two modes against the numbers of story 012, the Mann-Whitney p-value against an
 exact count, the tables, and which variant each one is compared with. Run:
 python3 bench/bondtab_test.py
@@ -19,6 +20,7 @@ import tempfile
 sys.dont_write_bytecode = True  # no bench/__pycache__ in the tree
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import bondtab  # noqa: E402
+import pepstat  # noqa: E402
 
 fails = 0
 checks = 0
@@ -437,6 +439,47 @@ def test_sig(d):
     check("sig" not in out[1], "sig: an engine without it, no key")
 
 
+def test_pep(d):
+    """Story 024: pepstat.py's legs and buffers, and the live line."""
+    pd = os.path.join(d, "pep")
+    os.makedirs(pd, exist_ok=True)
+    head = "Tcp: RtoAlgorithm RtoMin RtoMax MaxConn ActiveOpens PassiveOpens AttemptFails EstabResets CurrEstab InSegs OutSegs RetransSegs InErrs OutRsts InCsumErrors\n"
+    for tag, base in (("before", 0), ("after", 1)):
+        for i, ns in enumerate(pepstat.NSS):
+            write(os.path.join(pd, "snmp-%s-%s" % (tag, ns)),
+                  head + "Tcp: 1 200 120000 -1 0 0 0 0 1 0 %d %d 0 0 0\n" % (1000 * base * (i + 1), 10 * base * i))
+    ss1 = ("ESTAB 0 0 10.79.0.2:40000 10.79.0.1:8388\n"
+           "\t skmem:(r0,rb131072,t0,tb87040,f0,w300000,o0,bl0,d0) cubic rtt:25.5/2 bytes_acked:100\n"
+           "ESTAB 700000 0 192.168.79.1:1080 192.168.79.2:5000\n"
+           "\t skmem:(r724000,rb6291456,t0,tb46080,f0,w0,o0,bl0,d0) cubic rtt:0.1/0.05\n")
+    write(os.path.join(pd, "ss-cli-1"), ss1)
+    write(os.path.join(pd, "ss-cli-2"), "")
+    write(os.path.join(pd, "ss-srv-1"), "ESTAB 0 0 172.30.1.1:5 172.30.1.2:5201\n"
+          "\t skmem:(r0,rb1,t0,tb1,f0,w102400,o0,bl0,d0) bbr rtt:101.0/1 bytes_acked:5\n")
+    write(os.path.join(pd, "rss-1"), "ss-redir 3000\nss-server 4000\n")
+    write(os.path.join(pd, "rss-2"), "ss-redir 3500\n")
+    iperf = os.path.join(d, "pep-iperf.json")
+    write(iperf, {"end": {"sum_received": {"bytes": 1380000}}})
+    a = pepstat.argparse.Namespace(dir=pd, mode="tcp", midcc="cubic", farcc="bbr", secs=10, result=iperf,
+                                   cc="cubic", cpu_cli=50, cpu_srv=100, hz=100)
+    j = pepstat.summary(a)
+    check(j["retrans"] == {"lan": 0, "cli": 10, "srv": 20, "far": 30}, "pep: retransmissions per netns")
+    check(j["retrans_pct"]["srv"] == 2.0, "pep: over the delivered segments (bytes / 1380)")
+    check(j["mem_kb"]["cli"]["peak"] == round((724000 + 300000) / 1024) and j["mem_kb"]["srv"]["peak"] == 100,
+          "pep: rmem_alloc + wmem_queued, the peak over the samples")
+    check(j["mid_rtt_ms"] == 25.5 and j["far_rtt_ms"] == 101.0 and j["near_rtt_ms"] is None, "pep: the legs' RTT")
+    check(j["rss_kb"] == {"ss-redir": 3500, "ss-server": 4000}, "pep: the proxies' RSS at its peak")
+    check(j["cpu_cli_pct"] == 5.0 and j["cpu_srv_pct"] == 10.0 and "kcp" not in j, "pep: CPU, no kcptun")
+    live = {"far": {"mbps": 7.5, "sec_p5": 6.0, "delivered": 100, "size": 1250, "send": {"total_retrans": 7, "srtt_ms": 3.0}},
+            "near": {"mbps": 8.0, "delivered": 60, "size": 1250, "send": {}}}
+    write(iperf, live)
+    check(pepstat.rx_bytes(iperf, "live") == 160 * 1250, "pep: live bytes are both streams' records")
+    write(os.path.join(d, "pep.json"), j)
+    rc, line = run_line(d, ["--pep", os.path.join(d, "pep.json")], live, cc="live")
+    check(rc == 0 and line["mbps"] == 7.5 and line["retrans"] == 7 and line["srtt_ms"] == 3.0, "live: the far stream")
+    check(line["live"]["near"]["mbps"] == 8.0 and line["pep"]["retrans"]["cli"] == 10, "live: the streams and the legs")
+
+
 def main():
     with tempfile.TemporaryDirectory() as d:
         test_delta(d)
@@ -447,6 +490,7 @@ def main():
         test_tables(d)
         test_references(d)
         test_sig(d)
+        test_pep(d)
     print(f"bondtab_test: {checks - fails}/{checks} ok" if not fails else f"bondtab_test: {fails} of {checks} FAILED")
     return 1 if fails else 0
 
