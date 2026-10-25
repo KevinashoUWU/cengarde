@@ -1,7 +1,7 @@
 # 017 — Terreno en Nostálgica FM (20 al 22-10-2026)
 
 - **Fecha:** 2026-10-23
-- **Estado:** vigente
+- **Estado:** cerrada (2026-10-25, archivada): sus hallazgos se aplicaron (`pace_peers_ms` 250; el rescate mudo, arreglado en la 023)
 - **Fuentes:** registro de cengarde en el NUC (`/srv/cengarde-rec`, bajado a
   `~/campo/2026-10-22/nos-tarde/` y `nos-1500/` del PC del banco), el plato
   (`dish-rec`, `~/campo/2026-10-21/nos/`), el registrador de pings
@@ -105,3 +105,4 @@ estaban congelados; los cambios se hicieron en ventanas autorizadas.
   pista antes de las copias, nada retenido en redundancia, lo pedido sin
   espera al tope); en el laboratorio, `protect` con copias de 250 ms pasa de
   0,275 a 0,005 % perdido y el TCP de 7,6 a 14,4 Mbit/s.
+- 2026-10-25: cerrada y archivada (el índice de `CLAUDE.md` deja lugar a la 025).

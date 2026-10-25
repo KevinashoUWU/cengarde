@@ -9,7 +9,7 @@ archivos:
   - engine/tests/test_protoctl.c
   - engine/tests/test_stream.c
   - engine/tests/test_streamcc.c
-sello: 0
+sello: 6c8402dcecdab125
 ---
 # Protocontrolador (protoctl.c, stream.h, streamcc.h)
 

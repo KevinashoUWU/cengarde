@@ -4,7 +4,7 @@ archivos:
   - engine/src/proto.h
   - engine/src/proto.c
   - engine/tests/test_proto.c
-sello: 0c15c328fe40ee60
+sello: 39fdec69653b9d54
 ---
 # Sondas y cola de bonding (proto.h)
 
