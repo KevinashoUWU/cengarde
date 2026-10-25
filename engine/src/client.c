@@ -2117,6 +2117,10 @@ static int pctl_vps_addr(const struct cg_config *cfg, struct sockaddr_storage *a
 
 			if (t->family == AF_INET6 && i + 1 < cfg->ntun_addr)
 				continue; /* IPv4 first */
+			if (len + 1 >= n * 8) { /* OpenWrt's /32: no prefix to take it from */
+				snprintf(err, errlen, "protocontroller = a: tun_addr is a single address; set protocontroller_vps");
+				return -1;
+			}
 			memcpy(ad, t->a, n);
 			for (unsigned b = len; b < n * 8; b++)
 				ad[b / 8] &= (uint8_t)~(0x80u >> (b % 8));

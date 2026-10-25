@@ -1137,6 +1137,9 @@ engine_conf() {
 	if [ "$PCTL_ON" = 1 ] && [ "$NATIVE" = 1 ]; then
 		echo "protocontroller = $PCTL_MODE"
 		echo "protocontroller_port = $PCTL_LISTEN"
+		# variant A's middle TCP goes to the VPS's end of the tunnel (this
+		# router's own tun_addr is a /32: nothing to take it from)
+		echo "protocontroller_vps = $VPS_ADDR"
 		for k in protocontroller_mid_cc protocontroller_buf_kb protocontroller_mem_mb protocontroller_max_flows protocontroller_queue_ms protocontroller_backlog_ms protocontroller_dead_s; do
 			config_get v main "$k"
 			[ -n "$v" ] && echo "$k = $v"
