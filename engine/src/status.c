@@ -6,6 +6,7 @@
 #include "dominant.h"
 #include "linksig.h"
 #include "split.h"
+#include "tcpack.h"
 #include "tcpfree.h"
 
 #include <errno.h>
@@ -313,6 +314,33 @@ void cg_json_tcpe(struct cg_json *j, const char *k, const struct cg_tcpe *e)
 	cg_json_u64(j, "sack_holes", e->holes);
 	cg_json_u64(j, "beyond", e->beyond);
 	cg_json_u64(j, "tunnel", e->own);
+	cg_json_u64(j, "in_flight", e->inflight);
+	cg_json_u64(j, "unvouched", e->unvouched);
+	cg_json_u64(j, "marked", e->marked);
+	cg_json_end(j, '}');
+}
+
+void cg_json_tcpa(struct cg_json *j, const char *k, const struct cg_tcpa *a, const uint64_t *rows,
+		  const uint64_t *copied, int peer_marks)
+{
+	static const char *const row[CG_TCPA_ROWS] = { "unknown", "spurious", "delivered", "tunnel" };
+
+	cg_json_obj(j, k);
+	if (peer_marks >= 0)
+		cg_json_bool(j, "peer_marks", peer_marks);
+	if (a) {
+		cg_json_u64(j, "acks", a->acks);
+		cg_json_u64(j, "acks_sack", a->sacked);
+		cg_json_u64(j, "acks_marked", a->marked);
+	}
+	if (rows && copied) {
+		for (int i = 0; i < CG_TCPA_ROWS; i++)
+			cg_json_u64(j, row[i], rows[i]);
+		cg_json_obj(j, "copied");
+		for (int i = 0; i < CG_TCPA_ROWS; i++)
+			cg_json_u64(j, row[i], copied[i]);
+		cg_json_end(j, '}');
+	}
 	cg_json_end(j, '}');
 }
 

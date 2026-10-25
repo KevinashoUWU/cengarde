@@ -103,6 +103,7 @@ static size_t rpkt(uint8_t *b, uint16_t sport, uint32_t ack, uint8_t fl, uint32_
 }
 
 static struct cg_tcpe E;
+static uint32_t ETS; /* the tunnel sequence of each segment written */
 
 static void e_out(uint16_t sport, uint32_t seq, uint8_t fl, size_t plen, uint32_t t)
 {
@@ -113,7 +114,7 @@ static void e_out(uint16_t sport, uint32_t seq, uint8_t fl, size_t plen, uint32_
 	if (!(fl & 0x10)) /* pkt sets ACK: a bare SYN clears it */
 		b[33] &= (uint8_t)~0x10;
 	CHECK(cg_flow_of(b, len, 7, &f) == 4);
-	cg_tcpe_out(&E, &f, b, len, t);
+	cg_tcpe_out(&E, &f, b, len, t, ++ETS, -1);
 }
 
 static void e_in(uint16_t sport, uint32_t ack, uint8_t fl, uint32_t sl, uint32_t sr, uint32_t t)
@@ -123,7 +124,7 @@ static void e_in(uint16_t sport, uint32_t ack, uint8_t fl, uint32_t sl, uint32_t
 	struct cg_flow f;
 
 	CHECK(cg_flow_of_dir(b, len, 7, 1, &f) == 4);
-	cg_tcpe_in(&E, &f, b, len, t);
+	cg_tcpe_in(&E, &f, b, len, t, NULL);
 }
 
 /* Story 023: the classes of a retransmission (first, again) and where TCP

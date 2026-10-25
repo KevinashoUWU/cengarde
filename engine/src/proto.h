@@ -133,13 +133,23 @@ static inline int cg_type_ctl(uint8_t type)
  * waiting out rescue_wait_ms for what never comes. */
 #define CG_F_GONE 0x02
 
-/* Header flags on DATA, for bonding (story 012). CG_F_ECN is reserved:
- * senders write 0 for now and receivers ignore it. CG_F_SPLIT is written
+/* Header flags on DATA, for bonding (story 012). CG_F_SPLIT is written
  * only by a sender that splits (split.h), and is under the MAC: this packet
  * skips at least one carrier, some link that carries payload does not bring
  * this sequence (a weight-0 link may bring it too, so it is not "the only
  * copy"). */
-#define CG_F_ECN 0x02   /* reserved (was a 2-bit ECN field): written 0, ignored */
+/* CG_F_TUNHOLE (story 023, 2026-10-24; reserved before, written 0 and
+ * ignored, as bit 0x02 still is by a peer that predates it): with tunnel =
+ * native and tcp_aware, a TCP ACK the sender read into the tunnel with a
+ * SACK hole the tunnel lost on every link (tcpfree.h's cg_tcpe_in); the
+ * other end, which sends that flow's data, sends the retransmissions of
+ * those holes copied (tcpack.h). Without it, with the peer's
+ * CG_BOND_TCPMARK, the tunnel did not lose them as far as it knows
+ * (delivered and lost beyond it, or still on their way).
+ * Why no new version: like CG_BOND_TYPE, a peer that predates it writes 0
+ * and ignores it, and reads as "not known" whatever a peer writes that does
+ * not say CG_BOND_TCPMARK. */
+#define CG_F_TUNHOLE 0x02
 /* Version 6 (story 014, tcpfree.h): the receiver's reorderer hands this
  * packet on at once, never holding it nor waiting for a gap before it:
  * with tunnel = native, the sender's mark on inner TCP's retransmissions
@@ -250,13 +260,19 @@ struct cg_probe_info {
  *   20-22 CG_BOND_TYPE: the client's type of this link (linkmodel.h, story
  *        015), so that the server treats its download alike; 0 is auto,
  *        today's behaviour, and a reply writes 0;
+ *   23   CG_BOND_TCPMARK: the sender marks the TCP ACKs it reads into the
+ *        tunnel CG_F_TUNHOLE (story 023: tunnel = native, tcp_aware), so
+ *        that an ACK without the mark says its holes were delivered; a
+ *        reply carries it too (the server's own marks), and without it
+ *        the mark means nothing;
  * and every other bit is reserved: written 0, ignored when read, so that a
  * newer peer can use them. CG_BOND_TYPE is the first such use, and why it
  * needs no new version: a peer that predates it reads those bits as
  * reserved and ignores them (auto, as before), and one that has it reads 0
  * (auto) from a peer that wrote them 0, as reserved bits are written. The
  * MAC covers them either way. Bits 20+ are reserved alike in versions 6
- * and 7, so it is the same in both. A client sends it in every probe; a server
+ * and 7, so it is the same in both. CG_BOND_TCPMARK is the second such use,
+ * in version 9, for the same reason. A client sends it in every probe; a server
  * answers with one only a probe that had one, so that a reply is never
  * larger than its probe, and a reply's weight and CG_BOND_SPLIT_ME are 0
  * (the client's upload split depends only on the server reordering). */
@@ -269,6 +285,7 @@ struct cg_probe_info {
 #define CG_BOND_FULL (1u << 19)   /* but not what is lost on this path now (full, or out of budget) */
 #define CG_BOND_TYPE_SHIFT 20
 #define CG_BOND_TYPE (7u << CG_BOND_TYPE_SHIFT) /* the client's type of this link (linkmodel.h), 0: auto */
+#define CG_BOND_TCPMARK (1u << 23) /* the sender marks its TCP ACKs CG_F_TUNHOLE (tcp_aware) */
 
 struct cg_probe_bond {
 	uint16_t weight;  /* 0 to CG_BOND_WEIGHT_MAX */
@@ -277,6 +294,7 @@ struct cg_probe_bond {
 	uint8_t rescue;   /* CG_BOND_RESCUE */
 	uint8_t full;     /* CG_BOND_FULL */
 	uint8_t type;     /* CG_BOND_TYPE: enum cg_link_type, 0 to 7 as written (a reader normalizes it) */
+	uint8_t tcpmark;  /* CG_BOND_TCPMARK */
 };
 
 /* HELLO payload: the server answers a probe it cannot take yet. echo_ts ties

@@ -227,6 +227,7 @@ struct cg_ro_pkt {
 struct cg_ro_out {
 	uint32_t seq;
 	uint16_t buf, len;
+	uint8_t flags; /* its header's (CG_F_PREV: what the gap before it was, tcpfree.h) */
 };
 
 struct cg_ro_slot {
@@ -1107,6 +1108,7 @@ static inline int cg_ro_next(struct cg_reorder *r, const struct cg_ro_cfg *cf, u
 			o->seq = g;
 			o->buf = s->buf;
 			o->len = s->len;
+			o->flags = s->flags;
 			r->held_bits[(g % CG_RO_SLOTS) / 64] &= ~(1ULL << (g % 64));
 			r->held--;
 			s->state = CG_RO_EMPTY;
@@ -1247,6 +1249,7 @@ static inline int cg_ro_flush(struct cg_reorder *r, struct cg_ro_out *o)
 			o->seq = g;
 			o->buf = s->buf;
 			o->len = s->len;
+			o->flags = s->flags;
 			r->held_bits[(g % CG_RO_SLOTS) / 64] &= ~(1ULL << (g % 64));
 			r->held--;
 			s->state = CG_RO_EMPTY;

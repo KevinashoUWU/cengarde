@@ -68,7 +68,15 @@ struct cg_link_rx {
 	uint64_t missed; /* packets this link never delivered */
 	uint64_t lag8;   /* 8 x smoothed delay behind the first copy, microseconds */
 	uint32_t last_us; /* when it last brought a copy (any), 0: never */
+	uint32_t top;     /* the newest sequence it brought, any copy (with last_us; story 023: tcpfree.h's view) */
 };
+
+/* A copy of seq from link l: its newest sequence (serial max). */
+static inline void cg_arr_top(struct cg_link_rx *l, uint32_t seq)
+{
+	if (!l->last_us || (int32_t)(seq - l->top) > 0)
+		l->top = seq;
+}
 
 /* Whether link i brought no copy for idle_us (0: never idle): the reorderer
  * need not wait for it (reorder_idle_ms; clockwork audit C2). */
@@ -141,6 +149,7 @@ static inline void cg_arr_first(struct cg_arrivals *a, struct cg_link_rx rx[CG_M
 	for (unsigned d = 0; d < CG_JOINT_D; d++)
 		s->in[d] = bit;
 	rx[link].wins++;
+	cg_arr_top(&rx[link], seq);
 	rx[link].last_us = now_us ? now_us : 1;
 	cg_lag_sample(&rx[link], 0);
 }
@@ -153,6 +162,7 @@ static inline void cg_arr_dup(struct cg_arrivals *a, struct cg_link_rx rx[CG_MAX
 	uint16_t bit = (uint16_t)(1u << link);
 	uint32_t lag;
 
+	cg_arr_top(&rx[link], seq);
 	rx[link].last_us = now_us ? now_us : 1;
 	if (!s->used || s->seq != seq) {
 		rx[link].late++;

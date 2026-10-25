@@ -309,7 +309,8 @@ void test_proto(void)
 			cg_probe_bond_write(tp, &b);
 			v = (uint32_t)tp[CG_PROBE_INFO_LEN] << 24 | (uint32_t)tp[CG_PROBE_INFO_LEN + 1] << 16 |
 			    (uint32_t)tp[CG_PROBE_INFO_LEN + 2] << 8 | tp[CG_PROBE_INFO_LEN + 3];
-			CHECK_EQ(v >> 23, 0); /* bits 23+ stay reserved */
+			CHECK_EQ(v >> 24, 0); /* bits 24+ stay reserved */
+			CHECK_EQ(v & CG_BOND_TCPMARK, 0);
 			CHECK_EQ((v >> 20) & 7, t);
 			/* What an older reader knows of the word: bits 0-19 only, the same for every type */
 			CHECK_EQ(v & 0xfffffu, 1000u | CG_BOND_REORDERS | CG_BOND_SPLIT_ME | CG_BOND_RESCUE | CG_BOND_FULL);
@@ -329,6 +330,26 @@ void test_proto(void)
 		r.type = 5;
 		CHECK_EQ(cg_probe_bond_read(&r, tp, CG_PROBE_INFO_LEN), 0);
 		CHECK_EQ(r.type, 0);
+	}
+
+	/* CG_BOND_TCPMARK (bit 23, story 023): written and read back, alone
+	 * and next to the type; an older writer leaves it 0 (its ACKs' marks
+	 * mean nothing), an older reader ignores it. */
+	{
+		struct cg_probe_bond b = { .weight = 7, .type = 7, .tcpmark = 1 }, r;
+		uint8_t tp[CG_PROBE_BOND_LEN];
+
+		CHECK_EQ(CG_BOND_TCPMARK, 0x00800000u);
+		cg_probe_bond_write(tp, &b);
+		CHECK(!memcmp(tp + CG_PROBE_INFO_LEN, "\x00\xf0\x00\x07", 4));
+		CHECK_EQ(cg_probe_bond_read(&r, tp, CG_PROBE_BOND_LEN), 1);
+		CHECK(r.tcpmark && r.type == 7 && r.weight == 7 && !r.rescue);
+		b.tcpmark = 0;
+		cg_probe_bond_write(tp, &b);
+		CHECK_EQ(cg_probe_bond_read(&r, tp, CG_PROBE_BOND_LEN), 1);
+		CHECK(!r.tcpmark && r.type == 7);
+		CHECK_EQ(cg_probe_bond_read(&r, tp, CG_PROBE_INFO_LEN), 0);
+		CHECK(!r.tcpmark);
 	}
 
 	/* NACK: ranges of a base and a 64-bit mask, under the MAC; a count of 0,
