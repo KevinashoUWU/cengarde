@@ -20,6 +20,9 @@
  *   round trip is over that counts the
  *   acknowledged bytes only, and a whole round of them sets the estimate
  *   to what was delivered (loss by overflow is not capacity).
+ * - Each sample is over the longer of the time since the delivery before
+ *   the segment's send and the segment's own flight (BBR's ack and send
+ *   intervals: a burst of SACKs after a hole read as many times the link).
  * - The estimate bw is the largest sample over a window of a few round
  *   trips (two buckets); app-limited samples under it are skipped.
  * - The pacing rate is bw times a gain: STARTUP 3/2 (BBR's 2.89, and 2,
@@ -29,7 +32,12 @@
  *   early at a queue), and 3/4 while a window shows a standing queue.
  * - In flight at most twice bw x (min_rtt + queue_us) and a few segments:
  *   the pacing holds the rate, the window the late ACKs; a queue over
- *   queue_us for a round trip cuts the estimate to what is delivered.
+ *   queue_us for a round trip cuts the estimate: the first cut of a run to
+ *   the most delivered lately (behind a hole an instant delivers next to
+ *   nothing), the next ones to what is delivered.
+ * - Heavy random loss (cg_scc_lossw: of a window, more than 1 byte in 5
+ *   lost with the queue short) is the caller's sign that the tunnel's own
+ *   repairs do not keep up: protoctl.c stops waiting for them.
  * - The engine's capacity (capacity.h, cg_scc_hint): the estimate starts
  *   from it (at least CG_SCC_START) instead of from nothing, and while the
  *   engine finds the link that carries the data full (a capacity measured
@@ -64,6 +72,8 @@
 #define CG_SCC_IW_SEGS 32        /* in flight before any round trip is known */
 #define CG_SCC_WMIN_US 10000u    /* the window of the queue's verdict: a round trip, at least this */
 #define CG_SCC_IDLE_US 1000000u  /* idle this long (nothing in flight), STARTUP again */
+#define CG_SCC_LOSSW_US 100000u  /* the window of the heavy-loss verdict */
+#define CG_SCC_LOSSW_MIN 16384u  /* bytes a window needs for a verdict */
 
 enum { CG_SCC_STARTUP_M = 0, CG_SCC_DRAIN_M, CG_SCC_PROBE_M };
 
@@ -79,6 +89,8 @@ struct cg_scc {
 	uint64_t sent;   /* bytes sent, again too */
 	uint64_t bw;     /* the estimate, bytes/s; 0: none */
 	uint64_t bmax[2], bt; /* the window's two buckets, and the current one's start */
+	uint64_t dmax[2];     /* the same window's largest delivered-only samples (acknowledged bytes) */
+	uint8_t cut_run;      /* a cut since the queue appeared: the next ones follow what is delivered */
 	uint32_t min_rtt, srtt, rttvar; /* us; 0: none yet */
 	uint64_t min_t;  /* when min_rtt was taken */
 	uint8_t mode, cycle, full_n, cong;
@@ -101,6 +113,11 @@ struct cg_scc {
 	uint8_t app;        /* the senders ran out of bytes with tokens and room left (protoctl.c sets it) */
 	int64_t tokens;
 	uint64_t tok_t;
+	/* heavy random loss (cg_scc_heavy): of the last window, more than 1
+	 * byte in 5 declared lost while the queue was short */
+	uint64_t lw_t, lw_lost, lw_dl;
+	uint8_t heavy;
+	uint64_t n_heavy; /* windows with heavy loss */
 	uint64_t n_cong, n_cut, n_rounds; /* congested samples; rounds that cut bw; rounds */
 	uint64_t last_send, n_restart;    /* the last send (cg_scc_restart); restarts from idle */
 };
@@ -192,7 +209,7 @@ static inline void cg_scc_hint(struct cg_scc *p, uint64_t hint, int full)
 	}
 }
 
-static inline void cg_scc_filter(struct cg_scc *p, uint64_t now, uint64_t rate, int app)
+static inline void cg_scc_filter(struct cg_scc *p, uint64_t now, uint64_t rate, uint64_t drate, int app)
 {
 	uint64_t win = (uint64_t)p->srtt * 8;
 
@@ -200,9 +217,12 @@ static inline void cg_scc_filter(struct cg_scc *p, uint64_t now, uint64_t rate, 
 		win = CG_SCC_WIN_MIN_US;
 	if (now - p->bt >= win) {
 		p->bmax[1] = now - p->bt >= 2 * win ? 0 : p->bmax[0];
-		p->bmax[0] = 0;
+		p->dmax[1] = now - p->bt >= 2 * win ? 0 : p->dmax[0];
+		p->bmax[0] = p->dmax[0] = 0;
 		p->bt = now;
 	}
+	if (drate > p->dmax[0])
+		p->dmax[0] = drate;
 	/* an app-limited sample under what is known says nothing: the senders
 	 * had no more */
 	if (app && rate < cg_scc_bw(p))
@@ -219,6 +239,25 @@ static inline void cg_scc_filter(struct cg_scc *p, uint64_t now, uint64_t rate, 
 	}
 }
 
+/* The heavy-loss verdict at now: each CG_SCC_LOSSW_US, whether more than
+ * 1 byte in 5 of what the window settled was declared lost while the
+ * queue was short (cg_scc_lost); a window with too few bytes keeps the
+ * last verdict. The tunnel's own repairs do not keep up with that (a
+ * microcut: 60 % lost), so the caller stops waiting for them (protoctl.c:
+ * RACK's window and the timer back to protocontroller_reo_ms; widened by
+ * duplicates, they had reached 100 ms, the oldest hole took several of
+ * them and held the stream's buffer full, story 025). */
+static inline void cg_scc_lossw(struct cg_scc *p, uint64_t now)
+{
+	if (now - p->lw_t < CG_SCC_LOSSW_US)
+		return;
+	if (p->lw_lost + p->lw_dl >= CG_SCC_LOSSW_MIN || !p->lw_lost)
+		p->heavy = p->lw_lost * 4 > p->lw_dl;
+	p->n_heavy += p->heavy;
+	p->lw_t = now;
+	p->lw_lost = p->lw_dl = 0;
+}
+
 /* An ACK delivered acked bytes at now; rs, the sample of its newest-sent
  * segment (stream.h's cg_st_rs: have, tx, app, sent_us, dl, dla, dl_us). */
 static inline void cg_scc_ack(struct cg_scc *p, const struct cg_scc_cfg *c, uint64_t now, uint64_t acked, int have,
@@ -231,6 +270,8 @@ static inline void cg_scc_ack(struct cg_scc *p, const struct cg_scc_cfg *c, uint
 	p->dl += acked;
 	p->dla += acked;
 	p->dl_us = now;
+	cg_scc_lossw(p, now);
+	p->lw_dl += acked;
 	if (!have)
 		return;
 	if (now > sent_us && now - sent_us < 10000000)
@@ -283,7 +324,14 @@ static inline void cg_scc_ack(struct cg_scc *p, const struct cg_scc_cfg *c, uint
 		p->wt = now;
 	}
 	p->n_cong += p->cong;
+	/* over the longer of the time since the delivery before its send
+	 * and its own flight (BBR's ack and send intervals): after a hole
+	 * filled, a burst of SACKs over a short ack interval read as 300 to
+	 * 900 Mbit/s on a 60 Mbit/s link, the estimate followed and the
+	 * sends overflowed it (a microcut, story 025) */
 	iv = now > s_dl_us ? now - s_dl_us : 0;
+	if (now > sent_us && now - sent_us > iv)
+		iv = now - sent_us;
 	/* what the path took: delivered, and lost while the queue was short
 	 * (no more than 3 lost for 1 delivered: past 75 % lost, sending more
 	 * is only waste) */
@@ -300,27 +348,39 @@ static inline void cg_scc_ack(struct cg_scc *p, const struct cg_scc_cfg *c, uint
 	if (bytes > p->sent - s_sent)
 		bytes = p->sent - s_sent;
 	if (iv >= 100) {
+		uint64_t drate = cg_scc_mul(p->dla - s_dla, 1000000, iv);
+
 		rate = cg_scc_mul(bytes, 1000000, iv);
-		cg_scc_filter(p, now, rate, app);
+		cg_scc_filter(p, now, rate, drate, app);
 		/* a whole round trip with a queue: what is delivered, no more
-		 * (and STARTUP is over) */
+		 * (and STARTUP is over). The first cut of a run goes to the
+		 * most delivered lately, not to this instant's: behind a hole
+		 * (a microcut, the data moved to a slower link) an instant
+		 * delivers next to nothing, and the rate sank to the floor
+		 * for the rest of the cut (story 025); the next cuts of the
+		 * run follow what is delivered */
 		if (p->cong) {
 			if (!p->cong_t) {
 				p->cong_t = now;
 			} else if (now - p->cong_t >= p->min_rtt) {
-				uint64_t d = cg_scc_mul(p->dla - s_dla, 1000000, iv);
+				uint64_t d = drate, dm = p->dmax[0] > p->dmax[1] ? p->dmax[0] : p->dmax[1];
 
+				if (!p->cut_run && dm > d)
+					d = dm;
 				if (d < cg_scc_bw(p)) {
 					p->bw = d > CG_SCC_FLOOR ? d : CG_SCC_FLOOR;
 					p->bmax[0] = p->bmax[1] = p->bw;
 					p->n_cut++;
 				}
+				p->dmax[0] = p->dmax[1] = drate;
+				p->cut_run = 1;
 				if (p->mode == CG_SCC_STARTUP_M)
 					p->mode = CG_SCC_DRAIN_M;
 				p->cong_t = now;
 			}
 		} else {
 			p->cong_t = 0;
+			p->cut_run = 0;
 		}
 	}
 	/* rounds, for STARTUP's end */
@@ -394,6 +454,7 @@ static inline void cg_scc_owd(struct cg_scc *p, const struct cg_scc_cfg *c, uint
 static inline void cg_scc_lost(struct cg_scc *p, uint64_t bytes)
 {
 	p->dl += bytes;
+	p->lw_lost += bytes;
 }
 
 /* The token bucket at now. */

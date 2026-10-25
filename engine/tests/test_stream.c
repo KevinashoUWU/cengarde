@@ -244,6 +244,29 @@ static uint32_t rnd(uint32_t *s)
 	return *s >> 8;
 }
 
+/* A repeat goes as a copy from its second retransmission, and only among
+ * the CG_ST_COPY_HEAD oldest segments (the holes that hold the stream). */
+static void test_copy(void)
+{
+	struct cg_st_seg seg[32];
+	struct cg_st_tx t;
+
+	cg_st_tx_init(&t, seg, 32, 1 << 20);
+	t.n = 20;
+	for (uint32_t i = 0; i < 20; i++) {
+		seg[i].off = 1000 * i;
+		seg[i].tx = 1;
+	}
+	CHECK(!cg_st_tx_copy(&t, 0));
+	seg[0].tx = 2;
+	CHECK(cg_st_tx_copy(&t, 0));
+	seg[CG_ST_COPY_HEAD - 1].tx = 3;
+	CHECK(cg_st_tx_copy(&t, CG_ST_COPY_HEAD - 1));
+	seg[CG_ST_COPY_HEAD].tx = 3;
+	CHECK(!cg_st_tx_copy(&t, CG_ST_COPY_HEAD)); /* past the head */
+	CHECK(!cg_st_tx_copy(&t, 20));             /* new bytes */
+}
+
 static void test_e2e(void)
 {
 	static struct pkt q[4096];
@@ -372,6 +395,7 @@ static void test_e2e(void)
 
 void test_stream(void)
 {
+	test_copy();
 	test_pool_buf();
 	test_unwrap();
 	test_rx();

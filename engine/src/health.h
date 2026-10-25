@@ -410,6 +410,33 @@ static inline int cg_probes_stalled(uint32_t unanswered, uint64_t first_unanswer
 	       now_ms - first_unanswered_ms > 2 * (uint64_t)srtt_ms + CG_STALL_SLACK_MS;
 }
 
+/* A link whose probes stalled (cg_probes_stalled) but that brought a
+ * verified packet down within two round trips and CG_RXALIVE_SLACK_MS,
+ * the stall younger than CG_RXALIVE_MAX_MS: alive for a protocontroller
+ * stream, whose ARQ sends again what it loses (story 025: a microcut
+ * losing 60 % each way left 3 probes in a row unanswered for a second now
+ * and then, and the streams went to the cellular queue, where their
+ * one-way delay read as a queue and cut their rate to nothing). A link
+ * that only receives (its upload dead) is let go after the cap. */
+#define CG_RXALIVE_SLACK_MS 100
+#define CG_RXALIVE_MAX_MS 5000
+
+static inline int cg_link_rx_alive(uint32_t rx_age_ms, uint64_t stall_age_ms, uint32_t srtt_ms)
+{
+	return stall_age_ms < CG_RXALIVE_MAX_MS && rx_age_ms <= 2 * srtt_ms + CG_RXALIVE_SLACK_MS;
+}
+
+/* The same for a protocontroller stream's DATA, which has its own ARQ:
+ * anything down in the last CG_RXALIVE_ARQ_MS (its rate falls with the
+ * loss, and the packets down with it: a window of round trips let the link
+ * go, and the stream went to the cellular queue, story 025). */
+#define CG_RXALIVE_ARQ_MS 1000
+
+static inline int cg_link_rx_alive_arq(uint32_t rx_age_ms, uint64_t stall_age_ms)
+{
+	return stall_age_ms < CG_RXALIVE_MAX_MS && rx_age_ms <= CG_RXALIVE_ARQ_MS;
+}
+
 /* Server side: a path is stalled after CG_STALL_PROBES of the probe
  * intervals the client announced, plus slack, without a verified packet. */
 static inline int cg_path_stalled(uint64_t last_rx_ms, uint64_t now_ms, uint32_t interval_ms)

@@ -1113,13 +1113,21 @@ static void data_in(struct cg_pctl *p, struct flow *f, const struct cg_pctl_msg 
 		f->ack_t = now;
 }
 
+/* RACK's window beyond min_rtt / 4, and the timer's: reo_us, widened by
+ * duplicates (the tunnel's repairs come first), unless the loss is heavy
+ * (streamcc.h's cg_scc_lossw): then protocontroller_reo_ms. */
+static uint32_t peer_reo(const struct cg_pctl *p, const struct peer *r)
+{
+	return r->cc.heavy ? p->cfg.reo_ms * 1000 : r->reo_us;
+}
+
 /* The timer: rto after the oldest SENT segment's last transmission (a
  * segment sent again restarts its own clock); none with nothing SENT. */
-static void rto_arm(struct flow *f, struct peer *r)
+static void rto_arm(const struct cg_pctl *p, struct flow *f, struct peer *r)
 {
 	uint64_t o = f->tx.inflight ? cg_st_tx_oldest(&f->tx) : 0;
 
-	f->rto_at = o ? o + cg_scc_rto(&r->cc, f->backoff, r->reo_us) : 0;
+	f->rto_at = o ? o + cg_scc_rto(&r->cc, f->backoff, peer_reo(p, r)) : 0;
 }
 
 static void ack_in(struct cg_pctl *p, struct flow *f, const struct cg_pctl_msg *m, uint64_t now)
@@ -1131,7 +1139,7 @@ static void ack_in(struct cg_pctl *p, struct flow *f, const struct cg_pctl_msg *
 
 	p->acks_rx++;
 	/* something was sent again for nothing: wait longer before the next */
-	if ((m->flags & CG_PCTLF_DUP) && r->reo_us < PCTL_REO_MAX_US) {
+	if ((m->flags & CG_PCTLF_DUP) && r->reo_us < PCTL_REO_MAX_US && !r->cc.heavy) {
 		r->reo_us += PCTL_REO_STEP_US;
 		r->dups++;
 	}
@@ -1147,12 +1155,12 @@ static void ack_in(struct cg_pctl *p, struct flow *f, const struct cg_pctl_msg *
 		f->backoff = 0;
 		f->s_bytes += res.freed;
 	}
-	lost = cg_st_tx_rack(&f->tx, cg_scc_reo(&r->cc, r->reo_us), &lq);
+	lost = cg_st_tx_rack(&f->tx, cg_scc_reo(&r->cc, peer_reo(p, r)), &lq);
 	if (lost) {
 		r->cc.inflight -= r->cc.inflight >= lost ? lost : r->cc.inflight;
 		cg_scc_lost(&r->cc, lost - lq);
 	}
-	rto_arm(f, r);
+	rto_arm(p, f, r);
 }
 
 static void rx_one(struct cg_pctl *p, uint32_t peer, uint32_t sid, const uint8_t *msg, size_t len);
@@ -1436,7 +1444,7 @@ static void send_open(struct cg_pctl *p, struct flow *f, uint64_t now)
 
 	push(p, cg_pctl_put_open(b, f->id, f->family, f->addr, f->port), 1);
 	f->open_sent = 1;
-	f->open_due = now + cg_scc_rto(&r->cc, f->open_tries < 6 ? f->open_tries : 6, r->reo_us);
+	f->open_due = now + cg_scc_rto(&r->cc, f->open_tries < 6 ? f->open_tries : 6, peer_reo(p, r));
 	if (f->open_tries < 255)
 		f->open_tries++;
 	p->opens_tx++;
@@ -1454,10 +1462,10 @@ static int send_one(struct cg_pctl *p, struct flow *f, struct peer *r, uint64_t 
 	if (!cg_scc_may_repair(&r->cc) || !cg_st_tx_next(&f->tx, p->cfg.mss, &idx, &off, &len, &fin))
 		return 0;
 	/* new bytes need room in flight; a repair, tokens only */
-	if (idx == f->tx.n && !cg_scc_may(&r->cc, &p->ccf, cg_scc_reo(&r->cc, r->reo_us)))
+	if (idx == f->tx.n && !cg_scc_may(&r->cc, &p->ccf, cg_scc_reo(&r->cc, peer_reo(p, r))))
 		return 0;
 	cg_scc_restart(&r->cc, now);
-	copy = idx < f->tx.n && cg_st_tx_seg(&f->tx, idx)->tx >= 2;
+	copy = cg_st_tx_copy(&f->tx, idx);
 	b = slot_for(p, f->peer, f->sid);
 	cg_pctl_put_data(b, f->id, (uint8_t)((fin ? CG_PCTLF_FIN : 0) | (f->est ? CG_PCTLF_EST : 0)), off, (uint32_t)now);
 	if (len && cg_st_buf_read(&f->sb, &p->pool, off, b + CG_PCTL_DATA_HDR, len) < 0)
@@ -1477,7 +1485,7 @@ static int send_one(struct cg_pctl *p, struct flow *f, struct peer *r, uint64_t 
 	r->cc.inflight += sent;
 	cg_scc_spend(&r->cc, sent ? sent : 1);
 	if (!f->rto_at)
-		f->rto_at = now + cg_scc_rto(&r->cc, f->backoff, r->reo_us);
+		f->rto_at = now + cg_scc_rto(&r->cc, f->backoff, peer_reo(p, r));
 	p->data_tx++;
 	(void)now;
 	return 1;
@@ -1504,7 +1512,7 @@ static int timers(struct cg_pctl *p, struct flow *f, uint64_t now)
 		return -1;
 	}
 	if (f->rto_at && now >= f->rto_at) {
-		uint64_t lq = 0, lost = cg_st_tx_rto(&f->tx, now, cg_scc_rto(&r->cc, f->backoff, r->reo_us), &lq);
+		uint64_t lq = 0, lost = cg_st_tx_rto(&f->tx, now, cg_scc_rto(&r->cc, f->backoff, peer_reo(p, r)), &lq);
 
 		r->cc.inflight -= r->cc.inflight >= lost ? lost : r->cc.inflight;
 		cg_scc_lost(&r->cc, lost - lq);
@@ -1513,7 +1521,7 @@ static int timers(struct cg_pctl *p, struct flow *f, uint64_t now)
 				f->backoff++;
 			p->rto_n++;
 		}
-		rto_arm(f, r);
+		rto_arm(p, f, r);
 	}
 	if (!p->cfg.server && f->state == F_OPEN && (!f->open_sent || now >= f->open_due))
 		send_open(p, f, now);
@@ -1593,7 +1601,7 @@ void cg_pctl_service(struct cg_pctl *p)
 		struct cg_st_tx t = f->tx; /* cg_st_tx_next may move lost_from: a copy */
 
 		if (cg_st_tx_next(&t, p->cfg.mss, &idx, &off, &len, &fin) &&
-		    r->cc.inflight < cg_scc_cwnd(&r->cc, &p->ccf, cg_scc_reo(&r->cc, r->reo_us)))
+		    r->cc.inflight < cg_scc_cwnd(&r->cc, &p->ccf, cg_scc_reo(&r->cc, peer_reo(p, r))))
 			due(p, now + cg_scc_wait_us(&r->cc));
 	}
 	/* tokens left and room in flight with nothing to send: the samples
@@ -1602,7 +1610,7 @@ void cg_pctl_service(struct cg_pctl *p)
 		struct peer *r = &p->pr[i];
 
 		if (r->used)
-			r->app = r->cc.tokens > 0 && r->cc.inflight < cg_scc_cwnd(&r->cc, &p->ccf, cg_scc_reo(&r->cc, r->reo_us));
+			r->app = r->cc.tokens > 0 && r->cc.inflight < cg_scc_cwnd(&r->cc, &p->ccf, cg_scc_reo(&r->cc, peer_reo(p, r)));
 	}
 }
 
@@ -1785,8 +1793,11 @@ void cg_pctl_json(const struct cg_pctl *p, struct cg_json *j)
 	uint64_t txb = 0, rxb = 0, ab = 0;
 
 	cg_json_obj(j, "protocontroller");
-	if (!p->cfg.server)
+	if (!p->cfg.server) {
 		cg_json_str(j, "mode", p->cfg.mode == CG_PCTL_A ? "a" : "b");
+		/* the middle leg's protocol: a plain TCP (A) or GRIT (B) */
+		cg_json_str(j, "protocol", p->cfg.mode == CG_PCTL_A ? "TCP" : "GRIT");
+	}
 	cg_json_u64(j, "flows", p->nused);
 	cg_json_u64(j, "opened", p->opened);
 	cg_json_u64(j, "closed", p->closed);
@@ -1866,9 +1877,11 @@ void cg_pctl_json(const struct cg_pctl *p, struct cg_json *j)
 		cg_json_ms(j, "min_rtt_ms", c->min_rtt);
 		cg_json_ms(j, "srtt_ms", c->srtt);
 		cg_json_u64(j, "inflight", c->inflight);
-		cg_json_u64(j, "cwnd", cg_scc_cwnd(c, &p->ccf, cg_scc_reo(c, p->pr[i].reo_us)));
+		cg_json_u64(j, "cwnd", cg_scc_cwnd(c, &p->ccf, cg_scc_reo(c, peer_reo(p, &p->pr[i]))));
 		cg_json_str(j, "mode", c->mode == CG_SCC_STARTUP_M ? "startup" : c->mode == CG_SCC_DRAIN_M ? "drain" : "probe");
-		cg_json_ms(j, "reo_ms", p->pr[i].reo_us);
+		cg_json_ms(j, "reo_ms", peer_reo(p, &p->pr[i]));
+		cg_json_bool(j, "heavy_loss", c->heavy);
+		cg_json_u64(j, "heavy_windows", c->n_heavy);
 		if (c->have_owd)
 			cg_json_ms_signed(j, "owd_queue_ms", (int32_t)((uint32_t)c->owd_last - (uint32_t)c->owd_base));
 		cg_json_u64(j, "dup_acks", p->pr[i].dups);

@@ -309,6 +309,15 @@ static void test_stall(void)
 	CHECK(!cg_probes_stalled(2, 0, 10000, 40));
 	CHECK(!cg_probes_stalled(3, 1000, 2080, 40));
 	CHECK(cg_probes_stalled(3, 1000, 2081, 40));
+	/* stalled probes, but packets still down (story 025): alive for what
+	 * goes up within two round trips and slack, for a stream's DATA within
+	 * a second; neither once the stall is CG_RXALIVE_MAX_MS old */
+	CHECK(cg_link_rx_alive(180, 1200, 40));
+	CHECK(!cg_link_rx_alive(181, 1200, 40));
+	CHECK(!cg_link_rx_alive(10, CG_RXALIVE_MAX_MS, 40));
+	CHECK(cg_link_rx_alive_arq(CG_RXALIVE_ARQ_MS, 1200));
+	CHECK(!cg_link_rx_alive_arq(CG_RXALIVE_ARQ_MS + 1, 1200));
+	CHECK(!cg_link_rx_alive_arq(10, CG_RXALIVE_MAX_MS));
 	CHECK(!cg_probes_stalled(9, 1000, 3000, 500)); /* a slow link is not a dead one */
 	CHECK(cg_probes_stalled(9, 1000, 3001, 500));
 
