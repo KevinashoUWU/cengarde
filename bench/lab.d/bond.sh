@@ -242,6 +242,37 @@
 # Without netem the links only get a rate (tbf) and the delays are skipped,
 # which is said; BOND_NEED_NETEM=1 (the CI) makes that a failure instead.
 #
+# Story 024's hosts (BOND_PEP, PEP mode A: TCP split at the router and at the
+# VPS): BOND_PEP set adds three netns around the lab and runs the traffic
+# between them instead of between the tunnel's ends (native tunnel always):
+#
+#   peplan h0 192.168.79.2 -- lan0 192.168.79.1 cli ==tunnel== srv fv 172.30.1.1 -- f0 172.30.1.2 pepfar
+#                             (NAT to 10.79.0.2 into cg0)            nv 172.30.2.1 -- n0 172.30.2.2 pepnear
+#
+# the sender in peplan (a LAN host, ~0 ms from the router), the far host in
+# pepfar BOND_PEP_FAR_MS (50) one way beyond the VPS (Facebook's Miami ingest
+# from Vultr: 100-130 ms of RTT), the near one in pepnear BOND_PEP_NEAR_MS (5)
+# beyond it (YouTube's). In beyond, the far leg loses BOND_BEYOND_LOSS % each
+# way (netem) instead of the tunnel's ends dropping it. BOND_PEP is
+#   transparent  the router forwards (masquerading into the tunnel): today
+#   tcp          ss-redir (shadowsocks-libev, Debian) in the router takes the
+#                LAN's TCP (iptables REDIRECT) to ss-server on the VPS's tunnel
+#                address, plain TCP through the tunnel, and ss-server opens a
+#                fresh TCP to the destination: three TCP connections
+#   kcp          the same with KCP (kcptun, Debian: ARQ over UDP, no FEC of its
+#                own, BOND_PEP_KCP) between ss-redir and ss-server instead of TCP
+# BOND_PEP_MIDCC and BOND_PEP_FARCC (cubic): the congestion control of the
+# router's netns (the middle leg's sender in an upload) and the VPS's (the far
+# leg's); BOND_PEP_LANCC (empty: the run's cc for iperf3, cubic for live) the
+# LAN host's, the sender's (transparent with BBR end to end, the control of a
+# split with BBR on the far leg). The cc "live" (tcp ones are iperf3 from peplan to pepfar) is two
+# live-video-like streams (bench/livesim.py, RTMP from OBS: BOND_LIVE_MBIT, 8,
+# each, the sender dropping what waited BOND_LIVE_DROP_MS, 700), one to the far
+# host and one to the near one, up only. The JSON line gets "pep"
+# (pepstat.py: each leg's retransmissions, the proxies' buffers, RSS and CPU)
+# and, for live, "live" (each stream's goodput by second, stalls, delay).
+# Needs shadowsocks-libev (and kcptun for kcp).
+#
 # Each run takes the engine's status files and the WireGuard interfaces' counters
 # before and after (the engine writes them every second: a wait of 1.1 s per run;
 # the after of a run is the before of the next), and its JSON line carries the
@@ -291,6 +322,18 @@ BOND_NEED_NETEM=${BOND_NEED_NETEM:-0}
 BOND_TUNNEL=${BOND_TUNNEL:-wireguard} # native: cengarde's own tunnel (TUN, story 014) instead of WireGuard
 BOND_BEYOND_LOSS=${BOND_BEYOND_LOSS:-1} # beyond: % the download loses before the server's tunnel
 BOND_NEED_QUIC=${BOND_NEED_QUIC:-0}
+BOND_PEP=${BOND_PEP:-} # story 024: transparent, tcp or kcp (the hosts around the lab); empty: none
+BOND_PEP_MIDCC=${BOND_PEP_MIDCC:-cubic}
+BOND_PEP_FARCC=${BOND_PEP_FARCC:-cubic}
+BOND_PEP_LANCC=${BOND_PEP_LANCC:-}
+BOND_PEP_FAR_MS=${BOND_PEP_FAR_MS:-50}
+BOND_PEP_NEAR_MS=${BOND_PEP_NEAR_MS:-5}
+BOND_PEP_KCP=${BOND_PEP_KCP:---mode fast --datashard 0 --parityshard 0 --nocomp --crypt none --mtu 1300}
+BOND_LIVE_MBIT=${BOND_LIVE_MBIT:-8}
+BOND_LIVE_DROP_MS=${BOND_LIVE_DROP_MS:-700}
+NS_LAN=peplan${LAB_ID:+-$LAB_ID}
+NS_FAR=pepfar${LAB_ID:+-$LAB_ID}
+NS_NEAR=pepnear${LAB_ID:+-$LAB_ID}
 
 # bond_wg NETNS IF LISTEN ADDR KEYFILE PEERPUB PEERADDR [ENDPOINT]: a
 # WireGuard interface in NETNS, from the kernel or from wireguard-go.
@@ -330,7 +373,7 @@ bond_tunnel() {
 		# beyond: TCP loses BOND_BEYOND_LOSS % after it leaves the tunnel
 		# (each end's host drops it at random as it comes in from the TUN),
 		# a lossy path beyond the server (or the router)
-		if [ "${BOND_CASE:-}" = beyond ]; then
+		if [ "${BOND_CASE:-}" = beyond ] && [ -z "$BOND_PEP" ]; then
 			local p ns
 			p=$(awk -v l="$BOND_BEYOND_LOSS" 'BEGIN { printf "%.4f", l / 100 }')
 			for ns in "$NS_CLI" "$NS_SRV"; do
@@ -359,6 +402,7 @@ bond_tunnel() {
 
 bond_untunnel() {
 	local f
+	[ -n "$BOND_PEP" ] && bond_hosts_down
 	ns_kill "$NS_SRV" iperf3
 	for f in "$RUN"/wgc.pid "$RUN"/wgs.pid "$RUN"/quic.pid; do
 		[ -f "$f" ] && kill "$(cat "$f")" 2>/dev/null
@@ -379,6 +423,10 @@ bond_ccs() {
 		return 1
 	fi
 	for cc in ${BOND_CC:-cubic bbr quic}; do
+		if [ "$cc" = live ] && [ -z "$BOND_PEP" ]; then
+			echo "FAIL: cc live needs BOND_PEP (story 024's hosts)"
+			return 1
+		fi
 		if [ "$cc" = quic ] && [ "$quic" = 0 ]; then
 			echo "   note: no aioquic here (pip install aioquic==1.2.0): no quic runs"
 			continue
@@ -473,6 +521,186 @@ bond_variants_check() {
 		done
 	done
 	rm -f "$RUN"/check-*.conf "$RUN/check.out"
+}
+
+# bond_hosts_down: story 024's three netns go, with what runs in them.
+bond_hosts_down() {
+	local ns
+	for ns in "$NS_LAN" "$NS_FAR" "$NS_NEAR"; do
+		ip netns pids "$ns" >/dev/null 2>&1 || continue
+		ns_kill "$ns"
+		ip netns del "$ns" 2>/dev/null
+	done
+	return 0
+}
+
+# bond_hosts_up: the LAN host, the far and the near hosts around the lab (after
+# bond_tunnel: the router routes them into cg0), and each netns's congestion
+# control.
+bond_hosts_up() {
+	local ns loss=0
+	bond_hosts_down
+	for ns in "$NS_LAN" "$NS_FAR" "$NS_NEAR"; do
+		ip netns add "$ns" || return 1
+		ip -n "$ns" link set lo up
+	done
+	ip link add h0 netns "$NS_LAN" type veth peer name lan0 netns "$NS_CLI" || return 1
+	ip link add f0 netns "$NS_FAR" type veth peer name fv netns "$NS_SRV" || return 1
+	ip link add n0 netns "$NS_NEAR" type veth peer name nv netns "$NS_SRV" || return 1
+	ip -n "$NS_LAN" addr add 192.168.79.2/24 dev h0
+	ip -n "$NS_CLI" addr add 192.168.79.1/24 dev lan0
+	ip -n "$NS_FAR" addr add 172.30.1.2/24 dev f0
+	ip -n "$NS_SRV" addr add 172.30.1.1/24 dev fv
+	ip -n "$NS_NEAR" addr add 172.30.2.2/24 dev n0
+	ip -n "$NS_SRV" addr add 172.30.2.1/24 dev nv
+	ip -n "$NS_LAN" link set h0 up && ip -n "$NS_CLI" link set lan0 up
+	ip -n "$NS_FAR" link set f0 up && ip -n "$NS_SRV" link set fv up
+	ip -n "$NS_NEAR" link set n0 up && ip -n "$NS_SRV" link set nv up
+	ip -n "$NS_LAN" route add default via 192.168.79.1 || return 1
+	ip -n "$NS_FAR" route add default via 172.30.1.1 || return 1
+	ip -n "$NS_NEAR" route add default via 172.30.2.1 || return 1
+	ip -n "$NS_CLI" route add 172.30.0.0/16 dev cg0 || return 1
+	for ns in "$NS_CLI" "$NS_SRV"; do
+		ip netns exec "$ns" sysctl -qw net.ipv4.ip_forward=1 || return 1
+		# the tunnel's MTU is under the LAN's: the router and the VPS clamp
+		# the MSS, as OpenWrt's mtu_fix
+		ip netns exec "$ns" iptables -w -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN \
+			-j TCPMSS --clamp-mss-to-pmtu || return 1
+	done
+	ip netns exec "$NS_CLI" iptables -w -t nat -A POSTROUTING -s 192.168.79.0/24 -o cg0 -j MASQUERADE || return 1
+	ip netns exec "$NS_CLI" sysctl -qw net.ipv4.tcp_congestion_control="$BOND_PEP_MIDCC" || return 1
+	ip netns exec "$NS_SRV" sysctl -qw net.ipv4.tcp_congestion_control="$BOND_PEP_FARCC" || return 1
+	ip netns exec "$NS_LAN" sysctl -qw net.ipv4.tcp_congestion_control="${BOND_PEP_LANCC:-cubic}" || return 1
+	[ "${BOND_CASE:-}" = beyond ] && loss=$BOND_BEYOND_LOSS
+	ip netns exec "$NS_SRV" tc qdisc replace dev fv root netem delay "${BOND_PEP_FAR_MS}ms" limit 100000 loss "${loss}%" || return 1
+	ip netns exec "$NS_FAR" tc qdisc replace dev f0 root netem delay "${BOND_PEP_FAR_MS}ms" limit 100000 loss "${loss}%" || return 1
+	ip netns exec "$NS_SRV" tc qdisc replace dev nv root netem delay "${BOND_PEP_NEAR_MS}ms" limit 100000 || return 1
+	ip netns exec "$NS_NEAR" tc qdisc replace dev n0 root netem delay "${BOND_PEP_NEAR_MS}ms" limit 100000 || return 1
+	ip netns exec "$NS_FAR" iperf3 -s -B 172.30.1.2 -D || return 1
+	for ns in $(seq 1 30); do
+		ip netns exec "$NS_LAN" ping -q -c 1 -W 1 172.30.1.2 >/dev/null 2>&1 && return 0
+		sleep 0.2
+	done
+	echo "FAIL: the LAN host does not reach the far host through the tunnel"
+	return 1
+}
+
+# bond_pep_start: the proxies of BOND_PEP (none for transparent); their pids
+# in $RUN/pep-NAME.pid.
+bond_pep_start() {
+	local ssopt=(-k labpep -m chacha20-ietf-poly1305 --no-delay -t 300) i
+	# runs a command from RUN (kcptun formats --snmplog as a Go time layout: a
+	# name without digits, relative)
+	# shellcheck disable=SC2016 # expanded by that sh
+	local inrun='cd "$1" && shift && exec "$@"'
+	case $BOND_PEP in
+	transparent) return 0 ;;
+	tcp)
+		ip netns exec "$NS_SRV" ss-server -s 10.79.0.1 -p 8388 "${ssopt[@]}" >"$RUN/ss-server.log" 2>&1 &
+		echo $! >"$RUN/pep-ss-server.pid"
+		ip netns exec "$NS_CLI" ss-redir -s 10.79.0.1 -p 8388 -b 0.0.0.0 -l 1080 "${ssopt[@]}" >"$RUN/ss-redir.log" 2>&1 &
+		echo $! >"$RUN/pep-ss-redir.pid"
+		;;
+	kcp)
+		ip netns exec "$NS_SRV" ss-server -s 127.0.0.1 -p 8388 "${ssopt[@]}" >"$RUN/ss-server.log" 2>&1 &
+		echo $! >"$RUN/pep-ss-server.pid"
+		# shellcheck disable=SC2086 # BOND_PEP_KCP is a list of options
+		ip netns exec "$NS_SRV" sh -c "$inrun" sh "$RUN" kcptun-server -l 10.79.0.1:29900 \
+			-t 127.0.0.1:8388 $BOND_PEP_KCP --sndwnd 1024 --rcvwnd 1024 --quiet --snmplog kcp-srv.csv \
+			--snmpperiod 1 >"$RUN/kcp-server.log" 2>&1 &
+		echo $! >"$RUN/pep-kcptun-server.pid"
+		# shellcheck disable=SC2086
+		ip netns exec "$NS_CLI" sh -c "$inrun" sh "$RUN" kcptun-client -l 127.0.0.1:12948 \
+			-r 10.79.0.1:29900 $BOND_PEP_KCP --sndwnd 1024 --rcvwnd 1024 --quiet --snmplog kcp-cli.csv \
+			--snmpperiod 1 >"$RUN/kcp-client.log" 2>&1 &
+		echo $! >"$RUN/pep-kcptun-client.pid"
+		ip netns exec "$NS_CLI" ss-redir -s 127.0.0.1 -p 12948 -b 0.0.0.0 -l 1080 "${ssopt[@]}" >"$RUN/ss-redir.log" 2>&1 &
+		echo $! >"$RUN/pep-ss-redir.pid"
+		;;
+	*)
+		echo "FAIL: BOND_PEP is transparent, tcp or kcp, not $BOND_PEP"
+		return 1
+		;;
+	esac
+	ip netns exec "$NS_CLI" iptables -w -t nat -A PREROUTING -i lan0 -p tcp -j REDIRECT --to-ports 1080 || return 1
+	for i in $(seq 1 50); do
+		ip netns exec "$NS_LAN" timeout 2 bash -c 'exec 3<>/dev/tcp/172.30.1.2/5201' 2>/dev/null && return 0
+		sleep 0.2
+	done
+	echo "FAIL: no TCP through the proxies ($(tail -c 300 "$RUN/ss-redir.log"))"
+	return 1
+}
+
+# bond_pep_pids: the proxies' pids.
+bond_pep_pids() { cat "$RUN"/pep-*.pid 2>/dev/null; }
+
+# bond_pep_cpu NETNS: the CPU ticks of the proxies in NETNS, summed.
+bond_pep_cpu() {
+	local p t=0 ns
+	for p in $(bond_pep_pids); do
+		ns=$(ip netns identify "$p" 2>/dev/null)
+		[ "$ns" = "$1" ] && t=$((t + $(cpu_ticks "$p")))
+	done
+	echo "$t"
+}
+
+# bond_pep_snmp TAG: each host's TCP counters now (pepstat.py reads them).
+bond_pep_snmp() {
+	local ns n
+	mkdir -p "$RUN/pep"
+	for ns in lan cli srv far; do
+		case $ns in lan) n=$NS_LAN ;; cli) n=$NS_CLI ;; srv) n=$NS_SRV ;; far) n=$NS_FAR ;; esac
+		ip netns exec "$n" cat /proc/net/snmp >"$RUN/pep/snmp-$1-$ns" 2>/dev/null
+	done
+	for n in cli srv; do
+		[ -f "$RUN/kcp-$n.csv" ] && cp "$RUN/kcp-$n.csv" "$RUN/pep/kcp-$1-$n.csv"
+	done
+	return 0
+}
+
+# bond_pep_sample_start SECS: the router's and the VPS's sockets and the
+# proxies' RSS every 0.5 s of the run; the pid goes to BOND_BG.
+bond_pep_sample_start() {
+	(
+		local i p
+		for i in $(seq 1 $(($1 * 2))); do
+			ip netns exec "$NS_CLI" ss -tinmH >"$RUN/pep/ss-cli-$i" 2>/dev/null
+			ip netns exec "$NS_SRV" ss -tinmH >"$RUN/pep/ss-srv-$i" 2>/dev/null
+			for p in $(bond_pep_pids); do
+				echo "$(cat "/proc/$p/comm" 2>/dev/null) $(awk '/^VmRSS/ { print $2 }' "/proc/$p/status" 2>/dev/null)"
+			done >"$RUN/pep/rss-$i"
+			sleep 0.5
+		done
+	) &
+	BOND_BG="$BOND_BG $!"
+}
+
+# bond_pep_traffic DIR CC SECS RES ERR: the run's traffic between the hosts:
+# iperf3 from the LAN host to the far one, or (cc live) the two streams.
+bond_pep_traffic() {
+	local dir=$1 cc=$2 s=$3 res=$4 err=$5 rc=0 k rx=()
+	if [ "$cc" != live ]; then
+		# shellcheck disable=SC2046 # -R or nothing
+		ip netns exec "$NS_LAN" iperf3 -c 172.30.1.2 -t "$s" -C "${BOND_PEP_LANCC:-$cc}" -P "$BOND_P" -J ${BOND_KEEP:+-i 0.5} \
+			${BOND_RATE:+-b "$BOND_RATE"} $([ "$dir" = down ] && echo -R) >"$res" 2>"$err" || rc=1
+		return "$rc"
+	fi
+	[ "$dir" = up ] || { echo "live runs up only" >"$err"; return 1; }
+	rm -f "$RUN"/live-*.json
+	for k in far near; do
+		ip netns exec "$([ $k = far ] && echo "$NS_FAR" || echo "$NS_NEAR")" python3 -I "$LAB/livesim.py" recv \
+			--bind "$([ $k = far ] && echo 172.30.1.2 || echo 172.30.2.2):7100" --secs "$s" --mbit "$BOND_LIVE_MBIT" \
+			--out "$RUN/live-$k-recv.json" 2>>"$err" &
+		rx+=($!)
+	done
+	sleep 0.5
+	ip netns exec "$NS_LAN" python3 -I "$LAB/livesim.py" send --to 172.30.2.2:7100 --secs "$s" \
+		--mbit "$BOND_LIVE_MBIT" --drop-ms "$BOND_LIVE_DROP_MS" --out "$RUN/live-near-send.json" 2>>"$err" &
+	ip netns exec "$NS_LAN" python3 -I "$LAB/livesim.py" send --to 172.30.1.2:7100 --secs "$s" \
+		--mbit "$BOND_LIVE_MBIT" --drop-ms "$BOND_LIVE_DROP_MS" --out "$RUN/live-far-send.json" 2>>"$err" || rc=1
+	wait "${rx[@]}" || rc=1
+	python3 -I "$LAB/livesim.py" merge "$RUN/live" >"$res" || rc=1
+	return "$rc"
 }
 
 # bond_join A B: A;B, or whichever is not empty.
@@ -827,7 +1055,23 @@ bond_run() {
 		bond_sample_start "$s"
 		small+=(--samples "$RUN/samples")
 	fi
-	if [ "$cc" = quic ]; then
+	local pc0 ps0 pepargs=()
+	if [ -n "$BOND_PEP" ]; then
+		rm -rf "$RUN/pep"
+		bond_pep_snmp before
+		bond_pep_sample_start "$s"
+		pc0=$(bond_pep_cpu "$NS_CLI") ps0=$(bond_pep_cpu "$NS_SRV")
+		res=$RUN/iperf.json err=$RUN/iperf.err
+		[ "$cc" = live ] && res=$RUN/live.json err=$RUN/live.err
+		bond_pep_traffic "$dir" "$cc" "$s" "$res" "$err" || rc=1
+		bond_pep_snmp after
+		python3 -I "$LAB/pepstat.py" "$RUN/pep" --mode "$BOND_PEP" --midcc "$BOND_PEP_MIDCC" \
+			--farcc "$BOND_PEP_FARCC" --secs "$s" --result "$res" --cc "$cc" \
+			--cpu-cli $(($(bond_pep_cpu "$NS_CLI") - pc0)) --cpu-srv $(($(bond_pep_cpu "$NS_SRV") - ps0)) \
+			--hz "$(getconf CLK_TCK)" >"$RUN/pep.json" || rc=1
+		pepargs=(--pep "$RUN/pep.json")
+		[ -n "$BOND_KEEP" ] && mkdir -p "$BOND_KEEP" && cp "$res" "$BOND_KEEP/$c-$v-$dir-$cc-$rep.json"
+	elif [ "$cc" = quic ]; then
 		res=$RUN/quic.json err=$RUN/quic.err
 		ip netns exec "$NS_CLI" python3 -I "$LAB/quicperf.py" client 10.79.0.1 --dir "$dir" --secs "$s" \
 			--cc "$BOND_QUIC_CC" --mtu "$BOND_QUIC_MTU" >"$res" 2>"$err" || rc=1
@@ -849,7 +1093,8 @@ bond_run() {
 	python3 -I "$LAB/bondtab.py" line --result "$res" --ping "$RUN/ping.out" --ping-big "$RUN/pingbig.out" \
 		--case "$c" --variant "$v" --dir "$dir" --cc "$cc" --rep "$rep" --secs "$s" \
 		--cpu-client $((c1 - c0)) --cpu-server $((s1 - s0)) --hz "$(getconf CLK_TCK)" --netem "$BOND_NETEM" \
-		--before "$RUN/snap-before" --after "$RUN/snap-after" ${small[@]+"${small[@]}"} >>"$RUN/bond.jsonl" || rc=1
+		--before "$RUN/snap-before" --after "$RUN/snap-after" ${small[@]+"${small[@]}"} \
+		${pepargs[@]+"${pepargs[@]}"} >>"$RUN/bond.jsonl" || rc=1
 	bond_snap_roll
 	if [ -n "$BOND_KEEP" ] && [ "$BOND_SAMPLE" = 1 ]; then
 		rm -rf "$BOND_KEEP/$c-$v-$dir-$cc-$rep.samples"
@@ -874,8 +1119,10 @@ bond_case() {
 	case $c in sigrand | spurious) BOND_RATE=${BOND_RATE:-20M} ;; sigothers) BOND_RATE=${BOND_RATE:-8M} ;; esac
 	CLIENT_EXTRA=$(bond_join "$BV_CLIENT" "$CLIENT_EXTRA")
 	SERVER_EXTRA=$(bond_join "$BV_SERVER" "$SERVER_EXTRA")
-	# beyond needs the native tunnel (its loss is on the server's TUN)
+	# beyond needs the native tunnel (its loss is on the server's TUN), and so
+	# do story 024's hosts (the router masquerades into cg0)
 	[ "$c" = beyond ] && BOND_TUNNEL=native
+	[ -n "$BOND_PEP" ] && BOND_TUNNEL=native
 	BOND_CASE=$c
 	if [ "$BOND_TUNNEL" = native ]; then
 		CLIENT_EXTRA=$(bond_join "tunnel = native;tun_addr = 10.79.0.2/16" "$CLIENT_EXTRA")
@@ -895,6 +1142,10 @@ bond_case() {
 	bond_shape "$c" || return 1
 	start || return 1
 	bond_tunnel || return 1
+	if [ -n "$BOND_PEP" ]; then
+		bond_hosts_up || return 1
+		bond_pep_start || return 1
+	fi
 	ip netns exec "$NS_SRV" iperf3 -s -B 10.79.0.1 -D || return 1
 	case " $BOND_CC " in *" quic "*) bond_quic_server || return 1 ;; esac
 	sleep 1.7 # and the status files hold the handshake: the first before

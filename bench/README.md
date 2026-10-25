@@ -663,6 +663,45 @@ splitnoro` en `equal reorder50 reorder150`, unos 140. Cada corrida suma ahora
 la espera de 1,1 s por el estado del motor y un ping más, y la estimación
 cuenta 4 s de arranque y cierre por corrida (eran 3).
 
+#### TCP partido: los hosts de la historia 024 (`BOND_PEP`)
+
+Con `BOND_PEP`, el laboratorio suma tres `netns` alrededor del túnel (nativo
+siempre) y el tráfico va entre ellos, no entre los extremos del túnel: un host
+de la LAN detrás del router (`peplan-N`, ~0 ms), el host lejano detrás del VPS
+(`pepfar-N`, `BOND_PEP_FAR_MS` = 50 ms por sentido: la ingesta de Facebook en
+Miami desde Vultr) y uno cercano (`pepnear-N`, `BOND_PEP_NEAR_MS` = 5: la de
+YouTube). El router enmascara la LAN hacia `cg0` y los dos fijan el MSS
+(`TCPMSS --clamp-mss-to-pmtu`, como `mtu_fix` de OpenWrt). En `beyond`, la
+pérdida (`BOND_BEYOND_LOSS`, 1 %) va en el tramo VPS ↔ host lejano, por
+sentido, con netem.
+
+| `BOND_PEP` | Qué hay en el medio |
+| --- | --- |
+| `transparent` | nada: el router reenvía (lo de hoy) |
+| `tcp` | `ss-redir` en el router (iptables `REDIRECT` del TCP de la LAN) → TCP por el túnel → `ss-server` en `10.79.0.1`, que abre un TCP nuevo al destino (shadowsocks-libev de Debian, `chacha20-ietf-poly1305`, `--no-delay`) |
+| `kcp` | lo mismo con KCP en el medio (kcptun de Debian: ARQ sobre UDP, `BOND_PEP_KCP`, sin FEC propia ni cifrado) |
+
+`BOND_PEP_MIDCC`, `BOND_PEP_FARCC` y `BOND_PEP_LANCC` fijan el control de
+congestión de cada `netns` (el del router manda el tramo del medio en una
+subida, el del VPS el lejano, el de la LAN el emisor; `cubic`, y la LAN, el
+`cc` de la corrida). El `cc` `live` (solo subida) son dos transmisiones como
+RTMP desde OBS (`livesim.py`): `BOND_LIVE_MBIT` (8) cada una, al host lejano y
+al cercano, y el emisor descarta lo que esperó más de `BOND_LIVE_DROP_MS`
+(700, el umbral de OBS). La línea JSON suma `pep` (`pepstat.py`: las
+retransmisiones de cada tramo desde los contadores TCP de cada `netns`, la
+memoria TCP del router y del VPS en su pico y mediana, el RSS y la CPU de los
+proxies, el RTT de cada tramo) y, en `live`, `live` (goodput por segundo y sus
+percentiles, cortes de más de 500 ms, demora de cada registro, descartes).
+Necesita `shadowsocks-libev` (y `kcptun` para `kcp`); el paquete de Debian deja
+un `ss-server` como servicio en el host: `systemctl disable --now
+shadowsocks-libev`. Las tablas: `peptab.py` sobre el `all.jsonl` de `labq.py`.
+
+```sh
+sudo apt install shadowsocks-libev kcptun && sudo systemctl disable --now shadowsocks-libev
+sudo BOND_PEP=tcp BOND_PEP_FARCC=bbr BOND_CASES=beyond BOND_DIRS=up BOND_CC="cubic live" BOND_VARIANTS=redund bench/lab.sh bond
+python3 -I bench/peptab.py out/all.jsonl --ref T-copies,T-rlc
+```
+
 ### Varios laboratorios a la vez: `LAB_ID` y `labq.py`
 
 **`LAB_ID`.** Con `LAB_ID=N`, `lab.sh` arma su laboratorio en los netns
