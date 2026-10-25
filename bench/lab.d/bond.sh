@@ -116,6 +116,21 @@
 #               end's host drops it at random from the TUN, iptables): losses
 #               beyond the tunnel, which TCP repairs and the tunnel must not
 #               copy N times nor count against a link. Native tunnel always
+#   spurious    not in the default list: story 023 (2026-10-24), TCP's
+#               retransmissions without loss: protect's links losing nothing,
+#               link 1's delay jumping by 300 ms each way for 0.5 s every 5 s,
+#               its netem limit sized for the jump (nothing dropped when it
+#               comes back), the flow capped at 20 Mbit/s (BOND_RATE, unless
+#               given: the bigger limit is no standing queue); TCP's timer
+#               fires during the jump, and the copies on link 2 arrive out of
+#               order. With the native tunnel the server's host is 50 ms
+#               beyond it (BOND_FAR_MS, unless given): a download's
+#               retransmissions reach the server after the ACKs that cover them
+#   lossall     not in the default list: story 023 (2026-10-24), the tunnel
+#               losing on every link: 2 links of 30 Mbit/s, 10 and 15 ms, each
+#               losing 10 % at random each way, so a packet copied on both is
+#               lost on both 1 % of the time, and a retransmission on one link
+#               alone 10 %
 #   protectpin  not in the default list: the NUC's pinned Entel (2026-10-23):
 #               3 links of 20 Mbit/s, 10, 15 and 22 ms; the client pins link 3
 #               (redund_spare_first = l3, the case adds it and a control
@@ -305,9 +320,12 @@ bond_tunnel() {
 	local i
 	if [ "$BOND_TUNNEL" = native ]; then
 		# BOND_FAR_MS: the server's host as far as that beyond the tunnel
-		# (what it sends into the TUN waits: an upload's ACKs, a download)
-		if [ "${BOND_FAR_MS:-0}" -gt 0 ]; then
-			ip netns exec "$NS_SRV" tc qdisc replace dev cg0 root netem delay "${BOND_FAR_MS}ms" limit 100000 || return 1
+		# (what it sends into the TUN waits: an upload's ACKs, a download);
+		# spurious: 50 unless given
+		local far=${BOND_FAR_MS:-0}
+		[ "${BOND_CASE:-}" = spurious ] && far=${BOND_FAR_MS:-50}
+		if [ "$far" -gt 0 ]; then
+			ip netns exec "$NS_SRV" tc qdisc replace dev cg0 root netem delay "${far}ms" limit 100000 || return 1
 		fi
 		# beyond: TCP loses BOND_BEYOND_LOSS % after it leaves the tunnel
 		# (each end's host drops it at random as it comes in from the TUN),
@@ -487,7 +505,7 @@ bond_netem_ok() {
 	[ "$BOND_NETEM" = yes ]
 }
 
-# bond_link N DELAY_MS RATE_MBIT [QUEUE_MS [LOSS_PCT]]: link N, both
+# bond_link N DELAY_MS RATE_MBIT [QUEUE_MS [LOSS_PCT [INFLIGHT_MS]]]: link N, both
 # directions: one-way delay, rate, a queue of QUEUE_MS (100) at that rate.
 # netem counts the packets in its delay against its limit: a link of 170 ms and
 # 50 Mbit/s holds 760 packets of 1400 bytes in flight, more than the 456 of the
@@ -496,10 +514,16 @@ bond_netem_ok() {
 # like that, the redundancy hiding it behind the other link; a split has no
 # other copy. BOND_NETEM_INFLIGHT=1 adds to the limit what the delay holds, so
 # that QUEUE_MS is the queue beyond it (it changes the step 0 baseline).
+# INFLIGHT_MS (the delay itself by default) is the delay that addition is for:
+# a case whose delay jumps and comes back (ltespike) shrinks the limit when it
+# comes back, and netem then drops every packet that arrives while the jump's
+# packets are still in it (measured 2026-10-24: 807 of 1556 datagrams at
+# 60 Mbit/s back from 310 to 10 ms); spurious passes the jump's delay, so that
+# its jumps lose nothing.
 bond_link() {
-	local n=$1 d=$2 r=$3 q=${4:-100} loss=${5:-0} lim ns dev inflight=0
+	local n=$1 d=$2 r=$3 q=${4:-100} loss=${5:-0} fd=${6:-$2} lim ns dev inflight=0
 	lim=$((r * 1000000 * q / 8000 / 1400 + 10))
-	[ "${BOND_NETEM_INFLIGHT:-0}" = 1 ] && inflight=$((r * 1000000 * d / 8000 / 1400))
+	[ "${BOND_NETEM_INFLIGHT:-0}" = 1 ] && inflight=$((r * 1000000 * fd / 8000 / 1400))
 	for ns in "$NS_CLI" "$NS_SRV"; do
 		dev=$([ "$ns" = "$NS_CLI" ] && echo "l$n" || echo "s$n")
 		if bond_netem_ok; then
@@ -630,6 +654,14 @@ bond_events() {
 		sleep "$(awk -v s="$s" 'BEGIN { print s / 3 }')"
 		bond_link 1 10 60 15 0.7
 		;;
+	spurious)
+		for t in $(seq 5 5 "$s"); do
+			sleep 4.5
+			bond_link 1 310 60 15 0 310
+			sleep 0.5
+			bond_link 1 10 60 15 0 310
+		done
+		;;
 	sigothers)
 		sleep "$(awk -v s="$s" 'BEGIN { print s / 2 }')"
 		bond_link 1 25 5 2000
@@ -670,6 +702,8 @@ bond_shape() {
 	lossy) bond_link 1 20 60 100 1 && bond_link 2 35 30 100 1 && bond_link 3 25 50 100 1 ;;
 	protect | protectcut | beyond) bond_link 1 10 60 15 0.7 && bond_link 2 25 5 2000 ;;
 	protectslow) bond_link 1 10 5 2000 8 && bond_link 2 25 20 100 ;;
+	spurious) bond_link 1 10 60 15 0 310 && bond_link 2 25 5 2000 ;;
+	lossall) bond_link 1 10 30 100 10 && bond_link 2 15 30 100 10 ;;
 	protectpin) bond_link 1 10 20 && bond_link 2 15 20 && bond_link 3 22 20 ;;
 	msl1 | msl2 | msl3 | msl2c | msl3c)
 		for i in $(bond_msl_dishes "$1"); do bond_link "$i" 15 25 15 || return 1; done
@@ -837,7 +871,7 @@ bond_case() {
 	bond_variant "$v" || return 1
 	[ "$BV_SOLO" = 1 ] && NLINKS=1
 	# story 018's cases cap the flow so that the link they watch fills (or not) as they say
-	case $c in sigrand) BOND_RATE=${BOND_RATE:-20M} ;; sigothers) BOND_RATE=${BOND_RATE:-8M} ;; esac
+	case $c in sigrand | spurious) BOND_RATE=${BOND_RATE:-20M} ;; sigothers) BOND_RATE=${BOND_RATE:-8M} ;; esac
 	CLIENT_EXTRA=$(bond_join "$BV_CLIENT" "$CLIENT_EXTRA")
 	SERVER_EXTRA=$(bond_join "$BV_SERVER" "$SERVER_EXTRA")
 	# beyond needs the native tunnel (its loss is on the server's TUN)
@@ -898,7 +932,7 @@ bond_plan() {
 	for w in ${BOND_CC:-cubic bbr quic}; do ccs=$((ccs + 1)); done
 	for c in $BOND_CASES; do
 		case $c in
-		equal | het | reorder50 | reorder150 | linkdeath | downstall | shallowq | shallowqd | shallowqdeep | starsat | dominant | starlink15 | starlink15sw | starlink15ramp | ltespike | ltespikerand | deepq | bloat | lossy | spikeloss | protect | protectcut | protectslow | protectpin | beyond | sigrand | sigdeep | sigothers | msl1 | msl2 | msl3 | msl2c | msl3c) ;;
+		equal | het | reorder50 | reorder150 | linkdeath | downstall | shallowq | shallowqd | shallowqdeep | starsat | dominant | starlink15 | starlink15sw | starlink15ramp | ltespike | ltespikerand | deepq | bloat | lossy | spikeloss | protect | protectcut | protectslow | protectpin | beyond | spurious | lossall | sigrand | sigdeep | sigothers | msl1 | msl2 | msl3 | msl2c | msl3c) ;;
 		*)
 			echo "bond: unknown case $c"
 			return 1

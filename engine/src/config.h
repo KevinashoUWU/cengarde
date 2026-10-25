@@ -220,6 +220,7 @@ struct cg_config {
 	int parq;                     /* a gap the code cannot rebuild asks for its rank deficit in parity, not the packets (harq.h); default yes */
 	int rescue_tcp_race;          /* no repair asked, and no gap held for one, past TCP's own retransmission (harq.h); default yes */
 	int tcp_retx_one;             /* tcp_aware in redundancy: a first TCP retransmission on one link, not copied (story 023); default yes */
+	int tcp_ack_rule;             /* with tcp_retx_one: a retransmission's links from the ACKs and the exit end's marks (tcpack.h); default yes */
 	uint32_t reorder_pool_kb;     /* memory for the packets it holds; changing it restarts */
 	int tcp_aware;                /* native: mark inner TCP's retransmissions and ACKs free (tcpfree.h) */
 	uint32_t reorder_idle_ms;     /* EXPERIMENT: the reorderer stops waiting for a link that brought no data this long; 0: off */

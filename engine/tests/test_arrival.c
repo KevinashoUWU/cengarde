@@ -159,6 +159,15 @@ static void test_arrival_idle(void)
 	CHECK(cg_arr_idle(&l, 1500001, 500000));
 	l.last_us = 0xfffffff0u;                /* wraps */
 	CHECK(!cg_arr_idle(&l, 0x10, 500000));
+	/* the newest sequence: a serial max, the first copy sets it */
+	memset(&l, 0, sizeof(l));
+	cg_arr_top(&l, 0xfffffffeu);
+	l.last_us = 1;
+	CHECK_EQ(l.top, 0xfffffffeu);
+	cg_arr_top(&l, 5); /* past the wrap: newer */
+	CHECK_EQ(l.top, 5);
+	cg_arr_top(&l, 0xffffffffu); /* older */
+	CHECK_EQ(l.top, 5);
 }
 
 void test_arrival(void)
@@ -173,6 +182,10 @@ void test_arrival(void)
 		cg_arr_dup(&a, rx, s, s * 10 + 1000, 1);
 	}
 	CHECK_EQ(rx[0].wins, 2 * CG_ARR_SLOTS);
+	/* the newest sequence each brought, any copy (story 023) */
+	CHECK_EQ(rx[0].top, 2 * CG_ARR_SLOTS - 1);
+	CHECK_EQ(rx[1].top, 2 * CG_ARR_SLOTS - 1);
+	CHECK_EQ(rx[2].last_us, 0);
 	CHECK_EQ(rx[1].wins, 0);
 	CHECK_EQ(rx[1].dups, 2 * CG_ARR_SLOTS);
 	CHECK_EQ(cg_lag_us(&rx[0]), 0);

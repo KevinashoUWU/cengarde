@@ -1287,6 +1287,40 @@ los huecos que el host lejano declara con SACK (`tcp_e2e`: `sack_holes`;
 no se cargan a ningún enlace; `tunnel`, los propios) y el RTT del tramo
 lejano (`far_rtt_ms`).
 
+**`tcp_ack_rule` (`yes`; con `tcp_aware` y `tcp_retx_one`, en el extremo que
+envía; historia 023, 2026-10-24):** cuántos enlaces lleva una retransmisión
+ya no se adivina: se decide por lo que se sabe de su original
+(`src/tcpack.h`). El extremo que envía los datos de un flujo lee los ACK de
+ese flujo cuando salen del túnel (el ACK acumulado más alto, unos bloques
+SACK, y el marcador del ACK más nuevo con SACK), y el extremo por donde TCP
+sale del túnel le dice, en cada ACK con SACK, si perdió un hueco
+(`CG_F_TUNHOLE` en el DATA del ACK, el bit que estaba reservado; sin versión
+nueva: el par anuncia que marca con el bit 23 de la cola de las sondas,
+`CG_BOND_TCPMARK`):
+
+| Lo que se sabe del original | La retransmisión va |
+|---|---|
+| un ACK o un SACK que lo cubre ya volvió por el túnel (`spurious`) | por un enlace, también si se repite |
+| el túnel lo perdió en todos los enlaces que podían traerlo (`tunnel`) | copiada por todos los que la llevarían, también la primera |
+| el host lejano lo echa de menos, pero el túnel lo entregó (se perdió más allá), todavía viene por algún enlace o el túnel no sabe (`delivered`) | como `tcp_retx_one`: la primera por un enlace, la repetida copiada (un bit no distingue «entregado» de «en camino») |
+| nada todavía (`unknown`): un ACK vuelve una ida y vuelta después | como `tcp_retx_one` |
+
+Un hueco del túnel está perdido cuando todo enlace que podía traerlo ya trajo
+una secuencia posterior (los enlaces son FIFO): el único que nombra la pista
+`CG_F_PREV` del paquete que lo sigue, o, sin pista, todos los que trajeron
+alguna copia en los últimos 2 s (no solo los que el reordenador espera, que
+dejan afuera un enlace detenido o silenciado). Antes de eso viene en camino
+(un enlace lento o detenido) y no se marca: copiar la retransmisión por otro enlace la hacía llegar antes
+que los originales detenidos y RACK daba a todos por perdidos. Una
+retransmisión espuria nunca se descarta: su llegada produce el D-SACK con el
+que el emisor deshace su recorte y agranda la ventana de reordenamiento de
+RACK. Con `no`, el comportamiento de `tcp_retx_one` solo. Estado:
+`upload.tcp.rule` en el router y `tcp.rule` por sesión en el VPS (`peer_marks`,
+las retransmisiones por fila: `unknown`, `spurious`, `delivered`, `tunnel`, y
+`copied` de cada una; en el router también `acks`, `acks_sack`, `acks_marked`),
+`tcp_rule` global en el VPS (los ACK de la bajada), y en `tcp_e2e` del
+extremo de salida `in_flight`, `unvouched` y `marked`.
+
 - **`reorder_retx_release_ms` (0, apagado; 0–2000), experimental, en el
   que recibe:** una retransmisión de TCP abandona los huecos anteriores a
   ella cuyo paquete retenido se envió al menos ese tiempo antes que ella
@@ -1687,6 +1721,14 @@ versión.
 - **Ventanas:** el reordenador y la anti-replay son más grandes (16384 y
   32768 secuencias; ver el estado del reordenador), y no son parte del
   formato.
+
+Después del v5 se usaron dos bits más sin subir la versión, porque un motor
+que no los conoce los escribe en 0 y los ignora, y eso es lo de antes: los
+bits 20–22 de la cola de bonding (el tipo del enlace, historia 015) y, en la
+versión 9, el bit 23 (`CG_BOND_TCPMARK`: marco mis ACK de TCP) con la bandera
+0x02 de DATA, que estaba reservada (`CG_F_TUNHOLE`: un hueco SACK de este
+ACK lo perdió el túnel en todos los enlaces; ver `tcp_ack_rule`). Sin el bit 23 del par, la
+bandera no significa nada.
 
 ## Limitaciones conocidas
 

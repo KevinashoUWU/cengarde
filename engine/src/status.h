@@ -86,10 +86,18 @@ struct cg_hlink;
 void cg_json_owd_fresh(struct cg_json *j, const struct cg_hlink *h, uint64_t now_ms);
 
 /* Where TCP leaves the tunnel (tcpfree.h's struct cg_tcpe, story 023):
- * handshakes timed, the far leg, SACK holes seen, beyond the tunnel and
- * the tunnel's own. */
+ * handshakes timed, the far leg, SACK holes seen, beyond the tunnel, the
+ * tunnel's own and not vouched for, and the ACKs marked CG_F_TUNHOLE. */
 struct cg_tcpe;
 void cg_json_tcpe(struct cg_json *j, const char *k, const struct cg_tcpe *e);
+
+/* tcp_ack_rule (tcpack.h): whether the peer marks (peer_marks < 0: not
+ * said), the ACKs read where the data goes in (with SACK blocks, marked;
+ * a NULL: not said), and the retransmissions by row (rows[CG_TCPA_ROWS],
+ * copied: of them, copied; NULL: not said). */
+struct cg_tcpa;
+void cg_json_tcpa(struct cg_json *j, const char *k, const struct cg_tcpa *a, const uint64_t *rows,
+		  const uint64_t *copied, int peer_marks);
 
 /* Writes data to path atomically. Returns 0 or -1 (errno set). */
 int cg_status_write(const char *path, const char *data, size_t len);

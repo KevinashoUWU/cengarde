@@ -145,34 +145,88 @@ static inline int cg_tcp_data(const uint8_t *b, size_t len)
  *
  * From the ACKs it sees the far host's holes: a SACK block above the
  * cumulative ACK says the bytes between were not received. If the tunnel
- * delivered past them, and they were not a hole of its own (a sequence it
- * gave up, written out late or never: the last CG_TCPE_HOLES holes in TCP
- * sequence where it wrote a segment past the flow's highest end), they
- * were lost beyond the tunnel: counted (beyond), never fed to a link's
- * estimators, which only ever see the tunnel's own sequence.
+ * delivered them they were lost beyond the tunnel: counted (beyond), never
+ * fed to a link's estimators, which only ever see the tunnel's own
+ * sequence. A hole of the tunnel's own is a TCP range it skipped (it wrote
+ * a segment past the flow's highest end) and has not written since: a late
+ * copy or the retransmission that fills it trims it or drops it. It keeps
+ * CG_TCPE_HOLES of them; past that it only knows the range they lie in,
+ * and below the flow's first segment seen (its base) nothing.
+ *
+ * And it says so to the end that sends the data (tcpack.h, story 023's
+ * rule from evidence): cg_tcpe_in's verdict on each ACK with SACK blocks
+ * goes into the tunnel with that ACK, CG_F_TUNHOLE on its DATA (proto.h),
+ * when some hole between its cumulative ACK and its highest SACK edge is
+ * the tunnel's own and lost on every link; never when it does not know
+ * (below the base, SACKed above what it wrote, a flow it does not track:
+ * the lab's spurious case, story 023, where marking what it could not
+ * vouch for copied retransmissions of what a stall only delayed, and TCP
+ * retransmitted twice as much). A hole of its own is lost
+ * when every link that may still bring it brought a later tunnel sequence
+ * (links are FIFO; any copy counts, not only first ones): the one link the
+ * packet after it says it went on alone (CG_F_PREV), when exactly one
+ * tunnel sequence is missing before that packet, else every link that
+ * brought anything lately (the caller's view, struct cg_tcpe_view: not the
+ * links the reorderer waits for, which leave a stalled or muted link out).
+ * Until then it is on its way, maybe on a
+ * slow or stalled link (CG_TCPE_INFLIGHT): not marked, so the
+ * retransmission is not copied (the lab's spurious case, story 023: a
+ * retransmission copied past a stalled link reached the far host first
+ * and RACK took everything still stalled for lost).
  *
  * Per flow a direct-mapped entry by the hash of its data direction (the
  * ACKs look it up by their reversed tuple: cg_flow_of with rev); a flow
- * sharing it takes it over. Approximate by design: one entry per bucket,
- * the first SACK block only. */
+ * sharing it takes it over. */
 
-#define CG_TCPE_HOLES 4
+#define CG_TCPE_HOLES 8
+#define CG_TCP_SACK_MAX 4 /* blocks read from one segment: 4 fit in 40 bytes of options */
+
+/* cg_tcpe_in's verdict on an ACK's holes: none (no SACK block above its
+ * cumulative ACK, or not one to read), all delivered by the tunnel (lost
+ * beyond it), the tunnel's own but maybe still on their way, not known,
+ * or the tunnel's own and lost on every link: only OWN is marked. */
+enum { CG_TCPE_NONE = 0, CG_TCPE_THROUGH, CG_TCPE_INFLIGHT, CG_TCPE_UNVOUCHED, CG_TCPE_OWN };
+
+/* What the receiving end knows of its links when an ACK is judged: those
+ * that brought a copy of anything lately (rset: one of them may still
+ * bring a missing sequence), and per link the newest sequence it brought,
+ * any copy (hw, valid with hw_ok). */
+#define CG_TCPE_RECENT_US 2000000u /* "lately": a link that brought nothing for this long brings nothing old */
+struct cg_tcpe_view {
+	uint16_t rset, hw_ok;
+	uint32_t hw[16];
+};
 
 struct cg_tcpe_flow {
 	uint32_t key;
 	uint32_t hi;       /* the highest end written out */
+	uint32_t base;     /* below it the tunnel cannot vouch for what it wrote */
 	uint32_t syn_t;    /* when its SYN went out (us, low bits | 1), 0: none pending */
 	uint32_t ack;      /* the cumulative ACK of the last hole counted */
-	uint32_t hole_lo[CG_TCPE_HOLES], hole_hi[CG_TCPE_HOLES];
-	uint8_t used, nh, ack_ok;
+	uint32_t cum;      /* the highest cumulative ACK read (with cum_ok) */
+	uint32_t tseq;     /* the newest tunnel sequence of its segments written */
+	uint32_t hole_lo[CG_TCPE_HOLES], hole_hi[CG_TCPE_HOLES]; /* not written yet; lo == hi: a free slot */
+	uint32_t hole_ts[CG_TCPE_HOLES]; /* the tunnel sequence of the segment written past it */
+	uint8_t hole_ln[CG_TCPE_HOLES];  /* 1 + the link the one tunnel sequence before that went on alone, 0: not known */
+	uint32_t unk_lo, unk_hi;          /* with unk_ok: holes it had no slot for lie in [unk_lo, unk_hi) */
+	uint8_t used, ack_ok, cum_ok, unk_ok;
 };
 
 struct cg_tcpe {
 	struct cg_tcpe_flow f[CG_TCPF_N];
 	uint32_t leg_us;   /* the far leg's round trip, a min that rises slowly; 0: none yet */
 	uint32_t tcp_t;    /* when TCP data last went out (us, low bits | 1), 0: never */
-	uint64_t holes, beyond, own, legs; /* SACK holes seen; beyond the tunnel; the tunnel's; handshakes timed */
+	/* SACK holes seen; beyond the tunnel; the tunnel's on their way; the
+	 * tunnel's lost; not vouched for; handshakes timed; ACKs that went into
+	 * the tunnel marked */
+	uint64_t holes, beyond, inflight, own, unvouched, legs, marked;
 };
+
+/* Serial order of TCP sequences: a before b. */
+static inline int cg_tseq_lt(uint32_t a, uint32_t b)
+{
+	return (int32_t)(a - b) < 0;
+}
 
 /* A TCP segment's sequence, flags and data length (b, len bytes, flow f):
  * 0, or -1 when it is not one to read. */
@@ -193,13 +247,15 @@ static inline int cg_tcp_seg(const struct cg_flow *f, const uint8_t *b, size_t l
 	return 0;
 }
 
-/* The first SACK block above ack of a segment's options (b, len bytes, its
- * header at f->l4off, doff long): 1 and its left edge, else 0. */
-static inline int cg_tcp_sack_left(const struct cg_flow *f, const uint8_t *b, size_t doff, uint32_t ack,
-				   uint32_t *left)
+/* The SACK blocks above ack of a segment's options (b, its header at
+ * f->l4off, doff long) into l[] and r[], in their left edges' order, at
+ * most CG_TCP_SACK_MAX: how many. A block that is empty, or not above ack
+ * (a D-SACK), is left out. */
+static inline int cg_tcp_sacks(const struct cg_flow *f, const uint8_t *b, size_t doff, uint32_t ack, uint32_t *l,
+			       uint32_t *r)
 {
 	size_t o = (size_t)f->l4off + 20, end = (size_t)f->l4off + doff;
-	int found = 0;
+	int n = 0;
 
 	while (o < end) {
 		uint8_t kind = b[o], ol;
@@ -216,23 +272,92 @@ static inline int cg_tcp_sack_left(const struct cg_flow *f, const uint8_t *b, si
 		if (ol < 2 || o + ol > end)
 			break;
 		if (kind == 5)
-			for (size_t q = o + 2; q + 8 <= o + ol; q += 8) {
-				uint32_t l = (uint32_t)b[q] << 24 | (uint32_t)b[q + 1] << 16 | (uint32_t)b[q + 2] << 8 |
-					     b[q + 3];
+			for (size_t q = o + 2; q + 8 <= o + ol && n < CG_TCP_SACK_MAX; q += 8) {
+				uint32_t bl = (uint32_t)b[q] << 24 | (uint32_t)b[q + 1] << 16 | (uint32_t)b[q + 2] << 8 |
+					      b[q + 3];
+				uint32_t br = (uint32_t)b[q + 4] << 24 | (uint32_t)b[q + 5] << 16 |
+					      (uint32_t)b[q + 6] << 8 | b[q + 7];
+				int k = n;
 
-				if ((int32_t)(l - ack) > 0 && (!found || (int32_t)(l - *left) < 0)) {
-					*left = l;
-					found = 1;
+				if (!cg_tseq_lt(ack, bl) || !cg_tseq_lt(bl, br))
+					continue;
+				while (k > 0 && cg_tseq_lt(bl, l[k - 1])) {
+					l[k] = l[k - 1];
+					r[k] = r[k - 1];
+					k--;
 				}
+				l[k] = bl;
+				r[k] = br;
+				n++;
 			}
 		o += ol;
 	}
-	return found;
+	return n;
 }
 
-/* A segment the tunnel wrote out (b, len bytes, flow f), at now_us. */
+/* Keeps [lo, hi) as one of x's holes: in a free slot or one below the
+ * cumulative ACK; with none, the range it cannot keep track of grows by it
+ * (a hole there is not known: never judged lost, nor delivered). Merging
+ * two holes instead took the bytes written between them for missing, and
+ * a stall that opened dozens of holes read as lost on every link (the
+ * lab's spurious case, story 023). */
+static inline void cg_tcpe_hole_add(struct cg_tcpe_flow *x, uint32_t lo, uint32_t hi, uint32_t ts, uint8_t ln)
+{
+	for (unsigned h = 0; h < CG_TCPE_HOLES; h++)
+		if (x->hole_lo[h] == x->hole_hi[h] || (x->cum_ok && !cg_tseq_lt(x->cum, x->hole_hi[h]))) {
+			x->hole_lo[h] = lo;
+			x->hole_hi[h] = hi;
+			x->hole_ts[h] = ts;
+			x->hole_ln[h] = ln;
+			return;
+		}
+	if (!x->unk_ok) {
+		x->unk_lo = lo;
+		x->unk_hi = hi;
+		x->unk_ok = 1;
+		return;
+	}
+	if (cg_tseq_lt(lo, x->unk_lo))
+		x->unk_lo = lo;
+	if (cg_tseq_lt(x->unk_hi, hi))
+		x->unk_hi = hi;
+}
+
+/* [s, e) written out (below the highest end): the holes it covers are
+ * trimmed, dropped or split. */
+static inline void cg_tcpe_fill(struct cg_tcpe_flow *x, uint32_t s, uint32_t e)
+{
+	uint32_t slo = 0, shi = 0, sts = 0;
+	uint8_t sln = 0;
+
+	for (unsigned h = 0; h < CG_TCPE_HOLES; h++) {
+		uint32_t lo = x->hole_lo[h], hi = x->hole_hi[h];
+
+		if (lo == hi || !cg_tseq_lt(s, hi) || !cg_tseq_lt(lo, e))
+			continue;
+		if (!cg_tseq_lt(lo, s) && !cg_tseq_lt(e, hi)) {
+			x->hole_lo[h] = x->hole_hi[h] = 0;
+		} else if (!cg_tseq_lt(lo, s)) {
+			x->hole_lo[h] = e;
+		} else if (!cg_tseq_lt(e, hi)) {
+			x->hole_hi[h] = s;
+		} else { /* in the middle: two holes */
+			x->hole_hi[h] = s;
+			slo = e;
+			shi = hi;
+			sts = x->hole_ts[h];
+			sln = x->hole_ln[h];
+		}
+	}
+	if (slo != shi)
+		cg_tcpe_hole_add(x, slo, shi, sts, sln);
+}
+
+/* A segment the tunnel wrote out (b, len bytes, flow f), at now_us, from
+ * DATA of tunnel sequence tseq whose header said the sequence before it
+ * went on link prev alone (CG_F_PREV; -1: not said). */
 static inline void cg_tcpe_out(struct cg_tcpe *e, const struct cg_flow *f, const uint8_t *b, size_t len,
-			       uint32_t now_us)
+			       uint32_t now_us, uint32_t tseq, int prev)
 {
 	struct cg_tcpe_flow *x;
 	uint32_t seq, ack, dl, end;
@@ -247,7 +372,8 @@ static inline void cg_tcpe_out(struct cg_tcpe *e, const struct cg_flow *f, const
 		memset(x, 0, sizeof(*x));
 		x->key = f->hash;
 		x->used = 1;
-		x->hi = end;
+		x->hi = x->base = end;
+		x->tseq = tseq;
 		if (!(fl & 0x10)) /* a SYN without ACK: the handshake starts here */
 			x->syn_t = now_us | 1;
 		return;
@@ -260,58 +386,130 @@ static inline void cg_tcpe_out(struct cg_tcpe *e, const struct cg_flow *f, const
 		x->key = f->hash;
 		x->used = 1;
 		x->hi = end;
+		x->base = seq;
+		x->tseq = tseq;
 		return;
 	}
-	if ((int32_t)(seq - x->hi) > 0) { /* past the highest end: a hole of the tunnel's */
-		unsigned h = x->nh++ % CG_TCPE_HOLES;
-
-		x->hole_lo[h] = x->hi;
-		x->hole_hi[h] = seq;
-	}
-	if ((int32_t)(end - x->hi) > 0)
+	if (cg_tseq_lt(x->hi, seq)) /* past the highest end: a hole of the tunnel's */
+		cg_tcpe_hole_add(x, x->hi, seq, tseq,
+				 tseq - x->tseq == 2 && prev >= 0 && prev < 16 ? (uint8_t)(prev + 1) : 0);
+	else /* at or below it: a late copy, or a retransmission */
+		cg_tcpe_fill(x, seq, cg_tseq_lt(end, x->hi) ? end : x->hi);
+	if (cg_tseq_lt(x->hi, end))
 		x->hi = end;
+	if ((int32_t)(tseq - x->tseq) > 0)
+		x->tseq = tseq;
+}
+
+/* Whether hole h of x is lost on every link that may still bring it (v:
+ * the receiver's links; NULL, as if they all had): each brought a tunnel
+ * sequence past the newest one that may hold its bytes, the one before
+ * the segment written past it. */
+static inline int cg_tcpe_hole_lost(const struct cg_tcpe_flow *x, unsigned h, const struct cg_tcpe_view *v)
+{
+	uint32_t g = x->hole_ts[h] - 1;
+	uint16_t m;
+
+	if (!v)
+		return 1;
+	m = x->hole_ln[h] ? (uint16_t)(1u << (x->hole_ln[h] - 1)) : v->rset;
+	for (unsigned l = 0; l < 16; l++)
+		if ((m >> l & 1) && (!(v->hw_ok >> l & 1) || (int32_t)(v->hw[l] - g) <= 0))
+			return 0;
+	return 1;
+}
+
+/* What the tunnel knows of the holes of an ACK of flow x: cumulative ACK
+ * ack, SACK blocks l/r (n >= 1, in order), the receiver's links v. */
+static inline int cg_tcpe_verdict(const struct cg_tcpe_flow *x, uint32_t ack, const uint32_t *l, const uint32_t *r,
+				  int n, const struct cg_tcpe_view *v)
+{
+	uint32_t from = ack, top = r[0];
+	int way = 0, unk = 0;
+
+	for (int i = 1; i < n; i++)
+		if (cg_tseq_lt(top, r[i]))
+			top = r[i];
+	if (cg_tseq_lt(ack, x->base) || cg_tseq_lt(x->hi, top))
+		return CG_TCPE_UNVOUCHED;
+	for (int i = 0; i < n; i++) {
+		if (cg_tseq_lt(from, l[i]) && x->unk_ok && cg_tseq_lt(x->unk_lo, l[i]) && cg_tseq_lt(from, x->unk_hi))
+			unk = 1;
+		if (cg_tseq_lt(from, l[i])) /* the far host's hole [from, l[i]) */
+			for (unsigned h = 0; h < CG_TCPE_HOLES; h++)
+				if (x->hole_lo[h] != x->hole_hi[h] && cg_tseq_lt(x->hole_lo[h], l[i]) &&
+				    cg_tseq_lt(from, x->hole_hi[h])) {
+					if (cg_tcpe_hole_lost(x, h, v))
+						return CG_TCPE_OWN;
+					way = 1;
+				}
+		if (cg_tseq_lt(from, r[i]))
+			from = r[i];
+	}
+	return unk ? CG_TCPE_UNVOUCHED : way ? CG_TCPE_INFLIGHT : CG_TCPE_THROUGH;
 }
 
 /* A segment read into the tunnel (b, len bytes) whose reversed flow is r
  * (cg_flow_of with rev: the data direction's hash), at now_us: a SYN-ACK
- * times the far leg; an ACK with a SACK hole is counted. */
-static inline void cg_tcpe_in(struct cg_tcpe *e, const struct cg_flow *r, const uint8_t *b, size_t len,
-			      uint32_t now_us)
+ * times the far leg; an ACK with SACK blocks is judged against the
+ * receiver's links v (CG_TCPE_*: OWN and UNVOUCHED go into the tunnel
+ * marked CG_F_TUNHOLE), and its holes counted once per cumulative ACK. */
+static inline int cg_tcpe_in(struct cg_tcpe *e, const struct cg_flow *r, const uint8_t *b, size_t len,
+			     uint32_t now_us, const struct cg_tcpe_view *v)
 {
 	struct cg_tcpe_flow *x = &e->f[r->hash & (CG_TCPF_N - 1)];
-	uint32_t seq, ack, dl, left = 0;
+	uint32_t seq, ack, dl, sl[CG_TCP_SACK_MAX], sr[CG_TCP_SACK_MAX];
 	size_t doff;
 	uint8_t fl;
+	int n, k, known = x->used && x->key == r->hash;
 
-	if (!x->used || x->key != r->hash || cg_tcp_seg(r, b, len, &seq, &ack, &fl, &dl, &doff) < 0)
-		return;
-	if ((fl & CG_TCP_SYN) && (fl & 0x10) && x->syn_t) {
-		uint32_t leg = (now_us | 1) - x->syn_t;
+	if (cg_tcp_seg(r, b, len, &seq, &ack, &fl, &dl, &doff) < 0)
+		return CG_TCPE_NONE;
+	if ((fl & CG_TCP_SYN) && (fl & 0x10)) {
+		if (known && x->syn_t) {
+			uint32_t leg = (now_us | 1) - x->syn_t;
 
-		x->syn_t = 0;
-		if (leg < 10u * 1000 * 1000) {
-			e->legs++;
-			if (!e->leg_us || leg < e->leg_us)
-				e->leg_us = leg ? leg : 1;
-			else
-				e->leg_us += (leg - e->leg_us) / 8;
+			x->syn_t = 0;
+			if (leg < 10u * 1000 * 1000) {
+				e->legs++;
+				if (!e->leg_us || leg < e->leg_us)
+					e->leg_us = leg ? leg : 1;
+				else
+					e->leg_us += (leg - e->leg_us) / 8;
+			}
 		}
-		return;
+		return CG_TCPE_NONE;
 	}
-	if (!(fl & 0x10) || !cg_tcp_sack_left(r, b, doff, ack, &left))
-		return;
-	if (x->ack_ok && x->ack == ack)
-		return; /* the same hole, counted */
-	x->ack = ack;
-	x->ack_ok = 1;
-	e->holes++;
-	for (unsigned h = 0; h < CG_TCPE_HOLES && h < x->nh; h++)
-		if ((int32_t)(ack - x->hole_lo[h]) >= 0 && (int32_t)(ack - x->hole_hi[h]) < 0) {
+	if (!(fl & 0x10) || (fl & (CG_TCP_SYN | CG_TCP_RST)))
+		return CG_TCPE_NONE;
+	if (known && (!x->cum_ok || cg_tseq_lt(x->cum, ack))) {
+		x->cum = ack;
+		x->cum_ok = 1;
+		if (x->unk_ok && !cg_tseq_lt(ack, x->unk_hi)) /* past what it lost track of */
+			x->unk_ok = 0;
+	}
+	n = cg_tcp_sacks(r, b, doff, ack, sl, sr);
+	if (!n)
+		return CG_TCPE_NONE;
+	if (!known)
+		return CG_TCPE_UNVOUCHED;
+	k = cg_tcpe_verdict(x, ack, sl, sr, n, v);
+	if (!x->ack_ok || x->ack != ack) { /* a hole not counted yet */
+		x->ack = ack;
+		x->ack_ok = 1;
+		e->holes++;
+		if (k == CG_TCPE_THROUGH)
+			e->beyond++;
+		else if (k == CG_TCPE_INFLIGHT)
+			e->inflight++;
+		else if (k == CG_TCPE_OWN)
 			e->own++;
-			return;
-		}
-	if ((int32_t)(left - x->hi) <= 0)
-		e->beyond++;
+		else
+			e->unvouched++;
+	}
+	if (k == CG_TCPE_OWN)
+		e->marked++;
+	return k;
 }
 
 /* The round trip of the TCP flows through this end now (the far leg plus

@@ -20,7 +20,7 @@ archivos:
   - engine/src/engine.h
   - engine/src/main.c
   - engine/src/os.c
-sello: 463437324c5da84d
+sello: ce9be5dc5032eb51
 ---
 # Utilidades
 
@@ -41,7 +41,7 @@ Cabeceras sin lógica de decisión ni medida propia. Una línea cada una.
 - `names.h` / `names.c`: los sockets de las búsquedas DNS ([[Nombres del servidor (resolve.h)]]).
 - `dns.h`: el códec DNS, con lectura acotada de entrada no confiable.
 - `tun.h` / `tun.c`, `ippkt.h`: la TUN del túnel nativo y la forma de un paquete IP ([[Rutas del túnel nativo (tunroute.h)]]).
-- `status.h` / `status.c`: el JSON de estado, escrito atómico (`sig` por enlace: [[Observaciones del enlace (linksig.h)]]; `tcp_e2e`: [[Liberación TCP (tcpfree.h)]]).
+- `status.h` / `status.c`: el JSON de estado, escrito atómico (`sig` por enlace: [[Observaciones del enlace (linksig.h)]]; `tcp_e2e`: [[Liberación TCP (tcpfree.h)]]; `rule` y `tcp_rule`: [[Retransmisión según la evidencia (tcpack.h)]]).
 - `ctl.h` / `ctl.c`: el socket de control (`cengarde ctl`).
 - `log.h` / `log.c`: el registro.
 - `engine.h`: piezas comunes de los bucles; traduce la config a `cg_hcfg` ([[Salud y silenciado (health.h)]]) y `cg_ro_cfg` ([[Reordenador (reorder.h)]]).

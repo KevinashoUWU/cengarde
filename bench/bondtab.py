@@ -65,12 +65,18 @@ HISTS = ("wait", "late_by")  # 10 buckets each
 # ("tx_links": sent once per link a packet went on) and the sends a link's socket
 # refused for a full queue ("tx_drops"). tx_links over sent is how many times a
 # packet went out: 1 for a pure split, the number of links when copied.
-SENDS = ["sent", "tx_links", "tx_drops"]
+SENDS = ["sent", "tx_links", "tx_drops", "tx_bytes"]
 # The loss repair (story 023): what the rescue sent again, what the erasure
 # codes rebuilt, the parity asked for again (PARQ) and the TCP retransmissions
 # the sender kept to one link.
 REPAIR = ["resc_sent", "repaired", "parq_asked", "parq_sent", "retx_one", "retx_copied", "e2e_holes", "e2e_beyond",
           "left_tcp"]
+# tcp_ack_rule (tcpack.h, story 023): the sending end's retransmissions by what was
+# known of their originals (tr_*), of them copied (trc_*), and the ACKs the exit end
+# marked CG_F_TUNHOLE (e2e_marked, where TCP leaves the tunnel).
+RULE_ROWS = ["unknown", "spurious", "delivered", "tunnel"]
+E2E_MORE = [("e2e_marked", "marked"), ("e2e_own", "tunnel"), ("e2e_inflight", "in_flight"), ("e2e_unvouched", "unvouched")]
+REPAIR += ["tr_" + r for r in RULE_ROWS] + ["trc_" + r for r in RULE_ROWS] + [k for k, _ in E2E_MORE]
 COUNTERS = [k for k in RO_PATHS if k not in GAUGES] + ["too_old", "wireguard_drops", "lost_all"] + SENDS + REPAIR
 NAMES = list(RO_PATHS) + ["too_old", "wireguard_drops", "lost_all"] + SENDS + REPAIR
 
@@ -121,6 +127,7 @@ def flat_client(d):
     out["sent"] = num(dig(d, "upload", "packets"))
     out["tx_links"] = link_sum(dig(d, "links"), "tx_packets")
     out["tx_drops"] = link_sum(dig(d, "links"), "tx_drops")
+    out["tx_bytes"] = link_sum(dig(d, "links"), "tx_bytes")
     out["resc_sent"] = num(dig(d, "rescue", "sent"))
     out["repaired"] = None
     out["parq_asked"] = None
@@ -130,6 +137,11 @@ def flat_client(d):
     out["e2e_holes"] = num(dig(d, "tcp_e2e", "sack_holes"))
     out["e2e_beyond"] = num(dig(d, "tcp_e2e", "beyond"))
     out["left_tcp"] = num(dig(d, "rescue", "left_to_tcp"))
+    for r in RULE_ROWS:
+        out["tr_" + r] = num(dig(d, "upload", "tcp", "rule", r))
+        out["trc_" + r] = num(dig(d, "upload", "tcp", "rule", "copied", r))
+    for k, j in E2E_MORE:
+        out[k] = num(dig(d, "tcp_e2e", j))
     return out
 
 
@@ -141,6 +153,7 @@ def flat_session(s):
     out["sent"] = num(dig(s, "download_packets"))
     out["tx_links"] = link_sum(dig(s, "links"), "tx_packets")
     out["tx_drops"] = link_sum(dig(s, "links"), "tx_drops")
+    out["tx_bytes"] = link_sum(dig(s, "links"), "tx_bytes")
     out["resc_sent"] = num(dig(s, "rescue", "sent"))
     out["repaired"] = num(dig(s, "repair", "recovered"))
     out["parq_asked"] = num(dig(s, "repair", "parq", "asked"))
@@ -150,6 +163,11 @@ def flat_session(s):
     out["e2e_holes"] = None
     out["e2e_beyond"] = None
     out["left_tcp"] = num(dig(s, "rescue", "left_to_tcp"))
+    for r in RULE_ROWS:
+        out["tr_" + r] = num(dig(s, "tcp", "rule", r))
+        out["trc_" + r] = num(dig(s, "tcp", "rule", "copied", r))
+    for k, _ in E2E_MORE:
+        out[k] = None
     return out
 
 
@@ -214,7 +232,8 @@ def delta_server(b, a):
     old_a, old_b = num(dig(a, "rx", "too_old")), num(dig(b, "rx", "too_old"))
     out["too_old"] = None if old_a is None or old_b is None else (old_a - old_b if old_a >= old_b else old_a)
     # where the upload's TCP leaves the tunnel: the server's, for all sessions (story 023)
-    for k, path in (("e2e_holes", ("tcp_e2e", "sack_holes")), ("e2e_beyond", ("tcp_e2e", "beyond"))):
+    for k, path in [("e2e_holes", ("tcp_e2e", "sack_holes")), ("e2e_beyond", ("tcp_e2e", "beyond"))] + \
+            [(k, ("tcp_e2e", j)) for k, j in E2E_MORE]:
         x, y = num(dig(a, *path)), num(dig(b, *path))
         out[k] = None if x is None or y is None else (x - y if x >= y else x)
     return out

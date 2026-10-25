@@ -14,7 +14,11 @@
   `test_proto.c`; laboratorio `bench/lab.d/bond.sh` (`BOND_TUNNEL=native`,
   caso `beyond`) con `bench/labq.py`, resultados en
   `~/campo/2026-10-24/harq/` del PC del banco (`an.py`); terreno, historia
-  017.
+  017. La retransmisión según la evidencia (2026-10-25): `tcpack.h` (nuevo),
+  `tcpfree.h` (`cg_tcpe_verdict`, `struct cg_tcpe_view`), `arrival.h`
+  (`cg_arr_top`), `proto.h` (`CG_F_TUNHOLE`, `CG_BOND_TCPMARK`), tests
+  `test_tcpack.c`; casos `spurious` y `lossall` de `bond.sh`; resultados en
+  `~/campo/2026-10-24/tcpack/` (`an.py`, tandas `m1`–`m6`).
 
 ## TL;DR
 
@@ -48,6 +52,19 @@
   (copiadas por corrida: 188 → 2,5, caudal igual); las pérdidas **más allá
   del túnel** se cuentan aparte (`tcp_e2e.beyond`: 125 de 205 huecos SACK
   con 1 % perdido después del túnel) y no tocan los estimadores.
+- **La retransmisión según la evidencia** (2026-10-25, `tcp_ack_rule`, sí
+  por omisión): el extremo que envía lee los ACK del flujo que vuelven por
+  el túnel, y el otro le marca en cada ACK con SACK si el túnel perdió el
+  hueco en todos los enlaces (`CG_F_TUNHOLE`, el bit reservado de DATA; sin
+  versión nueva). Ya ACK o SACK: un enlace aunque se repita; perdida por el
+  túnel: copiada desde la primera; lo demás, como `tcp_retx_one`. En el
+  laboratorio (n = 8) el caudal de TCP queda como la conjetura en todos los
+  casos (p ≥ 0,17); copia 130 retransmisiones por corrida donde el túnel
+  pierde en los dos enlaces (`lossall`; la conjetura, 4) y ninguna en el
+  caso de retransmisiones espurias, donde copiarlas todas (`off`) hace que
+  TCP retransmita 742 contra 572 (p 0,03). Marcar lo que todavía venía por
+  un enlace detenido, o lo que el túnel no podía asegurar, duplicaba las
+  retransmisiones de TCP (1104 contra 484, p 0,003).
 - Costo: el bloque RS con la geometría mayor cuesta ~40 % más al codificar
   (0,14 → 0,20 µs por paquete, k 21 m 3), decodificar igual. Perillas nuevas
   `rescue_code_ms` (100), `parq`, `rescue_tcp_race`, `tcp_retx_one` (sí);
@@ -305,6 +322,151 @@ con solo el arreglo de la pista y la espera): `protect` con copias 0,256 →
 **No medido:** la celda virtual (no se usó: el laboratorio ocupó la máquina),
 la Pi y el terreno.
 
+## La retransmisión según la evidencia (`tcp_ack_rule`, 2026-10-25)
+
+`tcp_retx_one` adivinaba: la primera retransmisión de unos bytes por un
+enlace («lo más probable es que el original haya llegado»), la repetida
+copiada. Ahora se decide por lo que se sabe del original (`tcpack.h`, puro,
+tests en `test_tcpack.c`):
+
+| Lo que se sabe del original | Fila | La retransmisión va |
+|---|---|---|
+| un ACK o un SACK que lo cubre ya volvió por el túnel (retransmisión espuria) | `spurious` | por un enlace, también repetida |
+| el túnel lo perdió en todos los enlaces que podían traerlo | `tunnel` | copiada por todos los que la llevarían, también la primera |
+| el host lejano lo echa de menos, pero el túnel lo entregó (perdido más allá), viene en camino, o el túnel no sabe | `delivered` | como `tcp_retx_one`: la primera por un enlace, la repetida copiada |
+| nada todavía (un ACK vuelve una ida y vuelta después del dato: «sin ACK» no es «perdido») | `unknown` | como `tcp_retx_one` |
+
+**De dónde sale la evidencia.** El extremo que envía los datos de un flujo
+(el router para la subida, el VPS para la bajada) lee los ACK de ese flujo
+cuando salen del túnel (`down_deliver`, `up_deliver`: el primer ACK libre sin
+datos): por flujo, en la tabla de `flow.h` de 4096 entradas sin memoria por
+paquete, el ACK acumulado más alto, hasta 4 bloques SACK fusionados y el
+marcador del ACK más nuevo con SACK, `[su ACK, su borde SACK más alto)`, con
+lo que el otro extremo dijo de él. El otro extremo, por donde TCP sale del
+túnel, ya veía los SACK del host lejano (`tcp_e2e`); ahora juzga cada ACK con
+SACK al leerlo hacia el túnel y lo marca:
+
+- guarda por flujo hasta 8 **huecos propios** (rangos de TCP que saltó al
+  escribir), que una copia tardía o la retransmisión recortan, parten o
+  borran, con la secuencia del túnel del segmento que los reveló y la pista
+  `CG_F_PREV` de ese paquete (`cg_ro_out` ahora lleva las banderas);
+- un hueco propio está **perdido** cuando todo enlace que podía traerlo
+  trajo una secuencia del túnel posterior (los enlaces son FIFO): el único
+  que nombra la pista, si falta exactamente una secuencia, o si no todos los
+  que trajeron alguna copia en los últimos 2 s (`cg_arr_top`: cualquier
+  copia, no solo las primeras);
+- solo eso se marca (`CG_F_TUNHOLE`). Lo que todavía puede llegar
+  (`in_flight`), lo entregado (`beyond`) y lo que no sabe (`unvouched`: un
+  flujo visto a la mitad, más de 8 huecos, SACK por encima de lo escrito)
+  van sin marca.
+
+**El formato, sin versión nueva.** `CG_F_TUNHOLE` es la bandera 0x02 de DATA,
+reservada hasta ahora («se escribe 0, se ignora»), y el par anuncia que marca
+con el bit 23 de la cola de las sondas (`CG_BOND_TCPMARK`, también en la
+respuesta). Es el argumento de `CG_BOND_TYPE` (historia 015): un motor
+anterior escribe 0 y lo ignora, y sin el bit 23 del par la bandera no
+significa nada (la fila es `unknown`, el comportamiento de antes). No cambia
+nada de lo que un motor del protocolo 9 sin esto lee o rechaza, y
+`cengarde-vps-setup` sigue pidiendo el 9.
+
+**Por qué una espuria no se descarta.** Aunque el receptor ya tenga esos
+bytes, su llegada produce el D-SACK (RFC 2883) con el que el emisor sabe que
+fue espuria, deshace el recorte de su ventana y, con RACK (RFC 8985, 7.2),
+agranda su ventana de reordenamiento para que el próximo desorden no la
+dispare. Descartarla ahorra un paquete en un enlace y deja a TCP disparando.
+
+**Lo que costó llegar** (cada versión medida contra la conjetura, n = 8):
+
+1. La primera marcaba todo hueco propio que el túnel *todavía* no había
+   escrito. En el caso `spurious` (sin pérdida, un enlace detenido 300 ms
+   cada 5 s) copiaba retransmisiones que llegaban por el otro enlace antes
+   que los originales detenidos, y el RACK del host daba a todos por
+   perdidos.
+2. La segunda separó lo que viene en camino, pero seguía marcando lo que no
+   podía asegurar; con 4 huecos por flujo, un salto de demora abría decenas,
+   los olvidaba, y todo pasaba a «no sé» marcado: TCP retransmitió 1104
+   contra 484 por corrida en la bajada (p 0,003) y 667 contra 357 en la
+   subida.
+3. Fundir los huecos de más tomaba por faltante lo escrito entre ellos, y
+   esperar a «los enlaces que espera el reordenador» dejaba afuera un enlace
+   detenido o silenciado, mientras su secuencia más nueva contaba solo las
+   primeras copias: huecos que venían en camino se leían como perdidos (793
+   marcados por corrida en `spurious` de subida, sin una sola pérdida en el
+   túnel).
+4. Con una retransmisión `delivered` siempre por un enlace, en `protectcut`
+   la repetida de algo que venía por el enlace lento volvía a ir por el
+   rápido, que perdía 60 %: TCP 12,3 → 10,8 Mbit/s en la bajada (p 0,003).
+   Un bit no distingue «entregado» de «en camino», así que `delivered` copia
+   la repetida, como la conjetura.
+
+**Medidas** (laboratorio de bonding, túnel nativo, `tcp_aware`, copias de
+250 ms y rescate como en terreno; cubic, 30 s; `labq.py -j 6 --lab-offset 8`;
+n = 8 por brazo y sentido; mediana, p de Mann-Whitney contra `heur`, el
+binario de #108 con `tcp_retx_one`, y contra `off`, el mismo con
+`tcp_retx_one = no`, todo copiado; `rule` es el binario final `f29e50f`;
+tanda `m6`). Casos nuevos: `spurious` (los enlaces de `protect` sin pérdida,
+el primero detenido 300 ms cada 5 s, el flujo a 20 Mbit/s, el host del VPS a
+50 ms) y `lossall` (dos enlaces de 30 Mbit/s que pierden 10 % cada uno: un
+paquete copiado se pierde en los dos el 1 % de las veces).
+
+| Caso, sentido | Mbit/s `rule` / `heur` / `off` | retransmisiones de TCP | copiadas por corrida | bytes por byte útil | RTT p99 ms |
+|---|---|---|---|---|---|
+| `protect` subida | 15,1 / 13,9 / 13,9 (p 0,87; 1) | 104 / 105 / 106 | 3 / 1 / 65 | 1,36 / 1,39 / 1,39 | 46 / 43 / 50 |
+| `protect` bajada | 15,7 / 16,6 / 17,2 (p 0,25; 0,13) | 92 / 87 / 79 (p 0,29; 0,02) | 2,5 / 0 / 41 | 1,33 / 1,31 / 1,30 | 41 / 41 / 43 |
+| `protectcut` subida | 11,0 / 9,9 / 12,7 (p 0,44; **0,015**) | 408 / 419 / 369 | 40 / 20 / 315 | 1,49 / 1,53 / 1,42 | 153 / 150 / 148 |
+| `protectcut` bajada | 10,9 / 12,2 / 12,4 (p 0,21; 0,67) | 274 / 355 / 295 (p **0,04**) | 25 / 37 / 220 | 1,41 / 1,37 / 1,35 | 160 / 163 / 148 |
+| `beyond` subida | 4,5 / 4,7 / 4,6 (p 0,53) | 216 / 205 / 210 | 3,5 / 2 / 188 | 2,08 / 2,07 / 2,08 | 36 / 37 / 32 |
+| `beyond` bajada | 4,7 / 4,5 / 4,5 (p 0,17) | 203 / 207 / 213 | 3,5 / 2,5 / 197 | 2,02 / 2,05 / 2,07 | 39 / 38 / 38 |
+| `spurious` subida | 19,9 / 19,9 / 19,8 | 381 / 498 / 566 (p 0,38; 0,07) | 0 / 0,5 / 463 | 1,28 / 1,29 / 1,30 | 392 / 397 / 391 |
+| `spurious` bajada | 19,8 / 19,8 / 19,7 (p 0,2; 0,02) | 572 / 508 / 742 (p 0,8; **0,03**) | 0 / 0 / 523 | 1,27 / 1,27 / 1,28 | 390 / 391 / 389 |
+| `lossall` subida | 4,9 / 5,3 / 5,0 (p 0,24) | 174 / 185 / 176 | 127 / 3,5 / 164 | 2,14 / 2,13 / 2,14 | 47 / 46 / 47 |
+| `lossall` bajada | 5,2 / 5,2 / 5,1 (p 0,6) | 175 / 187 / 185 | 130 / 5 / 173 | 2,15 / 2,14 / 2,14 | 46 / 46 / 49 |
+
+Cómo actuó cada fila (retransmisiones por corrida de `rule`, `unknown` /
+`spurious` / `delivered` / `tunnel`, y de ellas copiadas):
+
+| Caso, sentido | filas | copiadas (`delivered` repetidas / `tunnel`) |
+|---|---|---|
+| `protect` subida / bajada | 1 / 0 / 97 / 3,5 — 0 / 0 / 87,5 / 5 | 2 / 1 — 0 / 2,5 |
+| `protectcut` subida / bajada | 15 / 1 / 360 / 30,5 — 8,5 / 0 / 208,5 / 36 | 22 / 16,5 — 12 / 10 |
+| `beyond` subida / bajada | 1 / 0 / 213,5 / 0 — 1 / 0 / 199 / 3 | 3 / 0 — 3 / 1 |
+| `spurious` subida / bajada | 0 / 0 / 411,5 / 0 — 0 / 165 / 319,5 / 0 | 0 / 0 — 0 / 0 |
+| `lossall` subida / bajada | 0,5 / 1 / 39,5 / 130,5 — 0,5 / 0,5 / 38,5 / 135,5 | 0 / 127 — 0 / 130 |
+
+- **El caudal no cambia** contra la conjetura en ningún caso (p ≥ 0,17 con
+  n = 8; las diferencias de un 10 % entre tandas del mismo brazo son
+  ruido: `heur` en `protectcut` de bajada midió 10,9, 12,5, 11,7, 11,4,
+  12,3 y 12,2 en seis tandas). Lo que cambia es **qué** se copia.
+- **Copiar todas las retransmisiones daña donde son espurias**: en
+  `spurious` de bajada `off` hace que TCP retransmita 742 contra 572 de
+  `rule` (p 0,03) y copia 523 por corrida; `rule` no copia ninguna y la fila
+  `spurious` actúa 165 veces por corrida (en la subida, 0: el ACK pasa por el
+  router un instante antes que por el host, que retransmite sin haberlo
+  visto; en la bajada, el host del VPS está a 50 ms y sus retransmisiones
+  llegan después del ACK que las cubre).
+- **Lo que el túnel perdió en los dos enlaces se copia desde la primera**
+  (`lossall`: 130 por corrida contra 4), por 0,01 más de bytes por byte útil
+  (p 0,03 y 0,0006); el caudal no lo nota (TCP repara una retransmisión
+  perdida sin cortar la ventana otra vez).
+- **Las pérdidas más allá del túnel** (`beyond`) van a `delivered` (200–214
+  por corrida, 0–3 a `tunnel`): como la conjetura, que ya acertaba ahí.
+- En `protect`, 9 de cada 10 huecos que TCP retransmite **venían en camino**
+  (su copia por el enlace lento, o el paquete entero por él: medido con un
+  binario de depuración, la pista nombraba siempre el enlace de 2 s de
+  cola): no se copian.
+- **Pendiente de esto:** en el microcorte copiar todo rinde más en la subida
+  (`off` 12,7 contra 11,0 de `rule`, p 0,015; `heur` 9,9): una ráfaga en el
+  enlace rápido deja huecos de varias secuencias sin pista, que la regla no
+  puede dar por perdidos hasta que pase el enlace lento.
+
+**Un hallazgo del banco:** con `BOND_NETEM_INFLIGHT=1`, un caso cuya demora
+salta y vuelve (`ltespike`, `ltespikerand`, `protectpin`) achica el límite de
+netem al volver, y netem descarta todo lo que llega mientras los paquetes del
+salto siguen adentro (medido: 807 de 1556 datagramas a 60 Mbit/s, de 310 a
+10 ms). Esos casos pierden en cada salto además de demorar; `bond_link`
+acepta ahora la demora para la que se dimensiona el límite (`spurious` la
+usa), y los casos viejos quedan como estaban hasta revisarlos.
+
 ## Pendiente
 
 - **Terreno:** el rescate (`rescue_wait_ms`, `rescue_kb`) en Nostálgica con
@@ -322,7 +484,19 @@ la Pi y el terreno.
   validar contra `nstat` del host lejano.
 - UCI/LuCI no exponen las perillas nuevas (los valores por omisión son los
   propuestos).
+- `tcp_ack_rule`: en el microcorte copiar todas las retransmisiones rindió
+  más (`off`); probar a dar por perdido un hueco sin pista por el tiempo
+  (más que el retardo del enlace más lento con copia a tiempo) en vez de
+  esperar a que pase. En terreno: `upload.tcp.rule` y `tcp.rule` (cuántas
+  `tunnel` y `spurious`), `tcp_e2e.marked` e `in_flight`.
+- Los casos con saltos de demora y `BOND_NETEM_INFLIGHT=1` (`ltespike`,
+  `protectpin`) pierden en cada salto por el límite de netem: volver a
+  medirlos con `bond_link ... INFLIGHT_MS`.
 
 ## Cambios
 
 - 2026-10-24: creada.
+- 2026-10-25: la retransmisión según la evidencia (`tcp_ack_rule`,
+  `tcpack.h`, `CG_F_TUNHOLE` y `CG_BOND_TCPMARK` sin versión nueva), los
+  casos `spurious` y `lossall`, y el límite de netem que achican los saltos
+  de demora.

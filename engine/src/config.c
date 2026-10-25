@@ -831,6 +831,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	c->parq = 1;
 	c->rescue_tcp_race = 1;
 	c->tcp_retx_one = 1;
+	c->tcp_ack_rule = 1;
 	c->fec_wait_ms = 10;
 	c->redund_spare_ms = 50;
 	c->redund_spare_code_ms = 30;
@@ -933,6 +934,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	    get_bool(&ini, "", "parq", &c->parq, err, errlen) ||
 	    get_bool(&ini, "", "rescue_tcp_race", &c->rescue_tcp_race, err, errlen) ||
 	    get_bool(&ini, "", "tcp_retx_one", &c->tcp_retx_one, err, errlen) ||
+	    get_bool(&ini, "", "tcp_ack_rule", &c->tcp_ack_rule, err, errlen) ||
 	    get_bool(&ini, "", "fec", &c->fec, err, errlen) ||
 	    get_u32(&ini, "", "fec_wait_ms", 1, 200, &c->fec_wait_ms, err, errlen) ||
 	    get_u32(&ini, "", "fec_share_max", 0, 100, &c->fec_share_max, err, errlen) ||

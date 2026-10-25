@@ -74,6 +74,7 @@
 #include "capacity.h"
 #include "dominant.h"
 #include "linksig.h"
+#include "tcpack.h"
 #include "tcpfree.h"
 #include "fec.h"
 #include "gf256.h"
@@ -231,8 +232,13 @@ struct client {
 	int peer_bond;             /* the newest probe reply had a bonding tail (proto.h) */
 	int peer_reorders;         /* and it said the server reorders: split = on splits */
 	int peer_rescue;           /* and that it sends DATA again on a NACK (rescue.h) */
+	int peer_tcpmark;          /* and that it marks its TCP ACKs CG_F_TUNHOLE (tcpack.h) */
 	uint64_t nacks_sent;       /* NACK messages sent, for the rescue */
 	uint64_t retx_one, retx_copied; /* tcp_aware in redundancy: TCP retransmissions sent on one link; copied (story 023) */
+	/* tcp_ack_rule (tcpack.h): the upload's ACKs as they come down, and its
+	 * retransmissions by what was known of their originals; of them, copied */
+	struct cg_tcpa tcpa;
+	uint64_t retx_row[CG_TCPA_ROWS], retx_row_copied[CG_TCPA_ROWS];
 	/* The parity asked for again (harq.h, story 023): the RS block encoded
 	 * again from the rescue ring (with rescue_kb and Leopard), the seeds of
 	 * fresh combinations, and what was asked and sent. */
@@ -356,6 +362,7 @@ struct client {
 	uint32_t sts[CG_BATCH];   /* and its header's ts */
 	uint8_t sflags[CG_BATCH]; /* and its flags, but CG_F_PREV (seal_batch) */
 	uint8_t tcpk[CG_BATCH];   /* its class for tcp_aware (tcpfree.h's CG_TCPF_*) */
+	uint8_t tcpr[CG_BATCH];   /* a retransmission's row (tcpack.h's CG_TCPA_*) */
 	uint8_t prio[CG_BATCH];
 	struct cg_ro_cfg rocf;
 	uint32_t ro_budget;
@@ -1245,24 +1252,33 @@ static void spare_close(struct client *c, uint64_t now_us);
 static int code_service(struct client *c, uint64_t now_us);
 static uint64_t code_due(const struct client *c);
 
-/* tcp_aware in redundancy (story 023): the first retransmission of a TCP
- * segment goes on one link, the fastest of those it would go on, not copied
- * on every carrier: the tunnel most likely delivered the original (TCP
- * took it for lost beyond the tunnel, or its ACK was slow), and N copies of
- * every such retransmission fed the field's spirals. TCP sending it again
- * means the one copy did not do: that one goes on every carrier (tcpfree.h's
- * classes). */
+/* tcp_aware in redundancy (story 023): how many links a TCP retransmission
+ * goes on. With tcp_ack_rule, from what is known of its original
+ * (tcpack.h): ACKed already or lost beyond the tunnel, one link; not
+ * delivered by the tunnel, copied on every carrier; nothing known, as
+ * tcp_retx_one alone. With tcp_retx_one alone: the first retransmission of
+ * some bytes on one link, a repeat copied (tcpfree.h's classes). One link
+ * is the fastest of those it would go on. */
 static void retx_masks(struct client *c, int m, uint16_t carry, uint16_t dup)
 {
 	for (int j = 0; j < m; j++) {
 		uint16_t d;
-		int best = -1;
+		int best = -1, copy, row = c->tcpr[j], multi;
 
 		if (c->tcpk[j] != CG_TCPF_RETX1 && c->tcpk[j] != CG_TCPF_RETXN)
 			continue;
 		d = (uint16_t)(cg_split_dst(c->pick[j], carry, dup) & c->cmask[j]);
-		if (c->tcpk[j] == CG_TCPF_RETXN || !c->cfg->tcp_retx_one || (d & (d - 1)) == 0) {
-			c->retx_copied += (d & (d - 1)) != 0;
+		multi = (d & (d - 1)) != 0;
+		if (!c->cfg->tcp_retx_one)
+			copy = 1;
+		else if (c->cfg->tcp_ack_rule)
+			copy = cg_tcpa_copy(row, c->tcpk[j]);
+		else
+			copy = c->tcpk[j] == CG_TCPF_RETXN;
+		c->retx_row[row]++;
+		if (copy || !multi) {
+			c->retx_copied += multi && copy;
+			c->retx_row_copied[row] += multi && copy;
 			continue;
 		}
 		for (int i = 0; i < CG_MAX_LINKS; i++)
@@ -1881,6 +1897,25 @@ static void spare_tick(struct client *c, uint16_t live, uint64_t now_ms)
 	}
 }
 
+_Static_assert(CG_MAX_LINKS == 16, "struct cg_tcpe_view holds 16 links");
+
+/* The download's links as tcpfree.h judges an upload ACK's holes against
+ * them: per link the newest sequence of any copy, and those that brought
+ * one lately (arrival.h). */
+static const struct cg_tcpe_view *tcpe_view(const struct client *c, uint32_t now_us, struct cg_tcpe_view *v)
+{
+	v->rset = v->hw_ok = 0;
+	for (int i = 0; i < CG_MAX_LINKS; i++) {
+		const struct cg_link_rx *l = &c->rxs.rx[i];
+
+		v->hw[i] = l->top;
+		if (l->last_us && now_us - l->last_us <= CG_TCPE_RECENT_US)
+			v->hw_ok |= (uint16_t)(1u << i);
+	}
+	v->rset = v->hw_ok;
+	return v;
+}
+
 static void wg_read(struct client *c)
 {
 	for (int round = 0; round < CG_MAX_ROUNDS; round++) {
@@ -1889,6 +1924,9 @@ static void wg_read(struct client *c)
 		struct cg_split_masks k;
 		const uint16_t *w;
 		uint64_t now_us, now_ms;
+		struct cg_tcpe_view tv;
+		const struct cg_tcpe_view *tvp = NULL;
+		int tv_done = 0;
 
 		if (n <= 0)
 			return;
@@ -1951,6 +1989,7 @@ static void wg_read(struct client *c)
 						    : cg_slot_pick(esolo, (uint32_t)len, CG_PACE_SMALL, &flags));
 			c->up_split += c->pick[m] >= 0;
 			c->tcpk[m] = 0;
+			c->tcpr[m] = CG_TCPA_UNKNOWN;
 			if (c->native && c->cfg->tcp_aware) {
 				struct cg_flow f;
 
@@ -1958,11 +1997,21 @@ static void wg_read(struct client *c)
 					c->tcpk[m] = (uint8_t)cg_tcpf_class(&c->tcpf, &f, c->in.buf[i], len);
 					if (c->tcpk[m])
 						flags |= CG_F_FREE;
+					/* what the ACKs said of a retransmission's original (tcpack.h) */
+					if ((c->tcpk[m] == CG_TCPF_RETX1 || c->tcpk[m] == CG_TCPF_RETXN) && c->cfg->tcp_ack_rule)
+						c->tcpr[m] = (uint8_t)cg_tcpa_retx(&c->tcpa, &f, c->in.buf[i], len);
 				}
-				/* a flow's ACKs (and SYN-ACK) into the tunnel (tcpfree.h) */
+				/* a flow's ACKs (and SYN-ACK) into the tunnel (tcpfree.h),
+				 * marked when the download did not deliver their holes */
 				if (c->tcpk[m] == CG_TCPF_CTL && f.tcp &&
-				    cg_flow_of_dir(c->in.buf[i], len, c->flow_seed, 1, &f))
-					cg_tcpe_in(&c->tcpe, &f, c->in.buf[i], len, (uint32_t)now_us);
+				    cg_flow_of_dir(c->in.buf[i], len, c->flow_seed, 1, &f)) {
+					if (!tv_done) { /* once a batch */
+						tvp = tcpe_view(c, (uint32_t)now_us, &tv);
+						tv_done = 1;
+					}
+					if (cg_tcpe_in(&c->tcpe, &f, c->in.buf[i], len, (uint32_t)now_us, tvp) >= CG_TCPE_OWN)
+						flags |= CG_F_TUNHOLE;
+				}
 			}
 			/* The header is sealed in send_links, once the copies are
 			 * decided: the link this one went on alone goes in the next
@@ -2018,6 +2067,7 @@ static void on_probe_reply(struct client *c, struct link *l, const struct cg_hdr
 		c->peer_bond = cg_probe_bond_read(&pb, payload, plen);
 		c->peer_reorders = pb.reorders;
 		c->peer_rescue = pb.rescue;
+		c->peer_tcpmark = pb.tcpmark;
 		rescue_apply(c);
 	}
 	/* This path's losses the server will not send again now (CG_BOND_FULL):
@@ -2190,7 +2240,8 @@ static void dout_flush(struct client *c, uint64_t now_ms)
  * already in it; buf: the pool buffer it is in, CG_RO_NOBUF when none (a
  * socket's batch or a pump's slot, both kept until the batch is sent). A
  * full batch goes first. */
-static void dout_add(struct client *c, uint8_t *payload, size_t len, uint16_t buf, uint64_t now_ms)
+static void dout_add(struct client *c, uint8_t *payload, size_t len, uint16_t buf, uint64_t now_ms, uint32_t seq,
+		     uint8_t flags)
 {
 	if (c->dq == DOUT_MAX)
 		dout_flush(c, now_ms);
@@ -2199,7 +2250,7 @@ static void dout_add(struct client *c, uint8_t *payload, size_t len, uint16_t bu
 		struct cg_flow f;
 
 		if (cg_flow_of(payload, len, c->flow_seed, &f) && f.tcp)
-			cg_tcpe_out(&c->tcpe, &f, payload, len, (uint32_t)cg_now_us());
+			cg_tcpe_out(&c->tcpe, &f, payload, len, (uint32_t)cg_now_us(), seq, cg_prev_link(flags));
 	}
 	wg_msg(c, &c->dmsg[c->dq], &c->diov[c->dq], payload, len);
 	c->dq++;
@@ -2549,7 +2600,7 @@ static void ro_drain(struct client *c, uint16_t rset, uint32_t now, int all, uin
 	struct cg_ro_out o;
 
 	while ((all || c->ro_budget) && cg_ro_next(&c->rxs.ro, &c->rocf, rset, now, &o)) {
-		dout_add(c, cg_ro_pool_buf(&c->pool, o.buf), o.len, o.buf, now_ms);
+		dout_add(c, cg_ro_pool_buf(&c->pool, o.buf), o.len, o.buf, now_ms, o.seq, o.flags);
 		if (c->ro_budget)
 			c->ro_budget--;
 	}
@@ -2578,8 +2629,17 @@ static void down_deliver(struct client *c, const struct cg_hdr *h, unsigned link
 	enum cg_ro_v v;
 	uint16_t buf;
 
+	/* free without data: the upload's ACKs, with the server's mark on
+	 * their holes (tcpack.h) */
+	if (c->native && (h->flags & CG_F_FREE) && !k.retx && c->cfg->tcp_aware) {
+		struct cg_flow f;
+
+		if (cg_flow_of_dir(payload, len, c->flow_seed, 1, &f) && f.tcp)
+			cg_tcpa_ack(&c->tcpa, &f, payload, len, !!(h->flags & CG_F_TUNHOLE), c->peer_tcpmark);
+	}
+
 	if (!c->cfg->reorder) {
-		dout_add(c, payload, len, CG_RO_NOBUF, now_ms);
+		dout_add(c, payload, len, CG_RO_NOBUF, now_ms, h->seq, h->flags);
 		return;
 	}
 	v = cg_ro_in(&c->rxs.ro, &c->pool, &c->rocf, &k, rset, &buf);
@@ -2592,7 +2652,7 @@ static void down_deliver(struct client *c, const struct cg_hdr *h, unsigned link
 	if (v == CG_RO_HOLD)
 		memcpy(cg_ro_pool_buf(&c->pool, buf), payload, len);
 	else
-		dout_add(c, payload, len, CG_RO_NOBUF, now_ms); /* NOW (a second AGAIN cannot be: never dropped) */
+		dout_add(c, payload, len, CG_RO_NOBUF, now_ms, h->seq, h->flags); /* NOW (a second AGAIN cannot be: never dropped) */
 	ro_drain(c, rset, now, 0, now_ms);
 }
 
@@ -2661,7 +2721,7 @@ static void ro_flush(struct client *c, uint64_t now_ms)
 	uint32_t held = c->rxs.ro.held;
 
 	while (cg_ro_flush(&c->rxs.ro, &o))
-		dout_add(c, cg_ro_pool_buf(&c->pool, o.buf), o.len, o.buf, now_ms);
+		dout_add(c, cg_ro_pool_buf(&c->pool, o.buf), o.len, o.buf, now_ms, o.seq, o.flags);
 	dout_flush(c, now_ms);
 	if (held)
 		cg_info("reorder off: %u held packets handed on to WireGuard", held);
@@ -2826,6 +2886,8 @@ static void send_probe(struct client *c, struct link *l, uint64_t now_us, uint32
 	pb.full = pb.rescue && (cg_resc_low(&c->resc_b) || up_full(c, id));
 	/* Its type, so that the server treats its download alike (story 015). */
 	pb.type = c->ltype[id];
+	/* Its TCP ACKs marked when the download did not deliver their holes (tcpack.h). */
+	pb.tcpmark = c->native && c->cfg->tcp_aware;
 	const struct cg_link_rx *rx = &c->rxs.rx[id];
 	/* The cookie, and where our windows stand, for a server that has to
 	 * take the session up (proto.h). */
@@ -3216,6 +3278,7 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 	cg_json_u64(j, "retx_again", c->tcpf.retx_again);
 	cg_json_u64(j, "retx_one", c->retx_one);
 	cg_json_u64(j, "retx_copied", c->retx_copied);
+	cg_json_tcpa(j, "rule", &c->tcpa, c->retx_row, c->retx_row_copied, c->peer_tcpmark);
 	cg_json_end(j, '}');
 	/* Splitting the upload (split.h). */
 	cg_json_u64(j, "split", c->up_split);

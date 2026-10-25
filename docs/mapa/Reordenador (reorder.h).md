@@ -3,7 +3,7 @@ tags: [mapa, pieza]
 archivos:
   - engine/src/reorder.h
   - engine/tests/test_reorder.c
-sello: bf852640aa1dba7f
+sello: 2106ebe801e82b56
 ---
 # Reordenador (reorder.h)
 
@@ -23,6 +23,7 @@ Pone en orden de secuencia lo que llega antes de entregarlo a WireGuard o a la T
 - Un hueco que la pista `CG_F_PREV` dio por perdido en todos los enlaces se pide al instante y retiene lo que sigue aunque el tope sea 0 (redundancia); un hueco pedido espera `rescue_us` desde el pedido, acotado por el tope **más** `rescue_us` (`cg_ro_ask_left`), no por el tope solo ([[023-reparacion-coherente]]).
 - Lo rehecho (`rebuilt`) que llena un hueco pedido cuenta en `rescue.repaired`, no en `rescued`.
 - Estadísticas `in_order`, `held_total`, `lost.*`, `late.*` → estado.
+- `struct cg_ro_out` lleva también las banderas de la cabecera (`flags`): el extremo de salida lee la pista `CG_F_PREV` de lo que escribe ([[Liberación TCP (tcpfree.h)]]).
 
 ## Perillas
 - [[Mapa/Perillas/reorder|reorder]]: sí. [[Mapa/Perillas/reorder_max_wait_ms|reorder_max_wait_ms]]: 200. [[Mapa/Perillas/reorder_dup_wait_ms|reorder_dup_wait_ms]]: 0.

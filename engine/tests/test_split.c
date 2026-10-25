@@ -252,7 +252,7 @@ static void test_split_duplicate(void)
 {
 	static const uint16_t w[CG_MAX_LINKS] = { 1, 1, 1, 1 };
 	struct cg_split s, ref;
-	uint8_t flags = CG_F_ECN;
+	uint8_t flags = CG_F_TUNHOLE;
 
 	cg_split_reset(&s);
 
@@ -270,7 +270,7 @@ static void test_split_duplicate(void)
 		CHECK(pick(&s, bit(0) | bit(1) | bit(2), 0, wz) >= 0);
 	}
 	CHECK_EQ(cg_split_pick(&s, bit(2), bit(2), 0, w, CG_WGS_DATA, BIG, SMALL_LEN, &flags), -1);
-	CHECK_EQ(flags, CG_F_ECN); /* untouched */
+	CHECK_EQ(flags, CG_F_TUNHOLE); /* untouched */
 	CHECK(pick(&s, bit(0) | bit(1), 0, w) >= 0);
 
 	/* WireGuard's other messages (handshakes, types 1 to 3) and anything
@@ -280,7 +280,7 @@ static void test_split_duplicate(void)
 	CHECK_EQ(cg_split_pick(&s, 0xf, 0xf, 0, w, 1, 148, SMALL_LEN, &flags), -1); /* an initiation */
 	CHECK_EQ(cg_split_pick(&s, 0xf, 0xf, 0, w, 2, 92, SMALL_LEN, &flags), -1);  /* a response */
 	CHECK_EQ(cg_split_pick(&s, 0xf, 0xf, 0, w, 3, 64, SMALL_LEN, &flags), -1);  /* a cookie reply */
-	CHECK_EQ(flags, CG_F_ECN);
+	CHECK_EQ(flags, CG_F_TUNHOLE);
 
 	/* Small datagrams (keepalives, empty ACKs): up to split_small, inclusive. */
 	CHECK_EQ(cg_split_pick(&s, 0xf, 0xf, 0, w, CG_WGS_DATA, 0, SMALL_LEN, NULL), -1);
@@ -392,15 +392,15 @@ static void test_split_flag(void)
 		uint32_t len;
 	} kind[] = {
 		{ CG_WGS_DATA, 0, BIG },
-		{ CG_WGS_DATA, CG_F_ECN, BIG }, /* the sender's ECN bits stay */
-		{ 2, CG_F_ECN, 92 },            /* a handshake response */
+		{ CG_WGS_DATA, CG_F_TUNHOLE, BIG }, /* the sender's ECN bits stay */
+		{ 2, CG_F_TUNHOLE, 92 },            /* a handshake response */
 		{ CG_WGS_DATA, 0, 40 },         /* a small one */
 	};
 	struct cg_split s;
 	unsigned flagged = 0, plain = 0;
 
 	CHECK_EQ(CG_F_SPLIT, 0x04);
-	CHECK_EQ(CG_F_SPLIT & CG_F_ECN, 0);
+	CHECK_EQ(CG_F_SPLIT & CG_F_TUNHOLE, 0);
 
 	cg_split_reset(&s);
 	/* Links 0 to 4, every way: which are eligible, which have weight 0 and
