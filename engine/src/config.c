@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "arrival.h" /* CG_MAX_LINKS */
+#include "fec3.h"    /* enum cg_f3_single */
 #include "linkmodel.h" /* type */
 #include "log.h"
 #include "protoctlio.h" /* CG_PCTL_NO, _A, _B */
@@ -779,6 +780,38 @@ static int get_spare(struct cg_ini *ini, struct cg_config *c, char *err, size_t 
 	return -1;
 }
 
+/* fec_code: xor (fec.h) or rlc (FEC v3, story 026); fec_single: auto, yes
+ * or no (fec3.h). */
+static int get_fec(struct cg_ini *ini, struct cg_config *c, char *err, size_t errlen)
+{
+	const char *v = cg_ini_get(ini, "", "fec_code");
+
+	if (v) {
+		if (!strcmp(v, "xor"))
+			c->fec_code = CG_FEC_XOR;
+		else if (!strcmp(v, "rlc"))
+			c->fec_code = CG_FEC_RLC;
+		else {
+			snprintf(err, errlen, "fec_code: expected xor or rlc, got '%s'", v);
+			return -1;
+		}
+	}
+	v = cg_ini_get(ini, "", "fec_single");
+	if (v) {
+		if (!strcmp(v, "auto"))
+			c->fec_single = CG_F3_SINGLE_AUTO;
+		else if (!strcmp(v, "yes") || !strcmp(v, "on") || !strcmp(v, "1"))
+			c->fec_single = CG_F3_SINGLE_YES;
+		else if (!strcmp(v, "no") || !strcmp(v, "off") || !strcmp(v, "0"))
+			c->fec_single = CG_F3_SINGLE_NO;
+		else {
+			snprintf(err, errlen, "fec_single: expected auto, yes or no, got '%s'", v);
+			return -1;
+		}
+	}
+	return 0;
+}
+
 static int get_split(struct cg_ini *ini, struct cg_config *c, char *err, size_t errlen)
 {
 	const char *v = cg_ini_get(ini, "", "split");
@@ -867,6 +900,8 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	strcpy(c->protocontroller_cc, "auto");
 	strcpy(c->protocontroller_mid_cc, "bbr");
 	c->fec_wait_ms = 10;
+	c->fec_pct = 10;
+	c->fec_window_ms = 100;
 	c->redund_spare_ms = 50;
 	c->redund_spare_code_ms = 30;
 	c->fec_share_max = 0;
@@ -984,6 +1019,9 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	    get_bool(&ini, "", "fec", &c->fec, err, errlen) ||
 	    get_u32(&ini, "", "fec_wait_ms", 1, 200, &c->fec_wait_ms, err, errlen) ||
 	    get_u32(&ini, "", "fec_share_max", 0, 100, &c->fec_share_max, err, errlen) ||
+	    get_fec(&ini, c, err, errlen) ||
+	    get_u32(&ini, "", "fec_pct", 1, 50, &c->fec_pct, err, errlen) ||
+	    get_u32(&ini, "", "fec_window_ms", 10, 1000, &c->fec_window_ms, err, errlen) ||
 	    get_u32(&ini, "", "reorder_pool_kb", 256, 131070, &c->reorder_pool_kb, err, errlen) ||
 	    get_bool(&ini, "", "tcp_aware", &c->tcp_aware, err, errlen) ||
 	    get_u32(&ini, "", "reorder_idle_ms", 0, 60000, &c->reorder_idle_ms, err, errlen) ||

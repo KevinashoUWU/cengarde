@@ -75,6 +75,28 @@ static void test_gf(void)
 	cg_gf_madd(&G, c, b, 0x53, 16);
 	for (int i = 0; i < 16; i++)
 		CHECK_EQ(c[i], a[i] ^ G.mul[0x53][b[i]]);
+	/* the 16-byte path (SSSE3, NEON) against the table, every coefficient,
+	 * odd lengths and offsets; then scaled in place */
+	{
+		static uint8_t src[300], dst[300], ref[300];
+
+		for (unsigned i = 0; i < sizeof(src); i++)
+			src[i] = (uint8_t)(i * 89 + 7 + (i >> 4));
+		for (unsigned k = 0; k < 256; k++) {
+			unsigned off = k % 5, n = 1 + (k * 37) % 290;
+
+			for (unsigned i = 0; i < sizeof(dst); i++)
+				dst[i] = ref[i] = (uint8_t)(i * 13 + k);
+			cg_gf_madd(&G, dst + off, src + (k % 3), (uint8_t)k, n);
+			for (unsigned i = 0; i < n; i++)
+				ref[off + i] ^= G.mul[k][src[k % 3 + i]];
+			CHECK(!memcmp(dst, ref, sizeof(dst)));
+			cg_gf_scale(&G, dst + off, (uint8_t)k, n);
+			for (unsigned i = 0; i < n; i++)
+				ref[off + i] = G.mul[k][ref[off + i]];
+			CHECK(!memcmp(dst, ref, sizeof(dst)));
+		}
+	}
 	/* a Vandermonde matrix and its inverse */
 	for (unsigned r = 0; r < 4; r++)
 		for (unsigned k = 0, v = 1; k < 4; k++, v = G.mul[v][r + 1])
@@ -96,7 +118,7 @@ static void test_gf(void)
 
 static void test_rep_hdr(void)
 {
-	struct cg_rep_hdr h = { 0x01020304u, 0x8000000000000005ull, CG_REP_RS, 3, 2 }, g;
+	struct cg_rep_hdr h = { .base = 0x01020304u, .map = 0x8000000000000005ull, .kind = CG_REP_RS, .m = 3, .idx = 2 }, g;
 	uint8_t p[CG_REP_HDR + 128];
 	unsigned slen;
 
@@ -131,6 +153,48 @@ static void test_rep_hdr(void)
 	h.kind = 9;
 	cg_rep_put(p, &h);
 	CHECK_EQ(cg_rep_get(p, CG_REP_HDR + 100, &g, &slen), -1);
+	/* a wide window (story 026): base, span, density and seed */
+	memset(&h, 0, sizeof(h));
+	h.base = 0xfffffff0u;
+	h.kind = CG_REP_RLCW;
+	h.span = 700;
+	h.dn = 34;
+	h.seed = 0xdeadbeefu;
+	cg_rep_put(p, &h);
+	CHECK_EQ(cg_rep_get(p, CG_REP_HDR + 100, &g, &slen), 0);
+	CHECK_EQ(g.kind, CG_REP_RLCW);
+	CHECK_EQ(g.base, 0xfffffff0u);
+	CHECK_EQ(g.span, 700);
+	CHECK_EQ(g.dn, 34);
+	CHECK_EQ(g.seed, 0xdeadbeefu);
+	CHECK(g.map == 0);
+	CHECK_EQ(slen, 100);
+	h.span = 0;
+	cg_rep_put(p, &h);
+	CHECK_EQ(cg_rep_get(p, CG_REP_HDR + 100, &g, &slen), -1);
+	h.span = CG_RLCW_SPAN + 1;
+	cg_rep_put(p, &h);
+	CHECK_EQ(cg_rep_get(p, CG_REP_HDR + 100, &g, &slen), -1);
+	h.span = CG_RLCW_SPAN;
+	cg_rep_put(p, &h);
+	p[7] = 1; /* reserved */
+	CHECK_EQ(cg_rep_get(p, CG_REP_HDR + 100, &g, &slen), -1);
+	p[7] = 0;
+	CHECK_EQ(cg_rep_get(p, CG_REP_HDR + CG_SYM_MAX + 1, &g, &slen), -1);
+	CHECK_EQ(cg_rep_get(p, CG_REP_HDR + 2, &g, &slen), -1);
+	/* the density: every member up to the target, about the target beyond */
+	CHECK_EQ(cg_rlcw_density(CG_RLCW_DMAX), 255);
+	{
+		unsigned n = 0;
+		uint8_t c;
+
+		for (uint32_t sd = 0; sd < 64; sd++)
+			for (unsigned d = 0; d < CG_RLCW_SPAN; d++) {
+				n += (unsigned)cg_rlcw_member(sd, cg_rlcw_density(CG_RLCW_SPAN), d, &c);
+				CHECK(c);
+			}
+		CHECK(n > 64 * CG_RLCW_DMAX * 8 / 10 && n < 64 * CG_RLCW_DMAX * 12 / 10);
+	}
 }
 
 static struct cg_rlc_tx T;
@@ -144,7 +208,7 @@ static unsigned rlc_run(uint32_t seq0, unsigned n, unsigned every, unsigned w, i
 {
 	struct cg_rep_ring ring = ring_new();
 	uint8_t p[CG_SYM_PLEN], sym[CG_SYM_MAX];
-	uint32_t out[CG_RLC_EQ];
+	uint32_t out[CG_RLC_COLS];
 	unsigned back = 0, nr = 0;
 
 	memset(&T, 0, sizeof(T));
@@ -159,7 +223,7 @@ static unsigned rlc_run(uint32_t seq0, unsigned n, unsigned every, unsigned w, i
 			(*nlost)++;
 		} else {
 			ring_put(&ring, s, p, len);
-			back += cg_rlc_rx_data(&G, &R, &ring, s, out, CG_RLC_EQ);
+			back += cg_rlc_rx_data(&G, &R, &ring, s, out, CG_RLC_COLS);
 		}
 		if ((i + 1) % every == 0) {
 			struct cg_rep_hdr h = { 0 };
@@ -168,7 +232,7 @@ static unsigned rlc_run(uint32_t seq0, unsigned n, unsigned every, unsigned w, i
 			CHECK(sl > 2);
 			if (rlost(nr++))
 				continue;
-			got = cg_rlc_rx_repair(&G, &R, &ring, &h, sym, sl, out, CG_RLC_EQ);
+			got = cg_rlc_rx_repair(&G, &R, &ring, &h, sym, sl, out, CG_RLC_COLS);
 			for (unsigned j = 0; j < got; j++)
 				CHECK(ring_ok(&ring, out[j]));
 			back += got;
@@ -252,16 +316,17 @@ static void test_rlc_late(void)
 	CHECK(h.map == 0xff);
 	CHECK_EQ(cg_rlc_rx_repair(&G, &R, &ring, &h, sym, sl, out, 8), 0);
 	CHECK_EQ(R.kept, 1);
-	CHECK_EQ(R.want[12], 1);
+	CHECK(cg_rlc_rx_wants(&R, 12) && cg_rlc_rx_wants(&R, 15));
+	CHECK_EQ(R.nrow, 1);
+	CHECK_EQ(R.ncol, 2);
 	CHECK(!cg_rep_has(&ring, 12));
 	ring_put(&ring, 15, p, pkt(15, p));
 	CHECK_EQ(cg_rlc_rx_data(&G, &R, &ring, 15, out, 8), 1);
 	CHECK_EQ(out[0], 12);
 	CHECK(ring_ok(&ring, 12));
-	CHECK_EQ(R.want[12], 0);
-	CHECK_EQ(R.want[15], 0);
-	for (unsigned k = 0; k < CG_RLC_EQ; k++)
-		CHECK(!R.eq[k].used);
+	CHECK(!cg_rlc_rx_wants(&R, 12) && !cg_rlc_rx_wants(&R, 15));
+	CHECK_EQ(R.nrow, 0);
+	CHECK_EQ(R.ncol, 0);
 	/* a member longer than the repair: not one (malformed), let go */
 	memset(&R, 0, sizeof(R));
 	ring.have[12] = 0;
@@ -270,8 +335,9 @@ static void test_rlc_late(void)
 	CHECK_EQ(R.bad, 1);
 }
 
-/* The window spans CG_REP_SPAN sequences at most; equations too old are let
- * go when a newer repair comes. */
+/* The window spans CG_REP_SPAN sequences at most; unknowns too old
+ * (CG_RLC_KEEP behind the newest repair) are let go with their rows when a
+ * newer repair comes. */
 static void test_rlc_span_age(void)
 {
 	struct cg_rep_ring ring = ring_new();
@@ -292,14 +358,27 @@ static void test_rlc_span_age(void)
 	/* kept: 150 and 170 both missing */
 	CHECK_EQ(cg_rlc_rx_repair(&G, &R, &ring, &h, sym, sl, out, 8), 0);
 	CHECK_EQ(R.kept, 1);
-	/* a repair CG_REP_AGE + 1 later lets it go */
+	/* a repair CG_RLC_KEEP + 1 after 170 lets it go */
 	memset(&T, 0, sizeof(T));
-	cg_rlc_tx_add(&T, 150 + CG_REP_AGE + 1, p, pkt(150 + CG_REP_AGE + 1, p), 0);
+	cg_rlc_tx_add(&T, 170 + CG_RLC_KEEP + 1, p, pkt(170 + CG_RLC_KEEP + 1, p), 0);
 	sl = cg_rlc_tx_repair(&G, &T, 8, &h, sym);
 	CHECK_EQ(cg_rlc_rx_repair(&G, &R, &ring, &h, sym, sl, out, 8), 1); /* its one member, rebuilt */
-	CHECK_EQ(out[0], 150 + CG_REP_AGE + 1);
+	CHECK_EQ(out[0], 170 + CG_RLC_KEEP + 1);
 	CHECK_EQ(R.dropped, 1);
-	CHECK_EQ(R.want[150 & (CG_REP_RING - 1)], 0);
+	CHECK(!cg_rlc_rx_wants(&R, 150) && !cg_rlc_rx_wants(&R, 170));
+	CHECK_EQ(R.ncol, 0);
+	/* a repair whose members are all that old: useless */
+	memset(&T, 0, sizeof(T));
+	cg_rlc_tx_add(&T, 160, p, pkt(160, p), 0);
+	sl = cg_rlc_tx_repair(&G, &T, 8, &h, sym);
+	{
+		uint64_t u = R.useless, k = R.kept;
+
+		CHECK_EQ(cg_rlc_rx_repair(&G, &R, &ring, &h, sym, sl, out, 8), 0);
+		CHECK_EQ(R.useless, u + 1);
+		CHECK_EQ(R.kept, k);
+	}
+	CHECK(!cg_rlc_rx_wants(&R, 160));
 	/* the credit: 3/8 of a repair a packet */
 	memset(&T, 0, sizeof(T));
 	{
@@ -315,10 +394,11 @@ static void test_rlc_span_age(void)
 
 
 /* The parity asked for again (harq.h, story 023): three lost among 16, one
- * repair kept, so a deficit of 2 over exactly those three; two fresh
- * combinations of only them, built from the sender's copies (not its
- * window), settle all three. An unknown linked through a second equation
- * joins the set; an equation too far apart is left out. */
+ * repair kept, so a deficit of 2: its pivot (the first unknown) waits for
+ * the other two, its free columns; two fresh combinations of only them,
+ * built from the sender's copies (not its window), settle all three. A
+ * free unknown held by a row asks for itself; an unknown no row holds,
+ * for nothing (the packet answers it). */
 static void test_rlc_parq(void)
 {
 	struct cg_rep_ring ring = ring_new();
@@ -341,10 +421,14 @@ static void test_rlc_parq(void)
 	CHECK_EQ(cg_rlc_rx_need(&G, &R, 103, &base, &map), 0); /* no equation yet */
 	sl = cg_rlc_tx_repair(&G, &T, 16, &h, sym);
 	CHECK_EQ(cg_rlc_rx_repair(&G, &R, &ring, &h, sym, sl, out, 8), 0);
-	CHECK_EQ(cg_rlc_rx_need(&G, &R, 107, &base, &map), 2);
-	CHECK_EQ(base, 103);
-	CHECK(map == (1ull | 1ull << 4 | 1ull << 8));
+	CHECK_EQ(cg_rlc_rx_need(&G, &R, 103, &base, &map), 2);
+	CHECK_EQ(base, 107);
+	CHECK(map == (1ull | 1ull << 4));
+	CHECK_EQ(cg_rlc_rx_need(&G, &R, 111, &base, &map), 1); /* free: itself */
+	CHECK_EQ(base, 111);
+	CHECK(map == 1);
 	CHECK_EQ(cg_rlc_rx_need(&G, &R, 104, &base, &map), 0); /* here: no equation misses it */
+	cg_rlc_rx_need(&G, &R, 103, &base, &map);
 	for (uint64_t m = map; m; m &= m - 1, k++) {
 		mp[k] = p[base + (unsigned)__builtin_ctzll(m) - 100];
 		ml[k] = len[base + (unsigned)__builtin_ctzll(m) - 100];
@@ -358,9 +442,10 @@ static void test_rlc_parq(void)
 	CHECK_EQ(got, 3);
 	CHECK(ring_ok(&ring, 103) && ring_ok(&ring, 107) && ring_ok(&ring, 111));
 	CHECK_EQ(cg_rlc_rx_need(&G, &R, 107, &base, &map), 0);
+	CHECK_EQ(R.ncol, 0);
 
-	/* linked: 200 and 205 in one equation, 205 and 230 in another; the set
-	 * is all three, deficit 1 */
+	/* linked: 200 and 205 in one equation, 205 and 230 in another: two
+	 * rows over three unknowns, a deficit of 1 whichever is asked about */
 	ring = ring_new();
 	memset(&T, 0, sizeof(T));
 	memset(&R, 0, sizeof(R));
@@ -376,9 +461,22 @@ static void test_rlc_parq(void)
 			CHECK_EQ(cg_rlc_rx_repair(&G, &R, &ring, &h, sym, sl, out, 8), 0);
 		}
 	}
+	CHECK_EQ(R.nrow, 2);
+	CHECK_EQ(cg_rlc_rx_need(&G, &R, 200, &base, &map), 1);
+	CHECK_EQ(cg_rlc_rx_need(&G, &R, 205, &base, &map), 1);
 	CHECK_EQ(cg_rlc_rx_need(&G, &R, 230, &base, &map), 1);
-	CHECK_EQ(base, 200);
-	CHECK(map == (1ull | 1ull << 5 | 1ull << 30));
+	CHECK_EQ(base, 230); /* the free one */
+	CHECK(map == 1);
+	{
+		uint8_t q[CG_SYM_PLEN];
+		const uint8_t *qp[1] = { q };
+		uint16_t ql[1];
+
+		ql[0] = pkt(230, q);
+		sl = cg_rlc_combine(&G, 230, 1, 0x9001, qp, ql, &h, sym);
+		CHECK_EQ(cg_rlc_rx_repair(&G, &R, &ring, &h, sym, sl, out, 8), 3);
+	}
+	CHECK(ring_ok(&ring, 200) && ring_ok(&ring, 205) && ring_ok(&ring, 230));
 }
 
 /* A combination of the given members (bit d of map: base + d), from the
@@ -390,7 +488,7 @@ static unsigned rlc_feed_combo(struct cg_rep_ring *ring, uint32_t base, uint64_t
 	const uint8_t *mp[CG_REP_SPAN];
 	uint16_t ml[CG_REP_SPAN];
 	uint8_t sym[CG_SYM_MAX];
-	uint32_t out[CG_RLC_EQ];
+	uint32_t out[CG_RLC_COLS];
 	struct cg_rep_hdr h;
 	unsigned k = 0, sl, got;
 
@@ -399,7 +497,7 @@ static unsigned rlc_feed_combo(struct cg_rep_ring *ring, uint32_t base, uint64_t
 		mp[k] = p[k];
 	}
 	sl = cg_rlc_combine(&G, base, map, seed, mp, ml, &h, sym);
-	got = cg_rlc_rx_repair(&G, &R, ring, &h, sym, sl, out, CG_RLC_EQ);
+	got = cg_rlc_rx_repair(&G, &R, ring, &h, sym, sl, out, CG_RLC_COLS);
 	for (unsigned j = 0; j < got; j++)
 		*wrong += !ring_ok(ring, out[j]);
 	return got;
@@ -451,7 +549,7 @@ static void test_rlc_random(void)
 	static uint16_t hlen[CG_REP_RING];
 	struct cg_rep_ring ring = ring_new();
 	uint8_t sym[CG_SYM_MAX];
-	uint32_t out[CG_RLC_EQ], s = 0xfffe0000u;
+	uint32_t out[CG_RLC_COLS], s = 0xfffe0000u;
 	unsigned burst = 0, wrong = 0, back = 0, asked = 0, nlost = 0;
 	uint16_t seed = 0;
 
@@ -471,13 +569,13 @@ static void test_rlc_random(void)
 			nlost++;
 		} else {
 			ring_put(&ring, s, hist[ix], hlen[ix]);
-			got = cg_rlc_rx_data(&G, &R, &ring, s, out, CG_RLC_EQ);
+			got = cg_rlc_rx_data(&G, &R, &ring, s, out, CG_RLC_COLS);
 		}
 		if (i % 3 == 2 && rlc_rand() % 4) {
 			struct cg_rep_hdr h;
 			unsigned sl = cg_rlc_tx_repair(&G, &T, 21, &h, sym);
 
-			got += cg_rlc_rx_repair(&G, &R, &ring, &h, sym, sl, out + got, CG_RLC_EQ - got);
+			got += cg_rlc_rx_repair(&G, &R, &ring, &h, sym, sl, out + got, CG_RLC_COLS - got);
 		}
 		/* now and then, the deficit of a hole 30 behind, asked for again */
 		if (i % 7 == 0 && i > 64) {
@@ -485,7 +583,7 @@ static void test_rlc_random(void)
 			uint64_t map;
 			unsigned d = cg_rlc_rx_need(&G, &R, q, &base, &map);
 
-			for (unsigned j = 0; j < d && got < CG_RLC_EQ; j++) {
+			for (unsigned j = 0; j < d && got < CG_RLC_COLS; j++) {
 				const uint8_t *mp[CG_REP_SPAN];
 				uint16_t ml[CG_REP_SPAN];
 				struct cg_rep_hdr h;
@@ -498,7 +596,7 @@ static void test_rlc_random(void)
 					ml[k] = hlen[x];
 				}
 				sl = cg_rlc_combine(&G, base, map, (uint16_t)(0x8000u | ++seed), mp, ml, &h, sym);
-				got += cg_rlc_rx_repair(&G, &R, &ring, &h, sym, sl, out + got, CG_RLC_EQ - got);
+				got += cg_rlc_rx_repair(&G, &R, &ring, &h, sym, sl, out + got, CG_RLC_COLS - got);
 				asked++;
 			}
 		}
@@ -532,6 +630,219 @@ static void test_rlc_ring_newer(void)
 	CHECK_EQ(cg_rep_put_sym(&ring, 5 + 2 * CG_REP_RING, sym, len + 2u), 0);
 }
 
+
+/* ---- the wide windows (FEC v3, story 026) ---- */
+
+static struct cg_rlcw_tx W;
+
+/* The sender's run: by sequence, a hole starts it over; the window by time. */
+static void test_rlcw_window(void)
+{
+	uint8_t p[CG_SYM_PLEN];
+	uint16_t len;
+
+	memset(&W, 0, sizeof(W));
+	CHECK_EQ(cg_rlcw_window(&W, 1000, 100, CG_RLCW_SPAN), 0);
+	for (uint32_t s = 0xfffffffeu, i = 0; i < 2000; s++, i++)
+		cg_rlcw_add(&W, s, p, pkt(s, p), 1000ull * i);
+	CHECK_EQ(W.n, CG_RLCW_SPAN);
+	CHECK(cg_rlcw_get(&W, 0xfffffffeu + 1999, &len) != NULL);
+	CHECK(cg_rlcw_get(&W, 0xfffffffeu + 1999 - CG_RLCW_SPAN, &len) == NULL);
+	{
+		const uint8_t *q = cg_rlcw_get(&W, 0xfffffffeu + 1500, &len);
+
+		CHECK(q && len == pkt(0xfffffffeu + 1500, p) && !memcmp(q, p, len));
+	}
+	/* sent at 1 ms each: 50 ms back from the newest is 51 of them */
+	CHECK_EQ(cg_rlcw_window(&W, 1999000, 50000, CG_RLCW_SPAN), 51);
+	CHECK_EQ(cg_rlcw_window(&W, 1999000, 50000, 20), 20);
+	CHECK_EQ(cg_rlcw_window(&W, 1999000 + 60000, 50000, CG_RLCW_SPAN), 0);
+	CHECK_EQ(cg_rlcw_window(&W, 1999000, 5000000, CG_RLCW_SPAN), CG_RLCW_SPAN);
+	cg_rlcw_add(&W, 5, p, pkt(5, p), 3000000); /* a jump: over */
+	CHECK_EQ(W.n, 1);
+	CHECK_EQ(cg_rlcw_window(&W, 3000000, 50000, CG_RLCW_SPAN), 1);
+}
+
+/* n packets on k links round-robin, link 0 dead for packets [a, b); a wide
+ * repair over the last w sequences every `every` packets, on the links in
+ * turn (those on link 0 lost while it is dead), every rebuilt packet
+ * checked; returns the packet after which the last loss came back (0:
+ * not all). */
+static unsigned rlcw_stall(unsigned n, unsigned k, unsigned a, unsigned b, unsigned every, unsigned w, unsigned *nlost)
+{
+	struct cg_rep_ring ring = ring_new();
+	uint8_t p[CG_SYM_PLEN], sym[CG_SYM_MAX];
+	uint32_t out[CG_RLC_COLS];
+	unsigned lost = 0, back = 0, wrong = 0, nr = 0, done = 0;
+
+	memset(&W, 0, sizeof(W));
+	memset(&R, 0, sizeof(R));
+	for (unsigned i = 0; i < n; i++) {
+		uint32_t s = 7000 + i;
+		uint16_t len = pkt(s, p);
+		unsigned got = 0;
+
+		cg_rlcw_add(&W, s, p, len, 1000ull * i);
+		if (i % k == 0 && i >= a && i < b) {
+			lost++;
+		} else {
+			ring_put(&ring, s, p, len);
+			got = cg_rlc_rx_data(&G, &R, &ring, s, out, CG_RLC_COLS);
+		}
+		if ((i + 1) % every == 0) {
+			struct cg_rep_hdr h;
+			unsigned sl = cg_rlcw_repair(&G, &W, w, &h, sym), link = nr++ % k;
+
+			CHECK(sl > 2);
+			if (!(link == 0 && i >= a && i < b))
+				got += cg_rlc_rx_repair(&G, &R, &ring, &h, sym, sl, out + got, CG_RLC_COLS - got);
+		}
+		for (unsigned j = 0; j < got; j++)
+			wrong += !ring_ok(&ring, out[j]);
+		back += got;
+		if (got && back == lost && i >= b && !done)
+			done = i;
+	}
+	CHECK_EQ(wrong, 0);
+	CHECK_EQ(R.bad, 0);
+	*nlost = lost;
+	return back == lost ? done : 0;
+}
+
+/* A stall of one link of four, as story 026's estimate: a link with share
+ * s stalling T is rebuilt about s T / (r (1 - s)) after it began, at
+ * repair rate r. 50 packets lost (a 200-packet stall), r 1/4: ~67 % of the
+ * stall later; r 1/10: ~167 %; a window too short for it rebuilds nothing
+ * wrong. */
+static void test_rlcw_stall(void)
+{
+	unsigned nl, at;
+
+	at = rlcw_stall(1200, 4, 400, 600, 4, 400, &nl);
+	CHECK_EQ(nl, 50);
+	CHECK(at > 0);
+	/* the last came back within 1.5 x the estimate (200 x 0.25 / (0.25 x 0.75) = 267 after the start) */
+	CHECK(at >= 600 && at - 400 <= 400);
+	at = rlcw_stall(2000, 4, 400, 600, 10, 900, &nl);
+	CHECK(at > 0);
+	CHECK(at - 400 <= 1000); /* estimate 667 */
+	/* a window of 100 for a stall of 200: what it can, never wrong */
+	rlcw_stall(1200, 4, 400, 600, 4, 100, &nl);
+	CHECK(R.recovered <= nl);
+	/* full density, a small window (single link, random loss's case) */
+	at = rlcw_stall(400, 1, 100, 103, 5, 60, &nl);
+	CHECK_EQ(nl, 3);
+	CHECK(at > 0 && at < 160);
+}
+
+/* More unknowns than CG_RLC_COLS: the oldest go with their rows, nothing is
+ * rebuilt wrong, and once the loss stops the system is free again. */
+static void test_rlc_evict(void)
+{
+	unsigned nl;
+
+	rlcw_stall(3000, 2, 200, 1000, 8, CG_RLCW_SPAN, &nl);
+	CHECK_EQ(nl, 400);
+	CHECK(R.evicted > 0);
+	CHECK(R.peak <= CG_RLC_COLS);
+	CHECK(R.ncol < CG_RLC_COLS);
+}
+
+/* Random loss in bursts, packets late (counted lost, then arriving),
+ * repairs lost, wide windows across the 32-bit wrap with now and then the
+ * parity asked for again (explicit maps on the same receiver): every
+ * packet rebuilt is the packet, nothing bad, and the system never holds
+ * a column for something in the ring. */
+static void test_rlcw_random(void)
+{
+	static uint8_t hist[CG_REP_RING][CG_SYM_PLEN];
+	static uint16_t hlen[CG_REP_RING];
+	struct cg_rep_ring ring = ring_new();
+	uint8_t sym[CG_SYM_MAX];
+	uint32_t out[CG_RLC_COLS], s = 0xffff0000u, late[64];
+	unsigned burst = 0, wrong = 0, back = 0, nlost = 0, asked = 0, nlate = 0, stray = 0;
+	uint16_t seed = 0;
+
+	memset(&W, 0, sizeof(W));
+	memset(&R, 0, sizeof(R));
+	for (unsigned i = 0; i < 120000; i++, s++) {
+		uint32_t ix = s & (CG_REP_RING - 1);
+		unsigned got = 0;
+
+		hlen[ix] = pkt(s, hist[ix]);
+		cg_rlcw_add(&W, s, hist[ix], hlen[ix], 200ull * i);
+		if (burst)
+			burst--;
+		else if (rlc_rand() % 1000 < 12)
+			burst = 1 + rlc_rand() % 8;
+		if (burst) {
+			nlost++;
+			if (rlc_rand() % 4 == 0 && nlate < 64)
+				late[nlate++] = s; /* comes later */
+		} else {
+			ring_put(&ring, s, hist[ix], hlen[ix]);
+			got = cg_rlc_rx_data(&G, &R, &ring, s, out, CG_RLC_COLS);
+		}
+		/* the late ones arrive 40 to 100 packets after */
+		for (unsigned j = 0; j < nlate;) {
+			if (s - late[j] >= 40 + late[j] % 61) {
+				uint32_t x = late[j] & (CG_REP_RING - 1);
+
+				if (!cg_rep_has(&ring, late[j])) {
+					ring_put(&ring, late[j], hist[x], hlen[x]);
+					got += cg_rlc_rx_data(&G, &R, &ring, late[j], out + got, CG_RLC_COLS - got);
+					nlost--;
+				}
+				late[j] = late[--nlate];
+			} else {
+				j++;
+			}
+		}
+		if (i % 8 == 7 && rlc_rand() % 5) {
+			struct cg_rep_hdr h;
+			unsigned w = cg_rlcw_window(&W, 200ull * i, 60000, CG_RLCW_SPAN), sl = cg_rlcw_repair(&G, &W, w, &h, sym);
+
+			got += cg_rlc_rx_repair(&G, &R, &ring, &h, sym, sl, out + got, CG_RLC_COLS - got);
+		}
+		if (i % 13 == 0 && i > 400) {
+			uint32_t q = s - 200 - rlc_rand() % 100, base;
+			uint64_t map;
+			unsigned d = cg_rlc_rx_need(&G, &R, q, &base, &map);
+
+			for (unsigned j = 0; j < d && got < CG_RLC_COLS; j++) {
+				const uint8_t *mp[CG_REP_SPAN];
+				uint16_t ml[CG_REP_SPAN];
+				struct cg_rep_hdr h;
+				unsigned k = 0, sl;
+
+				for (uint64_t m = map; m; m &= m - 1, k++) {
+					uint32_t x = (base + (unsigned)__builtin_ctzll(m)) & (CG_REP_RING - 1);
+
+					mp[k] = hist[x];
+					ml[k] = hlen[x];
+				}
+				sl = cg_rlc_combine(&G, base, map, (uint16_t)(0x8000u | ++seed), mp, ml, &h, sym);
+				got += cg_rlc_rx_repair(&G, &R, &ring, &h, sym, sl, out + got, CG_RLC_COLS - got);
+				asked++;
+			}
+		}
+		for (unsigned j = 0; j < got; j++)
+			wrong += !ring_ok(&ring, out[j]);
+		back += got;
+		if (i % 997 == 0)
+			for (unsigned j = 0; j < CG_RLC_COLS; j++)
+				stray += R.col_used[j] && cg_rep_has(&ring, R.col_seq[j]);
+	}
+	CHECK(nlost > 3000);
+	CHECK(asked > 50);
+	CHECK(back > nlost * 9 / 10);
+	CHECK_EQ(wrong, 0);
+	CHECK_EQ(stray, 0);
+	CHECK_EQ(R.bad, 0);
+	CHECK_EQ(R.recovered, back);
+	CHECK(R.wide > 10000);
+}
+
 void test_rlc(void)
 {
 	test_gf();
@@ -543,4 +854,8 @@ void test_rlc(void)
 	test_rlc_swap();
 	test_rlc_random();
 	test_rlc_ring_newer();
+	test_rlcw_window();
+	test_rlcw_stall();
+	test_rlc_evict();
+	test_rlcw_random();
 }

@@ -201,6 +201,31 @@ static inline uint32_t cg_harq_budget_us(uint32_t flow_rtt_us)
 	return flow_rtt_us ? flow_rtt_us + flow_rtt_us / 4 : 0;
 }
 
+/* FEC v3 without the rescue (story 026, rescue_wait_ms 0, the client keeps
+ * no ring): an asked gap waits for the code alone, code_us (its horizon,
+ * rescue_code_ms), never past TCP's budget; 0 when no code is on. */
+static inline uint32_t cg_harq_code_wait_us(uint32_t code_us, uint32_t budget_us)
+{
+	if (!code_us)
+		return 0;
+	if (budget_us && code_us > budget_us)
+		code_us = budget_us;
+	return code_us ? code_us : 1;
+}
+
+/* The members of a PARQ request (qbase, qmap) as a map from base (bit d:
+ * base + d, within CG_REP_SPAN): what another request of the same batch
+ * already asks for, so that two gaps of one system ask for its free
+ * unknowns once (FEC v3's wide windows tie many gaps together). */
+static inline uint64_t cg_parq_overlap(uint32_t qbase, uint64_t qmap, uint32_t base)
+{
+	int32_t d = (int32_t)(qbase - base);
+
+	if (d >= 0)
+		return d < CG_REP_SPAN ? qmap << d : 0;
+	return -d < CG_REP_SPAN ? qmap >> -d : 0;
+}
+
 /* How long an asked gap waits at the reorderer: rescue_us (rescue_wait_ms),
  * the code's horizon before it when a code is on, and never past TCP's
  * budget when TCP flows are seen (held longer, TCP's probes and timers

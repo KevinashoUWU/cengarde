@@ -1,6 +1,8 @@
 /* Repair packets (CG_T_REPAIR, protocol version 8, story 021): the
  * erasure codes of redund_spare = rs | rlc, over DATA that went on the
- * first link alone, carried in the other links' spare (spare.h).
+ * first link alone, carried in the other links' spare (spare.h); since
+ * protocol 11 (story 026, FEC v3: fec_code = rlc) also the wide windows
+ * over every DATA of a split or of a lone link, either way.
  *
  * Payload: a 16-byte header, then the coded symbol.
  *
@@ -16,6 +18,23 @@
  *   16..    RS: Leopard's recovery symbol, a multiple of 64 bytes (each
  *           member's symbol padded to the block's longest); RLC: the
  *           combination, as long as its longest member's symbol
+ *
+ * A wide window's repair (kind CG_REP_RLCW, protocol 11) names its members
+ * by a range and a seed instead of a map, since its window spans up to
+ * CG_RLCW_SPAN sequences, every DATA in it a candidate:
+ *
+ *   0..3    base: the window's first DATA sequence (big-endian)
+ *   4..5    span: the window's sequences, base to base + span - 1 (1 to
+ *           CG_RLCW_SPAN, big-endian)
+ *   6       density dn: the member at distance d is in the repair when
+ *           the low byte of its hash (rlc.h's cg_rlcw_member) is at most
+ *           dn (255: every one)
+ *   7       0
+ *   8..11   seed: the hash's, which also gives each member's coefficient
+ *           (big-endian)
+ *   12      kind: CG_REP_RLCW
+ *   13..15  0
+ *   16..    the combination, as long as its longest member's symbol
  *
  * A member's symbol is its DATA payload behind its 16-bit big-endian length
  * (gf256.h's CG_SYM_*), zero-padded: a rebuilt one carries its length.
@@ -38,29 +57,47 @@
 
 #define CG_REP_HDR 16
 #define CG_REP_SPAN 64   /* a repair's members: within this many sequences */
-#define CG_REP_RING 1024 /* the ring of DATA (fec.h's CG_FEC_RING) */
-#define CG_REP_AGE 384   /* a pending repair older than this (sequences behind the newest) is let go */
+#define CG_REP_RING 2048 /* the ring of DATA (fec.h's CG_FEC_RING) */
+#define CG_REP_AGE 384   /* a pending RS block older than this (sequences behind the newest) is let go */
 #define CG_RS_MMAX 32    /* an RS block's repairs, at most */
 #define CG_RS_BYTES_MAX 2048 /* an RS symbol: CG_SYM_MAX rounded up to 64 */
+#define CG_RLCW_SPAN 1024 /* a wide window's sequences, at most (story 026) */
+#define CG_RLC_KEEP 1024  /* an unknown this far behind the newest repair is given up (rlc.h) */
 
 _Static_assert(CG_RS_BYTES_MAX >= CG_SYM_MAX && CG_RS_BYTES_MAX % 64 == 0, "an RS symbol holds any DATA");
 _Static_assert(!(CG_REP_RING & (CG_REP_RING - 1)) && CG_REP_AGE + CG_REP_SPAN < CG_REP_RING / 2,
 	       "a pending repair's members stay in the ring");
+_Static_assert(!(CG_RLCW_SPAN & (CG_RLCW_SPAN - 1)) && CG_RLCW_SPAN <= 65535 && CG_RLC_KEEP < CG_REP_RING,
+	       "a wide window fits its 16-bit span, and an unknown its ring slot");
 
-enum { CG_REP_RS = 1, CG_REP_RLC = 2 };
+enum { CG_REP_RS = 1, CG_REP_RLC = 2, CG_REP_RLCW = 3 };
 
 struct cg_rep_hdr {
 	uint32_t base;
-	uint64_t map;
+	uint64_t map;  /* RS and RLC: the members */
 	uint8_t kind;
 	uint8_t m;
-	uint16_t idx; /* RS: the repair's index; RLC: the seed */
+	uint16_t idx;  /* RS: the repair's index; RLC: the seed */
+	uint16_t span; /* RLCW: the window's sequences */
+	uint8_t dn;    /* RLCW: its density */
+	uint32_t seed; /* RLCW: the members' and coefficients' seed */
 };
 
 static inline void cg_rep_put(uint8_t *o, const struct cg_rep_hdr *h)
 {
 	for (int i = 0; i < 4; i++)
 		o[i] = (uint8_t)(h->base >> (24 - 8 * i));
+	if (h->kind == CG_REP_RLCW) {
+		o[4] = (uint8_t)(h->span >> 8);
+		o[5] = (uint8_t)h->span;
+		o[6] = h->dn;
+		o[7] = 0;
+		for (int i = 0; i < 4; i++)
+			o[8 + i] = (uint8_t)(h->seed >> (24 - 8 * i));
+		o[12] = h->kind;
+		o[13] = o[14] = o[15] = 0;
+		return;
+	}
 	for (int i = 0; i < 8; i++)
 		o[4 + i] = (uint8_t)(h->map >> (56 - 8 * i));
 	o[12] = h->kind;
@@ -79,12 +116,26 @@ static inline int cg_rep_get(const uint8_t *p, unsigned plen, struct cg_rep_hdr 
 		return -1;
 	h->base = (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3];
 	h->map = 0;
+	h->kind = p[12];
+	h->span = 0;
+	h->dn = 0;
+	h->seed = 0;
+	*slen = plen - CG_REP_HDR;
+	if (h->kind == CG_REP_RLCW) {
+		h->span = (uint16_t)(p[4] << 8 | p[5]);
+		h->dn = p[6];
+		h->seed = (uint32_t)p[8] << 24 | (uint32_t)p[9] << 16 | (uint32_t)p[10] << 8 | p[11];
+		h->m = 0;
+		h->idx = 0;
+		return h->span && h->span <= CG_RLCW_SPAN && !p[7] && !p[13] && !p[14] && !p[15] && *slen > 2 &&
+				       *slen <= CG_SYM_MAX
+			       ? 0
+			       : -1;
+	}
 	for (int i = 0; i < 8; i++)
 		h->map = h->map << 8 | p[4 + i];
-	h->kind = p[12];
 	h->m = p[13];
 	h->idx = (uint16_t)(p[14] << 8 | p[15]);
-	*slen = plen - CG_REP_HDR;
 	if (!(h->map & 1))
 		return -1;
 	k = (unsigned)__builtin_popcountll(h->map);

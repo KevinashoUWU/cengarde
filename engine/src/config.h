@@ -119,6 +119,10 @@ static inline const char *cg_lt_name(int v)
  * probes' bonding tail (proto.h); split.h decides (cg_split_active). */
 enum cg_split_mode { CG_SPLIT_OFF = 0, CG_SPLIT_ON, CG_SPLIT_CLIENT, CG_SPLIT_FORCE };
 
+/* What fec = yes sends (fec_code, story 026): the spatial XOR parity of
+ * fec.h, or FEC v3's wide sliding window (rlc.h, fec3.h). */
+enum cg_fec_code { CG_FEC_XOR = 0, CG_FEC_RLC = 1 };
+
 static inline const char *cg_split_name(int v)
 {
 	return v == CG_SPLIT_ON ? "on" : v == CG_SPLIT_CLIENT ? "client" : v == CG_SPLIT_FORCE ? "force" : "off";
@@ -244,6 +248,10 @@ struct cg_config {
 	int fec;                      /* send a parity of each group of split DATA, rebuild from it (fec.h) */
 	uint32_t fec_wait_ms;         /* a group's parity goes at the latest this long after its first packet */
 	uint32_t fec_share_max;       /* with fec, no link takes over this % of the split DATA (fec.h); 0 (default): no cap */
+	int fec_code;                 /* with fec, what it sends: CG_FEC_XOR (the spatial parity, fec.h; default) or CG_FEC_RLC (FEC v3, story 026: a wide sliding window over every DATA, rlc.h, fec3.h) */
+	uint32_t fec_pct;             /* FEC v3: its repairs, % of the DATA's bytes (default 10) */
+	uint32_t fec_window_ms;       /* FEC v3: the window's span (default 100; within rescue_code_ms and the reorderer's wait) */
+	int fec_single;               /* FEC v3 on a lone link: enum cg_f3_single, auto (by its loss; default), yes or no */
 	int split;                    /* enum cg_split_mode */
 	uint32_t split_small;         /* datagrams of up to this many bytes are never split */
 	uint32_t split_spread_ms;     /* only links this close to the fastest share the split (split.h G4); 0: off */

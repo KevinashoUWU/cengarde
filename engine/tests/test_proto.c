@@ -41,7 +41,7 @@ void test_proto(void)
 
 	/* Layout: version/type, the client hint at byte 2, link at byte 3,
 	 * session, seq and ts in network order. */
-	CHECK_EQ(pkt[0], 0xa1);
+	CHECK_EQ(pkt[0], 0xb1);
 	CHECK_EQ(pkt[2], 0x5a);
 	CHECK_EQ(pkt[3], 5);
 	CHECK(!memcmp(pkt + 4, "\xde\xad\xbe\xef\x01\x02\x03\x04\xa0\xb0\xc0\xd0", 12));
@@ -94,12 +94,14 @@ void test_proto(void)
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
 	pkt[0] = 0x91; /* version 9 (no protocontroller streams) too */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
-	pkt[0] = 0xaf; /* unknown type */
+	pkt[0] = 0xa1; /* version 10 (no wide windows, FEC v3) too */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
-	pkt[0] = 0xa6; /* a parity (fec.h): its header and a byte at least */
+	pkt[0] = 0xbf; /* unknown type */
+	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
+	pkt[0] = 0xb6; /* a parity (fec.h): its header and a byte at least */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), sizeof(pkt) > CG_HDR_LEN + CG_FEC_HDR ? 0 : -1);
 	CHECK_EQ(cg_hdr_parse(&p, pkt, CG_HDR_LEN + CG_FEC_HDR), -1);
-	pkt[0] = 0xa7; /* a repair (repair.h): its header and a byte at least */
+	pkt[0] = 0xb7; /* a repair (repair.h): its header and a byte at least */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), sizeof(pkt) > CG_HDR_LEN + CG_REP_HDR ? 0 : -1);
 	CHECK_EQ(cg_hdr_parse(&p, pkt, CG_HDR_LEN + CG_REP_HDR), -1);
 	CHECK(cg_type_ctl(CG_T_REPAIR));
@@ -109,7 +111,7 @@ void test_proto(void)
 		uint8_t q[CG_HDR_LEN + CG_PARQ_LEN];
 
 		memcpy(q, pkt, CG_HDR_LEN);
-		q[0] = 0xa8;
+		q[0] = 0xb8;
 		memset(q + CG_HDR_LEN, 0, sizeof(q) - CG_HDR_LEN);
 		q[CG_HDR_LEN] = 2;
 		CHECK_EQ(cg_hdr_parse(&p, q, CG_HDR_LEN + 1 + 2 * CG_PARQ_REQ), 0);
@@ -122,7 +124,7 @@ void test_proto(void)
 		q[CG_HDR_LEN] = CG_PARQ_MAX;
 		CHECK_EQ(cg_hdr_parse(&p, q, sizeof(q)), 0);
 	}
-	pkt[0] = 0xa1;
+	pkt[0] = 0xb1;
 	pkt[2] = 0xff; /* any hint parses: the server judges it */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), 0);
 	CHECK_EQ(p.hint, 0xff);

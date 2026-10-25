@@ -3,6 +3,11 @@
 // second): the XOR parity of redund_spare = parity|mix (fec.h), Reed-Solomon on
 // Leopard-RS (rs.h) and the sliding-window RLC (rlc.h). No sockets, no engine:
 // the sender's and the receiver's functions as client.c and server.c call them.
+// FEC v3 (story 026, fec_code = rlc): the wide window at 50 and 100 Mbit/s of
+// 1400-byte packets, a share of repairs (fec_pct) over fec_window_ms, as % of a
+// core at that rate; nothing lost, 1 % at random, and one link of four
+// stalling 50 ms every 2 s; with GF(2^8)'s 16-byte path (SSSE3, NEON) and
+// without it ("scalar", as on armhf or MIPS).
 //
 //   encode   per source packet: what the sender does for it and its share of the
 //            repairs (XOR: the group's XOR; RS: the copy into the block and its
@@ -179,7 +184,7 @@ static void bench_rlc(unsigned w, unsigned m, unsigned lose)
 	struct cg_rep_ring rg = ring();
 	struct cg_rep_hdr h;
 	uint8_t sym[CG_SYM_MAX];
-	uint32_t out[CG_RLC_EQ];
+	uint32_t out[CG_RLC_COLS];
 	unsigned long n = 0, rec = 0, lost = 0;
 	double t0 = now(), te = 0, td = 0;
 	uint32_t seq = 0;
@@ -205,10 +210,10 @@ static void bench_rlc(unsigned w, unsigned m, unsigned lose)
 				lost++;
 			} else {
 				ring_put(seq);
-				rec += cg_rlc_rx_data(&G, &LR, &rg, seq, out, CG_RLC_EQ);
+				rec += cg_rlc_rx_data(&G, &LR, &rg, seq, out, CG_RLC_COLS);
 			}
 			if (sl)
-				rec += cg_rlc_rx_repair(&G, &LR, &rg, &h, sym, sl, out, CG_RLC_EQ);
+				rec += cg_rlc_rx_repair(&G, &LR, &rg, &h, sym, sl, out, CG_RLC_COLS);
 			td += now() - b;
 			n++;
 		}
@@ -218,6 +223,72 @@ static void bench_rlc(unsigned w, unsigned m, unsigned lose)
 	snprintf(name, sizeof(name), "RLC w %u decode (1 lost per %u; %.0f %% back)", w, lose * every,
 		 lost ? 100.0 * rec / lost : 100.0);
 	report(name, td, n);
+}
+
+static struct cg_rlcw_tx WT;
+
+/* FEC v3: mbit of 1400-byte packets (simulated time), pct % of repair bytes
+ * over a window of win_ms; loss 0 none, 1: 1 % at random, 2: one link of four
+ * (every fourth packet) stalling 50 ms every 2 s, its repairs lost too. */
+static void bench_f3(unsigned mbit, unsigned pct, unsigned win_ms, int loss)
+{
+	struct cg_rep_ring rg = ring();
+	struct cg_rep_hdr h;
+	uint8_t sym[CG_SYM_MAX], big[1400];
+	uint32_t out[CG_RLC_COLS];
+	double pps = mbit * 1e6 / 8 / 1400, t0 = now(), te = 0, td = 0;
+	unsigned long n = 0, lost = 0, rec = 0, reps = 0, nr = 0;
+	int64_t credit = 0;
+	uint32_t seq = 0;
+	char name[96];
+	static const char *const lname[] = { "none lost", "1 % lost", "1 of 4 stalls 50 ms / 2 s" };
+
+	for (unsigned i = 0; i < sizeof(big); i++)
+		big[i] = (uint8_t)(i * 13 + 1);
+	memset(&WT, 0, sizeof(WT));
+	memset(&LR, 0, sizeof(LR));
+	memset(r_have, 0, sizeof(r_have));
+	while (now() - t0 < secs) {
+		uint64_t us = (uint64_t)(seq / pps * 1e6);
+		double a = now(), b;
+		unsigned sl = 0;
+		int gone;
+
+		cg_rlcw_add(&WT, seq, big, sizeof(big), us);
+		credit += 1400 * pct;
+		if (credit >= 1440 * 100) {
+			credit -= 1440 * 100;
+			sl = cg_rlcw_repair(&G, &WT, cg_rlcw_window(&WT, us, win_ms * 1000ull, CG_RLCW_SPAN), &h, sym);
+			reps++;
+		}
+		b = now();
+		te += b - a;
+		gone = loss == 1 ? (seq * 2654435761u >> 16) % 100 == 0
+				 : loss == 2 && seq % 4 == 1 && us % 2000000 < 50000;
+		if (gone) {
+			lost++;
+		} else {
+			uint32_t i = seq & (CG_REP_RING - 1);
+
+			r_seq[i] = seq;
+			r_len[i] = sizeof(big);
+			r_have[i] = 1;
+			memcpy(r_mem + (size_t)i * CG_SYM_PLEN, big, sizeof(big));
+			rec += cg_rlc_rx_data(&G, &LR, &rg, seq, out, CG_RLC_COLS);
+		}
+		/* the repairs on the stalled link (one in four) go with it */
+		if (sl && !(loss == 2 && nr++ % 4 == 1 && us % 2000000 < 50000))
+			rec += cg_rlc_rx_repair(&G, &LR, &rg, &h, sym, sl, out, CG_RLC_COLS);
+		td += now() - b;
+		n++;
+		seq++;
+	}
+	snprintf(name, sizeof(name), "v3 %u Mbit/s %u %% %u ms%s encode", mbit, pct, win_ms, G.simd ? "" : " scalar");
+	printf("  %-52s %8.3f µs/pkt  %6.2f %% of a core\n", name, te / n * 1e6, te / n * pps * 100);
+	snprintf(name, sizeof(name), "v3 %u Mbit/s %u %% %u ms%s decode (%s, %.1f %% back)", mbit, pct, win_ms,
+		 G.simd ? "" : " scalar", lname[loss], lost ? 100.0 * rec / lost : 100.0);
+	printf("  %-52s %8.3f µs/pkt  %6.2f %% of a core\n", name, td / n * 1e6, td / n * pps * 100);
+	(void)reps;
 }
 
 int main(int argc, char **argv)
@@ -244,5 +315,19 @@ int main(int argc, char **argv)
 	bench_rlc(32, 5, 0);
 	bench_rlc(32, 5, 2);
 	bench_rlc(64, 8, 2);
+	printf("FEC v3 (story 026), 1400-byte packets, %% of a core at the rate given:\n");
+	for (int simd = 1; simd >= 0; simd--) {
+		unsigned char had = G.simd;
+
+		if (!simd)
+			G.simd = 0;
+		if (simd && !had)
+			continue;
+		for (unsigned mb = 50; mb <= 100; mb += 50)
+			for (unsigned pct = 10; pct <= 25; pct += 15)
+				for (int loss = 0; loss < 3; loss++)
+					bench_f3(mb, pct, 100, loss);
+		G.simd = had;
+	}
 	return 0;
 }

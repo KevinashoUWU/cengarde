@@ -1,10 +1,12 @@
-/* cengarde wire protocol, version 10 (version 1 had no delay reports,
+/* cengarde wire protocol, version 11 (version 1 had no delay reports,
  * version 2 no IP pass flags, version 3 no client hint, cookies or separate
  * control sequence, version 4 no previous link in DATA's flags, version 5
  * no NACK, version 6 no CG_F_FREE, version 7 no parity, version 8 no
  * repairs of an erasure code, version 9 no parity asked for again and no
- * CG_F_PREV written after the copies were decided; version 10 adds the
- * protocontroller's streams in DATA, story 025: protoctl.h).
+ * CG_F_PREV written after the copies were decided, version 10 no
+ * protocontroller's streams in DATA, story 025: protoctl.h; version 11 adds
+ * FEC v3's wide windows, story 026: CG_REP_RLCW repairs, repair.h, and
+ * repairs and parity requests either way).
  *
  * Every datagram between client and server carries a 24-byte header followed
  * by the payload (a WireGuard datagram for DATA). All integers are big-endian.
@@ -61,7 +63,7 @@
 
 #include "siphash.h"
 
-#define CG_PROTO_VERSION 10
+#define CG_PROTO_VERSION 11
 #define CG_HDR_LEN 24
 #define CG_MAC_OFF 16
 #define CG_HINT_OFF 2
@@ -75,8 +77,8 @@ enum cg_type {
 	CG_T_HELLO = 4,       /* server -> client, to a probe it cannot take yet; payload: cg_hello */
 	CG_T_NACK = 5,        /* either way, one link; payload: DATA sequences to send again */
 	CG_T_FEC = 6,         /* either way, one link; payload: the parity of a group of DATA (fec.h) */
-	CG_T_REPAIR = 7,      /* client -> server, one link; payload: an erasure code's repair (repair.h) */
-	CG_T_PARQ = 8,        /* server -> client, one link; payload: repairs asked for again (harq.h) */
+	CG_T_REPAIR = 7,      /* either way (client -> server before 11), one link; payload: an erasure code's repair (repair.h) */
+	CG_T_PARQ = 8,        /* either way (server -> client before 11), one link; payload: repairs asked for again (harq.h) */
 };
 
 /* Probes, replies, NACKs and parities count in the control sequence, DATA
@@ -106,7 +108,10 @@ static inline int cg_type_ctl(uint8_t type)
  * or a sliding window's (rlc.h); the server rebuilds the DATA missing once
  * it has enough of them. Payload: repair.h's (base sequence, members' map,
  * kind, m, index or seed, the symbol). A server without fec drops it,
- * counted. */
+ * counted. Version 11 (story 026, FEC v3: fec_code = rlc): also a wide
+ * window's repair over every DATA of a split or of a lone link (kind
+ * CG_REP_RLCW: base, span, density and seed instead of a map), sent by
+ * either end over the DATA it sends; the receiver without fec drops it. */
 
 /* FEC (version 7, story 013: the spatial parity, fec.h): the sender of
  * split DATA sends, after each group of packets that went one per link, a
