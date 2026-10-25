@@ -76,6 +76,7 @@ struct cg_pcc {
 	uint64_t dl;     /* bytes delivered, and lost while the queue was short */
 	uint64_t dla;    /* bytes delivered (acknowledged or SACKed) */
 	uint64_t dl_us;  /* the last delivery */
+	uint64_t sent;   /* bytes sent, again too */
 	uint64_t bw;     /* the estimate, bytes/s; 0: none */
 	uint64_t bmax[2], bt; /* the window's two buckets, and the current one's start */
 	uint32_t min_rtt, srtt, rttvar; /* us; 0: none yet */
@@ -91,7 +92,7 @@ struct cg_pcc {
 	/* the forward one-way delay the receiver reports in its ACKs (pep.h:
 	 * its clock less ours, the offset included): the least of the last
 	 * CG_PCC_MINRTT_US (base), and of the current window (ow_min), us */
-	int32_t owd_base, ow_min;
+	int32_t owd_base, ow_min, owd_last;
 	uint64_t owd_t;
 	uint8_t have_owd, have_ow;
 	uint64_t inflight;  /* bytes in flight over all streams (the caller's) */
@@ -170,8 +171,9 @@ static inline uint64_t cg_pcc_cwnd(const struct cg_pcc *p, const struct cg_pcc_c
 	 * lost and not declared yet (60 % lost and a window of 100 ms filled
 	 * it with the lost, the sends stopped and the estimate sank: the
 	 * microcut) */
-	w = 2 * cg_pcc_mul(cg_pcc_bw(p), (uint64_t)p->min_rtt + c->queue_us, 1000000) +
-	    cg_pcc_mul(cg_pcc_bw(p), reo_us, 1000000);
+	w = 2 * cg_pcc_mul(cg_pcc_bw(p), (uint64_t)p->min_rtt + c->queue_us, 1000000);
+	if (p->mode != CG_PCC_STARTUP_M) /* STARTUP's overshoot is bounded by the path's alone */
+		w += cg_pcc_mul(cg_pcc_bw(p), reo_us, 1000000);
 	return w + (uint64_t)CG_PCC_SEGS * c->mss;
 }
 
@@ -211,6 +213,7 @@ static inline void cg_pcc_filter(struct cg_pcc *p, uint64_t now, uint64_t rate, 
 		p->bw = p->bmax[0] > p->bmax[1] ? p->bmax[0] : p->bmax[1];
 		if (p->hint_full && p->bw > p->hint)
 			p->bw = p->hint;
+
 		if (p->bw < CG_PCC_FLOOR)
 			p->bw = CG_PCC_FLOOR;
 	}
@@ -219,7 +222,8 @@ static inline void cg_pcc_filter(struct cg_pcc *p, uint64_t now, uint64_t rate, 
 /* An ACK delivered acked bytes at now; rs, the sample of its newest-sent
  * segment (stream.h's cg_st_rs: have, tx, app, sent_us, dl, dla, dl_us). */
 static inline void cg_pcc_ack(struct cg_pcc *p, const struct cg_pcc_cfg *c, uint64_t now, uint64_t acked, int have,
-			      int tx, int app, uint64_t sent_us, uint64_t s_dl, uint64_t s_dla, uint64_t s_dl_us)
+			      int tx, int app, uint64_t sent_us, uint64_t s_dl, uint64_t s_dla, uint64_t s_dl_us,
+			      uint64_t s_sent)
 {
 	uint32_t rtt = 0;
 	uint64_t rate, iv, bytes;
@@ -284,8 +288,17 @@ static inline void cg_pcc_ack(struct cg_pcc *p, const struct cg_pcc_cfg *c, uint
 	 * (no more than 3 lost for 1 delivered: past 75 % lost, sending more
 	 * is only waste) */
 	bytes = p->dla - s_dla;
-	if (!p->cong)
+	/* in PROBE only: in STARTUP the queue's first overflow came before any
+	 * sample said queue, its losses read as capacity, the estimate went to
+	 * twice the link and stayed for a second (beyond: 2 s with nothing
+	 * delivered behind the holes) */
+	if (!p->cong && p->mode == CG_PCC_PROBE_M)
 		bytes = p->dl - s_dl < 4 * bytes ? p->dl - s_dl : 4 * bytes;
+	/* never more than went out meanwhile: losses are declared in bursts
+	 * (RACK's window), and a burst over a short interval read as five
+	 * times the link (a microcut) */
+	if (bytes > p->sent - s_sent)
+		bytes = p->sent - s_sent;
 	if (iv >= 100) {
 		rate = cg_pcc_mul(bytes, 1000000, iv);
 		cg_pcc_filter(p, now, rate, app);
@@ -333,6 +346,17 @@ static inline void cg_pcc_ack(struct cg_pcc *p, const struct cg_pcc_cfg *c, uint
 		p->cycle = 2;
 		p->cycle_t = now;
 	}
+	/* far under what the engine saw the links deliver, or under
+	 * CG_PCC_START / 4 (a link back from a stall, a cut that went), no
+	 * queue and the senders not short of bytes: STARTUP again, not 5/4 a
+	 * cycle (from the floor to 60 Mbit/s, 3.4 s) */
+	if (p->mode == CG_PCC_PROBE_M && !p->cong && !p->qnow && !app &&
+	    p->bw < (p->hint > CG_PCC_START ? p->hint : CG_PCC_START) / 4) {
+		p->mode = CG_PCC_STARTUP_M;
+		p->full_bw = 0;
+		p->full_n = 0;
+		p->n_restart++;
+	}
 	if (p->mode == CG_PCC_PROBE_M) {
 		uint32_t g = cg_pcc_gain(p);
 
@@ -362,6 +386,7 @@ static inline void cg_pcc_restart(struct cg_pcc *p, uint64_t now)
  * before cg_pcc_ack with the same ACK. */
 static inline void cg_pcc_owd(struct cg_pcc *p, const struct cg_pcc_cfg *c, uint64_t now, int32_t owd)
 {
+	p->owd_last = owd;
 	if (!p->have_owd || (int32_t)((uint32_t)owd - (uint32_t)p->owd_base) <= 0 || now - p->owd_t > CG_PCC_MINRTT_US) {
 		p->owd_base = owd;
 		p->owd_t = now;
@@ -402,10 +427,20 @@ static inline int cg_pcc_may(const struct cg_pcc *p, const struct cg_pcc_cfg *c,
 	return p->tokens > 0 && p->inflight < cg_pcc_cwnd(p, c, reo_us);
 }
 
+/* Whether a segment declared lost may go again now: tokens left (the
+ * window does not hold a repair back: full of what was lost and not
+ * declared yet, it held every repair until the timer declared it, a
+ * second at a time after STARTUP's overflow) */
+static inline int cg_pcc_may_repair(const struct cg_pcc *p)
+{
+	return p->tokens > 0;
+}
+
 /* A segment of bytes went (the caller adds it to inflight). */
 static inline void cg_pcc_spend(struct cg_pcc *p, uint32_t bytes)
 {
 	p->tokens -= bytes;
+	p->sent += bytes;
 }
 
 /* The us until the bucket has tokens again, 0: it has. */

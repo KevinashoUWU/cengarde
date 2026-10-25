@@ -274,7 +274,8 @@
 # router's netns (the middle leg's sender in an upload) and the VPS's (the far
 # leg's); BOND_PEP_LANCC (empty: the run's cc for iperf3, cubic for live) the
 # LAN host's, the sender's (transparent with BBR end to end, the control of a
-# split with BBR on the far leg). The cc "live" (tcp ones are iperf3 from peplan to pepfar) is two
+# split with BBR on the far leg). The cc "soak" is "live" with pepchurn.py's short connections
+# next to it (story 025: BOND_SOAK_WORKERS at a time, some reset halfway). The cc "live" (tcp ones are iperf3 from peplan to pepfar) is two
 # live-video-like streams (bench/livesim.py, RTMP from OBS: BOND_LIVE_MBIT, 8,
 # each, the sender dropping what waited BOND_LIVE_DROP_MS, 700), one to the far
 # host and one to the near one, up only. The JSON line gets "pep"
@@ -342,6 +343,7 @@ BOND_PEP_CGCC=${BOND_PEP_CGCC:-auto}
 BOND_PEP_KCP=${BOND_PEP_KCP:---mode fast --datashard 0 --parityshard 0 --nocomp --crypt none --mtu 1300}
 BOND_LIVE_MBIT=${BOND_LIVE_MBIT:-8}
 BOND_LIVE_DROP_MS=${BOND_LIVE_DROP_MS:-700}
+BOND_SOAK_WORKERS=${BOND_SOAK_WORKERS:-16} # cc soak: pepchurn.py's connections at a time
 BOND_LIVE_DUMP=${BOND_LIVE_DUMP:-} # set: livesim.py recv --dump, each record's delay (live-far-delays.txt, live-near-delays.txt)
 NS_LAN=peplan${LAB_ID:+-$LAB_ID}
 NS_FAR=pepfar${LAB_ID:+-$LAB_ID}
@@ -435,8 +437,8 @@ bond_ccs() {
 		return 1
 	fi
 	for cc in ${BOND_CC:-cubic bbr quic}; do
-		if [ "$cc" = live ] && [ -z "$BOND_PEP" ]; then
-			echo "FAIL: cc live needs BOND_PEP (story 024's hosts)"
+		if { [ "$cc" = live ] || [ "$cc" = soak ]; } && [ -z "$BOND_PEP" ]; then
+			echo "FAIL: cc $cc needs BOND_PEP (story 024's hosts)"
 			return 1
 		fi
 		if [ "$cc" = quic ] && [ "$quic" = 0 ]; then
@@ -697,6 +699,9 @@ bond_pep_sample_start() {
 			for p in $(bond_pep_pids); do
 				echo "$(cat "/proc/$p/comm" 2>/dev/null) $(awk '/^VmRSS/ { print $2 }' "/proc/$p/status" 2>/dev/null)"
 			done >"$RUN/pep/rss-$i"
+			for p in client server; do
+				echo "engine-$p $(awk '/^VmRSS/ { print $2 }' "/proc/$(cat "$RUN/$p.pid" 2>/dev/null)/status" 2>/dev/null)"
+			done >>"$RUN/pep/rss-$i"
 			sleep 0.5
 		done
 	) &
@@ -707,14 +712,23 @@ bond_pep_sample_start() {
 # iperf3 from the LAN host to the far one, or (cc live) the two streams.
 bond_pep_traffic() {
 	local dir=$1 cc=$2 s=$3 res=$4 err=$5 rc=0 k rx=()
-	if [ "$cc" != live ]; then
+	if [ "$cc" != live ] && [ "$cc" != soak ]; then
 		# shellcheck disable=SC2046 # -R or nothing
 		ip netns exec "$NS_LAN" iperf3 -c 172.30.1.2 -t "$s" -C "${BOND_PEP_LANCC:-$cc}" -P "$BOND_P" -J ${BOND_KEEP:+-i 0.5} \
 			${BOND_RATE:+-b "$BOND_RATE"} $([ "$dir" = down ] && echo -R) >"$res" 2>"$err" || rc=1
 		return "$rc"
 	fi
 	[ "$dir" = up ] || { echo "live runs up only" >"$err"; return 1; }
-	rm -f "$RUN"/live-*.json
+	rm -f "$RUN"/live-*.json "$RUN/churn.json"
+	# soak (story 025): the two streams and, next to them, pepchurn.py's short
+	# connections to the far host (BOND_SOAK_WORKERS at a time)
+	if [ "$cc" = soak ]; then
+		ip netns exec "$NS_FAR" python3 -I "$LAB/pepchurn.py" serve --bind 172.30.1.2:7200 --secs "$s" 2>>"$err" &
+		rx+=($!)
+		(sleep 1 && ip netns exec "$NS_LAN" python3 -I "$LAB/pepchurn.py" run --to 172.30.1.2:7200 --secs "$((s - 5))" \
+			--workers "$BOND_SOAK_WORKERS" --out "$RUN/churn.json" 2>>"$err") &
+		rx+=($!)
+	fi
 	for k in far near; do
 		ip netns exec "$([ $k = far ] && echo "$NS_FAR" || echo "$NS_NEAR")" python3 -I "$LAB/livesim.py" recv \
 			--bind "$([ $k = far ] && echo 172.30.1.2 || echo 172.30.2.2):7100" --secs "$s" --mbit "$BOND_LIVE_MBIT" \
@@ -728,6 +742,12 @@ bond_pep_traffic() {
 		--mbit "$BOND_LIVE_MBIT" --drop-ms "$BOND_LIVE_DROP_MS" --out "$RUN/live-far-send.json" 2>>"$err" || rc=1
 	wait "${rx[@]}" || rc=1
 	python3 -I "$LAB/livesim.py" merge "$RUN/live" >"$res" || rc=1
+	if [ "$cc" = soak ]; then
+		python3 -I -c 'import json,sys; j=json.load(open(sys.argv[1]))
+try: j["churn"]=json.load(open(sys.argv[2]))
+except (OSError, ValueError): j["churn"]=None
+json.dump(j, open(sys.argv[1], "w"))' "$res" "$RUN/churn.json" || rc=1
+	fi
 	return "$rc"
 }
 
@@ -1091,7 +1111,7 @@ bond_run() {
 		bond_pep_sample_start "$s"
 		pc0=$(bond_pep_cpu "$NS_CLI") ps0=$(bond_pep_cpu "$NS_SRV")
 		res=$RUN/iperf.json err=$RUN/iperf.err
-		[ "$cc" = live ] && res=$RUN/live.json err=$RUN/live.err
+		case $cc in live | soak) res=$RUN/live.json err=$RUN/live.err ;; esac
 		bond_pep_traffic "$dir" "$cc" "$s" "$res" "$err" || rc=1
 		bond_pep_snmp after
 		python3 -I "$LAB/pepstat.py" "$RUN/pep" --mode "$BOND_PEP" --midcc "$BOND_PEP_MIDCC" \

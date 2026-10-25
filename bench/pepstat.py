@@ -105,7 +105,7 @@ def rx_bytes(path, cc):
     """The bytes the far (and near) hosts received in the run, 0 when unknown."""
     try:
         j = json.load(open(path))
-        if cc == "live":
+        if cc in ("live", "soak"):
             return sum((j[k].get("delivered") or 0) * (j[k].get("size") or 0) for k in ("far", "near") if j.get(k))
         return j["end"]["sum_received"]["bytes"]
     except (OSError, ValueError, KeyError, TypeError):

@@ -76,7 +76,7 @@
 #     restart of the engine netifd puts cg0 back with its address and routes;
 #     converged; IPv6 in it (the ULA on cg0 and in tun_addr, ::/1 and
 #     8000::/1, NAT66, the VPS answers) and off again; PEP mode B (pep on
-#     at both ends: the redirect in dstnat_lan, pep = yes, a web page of the
+#     at both ends: the redirect in cengarde_pep, pep = yes, a web page of the
 #     VPS fetched by the router through a stream, then off and nothing
 #     left); then both ends back to WireGuard: wgcg as before, nothing left
 #     of cg0, converged;
@@ -1156,14 +1156,14 @@ pep_set() {
 	"$VM" ssh router "uci set cengarde.main.pep=$1; uci commit cengarde
 		ubus call service event '{\"type\":\"config.change\",\"data\":{\"package\":\"cengarde\"}}'"
 }
-pep_rule() { "$VM" ssh router "nft list chain inet fw4 dstnat_lan 2>/dev/null | grep -q 'redirect to :7801'"; }
+pep_rule() { "$VM" ssh router "nft list chain inet fw4 cengarde_pep 2>/dev/null | grep -q 'redirect to :7801'"; }
 pep_conf() { "$VM" ssh router "grep -qx 'pep = yes' /var/etc/cengarde.conf"; }
 pep_set 1
 if until_ok 90 pep_rule && until_ok 30 pep_conf && until_ok 90 native_back; then
-	ok "pep on: the LAN's TCP redirected to 7801 (dstnat_lan), the engine runs pep = yes"
+	ok "pep on: the LAN's TCP redirected to 7801 (fw4's chain cengarde_pep), the engine runs pep = yes"
 else
-	bad "pep on: no redirect in dstnat_lan, or no pep in the engine's configuration"
-	"$VM" ssh router 'nft list chain inet fw4 dstnat_lan; cat /etc/cengarde/pep.nft; grep pep /var/etc/cengarde.conf; logread | grep -E "cengarde|firewall" | tail -20'
+	bad "pep on: no redirect in cengarde_pep, or no pep in the engine's configuration"
+	"$VM" ssh router 'nft list chain inet fw4 cengarde_pep; cat /etc/cengarde/pep.nft; grep pep /var/etc/cengarde.conf; logread | grep -E "cengarde|firewall" | tail -20'
 fi
 "$VM" ssh router "nft add table ip cgpeptest && nft add chain ip cgpeptest out '{ type nat hook output priority -100; }' &&
 	nft add rule ip cgpeptest out ip daddr 1.2.3.5 tcp dport 80 redirect to :7801"

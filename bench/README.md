@@ -680,6 +680,7 @@ sentido, con netem.
 | `transparent` | nada: el router reenvía (lo de hoy) |
 | `tcp` | `ss-redir` en el router (iptables `REDIRECT` del TCP de la LAN) → TCP por el túnel → `ss-server` en `10.79.0.1`, que abre un TCP nuevo al destino (shadowsocks-libev de Debian, `chacha20-ietf-poly1305`, `--no-delay`) |
 | `kcp` | lo mismo con KCP en el medio (kcptun de Debian: ARQ sobre UDP, `BOND_PEP_KCP`, sin FEC propia ni cifrado) |
+| `cg` | el PEP modo B de los motores (historia 025): `pep = yes` en los dos extremos, iptables `REDIRECT` al `BOND_PEP_PORT` (7801) del router, el flujo fiable de cengarde en el medio y el TCP del VPS al destino con `BOND_PEP_CGCC` (`auto`: cubic, BBR cuando ese tramo pierde) |
 
 `BOND_PEP_MIDCC`, `BOND_PEP_FARCC` y `BOND_PEP_LANCC` fijan el control de
 congestión de cada `netns` (el del router manda el tramo del medio en una
@@ -692,6 +693,15 @@ retransmisiones de cada tramo desde los contadores TCP de cada `netns`, la
 memoria TCP del router y del VPS en su pico y mediana, el RSS y la CPU de los
 proxies, el RTT de cada tramo) y, en `live`, `live` (goodput por segundo y sus
 percentiles, cortes de más de 500 ms, demora de cada registro, descartes).
+Con `cg`, `pep` lleva además los contadores de los flujos de cada motor (`cg`:
+mensajes enviados y reenviados, copias, temporizadores, duplicados, la memoria
+de los flujos en su pico, el RTT del dosificador) y el JSON de estado de cada
+segundo queda en `pep/`. El `cc` `soak` es `live` más las conexiones cortas de
+`pepchurn.py` al host lejano (`BOND_SOAK_WORKERS`, 16 a la vez, algunas
+cortadas con RST a mitad: la tabla de flujos y la memoria bajo recambio), con el
+RSS de los motores en cada muestra. `BOND_LIVE_DUMP=1` deja la demora de cada
+registro (`live-far-delays.txt`, `live-near-delays.txt`). El caso `cell4`
+(historia 025) son cuatro enlaces celulares sin Starlink.
 Necesita `shadowsocks-libev` (y `kcptun` para `kcp`); el paquete de Debian deja
 un `ss-server` como servicio en el host: `systemctl disable --now
 shadowsocks-libev`. Las tablas: `peptab.py` sobre el `all.jsonl` de `labq.py`.

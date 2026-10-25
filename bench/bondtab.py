@@ -415,7 +415,7 @@ def line(a):
     j = None
     try:
         j = json.load(open(a.result))
-        if a.cc == "live":  # story 024: livesim.py merge's, the far stream's numbers
+        if a.cc in ("live", "soak"):  # story 024: livesim.py merge's, the far stream's numbers (025: soak too)
             far = j["far"]
             mbps, retrans = far["mbps"], far.get("send", {}).get("total_retrans")
             extra["srtt_ms"] = far.get("send", {}).get("srtt_ms")
@@ -454,7 +454,7 @@ def line(a):
         rx, tx = udpgen_fields(a.small_rx), udpgen_fields(a.small_tx) if a.small_tx else {}
         out["small"] = {"sent": tx.get("sent"), "uniq": rx.get("uniq"), "p50_us": rx.get("p50_us"),
                         "p99_us": rx.get("p99_us"), "reord": rx.get("reord")} if rx else None
-    if a.cc == "live" and isinstance(j, dict):
+    if a.cc in ("live", "soak") and isinstance(j, dict):
         out["live"] = j
     if a.pep:  # story 024's hosts: each leg's retransmissions, the proxies' memory
         try:

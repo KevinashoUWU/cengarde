@@ -31,7 +31,7 @@
   reordenador no los retiene, tienen su propio orden).
 - **Configuración:** apagado por omisión. Router: `pep = yes`, `pep_port`
   (el `REDIRECT` del firewall llega ahí) y qué se intercepta lo dice el
-  firewall (UCI `pep_ports`, `pep_dest`); VPS: `pep = yes`, `pep_cc = bbr`
+  firewall (UCI `pep_port`, `pep_dest`); VPS: `pep = yes`, `pep_cc = bbr`
   para el tramo lejano. Memoria acotada: `pep_buf_kb` por flujo y sentido,
   `pep_mem_mb` en total, `pep_max_flows`.
 
@@ -82,9 +82,13 @@ Carga de un DATA del túnel (detrás de la cabecera de 24 B y bajo su MAC):
   así que el ACK que lo cubre lo confirma. Bandera `EST`: el que envía ya
   recibió un ACK de este flujo (un VPS que no lo conoce contesta `RST`; sin
   `EST`, calla: el OPEN pudo perderse).
-- `ACK`: el acumulado (lo siguiente que espera), el borde derecho de la
-  ventana (hasta dónde acepta, absoluto) y hasta 4 rangos SACK. Cada ACK
-  lleva el estado completo: cualquiera sirve de actualización de ventana.
+- `ACK`: su secuencia, el acumulado (lo siguiente que espera), el borde
+  derecho de la ventana (hasta dónde acepta, absoluto; puede retroceder: el
+  receptor igual toma lo que llegue dentro de su búfer), el menor retardo de
+  ida desde el ACK anterior y hasta 8 rangos SACK. Cada ACK lleva el estado
+  completo: cualquiera sirve de actualización de ventana; uno adelantado por
+  otro posterior no mueve el borde (la secuencia). Bandera `DUP`: llegó un
+  duplicado.
 - `RST`: motivo. Se contesta `RST` (con tope de ritmo) a un DATA con `EST`
   o a un ACK de un flujo desconocido: así un extremo reiniciado limpia al
   otro.
@@ -112,20 +116,22 @@ Carga de un DATA del túnel (detrás de la cabecera de 24 B y bajo su MAC):
 - **Emisor:** un búfer circular por trozos de 16 KB (de un fondo común con
   tope `pep_mem_mb`) con lo no confirmado y lo no enviado, hasta
   `pep_buf_kb`; un anillo de segmentos (desplazamiento, largo, hora de envío,
-  reenvíos, estado, y la foto de lo entregado para la muestra de ritmo).
+  reenvíos, estado, si había cola, y la foto de lo entregado para la muestra
+  de ritmo). Un reenvío reusa su segmento: el receptor nunca ve dos cortes de
+  los mismos bytes.
 - **Pérdida:** RACK (un segmento sin confirmar enviado más de una ventana
-  de reorden antes que uno ya confirmado está perdido; la ventana,
-  `min_rtt / 4` más el tiempo que tarda la reparación del túnel) y un
-  temporizador (`srtt + 4 rttvar`, con retroceso doble hasta 2 s) para la
-  cola. Nunca se rinde: un segmento se reenvía hasta que llega.
-- **Copias por regla de cengarde:** el primer reenvío va como un DATA
-  cualquiera (las copias y la FEC del modo); desde el segundo, copiado en
-  todos los enlaces que llevan (como la regla de la evidencia de la 023 para
-  lo que el túnel perdió).
-- **Receptor:** reensambla por desplazamiento en su búfer (hasta 16 rangos
-  fuera de orden; más, descarta y lo reenviará el emisor), entrega en orden
-  al socket y contesta: al instante con un hueco, el FIN o una ventana que
-  se abre; si no, cada 2 DATA o 2 ms. Los duplicados se cuentan.
+  antes que uno ya confirmado está perdido; la ventana, `min_rtt / 4` más
+  `pep_reo_ms`, 10 ms, que cada duplicado avisado por el receptor agranda
+  4 ms hasta 100 y vuelve sola, como la de RACK con D-SACK: la reparación del
+  túnel, la RLC o el rescate, llega a veces después) y un temporizador desde
+  el envío más viejo de lo que está en vuelo (`srtt + 4 rttvar`, al menos dos
+  `min_rtt` más la ventana de RACK, retroceso doble hasta 2 s). Nunca se
+  rinde.
+- **Receptor:** reensambla por desplazamiento (hasta 256 huecos; con más,
+  descarta lo que abriría otro y el emisor lo reenvía: con 16, una ráfaga de
+  pérdidas al arrancar se volvía una cascada de descartes), entrega en orden al
+  socket. El ACK lleva primero el rango del DATA más nuevo (RACK conoce la
+  entrega más reciente aunque haya más huecos de los que caben) y hasta 8.
 
 ### Ritmo (`pepcc.h`)
 
@@ -133,17 +139,62 @@ Carga de un DATA del túnel (detrás de la cabecera de 24 B y bajo su MAC):
   todos los flujos; entre flujos, turnos por igual (DRR).
 - **Lo que el camino consume:** muestras por ACK al estilo de BBR (bytes
   entregados entre el envío de un segmento y su ACK, sobre ese tiempo), pero
-  contando también lo perdido mientras el RTT de la muestra no pasa de
-  `min_rtt + pep_queue_ms`: la pérdida al azar no baja el ritmo. Con la cola
-  arriba, la muestra cuenta solo lo entregado y el estimador baja a ella (la
-  pérdida por desborde no se confunde con capacidad).
-- **Ritmo** = estimador × ganancia (arranque 2, luego un ciclo 5/4, 3/4,
-  1, …); **en vuelo** ≤ estimador × (`min_rtt` + `pep_queue_ms`) más unos
-  pocos paquetes: la cola que el medio arma está acotada por diseño.
+  contando también lo perdido de los segmentos enviados mientras no había
+  cola (hasta 3 perdidos por 1 entregado): la pérdida al azar no baja el
+  ritmo. La pérdida por desborde (segmentos enviados con cola) no cuenta.
+- **La cola es el retardo de ida:** cada DATA lleva el reloj del emisor y
+  cada ACK devuelve el menor retardo de ida de lo que llegó desde el ACK
+  anterior (el reloj del receptor menos el del emisor, el desfase incluido:
+  solo cuenta su cambio sobre el mínimo de 10 s). El veredicto es el menor
+  de cada ventana de una ida y vuelta: una cola sube todas las muestras, una
+  copia tardía (un paquete perdido en el primer enlace que llegó por el
+  segundo) solo algunas. La ida y vuelta no sirve para esto: en un microcorte
+  lleva las pérdidas y las copias lentas del ACK de vuelta, que se leían como
+  cola y hundían el ritmo.
+- **Ritmo** = estimador × ganancia: arranque 3/2 (el 2,89 de BBR, y 2,
+  desbordaban una cola corta de una vez) que termina con la primera muestra
+  con cola; luego el ciclo 5/4, 3/4, 1 × 6; y 3/4 mientras la ventana muestre
+  cola sobre `pep_queue_ms` (5 ms): con el estimador en lo entregado, una cola
+  ya formada no se vacía sola. Una ventana entera con cola baja el estimador a
+  lo entregado. El estimador es el mayor de las muestras de 1–2 s (más corto,
+  caía con el ruido de las pérdidas de un microcorte).
+- **En vuelo:** dos veces `bw × (min_rtt + pep_queue_ms)`, más lo que RACK
+  todavía no declaró perdido (`bw ×` su ventana: con 60 % perdido y 100 ms
+  de ventana, lo perdido sin declarar llenaba la ventana, los envíos paraban y
+  el estimador los seguía hacia abajo).
 - **Del motor** (`capacity.h`): el estimador arranca de la capacidad de los
-  enlaces que llevan los datos (en redundancia, la del primero; repartido,
-  la suma), sin arranque lento; y cuando el motor ve su cola sobre
-  `capacity_sat_ms`, la capacidad es el techo.
+  enlaces que llevan los datos (en redundancia con `redund_spare`, la del
+  primero; repartido, la suma), al menos 16 Mbit/s; y cuando el motor halla
+  lleno ese enlace (`CG_CAP_CUT_FULL`: su capacidad medida con una cola
+  sostenida), es el techo, salvo que esté por debajo de la mitad del
+  estimador: la capacidad de un enlace ocioso es lo que entregan sus sondas,
+  «lleno» de ellas, y como techo retuvo un flujo nuevo en pocos kbit/s.
+- Tras un segundo sin nada en vuelo, el arranque vuelve (con el estimador que
+  tenía).
+
+### Copias y FEC para el flujo fiable
+
+- Un DATA del flujo es un DATA del túnel: el modo decide (en `protect`, con
+  `redund_spare = rlc`, va por el primer enlace y la RLC lleva sus
+  reparaciones por lo que le sobra al segundo).
+- **En las copias de un microcorte** (`redund_spare` pasa a copias cuando el
+  primer enlace pierde mucho), los DATA del flujo no se copian: su ARQ
+  reenvía lo perdido, y copiado, un flujo que mantiene su ritmo durante el
+  corte llenó la cola del celular hasta 2 s.
+- **Un segmento reenviado por segunda vez** va como copia prioritaria (dentro
+  del presupuesto de lo que sobra), y no a un enlace con cola sobre
+  `redund_spare_ms`: llegaría después del próximo reenvío.
+- **ACK:** cada 4 DATA o 2 ms; al instante con un hueco nuevo, uno que se
+  llena o el FIN. Un ACK por cada DATA fuera de orden (60 % perdido) copiado
+  por todos los enlaces llenó la bajada del celular.
+
+### El tramo lejano (`pep_cc`)
+
+- `auto` (por omisión): el control de congestión del kernel (cubic) y BBR en
+  cuanto ese tramo reenvía 3 segmentos. BBR no toma la pérdida al azar por
+  congestión (el tramo lejano de `beyond`, historia 024), pero su ProbeRTT
+  (4 paquetes por ida y vuelta durante 200 ms cada 10 s) retenía un vivo de
+  8 Mbit/s 50–140 ms. Un nombre (`bbr`, `cubic`) lo fija.
 
 ### Búferes y contrapresión
 
@@ -153,10 +204,12 @@ Carga de un DATA del túnel (detrás de la cabecera de 24 B y bajo su MAC):
   que guarda pasa `pep_backlog_ms` al ritmo con que el destino lo toma (y
   nunca pasa `pep_buf_kb`): el router se detiene.
 - **Router:** lee del socket de la LAN mientras lo que tiene sin enviar no
-  pase `pep_backlog_ms` a su ritmo y lo no confirmado quepa en `pep_buf_kb`;
-  el socket de la LAN tiene un `SO_RCVBUF` chico (puesto en el socket que
-  escucha), así que el emisor siente la ventana cerrada en ~`pep_backlog_ms`
-  más lo que viaja.
+  pase `pep_backlog_ms` a su ritmo (al menos 256 KB: con 64, un flujo que
+  arrancaba lento dejaba de leer, el búfer chico del socket descartaba un
+  segmento y el emisor esperaba su temporizador de 200 ms) y lo no confirmado
+  quepa en `pep_buf_kb`; el socket de la LAN tiene un `SO_RCVBUF` de 128 KB
+  (puesto en el socket que escucha), así que el emisor siente la ventana
+  cerrada en ~`pep_backlog_ms` más lo que viaja.
 - **Memoria por conexión y extremo:** `pep_buf_kb` (1024) por sentido como
   tope, más los búferes del kernel acotados (el `SO_RCVBUF` de la LAN, el
   `NOTSENT_LOWAT` del destino); `pep_mem_mb` (64) para todos.
@@ -164,8 +217,11 @@ Carga de un DATA del túnel (detrás de la cabecera de 24 B y bajo su MAC):
 ### Interceptar
 
 - **Router:** el firewall elige: `REDIRECT` del TCP que entra por la LAN al
-  `pep_port` (fw4: una regla `dstnat` que escribe `cengarde-setup` desde UCI
-  `pep_ports` y `pep_dest`; sin puertos, todo el TCP). IPv4 e IPv6 (dos
+  `pep_port` (fw4: una cadena propia, `cengarde_pep`, enganchada justo antes
+  de la `dstnat` de fw4 para lo que entra por los dispositivos de la zona
+  `lan`, que escribe `cengarde-setup` desde UCI `pep_port` y `pep_dest`; sin
+  puertos, todo el TCP; sin destinos, todo lo que no es privado ni local; la
+  `dstnat_lan` de fw4 existe solo con alguna regla DNAT de la zona). IPv4 e IPv6 (dos
   sockets que escuchan). El motor no decide qué se intercepta, solo si lo
   acepta: rehúsa (RST) lo que va al propio router o a su puerto, y con los
   topes llenos.

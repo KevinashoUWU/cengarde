@@ -12,8 +12,8 @@ static void test_codec(void)
 	struct cg_st_ack a = { .aseq = 0xbeef, .cum = 0x100000005ull, .edge = 0x100100000ull, .n = 2 }, u;
 	size_t n;
 
-	n = cg_pep_put_open(b, 0x00020003, 4, a4, 5201);
-	CHECK_EQ(n, 13);
+	n = cg_pep_seal(b, cg_pep_put_open(b, 0x00020003, 4, a4, 5201));
+	CHECK_EQ(n, 13 + CG_PEP_TAG);
 	CHECK(cg_pep_is(b, n));
 	CHECK_EQ(cg_pep_parse(b, n, &m), 0);
 	CHECK_EQ(m.type, CG_PEP_OPEN);
@@ -21,14 +21,15 @@ static void test_codec(void)
 	CHECK_EQ(m.family, 4);
 	CHECK_EQ(m.port, 5201);
 	CHECK(!memcmp(m.addr, a4, 4));
-	CHECK_EQ(cg_pep_parse(b, n - 1, &m), -1);
-	n = cg_pep_put_open(b, 9, 6, a6, 443);
-	CHECK_EQ(n, 25);
+	CHECK(cg_pep_parse(b, n - 1, &m) < 0);
+	n = cg_pep_seal(b, cg_pep_put_open(b, 9, 6, a6, 443));
+	CHECK_EQ(n, 25 + CG_PEP_TAG);
 	CHECK_EQ(cg_pep_parse(b, n, &m), 0);
 	CHECK(!memcmp(m.addr, a6, 16));
 
 	n = cg_pep_put_data(b, 7, CG_PEPF_FIN | CG_PEPF_EST, 0x1234567890ull, 0xdeadbeef);
 	memcpy(b + n, "hello", 5);
+	n = cg_pep_seal(b, n + 5) - 5;
 	CHECK_EQ(cg_pep_parse(b, n + 5, &m), 0);
 	CHECK_EQ(m.type, CG_PEP_DATA);
 	CHECK_EQ(m.flags, CG_PEPF_FIN | CG_PEPF_EST);
@@ -41,8 +42,8 @@ static void test_codec(void)
 	a.e[0] = 0x100000200ull;
 	a.s[1] = 0x100000300ull;
 	a.e[1] = 0x100000400ull;
-	n = cg_pep_put_ack(b, 7, CG_PEPF_EST, &a, -1234);
-	CHECK_EQ(n, 21 + 16);
+	n = cg_pep_seal(b, cg_pep_put_ack(b, 7, CG_PEPF_EST, &a, -1234));
+	CHECK_EQ(n, 21 + 16 + CG_PEP_TAG);
 	CHECK(n <= CG_PEP_ACK_MAX);
 	CHECK_EQ(cg_pep_parse(b, n, &m), 0);
 	CHECK_EQ(m.type, CG_PEP_ACK);
@@ -55,10 +56,18 @@ static void test_codec(void)
 	CHECK_EQ(u.s[1], a.s[1]);
 	CHECK_EQ(u.e[0], a.e[0]);
 	b[20] = CG_ST_ACK_RANGES + 1;
-	CHECK_EQ(cg_pep_parse(b, n, &m), -1);
+	CHECK_EQ(cg_pep_parse(b, n, &m), -2); /* the tag no longer matches */
+	cg_pep_seal(b, n - CG_PEP_TAG);
+	CHECK_EQ(cg_pep_parse(b, n, &m), -1); /* sealed again: malformed */
 
-	n = cg_pep_put_rst(b, 7, CG_PEP_R_REFUSED);
+	n = cg_pep_seal(b, cg_pep_put_rst(b, 7, CG_PEP_R_REFUSED));
 	CHECK_EQ(cg_pep_parse(b, n, &m), 0);
+	/* a wrong rebuild: any byte changed */
+	for (size_t i = 0; i < n; i++) {
+		b[i] ^= 0x20;
+		CHECK(cg_pep_parse(b, n, &m) < 0);
+		b[i] ^= 0x20;
+	}
 	CHECK_EQ(m.type, CG_PEP_RST);
 	CHECK_EQ(m.reason, CG_PEP_R_REFUSED);
 	CHECK(!strcmp(cg_pep_reason(CG_PEP_R_REFUSED), "refused"));
@@ -69,6 +78,7 @@ static void test_codec(void)
 	b[0] = 0x60;
 	CHECK(!cg_pep_is(b, 40));
 	b[0] = 0xF9;
+	cg_pep_seal(b, 16);
 	CHECK_EQ(cg_pep_parse(b, 20, &m), -1); /* no such type */
 }
 

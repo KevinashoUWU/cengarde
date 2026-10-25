@@ -400,7 +400,7 @@ enum { CG_ST_SENT = 0, CG_ST_SACKED, CG_ST_LOST };
 struct cg_st_seg {
 	uint64_t off;
 	uint64_t sent_us;       /* its last transmission */
-	uint64_t dl, dla, dl_us; /* the rate controller's counters when it was sent (pepcc.h) */
+	uint64_t dl, dla, dl_us, ss; /* the rate controller's counters when it was sent (pepcc.h) */
 	uint16_t len;           /* bytes; the FIN, if any, after them */
 	uint8_t fin, st, tx, app;
 	uint8_t q;              /* sent while the path showed a queue (pepcc.h's cong) */
@@ -409,7 +409,7 @@ struct cg_st_seg {
 /* The rate sample an ACK gives: from the newest-sent segment it delivered. */
 struct cg_st_rs {
 	uint8_t have, tx, app;
-	uint64_t sent_us, dl, dla, dl_us;
+	uint64_t sent_us, dl, dla, dl_us, ss;
 };
 
 struct cg_st_tx {
@@ -501,10 +501,10 @@ static inline int cg_st_tx_next(struct cg_st_tx *t, uint32_t mss, uint32_t *idx,
 }
 
 /* What cg_st_tx_next gave went at now, with the rate controller's counters
- * then (dl, dla, dl_us) and whether it was app-limited. Returns the bytes
+ * then (dl, dla, dl_us, ss) and whether it was app-limited. Returns the bytes
  * that went into flight. */
 static inline uint32_t cg_st_tx_sent(struct cg_st_tx *t, uint32_t idx, uint64_t off, uint32_t len, int fin,
-				     uint64_t now, uint64_t dl, uint64_t dla, uint64_t dl_us, int app, int q)
+				     uint64_t now, uint64_t dl, uint64_t dla, uint64_t dl_us, uint64_t ss, int app, int q)
 {
 	struct cg_st_seg *s;
 
@@ -532,6 +532,7 @@ static inline uint32_t cg_st_tx_sent(struct cg_st_tx *t, uint32_t idx, uint64_t 
 	s->dl = dl;
 	s->dla = dla;
 	s->dl_us = dl_us;
+	s->ss = ss;
 	s->app = (uint8_t)!!app;
 	s->q = (uint8_t)!!q;
 	t->inflight += cg_st_span(s);
@@ -558,6 +559,7 @@ static inline void cg_st_rs_take(struct cg_st_rs *rs, const struct cg_st_seg *s)
 		rs->dl = s->dl;
 		rs->dla = s->dla;
 		rs->dl_us = s->dl_us;
+		rs->ss = s->ss;
 	}
 }
 

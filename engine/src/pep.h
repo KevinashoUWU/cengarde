@@ -32,6 +32,13 @@
  *         window widens, as RACK's with DSACK).
  *   RST   6: the reason (CG_PEP_R_*).
  *
+ * Every message ends in a 4-byte tag, SipHash-2-4 of the rest under a fixed
+ * key (cg_pep_seal): not for authenticity (the tunnel's MAC is that), but
+ * because a DATA the tunnel rebuilds from its repairs (fec.h, rlc.h) is not
+ * under any MAC, and a wrong rebuild (seen in the lab: the RLC receiver's
+ * "bad" by thousands, its garbage counted not_ip) must not write bytes into a
+ * stream, nor a clock into the rate's delay.
+ *
  * Also here: which destinations the VPS refuses to connect to, the
  * server's table of streams by (session, id), and the slots' generations.
  *
@@ -45,6 +52,7 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "siphash.h"
 #include "stream.h"
 
 #define CG_PEP_MAGIC 0xF0
@@ -58,6 +66,8 @@ enum { CG_PEP_OPEN = 1, CG_PEP_DATA = 2, CG_PEP_ACK = 3, CG_PEP_RST = 4 };
 #define CG_PEP_ACK_MAX (CG_PEP_HDR + 15 + 8 * CG_ST_ACK_RANGES)
 #define CG_PEP_NOOWD INT32_MIN /* an ACK with no one-way delay */
 #define CG_PEP_RST_LEN (CG_PEP_HDR + 1)
+#define CG_PEP_TAG 4                                /* the trailer: cg_pep_seal */
+#define CG_PEP_OVERHEAD (CG_PEP_DATA_HDR + CG_PEP_TAG) /* a DATA's bytes besides the stream's */
 
 /* Why a stream was reset. */
 enum {
@@ -157,6 +167,22 @@ static inline size_t cg_pep_put_rst(uint8_t *b, uint32_t id, uint8_t reason)
 	return CG_PEP_RST_LEN;
 }
 
+static inline uint32_t cg_pep_tag(const uint8_t *b, size_t len)
+{
+	static const uint8_t key[CG_SIPHASH_KEY_LEN] = { 'c', 'e', 'n', 'g', 'a', 'r', 'd', 'e',
+							 '-', 'p', 'e', 'p', '-', 't', 'a', 'g' };
+
+	return (uint32_t)cg_siphash24(key, b, len);
+}
+
+/* A message of len bytes at b, its tag after it (room for CG_PEP_TAG
+ * more). Returns the length with it. */
+static inline size_t cg_pep_seal(uint8_t *b, size_t len)
+{
+	cg_pep_be32(b + len, cg_pep_tag(b, len));
+	return len + CG_PEP_TAG;
+}
+
 /* A message, parsed. Offsets are the wire's 32 bits (cg_st_unwrap). */
 struct cg_pep_msg {
 	uint8_t type, flags;
@@ -179,11 +205,15 @@ struct cg_pep_msg {
 	uint8_t reason;
 };
 
-/* Returns 0, or -1 for a malformed message. */
+/* Returns 0, -1 for a malformed message, -2 for one whose tag does not
+ * match (a wrong rebuild). */
 static inline int cg_pep_parse(const uint8_t *p, size_t len, struct cg_pep_msg *m)
 {
-	if (len < CG_PEP_HDR || !cg_pep_is(p, len))
+	if (len < CG_PEP_HDR + CG_PEP_TAG || !cg_pep_is(p, len))
 		return -1;
+	len -= CG_PEP_TAG;
+	if (cg_pep_rd32(p + len) != cg_pep_tag(p, len))
+		return -2;
 	m->type = p[0] & 0x0F;
 	m->flags = p[1];
 	m->id = cg_pep_rd32(p + 2);

@@ -141,13 +141,13 @@ static void test_tx(void)
 	CHECK_EQ(idx, 0);
 	CHECK_EQ(off, 0);
 	CHECK_EQ(len, 1000);
-	CHECK_EQ(cg_st_tx_sent(&t, idx, off, len, fin, 100, 0, 0, 0, 0, 0), 1000);
+	CHECK_EQ(cg_st_tx_sent(&t, idx, off, len, fin, 100, 0, 0, 0, 0, 0, 0), 1000);
 	cg_st_tx_next(&t, 1000, &idx, &off, &len, &fin);
-	cg_st_tx_sent(&t, idx, off, len, fin, 200, 0, 0, 0, 0, 0);
+	cg_st_tx_sent(&t, idx, off, len, fin, 200, 0, 0, 0, 0, 0, 0);
 	cg_st_tx_next(&t, 1000, &idx, &off, &len, &fin);
 	CHECK_EQ(len, 500);
 	CHECK(!fin);
-	cg_st_tx_sent(&t, idx, off, len, fin, 300, 0, 0, 0, 0, 0);
+	cg_st_tx_sent(&t, idx, off, len, fin, 300, 0, 0, 0, 0, 0, 0);
 	CHECK_EQ(t.inflight, 2500);
 	CHECK_EQ(t.n, 3);
 	CHECK(!cg_st_tx_next(&t, 1000, &idx, &off, &len, &fin));
@@ -173,7 +173,7 @@ static void test_tx(void)
 	CHECK(cg_st_tx_next(&t, 1000, &idx, &off, &len, &fin));
 	CHECK_EQ(idx, 0);
 	CHECK_EQ(off, 0);
-	cg_st_tx_sent(&t, idx, off, len, fin, 400, 0, 0, 0, 0, 0);
+	cg_st_tx_sent(&t, idx, off, len, fin, 400, 0, 0, 0, 0, 0, 0);
 	CHECK_EQ(cg_st_tx_seg(&t, 0)->tx, 2);
 	CHECK_EQ(t.retx_segs, 1);
 	/* cumulative to 2000: two segments go, una moves */
@@ -195,7 +195,7 @@ static void test_tx(void)
 	CHECK_EQ(cg_st_tx_rto(&t, 1000000, 500000, NULL), 500);
 	CHECK(cg_st_tx_busy(&t));
 	cg_st_tx_next(&t, 1000, &idx, &off, &len, &fin);
-	cg_st_tx_sent(&t, idx, off, len, fin, 1000000, 0, 0, 0, 0, 0);
+	cg_st_tx_sent(&t, idx, off, len, fin, 1000000, 0, 0, 0, 0, 0, 0);
 	/* the socket ends: the FIN alone, past the window too */
 	t.eof = 1;
 	t.edge = 2500;
@@ -203,7 +203,7 @@ static void test_tx(void)
 	CHECK_EQ(len, 0);
 	CHECK(fin);
 	CHECK_EQ(off, 2500);
-	cg_st_tx_sent(&t, idx, off, len, fin, 1000100, 0, 0, 0, 0, 0);
+	cg_st_tx_sent(&t, idx, off, len, fin, 1000100, 0, 0, 0, 0, 0, 0);
 	CHECK(t.fin_sent);
 	CHECK(!cg_st_tx_next(&t, 1000, &idx, &off, &len, &fin));
 	CHECK(!cg_st_tx_done(&t));
@@ -217,10 +217,10 @@ static void test_tx(void)
 	cg_st_tx_init(&t, seg, 16, 1500);
 	t.tail = 5000;
 	cg_st_tx_next(&t, 1000, &idx, &off, &len, &fin);
-	cg_st_tx_sent(&t, idx, off, len, fin, 1, 0, 0, 0, 0, 0);
+	cg_st_tx_sent(&t, idx, off, len, fin, 1, 0, 0, 0, 0, 0, 0);
 	CHECK(cg_st_tx_next(&t, 1000, &idx, &off, &len, &fin));
 	CHECK_EQ(len, 500);
-	cg_st_tx_sent(&t, idx, off, len, fin, 2, 0, 0, 0, 0, 0);
+	cg_st_tx_sent(&t, idx, off, len, fin, 2, 0, 0, 0, 0, 0, 0);
 	CHECK(!cg_st_tx_next(&t, 1000, &idx, &off, &len, &fin));
 }
 
@@ -289,7 +289,7 @@ static void test_e2e(void)
 			struct pkt *x;
 			uint32_t dup = rnd(&seed) % 100 < 2 ? 2 : 1;
 
-			cg_st_tx_sent(&t, idx, off, len, fin, now, 0, 0, 0, 0, 0);
+			cg_st_tx_sent(&t, idx, off, len, fin, now, 0, 0, 0, 0, 0, 0);
 			sent++;
 			if (!rto_at)
 				rto_at = now + 20000;

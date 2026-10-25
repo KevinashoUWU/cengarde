@@ -4389,7 +4389,7 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 	if (cfg->pep) {
 		struct cg_pep_cfg pc = { .server = 0,
 					 .port = (uint16_t)cfg->pep_port,
-					 .mss = cfg->tun_mtu - CG_PEP_DATA_HDR,
+					 .mss = cfg->tun_mtu - CG_PEP_OVERHEAD,
 					 .buf_kb = cfg->pep_buf_kb,
 					 .mem_mb = cfg->pep_mem_mb,
 					 .max_flows = cfg->pep_max_flows,

@@ -40,12 +40,17 @@
 #define TCP_NOTSENT_LOWAT 25
 #endif
 
-#define PEP_LOWAT 131072u      /* bytes a socket may hold unsent (TCP_NOTSENT_LOWAT) */
+#define PEP_LOWAT_MIN 32768u   /* bytes a socket may hold unsent (TCP_NOTSENT_LOWAT): its rate for */
+#define PEP_LOWAT_MS 100u      /* this long, between these two (a slow destination's kernel */
+#define PEP_LOWAT_MAX 524288u  /* hid 0.7 s at 128 KB) */
 #define PEP_LAN_RCVBUF 131072  /* the router's LAN sockets' receive buffer (the kernel doubles it) */
 #define PEP_INIT_EDGE 262144u  /* the peer's window before its first ACK */
-#define PEP_MIN_BACKLOG 262144u /* what a stream may hold unsent or unwritten, at least: under it a stream that
-				 * starts slow stopped reading, the LAN socket's small buffer dropped a segment
-				 * and the sender waited out its 200 ms timer (live, protect) */
+#define PEP_MIN_BACKLOG 65536u   /* what a stream may hold unsent or unwritten, at least */
+#define PEP_START_BACKLOG 262144u /* and in its first PEP_START_US: under it a stream that started slow stopped
+				   * reading, the LAN socket's small buffer dropped a segment (its window
+				   * before the kernel learned the segments' overhead) and the sender waited
+				   * out its 200 ms timer (live, protect) */
+#define PEP_START_US 2000000u
 #define PEP_ACK_US 2000u       /* an ACK at most this late */
 #define PEP_ACK_FRAMES 4       /* or after this many DATA */
 #define PEP_CONNECT_S 30       /* the VPS gives a connect this long */
@@ -53,7 +58,8 @@
 #define PEP_RATE_US 100000u    /* the window of a stream's rates */
 #define PEP_FRAME (2048)
 #define PEP_HOLE_BUCKETS 8
-#define PEP_CC_LOSSES 3        /* pep_cc auto: segments the destination's leg sent again before BBR */
+#define PEP_CC_LOSSES 1        /* pep_cc auto: segments the destination's leg sent again before BBR (3 left
+				* a stream at cubic's 1 % at 100 ms for its first 2-3 s: beyond) */
 #define PEP_AGES 16
 #define PEP_REO_STEP_US 4000u  /* a duplicate widens RACK's window by this */
 #define PEP_REO_MAX_US 100000u /* up to this */
@@ -92,6 +98,7 @@ struct flow {
 	uint64_t s_bytes, s_t, s_rate; /* bytes delivered to the peer, a window's start, the rate */
 	uint64_t w_bytes, w_t, w_rate; /* bytes written to the socket, idem */
 	uint64_t up, down;             /* bytes read from and written to the socket */
+	uint32_t lowat;                /* the socket's TCP_NOTSENT_LOWAT now */
 	struct cg_st_tx tx;
 	struct cg_st_rx rx;
 	struct cg_st_buf sb, rb;
@@ -138,7 +145,7 @@ struct cg_pep {
 	uint32_t mpeer, msid;
 	uint8_t in_rx; /* in cg_pep_rx: the engine is mid-batch, nothing may be sent now */
 	/* counters */
-	uint64_t opened, closed, refused[CG_PEP_R_N], rst_tx, rst_lost, rst_rx[CG_PEP_R_N], bad, unknown;
+	uint64_t opened, closed, refused[CG_PEP_R_N], rst_tx, rst_lost, rst_rx[CG_PEP_R_N], bad, corrupt, unknown;
 	uint64_t up_bytes, down_bytes, data_tx, data_rx, acks_tx, acks_rx, opens_tx, retx, copies, rto_n;
 	uint64_t dup_frames, ooo_frames, drop_frames, nomem;
 	uint64_t cc_switches; /* pep_cc auto: connections switched to BBR */
@@ -224,6 +231,7 @@ static uint8_t *slot_for(struct cg_pep *p, uint32_t peer, uint32_t sid)
 
 static void push(struct cg_pep *p, size_t len, int copy)
 {
+	len = cg_pep_seal(p->msg[p->nmsg], len);
 	p->mptr[p->nmsg] = p->msg[p->nmsg];
 	p->mlen[p->nmsg] = (uint16_t)len;
 	p->mcopy[p->nmsg] = (uint8_t)copy;
@@ -489,7 +497,7 @@ static void accept_some(struct cg_pep *p, int v6)
 		f->id = cg_pep_id(p->gen[f - p->f], (uint16_t)(f - p->f));
 		f->rd_ready = 1;
 		set_int(fd, IPPROTO_TCP, TCP_NODELAY, 1);
-		set_int(fd, IPPROTO_TCP, TCP_NOTSENT_LOWAT, PEP_LOWAT);
+		set_int(fd, IPPROTO_TCP, TCP_NOTSENT_LOWAT, PEP_LOWAT_MIN);
 		e.data.u64 = CG_EV(CG_EV_PEP, f - p->f);
 		if (epoll_ctl(p->ep, EPOLL_CTL_ADD, fd, &e) < 0) {
 			flow_free(p, f, 1);
@@ -566,7 +574,11 @@ static void open_in(struct cg_pep *p, uint32_t peer, uint32_t sid, const struct 
 		cg_warn("pep: pep_cc %s: %s (the kernel's own instead; modprobe tcp_%s?)", p->cfg.cc, strerror(errno),
 			p->cfg.cc);
 	set_int(fd, IPPROTO_TCP, TCP_NODELAY, 1);
-	set_int(fd, IPPROTO_TCP, TCP_NOTSENT_LOWAT, PEP_LOWAT);
+	set_int(fd, IPPROTO_TCP, TCP_NOTSENT_LOWAT, PEP_LOWAT_MIN);
+	/* what the destination sends while the stream is full waits in this
+	 * socket: as much as the stream's own buffer (the kernel doubles it),
+	 * not the autotuned 6 MB (a download, 7 MB a connection) */
+	set_int(fd, SOL_SOCKET, SO_RCVBUF, (int)p->buf_cap);
 	r = connect(fd, (struct sockaddr *)&a, al);
 	if (r < 0 && errno != EINPROGRESS) {
 		flow_reset(p, f, reason_of(errno));
@@ -693,7 +705,7 @@ static void ack_in(struct cg_pep *p, struct flow *f, const struct cg_pep_msg *m,
 		cg_pcc_owd(&r->cc, &p->ccf, now, m->owd);
 	r->cc.inflight -= r->cc.inflight >= res.was_inflight ? res.was_inflight : r->cc.inflight;
 	cg_pcc_ack(&r->cc, &p->ccf, now, res.delivered, res.rs.have, res.rs.tx, res.rs.app, res.rs.sent_us, res.rs.dl,
-		   res.rs.dla, res.rs.dl_us);
+		   res.rs.dla, res.rs.dl_us, res.rs.ss);
 	if (res.progress) {
 		cg_st_buf_release(&f->sb, &p->pool, f->tx.una < f->tx.tail ? f->tx.una : f->tx.tail);
 		f->backoff = 0;
@@ -722,7 +734,13 @@ static void rx_one(struct cg_pep *p, uint32_t peer, uint32_t sid, const uint8_t 
 	struct flow *f;
 	uint64_t now = cg_now_us();
 
-	if (cg_pep_parse(msg, len, &m) < 0) {
+	switch (cg_pep_parse(msg, len, &m)) {
+	case 0:
+		break;
+	case -2:
+		p->corrupt++;
+		return;
+	default:
 		p->bad++;
 		return;
 	}
@@ -776,9 +794,27 @@ static void rx_one(struct cg_pep *p, uint32_t peer, uint32_t sid, const uint8_t 
 
 /* ---- the sockets ---- */
 
-static uint64_t backlog_max(const struct cg_pep *p, uint64_t rate)
+static uint64_t backlog_max(const struct cg_pep *p, const struct flow *f, uint64_t rate, uint64_t now)
 {
-	return cg_pep_backlog(rate, p->cfg.backlog_ms, PEP_MIN_BACKLOG);
+	return cg_pep_backlog(rate, p->cfg.backlog_ms,
+			      now - f->created_t < PEP_START_US ? PEP_START_BACKLOG : PEP_MIN_BACKLOG);
+}
+
+/* The unsent bytes f's socket may hold: its write rate for PEP_LOWAT_MS
+ * (TCP_NOTSENT_LOWAT follows, so that EPOLLOUT comes at it). */
+static uint32_t lowat_of(struct flow *f)
+{
+	uint64_t l = f->w_rate * PEP_LOWAT_MS / 1000;
+
+	if (l < PEP_LOWAT_MIN)
+		l = PEP_LOWAT_MIN;
+	if (l > PEP_LOWAT_MAX)
+		l = PEP_LOWAT_MAX;
+	if (!f->lowat || l > f->lowat + f->lowat / 4 || l + l / 4 < f->lowat) {
+		f->lowat = (uint32_t)l;
+		setsockopt(f->fd, IPPROTO_TCP, TCP_NOTSENT_LOWAT, &f->lowat, sizeof(f->lowat));
+	}
+	return f->lowat;
 }
 
 /* Reads what the socket has into the stream, as far as it may hold.
@@ -789,7 +825,7 @@ static int sock_read(struct cg_pep *p, struct flow *f)
 
 	while (f->rd_ready && !f->tx.eof && got < PEP_READ_PASS) {
 		uint64_t held = f->tx.tail - f->tx.una, unsent = cg_st_tx_unsent(&f->tx);
-		uint64_t room = p->buf_cap > held ? p->buf_cap - held : 0, bl = backlog_max(p, f->s_rate);
+		uint64_t room = p->buf_cap > held ? p->buf_cap - held : 0, bl = backlog_max(p, f, f->s_rate, cg_now_us());
 		uint32_t crun;
 		uint8_t *d;
 		ssize_t n;
@@ -828,13 +864,15 @@ static int sock_read(struct cg_pep *p, struct flow *f)
 }
 
 /* Writes what came in order to the socket, as far as it takes without
- * holding more than PEP_LOWAT unsent. Returns -1 when the flow was reset. */
+ * holding more than lowat_of unsent. Returns -1 when the flow was reset. */
 static int sock_write(struct cg_pep *p, struct flow *f, uint64_t now)
 {
 	uint64_t was = f->consumed;
+	uint32_t lowat;
 
 	if (f->connecting)
 		return 0;
+	lowat = lowat_of(f);
 	for (;;) {
 		uint64_t ready = cg_st_rx_ready(&f->rx, f->consumed);
 		uint32_t crun;
@@ -845,15 +883,15 @@ static int sock_write(struct cg_pep *p, struct flow *f, uint64_t now)
 
 		if (!ready)
 			break;
-		if (ioctl(f->fd, SIOCOUTQNSD, &unsent) == 0 && unsent >= (int)PEP_LOWAT) {
+		if (ioctl(f->fd, SIOCOUTQNSD, &unsent) == 0 && unsent >= (int)lowat) {
 			f->wr_blocked = 1;
 			break;
 		}
 		if (!(s = cg_st_buf_at(&f->rb, &p->pool, f->consumed, 0, &crun)))
 			break; /* not reached: what is in order is held */
 		k = ready < crun ? ready : crun;
-		if (k > PEP_LOWAT - (uint32_t)(unsent > 0 ? unsent : 0))
-			k = PEP_LOWAT - (uint32_t)(unsent > 0 ? unsent : 0);
+		if (k > lowat - (uint32_t)(unsent > 0 ? unsent : 0))
+			k = lowat - (uint32_t)(unsent > 0 ? unsent : 0);
 		n = send(f->fd, s, k, MSG_NOSIGNAL | MSG_DONTWAIT);
 		if (n > 0) {
 			f->consumed += (uint64_t)n;
@@ -874,7 +912,7 @@ static int sock_write(struct cg_pep *p, struct flow *f, uint64_t now)
 		return -1;
 	}
 	if (f->consumed != was) {
-		uint64_t e = cg_pep_edge(f->consumed, f->rx.nxt, p->buf_cap, backlog_max(p, f->w_rate));
+		uint64_t e = cg_pep_edge(f->consumed, f->rx.nxt, p->buf_cap, backlog_max(p, f, f->w_rate, now));
 
 		age_pop(f->io, &f->io_h, &f->io_n, f->consumed, now, p->writeq);
 		f->progress_t = now;
@@ -934,7 +972,7 @@ void cg_pep_event(struct cg_pep *p, uint32_t idx, uint32_t events)
 static void send_ack(struct cg_pep *p, struct flow *f)
 {
 	struct cg_st_ack a;
-	uint64_t edge = cg_pep_edge(f->consumed, f->rx.nxt, p->buf_cap, backlog_max(p, f->w_rate));
+	uint64_t edge = cg_pep_edge(f->consumed, f->rx.nxt, p->buf_cap, backlog_max(p, f, f->w_rate, cg_now_us()));
 	uint8_t *b = slot_for(p, f->peer, f->sid);
 
 	cg_st_rx_ack(&f->rx, edge, ++f->aseq, &a);
@@ -971,7 +1009,10 @@ static int send_one(struct cg_pep *p, struct flow *f, struct peer *r, uint64_t n
 	int fin, copy;
 	uint8_t *b;
 
-	if (!cg_pcc_may(&r->cc, &p->ccf, cg_pcc_reo(&r->cc, r->reo_us)) || !cg_st_tx_next(&f->tx, p->cfg.mss, &idx, &off, &len, &fin))
+	if (!cg_pcc_may_repair(&r->cc) || !cg_st_tx_next(&f->tx, p->cfg.mss, &idx, &off, &len, &fin))
+		return 0;
+	/* new bytes need room in flight; a repair, tokens only */
+	if (idx == f->tx.n && !cg_pcc_may(&r->cc, &p->ccf, cg_pcc_reo(&r->cc, r->reo_us)))
 		return 0;
 	cg_pcc_restart(&r->cc, now);
 	copy = idx < f->tx.n && cg_st_tx_seg(&f->tx, idx)->tx >= 2;
@@ -989,7 +1030,7 @@ static int send_one(struct cg_pep *p, struct flow *f, struct peer *r, uint64_t n
 	/* app-limited: the peer's senders ran out of bytes lately, or this one
 	 * has none left after it (a stream's last bytes, a FIN alone, a live
 	 * stream between frames): its sample says what they had, not the path */
-	sent = cg_st_tx_sent(&f->tx, idx, off, len, fin, now, r->cc.dl, r->cc.dla, r->cc.dl_us,
+	sent = cg_st_tx_sent(&f->tx, idx, off, len, fin, now, r->cc.dl, r->cc.dla, r->cc.dl_us, r->cc.sent,
 			     r->app || (!cg_st_tx_unsent(&f->tx) && !f->tx.nlost), r->cc.qnow || r->cc.cong);
 	r->cc.inflight += sent;
 	cg_pcc_spend(&r->cc, sent ? sent : 1);
@@ -1063,7 +1104,8 @@ void cg_pep_service(struct cg_pep *p)
 			want = EPOLLOUT;
 		} else {
 			uint64_t held = f->tx.tail - f->tx.una;
-			int can = !f->tx.eof && held < p->buf_cap && cg_st_tx_unsent(&f->tx) < backlog_max(p, f->s_rate);
+			int can = !f->tx.eof && held < p->buf_cap &&
+				  cg_st_tx_unsent(&f->tx) < backlog_max(p, f, f->s_rate, now);
 
 			if (can && !(f->ev & EPOLLIN)) {
 				f->rd_ready = 1; /* it may have data already: read it next pass */
@@ -1132,7 +1174,7 @@ int cg_pep_timeout(const struct cg_pep *p)
 /* pep_cc auto: a connection to a destination starts with the kernel's own
  * congestion control (cubic: no BBR ProbeRTT, which every 10 s held a live
  * stream to 4 packets a round trip for 200 ms, 50-140 ms of delay) and goes
- * to BBR once its leg loses (PEP_CC_LOSSES segments sent again: cubic took
+ * to BBR once its leg loses (a segment sent again: cubic took
  * 1 % of loss at 100 ms for congestion, story 024). */
 static void cc_auto(struct cg_pep *p, struct flow *f)
 {
@@ -1308,6 +1350,7 @@ void cg_pep_json(const struct cg_pep *p, struct cg_json *j)
 	cg_json_u64(j, "rst_tx", p->rst_tx);
 	cg_json_u64(j, "rst_lost", p->rst_lost);
 	cg_json_u64(j, "bad", p->bad);
+	cg_json_u64(j, "corrupt", p->corrupt); /* tags that did not match: wrong rebuilds of the tunnel's repairs */
 	cg_json_u64(j, "unknown", p->unknown);
 	cg_json_u64(j, "sock_rx_bytes", p->up_bytes);
 	cg_json_u64(j, "sock_tx_bytes", p->down_bytes);
@@ -1365,6 +1408,8 @@ void cg_pep_json(const struct cg_pep *p, struct cg_json *j)
 		cg_json_u64(j, "cwnd", cg_pcc_cwnd(c, &p->ccf, cg_pcc_reo(c, p->pr[i].reo_us)));
 		cg_json_str(j, "mode", c->mode == CG_PCC_STARTUP_M ? "startup" : c->mode == CG_PCC_DRAIN_M ? "drain" : "probe");
 		cg_json_ms(j, "reo_ms", p->pr[i].reo_us);
+		if (c->have_owd)
+			cg_json_ms_signed(j, "owd_queue_ms", (int32_t)((uint32_t)c->owd_last - (uint32_t)c->owd_base));
 		cg_json_u64(j, "dup_acks", p->pr[i].dups);
 		cg_json_u64(j, "congested", c->n_cong);
 		cg_json_u64(j, "cuts", c->n_cut);
