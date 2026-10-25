@@ -234,7 +234,7 @@ struct cg_config {
 	uint32_t pep_backlog_ms;      /* what a stream holds unsent or unwritten, in time at its rate */
 	uint32_t pep_dead_s;          /* a stream without progress this long, with something pending, is reset; 0: never */
 	uint32_t pep_reo_ms;          /* RACK's reordering window beyond a quarter of the round trip */
-	char pep_cc[16];              /* VPS: the congestion control toward the destination ("": the kernel's) */
+	char pep_cc[16];              /* VPS: the congestion control toward the destination ("": the kernel's; auto: the kernel's, BBR once it loses) */
 	int tcp_aware;                /* native: mark inner TCP's retransmissions and ACKs free (tcpfree.h) */
 	uint32_t reorder_idle_ms;     /* EXPERIMENT: the reorderer stops waiting for a link that brought no data this long; 0: off */
 	uint32_t reorder_retx_release_ms; /* a TCP retransmission gives up the gaps held this long before it; 0: off */

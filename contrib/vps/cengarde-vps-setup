@@ -46,6 +46,12 @@
 #                                    encrypted. Every router of this server
 #                                    has to be in the same mode (LuCI, Tunnel
 #                                    tab); the engine restarts
+#   cengarde-vps-setup pep on|off    PEP mode B (PEP, experimental, story 025;
+#                                    tunnel native only): the routers that
+#                                    turn pep on in LuCI hand their TCP to
+#                                    this engine, which opens a fresh TCP to
+#                                    each destination with BBR (tcp_bbr
+#                                    loaded at boot); the engine restarts
 #   cengarde-vps-setup refresh       the engine's configuration again, reloaded
 #                                    if it changed (cengarde-nat check)
 #   cengarde-vps-setup purge [--all] the services of install.sh removed and the
@@ -96,6 +102,7 @@ FORWARD_UNRESERVE=
 FORWARD_MAX_PORTS=1024
 TUNNEL_IPV6=no
 TUNNEL=wireguard
+PEP=no
 ROUTER_NAME=router
 # ROUTER_TUNNEL_ADDR, the cloud-config's router's tunnel address, is left
 # unset: a cloud-config without it is older than 0.5.2, and its router has
@@ -177,6 +184,7 @@ fi
 is_port "$CENGARDE_PORT" || die "CENGARDE_PORT in $CONF: not a port"
 is_port "$WG_PORT_BASE" || die "WG_PORT_BASE in $CONF: not a port"
 case $TUNNEL in wireguard | native) ;; *) die "TUNNEL in $CONF: wireguard or native" ;; esac
+case $PEP in yes | no) ;; *) die "PEP in $CONF: yes or no" ;; esac
 # What IP pass forwards (cengarde-nat refuses a bad one).
 PASS_LO=${PASSTHROUGH_PORTS%%:*} PASS_HI=${PASSTHROUGH_PORTS#*:}
 is_port "$PASS_LO" && is_port "$PASS_HI" || PASS_LO=1024 PASS_HI=65000
@@ -444,6 +452,12 @@ engine_conf() {
 			tunnel = native
 			tun = $TUN_DEV
 			tun_addr = $TUN_NET$(! tunnel_v6 || echo " $TUN_NET6")
+		EOF
+		[ "$PEP" = yes ] && cat <<-EOF
+			# PEP mode B (cengarde-vps-setup pep off removes it): the TCP the routers
+			# hand over, opened here to its destination with BBR (story 025).
+			pep = yes
+			pep_cc = bbr
 		EOF
 	fi
 	if [ -s "$LOCAL_CONF" ]; then
@@ -1501,6 +1515,38 @@ cmd_tunnel() {
 	fi
 }
 
+# cmd_pep on|off: PEP in nat.conf, and the engine to match (native only).
+cmd_pep() {
+	local v
+	case ${1:-} in
+	on) v=yes ;;
+	off) v=no ;;
+	*) die "usage: pep on|off" ;;
+	esac
+	[ "$v" = no ] || native || die "PEP mode B needs the native tunnel: cengarde-vps-setup tunnel native first"
+	check_proto
+	lock
+	if [ "$PEP" = "$v" ]; then
+		say "pep is $1 already"
+		return 0
+	fi
+	if [ "$v" = yes ]; then
+		# BBR toward the destinations: the module at every boot, and now
+		mkdir -p "$R/etc/modules-load.d"
+		echo tcp_bbr >"$R/etc/modules-load.d/cengarde-bbr.conf"
+		[ -n "$R" ] || modprobe tcp_bbr 2>/dev/null || say "modprobe tcp_bbr failed: the engine uses the kernel's congestion control instead"
+	fi
+	keep "$CONF"
+	set_conf PEP "$v"
+	regen
+	kept
+	if [ "$v" = yes ]; then
+		say "PEP mode B on: the routers that turn on \"PEP\" in LuCI (Tunnel tab, native mode) hand their TCP to this server, which opens it to each destination with BBR"
+	else
+		say "PEP mode B off: the routers' TCP goes through the tunnel as packets again (turn \"PEP\" off on them too, or their TCP is refused)"
+	fi
+}
+
 cmd_refresh() {
 	check_proto
 	lock
@@ -1596,6 +1642,10 @@ ipv6)
 tunnel)
 	shift
 	cmd_tunnel "$@"
+	;;
+pep)
+	shift
+	cmd_pep "$@"
 	;;
 refresh) cmd_refresh ;;
 purge)

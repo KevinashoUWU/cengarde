@@ -27,12 +27,13 @@ static void test_codec(void)
 	CHECK_EQ(cg_pep_parse(b, n, &m), 0);
 	CHECK(!memcmp(m.addr, a6, 16));
 
-	n = cg_pep_put_data(b, 7, CG_PEPF_FIN | CG_PEPF_EST, 0x1234567890ull);
+	n = cg_pep_put_data(b, 7, CG_PEPF_FIN | CG_PEPF_EST, 0x1234567890ull, 0xdeadbeef);
 	memcpy(b + n, "hello", 5);
 	CHECK_EQ(cg_pep_parse(b, n + 5, &m), 0);
 	CHECK_EQ(m.type, CG_PEP_DATA);
 	CHECK_EQ(m.flags, CG_PEPF_FIN | CG_PEPF_EST);
 	CHECK_EQ(m.off, 0x34567890u);
+	CHECK_EQ(m.ts, 0xdeadbeefu);
 	CHECK_EQ(m.len, 5);
 	CHECK(!memcmp(m.data, "hello", 5));
 
@@ -40,19 +41,20 @@ static void test_codec(void)
 	a.e[0] = 0x100000200ull;
 	a.s[1] = 0x100000300ull;
 	a.e[1] = 0x100000400ull;
-	n = cg_pep_put_ack(b, 7, CG_PEPF_EST, &a);
-	CHECK_EQ(n, 17 + 16);
+	n = cg_pep_put_ack(b, 7, CG_PEPF_EST, &a, -1234);
+	CHECK_EQ(n, 21 + 16);
 	CHECK(n <= CG_PEP_ACK_MAX);
 	CHECK_EQ(cg_pep_parse(b, n, &m), 0);
 	CHECK_EQ(m.type, CG_PEP_ACK);
 	CHECK_EQ(m.aseq, 0xbeef);
+	CHECK_EQ(m.owd, -1234);
 	CHECK_EQ(m.n, 2);
 	cg_pep_ack_of(&m, 0x100000000ull, 0x1000f0000ull, &u);
 	CHECK_EQ(u.cum, a.cum);
 	CHECK_EQ(u.edge, a.edge);
 	CHECK_EQ(u.s[1], a.s[1]);
 	CHECK_EQ(u.e[0], a.e[0]);
-	b[16] = CG_ST_ACK_RANGES + 1;
+	b[20] = CG_ST_ACK_RANGES + 1;
 	CHECK_EQ(cg_pep_parse(b, n, &m), -1);
 
 	n = cg_pep_put_rst(b, 7, CG_PEP_R_REFUSED);

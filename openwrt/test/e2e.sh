@@ -75,8 +75,11 @@
 #     the status, the engine and the cloud-config say native; after a
 #     restart of the engine netifd puts cg0 back with its address and routes;
 #     converged; IPv6 in it (the ULA on cg0 and in tun_addr, ::/1 and
-#     8000::/1, NAT66, the VPS answers) and off again; then both ends back to
-#     WireGuard: wgcg as before, nothing left of cg0, converged;
+#     8000::/1, NAT66, the VPS answers) and off again; PEP mode B (pep on
+#     at both ends: the redirect in dstnat_lan, pep = yes, a web page of the
+#     VPS fetched by the router through a stream, then off and nothing
+#     left); then both ends back to WireGuard: wgcg as before, nothing left
+#     of cg0, converged;
 # 14. disables cengarde and checks that the router is back as it was (the
 #     LAN gets its prefix again), and converged again.
 # Screenshots and logs go to OUT_DIR (default ./e2e-out). Needs qemu-system-x86,
@@ -1141,6 +1144,48 @@ else
 	bad "tunnel_mode native, tunnel_ipv6 off: IPv6 left on cg0"
 	"$VM" ssh router 'uci show network | grep -E "route6|cg0"; ip -6 addr show dev cg0'
 fi
+
+# PEP mode B (story 025): the router's engine takes redirected TCP and the
+# VPS's opens it to the destination. The firewall redirects only what comes
+# in from the LAN, so for the test the router's own TCP to the VPS's web
+# server (1.2.3.5:80, uhttpd) is redirected too, from a table of the test's.
+say "native tunnel: PEP mode B, a TCP connection split at both ends"
+"$VM" ssh vps "sed -i '/^pep/d' /etc/cengarde/server.conf && printf 'pep = yes\npep_cc = cubic\n' >>/etc/cengarde/server.conf &&
+	/etc/init.d/cengarde restart"
+pep_set() {
+	"$VM" ssh router "uci set cengarde.main.pep=$1; uci commit cengarde
+		ubus call service event '{\"type\":\"config.change\",\"data\":{\"package\":\"cengarde\"}}'"
+}
+pep_rule() { "$VM" ssh router "nft list chain inet fw4 dstnat_lan 2>/dev/null | grep -q 'redirect to :7801'"; }
+pep_conf() { "$VM" ssh router "grep -qx 'pep = yes' /var/etc/cengarde.conf"; }
+pep_set 1
+if until_ok 90 pep_rule && until_ok 30 pep_conf && until_ok 90 native_back; then
+	ok "pep on: the LAN's TCP redirected to 7801 (dstnat_lan), the engine runs pep = yes"
+else
+	bad "pep on: no redirect in dstnat_lan, or no pep in the engine's configuration"
+	"$VM" ssh router 'nft list chain inet fw4 dstnat_lan; cat /etc/cengarde/pep.nft; grep pep /var/etc/cengarde.conf; logread | grep -E "cengarde|firewall" | tail -20'
+fi
+"$VM" ssh router "nft add table ip cgpeptest && nft add chain ip cgpeptest out '{ type nat hook output priority -100; }' &&
+	nft add rule ip cgpeptest out ip daddr 1.2.3.5 tcp dport 80 redirect to :7801"
+pep_fetch() { "$VM" ssh router 'wget -q -T 10 -O - http://1.2.3.5/ 2>/dev/null | grep -qi "<html"'; }
+if until_ok 30 pep_fetch &&
+	[ "$("$VM" ssh router "cengarde ctl status | jsonfilter -e '@.pep.opened'")" -ge 1 ] 2>/dev/null &&
+	[ "$("$VM" ssh vps "cengarde ctl status | jsonfilter -e '@.pep.opened'")" -ge 1 ] 2>/dev/null; then
+	ok "pep on: a web page of the VPS through a stream (both engines opened one)"
+else
+	bad "pep on: no page through the stream"
+	"$VM" ssh router "cengarde ctl status | jsonfilter -e '@.pep'"
+	"$VM" ssh vps "cengarde ctl status | jsonfilter -e '@.pep'; logread | grep cengarde | tail -10"
+fi
+"$VM" ssh router 'nft delete table ip cgpeptest' || true
+pep_set 0
+if until_ok 90 eval '! pep_rule' && until_ok 30 eval '! pep_conf' && until_ok 90 native_back &&
+	[ -z "$("$VM" ssh router 'uci show firewall | grep cengarde_pep' || true)" ]; then
+	ok "pep off: no redirect, no include, the tunnel answers"
+else
+	bad "pep off: the redirect or the include left behind"
+fi
+"$VM" ssh vps "sed -i '/^pep/d' /etc/cengarde/server.conf && /etc/init.d/cengarde restart"
 
 say "native tunnel: back to WireGuard on both ends"
 "$VM" ssh vps 'cp /etc/cengarde/server-wg.conf /etc/cengarde/server.conf && ifup wg0 && sleep 2 && /etc/init.d/cengarde restart'

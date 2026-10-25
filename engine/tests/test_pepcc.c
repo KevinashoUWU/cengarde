@@ -58,7 +58,7 @@ static struct simres sim(uint64_t bps, uint32_t rtt_us, uint32_t qmax_us, uint32
 			n--;
 		}
 		cg_pcc_refill(&p, &c, now);
-		while (cg_pcc_may(&p, &c) && n < SIM_Q) {
+		while (cg_pcc_may(&p, &c, 0) && n < SIM_Q) {
 			uint32_t i = (head + n) % SIM_Q;
 			uint64_t q = link_free > now ? link_free - now : 0, tx = 1200 * 1000000 / bps;
 
@@ -105,7 +105,7 @@ void test_pepcc(void)
 	/* before anything: the first rate, the window of a start */
 	cg_pcc_init(&p, 0);
 	CHECK_EQ(cg_pcc_bw(&p), CG_PCC_START);
-	CHECK_EQ(cg_pcc_cwnd(&p, &c), CG_PCC_IW_SEGS * 1200);
+	CHECK_EQ(cg_pcc_cwnd(&p, &c, 0), CG_PCC_IW_SEGS * 1200);
 	CHECK_EQ(cg_pcc_rto(&p, 0, 0), 200000);
 	CHECK_EQ(cg_pcc_rto(&p, 10, 0), 2000000);
 	/* a hint starts it there */
@@ -113,11 +113,11 @@ void test_pepcc(void)
 	CHECK_EQ(cg_pcc_bw(&p), 5000000);
 	CHECK_EQ(cg_pcc_rate(&p), 5000000ull * CG_PCC_STARTUP / CG_PCC_ONE);
 	/* the token bucket: empty at the start, a rate's worth after a while */
-	CHECK(!cg_pcc_may(&p, &c));
+	CHECK(!cg_pcc_may(&p, &c, 0));
 	cg_pcc_refill(&p, &c, 1000);
-	CHECK(cg_pcc_may(&p, &c));
+	CHECK(cg_pcc_may(&p, &c, 0));
 	cg_pcc_spend(&p, 1000000);
-	CHECK(!cg_pcc_may(&p, &c));
+	CHECK(!cg_pcc_may(&p, &c, 0));
 	CHECK(cg_pcc_wait_us(&p) > 0);
 	CHECK(cg_pcc_mul(UINT64_MAX / 2, 4, 2) == UINT64_MAX / 2 / 2 * 4);
 

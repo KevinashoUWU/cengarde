@@ -4,7 +4,7 @@ archivos:
   - engine/src/proto.h
   - engine/src/proto.c
   - engine/tests/test_proto.c
-sello: d9f812c5b2a0fe8c
+sello: 0c15c328fe40ee60
 ---
 # Sondas y cola de bonding (proto.h)
 
@@ -34,6 +34,7 @@ Es la fuente de casi todas las medidas. El cliente manda una sonda por enlace; e
 - [[015-modelo-de-enlace]]: el tipo en los bits 20–22, sin versión nueva.
 - [[021-fec-v2]]: protocolo 8, el tipo `CG_T_REPAIR` (7) de los códigos de borrado (`repair.h`, [[Códigos de borrado (rs.h, rlc.h)]]): cuenta en la secuencia de control, como la paridad; `cg_hdr_parse` exige su cabecera y un byte.
 - [[023-reparacion-coherente]]: protocolo 9, el tipo `CG_T_PARQ` (8, del servidor al cliente): un recuento y hasta 8 pedidos de 20 bytes (`harq.h`); `cg_hdr_parse` exige el largo exacto. La versión sube también porque `CG_F_PREV` se escribe ahora una vez decididas las copias.
+- [[025-protocontrolador]]: protocolo 10, los mensajes del PEP modo B dentro de DATA (primer nibble `0xF`, nunca IPv4 ni IPv6; `pep.h`): ningún tipo nuevo de cabecera, pero un servidor 9 los escribiría a la TUN y la conexión quedaría colgada sin aviso → [[PEP modo B (pep.c, stream.h, pepcc.h)]].
 - [[023-reparacion-coherente]] (2026-10-24): `CG_F_TUNHOLE` (0x02 de DATA, reservado hasta entonces) y `CG_BOND_TCPMARK` (bit 23 de la cola, también en la respuesta), sin versión nueva, como el tipo: un par anterior escribe 0 y los ignora → [[Retransmisión según la evidencia (tcpack.h)]].
 
 ## Choques conocidos

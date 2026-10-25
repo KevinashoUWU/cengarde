@@ -419,6 +419,22 @@ return view.extend({
 		o.depends('tunnel', '1');
 		o.onchange = refresh;
 
+		o = s.taboption('tunnel', form.Flag, 'pep', _('PEP (experimental)'),
+			_('Native mode only. The router answers the TCP connections of the LAN itself and the VPS opens a fresh one to each destination (with BBR); between them each connection travels as a reliable stream of cengarde, paced by what the uplinks carry instead of by loss. It helps TCP uploads such as RTMP over lossy uplinks and long paths beyond the VPS. UDP, QUIC and the rest go through the tunnel as always. The VPS needs "sudo cengarde-vps-setup pep on". A change restarts the engine.'));
+		o.rmempty = false;
+		o.depends('tunnel_mode', 'native');
+		o.onchange = refresh;
+
+		o = s.taboption('tunnel', form.DynamicList, 'pep_port', _('PEP ports'),
+			_('Only the TCP to these destination ports (or ranges such as 8000-8100). Empty: every port.'));
+		o.datatype = 'or(port, portrange)';
+		o.depends('pep', '1');
+
+		o = s.taboption('tunnel', form.DynamicList, 'pep_dest', _('PEP destinations'),
+			_('Only the TCP to these addresses or prefixes. Empty: every address that is not private, local or link-local.'));
+		o.datatype = 'or(ipaddr, cidr)';
+		o.depends('pep', '1');
+
 		o = s.taboption('tunnel', form.Flag, 'ip_pass', _('IP pass'),
 			_('The VPS forwards TCP and UDP ports 1024-65000 to this router and UPnP hands them on to the LAN: devices and services here get the public IP of the VPS. The VPS follows this switch on its own, within a second of saving.') +
 			(hasUpnp ? '' : '<br /><strong>' + _('Needs miniupnpd-nftables (and luci-app-upnp to see the mappings).') + '</strong>'));

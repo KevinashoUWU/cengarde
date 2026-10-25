@@ -106,6 +106,9 @@
 #   protectcut  not in the default list: protect with a microcut (story 017:
 #               20-40 s of 50-77 % lost on Starlink): link 1 loses 60 % for the
 #               middle third of the run
+#   cell4       not in the default list: story 025's sanity check, four
+#               cellular-like links and no Starlink: 20, 15, 10 and 5 Mbit/s,
+#               25, 30, 35 and 45 ms, 300 ms to 2 s of queue, losing 0.3-0.5 %
 #   protectslow not in the default list: the NUC's Claro on B5 (2026-10-23),
 #               the link of least delay is the narrow one: link 1 at 10 ms but
 #               5 Mbit/s behind 2 s of queue and losing 8 % at random (a weak
@@ -264,7 +267,8 @@
 #   cg           PEP mode B (story 025): the engines themselves, pep = yes at both
 #                ends (the router's iptables REDIRECT to BOND_PEP_PORT, 7801), a
 #                reliable stream of cengarde's in the middle and the VPS's TCP to
-#                the destination with BOND_PEP_CGCC (bbr, the engine's pep_cc);
+#                the destination with BOND_PEP_CGCC (auto, the engine's pep_cc: cubic, BBR
+#                once that leg loses);
 #                "pep" then carries the engines' streams too (pepstat.py)
 # BOND_PEP_MIDCC and BOND_PEP_FARCC (cubic): the congestion control of the
 # router's netns (the middle leg's sender in an upload) and the VPS's (the far
@@ -334,10 +338,11 @@ BOND_PEP_LANCC=${BOND_PEP_LANCC:-}
 BOND_PEP_FAR_MS=${BOND_PEP_FAR_MS:-50}
 BOND_PEP_NEAR_MS=${BOND_PEP_NEAR_MS:-5}
 BOND_PEP_PORT=${BOND_PEP_PORT:-7801}
-BOND_PEP_CGCC=${BOND_PEP_CGCC:-bbr}
+BOND_PEP_CGCC=${BOND_PEP_CGCC:-auto}
 BOND_PEP_KCP=${BOND_PEP_KCP:---mode fast --datashard 0 --parityshard 0 --nocomp --crypt none --mtu 1300}
 BOND_LIVE_MBIT=${BOND_LIVE_MBIT:-8}
 BOND_LIVE_DROP_MS=${BOND_LIVE_DROP_MS:-700}
+BOND_LIVE_DUMP=${BOND_LIVE_DUMP:-} # set: livesim.py recv --dump, each record's delay (live-far-delays.txt, live-near-delays.txt)
 NS_LAN=peplan${LAB_ID:+-$LAB_ID}
 NS_FAR=pepfar${LAB_ID:+-$LAB_ID}
 NS_NEAR=pepnear${LAB_ID:+-$LAB_ID}
@@ -713,7 +718,7 @@ bond_pep_traffic() {
 	for k in far near; do
 		ip netns exec "$([ $k = far ] && echo "$NS_FAR" || echo "$NS_NEAR")" python3 -I "$LAB/livesim.py" recv \
 			--bind "$([ $k = far ] && echo 172.30.1.2 || echo 172.30.2.2):7100" --secs "$s" --mbit "$BOND_LIVE_MBIT" \
-			--out "$RUN/live-$k-recv.json" 2>>"$err" &
+			--out "$RUN/live-$k-recv.json" ${BOND_LIVE_DUMP:+--dump "$RUN/live-$k-delays.txt"} 2>>"$err" &
 		rx+=($!)
 	done
 	sleep 0.5
@@ -952,6 +957,7 @@ bond_shape() {
 	sigothers) bond_link 1 25 20 500 && bond_link 2 30 20 ;;
 	lossy) bond_link 1 20 60 100 1 && bond_link 2 35 30 100 1 && bond_link 3 25 50 100 1 ;;
 	protect | protectcut | beyond) bond_link 1 10 60 15 0.7 && bond_link 2 25 5 2000 ;;
+	cell4) bond_link 1 25 20 300 0.3 && bond_link 2 30 15 500 0.3 && bond_link 3 35 10 1000 0.5 && bond_link 4 45 5 2000 0.5 ;;
 	protectslow) bond_link 1 10 5 2000 8 && bond_link 2 25 20 100 ;;
 	spurious) bond_link 1 10 60 15 0 310 && bond_link 2 25 5 2000 ;;
 	lossall) bond_link 1 10 30 100 10 && bond_link 2 15 30 100 10 ;;
@@ -988,7 +994,7 @@ bond_nlinks() {
 	case $1 in
 	het | linkdeath | downstall | bloat | lossy | shallowq | shallowqd | shallowqdeep | starsat | dominant | protectpin | msl3) echo 3 ;;
 	msl1) echo 1 ;;
-	msl2c) echo 4 ;;
+	msl2c | cell4) echo 4 ;;
 	msl3c) echo 5 ;;
 	*) echo 2 ;;
 	esac
@@ -1210,7 +1216,7 @@ bond_plan() {
 	for w in ${BOND_CC:-cubic bbr quic}; do ccs=$((ccs + 1)); done
 	for c in $BOND_CASES; do
 		case $c in
-		equal | het | reorder50 | reorder150 | linkdeath | downstall | shallowq | shallowqd | shallowqdeep | starsat | dominant | starlink15 | starlink15sw | starlink15ramp | ltespike | ltespikerand | deepq | bloat | lossy | spikeloss | protect | protectcut | protectslow | protectpin | beyond | spurious | lossall | sigrand | sigdeep | sigothers | msl1 | msl2 | msl3 | msl2c | msl3c) ;;
+		equal | het | reorder50 | reorder150 | linkdeath | downstall | shallowq | shallowqd | shallowqdeep | starsat | dominant | starlink15 | starlink15sw | starlink15ramp | ltespike | ltespikerand | deepq | bloat | lossy | spikeloss | protect | protectcut | protectslow | protectpin | beyond | spurious | lossall | sigrand | sigdeep | sigothers | msl1 | msl2 | msl3 | msl2c | msl3c | cell4) ;;
 		*)
 			echo "bond: unknown case $c"
 			return 1

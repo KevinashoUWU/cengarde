@@ -29,6 +29,7 @@
 #   WireGuard gets its ULA (::1 here, ::2 the router), TUNNEL_IPV6=yes in
 #   nat.conf and cengarde-nat applies it; off takes it back; the import of
 #   a cloud-config with TUNNEL_IPV6=yes;
+# - pep on|off (native only): pep = yes and pep_cc = bbr, tcp_bbr at boot;
 # - tunnel native|wireguard: native writes tunnel = native, the TUN's
 #   10.79.0.1/16 and each router's address as its tun_route (its ULA too
 #   with ipv6 on), a systemd drop-in that allows /dev/net/tun, restarts
@@ -728,6 +729,14 @@ check "the TUN gets fd79::1/8 (every router's ULA inside), each router its ULA :
 check "still no WireGuard" [ ! -e "$R/etc/wireguard/cg-zeta.conf" ]
 check "ipv6 off" setup ipv6 off
 rm -rf "$R/proc"
+: >"$CALLS"
+check "pep on, natively" setup pep on
+check "cengarde.conf: pep = yes with bbr; PEP in nat.conf; tcp_bbr at boot" \
+	sh -c 'grep -qx "pep = yes" "$1" && grep -qx "pep_cc = bbr" "$1" && grep -qx "PEP=\"yes\"" "$2" && grep -qx tcp_bbr "$3"' \
+	sh "$R/etc/cengarde/cengarde.conf" "$R/etc/cengarde/nat.conf" "$R/etc/modules-load.d/cengarde-bbr.conf"
+check "the engine takes it" called '^cengarde -t -c .*cengarde.conf.new'
+check "pep off" setup pep off
+check "no pep in cengarde.conf" not grep -q "^pep" "$R/etc/cengarde/cengarde.conf"
 check "remove omega" setup remove omega
 : >"$CALLS"
 check "tunnel wireguard" setup tunnel wireguard
@@ -739,6 +748,7 @@ check "each router's WireGuard back as it was" \
 check "and started" sh -c 'grep -q "^systemctl enable --now wg-quick@cg-zeta$" "$1" && grep -q "^systemctl enable --now wg-quick@cg-alpha$" "$1"' sh "$CALLS"
 check "cengarde.conf as before native" [ "$(conf)" = "$conf_before" ]
 check "tunnel gre is refused" not setup tunnel gre
+check "pep on is refused without the native tunnel" not setup pep on
 check "a TUNNEL in nat.conf that is neither is refused" \
 	not sh -c 'printf "TUNNEL=gre\n" >>"$1/etc/cengarde/nat.conf" && env CENGARDE_ROOT="$1" PATH="$2" sh "$3" list 2>/dev/null' sh "$R" "$BIN:$PATH" "$SETUP"
 say "  the import of a cloud-config with TUNNEL=native"

@@ -47,6 +47,7 @@ CONF = "Configuración (config.c)"
 SPARE = "Lo que sobra (spare.h)"
 CODES = "Códigos de borrado (rs.h, rlc.h)"
 HARQ = "Reparación coherente (harq.h)"
+PEP = "PEP modo B (pep.c, stream.h, pepcc.h)"
 
 H = {
     "002": "002-wireguard-para-cengarde", "005": "005-motor-c-v1", "006": "006-salud-de-enlaces",
@@ -54,7 +55,7 @@ H = {
     "010": "010-ipv6-varias-ip-multicliente-nombres", "011": "011-hilos", "012": "012-bonding",
     "013": "013-capacidad-y-dosificacion", "014": "014-tunel-nativo", "015": "015-modelo-de-enlace", "016": "016-celda-virtual",
     "017": "017-terreno-nostalgica", "019": "019-perdida-con-cola", "020": "020-copias-parciales-y-paridad", "021": "021-fec-v2",
-    "023": "023-reparacion-coherente",
+    "023": "023-reparacion-coherente", "025": "025-protocontrolador",
     "audit": "audit-pending",
 }
 
@@ -190,11 +191,23 @@ T = {
  "redund_spare_ms": ([G], CLI, "50", "1–2000", [SPARE], ["020"], "Con `redund_spare`, la cola (sobre el mínimo de 60 s) en la que cada enlace que no es el primero sostiene lo que lleva."),
  "redund_spare_first": ([G], CLI, "vacío (el de menor retardo sin cola)", "el nombre de un `[link NAME]` del archivo", [SPARE], ["020"], "Con `redund_spare`, el primer enlace (el que los demás protegen) fijado: ese mientras esté vivo y llevando, medido ahora y sin ahogarse; si se ahoga como primero queda vetado 15 s y manda la elección automática, y vuelve cuando se despeja; mientras los demás copian toda la subida, solo tras 2 s seguidos de ahogo (un salto de retardo más corto no lo saca). El estado dice por qué no es el primero (`upload.spare.pin`)."),
  "exp_link_types": ([G], BOTH, "vacía (todos los tipos)", "nombres de tipo", [MODEL], ["015"], "Limita las perillas globales del modelo a los enlaces de esos tipos."),
+ # --- PEP mode B (story 025) ---
+ "pep": ([G], BOTH, "`no`", "`yes` o `no`", [PEP], ["025"], "PEP modo B (solo con `tunnel = native`): en el router, el motor toma el TCP que el firewall redirige a `pep_port` y lo lleva como flujo fiable propio; en el VPS, abre al destino el TCP que pidan los routers. Con `no`, un mensaje de flujo que llega se cuenta y se descarta."),
+ "pep_port": ([G], CLI, "7801", "1–65535", [PEP], ["025"], "Puerto donde escucha el router (IPv4 e IPv6) lo que el firewall redirige (`REDIRECT`)."),
+ "pep_buf_kb": ([G], BOTH, "1024", "64–4080", [PEP], ["025"], "Búfer de cada flujo por sentido, como tope: lo leído del socket y no confirmado (al enviar), lo llegado y no escrito (al recibir: su ventana)."),
+ "pep_mem_mb": ([G], BOTH, "64", "4–4096", [PEP], ["025"], "Memoria de todos los flujos juntos (trozos de 16 KB). Sin trozos libres, no se aceptan flujos nuevos ni se lee más."),
+ "pep_max_flows": ([G], BOTH, "256", "1–65535", [PEP], ["025"], "Flujos a la vez; el siguiente se rehúsa con RST."),
+ "pep_queue_ms": ([G], BOTH, "5", "1–1000", [PEP], ["025"], "La cola que el tramo del medio puede armar sobre su menor ida y vuelta: más, y el ritmo baja a lo entregado (`pepcc.h`)."),
+ "pep_backlog_ms": ([G], BOTH, "200", "10–10000", [PEP], ["025"], "Lo que un flujo guarda sin enviar o sin escribir, en tiempo a su ritmo (al menos 64 KB): la contrapresión hacia el emisor."),
+ "pep_dead_s": ([G], BOTH, "60", "0–3600", [PEP], ["025"], "Un flujo sin avance este tiempo, con algo pendiente (el túnel caído), se cierra con RST en los dos lados; 0: nunca."),
+ "pep_reo_ms": ([G], BOTH, "10", "0–1000", [PEP], ["025"], "La ventana de RACK sobre un cuarto de la ida y vuelta (la reparación del túnel va primero); un duplicado la agranda 4 ms (hasta 100) y vuelve sola."),
+ "pep_cc": ([G], SRVS, "`bbr`", "un control de congestión del kernel, o vacío", [PEP], ["025"], "Control de congestión del TCP del VPS hacia el destino; si el kernel no lo tiene, el suyo (un aviso)."),
 }
 
 RESTART = {"mode", "key", "listen", "control_socket", "busy_poll_us", "cpu", "rt_priority", "reorder_pool_kb",
            "rescue_kb", "fec", "link_threads", "io_queue", "lanes", "tunnel", "tun", "tun_addr", "tun_mtu",
-           "tun_txqueuelen"}
+           "tun_txqueuelen", "pep", "pep_port", "pep_buf_kb", "pep_mem_mb", "pep_max_flows", "pep_queue_ms",
+           "pep_backlog_ms", "pep_dead_s", "pep_reo_ms", "pep_cc"}
 
 def parsed_keys():
     s = open(SRC).read()
@@ -259,6 +272,8 @@ def generate():
                                "starlink_slot_clock", "starlink_edge_ms", "starlink_edge_pre_ms",
                                "starlink_edge_post_ms", "starlink_edge_copies"]),
         ("Lo que sobra (redundancia)", ["redund_spare", "redund_spare_ms", "redund_spare_first", "redund_spare_code_ms"]),
+        ("PEP modo B", ["pep", "pep_port", "pep_buf_kb", "pep_mem_mb", "pep_max_flows", "pep_queue_ms",
+                        "pep_backlog_ms", "pep_dead_s", "pep_reo_ms", "pep_cc"]),
     ]
     seen = [k for _, ks in groups for k in ks]
     unplaced = sorted(set(T) - set(seen))

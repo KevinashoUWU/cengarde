@@ -368,7 +368,8 @@ struct client {
 	uint8_t tcpk[CG_BATCH];   /* its class for tcp_aware (tcpfree.h's CG_TCPF_*) */
 	uint8_t tcpr[CG_BATCH];   /* a retransmission's row (tcpack.h's CG_TCPA_*) */
 	uint8_t prio[CG_BATCH];
-	uint8_t pcopy[CG_BATCH]; /* a PEP stream's message for every carrier (story 025) */
+	uint8_t pnc[CG_BATCH]; /* a PEP stream's DATA: no copies of a microcut (its ARQ repairs it, story 025) */
+	uint8_t prc[CG_BATCH]; /* a PEP stream's DATA sent again a second time: a priority copy, on a link without a queue */
 	struct cg_ro_cfg rocf;
 	uint32_t ro_budget;
 
@@ -1375,10 +1376,6 @@ static void send_links(struct client *c, int m, uint64_t now_ms, uint16_t live, 
 			c->cmask[j] = 0xffff;
 	}
 	retx_masks(c, m, carry, dup);
-	/* a PEP stream's message sent again a second time: every carrier */
-	for (int j = 0; j < m; j++)
-		if (c->pcopy[j])
-			c->cmask[j] = 0xffff;
 	seal_batch(c, m, carry, dup);
 	for (int x0 = 0; x0 < n; x0++) {
 		int i = ids[(first + x0) % n];
@@ -1749,6 +1746,12 @@ static void spare_masks(struct client *c, int m, uint16_t carry, uint64_t now_us
 		if (c->pick[j] >= 0 || f < 0 || !(carry >> f & 1))
 			continue;
 		mask = cg_spare_mask(c->cmask[j], carry, f);
+		/* a PEP stream's DATA in the copies of a microcut: its first link
+		 * only (story 025: its ARQ sends again what is lost; copied, a
+		 * stream that keeps its rate through the cut filled the cellular
+		 * queue to 2 s); its repairs, as any DATA's */
+		if (c->pnc[j] && c->sp_how == CG_SPARE_COPIES)
+			mask &= (uint16_t)(1u << f);
 		if (!small && !(c->cmask[j] >> f & 1))
 			cg_eta_add(&c->pace, (unsigned)f, len, now_us); /* not counted by the window */
 		for (int i = 0; i < CG_MAX_LINKS; i++) {
@@ -1756,6 +1759,14 @@ static void spare_masks(struct client *c, int m, uint16_t carry, uint64_t now_us
 
 			if (i == f || !(mask >> i & 1))
 				continue;
+			/* a PEP stream's repeat on a queued link would come after its
+			 * ARQ sends it again anyway (a microcut: 60 % lost, a repeat
+			 * for every other packet, the cellular queue at 1 s) */
+			if (c->prc[j] && c->cap[i].ql_us > (int32_t)(c->cfg->redund_spare_ms * 1000)) {
+				mask &= (uint16_t)~(1u << i);
+				c->sp_copy_skip++;
+				continue;
+			}
 			if (small)
 				go = cg_spare_take(&c->spare[i], now_us, bits, 1, 1);
 			else if (c->sp_how == CG_SPARE_COPIES)
@@ -1953,8 +1964,8 @@ static void up_begin(struct client *c, uint64_t now_ms, struct upctx *u)
 }
 
 /* Packet m of the batch: buf, len bytes (an IP packet from the TUN, a
- * WireGuard datagram, or a PEP stream's message, story 025: copy, on
- * every carrier). */
+ * WireGuard datagram, or a PEP stream's message, story 025: copy, a
+ * priority copy where the links have room; split, on every carrier). */
 static void up_one(struct client *c, struct upctx *u, int m, uint8_t *buf, size_t len, uint64_t now_us, int copy)
 {
 	uint16_t elig;
@@ -1984,7 +1995,6 @@ static void up_one(struct client *c, struct upctx *u, int m, uint8_t *buf, size_
 							  stress ? 0 : elig, u->k.dup, u->w, c->native ? CG_WGS_DATA : buf[0],
 							  (uint32_t)len, c->cfg->split_small, &flags)
 				      : cg_slot_pick(u->esolo, (uint32_t)len, CG_PACE_SMALL, &flags));
-	c->pcopy[m] = (uint8_t)copy;
 	c->up_split += c->pick[m] >= 0;
 	c->tcpk[m] = 0;
 	c->tcpr[m] = CG_TCPA_UNKNOWN;
@@ -2016,7 +2026,12 @@ static void up_one(struct client *c, struct upctx *u, int m, uint8_t *buf, size_
 	c->sflags[m] = flags;
 	c->sts[m] = (uint32_t)now_us;
 	c->sseq[m] = cg_up_next(&c->txs);
-	c->prio[m] = (uint8_t)(len < CG_PACE_SMALL || (flags & CG_F_FREE));
+	/* a PEP stream's message sent again a second time: a priority copy,
+	 * on what the links have to spare (forced on every carrier, the copies
+	 * of a microcut filled the cellular queue to 2 s) */
+	c->prio[m] = (uint8_t)(len < CG_PACE_SMALL || (flags & CG_F_FREE) || copy);
+	c->pnc[m] = (uint8_t)(!copy && len >= CG_PACE_SMALL && cg_pep_is(buf, len));
+	c->prc[m] = (uint8_t)copy;
 	c->sp_bytes += len;
 	if (c->cfg->fec && split) {
 		int only = cg_split_only(c->pick[m], u->carry, u->k.dup);

@@ -403,7 +403,6 @@ struct server {
 	uint8_t sflags[CG_BATCH];               /* and its flags, but CG_F_PREV (down_seal) */
 	uint8_t tcpk[CG_BATCH];                 /* and its class for tcp_aware (tcpfree.h's CG_TCPF_*) */
 	uint8_t tcpr[CG_BATCH];                 /* a retransmission's row (tcpack.h's CG_TCPA_*) */
-	uint8_t pcopy[CG_BATCH];                /* a PEP stream's message for every carrier (story 025) */
 	uint8_t reply[CG_BATCH][CG_HDR_LEN + CG_PROBE_BOND_LEN];
 	struct sockaddr_storage reply_to[CG_BATCH];
 	union cg_ctl_tx reply_ctl[CG_BATCH];
@@ -2327,7 +2326,6 @@ static void down_prepare(struct server *s, struct session *S, int m, uint8_t *bu
 				       : cg_slot_pick(d->esolo, (uint32_t)len, CG_PACE_SMALL, &h.flags));
 	S->down_split += s->pick[m] >= 0;
 	S->last_down_ms = now_us / 1000;
-	s->pcopy[m] = 0;
 	s->tcpk[m] = 0;
 	s->tcpr[m] = CG_TCPA_UNKNOWN;
 	if (s->native && s->cfg->tcp_aware) {
@@ -2484,10 +2482,6 @@ static void down_send(struct server *s, struct session *S, int m, uint64_t now_m
 			s->cmask[j] = 0xffff;
 	}
 	down_retx_masks(s, S, m, d);
-	/* a PEP stream's message sent again a second time: every carrier */
-	for (int j = 0; j < m; j++)
-		if (s->pcopy[j])
-			s->cmask[j] = 0xffff;
 	down_seal(s, S, m, d);
 	for (int o = 0; o < no; o++) {
 		int p = order[(o + S->rot) % (unsigned)no];
@@ -2608,7 +2602,6 @@ static void pep_send(void *ctx, uint32_t peer, uint32_t sid, uint8_t *const *msg
 		if (copy[m]) {
 			s->pick[m] = -1;
 			s->sflags[m] &= (uint8_t)~CG_F_SPLIT;
-			s->pcopy[m] = 1;
 		}
 	}
 	down_send(s, S, n, now_us / 1000, &d);

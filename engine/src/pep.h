@@ -14,13 +14,18 @@
  *
  *   OPEN  6: family (4 or 6), 7..8: port, 9..: address (4 or 16 bytes).
  *         Router -> VPS, again on the timer until the VPS's first ACK.
- *   DATA  6..9: the offset's low 32 bits, then the bytes. CG_PEPF_FIN: the
+ *   DATA  6..9: the offset's low 32 bits; 10..13: the sender's clock when it
+ *         sent it (us, low 32 bits); then the bytes. CG_PEPF_FIN: the
  *         stream ends after them (the FIN takes one byte of the sequence);
  *         CG_PEPF_EST: the sender got an ACK of this stream already (a peer
  *         that does not know it answers RST; without it, the OPEN may have
  *         been lost, and it stays quiet).
  *   ACK   6..7: its sequence; 8..11: cumulative offset; 12..15: the
- *         window's right edge (absolute); 16: n (at most CG_ST_ACK_RANGES);
+ *         window's right edge (absolute); 16..19: the least one-way delay
+ *         of the DATA that came since the last ACK, the receiver's clock at
+ *         arrival less the sender's in the DATA (us, signed 32 bits, the two
+ *         clocks' offset included: the sender compares it with its own
+ *         minimum, CG_PEP_NOOWD: none); 20: n (at most CG_ST_ACK_RANGES);
  *         then n ranges of start and end, the newest frame's first.
  *         CG_PEPF_EST as in DATA; CG_PEPF_DUP: a duplicate arrived since the
  *         last ACK (a segment sent again for nothing: the sender's RACK
@@ -48,9 +53,10 @@ enum { CG_PEP_OPEN = 1, CG_PEP_DATA = 2, CG_PEP_ACK = 3, CG_PEP_RST = 4 };
 #define CG_PEPF_EST 0x02
 #define CG_PEPF_DUP 0x04 /* ACK: a duplicate came since the last ACK (the sender widens its RACK window) */
 #define CG_PEP_HDR 6
-#define CG_PEP_DATA_HDR 10
+#define CG_PEP_DATA_HDR 14
 #define CG_PEP_OPEN_MAX (CG_PEP_HDR + 3 + 16)
-#define CG_PEP_ACK_MAX (CG_PEP_HDR + 11 + 8 * CG_ST_ACK_RANGES)
+#define CG_PEP_ACK_MAX (CG_PEP_HDR + 15 + 8 * CG_ST_ACK_RANGES)
+#define CG_PEP_NOOWD INT32_MIN /* an ACK with no one-way delay */
 #define CG_PEP_RST_LEN (CG_PEP_HDR + 1)
 
 /* Why a stream was reset. */
@@ -117,15 +123,16 @@ static inline size_t cg_pep_put_open(uint8_t *b, uint32_t id, int family, const 
 	return 9 + al;
 }
 
-/* A DATA's header (the bytes go after it, CG_PEP_DATA_HDR on). */
-static inline size_t cg_pep_put_data(uint8_t *b, uint32_t id, uint8_t flags, uint64_t off)
+/* A DATA's header, sent at ts (us), the bytes after it (CG_PEP_DATA_HDR on). */
+static inline size_t cg_pep_put_data(uint8_t *b, uint32_t id, uint8_t flags, uint64_t off, uint32_t ts)
 {
 	cg_pep_hdr(b, CG_PEP_DATA, flags, id);
 	cg_pep_be32(b + 6, (uint32_t)off);
+	cg_pep_be32(b + 10, ts);
 	return CG_PEP_DATA_HDR;
 }
 
-static inline size_t cg_pep_put_ack(uint8_t *b, uint32_t id, uint8_t flags, const struct cg_st_ack *a)
+static inline size_t cg_pep_put_ack(uint8_t *b, uint32_t id, uint8_t flags, const struct cg_st_ack *a, int32_t owd)
 {
 	size_t n = a->n > CG_ST_ACK_RANGES ? CG_ST_ACK_RANGES : a->n;
 
@@ -134,12 +141,13 @@ static inline size_t cg_pep_put_ack(uint8_t *b, uint32_t id, uint8_t flags, cons
 	b[7] = (uint8_t)a->aseq;
 	cg_pep_be32(b + 8, (uint32_t)a->cum);
 	cg_pep_be32(b + 12, (uint32_t)a->edge);
-	b[16] = (uint8_t)n;
+	cg_pep_be32(b + 16, (uint32_t)owd);
+	b[20] = (uint8_t)n;
 	for (size_t i = 0; i < n; i++) {
-		cg_pep_be32(b + 17 + 8 * i, (uint32_t)a->s[i]);
-		cg_pep_be32(b + 21 + 8 * i, (uint32_t)a->e[i]);
+		cg_pep_be32(b + 21 + 8 * i, (uint32_t)a->s[i]);
+		cg_pep_be32(b + 25 + 8 * i, (uint32_t)a->e[i]);
 	}
-	return 17 + 8 * n;
+	return 21 + 8 * n;
 }
 
 static inline size_t cg_pep_put_rst(uint8_t *b, uint32_t id, uint8_t reason)
@@ -158,12 +166,13 @@ struct cg_pep_msg {
 	uint16_t port;
 	uint8_t addr[16];
 	/* DATA */
-	uint32_t off;
+	uint32_t off, ts;
 	const uint8_t *data;
 	uint32_t len;
 	/* ACK */
 	uint16_t aseq;
 	uint32_t cum, edge;
+	int32_t owd;
 	uint8_t n;
 	uint32_t s[CG_ST_ACK_RANGES], e[CG_ST_ACK_RANGES];
 	/* RST */
@@ -195,21 +204,23 @@ static inline int cg_pep_parse(const uint8_t *p, size_t len, struct cg_pep_msg *
 		if (len < CG_PEP_DATA_HDR || len - CG_PEP_DATA_HDR > 0xffff)
 			return -1;
 		m->off = cg_pep_rd32(p + 6);
+		m->ts = cg_pep_rd32(p + 10);
 		m->data = p + CG_PEP_DATA_HDR;
 		m->len = (uint32_t)(len - CG_PEP_DATA_HDR);
 		return 0;
 	case CG_PEP_ACK:
-		if (len < 17)
+		if (len < 21)
 			return -1;
 		m->aseq = (uint16_t)(p[6] << 8 | p[7]);
 		m->cum = cg_pep_rd32(p + 8);
 		m->edge = cg_pep_rd32(p + 12);
-		m->n = p[16];
-		if (m->n > CG_ST_ACK_RANGES || len < 17 + 8 * (size_t)m->n)
+		m->owd = (int32_t)cg_pep_rd32(p + 16);
+		m->n = p[20];
+		if (m->n > CG_ST_ACK_RANGES || len < 21 + 8 * (size_t)m->n)
 			return -1;
 		for (unsigned i = 0; i < m->n; i++) {
-			m->s[i] = cg_pep_rd32(p + 17 + 8 * i);
-			m->e[i] = cg_pep_rd32(p + 21 + 8 * i);
+			m->s[i] = cg_pep_rd32(p + 21 + 8 * i);
+			m->e[i] = cg_pep_rd32(p + 25 + 8 * i);
 		}
 		return 0;
 	case CG_PEP_RST:

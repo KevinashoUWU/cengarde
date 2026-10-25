@@ -10,11 +10,12 @@
  *
  * - Samples as BBR's delivery rate (bytes delivered between a segment's
  *   send and its ACK, over the time since the delivery that came before
- *   its send), but counting what was declared lost too while the round
- *   trip stays under min_rtt + queue_us (cg_pcc_lost; the round trip's
- *   verdict is the least sample of each window of a round trip: a queue
- *   moves every sample up, a lost packet's copy that came late by a
- *   slower link only some): random loss is
+ *   its send), but counting what was declared lost too while the queue
+ *   stays under queue_us (cg_pcc_lost). The queue is the forward one-way
+ *   delay the receiver reports (cg_pcc_owd) over its minimum, the least
+ *   sample of each window of a round trip (a queue moves every sample up,
+ *   a lost packet's copy that came late by a slower link only some); with
+ *   no report, the round trip over min_rtt. Random loss is
  *   bytes the path took (up to 3 lost for 1 delivered). A sample whose
  *   round trip is over that counts the
  *   acknowledged bytes only, and a whole round of them sets the estimate
@@ -30,8 +31,10 @@
  *   the pacing holds the rate, the window the late ACKs; a queue over
  *   queue_us for a round trip cuts the estimate to what is delivered.
  * - The engine's capacity (capacity.h, cg_pcc_hint): the estimate starts
- *   from it instead of from nothing, and while the engine sees the links
- *   that carry the data queued over capacity_sat_ms, it is the ceiling.
+ *   from it (at least CG_PCC_START) instead of from nothing, and while the
+ *   engine finds the link that carries the data full (a capacity measured
+ *   under a standing queue), it is the ceiling, if it is not under half the
+ *   estimate (an idle link's capacity is its probes').
  * - A token bucket of CG_PCC_BURST_US paces the sends (the event loop wakes
  *   by the millisecond).
  *
@@ -51,13 +54,16 @@
 #define CG_PCC_DRAIN 171         /* 2/3 */
 #define CG_PCC_CYCLE 8
 #define CG_PCC_FLOOR 62500u      /* bytes/s: 0.5 Mbit/s, the least rate */
-#define CG_PCC_START 250000u     /* bytes/s: 2 Mbit/s, the first rate without a hint */
+#define CG_PCC_START 2000000u    /* bytes/s: 16 Mbit/s, the first rate without a hint (2 left a live stream's start
+				  * waiting at the router for 5 rounds) */
 #define CG_PCC_BURST_US 2000u    /* the token bucket's depth, in time at the rate */
 #define CG_PCC_MINRTT_US 10000000ull /* min_rtt's window */
-#define CG_PCC_WIN_MIN_US 200000u    /* bw's bucket: at least this, else 8 round trips */
+#define CG_PCC_WIN_MIN_US 1000000u   /* bw's bucket: at least this, else 8 round trips (shorter, the
+					 * estimate fell with the noise of a microcut's losses) */
 #define CG_PCC_SEGS 4            /* in flight beyond the bound, segments */
 #define CG_PCC_IW_SEGS 32        /* in flight before any round trip is known */
 #define CG_PCC_WMIN_US 10000u    /* the window of the queue's verdict: a round trip, at least this */
+#define CG_PCC_IDLE_US 1000000u  /* idle this long (nothing in flight), STARTUP again */
 
 enum { CG_PCC_STARTUP_M = 0, CG_PCC_DRAIN_M, CG_PCC_PROBE_M };
 
@@ -82,6 +88,12 @@ struct cg_pcc {
 	uint64_t cong_t;    /* the first congested window of the current run, 0: none */
 	uint32_t wmin;      /* the least round trip in the current window, 0: none yet */
 	uint64_t wt;        /* the window's start */
+	/* the forward one-way delay the receiver reports in its ACKs (pep.h:
+	 * its clock less ours, the offset included): the least of the last
+	 * CG_PCC_MINRTT_US (base), and of the current window (ow_min), us */
+	int32_t owd_base, ow_min;
+	uint64_t owd_t;
+	uint8_t have_owd, have_ow;
 	uint64_t inflight;  /* bytes in flight over all streams (the caller's) */
 	uint64_t hint;      /* the engine's capacity for the data, bytes/s; 0: none */
 	uint8_t hint_full;  /* the engine sees those links queued */
@@ -89,6 +101,7 @@ struct cg_pcc {
 	int64_t tokens;
 	uint64_t tok_t;
 	uint64_t n_cong, n_cut, n_rounds; /* congested samples; rounds that cut bw; rounds */
+	uint64_t last_send, n_restart;    /* the last send (cg_pcc_restart); restarts from idle */
 };
 
 static inline void cg_pcc_init(struct cg_pcc *p, uint64_t now)
@@ -130,7 +143,8 @@ static inline uint64_t cg_pcc_bw(const struct cg_pcc *p)
 {
 	if (p->bw)
 		return p->bw;
-	return p->hint ? p->hint : CG_PCC_START;
+	/* the engine's capacity is what a link once delivered: at least that */
+	return p->hint > CG_PCC_START ? p->hint : CG_PCC_START;
 }
 
 /* The pacing rate, bytes/s. */
@@ -141,8 +155,9 @@ static inline uint64_t cg_pcc_rate(const struct cg_pcc *p)
 	return r > CG_PCC_FLOOR ? r : CG_PCC_FLOOR;
 }
 
-/* How many bytes may be in flight. */
-static inline uint64_t cg_pcc_cwnd(const struct cg_pcc *p, const struct cg_pcc_cfg *c)
+/* How many bytes may be in flight; reo_us, RACK's window (what was lost
+ * stays in flight that long before it is declared). */
+static inline uint64_t cg_pcc_cwnd(const struct cg_pcc *p, const struct cg_pcc_cfg *c, uint64_t reo_us)
 {
 	uint64_t w;
 
@@ -151,8 +166,12 @@ static inline uint64_t cg_pcc_cwnd(const struct cg_pcc *p, const struct cg_pcc_c
 	/* twice the path's: the pacing holds the rate, the window only the
 	 * ACKs that come late (a lost packet's copy by a slower link: in a
 	 * microcut most of them; with min_rtt + queue_us alone the window
-	 * stopped the sends and the estimate followed it down) */
-	w = 2 * cg_pcc_mul(cg_pcc_bw(p), (uint64_t)p->min_rtt + c->queue_us, 1000000);
+	 * stopped the sends and the estimate followed it down); and what is
+	 * lost and not declared yet (60 % lost and a window of 100 ms filled
+	 * it with the lost, the sends stopped and the estimate sank: the
+	 * microcut) */
+	w = 2 * cg_pcc_mul(cg_pcc_bw(p), (uint64_t)p->min_rtt + c->queue_us, 1000000) +
+	    cg_pcc_mul(cg_pcc_bw(p), reo_us, 1000000);
 	return w + (uint64_t)CG_PCC_SEGS * c->mss;
 }
 
@@ -161,7 +180,10 @@ static inline uint64_t cg_pcc_cwnd(const struct cg_pcc *p, const struct cg_pcc_c
 static inline void cg_pcc_hint(struct cg_pcc *p, uint64_t hint, int full)
 {
 	p->hint = hint;
-	p->hint_full = (uint8_t)(full && hint);
+	/* a ceiling only near what the streams take: an idle link's capacity
+	 * is what its probes deliver, "full" of them, and as a ceiling it held
+	 * a new stream at a few kbit/s (live, protect) */
+	p->hint_full = (uint8_t)(full && hint && hint >= CG_PCC_START / 2 && 2 * hint >= p->bw);
 	if (p->hint_full && p->bw > hint) {
 		p->bw = hint;
 		p->bmax[0] = p->bmax[1] = hint;
@@ -225,12 +247,16 @@ static inline void cg_pcc_ack(struct cg_pcc *p, const struct cg_pcc_cfg *c, uint
 			p->rttvar = (3 * p->rttvar + d) / 4;
 			p->srtt = (7 * p->srtt + rtt) / 8;
 		}
-		p->qnow = rtt > p->min_rtt + c->queue_us;
+		if (!p->have_owd)
+			p->qnow = rtt > p->min_rtt + c->queue_us;
 		/* STARTUP ends at the first sample over: it grows by half a
 		 * round, so a window's lag is a round of overflow */
 		if (p->mode == CG_PCC_STARTUP_M && p->n_rounds >= 2 && p->qnow)
 			p->mode = CG_PCC_DRAIN_M;
 	}
+	/* STARTUP's exit by the forward delay, when there is one */
+	if (p->have_owd && p->mode == CG_PCC_STARTUP_M && p->n_rounds >= 2 && p->qnow)
+		p->mode = CG_PCC_DRAIN_M;
 	/* the queue's verdict: a queue moves every sample up, a late copy (a
 	 * lost packet's copy on a slower link) only some, so the least of a
 	 * window of a round trip says which. A segment sent again counts if it
@@ -241,8 +267,15 @@ static inline void cg_pcc_ack(struct cg_pcc *p, const struct cg_pcc_cfg *c, uint
 	if (rtt && p->min_rtt && (tx == 1 || rtt >= p->min_rtt) && (!p->wmin || rtt < p->wmin))
 		p->wmin = rtt;
 	if (now - p->wt >= (p->min_rtt > CG_PCC_WMIN_US ? p->min_rtt : CG_PCC_WMIN_US)) {
-		p->cong = p->wmin && p->wmin > p->min_rtt + c->queue_us;
+		/* the forward delay when the receiver reports it: a round trip
+		 * also carries the ACK's way back, whose losses and slower
+		 * copies (a microcut) read as a queue and cut the rate */
+		if (p->have_owd)
+			p->cong = p->have_ow && (int32_t)((uint32_t)p->ow_min - (uint32_t)p->owd_base) > (int32_t)c->queue_us;
+		else
+			p->cong = p->wmin && p->wmin > p->min_rtt + c->queue_us;
 		p->wmin = 0;
+		p->have_ow = 0;
 		p->wt = now;
 	}
 	p->n_cong += p->cong;
@@ -310,6 +343,37 @@ static inline void cg_pcc_ack(struct cg_pcc *p, const struct cg_pcc_cfg *c, uint
 	}
 }
 
+/* A send at now: after a second with nothing in flight the path may have
+ * changed, and STARTUP goes again from the estimate it has (BBR's restart
+ * from idle keeps the estimate too). */
+static inline void cg_pcc_restart(struct cg_pcc *p, uint64_t now)
+{
+	if (!p->inflight && p->last_send && now - p->last_send > CG_PCC_IDLE_US && p->mode != CG_PCC_STARTUP_M) {
+		p->mode = CG_PCC_STARTUP_M;
+		p->full_bw = 0;
+		p->full_n = 0;
+		p->n_restart++;
+	}
+	p->last_send = now;
+}
+
+/* An ACK's one-way delay (pep.h: the least of the DATA it answers; the two
+ * clocks' offset included, so only its changes mean anything). Call it
+ * before cg_pcc_ack with the same ACK. */
+static inline void cg_pcc_owd(struct cg_pcc *p, const struct cg_pcc_cfg *c, uint64_t now, int32_t owd)
+{
+	if (!p->have_owd || (int32_t)((uint32_t)owd - (uint32_t)p->owd_base) <= 0 || now - p->owd_t > CG_PCC_MINRTT_US) {
+		p->owd_base = owd;
+		p->owd_t = now;
+		p->have_owd = 1;
+	}
+	if (!p->have_ow || (int32_t)((uint32_t)owd - (uint32_t)p->ow_min) < 0) {
+		p->ow_min = owd;
+		p->have_ow = 1;
+	}
+	p->qnow = (int32_t)((uint32_t)owd - (uint32_t)p->owd_base) > (int32_t)c->queue_us;
+}
+
 /* Bytes declared lost, of segments sent while the path's queue was short
  * (the caller leaves out those sent with a queue: overflow): what the path
  * took. */
@@ -333,9 +397,9 @@ static inline void cg_pcc_refill(struct cg_pcc *p, const struct cg_pcc_cfg *c, u
 }
 
 /* Whether a segment may go now: tokens left and room in flight. */
-static inline int cg_pcc_may(const struct cg_pcc *p, const struct cg_pcc_cfg *c)
+static inline int cg_pcc_may(const struct cg_pcc *p, const struct cg_pcc_cfg *c, uint64_t reo_us)
 {
-	return p->tokens > 0 && p->inflight < cg_pcc_cwnd(p, c);
+	return p->tokens > 0 && p->inflight < cg_pcc_cwnd(p, c, reo_us);
 }
 
 /* A segment of bytes went (the caller adds it to inflight). */
