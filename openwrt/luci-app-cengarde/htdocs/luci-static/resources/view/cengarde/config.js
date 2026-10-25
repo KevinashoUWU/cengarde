@@ -196,6 +196,8 @@ return view.extend({
 		s.tab('general', _('General'));
 		s.tab('vps', _('VPS'));
 		s.tab('tunnel', _('Tunnel'));
+		s.tab('protection', _('Protection'), _('How each packet is protected while every uplink carries the upload (the split off): full copies, or partial copies and repair data in what each backup uplink has to spare, and asking the VPS for what is still missing.'));
+		s.tab('layer4', _('Layer 4 features'), _('What cengarde does with the TCP it carries, beyond moving packets. Native tunnel mode only (Tunnel tab).'));
 		s.tab('advanced', _('Advanced'));
 
 		o = s.taboption('general', form.Flag, 'enabled', _('Enabled'));
@@ -419,7 +421,7 @@ return view.extend({
 		o.depends('tunnel', '1');
 		o.onchange = refresh;
 
-		o = s.taboption('tunnel', form.ListValue, 'protocontroller', _('Protocontroller'),
+		o = s.taboption('layer4', form.ListValue, 'protocontroller', _('Protocontroller'),
 			_('Native mode only. With A or B the router answers the TCP connections of the LAN itself and the VPS opens a fresh one to each destination (cubic, BBR once that leg loses). Between them each connection travels as a plain TCP through the tunnel (A) or, experimental, as GRIT, a reliable stream of cengarde paced by what the uplinks carry instead of by loss (B). It helps TCP uploads such as RTMP over lossy uplinks and long paths beyond the VPS. UDP, QUIC and the rest go through the tunnel as always. The VPS needs "sudo cengarde-vps-setup protocontroller on". A change restarts the engine.'));
 		o.value('no', _('No (the tunnel as always)'));
 		o.value('a', _('A: TCP in the middle'));
@@ -428,17 +430,49 @@ return view.extend({
 		o.depends('tunnel_mode', 'native');
 		o.onchange = refresh;
 
-		o = s.taboption('tunnel', form.DynamicList, 'protocontroller_port', _('Protocontroller ports'),
+		o = s.taboption('layer4', form.DynamicList, 'protocontroller_port', _('Protocontroller ports'),
 			_('Only the TCP to these destination ports (or ranges such as 8000-8100). Empty: every port.'));
 		o.datatype = 'or(port, portrange)';
 		o.depends('protocontroller', 'a');
 		o.depends('protocontroller', 'b');
 
-		o = s.taboption('tunnel', form.DynamicList, 'protocontroller_dest', _('Protocontroller destinations'),
+		o = s.taboption('layer4', form.DynamicList, 'protocontroller_dest', _('Protocontroller destinations'),
 			_('Only the TCP to these addresses or prefixes. Empty: every address that is not private, local or link-local.'));
 		o.datatype = 'or(ipaddr, cidr)';
 		o.depends('protocontroller', 'a');
 		o.depends('protocontroller', 'b');
+
+		o = s.taboption('layer4', form.Flag, 'tcp_aware', _('TCP-aware tunnel'),
+			_('The router and the VPS look at the TCP inside the tunnel: its ACKs and handshakes are handed on at once instead of waiting behind a missing packet, and a TCP retransmission is copied over every uplink only when the tunnel lost the original on all of them (from the ACKs it has seen), so a spurious one does not load every uplink. Off: TCP is carried like any other packet.'));
+		o.default = '0';
+		o.rmempty = false;
+		o.depends('tunnel_mode', 'native');
+
+		o = s.taboption('protection', form.ListValue, 'redund_spare', _('Protection mode'),
+			_('Full copies: every packet over every uplink, as always; the safest in a cut, and the most data. Mixed: full copies while they fit, and XOR parity on an uplink that cannot carry them all. Parity: XOR only, the least data. RLC and Reed-Solomon: erasure codes that rebuild several lost packets at once from what the backup uplinks have to spare (in the lab, the most TCP over a choked backup uplink); RLC repairs sooner. Partial copies: copies only of what fits. Every mode but full copies needs "fec = yes" on the VPS to rebuild the upload.'));
+		o.value('no', _('Full copies on every uplink'));
+		o.value('mix', _('Mixed: copies, or parity when an uplink is choked'));
+		o.value('parity', _('Parity (XOR)'));
+		o.value('rlc', _('RLC erasure code'));
+		o.value('rs', _('Reed-Solomon erasure code'));
+		o.value('copies', _('Partial copies'));
+		o.default = 'no';
+
+		o = s.taboption('protection', form.ListValue, 'redund_spare_first', _('Main uplink'),
+			_('The uplink that carries every packet while the others protect it. Automatic: the one with the least delay that is not choked. A main uplink that chokes or fails is replaced until it recovers.'));
+		o.value('', _('Automatic'));
+		L.toArray(uci.get('cengarde', 'main', 'uplink')).forEach(function(n) { o.value(n, n); });
+		[ 'mix', 'parity', 'rlc', 'rs', 'copies' ].forEach(function(v) { o.depends('redund_spare', v); });
+
+		o = s.taboption('protection', form.Value, 'pace_peers_ms', _('Copy window next to Starlink (ms)'),
+			_('With a Starlink uplink, the others carry a copy of a packet only if it would arrive within this long of the first one. Empty: 60 ms, the Starlink preset. 250 is what worked in the field with cellular uplinks behind Starlink. 0: no limit.'));
+		o.datatype = 'range(0,2000)';
+		o.placeholder = '60';
+
+		o = s.taboption('protection', form.Flag, 'rescue', _('Rescue missing packets'),
+			_('A packet that no uplink delivered is asked for again (as parity when an erasure code is on) before the receiver gives up on it, within 60 ms. The router keeps what it sent for the VPS to ask, and asks the VPS for the download. The VPS needs rescue_kb and rescue_wait_ms in its cengarde.conf for its side. In the lab it doubled TCP with full copies over a lossy main uplink.'));
+		o.default = '0';
+		o.rmempty = false;
 
 		o = s.taboption('tunnel', form.Flag, 'ip_pass', _('IP pass'),
 			_('The VPS forwards TCP and UDP ports 1024-65000 to this router and UPnP hands them on to the LAN: devices and services here get the public IP of the VPS. The VPS follows this switch on its own, within a second of saving.') +

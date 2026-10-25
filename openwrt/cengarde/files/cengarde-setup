@@ -1129,9 +1129,45 @@ engine_conf() {
 	for k in server_failover_ms mute_behind_ms unmute_behind_ms mute_settle_ms mute_trickle min_active_links \
 		probe_interval_ms probe_idle_ms status_interval_ms busy_poll_us cpu rt_priority sndbuf link_threads \
 		io_queue description reorder_max_wait_ms reorder_dup_wait_ms reorder_margin_ms reorder_bypass \
-		reorder_pool_kb rescue_kb rescue_pct rescue_tries rescue_wait_ms fec_wait_ms fec_share_max split_small split_spread_ms governor_target_ms governor_window_ms; do
+		reorder_pool_kb rescue_kb rescue_pct rescue_tries rescue_wait_ms rescue_code_ms fec_wait_ms fec_share_max split_small split_spread_ms governor_target_ms governor_window_ms \
+		pace_peers_ms redund_spare_ms redund_spare_code_ms; do
 		config_get v main "$k"
 		[ -n "$v" ] && echo "$k = $v"
+	done
+	# The rescue switch (LuCI's Protection tab): what is missing is asked for
+	# within 60 ms, and what was sent is kept (32 MB) for the VPS to ask;
+	# rescue_wait_ms and rescue_kb set apart win.
+	config_get_bool v main rescue 0
+	if [ "$v" = 1 ]; then
+		config_get w main rescue_wait_ms
+		[ -n "$w" ] || echo "rescue_wait_ms = 60"
+		config_get w main rescue_kb
+		[ -n "$w" ] || echo "rescue_kb = 32768"
+	fi
+	# The protection in redundancy (redund_spare, stories 020 and 021) and
+	# its main uplink, by the device the engine names its link after.
+	config_get v main redund_spare
+	case "$v" in
+	'') ;;
+	no | off | copies | parity | mix | rs | rlc) echo "redund_spare = $v" ;;
+	*) log "redund_spare '$v': expected no, copies, parity, mix, rs or rlc, left out" ;;
+	esac
+	config_get v main redund_spare_first
+	if [ -n "$v" ]; then
+		if list_has "$UPLINKS" "$v" && dev=$(uplink_device "$v"); then
+			echo "redund_spare_first = $dev"
+		else
+			log "redund_spare_first '$v': not one of the uplinks that are up, left out"
+		fi
+	fi
+	for k in parq tcp_retx_one tcp_ack_rule rescue_tcp_race; do
+		config_get v main "$k"
+		case "$v" in
+		'') ;;
+		1 | on | yes | true | enabled) echo "$k = yes" ;;
+		0 | off | no | false | disabled) echo "$k = no" ;;
+		*) log "$k '$v': expected 0 or 1, left out" ;;
+		esac
 	done
 	# the protocontroller (story 025): the firewall's redirect lands on PCTL_LISTEN
 	if [ "$PCTL_ON" = 1 ] && [ "$NATIVE" = 1 ]; then

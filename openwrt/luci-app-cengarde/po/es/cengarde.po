@@ -30,6 +30,18 @@ msgstr "VPS"
 msgid "Tunnel"
 msgstr "Túnel"
 
+msgid "Protection"
+msgstr "Protección"
+
+msgid "How each packet is protected while every uplink carries the upload (the split off): full copies, or partial copies and repair data in what each backup uplink has to spare, and asking the VPS for what is still missing."
+msgstr "Cómo se protege cada paquete mientras todos los enlaces llevan la subida (sin reparto): copias completas, o copias parciales y datos de reparación en lo que le sobra a cada enlace de respaldo, y pedirle al VPS lo que aún falta."
+
+msgid "Layer 4 features"
+msgstr "Funciones de capa 4"
+
+msgid "What cengarde does with the TCP it carries, beyond moving packets. Native tunnel mode only (Tunnel tab)."
+msgstr "Lo que cengarde hace con el TCP que lleva, más allá de mover paquetes. Solo en modo de túnel nativo (pestaña Túnel)."
+
 msgid "Advanced"
 msgstr "Avanzado"
 
@@ -191,6 +203,54 @@ msgstr "Destinos del protocontrolador"
 
 msgid "Only the TCP to these addresses or prefixes. Empty: every address that is not private, local or link-local."
 msgstr "Solo el TCP hacia estas direcciones o prefijos. Vacío: toda dirección que no sea privada, local ni de enlace local."
+
+msgid "TCP-aware tunnel"
+msgstr "Túnel consciente de TCP"
+
+msgid "The router and the VPS look at the TCP inside the tunnel: its ACKs and handshakes are handed on at once instead of waiting behind a missing packet, and a TCP retransmission is copied over every uplink only when the tunnel lost the original on all of them (from the ACKs it has seen), so a spurious one does not load every uplink. Off: TCP is carried like any other packet."
+msgstr "El router y el VPS miran el TCP dentro del túnel: sus ACK y saludos pasan al tiro en vez de esperar detrás de un paquete que falta, y una retransmisión de TCP se copia por todos los enlaces solo cuando el túnel perdió el original en todos (según los ACK que vio), así una retransmisión innecesaria no carga a todos los enlaces. Desactivado: el TCP viaja como cualquier otro paquete."
+
+msgid "Protection mode"
+msgstr "Modo de protección"
+
+msgid "Full copies: every packet over every uplink, as always; the safest in a cut, and the most data. Mixed: full copies while they fit, and XOR parity on an uplink that cannot carry them all. Parity: XOR only, the least data. RLC and Reed-Solomon: erasure codes that rebuild several lost packets at once from what the backup uplinks have to spare (in the lab, the most TCP over a choked backup uplink); RLC repairs sooner. Partial copies: copies only of what fits. Every mode but full copies needs \"fec = yes\" on the VPS to rebuild the upload."
+msgstr "Copias completas: cada paquete por todos los enlaces, como siempre; lo más seguro en un corte, y lo que más datos gasta. Mixta: copias completas mientras caben, y paridad XOR en un enlace que no alcanza a llevarlas todas. Paridad: solo XOR, lo que menos datos gasta. RLC y Reed-Solomon: códigos de borrado que rehacen varios paquetes perdidos a la vez con lo que les sobra a los enlaces de respaldo (en el laboratorio, el mayor TCP con un respaldo ahogado); RLC repara antes. Copias parciales: copias solo de lo que cabe. Todos los modos menos copias completas necesitan \"fec = yes\" en el VPS para rehacer la subida."
+
+msgid "Full copies on every uplink"
+msgstr "Copias completas por todos los enlaces"
+
+msgid "Mixed: copies, or parity when an uplink is choked"
+msgstr "Mixta: copias, o paridad cuando un enlace se ahoga"
+
+msgid "Parity (XOR)"
+msgstr "Paridad (XOR)"
+
+msgid "RLC erasure code"
+msgstr "Código de borrado RLC"
+
+msgid "Reed-Solomon erasure code"
+msgstr "Código de borrado Reed-Solomon"
+
+msgid "Partial copies"
+msgstr "Copias parciales"
+
+msgid "Main uplink"
+msgstr "Enlace principal"
+
+msgid "The uplink that carries every packet while the others protect it. Automatic: the one with the least delay that is not choked. A main uplink that chokes or fails is replaced until it recovers."
+msgstr "El enlace que lleva todos los paquetes mientras los demás lo protegen. Automático: el de menor retardo que no esté ahogado. Un enlace principal que se ahoga o falla se reemplaza hasta que se recupera."
+
+msgid "Copy window next to Starlink (ms)"
+msgstr "Ventana de copias junto a Starlink (ms)"
+
+msgid "With a Starlink uplink, the others carry a copy of a packet only if it would arrive within this long of the first one. Empty: 60 ms, the Starlink preset. 250 is what worked in the field with cellular uplinks behind Starlink. 0: no limit."
+msgstr "Con un enlace Starlink, los demás llevan copia de un paquete solo si llegaría dentro de este plazo después del primero. Vacío: 60 ms, el ajuste de Starlink. 250 es lo que funcionó en terreno con celulares detrás de Starlink. 0: sin límite."
+
+msgid "Rescue missing packets"
+msgstr "Rescatar paquetes faltantes"
+
+msgid "A packet that no uplink delivered is asked for again (as parity when an erasure code is on) before the receiver gives up on it, within 60 ms. The router keeps what it sent for the VPS to ask, and asks the VPS for the download. The VPS needs rescue_kb and rescue_wait_ms in its cengarde.conf for its side. In the lab it doubled TCP with full copies over a lossy main uplink."
+msgstr "Un paquete que ningún enlace entregó se vuelve a pedir (como paridad si hay un código de borrado) antes de que el receptor lo dé por perdido, dentro de 60 ms. El router guarda lo que envió para que el VPS lo pida, y le pide al VPS lo de la bajada. El VPS necesita rescue_kb y rescue_wait_ms en su cengarde.conf para su lado. En el laboratorio duplicó el TCP con copias completas sobre un enlace principal con pérdidas."
 
 msgid "IP pass"
 msgstr "IP pass"
@@ -489,6 +549,30 @@ msgstr "activo en el VPS"
 msgid "off"
 msgstr "desactivado"
 
+msgid "own traffic"
+msgstr "tráfico propio"
+
+msgid "other users"
+msgstr "otros usuarios"
+
+msgid "The uplink delivered more than 15 % less when its queue grew: other users of the cell are taking its capacity."
+msgstr "El enlace entregó más de 15 % menos cuando creció su cola: otros usuarios de la celda le están quitando capacidad."
+
+msgid "random"
+msgstr "aleatorias"
+
+msgid "It loses packets with no queue, as Starlink does: repair data (parity or erasure codes) fixes this best."
+msgstr "Pierde paquetes sin hacer cola, como Starlink: los datos de reparación (paridad o códigos de borrado) lo arreglan mejor."
+
+msgid "queue overflow"
+msgstr "por cola llena"
+
+msgid "It loses when its queue overflows: sending it less helps more than sending it repairs."
+msgstr "Pierde cuando su cola rebalsa: mandarle menos ayuda más que mandarle reparaciones."
+
+msgid "none"
+msgstr "ninguna"
+
 msgid "disabled"
 msgstr "desactivado"
 
@@ -633,6 +717,81 @@ msgstr "Todavía no hay enlaces arriba."
 msgid "The engine is not running."
 msgstr "El motor no está corriendo."
 
+msgid "Type"
+msgstr "Tipo"
+
+msgid "Capacity"
+msgstr "Capacidad"
+
+msgid "Queue now"
+msgstr "Cola ahora"
+
+msgid "Queue p50 / p95"
+msgstr "Cola p50 / p95"
+
+msgid "Queue caused by"
+msgstr "Cola causada por"
+
+msgid "Losses"
+msgstr "Pérdidas"
+
+msgid "Now"
+msgstr "Ahora"
+
+msgid "parity, one every %d packets"
+msgstr "paridad, una cada %d paquetes"
+
+msgid "full copies"
+msgstr "copias completas"
+
+msgid "Copies on the backup uplinks"
+msgstr "Copias en los enlaces de respaldo"
+
+msgid "%d sent, %d left out"
+msgstr "%d enviadas, %d omitidas"
+
+msgid "Repair packets sent"
+msgstr "Paquetes de reparación enviados"
+
+msgid "Lost on every uplink"
+msgstr "Perdidos en todos los enlaces"
+
+msgid "Rescue"
+msgstr "Rescate"
+
+msgid "on"
+msgstr "activado"
+
+msgid "Rescued"
+msgstr "Rescates"
+
+msgid "%d asked of the VPS, %d sent again for the VPS, %d repair packets on request, %d left to TCP"
+msgstr "%d pedidos al VPS, %d reenviados al VPS, %d reparaciones a pedido, %d dejados a TCP"
+
+msgid "Lost on every uplink: packets that no uplink delivered and that nothing repaired, counted with a delay of up to a few minutes. The mode is set in the Protection tab."
+msgstr "Perdidos en todos los enlaces: paquetes que ningún enlace entregó y que nada reparó, contados con un atraso de hasta unos minutos. El modo se elige en la pestaña Protección."
+
+msgid "Mode"
+msgstr "Modo"
+
+msgid "B (GRIT): cengarde's stream in the middle"
+msgstr "B (GRIT): el flujo de cengarde en el medio"
+
+msgid "Connections now"
+msgstr "Conexiones ahora"
+
+msgid "Connections in total"
+msgstr "Conexiones en total"
+
+msgid "%d opened, %d closed"
+msgstr "%d abiertas, %d cerradas"
+
+msgid "From the LAN / to the LAN"
+msgstr "Desde la LAN / hacia la LAN"
+
+msgid "Sent again in the middle"
+msgstr "Reenviados en el medio"
+
 msgid "The last change was not applied, cengarde goes on with the previous settings: %s"
 msgstr "El último cambio no se aplicó y cengarde sigue con la configuración anterior: %s"
 
@@ -650,6 +809,12 @@ msgstr "Atraso frente al más rápido: cuánto más tarde entrega este enlace la
 
 msgid "VPS address: where the uplink sends to; \"failover\" when the first VPS address it can use did not answer. Path MTU: the largest packet the path to the VPS takes."
 msgstr "Dirección del VPS: adónde envía el enlace; \"alternativa\" cuando la primera dirección del VPS que puede usar no contestó. MTU del camino: el paquete más grande que admite el camino hasta el VPS."
+
+msgid "Uplink health"
+msgstr "Salud de los enlaces"
+
+msgid "Capacity: what the engine measures that the uplink carries now. Queue: how much longer than its fastest the uplink takes now, and its median and 95th percentile over the last five minutes on this page. Queue caused by: this router's own traffic, or other users of the cell. Losses: at random with no queue (repair data helps), or when the queue overflows (sending less helps)."
+msgstr "Capacidad: lo que el motor mide que el enlace lleva ahora. Cola: cuánto más tarda ahora el enlace respecto de su mínimo, y su mediana y percentil 95 de los últimos cinco minutos en esta página. Cola causada por: el tráfico propio de este router, u otros usuarios de la celda. Pérdidas: aleatorias sin cola (ayudan los datos de reparación), o por cola llena (ayuda mandar menos)."
 
 msgid "Reordering"
 msgstr "Reordenamiento"

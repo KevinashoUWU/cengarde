@@ -28,6 +28,18 @@ msgstr ""
 msgid "Tunnel"
 msgstr ""
 
+msgid "Protection"
+msgstr ""
+
+msgid "How each packet is protected while every uplink carries the upload (the split off): full copies, or partial copies and repair data in what each backup uplink has to spare, and asking the VPS for what is still missing."
+msgstr ""
+
+msgid "Layer 4 features"
+msgstr ""
+
+msgid "What cengarde does with the TCP it carries, beyond moving packets. Native tunnel mode only (Tunnel tab)."
+msgstr ""
+
 msgid "Advanced"
 msgstr ""
 
@@ -188,6 +200,54 @@ msgid "Protocontroller destinations"
 msgstr ""
 
 msgid "Only the TCP to these addresses or prefixes. Empty: every address that is not private, local or link-local."
+msgstr ""
+
+msgid "TCP-aware tunnel"
+msgstr ""
+
+msgid "The router and the VPS look at the TCP inside the tunnel: its ACKs and handshakes are handed on at once instead of waiting behind a missing packet, and a TCP retransmission is copied over every uplink only when the tunnel lost the original on all of them (from the ACKs it has seen), so a spurious one does not load every uplink. Off: TCP is carried like any other packet."
+msgstr ""
+
+msgid "Protection mode"
+msgstr ""
+
+msgid "Full copies: every packet over every uplink, as always; the safest in a cut, and the most data. Mixed: full copies while they fit, and XOR parity on an uplink that cannot carry them all. Parity: XOR only, the least data. RLC and Reed-Solomon: erasure codes that rebuild several lost packets at once from what the backup uplinks have to spare (in the lab, the most TCP over a choked backup uplink); RLC repairs sooner. Partial copies: copies only of what fits. Every mode but full copies needs \"fec = yes\" on the VPS to rebuild the upload."
+msgstr ""
+
+msgid "Full copies on every uplink"
+msgstr ""
+
+msgid "Mixed: copies, or parity when an uplink is choked"
+msgstr ""
+
+msgid "Parity (XOR)"
+msgstr ""
+
+msgid "RLC erasure code"
+msgstr ""
+
+msgid "Reed-Solomon erasure code"
+msgstr ""
+
+msgid "Partial copies"
+msgstr ""
+
+msgid "Main uplink"
+msgstr ""
+
+msgid "The uplink that carries every packet while the others protect it. Automatic: the one with the least delay that is not choked. A main uplink that chokes or fails is replaced until it recovers."
+msgstr ""
+
+msgid "Copy window next to Starlink (ms)"
+msgstr ""
+
+msgid "With a Starlink uplink, the others carry a copy of a packet only if it would arrive within this long of the first one. Empty: 60 ms, the Starlink preset. 250 is what worked in the field with cellular uplinks behind Starlink. 0: no limit."
+msgstr ""
+
+msgid "Rescue missing packets"
+msgstr ""
+
+msgid "A packet that no uplink delivered is asked for again (as parity when an erasure code is on) before the receiver gives up on it, within 60 ms. The router keeps what it sent for the VPS to ask, and asks the VPS for the download. The VPS needs rescue_kb and rescue_wait_ms in its cengarde.conf for its side. In the lab it doubled TCP with full copies over a lossy main uplink."
 msgstr ""
 
 msgid "IP pass"
@@ -487,6 +547,30 @@ msgstr ""
 msgid "off"
 msgstr ""
 
+msgid "own traffic"
+msgstr ""
+
+msgid "other users"
+msgstr ""
+
+msgid "The uplink delivered more than 15 % less when its queue grew: other users of the cell are taking its capacity."
+msgstr ""
+
+msgid "random"
+msgstr ""
+
+msgid "It loses packets with no queue, as Starlink does: repair data (parity or erasure codes) fixes this best."
+msgstr ""
+
+msgid "queue overflow"
+msgstr ""
+
+msgid "It loses when its queue overflows: sending it less helps more than sending it repairs."
+msgstr ""
+
+msgid "none"
+msgstr ""
+
 msgid "disabled"
 msgstr ""
 
@@ -631,6 +715,81 @@ msgstr ""
 msgid "The engine is not running."
 msgstr ""
 
+msgid "Type"
+msgstr ""
+
+msgid "Capacity"
+msgstr ""
+
+msgid "Queue now"
+msgstr ""
+
+msgid "Queue p50 / p95"
+msgstr ""
+
+msgid "Queue caused by"
+msgstr ""
+
+msgid "Losses"
+msgstr ""
+
+msgid "Now"
+msgstr ""
+
+msgid "parity, one every %d packets"
+msgstr ""
+
+msgid "full copies"
+msgstr ""
+
+msgid "Copies on the backup uplinks"
+msgstr ""
+
+msgid "%d sent, %d left out"
+msgstr ""
+
+msgid "Repair packets sent"
+msgstr ""
+
+msgid "Lost on every uplink"
+msgstr ""
+
+msgid "Rescue"
+msgstr ""
+
+msgid "on"
+msgstr ""
+
+msgid "Rescued"
+msgstr ""
+
+msgid "%d asked of the VPS, %d sent again for the VPS, %d repair packets on request, %d left to TCP"
+msgstr ""
+
+msgid "Lost on every uplink: packets that no uplink delivered and that nothing repaired, counted with a delay of up to a few minutes. The mode is set in the Protection tab."
+msgstr ""
+
+msgid "Mode"
+msgstr ""
+
+msgid "B (GRIT): cengarde's stream in the middle"
+msgstr ""
+
+msgid "Connections now"
+msgstr ""
+
+msgid "Connections in total"
+msgstr ""
+
+msgid "%d opened, %d closed"
+msgstr ""
+
+msgid "From the LAN / to the LAN"
+msgstr ""
+
+msgid "Sent again in the middle"
+msgstr ""
+
 msgid "The last change was not applied, cengarde goes on with the previous settings: %s"
 msgstr ""
 
@@ -647,6 +806,12 @@ msgid "Behind the fastest: how much later this uplink delivers the upload than t
 msgstr ""
 
 msgid "VPS address: where the uplink sends to; \"failover\" when the first VPS address it can use did not answer. Path MTU: the largest packet the path to the VPS takes."
+msgstr ""
+
+msgid "Uplink health"
+msgstr ""
+
+msgid "Capacity: what the engine measures that the uplink carries now. Queue: how much longer than its fastest the uplink takes now, and its median and 95th percentile over the last five minutes on this page. Queue caused by: this router's own traffic, or other users of the cell. Losses: at random with no queue (repair data helps), or when the queue overflows (sending less helps)."
 msgstr ""
 
 msgid "Reordering"

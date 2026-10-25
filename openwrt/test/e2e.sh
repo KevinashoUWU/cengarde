@@ -537,6 +537,59 @@ else
 	bad "engine-conf: reordering and split options or weights"
 fi
 
+# The protection in redundancy and the rescue (LuCI's Protection tab): the
+# mode, the main uplink by its device, the rescue switch's defaults, the
+# copy window, the TCP and PARQ switches; a mode or an uplink that is not
+# valid is left out and logged, and the engine takes the file.
+if "$VM" ssh router sh -s <<'EOF'
+conf() { cengarde-setup engine-conf; }
+clear() {
+	for o in redund_spare redund_spare_first redund_spare_ms redund_spare_code_ms pace_peers_ms rescue rescue_wait_ms \
+		rescue_kb rescue_code_ms parq tcp_retx_one tcp_ack_rule rescue_tcp_race; do
+		uci -q delete "cengarde.main.$o"
+	done
+	uci commit cengarde
+}
+r=0
+clear
+conf | grep -qE '^(redund_spare|pace_peers_ms|rescue_|parq|tcp_retx_one|tcp_ack_rule)' && { echo "keys without options"; r=1; }
+uci set cengarde.main.redund_spare=rlc
+uci set cengarde.main.redund_spare_first=up2
+uci set cengarde.main.redund_spare_code_ms=40
+uci set cengarde.main.pace_peers_ms=250
+uci set cengarde.main.rescue=1
+uci set cengarde.main.parq=0
+uci set cengarde.main.tcp_ack_rule=1
+uci commit cengarde
+for kv in 'redund_spare = rlc' 'redund_spare_first = eth2' 'redund_spare_code_ms = 40' 'pace_peers_ms = 250' \
+	'rescue_wait_ms = 60' 'rescue_kb = 32768' 'parq = no' 'tcp_ack_rule = yes'; do
+	conf | grep -qxF "$kv" || { echo "missing: $kv"; r=1; }
+done
+(umask 077 && conf > /tmp/prot.conf)
+cengarde -t -c /tmp/prot.conf || r=1
+rm -f /tmp/prot.conf
+# a rescue_wait_ms of its own wins over the switch's 60
+uci set cengarde.main.rescue_wait_ms=80
+uci commit cengarde
+[ "$(conf | grep -c '^rescue_wait_ms')" = 1 ] && conf | grep -qx 'rescue_wait_ms = 80' || { echo "rescue_wait_ms 80 does not win"; r=1; }
+# not valid: left out and logged
+uci set cengarde.main.redund_spare=quantum
+uci set cengarde.main.redund_spare_first=up9
+uci commit cengarde
+conf | grep -q '^redund_spare =' && { echo "a bad mode is written"; r=1; }
+conf | grep -q '^redund_spare_first' && { echo "an uplink that is not one is written"; r=1; }
+logread | grep -q "redund_spare 'quantum'" || { echo "redund_spare quantum not logged"; r=1; }
+logread | grep -q "redund_spare_first 'up9'" || { echo "redund_spare_first up9 not logged"; r=1; }
+clear
+conf | grep -qE '^(redund_spare|pace_peers_ms|rescue_|parq|tcp_ack_rule)' && { echo "keys left after clearing"; r=1; }
+exit $r
+EOF
+then
+	ok "engine-conf: the protection mode, its main uplink, the rescue switch and the copy window reach the engine's file, which it takes"
+else
+	bad "engine-conf: protection or rescue options"
+fi
+
 # No PPPoE server here: only the configuration. PPP copies the uplink's
 # delegate onto the IPv6 interface it creates (ppp9_6), so the uplink gets
 # delegate 0 while everything goes through the tunnel, and loses it after.
