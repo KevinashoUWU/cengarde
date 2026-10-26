@@ -635,6 +635,11 @@ con 4 flujos y 20 s, 3 rondas alternadas, salvo que se diga otra cosa.
     doble de huecos se rehace tarde. Con `rescue_wait_ms = 60` (el perfil de
     terreno) master y C2 quedan parejos (bajada 51,7 / 53,3, subida 60,1 /
     55,7, n = 3).
+  - `d5c41f6` (la máscara sigue en vigor para un reloj algo atrás del suyo:
+    el hub juzga un lote por la hora en que la bomba lo leyó), repetido en
+    `idleslow` y `het` (n = 3, otra semilla): `lost.cap` 113 → 14 (bajada) y
+    300 → 34 (subida), sin tardíos; `het` igual (59,3 / 57,5 y 67,4 / 66,2).
+    Es el commit para el A/B.
 - **Pendiente:** el A/B intercalado n = 6 (el usuario); el terreno; que un
   hueco que protege un código espere su reparación antes de RACK cuando no
   hay rescate (FEC v3).
