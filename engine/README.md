@@ -551,6 +551,37 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
     las lleva (van en `tx_fec_packets`/`tx_fec_bytes`): el servidor cuenta
     solo DATA por camino, y una paridad contada como enviada parecía
     perdida a la capacidad (`short` y la pérdida de la muestra).
+  - **`fec_code` (`xor`; `rlc`, protocolo 11; se cambia sin reiniciar):**
+    lo que manda `fec = yes`. `xor`, la paridad de arriba; `rlc`, la **FEC
+    v3** (historia 026, `fec3.h`, `rlc.h`): todo DATA entra en una ventana
+    deslizante y salen reparaciones de ella a una parte fija de los bytes,
+    haya o no pérdida, repartidas por los enlaces según lo que lleva cada
+    uno (no uno silenciado ni fuera del reparto, ni uno cuya cola pase la
+    ventana). Así un enlace que se detiene se rehace con lo que llevan los
+    demás: con parte s detenido T, unos s·T / (r·(1 − s)) después de
+    empezar a tasa r (estimación; cuatro enlaces iguales y 50 ms: ~67 ms a
+    25 %), y lo que la ventana no alcanza lo pide el receptor como paridad
+    (PARQ), una ida y vuelta. Con reparto (dos enlaces o más) o un solo
+    enlace; en redundancia con varios, nada (para eso `redund_spare`). El
+    servidor rehace con `fec = yes` (su anillo de 2048 DATA y las ecuaciones
+    de la RLC, ~5 MB por sesión); sin rescate, un hueco espera las
+    reparaciones hasta `rescue_code_ms`.
+    - **`fec_pct` (10; 1–50):** las reparaciones, % de los bytes de DATA.
+    - **`fec_window_ms` (300; 10–1000):** hasta dónde alcanza una
+      reparación (una de cada dos cubre solo su último cuarto); como mucho
+      1024 secuencias.
+    - **`fec_single` (`auto`; `yes`, `no`):** con un solo enlace las
+      reparaciones mueren con él en un corte; `auto` repara solo mientras
+      pierde al azar (sin cola, como Starlink), no con pérdida por cola llena
+      ni en un corte (pérdida sobre la mitad de la tasa).
+    - Estado: `upload.fec.code` y `upload.fec.rlc` (`mode`: `bonding`,
+      `single` u `off`; `window`, `lag_ms`, `density`, `repairs`,
+      `repair_bytes`, `data_bytes`, `overhead_pm`, `tail`, `guarded`,
+      `no_link`, `empty`, `gated`), por enlace `fec_repairs`,
+      `fec_repair_bytes` y `fec_loss_pm`; en el servidor, `repair.rlc`
+      (`wide`, `recovered`, `dependent`, `evicted`, `peak`, `unknowns`,
+      `rows`) y `rescue.no_nack` (un hueco sin anillo en el cliente se suelta en vez
+      de pedirse).
 - **`redund_spare` (no; `copies`, `parity`, `mix`, `rs` o `rlc`; solo el cliente,
   experimental):** en redundancia, protege al primer enlace (el de menor
   retardo sin una cola parada; un Starlink que pierde) con lo que les sobra
@@ -1846,6 +1877,15 @@ sube porque un motor 9 los escribiría a la TUN (los descarta como no IP) y una
 conexión interceptada quedaría colgada sin aviso. La variante A no cambia nada
 del formato (su TCP es un paquete más de la TUN). `cengarde-vps-setup` escribe
 las mismas configuraciones que con el 9 (más `protocontroller on`).
+
+## Protocolo 11
+
+Historia 026 (FEC v3): las reparaciones de ventana ancha (`CG_REP_RLCW` dentro
+de `CG_T_REPAIR`: base, largo de la ventana, densidad y semilla en vez del
+mapa de 64 bits; `src/repair.h`), y `CG_T_REPAIR`/`CG_T_PARQ` en los dos
+sentidos. Un servidor 10 contaría una reparación ancha como mal formada y el
+router protegería en vano. `cengarde-vps-setup` acepta 4 a 11 y tiene
+`fec on|off` (el anillo y los decodificadores en el VPS).
 
 ## Limitaciones conocidas
 
