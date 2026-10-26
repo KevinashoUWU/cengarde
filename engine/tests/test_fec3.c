@@ -196,6 +196,12 @@ static void test_f3_pct(void)
 	uint64_t t;
 
 	memset(&f, 0, sizeof(f));
+	CHECK_EQ(cg_f3_pct(&f, 0x3, 0, 20, 0, 5000), 20); /* nothing known yet: the whole share */
+	CHECK_EQ(f.warm_ms, 5000 + CG_F3_WARM_MS);
+	CHECK_EQ(cg_f3_pct(&f, 0x3, 0, 20, 0, 5000 + CG_F3_WARM_MS - 1), 20);
+	CHECK_EQ(cg_f3_pct(&f, 0x3, 0, 20, 0, 5000 + CG_F3_WARM_MS), 0);
+	memset(&f, 0, sizeof(f));
+	f.warm_ms = 1;
 	CHECK_EQ(cg_f3_pct(&f, 0x3, 0, 20, 20, 1000), 20); /* fixed */
 	CHECK_EQ(cg_f3_pct(&f, 0x3, 0, 20, 30, 1000), 20);
 	CHECK_EQ(cg_f3_pct(&f, 0x3, 0, 20, 0, 1000), 0);   /* clean: nothing */
@@ -205,8 +211,9 @@ static void test_f3_pct(void)
 		cg_f3_loss(&f, 0, 10, t, 80000, 80000, 0);
 	CHECK_EQ(cg_f3_pct(&f, 0x3, 0, 20, 0, 40), 0);
 	CHECK_EQ(f.bursts, 0);
-	/* 1 % at random on both links, equal bytes: 20 % */
+	/* 1 % at random on both links, equal bytes: 25 % */
 	memset(&f, 0, sizeof(f));
+	f.warm_ms = 1; /* warmed up */
 	f.w[0] = f.w[1] = 1000;
 	for (t = 1; t <= 30; t++) {
 		cg_f3_loss(&f, 0, 10, t, 2000, 2000, 0);
@@ -215,19 +222,20 @@ static void test_f3_pct(void)
 	CHECK_EQ(f.bursts, 0);
 	CHECK(f.srand_ms[0] == 30 && f.srand_ms[1] == 30);
 	f.loss16[0] = f.loss16[1] = 10 * 16;
-	CHECK_EQ(cg_f3_pct(&f, 0x3, 0, 30, 0, 40), 20);
-	CHECK_EQ(cg_f3_pct(&f, 0x3, 0, 30, 2, 40), 22);
+	CHECK_EQ(cg_f3_pct(&f, 0x3, 0, 30, 0, 40), 25);
+	CHECK_EQ(cg_f3_pct(&f, 0x3, 0, 30, 2, 40), 27);
 	CHECK_EQ(cg_f3_pct(&f, 0x3, 0, 5, 0, 40), 5); /* at most the top */
-	/* Starlink's 0.3 %: 6 % */
-	f.loss16[0] = f.loss16[1] = 3 * 16;
-	CHECK_EQ(cg_f3_pct(&f, 0x3, 0, 20, 0, 40), 6);
-	/* only link 0 loses 1.5 %, a third of the bytes: a third of it */
+	/* Starlink's 0.4 %: 10 % */
+	f.loss16[0] = f.loss16[1] = 4 * 16;
+	CHECK_EQ(cg_f3_pct(&f, 0x3, 0, 20, 0, 40), 10);
+	/* only link 0 loses 1.2 %, a third of the bytes: a third of it */
 	memset(&f, 0, sizeof(f));
+	f.warm_ms = 1; /* warmed up */
 	f.w[0] = 1000;
 	f.w[1] = 2000;
-	f.loss16[0] = 15 * 16;
+	f.loss16[0] = 12 * 16;
 	f.srand_ms[0] = 30;
-	CHECK_EQ(cg_f3_pct(&f, 0x3, 0, 20, 0, 40), 10); /* 5 per mille x 20 */
+	CHECK_EQ(cg_f3_pct(&f, 0x3, 0, 20, 0, 40), 10); /* 4 per mille x 25 */
 	CHECK_EQ(cg_f3_pct(&f, 0x3, 0, 20, 0, 30 + CG_F3_SRAND_HOLD_MS), 10);
 	/* past the hold, the loss no longer read random: clean */
 	CHECK_EQ(cg_f3_pct(&f, 0x3, 0, 20, 0, 30 + CG_F3_SRAND_HOLD_MS + 1), 0);
@@ -236,6 +244,7 @@ static void test_f3_pct(void)
 	/* a burst on link 1 (a stall: 10 % in a sample, no queue): the whole
 	 * share for the hold, also after the link is clean again */
 	memset(&f, 0, sizeof(f));
+	f.warm_ms = 1; /* warmed up */
 	cg_f3_loss(&f, 1, 100, 100, 3000, 3000, 0);
 	CHECK_EQ(f.bursts, 1);
 	for (t = 101; t <= 130; t++)
@@ -250,26 +259,30 @@ static void test_f3_pct(void)
 	/* a TCP filling the link: its standing queue lifts the minute's minimum (no
 	 * queue over it now) but the sample's top was high: congestion, no burst */
 	cg_f3_loss(&f, 0, 100, 202, 2000, 90000, 0);
-	/* at the link's capacity, no queue: BBR's probes overflowing it, no burst */
-	cg_f3_loss(&f, 0, 100, 203, 2000, 2000, 1);
 	CHECK_EQ(f.bursts, 1);
 	/* random loss at the link's capacity: the gate's, not the share's */
 	memset(&f, 0, sizeof(f));
+	f.warm_ms = 1; /* warmed up */
 	f.w[0] = 1000;
 	for (t = 1; t <= 30; t++)
 		cg_f3_loss(&f, 0, 10, t, 2000, 2000, 1);
 	CHECK(f.rand_ms[0] == 30 && !f.srand_ms[0]);
 	CHECK_EQ(cg_f3_pct(&f, 0x1, 0, 20, 0, 40), 0);
-	f.loss16[0] = 10 * 16;
+	f.loss16[0] = 8 * 16;
 	CHECK_EQ(cg_f3_pct(&f, 0x1, 0x1, 20, 0, 40), 20); /* linksig says random: it counts */
 	/* a TCP that just backed off: the sample is quiet and under its capacity,
 	 * the one before full with a queue: neither burst nor random loss */
 	memset(&f, 0, sizeof(f));
+	f.warm_ms = 1; /* warmed up */
 	cg_f3_loss(&f, 0, 0, 1, 40000, 60000, 1);
 	cg_f3_loss(&f, 0, 150, 2, 1000, 2000, 0);
 	CHECK(!f.srand_ms[0] && !f.bursts);
 	cg_f3_loss(&f, 0, 150, 3, 1000, 2000, 0); /* two quiet samples: a burst */
 	CHECK(f.srand_ms[0] == 3 && f.bursts == 1);
+	/* a stall on a full link without a queue: a burst, not random loss */
+	cg_f3_loss(&f, 1, 0, 3, 1000, 2000, 1);
+	cg_f3_loss(&f, 1, 100, 4, 1000, 2000, 1);
+	CHECK(f.bursts == 2 && !f.srand_ms[1]);
 }
 
 void test_fec3(void)

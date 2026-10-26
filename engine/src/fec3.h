@@ -69,7 +69,8 @@
 #define CG_F3_BURST_Q_US 10000 /* without a queue: its top over the minute's minimum within this (BBR draining 26 ms read as a burst at 30) */
 #define CG_F3_HOLD_MS 30000u /* the whole share this long after a burst */
 #define CG_F3_SRAND_HOLD_MS 120000u /* the loss's share this long after it was random off the link's capacity */
-#define CG_F3_PER_LOSS 20   /* scattered loss alone: repairs this many times the loss, over the floor (story 026: 1 % wanted 20 %) */
+#define CG_F3_PER_LOSS 25   /* scattered loss alone: repairs this many times the loss, over the floor (story 026: 1 % wanted 20 % or more) */
+#define CG_F3_WARM_MS 10000u /* the whole share this long from the first batch: nothing known yet, and a cubic that collapses at its start is slow to come back */
 
 enum cg_f3_mode { CG_F3_OFF = 0, CG_F3_BOND, CG_F3_SINGLE };
 enum cg_f3_single { CG_F3_SINGLE_AUTO = 0, CG_F3_SINGLE_YES, CG_F3_SINGLE_NO };
@@ -90,6 +91,7 @@ struct cg_f3 {
 	uint8_t lprev[CG_F3_LINKS];  /* and whether it was loaded */
 	uint64_t bursts;             /* bursts seen, every link */
 	uint32_t pct;                /* the share now, % (cg_f3_pct) */
+	uint64_t warm_ms;            /* the whole share until then (CG_F3_WARM_MS from the first batch), 0: none yet */
 	uint8_t gate;                /* the lone link's gate (fec_single = auto) */
 	uint8_t alt;                 /* the next repair's span: the window or its quarter (cg_f3_span_us) */
 	uint8_t mode;                /* enum cg_f3_mode, at the last batch */
@@ -288,9 +290,10 @@ static inline void cg_f3_loss(struct cg_f3 *f, unsigned i, uint16_t loss_pm, uin
 	/* a burst: by the highest queue of the sample, not the last one (a TCP
 	 * filling the link drops at the top of its sawtooth, and its standing
 	 * queue lifts the minute's minimum: clean4 read 5-13 % "bursts" by
-	 * ql_us), and off the link's capacity (BBR loses ~2 % at its probes
-	 * with no queue, as random loss does: the load tells them apart) */
-	if (loss_pm >= CG_F3_BURST_PM && ql_us >= 0 && q2 >= 0 && q2 <= CG_F3_BURST_Q_US && !l2) {
+	 * ql_us), over this sample and the one before (BBR overflowing
+	 * clean4's links held 15-70 ms; a stall on a full link is still one:
+	 * judged by the load too, cubic's stalls went unseen, story 026) */
+	if (loss_pm >= CG_F3_BURST_PM && ql_us >= 0 && q2 >= 0 && q2 <= CG_F3_BURST_Q_US) {
 		f->burst_ms[i] = t_ms;
 		f->bursts++;
 	}
@@ -304,7 +307,8 @@ static inline void cg_f3_loss(struct cg_f3 *f, unsigned i, uint16_t loss_pm, uin
  * CG_F3_SRAND_HOLD_MS (long: once repaired, a TCP fills the link and the
  * evidence stops; the share must outlive that, not drop under it), weighed by
  * their bytes (a link losing only with its queue counts as clean: its drops
- * are its TCP's signal). 0: no repairs at all. now_ms: the samples' clock. */
+ * are its TCP's signal); hi for CG_F3_WARM_MS from the first call. 0: no
+ * repairs at all. now_ms: the samples' clock. */
 static inline uint32_t cg_f3_pct(struct cg_f3 *f, uint16_t set, uint16_t rnd, uint32_t hi, uint32_t lo, uint64_t now_ms)
 {
 	uint64_t sw = 0, sl = 0;
@@ -314,6 +318,10 @@ static inline uint32_t cg_f3_pct(struct cg_f3 *f, uint16_t set, uint16_t rnd, ui
 		if ((set & rnd) >> i & 1)
 			f->srand_ms[i] = now_ms ? now_ms : 1;
 	if (lo >= hi)
+		return f->pct = hi;
+	if (!f->warm_ms)
+		f->warm_ms = now_ms + CG_F3_WARM_MS;
+	if (now_ms < f->warm_ms)
 		return f->pct = hi;
 	for (unsigned i = 0; i < CG_F3_LINKS; i++) {
 		if (!(set >> i & 1))
