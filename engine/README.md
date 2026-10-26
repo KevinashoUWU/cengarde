@@ -575,7 +575,7 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
       la pérdida, entera 30 s y luego a la mitad cada 10 s; los primeros 10 s,
       `fec_pct`; la pérdida de un enlace con cola o lleno no cuenta (TCP
       desbordándolo); los bytes del protocontrolador (B, y A con BBR) no la
-      piden tras una ráfaga ni con un solo enlace. Igual a `fec_pct`: la parte
+      piden con un solo enlace. Igual a `fec_pct`: la parte
       fija. El estado cuenta los cambios de modo (`switches`).
     - **`fec_window_ms` (300; 10–1000):** hasta dónde alcanza una
       reparación (una de cada dos cubre solo su último cuarto); como mucho
