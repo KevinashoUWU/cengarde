@@ -265,7 +265,13 @@ msgstr ""
 msgid "Repair data (% of the upload)"
 msgstr ""
 
-msgid "The share of the bytes that goes in repairs, whatever the losses: more rebuilds longer stalls (an uplink of four stalling 50 ms needs about 25 %) and costs as much of the capacity of the uplinks."
+msgid "The most of the bytes that goes in repairs: all of it for 30 s after an uplink stalls or loses a burst, and with scattered losses 20 times the loss up to it. More rebuilds longer stalls (an uplink of four stalling 50 ms needs about 25 %) and costs as much of the capacity of the uplinks."
+msgstr ""
+
+msgid "Repair data when nothing is lost (%)"
+msgstr ""
+
+msgid "The share when no uplink lost at random or in a burst lately (losses with a full queue do not count: they are TCP slowing down). 0 sends no repairs on clean uplinks; the same as the repair data above keeps a fixed share."
 msgstr ""
 
 msgid "Repair window (ms)"
@@ -800,6 +806,15 @@ msgid "over the split, %s over %d ms"
 msgstr ""
 
 msgid "on the lone uplink, %s over %d ms"
+msgstr ""
+
+msgid "none: no uplink lost lately"
+msgstr ""
+
+msgid "Repair share"
+msgstr ""
+
+msgid "%s to %s, by the losses"
 msgstr ""
 
 msgid "%d, %s of the data"

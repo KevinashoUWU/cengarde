@@ -1252,6 +1252,10 @@ engine_conf() {
 	if [ -n "$v" ]; then
 		if uint_in "$v" 1 50; then echo "fec_pct = $v"; else log "fec_pct '$v': expected 1 to 50, left out"; fi
 	fi
+	config_get v main fec_pct_min
+	if [ -n "$v" ]; then
+		if uint_in "$v" 0 50; then echo "fec_pct_min = $v"; else log "fec_pct_min '$v': expected 0 to 50, left out"; fi
+	fi
 	config_get v main fec_window_ms
 	if [ -n "$v" ]; then
 		if uint_in "$v" 10 1000; then

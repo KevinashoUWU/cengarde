@@ -395,9 +395,10 @@ for (const [lang, tr] of [ [ 'en', english ], [ 'es', spanish ] ]) {
 	assert.equal(o.fec_code.default, 'xor', 'the XOR parity unless set: the engine as before');
 	assert.deepEqual(o.fec_code.deps, [ { fec: '1' } ], 'a code only with the switch');
 	assert.equal(tab('fec_pct', 'protection').datatype, 'range(1,50)', 'the engine\'s range');
+	assert.equal(tab('fec_pct_min', 'protection').datatype, 'range(0,50)', 'the engine\'s range');
 	assert.equal(tab('fec_window_ms', 'protection').datatype, 'range(10,1000)', 'the engine\'s range');
 	assert.deepEqual(tab('fec_single', 'protection').values.map((v) => v[0]), [ 'auto', 'yes', 'no' ]);
-	for (const name of [ 'fec_pct', 'fec_window_ms', 'fec_single' ])
+	for (const name of [ 'fec_pct', 'fec_pct_min', 'fec_window_ms', 'fec_single' ])
 		assert.deepEqual(o[name].deps, [ { fec_code: 'rlc' } ], `${lang}: ${name} only with FEC v3`);
 	for (const name of [ 'protocontroller', 'protocontroller_port', 'protocontroller_dest' ])
 		tab(name, 'layer4');
@@ -569,6 +570,14 @@ for (const [lang, tr] of [ [ 'en', english ], [ 'es', spanish ] ]) {
 	assert.equal(frow(L('Repair data (FEC)', 'Datos de reparación (FEC)')), L('RLC sliding window (FEC v3)', 'Ventana deslizante RLC (FEC v3)'));
 	assert.equal(frow(L('Repairs now', 'Reparaciones ahora')), L('over the split, 25 % over 200 ms', 'sobre el reparto, 25 % en 200 ms'));
 	assert.equal(frow(L('Repair packets sent', 'Paquetes de reparación enviados')), L('1234, 24.7 % of the data', '1234, 24.7 % de los datos'));
+	assert.ok(!find(fn, (x) => x.tag == 'tr').some((r) => text(r.children[0]) == L('Repair share', 'Parte de reparación')), `${lang}: a fixed share, no range`);
+	// the share by the losses (fec_pct_min): its range, and none while nothing was lost
+	const fq = E('div');
+	v.update(fq, base({ links: [], upload: { bytes: 1, spare: null,
+		fec: { on: true, code: 'rlc', parities: 0, rlc: { mode: 'off', pct: 0, pct_min: 0, pct_max: 20, quiet: 9, window_ms: 300, repairs: 0, overhead_pm: 0 } } } }));
+	const qrow = (name) => ((find(fq, (x) => x.tag == 'tr').map((r) => r.children.map(text)).find((r) => r[0] == name)) || assert.fail(`${lang}: no row ${name}`))[1];
+	assert.equal(qrow(L('Repairs now', 'Reparaciones ahora')), L('none: no uplink lost lately', 'ninguna: ningún enlace perdió hace poco'));
+	assert.equal(qrow(L('Repair share', 'Parte de reparación')), L('0 % to 20 %, by the losses', 'de 0 % a 20 %, según las pérdidas'));
 	// the download's (story 026): what the VPS's repairs rebuilt here, only when they come
 	const dn = E('div');
 	v.update(dn, base({ links: [], upload: { bytes: 1, spare: null }, download_fec: { on: true, fec3: true, rlc_recovered: 42 } }));

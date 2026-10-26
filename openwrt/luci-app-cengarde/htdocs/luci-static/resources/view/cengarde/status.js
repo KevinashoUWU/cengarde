@@ -466,7 +466,11 @@ return view.extend({
 			rows.push([ _('Repair data (FEC)'), f.code == 'rlc' ? _('RLC sliding window (FEC v3)') : _('XOR parity') ]);
 			if (r && typeof r == 'object') {
 				rows.push([ _('Repairs now'), r.mode == 'bonding' ? _('over the split, %s over %d ms').format(n(r.pct) + ' %', n(r.window_ms))
-					: r.mode == 'single' ? _('on the lone uplink, %s over %d ms').format(n(r.pct) + ' %', n(r.window_ms)) : _('none') ]);
+					: r.mode == 'single' ? _('on the lone uplink, %s over %d ms').format(n(r.pct) + ' %', n(r.window_ms))
+					: n(r.quiet) > 0 ? _('none: no uplink lost lately') : _('none') ]);
+				// the share follows the loss (fec_pct_min under fec_pct)
+				if (r.pct_max != null && n(r.pct_min) < n(r.pct_max))
+					rows.push([ _('Repair share'), _('%s to %s, by the losses').format(n(r.pct_min) + ' %', n(r.pct_max) + ' %') ]);
 				rows.push([ _('Repair packets sent'), _('%d, %s of the data').format(n(r.repairs), (n(r.overhead_pm) / 10).toFixed(1) + ' %') ]);
 			} else {
 				rows.push([ _('Repair packets sent'), '%d'.format(n(f.parities)) ]);

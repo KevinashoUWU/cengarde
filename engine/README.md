@@ -567,7 +567,13 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
     servidor rehace con `fec = yes` (su anillo de 2048 DATA y las ecuaciones
     de la RLC, ~5 MB por sesión); sin rescate, un hueco espera las
     reparaciones hasta `rescue_code_ms`.
-    - **`fec_pct` (20; 1–50):** las reparaciones, % de los bytes de DATA (10 en un Starlink solo, 33 para detenciones de 100–200 ms con cuatro enlaces).
+    - **`fec_pct` (20; 1–50):** las reparaciones, % de los bytes de DATA, como mucho (10 en un Starlink solo, 33 para detenciones de 100–200 ms con cuatro enlaces).
+    - **`fec_pct_min` (0; 0–50):** la parte sin pérdida que la pida. Con
+      evidencia de muestras bajo la capacidad del enlace y sin cola (esta y la
+      anterior): tras una ráfaga (5 % o más en una muestra: una detención, un
+      corte), `fec_pct` por 30 s; con pérdida al azar, `fec_pct_min` más 20
+      veces la pérdida por 120 s; la pérdida de un enlace lleno o con cola no
+      cuenta (TCP desbordándolo). Igual a `fec_pct`: la parte fija.
     - **`fec_window_ms` (300; 10–1000):** hasta dónde alcanza una
       reparación (una de cada dos cubre solo su último cuarto); como mucho
       1024 secuencias.
