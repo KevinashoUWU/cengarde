@@ -27,10 +27,11 @@
  *
  * Where (cg_f3_pick): by a smooth weighted round-robin over the links the
  * split sends on, each weighed by its DATA bytes lately (cg_f3_weigh), so
- * every link carries about fec_pct more than its share; not a link whose
- * queue is past the window (cg_f3_guard: its repairs would come after the
- * gaps they cover were given up, and they would fill its queue: a choked
- * link takes none), nor one the split left out (muted, G3, G4).
+ * every link carries about fec_pct more than its share; not a link without
+ * room (cg_f3_guard: its queue a second ahead past 2.5 x rescue_target_ms,
+ * or past the window) nor one the split left out (muted, G3, G4). With no
+ * link left, the repair is not sent (its bytes are spent all the same): the
+ * share is a ceiling, filled where the links have room.
  *
  * Repairs are counted apart from DATA (tx_fec_*: the server counts a
  * path's DATA, and capacity.h would read a repair counted as DATA as
@@ -169,12 +170,19 @@ static inline uint64_t cg_f3_span_us(struct cg_f3 *f, uint64_t window_us)
 	return s > CG_F3_SHORT_MIN_US ? s : CG_F3_SHORT_MIN_US;
 }
 
-/* Whether link i may not carry repairs: its queue over the minute's
- * minimum (ql_us, -1: none measured) is past the window, where a repair
- * comes after the gaps it covers were given up. */
-static inline int cg_f3_guard(int32_t ql_us, uint32_t window_us)
+/* Whether link i may not carry repairs: it has no room (full: capacity.h's
+ * rescue weight, from where its queue will be in a second, under half:
+ * past 2.5 x rescue_target_ms), or its queue over the minute's minimum
+ * (ql_us, -1: none measured) is past the window, where a repair comes
+ * after the gaps it covers were given up. The repairs fill what the links
+ * leave: under a sender that fills them anyway (BBR keeps its rate through
+ * loss) they only took its capacity and queued in front of everything
+ * (story 026: 20 % of repairs cost BBR 12-17 % of its throughput and took
+ * the 1200-byte ping's p99 from 137 to 310-390 ms), while a loss-bound
+ * sender (cubic losing 1 % at random) leaves room and gets them. */
+static inline int cg_f3_guard(int32_t ql_us, uint32_t window_us, int full)
 {
-	return ql_us >= 0 && (uint32_t)ql_us > window_us;
+	return full || (ql_us >= 0 && (uint32_t)ql_us > window_us);
 }
 
 /* How much before now a repair on link `link` ends its window: the DATA

@@ -94,13 +94,15 @@ static void test_f3_pick(void)
 	CHECK(f.w[0] < 30000);
 }
 
-/* The guard: a queue past the window, none measured. */
+/* The guard: no room, or a queue past the window; none measured. */
 static void test_f3_guard(void)
 {
-	CHECK(!cg_f3_guard(-1, 100000));
-	CHECK(!cg_f3_guard(100000, 100000));
-	CHECK(cg_f3_guard(100001, 100000));
-	CHECK(!cg_f3_guard(0, 0));
+	CHECK(!cg_f3_guard(-1, 100000, 0));
+	CHECK(!cg_f3_guard(100000, 100000, 0));
+	CHECK(cg_f3_guard(100001, 100000, 0));
+	CHECK(!cg_f3_guard(0, 0, 0));
+	CHECK(cg_f3_guard(0, 300000, 1));
+	CHECK(cg_f3_guard(-1, 300000, 1));
 }
 
 /* Every other repair over the window's last quarter, never under 20 ms. */
