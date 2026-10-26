@@ -605,7 +605,7 @@ de reparación** (historia 026):
   últimos instantes, una parte fija de los datos repartida entre los
   enlaces; un enlace que se detiene un momento se rehace con lo que llevan
   los demás, y con un solo enlace se rehacen las pérdidas sueltas.
-- **Datos de reparación (% de la subida)** (`fec_pct`, 10 si se deja vacío):
+- **Datos de reparación (% de la subida)** (`fec_pct`, 20 si se deja vacío):
   cuesta lo mismo de la capacidad de los enlaces; más rehace detenciones más
   largas.
 - **Ventana de reparación** (`fec_window_ms`, 300 ms): hasta dónde alcanza

@@ -484,7 +484,7 @@ return view.extend({
 		o = s.taboption('protection', form.Value, 'fec_pct', _('Repair data (% of the upload)'),
 			_('The share of the bytes that goes in repairs, whatever the losses: more rebuilds longer stalls (an uplink of four stalling 50 ms needs about 25 %) and costs as much of the capacity of the uplinks.'));
 		o.datatype = 'range(1,50)';
-		o.placeholder = '10';
+		o.placeholder = '20';
 		o.depends('fec_code', 'rlc');
 
 		o = s.taboption('protection', form.Value, 'fec_window_ms', _('Repair window (ms)'),

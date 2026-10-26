@@ -567,7 +567,7 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
     servidor rehace con `fec = yes` (su anillo de 2048 DATA y las ecuaciones
     de la RLC, ~5 MB por sesión); sin rescate, un hueco espera las
     reparaciones hasta `rescue_code_ms`.
-    - **`fec_pct` (10; 1–50):** las reparaciones, % de los bytes de DATA.
+    - **`fec_pct` (20; 1–50):** las reparaciones, % de los bytes de DATA (10 en un Starlink solo, 33 para detenciones de 100–200 ms con cuatro enlaces).
     - **`fec_window_ms` (300; 10–1000):** hasta dónde alcanza una
       reparación (una de cada dos cubre solo su último cuarto); como mucho
       1024 secuencias.
@@ -583,6 +583,9 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
       (`wide`, `recovered`, `dependent`, `evicted`, `peak`, `unknowns`,
       `rows`) y `rescue.no_nack` (un hueco sin anillo en el cliente se suelta en vez
       de pedirse).
+    - Con FEC v3, `reorder_max_wait_ms` en 200 (el valor por omisión) o
+      menos: con 500 (el perfil de terreno) el p99 de un ping de 1200 B bajo
+      BBR sube 1,5–1,9× (medido en la bajada, historia 026).
 - **`redund_spare` (no; `copies`, `parity`, `mix`, `rs` o `rlc`; solo el cliente,
   experimental):** en redundancia, protege al primer enlace (el de menor
   retardo sin una cola parada; un Starlink que pierde) con lo que les sobra

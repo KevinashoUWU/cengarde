@@ -29,7 +29,7 @@ Las decisiones del emisor de la **FEC v3** (`fec = yes` con `fec_code = rlc`, [[
 
 ## Perillas
 - [[Mapa/Perillas/fec|fec]]: `yes`; [[Mapa/Perillas/fec_code|fec_code]]: `rlc` (por omisión `xor`, la paridad de [[FEC (fec.h)]]).
-- [[Mapa/Perillas/fec_pct|fec_pct]]: 10; 1–50. [[Mapa/Perillas/fec_window_ms|fec_window_ms]]: 300; 10–1000. [[Mapa/Perillas/fec_single|fec_single]]: `auto`, `yes`, `no`.
+- [[Mapa/Perillas/fec_pct|fec_pct]]: 20; 1–50. [[Mapa/Perillas/fec_window_ms|fec_window_ms]]: 300; 10–1000. [[Mapa/Perillas/fec_single|fec_single]]: `auto`, `yes`, `no`.
 - [[Mapa/Perillas/fec_wait_ms|fec_wait_ms]]: el plazo de la reparación de cola.
 
 ## Dónde se midió

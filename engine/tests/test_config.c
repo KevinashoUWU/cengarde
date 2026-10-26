@@ -835,7 +835,7 @@ static void test_config_bonding(void)
 	 * 300 ms, a lone link by its loss; the words and ranges */
 	CHECK_EQ(cg_config_parse(&c, CLIENT "fec = yes\n", err, sizeof(err), warn, sizeof(warn)), 0);
 	CHECK_EQ(c.fec_code, CG_FEC_XOR);
-	CHECK_EQ(c.fec_pct, 10);
+	CHECK_EQ(c.fec_pct, 20);
 	CHECK_EQ(c.fec_window_ms, 300);
 	CHECK_EQ(c.fec_single, CG_F3_SINGLE_AUTO);
 	cg_config_free(&c);

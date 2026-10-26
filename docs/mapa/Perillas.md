@@ -123,7 +123,7 @@ Secciones: «global» es la parte sin sección; `[link NOMBRE]` es del cliente; 
 | [[Mapa/Perillas/fec_wait_ms\|fec_wait_ms]] | 10 | [[FEC (fec.h)]], [[Rescate (rescue.h)]] | [[013-capacidad-y-dosificacion]] |
 | [[Mapa/Perillas/fec_share_max\|fec_share_max]] | 0 (sin tope) | [[FEC (fec.h)]], [[Reparto (split.h)]] | [[012-bonding]], [[013-capacidad-y-dosificacion]] |
 | [[Mapa/Perillas/fec_code\|fec_code]] | `xor` | [[FEC v3 (fec3.h)]], [[FEC (fec.h)]], [[Códigos de borrado (rs.h, rlc.h)]] | [[026-fec-v3]] |
-| [[Mapa/Perillas/fec_pct\|fec_pct]] | 10 | [[FEC v3 (fec3.h)]] | [[026-fec-v3]] |
+| [[Mapa/Perillas/fec_pct\|fec_pct]] | 20 | [[FEC v3 (fec3.h)]] | [[026-fec-v3]] |
 | [[Mapa/Perillas/fec_window_ms\|fec_window_ms]] | 300 | [[FEC v3 (fec3.h)]], [[Códigos de borrado (rs.h, rlc.h)]] | [[026-fec-v3]] |
 | [[Mapa/Perillas/fec_single\|fec_single]] | `auto` | [[FEC v3 (fec3.h)]], [[Observaciones del enlace (linksig.h)]] | [[026-fec-v3]] |
 

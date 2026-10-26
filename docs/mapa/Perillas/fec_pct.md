@@ -11,7 +11,7 @@ FEC v3: las reparaciones, % de los bytes de DATA, haya o no pérdida. Un enlace 
 
 - **Sección:** global
 - **Extremo:** cliente
-- **Por omisión:** 10
+- **Por omisión:** 20
 - **Rango:** 1–50
 - **Pieza:** [[FEC v3 (fec3.h)]]
 - **Historia:** [[026-fec-v3]]
