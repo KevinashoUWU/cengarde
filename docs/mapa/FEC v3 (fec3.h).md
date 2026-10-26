@@ -3,7 +3,7 @@ tags: [mapa, pieza]
 archivos:
   - engine/src/fec3.h
   - engine/tests/test_fec3.c
-sello: 1f47d292739638d1
+sello: a89a9443b8c35b76
 ---
 # FEC v3 (fec3.h)
 
@@ -14,7 +14,7 @@ Las decisiones del emisor de la **FEC v3** (`fec = yes` con `fec_code = rlc`, [[
 
 - **Cuándo protege** (`cg_f3_mode_of`): con reparto sobre dos enlaces o más (`bonding`), o un **solo enlace** (`single`), con su puerta (`cg_f3_gate`, `fec_single = auto`): abierta mientras pierde **al azar** (el `loss_kind` de [[Observaciones del enlace (linksig.h)]], o una muestra con pérdida de 2 ‰ o más sin cola, `CG_F3_RAND_PM`: el 0,3 % de Starlink queda bajo la muestra con pérdida de `linksig.h`) y 30 s después mientras siga perdiendo 1 ‰ o más; cerrada en un enlace limpio, con pérdida **por congestión** (las caídas de una cola llena son la señal de TCP para frenar: repararlas le quitaría capacidad y la escondería) y en un **corte** (pérdida sobre la mitad de la tasa de reparación: el código no alcanza y las reparaciones mueren con el enlace). En redundancia con varios enlaces, apagada (ahí protege [[Lo que sobra (spare.h)]]).
 - **Cuántas** (`cg_f3_earn`, `cg_f3_owed`, `cg_f3_spend`): un crédito en bytes × 100; cada DATA gana su largo × `fec_pct`, cada reparación gasta su tamaño (cabecera y símbolo). La reparación de **cola** (`cg_f3_due`): `fec_wait_ms` después del primer DATA sin reparación (el fin de una ráfaga), con el crédito en 0 o más, hasta una reparación de deuda.
-- **Dónde** (`cg_f3_pick`): round-robin suave ponderado por los bytes de DATA de cada enlace en los últimos ticks (`cg_f3_weigh`): cada enlace lleva ~`fec_pct` más que su parte; nunca un enlace que el reparto dejó afuera (silenciado, G3, G4) ni uno cuya cola pasa la ventana (`cg_f3_guard`: sus reparaciones llegarían cuando ya se soltaron los huecos, y le llenarían la cola).
+- **Dónde** (`cg_f3_pick`): round-robin suave ponderado por los bytes de DATA de cada enlace en los últimos ticks (`cg_f3_weigh`): cada enlace lleva ~`fec_pct` más que su parte; nunca un enlace que el reparto dejó afuera (silenciado, G3, G4) ni uno **lleno** (`cg_f3_guard`: el peso del rescate de [[Capacidad (capacity.h)]] en 0, su cola dentro de un segundo pasa 4 × `rescue_target_ms`: lo que pierde es congestión y un enlace ahogado no recibe reparaciones que le llenen la cola) o cuya cola pasa la ventana (sus reparaciones llegarían cuando ya se soltaron los huecos). Sin enlace, la reparación no sale (sus bytes se gastan igual): la parte es un techo. Con la mitad del peso (2,5 × el objetivo) cortaba las reparaciones que cubic necesita mientras llena un enlace solo, y tampoco frenaba a BBR, cuya cola queda chica mientras las reparaciones le quitan capacidad ([[026-fec-v3]]).
 - **Sobre qué** (`cg_f3_span_us`, `cg_f3_lag_us`): una reparación de cada dos cubre la ventana entera (alcanza una detención) y la otra su último cuarto (al menos 20 ms: a los mismos miembros por reparación, una pérdida suelta cae en más de ellas y vuelve antes); la ventana termina un poco antes de ahora, en lo que tarda el enlace más lento más que el de la reparación (`behind_us` de [[Salud y silenciado (health.h)]]): lo enviado después llegaría detrás de la reparación y le costaría al receptor una columna para nada (bajo TCP, ~100 miembros por reparación en el laboratorio; con el retraso, la mitad de las incógnitas a la vez).
 
 ## Lee

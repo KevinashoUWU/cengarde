@@ -556,7 +556,8 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
     v3** (historia 026, `fec3.h`, `rlc.h`): todo DATA entra en una ventana
     deslizante y salen reparaciones de ella a una parte fija de los bytes,
     haya o no pérdida, repartidas por los enlaces según lo que lleva cada
-    uno (no uno silenciado ni fuera del reparto, ni uno cuya cola pase la
+    uno (no uno silenciado ni fuera del reparto, ni uno lleno: su cola en
+    un segundo pasa 4 × `rescue_target_ms`, ni uno cuya cola pase la
     ventana). Así un enlace que se detiene se rehace con lo que llevan los
     demás: con parte s detenido T, unos s·T / (r·(1 − s)) después de
     empezar a tasa r (estimación; cuatro enlaces iguales y 50 ms: ~67 ms a
