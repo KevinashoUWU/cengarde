@@ -33,6 +33,7 @@ TCPA = "Retransmisión según la evidencia (tcpack.h)"
 SRV = "Elección de servidor (srvpick.h)"
 NAMES = "Nombres del servidor (resolve.h)"
 RO = "Reordenador (reorder.h)"
+ACT = "Enlaces activos (active.h)"
 LANES = "Colas del servidor (steer.h)"
 RCVB = "Presupuesto de recepción (rcvbudget.h)"
 THR = "Hilos por enlace (thrplan.h)"
@@ -129,6 +130,7 @@ T = {
  "reorder_by_link": ([G], BOTH, "`no`", "`yes` o `no`", [RO], ["013"], "Un hueco espera solo al enlace por el que salió (`CG_F_PREV`). Experimental."),
  "reorder_adaptive": ([G], BOTH, "`no`", "`yes` o `no`", [RO], ["013"], "El margen de cada enlace aprende de sus tardíos. Experimental."),
  "reorder_pool_kb": ([G], BOTH, "8192", "256–131070", [RO], ["012", "013"], "Memoria para lo retenido."),
+ "reorder_active": ([G], BOTH, "`yes`", "`yes` o `no`", [RO, ACT], ["013"], "Un hueco espera solo a los enlaces por los que el otro extremo llevó datos hace poco (la máscara de sus sondas, C2); `no`: a todos los no silenciados, como antes."),
  "reorder_idle_ms": ([G], BOTH, "0 (apagado)", "0–60000", [RO, ARR], ["audit"], "EXPERIMENTO (C2): el reordenador deja de esperar a un enlace que no trajo datos este tiempo."),
  "reorder_retx_release_ms": ([G], BOTH, "0 (apagado)", "0–2000", [RO, TCPF], ["014"], "Una retransmisión de TCP suelta los huecos retenidos desde este tiempo antes de ella."),
  "tcp_aware": ([G], BOTH, "`no`", "`yes` o `no`", [TCPF, RO], ["014"], "Con `tunnel = native`, marca libres los segmentos sin datos y las retransmisiones de TCP."),
@@ -265,7 +267,7 @@ def generate():
                       "path_timeout_ms", "passthrough_file", "forward_file", "forward", "lanes"]),
         ("Salud", ["mute_behind_ms", "unmute_behind_ms", "mute_settle_ms", "mute_trickle", "min_active_links", "mute_queue"]),
         ("Reordenador", ["reorder", "reorder_max_wait_ms", "reorder_dup_wait_ms", "reorder_margin_ms", "reorder_bypass",
-                         "reorder_by_link", "reorder_adaptive", "reorder_pool_kb", "reorder_idle_ms",
+                         "reorder_by_link", "reorder_adaptive", "reorder_pool_kb", "reorder_active", "reorder_idle_ms",
                          "reorder_retx_release_ms", "tcp_aware"]),
         ("Rescate y FEC", ["rescue_kb", "rescue_pct", "rescue_wait_ms", "rescue_tries", "rescue_target_ms",
                            "rescue_by_owd", "rescue_full_hyst", "rescue_code_ms", "parq", "rescue_tcp_race",

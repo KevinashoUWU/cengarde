@@ -36,7 +36,7 @@ El reparto por **llegada esperada**: cada paquete va por el enlace donde llegar�
 ## Choques conocidos
 - Con `capacity_expire_ms`, cada mitad de la caducidad cuenta como medida (`loaded_ms`): `cg_cap_stale` no la vuelve a agrandar durante `CG_CAP_STALE_MS` ([[Capacidad (capacity.h)]], [[016-celda-virtual]]).
 - C9: reinicia su cola cada tick con una cola de hace 300–500 ms, sin lo que está en vuelo; oscila con período de 0,6–1 s ([[audit-pending]]). `eta_keep` quedó apagado.
-- C2: con el ETA, los enlaces ociosos no avanzan y el RACK del [[Reordenador (reorder.h)]] los espera.
+- C2 (resuelto el 2026-10-26): con el ETA, los enlaces ociosos no avanzaban y el RACK del [[Reordenador (reorder.h)]] los esperaba; ahora el receptor sabe por la máscara de [[Enlaces activos (active.h)]] qué enlaces usa el ETA.
 - Sin carga un enlace no se mide: [[Cosquilla (tickle.h)]].
 - Con ETA, los pesos del [[Gobernador (govern.h)]] y de la capacidad no deciden, pero salen en el estado (auditoría, métrica 10).
 
