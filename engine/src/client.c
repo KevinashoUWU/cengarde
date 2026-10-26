@@ -2068,6 +2068,7 @@ static const struct cg_tcpe_view *tcpe_view(const struct client *c, uint32_t now
 
 /* Where an upload batch goes, decided once per batch (wg_read, up_send). */
 struct upctx {
+	uint64_t now_ms;
 	uint16_t present, live, carry, dup0, esolo;
 	int split;
 	struct cg_split_masks k;
@@ -2106,7 +2107,8 @@ static void f3_begin(struct client *c, const struct upctx *u)
 	if (mode == CG_F3_SINGLE) {
 		int i = __builtin_ctz(set);
 
-		if (!cg_f3_gate(&c->f3, (unsigned)i, c->cfg->fec_single, c->sig[i].kind == CG_SIG_RANDOM, c->cfg->fec_pct)) {
+		if (!cg_f3_gate(&c->f3, (unsigned)i, c->cfg->fec_single, c->sig[i].kind == CG_SIG_RANDOM, c->cfg->fec_pct,
+				u->now_ms)) {
 			mode = CG_F3_OFF;
 			c->f3_gated++;
 		}
@@ -2169,9 +2171,10 @@ static void f3_repair(struct client *c, uint64_t now_us)
 		return;
 	}
 	{
-		/* its window ends where the DATA of slower links would still
-		 * be on their way when it arrives (cg_f3_lag_us), at most half
-		 * the window back */
+		/* the window, or its last quarter (cg_f3_span_us); it ends where
+		 * the DATA of slower links would still be on their way when it
+		 * arrives (cg_f3_lag_us), at most half its span back */
+		uint64_t span = cg_f3_span_us(&c->f3, win);
 		int32_t behind[CG_MAX_LINKS];
 		uint16_t have = 0;
 
@@ -2179,9 +2182,9 @@ static void f3_repair(struct client *c, uint64_t now_us)
 			behind[i] = c->uh[i].behind_us;
 			have |= (uint16_t)(c->uh[i].have_behind ? 1u << i : 0);
 		}
-		lag = cg_f3_lag_us(behind, have, c->f3_links, (unsigned)link, (uint32_t)(win / 2));
+		lag = cg_f3_lag_us(behind, have, c->f3_links, (unsigned)link, (uint32_t)(span / 2));
+		w = cg_rlcw_window(c->f3w, now_us > span ? now_us - span : 0, now_us - lag, CG_RLCW_SPAN, &top);
 	}
-	w = cg_rlcw_window(c->f3w, now_us > win ? now_us - win : 0, now_us - lag, CG_RLCW_SPAN, &top);
 	if (c->nfecq == CG_FEC_Q)
 		fec_send(c, now_us);
 	p = c->fecq[c->nfecq].p + CG_HDR_LEN;
@@ -2248,6 +2251,7 @@ static void f3_apply(struct client *c)
 
 static void up_begin(struct client *c, uint64_t now_ms, struct upctx *u)
 {
+	u->now_ms = now_ms;
 	/* the split is decided per packet before its header (CG_F_SPLIT is
 	 * under the MAC) */
 	link_masks_tx(c, now_ms, &u->present, &u->live);
@@ -3543,7 +3547,7 @@ static void cap_tick(struct client *c, uint16_t live, uint16_t in, uint64_t now_
 			cg_sig_cap(&c->sig[i], &c->cap[i], now_ms);
 			/* FEC v3: where its repairs go, and a lone link's loss */
 			cg_f3_weigh(&c->f3, (unsigned)i, l->tx_bytes);
-			cg_f3_loss(&c->f3, (unsigned)i, c->cap[i].loss_pm, c->cap[i].loss_pm_ms);
+			cg_f3_loss(&c->f3, (unsigned)i, c->cap[i].loss_pm, c->cap[i].loss_pm_ms, c->cap[i].ql_us);
 
 			cg_decrec_cap(&c->dec, &c->cap[i], (unsigned)i, ev, was, now_ms);
 		}

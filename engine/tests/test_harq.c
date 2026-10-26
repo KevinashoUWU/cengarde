@@ -139,7 +139,8 @@ static void test_harq_route(void)
 	CHECK_EQ(cg_harq_route(&g), CG_HARQ_WAIT); /* narrow codes: as before */
 	g.deficit = 0;
 	/* the estimate: covered until the newest passes seq + span - 1, a repair every gap / 16 */
-	CHECK_EQ(cg_harq_future(1000, 1300, 600, 16 * 10), 29);
+	CHECK_EQ(cg_harq_future(1000, 1300, 600, 16 * 10), 14); /* 300 back: only the long ones */
+	CHECK_EQ(cg_harq_future(1200, 1300, 600, 16 * 10), 49);  /* 100 back: every one */
 	CHECK_EQ(cg_harq_future(1000, 1599, 600, 160), 0);
 	CHECK_EQ(cg_harq_future(1000, 1700, 600, 160), 0);
 	CHECK_EQ(cg_harq_future(1000, 1300, 600, 0), 0);

@@ -194,7 +194,8 @@ struct session {
 	uint8_t rep_top_ok;
 	uint64_t rep_last_ms;
 	uint64_t f3_last_ms;   /* FEC v3's wide repairs came then (story 026): gaps wait for the code without the rescue */
-	uint32_t f3_top, f3_span; /* the newest wide repair's last member and window (harq.h's cg_harq_future) */
+	uint32_t f3_top, f3_span; /* the newest wide repair's last member, the long ones' window (harq.h's cg_harq_future) */
+	uint64_t f3_span_ms;      /* when that span was last seen */
 	uint32_t f3_gap16;        /* sequences between wide repairs as they arrive, x 16, smoothed (1/8) */
 	uint8_t f3_have;
 	uint64_t hq_nonack;    /* asks the code could not answer, the client keeping no rescue ring: given up, no NACK */
@@ -1912,9 +1913,14 @@ static void rep_take(struct server *s, int *nq, struct session *S, const uint8_t
 		S->f3_last_ms = now_ms;
 		/* how far apart they come, for the repairs still to come
 		 * over a gap (cg_harq_future) */
+		/* the long repairs' window: the largest span lately (every other
+		 * repair spans a quarter of it) */
+		if (h.span >= S->f3_span || now_ms - S->f3_span_ms > 1000) {
+			S->f3_span = h.span;
+			S->f3_span_ms = now_ms;
+		}
 		if (!S->f3_have) {
 			S->f3_top = top;
-			S->f3_span = h.span;
 			S->f3_have = 1;
 		} else if ((int32_t)(top - S->f3_top) >= 0) {
 			uint32_t d = top - S->f3_top;
@@ -1925,7 +1931,6 @@ static void rep_take(struct server *s, int *nq, struct session *S, const uint8_t
 				S->f3_gap16 = S->f3_gap16 ? S->f3_gap16 - S->f3_gap16 / 8 + g16 / 8 : g16;
 			}
 			S->f3_top = top;
-			S->f3_span = h.span;
 		}
 	}
 	if ((h.kind == CG_REP_RLC || h.kind == CG_REP_RLCW) && S->rlc)

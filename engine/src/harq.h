@@ -194,11 +194,12 @@ static inline enum cg_harq_do cg_harq_route(const struct cg_harq_gap *g)
 }
 
 /* FEC v3 (story 026): the repairs still to come over gap seq, about: the
- * newest wide repair covered up to top with a window of span sequences, so
+ * newest long repair covered up to top with a window of span sequences, so
  * repairs go on covering seq until the newest sequence passes seq + span -
  * 1; one comes every gap16 / 16 sequences (smoothed, as they arrive: those
- * a stalled link took are not counted). At most 65535; 0 when gap16 is 0
- * (not known yet). */
+ * a stalled link took are not counted), and every other one covers only
+ * the window's last quarter (fec3.h's cg_f3_span_us): a gap older than that
+ * gets half of them. At most 65535; 0 when gap16 is 0 (not known yet). */
 static inline uint16_t cg_harq_future(uint32_t seq, uint32_t top, uint32_t span, uint32_t gap16)
 {
 	int32_t left = (int32_t)(seq + span - 1 - top);
@@ -207,6 +208,8 @@ static inline uint16_t cg_harq_future(uint32_t seq, uint32_t top, uint32_t span,
 	if (left <= 0 || !gap16)
 		return 0;
 	f = (uint64_t)left * 16 / gap16;
+	if ((int32_t)(top - seq) > (int32_t)(span / 4))
+		f /= 2;
 	return f > 65535 ? 65535 : (uint16_t)f;
 }
 

@@ -13,9 +13,9 @@
  * lone link (single: no other link to carry the repairs, so a cut takes
  * them too; they only answer scattered loss, Starlink's 0.3-1.3 %, a
  * radio's), gated by its loss (cg_f3_gate, fec_single = auto): on while
- * it loses at random or above CG_F3_ON_PM, off on a clean link (no bytes
- * spent) and in a cut (its loss over half the repair rate: the code cannot
- * keep up and the repairs die with the link). Redundancy over several
+ * it loses at random (linksig.h), off on a clean link and on congestive
+ * loss (no bytes spent) and in a cut (its loss over half the repair rate:
+ * the code cannot keep up and the repairs die with the link). Redundancy over several
  * links: off (every packet is on every link; redund_spare protects the
  * first link there).
  *
@@ -49,10 +49,13 @@
 #include "repair.h" /* CG_REP_HDR */
 
 #define CG_F3_LINKS 16      /* CG_MAX_LINKS */
-#define CG_F3_ON_PM 2       /* fec_single = auto: on from this loss (per mille, smoothed) */
-#define CG_F3_OFF_PM 1      /* off under this */
+#define CG_F3_OFF_PM 1      /* fec_single = auto: off under this loss (per mille, smoothed) */
+#define CG_F3_RAND_HOLD_MS 30000u /* and this long after the link last lost at random (linksig.h) */
+#define CG_F3_RAND_PM 2     /* a sample losing this (per mille) or more ... */
+#define CG_F3_RAND_Q_US 10000 /* ... with its queue within this: random (linksig.h's CG_SIG_RAND_Q_US) */
 #define CG_F3_BURST 32      /* repairs one batch may owe at most */
 #define CG_F3_COST0 1500u   /* a repair's bytes before the first one is known */
+#define CG_F3_SHORT_MIN_US 20000u /* a short repair's window, at least */
 
 enum cg_f3_mode { CG_F3_OFF = 0, CG_F3_BOND, CG_F3_SINGLE };
 enum cg_f3_single { CG_F3_SINGLE_AUTO = 0, CG_F3_SINGLE_YES, CG_F3_SINGLE_NO };
@@ -66,7 +69,9 @@ struct cg_f3 {
 	uint64_t txb[CG_F3_LINKS];   /* its DATA bytes sent at the last tick */
 	uint16_t loss16[CG_F3_LINKS]; /* its loss, per mille x 16, smoothed (1/4) over its samples */
 	uint64_t loss_ms[CG_F3_LINKS]; /* the sample last taken */
-	uint8_t gate;                /* the lone link's gate (fec_single = auto), with hysteresis */
+	uint64_t rand_ms[CG_F3_LINKS]; /* when its loss last read random (linksig.h's loss_kind), 0: never */
+	uint8_t gate;                /* the lone link's gate (fec_single = auto) */
+	uint8_t alt;                 /* the next repair's span: the window or its quarter (cg_f3_span_us) */
 	uint8_t mode;                /* enum cg_f3_mode, at the last batch */
 };
 
@@ -146,6 +151,24 @@ static inline void cg_f3_weigh(struct cg_f3 *f, unsigned i, uint64_t txb)
 	f->w[i] = (f->w[i] * 3 + d) / 4;
 }
 
+/* The span of the next repair's window, us: every other one covers only
+ * the last quarter of the window (CG_F3_SHORT_MIN_US at least). The long
+ * ones reach back over a stall (a link's lost run needs the repairs of the
+ * whole window); the short ones combine fewer packets each, so at the same
+ * members per repair (rlc.h's CG_RLCW_DMAX) a scattered loss is in more of
+ * them and comes back sooner (a lone link losing 1 %: TCP 26 Mbit/s with a
+ * window of 100 ms against 15 with 300, its losses waiting for repairs past
+ * TCP's own retransmission). */
+static inline uint64_t cg_f3_span_us(struct cg_f3 *f, uint64_t window_us)
+{
+	uint64_t s = window_us / 4;
+
+	f->alt ^= 1;
+	if (!f->alt || window_us <= CG_F3_SHORT_MIN_US)
+		return window_us;
+	return s > CG_F3_SHORT_MIN_US ? s : CG_F3_SHORT_MIN_US;
+}
+
 /* Whether link i may not carry repairs: its queue over the minute's
  * minimum (ql_us, -1: none measured) is past the window, where a repair
  * comes after the gaps it covers were given up. */
@@ -203,8 +226,11 @@ static inline int cg_f3_pick(struct cg_f3 *f, uint16_t cand)
 }
 
 /* Link i's loss sample (its capacity's loss_pm, per mille, reported at
- * t_ms): into its average, once per sample. */
-static inline void cg_f3_loss(struct cg_f3 *f, unsigned i, uint16_t loss_pm, uint64_t t_ms)
+ * t_ms, with its queue over the minute's minimum ql_us, -1: none): into
+ * its average, once per sample; a loss of CG_F3_RAND_PM or more without a
+ * queue (CG_F3_RAND_Q_US) is random (Starlink's 0.3 % is under linksig.h's
+ * lossy sample, 5 per mille, and its loss_kind never reads random). */
+static inline void cg_f3_loss(struct cg_f3 *f, unsigned i, uint16_t loss_pm, uint64_t t_ms, int32_t ql_us)
 {
 	if (!t_ms || t_ms == f->loss_ms[i])
 		return;
@@ -212,26 +238,32 @@ static inline void cg_f3_loss(struct cg_f3 *f, unsigned i, uint16_t loss_pm, uin
 	if (loss_pm > 1000)
 		loss_pm = 1000;
 	f->loss16[i] = (uint16_t)((f->loss16[i] * 3 + loss_pm * 16) / 4);
+	if (loss_pm >= CG_F3_RAND_PM && ql_us >= 0 && ql_us <= CG_F3_RAND_Q_US && loss_pm * 2 < 1000)
+		f->rand_ms[i] = t_ms;
 }
 
 /* Whether a lone link i is protected: fec_single (enum cg_f3_single);
- * auto, while it loses at random (random: linksig.h's loss_kind says so)
- * or over CG_F3_ON_PM, until it loses under CG_F3_OFF_PM, and never while
- * it loses over half the repair rate (pct %: a cut). */
-static inline int cg_f3_gate(struct cg_f3 *f, unsigned i, int knob, int random, uint32_t pct)
+ * auto, while linksig.h has seen it lose at random (random: its loss_kind
+ * says so now) within CG_F3_RAND_HOLD_MS and it still loses CG_F3_OFF_PM or
+ * more, and never while it loses over half the repair rate (pct %: a cut,
+ * the repairs die with it). Not on congestive loss: a full link's drops are
+ * TCP's signal to slow down, and repairs would take its capacity and hide
+ * that signal (in the lab, a clean link saturated by TCP lost 0.2-1 % at
+ * its queue: protecting it cost 6-12 % of its throughput). The hold keeps
+ * it on once TCP, with the loss repaired, fills the link and its queue
+ * makes the kind read congestive. now_ms: the tick's clock. */
+static inline int cg_f3_gate(struct cg_f3 *f, unsigned i, int knob, int random, uint32_t pct, uint64_t now_ms)
 {
 	uint32_t pm = f->loss16[i] / 16u;
 
+	if (random)
+		f->rand_ms[i] = now_ms ? now_ms : 1;
 	if (knob == CG_F3_SINGLE_YES)
 		return 1;
 	if (knob == CG_F3_SINGLE_NO)
 		return 0;
-	if (pm * 2 > pct * 10)
-		f->gate = 0;
-	else if (random || pm >= CG_F3_ON_PM)
-		f->gate = 1;
-	else if (pm < CG_F3_OFF_PM)
-		f->gate = 0;
+	f->gate = pm * 2 <= pct * 10 && f->rand_ms[i] && now_ms - f->rand_ms[i] <= CG_F3_RAND_HOLD_MS &&
+		  (random || pm >= CG_F3_OFF_PM);
 	return f->gate;
 }
 

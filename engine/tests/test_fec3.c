@@ -103,6 +103,21 @@ static void test_f3_guard(void)
 	CHECK(!cg_f3_guard(0, 0));
 }
 
+/* Every other repair over the window's last quarter, never under 20 ms. */
+static void test_f3_span(void)
+{
+	struct cg_f3 f;
+
+	memset(&f, 0, sizeof(f));
+	CHECK_EQ(cg_f3_span_us(&f, 200000), 50000);
+	CHECK_EQ(cg_f3_span_us(&f, 200000), 200000);
+	CHECK_EQ(cg_f3_span_us(&f, 200000), 50000);
+	CHECK_EQ(cg_f3_span_us(&f, 40000), 40000);
+	CHECK_EQ(cg_f3_span_us(&f, 40000), 20000);
+	CHECK_EQ(cg_f3_span_us(&f, 20000), 20000);
+	CHECK_EQ(cg_f3_span_us(&f, 20000), 20000);
+}
+
 /* The lag: the slowest link of the set over the repair's own, never
  * negative, capped; links whose delay is not known count as the fastest. */
 static void test_f3_lag(void)
@@ -119,43 +134,55 @@ static void test_f3_lag(void)
 	CHECK_EQ(cg_f3_lag_us(b, 0, 0xf, 1, 50000), 0);
 }
 
-/* The lone link's gate: on at 2 per mille (or random loss), off under 1,
- * off in a cut (over half the repair rate), the knob over all of it. */
+/* The lone link's gate: on with random loss (linksig.h's kind) and for
+ * CG_F3_RAND_HOLD_MS after while it still loses; never on congestive loss
+ * alone, nor in a cut (over half the repair rate); the knob over all of it. */
 static void test_f3_gate(void)
 {
 	struct cg_f3 f;
+	uint64_t t = 1000;
 
 	memset(&f, 0, sizeof(f));
-	CHECK(!cg_f3_gate(&f, 0, CG_F3_SINGLE_AUTO, 0, 10)); /* clean */
-	CHECK(cg_f3_gate(&f, 0, CG_F3_SINGLE_AUTO, 1, 10));  /* random loss said */
-	for (int i = 1; i <= 10; i++)
-		cg_f3_loss(&f, 0, 0, (uint64_t)i);
-	CHECK(!cg_f3_gate(&f, 0, CG_F3_SINGLE_AUTO, 0, 10));
-	for (int i = 11; i <= 30; i++)
-		cg_f3_loss(&f, 0, 10, (uint64_t)i); /* 1 % */
-	CHECK(f.loss16[0] / 16 >= 9);
-	CHECK(cg_f3_gate(&f, 0, CG_F3_SINGLE_AUTO, 0, 10));
-	cg_f3_loss(&f, 0, 10, 30); /* the same sample: once */
-	for (int i = 31; i <= 33; i++)
-		cg_f3_loss(&f, 0, 0, (uint64_t)i);
-	CHECK(f.loss16[0] / 16 >= 1);
-	CHECK(cg_f3_gate(&f, 0, CG_F3_SINGLE_AUTO, 0, 10)); /* hysteresis */
-	for (int i = 34; i <= 60; i++)
-		cg_f3_loss(&f, 0, 0, (uint64_t)i);
-	CHECK(!cg_f3_gate(&f, 0, CG_F3_SINGLE_AUTO, 0, 10));
+	CHECK(!cg_f3_gate(&f, 0, CG_F3_SINGLE_AUTO, 0, 10, t)); /* clean */
+	for (int i = 1; i <= 30; i++)
+		cg_f3_loss(&f, 0, 10, (uint64_t)i, 80000); /* 1 %, congestive: a queue of 80 ms */
+	CHECK(!cg_f3_gate(&f, 0, CG_F3_SINGLE_AUTO, 0, 10, t));
+	CHECK(cg_f3_gate(&f, 0, CG_F3_SINGLE_AUTO, 1, 10, t)); /* random */
+	t += 20000;
+	CHECK(cg_f3_gate(&f, 0, CG_F3_SINGLE_AUTO, 0, 10, t)); /* held: reads congestive now */
+	cg_f3_loss(&f, 0, 10, 30, 50000);                             /* the same sample: once */
+	t += CG_F3_RAND_HOLD_MS;
+	CHECK(!cg_f3_gate(&f, 0, CG_F3_SINGLE_AUTO, 0, 10, t)); /* past the hold */
+	CHECK(cg_f3_gate(&f, 0, CG_F3_SINGLE_AUTO, 1, 10, t));
+	for (int i = 31; i <= 60; i++)
+		cg_f3_loss(&f, 0, 0, (uint64_t)i, 50000);
+	CHECK_EQ(f.loss16[0] / 16, 0);
+	CHECK(!cg_f3_gate(&f, 0, CG_F3_SINGLE_AUTO, 0, 10, t + 1)); /* clean again within the hold */
 	for (int i = 61; i <= 90; i++)
-		cg_f3_loss(&f, 0, 600, (uint64_t)i); /* a microcut, 60 % */
-	CHECK(!cg_f3_gate(&f, 0, CG_F3_SINGLE_AUTO, 1, 10));
-	CHECK(cg_f3_gate(&f, 0, CG_F3_SINGLE_YES, 0, 10));
+		cg_f3_loss(&f, 0, 600, (uint64_t)i, 50000); /* a microcut, 60 % */
+	CHECK(!cg_f3_gate(&f, 0, CG_F3_SINGLE_AUTO, 1, 10, t + 2));
+	CHECK(cg_f3_gate(&f, 0, CG_F3_SINGLE_YES, 0, 10, t + 2));
 	memset(&f, 0, sizeof(f));
 	for (int i = 1; i <= 30; i++)
-		cg_f3_loss(&f, 0, 10, (uint64_t)i);
-	CHECK(!cg_f3_gate(&f, 0, CG_F3_SINGLE_NO, 1, 10));
-	/* 1 % at 2 % of repairs: over half the rate, off */
-	CHECK(!cg_f3_gate(&f, 0, CG_F3_SINGLE_AUTO, 1, 1));
-	CHECK(cg_f3_gate(&f, 0, CG_F3_SINGLE_AUTO, 1, 5));
-	cg_f3_loss(&f, 0, 5000, 31);
+		cg_f3_loss(&f, 0, 10, (uint64_t)i, 50000);
+	CHECK(!cg_f3_gate(&f, 0, CG_F3_SINGLE_NO, 1, 10, t));
+	/* 1 % at 1 % of repairs: over half the rate, off; at 5 %, on */
+	CHECK(!cg_f3_gate(&f, 0, CG_F3_SINGLE_AUTO, 1, 1, t));
+	CHECK(cg_f3_gate(&f, 0, CG_F3_SINGLE_AUTO, 1, 5, t));
+	cg_f3_loss(&f, 0, 5000, 31, 50000);
 	CHECK(f.loss16[0] / 16 <= 1000);
+	/* Starlink's 0.3 % without a queue: random, though under linksig's lossy sample */
+	memset(&f, 0, sizeof(f));
+	for (int i = 1; i <= 30; i++)
+		cg_f3_loss(&f, 0, i % 2 ? 6 : 0, (uint64_t)i, 2000);
+	CHECK(f.rand_ms[0] == 29);
+	CHECK(cg_f3_gate(&f, 0, CG_F3_SINGLE_AUTO, 0, 10, 40));
+	/* the same with a queue (congestive): never */
+	memset(&f, 0, sizeof(f));
+	for (int i = 1; i <= 30; i++)
+		cg_f3_loss(&f, 0, i % 2 ? 6 : 0, (uint64_t)i, 30000);
+	CHECK(!f.rand_ms[0]);
+	CHECK(!cg_f3_gate(&f, 0, CG_F3_SINGLE_AUTO, 0, 10, 40));
 }
 
 void test_fec3(void)
@@ -165,5 +192,6 @@ void test_fec3(void)
 	test_f3_pick();
 	test_f3_guard();
 	test_f3_lag();
+	test_f3_span();
 	test_f3_gate();
 }
