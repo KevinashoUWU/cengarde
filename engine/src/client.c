@@ -1655,7 +1655,10 @@ static int fec_timeout(const struct client *c)
 		if (cd && (!due || cd < due))
 			due = cd;
 	}
-	if (c->f3w && c->f3.mode != CG_F3_OFF) {
+	if (c->f3w && c->f3.mode != CG_F3_OFF && c->f3.credit >= 0) {
+		/* in debt, nothing is due until a DATA pays it (and that DATA
+		 * wakes the loop): a deadline in the past here spun the loop
+		 * (the client at 25-30 % of a core with fec_pct 5) */
 		uint64_t fd = cg_f3_due_at(&c->f3, (uint64_t)c->cfg->fec_wait_ms * 1000);
 
 		if (fd && (!due || fd < due))
