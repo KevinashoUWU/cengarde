@@ -1,7 +1,7 @@
 # 013 — Capacidad por enlace y dosificación (paso 4 del bonding)
 
 - **Fecha:** 2026-10-14 (actualizada el 2026-10-26: C2, la máscara de enlaces activos)
-- **Estado:** vigente. C2 (PR #PRNUM, protocolo 11): el reordenador espera solo a los enlaces por los que el otro extremo manda datos. PR 1 hecho (PR #32, 0.6.5): el plazo del reordenador según la oscilación de cada enlace. PR 2 hecho (PR #33, 0.6.6): la capacidad de cada enlace. PR 3 (PR #34, 0.6.7): los pesos según la capacidad (`capacity_weights`), +50 % en la bajada (n = 5, p = 0,075). Medidos en la red de pruebas. PR 4 (PR #35, 0.6.8): `shape_mbit` y `bench/shaper.sh`, experimental; todavía cuesta ~40 % de la bajada.
+- **Estado:** vigente. C2 (PR #118, protocolo 11): el reordenador espera solo a los enlaces por los que el otro extremo manda datos. PR 1 hecho (PR #32, 0.6.5): el plazo del reordenador según la oscilación de cada enlace. PR 2 hecho (PR #33, 0.6.6): la capacidad de cada enlace. PR 3 (PR #34, 0.6.7): los pesos según la capacidad (`capacity_weights`), +50 % en la bajada (n = 5, p = 0,075). Medidos en la red de pruebas. PR 4 (PR #35, 0.6.8): `shape_mbit` y `bench/shaper.sh`, experimental; todavía cuesta ~40 % de la bajada.
 - **Fuentes:**
   - las medidas del 2026-10-14 en el banco y en la Pi, en [012](012-bonding.md) («El gobernador en el banco…», «El gobernador en la bajada y `cake`…», «… en la Pi»);
   - código leído: `engine/src/reorder.h` (plazo de un hueco, líneas 70–80 del comentario), `govern.h`, `split.h`, `health.h`, `proto.h` (`struct cg_probe_info`: `rx` por camino), `clientpath.h`, `server.c` (`peer_asks`, `apply_config`);
@@ -537,7 +537,7 @@ con 4 flujos y 20 s, 3 rondas alternadas, salvo que se diga otra cosa.
 - **Pendiente:** el A/B en la red de pruebas cuando vuelvan los módems
   (`fastab.sh`: reinicio, carga de 8 s, reposo de 40 s y la rampa).
 
-### 2026-10-26: el receptor espera solo a los enlaces con datos (C2, PR #PRNUM)
+### 2026-10-26: el receptor espera solo a los enlaces con datos (C2, PR #118)
 
 - **El problema (auditoría de relojería, 2026-10-17, C2;
   `~/campo/2026-10-17/relojeria/analysis.md`):** el `rset` del reordenador
@@ -695,4 +695,4 @@ con 4 flujos y 20 s, 3 rondas alternadas, salvo que se diga otra cosa.
 - 2026-10-15: los A/B de ETA y de la dosificación, MPTCP, el falso hundimiento por `tcp_mem` del VPS, speedtest y la capacidad con cola (PR 5).
 - 2026-10-15: el PR 5 medido en la red de pruebas: neutro; la bajada de 16 flujos llega a 280–344 con los enlaces de la mañana.
 - 2026-10-15: el arranque rápido (PR #56): neutro en el laboratorio, que no reproduce el enfriamiento; el A/B en terreno, pendiente.
-- 2026-10-26: C2 (PR #PRNUM): la máscara de enlaces activos en las sondas y el `rset` del receptor recortado a ella (`active.h`, `reorder_active`, caso `idleslow`); cordura en el laboratorio.
+- 2026-10-26: C2 (PR #118): la máscara de enlaces activos en las sondas y el `rset` del receptor recortado a ella (`active.h`, `reorder_active`, caso `idleslow`); cordura en el laboratorio.
