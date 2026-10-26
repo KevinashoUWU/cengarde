@@ -147,42 +147,42 @@ static void test_f3_gate(void)
 	memset(&f, 0, sizeof(f));
 	CHECK(!cg_f3_gate(&f, 0, CG_F3_SINGLE_AUTO, 0, 10, t)); /* clean */
 	for (int i = 1; i <= 30; i++)
-		cg_f3_loss(&f, 0, 10, (uint64_t)i, 80000); /* 1 %, congestive: a queue of 80 ms */
+		cg_f3_loss(&f, 0, 10, (uint64_t)i, 80000, 80000); /* 1 %, congestive: a queue of 80 ms */
 	CHECK(!cg_f3_gate(&f, 0, CG_F3_SINGLE_AUTO, 0, 10, t));
 	CHECK(cg_f3_gate(&f, 0, CG_F3_SINGLE_AUTO, 1, 10, t)); /* random */
 	t += 20000;
 	CHECK(cg_f3_gate(&f, 0, CG_F3_SINGLE_AUTO, 0, 10, t)); /* held: reads congestive now */
-	cg_f3_loss(&f, 0, 10, 30, 50000);                             /* the same sample: once */
+	cg_f3_loss(&f, 0, 10, 30, 50000, 50000);                             /* the same sample: once */
 	t += CG_F3_RAND_HOLD_MS;
 	CHECK(!cg_f3_gate(&f, 0, CG_F3_SINGLE_AUTO, 0, 10, t)); /* past the hold */
 	CHECK(cg_f3_gate(&f, 0, CG_F3_SINGLE_AUTO, 1, 10, t));
 	for (int i = 31; i <= 60; i++)
-		cg_f3_loss(&f, 0, 0, (uint64_t)i, 50000);
+		cg_f3_loss(&f, 0, 0, (uint64_t)i, 50000, 50000);
 	CHECK_EQ(f.loss16[0] / 16, 0);
 	CHECK(!cg_f3_gate(&f, 0, CG_F3_SINGLE_AUTO, 0, 10, t + 1)); /* clean again within the hold */
 	for (int i = 61; i <= 90; i++)
-		cg_f3_loss(&f, 0, 600, (uint64_t)i, 50000); /* a microcut, 60 % */
+		cg_f3_loss(&f, 0, 600, (uint64_t)i, 50000, 50000); /* a microcut, 60 % */
 	CHECK(!cg_f3_gate(&f, 0, CG_F3_SINGLE_AUTO, 1, 10, t + 2));
 	CHECK(cg_f3_gate(&f, 0, CG_F3_SINGLE_YES, 0, 10, t + 2));
 	memset(&f, 0, sizeof(f));
 	for (int i = 1; i <= 30; i++)
-		cg_f3_loss(&f, 0, 10, (uint64_t)i, 50000);
+		cg_f3_loss(&f, 0, 10, (uint64_t)i, 50000, 50000);
 	CHECK(!cg_f3_gate(&f, 0, CG_F3_SINGLE_NO, 1, 10, t));
 	/* 1 % at 1 % of repairs: over half the rate, off; at 5 %, on */
 	CHECK(!cg_f3_gate(&f, 0, CG_F3_SINGLE_AUTO, 1, 1, t));
 	CHECK(cg_f3_gate(&f, 0, CG_F3_SINGLE_AUTO, 1, 5, t));
-	cg_f3_loss(&f, 0, 5000, 31, 50000);
+	cg_f3_loss(&f, 0, 5000, 31, 50000, 50000);
 	CHECK(f.loss16[0] / 16 <= 1000);
 	/* Starlink's 0.3 % without a queue: random, though under linksig's lossy sample */
 	memset(&f, 0, sizeof(f));
 	for (int i = 1; i <= 30; i++)
-		cg_f3_loss(&f, 0, i % 2 ? 6 : 0, (uint64_t)i, 2000);
+		cg_f3_loss(&f, 0, i % 2 ? 6 : 0, (uint64_t)i, 2000, 2000);
 	CHECK(f.rand_ms[0] == 29);
 	CHECK(cg_f3_gate(&f, 0, CG_F3_SINGLE_AUTO, 0, 10, 40));
 	/* the same with a queue (congestive): never */
 	memset(&f, 0, sizeof(f));
 	for (int i = 1; i <= 30; i++)
-		cg_f3_loss(&f, 0, i % 2 ? 6 : 0, (uint64_t)i, 30000);
+		cg_f3_loss(&f, 0, i % 2 ? 6 : 0, (uint64_t)i, 30000, 30000);
 	CHECK(!f.rand_ms[0]);
 	CHECK(!cg_f3_gate(&f, 0, CG_F3_SINGLE_AUTO, 0, 10, 40));
 }
@@ -202,15 +202,15 @@ static void test_f3_pct(void)
 	CHECK_EQ(cg_f3_pct(&f, 0x3, 0, 20, 2, 1000), 2);   /* the floor */
 	/* congestive loss (a queue of 80 ms): clean for the share */
 	for (t = 1; t <= 30; t++)
-		cg_f3_loss(&f, 0, 10, t, 80000);
+		cg_f3_loss(&f, 0, 10, t, 80000, 80000);
 	CHECK_EQ(cg_f3_pct(&f, 0x3, 0, 20, 0, 40), 0);
 	CHECK_EQ(f.bursts, 0);
 	/* 1 % at random on both links, equal bytes: 20 % */
 	memset(&f, 0, sizeof(f));
 	f.w[0] = f.w[1] = 1000;
 	for (t = 1; t <= 30; t++) {
-		cg_f3_loss(&f, 0, 10, t, 2000);
-		cg_f3_loss(&f, 1, 10, t, 2000);
+		cg_f3_loss(&f, 0, 10, t, 2000, 2000);
+		cg_f3_loss(&f, 1, 10, t, 2000, 2000);
 	}
 	CHECK_EQ(f.bursts, 0);
 	CHECK(f.rand_ms[0] == 30 && f.rand_ms[1] == 30);
@@ -235,17 +235,20 @@ static void test_f3_pct(void)
 	/* a burst on link 1 (a stall: 10 % in a sample, no queue): the whole
 	 * share for the hold, also after the link is clean again */
 	memset(&f, 0, sizeof(f));
-	cg_f3_loss(&f, 1, 100, 100, 3000);
+	cg_f3_loss(&f, 1, 100, 100, 3000, 3000);
 	CHECK_EQ(f.bursts, 1);
 	for (t = 101; t <= 130; t++)
-		cg_f3_loss(&f, 1, 0, t, 3000);
+		cg_f3_loss(&f, 1, 0, t, 3000, 3000);
 	CHECK_EQ(cg_f3_pct(&f, 0x3, 0, 20, 0, 1000), 20);
 	CHECK_EQ(cg_f3_pct(&f, 0x1, 0, 20, 0, 1000), 0); /* not a link of the set */
 	CHECK_EQ(cg_f3_pct(&f, 0x3, 0, 20, 0, 100 + CG_F3_HOLD_MS), 20);
 	CHECK_EQ(cg_f3_pct(&f, 0x3, 0, 20, 0, 101 + CG_F3_HOLD_MS), 0);
 	/* the same loss with its queue full (congestion), or none known: no burst */
-	cg_f3_loss(&f, 0, 100, 200, CG_F3_BURST_Q_US + 1);
-	cg_f3_loss(&f, 0, 100, 201, -1);
+	cg_f3_loss(&f, 0, 100, 200, CG_F3_BURST_Q_US + 1, CG_F3_BURST_Q_US + 1);
+	cg_f3_loss(&f, 0, 100, 201, -1, -1);
+	/* a TCP filling the link: its standing queue lifts the minute's minimum (no
+	 * queue over it now) but the sample's top was high: congestion, no burst */
+	cg_f3_loss(&f, 0, 100, 202, 2000, 90000);
 	CHECK_EQ(f.bursts, 1);
 }
 

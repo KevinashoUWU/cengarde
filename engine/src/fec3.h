@@ -248,11 +248,13 @@ static inline int cg_f3_pick(struct cg_f3 *f, uint16_t cand)
 }
 
 /* Link i's loss sample (its capacity's loss_pm, per mille, reported at
- * t_ms, with its queue over the minute's minimum ql_us, -1: none): into
+ * t_ms, with its queue over the minute's minimum ql_us, -1: none, and the
+ * highest during the sample qmax_us, linksig.h's last_qmax): into
  * its average, once per sample; a loss of CG_F3_RAND_PM or more without a
  * queue (CG_F3_RAND_Q_US) is random (Starlink's 0.3 % is under linksig.h's
  * lossy sample, 5 per mille, and its loss_kind never reads random). */
-static inline void cg_f3_loss(struct cg_f3 *f, unsigned i, uint16_t loss_pm, uint64_t t_ms, int32_t ql_us)
+static inline void cg_f3_loss(struct cg_f3 *f, unsigned i, uint16_t loss_pm, uint64_t t_ms, int32_t ql_us,
+			      int32_t qmax_us)
 {
 	if (!t_ms || t_ms == f->loss_ms[i])
 		return;
@@ -262,7 +264,10 @@ static inline void cg_f3_loss(struct cg_f3 *f, unsigned i, uint16_t loss_pm, uin
 	f->loss16[i] = (uint16_t)((f->loss16[i] * 3 + loss_pm * 16) / 4);
 	if (loss_pm >= CG_F3_RAND_PM && ql_us >= 0 && ql_us <= CG_F3_RAND_Q_US && loss_pm * 2 < 1000)
 		f->rand_ms[i] = t_ms;
-	if (loss_pm >= CG_F3_BURST_PM && ql_us >= 0 && ql_us <= CG_F3_BURST_Q_US) {
+	/* a burst: by the highest queue of the sample, not the last one (a TCP
+	 * filling the link drops at the top of its sawtooth, and its standing
+	 * queue lifts the minute's minimum: clean4 read 5-13 % "bursts" by ql_us) */
+	if (loss_pm >= CG_F3_BURST_PM && ql_us >= 0 && qmax_us <= CG_F3_BURST_Q_US) {
 		f->burst_ms[i] = t_ms;
 		f->bursts++;
 	}

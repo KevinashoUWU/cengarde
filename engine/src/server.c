@@ -3229,7 +3229,8 @@ static void cap_tick(struct server *s, struct session *S, uint16_t live, uint64_
 			cg_sig_cap(&S->sig[p], &S->cap[p], now_ms);
 			/* FEC v3 down: where its repairs go, and a lone path's loss */
 			cg_f3_weigh(&S->df3, (unsigned)p, P->tx_bytes);
-			cg_f3_loss(&S->df3, (unsigned)p, S->cap[p].loss_pm, S->cap[p].loss_pm_ms, S->cap[p].ql_us);
+			cg_f3_loss(&S->df3, (unsigned)p, S->cap[p].loss_pm, S->cap[p].loss_pm_ms, S->cap[p].ql_us,
+				   S->sig[p].last_qmax > S->cap[p].ql_us ? S->sig[p].last_qmax : S->cap[p].ql_us);
 
 			cg_decrec_cap(&S->dec, &S->cap[p], (unsigned)p, ev, was, now_ms);
 		}
