@@ -193,6 +193,24 @@ int cg_probe_bond_read(struct cg_probe_bond *b, const uint8_t *payload, size_t p
 	return 1;
 }
 
+void cg_probe_act_write(uint8_t *payload, const struct cg_probe_act *a)
+{
+	put32(payload + CG_PROBE_BOND_LEN, (uint32_t)a->mask << 16 | a->hold_ms);
+}
+
+int cg_probe_act_read(struct cg_probe_act *a, const uint8_t *payload, size_t plen)
+{
+	uint32_t v;
+
+	memset(a, 0, sizeof(*a));
+	if (plen < CG_PROBE_ACT_LEN)
+		return 0;
+	v = get32(payload + CG_PROBE_BOND_LEN);
+	a->mask = (uint16_t)(v >> 16);
+	a->hold_ms = (uint16_t)v;
+	return 1;
+}
+
 size_t cg_nack_write(uint8_t *out, const uint32_t *seq, unsigned n, unsigned *used)
 {
 	unsigned k = 0, i;

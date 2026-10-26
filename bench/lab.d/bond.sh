@@ -180,6 +180,12 @@
 #               200 ms every 2 s (bench/stall.py: tc in batch mode, a stall of
 #               50 ms lasts 50 ms). FEC v3's case (fec_code = rlc): its
 #               repairs on the other three links rebuild what link 2 lost
+#   idleslow    not in the default list: story 013 (clockwork audit C2), a
+#               live link the split leaves idle: links 1 and 2 50 Mbit/s, 20
+#               and 25 ms; link 3 20 Mbit/s behind 150 ms, which the ETA
+#               sends nothing while the others' queues stay under 125 ms.
+#               Every gap waited for it (to reorder_max_wait_ms) until the
+#               receiver knew which links the sender uses (reorder_active)
 #   clean4      not in the default list: story 026, the stall cases' four
 #               links never stalling nor losing: what FEC v3's repairs cost a
 #               clean bond (fec_pct_min: none)
@@ -1001,6 +1007,7 @@ bond_shape() {
 	case $1 in
 	equal) bond_link 1 25 50 && bond_link 2 25 50 ;;
 	het) bond_link 1 20 60 && bond_link 2 35 30 && bond_link 3 60 10 ;;
+	idleslow) bond_link 1 20 50 && bond_link 2 25 50 && bond_link 3 150 20 ;;
 	reorder50) bond_link 1 20 50 && bond_link 2 70 50 ;;
 	reorder150) bond_link 1 20 50 && bond_link 2 170 50 ;;
 	linkdeath) bond_link 1 25 40 && bond_link 2 25 40 && bond_link 3 25 40 ;;
@@ -1059,7 +1066,7 @@ bond_msl_types() {
 
 bond_nlinks() {
 	case $1 in
-	het | linkdeath | downstall | bloat | lossy | shallowq | shallowqd | shallowqdeep | starsat | dominant | protectpin | msl3) echo 3 ;;
+	het | idleslow | linkdeath | downstall | bloat | lossy | shallowq | shallowqd | shallowqdeep | starsat | dominant | protectpin | msl3) echo 3 ;;
 	msl1 | single1 | singlecut | singleclean) echo 1 ;;
 	msl2c | cell4 | clean4 | stall50 | stall100 | stall200 | stallr50 | stallr100 | stallr200) echo 4 ;;
 	msl3c) echo 5 ;;
@@ -1291,7 +1298,7 @@ bond_plan() {
 	for w in ${BOND_CC:-cubic bbr quic}; do ccs=$((ccs + 1)); done
 	for c in $BOND_CASES; do
 		case $c in
-		equal | het | reorder50 | reorder150 | linkdeath | downstall | shallowq | shallowqd | shallowqdeep | starsat | dominant | starlink15 | starlink15sw | starlink15ramp | ltespike | ltespikerand | deepq | bloat | lossy | spikeloss | protect | protectcut | protectslow | protectpin | beyond | spurious | lossall | sigrand | sigdeep | sigothers | msl1 | msl2 | msl3 | msl2c | msl3c | cell4 | clean4 | stall50 | stall100 | stall200 | stallr50 | stallr100 | stallr200 | single1 | singlecut | singleclean) ;;
+		equal | het | idleslow | reorder50 | reorder150 | linkdeath | downstall | shallowq | shallowqd | shallowqdeep | starsat | dominant | starlink15 | starlink15sw | starlink15ramp | ltespike | ltespikerand | deepq | bloat | lossy | spikeloss | protect | protectcut | protectslow | protectpin | beyond | spurious | lossall | sigrand | sigdeep | sigothers | msl1 | msl2 | msl3 | msl2c | msl3c | cell4 | clean4 | stall50 | stall100 | stall200 | stallr50 | stallr100 | stallr200 | single1 | singlecut | singleclean) ;;
 		*)
 			echo "bond: unknown case $c"
 			return 1

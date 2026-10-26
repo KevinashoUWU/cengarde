@@ -124,6 +124,7 @@
 #include "util.h"
 #include "wgport.h"
 #include "wgsize.h"
+#include "active.h"
 #include "wgwatch.h"
 
 /* split = force shares the packets out evenly (split.h): every path weighs
@@ -273,6 +274,13 @@ struct session {
 	 * which probe that was (split.h). */
 	uint8_t peer_bond, peer_reorders, peer_asks;
 	struct cg_split_tail tail;
+	/* Which paths the client carries the upload on lately (active.h,
+	 * clockwork audit C2): its probes' masks and what came, and the paths
+	 * rset was last narrowed from; and the paths this end carries the
+	 * download on, told in its replies. */
+	struct cg_act_rx act_rx;
+	struct cg_act_tx act_tx;
+	uint16_t act_base;
 	struct cg_reorder ro;  /* the upload, back in sequence (reorder.h); about 322 KiB */
 };
 
@@ -427,7 +435,7 @@ struct server {
 	uint8_t sflags[CG_BATCH];               /* and its flags, but CG_F_PREV (down_seal) */
 	uint8_t tcpk[CG_BATCH];                 /* and its class for tcp_aware (tcpfree.h's CG_TCPF_*) */
 	uint8_t tcpr[CG_BATCH];                 /* a retransmission's row (tcpack.h's CG_TCPA_*) */
-	uint8_t reply[CG_BATCH][CG_HDR_LEN + CG_PROBE_BOND_LEN];
+	uint8_t reply[CG_BATCH][CG_HDR_LEN + CG_PROBE_ACT_LEN];
 	struct sockaddr_storage reply_to[CG_BATCH];
 	union cg_ctl_tx reply_ctl[CG_BATCH];
 	struct session *reply_sess[CG_BATCH]; /* whose path each reply is for */
@@ -467,15 +475,30 @@ static uint16_t expect_mask(const struct session *S, uint64_t now_ms)
 	return m;
 }
 
-/* The paths the upload's reorderer waits for: the expected ones, less those
- * that brought no data for reorder_idle_ms (clockwork audit C2). */
-static uint16_t ro_rset(const struct server *s, const struct session *S, uint64_t now_ms)
+/* The paths the upload's reorderer waits for at now32 (its clock): the
+ * expected ones, less those that brought no data for reorder_idle_ms, in
+ * *base; narrowed to those the client carries the upload on lately
+ * (reorder_active, active.h: clockwork audit C2). */
+static uint16_t ro_rset_of(const struct server *s, const struct session *S, uint64_t now_ms, uint32_t now32,
+			   uint16_t *base)
 {
 	uint16_t m = expect_mask(S, now_ms);
 
 	for (int i = 0; s->cfg->reorder_idle_ms && i < CG_MAX_LINKS; i++)
 		if ((m >> i & 1) && cg_arr_idle(&S->rx[i], (uint32_t)(now_ms * 1000), s->cfg->reorder_idle_ms * 1000))
 			m &= (uint16_t)~(1u << i);
+	*base = m;
+	if (s->cfg->reorder_active)
+		m = cg_act_rx_rset(&S->act_rx, &S->ro, S->rocf.margin_us, m, now_ms * 1000, now32);
+	return m;
+}
+
+/* The same, kept in S for what the reorderer counts (its wide set). */
+static uint16_t ro_rset(const struct server *s, struct session *S, uint64_t now_ms, uint32_t now32)
+{
+	uint16_t m = ro_rset_of(s, S, now_ms, now32, &S->act_base);
+
+	S->ro.wide = S->act_base;
 	return m;
 }
 
@@ -844,6 +867,7 @@ static struct session *session_create(struct server *s, struct client *C, const 
 		return NULL;
 	}
 	memset(S, 0, sizeof(*S));
+	cg_act_tx_start(&S->act_tx, cg_now_us()); /* every path in its masks for the hold */
 	cg_gov_reset(&S->gov);
 	cg_dom_reset(&S->dom);
 	cg_gov_weights(&S->gov, 0, S->gw);
@@ -1001,11 +1025,13 @@ static int path_full(const struct server *s, const struct session *S, unsigned p
 
 /* up_owd: the probe's trip up this path, timed here, for the client's link
  * health. bond: the probe had a bonding tail, so the reply has one too,
- * saying whether this end reorders (never larger than the probe). */
+ * saying whether this end reorders; act: and an active mask, so the reply
+ * says which paths this end carries the download on (never larger than
+ * the probe). */
 static void queue_reply(struct server *s, int *nr, struct session *S, unsigned link, const struct cg_hdr *probe,
-			uint32_t up_owd, int bond, uint64_t now_us)
+			uint32_t up_owd, int bond, int act, uint64_t now_us)
 {
-	size_t plen = bond ? CG_PROBE_BOND_LEN : CG_PROBE_INFO_LEN;
+	size_t plen = act ? CG_PROBE_ACT_LEN : bond ? CG_PROBE_BOND_LEN : CG_PROBE_INFO_LEN;
 	struct cg_probe_bond pb = cg_split_reply_tail(s->cfg->reorder);
 	const struct client *C = client_of(s, S);
 	const struct path *P = &S->path[link];
@@ -1033,8 +1059,14 @@ static void queue_reply(struct server *s, int *nr, struct session *S, unsigned l
 	pb.full = pb.rescue && (cg_resc_low(&S->resc_b) || path_full(s, S, link));
 	/* its TCP ACKs marked when the upload did not deliver their holes (tcpack.h) */
 	pb.tcpmark = s->native && s->cfg->tcp_aware;
-	if (bond)
+	if (bond || act)
 		cg_probe_bond_write(r + CG_HDR_LEN, &pb);
+	if (act) {
+		/* the paths the download went on within the hold before its ts */
+		struct cg_probe_act pa = { cg_act_tx_mask(&S->act_tx, now_us, CG_ACT_HOLD_MS * 1000), CG_ACT_HOLD_MS };
+
+		cg_probe_act_write(r + CG_HDR_LEN, &pa);
+	}
 	cg_hdr_write(r, &h, C->key + CG_SIPHASH_KEY_LEN, r + CG_HDR_LEN, plen);
 	s->reply_to[*nr] = P->addr;
 	s->riov[*nr].iov_base = r;
@@ -1155,7 +1187,8 @@ static void flush_replies(struct server *s, int fd, int nr, uint64_t now_ms)
 /* A verified probe on P (link of S), with its info and bonding tail (pb,
  * NULL: none, an older client). */
 static void on_probe(struct server *s, struct session *S, struct path *P, unsigned link, const struct cg_hdr *h,
-		     const struct cg_probe_info *pi, const struct cg_probe_bond *pb, uint64_t now_ms)
+		     const struct cg_probe_info *pi, const struct cg_probe_bond *pb, const struct cg_probe_act *pa,
+		     uint64_t now_ms)
 {
 	struct client *C = client_of(s, S);
 
@@ -1181,6 +1214,12 @@ static void on_probe(struct server *s, struct session *S, struct path *P, unsign
 		S->peer_reorders = pb && pb->reorders;
 		S->peer_asks = pb && pb->split_me;
 		S->peer_tcpmark = pb && pb->tcpmark;
+		/* The paths it carries the upload on (active.h); none said:
+		 * every path counts. */
+		if (pa)
+			cg_act_rx_mask(&S->act_rx, h->ts, pa->mask, pa->hold_ms, now_ms * 1000);
+		else
+			S->act_rx.have = 0;
 		/* Whether it keeps what it sends up, for the upload's rescue. */
 		if (S->peer_rescue != (pb && pb->rescue)) {
 			S->peer_rescue = pb && pb->rescue;
@@ -1312,6 +1351,9 @@ static int send_path(struct server *s, struct session *S, int p, const uint8_t *
 		mh.msg_control = P->ctl.b;
 		mh.msg_controllen = P->ctl_len;
 	}
+	/* DATA sent again, a parity, a repair: it may fill a gap (active.h) */
+	if (len && ((b[0] & 0x0f) == CG_T_DATA || (b[0] & 0x0f) == CG_T_FEC || (b[0] & 0x0f) == CG_T_REPAIR))
+		cg_act_tx_sent(&S->act_tx, (unsigned)p, cg_now_us());
 	return sendmsg(s->lane[(unsigned)p & (s->nlanes - 1)].fd, &mh, MSG_DONTWAIT) < 0 ? -1 : 0;
 }
 
@@ -1830,7 +1872,7 @@ static void fec_deliver(struct server *s, int *nq, struct session *S, uint32_t s
 	S->up_bytes += len;
 	cg_wgs_add(&s->wgs_up, out, len);
 	S->rebuilding = 1;
-	up_deliver(s, nq, S, &h, out, len, expect_mask(S, now_ms), now);
+	up_deliver(s, nq, S, &h, out, len, ro_rset(s, S, now_ms, now), now);
 	S->rebuilding = 0;
 }
 
@@ -2158,7 +2200,8 @@ static void listen_read(struct server *s, struct lane *ln)
 			const struct sockaddr_storage *from = &s->in.from[i];
 			struct cg_probe_info pi;
 			struct cg_probe_bond pb;
-			int bond = 0;
+			struct cg_probe_act pa;
+			int bond = 0, act = 0;
 			struct cg_replay *w;
 			struct session *S;
 			struct client *C;
@@ -2193,6 +2236,7 @@ static void listen_read(struct server *s, struct lane *ln)
 			if (h.type == CG_T_PROBE) {
 				cg_probe_info_read(&pi, b + CG_HDR_LEN);
 				bond = cg_probe_bond_read(&pb, b + CG_HDR_LEN, len - CG_HDR_LEN);
+				act = cg_probe_act_read(&pa, b + CG_HDR_LEN, len - CG_HDR_LEN);
 			}
 			S = lookup(s, &h, b, len, &verified);
 			if (!S) {
@@ -2266,6 +2310,8 @@ static void listen_read(struct server *s, struct lane *ln)
 				on_parq(s, S, b + CG_HDR_LEN, len - CG_HDR_LEN, now_ms);
 				continue;
 			}
+			if (h.type == CG_T_FEC || h.type == CG_T_REPAIR) /* it may fill a gap: its path counts (active.h) */
+				cg_act_rx_data(&S->act_rx, h.link, h.ts, -1, now_ms * 1000);
 			if (h.type == CG_T_FEC) {
 				/* A parity of the upload (fec.h): kept, and what it
 				 * can rebuild now goes on. */
@@ -2299,13 +2345,13 @@ static void listen_read(struct server *s, struct lane *ln)
 				}
 				P = path_update(s, S, h.link, from, &s->in.msg[i].msg_hdr, now_ms);
 				P->last_rx_ms = now_ms;
-				on_probe(s, S, P, h.link, &h, &pi, bond ? &pb : NULL, now_ms);
-				queue_reply(s, &nr, S, h.link, &h, now32 - h.ts, bond, now_us);
+				on_probe(s, S, P, h.link, &h, &pi, bond ? &pb : NULL, act ? &pa : NULL, now_ms);
+				queue_reply(s, &nr, S, h.link, &h, now32 - h.ts, bond, act, now_us);
 				/* Its trip up this path, for the reorderer's deadlines;
 				 * the path may have changed its rset too. */
 				cg_ro_owd(&S->ro, h.link, now32 - h.ts);
 				if (s->cfg->reorder && S->ro.held) {
-					up_drain(s, &nq, S, ro_rset(s, S, now_ms), now32, 0);
+					up_drain(s, &nq, S, ro_rset(s, S, now_ms, now32), now32, 0);
 					ro_track(s, S);
 				}
 				continue;
@@ -2327,7 +2373,10 @@ static void listen_read(struct server *s, struct lane *ln)
 			S->up_pkts++;
 			S->up_bytes += len - CG_HDR_LEN;
 			cg_wgs_add(&s->wgs_up, b + CG_HDR_LEN, len - CG_HDR_LEN);
-			rs = s->cfg->reorder_idle_ms ? ro_rset(s, S, now_ms) : expect;
+			/* What it says of the paths the client carries the upload
+			 * on (its own, and the one CG_F_PREV names, active.h). */
+			cg_act_rx_data(&S->act_rx, h.link, h.ts, cg_prev_link(h.flags), now_ms * 1000);
+			rs = s->cfg->reorder ? ro_rset(s, S, now_ms, now32) : expect;
 			if (S->fec) {
 				/* Kept for the parities (fec.h); one waiting for
 				 * this packet may rebuild another now. */
@@ -2871,7 +2920,8 @@ static void down_seal(struct server *s, struct session *S, int m, const struct d
 static void down_send(struct server *s, struct session *S, int m, uint64_t now_ms, const struct dpaths *d)
 {
 	int order[CG_MAX_LINKS], no = 0;
-	uint16_t live = d->live, carry = d->carry;
+	uint16_t live = d->live, carry = d->carry, counts = 0;
+	uint64_t mark_us;
 
 	/* The batch goes out path after path, and the path sent first
 	 * delivers first: the first path rotates from batch to batch, so
@@ -2900,6 +2950,21 @@ static void down_send(struct server *s, struct session *S, int m, uint64_t now_m
 	}
 	down_retx_masks(s, S, m, d);
 	down_seal(s, S, m, d);
+	/* The paths the batch counts on for the client's reorderer (active.h):
+	 * a packet's one path, or of its copies the one of least delay down. */
+	{
+		uint32_t owd[CG_MAX_LINKS];
+		uint16_t known = 0;
+
+		for (int p = 0; p < CG_MAX_LINKS; p++) {
+			owd[p] = S->dh[p].owd;
+			known |= (uint16_t)(S->dh[p].have_owd ? 1u << p : 0);
+		}
+		for (int j = 0; j < m; j++)
+			counts |= cg_act_tx_counts((uint16_t)(cg_split_dst(s->pick[j], carry, d->k.dup) & s->cmask[j]), known,
+						   owd);
+	}
+	mark_us = cg_now_us(); /* after every ts of the batch */
 	for (int o = 0; o < no; o++) {
 		int p = order[(o + S->rot) % (unsigned)no];
 		struct path *P = &S->path[p];
@@ -2916,6 +2981,8 @@ static void down_send(struct server *s, struct session *S, int m, uint64_t now_m
 		}
 		if (!k)
 			continue;
+		if (counts >> p & 1)
+			cg_act_tx_sent(&S->act_tx, (unsigned)p, mark_us);
 		for (int x = 0; x < k; x++) {
 			cg_hdr_set_link(s->hdr[sel[x]], (uint8_t)p);
 			memset(&s->out[x].msg_hdr, 0, sizeof(s->out[x].msg_hdr));
@@ -3591,11 +3658,11 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 	for (uint32_t i = 0; i < s->cap; i++) {
 		const struct session *S = &s->s[i];
 		struct dpaths d;
-		uint16_t rset;
+		uint16_t rset, base;
 
 		if (!S->used)
 			continue;
-		rset = ro_rset(s, S, now_ms);
+		rset = ro_rset_of(s, S, now_ms, (uint32_t)cg_now_us(), &base);
 		d = down_paths(s, S, now_ms); /* the download split, as a batch now would take it */
 		cg_json_obj(j, NULL);
 		snprintf(buf, sizeof(buf), "%08x", S->id);
@@ -3841,6 +3908,9 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 		cg_json_end(j, '}');
 		cg_json_joint(j, "joint", &S->arr);
 		cg_json_reorder(j, "reorder", &S->ro, s->cfg->reorder, NULL);
+		/* which paths it waits for: the client's mask (active.h, C2) */
+		cg_json_active(j, "active", &S->act_rx, &S->ro, s->cfg->reorder_active, base, rset,
+			       cg_act_tx_mask(&S->act_tx, cg_now_us(), CG_ACT_HOLD_MS * 1000), now_ms * 1000);
 		cg_json_arr(j, "links");
 		for (int p = 0; p < CG_MAX_LINKS; p++) {
 			const struct path *P = &S->path[p];
@@ -4266,7 +4336,7 @@ static void ro_service(struct server *s)
 
 		harq_wait(s, S, now_us);
 		harq_service(s, S, now_us);
-		up_drain(s, &nq, S, ro_rset(s, S, now_ms), (uint32_t)now_us, 0);
+		up_drain(s, &nq, S, ro_rset(s, S, now_ms, (uint32_t)now_us), (uint32_t)now_us, 0);
 		ro_track(s, S);
 	}
 	q_flush(s, &nq);
@@ -4286,9 +4356,14 @@ static int ro_timeout(struct server *s)
 	now_us = cg_now_us();
 	for (uint32_t i = 0; i < s->nactive && due > 0; i++) {
 		const struct session *S = &s->s[s->ro_active[i]];
-		int32_t d = cg_ro_due_us(&S->ro, &S->rocf, ro_rset(s, S, now_us / 1000), (uint32_t)now_us),
-			h = harq_due_us(s, S, now_us);
+		uint16_t base, rset = ro_rset_of(s, S, now_us / 1000, (uint32_t)now_us, &base);
+		int32_t d = cg_ro_due_us(&S->ro, &S->rocf, rset, (uint32_t)now_us), h = harq_due_us(s, S, now_us),
+			a = s->cfg->reorder_active ? cg_act_rx_next_us(&S->act_rx, &S->ro, S->rocf.margin_us, base,
+									now_us, (uint32_t)now_us)
+						   : INT32_MAX;
 
+		if (a < d) /* a path leaving rset may bring a deadline forward */
+			d = a;
 		if (h < d)
 			d = h < 0 ? 0 : h;
 		if (d < due)

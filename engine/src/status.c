@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "status.h"
 
+#include "active.h"
 #include "capacity.h"
 #include "decision.h"
 #include "dominant.h"
@@ -303,6 +304,30 @@ void cg_json_reorder(struct cg_json *j, const char *k, const struct cg_reorder *
 	cg_json_end(j, ']');
 	json_hist(j, "wait", st->wait);
 	json_hist(j, "late_by", st->late_by);
+	cg_json_end(j, '}');
+}
+
+void cg_json_active(struct cg_json *j, const char *k, const struct cg_act_rx *a, const struct cg_reorder *r, int on,
+		    uint16_t base, uint16_t rset, uint16_t sent, uint64_t now_us)
+{
+	cg_json_obj(j, k);
+	cg_json_bool(j, "enabled", on);
+	if (a->have) {
+		cg_json_u64(j, "peer_mask", a->mask);
+		cg_json_u64(j, "peer_hold_ms", a->hold_us / 1000);
+		cg_json_ms(j, "peer_age_ms", now_us - a->at_us);
+	} else {
+		cg_json_null(j, "peer_mask");
+		cg_json_null(j, "peer_hold_ms");
+		cg_json_null(j, "peer_age_ms");
+	}
+	cg_json_u64(j, "base", base);
+	cg_json_u64(j, "rset", rset);
+	cg_json_u64(j, "masks", a->masks);
+	cg_json_u64(j, "opened", a->opened);
+	cg_json_u64(j, "early", r->st.due_narrow);
+	cg_json_u64(j, "at_cap", r->st.due_capped);
+	cg_json_u64(j, "sent", sent);
 	cg_json_end(j, '}');
 }
 

@@ -1898,6 +1898,26 @@ static int64_t m_deadline(const struct cg_ro_cfg *cf, uint16_t rset, const struc
 	return dl;
 }
 
+/* Whether the deadline of the gap before p is the cap itself (no delay for
+ * every link of rset, or the slowest one's beyond it). */
+static int m_capped(const struct cg_ro_cfg *cf, uint16_t rset, const struct m_pkt *p)
+{
+	return m_deadline(cf, rset, p) == (int64_t)p->t + m_cap(cf, p);
+}
+
+static uint16_t m_wide(void);
+
+/* Whether gap g, given up under rset at now (p the lowest held packet above
+ * it), would still wait under the wide set. */
+static int m_narrowed(const struct cg_ro_cfg *cf, uint16_t rset, uint64_t g, const struct m_pkt *p, uint64_t now)
+{
+	uint16_t wide = m_wide();
+
+	if (!wide || !(wide & (uint16_t)~rset) || m_rack(wide, g))
+		return 0;
+	return m_cap(cf, p) && (int64_t)now < m_deadline(cf, wide, p);
+}
+
 static void m_lose(uint64_t g, uint8_t why, uint64_t t)
 {
 	m_write(g, why, t);
@@ -1987,9 +2007,12 @@ static enum cg_ro_v m_in(const struct cg_ro_cfg *cf, const struct m_pkt *k, uint
 
 		if (go) {
 			for (uint64_t g = M.head; g < k->seq; g++)
-				if (!m_take_mark(g))
+				if (!m_take_mark(g)) {
+					if (!m_forced(g) && m_narrowed(cf, rset, g, k, k->t))
+						M.st.due_narrow++;
 					m_lose(g, m_forced(g) ? CG_RO_LOST_OVF : m_rack(rset, g) ? CG_RO_LOST_RACK : CG_RO_LOST_CAP,
 					       k->t);
+				}
 			M.head = k->seq + 1;
 			M.st.in_order++;
 			m_moved();
@@ -2053,6 +2076,10 @@ static int m_next(const struct cg_ro_cfg *cf, uint16_t rset, uint64_t now, struc
 			why = CG_RO_LOST_CAP;
 		else
 			break;
+		if (why != CG_RO_LOST_OVF) {
+			M.st.due_narrow += (uint64_t)m_narrowed(cf, rset, g, &M.held[0], now);
+			M.st.due_capped += why == CG_RO_LOST_CAP && m_cap(cf, &M.held[0]) && m_capped(cf, rset, &M.held[0]);
+		}
 		m_lose(g, why, now);
 		M.head++;
 		m_moved();
@@ -2129,12 +2156,17 @@ static uint8_t t_seen[T_PKTS], t_out[T_PKTS];
 
 static struct {
 	struct cg_ro_cfg cf;
-	uint16_t rset;
+	uint16_t rset, wide; /* wide: rset before a narrowing (reorder.h's due_narrow), 0: not counted */
 	uint32_t soff, toff, tsoff;
 	uint64_t now, last_ord;
 	int have_ord;
 	unsigned fails, steps, timers, early_checks;
 } T;
+
+static uint16_t m_wide(void)
+{
+	return T.wide;
+}
 
 #define RC(cond)                                                                                     \
 	do {                                                                                         \
@@ -2379,6 +2411,9 @@ static void trial(int idx)
 		T.rset |= 1u << 5; /* a link that never brings anything */
 	if (!rn(8) && nl > 1)
 		T.rset &= (uint16_t)~1u; /* one left out */
+	/* Half the trials count what a narrowing let go sooner: wide holds
+	 * rset and more (a link out of rset, one that never brings anything). */
+	T.wide = rn(2) ? (uint16_t)(T.rset | (rn(2) ? 1u << 5 : 0) | (rn(2) ? 1u : 0) | (rnd() & ((1u << nl) - 1))) : 0;
 
 	for (unsigned i = 0; i < npk; i++) {
 		struct tpkt *p = &tp[i];
@@ -2432,6 +2467,7 @@ static void trial(int idx)
 	qsort(tq, ne, sizeof(tq[0]), tev_cmp);
 
 	cg_ro_init(&R.r);
+	R.r.wide = T.wide;
 	cg_ro_pool_init(&R.p, pool_mem, pool_stack, ovf ? CG_RO_SLOTS : pools[rn(4)]);
 	memset(&M, 0, sizeof(M));
 	M.base = (uint64_t)1 << 33;
@@ -2467,6 +2503,8 @@ static void trial(int idx)
 			t_flush();
 		if (!rn(2000)) {
 			T.rset = (uint16_t)(rnd() & ((1u << nl) - 1));
+			if (T.wide)
+				R.r.wide = T.wide = (uint16_t)(T.wide | T.rset);
 			t_drain();
 		}
 	}
@@ -2480,6 +2518,7 @@ static void trial(int idx)
 static void test_random(void)
 {
 	uint64_t agains = 0, late = 0, held = 0, lost_all = 0, far = 0, resyncs = 0, pool_full = 0, flushed = 0;
+	uint64_t narrow = 0, capped = 0;
 
 	memset(&T, 0, sizeof(T));
 	for (int i = 0; i < 800; i++) {
@@ -2492,11 +2531,14 @@ static void test_random(void)
 		resyncs += R.r.st.resyncs;
 		pool_full += R.r.st.pool_full;
 		flushed += R.r.st.lost_flush;
+		narrow += R.r.st.due_narrow;
+		capped += R.r.st.due_capped;
 	}
 	CHECK_EQ(T.fails, 0);
 	/* The trials went through every rule. */
 	CHECK(agains > 0 && late > 0 && held > 0 && lost_all > 0 && far > 0 && resyncs > 0 && pool_full > 0);
 	CHECK(flushed > 0 && T.timers > 0 && T.early_checks > 0);
+	CHECK(narrow > 0 && capped > 0);
 }
 
 void test_reorder(void)
