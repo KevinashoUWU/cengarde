@@ -53,7 +53,7 @@
 #define CG_FEC_HDR (7 + 2 * (CG_FEC_KMAX - 1)) /* base, n, lengths' XOR, distances */
 #define CG_FEC_SPAN 512      /* a group's sequences, from its first: within this */
 #define CG_FEC_OPEN 32       /* groups the sender has open at once */
-#define CG_FEC_RING 1024     /* DATA kept by the receiver: a power of two, over CG_FEC_SPAN */
+#define CG_FEC_RING 2048     /* DATA kept by the receiver: a power of two, over CG_FEC_SPAN (and FEC v3's windows, repair.h) */
 #define CG_FEC_PAR 64        /* parities kept by the receiver */
 
 _Static_assert(!(CG_FEC_RING & (CG_FEC_RING - 1)), "CG_FEC_RING is a power of two");

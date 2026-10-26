@@ -193,6 +193,12 @@ struct session {
 	uint32_t rep_top;
 	uint8_t rep_top_ok;
 	uint64_t rep_last_ms;
+	uint64_t f3_last_ms;   /* FEC v3's wide repairs came then (story 026): gaps wait for the code without the rescue */
+	uint32_t f3_top, f3_span; /* the newest wide repair's last member, the long ones' window (harq.h's cg_harq_future) */
+	uint64_t f3_span_ms;      /* when that span was last seen */
+	uint32_t f3_gap16;        /* sequences between wide repairs as they arrive, x 16, smoothed (1/8) */
+	uint8_t f3_have;
+	uint64_t hq_nonack;    /* asks the code could not answer, the client keeping no rescue ring: given up, no NACK */
 	uint64_t hq_waited, hq_none, hq_tcp, hq_full;  /* asks that waited for the code; not asked: here, decodable; left to TCP; no room */
 	uint64_t hq_released;                          /* of those that waited, not held (TCP flows), followed out of order */
 	uint64_t parq_req, parq_want, parq_msgs;       /* PARQ requests, the repairs they asked for, messages sent */
@@ -1408,12 +1414,26 @@ static uint32_t harq_budget_us(const struct server *s, const struct session *S, 
 	return cg_harq_budget_us(rtt);
 }
 
+/* Whether FEC v3's wide repairs protect S's upload (within the last two
+ * seconds, as harq_code). */
+static int harq_wide(const struct server *s, const struct session *S, uint64_t now_ms)
+{
+	return harq_code(s, S, now_ms) && S->f3_last_ms && now_ms - S->f3_last_ms < 2000;
+}
+
 /* S's asked gaps' wait (harq.h's cg_harq_wait_us): rescue_wait_ms, the
- * code's horizon when one is on, within TCP's budget. */
+ * code's horizon when one is on, within TCP's budget; without the rescue,
+ * the code's horizon alone while FEC v3 protects (cg_harq_code_wait_us:
+ * a gap waits for the wide window's repairs instead of going at its
+ * deadline). */
 static void harq_wait(const struct server *s, struct session *S, uint64_t now_us)
 {
-	if (!S->rescue_base_us)
+	if (!S->rescue_base_us) {
+		S->rocf.rescue_us = harq_wide(s, S, now_us / 1000) && s->cfg->reorder
+					    ? cg_harq_code_wait_us(s->cfg->rescue_code_ms * 1000, harq_budget_us(s, S, now_us))
+					    : 0;
 		return;
+	}
 	S->rocf.rescue_us =
 		cg_harq_wait_us(S->rescue_base_us, harq_code(s, S, now_us / 1000) ? s->cfg->rescue_code_ms * 1000 : 0,
 				harq_budget_us(s, S, now_us));
@@ -1456,6 +1476,11 @@ static int harq_one(struct server *s, struct session *S, struct harq_batch *hb, 
 	}
 	g.age_us = (uint32_t)now_us - t_us;
 	g.horizon_us = s->cfg->rescue_code_ms * 1000;
+	/* FEC v3: the repairs still to come over it (cg_harq_future) */
+	if (kind == CG_REP_RLC && harq_wide(s, S, now_us / 1000) && S->f3_have) {
+		g.wide = 1;
+		g.future = cg_harq_future(seq, S->f3_top, S->f3_span, S->f3_gap16);
+	}
 	g.eta_us = harq_rtt_us(S, now_us / 1000);
 	g.budget_us = harq_budget_us(s, S, now_us);
 	if (!s->cfg->parq)
@@ -1483,6 +1508,32 @@ static int harq_one(struct server *s, struct session *S, struct harq_batch *hb, 
 		for (unsigned i = 0; i < hb->nr; i++)
 			if (hb->req[i].kind == kind && hb->req[i].base == base && hb->req[i].map == map)
 				return 0; /* asked already, in this batch */
+		if (kind == CG_REP_RLC) {
+			/* RLC: the unknowns another request already asks for, out
+			 * (the free columns of one system, story 026); a wide
+			 * window's, only what its coming repairs will not bring */
+			unsigned sh;
+
+			if (g.wide && !g.sealed && g.age_us < g.horizon_us && g.deficit > g.future) {
+				unsigned want = g.deficit - g.future;
+				uint64_t keep = 0, rest = map;
+
+				/* the oldest of them: due first */
+				for (unsigned k = 0; k < want && rest; k++, rest &= rest - 1)
+					keep |= rest & (~rest + 1);
+				map = keep;
+			}
+
+			for (unsigned i = 0; i < hb->nr; i++)
+				if (hb->req[i].kind == CG_REP_RLC)
+					map &= ~cg_parq_overlap(hb->req[i].base, hb->req[i].map, base);
+			if (!map)
+				return 0;
+			sh = (unsigned)__builtin_ctzll(map);
+			base += sh;
+			map >>= sh;
+			g.deficit = (uint8_t)__builtin_popcountll(map);
+		}
 		if (hb->nr == sizeof(hb->req) / sizeof(hb->req[0]))
 			break; /* no room: the packet */
 		hb->req[hb->nr++] = (struct cg_parq_req){ .kind = kind,
@@ -1496,6 +1547,14 @@ static int harq_one(struct server *s, struct session *S, struct harq_batch *hb, 
 		return 0;
 	case CG_HARQ_NACK:
 		break;
+	}
+	/* nothing to ask for again: the client keeps nothing (FEC v3 alone,
+	 * story 026); the gap goes now instead of waiting for no answer */
+	if (!S->peer_rescue) {
+		S->hq_nonack++;
+		if (!*rel)
+			cg_ro_refused(&S->ro, &S->rocf, seq, (uint32_t)now_us);
+		return 0;
 	}
 	hb->nack[retry][hb->nn[retry]++] = seq;
 	return 0;
@@ -1556,7 +1615,10 @@ static void send_nacks(struct server *s, struct session *S, uint64_t now_ms)
 
 		for (uint32_t i = 0; i < n; i++) {
 			if (!harq_code(s, S, now_ms) && !harq_budget_us(s, S, now_us)) {
-				hb.nack[list][hb.nn[list]++] = seq[i];
+				if (S->peer_rescue)
+					hb.nack[list][hb.nn[list]++] = seq[i];
+				else
+					S->hq_nonack += cg_ro_refused(&S->ro, &S->rocf, seq[i], (uint32_t)now_us);
 				continue;
 			}
 			uint8_t rel = 0;
@@ -1817,7 +1879,7 @@ static void rep_take(struct server *s, int *nq, struct session *S, const uint8_t
 {
 	struct cg_rep_hdr h;
 	struct cg_rep_ring r;
-	uint32_t out[CG_RS_KMAX];
+	uint32_t out[CG_RLC_COLS];
 	unsigned slen, n = 0;
 
 	if (!S->fec) {
@@ -1830,8 +1892,39 @@ static void rep_take(struct server *s, int *nq, struct session *S, const uint8_t
 	}
 	r = rep_ring(S);
 	rep_seal(S, h.base, now_ms);
-	if (h.kind == CG_REP_RLC && S->rlc)
-		n = cg_rlc_rx_repair(s->gf, S->rlc, &r, &h, p + CG_REP_HDR, slen, out, CG_RS_KMAX);
+	if (h.kind == CG_REP_RLCW && !(S->f3_last_ms && now_ms - S->f3_last_ms < 2000)) {
+		/* FEC v3 starts: gaps wait for its repairs from now (harq_wait) */
+		S->f3_last_ms = now_ms;
+		harq_wait(s, S, now_ms * 1000);
+	}
+	if (h.kind == CG_REP_RLCW) {
+		uint32_t top = h.base + h.span - 1u;
+
+		S->f3_last_ms = now_ms;
+		/* how far apart they come, for the repairs still to come
+		 * over a gap (cg_harq_future) */
+		/* the long repairs' window: the largest span lately (every other
+		 * repair spans a quarter of it) */
+		if (h.span >= S->f3_span || now_ms - S->f3_span_ms > 1000) {
+			S->f3_span = h.span;
+			S->f3_span_ms = now_ms;
+		}
+		if (!S->f3_have) {
+			S->f3_top = top;
+			S->f3_have = 1;
+		} else if ((int32_t)(top - S->f3_top) >= 0) {
+			uint32_t d = top - S->f3_top;
+
+			if (d < 65536) {
+				uint32_t g16 = d * 16;
+
+				S->f3_gap16 = S->f3_gap16 ? S->f3_gap16 - S->f3_gap16 / 8 + g16 / 8 : g16;
+			}
+			S->f3_top = top;
+		}
+	}
+	if ((h.kind == CG_REP_RLC || h.kind == CG_REP_RLCW) && S->rlc)
+		n = cg_rlc_rx_repair(s->gf, S->rlc, &r, &h, p + CG_REP_HDR, slen, out, CG_RLC_COLS);
 	else if (h.kind == CG_REP_RS && S->rsx)
 		n = cg_rs_rx_repair(S->rsx, s->rs_x, &r, &h, p + CG_REP_HDR, slen, out, CG_RS_KMAX);
 	else
@@ -1845,16 +1938,16 @@ static void rep_data(struct server *s, int *nq, struct session *S, uint32_t seq,
 		     uint64_t now_ms)
 {
 	struct cg_rep_ring r;
-	uint32_t out[CG_RS_KMAX];
+	uint32_t out[CG_RLC_COLS + CG_RS_KMAX];
 	unsigned n = 0;
 
 	if (!S->rlc && !S->rsx)
 		return;
 	r = rep_ring(S);
 	if (S->rlc)
-		n = cg_rlc_rx_data(s->gf, S->rlc, &r, seq, out, CG_RS_KMAX);
+		n = cg_rlc_rx_data(s->gf, S->rlc, &r, seq, out, CG_RLC_COLS);
 	if (S->rsx)
-		n += cg_rs_rx_data(S->rsx, s->rs_x, &r, seq, out + n, CG_RS_KMAX - n);
+		n += cg_rs_rx_data(S->rsx, s->rs_x, &r, seq, out + n, CG_RS_KMAX);
 	rep_deliver(s, nq, S, out, n, link, ts, now, now_ms);
 }
 
@@ -3320,6 +3413,7 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 		cg_json_u64(j, "wait_full", S->hq_full);
 		cg_json_u64(j, "released", S->hq_released);
 		cg_json_u64(j, "waiting", S->hq_n);
+		cg_json_u64(j, "no_nack", S->hq_nonack); /* FEC v3 alone: nothing kept to ask for */
 		cg_json_end(j, '}');
 		/* tcp_aware in redundancy: first TCP retransmissions down one
 		 * path, and those copied */
@@ -3365,6 +3459,16 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 			cg_json_u64(j, "recovered", S->rlc->recovered);
 			cg_json_u64(j, "dropped", S->rlc->dropped);
 			cg_json_u64(j, "bad", S->rlc->bad);
+			/* FEC v3's wide windows (story 026): those repairs, the
+			 * ones that added nothing, unknowns given up for room, the
+			 * most at once, and now */
+			cg_json_u64(j, "wide", S->rlc->wide);
+			cg_json_u64(j, "dependent", S->rlc->dependent);
+			cg_json_u64(j, "evicted", S->rlc->evicted);
+			cg_json_u64(j, "peak", S->rlc->peak);
+			cg_json_u64(j, "unknowns", S->rlc->ncol);
+			cg_json_u64(j, "rows", S->rlc->nrow);
+			cg_json_bool(j, "fec3", S->f3_last_ms && cg_now_ms() - S->f3_last_ms < 2000);
 			cg_json_end(j, '}');
 		} else {
 			cg_json_null(j, "rlc");

@@ -3,7 +3,7 @@ tags: [mapa, pieza]
 archivos:
   - engine/src/harq.h
   - engine/tests/test_harq.c
-sello: 6df5ba47ed8d3fcb
+sello: 771ead11b10fd4ed
 ---
 # Reparación coherente (harq.h)
 
@@ -17,17 +17,20 @@ Decide quién repara un hueco, para que el código, el rescate y el TCP de adent
 3. **Sin código que lo cubra:** el paquete ([[Rescate (rescue.h)]], NACK).
 4. **Nunca contra TCP:** con TCP adentro (túnel nativo), una respuesta que no llega dentro del presupuesto de TCP (su RTT más un cuarto, el `reo_wnd` de RACK) no se pide, y el hueco no se retiene por ella: lo repara la retransmisión de TCP (`CG_HARQ_TCP`).
 
+Con las **ventanas anchas de la FEC v3** ([[026-fec-v3]]) cambian tres cosas. Un hueco que la ventana todavía cubre no espera al sello si sus reparaciones por venir no alcanzan: `cg_harq_future` estima cuántas llegarán todavía sobre él (la ventana larga de la reparación más nueva, una cada `gap16`/16 secuencias, la mitad para un hueco más viejo que el cuarto de la ventana), y con el déficit sobre eso se pide **ya** la diferencia (PARQ sobre las columnas libres más viejas), una ida y vuelta, no después de que la ventana lo pase (en `stall100` con el túnel de WireGuard, de ~700 a 43 retransmisiones en una corrida de cada una: un indicio, no una medida). Sin rescate (`rescue_wait_ms` 0), el hueco espera al código igual (`cg_harq_code_wait_us`: `rescue_code_ms`, dentro del presupuesto de TCP) mientras llegan reparaciones anchas. Y sin anillo en el cliente (`client_keeps` falso) no se manda NACK: el hueco se suelta al momento (`no_nack`). Dos huecos del mismo sistema no piden dos veces las mismas columnas en un lote (`cg_parq_overlap`). Retener los huecos de la ventana ancha también con TCP se probó y se descartó: el mismo caudal y más retardo (ping de 1200 B p99 400 contra 240 ms en `stall100`, medianas de n = 3, sin prueba estadística).
+
 También dice qué escribe un emisor en `CG_F_PREV` una vez decididas las copias (`cg_harq_only`): antes se escribía antes de que [[Copias a tiempo (eta.h)]] y [[Lo que sobra (spare.h)]] quitaran copias, y un paquete que iba solo por el primer enlace decía «varios»; el receptor nunca sabía que se había perdido en todos los enlaces y el rescate casi no pedía (112 pedidos en un día de ~25 000 pérdidas, [[017-terreno-nostalgica]]).
 
 ## Lee
 - Del servidor (receptor de la subida): el anillo de DATA y las ecuaciones o bloques pendientes de los códigos, la base de la reparación más nueva (`rep_seal`), el RTT del camino más rápido (subida del reordenador más bajada que reporta el cliente: el desfase de relojes se cancela), y el RTT de los flujos TCP que salen del túnel ([[Liberación TCP (tcpfree.h)]], `struct cg_tcpe`: el tramo lejano del SYN al SYN-ACK más el del túnel).
 - Del cliente (receptor de la bajada): solo el presupuesto de TCP (no hay códigos en la bajada).
+- De la FEC v3: la base y el largo de la reparación ancha más nueva y cada cuánto llegan (`f3_top`, `f3_span`, `f3_gap16` por sesión).
 
 ## Decide / escribe
 - `send_nacks` del servidor: cada hueco pedido por el [[Reordenador (reorder.h)]] espera al código (`hq`, hasta 256 por sesión), o va como PARQ o NACK, o se suelta para TCP (`cg_ro_refused`). `ro_timeout` despierta al cumplirse `rescue_code_ms`.
 - La espera de un hueco pedido (`rocf.rescue_us`, `cg_harq_wait_us`): `rescue_wait_ms`, más `rescue_code_ms` con un código, nunca más que el presupuesto de TCP.
 - El cliente responde una PARQ desde su anillo de rescate (`on_parq`): RLC con semillas nuevas (`cg_rlc_combine`), RS codificando otra vez el bloque (`cg_rs_encode` con la geometría) y los índices que el servidor no tiene (`cg_parq_rs_pick`); por un enlace con lugar (no ahogado ni lleno, el de menor RTT; si no hay ninguno, no sale: antes iba por el ahogado, y en un microcorte 1 500 reparaciones por segundo llevaron la cola del celular a 1,6 s, [[025-protocontrolador]]), dentro del crédito del rescate. Un enlace con las sondas detenidas que todavía trae paquetes cuenta como vivo (`link_masks_tx`, [[Salud y silenciado (health.h)]]), también para el NACK.
-- Estado: servidor por sesión `rescue` (`nack_seqs`, `wait_ms`, `tcp_budget_ms`, `waited_code`, `not_asked`, `left_to_tcp`, `wait_full`, `waiting`), `repair.parq` (`asked`, `repairs_asked`, `messages`), `tcp` (`retx_one`, `retx_copied`); global `tcp_e2e`. Cliente: `rescue.parq` (`received`, `requests`, `repairs`, `bytes`, `missing`, `over_budget`, `no_link`), `rescue.left_to_tcp`, `upload.tcp`, `tcp_e2e`. El reordenador separa `rescue.rescued` (llegó el paquete) de `rescue.repaired` (lo rehizo un código).
+- Estado: servidor por sesión `rescue` (`nack_seqs`, `wait_ms`, `tcp_budget_ms`, `waited_code`, `not_asked`, `left_to_tcp`, `wait_full`, `waiting`, `no_nack`), `repair.parq` (`asked`, `repairs_asked`, `messages`), `tcp` (`retx_one`, `retx_copied`); global `tcp_e2e`. Cliente: `rescue.parq` (`received`, `requests`, `repairs`, `bytes`, `missing`, `over_budget`, `no_link`), `rescue.left_to_tcp`, `upload.tcp`, `tcp_e2e`. El reordenador separa `rescue.rescued` (llegó el paquete) de `rescue.repaired` (lo rehizo un código).
 
 ## Perillas
 - [[Mapa/Perillas/rescue_code_ms|rescue_code_ms]]: 100; 0–1000. [[Mapa/Perillas/parq|parq]]: sí. [[Mapa/Perillas/rescue_tcp_race|rescue_tcp_race]]: sí. [[Mapa/Perillas/tcp_retx_one|tcp_retx_one]]: sí.

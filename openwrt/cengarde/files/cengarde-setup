@@ -127,6 +127,12 @@ die() {
 	exit 1
 }
 
+# uint_in V LO HI: V is a whole number from LO to HI.
+uint_in() {
+	case "$1" in '' | 0?* | *[!0-9]*) return 1 ;; esac
+	[ "${#1}" -le 9 ] && [ "$1" -ge "$2" ] && [ "$1" -le "$3" ]
+}
+
 list_has() {
 	case " $1 " in *" $2 "*) return 0 ;; esac
 	return 1
@@ -1232,6 +1238,33 @@ engine_conf() {
 	1 | on | yes | true | enabled) echo "fec = yes" ;;
 	0 | off | no | false | disabled) echo "fec = no" ;;
 	*) log "fec '$v': expected 0 or 1, left out" ;;
+	esac
+	# FEC v3 (story 026, LuCI's Protection tab): what fec sends, the share of
+	# its repairs, its window, and a lone uplink's protection; checked here,
+	# since the engine refuses a whole configuration with one bad value
+	config_get v main fec_code
+	case "$v" in
+	'') ;;
+	xor | rlc) echo "fec_code = $v" ;;
+	*) log "fec_code '$v': expected xor or rlc, left out" ;;
+	esac
+	config_get v main fec_pct
+	if [ -n "$v" ]; then
+		if uint_in "$v" 1 50; then echo "fec_pct = $v"; else log "fec_pct '$v': expected 1 to 50, left out"; fi
+	fi
+	config_get v main fec_window_ms
+	if [ -n "$v" ]; then
+		if uint_in "$v" 10 1000; then
+			echo "fec_window_ms = $v"
+		else
+			log "fec_window_ms '$v': expected 10 to 1000, left out"
+		fi
+	fi
+	config_get v main fec_single
+	case "$v" in
+	'') ;;
+	auto | yes | no) echo "fec_single = $v" ;;
+	*) log "fec_single '$v': expected auto, yes or no, left out" ;;
 	esac
 	config_get v main split_eta
 	case "$v" in

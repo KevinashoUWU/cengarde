@@ -564,7 +564,10 @@ Desde la 0.10.1, la página de estado suma tres recuadros:
   porque su cola rebalsa (como un módem celular).
 - **Protección** (motor 0.9 o más nuevo): el modo, el enlace principal, si
   ahora va con copias completas o paridad, las copias y reparaciones
-  enviadas, los paquetes perdidos en todos los enlaces y el rescate.
+  enviadas, los paquetes perdidos en todos los enlaces y el rescate; con
+  los datos de reparación (FEC) encendidos, el código y, con la FEC v3,
+  cómo repara ahora (sobre el reparto, en el único enlace o nada) y las
+  reparaciones enviadas con su parte de los datos.
 - **Protocontrolador:** solo cuando está en A o B: conexiones abiertas y en
   total, bytes desde y hacia la LAN y lo reenviado en el medio.
 
@@ -589,6 +592,27 @@ reparto):
   60 ms, lo que ningún enlace entregó (como paridad con un código de
   borrado). El VPS necesita `rescue_kb` y `rescue_wait_ms` en su
   `cengarde.conf` para su lado (historia 023).
+
+Con el reparto encendido (pestaña *Avanzado*) o un solo enlace, los **datos
+de reparación** (historia 026):
+
+- **Datos de reparación (FEC)** (`fec`): paquetes de reparación junto con los
+  datos, para que el VPS rehaga lo que pierde un enlace sin pedirlo. El VPS
+  necesita `sudo cengarde-vps-setup fec on`. Reinicia el motor.
+- **Código de reparación** (`fec_code`): *Paridad XOR* (una paridad por
+  grupo de paquetes repartidos, rehace una pérdida por grupo) o *Ventana
+  deslizante RLC (FEC v3)*: reparaciones sobre todo lo enviado en los
+  últimos instantes, una parte fija de los datos repartida entre los
+  enlaces; un enlace que se detiene un momento se rehace con lo que llevan
+  los demás, y con un solo enlace se rehacen las pérdidas sueltas.
+- **Datos de reparación (% de la subida)** (`fec_pct`, 20 si se deja vacío):
+  cuesta lo mismo de la capacidad de los enlaces; más rehace detenciones más
+  largas.
+- **Ventana de reparación** (`fec_window_ms`, 300 ms): hasta dónde alcanza
+  cada reparación hacia atrás.
+- **Reparaciones con un solo enlace** (`fec_single`): *Automático* repara
+  solo mientras el enlace pierde al azar (como Starlink), no cuando se le
+  llena la cola ni en un corte; *Siempre*, *Nunca*.
 
 La pestaña *Funciones de capa 4* tiene el protocontrolador (abajo) y el
 **túnel consciente de TCP** (`tcp_aware`, solo nativo): los ACK del TCP de

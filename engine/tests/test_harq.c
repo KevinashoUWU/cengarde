@@ -122,12 +122,47 @@ static void test_harq_route(void)
 	CHECK_EQ(cg_harq_route(&g), CG_HARQ_WAIT); /* may still wait */
 	g.age_us = 90000;
 	CHECK_EQ(cg_harq_route(&g), CG_HARQ_TCP);  /* waiting more leaves no time to ask */
+	/* a wide window (FEC v3): waits while its coming repairs cover the
+	 * deficit, asks for it at once when they cannot */
+	g.budget_us = 0;
+	g.age_us = 10000;
+	g.wide = 1;
+	g.deficit = 5;
+	g.future = 8;
+	CHECK_EQ(cg_harq_route(&g), CG_HARQ_WAIT);
+	g.future = 4;
+	CHECK_EQ(cg_harq_route(&g), CG_HARQ_PARQ);
+	g.deficit = 0;
+	CHECK_EQ(cg_harq_route(&g), CG_HARQ_WAIT); /* no equation yet: the window's repairs */
+	g.wide = 0;
+	g.deficit = 5;
+	CHECK_EQ(cg_harq_route(&g), CG_HARQ_WAIT); /* narrow codes: as before */
+	g.deficit = 0;
+	/* the estimate: covered until the newest passes seq + span - 1, a repair every gap / 16 */
+	CHECK_EQ(cg_harq_future(1000, 1300, 600, 16 * 10), 14); /* 300 back: only the long ones */
+	CHECK_EQ(cg_harq_future(1200, 1300, 600, 16 * 10), 49);  /* 100 back: every one */
+	CHECK_EQ(cg_harq_future(1000, 1599, 600, 160), 0);
+	CHECK_EQ(cg_harq_future(1000, 1700, 600, 160), 0);
+	CHECK_EQ(cg_harq_future(1000, 1300, 600, 0), 0);
+	CHECK_EQ(cg_harq_future(0xfffffff0u, 0xfffffff0u, 1024, 1), 1023 * 16); /* across the wrap */
+	g.age_us = 90000;
 	CHECK(cg_harq_hold(0));
 	CHECK(!cg_harq_hold(25000));
 	g.code = 0;
 	g.age_us = 0;
 	g.budget_us = 25000;
 	CHECK_EQ(cg_harq_route(&g), CG_HARQ_NACK); /* 0 + 20 within 25 */
+	{
+		/* the members another request of the batch asks for, from a base */
+		CHECK(cg_parq_overlap(100, 0x5, 100) == 0x5);
+		CHECK(cg_parq_overlap(104, 0x5, 100) == 0x50);
+		CHECK(cg_parq_overlap(96, 0x30, 100) == 0x3);
+		CHECK(cg_parq_overlap(100 + 64, 1, 100) == 0);
+		CHECK(cg_parq_overlap(100 - 64, ~0ull, 100) == 0);
+		CHECK_EQ(cg_harq_code_wait_us(0, 0), 0);
+		CHECK_EQ(cg_harq_code_wait_us(100000, 0), 100000);
+		CHECK_EQ(cg_harq_code_wait_us(100000, 60000), 60000);
+	}
 	g.age_us = 6000;
 	CHECK_EQ(cg_harq_route(&g), CG_HARQ_TCP);
 	g.here = 1;

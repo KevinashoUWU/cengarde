@@ -10,7 +10,7 @@
 #   again (nothing changes), a new secret (refused, then --replace: its new
 #   address, WireGuard restarted, the engine restarting), --rename, a second
 #   router (its own slot, port and address), a tunnel address taken, the
-#   33rd router, an engine of protocol 3 and --proto 11 refused (with the
+#   33rd router, an engine of protocol 3 and --proto 12 refused (with the
 #   upgrade command), WireGuard ports out of range; remove, the last one
 #   leaving a key that serves nobody; list and forward with each router's
 #   sessions;
@@ -31,6 +31,7 @@
 #   a cloud-config with TUNNEL_IPV6=yes;
 # - protocontroller on|off (native only): protocontroller = b, tcp_bbr at
 #   boot, PROTOCONTROLLER in nat.conf;
+# - fec on|off: fec = yes, FEC in nat.conf (story 026);
 # - tunnel native|wireguard: native writes tunnel = native, the TUN's
 #   10.79.0.1/16 and each router's address as its tun_route (its ULA too
 #   with ipv6 on), a systemd drop-in that allows /dev/net/tun, restarts
@@ -388,7 +389,7 @@ say "limits of the routers and of the ports"
 before=$(fingerprint)
 check "a tunnel address taken is refused" not add shop "$S4" --tunnel-addr "$A2"
 check "it says whose" said "router home has the tunnel address $A2"
-check "--proto 11 (a newer router) is refused with the upgrade command" not add shop "$S4" --proto 11
+check "--proto 12 (a newer router) is refused with the upgrade command" not add shop "$S4" --proto 12
 check "it prints the upgrade command" said "contrib/vps/install.sh"
 check "an engine of protocol 3 is refused" not env FAKE_PROTO=3 sh -c 'printf "%s\n" "$1" | env CENGARDE_ROOT="$2" PATH="$3" sh "$4" add shop' \
 	sh "$S4" "$R" "$BIN:$PATH" "$SETUP"
@@ -738,6 +739,15 @@ check "cengarde.conf: protocontroller = b; PROTOCONTROLLER in nat.conf; tcp_bbr 
 check "the engine takes it" called '^cengarde -t -c .*cengarde.conf.new'
 check "protocontroller off" setup protocontroller off
 check "no protocontroller in cengarde.conf" not grep -q "^protocontroller" "$R/etc/cengarde/cengarde.conf"
+: >"$CALLS"
+check "fec on" setup fec on
+check "cengarde.conf: fec = yes; FEC in nat.conf" \
+	sh -c 'grep -qx "fec = yes" "$1" && grep -qx "FEC=\"yes\"" "$2"' sh "$R/etc/cengarde/cengarde.conf" "$R/etc/cengarde/nat.conf"
+check "the engine takes it" called '^cengarde -t -c .*cengarde.conf.new'
+check "fec on again changes nothing" setup fec on
+check "fec off" setup fec off
+check "no fec in cengarde.conf" not grep -q "^fec" "$R/etc/cengarde/cengarde.conf"
+check "fec maybe is refused" not setup fec maybe
 check "remove omega" setup remove omega
 : >"$CALLS"
 check "tunnel wireguard" setup tunnel wireguard

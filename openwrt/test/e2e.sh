@@ -590,6 +590,52 @@ else
 	bad "engine-conf: protection or rescue options"
 fi
 
+# The repair data (story 026, LuCI's Protection tab): fec, its code and FEC
+# v3's share, window and lone-uplink gate reach the engine's file, which it
+# takes; a value out of the engine's range is left out and logged (the
+# engine would refuse the whole file).
+if "$VM" ssh router sh -s <<'EOF'
+conf() { cengarde-setup engine-conf; }
+clear() {
+	for o in fec fec_code fec_pct fec_window_ms fec_single; do
+		uci -q delete "cengarde.main.$o"
+	done
+	uci commit cengarde
+}
+r=0
+clear
+conf | grep -qE '^fec' && { echo "keys without options"; r=1; }
+uci set cengarde.main.fec=1
+uci set cengarde.main.fec_code=rlc
+uci set cengarde.main.fec_pct=20
+uci set cengarde.main.fec_window_ms=150
+uci set cengarde.main.fec_single=yes
+uci commit cengarde
+for kv in 'fec = yes' 'fec_code = rlc' 'fec_pct = 20' 'fec_window_ms = 150' 'fec_single = yes'; do
+	conf | grep -qxF "$kv" || { echo "missing: $kv"; r=1; }
+done
+(umask 077 && conf > /tmp/fec.conf)
+cengarde -t -c /tmp/fec.conf || r=1
+rm -f /tmp/fec.conf
+uci set cengarde.main.fec_code=raptor
+uci set cengarde.main.fec_pct=90
+uci set cengarde.main.fec_window_ms=5
+uci set cengarde.main.fec_single=sometimes
+uci commit cengarde
+conf | grep -qE '^fec_(code|pct|window_ms|single) =' && { echo "a bad value is written"; r=1; }
+for k in "fec_code 'raptor'" "fec_pct '90'" "fec_window_ms '5'" "fec_single 'sometimes'"; do
+	logread | grep -qF "$k" || { echo "$k not logged"; r=1; }
+done
+clear
+conf | grep -qE '^fec' && { echo "keys left after clearing"; r=1; }
+exit $r
+EOF
+then
+	ok "engine-conf: the repair data (fec, fec_code, fec_pct, fec_window_ms, fec_single) reach the engine's file, which it takes, and bad values are left out"
+else
+	bad "engine-conf: repair data options"
+fi
+
 # No PPPoE server here: only the configuration. PPP copies the uplink's
 # delegate onto the IPv6 interface it creates (ppp9_6), so the uplink gets
 # delegate 0 while everything goes through the tunnel, and loses it after.

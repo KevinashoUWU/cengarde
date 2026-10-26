@@ -509,3 +509,14 @@ usa), y los casos viejos quedan como estaban hasta revisarlos.
   paquetes sigue vivo (`link_masks_tx`, `cg_link_rx_alive`). Las
   combinaciones de la PARQ con la RLC destapaban el error de la
   eliminación de la RLC (ver la 021): corregido.
+- 2026-10-25: historia 026 (FEC v3). Con las reparaciones de ventana ancha
+  llegando, un hueco espera al código aunque `rescue_wait_ms` sea 0
+  (`cg_harq_code_wait_us`, dentro del presupuesto de TCP), pide la PARQ
+  antes del sello cuando las reparaciones por venir no alcanzan su déficit
+  (`cg_harq_future`), y sin anillo en el cliente no manda NACK
+  (`no_nack`); dos huecos del mismo sistema no piden dos veces las mismas
+  columnas en un lote (`cg_parq_overlap`). El cliente responde la PARQ
+  también desde la ventana de la FEC v3, con el presupuesto del rescate.
+  Retener los huecos de la ventana ancha con TCP adentro se probó y se
+  descartó (el mismo caudal y más retardo, n = 3): la regla de TCP de esta
+  historia queda.

@@ -17,7 +17,14 @@
  *    extension header, a fragment, another protocol) cannot be confirmed.
  *  - native, a protocontroller message (protoctl.h): its tag.
  *  - WireGuard: the type and the length of its message (WireGuard's own
- *    MAC checks the rest; it drops what does not match).
+ *    MAC checks the rest; it drops what does not match). A data message
+ *    is its 16-byte header, the plaintext padded to a multiple of 16, and
+ *    its 16-byte tag; but the padding stops at the interface's MTU, so a
+ *    full packet under an MTU that is no multiple of 16 is 32 + MTU bytes
+ *    (1412 under the usual 1380, 1452 under 1420), and an MTU is never
+ *    under IPv6's 1280: such a length passes from 32 + 1280 on (story 026:
+ *    the rule of 16 alone refused every full packet the codes rebuilt in
+ *    the lab's WireGuard tunnel, 2 717 of 2 726 in a run).
  *
  * A random 16-bit sum passes by chance once in 65 536, after the length
  * prefix (rlc.h, rs.h: about one in 40 of 1400-byte garbage) and the IP
@@ -125,9 +132,13 @@ static inline int cg_rb_native(const uint8_t *p, size_t len)
 	}
 }
 
+/* The smallest MTU a WireGuard interface pads its data messages to (IPv6's
+ * minimum link MTU). */
+#define CG_RB_WG_MTU_MIN 1280
+
 /* A WireGuard message's shape (p, len bytes): its type, zero reserved
  * bytes and the length of that type (a data message: its 16-byte header,
- * a multiple of 16 and its 16-byte tag). */
+ * a multiple of 16 or a full MTU of plaintext, and its 16-byte tag). */
 static inline int cg_rb_wg(const uint8_t *p, size_t len)
 {
 	if (len < 4 || p[1] | p[2] | p[3])
@@ -140,7 +151,7 @@ static inline int cg_rb_wg(const uint8_t *p, size_t len)
 	case 3:
 		return len == 64 ? CG_RB_OK : CG_RB_BAD;
 	case 4:
-		return len >= 32 && len % 16 == 0 ? CG_RB_OK : CG_RB_BAD;
+		return len >= 32 && (len % 16 == 0 || len >= 32 + CG_RB_WG_MTU_MIN) ? CG_RB_OK : CG_RB_BAD;
 	}
 	return CG_RB_BAD;
 }

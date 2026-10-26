@@ -33,8 +33,8 @@ msgstr "Túnel"
 msgid "Protection"
 msgstr "Protección"
 
-msgid "How each packet is protected while every uplink carries the upload (the split off): full copies, or partial copies and repair data in what each backup uplink has to spare, and asking the VPS for what is still missing."
-msgstr "Cómo se protege cada paquete mientras todos los enlaces llevan la subida (sin reparto): copias completas, o copias parciales y datos de reparación en lo que le sobra a cada enlace de respaldo, y pedirle al VPS lo que aún falta."
+msgid "How each packet is protected while every uplink carries the upload (the split off): full copies, or partial copies and repair data in what each backup uplink has to spare, and asking the VPS for what is still missing. With the split on, or a lone uplink, the repair data below (FEC)."
+msgstr "Cómo se protege cada paquete mientras todos los enlaces llevan la subida (sin reparto): copias completas, o copias parciales y datos de reparación en lo que le sobra a cada enlace de respaldo, y pedirle al VPS lo que aún falta. Con el reparto activado, o con un solo enlace, los datos de reparación de abajo (FEC)."
 
 msgid "Layer 4 features"
 msgstr "Funciones de capa 4"
@@ -245,6 +245,48 @@ msgstr "Ventana de copias junto a Starlink (ms)"
 
 msgid "With a Starlink uplink, the others carry a copy of a packet only if it would arrive within this long of the first one. Empty: 60 ms, the Starlink preset. 250 is what worked in the field with cellular uplinks behind Starlink. 0: no limit."
 msgstr "Con un enlace Starlink, los demás llevan copia de un paquete solo si llegaría dentro de este plazo después del primero. Vacío: 60 ms, el ajuste de Starlink. 250 es lo que funcionó en terreno con celulares detrás de Starlink. 0: sin límite."
+
+msgid "Repair data (FEC)"
+msgstr "Datos de reparación (FEC)"
+
+msgid "With the split on (Advanced tab) or a lone uplink, repair packets go with the data, so the VPS rebuilds what an uplink loses without asking for it. The VPS needs \"sudo cengarde-vps-setup fec on\" to rebuild them. A change restarts the engine."
+msgstr "Con el reparto activado (pestaña Avanzado) o con un solo enlace, van paquetes de reparación junto con los datos, para que el VPS rehaga lo que pierde un enlace sin tener que pedirlo. El VPS necesita \"sudo cengarde-vps-setup fec on\" para rehacerlos. Un cambio reinicia el motor."
+
+msgid "Repair code"
+msgstr "Código de reparación"
+
+msgid "XOR parity: one parity per group of split packets, one per uplink; it rebuilds one lost packet per group. RLC sliding window (FEC v3): repairs over every packet of the last moments, a fixed share of the data spread over the uplinks, so an uplink that stalls for a moment is rebuilt from what the others carry, and scattered losses on a lone uplink too."
+msgstr "Paridad XOR: una paridad por cada grupo de paquetes repartidos, uno por enlace; rehace un paquete perdido por grupo. Ventana deslizante RLC (FEC v3): reparaciones sobre todos los paquetes de los últimos instantes, una parte fija de los datos repartida entre los enlaces, para que un enlace que se detiene un momento se rehaga con lo que llevan los demás, y también las pérdidas sueltas de un solo enlace."
+
+msgid "XOR parity"
+msgstr "Paridad XOR"
+
+msgid "RLC sliding window (FEC v3)"
+msgstr "Ventana deslizante RLC (FEC v3)"
+
+msgid "Repair data (% of the upload)"
+msgstr "Datos de reparación (% de la subida)"
+
+msgid "The share of the bytes that goes in repairs, whatever the losses: more rebuilds longer stalls (an uplink of four stalling 50 ms needs about 25 %) and costs as much of the capacity of the uplinks."
+msgstr "La parte de los bytes que va en reparaciones, haya o no pérdidas: más rehace detenciones más largas (un enlace de cuatro detenido 50 ms necesita cerca de 25 %) y cuesta lo mismo de la capacidad de los enlaces."
+
+msgid "Repair window (ms)"
+msgstr "Ventana de reparación (ms)"
+
+msgid "How far back each repair reaches: it has to cover a stall and the time to rebuild it, within the wait of the VPS for a missing packet."
+msgstr "Hasta dónde alcanza cada reparación hacia atrás: tiene que cubrir una detención y el tiempo de rehacerla, dentro de lo que el VPS espera a un paquete que falta."
+
+msgid "Repairs on a lone uplink"
+msgstr "Reparaciones con un solo enlace"
+
+msgid "With one uplink, repairs cannot save a cut (they are lost with it); they rebuild scattered losses. Automatic: only while the uplink loses at random (as Starlink does), not when its queue overflows, and never in a cut."
+msgstr "Con un solo enlace, las reparaciones no salvan un corte (se pierden con él); rehacen las pérdidas sueltas. Automático: solo mientras el enlace pierde al azar (como Starlink), no cuando se le llena la cola, y nunca en un corte."
+
+msgid "Always"
+msgstr "Siempre"
+
+msgid "Never"
+msgstr "Nunca"
 
 msgid "Rescue missing packets"
 msgstr "Rescatar paquetes faltantes"
@@ -752,6 +794,18 @@ msgstr "%d enviadas, %d omitidas"
 
 msgid "Repair packets sent"
 msgstr "Paquetes de reparación enviados"
+
+msgid "Repairs now"
+msgstr "Reparaciones ahora"
+
+msgid "over the split, %s over %d ms"
+msgstr "sobre el reparto, %s en %d ms"
+
+msgid "on the lone uplink, %s over %d ms"
+msgstr "en el único enlace, %s en %d ms"
+
+msgid "%d, %s of the data"
+msgstr "%d, %s de los datos"
 
 msgid "Lost on every uplink"
 msgstr "Perdidos en todos los enlaces"

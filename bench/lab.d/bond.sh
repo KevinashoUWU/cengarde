@@ -174,6 +174,22 @@
 #               microcut of MSL_CUT_LOSS % (60) on the first dish or on every
 #               one for the run's middle third. The links' types default to
 #               starlink (and cellular) unless BOND_LINK_TYPES says otherwise
+#   stall50 stall100 stall200  not in the default list: story 026, one link of
+#               four stalling: 4 links of 20 Mbit/s, 25, 27, 30 and 33 ms, 100 ms
+#               of queue; link 2 drops everything, both ways, for 50, 100 or
+#               200 ms every 2 s (bench/stall.py: tc in batch mode, a stall of
+#               50 ms lasts 50 ms). FEC v3's case (fec_code = rlc): its
+#               repairs on the other three links rebuild what link 2 lost
+#   stallr50 stallr100 stallr200  not in the default list: the same at random
+#               times, 1 to 4 s after the last stall, seeded like ltespikerand
+#               (the same draw for every arm at the same repetition)
+#   single1     not in the default list: story 026, a lone link (NLINKS 1):
+#               40 Mbit/s, 20 ms, 100 ms of queue, losing 1 % at random each
+#               way (a radio's scattered loss, Starlink's 0.3-1.3 %)
+#   singlecut   not in the default list: single1 with a microcut, 60 % lost
+#               for 2 s in the middle of the run: what repairs cannot save
+#   singleclean not in the default list: single1 losing nothing: what FEC v3
+#               costs a clean lone link (its gate, fec_single = auto)
 #   bloat       bufferbloat as on the Pi's 5G modems (story 012, 2026-10-13):
 #               3 links of similar delay (20, 20 and 22 ms) and unequal rate
 #               (30, 20 and 8 Mbit/s) behind deep queues (1, 1 and 2 s). A
@@ -956,6 +972,24 @@ bond_events() {
 			bond_link 1 25 50 100 1
 		done
 		;;
+	stall50 | stall100 | stall200 | stallr50 | stallr100 | stallr200)
+		# link 2 stalls (bench/stall.py), every 2 s or at random
+		local ms=${c#stall} when
+		ms=${ms#r}
+		case $c in
+		stallr*) when="--gap 1 4 --seed $((${BOND_SEED:-1} * 1000 + rep))" ;;
+		*) when="--every 2" ;;
+		esac
+		# shellcheck disable=SC2086 # when is a list of options
+		python3 -I "$LAB/stall.py" run --ns-cli "$NS_CLI" --ns-srv "$NS_SRV" --link 2 --secs "$s" --ms "$ms" \
+			$when --delay 27 --rate 20 --queue 100 --inflight "${BOND_NETEM_INFLIGHT:-0}" --log "$RUN/stalls.json"
+		;;
+	singlecut)
+		sleep "$(awk -v s="$s" 'BEGIN { print s / 2 - 1 }')"
+		bond_link 1 20 40 100 60
+		sleep 2
+		bond_link 1 20 40 100 1
+		;;
 	esac
 }
 
@@ -976,6 +1010,10 @@ bond_shape() {
 	starlink15sw) bond_link 1 25 100 && bond_link 2 20 50 ;;
 	ltespike | ltespikerand) bond_link 1 25 50 && bond_link 2 30 50 ;;
 	spikeloss) bond_link 1 25 50 100 1 && bond_link 2 30 50 100 1 ;;
+	stall50 | stall100 | stall200 | stallr50 | stallr100 | stallr200)
+		bond_link 1 25 20 && bond_link 2 27 20 && bond_link 3 30 20 && bond_link 4 33 20 ;;
+	single1 | singlecut) bond_link 1 20 40 100 1 ;;
+	singleclean) bond_link 1 20 40 ;;
 	deepq) bond_link 1 25 20 500 && bond_link 2 25 50 ;;
 	bloat) bond_link 1 20 30 1000 && bond_link 2 20 20 1000 && bond_link 3 22 8 2000 ;;
 	sigrand) bond_link 1 20 50 100 2 && bond_link 2 30 50 ;;
@@ -1019,8 +1057,8 @@ bond_msl_types() {
 bond_nlinks() {
 	case $1 in
 	het | linkdeath | downstall | bloat | lossy | shallowq | shallowqd | shallowqdeep | starsat | dominant | protectpin | msl3) echo 3 ;;
-	msl1) echo 1 ;;
-	msl2c | cell4) echo 4 ;;
+	msl1 | single1 | singlecut | singleclean) echo 1 ;;
+	msl2c | cell4 | stall50 | stall100 | stall200 | stallr50 | stallr100 | stallr200) echo 4 ;;
 	msl3c) echo 5 ;;
 	*) echo 2 ;;
 	esac

@@ -83,6 +83,28 @@ REPAIR += ["tr_" + r for r in RULE_ROWS] + ["trc_" + r for r in RULE_ROWS] + [k 
 GUARD = [("rlc_bad", ("repair", "rlc", "bad")), ("rs_bad", ("repair", "rs", "bad")), ("not_ip", ("not_ip",)),
          ("rb_ok", ("rebuilt", "ok")), ("rb_bad", ("rebuilt", "bad")), ("rb_unsure", ("rebuilt", "unsure"))]
 REPAIR += [k for k, _ in GUARD]
+# FEC (story 026): the XOR parity's and FEC v3's repairs at the sending end (the
+# client's upload; the server's download, story 026's second part), its window's
+# DATA bytes, the candidates its guard took out, the repairs without a link, the
+# batches its lone link's gate kept off; at the receiving end what the XOR parity
+# and the RLC rebuilt, the wide repairs, the unknowns evicted for room, the most at
+# once (a gauge). (name, the client's path, the session's path)
+FEC3 = [("fec_par", ("upload", "fec", "parities"), ("download_fec", "parities")),
+        ("fec_par_bytes", ("upload", "fec", "bytes"), ("download_fec", "bytes")),
+        ("f3_rep", ("upload", "fec", "rlc", "repairs"), ("download_fec", "rlc", "repairs")),
+        ("f3_bytes", ("upload", "fec", "rlc", "repair_bytes"), ("download_fec", "rlc", "repair_bytes")),
+        ("f3_data", ("upload", "fec", "rlc", "data_bytes"), ("download_fec", "rlc", "data_bytes")),
+        ("f3_guarded", ("upload", "fec", "rlc", "guarded"), ("download_fec", "rlc", "guarded")),
+        ("f3_nolink", ("upload", "fec", "rlc", "no_link"), ("download_fec", "rlc", "no_link")),
+        ("f3_gated", ("upload", "fec", "rlc", "gated"), ("download_fec", "rlc", "gated")),
+        ("parq_bytes", ("rescue", "parq", "bytes"), ("download_fec", "parq_bytes")),
+        ("xor_rec", ("download_fec", "xor_recovered"), ("fec", "recovered")),
+        ("rlc_rec", ("download_fec", "rlc_recovered"), ("repair", "rlc", "recovered")),
+        ("rlc_wide", ("download_fec", "rlc_wide"), ("repair", "rlc", "wide")),
+        ("rlc_evicted", ("download_fec", "rlc_evicted"), ("repair", "rlc", "evicted")),
+        ("rlc_peak", ("download_fec", "rlc_peak"), ("repair", "rlc", "peak"))]
+REPAIR += [k for k, _, _ in FEC3]
+GAUGES = GAUGES + ("rlc_peak",)
 COUNTERS = [k for k in RO_PATHS if k not in GAUGES] + ["too_old", "wireguard_drops", "lost_all"] + SENDS + REPAIR
 NAMES = list(RO_PATHS) + ["too_old", "wireguard_drops", "lost_all"] + SENDS + REPAIR
 
@@ -150,6 +172,8 @@ def flat_client(d):
         out[k] = num(dig(d, "tcp_e2e", j))
     for k, _ in GUARD:
         out[k] = None
+    for k, cp, _ in FEC3:
+        out[k] = num(dig(d, *cp))
     return out
 
 
@@ -178,6 +202,8 @@ def flat_session(s):
         out[k] = None
     for k, path in GUARD:
         out[k] = num(dig(s, *path))
+    for k, _, sp in FEC3:
+        out[k] = num(dig(s, *sp))
     return out
 
 

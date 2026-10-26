@@ -18,14 +18,17 @@
 //   the Protection tab holds the protection mode (the engine's redund_spare,
 //   full copies by default), its main uplink (automatic or one of the
 //   uplinks, only with a mode that protects), the copy window next to
-//   Starlink and the rescue switch; the Layer 4 features tab holds the
+//   Starlink, the rescue switch and the repair data (fec, its code, and FEC
+//   v3's share, window and lone-uplink gate only with rlc, story 026); the
+//   Layer 4 features tab holds the
 //   protocontroller and the TCP-aware switch, native mode only;
 // - status.js: the "Reordering" box shows the engine's "reorder" object (and
 //   says so when the engine has it off) and is not there for an engine without
 //   it, the Uplink health table shows each uplink's type, capacity, queue now
 //   and its p50 / p95 over the samples the page saw, whose queue it is and how
 //   it loses, the Protection box (only for an engine that reports
-//   upload.spare) and the Protocontroller box (only when it is on) show,
+//   upload.spare, with FEC's code and FEC v3's repairs when it is on) and
+//   the Protocontroller box (only when it is on) show,
 //   and an uplink the split leaves out for its delay says so, in English
 //   and in Spanish (po/es), which also has to cover its strings.
 //
@@ -385,6 +388,17 @@ for (const [lang, tr] of [ [ 'en', english ], [ 'es', spanish ] ]) {
 	assert.equal(o.pace_peers_ms.placeholder, '60', 'the Starlink preset\'s window');
 	assert.equal(tab('rescue', 'protection').cls, 'Flag');
 	assert.equal(o.rescue.default, '0', 'the rescue is off unless turned on');
+	// FEC (story 026): the switch, its code, and FEC v3's knobs only with rlc
+	assert.equal(tab('fec', 'protection').cls, 'Flag');
+	assert.equal(o.fec.default, '0', 'no repair data unless turned on, as in the engine');
+	assert.deepEqual(tab('fec_code', 'protection').values.map((v) => v[0]), [ 'xor', 'rlc' ], 'the engine\'s codes');
+	assert.equal(o.fec_code.default, 'xor', 'the XOR parity unless set: the engine as before');
+	assert.deepEqual(o.fec_code.deps, [ { fec: '1' } ], 'a code only with the switch');
+	assert.equal(tab('fec_pct', 'protection').datatype, 'range(1,50)', 'the engine\'s range');
+	assert.equal(tab('fec_window_ms', 'protection').datatype, 'range(10,1000)', 'the engine\'s range');
+	assert.deepEqual(tab('fec_single', 'protection').values.map((v) => v[0]), [ 'auto', 'yes', 'no' ]);
+	for (const name of [ 'fec_pct', 'fec_window_ms', 'fec_single' ])
+		assert.deepEqual(o[name].deps, [ { fec_code: 'rlc' } ], `${lang}: ${name} only with FEC v3`);
 	for (const name of [ 'protocontroller', 'protocontroller_port', 'protocontroller_dest' ])
 		tab(name, 'layer4');
 	assert.deepEqual(o.protocontroller.values.map((v) => v[0]), [ 'no', 'a', 'b' ]);
@@ -546,6 +560,18 @@ for (const [lang, tr] of [ [ 'en', english ], [ 'es', spanish ] ]) {
 	assert.equal(prow(L('Now', 'Ahora')), L('parity, one every 21 packets', 'paridad, una cada 21 paquetes'));
 	assert.equal(prow(L('Lost on every uplink', 'Perdidos en todos los enlaces')), '7');
 	assert.ok(prow(L('Rescued', 'Rescates')).startsWith('4'), `${lang}: the rescue's counts`);
+	assert.ok(!prot.some((r) => r[0] == L('Repair data (FEC)', 'Datos de reparación (FEC)')), `${lang}: no fec, no row`);
+	// FEC v3 (story 026): its code, how it repairs now and what it sent
+	const fn = E('div');
+	v.update(fn, base({ links: [], upload: { bytes: 1, spare: null,
+		fec: { on: true, code: 'rlc', parities: 0, rlc: { mode: 'bonding', pct: 25, window_ms: 200, repairs: 1234, overhead_pm: 247 } } } }));
+	const frow = (name) => ((find(fn, (x) => x.tag == 'tr').map((r) => r.children.map(text)).find((r) => r[0] == name)) || assert.fail(`${lang}: no row ${name}`))[1];
+	assert.equal(frow(L('Repair data (FEC)', 'Datos de reparación (FEC)')), L('RLC sliding window (FEC v3)', 'Ventana deslizante RLC (FEC v3)'));
+	assert.equal(frow(L('Repairs now', 'Reparaciones ahora')), L('over the split, 25 % over 200 ms', 'sobre el reparto, 25 % en 200 ms'));
+	assert.equal(frow(L('Repair packets sent', 'Paquetes de reparación enviados')), L('1234, 24.7 % of the data', '1234, 24.7 % de los datos'));
+	const xn = E('div');
+	v.update(xn, base({ links: [], upload: { bytes: 1, spare: null, fec: { on: true, code: 'xor', parities: 9, rlc: null } } }));
+	assert.ok(find(xn, (x) => x.tag == 'tr').map((r) => r.children.map(text)).some((r) => r[0] == L('Repair data (FEC)', 'Datos de reparación (FEC)') && r[1] == L('XOR parity', 'Paridad XOR')), `${lang}: the XOR parity`);
 
 	// Protocontroller: only when it is on
 	assert.ok(!heads(base({ links: [], protocontroller: { mode: 'no' } })).includes(PCTL), `${lang}: off, no box`);

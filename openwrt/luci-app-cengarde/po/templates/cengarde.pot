@@ -31,7 +31,7 @@ msgstr ""
 msgid "Protection"
 msgstr ""
 
-msgid "How each packet is protected while every uplink carries the upload (the split off): full copies, or partial copies and repair data in what each backup uplink has to spare, and asking the VPS for what is still missing."
+msgid "How each packet is protected while every uplink carries the upload (the split off): full copies, or partial copies and repair data in what each backup uplink has to spare, and asking the VPS for what is still missing. With the split on, or a lone uplink, the repair data below (FEC)."
 msgstr ""
 
 msgid "Layer 4 features"
@@ -242,6 +242,48 @@ msgid "Copy window next to Starlink (ms)"
 msgstr ""
 
 msgid "With a Starlink uplink, the others carry a copy of a packet only if it would arrive within this long of the first one. Empty: 60 ms, the Starlink preset. 250 is what worked in the field with cellular uplinks behind Starlink. 0: no limit."
+msgstr ""
+
+msgid "Repair data (FEC)"
+msgstr ""
+
+msgid "With the split on (Advanced tab) or a lone uplink, repair packets go with the data, so the VPS rebuilds what an uplink loses without asking for it. The VPS needs \"sudo cengarde-vps-setup fec on\" to rebuild them. A change restarts the engine."
+msgstr ""
+
+msgid "Repair code"
+msgstr ""
+
+msgid "XOR parity: one parity per group of split packets, one per uplink; it rebuilds one lost packet per group. RLC sliding window (FEC v3): repairs over every packet of the last moments, a fixed share of the data spread over the uplinks, so an uplink that stalls for a moment is rebuilt from what the others carry, and scattered losses on a lone uplink too."
+msgstr ""
+
+msgid "XOR parity"
+msgstr ""
+
+msgid "RLC sliding window (FEC v3)"
+msgstr ""
+
+msgid "Repair data (% of the upload)"
+msgstr ""
+
+msgid "The share of the bytes that goes in repairs, whatever the losses: more rebuilds longer stalls (an uplink of four stalling 50 ms needs about 25 %) and costs as much of the capacity of the uplinks."
+msgstr ""
+
+msgid "Repair window (ms)"
+msgstr ""
+
+msgid "How far back each repair reaches: it has to cover a stall and the time to rebuild it, within the wait of the VPS for a missing packet."
+msgstr ""
+
+msgid "Repairs on a lone uplink"
+msgstr ""
+
+msgid "With one uplink, repairs cannot save a cut (they are lost with it); they rebuild scattered losses. Automatic: only while the uplink loses at random (as Starlink does), not when its queue overflows, and never in a cut."
+msgstr ""
+
+msgid "Always"
+msgstr ""
+
+msgid "Never"
 msgstr ""
 
 msgid "Rescue missing packets"
@@ -749,6 +791,18 @@ msgid "%d sent, %d left out"
 msgstr ""
 
 msgid "Repair packets sent"
+msgstr ""
+
+msgid "Repairs now"
+msgstr ""
+
+msgid "over the split, %s over %d ms"
+msgstr ""
+
+msgid "on the lone uplink, %s over %d ms"
+msgstr ""
+
+msgid "%d, %s of the data"
 msgstr ""
 
 msgid "Lost on every uplink"
