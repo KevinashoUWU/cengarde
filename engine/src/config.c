@@ -901,7 +901,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	strcpy(c->protocontroller_mid_cc, "bbr");
 	c->fec_wait_ms = 10;
 	c->fec_pct = 10;
-	c->fec_window_ms = 100;
+	c->fec_window_ms = 300;
 	c->redund_spare_ms = 50;
 	c->redund_spare_code_ms = 30;
 	c->fec_share_max = 0;

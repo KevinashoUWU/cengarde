@@ -54,6 +54,12 @@
 #                                    opens a fresh TCP to each destination
 #                                    (cubic, BBR once that leg loses; tcp_bbr
 #                                    loaded at boot); the engine restarts
+#   cengarde-vps-setup fec on|off    the repair data (FEC, story 026): the
+#                                    rings and decoders that rebuild what
+#                                    the routers' parity and repairs cover
+#                                    (fec, redund_spare, fec_code = rlc in
+#                                    LuCI's Protection tab); the engine
+#                                    restarts
 #   cengarde-vps-setup refresh       the engine's configuration again, reloaded
 #                                    if it changed (cengarde-nat check)
 #   cengarde-vps-setup purge [--all] the services of install.sh removed and the
@@ -105,6 +111,7 @@ FORWARD_MAX_PORTS=1024
 TUNNEL_IPV6=no
 TUNNEL=wireguard
 PROTOCONTROLLER=no
+FEC=no
 ROUTER_NAME=router
 # ROUTER_TUNNEL_ADDR, the cloud-config's router's tunnel address, is left
 # unset: a cloud-config without it is older than 0.5.2, and its router has
@@ -187,6 +194,7 @@ is_port "$CENGARDE_PORT" || die "CENGARDE_PORT in $CONF: not a port"
 is_port "$WG_PORT_BASE" || die "WG_PORT_BASE in $CONF: not a port"
 case $TUNNEL in wireguard | native) ;; *) die "TUNNEL in $CONF: wireguard or native" ;; esac
 case $PROTOCONTROLLER in yes | no) ;; *) die "PROTOCONTROLLER in $CONF: yes or no" ;; esac
+case $FEC in yes | no) ;; *) die "FEC in $CONF: yes or no" ;; esac
 # What IP pass forwards (cengarde-nat refuses a bad one).
 PASS_LO=${PASSTHROUGH_PORTS%%:*} PASS_HI=${PASSTHROUGH_PORTS#*:}
 is_port "$PASS_LO" && is_port "$PASS_HI" || PASS_LO=1024 PASS_HI=65000
@@ -463,6 +471,12 @@ engine_conf() {
 			protocontroller = b
 		EOF
 	fi
+	[ "$FEC" = yes ] && cat <<-EOF
+		# The repair data (cengarde-vps-setup fec off removes it): each
+		# session keeps the DATA it got lately and rebuilds what the routers'
+		# parity and repairs cover (story 026; ~5 MB a session).
+		fec = yes
+	EOF
 	if [ -s "$LOCAL_CONF" ]; then
 		# Before the [client] sections, which would take its keys.
 		! grep -q '^[[:space:]]*\[' "$LOCAL_CONF" || die "$LOCAL_CONF: the engine's global settings only, no [section]"
@@ -1552,6 +1566,32 @@ cmd_protocontroller() {
 	fi
 }
 
+# cmd_fec on|off: FEC in nat.conf, and the engine (restarted: its rings
+# come with each session).
+cmd_fec() {
+	local v
+	case ${1:-} in
+	on) v=yes ;;
+	off) v=no ;;
+	*) die "usage: fec on|off" ;;
+	esac
+	check_proto
+	lock
+	if [ "$FEC" = "$v" ]; then
+		say "fec is $1 already"
+		return 0
+	fi
+	keep "$CONF"
+	set_conf FEC "$v"
+	regen
+	kept
+	if [ "$v" = yes ]; then
+		say "fec on: the routers that turn on the repair data in LuCI (Protection tab) are rebuilt here"
+	else
+		say "fec off: their repairs are dropped here (turn the repair data off on them too)"
+	fi
+}
+
 cmd_refresh() {
 	check_proto
 	lock
@@ -1651,6 +1691,10 @@ tunnel)
 protocontroller)
 	shift
 	cmd_protocontroller "$@"
+	;;
+fec)
+	shift
+	cmd_fec "$@"
 	;;
 refresh) cmd_refresh ;;
 purge)

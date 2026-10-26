@@ -196,7 +196,7 @@ return view.extend({
 		s.tab('general', _('General'));
 		s.tab('vps', _('VPS'));
 		s.tab('tunnel', _('Tunnel'));
-		s.tab('protection', _('Protection'), _('How each packet is protected while every uplink carries the upload (the split off): full copies, or partial copies and repair data in what each backup uplink has to spare, and asking the VPS for what is still missing.'));
+		s.tab('protection', _('Protection'), _('How each packet is protected while every uplink carries the upload (the split off): full copies, or partial copies and repair data in what each backup uplink has to spare, and asking the VPS for what is still missing. With the split on, or a lone uplink, the repair data below (FEC).'));
 		s.tab('layer4', _('Layer 4 features'), _('What cengarde does with the TCP it carries, beyond moving packets. Native tunnel mode only (Tunnel tab).'));
 		s.tab('advanced', _('Advanced'));
 
@@ -468,6 +468,38 @@ return view.extend({
 			_('With a Starlink uplink, the others carry a copy of a packet only if it would arrive within this long of the first one. Empty: 60 ms, the Starlink preset. 250 is what worked in the field with cellular uplinks behind Starlink. 0: no limit.'));
 		o.datatype = 'range(0,2000)';
 		o.placeholder = '60';
+
+		o = s.taboption('protection', form.Flag, 'fec', _('Repair data (FEC)'),
+			_('With the split on (Advanced tab) or a lone uplink, repair packets go with the data, so the VPS rebuilds what an uplink loses without asking for it. The VPS needs "sudo cengarde-vps-setup fec on" to rebuild them. A change restarts the engine.'));
+		o.default = '0';
+		o.rmempty = false;
+
+		o = s.taboption('protection', form.ListValue, 'fec_code', _('Repair code'),
+			_('XOR parity: one parity per group of split packets, one per uplink; it rebuilds one lost packet per group. RLC sliding window (FEC v3): repairs over every packet of the last moments, a fixed share of the data spread over the uplinks, so an uplink that stalls for a moment is rebuilt from what the others carry, and scattered losses on a lone uplink too.'));
+		o.value('xor', _('XOR parity'));
+		o.value('rlc', _('RLC sliding window (FEC v3)'));
+		o.default = 'xor';
+		o.depends('fec', '1');
+
+		o = s.taboption('protection', form.Value, 'fec_pct', _('Repair data (% of the upload)'),
+			_('The share of the bytes that goes in repairs, whatever the losses: more rebuilds longer stalls (an uplink of four stalling 50 ms needs about 25 %) and costs as much of the capacity of the uplinks.'));
+		o.datatype = 'range(1,50)';
+		o.placeholder = '10';
+		o.depends('fec_code', 'rlc');
+
+		o = s.taboption('protection', form.Value, 'fec_window_ms', _('Repair window (ms)'),
+			_('How far back each repair reaches: it has to cover a stall and the time to rebuild it, within the wait of the VPS for a missing packet.'));
+		o.datatype = 'range(10,1000)';
+		o.placeholder = '300';
+		o.depends('fec_code', 'rlc');
+
+		o = s.taboption('protection', form.ListValue, 'fec_single', _('Repairs on a lone uplink'),
+			_('With one uplink, repairs cannot save a cut (they are lost with it); they rebuild scattered losses. Automatic: only while the uplink loses at random (as Starlink does), not when its queue overflows, and never in a cut.'));
+		o.value('auto', _('Automatic'));
+		o.value('yes', _('Always'));
+		o.value('no', _('Never'));
+		o.default = 'auto';
+		o.depends('fec_code', 'rlc');
 
 		o = s.taboption('protection', form.Flag, 'rescue', _('Rescue missing packets'),
 			_('A packet that no uplink delivered is asked for again (as parity when an erasure code is on) before the receiver gives up on it, within 60 ms. The router keeps what it sent for the VPS to ask, and asks the VPS for the download. The VPS needs rescue_kb and rescue_wait_ms in its cengarde.conf for its side. In the lab it doubled TCP with full copies over a lossy main uplink.'));

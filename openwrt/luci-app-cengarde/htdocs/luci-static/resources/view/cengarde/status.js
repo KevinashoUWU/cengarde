@@ -458,6 +458,20 @@ return view.extend({
 			rows.push([ _('Copies on the backup uplinks'), _('%d sent, %d left out').format(n(sp.copies), n(sp.copies_skipped)) ]);
 			rows.push([ _('Repair packets sent'), '%d'.format(n(sp.parities)) ]);
 		}
+		// The repair data with the split or a lone uplink (fec): the code,
+		// and FEC v3's mode and repairs when it runs
+		if (e.upload.fec && e.upload.fec.on) {
+			const f = e.upload.fec, r = f.rlc;
+
+			rows.push([ _('Repair data (FEC)'), f.code == 'rlc' ? _('RLC sliding window (FEC v3)') : _('XOR parity') ]);
+			if (r && typeof r == 'object') {
+				rows.push([ _('Repairs now'), r.mode == 'bonding' ? _('over the split, %s over %d ms').format(n(r.pct) + ' %', n(r.window_ms))
+					: r.mode == 'single' ? _('on the lone uplink, %s over %d ms').format(n(r.pct) + ' %', n(r.window_ms)) : _('none') ]);
+				rows.push([ _('Repair packets sent'), _('%d, %s of the data').format(n(r.repairs), (n(r.overhead_pm) / 10).toFixed(1) + ' %') ]);
+			} else {
+				rows.push([ _('Repair packets sent'), '%d'.format(n(f.parities)) ]);
+			}
+		}
 		rows.push([ _('Lost on every uplink'), '%d'.format(n(e.lost_all)) ]);
 		rows.push([ _('Rescue'), rs.on ? badge(_('on'), '#393') : _('off') ]);
 		if (rs.on || rs.keeps)
