@@ -249,7 +249,8 @@ struct cg_config {
 	uint32_t fec_wait_ms;         /* a group's parity goes at the latest this long after its first packet */
 	uint32_t fec_share_max;       /* with fec, no link takes over this % of the split DATA (fec.h); 0 (default): no cap */
 	int fec_code;                 /* with fec, what it sends: CG_FEC_XOR (the spatial parity, fec.h; default) or CG_FEC_RLC (FEC v3, story 026: a wide sliding window over every DATA, rlc.h, fec3.h) */
-	uint32_t fec_pct;             /* FEC v3: its repairs, % of the DATA's bytes (default 20) */
+	uint32_t fec_pct;             /* FEC v3: its repairs, % of the DATA's bytes (default 20); with bursts, the share */
+	uint32_t fec_pct_min;         /* FEC v3: the share without bursts nor random loss (default 0; at fec_pct or over: fixed, fec3.h's cg_f3_pct) */
 	uint32_t fec_window_ms;       /* FEC v3: the window's span (default 300; at most CG_RLCW_SPAN sequences) */
 	int fec_single;               /* FEC v3 on a lone link: enum cg_f3_single, auto (by its loss; default), yes or no */
 	int split;                    /* enum cg_split_mode */

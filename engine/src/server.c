@@ -226,7 +226,7 @@ struct session {
 	unsigned df3_span;
 	uint8_t df3_dn;
 	uint32_t df3_lag;
-	uint64_t df3_rep, df3_bytes, df3_data, df3_tail, df3_guarded, df3_nolink, df3_empty, df3_gated;
+	uint64_t df3_rep, df3_bytes, df3_data, df3_tail, df3_guarded, df3_nolink, df3_empty, df3_gated, df3_quiet, df3_switches;
 	uint16_t parq_seed;
 	uint64_t parq_rx, parq_bad, parq_reqs, parq_sent, parq_bytes, parq_missing, parq_budget, parq_nolink;
 	struct cg_ro_cfg rocf;    /* the server's reorder settings, with its rescue */
@@ -2557,9 +2557,11 @@ static void sf3_begin(struct server *s, struct session *S, const struct dpaths *
 
 	if (!sf3_on(s, S))
 		return;
-	mode = cg_f3_mode_of(split, (unsigned)__builtin_popcount(set));
+	/* the mode by the paths that carry, not the split's set of the moment
+	 * (the client's f3_begin) */
+	mode = cg_f3_mode_of(split, (unsigned)__builtin_popcount(split ? d->carry : set));
 	if (mode == CG_F3_SINGLE) {
-		int p = __builtin_ctz(set);
+		int p = __builtin_ctz(d->carry);
 
 		if (!cg_f3_gate(&S->df3, (unsigned)p, s->cfg->fec_single, S->sig[p].kind == CG_SIG_RANDOM, s->cfg->fec_pct,
 				now_ms)) {
@@ -2567,8 +2569,22 @@ static void sf3_begin(struct server *s, struct session *S, const struct dpaths *
 			S->df3_gated++;
 		}
 	}
+	if (mode != CG_F3_OFF) {
+		uint16_t rnd = 0;
+
+		/* the share, by the loss of the paths it protects (fec_pct_min) */
+		for (int p = 0; p < CG_MAX_LINKS; p++)
+			if ((set >> p & 1) && S->sig[p].kind == CG_SIG_RANDOM)
+				rnd |= (uint16_t)(1u << p);
+		if (!cg_f3_pct(&S->df3, set, rnd, s->cfg->fec_pct, s->cfg->fec_pct_min, now_ms)) {
+			mode = CG_F3_OFF;
+			S->df3_quiet++;
+		}
+	}
 	if (mode == CG_F3_OFF && S->df3.mode != CG_F3_OFF)
 		cg_f3_idle(&S->df3);
+	if (mode != S->df3.mode)
+		S->df3_switches++;
 	S->df3.mode = (uint8_t)mode;
 	S->df3_links = mode == CG_F3_OFF ? 0 : set;
 }
@@ -2579,11 +2595,17 @@ static void sf3_begin(struct server *s, struct session *S, const struct dpaths *
 static void sf3_feed(struct server *s, struct session *S, uint32_t seq, const uint8_t *p, size_t len, uint64_t now_us)
 {
 	cg_rlcw_add(S->dw, seq, p, (uint16_t)(len > CG_SYM_PLEN ? CG_SYM_PLEN : len), now_us);
+	/* the protocontroller's bytes, which loss does not hold back: B's
+	 * stream, and A's middle TCP from here with BBR (fec3.h's cg_f3_mix) */
+	cg_f3_mix(&S->df3, (uint32_t)len,
+		  cg_pctl_is(p, len) ||
+			  (s->cfg->protocontroller && !strncmp(s->cfg->protocontroller_mid_cc, "bbr", 3) &&
+			   cg_f3_tcp_port(p, len, (uint16_t)s->cfg->protocontroller_port, 0)));
 	if (!S->resc_idx)
 		cg_resc_earn(&S->resc_b, (uint32_t)len, s->cfg->rescue_pct);
 	if (S->df3.mode == CG_F3_OFF)
 		return;
-	cg_f3_earn(&S->df3, (uint32_t)len, s->cfg->fec_pct, now_us);
+	cg_f3_earn(&S->df3, (uint32_t)len, S->df3.pct, now_us);
 	S->df3_data += len;
 }
 
@@ -3217,11 +3239,14 @@ static void cap_tick(struct server *s, struct session *S, uint16_t live, uint64_
 			cg_sig_cap(&S->sig[p], &S->cap[p], now_ms);
 			/* FEC v3 down: where its repairs go, and a lone path's loss */
 			cg_f3_weigh(&S->df3, (unsigned)p, P->tx_bytes);
-			cg_f3_loss(&S->df3, (unsigned)p, S->cap[p].loss_pm, S->cap[p].loss_pm_ms, S->cap[p].ql_us);
+			cg_f3_loss(&S->df3, (unsigned)p, S->cap[p].loss_pm, S->cap[p].loss_pm_ms, S->cap[p].ql_us,
+				   S->sig[p].last_qmax > S->cap[p].ql_us ? S->sig[p].last_qmax : S->cap[p].ql_us,
+				   S->cap[p].loaded_ms == S->cap[p].loss_pm_ms);
 
 			cg_decrec_cap(&S->dec, &S->cap[p], (unsigned)p, ev, was, now_ms);
 		}
 	}
+	cg_f3_mix_tick(&S->df3);
 	if (s->cfg->capacity_weights) {
 		struct dpaths d = down_paths(s, S, now_ms);
 
@@ -3725,7 +3750,10 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 
 			cg_json_obj(j, "rlc");
 			cg_json_str(j, "mode", mode[S->df3.mode <= CG_F3_SINGLE ? S->df3.mode : 0]);
-			cg_json_u64(j, "pct", s->cfg->fec_pct);
+			cg_json_u64(j, "pct", S->df3.mode == CG_F3_OFF ? 0 : S->df3.pct);
+			cg_json_u64(j, "pct_max", s->cfg->fec_pct);
+			cg_json_u64(j, "pct_min", s->cfg->fec_pct_min);
+			cg_json_u64(j, "bursts", S->df3.bursts);
 			cg_json_u64(j, "window_ms", s->cfg->fec_window_ms);
 			cg_json_u64(j, "links", (uint64_t)__builtin_popcount(S->df3_links));
 			cg_json_u64(j, "window", S->df3_span);
@@ -3740,6 +3768,9 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 			cg_json_u64(j, "no_link", S->df3_nolink);
 			cg_json_u64(j, "empty", S->df3_empty);
 			cg_json_u64(j, "gated", S->df3_gated);
+			cg_json_u64(j, "quiet", S->df3_quiet);
+			cg_json_u64(j, "switches", S->df3_switches);
+			cg_json_u64(j, "insensitive_pm", (uint64_t)S->df3.ins_q10 * 1000 / 1024);
 			cg_json_end(j, '}');
 		} else {
 			cg_json_null(j, "rlc");

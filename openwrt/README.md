@@ -609,8 +609,13 @@ de reparación** (historia 026):
   enlaces; un enlace que se detiene un momento se rehace con lo que llevan
   los demás, y con un solo enlace se rehacen las pérdidas sueltas.
 - **Datos de reparación (% de la subida)** (`fec_pct`, 20 si se deja vacío):
+  lo más que va en reparaciones, todo durante 30 s después de que un enlace se
+  detiene o pierde en ráfaga, y con pérdidas sueltas 25 veces la pérdida;
   cuesta lo mismo de la capacidad de los enlaces; más rehace detenciones más
   largas.
+- **Datos de reparación sin pérdidas** (`fec_pct_min`, 0): la parte cuando
+  ningún enlace perdió al azar ni en ráfaga hace poco; la pérdida con la cola
+  llena no cuenta (es TCP frenando). Igual a la de arriba deja una parte fija.
 - **Ventana de reparación** (`fec_window_ms`, 300 ms): hasta dónde alcanza
   cada reparación hacia atrás.
 - **Reparaciones con un solo enlace** (`fec_single`): *Automático* repara

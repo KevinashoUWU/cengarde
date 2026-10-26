@@ -482,9 +482,15 @@ return view.extend({
 		o.depends('fec', '1');
 
 		o = s.taboption('protection', form.Value, 'fec_pct', _('Repair data (% of the upload)'),
-			_('The share of the bytes that goes in repairs, whatever the losses: more rebuilds longer stalls (an uplink of four stalling 50 ms needs about 25 %) and costs as much of the capacity of the uplinks.'));
+			_('The most of the bytes that goes in repairs: all of it for 30 s after an uplink stalls or loses a burst, and with scattered losses 25 times the loss up to it. More rebuilds longer stalls (an uplink of four stalling 50 ms needs about 25 %) and costs as much of the capacity of the uplinks.'));
 		o.datatype = 'range(1,50)';
 		o.placeholder = '20';
+		o.depends('fec_code', 'rlc');
+
+		o = s.taboption('protection', form.Value, 'fec_pct_min', _('Repair data when nothing is lost (%)'),
+			_('The share when no uplink lost at random or in a burst lately (losses with a full queue do not count: they are TCP slowing down). 0 sends no repairs on clean uplinks; the same as the repair data above keeps a fixed share.'));
+		o.datatype = 'range(0,50)';
+		o.placeholder = '0';
 		o.depends('fec_code', 'rlc');
 
 		o = s.taboption('protection', form.Value, 'fec_window_ms', _('Repair window (ms)'),

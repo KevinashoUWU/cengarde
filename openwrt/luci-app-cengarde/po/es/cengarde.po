@@ -267,8 +267,14 @@ msgstr "Ventana deslizante RLC (FEC v3)"
 msgid "Repair data (% of the upload)"
 msgstr "Datos de reparación (% de la subida)"
 
-msgid "The share of the bytes that goes in repairs, whatever the losses: more rebuilds longer stalls (an uplink of four stalling 50 ms needs about 25 %) and costs as much of the capacity of the uplinks."
-msgstr "La parte de los bytes que va en reparaciones, haya o no pérdidas: más rehace detenciones más largas (un enlace de cuatro detenido 50 ms necesita cerca de 25 %) y cuesta lo mismo de la capacidad de los enlaces."
+msgid "The most of the bytes that goes in repairs: all of it for 30 s after an uplink stalls or loses a burst, and with scattered losses 25 times the loss up to it. More rebuilds longer stalls (an uplink of four stalling 50 ms needs about 25 %) and costs as much of the capacity of the uplinks."
+msgstr "Lo más de los bytes que va en reparaciones: todo durante 30 s después de que un enlace se detiene o pierde en ráfaga, y con pérdidas sueltas 25 veces la pérdida hasta ese tope. Más rehace detenciones más largas (un enlace de cuatro detenido 50 ms necesita cerca de 25 %) y cuesta lo mismo de la capacidad de los enlaces."
+
+msgid "Repair data when nothing is lost (%)"
+msgstr "Datos de reparación sin pérdidas (%)"
+
+msgid "The share when no uplink lost at random or in a burst lately (losses with a full queue do not count: they are TCP slowing down). 0 sends no repairs on clean uplinks; the same as the repair data above keeps a fixed share."
+msgstr "La parte cuando ningún enlace perdió al azar ni en ráfaga hace poco (las pérdidas con la cola llena no cuentan: son TCP frenando). Con 0 no van reparaciones por enlaces limpios; igual a los datos de reparación de arriba deja una parte fija."
 
 msgid "Repair window (ms)"
 msgstr "Ventana de reparación (ms)"
@@ -803,6 +809,15 @@ msgstr "sobre el reparto, %s en %d ms"
 
 msgid "on the lone uplink, %s over %d ms"
 msgstr "en el único enlace, %s en %d ms"
+
+msgid "none: no uplink lost lately"
+msgstr "ninguna: ningún enlace perdió hace poco"
+
+msgid "Repair share"
+msgstr "Parte de reparación"
+
+msgid "%s to %s, by the losses"
+msgstr "de %s a %s, según las pérdidas"
 
 msgid "%d, %s of the data"
 msgstr "%d, %s de los datos"
