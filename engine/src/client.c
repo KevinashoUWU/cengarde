@@ -3948,7 +3948,8 @@ static void cap_tick(struct client *c, uint16_t live, uint16_t in, uint64_t now_
 			/* FEC v3: where its repairs go, and a lone link's loss */
 			cg_f3_weigh(&c->f3, (unsigned)i, l->tx_bytes);
 			cg_f3_loss(&c->f3, (unsigned)i, c->cap[i].loss_pm, c->cap[i].loss_pm_ms, c->cap[i].ql_us,
-				   c->sig[i].last_qmax > c->cap[i].ql_us ? c->sig[i].last_qmax : c->cap[i].ql_us);
+				   c->sig[i].last_qmax > c->cap[i].ql_us ? c->sig[i].last_qmax : c->cap[i].ql_us,
+				   c->cap[i].loaded_ms == c->cap[i].loss_pm_ms);
 
 			cg_decrec_cap(&c->dec, &c->cap[i], (unsigned)i, ev, was, now_ms);
 		}
