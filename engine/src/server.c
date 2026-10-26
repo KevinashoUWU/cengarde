@@ -5052,6 +5052,7 @@ out:
 		free(s->s[i].fec);
 		free(s->s[i].rlc);
 		free(s->s[i].rsx);
+		free(s->s[i].dw);
 	}
 	free(s->gf);
 	free(s->rs_x);
