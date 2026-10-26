@@ -296,6 +296,49 @@ static void test_f3_pct(void)
 	CHECK(f.bursts == 2 && !f.srand_ms[1]);
 }
 
+/* The bytes loss does not hold back (the protocontroller's): their part of
+ * the share asks for no repairs; variant A's middle TCP by its port. */
+static void test_f3_mix(void)
+{
+	struct cg_f3 f;
+	uint8_t v4[40] = { 0x45, 0, 0, 40, 0, 0, 0, 0, 64, 6 }, v6[60] = { 0x60 };
+	int i;
+
+	memset(&f, 0, sizeof(f));
+	f.warm_ms = 1;
+	cg_f3_mix_tick(&f); /* nothing sent: unchanged */
+	CHECK_EQ(f.ins_q10, 0);
+	for (i = 0; i < 40; i++) {
+		cg_f3_mix(&f, 1000, 1);
+		cg_f3_mix(&f, 1000, 0);
+		cg_f3_mix_tick(&f);
+	}
+	CHECK(f.ins_q10 >= 500 && f.ins_q10 <= 512);
+	/* a burst: half the bytes ask for the share over the floor */
+	f.burst_ms[0] = 100;
+	f.ins_q10 = 512;
+	CHECK_EQ(cg_f3_pct(&f, 0x1, 0, 20, 0, 200), 10);
+	CHECK_EQ(cg_f3_pct(&f, 0x1, 0, 20, 4, 200), 12);
+	f.ins_q10 = 1024; /* all of them: the floor */
+	CHECK_EQ(cg_f3_pct(&f, 0x1, 0, 20, 4, 200), 4);
+	CHECK_EQ(cg_f3_pct(&f, 0x1, 0, 20, 20, 200), 20); /* a fixed share stays */
+	/* the port: TCP's destination (or source) port, IPv4 with options, IPv6 */
+	v4[22] = 0x1e;
+	v4[23] = 0x79; /* destination 7801 */
+	CHECK(cg_f3_tcp_port(v4, sizeof(v4), 7801, 1));
+	CHECK(!cg_f3_tcp_port(v4, sizeof(v4), 7801, 0));
+	CHECK(!cg_f3_tcp_port(v4, sizeof(v4), 0, 1));
+	CHECK(!cg_f3_tcp_port(v4, 23, 7801, 1)); /* short */
+	v4[9] = 17;                              /* UDP */
+	CHECK(!cg_f3_tcp_port(v4, sizeof(v4), 7801, 1));
+	v6[6] = 6;
+	v6[40] = 0x1e;
+	v6[41] = 0x79; /* source 7801 */
+	CHECK(cg_f3_tcp_port(v6, sizeof(v6), 7801, 0));
+	CHECK(!cg_f3_tcp_port(v6, sizeof(v6), 7801, 1));
+	CHECK(!cg_f3_tcp_port(v6, 43, 7801, 0));
+}
+
 void test_fec3(void)
 {
 	test_f3_mode();
@@ -306,4 +349,5 @@ void test_fec3(void)
 	test_f3_span();
 	test_f3_gate();
 	test_f3_pct();
+	test_f3_mix();
 }

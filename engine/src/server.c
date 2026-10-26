@@ -2595,6 +2595,12 @@ static void sf3_begin(struct server *s, struct session *S, const struct dpaths *
 static void sf3_feed(struct server *s, struct session *S, uint32_t seq, const uint8_t *p, size_t len, uint64_t now_us)
 {
 	cg_rlcw_add(S->dw, seq, p, (uint16_t)(len > CG_SYM_PLEN ? CG_SYM_PLEN : len), now_us);
+	/* the protocontroller's bytes, which loss does not hold back: B's
+	 * stream, and A's middle TCP from here with BBR (fec3.h's cg_f3_mix) */
+	cg_f3_mix(&S->df3, (uint32_t)len,
+		  cg_pctl_is(p, len) ||
+			  (s->cfg->protocontroller && !strncmp(s->cfg->protocontroller_mid_cc, "bbr", 3) &&
+			   cg_f3_tcp_port(p, len, (uint16_t)s->cfg->protocontroller_port, 0)));
 	if (!S->resc_idx)
 		cg_resc_earn(&S->resc_b, (uint32_t)len, s->cfg->rescue_pct);
 	if (S->df3.mode == CG_F3_OFF)
@@ -3240,6 +3246,7 @@ static void cap_tick(struct server *s, struct session *S, uint16_t live, uint64_
 			cg_decrec_cap(&S->dec, &S->cap[p], (unsigned)p, ev, was, now_ms);
 		}
 	}
+	cg_f3_mix_tick(&S->df3);
 	if (s->cfg->capacity_weights) {
 		struct dpaths d = down_paths(s, S, now_ms);
 
@@ -3763,6 +3770,7 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 			cg_json_u64(j, "gated", S->df3_gated);
 			cg_json_u64(j, "quiet", S->df3_quiet);
 			cg_json_u64(j, "switches", S->df3_switches);
+			cg_json_u64(j, "insensitive_pm", (uint64_t)S->df3.ins_q10 * 1000 / 1024);
 			cg_json_end(j, '}');
 		} else {
 			cg_json_null(j, "rlc");

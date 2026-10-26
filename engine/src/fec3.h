@@ -95,6 +95,8 @@ struct cg_f3 {
 	uint64_t bursts;             /* bursts seen, every link */
 	uint32_t pct;                /* the share now, % (cg_f3_pct) */
 	uint64_t warm_ms;            /* the whole share until then (CG_F3_WARM_MS from the first batch), 0: none yet */
+	uint64_t b_all, b_ins;       /* DATA bytes since the last tick, and of them not held back by loss (cg_f3_mix) */
+	uint16_t ins_q10;            /* that share of the bytes, x 1024, smoothed (1/4) per tick */
 	uint8_t gate;                /* the lone link's gate (fec_single = auto) */
 	uint8_t alt;                 /* the next repair's span: the window or its quarter (cg_f3_span_us) */
 	uint8_t mode;                /* enum cg_f3_mode, at the last batch */
@@ -302,6 +304,59 @@ static inline void cg_f3_loss(struct cg_f3 *f, unsigned i, uint16_t loss_pm, uin
 	}
 }
 
+/* A DATA of len bytes, ins: one whose sender is not held back by loss (the
+ * protocontroller's: B's stream, with its own ARQ and its rate from
+ * capacity.h, or A's middle TCP with BBR): repairs against random loss only
+ * take its capacity (story 026: BBR paid 9-12 % with random loss), so its
+ * part of the bytes asks for none (cg_f3_pct). */
+static inline void cg_f3_mix(struct cg_f3 *f, uint32_t len, int ins)
+{
+	f->b_all += len;
+	if (ins)
+		f->b_ins += len;
+}
+
+/* Each tick: the share of those bytes, smoothed. */
+static inline void cg_f3_mix_tick(struct cg_f3 *f)
+{
+	if (!f->b_all)
+		return;
+	f->ins_q10 = (uint16_t)((f->ins_q10 * 3u + (uint32_t)(f->b_ins * 1024 / f->b_all)) / 4);
+	f->b_all = f->b_ins = 0;
+}
+
+/* Whether a packet is TCP to (dst) or from (!dst) port, IPv4 or IPv6
+ * without extension headers: variant A's middle TCP (protocontroller_port). */
+static inline int cg_f3_tcp_port(const uint8_t *p, size_t len, uint16_t port, int dst)
+{
+	size_t off;
+
+	if (!port || len < 1)
+		return 0;
+	if (p[0] >> 4 == 4) {
+		if (len < 20 || p[9] != 6)
+			return 0;
+		off = (size_t)(p[0] & 15) * 4;
+	} else if (p[0] >> 4 == 6) {
+		if (len < 40 || p[6] != 6)
+			return 0;
+		off = 40;
+	} else {
+		return 0;
+	}
+	if (off < 20 || len < off + 4)
+		return 0;
+	off += dst ? 2 : 0;
+	return (uint16_t)(p[off] << 8 | p[off + 1]) == port;
+}
+
+/* The loss-driven part of the share for the bytes that are held back by
+ * loss: over lo, scaled by the rest of ins_q10. */
+static inline uint32_t cg_f3_scale(const struct cg_f3 *f, uint32_t x, uint32_t lo)
+{
+	return x <= lo ? x : lo + (uint32_t)((uint64_t)(x - lo) * (1024u - (f->ins_q10 > 1024 ? 1024 : f->ins_q10)) / 1024);
+}
+
 /* The share of repairs now (%, into f->pct), between lo and hi (fec_pct_min
  * and fec_pct; lo at hi or over: hi, the fixed share) over the links of set
  * (rnd: those whose loss_kind reads random now, linksig.h): hi while one of
@@ -311,8 +366,9 @@ static inline void cg_f3_loss(struct cg_f3 *f, unsigned i, uint16_t loss_pm, uin
  * a TCP fills the link and the evidence stops: the share fades, it does not
  * cut), weighed by
  * their bytes (a link losing only with its queue counts as clean: its drops
- * are its TCP's signal); hi for CG_F3_WARM_MS from the first call. 0: no
- * repairs at all. now_ms: the samples' clock. */
+ * are its TCP's signal); hi for CG_F3_WARM_MS from the first call. The
+ * part over lo scaled down by the bytes no loss holds back (cg_f3_mix). 0:
+ * no repairs at all. now_ms: the samples' clock. */
 static inline uint32_t cg_f3_pct(struct cg_f3 *f, uint16_t set, uint16_t rnd, uint32_t hi, uint32_t lo, uint64_t now_ms)
 {
 	uint64_t sw = 0, sl = 0;
@@ -326,12 +382,12 @@ static inline uint32_t cg_f3_pct(struct cg_f3 *f, uint16_t set, uint16_t rnd, ui
 	if (!f->warm_ms)
 		f->warm_ms = now_ms + CG_F3_WARM_MS;
 	if (now_ms < f->warm_ms)
-		return f->pct = hi;
+		return f->pct = cg_f3_scale(f, hi, lo);
 	for (unsigned i = 0; i < CG_F3_LINKS; i++) {
 		if (!(set >> i & 1))
 			continue;
 		if (f->burst_ms[i] && now_ms - f->burst_ms[i] <= CG_F3_HOLD_MS)
-			return f->pct = hi;
+			return f->pct = cg_f3_scale(f, hi, lo);
 		sw += f->w[i];
 		if (!f->srand_ms[i] || now_ms - f->srand_ms[i] >= CG_F3_SRAND_END_MS)
 			continue;
@@ -349,7 +405,7 @@ static inline uint32_t cg_f3_pct(struct cg_f3 *f, uint16_t set, uint16_t rnd, ui
 	}
 	pm = sw ? (uint32_t)(sl / sw) : mx;
 	need = lo + (pm * CG_F3_PER_LOSS + 9) / 10;
-	return f->pct = need < hi ? need : hi;
+	return f->pct = cg_f3_scale(f, need < hi ? need : hi, lo);
 }
 
 /* Whether a lone link i is protected: fec_single (enum cg_f3_single);

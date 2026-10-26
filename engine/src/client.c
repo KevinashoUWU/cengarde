@@ -381,6 +381,7 @@ struct client {
 	uint32_t f3_lag; /* the last repair's window ended this long before now, us (cg_f3_lag_us) */
 	uint8_t f3_dn;
 	uint64_t f3_rep, f3_bytes, f3_data, f3_tail, f3_guarded, f3_nolink, f3_empty, f3_gated, f3_quiet, f3_switches;
+	uint16_t f3_ins_port; /* variant A's middle TCP with BBR: its port (f3_apply), 0: none */
 	/* FEC v3 down (story 026): the server's repairs of the download,
 	 * rebuilt as the server rebuilds the upload (with fec): the DATA got
 	 * lately (fec.h's ring, 4 MB) and the RLC's equations (~600 KB); the
@@ -2166,6 +2167,10 @@ static void f3_begin(struct client *c, const struct upctx *u)
 static void f3_feed(struct client *c, uint32_t seq, const uint8_t *p, size_t len, uint64_t now_us)
 {
 	cg_rlcw_add(c->f3w, seq, p, (uint16_t)(len > CG_SYM_PLEN ? CG_SYM_PLEN : len), now_us);
+	/* the protocontroller's bytes, which loss does not hold back: B's
+	 * stream, and A's middle TCP to the VPS with BBR (fec3.h's cg_f3_mix) */
+	cg_f3_mix(&c->f3, (uint32_t)len,
+		  cg_pctl_is(p, len) || (c->f3_ins_port && cg_f3_tcp_port(p, len, c->f3_ins_port, 1)));
 	/* the parity the server asks for again comes from this window too
 	 * (on_parq): without the rescue ring, the rescue's budget grows here */
 	if (!c->resc_idx)
@@ -2273,6 +2278,10 @@ static int f3_tail(struct client *c, uint64_t now_us)
  * never per packet. */
 static void f3_apply(struct client *c)
 {
+	/* variant A's middle TCP, when its congestion control does not slow
+	 * down for loss (BBR): its port, for cg_f3_mix */
+	c->f3_ins_port = c->cfg->protocontroller == CG_PCTL_A && !strncmp(c->cfg->protocontroller_mid_cc, "bbr", 3)
+				 ? (uint16_t)c->cfg->protocontroller_port : 0;
 	if (c->cfg->fec && c->cfg->fec_code == CG_FEC_RLC) {
 		if (!c->f3w && !(c->f3w = calloc(1, sizeof(*c->f3w))))
 			cg_warn("fec_code = rlc: out of memory for its window, no repairs");
@@ -3960,6 +3969,7 @@ static void cap_tick(struct client *c, uint16_t live, uint16_t in, uint64_t now_
 			cg_decrec_cap(&c->dec, &c->cap[i], (unsigned)i, ev, was, now_ms);
 		}
 	}
+	cg_f3_mix_tick(&c->f3);
 	if (c->cfg->capacity_weights)
 		cg_cap_weights(c->cap, c->cfg->split == CG_SPLIT_FORCE ? 0 : c->dup0, c->cfg->governor ? c->gw : NULL,
 			       cc.sat_us / 2, c->cw);
@@ -4364,6 +4374,7 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 		cg_json_u64(j, "gated", c->f3_gated);
 		cg_json_u64(j, "quiet", c->f3_quiet); /* batches without repairs: no burst nor random loss, fec_pct_min 0 */
 		cg_json_u64(j, "switches", c->f3_switches);
+		cg_json_u64(j, "insensitive_pm", (uint64_t)c->f3.ins_q10 * 1000 / 1024); /* the bytes loss does not hold back (the protocontroller's) */
 		cg_json_end(j, '}');
 	} else {
 		cg_json_null(j, "rlc");
