@@ -6,6 +6,7 @@
 #include <unistd.h>
 
 #include "config.h"
+#include "fec3.h"
 #include "linkmodel.h"
 #include "test.h"
 #include "protoctlio.h"
@@ -830,6 +831,32 @@ static void test_config_bonding(void)
 	cg_config_free(&c);
 	bad(CLIENT "redund_spare_first = CLARO\n[link ENTEL]\n", "redund_spare_first", "CLARO");
 	bad(CLIENT "split_dominant_hold = 3\n", "split_dominant_hold", "3");
+	/* FEC v3 (story 026): the XOR parity by default, 10 % of repairs over
+	 * 300 ms, a lone link by its loss; the words and ranges */
+	CHECK_EQ(cg_config_parse(&c, CLIENT "fec = yes\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(c.fec_code, CG_FEC_XOR);
+	CHECK_EQ(c.fec_pct, 10);
+	CHECK_EQ(c.fec_window_ms, 300);
+	CHECK_EQ(c.fec_single, CG_F3_SINGLE_AUTO);
+	cg_config_free(&c);
+	CHECK_EQ(cg_config_parse(&c, CLIENT "fec = yes\nfec_code = rlc\nfec_pct = 25\nfec_window_ms = 150\nfec_single = no\n", err,
+				 sizeof(err), warn, sizeof(warn)),
+		 0);
+	CHECK_EQ(c.fec_code, CG_FEC_RLC);
+	CHECK_EQ(c.fec_pct, 25);
+	CHECK_EQ(c.fec_window_ms, 150);
+	CHECK_EQ(c.fec_single, CG_F3_SINGLE_NO);
+	cg_config_free(&c);
+	CHECK_EQ(cg_config_parse(&c, SERVER "fec = yes\nfec_code = xor\nfec_single = yes\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(c.fec_code, CG_FEC_XOR);
+	CHECK_EQ(c.fec_single, CG_F3_SINGLE_YES);
+	cg_config_free(&c);
+	bad(CLIENT "fec_code = raptor\n", "fec_code", "raptor");
+	bad(CLIENT "fec_pct = 0\n", "fec_pct", "0");
+	bad(CLIENT "fec_pct = 51\n", "fec_pct", "51");
+	bad(CLIENT "fec_window_ms = 9\n", "fec_window_ms", "9");
+	bad(CLIENT "fec_window_ms = 1001\n", "fec_window_ms", "1001");
+	bad(CLIENT "fec_single = sometimes\n", "fec_single", "sometimes");
 	/* The weight is a link's, not global; a server has no [link] weights (its
 	 * client's probes say them), and says so. */
 	CHECK_EQ(cg_config_parse(&c, CLIENT "weight = 2\n", err, sizeof(err), warn, sizeof(warn)), 0);

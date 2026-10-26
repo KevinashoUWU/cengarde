@@ -38,6 +38,7 @@ RCVB = "Presupuesto de recepción (rcvbudget.h)"
 THR = "Hilos por enlace (thrplan.h)"
 RESC = "Rescate (rescue.h)"
 FEC = "FEC (fec.h)"
+F3 = "FEC v3 (fec3.h)"
 WGW = "Reloj atrasado de WireGuard (wgwatch.h)"
 CLIENTS = "Varios clientes (clients.h)"
 FWD = "Tabla de reenvío (fwdtable.h)"
@@ -55,7 +56,7 @@ H = {
     "010": "010-ipv6-varias-ip-multicliente-nombres", "011": "011-hilos", "012": "012-bonding",
     "013": "013-capacidad-y-dosificacion", "014": "014-tunel-nativo", "015": "015-modelo-de-enlace", "016": "016-celda-virtual",
     "017": "017-terreno-nostalgica", "019": "019-perdida-con-cola", "020": "020-copias-parciales-y-paridad", "021": "021-fec-v2",
-    "023": "023-reparacion-coherente", "025": "025-protocontrolador",
+    "023": "023-reparacion-coherente", "025": "025-protocontrolador", "026": "026-fec-v3",
     "audit": "audit-pending",
 }
 
@@ -144,7 +145,11 @@ T = {
  "rescue_target_ms": ([G], BOTH, "20 (el de `governor_target_ms`; 0 lo sigue)", "0–1000", [RESC, CAP], ["audit"], "Cola donde empieza a bajar el peso del rescate (cero a 4 veces). Auditoría C12."),
  "rescue_by_owd": ([G], CLI, "`no`", "`yes` o `no`", [RESC], ["015", "audit"], "El rescate del cliente por el enlace de menor retardo de subida, no de RTT (C10). Experimento."),
  "rescue_full_hyst": ([G], BOTH, "0 (apagado)", "0–2", [RESC, CAP, MODEL], ["015", "audit"], "Histéresis del bit `full` del rescate (C11). Experimento, campo del modelo."),
- "fec": ([G], BOTH, "`no`", "`yes` o `no`", [FEC, CODES], ["013", "021"], "Paridad XOR de cada grupo de DATA repartido. En el servidor, también la memoria con la que usa las paridades y las reparaciones de `redund_spare` (`parity`, `mix`, `rs`, `rlc`)."),
+ "fec": ([G], BOTH, "`no`", "`yes` o `no`", [FEC, F3, CODES], ["013", "021", "026"], "Paridad XOR de cada grupo de DATA repartido, o con `fec_code = rlc` la ventana deslizante de la FEC v3. En el servidor, también la memoria con la que usa las paridades y las reparaciones de `redund_spare` (`parity`, `mix`, `rs`, `rlc`) y de la FEC v3 (el anillo de 2048 DATA y las ecuaciones: ~5 MB por sesión)."),
+ "fec_code": ([G], CLI, "`xor`", "`xor` o `rlc`", [F3, FEC, CODES], ["026"], "Lo que manda `fec = yes`: `xor`, la paridad espacial de siempre (un paquete por enlace por grupo, rehace una pérdida por grupo); `rlc`, la FEC v3: reparaciones de una ventana deslizante sobre todo DATA, una parte fija de los bytes repartida por los enlaces, con reparto o con un solo enlace (protocolo 11; el servidor con `fec = yes`). Se cambia sin reiniciar."),
+ "fec_pct": ([G], CLI, "10", "1–50", [F3], ["026"], "FEC v3: las reparaciones, % de los bytes de DATA, haya o no pérdida. Un enlace de parte s detenido T se rehace unos s·T / (r·(1 − s)) después de empezar: con cuatro enlaces, 50 ms piden ~25 %."),
+ "fec_window_ms": ([G], CLI, "300", "10–1000", [F3, CODES], ["026"], "FEC v3: hasta dónde alcanza una reparación (una de cada dos cubre su último cuarto); como mucho `CG_RLCW_SPAN` (1024) secuencias, y lo útil queda dentro de lo que el receptor espera un hueco (su plazo más `rescue_code_ms`)."),
+ "fec_single": ([G], CLI, "`auto`", "`auto`, `yes` o `no`", [F3, "Observaciones del enlace (linksig.h)"], ["026"], "FEC v3 con un solo enlace: `auto` repara mientras pierde al azar (sin cola, como Starlink) y no con pérdida por congestión ni en un corte (pérdida sobre la mitad de la tasa); `yes` siempre, `no` nunca."),
  "fec_wait_ms": ([G], BOTH, "10", "1–200", [FEC, RESC], ["013"], "Plazo máximo de un grupo antes de mandar su paridad."),
  "fec_share_max": ([G], BOTH, "0 (sin tope)", "0–100", [FEC, SPLIT], ["012", "013"], "Con `fec`, ningún enlace lleva más de este % de lo repartido reciente."),
  # --- split ---
@@ -263,7 +268,8 @@ def generate():
                          "reorder_retx_release_ms", "tcp_aware"]),
         ("Rescate y FEC", ["rescue_kb", "rescue_pct", "rescue_wait_ms", "rescue_tries", "rescue_target_ms",
                            "rescue_by_owd", "rescue_full_hyst", "rescue_code_ms", "parq", "rescue_tcp_race",
-                           "tcp_retx_one", "tcp_ack_rule", "fec", "fec_wait_ms", "fec_share_max"]),
+                           "tcp_retx_one", "tcp_ack_rule", "fec", "fec_wait_ms", "fec_share_max", "fec_code",
+                           "fec_pct", "fec_window_ms", "fec_single"]),
         ("Reparto y guardas", ["split", "split_small", "split_spread_ms", "split_spread_copy", "split_stress_dup",
                                "split_stress_rejoin", "split_stress_single", "split_dwell_ms", "split_dwell_oq_ms"]),
         ("Gobernador y capacidad", ["governor", "governor_target_ms", "governor_window_ms", "capacity_weights",

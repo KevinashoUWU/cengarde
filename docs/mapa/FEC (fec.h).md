@@ -3,14 +3,14 @@ tags: [mapa, pieza]
 archivos:
   - engine/src/fec.h
   - engine/tests/test_fec.c
-sello: 6774eb5315b72b74
+sello: e5dfb813e050a659
 ---
 # FEC (fec.h)
 
 **Grupo:** Recuperar — [[Mapa del motor]]
 
 ## Qué hace
-Una paridad XOR «espacial» sobre un grupo de DATA repartidos, como mucho uno por enlace; la paridad va por un enlace de fuera del grupo. Así el atasco de un enlace deja cada grupo con un paquete de menos, que la paridad reconstruye apenas llega el resto (código (n+1, n)). El emisor manda cada DATA al instante y lo suma al grupo abierto más viejo sin nada de su enlace (hasta 32 grupos abiertos). Un grupo cierra con k paquetes, al pasar 512 secuencias, o en su plazo; un grupo de uno no manda paridad. El receptor reconstruye antes de que el rescate pida.
+Una paridad XOR «espacial» sobre un grupo de DATA repartidos, como mucho uno por enlace; la paridad va por un enlace de fuera del grupo. Así el atasco de un enlace deja cada grupo con un paquete de menos, que la paridad reconstruye apenas llega el resto (código (n+1, n)). El emisor manda cada DATA al instante y lo suma al grupo abierto más viejo sin nada de su enlace (hasta 32 grupos abiertos). Un grupo cierra con k paquetes, al pasar 512 secuencias, o en su plazo; un grupo de uno no manda paridad. El receptor reconstruye antes de que el rescate pida. Con `fec_code = rlc` el emisor no arma grupos: lo reemplaza la [[FEC v3 (fec3.h)]], una ventana deslizante sobre todo DATA; el receptor es el mismo (el anillo y los [[Códigos de borrado (rs.h, rlc.h)]]).
 
 En **redundancia** no hace nada: cada paquete va por todos los enlaces y ninguno queda solo en uno (medido: 0 paridades, [[020-copias-parciales-y-paridad]]). Ahí la paridad la arma [[Lo que sobra (spare.h)]] (`redund_spare = parity` o `mix`) con estas mismas funciones (`cg_fec_grp_add`, `cg_fec_grp_close`): un grupo de k paquetes del primer enlace, todos de él, y su paridad por otro. El receptor no distingue: rehace igual. Su anillo de DATA lo usan también los [[Códigos de borrado (rs.h, rlc.h)]] del servidor (`redund_spare = rs | rlc`).
 
@@ -26,6 +26,7 @@ En **redundancia** no hace nada: cada paquete va por todos los enlaces y ninguno
 - [[Mapa/Perillas/fec|fec]]: no (reinicia; en los dos extremos).
 - [[Mapa/Perillas/fec_wait_ms|fec_wait_ms]]: 10; 1–200.
 - [[Mapa/Perillas/fec_share_max|fec_share_max]]: 0 (sin tope); hasta 100.
+- [[Mapa/Perillas/fec_code|fec_code]]: `xor` (este código) o `rlc` ([[FEC v3 (fec3.h)]]).
 
 ## Dónde se midió
 - `fec.h`: con la traza de 120 s de los cuatro módems, las 29 esperas de más de 100 ms del reparto pasaron a ninguna, con un tercio más de bytes; duplicar cuesta tres veces más.
@@ -33,6 +34,7 @@ En **redundancia** no hace nada: cada paquete va por todos los enlaces y ninguno
 - [[020-copias-parciales-y-paridad]]: en redundancia, `fec = yes` es igual a no tenerla (celda virtual, n = 3).
 
 ## Choques conocidos
+- El anillo del receptor (`CG_FEC_RING`) pasó de 1024 a 2048 entradas con la FEC v3 ([[026-fec-v3]]): sus ventanas de hasta 1024 secuencias caben con margen; con `fec = yes` cada sesión del servidor guarda 4 MB (antes 2).
 - C10: la paridad elige enlace por RTT, no por OWD, y no se cuenta en el ETA ni en `cake` ([[audit-pending]]).
 - C13: bajo `split_stress_single`, la FEC solo arma grupos de uno.
 - Si el reparto manda casi todo por un enlace (88 % en el caso `lossy`), casi todos los grupos son de uno (sin paridad); los cubre el rescate.
