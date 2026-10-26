@@ -572,9 +572,11 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
       evidencia de muestras sin cola (esta y la anterior): tras una ráfaga (5 %
       o más en una muestra: una detención, un corte), `fec_pct` por 30 s; con
       pérdida al azar bajo la capacidad del enlace, `fec_pct_min` más 25 veces
-      la pérdida por 120 s; los primeros 10 s, `fec_pct`; la pérdida de un
-      enlace con cola o lleno no cuenta (TCP desbordándolo). Igual a
-      `fec_pct`: la parte fija.
+      la pérdida, entera 30 s y luego a la mitad cada 10 s; los primeros 10 s,
+      `fec_pct`; la pérdida de un enlace con cola o lleno no cuenta (TCP
+      desbordándolo); los bytes del protocontrolador (B, y A con BBR) no la
+      piden tras una ráfaga ni con un solo enlace. Igual a `fec_pct`: la parte
+      fija. El estado cuenta los cambios de modo (`switches`).
     - **`fec_window_ms` (300; 10–1000):** hasta dónde alcanza una
       reparación (una de cada dos cubre solo su último cuarto); como mucho
       1024 secuencias.

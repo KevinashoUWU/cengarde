@@ -306,9 +306,9 @@ static inline void cg_f3_loss(struct cg_f3 *f, unsigned i, uint16_t loss_pm, uin
 
 /* A DATA of len bytes, ins: one whose sender is not held back by loss (the
  * protocontroller's: B's stream, with its own ARQ and its rate from
- * capacity.h, or A's middle TCP with BBR): repairs only take its capacity
- * after a burst and against a lone link's random loss (story 026: 12-17 %
- * there), so its part of the bytes asks for none then (cg_f3_pct). */
+ * capacity.h, or A's middle TCP with BBR): on a lone link repairs only take
+ * its capacity (story 026: 15-17 %), so its part of the bytes asks for none
+ * there (cg_f3_pct). */
 static inline void cg_f3_mix(struct cg_f3 *f, uint32_t len, int ins)
 {
 	f->b_all += len;
@@ -367,13 +367,14 @@ static inline uint32_t cg_f3_scale(const struct cg_f3 *f, uint32_t x, uint32_t l
  * cut), weighed by
  * their bytes (a link losing only with its queue counts as clean: its drops
  * are its TCP's signal); hi for CG_F3_WARM_MS from the first call. The
- * part over lo scaled down by the bytes no loss holds back (cg_f3_mix), but
- * for random loss over several links (the reorderer waits for its holes). 0:
+ * part over lo scaled down on a lone link by the bytes no loss holds back
+ * (cg_f3_mix; over several the reorderer waits for every hole). 0:
  * no repairs at all. now_ms: the samples' clock. */
 static inline uint32_t cg_f3_pct(struct cg_f3 *f, uint16_t set, uint16_t rnd, uint32_t hi, uint32_t lo, uint64_t now_ms)
 {
 	uint64_t sw = 0, sl = 0;
 	uint32_t mx = 0, pm, need;
+	int lone;
 
 	for (unsigned i = 0; i < CG_F3_LINKS; i++)
 		if ((set & rnd) >> i & 1)
@@ -382,13 +383,18 @@ static inline uint32_t cg_f3_pct(struct cg_f3 *f, uint16_t set, uint16_t rnd, ui
 		return f->pct = hi;
 	if (!f->warm_ms)
 		f->warm_ms = now_ms + CG_F3_WARM_MS;
+	/* over several links every byte asks, held back by loss or not: the
+	 * reorderer waits for each hole (BBR and GRIT in the middle gained
+	 * 40-56 % with the repairs on lossy, story 026); on a lone link nothing
+	 * waits for a hole, and the protocontroller's ask for none */
+	lone = __builtin_popcount(set) <= 1;
 	if (now_ms < f->warm_ms)
-		return f->pct = cg_f3_scale(f, hi, lo);
+		return f->pct = lone ? cg_f3_scale(f, hi, lo) : hi;
 	for (unsigned i = 0; i < CG_F3_LINKS; i++) {
 		if (!(set >> i & 1))
 			continue;
 		if (f->burst_ms[i] && now_ms - f->burst_ms[i] <= CG_F3_HOLD_MS)
-			return f->pct = cg_f3_scale(f, hi, lo);
+			return f->pct = lone ? cg_f3_scale(f, hi, lo) : hi;
 		sw += f->w[i];
 		if (!f->srand_ms[i] || now_ms - f->srand_ms[i] >= CG_F3_SRAND_END_MS)
 			continue;
@@ -408,11 +414,7 @@ static inline uint32_t cg_f3_pct(struct cg_f3 *f, uint16_t set, uint16_t rnd, ui
 	need = lo + (pm * CG_F3_PER_LOSS + 9) / 10;
 	if (need > hi)
 		need = hi;
-	/* random loss over several links: every byte's, held back by loss or
-	 * not (the reorderer waits for each hole: BBR and GRIT in the middle
-	 * gained 40-56 % with the repairs on lossy, story 026); on a lone link
-	 * nothing waits for a hole, and the protocontroller's ask for none */
-	return f->pct = __builtin_popcount(set) > 1 ? need : cg_f3_scale(f, need, lo);
+	return f->pct = lone ? cg_f3_scale(f, need, lo) : need;
 }
 
 /* Whether a lone link i is protected: fec_single (enum cg_f3_single);

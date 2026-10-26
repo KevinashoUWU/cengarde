@@ -314,13 +314,14 @@ static void test_f3_mix(void)
 		cg_f3_mix_tick(&f);
 	}
 	CHECK(f.ins_q10 >= 500 && f.ins_q10 <= 512);
-	/* a burst: half the bytes ask for the share over the floor */
+	/* a burst on a lone link: half the bytes ask for the share over the floor */
 	f.burst_ms[0] = 100;
 	f.ins_q10 = 512;
 	CHECK_EQ(cg_f3_pct(&f, 0x1, 0, 20, 0, 200), 10);
 	CHECK_EQ(cg_f3_pct(&f, 0x1, 0, 20, 4, 200), 12);
 	f.ins_q10 = 1024; /* all of them: the floor */
 	CHECK_EQ(cg_f3_pct(&f, 0x1, 0, 20, 4, 200), 4);
+	CHECK_EQ(cg_f3_pct(&f, 0x3, 0, 20, 4, 200), 20); /* over several links: whole */
 	CHECK_EQ(cg_f3_pct(&f, 0x1, 0, 20, 20, 200), 20); /* a fixed share stays */
 	/* random loss: on a lone link scaled, over several links whole */
 	f.burst_ms[0] = 0;
