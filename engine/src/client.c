@@ -380,7 +380,7 @@ struct client {
 	unsigned f3_span;
 	uint32_t f3_lag; /* the last repair's window ended this long before now, us (cg_f3_lag_us) */
 	uint8_t f3_dn;
-	uint64_t f3_rep, f3_bytes, f3_data, f3_tail, f3_guarded, f3_nolink, f3_empty, f3_gated;
+	uint64_t f3_rep, f3_bytes, f3_data, f3_tail, f3_guarded, f3_nolink, f3_empty, f3_gated, f3_quiet;
 	/* FEC v3 down (story 026): the server's repairs of the download,
 	 * rebuilt as the server rebuilds the upload (with fec): the DATA got
 	 * lately (fec.h's ring, 4 MB) and the RLC's equations (~600 KB); the
@@ -2137,6 +2137,18 @@ static void f3_begin(struct client *c, const struct upctx *u)
 			c->f3_gated++;
 		}
 	}
+	if (mode != CG_F3_OFF) {
+		uint16_t rnd = 0;
+
+		/* the share, by the loss of the links it protects (fec_pct_min) */
+		for (int i = 0; i < CG_MAX_LINKS; i++)
+			if ((set >> i & 1) && c->sig[i].kind == CG_SIG_RANDOM)
+				rnd |= (uint16_t)(1u << i);
+		if (!cg_f3_pct(&c->f3, set, rnd, c->cfg->fec_pct, c->cfg->fec_pct_min, u->now_ms)) {
+			mode = CG_F3_OFF;
+			c->f3_quiet++;
+		}
+	}
 	if (mode == CG_F3_OFF && c->f3.mode != CG_F3_OFF)
 		cg_f3_idle(&c->f3);
 	c->f3.mode = (uint8_t)mode;
@@ -2154,7 +2166,7 @@ static void f3_feed(struct client *c, uint32_t seq, const uint8_t *p, size_t len
 		cg_resc_earn(&c->resc_b, (uint32_t)len, c->cfg->rescue_pct);
 	if (c->f3.mode == CG_F3_OFF)
 		return;
-	cg_f3_earn(&c->f3, (uint32_t)len, c->cfg->fec_pct, now_us);
+	cg_f3_earn(&c->f3, (uint32_t)len, c->f3.pct, now_us);
 	c->f3_data += len;
 }
 
@@ -4323,7 +4335,10 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 
 		cg_json_obj(j, "rlc");
 		cg_json_str(j, "mode", mode[c->f3.mode <= CG_F3_SINGLE ? c->f3.mode : 0]);
-		cg_json_u64(j, "pct", c->cfg->fec_pct);
+		cg_json_u64(j, "pct", c->f3.mode == CG_F3_OFF ? 0 : c->f3.pct); /* the share now (fec_pct_min to fec_pct) */
+		cg_json_u64(j, "pct_max", c->cfg->fec_pct);
+		cg_json_u64(j, "pct_min", c->cfg->fec_pct_min);
+		cg_json_u64(j, "bursts", c->f3.bursts);
 		cg_json_u64(j, "window_ms", c->cfg->fec_window_ms);
 		cg_json_str(j, "single", single[c->cfg->fec_single >= 0 && c->cfg->fec_single <= 2 ? c->cfg->fec_single : 0]);
 		cg_json_u64(j, "links", (uint64_t)__builtin_popcount(c->f3_links));
@@ -4339,6 +4354,7 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 		cg_json_u64(j, "no_link", c->f3_nolink);
 		cg_json_u64(j, "empty", c->f3_empty);
 		cg_json_u64(j, "gated", c->f3_gated);
+		cg_json_u64(j, "quiet", c->f3_quiet); /* batches without repairs: no burst nor random loss, fec_pct_min 0 */
 		cg_json_end(j, '}');
 	} else {
 		cg_json_null(j, "rlc");

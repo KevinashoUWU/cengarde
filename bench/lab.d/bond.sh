@@ -180,6 +180,9 @@
 #               200 ms every 2 s (bench/stall.py: tc in batch mode, a stall of
 #               50 ms lasts 50 ms). FEC v3's case (fec_code = rlc): its
 #               repairs on the other three links rebuild what link 2 lost
+#   clean4      not in the default list: story 026, the stall cases' four
+#               links never stalling nor losing: what FEC v3's repairs cost a
+#               clean bond (fec_pct_min: none)
 #   stallr50 stallr100 stallr200  not in the default list: the same at random
 #               times, 1 to 4 s after the last stall, seeded like ltespikerand
 #               (the same draw for every arm at the same repetition)
@@ -1010,7 +1013,7 @@ bond_shape() {
 	starlink15sw) bond_link 1 25 100 && bond_link 2 20 50 ;;
 	ltespike | ltespikerand) bond_link 1 25 50 && bond_link 2 30 50 ;;
 	spikeloss) bond_link 1 25 50 100 1 && bond_link 2 30 50 100 1 ;;
-	stall50 | stall100 | stall200 | stallr50 | stallr100 | stallr200)
+	clean4 | stall50 | stall100 | stall200 | stallr50 | stallr100 | stallr200)
 		bond_link 1 25 20 && bond_link 2 27 20 && bond_link 3 30 20 && bond_link 4 33 20 ;;
 	single1 | singlecut) bond_link 1 20 40 100 1 ;;
 	singleclean) bond_link 1 20 40 ;;
@@ -1058,7 +1061,7 @@ bond_nlinks() {
 	case $1 in
 	het | linkdeath | downstall | bloat | lossy | shallowq | shallowqd | shallowqdeep | starsat | dominant | protectpin | msl3) echo 3 ;;
 	msl1 | single1 | singlecut | singleclean) echo 1 ;;
-	msl2c | cell4 | stall50 | stall100 | stall200 | stallr50 | stallr100 | stallr200) echo 4 ;;
+	msl2c | cell4 | clean4 | stall50 | stall100 | stall200 | stallr50 | stallr100 | stallr200) echo 4 ;;
 	msl3c) echo 5 ;;
 	*) echo 2 ;;
 	esac
@@ -1288,7 +1291,7 @@ bond_plan() {
 	for w in ${BOND_CC:-cubic bbr quic}; do ccs=$((ccs + 1)); done
 	for c in $BOND_CASES; do
 		case $c in
-		equal | het | reorder50 | reorder150 | linkdeath | downstall | shallowq | shallowqd | shallowqdeep | starsat | dominant | starlink15 | starlink15sw | starlink15ramp | ltespike | ltespikerand | deepq | bloat | lossy | spikeloss | protect | protectcut | protectslow | protectpin | beyond | spurious | lossall | sigrand | sigdeep | sigothers | msl1 | msl2 | msl3 | msl2c | msl3c | cell4) ;;
+		equal | het | reorder50 | reorder150 | linkdeath | downstall | shallowq | shallowqd | shallowqdeep | starsat | dominant | starlink15 | starlink15sw | starlink15ramp | ltespike | ltespikerand | deepq | bloat | lossy | spikeloss | protect | protectcut | protectslow | protectpin | beyond | spurious | lossall | sigrand | sigdeep | sigothers | msl1 | msl2 | msl3 | msl2c | msl3c | cell4 | clean4 | stall50 | stall100 | stall200 | stallr50 | stallr100 | stallr200 | single1 | singlecut | singleclean) ;;
 		*)
 			echo "bond: unknown case $c"
 			return 1

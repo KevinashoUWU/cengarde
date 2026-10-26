@@ -226,7 +226,7 @@ struct session {
 	unsigned df3_span;
 	uint8_t df3_dn;
 	uint32_t df3_lag;
-	uint64_t df3_rep, df3_bytes, df3_data, df3_tail, df3_guarded, df3_nolink, df3_empty, df3_gated;
+	uint64_t df3_rep, df3_bytes, df3_data, df3_tail, df3_guarded, df3_nolink, df3_empty, df3_gated, df3_quiet;
 	uint16_t parq_seed;
 	uint64_t parq_rx, parq_bad, parq_reqs, parq_sent, parq_bytes, parq_missing, parq_budget, parq_nolink;
 	struct cg_ro_cfg rocf;    /* the server's reorder settings, with its rescue */
@@ -2567,6 +2567,18 @@ static void sf3_begin(struct server *s, struct session *S, const struct dpaths *
 			S->df3_gated++;
 		}
 	}
+	if (mode != CG_F3_OFF) {
+		uint16_t rnd = 0;
+
+		/* the share, by the loss of the paths it protects (fec_pct_min) */
+		for (int p = 0; p < CG_MAX_LINKS; p++)
+			if ((set >> p & 1) && S->sig[p].kind == CG_SIG_RANDOM)
+				rnd |= (uint16_t)(1u << p);
+		if (!cg_f3_pct(&S->df3, set, rnd, s->cfg->fec_pct, s->cfg->fec_pct_min, now_ms)) {
+			mode = CG_F3_OFF;
+			S->df3_quiet++;
+		}
+	}
 	if (mode == CG_F3_OFF && S->df3.mode != CG_F3_OFF)
 		cg_f3_idle(&S->df3);
 	S->df3.mode = (uint8_t)mode;
@@ -2583,7 +2595,7 @@ static void sf3_feed(struct server *s, struct session *S, uint32_t seq, const ui
 		cg_resc_earn(&S->resc_b, (uint32_t)len, s->cfg->rescue_pct);
 	if (S->df3.mode == CG_F3_OFF)
 		return;
-	cg_f3_earn(&S->df3, (uint32_t)len, s->cfg->fec_pct, now_us);
+	cg_f3_earn(&S->df3, (uint32_t)len, S->df3.pct, now_us);
 	S->df3_data += len;
 }
 
@@ -3725,7 +3737,10 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 
 			cg_json_obj(j, "rlc");
 			cg_json_str(j, "mode", mode[S->df3.mode <= CG_F3_SINGLE ? S->df3.mode : 0]);
-			cg_json_u64(j, "pct", s->cfg->fec_pct);
+			cg_json_u64(j, "pct", S->df3.mode == CG_F3_OFF ? 0 : S->df3.pct);
+			cg_json_u64(j, "pct_max", s->cfg->fec_pct);
+			cg_json_u64(j, "pct_min", s->cfg->fec_pct_min);
+			cg_json_u64(j, "bursts", S->df3.bursts);
 			cg_json_u64(j, "window_ms", s->cfg->fec_window_ms);
 			cg_json_u64(j, "links", (uint64_t)__builtin_popcount(S->df3_links));
 			cg_json_u64(j, "window", S->df3_span);
@@ -3740,6 +3755,7 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 			cg_json_u64(j, "no_link", S->df3_nolink);
 			cg_json_u64(j, "empty", S->df3_empty);
 			cg_json_u64(j, "gated", S->df3_gated);
+			cg_json_u64(j, "quiet", S->df3_quiet);
 			cg_json_end(j, '}');
 		} else {
 			cg_json_null(j, "rlc");

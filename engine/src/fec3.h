@@ -19,8 +19,16 @@
  * links: off (every packet is on every link; redund_spare protects the
  * first link there).
  *
+ * How much (cg_f3_pct, with fec_pct_min under fec_pct): the whole share
+ * while some link it protects lost in a burst lately (a stall, an outage,
+ * a satellite switch: a sample losing CG_F3_BURST_PM or more without a
+ * queue), else the floor plus CG_F3_PER_LOSS times the scattered loss
+ * (links losing at random, weighed by their bytes), so a clean or only
+ * congested bond pays the floor (story 026: 20 % of the bytes for nothing,
+ * and BBR's capacity with them).
+ *
  * How many (cg_f3_earn, cg_f3_owed, cg_f3_spend): a credit in bytes x 100,
- * each DATA earns its length x fec_pct, each repair spends its size
+ * each DATA earns its length x the share, each repair spends its size
  * (header and symbol); a tail repair (cg_f3_due) goes fec_wait_ms after the
  * first DATA it would cover when no repair followed it (the end of a
  * burst), on one repair of debt at most, so the share holds on average.
@@ -57,6 +65,10 @@
 #define CG_F3_BURST 32      /* repairs one batch may owe at most */
 #define CG_F3_COST0 1500u   /* a repair's bytes before the first one is known */
 #define CG_F3_SHORT_MIN_US 20000u /* a short repair's window, at least */
+#define CG_F3_BURST_PM 20   /* a sample losing this (per mille) or more without a queue: a burst */
+#define CG_F3_BURST_Q_US 30000 /* without a queue: over the minute's minimum within this */
+#define CG_F3_HOLD_MS 30000u /* the whole share this long after a burst, the loss's this long after it was random */
+#define CG_F3_PER_LOSS 20   /* scattered loss alone: repairs this many times the loss, over the floor (story 026: 1 % wanted 20 %) */
 
 enum cg_f3_mode { CG_F3_OFF = 0, CG_F3_BOND, CG_F3_SINGLE };
 enum cg_f3_single { CG_F3_SINGLE_AUTO = 0, CG_F3_SINGLE_YES, CG_F3_SINGLE_NO };
@@ -71,6 +83,9 @@ struct cg_f3 {
 	uint16_t loss16[CG_F3_LINKS]; /* its loss, per mille x 16, smoothed (1/4) over its samples */
 	uint64_t loss_ms[CG_F3_LINKS]; /* the sample last taken */
 	uint64_t rand_ms[CG_F3_LINKS]; /* when its loss last read random (linksig.h's loss_kind), 0: never */
+	uint64_t burst_ms[CG_F3_LINKS]; /* its last burst (CG_F3_BURST_PM), 0: never */
+	uint64_t bursts;             /* bursts seen, every link */
+	uint32_t pct;                /* the share now, % (cg_f3_pct) */
 	uint8_t gate;                /* the lone link's gate (fec_single = auto) */
 	uint8_t alt;                 /* the next repair's span: the window or its quarter (cg_f3_span_us) */
 	uint8_t mode;                /* enum cg_f3_mode, at the last batch */
@@ -247,6 +262,45 @@ static inline void cg_f3_loss(struct cg_f3 *f, unsigned i, uint16_t loss_pm, uin
 	f->loss16[i] = (uint16_t)((f->loss16[i] * 3 + loss_pm * 16) / 4);
 	if (loss_pm >= CG_F3_RAND_PM && ql_us >= 0 && ql_us <= CG_F3_RAND_Q_US && loss_pm * 2 < 1000)
 		f->rand_ms[i] = t_ms;
+	if (loss_pm >= CG_F3_BURST_PM && ql_us >= 0 && ql_us <= CG_F3_BURST_Q_US) {
+		f->burst_ms[i] = t_ms;
+		f->bursts++;
+	}
+}
+
+/* The share of repairs now (%, into f->pct), between lo and hi (fec_pct_min
+ * and fec_pct; lo at hi or over: hi, the fixed share) over the links of set
+ * (rnd: those whose loss_kind reads random now, linksig.h): hi while one of
+ * them had a burst within CG_F3_HOLD_MS; else lo plus CG_F3_PER_LOSS times
+ * the loss of the links that lost at random within the hold, weighed by
+ * their bytes (a link losing only with its queue counts as clean: its drops
+ * are its TCP's signal). 0: no repairs at all. now_ms: the samples' clock. */
+static inline uint32_t cg_f3_pct(struct cg_f3 *f, uint16_t set, uint16_t rnd, uint32_t hi, uint32_t lo, uint64_t now_ms)
+{
+	uint64_t sw = 0, sl = 0;
+	uint32_t mx = 0, pm, need;
+
+	for (unsigned i = 0; i < CG_F3_LINKS; i++)
+		if ((set & rnd) >> i & 1)
+			f->rand_ms[i] = now_ms ? now_ms : 1;
+	if (lo >= hi)
+		return f->pct = hi;
+	for (unsigned i = 0; i < CG_F3_LINKS; i++) {
+		if (!(set >> i & 1))
+			continue;
+		if (f->burst_ms[i] && now_ms - f->burst_ms[i] <= CG_F3_HOLD_MS)
+			return f->pct = hi;
+		sw += f->w[i];
+		if (!f->rand_ms[i] || now_ms - f->rand_ms[i] > CG_F3_HOLD_MS)
+			continue;
+		pm = f->loss16[i] / 16u;
+		sl += f->w[i] * pm;
+		if (pm > mx)
+			mx = pm;
+	}
+	pm = sw ? (uint32_t)(sl / sw) : mx;
+	need = lo + (pm * CG_F3_PER_LOSS + 9) / 10;
+	return f->pct = need < hi ? need : hi;
 }
 
 /* Whether a lone link i is protected: fec_single (enum cg_f3_single);

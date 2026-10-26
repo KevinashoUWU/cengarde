@@ -187,6 +187,68 @@ static void test_f3_gate(void)
 	CHECK(!cg_f3_gate(&f, 0, CG_F3_SINGLE_AUTO, 0, 10, 40));
 }
 
+/* The share: the floor on a clean or only congested set, the floor plus
+ * CG_F3_PER_LOSS x the scattered loss weighed by the links' bytes, the whole
+ * share for CG_F3_HOLD_MS after a burst; fixed when the floor is at the top. */
+static void test_f3_pct(void)
+{
+	struct cg_f3 f;
+	uint64_t t;
+
+	memset(&f, 0, sizeof(f));
+	CHECK_EQ(cg_f3_pct(&f, 0x3, 0, 20, 20, 1000), 20); /* fixed */
+	CHECK_EQ(cg_f3_pct(&f, 0x3, 0, 20, 30, 1000), 20);
+	CHECK_EQ(cg_f3_pct(&f, 0x3, 0, 20, 0, 1000), 0);   /* clean: nothing */
+	CHECK_EQ(cg_f3_pct(&f, 0x3, 0, 20, 2, 1000), 2);   /* the floor */
+	/* congestive loss (a queue of 80 ms): clean for the share */
+	for (t = 1; t <= 30; t++)
+		cg_f3_loss(&f, 0, 10, t, 80000);
+	CHECK_EQ(cg_f3_pct(&f, 0x3, 0, 20, 0, 40), 0);
+	CHECK_EQ(f.bursts, 0);
+	/* 1 % at random on both links, equal bytes: 20 % */
+	memset(&f, 0, sizeof(f));
+	f.w[0] = f.w[1] = 1000;
+	for (t = 1; t <= 30; t++) {
+		cg_f3_loss(&f, 0, 10, t, 2000);
+		cg_f3_loss(&f, 1, 10, t, 2000);
+	}
+	CHECK_EQ(f.bursts, 0);
+	CHECK(f.rand_ms[0] == 30 && f.rand_ms[1] == 30);
+	f.loss16[0] = f.loss16[1] = 10 * 16;
+	CHECK_EQ(cg_f3_pct(&f, 0x3, 0, 30, 0, 40), 20);
+	CHECK_EQ(cg_f3_pct(&f, 0x3, 0, 30, 2, 40), 22);
+	CHECK_EQ(cg_f3_pct(&f, 0x3, 0, 5, 0, 40), 5); /* at most the top */
+	/* Starlink's 0.3 %: 6 % */
+	f.loss16[0] = f.loss16[1] = 3 * 16;
+	CHECK_EQ(cg_f3_pct(&f, 0x3, 0, 20, 0, 40), 6);
+	/* only link 0 loses 1.5 %, a third of the bytes: a third of it */
+	memset(&f, 0, sizeof(f));
+	f.w[0] = 1000;
+	f.w[1] = 2000;
+	f.loss16[0] = 15 * 16;
+	f.rand_ms[0] = 30;
+	CHECK_EQ(cg_f3_pct(&f, 0x3, 0, 20, 0, 40), 10); /* 5 per mille x 20 */
+	/* past the hold, the loss no longer read random: clean */
+	CHECK_EQ(cg_f3_pct(&f, 0x3, 0, 20, 0, 30 + CG_F3_HOLD_MS + 1), 0);
+	/* linksig's kind says random now: counted again */
+	CHECK_EQ(cg_f3_pct(&f, 0x3, 0x1, 20, 0, 30 + CG_F3_HOLD_MS + 2), 10);
+	/* a burst on link 1 (a stall: 10 % in a sample, no queue): the whole
+	 * share for the hold, also after the link is clean again */
+	memset(&f, 0, sizeof(f));
+	cg_f3_loss(&f, 1, 100, 100, 3000);
+	CHECK_EQ(f.bursts, 1);
+	for (t = 101; t <= 130; t++)
+		cg_f3_loss(&f, 1, 0, t, 3000);
+	CHECK_EQ(cg_f3_pct(&f, 0x3, 0, 20, 0, 1000), 20);
+	CHECK_EQ(cg_f3_pct(&f, 0x1, 0, 20, 0, 1000), 0); /* not a link of the set */
+	CHECK_EQ(cg_f3_pct(&f, 0x3, 0, 20, 0, 100 + CG_F3_HOLD_MS), 20);
+	CHECK_EQ(cg_f3_pct(&f, 0x3, 0, 20, 0, 101 + CG_F3_HOLD_MS), 0);
+	/* the same loss with its queue full (congestion), or none known: no burst */
+	cg_f3_loss(&f, 0, 100, 200, CG_F3_BURST_Q_US + 1);
+	cg_f3_loss(&f, 0, 100, 201, -1);
+	CHECK_EQ(f.bursts, 1);
+}
+
 void test_fec3(void)
 {
 	test_f3_mode();
@@ -196,4 +258,5 @@ void test_fec3(void)
 	test_f3_lag();
 	test_f3_span();
 	test_f3_gate();
+	test_f3_pct();
 }
