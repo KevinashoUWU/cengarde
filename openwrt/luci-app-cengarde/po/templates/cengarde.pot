@@ -805,6 +805,9 @@ msgstr ""
 msgid "%d, %s of the data"
 msgstr ""
 
+msgid "Rebuilt from the VPS's repairs"
+msgstr ""
+
 msgid "Lost on every uplink"
 msgstr ""
 

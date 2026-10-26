@@ -31,7 +31,7 @@
 #   a cloud-config with TUNNEL_IPV6=yes;
 # - protocontroller on|off (native only): protocontroller = b, tcp_bbr at
 #   boot, PROTOCONTROLLER in nat.conf;
-# - fec on|off: fec = yes, FEC in nat.conf (story 026);
+# - fec on|rlc|off: fec = yes (and fec_code = rlc), FEC in nat.conf (story 026);
 # - tunnel native|wireguard: native writes tunnel = native, the TUN's
 #   10.79.0.1/16 and each router's address as its tun_route (its ULA too
 #   with ipv6 on), a systemd drop-in that allows /dev/net/tun, restarts
@@ -745,6 +745,10 @@ check "cengarde.conf: fec = yes; FEC in nat.conf" \
 	sh -c 'grep -qx "fec = yes" "$1" && grep -qx "FEC=\"yes\"" "$2"' sh "$R/etc/cengarde/cengarde.conf" "$R/etc/cengarde/nat.conf"
 check "the engine takes it" called '^cengarde -t -c .*cengarde.conf.new'
 check "fec on again changes nothing" setup fec on
+check "fec rlc" setup fec rlc
+check "cengarde.conf: fec = yes and fec_code = rlc; FEC=rlc in nat.conf" \
+	sh -c 'grep -qx "fec = yes" "$1" && grep -qx "fec_code = rlc" "$1" && grep -qx "FEC=\"rlc\"" "$2"' \
+	sh "$R/etc/cengarde/cengarde.conf" "$R/etc/cengarde/nat.conf"
 check "fec off" setup fec off
 check "no fec in cengarde.conf" not grep -q "^fec" "$R/etc/cengarde/cengarde.conf"
 check "fec maybe is refused" not setup fec maybe

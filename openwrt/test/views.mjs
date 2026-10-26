@@ -569,6 +569,13 @@ for (const [lang, tr] of [ [ 'en', english ], [ 'es', spanish ] ]) {
 	assert.equal(frow(L('Repair data (FEC)', 'Datos de reparación (FEC)')), L('RLC sliding window (FEC v3)', 'Ventana deslizante RLC (FEC v3)'));
 	assert.equal(frow(L('Repairs now', 'Reparaciones ahora')), L('over the split, 25 % over 200 ms', 'sobre el reparto, 25 % en 200 ms'));
 	assert.equal(frow(L('Repair packets sent', 'Paquetes de reparación enviados')), L('1234, 24.7 % of the data', '1234, 24.7 % de los datos'));
+	// the download's (story 026): what the VPS's repairs rebuilt here, only when they come
+	const dn = E('div');
+	v.update(dn, base({ links: [], upload: { bytes: 1, spare: null }, download_fec: { on: true, fec3: true, rlc_recovered: 42 } }));
+	assert.ok(find(dn, (x) => x.tag == 'tr').map((r) => r.children.map(text)).some((r) => r[0] == L('Rebuilt from the VPS\'s repairs', 'Rehechos con las reparaciones del VPS') && r[1] == '42'), `${lang}: the download's rebuilt`);
+	const dn0 = E('div');
+	v.update(dn0, base({ links: [], upload: { bytes: 1, spare: null }, download_fec: { on: true, fec3: false, rlc_recovered: 0 } }));
+	assert.ok(!find(dn0, (x) => x.tag == 'tr').map((r) => r.children.map(text)).some((r) => r[0] == L('Rebuilt from the VPS\'s repairs', 'Rehechos con las reparaciones del VPS')), `${lang}: no repairs, no row`);
 	const xn = E('div');
 	v.update(xn, base({ links: [], upload: { bytes: 1, spare: null, fec: { on: true, code: 'xor', parities: 9, rlc: null } } }));
 	assert.ok(find(xn, (x) => x.tag == 'tr').map((r) => r.children.map(text)).some((r) => r[0] == L('Repair data (FEC)', 'Datos de reparación (FEC)') && r[1] == L('XOR parity', 'Paridad XOR')), `${lang}: the XOR parity`);

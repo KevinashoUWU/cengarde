@@ -17,6 +17,7 @@ Las decisiones del emisor de la **FEC v3** (`fec = yes` con `fec_code = rlc`, [[
 - **Dónde** (`cg_f3_pick`): round-robin suave ponderado por los bytes de DATA de cada enlace en los últimos ticks (`cg_f3_weigh`): cada enlace lleva ~`fec_pct` más que su parte; nunca un enlace que el reparto dejó afuera (silenciado, G3, G4) ni uno **lleno** (`cg_f3_guard`: el peso del rescate de [[Capacidad (capacity.h)]] en 0, su cola dentro de un segundo pasa 4 × `rescue_target_ms`: lo que pierde es congestión y un enlace ahogado no recibe reparaciones que le llenen la cola) o cuya cola pasa la ventana (sus reparaciones llegarían cuando ya se soltaron los huecos). Sin enlace, la reparación no sale (sus bytes se gastan igual): la parte es un techo. Con la mitad del peso (2,5 × el objetivo) cortaba las reparaciones que cubic necesita mientras llena un enlace solo, y tampoco frenaba a BBR, cuya cola queda chica mientras las reparaciones le quitan capacidad ([[026-fec-v3]]).
 - **Sobre qué** (`cg_f3_span_us`, `cg_f3_lag_us`): una reparación de cada dos cubre la ventana entera (alcanza una detención) y la otra su último cuarto (al menos 20 ms: a los mismos miembros por reparación, una pérdida suelta cae en más de ellas y vuelve antes); la ventana termina un poco antes de ahora, en lo que tarda el enlace más lento más que el de la reparación (`behind_us` de [[Salud y silenciado (health.h)]]): lo enviado después llegaría detrás de la reparación y le costaría al receptor una columna para nada (bajo TCP, ~100 miembros por reparación en el laboratorio; con el retraso, la mitad de las incógnitas a la vez).
 
+- **La bajada** (`server.c`: `sf3_apply`, `sf3_begin`, `sf3_feed`, `sf3_repair`, `sf3_send`, `sf3_service`): con `fec = yes` y `fec_code = rlc` en el servidor (`cengarde-vps-setup fec rlc`), las mismas decisiones por sesión sobre los caminos de la bajada (una ventana de ~2 MB por sesión, asignada con la perilla, nunca por paquete), con su guarda en el peso del rescate de cada camino; el router las rehace con `fec = yes` (su anillo de 2048 DATA y el receptor de la RLC, ~5 MB) y pide la PARQ por la subida ([[Reparación coherente (harq.h)]]).
 ## Lee
 - De [[Reparto (split.h)]]: los enlaces elegibles del lote y los de peso 0 (`u->k`), o los portadores en redundancia; `split_active` y el dominante.
 - De [[Capacidad (capacity.h)]]: la pérdida de cada muestra (`loss_pm`, `loss_pm_ms`) y la cola sobre el mínimo del minuto (`ql_us`); de [[Observaciones del enlace (linksig.h)]], `kind`.
@@ -24,6 +25,7 @@ Las decisiones del emisor de la **FEC v3** (`fec = yes` con `fec_code = rlc`, [[
 
 ## Decide / escribe
 - Reparaciones `CG_T_REPAIR` de tipo `CG_REP_RLCW` (protocolo 11, `repair.h`: base, largo de la ventana, densidad y semilla) en la cola de paridades (`fecq`, `f3 = 1`), por el enlace elegido; cuentan en `tx_fec_*` del enlace (no como DATA, [[FEC (fec.h)]]) y en el [[ETA (eta.h)]] con `split_eta`.
+- Estado del servidor por sesión: `download_fec` (`code`, `rlc` con los mismos campos que el cliente) y por camino `fec_repairs`; del cliente, `download_fec` (lo rehecho).
 - Estado del cliente: `upload.fec.code` y `upload.fec.rlc` (`mode`, `pct`, `window_ms`, `single`, `links`, `window`, `lag_ms`, `density`, `repairs`, `repair_bytes`, `data_bytes`, `overhead_pm`, `tail`, `guarded`, `no_link`, `empty`, `gated`); por enlace `fec_repairs`, `fec_repair_bytes`, `fec_loss_pm`.
 - La ventana también responde la paridad pedida (PARQ) sin anillo de rescate (`on_parq`), con el presupuesto del rescate (`rescue_pct`) que gana cada DATA.
 
@@ -33,7 +35,7 @@ Las decisiones del emisor de la **FEC v3** (`fec = yes` con `fec_code = rlc`, [[
 - [[Mapa/Perillas/fec_wait_ms|fec_wait_ms]]: el plazo de la reparación de cola.
 
 ## Dónde se midió
-- [[026-fec-v3]]: laboratorio (túnel nativo, perfil de terreno, n = 6, contra `origin/master` con `fec = no` y `fec = yes`): detenciones de uno de cuatro enlaces, un solo enlace con 1 % de pérdida, con microcorte y limpio, `lossy`, `spikeloss`, `ltespikerand`, `starsat`, `protect`; costo con `bench/fecbench.c`.
+- [[026-fec-v3]]: laboratorio (túnel nativo, perfil de terreno, n = 6, contra `origin/master` con `fec = no` y `fec = yes`): detenciones de uno de cuatro enlaces, un solo enlace con 1 % de pérdida, con microcorte y limpio, `lossy`, `spikeloss`, `ltespikerand`, `starsat`, `protect`, en la subida y en la bajada; costo con `bench/fecbench.c` y la CPU del servidor con tres routers (`bench/lab.sh fec3cpu`).
 
 ## Choques conocidos
 - Una detención más larga que la que cubre la parte (s·T / (r·(1 − s)) más allá de la espera del receptor) no se rehace con la ventana sola: lo que falta lo pide la PARQ, una ida y vuelta ([[Reparación coherente (harq.h)]]); con TCP adentro el hueco no se retiene (la regla de la historia 023) y lo rehecho llega tarde.

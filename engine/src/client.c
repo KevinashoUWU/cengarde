@@ -82,6 +82,7 @@
 #include "fec3.h"
 #include "gf256.h"
 #include "repair.h"
+#include "rebuilt.h"
 #include "rlc.h"
 #include "rs.h"
 #include "harq.h"
@@ -174,6 +175,7 @@ struct link {
 };
 
 #define CG_FEC_Q (CG_BATCH + 1) /* parities of one batch: at most one a packet, and the group before it */
+#define CG_DHQ_N 256            /* download gaps waiting for the code (harq.h), as the server's CG_HQ_N */
 /* a queued parity or repair's payload, at most */
 #define CG_FECQ_PLEN (CG_FEC_HDR + CG_FEC_PLEN_MAX > CG_REP_HDR + CG_RS_BYTES_MAX ? CG_FEC_HDR + CG_FEC_PLEN_MAX \
 										    : CG_REP_HDR + CG_RS_BYTES_MAX)
@@ -379,6 +381,24 @@ struct client {
 	uint32_t f3_lag; /* the last repair's window ended this long before now, us (cg_f3_lag_us) */
 	uint8_t f3_dn;
 	uint64_t f3_rep, f3_bytes, f3_data, f3_tail, f3_guarded, f3_nolink, f3_empty, f3_gated;
+	/* FEC v3 down (story 026): the server's repairs of the download,
+	 * rebuilt as the server rebuilds the upload (with fec): the DATA got
+	 * lately (fec.h's ring, 4 MB) and the RLC's equations (~600 KB); the
+	 * gaps that wait for the code (harq.h, as the server's hq), the newest
+	 * wide repair's top and window and how far apart they come, its seal;
+	 * the counts */
+	struct cg_fec_rx *dfec;
+	struct cg_rlc_rx *drlc;
+	struct {
+		uint32_t seq, t_us;
+		uint8_t rel; /* given up at the reorderer (TCP flows: not held), followed for a late PARQ */
+	} dhq[CG_DHQ_N];
+	uint32_t dhq_n;
+	uint32_t df3_top, df3_span, df3_gap16, drep_top;
+	uint8_t df3_have, drep_top_ok, drebuilding;
+	uint64_t df3_last_ms, df3_span_ms;
+	uint64_t drep_unused, drep_bad, d_rb_ok, d_rb_bad, d_rb_unsure, d_fec_dups;
+	uint64_t dhq_waited, dhq_none, dhq_tcp, dhq_full, dhq_nonack, dparq_req, dparq_want, dparq_msgs;
 	uint32_t sseq[CG_BATCH];
 	uint32_t sts[CG_BATCH];   /* and its header's ts */
 	uint8_t sflags[CG_BATCH]; /* and its flags, but CG_F_PREV (seal_batch) */
@@ -1348,6 +1368,7 @@ static void spare_close(struct client *c, uint64_t now_us);
 static int code_service(struct client *c, uint64_t now_us);
 static uint64_t code_due(const struct client *c);
 static int f3_tail(struct client *c, uint64_t now_us);
+static int dwide(const struct client *c, uint64_t now_ms);
 
 /* tcp_aware in redundancy (story 023): how many links a TCP retransmission
  * goes on. With tcp_ack_rule, from what is known of its original
@@ -2764,31 +2785,23 @@ static uint32_t tcp_budget_us(struct client *c, uint64_t now_us)
 
 static void rescue_apply(struct client *c)
 {
-	uint32_t w = c->cfg->reorder && c->peer_rescue ? cg_rescue_wait_ms(c->cfg) * 1000 : 0;
+	uint64_t now_us = cg_now_us();
+	uint32_t w = c->cfg->reorder && c->peer_rescue ? cg_rescue_wait_ms(c->cfg) * 1000 : 0,
+		 code = dwide(c, now_us / 1000) ? c->cfg->rescue_code_ms * 1000 : 0, budget = tcp_budget_us(c, now_us);
 
-	/* within TCP's budget (harq.h): held longer, its own repair comes first */
-	c->rocf.rescue_us = cg_harq_wait_us(w, 0, tcp_budget_us(c, cg_now_us()));
+	/* within TCP's budget (harq.h): held longer, its own repair comes
+	 * first; with FEC v3's repairs of the download coming, the code's
+	 * horizon too, with the rescue or alone (story 026) */
+	c->rocf.rescue_us = w ? cg_harq_wait_us(w, code, budget) : cg_harq_code_wait_us(code, budget);
 }
 
-/* The gaps the reorderer asked for, as NACKs on the live link of least
- * RTT (the request waits for its answer: the fastest way there). */
-static void send_nacks(struct client *c, uint64_t now_ms)
+/* NACKs for seq[0..n) on the two live links of least RTT (retry:
+ * CG_F_RETRY; the request waits for its answer: the fastest way there). */
+static void nack_out(struct client *c, const uint32_t *seq, uint32_t n, int retry, uint64_t now_ms)
 {
-	struct cg_reorder *r = &c->rxs.ro;
 	uint16_t present, live;
 	struct link *best[2] = { NULL, NULL };
-	uint32_t budget = tcp_budget_us(c, now_ms * 1000), rtt = fastest_rtt_us(c, now_ms);
 
-	/* An answer that cannot come before TCP's own retransmission
-	 * (harq.h): left to TCP, the gaps given up now. */
-	if (budget && rtt >= budget) {
-		for (uint32_t i = 0; i < r->nask; i++)
-			c->ask_tcp += (uint64_t)cg_ro_refused(r, &c->rocf, r->ask[i], (uint32_t)cg_now_us());
-		for (uint32_t i = 0; i < r->nask2; i++)
-			c->ask_tcp += (uint64_t)cg_ro_refused(r, &c->rocf, r->ask2[i], (uint32_t)cg_now_us());
-		r->nask = r->nask2 = 0;
-		return;
-	}
 	link_masks(c, now_ms, &present, &live);
 	for (int i = 0; i < CG_MAX_LINKS; i++) {
 		struct link *l = &c->link[i];
@@ -2802,25 +2815,51 @@ static void send_nacks(struct client *c, uint64_t now_ms)
 			best[1] = l;
 		}
 	}
-	/* First asks, then retries (CG_F_RETRY), each on the two fastest links. */
-	for (int list = 0; best[0] && list < 2; list++) {
-		const uint32_t *seq = list ? r->ask2 : r->ask;
-		uint32_t n = list ? r->nask2 : r->nask;
+	for (uint32_t i = 0; best[0] && i < n;) {
+		uint8_t pkt[CG_HDR_LEN + CG_NACK_LEN];
+		unsigned used;
+		size_t plen = cg_nack_write(pkt + CG_HDR_LEN, seq + i, n - i, &used);
 
-		for (uint32_t i = 0; i < n;) {
-			uint8_t pkt[CG_HDR_LEN + CG_NACK_LEN];
-			unsigned used;
-			size_t plen = cg_nack_write(pkt + CG_HDR_LEN, seq + i, n - i, &used);
-
-			i += used;
-			for (int b = 0; b < 2 && best[b]; b++) {
-				cg_up_header(&c->txs, pkt, CG_T_NACK, list ? CG_F_RETRY : 0, (uint8_t)(best[b] - c->link),
-					     (uint32_t)cg_now_us(), pkt + CG_HDR_LEN, plen);
-				if (send(best[b]->fd, pkt, CG_HDR_LEN + plen, MSG_DONTWAIT) == (ssize_t)(CG_HDR_LEN + plen))
-					c->nacks_sent++;
-			}
+		i += used;
+		for (int b = 0; b < 2 && best[b]; b++) {
+			cg_up_header(&c->txs, pkt, CG_T_NACK, retry ? CG_F_RETRY : 0, (uint8_t)(best[b] - c->link),
+				     (uint32_t)cg_now_us(), pkt + CG_HDR_LEN, plen);
+			if (send(best[b]->fd, pkt, CG_HDR_LEN + plen, MSG_DONTWAIT) == (ssize_t)(CG_HDR_LEN + plen))
+				c->nacks_sent++;
 		}
 	}
+}
+
+static void d_send_asks(struct client *c, uint64_t now_ms);
+
+/* The gaps the reorderer asked for, as NACKs (nack_out); with FEC v3's
+ * repairs of the download coming, by harq.h's route (d_send_asks). */
+static void send_nacks(struct client *c, uint64_t now_ms)
+{
+	struct cg_reorder *r = &c->rxs.ro;
+	uint32_t budget, rtt;
+
+	if (dwide(c, now_ms)) {
+		d_send_asks(c, now_ms);
+		return;
+	}
+	budget = tcp_budget_us(c, now_ms * 1000);
+	rtt = fastest_rtt_us(c, now_ms);
+	/* An answer that cannot come before TCP's own retransmission
+	 * (harq.h): left to TCP, the gaps given up now. */
+	if (budget && rtt >= budget) {
+		for (uint32_t i = 0; i < r->nask; i++)
+			c->ask_tcp += (uint64_t)cg_ro_refused(r, &c->rocf, r->ask[i], (uint32_t)cg_now_us());
+		for (uint32_t i = 0; i < r->nask2; i++)
+			c->ask_tcp += (uint64_t)cg_ro_refused(r, &c->rocf, r->ask2[i], (uint32_t)cg_now_us());
+		r->nask = r->nask2 = 0;
+		return;
+	}
+	/* First asks, then retries (CG_F_RETRY), each on the two fastest links. */
+	if (r->nask)
+		nack_out(c, r->ask, r->nask, 0, now_ms);
+	if (r->nask2)
+		nack_out(c, r->ask2, r->nask2, 1, now_ms);
 	r->nask = r->nask2 = 0;
 }
 
@@ -3110,7 +3149,8 @@ static void down_deliver(struct client *c, const struct cg_hdr *h, unsigned link
 			       .wgtype = c->native ? CG_RO_WG_DATA : len ? payload[0] : 0,
 			       .prev = (uint8_t)(cg_prev_link(h->flags) + 1),
 			       /* free with TCP data: a retransmission (tcp_aware) */
-			       .retx = (uint8_t)(c->native && (h->flags & CG_F_FREE) && cg_tcp_data(payload, len)) };
+			       .retx = (uint8_t)(c->native && (h->flags & CG_F_FREE) && cg_tcp_data(payload, len)),
+			       .rebuilt = c->drebuilding };
 	enum cg_ro_v v;
 	uint16_t buf;
 
@@ -3162,6 +3202,342 @@ static void down_deliver(struct client *c, const struct cg_hdr *h, unsigned link
 	ro_drain(c, rset, now, 0, now_ms);
 }
 
+/* ---- FEC v3 down: what the server's repairs cover, rebuilt here (story 026) ---- */
+
+static struct cg_rep_ring dring(const struct client *c)
+{
+	struct cg_rep_ring r = { c->dfec->seq, c->dfec->len, c->dfec->have, c->dfec->mem };
+
+	return r;
+}
+
+/* Whether FEC v3's wide repairs protect the download (within the last two
+ * seconds, as the server's harq_wide), the reorderer on. */
+static int dwide(const struct client *c, uint64_t now_ms)
+{
+	return c->dfec && c->df3_last_ms && now_ms - c->df3_last_ms < 2000 && c->cfg->reorder;
+}
+
+/* DATA seq rebuilt (len bytes at p, in the ring) on to the reorderer as if
+ * it had come on link with ts, unless it came or was given up meanwhile
+ * (the replay window), and once the guard passed it (rebuilt.h: refused,
+ * the ring forgets it and the equations go, as the server's fec_deliver). */
+static void d_deliver(struct client *c, uint32_t seq, uint8_t *p, uint16_t len, uint8_t link, uint32_t ts,
+		      uint16_t rset, uint32_t now, uint64_t now_ms)
+{
+	struct cg_hdr h = { .type = CG_T_DATA, .link = link, .session = c->rxs.session, .seq = seq, .ts = ts };
+	int rb;
+
+	if (cg_replay_check(&c->rxs.replay, seq) != CG_RP_NEW) {
+		c->d_fec_dups++;
+		return;
+	}
+	rb = cg_rebuilt_check(c->native, p, len);
+	if (rb != CG_RB_OK) {
+		uint32_t i = seq & (CG_FEC_RING - 1);
+
+		if (rb == CG_RB_BAD)
+			c->d_rb_bad++;
+		else
+			c->d_rb_unsure++;
+		if (c->dfec->have[i] && c->dfec->seq[i] == seq)
+			c->dfec->have[i] = 0;
+		cg_rlc_rx_clear(c->drlc);
+		return;
+	}
+	c->d_rb_ok++;
+	cg_replay_mark(&c->rxs.replay, seq);
+	c->drebuilding = 1;
+	down_deliver(c, &h, link, p, len, now, rset, now, now_ms);
+	c->drebuilding = 0;
+}
+
+static void d_rep_deliver(struct client *c, const uint32_t *seqs, unsigned n, uint8_t link, uint32_t ts, uint16_t rset,
+			  uint32_t now, uint64_t now_ms)
+{
+	struct cg_rep_ring r = dring(c);
+
+	for (unsigned i = 0; i < n; i++) {
+		uint16_t len;
+		uint8_t *p = (uint8_t *)cg_rep_data(&r, seqs[i], &len);
+
+		d_deliver(c, seqs[i], p, len, link, ts, rset, now, now_ms);
+	}
+}
+
+/* DATA seq went into the ring: out of the RLC's equations, and what that
+ * settles on. */
+static void d_rep_data(struct client *c, uint32_t seq, uint8_t link, uint32_t ts, uint16_t rset, uint32_t now,
+		       uint64_t now_ms)
+{
+	struct cg_rep_ring r = dring(c);
+	uint32_t out[CG_RLC_COLS];
+	unsigned n = cg_rlc_rx_data(&c->sp_gf, c->drlc, &r, seq, out, CG_RLC_COLS);
+
+	d_rep_deliver(c, out, n, link, ts, rset, now, now_ms);
+}
+
+static void d_harq_service(struct client *c, uint64_t now_us);
+
+/* A repair of the download (plen bytes at p, repair.h) from link. */
+static void d_rep_take(struct client *c, const uint8_t *p, unsigned plen, uint8_t link, uint32_t ts, uint16_t rset,
+		       uint32_t now, uint64_t now_ms)
+{
+	struct cg_rep_hdr h;
+	struct cg_rep_ring r;
+	uint32_t out[CG_RLC_COLS];
+	unsigned slen, n = 0;
+
+	if (!c->dfec) {
+		c->drep_unused++;
+		return;
+	}
+	if (cg_rep_get(p, plen, &h, &slen) < 0) {
+		c->drep_bad++;
+		return;
+	}
+	/* what it seals (harq.h), and for the wide ones how far apart they
+	 * come and their window (cg_harq_future) */
+	if (!c->drep_top_ok || (int32_t)(h.base - c->drep_top) > 0) {
+		c->drep_top = h.base;
+		c->drep_top_ok = 1;
+	}
+	if (h.kind == CG_REP_RLCW) {
+		uint32_t top = h.base + h.span - 1u;
+		int start = !dwide(c, now_ms);
+
+		c->df3_last_ms = now_ms;
+		if (h.span >= c->df3_span || now_ms - c->df3_span_ms > 1000) {
+			c->df3_span = h.span;
+			c->df3_span_ms = now_ms;
+		}
+		if (!c->df3_have) {
+			c->df3_top = top;
+			c->df3_have = 1;
+		} else if ((int32_t)(top - c->df3_top) >= 0) {
+			uint32_t d = top - c->df3_top;
+
+			if (d < 65536)
+				c->df3_gap16 = c->df3_gap16 ? c->df3_gap16 - c->df3_gap16 / 8 + d * 16 / 8 : d * 16;
+			c->df3_top = top;
+		}
+		if (start)
+			rescue_apply(c); /* gaps wait for its repairs from now */
+	}
+	r = dring(c);
+	if (h.kind == CG_REP_RLC || h.kind == CG_REP_RLCW)
+		n = cg_rlc_rx_repair(&c->sp_gf, c->drlc, &r, &h, p + CG_REP_HDR, slen, out, CG_RLC_COLS);
+	else
+		c->drep_unused++;
+	d_rep_deliver(c, out, n, link, ts, rset, now, now_ms);
+	d_harq_service(c, cg_now_us());
+}
+
+/* The download's asks of a batch, as the server's harq_batch. */
+struct dharq_batch {
+	uint32_t nack[2][CG_RO_ASK_MAX + CG_DHQ_N];
+	uint32_t nn[2];
+	struct cg_parq_req req[CG_PARQ_MAX * 4];
+	unsigned nr;
+};
+
+/* Download gap seq (asked at t_us; retry: asked again) by harq.h's route,
+ * as the server's harq_one: 1 when it waits for the code (keep it). */
+static int d_harq_one(struct client *c, struct dharq_batch *hb, uint32_t seq, uint32_t t_us, int retry, uint8_t *rel,
+		      uint64_t now_us)
+{
+	const struct cg_ro_slot *sl = &c->rxs.ro.slot[seq % CG_RO_SLOTS];
+	struct cg_harq_gap g = { 0 };
+	uint32_t base = 0;
+	uint64_t map = 0;
+
+	if (!*rel && (sl->seq != seq || sl->state != CG_RO_ASKED))
+		return 0; /* came, or went, meanwhile */
+	g.code = (uint8_t)dwide(c, now_us / 1000);
+	if (*rel && !g.code)
+		return 0;
+	if (g.code) {
+		struct cg_rep_ring r = dring(c);
+
+		g.here = (uint8_t)cg_rep_has(&r, seq);
+		g.sealed = (uint8_t)(c->drep_top_ok && (int32_t)(c->drep_top - seq) > 0);
+		g.deficit = (uint8_t)cg_rlc_rx_need(&c->sp_gf, c->drlc, seq, &base, &map);
+		g.wide = 1;
+		g.future = cg_harq_future(seq, c->df3_top, c->df3_span, c->df3_gap16);
+	}
+	g.age_us = (uint32_t)now_us - t_us;
+	g.horizon_us = c->cfg->rescue_code_ms * 1000;
+	g.eta_us = fastest_rtt_us(c, now_us / 1000);
+	g.budget_us = tcp_budget_us(c, now_us);
+	if (!c->cfg->parq)
+		g.deficit = 0;
+	switch (cg_harq_route(&g)) {
+	case CG_HARQ_WAIT:
+		if (!*rel && !cg_harq_hold(g.budget_us)) {
+			cg_ro_refused(&c->rxs.ro, &c->rocf, seq, (uint32_t)now_us);
+			*rel = 1;
+		}
+		return 1;
+	case CG_HARQ_NONE:
+		c->dhq_none++;
+		return 0;
+	case CG_HARQ_TCP:
+		c->dhq_tcp++;
+		c->ask_tcp++;
+		if (!*rel)
+			cg_ro_refused(&c->rxs.ro, &c->rocf, seq, (uint32_t)now_us);
+		return 0;
+	case CG_HARQ_PARQ: {
+		unsigned sh;
+
+		/* the unknowns another request of the batch asks for, out, and of
+		 * a gap the window still covers only what its repairs will not
+		 * bring (the server's harq_one) */
+		if (!g.sealed && g.age_us < g.horizon_us && g.deficit > g.future) {
+			unsigned want = g.deficit - g.future;
+			uint64_t keep = 0, rest = map;
+
+			for (unsigned k = 0; k < want && rest; k++, rest &= rest - 1)
+				keep |= rest & (~rest + 1);
+			map = keep;
+		}
+		for (unsigned i = 0; i < hb->nr; i++)
+			map &= ~cg_parq_overlap(hb->req[i].base, hb->req[i].map, base);
+		if (!map)
+			return 0;
+		if (hb->nr == sizeof(hb->req) / sizeof(hb->req[0]))
+			break; /* no room: the packet */
+		sh = (unsigned)__builtin_ctzll(map);
+		base += sh;
+		map >>= sh;
+		hb->req[hb->nr++] = (struct cg_parq_req){ .kind = CG_REP_RLC,
+							   .d = (uint8_t)__builtin_popcountll(map),
+							   .base = base,
+							   .map = map };
+		c->dparq_req++;
+		c->dparq_want += (uint64_t)__builtin_popcountll(map);
+		return 0;
+	}
+	case CG_HARQ_NACK:
+		break;
+	}
+	/* nothing to ask for again from a server that keeps nothing */
+	if (!c->peer_rescue) {
+		c->dhq_nonack++;
+		if (!*rel)
+			cg_ro_refused(&c->rxs.ro, &c->rocf, seq, (uint32_t)now_us);
+		return 0;
+	}
+	hb->nack[retry][hb->nn[retry]++] = seq;
+	return 0;
+}
+
+static void nack_out(struct client *c, const uint32_t *seq, uint32_t n, int retry, uint64_t now_ms);
+
+/* PARQs for req[0..n) on the two links of least RTT (as the NACKs). */
+static void parq_out(struct client *c, const struct cg_parq_req *req, unsigned n, uint64_t now_ms)
+{
+	uint16_t present, live;
+	struct link *best[2] = { NULL, NULL };
+
+	link_masks(c, now_ms, &present, &live);
+	for (int i = 0; i < CG_MAX_LINKS; i++) {
+		struct link *l = &c->link[i];
+
+		if (!(live >> i & 1) || l->fd < 0 || !l->srtt8_us)
+			continue;
+		if (!best[0] || l->srtt8_us < best[0]->srtt8_us) {
+			best[1] = best[0];
+			best[0] = l;
+		} else if (!best[1] || l->srtt8_us < best[1]->srtt8_us) {
+			best[1] = l;
+		}
+	}
+	for (unsigned i = 0; best[0] && i < n; i += CG_PARQ_MAX) {
+		uint8_t pkt[CG_HDR_LEN + CG_PARQ_LEN];
+		unsigned k = n - i < CG_PARQ_MAX ? n - i : CG_PARQ_MAX, plen = cg_parq_write(pkt + CG_HDR_LEN, req + i, k);
+
+		for (int b = 0; b < 2 && best[b]; b++) {
+			cg_up_header(&c->txs, pkt, CG_T_PARQ, 0, (uint8_t)(best[b] - c->link), (uint32_t)cg_now_us(),
+				     pkt + CG_HDR_LEN, plen);
+			if (send(best[b]->fd, pkt, CG_HDR_LEN + plen, MSG_DONTWAIT) == (ssize_t)(CG_HDR_LEN + plen))
+				c->dparq_msgs++;
+		}
+	}
+}
+
+static void d_harq_flush(struct client *c, struct dharq_batch *hb, uint64_t now_ms)
+{
+	for (int l = 0; l < 2; l++)
+		if (hb->nn[l])
+			nack_out(c, hb->nack[l], hb->nn[l], l, now_ms);
+	if (hb->nr)
+		parq_out(c, hb->req, hb->nr, now_ms);
+}
+
+/* The download gaps that wait for the code, again (a repair came, or the
+ * reorderer's pass). */
+static void d_harq_service(struct client *c, uint64_t now_us)
+{
+	struct dharq_batch hb;
+	uint32_t k = 0;
+
+	if (!c->dhq_n)
+		return;
+	hb.nn[0] = hb.nn[1] = 0;
+	hb.nr = 0;
+	for (uint32_t i = 0; i < c->dhq_n; i++)
+		if (d_harq_one(c, &hb, c->dhq[i].seq, c->dhq[i].t_us, 0, &c->dhq[i].rel, now_us))
+			c->dhq[k++] = c->dhq[i];
+	c->dhq_n = k;
+	d_harq_flush(c, &hb, now_us / 1000);
+}
+
+/* The download gaps the reorderer asked for while FEC v3 protects it:
+ * each waits for the code, or asks for its deficit (PARQ), or for the
+ * packet (NACK, from a server that keeps it), as the server's send_nacks. */
+static void d_send_asks(struct client *c, uint64_t now_ms)
+{
+	struct cg_reorder *r = &c->rxs.ro;
+	uint64_t now_us = cg_now_us();
+	struct dharq_batch hb;
+
+	hb.nn[0] = hb.nn[1] = 0;
+	hb.nr = 0;
+	for (int list = 0; list < 2; list++) {
+		const uint32_t *seq = list ? r->ask2 : r->ask;
+		uint32_t n = list ? r->nask2 : r->nask;
+
+		for (uint32_t i = 0; i < n; i++) {
+			uint8_t rel = 0;
+
+			if (!d_harq_one(c, &hb, seq[i], (uint32_t)now_us, list, &rel, now_us))
+				continue;
+			if (list) { /* asked again while it waits: it waits once */
+				uint32_t j = 0;
+
+				while (j < c->dhq_n && c->dhq[j].seq != seq[i])
+					j++;
+				if (j < c->dhq_n)
+					continue;
+			}
+			if (c->dhq_n == CG_DHQ_N) {
+				c->dhq_full++;
+				if (c->peer_rescue)
+					hb.nack[list][hb.nn[list]++] = seq[i];
+				continue;
+			}
+			c->dhq[c->dhq_n].seq = seq[i];
+			c->dhq[c->dhq_n].t_us = (uint32_t)now_us;
+			c->dhq[c->dhq_n].rel = rel;
+			c->dhq_n++;
+			c->dhq_waited++;
+		}
+	}
+	r->nask = r->nask2 = 0;
+	d_harq_flush(c, &hb, now_ms);
+}
+
 /* A probe reply moved what the reorderer knows: a link's delay, and rset. */
 static void ro_reply(struct client *c, uint16_t *rset, uint32_t now, uint64_t now_ms)
 {
@@ -3198,6 +3574,8 @@ static void ro_service(struct client *c)
 {
 	uint64_t now_us, now_ms;
 
+	if (c->dhq_n)
+		d_harq_service(c, cg_now_us()); /* gaps waiting for FEC v3's code */
 	if (!c->cfg->reorder || !c->rxs.ro.held)
 		return;
 	now_us = cg_now_us();
@@ -3277,10 +3655,17 @@ static void link_read(struct client *c, struct link *l)
 					on_nack(c, h.flags, b + CG_HDR_LEN, len - CG_HDR_LEN, now_ms);
 				} else if (v == CG_RXV_PARQ) {
 					on_parq(c, b + CG_HDR_LEN, len - CG_HDR_LEN, now_ms);
+				} else if (v == CG_RXV_REPAIR) {
+					d_rep_take(c, b + CG_HDR_LEN, (unsigned)(len - CG_HDR_LEN), (uint8_t)id, h.ts, rset, now32,
+						   now_ms);
 				}
 				continue;
 			}
+			if (c->dfec) /* kept for the server's repairs (story 026) */
+				cg_fec_rx_put(c->dfec, h.seq, b + CG_HDR_LEN, (uint16_t)(len - CG_HDR_LEN));
 			down_deliver(c, &h, id, b + CG_HDR_LEN, len - CG_HDR_LEN, now32, rset, now32, now_ms);
+			if (c->dfec)
+				d_rep_data(c, h.seq, (uint8_t)id, h.ts, rset, now32, now_ms);
 		}
 		dout_flush(c, now_ms);
 		if (n < CG_BATCH)
@@ -3300,8 +3685,12 @@ static void hub_slot(struct client *c, struct cg_rxslot *sl, uint16_t *expect, u
 				    *expect, &h);
 
 	if (v == CG_RXV_DATA) {
+		if (c->dfec) /* kept for the server's repairs (story 026) */
+			cg_fec_rx_put(c->dfec, h.seq, sl->buf + CG_HDR_LEN, (uint16_t)(sl->len - CG_HDR_LEN));
 		down_deliver(c, &h, sl->link, sl->buf + CG_HDR_LEN, sl->len - CG_HDR_LEN, (uint32_t)sl->t_us, *rset,
 			     (uint32_t)clock_us, clock_us / 1000);
+		if (c->dfec)
+			d_rep_data(c, h.seq, (uint8_t)sl->link, h.ts, *rset, (uint32_t)clock_us, clock_us / 1000);
 		return;
 	}
 	if (v == CG_RXV_DROP)
@@ -3317,6 +3706,9 @@ static void hub_slot(struct client *c, struct cg_rxslot *sl, uint16_t *expect, u
 		on_nack(c, h.flags, sl->buf + CG_HDR_LEN, (size_t)sl->len - CG_HDR_LEN, now_ms);
 	} else if (v == CG_RXV_PARQ) {
 		on_parq(c, sl->buf + CG_HDR_LEN, (size_t)sl->len - CG_HDR_LEN, now_ms);
+	} else if (v == CG_RXV_REPAIR) {
+		d_rep_take(c, sl->buf + CG_HDR_LEN, (unsigned)(sl->len - CG_HDR_LEN), (uint8_t)sl->link, h.ts, *rset,
+			   (uint32_t)clock_us, clock_us / 1000);
 	}
 }
 
@@ -3977,6 +4369,41 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 	cg_json_u64(j, "not_ip", c->down_not_ip);
 	cg_json_u64(j, "protocontroller_off", c->down_pctl_off);
 	cg_json_end(j, '}');
+	/* FEC v3's repairs of the download (story 026), as the server's
+	 * session repair, rebuilt and rescue counts */
+	cg_json_obj(j, "download_fec");
+	cg_json_bool(j, "on", c->dfec != NULL);
+	cg_json_bool(j, "fec3", dwide(c, now_ms));
+	cg_json_u64(j, "xor_recovered", 0);
+	cg_json_u64(j, "rlc_recovered", c->drlc ? c->drlc->recovered : 0);
+	cg_json_u64(j, "rlc_wide", c->drlc ? c->drlc->wide : 0);
+	cg_json_u64(j, "rlc_evicted", c->drlc ? c->drlc->evicted : 0);
+	cg_json_u64(j, "rlc_peak", c->drlc ? c->drlc->peak : 0);
+	cg_json_u64(j, "repairs", c->drlc ? c->drlc->repairs : 0);
+	cg_json_u64(j, "useless", c->drlc ? c->drlc->useless : 0);
+	cg_json_u64(j, "kept", c->drlc ? c->drlc->kept : 0);
+	cg_json_u64(j, "dropped", c->drlc ? c->drlc->dropped : 0);
+	cg_json_u64(j, "dependent", c->drlc ? c->drlc->dependent : 0);
+	cg_json_u64(j, "bad", c->drlc ? c->drlc->bad : 0);
+	cg_json_u64(j, "unknowns", c->drlc ? c->drlc->ncol : 0);
+	cg_json_u64(j, "unused", c->drep_unused);
+	cg_json_u64(j, "malformed", c->drep_bad);
+	cg_json_u64(j, "already_there", c->d_fec_dups);
+	cg_json_obj(j, "rebuilt");
+	cg_json_u64(j, "ok", c->d_rb_ok);
+	cg_json_u64(j, "bad", c->d_rb_bad);
+	cg_json_u64(j, "unsure", c->d_rb_unsure);
+	cg_json_end(j, '}');
+	cg_json_u64(j, "waited_code", c->dhq_waited);
+	cg_json_u64(j, "not_asked", c->dhq_none);
+	cg_json_u64(j, "left_to_tcp", c->dhq_tcp);
+	cg_json_u64(j, "wait_full", c->dhq_full);
+	cg_json_u64(j, "no_nack", c->dhq_nonack);
+	cg_json_u64(j, "waiting", c->dhq_n);
+	cg_json_u64(j, "parq_asked", c->dparq_req);
+	cg_json_u64(j, "parq_repairs_asked", c->dparq_want);
+	cg_json_u64(j, "parq_messages", c->dparq_msgs);
+	cg_json_end(j, '}');
 	if (c->pctl)
 		cg_pctl_json(c->pctl, j);
 	/* Download: lost on every link, joint lateness, and the reorderer
@@ -4561,6 +4988,8 @@ static void tick(struct client *c)
 	take_open_failed(c, now_ms);
 	link_cmds_retry(c);
 	ro_service(c);
+	if (c->dfec)
+		rescue_apply(c); /* the code's wait on or off with FEC v3's repairs of the download */
 	if (now_ms >= c->next_second_ms) {
 		threads_second(c, now_ms);
 		c->next_second_ms = now_ms + 1000;
@@ -4808,6 +5237,33 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 	c->rocf = cg_ro_cfg_of(cfg);
 	rescue_apply(c);
 	f3_apply(c);
+	/* FEC v3's repairs of the download (story 026): the ring of the DATA got
+	 * lately and the RLC's equations, with fec (it restarts the engine) */
+	if (cfg->fec) {
+		size_t n = CG_FEC_RING;
+		uint8_t *b = calloc(1, sizeof(struct cg_fec_rx) + n * (sizeof(uint32_t) + sizeof(uint16_t) + 2) +
+					       n * CG_FEC_PLEN_MAX);
+
+		if (b) {
+			c->dfec = (struct cg_fec_rx *)b;
+			b += sizeof(*c->dfec);
+			c->dfec->seq = (uint32_t *)b;
+			b += n * sizeof(uint32_t);
+			c->dfec->len = (uint16_t *)b;
+			b += n * sizeof(uint16_t);
+			c->dfec->have = b;
+			b += n;
+			c->dfec->pidx = b;
+			b += n;
+			c->dfec->mem = b;
+			if (!(c->drlc = calloc(1, sizeof(*c->drlc)))) {
+				free(c->dfec);
+				c->dfec = NULL;
+			}
+		}
+		if (!c->dfec)
+			cg_warn("fec: out of memory for the download's ring, its repairs are dropped");
+	}
 	if (cfg->protocontroller) {
 		struct cg_pctl_cfg pc = { .server = 0,
 					 .port = (uint16_t)cfg->protocontroller_port,
@@ -4988,6 +5444,8 @@ out:
 	pumps_free(c); /* they close the link sockets they hold */
 	cg_ro_pool_free(&c->pool);
 	free(c->f3w);
+	free(c->dfec);
+	free(c->drlc);
 	free(c->resc.mem);
 	free(c->parq_rs);
 	free(c->resc.sess);

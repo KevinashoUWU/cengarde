@@ -583,6 +583,17 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
       (`wide`, `recovered`, `dependent`, `evicted`, `peak`, `unknowns`,
       `rows`) y `rescue.no_nack` (un hueco sin anillo en el cliente se suelta en vez
       de pedirse).
+    - **La bajada:** con `fec = yes` y `fec_code = rlc` en el servidor
+      (`cengarde-vps-setup fec rlc`), las mismas reparaciones sobre la
+      bajada de cada sesión (`fec_pct`, `fec_window_ms` y `fec_single` del
+      servidor; una ventana de ~2 MB por sesión, asignada al encender la
+      perilla). El router las rehace con `fec = yes` (su anillo de 2048 DATA
+      y el receptor de la RLC, ~5 MB, asignados con `fec`) y pide la PARQ
+      por la subida; el servidor la responde desde su ventana con el
+      presupuesto del rescate. Estado: `download_fec` en cada sesión del
+      servidor (`code`, `rlc`) y en el cliente (`repairs`, `rlc_recovered`,
+      `waited_code`, `parq_asked`, `no_nack`, …); por camino,
+      `fec_repairs`.
     - Con FEC v3, `reorder_max_wait_ms` en 200 (el valor por omisión) o
       menos: con 500 (el perfil de terreno) el p99 de un ping de 1200 B bajo
       BBR sube 1,5–1,9× (medido en la bajada, historia 026).
