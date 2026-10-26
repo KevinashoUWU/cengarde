@@ -102,6 +102,7 @@
 #include "dominant.h"
 #include "linksig.h"
 #include "fec.h"
+#include "fec3.h"
 #include "gf256.h"
 #include "repair.h"
 #include "rebuilt.h"
@@ -154,6 +155,7 @@ struct path {
 	uint8_t type;         /* the link type that tail says (linkmodel.h), auto without one */
 	uint64_t tx_pkts, tx_bytes, tx_drops;
 	uint64_t tx_split;     /* of tx_pkts, split packets (split.h): its share, or all of them with weight 0 */
+	uint64_t f3_rep, f3_bytes; /* FEC v3's repairs down it (story 026), apart from tx_pkts and tx_bytes */
 	uint64_t moves;        /* changes of address, at either end */
 	uint64_t local_errors; /* datagrams that could not leave: our address gone, no route */
 	struct cg_probe_info peer_view; /* client's view of this path (download) */
@@ -213,6 +215,20 @@ struct session {
 	struct cg_rs_rx *rsx;
 	uint64_t rep_unused, rep_bad; /* repairs without fec (or Leopard here), malformed */
 	uint64_t resc_gone_tx, resc_gone_rx; /* CG_F_GONE said to the client; asked gaps it said were gone */
+	/* FEC v3 down (fec = yes, fec_code = rlc, story 026): every DATA of
+	 * the window (~2 MB, with the knob), the decisions (fec3.h), the paths
+	 * it repairs on now, the last repair's window, density and lag, the
+	 * counts as the client's (f3_*), and the parity the client asked for
+	 * again (PARQ) */
+	struct cg_rlcw_tx *dw;
+	struct cg_f3 df3;
+	uint16_t df3_links;
+	unsigned df3_span;
+	uint8_t df3_dn;
+	uint32_t df3_lag;
+	uint64_t df3_rep, df3_bytes, df3_data, df3_tail, df3_guarded, df3_nolink, df3_empty, df3_gated;
+	uint16_t parq_seed;
+	uint64_t parq_rx, parq_bad, parq_reqs, parq_sent, parq_bytes, parq_missing, parq_budget, parq_nolink;
 	struct cg_ro_cfg rocf;    /* the server's reorder settings, with its rescue */
 	uint32_t rescue_base_us;  /* rescue_wait_ms's wait, before the code's horizon and TCP's budget (harq_wait) */
 	uint32_t tx_ctl; /* next probe reply sequence */
@@ -733,6 +749,8 @@ static void session_destroy(struct server *s, struct session *S, const char *why
 	S->rlc = NULL;
 	free(S->rsx);
 	S->rsx = NULL;
+	free(S->dw);
+	S->dw = NULL;
 	S->used = 0;
 	if (!--C->nsess)
 		C->alone_ms = now_ms;
@@ -779,6 +797,7 @@ static void client_close(struct server *s, struct client *C, const char *why, ui
 static void rescue_apply(const struct server *s, struct session *S);
 static struct cg_fec_rx *fec_rx_new(void);
 static void rep_rx_new(struct server *s, struct session *S);
+static void sf3_apply(struct server *s, struct session *S);
 
 static struct session *session_create(struct server *s, struct client *C, const struct cg_hdr *h,
 				      const struct cg_probe_info *pi, const struct sockaddr_storage *from,
@@ -856,6 +875,7 @@ static struct session *session_create(struct server *s, struct client *C, const 
 		S->resc_idx = calloc(CG_RESC_IDX, sizeof(*S->resc_idx));
 	S->fec = s->cfg->fec ? fec_rx_new() : NULL;
 	rep_rx_new(s, S);
+	sf3_apply(s, S);
 	C->nsess++;
 	s->nsess++;
 	C->newest = (int32_t)(S - s->s);
@@ -2045,6 +2065,80 @@ static void on_nack(struct server *s, struct session *S, uint8_t flags, const ui
 	}
 }
 
+/* A verified PARQ of S (harq.h, story 026: the client receives FEC v3's
+ * download): the repairs it asks for, combinations of the members it names
+ * (RLC only: the download has no Reed-Solomon), from the rescue ring or
+ * the window, down its live path of least delay, within the rescue's
+ * budget (earned by every DATA without the ring, sf3_feed). */
+static void on_parq(struct server *s, struct session *S, const uint8_t *payload, size_t plen, uint64_t now_ms)
+{
+	const struct client *C = client_of(s, S);
+	struct cg_parq_req req[CG_PARQ_MAX];
+	int n = cg_parq_read(req, payload, (unsigned)plen), best[2];
+
+	S->parq_rx++;
+	if (n < 0) {
+		S->parq_bad++;
+		return;
+	}
+	if ((!S->resc_idx && !S->dw) || !s->gf)
+		return;
+	best_paths(S, now_ms, best);
+	if (best[0] < 0 || path_full(s, S, (unsigned)best[0])) {
+		S->parq_nolink++;
+		return;
+	}
+	for (int q = 0; q < n; q++) {
+		const struct cg_parq_req *r = &req[q];
+		const uint8_t *mp[CG_REP_SPAN];
+		uint16_t ml[CG_REP_SPAN];
+		unsigned k = 0;
+		int ok = r->kind == CG_REP_RLC;
+
+		S->parq_reqs++;
+		for (uint64_t m = r->map; m && ok; m &= m - 1, k++) {
+			uint32_t sq = r->base + (unsigned)__builtin_ctzll(m);
+			uint16_t el = 0;
+			uint8_t went;
+			const uint8_t *e = S->resc_idx ? cg_resc_get(&s->resc, S->resc_idx, S->id, sq, &el, &went) : NULL;
+
+			if (e && el > CG_HDR_LEN && el - CG_HDR_LEN <= CG_SYM_PLEN) {
+				mp[k] = e + CG_HDR_LEN;
+				ml[k] = (uint16_t)(el - CG_HDR_LEN);
+			} else if (!S->dw || !(mp[k] = cg_rlcw_get(S->dw, sq, &ml[k]))) {
+				ok = 0;
+			}
+		}
+		if (!ok) {
+			S->parq_missing++;
+			continue;
+		}
+		for (unsigned d = 0; d < r->d; d++) {
+			uint8_t pkt[CG_HDR_LEN + CG_REP_HDR + CG_SYM_MAX];
+			struct cg_rep_hdr rh;
+			unsigned sl = cg_rlc_combine(s->gf, r->base, r->map, (uint16_t)(0x8000u | ++S->parq_seed), mp, ml, &rh,
+						     pkt + CG_HDR_LEN + CG_REP_HDR);
+			struct cg_hdr h = { .type = CG_T_REPAIR,
+					    .hint = C->hint,
+					    .link = (uint8_t)best[0],
+					    .session = S->id,
+					    .seq = S->tx_ctl++,
+					    .ts = (uint32_t)cg_now_us() };
+
+			if (!cg_resc_spend(&S->resc_b, CG_REP_HDR + sl)) {
+				S->parq_budget++;
+				break;
+			}
+			cg_rep_put(pkt + CG_HDR_LEN, &rh);
+			cg_hdr_write(pkt, &h, C->key + CG_SIPHASH_KEY_LEN, pkt + CG_HDR_LEN, CG_REP_HDR + sl);
+			if (send_path(s, S, best[0], pkt, CG_HDR_LEN + CG_REP_HDR + sl) == 0) {
+				S->parq_sent++;
+				S->parq_bytes += CG_REP_HDR + sl;
+			}
+		}
+	}
+}
+
 static void listen_read(struct server *s, struct lane *ln)
 {
 	for (int round = 0; round < CG_MAX_ROUNDS; round++) {
@@ -2080,7 +2174,7 @@ static void listen_read(struct server *s, struct lane *ln)
 			}
 			if (cg_hdr_parse(&h, b, len) < 0 ||
 			    (h.type != CG_T_DATA && h.type != CG_T_PROBE && h.type != CG_T_NACK && h.type != CG_T_FEC &&
-			     h.type != CG_T_REPAIR) ||
+			     h.type != CG_T_REPAIR && h.type != CG_T_PARQ) ||
 			    h.link >= CG_MAX_LINKS) {
 				s->rx_malformed++;
 				if (cg_ratelimit_ok(&s->rl_auth, now_ms, 10000))
@@ -2166,6 +2260,10 @@ static void listen_read(struct server *s, struct lane *ln)
 			S->last_rx_ms = now_ms;
 			if (h.type == CG_T_NACK) {
 				on_nack(s, S, h.flags, b + CG_HDR_LEN, len - CG_HDR_LEN, now_ms);
+				continue;
+			}
+			if (h.type == CG_T_PARQ) {
+				on_parq(s, S, b + CG_HDR_LEN, len - CG_HDR_LEN, now_ms);
 				continue;
 			}
 			if (h.type == CG_T_FEC) {
@@ -2423,6 +2521,179 @@ static const struct cg_tcpe_view *tcpe_view(const struct session *S, uint32_t no
 	return v;
 }
 
+/* ---- FEC v3 down (fec = yes, fec_code = rlc; fec3.h, rlc.h, story 026) ---- */
+
+/* Whether FEC v3 protects S's download: the knobs, and its window. */
+static int sf3_on(const struct server *s, const struct session *S)
+{
+	return S->dw && s->cfg->fec && s->cfg->fec_code == CG_FEC_RLC;
+}
+
+/* S's window allocated or freed with the knobs (a new session, a reload),
+ * never per packet; GF(2^8)'s tables once. */
+static void sf3_apply(struct server *s, struct session *S)
+{
+	if (s->cfg->fec && s->cfg->fec_code == CG_FEC_RLC) {
+		if (!s->gf && (s->gf = calloc(1, sizeof(*s->gf))))
+			cg_gf_init(s->gf);
+		if (!S->dw && (!s->gf || !(S->dw = calloc(1, sizeof(*S->dw)))))
+			cg_warn("%ssession %08x: fec_code = rlc: out of memory for its window, no repairs",
+				client_of(s, S)->tag, S->id);
+	} else if (S->dw) {
+		free(S->dw);
+		S->dw = NULL;
+		cg_f3_idle(&S->df3);
+		S->df3.mode = CG_F3_OFF;
+	}
+}
+
+/* For a batch: how FEC v3 protects S's download (fec3.h's cg_f3_mode_of)
+ * over the paths it goes down; a lone path only while its gate is open. */
+static void sf3_begin(struct server *s, struct session *S, const struct dpaths *d, uint64_t now_ms)
+{
+	int split = d->split && !S->dom.out;
+	uint16_t set = split ? (uint16_t)((d->k.eligible | d->k.dup) & d->carry) : d->carry;
+	int mode;
+
+	if (!sf3_on(s, S))
+		return;
+	mode = cg_f3_mode_of(split, (unsigned)__builtin_popcount(set));
+	if (mode == CG_F3_SINGLE) {
+		int p = __builtin_ctz(set);
+
+		if (!cg_f3_gate(&S->df3, (unsigned)p, s->cfg->fec_single, S->sig[p].kind == CG_SIG_RANDOM, s->cfg->fec_pct,
+				now_ms)) {
+			mode = CG_F3_OFF;
+			S->df3_gated++;
+		}
+	}
+	if (mode == CG_F3_OFF && S->df3.mode != CG_F3_OFF)
+		cg_f3_idle(&S->df3);
+	S->df3.mode = (uint8_t)mode;
+	S->df3_links = mode == CG_F3_OFF ? 0 : set;
+}
+
+/* DATA seq of S's download (len bytes at p) into the window; its share of
+ * repairs while FEC v3 protects, and of the rescue's budget for the
+ * client's PARQs without the rescue ring. */
+static void sf3_feed(struct server *s, struct session *S, uint32_t seq, const uint8_t *p, size_t len, uint64_t now_us)
+{
+	cg_rlcw_add(S->dw, seq, p, (uint16_t)(len > CG_SYM_PLEN ? CG_SYM_PLEN : len), now_us);
+	if (!S->resc_idx)
+		cg_resc_earn(&S->resc_b, (uint32_t)len, s->cfg->rescue_pct);
+	if (S->df3.mode == CG_F3_OFF)
+		return;
+	cg_f3_earn(&S->df3, (uint32_t)len, s->cfg->fec_pct, now_us);
+	S->df3_data += len;
+}
+
+/* One repair over S's window down the path the round-robin picks (as the
+ * client's f3_repair), sent at once; its bytes spent either way. */
+static void sf3_repair(struct server *s, struct session *S, uint64_t now_us)
+{
+	const struct client *C = client_of(s, S);
+	uint64_t win = (uint64_t)s->cfg->fec_window_ms * 1000, span;
+	uint8_t pkt[CG_HDR_LEN + CG_REP_HDR + CG_SYM_MAX];
+	struct cg_rep_hdr rh;
+	int32_t behind[CG_MAX_LINKS];
+	uint16_t cand = 0, have = 0;
+	unsigned w, slen;
+	uint32_t top = 0, lag;
+	int p;
+
+	for (int i = 0; i < CG_MAX_LINKS; i++) {
+		if (!(S->df3_links >> i & 1) || !S->path[i].used)
+			continue;
+		if (cg_f3_guard(S->cap[i].ql_us, (uint32_t)win)) {
+			S->df3_guarded++;
+			continue;
+		}
+		cand |= (uint16_t)(1u << i);
+	}
+	p = cg_f3_pick(&S->df3, cand);
+	if (p < 0) {
+		S->df3_nolink++;
+		cg_f3_spend(&S->df3, S->df3.cost ? S->df3.cost : CG_F3_COST0);
+		return;
+	}
+	span = cg_f3_span_us(&S->df3, win);
+	for (int i = 0; i < CG_MAX_LINKS; i++) {
+		behind[i] = S->dh[i].behind_us;
+		have |= (uint16_t)(S->dh[i].have_behind ? 1u << i : 0);
+	}
+	lag = cg_f3_lag_us(behind, have, S->df3_links, (unsigned)p, (uint32_t)(span / 2));
+	w = cg_rlcw_window(S->dw, now_us > span ? now_us - span : 0, now_us - lag, CG_RLCW_SPAN, &top);
+	slen = w ? cg_rlcw_repair(s->gf, S->dw, top, w, &rh, pkt + CG_HDR_LEN + CG_REP_HDR) : 0;
+	if (!slen) {
+		S->df3_empty++;
+		cg_f3_pay(&S->df3, S->df3.cost ? S->df3.cost : CG_F3_COST0);
+		return;
+	}
+	cg_rep_put(pkt + CG_HDR_LEN, &rh);
+	{
+		struct cg_hdr h = { .type = CG_T_REPAIR,
+				    .hint = C->hint,
+				    .link = (uint8_t)p,
+				    .session = S->id,
+				    .seq = S->tx_ctl++,
+				    .ts = (uint32_t)now_us };
+
+		cg_hdr_write(pkt, &h, C->key + CG_SIPHASH_KEY_LEN, pkt + CG_HDR_LEN, CG_REP_HDR + slen);
+	}
+	/* apart from DATA (tx_pkts, tx_bytes): the client counts a path's DATA,
+	 * and the capacity would read a repair counted as sent as lost */
+	if (send_path(s, S, p, pkt, CG_HDR_LEN + CG_REP_HDR + slen) == 0) {
+		S->df3_rep++;
+		S->df3_bytes += CG_REP_HDR + slen;
+		S->path[p].f3_rep++;
+		S->path[p].f3_bytes += CG_REP_HDR + slen;
+	} else {
+		S->path[p].tx_drops++;
+	}
+	cg_f3_spend(&S->df3, cg_f3_cost(slen));
+	if (s->cfg->split_eta)
+		cg_eta_add(&S->eta, (unsigned)p, cg_f3_cost(slen), now_us);
+	S->df3_span = w;
+	S->df3_dn = rh.dn;
+	S->df3_lag = lag;
+}
+
+/* After a batch down S: the repairs its DATA earned. */
+static void sf3_send(struct server *s, struct session *S, uint64_t now_us)
+{
+	if (!sf3_on(s, S) || S->df3.mode == CG_F3_OFF)
+		return;
+	for (int n = 0; n < CG_F3_BURST && cg_f3_owed(&S->df3); n++)
+		sf3_repair(s, S, now_us);
+}
+
+/* The repairs at the end of the sessions' bursts (cg_f3_due); and when the
+ * next one is due (ms, -1: none). */
+static int sf3_service(struct server *s)
+{
+	uint64_t now_us = cg_now_us(), wait = (uint64_t)s->cfg->fec_wait_ms * 1000, next = 0;
+
+	if (!s->cfg->fec || s->cfg->fec_code != CG_FEC_RLC)
+		return -1;
+	for (uint32_t i = 0; i < s->cap; i++) {
+		struct session *S = &s->s[i];
+		uint64_t at;
+
+		if (!S->used || !sf3_on(s, S) || S->df3.mode == CG_F3_OFF)
+			continue;
+		if (cg_f3_due(&S->df3, now_us, wait)) {
+			sf3_repair(s, S, now_us);
+			S->df3_tail++;
+		}
+		at = S->df3.credit >= 0 ? cg_f3_due_at(&S->df3, wait) : 0;
+		if (at && (!next || at < next))
+			next = at;
+	}
+	if (!next)
+		return -1;
+	return next <= now_us ? 0 : (int)((next - now_us + 999) / 1000);
+}
+
 static void down_prepare(struct server *s, struct session *S, int m, uint8_t *buf, size_t len, uint64_t now_us,
 			 const struct dpaths *d)
 {
@@ -2473,6 +2744,11 @@ static void down_prepare(struct server *s, struct session *S, int m, uint8_t *bu
 	s->sflags[m] = h.flags;
 	s->sts[m] = h.ts;
 	s->sseq[m] = S->tx_seq++;
+	if (sf3_on(s, S)) {
+		if (!m)
+			sf3_begin(s, S, d, now_us / 1000); /* once a batch, at its first */
+		sf3_feed(s, S, s->sseq[m], buf, len, now_us);
+	}
 	s->oiov[m][0].iov_base = s->hdr[m];
 	s->oiov[m][0].iov_len = CG_HDR_LEN;
 	s->oiov[m][1].iov_base = buf;
@@ -2646,6 +2922,7 @@ static void down_send(struct server *s, struct session *S, int m, uint64_t now_m
 		}
 	}
 	S->rot++;
+	sf3_send(s, S, cg_now_us()); /* FEC v3: the repairs the batch earned, after its DATA */
 }
 
 static void wg_read(struct server *s, struct session *S)
@@ -2937,6 +3214,9 @@ static void cap_tick(struct server *s, struct session *S, uint16_t live, uint64_
 			ev = cg_cap_tick(&S->cap[p], now_ms, P->peer_view_ms, P->peer_view.rx, P->tx_pkts, P->tx_bytes,
 					 &S->dh[p], &cc);
 			cg_sig_cap(&S->sig[p], &S->cap[p], now_ms);
+			/* FEC v3 down: where its repairs go, and a lone path's loss */
+			cg_f3_weigh(&S->df3, (unsigned)p, P->tx_bytes);
+			cg_f3_loss(&S->df3, (unsigned)p, S->cap[p].loss_pm, S->cap[p].loss_pm_ms, S->cap[p].ql_us);
 
 			cg_decrec_cap(&S->dec, &S->cap[p], (unsigned)p, ev, was, now_ms);
 		}
@@ -3432,6 +3712,46 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 		cg_json_u64(j, "already_there", S->fec_dups);
 		cg_json_u64(j, "unused", S->fec_unused);
 		cg_json_end(j, '}');
+		/* FEC v3 down (story 026): how it protects the download now, its
+		 * window and repairs, and the client's PARQs */
+		cg_json_obj(j, "download_fec");
+		cg_json_bool(j, "on", s->cfg->fec);
+		cg_json_str(j, "code", s->cfg->fec_code == CG_FEC_RLC ? "rlc" : "xor");
+		cg_json_u64(j, "parities", 0); /* the download has no XOR parity */
+		cg_json_u64(j, "bytes", 0);
+		if (sf3_on(s, S)) {
+			static const char *const mode[] = { "off", "bonding", "single" };
+
+			cg_json_obj(j, "rlc");
+			cg_json_str(j, "mode", mode[S->df3.mode <= CG_F3_SINGLE ? S->df3.mode : 0]);
+			cg_json_u64(j, "pct", s->cfg->fec_pct);
+			cg_json_u64(j, "window_ms", s->cfg->fec_window_ms);
+			cg_json_u64(j, "links", (uint64_t)__builtin_popcount(S->df3_links));
+			cg_json_u64(j, "window", S->df3_span);
+			cg_json_ms(j, "lag_ms", S->df3_lag);
+			cg_json_u64(j, "density", S->df3_dn);
+			cg_json_u64(j, "repairs", S->df3_rep);
+			cg_json_u64(j, "repair_bytes", S->df3_bytes);
+			cg_json_u64(j, "data_bytes", S->df3_data);
+			cg_json_u64(j, "overhead_pm", S->df3_data ? S->df3_bytes * 1000 / S->df3_data : 0);
+			cg_json_u64(j, "tail", S->df3_tail);
+			cg_json_u64(j, "guarded", S->df3_guarded);
+			cg_json_u64(j, "no_link", S->df3_nolink);
+			cg_json_u64(j, "empty", S->df3_empty);
+			cg_json_u64(j, "gated", S->df3_gated);
+			cg_json_end(j, '}');
+		} else {
+			cg_json_null(j, "rlc");
+		}
+		cg_json_u64(j, "parq_received", S->parq_rx);
+		cg_json_u64(j, "parq_malformed", S->parq_bad);
+		cg_json_u64(j, "parq_requests", S->parq_reqs);
+		cg_json_u64(j, "parq_repairs", S->parq_sent);
+		cg_json_u64(j, "parq_bytes", S->parq_bytes);
+		cg_json_u64(j, "parq_missing", S->parq_missing);
+		cg_json_u64(j, "parq_over_budget", S->parq_budget);
+		cg_json_u64(j, "parq_no_link", S->parq_nolink);
+		cg_json_end(j, '}');
 		/* what the codes rebuilt, by the guard (rebuilt.h) */
 		cg_json_obj(j, "rebuilt");
 		cg_json_u64(j, "ok", S->rb_ok);
@@ -3522,6 +3842,8 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 			cg_json_u64(j, "tx_packets", P->tx_pkts);
 			cg_json_u64(j, "tx_bytes", P->tx_bytes);
 			cg_json_u64(j, "tx_drops", P->tx_drops);
+			cg_json_u64(j, "fec_repairs", P->f3_rep); /* FEC v3's, not in tx_packets (story 026) */
+			cg_json_u64(j, "fec_repair_bytes", P->f3_bytes);
 			cg_json_u64(j, "tx_split", P->tx_split);
 			if (P->bond_ok)
 				cg_json_u64(j, "client_weight", P->bond_w);
@@ -4284,8 +4606,10 @@ static void apply_config(struct server *s, struct cg_config *next)
 	 * starts again when it is turned back on. */
 	s->rocf = cg_ro_cfg_of(next);
 	for (uint32_t i = 0; i < s->cap; i++)
-		if (s->s[i].used)
+		if (s->s[i].used) {
 			rescue_apply(s, &s->s[i]);
+			sf3_apply(s, &s->s[i]); /* fec_code reloads in place */
+		}
 	if (old->split != next->split)
 		for (uint32_t i = 0; i < s->cap; i++)
 			cg_split_reset(&s->s[i].sp);
@@ -4622,10 +4946,12 @@ int cg_server_run(struct cg_config *cfg, const struct cg_run *run)
 		/* Until the reorderer's nearest deadline at most (CG_TICK_MS is
 		 * too coarse for it). */
 		{
-			int due = ro_timeout(s), pdue = s->pctl ? cg_pctl_timeout(s->pctl) : -1;
+			int due = ro_timeout(s), pdue = s->pctl ? cg_pctl_timeout(s->pctl) : -1, fdue = sf3_service(s);
 
 			if (pdue >= 0 && (due < 0 || pdue < due))
 				due = pdue;
+			if (fdue >= 0 && (due < 0 || fdue < due))
+				due = fdue;
 			n = cg_wait(s->ep, ev, 32, busy, last_traffic_us, due);
 		}
 		s->ro_budget = CG_RO_PASS_MAX;

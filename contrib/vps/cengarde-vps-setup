@@ -54,12 +54,16 @@
 #                                    opens a fresh TCP to each destination
 #                                    (cubic, BBR once that leg loses; tcp_bbr
 #                                    loaded at boot); the engine restarts
-#   cengarde-vps-setup fec on|off    the repair data (FEC, story 026): the
-#                                    rings and decoders that rebuild what
-#                                    the routers' parity and repairs cover
-#                                    (fec, redund_spare, fec_code = rlc in
-#                                    LuCI's Protection tab); the engine
-#                                    restarts
+#   cengarde-vps-setup fec on|rlc|off
+#                                    the repair data (FEC, story 026): on,
+#                                    the rings and decoders that rebuild
+#                                    what the routers' parity and repairs
+#                                    cover (fec, redund_spare, fec_code =
+#                                    rlc in LuCI's Protection tab); rlc, the
+#                                    same and FEC v3's repairs on the
+#                                    download too (fec_pct and fec_window_ms
+#                                    as the engine's, or in engine.local);
+#                                    the engine restarts
 #   cengarde-vps-setup refresh       the engine's configuration again, reloaded
 #                                    if it changed (cengarde-nat check)
 #   cengarde-vps-setup purge [--all] the services of install.sh removed and the
@@ -194,7 +198,7 @@ is_port "$CENGARDE_PORT" || die "CENGARDE_PORT in $CONF: not a port"
 is_port "$WG_PORT_BASE" || die "WG_PORT_BASE in $CONF: not a port"
 case $TUNNEL in wireguard | native) ;; *) die "TUNNEL in $CONF: wireguard or native" ;; esac
 case $PROTOCONTROLLER in yes | no) ;; *) die "PROTOCONTROLLER in $CONF: yes or no" ;; esac
-case $FEC in yes | no) ;; *) die "FEC in $CONF: yes or no" ;; esac
+case $FEC in yes | rlc | no) ;; *) die "FEC in $CONF: yes, rlc or no" ;; esac
 # What IP pass forwards (cengarde-nat refuses a bad one).
 PASS_LO=${PASSTHROUGH_PORTS%%:*} PASS_HI=${PASSTHROUGH_PORTS#*:}
 is_port "$PASS_LO" && is_port "$PASS_HI" || PASS_LO=1024 PASS_HI=65000
@@ -471,11 +475,17 @@ engine_conf() {
 			protocontroller = b
 		EOF
 	fi
-	[ "$FEC" = yes ] && cat <<-EOF
+	[ "$FEC" = no ] || cat <<-EOF
 		# The repair data (cengarde-vps-setup fec off removes it): each
 		# session keeps the DATA it got lately and rebuilds what the routers'
 		# parity and repairs cover (story 026; ~5 MB a session).
 		fec = yes
+	EOF
+	[ "$FEC" = rlc ] && cat <<-EOF
+		# And FEC v3's repairs on the download (cengarde-vps-setup fec on
+		# leaves them out): a share of the bytes over a sliding window, so a
+		# router rebuilds what a path loses (~2 MB more a session).
+		fec_code = rlc
 	EOF
 	if [ -s "$LOCAL_CONF" ]; then
 		# Before the [client] sections, which would take its keys.
@@ -1572,8 +1582,9 @@ cmd_fec() {
 	local v
 	case ${1:-} in
 	on) v=yes ;;
+	rlc) v=rlc ;;
 	off) v=no ;;
-	*) die "usage: fec on|off" ;;
+	*) die "usage: fec on|rlc|off" ;;
 	esac
 	check_proto
 	lock
@@ -1587,6 +1598,8 @@ cmd_fec() {
 	kept
 	if [ "$v" = yes ]; then
 		say "fec on: the routers that turn on the repair data in LuCI (Protection tab) are rebuilt here"
+	elif [ "$v" = rlc ]; then
+		say "fec rlc: the routers' repairs are rebuilt here, and the download carries FEC v3's repairs (the routers need the repair data on in LuCI to rebuild them)"
 	else
 		say "fec off: their repairs are dropped here (turn the repair data off on them too)"
 	fi

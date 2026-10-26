@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "clientpath.h"
+#include "repair.h"
 #include "test.h"
 
 #define SESSION 0x0badcafeu
@@ -223,6 +224,11 @@ static void test_classes(void)
 	/* What the old server still had in flight is OLD now, never DATA again. */
 	n = mk(CG_T_DATA, SESSION, top + 1, 1, 40);
 	CHECK_EQ(in(&l1, 0, 3, n, 20002), CG_RXV_DROP);
+	/* A repair of the download (story 026, protocol 11): a control
+	 * message, verified, for the decoder; a PARQ too, as before. */
+	n = mk(CG_T_REPAIR, SESSION, top + CG_SEQ_LEAP + 1, 1, CG_REP_HDR + 40);
+	CHECK_EQ(in(&l2, 1, 7, n, 20003), CG_RXV_REPAIR);
+	CHECK_EQ(in(&l2, 1, 7, n, 20004), CG_RXV_DROP); /* a copy: DUP in the control window */
 	/* Nothing received: the probes say 0. */
 	reset_state();
 	CHECK_EQ(cg_rx_top(&r.replay), 0);

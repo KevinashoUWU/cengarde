@@ -81,6 +81,7 @@ enum cg_rxv {
 	CG_RXV_NACK,     /* a verified NACK: the caller sends those sequences again (rescue.h) */
 	CG_RXV_FEC,      /* a verified parity: the caller may rebuild DATA from it (fec.h) */
 	CG_RXV_PARQ,     /* a verified PARQ: the caller sends the repairs it asks for (harq.h) */
+	CG_RXV_REPAIR,   /* a verified repair of the download: the caller may rebuild DATA from it (rlc.h, story 026) */
 };
 
 /* The upload side of the session. */
@@ -144,7 +145,7 @@ static inline enum cg_rxv cg_rx_entry(struct cg_rxs *r, struct cg_rxl *l, unsign
 	}
 	if (cg_hdr_parse(h, b, len) < 0 ||
 	    (h->type != CG_T_DATA && h->type != CG_T_PROBE_REPLY && h->type != CG_T_HELLO && h->type != CG_T_NACK &&
-	     h->type != CG_T_FEC && h->type != CG_T_PARQ)) {
+	     h->type != CG_T_FEC && h->type != CG_T_PARQ && h->type != CG_T_REPAIR)) {
 		r->malformed++;
 		return CG_RXV_DROP;
 	}
@@ -182,6 +183,8 @@ static inline enum cg_rxv cg_rx_entry(struct cg_rxs *r, struct cg_rxl *l, unsign
 		return CG_RXV_FEC;
 	if (h->type == CG_T_PARQ)
 		return CG_RXV_PARQ;
+	if (h->type == CG_T_REPAIR)
+		return CG_RXV_REPAIR;
 	/* A split packet (split.h) comes on its one link: the others do not
 	 * miss it, and are not late for it. */
 	cg_arr_first(&r->arr, r->rx, h->seq, now32, link, h->flags & CG_F_SPLIT ? (uint16_t)(1u << link) : expect);

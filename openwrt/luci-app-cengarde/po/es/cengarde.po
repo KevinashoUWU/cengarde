@@ -807,6 +807,9 @@ msgstr "en el único enlace, %s en %d ms"
 msgid "%d, %s of the data"
 msgstr "%d, %s de los datos"
 
+msgid "Rebuilt from the VPS's repairs"
+msgstr "Rehechos con las reparaciones del VPS"
+
 msgid "Lost on every uplink"
 msgstr "Perdidos en todos los enlaces"
 

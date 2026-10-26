@@ -472,6 +472,9 @@ return view.extend({
 				rows.push([ _('Repair packets sent'), '%d'.format(n(f.parities)) ]);
 			}
 		}
+		// what the VPS's repairs of the download rebuilt here (story 026)
+		if (e.download_fec && e.download_fec.on && (e.download_fec.fec3 || n(e.download_fec.rlc_recovered)))
+			rows.push([ _('Rebuilt from the VPS\'s repairs'), '%d'.format(n(e.download_fec.rlc_recovered)) ]);
 		rows.push([ _('Lost on every uplink'), '%d'.format(n(e.lost_all)) ]);
 		rows.push([ _('Rescue'), rs.on ? badge(_('on'), '#393') : _('off') ]);
 		if (rs.on || rs.keeps)
