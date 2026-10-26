@@ -236,11 +236,14 @@ static void test_f3_pct(void)
 	f.loss16[0] = 12 * 16;
 	f.srand_ms[0] = 30;
 	CHECK_EQ(cg_f3_pct(&f, 0x3, 0, 20, 0, 40), 10); /* 4 per mille x 25 */
-	CHECK_EQ(cg_f3_pct(&f, 0x3, 0, 20, 0, 30 + CG_F3_SRAND_HOLD_MS), 10);
-	/* past the hold, the loss no longer read random: clean */
-	CHECK_EQ(cg_f3_pct(&f, 0x3, 0, 20, 0, 30 + CG_F3_SRAND_HOLD_MS + 1), 0);
+	CHECK_EQ(cg_f3_pct(&f, 0x3, 0, 20, 0, 30 + CG_F3_SRAND_FULL_MS), 10);
+	/* then it fades: halved every CG_F3_SRAND_HALF_MS, gone at the end */
+	CHECK_EQ(cg_f3_pct(&f, 0x3, 0, 20, 0, 30 + CG_F3_SRAND_FULL_MS + 1), 5); /* 2 per mille x 25 */
+	CHECK_EQ(cg_f3_pct(&f, 0x3, 0, 20, 0, 30 + CG_F3_SRAND_FULL_MS + CG_F3_SRAND_HALF_MS + 1), 3);
+	CHECK_EQ(cg_f3_pct(&f, 0x3, 0, 20, 0, 30 + CG_F3_SRAND_END_MS - 1), 0);
+	CHECK_EQ(cg_f3_pct(&f, 0x3, 0, 20, 0, 30 + CG_F3_SRAND_END_MS), 0);
 	/* linksig's kind says random now: counted again */
-	CHECK_EQ(cg_f3_pct(&f, 0x3, 0x1, 20, 0, 30 + CG_F3_SRAND_HOLD_MS + 2), 10);
+	CHECK_EQ(cg_f3_pct(&f, 0x3, 0x1, 20, 0, 30 + CG_F3_SRAND_END_MS + 2), 10);
 	/* a burst on link 1 (a stall: 10 % in a sample, no queue): the whole
 	 * share for the hold, also after the link is clean again */
 	memset(&f, 0, sizeof(f));
@@ -270,6 +273,14 @@ static void test_f3_pct(void)
 	CHECK_EQ(cg_f3_pct(&f, 0x1, 0, 20, 0, 40), 0);
 	f.loss16[0] = 8 * 16;
 	CHECK_EQ(cg_f3_pct(&f, 0x1, 0x1, 20, 0, 40), 20); /* linksig says random: it counts */
+	/* the lone link's gate lasts as long as the share's evidence, even when
+	 * its own (later, by the instant queue) runs out first (single1) */
+	memset(&f, 0, sizeof(f));
+	cg_f3_loss(&f, 0, 10, 1000, 2000, 2000, 0);   /* the share's and the gate's */
+	cg_f3_loss(&f, 0, 10, 1500, 2000, 40000, 1);  /* the gate's only: at its capacity */
+	CHECK(f.srand_ms[0] == 1000 && f.rand_ms[0] == 1500);
+	CHECK(cg_f3_gate(&f, 0, CG_F3_SINGLE_AUTO, 0, 20, 1500 + CG_F3_RAND_HOLD_MS + 1));
+	CHECK(!cg_f3_gate(&f, 0, CG_F3_SINGLE_AUTO, 0, 20, 1000 + CG_F3_SRAND_END_MS));
 	/* a TCP that just backed off: the sample is quiet and under its capacity,
 	 * the one before full with a queue: neither burst nor random loss */
 	memset(&f, 0, sizeof(f));

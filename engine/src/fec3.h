@@ -68,7 +68,10 @@
 #define CG_F3_BURST_PM 50   /* a sample losing this (per mille) or more without a queue: a burst (a 50 ms stall: ~100 in its 0.5 s sample) */
 #define CG_F3_BURST_Q_US 10000 /* without a queue: its top over the minute's minimum within this (BBR draining 26 ms read as a burst at 30) */
 #define CG_F3_HOLD_MS 30000u /* the whole share this long after a burst */
-#define CG_F3_SRAND_HOLD_MS 120000u /* the loss's share this long after it was random off the link's capacity */
+#define CG_F3_SRAND_FULL_MS 30000u /* the random loss's share whole this long after the evidence (off the link's capacity) */
+#define CG_F3_SRAND_HALF_MS 10000u /* then halved every this long */
+#define CG_F3_SRAND_STEPS 6         /* and gone after this many halvings (90 s in all) */
+#define CG_F3_SRAND_END_MS (CG_F3_SRAND_FULL_MS + CG_F3_SRAND_HALF_MS * CG_F3_SRAND_STEPS)
 #define CG_F3_PER_LOSS 25   /* scattered loss alone: repairs this many times the loss, over the floor (story 026: 1 % wanted 20 % or more) */
 #define CG_F3_WARM_MS 10000u /* the whole share this long from the first batch: nothing known yet, and a cubic that collapses at its start is slow to come back */
 
@@ -304,8 +307,9 @@ static inline void cg_f3_loss(struct cg_f3 *f, unsigned i, uint16_t loss_pm, uin
  * (rnd: those whose loss_kind reads random now, linksig.h): hi while one of
  * them had a burst within CG_F3_HOLD_MS; else lo plus CG_F3_PER_LOSS times
  * the loss of the links that lost at random off their capacity within
- * CG_F3_SRAND_HOLD_MS (long: once repaired, a TCP fills the link and the
- * evidence stops; the share must outlive that, not drop under it), weighed by
+ * CG_F3_SRAND_FULL_MS, then halved every CG_F3_SRAND_HALF_MS (once repaired,
+ * a TCP fills the link and the evidence stops: the share fades, it does not
+ * cut), weighed by
  * their bytes (a link losing only with its queue counts as clean: its drops
  * are its TCP's signal); hi for CG_F3_WARM_MS from the first call. 0: no
  * repairs at all. now_ms: the samples' clock. */
@@ -329,9 +333,16 @@ static inline uint32_t cg_f3_pct(struct cg_f3 *f, uint16_t set, uint16_t rnd, ui
 		if (f->burst_ms[i] && now_ms - f->burst_ms[i] <= CG_F3_HOLD_MS)
 			return f->pct = hi;
 		sw += f->w[i];
-		if (!f->srand_ms[i] || now_ms - f->srand_ms[i] > CG_F3_SRAND_HOLD_MS)
+		if (!f->srand_ms[i] || now_ms - f->srand_ms[i] >= CG_F3_SRAND_END_MS)
 			continue;
 		pm = f->loss16[i] / 16u;
+		/* aging evidence fades, it does not cut: a TCP the repairs let
+		 * fill the link gives none (its queue), and a share gone at once
+		 * collapsed cubic every ~40 s on a lone lossy link (single1),
+		 * which then gave the evidence back: as the share falls the
+		 * link drains before that, and the evidence returns */
+		if (now_ms - f->srand_ms[i] > CG_F3_SRAND_FULL_MS)
+			pm >>= (now_ms - f->srand_ms[i] - CG_F3_SRAND_FULL_MS - 1) / CG_F3_SRAND_HALF_MS + 1;
 		sl += f->w[i] * pm;
 		if (pm > mx)
 			mx = pm;
@@ -361,8 +372,15 @@ static inline int cg_f3_gate(struct cg_f3 *f, unsigned i, int knob, int random, 
 		return 1;
 	if (knob == CG_F3_SINGLE_NO)
 		return 0;
-	f->gate = pm * 2 <= pct * 10 && f->rand_ms[i] && now_ms - f->rand_ms[i] <= CG_F3_RAND_HOLD_MS &&
-		  (random || pm >= CG_F3_OFF_PM);
+	{
+		/* open while the share's evidence lasts too (cg_f3_pct): the
+		 * gate's own hold ran out under a cubic filling the link and shut
+		 * the repairs at once, every ~40 s (single1) */
+		int held = (f->rand_ms[i] && now_ms - f->rand_ms[i] <= CG_F3_RAND_HOLD_MS) ||
+			   (f->srand_ms[i] && now_ms - f->srand_ms[i] < CG_F3_SRAND_END_MS);
+
+		f->gate = pm * 2 <= pct * 10 && held && (random || pm >= CG_F3_OFF_PM);
+	}
 	return f->gate;
 }
 

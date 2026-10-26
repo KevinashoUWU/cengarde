@@ -226,7 +226,7 @@ struct session {
 	unsigned df3_span;
 	uint8_t df3_dn;
 	uint32_t df3_lag;
-	uint64_t df3_rep, df3_bytes, df3_data, df3_tail, df3_guarded, df3_nolink, df3_empty, df3_gated, df3_quiet;
+	uint64_t df3_rep, df3_bytes, df3_data, df3_tail, df3_guarded, df3_nolink, df3_empty, df3_gated, df3_quiet, df3_switches;
 	uint16_t parq_seed;
 	uint64_t parq_rx, parq_bad, parq_reqs, parq_sent, parq_bytes, parq_missing, parq_budget, parq_nolink;
 	struct cg_ro_cfg rocf;    /* the server's reorder settings, with its rescue */
@@ -2557,9 +2557,11 @@ static void sf3_begin(struct server *s, struct session *S, const struct dpaths *
 
 	if (!sf3_on(s, S))
 		return;
-	mode = cg_f3_mode_of(split, (unsigned)__builtin_popcount(set));
+	/* the mode by the paths that carry, not the split's set of the moment
+	 * (the client's f3_begin) */
+	mode = cg_f3_mode_of(split, (unsigned)__builtin_popcount(split ? d->carry : set));
 	if (mode == CG_F3_SINGLE) {
-		int p = __builtin_ctz(set);
+		int p = __builtin_ctz(d->carry);
 
 		if (!cg_f3_gate(&S->df3, (unsigned)p, s->cfg->fec_single, S->sig[p].kind == CG_SIG_RANDOM, s->cfg->fec_pct,
 				now_ms)) {
@@ -2581,6 +2583,8 @@ static void sf3_begin(struct server *s, struct session *S, const struct dpaths *
 	}
 	if (mode == CG_F3_OFF && S->df3.mode != CG_F3_OFF)
 		cg_f3_idle(&S->df3);
+	if (mode != S->df3.mode)
+		S->df3_switches++;
 	S->df3.mode = (uint8_t)mode;
 	S->df3_links = mode == CG_F3_OFF ? 0 : set;
 }
@@ -3758,6 +3762,7 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 			cg_json_u64(j, "empty", S->df3_empty);
 			cg_json_u64(j, "gated", S->df3_gated);
 			cg_json_u64(j, "quiet", S->df3_quiet);
+			cg_json_u64(j, "switches", S->df3_switches);
 			cg_json_end(j, '}');
 		} else {
 			cg_json_null(j, "rlc");

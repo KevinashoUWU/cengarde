@@ -380,7 +380,7 @@ struct client {
 	unsigned f3_span;
 	uint32_t f3_lag; /* the last repair's window ended this long before now, us (cg_f3_lag_us) */
 	uint8_t f3_dn;
-	uint64_t f3_rep, f3_bytes, f3_data, f3_tail, f3_guarded, f3_nolink, f3_empty, f3_gated, f3_quiet;
+	uint64_t f3_rep, f3_bytes, f3_data, f3_tail, f3_guarded, f3_nolink, f3_empty, f3_gated, f3_quiet, f3_switches;
 	/* FEC v3 down (story 026): the server's repairs of the download,
 	 * rebuilt as the server rebuilds the upload (with fec): the DATA got
 	 * lately (fec.h's ring, 4 MB) and the RLC's equations (~600 KB); the
@@ -2127,9 +2127,13 @@ static void f3_begin(struct client *c, const struct upctx *u)
 
 	if (!f3_on(c))
 		return;
-	mode = cg_f3_mode_of(split, (unsigned)__builtin_popcount(set));
+	/* the mode by the links that carry, not the split's set of the moment:
+	 * a link left out for a delay spike made it jump to single (its gate)
+	 * and back, 109 times in 180 s (ltespikerand); the repairs still go
+	 * only where the split sends (set) */
+	mode = cg_f3_mode_of(split, (unsigned)__builtin_popcount(split ? u->carry : set));
 	if (mode == CG_F3_SINGLE) {
-		int i = __builtin_ctz(set);
+		int i = __builtin_ctz(u->carry);
 
 		if (!cg_f3_gate(&c->f3, (unsigned)i, c->cfg->fec_single, c->sig[i].kind == CG_SIG_RANDOM, c->cfg->fec_pct,
 				u->now_ms)) {
@@ -2151,6 +2155,8 @@ static void f3_begin(struct client *c, const struct upctx *u)
 	}
 	if (mode == CG_F3_OFF && c->f3.mode != CG_F3_OFF)
 		cg_f3_idle(&c->f3);
+	if (mode != c->f3.mode)
+		c->f3_switches++; /* on, off or another mode: a ping-pong shows here */
 	c->f3.mode = (uint8_t)mode;
 	c->f3_links = mode == CG_F3_OFF ? 0 : set;
 }
@@ -4357,6 +4363,7 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 		cg_json_u64(j, "empty", c->f3_empty);
 		cg_json_u64(j, "gated", c->f3_gated);
 		cg_json_u64(j, "quiet", c->f3_quiet); /* batches without repairs: no burst nor random loss, fec_pct_min 0 */
+		cg_json_u64(j, "switches", c->f3_switches);
 		cg_json_end(j, '}');
 	} else {
 		cg_json_null(j, "rlc");
