@@ -7,7 +7,7 @@ archivos:
 
 # `fec_pct`
 
-FEC v3: las reparaciones, % de los bytes de DATA, haya o no pérdida. Un enlace de parte s detenido T se rehace unos s·T / (r·(1 − s)) después de empezar: con cuatro enlaces, 50 ms piden ~25 %.
+FEC v3: las reparaciones, % de los bytes de DATA, haya o no pérdida. Un enlace de parte s detenido T se rehace unos s·T / (r·(1 − s)) después de empezar. Medido con cuatro enlaces: 20 % rinde en la pérdida al azar y en detenciones de 50 ms, 33 % en las de 100–200 ms; con BBR se paga la parte entera.
 
 - **Sección:** global
 - **Extremo:** cliente
