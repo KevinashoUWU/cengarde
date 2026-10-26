@@ -2124,16 +2124,8 @@ static void f3_begin(struct client *c, const struct upctx *u)
 
 /* DATA seq (len bytes at p) into the window; its share of repairs, while
  * FEC v3 protects. */
-#ifdef CG_F3_DEBUG
-static FILE *f3dbg;
-static uint32_t f3h(const uint8_t *p, size_t n) { uint32_t h = 2166136261u; for (size_t i = 0; i < n; i++) h = (h ^ p[i]) * 16777619u; return h; }
-#endif
 static void f3_feed(struct client *c, uint32_t seq, const uint8_t *p, size_t len, uint64_t now_us)
 {
-#ifdef CG_F3_DEBUG
-	if (!f3dbg) f3dbg = fopen("/tmp/f3cli.txt", "w");
-	if (f3dbg) fprintf(f3dbg, "%u %zu %08x\n", seq, len, f3h(p, len));
-#endif
 	cg_rlcw_add(c->f3w, seq, p, (uint16_t)(len > CG_SYM_PLEN ? CG_SYM_PLEN : len), now_us);
 	/* the parity the server asks for again comes from this window too
 	 * (on_parq): without the rescue ring, the rescue's budget grows here */

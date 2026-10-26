@@ -1782,16 +1782,6 @@ static void fec_deliver(struct server *s, int *nq, struct session *S, uint32_t s
 	 * Refused, it is not marked (the packet itself, or the rescue's, may
 	 * still come), the ring forgets it and the RLC's equations, which may
 	 * hold it already, go. */
-#ifdef CG_F3_DEBUG
-	{
-		static FILE *f;
-		uint32_t hh = 2166136261u;
-
-		if (!f) f = fopen("/tmp/f3srv.txt", "w");
-		for (unsigned i = 0; i < len; i++) hh = (hh ^ p[i]) * 16777619u;
-		if (f) fprintf(f, "R %u %u %08x\n", seq, len, hh);
-	}
-#endif
 	rb = cg_rebuilt_check(s->native, p, len);
 	if (rb == CG_RB_OK) {
 		S->rb_ok++;
@@ -2244,16 +2234,6 @@ static void listen_read(struct server *s, struct lane *ln)
 				/* Kept for the parities (fec.h); one waiting for
 				 * this packet may rebuild another now. */
 				int k = cg_fec_rx_put(S->fec, h.seq, b + CG_HDR_LEN, (uint16_t)(len - CG_HDR_LEN));
-#ifdef CG_F3_DEBUG
-				{
-					static FILE *f;
-					uint32_t hh = 2166136261u;
-
-					if (!f) f = fopen("/tmp/f3srvd.txt", "w");
-					for (size_t q = CG_HDR_LEN; q < len; q++) hh = (hh ^ b[q]) * 16777619u;
-					if (f) fprintf(f, "%u %zu %08x\n", h.seq, len - CG_HDR_LEN, hh);
-				}
-#endif
 
 				up_deliver(s, &nq, S, &h, b + CG_HDR_LEN, len - CG_HDR_LEN, rs, now32);
 				fec_try(s, &nq, S, k, h.link, h.ts, now32, now_ms);
