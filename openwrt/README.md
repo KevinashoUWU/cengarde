@@ -610,7 +610,7 @@ de reparación** (historia 026):
   los demás, y con un solo enlace se rehacen las pérdidas sueltas.
 - **Datos de reparación (% de la subida)** (`fec_pct`, 20 si se deja vacío):
   lo más que va en reparaciones, todo durante 30 s después de que un enlace se
-  detiene o pierde en ráfaga, y con pérdidas sueltas 20 veces la pérdida;
+  detiene o pierde en ráfaga, y con pérdidas sueltas 25 veces la pérdida;
   cuesta lo mismo de la capacidad de los enlaces; más rehace detenciones más
   largas.
 - **Datos de reparación sin pérdidas** (`fec_pct_min`, 0): la parte cuando

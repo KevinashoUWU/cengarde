@@ -265,7 +265,7 @@ msgstr ""
 msgid "Repair data (% of the upload)"
 msgstr ""
 
-msgid "The most of the bytes that goes in repairs: all of it for 30 s after an uplink stalls or loses a burst, and with scattered losses 20 times the loss up to it. More rebuilds longer stalls (an uplink of four stalling 50 ms needs about 25 %) and costs as much of the capacity of the uplinks."
+msgid "The most of the bytes that goes in repairs: all of it for 30 s after an uplink stalls or loses a burst, and with scattered losses 25 times the loss up to it. More rebuilds longer stalls (an uplink of four stalling 50 ms needs about 25 %) and costs as much of the capacity of the uplinks."
 msgstr ""
 
 msgid "Repair data when nothing is lost (%)"

@@ -267,8 +267,8 @@ msgstr "Ventana deslizante RLC (FEC v3)"
 msgid "Repair data (% of the upload)"
 msgstr "Datos de reparación (% de la subida)"
 
-msgid "The most of the bytes that goes in repairs: all of it for 30 s after an uplink stalls or loses a burst, and with scattered losses 20 times the loss up to it. More rebuilds longer stalls (an uplink of four stalling 50 ms needs about 25 %) and costs as much of the capacity of the uplinks."
-msgstr "Lo más de los bytes que va en reparaciones: todo durante 30 s después de que un enlace se detiene o pierde en ráfaga, y con pérdidas sueltas 20 veces la pérdida hasta ese tope. Más rehace detenciones más largas (un enlace de cuatro detenido 50 ms necesita cerca de 25 %) y cuesta lo mismo de la capacidad de los enlaces."
+msgid "The most of the bytes that goes in repairs: all of it for 30 s after an uplink stalls or loses a burst, and with scattered losses 25 times the loss up to it. More rebuilds longer stalls (an uplink of four stalling 50 ms needs about 25 %) and costs as much of the capacity of the uplinks."
+msgstr "Lo más de los bytes que va en reparaciones: todo durante 30 s después de que un enlace se detiene o pierde en ráfaga, y con pérdidas sueltas 25 veces la pérdida hasta ese tope. Más rehace detenciones más largas (un enlace de cuatro detenido 50 ms necesita cerca de 25 %) y cuesta lo mismo de la capacidad de los enlaces."
 
 msgid "Repair data when nothing is lost (%)"
 msgstr "Datos de reparación sin pérdidas (%)"

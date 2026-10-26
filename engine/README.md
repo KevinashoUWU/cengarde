@@ -569,11 +569,12 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
     reparaciones hasta `rescue_code_ms`.
     - **`fec_pct` (20; 1–50):** las reparaciones, % de los bytes de DATA, como mucho (10 en un Starlink solo, 33 para detenciones de 100–200 ms con cuatro enlaces).
     - **`fec_pct_min` (0; 0–50):** la parte sin pérdida que la pida. Con
-      evidencia de muestras bajo la capacidad del enlace y sin cola (esta y la
-      anterior): tras una ráfaga (5 % o más en una muestra: una detención, un
-      corte), `fec_pct` por 30 s; con pérdida al azar, `fec_pct_min` más 20
-      veces la pérdida por 120 s; la pérdida de un enlace lleno o con cola no
-      cuenta (TCP desbordándolo). Igual a `fec_pct`: la parte fija.
+      evidencia de muestras sin cola (esta y la anterior): tras una ráfaga (5 %
+      o más en una muestra: una detención, un corte), `fec_pct` por 30 s; con
+      pérdida al azar bajo la capacidad del enlace, `fec_pct_min` más 25 veces
+      la pérdida por 120 s; los primeros 10 s, `fec_pct`; la pérdida de un
+      enlace con cola o lleno no cuenta (TCP desbordándolo). Igual a
+      `fec_pct`: la parte fija.
     - **`fec_window_ms` (300; 10–1000):** hasta dónde alcanza una
       reparación (una de cada dos cubre solo su último cuarto); como mucho
       1024 secuencias.
