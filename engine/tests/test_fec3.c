@@ -322,6 +322,14 @@ static void test_f3_mix(void)
 	f.ins_q10 = 1024; /* all of them: the floor */
 	CHECK_EQ(cg_f3_pct(&f, 0x1, 0, 20, 4, 200), 4);
 	CHECK_EQ(cg_f3_pct(&f, 0x1, 0, 20, 20, 200), 20); /* a fixed share stays */
+	/* random loss: on a lone link scaled, over several links whole */
+	f.burst_ms[0] = 0;
+	f.srand_ms[0] = f.srand_ms[1] = 150;
+	f.loss16[0] = f.loss16[1] = 8 * 16;
+	f.w[0] = f.w[1] = 1000;
+	f.ins_q10 = 1024;
+	CHECK_EQ(cg_f3_pct(&f, 0x1, 0, 20, 0, 200), 0);
+	CHECK_EQ(cg_f3_pct(&f, 0x3, 0, 20, 0, 200), 20);
 	/* the port: TCP's destination (or source) port, IPv4 with options, IPv6 */
 	v4[22] = 0x1e;
 	v4[23] = 0x79; /* destination 7801 */
