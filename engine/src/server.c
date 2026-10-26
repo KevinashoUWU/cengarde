@@ -2605,7 +2605,7 @@ static void sf3_repair(struct server *s, struct session *S, uint64_t now_us)
 		if (!(S->df3_links >> i & 1) || !S->path[i].used)
 			continue;
 		if (cg_f3_guard(S->cap[i].ql_us, (uint32_t)win,
-				cg_cap_rescue_w(&S->cap[i], s->cfg->rescue_target_ms * 1000) < CG_CAP_W_ONE / 2)) {
+				!cg_cap_rescue_w(&S->cap[i], s->cfg->rescue_target_ms * 1000))) {
 			S->df3_guarded++;
 			continue;
 		}
