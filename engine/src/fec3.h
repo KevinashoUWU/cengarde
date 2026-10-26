@@ -170,16 +170,15 @@ static inline uint64_t cg_f3_span_us(struct cg_f3 *f, uint64_t window_us)
 	return s > CG_F3_SHORT_MIN_US ? s : CG_F3_SHORT_MIN_US;
 }
 
-/* Whether link i may not carry repairs: it has no room (full: capacity.h's
- * rescue weight, from where its queue will be in a second, under half:
- * past 2.5 x rescue_target_ms), or its queue over the minute's minimum
- * (ql_us, -1: none measured) is past the window, where a repair comes
- * after the gaps it covers were given up. The repairs fill what the links
- * leave: under a sender that fills them anyway (BBR keeps its rate through
- * loss) they only took its capacity and queued in front of everything
- * (story 026: 20 % of repairs cost BBR 12-17 % of its throughput and took
- * the 1200-byte ping's p99 from 137 to 310-390 ms), while a loss-bound
- * sender (cubic losing 1 % at random) leaves room and gets them. */
+/* Whether link i may not carry repairs: it is full (full: capacity.h's
+ * rescue weight, from where its queue will be in a second, is 0: past 4 x
+ * rescue_target_ms, where what it loses is congestion and a choked link's
+ * queue would only grow with repairs), or its queue over the minute's
+ * minimum (ql_us, -1: none measured) is past the window, where a repair
+ * comes after the gaps it covers were given up. (Half the weight, 2.5 x
+ * the target, also cut the repairs a loss-bound cubic needs while it
+ * fills a lone link, and did not catch BBR, whose queue stays small while
+ * the repairs take its capacity: story 026.) */
 static inline int cg_f3_guard(int32_t ql_us, uint32_t window_us, int full)
 {
 	return full || (ql_us >= 0 && (uint32_t)ql_us > window_us);

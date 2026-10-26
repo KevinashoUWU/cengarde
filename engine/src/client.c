@@ -2154,7 +2154,7 @@ static void f3_repair(struct client *c, uint64_t now_us)
 		if (!(c->f3_links >> i & 1) || c->link[i].fd < 0)
 			continue;
 		if (cg_f3_guard(c->cap[i].ql_us, (uint32_t)win,
-				cg_cap_rescue_w(&c->cap[i], c->cfg->rescue_target_ms * 1000) < CG_CAP_W_ONE / 2)) {
+				!cg_cap_rescue_w(&c->cap[i], c->cfg->rescue_target_ms * 1000))) {
 			c->f3_guarded++;
 			continue;
 		}
