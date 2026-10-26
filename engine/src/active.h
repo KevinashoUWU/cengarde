@@ -178,10 +178,12 @@ static inline void cg_act_rx_forget(struct cg_act_rx *a)
 	a->fresh = 0;
 }
 
-/* Whether a mask is in force at now_us (taken, and not stale). */
+/* Whether a mask is in force at now_us (taken, and not stale). A caller's
+ * clock a little behind the one the mask was taken by (a batch's read
+ * time) still finds it in force. */
 static inline int cg_act_rx_on(const struct cg_act_rx *a, uint64_t now_us)
 {
-	return a->have && now_us - a->at_us < CG_ACT_STALE_US;
+	return a->have && (int64_t)(now_us - a->at_us) < (int64_t)CG_ACT_STALE_US;
 }
 
 /* Whether link l is open at now_us: the peer may be sending on it now. */

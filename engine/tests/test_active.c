@@ -180,8 +180,10 @@ static void test_rx(void)
 	/* evidence on link 16 or a prev of -1: nothing */
 	CHECK_EQ(cg_act_rx_data(&a, 16, ts + 520 * MS, -1, now), 0);
 
-	/* Stale: no mask for CG_ACT_STALE_US, every link open again. */
+	/* Stale: no mask for CG_ACT_STALE_US, every link open again; a clock a
+	 * little behind the mask's still finds it. */
 	CHECK(!cg_act_rx_open(&a, 1, now));
+	CHECK(!cg_act_rx_open(&a, 1, now - 5 * MS));
 	CHECK(cg_act_rx_open(&a, 1, now + CG_ACT_STALE_US));
 	CHECK_EQ(cg_act_rx_rset(&a, &ro, margin, 0x7, now + CG_ACT_STALE_US, ts + off + 5000 * MS), 0x7);
 
