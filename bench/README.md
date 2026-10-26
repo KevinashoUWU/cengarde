@@ -61,7 +61,7 @@ sudo bench/lab.sh mtlat    # latencia y CPU de legacy, off, on y on con busy_pol
 sudo bench/lab.sh soak     # 1 h por modo (off y on): tráfico variado, pérdidas, enlaces que caen, recargas (lab.d, a mano)
 sudo bench/lab.sh reorder  # el reordenador del receptor y el reparto (paso 1 de la Fase 5): IMIX con desbordes y cabeza de línea; sin ellos en el motor, "skip" (lab.d, a mano)
 bench/bin/robench          # ns por paquete de engine/src/reorder.h solo: en orden, 50/50 con 50 ms de diferencia, IMIX con bypass y desborde (1 s, sin root)
-bench/bin/fecbench         # µs por paquete de los códigos de redund_spare (historia 021): XOR, Reed-Solomon (Leopard) y RLC, codificar y decodificar (sin root)
+bench/bin/fecbench         # µs por paquete de los códigos de redund_spare (historia 021): XOR, Reed-Solomon (Leopard) y RLC, codificar y decodificar; y la FEC v3 (historia 026) a 50 y 100 Mbit/s, con y sin los 16 bytes de SSSE3/NEON (sin root)
 sudo CLIENT_EXTRA="link_threads = on" bench/lab.sh ci   # el ci con los hilos por enlace (el CI corre legacy, off y on)
 
 sudo ENGINE=go bench/lab.sh build  # además, el engarde Go (normal y -race)
@@ -429,6 +429,11 @@ tasa y una cola de 100 ms a esa tasa.
 | `sigrand` | 50/20 perdiendo 2 % al azar; 50/30 | flujo de 20 Mbit/s (`BOND_RATE`, si no se da): pérdida aleatoria sin cola, l1 debe leer `loss_kind` `random` (`linksig.h`, historia 018); no está en la lista por defecto |
 | `sigdeep` | 10/25 con 1 s de cola; 20/25 con 200 ms | TCP sin tope llena las dos colas: `queue_owner` `mine`, `loss_kind` `congestive` en l1; no está en la lista por defecto |
 | `sigothers` | 20/25 con 500 ms de cola; 20/30 | flujo de 8 Mbit/s; a la mitad, l1 baja a 5 Mbit/s (otros se llevan la celda): `queue_owner` `others`; no está en la lista por defecto |
+| `stall50`, `stall100`, `stall200` | 4 × 20 Mbit/s, 25, 27, 30 y 33 ms | l2 deja de pasar todo, en los dos sentidos, 50, 100 o 200 ms cada 2 s (`stall.py`: tc en modo lote, una detención de 50 ms dura 50 ms); el caso de la FEC v3 (historia 026); no está en la lista por defecto |
+| `stallr50`, `stallr100`, `stallr200` | como `stall50` | lo mismo a 1–4 s al azar de la detención anterior, con el sorteo de `ltespikerand`; no está en la lista por defecto |
+| `single1` | 40/20 (un solo enlace) | pierde el 1 % al azar en los dos sentidos (la pérdida suelta de una radio, el 0,3–1,3 % de Starlink); no está en la lista por defecto |
+| `singlecut` | como `single1` | con un microcorte: 60 % perdido 2 s a la mitad de la corrida; no está en la lista por defecto |
+| `singleclean` | 40/20, sin pérdida | lo que la FEC v3 le cuesta a un enlace limpio (su puerta, `fec_single = auto`); no está en la lista por defecto |
 
 Así queda medido lo que hoy da la redundancia (cada paquete por todos los
 enlaces, gana la primera copia) y, en `equal` y `het`, lo que daría el mejor
@@ -752,6 +757,7 @@ python3 -I bench/labq.py plan plan.json -j 4               # los trabajos, en or
 python3 -I bench/labq.py run plan.json -j 4 --out /tmp/cmp  # compila, corre; otra vez: sigue donde quedó
 python3 -I bench/bondtab.py table /tmp/cmp/all.jsonl --ref base   # cada brazo frente a base
 python3 -I bench/bondtab.py table /tmp/cmp/idle50.jsonl           # un brazo solo
+python3 -I bench/fectab.py /tmp/cmp/all.jsonl --ref base          # las tablas de la FEC (historia 026): n, caudal y p de Mann-Whitney, retardos, perdidos, rehechos, bytes de reparación por byte útil
 # lo mismo sin archivo:
 python3 -I bench/labq.py run --arm base=origin/master --arm idle50=HEAD \
   --client idle50='reorder_idle_ms = 50' --cases equal,het --reps 8 --secs 30 -j 4 --out /tmp/cmp
