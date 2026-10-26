@@ -598,7 +598,10 @@ de reparación** (historia 026):
 
 - **Datos de reparación (FEC)** (`fec`): paquetes de reparación junto con los
   datos, para que el VPS rehaga lo que pierde un enlace sin pedirlo. El VPS
-  necesita `sudo cengarde-vps-setup fec on`. Reinicia el motor.
+  necesita `sudo cengarde-vps-setup fec on`. Reinicia el motor. Con `fec rlc`
+  en el VPS, también la bajada lleva reparaciones de la FEC v3 y el router
+  las rehace con esta opción encendida (*Estado*: «Rehechos con las
+  reparaciones del VPS»).
 - **Código de reparación** (`fec_code`): *Paridad XOR* (una paridad por
   grupo de paquetes repartidos, rehace una pérdida por grupo) o *Ventana
   deslizante RLC (FEC v3)*: reparaciones sobre todo lo enviado en los

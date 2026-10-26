@@ -7,7 +7,7 @@ archivos:
 
 # `fec`
 
-Paridad XOR de cada grupo de DATA repartido, o con `fec_code = rlc` la ventana deslizante de la FEC v3. En el servidor, también la memoria con la que usa las paridades y las reparaciones de `redund_spare` (`parity`, `mix`, `rs`, `rlc`) y de la FEC v3 (el anillo de 2048 DATA y las ecuaciones: ~5 MB por sesión).
+Paridad XOR de cada grupo de DATA repartido, o con `fec_code = rlc` la ventana deslizante de la FEC v3. En el servidor, también la memoria con la que usa las paridades y las reparaciones de `redund_spare` (`parity`, `mix`, `rs`, `rlc`) y de la FEC v3 (el anillo de 2048 DATA y las ecuaciones: ~5 MB por sesión). En el router, con un servidor que manda reparaciones en la bajada (`fec_code = rlc` allí), el mismo anillo y las ecuaciones para rehacerlas.
 
 - **Sección:** global
 - **Extremo:** los dos
