@@ -121,6 +121,7 @@ struct peer {
 	uint8_t used, app;
 	uint32_t reo_us; /* RACK's window beyond min_rtt / 4: protocontroller_reo_ms, widened by duplicates */
 	uint64_t dups;   /* ACKs that said a duplicate came */
+	uint32_t horizon_us; /* the engine's repair horizon toward this peer (ops.horizon, task #77) */
 	struct cg_scc cc;
 	struct cg_lowd lo; /* what each link adds to this peer's messages' delay, as they come (linkowd.h) */
 };
@@ -1130,7 +1131,7 @@ static void data_in(struct cg_pctl *p, struct flow *f, const struct cg_pctl_msg 
  * (streamcc.h's cg_scc_lossw): then protocontroller_reo_ms. */
 static uint32_t peer_reo(const struct cg_pctl *p, const struct peer *r)
 {
-	return r->cc.heavy ? p->cfg.reo_ms * 1000 : r->reo_us;
+	return cg_scc_reo_win(p->cfg.reo_ms * 1000, r->reo_us, r->horizon_us, r->cc.heavy);
 }
 
 /* The timer: rto after the oldest SENT segment's last transmission (a
@@ -1722,6 +1723,7 @@ void cg_pctl_tick(struct cg_pctl *p)
 			continue;
 		p->ops.hint(p->ops.ctx, i, r->sid, &bps, &full);
 		cg_scc_hint(&r->cc, bps, full);
+		r->horizon_us = p->ops.horizon ? p->ops.horizon(p->ops.ctx, i, r->sid) : 0;
 		if (r->reo_us > p->cfg.reo_ms * 1000 + PCTL_REO_DECAY_US)
 			r->reo_us -= PCTL_REO_DECAY_US;
 		else
@@ -1985,6 +1987,7 @@ void cg_pctl_json(const struct cg_pctl *p, struct cg_json *j)
 		cg_json_u64(j, "congested", c->n_cong);
 		cg_json_u64(j, "cuts", c->n_cut);
 		cg_json_u64(j, "rebases", c->n_rebase);
+		cg_json_ms(j, "horizon_ms", p->pr[i].horizon_us); /* the engine's repair horizon (task #77) */
 		/* what each link adds to the delay of what comes from this peer
 		 * (linkowd.h): taken off before the ACK's least */
 		{

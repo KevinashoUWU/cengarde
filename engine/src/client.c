@@ -2554,6 +2554,21 @@ static void pctl_send(void *ctx, uint32_t peer, uint32_t sid, uint8_t *const *ms
  * delivers). Full: the engine found that capacity under a standing queue
  * (CG_CAP_CUT_FULL), so it is what the link carries and no more; a loss
  * cut (a microcut) is not a ceiling, the ARQ answers loss. */
+/* The protocontroller's repair horizon for the upload (task #77, protoctlio.h's
+ * ops.horizon): while the code sends repairs (FEC v3 with a share now, or
+ * redund_spare's codes), how long a hole may wait at the VPS for them and
+ * for the NACK after them (its rescue_code_ms and rescue wait, taken as
+ * ours: the two ends are set alike); 0 without a code now. */
+static uint32_t pctl_horizon(void *ctx, uint32_t peer, uint32_t sid)
+{
+	struct client *c = ctx;
+	int code = (f3_on(c) && c->f3.mode != CG_F3_OFF && c->f3.pct) || c->cfg->redund_spare >= 2;
+
+	(void)peer;
+	(void)sid;
+	return code ? (c->cfg->rescue_code_ms + cg_rescue_wait_ms(c->cfg)) * 1000 : 0;
+}
+
 static void pctl_hint(void *ctx, uint32_t peer, uint32_t sid, uint64_t *bps, int *full)
 {
 	struct client *c = ctx;
@@ -5376,7 +5391,7 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 					  * redundancy's spare carries (parity, rs, rlc) */
 					 .code_ms = cfg->fec || cfg->redund_spare >= 2 ? cfg->rescue_code_ms : 0,
 					 .mode = cfg->protocontroller };
-		struct cg_pctl_ops ops = { .ctx = c, .send = pctl_send, .hint = pctl_hint };
+		struct cg_pctl_ops ops = { .ctx = c, .send = pctl_send, .hint = pctl_hint, .horizon = pctl_horizon };
 
 		snprintf(pc.mid_cc, sizeof(pc.mid_cc), "%s", cfg->protocontroller_mid_cc);
 		if (cfg->protocontroller == CG_PCTL_A && pctl_vps_addr(cfg, &pc.a_peer, err, sizeof(err)) < 0) {

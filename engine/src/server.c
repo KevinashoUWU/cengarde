@@ -2845,6 +2845,22 @@ static void pctl_send(void *ctx, uint32_t peer, uint32_t sid, uint8_t *const *ms
 /* The download capacity of the paths that carry session peer's streams
  * (capacity.h), bytes/s: split, the sum; else the largest carrier; full
  * as the client's pctl_hint (CG_CAP_CUT_FULL on all of them). */
+/* The protocontroller's repair horizon for a session's download (task #77,
+ * protoctlio.h's ops.horizon): while FEC v3 sends it repairs with a share
+ * now, how long a hole may wait at the router for them and for the NACK
+ * after them; 0 without. */
+static uint32_t pctl_horizon(void *ctx, uint32_t peer, uint32_t sid)
+{
+	struct server *s = ctx;
+	const struct session *S;
+
+	if (peer >= s->cap || !(S = &s->s[peer])->used || S->id != sid)
+		return 0;
+	return sf3_on(s, S) && S->df3.mode != CG_F3_OFF && S->df3.pct
+		       ? (s->cfg->rescue_code_ms + cg_rescue_wait_ms(s->cfg)) * 1000
+		       : 0;
+}
+
 static void pctl_hint(void *ctx, uint32_t peer, uint32_t sid, uint64_t *bps, int *full)
 {
 	struct server *s = ctx;
@@ -4603,7 +4619,7 @@ int cg_server_run(struct cg_config *cfg, const struct cg_run *run)
 					 /* the download's code: the spatial parity or FEC v3 */
 					 .code_ms = cfg->fec ? cfg->rescue_code_ms : 0,
 					 .peers = s->cap };
-		struct cg_pctl_ops ops = { .ctx = s, .send = pctl_send, .hint = pctl_hint };
+		struct cg_pctl_ops ops = { .ctx = s, .send = pctl_send, .hint = pctl_hint, .horizon = pctl_horizon };
 
 		snprintf(pc.cc, sizeof(pc.cc), "%s", cfg->protocontroller_cc);
 		snprintf(pc.mid_cc, sizeof(pc.mid_cc), "%s", cfg->protocontroller_mid_cc);

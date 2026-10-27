@@ -714,4 +714,25 @@ static inline uint32_t cg_scc_reo_cap(uint32_t base_us, uint32_t code_us)
 	return cap > base_us ? cap : base_us;
 }
 
+#define CG_SCC_HORIZON_MAX_US 1000000u /* the engine's repair horizon, at most */
+
+/* RACK's window beyond min_rtt / 4 for a peer (task #77): reo_us, what
+ * duplicates widened (cg_scc_reo_cap); with the engine's repair horizon
+ * (horizon_us: its code sends repairs now; 0: none), at least that from the
+ * start. A hole a code covers is rebuilt, or the receiver asks for it and
+ * its NACK tells the stream (cg_st_tx_nack): RACK only stands in for a NACK
+ * lost. Before, RACK waited at most the code's 100 ms and learnt it from
+ * duplicates; a stall's repairs take longer (s T / (r (1 - s)), story 026,
+ * ~170 ms), and nearly every RACK retransmission came back a duplicate
+ * (lossy 940 of 940, stall50 3918 of 4576, the code rebuilding thousands).
+ * Heavy loss (the code does not keep up): base_us, as before. */
+static inline uint32_t cg_scc_reo_win(uint32_t base_us, uint32_t reo_us, uint32_t horizon_us, int heavy)
+{
+	if (heavy)
+		return base_us;
+	if (horizon_us > CG_SCC_HORIZON_MAX_US)
+		horizon_us = CG_SCC_HORIZON_MAX_US;
+	return reo_us > horizon_us ? reo_us : horizon_us;
+}
+
 #endif
