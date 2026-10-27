@@ -99,8 +99,8 @@ static struct simres sim(uint64_t bps, uint32_t rtt_us, uint32_t qmax_us, uint32
 
 
 /* A path that changes under the stream at sw_us (the engine moves its data
- * to another link): before, a (bytes/s, one-way delay, queue), after, b;
- * the ACKs come back in back_us and carry each segment's one-way delay (the
+ * to another link): before, a (bytes/s, one-way delay, queue), after, b,
+ * with one segment in trickle (0: none) still by a; the ACKs come back in back_us and carry each segment's one-way delay (the
  * receiver's clock 5 s off ours), as protoctl.c's. Returns what was
  * delivered per second over the last half, the largest queue after the
  * switch, and the rate at the end. */
@@ -109,8 +109,8 @@ struct pathx {
 	uint32_t owd_us, qmax_us;
 };
 
-static struct simres sim_switch(struct pathx a, struct pathx b, uint64_t sw_us, uint32_t back_us, uint32_t secs,
-				struct cg_scc *out)
+static struct simres sim_switch(struct pathx a, struct pathx b, uint64_t sw_us, uint32_t trickle, uint32_t back_us,
+				uint32_t secs, struct cg_scc *out)
 {
 	struct cg_scc p;
 	struct cg_scc_cfg c = { .queue_us = 5000, .mss = 1200 };
@@ -119,7 +119,7 @@ static struct simres sim_switch(struct pathx a, struct pathx b, uint64_t sw_us, 
 		uint64_t sent, at, ack_at, dl, dla, dl_us, ss;
 		int lost, q;
 	} f[SIM_Q];
-	uint32_t head = 0, n = 0;
+	uint32_t head = 0, n = 0, k = 0;
 	uint64_t now = 0, free_a = 0, free_b = 0, delivered = 0, end = (uint64_t)secs * 1000000;
 
 	cg_scc_init(&p, 0);
@@ -143,8 +143,9 @@ static struct simres sim_switch(struct pathx a, struct pathx b, uint64_t sw_us, 
 		cg_scc_refill(&p, &c, now);
 		while (cg_scc_may(&p, &c, 0) && n < SIM_Q) {
 			uint32_t i = (head + n) % SIM_Q;
-			const struct pathx *x = now < sw_us ? &a : &b;
-			uint64_t *lf = now < sw_us ? &free_a : &free_b;
+			int on_a = now < sw_us || (trickle && ++k % trickle == 0);
+			const struct pathx *x = on_a ? &a : &b;
+			uint64_t *lf = on_a ? &free_a : &free_b;
 			uint64_t q = *lf > now ? *lf - now : 0, tx = 1200 * 1000000 / x->bps;
 
 			f[i].sent = now;
@@ -154,7 +155,7 @@ static struct simres sim_switch(struct pathx a, struct pathx b, uint64_t sw_us, 
 			f[i].ss = p.sent;
 			f[i].q = p.qnow || p.cong;
 			f[i].lost = 0;
-			if (now >= sw_us && q > res.qmax)
+			if (!on_a && q > res.qmax)
 				res.qmax = q;
 			if (q > x->qmax_us) {
 				f[i].lost = 1;
@@ -347,26 +348,35 @@ void test_streamcc(void)
 		struct pathx sl = { 7500000, 10000, 15000 }, cell = { 625000, 25000, 2000000 };
 		struct cg_scc q;
 
-		r = sim_switch(sl, cell, 50000, 10000, 4, &q);
+		r = sim_switch(sl, cell, 50000, 0, 10000, 4, &q);
 		CHECK(r.goodput > 625000 * 3 / 4); /* before: 60 000, the floor */
 		CHECK(r.qmax < 300000); /* STARTUP's overshoot, drained: never the 2 s */
 		CHECK(q.n_rebase >= 1);
+		/* a packet now and then still by the shorter link (one in 40 to
+		 * 160): the base falls to it only when windows in a row find it, or
+		 * each one set it back and the stream's own delay read as a queue
+		 * again (before: 17 moves of the base, a quarter of the link) */
+		for (uint32_t t = 40; t <= 160; t *= 2) {
+			r = sim_switch(sl, cell, 50000, t, 10000, 6, &q);
+			CHECK(r.goodput > 625000 * 85 / 100);
+			CHECK(q.n_rebase <= 2);
+		}
 		/* only the delay changes (another link as fast): the same */
 		cell.bps = 7500000;
 		cell.qmax_us = 15000;
-		r = sim_switch(sl, cell, 50000, 10000, 4, &q);
+		r = sim_switch(sl, cell, 50000, 0, 10000, 4, &q);
 		CHECK(r.goodput > 7500000 * 85 / 100);
 		CHECK(q.n_rebase >= 1);
 		/* the stream's own queue (a deep one, STARTUP's overshoot) drains
 		 * under the cuts: no move of the base */
 		cell = (struct pathx){ 625000, 25000, 2000000 };
-		r = sim_switch(cell, cell, 0, 10000, 6, &q);
+		r = sim_switch(cell, cell, 0, 0, 10000, 6, &q);
 		CHECK(r.goodput > 625000 * 85 / 100);
 		CHECK(r.qmax < 300000);
 		CHECK_EQ(q.n_rebase, 0);
 		/* the shorter link after the longer: the base falls at once (the
 		 * rate grows by PROBE's cycle) */
-		r = sim_switch((struct pathx){ 625000, 25000, 2000000 }, sl, 1000000, 10000, 4, &q);
+		r = sim_switch((struct pathx){ 625000, 25000, 2000000 }, sl, 1000000, 0, 10000, 4, &q);
 		CHECK(r.goodput > 625000 * 2);
 		CHECK_EQ(q.n_rebase, 0);
 		CHECK_EQ(q.n_cut, 0);
@@ -401,6 +411,26 @@ void test_streamcc(void)
 		CHECK(!cg_scc_stuck(&q, &c5, t + hold, 38000));        /* fell 2 ms: draining */
 		CHECK(!cg_scc_stuck(&q, &c5, t + hold + hold / 2, 37000));
 		CHECK_EQ(q.n_rebase, 0);
+		/* a shorter path: one packet by it does not lower the base, two
+		 * windows in a row do (to the larger of their least) */
+		cg_scc_init(&q, 0);
+		cg_scc_owd(&q, &c5, t, 27000);
+		cg_scc_ack(&q, &c5, t, 1200, 1, 1, 0, t - 20000, 0, 0, t - 20000, 0);
+		cg_scc_owd(&q, &c5, t + 30000, 10000);
+		CHECK_EQ(q.owd_base, 27000);
+		cg_scc_ack(&q, &c5, t + 30000, 1200, 1, 1, 0, t + 10000, 0, 0, t + 10000, 0);
+		CHECK_EQ(q.owd_base, 27000);
+		cg_scc_owd(&q, &c5, t + 60000, 27000);
+		cg_scc_ack(&q, &c5, t + 60000, 1200, 1, 1, 0, t + 40000, 0, 0, t + 40000, 0);
+		cg_scc_owd(&q, &c5, t + 90000, 10000);
+		cg_scc_ack(&q, &c5, t + 90000, 1200, 1, 1, 0, t + 70000, 0, 0, t + 70000, 0);
+		CHECK_EQ(q.owd_base, 27000);
+		cg_scc_owd(&q, &c5, t + 120000, 10100);
+		cg_scc_ack(&q, &c5, t + 120000, 1200, 1, 1, 0, t + 100000, 0, 0, t + 100000, 0);
+		CHECK_EQ(q.owd_base, 10100);
+		/* a small fall (within queue_us) lowers it at once */
+		cg_scc_owd(&q, &c5, t + 130000, 8000);
+		CHECK_EQ(q.owd_base, 8000);
 		/* the offset wraps the 32 bits */
 		cg_scc_init(&q, 0);
 		q.owd_base = INT32_MAX - 5000;

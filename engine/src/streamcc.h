@@ -14,7 +14,9 @@
  *   stays under queue_us (cg_scc_lost). The queue is the forward one-way
  *   delay the receiver reports (cg_scc_owd) over its minimum, the least
  *   sample of each window of a round trip (a queue moves every sample up,
- *   a lost packet's copy that came late by a slower link only some); with
+ *   a lost packet's copy that came late by a slower link only some; the
+ *   minimum falls by more than queue_us only when windows in a row find
+ *   the shorter path, not for a packet now and then by it); with
  *   no report, the round trip over min_rtt. Random loss is
  *   bytes the path took (up to 3 lost for 1 delivered). A sample whose
  *   round trip is over that counts the
@@ -83,6 +85,7 @@
 #define CG_SCC_STUCK_ROUNDS 4u   /* a queue not drained over this many round trips (and 4 times its depth) is not
 				  * the stream's (cg_scc_stuck) */
 #define CG_SCC_STUCK_TOL_US 500u /* the least fall of the queue that says it drains */
+#define CG_SCC_LOW_WINS 2u       /* windows in a row that find a shorter path before the base falls to it */
 
 enum { CG_SCC_STARTUP_M = 0, CG_SCC_DRAIN_M, CG_SCC_PROBE_M };
 
@@ -121,6 +124,11 @@ struct cg_scc {
 	uint64_t qr_t;
 	int32_t qr_ref, qr_min;
 	uint64_t n_rebase; /* runs whose queue did not drain: the base moved up */
+	/* windows in a row whose least delay was under the base by more than
+	 * queue_us (another, shorter path: cg_scc_owd), and the larger of their
+	 * least */
+	uint8_t low_n;
+	int32_t low_ow;
 	uint64_t inflight;  /* bytes in flight over all streams (the caller's) */
 	uint64_t hint;      /* the engine's capacity for the data, bytes/s; 0: none */
 	uint8_t hint_full;  /* the engine sees those links queued */
@@ -265,8 +273,9 @@ static inline void cg_scc_filter(struct cg_scc *p, uint64_t now, uint64_t rate, 
  * others hold a queue the stream cannot empty (cutting more only starves
  * it). The base moves up to the run's least, and STARTUP goes again from
  * the estimate it has (the path changed, as after idle): a queue of its
- * own on the new path shows over the new base. A sample under the base
- * still lowers it at once (cg_scc_owd). Returns 1 when it moved. */
+ * own on the new path shows over the new base. A shorter path lowers it
+ * again once CG_SCC_LOW_WINS windows in a row find it (cg_scc_owd).
+ * Returns 1 when it moved. */
 static inline int cg_scc_stuck(struct cg_scc *p, const struct cg_scc_cfg *c, uint64_t now, int32_t ex)
 {
 	uint32_t tol = c->queue_us / 4 > CG_SCC_STUCK_TOL_US ? c->queue_us / 4 : CG_SCC_STUCK_TOL_US;
@@ -379,6 +388,19 @@ static inline void cg_scc_ack(struct cg_scc *p, const struct cg_scc_cfg *c, uint
 		if (p->have_owd) {
 			int32_t ex = (int32_t)((uint32_t)p->ow_min - (uint32_t)p->owd_base);
 
+			/* a shorter path, window after window: the base falls to it */
+			if (p->have_ow && ex < -(int32_t)c->queue_us) {
+				if (!p->low_n || (int32_t)((uint32_t)p->ow_min - (uint32_t)p->low_ow) > 0)
+					p->low_ow = p->ow_min;
+				if (++p->low_n >= CG_SCC_LOW_WINS) {
+					p->owd_base = p->low_ow;
+					p->owd_t = now;
+					p->low_n = 0;
+					ex = (int32_t)((uint32_t)p->ow_min - (uint32_t)p->owd_base);
+				}
+			} else {
+				p->low_n = 0;
+			}
 			p->cong = p->have_ow && ex > (int32_t)c->queue_us;
 			if (!p->cong)
 				p->qr_t = 0;
@@ -503,8 +525,16 @@ static inline void cg_scc_restart(struct cg_scc *p, uint64_t now)
  * before cg_scc_ack with the same ACK. */
 static inline void cg_scc_owd(struct cg_scc *p, const struct cg_scc_cfg *c, uint64_t now, int32_t owd)
 {
+	int32_t d = (int32_t)((uint32_t)owd - (uint32_t)p->owd_base);
+
 	p->owd_last = owd;
-	if (!p->have_owd || (int32_t)((uint32_t)owd - (uint32_t)p->owd_base) <= 0 || now - p->owd_t > CG_SCC_MINRTT_US) {
+	/* the base, the least of CG_SCC_MINRTT_US; a sample under it by more
+	 * than queue_us came by another, shorter path, and the base falls to
+	 * it only once windows in a row find it (cg_scc_ack): a packet now
+	 * and then by the Starlink-like link, among a stream the engine sends
+	 * by the cellular one, set it back each time, and the stream's own
+	 * delay read as a queue again (story 025, 2026-10-27) */
+	if (!p->have_owd || (d <= 0 && d >= -(int32_t)c->queue_us) || now - p->owd_t > CG_SCC_MINRTT_US) {
 		p->owd_base = owd;
 		p->owd_t = now;
 		p->have_owd = 1;
