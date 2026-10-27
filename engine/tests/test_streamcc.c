@@ -122,6 +122,15 @@ void test_streamcc(void)
 	CHECK(cg_scc_wait_us(&p) > 0);
 	CHECK(cg_scc_mul(UINT64_MAX / 2, 4, 2) == UINT64_MAX / 2 / 2 * 4);
 
+	/* how far duplicates widen RACK's window: the code's horizon (at most
+	 * 100 ms), 20 ms of reordering without a code, never under the base */
+	CHECK_EQ(cg_scc_reo_cap(10000, 0), CG_SCC_REO_NOCODE_US);
+	CHECK_EQ(cg_scc_reo_cap(10000, 60000), 60000);
+	CHECK_EQ(cg_scc_reo_cap(10000, 100000), 100000);
+	CHECK_EQ(cg_scc_reo_cap(10000, 1000000), CG_SCC_REO_MAX_US);
+	CHECK_EQ(cg_scc_reo_cap(50000, 0), 50000);
+	CHECK_EQ(cg_scc_reo_cap(50000, 30000), 50000);
+
 	/* the forward delay decides the queue: a round trip inflated by the
 	 * ACK's way back (its copies on a slow link) is no queue */
 	{

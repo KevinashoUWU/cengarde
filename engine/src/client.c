@@ -313,6 +313,7 @@ struct client {
 	struct cg_resc_budget resc_b;
 	uint64_t nacks_rx, resc_sent, resc_miss, resc_budget, resc_congested;
 	uint64_t resc_gone_tx, resc_gone_rx; /* CG_F_GONE said to the server; asked gaps it said were gone */
+	uint64_t resc_grit, resc_grit_bytes; /* asked for, a GRIT message: its loss to its stream, not sent again (story 025) */
 	/* The upload's parities (fec.h): the open group, and the parities of
 	 * the groups closed in this batch, sent after its DATA. */
 	struct cg_fec_tx fectx;
@@ -2916,9 +2917,13 @@ static int up_full(const struct client *c, unsigned i)
 	return cg_cap_full(&c->cap[i], c->cfg->rescue_target_ms * 1000, c->lm[i].rfull_hyst);
 }
 
+_Static_assert(CG_PCTL_LINKS == CG_MAX_LINKS && CG_PCTL_NOLINK == CG_RESC_NOLINK,
+	       "cg_pctl_nack takes the rescue ring's link as it is");
+
 /* A verified NACK from the server (rescue.h): each sequence the ring still
  * keeps goes again, within the budget, on the live link of least RTT;
- * not one lost on a full link. */
+ * not one lost on a full link, nor a GRIT message (its loss goes to its
+ * stream, cg_pctl_nack); what does not go again is said gone. */
 static void on_nack(struct client *c, uint8_t flags, const uint8_t *payload, size_t plen, uint64_t now_ms)
 {
 	uint32_t seq[CG_NACK_SEQ_MAX];
@@ -2978,6 +2983,18 @@ static void on_nack(struct client *c, uint8_t flags, const uint8_t *payload, siz
 		}
 		if (cg_resc_dup(&c->resc, c->resc_idx, seq[i], (uint32_t)now_ms))
 			continue;
+		/* a GRIT message (story 025): its stream retransmits what it
+		 * loses, so the loss goes to it, and the server stops waiting */
+		if (c->pctl) {
+			int k = cg_pctl_nack(c->pctl, 0, 0, e + CG_HDR_LEN, (size_t)len - CG_HDR_LEN, went);
+
+			if (k == CG_PCTL_NACK_DATA || k == CG_PCTL_NACK_ACK) {
+				c->resc_grit++;
+				c->resc_grit_bytes += len - CG_HDR_LEN;
+				gone[ngone++] = seq[i];
+				continue;
+			}
+		}
 		if (went < CG_MAX_LINKS && up_full(c, went)) {
 			c->resc_congested++;
 			gone[ngone++] = seq[i];
@@ -4511,6 +4528,9 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 	cg_json_u64(j, "congested", c->resc_congested);
 	cg_json_u64(j, "gone_sent", c->resc_gone_tx);
 	cg_json_u64(j, "gone_received", c->resc_gone_rx);
+	/* asked-for GRIT messages handed to their streams, not sent again */
+	cg_json_u64(j, "to_grit", c->resc_grit);
+	cg_json_u64(j, "to_grit_bytes", c->resc_grit_bytes);
 	cg_json_ms(j, "wait_ms", c->rocf.rescue_us);
 	cg_json_ms(j, "tcp_budget_ms", tcp_budget_us(c, now_ms * 1000));
 	cg_json_u64(j, "left_to_tcp", c->ask_tcp);
@@ -5352,6 +5372,9 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 					 .backlog_ms = cfg->protocontroller_backlog_ms,
 					 .dead_s = cfg->protocontroller_dead_s,
 					 .reo_ms = cfg->protocontroller_reo_ms,
+					 /* the upload's codes: the spatial parity or FEC v3, or what
+					  * redundancy's spare carries (parity, rs, rlc) */
+					 .code_ms = cfg->fec || cfg->redund_spare >= 2 ? cfg->rescue_code_ms : 0,
 					 .mode = cfg->protocontroller };
 		struct cg_pctl_ops ops = { .ctx = c, .send = pctl_send, .hint = pctl_hint };
 

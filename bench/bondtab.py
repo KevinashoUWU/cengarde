@@ -111,6 +111,16 @@ REPAIR += [k for k, _, _ in FEC3]
 # the hold cap itself.
 ACT = [("act_early", ("active", "early")), ("act_at_cap", ("active", "at_cap"))]
 REPAIR += [k for k, _ in ACT]
+# GRIT, the protocontroller's variant B (story 025): each end's stream
+# retransmissions and by why the segment was lost (RACK, the timer, the
+# tunnel's NACK handed over), the duplicate frames its receiver took, the
+# rescue's NACKs of its DATA by what they did, and the NACKed sequences the
+# rescue handed to GRIT instead of sending them again (to_grit).
+PCTL = [("g_retx", ("retx",)), ("g_rack", ("retx_by", "rack")), ("g_rto", ("retx_by", "rto")),
+        ("g_nack", ("retx_by", "nack")), ("g_dup", ("dup_frames",)), ("g_nlost", ("nacks", "lost")),
+        ("g_ndeliv", ("nacks", "delivered")), ("g_nstale", ("nacks", "stale")), ("g_npend", ("nacks", "pending")),
+        ("g_corrupt", ("corrupt",))]
+REPAIR += [k for k, _ in PCTL] + ["to_grit"]
 GAUGES = GAUGES + ("rlc_peak",)
 COUNTERS = [k for k in RO_PATHS if k not in GAUGES] + ["too_old", "tun_drops", "lost_all"] + SENDS + REPAIR
 NAMES = list(RO_PATHS) + ["too_old", "tun_drops", "lost_all"] + SENDS + REPAIR
@@ -183,6 +193,9 @@ def flat_client(d):
         out[k] = num(dig(d, *cp))
     for k, p in ACT:
         out[k] = num(dig(d, *p))
+    for k, p in PCTL:
+        out[k] = num(dig(d, "protocontroller", *p))
+    out["to_grit"] = num(dig(d, "rescue", "to_grit"))
     return out
 
 
@@ -215,6 +228,9 @@ def flat_session(s):
         out[k] = num(dig(s, *sp))
     for k, p in ACT:
         out[k] = num(dig(s, *p))
+    for k, _ in PCTL:
+        out[k] = None  # the server's protocontroller counts for all sessions
+    out["to_grit"] = num(dig(s, "rescue", "to_grit"))
     return out
 
 
@@ -280,7 +296,7 @@ def delta_server(b, a):
     out["too_old"] = None if old_a is None or old_b is None else (old_a - old_b if old_a >= old_b else old_a)
     # where the upload's TCP leaves the tunnel: the server's, for all sessions (story 023)
     for k, path in [("e2e_holes", ("tcp_e2e", "sack_holes")), ("e2e_beyond", ("tcp_e2e", "beyond"))] + \
-            [(k, ("tcp_e2e", j)) for k, j in E2E_MORE]:
+            [(k, ("tcp_e2e", j)) for k, j in E2E_MORE] + [(k, ("protocontroller",) + p) for k, p in PCTL]:
         x, y = num(dig(a, *path)), num(dig(b, *path))
         out[k] = None if x is None or y is None else (x - y if x >= y else x)
     return out

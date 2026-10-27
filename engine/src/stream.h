@@ -14,10 +14,13 @@
  *   never sees two framings of the same bytes). A segment is SENT, SACKED
  *   or LOST; LOST ones go again first. Loss is RACK's: a segment still
  *   SENT, sent more than a reordering window before one already delivered,
- *   is lost (cg_st_tx_rack); and a timer for the tail (cg_st_tx_rto: due
- *   rto after the oldest SENT segment's last transmission). It
- *   never gives up: a segment goes again until it arrives (the caller
- *   closes a stream that made no progress for protocontroller_dead_s).
+ *   is lost (cg_st_tx_rack); the tunnel's NACK of the DATA that carried its
+ *   latest transmission says so directly (cg_st_tx_nack: the rescue hands
+ *   it over instead of sending the packet again); and a timer for the tail
+ *   (cg_st_tx_rto: due rto after the oldest SENT segment's last
+ *   transmission). It never gives up: a segment goes again until it
+ *   arrives (the caller closes a stream that made no progress for
+ *   protocontroller_dead_s).
  * - The receiver keeps the next byte in order (nxt) and up to
  *   CG_ST_RANGES ranges above it; more holes than that, and a frame that
  *   would need a new range is dropped (the sender sends it again). The FIN
@@ -397,6 +400,9 @@ static inline void cg_st_rx_ack(const struct cg_st_rx *r, uint64_t edge, uint16_
 
 enum { CG_ST_SENT = 0, CG_ST_SACKED, CG_ST_LOST };
 
+/* Why a segment was declared lost: its retransmission is counted by it. */
+enum { CG_ST_BY_RACK = 0, CG_ST_BY_RTO, CG_ST_BY_NACK, CG_ST_BY_N };
+
 struct cg_st_seg {
 	uint64_t off;
 	uint64_t sent_us;       /* its last transmission */
@@ -404,6 +410,7 @@ struct cg_st_seg {
 	uint16_t len;           /* bytes; the FIN, if any, after them */
 	uint8_t fin, st, tx, app;
 	uint8_t q;              /* sent while the path showed a queue (streamcc.h's cong) */
+	uint8_t by;             /* LOST: why (CG_ST_BY_*) */
 };
 
 /* A segment sent again a second time or more goes as a copy (a priority
@@ -434,6 +441,8 @@ struct cg_st_tx {
 	uint64_t inflight;     /* bytes of SENT segments */
 	uint64_t rack_us;      /* the newest send time of a delivered segment */
 	uint64_t retx_segs, retx_bytes, rack_lost, rto_lost, copies;
+	uint64_t retx_by[CG_ST_BY_N]; /* segments sent again, by why they were lost */
+	uint64_t nack_lost;           /* bytes a NACK declared lost (cg_st_tx_nack) */
 };
 
 static inline void cg_st_tx_init(struct cg_st_tx *t, struct cg_st_seg *seg, uint32_t cap, uint64_t edge)
@@ -537,6 +546,7 @@ static inline uint32_t cg_st_tx_sent(struct cg_st_tx *t, uint32_t idx, uint64_t 
 		t->nlost--;
 		t->retx_segs++;
 		t->retx_bytes += s->len;
+		t->retx_by[s->by < CG_ST_BY_N ? s->by : CG_ST_BY_RACK]++;
 	}
 	s->st = CG_ST_SENT;
 	if (s->tx < 255)
@@ -657,13 +667,15 @@ static inline void cg_st_tx_ack(struct cg_st_tx *t, const struct cg_st_ack *a, s
 	}
 }
 
-/* A segment declared lost: *lq gets its bytes too if it was sent while
- * the path showed a queue (a loss by overflow, not the path's own). */
-static inline uint32_t cg_st_tx_lose(struct cg_st_tx *t, struct cg_st_seg *s, uint32_t i, uint64_t *lq)
+/* A segment declared lost (by: CG_ST_BY_*): *lq gets its bytes too if it
+ * was sent while the path showed a queue (a loss by overflow, not the
+ * path's own). */
+static inline uint32_t cg_st_tx_lose(struct cg_st_tx *t, struct cg_st_seg *s, uint32_t i, uint64_t *lq, uint8_t by)
 {
 	uint32_t sp = cg_st_span(s);
 
 	s->st = CG_ST_LOST;
+	s->by = by;
 	t->inflight -= sp;
 	if (s->q && lq)
 		*lq += sp;
@@ -685,7 +697,7 @@ static inline uint64_t cg_st_tx_rack(struct cg_st_tx *t, uint64_t reo_us, uint64
 		struct cg_st_seg *s = cg_st_tx_seg(t, i);
 
 		if (s->st == CG_ST_SENT && s->sent_us + reo_us < t->rack_us)
-			lost += cg_st_tx_lose(t, s, i, lq);
+			lost += cg_st_tx_lose(t, s, i, lq, CG_ST_BY_RACK);
 	}
 	t->rack_lost += lost;
 	return lost;
@@ -701,10 +713,53 @@ static inline uint64_t cg_st_tx_rto(struct cg_st_tx *t, uint64_t now, uint64_t r
 		struct cg_st_seg *s = cg_st_tx_seg(t, i);
 
 		if (s->st == CG_ST_SENT && s->sent_us + rto_us <= now)
-			lost += cg_st_tx_lose(t, s, i, lq);
+			lost += cg_st_tx_lose(t, s, i, lq, CG_ST_BY_RTO);
 	}
 	t->rto_lost += lost;
 	return lost;
+}
+
+/* What a NACK of the tunnel did to the segment it names (cg_st_tx_nack). */
+enum {
+	CG_ST_NACK_LOST = 0,  /* it was SENT by that very DATA: LOST now, it goes again first */
+	CG_ST_NACK_DELIVERED, /* acknowledged or SACKed already: nothing (a DSACK, in TCP's words) */
+	CG_ST_NACK_STALE,     /* sent again since: the DATA asked for is an older copy, a newer is in flight */
+	CG_ST_NACK_PENDING,   /* LOST already (RACK or the timer), waiting to go again */
+	CG_ST_NACK_UNKNOWN,   /* no segment starts there (not sent yet, or another framing) */
+	CG_ST_NACK_N
+};
+
+/* The tunnel's receiver asked for the DATA that carried the segment at
+ * offset off32 (the wire's low 32 bits), sent at ts32 (the sender's clock
+ * in that DATA, the low 32 bits of its sent_us): the tunnel lost it on
+ * every link and has no code to rebuild it (harq.h asks for the packet only
+ * then), so the rescue hands the loss to the stream instead of sending the
+ * packet again (story 025). A loss is RACK's, the timer's or a NACK's;
+ * a delivery, an ACK's: the NACK makes TCP's "duplicate ACKs mean a loss"
+ * explicit. Only the latest transmission counts: a NACK of an older copy
+ * says nothing of the one in flight. *bytes: what was marked (for the
+ * rate's accounting; *lq as cg_st_tx_rack's, may be NULL). */
+static inline int cg_st_tx_nack(struct cg_st_tx *t, uint32_t off32, uint32_t ts32, uint32_t *bytes, uint64_t *lq)
+{
+	uint64_t off = cg_st_unwrap(t->una, off32);
+	uint32_t i;
+	struct cg_st_seg *s;
+
+	*bytes = 0;
+	if (off < t->una)
+		return CG_ST_NACK_DELIVERED;
+	i = cg_st_tx_find(t, off);
+	if (i >= t->n || (s = cg_st_tx_seg(t, i))->off != off)
+		return CG_ST_NACK_UNKNOWN;
+	if (s->st == CG_ST_SACKED)
+		return CG_ST_NACK_DELIVERED;
+	if (s->st == CG_ST_LOST)
+		return CG_ST_NACK_PENDING;
+	if ((uint32_t)s->sent_us != ts32)
+		return CG_ST_NACK_STALE;
+	*bytes = cg_st_tx_lose(t, s, i, lq, CG_ST_BY_NACK);
+	t->nack_lost += *bytes;
+	return CG_ST_NACK_LOST;
 }
 
 /* Bytes the stream holds in flight or lost (what the timer guards). */

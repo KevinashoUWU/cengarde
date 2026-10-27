@@ -263,6 +263,42 @@ static inline int cg_pctl_parse(const uint8_t *p, size_t len, struct cg_pctl_msg
 	}
 }
 
+/* What the rescue does with a packet it kept, named by a NACK (story 025:
+ * the stream retransmits what it loses, so the tunnel does not send its
+ * messages again):
+ *   CG_PCTL_NACK_NOT    not a stream message (an IP packet): the rescue
+ *                       sends it again, as always;
+ *   CG_PCTL_NACK_DATA   a DATA: its loss goes to its stream (id, off and
+ *                       ts set: cg_st_tx_nack), not the packet again;
+ *   CG_PCTL_NACK_ACK    an ACK: a fresh one says more than the old (every
+ *                       ACK carries the whole state), not the packet again;
+ *   CG_PCTL_NACK_RESEND an OPEN or a RST (rare, idempotent), or one that
+ *                       does not parse: sent again, as before.
+ * The packet is the sender's own copy (no tag to check: it was sealed when
+ * kept). */
+enum { CG_PCTL_NACK_NOT = 0, CG_PCTL_NACK_DATA, CG_PCTL_NACK_ACK, CG_PCTL_NACK_RESEND };
+
+static inline int cg_pctl_nack_kind(const uint8_t *p, size_t len, uint32_t *id, uint32_t *off, uint32_t *ts)
+{
+	if (!cg_pctl_is(p, len))
+		return CG_PCTL_NACK_NOT;
+	if (len < CG_PCTL_HDR + CG_PCTL_TAG)
+		return CG_PCTL_NACK_RESEND;
+	*id = cg_pctl_rd32(p + 2);
+	switch (p[0] & 0x0F) {
+	case CG_PCTL_DATA:
+		if (len < CG_PCTL_DATA_HDR + CG_PCTL_TAG)
+			return CG_PCTL_NACK_RESEND;
+		*off = cg_pctl_rd32(p + 6);
+		*ts = cg_pctl_rd32(p + 10);
+		return CG_PCTL_NACK_DATA;
+	case CG_PCTL_ACK:
+		return CG_PCTL_NACK_ACK;
+	default:
+		return CG_PCTL_NACK_RESEND;
+	}
+}
+
 /* An ACK message's offsets, unwrapped against what the sender knows: una
  * (cumulative and ranges) and the edge it had. */
 static inline void cg_pctl_ack_of(const struct cg_pctl_msg *m, uint64_t una, uint64_t edge, struct cg_st_ack *a)
