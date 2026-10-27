@@ -109,6 +109,18 @@
 #   cell4       not in the default list: story 025's sanity check, four
 #               cellular-like links and no Starlink: 20, 15, 10 and 5 Mbit/s,
 #               25, 30, 35 and 45 ms, 300 ms to 2 s of queue, losing 0.3-0.5 %
+#   ratswitch   not in the default list: a CPE that changes RAT, LTE <-> NR
+#               (NSA, the field's n78), next to another operator's steady LTE
+#               (25/10 Mbit/s, 30 ms, 2 MB of buffer). The operator's buffer
+#               is bytes, not time: in LTE (30 down, 15 up, 35 ms) 3 MB down
+#               and 1.5 MB up are 800 ms; in NR (180 down, 60 up, 20 ms) the
+#               same bytes are 133 and 200 ms, so a fall back to LTE drains
+#               what NR queued six times slower (story 016's deep LTE queues).
+#               LTE -> NR adds the leg with no gap; NR -> LTE is an SCG
+#               failure, 0.6 s with nothing through. Dwell times drawn per
+#               repetition like ltespikerand: LTE 4-10 s, NR 5-12 s; the
+#               numbers are estimates until the field's (AT+QENG) replace them
+#   ratsingle   not in the default list: ratswitch's CPE alone
 #   protectslow not in the default list: the NUC's Claro on B5 (2026-10-23),
 #               the link of least delay is the narrow one: link 1 at 10 ms but
 #               5 Mbit/s behind 2 s of queue and losing 8 % at random (a weak
@@ -818,6 +830,20 @@ bond_link_ud() {
 	bond_link "$1" "$2" "$3" "${5:-100}" "${6:-0}" && bond_link_down "$1" "$2" "$4" "${5:-100}" "${6:-0}"
 }
 
+# bond_rat N lte|nr|gap: link N as ratswitch's CPE in that RAT, its buffer
+# a fixed number of bytes in each direction (3 MB down, 1.5 MB up: the
+# queue in ms is the bytes over the RAT's rate); gap: nothing through.
+bond_rat() {
+	local n=$1 d up dn
+	case $2 in
+	nr) d=20 up=60 dn=180 ;;
+	gap) d=35 up=15 dn=30 ;;
+	*) d=35 up=15 dn=30 ;;
+	esac
+	bond_link "$n" "$d" "$up" $((1500 * 8 / up)) "$([ "$2" = gap ] && echo 100 || echo 0)" &&
+		bond_link_down "$n" "$d" "$dn" $((3000 * 8 / dn)) "$([ "$2" = gap ] && echo 100 || echo 0)"
+}
+
 # bond_events CASE SECS [REP]: what changes during a run (in the background).
 bond_events() {
 	local c=$1 s=$2 rep=${3:-1} t r2=100 gap
@@ -880,6 +906,24 @@ bond_events() {
 			bond_link 1 325 50
 			sleep 1
 			bond_link 1 25 50
+		done
+		;;
+	ratswitch | ratsingle)
+		RANDOM=$((${BOND_SEED:-1} * 1000 + rep))
+		t=0
+		while :; do
+			gap=$((4 + RANDOM % 7)) # LTE 4 to 10 s
+			t=$((t + gap))
+			[ "$t" -lt "$s" ] || break
+			sleep "$gap"
+			bond_rat 1 nr
+			gap=$((5 + RANDOM % 8)) # NR 5 to 12 s
+			t=$((t + gap))
+			[ "$t" -lt "$s" ] || break
+			sleep "$gap"
+			bond_rat 1 gap
+			sleep 0.6
+			bond_rat 1 lte
 		done
 		;;
 	downstall)
@@ -984,6 +1028,8 @@ bond_shape() {
 	clean4 | stall50 | stall100 | stall200 | stallr50 | stallr100 | stallr200)
 		bond_link 1 25 20 && bond_link 2 27 20 && bond_link 3 30 20 && bond_link 4 33 20 ;;
 	single1 | singlecut) bond_link 1 20 40 100 1 ;;
+	ratsingle) bond_rat 1 lte ;;
+	ratswitch) bond_rat 1 lte && bond_link 2 30 10 1600 && bond_link_down 2 30 25 640 ;;
 	singleclean) bond_link 1 20 40 ;;
 	deepq) bond_link 1 25 20 500 && bond_link 2 25 50 ;;
 	bloat) bond_link 1 20 30 1000 && bond_link 2 20 20 1000 && bond_link 3 22 8 2000 ;;
@@ -1028,7 +1074,7 @@ bond_msl_types() {
 bond_nlinks() {
 	case $1 in
 	het | idleslow | linkdeath | downstall | bloat | lossy | shallowq | shallowqd | shallowqdeep | starsat | dominant | protectpin | msl3) echo 3 ;;
-	msl1 | single1 | singlecut | singleclean) echo 1 ;;
+	msl1 | single1 | singlecut | singleclean | ratsingle) echo 1 ;;
 	msl2c | cell4 | clean4 | stall50 | stall100 | stall200 | stallr50 | stallr100 | stallr200) echo 4 ;;
 	msl3c) echo 5 ;;
 	*) echo 2 ;;
@@ -1250,7 +1296,7 @@ bond_plan() {
 	for w in ${BOND_CC:-cubic bbr quic}; do ccs=$((ccs + 1)); done
 	for c in $BOND_CASES; do
 		case $c in
-		equal | het | idleslow | reorder50 | reorder150 | linkdeath | downstall | shallowq | shallowqd | shallowqdeep | starsat | dominant | starlink15 | starlink15sw | starlink15ramp | ltespike | ltespikerand | deepq | bloat | lossy | spikeloss | protect | protectcut | protectslow | protectpin | beyond | spurious | lossall | sigrand | sigdeep | sigothers | msl1 | msl2 | msl3 | msl2c | msl3c | cell4 | clean4 | stall50 | stall100 | stall200 | stallr50 | stallr100 | stallr200 | single1 | singlecut | singleclean) ;;
+		equal | het | idleslow | reorder50 | reorder150 | linkdeath | downstall | shallowq | shallowqd | shallowqdeep | starsat | dominant | starlink15 | starlink15sw | starlink15ramp | ltespike | ltespikerand | deepq | bloat | lossy | spikeloss | protect | protectcut | protectslow | protectpin | beyond | spurious | lossall | sigrand | sigdeep | sigothers | msl1 | msl2 | msl3 | msl2c | msl3c | cell4 | clean4 | stall50 | stall100 | stall200 | stallr50 | stallr100 | stallr200 | single1 | singlecut | singleclean | ratswitch | ratsingle) ;;
 		*)
 			echo "bond: unknown case $c"
 			return 1
