@@ -1522,6 +1522,11 @@ static int send_one(struct cg_pctl *p, struct flow *f, struct peer *r, uint64_t 
 	if (idx == f->tx.n && !cg_scc_may(&r->cc, &p->ccf, cg_scc_reo(&r->cc, peer_reo(p, r))))
 		return 0;
 	cg_scc_restart(&r->cc, now);
+	/* a stream that had nothing in flight waits for no answer: protocontroller_dead_s
+	 * counts from now, not from the peer's last message (an SSH session or
+	 * iperf's control idle a minute, then a byte: reset at once) */
+	if (!cg_st_tx_busy(&f->tx))
+		f->progress_t = now;
 	copy = cg_st_tx_copy(&f->tx, idx);
 	b = slot_for(p, f->peer, f->sid);
 	cg_pctl_put_data(b, f->id, (uint8_t)((fin ? CG_PCTLF_FIN : 0) | (f->est ? CG_PCTLF_EST : 0)), off, (uint32_t)now);
