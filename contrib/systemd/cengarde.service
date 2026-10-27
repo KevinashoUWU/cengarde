@@ -22,7 +22,7 @@
 # /var/lib/cengarde.
 
 [Unit]
-Description=cengarde, redundant multi-link transport for WireGuard
+Description=cengarde, redundant multi-link tunnel
 Documentation=https://github.com/KevinashoUWU/cengarde
 After=network-online.target
 Wants=network-online.target
@@ -37,15 +37,20 @@ RestartSec=2
 RuntimeDirectory=cengarde
 StateDirectory=cengarde
 StateDirectoryMode=0750
-# CAP_NET_ADMIN: large socket buffers (SO_RCVBUFFORCE). CAP_NET_RAW: a client
-# binds each uplink socket to its interface. CAP_SYS_NICE: rt_priority.
+# CAP_NET_ADMIN: the TUN device and its addresses, large socket buffers
+# (SO_RCVBUFFORCE). CAP_NET_RAW: a client binds each uplink socket to its
+# interface. CAP_SYS_NICE: rt_priority.
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW CAP_SYS_NICE
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_SYS_NICE
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
-PrivateDevices=yes
+# The tunnel is a TUN device: /dev/net/tun, which PrivateDevices=yes would
+# hide, and no other device (DevicePolicy=closed keeps /dev/null and such).
+PrivateDevices=no
+DevicePolicy=closed
+DeviceAllow=/dev/net/tun rw
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes

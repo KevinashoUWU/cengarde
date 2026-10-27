@@ -12,18 +12,17 @@
 #   configuration nobody but root can write;
 # - the reserved set: below 1024 with FORWARD_ALLOW_LOW, this server's own
 #   listeners and Docker's ports (fixtures/ss-*.txt, docker-nat.txt), a
-#   kernel UDP socket in the ephemeral range too (WireGuard's), but not a
+#   kernel UDP socket in the ephemeral range too (a WireGuard's), but not a
 #   process's there, FORWARD_UNRESERVE, FORWARD_RESERVED; "reserved -v" with
 #   the reasons;
 # - FORWARD_SKIP_SRC; the jumps and the MASQUERADE without and with PUB_IF;
 #   the hairpin accept before the tunnels' DROP, and its SNAT; IPv6, and
 #   with TUNNEL_IPV6=yes the routers' IPv6 masqueraded (NAT66), without and
 #   with PUB_IF, and its jumps; a TUNNEL_IPV6 that is neither yes nor no;
-# - TUNNEL=native: the same rules with the engine's TUN, cg0, in place of
-#   the cg-* interfaces (IPv4 with two routers' forwarding, the jumps with
-#   and without PUB_IF, NAT66), and a TUNNEL that is neither wireguard nor
-#   native refused; with PROTOCONTROLLER=yes, variant A's TCP to the
-#   engine (story 025) accepted from cg0 only;
+# - the tunnels are the engine's TUN, cg0, everywhere; with
+#   PROTOCONTROLLER=yes, variant A's TCP to the engine (story 025) accepted
+#   from cg0 only; a nat.conf of before 0.12 (TUNNEL, WG_PORT_BASE, 0.4's
+#   WG_PORT): the same rules, nothing for WireGuard (story 027);
 # - a forward table with bad lines (fixtures/forward-bad): each skipped and
 #   logged by its number and reason, never its content; a table or IP pass
 #   file that is a symlink, a FIFO, someone else's or over 64 KiB: refused
@@ -166,12 +165,12 @@ root none
 rm -f "$R/etc/cengarde/clients/"*
 rules4 none "no router, nothing forwarded"
 check "the hairpin's accept comes before the tunnels' DROP" \
-	sh -c 'printf "%s\n" "$1" | grep -n "" | grep -E "ctstate DNAT -j ACCEPT|-i cg-\+ -o cg-\+ -j DROP" | cut -d: -f1 | tr "\n" " " | awk "{ exit !(\$1 < \$2) }"' sh "$OUT"
+	sh -c 'printf "%s\n" "$1" | grep -n "" | grep -E "ctstate DNAT -j ACCEPT|-i cg0 -o cg0 -j DROP" | cut -d: -f1 | tr "\n" " " | awk "{ exit !(\$1 < \$2) }"' sh "$OUT"
 check "and the metadata REJECT before both" \
 	sh -c 'printf "%s\n" "$1" | grep "^-A CG_FWD" | head -n 1 | grep -q "169.254.0.0/16 -j REJECT"' sh "$OUT"
 check "hairpin SNAT to 10.79.0.1, MASQUERADE out of anything but a tunnel" \
-	sh -c 'printf "%s\n" "$1" | grep -qx -- "-A CG_POST -s 10.79.0.0/16 -o cg-+ -m conntrack --ctstate DNAT -j SNAT --to-source 10.79.0.1" &&
-		printf "%s\n" "$1" | grep -qx -- "-A CG_POST -s 10.79.0.0/16 ! -o cg-+ -j MASQUERADE"' sh "$OUT"
+	sh -c 'printf "%s\n" "$1" | grep -qx -- "-A CG_POST -s 10.79.0.0/16 -o cg0 -m conntrack --ctstate DNAT -j SNAT --to-source 10.79.0.1" &&
+		printf "%s\n" "$1" | grep -qx -- "-A CG_POST -s 10.79.0.0/16 ! -o cg0 -j MASQUERADE"' sh "$OUT"
 
 say "one router (protocol 3)"
 root v3
@@ -305,7 +304,7 @@ check "a bad token and a port above 1023 in FORWARD_ALLOW_LOW: said, ignored" \
 	sh -c 'printf "%s\n" "$1" | grep -q "FORWARD_RESERVED: bogus is not" && printf "%s\n" "$1" | grep -q "FORWARD_ALLOW_LOW: udp:2000: only ports below 1024"' sh "$ERR"
 nat reserved -v
 check "reserved -v: the reasons" golden reserved-v.txt
-check "a kernel UDP socket in the ephemeral range (WireGuard on 51820, no process) is reserved" out_has "udp:51820 listener"
+check "a kernel UDP socket in the ephemeral range (a WireGuard on 51820, no process) is reserved" out_has "udp:51820 listener"
 check "loopback listeners, a process's UDP socket in the ephemeral range and FORWARD_UNRESERVE are not reserved" \
 	sh -c '! printf "%s\n" "$1" | grep -Eq "^(tcp:631|udp:323|udp:40000|tcp:8123) "' sh "$OUT"
 nat reserved
@@ -326,7 +325,7 @@ check "jumps without PUB_IF: no interface" golden jumps.4
 nat jumps 6
 check "IPv6 jump" golden jumps.6
 nat rules 6
-check "IPv6 rules: cengarde open, WireGuard only on lo" golden rules.6
+check "IPv6 rules: cengarde open" golden rules.6
 V6=no
 ip netns exec "$NS" ip6tables -w -n -L INPUT >/dev/null 2>&1 && V6=yes
 if [ "$V6" = yes ]; then
@@ -351,45 +350,27 @@ root jumps
 printf 'PUB_IF="eth0;reboot"\n' >>"$R/etc/cengarde/nat.conf"
 check "a PUB_IF that is no interface name is refused" not nat rules 4
 
-say "TUNNEL=native: the engine's one TUN, cg0, in place of the cg-* interfaces"
-root native "TUNNEL=native
-FORWARD_FILE=$TMP/native/var/lib/cengarde/forward"
-cp "$FIX/forward-two-routers" "$R/var/lib/cengarde/forward"
-chown nobody "$R/var/lib/cengarde/forward"
-rules4 native "two routers' forwarding through cg0"
-check "no cg-* left" not sh -c 'printf "%s\n" "$1" | grep -q "cg-"' sh "$OUT"
-check "the same rules as with WireGuard, cg0 for cg-+" \
-	sh -c 'printf "%s\n" "$1" | sed "s/cg0/cg-+/g" | cmp -s - "$2"' sh "$OUT" "$GOLD/table.4"
-check "the routers not to each other, the hairpin's accept and SNAT, MASQUERADE out of anything but cg0" \
-	sh -c 'printf "%s\n" "$1" | grep -qx -- "-A CG_FWD -i cg0 -o cg0 -j DROP" &&
-		printf "%s\n" "$1" | grep -qx -- "-A CG_FWD -o cg0 -m conntrack --ctstate DNAT -j ACCEPT" &&
-		printf "%s\n" "$1" | grep -qx -- "-A CG_POST -s 10.79.0.0/16 -o cg0 -m conntrack --ctstate DNAT -j SNAT --to-source 10.79.0.1" &&
-		printf "%s\n" "$1" | grep -qx -- "-A CG_POST -s 10.79.0.0/16 ! -o cg0 -j MASQUERADE"' sh "$OUT"
-nat jumps 4
-check "jumps without PUB_IF: as with WireGuard" golden jumps.4
-root nativepub 'TUNNEL=native
-PUB_IF=eth0'
-nat jumps 4
-check "jumps with PUB_IF: from it and from cg0" golden jumps-native-pubif.4
-root native6 'TUNNEL=native
-TUNNEL_IPV6=yes'
-nat rules 6
-check "TUNNEL_IPV6=yes: the routers' IPv6 through cg0, masqueraded" golden rules-native-tunnel.6
-[ "$V6" = no ] || check "ip6tables-restore --test takes them" loads 6
-root nativepctl 'TUNNEL=native
-PROTOCONTROLLER=yes'
+say "the engine's TUN, cg0; a nat.conf of before 0.12"
+root pctl 'PROTOCONTROLLER=yes'
 nat rules 4
 check "PROTOCONTROLLER=yes: variant A's TCP from cg0 to 10.79.0.1:7801 accepted" \
 	out_has "-A CG_IN -i cg0 -d 10.79.0.1 -p tcp --dport 7801 -j ACCEPT"
 check "iptables-restore --test takes it" loads 4
-root wgpctl 'PROTOCONTROLLER=yes'
-nat rules 4
-check "and not without the native tunnel" not out_has "-A CG_IN -i cg-+ -d 10.79.0.1 -p tcp --dport 7801 -j ACCEPT"
 root pctlbad 'PROTOCONTROLLER=b'
 check "a PROTOCONTROLLER that is neither yes nor no is refused" not nat rules 4
-root nativebad 'TUNNEL=gre'
-check "a TUNNEL that is neither wireguard nor native is refused" not nat rules 4
-check "it says so" err_has "TUNNEL in"
+root old "TUNNEL=wireguard
+WG_PORT_BASE=65501
+FORWARD_FILE=$TMP/old/var/lib/cengarde/forward"
+cp "$FIX/forward-two-routers" "$R/var/lib/cengarde/forward"
+chown nobody "$R/var/lib/cengarde/forward"
+rules4 table "TUNNEL=wireguard and WG_PORT_BASE (before 0.12): ignored, the same rules"
+check "nothing for WireGuard: no cg-*, no port dropped but on lo" \
+	not sh -c 'printf "%s\n" "$1" | grep -q -e "cg-" -e "! -i lo"' sh "$OUT"
+root oldnative 'TUNNEL=native'
+nat rules 4
+check "TUNNEL=native (before 0.12): the same as none" golden none.4
+root oldbad 'TUNNEL=gre'
+check "any TUNNEL is ignored" nat rules 4
 
 say "nat.conf"
 root conf
@@ -402,9 +383,8 @@ check "writable by others: refused" not nat rules 4
 chmod 0644 "$R/etc/cengarde/nat.conf"
 printf 'WG_PORT=65400\nCLIENT_IP=10.79.0.2\n' >>"$R/etc/cengarde/nat.conf"
 nat rules 4
-check "0.4's WG_PORT is the base of the WireGuard ports" out_has "-A CG_IN ! -i lo -p udp --dport 65400:65431 -j DROP"
-printf 'WG_PORT_BASE=65520\n' >>"$R/etc/cengarde/nat.conf"
-check "WireGuard ports past 65535: refused" not nat rules 4
+check "0.4's WG_PORT and CLIENT_IP: no rule of theirs" not sh -c 'printf "%s\n" "$1" | grep -q -e 65400 -e "! -i lo"' sh "$OUT"
+check "CLIENT_IP is said to be ignored" sh -c 'env CENGARDE_ROOT="$1" PATH="$2" sh "$3" status 2>&1 | grep -q "CLIENT_IP and TUNNEL_NET in .* are ignored"' sh "$R" "$BIN:$PATH" "$NAT"
 
 if [ "$fails" -eq 0 ]; then
 	say "all passed"

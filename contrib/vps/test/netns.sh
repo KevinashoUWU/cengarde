@@ -1,10 +1,12 @@
 #!/bin/sh
 # shellcheck disable=SC2016 # sh -c scripts: expanded by the inner sh
 # cengarde-nat with real traffic, in network namespaces, the real iptables
-# and conntrack; veth pairs stand in for the WireGuard interfaces:
+# and conntrack; a bridge stands in for the engine's TUN, cg0, with a veth
+# pair to each router (redirects off: a TUN has no link to be redirected
+# on, and the routers know no route but the one to the server):
 #
 #   inet [ext 10.1.0.2 (.3), ext2 10.2.0.2, 198.51.100.1 on lo]
-#     -- [pub 10.1.0.1, pub2 10.2.0.1] vps [cg-alpha, cg-bravo: 10.79.0.1]
+#     -- [pub 10.1.0.1, pub2 10.2.0.1] vps [cg0 10.79.0.1/16]
 #     -- alpha [10.79.0.2] and bravo [10.79.12.34]
 #
 # The routers and the server answer every TCP connection and UDP datagram
@@ -17,7 +19,8 @@
 #   with the source intact; the whole range reaches its holder, but not
 #   the ports carved out of it; reserved ports (SSH, cengarde, a service of
 #   the server itself on 8123) stay on the server, and a kernel UDP socket
-#   on 51820 (VXLAN's, as a WireGuard interface's) is reserved; a skipped
+#   on 51820 (VXLAN's, as a WireGuard interface's of the server's own) is
+#   reserved; a skipped
 #   source and a broadcast are not forwarded;
 # - the routers do not reach each other's tunnel addresses; hairpin: bravo
 #   reaches alpha's published port at the server's public address, as does
@@ -249,15 +252,18 @@ ip -n "$INET" addr add 10.2.0.2/24 dev ext2
 ip -n "$INET" addr add 198.51.100.1/32 dev lo
 for l in pub pub2; do ip -n "$VPS" link set "$l" up; done
 for l in ext ext2; do ip -n "$INET" link set "$l" up; done
-tunnel() { # NS NAME ADDR: a router's tunnel, as wg-quick with Table=auto sets it up
-	ip link add "cg-$2" netns "$VPS" type veth peer name wg netns "$1"
-	ip -n "$VPS" addr add 10.79.0.1/32 dev "cg-$2"
-	ip -n "$VPS" link set "cg-$2" up
-	ip -n "$VPS" route add "$3/32" dev "cg-$2"
-	ip -n "$1" addr add "$3/32" dev wg
-	ip -n "$1" link set wg up
-	ip -n "$1" route add 10.79.0.1/32 dev wg
-	ip -n "$1" route add default via 10.79.0.1 dev wg onlink
+# cg0 as the engine sets it up, 10.79.0.1/16.
+ip -n "$VPS" link add cg0 type bridge
+ip -n "$VPS" addr add 10.79.0.1/16 dev cg0
+ip -n "$VPS" link set cg0 up
+nsexec "$VPS" sysctl -qw net.ipv4.conf.all.send_redirects=0 net.ipv4.conf.cg0.send_redirects=0
+tunnel() { # NS NAME ADDR: a router's end, as cengarde-setup sets it up on OpenWrt
+	ip link add "cgp-$2" netns "$VPS" type veth peer name tun netns "$1"
+	ip -n "$VPS" link set "cgp-$2" master cg0 up
+	ip -n "$1" addr add "$3/32" dev tun
+	ip -n "$1" link set tun up
+	ip -n "$1" route add 10.79.0.1/32 dev tun
+	ip -n "$1" route add default via 10.79.0.1 dev tun onlink
 }
 tunnel "$A" alpha 10.79.0.2
 tunnel "$B" bravo 10.79.12.34
@@ -405,10 +411,10 @@ if command -v nft >/dev/null; then
 	EOF
 	check "an nftables chain dropping forwarded traffic: check" nat check
 	check "it says which lines to add" sh -c 'printf "%s\n" "$1" | grep -q "chain inet strict forward drops" &&
-		printf "%s\n" "$1" | grep -qF "oifname \"cg-*\" ct status dnat accept"' sh "$OUT"
-	nsexec "$VPS" nft add rule inet strict forward iifname '"cg-*"' accept
-	nsexec "$VPS" nft add rule inet strict forward oifname '"cg-*"' ct state established,related accept
-	nsexec "$VPS" nft add rule inet strict forward oifname '"cg-*"' ct status dnat accept
+		printf "%s\n" "$1" | grep -qF "oifname \"cg0\" ct status dnat accept"' sh "$OUT"
+	nsexec "$VPS" nft add rule inet strict forward iifname '"cg0"' accept
+	nsexec "$VPS" nft add rule inet strict forward oifname '"cg0"' ct state established,related accept
+	nsexec "$VPS" nft add rule inet strict forward oifname '"cg0"' ct status dnat accept
 	check "with them added, check is quiet about it" nat check
 	check "no warning" not sh -c 'printf "%s\n" "$1" | grep -q "strict"' sh "$OUT"
 	check "and the forwarding works through it" is "bravo:20000:10.1.0.2" py "$INET" tcp 10.1.0.1 20000

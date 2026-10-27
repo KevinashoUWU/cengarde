@@ -1,10 +1,11 @@
 #!/bin/sh
 # shellcheck disable=SC2016 # sh -c scripts: expanded by the inner sh
 # The security rules of cengarde-nat, in network namespaces with the real
-# iptables; a veth pair stands in for a router's WireGuard, cg-router:
+# iptables; a veth pair stands in for the engine's TUN, cg0, and the
+# router's end of the tunnel:
 #
 #   inet [ext 10.1.0.2, 169.254.169.254] -- [pub 10.1.0.1] vps
-#     [cg-router 10.79.0.1] -- [wg 10.79.0.2] router
+#     [cg0 10.79.0.1] -- [tun 10.79.0.2] router
 #
 # inet is the Internet and the provider's network, with a fake metadata
 # service on 169.254.169.254 that serves the "user data". On a VPS it sits
@@ -16,10 +17,7 @@
 # - the REJECT deleted by hand, or the tunnel's ACCEPT (a chain changed by
 #   someone else): "check" puts the chain back whole, in order, with no
 #   rule twice;
-# - WireGuard's ports (65501-65532, one per router) are dropped from the
-#   Internet and from the tunnel but answer on lo, and cengarde's port is
-#   open;
-# - with IPv6, ip6tables accepts cengarde's port and drops WireGuard's;
+# - cengarde's port is open, and with IPv6 ip6tables accepts it too;
 # - IPv6 through the tunnel (TUNNEL_IPV6, the router at its ULA ::2, the
 #   VPS at ::1): off, it goes nowhere; on, the router reaches the Internet
 #   from the VPS's address (NAT66), forwarding is on and accept_ra went from
@@ -43,7 +41,7 @@ set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
 NAT=${CENGARDE_NAT:-$HERE/../cengarde-nat}
 INET=cgsec-inet VPS=cgsec-vps ROUTER=cgsec-router
-CG_PORT=65500 WG_PORTS=65501:65532
+CG_PORT=65500
 META=169.254.169.254
 SECRET=not-the-real-secret-$$
 TMP=
@@ -179,8 +177,6 @@ v6_checks() {
 	check "IPv6: INPUT jumps to CG_IN" has ip6tables INPUT -j CG_IN
 	check "IPv6: cengarde's port accepted" \
 		has ip6tables CG_IN -p udp --dport "$CG_PORT" -j ACCEPT
-	check "IPv6: WireGuard's ports dropped except on lo" \
-		has ip6tables CG_IN ! -i lo -p udp --dport "$WG_PORTS" -j DROP
 }
 
 say "namespaces: $INET (Internet, metadata on $META) -- $VPS -- $ROUTER"
@@ -195,16 +191,16 @@ ip -n "$VPS" link set pub up
 ip -n "$INET" addr add 10.1.0.2/24 dev ext
 ip -n "$INET" addr add "$META/32" dev ext
 ip -n "$INET" link set ext up
-# As wg-quick sets cg-router up: 10.79.0.1/32, and a route to the router.
-ip link add cg-router netns "$VPS" type veth peer name wg netns "$ROUTER"
-ip -n "$VPS" addr add 10.79.0.1/32 dev cg-router
-ip -n "$VPS" link set cg-router up
-ip -n "$VPS" route add 10.79.0.2/32 dev cg-router
-ip -n "$ROUTER" addr add 10.79.0.2/32 dev wg
-ip -n "$ROUTER" link set wg up
-ip -n "$ROUTER" route add 10.79.0.1/32 dev wg
+# As the engine sets cg0 up (10.79.0.1/16), and the router's end as
+# cengarde-setup does on OpenWrt (its address as a /32).
+ip link add cg0 netns "$VPS" type veth peer name tun netns "$ROUTER"
+ip -n "$VPS" addr add 10.79.0.1/16 dev cg0
+ip -n "$VPS" link set cg0 up
+ip -n "$ROUTER" addr add 10.79.0.2/32 dev tun
+ip -n "$ROUTER" link set tun up
+ip -n "$ROUTER" route add 10.79.0.1/32 dev tun
 ip -n "$VPS" route add default via 10.1.0.2
-ip -n "$ROUTER" route add default via 10.79.0.1 dev wg onlink
+ip -n "$ROUTER" route add default via 10.79.0.1 dev tun onlink
 nsexec "$VPS" sysctl -qw net.ipv4.ip_forward=1
 set +e
 V6=no
@@ -225,8 +221,6 @@ done
 
 before4=$(rules iptables)
 before6=$(rules ip6tables)
-check "without the rules, WireGuard's port is reachable from the Internet (the test sees it)" \
-	udp "$VPS" "$INET" 10.1.0.1 65501
 
 say "apply, with no firewall"
 check "cengarde-nat apply" nat apply
@@ -234,29 +228,25 @@ check "the VPS itself reads the metadata" fetch "$VPS" "$META"
 check "the router reaches the Internet through the tunnel" fetch "$ROUTER" 10.1.0.2
 check "the router cannot read the metadata through the tunnel, and is told at once" \
 	rejected "$ROUTER" "$META"
-check "WireGuard's port is dropped from the Internet" not udp "$VPS" "$INET" 10.1.0.1 65501
-check "another router's WireGuard port too" not udp "$VPS" "$INET" 10.1.0.1 65532
-check "WireGuard's port is dropped from the tunnel" not udp "$VPS" "$ROUTER" 10.79.0.1 65501
-check "WireGuard's port answers on lo" udp "$VPS" "$VPS" 127.0.0.1 65501
 check "cengarde's port is reachable from the Internet" udp "$VPS" "$INET" 10.1.0.1 "$CG_PORT"
 v6_checks
 
 say "the REJECT deleted by hand, then check"
-nsexec "$VPS" iptables -D CG_FWD -i cg-+ -d 169.254.0.0/16 -j REJECT --reject-with icmp-net-prohibited
+nsexec "$VPS" iptables -D CG_FWD -i cg0 -d 169.254.0.0/16 -j REJECT --reject-with icmp-net-prohibited
 check "without it the router reads the metadata (the test sees the leak)" fetch "$ROUTER" "$META"
 check "cengarde-nat check" nat check
 check "the REJECT is back above the tunnels' ACCEPT" rejected "$ROUTER" "$META"
 check "no rule twice" not dup
 
 say "the tunnels' ACCEPT deleted by hand, then check"
-nsexec "$VPS" iptables -D CG_FWD -i cg-+ -j ACCEPT
+nsexec "$VPS" iptables -D CG_FWD -i cg0 -j ACCEPT
 check "cengarde-nat check" nat check
 check "the REJECT is still above the tunnels' ACCEPT" rejected "$ROUTER" "$META"
 check "the router reaches the Internet through the tunnel" fetch "$ROUTER" 10.1.0.2
 check "no rule twice" not dup
 
 # IPv6 through the tunnel: the router's ULA ::2 and the VPS's ::1 on the
-# tunnel, as wg-quick and OpenWrt set them up; the Internet at 2001:db8:1::2,
+# tunnel, as the engine and OpenWrt set them up; the Internet at 2001:db8:1::2,
 # with a web server of its own that logs who asks.
 ULA=fd00:1:2
 v6_tunnel() {
@@ -265,11 +255,11 @@ v6_tunnel() {
 	ip -n "$VPS" addr add 2001:db8:1::1/64 dev pub nodad
 	ip -n "$INET" addr add 2001:db8:1::2/64 dev ext nodad
 	ip -n "$VPS" -6 route add default via 2001:db8:1::2
-	ip -n "$VPS" addr add "$ULA::1/128" dev cg-router nodad
-	ip -n "$VPS" -6 route add "$ULA::2/128" dev cg-router
-	ip -n "$ROUTER" addr add "$ULA::2/128" dev wg nodad
-	ip -n "$ROUTER" -6 route add "$ULA::1/128" dev wg
-	ip -n "$ROUTER" -6 route add default via "$ULA::1" dev wg
+	ip -n "$VPS" addr add "$ULA::1/128" dev cg0 nodad
+	ip -n "$VPS" -6 route add "$ULA::2/128" dev cg0
+	ip -n "$ROUTER" addr add "$ULA::2/128" dev tun nodad
+	ip -n "$ROUTER" -6 route add "$ULA::1/128" dev tun
+	ip -n "$ROUTER" -6 route add default via "$ULA::1" dev tun
 	nsexec "$VPS" sysctl -qw net.ipv6.conf.pub.accept_ra=1
 	nsexec "$INET" python3 -m http.server 8080 --bind :: --directory "$TMP/www" >/dev/null 2>>"$TMP/www6.log" &
 	n=0
@@ -315,7 +305,6 @@ nsexec "$VPS" iptables -P FORWARD DROP
 before4=$(rules iptables)
 check "cengarde-nat apply" nat apply
 check "cengarde's port is reachable from the Internet" udp "$VPS" "$INET" 10.1.0.1 "$CG_PORT"
-check "WireGuard's port answers on lo" udp "$VPS" "$VPS" 127.0.0.1 65501
 check "the router reaches the Internet through the tunnel" fetch "$ROUTER" 10.1.0.2
 check "the router cannot read the metadata through the tunnel" rejected "$ROUTER" "$META"
 check "cengarde-nat down" nat down
