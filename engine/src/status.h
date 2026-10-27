@@ -32,20 +32,17 @@ void cg_json_null(struct cg_json *j, const char *key);
 /* Appends text as it is: plain-text replies use the same buffer. */
 void cg_json_raw(struct cg_json *j, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 
-/* The measurements of story 012, the same at both ends: joint lateness
- * (arrival.h) and WireGuard's datagrams by type and size in each direction
- * (wgsize.h). */
+/* The measurement of story 012, the same at both ends: joint lateness
+ * (arrival.h). */
 struct cg_arrivals;
-struct cg_wgs;
 void cg_json_joint(struct cg_json *j, const char *key, const struct cg_arrivals *a);
-void cg_json_sizes(struct cg_json *j, const char *key, const struct cg_wgs *up, const struct cg_wgs *down);
 
 /* The receiver's reorderer (reorder.h), the same object at both ends: on or
  * off, what it holds, and its counters and histograms. pool: the client's
  * own pool, whose size and free buffers go in it too; NULL on the server,
  * whose sessions share one pool (shown once, apart). Its 64-bit counters
- * are read without a lock: only from the thread that delivers to
- * WireGuard. */
+ * are read without a lock: only from the thread that delivers to the
+ * TUN. */
 struct cg_reorder;
 struct cg_ro_pool;
 void cg_json_reorder(struct cg_json *j, const char *key, const struct cg_reorder *r, int enabled,

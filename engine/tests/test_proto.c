@@ -257,34 +257,12 @@ void test_proto(void)
 		h.type = CG_T_PROBE;
 	}
 
-	/* WireGuard message shapes (docs/historias/002). */
-	{
-		uint8_t wg[200] = { 0 };
-
-		wg[0] = 1;
-		CHECK(cg_looks_like_wg(wg, 148));
-		CHECK(!cg_looks_like_wg(wg, 149));
-		wg[0] = 2;
-		CHECK(cg_looks_like_wg(wg, 92));
-		wg[0] = 3;
-		CHECK(cg_looks_like_wg(wg, 64));
-		wg[0] = 4;
-		CHECK(cg_looks_like_wg(wg, 32));
-		CHECK(cg_looks_like_wg(wg, 177));
-		CHECK(!cg_looks_like_wg(wg, 31));
-		wg[2] = 1; /* reserved bytes must be zero */
-		CHECK(!cg_looks_like_wg(wg, 64));
-		wg[2] = 0;
-		wg[0] = 5;
-		CHECK(!cg_looks_like_wg(wg, 64));
-	}
-
-	/* Outer packet sizes: the WireGuard MTU that fills a 1500-byte path is
-	 * 1416 over IPv4 and 1396 over IPv6; the default 1380 fits both. */
-	CHECK_EQ(cg_outer_len(AF_INET, 1416 + CG_WG_OVERHEAD), 1500);
-	CHECK_EQ(cg_outer_len(AF_INET6, 1396 + CG_WG_OVERHEAD), 1500);
-	CHECK_EQ(cg_outer_len(AF_INET6, 1380 + CG_WG_OVERHEAD), 1484);
-	CHECK_EQ(1500 - cg_outer_len(AF_INET6, CG_WG_OVERHEAD), 1396);
+	/* Outer packet sizes: the tun_mtu that fills a 1500-byte path is 1448
+	 * over IPv4 and 1428 over IPv6; the default 1420 fits both. */
+	CHECK_EQ(cg_outer_len(AF_INET, 1448), 1500);
+	CHECK_EQ(cg_outer_len(AF_INET6, 1428), 1500);
+	CHECK_EQ(cg_outer_len(AF_INET6, 1420), 1492); /* CG_TUN_MTU_DEFAULT */
+	CHECK_EQ(1500 - cg_outer_len(AF_INET6, 0), 1428);
 	CHECK_EQ(cg_outer_len(AF_INET, 0), CG_HDR_LEN + 28);
 
 	/* The rescue bit of a reply's bonding tail (version 5). */

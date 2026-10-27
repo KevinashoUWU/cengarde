@@ -60,7 +60,7 @@ static void sim(int eta, double *share1, double *ooo, double *late_ms)
 					   (uint32_t)(free_at[i] > t ? free_at[i] - t : 0), (uint64_t)t);
 		k = eta ? cg_eta_pick(&e, 0x3, 1400, (uint64_t)t) : -1;
 		if (k < 0)
-			k = cg_split_pick(&sp, 0x3, 0x3, 0, w, CG_WGS_DATA, 1400, 256, &flags);
+			k = cg_split_pick(&sp, 0x3, 0x3, 0, w, 1400, 256, &flags);
 		free_at[k] = (free_at[k] > t ? free_at[k] : t) + 1400 * 8 / rate[k] * 1e6;
 		arr = free_at[k] + base[k];
 		if (arr < newest) {

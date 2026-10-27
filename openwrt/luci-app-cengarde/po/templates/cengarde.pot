@@ -16,7 +16,7 @@ msgstr ""
 msgid "cengarde"
 msgstr ""
 
-msgid "Sends every packet of a WireGuard tunnel to a VPS over all the selected uplinks at once, and the first copy to arrive wins: one uplink failing or lagging no longer drops the connection. Setup: copy the cloud-config from the VPS tab when creating the VPS, then enter its IP here, pick the uplinks and enable."
+msgid "Carries the traffic of the router through a tunnel to a VPS, sending every packet over all the selected uplinks at once, and the first copy to arrive wins: one uplink failing or lagging no longer drops the connection. Setup: copy the cloud-config from the VPS tab when creating the VPS, then enter its IP here, pick the uplinks and enable."
 msgstr ""
 
 msgid "General"
@@ -37,7 +37,7 @@ msgstr ""
 msgid "Layer 4 features"
 msgstr ""
 
-msgid "What cengarde does with the TCP it carries, beyond moving packets. Native tunnel mode only (Tunnel tab)."
+msgid "What cengarde does with the TCP it carries, beyond moving packets."
 msgstr ""
 
 msgid "Advanced"
@@ -49,7 +49,7 @@ msgstr ""
 msgid "VPS addresses"
 msgstr ""
 
-msgid "Public IPs of the VPS as the provider shows them, IPv4 and IPv6, in order of preference: each uplink uses the first one of a family it has, and tries the next one when the VPS does not answer there. A name works too: the router looks it up through each uplink (the carrier's DNS first), never through the tunnel, and follows it when its IP changes (dynamic DNS). An MTU above 1396 does not fit if the name has an IPv6 address that the uplinks use."
+msgid "Public IPs of the VPS as the provider shows them, IPv4 and IPv6, in order of preference: each uplink uses the first one of a family it has, and tries the next one when the VPS does not answer there. A name works too: the router looks it up through each uplink (the carrier's DNS first), never through the tunnel, and follows it when its IP changes (dynamic DNS). An MTU above 1428 does not fit if the name has an IPv6 address that the uplinks use."
 msgstr ""
 
 msgid "At most %d addresses"
@@ -127,7 +127,7 @@ msgstr ""
 msgid "VPS cloud-config"
 msgstr ""
 
-msgid "For a new VPS. Paste it as \"user data\" (cloud-init) when creating an Ubuntu 22.04 or 24.04 VPS, e.g. on Vultr. It builds the same cengarde version as this router and sets up WireGuard, NAT and IP pass, with the name and address of this router. Setup log on the VPS: /var/log/cloud-init-output.log."
+msgid "For a new VPS. Paste it as \"user data\" (cloud-init) when creating an Ubuntu 22.04 or 24.04 VPS, e.g. on Vultr. It builds the same cengarde version as this router and sets up the tunnel, NAT and IP pass, with the name and address of this router. Setup log on the VPS: /var/log/cloud-init-output.log."
 msgstr ""
 
 msgid "Copy"
@@ -145,22 +145,10 @@ msgstr ""
 msgid "The command shows once the name and the address in the tunnel are valid and known: after a new secret, save and apply first."
 msgstr ""
 
-msgid "Manage the WireGuard tunnel"
+msgid "Manage the tunnel"
 msgstr ""
 
-msgid "Creates the interface wgcg with the keys derived from the secret and this router's address in the tunnel (VPS tab), in the wan firewall zone. Off: set up WireGuard yourself, cengarde only listens on 127.0.0.1 at the VPS port."
-msgstr ""
-
-msgid "Tunnel mode"
-msgstr ""
-
-msgid "WireGuard: the tunnel goes through the interface wgcg, encrypted. Native (experimental): no WireGuard, cengarde carries the packets itself through the interface cg0, with the same addresses and routes; it is authenticated (nobody can inject or replay packets) but NOT encrypted, so the carriers see the traffic. The VPS has to be in the same mode, for every router it serves: \"sudo cengarde-vps-setup tunnel native\" (or wireguard to go back). A change restarts the engine."
-msgstr ""
-
-msgid "WireGuard"
-msgstr ""
-
-msgid "Native (experimental, not encrypted)"
+msgid "cengarde carries the packets itself through its own interface cg0: authenticated (nobody can inject or replay packets) but NOT encrypted, so the carriers see the traffic. On: cg0 gets this router's address in the tunnel (VPS tab) and its routes, in the wan firewall zone. Off: cengarde still carries what reaches cg0, but its interface, routes and firewall zone are yours to set up."
 msgstr ""
 
 msgid "Route all traffic through the tunnel"
@@ -178,7 +166,7 @@ msgstr ""
 msgid "Protocontroller"
 msgstr ""
 
-msgid "Native mode only. With A or B the router answers the TCP connections of the LAN itself and the VPS opens a fresh one to each destination (cubic, BBR once that leg loses). Between them each connection travels as a plain TCP through the tunnel (A) or, experimental, as GRIT, a reliable stream of cengarde paced by what the uplinks carry instead of by loss (B). It helps TCP uploads such as RTMP over lossy uplinks and long paths beyond the VPS. UDP, QUIC and the rest go through the tunnel as always. The VPS needs \"sudo cengarde-vps-setup protocontroller on\". A change restarts the engine."
+msgid "With A or B the router answers the TCP connections of the LAN itself and the VPS opens a fresh one to each destination (cubic, BBR once that leg loses). Between them each connection travels as a plain TCP through the tunnel (A) or, experimental, as GRIT, a reliable stream of cengarde paced by what the uplinks carry instead of by loss (B). It helps TCP uploads such as RTMP over lossy uplinks and long paths beyond the VPS. UDP, QUIC and the rest go through the tunnel as always. The VPS needs \"sudo cengarde-vps-setup protocontroller on\". A change restarts the engine."
 msgstr ""
 
 msgid "No (the tunnel as always)"
@@ -328,7 +316,7 @@ msgstr ""
 msgid "Tunnel MTU"
 msgstr ""
 
-msgid "In a 1500-byte path, packets of up to 1416 bytes fit over IPv4 and of up to 1396 over IPv6. Larger ones get fragmented, and mobile networks often drop the fragments."
+msgid "In a 1500-byte path, packets of up to 1448 bytes fit over IPv4 and of up to 1428 over IPv6. Larger ones get fragmented, and mobile networks often drop the fragments."
 msgstr ""
 
 msgid "At most %d with an IPv6 VPS address"
@@ -367,7 +355,7 @@ msgstr ""
 msgid "Reorder at the receiver"
 msgstr ""
 
-msgid "The end that receives holds a packet that arrives ahead of a missing one until the missing one comes or its time runs out, and hands them to WireGuard in order. The VPS does the same with what it receives. While every packet is copied over all the uplinks nothing is held, so it changes nothing and costs almost nothing; it is what makes the split below usable."
+msgid "The end that receives holds a packet that arrives ahead of a missing one until the missing one comes or its time runs out, and hands them on in order. The VPS does the same with what it receives. While every packet is copied over all the uplinks nothing is held, so it changes nothing and costs almost nothing; it is what makes the split below usable."
 msgstr ""
 
 msgid "Longest wait for a missing packet (ms)"
@@ -379,13 +367,13 @@ msgstr ""
 msgid "Packets never held, up to (bytes)"
 msgstr ""
 
-msgid "WireGuard packets of up to this size (keepalives, empty TCP ACKs) are handed on at once, and so are the handshakes. 0: only the handshakes. A larger value lets small data packets overtake the big ones that are held, which TCP and QUIC can take for losses."
+msgid "Packets of up to this size (empty TCP ACKs, small control packets) are handed on at once. 0: none. A larger value lets small data packets overtake the big ones that are held, which TCP and QUIC can take for losses."
 msgstr ""
 
 msgid "Split large packets across the uplinks (experimental)"
 msgstr ""
 
-msgid "Instead of a copy over every uplink, each large packet (over 256 bytes, by default) goes over one uplink, chosen by weight; the small ones and the handshakes still go over all of them. This adds up the speed of the uplinks (in the lab, two equal uplinks carried 1.98 times what one does), but it protects less than copying: an uplink that dies keeps its share of the packets until the engine takes it out (about 300 ms by estimate, 1.5 s before that), and the packets sent to it in the meantime are lost; the slowest uplink in the split sets the latency of all (see the largest delay difference below); and a weight above what an uplink can carry fills the queue of its modem and makes the uplink unstable. The VPS follows this router: it splits the download the same way, with the same weights, when the router asks for it, and needs no setting. It needs \"Reorder at the receiver\"."
+msgid "Instead of a copy over every uplink, each large packet (over 256 bytes, by default) goes over one uplink, chosen by weight; the small ones still go over all of them. This adds up the speed of the uplinks (in the lab, two equal uplinks carried 1.98 times what one does), but it protects less than copying: an uplink that dies keeps its share of the packets until the engine takes it out (about 300 ms by estimate, 1.5 s before that), and the packets sent to it in the meantime are lost; the slowest uplink in the split sets the latency of all (see the largest delay difference below); and a weight above what an uplink can carry fills the queue of its modem and makes the uplink unstable. The VPS follows this router: it splits the download the same way, with the same weights, when the router asks for it, and needs no setting. It needs \"Reorder at the receiver\"."
 msgstr ""
 
 msgid "Weight of each uplink in the split"
@@ -403,7 +391,7 @@ msgstr ""
 msgid "Copies to the uplinks out of the split"
 msgstr ""
 
-msgid "On (as up to version 0.6.2): an uplink that leaves the split for its delay carries a copy of every packet, to fill the gaps of the others, and with fewer than two uplinks left in the split everything goes on every uplink. Off: it carries only the small packets and the handshakes, which go on every uplink, and one uplink left in the split carries everything that is split. An uplink falls behind most often because its modem's queue is full: in the first field test the copies loaded the late uplinks even more, and the router dropped thousands of packets; in the lab they helped QUIC. Only for the upload: the VPS has its own setting (on unless changed there)."
+msgid "On (as up to version 0.6.2): an uplink that leaves the split for its delay carries a copy of every packet, to fill the gaps of the others, and with fewer than two uplinks left in the split everything goes on every uplink. Off: it carries only the small packets, which go on every uplink, and one uplink left in the split carries everything that is split. An uplink falls behind most often because its modem's queue is full: in the first field test the copies loaded the late uplinks even more, and the router dropped thousands of packets; in the lab they helped QUIC. Only for the upload: the VPS has its own setting (on unless changed there)."
 msgstr ""
 
 msgid "Probe interval (ms)"
@@ -550,7 +538,7 @@ msgstr ""
 msgid "out of the split"
 msgstr ""
 
-msgid "More than the largest delay difference (Advanced tab) behind the fastest uplink: it carries only the small packets and the handshakes, which go on every uplink, instead of a share of the split, until it catches up."
+msgid "More than the largest delay difference (Advanced tab) behind the fastest uplink: it carries only the small packets, which go on every uplink, instead of a share of the split, until it catches up."
 msgstr ""
 
 msgid "paused"
@@ -634,22 +622,7 @@ msgstr ""
 msgid "connected"
 msgstr ""
 
-msgid "handshake before the clock was set"
-msgstr ""
-
-msgid "The router set its clock after this handshake: the next one, within about two minutes of traffic, shows its age."
-msgstr ""
-
-msgid "no handshake for %s"
-msgstr ""
-
-msgid "handshake %s"
-msgstr ""
-
-msgid "Native tunnel (not encrypted)"
-msgstr ""
-
-msgid "WireGuard tunnel"
+msgid "Tunnel (not encrypted)"
 msgstr ""
 
 msgid "IPv6 address in the tunnel"

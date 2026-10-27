@@ -11,7 +11,8 @@
  * the receiver's reorderer, active.h).
  *
  * Every datagram between client and server carries a 24-byte header followed
- * by the payload (a WireGuard datagram for DATA). All integers are big-endian.
+ * by the payload (an IP packet from the TUN for DATA, or a protocontroller
+ * stream's message). All integers are big-endian.
  *
  *   0       ver(4 bits) | type(4 bits)
  *   1       flags          (CG_F_*, by type)
@@ -73,7 +74,7 @@
 #define CG_KEY_LEN 32 /* shared secret: c2s key || s2c key */
 
 enum cg_type {
-	CG_T_DATA = 1,        /* payload: WireGuard datagram */
+	CG_T_DATA = 1,        /* payload: an IP packet (or a protocontroller stream's message) */
 	CG_T_PROBE = 2,       /* client -> server, one link; payload: cg_probe_info */
 	CG_T_PROBE_REPLY = 3, /* server -> client, same path; payload: cg_probe_info */
 	CG_T_HELLO = 4,       /* server -> client, to a probe it cannot take yet; payload: cg_hello */
@@ -377,21 +378,13 @@ unsigned cg_nack_read(uint32_t *seq, unsigned max, const uint8_t *payload, size_
 void cg_hello_write(uint8_t out[CG_HELLO_LEN], const struct cg_hello *hl);
 void cg_hello_read(struct cg_hello *hl, const uint8_t in[CG_HELLO_LEN]);
 
-/* Size of the IP packet that carries a datagram of len bytes (WireGuard's)
- * over family AF_INET or AF_INET6: IP header, UDP header and ours. */
+/* Size of the IP packet that carries a payload of len bytes (an IP packet
+ * from the TUN) over family AF_INET or AF_INET6: IP header, UDP header and
+ * ours. The largest tun_mtu over a path MTU is mtu - cg_outer_len(family, 0):
+ * 1448 over IPv4 and 1428 over IPv6 on a 1500-byte path. */
 static inline uint32_t cg_outer_len(int family, uint32_t len)
 {
 	return len + CG_HDR_LEN + 8 + (family == AF_INET6 ? 40 : 20);
 }
-
-/* What WireGuard adds to each packet it carries: 16 bytes of header and 16
- * of tag. The largest WireGuard MTU over a path MTU is therefore
- * mtu - cg_outer_len(family, CG_WG_OVERHEAD): 1416 over IPv4 and 1396 over
- * IPv6 on a 1500-byte path. */
-#define CG_WG_OVERHEAD 32
-
-/* Does buf have the shape of a WireGuard message (type 1-4, reserved bytes
- * zero, fixed handshake sizes, data >= 32 bytes)? See docs/historias/002. */
-int cg_looks_like_wg(const uint8_t *buf, size_t len);
 
 #endif

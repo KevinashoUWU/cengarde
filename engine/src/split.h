@@ -18,10 +18,9 @@
  *   a a a a a b c, so a link's share is spread out instead of sent in bursts
  *   that fill its queue. The credits of the links that left the set are
  *   zeroed, so a link that comes back starts even.
- * - Duplicated packets (pick -1): WireGuard's handshake messages (types 1 to
- *   3: a lost one costs a retry of seconds), small datagrams (keepalives, TCP
- *   ACKs: their loss costs more than the bytes saved) and everything while
- *   no link is eligible. They go to every carrier, as without a split.
+ * - Duplicated packets (pick -1): small packets (TCP ACKs, handshakes: their
+ *   loss costs more than the bytes saved) and everything while no link is
+ *   eligible. They go to every carrier, as without a split.
  * - Guard G2: with fewer than 2 eligible links everything goes to every
  *   carrier, as up to 0.6.2. With split_spread_copy off, one eligible link
  *   takes every packet that would be split instead, so long as it is not
@@ -63,7 +62,6 @@
 #include "health.h"  /* struct cg_hlink: each link's delay */
 #include "proto.h"   /* CG_F_SPLIT, struct cg_probe_bond */
 #include "tickle.h"  /* struct cg_tickle */
-#include "wgsize.h"  /* CG_WGS_DATA */
 
 /* Guard G3: a link with no verified packet from the peer for more than this
  * many probe intervals is not eligible, though it still carries the
@@ -100,10 +98,9 @@ static inline void cg_split_reset(struct cg_split *s)
  * every carrier); eligible: the links that may take a share (above); dup0:
  * the links that carry every packet (weight 0, and with split_spread_copy
  * the ones G4 keeps out; any of them in eligible is ignored); w: the weights
- * (0: none); wgtype and len: the WireGuard message type (its first byte, 0
- * for an empty datagram) and the datagram's length, 32 bytes of overhead
- * included as in wgsize.h; small_len: datagrams of up to this many bytes
- * are duplicated.
+ * (0: none); len: the packet's length (the DATA payload: an IP packet, or a
+ * protocontroller stream's message); small_len: packets of up to this many
+ * bytes are duplicated.
  *
  * Returns the link that carries the packet, to which cg_split_dst adds the
  * weight-0 links, and ORs CG_F_SPLIT into *flags (NULL: not asked), the
@@ -116,8 +113,7 @@ static inline void cg_split_reset(struct cg_split *s)
  * packet first, while its bucket lasts. */
 static inline int cg_split_pick_eta(struct cg_split *s, struct cg_eta *eta, struct cg_tickle *pr, uint64_t now_us,
 				    uint16_t carriers,
-				    uint16_t eligible, uint16_t dup0, const uint16_t w[CG_MAX_LINKS], uint8_t wgtype,
-				    uint32_t len, uint32_t small_len, uint8_t *flags)
+				    uint16_t eligible, uint16_t dup0, const uint16_t w[CG_MAX_LINKS], uint32_t len, uint32_t small_len, uint8_t *flags)
 {
 	uint16_t set = 0, keep, copies = dup0;
 	int32_t total = 0;
@@ -138,7 +134,7 @@ static inline int cg_split_pick_eta(struct cg_split *s, struct cg_eta *eta, stru
 		if (!(keep >> i & 1))
 			s->cur[i] = 0;
 
-	if (wgtype != CG_WGS_DATA || len <= small_len || !set) {
+	if (len <= small_len || !set) {
 		s->n_by[CG_SPLIT_BY_ALL]++;
 		return -1;
 	}
@@ -201,10 +197,9 @@ static inline int cg_split_pick_eta(struct cg_split *s, struct cg_eta *eta, stru
 }
 
 static inline int cg_split_pick(struct cg_split *s, uint16_t carriers, uint16_t eligible, uint16_t dup0,
-				const uint16_t w[CG_MAX_LINKS], uint8_t wgtype, uint32_t len, uint32_t small_len,
-				uint8_t *flags)
+				const uint16_t w[CG_MAX_LINKS], uint32_t len, uint32_t small_len, uint8_t *flags)
 {
-	return cg_split_pick_eta(s, NULL, NULL, 0, carriers, eligible, dup0, w, wgtype, len, small_len, flags);
+	return cg_split_pick_eta(s, NULL, NULL, 0, carriers, eligible, dup0, w, len, small_len, flags);
 }
 
 /* The links a packet is sent on, given what cg_split_pick returned: every

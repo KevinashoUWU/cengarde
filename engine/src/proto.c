@@ -131,24 +131,6 @@ void cg_probe_info_write(uint8_t out[CG_PROBE_INFO_LEN], const struct cg_probe_i
 	put32(out + 36, pi->tx_next);
 }
 
-int cg_looks_like_wg(const uint8_t *buf, size_t len)
-{
-	if (len < 32 || buf[1] || buf[2] || buf[3])
-		return 0;
-	switch (buf[0]) {
-	case 1:
-		return len == 148;
-	case 2:
-		return len == 92;
-	case 3:
-		return len == 64;
-	case 4:
-		return 1;
-	default:
-		return 0;
-	}
-}
-
 void cg_probe_info_read(struct cg_probe_info *pi, const uint8_t in[CG_PROBE_INFO_LEN])
 {
 	pi->echo_ts = get32(in);

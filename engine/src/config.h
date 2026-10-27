@@ -14,31 +14,23 @@
  * stops answering on its addresses; /etc/hosts goes first, once, when the
  * file is read.
  *
- * A server serves one client with the global key, or several, one
- * [client NAME] section each:
+ * The tunnel carries IP packets from a TUN device each end owns
+ * (tunnel = native, the only kind: authenticated, not encrypted). Both ends
+ * take tun (cg0), tun_addr and tun_mtu; a server routes what the kernel
+ * puts in its TUN by tun_route, the prefixes each client owns.
+ *
+ * A server serves one client with the global key (which owns everything in
+ * the TUN unless tun_route says otherwise), or several, one [client NAME]
+ * section each:
  *
  *   mode = server
- *   forward_file = /var/lib/cengarde/forward
- *   wireguard_port_file = /var/lib/cengarde/wg/ports
- *
- *   [client alpha]
- *   key = <the router's key>
- *   wireguard = 127.0.0.1:65501
- *   wireguard_poke = 10.79.12.34:9
- *   forward = tcp:9000=22 udp:5000-5010
- *
- * tunnel = native (experimental) carries IP packets from a TUN device each
- * end owns instead of WireGuard's datagrams: authenticated, not encrypted.
- * Both ends take tun (cg0), tun_addr and tun_mtu; a server routes what the
- * kernel puts in its TUN by tun_route, the prefixes each client owns (in
- * its [client NAME] section; one client without it owns everything):
- *
- *   tunnel = native
  *   tun_addr = 10.79.0.1/16
+ *   forward_file = /var/lib/cengarde/forward
  *
  *   [client alpha]
  *   key = <the router's key>
  *   tun_route = 10.79.12.34/32 192.168.1.0/24
+ *   forward = tcp:9000=22 udp:5000-5010
  *
  * SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef CG_CONFIG_H
@@ -86,12 +78,6 @@ void cg_ini_free(struct cg_ini *ini);
 /* ---- typed configuration ---- */
 
 enum cg_mode { CG_MODE_CLIENT = 1, CG_MODE_SERVER = 2 };
-
-/* What the tunnel carries (tunnel = ...): WireGuard's datagrams, between
- * a local WireGuard and cengarde's UDP sockets (the default), or raw IP
- * packets from a TUN device cengarde owns (native: authenticated by the
- * MAC, not encrypted). */
-enum cg_tunnel { CG_TUNNEL_WIREGUARD = 0, CG_TUNNEL_NATIVE = 1 };
 
 #define CG_TUN_ADDRS 4         /* tun_addr entries */
 #define CG_TUN_MTU_DEFAULT 1420 /* 1500 - IPv6 - UDP - the cengarde header, rounded down */
@@ -159,8 +145,7 @@ struct cg_name_cfg {
 	struct cg_nameaddrs addrs; /* hosts only */
 };
 
-/* A client of a server, a [client NAME] section. Its WireGuard address is
- * the global one unless it has its own. */
+/* A client of a server, a [client NAME] section. */
 #define CG_CLIENT_NAME 32     /* room for a name, with its NUL */
 #define CG_CLIENT_NAME_MAX 12 /* the longest name: cg-NAME fits in IFNAMSIZ */
 struct cg_client_cfg {
@@ -169,10 +154,7 @@ struct cg_client_cfg {
 	uint8_t key[CG_KEY_LEN];
 	int enabled;     /* no: its probes are refused (a HELLO with CG_F_REFUSED) */
 	int passthrough; /* may hold IP pass */
-	struct sockaddr_storage wireguard;
-	struct sockaddr_storage wireguard_poke; /* AF_UNSPEC: none */
-	/* tunnel = native: the prefixes it owns in the server's TUN
-	 * (tunroute.h). */
+	/* the prefixes it owns in the server's TUN (tunroute.h) */
 	int ntun_route;
 	struct cg_pfx tun_route[CG_TUN_ROUTES];
 };
@@ -188,9 +170,8 @@ struct cg_config {
 	int rcvbuf;
 	int log_level;
 
-	/* The tunnel (enum cg_tunnel), and with native its TUN device: name,
-	 * addresses set on it ("": the system sets them) and MTU. */
-	int tunnel;
+	/* The tunnel's TUN device: name, addresses set on it ("": the system
+	 * sets them) and MTU. */
 	char tun[IFNAMSIZ];
 	int ntun_addr;
 	struct cg_pfx tun_addr[CG_TUN_ADDRS];
@@ -209,7 +190,7 @@ struct cg_config {
 	 * ends. Each end reorders what it receives with them (reorder.h): the
 	 * client its download, the server each session's upload; and split
 	 * shares out what each end sends (split.h). */
-	int reorder;                  /* put the peer's DATA back in sequence before WireGuard */
+	int reorder;                  /* put the peer's DATA back in sequence before the TUN */
 	uint32_t reorder_max_wait_ms; /* the longest a missing packet holds back the ones behind it */
 	uint32_t reorder_dup_wait_ms; /* the same where nothing is split (<= reorder_max_wait_ms) */
 	uint32_t reorder_margin_ms;   /* added to the slowest link's delay when waiting for a gap */
@@ -229,7 +210,7 @@ struct cg_config {
 	uint32_t reorder_pool_kb;     /* memory for the packets it holds; changing it restarts */
 	/* The protocontroller (story 025, protoctlio.h): TCP split at both
 	 * ends, a plain TCP (variant A) or a reliable stream of cengarde's
-	 * (variant B) in the middle; native tunnel only. Changing any of these
+	 * (variant B) in the middle. Changing any of these
 	 * restarts the connections. */
 	int protocontroller;          /* CG_PCTL_NO, _A or _B (protoctlio.h): router, take the LAN's TCP redirected to protocontroller_port; VPS, open what routers ask (A and B) */
 	uint32_t protocontroller_port;            /* router: the listening port the firewall redirects to */
@@ -243,7 +224,7 @@ struct cg_config {
 	char protocontroller_cc[16];              /* VPS: the congestion control toward the destination ("": the kernel's; auto: the kernel's, BBR once it loses) */
 	char protocontroller_mid_cc[16];          /* variant A: the middle TCP's congestion control, each end for what it sends (bbr; "": the kernel's) */
 	char protocontroller_vps[64];             /* router, variant A: the VPS's tunnel address ("": the tunnel prefix's first address) */
-	int tcp_aware;                /* native: mark inner TCP's retransmissions and ACKs free (tcpfree.h) */
+	int tcp_aware;                /* mark inner TCP's retransmissions and ACKs free (tcpfree.h) */
 	uint32_t reorder_idle_ms;     /* EXPERIMENT: the reorderer stops waiting for a link that brought no data this long; 0: off */
 	uint32_t reorder_retx_release_ms; /* a TCP retransmission gives up the gaps held this long before it; 0: off */
 	int fec;                      /* send a parity of each group of split DATA, rebuild from it (fec.h) */
@@ -338,7 +319,6 @@ struct cg_config {
 	uint32_t io_queue; /* entries of each hub -> pump ring, a power of two */
 
 	/* server */
-	struct sockaddr_storage wireguard; /* AF_UNSPEC: none (every [client] has its own) */
 	uint32_t max_sessions; /* a limit, applied in place by a reload */
 	uint32_t session_timeout_ms;
 	uint32_t path_timeout_ms;
@@ -350,13 +330,8 @@ struct cg_config {
 	struct cg_fwd_rule *forward;
 	int nforward;
 	char forward_file[256]; /* the forward table (fwdtable.h); "": none */
-	char wireguard_port_file[256]; /* each client's port WireGuard knows (wgport.h); "": none */
 	uint32_t lanes;             /* listen sockets steered by link id (steer.h); 1: one socket */
-	/* The client's address in the tunnel: a datagram there makes WireGuard
-	 * start a handshake when it ignores the client's (wgwatch.h). Family
-	 * AF_UNSPEC: never. */
-	struct sockaddr_storage wireguard_poke;
-	/* tunnel = native, one client: the prefixes it owns in the TUN
+	/* One client: the prefixes it owns in the TUN
 	 * (default 0.0.0.0/0 and ::/0); with [client] sections, each its own. */
 	int ntun_route;
 	struct cg_pfx tun_route[CG_TUN_ROUTES];

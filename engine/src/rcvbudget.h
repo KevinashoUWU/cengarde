@@ -15,10 +15,9 @@
  *   budget = udp_mem[1] x page / 2
  * and each gets min(rcvbuf, budget / (2 x sockets)) as its SO_RCVBUF,
  * since the kernel doubles that value. The sockets are the lanes of the
- * groups that hold a router (an empty group receives nothing), one
- * WireGuard socket per router (its active session's) and the junk socket.
- * On a 1 GB VPS with one router: 8 lanes + 1 + 1 = 10 sockets, about
- * 3.2 MiB each. udp_mem itself is left alone: raising it on a small box
+ * groups that hold a router (an empty group receives nothing) and the
+ * junk socket (the TUN is not a UDP socket). On a 1 GB VPS with one
+ * router: 8 lanes + 1 = 9 sockets, about 3.6 MiB each. udp_mem itself is left alone: raising it on a small box
  * trades UDP drops for the OOM killer.
  *
  * SPDX-License-Identifier: GPL-3.0-or-later */
@@ -80,10 +79,10 @@ static inline void cg_udp_mem_estimate(uint64_t ram, uint64_t page, uint64_t mem
 }
 
 /* Receiving sockets: the lanes of the groups that hold at least one router,
- * one WireGuard socket per router, and the junk socket when there is one. */
-static inline uint32_t cg_rcvbudget_sockets(uint32_t lanes, uint32_t groups_used, uint32_t routers, int junk)
+ * and the junk socket when there is one. */
+static inline uint32_t cg_rcvbudget_sockets(uint32_t lanes, uint32_t groups_used, int junk)
 {
-	return lanes * groups_used + routers + (junk ? 1 : 0);
+	return lanes * groups_used + (junk ? 1 : 0);
 }
 
 /* udp_mem: NULL when unknown (no cap). page: bytes per page. rcvbuf: the

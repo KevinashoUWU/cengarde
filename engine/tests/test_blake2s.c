@@ -107,14 +107,8 @@ static void counter_secret(uint8_t s[CG_PAIR_LEN], uint32_t n)
 void test_pair(void)
 {
 	static const char *want[2][CG_PAIR_NKEYS] = {
-		{ "de0c339245be68b01200b54d79b2252ce68c9f003b0c295da272d4a5ef86b2c2",
-		  "68674045be71fadf3aa5767aa515cb7ab793dda99808773b2b31d03c79749448",
-		  "3027876fd47dd41e566098ca264292b0b94db9526d7f723c983e73e531c90c63",
-		  "3c77c5b078ecf32e983c6a1d399d1952b3d623f28b4ce683ba1526364dede60f" },
-		{ "35db58444c9a9404df51720b33ae8053e975cf9c08b14f18b03747480989ed0f",
-		  "2810950d72e786a47b97c26d4571e268cd1af008e2f66c48be612d443303ba4d",
-		  "40be0b23243987470f807af1d9c2fa175b19f2606adfa582af97789c56c7bf72",
-		  "b7d45d88e88a061573748c17db6020646cfb9c1d4704ae139a4c2646e8b13329" },
+		{ "de0c339245be68b01200b54d79b2252ce68c9f003b0c295da272d4a5ef86b2c2" },
+		{ "35db58444c9a9404df51720b33ae8053e975cf9c08b14f18b03747480989ed0f" },
 	};
 	/* Tunnel addresses of the same secrets, and the hint of their link key. */
 	static const struct {
@@ -159,10 +153,7 @@ void test_pair(void)
 		CHECK_EQ(cg_client_hint(out), tun[s].hint);
 	}
 
-	/* WireGuard private keys are clamped Curve25519 scalars. */
-	cg_pair_derive(out, secret[1], CG_PAIR_WG_CLIENT);
-	CHECK((out[0] & 7) == 0 && (out[31] & 0xc0) == 0x40);
-	CHECK(!strcmp(cg_pair_name(CG_PAIR_WG_PSK), "WG_PSK"));
+	CHECK(!strcmp(cg_pair_name(CG_PAIR_LINK), "LINK_KEY"));
 
 	/* The hint keyed directly with 00..1f. */
 	CHECK_EQ(cg_client_hint(secret[0]), 198);

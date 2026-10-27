@@ -24,7 +24,6 @@
 #include "engine.h" /* cg_thread_normal */
 #include "log.h"
 #include "util.h"
-#include "wgsize.h"
 
 void cg_json_init(struct cg_json *j)
 {
@@ -208,36 +207,6 @@ void cg_json_joint(struct cg_json *j, const char *k, const struct cg_arrivals *a
 		json_masks(j, NULL, a->late[d]);
 	cg_json_end(j, ']');
 	cg_json_u64(j, "other", a->other);
-	cg_json_end(j, '}');
-}
-
-static void json_wgs(struct cg_json *j, const char *k, const struct cg_wgs *w)
-{
-	cg_json_obj(j, k);
-	cg_json_arr(j, "data");
-	for (unsigned i = 0; i < CG_WGS_N; i++)
-		cg_json_u64(j, NULL, w->data[i]);
-	cg_json_end(j, ']');
-	cg_json_arr(j, "data_bytes");
-	for (unsigned i = 0; i < CG_WGS_N; i++)
-		cg_json_u64(j, NULL, w->data_bytes[i]);
-	cg_json_end(j, ']');
-	cg_json_u64(j, "init", w->msg[CG_WGS_INIT]);
-	cg_json_u64(j, "response", w->msg[CG_WGS_RESPONSE]);
-	cg_json_u64(j, "cookie", w->msg[CG_WGS_COOKIE]);
-	cg_json_u64(j, "other", w->msg[CG_WGS_OTHER]);
-	cg_json_end(j, '}');
-}
-
-void cg_json_sizes(struct cg_json *j, const char *k, const struct cg_wgs *up, const struct cg_wgs *down)
-{
-	cg_json_obj(j, k);
-	cg_json_arr(j, "edges");
-	for (unsigned i = 0; i < CG_WGS_N - 1; i++)
-		cg_json_u64(j, NULL, cg_wgs_edge(i));
-	cg_json_end(j, ']');
-	json_wgs(j, "up", up);
-	json_wgs(j, "down", down);
 	cg_json_end(j, '}');
 }
 
@@ -622,7 +591,7 @@ static void *writer_main(void *arg)
 		while (!w->buf && !w->stop)
 			pthread_cond_wait(&w->cv, &w->mu);
 		/* What was handed on before the stop is written first: the last
-		 * port WireGuard knows a client by has to outlive the engine. */
+		 * change has to outlive the engine. */
 		if (!w->buf)
 			break;
 		buf = w->buf;

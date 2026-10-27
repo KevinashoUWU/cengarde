@@ -7,12 +7,8 @@
 
 static const struct {
 	const char *label, *name;
-	int clamp;
 } keys[CG_PAIR_NKEYS] = {
-	[CG_PAIR_LINK] = { "link", "LINK_KEY", 0 },
-	[CG_PAIR_WG_SERVER] = { "wg-server", "WG_SERVER_KEY", 1 },
-	[CG_PAIR_WG_CLIENT] = { "wg-client", "WG_CLIENT_KEY", 1 },
-	[CG_PAIR_WG_PSK] = { "wg-psk", "WG_PSK", 0 },
+	[CG_PAIR_LINK] = { "link", "LINK_KEY" },
 };
 
 static const char prefix[] = "cengarde pairing v1: ";
@@ -36,11 +32,6 @@ const char *cg_pair_name(enum cg_pair_key k)
 void cg_pair_derive(uint8_t out[CG_PAIR_LEN], const uint8_t secret[CG_PAIR_LEN], enum cg_pair_key k)
 {
 	derive(out, secret, keys[k].label);
-	if (keys[k].clamp) { /* Curve25519 scalar */
-		out[0] &= 248;
-		out[31] &= 127;
-		out[31] |= 64;
-	}
 }
 
 void cg_pair_tunnel4(uint8_t out[4], const uint8_t secret[CG_PAIR_LEN])

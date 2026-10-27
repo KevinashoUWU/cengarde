@@ -1,8 +1,8 @@
-/* cengarde client: one socket per uplink, every WireGuard datagram goes out on
- * every carrying uplink, and the first copy of each server datagram goes back
- * to WireGuard.
+/* cengarde client: one socket per uplink, every IP packet from the TUN
+ * (tunnel = native) goes out on every carrying uplink, and the first copy of
+ * each server datagram goes back to the TUN.
  *
- * Upload: recvmmsg from WireGuard, MAC each packet once, then one
+ * Upload: a batch read from the TUN, MAC each packet once, then one
  * non-blocking sendmmsg per uplink, patching only the link byte. A full
  * uplink drops its own copies; it never stalls the others. Link health
  * (health.h) mutes uplinks that lag far behind the fastest one, from the
@@ -16,7 +16,7 @@
  * checked, so only the first copy of each packet pays for verification. A
  * server that started over with a sequence behind the window is recognised
  * from its probe replies (epoch.h), and the window starts again. The first
- * copies go to WireGuard in sequence (reorder.h, story 012): one that comes
+ * copies go to the TUN in sequence (reorder.h, story 012): one that comes
  * in ahead of a missing one waits in a pool buffer until the missing one
  * comes, every link brought a later one, or its deadline, which the loop's
  * epoll timeout keeps; with nothing split and reorder_dup_wait_ms 0 nothing
@@ -98,10 +98,9 @@
 #include "ippkt.h"
 #include "tun.h"
 #include "util.h"
-#include "wgsize.h"
 
 #define RECONCILE_MS 5000
-/* The output batch to WireGuard: a hub pass takes up to CG_BATCH slots of
+/* The output batch to the TUN: a hub pass takes up to CG_BATCH slots of
  * each pump; a fuller batch (held packets released) is sent early. */
 #define DOUT_MAX (CG_MAX_PUMPS * CG_BATCH)
 
@@ -187,13 +186,8 @@ struct client {
 	uint32_t session;
 	struct cg_txs txs; /* sequence and key up */
 	struct cg_rxs rxs; /* window, arrivals and counters down (clientpath.h) */
-	/* wg_fd: the UDP socket WireGuard sends to, or with tunnel = native
-	 * (native) the TUN device, whose packets go the same way. */
-	int ep, wg_fd, tfd;
+	int ep, tun_fd, tfd; /* tun_fd: the TUN device */
 	uint64_t ticks_missed, tick_max_us; /* timer expirations the tick ran late for, and its longest run */
-	int native;
-	struct sockaddr_storage wg_peer;
-	int have_peer;
 	struct cg_nl nl;
 	struct link link[CG_MAX_LINKS];
 	struct cg_hlink uh[CG_MAX_LINKS]; /* upload health, by link id */
@@ -257,18 +251,17 @@ struct client {
 	struct cg_split_tail tail; /* which reply that was (split.h) */
 	int8_t pick[CG_BATCH]; /* per packet of an upload batch: its one link (split), or -1 (every carrier) */
 	uint16_t cmask[CG_BATCH]; /* with a link's pace_ms: the carriers a packet of every carrier goes on */
-	uint32_t up_max;     /* largest WireGuard datagram since the last path check */
+	uint32_t up_max;     /* largest packet from the TUN since the last path check */
 	uint32_t up_largest; /* the same over the last check period, for the status */
-	uint64_t down_pkts, down_bytes, down_wg_drops, down_no_peer;
-	uint64_t down_not_ip; /* native: DATA that was not an IP packet, never written to the TUN */
+	uint64_t down_pkts, down_bytes, down_tun_drops;
+	uint64_t down_not_ip; /* DATA that was not an IP packet, never written to the TUN */
 	struct cg_pctl *pctl;   /* the protocontroller (variant B) (protoctlio.h, story 025), NULL: off */
 	uint64_t down_pctl_off; /* protocontroller stream messages that came with the protocontroller off */
-	/* native, tcp_aware: inner TCP's retransmissions and segments without
+	/* tcp_aware: inner TCP's retransmissions and segments without
 	 * data go marked CG_F_FREE (tcpfree.h); the flow hash's seed */
 	struct cg_tcpf tcpf;
 	uint32_t flow_seed;
-	struct cg_wgs wgs_up, wgs_down; /* WireGuard's datagrams read, and first copies to it (wgsize.h) */
-	struct cg_ratelimit rl_auth, rl_big, rl_wg, rl_full, rl_hello, rl_refused;
+	struct cg_ratelimit rl_auth, rl_big, rl_tun, rl_full, rl_hello, rl_refused;
 
 	/* Link sockets (pump.h): the mode in use, and the pumps of off and on. */
 	int lt;                          /* CG_LT_LEGACY, CG_LT_OFF or CG_LT_ON */
@@ -294,10 +287,10 @@ struct client {
 	unsigned send_first;             /* rotates the order links send a batch in */
 	struct cg_hist hop[CG_MAX_PUMPS]; /* download: from a pump's read to this loop's take, us */
 
-	/* The output batch to WireGuard, every mode: the first copies of a pass
+	/* The output batch to the TUN, every mode: the first copies of a pass
 	 * and the held packets it releases, in delivery order (DOUT_MAX entries,
 	 * dq used), and the pool buffers dnbuf of them are in, given back only
-	 * once the sendmmsg that carried them returned. */
+	 * once they were written. */
 	struct mmsghdr *dmsg;
 	struct iovec *diov;
 	int dq, dnbuf;
@@ -1176,29 +1169,20 @@ static void names_tick(struct client *c, uint64_t now_ms)
 }
 
 /* Every RECONCILE_MS: the path MTU of each socket, and a warning when the
- * largest WireGuard datagram since the last check does not fit it. */
+ * largest packet from the TUN since the last check does not fit it. */
 static void path_check(struct client *c, uint64_t now_ms)
 {
 	for (int i = 0; i < CG_MAX_LINKS; i++) {
 		struct link *l = &c->link[i];
 		int f = l->remote.ss_family;
-		uint32_t need = cg_outer_len(f, c->up_max), wrap = cg_outer_len(f, CG_WG_OVERHEAD);
+		uint32_t need = cg_outer_len(f, c->up_max), wrap = cg_outer_len(f, 0);
 
 		if (l->fd < 0)
 			continue;
 		l->path_mtu = sock_path_mtu(l->fd, f);
-		if (c->native)
-			wrap = cg_outer_len(f, 0);
-		if (c->up_max && l->path_mtu && need > l->path_mtu && c->native &&
-		    cg_ratelimit_ok(&l->rl_mtu, now_ms, 600000))
+		if (c->up_max && l->path_mtu && need > l->path_mtu && cg_ratelimit_ok(&l->rl_mtu, now_ms, 600000))
 			cg_warn("link %s: packets of %u bytes from the TUN make %u-byte packets over IPv%c, more than its "
 				"path MTU of %u: lower tun_mtu to %u",
-				l->ifname, c->up_max, need, f == AF_INET6 ? '6' : '4', l->path_mtu,
-				l->path_mtu > wrap ? l->path_mtu - wrap : 0);
-		else if (!c->native && c->up_max && l->path_mtu && need > l->path_mtu &&
-			 cg_ratelimit_ok(&l->rl_mtu, now_ms, 600000))
-			cg_warn("link %s: WireGuard datagrams of %u bytes make %u-byte packets over IPv%c, more than its path "
-				"MTU of %u: lower the WireGuard MTU to %u",
 				l->ifname, c->up_max, need, f == AF_INET6 ? '6' : '4', l->path_mtu,
 				l->path_mtu > wrap ? l->path_mtu - wrap : 0);
 	}
@@ -2118,7 +2102,7 @@ static const struct cg_tcpe_view *tcpe_view(const struct client *c, uint32_t now
 	return v;
 }
 
-/* Where an upload batch goes, decided once per batch (wg_read, up_send). */
+/* Where an upload batch goes, decided once per batch (tun_read, up_send). */
 struct upctx {
 	uint64_t now_ms;
 	uint16_t present, live, carry, dup0, esolo;
@@ -2337,8 +2321,8 @@ static void up_begin(struct client *c, uint64_t now_ms, struct upctx *u)
 	u->tv_done = 0;
 }
 
-/* Packet m of the batch: buf, len bytes (an IP packet from the TUN, a
- * WireGuard datagram, or a protocontroller stream's message, story 025: copy, a
+/* Packet m of the batch: buf, len bytes (an IP packet from the TUN, or a
+ * protocontroller stream's message, story 025: copy, a
  * priority copy where the links have room; split, on every carrier). */
 static void up_one(struct client *c, struct upctx *u, int m, uint8_t *buf, size_t len, uint64_t now_us, int copy)
 {
@@ -2366,13 +2350,12 @@ static void up_one(struct client *c, struct upctx *u, int m, uint8_t *buf, size_
 			      : split && !c->dom.out
 				      ? cg_split_pick_eta(&c->sp, c->cfg->split_eta ? &c->eta : NULL,
 							  c->cfg->split_eta ? &c->tk : NULL, now_us, u->k.carriers,
-							  stress ? 0 : elig, u->k.dup, u->w, c->native ? CG_WGS_DATA : buf[0],
-							  (uint32_t)len, c->cfg->split_small, &flags)
+							  stress ? 0 : elig, u->k.dup, u->w, (uint32_t)len, c->cfg->split_small, &flags)
 				      : cg_slot_pick(u->esolo, (uint32_t)len, CG_PACE_SMALL, &flags));
 	c->up_split += c->pick[m] >= 0;
 	c->tcpk[m] = 0;
 	c->tcpr[m] = CG_TCPA_UNKNOWN;
-	if (c->native && c->cfg->tcp_aware) {
+	if (c->cfg->tcp_aware) {
 		struct cg_flow f;
 
 		if (cg_flow_of(buf, len, c->flow_seed, &f)) {
@@ -2421,13 +2404,12 @@ static void up_one(struct client *c, struct upctx *u, int m, uint8_t *buf, size_
 	c->oiov[m][1].iov_len = len;
 	c->up_pkts++;
 	c->up_bytes += len;
-	cg_wgs_add(&c->wgs_up, buf, len);
 }
 
-static void wg_read(struct client *c)
+static void tun_read(struct client *c)
 {
 	for (int round = 0; round < CG_MAX_ROUNDS; round++) {
-		int n = c->native ? cg_tun_rx(c->wg_fd, &c->in) : cg_rx(c->wg_fd, &c->in), m = 0;
+		int n = cg_tun_rx(c->tun_fd, &c->in), m = 0;
 		uint64_t now_us, now_ms;
 		struct upctx u;
 
@@ -2445,16 +2427,8 @@ static void wg_read(struct client *c)
 			if ((c->in.msg[i].msg_hdr.msg_flags & MSG_TRUNC) || len > CG_MAX_PAYLOAD) {
 				c->up_toobig++;
 				if (cg_ratelimit_ok(&c->rl_big, now_ms, 30000))
-					cg_warn("%s larger than %d bytes dropped: lower the %s MTU",
-						c->native ? "packet" : "WireGuard datagram", CG_MAX_PAYLOAD,
-						c->native ? "TUN" : "WireGuard");
+					cg_warn("packet larger than %d bytes dropped: lower tun_mtu", CG_MAX_PAYLOAD);
 				continue;
-			}
-			/* Downstream goes back to whoever last sent something shaped like
-			 * WireGuard, not to any local sender. A TUN has no sender. */
-			if (!c->native && cg_looks_like_wg(c->in.buf[i], len)) {
-				c->wg_peer = c->in.from[i];
-				c->have_peer = 1;
 			}
 			up_one(c, &u, m++, c->in.buf[i], len, now_us, 0);
 		}
@@ -2715,58 +2689,40 @@ static void rx_verdict_log(struct client *c, struct link *l, enum cg_rxv v, uint
 		cg_dbg("link %s: the server asks for a cookie (a new session, link or address)", l->ifname);
 }
 
-/* Sends q datagrams to WireGuard, never waiting: what does not fit is
- * dropped, as a full link drops its own copies. */
-static void wg_send(struct client *c, struct mmsghdr *m, int q, uint64_t now_ms)
+/* Writes q packets to the TUN, never waiting: what does not fit is
+ * dropped, as a full link drops its own copies. One write per packet, each
+ * checked first: the MAC says who sent it, this that the kernel gets an IP
+ * packet. */
+static void tun_send(struct client *c, struct mmsghdr *m, int q, uint64_t now_ms)
 {
-	int s;
-
 	c->last_traffic_ms = now_ms;
-	if (c->native) {
-		/* One write per packet, each checked first: the MAC says who
-		 * sent it, this that the kernel gets an IP packet. */
-		for (int i = 0; i < q; i++) {
-			const struct iovec *v = m[i].msg_hdr.msg_iov;
+	for (int i = 0; i < q; i++) {
+		const struct iovec *v = m[i].msg_hdr.msg_iov;
 
-			if (!cg_ip_check(v->iov_base, v->iov_len)) {
-				c->down_not_ip++;
-				continue;
-			}
-			if (cg_tun_tx(c->wg_fd, v->iov_base, v->iov_len) < 0) {
-				c->down_wg_drops++;
-				if (errno != EAGAIN && cg_ratelimit_ok(&c->rl_wg, now_ms, 10000))
-					cg_warn("write to %s: %s", c->cfg->tun, strerror(errno));
-			}
+		if (!cg_ip_check(v->iov_base, v->iov_len)) {
+			c->down_not_ip++;
+			continue;
 		}
-		return;
-	}
-	if (!c->have_peer) {
-		c->down_no_peer += (uint64_t)q; /* WireGuard has not sent anything yet */
-		return;
-	}
-	s = sendmmsg(c->wg_fd, m, (unsigned)q, MSG_DONTWAIT);
-	if (s < q) {
-		c->down_wg_drops += (uint64_t)(q - (s < 0 ? 0 : s));
-		if (s < 0 && errno != EAGAIN && cg_ratelimit_ok(&c->rl_wg, now_ms, 10000))
-			cg_warn("send to WireGuard: %s", strerror(errno));
+		if (cg_tun_tx(c->tun_fd, v->iov_base, v->iov_len) < 0) {
+			c->down_tun_drops++;
+			if (errno != EAGAIN && cg_ratelimit_ok(&c->rl_tun, now_ms, 10000))
+				cg_warn("write to %s: %s", c->cfg->tun, strerror(errno));
+		}
 	}
 }
 
-static void wg_msg(struct client *c, struct mmsghdr *m, struct iovec *iov, uint8_t *payload, size_t len)
+static void tun_msg(struct client *c, struct mmsghdr *m, struct iovec *iov, uint8_t *payload, size_t len)
 {
 	iov->iov_base = payload;
 	iov->iov_len = len;
 	memset(&m->msg_hdr, 0, sizeof(m->msg_hdr));
-	m->msg_hdr.msg_name = &c->wg_peer;
-	m->msg_hdr.msg_namelen = cg_addr_len(&c->wg_peer);
 	m->msg_hdr.msg_iov = iov;
 	m->msg_hdr.msg_iovlen = 1;
 	c->down_pkts++;
 	c->down_bytes += len;
-	cg_wgs_add(&c->wgs_down, payload, len);
 }
 
-/* ---- download: to WireGuard, in sequence (reorder.h) ---- */
+/* ---- download: to the TUN, in sequence (reorder.h) ---- */
 
 /* The links the reorderer waits for at now32 (its clock): those the server
  * should send each packet on, and that answer, narrowed to those it carries
@@ -2801,19 +2757,19 @@ static int32_t ro_act_next(const struct client *c, uint64_t now_ms, uint32_t now
 	return cg_act_rx_next_us(&c->act_rx, &c->rxs.ro, c->rocf.margin_us, c->act_base, now_ms * 1000, now32);
 }
 
-/* Sends the output batch to WireGuard, then gives back the pool buffers it
+/* Writes the output batch to the TUN, then gives back the pool buffers it
  * carried: only then, or a packet held meanwhile could take one still
- * waiting to be sent. */
+ * waiting to be written. */
 static void dout_flush(struct client *c, uint64_t now_ms)
 {
 	if (c->dq)
-		wg_send(c, c->dmsg, c->dq, now_ms);
+		tun_send(c, c->dmsg, c->dq, now_ms);
 	for (int i = 0; i < c->dnbuf; i++)
 		cg_ro_pool_put(&c->pool, c->dbuf[i]);
 	c->dq = c->dnbuf = 0;
 }
 
-/* Appends a datagram for WireGuard to the output batch, after everything
+/* Appends a packet for the TUN to the output batch, after everything
  * already in it; buf: the pool buffer it is in, CG_RO_NOBUF when none (a
  * socket's batch or a pump's slot, both kept until the batch is sent). A
  * full batch goes first. */
@@ -2823,13 +2779,13 @@ static void dout_add(struct client *c, uint8_t *payload, size_t len, uint16_t bu
 	if (c->dq == DOUT_MAX)
 		dout_flush(c, now_ms);
 	/* where the download's TCP leaves the tunnel (tcpfree.h, story 023) */
-	if (c->native && c->cfg->tcp_aware) {
+	if (c->cfg->tcp_aware) {
 		struct cg_flow f;
 
 		if (cg_flow_of(payload, len, c->flow_seed, &f) && f.tcp)
 			cg_tcpe_out(&c->tcpe, &f, payload, len, (uint32_t)cg_now_us(), seq, cg_prev_link(flags));
 	}
-	wg_msg(c, &c->dmsg[c->dq], &c->diov[c->dq], payload, len);
+	tun_msg(c, &c->dmsg[c->dq], &c->diov[c->dq], payload, len);
 	c->dq++;
 	if (buf != CG_RO_NOBUF)
 		c->dbuf[c->dnbuf++] = buf;
@@ -2855,7 +2811,7 @@ static uint32_t fastest_rtt_us(struct client *c, uint64_t now_ms)
  * out of the tunnel lately or rescue_tcp_race is off. */
 static uint32_t tcp_budget_us(struct client *c, uint64_t now_us)
 {
-	if (!c->cfg->rescue_tcp_race || !c->native)
+	if (!c->cfg->rescue_tcp_race)
 		return 0;
 	return cg_harq_budget_us(
 		cg_tcpe_rtt(&c->tcpe, fastest_rtt_us(c, now_us / 1000), (uint32_t)now_us, 10u * 1000 * 1000));
@@ -3198,7 +3154,7 @@ static void on_parq(struct client *c, const uint8_t *payload, size_t plen, uint6
  * overflow, taken again right after), else up to the pass's budget; the
  * next pass comes at once for the rest (cg_ro_due_us says 0). A drain the
  * budget cuts ends here for max_burst, which says what one drain gave
- * WireGuard at once. */
+ * the TUN at once. */
 static void ro_drain(struct client *c, uint16_t rset, uint32_t now, int all, uint64_t now_ms)
 {
 	struct cg_ro_out o;
@@ -3213,7 +3169,7 @@ static void ro_drain(struct client *c, uint16_t rset, uint32_t now, int all, uin
 		send_nacks(c, now_ms);
 }
 
-/* A first copy for WireGuard, payload (len bytes) of DATA h from link,
+/* A first copy for the TUN, payload (len bytes) of DATA h from link,
  * read at t_arr: into the batch now, or once what comes before it did
  * (copied into a pool buffer meanwhile), with what it releases after it.
  * The one place every link_threads mode delivers through. */
@@ -3226,10 +3182,9 @@ static void down_deliver(struct client *c, const struct cg_hdr *h, unsigned link
 			       .len = (uint16_t)len,
 			       .link = (uint8_t)link,
 			       .flags = h->flags,
-			       .wgtype = c->native ? CG_RO_WG_DATA : len ? payload[0] : 0,
 			       .prev = (uint8_t)(cg_prev_link(h->flags) + 1),
 			       /* free with TCP data: a retransmission (tcp_aware) */
-			       .retx = (uint8_t)(c->native && (h->flags & CG_F_FREE) && cg_tcp_data(payload, len)),
+			       .retx = (uint8_t)((h->flags & CG_F_FREE) && cg_tcp_data(payload, len)),
 			       .rebuilt = c->drebuilding };
 	enum cg_ro_v v;
 	uint16_t buf;
@@ -3245,13 +3200,13 @@ static void down_deliver(struct client *c, const struct cg_hdr *h, unsigned link
 	/* A protocontroller stream's message (story 025): to its stream at once, its
 	 * sequence still counted by the reorderer (never held: it has its own
 	 * order). */
-	if (c->native && cg_pctl_is(payload, len)) {
+	if (cg_pctl_is(payload, len)) {
 		if (!c->pctl) {
 			c->down_pctl_off++;
 			return;
 		}
 		if (c->cfg->reorder) {
-			k.wgtype = CG_RO_WG_DATA + 1;
+			k.nohold = 1;
 			if (cg_ro_in(&c->rxs.ro, &c->pool, &c->rocf, &k, rset, &buf) == CG_RO_AGAIN) {
 				ro_drain(c, rset, now, 1, now_ms);
 				cg_ro_in(&c->rxs.ro, &c->pool, &c->rocf, &k, rset, &buf);
@@ -3265,7 +3220,7 @@ static void down_deliver(struct client *c, const struct cg_hdr *h, unsigned link
 
 	/* free without data: the upload's ACKs, with the server's mark on
 	 * their holes (tcpack.h) */
-	if (c->native && (h->flags & CG_F_FREE) && !k.retx && c->cfg->tcp_aware) {
+	if ((h->flags & CG_F_FREE) && !k.retx && c->cfg->tcp_aware) {
 		struct cg_flow f;
 
 		if (cg_flow_of_dir(payload, len, c->flow_seed, 1, &f) && f.tcp)
@@ -3320,7 +3275,7 @@ static void d_deliver(struct client *c, uint32_t seq, uint8_t *p, uint16_t len, 
 		c->d_fec_dups++;
 		return;
 	}
-	rb = cg_rebuilt_check(c->native, p, len);
+	rb = cg_rebuilt_check(p, len);
 	if (rb != CG_RB_OK) {
 		uint32_t i = seq & (CG_FEC_RING - 1);
 
@@ -3712,13 +3667,13 @@ static void ro_flush(struct client *c, uint64_t now_ms)
 		dout_add(c, cg_ro_pool_buf(&c->pool, o.buf), o.len, o.buf, now_ms, o.seq, o.flags);
 	dout_flush(c, now_ms);
 	if (held)
-		cg_info("reorder off: %u held packets handed on to WireGuard", held);
+		cg_info("reorder off: %u held packets handed on to the TUN", held);
 }
 
 /* Today's loop (link_threads = legacy): reads a link's socket into the
  * client's batch, judges each datagram (clientpath.h) and sends the first
- * copies to WireGuard, one sendmmsg per batch (more when held packets
- * released make it fuller). */
+ * copies to the TUN, one output batch per socket batch (more when held
+ * packets released make it fuller). */
 static void link_read(struct client *c, struct link *l)
 {
 	unsigned id = (unsigned)(l - c->link);
@@ -3819,8 +3774,8 @@ static void hub_slot(struct client *c, struct cg_rxslot *sl, uint16_t *expect, u
 /* Takes what the pumps read (link_threads off and on): each pump in turn,
  * starting with a different one on every pass, up to CG_BATCH slots each.
  * Judges each slot in the order of today's loop (clientpath.h), with the
- * time its pump read it, sends the first copies of the whole pass to
- * WireGuard (one sendmmsg, more with held packets released) straight out
+ * time its pump read it, writes the first copies of the whole pass to
+ * the TUN (one output batch, more with held packets released) straight out
  * of the slots, and only then gives the slots back. Returns the slots
  * taken. */
 static int hub_drain(struct client *c)
@@ -3891,7 +3846,7 @@ static void send_probe(struct client *c, struct link *l, uint64_t now_us, uint32
 	/* Its type, so that the server treats its download alike (story 015). */
 	pb.type = c->ltype[id];
 	/* Its TCP ACKs marked when the download did not deliver their holes (tcpack.h). */
-	pb.tcpmark = c->native && c->cfg->tcp_aware;
+	pb.tcpmark = c->cfg->tcp_aware;
 	const struct cg_link_rx *rx = &c->rxs.rx[id];
 	/* The cookie, and where our windows stand, for a server that has to
 	 * take the session up (proto.h). */
@@ -4255,10 +4210,8 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 	cg_json_u64(j, "time_ms", cg_wall_ms());
 	snprintf(buf, sizeof(buf), "%08x", c->session);
 	cg_json_str(j, "session", buf);
-	cg_json_str(j, "tunnel", c->native ? "native" : "wireguard");
-	if (c->native)
-		cg_json_str(j, "tun", c->cfg->tun);
-	cg_json_str(j, "wireguard", c->have_peer && !c->native ? cg_addr_str(&c->wg_peer, buf, sizeof(buf)) : "");
+	cg_json_str(j, "tunnel", "native");
+	cg_json_str(j, "tun", c->cfg->tun);
 	cg_json_u64(j, "probe_interval_ms", probe_interval(c, now_ms));
 	cg_json_bool(j, "vps_refusing", vps_refusing(c, now_ms));
 	cg_json_str(j, "config_error", c->config_error);
@@ -4362,9 +4315,9 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 	cg_json_end(j, '}');
 	cg_json_dominant(j, &c->dom);
 	cg_json_bool(j, "pacing", c->cfg->pacing);
-	/* native, tcp_aware: inner TCP marked free (tcpfree.h) */
+	/* tcp_aware: inner TCP marked free (tcpfree.h) */
 	cg_json_obj(j, "tcp_free");
-	cg_json_bool(j, "on", c->native && c->cfg->tcp_aware);
+	cg_json_bool(j, "on", c->cfg->tcp_aware);
 	cg_json_u64(j, "control", c->tcpf.ctl);
 	cg_json_u64(j, "retransmissions", c->tcpf.retx);
 	cg_json_end(j, '}');
@@ -4481,7 +4434,7 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 	cg_json_u64(j, "malformed", c->rxs.malformed + c->rxs.trunc);
 	cg_json_u64(j, "foreign_session", c->rxs.foreign);
 	cg_json_u64(j, "stale", c->rxs.stale_gen);
-	cg_json_u64(j, "wireguard_drops", c->down_wg_drops + c->down_no_peer);
+	cg_json_u64(j, "tun_drops", c->down_tun_drops);
 	cg_json_u64(j, "not_ip", c->down_not_ip);
 	cg_json_u64(j, "protocontroller_off", c->down_pctl_off);
 	cg_json_end(j, '}');
@@ -4561,7 +4514,6 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 	cg_json_active(j, "active", &c->act_rx, &c->rxs.ro, c->cfg->reorder_active, c->act_base, rset,
 		       cg_act_tx_mask(&c->act_tx, cg_now_us(), CG_ACT_HOLD_MS * 1000), now_ms * 1000);
 	cg_json_tcpe(j, "tcp_e2e", &c->tcpe); /* the download's TCP where it leaves the tunnel (story 023) */
-	cg_json_sizes(j, "sizes", &c->wgs_up, &c->wgs_down);
 	cg_json_arr(j, "overrides");
 	for (int i = 0; i < c->ovr.n; i++) {
 		cg_json_obj(j, NULL);
@@ -4891,8 +4843,6 @@ static void apply_config(struct client *c, struct cg_config *next, uint64_t now_
 			cg_warn("status file %s: cannot start the writer thread", next->status_file);
 	}
 	if (old->rcvbuf != next->rcvbuf || old->sndbuf != next->sndbuf) {
-		if (!c->native)
-			cg_sock_buffers(c->wg_fd, next->rcvbuf, next->rcvbuf);
 		for (int i = 0; i < CG_MAX_LINKS; i++)
 			if (c->link[i].fd >= 0)
 				cg_sock_buffers(c->link[i].fd, next->rcvbuf, next->sndbuf);
@@ -5167,7 +5117,7 @@ static int signals(struct client *c)
 	return stop;
 }
 
-/* The output batch to WireGuard (every mode), and the pump of link_threads
+/* The output batch to the TUN (every mode), and the pump of link_threads
  * off (one, inline) or the bell of on (whose threads start with their
  * links). Returns 0 or -1. */
 static int pumps_init(struct client *c)
@@ -5231,7 +5181,7 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 	char err[256], buf[64];
 	uint64_t last_traffic_us = 0;
 	uint32_t busy;
-	int rc = 1, rcv;
+	int rc = 1;
 
 	if (!c) {
 		cg_err("out of memory");
@@ -5268,7 +5218,7 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 	c->txs.k_tx = cfg->key;
 	c->txs.hint = cg_client_hint(cfg->key);
 	c->rxs.k_rx = cfg->key + CG_SIPHASH_KEY_LEN;
-	c->ep = c->wg_fd = c->tfd = -1;
+	c->ep = c->tun_fd = c->tfd = -1;
 	c->nl.fd = -1;
 	cg_names_init(&c->names);
 	c->server_pass = -2;
@@ -5294,24 +5244,10 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 	c->start_ms = cg_now_ms();
 	cg_act_tx_start(&c->act_tx, cg_now_us());
 
-	c->native = cfg->tunnel == CG_TUNNEL_NATIVE;
-	if (c->native) {
-		/* What comes down goes into the TUN: there is always somewhere
-		 * to send it. */
-		c->wg_fd = cg_tun_open(cfg, err, sizeof(err));
-		c->have_peer = 1;
-	} else {
-		c->wg_fd = cg_udp_bind(&cfg->listen, 1, err, sizeof(err));
-	}
-	if (c->wg_fd < 0) {
+	c->tun_fd = cg_tun_open(cfg, err, sizeof(err));
+	if (c->tun_fd < 0) {
 		cg_err("%s", err);
 		goto out;
-	}
-	if (!c->native) {
-		rcv = cg_sock_buffers(c->wg_fd, cfg->rcvbuf, cfg->rcvbuf);
-		if (rcv < (1 << 20))
-			cg_warn("receive buffer is only %d bytes; raise net.core.rmem_max or run with CAP_NET_ADMIN",
-				rcv);
 	}
 	if (cg_nl_open(&c->nl, err, sizeof(err)) < 0) {
 		cg_err("%s", err);
@@ -5319,7 +5255,7 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 	}
 	c->ep = epoll_create1(EPOLL_CLOEXEC);
 	c->tfd = cg_timerfd(CG_TICK_MS);
-	if (c->ep < 0 || c->tfd < 0 || cg_epoll_add(c->ep, c->wg_fd, CG_EV(CG_EV_WG, 0)) < 0 ||
+	if (c->ep < 0 || c->tfd < 0 || cg_epoll_add(c->ep, c->tun_fd, CG_EV(CG_EV_TUN, 0)) < 0 ||
 	    cg_epoll_add(c->ep, c->nl.fd, CG_EV(CG_EV_NL, 0)) < 0 ||
 	    cg_epoll_add(c->ep, c->tfd, CG_EV(CG_EV_TIMER, 0)) < 0 ||
 	    cg_epoll_add(c->ep, run->sigfd, CG_EV(CG_EV_SIG, 0)) < 0 ||
@@ -5422,13 +5358,9 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 		cg_warn("control socket: %s", err);
 	if (cfg->status_file[0] && cg_status_writer_start(&c->sw, cfg->status_file, "cg-status") < 0)
 		cg_warn("status file %s: cannot start the writer thread", cfg->status_file);
-	if (c->native)
-		cg_info("client %s: session %08x, native tunnel on %s (MTU %u; authenticated, not encrypted), "
-			"link_threads %s",
-			CG_VERSION, c->session, cfg->tun, cfg->tun_mtu, cg_lt_name(c->lt));
-	else
-		cg_info("client %s: session %08x, WireGuard endpoint %s, link_threads %s", CG_VERSION, c->session,
-			cg_addr_str(&cfg->listen, buf, sizeof(buf)), cg_lt_name(c->lt));
+	cg_info("client %s: session %08x, native tunnel on %s (MTU %u; authenticated, not encrypted), "
+		"link_threads %s",
+		CG_VERSION, c->session, cfg->tun, cfg->tun_mtu, cg_lt_name(c->lt));
 	if (cfg->passthrough >= 0)
 		cg_info("asking the server for IP pass %s", cfg->passthrough ? "on" : "off");
 	busy = cg_tune(cfg);
@@ -5472,8 +5404,8 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 			uint32_t kind = (uint32_t)(ev[i].data.u64 >> 32), idx = (uint32_t)ev[i].data.u64;
 
 			switch (kind) {
-			case CG_EV_WG:
-				wg_read(c);
+			case CG_EV_TUN:
+				tun_read(c);
 				traffic = 1;
 				break;
 			case CG_EV_LINK:
@@ -5544,7 +5476,7 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 			}
 		}
 		/* What the pump threads read: a few passes, then epoll again for
-		 * WireGuard, the timer and the rest. */
+		 * the TUN, the timer and the rest. */
 		for (int r = 0; c->lt == CG_LT_ON && r < CG_MAX_ROUNDS && hub_drain(c) > 0; r++)
 			traffic = 1;
 		ro_service(c);
@@ -5577,8 +5509,8 @@ out:
 	free(c->resc.link);
 	free(c->resc.sent);
 	free(c->resc_idx);
-	if (c->wg_fd >= 0)
-		close(c->wg_fd);
+	if (c->tun_fd >= 0)
+		close(c->tun_fd);
 	if (c->tfd >= 0)
 		close(c->tfd);
 	if (c->ep >= 0)
