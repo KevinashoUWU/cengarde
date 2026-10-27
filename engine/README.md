@@ -1461,8 +1461,10 @@ Solo la variante B:
   más de 1 byte de cada 5 en 100 ms, vuelve a `protocontroller_reo_ms`: las
   reparaciones del túnel no alcanzan; desde el comienzo, al menos el
   **horizonte de reparación** del motor: `rescue_code_ms` mientras el código
-  manda reparaciones más la espera del rescate si está encendido, así el
-  NACK del túnel, exacto, llega primero y RACK solo lo respalda; el estado
+  manda reparaciones más, con el rescate encendido, su espera y lo que el
+  enlace más lento que lleva los datos va detrás del más rápido (la cola de
+  un búfer hondo no es pérdida), así el NACK del túnel, exacto, llega
+  primero y RACK solo lo respalda; el estado
   lo muestra como `horizon_ms`), el **NACK del rescate** (el rescate
   no reenvía un mensaje de GRIT: le pasa la pérdida a su flujo, que marca
   perdido el segmento si ese DATA era su envío más nuevo y lo reenvía en la

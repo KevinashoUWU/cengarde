@@ -9,7 +9,7 @@
   colapso de la bajada, el estimador desbocado, el arranque) y 023 (el
   rescate, la PARQ); tarea #77; laboratorio `bench/labq.py` con
   `BOND_PEP=cgb`, datos en `~/campo/2026-10-27/gshare{1,2,3}/`, `bondvs/`,
-  `nackfirst/out45/` y `nackfirst-nofec/`.
+  `nackfirst/out45/`, `nackfirst-nofec/` y `spread/`.
 
 ## TL;DR
 
@@ -46,8 +46,14 @@
   desde que vuelve a tener algo en vuelo.
 - **Bonding contra los estados anteriores** (n = 8): GRIT le gana al Split
   TCP en `equal`, `lossy`, `protect` y `single1` (+5 a +30 %), empata en
-  `het`, `idleslow` y `stall50`, y **pierde en `cell4`** (−15 a −20 %); al
+  `het`, `idleslow` y `stall50`, y perdía en `cell4` (−15 a −20 %); al
   TCP directo le gana en 13 de 16 celdas (×1,15–2,15).
+- **`cell4`, resuelto en su mayor parte:** la cola de los enlaces chicos de
+  búfer hondo (300–590 ms) hacía que RACK diera por perdido lo que solo
+  estaba en cola; los bytes contados dos veces inflaban el estimador y GRIT
+  llenaba más esas colas, hasta caer a ~17 Mbit/s. El horizonte suma ahora
+  la dispersión de los enlaces que llevan los datos (`behind_us`): `cell4`
+  +15 y +19 % (a −4 % del Split TCP), `idleslow` +20 %, el resto igual.
 - Ya eran parte de esta vista, sin ese nombre: el NACK del túnel como
   pérdida confirmada para GRIT, con su enlace (#122); los bytes de GRIT que
   el reordenador no retiene; las copias prioritarias; la capacidad del
@@ -146,6 +152,36 @@ se repite dentro de la espera del rescate.
   y RACK queda de respaldo si se pierden el NACK y su repetición. Sin
   rescate, todo sigue como antes.
 
+## `cell4`: la cola que RACK leía como pérdida
+
+Cuatro celulares de 20/15/10/5 Mbit/s con búferes de 0,3/0,5/1/2 s y
+0,3–0,5 % de pérdida al azar. Con el estado muestreado cada 0,5 s (subida,
+misma semilla), el ciclo era:
+
+1. el estimador de GRIT por encima de lo que los enlaces entregaban (47–50
+   Mbit/s con 32 entregados y 19–37 por su socket);
+2. con la FEC, 38–41 Mbit/s ofrecidos a enlaces de 34–37 estimados: el
+   reparto ponía lo que sobraba en las colas hondas de los chicos (300–590
+   ms);
+3. RACK, con un horizonte de 160 ms, daba por perdido en ráfagas (460–1435
+   segmentos de una vez) lo que solo estaba en esas colas; los originales
+   llegaban después: ~3500 duplicados por corrida;
+4. `cg_scc_lost` cuenta lo perdido como lo que el camino se llevó, y al
+   llegar los originales se contaba otra vez: el estimador se inflaba más;
+5. el corte (cola de ida de 517 ms), el G4 sacaba los enlaces chicos y GRIT
+   quedaba en ~17 Mbit/s por un enlace, con el motor ofreciendo 33.
+
+El Split TCP no entraba en el ciclo: BBR no pasa de lo que se entrega y las
+colas no pasaban de ~130 ms.
+
+El motor sabe cuánto desordena su reparto: `health.h` mide cuánto va cada
+enlace detrás del más rápido (`behind_us`, camino y cola). Con el rescate
+encendido, el horizonte suma el mayor de los enlaces que llevan los datos
+(`cg_pctl_spread`, a lo más 1 s); las pérdidas reales las sigue avisando
+primero el NACK, exacto por enlace. En la corrida de prueba: 24,8 → 33,5
+Mbit/s (Split TCP 33,2), sin colapso, 978 reenvíos (casi todos en los
+primeros 4 s, antes de conocer los retardos), ping p99 523 → 337 ms.
+
 ## El temporizador de flujo muerto
 
 `protocontroller_dead_s` (60) cierra un flujo con algo pendiente que no
@@ -198,15 +234,37 @@ El ping p99 de GRIT es el más bajo en `equal`, `het`, `lossy` y `stall50`
 (152 frente a 398 ms del Split en `equal`) y el más alto en `cell4` (413
 frente a 296).
 
+### La dispersión en el horizonte
+
+`spread` (n = 6, 20 s; `grit2` = NACK primero, `spread` = más la dispersión,
+`split` = Split TCP con el mismo motor; Mbit/s bajada / subida):
+
+| Caso | `grit2` | `spread` | `split` | `spread` / `grit2` |
+| --- | --- | --- | --- | --- |
+| `cell4` | 26,5 / 26,7 | 30,4 / 31,8 | 31,7 / 32,9 | +15 / +19 % (p ≤ 0,02) |
+| `idleslow` | 54,5 / 58,4 | 66,2 / 70,0 | 58,3 / 59,3 | +21 / +20 % (p 0,08–0,11) |
+| `reorder50` | 49,6 / 39,0 | 51,7 / 50,9 | 61,3 / 51,0 | +4 / +31 % (n.s.) |
+| `protect` | 47,0 / 43,2 | 42,0 / 47,0 | 44,3 / 39,5 | −11 / +9 % (n.s.) |
+| `stall50` | 53,5 / 55,6 | 52,3 / 55,2 | 55,9 / 54,0 | −2 % (p 0,02) / igual |
+| `equal`, `het`, `lossy`, `single1` | — | igual | — | sin diferencia significativa |
+
+`cell4`: duplicados 3101 → 1296 y 2956 → 1109, ping p99 de bajada 410 → 323
+ms (p 0,02). Frente al Split TCP, GRIT con la dispersión gana en `equal`,
+`idleslow`, `lossy` y `single1`, empata en `het` de subida, `stall50` y
+`protect`, y pierde en `cell4` (−4 %), `het` de bajada (−12 %) y
+`reorder50` de bajada (−16 %); su ping p99 es menor salvo en `reorder50` de
+bajada y `protect` de bajada.
+
 ## Pendiente
 
-- **`cell4`** (cuatro celulares de 20/15/10/5 Mbit/s, colas hondas, 0,3–0,5 %
-  de pérdida): GRIT pierde con el Split TCP (−15 a −20 %) y aún duplica
-  ~3500 segmentos por corrida, con o sin horizonte. Sospecha: el techo de la
-  capacidad del motor en celulares con pérdida suelta. Hace falta una
-  corrida con muestreo del estado.
-- **`reorder50`:** con el horizonte el ping p99 de bajada sube (129 → ~300
-  ms, p 0,02–0,05) sin bajar los duplicados.
+- **Deshacer las pérdidas falsas:** un segmento que RACK dio por perdido y
+  que llega igual sigue contado dos veces en lo entregado (`cg_scc_lost`).
+  Con el horizonte casi no pasa, pero en el arranque (antes de conocer los
+  retardos) quedan ráfagas: `cell4` aún duplica ~1100–1300 por corrida.
+- **`cell4`** queda a −4 % del Split TCP; **`reorder50`** de bajada a −16 %
+  (51,7 frente a 61,3) y con más ping (390 frente a 141 ms); `het` de
+  bajada −12 %; `protect` de bajada −11 % frente a `grit2` (no
+  significativo).
 - **Usar la pérdida por enlace** que el NACK ya trae: que el reparto la
   tome como pérdida de datos real, no solo de sondas.
 - **Un flujo que empieza:** que GRIT le avise al motor para sondear los
@@ -223,3 +281,5 @@ frente a 296).
 - 2026-10-27: el horizonte de reparación (NACK primero), el temporizador de
   flujo muerto corregido, el bonding contra el Split TCP y el TCP directo, y
   `cell4` como pendiente.
+- 2026-10-27: `cell4` analizado; la dispersión de los enlaces en el
+  horizonte.
