@@ -86,6 +86,9 @@
 				  * the stream's (cg_scc_stuck) */
 #define CG_SCC_STUCK_TOL_US 500u /* the least fall of the queue that says it drains */
 #define CG_SCC_LOW_WINS 2u       /* windows in a row that find a shorter path before the base falls to it */
+#define CG_SCC_LF_US 5000000u    /* the random-loss floor's bucket (two of them: 5 to 10 s, cg_scc_lfloor) */
+#define CG_SCC_LF_NONE 0xffffu   /* a bucket without a window yet */
+#define CG_SCC_LF_START 30u      /* per mille: the floor before any window says (a stream's first seconds) */
 
 enum { CG_SCC_STARTUP_M = 0, CG_SCC_DRAIN_M, CG_SCC_PROBE_M };
 
@@ -109,6 +112,8 @@ struct cg_scc {
 	uint8_t qnow;       /* the last sample was over min_rtt + queue_us: what is sent now may overflow */
 	uint64_t cycle_t;
 	uint64_t round_dl;  /* a round ends with the ACK of a segment sent once dl had passed this */
+	uint8_t r_q;        /* this round, a sample over a quarter of queue_us: the pipe may be full */
+	uint64_t r_lost, r_dla; /* this round's lost (cg_scc_lost) and delivered bytes */
 	uint64_t full_bw;
 	uint64_t cong_t;    /* the first congested window of the current run, 0: none */
 	uint32_t wmin;      /* the least round trip in the current window, 0: none yet */
@@ -138,6 +143,8 @@ struct cg_scc {
 	/* heavy random loss (cg_scc_heavy): of the last window, more than 1
 	 * byte in 5 declared lost while the queue was short */
 	uint64_t lw_t, lw_lost, lw_dl;
+	uint16_t lf[2];      /* the loss of the windows with a short queue, per mille: each bucket's least */
+	uint64_t lf_t;       /* the current bucket's start */
 	uint8_t heavy;
 	uint64_t n_heavy; /* windows with heavy loss */
 	uint64_t n_cong, n_cut, n_rounds; /* congested samples; rounds that cut bw; rounds */
@@ -147,8 +154,20 @@ struct cg_scc {
 static inline void cg_scc_init(struct cg_scc *p, uint64_t now)
 {
 	memset(p, 0, sizeof(*p));
-	p->dl_us = p->tok_t = p->bt = now;
+	p->dl_us = p->tok_t = p->bt = p->lf_t = now;
+	p->lf[0] = p->lf[1] = CG_SCC_LF_NONE;
 	p->mode = CG_SCC_STARTUP_M;
+}
+
+/* The path's random loss, per mille: the least of the loss windows
+ * (cg_scc_lossw) over the last 5 to 10 s. Random loss is in every window;
+ * a queue's overflow only while more goes out than the path takes, so the
+ * least is the random part. CG_SCC_LF_START before any window. */
+static inline uint32_t cg_scc_lfloor(const struct cg_scc *p)
+{
+	uint32_t f = p->lf[0] < p->lf[1] ? p->lf[0] : p->lf[1];
+
+	return f == CG_SCC_LF_NONE ? CG_SCC_LF_START : f;
 }
 
 static inline uint64_t cg_scc_mul(uint64_t a, uint64_t b, uint64_t d)
@@ -323,6 +342,18 @@ static inline void cg_scc_lossw(struct cg_scc *p, uint64_t now)
 		return;
 	if (p->lw_lost + p->lw_dl >= CG_SCC_LOSSW_MIN || !p->lw_lost)
 		p->heavy = p->lw_lost * 4 > p->lw_dl;
+	/* the random-loss floor: each window's loss into its bucket's least */
+	if (now - p->lf_t >= CG_SCC_LF_US) {
+		p->lf[1] = p->lf[0];
+		p->lf[0] = CG_SCC_LF_NONE;
+		p->lf_t = now;
+	}
+	if (p->lw_lost + p->lw_dl >= CG_SCC_LOSSW_MIN) {
+		uint64_t f = p->lw_lost * 1000 / (p->lw_lost + p->lw_dl);
+
+		if (f < p->lf[0])
+			p->lf[0] = (uint16_t)f;
+	}
 	p->n_heavy += p->heavy;
 	p->lw_t = now;
 	p->lw_lost = p->lw_dl = 0;
@@ -339,6 +370,7 @@ static inline void cg_scc_ack(struct cg_scc *p, const struct cg_scc_cfg *c, uint
 
 	p->dl += acked;
 	p->dla += acked;
+	p->r_dla += acked;
 	p->dl_us = now;
 	cg_scc_lossw(p, now);
 	p->lw_dl += acked;
@@ -362,16 +394,21 @@ static inline void cg_scc_ack(struct cg_scc *p, const struct cg_scc_cfg *c, uint
 			p->rttvar = (3 * p->rttvar + d) / 4;
 			p->srtt = (7 * p->srtt + rtt) / 8;
 		}
-		if (!p->have_owd)
+		if (!p->have_owd) {
 			p->qnow = rtt > p->min_rtt + c->queue_us;
-		/* STARTUP ends at the first sample over: it grows by half a
-		 * round, so a window's lag is a round of overflow */
-		if (p->mode == CG_SCC_STARTUP_M && p->n_rounds >= 2 && p->qnow)
+			if (rtt > p->min_rtt + c->queue_us / 4)
+				p->r_q = 1;
+		}
+		/* STARTUP ends at the first sample over, without the forward
+		 * delay (one path: a queue moves every sample up) */
+		if (!p->have_owd && p->mode == CG_SCC_STARTUP_M && p->n_rounds >= 2 && p->qnow)
 			p->mode = CG_SCC_DRAIN_M;
 	}
-	/* STARTUP's exit by the forward delay, when there is one */
-	if (p->have_owd && p->mode == CG_SCC_STARTUP_M && p->n_rounds >= 2 && p->qnow)
-		p->mode = CG_SCC_DRAIN_M;
+	/* With the forward delay, STARTUP ends at the window's verdict (cong,
+	 * below), not at one sample over: over several links one packet by a
+	 * longer one read as a queue, STARTUP ended as a download began and
+	 * PROBE's 5/4 a cycle took 3-4 s to the links (story 025); the least of
+	 * a window says a queue only when every path has one */
 	/* the queue's verdict: a queue moves every sample up, a late copy (a
 	 * lost packet's copy on a slower link) only some, so the least of a
 	 * window of a round trip says which. A segment sent again counts if it
@@ -422,16 +459,29 @@ static inline void cg_scc_ack(struct cg_scc *p, const struct cg_scc_cfg *c, uint
 	iv = now > s_dl_us ? now - s_dl_us : 0;
 	if (now > sent_us && now - sent_us > iv)
 		iv = now - sent_us;
-	/* what the path took: delivered, and lost while the queue was short
-	 * (no more than 3 lost for 1 delivered: past 75 % lost, sending more
-	 * is only waste) */
+	/* what the path took: delivered, and lost while the queue was short,
+	 * as much as the path's random loss explains (cg_scc_lfloor: twice its
+	 * share over what was delivered, no more than 3 lost for 1). More is a
+	 * queue's overflow: a link whose queue is shorter than queue_us
+	 * overflows before any sample says queue (Starlink's), and counted as
+	 * capacity its losses fed the estimate, the sends and the losses (on a
+	 * link of 60 Mbit/s with 5 ms of queue the estimate went to 240-320,
+	 * 100 000 overflowed in 8 s; in the lab 744 Mbit/s, then 2 s of queue
+	 * on the cellular link and the floor, story 025) */
 	bytes = p->dla - s_dla;
 	/* in PROBE only: in STARTUP the queue's first overflow came before any
 	 * sample said queue, its losses read as capacity, the estimate went to
 	 * twice the link and stayed for a second (beyond: 2 s with nothing
 	 * delivered behind the holes) */
-	if (!p->cong && p->mode == CG_SCC_PROBE_M)
-		bytes = p->dl - s_dl < 4 * bytes ? p->dl - s_dl : 4 * bytes;
+	if (!p->cong && p->mode == CG_SCC_PROBE_M) {
+		uint32_t f = cg_scc_lfloor(p);
+		uint64_t lost = p->dl - s_dl > bytes ? p->dl - s_dl - bytes : 0;
+		uint64_t cap = f >= 750 ? 3 * bytes : bytes * 2 * f / (1000 - f);
+
+		if (cap > 3 * bytes)
+			cap = 3 * bytes;
+		bytes += lost < cap ? lost : cap;
+	}
 	/* never more than went out meanwhile: losses are declared in bursts
 	 * (RACK's window), and a burst over a short interval read as five
 	 * times the link (a microcut) */
@@ -477,14 +527,30 @@ static inline void cg_scc_ack(struct cg_scc *p, const struct cg_scc_cfg *c, uint
 	if (s_dl >= p->round_dl) {
 		p->round_dl = p->dl;
 		p->n_rounds++;
+		/* a round that did not grow says the pipe is full only with a
+		 * sign of it: some queue, or losses past the path's random ones.
+		 * Without: what fed the stream grew slower than its rounds (a
+		 * download, fed by the far TCP in its slow start at 100 ms while
+		 * the middle's round trip is 20: its bursts drain the tokens, so
+		 * the rounds are not app-limited), STARTUP ended within a second,
+		 * the estimate fell to what had come (0.9 Mbit/s) and PROBE's 5/4
+		 * a cycle took 4-5 s to the link (story 025) */
 		if (p->mode == CG_SCC_STARTUP_M && !app) {
+			uint32_t f = cg_scc_lfloor(p) * 2;
+			/* or the heavy random loss of a microcut (its capacity reads
+			 * in PROBE, losses and all), or the engine's ceiling */
+			int sig = p->r_q || p->r_lost * 1000 > (p->r_lost + p->r_dla) * (f > 5 ? f : 5) || p->heavy ||
+				  (p->hint_full && p->bw >= p->hint);
+
 			if (p->bw >= p->full_bw + p->full_bw / 4) {
 				p->full_bw = p->bw;
 				p->full_n = 0;
-			} else if (++p->full_n >= 3) {
+			} else if (sig && ++p->full_n >= 3) {
 				p->mode = CG_SCC_DRAIN_M;
 			}
 		}
+		p->r_q = 0;
+		p->r_lost = p->r_dla = 0;
 	}
 	/* STARTUP's overshoot ends at the first queue (after two rounds: the
 	 * first round trips set min_rtt) */
@@ -544,6 +610,8 @@ static inline void cg_scc_owd(struct cg_scc *p, const struct cg_scc_cfg *c, uint
 		p->have_ow = 1;
 	}
 	p->qnow = (int32_t)((uint32_t)owd - (uint32_t)p->owd_base) > (int32_t)c->queue_us;
+	if ((int32_t)((uint32_t)owd - (uint32_t)p->owd_base) > (int32_t)(c->queue_us / 4))
+		p->r_q = 1;
 }
 
 /* Bytes declared lost, of segments sent while the path's queue was short
@@ -553,6 +621,7 @@ static inline void cg_scc_lost(struct cg_scc *p, uint64_t bytes)
 {
 	p->dl += bytes;
 	p->lw_lost += bytes;
+	p->r_lost += bytes;
 }
 
 /* The token bucket at now. */

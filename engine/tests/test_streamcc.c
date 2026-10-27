@@ -326,6 +326,19 @@ void test_streamcc(void)
 	r = sim(7500000, 20000, 15000, 0, 8, 0, 0);
 	CHECK(r.goodput > 7500000 * 9 / 10);
 	CHECK(r.overflow < 200);
+	/* a queue shorter than queue_us (Starlink's): it overflows before any
+	 * sample says queue; its losses are not capacity beyond the path's
+	 * random loss (before: the estimate went to 240-320 Mbit/s, 100 000
+	 * overflowed in 8 s; story 025) */
+	for (uint32_t qq = 2000; qq <= 9000; qq += 3500) {
+		r = sim(7500000, 20000, qq, 0, 8, 0, 0);
+		CHECK(r.goodput > 7500000 * 9 / 10);
+		CHECK(r.rate_end < 7500000 * 3 / 2);
+		CHECK(r.overflow < 5000);
+		r = sim(7500000, 20000, qq, 20, 8, 0, 0); /* and 2 % at random */
+		CHECK(r.goodput > 7500000 * 85 / 100);
+		CHECK(r.rate_end < 7500000 * 3 / 2);
+	}
 	/* random loss of 0.7 % does not slow it */
 	r = sim(7500000, 20000, 15000, 7, 8, 0, 0);
 	CHECK(r.goodput > 7500000 * 85 / 100);
@@ -379,7 +392,9 @@ void test_streamcc(void)
 		r = sim_switch((struct pathx){ 625000, 25000, 2000000 }, sl, 1000000, 0, 10000, 4, &q);
 		CHECK(r.goodput > 625000 * 2);
 		CHECK_EQ(q.n_rebase, 0);
-		CHECK_EQ(q.n_cut, 0);
+		/* the cuts are STARTUP's on the first link (it ends at a window's
+		 * verdict, a round after the first sample over), none at the switch */
+		CHECK(q.n_cut <= 4);
 	}
 	/* the run's verdict alone: a queue that falls is the stream's, one that
 	 * stays for CG_SCC_STUCK_ROUNDS round trips and 4 times its depth is
