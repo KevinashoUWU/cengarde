@@ -1476,8 +1476,7 @@ static void send_ack(struct cg_pctl *p, struct flow *f)
 	struct cg_st_ack a;
 	uint64_t edge = cg_pctl_edge(f->consumed, f->rx.nxt, p->buf_cap, backlog_max(p, f, f->w_rate, cg_now_us()));
 	uint8_t *b = slot_for(p, f->peer, f->sid);
-
-	int32_t d;
+	int32_t d = 0;
 
 	cg_st_rx_ack(&f->rx, edge, ++f->aseq, &a);
 	f->adv_edge = edge;
