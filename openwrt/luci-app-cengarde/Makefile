@@ -16,7 +16,7 @@ LUCI_PKGARCH:=all
 LUCI_URL:=https://github.com/KevinashoUWU/cengarde
 LUCI_MAINTAINER:=cengarde contributors
 
-PKG_VERSION:=0.10.1
+PKG_VERSION:=0.11.0
 PKG_RELEASE:=1
 PKG_LICENSE:=GPL-3.0-or-later
 
