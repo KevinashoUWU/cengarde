@@ -66,8 +66,35 @@ static void test_lowd_window(void)
 	CHECK_EQ(cg_lowd_extra(&o, 1), 15000);
 }
 
+/* An ACK's delay: the worst of the links that brought a quarter or more of
+ * its messages, so a link with a few messages and no queue does not hide
+ * the main link's queue. */
+static void test_lowd_ack(void)
+{
+	struct cg_lowd_ack a;
+	int32_t d = 0;
+
+	memset(&a, 0, sizeof(a));
+	CHECK(!cg_lowd_ack_get(&a, &d)); /* nothing */
+	for (int i = 0; i < 9; i++)
+		cg_lowd_ack_add(&a, 0, 30000 + i); /* the main link, 20 ms of queue */
+	cg_lowd_ack_add(&a, 1, 10000);          /* one message by a clear link */
+	CHECK(cg_lowd_ack_get(&a, &d));
+	CHECK_EQ(d, 30000); /* the main link's least, not 10 */
+	CHECK(!cg_lowd_ack_get(&a, &d)); /* it started again */
+	cg_lowd_ack_add(&a, 0, 30000);
+	cg_lowd_ack_add(&a, 1, 12000);
+	cg_lowd_ack_add(&a, CG_LOWD_NOLINK, 1000); /* no link: not counted */
+	CHECK(cg_lowd_ack_get(&a, &d));
+	CHECK_EQ(d, 30000);
+	cg_lowd_ack_add(&a, 2, 15000);
+	CHECK(cg_lowd_ack_get(&a, &d));
+	CHECK_EQ(d, 15000);
+}
+
 void test_linkowd(void)
 {
 	test_lowd_paths();
 	test_lowd_window();
+	test_lowd_ack();
 }

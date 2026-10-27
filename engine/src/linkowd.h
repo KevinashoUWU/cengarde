@@ -118,4 +118,44 @@ static inline int32_t cg_lowd_take(struct cg_lowd *o, unsigned link, int32_t d, 
 	return (int32_t)((uint32_t)d - x);
 }
 
+/* What one ACK says of the delay: of the messages since the last one, each
+ * link's least (already less what the link adds), and of the links that
+ * brought at least a quarter of them, the largest. The least of all, as
+ * before, let a link that carried a few messages with no queue hide the
+ * queue of the link that carried the rest: with the paths taken off, the
+ * stream filled its main links and the 1200-byte ping's p99 rose from
+ * ~90 to 250-360 ms in half the runs of lossy (task #77). */
+struct cg_lowd_ack {
+	int32_t m[CG_LOWD_LINKS];
+	uint16_t n[CG_LOWD_LINKS];
+	uint32_t total;
+};
+
+static inline void cg_lowd_ack_add(struct cg_lowd_ack *a, unsigned link, int32_t d)
+{
+	if (link >= CG_LOWD_LINKS)
+		return;
+	if (!a->n[link] || (int32_t)((uint32_t)d - (uint32_t)a->m[link]) < 0)
+		a->m[link] = d;
+	if (a->n[link] < UINT16_MAX)
+		a->n[link]++;
+	a->total++;
+}
+
+/* 1 and *d set when a link brought a quarter or more since the last ACK;
+ * then the state starts again. */
+static inline int cg_lowd_ack_get(struct cg_lowd_ack *a, int32_t *d)
+{
+	int got = 0;
+
+	for (unsigned i = 0; i < CG_LOWD_LINKS; i++)
+		if (a->n[i] && (uint32_t)a->n[i] * 4 >= a->total &&
+		    (!got || (int32_t)((uint32_t)a->m[i] - (uint32_t)*d) > 0)) {
+			*d = a->m[i];
+			got = 1;
+		}
+	memset(a, 0, sizeof(*a));
+	return got;
+}
+
 #endif

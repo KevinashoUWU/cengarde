@@ -84,6 +84,7 @@ struct flow {
 	uint8_t cc_bbr;   /* protocontroller_cc auto: switched to BBR (the destination's leg lost) */
 	uint8_t have_owd; /* a DATA came since the last ACK: owd is its least one-way delay */
 	int32_t owd;
+	struct cg_lowd_ack la; /* and by link (linkowd.h): the ACK says the worst of the links that carried */
 	uint64_t hole_t;  /* since when the receiver misses something (holes in rx), 0: none */
 	/* where a live stream's delay is: when the bytes up to each offset were
 	 * read from the socket (sending side) and came in order (receiving side) */
@@ -1070,6 +1071,8 @@ static void data_in(struct cg_pctl *p, struct flow *f, const struct cg_pctl_msg 
 	if (link != CG_PCTL_NOLINK) {
 		int32_t d = cg_lowd_take(&peer_of(p, f)->lo, link, (int32_t)((uint32_t)now - m->ts), now);
 
+		cg_lowd_ack_add(&f->la, link, d);
+
 		if (!f->have_owd || (int32_t)((uint32_t)d - (uint32_t)f->owd) < 0) {
 			f->owd = d;
 			f->have_owd = 1;
@@ -1473,8 +1476,14 @@ static void send_ack(struct cg_pctl *p, struct flow *f)
 	uint64_t edge = cg_pctl_edge(f->consumed, f->rx.nxt, p->buf_cap, backlog_max(p, f, f->w_rate, cg_now_us()));
 	uint8_t *b = slot_for(p, f->peer, f->sid);
 
+	int32_t d;
+
 	cg_st_rx_ack(&f->rx, edge, ++f->aseq, &a);
 	f->adv_edge = edge;
+	/* the delay: the worst of the links that carried a quarter or more
+	 * (linkowd.h), else the least of all */
+	if (f->have_owd && cg_lowd_ack_get(&f->la, &d))
+		f->owd = d;
 	push(p, cg_pctl_put_ack(b, f->id, (uint8_t)((f->est ? CG_PCTLF_EST : 0) | (f->dup_seen ? CG_PCTLF_DUP : 0)), &a,
 			       f->have_owd ? f->owd : CG_PCTL_NOOWD),
 	     0);
