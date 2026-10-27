@@ -240,8 +240,28 @@ static void test_spread(void)
 	CHECK_EQ(cg_pctl_spread(b, 0x3f, 0x3f, 16), CG_PCTL_SPREAD_MAX_US);
 }
 
+
+/* A sending side's buffer (task #77): it grows with the cap holding bytes
+ * on a clean path, shrinks with random or heavy loss, stays otherwise. */
+static void test_cap(void)
+{
+	const uint64_t mb = 1048576;
+
+	CHECK_EQ(cg_pctl_cap_max(mb, 4177920), 4177920);
+	CHECK_EQ(cg_pctl_cap_max(mb / 2, 4177920), 2 * mb);
+	CHECK_EQ(cg_pctl_cap_next(mb, mb, 4 * mb, 1, 0, 0, 0, 2, 5), 2 * mb);     /* held bytes, clean */
+	CHECK_EQ(cg_pctl_cap_next(2 * mb, mb, 3 * mb, 1, 1, 0, 0, 2, 5), 3 * mb); /* up to the most */
+	CHECK_EQ(cg_pctl_cap_next(2 * mb, mb, 4 * mb, 0, 0, 0, 0, 2, 5), 2 * mb); /* held nothing */
+	CHECK_EQ(cg_pctl_cap_next(mb, mb, 4 * mb, 1, 3, 0, 0, 2, 5), mb);         /* some random loss */
+	CHECK_EQ(cg_pctl_cap_next(mb, mb, 4 * mb, 1, 0, 1, 0, 2, 5), mb);         /* a queue */
+	CHECK_EQ(cg_pctl_cap_next(4 * mb, mb, 4 * mb, 1, 10, 0, 0, 2, 5), 3 * mb); /* 1 %: shrinks */
+	CHECK_EQ(cg_pctl_cap_next(4 * mb, mb, 4 * mb, 0, 0, 0, 1, 2, 5), 3 * mb);  /* heavy loss */
+	CHECK_EQ(cg_pctl_cap_next(mb, mb, 4 * mb, 0, 30, 0, 0, 2, 5), mb);        /* never under buf_cap */
+}
+
 void test_protoctl(void)
 {
+	test_cap();
 	test_spread();
 	test_codec();
 	test_dest();

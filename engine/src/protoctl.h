@@ -471,6 +471,36 @@ static inline uint64_t cg_pctl_edge(uint64_t consumed, uint64_t nxt, uint64_t ca
 	return consumed + cap;
 }
 
+/* What a sending side's buffer may grow to: four times buf_cap
+ * (protocontroller_buf_kb), at most maxwin (the stream's ring). Every
+ * receiving side takes that much (cg_pctl_edge). */
+static inline uint64_t cg_pctl_cap_max(uint64_t buf_cap, uint64_t maxwin)
+{
+	return buf_cap * 4 < maxwin ? buf_cap * 4 : maxwin;
+}
+
+/* A sending side's buffer after a second (task #77): twice as large, up to
+ * buf_max, when the cap held bytes in the socket (hit) on a path without
+ * random loss (lf_pm under grow_pm: streamcc.h's cg_scc_lfloor), queue or
+ * heavy loss; three quarters, down to buf_cap, with random loss of
+ * shrink_pm or more or heavy loss; else as it was. On NR (180 Mbit/s, ~70 ms)
+ * 1 MB held a stream at ~120 Mbit/s and 4 MB took it to the link; 4 MB on
+ * links that lose 1 % at random tripled the ping p99 and sent ~5000
+ * segments twice (story 028). */
+static inline uint64_t cg_pctl_cap_next(uint64_t cap, uint64_t buf_cap, uint64_t buf_max, int hit, uint32_t lf_pm,
+					int cong, int heavy, uint32_t grow_pm, uint32_t shrink_pm)
+{
+	if (heavy || lf_pm >= shrink_pm) {
+		cap = cap / 4 * 3;
+		return cap > buf_cap ? cap : buf_cap;
+	}
+	if (hit && lf_pm < grow_pm && !cong) {
+		cap *= 2;
+		return cap < buf_max ? cap : buf_max;
+	}
+	return cap;
+}
+
 /* The bytes a stream's sending side may hold unsent (read from its socket
  * and not sent yet): rate (its share, bytes/s) for backlog_ms, at least
  * min_bytes. The router stops reading its LAN socket beyond it. */

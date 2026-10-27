@@ -64,6 +64,9 @@
 #define PCTL_AGES 16
 #define CG_PCTL_AHDR_MAX 20    /* variant A's header: magic, family, port, address */
 #define PCTL_AMAGIC 0xA5
+#define PCTL_CAP_US 1000000u /* a sending side's buffer is weighed once a second (cap_adapt) */
+#define PCTL_CAP_LF 2u       /* per mille: the path's random loss under which it may grow */
+#define PCTL_CAP_LF_SHRINK 5u /* and over which it shrinks */
 #define PCTL_REO_STEP_US 4000u  /* a duplicate widens RACK's window by this */
 #define PCTL_REO_DECAY_US 200u  /* and it narrows by this a tick (2 ms a second), down to protocontroller_reo_ms;
 				 * up to reo_cap (streamcc.h's cg_scc_reo_cap: the code's horizon) */
@@ -97,6 +100,9 @@ struct flow {
 	uint16_t aseq, ack_pend;
 	uint64_t ack_t;
 	uint64_t consumed; /* received bytes written to the socket */
+	uint64_t cap;      /* what the sending side holds at most: buf_cap up to buf_max (cap_adapt) */
+	uint64_t cap_t;    /* its last weighing */
+	uint8_t cap_hit;   /* the socket had bytes the cap left there since */
 	uint64_t adv_edge; /* the edge of the last ACK sent */
 	uint64_t open_due, rto_at, progress_t, created_t;
 	uint64_t s_bytes, s_t, s_rate; /* bytes delivered to the peer, a window's start, the rate */
@@ -149,7 +155,8 @@ struct cg_pctl {
 	uint32_t *tval;
 	struct peer *pr;
 	uint32_t npr;
-	uint64_t buf_cap, due_us;
+	uint64_t buf_cap, buf_max, due_us; /* buf_max: what a sending side may grow to, and every receiving side's window */
+	uint64_t cap_up, cap_down;         /* sending sides' buffers grown and shrunk (cap_adapt) */
 	uint32_t reo_cap; /* how far duplicates widen RACK's window (cg_scc_reo_cap) */
 	/* the batch of messages to send, all to one peer */
 	uint8_t msg[CG_BATCH][PCTL_FRAME];
@@ -330,6 +337,9 @@ static struct flow *flow_alloc(struct cg_pctl *p)
 	cg_st_rx_init(&f->rx);
 	cg_st_tx_init(&f->tx, p->segs + (size_t)s * p->nseg, p->nseg, PCTL_INIT_EDGE);
 	f->created_t = f->progress_t = f->s_t = f->w_t = cg_now_us();
+	f->cap = p->buf_cap;
+	f->cap_t = f->created_t;
+	f->cap_hit = 0;
 	p->used[p->nused++] = s;
 	return f;
 }
@@ -623,9 +633,10 @@ static int dest_connect(struct cg_pctl *p, int family, const uint8_t *addr, uint
 	set_int(fd, IPPROTO_TCP, TCP_NODELAY, 1);
 	set_int(fd, IPPROTO_TCP, TCP_NOTSENT_LOWAT, PCTL_LOWAT_MIN);
 	/* what the destination sends while the stream is full waits in this
-	 * socket: as much as the stream's own buffer (the kernel doubles it),
-	 * not the autotuned 6 MB (a download, 7 MB a connection) */
-	set_int(fd, SOL_SOCKET, SO_RCVBUF, (int)p->buf_cap);
+	 * socket: half of what the stream may grow to (the kernel doubles it),
+	 * not the autotuned 6 MB (a download, 7 MB a connection); at buf_cap
+	 * it held the far leg at ~120 Mbit/s over 100 ms */
+	set_int(fd, SOL_SOCKET, SO_RCVBUF, (int)(p->buf_max / 2));
 	if (connect(fd, (struct sockaddr *)&a, al) < 0 && errno != EINPROGRESS) {
 		*why = reason_of(errno);
 		close(fd);
@@ -1080,7 +1091,7 @@ static void data_in(struct cg_pctl *p, struct flow *f, const struct cg_pctl_msg 
 			f->have_owd = 1;
 		}
 	}
-	v = cg_st_rx_judge(&f->rx, off, m->len, fin, f->consumed + p->buf_cap);
+	v = cg_st_rx_judge(&f->rx, off, m->len, fin, f->consumed + p->buf_max);
 	if (v == CG_ST_RX_DUP) {
 		p->dup_frames++;
 		f->dup_seen = 1;
@@ -1327,7 +1338,7 @@ static int sock_read(struct cg_pctl *p, struct flow *f)
 
 	while (f->rd_ready && !f->tx.eof && got < PCTL_READ_PASS) {
 		uint64_t held = f->tx.tail - f->tx.una, unsent = cg_st_tx_unsent(&f->tx);
-		uint64_t room = p->buf_cap > held ? p->buf_cap - held : 0, bl = backlog_max(p, f, f->s_rate, cg_now_us());
+		uint64_t room = f->cap > held ? f->cap - held : 0, bl = backlog_max(p, f, f->s_rate, cg_now_us());
 		uint32_t crun;
 		uint8_t *d;
 		ssize_t n;
@@ -1336,7 +1347,11 @@ static int sock_read(struct cg_pctl *p, struct flow *f)
 			break;
 		if (room > bl - unsent)
 			room = bl - unsent;
-		if (!room || !(d = cg_st_buf_at(&f->sb, &p->pool, f->tx.tail, 1, &crun)))
+		if (!room) {
+			f->cap_hit = 1; /* the socket may have more: the cap held it */
+			break;
+		}
+		if (!(d = cg_st_buf_at(&f->sb, &p->pool, f->tx.tail, 1, &crun)))
 			break;
 		if (room > crun)
 			room = crun;
@@ -1414,7 +1429,7 @@ static int sock_write(struct cg_pctl *p, struct flow *f, uint64_t now)
 		return -1;
 	}
 	if (f->consumed != was) {
-		uint64_t e = cg_pctl_edge(f->consumed, f->rx.nxt, p->buf_cap, backlog_max(p, f, f->w_rate, now));
+		uint64_t e = cg_pctl_edge(f->consumed, f->rx.nxt, p->buf_max, backlog_max(p, f, f->w_rate, now));
 
 		age_pop(f->io, &f->io_h, &f->io_n, f->consumed, now, p->writeq);
 		f->progress_t = now;
@@ -1480,7 +1495,7 @@ void cg_pctl_event(struct cg_pctl *p, uint32_t idx, uint32_t events)
 static void send_ack(struct cg_pctl *p, struct flow *f)
 {
 	struct cg_st_ack a;
-	uint64_t edge = cg_pctl_edge(f->consumed, f->rx.nxt, p->buf_cap, backlog_max(p, f, f->w_rate, cg_now_us()));
+	uint64_t edge = cg_pctl_edge(f->consumed, f->rx.nxt, p->buf_max, backlog_max(p, f, f->w_rate, cg_now_us()));
 	uint8_t *b = slot_for(p, f->peer, f->sid);
 	int32_t d = 0;
 
@@ -1582,6 +1597,16 @@ static int timers(struct cg_pctl *p, struct flow *f, uint64_t now)
 		flow_reset(p, f, CG_PCTL_R_TIMEOUT);
 		return -1;
 	}
+	if (now - f->cap_t >= PCTL_CAP_US) {
+		uint64_t c = cg_pctl_cap_next(f->cap, p->buf_cap, p->buf_max, f->cap_hit, cg_scc_lfloor(&r->cc),
+					      r->cc.cong || r->cc.qnow, r->cc.heavy, PCTL_CAP_LF, PCTL_CAP_LF_SHRINK);
+
+		p->cap_up += c > f->cap;
+		p->cap_down += c < f->cap;
+		f->cap = c;
+		f->cap_hit = 0;
+		f->cap_t = now;
+	}
 	if (f->rto_at && now >= f->rto_at) {
 		uint64_t rn = f->tx.reneged, lq = 0,
 			 lost = cg_st_tx_rto(&f->tx, now, cg_scc_rto(&r->cc, f->backoff, peer_reo(p, r)), &lq);
@@ -1632,7 +1657,7 @@ void cg_pctl_service(struct cg_pctl *p)
 			want = EPOLLOUT;
 		} else {
 			uint64_t held = f->tx.tail - f->tx.una;
-			int can = !f->tx.eof && held < p->buf_cap &&
+			int can = !f->tx.eof && held < f->cap &&
 				  cg_st_tx_unsent(&f->tx) < backlog_max(p, f, f->s_rate, now);
 
 			if (can && !(f->ev & EPOLLIN)) {
@@ -1791,11 +1816,12 @@ struct cg_pctl *cg_pctl_new(const struct cg_pctl_cfg *cfg, int ep, const struct 
 	p->buf_cap = (uint64_t)cfg->buf_kb * 1024;
 	if (p->buf_cap > CG_ST_MAXWIN)
 		p->buf_cap = CG_ST_MAXWIN;
+	p->buf_max = cg_pctl_cap_max(p->buf_cap, CG_ST_MAXWIN);
 	p->ccf.queue_us = cfg->queue_ms * 1000;
 	p->ccf.mss = cfg->mss;
 	p->reo_cap = cg_scc_reo_cap(cfg->reo_ms * 1000, cfg->code_ms * 1000);
 	/* a segment per mss of the buffer, and some for small writes */
-	p->nseg = (uint32_t)(p->buf_cap / (cfg->mss > 256 ? cfg->mss / 2 : 128)) + 64;
+	p->nseg = (uint32_t)(p->buf_max / (cfg->mss > 256 ? cfg->mss / 2 : 128)) + 64;
 	nch = (uint32_t)((uint64_t)cfg->mem_mb * 1024 * 1024 / CG_ST_CHUNK);
 	p->mem = malloc((size_t)nch * CG_ST_CHUNK); /* untouched pages stay free */
 	p->stack = malloc((size_t)nch * sizeof(*p->stack));
@@ -1938,6 +1964,16 @@ void cg_pctl_json(const struct cg_pctl *p, struct cg_json *j)
 	cg_json_u64(j, "copies", p->copies);
 	cg_json_u64(j, "rto", p->rto_n);
 	cg_json_u64(j, "reneged", p->reneged);
+	{
+		uint64_t m = 0;
+
+		for (uint32_t i = 0; i < p->nused; i++)
+			if (p->f[p->used[i]].cap > m)
+				m = p->f[p->used[i]].cap;
+		cg_json_u64(j, "buf_kb_max", m / 1024); /* the largest sending side's buffer now */
+	}
+	cg_json_u64(j, "buf_up", p->cap_up);
+	cg_json_u64(j, "buf_down", p->cap_down);
 	cg_json_u64(j, "dup_frames", p->dup_frames);
 	cg_json_u64(j, "ooo_frames", p->ooo_frames);
 	cg_json_u64(j, "drop_frames", p->drop_frames);
