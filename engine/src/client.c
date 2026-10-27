@@ -2176,7 +2176,7 @@ static void f3_begin(struct client *c, const struct upctx *u)
 
 /* DATA seq (len bytes at p) into the window; its share of repairs, while
  * FEC v3 protects. */
-static void f3_feed(struct client *c, uint32_t seq, const uint8_t *p, size_t len, uint64_t now_us, int copied)
+static void f3_feed(struct client *c, uint32_t seq, const uint8_t *p, size_t len, uint64_t now_us)
 {
 	cg_rlcw_add(c->f3w, seq, p, (uint16_t)(len > CG_SYM_PLEN ? CG_SYM_PLEN : len), now_us);
 	/* the protocontroller's bytes, which loss does not hold back: B's
@@ -2189,9 +2189,8 @@ static void f3_feed(struct client *c, uint32_t seq, const uint8_t *p, size_t len
 		cg_resc_earn(&c->resc_b, (uint32_t)len, c->cfg->rescue_pct);
 	if (c->f3.mode == CG_F3_OFF)
 		return;
+	cg_f3_earn(&c->f3, (uint32_t)len, c->f3.pct, now_us);
 	c->f3_data += len;
-	if (!copied)
-		cg_f3_earn(&c->f3, (uint32_t)len, c->f3.pct, now_us);
 }
 
 /* One repair over the window, on the link the round-robin picks among
@@ -2402,10 +2401,7 @@ static void up_one(struct client *c, struct upctx *u, int m, uint8_t *buf, size_
 	c->prc[m] = (uint8_t)copy;
 	c->sp_bytes += len;
 	if (f3_on(c)) {
-		/* a packet on every carrier of several is there already: no
-		 * repair earned for it (cg_split_plan) */
-		f3_feed(c, c->sseq[m], buf, len, now_us,
-			c->pick[m] < 0 && (u->carry & (u->carry - 1)) && split);
+		f3_feed(c, c->sseq[m], buf, len, now_us);
 	} else if (c->cfg->fec && split) {
 		int only = cg_split_only(c->pick[m], u->carry, u->k.dup);
 

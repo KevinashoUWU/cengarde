@@ -2425,8 +2425,7 @@ static void sf3_begin(struct server *s, struct session *S, const struct dpaths *
 /* DATA seq of S's download (len bytes at p) into the window; its share of
  * repairs while FEC v3 protects, and of the rescue's budget for the
  * client's PARQs without the rescue ring. */
-static void sf3_feed(struct server *s, struct session *S, uint32_t seq, const uint8_t *p, size_t len, uint64_t now_us,
-		     int copied)
+static void sf3_feed(struct server *s, struct session *S, uint32_t seq, const uint8_t *p, size_t len, uint64_t now_us)
 {
 	cg_rlcw_add(S->dw, seq, p, (uint16_t)(len > CG_SYM_PLEN ? CG_SYM_PLEN : len), now_us);
 	/* the protocontroller's bytes, which loss does not hold back: B's
@@ -2439,9 +2438,8 @@ static void sf3_feed(struct server *s, struct session *S, uint32_t seq, const ui
 		cg_resc_earn(&S->resc_b, (uint32_t)len, s->cfg->rescue_pct);
 	if (S->df3.mode == CG_F3_OFF)
 		return;
+	cg_f3_earn(&S->df3, (uint32_t)len, S->df3.pct, now_us);
 	S->df3_data += len;
-	if (!copied)
-		cg_f3_earn(&S->df3, (uint32_t)len, S->df3.pct, now_us);
 }
 
 /* One repair over S's window down the path the round-robin picks (as the
@@ -2611,9 +2609,7 @@ static void down_prepare(struct server *s, struct session *S, int m, uint8_t *bu
 	if (sf3_on(s, S)) {
 		if (!m)
 			sf3_begin(s, S, d, now_us / 1000); /* once a batch, at its first */
-		/* a packet on every carrier of several is there already: no
-		 * repair earned for it (cg_split_plan) */
-		sf3_feed(s, S, s->sseq[m], buf, len, now_us, s->pick[m] < 0 && (d->carry & (d->carry - 1)) && d->split);
+		sf3_feed(s, S, s->sseq[m], buf, len, now_us);
 	}
 	s->oiov[m][0].iov_base = s->hdr[m];
 	s->oiov[m][0].iov_len = CG_HDR_LEN;

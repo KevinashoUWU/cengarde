@@ -644,6 +644,35 @@ con 4 flujos y 20 s, 3 rondas alternadas, salvo que se diga otra cosa.
   hueco que protege un código espere su reparación antes de RACK cuando no
   hay rescate (FEC v3).
 
+### 2026-10-26: un solo orden para los enlaces de un paquete repartido (C13)
+
+La auditoría (C13) encontró que cuatro mecanismos reescribían la máscara
+`eligible` uno tras otro, sin dueño ni orden: `split_stress_single`, el tope
+de la XOR (`fec_share_max`), las copias bajo estrés (`cg_sdup`) y la
+cosquilla. Bajo `stress_single` la XOR agrupaba por todos los enlaces
+mientras uno solo llevaba todo (grupos de uno, sin paridad) y la cosquilla
+no corría; las reparaciones de la FEC v3 iban por la máscara del lote.
+
+- **`cg_split_plan`** (`split.h`, pura, `test_split.c`): G3/G4 → el más
+  rápido solo bajo estrés → el tope de la XOR (solo con la XOR) → copia en
+  todos los portadores bajo estrés → la cosquilla y el ETA eligen entre lo que
+  queda. Cada paso solo achica, y el plan dice cuál decidió (`split_plan` en
+  el estado, en el router y por sesión en el VPS).
+- La XOR agrupa por lo que el paquete puede tomar; `fec_share_max` solo con
+  la XOR.
+- **Probado y descartado:** que la FEC v3 no ganara reparaciones por los
+  paquetes que `cg_sdup` copia en todos los portadores. Parecía gasto, pero
+  bajo estrés esas reparaciones rehacen los paquetes repartidos retenidos en
+  el enlace lento: sin ellas el ping de 1200 B p99 empeoró en `ltespikerand`
+  en 6 de 8 celdas (444 → 619 ms de subida con cubic). Se deshizo.
+- **Medido** (n = 6, master `8c7a386` contra C13, perfil de terreno con la
+  FEC v3 y el rescate, y con `split_stress_single` y la cosquilla de 2 s;
+  `ltespikerand`, `het`, `spikeloss`, `stall50`, `starsat`, `clean4`, subida y
+  bajada, cubic y BBR): neutro, 0,88–1,10× sin diferencia significativa salvo
+  una celda (0,95×, p 0,03). Con la FEC v3, tras deshacer lo anterior, el
+  comportamiento es el de antes: C13 ordena y cuenta. Datos:
+  `~/campo/2026-10-26/c13/`.
+
 ## Qué hacemos con esto (diseño)
 
 ### Piezas
@@ -701,3 +730,4 @@ con 4 flujos y 20 s, 3 rondas alternadas, salvo que se diga otra cosa.
 - 2026-10-15: el PR 5 medido en la red de pruebas: neutro; la bajada de 16 flujos llega a 280–344 con los enlaces de la mañana.
 - 2026-10-15: el arranque rápido (PR #56): neutro en el laboratorio, que no reproduce el enfriamiento; el A/B en terreno, pendiente.
 - 2026-10-26: C2 (PR #118): la máscara de enlaces activos en las sondas y el `rset` del receptor recortado a ella (`active.h`, `reorder_active`, caso `idleslow`); cordura en el laboratorio.
+- 2026-10-26: C13, `cg_split_plan` (un solo orden para los enlaces de un paquete repartido).

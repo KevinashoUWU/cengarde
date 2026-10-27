@@ -668,9 +668,11 @@ static inline uint16_t cg_split_stress_elig(const struct cg_spread *s, uint16_t 
  * What follows the plan, not the batch's elig: the XOR parity groups by the
  * links a packet may really take (with one, no group: before, under
  * split_stress_single it grouped by every link while one carried all, and
- * every group closed with one packet), and FEC v3 earns no repair for a
- * packet copied on every carrier (it is there already). The callers count
- * each step (n[by]). */
+ * every group closed with one packet). FEC v3 still earns repairs for a
+ * packet copied on every carrier: under G4's stress those repairs rebuild
+ * the split packets held on the slow link (without them, ltespikerand's
+ * 1200 B ping p99 rose in 6 of 8 cells, 444 -> 619 ms up with cubic; story
+ * 012). The callers count each step (n[by]). */
 enum { CG_PLAN_SPLIT = 0, CG_PLAN_SINGLE, CG_PLAN_SHARE, CG_PLAN_COPY, CG_PLAN_N };
 
 struct cg_split_plan {
