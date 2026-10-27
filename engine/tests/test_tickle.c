@@ -67,7 +67,7 @@ static void test_tickle_split(void)
 	cg_eta_set(&e, 1, 10000000, 20000, 0, now); /* slow, 20 ms more */
 	for (int i = 0; i < 100; i++) {
 		uint8_t f = 0;
-		int k = cg_split_pick_eta(&sp, &e, &t, now + (uint64_t)i * 200, 0x3, 0x3, 0, w, CG_WGS_DATA, 1000, 100, &f);
+		int k = cg_split_pick_eta(&sp, &e, &t, now + (uint64_t)i * 200, 0x3, 0x3, 0, w, 1000, 100, &f);
 
 		n0 += k == 0;
 		n1 += k == 1;
@@ -81,7 +81,7 @@ static void test_tickle_split(void)
 	n0 = n1 = 0;
 	for (int i = 0; i < 100; i++) {
 		uint8_t f = 0;
-		int k = cg_split_pick_eta(&sp, &e, &t, now + (uint64_t)i * 200, 0x3, 0x3, 0, w, CG_WGS_DATA, 1000, 100, &f);
+		int k = cg_split_pick_eta(&sp, &e, &t, now + (uint64_t)i * 200, 0x3, 0x3, 0, w, 1000, 100, &f);
 
 		CHECK(f & CG_F_SPLIT);
 		n0 += k == 0;
@@ -92,7 +92,7 @@ static void test_tickle_split(void)
 	CHECK_EQ(sp.n_by[CG_SPLIT_BY_TICKLE], (uint64_t)n1); /* counted as the tickle's (status split_by) */
 	CHECK(e.l[1].backlog > 0);
 	/* the link left the split's set: the tickle takes nothing */
-	CHECK_EQ(cg_split_pick_eta(&sp, &e, &t, now + 30000, 0x1, 0x1, 0, w, CG_WGS_DATA, 1000, 100, NULL), -1);
+	CHECK_EQ(cg_split_pick_eta(&sp, &e, &t, now + 30000, 0x1, 0x1, 0, w, 1000, 100, NULL), -1);
 }
 
 /* Backoff: a tickle after which the capacity did not grow by 1/8 doubles

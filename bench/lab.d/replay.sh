@@ -1,4 +1,4 @@
-# shellcheck shell=bash disable=SC2034 # LAB_CI, ENGINE and NLINKS are read by lab.sh
+# shellcheck shell=bash disable=SC2034 # LAB_CI and NLINKS are read by lab.sh
 # Cookies and replays, protocol 4: "bench/lab.sh replay".
 #
 # bench/cgprobe plays a second router with the lab's key, from addresses of
@@ -16,8 +16,10 @@
 #  5. the server restarts: p.bin from any address, its own included, gets
 #     only a HELLO (the cookie keys are new): no session, and IP pass is not
 #     written;
-#  6. the real client, all along: its download goes on before the restart,
-#     and after it within RESTART_S (5) seconds, its windows never reset.
+#  6. the real client, all along: its upload goes on before the restart
+#     (the download goes to the newest session of the one client, which is
+#     cgprobe's), its download after it within RESTART_S (5) seconds, its
+#     windows never reset.
 LAB_CI=1
 
 # replay_probe BIND ARGS...: cgprobe from BIND (10.0.N.1:PORT) in the cli
@@ -69,7 +71,7 @@ replay_server_restart() {
 
 replay() {
 	local fail=0 out c1 c2 S=c0ffee01 i loss hint b
-	ENGINE=c NLINKS=2
+	NLINKS=2
 	SERVER_EXTRA="status_interval_ms = 200;passthrough_file = $RUN/passthrough${SERVER_EXTRA:+;$SERVER_EXTRA}"
 	CLIENT_EXTRA="status_interval_ms = 200${CLIENT_EXTRA:+;$CLIENT_EXTRA}"
 	trap teardown EXIT
@@ -124,8 +126,11 @@ replay() {
 	replay_expect "another key, our hint" "$out" "none" || fail=1
 	replay_expect "rx.auth_failures" "$(replay_srv "d['rx']['auth_failures']")" "[1-9]*" || fail=1
 
-	echo "   6. the real client's download, before the restart"
-	loss=$(down 1000 2 | sed -n 's/.*loss= *\([0-9.]*\)%.*/\1/p')
+	# The server's TUN sends to the newest session of the one client, here
+	# cgprobe's (it holds the lab's key): the real client's upload says its
+	# session still carries what it sends, windows and all.
+	echo "   6. the real client's upload, before the restart"
+	loss=$(up 1000 2 | sed -n 's/.*loss= *\([0-9.]*\)%.*/\1/p')
 	replay_expect "loss %" "$loss" "0.00" || fail=1
 
 	echo "   5. the server restarts; the datagram again"

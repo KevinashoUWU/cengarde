@@ -22,7 +22,7 @@
 #    lookup it asked for): the new /32 is added, the zone changed and the
 #    old /32 deleted.
 #    The cut is measured from the control sockets (25 ms): the gap in the
-#    packets each end delivers to WireGuard around the deletion, and the time
+#    packets each end delivers to its TUN around the deletion, and the time
 #    until every link is live on the new address at both ends. At most
 #    NAMES_CUT_LIMIT s (8); expected about 3: the links' stall detection, 2 s
 #    of silence, then a lookup.
@@ -80,7 +80,7 @@ def status(end):
 
 
 def sample():
-    """Both ends now, or None. dl: packets the client delivered to WireGuard;
+    """Both ends now, or None. dl: packets the client delivered to its TUN;
     ul: those the server delivered to its own."""
     cli, srv = status("client"), status("server")
     if not cli or not srv:
@@ -223,9 +223,9 @@ names_queries() {
 # names_traffic SECS: 1000 pps down and up for SECS seconds, in the background;
 # names_traffic_wait waits for the end and names_loss reads what came of it.
 names_traffic() {
-	ip netns exec "$NS_SRV" "$BIN/udpgen" -b 127.0.0.1:59301 -l -r 1000 -s "$SIZE" -d "$1" -g 2 >"$RUN/names-srv.out" &
+	ip netns exec "$NS_SRV" "$BIN/udpgen" -b "$SRV_TUN:59301" -l -r 1000 -s "$SIZE" -d "$1" -g 2 >"$RUN/names-srv.out" &
 	NAMES_PIDS=("$!")
-	ip netns exec "$NS_CLI" "$BIN/udpgen" -b 127.0.0.1:50000 -p 127.0.0.1:59401 -r 1000 -s "$SIZE" -d "$1" -g 2 >"$RUN/names-cli.out" &
+	ip netns exec "$NS_CLI" "$BIN/udpgen" -b "$CLI_TUN:50000" -p "$SRV_TUN:59301" -r 1000 -s "$SIZE" -d "$1" -g 2 >"$RUN/names-cli.out" &
 	NAMES_PIDS+=("$!")
 }
 names_traffic_wait() {
@@ -408,7 +408,7 @@ names() {
 		echo "names: FAILED"
 		return 1
 	fi
-	ENGINE=c NLINKS=3
+	NLINKS=3
 	CLIENT_EXTRA="control_socket = $sock;resolver =${CLIENT_EXTRA:+;$CLIENT_EXTRA}"
 	SERVER_EXTRA="control_socket = $RUN/server.sock${SERVER_EXTRA:+;$SERVER_EXTRA}"
 	trap 'names_stop; teardown' EXIT

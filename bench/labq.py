@@ -18,7 +18,8 @@ An arm has a name and either a git revision ("rev", built once per commit into
 the cache: a detached git worktree, make, the binary kept) or a prebuilt engine
 ("bin"); "client_extra" and "server_extra" ("key = value;..."), "variant" (a
 bond.sh variant, "bonded" by default) and "env" (more variables for its jobs)
-are optional. The lab's scripts are always this tree's; only the engine changes.
+are optional. The lab's scripts are always this tree's; only the engine changes
+(the lab is native-only, so an arm's revision needs the native tunnel).
 The same can be said without a file: --arm NAME=REV (or NAME=/path/to/cengarde),
 --client NAME='k = v;...', --server NAME='...', and --cases, --dirs, --cc, --reps,
 --secs, --seed, --env K=V, which also override the file's.
@@ -35,7 +36,7 @@ from N+1, so that two queues share a machine.
 
 Other machines join with --node USER@HOST:N[,key=PATH][,root=DIR] (and the
 local labs with --node local:N; without --node, -j N local labs): a node is a
-box prepared like ~/cengarde-lab (iperf3 and wg in ROOT/prefix/bin, a venv in
+box prepared like ~/cengarde-lab (iperf3 in ROOT/prefix/bin, a venv in
 ROOT/venv with aioquic, the repository in ROOT/repo; passwordless sudo). Before
 running, the lab's scripts (bench/) and each arm's engine are copied there with
 rsync, so every node runs the same binary and scripts; a job there is one

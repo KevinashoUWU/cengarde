@@ -5,7 +5,7 @@
 # are known. Then the real thing on 2 links: iperf3 servers in srv on two
 # ports, bench/fieldperf.sh (under sh) in cli with the links and each one's
 # VPS address taken from the engine's status, "solo" and "all" for 2 s each
-# way (the lab has no WireGuard, so no "tunnel"), and bench/fieldperf.py on
+# way (its "tunnel" mode is not run here), and bench/fieldperf.py on
 # what it wrote. Passes when "plan" prints the estimate for the three modes
 # and runs nothing, every test has its iperf3 with traffic and its ping,
 # and the counters were read (the UDP sockets', each device's, the
@@ -14,7 +14,7 @@ LAB_CI=1
 
 fieldperf() {
 	local fail=0 out="$RUN/fieldperf" p plan
-	ENGINE=c NLINKS=2
+	NLINKS=2
 	if ! p=$(python3 "$LAB/fieldperf_test.py"); then
 		echo "$p" | grep -v '^ok'
 		echo "FAIL: bench/fieldperf_test.py"

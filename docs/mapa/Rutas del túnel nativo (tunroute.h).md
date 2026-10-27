@@ -5,14 +5,16 @@ archivos:
   - engine/src/tun.h
   - engine/src/ippkt.h
   - engine/tests/test_tun.c
-sello: 132d7c553651acf6
+sello: 5d4176cdc3e683d9
 ---
 # Rutas del túnel nativo (tunroute.h)
 
 **Grupo:** Recibir · Enviar — [[Mapa del motor]]
 
 ## Qué hace
-Con `tunnel = native`, el servidor tiene una TUN para todos los clientes. Un paquete que el kernel mete en ella va al cliente cuyos prefijos contienen su destino, por prefijo más largo, como los AllowedIPs de WireGuard. En el otro sentido comprueba el origen: un paquete de un cliente entra a la TUN solo si su origen es de ese cliente. `ippkt.h` comprueba que un DATA tenga forma de paquete IP antes de la TUN.
+El servidor tiene una TUN para todos los clientes (el túnel nativo, el único desde 0.12). Un paquete que el kernel mete en ella va al cliente cuyos prefijos contienen su destino, por prefijo más largo, como los AllowedIPs de WireGuard. En el otro sentido comprueba el origen: un paquete de un cliente entra a la TUN solo si su origen es de ese cliente. `ippkt.h` comprueba que un DATA tenga forma de paquete IP antes de la TUN.
+
+`tun.c` crea la TUN y le pone `tun_addr`: la primera dirección IPv4 por `SIOCSIFADDR` y las siguientes como secundarias con la etiqueta `NOMBRE:n` (antes de 0.12 cada una reemplazaba a la anterior y solo quedaba la última).
 
 ## Lee
 - El destino (y el origen) de cada paquete IP; los `tun_route` de cada cliente.

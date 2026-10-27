@@ -13,20 +13,20 @@ El motor de cengarde (`engine/src`, C) lleva un túnel por varios enlaces a la v
 ## El camino de un paquete
 
 ### Subida (cliente → servidor)
-1. WireGuard local (o la TUN con `tunnel = native`) entrega un lote; `wg_read` lo lee. En nativo, [[Flujos (flow.h)]] y [[Liberación TCP (tcpfree.h)]] marcan los ACK y las retransmisiones. Con `protocontroller`, el TCP que el firewall redirige lo toma [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]], que manda los mensajes de sus flujos (variante B) por el mismo camino (`pctl_send`), o un TCP simple por la TUN (variante A).
+1. La TUN (`cg0`, el único túnel desde 0.12: [[027-adios-wireguard]]) entrega un lote; `tun_read` lo lee. [[Flujos (flow.h)]] y [[Liberación TCP (tcpfree.h)]] marcan los ACK y las retransmisiones. Con `protocontroller`, el TCP que el firewall redirige lo toma [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]], que manda los mensajes de sus flujos (variante B) por el mismo camino (`pctl_send`), o un TCP simple por la TUN (variante A).
 2. Las máscaras del lote: portadores de [[Salud y silenciado (health.h)]] (G1), elegibles de [[G3 enlace sin respuesta (split.h)]] y la guarda [[G4 guarda de dispersión (split.h)]].
 3. Por paquete: [[Copias bajo estrés (split.h)]] y el tope de [[FEC (fec.h)]] recortan; si hay un [[Enlace dominante (dominant.h)]], va como en redundancia; si no, el [[Reparto (split.h)]] elige enlace con el [[ETA (eta.h)]] (o por pesos del [[Gobernador (govern.h)]] o de la [[Capacidad (capacity.h)]]), primero la [[Cosquilla (tickle.h)]].
 4. Cabecera, secuencia y MAC una vez ([[Camino del router (clientpath.h)]]); se suma a un grupo de [[FEC (fec.h)]] (o, con `fec_code = rlc`, a la ventana de la [[FEC v3 (fec3.h)]], cuyas reparaciones salen tras el lote) y se guarda para el [[Rescate (rescue.h)]].
 5. `send_links` manda por cada enlace: las [[Copias a tiempo (eta.h)]], las copias del borde ([[Ranuras de Starlink (slot.h)]]) y lo que sobra a los enlaces que no son el primero ([[Lo que sobra (spare.h)]]: copias parciales o paridad) deciden qué copias salen; el socket va dosificado ([[Dosificación (pace.h)]]), desde la [[Dirección de origen (addrpick.h)]] hacia la dirección de la [[Elección de servidor (srvpick.h)]] ([[Nombres del servidor (resolve.h)]]).
 6. En el VPS, el kernel deja cada datagrama en el carril de su enlace ([[Colas del servidor (steer.h)]], con el [[Presupuesto de recepción (rcvbudget.h)]]).
-7. El servidor halla la clave por la pista ([[Varios clientes (clients.h)]]), acepta caminos nuevos solo con cookie ([[Cookies y HELLO (cookie.h)]]), mira el [[Anti-replay (replay.h)]] antes del MAC y marca después; anota en [[Llegadas (arrival.h)]] y [[Tamaños (wgsize.h)]].
-8. [[FEC (fec.h)]] y los [[Códigos de borrado (rs.h, rlc.h)]] reconstruyen lo que pueden; el [[Reordenador (reorder.h)]] pone en orden y pide los huecos al [[Rescate (rescue.h)]] del cliente; sale a WireGuard o a la TUN ([[Rutas del túnel nativo (tunroute.h)]], que comprueba el origen).
+7. El servidor halla la clave por la pista ([[Varios clientes (clients.h)]]), acepta caminos nuevos solo con cookie ([[Cookies y HELLO (cookie.h)]]), mira el [[Anti-replay (replay.h)]] antes del MAC y marca después; anota en [[Llegadas (arrival.h)]].
+8. [[FEC (fec.h)]] y los [[Códigos de borrado (rs.h, rlc.h)]] reconstruyen lo que pueden; el [[Reordenador (reorder.h)]] pone en orden y pide los huecos al [[Rescate (rescue.h)]] del cliente; sale a la TUN ([[Rutas del túnel nativo (tunroute.h)]], que comprueba el origen).
 
 ### Bajada (servidor → cliente)
-1. `wg_read` o `tun_read` del servidor ([[Rutas del túnel nativo (tunroute.h)]] elige la sesión); `down_prepare` usa las mismas piezas que el paso 2–4 de la subida, con la salud y la capacidad medidas en este sentido y el tipo de cada camino que mandó el cliente ([[Modelo de enlace (linkmodel.h)]]).
+1. `tun_read` del servidor ([[Rutas del túnel nativo (tunroute.h)]] elige la sesión); `down_prepare` usa las mismas piezas que el paso 2–4 de la subida, con la salud y la capacidad medidas en este sentido y el tipo de cada camino que mandó el cliente ([[Modelo de enlace (linkmodel.h)]]).
 2. `down_send` sale por el carril de cada camino, dosificado ([[Dosificación (pace.h)]]), desde la [[Dirección de llegada (pktinfo.h)]].
 3. En el router, las bombas o el bucle leen los sockets ([[Hilos por enlace (thrplan.h)]]); [[Camino del router (clientpath.h)]] juzga cada datagrama ([[Eco de sondas (epoch.h)]], [[Anti-replay (replay.h)]]).
-4. El [[Reordenador (reorder.h)]] del cliente entrega en orden y pide (NACK) al [[Rescate (rescue.h)]] del servidor. Si WireGuard del VPS ignora al router, [[Reloj atrasado de WireGuard (wgwatch.h)]].
+4. El [[Reordenador (reorder.h)]] del cliente entrega en orden y pide (NACK) al [[Rescate (rescue.h)]] del servidor.
 
 ### Los ticks (~10 por segundo, cada extremo)
 [[Sondas y cola de bonding (proto.h)]] traen las medidas → `health_tick`: [[Modelo de enlace (linkmodel.h)]] → [[Salud y silenciado (health.h)]] → `spread_tick` ([[G3 enlace sin respuesta (split.h)]], [[G4 guarda de dispersión (split.h)]]) → `gov_tick` ([[Gobernador (govern.h)]]) → `cap_tick` ([[Capacidad (capacity.h)]], [[Observaciones del enlace (linksig.h)]], [[Tope para cake (capacity.h)]], [[Enlace dominante (dominant.h)]], [[ETA (eta.h)]], [[Cosquilla (tickle.h)]], [[Dosificación (pace.h)]], [[Lo que sobra (spare.h)]]). Todo cambio va a la [[Bitácora de decisiones (decision.h)]]. Casi todo cuelga de un solo sensor: [[Cola por enlace (cg_gov_base)]].
@@ -34,7 +34,7 @@ El motor de cengarde (`engine/src`, C) lleva un túnel por varios enlaces a la v
 ```mermaid
 flowchart LR
   subgraph CLI[Cliente / router]
-    WG1[WireGuard o TUN] --> RD1[wg_read]
+    WG1[TUN] --> RD1[tun_read]
     RD1 --> MK[Máscaras: salud G1, G3, G4]
     MK --> DOM{¿Dominante?}
     DOM -- no --> SP[Reparto: ETA / pesos / cosquilla]
@@ -50,7 +50,7 @@ flowchart LR
     LN[Carriles cBPF] --> AR[Pista, cookie, anti-replay, MAC]
     AR --> FC[FEC reconstruye]
     FC --> RO[Reordenador]
-    RO --> WG2[WireGuard o TUN]
+    RO --> WG2[TUN]
     RO -. NACK .-> RS[Rescate del otro extremo]
   end
   L1 --> LN
@@ -66,9 +66,9 @@ flowchart LR
 - **Decidir:** [[Modelo de enlace (linkmodel.h)]], [[Gobernador (govern.h)]], [[Reparto (split.h)]], [[G3 enlace sin respuesta (split.h)]], [[G4 guarda de dispersión (split.h)]], [[Copias bajo estrés (split.h)]], [[ETA (eta.h)]], [[Copias a tiempo (eta.h)]], [[Lo que sobra (spare.h)]], [[Cosquilla (tickle.h)]], [[Enlace dominante (dominant.h)]].
 - **Enviar:** [[Dosificación (pace.h)]], [[Liberación TCP (tcpfree.h)]], [[Retransmisión según la evidencia (tcpack.h)]], [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]], [[Elección de servidor (srvpick.h)]], [[Dirección de origen (addrpick.h)]], [[Dirección de llegada (pktinfo.h)]], [[Nombres del servidor (resolve.h)]].
 - **Recibir:** [[Camino del router (clientpath.h)]], [[Anti-replay (replay.h)]], [[Reordenador (reorder.h)]], [[Enlaces activos (active.h)]], [[Colas del servidor (steer.h)]], [[Presupuesto de recepción (rcvbudget.h)]], [[Hilos por enlace (thrplan.h)]], [[Eco de sondas (epoch.h)]], [[Cookies y HELLO (cookie.h)]], [[Varios clientes (clients.h)]], [[Rutas del túnel nativo (tunroute.h)]].
-- **Recuperar:** [[Rescate (rescue.h)]], [[Reparación coherente (harq.h)]], [[FEC (fec.h)]], [[FEC v3 (fec3.h)]], [[Códigos de borrado (rs.h, rlc.h)]], [[Lo que sobra (spare.h)]], [[Reloj atrasado de WireGuard (wgwatch.h)]].
+- **Recuperar:** [[Rescate (rescue.h)]], [[Reparación coherente (harq.h)]], [[FEC (fec.h)]], [[FEC v3 (fec3.h)]], [[Códigos de borrado (rs.h, rlc.h)]], [[Lo que sobra (spare.h)]].
 - **Configurar:** [[Configuración (config.c)]], [[Perillas]], [[Tabla de reenvío (fwdtable.h)]].
-- **Observar:** [[Llegadas (arrival.h)]], [[Tamaños (wgsize.h)]], [[Bitácora de decisiones (decision.h)]].
+- **Observar:** [[Llegadas (arrival.h)]], [[Bitácora de decisiones (decision.h)]].
 - **Otros:** [[Utilidades]], [[Glosario]].
 
 Fuera del mapa: [[engine-README]] (perillas con medidas), [[ROADMAP]], [[012-bonding]], [[013-capacidad-y-dosificacion]], [[015-modelo-de-enlace]], [[020-copias-parciales-y-paridad]], [[audit-pending]] (la auditoría de relojería: `~/campo/2026-10-17/relojeria/analysis.md`, fuera del vault).

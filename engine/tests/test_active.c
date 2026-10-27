@@ -214,7 +214,7 @@ static void test_keeps_rack(void)
 	struct cg_ro_pool p;
 	struct cg_ro_cfg cf = { .max_wait_us = 200 * MS, .dup_wait_us = 200 * MS, .margin_us = 10 * MS };
 	struct cg_act_rx a;
-	struct cg_ro_pkt k = { .len = 1400, .flags = CG_F_SPLIT, .wgtype = CG_RO_WG_DATA };
+	struct cg_ro_pkt k = { .len = 1400, .flags = CG_F_SPLIT };
 	struct cg_ro_out o;
 	uint16_t buf, rset;
 	uint64_t now = 1000000000;
@@ -499,7 +499,6 @@ static uint64_t s_trial(int rule, uint32_t seed, int jitter, unsigned loss, uint
 					       .len = 1400,
 					       .link = v->link,
 					       .flags = (uint8_t)(CG_F_SPLIT | cg_prev_flags(p->prev)),
-					       .wgtype = CG_RO_WG_DATA,
 					       .prev = (uint8_t)(p->prev + 1) };
 			uint16_t buf, rset;
 			enum cg_ro_v r;

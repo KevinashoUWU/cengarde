@@ -1,9 +1,13 @@
 # Motor cengarde (C)
 
-Reescritura en C de engarde: duplica cada datagrama de WireGuard por todos los
-enlaces del cliente hacia el servidor, y en el otro extremo entrega a
-WireGuard solo la primera copia. Cliente y servidor son el mismo binario; el
-modo lo decide la configuración. El diseño y sus razones están en
+Reescritura en C de engarde: cada extremo abre un dispositivo TUN (`cg0`),
+duplica cada paquete IP que el sistema le entrega por todos los enlaces del
+cliente hacia el servidor, y en el otro extremo escribe en su TUN solo la
+primera copia. Cliente y servidor son el mismo binario; el modo lo decide la
+configuración. Hasta 0.11 el túnel podía ser también WireGuard (cengarde
+llevaba sus datagramas); 0.12 lo quitó
+([historia 027](../docs/historias/027-adios-wireguard.md), ver
+[Sin WireGuard desde 0.12](#sin-wireguard-desde-012)). El diseño y sus razones están en
 [`docs/historias/005-motor-c-v1.md`](../docs/historias/005-motor-c-v1.md) y
 la salud de los enlaces en
 [`docs/historias/006-salud-de-enlaces.md`](../docs/historias/006-salud-de-enlaces.md).
@@ -43,47 +47,45 @@ A mano, en cualquier Linux:
    cengarde genkey
    ```
 
-2. **Servidor (VPS):** copia `examples/server.conf`, pon la clave y la
-   dirección de escucha de WireGuard (`wireguard = 127.0.0.1:51820`).
+2. **Servidor (VPS):** copia `examples/server.conf`, pon la clave y su
+   dirección en el túnel (`tun_addr = 10.79.0.1/16`).
    Compruébala con `cengarde -t -c server.conf` y arranca con
    `cengarde -c server.conf`. Abre en el cortafuegos el puerto UDP de `listen`
    (59402 por defecto).
 
 3. **Cliente:** copia `examples/client.conf`. Pon la clave, `server = <VPS>:59402`
    (o varias direcciones del VPS, ver [más abajo](#varias-direcciones-del-servidor))
-   y los enlaces: patrones en `interfaces` o secciones `[link NOMBRE]`.
+   y los enlaces: patrones en `interfaces` o secciones `[link NOMBRE]`, y
+   su dirección en el túnel (`tun_addr = 10.79.0.2/16`). Las rutas por
+   `cg0` son del sistema (`ip route add … dev cg0`), como en
+   [Túnel nativo](#túnel-nativo-tunnel--native).
 
-4. **WireGuard del cliente:** el `Endpoint` del peer pasa a ser la dirección
-   `listen` del cliente (`127.0.0.1:59401`). El servidor WireGuard no cambia.
-
-5. **MTU de WireGuard:** cengarde añade 24 bytes por paquete. Con una ruta de
-   1500 bytes el máximo es 1416 sobre IPv4 y 1396 sobre IPv6
-   (1500 − IP − 8 UDP − 24 cengarde − 32 WireGuard). En redes móviles conviene
-   ir más bajo, por ejemplo `MTU = 1380`, o menos si algún operador tiene un
-   MTU de camino menor. El cliente lee cada 5 s el MTU de camino de cada
-   enlace (`path_mtu` en el estado) y avisa en el log, como mucho cada 10
-   minutos por enlace, si los datagramas de WireGuard más grandes no caben,
-   con el MTU que sí cabría.
+4. **MTU del túnel (`tun_mtu`, 1420 por omisión):** cengarde añade 24 bytes
+   por paquete. Con una ruta de 1500 bytes el máximo es 1448 sobre IPv4 y
+   1428 sobre IPv6 (1500 − IP − 8 UDP − 24 cengarde). Si algún operador tiene
+   un MTU de camino menor, hay que bajarlo. El cliente lee cada 5 s el MTU
+   de camino de cada enlace (`path_mtu` en el estado) y avisa en el log,
+   como mucho cada 10 minutos por enlace, si los paquetes más grandes de la
+   TUN no caben, con el `tun_mtu` que sí cabría.
 
 ## Emparejar con un solo secreto
 
-En lugar de repartir cuatro claves, los dos extremos pueden derivarlas de un
-secreto de 32 bytes (la salida de `cengarde genkey`):
+En lugar de repartir la clave y las direcciones, los dos extremos pueden
+derivarlas de un secreto de 32 bytes (la salida de `cengarde genkey`):
 
 ```sh
 cengarde keys < secreto
 # CG_LINK_KEY='…'                 la clave de cengarde ("key"), igual en los dos extremos
-# CG_WG_SERVER_KEY='…'            la clave privada de WireGuard del VPS
-# CG_WG_CLIENT_KEY='…'            la del router
-# CG_WG_PSK='…'                   la PSK de WireGuard
 # CG_TUNNEL_ADDR='10.79.x.y'      la IPv4 del router dentro del túnel
 # CG_TUNNEL_ULA='fdxx:xxxx:xxxx'  su prefijo ULA, un /48 (el túnel usa su ::/64)
 # CG_CLIENT_HINT='N'              la pista de cliente, de 0 a 255
 ```
 
 - **Derivación:** cada clave es BLAKE2s-256 con el secreto como clave y
-  `"cengarde pairing v1: " + etiqueta` como mensaje. Las privadas de
-  WireGuard salen recortadas, como las de `wg genkey`.
+  `"cengarde pairing v1: " + etiqueta` como mensaje. Hasta 0.11 también
+  salían las claves de WireGuard (`CG_WG_SERVER_KEY`, `CG_WG_CLIENT_KEY`,
+  `CG_WG_PSK`, etiquetas `wg-server`, `wg-client` y `wg-psk`, que no se
+  reutilizan); 0.12 ya no las imprime.
 - **Direcciones del túnel:** salen de la misma fórmula, para que nadie tenga
   que elegir números cuando varios routers comparten un VPS:
   - `CG_TUNNEL_ADDR`: con `d` la salida de la etiqueta `tunnel` y
@@ -98,15 +100,14 @@ cengarde keys < secreto
   `"cengarde v4 client hint"` como mensaje. El protocolo v4 la llevará en el
   byte 2 de la cabecera para que el servidor elija la clave de cada router
   sin probarlas todas; hoy ningún paquete la lleva.
-- **Variables nuevas al final:** las cuatro primeras líneas no cambian, así
-  que los scripts que hacen `eval` de la salida siguen igual. Desde 0.5.2
+- **Variables nuevas al final:** las líneas que quedan no cambian, así que
+  los scripts que hacen `eval` de la salida siguen igual. Desde 0.5.2
   el router usa en el túnel la dirección derivada (`CG_TUNNEL_ADDR`, una
   /32), así que varios routers caben en un VPS sin repartir direcciones a
   mano; los instalados antes conservan 10.79.0.2.
 - **Entrada estándar:** el secreto se lee de ahí para que no aparezca en la
   lista de procesos.
-- **Salida:** asignaciones de shell para `eval`. Las públicas se sacan con
-  `wg pubkey`.
+- **Salida:** asignaciones de shell para `eval`.
 - **Quién lo usa:** `cengarde-setup`, en OpenWrt, y
   [`contrib/vps/cengarde-vps-setup`](../contrib/vps/cengarde-vps-setup).
 
@@ -121,7 +122,7 @@ Detalle y razones en la
   - sigue los cambios de interfaces y direcciones por netlink;
   - manda cada paquete por todos los enlaces activos, sin bloquear: un enlace
     lleno pierde solo sus copias;
-  - entrega a WireGuard la primera copia de cada paquete del servidor;
+  - escribe en su TUN la primera copia de cada paquete del servidor;
   - envía una sonda por enlace cada 100 ms mientras hay tráfico y cada
     segundo en reposo: mide el RTT y el retraso de ida de cada enlace y
     mantiene abierto el NAT.
@@ -130,8 +131,9 @@ Detalle y razones en la
     dirección (un NAT que cambió) solo con una sonda autenticada que trae
     la cookie de un HELLO enviado a esa dirección (ver
     [Protocolo v4](#protocolo-v4));
-  - cada sesión tiene su propio socket hacia WireGuard, así que varios
-    clientes comparten un puerto;
+  - escribe en su TUN, una para todos los routers, la subida de cada
+    sesión, y lo que el sistema enruta a la TUN va al router dueño del
+    destino (`tun_route`);
   - sirve a uno o a varios routers, cada uno con su clave (ver
     [Varios routers](#varios-routers-por-servidor-client-name));
   - responde por cada camino desde la dirección a la que envía el cliente
@@ -343,11 +345,12 @@ copias de un mismo paquete esperan en colas distintas.
   datagrama en la cola de cada socket UDP, y pasado el último, ninguno;
   ocho colas llenas podrían llevarse por delante cualquier otro socket UDP
   con algo de cola (en el laboratorio, uno que lee cada 250 ms recibió 163
-  de 599 datagramas). Por eso los sockets que reciben (las colas, el
-  socket de WireGuard de la sesión y el de basura) se reparten la mitad del
-  umbral de presión, y cada uno recibe `min(rcvbuf, presupuesto / (2 ×
-  sockets))` (el kernel dobla el valor): en un VPS de 1 GB, unos 3,2 MiB
-  por socket en vez de 4 MiB *(cálculo)*. Se recalcula al arrancar y en
+  de 599 datagramas). Por eso los sockets que reciben (las colas y el de
+  basura; la TUN no es un socket UDP) se reparten la mitad del umbral de
+  presión, y cada uno recibe `min(rcvbuf, presupuesto / (2 × sockets))` (el
+  kernel dobla el valor): en un VPS de 1 GB, con 8 colas y el de basura,
+  unos 3,6 MiB por socket en vez de 4 MiB *(cálculo)*. Hasta 0.11 contaba
+  también el socket de WireGuard de cada router. Se recalcula al arrancar y en
   cada recarga; `cengarde -t` y el estado (`rcvbuf`, `rcvbuf_capped`)
   dicen cuánto queda. En un namespace de red propio (un contenedor) el
   sysctl no se ve y se estima desde la RAM, como lo calcula el kernel al
@@ -408,7 +411,7 @@ servidor, cuando el cliente lo pide y reordena. Con redundancia pura y los
 valores por omisión no retiene nada: el orden de entrega es el de siempre.
 
 - **`reorder` (`yes`), en los dos extremos:** el receptor pone en secuencia
-  los datos verificados del otro extremo antes de entregarlos a WireGuard.
+  los datos verificados del otro extremo antes de escribirlos en la TUN.
   Un paquete que llega por delante de uno que falta espera como mucho
   `reorder_max_wait_ms` (200; 0–2000), y menos si el que falta ya habría
   llegado por el enlace más lento (su retraso más `reorder_margin_ms`: 10;
@@ -433,9 +436,10 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
   enlace de 150 ms que el ETA no usa (`idleslow`), los huecos que iban al
   tope bajaron de 165 a 8 por corrida en la bajada y de 242 a 30 en la
   subida (n = 3, cordura); el estado lo cuenta en `active`.
-- **`reorder_bypass` (128; 0–2048 bytes):** los datagramas de datos de
-  WireGuard de hasta ese tamaño (keepalives, ACK de TCP vacíos) y los
-  handshakes se entregan al instante, sin esperar. Con 0, solo los handshakes.
+- **`reorder_bypass` (128; 0–2048 bytes):** los paquetes de hasta ese tamaño
+  (ACK de TCP vacíos) y los mensajes del protocontrolador, que tienen su
+  propio orden, se entregan al instante, sin esperar. Con 0, solo los del
+  protocontrolador.
 - **`reorder_by_link` (`no`; `yes` o `no`), experimental:** cada paquete
   de datos dice por qué enlace salió la secuencia anterior, cuando salió
   por uno solo (protocolo v5, `CG_F_PREV`). Con `yes`, el reordenador
@@ -525,8 +529,8 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
     lo que falta (RLC) o índices nuevos del mismo bloque (RS: sus
     reparaciones declaran una geometría mayor que las que manda el plan). El
     router las rehace desde su anillo de rescate (`rescue_kb`) y las manda
-    por un enlace con lugar. Sin código, el NACK de siempre. Con TCP adentro
-    (túnel nativo), nada se pide ni se retiene más allá del presupuesto de
+    por un enlace con lugar. Sin código, el NACK de siempre. Con TCP adentro,
+    nada se pide ni se retiene más allá del presupuesto de
     TCP (el RTT de sus flujos más un cuarto: lo que tarda su propia
     retransmisión).
   - **`rescue_code_ms` (servidor; 100; 0–1000):** cuánto espera un hueco a
@@ -686,10 +690,10 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
     Estado: `upload.spare.code` y `repair` en la sesión del servidor.
     `make LEOPARD=0` compila sin Leopard (sin C++): `rs` queda rechazado.
     **Lo rehecho se revisa** antes de entregarlo (`src/rebuilt.h`, para el
-    XOR, el RS y la RLC; historia 025): con el túnel nativo, la forma IP y
-    la suma de TCP, UDP, ICMP o ICMPv6 (o la de la cabecera IPv4), o la
-    etiqueta de un mensaje del protocontrolador; con WireGuard, el tipo y el
-    largo. Lo que no pasa no se entrega ni se marca como recibido (el
+    XOR, el RS y la RLC; historia 025): la forma IP y la suma de TCP, UDP,
+    ICMP o ICMPv6 (o la de la cabecera IPv4), o la etiqueta de un mensaje
+    del protocontrolador (hasta 0.11, con WireGuard, el tipo y el largo de
+    su mensaje). Lo que no pasa no se entrega ni se marca como recibido (el
     paquete o su rescate pueden llegar). Estado por sesión: `rebuilt`
     (`ok`, `bad`, `unsure`). Hasta esta revisión la RLC rehacía a veces
     basura (un error de la eliminación al permutar filas, corregido):
@@ -705,8 +709,9 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
   caliente, y apagar `reorder` entrega en orden lo que estaba retenido.
 - **Sin bloquear:** el plazo del hueco más antiguo es el tiempo de espera
   del bucle (no el tic de 100 ms), y una pasada entrega como mucho 512
-  retenidos (la siguiente viene enseguida), para no desbordar la cola de
-  descifrado de WireGuard (1024 por par). Un desborde de la ventana (16384
+  retenidos (la siguiente viene enseguida), para no desbordar lo que haya
+  detrás de la TUN (medido con WireGuard, cuya cola de descifrado es de
+  1024 por par). Un desborde de la ventana (16384
   secuencias, `CG_RO_SLOTS`) se entrega entero.
 - **`split`:** reparte la subida (cliente) o la bajada (servidor) entre los
   enlaces en vez de copiar cada paquete por todos: un paquete grande viaja
@@ -735,9 +740,9 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
   y vuelta; si es el servidor el que apaga `reorder`, el cliente deja de
   repartir la subida con la respuesta siguiente, dentro de un intervalo de
   sondeo (100 ms con tráfico).
-- **`split_small` (256; 0–2048 bytes):** los datagramas de hasta ese tamaño,
-  los handshakes y todo lo que se envía sin ningún enlace apto van siempre
-  por todos los enlaces. Con un solo enlace apto, todo va por todos, o con
+- **`split_small` (256; 0–2048 bytes):** los paquetes de hasta ese tamaño
+  (ACK, handshakes de TCP o TLS) y todo lo que se envía sin ningún enlace
+  apto van siempre por todos los enlaces. Con un solo enlace apto, todo va por todos, o con
   `split_spread_copy = no` ese lleva todo lo que se reparte (guarda G2).
 - **`split_spread_ms` (30; 0–2000), en los dos extremos, para lo que cada
   uno envía:** solo reciben parte los enlaces que van, en ese sentido, a lo
@@ -770,7 +775,7 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
   hasta la 0.6.2: los que quedan fuera llevan copia de todos los paquetes,
   como uno de peso 0, para tapar los huecos de los demás, y con menos de dos
   en el reparto todo va por todos. Con `no`: llevan solo lo que va por todos
-  (handshakes y paquetes chicos), y si queda uno solo, ese lleva todo lo que
+  (los paquetes chicos), y si queda uno solo, ese lleva todo lo que
   se reparte (guarda G2). El porqué de `no`: un enlace se atrasa casi
   siempre porque su cola está llena, y el flujo entero encima de su parte lo
   empeora. En la primera prueba en la Pi (historia 012, 2026-10-13, cuatro
@@ -1074,10 +1079,11 @@ túnel:
   `max_sessions` (la tabla crece; con un límite menor, solo se rechazan
   sesiones nuevas).
 - **Reiniciando el proceso en el lugar** (mismo PID, sesión nueva): `mode`,
-  `key`, `listen`, `control_socket`, `busy_poll_us`, `cpu`, `rt_priority`,
-  `reorder_pool_kb`, en el cliente `link_threads`, `io_queue` y el `cpu` de
-  un `[link]`, y en el servidor `wireguard` (con un solo router), `lanes` y
-  pasar de un router a varios o al revés (`[client] sections`).
+  `key`, `control_socket`, `busy_poll_us`, `cpu`, `rt_priority`,
+  `reorder_pool_kb`, `tun`, `tun_addr`, `tun_mtu`, `tun_txqueuelen`, en el
+  cliente `link_threads`, `io_queue` y el `cpu` de un `[link]`, y en el
+  servidor `listen`, `lanes` y pasar de un router a varios o al revés
+  (`[client] sections`).
 - **Si el archivo tiene un error,** sigue con la configuración anterior,
   lo registra y lo publica en el estado (`config_error`).
 - **Sin bloquear el túnel:** la lectura va en un hilo aparte. Los nombres
@@ -1150,30 +1156,31 @@ como siempre; con ellas, a uno por sección:
 ```ini
 mode = server
 listen = *:65500
+tun_addr = 10.79.0.1/16
 forward_file = /var/lib/cengarde/forward
 
 [client alpha]
 key = <la clave de alpha>
-wireguard = 127.0.0.1:65501
-wireguard_poke = 10.79.12.34:9
+tun_route = 10.79.12.34/32 192.168.1.0/24
 forward = tcp:9000=22 udp:5000-5010
 
 [client bravo]
 key = <la de bravo>
-wireguard = 127.0.0.1:65502
+tun_route = 10.79.42.120/32
 enabled = no
 ```
 
 - **Nombres:** de 1 a 12 minúsculas, dígitos o `-`, sin `-` al principio
-  y sin llamarse `default`: los que acepta `cengarde-nat` (su interfaz
-  `cg-NOMBRE` tiene que caber en un nombre de interfaz).
-- **Por sección:** `key` (obligatoria y distinta en cada una), `wireguard`
-  (la global si no tiene), `wireguard_poke` (sin valor por omisión: la
-  dirección de ese router en el túnel), `label`, `enabled` (con `no`, sus
-  sondas reciben un HELLO de rechazo y el router muestra `vps_refusing`),
-  `passthrough` (`no`: nunca recibe el IP pass) y `forward`. Con secciones,
-  la `key`, el `wireguard_poke` y el `passthrough_file` globales son un
-  error.
+  y sin llamarse `default`: los que acepta `cengarde-nat` (hasta 0.11 su
+  interfaz de WireGuard, `cg-NOMBRE`, tenía que caber en un nombre de
+  interfaz).
+- **Por sección:** `key` (obligatoria y distinta en cada una), `tun_route`
+  (obligatoria: la dirección de ese router en el túnel y las redes detrás
+  de él, ver [Túnel nativo](#túnel-nativo-tunnel--native)), `label`,
+  `enabled` (con `no`, sus sondas reciben un HELLO de rechazo y el router
+  muestra `vps_refusing`), `passthrough` (`no`: nunca recibe el IP pass) y
+  `forward`. Con secciones, la `key`, el `tun_route` y el
+  `passthrough_file` globales son un error.
 - **Qué clave:** cada paquete trae la pista de su router (protocolo v4). La
   sesión se busca solo entre los routers de esa pista; una sonda sin sesión
   prueba sus claves, normalmente una y rara vez dos o tres
@@ -1187,13 +1194,12 @@ enabled = no
   y verificar un DATA no se distingue de antes; una sonda, unos 7 ns más
   (de 59–60 a 66–67 ns). Admitir una sesión cuesta un MAC por clave
   probada, unos 57 ns cada uno.
-- **Sesiones:** cada router tiene las suyas, cada una con su socket hacia
-  su WireGuard, y como mucho 4 a la vez (`CG_CLIENT_SESSIONS`), también
+- **Sesiones:** cada router tiene las suyas, como mucho 4 a la vez
+  (`CG_CLIENT_SESSIONS`), también
   con un solo router: una quinta reemplaza a la que hace más tiempo que no
   se oye (un router que se reinicia en bucle no llena la tabla). `max_sessions` vale por omisión 64,
   o 4 por router si son más de 16. La sesión más nueva de cada router
-  decide su IP pass, y el puerto que WireGuard conoce y el empujón de
-  `wireguard_poke` son de cada router.
+  decide su IP pass y recibe lo que la TUN manda a sus prefijos.
 - **Cada router su presupuesto de HELLO** (50 por segundo): las sondas
   reenviadas de uno no frenan a los demás.
 - **Reenvío de puertos** (`forward`): `PROTO:PUERTO[-PUERTO][=DESTINO]`,
@@ -1226,79 +1232,67 @@ enabled = no
   registro ("asks for IP pass on, which alpha holds"), en sus respuestas
   (`passthrough.server`: `off`) y en LuCI ("el VPS no lo concede").
 - **Recargas:** agregar un router, cambiar su etiqueta, sus reglas o su
-  `wireguard_poke` no toca ninguna sesión; quitarlo, desactivarlo o cambiar
-  su clave o su `wireguard` cierra solo las suyas (su router vuelve con el
+  `tun_route` no toca ninguna sesión; quitarlo, desactivarlo o cambiar
+  su clave cierra solo las suyas (su router vuelve con el
   HELLO, o queda rechazado). En el laboratorio
   (`sudo bench/lab.sh multiclient`), tres routers, dos con la misma pista,
   pasan 1000 pps cada uno en los dos sentidos sin perder ni cruzar nada, y
   las recargas no le quitan un paquete al que sigue.
 
-## Router con la hora atrasada (`wireguard_poke`)
+## Sin WireGuard desde 0.12
 
-WireGuard ignora una iniciación de handshake que no sea más nueva que la
-última que aceptó de ese peer. Una Raspberry Pi no tiene reloj con batería:
-al reiniciarse vuelve con la hora atrasada (la de la imagen, o la del último
-cambio en `/etc`), y con todo por el túnel el NTP no puede corregirla. El
-túnel quedaba caído hasta que el reloj alcanzaba esa hora (historia 002).
-Desde la 0.4.4, el servidor lo destraba solo, sin cambiar el protocolo:
+Hasta 0.11, `tunnel = wireguard` era el modo por omisión: cengarde llevaba
+los datagramas de un WireGuard local (`listen` en el cliente, `wireguard`
+en el servidor) y tenía piezas solo para él: el empujón a un router con la
+hora atrasada (`wireguard_poke`, `wgwatch.h`), el puerto que WireGuard
+conocía de cada router guardado entre reinicios (`wireguard_port_file`,
+`wgport.h`), el recuento por tipo y tamaño de sus mensajes (`sizes`) y la
+duplicación de sus handshakes. 0.12 dejó solo el túnel nativo
+([historia 027](../docs/historias/027-adios-wireguard.md)): el
+protocontrolador y la liberación según TCP necesitan ver los paquetes, y es
+un modo menos que probar.
 
-- **Detecta:** cuenta las iniciaciones del cliente que WireGuard no contesta
-  (`wgwatch.h`).
-- **Empuja:** tras 3 sin respuesta, manda un datagrama a `wireguard_poke`,
-  la dirección del router dentro del túnel (por omisión `10.79.0.2:9`; `none`
-  lo apaga). WireGuard inicia entonces el handshake él mismo, y el router lo
-  acepta tenga la hora que tenga. Como mucho uno cada 15 s, y solo mientras
-  el cliente siga llamando.
-- **Redirige:** WireGuard manda su iniciación a la sesión que conoce, que
-  tras un reinicio del router es la vieja; va por la sesión nueva mientras
-  esta llame en vano y la vieja haya callado antes.
-- **Hereda el puerto:** WireGuard conoce al cliente por el puerto del socket
-  de su sesión. Ese puerto pasa a la sesión nueva cuando la vieja se cierra
-  mientras la nueva llama en vano, o cuando la nueva empieza sin otras
-  vivas. Así se destraba también un corte más largo que
-  `session_timeout_ms`, o un WireGuard que contesta tarde.
-- **Guarda el puerto (0.6.2):** con `wireguard_port_file` el servidor
-  escribe el puerto de cada cliente en ese archivo, desde un hilo
-  (`cg-wgport`), y lo lee al arrancar: la primera sesión de cada cliente
-  vuelve a tomarlo. Antes vivía solo en memoria, y un reinicio del motor
-  (una actualización) con el router atrasado a la vez dejaba el túnel caído
-  hasta reiniciar WireGuard en el VPS. El formato (`src/wgport.h`) es una
-  cabecera con versión y una línea `PUERTO NOMBRE` por cliente (`PUERTO` a
-  secas con un solo cliente). `cengarde-vps-setup` lo pone en
-  `/var/lib/cengarde/wg/ports`, un directorio aparte porque
-  `cengarde-passthrough.path` vigila `/var/lib/cengarde`, y la primera vez lo
-  siembra desde `wg show`.
-- **Estado:** `wireguard.pokes` y `wireguard.redirected_handshakes`, y por
-  sesión `wireguard_unanswered`.
+- **Configuración vieja:** `tunnel = wireguard`, y las claves `wireguard`,
+  `wireguard_poke`, `wireguard_port_file` (también en `[client NAME]`) y
+  `listen` en el cliente son errores que lo dicen y apuntan a la historia;
+  `tunnel = native` sigue aceptándose (es el único valor).
+- **Router OpenWrt:** al actualizar, el paquete borra `tunnel_mode`, la
+  interfaz `wgcg` y su peer `cengarde_vps`, y `cengarde-setup apply` pasa la
+  dirección, las rutas, la zona y UPnP a `cg0`.
+- **VPS:** la siguiente pasada de `cengarde-vps-setup` (o de `install.sh`)
+  escribe la configuración nativa y, una vez que el motor la tomó, quita
+  sus `wg-quick@cg-NOMBRE` (solo los que escribió él), `/var/lib/cengarde/wg`,
+  el drop-in `native.conf` y `TUNNEL=`/`WG_PORT_BASE=` de `nat.conf`.
+- **Estado:** `wireguard` (el extremo del cliente y la dirección de cada
+  router), `wireguard.pokes`, `wireguard_unanswered` y `sizes` ya no están;
+  `wireguard_drops` pasó a llamarse `tun_drops`.
 
-## Túnel nativo (`tunnel = native`, experimental)
+## Túnel nativo (`tunnel = native`)
 
-Por omisión (`tunnel = wireguard`) cengarde lleva datagramas de WireGuard:
-como va por fuera de WireGuard, no ve los flujos de dentro. Con `tunnel =
-native` cada extremo abre un dispositivo TUN propio y lleva paquetes IP tal
+Cada extremo abre un dispositivo TUN propio y lleva paquetes IP tal
 cual, con la misma autenticación de siempre (MAC SipHash y anti-replay, con
 las claves del secreto de emparejamiento). **No cifra:** quien mire los
 enlaces ve el tráfico; solo impide que alguien inyecte o repita paquetes. El
-cifrado llegará después, como opción. La razón de esta fase es ver los
-paquetes: el reordenador por flujo y la liberación según TCP vendrán
-encima (`src/flow.h` ya da la clave de flujo de un paquete y si es TCP, con
-pruebas, aunque aún no la usa nadie).
+cifrado llegará después, como opción. La razón de ser de este túnel es ver
+los paquetes: la liberación según TCP (`tcp_aware`) y el protocontrolador
+van encima, y el reordenador por flujo vendrá (`src/flow.h` da la clave de
+flujo de un paquete y si es TCP). `tunnel = native` puede escribirse o no:
+es el único valor (ver [Sin WireGuard desde 0.12](#sin-wireguard-desde-012)).
 
-Todo lo demás no cambia: el reparto, la duplicación, el rescate y el
-reordenador tratan cada paquete IP como un paquete de datos de WireGuard
-(los pequeños, hasta `split_small` y `reorder_bypass`, se duplican y no
-esperan, igual que antes). Lo que solo tiene sentido con WireGuard no
-corre: la detección de su formato, la vigilancia de handshakes,
-`wireguard_poke` y `wireguard_port_file` (este último se rechaza).
+El reparto, la duplicación, el rescate y el reordenador tratan cada paquete
+IP como un paquete de datos (los pequeños, hasta `split_small` y
+`reorder_bypass`, se duplican y no esperan).
 
 Ajustes, en los dos extremos (cambiarlos reinicia el motor):
 
 - `tun`: el nombre del TUN, `cg0` por omisión.
 - `tun_addr`: hasta 4 direcciones con su prefijo que cengarde le pone
-  (`10.79.0.2/16 fd00:79::2/64`); sin ella, las pone el sistema.
+  (`10.79.0.2/16 fd00:79::2/64`); sin ella, las pone el sistema. Desde
+  la segunda dirección IPv4, cada una va como secundaria con la etiqueta
+  `cg0:1`, `cg0:2`… (hasta 0.11 cada una reemplazaba a la anterior).
 - `tun_mtu`: 1420 por omisión, lo que cabe en un enlace de 1500 por IPv6
-  (1500 − 40 − 8 − 24 de cabecera de cengarde = 1428). Si un enlace tiene
-  menos, el cliente avisa con la cifra que cabe.
+  (1500 − 40 − 8 − 24 de cabecera de cengarde = 1428; por IPv4, 1448). Si
+  un enlace tiene menos, el cliente avisa con la cifra que cabe.
 - `tun_txqueuelen`: la cola de transmisión del TUN, en paquetes; `0` (por
   omisión) deja la del kernel (500). El PC de la testnet usa 5000, que
   antes ponía a mano con `ip link set cgpc txqueuelen 5000` después de cada
@@ -1308,7 +1302,7 @@ Las rutas por el TUN son del sistema (`ip route add … dev cg0`), como con
 cualquier interfaz. El servidor tiene **un solo TUN para todos los
 clientes**: un paquete que el kernel mete en él va a la sesión más nueva
 del cliente cuyo `tun_route` contiene su destino (el prefijo más largo
-gana, como `AllowedIPs` de WireGuard), y el paquete de un cliente entra al
+gana, como los `AllowedIPs` de WireGuard), y el paquete de un cliente entra al
 TUN solo si su origen es de ese cliente (si no, cuenta como `spoofed`). Con
 un solo cliente, `tun_route` es `0.0.0.0/0 ::/0` por omisión; con
 `[client NAME]`, cada sección lleva la suya (obligatoria) y dos clientes no
@@ -1333,10 +1327,11 @@ key = …
 tun_route = 10.79.12.34/32 192.168.1.0/24
 ```
 
-Requiere `CAP_NET_ADMIN` y `/dev/net/tun`. Estado: `tunnel` y `tun` en los
-dos extremos; en el cliente, `download.not_ip` (lo que no era IP y no se
-escribió); en el servidor, `tun` (`rx`, `not_ip`, `no_route`,
-`no_session`) y por sesión `not_ip` y `spoofed`. En el laboratorio
+Requiere `CAP_NET_ADMIN` y `/dev/net/tun`. Estado: `tunnel` (siempre
+`native`) y `tun` en los dos extremos; en el cliente, `download.not_ip` (lo
+que no era IP y no se escribió) y `download.tun_drops` (lo que la TUN no
+tomó); en el servidor, `tun` (`rx`, `not_ip`, `no_route`,
+`no_session`) y por sesión `not_ip`, `spoofed` y `tun_drops`. En el laboratorio
 (`sudo bench/lab.sh native`): ping por IPv4 e IPv6 sin pérdidas, iperf3 TCP
 por 2 enlaces de 40 Mbit/s con `split = on` a 73,5 Mbit/s de subida y 73,5
 de bajada (más de lo que da un enlace), y dos routers en un servidor, cada
@@ -1344,7 +1339,7 @@ uno con su ruta, sin poder usar la dirección del otro. Sin límite en los
 veth, iperf3 pasa unos 2,5 Gbit/s en el PC del laboratorio (sin cifrar).
 
 **`tcp_aware` (`no`; `yes` o `no`), experimental, en el extremo que envía:**
-con el túnel nativo, el emisor marca `CG_F_FREE` (protocolo v6) los
+el emisor marca `CG_F_FREE` (protocolo v6) los
 segmentos de TCP sin datos (ACK, SYN, FIN, RST) y las retransmisiones de
 TCP (`src/tcpfree.h`; en el estado, `tcp_free`: `control` y
 `retransmissions`). El reordenador del otro extremo entrega al instante
@@ -1414,8 +1409,7 @@ extremo de salida `in_flight`, `unvouched` y `marked`.
 ## Protocontrolador (`protocontroller`)
 
 El protocontrolador (historia 025): TCP partido en los dos extremos (lo que
-la RFC 3135 llama un PEP). **Solo con `tunnel = native`**, apagado por
-omisión (`protocontroller = no`), protocolo 10. Dos variantes:
+la RFC 3135 llama un PEP). Apagado por omisión (`protocontroller = no`), protocolo 10. Dos variantes:
 
 - **`a`:** el tramo del medio es un **TCP simple del kernel** por el túnel,
   del router a la dirección del VPS en el túnel (`protocontroller_vps`; vacío:
@@ -1497,7 +1491,7 @@ Despliegue:
   `cengarde_protoctl`, enganchada justo antes de la `dstnat` de fw4, para lo
   que entra por los dispositivos de la zona `lan`
   (`/etc/cengarde/protoctl.nft`). En el VPS: `sudo cengarde-vps-setup
-  protocontroller on` (necesita `tunnel native`; carga `tcp_bbr` al arrancar
+  protocontroller on` (carga `tcp_bbr` al arrancar
   y abre a `cengarde-nat` el TCP 7801 desde `cg0` para la variante A).
 - **Estado:** `protocontroller` (`mode` en el router, conexiones, abiertas,
   rehusadas por motivo, RST, mensajes, reenvíos, copias, duplicados,
@@ -1553,7 +1547,7 @@ Además, `config_error` (por qué no se aplicó la última recarga) y el IP pass
 varios: el nombre del que lo tiene).
 
 En el servidor, `clients[]` tiene cada router: `name` (`null` con uno
-solo), `label`, `enabled`, `hint`, `wireguard`, `sessions`, `newest` (el id
+solo), `label`, `enabled`, `hint`, `sessions`, `newest` (el id
 de su sesión más nueva), `passthrough` (lo que pide), `passthrough_allowed`,
 `ip_pass` (si lo tiene) y `refused` (sondas rechazadas: desactivado, o sin
 lugar). Cada sesión dice su `client`, y `max_sessions` el límite;
@@ -1612,7 +1606,7 @@ de enlace fijados a la misma CPU); por enlace:
 `download.stale` cuenta lo que llegó por un socket ya cerrado o sustituido
 (se descarta antes de mirarlo).
 
-En el cliente, `upload.largest` es el datagrama de WireGuard más grande de
+En el cliente, `upload.largest` es el paquete de la TUN más grande de
 los últimos 5 s, el que se compara con cada `path_mtu`, y `download.hellos`
 cuenta los HELLO que tomó (un servidor que se reinició, una sesión que
 expiró, un enlace nuevo o un NAT que cambió). Por enlace, `cookie` dice si
@@ -1622,11 +1616,13 @@ otra sesión); `vps_refusing` resume eso para todo el router. En el servidor, `h
 otro router, por su pista) y `no_session` (DATA de una sesión que todavía
 no tiene: espera a la sonda).
 
-Para el bonding (historia 012) hay tres medidas que solo se muestran y
+Para el bonding (historia 012) hay dos medidas que solo se muestran y
 nunca deciden nada; las toma el registrador de campo (`cengarde-rec`,
 `bench/fieldrec.py`). `lost_all` y `joint` miden la bajada en el cliente
 (en la raíz del JSON) y la subida de cada sesión en el servidor
-(`sessions[]`); `sizes` está en la raíz en los dos extremos.
+(`sessions[]`). La tercera, `sizes` (los mensajes de WireGuard por tipo y
+tamaño), se fue con WireGuard en 0.12: con el túnel nativo todo caía en
+`other`.
 - `lost_all`: secuencias de DATA que salieron de la ventana anti-replay sin
   llegar por ningún enlace, es decir, lo que el túnel perdió en todos. Se
   cuenta desde la primera secuencia que vio la ventana (o desde donde siguió
@@ -1647,12 +1643,6 @@ nunca deciden nada; las toma el registrador de campo (`cengarde-rec`,
   cuya máscara contiene a S dividida por la de los cubos de `expect` que lo
   contienen: el número que decide k-de-N. Las copias tardías no pasan por el
   MAC, así que esto solo sirve para medir.
-- `sizes`: los datagramas de WireGuard por tipo (`init`, `response`,
-  `cookie` y `other`) y los de datos por tamaño (`data` y `data_bytes`, 12
-  cubos: hasta cada borde de `edges`, incluido, y el último por encima de
-  1440). `up` es lo que el cliente lee de WireGuard y lo que el
-  servidor le entrega (primeras copias de todos los routers); `down`, al
-  revés.
 
 Cuesta poca memoria: cada casilla de llegadas pasa de 16 a 20 bytes y los
 histogramas suman 8 KiB, unos 24 KiB más por sesión (el cliente tiene una; el
@@ -1667,8 +1657,8 @@ subida:
   `buffers`, `free`, `sessions_holding` y `full`, las veces que no hubo
   búfer);
 - cada paquete verificado cuenta en uno solo de `in_order`, `held_total`
-  (retenido hasta que llegó lo anterior), `bypassed` (pequeño o handshake:
-  al instante), `late.*`, `far` (un salto de 32768 secuencias o más
+  (retenido hasta que llegó lo anterior), `bypassed` (pequeño, marcado
+  libre o del protocontrolador: al instante), `late.*`, `far` (un salto de 32768 secuencias o más
   mientras retenía, como el de un servidor que retoma la sesión),
   `resyncs` y `pool_full` (sin búfer libre: al instante); `split_rx` cuenta
   los repartidos, y `retx` las retransmisiones de TCP marcadas por el otro
@@ -1948,8 +1938,8 @@ ella, el receptor espera a todos los enlaces no silenciados, como antes.
 
 ## Limitaciones conocidas
 
-- **Puerto de WireGuard en el cliente:** el cliente lo aprende del primer
-  paquete que WireGuard le envía, como engarde.
+- **Sin cifrado:** el túnel autentica (MAC y anti-replay) pero no cifra;
+  quien mire un enlace ve el tráfico.
 - **Enlaces asimétricos:** un enlace que sube pero no baja (o al revés) se da
   por mudo en los dos sentidos, aunque uno de ellos funcione.
 - **Aún no** baja privilegios y el servidor es de un solo hilo; en el

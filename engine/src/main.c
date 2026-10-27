@@ -112,7 +112,7 @@ static int ctl(int argc, char **argv)
 /* Reads the secret from stdin so that it never shows in the process list,
  * and prints shell assignments (base64 needs no quoting inside '...').
  * cengarde-setup and cengarde-vps-setup eval them: new lines go last and
- * the old ones never change. */
+ * the old ones never change (the WireGuard keys, CG_WG_*, went in 0.12). */
 static int keys(void)
 {
 	uint8_t secret[CG_PAIR_LEN], k[CG_PAIR_LEN], a4[4], ula[CG_PAIR_ULA_LEN];
@@ -159,9 +159,7 @@ static void server_plan(const struct cg_config *cfg)
 	uint64_t mem[3];
 	int from = cg_udp_mem_read(mem), junk = cfg->lanes > 1;
 	long page = sysconf(_SC_PAGESIZE);
-	uint32_t routers = 0;
 	struct cg_rcvbudget b;
-	char wg[64];
 
 	/* The routers, their hints (a hint two share: both keys are tried)
 	 * and their forward rules. */
@@ -170,17 +168,15 @@ static void server_plan(const struct cg_config *cfg)
 		uint8_t h = cg_client_hint(k->key);
 		int rules = 0, shared = 0;
 
-		routers += k->enabled;
 		for (int j = 0; j < cfg->nforward; j++)
 			rules += cfg->forward[j].client == i;
 		for (int j = 0; j < cfg->nclients; j++)
 			shared += j != i && cg_client_hint(cfg->clients[j].key) == h;
-		printf("client %s: hint %02x%s, WireGuard at %s, %d forward rule%s%s\n", k->name, h,
-		       shared ? " (shared)" : "", cg_addr_str(&k->wireguard, wg, sizeof(wg)), rules, rules == 1 ? "" : "s",
-		       k->enabled ? "" : ", disabled");
+		printf("client %s: hint %02x%s, %d forward rule%s%s\n", k->name, h, shared ? " (shared)" : "", rules,
+		       rules == 1 ? "" : "s", k->enabled ? "" : ", disabled");
 	}
 	b = cg_rcvbudget(from >= 0 ? mem : NULL, page > 0 ? (uint64_t)page : 4096,
-			 cg_rcvbudget_sockets(cfg->lanes, 1, routers ? routers : 1, junk), cfg->rcvbuf);
+			 cg_rcvbudget_sockets(cfg->lanes, 1, junk), cfg->rcvbuf);
 	if (junk)
 		printf("listen: %u lanes by link id and a junk socket\n", cfg->lanes);
 	else

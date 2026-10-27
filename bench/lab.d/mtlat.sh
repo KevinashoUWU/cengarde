@@ -1,4 +1,4 @@
-# shellcheck shell=bash disable=SC2034 # ENGINE and NLINKS are read by lab.sh
+# shellcheck shell=bash disable=SC2034 # NLINKS is read by lab.sh
 # Latency and CPU of the client's link_threads modes: "bench/lab.sh mtlat"
 # (by hand; PR 3b, docs/historias/011).
 #
@@ -21,7 +21,7 @@ MTLAT_S=${MTLAT_S:-5}
 
 mtlat() {
 	local r mode rate dir hop line extra out=$RUN/mtlat.txt
-	ENGINE=c NLINKS=3
+	NLINKS=3
 	trap teardown EXIT
 	trap 'teardown; exit 130' INT TERM
 	mkdir -p "$RUN"

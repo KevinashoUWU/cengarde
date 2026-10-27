@@ -33,12 +33,11 @@ void test_rcvbudget(void)
 	cg_udp_mem_estimate(1 << 20, 0, m);
 	CHECK_EQ(m[1], 128);
 
-	/* Who counts: the lanes of groups with a router, one WireGuard socket
-	 * per router, the junk socket. */
-	CHECK_EQ(cg_rcvbudget_sockets(8, 1, 1, 1), 10);
-	CHECK_EQ(cg_rcvbudget_sockets(1, 1, 1, 0), 2); /* lanes = 1: one socket, no junk */
-	CHECK_EQ(cg_rcvbudget_sockets(8, 4, 4, 1), 37);
-	CHECK_EQ(cg_rcvbudget_sockets(8, 2, 4, 1), 21); /* two routers per group: their groups only */
+	/* Who counts: the lanes of groups with a router, the junk socket. */
+	CHECK_EQ(cg_rcvbudget_sockets(8, 1, 1), 9);
+	CHECK_EQ(cg_rcvbudget_sockets(1, 1, 0), 1); /* lanes = 1: one socket, no junk */
+	CHECK_EQ(cg_rcvbudget_sockets(8, 4, 1), 33);
+	CHECK_EQ(cg_rcvbudget_sockets(8, 2, 1), 17); /* two routers per group: their groups only */
 
 	/* 16 GB (this lab's udp_mem): nothing capped. */
 	CHECK_EQ(cg_udp_mem_parse("383415\t511221\t766830\n", m), 0);
@@ -79,7 +78,8 @@ void test_rcvbudget(void)
 	CHECK_EQ(b.per_socket, (int)(15000ull * 4096 / 2 / 20));
 	CHECK_EQ(b.capped, 1);
 
-	/* The lab's udpmem scenario: 8 lanes + WireGuard + junk in 24 MiB. */
+	/* The lab's udpmem scenario (with the socket to WireGuard it had
+	 * before 0.12: 8 lanes + 1 + junk) in 24 MiB. */
 	b = cg_rcvbudget(small, 4096, 10, 4 * MIB);
 	CHECK_EQ(b.budget, 24ull * MIB);
 	CHECK(b.capped && 2ull * (uint64_t)b.per_socket * 10 <= 24ull * MIB);

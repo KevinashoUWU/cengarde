@@ -6,7 +6,7 @@
 // Against the router VM of vm.sh (uplinks up1-up3, VPS at 1.2.3.4, see
 // e2e.sh): configures cengarde from the web UI only (VPS addresses,
 // uplinks, IP pass, enable), checks that an address with a mask, an MTU of
-// 1420 and a VPS failover time below three probe intervals are refused and
+// 1460 and a VPS failover time below three probe intervals are refused and
 // that the cloud-config follows the form (the IP pass and IPv6 through the
 // tunnel switches too: the second is off by default and left off), applies,
 // and waits on the status page for the tunnel, the three uplinks and the
@@ -261,13 +261,13 @@ try {
 		await addCommand() === `sudo cengarde-vps-setup add router --tunnel-addr ${derived} --proto ${proto}`,
 		'emptied, the name is router again and the address the derived one');
 
-	step('Tunnel tab: an MTU of 1420 is refused, IP pass and IPv6 on, the cloud-config follows');
+	step('Tunnel tab: an MTU of 1460 is refused (over 1448), IP pass and IPv6 on, the cloud-config follows');
 	await tab('tunnel');
 	const mtu = page.locator(id('widget.cbid.cengarde.main.mtu'));
 	const mtuSaved = await mtu.inputValue();
 	await mtu.fill('');
-	await mtu.pressSequentially('1420');
-	check(await invalid(mtu), 'an MTU of 1420 is refused');
+	await mtu.pressSequentially('1460');
+	check(await invalid(mtu), 'an MTU of 1460 is refused');
 	await mtu.fill('');
 	await mtu.pressSequentially(mtuSaved);
 	await mtu.blur();
@@ -397,7 +397,7 @@ try {
 		await page.waitForTimeout(3000);
 	}
 	await shot('05-status');
-	check(connected, 'the WireGuard tunnel is connected');
+	check(connected, 'the tunnel is connected');
 	check(rows === UPLINKS.length, `all ${UPLINKS.length} uplinks active (got ${rows})`);
 	check(await page.locator('table.cengarde-links th:text-is("Subida")').count() === 1 &&
 		await page.locator('table.cengarde-links th:text-is("Bajada")').count() === 1,

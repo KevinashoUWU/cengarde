@@ -1,11 +1,12 @@
 # cengarde
 
-*Redundant multi-link transport for WireGuard: a C rewrite of engarde for
-OpenWrt routers. Documentation in Spanish.*
+*Redundant multi-link tunnel: a C rewrite of engarde for OpenWrt routers.
+Documentation in Spanish.*
 
-**WireGuard por varios enlaces a la vez, sin perder un paquete.**
-- cengarde manda cada paquete de un túnel WireGuard por todos tus enlaces a
-  la vez (módems 4G/5G, fibra, satelital…) hacia un VPS.
+**Un túnel por varios enlaces a la vez, sin perder un paquete.**
+- cengarde lleva cada paquete IP de tu red por todos tus enlaces a la vez
+  (módems 4G/5G, fibra, satelital…) hacia un VPS, por un túnel propio (una
+  interfaz TUN, `cg0`, en cada extremo).
 - En el otro extremo gana la primera copia que llega. Si un enlace se corta
   o se atrasa, la conexión sigue como si nada.
 
@@ -16,8 +17,8 @@ entera desde LuCI.
 ```
                          ┌══ enlace 1 (5G) ══┐
 LAN ── router OpenWrt ───┼══ enlace 2 (5G) ══┼─── VPS ─── Internet
-       WireGuard         └══ enlace 3 (…)  ══┘    cengarde → WireGuard
-       └→ cengarde            cada paquete por todos; gana la primera copia
+       cg0 (cengarde)    └══ enlace 3 (…)  ══┘    cengarde → cg0
+                              cada paquete por todos; gana la primera copia
 ```
 
 ## Qué hace
@@ -32,7 +33,7 @@ LAN ── router OpenWrt ───┼══ enlace 2 (5G) ══┼─── VP
   - sigue sondeándose y no corta el túnel;
   - siempre quedan al menos dos enlaces activos.
 - **Reordena lo que recibe:** cada extremo pone en secuencia los paquetes
-  antes de entregarlos a WireGuard (activado), con ventanas que cubren
+  antes de entregarlos al túnel (activado), con ventanas que cubren
   ~600 ms a ~27.000 paquetes por segundo. Con redundancia pura no retiene
   nada.
 - **Experimental, apagado por omisión:**
@@ -53,14 +54,15 @@ LAN ── router OpenWrt ───┼══ enlace 2 (5G) ══┼─── VP
 - **Seguro:**
   - protocolo propio autenticado (SipHash-2-4) con ventana anti-replay;
   - el servidor solo atiende paquetes autenticados;
-  - WireGuard cifra el contenido.
+  - el túnel autentica pero no cifra: lo que necesite reserva va cifrado
+    por encima (HTTPS, SSH, SRT/RIST con clave).
 - **Liviano:** C11 sin dependencias, un hilo con epoll y lotes
   (`recvmmsg`/`sendmmsg`). El binario ocupa unos 110 KB.
 - **OpenWrt de punta a punta:**
   - paquetes para 25.12 y 24.10, e imágenes listas para la Pi 4 y x86-64;
   - una pestaña de LuCI en español;
-  - el túnel WireGuard se crea solo, a partir de un único secreto compartido
-    con el VPS;
+  - el túnel se crea solo, a partir de un único secreto compartido con el
+    VPS;
   - **IP pass**: la IP pública del VPS en tu red, con UPnP. Se enciende y se
     apaga desde el router, y el VPS lo sigue solo.
 - **El VPS en un paso:** LuCI entrega el cloud-config listo para pegar al
@@ -79,9 +81,10 @@ LAN ── router OpenWrt ───┼══ enlace 2 (5G) ══┼─── VP
 ## Medidas
 
 En el laboratorio de [`bench/`](bench/): 3 enlaces, paquetes de 1400 B,
-VM Xeon de 2,1 GHz, cada motor en ambos extremos (historias
-[005](docs/historias/005-motor-c-v1.md) y
-[006](docs/historias/006-salud-de-enlaces.md)).
+VM Xeon de 2,1 GHz, cada motor en ambos extremos, con WireGuard encima como
+era hasta 0.11 (historias [005](docs/historias/005-motor-c-v1.md) y
+[006](docs/historias/006-salud-de-enlaces.md)); engarde solo funciona sobre
+WireGuard, así que la comparación ya no se repite en el laboratorio actual.
 
 | Prueba | engarde (Go) | cengarde |
 | --- | --- | --- |
@@ -145,6 +148,14 @@ Las configuraciones de cliente y servidor se explican en
 - **Falta probarlo en hardware real:** la Pi 4 y un VPS en Vultr.
 - **Compatibilidad:** los dos extremos tienen que ser cengarde con la misma
   versión del protocolo; no habla con engarde.
+- **Sin WireGuard desde 0.12** (historia
+  [027](docs/historias/027-adios-wireguard.md)): el túnel nativo es el único.
+  Un router que venía con WireGuard pasa solo a `cg0` al actualizar (el
+  paquete borra `wgcg` y `tunnel_mode`, y `cengarde-setup` mueve rutas,
+  zona y UPnP a `cg0`); el VPS se limpia en la siguiente pasada de
+  `cengarde-vps-setup` (o de `install.sh`). Las claves viejas del motor
+  (`wireguard`, `wireguard_poke`, `wireguard_port_file`, `listen` en el
+  cliente, `tunnel = wireguard`) son errores que apuntan a la historia.
 
 ## Hoja de ruta
 
@@ -195,12 +206,12 @@ openwrt/test/e2e.sh <imagen-x86-64>                    # OpenWrt de punta a punt
 ## Créditos y licencia
 
 cengarde nace de [engarde](https://github.com/porech/engarde), de
-Alessandro Rinaldi. De engarde vienen la idea de duplicar sobre WireGuard y
-años de uso real transmitiendo radio en vivo desde terreno.
+Alessandro Rinaldi. De engarde vienen la idea de duplicar los paquetes por
+todos los enlaces (allí, los de WireGuard) y años de uso real transmitiendo
+radio en vivo desde terreno.
 
 El código Go original sigue en el historial de este repositorio (commit
-`3492df9`), y el laboratorio lo compila desde ahí cuando hace falta
-compararse.
+`3492df9`); el laboratorio de 0.11 lo compilaba desde ahí para compararse.
 
 Licencia: GPL-3.0 o posterior (`GPL-3.0-or-later`), [LICENSE.txt](LICENSE.txt).
 Hasta el cambio de licencia, cengarde se publicó bajo GPL-2.0, como

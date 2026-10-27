@@ -10,7 +10,7 @@ sello: b0793e22bf93f79f
 **Grupo:** Enviar · Recibir — [[Mapa del motor]]
 
 ## Qué hace
-Con `tunnel = native` el emisor ve el TCP de adentro. Marca `CG_F_FREE` los segmentos sin datos (ACK puros, SYN, FIN, RST), que el reordenador del otro lado entrega al instante, y las retransmisiones. Detecta una retransmisión por flujo: guarda el final de la secuencia más alta enviada; un segmento que termina antes o ahí es reenvío. La tabla es de acceso directo (`CG_TCPF_N`, 4096 flujos), sin memoria por paquete.
+El emisor ve el TCP de adentro (el túnel lleva paquetes IP). Marca `CG_F_FREE` los segmentos sin datos (ACK puros, SYN, FIN, RST), que el reordenador del otro lado entrega al instante, y las retransmisiones. Detecta una retransmisión por flujo: guarda el final de la secuencia más alta enviada; un segmento que termina antes o ahí es reenvío. La tabla es de acceso directo (`CG_TCPF_N`, 4096 flujos), sin memoria por paquete.
 
 Desde [[023-reparacion-coherente]] distingue la primera retransmisión de unos bytes (`CG_TCPF_RETX1`) de una repetida (`CG_TCPF_RETXN`), y en el extremo donde TCP sale del túnel (`struct cg_tcpe`) mide el tramo lejano (del SYN al SYN-ACK) y cuenta los huecos SACK del host lejano: los que el túnel había entregado son pérdidas más allá del túnel (`beyond`), los demás suyos.
 
@@ -31,7 +31,6 @@ Desde el 2026-10-24 ese extremo juzga cada ACK con SACK y lo marca para el otro 
 ## Perillas
 - [[Mapa/Perillas/tcp_aware|tcp_aware]]: no.
 - [[Mapa/Perillas/reorder_retx_release_ms|reorder_retx_release_ms]]: 0 (apagado); 0–2000.
-- [[Mapa/Perillas/tunnel|tunnel]]: tiene que ser `native`.
 - [[Mapa/Perillas/tcp_retx_one|tcp_retx_one]]: sí. [[Mapa/Perillas/rescue_tcp_race|rescue_tcp_race]]: sí. [[Mapa/Perillas/tcp_ack_rule|tcp_ack_rule]]: sí.
 
 ## Dónde se midió
@@ -43,4 +42,4 @@ Desde el 2026-10-24 ese extremo juzga cada ACK con SACK y lo marca para el otro 
 
 ## Archivos
 - `tcpfree.h`; tests `engine/tests/test_tcpfree.c`.
-- `client.c`: `wg_read` (`cg_tcpe_in`, la marca), `retx_masks`, `dout_add` (`cg_tcpe_out`). `server.c`: `down_prepare` (`cg_tcpe_in`, la marca), `down_retx_masks`, `q_add` (`cg_tcpe_out`).
+- `client.c`: `tun_read` (`cg_tcpe_in`, la marca), `retx_masks`, `dout_add` (`cg_tcpe_out`). `server.c`: `down_prepare` (`cg_tcpe_in`, la marca), `down_retx_masks`, `q_add` (`cg_tcpe_out`).

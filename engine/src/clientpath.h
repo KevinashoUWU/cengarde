@@ -21,12 +21,12 @@
  *   7. the window is marked, only now;
  *   8. a probe reply goes back to the caller (it updates the link's health);
  *      DATA is the first copy, noted in the arrival ring (expected on every
- *      link of expect, or on its own link only when split), for WireGuard.
+ *      link of expect, or on its own link only when split), for the TUN.
  * A server that restarted needs no window reset here: it goes on past what
  * the probes say we received (cg_probe_info), and the reorderer takes its
  * 2^20 leap as a far packet, then resyncs (reorder.h).
  * What a DATA verdict hands on goes through the reorderer (reorder.h,
- * client.c's down_deliver) before WireGuard; it lives here, with the window,
+ * client.c's down_deliver) before the TUN; it lives here, with the window,
  * because it has the same one owner.
  * cg_up_header() writes the header of one packet that goes up: the next
  * sequence of its class and the MAC, computed once (the link byte is patched
@@ -74,7 +74,7 @@ struct cg_rxs {
 
 enum cg_rxv {
 	CG_RXV_DROP = 0, /* counted, nothing else to do */
-	CG_RXV_DATA,     /* a first copy: to WireGuard */
+	CG_RXV_DATA,     /* a first copy: to the TUN */
 	CG_RXV_REPLY,    /* a verified probe reply: the caller takes it */
 	CG_RXV_HELLO,    /* a verified HELLO answering a probe of the link: its cookie is taken */
 	CG_RXV_AUTH,     /* dropped: its MAC failed (the caller warns, rate-limited) */

@@ -6,9 +6,10 @@
 #
 #   sh shaper.sh -i IFACE [-s STATUS] [-c CLIENT] [-p SECS] [-d PCT] [-m KBIT] [-f]
 #
-#   -i IFACE   the interface whose egress is shaped: on the router its
-#              WireGuard (wgcg: the upload); on the VPS a router's
-#              (cg-NAME: its download)
+#   -i IFACE   the interface whose egress is shaped: on the router the
+#              engine's TUN (cg0: the upload); on the VPS the server's TUN
+#              (cg0: the download; one device for every router, so with
+#              several the rate is the one -c names)
 #   -s STATUS  the engine's status (/var/run/cengarde.json on OpenWrt,
 #              /run/cengarde/status.json on the VPS)
 #   -c CLIENT  on the VPS: the router's name; its newest session's rate

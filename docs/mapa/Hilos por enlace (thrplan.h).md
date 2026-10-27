@@ -8,7 +8,7 @@ archivos:
   - engine/tests/test_thrplan.c
   - engine/tests/test_ring.c
   - engine/tests/test_threads.c
-sello: e48b032363c05d2f
+sello: fa3c68e245eea424
 ---
 # Hilos por enlace (thrplan.h)
 

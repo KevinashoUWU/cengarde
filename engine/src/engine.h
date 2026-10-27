@@ -24,25 +24,25 @@
 
 #define CG_BATCH 64
 #define CG_BUF 2048
-#define CG_MAX_PAYLOAD (CG_BUF - CG_HDR_LEN) /* largest WireGuard datagram carried */
+#define CG_MAX_PAYLOAD (CG_BUF - CG_HDR_LEN) /* largest packet carried */
 #define CG_TICK_MS 100
 /* Batches read from one socket before going back to epoll, so a busy
  * direction cannot starve the other one or the probes (level-triggered). */
 #define CG_MAX_ROUNDS 8
 /* Held packets the reorderer hands on per loop pass, at most, from its
  * deadlines and gaps filled: the rest goes on the next pass, which comes at
- * once (risk R1 of story 012's step 1: the kernel's WireGuard queues 1024
- * packets per peer for decryption and drops beyond). A window overflow is
+ * once (risk R1 of story 012's step 1, measured with WireGuard behind the
+ * tunnel: its kernel queues 1024 packets per peer and drops beyond). A window overflow is
  * drained whole all the same (reorder.h: CG_RO_AGAIN). */
 #define CG_RO_PASS_MAX 512
 
-_Static_assert(CG_RO_BUF >= CG_MAX_PAYLOAD, "a pool buffer holds the largest WireGuard datagram");
+_Static_assert(CG_RO_BUF >= CG_MAX_PAYLOAD, "a pool buffer holds the largest packet");
 
 /* epoll tags: kind in the high half, index in the low half. */
-enum { CG_EV_SIG = 1, CG_EV_TIMER, CG_EV_NL, CG_EV_WG, CG_EV_LINK, CG_EV_LISTEN, CG_EV_CTL, CG_EV_LOAD, CG_EV_JUNK,
+enum { CG_EV_SIG = 1, CG_EV_TIMER, CG_EV_NL, CG_EV_LINK, CG_EV_LISTEN, CG_EV_CTL, CG_EV_LOAD, CG_EV_JUNK,
        CG_EV_BELL /* a doorbell (ring.h): a thread's rings have work */,
        CG_EV_DNS /* a lookup of a server name (names.h) */,
-       CG_EV_TUN /* the server's TUN device (tunnel = native) */,
+       CG_EV_TUN /* the TUN device */,
        CG_EV_PCTL /* the protocontroller's sockets (protoctlio.h) */ };
 #define CG_EV(kind, idx) (((uint64_t)(kind) << 32) | (uint32_t)(idx))
 

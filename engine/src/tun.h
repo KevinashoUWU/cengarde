@@ -7,8 +7,8 @@
  * are the system's (ip route ... dev cg0), as for any other interface.
  *
  * A read gives one packet, a write takes one: a batch is a loop of them,
- * never waiting (EAGAIN ends it), as the UDP socket to WireGuard is read
- * with recvmmsg and written with sendmmsg.
+ * never waiting (EAGAIN ends it), as the link sockets are read with
+ * recvmmsg and written with sendmmsg.
  *
  * SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef CG_TUN_H

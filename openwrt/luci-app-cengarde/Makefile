@@ -11,7 +11,7 @@
 include $(TOPDIR)/rules.mk
 
 LUCI_TITLE:=LuCI support for cengarde
-LUCI_DEPENDS:=+cengarde +luci-proto-wireguard
+LUCI_DEPENDS:=+cengarde
 LUCI_PKGARCH:=all
 LUCI_URL:=https://github.com/KevinashoUWU/cengarde
 LUCI_MAINTAINER:=cengarde contributors

@@ -17,7 +17,8 @@ _Static_assert(CG_RO_BUF == CG_BUF, "a pool buffer holds what a receive buffer h
 #define BIG 1400
 #define SMALL 64
 #define SPLIT CG_F_SPLIT
-#define DATA CG_RO_WG_DATA
+#define DATA 0   /* a packet that may wait (cg_ro_pkt.nohold 0) */
+#define NOHOLD 1 /* one that never waits: a protocontroller stream's message */
 #define N CG_RO_SLOTS
 #define LEAP (1u << 20) /* CG_SEQ_LEAP: a server back from a restart */
 
@@ -145,7 +146,7 @@ static struct cg_ro_pkt pkt(uint32_t seq, uint32_t ts, uint32_t at, unsigned lin
 			    uint16_t len)
 {
 	return (struct cg_ro_pkt){ .seq = R.b.sb + seq, .ts = R.b.tsb + ts, .t_arr = R.b.tb + at, .len = len,
-				   .link = (uint8_t)link, .flags = flags, .wgtype = type,
+				   .link = (uint8_t)link, .flags = flags, .nohold = type,
 				   .prev = (uint8_t)(cg_prev_link(flags) + 1) };
 }
 
@@ -1053,7 +1054,7 @@ static void sc_overflow(const struct base *b)
 		for (uint32_t i = 0; i < n; i++) {
 			const struct cg_ro_pkt *k = &e[order[i].seq];
 
-			in(k->seq - R.b.sb, k->ts - R.b.tsb, k->t_arr - R.b.tb, k->link, k->flags, k->wgtype, k->len);
+			in(k->seq - R.b.sb, k->ts - R.b.tsb, k->t_arr - R.b.tb, k->link, k->flags, k->nohold, k->len);
 		}
 	}
 	flush_all();
@@ -1205,11 +1206,11 @@ static void sc_bypass(const struct base *b)
 	CHECK_EQ(R.r.head, R.b.sb + 4);
 	CHECK(marks_ok(&R.r)); /* the mark stepped over is gone with it */
 
-	/* Handshakes always, even with bypass_len 0; data of 32 bytes then held. */
+	/* What never waits always, even with bypass_len 0; 32 bytes then held. */
 	R.cf.bypass_len = 0;
-	CHECK_EQ(in(5, 0, 0, 0, 0, 1, 148), CG_RO_NOW);
-	CHECK_EQ(in(6, 0, 0, 0, 0, 2, 92), CG_RO_NOW);
-	CHECK_EQ(in(7, 0, 0, 0, 0, 3, 64), CG_RO_NOW);
+	CHECK_EQ(in(5, 0, 0, 0, 0, NOHOLD, 148), CG_RO_NOW);
+	CHECK_EQ(in(6, 0, 0, 0, 0, NOHOLD, 92), CG_RO_NOW);
+	CHECK_EQ(in(7, 0, 0, 0, 0, NOHOLD, 64), CG_RO_NOW);
 	CHECK_EQ(in(8, 0, 0, 0, SPLIT, DATA, 32), CG_RO_HOLD);
 	CHECK_EQ(R.r.st.bypassed, 4);
 	CHECK_EQ(in(4, 0, 0, 0, SPLIT, DATA, BIG), CG_RO_NOW);
@@ -1223,7 +1224,7 @@ static void sc_bypass(const struct base *b)
 	CHECK(marks_ok(&R.r));
 
 	/* Late and in order are what they are, bypass or not. */
-	CHECK_EQ(in(9, 0, 0, 0, 0, 1, 148), CG_RO_NOW);
+	CHECK_EQ(in(9, 0, 0, 0, 0, NOHOLD, 148), CG_RO_NOW);
 	CHECK_EQ(R.r.st.in_order, 4); /* 0, 1, 4 and 9 */
 	CHECK_EQ(R.r.st.bypassed, 4);
 
@@ -1232,7 +1233,7 @@ static void sc_bypass(const struct base *b)
 	CHECK(!cg_ro_bypass(&R.cf, DATA, 129, 0));
 	CHECK(cg_ro_bypass(&R.cf, DATA, 1400, CG_F_FREE)); /* marked free (tcpfree.h) */
 	CHECK(!cg_ro_bypass(&R.cf, DATA, 1400, CG_F_SPLIT));
-	CHECK(cg_ro_bypass(&R.cf, 1, 2000, 0));
+	CHECK(cg_ro_bypass(&R.cf, NOHOLD, 2000, 0));
 	CHECK(cg_ro_bypass(&R.cf, 0, 0, 0));
 	CHECK(cg_ro_bypass(&R.cf, 5, 1400, 0));
 }
@@ -2330,7 +2331,7 @@ static void t_take(const struct tev *e)
 	struct m_pkt mk = { .seq = p->seq, .ts = p->ts, .t = e->t, .id = e->pkt, .len = p->len, .link = e->link,
 			    .flags = p->flags, .type = p->type };
 	struct cg_ro_pkt k = { .seq = s32(p->seq), .ts = (uint32_t)(p->ts + T.tsoff), .t_arr = t32(e->t),
-			       .len = p->len, .link = e->link, .flags = p->flags, .wgtype = p->type };
+			       .len = p->len, .link = e->link, .flags = p->flags, .nohold = p->type };
 	struct cg_ro_stats before = R.r.st;
 	uint16_t buf;
 	enum cg_ro_v v = cg_ro_in(&R.r, &R.p, &T.cf, &k, T.rset, &buf), mv = m_in(&T.cf, &mk, T.rset);
@@ -2430,7 +2431,8 @@ static void trial(int idx)
 			p->len = edges[rn(4)];
 		}
 		if (!rn(200)) {
-			p->type = (uint8_t)(1 + rn(3));
+			(void)rn(3); /* the draw that picked a WireGuard handshake type before 0.12 */
+			p->type = NOHOLD;
 			p->len = 148;
 		}
 		p->flags = 0;

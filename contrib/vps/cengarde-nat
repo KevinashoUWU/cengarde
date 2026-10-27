@@ -4,16 +4,13 @@
 # its own, CG_IN and CG_FWD (filter) and CG_PRE and CG_POST (nat), each
 # restored whole with iptables-restore --noflush, and one jump to each,
 # inserted first so that ufw's chains come after them:
-# - cengarde's UDP port open; WireGuard's ports (one per router, from
-#   WG_PORT_BASE) answer only on lo, where cengarde talks to them, in IPv4
-#   and, when the box has it, IPv6;
-# - the tunnels are the routers' WireGuard interfaces, cg-* (TUNNEL=wireguard,
-#   the default), or with TUNNEL=native the engine's one TUN for all of
-#   them, cg0, whose routes to each router's address the engine keeps; the
-#   rules below are the same for both, with cg0 in place of cg-*;
-# - with PROTOCONTROLLER=yes and the native tunnel, the routers' variant A
-#   connections (story 025) reach the engine on SERVER_ADDR, TCP 7801;
-# - nothing from the tunnels (cg-*) reaches 169.254.0.0/16, the provider's
+# - cengarde's UDP port open, in IPv4 and, when the box has it, IPv6;
+# - the tunnels are the engine's one TUN for every router, cg0, whose
+#   routes to each router's address the engine keeps (until 0.12 each
+#   router had a WireGuard interface, cg-NAME: story 027);
+# - with PROTOCONTROLLER=yes, the routers' variant A connections (story
+#   025) reach the engine on SERVER_ADDR, TCP 7801;
+# - nothing from the tunnels (cg0) reaches 169.254.0.0/16, the provider's
 #   metadata service, whose user data hold the pairing secret;
 # - the routers reach the Internet through the server (MASQUERADE), and
 #   not each other, except for the ports the server forwards;
@@ -35,7 +32,7 @@
 #   advertisements a daemon takes (systemd-networkd: accept_ra 0) is left
 #   alone. Forwarding stays on after down, as something else may need it;
 # - never forwarded, nor taken by a router: the reserved set, printed by
-#   "cengarde-nat reserved": SSH, cengarde, WireGuard, every port below 1024
+#   "cengarde-nat reserved": SSH, cengarde, every port below 1024
 #   but FORWARD_ALLOW_LOW, FORWARD_RESERVED and, with FORWARD_AUTO_RESERVE,
 #   whatever this box itself listens on or Docker publishes, but
 #   FORWARD_UNRESERVE.
@@ -75,8 +72,7 @@ R=${CENGARDE_ROOT:-}
 ME=cengarde-nat
 
 CENGARDE_PORT=65500
-WG_PORT_BASE=   # router k's WireGuard: WG_PORT_BASE + k, k = 0..31
-WG_PORT=        # cengarde 0.4's name for it, read as the base
+WG_PORT=        # cengarde 0.4's WireGuard port: its rules are removed by it
 PASSTHROUGH=no  # protocol 3: IP pass until the router asks (yes or no)
 PASSTHROUGH_PORTS=1024:65000
 SSH_PORT=22
@@ -88,8 +84,7 @@ FORWARD_UNRESERVE=    # forwarded even though something listens there
 FORWARD_MAX_PORTS=1024
 FORWARD_SKIP_SRC=     # sources never forwarded: "192.168.1.0/24"
 TUNNEL_IPV6=no        # the routers' IPv6 through the tunnels (yes or no)
-TUNNEL=wireguard      # wireguard (cg-NAME each) or native (one TUN, cg0)
-PROTOCONTROLLER=no    # with native: the routers' variant A connects to SERVER_ADDR, TCP 7801
+PROTOCONTROLLER=no    # the routers' variant A connects to SERVER_ADDR, TCP 7801
 PUB_IF=              # optional: the only interface forwarded and masqueraded
 # shellcheck disable=SC2034 # for cengarde-vps-setup
 ROUTER_NAME=router
@@ -155,12 +150,9 @@ if [ -e "$CONF" ]; then
 	# shellcheck source=/dev/null
 	. "$CONF"
 fi
-: "${WG_PORT_BASE:=${WG_PORT:-65501}}"
-for v in CENGARDE_PORT SSH_PORT WG_PORT_BASE; do
+for v in CENGARDE_PORT SSH_PORT; do
 	eval "is_port \"\${$v}\"" || die "$v in $CONF: not a port"
 done
-WG_PORT_LAST=$((WG_PORT_BASE + 31))
-[ "$WG_PORT_LAST" -le 65535 ] || die "WG_PORT_BASE in $CONF: the 32 WireGuard ports from it go past 65535"
 # The engine's forward table, unless nat.conf names one: its forward_file,
 # read only from a configuration root owns and nobody else can write.
 if [ -z "$FORWARD_FILE" ] && [ -f "$ENGINE_CONF" ] && safe "$ENGINE_CONF"; then
@@ -175,13 +167,10 @@ fi
 case $PUB_IF in *[!A-Za-z0-9._@+-]*) die "PUB_IF in $CONF: not an interface name" ;; esac
 case $TUNNEL_IPV6 in yes | no) ;; *) die "TUNNEL_IPV6 in $CONF: yes or no" ;; esac
 case $PROTOCONTROLLER in yes | no) ;; *) die "PROTOCONTROLLER in $CONF: yes or no" ;; esac
-# The routers' tunnels as iptables names them: one WireGuard interface each
-# (cg-NAME), or the engine's one TUN for all of them (tunnel = native).
-case $TUNNEL in
-wireguard) TUN_IF=cg-+ NFT_IF='cg-*' ;;
-native) TUN_IF=cg0 NFT_IF=cg0 ;;
-*) die "TUNNEL in $CONF: wireguard or native" ;;
-esac
+# The routers' tunnels: the engine's one TUN for all of them. (TUNNEL and
+# WG_PORT_BASE in a nat.conf of before 0.12 are left for cengarde-vps-setup
+# to remove, and ignored.)
+TUN_IF=cg0 NFT_IF=cg0
 [ ${#PUB_IF} -le 15 ] || die "PUB_IF in $CONF: not an interface name"
 SKIP=
 for c in $FORWARD_SKIP_SRC; do
@@ -284,7 +273,7 @@ reserved_runs() {
 			docker_ports
 		fi
 	} | awk -v mode="$1" -v me="$ME" \
-		-v cg="$CENGARDE_PORT" -v ssh="$SSH_PORT" -v wlo="$WG_PORT_BASE" -v whi="$WG_PORT_LAST" \
+		-v cg="$CENGARDE_PORT" -v ssh="$SSH_PORT" \
 		-v allow="$FORWARD_ALLOW_LOW" -v res="$FORWARD_RESERVED" -v unres="$FORWARD_UNRESERVE" '
 	function port(s) { return s ~ /^[0-9]+$/ && length(s) <= 5 && s + 0 >= 1 && s + 0 <= 65535 }
 	# tokens(VAR, LIST, ARRAY): marks ARRAY[proto, port] for "proto:first[-last]".
@@ -321,7 +310,6 @@ reserved_runs() {
 				if (p <= 65535) {
 					if (proto == "tcp" && p == ssh) why = "ssh"
 					else if (proto == "udp" && p == cg) why = "cengarde"
-					else if (proto == "udp" && p >= wlo && p <= whi) why = "wireguard"
 					else if (p < 1024 && !((proto, p) in al)) why = "below-1024"
 					else if ((proto, p) in fr) why = "FORWARD_RESERVED"
 					else if ((proto, p) in au && !((proto, p) in un)) why = au[proto, p]
@@ -561,9 +549,8 @@ render4() {
 		:CG_IN - [0:0]
 		:CG_FWD - [0:0]
 		-A CG_IN -p udp --dport $CENGARDE_PORT -j ACCEPT
-		-A CG_IN ! -i lo -p udp --dport $WG_PORT_BASE:$WG_PORT_LAST -j DROP
 	EOF
-	[ "$PROTOCONTROLLER" = yes ] && [ "$TUNNEL" = native ] &&
+	[ "$PROTOCONTROLLER" = yes ] &&
 		echo "-A CG_IN -i $TUN_IF -d $SERVER_ADDR -p tcp --dport 7801 -j ACCEPT"
 	cat <<-EOF
 		-A CG_FWD -i $TUN_IF -d 169.254.0.0/16 -j REJECT --reject-with icmp-net-prohibited
@@ -599,7 +586,6 @@ render6() {
 		:CG_IN - [0:0]
 		:CG_FWD - [0:0]
 		-A CG_IN -p udp --dport $CENGARDE_PORT -j ACCEPT
-		-A CG_IN ! -i lo -p udp --dport $WG_PORT_BASE:$WG_PORT_LAST -j DROP
 	EOF
 	if [ "$TUNNEL_IPV6" = yes ]; then
 		cat <<-EOF
@@ -713,7 +699,7 @@ v6_forwarding() {
 	local f n
 	for f in /proc/sys/net/ipv6/conf/*/accept_ra; do
 		n=${f%/accept_ra}
-		case ${n##*/} in all | lo | cg-* | cg0) continue ;; esac
+		case ${n##*/} in all | lo | cg0) continue ;; esac
 		if [ "$(cat "$f" 2>/dev/null)" = 1 ]; then
 			echo 2 >"$f" || return 1
 		fi
@@ -888,7 +874,7 @@ sync_now() {
 # purge_legacy: every rule cengarde 0.4's "cengarde-nat up" and IP pass
 # inserted, whichever interface they named, by their exact form.
 purge_legacy() {
-	local wg="${WG_PORT:-$WG_PORT_BASE}" pp="$PASS_LO:$PASS_HI"
+	local wg="${WG_PORT:-65501}" pp="$PASS_LO:$PASS_HI"
 	legacy iptables filter INPUT \
 		"-A INPUT -i [^ ]+ -p udp -m udp --dport $CENGARDE_PORT -j ACCEPT" \
 		"-A INPUT (! )?-i [^ ]+ -p udp -m udp --dport $wg -j DROP"
@@ -1054,11 +1040,7 @@ cmd_status() {
 		say "nothing forwarded"
 	fi
 	say "reserved: $(reserved_tokens | tr '\n' ' ')"
-	if [ "$TUNNEL" = native ]; then
-		say "the tunnels: the engine's TUN, $TUN_IF (TUNNEL=native; cengarde-vps-setup tunnel wireguard)"
-	else
-		say "the tunnels: a WireGuard interface per router, cg-NAME (TUNNEL=wireguard)"
-	fi
+	say "the tunnels: the engine's TUN, $TUN_IF"
 	if [ "$TUNNEL_IPV6" = no ]; then
 		say "the routers' IPv6: not through the tunnels (TUNNEL_IPV6=no; cengarde-vps-setup ipv6 on)"
 	elif ! have_v6; then

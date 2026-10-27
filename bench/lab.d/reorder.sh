@@ -1,4 +1,4 @@
-# shellcheck shell=bash disable=SC2034 # LAB_CI, ENGINE, NLINKS and SIZE are read by lab.sh
+# shellcheck shell=bash disable=SC2034 # LAB_CI, NLINKS and SIZE are read by lab.sh
 # Reordering at the receiver and the split (story 012, Fase 5 step 1):
 # "bench/lab.sh reorder" (or reorder_imix, reorder_hol on their own).
 #
@@ -8,25 +8,25 @@
 # Both scenarios run with split = force on both ends and muting off
 # (mute_behind_ms = 0), over the shaping of reorder150 or reorder50 (bond.sh).
 #
-# imix: IMIX packets (udpgen -s imix: 7 x 64, 4 x 576, 1 x 1400 bytes, fake WireGuard)
+# imix: IMIX packets (udpgen -s imix: 7 x 64, 4 x 576, 1 x 1392 bytes of UDP payload)
 # over two links 150 ms apart, up and down, at two rates. The window is 4096
 # sequences: 20 kpps (205 ms) fits the spread, 30 kpps (136 ms) does not and
 # overflows. Always: every packet arrives once (unique == sent), nothing is
-# dropped as too old or at the WireGuard socket, the pool never runs dry. Below
+# dropped as too old or at the TUN, the pool never runs dry. Below
 # the window nothing is given up for the overflow and the big packets arrive in
 # order (IMIX_BELOW_ORD_MAX_PERMILLE, 5 per thousand); above it the overflow
 # happens (lost.overflow > 0) and the share of big packets that arrive behind a
 # later one is reported. The late copies of forced gaps come out of order, so
 # it is not near 0 there; IMIX_ORD_MAX_PCT, if set, bounds it.
 #
-# hol: head of line. The real thing (WireGuard, iperf3 and QUIC, as in bond) with
-# a flow of small packets alongside: HOL_PPS (50) of HOL_SIZE (160
-# bytes of payload: a 224-byte WireGuard datagram, above the default bypass
+# hol: head of line. The real thing (iperf3 and QUIC through the TUN, as in bond)
+# with a flow of small packets alongside: HOL_PPS (50) of HOL_SIZE (160
+# bytes of payload: a 188-byte IPv4 packet in the tunnel, above the default bypass
 # and below the split size) through the tunnel while the transfers go, with
 # reorder_bypass 0, 128 and 256 (HOL_BYPASS). What the small flow waits for
 # behind the held big packets (p50 and p99 of its delay) and what the
 # transfers see (retransmissions, spurious losses) come out in the bond table.
-# Fails only when something is dropped as too old or at the WireGuard socket.
+# Fails only when something is dropped as too old or at the TUN.
 # It runs with BOND_NETEM_INFLIGHT=1: a split has no second copy to cover what
 # netem drops when the packets in its delay fill its limit (bond_link).
 #
@@ -54,7 +54,7 @@ REORDER_NEED_NETEM=${REORDER_NEED_NETEM:-0}
 reorder_ready() {
 	local have=0
 	[ "${REORDER_READY:-}" = 1 ] && return 0 # reorder asked already
-	ENGINE=c NLINKS=2
+	NLINKS=2
 	setup && start || {
 		echo "FAIL: the lab did not start"
 		teardown
@@ -115,14 +115,14 @@ reorder_imix_run() {
 	held_max=$(reorder_get "$side" held_max)
 	pool=$(reorder_get "$side" pool_full)
 	old_c=$(reorder_get cli too_old) old_s=$(reorder_get srv too_old)
-	drops_c=$(reorder_get cli wireguard_drops) drops_s=$(reorder_get srv wireguard_drops)
+	drops_c=$(reorder_get cli tun_drops) drops_s=$(reorder_get srv tun_drops)
 	pct=$(awk -v a="${bigord:-0}" -v b="${big:-0}" 'BEGIN { printf "%.1f", (b > 0 ? 100 * a / b : 0) }')
 	echo "   $dir $phase $pps pps at the $side: sent=$sent uniq=$uniq big=$big bigord=$bigord ($pct %)" \
 		"lost.overflow=$ovf late.old=$late_old held_max=$held_max pool_full=$pool" \
-		"too_old=$old_c/$old_s wireguard_drops=$drops_c/$drops_s"
+		"too_old=$old_c/$old_s tun_drops=$drops_c/$drops_s"
 	[ -n "$sent" ] && [ "$sent" -gt 0 ] && [ "$uniq" = "$sent" ] || { echo "FAIL: $dir $phase: unique ($uniq) is not sent ($sent)"; fail=1; }
 	[ "$old_c" = 0 ] && [ "$old_s" = 0 ] || { echo "FAIL: $dir $phase: packets dropped as too old ($old_c/$old_s)"; fail=1; }
-	[ "$drops_c" = 0 ] && [ "$drops_s" = 0 ] || { echo "FAIL: $dir $phase: packets dropped at the WireGuard socket ($drops_c/$drops_s)"; fail=1; }
+	[ "$drops_c" = 0 ] && [ "$drops_s" = 0 ] || { echo "FAIL: $dir $phase: packets dropped at the TUN ($drops_c/$drops_s)"; fail=1; }
 	[ "$pool" = 0 ] || { echo "FAIL: $dir $phase: the pool ran dry ($pool)"; fail=1; }
 	if [ "$phase" = below ]; then
 		[ "$ovf" = 0 ] || { echo "FAIL: $dir $phase: the window overflowed ($ovf) below its rate"; fail=1; }
@@ -144,7 +144,7 @@ reorder_imix() {
 	ready=$?
 	[ "$ready" = 1 ] && return 0
 	[ "$ready" = 0 ] || return 1
-	ENGINE=c NLINKS=2 SIZE=imix
+	NLINKS=2 SIZE=imix
 	CLIENT_EXTRA=$(bond_join "split = force;mute_behind_ms = 0;reorder_max_wait_ms = 400" "$CLIENT_EXTRA")
 	SERVER_EXTRA=$(bond_join "split = force;mute_behind_ms = 0;reorder_max_wait_ms = 400" "$SERVER_EXTRA")
 	trap teardown EXIT
@@ -174,8 +174,8 @@ reorder_hol() {
 	for bp in $HOL_BYPASS; do v="$v split-bp$bp"; done
 	BOND_CASES=$HOL_CASE BOND_VARIANTS=${HOL_VARIANTS:-${v# }} BOND_SMALL=$HOL_PPS BOND_SMALL_SIZE=$HOL_SIZE \
 		BOND_DIRS=$HOL_DIRS BOND_CC=$HOL_CC BOND_N=$HOL_N BOND_NEED_NETEM=1 BOND_NETEM_INFLIGHT=1 bond || fail=1
-	python3 -I "$LAB/bondtab.py" zero "$RUN/bond.jsonl" too_old wireguard_drops || {
-		echo "FAIL: packets dropped as too old or at the WireGuard socket (above)"
+	python3 -I "$LAB/bondtab.py" zero "$RUN/bond.jsonl" too_old tun_drops || {
+		echo "FAIL: packets dropped as too old or at the TUN (above)"
 		fail=1
 	}
 	[ "$fail" = 0 ] && echo "reorder_hol: ok" || echo "reorder_hol: FAILED"

@@ -3,7 +3,7 @@ tags: [mapa, pieza]
 archivos:
   - engine/src/split.h
   - engine/tests/test_split.c
-sello: 2b0121cdcf55ea99
+sello: 907b1381554c3745
 ---
 # G4 guarda de dispersión (split.h)
 

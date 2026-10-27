@@ -1,4 +1,4 @@
-# shellcheck shell=bash disable=SC2034 # LAB_CI, ENGINE and NLINKS are read by lab.sh
+# shellcheck shell=bash disable=SC2034 # LAB_CI and NLINKS are read by lab.sh
 # Muting turned off by a reload: "bench/lab.sh muteoff".
 #
 # 2000 pps flow one way over 3 links. Link 3 gets a 500 ms queue (tbf at
@@ -34,7 +34,7 @@ muteoff_wait() {
 
 muteoff() {
 	local fail=0 dir end ns dev pid sess traffic t0 ms sent uniq
-	ENGINE=c NLINKS=3
+	NLINKS=3
 	CLIENT_EXTRA="sndbuf = 4194304;status_interval_ms = 100${CLIENT_EXTRA:+;$CLIENT_EXTRA}"
 	SERVER_EXTRA="status_interval_ms = 100${SERVER_EXTRA:+;$SERVER_EXTRA}"
 	trap teardown EXIT

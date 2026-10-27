@@ -1,19 +1,20 @@
 # bench — laboratorio de rendimiento
 
 Laboratorio reproducible para medir el motor cengarde en C (`engine/`, y en
-el futuro eBPF), y compararlo con el engarde Go original, en una sola máquina
-Linux, sin hardware. Dos network
+el futuro eBPF) en una sola máquina Linux, sin hardware. Dos network
 namespaces unidos por tres pares veth (o `NLINKS`, si son más) que hacen de
 enlaces: `cli` hace de
-Raspberry Pi y `srv` de VPS. WireGuard se sustituye por `udpgen`, un
-emisor/receptor UDP que numera y marca con la hora cada paquete, así que se
-miden pérdidas reales (paquetes sin ninguna copia), duplicados, reordenación y
+Raspberry Pi y `srv` de VPS, y entre ellos el túnel nativo de cengarde (un
+TUN `cg0` en cada extremo, el único modo desde la 0.12, historia 027). El
+tráfico lo pone `udpgen`, un emisor/receptor UDP que numera y marca con la
+hora cada paquete y habla entre las direcciones del túnel, así que se miden
+pérdidas reales (paquetes sin ninguna copia), duplicados, reordenación y
 latencia de un sentido.
 
 ```
 netns cli (la Pi)                            netns srv (el VPS)
-WG falso: udpgen 127.0.0.1:50000             servidor :59402 (engarde o cengarde)
-cliente 127.0.0.1:59401                      WG falso: udpgen 127.0.0.1:59301
+udpgen 10.79.0.2:50000                       udpgen 10.79.0.1:59301
+cg0 10.79.0.2/16 (cliente cengarde)          cg0 10.79.0.1/16 (servidor cengarde :59402)
 l1 10.0.1.1 ──────────────────────────────── s1 10.0.1.2
 l2 10.0.2.1 ──────────────────────────────── s2 10.0.2.2
 l3 10.0.3.1 ──────────────────────────────── s3 10.0.3.2
@@ -24,16 +25,21 @@ Las cifras citadas en [`ROADMAP.md`](../ROADMAP.md) y en las historias 001,
 
 ## Requisitos
 
-root, iproute2 (`ip`, `tc` con `sch_tbf`), gcc, make y python3. Go solo hace
-falta para la línea base del engarde Go (`ENGINE=go`); git, para esa línea
-base y para `restart REF`; iptables, para `fallback`; iperf3,
-wireguard-tools y `sch_netem`, para `bond`; ffmpeg (con libsrt para SRT), `ss` y python3,
-para `stream`; y curl, para las demos del Go.
+root, iproute2 (`ip`, `tc` con `sch_tbf`), el módulo `tun`, gcc, make y
+python3. git, para `restart REF`; iptables, para `fallback`; iperf3 y ping,
+para `native`, `fieldperf` y `bond`, que además pide `sch_netem`; ffmpeg (con
+libsrt para SRT), `ss` y python3, para `stream`.
+
+La línea base del engarde Go (`ENGINE=go`, `suite`, `compare` y las demos
+`demo_webpanic` y `demo_races`) salió con el modo WireGuard en la 0.12:
+engarde es un relevo de datagramas de WireGuard y no tiene túnel propio, así
+que no puede ir sobre el túnel nativo. Sus cifras siguen en las historias 001
+y 005; para repetirlas, el `bench/lab.sh` de una versión anterior (0.11).
 
 ## Uso
 
 ```sh
-sudo bench/lab.sh build    # udpgen, protoclient, ringbench, robench, cgprobe, macbench y cengarde en bench/bin/
+sudo bench/lab.sh build    # udpgen, mgen, ringbench, robench, cgprobe, macbench, fecbench y cengarde en bench/bin/
 sudo bench/lab.sh ci       # lo que corre el CI: smoke, health, control y los escenarios de lab.d con LAB_CI=1
 sudo bench/lab.sh smoke    # prueba de humo de cengarde
 sudo bench/lab.sh health   # salud de enlaces: un enlace con 500 ms de cola, subida y bajada (historia 006)
@@ -41,19 +47,17 @@ sudo bench/lab.sh control  # con tráfico: pausar un enlace, recargar dos veces,
 sudo bench/lab.sh muteoff  # una recarga con mute_behind_ms = 0 devuelve al instante un enlace silenciado, subida y bajada (lab.d, va en ci)
 sudo bench/lab.sh multiclient  # tres routers en un servidor: tráfico sin cruces, IP pass y tabla de reenvío, recargas (lab.d, va en ci)
 sudo bench/lab.sh stream   # transmisión simulada: RTMP y SRT por el túnel, con las grabaciones del motor y el informe de report.py (lab.d, a mano; ver bench/stream/)
-sudo bench/lab.sh latency  # latencia y CPU con busy_poll_us 0, 50 y 200, y el Go si está compilado (historia 006)
+sudo bench/lab.sh latency  # latencia y CPU con busy_poll_us 0, 50 y 200 (historia 006)
 sudo bench/lab.sh restart  # reinicios del servidor con tráfico: todos los enlaces vivos en 4 s (lab.d, va en ci)
 sudo bench/lab.sh restart ebe570b  # lo mismo con el motor de otro commit, p. ej. el de antes del arreglo
 sudo bench/lab.sh multiip  # servidor con varias direcciones: responde desde la de llegada (lab.d, va en ci)
 sudo bench/lab.sh fallback # varias direcciones del servidor por enlace: failover, IPv6 que se salta, vuelta tras un corte, MTU de camino (lab.d, va en ci)
 sudo bench/lab.sh names    # el servidor por nombre, con un DNS falso (fakedns.py): cambio de IP con tráfico (corte de ~3 s), DNS caído, TTL 0, NXDOMAIN (lab.d, va en ci)
 sudo bench/lab.sh lanes    # las colas del servidor: una por enlace, la basura aparte, un segundo servidor rechazado; y lanes = 1 (lab.d, va en ci)
-sudo bench/lab.sh native   # tunnel = native: ping (IPv4 e IPv6) e iperf3 TCP por el TUN con 2 enlaces y split, y dos routers con sus tun_route (lab.d, va en ci)
+sudo bench/lab.sh native   # TCP real: ping (IPv4 e IPv6) e iperf3 TCP por el TUN con 2 enlaces y split, y dos routers con sus tun_route (lab.d, va en ci)
 sudo bench/lab.sh tcpaware # iperf3 -R -P 4 por el TUN con tcp_aware no y yes: contadores de TCP del emisor (nstat) y del reordenador; TCPA_LINKS, TCPA_SPIKE, TCPA_VARIANTS (lab.d, a mano; historia 014)
 sudo bench/lab.sh deepq    # un camino del servidor con 20 MB de cola local no afecta a los demás (lab.d, va en ci)
 sudo bench/lab.sh skew     # primeras llegadas repartidas entre enlaces idénticos, puerta C5 (lab.d, va en ci)
-sudo bench/lab.sh wgpoke   # un router con la hora atrasada: el servidor hace que WireGuard inicie el handshake (lab.d, va en ci)
-sudo bench/lab.sh wgport   # el socket del servidor hacia WireGuard nunca se queda con el puerto de WireGuard, con el rango efímero reducido a dos puertos (lab.d, va en ci)
 sudo bench/lab.sh srcroute # un enlace cuya IPv6 más nueva solo tiene ruta por otro enlace: sale desde otra suya, y vuelve de la IPv4 cuando la ruta vuelve (lab.d, va en ci; se omite sin IPv6)
 sudo LAB_UDPMEM=1 bench/lab.sh udpmem  # el presupuesto de recepción frente a net.ipv4.udp_mem (lab.d; baja el sysctl de toda la máquina unos segundos: solo en el CI)
 sudo bench/lab.sh mtstall  # un hilo de enlace sin CPU no frena a los demás (link_threads = on; lab.d, va en ci)
@@ -63,10 +67,6 @@ sudo bench/lab.sh reorder  # el reordenador del receptor y el reparto (paso 1 de
 bench/bin/robench          # ns por paquete de engine/src/reorder.h solo: en orden, 50/50 con 50 ms de diferencia, IMIX con bypass y desborde (1 s, sin root)
 bench/bin/fecbench         # µs por paquete de los códigos de redund_spare (historia 021): XOR, Reed-Solomon (Leopard) y RLC, codificar y decodificar; y la FEC v3 (historia 026) a 50 y 100 Mbit/s, con y sin los 16 bytes de SSSE3/NEON (sin root)
 sudo CLIENT_EXTRA="link_threads = on" bench/lab.sh ci   # el ci con los hilos por enlace (el CI corre legacy, off y on)
-
-sudo ENGINE=go bench/lab.sh build  # además, el engarde Go (normal y -race)
-sudo bench/lab.sh suite    # línea base del engarde Go (historia 001, ~5 min)
-sudo bench/lab.sh compare  # engarde Go frente a cengarde, cada uno en ambos extremos (historia 005)
 ```
 
 `ci` corre cada escenario en una subshell y con el laboratorio limpio, sigue
@@ -218,9 +218,8 @@ escenario comprueba que los enlaces vuelven y la bajada fluye.
 - **Montaje:** 2000 pps de bajada (y 20 de subida, para que las sondas vayan
   cada 100 ms). l3 tiene 800 ms de cola siempre llena: tbf a 5 Mbit/s en el
   lado del cliente más un relleno de 7,8 Mbit/s, como `health` llena la suya
-  de 500 ms. El WireGuard falso del VPS (`udpgen -l`) sigue al servidor
-  nuevo a su puerto nuevo, como WireGuard cuando cambia el punto final del
-  otro lado.
+  de 500 ms. Los `udpgen` están atados a las direcciones del túnel, que
+  vuelven con el TUN del servidor nuevo.
 - **Fase 1:** 10 reinicios (`RESTARTS`). Cada vez, todos los enlaces tienen
   que estar vivos, con un paquete verificado después del reinicio, en 4 s
   (`RESTART_LIMIT`) desde que arranca el servidor nuevo (consultando el
@@ -231,8 +230,9 @@ escenario comprueba que los enlaces vuelven y la bajada fluye.
   y la cookie solo pueden pasar por l3, detrás de su cola. Son `ALONE`
   reinicios (3).
 - **Al final** dice cuántos HELLO tomó el cliente (`download.hellos`).
-- **Con `REF`** compila el motor de ese commit en `$RUN` y lo mide igual. Un
-  motor del protocolo 3 dice además `window_resets`.
+- **Con `REF`** compila el motor de ese commit en `$RUN` y lo mide igual
+  (tiene que tener el túnel nativo, historia 014). Un motor del protocolo 3
+  dice además `window_resets`.
 - **Si el laboratorio no está listo** (la comprobación de antes de reiniciar
   falla, o el socket de control no contesta), no reinicia nada: dice qué
   extremo no corre, con el final de su log, en vez de contarlo como atascado.
@@ -270,14 +270,17 @@ siguiente:
 
 Tres motores cliente en el netns `cli`, cada uno un router con sus enlaces:
 alpha (l1 y l2), bravo (l3 y l4) y charlie (l5), con una clave elegida para
-que su pista sea la de alpha (el servidor prueba las dos claves). Un
-servidor con una sección `[client NOMBRE]` por router y un `udpgen` como
-WireGuard de cada uno. Comprueba:
+que su pista sea la de alpha (el servidor prueba las dos claves). Cada
+router tiene su TUN (`cga`, `cgb`, `cgc`) en un /24 propio, 10.79.N.2, y el
+`cg0` del servidor tiene 10.79.N.1 en cada uno, así que lo que va a
+10.79.N.1 sale por el TUN del router N y el servidor devuelve 10.79.N.2 al
+router N (su `tun_route`). Un servidor con una sección `[client NOMBRE]`
+por router y un `udpgen` por router en `srv`. Comprueba:
 
 1. Los tres routers vivos en todos sus enlaces, de los dos lados, en 3 s,
    con una sesión cada uno; `ctl links` con la columna `CLIENT`.
 2. 1000 pps de subida y luego de bajada para los tres a la vez: lo de cada
-   router llega una vez a su WireGuard y nada al de otro (otro router se
+   router llega una vez a su extremo y nada al de otro (otro router se
    vería como duplicados o como más de lo enviado).
 3. IP pass: alpha lo pide y la tabla de reenvío dice `pass alpha` y sus dos
    reglas; bravo lo pide también y espera; alpha lo suelta y pasa a bravo.
@@ -307,37 +310,6 @@ Medido el 2026-10-10: l3 vuelve 58–139 ms después de la recarga. Con el
 motor anterior al arreglo seguía silenciado 3 s después en los dos sentidos:
 `unmute_behind_ms` no puede pasar de `mute_behind_ms`, así que quedaba en 0,
 y un enlace atrasado no volvía mientras siguiera atrasado (historia 006).
-
-### `wgpoke`: un router con la hora atrasada (`lab.d/wgpoke.sh`)
-
-WireGuard ignora las iniciaciones de un router que volvió con la hora
-atrasada; el servidor lo nota y hace que WireGuard inicie él
-(`engine/src/wgwatch.h`, historia
-[002](../docs/historias/002-wireguard-para-cengarde.md)). `bench/fakewg.py`
-hace de los dos WireGuard: el del VPS ignora toda iniciación e inicia una
-cuando lo empujan; el del router la contesta.
-
-- **1:** con datos, WireGuard aprende la sesión del cliente y nadie empuja.
-- **2:** el cliente se reinicia y llama. En 6 s (`KNOCK_S`) WireGuard recibe
-  el empujón, su iniciación (hacia la sesión vieja) va por la nueva y llega
-  al router, y la respuesta deja la sesión nueva como su endpoint.
-- **3:** lo mismo, pero WireGuard inicia 7 s después del empujón (el real
-  espera 15 s si su sesión sigue válida). Para entonces la sesión vieja
-  expiró y la que llama heredó su puerto: la iniciación llega igual, sin
-  redirección.
-- **4:** el cliente para 8 s, más que `session_timeout_ms` (5 s aquí), y
-  vuelve a llamar: la sesión nueva retoma el puerto de la anterior y la
-  iniciación le llega directo.
-- **5:** el servidor se reinicia (una actualización) mientras el cliente
-  llama con la hora todavía atrasada: lee de `wireguard_port_file` el puerto
-  que conoce WireGuard, su sesión nueva lo toma y la iniciación de WireGuard
-  llega al router.
-- **6:** con `wireguard_poke = none` (recarga), un cliente que llama tras un
-  reinicio no provoca empujones.
-
-El motor de antes del arreglo falla las fases 2, 3 y 4; sin el traspaso del
-puerto, falla la 3; sin `wireguard_port_file` (0.6.1 y antes), falla la 5
-(comprobado quitando la clave del escenario el 2026-10-13).
 
 ### `multiip`: el servidor con varias direcciones (`lab.d/multiip.sh`)
 
@@ -392,17 +364,16 @@ failover (`FAILOVER_MS`):
   muerta), y la primera respuesta lo devuelve a 10.0.3.2. Por último, otra
   vez en 10.0.3.20, l3 pierde su propia dirección y recupera la misma: eso
   también lo devuelve a la primera, al momento.
-- **MTU de camino:** l2 baja a MTU 1400 mientras suben datagramas de 1400
-  bytes; el estado tiene que dar `path_mtu` 1400 en l2 (1500 en l1) y el log
-  tiene que pedir un MTU de WireGuard de 1316 solo para l2, sin perder
-  paquetes.
+- **MTU de camino:** l2 baja a MTU 1400 mientras suben por el TUN paquetes
+  de 1420 bytes (`SIZE` 1392 de carga UDP); el estado tiene que dar
+  `path_mtu` 1400 en l2 (1500 en l1) y el log tiene que pedir un `tun_mtu`
+  de 1348 solo para l2, sin perder paquetes.
 
 ### `bond`: el laboratorio de bonding (`lab.d/bond.sh`)
 
 Es el paso 0 de la Fase 5 ([historia 012](../docs/historias/012-bonding.md)).
-A diferencia del resto, aquí no hay WireGuard falso: un WireGuard real
-(`wgc` 10.79.0.2 en `cli`, `wgs` 10.79.0.1 en `srv`) pasa por cengarde, y
-dentro va tráfico real. En cada corrida, iperf3 sube o baja (`-R`) con Cubic
+A diferencia del resto, aquí no hay `udpgen`: por el túnel (`cg0` 10.79.0.2
+en `cli`, 10.79.0.1 en `srv`) va tráfico real. En cada corrida, iperf3 sube o baja (`-R`) con Cubic
 y con BBR, y un emisor QUIC (`quicperf.py`, abajo) hace lo mismo, mientras
 ping mide el RTT del túnel cargado cada 100 ms. Los
 enlaces se moldean con netem en los dos sentidos: retardo de un sentido,
@@ -535,14 +506,17 @@ puro desorden); en TCP esos campos van en `null`.
 Antes y después de cada corrida se copian los archivos de estado de los dos
 extremos (el motor los escribe cada segundo: por eso hay una espera de 1,1 s por
 corrida; el «después» de una es el «antes» de la siguiente) y los contadores de
-las interfaces de WireGuard (`ip -s -j link show`). La línea lleva las
+los TUN (`ip -s -j link show dev cg0` en cada netns). La línea lleva las
 diferencias en `eng.cli` y `eng.srv`: de `reorder.*` (`held_total`, `in_order`,
 `bypassed`, `split_rx`, `lost_rack`, `lost_cap`, `lost_overflow`, `lost_flush`,
 `late_after_rack`, `late_after_cap`, `late_after_overflow`, `late_old`, `far`,
 `resyncs`, `pool_full`, y los histogramas `wait` y `late_by`), `too_old`
-(`download.too_old` del cliente, `rx.too_old` del servidor), `wireguard_drops`
+(`download.too_old` del cliente, `rx.too_old` del servidor), `tun_drops`
 y `lost_all`; `held_max` y `max_burst` son máximos desde que arrancó el caso, no
-diferencias. En `wg_rx_dropped`, la diferencia de `rx_dropped` de `wgc` y `wgs`.
+diferencias. En `tun_rx_dropped`, la diferencia de `rx_dropped` del `cg0` de
+cada lado (lo que el kernel tiró de lo que su motor escribió en el TUN). Las
+líneas de antes de la 0.12 los llaman `wireguard_drops` y `wg_rx_dropped`
+(las interfaces `wgc` y `wgs`); `bondtab.py` las lee con los nombres nuevos.
 Lo que el motor no tiene (hoy, todo `reorder`) va en `null`, nunca es un error.
 Con `BOND_SMALL` > 0 (pps) corre además un flujo de datagramas de
 `BOND_SMALL_SIZE` bytes (160) por el túnel, en el sentido de la corrida, y la
@@ -568,8 +542,8 @@ Al final se imprimen las tablas (Markdown), que también quedan en
   es una descripción de 10 corridas, no una prueba.
 - **Contadores del motor**, la mediana de las diferencias de cada corrida en el
   extremo que recibió (el servidor en `up`, el cliente en `down`), y `too_old`,
-  `wireguard_drops`, `lost_all` y `rx_dropped` de los dos. Debajo, si `too_old`,
-  `pool_full` o `wireguard_drops` no son 0, lista las corridas.
+  `tun_drops`, `lost_all` y `rx_dropped` de los dos. Debajo, si `too_old`,
+  `pool_full` o `tun_drops` no son 0, lista las corridas.
 - **Contra la referencia**: cada variante frente a las referencias de su
   familia que haya en su grupo (mismo caso, sentido y control), una fila por
   cada una: `bonded`, `redund` y `redund-dw20` frente a `redund-ro0`; `split`
@@ -589,10 +563,8 @@ Al final se imprimen las tablas (Markdown), que también quedan en
   corridas por lado) del goodput y de la tasa de retransmisiones.
 
 El escenario no juzga la velocidad: solo falla si falla la fontanería, es
-decir, si no hay handshake, tráfico o pings. Necesita iperf3,
-wireguard-tools y ping, y aioquic para QUIC (abajo). Si el kernel no trae
-WireGuard (el contenedor cloud), sirve wireguard-go con
-`WG_GO=/ruta/wireguard`. Sin netem, los enlaces solo tienen tasa (`tbf`), sin
+decir, si no hay ping por el túnel, tráfico o pings. Necesita iperf3 y ping,
+y aioquic para QUIC (abajo). Sin netem, los enlaces solo tienen tasa (`tbf`), sin
 retardos ni eventos, y el escenario lo avisa; con `BOND_NEED_NETEM=1` eso
 pasa a ser un fallo.
 
@@ -634,7 +606,7 @@ python3 bench/bondtab_test.py                           # pruebas de las tablas,
 | `BOND_VARIANTS` | `bonded solo` | variantes (arriba); dadas, `solo` corre también en `reorder50` y `reorder150` |
 | `BOND_SOLO_CASES` | `equal het` | casos en los que corre `solo` |
 | `BOND_SMALL` | 0 | pps de un flujo de datagramas pequeños por el túnel durante la corrida (0: ninguno) |
-| `BOND_SMALL_SIZE` | 160 | bytes de esos datagramas (un datagrama de WireGuard de 224) |
+| `BOND_SMALL_SIZE` | 160 | bytes de esos datagramas (un paquete IPv4 de 188 en el túnel) |
 | `BOND_NETEM_INFLIGHT` | 0 | 1: el límite de netem cuenta también lo que cabe en el retardo (arriba); cambia la línea base del paso 0 |
 | `BOND_WARM` | 0 | segundos de la misma transferencia antes de cada corrida, para que arranque con los enlaces medidos (el arranque rápido, historia 013); solo con `BOND_REST` > 0 y sin `quic` |
 | `BOND_REST` | 0 | segundos sin tráfico entre ese calentamiento y la corrida: arranca desde el reposo (0: ninguno) |
@@ -645,10 +617,9 @@ python3 bench/bondtab_test.py                           # pruebas de las tablas,
 | `BOND_N` | 1 | repeticiones; la tabla da la mediana y el rango |
 | `BOND_CC` | `cubic bbr quic` | controles de congestión; `quic` solo si importa aioquic, y si no se avisa |
 | `BOND_QUIC_CC` | `cubic` | el control de congestión del emisor QUIC (`cubic` o `reno`) |
-| `BOND_QUIC_MTU` | 1350 | tamaño del datagrama QUIC (el túnel tiene MTU 1380) |
+| `BOND_QUIC_MTU` | 1350 | tamaño del datagrama QUIC (el TUN tiene MTU 1420) |
 | `BOND_DIRS` | `up down` | sentidos (`down` es iperf3 `-R`) |
 | `BOND_OUT` | vacío | archivo al que añadir las líneas JSON |
-| `WG_GO` | vacío | wireguard-go, si el kernel no tiene WireGuard |
 | `BOND_NEED_NETEM` | 0 | 1: sin netem, falla en vez de avisar |
 | `BOND_NEED_QUIC` | 0 | 1: sin aioquic, falla en vez de avisar |
 
@@ -726,8 +697,7 @@ procesos de esos dos netns (`ip netns pids`) y solo los borra a ellos. Vacío
 (lo de siempre, lo que corren el CI y los scripts de hoy) son `cli`, `srv` y
 `bench/run`. Lo demás no cambia de nombre porque vive dentro de los netns o de
 `RUN`: los veth `l1`… y `s1`…, las direcciones 10.0.x.x y 10.79.0.x, los
-puertos, las interfaces `wgc` y `wgs`, las claves, los pid y los sockets de
-control. `l1` en `cli-1` y `l1` en `cli-2` son dos interfaces distintas, así
+puertos, los TUN `cg0`, los pid y los sockets de control. `l1` en `cli-1` y `l1` en `cli-2` son dos interfaces distintas, así
 que no hace falta correr subredes ni puertos ni acortar nombres (IFNAMSIZ).
 Lo único que comparten las instancias es la máquina: la CPU, `bench/bin` (las
 herramientas; el motor de cada una puede ser otro con `CENGARDE_BIN`, y `BIN`
@@ -854,12 +824,12 @@ contra los ajustes y el estado del plan (`split`, `reorder_*`, el objeto
 `split = force` en los dos extremos y el silenciado apagado.
 
 - **`reorder_imix`: el desborde.** Paquetes IMIX (`udpgen -s imix`: 7 de 64, 4
-  de 576 y 1 de 1400 bytes; WireGuard falso) por dos enlaces con 150 ms de
+  de 576 y 1 de 1392 bytes de carga UDP) por dos enlaces con 150 ms de
   diferencia (20 y 170 ms, con una cola de 60 000 paquetes, porque netem cuenta
   contra su límite lo que va en el retardo), arriba y abajo, a dos tasas. La
   ventana es de 4096 secuencias: a 20 kpps (205 ms) cabe la diferencia y a 30
   kpps (136 ms) no, así que hay desborde. En todas: cada paquete llega una vez
-  (`uniq` = `sent`), `too_old` y `wireguard_drops` en 0 y `pool_full` en 0. Bajo
+  (`uniq` = `sent`), `too_old` y `tun_drops` en 0 y `pool_full` en 0. Bajo
   la ventana, sin desborde (`lost.overflow` = 0) y con los paquetes grandes en
   orden (`IMIX_BELOW_ORD_MAX_PERMILLE`, 5 por mil); sobre ella, `lost.overflow`
   > 0, y se informa qué parte de los grandes llegó detrás de uno posterior
@@ -867,14 +837,14 @@ contra los ajustes y el estado del plan (`split`, `reorder_*`, el objeto
   de un hueco forzado sale desordenada, y a 30 kpps con 150 ms es la de todos
   los paquetes del enlace lento; `IMIX_ORD_MAX_PCT` la acota si se quiere.
   `IMIX_S` (8) son los segundos de cada tramo.
-- **`reorder_hol`: la cabeza de línea.** Lo real, el túnel con WireGuard (el
+- **`reorder_hol`: la cabeza de línea.** Lo real, TCP y QUIC por el túnel (el
   escenario `bond`) sobre `HOL_CASE` (`reorder50`), con iperf3 y QUIC
   (`HOL_CC`) y, a la vez, `HOL_PPS` (50) datagramas de `HOL_SIZE` (160) bytes
   por el túnel, con `reorder_bypass` 0, 128 y 256 (`HOL_BYPASS`). Cuánto espera
   el flujo pequeño detrás de los grandes retenidos (p50 y p99 de su retardo) y
   qué ven las transferencias (retransmisiones y pérdidas espurias) sale en la
-  tabla de `bond`. Falla solo si algo se tira por viejo o en el socket de
-  WireGuard.
+  tabla de `bond`. Falla solo si algo se tira por viejo o al escribir en el
+  TUN.
 
 **`robench`** (`bench/robench.c`, lo compila `build`): cuesta `engine/src/reorder.h`
 sola, en ns por paquete, con flujos hechos a mano y el llamador que usará el
@@ -1055,7 +1025,7 @@ bench/fieldrec.py /ruta/a/cengarde-rec --rf radio.csv --export campo/ --export-g
 | `samples.csv` | enlace y muestra de estado: estado, caído, silenciado, RTT y su desvío, retraso, deltas de paquetes, pérdida de bajada, y el id de la corrida (`segment`) |
 | `events.csv` | caída, silenciado de subida o de bajada, hueco o reinicio: inicio, fin, duración, y cómo terminó |
 | `joint.csv` | intervalo, plazo y conjunto de enlaces (máscara y nombres): paquetes esperados y tardíos |
-| `tunnel.csv` | intervalo: paquetes entregados, perdidos en todos los enlaces y tamaños de WireGuard (una columna por borde) |
+| `tunnel.csv` | intervalo: paquetes entregados, perdidos en todos los enlaces y, en grabaciones de antes de la 0.12, tamaños de WireGuard (una columna por borde) |
 | `rf.csv`, `rf_changes.csv` | muestra de radio de cada serie asignada a un enlace, y cada cambio de RAT, banda o celda (con `--rf`) |
 | `README.txt` | lista cada archivo con sus columnas, unidades y filas, y dice cómo se relacionan los relojes (el del motor, el de InfluxDB y el `--rf-offset`) |
 
@@ -1179,14 +1149,14 @@ iputils, uno sin respuestas, un iperf3 caído, los contadores de UDP en IPv4
 e IPv6, la cola raíz y no las hijas), y de punta a punta con 2 enlaces del
 laboratorio: servidores iperf3 en `srv`, `fieldperf.sh` (bajo `sh`) en
 `cli` tomando los enlaces y sus direcciones del estado del motor, `solo` y
-`all` (el laboratorio no tiene WireGuard, así que no `tunnel`). `plan` no
+`all` (el modo `tunnel` no corre aquí). `plan` no
 puede correr nada y tiene que dar 210 MB.
 
 Paso a paso (pasa las mismas variables a `setup` y a `start`):
 
 ```sh
 sudo NLINKS=3 bench/lab.sh setup     # netns, enlaces y configs en bench/run/
-sudo NLINKS=3 bench/lab.sh start     # cengarde en ambos extremos (ENGINE=go: engarde)
+sudo NLINKS=3 bench/lab.sh start     # cengarde en ambos extremos
 sudo bench/lab.sh down 10000 5       # 10.000 pps de bajada (VPS -> Pi) durante 5 s
 sudo bench/lab.sh up 10000 5         # subida (Pi -> VPS)
 sudo bench/lab.sh shape l3 5mbit     # enlace lento con cola local (módem USB, WiFi)
@@ -1196,26 +1166,17 @@ sudo bench/lab.sh teardown
 | Variable | Valor por defecto | Uso |
 | --- | --- | --- |
 | `NLINKS` | 3 | enlaces activos; con más de 3 crea más veth (l4 10.0.4.1…) |
-| `SIZE` | 1400 | tamaño de paquete en bytes |
-| `ENGINE` | `c` | `c`: cengarde (`engine/`) en ambos extremos, con configs INI en `bench/run/`; `go`: el engarde Go |
-| `GO_REF` / `GO_REPO` | `3492df9…` / porech/engarde | de qué commit sale el engarde Go: del historial de este repositorio o, si no está (clon superficial), de `GO_REPO` |
-| `WRITE_TIMEOUT` | 10 | `writeTimeout` del cliente Go, en ms (`-1` lo desactiva) |
-| `PROTO` | vacío | con `ENGINE=go`, `c` o `dedup`: usa `protoclient` (C) en vez del cliente Go |
-| `CLIENT_BIN` / `SERVER_BIN` | `bench/bin/engarde-*` | probar otros binarios de engarde |
+| `SIZE` | 1392 | bytes de carga UDP de `udpgen` (1392: un paquete IPv4 de 1420, el MTU del TUN; más grande, el kernel lo fragmenta), o `imix` |
 | `CLIENT_EXTRA` / `SERVER_EXTRA` | vacío | ajustes extra de cengarde, `clave = valor` separados por `;` (p. ej. `busy_poll_us = 50`) |
 | `CENGARDE_BIN` | `bench/bin/cengarde` | otro binario de cengarde, p. ej. un envoltorio que ejecuta la compilación de OpenWrt con su musl (historia 007) |
 | `LAB_ID` | vacío | varios laboratorios a la vez: con `LAB_ID=N` los netns son `cli-N` y `srv-N`, `RUN` pasa a `bench/run-N` y `teardown` solo toca los suyos (ver «Varios laboratorios a la vez») |
 | `BIN` | `bench/bin` | dónde `build` deja las herramientas y el motor |
 | `RUN` | `bench/run` (`bench/run-N` con `LAB_ID`) | configs, logs, JSON de estado y sockets de control. Un `RUN` relativo se toma desde el directorio actual y pasa a ruta absoluta, porque el motor solo acepta un `control_socket` absoluto. La ruta de un socket Unix no pasa de 107 bytes (contando la ruta absoluta): si el repositorio está muy hondo, `control` falla con `socket path too long` y hay que usar un `RUN` más corto, p. ej. bajo `/tmp` |
 
-Demos de los problemas del engarde Go descritos en el roadmap (necesitan
-`ENGINE=go bench/lab.sh build`):
-- `demo_stranger`: el servidor envía el tráfico del túnel a cualquiera que le
-  mande un paquete. Con el valor por defecto, `ENGINE=c`, muestra en cambio
-  que cengarde no responde a nadie sin autenticar.
-- `demo_webpanic`: el cliente se cae si el puerto web está ocupado.
-- `demo_races`: detector de carreras de Go, con tráfico y uso normal de la
-  web.
+`demo_stranger` repite la prueba de uno de los problemas del engarde Go
+descritos en el roadmap (su servidor enviaba el tráfico del túnel a
+cualquiera que le mandara un paquete): muestra que cengarde no responde a
+nadie sin autenticar.
 
 ## Medidas más finas: `mt.py`, `jitter` y `mgen`
 
@@ -1224,7 +1185,7 @@ start, teardown) y repite su tráfico, y apunta por ejecución lo que la
 línea de `lab.sh` no da: CPU por paquete en ns (de
 `/proc/PID/task/*/schedstat`, por proceso y por hilo), descartes por socket
 según su papel (los enlaces del cliente, las colas del servidor por orden
-de creación, los sockets de WireGuard), los errores UDP de cada namespace y
+de creación, los generadores) y lo que tiró la cola de cada TUN, los errores UDP de cada namespace y
 los contadores de los dos motores, con las colas del servidor. Cada
 ejecución es una línea JSON en `RESULTS` (por defecto `mt.jsonl`).
 
@@ -1236,15 +1197,16 @@ sudo RUN=/tmp/cg-mt RESULTS=$PWD/s1.jsonl flock /tmp/cengarde-netns.lock python3
 sudo RUN=/tmp/cg-mt RESULTS=$PWD/s1.jsonl flock /tmp/cengarde-netns.lock python3 bench/mt.py s1 4 40000,50000,60000 4,8 5 5 up
 python3 bench/mt.py table s1.jsonl
 # barrido, enlace lento, perf y varias sesiones (ver el docstring)
-sudo RUN=/tmp/cg-mt flock /tmp/cengarde-netns.lock python3 bench/mt.py sweep e1 down,up 40000,80000 5 3 1400 3
+sudo RUN=/tmp/cg-mt flock /tmp/cengarde-netns.lock python3 bench/mt.py sweep e1 down,up 40000,80000 5 3 1392 3
 ```
 
 `bench/jitter.c` (`bin/jitter -d SEGUNDOS`) mide cuánto tarda en despertar
 un sueño de 1 ms en cada CPU y marca los despertares tardíos con su hora
 `CLOCK_MONOTONIC`: así se distinguen las pausas de la VM entera (tardíos a
 la vez en varias CPU) de los atascos del motor. `bench/mgen.c` es el
-WireGuard falso de varias sesiones que usan los comandos `multi` de
-`mt.py`. `build` compila los dos.
+extremo del servidor para varios routers que usan los comandos `multi` de
+`mt.py` (cada router con su `[client cK]`, su TUN `cgK` y su dirección
+10.79.0.(2+K)). `build` compila los dos.
 
 ### La puerta S1
 
@@ -1253,9 +1215,10 @@ con los búferes del servidor por defecto y los del router a 32 MiB, 5 s y
 4 rondas por punto. Cuatro sesiones con el mismo código (4 vCPU
 compartidas con otros agentes; ≈: estimado por resta, porque en esa ronda
 también tiró otro socket). `mt.py table` da por ronda lo que se tiró antes
-de duplicar (en subida, en el socket de WireGuard del router; en bajada,
-en el de la sesión en el servidor) y cuántas rondas quedan en ≤ 0,1 % sin
-eso:
+de duplicar (en subida, en la cola del TUN del router; en bajada, en la del
+servidor; en las medidas de abajo, aún con WireGuard, en el socket de
+WireGuard del router y en el de la sesión en el servidor) y cuántas rondas
+quedan en ≤ 0,1 % sin eso:
 
 | Criterio | Medido | Veredicto |
 | --- | --- | --- |
@@ -1284,7 +1247,7 @@ a tiempo (historia [011](../docs/historias/011-hilos.md)).
 - **Montaje:** 2000 pps en los dos sentidos durante 12 s (`MTSTALL_S`). Un
   bucle `SCHED_FIFO` 99 ocupa la última CPU 300 ms de cada 2 s; el hilo que
   lee l3 (`cg-l3`, buscado por nombre con `cengarde ctl threads`) pasa a esa
-  CPU y todo lo demás (los otros hilos, el servidor, los WireGuard falsos)
+  CPU y todo lo demás (los otros hilos, el servidor, los `udpgen`)
   se queda fuera de ella. `rcvbuf = 256 KiB`: cada atasco de 300 ms (unos
   600 datagramas de l3) desborda el socket de l3.
 - **Pasa con `on`:** el túnel no pierde ni un paquete en ningún sentido,
@@ -1312,15 +1275,16 @@ a tiempo (historia [011](../docs/historias/011-hilos.md)).
   la mediana de cada punto. Con `MTLAT_S` de 10 o más, la
   ventana de 5 s de `hop_us` cae entera dentro del tráfico.
 - **`soak`:** `SOAK_S` (3600) s por modo de `SOAK_MODES` (`off on`), en
-  tramos de 60 s a 2000, 10 000, 20 000 y 40 000 pps y 80, 400 y 1400
+  tramos de 60 s a 2000, 10 000, 20 000 y 40 000 pps y 80, 400 y 1392
   bytes por turnos, mientras l3 cambia de pérdida y retardo cada 2 min
   (netem; `tbf` si el kernel no lo tiene), el cliente recarga cada 5 min y
   l2 cae 10 s cada 10 min. Cada tramo imprime lo que perdió cada sentido y
   los descartes contados para ese sentido mientras corría, los que pueden
   explicarlo: de paquetes enteros, los del kernel al recibir en los sockets
-  de ese sentido (colas llenas y puertos sin socket, `/proc/net/snmp` y
-  `/proc/net/udp`), lo que el motor no pudo entregar a WireGuard y los
-  errores de envío del WireGuard falso que envía; de copias, por enlace, lo
+  de ese sentido (colas llenas y puertos sin socket, `/proc/net/snmp`), lo
+  que tiró la cola del TUN que envía antes de que el motor lo leyera, lo que
+  el motor no pudo escribir en su TUN y los errores de envío del `udpgen`
+  que envía; de copias, por enlace, lo
   que el motor no pudo enviar y lo que tiraron después el veth o la `qdisc`
   de l3. Un paquete solo se pierde si se pierden sus copias en dos enlaces
   o más, así que cuentan las copias de todos los enlaces menos el que más
@@ -1339,32 +1303,31 @@ pps=10000 (112 Mbit/s) sent=49997 uniq=49997 loss=0.00% dup=99994 p50=110us p99=
 ```
 
 - `loss`: paquetes de los que no llegó **ninguna** copia.
-- `dup`: copias extra entregadas al "WireGuard". Con engarde Go son N−1 por
-  paquete, y el WireGuard real las descifra todas antes de descartarlas;
-  cengarde deduplica y entrega 0.
+- `dup`: copias extra entregadas al otro extremo. Con engarde Go eran N−1 por
+  paquete, y WireGuard las descifraba todas antes de descartarlas (historia
+  001); cengarde deduplica y entrega 0.
 - `big` y `bigord` (al final de la línea de `udpgen`): los paquetes únicos de
   256 bytes o más y cuántos de ellos llegaron detrás de uno posterior. Con
-  `-s imix` (7 de 64, 4 de 576 y 1 de 1400 bytes, 347 de media; `SIZE=imix`
+  `-s imix` (7 de 64, 4 de 576 y 1 de 1392 bytes, 345 de media; `SIZE=imix`
   en el laboratorio) separa el desorden de lo que retiene un reordenador del
   de los pequeños, que lo adelantan.
 - `us/pkt`: CPU (usuario + kernel en el contexto del proceso) por paquete
-  WireGuard. Incluye el trabajo del kernel al enviar y, en veth/loopback, parte
+  del túnel. Incluye el trabajo del kernel al enviar y, en veth/loopback, parte
   de la recepción del otro extremo; es igual para todas las variantes, así que
   sirve para compararlas, no como coste absoluto.
 
 ## Limitaciones
 
-- No hay cifrado: el coste de WireGuard (que con engarde Go descifra N copias
-  de cada paquete) no aparece en las cifras.
+- No hay cifrado: el túnel nativo autentica cada paquete (MAC) pero no lo
+  cifra, y el laboratorio mide eso; un cifrado encima no aparece en las
+  cifras.
 - veth no es un módem: sin `sch_netem` no hay retardo, jitter ni pérdida en los
   enlaces; `tbf` solo emula un enlace lento con la cola en la propia máquina.
   Esa cola la limita también el `sndbuf` del socket (~190 ms a 5 Mbit/s por
   defecto), así que `health` lo sube a 4 MiB para tener 500 ms.
 - Los valores absolutos dependen de la CPU (una VM x86 no es una Pi). Compara
   variantes en la misma máquina y, si puedes, ejecútalo también en la Pi.
-- `protoclient.c` es el prototipo de ~200 líneas que sirvió para la primera
-  medida, antes del motor; queda como referencia. El motor real está en
-  `engine/`.
-- `udpgen` envía paquetes con forma de mensaje de datos de WireGuard (tipo 4),
-  porque cengarde solo aprende el puerto local de WireGuard de datagramas con
-  esa forma.
+- `udpgen` habla UDP entre las direcciones del túnel (10.79.0.2 y 10.79.0.1):
+  su carga va entera dentro del paquete IP que lee el TUN, así que con
+  `SIZE` por encima de 1392 el kernel lo fragmenta antes de que llegue al
+  motor.

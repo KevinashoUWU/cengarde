@@ -25,8 +25,8 @@
 #include <stdint.h>
 #include <string.h>
 
-/* [client] sections of a server; a cengarde-vps-setup server has at most 32
- * (one WireGuard port each). */
+/* [client] sections of a server; a cengarde-vps-setup server has at most
+ * 32. */
 #define CG_MAX_CLIENTS 64
 /* Sessions one client holds at once: a router that restarted keeps its old
  * session until it times out; a fifth replaces the one heard from least

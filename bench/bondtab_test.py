@@ -50,14 +50,14 @@ def reorder(k=1, held_max=7, burst=3):
 
 
 def client(k, with_reorder=True, old=0, drops=0, lost_all=0, **kw):
-    d = {"mode": "client", "download": {"packets": 1, "too_old": old, "wireguard_drops": drops}, "lost_all": lost_all}
+    d = {"mode": "client", "download": {"packets": 1, "too_old": old, "tun_drops": drops}, "lost_all": lost_all}
     if with_reorder:
         d["reorder"] = reorder(k, **kw)
     return d
 
 
 def session(sid, k, drops=0, lost_all=0, with_reorder=True, **kw):
-    s = {"id": sid, "wireguard_drops": drops, "lost_all": lost_all}
+    s = {"id": sid, "tun_drops": drops, "lost_all": lost_all}
     if with_reorder:
         s["reorder"] = reorder(k, **kw)
     return s
@@ -69,18 +69,18 @@ def write(path, obj):
 
 
 def ipj(dropped):
-    return [{"ifname": "wgc", "stats64": {"rx": {"bytes": 1, "packets": 1, "errors": 0, "dropped": dropped}}}]
+    return [{"ifname": "cg0", "stats64": {"rx": {"bytes": 1, "packets": 1, "errors": 0, "dropped": dropped}}}]
 
 
-def snap(d, prefix, cli, srv, wgc=None, wgs=None):
+def snap(d, prefix, cli, srv, tunc=None, tuns=None):
     if cli is not None:
         write(f"{prefix}.client.json", cli)
     if srv is not None:
         write(f"{prefix}.server.json", srv)
-    if wgc is not None:
-        write(f"{prefix}.wgc.json", ipj(wgc))
-    if wgs is not None:
-        write(f"{prefix}.wgs.json", ipj(wgs))
+    if tunc is not None:
+        write(f"{prefix}.tunc.json", ipj(tunc))
+    if tuns is not None:
+        write(f"{prefix}.tuns.json", ipj(tuns))
 
 
 def test_delta(d):
@@ -97,10 +97,10 @@ def test_delta(d):
     check(c["late_after_rack"] == 18 and c["late_after_cap"] == 21 and c["late_after_overflow"] == 24 and c["late_old"] == 27, "late.*")
     check(c["far"] == 30 and c["resyncs"] == 33 and c["pool_full"] == 36 and c["split_rx"] == 360, "far, resyncs, pool_full, split_rx")
     check(c["held_max"] == 9 and c["max_burst"] == 8, "the maxima are the end's, not differences")
-    check(c["too_old"] == 0 and c["wireguard_drops"] == 0 and c["lost_all"] == 15, "download.too_old, wireguard_drops, lost_all")
+    check(c["too_old"] == 0 and c["tun_drops"] == 0 and c["lost_all"] == 15, "download.too_old, tun_drops, lost_all")
     check(c["wait"] == [3] * 10 and c["late_by"] == [6] * 10, "histograms by bucket")
-    check(s["held_total"] == 200 and s["lost_all"] == 5 and s["wireguard_drops"] == 0 and s["too_old"] == 0, "server session counters")
-    check(r["wg_rx_dropped"] == {"cli": 30, "srv": 0}, "the WireGuard interfaces' rx_dropped")
+    check(s["held_total"] == 200 and s["lost_all"] == 5 and s["tun_drops"] == 0 and s["too_old"] == 0, "server session counters")
+    check(r["tun_rx_dropped"] == {"cli": 30, "srv": 0}, "the TUN devices' rx_dropped")
 
     # The server: a session that appears is counted from zero, one that goes is not counted; rx.too_old
     snap(d, b, None, {"rx": {"too_old": 3}, "sessions": [session("aa", 1, lost_all=4), session("gone", 5, lost_all=100)]})
@@ -121,7 +121,7 @@ def test_delta(d):
     # Nothing to read: null all over, no error
     r = bondtab.delta(os.path.join(d, "nothing"), os.path.join(d, "nothing-either"))
     check(all(v is None for v in r["eng"]["cli"].values()) and all(v is None for v in r["eng"]["srv"].values()), "no files: null")
-    check(r["wg_rx_dropped"] == {"cli": None, "srv": None}, "no ip -s output: null")
+    check(r["tun_rx_dropped"] == {"cli": None, "srv": None}, "no ip -s output: null")
     write(f"{b}.client.json", "")  # an empty file, as bond_snap leaves it
     write(f"{a}.client.json", "{not json")
     check(bondtab.delta(b, a)["eng"]["cli"]["held_total"] is None, "broken files: null")
@@ -174,7 +174,7 @@ def test_line(d):
     check(j["pings"] == 100 and j["rtt_p50"] == 55.0 and j["rtt_p99"] == 59.9, "the 84-byte ping")
     check(j["pings_big"] == 50 and j["rtt_big_p50"] == 85.0 and j["rtt_big_p99"] == 109.0, "the 1200-byte ping")
     check(j["cpu_client_pct"] == 5.0 and j["cpu_server_pct"] == 10.0 and j["netem"] is True, "cpu and netem")
-    check(j["eng"]["cli"]["held_total"] == 100 and j["eng"]["srv"]["held_total"] == 100 and j["wg_rx_dropped"]["srv"] == 3, "deltas in the line")
+    check(j["eng"]["cli"]["held_total"] == 100 and j["eng"]["srv"]["held_total"] == 100 and j["tun_rx_dropped"]["srv"] == 3, "deltas in the line")
     check("small" not in j, "no small flow, no field")
 
     # quic: lost is retrans, its rate is over the packets sent
@@ -203,9 +203,20 @@ def test_line(d):
         bondtab.main(["show", path])
     check("reorder50" in out.getvalue() and "0.50 %" in out.getvalue() and "big 85.0 / 109.0 ms" in out.getvalue(), "show")
     with contextlib.redirect_stdout(io.StringIO()):
-        check(bondtab.main(["zero", path, "too_old", "wireguard_drops"]) == 0, "zero: nothing above 0")
+        check(bondtab.main(["zero", path, "too_old", "tun_drops"]) == 0, "zero: nothing above 0")
         check(bondtab.main(["zero", path, "pool_full"]) == 1, "zero: pool_full is above 0 in the test line")
-        check(bondtab.main(["zero", path, "wg_rx_dropped"]) == 1, "zero: the interface's rx_dropped")
+        check(bondtab.main(["zero", path, "tun_rx_dropped"]) == 1, "zero: the interface's rx_dropped")
+    # a line of the WireGuard era (before 0.12): its counters under their old names
+    old = json.loads(open(path).read())
+    old["wg_rx_dropped"] = old.pop("tun_rx_dropped")
+    for side in old["eng"].values():
+        side["wireguard_drops"] = side.pop("tun_drops")
+    old["eng"]["srv"]["wireguard_drops"] = 4
+    with open(path, "w") as f:
+        f.write(json.dumps(old) + "\n")
+    with contextlib.redirect_stdout(io.StringIO()):
+        check(bondtab.main(["zero", path, "tun_drops"]) == 1, "zero: an old line's wireguard_drops read as tun_drops")
+        check(bondtab.main(["zero", path, "tun_rx_dropped"]) == 1, "zero: an old line's wg_rx_dropped read as tun_rx_dropped")
 
 
 def test_modes():
@@ -276,7 +287,7 @@ def row(case, var, dirn, cc, rep, mbps, retrans, pct, rtt=50.0, big=None, cpu=(1
          "cpu_server_pct": cpu[1], "netem": True}
     if eng is not None:
         r["eng"] = eng
-        r["wg_rx_dropped"] = {"cli": 0, "srv": 0}
+        r["tun_rx_dropped"] = {"cli": 0, "srv": 0}
     r.update(kw)
     return r
 
@@ -297,9 +308,9 @@ def test_tables(d):
         # solo: steady. split: twice the goodput, a retransmission rate in two modes, reordering counters
         rows.append(row("reorder150", "solo", "up", "cubic", i + 1, 43.5, 30 + i, 0.03 + i / 1000, rtt=100.0, big=101.0))
         low = i < 5
-        eng = {"cli": dict(zero_side, wireguard_drops=0, lost_all=1, sent=1000, tx_links=1500, tx_drops=3),
+        eng = {"cli": dict(zero_side, tun_drops=0, lost_all=1, sent=1000, tx_links=1500, tx_drops=3),
                "srv": dict(zero_side, held_total=1000 + i, bypassed=500, lost_cap=7, late_after_cap=7, held_max=40, max_burst=12,
-                           too_old=0, wireguard_drops=0, lost_all=2)}
+                           too_old=0, tun_drops=0, lost_all=2)}
         rows.append(row("reorder150", "split", "up", "cubic", i + 1, 80.0 + i / 10, 100 + i if low else 900 + 10 * i,
                         0.1 if low else 0.9, rtt=60.0 + i / 10 if low else 85.0 + i / 10, big=130.0, cpu=(12.0, 25.0), eng=eng))
     text = "\n".join(bondtab.tables(rows, ["solo", "redund-ro0", "splitnoro"]))

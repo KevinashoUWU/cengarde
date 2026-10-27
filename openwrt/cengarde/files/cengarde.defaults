@@ -8,15 +8,14 @@ had_secret=$(uci -q get cengarde.main.secret)
 # 0.5.2: the router's address in the tunnel derives from its secret
 # (tunnel_addr unset). Until then every router used 10.79.0.2, the address
 # its VPS knows: an install that had a secret keeps it, or the tunnel would
-# be cut until the VPS is told. Not when wgcg already has another address,
-# which is how a later upgrade tells a router that chose to derive it.
-if [ -n "$had_secret" ] && [ -z "$(uci -q get cengarde.main.tunnel_addr)" ]; then
-	case "$(uci -q get network.wgcg.addresses)" in
-	'' | 10.79.0.2/30)
-		uci set cengarde.main.tunnel_addr=10.79.0.2
-		uci commit cengarde
-		;;
-	esac
+# be cut until the VPS is told. Only when the WireGuard interface of those
+# releases, wgcg, still has their 10.79.0.2/30: a later one gave it another
+# address, and since 0.12 there is no wgcg at all (below), so an upgrade
+# never takes a derived address away.
+if [ -n "$had_secret" ] && [ -z "$(uci -q get cengarde.main.tunnel_addr)" ] &&
+	[ "$(uci -q get network.wgcg.addresses)" = 10.79.0.2/30 ]; then
+	uci set cengarde.main.tunnel_addr=10.79.0.2
+	uci commit cengarde
 fi
 # 0.4.2: the VPS address became "list server" (several addresses, in order).
 if uci -q export cengarde | grep -q "^[[:space:]]*option server "; then
@@ -26,5 +25,16 @@ if uci -q export cengarde | grep -q "^[[:space:]]*option server "; then
 		uci add_list cengarde.main.server="$a"
 	done
 	uci commit cengarde
+fi
+# 0.12: WireGuard is gone (story 027); the engine's own TUN, cg0, is the only
+# tunnel. The mode switch goes, and so do the WireGuard interface and its
+# peer, which netifd could no longer bring up: cengarde-setup apply puts cg0
+# in their place (and wgcg out of the wan zone and UPnP) when the service
+# starts.
+uci -q delete cengarde.main.tunnel_mode && uci commit cengarde
+if uci -q get network.wgcg >/dev/null || uci -q get network.cengarde_vps >/dev/null; then
+	uci -q delete network.cengarde_vps
+	uci -q delete network.wgcg
+	uci commit network
 fi
 exit 0

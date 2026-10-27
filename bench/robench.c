@@ -32,7 +32,7 @@
 struct ev {
 	uint32_t seq, ts, t_arr;
 	uint16_t len;
-	uint8_t link, flags, wgtype;
+	uint8_t link, flags;
 };
 
 struct scenario {
@@ -95,7 +95,6 @@ static struct ev *make(const struct scenario *sc, size_t n)
 
 		e.seq = seq0 + (uint32_t)i;
 		e.ts = ts0 + (uint32_t)sent_us;
-		e.wgtype = CG_RO_WG_DATA;
 		e.len = sc->kind == 3 ? imix_len((uint32_t)i) : 1400;
 		e.flags = 0;
 		if (sc->kind >= 2 && e.len >= 256) { /* the big ones are split, one link then the other */
@@ -167,7 +166,7 @@ static void run(const struct ev *ev, size_t n, const struct scenario *sc, int co
 	t0 = now_s();
 	for (i = 0; i < n; i++) {
 		struct cg_ro_pkt k = { .seq = ev[i].seq, .ts = ev[i].ts, .t_arr = ev[i].t_arr, .len = ev[i].len,
-				       .link = ev[i].link, .flags = ev[i].flags, .wgtype = ev[i].wgtype };
+				       .link = ev[i].link, .flags = ev[i].flags };
 		uint32_t now = k.t_arr;
 		uint16_t buf;
 		enum cg_ro_v v = cg_ro_in(&r, &pool, &cf, &k, rset, &buf);

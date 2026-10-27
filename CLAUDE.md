@@ -5,10 +5,11 @@ Contexto mínimo: reglas, comandos e índice; lo investigado vive en
 
 ## Proyecto
 
-Fork de porech/engarde (Go). engarde duplica cada datagrama de WireGuard por
-todos los enlaces del cliente (p. ej. una Raspberry Pi con varios módems) hacia
-un servidor (VPS), y el otro extremo se queda con la primera copia. Objetivo
-del fork: motor en C (Pi, OpenWrt, VPS), eBPF opcional y OpenWrt con LuCI.
+Fork de porech/engarde (Go). cengarde lleva los paquetes IP de su propia TUN
+(`cg0`; sin WireGuard desde 0.12, historia 027) por todos los enlaces del
+cliente (p. ej. una Raspberry Pi con varios módems) hacia un servidor (VPS), y
+el otro extremo se queda con la primera copia. Objetivo del fork: motor en C
+(Pi, OpenWrt, VPS), eBPF opcional y OpenWrt con LuCI.
 Plan: `ROADMAP.md`. Estado: Fases 1 y 2 hechas; Fase 3: OpenWrt (UCI, LuCI,
 imágenes, un solo secreto, `cengarde ctl`, recarga, IP pass, IPv6, varios
 routers por VPS, nombres con DNS dinámico) en QEMU; falta hardware real.
@@ -18,7 +19,7 @@ routers por VPS, nombres con DNS dinámico) en QEMU; falta hardware real.
 - `engine/`: motor C (`src/`, `tests/`, `examples/`, `README.md`).
 - `openwrt/`: paquetes `cengarde` y `luci-app-cengarde`, `test/` (VMs QEMU
   y Playwright) y guía; `contrib/`: VPS (cloud-init, NAT) y systemd.
-- `bench/`: laboratorio netns/veth con `udpgen` (WireGuard falso); `docs/historias/`: investigación (índice abajo);
+- `bench/`: laboratorio netns/veth con `udpgen` por el túnel; `docs/historias/`: investigación (índice abajo);
   `docs/mapa/`: mapa del motor (una nota por pieza y por perilla; bóveda Obsidian `~/Obsidian/cengarde`).
 
 ## Comandos
@@ -26,15 +27,14 @@ routers por VPS, nombres con DNS dinámico) en QEMU; falta hardware real.
 - Motor: `make -C engine test`, `SANITIZE=1 test` (ASan), `SANITIZE=thread
   test` (TSAN) y, en cruzado, `make CC=aarch64-linux-gnu-gcc`.
 - Laboratorio (root): `bench/lab.sh build`, `ci` (smoke, health, control y
-  `lab.d/`) y `latency`; `ENGINE=go bench/lab.sh build` suma el engarde Go,
-  que salió del árbol (`3492df9`), para `compare` (Go frente a C) y `suite`.
+  `lab.d/`) y `latency`.
 - OpenWrt de punta a punta: `openwrt/test/e2e.sh IMAGEN` (`openwrt/README.md`).
 - Contenedor cloud: `apt-get update`, `iproute2 iptables strace` (laboratorio)
-  o `qemu-system-x86 openssh-client` (e2e); sin IPv6, WireGuard, netem, systemd.
+  o `qemu-system-x86 openssh-client` (e2e); sin IPv6, netem, systemd.
 - CI: `engine.yml` (gcc/clang `-Werror`, ASan, TSAN, qemu aarch64/armhf/MIPS
   BE, AArch64 real, laboratorio en netns), `openwrt.yml` (paquetes, imágenes,
   e2e con KVM, release con tags `v*`), `vps.yml` (`cengarde-nat`, systemd
-  real) y `bond.yml` (`lab.sh bond`: WireGuard y TCP reales sobre netem).
+  real) y `bond.yml` (`lab.sh bond`: túnel nativo y TCP reales sobre netem).
 
 ## Reglas de trabajo
 
@@ -93,3 +93,4 @@ routers por VPS, nombres con DNS dinámico) en QEMU; falta hardware real.
 | [024](docs/historias/024-pep-tcp-partido.md) | PEP modo A: TCP partido en el router y el VPS con piezas de Debian (`ss-redir`/`ss-server`, kcptun) contra el túnel transparente: gana por BBR en el tramo lejano (pérdida más allá del VPS: 1,1 → 44 Mbit/s, vivo 80 → 0 % perdido), con copias duplica el TCP; costos (ACK roto, búferes de MB) y las cifras que el PEP B debe batir | diseñes el PEP B (protocontrolador), toques `BOND_PEP`, `livesim.py`, `pepstat.py` o `peptab.py`, o pienses en proxies o BBR en el VPS |
 | [025](docs/historias/025-protocontrolador.md) | Protocontrolador: TCP partido en el router y el VPS por el propio motor (`protocontroller = no | a | b`): A con un TCP simple por el túnel (BBR en el medio), B con GRIT, un flujo fiable propio (protocolo 10, `stream.h`, `streamcc.h`, ritmo por el retardo de ida); OpenWrt, VPS, medidas contra el túnel transparente y la 024; el microcorte de GRIT corregido y la RLC que rehacía basura (`row_eq`), con la guarda de lo rehecho (`rebuilt.h`) | toques `protocontroller*`, `protoctl.c`, `protoctl.h`, `stream.h`, `streamcc.h`, `rebuilt.h`, la eliminación de `rlc.h`, la intercepción en OpenWrt o `cengarde-vps-setup protocontroller` |
 | [026](docs/historias/026-fec-v3.md) | FEC v3 (`fec_code = rlc`, protocolo 11): ventana deslizante de RLC sobre todo lo repartido, un solo enlace (puerta por pérdida al azar) y la bajada; `fec_pct` 20 y la parte según la pérdida (`fec_pct_min`: BBR sin pérdida no paga), la guarda, la PARQ temprana (`cg_harq_future`), `gf256.h` con SIMD, el arreglo de `rebuilt.h`; pérdida al azar 9–24×, detenciones 1,6–1,8× (≥ la XOR), BBR paga su parte y la cola del ping | toques `fec3.h`, `rlc.h`, `gf256.h`, `repair.h`, `harq.h`, `rebuilt.h`, `fec_code`, `fec_pct`, `fec_pct_min`, `fec_window_ms`, `fec_single`, la FEC del servidor, `stall.py` o `fec3cpu` |
+| [027](docs/historias/027-adios-wireguard.md) | Adiós a WireGuard (0.12): el túnel nativo es el único; qué salió (`wgwatch.h`, `wgport.h`, `wgsize.h`, claves `wireguard*`, `wgcg`, `wg-quick@cg-*`, `ENGINE=go`), qué lo reemplaza y cómo migran router y VPS | toques el túnel, la configuración de los extremos, `cengarde-setup`, `cengarde-vps-setup`, o veas una clave o un estado de WireGuard |

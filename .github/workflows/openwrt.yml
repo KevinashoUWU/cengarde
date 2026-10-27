@@ -7,7 +7,7 @@ name: OpenWrt
 #   official SDKs (25.12: .apk, 24.10: .ipk) for the Raspberry Pi 4 and
 #   x86_64; unit tests with each target's own musl, netns smoke test with the
 #   x86_64 build;
-# - image: firmware with LuCI (in Spanish too), cengarde, WireGuard and UPnP
+# - image: firmware with LuCI (in Spanish too), cengarde and UPnP
 #   from the official ImageBuilder: 25.12 for the Pi 4 and x86_64, plus 24.10
 #   x86_64 for the test;
 # - e2e: each x86_64 image in two QEMU VMs, router and VPS, configured from

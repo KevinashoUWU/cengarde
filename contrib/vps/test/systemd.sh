@@ -6,12 +6,13 @@
 #   router [up1 10.250.81.2] -- [10.250.81.1] inet [10.250.80.2, 169.254.79.254,
 #     198.51.100.7] -- [cgsd-pub 10.250.80.1] this machine, the server
 #
-# The router runs cengarde and WireGuard (wgcg, 10.79.0.2) with the keys of
-# the server's secret, as an OpenWrt router does, and reaches the server
-# through inet, the Internet. Its engine is always of the server's version
-# (0.4.2's with 0.4.2, protocol 3; this checkout's after the upgrade,
-# protocol 4): a router is updated along with its VPS; a web server on its side stands in
-# for its LAN. inet stands in for the provider's metadata service too, on a
+# The router runs cengarde with the keys of the server's secret, as an
+# OpenWrt router does, and reaches the server through inet, the Internet.
+# Its engine is always of the server's version: 0.4.2's with 0.4.2
+# (protocol 3, behind WireGuard, wgcg at 10.79.0.2, as 0.4.2 was), this
+# checkout's after the upgrade (its TUN cg0 at 10.79.0.2: the only tunnel
+# since 0.12, story 027); a router is updated along with its VPS; a web
+# server on its side stands in for its LAN. inet stands in for the provider's metadata service too, on a
 # link-local address. The test:
 # - installs cengarde 0.4.2 (CENGARDE_OLD_REF, from this repository's
 #   history) with its install.sh, as its cloud-config did, with PUB_IF
@@ -19,8 +20,8 @@
 # - upgrades to this checkout with "sudo sh install.sh" on a terminal
 #   (script) that hangs up once wg0 is down (its step 2, after the build),
 #   as an SSH session riding the tunnel does: the transient unit
-#   cengarde-upgrade finishes anyway; wg0 is gone, cg-router has port 65501
-#   and the router's address, no rule of 0.4 is left, the engine runs as
+#   cengarde-upgrade finishes anyway; wg0 is gone, the engine's TUN cg0 has
+#   10.79.0.1/16, no rule of 0.4 is left, the engine runs as
 #   the static user cengarde, the secret file was imported and deleted (at
 #   10.79.0.2: 0.4.2's cloud-config has no ROUTER_TUNNEL_ADDR), 0.4's IP pass
 #   state removed, and the router comes back asking for IP pass on;
@@ -51,14 +52,15 @@
 # - nftables.service with a forward chain whose policy is drop: the drop-in
 #   puts the rules back after its restart and reload, check prints the
 #   lines to add, and with them the router's Internet works through it;
-# - "cengarde-vps-setup remove": the router's interface and forwarding gone.
+# - "cengarde-vps-setup remove": the router's section and forwarding gone.
 #
 #   sudo sh contrib/vps/test/systemd.sh --yes
 #
 # It installs cengarde on this machine for good, turns ufw and nftables on
 # and flushes the firewall, so it runs only on a throwaway one: with CI=true
-# (vps.yml, on GitHub's runners) or --yes. Needs systemd as PID 1, the
-# wireguard module, wireguard-tools, iptables, conntrack, nftables, git and
+# (vps.yml, on GitHub's runners) or --yes. Needs systemd as PID 1, a TUN
+# device, the wireguard module and wireguard-tools (for 0.4.2, which only
+# knew WireGuard), iptables, conntrack, nftables, git and
 # the repository's history (CENGARDE_OLD_REF), python3, curl, make and a C
 # compiler, script, sudo and pgrep, and ufw and docker if they are to be
 # tested too;
@@ -80,7 +82,8 @@ FAR_IP=198.51.100.7 # on inet, reached through a route added later
 META=169.254.79.254 # a fake metadata service, in inet
 TUN_VPS=10.79.0.1 TUN_ROUTER=10.79.0.2
 CG_PORT=65500 PASS_PORT=9000
-T0=0 TMP='' ROUTER_PID='' ROUTER_BIN='' RULES0='' DENY='' LOCAL_PID='' DOCKER_ID='' UFW=''
+T0=0 TMP='' ROUTER_PID='' ROUTER_BIN='' ROUTER_MODE=old ROUTER_PASS=yes
+RULES0='' DENY='' LOCAL_PID='' DOCKER_ID='' UFW=''
 fails=0
 
 say() { echo "systemd: $*"; }
@@ -119,7 +122,7 @@ wait_for() {
 # jget FILE EXPR: a value from a status JSON (EXPR in Python, on d).
 jget() { python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); print(eval(sys.argv[2]))' "$1" "$2" 2>/dev/null; }
 
-UNITS="cengarde wg-quick@wg0 wg-quick@cg-router cengarde-nat cengarde-nat-check.timer cengarde-nat-check
+UNITS="cengarde wg-quick@wg0 cengarde-nat cengarde-nat-check.timer cengarde-nat-check
 cengarde-passthrough.path cengarde-passthrough cengarde-upgrade nftables"
 
 cleanup() {
@@ -147,6 +150,7 @@ diag() {
 	tail -n 40 "$UPGRADE_LOG" 2>/dev/null
 	iptables -S
 	iptables -t nat -S
+	ip addr show dev cg0 2>&1
 	wg show 2>&1
 	if [ -n "$TMP" ] && [ -e "$TMP/router.log" ]; then
 		echo "--- the router's cengarde"
@@ -169,9 +173,12 @@ preflight() {
 		exit 1
 	fi
 	if ! modprobe wireguard; then
-		echo "systemd: FATAL: modprobe wireguard failed: this kernel has no WireGuard" >&2
+		echo "systemd: FATAL: modprobe wireguard failed: this kernel has no WireGuard (cengarde 0.4.2 needs it)" >&2
 		exit 1
 	fi
+	modprobe tun 2>/dev/null
+	[ -c /dev/net/tun ] || die "no /dev/net/tun: the engine's tunnel is a TUN device"
+
 	for cmd in ip iptables ip6tables wg wg-quick conntrack nft git python3 curl ping make cc journalctl \
 		systemd-run systemd-analyze setsid script sudo pgrep; do
 		command -v "$cmd" >/dev/null || die "$cmd is missing"
@@ -195,11 +202,15 @@ prepare() {
 		PUB_IF=$PUB
 	EOF
 	rm -rf /var/lib/cengarde-nat /var/lib/cengarde
-	keys=$("$SRC/engine/cengarde" keys <"$SECRET") || fatal "cengarde keys"
-	eval "$keys"
 	mkdir "$TMP/old"
 	git -c safe.directory="$SRC" -C "$SRC" archive "$OLD_REF" | tar -x -C "$TMP/old" || fatal "git archive $OLD_REF"
 	make -s -C "$TMP/old/engine" cengarde VERSION=0.4.2 >/dev/null || fatal "0.4.2's engine does not build"
+	# 0.4.2's keys give its WireGuard's (CG_WG_*), this checkout's the rest;
+	# both derive the link key the same way.
+	keys=$("$TMP/old/engine/cengarde" keys <"$SECRET") || fatal "0.4.2's cengarde keys"
+	eval "$keys"
+	keys=$("$SRC/engine/cengarde" keys <"$SECRET") || fatal "cengarde keys"
+	eval "$keys"
 }
 
 # net_up: the router and the Internet, in network namespaces.
@@ -331,7 +342,9 @@ active() { # UNIT...: all active
 	done
 }
 # active_new: the units of this checkout are active.
-active_new() { active cengarde wg-quick@cg-router cengarde-nat cengarde-nat-check.timer cengarde-passthrough.path; }
+active_new() { active cengarde cengarde-nat cengarde-nat-check.timer cengarde-passthrough.path; }
+# server_tun: the engine's TUN, cg0, with the server's end of the tunnels.
+server_tun() { ip -4 addr show dev cg0 2>/dev/null | grep -q "inet $TUN_VPS/16 "; }
 # verify: systemd-analyze verify of the units install.sh put in place, the
 # drop-ins included. Its output is shown; anything about them fails.
 verify() {
@@ -346,9 +359,9 @@ verify() {
 }
 engine_user() { ps -o user= -p "$(systemctl show -p MainPID --value cengarde)" | tr -d ' '; }
 
-# router_wg: the router's WireGuard, as cengarde-setup 0.4 sets it up on
-# OpenWrt: the keys of the secret, its own cengarde as the endpoint, and
-# everything through the tunnel.
+# router_wg: the router's WireGuard of 0.4.2, as cengarde-setup 0.4 sets it
+# up on OpenWrt: the keys of the secret, its own cengarde as the endpoint,
+# and everything through the tunnel.
 router_wg() {
 	(umask 077 && printf '%s\n' "$CG_WG_CLIENT_KEY" >"$TMP/wg.key" &&
 		printf '%s\n' "$CG_WG_PSK" >"$TMP/wg.psk") &&
@@ -362,12 +375,20 @@ router_wg() {
 		ip -n "$ROUTER" route add default dev wgcg
 }
 # router_conf yes|no: the router's engine configuration, as cengarde-setup
-# writes it, asking for IP pass or not.
+# writes it, asking for IP pass or not: 0.4.2's behind WireGuard, this
+# checkout's with its TUN.
 router_conf() {
+	ROUTER_PASS=$1
+	if [ "$ROUTER_MODE" = old ]; then
+		tunnel="listen = 127.0.0.1:$CG_PORT"
+	else
+		tunnel="tun = cg0
+tun_addr = $TUN_ROUTER/32"
+	fi
 	cat >"$TMP/router.conf" <<-EOF
 		mode = client
 		key = $CG_LINK_KEY
-		listen = 127.0.0.1:$CG_PORT
+		$tunnel
 		server = $VPS_IP:$CG_PORT
 		interfaces =
 		status_file = $TMP/router.json
@@ -378,20 +399,37 @@ router_conf() {
 		label = carrier
 	EOF
 }
+router_tun() { ip -n "$ROUTER" -4 addr show dev cg0 2>/dev/null | grep -q "inet $TUN_ROUTER/32 "; }
+# router_start: the router's engine; this checkout's makes its TUN, cg0,
+# which takes the server's end and everything else, as cengarde-setup
+# routes it on OpenWrt (it goes with the engine: again at every start).
 router_start() {
 	ip netns exec "$ROUTER" "$ROUTER_BIN" -c "$TMP/router.conf" >>"$TMP/router.log" 2>&1 &
 	ROUTER_PID=$!
+	[ "$ROUTER_MODE" = new ] || return 0
+	if ! wait_for 10 router_tun; then
+		bad "the router's engine has no cg0 with $TUN_ROUTER"
+		return 0
+	fi
+	if ! ip -n "$ROUTER" route replace "$TUN_VPS/32" dev cg0 || ! ip -n "$ROUTER" route replace default dev cg0; then
+		bad "the routes through the router's cg0"
+	fi
 }
 # router_version old|new: the router's engine of the server's version
-# (0.4.2's or this checkout's), restarted when it runs.
+# (0.4.2's, behind WireGuard, or this checkout's, with its TUN), restarted
+# when it runs.
 router_version() {
 	local was=$ROUTER_PID
 	router_stop
+	ROUTER_MODE=$1
 	if [ "$1" = old ]; then
 		ROUTER_BIN=$TMP/old/engine/cengarde
+		ip -n "$ROUTER" link show wgcg >/dev/null 2>&1 || router_wg || bad "the router's WireGuard (0.4.2)"
 	else
 		ROUTER_BIN=$SRC/engine/cengarde
+		ip -n "$ROUTER" link del wgcg 2>/dev/null
 	fi
+	router_conf "$ROUTER_PASS"
 	[ -z "$was" ] || router_start
 }
 router_stop() {
@@ -403,9 +441,9 @@ router_stop() {
 router_ctl() { "$ROUTER_BIN" ctl -s "$TMP/router.sock" "$@"; }
 router_live() { router_ctl links 2>/dev/null | grep -Eq '^up1 +[^ ]+ +live '; }
 # tunnel_back WHAT: the router's link live, the tunnel and the Internet
-# through it, after the server changed under it. WireGuard on a new
-# interface has no session: only the router can start a handshake, about
-# 15 s after its data goes unanswered.
+# through it, after the server changed under it (with 0.4.2's WireGuard,
+# a new interface has no session: only the router can start a handshake,
+# about 15 s after its data goes unanswered).
 tunnel_back() {
 	check "$1: the router's link is live" wait_for 30 router_live
 	check "$1: the tunnel works" wait_for 40 tunnel_ping
@@ -473,7 +511,7 @@ upgrade() {
 after_upgrade() {
 	check "wg0 is gone" not ip link show wg0
 	check "the new units are active" active_new
-	check "cg-router listens on 65501 (0.4's WireGuard port)" [ "$(wg show cg-router listen-port 2>/dev/null)" = 65501 ]
+	check "the engine's TUN, cg0, has 10.79.0.1/16" wait_for 10 server_tun
 	check "no rule of 0.4 is left" not legacy_rules
 	check "the static user cengarde exists" grep -q '^cengarde:' /etc/passwd
 	# Right after the units turn active the main PID may still be a
@@ -515,8 +553,6 @@ pass_on_off() {
 	check "cengarde is active again" systemctl is-active -q cengarde
 	check "IP pass stays on: the engine's file is kept" pass_rules
 	router_start
-	# WireGuard on the VPS still sends to the old engine's socket until the
-	# router's WireGuard sends through the new one: tunnel_back pings.
 	tunnel_back "cengarde restarted"
 	check "cengarde-passthrough.path is still watching" systemctl is-active -q cengarde-passthrough.path
 	say "everything stopped and started: the rules before the engine"
@@ -692,9 +728,9 @@ stop_all() {
 	# All at once, as a shutdown does.
 	say "stop: everything"
 	router_stop
-	systemctl stop cengarde-passthrough.path cengarde-nat-check.timer cengarde wg-quick@cg-router cengarde-nat
+	systemctl stop cengarde-passthrough.path cengarde-nat-check.timer cengarde cengarde-nat
 	same_rules "$RULES0" "the firewall is as it was before cengarde 0.4.2"
-	check "cg-router is gone" not ip link show cg-router
+	check "cg0 is gone with the engine" not ip link show cg0
 }
 
 nftables() {
@@ -719,9 +755,9 @@ nftables() {
 	check "after nftables' restart (flush ruleset) the rules are back" sh -c 'iptables-save -t nat | grep -q -- "-j CG_PRE"'
 	out=$("$NAT" check 2>&1)
 	check "check says which lines to add to the forward chain" \
-		sh -c 'printf "%s\n" "$1" | grep -q "chain inet filter forward drops" && printf "%s\n" "$1" | grep -qF "iifname \"cg-*\" accept"' sh "$out"
+		sh -c 'printf "%s\n" "$1" | grep -q "chain inet filter forward drops" && printf "%s\n" "$1" | grep -qF "iifname \"cg0\" accept"' sh "$out"
 	check "without them the router's Internet is dropped (the test sees it)" not fetch "$ROUTER" "http://$INET_IP/index" internet
-	sed -i 's/policy drop; }/policy drop;\n\t\tiifname "cg-*" accept\n\t\toifname "cg-*" ct state established,related accept\n\t\toifname "cg-*" ct status dnat accept\n\t}/' /etc/nftables.conf
+	sed -i 's/policy drop; }/policy drop;\n\t\tiifname "cg0" accept\n\t\toifname "cg0" ct state established,related accept\n\t\toifname "cg0" ct status dnat accept\n\t}/' /etc/nftables.conf
 	systemctl reload nftables
 	check "after nftables' reload the rules are still there" sh -c 'iptables-save -t nat | grep -q -- "-j CG_PRE"'
 	out=$("$NAT" check 2>&1)
@@ -734,7 +770,7 @@ remove() {
 	"$SETUP" remove router >"$TMP/remove.log" 2>&1 || { bad "remove"; cat "$TMP/remove.log"; }
 	cat "$TMP/remove.log"
 	check "it says what forwarding it released" grep -q "released its forwarding" "$TMP/remove.log"
-	check "cg-router is gone" not ip link show cg-router
+	check "its section is gone from the engine's configuration" not grep -q '^\[client router\]' /etc/cengarde/cengarde.conf
 	check "nothing is forwarded to it" no_pass_rules
 	check "the engine is still running, serving nobody" sh -c 'systemctl is-active -q cengarde && grep -q "^# No router yet" /etc/cengarde/cengarde.conf'
 }

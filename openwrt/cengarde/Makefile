@@ -30,18 +30,19 @@ include $(INCLUDE_DIR)/package.mk
 define Package/cengarde
   SECTION:=net
   CATEGORY:=Network
-  TITLE:=Redundant multi-link transport for WireGuard
+  TITLE:=Redundant multi-link tunnel
   URL:=https://github.com/KevinashoUWU/cengarde
-  DEPENDS:=+wireguard-tools +kmod-tun +kmod-tcp-bbr
+  DEPENDS:=+kmod-tun +kmod-tcp-bbr
 endef
 
 define Package/cengarde/description
-  cengarde sends every WireGuard datagram over several uplinks at once and
-  keeps the first copy that arrives at the other end, so the tunnel survives
-  the loss or delay of any single link. It mutes links that lag far behind
-  the others. The same binary is the client (the router) and the server.
-  Configured in /etc/config/cengarde (or with luci-app-cengarde), which also
-  sets up the WireGuard tunnel to the VPS from a single pairing secret.
+  cengarde carries the router's IP packets through a TUN device of its own
+  and sends each over several uplinks at once, keeping the first copy that
+  arrives at the other end, so the tunnel survives the loss or delay of any
+  single link. It mutes links that lag far behind the others. The same
+  binary is the client (the router) and the server. Configured in
+  /etc/config/cengarde (or with luci-app-cengarde), which also sets up the
+  tunnel to the VPS from a single pairing secret.
 endef
 
 define Package/cengarde/conffiles

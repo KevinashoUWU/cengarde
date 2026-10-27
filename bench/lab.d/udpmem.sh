@@ -15,7 +15,7 @@
 # machine. With 8 lanes at the default 4 MiB (8 MiB once doubled) the
 # lanes alone would pass both values:
 # - the server reports rcvbuf_capped, with the per-socket value of the
-#   budget (24 MiB for 10 sockets);
+#   budget (24 MiB for 9 sockets: 8 lanes and the junk one);
 # - every lane fills, and all the lanes together hold no more than the
 #   budget (their receive queues in /proc/net/udp and /proc/net/udp6: with
 #   *:59402 the lanes are dual-stack AF_INET6 sockets where the kernel has
@@ -169,7 +169,7 @@ udpmem() {
 		echo "udpmem: FAILED"
 		return 1
 	fi
-	ENGINE=c NLINKS=3
+	NLINKS=3
 	CLIENT_EXTRA="control_socket = $RUN/client.sock${CLIENT_EXTRA:+;$CLIENT_EXTRA}"
 	SERVER_EXTRA="control_socket = $RUN/server.sock${SERVER_EXTRA:+;$SERVER_EXTRA};lanes = 8"
 	trap 'udpmem_restore; udpmem_cont; teardown' EXIT

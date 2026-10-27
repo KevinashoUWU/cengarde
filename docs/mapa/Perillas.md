@@ -7,7 +7,7 @@ archivos:
 
 # Perillas
 
-Las 136 claves que `engine/src/config.c` lee (comprobado al generar esta nota: ni falta ni sobra ninguna).
+Las 133 claves que `engine/src/config.c` lee (comprobado al generar esta nota: ni falta ni sobra ninguna).
 Por omisión y rango salen de `cg_config_parse`; el significado, de los comentarios de `config.h` y de [[engine-README]].
 Las perillas marcadas como experimento están apagadas por omisión.
 
@@ -20,7 +20,7 @@ Secciones: «global» es la parte sin sección; `[link NOMBRE]` es del cliente; 
 | [[Mapa/Perillas/mode\|mode]] | (obligatoria) | [[Configuración (config.c)]] | [[005-motor-c-v1]] |
 | [[Mapa/Perillas/key\|key]] | (obligatoria; con secciones `[client]`, una en cada una y ninguna global) | [[Configuración (config.c)]], [[Varios clientes (clients.h)]] | [[008-luci-uci-y-emparejamiento]] |
 | [[Mapa/Perillas/description\|description]] | vacía | [[Configuración (config.c)]] | — |
-| [[Mapa/Perillas/listen\|listen]] | cliente `127.0.0.1:59401`; servidor `*:59402` | [[Configuración (config.c)]] | — |
+| [[Mapa/Perillas/listen\|listen]] | `*:59402` | [[Configuración (config.c)]] | [[027-adios-wireguard]] |
 | [[Mapa/Perillas/log_level\|log_level]] | `info` | [[Configuración (config.c)]] | — |
 | [[Mapa/Perillas/status_file\|status_file]] | vacía (no escribe) | [[Configuración (config.c)]] | [[006-salud-de-enlaces]] |
 | [[Mapa/Perillas/status_interval_ms\|status_interval_ms]] | 1000 | [[Configuración (config.c)]] | — |
@@ -31,11 +31,11 @@ Secciones: «global» es la parte sin sección; `[link NOMBRE]` es del cliente; 
 | [[Mapa/Perillas/busy_poll_us\|busy_poll_us]] | 0 | [[Hilos por enlace (thrplan.h)]] | [[006-salud-de-enlaces]] |
 | [[Mapa/Perillas/rt_priority\|rt_priority]] | 0 (normal) | [[Hilos por enlace (thrplan.h)]] | [[006-salud-de-enlaces]] |
 
-## Túnel nativo
+## Túnel
 
 | Perilla | Por omisión | Pieza | Historia |
 | --- | --- | --- | --- |
-| [[Mapa/Perillas/tunnel\|tunnel]] | `wireguard` | [[Rutas del túnel nativo (tunroute.h)]], [[Liberación TCP (tcpfree.h)]] | [[014-tunel-nativo]] |
+| [[Mapa/Perillas/tunnel\|tunnel]] | `native` | [[Rutas del túnel nativo (tunroute.h)]], [[Liberación TCP (tcpfree.h)]] | [[014-tunel-nativo]], [[027-adios-wireguard]] |
 | [[Mapa/Perillas/tun\|tun]] | `cg0` | [[Rutas del túnel nativo (tunroute.h)]] | [[014-tunel-nativo]] |
 | [[Mapa/Perillas/tun_addr\|tun_addr]] | ninguna (las pone el sistema) | [[Rutas del túnel nativo (tunroute.h)]] | [[014-tunel-nativo]] |
 | [[Mapa/Perillas/tun_mtu\|tun_mtu]] | 1420 | [[Rutas del túnel nativo (tunroute.h)]] | [[014-tunel-nativo]] |
@@ -65,9 +65,6 @@ Secciones: «global» es la parte sin sección; `[link NOMBRE]` es del cliente; 
 
 | Perilla | Por omisión | Pieza | Historia |
 | --- | --- | --- | --- |
-| [[Mapa/Perillas/wireguard\|wireguard]] | (obligatoria con un cliente y `tunnel = wireguard`) | [[Configuración (config.c)]], [[Varios clientes (clients.h)]] | [[005-motor-c-v1]] |
-| [[Mapa/Perillas/wireguard_poke\|wireguard_poke]] | `10.79.0.2:9` | [[Reloj atrasado de WireGuard (wgwatch.h)]] | [[002-wireguard-para-cengarde]], [[010-ipv6-varias-ip-multicliente-nombres]] |
-| [[Mapa/Perillas/wireguard_port_file\|wireguard_port_file]] | vacía | [[Reloj atrasado de WireGuard (wgwatch.h)]] | [[010-ipv6-varias-ip-multicliente-nombres]] |
 | [[Mapa/Perillas/max_sessions\|max_sessions]] | 64 (o 4 por cliente si es más) | [[Varios clientes (clients.h)]] | [[010-ipv6-varias-ip-multicliente-nombres]] |
 | [[Mapa/Perillas/session_timeout_ms\|session_timeout_ms]] | 180000 | [[Varios clientes (clients.h)]] | [[010-ipv6-varias-ip-multicliente-nombres]] |
 | [[Mapa/Perillas/path_timeout_ms\|path_timeout_ms]] | 30000 | [[Varios clientes (clients.h)]] | [[010-ipv6-varias-ip-multicliente-nombres]] |

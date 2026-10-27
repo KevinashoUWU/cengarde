@@ -13,7 +13,7 @@
  * and adds it to the oldest open group that has nothing of its link yet;
  * up to CG_FEC_OPEN groups are open at once, interleaved, and a group may
  * take sequences up to CG_FEC_SPAN apart: the split sends runs of tens of
- * packets on one link (a batch read from WireGuard goes where it arrives
+ * packets on one link (a batch read from the TUN goes where it arrives
  * first), and groups of consecutive sequences closed with one packet each,
  * a parity per packet, as many bytes as duplicating (story 013). A group
  * closes, and its parity goes, when it holds k packets (k: the links that

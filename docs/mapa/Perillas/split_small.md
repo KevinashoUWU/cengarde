@@ -7,7 +7,7 @@ archivos:
 
 # `split_small`
 
-Datagramas de hasta este tamaño nunca se reparten.
+Paquetes de hasta este tamaño nunca se reparten.
 
 - **Sección:** global
 - **Extremo:** los dos

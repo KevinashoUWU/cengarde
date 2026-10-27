@@ -44,7 +44,7 @@ deepq() {
 		echo "deepq: FAILED"
 		return 1
 	fi
-	ENGINE=c NLINKS=3
+	NLINKS=3
 	SERVER_EXTRA="control_socket = $RUN/server.sock${SERVER_EXTRA:+;$SERVER_EXTRA}"
 	trap teardown EXIT
 	trap 'teardown; exit 130' INT TERM

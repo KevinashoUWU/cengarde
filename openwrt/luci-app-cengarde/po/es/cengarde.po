@@ -18,8 +18,8 @@ msgstr "Copiado al portapapeles."
 msgid "cengarde"
 msgstr "cengarde"
 
-msgid "Sends every packet of a WireGuard tunnel to a VPS over all the selected uplinks at once, and the first copy to arrive wins: one uplink failing or lagging no longer drops the connection. Setup: copy the cloud-config from the VPS tab when creating the VPS, then enter its IP here, pick the uplinks and enable."
-msgstr "Envía cada paquete de un túnel WireGuard a un VPS por todos los enlaces elegidos a la vez, y gana la primera copia que llega: que un enlace se caiga o se atrase ya no corta la conexión. Puesta en marcha: copia el cloud-config de la pestaña VPS al crear el VPS, luego escribe aquí su IP, elige los enlaces y activa."
+msgid "Carries the traffic of the router through a tunnel to a VPS, sending every packet over all the selected uplinks at once, and the first copy to arrive wins: one uplink failing or lagging no longer drops the connection. Setup: copy the cloud-config from the VPS tab when creating the VPS, then enter its IP here, pick the uplinks and enable."
+msgstr "Lleva el tráfico del router por un túnel hasta un VPS, enviando cada paquete por todos los enlaces elegidos a la vez, y gana la primera copia que llega: que un enlace se caiga o se atrase ya no corta la conexión. Puesta en marcha: copia el cloud-config de la pestaña VPS al crear el VPS, luego escribe aquí su IP, elige los enlaces y activa."
 
 msgid "General"
 msgstr "General"
@@ -39,8 +39,8 @@ msgstr "Cómo se protege cada paquete mientras todos los enlaces llevan la subid
 msgid "Layer 4 features"
 msgstr "Funciones de capa 4"
 
-msgid "What cengarde does with the TCP it carries, beyond moving packets. Native tunnel mode only (Tunnel tab)."
-msgstr "Lo que cengarde hace con el TCP que lleva, más allá de mover paquetes. Solo en modo de túnel nativo (pestaña Túnel)."
+msgid "What cengarde does with the TCP it carries, beyond moving packets."
+msgstr "Lo que cengarde hace con el TCP que lleva, más allá de mover paquetes."
 
 msgid "Advanced"
 msgstr "Avanzado"
@@ -51,8 +51,8 @@ msgstr "Activado"
 msgid "VPS addresses"
 msgstr "Direcciones del VPS"
 
-msgid "Public IPs of the VPS as the provider shows them, IPv4 and IPv6, in order of preference: each uplink uses the first one of a family it has, and tries the next one when the VPS does not answer there. A name works too: the router looks it up through each uplink (the carrier's DNS first), never through the tunnel, and follows it when its IP changes (dynamic DNS). An MTU above 1396 does not fit if the name has an IPv6 address that the uplinks use."
-msgstr "IP públicas del VPS, tal como las muestra el proveedor, IPv4 e IPv6, en orden de preferencia: cada enlace usa la primera de una familia que tenga, y prueba la siguiente cuando el VPS no le contesta por ahí. También sirve un nombre: el router lo busca por cada enlace (primero en el DNS de la operadora), nunca por el túnel, y lo sigue cuando cambia su IP (DNS dinámico). Un MTU de más de 1396 no cabe si el nombre tiene una dirección IPv6 que usan los enlaces."
+msgid "Public IPs of the VPS as the provider shows them, IPv4 and IPv6, in order of preference: each uplink uses the first one of a family it has, and tries the next one when the VPS does not answer there. A name works too: the router looks it up through each uplink (the carrier's DNS first), never through the tunnel, and follows it when its IP changes (dynamic DNS). An MTU above 1428 does not fit if the name has an IPv6 address that the uplinks use."
+msgstr "IP públicas del VPS, tal como las muestra el proveedor, IPv4 e IPv6, en orden de preferencia: cada enlace usa la primera de una familia que tenga, y prueba la siguiente cuando el VPS no le contesta por ahí. También sirve un nombre: el router lo busca por cada enlace (primero en el DNS de la operadora), nunca por el túnel, y lo sigue cuando cambia su IP (DNS dinámico). Un MTU de más de 1428 no cabe si el nombre tiene una dirección IPv6 que usan los enlaces."
 
 msgid "At most %d addresses"
 msgstr "Como mucho %d direcciones"
@@ -129,8 +129,8 @@ msgstr "Se espera 10.79.X.Y, de 10.79.0.2 a 10.79.255.254"
 msgid "VPS cloud-config"
 msgstr "Cloud-config del VPS"
 
-msgid "For a new VPS. Paste it as \"user data\" (cloud-init) when creating an Ubuntu 22.04 or 24.04 VPS, e.g. on Vultr. It builds the same cengarde version as this router and sets up WireGuard, NAT and IP pass, with the name and address of this router. Setup log on the VPS: /var/log/cloud-init-output.log."
-msgstr "Para un VPS nuevo. Pégalo como \"user data\" (cloud-init) al crear un VPS con Ubuntu 22.04 o 24.04, por ejemplo en Vultr. Compila la misma versión de cengarde que este router y configura WireGuard, NAT e IP pass, con el nombre y la dirección de este router. Registro de la instalación en el VPS: /var/log/cloud-init-output.log."
+msgid "For a new VPS. Paste it as \"user data\" (cloud-init) when creating an Ubuntu 22.04 or 24.04 VPS, e.g. on Vultr. It builds the same cengarde version as this router and sets up the tunnel, NAT and IP pass, with the name and address of this router. Setup log on the VPS: /var/log/cloud-init-output.log."
+msgstr "Para un VPS nuevo. Pégalo como \"user data\" (cloud-init) al crear un VPS con Ubuntu 22.04 o 24.04, por ejemplo en Vultr. Compila la misma versión de cengarde que este router y configura el túnel, NAT e IP pass, con el nombre y la dirección de este router. Registro de la instalación en el VPS: /var/log/cloud-init-output.log."
 
 msgid "Copy"
 msgstr "Copiar"
@@ -147,23 +147,11 @@ msgstr "En lugar del cloud-config, ejecuta esto en el VPS por SSH: agrega este r
 msgid "The command shows once the name and the address in the tunnel are valid and known: after a new secret, save and apply first."
 msgstr "El comando aparece cuando el nombre y la dirección en el túnel son válidos y se conocen: tras un secreto nuevo, guarda y aplica primero."
 
-msgid "Manage the WireGuard tunnel"
-msgstr "Gestionar el túnel WireGuard"
+msgid "Manage the tunnel"
+msgstr "Gestionar el túnel"
 
-msgid "Creates the interface wgcg with the keys derived from the secret and this router's address in the tunnel (VPS tab), in the wan firewall zone. Off: set up WireGuard yourself, cengarde only listens on 127.0.0.1 at the VPS port."
-msgstr "Crea la interfaz wgcg con las claves derivadas del secreto y la dirección de este router en el túnel (pestaña VPS), en la zona wan del cortafuegos. Desactivado: configuras WireGuard tú, y cengarde solo escucha en 127.0.0.1 en el puerto del VPS."
-
-msgid "Tunnel mode"
-msgstr "Modo del túnel"
-
-msgid "WireGuard: the tunnel goes through the interface wgcg, encrypted. Native (experimental): no WireGuard, cengarde carries the packets itself through the interface cg0, with the same addresses and routes; it is authenticated (nobody can inject or replay packets) but NOT encrypted, so the carriers see the traffic. The VPS has to be in the same mode, for every router it serves: \"sudo cengarde-vps-setup tunnel native\" (or wireguard to go back). A change restarts the engine."
-msgstr "WireGuard: el túnel va por la interfaz wgcg, cifrado. Nativo (experimental): sin WireGuard, cengarde lleva él mismo los paquetes por la interfaz cg0, con las mismas direcciones y rutas; va autenticado (nadie puede inyectar ni repetir paquetes) pero NO cifrado, así que las operadoras ven el tráfico. El VPS tiene que estar en el mismo modo, para todos los routers que atiende: \"sudo cengarde-vps-setup tunnel native\" (o wireguard para volver). Un cambio reinicia el motor."
-
-msgid "WireGuard"
-msgstr "WireGuard"
-
-msgid "Native (experimental, not encrypted)"
-msgstr "Nativo (experimental, sin cifrar)"
+msgid "cengarde carries the packets itself through its own interface cg0: authenticated (nobody can inject or replay packets) but NOT encrypted, so the carriers see the traffic. On: cg0 gets this router's address in the tunnel (VPS tab) and its routes, in the wan firewall zone. Off: cengarde still carries what reaches cg0, but its interface, routes and firewall zone are yours to set up."
+msgstr "cengarde lleva él mismo los paquetes por su propia interfaz cg0: autenticados (nadie puede inyectar ni repetir paquetes) pero NO cifrados, así que las operadoras ven el tráfico. Activado: cg0 recibe la dirección de este router en el túnel (pestaña VPS) y sus rutas, en la zona wan del cortafuegos. Desactivado: cengarde sigue llevando lo que llega a cg0, pero su interfaz, sus rutas y su zona del cortafuegos las configuras tú."
 
 msgid "Route all traffic through the tunnel"
 msgstr "Enrutar todo el tráfico por el túnel"
@@ -180,8 +168,8 @@ msgstr "Lleva también la IPv6 por el túnel, traducida (NAT66) aquí y en el VP
 msgid "Protocontroller"
 msgstr "Protocontrolador"
 
-msgid "Native mode only. With A or B the router answers the TCP connections of the LAN itself and the VPS opens a fresh one to each destination (cubic, BBR once that leg loses). Between them each connection travels as a plain TCP through the tunnel (A) or, experimental, as GRIT, a reliable stream of cengarde paced by what the uplinks carry instead of by loss (B). It helps TCP uploads such as RTMP over lossy uplinks and long paths beyond the VPS. UDP, QUIC and the rest go through the tunnel as always. The VPS needs \"sudo cengarde-vps-setup protocontroller on\". A change restarts the engine."
-msgstr "Solo en modo nativo. Con A o B el router responde él mismo las conexiones TCP de la LAN y el VPS abre una nueva hacia cada destino (cubic, BBR en cuanto ese tramo pierde). Entre ellos, cada conexión viaja como un TCP simple por el túnel (A) o, experimental, como GRIT, un flujo fiable de cengarde dosificado por lo que llevan los enlaces y no por la pérdida (B). Ayuda a las subidas por TCP, como RTMP, con enlaces que pierden y caminos largos más allá del VPS. UDP, QUIC y lo demás van por el túnel como siempre. El VPS necesita \"sudo cengarde-vps-setup protocontroller on\". Un cambio reinicia el motor."
+msgid "With A or B the router answers the TCP connections of the LAN itself and the VPS opens a fresh one to each destination (cubic, BBR once that leg loses). Between them each connection travels as a plain TCP through the tunnel (A) or, experimental, as GRIT, a reliable stream of cengarde paced by what the uplinks carry instead of by loss (B). It helps TCP uploads such as RTMP over lossy uplinks and long paths beyond the VPS. UDP, QUIC and the rest go through the tunnel as always. The VPS needs \"sudo cengarde-vps-setup protocontroller on\". A change restarts the engine."
+msgstr "Con A o B el router responde él mismo las conexiones TCP de la LAN y el VPS abre una nueva hacia cada destino (cubic, BBR en cuanto ese tramo pierde). Entre ellos, cada conexión viaja como un TCP simple por el túnel (A) o, experimental, como GRIT, un flujo fiable de cengarde dosificado por lo que llevan los enlaces y no por la pérdida (B). Ayuda a las subidas por TCP, como RTMP, con enlaces que pierden y caminos largos más allá del VPS. UDP, QUIC y lo demás van por el túnel como siempre. El VPS necesita \"sudo cengarde-vps-setup protocontroller on\". Un cambio reinicia el motor."
 
 msgid "No (the tunnel as always)"
 msgstr "No (el túnel como siempre)"
@@ -330,8 +318,8 @@ msgstr "Los servidores IPv6 se dejan fuera mientras IPv6 no vaya por el túnel: 
 msgid "Tunnel MTU"
 msgstr "MTU del túnel"
 
-msgid "In a 1500-byte path, packets of up to 1416 bytes fit over IPv4 and of up to 1396 over IPv6. Larger ones get fragmented, and mobile networks often drop the fragments."
-msgstr "En un camino de 1500 bytes caben paquetes de hasta 1416 bytes sobre IPv4 y de hasta 1396 sobre IPv6. Los más grandes se fragmentan, y las redes móviles suelen descartar los fragmentos."
+msgid "In a 1500-byte path, packets of up to 1448 bytes fit over IPv4 and of up to 1428 over IPv6. Larger ones get fragmented, and mobile networks often drop the fragments."
+msgstr "En un camino de 1500 bytes caben paquetes de hasta 1448 bytes sobre IPv4 y de hasta 1428 sobre IPv6. Los más grandes se fragmentan, y las redes móviles suelen descartar los fragmentos."
 
 msgid "At most %d with an IPv6 VPS address"
 msgstr "Como mucho %d con una dirección IPv6 del VPS"
@@ -369,8 +357,8 @@ msgstr "Ningún enlace pasa a reserva si eso dejara menos enlaces en uso que est
 msgid "Reorder at the receiver"
 msgstr "Reordenar en el receptor"
 
-msgid "The end that receives holds a packet that arrives ahead of a missing one until the missing one comes or its time runs out, and hands them to WireGuard in order. The VPS does the same with what it receives. While every packet is copied over all the uplinks nothing is held, so it changes nothing and costs almost nothing; it is what makes the split below usable."
-msgstr "El extremo que recibe retiene un paquete que llega antes que otro que falta, hasta que llegue el que falta o se acabe su plazo, y los entrega a WireGuard en orden. El VPS hace lo mismo con lo que recibe. Mientras cada paquete se copia por todos los enlaces no se retiene nada, así que no cambia nada y casi no cuesta; es lo que hace utilizable el reparto de más abajo."
+msgid "The end that receives holds a packet that arrives ahead of a missing one until the missing one comes or its time runs out, and hands them on in order. The VPS does the same with what it receives. While every packet is copied over all the uplinks nothing is held, so it changes nothing and costs almost nothing; it is what makes the split below usable."
+msgstr "El extremo que recibe retiene un paquete que llega antes que otro que falta, hasta que llegue el que falta o se acabe su plazo, y los entrega en orden. El VPS hace lo mismo con lo que recibe. Mientras cada paquete se copia por todos los enlaces no se retiene nada, así que no cambia nada y casi no cuesta; es lo que hace utilizable el reparto de más abajo."
 
 msgid "Longest wait for a missing packet (ms)"
 msgstr "Espera máxima por un paquete que falta (ms)"
@@ -381,14 +369,14 @@ msgstr "Cuánto espera un paquete que llegó antes de tiempo al que falta, antes
 msgid "Packets never held, up to (bytes)"
 msgstr "Paquetes que nunca se retienen, hasta (bytes)"
 
-msgid "WireGuard packets of up to this size (keepalives, empty TCP ACKs) are handed on at once, and so are the handshakes. 0: only the handshakes. A larger value lets small data packets overtake the big ones that are held, which TCP and QUIC can take for losses."
-msgstr "Los paquetes de WireGuard de hasta este tamaño (keepalives, ACK de TCP vacíos) se entregan al instante, igual que los handshakes. 0: solo los handshakes. Un valor mayor deja que paquetes de datos pequeños adelanten a los grandes que están retenidos, y TCP y QUIC pueden tomarlo por pérdidas."
+msgid "Packets of up to this size (empty TCP ACKs, small control packets) are handed on at once. 0: none. A larger value lets small data packets overtake the big ones that are held, which TCP and QUIC can take for losses."
+msgstr "Los paquetes de hasta este tamaño (ACK de TCP vacíos, paquetes de control pequeños) se entregan al instante. 0: ninguno. Un valor mayor deja que paquetes de datos pequeños adelanten a los grandes que están retenidos, y TCP y QUIC pueden tomarlo por pérdidas."
 
 msgid "Split large packets across the uplinks (experimental)"
 msgstr "Repartir los paquetes grandes entre los enlaces (experimental)"
 
-msgid "Instead of a copy over every uplink, each large packet (over 256 bytes, by default) goes over one uplink, chosen by weight; the small ones and the handshakes still go over all of them. This adds up the speed of the uplinks (in the lab, two equal uplinks carried 1.98 times what one does), but it protects less than copying: an uplink that dies keeps its share of the packets until the engine takes it out (about 300 ms by estimate, 1.5 s before that), and the packets sent to it in the meantime are lost; the slowest uplink in the split sets the latency of all (see the largest delay difference below); and a weight above what an uplink can carry fills the queue of its modem and makes the uplink unstable. The VPS follows this router: it splits the download the same way, with the same weights, when the router asks for it, and needs no setting. It needs \"Reorder at the receiver\"."
-msgstr "En vez de una copia por cada enlace, cada paquete grande (de más de 256 bytes, por omisión) va por un solo enlace, elegido según su peso; los pequeños y los handshakes siguen yendo por todos. Suma la velocidad de los enlaces (en el laboratorio, dos enlaces iguales llevaron 1,98 veces lo de uno), pero protege menos que copiar: un enlace que muere conserva su parte de los paquetes hasta que el motor lo saca (unos 300 ms según la estimación, 1,5 s antes de esa protección), y los paquetes enviados por él mientras tanto se pierden; el enlace más lento del reparto fija la latencia de todos (ver la diferencia máxima de retardo, más abajo); y un peso mayor que lo que un enlace puede llevar llena la cola de su módem y lo vuelve inestable. El VPS sigue a este router: reparte la bajada del mismo modo, con los mismos pesos, cuando el router se lo pide, y no necesita ningún ajuste. Requiere \"Reordenar en el receptor\"."
+msgid "Instead of a copy over every uplink, each large packet (over 256 bytes, by default) goes over one uplink, chosen by weight; the small ones still go over all of them. This adds up the speed of the uplinks (in the lab, two equal uplinks carried 1.98 times what one does), but it protects less than copying: an uplink that dies keeps its share of the packets until the engine takes it out (about 300 ms by estimate, 1.5 s before that), and the packets sent to it in the meantime are lost; the slowest uplink in the split sets the latency of all (see the largest delay difference below); and a weight above what an uplink can carry fills the queue of its modem and makes the uplink unstable. The VPS follows this router: it splits the download the same way, with the same weights, when the router asks for it, and needs no setting. It needs \"Reorder at the receiver\"."
+msgstr "En vez de una copia por cada enlace, cada paquete grande (de más de 256 bytes, por omisión) va por un solo enlace, elegido según su peso; los pequeños siguen yendo por todos. Suma la velocidad de los enlaces (en el laboratorio, dos enlaces iguales llevaron 1,98 veces lo de uno), pero protege menos que copiar: un enlace que muere conserva su parte de los paquetes hasta que el motor lo saca (unos 300 ms según la estimación, 1,5 s antes de esa protección), y los paquetes enviados por él mientras tanto se pierden; el enlace más lento del reparto fija la latencia de todos (ver la diferencia máxima de retardo, más abajo); y un peso mayor que lo que un enlace puede llevar llena la cola de su módem y lo vuelve inestable. El VPS sigue a este router: reparte la bajada del mismo modo, con los mismos pesos, cuando el router se lo pide, y no necesita ningún ajuste. Requiere \"Reordenar en el receptor\"."
 
 msgid "Weight of each uplink in the split"
 msgstr "Peso de cada enlace en el reparto"
@@ -405,8 +393,8 @@ msgstr "Solo reciben parte del reparto los enlaces cuyo retardo hacia el VPS va 
 msgid "Copies to the uplinks out of the split"
 msgstr "Copias a los enlaces fuera del reparto"
 
-msgid "On (as up to version 0.6.2): an uplink that leaves the split for its delay carries a copy of every packet, to fill the gaps of the others, and with fewer than two uplinks left in the split everything goes on every uplink. Off: it carries only the small packets and the handshakes, which go on every uplink, and one uplink left in the split carries everything that is split. An uplink falls behind most often because its modem's queue is full: in the first field test the copies loaded the late uplinks even more, and the router dropped thousands of packets; in the lab they helped QUIC. Only for the upload: the VPS has its own setting (on unless changed there)."
-msgstr "Activado (como hasta la versión 0.6.2): un enlace que sale del reparto por su retardo lleva una copia de todos los paquetes, para tapar los huecos de los demás, y si en el reparto quedan menos de dos enlaces todo va por todos. Desactivado: lleva solo los paquetes chicos y los handshakes, que van por todos los enlaces, y si en el reparto queda un solo enlace, ese lleva todo lo que se reparte. Un enlace se atrasa casi siempre porque la cola de su módem está llena: en la primera prueba de campo las copias cargaron todavía más a los enlaces atrasados y el router perdió miles de paquetes; en el laboratorio ayudaron a QUIC. Solo para la subida: el VPS tiene su propio ajuste (activado si no se cambia allí)."
+msgid "On (as up to version 0.6.2): an uplink that leaves the split for its delay carries a copy of every packet, to fill the gaps of the others, and with fewer than two uplinks left in the split everything goes on every uplink. Off: it carries only the small packets, which go on every uplink, and one uplink left in the split carries everything that is split. An uplink falls behind most often because its modem's queue is full: in the first field test the copies loaded the late uplinks even more, and the router dropped thousands of packets; in the lab they helped QUIC. Only for the upload: the VPS has its own setting (on unless changed there)."
+msgstr "Activado (como hasta la versión 0.6.2): un enlace que sale del reparto por su retardo lleva una copia de todos los paquetes, para tapar los huecos de los demás, y si en el reparto quedan menos de dos enlaces todo va por todos. Desactivado: lleva solo los paquetes chicos, que van por todos los enlaces, y si en el reparto queda un solo enlace, ese lleva todo lo que se reparte. Un enlace se atrasa casi siempre porque la cola de su módem está llena: en la primera prueba de campo las copias cargaron todavía más a los enlaces atrasados y el router perdió miles de paquetes; en el laboratorio ayudaron a QUIC. Solo para la subida: el VPS tiene su propio ajuste (activado si no se cambia allí)."
 
 msgid "Probe interval (ms)"
 msgstr "Intervalo de sondas (ms)"
@@ -552,8 +540,8 @@ msgstr "Va más atrás del más rápido que la diferencia máxima de retardo (pe
 msgid "out of the split"
 msgstr "fuera del reparto"
 
-msgid "More than the largest delay difference (Advanced tab) behind the fastest uplink: it carries only the small packets and the handshakes, which go on every uplink, instead of a share of the split, until it catches up."
-msgstr "Va más atrás del más rápido que la diferencia máxima de retardo (pestaña Avanzado): lleva solo los paquetes chicos y los handshakes, que van por todos los enlaces, en vez de una parte del reparto, hasta que se pone al día."
+msgid "More than the largest delay difference (Advanced tab) behind the fastest uplink: it carries only the small packets, which go on every uplink, instead of a share of the split, until it catches up."
+msgstr "Va más atrás del más rápido que la diferencia máxima de retardo (pestaña Avanzado): lleva solo los paquetes chicos, que van por todos los enlaces, en vez de una parte del reparto, hasta que se pone al día."
 
 msgid "paused"
 msgstr "en pausa"
@@ -636,23 +624,8 @@ msgstr "Servicio"
 msgid "connected"
 msgstr "conectado"
 
-msgid "handshake before the clock was set"
-msgstr "handshake anterior al ajuste de la hora"
-
-msgid "The router set its clock after this handshake: the next one, within about two minutes of traffic, shows its age."
-msgstr "El router ajustó su hora después de este handshake: el siguiente, en unos dos minutos con tráfico, muestra su antigüedad."
-
-msgid "no handshake for %s"
-msgstr "sin handshake desde %s"
-
-msgid "handshake %s"
-msgstr "handshake %s"
-
-msgid "Native tunnel (not encrypted)"
-msgstr "Túnel nativo (sin cifrar)"
-
-msgid "WireGuard tunnel"
-msgstr "Túnel WireGuard"
+msgid "Tunnel (not encrypted)"
+msgstr "Túnel (sin cifrar)"
 
 msgid "IPv6 address in the tunnel"
 msgstr "Dirección IPv6 en el túnel"

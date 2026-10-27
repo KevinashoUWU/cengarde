@@ -21,7 +21,7 @@
 //   Starlink, the rescue switch and the repair data (fec, its code, and FEC
 //   v3's share, window and lone-uplink gate only with rlc, story 026); the
 //   Layer 4 features tab holds the
-//   protocontroller and the TCP-aware switch, native mode only;
+//   protocontroller (only with the tunnel managed) and the TCP-aware switch;
 // - status.js: the "Reordering" box shows the engine's "reorder" object (and
 //   says so when the engine has it off) and is not there for an engine without
 //   it, the Uplink health table shows each uplink's type, capacity, queue now
@@ -181,7 +181,7 @@ async function renderConfig(tr, uplinks, extra = {}) {
 	const saved = { secret: 'A'.repeat(43) + '=', uplink: uplinks, ...extra };
 	// the router's interfaces: lan, loopback and the tunnel are never uplinks,
 	// nor an IPv6 companion (on top of another interface) not chosen yet
-	const network = { lan: {}, loopback: {}, wgcg: {}, wan: {}, lte2: {}, lte3: {}, wan6: { device: '@wan' } };
+	const network = { lan: {}, loopback: {}, cg0: {}, wan: {}, lte2: {}, lte3: {}, wan6: { device: '@wan' } };
 	const uci = {
 		get: (c, s, o) => (c === 'cengarde' && s === 'main' ? saved[o] : c === 'network' && network[s] ? network[s][o] : undefined),
 		set: (c, s, o, v) => { if (c === 'cengarde' && s === 'main') saved[o] = v; },
@@ -336,7 +336,7 @@ for (const [lang, tr] of [ [ 'en', english ], [ 'es', spanish ] ]) {
 		assert.deepEqual(t.deps, [ { uplink: n, '!contains': true } ], `${n}'s shows while ${n} is an uplink`);
 		assert.ok(t.title.includes(n), 'its title names the uplink');
 	}
-	for (const n of [ 'lan', 'loopback', 'wgcg', 'wan6' ])
+	for (const n of [ 'lan', 'loopback', 'cg0', 'wan6' ])
 		assert.equal(o['uplink_type_' + n], undefined, `no type for ${n}`);
 	assert.ok(o.uplink_type_wan.descr.includes('Starlink'), `${lang}: it says what the type changes`);
 	// reads and writes its own entry of the list, the others untouched
@@ -373,7 +373,8 @@ for (const [lang, tr] of [ [ 'en', english ], [ 'es', spanish ] ]) {
 // The Protection and Layer 4 tabs: the protection mode and its main uplink
 // (one of the router's uplinks, or automatic), the copy window next to
 // Starlink, the rescue switch; the protocontroller and the TCP-aware switch
-// in Layer 4 features, which need the native tunnel.
+// in Layer 4 features (the protocontroller only with the tunnel managed, as
+// cengarde-setup writes it then only), and no tunnel mode to choose.
 for (const [lang, tr] of [ [ 'en', english ], [ 'es', spanish ] ]) {
 	const o = await renderConfig(tr, [ 'wan', 'lte2' ]);
 	const tab = (name, t) => { assert.ok(o[name], `${lang}: ${name} exists`); assert.equal(o[name].tab, t, `${lang}: ${name} is in the ${t} tab`); return o[name]; };
@@ -403,9 +404,11 @@ for (const [lang, tr] of [ [ 'en', english ], [ 'es', spanish ] ]) {
 	for (const name of [ 'protocontroller', 'protocontroller_port', 'protocontroller_dest' ])
 		tab(name, 'layer4');
 	assert.deepEqual(o.protocontroller.values.map((v) => v[0]), [ 'no', 'a', 'b' ]);
-	assert.deepEqual(o.protocontroller.deps, [ { tunnel_mode: 'native' } ], 'native mode only');
+	assert.deepEqual(o.protocontroller.deps, [ { tunnel: '1' } ], 'only with the tunnel managed');
 	assert.equal(tab('tcp_aware', 'layer4').default, '0', 'TCP-aware is off unless turned on, as in the engine');
-	assert.deepEqual(o.tcp_aware.deps, [ { tunnel_mode: 'native' } ], 'native mode only');
+	assert.deepEqual(o.tcp_aware.deps, [], 'TCP-aware in any case');
+	assert.equal(o.tunnel_mode, undefined, 'no tunnel mode: the engine\'s own TUN is the only one');
+	assert.equal(tab('mtu', 'tunnel').datatype, 'range(1280,1448)', 'what fits in a 1500-byte path over IPv4');
 	assert.equal(o.ip_pass.tab, 'tunnel', 'IP pass stays in the Tunnel tab');
 }
 
@@ -428,7 +431,7 @@ const reorder = {
 };
 const base = (engine) => ({
 	enabled: true, running: true, protocol: 4, tunnel_addr: '10.79.1.2', tunnel_ipv6: false,
-	tunnel: { handshake: 0, now: 1000, uptime: 500 }, problems: [],
+	tunnel: { rx_bytes: 0, tx_bytes: 0 }, problems: [],
 	engine: engine && { version: '0.5.5', upload: { bytes: 1, largest: 1 }, download: { bytes: 1, duplicates: 0 }, links: [], ...engine }
 });
 // The rows of the Reordering box as [ name, value ] text, or null when there is no box.
@@ -507,18 +510,22 @@ for (const [lang, tr] of [ [ 'en', english ], [ 'es', spanish ] ]) {
 			assert.ok(!r[6].includes(OUT) && !r[6].includes(COPIES), `${lang} ${how}: the others say nothing`);
 	}
 
-	// native mode: no handshake row, the native tunnel's instead
+	// the tunnel's row: connected while some uplink is live, says it is not
+	// encrypted, and no handshakes
 	const summary = (st) => {
 		const n = E('div');
 
 		v.update(n, st);
 		return find(n, (x) => x.tag == 'tr').map((r) => r.children.map(text));
 	};
-	const NATIVE = L('Native tunnel (not encrypted)', 'Túnel nativo (sin cifrar)'), WG = L('WireGuard tunnel', 'Túnel WireGuard');
-	const nat = summary({ ...base({ links: [ link('up1', null) ] }), tunnel_mode: 'native' });
-	assert.ok(nat.some((r) => r[0] == NATIVE) && !nat.some((r) => r[0] == WG), `${lang}: native mode names its tunnel: ${JSON.stringify(nat)}`);
-	const wgRows = summary(base({ links: [] }));
-	assert.ok(wgRows.some((r) => r[0] == WG) && !wgRows.some((r) => r[0] == NATIVE), `${lang}: WireGuard mode as before`);
+	const TUNNEL = L('Tunnel (not encrypted)', 'Túnel (sin cifrar)');
+	const CONNECTED = L('connected', 'conectado'), WAITING = L('waiting for the VPS', 'esperando al VPS');
+	const tunnelRow = (rows) => rows.find((r) => r[0] == TUNNEL);
+	const up = tunnelRow(summary(base({ links: [ { ...link('up1', null), state: 'live' } ] })));
+	assert.ok(up && up[1].includes(CONNECTED), `${lang}: a live uplink, the tunnel is connected: ${JSON.stringify(up)}`);
+	const down = tunnelRow(summary(base({ links: [] })));
+	assert.ok(down && down[1].includes(WAITING), `${lang}: no live uplink, it waits for the VPS: ${JSON.stringify(down)}`);
+	assert.ok(!JSON.stringify(summary(base({ links: [] }))).toLowerCase().includes('handshake'), `${lang}: no handshakes`);
 
 	// the rest of the page is still there
 	const page = E('div');

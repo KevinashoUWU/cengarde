@@ -20,7 +20,10 @@ struct cg_in6_ifreq {
 	int ifindex;
 };
 
-static int tun_addr(const char *name, const struct cg_pfx *p, char *err, size_t errlen)
+/* Sets prefix p on the TUN called name. SIOCSIFADDR replaces a device's
+ * IPv4 address, so the nth IPv4 prefix after the first (n 1, 2, ...) goes on
+ * the label NAME:n, as a secondary address of the same device. */
+static int tun_addr(const char *name, const struct cg_pfx *p, int n, char *err, size_t errlen)
 {
 	char a[64];
 	int s = socket(p->family, SOCK_DGRAM | SOCK_CLOEXEC, 0), rc = -1;
@@ -35,7 +38,13 @@ static int tun_addr(const char *name, const struct cg_pfx *p, char *err, size_t 
 		uint32_t mask = p->len ? htonl(~0u << (32 - p->len)) : 0;
 
 		memset(&ifr, 0, sizeof(ifr));
-		snprintf(ifr.ifr_name, sizeof(ifr.ifr_name), "%s", name);
+		if ((size_t)(n ? snprintf(ifr.ifr_name, sizeof(ifr.ifr_name), "%s:%d", name, n)
+			       : snprintf(ifr.ifr_name, sizeof(ifr.ifr_name), "%s", name)) >= sizeof(ifr.ifr_name)) {
+			snprintf(err, errlen, "tun_addr %s: %s:%d is too long a label for a second IPv4 address",
+				 cg_pfx_str(p, a, sizeof(a)), name, n);
+			close(s);
+			return -1;
+		}
 		sin->sin_family = AF_INET;
 		memcpy(&sin->sin_addr, p->a, 4);
 		if (ioctl(s, SIOCSIFADDR, &ifr) == 0) {
@@ -101,8 +110,8 @@ int cg_tun_open(const struct cg_config *cfg, char *err, size_t errlen)
 	}
 	/* IPv4 addresses before it is up; IPv6 ones after, on a device that
 	 * has IPv6 by then. */
-	for (int i = 0; i < cfg->ntun_addr; i++)
-		if (cfg->tun_addr[i].family == AF_INET && tun_addr(name, &cfg->tun_addr[i], err, errlen) < 0)
+	for (int i = 0, n = 0; i < cfg->ntun_addr; i++)
+		if (cfg->tun_addr[i].family == AF_INET && tun_addr(name, &cfg->tun_addr[i], n++, err, errlen) < 0)
 			goto fail;
 	if (ioctl(s, SIOCGIFFLAGS, &ifr) < 0) {
 		snprintf(err, errlen, "tun %s: flags: %s", name, strerror(errno));
@@ -114,7 +123,7 @@ int cg_tun_open(const struct cg_config *cfg, char *err, size_t errlen)
 		goto fail;
 	}
 	for (int i = 0; i < cfg->ntun_addr; i++)
-		if (cfg->tun_addr[i].family == AF_INET6 && tun_addr(name, &cfg->tun_addr[i], err, errlen) < 0)
+		if (cfg->tun_addr[i].family == AF_INET6 && tun_addr(name, &cfg->tun_addr[i], 0, err, errlen) < 0)
 			goto fail;
 	close(s);
 	return fd;

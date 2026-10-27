@@ -1,7 +1,7 @@
 /* IP packets in the native tunnel (tunnel = native): what cengarde checks
  * of a packet before it reaches a TUN device, and where its addresses are.
  *
- * In native mode each DATA payload is a raw IP packet, read from a TUN
+ * Each DATA payload is a raw IP packet, read from a TUN
  * device at one end and written to the other end's. The MAC already says
  * who sent it; this only makes sure the kernel gets something shaped like
  * an IP packet: version 4 or 6, a header that fits, and a length field that

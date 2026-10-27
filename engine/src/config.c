@@ -612,7 +612,7 @@ static const char *proto_name(uint8_t p)
 }
 
 /* The [client NAME] sections of a server, in order, with their forward
- * rules; called with c->wireguard already parsed (AF_UNSPEC: none). */
+ * rules. */
 static int parse_clients(struct cg_config *c, struct cg_ini *ini, char *err, size_t errlen)
 {
 	int fi, fj;
@@ -627,7 +627,6 @@ static int parse_clients(struct cg_config *c, struct cg_ini *ini, char *err, siz
 		const char *sec = ini->e[i].section, *name, *v;
 		struct cg_client_cfg *k;
 		char e[256];
-		int n;
 
 		if (!strcmp(sec, "client")) {
 			snprintf(err, errlen, "[client]: expected [client NAME]");
@@ -663,31 +662,15 @@ static int parse_clients(struct cg_config *c, struct cg_ini *ini, char *err, siz
 		if (get_str(ini, sec, "label", k->label, sizeof(k->label), e, sizeof(e)) ||
 		    get_bool(ini, sec, "enabled", &k->enabled, e, sizeof(e)) ||
 		    get_bool(ini, sec, "passthrough", &k->passthrough, e, sizeof(e)) ||
-		    get_addrs(ini, sec, "wireguard", 0, &k->wireguard, 1, 1, &n, e, sizeof(e)) ||
-		    (cg_ini_get(ini, sec, "wireguard_poke") && strcmp(cg_ini_get(ini, sec, "wireguard_poke"), "none") &&
-		     get_addrs(ini, sec, "wireguard_poke", 1, &k->wireguard_poke, 1, 1, &n, e, sizeof(e)))) {
+		    get_pfxs(ini, sec, "tun_route", 0, k->tun_route, CG_TUN_ROUTES, &k->ntun_route, e, sizeof(e))) {
 			snprintf(err, errlen, "[%s] %s", sec, e);
 			return -1;
 		}
-		if (c->tunnel == CG_TUNNEL_NATIVE) {
-			/* No WireGuard to talk to or poke; the TUN routes by
-			 * these instead (tunroute.h). */
-			if (get_pfxs(ini, sec, "tun_route", 0, k->tun_route, CG_TUN_ROUTES, &k->ntun_route, e, sizeof(e))) {
-				snprintf(err, errlen, "[%s] %s", sec, e);
-				return -1;
-			}
-			if (!k->ntun_route) {
-				snprintf(err, errlen, "[%s] tun_route: required with tunnel = native (the client's "
-					 "address in the tunnel, and the networks behind it)", sec);
-				return -1;
-			}
-			k->wireguard_poke.ss_family = AF_UNSPEC;
-		} else if (k->wireguard.ss_family == AF_UNSPEC) {
-			if (c->wireguard.ss_family == AF_UNSPEC) {
-				snprintf(err, errlen, "[%s] wireguard: required (no global one)", sec);
-				return -1;
-			}
-			k->wireguard = c->wireguard;
+		/* The TUN routes by these (tunroute.h). */
+		if (!k->ntun_route) {
+			snprintf(err, errlen, "[%s] tun_route: required (the client's address in the tunnel, and the "
+				 "networks behind it)", sec);
+			return -1;
 		}
 		v = cg_ini_get(ini, sec, "forward");
 		if (v && cg_fwd_parse(v, (uint8_t)c->nclients, c->forward, &c->nforward, CG_FWD_MAX, e, sizeof(e)) < 0) {
@@ -832,6 +815,29 @@ static int get_split(struct cg_ini *ini, struct cg_config *c, char *err, size_t 
 	return 0;
 }
 
+/* The keys only the WireGuard tunnel had (removed in 0.12, story 027): an
+ * error that says so, not an unknown key a router or a VPS would run on
+ * without. Returns -1 at the first. */
+static int removed_keys(struct cg_ini *ini, int mode, char *err, size_t errlen)
+{
+	static const char *const keys[] = { "wireguard", "wireguard_poke", "wireguard_port_file" };
+
+	for (int i = 0; i < ini->n; i++) {
+		const struct cg_ini_entry *x = &ini->e[i];
+		int gone = mode == CG_MODE_CLIENT && !x->section[0] && !strcmp(x->key, "listen");
+
+		for (size_t j = 0; j < sizeof(keys) / sizeof(keys[0]) && !gone; j++)
+			gone = !strcmp(x->key, keys[j]);
+		if (gone) {
+			snprintf(err, errlen, "%s%s%sline %d: %s: WireGuard was removed in 0.12 and the tunnel is native, "
+				 "drop this key (docs/historias/027)", x->section[0] ? "[" : "", x->section,
+				 x->section[0] ? "] " : "", x->line, x->key);
+			return -1;
+		}
+	}
+	return 0;
+}
+
 int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t errlen, char *warn,
 		    size_t warnlen)
 {
@@ -956,13 +962,17 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 		goto out;
 	}
 
+	/* The tunnel is native, the only kind since WireGuard's was removed
+	 * (0.12, story 027); the key stays for files that name it, and what
+	 * only WireGuard used is refused with a word on why. */
 	v = cg_ini_get(&ini, "", "tunnel");
-	if (v && !strcmp(v, "native"))
-		c->tunnel = CG_TUNNEL_NATIVE;
-	else if (v && strcmp(v, "wireguard")) {
-		snprintf(err, errlen, "tunnel: expected wireguard or native, got '%s'", v);
+	if (v && strcmp(v, "native")) {
+		snprintf(err, errlen, "tunnel: expected native, got '%s'%s", v,
+			 strcmp(v, "wireguard") ? "" : " (WireGuard was removed in 0.12: the tunnel is native, see docs/historias/027)");
 		goto out;
 	}
+	if (removed_keys(&ini, c->mode, err, errlen))
+		goto out;
 	strcpy(c->tun, "cg0");
 	c->tun_mtu = CG_TUN_MTU_DEFAULT;
 	if (get_str(&ini, "", "tun", c->tun, sizeof(c->tun), err, errlen) ||
@@ -1104,10 +1114,10 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 		c->cpu = (int)u;
 	}
 
-	if (!cg_ini_get(&ini, "", "listen")) {
-		cg_addr_parse(c->mode == CG_MODE_CLIENT ? "127.0.0.1:59401" : "*:59402", 0, &c->listen, 1, e,
-			      sizeof(e));
-	} else if (get_addrs(&ini, "", "listen", 0, &c->listen, 1, 1, &n, err, errlen)) {
+	/* The server's listen sockets (a client has none: removed_keys). */
+	if (c->mode == CG_MODE_SERVER && !cg_ini_get(&ini, "", "listen")) {
+		cg_addr_parse("*:59402", 0, &c->listen, 1, e, sizeof(e));
+	} else if (c->mode == CG_MODE_SERVER && get_addrs(&ini, "", "listen", 0, &c->listen, 1, 1, &n, err, errlen)) {
 		goto out;
 	}
 
@@ -1180,12 +1190,6 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 		}
 		cg_config_build(c, NULL);
 	} else {
-		if (get_addrs(&ini, "", "wireguard", 0, &c->wireguard, 1, 1, &n, err, errlen))
-			goto out;
-		if (!n && !multi && c->tunnel != CG_TUNNEL_NATIVE) {
-			snprintf(err, errlen, "wireguard: required in server mode (local WireGuard address)");
-			goto out;
-		}
 		if (multi && parse_clients(c, &ini, err, errlen))
 			goto out;
 		/* Room for every client's sessions (CG_CLIENT_SESSIONS each). */
@@ -1196,18 +1200,12 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 		    get_u32(&ini, "", "path_timeout_ms", 1000, 3600000, &c->path_timeout_ms, err, errlen) ||
 		    get_str(&ini, "", "passthrough_file", c->passthrough_file, sizeof(c->passthrough_file), err,
 			    errlen) ||
-		    get_str(&ini, "", "forward_file", c->forward_file, sizeof(c->forward_file), err, errlen) ||
-		    get_str(&ini, "", "wireguard_port_file", c->wireguard_port_file, sizeof(c->wireguard_port_file),
-			    err, errlen))
+		    get_str(&ini, "", "forward_file", c->forward_file, sizeof(c->forward_file), err, errlen))
 			goto out;
 		/* One client asks for IP pass in passthrough_file; several share
 		 * the forward table. */
 		if (multi && c->passthrough_file[0]) {
 			snprintf(err, errlen, "passthrough_file: not with [client] sections, see forward_file");
-			goto out;
-		}
-		if (c->tunnel == CG_TUNNEL_NATIVE && c->wireguard_port_file[0]) {
-			snprintf(err, errlen, "wireguard_port_file: not with tunnel = native (no WireGuard)");
 			goto out;
 		}
 		if (!multi && c->forward_file[0]) {
@@ -1218,7 +1216,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 			snprintf(err, errlen, "tun_route: with [client] sections, in each of them");
 			goto out;
 		}
-		if (!multi && c->tunnel == CG_TUNNEL_NATIVE) {
+		if (!multi) {
 			/* One client: everything in the TUN is its, unless
 			 * tun_route says otherwise. */
 			if (get_pfxs(&ini, "", "tun_route", 0, c->tun_route, CG_TUN_ROUTES, &c->ntun_route, err, errlen))
@@ -1229,7 +1227,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 				c->ntun_route = 2;
 			}
 		}
-		if (multi && c->tunnel == CG_TUNNEL_NATIVE) {
+		if (multi) {
 			struct cg_rt *rt = calloc(1, sizeof(*rt)); /* only to look for clashes */
 			char a[64];
 			int clash = 0;
@@ -1255,11 +1253,6 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 			if (clash)
 				goto out;
 		}
-		if (multi && cg_ini_get(&ini, "", "wireguard_poke")) {
-			snprintf(err, errlen, "wireguard_poke: with [client] sections, in each of them (that client's "
-				 "address in the tunnel)");
-			goto out;
-		}
 		v = cg_ini_get(&ini, "", "lanes");
 		if (v && strcmp(v, "auto")) {
 			char *end;
@@ -1273,21 +1266,6 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 			}
 			c->lanes = (uint32_t)l;
 		}
-		/* The router's end of the tunnel cengarde sets up (10.79.0.2/30). */
-		v = cg_ini_get(&ini, "", "wireguard_poke");
-		if (multi || c->tunnel == CG_TUNNEL_NATIVE)
-			;
-		else if (!v)
-			cg_addr_parse("10.79.0.2:9", 0, &c->wireguard_poke, 1, e, sizeof(e));
-		else if (strcmp(v, "none") &&
-			 get_addrs(&ini, "", "wireguard_poke", 1, &c->wireguard_poke, 1, 1, &n, err, errlen))
-			goto out;
-	}
-
-	/* the protocontroller's streams ride the native tunnel's DATA (story 025) */
-	if (c->protocontroller && c->tunnel != CG_TUNNEL_NATIVE) {
-		snprintf(err, errlen, "protocontroller: needs tunnel = native");
-		goto out;
 	}
 
 	for (int i = 0; i < ini.n; i++) {
@@ -1402,7 +1380,7 @@ const char *cg_config_restart_needed(const struct cg_config *a, const struct cg_
 		return "[client] sections";
 	if (memcmp(a->key, b->key, sizeof(a->key)))
 		return "key";
-	if (!cg_addr_equal(&a->listen, &b->listen))
+	if (a->mode == CG_MODE_SERVER && !cg_addr_equal(&a->listen, &b->listen))
 		return "listen";
 	if (strcmp(a->control_socket, b->control_socket))
 		return "control_socket";
@@ -1424,21 +1402,16 @@ const char *cg_config_restart_needed(const struct cg_config *a, const struct cg_
 		return "io_queue";
 	if (a->mode == CG_MODE_CLIENT && links_cpu_differ(a, b))
 		return "cpu of a [link]";
-	if (a->mode == CG_MODE_SERVER && !a->nclients && !cg_addr_equal(&a->wireguard, &b->wireguard))
-		return "wireguard";
 	if (a->mode == CG_MODE_SERVER && a->lanes != b->lanes)
 		return "lanes";
 	/* The TUN device is set up once. */
-	if (a->tunnel != b->tunnel)
-		return "tunnel";
-	if (a->tunnel == CG_TUNNEL_NATIVE && strcmp(a->tun, b->tun))
+	if (strcmp(a->tun, b->tun))
 		return "tun";
-	if (a->tunnel == CG_TUNNEL_NATIVE &&
-	    (a->ntun_addr != b->ntun_addr || memcmp(a->tun_addr, b->tun_addr, sizeof(a->tun_addr))))
+	if ((a->ntun_addr != b->ntun_addr || memcmp(a->tun_addr, b->tun_addr, sizeof(a->tun_addr))))
 		return "tun_addr";
-	if (a->tunnel == CG_TUNNEL_NATIVE && a->tun_mtu != b->tun_mtu)
+	if (a->tun_mtu != b->tun_mtu)
 		return "tun_mtu";
-	if (a->tunnel == CG_TUNNEL_NATIVE && a->tun_txqueuelen != b->tun_txqueuelen)
+	if (a->tun_txqueuelen != b->tun_txqueuelen)
 		return "tun_txqueuelen";
 	/* the protocontroller's sockets, pool and pacers are set up once (story 025) */
 	if (a->protocontroller != b->protocontroller || (a->protocontroller && (a->protocontroller_port != b->protocontroller_port || a->protocontroller_buf_kb != b->protocontroller_buf_kb ||

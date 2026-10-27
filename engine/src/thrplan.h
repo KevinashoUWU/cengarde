@@ -14,7 +14,7 @@
  *   links join the pump with the fewest links (ties: the lowest index). The
  *   choice is sticky: link slots are never freed.
  * - Guards: real-time priority on as many data threads as there are CPUs
- *   (the kernel's softirqs and WireGuard's workers would starve), busy
+ *   (the kernel's softirqs would starve), busy
  *   polling on every data thread when they do not fit the CPUs with one to
  *   spare (then only the hub polls), two pumps pinned to one CPU.
  *

@@ -4,8 +4,8 @@
  * ring of slots, stamping each batch with the time it was read, and closes a
  * socket when told to. It decides nothing: the hub, the one thread that
  * holds the session (sequence, MAC, anti-replay window, health, probes),
- * takes the slots in turn (clientpath.h) and sends the first copies to
- * WireGuard straight out of them.
+ * takes the slots in turn (clientpath.h) and writes the first copies to
+ * the TUN straight out of them.
  *
  * - link_threads = on: one pump thread per link, at most CG_MAX_PUMPS (a
  *   later link shares the pump with the fewest links, thrplan.h). A stall of
@@ -198,7 +198,7 @@ static inline struct cg_rxslot *cg_pump_rx_slot(struct cg_pump *p, uint32_t i)
 }
 
 /* Gives back the n oldest slots, once the hub is done with them (after its
- * sendmmsg to WireGuard returned: the slots are the iovecs). */
+ * writes to the TUN returned: the slots are the iovecs). */
 static inline void cg_pump_rx_release(struct cg_pump *p, uint32_t n)
 {
 	cg_ring_release(&p->rxq, n);

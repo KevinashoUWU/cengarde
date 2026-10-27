@@ -7,7 +7,7 @@ archivos:
 
 # `tun`
 
-Nombre de la TUN con `tunnel = native`.
+Nombre de la TUN del túnel.
 
 - **Sección:** global
 - **Extremo:** los dos

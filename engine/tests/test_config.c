@@ -31,7 +31,7 @@ static const char client_conf[] = "# cengarde client\n"
 				  "enabled = no\n"
 				  "colour = blue\n";
 
-#define SERVER "mode = server\nkey = " KEY "\nwireguard = 127.0.0.1:51820\n"
+#define SERVER "mode = server\nkey = " KEY "\n"
 #define CLIENT "mode = client\nkey = " KEY "\nserver = 192.0.2.1:59402\n"
 
 /* Control socket, IP pass, and what a reload applies in place. */
@@ -65,15 +65,6 @@ static void test_config_reload(void)
 				 sizeof(warn)),
 		 0);
 	CHECK(!strcmp(a.passthrough_file, "/run/cengarde/passthrough"));
-	CHECK(!strcmp(a.wireguard_port_file, "")); /* none by default */
-	cg_config_free(&a);
-	CHECK_EQ(cg_config_parse(&a, SERVER "wireguard_port_file = /var/lib/cengarde/wg/ports\n", err, sizeof(err), warn,
-				 sizeof(warn)),
-		 0);
-	CHECK(!strcmp(a.wireguard_port_file, "/var/lib/cengarde/wg/ports"));
-	cg_config_free(&a);
-	CHECK_EQ(cg_config_parse(&a, CLIENT "wireguard_port_file = /run/w\n", err, sizeof(err), warn, sizeof(warn)), 0);
-	CHECK(strstr(warn, "unknown key 'wireguard_port_file'") != NULL); /* a server setting */
 	cg_config_free(&a);
 	CHECK_EQ(cg_config_parse(&a, SERVER "passthrough = yes\n", err, sizeof(err), warn, sizeof(warn)), 0);
 	CHECK(strstr(warn, "unknown key 'passthrough'") != NULL); /* a client setting */
@@ -90,11 +81,6 @@ static void test_config_reload(void)
 	CHECK(cg_config_restart_needed(&a, &b) == NULL);
 	cg_config_free(&b);
 	/* A restart for what the event loop set up once. */
-	CHECK_EQ(cg_config_parse(&b, CLIENT "interfaces = eth1.*\nlisten = 127.0.0.1:1\n", err, sizeof(err), warn,
-				 sizeof(warn)),
-		 0);
-	CHECK(cg_config_restart_needed(&a, &b) && !strcmp(cg_config_restart_needed(&a, &b), "listen"));
-	cg_config_free(&b);
 	CHECK_EQ(cg_config_parse(&b,
 				 "mode = client\nkey = AQECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=\n"
 				 "server = 192.0.2.1:59402\n",
@@ -125,10 +111,8 @@ static void test_config_reload(void)
 	CHECK_EQ(cg_config_parse(&a, SERVER "max_sessions = 8\n", err, sizeof(err), warn, sizeof(warn)), 0);
 	CHECK(cg_config_restart_needed(&a, &b) == NULL); /* a limit: the table grows in place */
 	cg_config_free(&a);
-	CHECK_EQ(cg_config_parse(&a, "mode = server\nkey = " KEY "\nwireguard = 127.0.0.1:51821\n", err, sizeof(err),
-				 warn, sizeof(warn)),
-		 0);
-	CHECK(!strcmp(cg_config_restart_needed(&a, &b), "wireguard"));
+	CHECK_EQ(cg_config_parse(&a, SERVER "listen = *:1\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK(!strcmp(cg_config_restart_needed(&a, &b), "listen"));
 	cg_config_free(&a);
 	CHECK_EQ(cg_config_parse(&a, SERVER "lanes = 4\n", err, sizeof(err), warn, sizeof(warn)), 0);
 	CHECK(!strcmp(cg_config_restart_needed(&a, &b), "lanes")); /* the socket group is built once */
@@ -155,9 +139,11 @@ static void test_config_reload(void)
 /* How the client handles its link sockets (pump.h): legacy by default. */
 #define KEY2 "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=" /* bytes 1..32 */
 #define KEY3 "AgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4fICE=" /* bytes 2..33 */
-#define MULTI "mode = server\nforward_file = /var/lib/cengarde/forward\nwireguard_port_file = /var/lib/cengarde/wg/ports\n"
-#define ALPHA "[client alpha]\nkey = " KEY "\nwireguard = 127.0.0.1:65501\n"
-#define BRAVO "[client bravo]\nkey = " KEY2 "\nwireguard = 127.0.0.1:65502\n"
+#define MULTI "mode = server\nforward_file = /var/lib/cengarde/forward\n"
+#define ALPHA "[client alpha]\nkey = " KEY "\ntun_route = 10.79.12.34/32\n"
+#define BRAVO "[client bravo]\nkey = " KEY2 "\ntun_route = 10.79.0.3/32 192.168.2.0/24\n"
+#define GONE(line, key) "line " #line ": " key ": WireGuard was removed in 0.12 and the tunnel is native, drop this " \
+			"key (docs/historias/027)"
 
 #define NAME_ERR(sec) sec ": a client's name is 1 to 12 lowercase letters, digits or '-', not starting with " \
 		     "'-' and not \"default\""
@@ -166,11 +152,11 @@ static void test_config_reload(void)
 static void test_config_clients(void)
 {
 	static struct cg_config a, b;
-	char err[256], warn[512], buf[64];
+	char err[256], warn[512];
 	const struct cg_client_cfg *k;
 
 	CHECK_EQ(cg_config_parse(&a,
-				 MULTI ALPHA "label = Roof\nwireguard_poke = 10.79.12.34:9\nforward = tcp:9000=22 both:6000\n"
+				 MULTI ALPHA "label = Roof\nforward = tcp:9000=22 both:6000\n"
 				       BRAVO "enabled = no\npassthrough = no\nforward = udp:5000-5010=15000\n",
 				 err, sizeof(err), warn, sizeof(warn)),
 		 0);
@@ -182,13 +168,12 @@ static void test_config_clients(void)
 	CHECK_EQ(k->enabled, 1);
 	CHECK_EQ(k->passthrough, 1);
 	CHECK_EQ(k->key[31], 31);
-	CHECK(!strcmp(cg_addr_str(&k->wireguard, buf, sizeof(buf)), "127.0.0.1:65501"));
-	CHECK(!strcmp(cg_addr_str(&k->wireguard_poke, buf, sizeof(buf)), "10.79.12.34:9"));
+	CHECK_EQ(k->ntun_route, 1);
 	k = cg_config_client(&a, "bravo");
 	CHECK(k == &a.clients[1]);
 	CHECK_EQ(k->enabled, 0);
 	CHECK_EQ(k->passthrough, 0);
-	CHECK_EQ(k->wireguard_poke.ss_family, AF_UNSPEC); /* no default with several clients */
+	CHECK_EQ(k->ntun_route, 2);
 	CHECK(cg_config_client(&a, "charlie") == NULL);
 	CHECK_EQ(a.nforward, 4); /* both: a tcp and a udp rule */
 	CHECK_EQ(a.forward[0].client, 0);
@@ -196,12 +181,11 @@ static void test_config_clients(void)
 	CHECK_EQ(a.forward[3].client, 1);
 	CHECK_EQ(a.forward[3].last, 5010);
 	CHECK(!strcmp(a.forward_file, "/var/lib/cengarde/forward"));
-	CHECK(!strcmp(a.wireguard_port_file, "/var/lib/cengarde/wg/ports"));
 	CHECK_EQ(a.max_sessions, 64); /* at least CG_CLIENT_SESSIONS per client */
 
 	/* Changes to the clients apply in place; going from one client to
 	 * several (or back) is another server. */
-	CHECK_EQ(cg_config_parse(&b, MULTI ALPHA "[client charlie]\nkey = " KEY3 "\nwireguard = 127.0.0.1:65503\n", err,
+	CHECK_EQ(cg_config_parse(&b, MULTI ALPHA "[client charlie]\nkey = " KEY3 "\ntun_route = 10.79.0.4/32\n", err,
 				 sizeof(err), warn, sizeof(warn)),
 		 0);
 	CHECK(cg_config_restart_needed(&a, &b) == NULL);
@@ -213,25 +197,18 @@ static void test_config_clients(void)
 	cg_config_free(&a);
 	CHECK(a.clients == NULL && a.forward == NULL && a.nclients == 0);
 
-	/* A global WireGuard address serves the clients without their own. */
-	CHECK_EQ(cg_config_parse(&a, "mode = server\nwireguard = 127.0.0.1:51820\n[client alpha]\nkey = " KEY "\n" BRAVO,
-				 err, sizeof(err), warn, sizeof(warn)),
-		 0);
-	CHECK(!strcmp(cg_addr_str(&a.clients[0].wireguard, buf, sizeof(buf)), "127.0.0.1:51820"));
-	CHECK(!strcmp(cg_addr_str(&a.clients[1].wireguard, buf, sizeof(buf)), "127.0.0.1:65502"));
-	cg_config_free(&a);
-
 	/* max_sessions: room for every client unless set. */
 	{
 		char text[16384];
-		size_t n = (size_t)snprintf(text, sizeof(text), "mode = server\nwireguard = 127.0.0.1:51820\n");
+		size_t n = (size_t)snprintf(text, sizeof(text), "mode = server\n");
 		uint8_t key[CG_KEY_LEN];
 		char b64[64];
 
 		for (int i = 0; i < 20; i++) {
 			memset(key, i, sizeof(key));
 			cg_base64_encode(b64, key, sizeof(key));
-			n += (size_t)snprintf(text + n, sizeof(text) - n, "[client r%d]\nkey = %s\n", i, b64);
+			n += (size_t)snprintf(text + n, sizeof(text) - n, "[client r%d]\nkey = %s\ntun_route = 10.80.%d.0/24\n",
+					      i, b64, i);
 		}
 		CHECK_EQ(cg_config_parse(&a, text, err, sizeof(err), warn, sizeof(warn)), 0);
 		CHECK_EQ(a.max_sessions, 20 * CG_CLIENT_SESSIONS);
@@ -251,11 +228,12 @@ static void test_config_clients(void)
 			cg_config_free(&a);
 		}
 		/* At most CG_MAX_CLIENTS. */
-		n = (size_t)snprintf(text, sizeof(text), "mode = server\nwireguard = 127.0.0.1:51820\n");
+		n = (size_t)snprintf(text, sizeof(text), "mode = server\n");
 		for (int i = 0; i <= CG_MAX_CLIENTS; i++) {
 			memset(key, i, sizeof(key));
 			cg_base64_encode(b64, key, sizeof(key));
-			n += (size_t)snprintf(text + n, sizeof(text) - n, "[client r%d]\nkey = %s\n", i, b64);
+			n += (size_t)snprintf(text + n, sizeof(text) - n, "[client r%d]\nkey = %s\ntun_route = 10.80.%d.0/24\n",
+					      i, b64, i);
 		}
 		CHECK_EQ(cg_config_parse(&a, text, err, sizeof(err), warn, sizeof(warn)), -1);
 		CHECK(!strcmp(err, "too many [client] sections (max 64)"));
@@ -268,36 +246,40 @@ static void test_config_clients(void)
 		} bad[] = {
 			{ MULTI "key = " KEY "\n" ALPHA, "key: not with [client] sections, each has its own" },
 			{ MULTI "[client]\nkey = " KEY "\n", "[client]: expected [client NAME]" },
-			{ MULTI "[client -x]\nkey = " KEY "\nwireguard = 127.0.0.1:1\n",
+			{ MULTI "[client -x]\nkey = " KEY "\ntun_route = 10.79.9.9/32\n",
 			  NAME_ERR("[client -x]") },
-			{ MULTI "[client a/b]\nkey = " KEY "\nwireguard = 127.0.0.1:1\n",
+			{ MULTI "[client a/b]\nkey = " KEY "\ntun_route = 10.79.9.9/32\n",
 			  NAME_ERR("[client a/b]") },
-			{ MULTI "[client Alpha]\nkey = " KEY "\nwireguard = 127.0.0.1:1\n",
+			{ MULTI "[client Alpha]\nkey = " KEY "\ntun_route = 10.79.9.9/32\n",
 			  NAME_ERR("[client Alpha]") },
-			{ MULTI "[client r_1]\nkey = " KEY "\nwireguard = 127.0.0.1:1\n",
+			{ MULTI "[client r_1]\nkey = " KEY "\ntun_route = 10.79.9.9/32\n",
 			  NAME_ERR("[client r_1]") },
-			{ MULTI "[client abcdefghijklm]\nkey = " KEY "\nwireguard = 127.0.0.1:1\n",
+			{ MULTI "[client abcdefghijklm]\nkey = " KEY "\ntun_route = 10.79.9.9/32\n",
 			  NAME_ERR("[client abcdefghijklm]") },
-			{ MULTI "[client default]\nkey = " KEY "\nwireguard = 127.0.0.1:1\n",
+			{ MULTI "[client default]\nkey = " KEY "\ntun_route = 10.79.9.9/32\n",
 			  NAME_ERR("[client default]") },
-			{ MULTI "[client alpha]\nwireguard = 127.0.0.1:1\n",
+			{ MULTI "[client alpha]\ntun_route = 10.79.9.9/32\n",
 			  "[client alpha] key: expected the base64 of 32 bytes" },
-			{ MULTI "[client alpha]\nkey = " KEY "\n", "[client alpha] wireguard: required (no global one)" },
-			{ MULTI ALPHA "[client bravo]\nkey = " KEY "\nwireguard = 127.0.0.1:2\n",
+			{ MULTI "[client alpha]\nkey = " KEY "\n",
+			  "[client alpha] tun_route: required (the client's address in the tunnel, and the networks behind it)" },
+			{ MULTI ALPHA "[client bravo]\nkey = " KEY "\ntun_route = 10.79.9.9/32\n",
 			  "[client bravo] key: the same as [client alpha]'s" },
 			{ MULTI ALPHA "enabled = maybe\n", "[client alpha] enabled: expected yes or no, got 'maybe'" },
-			{ MULTI ALPHA "wireguard_poke = 0.0.0.0:9\n", NULL },
+			{ MULTI ALPHA "wireguard_poke = 0.0.0.0:9\n", "[client alpha] " GONE(6, "wireguard_poke") },
+			{ MULTI ALPHA "wireguard = 127.0.0.1:65501\n", "[client alpha] " GONE(6, "wireguard") },
 			{ MULTI ALPHA "forward = tcp:70000\n", NULL },
 			{ MULTI ALPHA "forward = tcp:9000-9010\n" BRAVO "forward = tcp:9010=22\n",
 			  "forward: tcp 9000-9010 of [client alpha] overlaps tcp 9010-9010 of [client bravo]" },
 			{ MULTI ALPHA "forward = both:53 udp:53\n",
 			  "forward: udp 53-53 of [client alpha] overlaps udp 53-53 of [client alpha]" },
-			{ "mode = server\nwireguard = 127.0.0.1:1\npassthrough_file = /run/p\n" ALPHA,
+			{ "mode = server\npassthrough_file = /run/p\n" ALPHA,
 			  "passthrough_file: not with [client] sections, see forward_file" },
 			{ SERVER "forward_file = /run/f\n",
 			  "forward_file: only with [client] sections (one client: passthrough_file)" },
-			{ MULTI "wireguard_poke = 10.79.0.2:9\n" ALPHA,
-			  "wireguard_poke: with [client] sections, in each of them (that client's address in the tunnel)" },
+			{ MULTI "wireguard_poke = 10.79.0.2:9\n" ALPHA, GONE(3, "wireguard_poke") },
+			{ MULTI "wireguard_port_file = /var/lib/cengarde/wg/ports\n" ALPHA, GONE(3, "wireguard_port_file") },
+			{ MULTI ALPHA "[client bravo]\nkey = " KEY2 "\ntun_route = 10.79.12.34/32\n",
+			  "tun_route: 10.79.12.34/32 is in [client alpha] and in [client bravo]" },
 		};
 
 		for (size_t i = 0; i < CG_ARRAY_SIZE(bad); i++) {
@@ -313,7 +295,7 @@ static void test_config_clients(void)
 	}
 
 	/* The longest name: cg-NAME fits in an interface name. */
-	CHECK_EQ(cg_config_parse(&a, MULTI "[client abcdefghijk-]\nkey = " KEY "\nwireguard = 127.0.0.1:1\n", err,
+	CHECK_EQ(cg_config_parse(&a, MULTI "[client abcdefghijk-]\nkey = " KEY "\ntun_route = 10.79.9.9/32\n", err,
 				 sizeof(err), warn, sizeof(warn)),
 		 0);
 	cg_config_free(&a);
@@ -913,7 +895,7 @@ static void test_config_bonding(void)
 	cg_config_free(&c);
 }
 
-/* Address lists: a single listen and wireguard address, servers to send to,
+/* Address lists: a single listen address, servers to send to,
  * IPv4-mapped addresses as IPv4. */
 static void test_config_addrs(void)
 {
@@ -929,13 +911,6 @@ static void test_config_addrs(void)
 				 sizeof(warn)),
 		 -1);
 	CHECK(strstr(err, "listen: expected a single address") != NULL);
-	CHECK_EQ(cg_config_parse(&c, CLIENT "listen = 127.0.0.1:1, 127.0.0.1:2\n", err, sizeof(err), warn, sizeof(warn)),
-		 -1);
-	CHECK(strstr(err, "listen") != NULL);
-	CHECK_EQ(cg_config_parse(&c, "mode = server\nkey = " KEY "\nwireguard = 127.0.0.1:51820 127.0.0.1:51821\n", err,
-				 sizeof(err), warn, sizeof(warn)),
-		 -1);
-	CHECK(strstr(err, "wireguard: expected a single address") != NULL);
 	CHECK_EQ(cg_config_parse(&c, "mode = client\nkey = " KEY "\nserver = 192.0.2.1:1 192.0.2.2:1 192.0.2.3:1 "
 				 "192.0.2.4:1 192.0.2.5:1 192.0.2.6:1 192.0.2.7:1 192.0.2.8:1 192.0.2.9:1\n",
 				 err, sizeof(err), warn, sizeof(warn)),
@@ -1002,27 +977,25 @@ static void test_config_addrs(void)
 	/* The wildcard is still fine where it means "any local address". */
 	CHECK_EQ(cg_config_parse(&c, SERVER "listen = 0.0.0.0:59402\n", err, sizeof(err), warn, sizeof(warn)), 0);
 	cg_config_free(&c);
-	CHECK_EQ(cg_config_parse(&c, CLIENT "listen = [::]:59401\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(cg_config_parse(&c, SERVER "listen = [::]:59402\n", err, sizeof(err), warn, sizeof(warn)), 0);
 	cg_config_free(&c);
 
 	/* IPv4-mapped addresses become IPv4, so they leave through IPv4. */
 	CHECK_EQ(cg_config_parse(&c,
 				 "mode = client\nkey = " KEY "\nserver = [::ffff:203.0.113.10]:59402 [2001:db8::1]:59402\n"
-				 "listen = [::ffff:127.0.0.1]:59401\n[link eth1]\nserver = [::ffff:198.51.100.7]:1\n",
+				 "[link eth1]\nserver = [::ffff:198.51.100.7]:1\n",
 				 err, sizeof(err), warn, sizeof(warn)),
 		 0);
 	CHECK_EQ(c.nserver, 2);
 	CHECK_EQ(c.server[0].ss_family, AF_INET);
 	CHECK_EQ(c.server[1].ss_family, AF_INET6);
-	CHECK_EQ(c.listen.ss_family, AF_INET);
 	CHECK_EQ(c.links[0].server[0].ss_family, AF_INET);
 	CHECK(!strcmp(cg_addr_str(&c.server[0], text, sizeof(text)), "203.0.113.10:59402"));
 	cg_config_free(&c);
-	CHECK_EQ(cg_config_parse(&c, "mode = server\nkey = " KEY "\nwireguard = [::ffff:127.0.0.1]:51820\n", err,
-				 sizeof(err), warn, sizeof(warn)),
+	CHECK_EQ(cg_config_parse(&c, SERVER "listen = [::ffff:127.0.0.1]:59402\n", err, sizeof(err), warn, sizeof(warn)),
 		 0);
-	CHECK_EQ(c.wireguard.ss_family, AF_INET);
-	CHECK_EQ(cg_config_parse(&d, SERVER, err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(c.listen.ss_family, AF_INET);
+	CHECK_EQ(cg_config_parse(&d, SERVER "listen = 127.0.0.1:59402\n", err, sizeof(err), warn, sizeof(warn)), 0);
 	CHECK(cg_config_restart_needed(&c, &d) == NULL); /* the same address */
 	cg_config_free(&c);
 	cg_config_free(&d);
@@ -1177,17 +1150,18 @@ static void test_config_names(void)
 	cg_hosts_path = saved;
 }
 
-/* tunnel = native: the TUN device, the server's routes, and what a reload
- * cannot change in place. */
+/* The tunnel (native, the only kind): the TUN device, the server's routes,
+ * what a reload cannot change in place, and what only WireGuard had (gone in
+ * 0.12, story 027). */
 static void test_config_native(void)
 {
 	static struct cg_config c, o;
 	char err[256], warn[512], buf[64];
 
-	/* The default: WireGuard, nothing about a TUN needed. */
+	/* The defaults: cg0, the system's addresses. */
 	CHECK_EQ(cg_config_parse(&c, CLIENT, err, sizeof(err), warn, sizeof(warn)), 0);
-	CHECK_EQ(c.tunnel, CG_TUNNEL_WIREGUARD);
 	CHECK(!strcmp(c.tun, "cg0"));
+	CHECK_EQ(c.ntun_addr, 0);
 	CHECK_EQ(c.tun_mtu, CG_TUN_MTU_DEFAULT);
 	cg_config_free(&c);
 	CHECK_EQ(cg_config_parse(&c, CLIENT "tun_txqueuelen = 5000\n", err, sizeof(err), warn, sizeof(warn)), 0);
@@ -1197,7 +1171,6 @@ static void test_config_native(void)
 
 #define NATIVE CLIENT "tunnel = native\ntun = cgt\ntun_addr = 10.79.0.2/16 fd00:79::2/64\ntun_mtu = 1400\n"
 	CHECK_EQ(cg_config_parse(&c, NATIVE, err, sizeof(err), warn, sizeof(warn)), 0);
-	CHECK_EQ(c.tunnel, CG_TUNNEL_NATIVE);
 	CHECK(!strcmp(c.tun, "cgt"));
 	CHECK_EQ(c.ntun_addr, 2);
 	CHECK(!strcmp(cg_pfx_str(&c.tun_addr[0], buf, sizeof(buf)), "10.79.0.2/16"));
@@ -1217,25 +1190,32 @@ static void test_config_native(void)
 	o.tun_mtu = 1400;
 	o.ntun_addr = 1;
 	CHECK(!strcmp(cg_config_restart_needed(&c, &o), "tun_addr"));
-	o.tunnel = CG_TUNNEL_WIREGUARD;
-	CHECK(!strcmp(cg_config_restart_needed(&c, &o), "tunnel"));
+	o.ntun_addr = 2;
+	strcpy(o.tun, "cg1");
+	CHECK(!strcmp(cg_config_restart_needed(&c, &o), "tun"));
 	cg_config_free(&c);
 	cg_config_free(&o);
 #undef NATIVE
 
-	bad(CLIENT "tunnel = tun\n", "tunnel", "wireguard or native");
+	bad(CLIENT "tunnel = tun\n", "tunnel", "expected native, got 'tun'");
+	/* WireGuard's mode and keys: refused, with why. */
+	bad(CLIENT "tunnel = wireguard\n", "tunnel", "WireGuard was removed in 0.12");
+	bad(CLIENT "listen = 127.0.0.1:59401\n", "line 4: listen", "WireGuard was removed in 0.12");
+	bad(SERVER "wireguard = 127.0.0.1:51820\n", "line 3: wireguard", "drop this key");
+	bad(SERVER "wireguard_poke = none\n", "line 3: wireguard_poke", "drop this key");
+	bad(SERVER "wireguard_port_file = /var/lib/cengarde/wg/ports\n", "line 3: wireguard_port_file", "drop this key");
+	bad(CLIENT "wireguard_poke = 10.79.0.2:9\n", "line 4: wireguard_poke", "drop this key");
 	bad(CLIENT "tunnel = native\ntun_mtu = 3000\n", "tun_mtu", NULL);
 	bad(CLIENT "tunnel = native\ntun_addr = 10.79.0.2/40\n", "tun_addr", NULL);
 	bad(CLIENT "tunnel = native\ntun = a/b\n", "tun", NULL);
 
-	/* A server with one client needs no WireGuard, and takes everything. */
+	/* A server with one client takes everything. */
 	CHECK_EQ(cg_config_parse(&c, "mode = server\nkey = " KEY "\ntunnel = native\ntun_addr = 10.79.0.1/16\n", err,
 				 sizeof(err), warn, sizeof(warn)),
 		 0);
 	CHECK_EQ(c.ntun_route, 2);
 	CHECK(!strcmp(cg_pfx_str(&c.tun_route[0], buf, sizeof(buf)), "0.0.0.0/0"));
 	CHECK(!strcmp(cg_pfx_str(&c.tun_route[1], buf, sizeof(buf)), "::/0"));
-	CHECK_EQ(c.wireguard_poke.ss_family, AF_UNSPEC); /* no WireGuard to poke */
 	cg_config_free(&c);
 	CHECK_EQ(cg_config_parse(&c, "mode = server\nkey = " KEY "\ntunnel = native\ntun_route = 10.79.0.2\n", err,
 				 sizeof(err), warn, sizeof(warn)),
@@ -1244,8 +1224,6 @@ static void test_config_native(void)
 	CHECK_EQ(c.tun_route[0].len, 32);
 	cg_config_free(&c);
 	bad("mode = server\nkey = " KEY "\ntunnel = native\ntun_route = 10.79.0.1/16\n", "tun_route", "a prefix");
-	/* WireGuard still required without native */
-	bad("mode = server\nkey = " KEY "\n", "wireguard", NULL);
 
 	/* Several clients: each its own routes, never the same prefix. */
 #define TWO(ra, rb)                                                                                     \
@@ -1266,7 +1244,7 @@ static void test_config_native(void)
 	    "tun_route", "in each");
 #undef TWO
 
-	/* the protocontroller (story 025): no, a or b, native only */
+	/* the protocontroller (story 025): no, a or b */
 #define PNAT CLIENT "tunnel = native\ntun_addr = 10.79.0.2/16\n"
 	CHECK_EQ(cg_config_parse(&c, PNAT, err, sizeof(err), warn, sizeof(warn)), 0);
 	CHECK_EQ(c.protocontroller, CG_PCTL_NO);
@@ -1293,7 +1271,8 @@ static void test_config_native(void)
 	CHECK_EQ(c.protocontroller, CG_PCTL_NO);
 	cg_config_free(&c);
 	bad(PNAT "protocontroller = c\n", "protocontroller", "no, a or b");
-	bad(CLIENT "protocontroller = b\n", "protocontroller", "tunnel = native");
+	CHECK_EQ(cg_config_parse(&c, CLIENT "protocontroller = b\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	cg_config_free(&c);
 #undef PNAT
 }
 
@@ -1311,7 +1290,6 @@ void test_config(void)
 	CHECK_EQ(c.nserver, 2);
 	CHECK(!strcmp(cg_addr_str(&c.server[0], buf, sizeof(buf)), "203.0.113.10:59402"));
 	CHECK(!strcmp(cg_addr_str(&c.server[1], buf, sizeof(buf)), "[2001:db8::1]:59402"));
-	CHECK(!strcmp(cg_addr_str(&c.listen, buf, sizeof(buf)), "127.0.0.1:59401"));
 	CHECK_EQ(c.probe_interval_ms, 500);
 	CHECK_EQ(c.probe_idle_ms, 1000);
 	CHECK_EQ(c.mute_behind_ms, 150); /* link health defaults */
@@ -1337,12 +1315,9 @@ void test_config(void)
 	cg_config_free(&c);
 
 	/* Server mode, defaults. */
-	CHECK_EQ(cg_config_parse(&c, "mode = server\nkey = " KEY "\nwireguard = 127.0.0.1:51820\n", err,
-				 sizeof(err), warn, sizeof(warn)),
-		 0);
+	CHECK_EQ(cg_config_parse(&c, SERVER, err, sizeof(err), warn, sizeof(warn)), 0);
 	CHECK_EQ(c.mode, CG_MODE_SERVER);
 	CHECK(!strcmp(cg_addr_str(&c.listen, buf, sizeof(buf)), "[::]:59402"));
-	CHECK(!strcmp(cg_addr_str(&c.wireguard, buf, sizeof(buf)), "127.0.0.1:51820"));
 	CHECK_EQ(c.max_sessions, 64);
 	CHECK_EQ(c.lanes, 8);
 	CHECK(warn[0] == '\0');
@@ -1371,35 +1346,9 @@ void test_config(void)
 		cg_config_free(&c);
 	}
 
-	/* wireguard_poke: the router's end of the tunnel by default, an address,
-	 * or none; never the wildcard. A reload applies it. */
-	CHECK_EQ(cg_config_parse(&c, SERVER, err, sizeof(err), warn, sizeof(warn)), 0);
-	CHECK(!strcmp(cg_addr_str(&c.wireguard_poke, buf, sizeof(buf)), "10.79.0.2:9"));
-	cg_config_free(&c);
-	CHECK_EQ(cg_config_parse(&c, SERVER "wireguard_poke = 10.80.0.6:7\n", err, sizeof(err), warn, sizeof(warn)), 0);
-	CHECK(!strcmp(cg_addr_str(&c.wireguard_poke, buf, sizeof(buf)), "10.80.0.6:7"));
-	CHECK(warn[0] == '\0');
-	{
-		static struct cg_config o;
-
-		CHECK_EQ(cg_config_parse(&o, SERVER, err, sizeof(err), warn, sizeof(warn)), 0);
-		CHECK(cg_config_restart_needed(&o, &c) == NULL);
-		cg_config_free(&o);
-	}
-	cg_config_free(&c);
-	CHECK_EQ(cg_config_parse(&c, SERVER "wireguard_poke = none\n", err, sizeof(err), warn, sizeof(warn)), 0);
-	CHECK_EQ(c.wireguard_poke.ss_family, AF_UNSPEC);
-	CHECK(warn[0] == '\0');
-	cg_config_free(&c);
-	CHECK_EQ(cg_config_parse(&c, SERVER "wireguard_poke = *:9\n", err, sizeof(err), warn, sizeof(warn)), -1);
-	CHECK(!strncmp(err, "wireguard_poke: ", 16));
-	CHECK_EQ(cg_config_parse(&c, CLIENT "wireguard_poke = 10.79.0.2:9\n", err, sizeof(err), warn, sizeof(warn)), 0);
-	CHECK(strstr(warn, "unknown key 'wireguard_poke'") != NULL);
-	cg_config_free(&c);
-
 	/* Link health and latency knobs, the same keys in both modes. */
 	CHECK_EQ(cg_config_parse(&c,
-				 "mode = server\nkey = " KEY "\nwireguard = 127.0.0.1:51820\nmute_behind_ms = 300\n"
+				 "mode = server\nkey = " KEY "\nmute_behind_ms = 300\n"
 				 "mute_trickle = 50\nmin_active_links = 1\nbusy_poll_us = 50\ncpu = 3\nrt_priority = 10\n",
 				 err, sizeof(err), warn, sizeof(warn)),
 		 0);
@@ -1413,19 +1362,19 @@ void test_config(void)
 	CHECK(warn[0] == '\0');
 	cg_config_free(&c);
 	CHECK_EQ(cg_config_parse(&c,
-				 "mode = server\nkey = " KEY "\nwireguard = 127.0.0.1:51820\nmute_behind_ms = 0\n",
+				 "mode = server\nkey = " KEY "\nmute_behind_ms = 0\n",
 				 err, sizeof(err), warn, sizeof(warn)),
 		 0);
 	CHECK_EQ(c.unmute_behind_ms, 0); /* delay muting off */
 	cg_config_free(&c);
 	CHECK_EQ(cg_config_parse(&c,
-				 "mode = server\nkey = " KEY "\nwireguard = 127.0.0.1:51820\nmute_behind_ms = 100\n"
+				 "mode = server\nkey = " KEY "\nmute_behind_ms = 100\n"
 				 "unmute_behind_ms = 150\n",
 				 err, sizeof(err), warn, sizeof(warn)),
 		 -1);
 	CHECK(strstr(err, "unmute_behind_ms") != NULL);
 	CHECK_EQ(cg_config_parse(&c,
-				 "mode = server\nkey = " KEY "\nwireguard = 127.0.0.1:51820\nmin_active_links = 0\n",
+				 "mode = server\nkey = " KEY "\nmin_active_links = 0\n",
 				 err, sizeof(err), warn, sizeof(warn)),
 		 -1);
 	CHECK_EQ(cg_config_parse(&c, "mode = client\nkey = " KEY "\nserver = 192.0.2.1:1\nprobe_interval_ms = 200\n"
@@ -1441,7 +1390,7 @@ void test_config(void)
 	/* Errors carry the key or the line. */
 	CHECK_EQ(cg_config_parse(&c, "mode = client\nkey = " KEY "\n", err, sizeof(err), warn, sizeof(warn)), -1);
 	CHECK(strstr(err, "server") != NULL);
-	CHECK_EQ(cg_config_parse(&c, "mode = server\nkey = c2hvcnQ=\nwireguard = 127.0.0.1:1\n", err,
+	CHECK_EQ(cg_config_parse(&c, "mode = server\nkey = c2hvcnQ=\n", err,
 				 sizeof(err), warn, sizeof(warn)),
 		 -1);
 	CHECK(strstr(err, "key") != NULL);
@@ -1449,13 +1398,13 @@ void test_config(void)
 		 -1);
 	CHECK(strstr(err, "line 3") != NULL);
 	CHECK_EQ(cg_config_parse(&c,
-				 "mode = server\nkey = " KEY "\nwireguard = 127.0.0.1:51820\nmax_sessions = 0\n",
+				 "mode = server\nkey = " KEY "\nmax_sessions = 0\n",
 				 err, sizeof(err), warn, sizeof(warn)),
 		 -1);
 	CHECK(strstr(err, "max_sessions") != NULL);
-	CHECK_EQ(cg_config_parse(&c, "mode = server\nkey = " KEY "\nwireguard = localhost:51820\n", err,
+	CHECK_EQ(cg_config_parse(&c, "mode = server\nkey = " KEY "\nlisten = localhost:59402\n", err,
 				 sizeof(err), warn, sizeof(warn)),
-		 -1); /* wireguard must be numeric */
+		 -1); /* listen must be numeric */
 
 	test_config_reload();
 	test_config_addrs();

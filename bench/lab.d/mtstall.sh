@@ -1,13 +1,13 @@
-# shellcheck shell=bash disable=SC2034 # LAB_CI, ENGINE and NLINKS are read by lab.sh
+# shellcheck shell=bash disable=SC2034 # LAB_CI and NLINKS are read by lab.sh
 # A stalled link thread: "bench/lab.sh mtstall" (PR 3b, docs/historias/011).
 #
 # With link_threads = on each link has a thread that reads its socket, so a
 # thread that does not get the CPU fills only its own link's socket: the
-# copies of the other links reach WireGuard on time. Here, 2000 pps flow in
+# copies of the other links reach the TUN on time. Here, 2000 pps flow in
 # both ways for MTSTALL_S (12) seconds while a SCHED_FIFO busy loop takes
 # one CPU 300 ms of every 2 s; the thread that reads l3, found by name with
 # "cengarde ctl threads", is moved onto that CPU and everything else (the
-# other threads, the server, the fake WireGuards) kept off it. Each stall
+# other threads, the server, the generators) kept off it. Each stall
 # of 300 ms holds about 600 of l3's datagrams, more than its socket keeps
 # (rcvbuf = 256 KiB, doubled by the kernel), so l3 drops.
 #
@@ -54,7 +54,7 @@ mt_run() {
 	# Everything but the stalled thread stays off the busy CPU.
 	taskset -a -p -c "$rest" "$(cat "$RUN/server.pid")" >/dev/null
 	taskset -a -p -c "$rest" "$(cat "$RUN/client.pid")" >/dev/null
-	taskset -p -c "$rest" "$BASHPID" >/dev/null # this subshell: the fake WireGuards inherit it
+	taskset -p -c "$rest" "$BASHPID" >/dev/null # this subshell: the generators inherit it
 	t=cg-hub
 	[ "$mode" = on ] && t=cg-l3
 	tid=$(mt_tid "$t")
@@ -65,10 +65,10 @@ mt_run() {
 		return 1
 	fi
 	taskset -p -c "$cpu" "$tid" >/dev/null
-	ip netns exec "$NS_SRV" "$BIN/udpgen" -b 127.0.0.1:59301 -l -r 2000 -s "$SIZE" -d "$MTSTALL_S" -g 2 >"$RUN/srv.out" &
+	ip netns exec "$NS_SRV" "$BIN/udpgen" -b "$SRV_TUN:59301" -l -r 2000 -s "$SIZE" -d "$MTSTALL_S" -g 2 >"$RUN/srv.out" &
 	gs=$!
 	sleep 0.3 # as in up(): else the server hands the first packets to an unbound port
-	ip netns exec "$NS_CLI" "$BIN/udpgen" -b 127.0.0.1:50000 -p 127.0.0.1:59401 -r 2000 -s "$SIZE" -d "$MTSTALL_S" -g 2 \
+	ip netns exec "$NS_CLI" "$BIN/udpgen" -b "$CLI_TUN:50000" -p "$SRV_TUN:59301" -r 2000 -s "$SIZE" -d "$MTSTALL_S" -g 2 \
 		>"$RUN/cli.out" &
 	gc=$!
 	sleep 1
@@ -111,7 +111,7 @@ mt_dir() {
 
 mtstall() {
 	local fail=0 mode modes="on off legacy" mt_extra=${CLIENT_EXTRA:-}
-	ENGINE=c NLINKS=3
+	NLINKS=3
 	trap teardown EXIT
 	trap 'teardown; exit 130' INT TERM
 	if [ "$(nproc)" -lt 2 ] || ! command -v chrt >/dev/null || ! command -v taskset >/dev/null; then

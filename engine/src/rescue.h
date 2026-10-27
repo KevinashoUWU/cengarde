@@ -5,8 +5,8 @@
  * never sees the loss. On the testnet 1-2 % of the download was lost on
  * every link, and the reorderer could only give those gaps up.
  *
- * The ring: entries of CG_RESC_ENTRY bytes (a header and a WireGuard
- * datagram), in the order they were sent, the oldest overwritten. Each
+ * The ring: entries of CG_RESC_ENTRY bytes (a header and a packet), in the
+ * order they were sent, the oldest overwritten. Each
  * session keeps an index by sequence (CG_RESC_IDX entries, seq modulo it)
  * of where its packets went; a lookup checks the entry's session and
  * sequence, so a packet overwritten since (or a sequence that wrapped the

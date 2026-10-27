@@ -3,14 +3,14 @@ tags: [mapa, pieza]
 archivos:
   - engine/src/reorder.h
   - engine/tests/test_reorder.c
-sello: b24bda4cec74363e
+sello: 39fb428d9f1ec356
 ---
 # Reordenador (reorder.h)
 
 **Grupo:** Recibir — [[Mapa del motor]]
 
 ## Qué hace
-Pone en orden de secuencia lo que llega antes de entregarlo a WireGuard o a la TUN. Retiene lo que llegó adelantado por un tiempo acotado; **nunca tira nada**: cada paquete sale una vez. Un hueco se abandona (1) si se fuerza (desborde, pool lleno), (2) nunca mientras no hay nada retenido, (3) por una retransmisión de TCP con `retx_release`, (4) por **RACK**: cada enlace de `rset` trajo un DATA posterior, o (5) en su **plazo**. El plazo sale del enlace más lento: su retardo más 4 desvíos (`CG_RO_DEV_K`) más el margen, acotado por `max_wait` (si hay reparto) o `dup_wait`.
+Pone en orden de secuencia lo que llega antes de entregarlo a la TUN. Retiene lo que llegó adelantado por un tiempo acotado; **nunca tira nada**: cada paquete sale una vez. Un hueco se abandona (1) si se fuerza (desborde, pool lleno), (2) nunca mientras no hay nada retenido, (3) por una retransmisión de TCP con `retx_release`, (4) por **RACK**: cada enlace de `rset` trajo un DATA posterior, o (5) en su **plazo**. El plazo sale del enlace más lento: su retardo más 4 desvíos (`CG_RO_DEV_K`) más el margen, acotado por `max_wait` (si hay reparto) o `dup_wait`.
 
 ## Lee
 - Primeras copias verificadas del [[Anti-replay (replay.h)]]: secuencia, ts del emisor, flags (`CG_F_SPLIT`, `CG_F_PREV`, `CG_F_FREE`), enlace y hora de llegada.

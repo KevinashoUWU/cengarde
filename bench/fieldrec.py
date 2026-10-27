@@ -25,7 +25,8 @@ not count. Resolution is the sampling interval (status_interval_ms); the
 start of an outage is placed at its last reply, which the engine stamps.
 
 The passive instruments of the engine (status fields "joint", "lost_all" and
-"sizes", packages 0.5.5) add three sections; a recording without them says
+"sizes", packages 0.5.5; "sizes" counted WireGuard's messages and went with
+the WireGuard mode in 0.12) add three sections; a recording without them says
 so and keeps the rest. Their counters are cumulative since the engine
 started: they are differenced between consecutive samples of one run (a
 restart, a gap or a counter that went down starts over, as for the others).
@@ -41,8 +42,8 @@ restart, a gap or a counter that went down starts over, as for the others).
   with an expected link of id 8 or more, and packets whose slot came round
   again before the longest deadline (about 27 kpps and up);
 - lost on every link (download): the tunnel's loss, overall and per hour;
-- WireGuard sizes, per direction: the share of data packets and of bytes at or
-  under each edge, and the handshake counts.
+- WireGuard sizes, per direction (recordings of 0.5.5 to 0.11): the share of
+  data packets and of bytes at or under each edge, and the handshake counts.
 
 The receiver's reorderer (status field "reorder", step 1 of the bonding) adds a
 fourth section, with the same rules: its counters are differenced between
@@ -86,7 +87,7 @@ Export (--export DIR, --export-gzip): tidy CSVs for R and pandas, written while
 the analysis goes through the recording: samples.csv (a row per link per status
 sample, with what fieldrec derives), events.csv (outages, upload and download
 mutes, gaps and restarts), joint.csv (late packets per interval, deadline and
-set of links), tunnel.csv (lost_all and WireGuard sizes per interval), reorder.csv
+set of links), tunnel.csv (lost_all and, before 0.12, WireGuard sizes per interval), reorder.csv
 (the reorderer per interval in long format: the growth of each counter, the
 gauges and the histogram buckets; only if the recording has it) and, with
 --rf, rf.csv and rf_changes.csv; README.txt in DIR lists their columns, units
@@ -343,7 +344,7 @@ class Sample:
 class ServerSample:
     """The status of a server (mode "server"), of which only the reordering of
     each session is read: sessions maps a session's id to (its Reorder, the
-    packets it delivered to WireGuard so far, its client's name or None);
+    packets it delivered so far, its client's name or None);
     pool is parse_pool's tuple."""
     __slots__ = ("up", "wall", "coarse", "synced", "sessions", "pool")
 
@@ -1387,10 +1388,10 @@ def fpair(ref):
     return ("-", "-") if ref is None else (" + ".join(ref["set"]), fp(ref["late_pct"]))
 
 
-def no_data(x, what):
+def no_data(x, what, why="an engine without the passive instruments of 0.5.5"):
     """Say why a section is empty; True if it is."""
     if x is None:
-        print(f"No data: the recording has no `{what}` field (an engine without the passive instruments of 0.5.5).")
+        print(f"No data: the recording has no `{what}` field ({why}).")
     elif not x["intervals"]:
         print(f"No data: {x['skipped_intervals']} intervals skipped (a counter went down or the layout changed).")
     else:
@@ -1524,7 +1525,8 @@ def report_lost(x, utc_offset_h):
 def report_sizes(z):
     w = print
     w("\n## WireGuard sizes\n")
-    if no_data(z, "sizes"):
+    if no_data(z, "sizes", "an engine before 0.5.5, or of 0.12 or later: it counted WireGuard's messages and went "
+                           "with the WireGuard mode"):
         return
     w("Datagram sizes by the engine's edges: the share of data packets and of bytes at or under each one. "
       "Up is what the client read from WireGuard, down what it delivered to it.")
@@ -1599,7 +1601,7 @@ def report_reorder(x, utc_offset_h):
         w("No data: no `reorder` object in the recording (an engine without the receiver's reorderer of story 012, step 1).")
         return
     w("The receiver's reorderer (the status field `reorder`, counters since the engine started, differenced between samples). "
-      "Delivered: packets handed to WireGuard. Held: packets that waited for an earlier one; bypassed: handed on at once for being small. "
+      "Delivered: packets handed on (to the TUN; to WireGuard before 0.12). Held: packets that waited for an earlier one; bypassed: handed on at once for being small. "
       "Lost: gaps it gave up on, because every link had gone past the packet (rack), at its deadline (cap), for lack of room "
       "(overflow) or at a flush. Late after: packets that came after their gap was given up on, by what gave it up (old: too long ago to tell). "
       "Far, resyncs and pool full: packets passed through at once, and the times it picked up the sequence again. "
@@ -2897,7 +2899,7 @@ REORDER_COLS = [SEGMENT_COL] + TIME_COLS + [
     ("client", "text", "server: the name of the session's client, empty with a single one; empty for a client"),
     ("kind", "text", "delta (growth in the interval), gauge (the value at the end of the interval; no row when 0) or hist (growth of one bucket "
                      "of a histogram)"),
-    ("metric", "text", "delta: delivered (packets handed to WireGuard: download.packets for a client, the session's upload_packets for a "
+    ("metric", "text", "delta: delivered (packets handed on, to the TUN or before 0.12 to WireGuard: download.packets for a client, the session's upload_packets for a "
                        "server; a row in every interval counted) and each counter that grew: in_order, held_total, bypassed, split_rx, far, "
                        "resyncs, pool_full, lost_rack, lost_cap, lost_overflow, lost_flush, late_after_rack, late_after_cap, "
                        "late_after_overflow, late_old. gauge: held, held_max, pool_buffers, pool_free, max_burst. hist: wait (hold time of "
@@ -2944,9 +2946,10 @@ EXPORT_NAMES = ("samples.csv", "events.csv", "joint.csv", "tunnel.csv", "reorder
 
 
 def tunnel_cols(edges):
-    """The columns of tunnel.csv: the tunnel's lost_all and WireGuard sizes per interval; the sizes one column per bucket edge."""
+    """The columns of tunnel.csv: the tunnel's lost_all and, for a recording of 0.5.5 to 0.11, WireGuard sizes per interval;
+    the sizes one column per bucket edge."""
     cols = [SEGMENT_COL] + TIME_COLS + [
-        ("down_packets_delta", "packets", "growth of the packets the tunnel delivered to WireGuard (download.packets)"),
+        ("down_packets_delta", "packets", "growth of the packets the tunnel delivered (download.packets)"),
         ("lost_all_delta", "packets", "growth of lost_all: sequences that left the replay window without a copy on any link; empty if the counter "
                                       "went down or the status has none")]
     if edges:
@@ -2996,7 +2999,7 @@ class Exporter:
         self.open("samples.csv", SAMPLES_COLS, "one row per link per status sample the recorder kept")
         self.open("joint.csv", JOINT_COLS, "download: packets late on each set of links, per interval and deadline (from the passive instrument "
                                            "'joint'); only masks that grew")
-        self.open("tunnel.csv", tunnel_cols(self.edges), "the tunnel per interval: packets delivered, lost on every link, WireGuard sizes")
+        self.open("tunnel.csv", tunnel_cols(self.edges), "the tunnel per interval: packets delivered, lost on every link and, before 0.12, WireGuard sizes")
         # Only for a recording that has the field, so that an older one exports what it always did.
         self.server_reorder = any(s.sessions for seg in server for s in seg)
         if self.server_reorder or any(s.reorder for seg in segs for s in seg):

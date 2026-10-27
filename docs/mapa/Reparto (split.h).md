@@ -3,14 +3,14 @@ tags: [mapa, pieza]
 archivos:
   - engine/src/split.h
   - engine/tests/test_split.c
-sello: 2b0121cdcf55ea99
+sello: 907b1381554c3745
 ---
 # Reparto (split.h)
 
 **Grupo:** Decidir · Enviar — [[Mapa del motor]]
 
 ## Qué hace
-Decide por qué enlace va cada paquete cuando se reparte en vez de copiar todo por todos. Por omisión usa un round-robin ponderado suave (el de nginx): pesos 5:1:1 dan `a a b a c a a`. Duplica (pick −1) los handshakes de WireGuard, los datagramas chicos y todo cuando no hay enlace elegible. **G2:** con menos de 2 elegibles, todo va por todos. Peso 0 (sentido de libRIST): copia de todo. Marca `CG_F_SPLIT` bajo el MAC. Si un extremo reparte o no lo decide `cg_split_active` con la cola de bonding del otro.
+Decide por qué enlace va cada paquete cuando se reparte en vez de copiar todo por todos. Por omisión usa un round-robin ponderado suave (el de nginx): pesos 5:1:1 dan `a a b a c a a`. Duplica (pick −1) los paquetes chicos (`split_small`: ACK, handshakes) y todo cuando no hay enlace elegible. **G2:** con menos de 2 elegibles, todo va por todos. Peso 0 (sentido de libRIST): copia de todo. Marca `CG_F_SPLIT` bajo el MAC. Si un extremo reparte o no lo decide `cg_split_active` con la cola de bonding del otro.
 
 ## Lee
 - Portadores de [[Salud y silenciado (health.h)]] (G1: nunca un silenciado), elegibles de [[G3 enlace sin respuesta (split.h)]] y la máscara de [[G4 guarda de dispersión (split.h)]].
@@ -41,4 +41,4 @@ Decide por qué enlace va cada paquete cuando se reparte en vez de copiar todo p
 
 ## Archivos
 - `split.h`; tests `engine/tests/test_split.c`.
-- `client.c`: `split_active`, `split_weights`, `split_masks`, `wg_read`, `send_links`. `server.c`: `down_prepare`, `down_send`.
+- `client.c`: `split_active`, `split_weights`, `split_masks`, `tun_read`, `send_links`. `server.c`: `down_prepare`, `down_send`.

@@ -15,7 +15,7 @@
  * than a cookie's life before and sent again from the client's own address
  * (the cookie is bound to it): the same session, towards the same client,
  * with the wishes it had then until its next probe; what it sent meanwhile
- * goes to WireGuard again, which drops it by its own counters.
+ * goes to the TUN again, as a network may duplicate any packet.
  *
  * HELLOs go only to probes whose MAC verified, are never larger than the
  * probe, and come out of a token bucket (cg_bucket), so the server cannot be

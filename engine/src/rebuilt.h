@@ -6,25 +6,16 @@
  * did not: the MAC covered the members and the repairs, not the sum the
  * decoder made of them. A decoder bug, or a member that was not what the
  * sender coded, gives bytes nobody sent. So, before a rebuilt payload is
- * written to the TUN (or to WireGuard, or a protocontroller stream), it is
- * checked with what it carries:
+ * written to the TUN (or a protocontroller stream), it is checked with what
+ * it carries:
  *
- *  - native, an IP packet: the shape of ippkt.h (version, header length,
+ *  - an IP packet: the shape of ippkt.h (version, header length,
  *    total length == what was rebuilt), then a checksum: TCP, UDP (a
  *    nonzero one), ICMP and ICMPv6 over the whole packet (with the pseudo
  *    header); IPv4 without one of those (a fragment, another protocol,
  *    UDP with checksum 0) by its header checksum. IPv6 without one (an
  *    extension header, a fragment, another protocol) cannot be confirmed.
- *  - native, a protocontroller message (protoctl.h): its tag.
- *  - WireGuard: the type and the length of its message (WireGuard's own
- *    MAC checks the rest; it drops what does not match). A data message
- *    is its 16-byte header, the plaintext padded to a multiple of 16, and
- *    its 16-byte tag; but the padding stops at the interface's MTU, so a
- *    full packet under an MTU that is no multiple of 16 is 32 + MTU bytes
- *    (1412 under the usual 1380, 1452 under 1420), and an MTU is never
- *    under IPv6's 1280: such a length passes from 32 + 1280 on (story 026:
- *    the rule of 16 alone refused every full packet the codes rebuilt in
- *    the lab's WireGuard tunnel, 2 717 of 2 726 in a run).
+ *  - a protocontroller message (protoctl.h): its tag.
  *
  * A random 16-bit sum passes by chance once in 65 536, after the length
  * prefix (rlc.h, rs.h: about one in 40 of 1400-byte garbage) and the IP
@@ -85,8 +76,7 @@ static inline int cg_rb_l4_ok(int ver, const uint8_t *ip, uint8_t proto, const u
 	return cg_rb_fold(cg_rb_sum(s, l4, n)) == 0xffff;
 }
 
-/* A native rebuilt payload (p, len bytes): an IP packet or a stream
- * message. */
+/* A rebuilt payload (p, len bytes): an IP packet or a stream message. */
 static inline int cg_rb_native(const uint8_t *p, size_t len)
 {
 	int ver;
@@ -132,35 +122,11 @@ static inline int cg_rb_native(const uint8_t *p, size_t len)
 	}
 }
 
-/* The smallest MTU a WireGuard interface pads its data messages to (IPv6's
- * minimum link MTU). */
-#define CG_RB_WG_MTU_MIN 1280
-
-/* A WireGuard message's shape (p, len bytes): its type, zero reserved
- * bytes and the length of that type (a data message: its 16-byte header,
- * a multiple of 16 or a full MTU of plaintext, and its 16-byte tag). */
-static inline int cg_rb_wg(const uint8_t *p, size_t len)
-{
-	if (len < 4 || p[1] | p[2] | p[3])
-		return CG_RB_BAD;
-	switch (p[0]) {
-	case 1:
-		return len == 148 ? CG_RB_OK : CG_RB_BAD;
-	case 2:
-		return len == 92 ? CG_RB_OK : CG_RB_BAD;
-	case 3:
-		return len == 64 ? CG_RB_OK : CG_RB_BAD;
-	case 4:
-		return len >= 32 && (len % 16 == 0 || len >= 32 + CG_RB_WG_MTU_MIN) ? CG_RB_OK : CG_RB_BAD;
-	}
-	return CG_RB_BAD;
-}
-
 /* What a rebuilt payload (p, len bytes) shows: CG_RB_OK, CG_RB_BAD or
- * CG_RB_UNSURE; native: the tunnel carries IP (else WireGuard). */
-static inline int cg_rebuilt_check(int native, const uint8_t *p, size_t len)
+ * CG_RB_UNSURE. */
+static inline int cg_rebuilt_check(const uint8_t *p, size_t len)
 {
-	return native ? cg_rb_native(p, len) : cg_rb_wg(p, len);
+	return cg_rb_native(p, len);
 }
 
 #endif

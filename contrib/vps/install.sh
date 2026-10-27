@@ -10,12 +10,14 @@
 #
 #   sudo sh contrib/vps/install.sh
 #
-# Needs build-essential, git, iptables, wireguard-tools and conntrack
-# (cloud-config.yaml installs them). With /etc/cengarde/secret (the
-# cloud-config writes it) its router is imported; without it, add one with
-# "sudo cengarde-vps-setup add NAME ..." (the router's LuCI shows the whole
-# command). From cengarde 0.4: its wg0 becomes cg-router, with the same port
-# and tunnel address, and the service gets a static user. Back to 0.4: "sudo cengarde-vps-setup purge", then the 0.4
+# Needs build-essential, git, iptables and conntrack (cloud-config.yaml
+# installs them). With /etc/cengarde/secret (the cloud-config writes it) its
+# router is imported; without it, add one with "sudo cengarde-vps-setup add
+# NAME ..." (the router's LuCI shows the whole command). The routers'
+# tunnels are the engine's TUN, cg0; a server set up for WireGuard before
+# 0.12 loses it (cengarde-vps-setup: story 027). From cengarde 0.4: its wg0
+# goes, its router keeps its tunnel address, and the service gets a static
+# user. Back to 0.4: "sudo cengarde-vps-setup purge", then the 0.4
 # checkout's install.sh. firewalld is not supported yet: it stops here.
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
@@ -106,7 +108,7 @@ if [ -e "$R/etc/wireguard/wg0.conf" ] &&
 	# one's, which removes 0.4's rules.
 	systemctl disable --now wg-quick@wg0 || :
 	rm -f "$R/etc/wireguard/wg0.conf"
-	say "wg0 stopped and removed; its router comes back as cg-router, same port and tunnel address"
+	say "wg0 stopped and removed; its router comes back through the engine's TUN, same tunnel address"
 fi
 
 say "3/6: install"
@@ -145,15 +147,13 @@ if [ ! -e "$R/etc/cengarde/nat.conf" ]; then
 		# Settings of cengarde-nat and cengarde-vps-setup, as shell variables;
 		# after a change: sudo cengarde-vps-setup. The defaults:
 		#CENGARDE_PORT=65500      the engine's UDP port (the router's "port")
-		#WG_PORT_BASE=65501       router k's WireGuard: 127.0.0.1, this + k
 		#PASSTHROUGH_PORTS=1024:65000  IP pass's range, to the router that asks for it
 		#SSH_PORT=22              never forwarded
 		#FORWARD_ALLOW_LOW=""     ports below 1024 routers may have: "tcp:80 tcp:443"
 		#                         (cengarde-vps-setup forward add NAME tcp:443)
 		#FORWARD_MAX_PORTS=1024   ports a router may forward with its own rules
 		#TUNNEL_IPV6=no           the routers' IPv6 through the tunnels (cengarde-vps-setup ipv6 on)
-		#TUNNEL=wireguard         or native: the engine's TUN, not encrypted (cengarde-vps-setup tunnel native)
-		#PROTOCONTROLLER=no       with native: the routers' TCP split here (cengarde-vps-setup protocontroller on)
+		#PROTOCONTROLLER=no       the routers' TCP split here (cengarde-vps-setup protocontroller on)
 		#FORWARD_RESERVED=""      more ports never forwarded: "udp:5000-5010"
 		#FORWARD_AUTO_RESERVE=yes this server's own listeners and Docker ports
 		#FORWARD_UNRESERVE=""     forwarded even though something listens there

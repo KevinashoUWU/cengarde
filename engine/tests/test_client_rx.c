@@ -119,7 +119,7 @@ static void test_order(void)
 	CHECK(!r.replay.init);
 	CHECK_EQ(l1.last_rx_ms, 0);
 	pkt[CG_HDR_LEN + 5] ^= 1;
-	/* 7. The first copy: marked, noted in the arrival ring, for WireGuard. */
+	/* 7. The first copy: marked, noted in the arrival ring, for the TUN. */
 	CHECK_EQ(cg_rx_entry(&r, &l1, 0, 3, pkt, n, 0, 1000000, 0x3, &h), CG_RXV_DATA);
 	CHECK_EQ(h.seq, 100);
 	CHECK_EQ(cg_replay_check(&r.replay, 100), CG_RP_DUP);

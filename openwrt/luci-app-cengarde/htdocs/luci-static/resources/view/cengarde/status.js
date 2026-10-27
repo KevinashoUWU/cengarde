@@ -95,14 +95,14 @@ function direction(standby, title) {
 // in use, but without a share. It carries a copy of every packet with
 // split_spread_copy (the engine's default, and what an engine up to 0.6.2
 // did, which does not say), or only what goes on every uplink (the small
-// packets, the handshakes) without it.
+// packets) without it.
 function splitNote(l, copy) {
 	if (l.split_share != 'spread')
 		return [];
 	return [ ' ', copy ? badge(_('copies only'), '#68a',
 		_('More than the largest delay difference (Advanced tab) behind the fastest uplink: it carries a copy of every packet instead of a share of the split, until it catches up.'))
 		: badge(_('out of the split'), '#68a',
-		_('More than the largest delay difference (Advanced tab) behind the fastest uplink: it carries only the small packets and the handshakes, which go on every uplink, instead of a share of the split, until it catches up.')) ];
+		_('More than the largest delay difference (Advanced tab) behind the fastest uplink: it carries only the small packets, which go on every uplink, instead of a share of the split, until it catches up.')) ];
 }
 
 function linkState(l) {
@@ -264,26 +264,11 @@ return view.extend({
 			service = badge(_('stopped'), '#c33');
 		rows.push([ _('Service'), service ]);
 
-		if (st.tunnel_mode == 'native') {
-			/* No handshakes: connected while some uplink is live. */
-			const live = e && Array.isArray(e.links) && e.links.some(function(l) { return l.state == 'live'; });
+		/* Connected while some uplink is live. */
+		const live = e && Array.isArray(e.links) && e.links.some(function(l) { return l.state == 'live'; });
 
-			tunnel = live ? badge(_('connected'), '#393') : (st.enabled ? badge(_('waiting for the VPS'), '#d80') : '-');
-		} else if (st.tunnel.handshake > 0) {
-			const ago = st.tunnel.now - st.tunnel.handshake;
-
-			/* Older than the boot, or in the future: the clock was set after
-			 * the handshake (no battery-backed clock), and its age is unknown. */
-			if (ago < 0 || (st.tunnel.uptime > 0 && ago > st.tunnel.uptime))
-				tunnel = badge(_('handshake before the clock was set'), '#d80',
-					_('The router set its clock after this handshake: the next one, within about two minutes of traffic, shows its age.'));
-			else
-				tunnel = (ago > 180) ? badge(_('no handshake for %s').format(age(ago)), '#c33')
-					: E('span', {}, [ badge(_('connected'), '#393'), ' ', _('handshake %s').format(age(ago)) ]);
-		} else {
-			tunnel = st.enabled ? badge(_('waiting for the VPS'), '#d80') : '-';
-		}
-		rows.push([ st.tunnel_mode == 'native' ? _('Native tunnel (not encrypted)') : _('WireGuard tunnel'), tunnel ]);
+		tunnel = live ? badge(_('connected'), '#393') : (st.enabled ? badge(_('waiting for the VPS'), '#d80') : '-');
+		rows.push([ _('Tunnel (not encrypted)'), tunnel ]);
 
 		if (st.tunnel_addr)
 			rows.push([ _('Address in the tunnel'), st.tunnel_addr ]);

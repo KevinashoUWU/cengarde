@@ -3,7 +3,7 @@ tags: [mapa, pieza]
 archivos:
   - engine/src/clientpath.h
   - engine/tests/test_client_rx.c
-sello: 8bbc7c99c8b1f5fe
+sello: 5d9921535c257cf9
 ---
 # Camino del router (clientpath.h)
 
@@ -31,4 +31,4 @@ Las decisiones por paquete del router, iguales en todos los modos de `link_threa
 
 ## Archivos
 - `clientpath.h`; tests `engine/tests/test_client_rx.c`.
-- `client.c`: `link_read` y `hub_slot` (llaman a `cg_rx_entry`), `wg_read`, `fec_send`, `send_nacks` y `on_nack` (`cg_up_header`).
+- `client.c`: `link_read` y `hub_slot` (llaman a `cg_rx_entry`), `tun_read`, `fec_send`, `send_nacks` y `on_nack` (`cg_up_header`).

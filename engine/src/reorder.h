@@ -2,14 +2,14 @@
  * Fase 5 step 1). When the sender splits packets across links of different
  * delay, or the first copy of a packet comes in before that of an earlier
  * one, the receiver holds what came early, for a bounded time, and hands
- * everything on to WireGuard in sequence order. Nothing is ever dropped:
+ * everything on to the TUN in sequence order. Nothing is ever dropped:
  * every packet given to cg_ro_in() comes out exactly once, through its
  * verdict (NOW), cg_ro_next() or cg_ro_flush().
  *
  * Inputs are verified first copies only (arrival.h's rule): a DATA packet
  * whose MAC verified and whose sequence the anti-replay window took as new.
  * The reorderer reads its sequence, the sender's ts and flags (all under the
- * MAC), the link it came on, its length and WireGuard type, and its arrival
+ * MAC), the link it came on, its length, whether it may wait at all, and its arrival
  * time on the local microsecond clock (low 32 bits, as every time here).
  * Verified probes (server) and probe replies (client) give each link's
  * one-way delay through cg_ro_owd(). Duplicates never reach it.
@@ -33,8 +33,9 @@
  *     overflow moves the window just enough and never turns into a resync;
  *   - d >= FAR while holding: NOW (far) and the window stays: what is held
  *     goes at its deadlines, and the first one after that resyncs;
- *   - 0 < d < N and small (cg_ro_bypass: not WireGuard data, or data of at
- *     most bypass_len bytes, or marked free and not a TCP retransmission):
+ *   - 0 < d < N and small (cg_ro_bypass: a packet that never waits, a
+ *     protocontroller stream's message, or one of at most bypass_len bytes,
+ *     or marked free and not a TCP retransmission):
  *     NOW, its slot PASSED so that the head steps over it later;
  *   - 0 < d < N with nothing held, when a drain at its arrival would give up
  *     the whole gap before it (the hold cap is 0, RACK, or forced): the gap
@@ -127,8 +128,8 @@
  *
  * Buffers: the caller owns the pool's memory (struct cg_ro_pool, n buffers
  * of CG_RO_BUF bytes and a stack of free indexes) and the copying.
- *   - HOLD: *buf is the packet's buffer; the caller copies the WireGuard
- *     datagram (len bytes) into cg_ro_pool_buf(p, *buf) before its next
+ *   - HOLD: *buf is the packet's buffer; the caller copies the packet
+ *     (len bytes) into cg_ro_pool_buf(p, *buf) before its next
  *     cg_ro_next() or cg_ro_flush().
  *   - cg_ro_next() or cg_ro_flush() returning 1: o->len bytes in o->buf go
  *     on, after anything handed on before; the caller gives the buffer back
@@ -176,7 +177,6 @@
 #define CG_RO_POOL_MAX 65535u           /* buffers per pool: indexes are 16-bit */
 #define CG_RO_NOBUF 0xffffu
 #define CG_RO_HIST 10                   /* buckets of wait and late_by */
-#define CG_RO_WG_DATA 4                 /* WireGuard's data message type */
 #define CG_RO_DEV_K 4                   /* deviations of a link's delay a gap waits beyond it */
 #define CG_RO_ASK_MAX 64                /* gaps asked for in one drain, at most */
 #define CG_RO_PEND 64                   /* rescue: gaps a link is known to carry, waiting for its next packet */
@@ -210,7 +210,7 @@ struct cg_ro_cfg {
 	uint32_t max_wait_us; /* hold cap for split traffic */
 	uint32_t dup_wait_us; /* hold cap otherwise; at most max_wait_us */
 	uint32_t margin_us;   /* added to the slowest link's delay */
-	uint32_t bypass_len;  /* WireGuard data up to this length is never held */
+	uint32_t bypass_len;  /* packets up to this length are never held */
 	uint8_t by_link;      /* a gap whose link the next packet names waits for that link only */
 	uint32_t rescue_us;   /* a gap about to be given up is asked for and waits this long; 0: never */
 	uint8_t adaptive;     /* each link's margin learns from its late packets (RACK's reo_wnd) */
@@ -221,10 +221,10 @@ struct cg_ro_cfg {
 struct cg_ro_pkt {
 	uint32_t seq, ts; /* verified header */
 	uint32_t t_arr;   /* local arrival time */
-	uint16_t len;     /* of the WireGuard datagram */
+	uint16_t len;     /* of the packet (the DATA payload) */
 	uint8_t link;     /* ids from CG_MAX_LINKS up take no per-link state */
 	uint8_t flags;    /* verified header flags */
-	uint8_t wgtype;   /* the datagram's first byte, 0 when empty */
+	uint8_t nohold;   /* never held: a protocontroller stream's message, which has its own order */
 	uint8_t prev;     /* 1 + the link seq - 1 went on alone (CG_F_PREV), 0: not said */
 	uint8_t retx;     /* CG_F_FREE with TCP data: a TCP retransmission (tcpfree.h's cg_tcp_data) */
 	uint8_t rebuilt;  /* rebuilt by the receiver (a parity, an erasure code), not received */
@@ -390,14 +390,13 @@ static inline void cg_ro_hist_add(uint64_t h[CG_RO_HIST], uint32_t later, uint32
 	h[cg_ro_bucket(d > 0 ? (uint32_t)d : 0)]++;
 }
 
-/* Never held, whatever the window: what is not WireGuard data (handshakes
- * above all), data of at most bypass_len bytes (keepalives, pure ACKs), and
- * what the sender marked free (CG_F_FREE; a TCP retransmission is held, see
- * the top: the caller clears the flag).
- * len is the WireGuard datagram's, its 32 bytes of overhead included. */
-static inline int cg_ro_bypass(const struct cg_ro_cfg *cf, uint8_t wgtype, uint32_t len, uint8_t flags)
+/* Never held, whatever the window: what may not wait (nohold), packets of
+ * at most bypass_len bytes (pure ACKs), and what the sender marked free
+ * (CG_F_FREE; a TCP retransmission is held, see the top: the caller clears
+ * the flag). len is the DATA payload's, the IP packet. */
+static inline int cg_ro_bypass(const struct cg_ro_cfg *cf, uint8_t nohold, uint32_t len, uint8_t flags)
 {
-	return wgtype != CG_RO_WG_DATA || len <= cf->bypass_len || (flags & CG_F_FREE);
+	return nohold || len <= cf->bypass_len || (flags & CG_F_FREE);
 }
 
 static inline void cg_ro_owd_sample(struct cg_ro_link *l, uint32_t raw)
@@ -1130,7 +1129,7 @@ static inline enum cg_ro_v cg_ro_in(struct cg_reorder *r, struct cg_ro_pool *p, 
 	cg_ro_answered(r, s, k->seq, k->rebuilt);
 	if (k->retx && cf->retx_release_us)
 		cg_ro_retx_mark(r, k);
-	if (cg_ro_bypass(cf, k->wgtype, k->len, k->retx ? k->flags & ~CG_F_FREE : k->flags)) {
+	if (cg_ro_bypass(cf, k->nohold, k->len, k->retx ? k->flags & ~CG_F_FREE : k->flags)) {
 		cg_ro_pass(r, s, k->seq);
 		r->st.bypassed++;
 		return CG_RO_NOW;
