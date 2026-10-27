@@ -17,19 +17,22 @@ static void test_lowd_paths(void)
 
 	cg_lowd_init(&o);
 	/* the first message by each link: its own least */
-	CHECK_EQ(cg_lowd_take(&o, 0, off + 10000, 1 * S), off + 10000);
-	d = cg_lowd_take(&o, 1, off + 25000, 1 * S + 1000);
+	CHECK_EQ(cg_lowd_take(&o, 0, off + 10000, 1 * S, 0), off + 10000);
+	d = cg_lowd_take(&o, 1, off + 25000, 1 * S + 1000, 0);
 	CHECK_EQ(d, off + 10000); /* the 15 ms of the longer path taken off */
 	CHECK_EQ(cg_lowd_extra(&o, 1), 15000);
 	CHECK_EQ(cg_lowd_extra(&o, 0), 0);
 	/* a queue of 8 ms on the longer link: it shows over its own least */
-	CHECK_EQ(cg_lowd_take(&o, 1, off + 33000, 1 * S + 2000), off + 18000);
+	CHECK_EQ(cg_lowd_take(&o, 1, off + 33000, 1 * S + 2000, 0), off + 18000);
 	/* and on the shorter one */
-	CHECK_EQ(cg_lowd_take(&o, 0, off + 18000, 1 * S + 3000), off + 18000);
+	CHECK_EQ(cg_lowd_take(&o, 0, off + 18000, 1 * S + 3000, 0), off + 18000);
 	/* no link: as it came */
-	CHECK_EQ(cg_lowd_take(&o, CG_LOWD_NOLINK, off + 99000, 1 * S + 4000), off + 99000);
+	CHECK_EQ(cg_lowd_take(&o, CG_LOWD_NOLINK, off + 99000, 1 * S + 4000, 0), off + 99000);
 	CHECK_EQ(o.samples, 4);
 	CHECK_EQ(o.corrected, 2);
+	/* a gap under min_us stays: within the queue the stream may hold */
+	CHECK_EQ(cg_lowd_take(&o, 1, off + 25000, 1 * S + 5000, 20000), off + 25000);
+	CHECK_EQ(cg_lowd_take(&o, 1, off + 25000, 1 * S + 6000, 15000), off + 10000);
 	(void)cg_lowd_base(&o, 7, &ok);
 	CHECK(!ok);
 	CHECK_EQ(cg_lowd_extra(&o, 7), 0);
@@ -43,26 +46,26 @@ static void test_lowd_window(void)
 	int ok;
 
 	cg_lowd_init(&o);
-	cg_lowd_take(&o, 0, 10000, 1 * S);
-	cg_lowd_take(&o, 1, 25000, 1 * S);
+	cg_lowd_take(&o, 0, 10000, 1 * S, 0);
+	cg_lowd_take(&o, 1, 25000, 1 * S, 0);
 	/* the path of link 1 grows longer (a handover): within a bucket its
 	 * least stays, then it follows */
-	cg_lowd_take(&o, 1, 40000, 2 * S);
+	cg_lowd_take(&o, 1, 40000, 2 * S, 0);
 	CHECK_EQ(cg_lowd_extra(&o, 1), 15000);
-	cg_lowd_take(&o, 0, 10000, 1 * S + CG_LOWD_WIN_US); /* a new bucket */
-	cg_lowd_take(&o, 1, 40000, 1 * S + CG_LOWD_WIN_US + 1);
+	cg_lowd_take(&o, 0, 10000, 1 * S + CG_LOWD_WIN_US, 0); /* a new bucket */
+	cg_lowd_take(&o, 1, 40000, 1 * S + CG_LOWD_WIN_US + 1, 0);
 	CHECK_EQ(cg_lowd_extra(&o, 1), 15000); /* the last bucket still has 25 */
-	cg_lowd_take(&o, 0, 10000, 1 * S + 2 * CG_LOWD_WIN_US);
-	cg_lowd_take(&o, 1, 40000, 1 * S + 2 * CG_LOWD_WIN_US + 1);
+	cg_lowd_take(&o, 0, 10000, 1 * S + 2 * CG_LOWD_WIN_US, 0);
+	cg_lowd_take(&o, 1, 40000, 1 * S + 2 * CG_LOWD_WIN_US + 1, 0);
 	CHECK_EQ(cg_lowd_extra(&o, 1), 30000);
 	/* a link idle for two buckets is forgotten */
-	cg_lowd_take(&o, 0, 10000, 1 * S + 5 * CG_LOWD_WIN_US);
+	cg_lowd_take(&o, 0, 10000, 1 * S + 5 * CG_LOWD_WIN_US, 0);
 	cg_lowd_base(&o, 1, &ok);
 	CHECK(!ok);
 	/* the 32-bit clock wraps between two samples */
 	cg_lowd_init(&o);
-	cg_lowd_take(&o, 0, INT32_MAX - 5000, 1 * S);
-	CHECK_EQ(cg_lowd_take(&o, 1, (int32_t)((uint32_t)INT32_MAX + 10000), 1 * S), INT32_MAX - 5000);
+	cg_lowd_take(&o, 0, INT32_MAX - 5000, 1 * S, 0);
+	CHECK_EQ(cg_lowd_take(&o, 1, (int32_t)((uint32_t)INT32_MAX + 10000), 1 * S, 0), INT32_MAX - 5000);
 	CHECK_EQ(cg_lowd_extra(&o, 1), 15000);
 }
 

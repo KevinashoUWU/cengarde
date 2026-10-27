@@ -100,8 +100,14 @@ static inline uint32_t cg_lowd_extra(const struct cg_lowd *o, unsigned i)
 }
 
 /* A message that came by link at now with delay d: into the link's least,
- * and d less what the link adds (d itself without a link). */
-static inline int32_t cg_lowd_take(struct cg_lowd *o, unsigned link, int32_t d, uint64_t now)
+ * and d less what the link adds when that is at least min_us (d itself
+ * without a link). min_us, the queue the stream may hold
+ * (protocontroller_queue_ms): a gap under it is within what the stream
+ * tolerates, and taking it off let the stream hold the whole queue on every
+ * link (four links within 8 ms, stall50: the 1200-byte ping's p99 from 262
+ * to 423 ms, the throughput the same); the gaps that hurt (15 to 130 ms:
+ * the collapse, STARTUP's false ends) are larger. */
+static inline int32_t cg_lowd_take(struct cg_lowd *o, unsigned link, int32_t d, uint64_t now, uint32_t min_us)
 {
 	uint32_t x;
 
@@ -113,6 +119,8 @@ static inline int32_t cg_lowd_take(struct cg_lowd *o, unsigned link, int32_t d, 
 	o->have[link] |= 1;
 	o->samples++;
 	x = cg_lowd_extra(o, link);
+	if (x < min_us)
+		x = 0;
 	if (x)
 		o->corrected++;
 	return (int32_t)((uint32_t)d - x);

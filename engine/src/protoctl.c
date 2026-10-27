@@ -1069,7 +1069,7 @@ static void data_in(struct cg_pctl *p, struct flow *f, const struct cg_pctl_msg 
 	 * adds over the shortest one (linkowd.h, task #77: the engine says
 	 * the link); a message the tunnel's codes rebuilt gives none */
 	if (link != CG_PCTL_NOLINK) {
-		int32_t d = cg_lowd_take(&peer_of(p, f)->lo, link, (int32_t)((uint32_t)now - m->ts), now);
+		int32_t d = cg_lowd_take(&peer_of(p, f)->lo, link, (int32_t)((uint32_t)now - m->ts), now, p->ccf.queue_us);
 
 		cg_lowd_ack_add(&f->la, link, d);
 
