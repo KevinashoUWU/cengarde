@@ -206,8 +206,8 @@ T = {
  "protocontroller_max_flows": ([G], BOTH, "256", "1–65535", [PCTL], ["025"], "Conexiones a la vez; la siguiente se rehúsa con RST."),
  "protocontroller_queue_ms": ([G], BOTH, "5", "1–1000", [PCTL], ["025"], "Variante B: la cola que el tramo del medio puede armar sobre su menor ida y vuelta: más, y el ritmo baja a lo entregado (`streamcc.h`)."),
  "protocontroller_backlog_ms": ([G], BOTH, "200", "10–10000", [PCTL], ["025"], "Variante B: lo que un flujo guarda sin enviar o sin escribir, en tiempo a su ritmo (al menos 64 KB): la contrapresión hacia el emisor."),
- "protocontroller_dead_s": ([G], BOTH, "60", "0–3600", [PCTL], ["025"], "Variante B: un flujo sin avance este tiempo, con algo pendiente (el túnel caído), se cierra con RST en los dos lados; 0: nunca."),
- "protocontroller_reo_ms": ([G], BOTH, "10", "0–1000", [PCTL], ["025"], "Variante B: la ventana de RACK sobre un cuarto de la ida y vuelta (la reparación del túnel va primero); un duplicado la agranda 4 ms (hasta 100) y vuelve sola."),
+ "protocontroller_dead_s": ([G], BOTH, "60", "0–3600", [PCTL], ["025"], "Variante B: un flujo sin avance este tiempo, con algo pendiente (el túnel caído), se cierra con RST en los dos lados; cuenta desde el último mensaje del otro lado o desde que el flujo vuelve a tener algo en vuelo; 0: nunca."),
+ "protocontroller_reo_ms": ([G], BOTH, "10", "0–1000", [PCTL], ["025"], "Variante B: la ventana de RACK sobre un cuarto de la ida y vuelta (la reparación del túnel va primero); un duplicado la agranda 4 ms (hasta 100) y vuelve sola; con un código o el rescate, al menos el horizonte de reparación del motor (historia 028)."),
  "protocontroller_cc": ([G], SRVS, "`auto`", "`auto`, un control de congestión del kernel, o vacío", [PCTL], ["025"], "Control de congestión del TCP del VPS hacia el destino; `auto`: el del kernel (cubic) y BBR en cuanto ese tramo pierde (sin el ProbeRTT de BBR para el vídeo en vivo); si el kernel no lo tiene, el suyo (un aviso)."),
 }
 

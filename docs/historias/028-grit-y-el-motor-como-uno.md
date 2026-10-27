@@ -1,13 +1,15 @@
 # 028 — GRIT y el motor como uno: la vista compartida
 
 - **Fecha:** 2026-10-27
-- **Estado:** vigente (primer paso hecho; los siguientes, en «Pendiente»)
+- **Estado:** vigente (dos pasos hechos: el retardo por enlace y el horizonte
+  de reparación; los siguientes, en «Pendiente»)
 - **Fuentes:** `engine/src/linkowd.h`, `engine/tests/test_linkowd.c`,
   `protoctl.c` (`data_in`, `send_ack`, el estado `pacers`), `client.c`
   (`down_deliver`), `server.c` (`up_deliver`); historias 025 (GRIT, el
   colapso de la bajada, el estimador desbocado, el arranque) y 023 (el
   rescate, la PARQ); tarea #77; laboratorio `bench/labq.py` con
-  `BOND_PEP=cgb`, datos en `~/campo/2026-10-27/gshare{1,2,3}/`.
+  `BOND_PEP=cgb`, datos en `~/campo/2026-10-27/gshare{1,2,3}/`, `bondvs/`,
+  `nackfirst/out45/` y `nackfirst-nofec/`.
 
 ## TL;DR
 
@@ -27,6 +29,25 @@
   de ping significativo); **protect de bajada ×1,16 y el ping de 1200 B p99
   de 766 a 274 ms**, de subida de 342 a 159 ms; idleslow de subida ×1,34
   (+35 ms de ping), stall50 igual. 0 colapsos.
+- **Segundo paso, hecho: el horizonte de reparación, NACK primero.** El
+  motor le dice a GRIT cuánto puede esperar un hueco en el receptor: lo
+  que tarda el código en repararlo (`rescue_code_ms`, mientras la FEC
+  manda reparaciones) más la espera del rescate (con el rescate encendido).
+  El NACK del túnel es exacto (un hueco se pide cuando su propio enlace
+  trae algo posterior), así que RACK solo cubre un NACK perdido. Antes
+  ~85–100 % de lo que RACK reenviaba llegaba duplicado, también sin pérdida
+  (`equal`, `het`: 1–4 % de los DATA dos veces, por el desorden entre
+  enlaces). Ahora: duplicados de miles a decenas, el ping p99 de 1200 B
+  baja a la mitad en `equal`, `lossy` y `stall50`, el caudal igual o
+  mejor (+4 a +12 %).
+- **Un error de GRIT, corregido:** `protocontroller_dead_s` contaba desde el
+  último mensaje recibido, así que un flujo ocioso más de 60 s (SSH, el
+  control de iperf) se reseteaba al mandar su siguiente byte. Ahora cuenta
+  desde que vuelve a tener algo en vuelo.
+- **Bonding contra los estados anteriores** (n = 8): GRIT le gana al Split
+  TCP en `equal`, `lossy`, `protect` y `single1` (+5 a +30 %), empata en
+  `het`, `idleslow` y `stall50`, y **pierde en `cell4`** (−15 a −20 %); al
+  TCP directo le gana en 13 de 16 celdas (×1,15–2,15).
 - Ya eran parte de esta vista, sin ese nombre: el NACK del túnel como
   pérdida confirmada para GRIT, con su enlace (#122); los bytes de GRIT que
   el reordenador no retiene; las copias prioritarias; la capacidad del
@@ -43,7 +64,7 @@
 | GRIT → motor | «estos bytes son míos»: no se retienen, copias prioritarias | `cg_pctl_is`, `nohold`, `pnc`/`prc` | hecho (025) |
 | GRIT → motor | bytes que la pérdida no frena | `cg_f3_mix` | hecho (026) |
 | GRIT → motor | lo que GRIT recupera (el rescate no lo repite) | `on_nack` | hecho (#122) |
-| motor → GRIT | el horizonte de las reparaciones de un hueco | — | pendiente |
+| motor → GRIT | el horizonte de las reparaciones de un hueco | `ops.horizon`, `cg_scc_reo_win` | **hecho** (esta historia) |
 | motor → GRIT | microcortes, bordes de ranura de Starlink | — | pendiente |
 | GRIT → motor | prioridad y plazo de cada flujo (vivo o bulto) | — | pendiente |
 | GRIT → motor | un flujo que empieza (sondear los enlaces antes) | — | pendiente |
@@ -96,11 +117,96 @@ stall50, sin diferencia significativa. La 2 daba más caudal en idleslow
 (×1,6) a costa de ~100–150 ms de ping: se eligió la 3 por contener el
 costo.
 
+## El horizonte de reparación: NACK primero
+
+RACK da por perdido un segmento cuando ya llegó otro enviado más de una
+ventana después (un cuarto del RTT mínimo más `protocontroller_reo_ms`, que
+cada duplicado agrandaba 4 ms: hasta 20 sin código, hasta el `rescue_code_ms`
+con código). Esa ventana era más corta que la reparación del código (una
+detención: ~170 ms, historia 026) y que el desorden entre enlaces, así que
+RACK le ganaba al código y al NACK y su reenvío llegaba repetido: `lossy`
+940 de 940, `stall50` 3918 de 4576; en `equal` y `het`, sin una sola
+pérdida, 1000–4000 duplicados por corrida.
+
+El túnel sabe más: cada paquete dice por qué enlace fue el anterior
+(`CG_F_PREV`) y los enlaces entregan en orden, así que el reordenador pide
+un hueco apenas ese mismo enlace trae algo posterior (`reorder.h`), sea cual
+sea el retardo de los otros. Ese NACK sale por los dos enlaces más rápidos y
+se repite dentro de la espera del rescate.
+
+- `protoctlio.h`: `ops.horizon(peer, sid)`, lo que un hueco puede esperar:
+  `rescue_code_ms` si el código manda reparaciones ahora (FEC v3 con su
+  parte o los códigos de `redund_spare`) más `cg_rescue_wait_ms` si el
+  rescate está encendido (`reorder` y `rescue_kb`); 0, ninguno.
+- `streamcc.h`: `cg_scc_reo_win`, la ventana de RACK sobre un cuarto del RTT
+  mínimo es al menos el horizonte (a lo más 1 s) desde el comienzo; con
+  pérdida pesada, `protocontroller_reo_ms` como antes. El tick de
+  `protoctl.c` lo pregunta por par; el estado lo muestra (`horizon_ms`).
+- Así el NACK llega primero (alrededor de un cuarto del RTT antes que RACK)
+  y RACK queda de respaldo si se pierden el NACK y su repetición. Sin
+  rescate, todo sigue como antes.
+
+## El temporizador de flujo muerto
+
+`protocontroller_dead_s` (60) cierra un flujo con algo pendiente que no
+avanza (el túnel caído). Contaba desde el último mensaje del otro lado:
+un flujo ocioso más de eso (una sesión SSH, el control de iperf, un
+websocket) se cerraba con RST al mandar su siguiente byte, antes de que
+pudiera volver el ACK. Lo encontró la matriz de 60 s, que falló entera
+(iperf: «unable to send control message»); con `dead_s = 300` pasaba, y un
+registro temporal mostró el flujo establecido con 1 byte en vuelo. Ahora un
+flujo sin nada en vuelo reinicia la cuenta al enviar (`send_one`). Venía al
+menos desde 0.12.0.
+
+### El horizonte de reparación
+
+`bondvs` (n = 8, 20 s, FEC v3 y rescate, `grit` = horizonte con código
+frente a `grit0` = solo el retardo por enlace): duplicados `equal` 2160 →
+472, `het` 2974 → 82, `lossy` ~1000 → 0, `stall50` 3379 → 237 y 4114 → 8;
+ping p99 `equal` 322 → 152, `lossy` 216 → 108, `stall50` 357 → 196 y 379 →
+170 (p ≤ 0,04); caudal igual o +2 a +7 %; `protect`, `single1` y `cell4` sin
+cambio.
+
+`nackfirst/out45` (n = 6, 45 s, para que la FEC deje de arrancar; `grit2` =
+NACK primero siempre): caudal frente a `grit0` +6 y +12 % en `equal`
+(p ≤ 0,05), +11 % en `het` de bajada (p 0,01), +3/+4 % en `stall50` (p ≤
+0,01), igual en el resto; duplicados `het` 3176 → 6, `reorder150` 392–916 →
+0, `lossy` 745–1418 → 0–1, `stall50` 6110–8080 → 659–1151; ping p99
+`stall50` de bajada 377 → 228 y `equal` 254 → 178 (p 0,01).
+
+Sin FEC, con rescate (`nackfirst-nofec`, n = 6, 30 s): `lossy` duplicados
+12546 → 398 y 8450 → 188, ping p99 191 → 144 y 164 → 139 (p ≤ 0,02);
+`cell4` caudal +17 y +28 % (p ≤ 0,01), ping 338 → 300 y 458 → 267.
+
+### Bonding: TCP directo, Split TCP y GRIT
+
+`bondvs` (n = 8, 20 s; misma topología: LAN → router → túnel → VPS → 50 ms
+al destino; Mbit/s, bajada / subida):
+
+| Caso | TCP directo | Split TCP | GRIT | GRIT / Split |
+| --- | --- | --- | --- | --- |
+| `equal` 2×50 | 58 / 63 | 68 / 68 | 76 / 72 | +11 / +6 % |
+| `het` 60+30+10 | 29 / 54 | 63 / 63 | 62 / 63 | igual |
+| `idleslow` | 40 / 39 | 60 / 62 | 53 / 69 | −11 / +12 % (n.s.) |
+| `lossy` 1 % | 65 / 67 | 84 / 93 | 95 / 99 | +14 / +7 % |
+| `cell4` | 25 / 31 | 33 / 33 | 27 / 28 | −20 / −15 % |
+| `stall50` | 50 / 40 | 55 / 53 | 53 / 56 | −4 / +6 % |
+| `protect` | 24 / 22 | 40 / 35 | 46 / 46 | +15 / +30 % |
+| `single1` | 21 / 19 | 34 / 33 | 36 / 36 | +5 / +11 % |
+
+El ping p99 de GRIT es el más bajo en `equal`, `het`, `lossy` y `stall50`
+(152 frente a 398 ms del Split en `equal`) y el más alto en `cell4` (413
+frente a 296).
+
 ## Pendiente
 
-- **El horizonte de las reparaciones:** que el motor le diga a GRIT si un
-  hueco lo cubre un código y cuándo llega la reparación, en vez del margen
-  fijo de su RACK (`rescue_code_ms`, hasta 100 ms).
+- **`cell4`** (cuatro celulares de 20/15/10/5 Mbit/s, colas hondas, 0,3–0,5 %
+  de pérdida): GRIT pierde con el Split TCP (−15 a −20 %) y aún duplica
+  ~3500 segmentos por corrida, con o sin horizonte. Sospecha: el techo de la
+  capacidad del motor en celulares con pérdida suelta. Hace falta una
+  corrida con muestreo del estado.
+- **`reorder50`:** con el horizonte el ping p99 de bajada sube (129 → ~300
+  ms, p 0,02–0,05) sin bajar los duplicados.
 - **Usar la pérdida por enlace** que el NACK ya trae: que el reparto la
   tome como pérdida de datos real, no solo de sondas.
 - **Un flujo que empieza:** que GRIT le avise al motor para sondear los
@@ -114,3 +220,6 @@ costo.
 
 - 2026-10-27: creada. El retardo por enlace (`linkowd.h`), tres variantes
   medidas.
+- 2026-10-27: el horizonte de reparación (NACK primero), el temporizador de
+  flujo muerto corregido, el bonding contra el Split TCP y el TCP directo, y
+  `cell4` como pendiente.

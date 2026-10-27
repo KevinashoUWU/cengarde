@@ -7,7 +7,7 @@ archivos:
 
 # `protocontroller_dead_s`
 
-Variante B: un flujo sin avance este tiempo, con algo pendiente (el túnel caído), se cierra con RST en los dos lados; 0: nunca.
+Variante B: un flujo sin avance este tiempo, con algo pendiente (el túnel caído), se cierra con RST en los dos lados; cuenta desde el último mensaje del otro lado o desde que el flujo vuelve a tener algo en vuelo; 0: nunca.
 
 - **Sección:** global
 - **Extremo:** los dos
