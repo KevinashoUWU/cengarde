@@ -3,7 +3,7 @@ tags: [mapa, pieza]
 archivos:
   - engine/src/split.h
   - engine/tests/test_split.c
-sello: 907b1381554c3745
+sello: 2255eb198b74e539
 ---
 # Reparto (split.h)
 
@@ -36,7 +36,7 @@ Decide por qué enlace va cada paquete cuando se reparte en vez de copiar todo p
 - [[015-modelo-de-enlace]] §8: con un Starlink dominante, el reparto daba 135 frente a 294 de Starlink solo.
 
 ## Choques conocidos
-- C13: G4, la cosquilla, `split_stress_single`, `cg_sdup` y la FEC reescriben la misma máscara `eligible`; bajo `stress_single` la FEC solo arma grupos de uno y la cosquilla no corre ([[audit-pending]], tarea #52).
+- C13 (resuelto, 2026-10-26): los enlaces de un paquete repartido salen de **un** lugar y en **un** orden, `cg_split_plan`: G3/G4 (los del lote) → el más rápido solo bajo estrés (`split_stress_single`) → el tope de la XOR por enlace (`fec_share_max`, solo con la XOR) → copia en todos los portadores bajo estrés (`cg_sdup`) → la cosquilla y el ETA eligen entre lo que queda (la cosquilla solo con 2 enlaces o más). Cada paso solo achica. La XOR agrupa por lo que el paquete puede tomar de verdad (antes, bajo `stress_single`, por todos los enlaces: grupos de uno); la FEC v3 sigue ganando reparaciones por los paquetes copiados (bajo estrés rehacen los repartidos retenidos en el enlace lento: sin ellas el ping de 1200 B empeoraba en `ltespikerand`). El estado cuenta qué paso decidió cada paquete (`split_plan`: `split`, `single`, `share`, `copy`). Con la FEC v3 el comportamiento es el de antes: matriz n = 6 neutra (0,88–1,10×, n.s.).
 - Sin reordenador del otro lado, repartir es peor que redundancia: por eso es experimental.
 
 ## Archivos

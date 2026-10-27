@@ -329,6 +329,7 @@ struct client {
 	uint64_t fec_why[4];               /* closed full, evicted (span or no slot), at the deadline, split off */
 	struct cg_fec_share fec_share;     /* each link's recent share, for fec_share_max */
 	uint64_t fec_capped;               /* split packets a link at the cap did not take */
+	uint64_t plan_n[CG_PLAN_N];        /* split packets by the step that set their links last (split.h's cg_split_plan) */
 	uint32_t fec_ia_us;                /* mean gap between protected packets, for the deadline */
 	unsigned fec_k;                    /* members of a full group now */
 	uint64_t fec_last_us;
@@ -2329,28 +2330,37 @@ static void up_one(struct client *c, struct upctx *u, int m, uint8_t *buf, size_
 	uint16_t elig;
 	uint8_t flags = 0;
 	int stress, split = u->split;
+	struct cg_split_plan plan;
 
 	if (len > c->up_max)
 		c->up_max = (uint32_t)len; /* for the path MTU check */
 	/* With fec, a link over fec_share_max of the recent split DATA
 	 * sits this packet out (fec.h). */
+	/* The links it may take, in one order (split.h's cg_split_plan, audit
+	 * C13): G3/G4 (the batch's), the lead alone under stress, the XOR's cap
+	 * per link (only with the XOR), a copy on every carrier under stress */
 	elig = cg_split_stress_elig(&c->spread, u->k.eligible, c->cfg->split_stress_single);
-	if (c->cfg->fec && split) {
-		uint16_t e = cg_fec_share_mask(&c->fec_share, elig, c->cfg->fec_share_max);
+	{
+		uint16_t share = c->cfg->fec && c->cfg->fec_code == CG_FEC_XOR && split
+					 ? cg_fec_share_mask(&c->fec_share, elig, c->cfg->fec_share_max)
+					 : elig;
 
-		c->fec_capped += e != elig;
-		elig = e;
+		c->fec_capped += share != elig;
+		/* Under G4's stress, on its budget: a copy on every carrier. */
+		stress = split && cg_sdup(&c->sdup, c->spread.stress, (uint32_t)len,
+					  (unsigned)__builtin_popcount(u->carry), c->cfg->split_stress_dup);
+		plan = cg_split_plan(u->k.eligible, elig, share, stress);
+		elig = plan.pick;
+		if (split)
+			c->plan_n[plan.by]++;
 	}
-	/* Under G4's stress, on its budget: a copy on every carrier. */
-	stress = split && cg_sdup(&c->sdup, c->spread.stress, (uint32_t)len, (unsigned)__builtin_popcount(u->carry),
-				  c->cfg->split_stress_dup);
 	/* A dominant link (dominant.h): the split steps aside, every
 	 * packet goes as in redundancy (the copies paced, eta.h). */
 	c->pick[m] = (int8_t)(copy ? -1
 			      : split && !c->dom.out
 				      ? cg_split_pick_eta(&c->sp, c->cfg->split_eta ? &c->eta : NULL,
 							  c->cfg->split_eta ? &c->tk : NULL, now_us, u->k.carriers,
-							  stress ? 0 : elig, u->k.dup, u->w, (uint32_t)len, c->cfg->split_small, &flags)
+							  elig, u->k.dup, u->w, (uint32_t)len, c->cfg->split_small, &flags)
 				      : cg_slot_pick(u->esolo, (uint32_t)len, CG_PACE_SMALL, &flags));
 	c->up_split += c->pick[m] >= 0;
 	c->tcpk[m] = 0;
@@ -2395,8 +2405,9 @@ static void up_one(struct client *c, struct upctx *u, int m, uint8_t *buf, size_
 	} else if (c->cfg->fec && split) {
 		int only = cg_split_only(c->pick[m], u->carry, u->k.dup);
 
+		/* grouped by the links it may really take (cg_split_plan) */
 		fec_feed(c, c->sseq[m], c->pick[m] < 0 && c->cfg->mute_trickle ? -1 : only, buf, len, now_us,
-			 u->k.eligible);
+			 plan.xor_by);
 	}
 	c->oiov[m][0].iov_base = c->hdr[m];
 	c->oiov[m][0].iov_len = CG_HDR_LEN;
@@ -4276,6 +4287,13 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 	cg_json_u64(j, "g2", c->sp.n_by[CG_SPLIT_BY_G2]);
 	cg_json_u64(j, "all", c->sp.n_by[CG_SPLIT_BY_ALL]);
 	cg_json_u64(j, "tickle", c->sp.n_by[CG_SPLIT_BY_TICKLE]);
+	cg_json_end(j, '}');
+	/* which step set a split packet's links last (cg_split_plan, audit C13) */
+	cg_json_obj(j, "split_plan");
+	cg_json_u64(j, "split", c->plan_n[CG_PLAN_SPLIT]);
+	cg_json_u64(j, "single", c->plan_n[CG_PLAN_SINGLE]);
+	cg_json_u64(j, "share", c->plan_n[CG_PLAN_SHARE]);
+	cg_json_u64(j, "copy", c->plan_n[CG_PLAN_COPY]);
 	cg_json_end(j, '}');
 	/* What picks the link of a split packet now (decrec.h): with "eta" the
 	 * gov_weight and cap_weight of the links are not used. */

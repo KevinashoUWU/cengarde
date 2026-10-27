@@ -3,7 +3,7 @@ tags: [mapa, pieza]
 archivos:
   - engine/src/split.h
   - engine/tests/test_split.c
-sello: 907b1381554c3745
+sello: 2255eb198b74e539
 ---
 # Copias bajo estrés (split.h)
 
@@ -29,7 +29,7 @@ Mientras [[G4 guarda de dispersión (split.h)]] está en estrés, un paquete rep
 
 ## Choques conocidos
 - C10: `cg_sdup` acumula hasta 1 MiB y lo gasta en ráfaga al empezar el estrés ([[audit-pending]], tarea #51).
-- C13: reescribe `eligible` junto con la FEC, la cosquilla y `stress_single`.
+- C13 (resuelto): es el paso 4 de `cg_split_plan` ([[Reparto (split.h)]]): una copia no elige enlace; la FEC v3 igual gana reparaciones por ella (bajo estrés rehacen los repartidos del enlace lento).
 
 ## Archivos
 - `split.h` (`cg_sdup`, `CG_SDUP_CAP`, `cg_split_stress_elig`).

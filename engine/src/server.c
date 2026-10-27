@@ -239,6 +239,7 @@ struct session {
 	uint64_t not_ip, spoofed; /* upload not written to the TUN (not IP; a source not the client's) */
 	uint32_t rot; /* download batches sent: the first path of each rotates */
 	uint64_t down_split; /* of down_pkts, packets split (split.h) instead of copied to every path */
+	uint64_t plan_n[CG_PLAN_N]; /* split packets by the step that set their paths last (cg_split_plan) */
 	struct cg_split sp;  /* the split's round-robin credits */
 	struct cg_spread spread; /* guard G4: the paths of similar delay that share the split (split.h) */
 	struct cg_sdup sdup;     /* copies under G4's stress, on a budget */
@@ -2555,16 +2556,23 @@ static void down_prepare(struct server *s, struct session *S, int m, uint8_t *bu
 	const struct client *C = client_of(s, S);
 	struct cg_hdr h = { .type = CG_T_DATA, .hint = C->hint, .session = S->id, .ts = (uint32_t)now_us };
 
-	/* Under G4's stress, on its budget: a copy on every carrier. */
+	/* The paths it may take, in one order (split.h's cg_split_plan, audit
+	 * C13): G3/G4 (the batch's), the lead alone under stress, a copy on
+	 * every carrier under stress (cg_sdup) */
+	uint16_t single = cg_split_stress_elig(&S->spread, d->k.eligible, s->cfg->split_stress_single);
 	int stress = d->split && cg_sdup(&S->sdup, S->spread.stress, (uint32_t)len, (unsigned)__builtin_popcount(d->carry),
 					 s->cfg->split_stress_dup);
+	struct cg_split_plan plan = cg_split_plan(d->k.eligible, single, single, stress);
+
+	if (d->split)
+		S->plan_n[plan.by]++;
 
 	/* Before the header: CG_F_SPLIT is under the MAC. A dominant path
 	 * (dominant.h): the split steps aside, every packet goes as in
 	 * redundancy (the copies paced, eta.h). */
 	s->pick[m] = (int8_t)(d->split && !S->dom.out ? cg_split_pick_eta(&S->sp, s->cfg->split_eta ? &S->eta : NULL,
 							   s->cfg->split_eta ? &S->tk : NULL, now_us,
-							   d->k.carriers, stress ? 0 : cg_split_stress_elig(&S->spread, d->k.eligible, s->cfg->split_stress_single), d->k.dup, d->w,
+							   d->k.carriers, plan.pick, d->k.dup, d->w,
 							   (uint32_t)len, s->cfg->split_small, &h.flags)
 				       : cg_slot_pick(d->esolo, (uint32_t)len, CG_PACE_SMALL, &h.flags));
 	S->down_split += s->pick[m] >= 0;
@@ -3420,6 +3428,13 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 		cg_json_u64(j, "g2", S->sp.n_by[CG_SPLIT_BY_G2]);
 		cg_json_u64(j, "all", S->sp.n_by[CG_SPLIT_BY_ALL]);
 		cg_json_u64(j, "tickle", S->sp.n_by[CG_SPLIT_BY_TICKLE]);
+		cg_json_end(j, '}');
+		/* which step set a split packet's paths last (cg_split_plan, audit C13) */
+		cg_json_obj(j, "split_plan");
+		cg_json_u64(j, "split", S->plan_n[CG_PLAN_SPLIT]);
+		cg_json_u64(j, "single", S->plan_n[CG_PLAN_SINGLE]);
+		cg_json_u64(j, "share", S->plan_n[CG_PLAN_SHARE]);
+		cg_json_u64(j, "copy", S->plan_n[CG_PLAN_COPY]);
 		cg_json_end(j, '}');
 		/* What picks the path of a split packet now (decrec.h): with "eta"
 		 * the gov_weight and cap_weight of the paths are not used. */
