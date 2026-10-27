@@ -7,7 +7,7 @@ archivos:
 
 # `reorder_bypass`
 
-Datos de hasta este tamaño se entregan sin esperar.
+Paquetes de hasta este tamaño se entregan sin esperar.
 
 - **Sección:** global
 - **Extremo:** los dos

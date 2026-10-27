@@ -3,7 +3,7 @@ tags: [mapa, pieza]
 archivos:
   - engine/src/tickle.h
   - engine/tests/test_tickle.c
-sello: 382e00882c4314af
+sello: b9f384883487c2db
 ---
 # Cosquilla (tickle.h)
 

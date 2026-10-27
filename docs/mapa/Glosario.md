@@ -5,7 +5,7 @@ archivos:
   - engine/src/split.h
   - engine/src/capacity.h
   - engine/src/reorder.h
-sello: 17856b30098c0c21
+sello: 47970fcd43d3bf53
 ---
 # Glosario
 
@@ -80,7 +80,7 @@ Términos del proyecto, en español, con el nombre del código entre paréntesis
 - **Hub / bomba (pump):** el hilo con la sesión / los hilos que leen los enlaces. → [[Hilos por enlace (thrplan.h)]]
 - **Pista de cliente / cookie / HELLO:** cómo el servidor halla la clave y acepta caminos nuevos. → [[Varios clientes (clients.h)]], [[Cookies y HELLO (cookie.h)]]
 - **IP pass:** todos los puertos públicos del VPS a un router. → [[Tabla de reenvío (fwdtable.h)]]
-- **Túnel nativo:** paquetes IP de una TUN propia en vez de WireGuard. → [[Rutas del túnel nativo (tunroute.h)]]
+- **Túnel nativo:** paquetes IP de una TUN propia (`cg0`); el único túnel desde 0.12, cuando salió el de WireGuard ([[027-adios-wireguard]]). → [[Rutas del túnel nativo (tunroute.h)]]
 - **Relojería:** la auditoría de cómo se pisan los lazos (C1–C13). → [[Bitácora de decisiones (decision.h)]], [[audit-pending]]
 - **Control nulo:** el mismo código compilado aparte, para medir el ruido de un A/B. → [[015-modelo-de-enlace]]
 

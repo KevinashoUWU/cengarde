@@ -40,7 +40,6 @@ THR = "Hilos por enlace (thrplan.h)"
 RESC = "Rescate (rescue.h)"
 FEC = "FEC (fec.h)"
 F3 = "FEC v3 (fec3.h)"
-WGW = "Reloj atrasado de WireGuard (wgwatch.h)"
 CLIENTS = "Varios clientes (clients.h)"
 FWD = "Tabla de reenvío (fwdtable.h)"
 TUNR = "Rutas del túnel nativo (tunroute.h)"
@@ -58,6 +57,7 @@ H = {
     "013": "013-capacidad-y-dosificacion", "014": "014-tunel-nativo", "015": "015-modelo-de-enlace", "016": "016-celda-virtual",
     "017": "017-terreno-nostalgica", "019": "019-perdida-con-cola", "020": "020-copias-parciales-y-paridad", "021": "021-fec-v2",
     "023": "023-reparacion-coherente", "025": "025-protocontrolador", "026": "026-fec-v3",
+    "027": "027-adios-wireguard",
     "audit": "audit-pending",
 }
 
@@ -76,13 +76,13 @@ T = {
  "rcvbuf": ([G], BOTH, "4194304 (4 MiB)", "0–2^30 bytes", [RCVB], ["011"], "El búfer de recepción de los sockets. En el servidor, el presupuesto de recepción lo recorta según `udp_mem`."),
  "sndbuf": ([G], CLI, "0 (el del kernel)", "0–2^30 bytes", [CONF], [], "El búfer de envío de los sockets de los enlaces."),
  "log_level": ([G], BOTH, "`info`", "`error`, `warn`, `info`, `debug`", [CONF], [], "Nivel del registro."),
- "listen": ([G], BOTH, "cliente `127.0.0.1:59401`; servidor `*:59402`", "una dirección", [CONF], [], "Dónde escucha: el cliente, a WireGuard local; el servidor, a los enlaces."),
+ "listen": ([G], SRVS, "`*:59402`", "una dirección", [CONF], ["027"], "Dónde escucha el servidor a los enlaces. En el cliente es un error desde 0.12 (era la dirección para el WireGuard local)."),
  "cpu": ([G, L], BOTH, "-1 (cualquiera)", "0–1023", [THR], ["006", "011"], "Fija el proceso (global) o el hilo de un enlace (`[link]`, con `link_threads = on`) a una CPU."),
  "busy_poll_us": ([G], BOTH, "0", "0–1000000", [THR], ["006"], "Tras tráfico, sondea sin dormir este tiempo. `thrplan.h` lo limita si los hilos no caben en las CPU."),
  "rt_priority": ([G], BOTH, "0 (normal)", "0–99", [THR], ["006"], "Prioridad `SCHED_FIFO` de los hilos de datos."),
  # --- tunnel ---
- "tunnel": ([G], BOTH, "`wireguard`", "`wireguard` o `native`", [TUNR, TCPF], ["014"], "Qué lleva el túnel: datagramas de WireGuard o paquetes IP de una TUN propia (autenticados, sin cifrar)."),
- "tun": ([G], BOTH, "`cg0`", "nombre de interfaz", [TUNR], ["014"], "Nombre de la TUN con `tunnel = native`."),
+ "tunnel": ([G], BOTH, "`native`", "`native` (`wireguard` es un error desde 0.12)", [TUNR, TCPF], ["014", "027"], "Qué lleva el túnel: paquetes IP de una TUN propia (autenticados, sin cifrar), el único modo desde 0.12."),
+ "tun": ([G], BOTH, "`cg0`", "nombre de interfaz", [TUNR], ["014"], "Nombre de la TUN del túnel."),
  "tun_addr": ([G], BOTH, "ninguna (las pone el sistema)", "hasta 4 prefijos", [TUNR], ["014"], "Direcciones que cengarde pone en la TUN."),
  "tun_mtu": ([G], BOTH, "1420", "576–2024", [TUNR], ["014"], "MTU de la TUN."),
  "tun_txqueuelen": ([G], BOTH, "0 (el del kernel, 500)", "0–100000 paquetes", [TUNR], ["audit"], "Cola de transmisión de la TUN."),
@@ -111,9 +111,6 @@ T = {
  "weight": ([L], CLI, "1", "0–1000", [SPLIT, GOV], ["012"], "Parte del reparto con `split = on` (subida, y bajada vía sondas). 0: copia de todo."),
  "type": ([L], CLI, "`auto`", "`auto`, `cellular`, `starlink`, `fiber`, `ethernet`, `radio`", [MODEL], ["015"], "Tipo del enlace: elige el preset de los lazos; viaja al VPS en la cola de bonding."),
  # --- server ---
- "wireguard": ([G, K], SRVS, "(obligatoria con un cliente y `tunnel = wireguard`)", "una dirección", [CONF, CLIENTS], ["005"], "El WireGuard local del VPS."),
- "wireguard_poke": ([G, K], SRVS, "`10.79.0.2:9`", "una dirección o `none`", [WGW], ["002", "010"], "Dirección del router en el túnel: un datagrama ahí hace que WireGuard inicie un handshake."),
- "wireguard_port_file": ([G], SRVS, "vacía", "ruta", [WGW], ["010"], "Guarda el puerto que WireGuard conoce de cada cliente, a través de reinicios (`wgport.h`)."),
  "max_sessions": ([G], SRVS, "64 (o 4 por cliente si es más)", "1–4096", [CLIENTS], ["010"], "Límite de sesiones."),
  "session_timeout_ms": ([G], SRVS, "180000", "1000–86400000", [CLIENTS], ["010"], "Una sesión sin tráfico este tiempo se cierra."),
  "path_timeout_ms": ([G], SRVS, "30000", "1000–3600000", [CLIENTS], ["010"], "Un camino sin tráfico este tiempo se olvida."),
@@ -126,14 +123,14 @@ T = {
  "reorder_max_wait_ms": ([G], BOTH, "200", "0–2000", [RO], ["012", "013"], "Lo más que un hueco retiene lo que viene detrás, cuando hay reparto."),
  "reorder_dup_wait_ms": ([G], BOTH, "0", "0–`reorder_max_wait_ms`", [RO], ["012"], "La misma espera donde nada se reparte (redundancia). 0: no retiene."),
  "reorder_margin_ms": ([G], BOTH, "10", "0–1000", [RO], ["013"], "Se suma al retardo del enlace más lento al esperar un hueco."),
- "reorder_bypass": ([G], BOTH, "128", "0–2048 bytes", [RO], ["012"], "Datos de hasta este tamaño se entregan sin esperar."),
+ "reorder_bypass": ([G], BOTH, "128", "0–2048 bytes", [RO], ["012"], "Paquetes de hasta este tamaño se entregan sin esperar."),
  "reorder_by_link": ([G], BOTH, "`no`", "`yes` o `no`", [RO], ["013"], "Un hueco espera solo al enlace por el que salió (`CG_F_PREV`). Experimental."),
  "reorder_adaptive": ([G], BOTH, "`no`", "`yes` o `no`", [RO], ["013"], "El margen de cada enlace aprende de sus tardíos. Experimental."),
  "reorder_pool_kb": ([G], BOTH, "8192", "256–131070", [RO], ["012", "013"], "Memoria para lo retenido."),
  "reorder_active": ([G], BOTH, "`yes`", "`yes` o `no`", [RO, ACT], ["013"], "Un hueco espera solo a los enlaces por los que el otro extremo llevó datos hace poco (la máscara de sus sondas, C2); `no`: a todos los no silenciados, como antes."),
  "reorder_idle_ms": ([G], BOTH, "0 (apagado)", "0–60000", [RO, ARR], ["audit"], "EXPERIMENTO (C2): el reordenador deja de esperar a un enlace que no trajo datos este tiempo."),
  "reorder_retx_release_ms": ([G], BOTH, "0 (apagado)", "0–2000", [RO, TCPF], ["014"], "Una retransmisión de TCP suelta los huecos retenidos desde este tiempo antes de ella."),
- "tcp_aware": ([G], BOTH, "`no`", "`yes` o `no`", [TCPF, RO], ["014"], "Con `tunnel = native`, marca libres los segmentos sin datos y las retransmisiones de TCP."),
+ "tcp_aware": ([G], BOTH, "`no`", "`yes` o `no`", [TCPF, RO], ["014"], "Marca libres los segmentos sin datos y las retransmisiones de TCP del túnel."),
  # --- rescue / fec ---
  "rescue_kb": ([G], BOTH, "0 (apagado)", "0–262144", [RESC], ["013"], "Anillo de lo enviado hace poco, para los NACK (servidor: bajada; cliente: subida)."),
  "rescue_pct": ([G], BOTH, "5", "1–50", [RESC], ["013"], "Presupuesto del rescate, en % de lo enviado."),
@@ -157,7 +154,7 @@ T = {
  "fec_share_max": ([G], BOTH, "0 (sin tope)", "0–100", [FEC, SPLIT], ["012", "013"], "Con `fec`, ningún enlace lleva más de este % de lo repartido reciente."),
  # --- split ---
  "split": ([G], BOTH, "cliente `off`; servidor `client`", "cliente: `off`, `on`, `force`; servidor: `off`, `client`, `force`", [SPLIT, SONDAS], ["012"], "Si se reparte lo que se envía en vez de copiarlo por todos."),
- "split_small": ([G], BOTH, "256", "0–2048 bytes", [SPLIT], ["012"], "Datagramas de hasta este tamaño nunca se reparten."),
+ "split_small": ([G], BOTH, "256", "0–2048 bytes", [SPLIT], ["012"], "Paquetes de hasta este tamaño nunca se reparten."),
  "split_spread_ms": ([G], BOTH, "30", "0–2000 (0: sin guarda)", [G4], ["012"], "Solo comparten el reparto los enlaces a esta distancia del más rápido (G4)."),
  "split_spread_copy": ([G], BOTH, "`yes` salvo con `governor`, `capacity_weights` o `split_eta`", "`yes` o `no`", [G4, SPLIT], ["012"], "Los enlaces fuera del reparto llevan copia de todo (y G2 duplica)."),
  "split_stress_dup": ([G], BOTH, "50", "0–400", [SDUP], ["012"], "Bajo el estrés de G4, las copias pueden sumar este % de los bytes."),
@@ -259,11 +256,11 @@ def generate():
     groups = [
         ("Básicas y sistema", ["mode", "key", "description", "listen", "log_level", "status_file", "status_interval_ms",
                                "control_socket", "rcvbuf", "sndbuf", "cpu", "busy_poll_us", "rt_priority"]),
-        ("Túnel nativo", ["tunnel", "tun", "tun_addr", "tun_mtu", "tun_txqueuelen", "tun_route"]),
+        ("Túnel", ["tunnel", "tun", "tun_addr", "tun_mtu", "tun_txqueuelen", "tun_route"]),
         ("Cliente: enlaces, sondas, servidores", ["interfaces", "exclude", "server", "resolver", "server_failover_ms",
                                "probe_interval_ms", "probe_idle_ms", "passthrough", "link_threads", "io_queue",
                                "label", "enabled", "weight", "type"]),
-        ("Servidor", ["wireguard", "wireguard_poke", "wireguard_port_file", "max_sessions", "session_timeout_ms",
+        ("Servidor", ["max_sessions", "session_timeout_ms",
                       "path_timeout_ms", "passthrough_file", "forward_file", "forward", "lanes"]),
         ("Salud", ["mute_behind_ms", "unmute_behind_ms", "mute_settle_ms", "mute_trickle", "min_active_links", "mute_queue"]),
         ("Reordenador", ["reorder", "reorder_max_wait_ms", "reorder_dup_wait_ms", "reorder_margin_ms", "reorder_bypass",

@@ -4,7 +4,7 @@ archivos:
   - engine/src/eta.h
   - engine/src/capacity.h
   - engine/tests/test_eta.c
-sello: 3ebfbd97a446909d
+sello: 41b62a23b9cf1317
 ---
 # ETA (eta.h)
 
@@ -42,4 +42,4 @@ El reparto por **llegada esperada**: cada paquete va por el enlace donde llegar√
 
 ## Archivos
 - `eta.h`, `capacity.h` (`cg_cap_eta`, `cg_cap_qpred`, `cg_cap_stale`); tests `engine/tests/test_eta.c`.
-- `client.c`: `cap_tick`, `wg_read`. `server.c`: `cap_tick`, `down_prepare`.
+- `client.c`: `cap_tick`, `tun_read`. `server.c`: `cap_tick`, `down_prepare`.

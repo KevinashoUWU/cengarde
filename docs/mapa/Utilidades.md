@@ -20,7 +20,7 @@ archivos:
   - engine/src/engine.h
   - engine/src/main.c
   - engine/src/os.c
-sello: f592651a70209553
+sello: cff7bde67c802426
 ---
 # Utilidades
 
@@ -30,7 +30,7 @@ Cabeceras sin lógica de decisión ni medida propia. Una línea cada una.
 
 - `siphash.h` / `siphash.c`: SipHash-2-4, el MAC de cada datagrama y las cookies ([[Cookies y HELLO (cookie.h)]]).
 - `blake2s.h` / `blake2s.c`: BLAKE2s; deriva todas las claves de un solo secreto (`pair.h`), fuera del plano de datos ([[008-luci-uci-y-emparejamiento]]).
-- `pair.h` / `pair.c`: emparejamiento con un solo secreto: clave de cengarde, claves de WireGuard y direcciones del túnel.
+- `pair.h` / `pair.c`: emparejamiento con un solo secreto: la clave de cengarde y las direcciones del túnel (las claves de WireGuard salieron en 0.12; sus etiquetas no se reusan).
 - `util.h` / `util.c`: utilidades generales (listas, base64, direcciones, relojes).
 - `hist.h`: histogramas log2 de duraciones chicas (los saltos entre hilos del router, [[Hilos por enlace (thrplan.h)]]).
 - `idmap.h`: mapa de id de sesión a índice ([[Varios clientes (clients.h)]]).

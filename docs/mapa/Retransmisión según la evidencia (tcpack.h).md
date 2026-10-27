@@ -36,7 +36,7 @@ Un bit no distingue «entregado» de «en camino»: la repetida de algo que ven�
 ## Perillas
 - [[Mapa/Perillas/tcp_ack_rule|tcp_ack_rule]]: sí (con `tcp_retx_one`).
 - [[Mapa/Perillas/tcp_retx_one|tcp_retx_one]]: sí; con `no`, todo copiado.
-- [[Mapa/Perillas/tcp_aware|tcp_aware]]: tiene que estar, con `tunnel = native`.
+- [[Mapa/Perillas/tcp_aware|tcp_aware]]: tiene que estar.
 
 ## Dónde se midió
 - [[023-reparacion-coherente]] (2026-10-24, laboratorio de bonding, túnel nativo, n = 8): caudal de TCP igual a la conjetura y a todo copiado; copia las retransmisiones de lo que el túnel perdió en todos los enlaces y no las de lo que perdió más allá ni las espurias.
@@ -48,4 +48,4 @@ Un bit no distingue «entregado» de «en camino»: la repetida de algo que ven�
 
 ## Archivos
 - `tcpack.h`; tests `engine/tests/test_tcpack.c`.
-- `client.c`: `down_deliver` (`cg_tcpa_ack`), `wg_read` (`cg_tcpa_retx`, `tcpe_view`), `retx_masks`. `server.c`: `up_deliver`, `down_prepare` (`tcpe_view`), `down_retx_masks`.
+- `client.c`: `down_deliver` (`cg_tcpa_ack`), `tun_read` (`cg_tcpa_retx`, `tcpe_view`), `retx_masks`. `server.c`: `up_deliver`, `down_prepare` (`tcpe_view`), `down_retx_masks`.

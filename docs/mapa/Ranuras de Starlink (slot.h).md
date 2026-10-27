@@ -37,4 +37,4 @@ Cada 15 s, a los :12, :27, :42 y :57 de cada minuto (UTC), Starlink reconfigura 
 
 ## Archivos
 - `slot.h`; tests `engine/tests/test_slot.c`.
-- `client.c`: `cap_tick` (`cc.slot`), `edge_solo`, `wg_read` (`cg_slot_pick`), `send_links`. `server.c`: lo mismo en `cap_tick` y `down_prepare`.
+- `client.c`: `cap_tick` (`cc.slot`), `edge_solo`, `tun_read` (`cg_slot_pick`), `send_links`. `server.c`: lo mismo en `cap_tick` y `down_prepare`.

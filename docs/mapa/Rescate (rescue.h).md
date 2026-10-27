@@ -3,7 +3,7 @@ tags: [mapa, pieza]
 archivos:
   - engine/src/rescue.h
   - engine/tests/test_rescue.c
-sello: 9902060ce4276886
+sello: fb6a5c6d1fd7e06a
 ---
 # Rescate (rescue.h)
 

@@ -125,7 +125,7 @@ def dump_defaults():
             "\t\tfprintf(stderr, \"%s\\n\", err);", "\t\treturn;", "\t}"] + prints + [
             "\tputs(\"--\");", "}", "", "int main(void)", "{",
             f'\tone("mode = client\\nkey = {key}\\nserver = 192.0.2.1:59402\\n");',
-            f'\tone("mode = server\\nkey = {key}\\nwireguard = 127.0.0.1:51820\\n");',
+            f'\tone("mode = server\\nkey = {key}\\n");',
             "\treturn 0;", "}", ""]
     cc = os.environ.get("CC", "cc")
     core = [os.path.join(SRC, f) for f in ("siphash.c", "proto.c", "util.c", "log.c", "config.c", "blake2s.c", "pair.c")]

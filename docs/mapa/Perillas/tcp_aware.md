@@ -7,7 +7,7 @@ archivos:
 
 # `tcp_aware`
 
-Con `tunnel = native`, marca libres los segmentos sin datos y las retransmisiones de TCP.
+Marca libres los segmentos sin datos y las retransmisiones de TCP del túnel.
 
 - **Sección:** global
 - **Extremo:** los dos

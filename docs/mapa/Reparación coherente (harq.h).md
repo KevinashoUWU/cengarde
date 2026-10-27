@@ -42,7 +42,7 @@ También dice qué escribe un emisor en `CG_F_PREV` una vez decididas las copias
 - [[023-reparacion-coherente]], laboratorio (túnel nativo, n = 6): `protect` con copias de 250 ms y rescate, flujo perdido 0,275 → 0,005 % y TCP 7,6 → 14,4 Mbit/s; con código, el código lo rehace y con TCP los huecos no se retienen (retener hasta el sello bajó un TCP con el host a 100 ms de 23,6 a 16,9 Mbit/s; suelto, 25,2). PARQ contra NACK en el microcorte: mismos bytes y pérdida (p ≥ 0,39). Una retransmisión por un enlace: copiadas 188 → 2,5 por corrida.
 
 ## Choques conocidos
-- Retener un hueco hasta que el código lo rehace cuesta demora a todo lo que viene detrás: sin TCP adentro (UDP o túnel WireGuard) la espera puede llegar a `rescue_wait_ms` + `rescue_code_ms`; con TCP visible la acota su presupuesto.
+- Retener un hueco hasta que el código lo rehace cuesta demora a todo lo que viene detrás: sin TCP adentro (UDP, o TCP cifrado dentro de una VPN propia) la espera puede llegar a `rescue_wait_ms` + `rescue_code_ms`; con TCP visible la acota su presupuesto.
 - En un microcorte el enlace «con lugar» puede ser el mismo que pierde: las reparaciones pedidas también se pierden ([[023-reparacion-coherente]]).
 
 ## Archivos

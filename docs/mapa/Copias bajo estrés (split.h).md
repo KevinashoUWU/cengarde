@@ -3,7 +3,7 @@ tags: [mapa, pieza]
 archivos:
   - engine/src/split.h
   - engine/tests/test_split.c
-sello: 2b0121cdcf55ea99
+sello: 907b1381554c3745
 ---
 # Copias bajo estrés (split.h)
 
@@ -33,4 +33,4 @@ Mientras [[G4 guarda de dispersión (split.h)]] está en estrés, un paquete rep
 
 ## Archivos
 - `split.h` (`cg_sdup`, `CG_SDUP_CAP`, `cg_split_stress_elig`).
-- `client.c`: `wg_read`, `spread_tick`. `server.c`: `down_prepare`.
+- `client.c`: `tun_read`, `spread_tick`. `server.c`: `down_prepare`.

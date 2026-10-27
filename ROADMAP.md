@@ -7,8 +7,17 @@
 > [`docs/historias/`](docs/historias/README.md).
 >
 > Las secciones 1 y 2 describen el engarde Go original. Su código salió del
-> árbol el 2026-10-04 y sigue en el historial (commit `3492df9`), desde donde
-> el laboratorio lo compila con `ENGINE=go` para compararse.
+> árbol el 2026-10-04 y sigue en el historial (commit `3492df9`); el
+> laboratorio lo compilaba con `ENGINE=go` para compararse hasta 0.11.
+>
+> **0.12 (2026-10-26): sin WireGuard.** El túnel nativo (una TUN, `cg0`, en
+> cada extremo; historia 014) es el único; el modo WireGuard salió del motor,
+> de OpenWrt, de LuCI, del VPS y del laboratorio
+> ([historia 027](docs/historias/027-adios-wireguard.md)). Donde este
+> documento habla de WireGuard como el túnel, describe lo que había hasta
+> 0.11. Un router viejo pasa solo a `cg0` al actualizar, y el VPS en la
+> siguiente pasada de `cengarde-vps-setup`; engarde Go, que solo sabe ir
+> sobre WireGuard, ya no se compara en el laboratorio.
 
 ## Resumen
 
@@ -242,8 +251,8 @@ La [sección 7](#7-qué-medir-en-la-raspberry-pi) explica cómo distinguirlos.
    transporta el tráfico completo (N veces el consumo de datos).
 2. **La ganancia viene del diseño:** no bloquear nunca el plano de datos,
    trabajar por lotes, no pasar paquetes entre hilos, deduplicar antes de
-   WireGuard y no meter todos los caminos del servidor en una sola cola. C
-   añade lo suyo: un binario de ~100 KB frente a ~6–7 MB por ejecutable en Go
+   entregar (entonces a WireGuard; desde 0.12, a la TUN) y no meter todos
+   los caminos del servidor en una sola cola. C añade lo suyo: un binario de ~100 KB frente a ~6–7 MB por ejecutable en Go
    (decisivo en routers con 16 MB de flash), latencia predecible sin GC, acceso
    directo a netlink y a las opciones de socket, y estructuras compartidas con
    los programas eBPF.
@@ -286,9 +295,9 @@ segundo deseo del autor original.
 
 ```
           ┌─────────────────────── hilo de datos (epoll) ────────────────────────┐
- wg0 ────►│ recvmmsg (lote ≤64) ─► por enlace: sendmmsg(MSG_DONTWAIT)           │──► wwan0 / eth1 / wlan0
+ cg0 ───►│ lote de la TUN (≤64) ─► por enlace: sendmmsg(MSG_DONTWAIT)          │──► wwan0 / eth1 / wlan0
           │                       EAGAIN ⇒ se descarta solo en ese enlace       │
- wg0 ◄────│ sendmmsg ◄─ dedup exacta ◄─ recvmmsg de cada enlace                 │◄── wwan0 / eth1 / wlan0
+ cg0 ◄───│ write a la TUN ◄─ dedup exacta ◄─ recvmmsg de cada enlace           │◄── wwan0 / eth1 / wlan0
           └──────────────────────────────────────────────────────────────────────┘
           hilo de control: netlink (enlaces y direcciones), API por socket Unix, estadísticas
 ```
@@ -313,10 +322,10 @@ segundo deseo del autor original.
 ### 4.2 Servidor
 
 - **Sesiones** por el id de sesión de la cabecera propia (hecho en v1). Ya no
-  hace falta observar los índices de WireGuard. Cada sesión tiene su propio
-  socket hacia WireGuard, como un NAT, de modo que el WireGuard del servidor ve
-  a cada cliente como un endpoint distinto. Así caben **varios clientes en un
-  mismo puerto**, incluso cuando es el servidor quien inicia el handshake.
+  hace falta observar los índices de WireGuard. Hasta 0.11 cada sesión tenía
+  su propio socket hacia el WireGuard del servidor, como un NAT; desde 0.12
+  hay una sola TUN para todos los routers y cada uno recibe lo de sus
+  prefijos (`tun_route`). Así caben **varios clientes en un mismo puerto**.
 - **Admisión de caminos** (hecho en v1): una sesión o un camino nuevo (o un
   cambio de dirección) solo se acepta con el MAC verificado, y nunca se envía
   a una dirección sin confirmar. Eso cierra la reflexión del bug 1.
@@ -335,13 +344,13 @@ segundo deseo del autor original.
   - sondas por enlace (RTT y vista cruzada de cada sentido);
   - la base para FEC, agregación y ARQ.
 
-  Cuesta MTU: el de WireGuard tiene que ser ≤ 1416 sobre IPv4 y ≤ 1396 sobre
-  IPv6 con una ruta de 1500.
+  Cuesta MTU: `tun_mtu` tiene que ser ≤ 1448 sobre IPv4 y ≤ 1428 sobre IPv6
+  con una ruta de 1500 (con WireGuard encima, hasta 0.11, 1416 y 1396).
 - ~~v0 "compat"~~: descartado (cliente y servidor son siempre cengarde).
 
 ### 4.4 Configuración, control y observabilidad
 
-- Formato propio tipo INI (como `wg-quick`), sin dependencias; sin
+- Formato propio tipo INI (`clave = valor` y secciones), sin dependencias; sin
   conversor desde `engarde.yml`, porque no hay compatibilidad. En OpenWrt se
   usa UCI
   (`/etc/config/cengarde`) y el init script genera los parámetros.
@@ -374,9 +383,9 @@ orientativas, para una persona a tiempo parcial.
 - [x] Línea base del engarde Go y prototipo C del cliente.
 - [ ] Medir en la Pi real ([sección 7](#7-qué-medir-en-la-raspberry-pi)) y
   decidir si el límite es la CPU o los enlaces.
-- [ ] WireGuard real en el laboratorio (kernel o wireguard-go) con iperf3 TCP
-  dentro del túnel, y escenarios con retardo, jitter y pérdida (`netem`) en
-  una máquina que lo tenga.
+- [x] TCP real dentro del túnel en el laboratorio, con retardo, jitter y
+  pérdida (`netem`): `bench/lab.sh bond`, con WireGuard hasta 0.11 y sobre
+  la TUN desde 0.12.
 - [ ] Laboratorio en CI: los runners de GitHub Actions permiten netns con sudo,
   así que se pueden detectar regresiones de rendimiento. En parte:
   `bench/lab.sh ci` (smoke, health, control y restart) detecta fallos, no
@@ -467,8 +476,9 @@ hardware real (historias [007](docs/historias/007-openwrt-y-vps.md) y
 - Hecho:
   - los paquetes para OpenWrt 25.12 (apk) y 24.10 (ipk), para la Pi 4 y
     x86_64, en el CI:
-    - `cengarde`, con UCI y `cengarde-setup`, que crea el túnel de
-      WireGuard, las rutas, las métricas, el DNS, la zona y el UPnP;
+    - `cengarde`, con UCI y `cengarde-setup`, que crea el túnel (WireGuard
+      hasta 0.11, `cg0` desde 0.12), las rutas, las métricas, el DNS, la
+      zona y el UPnP;
     - `luci-app-cengarde`, con estado y configuración;
     - `luci-i18n-cengarde-es`;
   - el emparejamiento con un solo secreto de 256 bits (`cengarde keys`);
@@ -507,7 +517,7 @@ hardware real (historias [007](docs/historias/007-openwrt-y-vps.md) y
   - Pestaña de LuCI (hecha; pedido del usuario, referencia SmoothWAN):
     - estado por enlace;
     - elegir los uplinks;
-    - crear el túnel de WireGuard solo;
+    - crear el túnel solo;
     - **IP pass** sí/no: el VPS reenvía los puertos 1024–65000 al router, y
       UPnP en el router los reparte a la LAN para tener la IP pública del VPS
       en terreno.
@@ -520,7 +530,7 @@ hardware real (historias [007](docs/historias/007-openwrt-y-vps.md) y
   - Binarios estáticos y `.deb`.
   - Unidad systemd endurecida (`AmbientCapabilities=CAP_NET_RAW
     CAP_NET_ADMIN`, `ProtectSystem=strict`…): hecha, en `contrib/systemd/`.
-  - Plantilla cloud-init para el VPS con WireGuard, NAT y reenvío de puertos:
+  - Plantilla cloud-init para el VPS con el túnel, NAT y reenvío de puertos:
     hecha, en `contrib/vps/`.
   - Imagen Docker mínima para el servidor.
 - **API JSON versionada** (`/api/v2`), contrato único para la CLI, LuCI y la
@@ -537,9 +547,8 @@ hardware real (historias [007](docs/historias/007-openwrt-y-vps.md) y
     contraseña por defecto, tokens en vez de Basic Auth, ningún GET con
     efectos y protección CSRF.
   - La web corre aislada del plano de datos: si falla, no tumba el túnel.
-- **Alta estilo Tailscale:** `cengarde server init` genera las claves de
-  WireGuard y una URL o un QR que el cliente importa para configurar
-  WireGuard y cengarde de una vez. Es el quinto deseo del autor original.
+- **Alta estilo Tailscale:** `cengarde server init` genera el secreto y una
+  URL o un QR que el cliente importa para configurar cengarde de una vez. Es el quinto deseo del autor original.
   - Como en SmoothWAN, basta un solo secreto, pero de 256 bits, no una
     contraseña de 8 caracteres. Está hecho en OpenWrt: el router lo genera y
     el VPS lo recibe en su cloud-config (historia 008).
@@ -551,7 +560,7 @@ hardware real (historias [007](docs/historias/007-openwrt-y-vps.md) y
 ### Fase 4: eBPF como acelerador opcional (4–8 semanas)
 
 - **XDP en la entrada** (uplinks del cliente, NIC del VPS):
-  - parsea WireGuard;
+  - parsea la cabecera de cengarde;
   - deduplica de forma exacta en un mapa BPF: anillo por sesión con
     `cmpxchg` atómico, kernel ≥ 5.12;
   - lleva estadísticas por enlace en mapas per-CPU;
@@ -619,8 +628,8 @@ lista de comprobación de partida.
 - **k-de-N:** cada paquete va solo por los k mejores enlaces, lo que ahorra
   datos en enlaces móviles.
 - **Redundancia selectiva por tamaño:** duplicar los paquetes pequeños (ACKs,
-  VoIP, handshakes) y repartir los grandes. WireGuard no expone el DSCP
-  interior, pero el tamaño sí se ve.
+  VoIP, handshakes) y repartir los grandes. Con el túnel nativo se ve el
+  paquete entero, DSCP incluido (con WireGuard, hasta 0.11, solo el tamaño).
 - **Agregación (bonding):** reordenar en el receptor por la secuencia propia
   de cengarde (32 bits por sesión y sentido, bajo el MAC), la misma de la
   dedup y el anti-replay. ~~Usar el contador de WireGuard~~: el motor C nunca
@@ -644,8 +653,8 @@ debe sobrevivir a la caída de uno con ≤1,34× de sobrecoste.
 **Rendimiento**
 - [ ] No bloquear nunca el bucle de datos; descartar por enlace en EAGAIN.
 - [ ] Lotes con `recvmmsg`/`sendmmsg`; GSO/GRO en el servidor.
-- [ ] Deduplicación exacta antes de WireGuard (N−1 descifrados menos por
-  paquete).
+- [ ] Deduplicación exacta antes de entregar (con WireGuard, N−1 descifrados
+  menos por paquete; desde 0.12, a la TUN).
 - [ ] Un hilo por grupo de caminos en el servidor (`SO_REUSEPORT`).
 - [ ] Buffers de socket grandes, ninguna asignación por paquete y reloj grueso
   (`CLOCK_MONOTONIC_COARSE`) leído una vez por iteración.
@@ -668,7 +677,7 @@ debe sobrevivir a la caída de uno con ≤1,34× de sobrecoste.
   (`ip rule from <ip> table N`) cuando un uplink no tiene ruta por defecto, o
   integrarse con mwan3 en OpenWrt.
 - [ ] Keepalives propios por enlace para mantener abierto el NAT (CGNAT con
-  timeouts cortos) sin depender de `PersistentKeepalive`.
+  timeouts cortos): las sondas ya lo hacen; falta medirlo con CGNAT.
 - [ ] La UI en un proceso o hilo aislado: nunca puede tumbar el plano de datos.
 
 **Seguridad**
@@ -695,8 +704,8 @@ debe sobrevivir a la caída de uno con ≤1,34× de sobrecoste.
 - [ ] Estadísticas por enlace que sirvan de algo: % de wins, retardo relativo,
   pérdida y MTU.
 - [x] Recarga en caliente (`SIGHUP`), en cengarde (historia 009).
-- [ ] Gestión opcional de la interfaz WireGuard (endpoint, MTU, keepalive) por
-  netlink.
+- [x] ~~Gestión opcional de la interfaz WireGuard por netlink~~: sin objeto
+  desde 0.12, el motor crea y configura su TUN (historia 027).
 
 **Código y build:** ~~arreglar y limpiar el Go heredado~~. El 2026-10-04 se
 retiró del árbol, junto con su UI Angular, su build y la publicación en
@@ -709,7 +718,7 @@ Con engarde, la Pi se quedaba en ~30 Mbit/s con 4 enlaces, por CPU
 
 1. Capacidad de cada enlace por separado, sin túnel:
    `iperf3 -c <vps> -B <ip_del_enlace>` (y `-R` para la bajada).
-2. WireGuard sin cengarde por el mejor enlace: iperf3 contra la IP del túnel.
+2. El mejor enlace solo, sin cengarde: iperf3 contra el VPS por ese enlace.
 3. cengarde con 1 enlace y luego con 2, 3 y 4 (los enlaces se eligen en
    LuCI). Si el throughput baja o la CPU se dispara al añadir enlaces, es
    cengarde. Si se queda en lo que da el mejor enlace, son los enlaces.
@@ -731,7 +740,7 @@ Con engarde, la Pi se quedaba en ~30 Mbit/s con 4 enlaces, por CPU
    - `busy_poll_us` y `cpu` (pestaña *Avanzado*) si la latencia importa más
      que la CPU (historia 006);
    - fq_codel o cake en los uplinks, para mantener cortas las colas locales;
-   - un MTU de WireGuard conservador en redes móviles (1280–1380).
+   - un `tun_mtu` conservador en redes móviles (1280–1420).
 
 ## 8. Riesgos y mitigaciones
 

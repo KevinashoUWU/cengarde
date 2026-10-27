@@ -39,4 +39,4 @@ Un Starlink muy por encima de los celulares se queda el envío para él. Si un e
 
 ## Archivos
 - `dominant.h`; tests `engine/tests/test_dominant.c`.
-- `client.c`: `cap_tick` (`cg_dom_tick`), `wg_read`. `server.c`: `cap_tick`, `down_prepare`.
+- `client.c`: `cap_tick` (`cg_dom_tick`), `tun_read`. `server.c`: `cap_tick`, `down_prepare`.

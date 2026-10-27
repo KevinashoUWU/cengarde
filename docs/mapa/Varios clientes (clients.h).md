@@ -4,7 +4,7 @@ archivos:
   - engine/src/clients.h
   - engine/src/idmap.h
   - engine/tests/test_clients.c
-sello: bcb14f8db81632a7
+sello: 69c599882d95980e
 ---
 # Varios clientes (clients.h)
 
@@ -20,7 +20,7 @@ Un servidor con varios routers encuentra, antes de calcular ningún MAC, bajo qu
 - La sesión y la clave de cada paquete → `server.c` (`client_of`, `lookup`, `session_create`).
 
 ## Perillas
-- [[Mapa/Perillas/key|key]], [[Mapa/Perillas/enabled|enabled]], [[Mapa/Perillas/wireguard|wireguard]] en `[client NOMBRE]`.
+- [[Mapa/Perillas/key|key]], [[Mapa/Perillas/enabled|enabled]], [[Mapa/Perillas/tun_route|tun_route]] en `[client NOMBRE]`.
 - [[Mapa/Perillas/max_sessions|max_sessions]]: 64. [[Mapa/Perillas/session_timeout_ms|session_timeout_ms]]: 180000. [[Mapa/Perillas/path_timeout_ms|path_timeout_ms]]: 30000.
 
 ## Dónde se midió

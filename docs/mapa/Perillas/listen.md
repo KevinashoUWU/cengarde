@@ -7,14 +7,14 @@ archivos:
 
 # `listen`
 
-Dónde escucha: el cliente, a WireGuard local; el servidor, a los enlaces.
+Dónde escucha el servidor a los enlaces. En el cliente es un error desde 0.12 (era la dirección para el WireGuard local).
 
 - **Sección:** global
-- **Extremo:** los dos
-- **Por omisión:** cliente `127.0.0.1:59401`; servidor `*:59402`
+- **Extremo:** servidor
+- **Por omisión:** `*:59402`
 - **Rango:** una dirección
 - **Pieza:** [[Configuración (config.c)]]
-- **Historia:** —
+- **Historia:** [[027-adios-wireguard]]
 - **Recarga:** cambiarla reinicia el proceso (`cg_config_restart_needed`).
 
 Índice: [[Perillas]] · Mapa: [[Mapa del motor]]

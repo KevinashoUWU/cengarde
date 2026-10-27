@@ -3,7 +3,7 @@ tags: [mapa, pieza]
 archivos:
   - engine/src/cookie.h
   - engine/tests/test_cookie.c
-sello: b1a91283af8de604
+sello: b6eb1118298e6681
 ---
 # Cookies y HELLO (cookie.h)
 
