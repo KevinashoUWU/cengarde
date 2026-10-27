@@ -86,6 +86,9 @@
 				  * the stream's (cg_scc_stuck) */
 #define CG_SCC_STUCK_TOL_US 500u /* the least fall of the queue that says it drains */
 #define CG_SCC_LOW_WINS 2u       /* windows in a row that find a shorter path before the base falls to it */
+#define CG_SCC_LF_US 5000000u    /* the random-loss floor's bucket (two of them: 5 to 10 s, cg_scc_lfloor) */
+#define CG_SCC_LF_NONE 0xffffu   /* a bucket without a window yet */
+#define CG_SCC_LF_START 30u      /* per mille: the floor before any window says (a stream's first seconds) */
 
 enum { CG_SCC_STARTUP_M = 0, CG_SCC_DRAIN_M, CG_SCC_PROBE_M };
 
@@ -138,6 +141,8 @@ struct cg_scc {
 	/* heavy random loss (cg_scc_heavy): of the last window, more than 1
 	 * byte in 5 declared lost while the queue was short */
 	uint64_t lw_t, lw_lost, lw_dl;
+	uint16_t lf[2];      /* the loss of the windows with a short queue, per mille: each bucket's least */
+	uint64_t lf_t;       /* the current bucket's start */
 	uint8_t heavy;
 	uint64_t n_heavy; /* windows with heavy loss */
 	uint64_t n_cong, n_cut, n_rounds; /* congested samples; rounds that cut bw; rounds */
@@ -147,8 +152,20 @@ struct cg_scc {
 static inline void cg_scc_init(struct cg_scc *p, uint64_t now)
 {
 	memset(p, 0, sizeof(*p));
-	p->dl_us = p->tok_t = p->bt = now;
+	p->dl_us = p->tok_t = p->bt = p->lf_t = now;
+	p->lf[0] = p->lf[1] = CG_SCC_LF_NONE;
 	p->mode = CG_SCC_STARTUP_M;
+}
+
+/* The path's random loss, per mille: the least of the loss windows
+ * (cg_scc_lossw) over the last 5 to 10 s. Random loss is in every window;
+ * a queue's overflow only while more goes out than the path takes, so the
+ * least is the random part. CG_SCC_LF_START before any window. */
+static inline uint32_t cg_scc_lfloor(const struct cg_scc *p)
+{
+	uint32_t f = p->lf[0] < p->lf[1] ? p->lf[0] : p->lf[1];
+
+	return f == CG_SCC_LF_NONE ? CG_SCC_LF_START : f;
 }
 
 static inline uint64_t cg_scc_mul(uint64_t a, uint64_t b, uint64_t d)
@@ -323,6 +340,18 @@ static inline void cg_scc_lossw(struct cg_scc *p, uint64_t now)
 		return;
 	if (p->lw_lost + p->lw_dl >= CG_SCC_LOSSW_MIN || !p->lw_lost)
 		p->heavy = p->lw_lost * 4 > p->lw_dl;
+	/* the random-loss floor: each window's loss into its bucket's least */
+	if (now - p->lf_t >= CG_SCC_LF_US) {
+		p->lf[1] = p->lf[0];
+		p->lf[0] = CG_SCC_LF_NONE;
+		p->lf_t = now;
+	}
+	if (p->lw_lost + p->lw_dl >= CG_SCC_LOSSW_MIN) {
+		uint64_t f = p->lw_lost * 1000 / (p->lw_lost + p->lw_dl);
+
+		if (f < p->lf[0])
+			p->lf[0] = (uint16_t)f;
+	}
 	p->n_heavy += p->heavy;
 	p->lw_t = now;
 	p->lw_lost = p->lw_dl = 0;
@@ -422,16 +451,29 @@ static inline void cg_scc_ack(struct cg_scc *p, const struct cg_scc_cfg *c, uint
 	iv = now > s_dl_us ? now - s_dl_us : 0;
 	if (now > sent_us && now - sent_us > iv)
 		iv = now - sent_us;
-	/* what the path took: delivered, and lost while the queue was short
-	 * (no more than 3 lost for 1 delivered: past 75 % lost, sending more
-	 * is only waste) */
+	/* what the path took: delivered, and lost while the queue was short,
+	 * as much as the path's random loss explains (cg_scc_lfloor: twice its
+	 * share over what was delivered, no more than 3 lost for 1). More is a
+	 * queue's overflow: a link whose queue is shorter than queue_us
+	 * overflows before any sample says queue (Starlink's), and counted as
+	 * capacity its losses fed the estimate, the sends and the losses (on a
+	 * link of 60 Mbit/s with 5 ms of queue the estimate went to 240-320,
+	 * 100 000 overflowed in 8 s; in the lab 744 Mbit/s, then 2 s of queue
+	 * on the cellular link and the floor, story 025) */
 	bytes = p->dla - s_dla;
 	/* in PROBE only: in STARTUP the queue's first overflow came before any
 	 * sample said queue, its losses read as capacity, the estimate went to
 	 * twice the link and stayed for a second (beyond: 2 s with nothing
 	 * delivered behind the holes) */
-	if (!p->cong && p->mode == CG_SCC_PROBE_M)
-		bytes = p->dl - s_dl < 4 * bytes ? p->dl - s_dl : 4 * bytes;
+	if (!p->cong && p->mode == CG_SCC_PROBE_M) {
+		uint32_t f = cg_scc_lfloor(p);
+		uint64_t lost = p->dl - s_dl > bytes ? p->dl - s_dl - bytes : 0;
+		uint64_t cap = f >= 750 ? 3 * bytes : bytes * 2 * f / (1000 - f);
+
+		if (cap > 3 * bytes)
+			cap = 3 * bytes;
+		bytes += lost < cap ? lost : cap;
+	}
 	/* never more than went out meanwhile: losses are declared in bursts
 	 * (RACK's window), and a burst over a short interval read as five
 	 * times the link (a microcut) */

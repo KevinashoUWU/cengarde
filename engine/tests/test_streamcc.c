@@ -326,6 +326,19 @@ void test_streamcc(void)
 	r = sim(7500000, 20000, 15000, 0, 8, 0, 0);
 	CHECK(r.goodput > 7500000 * 9 / 10);
 	CHECK(r.overflow < 200);
+	/* a queue shorter than queue_us (Starlink's): it overflows before any
+	 * sample says queue; its losses are not capacity beyond the path's
+	 * random loss (before: the estimate went to 240-320 Mbit/s, 100 000
+	 * overflowed in 8 s; story 025) */
+	for (uint32_t qq = 2000; qq <= 9000; qq += 3500) {
+		r = sim(7500000, 20000, qq, 0, 8, 0, 0);
+		CHECK(r.goodput > 7500000 * 9 / 10);
+		CHECK(r.rate_end < 7500000 * 3 / 2);
+		CHECK(r.overflow < 5000);
+		r = sim(7500000, 20000, qq, 20, 8, 0, 0); /* and 2 % at random */
+		CHECK(r.goodput > 7500000 * 85 / 100);
+		CHECK(r.rate_end < 7500000 * 3 / 2);
+	}
 	/* random loss of 0.7 % does not slow it */
 	r = sim(7500000, 20000, 15000, 7, 8, 0, 0);
 	CHECK(r.goodput > 7500000 * 85 / 100);
