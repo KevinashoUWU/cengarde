@@ -897,7 +897,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	c->tcp_retx_one = 1;
 	c->tcp_ack_rule = 1;
 	c->protocontroller_port = 7801;
-	c->protocontroller_buf_kb = 4080;
+	c->protocontroller_buf_kb = 1024;
 	c->protocontroller_mem_mb = 64;
 	c->protocontroller_max_flows = 256;
 	c->protocontroller_queue_ms = 5;

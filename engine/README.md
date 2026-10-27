@@ -1448,7 +1448,7 @@ En los dos:
   congestión (historia 024), pero su ProbeRTT retenía un vivo 200 ms cada
   10 s. Un nombre (`bbr`, `cubic`) lo fija.
 - **Memoria:** trozos de 16 KB de un fondo común (`protocontroller_mem_mb`,
-  64), hasta `protocontroller_buf_kb` (4080) por conexión y sentido;
+  64), hasta `protocontroller_buf_kb` (1024) por conexión y sentido;
   `protocontroller_max_flows` (256) conexiones a la vez.
 
 Solo la variante B:
