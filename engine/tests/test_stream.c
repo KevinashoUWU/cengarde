@@ -237,7 +237,7 @@ static void test_nack(void)
 	struct cg_st_ackres r;
 	uint32_t idx = 0, len = 0, b;
 	uint64_t off = 0, lq = 0;
-	int fin;
+	int fin = 0;
 
 	cg_st_tx_init(&t, seg, 16, 0xFFFFFC00ull + (1u << 20));
 	t.una = t.nxt = t.tail = 0xFFFFFC00ull; /* across the wire's 32 bits */
