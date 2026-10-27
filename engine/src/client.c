@@ -2588,30 +2588,6 @@ static uint32_t pctl_horizon(void *ctx, uint32_t peer, uint32_t sid)
 	return us;
 }
 
-/* The queue the upload's GRIT may hold for the split by expected arrival to
- * reach the slower links that may carry it (protoctlio.h's ops.reach). */
-static uint32_t pctl_reach(void *ctx, uint32_t peer, uint32_t sid)
-{
-	struct client *c = ctx;
-	uint32_t base[CG_MAX_LINKS];
-	uint16_t known = 0, set;
-	struct upctx u;
-
-	(void)peer;
-	(void)sid;
-	if (!c->cfg->split_eta)
-		return 0;
-	up_begin(c, cg_now_ms(), &u);
-	if (!u.split)
-		return 0;
-	set = (uint16_t)((u.k.eligible | u.k.dup) & u.carry);
-	for (int i = 0; i < CG_MAX_LINKS; i++) {
-		base[i] = c->eta.l[i].base_us;
-		known |= (uint16_t)(c->eta.l[i].bps ? 1u << i : 0);
-	}
-	return cg_pctl_reach(base, known, set, CG_MAX_LINKS, CG_PCTL_REACH_MAX_US);
-}
-
 static void pctl_hint(void *ctx, uint32_t peer, uint32_t sid, uint64_t *bps, int *full)
 {
 	struct client *c = ctx;
@@ -5434,9 +5410,7 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 					  * redundancy's spare carries (parity, rs, rlc) */
 					 .code_ms = cfg->fec || cfg->redund_spare >= 2 ? cfg->rescue_code_ms : 0,
 					 .mode = cfg->protocontroller };
-		struct cg_pctl_ops ops = {
-			.ctx = c, .send = pctl_send, .hint = pctl_hint, .horizon = pctl_horizon, .reach = pctl_reach
-		};
+		struct cg_pctl_ops ops = { .ctx = c, .send = pctl_send, .hint = pctl_hint, .horizon = pctl_horizon };
 
 		snprintf(pc.mid_cc, sizeof(pc.mid_cc), "%s", cfg->protocontroller_mid_cc);
 		if (cfg->protocontroller == CG_PCTL_A && pctl_vps_addr(cfg, &pc.a_peer, err, sizeof(err)) < 0) {

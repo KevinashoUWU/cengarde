@@ -2876,29 +2876,6 @@ static uint32_t pctl_horizon(void *ctx, uint32_t peer, uint32_t sid)
 	return us;
 }
 
-/* The queue a session's download may hold for the split by expected arrival
- * to reach its slower links (protoctlio.h's ops.reach). */
-static uint32_t pctl_reach(void *ctx, uint32_t peer, uint32_t sid)
-{
-	struct server *s = ctx;
-	struct session *S;
-	struct dpaths d;
-	uint32_t base[CG_MAX_LINKS];
-	uint16_t known = 0;
-
-	if (!s->cfg->split_eta || peer >= s->cap || !(S = &s->s[peer])->used || S->id != sid)
-		return 0;
-	d = down_paths(s, S, cg_now_ms());
-	if (!d.split)
-		return 0;
-	for (int i = 0; i < CG_MAX_LINKS; i++) {
-		base[i] = S->eta.l[i].base_us;
-		known |= (uint16_t)(S->eta.l[i].bps ? 1u << i : 0);
-	}
-	return cg_pctl_reach(base, known, (uint16_t)((d.k.eligible | d.k.dup) & d.carry), CG_MAX_LINKS,
-			     CG_PCTL_REACH_MAX_US);
-}
-
 static void pctl_hint(void *ctx, uint32_t peer, uint32_t sid, uint64_t *bps, int *full)
 {
 	struct server *s = ctx;
@@ -4657,9 +4634,7 @@ int cg_server_run(struct cg_config *cfg, const struct cg_run *run)
 					 /* the download's code: the spatial parity or FEC v3 */
 					 .code_ms = cfg->fec ? cfg->rescue_code_ms : 0,
 					 .peers = s->cap };
-		struct cg_pctl_ops ops = {
-			.ctx = s, .send = pctl_send, .hint = pctl_hint, .horizon = pctl_horizon, .reach = pctl_reach
-		};
+		struct cg_pctl_ops ops = { .ctx = s, .send = pctl_send, .hint = pctl_hint, .horizon = pctl_horizon };
 
 		snprintf(pc.cc, sizeof(pc.cc), "%s", cfg->protocontroller_cc);
 		snprintf(pc.mid_cc, sizeof(pc.mid_cc), "%s", cfg->protocontroller_mid_cc);
