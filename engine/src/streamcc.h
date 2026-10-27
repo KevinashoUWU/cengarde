@@ -35,6 +35,12 @@
  *   queue_us for a round trip cuts the estimate: the first cut of a run to
  *   the most delivered lately (behind a hole an instant delivers next to
  *   nothing), the next ones to what is delivered.
+ * - A queue the cuts do not drain is not the stream's (cg_scc_stuck): the
+ *   engine moved the data to a link of a longer delay (or others hold a
+ *   queue the stream cannot empty). After a run of congested windows whose
+ *   least delay never fell, the base moves up to it and STARTUP goes again
+ *   from the estimate it has; before, the rate sat at the floor until the
+ *   base expired (10 s: GRIT's download collapse, story 025, 2026-10-27).
  * - Heavy random loss (cg_scc_lossw: of a window, more than 1 byte in 5
  *   lost with the queue short) is the caller's sign that the tunnel's own
  *   repairs do not keep up: protoctl.c stops waiting for them.
@@ -74,6 +80,9 @@
 #define CG_SCC_IDLE_US 1000000u  /* idle this long (nothing in flight), STARTUP again */
 #define CG_SCC_LOSSW_US 100000u  /* the window of the heavy-loss verdict */
 #define CG_SCC_LOSSW_MIN 16384u  /* bytes a window needs for a verdict */
+#define CG_SCC_STUCK_ROUNDS 4u   /* a queue not drained over this many round trips (and 4 times its depth) is not
+				  * the stream's (cg_scc_stuck) */
+#define CG_SCC_STUCK_TOL_US 500u /* the least fall of the queue that says it drains */
 
 enum { CG_SCC_STARTUP_M = 0, CG_SCC_DRAIN_M, CG_SCC_PROBE_M };
 
@@ -107,6 +116,11 @@ struct cg_scc {
 	int32_t owd_base, ow_min, owd_last;
 	uint64_t owd_t;
 	uint8_t have_owd, have_ow;
+	/* a run of congested windows (cg_scc_stuck): when its queue last fell
+	 * (0: no run), the queue then and the least of the run, over owd_base, us */
+	uint64_t qr_t;
+	int32_t qr_ref, qr_min;
+	uint64_t n_rebase; /* runs whose queue did not drain: the base moved up */
 	uint64_t inflight;  /* bytes in flight over all streams (the caller's) */
 	uint64_t hint;      /* the engine's capacity for the data, bytes/s; 0: none */
 	uint8_t hint_full;  /* the engine sees those links queued */
@@ -239,6 +253,53 @@ static inline void cg_scc_filter(struct cg_scc *p, uint64_t now, uint64_t rate, 
 	}
 }
 
+/* A window of the run found a queue of ex us over the base (more than
+ * queue_us). The stream's own queue drains under the cuts (3/4 of what is
+ * delivered: a quarter of the link's rate), and its least delay falls
+ * window after window; one that does not fall over CG_SCC_STUCK_ROUNDS
+ * round trips and four times its depth is the path's: the engine moved the
+ * data to a link of a longer delay (download, protect: the first bytes by
+ * the Starlink-like link set the base, the rest went by the cellular one,
+ * 15 ms longer; the rate sat at the floor, which kept that link idle, so
+ * the engine never moved it back, until the base expired 10 s later), or
+ * others hold a queue the stream cannot empty (cutting more only starves
+ * it). The base moves up to the run's least, and STARTUP goes again from
+ * the estimate it has (the path changed, as after idle): a queue of its
+ * own on the new path shows over the new base. A sample under the base
+ * still lowers it at once (cg_scc_owd). Returns 1 when it moved. */
+static inline int cg_scc_stuck(struct cg_scc *p, const struct cg_scc_cfg *c, uint64_t now, int32_t ex)
+{
+	uint32_t tol = c->queue_us / 4 > CG_SCC_STUCK_TOL_US ? c->queue_us / 4 : CG_SCC_STUCK_TOL_US;
+	uint64_t rt = p->min_rtt > CG_SCC_WMIN_US ? p->min_rtt : CG_SCC_WMIN_US;
+
+	if (!p->qr_t || ex + (int64_t)tol < p->qr_ref) {
+		/* a run begins, or its queue fell: the stream's, it drains */
+		if (!p->qr_t || ex < p->qr_min)
+			p->qr_min = ex;
+		p->qr_t = now;
+		p->qr_ref = ex;
+		return 0;
+	}
+	if (ex < p->qr_min)
+		p->qr_min = ex;
+	if (now - p->qr_t < CG_SCC_STUCK_ROUNDS * rt + 4 * (uint64_t)(uint32_t)p->qr_ref)
+		return 0;
+	p->owd_base = (int32_t)((uint32_t)p->owd_base + (uint32_t)p->qr_min);
+	p->owd_t = now;
+	p->qr_t = 0;
+	p->cong = 0;
+	p->cong_t = 0;
+	p->cut_run = 0;
+	p->qnow = 0;
+	if (p->mode != CG_SCC_STARTUP_M) {
+		p->mode = CG_SCC_STARTUP_M;
+		p->full_bw = 0;
+		p->full_n = 0;
+	}
+	p->n_rebase++;
+	return 1;
+}
+
 /* The heavy-loss verdict at now: each CG_SCC_LOSSW_US, whether more than
  * 1 byte in 5 of what the window settled was declared lost while the
  * queue was short (cg_scc_lost); a window with too few bytes keeps the
@@ -315,10 +376,17 @@ static inline void cg_scc_ack(struct cg_scc *p, const struct cg_scc_cfg *c, uint
 		/* the forward delay when the receiver reports it: a round trip
 		 * also carries the ACK's way back, whose losses and slower
 		 * copies (a microcut) read as a queue and cut the rate */
-		if (p->have_owd)
-			p->cong = p->have_ow && (int32_t)((uint32_t)p->ow_min - (uint32_t)p->owd_base) > (int32_t)c->queue_us;
-		else
+		if (p->have_owd) {
+			int32_t ex = (int32_t)((uint32_t)p->ow_min - (uint32_t)p->owd_base);
+
+			p->cong = p->have_ow && ex > (int32_t)c->queue_us;
+			if (!p->cong)
+				p->qr_t = 0;
+			else
+				cg_scc_stuck(p, c, now, ex);
+		} else {
 			p->cong = p->wmin && p->wmin > p->min_rtt + c->queue_us;
+		}
 		p->wmin = 0;
 		p->have_ow = 0;
 		p->wt = now;

@@ -1899,6 +1899,15 @@ void cg_pctl_json(const struct cg_pctl *p, struct cg_json *j)
 	cg_json_u64(j, "lost_no_link", p->nack_link[CG_PCTL_LINKS]);
 	cg_json_end(j, '}');
 	cg_json_ms(j, "reo_cap_ms", p->reo_cap);
+	{
+		/* queues the cuts did not drain: the delay's base moved up (streamcc.h's cg_scc_stuck) */
+		uint64_t nr = 0;
+
+		for (uint32_t i = 0; i < p->npr; i++)
+			if (p->pr[i].used)
+				nr += p->pr[i].cc.n_rebase;
+		cg_json_u64(j, "rebases", nr);
+	}
 	cg_json_u64(j, "copies", p->copies);
 	cg_json_u64(j, "rto", p->rto_n);
 	cg_json_u64(j, "dup_frames", p->dup_frames);
@@ -1962,6 +1971,7 @@ void cg_pctl_json(const struct cg_pctl *p, struct cg_json *j)
 		cg_json_u64(j, "dup_acks", p->pr[i].dups);
 		cg_json_u64(j, "congested", c->n_cong);
 		cg_json_u64(j, "cuts", c->n_cut);
+		cg_json_u64(j, "rebases", c->n_rebase);
 		cg_json_end(j, '}');
 	}
 	cg_json_end(j, ']');

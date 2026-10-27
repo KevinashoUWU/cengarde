@@ -114,12 +114,13 @@ REPAIR += [k for k, _ in ACT]
 # GRIT, the protocontroller's variant B (story 025): each end's stream
 # retransmissions and by why the segment was lost (RACK, the timer, the
 # tunnel's NACK handed over), the duplicate frames its receiver took, the
-# rescue's NACKs of its DATA by what they did, and the NACKed sequences the
-# rescue handed to GRIT instead of sending them again (to_grit).
+# rescue's NACKs of its DATA by what they did, the NACKed sequences the
+# rescue handed to GRIT instead of sending them again (to_grit), and the
+# queues its cuts did not drain (g_rebase: the delay's base moved up).
 PCTL = [("g_retx", ("retx",)), ("g_rack", ("retx_by", "rack")), ("g_rto", ("retx_by", "rto")),
         ("g_nack", ("retx_by", "nack")), ("g_dup", ("dup_frames",)), ("g_nlost", ("nacks", "lost")),
         ("g_ndeliv", ("nacks", "delivered")), ("g_nstale", ("nacks", "stale")), ("g_npend", ("nacks", "pending")),
-        ("g_corrupt", ("corrupt",))]
+        ("g_corrupt", ("corrupt",)), ("g_rebase", ("rebases",))]
 REPAIR += [k for k, _ in PCTL] + ["to_grit"]
 GAUGES = GAUGES + ("rlc_peak",)
 COUNTERS = [k for k in RO_PATHS if k not in GAUGES] + ["too_old", "tun_drops", "lost_all"] + SENDS + REPAIR
