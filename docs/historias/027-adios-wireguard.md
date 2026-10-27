@@ -82,6 +82,10 @@ reescritos):
   `CG_WG_PSK`; las etiquetas `wg-server`, `wg-client` y `wg-psk` no se
   reusan. `CG_LINK_KEY` y las direcciones del túnel no cambian.
 - `cengarde -t` en un servidor con varios routers ya no dice «WireGuard at».
+- De paso, un error del túnel nativo que el laboratorio destapó al quedarse
+  solo con él: `SIOCSIFADDR` reemplaza la dirección IPv4 de un dispositivo,
+  así que de varios `tun_addr` IPv4 solo quedaba el último. Desde la segunda
+  van como secundarias con la etiqueta `cg0:1`, `cg0:2`… (`tun.c`).
 
 **OpenWrt** (`openwrt/`): `cengarde-setup` solo arma `cg0` (sin `wgcg`, su
 peer, claves ni `tunnel_mode`); el paquete deja de depender de

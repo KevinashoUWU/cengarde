@@ -1287,7 +1287,9 @@ Ajustes, en los dos extremos (cambiarlos reinicia el motor):
 
 - `tun`: el nombre del TUN, `cg0` por omisión.
 - `tun_addr`: hasta 4 direcciones con su prefijo que cengarde le pone
-  (`10.79.0.2/16 fd00:79::2/64`); sin ella, las pone el sistema.
+  (`10.79.0.2/16 fd00:79::2/64`); sin ella, las pone el sistema. Desde
+  la segunda dirección IPv4, cada una va como secundaria con la etiqueta
+  `cg0:1`, `cg0:2`… (hasta 0.11 cada una reemplazaba a la anterior).
 - `tun_mtu`: 1420 por omisión, lo que cabe en un enlace de 1500 por IPv6
   (1500 − 40 − 8 − 24 de cabecera de cengarde = 1428; por IPv4, 1448). Si
   un enlace tiene menos, el cliente avisa con la cifra que cabe.
