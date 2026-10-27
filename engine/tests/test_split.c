@@ -1177,8 +1177,40 @@ static void test_split_spread_copy(void)
 	CHECK(split_old > 0 && split_new > split_old && lone > 0);
 }
 
+/* C13: one order for the links of a split packet; each step only narrows,
+ * the XOR groups by what is picked, a copy picks nothing. */
+static void test_split_plan(void)
+{
+	struct cg_split_plan p;
+
+	p = cg_split_plan(0x7, 0x7, 0x7, 0);
+	CHECK_EQ(p.pick, 0x7);
+	CHECK_EQ(p.xor_by, 0x7);
+	CHECK_EQ(p.by, CG_PLAN_SPLIT);
+	CHECK(!p.copy);
+	p = cg_split_plan(0x7, 0x1, 0x1, 0); /* stress: the lead alone */
+	CHECK_EQ(p.pick, 0x1);
+	CHECK_EQ(p.xor_by, 0x1); /* one link: no XOR group (was 0x7) */
+	CHECK_EQ(p.by, CG_PLAN_SINGLE);
+	p = cg_split_plan(0x7, 0x7, 0x6, 0); /* the XOR's cap */
+	CHECK_EQ(p.pick, 0x6);
+	CHECK_EQ(p.by, CG_PLAN_SHARE);
+	p = cg_split_plan(0x7, 0x1, 0x1, 1); /* copied under stress */
+	CHECK_EQ(p.pick, 0);
+	CHECK_EQ(p.xor_by, 0);
+	CHECK(p.copy);
+	CHECK_EQ(p.by, CG_PLAN_COPY);
+	p = cg_split_plan(0x3, 0x7, 0xf, 0); /* a step cannot widen */
+	CHECK_EQ(p.pick, 0x3);
+	CHECK_EQ(p.by, CG_PLAN_SPLIT);
+	p = cg_split_plan(0x3, 0x1, 0x3, 0); /* the cap after single: on single's */
+	CHECK_EQ(p.pick, 0x1);
+	CHECK_EQ(p.by, CG_PLAN_SINGLE);
+}
+
 void test_split(void)
 {
+	test_split_plan();
 	test_split_proportions();
 	test_split_interleave();
 	test_split_eligible();

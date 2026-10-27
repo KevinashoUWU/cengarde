@@ -652,6 +652,60 @@ static inline uint16_t cg_split_stress_elig(const struct cg_spread *s, uint16_t 
 	return (uint16_t)(1u << s->lead);
 }
 
+/* Who decides the links of a split packet (audit C13), in one place and in
+ * one order, each step on what the step before left:
+ *
+ *   1. elig: G3 and G4 (split_eligible, cg_split_spread_apply), per batch;
+ *   2. single: under G4's stress only the fastest link, with
+ *      split_stress_single (cg_split_stress_elig);
+ *   3. share: the XOR parity's cap per link, fec_share_max (fec.h's
+ *      cg_fec_share_mask), on what single left and only with the XOR;
+ *   4. copy: under G4's stress, on its budget, the packet goes on every
+ *      carrier instead (cg_sdup): nothing is picked;
+ *   5. the tickle (tickle.h) and the ETA pick among what is left
+ *      (cg_split_pick_eta), the tickle only with 2 links or more in it.
+ *
+ * What follows the plan, not the batch's elig: the XOR parity groups by the
+ * links a packet may really take (with one, no group: before, under
+ * split_stress_single it grouped by every link while one carried all, and
+ * every group closed with one packet), and FEC v3 earns no repair for a
+ * packet copied on every carrier (it is there already). The callers count
+ * each step (n[by]). */
+enum { CG_PLAN_SPLIT = 0, CG_PLAN_SINGLE, CG_PLAN_SHARE, CG_PLAN_COPY, CG_PLAN_N };
+
+struct cg_split_plan {
+	uint16_t pick;   /* the eligible links for cg_split_pick_eta; 0: copy */
+	uint16_t xor_by; /* the links the XOR parity groups by (fec.h) */
+	uint8_t copy;    /* on every carrier (cg_sdup) */
+	uint8_t by;      /* the last step that changed the links (CG_PLAN_*) */
+};
+
+/* elig: step 1's; single: cg_split_stress_elig's on it; share:
+ * cg_fec_share_mask's on single (single itself without the XOR); copy:
+ * cg_sdup's verdict. A step can only narrow: what it adds is ignored. */
+static inline struct cg_split_plan cg_split_plan(uint16_t elig, uint16_t single, uint16_t share, int copy)
+{
+	struct cg_split_plan p = { elig, 0, 0, CG_PLAN_SPLIT };
+
+	single &= elig;
+	if (single != p.pick) {
+		p.pick = single;
+		p.by = CG_PLAN_SINGLE;
+	}
+	share &= p.pick;
+	if (share != p.pick) {
+		p.pick = share;
+		p.by = CG_PLAN_SHARE;
+	}
+	if (copy) {
+		p.pick = 0;
+		p.copy = 1;
+		p.by = CG_PLAN_COPY;
+	}
+	p.xor_by = p.pick;
+	return p;
+}
+
 /* The eligible links the guard keeps out of the split (dup0, the weight-0
  * ones, aside), for cg_split_spread_apply. */
 static inline uint16_t cg_split_spread_out(const struct cg_spread *s, uint16_t eligible, uint16_t dup0,
