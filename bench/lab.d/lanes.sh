@@ -150,7 +150,7 @@ lanes() {
 		echo "lanes: FAILED"
 		return 1
 	fi
-	ENGINE=c NLINKS=3
+	NLINKS=3
 	# lanes = 8 last, so that it wins over a lanes in SERVER_EXTRA.
 	CLIENT_EXTRA="control_socket = $RUN/client.sock${CLIENT_EXTRA:+;$CLIENT_EXTRA}"
 	SERVER_EXTRA="control_socket = $RUN/server.sock${SERVER_EXTRA:+;$SERVER_EXTRA};lanes = 8"

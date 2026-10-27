@@ -1,14 +1,16 @@
-// udpgen: fake WireGuard endpoint for benchmarking engarde.
+// udpgen: traffic generator for the lab, at each end of the tunnel.
 // Sends sequence-numbered, timestamped UDP packets at a fixed rate and counts
 // what it receives: unique packets, duplicates, reordering and one-way latency
 // (CLOCK_MONOTONIC is shared across network namespaces on the same host).
 //
 // usage: udpgen -b ip:port [-p ip:port | -l] [-r pps] [-s size|imix] [-d secs] [-g grace]
-//   -l  learn the peer from received packets and follow it when it moves, as
-//       WireGuard roams (a restarted cengarde server talks from a new port)
+//   -l  learn the peer from received packets and follow it when it moves
+//       (answer whoever sends, as a server does)
 //   -r 0 (default) only receives. Latency percentiles saturate at 200000 us.
-//   -s imix  sizes cycle 7 x 64, 4 x 576, 1 x 1400 bytes (by sequence, 12 to a
-//       cycle, 347 on average); the output then says how many of the unique
+//   -s SIZE  bytes of UDP payload (1392 by default: a 1420-byte IPv4 packet,
+//       the largest the tunnel's TUN takes without fragmenting it)
+//   -s imix  sizes cycle 7 x 64, 4 x 576, 1 x 1392 bytes (by sequence, 12 to a
+//       cycle, 345 on average); the output then says how many of the unique
 //       packets were big (256 bytes or more) and how many of those arrived
 //       behind a later one: what a reorderer holds is the big ones, and what
 //       overtakes it is mostly small
@@ -32,10 +34,10 @@
 #define HIST_US 200000    /* 1us buckets up to 200ms */
 #define BIG_LEN 256       /* from this size on a packet counts as big (reported apart) */
 
-/* Shaped like a WireGuard data message (type 4, three zero bytes) so that
- * cengarde treats it as WireGuard traffic. */
+/* The first word is 4 (it used to make the packet look like a WireGuard data
+ * message; the tunnel carries the IP packet whole now, so it is only a tag). */
 struct hdr {
-	uint32_t wg_type;
+	uint32_t tag;
 	uint32_t magic;
 	uint64_t seq;
 	uint64_t ts_ns;
@@ -47,7 +49,7 @@ static atomic_int have_peer;
 static int learn;
 static atomic_uint_fast64_t learned; /* -l: newest sender, s_addr << 16 | sin_port */
 static atomic_int stop_rx;
-static long rate = 0, size = 1400, duration = 10, grace = 2;
+static long rate = 0, size = 1392, duration = 10, grace = 2;
 static int imix;
 static uint64_t max_seq_bits;
 static uint8_t *seen;
@@ -63,12 +65,12 @@ static uint64_t now_ns(void)
 	return (uint64_t)ts.tv_sec * 1000000000ull + ts.tv_nsec;
 }
 
-/* The size of packet seq with -s imix: 7 of 64, 4 of 576 and 1 of 1400 in turn. */
+/* The size of packet seq with -s imix: 7 of 64, 4 of 576 and 1 of 1392 in turn. */
 static long imix_size(uint64_t seq)
 {
 	uint64_t k = seq % 12;
 
-	return k < 7 ? 64 : k < 11 ? 576 : 1400;
+	return k < 7 ? 64 : k < 11 ? 576 : 1392;
 }
 
 static void parse_addr(const char *s, struct sockaddr_in *a)
@@ -230,7 +232,7 @@ int main(int argc, char **argv)
 				usleep(1000);
 		char *pkt = calloc(1, 2048);
 		struct hdr *h = (struct hdr *)pkt;
-		h->wg_type = htole32(4);
+		h->tag = htole32(4);
 		h->magic = MAGIC;
 		uint64_t start = now_ns(), end = start + duration * 1000000000ull;
 		for (;;) {

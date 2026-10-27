@@ -1,4 +1,4 @@
-# shellcheck shell=bash disable=SC2034 # ENGINE and NLINKS are read by lab.sh
+# shellcheck shell=bash disable=SC2034 # NLINKS is read by lab.sh
 # TCP over the native tunnel, tcp_aware off and on: "bench/lab.sh tcpaware".
 #
 # The field finding of story 014 (2026-10-16): with tcp_aware, the VPS's TCP
@@ -88,9 +88,8 @@ tcpa_run() {
 		[ -n "$conf" ] || { echo "FAIL: variant $v: no TCPA_CONF_$v"; return 1; }
 		;;
 	esac
-	ENGINE=c
-	CLIENT_EXTRA="tunnel = native;tun_addr = 10.79.0.2/16;status_interval_ms = 200;$TCPA_CONF;$TCPA_CONF_CLIENT;$conf"
-	SERVER_EXTRA="tunnel = native;tun_addr = 10.79.0.1/16;status_interval_ms = 200;$TCPA_CONF;$conf"
+	CLIENT_EXTRA="status_interval_ms = 200;$TCPA_CONF;$TCPA_CONF_CLIENT;$conf"
+	SERVER_EXTRA="status_interval_ms = 200;$TCPA_CONF;$conf"
 	setup && start || return 1
 	tcpa_links || return 1
 	ip netns exec "$NS_SRV" iperf3 -s -B 10.79.0.1 -D -I "$RUN/iperf3.pid" || return 1

@@ -1,9 +1,9 @@
 # shellcheck shell=bash disable=SC2034 # LAB_CI is read by lab.sh
-# The native tunnel (tunnel = native): "bench/lab.sh native".
+# The native tunnel with real TCP: "bench/lab.sh native".
 #
 # Client and server own a TUN device each (cg0: 10.79.0.2/16 and
-# 10.79.0.1/16, and fd00:79::2/64 and fd00:79::1/64 where the kernel has
-# IPv6) instead of talking to a WireGuard, over 2 links shaped to
+# 10.79.0.1/16, as in every lab, and fd00:79::2/64 and fd00:79::1/64 where
+# the kernel has IPv6), over 2 links shaped to
 # NATIVE_RATE each way, with split = on at the client (the server splits
 # the download when the client asks, its default). It pings across the
 # TUN, then runs iperf3 TCP up and down for NATIVE_S seconds each, and
@@ -15,8 +15,7 @@
 # tun_route: alpha (l1, TUN cga, 10.79.0.2) and bravo (l2, cgb,
 # 10.79.0.3), both in the cli namespace. Each pings the server through its
 # own TUN, and the server's replies find their router by destination; a
-# packet bravo sends with alpha's source address is dropped (spoofed), as
-# WireGuard's AllowedIPs would.
+# packet bravo sends with alpha's source address is dropped (spoofed).
 # Needs iperf3 and ping.
 LAB_CI=1
 
@@ -41,10 +40,10 @@ native() {
 	for tool in iperf3 ping; do
 		command -v "$tool" >/dev/null || { echo "native: needs $tool"; return 1; }
 	done
-	ENGINE=c NLINKS=2
+	NLINKS=2
 	[ -d /proc/sys/net/ipv6 ] && v6=1
-	CLIENT_EXTRA="tunnel = native;tun_addr = 10.79.0.2/16${v6:+ fd00:79::2/64};split = on${CLIENT_EXTRA:+;$CLIENT_EXTRA}"
-	SERVER_EXTRA="tunnel = native;tun_addr = 10.79.0.1/16${v6:+ fd00:79::1/64}${SERVER_EXTRA:+;$SERVER_EXTRA}"
+	CLIENT_EXTRA="tun_addr = 10.79.0.2/16${v6:+ fd00:79::2/64};split = on${CLIENT_EXTRA:+;$CLIENT_EXTRA}"
+	SERVER_EXTRA="tun_addr = 10.79.0.1/16${v6:+ fd00:79::1/64}${SERVER_EXTRA:+;$SERVER_EXTRA}"
 	trap 'native_stop_iperf; teardown' EXIT
 	trap 'native_stop_iperf; teardown; exit 130' INT TERM
 	setup && start || return 1
@@ -104,7 +103,7 @@ native_ping() {
 # native_multi EXTRA: the routers get EXTRA too (CLIENT_EXTRA as given).
 native_multi() {
 	local fail=0 name n loss v
-	ENGINE=c NLINKS=2
+	NLINKS=2
 	CLIENT_EXTRA="" SERVER_EXTRA=""
 	setup || return 1
 	cat >"$RUN/server.conf" <<-EOF

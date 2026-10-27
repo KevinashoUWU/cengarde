@@ -1,4 +1,4 @@
-# shellcheck shell=bash disable=SC2034 # LAB_CI, ENGINE and NLINKS are read by lab.sh
+# shellcheck shell=bash disable=SC2034 # LAB_CI and NLINKS are read by lab.sh
 # Server address lists and failover: "bench/lab.sh fallback".
 #
 # Each link sends to one address of its server list and moves to the next
@@ -26,9 +26,9 @@
 #   10.0.3.2, the first. Last, on 10.0.3.20 again, l3
 #   loses its own address and gets the same one back: that also sends it
 #   back to the first, at once.
-# - Path MTU: l2's MTU drops to 1400 on the client side while 1400-byte
-#   datagrams go up. The status shows path_mtu 1400 on l2, and the log asks
-#   for a WireGuard MTU of 1316 on l2 only.
+# - Path MTU: l2's MTU drops to 1400 on the client side while 1420-byte
+#   packets go up the TUN (SIZE 1392 of UDP payload). The status shows
+#   path_mtu 1400 on l2, and the log asks for a tun_mtu of 1348 on l2 only.
 #
 # Needs iptables (the DNAT and the block), besides what lab.sh needs.
 LAB_CI=1
@@ -104,7 +104,7 @@ fallback() {
 		echo "fallback: FAILED"
 		return 1
 	fi
-	ENGINE=c NLINKS=3
+	NLINKS=3
 	CLIENT_EXTRA="control_socket = $RUN/client.sock;server_failover_ms = $FAILOVER_MS${CLIENT_EXTRA:+;$CLIENT_EXTRA}"
 	trap teardown EXIT
 	trap 'teardown; exit 130' INT TERM
@@ -190,7 +190,7 @@ fallback() {
 	[ "$(grep -c "link l3: the server answers again" "$RUN/client.log")" = "$rounds" ] ||
 		{ echo "FAIL: l3 came back through a dead round, not through its local address"; fail=1; }
 
-	# Path MTU: l2 at 1400 bytes while 1400-byte datagrams go up.
+	# Path MTU: l2 at 1400 bytes while 1420-byte packets go up.
 	ip -n "$NS_CLI" link set l2 mtu 1400
 	up 2000 7 >"$RUN/traffic.txt"
 	echo "   tunnel: $(cat "$RUN/traffic.txt")"
@@ -199,9 +199,9 @@ fallback() {
 	[ -n "$sent" ] && [ $((uniq * 1000)) -ge $((sent * 995)) ] || { echo "FAIL: packets lost"; fail=1; }
 	[ "$(fb_link l2 path_mtu)" = 1400 ] || { echo "FAIL: l2 path_mtu is $(fb_link l2 path_mtu), 1400 wanted"; fail=1; }
 	[ "$(fb_link l1 path_mtu)" = 1500 ] || { echo "FAIL: l1 path_mtu is $(fb_link l1 path_mtu), 1500 wanted"; fail=1; }
-	grep -q "link l2: WireGuard datagrams of 1400 bytes .* lower the WireGuard MTU to 1316" "$RUN/client.log" ||
+	grep -q "link l2: packets of 1420 bytes from the TUN .* lower tun_mtu to 1348" "$RUN/client.log" ||
 		{ echo "FAIL: no path MTU warning for l2"; fail=1; }
-	grep -q "link l[13]: WireGuard datagrams" "$RUN/client.log" && { echo "FAIL: a path MTU warning for l1 or l3"; fail=1; }
+	grep -q "link l[13]: packets of .* from the TUN" "$RUN/client.log" && { echo "FAIL: a path MTU warning for l1 or l3"; fail=1; }
 
 	grep -hE "no reply from|cannot use|back to|path MTU" "$RUN/client.log" | sed 's/^/   /'
 	stop

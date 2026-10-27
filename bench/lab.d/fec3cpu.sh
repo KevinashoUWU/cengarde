@@ -1,11 +1,13 @@
-# shellcheck shell=bash disable=SC2034 # ENGINE and NLINKS are read by lab.sh
+# shellcheck shell=bash disable=SC2034 # NLINKS is read by lab.sh
 # The server's CPU with several routers on FEC v3 (story 026): "bench/lab.sh fec3cpu".
 #
 # FC_ROUTERS client engines (1 to 3) in the cli namespace, each a router with
 # two links of its own (l1-l2, l3-l4, l5-l6) losing FC_LOSS % at random each
-# way (netem), and one server with a [client NAME] section each. Every router
-# sends FC_PPS datagrams a second of FC_SIZE bytes (a fake WireGuard, udpgen)
-# up, or the server down (FC_DIR), for FC_S seconds, split over its two
+# way (netem), and one server with a [client NAME] section each. Router N
+# owns the TUN cgN with 10.79.N.2/24 and the server's cg0 has 10.79.N.1/24
+# (as in multiclient). Every router sends FC_PPS datagrams a second of
+# FC_SIZE bytes (udpgen, through its TUN) up, or the server down (FC_DIR),
+# for FC_S seconds, split over its two
 # links; then the same with the next arm (FC_ARMS): off (fec = no on both
 # ends), xor (fec = yes) or rlcN (fec_code = rlc, fec_pct = N, at the end
 # that sends; fec = yes at both). Per arm, a JSON line on stdout and in
@@ -15,7 +17,7 @@
 
 FC_ROUTERS=${FC_ROUTERS:-3}
 FC_PPS=${FC_PPS:-3000}
-FC_SIZE=${FC_SIZE:-1400}
+FC_SIZE=${FC_SIZE:-1392}
 FC_LOSS=${FC_LOSS:-1}
 FC_S=${FC_S:-20}
 FC_DIR=${FC_DIR:-up}
@@ -44,7 +46,9 @@ fc_conf() {
 	cat <<-EOF
 		mode = client
 		key = $(fc_key "r$n")
-		listen = 127.0.0.1:594${n}1
+		tunnel = native
+		tun = cg$n
+		tun_addr = 10.79.$n.2/24
 		server = 10.0.$((2 * n - 1)).2:59402
 		interfaces = none
 		status_file = $RUN/r$n.json
@@ -68,10 +72,12 @@ fc_server_conf() {
 		control_socket = $RUN/server.sock
 		split = force
 		mute_behind_ms = 0
+		tunnel = native
+		tun_addr = 10.79.1.1/24 10.79.2.1/24 10.79.3.1/24
 		$(fc_arm "$1" server)
 	EOF
 	for n in $(seq 1 "$FC_ROUTERS"); do
-		printf '[client r%s]\nkey = %s\nwireguard = 127.0.0.1:5930%s\n' "$n" "$(fc_key "r$n")" "$n"
+		printf '[client r%s]\nkey = %s\ntun_route = 10.79.%s.2/32\n' "$n" "$(fc_key "r$n")" "$n"
 	done
 }
 
@@ -94,7 +100,7 @@ fc_status() { "$CENGARDE_BIN" ctl -s "$RUN/$1.sock" status 2>/dev/null; }
 
 fec3cpu() {
 	local arm n i pids s0 s1 c0 c1 t0 t1 hz line
-	ENGINE=c NLINKS=6
+	NLINKS=6
 	hz=$(getconf CLK_TCK)
 	trap fc_teardown EXIT
 	trap 'fc_teardown; exit 130' INT TERM
@@ -117,9 +123,9 @@ fec3cpu() {
 		pids=
 		for n in $(seq 1 "$FC_ROUTERS"); do
 			if [ "$FC_DIR" = up ]; then
-				ip netns exec "$NS_SRV" "$BIN/udpgen" -b "127.0.0.1:5930$n" -d $((FC_S + 3)) -g 3 >"$RUN/rx-$n.out" &
+				ip netns exec "$NS_SRV" "$BIN/udpgen" -b "10.79.$n.1:59301" -d $((FC_S + 3)) -g 3 >"$RUN/rx-$n.out" &
 			else
-				ip netns exec "$NS_CLI" "$BIN/udpgen" -b "127.0.0.1:5000$n" -p "127.0.0.1:594${n}1" -r 20 -s 64 \
+				ip netns exec "$NS_CLI" "$BIN/udpgen" -b "10.79.$n.2:50000" -p "10.79.$n.1:59301" -r 20 -s 64 \
 					-d $((FC_S + 3)) -g 2 >"$RUN/rx-$n.out" &
 			fi
 			pids="$pids $!"
@@ -131,10 +137,10 @@ fec3cpu() {
 		t0=$(date +%s.%N)
 		for n in $(seq 1 "$FC_ROUTERS"); do
 			if [ "$FC_DIR" = up ]; then
-				ip netns exec "$NS_CLI" "$BIN/udpgen" -b "127.0.0.1:5000$n" -p "127.0.0.1:594${n}1" -r "$FC_PPS" \
+				ip netns exec "$NS_CLI" "$BIN/udpgen" -b "10.79.$n.2:50000" -p "10.79.$n.1:59301" -r "$FC_PPS" \
 					-s "$FC_SIZE" -d "$FC_S" -g 1 >"$RUN/tx-$n.out" &
 			else
-				ip netns exec "$NS_SRV" "$BIN/udpgen" -b "127.0.0.1:5930$n" -l -r "$FC_PPS" -s "$FC_SIZE" -d "$FC_S" \
+				ip netns exec "$NS_SRV" "$BIN/udpgen" -b "10.79.$n.1:59301" -l -r "$FC_PPS" -s "$FC_SIZE" -d "$FC_S" \
 					-g 1 >"$RUN/tx-$n.out" &
 			fi
 			pids="$pids $!"

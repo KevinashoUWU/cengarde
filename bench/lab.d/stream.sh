@@ -2,8 +2,8 @@
 # The simulated broadcast end to end: "bench/lab.sh stream" (bench/stream/).
 #
 # What the owner does from the field, in the bonding lab's namespaces: a
-# sender in cli (the PC on the router's LAN) sends a test picture through the
-# real WireGuard and cengarde (bond.sh's lab: netem per link) to a receiver in
+# sender in cli (the PC on the router's LAN) sends a test picture through
+# cengarde's tunnel (bond.sh's lab: netem per link) to a receiver in
 # srv (the VPS), over RTMP (TCP) and SRT (UDP). send.sh and recv.sh write their
 # run directories, cengarde-rec records the client's status file at the same
 # time, bench/fieldrec.py --export turns that into CSVs, and report.py lines
@@ -22,8 +22,8 @@
 # STREAM_S (seconds per run, 30), STREAM_SIZE (640x360), STREAM_KBPS (1500),
 # STREAM_ENC (libx264), STREAM_KEEP (a directory to copy the run directories
 # to), STREAM_QUIET (1: only a line per run, not the whole report). Needs
-# ffmpeg (with libsrt for SRT), ss, python3, wg and netem like bond; bond.sh's
-# notes on WG_GO and BOND_NEED_NETEM apply. Not in "ci": it takes about a
+# ffmpeg (with libsrt for SRT), ss, python3 and netem like bond; bond.sh's
+# note on BOND_NEED_NETEM applies. Not in "ci": it takes about a
 # minute per case and protocol.
 LAB_CI=0
 
@@ -75,7 +75,6 @@ stream_case() {
 	local c=$1 proto=$2 s=$STREAM_S dir=$RUN/stream/$1-$2 key=$RUN/stream.key
 	local rec rx ev snd_dir rx_dir rc=0 dest port rxopts=() snopts=() summary
 	case $c in starlink15*) [ "$s" -lt 31 ] && s=31 ;; esac
-	ENGINE=c
 	NLINKS=$(bond_nlinks "$c")
 	[ "$c" = blackout ] && NLINKS=2
 	CLIENT_EXTRA="status_interval_ms = 250;probe_idle_ms = 100${CLIENT_EXTRA:+;$CLIENT_EXTRA}"
@@ -192,7 +191,7 @@ EOF
 
 stream() {
 	local c p fail=0 failed="" tool
-	for tool in ffmpeg ss wg ping python3; do
+	for tool in ffmpeg ss ping python3; do
 		command -v "$tool" >/dev/null || { echo "stream: needs $tool"; return 1; }
 	done
 	if ! ffmpeg -hide_banner -protocols 2>/dev/null | grep -qw srt; then

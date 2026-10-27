@@ -44,7 +44,7 @@ fieldrec_nap() {
 
 fieldrec() {
 	local fail=0 rec cut dir="$RUN/rec" out
-	ENGINE=c NLINKS=3
+	NLINKS=3
 	CLIENT_EXTRA="status_interval_ms = 250;probe_idle_ms = 100${CLIENT_EXTRA:+;$CLIENT_EXTRA}"
 	trap teardown EXIT
 	trap 'teardown; exit 130' INT TERM

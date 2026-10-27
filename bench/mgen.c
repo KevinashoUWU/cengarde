@@ -1,7 +1,7 @@
-// mgen: udpgen for several peers (the fake WireGuard of bench/mt.py multi).
-// Same packet format as bench/udpgen.c (WireGuard-shaped, seq + timestamp).
+// mgen: udpgen for several peers (the server end of bench/mt.py multi).
+// Same packet format as bench/udpgen.c (a tag, seq + timestamp).
 // Receiving: counts per source address (flow), each with its own sequence
-// space, so several sessions can share one fake WireGuard endpoint.
+// space, so several routers can share one endpoint.
 // Sending (-l): learns peers from received packets (a peer is a distinct
 // source address:port, in the order first heard) and sends to each at its
 // own rate, with a sequence per peer.
@@ -26,7 +26,7 @@
 #define MAXF 64
 
 struct hdr {
-	uint32_t wg_type;
+	uint32_t tag;
 	uint32_t magic;
 	uint64_t seq;
 	uint64_t ts_ns;
@@ -44,7 +44,7 @@ static struct flow flows[MAXF];
 static atomic_int nflows;
 static int learn;
 static atomic_int stop_rx;
-static long size = 1400, duration = 10, grace = 2, npeers = 1;
+static long size = 1392, duration = 10, grace = 2, npeers = 1;
 static long rates[MAXF];
 static int nrates;
 static uint64_t max_seq_bits = 1u << 24;
@@ -215,7 +215,7 @@ int main(int argc, char **argv)
 		}
 		char *pkt = calloc(1, size);
 		struct hdr *h = (struct hdr *)pkt;
-		h->wg_type = htole32(4);
+		h->tag = htole32(4);
 		h->magic = MAGIC;
 		uint64_t start = now_ns(), end = start + duration * 1000000000ull;
 		for (;;) {

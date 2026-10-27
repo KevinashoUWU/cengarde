@@ -1,23 +1,25 @@
-# shellcheck shell=bash disable=SC2034 # LAB_CI, ENGINE and NLINKS are read by lab.sh
+# shellcheck shell=bash disable=SC2034 # LAB_CI and NLINKS are read by lab.sh
 # Several routers on one server: "bench/lab.sh multiclient".
 #
 # Three client engines in the cli namespace, each a router with links of its
 # own: alpha (l1, l2), bravo (l3, l4) and charlie (l5), whose key has the
 # same client hint as alpha's, so the server tries both keys on its probes
-# (engine/src/clients.h). One server with a [client NAME] section each, and
-# a fake WireGuard (udpgen) per router on srv. Checks:
+# (engine/src/clients.h). Each router owns a TUN (cga, cgb, cgc) on a /24 of
+# its own, 10.79.N.2 (N 1 to 3), and the server's cg0 has 10.79.N.1 on each:
+# the routes in cli send what goes to 10.79.N.1 through router N's TUN, and
+# the server routes 10.79.N.2 back to router N (its tun_route). One server
+# with a [client NAME] section each, and a udpgen per router on srv. Checks:
 # - every router live on all its links within MC_LIVE_S (3) seconds, with
 #   one session each, and alpha's and charlie's hints the same;
 # - 1000 pps up, then down, for the three at once: each router's packets
-#   reach its own WireGuard exactly once, none another's;
+#   reach its own end exactly once, none another's;
 # - IP pass and the forward table: alpha asks and holds the whole range,
 #   bravo asks too and waits, alpha lets it go and bravo takes it; alpha's
 #   forward rules are in the table all along;
 # - reloads that leave alpha alone (its session, and 1000 pps up with
 #   nothing lost): bravo disabled (refused: vps_refusing) and enabled again,
 #   charlie removed (its session closed, its probes no longer verify);
-# - "cengarde ctl links" with a CLIENT column;
-# - wireguard_port_file: a line per router while it is configured.
+# - "cengarde ctl links" with a CLIENT column.
 LAB_CI=1
 
 MC_LIVE_S=${MC_LIVE_S:-3}
@@ -32,17 +34,19 @@ mc_n() { case $1 in alpha) echo 1 ;; bravo) echo 2 ;; *) echo 3 ;; esac; }
 mc_key() { echo "$MC_KEYS" | tr ' ' '\n' | sed -n "s/^$1=//p"; }
 mc_links() { case $1 in alpha) echo "1 2" ;; bravo) echo "3 4" ;; *) echo 5 ;; esac; }
 
-# mc_conf NAME: router NAME's configuration: its links, its WireGuard side
-# on 127.0.0.1:594N1.
+# mc_conf NAME: router NAME's configuration: its links, its TUN cgX with
+# 10.79.N.2/24.
 mc_conf() {
 	local name=$1 n i
 	n=$(mc_n "$name")
 	cat <<-EOF
 		mode = client
 		key = $(mc_key "$name")
-		listen = 127.0.0.1:594${n}1
 		server = 10.0.1.2:59402
 		interfaces = none
+		tunnel = native
+		tun = cg${name:0:1}
+		tun_addr = 10.79.$n.2/24
 		status_file = $RUN/$name.json
 		control_socket = $RUN/$name.sock
 		status_interval_ms = 100
@@ -61,17 +65,18 @@ mc_server_conf() {
 		control_socket = $RUN/server.sock
 		status_interval_ms = 100
 		forward_file = $RUN/forward
-		wireguard_port_file = $RUN/wg-ports
+		tunnel = native
+		tun_addr = 10.79.1.1/24 10.79.2.1/24 10.79.3.1/24
 		[client alpha]
 		key = $(mc_key alpha)
-		wireguard = 127.0.0.1:59301
+		tun_route = 10.79.1.2/32
 		forward = tcp:9000=22 udp:5000-5010
 		[client bravo]
 		key = $(mc_key bravo)
-		wireguard = 127.0.0.1:59302
+		tun_route = 10.79.2.2/32
 		[client charlie]
 		key = $(mc_key charlie)
-		wireguard = 127.0.0.1:59303
+		tun_route = 10.79.3.2/32
 	EOF
 }
 
@@ -228,9 +233,9 @@ mc_traffic() {
 	for name in $names; do
 		n=$(mc_n "$name")
 		if [ "$dir" = up ]; then
-			ip netns exec "$NS_SRV" "$BIN/udpgen" -b "127.0.0.1:5930$n" -d 3 -g 3 >"$RUN/rx-$name.out" &
+			ip netns exec "$NS_SRV" "$BIN/udpgen" -b "10.79.$n.1:59301" -d 3 -g 3 >"$RUN/rx-$name.out" &
 		else
-			ip netns exec "$NS_CLI" "$BIN/udpgen" -b "127.0.0.1:5000$n" -p "127.0.0.1:594${n}1" -r 20 -s 64 -d 5 -g 2 \
+			ip netns exec "$NS_CLI" "$BIN/udpgen" -b "10.79.$n.2:50000" -p "10.79.$n.1:59301" -r 20 -s 64 -d 5 -g 2 \
 				>"$RUN/rx-$name.out" &
 		fi
 		pids="$pids $!"
@@ -239,10 +244,10 @@ mc_traffic() {
 	for name in $names; do
 		n=$(mc_n "$name")
 		if [ "$dir" = up ]; then
-			ip netns exec "$NS_CLI" "$BIN/udpgen" -b "127.0.0.1:5000$n" -p "127.0.0.1:594${n}1" -r "$MC_PPS" -s "$SIZE" \
+			ip netns exec "$NS_CLI" "$BIN/udpgen" -b "10.79.$n.2:50000" -p "10.79.$n.1:59301" -r "$MC_PPS" -s "$SIZE" \
 				-d 3 -g 1 >"$RUN/tx-$name.out" &
 		else
-			ip netns exec "$NS_SRV" "$BIN/udpgen" -b "127.0.0.1:5930$n" -l -r "$MC_PPS" -s "$SIZE" -d 3 -g 1 \
+			ip netns exec "$NS_SRV" "$BIN/udpgen" -b "10.79.$n.1:59301" -l -r "$MC_PPS" -s "$SIZE" -d 3 -g 1 \
 				>"$RUN/tx-$name.out" &
 		fi
 		pids="$pids $!"
@@ -270,11 +275,11 @@ mc_hup() { kill -HUP "$(cat "$RUN/$1.pid")"; }
 
 multiclient() {
 	local fail=0 name out sess traffic sent uniq
-	ENGINE=c NLINKS=5
+	NLINKS=5
 	trap mc_teardown EXIT
 	trap 'mc_teardown; exit 130' INT TERM
 	setup || return 1
-	rm -f "$RUN/forward" "$RUN/wg-ports"
+	rm -f "$RUN/forward"
 	mc_server_conf >"$RUN/server.conf"
 	for name in $MC_ROUTERS; do
 		mc_conf "$name" >"$RUN/$name.conf"
@@ -299,12 +304,6 @@ multiclient() {
 	for name in $MC_ROUTERS; do
 		grep -q "^$name " "$RUN/links.txt" || { echo "FAIL: $name not in ctl links"; fail=1; }
 	done
-
-	for name in $MC_ROUTERS; do
-		grep -Eq "^[1-9][0-9]* $name\$" "$RUN/wg-ports" 2>/dev/null ||
-			{ echo "FAIL: no port for $name in wireguard_port_file"; fail=1; }
-	done
-	echo "   wireguard_port_file: $(grep -v '^#' "$RUN/wg-ports" 2>/dev/null | tr '\n' ' ')"
 
 	mc_traffic up || fail=1
 	mc_traffic down || fail=1
@@ -332,10 +331,10 @@ multiclient() {
 
 	# Server reloads under alpha's traffic.
 	sess=$(mc_py session alpha)
-	ip netns exec "$NS_SRV" "$BIN/udpgen" -b 127.0.0.1:59301 -d 9 -g 3 >"$RUN/rx-alpha.out" &
+	ip netns exec "$NS_SRV" "$BIN/udpgen" -b 10.79.1.1:59301 -d 9 -g 3 >"$RUN/rx-alpha.out" &
 	traffic=$!
 	sleep 0.3
-	ip netns exec "$NS_CLI" "$BIN/udpgen" -b 127.0.0.1:50001 -p 127.0.0.1:59411 -r "$MC_PPS" -s "$SIZE" -d 9 -g 1 \
+	ip netns exec "$NS_CLI" "$BIN/udpgen" -b 10.79.1.2:50000 -p 10.79.1.1:59301 -r "$MC_PPS" -s "$SIZE" -d 9 -g 1 \
 		>"$RUN/tx-alpha.out" &
 	sleep 1
 	sed -i '/^\[client bravo\]$/a enabled = no' "$RUN/server.conf"
@@ -351,7 +350,6 @@ multiclient() {
 	sleep 1
 	grep -q "charlie: session [0-9a-f]* closed: the client was removed" "$RUN/server.log" ||
 		{ echo "FAIL: charlie's session not closed when it was removed"; fail=1; }
-	! grep -q " charlie$" "$RUN/wg-ports" || { echo "FAIL: charlie still in wireguard_port_file"; fail=1; }
 	wait "$traffic"
 	sent=$(sed -n 's/.*sent=\([0-9]*\).*/\1/p' "$RUN/tx-alpha.out")
 	uniq=$(sed -n 's/.*uniq=\([0-9]*\).*/\1/p' "$RUN/rx-alpha.out")

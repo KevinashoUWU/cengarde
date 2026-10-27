@@ -1,4 +1,4 @@
-# shellcheck shell=bash disable=SC2034 # LAB_CI, ENGINE and NLINKS are read by lab.sh
+# shellcheck shell=bash disable=SC2034 # LAB_CI and NLINKS are read by lab.sh
 # A source address with no route through its own link: "bench/lab.sh srcroute".
 #
 # netifd puts a prefix's source route ("default from PREFIX") on one
@@ -87,7 +87,7 @@ srcroute() {
 	local fail=0 out
 	local on_b="l['state'] == 'live' and l['remote'] == '[$SR_S]:59402' and l['local'].startswith('[$SR_B]:')"
 	local on_a="l['state'] == 'live' and l['remote'] == '[$SR_S]:59402' and l['local'].startswith('[$SR_A]:')"
-	ENGINE=c NLINKS=1
+	NLINKS=1
 	CLIENT_EXTRA="control_socket = $RUN/client.sock${CLIENT_EXTRA:+;$CLIENT_EXTRA}"
 	trap teardown EXIT
 	trap 'teardown; exit 130' INT TERM

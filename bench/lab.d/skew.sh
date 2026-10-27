@@ -61,7 +61,7 @@ skew() {
 		echo "skew: FAILED"
 		return 1
 	fi
-	ENGINE=c NLINKS=3
+	NLINKS=3
 	CLIENT_EXTRA="control_socket = $RUN/client.sock${CLIENT_EXTRA:+;$CLIENT_EXTRA}"
 	SERVER_EXTRA="control_socket = $RUN/server.sock${SERVER_EXTRA:+;$SERVER_EXTRA}"
 	trap teardown EXIT

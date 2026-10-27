@@ -1,4 +1,4 @@
-# shellcheck shell=bash disable=SC2034 # LAB_CI, ENGINE and NLINKS are read by lab.sh
+# shellcheck shell=bash disable=SC2034 # LAB_CI and NLINKS are read by lab.sh
 # Server restart under traffic: "bench/lab.sh restart [REF]".
 #
 # Up to protocol 3, a restarted server opened the session again with a new
@@ -24,7 +24,8 @@
 #   can carry the HELLO and the cookie, ALONE times (3), with the same checks.
 #
 # With REF, it measures the engine of that git commit instead (e.g. the one
-# before the fix, to count the wedges).
+# before the fix, to count the wedges); the lab is native-only, so REF needs
+# an engine with the native tunnel (tun_addr, story 014).
 LAB_CI=1
 
 RESTARTS=${RESTARTS:-10}
@@ -172,7 +173,7 @@ restart() {
 		echo "restart: FAILED"
 		return 1
 	fi
-	ENGINE=c NLINKS=3
+	NLINKS=3
 	CLIENT_EXTRA="control_socket = $RUN/client.sock${CLIENT_EXTRA:+;$CLIENT_EXTRA}"
 	trap teardown EXIT
 	trap 'teardown; exit 130' INT TERM
@@ -198,8 +199,9 @@ restart() {
 		ip netns exec "$NS_CLI" tc qdisc replace dev l3 root tbf rate 5mbit burst 32kb latency 800ms
 		ip netns exec "$NS_SRV" "$BIN/udpgen" -b 10.0.3.2:7000 -d "$secs" -g 0 >/dev/null &
 		ip netns exec "$NS_CLI" "$BIN/udpgen" -b 10.0.3.1:7000 -p 10.0.3.2:7000 -r 700 -s 1400 -d "$secs" -g 0 >/dev/null &
-		ip netns exec "$NS_SRV" "$BIN/udpgen" -b 127.0.0.1:59301 -l -r 2000 -s "$SIZE" -d "$secs" -g 1 >/dev/null &
-		ip netns exec "$NS_CLI" "$BIN/udpgen" -b 127.0.0.1:50000 -p 127.0.0.1:59401 -r 20 -s 64 -d "$secs" -g 1 >/dev/null &
+		# bound to the TUN addresses, which come back with each restarted end
+		ip netns exec "$NS_SRV" "$BIN/udpgen" -b "$SRV_TUN:59301" -l -r 2000 -s "$SIZE" -d "$secs" -g 1 >/dev/null &
+		ip netns exec "$NS_CLI" "$BIN/udpgen" -b "$CLI_TUN:50000" -p "$SRV_TUN:59301" -r 20 -s 64 -d "$secs" -g 1 >/dev/null &
 		sleep 4
 		if ! out=$(restart_watch "$(date +%s.%N)" 5); then
 			echo "FAIL: before any restart: $out"

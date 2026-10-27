@@ -7,13 +7,13 @@ traffic, adding:
 - CPU per packet in ns from /proc/PID/task/*/schedstat (user plus kernel in
   the process's context, as lab.sh's us/pkt, with ns resolution), the
   user/sys split, and the same per thread, by thread name;
-- the fake WireGuard processes' own CPU, whole-system CPU, ksoftirqd and
-  steal;
+- the generators' own CPU, whole-system CPU, ksoftirqd and steal;
 - per-netns UDP counters (RcvbufErrors, SndbufErrors) and per-socket drops
-  from /proc/net/udp and udp6, labelled by role: client links l1.., the
-  client's WireGuard socket c_wg; the server's listen sockets lfd (all of
-  them) and lfd0.. (by creation order: the lanes, then the junk socket),
-  its per-session WireGuard sockets sess_wg; the generators gen;
+  from /proc/net/udp and udp6, labelled by role: client links l1..; the
+  server's listen sockets lfd (all of them) and lfd0.. (by creation order:
+  the lanes, then the junk socket); the generators gen; and the TUN's
+  queue, tun (cg0's tx drops: what the kernel could not hand the engine:
+  the upload at the client, the download at the server);
 - the engines' own counters through their control sockets, the server's
   lanes included (rx and kernel drops per lane, from SO_MEMINFO).
 
@@ -35,6 +35,7 @@ Environment: RUN (default /tmp/cg-mt), RESULTS, CENGARDE_BIN, PERF (perf
 binary), CX and SX (extra client and server settings, "k = v;k = v"), PIN
 (CPU pinning, "srv=1,cli=2,gtx=0,grx=3").
 """
+import base64
 import glob
 import json
 import os
@@ -52,6 +53,8 @@ CG = os.environ.get('CENGARDE_BIN', BIN + '/cengarde')
 HZ = os.sysconf('SC_CLK_TCK')
 PERF = os.environ.get('PERF', 'perf')
 RESULTS = os.environ.get('RESULTS', 'mt.jsonl')
+CLI_TUN, SRV_TUN = '10.79.0.2', '10.79.0.1'  # the tunnel's ends (lab.sh)
+SIZE = 1392  # udpgen's payload: a 1420-byte IPv4 packet, the TUN's MTU
 
 
 def lab(fn, env=None):
@@ -156,28 +159,37 @@ def udp_drops(ns):
         if ns == 'cli':
             if loc.startswith('10.0.'):
                 k = 'l' + loc.split('.')[2]
-            elif loc.endswith(':50000') or loc.startswith('127.0.0.1:5000'):
+            elif loc.endswith(':50000'):
                 k = 'gen'
-            elif loc.startswith('127.0.0.1:594'):
-                k = 'c_wg'
             else:
                 k = 'other'
         else:
             if loc.endswith(':59402'):
                 k = 'lfd@' + f[9]
-            elif rem == '127.0.0.1:59301':
-                k = 'sess_wg'
             elif loc.endswith(':59301'):
                 k = 'gen'
             else:
                 k = 'other'
         out[k] = out.get(k, 0) + drops
+    out['tun'] = tun_drops(ns)
     lanes = sorted((int(k[4:]), k) for k in out if k.startswith('lfd@'))
     for i, (_, k) in enumerate(lanes):
         out['lfd' + str(i)] = out.pop(k)
     if lanes:
         out['lfd'] = sum(out['lfd' + str(i)] for i in range(len(lanes)))
     return out
+
+
+def tun_drops(ns):
+    """What the kernel dropped on its way into the engine's TUN (every cg*
+    in the netns: the client's of mt.py multi too), its tx drops."""
+    try:
+        links = json.loads(subprocess.run(['ip', '-n', ns, '-s', '-j', 'link', 'show'], capture_output=True,
+                                          text=True).stdout)
+    except ValueError:
+        return 0
+    return sum(l.get('stats64', {}).get('tx', {}).get('dropped', 0) for l in links
+               if l.get('ifname', '').startswith('cg'))
 
 
 def softnet():
@@ -207,7 +219,7 @@ def engine_counters(side, st):
     if side == 'client':
         L = st['links']
         return {'c_tx_drops': sum(l['tx_drops'] for l in L), 'c_tx_errors': sum(l['tx_errors'] for l in L),
-                'c_wg_drops': st['download']['wireguard_drops'], 'c_too_old': st['download']['too_old'],
+                'c_tun_drops': st['download']['tun_drops'], 'c_too_old': st['download']['too_old'],
                 'c_mutes': sum(l['upload_mutes'] for l in L),
                 'c_link_tx': [l['tx_packets'] for l in L], 'c_link_drops': [l['tx_drops'] for l in L],
                 'c_rx_first': [l['rx_first'] for l in L], 'c_rx_dup': [l['rx_duplicate'] for l in L],
@@ -216,7 +228,7 @@ def engine_counters(side, st):
                 'g_c_srv_view_lag_ms': [l.get('server_view', {}).get('lag_ms') for l in L]}
     S = st.get('sessions', [])
     return {'s_tx_drops': sum(p['tx_drops'] for s in S for p in s['links']),
-            's_wg_drops': sum(s['wireguard_drops'] for s in S),
+            's_tun_drops': sum(s['tun_drops'] for s in S),
             's_mutes': sum(p['download_mutes'] for s in S for p in s['links']),
             's_link_drops': [p['tx_drops'] for s in S for p in s['links']],
             's_link_tx': [p['tx_packets'] for s in S for p in s['links']],
@@ -293,16 +305,16 @@ def reap(p):
 def traffic(direction, pps, secs, size, label='', perf=None, extra=None):
     """One down/up run like bench/lab.sh, with the extra counters."""
     if direction == 'down':
-        rx = run_child(['ip', 'netns', 'exec', 'cli', BIN + '/udpgen', '-b', '127.0.0.1:50000', '-p',
-                        '127.0.0.1:59401', '-r', '20', '-s', '64', '-d', str(secs + 2), '-g', '2'], 'grx')
+        rx = run_child(['ip', 'netns', 'exec', 'cli', BIN + '/udpgen', '-b', CLI_TUN + ':50000', '-p',
+                        SRV_TUN + ':59301', '-r', '20', '-s', '64', '-d', str(secs + 2), '-g', '2'], 'grx')
         time.sleep(1)
-        txcmd = ['ip', 'netns', 'exec', 'srv', BIN + '/udpgen', '-b', '127.0.0.1:59301', '-l', '-r', str(pps),
+        txcmd = ['ip', 'netns', 'exec', 'srv', BIN + '/udpgen', '-b', SRV_TUN + ':59301', '-l', '-r', str(pps),
                  '-s', str(size), '-d', str(secs), '-g', '1']
     else:
-        rx = run_child(['ip', 'netns', 'exec', 'srv', BIN + '/udpgen', '-b', '127.0.0.1:59301', '-d', str(secs),
+        rx = run_child(['ip', 'netns', 'exec', 'srv', BIN + '/udpgen', '-b', SRV_TUN + ':59301', '-d', str(secs),
                         '-g', '3'], 'grx')
         time.sleep(0.3)
-        txcmd = ['ip', 'netns', 'exec', 'cli', BIN + '/udpgen', '-b', '127.0.0.1:50000', '-p', '127.0.0.1:59401',
+        txcmd = ['ip', 'netns', 'exec', 'cli', BIN + '/udpgen', '-b', CLI_TUN + ':50000', '-p', SRV_TUN + ':59301',
                  '-r', str(pps), '-s', str(size), '-d', str(secs), '-g', '1']
     perfp = None
     if perf:
@@ -371,13 +383,13 @@ def fmt(r):
             f"sys={r['sys_busy_cpus']:.2f}cpu ksoft={r['ksoftirqd_ticks']} | "
             f"rcvbuf cli={r['cli_RcvbufErrors']} srv={r['srv_RcvbufErrors']} "
             f"sndbuf cli={r['cli_SndbufErrors']} srv={r['srv_SndbufErrors']} softnet={r['softnet_drops']} "
-            f"eng: c_txdrop={r.get('c_tx_drops')} c_wgdrop={r.get('c_wg_drops')} s_txdrop={r.get('s_tx_drops')} "
-            f"s_wgdrop={r.get('s_wg_drops')} mutes={r.get('c_mutes')}/{r.get('s_mutes')} "
+            f"eng: c_txdrop={r.get('c_tx_drops')} c_tundrop={r.get('c_tun_drops')} s_txdrop={r.get('s_tx_drops')} "
+            f"s_tundrop={r.get('s_tun_drops')} mutes={r.get('c_mutes')}/{r.get('s_mutes')} "
             f"gen tx={r['gen_tx_us_pkt']:.1f} rx={r['gen_rx_us_pkt']:.1f} senderr={r['send_err']} "
             f"sockdrops cli={r['sockdrops_cli']} srv={r['sockdrops_srv']}")
 
 
-def start(nlinks=3, size=1400, client_extra='', server_extra=''):
+def start(nlinks=3, size=SIZE, client_extra='', server_extra=''):
     if os.environ.get('CX'):
         client_extra = os.environ['CX'] + (';' + client_extra if client_extra else '')
     if os.environ.get('SX'):
@@ -403,7 +415,7 @@ def cmd_sweep(argv):
     """sweep LABEL DIRS RATES SECS [NLINKS SIZE REPS]"""
     label, dirs, rates, secs = argv[0], argv[1].split(','), [int(x) for x in argv[2].split(',')], int(argv[3])
     nlinks = int(argv[4]) if len(argv) > 4 else 3
-    size = int(argv[5]) if len(argv) > 5 else 1400
+    size = int(argv[5]) if len(argv) > 5 else SIZE
     reps = int(argv[6]) if len(argv) > 6 else 1
     try:
         for rep in range(reps):
@@ -422,13 +434,13 @@ def cmd_slow(argv):
     cx = argv[7] if len(argv) > 7 else ''
     sx = argv[8] if len(argv) > 8 else ''
     try:
-        start(3, 1400, cx, sx)
+        start(3, SIZE, cx, sx)
         if where != 'none':
             ns, dev = ('cli', 'l3') if where == 'cli' else ('srv', 's3')
             lim = ['latency', limit.split(':', 1)[1]] if limit.startswith('latency:') else ['limit', limit]
             subprocess.run(['ip', 'netns', 'exec', ns, 'tc', 'qdisc', 'replace', 'dev', dev, 'root', 'tbf', 'rate', rate,
                             'burst', '32kb'] + lim, check=True)
-        r = traffic(d, pps, secs, 1400, label=label)
+        r = traffic(d, pps, secs, SIZE, label=label)
         for k in ('c_link_tx', 'c_link_drops', 'c_rx_first', 'g_c_rx_lag_ms', 'g_c_upload', 'g_c_rtt_ms',
                   'g_c_srv_view_lag_ms', 's_link_tx', 's_link_drops', 's_rx_first', 'g_s_rx_lag_ms', 'g_s_download'):
             print(f'    {k}={r.get(k)}')
@@ -444,7 +456,7 @@ def cmd_perf(argv):
     """perf LABEL DIR PPS SECS SIDE OUT [NLINKS SIZE]"""
     label, d, pps, secs, side, out = argv[0], argv[1], int(argv[2]), int(argv[3]), argv[4], argv[5]
     nlinks = int(argv[6]) if len(argv) > 6 else 3
-    size = int(argv[7]) if len(argv) > 7 else 1400
+    size = int(argv[7]) if len(argv) > 7 else SIZE
     try:
         start(nlinks, size)
         traffic(d, pps, secs, size, label=label, perf=(side, out))
@@ -454,15 +466,29 @@ def cmd_perf(argv):
 
 # ---- several sessions on one server ----
 
+def multi_addr(k):
+    """Router k's address in the tunnel: 10.79.0.2 on (k < 253)."""
+    return f'10.79.0.{2 + k}'
+
+
 def start_multi(n, server_extra='', client_extra=''):
+    """n routers, a [client cK] section each on the server (a key of its
+    own, tun_route its /32), each with its TUN cgK holding
+    multi_addr(K)/32; a rule per router in cli sends what leaves from its
+    address to the server's 10.79.0.1 through its own TUN."""
     env = {'NLINKS': '3', 'SERVER_EXTRA': f'control_socket = {RUN}/server.sock' + (';' + server_extra if server_extra else '')}
     lab('setup', env)
     base = open(f'{RUN}/client.conf').read()
+    keys = [base64.b64encode(os.urandom(32)).decode() for _ in range(n)]
+    srvconf = ''.join(l for l in open(f'{RUN}/server.conf').read().splitlines(True) if not l.startswith('key = '))
+    srvconf += ''.join(f'[client c{k}]\nkey = {keys[k]}\ntun_route = {multi_addr(k)}/32\n' for k in range(n))
+    open(f'{RUN}/server.conf', 'w').write(srvconf)
     srv = subprocess.Popen(f'exec ip netns exec srv {CG} -c {RUN}/server.conf >{RUN}/server.log 2>&1', shell=True)
     open(f'{RUN}/server.pid', 'w').write(str(srv.pid))
     pids = []
     for k in range(n):
-        conf = base.replace('listen = 127.0.0.1:59401', f'listen = 127.0.0.1:{59401 + k}')
+        conf = ''.join(f'key = {keys[k]}\n' if l.startswith('key = ') else l for l in base.splitlines(True))
+        conf = conf.replace(f'tun_addr = {CLI_TUN}/16', f'tun = cg{k}\ntun_addr = {multi_addr(k)}/32')
         conf = conf.replace(f'status_file = {RUN}/client.json', f'status_file = {RUN}/client{k}.json')
         if client_extra:
             conf = conf.replace('interfaces = none', 'interfaces = none\n' + client_extra.replace(';', '\n'))
@@ -472,6 +498,9 @@ def start_multi(n, server_extra='', client_extra=''):
         pids.append(p.pid)
     open(f'{RUN}/clients.pids', 'w').write(' '.join(map(str, pids)))
     time.sleep(2)
+    for k in range(n):
+        subprocess.run(['ip', '-n', 'cli', 'route', 'add', SRV_TUN + '/32', 'dev', f'cg{k}', 'table', str(100 + k)])
+        subprocess.run(['ip', '-n', 'cli', 'rule', 'add', 'from', multi_addr(k), 'table', str(100 + k)])
     return pids
 
 
@@ -499,15 +528,15 @@ def multi_traffic(direction, rates, secs, size, label='', cpids=(), perf=None):
     n = len(rates)
     kas, txs = [], []
     if direction == 'down':
-        mg = run_child(['ip', 'netns', 'exec', 'srv', BIN + '/mgen', '-b', '127.0.0.1:59301', '-l', '-n', str(n),
+        mg = run_child(['ip', 'netns', 'exec', 'srv', BIN + '/mgen', '-b', SRV_TUN + ':59301', '-l', '-n', str(n),
                         '-R', ','.join(map(str, rates)), '-s', str(size), '-d', str(secs), '-g', '1'])
         time.sleep(0.3)
         for k in range(n):
-            kas.append(run_child(['ip', 'netns', 'exec', 'cli', BIN + '/udpgen', '-b', f'127.0.0.1:{50000 + k}', '-p',
-                                  f'127.0.0.1:{59401 + k}', '-r', '20', '-s', '64', '-d', str(secs + 3), '-g', '2']))
+            kas.append(run_child(['ip', 'netns', 'exec', 'cli', BIN + '/udpgen', '-b', multi_addr(k) + ':50000', '-p',
+                                  SRV_TUN + ':59301', '-r', '20', '-s', '64', '-d', str(secs + 3), '-g', '2']))
             time.sleep(0.25)
     else:
-        mg = run_child(['ip', 'netns', 'exec', 'srv', BIN + '/mgen', '-b', '127.0.0.1:59301', '-d', str(secs + 1),
+        mg = run_child(['ip', 'netns', 'exec', 'srv', BIN + '/mgen', '-b', SRV_TUN + ':59301', '-d', str(secs + 1),
                         '-g', '3'])
         time.sleep(0.3)
     perfp = None
@@ -519,8 +548,8 @@ def multi_traffic(direction, rates, secs, size, label='', cpids=(), perf=None):
     s0 = msnap(cpids)
     if direction == 'up':
         for k in range(n):
-            txs.append(run_child(['ip', 'netns', 'exec', 'cli', BIN + '/udpgen', '-b', f'127.0.0.1:{50000 + k}', '-p',
-                                  f'127.0.0.1:{59401 + k}', '-r', str(rates[k]), '-s', str(size), '-d', str(secs),
+            txs.append(run_child(['ip', 'netns', 'exec', 'cli', BIN + '/udpgen', '-b', multi_addr(k) + ':50000', '-p',
+                                  SRV_TUN + ':59301', '-r', str(rates[k]), '-s', str(size), '-d', str(secs),
                                   '-g', '1']))
         outs = [reap(t)[0] for t in txs]
         s1 = msnap(cpids)
@@ -593,7 +622,7 @@ def cmd_multi(argv):
             cpids = start_multi(n)
             for d in dirs:
                 for tot in totals:
-                    multi_traffic(d, [tot // n] * n, secs, 1400, label=f'{label}#{rep}', cpids=cpids)
+                    multi_traffic(d, [tot // n] * n, secs, SIZE, label=f'{label}#{rep}', cpids=cpids)
             stop_multi()
     finally:
         stop_multi()
@@ -604,7 +633,7 @@ def cmd_multirates(argv):
     label, d, rates, secs = argv[0], argv[1], [int(x) for x in argv[2].split(',')], int(argv[3])
     try:
         cpids = start_multi(len(rates))
-        multi_traffic(d, rates, secs, 1400, label=label, cpids=cpids)
+        multi_traffic(d, rates, secs, SIZE, label=label, cpids=cpids)
     finally:
         stop_multi()
 
@@ -623,10 +652,10 @@ def cmd_s1(argv):
     try:
         for rep in range(reps):
             for L in lanes:
-                start(nlinks, 1400, 'rcvbuf = 33554432', f'lanes = {L}')
+                start(nlinks, SIZE, 'rcvbuf = 33554432', f'lanes = {L}')
                 for d in dirs:
                     for pps in rates:
-                        traffic(d, pps, secs, 1400, label=f's1-L{L}-n{nlinks}-r{rep}')
+                        traffic(d, pps, secs, SIZE, label=f's1-L{L}-n{nlinks}-r{rep}')
                 teardown()
     finally:
         teardown()
@@ -634,21 +663,22 @@ def cmd_s1(argv):
 
 def before_dup(r):
     """Datagrams dropped before duplication, where lanes cannot help:
-    upload at the router's WireGuard socket (c_wg) and its generator's;
-    download at the session's WireGuard socket on the server (sess_wg) and
-    its generator's."""
+    upload at the router's TUN (tun) and its generator's; download at the
+    server's TUN and its generator's. Rows of the WireGuard era (before
+    0.12) name the TUN's place c_wg and sess_wg."""
     if r['dir'] == 'up':
         d = r.get('sockdrops_cli', {})
-        return d.get('c_wg', 0) + d.get('gen', 0)
+        return d.get('tun', 0) + d.get('c_wg', 0) + d.get('gen', 0)
     d = r.get('sockdrops_srv', {})
-    return d.get('sess_wg', 0) + d.get('gen', 0)
+    return d.get('tun', 0) + d.get('sess_wg', 0) + d.get('gen', 0)
 
 
 def after_dedup(r):
-    """Upload datagrams the server dropped after dedup, on their way to
-    WireGuard."""
+    """Upload datagrams the server dropped after dedup, on their way into
+    its TUN (s_tun_drops; s_wg_drops in rows before 0.12) or at the
+    generator."""
     srv = r.get('sockdrops_srv', {})
-    return srv.get('gen', 0) + srv.get('sess_wg', 0) + (r.get('s_wg_drops') or 0)
+    return srv.get('gen', 0) + srv.get('sess_wg', 0) + (r.get('s_tun_drops', r.get('s_wg_drops')) or 0)
 
 
 def lane_drops(r):
@@ -679,7 +709,7 @@ def cmd_table(argv):
     loss after duplication leaves out what was dropped before it
     (before_dup): here the router's one thread reaches its CPU ceiling
     near 100 kpps with 3 links (60 kpps with 5) and then drops at its
-    WireGuard socket, where lanes cannot help. A whole-packet count marked
+    WireGuard socket (its TUN since 0.12), where lanes cannot help. A whole-packet count marked
     ≈ is an estimate: other sockets dropped too in that run."""
     rows = {}
     for f in argv:

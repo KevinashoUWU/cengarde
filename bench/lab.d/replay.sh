@@ -1,4 +1,4 @@
-# shellcheck shell=bash disable=SC2034 # LAB_CI, ENGINE and NLINKS are read by lab.sh
+# shellcheck shell=bash disable=SC2034 # LAB_CI and NLINKS are read by lab.sh
 # Cookies and replays, protocol 4: "bench/lab.sh replay".
 #
 # bench/cgprobe plays a second router with the lab's key, from addresses of
@@ -69,7 +69,7 @@ replay_server_restart() {
 
 replay() {
 	local fail=0 out c1 c2 S=c0ffee01 i loss hint b
-	ENGINE=c NLINKS=2
+	NLINKS=2
 	SERVER_EXTRA="status_interval_ms = 200;passthrough_file = $RUN/passthrough${SERVER_EXTRA:+;$SERVER_EXTRA}"
 	CLIENT_EXTRA="status_interval_ms = 200${CLIENT_EXTRA:+;$CLIENT_EXTRA}"
 	trap teardown EXIT

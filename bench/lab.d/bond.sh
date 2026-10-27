@@ -1,18 +1,18 @@
-# shellcheck shell=bash disable=SC2034 # ENGINE and NLINKS are read by lab.sh
+# shellcheck shell=bash disable=SC2034 # NLINKS is read by lab.sh
 # The bonding lab, step 0 of story 012: "bench/lab.sh bond".
 #
-# Real WireGuard through cengarde, real TCP inside: iperf3 (Cubic and BBR, up
-# and down) between the two ends of the tunnel while ping measures the RTT
+# cengarde's native tunnel, real TCP inside: iperf3 (Cubic and BBR, up and
+# down) between the two ends of the tunnel while ping measures the RTT
 # under load, over links shaped with netem (one-way delay, rate, queue,
 # events). Next to TCP goes a QUIC sender, bench/quicperf.py (aioquic): same
 # links, same direction and ping, cc "quic". It measures what the router's
 # users would see, so that the bonding of Fase 5 has a baseline to beat:
 # today's redundancy, and each case's best link alone. It judges nothing
-# about speed; a run fails only when the plumbing does (no handshake, no
-# traffic).
+# about speed; a run fails only when the plumbing does (no ping through the
+# tunnel, no traffic).
 #
-#   netns cli: wgc 10.79.0.2/30, WireGuard -> 127.0.0.1:59401 (cengarde client)
-#   netns srv: wgs 10.79.0.1/30 on :59301 <- cengarde server (wireguard =)
+#   netns cli: cg0 10.79.0.2/16, the cengarde client's TUN
+#   netns srv: cg0 10.79.0.1/16, the cengarde server's TUN
 #
 # Cases (BOND_CASES), one-way delays per direction, so the RTT is twice:
 #   equal       2 links, 50 Mbit/s, 25 ms; and the first link alone
@@ -118,7 +118,7 @@
 #               losing BOND_BEYOND_LOSS % (1) after it leaves the tunnel (each
 #               end's host drops it at random from the TUN, iptables): losses
 #               beyond the tunnel, which TCP repairs and the tunnel must not
-#               copy N times nor count against a link. Native tunnel always
+#               copy N times nor count against a link
 #   spurious    not in the default list: story 023 (2026-10-24), TCP's
 #               retransmissions without loss: protect's links losing nothing,
 #               link 1's delay jumping by 300 ms each way for 0.5 s every 5 s,
@@ -126,8 +126,8 @@
 #               comes back), the flow capped at 20 Mbit/s (BOND_RATE, unless
 #               given: the bigger limit is no standing queue); TCP's timer
 #               fires during the jump, and the copies on link 2 arrive out of
-#               order. With the native tunnel the server's host is 50 ms
-#               beyond it (BOND_FAR_MS, unless given): a download's
+#               order. The server's host is 50 ms
+#               beyond the tunnel (BOND_FAR_MS, unless given): a download's
 #               retransmissions reach the server after the ACKs that cover them
 #   lossall     not in the default list: story 023 (2026-10-24), the tunnel
 #               losing on every link: 2 links of 30 Mbit/s, 10 and 15 ms, each
@@ -245,12 +245,11 @@
 # (TCP flows in parallel, 1; speedtest opens many, and many flows starting
 # at once fill the links' queues as one does not; story 013), BOND_CC
 # ("cubic bbr quic"; quic only when aioquic imports, else a note),
-# BOND_TUNNEL (wireguard, or native: cengarde's TUN, needed by tcp_aware;
-# beyond always runs native, losing BOND_BEYOND_LOSS %; BOND_FAR_MS, native
-# only: the server's host that far beyond the tunnel, a far leg for TCP),
+# BOND_BEYOND_LOSS (beyond: the % TCP loses past the tunnel, 1), BOND_FAR_MS
+# (the server's host that far beyond the tunnel, a far leg for TCP),
 # BOND_NEED_QUIC (1: no aioquic is a failure, the CI), BOND_QUIC_CC (cubic or
 # reno, what the QUIC sender runs) and BOND_QUIC_MTU (QUIC datagram, 1350: the
-# tunnel is 1380), BOND_DIRS ("up down"), BOND_OUT (a file to append the JSON
+# TUN's MTU is 1420), BOND_DIRS ("up down"), BOND_OUT (a file to append the JSON
 # lines to), BOND_RATE (iperf3 -b: the flow capped, 8M a stream; empty: none),
 # BOND_SMALL (pps of a flow of datagrams of BOND_SMALL_SIZE bytes,
 # 160, through the tunnel alongside the transfer, 0: none) and
@@ -264,15 +263,14 @@
 # share, capacity, queue and time lossy at the sending end and its late
 # arrivals at the receiving one, and "tail", the throughput and the
 # receiver's gaps, both over the run's second half: the steady state, after
-# the capacities' start from zero). Needs iperf3, wg
-# (wireguard-tools), ping and netem; WireGuard from the kernel, or
-# wireguard-go named by WG_GO when the kernel has none.
+# the capacities' start from zero). Needs iperf3, ping and netem (and
+# iptables for beyond).
 # Without netem the links only get a rate (tbf) and the delays are skipped,
 # which is said; BOND_NEED_NETEM=1 (the CI) makes that a failure instead.
 #
 # Story 024's hosts (BOND_PEP, PEP mode A: TCP split at the router and at the
 # VPS): BOND_PEP set adds three netns around the lab and runs the traffic
-# between them instead of between the tunnel's ends (native tunnel always):
+# between them instead of between the tunnel's ends:
 #
 #   peplan h0 192.168.79.2 -- lan0 192.168.79.1 cli ==tunnel== srv fv 172.30.1.1 -- f0 172.30.1.2 pepfar
 #                             (NAT to 10.79.0.2 into cg0)            nv 172.30.2.1 -- n0 172.30.2.2 pepnear
@@ -313,14 +311,15 @@
 # and, for live, "live" (each stream's goodput by second, stalls, delay).
 # Needs shadowsocks-libev (and kcptun for kcp).
 #
-# Each run takes the engine's status files and the WireGuard interfaces' counters
+# Each run takes the engine's status files and the TUN devices' counters
 # before and after (the engine writes them every second: a wait of 1.1 s per run;
 # the after of a run is the before of the next), and its JSON line carries the
 # differences: "eng" for cli and srv (the reorder counters, too_old,
-# wireguard_drops and lost_all; null from an engine without them; and what
+# tun_drops and lost_all; null from an engine without them; and what
 # the end sent: data packets, their sends over all its links and the sends a
 # full queue refused, which the table shows as sends per packet and send
-# drops at the end that sent the bulk) and "wg_rx_dropped". A second ping, of 1200-byte packets (the ones a reorderer
+# drops at the end that sent the bulk) and "tun_rx_dropped" (what each
+# kernel dropped of the packets its engine wrote into the TUN). A second ping, of 1200-byte packets (the ones a reorderer
 # holds: the 84-byte one bypasses it), gives rtt_big_p50 and rtt_big_p99.
 # "retrans" is TCP's retransmissions or, for quic, the packets the sender
 # declared lost ("spurious": the ones that arrived after all); retrans_pct is
@@ -357,9 +356,7 @@ MSL_UP=${MSL_UP:-15 25 35}
 MSL_DOWN=${MSL_DOWN:-100 150 200}
 MSL_DELAY=${MSL_DELAY:-15 16 17}
 BOND_DOM_MBIT=${BOND_DOM_MBIT:-400} # dominant: Starlink's download, Mbit/s (its slots draw 3/4, 1 and 5/4 of it)
-WG_GO=${WG_GO:-}
 BOND_NEED_NETEM=${BOND_NEED_NETEM:-0}
-BOND_TUNNEL=${BOND_TUNNEL:-wireguard} # native: cengarde's own tunnel (TUN, story 014) instead of WireGuard
 BOND_BEYOND_LOSS=${BOND_BEYOND_LOSS:-1} # beyond: % the download loses before the server's tunnel
 BOND_NEED_QUIC=${BOND_NEED_QUIC:-0}
 BOND_PEP=${BOND_PEP:-} # story 024: transparent, tcp or kcp (the hosts around the lab); empty: none
@@ -380,79 +377,43 @@ NS_LAN=peplan${LAB_ID:+-$LAB_ID}
 NS_FAR=pepfar${LAB_ID:+-$LAB_ID}
 NS_NEAR=pepnear${LAB_ID:+-$LAB_ID}
 
-# bond_wg NETNS IF LISTEN ADDR KEYFILE PEERPUB PEERADDR [ENDPOINT]: a
-# WireGuard interface in NETNS, from the kernel or from wireguard-go.
-bond_wg() {
-	local ns=$1 ifc=$2 port=$3 addr=$4 key=$5 pub=$6 peer=$7 ep=${8:-} i
-	if ! ip -n "$ns" link add "$ifc" type wireguard 2>/dev/null; then
-		if [ -z "$WG_GO" ]; then
-			echo "FAIL: no WireGuard in the kernel: set WG_GO to a wireguard-go binary"
-			return 1
-		fi
-		ip netns exec "$ns" env WG_PROCESS_FOREGROUND=1 "$WG_GO" "$ifc" >"$RUN/$ifc.log" 2>&1 &
-		echo $! >"$RUN/$ifc.pid"
-		for i in $(seq 1 50); do
-			ip -n "$ns" link show "$ifc" >/dev/null 2>&1 && break
-			sleep 0.1
-		done
-	fi
-	ip netns exec "$ns" wg set "$ifc" listen-port "$port" private-key "$key" \
-		peer "$pub" allowed-ips "$peer/32" ${ep:+endpoint "$ep" persistent-keepalive 25} || return 1
-	ip -n "$ns" addr add "$addr/30" dev "$ifc"
-	ip -n "$ns" link set "$ifc" mtu 1380 up
-}
-
-# bond_tunnel: the two WireGuard ends, with the client's peer pointing at the
-# cengarde client and the server's learning the cengarde server's address.
+# bond_tunnel: what goes around the native tunnel once the engines are up
+# (the server's host BOND_FAR_MS beyond it, beyond's losses), then a ping
+# through it.
 bond_tunnel() {
 	local i
-	if [ "$BOND_TUNNEL" = native ]; then
-		# BOND_FAR_MS: the server's host as far as that beyond the tunnel
-		# (what it sends into the TUN waits: an upload's ACKs, a download);
-		# spurious: 50 unless given
-		local far=${BOND_FAR_MS:-0}
-		[ "${BOND_CASE:-}" = spurious ] && far=${BOND_FAR_MS:-50}
-		if [ "$far" -gt 0 ]; then
-			ip netns exec "$NS_SRV" tc qdisc replace dev cg0 root netem delay "${far}ms" limit 100000 || return 1
-		fi
-		# beyond: TCP loses BOND_BEYOND_LOSS % after it leaves the tunnel
-		# (each end's host drops it at random as it comes in from the TUN),
-		# a lossy path beyond the server (or the router)
-		if [ "${BOND_CASE:-}" = beyond ] && [ -z "$BOND_PEP" ]; then
-			local p ns
-			p=$(awk -v l="$BOND_BEYOND_LOSS" 'BEGIN { printf "%.4f", l / 100 }')
-			for ns in "$NS_CLI" "$NS_SRV"; do
-				ip netns exec "$ns" iptables -w -A INPUT -i cg0 -p tcp -m statistic --mode random \
-					--probability "$p" -j DROP || return 1
-			done
-		fi
-		for i in $(seq 1 50); do
-			ip netns exec "$NS_CLI" ping -q -c 1 -W 1 10.79.0.1 >/dev/null 2>&1 && return 0
-			sleep 0.2
-		done
-		echo "FAIL: no ping through the native tunnel"
-		return 1
+	# BOND_FAR_MS: the server's host as far as that beyond the tunnel
+	# (what it sends into the TUN waits: an upload's ACKs, a download);
+	# spurious: 50 unless given
+	local far=${BOND_FAR_MS:-0}
+	[ "${BOND_CASE:-}" = spurious ] && far=${BOND_FAR_MS:-50}
+	if [ "$far" -gt 0 ]; then
+		ip netns exec "$NS_SRV" tc qdisc replace dev cg0 root netem delay "${far}ms" limit 100000 || return 1
 	fi
-	wg genkey >"$RUN/wgc.key" && wg genkey >"$RUN/wgs.key" || return 1
-	chmod 600 "$RUN/wgc.key" "$RUN/wgs.key"
-	bond_wg "$NS_SRV" wgs 59301 10.79.0.1 "$RUN/wgs.key" "$(wg pubkey <"$RUN/wgc.key")" 10.79.0.2 || return 1
-	bond_wg "$NS_CLI" wgc 50000 10.79.0.2 "$RUN/wgc.key" "$(wg pubkey <"$RUN/wgs.key")" 10.79.0.1 127.0.0.1:59401 || return 1
+	# beyond: TCP loses BOND_BEYOND_LOSS % after it leaves the tunnel
+	# (each end's host drops it at random as it comes in from the TUN),
+	# a lossy path beyond the server (or the router)
+	if [ "${BOND_CASE:-}" = beyond ] && [ -z "$BOND_PEP" ]; then
+		local p ns
+		p=$(awk -v l="$BOND_BEYOND_LOSS" 'BEGIN { printf "%.4f", l / 100 }')
+		for ns in "$NS_CLI" "$NS_SRV"; do
+			ip netns exec "$ns" iptables -w -A INPUT -i cg0 -p tcp -m statistic --mode random \
+				--probability "$p" -j DROP || return 1
+		done
+	fi
 	for i in $(seq 1 50); do
 		ip netns exec "$NS_CLI" ping -q -c 1 -W 1 10.79.0.1 >/dev/null 2>&1 && return 0
 		sleep 0.2
 	done
-	echo "FAIL: no handshake through cengarde"
+	echo "FAIL: no ping through the tunnel"
 	return 1
 }
 
 bond_untunnel() {
-	local f
 	[ -n "$BOND_PEP" ] && bond_hosts_down
 	ns_kill "$NS_SRV" iperf3
-	for f in "$RUN"/wgc.pid "$RUN"/wgs.pid "$RUN"/quic.pid; do
-		[ -f "$f" ] && kill "$(cat "$f")" 2>/dev/null
-		rm -f "$f"
-	done
+	[ -f "$RUN/quic.pid" ] && kill "$(cat "$RUN/quic.pid")" 2>/dev/null
+	rm -f "$RUN/quic.pid"
 }
 
 # bond_quic_ok: whether bench/quicperf.py can run here (aioquic imports).
@@ -553,10 +514,10 @@ bond_variants_check() {
 		for end in client server; do
 			f=$RUN/check-$end.conf
 			if [ "$end" = client ]; then
-				printf 'mode = client\nkey = %s\nlisten = 127.0.0.1:59401\nserver = 10.0.1.2:59402\ninterfaces = none\n%s\n' \
+				printf 'mode = client\nkey = %s\nserver = 10.0.1.2:59402\ninterfaces = none\ntunnel = native\n%s\n' \
 					"$KEY" "$(echo "$BV_CLIENT" | tr ';' '\n')" >"$f"
 			else
-				printf 'mode = server\nkey = %s\nlisten = *:59402\nwireguard = 127.0.0.1:59301\n%s\n' \
+				printf 'mode = server\nkey = %s\nlisten = *:59402\ntunnel = native\n%s\n' \
 					"$KEY" "$(echo "$BV_SERVER" | tr ';' '\n')" >"$f"
 			fi
 			"$CENGARDE_BIN" -t -c "$f" >"$RUN/check.out" 2>&1 || {
@@ -1074,20 +1035,21 @@ bond_nlinks() {
 	esac
 }
 
-# bond_snap PREFIX: the engine's status files and the WireGuard interfaces'
-# counters now, as bondtab.py reads them (PREFIX.client.json, .server.json,
-# .wgc.json and .wgs.json; an empty file for what could not be read).
+# bond_snap PREFIX: the engine's status files and the TUN devices' counters
+# now, as bondtab.py reads them (PREFIX.client.json, .server.json, .tunc.json
+# and .tuns.json, cg0 in cli and in srv; an empty file for what could not be
+# read).
 bond_snap() {
 	cp "$RUN/client.json" "$1.client.json" 2>/dev/null || : >"$1.client.json"
 	cp "$RUN/server.json" "$1.server.json" 2>/dev/null || : >"$1.server.json"
-	ip -n "$NS_CLI" -s -j link show dev wgc >"$1.wgc.json" 2>/dev/null || : >"$1.wgc.json"
-	ip -n "$NS_SRV" -s -j link show dev wgs >"$1.wgs.json" 2>/dev/null || : >"$1.wgs.json"
+	ip -n "$NS_CLI" -s -j link show dev cg0 >"$1.tunc.json" 2>/dev/null || : >"$1.tunc.json"
+	ip -n "$NS_SRV" -s -j link show dev cg0 >"$1.tuns.json" 2>/dev/null || : >"$1.tuns.json"
 }
 
 # bond_snap_roll: the after of a run is the before of the next.
 bond_snap_roll() {
 	local f
-	for f in client server wgc wgs; do
+	for f in client server tunc tuns; do
 		mv -f "$RUN/snap-after.$f.json" "$RUN/snap-before.$f.json"
 	done
 }
@@ -1190,7 +1152,6 @@ bond_run() {
 	# the file after this wait (which overlaps the end of the pings).
 	sleep 1.1
 	bond_snap "$RUN/snap-after"
-	# Not a bare wait: the wireguard-go processes are children too.
 	# shellcheck disable=SC2086 # a list of pids
 	wait $BOND_BG
 	python3 -I "$LAB/bondtab.py" line --result "$res" --ping "$RUN/ping.out" --ping-big "$RUN/pingbig.out" \
@@ -1214,7 +1175,6 @@ bond_case() {
 	local c=$1 v=$2 s=$BOND_S dir cc rep fail=0
 	case $c in starlink15* | starsat | dominant | msl*) [ "$s" -lt 31 ] && s=31 ;; esac
 	case $c in msl*) [ -n "$LINK_TYPES" ] || LINK_TYPES=$(bond_msl_types "$c") ;; esac
-	ENGINE=c
 	NLINKS=$(bond_nlinks "$c")
 	bond_variant "$v" || return 1
 	[ "$BV_SOLO" = 1 ] && NLINKS=1
@@ -1222,10 +1182,6 @@ bond_case() {
 	case $c in sigrand | spurious) BOND_RATE=${BOND_RATE:-20M} ;; sigothers) BOND_RATE=${BOND_RATE:-8M} ;; esac
 	CLIENT_EXTRA=$(bond_join "$BV_CLIENT" "$CLIENT_EXTRA")
 	SERVER_EXTRA=$(bond_join "$BV_SERVER" "$SERVER_EXTRA")
-	# beyond needs the native tunnel (its loss is on the server's TUN), and so
-	# do story 024's hosts (the router masquerades into cg0)
-	[ "$c" = beyond ] && BOND_TUNNEL=native
-	[ -n "$BOND_PEP" ] && BOND_TUNNEL=native
 	case $BOND_PEP in
 	cg | cgb | cga)
 		local pv=b
@@ -1239,10 +1195,6 @@ bond_case() {
 		;;
 	esac
 	BOND_CASE=$c
-	if [ "$BOND_TUNNEL" = native ]; then
-		CLIENT_EXTRA=$(bond_join "tunnel = native;tun_addr = 10.79.0.2/16" "$CLIENT_EXTRA")
-		SERVER_EXTRA=$(bond_join "tunnel = native;tun_addr = 10.79.0.1/16" "$SERVER_EXTRA")
-	fi
 	# protectpin: link 3 pinned first, paused and resumed through the control socket
 	[ "$c" = protectpin ] && CLIENT_EXTRA=$(bond_join "$CLIENT_EXTRA" "redund_spare_first = l3;control_socket = $RUN/client.sock")
 	setup || return 1
@@ -1325,7 +1277,7 @@ bond_plan() {
 
 bond() {
 	local c v fail=0 failed="" tool
-	for tool in iperf3 wg ping; do
+	for tool in iperf3 ping; do
 		command -v "$tool" >/dev/null || { echo "bond: needs $tool"; return 1; }
 	done
 	if [ "$BOND_SMALL" -gt 0 ] && [ ! -x "$BIN/udpgen" ]; then

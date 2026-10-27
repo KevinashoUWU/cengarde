@@ -7,7 +7,7 @@
   bondtab.py delta BEFORE AFTER
                               the engine counters between two snapshots (JSON, stdout)
   bondtab.py zero  FILE NAME...
-                              exit 1 when a counter NAME (too_old, wireguard_drops,
+                              exit 1 when a counter NAME (too_old, tun_drops,
                               pool_full, lost_all, ...) is above 0 in a line of FILE
   bondtab.py table FILE [--ref A,B]
                               the summary tables (Markdown) of the lines of FILE; each
@@ -15,9 +15,11 @@
                               against the first of A,B its group has
 
 A snapshot is a prefix: PREFIX.client.json and PREFIX.server.json (the engine's
-status files), PREFIX.wgc.json and PREFIX.wgs.json (ip -s -j link show of the
-WireGuard interfaces). Anything missing, an engine without the reorder status
-object included, gives null and never an error.
+status files), PREFIX.tunc.json and PREFIX.tuns.json (ip -s -j link show of the
+TUN devices, cg0 in cli and srv). Anything missing, an engine without the reorder
+status object included, gives null and never an error. Lines written before the
+WireGuard mode went (0.12, story 027) name two of their counters wireguard_drops
+and wg_rx_dropped; they are read as tun_drops and tun_rx_dropped (old_names).
 
 The rules of the tables (what "two modes" means, the comparison against a
 reference variant) are in the docstrings of modes() and compare(); the JSON
@@ -110,8 +112,8 @@ REPAIR += [k for k, _, _ in FEC3]
 ACT = [("act_early", ("active", "early")), ("act_at_cap", ("active", "at_cap"))]
 REPAIR += [k for k, _ in ACT]
 GAUGES = GAUGES + ("rlc_peak",)
-COUNTERS = [k for k in RO_PATHS if k not in GAUGES] + ["too_old", "wireguard_drops", "lost_all"] + SENDS + REPAIR
-NAMES = list(RO_PATHS) + ["too_old", "wireguard_drops", "lost_all"] + SENDS + REPAIR
+COUNTERS = [k for k in RO_PATHS if k not in GAUGES] + ["too_old", "tun_drops", "lost_all"] + SENDS + REPAIR
+NAMES = list(RO_PATHS) + ["too_old", "tun_drops", "lost_all"] + SENDS + REPAIR
 
 
 def num(v):
@@ -155,7 +157,7 @@ def link_sum(links, key):
 def flat_client(d):
     out = flat_reorder(dig(d, "reorder"))
     out["too_old"] = num(dig(d, "download", "too_old"))
-    out["wireguard_drops"] = num(dig(d, "download", "wireguard_drops"))
+    out["tun_drops"] = num(dig(d, "download", "tun_drops"))
     out["lost_all"] = num(dig(d, "lost_all"))
     out["sent"] = num(dig(d, "upload", "packets"))
     out["tx_links"] = link_sum(dig(d, "links"), "tx_packets")
@@ -186,7 +188,7 @@ def flat_client(d):
 
 def flat_session(s):
     out = flat_reorder(dig(s, "reorder"))
-    out["wireguard_drops"] = num(dig(s, "wireguard_drops"))
+    out["tun_drops"] = num(dig(s, "tun_drops"))
     out["lost_all"] = num(dig(s, "lost_all"))
     out["too_old"] = None  # the server counts it for all sessions: rx.too_old
     out["sent"] = num(dig(s, "download_packets"))
@@ -290,18 +292,33 @@ def rx_dropped(path):
 
 
 def delta(before, after):
-    """The engine counters between two snapshots (prefixes): {"eng": {"cli", "srv"}, "wg_rx_dropped"}."""
-    wg = {}
-    for side, name in (("cli", "wgc"), ("srv", "wgs")):
+    """The engine counters between two snapshots (prefixes): {"eng": {"cli", "srv"}, "tun_rx_dropped"}."""
+    tun = {}
+    for side, name in (("cli", "tunc"), ("srv", "tuns")):
         x, y = rx_dropped(f"{after}.{name}.json"), rx_dropped(f"{before}.{name}.json")
-        wg[side] = None if x is None or y is None else (x - y if x >= y else x)
+        tun[side] = None if x is None or y is None else (x - y if x >= y else x)
     return {
         "eng": {
             "cli": delta_client(load(f"{before}.client.json"), load(f"{after}.client.json")),
             "srv": delta_server(load(f"{before}.server.json"), load(f"{after}.server.json")),
         },
-        "wg_rx_dropped": wg,
+        "tun_rx_dropped": tun,
     }
+
+
+def old_names(d):
+    """A JSON line as this version writes it: the WireGuard era's wireguard_drops
+    (each end's) and wg_rx_dropped become tun_drops and tun_rx_dropped."""
+    if "wg_rx_dropped" in d and "tun_rx_dropped" not in d:
+        d["tun_rx_dropped"] = d.pop("wg_rx_dropped")
+    for vals in (d.get("eng") or {}).values():
+        if isinstance(vals, dict) and "wireguard_drops" in vals and "tun_drops" not in vals:
+            vals["tun_drops"] = vals.pop("wireguard_drops")
+    return d
+
+
+def read_lines(path):
+    return [old_names(json.loads(ln)) for ln in open(path) if ln.strip()]
 
 
 # ---- one run -------------------------------------------------------------------
@@ -515,7 +532,7 @@ def line(a):
 
 
 def show(path):
-    rows = [json.loads(ln) for ln in open(path) if ln.strip()]
+    rows = read_lines(path)
     d = rows[-1]
     sp = "" if d.get("spurious") is None else " (spurious {})".format(d["spurious"])
     rate = "" if d.get("retrans_pct") is None else " ({:.2f} %)".format(d["retrans_pct"])
@@ -534,16 +551,16 @@ def zero(path, names):
     for ln in open(path):
         if not ln.strip():
             continue
-        d = json.loads(ln)
+        d = old_names(json.loads(ln))
         for side, vals in (d.get("eng") or {}).items():
             for n in names:
                 if (vals or {}).get(n):
                     bad.append("{} {} {} {} #{}: {} {} = {}".format(d["case"], d["variant"], d["dir"], d["cc"],
                                                                     d["rep"], side, n, vals[n]))
-        for side, v in (d.get("wg_rx_dropped") or {}).items():
-            if "wg_rx_dropped" in names and v:
-                bad.append("{} {} {} {} #{}: {} wg_rx_dropped = {}".format(d["case"], d["variant"], d["dir"],
-                                                                         d["cc"], d["rep"], side, v))
+        for side, v in (d.get("tun_rx_dropped") or {}).items():
+            if "tun_rx_dropped" in names and v:
+                bad.append("{} {} {} {} #{}: {} tun_rx_dropped = {}".format(d["case"], d["variant"], d["dir"],
+                                                                          d["cc"], d["rep"], side, v))
     for b in bad:
         print("   " + b)
     return 1 if bad else 0
@@ -730,7 +747,7 @@ def tables(rows, refs):
         if ro:
             head += ["held", "bypassed", "split_rx", "lost rack/cap/ovf/flush", "late rack/cap/ovf/old",
                      "far/resyncs/pool_full", "held max/burst"]
-        head += ["too_old cli/srv", "wg drops cli/srv", "lost_all cli/srv", "wg rx_dropped cli/srv",
+        head += ["too_old cli/srv", "tun drops cli/srv", "lost_all cli/srv", "tun rx_dropped cli/srv",
                  "sends per packet", "send drops"]
         body = []
         for k in keys:
@@ -746,9 +763,9 @@ def tables(rows, refs):
             def pair(n, eng=eng):
                 return "{}/{}".format(cell(eng("cli", n), 0, spread=False), cell(eng("srv", n), 0, spread=False))
 
-            wgd = [(r.get("wg_rx_dropped") or {}) for r in rs]
-            wgp = "{}/{}".format(cell([w.get("cli") for w in wgd], 0, spread=False),
-                                 cell([w.get("srv") for w in wgd], 0, spread=False))
+            tud = [(r.get("tun_rx_dropped") or {}) for r in rs]
+            tup = "{}/{}".format(cell([w.get("cli") for w in tud], 0, spread=False),
+                                 cell([w.get("srv") for w in tud], 0, spread=False))
             cells = [k[0], k[1], k[2], k[3], str(len(rs))]
             if ro:
                 cells += [slash(["held_total"]), slash(["bypassed"]), slash(["split_rx"]),
@@ -761,18 +778,18 @@ def tables(rows, refs):
             for r in rs:
                 e = (r.get("eng") or {}).get(tx) or {}
                 per.append(e["tx_links"] / e["sent"] if e.get("tx_links") is not None and e.get("sent") else None)
-            body.append(cells + [pair("too_old"), pair("wireguard_drops"), pair("lost_all"), wgp,
+            body.append(cells + [pair("too_old"), pair("tun_drops"), pair("lost_all"), tup,
                                  cell(per, 2, spread=False), cell(eng(tx, "tx_drops"), 0, spread=False)])
         out += md_table(head, body)
         bad = []
         for k in keys:
             for r in by[k]:
                 for s, v in (r.get("eng") or {}).items():
-                    for n in ("too_old", "pool_full", "wireguard_drops"):
+                    for n in ("too_old", "pool_full", "tun_drops"):
                         if (v or {}).get(n):
                             bad.append(f"{k[0]} {k[1]} {k[2]} {k[3]} #{r['rep']}: {s} {n} = {v[n]}")
         if bad:
-            out += ["", "Above 0 where it should not be (too_old, pool_full, wireguard_drops):"] + [f"- {b}" for b in bad[:20]]
+            out += ["", "Above 0 where it should not be (too_old, pool_full, tun_drops):"] + [f"- {b}" for b in bad[:20]]
             if len(bad) > 20:
                 out.append(f"- ... and {len(bad) - 20} more")
     out += compare(rows, by, keys, refs)
@@ -872,7 +889,7 @@ def compare(rows, by, keys, refs):
 
 
 def table(path, refs):
-    rows = [json.loads(ln) for ln in open(path) if ln.strip()]
+    rows = read_lines(path)
     if not rows:
         print("(no runs)")
         return 0

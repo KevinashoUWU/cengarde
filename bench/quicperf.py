@@ -2,7 +2,7 @@
 """quicperf: a bulk-transfer QUIC server and client for the bonding lab.
 
 The bonding lab (bench/lab.d/bond.sh, story 012) puts real TCP (iperf3) inside
-a real WireGuard tunnel through cengarde. This is the QUIC next to it: one
+cengarde's tunnel. This is the QUIC next to it: one
 stream of bulk data for N seconds, up (the client sends) or down (the server
 sends), over aioquic, so that the same links also see a QUIC sender (what
 browsers and phones use, though not with this library). Its loss detection is

@@ -2,8 +2,8 @@
 
 Prueba cómo se portan dentro del túnel los dos tráficos con los que se transmite
 desde el terreno: RTMP sobre TCP (YouTube, o un servidor propio) y SRT sobre
-UDP. cengarde duplica cada datagrama de WireGuard por todos los enlaces; lo que
-ve el emisor es el túnel, no los módems. El kit sirve para medir, sin una
+UDP. cengarde lleva cada paquete del túnel por los enlaces (copiado o
+repartido); lo que ve el emisor es el túnel, no los módems. El kit sirve para medir, sin una
 transmisión real, la redundancia de hoy y, más adelante, el reordenador y los
 modos de reparto del bonding ([historia 012](../../docs/historias/012-bonding.md)):
 se repiten los mismos comandos con el otro motor y se comparan los informes.
@@ -132,7 +132,7 @@ también `progress.log`, y el estado del socket aceptado cada 100 ms
 (`tcp.csv`: segmentos fuera de orden, DSACK, RTT de recepción) o del UDP
 (`udp.csv`). Atiende un flujo tras otro, cada uno en su directorio (`-1`: uno
 y sale). La clave es la misma del emisor. Ábrelo solo por el túnel: en el
-firewall del VPS, 1935/tcp o 9000/udp en la interfaz de WireGuard y nada más.
+firewall del VPS, 1935/tcp o 9000/udp en la interfaz del túnel (`cg0`) y nada más.
 
 ```sh
 # en el VPS: apt install ffmpeg srt-tools
@@ -242,7 +242,7 @@ python3 bench/stream/report_test.py     # la prueba: corridas inventadas con res
 ```
 
 **El laboratorio (`lab.sh stream`).** Corre todo esto dentro de los namespaces de
-`bond` (WireGuard real, cengarde, netem por enlace) con `libx264` a 640x360 y
+`bond` (el túnel nativo de cengarde, netem por enlace) con `libx264` a 640x360 y
 1,5 Mbit/s, para que quepa en un runner o en este contenedor sin GPU: el emisor
 en `cli`, el receptor en `srv`, `cengarde-rec` sobre el archivo de estado del
 cliente y `fieldrec.py --export` para el cruce. Los casos son los de `bond` más
@@ -267,9 +267,9 @@ sudo STREAM_ENC=libsvtav1 STREAM_QUIET=1 STREAM_KEEP=/tmp/stream bench/lab.sh st
 | `STREAM_KEEP` | vacío | directorio donde copiar las corridas (cada una con su `report.txt`, `report.json` y `field/`) |
 | `STREAM_QUIET` | 0 | 1: una línea por corrida en vez del informe completo |
 
-**Una corrida de ejemplo.** Medida el 2026-10-11 en este contenedor (4 núcleos, sin
-netem ni WireGuard en el kernel: wireguard-go y un netem en espacio de usuario,
-como en la historia 012), `lab.sh stream` con `libx264` a 640x360 y 1,5 Mbit/s,
+**Una corrida de ejemplo.** Medida el 2026-10-11 en este contenedor, aún con
+WireGuard (antes de la 0.12; 4 núcleos, sin netem ni WireGuard en el kernel:
+wireguard-go y un netem en espacio de usuario, como en la historia 012), `lab.sh stream` con `libx264` a 640x360 y 1,5 Mbit/s,
 BBR, 30 s por corrida y una repetición de cada caso. Las cifras de una corrida sola varían
 (historia 012): sirven para ver que el kit distingue los casos, no como línea
 base de nada.

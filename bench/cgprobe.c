@@ -127,7 +127,7 @@ int main(int argc, char **argv)
 			len = CG_HDR_LEN + CG_PROBE_INFO_LEN;
 		} else {
 			memset(pkt + CG_HDR_LEN, 0, 32);
-			pkt[CG_HDR_LEN] = 4; /* a WireGuard data message, as far as anyone can tell */
+			pkt[CG_HDR_LEN] = 4; /* any payload: what it carries is never looked at */
 			len = CG_HDR_LEN + 64;
 		}
 		cg_hdr_write(pkt, &h, key, pkt + CG_HDR_LEN, len - CG_HDR_LEN);
