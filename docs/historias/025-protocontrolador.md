@@ -1011,6 +1011,51 @@ Caudal, `matrix2`:
   que haya pérdidas que pedir, y las colapsadas no reenvían casi nada
   (0–1 por NACK): quién repara una pérdida no toca la base ni el reparto.
 
+### El estimador desbocado y el arranque lento de la bajada (2026-10-27)
+
+Dos de los tres pendientes que dejó el colapso, mirados con la traza por
+segundo y el simulador de `test_streamcc.c`:
+
+- **El estimador desbocado** no es solo de netem. En el simulador, un
+  enlace de 60 Mbit/s con una cola **más corta que `protocontroller_queue_ms`**
+  (2–9 ms, como la de Starlink) llevaba el estimador a 240–320 Mbit/s y
+  desbordaba ~100 000 paquetes en 8 s, **aun sin pérdida al azar**: el
+  desborde llega antes que cualquier muestra con cola, y la muestra de PROBE
+  contaba lo perdido como capacidad hasta 3 por 1 entregado. En el
+  laboratorio (`protectcut`): 63 → 277 → 744 Mbit/s en dos segundos, luego
+  2 s de cola en el celular y el piso. **Corrección:** lo perdido cuenta
+  como capacidad solo hasta lo que explica la pérdida al azar del camino
+  (`cg_scc_lfloor`: el menor de las ventanas de pérdida de 5–10 s, dos
+  veces su parte sobre lo entregado; el desborde viene y va con el exceso,
+  la pérdida al azar está siempre). Simulador: 60–75 Mbit/s, 400–4000
+  desbordados, el caudal igual.
+- **El arranque lento de la bajada** (3–4 s): no era el TCP lejano. El
+  arranque terminaba con **una sola muestra** sobre la base más la cola
+  (`qnow`): con varios enlaces, el primer paquete por el celular (25 ms
+  contra 10) lo leía como cola; el estimador caía a lo poco entregado
+  (≈1 Mbit/s) y PROBE subía de a 5/4 por ciclo. **Corrección:** con el
+  retardo de ida, el arranque termina con el veredicto de la **ventana**
+  (`cong`: el menor de una ida y vuelta, que solo sube si todos los caminos
+  tienen cola); y una ronda que no crece lo termina solo con una señal de
+  tubo lleno (alguna cola, pérdida sobre la de fondo, pérdida pesada o el
+  techo del motor; sin ella, la alimentación lenta del TCP lejano lo
+  terminaba en falso). Traza: la bajada a ~57 Mbit/s en ~1,5 s en vez de
+  3–4.
+- **Probado y descartado:** repartir un túnel ocioso por la mejor capacidad
+  reciente de cada enlace (al menos 2 Mbit/s) en vez de la de sus sondas.
+  Le daba datos al celular de 2 s de cola de `protect`: el túnel **se
+  trabó** en 5 de 48 corridas («no traffic or no ping»), y el ping subió;
+  sin GRIT dañaba al TCP (lossy con cubic 0,79×). Revertido.
+
+**Medido** (n = 8 intercalado, `BOND_PEP=cgb`, antes = `1e4102d`, después
+= `ac0f6dc`; `~/campo/2026-10-27/grate4/`): caudal **stall50 de bajada
+×4,5** (10,7 → 48,3 Mbit/s), **idleslow ×1,66**, **lossy ×1,63** (bajada)
+y ×1,16 (subida), protectcut ×1,24, stall50 de subida ×1,24, protect ×1,14
+(todas p ≤ 0,04); single1, protect de subida y protectcut de subida igual.
+**0 colapsos y 0 fallas en 96.** El ping de 1200 B p99 sube solo en
+idleslow de bajada (56 → 145 ms, p 0,001): GRIT ahora usa también el
+enlace de 150 ms, y el ping que va por él lo paga.
+
 ## Hallazgos
 
 - **A iguala a la 024 sin proxies:** el caudal es el de `Ab` en los tres
@@ -1056,15 +1101,12 @@ Caudal, `matrix2`:
   colapso de la bajada (corregido, arriba; el NACK no lo cambia). Queda
   usar el enlace que el NACK ya trae (`lost_by_link`) y una ventana de RACK
   medida de lo que tardan de verdad las reparaciones del código.
-- **El reparto del VPS al empezar una bajada** decide con capacidades de
-  unos kbit/s (las de las sondas) y se encierra en el enlace que ganó: con
-  GRIT corregido ya no colapsa, pero el flujo corre un rato por el celular
-  hasta llenarlo. Y GRIT no ve la cola de un enlace que lleva poco: el
-  menor de la ventana es el del enlace más corto (la cola de `l2` a
-  1,5–2 s en algunas corridas de los tres brazos).
-- **La bajada sana arranca lento:** 3–4 s hasta el caudal pleno (el TCP
-  lejano en arranque lento alimenta poco y el arranque de GRIT termina con
-  esas muestras). No analizado.
+- **El reparto del VPS al empezar una bajada** sigue decidiendo con las
+  capacidades de las sondas; repartir por la mejor reciente trabó el túnel
+  (arriba, descartado). Lo de fondo es que el motor le diga a GRIT por qué
+  enlace va (la vista compartida, tarea #77). Y GRIT no ve la cola de un
+  enlace que lleva poco: el menor de la ventana es el del enlace más corto.
+- **La bajada sana arranca lento:** corregido (arriba).
 
 - **El RTT de los pings en el microcorte** (224 ms con GRIT, 198 con A,
   meta 145): lo pone la cola del celular cuando `l1` pierde la copia de un
@@ -1072,7 +1114,8 @@ Caudal, `matrix2`:
   techo bajaba el RTT pero empeoraba el vivo de A en `beyond`), y las
   reparaciones que siguen al corte (la pérdida media aún alta pide m de
   8–10 por 64).
-- **El estimador de GRIT sube con lo perdido** en una pérdida antes del
+- **El estimador de GRIT sube con lo perdido:** corregido el 2026-10-27
+  (arriba, `cg_scc_lfloor`); lo que sigue es lo de antes. En una pérdida antes del
   cuello de botella (netem): manda hasta 150 Mbit/s a un enlace de 60 que
   pierde 60 % y, al terminar el corte, desborda una vez. En un enlace real
   que pierde después del cuello, la cola lo frena antes. Sin cambiar. Con
@@ -1107,3 +1150,6 @@ Caudal, `matrix2`:
   El colapso de la bajada de GRIT (la base del retardo de ida en un enlace
   y el flujo en otro más largo): `cg_scc_stuck` y la regla de las dos
   ventanas, `rebases`; matrices n = 8.
+- 2026-10-27: el estimador desbocado (`cg_scc_lfloor`) y el arranque lento de
+  la bajada (fin del arranque por la ventana y por una señal de tubo lleno);
+  el reparto por la mejor capacidad, probado y descartado.
