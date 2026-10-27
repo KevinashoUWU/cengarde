@@ -1556,7 +1556,7 @@ static void up_deliver(struct server *s, int *nq, struct session *S, const struc
 				cg_ro_in(&S->ro, &s->pool, &S->rocf, &k, rset, &buf);
 			}
 		}
-		cg_pctl_rx(s->pctl, (uint32_t)(S - s->s), S->id, payload, len);
+		cg_pctl_rx(s->pctl, (uint32_t)(S - s->s), S->id, payload, len, S->rebuilding ? CG_PCTL_NOLINK : h->link);
 		if (s->cfg->reorder) {
 			up_drain(s, nq, S, rset, now, 0);
 			ro_track(s, S);

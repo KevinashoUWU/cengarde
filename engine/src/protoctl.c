@@ -22,6 +22,7 @@
 #include <linux/sockios.h>
 
 #include "engine.h"
+#include "linkowd.h"
 #include "log.h"
 #include "protoctl.h"
 #include "streamcc.h"
@@ -120,6 +121,7 @@ struct peer {
 	uint32_t reo_us; /* RACK's window beyond min_rtt / 4: protocontroller_reo_ms, widened by duplicates */
 	uint64_t dups;   /* ACKs that said a duplicate came */
 	struct cg_scc cc;
+	struct cg_lowd lo; /* what each link adds to this peer's messages' delay, as they come (linkowd.h) */
 };
 
 struct cg_pctl {
@@ -1053,7 +1055,7 @@ static struct flow *find(struct cg_pctl *p, uint32_t sid, uint32_t id)
 	}
 }
 
-static void data_in(struct cg_pctl *p, struct flow *f, const struct cg_pctl_msg *m, uint64_t now)
+static void data_in(struct cg_pctl *p, struct flow *f, const struct cg_pctl_msg *m, uint64_t now, unsigned link)
 {
 	uint64_t off = cg_st_unwrap(f->rx.nxt, m->off);
 	int fin = !!(m->flags & CG_PCTLF_FIN), v;
@@ -1062,9 +1064,11 @@ static void data_in(struct cg_pctl *p, struct flow *f, const struct cg_pctl_msg 
 
 	p->data_rx++;
 	/* the least one-way delay since the last ACK (duplicates too: the
-	 * slower copies never win the minimum) */
-	{
-		int32_t d = (int32_t)((uint32_t)now - m->ts);
+	 * slower copies never win the minimum), less what the link it came by
+	 * adds over the shortest one (linkowd.h, task #77: the engine says
+	 * the link); a message the tunnel's codes rebuilt gives none */
+	if (link != CG_PCTL_NOLINK) {
+		int32_t d = cg_lowd_take(&peer_of(p, f)->lo, link, (int32_t)((uint32_t)now - m->ts), now);
 
 		if (!f->have_owd || (int32_t)((uint32_t)d - (uint32_t)f->owd) < 0) {
 			f->owd = d;
@@ -1207,16 +1211,16 @@ int cg_pctl_nack(struct cg_pctl *p, uint32_t peer, uint32_t sid, const uint8_t *
 	return k;
 }
 
-static void rx_one(struct cg_pctl *p, uint32_t peer, uint32_t sid, const uint8_t *msg, size_t len);
+static void rx_one(struct cg_pctl *p, uint32_t peer, uint32_t sid, const uint8_t *msg, size_t len, unsigned link);
 
-void cg_pctl_rx(struct cg_pctl *p, uint32_t peer, uint32_t sid, const uint8_t *msg, size_t len)
+void cg_pctl_rx(struct cg_pctl *p, uint32_t peer, uint32_t sid, const uint8_t *msg, size_t len, unsigned link)
 {
 	p->in_rx = 1;
-	rx_one(p, peer, sid, msg, len);
+	rx_one(p, peer, sid, msg, len, link);
 	p->in_rx = 0;
 }
 
-static void rx_one(struct cg_pctl *p, uint32_t peer, uint32_t sid, const uint8_t *msg, size_t len)
+static void rx_one(struct cg_pctl *p, uint32_t peer, uint32_t sid, const uint8_t *msg, size_t len, unsigned link)
 {
 	struct cg_pctl_msg m;
 	struct flow *f;
@@ -1260,7 +1264,7 @@ static void rx_one(struct cg_pctl *p, uint32_t peer, uint32_t sid, const uint8_t
 	case CG_PCTL_DATA:
 		if (!p->cfg.server)
 			f->est = 1;
-		data_in(p, f, &m, now);
+		data_in(p, f, &m, now, link);
 		break;
 	case CG_PCTL_ACK:
 		if (!p->cfg.server && f->state == F_OPEN) {
@@ -1972,6 +1976,25 @@ void cg_pctl_json(const struct cg_pctl *p, struct cg_json *j)
 		cg_json_u64(j, "congested", c->n_cong);
 		cg_json_u64(j, "cuts", c->n_cut);
 		cg_json_u64(j, "rebases", c->n_rebase);
+		/* what each link adds to the delay of what comes from this peer
+		 * (linkowd.h): taken off before the ACK's least */
+		{
+			const struct cg_lowd *o = &p->pr[i].lo;
+
+			cg_json_u64(j, "owd_samples", o->samples);
+			cg_json_u64(j, "owd_corrected", o->corrected);
+			cg_json_arr(j, "link_extra_ms");
+			for (unsigned k = 0; k < CG_LOWD_LINKS; k++) {
+				int ok;
+
+				cg_lowd_base(o, k, &ok);
+				if (ok)
+					cg_json_ms(j, NULL, cg_lowd_extra(o, k));
+				else
+					cg_json_null(j, NULL);
+			}
+			cg_json_end(j, ']');
+		}
 		cg_json_end(j, '}');
 	}
 	cg_json_end(j, ']');

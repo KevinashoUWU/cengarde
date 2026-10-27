@@ -65,8 +65,10 @@ void cg_pctl_free(struct cg_pctl *p);
 int cg_pctl_peers(struct cg_pctl *p, uint32_t n);
 /* An epoll event tagged CG_EV(CG_EV_PCTL, idx). */
 void cg_pctl_event(struct cg_pctl *p, uint32_t idx, uint32_t events);
-/* A stream message out of the tunnel, from peer (see ops->send). */
-void cg_pctl_rx(struct cg_pctl *p, uint32_t peer, uint32_t sid, const uint8_t *msg, size_t len);
+/* A stream message out of the tunnel, from peer (see ops->send), that came
+ * by link (the server's path index); CG_PCTL_NOLINK: rebuilt by the tunnel's
+ * codes, or not known (no delay sample: linkowd.h). */
+void cg_pctl_rx(struct cg_pctl *p, uint32_t peer, uint32_t sid, const uint8_t *msg, size_t len, unsigned link);
 /* The rescue's NACK named msg (len bytes), a stream message this end sent
  * to peer and kept (rescue.h), on link (the one link it went on, the
  * server's path index; CG_PCTL_NOLINK: copied, or not known): its loss goes

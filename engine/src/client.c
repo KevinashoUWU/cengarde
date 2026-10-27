@@ -3240,7 +3240,7 @@ static void down_deliver(struct client *c, const struct cg_hdr *h, unsigned link
 				cg_ro_in(&c->rxs.ro, &c->pool, &c->rocf, &k, rset, &buf);
 			}
 		}
-		cg_pctl_rx(c->pctl, 0, 0, payload, len);
+		cg_pctl_rx(c->pctl, 0, 0, payload, len, c->drebuilding ? CG_PCTL_NOLINK : link);
 		if (c->cfg->reorder)
 			ro_drain(c, rset, now, 0, now_ms);
 		return;
