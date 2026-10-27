@@ -399,14 +399,16 @@ static inline void cg_scc_ack(struct cg_scc *p, const struct cg_scc_cfg *c, uint
 			if (rtt > p->min_rtt + c->queue_us / 4)
 				p->r_q = 1;
 		}
-		/* STARTUP ends at the first sample over: it grows by half a
-		 * round, so a window's lag is a round of overflow */
-		if (p->mode == CG_SCC_STARTUP_M && p->n_rounds >= 2 && p->qnow)
+		/* STARTUP ends at the first sample over, without the forward
+		 * delay (one path: a queue moves every sample up) */
+		if (!p->have_owd && p->mode == CG_SCC_STARTUP_M && p->n_rounds >= 2 && p->qnow)
 			p->mode = CG_SCC_DRAIN_M;
 	}
-	/* STARTUP's exit by the forward delay, when there is one */
-	if (p->have_owd && p->mode == CG_SCC_STARTUP_M && p->n_rounds >= 2 && p->qnow)
-		p->mode = CG_SCC_DRAIN_M;
+	/* With the forward delay, STARTUP ends at the window's verdict (cong,
+	 * below), not at one sample over: over several links one packet by a
+	 * longer one read as a queue, STARTUP ended as a download began and
+	 * PROBE's 5/4 a cycle took 3-4 s to the links (story 025); the least of
+	 * a window says a queue only when every path has one */
 	/* the queue's verdict: a queue moves every sample up, a late copy (a
 	 * lost packet's copy on a slower link) only some, so the least of a
 	 * window of a round trip says which. A segment sent again counts if it
