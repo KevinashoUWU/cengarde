@@ -3,8 +3,9 @@
 - **Fecha:** 2026-10-25
 - **Estado:** implementado (A y B) y medido en el laboratorio; el
   microcorte de B y la RLC que rehacía basura, corregidos (2026-10-26); el
-  rescate le pasa a GRIT sus pérdidas en vez de reenviarlas (2026-10-27,
-  cordura; falta la matriz n = 6); falta la Pi, el VPS real y el terreno
+  rescate le pasa a GRIT sus pérdidas en vez de reenviarlas (2026-10-27);
+  el colapso de la bajada de GRIT, hallado y corregido (2026-10-27,
+  n = 8); falta la Pi, el VPS real y el terreno
 - **Fuentes:** historia 024 (TCP partido con shadowsocks, las cifras a
   batir), 023 (rescate, PARQ, `harq.h`, reglas de TCP), 020/021
   (`redund_spare`, `rs`/`rlc`), 014 (túnel nativo), 013/019
@@ -13,7 +14,11 @@
   26-10, `~/campo/2026-10-26/rlcfix/` (`planF.json` y `planY.json` el lote
   final, `tablesF.md`, `cmp.py`, `tables.py`; `plan1`–`plan14` los
   intentos; `tr*.log`/`ct*.log` las trazas; `planSoak.json`,
-  `planAsan.json` la resistencia).
+  `planAsan.json` la resistencia); el NACK a GRIT,
+  `~/campo/2026-10-27/gritnack/` y la matriz del usuario
+  `~/campo/2026-10-27/gritnack-final/`; el colapso de la bajada,
+  `~/campo/2026-10-27/gritcol/` (`repro*/` las trazas por ACK y las
+  muestras por segundo, `matrix/` y `matrix2/` las matrices, `scripts/`).
 
 ## TL;DR
 
@@ -64,6 +69,16 @@
   en `protect` de subida el ping de 1200 B p99 de 296 a 109 ms; nada
   cambia sin el protocontrolador; el microcorte sigue tan variable como
   antes.
+- **El colapso de la bajada de GRIT (2026-10-27):** 1 de cada 10 bajadas
+  (15 de 144 en `base` y 15 de 144 con el NACK) quedaba en 0,6–2 Mbit/s los
+  20 s. La causa: la base del retardo de ida la fijan los primeros bytes,
+  que van por el enlace corto, y el VPS manda el resto por otro 15 ms más
+  largo; GRIT lee esa diferencia como cola, corta al piso, y al piso el
+  enlace largo nunca se llena, así que el motor no lo cambia (encerrado
+  hasta que la base caduca a los 10 s). Corregido: una cola que los cortes
+  no vacían mueve la base (`cg_scc_stuck`) y un camino más corto la baja
+  solo si dos ventanas seguidas lo hallan. 0 de 96 colapsos (p < 0,001),
+  sin pérdida de caudal ni latencia en ningún caso ni sentido (p ≥ 0,04).
 - **Qué usar:** A para todos (estable, sin formato nuevo: su TCP es un
   paquete más de la TUN); B (GRIT) experimental, mejor en latencia y CPU y
   ahora también en el microcorte (más TCP, el vivo sin pérdida), con el RTT
@@ -255,6 +270,10 @@ Carga de un DATA del túnel (detrás de la cabecera de 24 B y bajo su MAC):
   cuando el motor halla lleno el enlace de los datos, si no queda bajo la
   mitad del estimador.
 - Tras un segundo sin nada en vuelo, el arranque vuelve.
+- **Una cola que los cortes no vacían no es del flujo** (`cg_scc_stuck`,
+  desde el 27-10): tras una racha de ventanas con cola cuyo menor retardo
+  no baja en 4 idas y vueltas y 4 veces su hondura, la base sube a ese
+  menor y el arranque vuelve (abajo, «El colapso de la bajada»).
 
 #### Copias y FEC
 
@@ -848,6 +867,150 @@ por segundo).
   33,5, `lossy` bajada 82,1 / 74,0 Mbit/s): el ruido de n = 2. El camino de
   lo que no es GRIT no cambió.
 
+## El colapso de la bajada de GRIT (2026-10-27)
+
+### Lo que se veía
+
+- La matriz n = 8 del usuario (`gritnack-final/`, `BOND_PEP=cgb`, el perfil
+  de la cordura de arriba, 20 s, semilla 3; `base` = `52c6e56`, `nack` =
+  `889a2b4`): en bajada el caudal de GRIT era bimodal, unas corridas en
+  0,6–2 Mbit/s los 20 s y las demás en 30–45. Bajo 5 Mbit/s: `base` 8 de
+  48 y `nack` 9 de 48 (`protect` 3/0, `protectcut` 3/4, `lossy` 0/4,
+  `stall50` 1/0, `idleslow` 1/1, `single1` 0/0); en subida, 0 de 48 en los
+  dos. Una colapsada tenía 13 reenvíos de GRIT: no era una tormenta, el
+  flujo dejaba de mandar.
+
+### La causa
+
+- **La base del retardo de ida se fija en un enlace y el flujo va por otro.**
+  GRIT mide la cola por el retardo de ida sobre su mínimo de 10 s
+  (`owd_base`). El VPS reparte los DATA de GRIT como cualquier DATA
+  (`split`, `capacity_weights`, `split_eta`). Los primeros bytes (el control
+  de iperf3, unos pocos DATA) van por `l1` (el Starlink falso, 10 ms de ida)
+  y fijan la base; el resto va por `l2` (el celular, 25 ms): 15 ms más la
+  serialización, 17,4 ms de «cola» en cada ventana, sobre los 5 de
+  `protocontroller_queue_ms`.
+- **Visto por ACK** (un binario de laboratorio con una traza del ritmo del
+  VPS, no en la rama; `repro/trace/`, 6 colapsos de 18 corridas): base
+  10,1 ms; el primer DATA por `l2` lee 27,6, el arranque termina con esa
+  muestra y el estimador cae al piso (0,5 Mbit/s); después cada ventana
+  dice cola, unos 25 cortes por segundo, siempre al piso. A los ~10,5 s la
+  base caduca (27,4 ms) y el ritmo vuelve a subir, pero por el ciclo de
+  PROBE (5/4 cada 8 idas y vueltas: de 0,5 a 3 Mbit/s en 5 s); a los
+  15,5 s un paquete por `l1` (10,2 ms) devuelve la base al mínimo viejo y
+  todo vuelve al piso: 0,8 Mbit/s la corrida.
+- **Se encierra solo:** al piso, `l2` (5 Mbit/s) nunca se llena, así que la
+  capacidad del motor no lo marca lleno ni le pasa peso a `l1`, cuya
+  capacidad es la de sus sondas (0,028 Mbit/s, `cap_weight` 63–97 contra
+  1000). En las muestras por segundo de la corrida colapsada que guardó la
+  cordura (`gritnack/keep2/nack/protect-bonded-down-cubic-2`): `s2` lleva
+  ~85 paquetes por segundo y `s1` solo las sondas; `owd_queue_ms` 17,39
+  diez segundos seguidos; el reparto pasa a `l1` recién cuando el ritmo,
+  con la base caducada, llena `l2` (`cut` `full`).
+- **Por qué solo la bajada:** en bajada, lo que alimenta a GRIT es el TCP
+  lejano (cubic, 100 ms de ida y vuelta, en arranque lento): el primer
+  segundo pasa muy poco, y el reparto del VPS decide con capacidades de
+  unos kbit/s, una lotería entre enlaces (en las corridas sanas la ganó
+  `l1`, 1000 contra 140). En subida el emisor de la LAN llena GRIT desde el
+  primer instante: sus 16 Mbit/s llenan `l2` enseguida, el motor lo marca
+  lleno y pasa el flujo a `l1`. `single1` (un enlace) nunca colapsa; los
+  casos con enlaces de retardo distinto, sí (`protect` 10/25 ms, `lossy`
+  20/35/25, `idleslow` 20/25/150). También pasa en subida, raro: 1 de 144
+  (`idleslow`, `nack`, srtt 47 ms, el flujo por el enlace de 25 ms).
+- **No era** el temporizador, el borde de la ventana, la cuenta de lo que
+  va en vuelo, `protocontroller_dead_s` ni el estimador que se dispara: en
+  las colapsadas hay 0–16 reenvíos (0–1 por NACK), en vuelo 1–2 segmentos y
+  el ritmo en el piso por la cola falsa; el borde avanza (el VPS guarda sus
+  64 KB sin enviar, `held_tx`, a la espera del ritmo).
+
+### La corrección (`streamcc.h`)
+
+1. **Una cola que los cortes no vacían no es del flujo** (`cg_scc_stuck`).
+   La propia se vacía: con los cortes GRIT manda 3/4 de lo entregado, y el
+   menor retardo de cada ventana baja ventana tras ventana. Una racha de
+   ventanas con cola cuyo menor no baja (más de `queue_ms / 4`, al menos
+   0,5 ms) en 4 idas y vueltas y 4 veces su hondura es del camino: el
+   motor pasó el flujo a un enlace de más retardo, o es una cola de otros
+   que cortar más no vacía. La base sube al menor de la racha y el arranque
+   vuelve desde el estimador que tiene (el camino cambió, como tras estar
+   ocioso): una cola propia en el camino nuevo se ve sobre la base nueva.
+   En el colapso de arriba: ~0,2 s al piso en vez de 10 s.
+2. **La base baja a un camino más corto solo si dos ventanas seguidas lo
+   hallan** (`CG_SCC_LOW_WINS`; una caída menor que `queue_ms` baja al
+   instante, como antes). Solo con la primera, un paquete de vez en cuando
+   por `l1` devolvía la base y el ciclo empezaba de nuevo: 16 movimientos
+   en una corrida de `protect`, 16 Mbit/s y el ping de 1200 B p99 en 1,2 s
+   (`repro3/`).
+
+- Sin cambio de formato ni de perillas; estado `rebases` (en total y por
+  par; `bondtab.py`, `g_rebase`). Con la corrección, una corrida de 20 s
+  mueve la base 0–3 veces (0–5 en `protectcut`, el microcorte; también en
+  subida, sin efecto en el caudal).
+- **Pruebas** (`test_streamcc.c`): `sim_switch`, un camino que cambia bajo
+  el flujo con el retardo de ida en cada ACK: del Starlink falso al
+  celular, antes 60 000 B/s (el piso) y ahora 530 000 (85 % de 625 000);
+  con 1 de cada 40–160 paquetes aún por el corto, antes 152 000–499 000 B/s
+  y 15–18 movimientos, ahora más de 85 % y a lo más 2; un enlace tan rápido
+  pero más largo, igual; la cola propia en un búfer de 2 s no mueve la
+  base; el corto tras el largo baja la base sin cortes. `cg_scc_stuck` solo
+  (la racha, la tolerancia, el desborde de 32 bits) y la regla de las dos
+  ventanas.
+
+### Medido (n = 8, intercalado)
+
+`bench/labq.py` con la matriz del usuario (los seis casos, los dos
+sentidos, 20 s, semilla 3, `BOND_PEP=cgb`, el mismo perfil), `base`
+(`52c6e56`), `nack` (`889a2b4`) y la rama (`fix`); dos matrices:
+`matrix/` con la primera corrección sola (`24835ec`) y `matrix2/` con las
+dos (`6a3bb95`, la final, con las muestras por segundo). Mediana de
+Mbit/s; p de Mann-Whitney a dos colas de `fix` contra `nack`.
+
+Colapsos (bajo 5 Mbit/s):
+
+| Brazo | bajada `gritnack-final` | bajada `matrix` | bajada `matrix2` | total bajada | subida (las tres) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| base | 8 / 48 | 3 / 48 | 4 / 48 | 15 / 144 | 0 / 144 |
+| nack | 9 / 48 | 4 / 48 | 2 / 48 | 15 / 144 | 1 / 144 |
+| fix | – | 0 / 48 | 0 / 48 | 0 / 96 | 0 / 96 |
+
+- `fix` contra `nack`, juntas: p < 0,001 (Fisher). En las corridas
+  trazadas con la corrección (`repro2/`, `repro4/`), 0 de 48.
+
+Caudal, `matrix2`:
+
+| Caso | Sentido | base | nack | fix | p fix/nack |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `protect` | bajada | 37,6 (media 25,1, mín. 0,7) | 38,0 (33,0; 9,5) | 37,7 (37,6; 33,2) | 0,43 |
+| `protectcut` | bajada | 18,0 | 14,0 | 20,9 (mín. 13,4) | 0,14 |
+| `lossy` | bajada | 35,4 (mín. 0,8) | 32,9 (mín. 0,9) | 31,6 (media 35,7, mín. 27,7) | 0,71 |
+| `stall50` | bajada | 10,0 | 14,1 (mín. 1,1) | 10,3 | 0,96 |
+| `idleslow` | bajada | 23,2 | 24,0 | 23,6 | 0,37 |
+| `single1` | bajada | 35,5 | 35,8 | 35,6 | 0,78 |
+| `protect` | subida | 45,9 | 47,1 | 46,2 | 0,96 |
+| `protectcut` | subida | 28,5 | 26,3 | 27,3 | 0,32 |
+| `lossy` | subida | 45,9 | 47,1 | 45,4 | 0,49 |
+| `stall50` | subida | 38,3 | 37,1 | 39,5 | 0,64 |
+| `idleslow` | subida | 41,7 | 38,0 | 39,3 | 0,16 |
+| `single1` | subida | 35,8 | 35,7 | 35,9 | 0,04 |
+
+- **Sin regresión:** la subida no cambia (p ≥ 0,16 salvo `single1`, 35,9
+  contra 35,7, a favor); el RTT p99 y el ping de 1200 B p99 tampoco, en
+  ningún caso ni sentido (p ≥ 0,07 contra `nack` y contra `base`). Lo que
+  la corrección quita son las corridas al piso: en `protect` de bajada el
+  mínimo pasa de 0,7 / 9,5 a 33,2 Mbit/s.
+- **El estimador que se dispara** (más de 100 Mbit/s en alguna muestra
+  por segundo, pendiente de abajo): `base` 19, `nack` 25, `fix` 18 de 96
+  corridas; la corrección no lo hace más frecuente.
+
+### El NACK de #122: ni más ni menos
+
+- Con las tres matrices, 15 de 144 bajadas colapsadas en `base` y 15 de 144
+  en `nack` (p = 1). El reparto por caso cambia de una matriz a otra
+  (`protect` 3/0 y `lossy` 0/4 en la del usuario, 3/0 y 1/1 en `matrix2`):
+  la lotería del arranque. El disparo está en el primer segundo, antes de
+  que haya pérdidas que pedir, y las colapsadas no reenvían casi nada
+  (0–1 por NACK): quién repara una pérdida no toca la base ni el reparto.
+
 ## Hallazgos
 
 - **A iguala a la 024 sin proxies:** el caudal es el de `Ab` en los tres
@@ -889,12 +1052,19 @@ por segundo).
 
 ## Pendiente
 
-- **El NACK a GRIT (2026-10-27), la matriz n = 6** intercalada (la hará el
-  usuario): sobre todo `protect` de bajada, `stall50` de bajada (más caudal
-  con más ping), `idleslow` de subida y si el estimador se dispara más a
-  menudo sin las copias del rescate. Si se confirma, el siguiente paso es
+- **El NACK a GRIT (2026-10-27):** la matriz n = 8 del usuario halló el
+  colapso de la bajada (corregido, arriba; el NACK no lo cambia). Queda
   usar el enlace que el NACK ya trae (`lost_by_link`) y una ventana de RACK
   medida de lo que tardan de verdad las reparaciones del código.
+- **El reparto del VPS al empezar una bajada** decide con capacidades de
+  unos kbit/s (las de las sondas) y se encierra en el enlace que ganó: con
+  GRIT corregido ya no colapsa, pero el flujo corre un rato por el celular
+  hasta llenarlo. Y GRIT no ve la cola de un enlace que lleva poco: el
+  menor de la ventana es el del enlace más corto (la cola de `l2` a
+  1,5–2 s en algunas corridas de los tres brazos).
+- **La bajada sana arranca lento:** 3–4 s hasta el caudal pleno (el TCP
+  lejano en arranque lento alimenta poco y el arranque de GRIT termina con
+  esas muestras). No analizado.
 
 - **El RTT de los pings en el microcorte** (224 ms con GRIT, 198 con A,
   meta 145): lo pone la cola del celular cuando `l1` pierde la copia de un
@@ -905,7 +1075,12 @@ por segundo).
 - **El estimador de GRIT sube con lo perdido** en una pérdida antes del
   cuello de botella (netem): manda hasta 150 Mbit/s a un enlace de 60 que
   pierde 60 % y, al terminar el corte, desborda una vez. En un enlace real
-  que pierde después del cuello, la cola lo frena antes. Sin cambiar.
+  que pierde después del cuello, la cola lo frena antes. Sin cambiar. Con
+  las bajadas que ya no colapsan se ve en más corridas sanas (18 de 96 con
+  la corrección, `matrix2`): en una de `protect`, 258 Mbit/s, la cola de
+  `l2` a 2 s y el ping de 1200 B p99 en 2,1 s. Probable en el laboratorio:
+  el `limit` de netem cuenta la línea de retardo, la cola de `l1` no pasa
+  de ~7 ms y el desborde se cuenta como pérdida «sin cola».
 - **La Pi y el VPS reales:** CPU y memoria en la Pi 4; `e2e.sh` en QEMU
   cubre b y a con una página del VPS; falta el terreno con el RTMP real.
 - **La demora del vivo con varios celulares** (los tres brazos): es del
@@ -929,3 +1104,6 @@ por segundo).
   reenviarlos (`cg_st_tx_nack`, `cg_pctl_nack`, `cg_pctl_nack_kind`),
   contesta `CG_F_GONE`, la ventana de RACK hasta el horizonte del código
   (`cg_scc_reo_cap`), el enlace del paquete contado; contadores y cordura.
+  El colapso de la bajada de GRIT (la base del retardo de ida en un enlace
+  y el flujo en otro más largo): `cg_scc_stuck` y la regla de las dos
+  ventanas, `rebases`; matrices n = 8.
