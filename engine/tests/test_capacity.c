@@ -340,6 +340,21 @@ static void test_capacity_weights(void)
 		cg_cap_reset(&l[i]);
 	cg_cap_weights(l, 0, NULL, 10 * MS, w); /* nothing measured: all at the top */
 	CHECK(w[0] == CG_GOV_MAX && w[15] == CG_GOV_MAX);
+	/* the tunnel idle: only the probes' rates (a few kbit/s), which say
+	 * nothing: every link at the top, or as its best lately (story 025,
+	 * 2026-10-27: a download's first packets went by whichever link's probes
+	 * read more, 1000 against 140) */
+	measured(&l[0], 0.028, 2);
+	measured(&l[1], 0.2, 2);
+	cg_cap_weights(l, 0, NULL, 10 * MS, w);
+	CHECK(w[0] == CG_GOV_MAX && w[1] == CG_GOV_MAX);
+	CHECK_EQ(cg_cap_idle_bps(&l[0], cg_cap_bps(&l[0]), cg_cap_bps(&l[1])), CG_CAP_SHAPE_MIN);
+	l[0].best_cur = (uint64_t)(40 * MBIT); /* it carried 40 Mbit/s lately */
+	cg_cap_weights(l, 0, NULL, 10 * MS, w);
+	CHECK(w[0] == CG_GOV_MAX && w[1] == CG_GOV_MAX * CG_CAP_SHAPE_MIN / (40 * MBIT));
+	CHECK_EQ(cg_cap_idle_bps(&l[0], 7, (uint64_t)(3 * MBIT)), 7); /* not idle: as it is */
+	cg_cap_reset(&l[0]);
+	cg_cap_reset(&l[1]);
 
 	measured(&l[0], 200, 50); /* full: no probe */
 	measured(&l[1], 20, 50);

@@ -930,6 +930,29 @@ static inline unsigned cg_cap_tick(struct cg_cap_link *l, uint64_t now_ms, uint6
 	return ev;
 }
 
+#define CG_CAP_SHAPE_MIN 2000000ull /* bps: below this a tunnel is idle */
+
+/* A link's capacity for the split while the tunnel is idle: when the largest
+ * of the links (big) is under CG_CAP_SHAPE_MIN, every capacity is only its
+ * probes' (a few kbit/s) and says nothing of the link; then each link counts
+ * its best of the last CG_CAP_BEST_MS (fast start), at least
+ * CG_CAP_SHAPE_MIN, so the split starts by delay (eta.h) or by what each
+ * link showed lately. Before, a download's first packets went by whichever
+ * link's probes read a few kbit/s more, the link that got them grew and the
+ * others never did (a protocontroller download sent by the cellular link of
+ * 25 ms, its Starlink-like one of 10 ms idle: 1000 against 140, story 025,
+ * 2026-10-27). bps otherwise. */
+static inline uint64_t cg_cap_idle_bps(const struct cg_cap_link *l, uint64_t bps, uint64_t big)
+{
+	uint64_t b = cg_cap_best_bps(l);
+
+	if (big >= CG_CAP_SHAPE_MIN)
+		return bps;
+	if (b < CG_CAP_SHAPE_MIN)
+		b = CG_CAP_SHAPE_MIN;
+	return bps > b ? bps : b;
+}
+
 /* The split's weights (cg_split_pick: up to CG_GOV_MAX) from l's
  * capacities: dup0's links 0 (a copy of every packet, split.h); gov, when
  * not NULL, the governor's weights, each scaling its link's. probe_us:
@@ -943,9 +966,9 @@ static inline void cg_cap_weights(const struct cg_cap_link l[CG_MAX_LINKS], uint
 		if (!(dup0 >> i & 1) && l[i].have_rate && cg_cap_bps(&l[i]) > big)
 			big = cg_cap_bps(&l[i]);
 	for (unsigned i = 0; i < CG_MAX_LINKS; i++) {
-		uint64_t c = l[i].have_rate ? cg_cap_bps(&l[i]) : 0;
+		uint64_t c = l[i].have_rate ? cg_cap_idle_bps(&l[i], cg_cap_bps(&l[i]), big) : 0;
 
-		if (l[i].have_rate && cg_cap_may_probe(&l[i], probe_us))
+		if (l[i].have_rate && big >= CG_CAP_SHAPE_MIN && cg_cap_may_probe(&l[i], probe_us))
 			c = cg_cap_probe(&l[i], c, big);
 		eff[i] = c;
 		if (!(dup0 >> i & 1) && c > top)
@@ -967,7 +990,6 @@ static inline void cg_cap_weights(const struct cg_cap_link l[CG_MAX_LINKS], uint
 	}
 }
 
-#define CG_CAP_SHAPE_MIN 2000000ull /* bps: below this a tunnel is idle */
 
 /* Where link l's queue q_us will be in h_ms (split_qpred_ms, task #33, the
  * rescue's prediction of cg_cap_rescue_w brought to the split): q_us plus
@@ -1085,7 +1107,9 @@ static inline void cg_cap_eta(struct cg_eta *e, const struct cg_cap_link l[CG_MA
 			cg_eta_set(e, i, 0, 0, 0, now_us);
 			continue;
 		}
-		if (cg_cap_may_probe(&l[i], probe_us))
+		if (big < CG_CAP_SHAPE_MIN)
+			bps = cg_cap_idle_bps(&l[i], bps, big); /* the tunnel idle: no probe's rate decides */
+		else if (cg_cap_may_probe(&l[i], probe_us))
 			bps = cg_cap_probe(&l[i], bps, big);
 		bps = cg_cap_stale(&l[i], bps, big, now_us / 1000, no_stale >> i & 1 ? 1 : stale_max);
 		if (m) {
