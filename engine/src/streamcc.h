@@ -718,14 +718,18 @@ static inline uint32_t cg_scc_reo_cap(uint32_t base_us, uint32_t code_us)
 
 /* RACK's window beyond min_rtt / 4 for a peer (task #77): reo_us, what
  * duplicates widened (cg_scc_reo_cap); with the engine's repair horizon
- * (horizon_us: its code sends repairs now; 0: none), at least that from the
- * start. A hole a code covers is rebuilt, or the receiver asks for it and
- * its NACK tells the stream (cg_st_tx_nack): RACK only stands in for a NACK
+ * (horizon_us: the code's repairs and the rescue's NACK; 0: neither), at
+ * least that from the start. A hole a code covers is rebuilt, or the
+ * receiver asks for it and its NACK tells the stream (cg_st_tx_nack); the
+ * NACK is exact (asked once the hole's own link brings something later,
+ * whatever the other links' delays), so RACK only stands in for a NACK
  * lost. Before, RACK waited at most the code's 100 ms and learnt it from
  * duplicates; a stall's repairs take longer (s T / (r (1 - s)), story 026,
  * ~170 ms), and nearly every RACK retransmission came back a duplicate
- * (lossy 940 of 940, stall50 3918 of 4576, the code rebuilding thousands).
- * Heavy loss (the code does not keep up): base_us, as before. */
+ * (lossy 940 of 940, stall50 3918 of 4576, the code rebuilding thousands);
+ * without a code, the links' delays reordered past 20 ms and the clean
+ * cases paid 1-3 % of their DATA twice (equal, het). Heavy loss (the code
+ * does not keep up): base_us, as before. */
 static inline uint32_t cg_scc_reo_win(uint32_t base_us, uint32_t reo_us, uint32_t horizon_us, int heavy)
 {
 	if (heavy)

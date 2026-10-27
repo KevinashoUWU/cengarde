@@ -2555,18 +2555,23 @@ static void pctl_send(void *ctx, uint32_t peer, uint32_t sid, uint8_t *const *ms
  * (CG_CAP_CUT_FULL), so it is what the link carries and no more; a loss
  * cut (a microcut) is not a ceiling, the ARQ answers loss. */
 /* The protocontroller's repair horizon for the upload (task #77, protoctlio.h's
- * ops.horizon): while the code sends repairs (FEC v3 with a share now, or
- * redund_spare's codes), how long a hole may wait at the VPS for them and
- * for the NACK after them (its rescue_code_ms and rescue wait, taken as
- * ours: the two ends are set alike); 0 without a code now. */
+ * ops.horizon): how long a hole may wait at the VPS for the code's repairs
+ * (rescue_code_ms, while FEC v3 sends a share now or redund_spare's codes
+ * are on) and for the rescue's NACK, asked as soon as the link the hole
+ * went on brings something later (reorder.h: exact, whatever the links'
+ * delays) and once more within the rescue wait (the VPS's, taken as ours:
+ * the two ends are set alike; with our ring, rescue_kb, the VPS asks). */
 static uint32_t pctl_horizon(void *ctx, uint32_t peer, uint32_t sid)
 {
 	struct client *c = ctx;
 	int code = (f3_on(c) && c->f3.mode != CG_F3_OFF && c->f3.pct) || c->cfg->redund_spare >= 2;
+	uint32_t ms = code ? c->cfg->rescue_code_ms : 0;
 
 	(void)peer;
 	(void)sid;
-	return code ? (c->cfg->rescue_code_ms + cg_rescue_wait_ms(c->cfg)) * 1000 : 0;
+	if (c->cfg->reorder && c->cfg->rescue_kb)
+		ms += cg_rescue_wait_ms(c->cfg);
+	return ms * 1000;
 }
 
 static void pctl_hint(void *ctx, uint32_t peer, uint32_t sid, uint64_t *bps, int *full)

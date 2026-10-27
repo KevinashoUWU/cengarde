@@ -54,9 +54,9 @@ struct cg_pctl_ops {
 	 * bytes/s (0: none), and whether it sees them queued. */
 	void (*hint)(void *ctx, uint32_t peer, uint32_t sid, uint64_t *bps, int *full);
 	/* The tunnel's repair horizon for what this end sends to peer now, us
-	 * (task #77): while its code sends repairs, how long a hole may wait
-	 * at the receiver for them and for the NACK that follows when they do
-	 * not rebuild it; 0: no code now (a hole is a loss). NULL: code_ms. */
+	 * (task #77): how long a hole may wait at the receiver for the code's
+	 * repairs (while it sends them) and for the rescue's NACK (while the
+	 * rescue is on); 0: neither (RACK alone). NULL: 0. */
 	uint32_t (*horizon)(void *ctx, uint32_t peer, uint32_t sid);
 };
 
