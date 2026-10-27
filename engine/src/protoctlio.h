@@ -47,23 +47,18 @@ struct cg_pctl_cfg {
 
 /* The spread of the links a peer's data takes, us: the largest delay behind
  * the fastest link (health.h's behind_us: path and queue) among those of set
- * whose delay is known, and at least unknown_us while two or more links of
- * set have none yet (the first seconds: cell4 still sent ~500 segments
- * twice before the delays came); 0 with none. What the engine's split may
- * reorder a stream by: RACK waiting less takes for lost what is only queued
- * on a slower link (cell4: queues of 300-590 ms on the small links, bursts
- * of up to 1435 retransmissions, nearly all of them duplicates, and the
+ * whose delay is known; 0 with none. What the engine's split may reorder a
+ * stream by: RACK waiting less takes for lost what is only queued on a
+ * slower link (cell4: queues of 300-590 ms on the small links, bursts of
+ * up to 1435 retransmissions, nearly all of them duplicates, and the
  * estimator inflated by the "lost" bytes counted twice). */
-static inline uint32_t cg_pctl_spread(const int32_t *behind_us, uint16_t known, uint16_t set, unsigned n,
-				      uint32_t unknown_us)
+static inline uint32_t cg_pctl_spread(const int32_t *behind_us, uint16_t known, uint16_t set, unsigned n)
 {
 	uint32_t s = 0;
 
 	for (unsigned i = 0; i < n && i < 16; i++)
 		if ((set & known) >> i & 1 && behind_us[i] > 0 && (uint32_t)behind_us[i] > s)
 			s = (uint32_t)behind_us[i];
-	if ((set & (set - 1)) && (set & ~known) && s < unknown_us)
-		s = unknown_us;
 	return s < CG_PCTL_SPREAD_MAX_US ? s : CG_PCTL_SPREAD_MAX_US;
 }
 
