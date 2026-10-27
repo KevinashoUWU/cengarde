@@ -37,6 +37,8 @@ struct cg_pctl_cfg {
 	uint32_t backlog_ms; /* what a stream holds unsent or unwritten, in time at its rate */
 	uint32_t dead_s;     /* a stream without progress this long, with something pending: reset */
 	uint32_t reo_ms;     /* RACK's window beyond min_rtt / 4: the tunnel's repairs come first */
+	uint32_t code_ms;    /* the tunnel's code horizon for what this end sends (rescue_code_ms with fec; 0: no code):
+			      * how far duplicates may widen that window (streamcc.h's cg_scc_reo_cap) */
 	uint32_t peers;      /* the server: sessions it may have (their pacers) */
 	char cc[16];         /* the VPS's congestion control toward the destination ("" the kernel's) */
 };
@@ -65,6 +67,17 @@ int cg_pctl_peers(struct cg_pctl *p, uint32_t n);
 void cg_pctl_event(struct cg_pctl *p, uint32_t idx, uint32_t events);
 /* A stream message out of the tunnel, from peer (see ops->send). */
 void cg_pctl_rx(struct cg_pctl *p, uint32_t peer, uint32_t sid, const uint8_t *msg, size_t len);
+/* The rescue's NACK named msg (len bytes), a stream message this end sent
+ * to peer and kept (rescue.h), on link (the one link it went on, the
+ * server's path index; CG_PCTL_NOLINK: copied, or not known): its loss goes
+ * to its stream (a DATA: marked lost, sent again at the next service; an
+ * ACK: a fresh one). The link is only counted for now (the losses each
+ * link had, for a view the engine and the streams share later). Returns
+ * CG_PCTL_NACK_* (protoctl.h): NOT or RESEND, the rescue sends the packet
+ * again as before; DATA or ACK, it does not, and answers CG_F_GONE. */
+#define CG_PCTL_LINKS 16      /* links counted (CG_MAX_LINKS) */
+#define CG_PCTL_NOLINK 0xffu  /* as rescue.h's CG_RESC_NOLINK */
+int cg_pctl_nack(struct cg_pctl *p, uint32_t peer, uint32_t sid, const uint8_t *msg, size_t len, uint8_t link);
 /* After every loop pass: the sockets, the timers, the sends. */
 void cg_pctl_service(struct cg_pctl *p);
 /* The epoll timeout it needs, ms: -1 none. */

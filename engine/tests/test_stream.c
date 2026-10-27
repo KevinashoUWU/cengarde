@@ -226,12 +226,84 @@ static void test_tx(void)
 
 /* Two ends through a channel that loses, duplicates and reorders: every
  * byte arrives, in order, and the FIN; the sender never gives up. */
+/* The tunnel's NACK of a DATA (cg_st_tx_nack): a loss only for the
+ * segment's latest transmission, a no-op for what was delivered, sent
+ * again since or lost already; its retransmission counted as the NACK's. */
+static void test_nack(void)
+{
+	struct cg_st_seg seg[16];
+	struct cg_st_tx t;
+	struct cg_st_ack a;
+	struct cg_st_ackres r;
+	uint32_t idx = 0, len = 0, b;
+	uint64_t off = 0, lq = 0;
+	int fin = 0;
+
+	cg_st_tx_init(&t, seg, 16, 0xFFFFFC00ull + (1u << 20));
+	t.una = t.nxt = t.tail = 0xFFFFFC00ull; /* across the wire's 32 bits */
+	t.tail += 4000;
+	for (int i = 0; i < 4; i++) {
+		CHECK(cg_st_tx_next(&t, 1000, &idx, &off, &len, &fin));
+		cg_st_tx_sent(&t, idx, off, len, fin, 0x100000000ull + 1000 * (uint64_t)i, 0, 0, 0, 0, 0, i == 1);
+	}
+	CHECK_EQ(t.inflight, 4000);
+	/* no segment starts there */
+	CHECK_EQ(cg_st_tx_nack(&t, 0xFFFFFC00u + 500, 0, &b, NULL), CG_ST_NACK_UNKNOWN);
+	CHECK_EQ(cg_st_tx_nack(&t, (uint32_t)(0xFFFFFC00ull + 5000), 0, &b, NULL), CG_ST_NACK_UNKNOWN);
+	/* segment 1 asked for with its own clock (sent with a queue): lost now */
+	CHECK_EQ(cg_st_tx_nack(&t, (uint32_t)(0xFFFFFC00ull + 1000), 1000, &b, &lq), CG_ST_NACK_LOST);
+	CHECK_EQ(b, 1000);
+	CHECK_EQ(lq, 1000);
+	CHECK_EQ(t.nlost, 1);
+	CHECK_EQ(t.inflight, 3000);
+	CHECK_EQ(t.nack_lost, 1000);
+	/* its second copy of the NACK: lost already */
+	CHECK_EQ(cg_st_tx_nack(&t, (uint32_t)(0xFFFFFC00ull + 1000), 1000, &b, NULL), CG_ST_NACK_PENDING);
+	CHECK_EQ(b, 0);
+	/* it goes again first, counted as the NACK's */
+	CHECK(cg_st_tx_next(&t, 1000, &idx, &off, &len, &fin));
+	CHECK_EQ(idx, 1);
+	cg_st_tx_sent(&t, idx, off, len, fin, 0x100000000ull + 9000, 0, 0, 0, 0, 0, 0);
+	CHECK_EQ(t.retx_by[CG_ST_BY_NACK], 1);
+	CHECK_EQ(t.retx_by[CG_ST_BY_RACK], 0);
+	/* a NACK of the first copy now: a newer one is in flight */
+	CHECK_EQ(cg_st_tx_nack(&t, (uint32_t)(0xFFFFFC00ull + 1000), 1000, &b, NULL), CG_ST_NACK_STALE);
+	CHECK_EQ(t.nlost, 0);
+	/* the third segment's offset is past 2^32: its low bits unwrap */
+	CHECK(cg_st_tx_seg(&t, 2)->off > 0xFFFFFFFFull);
+	/* SACKed: a DSACK, nothing */
+	memset(&a, 0, sizeof(a));
+	a.aseq = 1;
+	a.cum = t.una;
+	a.edge = t.edge;
+	a.n = 1;
+	a.s[0] = 0xFFFFFC00ull + 2000;
+	a.e[0] = 0xFFFFFC00ull + 3000;
+	cg_st_tx_ack(&t, &a, &r);
+	CHECK_EQ(cg_st_tx_nack(&t, (uint32_t)(0xFFFFFC00ull + 2000), 2000, &b, NULL), CG_ST_NACK_DELIVERED);
+	/* acknowledged: below una, nothing */
+	a.aseq = 2;
+	a.cum = 0xFFFFFC00ull + 1000;
+	a.n = 0;
+	cg_st_tx_ack(&t, &a, &r);
+	CHECK_EQ(cg_st_tx_nack(&t, 0xFFFFFC00u, 0, &b, NULL), CG_ST_NACK_DELIVERED);
+	/* the timer marks the two still SENT (the NACK's retransmission and
+	 * the last one): their retransmissions counted as the timer's */
+	CHECK_EQ(cg_st_tx_rto(&t, 0x100000000ull + 100000, 50000, NULL), 2000);
+	while (cg_st_tx_next(&t, 1000, &idx, &off, &len, &fin) && idx < t.n)
+		cg_st_tx_sent(&t, idx, off, len, fin, 0x100000000ull + 100000, 0, 0, 0, 0, 0, 0);
+	CHECK_EQ(t.retx_by[CG_ST_BY_RTO], 2);
+	CHECK_EQ(t.retx_segs, 3);
+}
+
 #define E2E_BYTES 300000u
 #define E2E_MSS 1200u
 
 struct pkt {
 	uint64_t at;
 	int ack;
+	int nack;    /* the tunnel's NACK of a DATA lost on every copy (off, ts) */
+	uint32_t ts; /* the sender's clock in that DATA */
 	uint64_t off;
 	uint32_t len;
 	int fin;
@@ -267,7 +339,10 @@ static void test_copy(void)
 	CHECK(!cg_st_tx_copy(&t, 20));             /* new bytes */
 }
 
-static void test_e2e(void)
+/* nack: the tunnel asks for 80 % of the DATA lost on every copy, the
+ * stream takes its NACK (cg_st_tx_nack), RACK's window wide (as when the
+ * code's repairs come late) so that most losses go by NACK. */
+static void e2e_run(int nack)
 {
 	static struct pkt q[4096];
 	static struct cg_st_seg seg[512];
@@ -280,6 +355,7 @@ static void test_e2e(void)
 	uint64_t now = 0, consumed = 0, rto_at = 0;
 	uint16_t aseq = 0;
 	const uint64_t cap = 200000;
+	uint64_t nacks[CG_ST_NACK_N] = { 0 };
 
 	cg_st_pool_init(&p, mem, stack, NCH);
 	cg_st_buf_init(&sb);
@@ -310,7 +386,7 @@ static void test_e2e(void)
 		/* send what may go, a few per step (the pacer's job) */
 		for (int k = 0; k < 4 && nq < 4000 && cg_st_tx_next(&t, E2E_MSS, &idx, &off, &len, &fin); k++) {
 			struct pkt *x;
-			uint32_t dup = rnd(&seed) % 100 < 2 ? 2 : 1;
+			uint32_t dup = rnd(&seed) % 100 < 2 ? 2 : 1, arrived = 0;
 
 			cg_st_tx_sent(&t, idx, off, len, fin, now, 0, 0, 0, 0, 0, 0);
 			sent++;
@@ -325,6 +401,15 @@ static void test_e2e(void)
 				x->off = off;
 				x->len = len;
 				x->fin = fin;
+				arrived++;
+			}
+			if (nack && !arrived && rnd(&seed) % 100 < 80) {
+				x = &q[nq++];
+				memset(x, 0, sizeof(*x));
+				x->nack = 1;
+				x->at = now + 10000 + rnd(&seed) % 3000; /* a round trip and the gap's detection */
+				x->off = off;
+				x->ts = (uint32_t)now;
 			}
 		}
 		/* deliver what is due */
@@ -335,7 +420,15 @@ static void test_e2e(void)
 				i++;
 				continue;
 			}
-			if (x->ack) {
+			if (x->nack) {
+				uint32_t b;
+				int v = cg_st_tx_nack(&t, (uint32_t)x->off, x->ts, &b, NULL);
+
+				nacks[v]++;
+				/* the DATA asked for was the segment's latest: it is lost now */
+				if (v == CG_ST_NACK_LOST)
+					CHECK(b > 0);
+			} else if (x->ack) {
 				struct cg_st_ackres res;
 
 				cg_st_tx_ack(&t, &x->a, &res);
@@ -343,7 +436,7 @@ static void test_e2e(void)
 					cg_st_buf_release(&sb, &p, t.una < t.tail ? t.una : t.tail);
 					rto_at = cg_st_tx_busy(&t) ? now + 20000 : 0;
 				}
-				cg_st_tx_rack(&t, 1000, NULL);
+				cg_st_tx_rack(&t, nack ? 40000 : 1000, NULL);
 			} else {
 				int v = cg_st_rx_judge(&r, x->off, x->len, x->fin, consumed + cap);
 
@@ -388,9 +481,25 @@ static void test_e2e(void)
 	CHECK(!memcmp(src, dst, E2E_BYTES));
 	CHECK(t.retx_segs > 0);
 	CHECK(sent > E2E_BYTES / E2E_MSS);
+	CHECK_EQ(t.retx_segs, t.retx_by[CG_ST_BY_RACK] + t.retx_by[CG_ST_BY_RTO] + t.retx_by[CG_ST_BY_NACK]);
+	if (nack) {
+		/* most losses went by NACK, and a NACK never marked a segment
+		 * whose newer copy was in flight */
+		CHECK(t.retx_by[CG_ST_BY_NACK] > t.retx_by[CG_ST_BY_RACK] + t.retx_by[CG_ST_BY_RTO]);
+		CHECK(nacks[CG_ST_NACK_LOST] > 0);
+		CHECK_EQ(nacks[CG_ST_NACK_UNKNOWN], 0);
+	} else {
+		CHECK_EQ(t.retx_by[CG_ST_BY_NACK], 0);
+	}
 	cg_st_buf_free(&sb, &p);
 	cg_st_buf_free(&rb, &p);
 	CHECK_EQ(cg_st_pool_used(&p), 0);
+}
+
+static void test_e2e(void)
+{
+	e2e_run(0);
+	e2e_run(1);
 }
 
 void test_stream(void)
@@ -400,5 +509,6 @@ void test_stream(void)
 	test_unwrap();
 	test_rx();
 	test_tx();
+	test_nack();
 	test_e2e();
 }

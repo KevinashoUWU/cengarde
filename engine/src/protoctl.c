@@ -64,8 +64,8 @@
 #define CG_PCTL_AHDR_MAX 20    /* variant A's header: magic, family, port, address */
 #define PCTL_AMAGIC 0xA5
 #define PCTL_REO_STEP_US 4000u  /* a duplicate widens RACK's window by this */
-#define PCTL_REO_MAX_US 100000u /* up to this */
-#define PCTL_REO_DECAY_US 200u  /* and it narrows by this a tick (2 ms a second), down to protocontroller_reo_ms */
+#define PCTL_REO_DECAY_US 200u  /* and it narrows by this a tick (2 ms a second), down to protocontroller_reo_ms;
+				 * up to reo_cap (streamcc.h's cg_scc_reo_cap: the code's horizon) */
 
 enum { F_FREE = 0, F_OPEN, F_EST };
 
@@ -146,6 +146,7 @@ struct cg_pctl {
 	struct peer *pr;
 	uint32_t npr;
 	uint64_t buf_cap, due_us;
+	uint32_t reo_cap; /* how far duplicates widen RACK's window (cg_scc_reo_cap) */
 	/* the batch of messages to send, all to one peer */
 	uint8_t msg[CG_BATCH][PCTL_FRAME];
 	uint8_t *mptr[CG_BATCH];
@@ -159,6 +160,10 @@ struct cg_pctl {
 	uint64_t up_bytes, down_bytes, data_tx, data_rx, acks_tx, acks_rx, opens_tx, retx, copies, rto_n;
 	uint64_t dup_frames, ooo_frames, drop_frames, nomem;
 	uint64_t cc_switches; /* protocontroller_cc auto: connections switched to BBR */
+	uint64_t retx_by[CG_ST_BY_N]; /* segments sent again, by why they were lost (RACK, the timer, a NACK) */
+	uint64_t nack[CG_ST_NACK_N];  /* the rescue's NACKs of DATA, by what they did (cg_st_tx_nack) */
+	uint64_t nack_noflow, nack_ack; /* NACKs of a stream gone; of an ACK (a fresh one sent instead) */
+	uint64_t nack_link[CG_PCTL_LINKS + 1]; /* segments a NACK found lost, by the link they went on (the last: copied or not known) */
 	uint64_t a_opened, a_bytes_in, a_bytes_out; /* variant A: relays opened, bytes read and written */
 	uint8_t cc_auto;      /* protocontroller_cc auto */
 	uint64_t holes[PCTL_HOLE_BUCKETS]; /* how long the receivers missed something: < 5, 10, 20, 40, 80, 160, 320 ms, more */
@@ -1139,7 +1144,7 @@ static void ack_in(struct cg_pctl *p, struct flow *f, const struct cg_pctl_msg *
 
 	p->acks_rx++;
 	/* something was sent again for nothing: wait longer before the next */
-	if ((m->flags & CG_PCTLF_DUP) && r->reo_us < PCTL_REO_MAX_US && !r->cc.heavy) {
+	if ((m->flags & CG_PCTLF_DUP) && r->reo_us < p->reo_cap && !r->cc.heavy) {
 		r->reo_us += PCTL_REO_STEP_US;
 		r->dups++;
 	}
@@ -1161,6 +1166,45 @@ static void ack_in(struct cg_pctl *p, struct flow *f, const struct cg_pctl_msg *
 		cg_scc_lost(&r->cc, lost - lq);
 	}
 	rto_arm(p, f, r);
+}
+
+int cg_pctl_nack(struct cg_pctl *p, uint32_t peer, uint32_t sid, const uint8_t *msg, size_t len, uint8_t link)
+{
+	uint32_t id = 0, off = 0, ts = 0, bytes;
+	int k = cg_pctl_nack_kind(msg, len, &id, &off, &ts), v;
+	struct flow *f;
+	struct peer *r;
+	uint64_t lq = 0;
+
+	if (k == CG_PCTL_NACK_NOT || k == CG_PCTL_NACK_RESEND)
+		return k;
+	if (!p->cfg.server)
+		sid = 0;
+	f = find(p, sid, id);
+	if (!f || f->relay) {
+		p->nack_noflow++; /* gone: nothing to send again */
+		return k;
+	}
+	if (k == CG_PCTL_NACK_ACK) {
+		f->ack_now = 1; /* a fresh one at the next service */
+		p->nack_ack++;
+		due(p, cg_now_us());
+		return k;
+	}
+	(void)peer;
+	v = cg_st_tx_nack(&f->tx, off, ts, &bytes, &lq);
+	p->nack[v]++;
+	if (v != CG_ST_NACK_LOST)
+		return k;
+	p->nack_link[link < CG_PCTL_LINKS ? link : CG_PCTL_LINKS]++;
+	/* as a loss RACK found: out of flight, into the rate's losses; it goes
+	 * again first, at the next service, within the pacer's tokens */
+	r = peer_of(p, f);
+	r->cc.inflight -= r->cc.inflight >= bytes ? bytes : r->cc.inflight;
+	cg_scc_lost(&r->cc, bytes - lq);
+	rto_arm(p, f, r);
+	due(p, cg_now_us());
+	return k;
 }
 
 static void rx_one(struct cg_pctl *p, uint32_t peer, uint32_t sid, const uint8_t *msg, size_t len);
@@ -1471,9 +1515,12 @@ static int send_one(struct cg_pctl *p, struct flow *f, struct peer *r, uint64_t 
 	if (len && cg_st_buf_read(&f->sb, &p->pool, off, b + CG_PCTL_DATA_HDR, len) < 0)
 		return 0; /* not reached: unacknowledged bytes are held */
 	push(p, CG_PCTL_DATA_HDR + len, copy);
-	if (idx < f->tx.n)
+	if (idx < f->tx.n) {
+		uint8_t by = cg_st_tx_seg(&f->tx, idx)->by;
+
 		p->retx++;
-	else {
+		p->retx_by[by < CG_ST_BY_N ? by : CG_ST_BY_RACK]++;
+	} else {
 		age_pop(f->rd, &f->rd_h, &f->rd_n, off + len, now, p->sendq);
 	}
 	p->copies += (uint64_t)copy;
@@ -1719,6 +1766,7 @@ struct cg_pctl *cg_pctl_new(const struct cg_pctl_cfg *cfg, int ep, const struct 
 		p->buf_cap = CG_ST_MAXWIN;
 	p->ccf.queue_us = cfg->queue_ms * 1000;
 	p->ccf.mss = cfg->mss;
+	p->reo_cap = cg_scc_reo_cap(cfg->reo_ms * 1000, cfg->code_ms * 1000);
 	/* a segment per mss of the buffer, and some for small writes */
 	p->nseg = (uint32_t)(p->buf_cap / (cfg->mss > 256 ? cfg->mss / 2 : 128)) + 64;
 	nch = (uint32_t)((uint64_t)cfg->mem_mb * 1024 * 1024 / CG_ST_CHUNK);
@@ -1824,6 +1872,33 @@ void cg_pctl_json(const struct cg_pctl *p, struct cg_json *j)
 	cg_json_u64(j, "acks_rx", p->acks_rx);
 	cg_json_u64(j, "opens_tx", p->opens_tx);
 	cg_json_u64(j, "retx", p->retx);
+	/* the segments sent again by why they were lost: RACK, the timer, the
+	 * tunnel's NACK (the rescue hands the loss over, story 025) */
+	cg_json_obj(j, "retx_by");
+	cg_json_u64(j, "rack", p->retx_by[CG_ST_BY_RACK]);
+	cg_json_u64(j, "rto", p->retx_by[CG_ST_BY_RTO]);
+	cg_json_u64(j, "nack", p->retx_by[CG_ST_BY_NACK]);
+	cg_json_end(j, '}');
+	/* the rescue's NACKs of this end's messages: a DATA marked lost, or
+	 * already delivered (a DSACK), sent again since (an older copy asked
+	 * for), lost already, no such segment; of a stream gone; of an ACK */
+	cg_json_obj(j, "nacks");
+	cg_json_u64(j, "lost", p->nack[CG_ST_NACK_LOST]);
+	cg_json_u64(j, "delivered", p->nack[CG_ST_NACK_DELIVERED]);
+	cg_json_u64(j, "stale", p->nack[CG_ST_NACK_STALE]);
+	cg_json_u64(j, "pending", p->nack[CG_ST_NACK_PENDING]);
+	cg_json_u64(j, "unknown", p->nack[CG_ST_NACK_UNKNOWN]);
+	cg_json_u64(j, "no_stream", p->nack_noflow);
+	cg_json_u64(j, "acks", p->nack_ack);
+	/* the segments found lost, by the link they went on (the server: the
+	 * path index, every session together); then copied or not known */
+	cg_json_arr(j, "lost_by_link");
+	for (unsigned l = 0; l < CG_PCTL_LINKS; l++)
+		cg_json_u64(j, NULL, p->nack_link[l]);
+	cg_json_end(j, ']');
+	cg_json_u64(j, "lost_no_link", p->nack_link[CG_PCTL_LINKS]);
+	cg_json_end(j, '}');
+	cg_json_ms(j, "reo_cap_ms", p->reo_cap);
 	cg_json_u64(j, "copies", p->copies);
 	cg_json_u64(j, "rto", p->rto_n);
 	cg_json_u64(j, "dup_frames", p->dup_frames);

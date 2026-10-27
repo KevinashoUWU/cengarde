@@ -502,8 +502,8 @@ static inline uint64_t cg_scc_wait_us(const struct cg_scc *p)
 }
 
 /* The retransmission timer: srtt + 4 rttvar, at least twice min_rtt and
- * 20 ms, plus extra_us (RACK's window beyond min_rtt / 4: the tunnel's own
- * repairs come first), doubled backoff times, 2 s at most; 200 ms before
+ * 20 ms, plus extra_us (RACK's window beyond min_rtt / 4: the tunnel's
+ * codes come first), doubled backoff times, 2 s at most; 200 ms before
  * any sample. */
 static inline uint64_t cg_scc_rto(const struct cg_scc *p, unsigned backoff, uint32_t extra_us)
 {
@@ -519,10 +519,32 @@ static inline uint64_t cg_scc_rto(const struct cg_scc *p, unsigned backoff, uint
 }
 
 /* RACK's reordering window: a quarter of min_rtt and extra_us (the
- * tunnel's own repair: its codes and rescue come first). */
+ * tunnel's codes come first: cg_scc_reo_cap). */
 static inline uint64_t cg_scc_reo(const struct cg_scc *p, uint32_t extra_us)
 {
 	return (uint64_t)p->min_rtt / 4 + extra_us;
+}
+
+#define CG_SCC_REO_MAX_US 100000u   /* duplicates widen RACK's window up to this, at most */
+#define CG_SCC_REO_NOCODE_US 20000u /* and up to this without a code: reordering between links alone */
+
+/* How far duplicates may widen RACK's window beyond min_rtt / 4 (extra_us
+ * starts at base_us, protocontroller_reo_ms), with code_us the tunnel's
+ * code horizon (rescue_code_ms while the sender sends repairs; 0: none).
+ * The tunnel's rescue does not count (story 025, 2026-10-27): it no longer
+ * sends a stream's DATA again, its NACK tells the stream of the loss
+ * instead (cg_st_tx_nack), so the only repair that may still land after
+ * the stream's own retransmission is the code's, and the receiver waits
+ * for it no longer than its horizon before it asks (harq.h): beyond that
+ * RACK waiting longer only delays. Before, a rescued copy behind every
+ * retransmission said "duplicate" and the window sat at 100 ms. Without
+ * a code a duplicate means only reordering (a stream goes on one link, a
+ * switch reorders by the links' delay difference). Never under base_us. */
+static inline uint32_t cg_scc_reo_cap(uint32_t base_us, uint32_t code_us)
+{
+	uint32_t cap = code_us ? (code_us < CG_SCC_REO_MAX_US ? code_us : CG_SCC_REO_MAX_US) : CG_SCC_REO_NOCODE_US;
+
+	return cap > base_us ? cap : base_us;
 }
 
 #endif

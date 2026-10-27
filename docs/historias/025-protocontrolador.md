@@ -2,8 +2,9 @@
 
 - **Fecha:** 2026-10-25
 - **Estado:** implementado (A y B) y medido en el laboratorio; el
-  microcorte de B y la RLC que rehacía basura, corregidos (2026-10-26); falta
-  la Pi, el VPS real y el terreno
+  microcorte de B y la RLC que rehacía basura, corregidos (2026-10-26); el
+  rescate le pasa a GRIT sus pérdidas en vez de reenviarlas (2026-10-27,
+  cordura; falta la matriz n = 6); falta la Pi, el VPS real y el terreno
 - **Fuentes:** historia 024 (TCP partido con shadowsocks, las cifras a
   batir), 023 (rescate, PARQ, `harq.h`, reglas de TCP), 020/021
   (`redund_spare`, `rs`/`rlc`), 014 (túnel nativo), 013/019
@@ -54,6 +55,15 @@
   de 29 a 54 Mbit/s en `protect`, de 1,2 a 53 en `beyond` (1 % perdido más
   allá del VPS) y de 8,6 a 31–36 en `protectcut`; el vivo más allá del VPS
   pasa de 80 % perdido a 0 %.
+- **GRIT y el rescate cooperan (2026-10-27):** un NACK de un mensaje de
+  GRIT ya no reenvía el paquete: la pérdida va al flujo (marca el segmento
+  perdido si ese DATA era su envío más nuevo y lo reenvía con su ritmo) y
+  se contesta `CG_F_GONE` para que el receptor suelte el hueco. La PARQ y
+  los códigos siguen primero; sin cambio de formato. Cordura (n = 2–3, sin
+  prueba): en `single1` los duplicados del receptor bajan de ~300 a ~10 y
+  en `protect` de subida el ping de 1200 B p99 de 296 a 109 ms; nada
+  cambia sin el protocontrolador; el microcorte sigue tan variable como
+  antes.
 - **Qué usar:** A para todos (estable, sin formato nuevo: su TCP es un
   paquete más de la TUN); B (GRIT) experimental, mejor en latencia y CPU y
   ahora también en el microcorte (más TCP, el vivo sin pérdida), con el RTT
@@ -661,6 +671,183 @@ caudal ni pérdida.
   completas, 715 cortadas a propósito, 0 fallidas, 14 387 abiertas y
   cerradas en cada extremo; 15 610 rehechos, 0 rechazados.
 
+## GRIT y el rescate: el NACK como señal de pérdida (2026-10-27)
+
+### Lo que pasaba
+
+- El rescate guarda cada DATA del túnel en su anillo (`seal_batch` del
+  router, `down_seal` del VPS) y `on_nack` reenvía lo que le piden, también
+  los mensajes de GRIT; GRIT reenvía por su cuenta (RACK y el temporizador).
+  Un segmento podía viajar dos veces: en `single1` (un enlace con 1 % al
+  azar), `origin/master` reenviaba ~890 mensajes de GRIT por corrida desde
+  el rescate mientras GRIT reenviaba ~230–390 propios, y el receptor
+  contaba ~200–375 duplicados.
+- El rescate existe para que el TCP de adentro no vea la pérdida y no
+  frene; GRIT ya sabe que una pérdida al azar no es congestión (su ritmo
+  cuenta lo perdido sin cola como lo que el camino toma), así que para él el
+  reenvío del paquete sobra. Lo que sí le sirve es saber **ya** que se
+  perdió: el NACK es exactamente eso, explícito («ACK duplicado = NACK
+  implícito», dicho por el túnel).
+
+### El diseño
+
+- **El NACK a GRIT** (`on_nack` de los dos extremos): con el paquete aún en
+  el anillo y no repetido en 20 ms (la copia del NACK por el segundo
+  enlace), si su carga es de GRIT (`cg_pctl_nack_kind`, `protoctl.h`):
+  - un **DATA**: se busca el flujo por su id (el router, la ranura; el VPS,
+    la tabla por sesión) y el segmento por su desplazamiento (los 32 bits
+    del mensaje desenrollados contra `una`); `cg_st_tx_nack` (`stream.h`)
+    decide: el segmento SENT cuyo envío más nuevo es **ese** DATA (el reloj
+    del emisor en el mensaje, los 32 bits bajos de su `sent_us`) pasa a
+    LOST y sale primero en la pasada siguiente (`cg_pctl_service` corre
+    tras cada vuelta del lazo), con su ritmo, sus copias (las de los 8 más
+    viejos reenviados por segunda vez) y su prioridad; la pérdida cuenta
+    para el ritmo como una de RACK (fuera de vuelo; lo perdido sin cola
+    suma a lo que el camino toma, `cg_scc_lost`) y el temporizador se
+    rearma. Ya confirmado o con SACK (`delivered`, un DSACK), reenviado
+    desde entonces (`stale`: lo pedido es una copia vieja, otra va en
+    vuelo), ya perdido (`pending`) o sin segmento ahí (`unknown`): nada,
+    contado. Un flujo que ya no existe: nada (`no_stream`).
+  - un **ACK**: no se reenvía el viejo; el flujo manda uno nuevo en la
+    pasada siguiente (cada ACK lleva el estado completo).
+  - un **OPEN** o un **RST** (raros e idempotentes) o algo que no se lee:
+    se reenvía como antes.
+- **Pérdida = RACK, NACK o temporizador; entrega = ACK o SACK.** RACK y el
+  temporizador quedan como respaldo (la cola, un NACK perdido, el rescate
+  apagado).
+- **El receptor deja de esperar:** lo pasado a GRIT entra en la lista de lo
+  que no vendrá y se contesta con el `CG_F_GONE` de siempre; el reordenador
+  del otro extremo suelta el hueco al recibirlo (`cg_ro_refused`, ya en los
+  dos `on_nack`). Los mensajes de GRIT siguen sin retenerse (`nohold`).
+- **La PARQ sigue:** el orden código → PARQ → NACK de `harq.h` no cambia:
+  si la ventana de la RLC o el bloque RS pueden rehacer el hueco con
+  paridad, eso va primero; solo cambia el último paso, el reenvío del
+  paquete, para los mensajes de GRIT. Con la FEC v3 (`fec_code = rlc`) la
+  mayoría de los huecos de GRIT van por la PARQ y no llegan como NACK.
+- **El anillo guarda todo el mensaje:** la PARQ del cliente (`on_parq`) y la
+  del servidor recodifican desde los paquetes guardados, así que el anillo
+  necesita la carga entera, no solo la cabecera de GRIT; la memoria no
+  cambia (el mismo anillo acotado, sin `malloc` por paquete).
+- **La congestión:** el NACK de un mensaje de GRIT va al flujo antes del
+  veto de «ruta llena» del rescate: GRIT tiene que reenviar igual, y su
+  ritmo ya separa lo perdido con cola (`q` del segmento).
+- **El enlace** por el que fue el paquete (`went` del anillo; `NOLINK`
+  copiado o sin saber) viaja con el NACK y se cuenta por enlace
+  (`lost_by_link`); GRIT no actúa todavía sobre él (para una vista que el
+  motor y los flujos compartan después).
+- **La ventana de RACK** (`cg_scc_reo_cap`, `streamcc.h`): los duplicados la
+  agrandan solo hasta el horizonte del código (`rescue_code_ms` si el
+  emisor manda reparaciones —`fec`, o lo que sobra codificado en el
+  router— y a lo más 100 ms), o 20 ms sin código (reordenamiento entre
+  enlaces); ya no por el rescate, que no manda copias de GRIT. Medido: la
+  ventana pasa igual casi toda la corrida en 80–100 ms en los dos brazos
+  (media de 60–89 ms por caso), por los duplicados del arranque, que se
+  deshacen a 2 ms por segundo; con el perfil del laboratorio
+  (`rescue_code_ms` 100 por omisión) el tope es el mismo de antes.
+- **Sin cambio de formato:** todo es local al emisor; el `CG_F_GONE` ya
+  existía. No sube la versión.
+- **Estado:** `rescue.to_grit` y `to_grit_bytes` en los dos extremos (lo
+  pedido que era de GRIT: los reenvíos que el rescate se ahorró);
+  `protocontroller.retx_by` (`rack`, `rto`, `nack`), `protocontroller.nacks`
+  (`lost`, `delivered`, `stale`, `pending`, `unknown`, `no_stream`, `acks`,
+  `lost_by_link`, `lost_no_link`) y `reo_cap_ms`. `bench/bondtab.py` los
+  guarda (`g_retx`, `g_rack`, `g_rto`, `g_nack`, `g_dup`, `g_nlost`,
+  `g_ndeliv`, `g_nstale`, `g_npend`, `to_grit`).
+- **Pruebas:** `test_stream.c` (`test_nack`: cada estado, el desenrollado de
+  32 bits, los reenvíos por causa; el extremo a extremo en memoria con
+  NACK: 80 % de lo perdido en todas las copias pedido, la mayoría de los
+  reenvíos por NACK, ninguno `unknown`, todo entregado), `test_protoctl.c`
+  (`cg_pctl_nack_kind`), `test_streamcc.c` (`cg_scc_reo_cap`).
+
+### Cordura (laboratorio, n = 2–3)
+
+`bench/labq.py` con `BOND_PEP=cgb` (y sin él), túnel nativo, 20 s por
+corrida, `origin/master` (`52c6e56`, `base`) contra la rama (`889a2b4`,
+`nack`), el perfil de la tarea (cliente `split = on`, `split_eta`,
+`capacity_weights`, `split_spread_ms = 250`, `probe_idle_ms = 100`,
+`reorder_max_wait_ms = 200`, `tcp_aware`, `fec = yes`, `fec_code = rlc`,
+`rescue_wait_ms = 60`, `rescue_kb = 32768`; el VPS igual sin las dos del
+cliente, más `governor` y `reorder_margin_ms = 10`). Medianas, sin prueba
+estadística (la matriz n = 6 intercalada queda para después). «reenv.»:
+los reenvíos de GRIT en el emisor (RACK / temporizador / NACK), «dup»: los
+duplicados del receptor, «rescate»: lo que el rescate reenvió (`base`) o
+pasó a GRIT (`nack`). `protect` y `protectcut`, n = 9 (tres tandas,
+semillas 1, 7 y 11); los demás, n = 2. Datos:
+`~/campo/2026-10-27/gritnack/` (`plan-*.json`, `cgb/`, `diag1/`, `diag2/`,
+`diag3/`, `live/`, `nopep/`, `an.py`, `runaway.py`; `keep*/` las muestras
+por segundo).
+
+| Caso | Sentido | Brazo | Mbit/s | RTT p99 ms | 1200 B p99 ms | reenv. (rack/rto/nack) | dup | rescate |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `protect` | subida | base | 44,5 | 36 | 296 | 1014 | 597 | 118 |
+| `protect` | subida | nack | 46,7 | 35 | 109 | 159 (159/0/0) | 159 | 11 |
+| `protect` | bajada | base | 38,3 | 40 | 263 | 597 | 481 | 34 |
+| `protect` | bajada | nack | 37,7 | 48 | 320 | 1092 (1080/0/21) | 989 | 272 |
+| `protectcut` | subida | base | 26,4 | 1969 | 2103 | 8685 | 3810 | 1126 |
+| `protectcut` | subida | nack | 25,4 | 2081 | 2210 | 15710 (13234/622/747) | 6134 | 4385 |
+| `protectcut` | bajada | base | 18,9 | 1408 | 2069 | 3665 | 2710 | 449 |
+| `protectcut` | bajada | nack | 17,8 | 2055 | 2096 | 10930 (10094/226/187) | 3452 | 3095 |
+| `single1` | subida | base | 35,8 | 70 | 198 | 224 | 209 | 887 |
+| `single1` | subida | nack | 35,9 | 72 | 186 | 672 (105/1/567) | 63 | 849 |
+| `single1` | bajada | base | 35,2 | 76 | 202 | 329 | 315 | 872 |
+| `single1` | bajada | nack | 35,6 | 60 | 195 | 776 (169/1/607) | 114 | 897 |
+| `lossy` | subida | base | 38,7 | 47 | 330 | 2539 | 2318 | 217 |
+| `lossy` | subida | nack | 46,0 | 46 | 77 | 194 (193/1/0) | 194 | 1 |
+| `lossy` | bajada | base | 34,4 | 47 | 90 | 535 | 535 | 1 |
+| `lossy` | bajada | nack | 36,5 | 45 | 73 | 164 (164/0/0) | 164 | 0 |
+| `stall50` | subida | base | 36,4 | 62 | 170 | 383 | 281 | 29 |
+| `stall50` | subida | nack | 42,8 | 75 | 143 | 734 (733/0/1) | 734 | 3 |
+| `stall50` | bajada | base | 10,0 | 53 | 76 | 1 | 1 | 2 |
+| `stall50` | bajada | nack | 18,7 | 58 | 370 | 2752 (2745/0/7) | 2135 | 106 |
+| `idleslow` | subida | base | 37,8 | 45 | 118 | 24 | 24 | 0 |
+| `idleslow` | subida | nack | 41,6 | 46 | 156 | 991 (990/1/0) | 991 | 1 |
+| `idleslow` | bajada | base | 23,7 | 45 | 54 | 1 | 1 | 0 |
+| `idleslow` | bajada | nack | 23,3 | 45 | 61 | 1 | 1 | 0 |
+
+- **Lo buscado se ve donde el rescate actuaba sobre GRIT:** en `single1`
+  (un enlace con 1 % al azar, sin código que lo cubra todo) el rescate
+  reenviaba ~880 mensajes por corrida y el receptor contaba ~210–315
+  duplicados; con la rama esos ~850 NACK van a GRIT (los reenvíos ahora
+  son por NACK: 567–607 de ~700) y los duplicados bajan a 63–114 (en una
+  corrida de cada sentido, 7 y 11). El caudal y el RTT no cambian.
+- **`protect` de subida y `lossy`:** menos reenvíos de GRIT (1014 → 159;
+  2539 → 194) y el ping de 1200 B p99 296 → 109 y 330 → 77 ms; el caudal
+  algo arriba (44,5 → 46,7 y 38,7 → 46,0 Mbit/s). Casi ningún NACK llega a
+  GRIT ahí (la FEC v3 y la PARQ reparan antes): la diferencia viene de que
+  el rescate ya no reenvía, no del NACK.
+- **`protect` de bajada:** un poco peor (RTT p99 40 → 48 ms, duplicados
+  481 → 989), con una corrida de 9 en la que el estimador de GRIT se
+  disparó (abajo).
+- **`stall50` de bajada:** 10,0 → 18,7 Mbit/s en las dos corridas, con
+  ~2 700 reenvíos de RACK (la mayoría duplicados) y el ping de 1200 B p99
+  76 → 370 ms. No explicado; para la matriz.
+- **`idleslow` de subida:** una de las dos corridas de la rama con 1 959
+  reenvíos de RACK, todos duplicados (la otra, 23); el rescate no actuaba
+  en ningún brazo (0 reenvíos, 1 NACK): azar del arranque de GRIT.
+- **El microcorte (`protectcut`)** reenvía más con la rama (subida 8685 →
+  15710, bajada 3665 → 10930, casi todo RACK) con caudal y RTT iguales
+  dentro de su variación (60 ms a 2 s, ya visto el 26-10). En las muestras
+  por segundo, las corridas grandes son las del **estimador que se
+  dispara** (pendiente de arriba: sube con lo perdido antes del cuello,
+  netem): de 28 corridas de `protect`/`protectcut` por brazo, el
+  estimador pasó de 100 Mbit/s en 8 de `base` y 12 de la rama (hasta 450–800
+  Mbit/s, reenvíos de 10 000 a 100 000 en 20 s, casi todo RACK con la
+  pérdida pesada marcada; los NACK marcan ≤ 1 300). Puede ser azar (n
+  chico) o que las copias del rescate entregaban huecos sin pasar por el
+  ritmo de GRIT; la matriz lo dirá.
+- **El vivo** (`cc live`, subida): `protect` n = 2, sin pérdida ni cortes en
+  los dos, demora p99 cercana 169 → 39 ms y ping de 1200 B p99 768 → 46 ms;
+  `stall50`, igual (sin pérdida, demora ~1,25 s en los dos); `protectcut`,
+  n = 5 (semillas 1 y 5): lo que el emisor descartó por esperar 700 ms,
+  `base` 0 / 1,8 / 14 / 39 / 20 % y la rama 19 / 36 / 23 / 0 / 0 %, cortes
+  0–4 en los dos: igual de variable (con este perfil, reparto y FEC v3; el
+  0 % del 26-10 era con redundancia y `redund_spare = rlc`).
+- **Sin el protocontrolador** (`BOND_PEP` vacío; `protect`, `protectcut`,
+  `lossy`, los dos sentidos, n = 2): `to_grit` 0 en todas; las diferencias
+  de caudal y RTT van en los dos sentidos (p. ej. `protect` subida 28,8 /
+  33,5, `lossy` bajada 82,1 / 74,0 Mbit/s): el ruido de n = 2. El camino de
+  lo que no es GRIT no cambió.
+
 ## Hallazgos
 
 - **A iguala a la 024 sin proxies:** el caudal es el de `Ab` en los tres
@@ -702,6 +889,13 @@ caudal ni pérdida.
 
 ## Pendiente
 
+- **El NACK a GRIT (2026-10-27), la matriz n = 6** intercalada (la hará el
+  usuario): sobre todo `protect` de bajada, `stall50` de bajada (más caudal
+  con más ping), `idleslow` de subida y si el estimador se dispara más a
+  menudo sin las copias del rescate. Si se confirma, el siguiente paso es
+  usar el enlace que el NACK ya trae (`lost_by_link`) y una ventana de RACK
+  medida de lo que tardan de verdad las reparaciones del código.
+
 - **El RTT de los pings en el microcorte** (224 ms con GRIT, 198 con A,
   meta 145): lo pone la cola del celular cuando `l1` pierde la copia de un
   ping; la asignación de lo que sobra pasa de la capacidad del celular (un
@@ -731,3 +925,7 @@ caudal ni pérdida.
   mudo que sigue trayendo vivo para lo que sube, la PARQ nunca a un enlace
   ahogado, copias de los 8 reenvíos más viejos dentro de la asignación;
   lote final n = 8 y resistencia.
+- 2026-10-27: el rescate le pasa a GRIT el NACK de sus mensajes en vez de
+  reenviarlos (`cg_st_tx_nack`, `cg_pctl_nack`, `cg_pctl_nack_kind`),
+  contesta `CG_F_GONE`, la ventana de RACK hasta el horizonte del código
+  (`cg_scc_reo_cap`), el enlace del paquete contado; contadores y cordura.

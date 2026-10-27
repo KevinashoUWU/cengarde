@@ -508,13 +508,17 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
     rescata); entre medio, una recta. Sin cola medida, 1.
   - **Lo que no vendrá (`CG_F_GONE`):** el extremo al que se pide avisa qué
     secuencias no volverá a enviar (ya no las guarda, se perdieron en una
-    ruta llena o el presupuesto no alcanza), y el reordenador las da por
+    ruta llena, el presupuesto no alcanza o eran de GRIT, que las reenvía
+    él), y el reordenador las da por
     perdidas al instante en vez de esperar `rescue_wait_ms`.
   - Estado: `rescue` en el cliente (`on`, `server_keeps`, `nacks_sent`; de
     la subida: `keeps`, `nacks_rx`, `sent`, `missing`, `over_budget`,
     `congested`) y en cada sesión del servidor (`on`, `nacks`, `sent`,
     `missing`, `over_budget`, `congested`; de la subida: `client_keeps`,
-    `asks`, `nacks_sent`); en los dos, `gone_sent` y `gone_received`.
+    `asks`, `nacks_sent`); en los dos, `gone_sent` y `gone_received`, y
+    `to_grit` y `to_grit_bytes`: lo pedido que era un mensaje de GRIT (el
+    protocontrolador B), pasado a su flujo en vez de reenviado (historia
+    025).
     `reorder.rescue` (`asked`, `rescued`, `repaired` —lo rehizo un código,
     no llegó el paquete—, `lost` y `refused`, los perdidos que el otro
     extremo avisó que no vendrían).
@@ -1450,11 +1454,16 @@ En los dos:
 Solo la variante B:
 
 - **Fiabilidad** (`src/stream.h`): RACK con una ventana de un cuarto de la
-  ida y vuelta más `protocontroller_reo_ms` (10, la reparación del túnel va
-  primero; cada duplicado que el receptor avisa la agranda 4 ms, hasta 100;
-  con pérdida al azar pesada, más de 1 byte de cada 5 en 100 ms, vuelve a
-  `protocontroller_reo_ms`: las reparaciones del túnel no alcanzan), y un
-  temporizador desde el envío más viejo. Nunca se rinde; un segmento
+  ida y vuelta más `protocontroller_reo_ms` (10, los códigos del túnel van
+  primero; cada duplicado que el receptor avisa la agranda 4 ms, hasta el
+  horizonte del código, `rescue_code_ms` con `fec` o con lo que sobra
+  codificado y a lo más 100, o 20 sin código; con pérdida al azar pesada,
+  más de 1 byte de cada 5 en 100 ms, vuelve a `protocontroller_reo_ms`: las
+  reparaciones del túnel no alcanzan), el **NACK del rescate** (el rescate
+  no reenvía un mensaje de GRIT: le pasa la pérdida a su flujo, que marca
+  perdido el segmento si ese DATA era su envío más nuevo y lo reenvía en la
+  pasada siguiente con su ritmo; contesta `CG_F_GONE` para que el receptor
+  no espere el hueco) y un temporizador desde el envío más viejo. Nunca se rinde; un segmento
   reenviado por segunda vez, entre los 8 más viejos, va además como copia
   por lo que sobra a otro enlace sin cola (dentro de su asignación). Con
   `redund_spare`, los DATA de los flujos van por **un** enlace, el de menor
@@ -1500,7 +1509,13 @@ Despliegue:
   `a_bytes_in`, `a_bytes_out` y `a_held_bytes` de la variante A, y por par el
   estimador, el ritmo, `min_rtt`, `srtt`, en vuelo, ventana, modo, la
   ventana de RACK, `heavy_loss` y `heavy_windows`); `protocol` dice
-  `GRIT` con la variante B.
+  `GRIT` con la variante B. Los reenvíos por causa (`retx_by`: `rack`,
+  `rto`, `nack`), los NACK del rescate de los DATA propios (`nacks`: `lost`,
+  marcados perdidos; `delivered`, ya entregados; `stale`, de una copia
+  vieja con otra en vuelo; `pending`, ya perdidos; `unknown`; `no_stream`;
+  `acks`, de un ACK, contestados con uno nuevo; `lost_by_link` y
+  `lost_no_link`, los marcados por el enlace por el que fueron) y el tope
+  de la ventana de RACK (`reo_cap_ms`).
 
 Toda perilla `protocontroller*` reinicia el proceso al cambiar.
 

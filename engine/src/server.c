@@ -199,6 +199,7 @@ struct session {
 	struct cg_rs_rx *rsx;
 	uint64_t rep_unused, rep_bad; /* repairs without fec (or Leopard here), malformed */
 	uint64_t resc_gone_tx, resc_gone_rx; /* CG_F_GONE said to the client; asked gaps it said were gone */
+	uint64_t resc_grit, resc_grit_bytes; /* asked for, a GRIT message: its loss to its stream, not sent again (story 025) */
 	/* FEC v3 down (fec = yes, fec_code = rlc, story 026): every DATA of
 	 * the window (~2 MB, with the knob), the decisions (fec3.h), the paths
 	 * it repairs on now, the last repair's window, density and lag, the
@@ -1812,7 +1813,9 @@ static int path_full(const struct server *s, const struct session *S, unsigned p
 
 /* A verified NACK of S (rescue.h): each sequence it names that the ring
  * still keeps goes again, within S's budget, on its live path of least
- * delay (the delays of one session's paths share the client's clock). */
+ * delay (the delays of one session's paths share the client's clock); not
+ * one lost on a full path, nor a GRIT message (its loss goes to its
+ * stream, cg_pctl_nack); what does not go again is said gone. */
 static void on_nack(struct server *s, struct session *S, uint8_t flags, const uint8_t *payload, size_t plen,
 		    uint64_t now_ms)
 {
@@ -1846,6 +1849,19 @@ static void on_nack(struct server *s, struct session *S, uint8_t flags, const ui
 		}
 		if (cg_resc_dup(&s->resc, S->resc_idx, seq[i], (uint32_t)now_ms))
 			continue;
+		/* A GRIT message (story 025): its stream retransmits what it
+		 * loses, so the loss goes to it, and the client stops waiting. */
+		if (s->pctl) {
+			int k = cg_pctl_nack(s->pctl, (uint32_t)(S - s->s), S->id, e + CG_HDR_LEN, (size_t)len - CG_HDR_LEN,
+					     went);
+
+			if (k == CG_PCTL_NACK_DATA || k == CG_PCTL_NACK_ACK) {
+				S->resc_grit++;
+				S->resc_grit_bytes += len - CG_HDR_LEN;
+				gone[ngone++] = seq[i];
+				continue;
+			}
+		}
 		/* Lost where the path is full: congestion, for TCP to see. */
 		if (went < CG_MAX_LINKS && path_full(s, S, went)) {
 			S->resc_congested++;
@@ -3506,6 +3522,9 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 		cg_json_u64(j, "nacks_sent", S->nacks_sent);
 		cg_json_u64(j, "gone_sent", S->resc_gone_tx);
 		cg_json_u64(j, "gone_received", S->resc_gone_rx);
+		/* asked-for GRIT messages handed to their streams, not sent again */
+		cg_json_u64(j, "to_grit", S->resc_grit);
+		cg_json_u64(j, "to_grit_bytes", S->resc_grit_bytes);
 		cg_json_u64(j, "nack_seqs", S->nack_seqs);
 		/* the upload's asks with a code on (harq.h, story 023): waited for
 		 * its repairs, not asked (here or decodable), left to TCP, no
@@ -4581,6 +4600,8 @@ int cg_server_run(struct cg_config *cfg, const struct cg_run *run)
 					 .backlog_ms = cfg->protocontroller_backlog_ms,
 					 .dead_s = cfg->protocontroller_dead_s,
 					 .reo_ms = cfg->protocontroller_reo_ms,
+					 /* the download's code: the spatial parity or FEC v3 */
+					 .code_ms = cfg->fec ? cfg->rescue_code_ms : 0,
 					 .peers = s->cap };
 		struct cg_pctl_ops ops = { .ctx = s, .send = pctl_send, .hint = pctl_hint };
 
