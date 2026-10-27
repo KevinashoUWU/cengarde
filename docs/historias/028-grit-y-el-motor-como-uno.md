@@ -9,7 +9,8 @@
   colapso de la bajada, el estimador desbocado, el arranque) y 023 (el
   rescate, la PARQ); tarea #77; laboratorio `bench/labq.py` con
   `BOND_PEP=cgb`, datos en `~/campo/2026-10-27/gshare{1,2,3}/`, `bondvs/`,
-  `nackfirst/out45/`, `nackfirst-nofec/` y `spread/`.
+  `nackfirst/out45/`, `nackfirst-nofec/`, `spread/`, `reach/`, `start/`,
+  `cap/`, `rat/`, `buf/`, `bufedge/` y `buf2/`.
 
 ## TL;DR
 
@@ -40,6 +41,11 @@
   enlaces). Ahora: duplicados de miles a decenas, el ping p99 de 1200 B
   baja a la mitad en `equal`, `lossy` y `stall50`, el caudal igual o
   mejor (+4 a +12 %).
+- **Otro error de GRIT, corregido:** el receptor contaba sus rangos fuera
+  de orden con 8 bits; con 256 y una fusión los olvidaba todos, el emisor
+  los tenía confirmados y nunca los reenviaba: el flujo quedaba trabado
+  para siempre. Solo aparece con búferes de más de 1 MB. El emisor ahora
+  además se recupera de un SACK «renegado», como TCP.
 - **Un error de GRIT, corregido:** `protocontroller_dead_s` contaba desde el
   último mensaje recibido, así que un flujo ocioso más de 60 s (SSH, el
   control de iperf) se reseteaba al mandar su siguiente byte. Ahora cuenta
@@ -182,6 +188,50 @@ primero el NACK, exacto por enlace. En la corrida de prueba: 24,8 → 33,5
 Mbit/s (Split TCP 33,2), sin colapso, 978 reenvíos (casi todos en los
 primeros 4 s, antes de conocer los retardos), ping p99 523 → 337 ms.
 
+## Lo probado y descartado después de `cell4`
+
+- **El alcance** (que GRIT tolere la cola que el reparto por ETA necesita
+  para llegar a los enlaces lentos, `ops.reach`): `reorder50` +35 / +52 %,
+  `het` +5 / +8 %, `idleslow` +8 / +16 %, pero el ping p99 subió (`reorder50`
+  278 → 412 y 255 → 466 ms) y `protect` de subida cayó 20 % con miles de
+  duplicados en las 6 corridas (`reach/`). Una cola permanente en el enlace
+  rápido es la herramienta equivocada: lo correcto es que el reparto mande
+  a los lentos una parte de los bytes de GRIT y que GRIT reordene.
+  Revertido.
+- **La dispersión supuesta al arrancar** (`reorder_max_wait_ms` mientras no
+  se conocen los retardos): `cell4` no duplica menos (1097 → 1452) y el ping
+  de `protect` de bajada sube (109 → 308 ms). Revertido.
+- **La cota del estimador** (fuera de STARTUP, una muestra no pasa de 3
+  veces la capacidad del motor; `protect` leyó 389 y 606 Mbit/s en enlaces
+  de 60 y 5): neutra en `cap/` (n = 6, nada significativo). Queda de
+  resguardo.
+
+## El búfer por conexión y los rangos del receptor
+
+El cambio de RAT (`ratswitch`, `ratsingle`: LTE 30/15 Mbit/s ↔ NR 180/60,
+búfer del operador de 3 MB de bajada) mostró a GRIT 15–31 % bajo el Split
+TCP (`rat/`). En NR no pasaba de ~120 Mbit/s: `protocontroller_buf_kb`
+(1 MB) sobre ~70 ms de ida y vuelta. Con 4 MB, en una corrida, 58 → 76
+Mbit/s. Subirlo por defecto destapó un error: con 2–4 MB la mayoría de las
+corridas de `equal` caía a 5–12 Mbit/s y una se colgó 35 minutos. El
+receptor guarda hasta 256 rangos fuera de orden y `cg_st_rx_add` los
+contaba con un cast a 8 bits: llenos, una fusión los dejaba en 0; lo
+recibido más allá del hueco quedaba sin registro, el emisor lo tenía
+confirmado por SACK y nunca lo reenviaba (en el registro: el segmento en
+`una` SACKED, enviado una sola vez). Corregido el conteo, y el emisor se
+recupera como TCP de un SACK «renegado»: un RTO que encuentra el segmento
+más viejo SACKED con el acumulado aún en él reenvía todo lo SACKED
+(`reneged` en el estado; el temporizador se arma también sin nada en
+vuelo). Con el arreglo, 64 de 64 corridas con 2–4 MB sin atascos y
+`reneged` 0 (`bufedge/`).
+
+Con el arreglo, 4 MB frente a 1 MB (`buf2/`, n = 6): `ratsingle` de bajada
+43 → 60 y `ratswitch` de bajada 52 → 60,5 Mbit/s (el Split TCP 63 y 60),
+pero `lossy` 97 / 100 → 90 / 93 con el ping p99 de 104–109 a 356–374 ms y
+~5000 duplicados, y `cell4` −2 a −4 % con más ping. El valor por defecto
+queda en 1 MB; lo correcto es un búfer que crezca solo cuando el flujo
+está limitado por la ventana y sin pérdida ni cola.
+
 ## El temporizador de flujo muerto
 
 `protocontroller_dead_s` (60) cierra un flujo con algo pendiente que no
@@ -257,10 +307,16 @@ bajada y `protect` de bajada.
 
 ## Pendiente
 
-- **Deshacer las pérdidas falsas:** un segmento que RACK dio por perdido y
-  que llega igual sigue contado dos veces en lo entregado (`cg_scc_lost`).
-  Con el horizonte casi no pasa, pero en el arranque (antes de conocer los
-  retardos) quedan ráfagas: `cell4` aún duplica ~1100–1300 por corrida.
+- **El búfer adaptativo:** crecer de 1 a 4 MB solo con el flujo limitado
+  por la ventana y sin pérdida ni cola (NR: +40 % en `ratsingle`; fijo,
+  triplica el ping de `lossy`).
+- **Reponerse con la capacidad del motor:** al caer de NR a LTE GRIT cortó
+  a 11,7 Mbit/s y tardó ~7 s en volver a 28, con el motor ya en ~35.
+- **La subida de `ratsingle`** (22 frente a 32 del Split TCP) no mejora con
+  el búfer: otro freno.
+- **Repartir los bytes de GRIT a los enlaces lentos** por su capacidad, sin
+  esperar la cola del rápido (`reorder50`, el alcance revertido).
+- **Las ráfagas del arranque** en `cell4` (~1100–1300 duplicados) siguen.
 - **`cell4`** queda a −4 % del Split TCP; **`reorder50`** de bajada a −16 %
   (51,7 frente a 61,3) y con más ping (390 frente a 141 ms); `het` de
   bajada −12 %; `protect` de bajada −11 % frente a `grit2` (no
@@ -283,3 +339,6 @@ bajada y `protect` de bajada.
   `cell4` como pendiente.
 - 2026-10-27: `cell4` analizado; la dispersión de los enlaces en el
   horizonte.
+- 2026-10-27: el alcance y la dispersión de arranque, probados y
+  revertidos; la cota del estimador; el cambio de RAT en el laboratorio;
+  el error de los 256 rangos y el SACK renegado; el búfer de 4 MB.

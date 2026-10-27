@@ -1524,7 +1524,8 @@ Despliegue:
   receptor le quita cuando llega al objetivo de cola, historia 028);
   `protocol` dice
   `GRIT` con la variante B. Los reenvíos por causa (`retx_by`: `rack`,
-  `rto`, `nack`), los NACK del rescate de los DATA propios (`nacks`: `lost`,
+  `rto`, `nack`), los RTO que hallaron un SACK renegado (`reneged`: el
+  receptor ya no tenía lo que dijo; se reenvía todo lo SACKED), los NACK del rescate de los DATA propios (`nacks`: `lost`,
   marcados perdidos; `delivered`, ya entregados; `stale`, de una copia
   vieja con otra en vuelo; `pending`, ya perdidos; `unknown`; `no_stream`;
   `acks`, de un ACK, contestados con uno nuevo; `lost_by_link` y
