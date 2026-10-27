@@ -214,6 +214,30 @@ void test_streamcc(void)
 	CHECK_EQ(cg_scc_reo_cap(50000, 0), 50000);
 	CHECK_EQ(cg_scc_reo_cap(50000, 30000), 50000);
 
+	/* past STARTUP, a rate sample is at most CG_SCC_HINT_MAX times the
+	 * engine's hint: 1 MB learnt in 10 ms on a path the engine sees at
+	 * 8 Mbit/s reads 24, not 800 (protect: 389 and 606 Mbit/s) */
+	{
+		struct cg_scc q;
+		uint64_t t = 1000000;
+
+		cg_scc_init(&q, 0);
+		q.mode = CG_SCC_PROBE_M;
+		q.min_rtt = 20000;
+		cg_scc_hint(&q, 1000000, 0);
+		q.sent = 2000000;
+		cg_scc_ack(&q, &c, t, 1000000, 1, 1, 0, t - 10000, 0, 0, t - 10000, 0);
+		CHECK(cg_scc_bw(&q) <= 3000000);
+		/* an idle link's small hint caps nothing */
+		cg_scc_init(&q, 0);
+		q.mode = CG_SCC_PROBE_M;
+		q.min_rtt = 20000;
+		cg_scc_hint(&q, 100000, 0);
+		q.sent = 2000000;
+		cg_scc_ack(&q, &c, t, 1000000, 1, 1, 0, t - 10000, 0, 0, t - 10000, 0);
+		CHECK(cg_scc_bw(&q) > 3000000);
+	}
+
 	/* the repair horizon (task #77): while a code sends repairs, RACK waits
 	 * for them and the NACK; without, the window duplicates widened; a
 	 * heavy loss takes the base back; never past a second */
