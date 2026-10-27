@@ -16,12 +16,14 @@ un «VPS»):
 El CI repite la prueba en cada cambio (`test/e2e.sh`). Falta probarlo en la
 Pi 4 y en un VPS reales. Decisiones en las historias
 [007](../docs/historias/007-openwrt-y-vps.md),
-[008](../docs/historias/008-luci-uci-y-emparejamiento.md) y
-[009](../docs/historias/009-recarga-control-e-ip-pass.md).
+[008](../docs/historias/008-luci-uci-y-emparejamiento.md),
+[009](../docs/historias/009-recarga-control-e-ip-pass.md),
+[014](../docs/historias/014-tunel-nativo.md) (el túnel propio) y
+[027](../docs/historias/027-adios-wireguard.md) (adiós a WireGuard).
 
 ```
 LAN ── router OpenWrt ══ enlace 1 ══╗
-       WireGuard wgcg   ══ enlace 2 ══╬══ VPS: cengarde → WireGuard cg-router → Internet
+       TUN cg0          ══ enlace 2 ══╬══ VPS: cengarde → TUN cg0 → Internet
        └→ cengarde      ══ enlace 3 ══╝   (cada paquete por todos; gana la primera copia)
 ```
 
@@ -49,7 +51,6 @@ ejecución más reciente → *Artifacts*.
 Es OpenWrt 25.12.5 oficial más:
 - cengarde y su página de LuCI;
 - LuCI en español;
-- WireGuard;
 - UPnP (miniupnpd y su página);
 - drivers de adaptadores Ethernet USB: Realtek r8152/r8153/r8156, ASIX
   AX88179 y CDC Ethernet (módems HiLink, tethering).
@@ -86,8 +87,10 @@ opkg update && opkg install /tmp/*cengarde*.ipk               # OpenWrt 24.10
 apk add miniupnpd-nftables luci-app-upnp                      # para IP pass (24.10: opkg install)
 ```
 
-Las dependencias salen de los repositorios oficiales: WireGuard
-(`wireguard-tools`, `kmod-wireguard`) y `luci-proto-wireguard`.
+Las dependencias salen de los repositorios oficiales: `kmod-tun` (el
+dispositivo del túnel) y `kmod-tcp-bbr`. Desde la 0.12 ya no hace falta
+WireGuard: un router que se actualiza puede quitar `wireguard-tools`,
+`kmod-wireguard` y `luci-proto-wireguard` si nada más los usa.
 `--allow-untrusted` hace falta porque los paquetes no vienen de un feed
 firmado (pendiente).
 
@@ -170,7 +173,7 @@ uci commit network && service network reload
 
    ```sh
    sudo cengarde-vps-setup list   # el router, su puerto y cuándo se le oyó
-   systemctl status cengarde wg-quick@cg-router cengarde-nat
+   systemctl status cengarde cengarde-nat
    tail /var/log/cloud-init-output.log
    sudo cengarde ctl status       # o: cengarde ctl links
    ```
@@ -180,10 +183,9 @@ uci commit network && service network reload
   y sin privilegios;
 - el router, importado una sola vez del secreto del cloud-config (que
   luego se borra) como `router` (o su `vps_name`): un archivo en
-  `/etc/cengarde/clients/` y su WireGuard, `cg-router`, solo para cengarde
-  (`127.0.0.1:65501`); los
-  puertos de WireGuard (65501–65532, uno por router) solo contestan en la
-  propia máquina, no desde Internet ni desde el túnel, tampoco por IPv6;
+  `/etc/cengarde/clients/`; el motor del VPS abre su propio TUN, `cg0`, con
+  la `10.79.0.1`, y a cada router le llega por ahí lo de su dirección en el
+  túnel (y solo puede mandar desde ella);
 - el túnel no llega al servicio de metadatos del proveedor
   (169.254.0.0/16), que guarda el secreto en el user data; el motor
   tampoco;
@@ -199,9 +201,8 @@ No desactiva SSH ni su cortafuegos: convive con ufw y con
 líneas añadir); firewalld no está soportado todavía y la instalación se
 detiene con un mensaje. Detalle en [`contrib/vps/`](../contrib/vps/):
 `install.sh` instala, `cengarde-vps-setup` lleva los routers y deriva sus
-claves del secreto, y `cengarde-nat` hace el cortafuegos. Sin WireGuard
-(experimental, sin cifrar): `sudo cengarde-vps-setup tunnel native`, ver
-[Túnel nativo](#túnel-nativo-experimental-sin-cifrar).
+claves del secreto, y `cengarde-nat` hace el cortafuegos. El túnel va
+autenticado pero sin cifrar: ver [El túnel](#el-túnel-autenticado-sin-cifrar).
 
 ### Nombre y dirección de cada router
 
@@ -210,10 +211,11 @@ en el túnel (el VPS es la `10.79.0.1`). Los dos van en la pestaña *VPS* de
 LuCI:
 - **Nombre** (`vps_name`): de 1 a 12 caracteres entre `a-z`, `0-9` y `-`, sin
   empezar por `-` y distinto de `default`; `router` si lo dejas vacío. En el
-  VPS es el archivo `/etc/cengarde/clients/NOMBRE` y su WireGuard `cg-NOMBRE`.
+  VPS es el archivo `/etc/cengarde/clients/NOMBRE` y su sección `[client
+  NOMBRE]` del motor.
 - **Dirección** (`tunnel_addr`): `10.79.X.Y`, de `10.79.0.2` a `10.79.255.254`.
   Vacía, sale del secreto (`cengarde keys`), así que dos routers no la
-  comparten sin que elijas nada. `wgcg` la lleva como `/32`, y cengarde
+  comparten sin que elijas nada. `cg0` la lleva como `/32`, y cengarde
   agrega la ruta a `10.79.0.1`, que un `/32` no trae, con o sin «enrutar todo».
 - **Un router anterior a la 0.5.2** conserva la `10.79.0.2`, la que su VPS ya
   conoce, y sigue funcionando al actualizar. Pasar a la derivada (vaciar el
@@ -242,7 +244,7 @@ detrás del router de tu operador, si le llega una IPv4 pública (no detrás
 de CGNAT):
 
 ```sh
-sudo apt-get install build-essential git iptables wireguard-tools conntrack
+sudo apt-get install build-essential git iptables conntrack
 sudo git clone https://github.com/KevinashoUWU/cengarde /opt/cengarde
 sudo git -C /opt/cengarde checkout COMMIT   # el del paquete del router (LuCI lo muestra)
 sudo sh /opt/cengarde/contrib/vps/install.sh
@@ -319,32 +321,33 @@ configuración del router:
 
 | Dónde | Qué | ¿Se deshace al desactivar? |
 | --- | --- | --- |
-| Red | interfaz `wgcg` (WireGuard) con las claves del secreto y la dirección del router en el túnel como `/32` (`tunnel_addr`, o la derivada del secreto); su par `cengarde_vps` apunta a cengarde en `127.0.0.1` | sí |
-| Rutas | `10.79.0.1/32` por `wgcg` (la sección `cengarde_vps_route`): el VPS dentro del túnel, también sin «enrutar todo» | sí |
-| Rutas | `0.0.0.0/1` y `128.0.0.0/1` por `wgcg`: le ganan a cualquier ruta por defecto sin borrarlas, y cada enlace conserva la suya para cengarde | sí |
-| Red | con «IPv6 por el túnel» (apagado por defecto): `wgcg` suma `fdXX:XXXX:XXXX::2/128` (la ULA sale del secreto), el par permite también `::/1` y `8000::/1`, y la ruta a `fdXX:XXXX:XXXX::1/128` por `wgcg` (la sección `cengarde_vps_route6`) | sí |
-| Rutas | con «IPv6 por el túnel» y «enrutar todo»: `::/1` y `8000::/1` por `wgcg` | sí |
-| Cortafuegos | con «IPv6 por el túnel»: un include de nftables (`cengarde_nat66`, que carga `/usr/share/cengarde/nat66.nft`) al comienzo de la cadena `srcnat`, que enmascara la IPv6 que sale por `wgcg` | sí |
+| Red | interfaz `cg0` (`proto static` sobre el dispositivo TUN `cg0`, que el motor crea al arrancar) con la dirección del router en el túnel como `/32` (`tunnel_addr`, o la derivada del secreto), el MTU y los DNS; netifd la levanta cuando aparece el dispositivo y la baja cuando el motor se detiene | sí |
+| Rutas | `10.79.0.1/32` por `cg0` (la sección `cengarde_vps_route`): el VPS dentro del túnel, también sin «enrutar todo» | sí |
+| Rutas | `0.0.0.0/1` y `128.0.0.0/1` por `cg0` (secciones `cengarde_route_all_*`): le ganan a cualquier ruta por defecto sin borrarlas, y cada enlace conserva la suya para cengarde | sí |
+| Red | con «IPv6 por el túnel» (apagado por defecto): `cg0` suma `fdXX:XXXX:XXXX::2/128` (la ULA sale del secreto) y la ruta a `fdXX:XXXX:XXXX::1/128` por `cg0` (la sección `cengarde_vps_route6`) | sí |
+| Rutas | con «IPv6 por el túnel» y «enrutar todo»: `::/1` y `8000::/1` por `cg0` (`cengarde_route6_all_*`) | sí |
+| Cortafuegos | con «IPv6 por el túnel»: un include de nftables (`cengarde_nat66`, que carga `/usr/share/cengarde/nat66.nft`) al comienzo de la cadena `srcnat`, que enmascara la IPv6 que sale por `cg0` | sí |
 | DHCP | con «IPv6 por el túnel» y «enrutar todo»: `ra_default 1` en la sección `lan` de `/etc/config/dhcp`, marcado con `cengarde_ra_default`, solo si no tenía valor | sí, solo lo que puso cengarde |
 | Enlaces | una métrica propia a cada uno (con la misma métrica, netifd deja una sola ruta por defecto) | no: no estorba |
 | Enlaces | `peerdns 0`: los DNS de la operadora irían por el VPS y suelen rechazarlo; se usan los IPv4 de la pestaña *Túnel*. El motor sí usa los de cada enlace, por ese enlace, para buscar el nombre del VPS (netifd los guarda como inactivos) | sí |
 | Enlaces | `<enlace>6`: DHCPv6 sobre el dispositivo del enlace, con `delegate 0` y `peerdns 0`, en la zona del enlace | sí |
 | Enlaces | con «enrutar todo»: `delegate 0` y `peerdns 0` en las interfaces IPv6 que no creó (`wan6`), y `delegate 0` en los enlaces PPP o de módem | sí |
-| Cortafuegos | `wgcg`, y los enlaces que no tengan zona, en la zona `wan` | `wgcg` sí, los enlaces no |
-| UPnP | con IP pass: miniupnpd sobre `wgcg`, con la IP del VPS como externa (o la que dé STUN) | sí |
+| Cortafuegos | `cg0`, y los enlaces que no tengan zona, en la zona `wan` | `cg0` sí, los enlaces no |
+| UPnP | con IP pass: miniupnpd sobre `cg0`, con la IP del VPS como externa (o la que dé STUN) | sí |
+| Motor | en `/var/etc/cengarde.conf`: `tunnel = native`, `tun = cg0`, `tun_addr` (las mismas direcciones) y `tun_mtu` (el MTU del túnel); el motor las pone en su TUN antes de que netifd lo vea | — |
 
 **Otros detalles:**
 - **Los cambios posteriores no cortan el túnel:** el motor los aplica en
   marcha, con la misma sesión. Solo el secreto, el puerto y las perillas de
   CPU lo reinician, en el lugar y en menos de un segundo. Cambiar la
-  dirección del túnel, «enrutar todo» o «IPv6 por el túnel» reinicia además
-  la interfaz `wgcg` (netifd no ve esos cambios): un corte breve mientras
-  WireGuard rehace el handshake.
+  dirección del túnel o «IPv6 por el túnel» le cambia además las
+  direcciones a `cg0`.
 - **Sin dirección del VPS o sin enlaces** no se crea el túnel, para no
   dejar el router sin salida.
-- **MTU del túnel:** 1380 por defecto; como mucho 1416 sobre IPv4 y 1396
-  si hay una dirección IPv6 del VPS (en caminos de 1500 bytes). Si el
-  camino de un enlace es más chico, el estado lo avisa.
+- **MTU del túnel:** 1380 por defecto; como mucho 1448 sobre IPv4 y 1428
+  si hay una dirección IPv6 del VPS (en caminos de 1500 bytes: IP, UDP y
+  los 24 bytes de cengarde). Si el camino de un enlace es más chico, el
+  estado lo avisa.
 - **DNS de la pestaña Túnel:** solo los IPv4 van por el túnel; los IPv6 se
   dejan fuera, también con «IPv6 por el túnel» (por ahora).
 - **Desinstalar** el paquete también lo deshace todo.
@@ -377,12 +380,12 @@ configuración del router:
   - *Reordenar en el receptor* (`reorder`, activado): el extremo que recibe
     retiene un paquete que llega antes que otro que falta, hasta que llegue
     el que falta o hasta la *espera máxima* (`reorder_max_wait_ms`, 200 ms;
-    menos si el enlace más lento ya lo habría entregado), y los entrega a
-    WireGuard en orden. El VPS hace lo mismo con lo que recibe. Mientras cada
+    menos si el enlace más lento ya lo habría entregado), y los entrega en
+    orden. El VPS hace lo mismo con lo que recibe. Mientras cada
     paquete va por todos los enlaces no retiene nada, así que el orden de
-    entrega es el de siempre. Los handshakes y los paquetes de hasta
-    *Paquetes que nunca se retienen* (`reorder_bypass`, 128 bytes:
-    keepalives, ACK vacíos) se entregan sin esperar. Sin interfaz quedan
+    entrega es el de siempre. Los paquetes de hasta
+    *Paquetes que nunca se retienen* (`reorder_bypass`, 128 bytes: ACK
+    vacíos) se entregan sin esperar. Sin interfaz quedan
     `reorder_dup_wait_ms`, `reorder_margin_ms` y `reorder_pool_kb` (este
     reinicia el motor al cambiarlo): ver `engine/README.md`.
   - *Repartir los paquetes grandes entre los enlaces (experimental)*
@@ -404,7 +407,7 @@ configuración del router:
     gobernador): mientras está
     fuera lleva una copia de todos los paquetes, y si quedan menos de dos
     en el reparto todo va por todos. Desactivado, lleva solo lo que va por
-    todos (handshakes y paquetes chicos) y, si queda uno solo en el
+    todos (los paquetes chicos) y, si queda uno solo en el
     reparto, ese lleva todo: en terreno las copias llenaban aún más la cola
     del enlace que ya iba atrasado, y en el laboratorio ayudaron a QUIC
     (historia 012), así que está para probar las dos cosas en campo. El VPS
@@ -452,7 +455,7 @@ configuración del router:
 
 *Servicios → cengarde → Estado* se actualiza cada 3 s:
 - **Servicio:** si está en marcha.
-- **Túnel WireGuard:** último handshake.
+- **Túnel (sin cifrar):** conectado mientras algún enlace está vivo.
 - **IP pass:** activo en el VPS, desactivado, o esperando que el VPS lo
   confirme.
 - **Nombre del VPS** (si pusiste uno): su IP y hace cuánto respondió el DNS,
@@ -497,8 +500,8 @@ cengarde-setup status         # lo mismo que la página, en JSON
 cengarde ctl links            # cada interfaz y por qué lleva el túnel o no
 cengarde ctl link eth3 off    # pausar un enlace; "auto" lo reanuda
 logread -e cengarde           # "link eth1.10 (wom) up ..." por enlace
-wg show wgcg                  # handshake con el VPS
-ping -c 3 10.79.0.1           # el VPS a través del túnel
+ifstatus cg0                  # la interfaz del túnel ("up": true)
+ping -c 3 -I cg0 10.79.0.1    # el VPS a través del túnel
 ```
 
 ### Registrar los enlaces durante días
@@ -520,7 +523,8 @@ tarde o no llegaron por todos a la vez (a 50, 100 y 150 ms de la primera
 copia), frente a lo que daría la independencia, y qué par conviene duplicar
 (el de menor tardanza conjunta, que no siempre es el de menor tardanza
 individual). También da la pérdida del túnel (paquetes que no llegaron por
-ningún enlace) y los tamaños de los datagramas de WireGuard. Con el
+ningún enlace) y, en grabaciones de motores hasta la 0.11, los tamaños de
+los datagramas de WireGuard. Con el
 reordenador del receptor (campo `reorder` del estado) suma la sección
 *Reordenamiento*: cuántos paquetes retuvo, cuántos faltantes dio por perdidos
 (por el plazo o por falta de lugar) y cuántos llegaron después, cuánto esperó
@@ -623,7 +627,7 @@ de reparación** (historia 026):
   llena la cola ni en un corte; *Siempre*, *Nunca*.
 
 La pestaña *Funciones de capa 4* tiene el protocontrolador (abajo) y el
-**túnel consciente de TCP** (`tcp_aware`, solo nativo): los ACK del TCP de
+**túnel consciente de TCP** (`tcp_aware`): los ACK del TCP de
 adentro no esperan detrás de un hueco, y una retransmisión de TCP se copia
 por todos los enlaces solo si el túnel perdió el original en todos.
 
@@ -631,7 +635,7 @@ por todos los enlaces solo si el túnel perdió el original en todos.
 
 **En el VPS:** el TCP y el UDP de los puertos 1024–65000 que llegan a su IP
 se reenvían al router, con la IP de origen intacta. Nunca se reenvían el
-puerto de cengarde, los de WireGuard, el SSH ni lo que escucha el propio
+puerto de cengarde, el SSH ni lo que escucha el propio
 servidor o publica Docker; `sudo cengarde-vps-setup forward` los lista con
 su motivo. Los puertos reenviados también funcionan desde la propia LAN,
 por la IP del VPS.
@@ -682,15 +686,15 @@ real.
 
 **En el router** (pestaña *Túnel*, *IPv6 por el túnel*; `tunnel_ipv6 '1'`),
 cengarde mantiene:
-- en `wgcg`, una dirección ULA, `fdXX:XXXX:XXXX::2/128`; el VPS tiene la
-  `::1` del mismo prefijo. El prefijo sale del secreto (`cengarde keys` lo
-  imprime como `CG_TUNNEL_ULA`): no hay nada que elegir ni que repetir en el
-  VPS;
-- la ruta a esa `::1` por `wgcg`, que una `/128` no trae sola;
-- `::/1` y `8000::/1` entre las IP permitidas del par, así que con «enrutar
-  todo» toda la IPv6 va por `wgcg`;
+- en `cg0` (y en el `tun_addr` del motor), una dirección ULA,
+  `fdXX:XXXX:XXXX::2/128`; el VPS tiene la `::1` del mismo prefijo. El
+  prefijo sale del secreto (`cengarde keys` lo imprime como
+  `CG_TUNNEL_ULA`): no hay nada que elegir ni que repetir en el VPS;
+- la ruta a esa `::1` por `cg0`, que una `/128` no trae sola;
+- con «enrutar todo», `::/1` y `8000::/1` por `cg0`
+  (`cengarde_route6_all_*`), así que toda la IPv6 va por el túnel;
 - un include de firewall4 (`nat66.nft`) que enmascara la IPv6 que sale por
-  `wgcg`;
+  `cg0`;
 - con «enrutar todo», `ra_default 1` en la sección `lan` de
   `/etc/config/dhcp`, para que odhcpd anuncie una ruta por defecto a una LAN
   que solo tiene su ULA. Solo si no tenía valor: un `ra_default` tuyo se
@@ -704,11 +708,11 @@ en el router y luego en el VPS.
 **Encenderla:** el VPS tiene que tener IPv6 propia (la que da el
 proveedor; ver el paso 2 de la sección 3). Luego, en los dos extremos:
 1. **En el VPS:** `sudo cengarde-vps-setup ipv6 on` (se niega si el VPS no
-   tiene IPv6; reinicia el WireGuard de cada router, un corte breve). Un VPS
+   tiene IPv6). Un VPS
    nuevo no lo necesita: el cloud-config de LuCI sigue el interruptor
    (`TUNNEL_IPV6=yes` cuando el router tiene también «enrutar todo»).
 2. **En el router:** LuCI, *Túnel* → *IPv6 por el túnel*, y *Guardar y
-   aplicar*. `wgcg` se reinicia (un corte breve). Por consola:
+   aplicar*. Por consola:
    `uci set cengarde.main.tunnel_ipv6=1 && uci commit cengarde &&
    /etc/init.d/cengarde reload`.
 
@@ -722,7 +726,7 @@ proveedor; ver el paso 2 de la sección 3). Luego, en los dos extremos:
   tienen IPv6; no es un fallo.
 - **El estado** muestra la dirección IPv6 en el túnel; `cengarde-setup
   status` la da como `tunnel_ula`, y `tunnel_ipv6` dice si está encendido.
-- **Apagarla:** en el router, el interruptor: `wgcg` pierde la dirección, el
+- **Apagarla:** en el router, el interruptor: `cg0` pierde la dirección, el
   cortafuegos el include y la LAN el `ra_default` que cengarde puso. En el
   VPS, `sudo cengarde-vps-setup ipv6 off`.
 - **Lo que cubre `test/e2e.sh`** (QEMU): la dirección, la ruta y un ping al
@@ -731,98 +735,53 @@ proveedor; ver el paso 2 de la sección 3). Luego, en los dos extremos:
   cubre la salida a Internet por IPv6, que pide hardware real y un VPS con
   IPv6.
 
-## Túnel nativo (experimental, sin cifrar)
+## El túnel (autenticado, sin cifrar)
 
-Por omisión el túnel es WireGuard (`wgcg`) y cengarde lleva sus datagramas
-cifrados. Con el **modo nativo** no hay WireGuard: el motor de cada extremo
-abre un dispositivo TUN propio, `cg0`, y lleva los paquetes IP tal cual,
-con la autenticación de siempre (MAC y anti-replay con las claves del
-secreto). **No cifra:** las operadoras ven el tráfico (IP, puertos, SNI);
-solo impide que alguien inyecte o repita paquetes. Sirve para que cengarde
-vea los flujos (historia 014); el cifrado llegará después como opción.
+El motor de cada extremo abre un dispositivo TUN propio, `cg0`, y lleva los
+paquetes IP tal cual, con la autenticación de siempre (MAC y anti-replay con
+las claves del secreto). **No cifra:** las operadoras ven el tráfico (IP,
+puertos, SNI); solo impide que alguien inyecte o repita paquetes. Así
+cengarde ve los flujos (historia 014); el cifrado llegará después como
+opción. Hasta la 0.11 había además un modo WireGuard (`wgcg`, cifrado por
+WireGuard), que la 0.12 quitó (historia 027).
 
-**Todo el VPS va en un modo:** el servidor tiene un solo motor, así que
-todos los routers de un VPS usan WireGuard o todos el nativo.
+**En el router** cengarde mantiene la interfaz `cg0` y sus rutas (ver la
+tabla de la sección 4). Necesita `kmod-tun`, que el paquete trae como
+dependencia (la Pi no lo tenía instalado).
 
-**En el router** (pestaña *Túnel*, *Modo del túnel*; `tunnel_mode
-'native'`), cengarde mantiene, en lugar de `wgcg` y su par:
-- una interfaz `cg0` (`proto static` sobre el dispositivo `cg0`, que el
-  motor crea al arrancar) con la misma dirección `/32`, el mismo MTU y los
-  mismos DNS. netifd la levanta cuando aparece el dispositivo y la baja
-  cuando el motor se detiene; al volver, le pone otra vez direcciones y
-  rutas;
-- la ruta a `10.79.0.1` por `cg0` y, con «enrutar todo», `0.0.0.0/1` y
-  `128.0.0.0/1` (secciones `cengarde_route_all_*`), lo que en WireGuard
-  daban las IP permitidas del par;
-- con *IPv6 por el túnel*, la ULA `::2/128` en `cg0`, la ruta a `::1` y
-  `::/1` y `8000::/1` (`cengarde_route6_all_*`); el NAT66 cubre `cg0`;
-- `cg0` en la zona `wan`, y como interfaz externa de UPnP con IP pass;
-- en el motor, `tunnel = native`, `tun = cg0`, `tun_addr` (las mismas
-  direcciones) y `tun_mtu` (el MTU del túnel).
+**En el VPS** `cengarde-vps-setup` escribe en la configuración del motor
+`tunnel = native`, `tun = cg0`, `tun_addr = 10.79.0.1/16` (más `fd79::1/8`
+con `ipv6 on`, que cubre la ULA de cada router) y, en cada `[client
+NOMBRE]`, `tun_route` con la dirección del router en el túnel (y su ULA
+`::2` con IPv6): por ahí le llega lo suyo y solo puede mandar desde ahí.
+`cengarde-nat` escribe sus reglas sobre `cg0`: NAT, reenvío de puertos e IP
+pass a la dirección del router, sin llegar a los metadatos ni de un router a
+otro. Detalle en [`contrib/vps/`](../contrib/vps/).
 
-Necesita `kmod-tun`, que el paquete trae como dependencia (la Pi no lo
-tenía instalado).
-
-**En el VPS:** `sudo cengarde-vps-setup tunnel native`:
-- escribe `TUNNEL="native"` en `/etc/cengarde/nat.conf`;
-- en la configuración del motor, `tunnel = native`, `tun = cg0`,
-  `tun_addr = 10.79.0.1/16` (más `fd79::1/8` con `ipv6 on`, que cubre la ULA
-  de cada router) y, en cada `[client NOMBRE]`, `tun_route` con la dirección
-  del router en el túnel (y su ULA `::2` con IPv6): por ahí le llega lo suyo
-  y solo puede mandar desde ahí;
-- un drop-in de systemd (`cengarde.service.d/native.conf`) que deja al motor
-  abrir `/dev/net/tun` (su unidad tiene `PrivateDevices=yes`) y ningún otro
-  dispositivo; por eso **reinicia el motor**: todos los routers ven un corte
-  de unos segundos;
-- después baja el WireGuard de cada router (`cg-NOMBRE`): su ruta al router
-  le ganaría a la del TUN;
-- `cengarde-nat` escribe las mismas reglas con `cg0` en lugar de `cg-*`:
-  NAT, reenvío de puertos e IP pass a la dirección del router, sin llegar a
-  los metadatos ni de un router a otro.
-
-Un VPS nuevo no necesita el comando: el cloud-config de LuCI lleva
-`TUNNEL=native` cuando el router está en modo nativo.
-
-**Pasar un router y su VPS al modo nativo:**
-1. En el router, actualizar a un paquete con esta versión (0.8.1 o
-   posterior), que instala `kmod-tun`.
-2. En el VPS, actualizar al mismo commit (`git -C /opt/cengarde fetch
-   --depth 1 https://github.com/KevinashoUWU/cengarde COMMIT && git -C
-   /opt/cengarde checkout FETCH_HEAD && sudo sh
-   /opt/cengarde/contrib/vps/install.sh`) y luego `sudo cengarde-vps-setup
-   tunnel native`. Desde aquí los routers en WireGuard quedan sin túnel.
-3. En el router, LuCI: *Túnel* → *Modo del túnel* → *Nativo*, *Guardar y
-   aplicar*. Por consola: `uci set cengarde.main.tunnel_mode=native && uci
-   commit cengarde && /etc/init.d/cengarde reload`.
-4. Comprobar: `ifstatus cg0` (`"up": true`), `ip route | grep cg0`, `ping
-   -I cg0 10.79.0.1`; en el VPS, `sudo cengarde ctl status` (`"tunnel":
-   "native"`) y `sudo cengarde-nat status`.
-
-**Volver a WireGuard:** en el VPS, `sudo cengarde-vps-setup tunnel
-wireguard` (vuelven los `cg-NOMBRE`, se va el drop-in, el motor se
-reinicia); en el router, *Modo del túnel* → *WireGuard* (o `uci set
-cengarde.main.tunnel_mode=wireguard && uci commit cengarde &&
-/etc/init.d/cengarde reload`): `cg0` y sus rutas se van y `wgcg` vuelve
-como estaba. En el modo WireGuard nada cambia respecto de antes.
+**Actualizar desde un router en modo WireGuard (0.11 o anterior):** router
+y VPS se actualizan juntos, primero el VPS (como en cada versión: ver
+*Actualizar* en [Problemas conocidos](#problemas-conocidos)). Al instalarse,
+el paquete del router borra la opción `tunnel_mode` y las secciones `wgcg` y
+`cengarde_vps` de la red; el primer `cengarde-setup apply` (al arrancar el
+servicio) saca `wgcg` de la zona `wan` y de UPnP y deja `cg0` en su lugar,
+con la misma dirección, el mismo MTU y las mismas rutas. Un motor 0.12
+rechaza una configuración escrita a mano con `tunnel = wireguard`,
+`wireguard`, `wireguard_poke`, `wireguard_port_file` o, en el router,
+`listen`, y dice que se usa el túnel propio.
 
 **Conviene saber:**
-- **El MTU** es el mismo ajuste (*MTU del túnel*, 1380 por omisión). Sin
-  WireGuard cada paquete lleva 32 bytes menos, así que cabría más (hasta
-  1448 por IPv4 y 1428 por IPv6 en un camino de 1500), pero LuCI sigue
-  aceptando hasta 1416.
-- **El estado** dice *Túnel nativo (sin cifrar)*: conectado mientras algún
-  enlace está vivo (no hay handshakes que mirar); `cengarde-setup status`
-  da `"tunnel_mode":"native"`.
-- **Lo que cubre `test/e2e.sh`** (QEMU): el paso de los dos extremos a
-  nativo, `cg0` con su dirección y rutas, ping sin pérdidas por el TUN, un
-  reinicio del motor (netifd devuelve dirección y rutas), IPv6 dentro y la
-  vuelta a WireGuard sin restos. `contrib/vps/test` cubre el VPS
-  (`setup-dryrun.sh`, `nat-rules.sh`). No está probado todavía en la Pi ni
-  en Vultr.
+- **El estado** dice *Túnel (sin cifrar)*: conectado mientras algún enlace
+  está vivo; `cengarde-setup status` da los bytes de `cg0` en `tunnel`.
+- **Lo que cubre `test/e2e.sh`** (QEMU): `cg0` con su dirección y rutas,
+  ping sin pérdidas por el TUN, un reinicio del motor (netifd devuelve
+  dirección y rutas), IPv6 dentro, y lo que dejaba una versión con WireGuard
+  (`wgcg`, su par, `tunnel_mode`, la zona y UPnP) se va al aplicar.
+  `contrib/vps/test` cubre el VPS (`setup-dryrun.sh`, `nat-rules.sh`). No
+  está probado todavía en la Pi ni en Vultr.
 
-## Protocontrolador (TCP partido, con el túnel nativo)
+## Protocontrolador (TCP partido)
 
-Con el túnel nativo, el router puede responder él mismo el TCP de la LAN y
+El router puede responder él mismo el TCP de la LAN y
 el VPS abrir uno nuevo hacia cada destino (historia 025): el TCP de la LAN
 ya no siente la pérdida ni el retardo de los enlaces, y el tramo del VPS al
 destino (cubic, BBR en cuanto pierde) tampoco los del túnel. Ayuda a las
@@ -836,8 +795,8 @@ QUIC y lo demás van por el túnel como siempre. Dos variantes:
   propio de cengarde, dosificado por lo que llevan los enlaces y no por la
   pérdida.
 
-**En el router** (pestaña *Funciones de capa 4*, *Protocontrolador*, solo en modo
-nativo): `cengarde-setup` escribe `/etc/cengarde/protoctl.nft`, un include
+**En el router** (pestaña *Funciones de capa 4*, *Protocontrolador*, con
+«Gestionar el túnel»): `cengarde-setup` escribe `/etc/cengarde/protoctl.nft`, un include
 de firewall4 (`cengarde_protoctl`, una cadena propia justo antes de la
 `dstnat` de fw4) que redirige al motor (puerto 7801) el TCP que entra por la
 zona `lan` hacia `protocontroller_port` (vacío: todos los puertos) y
@@ -846,8 +805,8 @@ del propio router. El motor recibe `protocontroller = a|b` y, para A, la
 dirección del VPS en el túnel (`protocontroller_vps = 10.79.0.1`: la del
 router es una `/32`). Un cambio reinicia el motor.
 
-**En el VPS:** `sudo cengarde-vps-setup protocontroller on` (necesita
-`tunnel native`): `protocontroller = b` en el motor (acepta A y B),
+**En el VPS:** `sudo cengarde-vps-setup protocontroller on`:
+`protocontroller = b` en el motor (acepta A y B),
 `PROTOCONTROLLER="yes"` en `nat.conf` (abre el TCP 7801 desde `cg0` para la
 variante A) y `tcp_bbr` al arrancar. `protocontroller off` lo quita; un
 router que siga con A o B ve entonces sus conexiones rehusadas.
@@ -895,25 +854,19 @@ cengarde-setup cloud-config > vps.yaml               # el user data del VPS
   reserved / private address».
 - **Un router sin reloj con batería (Raspberry Pi):** arranca con la hora de
   la imagen, o la del último cambio en `/etc`, hasta que el NTP la corrige
-  por el túnel.
-  - Por eso el estado puede mostrar un handshake «anterior al ajuste de la
-    hora»: el siguiente, en unos dos minutos con tráfico, muestra su
-    antigüedad real.
-  - Antes de la 0.4.4, en el VPS: si el router se reinicia con la hora
-    atrasada, WireGuard ignora sus handshakes (son más viejos que el último
-    que aceptó) y el túnel no vuelve («esperando al VPS»). Se destraba con
-    *Sistema → Sistema → Sincronizar con el navegador* en LuCI, o en el VPS
-    con `systemctl restart wg-quick@wg0`. Desde la 0.4.4, el VPS lo
-    destraba solo en menos de un minuto (35–38 s medidos en QEMU; historia
-    002).
+  por el túnel. Al túnel no le importa: desde la 0.12 no hay handshakes de
+  WireGuard que una hora atrasada pudiera hacer ignorar (historias 002 y
+  027).
 - **Cambiar el secreto:** en el VPS, `sudo cengarde-vps-setup add NOMBRE
   --replace` y pega el nuevo; el router se corta un momento. Si su dirección
   en el túnel sale del secreto, cambia con él: guarda y aplica en LuCI y usa
   el comando que muestra (lleva la nueva `--tunnel-addr`). La ULA de la IPv6
   por el túnel sale siempre del secreto y cambia también.
-- **Actualizar:** router y VPS con el mismo commit. El protocolo es ahora
-  el v5 (el enlace anterior en cada paquete de datos y el NACK del rescate):
-  un router y un VPS de protocolos distintos no se hablan, así que se
+- **Actualizar:** router y VPS con el mismo commit. La 0.12 quita el modo
+  WireGuard (historia 027): un router en ese modo pasa solo al túnel propio
+  al actualizarse (ver [El túnel](#el-túnel-autenticado-sin-cifrar)). El
+  protocolo es ahora el v5 (el enlace anterior en cada paquete de datos y
+  el NACK del rescate): un router y un VPS de protocolos distintos no se hablan, así que se
   actualizan juntos, primero el VPS. `cengarde-vps-setup add` se niega si el
   protocolo del router (`--proto`) no es el del motor del VPS. La 0.5.3 no
   cambia el
@@ -1003,10 +956,13 @@ comprueba el flujo completo:
 - enlaces por DHCP;
 - configuración solo desde LuCI;
 - túnel arriba, e IP pass confirmado por el VPS;
-- la dirección del router en el túnel, derivada del secreto: `wgcg` con su
-  `/32`, el estado y el cloud-config con el nombre y la dirección, una
-  `tunnel_addr` inválida rechazada, y la ruta a `10.79.0.1` que sigue
-  llevando por `wgcg` sin «enrutar todo»;
+- la dirección del router en el túnel, derivada del secreto: `cg0` con su
+  `/32` y sus rutas, el motor con `tunnel = native`, el estado y el
+  cloud-config con el nombre y la dirección, una `tunnel_addr` inválida
+  rechazada, y la ruta a `10.79.0.1` que sigue llevando por `cg0` sin
+  «enrutar todo»;
+- lo que dejaba una versión con WireGuard (`wgcg`, su par, `tunnel_mode`)
+  se va al aplicar, sin cortar el túnel;
 - compañeras IPv6 `<enlace>6` y `delegate 0` en un enlace PPPoE;
 - IPv6 hasta el VPS: cada enlace sale desde su dirección global (no la
   ULA), el VPS contesta desde la suya (`*`), el aviso de MTU de un camino

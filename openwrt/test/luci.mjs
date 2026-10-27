@@ -397,7 +397,7 @@ try {
 		await page.waitForTimeout(3000);
 	}
 	await shot('05-status');
-	check(connected, 'the WireGuard tunnel is connected');
+	check(connected, 'the tunnel is connected');
 	check(rows === UPLINKS.length, `all ${UPLINKS.length} uplinks active (got ${rows})`);
 	check(await page.locator('table.cengarde-links th:text-is("Subida")').count() === 1 &&
 		await page.locator('table.cengarde-links th:text-is("Bajada")').count() === 1,

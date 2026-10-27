@@ -3,9 +3,8 @@
 # script runs "apply" on every start and reload; LuCI reads "status" and
 # "cloud-config".
 #
-#   cengarde-setup apply          tunnel interface (WireGuard, or the engine's
-#                                 own TUN), firewall, uplinks, UPnP, IPv6 in
-#                                 the tunnel
+#   cengarde-setup apply          tunnel interface (the engine's own TUN),
+#                                 firewall, uplinks, UPnP, IPv6 in the tunnel
 #   cengarde-setup disable        undo what apply set up
 #   cengarde-setup engine-conf    print the engine configuration, with each
 #                                 uplink's DNS servers (resolver) for the
@@ -20,14 +19,18 @@
 #
 # What apply maintains while cengarde is enabled with tunnel = 1, once the
 # VPS addresses and at least one uplink are set (metrics also before that):
-# - network: interface "wgcg" (WireGuard) with the keys derived from the
-#   secret and this router's address in the tunnel as a /32 (tunnel_addr, or
-#   the one derived from the secret), and its peer "cengarde_vps" reached
-#   through cengarde on 127.0.0.1; a route to the VPS end of the tunnel,
-#   10.79.0.1, through it, which a /32 has no connected route for; with
-#   route_all, 0.0.0.0/1 and 128.0.0.0/1 through it (more specific than any
-#   default route, which the uplinks keep for cengarde); wgcg is restarted
-#   when its address or its peer change, which netifd may not notice;
+# - network: interface "cg0" on the engine's TUN device cg0 (proto static,
+#   which netifd takes over when the engine creates the device and lets go
+#   when the engine stops), with this router's address in the tunnel as a
+#   /32 (tunnel_addr, or the one derived from the secret), the MTU and the
+#   DNS servers; a route to the VPS end of the tunnel, 10.79.0.1, through it,
+#   which a /32 has no connected route for; with route_all, 0.0.0.0/1 and
+#   128.0.0.0/1 through it (cengarde_route_all_*: more specific than any
+#   default route, which the uplinks keep for cengarde). The engine carries
+#   the IP packets itself, authenticated but not encrypted, and sets the same
+#   addresses (tun_addr) and MTU (tun_mtu) on its TUN. What a WireGuard
+#   release left (the interface wgcg, its peer cengarde_vps, wgcg in the wan
+#   zone or in UPnP) goes on the first apply;
 # - each uplink: a metric of its own (two default routes with the same metric
 #   replace each other) and peerdns 0 (carrier DNS servers would be reached
 #   through the VPS and usually refuse); "dns" goes on the tunnel instead,
@@ -45,14 +48,14 @@
 #   delegate 0 on the uplinks that are not DHCP (PPP, qmi, mbim and ncm pass
 #   it on to the IPv6 interface they create): otherwise the LAN gets their
 #   prefix and its IPv6 goes around the tunnel;
-# - firewall: wgcg, and uplinks that have no zone yet, in the wan zone
+# - firewall: cg0, and uplinks that have no zone yet, in the wan zone
 #   (masquerade, inbound rejected);
 # - with tunnel_ipv6 (off by default; it needs a valid secret), IPv6 inside
-#   the tunnel: wgcg also holds ${CG_TUNNEL_ULA}::2/128, in the ULA prefix
+#   the tunnel: cg0 also holds ${CG_TUNNEL_ULA}::2/128, in the ULA prefix
 #   derived from the secret (cengarde keys; ::1 of it is the VPS end), with
-#   a route6 to that end like the IPv4 one (cengarde_vps_route6); the peer
-#   also allows ::/1 and 8000::/1, so with route_all all the IPv6 goes
-#   through wgcg; and a firewall4 include (nat66.nft, first in srcnat)
+#   a route6 to that end like the IPv4 one (cengarde_vps_route6); with
+#   route_all, ::/1 and 8000::/1 through cg0 too (cengarde_route6_all_*), so
+#   all the IPv6 goes through it; and a firewall4 include (nat66.nft, first in srcnat)
 #   masquerades IPv6 into the tunnel. NAT66 because the VPS provider routes
 #   no prefix to the VPS (one address, or a /64 on its own interface), so
 #   the LAN has nothing to send from but its ULA; and RFC 6724 makes a LAN
@@ -63,23 +66,11 @@
 #   (network.globals.ula_prefix): ra_default 1 on dhcp.lan, unless it has a
 #   value already. The VPS end is switched on at the VPS (cengarde-vps-setup
 #   ipv6 on, or the cloud-config's TUNNEL_IPV6, which follows tunnel_ipv6);
-# - with ip_pass, miniupnpd with wgcg as its external interface and the first
+# - with ip_pass, miniupnpd with cg0 as its external interface and the first
 #   IPv4 of the VPS addresses as the external IP (without one, STUN with
 #   stun_host); the engine asks the VPS to forward its ports (and to stop
 #   when ip_pass goes off);
-# - with tunnel_mode native (experimental; the VPS has to be native too:
-#   cengarde-vps-setup tunnel native), no WireGuard: the engine carries the
-#   IP packets itself through a TUN device of its own, cg0, authenticated
-#   but not encrypted. Instead of wgcg and its peer: an interface "cg0"
-#   (proto static on the device cg0, which netifd takes over when the engine
-#   creates it, and lets go when the engine stops) with the same addresses,
-#   MTU and DNS servers, the same routes to the VPS end, and with route_all
-#   the /1 routes (cengarde_route_all_*, and cengarde_route6_all_* with
-#   IPv6) that the peer's allowed IPs give wgcg; cg0 takes wgcg's place in
-#   the wan zone, in UPnP and in the NAT66 include. The engine sets the same
-#   addresses (tun_addr) and MTU (tun_mtu) itself. Back to wireguard, cg0
-#   and its routes go and wgcg comes back as it was.
-# - with protocontroller a or b (story 025; tunnel_mode native only): the
+# - with protocontroller a or b (story 025): the
 #   engine listens on PCTL_LISTEN and a firewall4 include (PCTL_FILE, written
 #   here from protocontroller_port and protocontroller_dest: a chain of its
 #   own in fw4's table, cengarde_protoctl, hooked just before fw4's dstnat)
@@ -97,14 +88,14 @@
 . /lib/functions/network.sh
 set -f
 
-WG_TUN=wgcg    # the WireGuard interface (tunnel_mode wireguard)
-NATIVE_TUN=cg0 # the engine's TUN, device and interface (tunnel_mode native)
-TUN=$WG_TUN    # the one in use (load)
-OTHER_TUN=$NATIVE_TUN
-PEER=cengarde_vps
+TUN=cg0 # the engine's TUN, device and interface
+# What a WireGuard release (up to 0.11) kept: its interface and its peer,
+# dropped on every apply and disable (story 027).
+OLD_TUN=wgcg
+OLD_PEER=cengarde_vps
 ROUTE=cengarde_vps_route
 ROUTE6=cengarde_vps_route6
-# Native mode with route_all: what the peer's allowed IPs route on wgcg.
+# With route_all: the /1 routes through cg0.
 ALL_ROUTES="cengarde_route_all_lo=0.0.0.0/1 cengarde_route_all_hi=128.0.0.0/1"
 ALL_ROUTES6="cengarde_route6_all_lo=::/1 cengarde_route6_all_hi=8000::/1"
 NAT66=cengarde_nat66
@@ -118,7 +109,6 @@ CLOUD_CONFIG=/usr/share/cengarde/cloud-config.yaml
 STATUS_FILE=/var/run/cengarde.json
 CONTROL_SOCKET=/var/run/cengarde/cengarde.sock # cengarde ctl's default
 CHANGED=
-RESTART_TUN=
 
 log() { logger -t cengarde-setup "$*"; }
 
@@ -252,8 +242,6 @@ load() {
 	config_get DNS main dns "$DEFAULT_DNS"
 	config_get UPLINKS main uplink
 	config_get LOG_LEVEL main log_level info
-	# wireguard (wgcg), or native (the engine's own TUN); only with tunnel 1.
-	config_get TUNNEL_MODE main tunnel_mode wireguard
 	# the protocontroller: no, a or b (story 025)
 	config_get PCTL_MODE main protocontroller no
 	case "$PCTL_MODE" in
@@ -263,18 +251,6 @@ load() {
 	esac
 	config_get PCTL_PORTS main protocontroller_port
 	config_get PCTL_DEST main protocontroller_dest
-	MODE_OK=1
-	case "$TUNNEL_MODE" in
-	wireguard | native) ;;
-	*) MODE_OK=0 ;;
-	esac
-	NATIVE=0
-	[ "$TUNNEL" = 1 ] && [ "$MODE_OK" = 1 ] && [ "$TUNNEL_MODE" = native ] && NATIVE=1
-	if [ "$NATIVE" = 1 ]; then
-		TUN=$NATIVE_TUN OTHER_TUN=$WG_TUN
-	else
-		TUN=$WG_TUN OTHER_TUN=$NATIVE_TUN
-	fi
 	# IP pass needs the tunnel to carry everything: replies go back through it.
 	PASS=no
 	[ "$IP_PASS" = 1 ] && [ "$TUNNEL" = 1 ] && [ "$ROUTE_ALL" = 1 ] && PASS=yes
@@ -541,19 +517,14 @@ fix_zone() { # on|off
 		[ "$1" = on ] && log "no firewall zone named wan: put $TUN and the uplinks in the zone of the uplinks"
 		return 0
 	fi
-	if [ "$1" = off ]; then
-		for s in $WG_TUN $NATIVE_TUN; do
-			list_has "$(uci -q get "firewall.$wan.network")" "$s" || continue
-			uci del_list "firewall.$wan.network=$s"
-			changed firewall
-		done
-		return 0
-	fi
-	# The tunnel interface of the other mode, if it was left there.
-	if list_has "$(uci -q get "firewall.$wan.network")" "$OTHER_TUN"; then
-		uci del_list "firewall.$wan.network=$OTHER_TUN"
+	# A WireGuard release's interface, if it was left there; the tunnel's own
+	# when off.
+	for s in $OLD_TUN $([ "$1" = off ] && echo "$TUN"); do
+		list_has "$(uci -q get "firewall.$wan.network")" "$s" || continue
+		uci del_list "firewall.$wan.network=$s"
 		changed firewall
-	fi
+	done
+	[ "$1" = off ] && return 0
 	list_has "$zoned" "$TUN" || add=$TUN
 	for s in $UPLINKS; do # uplinks with no zone yet; left there when disabled
 		list_has "$zoned" "$s" || ! uci -q get "network.$s" >/dev/null || add="$add $s"
@@ -651,7 +622,7 @@ fix_upnp() { # on|off
 			log "IP pass: no VPS address is an IPv4 literal (a name's IP may change), so UPnP has no public IP to announce: set stun_host"
 			;;
 		esac
-	elif list_has "$WG_TUN $NATIVE_TUN" "$(uci -q get upnpd.config.external_iface)"; then
+	elif list_has "$TUN $OLD_TUN" "$(uci -q get upnpd.config.external_iface)"; then
 		want upnpd.config.enabled 0
 		drop upnpd.config.external_iface
 		drop upnpd.config.external_ip
@@ -766,57 +737,33 @@ fix_ra_default() { # on|off
 	fi
 }
 
-# What netifd leaves as it is when it changes: reloading the network
-# configuration restarts wgcg for its keys, MTU and (25.12) addresses, but an
-# older wireguard.sh keeps the addresses it set up, and none looks at the
-# peer's routes, port or keys. commit restarts wgcg when this changed.
-tun_state() {
-	uci -q get "network.$TUN.addresses"
-	uci -q show "network.$PEER"
-}
-
-fix_tunnel() { # on|off IPV6: on|off
-	local pub before addrs='' allowed='0.0.0.0/1 128.0.0.0/1'
-
+# fix_tunnel on|off IPV6: the interface cg0 on the engine's TUN. netifd
+# brings it up when the engine creates the device and down when it goes, and
+# puts its addresses and routes back each time: a restart of the engine, or of
+# netifd, needs nothing here. The engine sets the same addresses itself
+# (tun_addr) before netifd sees the device. A WireGuard release's interface
+# and peer go either way.
+fix_tunnel() {
+	drop "network.$OLD_PEER"
+	drop "network.$OLD_TUN"
 	if [ "$1" = off ]; then
-		drop "network.$PEER"
 		drop "network.$ROUTE"
 		drop "network.$ROUTE6"
-		drop "network.$WG_TUN"
-		drop "network.$NATIVE_TUN"
+		drop "network.$TUN"
 		fix_routes_all off off
 		return 0
 	fi
-	if [ "$NATIVE" = 1 ]; then
-		fix_native "$2"
-		return 0
-	fi
-	# What native mode left, if it was on.
-	drop "network.$NATIVE_TUN"
-	fix_routes_all off off
-	pub=$(printf '%s\n' "$CG_WG_SERVER_KEY" | wg pubkey) || return 1
-	before=$(tun_state)
 	want "network.$TUN" interface
-	want "network.$TUN.proto" wireguard
-	want "network.$TUN.private_key" "$CG_WG_CLIENT_KEY"
-	addrs="$ADDR/32"
+	want "network.$TUN.proto" static
+	want "network.$TUN.device" "$TUN"
+	want_list "network.$TUN.ipaddr" "$ADDR/32"
 	if [ "$2" = on ]; then
-		addrs="$addrs ${CG_TUNNEL_ULA}::2/128"
-		allowed="$allowed ::/1 8000::/1"
+		want_list "network.$TUN.ip6addr" "${CG_TUNNEL_ULA}::2/128"
+	else
+		drop "network.$TUN.ip6addr"
 	fi
-	want_list "network.$TUN.addresses" "$addrs"
 	want "network.$TUN.mtu" "$MTU"
-	want "network.$TUN.nohostroute" 1
 	want_list "network.$TUN.dns" "$(dns4)"
-	want "network.$PEER" "wireguard_$TUN"
-	want "network.$PEER.description" "cengarde VPS"
-	want "network.$PEER.public_key" "$pub"
-	want "network.$PEER.preshared_key" "$CG_WG_PSK"
-	want "network.$PEER.endpoint_host" 127.0.0.1
-	want "network.$PEER.endpoint_port" "$PORT"
-	want "network.$PEER.persistent_keepalive" 25
-	want "network.$PEER.route_allowed_ips" "$ROUTE_ALL"
-	want_list "network.$PEER.allowed_ips" "$allowed"
 	# A /32 has no connected route: the VPS end, reached with or without
 	# route_all, gets one. The same goes for the /128 of IPv6.
 	want "network.$ROUTE" route
@@ -829,16 +776,15 @@ fix_tunnel() { # on|off IPV6: on|off
 	else
 		drop "network.$ROUTE6"
 	fi
-	# A tunnel that is new is set up as it is.
-	if [ -n "$before" ] && [ "$before" != "$(tun_state)" ]; then
-		RESTART_TUN=1
+	if [ "$ROUTE_ALL" = 1 ]; then
+		fix_routes_all on "$2"
+	else
+		fix_routes_all off off
 	fi
-	return 0
 }
 
-# fix_routes_all on|off IPV6: the /1 routes through cg0 (native mode with
-# route_all), more specific than any default route, as the peer's allowed
-# IPs put them on wgcg; with IPV6 on, ::/1 and 8000::/1 too.
+# fix_routes_all on|off IPV6: the /1 routes through cg0 (route_all), more
+# specific than any default route; with IPV6 on, ::/1 and 8000::/1 too.
 fix_routes_all() {
 	local e name
 
@@ -846,7 +792,7 @@ fix_routes_all() {
 		name=${e%%=*}
 		if [ "$1" = on ]; then
 			want "network.$name" route
-			want "network.$name.interface" "$NATIVE_TUN"
+			want "network.$name.interface" "$TUN"
 			want "network.$name.target" "${e#*=}"
 		else
 			drop "network.$name"
@@ -856,50 +802,12 @@ fix_routes_all() {
 		name=${e%%=*}
 		if [ "$1" = on ] && [ "$2" = on ]; then
 			want "network.$name" route6
-			want "network.$name.interface" "$NATIVE_TUN"
+			want "network.$name.interface" "$TUN"
 			want "network.$name.target" "${e#*=}"
 		else
 			drop "network.$name"
 		fi
 	done
-}
-
-# fix_native IPV6: the interface cg0 on the engine's TUN (tunnel_mode
-# native), in wgcg's place. netifd brings it up when the engine creates the
-# device and down when it goes, and puts its addresses and routes back each
-# time: a restart of the engine, or of netifd, needs nothing here. The engine
-# sets the same addresses itself (tun_addr) before netifd sees the device.
-fix_native() {
-	local i=$NATIVE_TUN
-
-	drop "network.$PEER"
-	drop "network.$WG_TUN"
-	want "network.$i" interface
-	want "network.$i.proto" static
-	want "network.$i.device" "$NATIVE_TUN"
-	want_list "network.$i.ipaddr" "$ADDR/32"
-	if [ "$1" = on ]; then
-		want_list "network.$i.ip6addr" "${CG_TUNNEL_ULA}::2/128"
-	else
-		drop "network.$i.ip6addr"
-	fi
-	want "network.$i.mtu" "$MTU"
-	want_list "network.$i.dns" "$(dns4)"
-	want "network.$ROUTE" route
-	want "network.$ROUTE.interface" "$i"
-	want "network.$ROUTE.target" "$VPS_ADDR/32"
-	if [ "$1" = on ]; then
-		want "network.$ROUTE6" route6
-		want "network.$ROUTE6.interface" "$i"
-		want "network.$ROUTE6.target" "${CG_TUNNEL_ULA}::1/128"
-	else
-		drop "network.$ROUTE6"
-	fi
-	if [ "$ROUTE_ALL" = 1 ]; then
-		fix_routes_all on "$1"
-	else
-		fix_routes_all off off
-	fi
 }
 
 commit() {
@@ -911,11 +819,6 @@ commit() {
 	[ -n "$CHANGED" ] || return 0
 	log "updated:$CHANGED"
 	list_has "$CHANGED" network && ubus call network reload
-	if [ -n "$RESTART_TUN" ]; then
-		log "restarting $TUN: its address or its peer changed"
-		ifdown "$TUN"
-		ifup "$TUN"
-	fi
 	list_has "$CHANGED" firewall && /etc/init.d/firewall reload >/dev/null 2>&1
 	list_has "$CHANGED" dhcp && /etc/init.d/odhcpd reload >/dev/null 2>&1
 	list_has "$CHANGED" upnpd && /etc/init.d/miniupnpd restart >/dev/null 2>&1
@@ -926,7 +829,6 @@ apply() {
 	local on=off six=off close=off t6=off ra=off
 
 	load
-	[ "$MODE_OK" = 1 ] || log "tunnel_mode '$TUNNEL_MODE': expected wireguard or native; WireGuard instead"
 	if [ "$ENABLED" = 1 ] && [ "$TUNNEL" = 1 ]; then
 		if ! derive_keys; then
 			log "no valid secret: set one in LuCI or with uci set cengarde.main.secret=\$(cengarde genkey)"
@@ -954,12 +856,11 @@ apply() {
 		fi
 	fi
 	[ "$t6" = on ] && [ "$close" = on ] && ra=on
-	fix_tunnel "$on" "$t6" || return 1
+	fix_tunnel "$on" "$t6"
 	fix_nat66 "$t6"
-	if [ "$on" = on ] && [ "$PCTL_ON" = 1 ] && [ "$NATIVE" = 1 ]; then
+	if [ "$on" = on ] && [ "$PCTL_ON" = 1 ]; then
 		fix_pctl on
 	else
-		[ "$PCTL_ON" = 1 ] && [ "$NATIVE" != 1 ] && log "protocontroller needs tunnel_mode native: left off"
 		fix_pctl off
 	fi
 	fix_ra_default "$ra"
@@ -1098,31 +999,20 @@ engine_conf() {
 		case "$a" in *:*) a="[$a]" ;; esac
 		server="$server${server:+ }$a:$PORT"
 	done
-	if [ "$NATIVE" = 1 ]; then
-		pick_addr || die "tunnel_addr $TUNNEL_ADDR: expected 10.79.X.Y, from 10.79.0.2 to 10.79.255.254"
-		tun_addr="$ADDR/32"
-		# As apply decides it (it also needs the uplinks).
-		[ "$TUNNEL_IPV6" = 1 ] && [ -n "$UPLINKS" ] && valid_ula "$CG_TUNNEL_ULA" &&
-			tun_addr="$tun_addr ${CG_TUNNEL_ULA}::2/128"
-	fi
+	pick_addr || die "tunnel_addr $TUNNEL_ADDR: expected 10.79.X.Y, from 10.79.0.2 to 10.79.255.254"
+	tun_addr="$ADDR/32"
+	# As apply decides it (it also needs the tunnel and the uplinks).
+	[ "$TUNNEL" = 1 ] && [ "$TUNNEL_IPV6" = 1 ] && [ -n "$UPLINKS" ] && valid_ula "$CG_TUNNEL_ULA" &&
+		tun_addr="$tun_addr ${CG_TUNNEL_ULA}::2/128"
 	cat <<-EOF
 		# Generated from /etc/config/cengarde by cengarde-setup: edit that instead.
 		mode = client
 		key = $CG_LINK_KEY
-	EOF
-	if [ "$NATIVE" = 1 ]; then
-		cat <<-EOF
-			# No WireGuard: the IP packets go through the TUN $NATIVE_TUN, authenticated
-			# but not encrypted (tunnel_mode native).
-			tunnel = native
-			tun = $NATIVE_TUN
-			tun_addr = $tun_addr
-			tun_mtu = $MTU
-		EOF
-	else
-		echo "listen = 127.0.0.1:$PORT"
-	fi
-	cat <<-EOF
+		# The IP packets go through the TUN $TUN, authenticated but not encrypted.
+		tunnel = native
+		tun = $TUN
+		tun_addr = $tun_addr
+		tun_mtu = $MTU
 		server = $server
 		# Only the uplinks below.
 		interfaces =
@@ -1176,7 +1066,7 @@ engine_conf() {
 		esac
 	done
 	# the protocontroller (story 025): the firewall's redirect lands on PCTL_LISTEN
-	if [ "$PCTL_ON" = 1 ] && [ "$NATIVE" = 1 ]; then
+	if [ "$PCTL_ON" = 1 ] && [ "$TUNNEL" = 1 ]; then
 		echo "protocontroller = $PCTL_MODE"
 		echo "protocontroller_port = $PCTL_LISTEN"
 		# variant A's middle TCP goes to the VPS's end of the tunnel (this
@@ -1316,17 +1206,12 @@ engine_conf() {
 }
 
 cloud_config() {
-	local vps_tunnel
-
 	load
 	[ -n "$SECRET" ] || die "no secret yet"
 	derive_keys || die "no valid secret (uci get cengarde.main.secret)"
 	valid_name "$VPS_NAME" || die "vps_name $VPS_NAME: 1 to 12 of a-z, 0-9 and -, not starting with -, and not \"default\""
 	pick_addr || die "tunnel_addr $TUNNEL_ADDR: expected 10.79.X.Y, from 10.79.0.2 to 10.79.255.254"
-	vps_tunnel=wireguard
-	[ "$NATIVE" = 1 ] && vps_tunnel=native
 	sed -e "s|^\( *\)REPLACE_SECRET\$|\1$SECRET|" \
-		-e "s|^\( *TUNNEL=\).*|\1$vps_tunnel|" \
 		-e "s|^\( *CENGARDE_PORT=\).*|\1$PORT|" \
 		-e "s|^\( *PASSTHROUGH=\).*|\1$PASS|" \
 		-e "s|^\( *TUNNEL_IPV6=\).*|\1$VPS_IPV6|" \
@@ -1389,15 +1274,13 @@ leaked_prefix() {
 # engine's error). A name still waiting is no problem yet: a lookup takes 12 s
 # at most before it counts as failed, and without uplinks those say why.
 engine_problems() { # STATUS_JSON
-	local up=0 largest=0 refusing=false wg wgo=32 n i=0 open=0 live=0 st fam pm name label over stall err
+	local up=0 largest=0 refusing=false big n i=0 open=0 live=0 st fam pm name label over stall err
 
 	eval "$(jsonfilter -s "$1" -e 'up=@.uptime_ms' -e 'largest=@.upload.largest' -e 'refusing=@.vps_refusing' \
 		2>/dev/null)"
-	wg=$largest
-	# What the tunnel hands the engine: WireGuard's datagram (MTU + 32), or
-	# in native mode the IP packet itself (MTU).
-	[ "$NATIVE" = 1 ] && wgo=0
-	case "$MTU" in '' | *[!0-9]*) ;; *) [ "$TUNNEL" = 1 ] && [ $((MTU + wgo)) -gt "$wg" ] && wg=$((MTU + wgo)) ;; esac
+	big=$largest
+	# What the TUN hands the engine: an IP packet of up to the MTU.
+	case "$MTU" in '' | *[!0-9]*) ;; *) [ "$TUNNEL" = 1 ] && [ "$MTU" -gt "$big" ] && big=$MTU ;; esac
 	n=$(jsonfilter -s "$1" -e '@.links[*].id' 2>/dev/null | wc -l)
 	while [ "$i" -lt "$n" ]; do
 		st='' fam='' pm=0 name='' label='' stall=0
@@ -1416,8 +1299,8 @@ engine_problems() { # STATUS_JSON
 		# The tunnel's packet (above), then ours (24), UDP (8) and IP.
 		over=52
 		[ "$fam" = ipv6 ] && over=72
-		[ "$pm" -gt 0 ] && [ $((wg + over)) -gt "$pm" ] &&
-			problem path_mtu "${label:-$name}" "\"mtu\":$pm,\"fit\":$((pm - over - wgo)),\"family\":\"$fam\""
+		[ "$pm" -gt 0 ] && [ $((big + over)) -gt "$pm" ] &&
+			problem path_mtu "${label:-$name}" "\"mtu\":$pm,\"fit\":$((pm - over)),\"family\":\"$fam\""
 	done
 	n=$(jsonfilter -s "$1" -e '@.names[*].name' 2>/dev/null | wc -l)
 	i=0
@@ -1441,8 +1324,7 @@ engine_problems() { # STATUS_JSON
 
 # Everything LuCI's status page needs in one call.
 status() {
-	local s running=false hs=0 rx=0 tx=0 now up line engine=null proto p addr=null derived=null name=null have=0
-	local t6=false ula=null mode
+	local s running=false rx=0 tx=0 engine=null proto p addr=null derived=null name=null have=0 t6=false ula=null
 
 	load
 	PROBLEMS=
@@ -1499,30 +1381,17 @@ status() {
 			problem not_running
 		fi
 	fi
-	if [ "$NATIVE" = 1 ]; then
-		# No handshakes: the TUN's own counters, while it is there.
-		rx=$(cat "/sys/class/net/$NATIVE_TUN/statistics/rx_bytes" 2>/dev/null) || rx=0
-		tx=$(cat "/sys/class/net/$NATIVE_TUN/statistics/tx_bytes" 2>/dev/null) || tx=0
-	elif [ "$TUNNEL" = 1 ] && line=$(wg show "$TUN" dump 2>/dev/null | sed -n 2p) && [ -n "$line" ]; then
-		# shellcheck disable=SC2086 # split the fields (globbing is off)
-		set -- $line
-		hs=$5 rx=$6 tx=$7
-	fi
-	now=$(date +%s)
-	# Since boot: a handshake older than that came before the clock was set
-	# (a router without a battery-backed clock), and its age means nothing.
-	up=$(cut -d. -f1 /proc/uptime)
+	# The TUN's own counters, while it is there.
+	rx=$(cat "/sys/class/net/$TUN/statistics/rx_bytes" 2>/dev/null) || rx=0
+	tx=$(cat "/sys/class/net/$TUN/statistics/tx_bytes" 2>/dev/null) || tx=0
 	if [ -s "$STATUS_FILE" ] && [ "$running" = true ]; then
 		engine=$(cat "$STATUS_FILE")
 		engine_problems "$engine"
 	fi
 	proto=$(cengarde version 2>/dev/null | sed -n 's/.*(protocol \([0-9]*\)).*/\1/p')
-	mode=wireguard
-	[ "$NATIVE" = 1 ] && mode=native
-	printf '{"enabled":%s,"running":%s,"protocol":%s,"tunnel_mode":"%s","tunnel_addr":%s,"tunnel_addr_derived":%s,"tunnel_ipv6":%s,"tunnel_ula":%s,"vps_name":%s,"problems":[%s],"tunnel":{"handshake":%s,"now":%s,"uptime":%s,"rx_bytes":%s,"tx_bytes":%s},"engine":%s}\n' \
-		"$([ "$ENABLED" = 1 ] && echo true || echo false)" "$running" "${proto:-null}" "$mode" "$addr" "$derived" "$t6" "$ula" \
-		"$name" "$PROBLEMS" \
-		"$hs" "$now" "${up:-0}" "$rx" "$tx" "$engine"
+	printf '{"enabled":%s,"running":%s,"protocol":%s,"tunnel_addr":%s,"tunnel_addr_derived":%s,"tunnel_ipv6":%s,"tunnel_ula":%s,"vps_name":%s,"problems":[%s],"tunnel":{"rx_bytes":%s,"tx_bytes":%s},"engine":%s}\n' \
+		"$([ "$ENABLED" = 1 ] && echo true || echo false)" "$running" "${proto:-null}" "$addr" "$derived" "$t6" "$ula" \
+		"$name" "$PROBLEMS" "$rx" "$tx" "$engine"
 }
 
 exec 9>/var/lock/cengarde-setup.lock

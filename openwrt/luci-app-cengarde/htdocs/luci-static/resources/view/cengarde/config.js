@@ -10,9 +10,9 @@
 
 const TEMPLATE = '/usr/share/cengarde/cloud-config.yaml';
 const MAX_SERVERS = 8; // the engine's CG_MAX_SERVERS
-// Largest tunnel MTU in a 1500-byte path: 1500 - (IP, UDP, cengarde and
-// WireGuard headers), 20 + 8 + 24 + 32 over IPv4, 40 + 8 + 24 + 32 over IPv6.
-const MTU_IPV6 = 1396;
+// Largest tunnel MTU in a 1500-byte path: 1500 - (IP, UDP and cengarde
+// headers), 20 + 8 + 24 over IPv4, 40 + 8 + 24 over IPv6.
+const MTU_IPV6 = 1428;
 
 // A router's name on the VPS and an address in the tunnel, as the VPS and
 // cengarde-setup take them: cg-NAME has to fit in an interface name, and
@@ -85,10 +85,9 @@ function setUplinkType(list, uplink, type) {
 // Same substitutions as "cengarde-setup cloud-config", on the values in the
 // form, so the text follows unsaved changes. Without an address (a new secret
 // that is not saved yet) its placeholder stays, and the VPS derives it.
-function cloudConfig(template, secret, port, ipPass, ipv6, name, addr, mode) {
+function cloudConfig(template, secret, port, ipPass, ipv6, name, addr) {
 	return template
 		.replace(/^(\s+)REPLACE_SECRET$/m, '$1' + (secret || 'REPLACE_SECRET'))
-		.replace(/^(\s*TUNNEL=).*$/m, '$1' + (mode == 'native' ? 'native' : 'wireguard'))
 		.replace(/^(\s*CENGARDE_PORT=).*$/m, '$1' + (port || '65500'))
 		.replace(/^(\s*PASSTHROUGH=).*$/m, '$1' + (ipPass == '1' ? 'yes' : 'no'))
 		.replace(/^(\s*TUNNEL_IPV6=).*$/m, '$1' + (ipv6 == '1' ? 'yes' : 'no'))
@@ -163,8 +162,7 @@ return view.extend({
 			if (textarea)
 				textarea.value = cloudConfig(template, value(m, 'secret'), value(m, 'port'),
 					on('ip_pass', '0') && on('tunnel', '1') && on('route_all', '1') ? '1' : '0',
-					on('tunnel_ipv6', '0') && on('tunnel', '1') && on('route_all', '1') ? '1' : '0', name, addr,
-					on('tunnel', '1') ? value(m, 'tunnel_mode') : 'wireguard');
+					on('tunnel_ipv6', '0') && on('tunnel', '1') && on('route_all', '1') ? '1' : '0', name, addr);
 			if (addCommand) {
 				const ready = addr != null && isName(name);
 
@@ -189,7 +187,7 @@ return view.extend({
 		});
 
 		m = new form.Map('cengarde', _('cengarde'),
-			_('Sends every packet of a WireGuard tunnel to a VPS over all the selected uplinks at once, and the first copy to arrive wins: one uplink failing or lagging no longer drops the connection. Setup: copy the cloud-config from the VPS tab when creating the VPS, then enter its IP here, pick the uplinks and enable.'));
+			_('Carries the traffic of the router through a tunnel to a VPS, sending every packet over all the selected uplinks at once, and the first copy to arrive wins: one uplink failing or lagging no longer drops the connection. Setup: copy the cloud-config from the VPS tab when creating the VPS, then enter its IP here, pick the uplinks and enable.'));
 
 		s = m.section(form.NamedSection, 'main', 'cengarde');
 		s.addremove = false;
@@ -197,14 +195,14 @@ return view.extend({
 		s.tab('vps', _('VPS'));
 		s.tab('tunnel', _('Tunnel'));
 		s.tab('protection', _('Protection'), _('How each packet is protected while every uplink carries the upload (the split off): full copies, or partial copies and repair data in what each backup uplink has to spare, and asking the VPS for what is still missing. With the split on, or a lone uplink, the repair data below (FEC).'));
-		s.tab('layer4', _('Layer 4 features'), _('What cengarde does with the TCP it carries, beyond moving packets. Native tunnel mode only (Tunnel tab).'));
+		s.tab('layer4', _('Layer 4 features'), _('What cengarde does with the TCP it carries, beyond moving packets.'));
 		s.tab('advanced', _('Advanced'));
 
 		o = s.taboption('general', form.Flag, 'enabled', _('Enabled'));
 		o.rmempty = false;
 
 		o = s.taboption('general', form.DynamicList, 'server', _('VPS addresses'),
-			_('Public IPs of the VPS as the provider shows them, IPv4 and IPv6, in order of preference: each uplink uses the first one of a family it has, and tries the next one when the VPS does not answer there. A name works too: the router looks it up through each uplink (the carrier\'s DNS first), never through the tunnel, and follows it when its IP changes (dynamic DNS). An MTU above 1396 does not fit if the name has an IPv6 address that the uplinks use.'));
+			_('Public IPs of the VPS as the provider shows them, IPv4 and IPv6, in order of preference: each uplink uses the first one of a family it has, and tries the next one when the VPS does not answer there. A name works too: the router looks it up through each uplink (the carrier\'s DNS first), never through the tunnel, and follows it when its IP changes (dynamic DNS). An MTU above 1428 does not fit if the name has an IPv6 address that the uplinks use.'));
 		o.datatype = 'host(0)'; // a name or an IP, without a mask
 		o.placeholder = '203.0.113.10';
 		o.validate = function(section_id) {
@@ -229,7 +227,7 @@ return view.extend({
 			const companion = uci.get('network', value, 'cengarde_owned') == '1' ||
 				String(uci.get('network', value, 'device') || '').charAt(0) == '@';
 
-			return value != 'lan' && value != 'loopback' && value != 'wgcg' && value != 'cg0' && (chosen || !companion);
+			return value != 'lan' && value != 'loopback' && value != 'cg0' && (chosen || !companion);
 		};
 		const uplinkFilter = o.filter;
 
@@ -320,7 +318,7 @@ return view.extend({
 		};
 
 		o = s.taboption('vps', form.DummyValue, '_cloudconfig', _('VPS cloud-config'),
-			_('For a new VPS. Paste it as "user data" (cloud-init) when creating an Ubuntu 22.04 or 24.04 VPS, e.g. on Vultr. It builds the same cengarde version as this router and sets up WireGuard, NAT and IP pass, with the name and address of this router. Setup log on the VPS: /var/log/cloud-init-output.log.'));
+			_('For a new VPS. Paste it as "user data" (cloud-init) when creating an Ubuntu 22.04 or 24.04 VPS, e.g. on Vultr. It builds the same cengarde version as this router and sets up the tunnel, NAT and IP pass, with the name and address of this router. Setup log on the VPS: /var/log/cloud-init-output.log.'));
 		o.write = function() {};
 		o.remove = function() {};
 		o.renderWidget = function(section_id) {
@@ -394,18 +392,10 @@ return view.extend({
 			]);
 		};
 
-		o = s.taboption('tunnel', form.Flag, 'tunnel', _('Manage the WireGuard tunnel'),
-			_('Creates the interface wgcg with the keys derived from the secret and this router\'s address in the tunnel (VPS tab), in the wan firewall zone. Off: set up WireGuard yourself, cengarde only listens on 127.0.0.1 at the VPS port.'));
+		o = s.taboption('tunnel', form.Flag, 'tunnel', _('Manage the tunnel'),
+			_('cengarde carries the packets itself through its own interface cg0: authenticated (nobody can inject or replay packets) but NOT encrypted, so the carriers see the traffic. On: cg0 gets this router\'s address in the tunnel (VPS tab) and its routes, in the wan firewall zone. Off: cengarde still carries what reaches cg0, but its interface, routes and firewall zone are yours to set up.'));
 		o.default = '1';
 		o.rmempty = false;
-		o.onchange = refresh;
-
-		o = s.taboption('tunnel', form.ListValue, 'tunnel_mode', _('Tunnel mode'),
-			_('WireGuard: the tunnel goes through the interface wgcg, encrypted. Native (experimental): no WireGuard, cengarde carries the packets itself through the interface cg0, with the same addresses and routes; it is authenticated (nobody can inject or replay packets) but NOT encrypted, so the carriers see the traffic. The VPS has to be in the same mode, for every router it serves: "sudo cengarde-vps-setup tunnel native" (or wireguard to go back). A change restarts the engine.'));
-		o.value('wireguard', _('WireGuard'));
-		o.value('native', _('Native (experimental, not encrypted)'));
-		o.default = 'wireguard';
-		o.depends('tunnel', '1');
 		o.onchange = refresh;
 
 		o = s.taboption('tunnel', form.Flag, 'route_all', _('Route all traffic through the tunnel'),
@@ -422,12 +412,12 @@ return view.extend({
 		o.onchange = refresh;
 
 		o = s.taboption('layer4', form.ListValue, 'protocontroller', _('Protocontroller'),
-			_('Native mode only. With A or B the router answers the TCP connections of the LAN itself and the VPS opens a fresh one to each destination (cubic, BBR once that leg loses). Between them each connection travels as a plain TCP through the tunnel (A) or, experimental, as GRIT, a reliable stream of cengarde paced by what the uplinks carry instead of by loss (B). It helps TCP uploads such as RTMP over lossy uplinks and long paths beyond the VPS. UDP, QUIC and the rest go through the tunnel as always. The VPS needs "sudo cengarde-vps-setup protocontroller on". A change restarts the engine.'));
+			_('With A or B the router answers the TCP connections of the LAN itself and the VPS opens a fresh one to each destination (cubic, BBR once that leg loses). Between them each connection travels as a plain TCP through the tunnel (A) or, experimental, as GRIT, a reliable stream of cengarde paced by what the uplinks carry instead of by loss (B). It helps TCP uploads such as RTMP over lossy uplinks and long paths beyond the VPS. UDP, QUIC and the rest go through the tunnel as always. The VPS needs "sudo cengarde-vps-setup protocontroller on". A change restarts the engine.'));
 		o.value('no', _('No (the tunnel as always)'));
 		o.value('a', _('A: TCP in the middle'));
 		o.value('b', _('B (GRIT): cengarde\'s stream in the middle (experimental)'));
 		o.default = 'no';
-		o.depends('tunnel_mode', 'native');
+		o.depends('tunnel', '1');
 		o.onchange = refresh;
 
 		o = s.taboption('layer4', form.DynamicList, 'protocontroller_port', _('Protocontroller ports'),
@@ -446,7 +436,6 @@ return view.extend({
 			_('The router and the VPS look at the TCP inside the tunnel: its ACKs and handshakes are handed on at once instead of waiting behind a missing packet, and a TCP retransmission is copied over every uplink only when the tunnel lost the original on all of them (from the ACKs it has seen), so a spurious one does not load every uplink. Off: TCP is carried like any other packet.'));
 		o.default = '0';
 		o.rmempty = false;
-		o.depends('tunnel_mode', 'native');
 
 		o = s.taboption('protection', form.ListValue, 'redund_spare', _('Protection mode'),
 			_('Full copies: every packet over every uplink, as always; the safest in a cut, and the most data. Mixed: full copies while they fit, and XOR parity on an uplink that cannot carry them all. Parity: XOR only, the least data. RLC and Reed-Solomon: erasure codes that rebuild several lost packets at once from what the backup uplinks have to spare (in the lab, the most TCP over a choked backup uplink); RLC repairs sooner. Partial copies: copies only of what fits. Every mode but full copies needs "fec = yes" on the VPS to rebuild the upload.'));
@@ -551,8 +540,8 @@ return view.extend({
 		};
 
 		o = s.taboption('tunnel', form.Value, 'mtu', _('Tunnel MTU'),
-			_('In a 1500-byte path, packets of up to 1416 bytes fit over IPv4 and of up to 1396 over IPv6. Larger ones get fragmented, and mobile networks often drop the fragments.'));
-		o.datatype = 'range(1280,1416)';
+			_('In a 1500-byte path, packets of up to 1448 bytes fit over IPv4 and of up to 1428 over IPv6. Larger ones get fragmented, and mobile networks often drop the fragments.'));
+		o.datatype = 'range(1280,1448)';
 		o.placeholder = '1380';
 		o.depends('tunnel', '1');
 		// The form checks every field again on each change, so this follows
@@ -595,7 +584,7 @@ return view.extend({
 		o.placeholder = '2';
 
 		o = s.taboption('advanced', form.Flag, 'reorder', _('Reorder at the receiver'),
-			_('The end that receives holds a packet that arrives ahead of a missing one until the missing one comes or its time runs out, and hands them to WireGuard in order. The VPS does the same with what it receives. While every packet is copied over all the uplinks nothing is held, so it changes nothing and costs almost nothing; it is what makes the split below usable.'));
+			_('The end that receives holds a packet that arrives ahead of a missing one until the missing one comes or its time runs out, and hands them on in order. The VPS does the same with what it receives. While every packet is copied over all the uplinks nothing is held, so it changes nothing and costs almost nothing; it is what makes the split below usable.'));
 		o.default = '1';
 		o.rmempty = false;
 
@@ -606,13 +595,13 @@ return view.extend({
 		o.depends('reorder', '1');
 
 		o = s.taboption('advanced', form.Value, 'reorder_bypass', _('Packets never held, up to (bytes)'),
-			_('WireGuard packets of up to this size (keepalives, empty TCP ACKs) are handed on at once, and so are the handshakes. 0: only the handshakes. A larger value lets small data packets overtake the big ones that are held, which TCP and QUIC can take for losses.'));
+			_('Packets of up to this size (empty TCP ACKs, small control packets) are handed on at once. 0: none. A larger value lets small data packets overtake the big ones that are held, which TCP and QUIC can take for losses.'));
 		o.datatype = 'range(0,2048)';
 		o.placeholder = '128';
 		o.depends('reorder', '1');
 
 		o = s.taboption('advanced', form.Flag, 'split', _('Split large packets across the uplinks (experimental)'),
-			_('Instead of a copy over every uplink, each large packet (over 256 bytes, by default) goes over one uplink, chosen by weight; the small ones and the handshakes still go over all of them. This adds up the speed of the uplinks (in the lab, two equal uplinks carried 1.98 times what one does), but it protects less than copying: an uplink that dies keeps its share of the packets until the engine takes it out (about 300 ms by estimate, 1.5 s before that), and the packets sent to it in the meantime are lost; the slowest uplink in the split sets the latency of all (see the largest delay difference below); and a weight above what an uplink can carry fills the queue of its modem and makes the uplink unstable. The VPS follows this router: it splits the download the same way, with the same weights, when the router asks for it, and needs no setting. It needs "Reorder at the receiver".'));
+			_('Instead of a copy over every uplink, each large packet (over 256 bytes, by default) goes over one uplink, chosen by weight; the small ones still go over all of them. This adds up the speed of the uplinks (in the lab, two equal uplinks carried 1.98 times what one does), but it protects less than copying: an uplink that dies keeps its share of the packets until the engine takes it out (about 300 ms by estimate, 1.5 s before that), and the packets sent to it in the meantime are lost; the slowest uplink in the split sets the latency of all (see the largest delay difference below); and a weight above what an uplink can carry fills the queue of its modem and makes the uplink unstable. The VPS follows this router: it splits the download the same way, with the same weights, when the router asks for it, and needs no setting. It needs "Reorder at the receiver".'));
 		o.rmempty = false;
 		o.depends('reorder', '1');
 
@@ -647,7 +636,7 @@ return view.extend({
 		o.depends({ reorder: '1', split: '1' });
 
 		o = s.taboption('advanced', form.Flag, 'split_spread_copy', _('Copies to the uplinks out of the split'),
-			_('On (as up to version 0.6.2): an uplink that leaves the split for its delay carries a copy of every packet, to fill the gaps of the others, and with fewer than two uplinks left in the split everything goes on every uplink. Off: it carries only the small packets and the handshakes, which go on every uplink, and one uplink left in the split carries everything that is split. An uplink falls behind most often because its modem\'s queue is full: in the first field test the copies loaded the late uplinks even more, and the router dropped thousands of packets; in the lab they helped QUIC. Only for the upload: the VPS has its own setting (on unless changed there).'));
+			_('On (as up to version 0.6.2): an uplink that leaves the split for its delay carries a copy of every packet, to fill the gaps of the others, and with fewer than two uplinks left in the split everything goes on every uplink. Off: it carries only the small packets, which go on every uplink, and one uplink left in the split carries everything that is split. An uplink falls behind most often because its modem\'s queue is full: in the first field test the copies loaded the late uplinks even more, and the router dropped thousands of packets; in the lab they helped QUIC. Only for the upload: the VPS has its own setting (on unless changed there).'));
 		o.default = '1';
 		o.rmempty = false;
 		o.depends({ reorder: '1', split: '1' });
