@@ -327,7 +327,7 @@ static inline int cg_st_rx_add(struct cg_st_rx *r, uint64_t off, uint32_t len, i
 			r->rs[i + 1 + k] = r->rs[j + k];
 			r->re[i + 1 + k] = r->re[j + k];
 		}
-		r->nr = (uint8_t)(r->nr - (j - i - 1));
+		r->nr = (uint16_t)(r->nr - (j - i - 1));
 	}
 	r->rs[i] = s;
 	r->re[i] = e;
@@ -443,6 +443,7 @@ struct cg_st_tx {
 	uint64_t retx_segs, retx_bytes, rack_lost, rto_lost, copies;
 	uint64_t retx_by[CG_ST_BY_N]; /* segments sent again, by why they were lost */
 	uint64_t nack_lost;           /* bytes a NACK declared lost (cg_st_tx_nack) */
+	uint64_t reneged;             /* timeouts that found the oldest segment SACKed (cg_st_tx_rto) */
 };
 
 static inline void cg_st_tx_init(struct cg_st_tx *t, struct cg_st_seg *seg, uint32_t cap, uint64_t edge)
@@ -704,11 +705,31 @@ static inline uint64_t cg_st_tx_rack(struct cg_st_tx *t, uint64_t reo_us, uint64
 }
 
 /* The timer fired at now: every SENT segment sent at least rto_us ago is
- * lost. Returns the bytes marked (*lq as cg_st_tx_rack's). */
+ * lost. Returns the bytes marked (*lq as cg_st_tx_rack's).
+ *
+ * With the oldest segment SACKed and the cumulative offset still at it, the
+ * receiver no longer holds what it said it had (a renege, TCP's word): every
+ * SACKed segment goes again, as TCP forgets its SACKs at a timeout. Its
+ * ranges counted in 8 bits once (2026-10-27): 256 holes, one merge, and it
+ * forgot them all; the sender never sent those segments again and the
+ * stream stuck for good (buffers over 1 MB). */
 static inline uint64_t cg_st_tx_rto(struct cg_st_tx *t, uint64_t now, uint64_t rto_us, uint64_t *lq)
 {
 	uint64_t lost = 0;
 
+	if (t->n && cg_st_tx_seg(t, 0)->st == CG_ST_SACKED) {
+		for (uint32_t i = 0; i < t->n; i++) {
+			struct cg_st_seg *s = cg_st_tx_seg(t, i);
+
+			if (s->st != CG_ST_SACKED)
+				continue;
+			s->st = CG_ST_LOST; /* not in flight: nothing to take off */
+			s->by = CG_ST_BY_RTO;
+			if (!t->nlost++ || i < t->lost_from)
+				t->lost_from = i;
+		}
+		t->reneged++;
+	}
 	for (uint32_t i = 0; i < t->n; i++) {
 		struct cg_st_seg *s = cg_st_tx_seg(t, i);
 
