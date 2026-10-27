@@ -122,6 +122,8 @@ struct peer {
 	uint32_t reo_us; /* RACK's window beyond min_rtt / 4: protocontroller_reo_ms, widened by duplicates */
 	uint64_t dups;   /* ACKs that said a duplicate came */
 	uint32_t horizon_us; /* the engine's repair horizon toward this peer (ops.horizon, task #77) */
+	uint32_t reach_us;   /* and the queue its split needs to reach the slower links (ops.reach) */
+	struct cg_scc_cfg ccf; /* the rate's settings toward this peer: queue_us plus reach_us */
 	struct cg_scc cc;
 	struct cg_lowd lo; /* what each link adds to this peer's messages' delay, as they come (linkowd.h) */
 };
@@ -282,6 +284,7 @@ static struct peer *peer_of(struct cg_pctl *p, const struct flow *f)
 		r->app = 1; /* nothing sent yet: what comes first says nothing of the path */
 		r->sid = f->sid;
 		r->reo_us = p->cfg.reo_ms * 1000;
+		r->ccf = p->ccf;
 		cg_scc_init(&r->cc, cg_now_us());
 	}
 	return r;
@@ -1159,9 +1162,9 @@ static void ack_in(struct cg_pctl *p, struct flow *f, const struct cg_pctl_msg *
 	cg_pctl_ack_of(m, f->tx.una, f->tx.edge, &a);
 	cg_st_tx_ack(&f->tx, &a, &res);
 	if (m->owd != CG_PCTL_NOOWD)
-		cg_scc_owd(&r->cc, &p->ccf, now, m->owd);
+		cg_scc_owd(&r->cc, &r->ccf, now, m->owd);
 	r->cc.inflight -= r->cc.inflight >= res.was_inflight ? res.was_inflight : r->cc.inflight;
-	cg_scc_ack(&r->cc, &p->ccf, now, res.delivered, res.rs.have, res.rs.tx, res.rs.app, res.rs.sent_us, res.rs.dl,
+	cg_scc_ack(&r->cc, &r->ccf, now, res.delivered, res.rs.have, res.rs.tx, res.rs.app, res.rs.sent_us, res.rs.dl,
 		   res.rs.dla, res.rs.dl_us, res.rs.ss);
 	if (res.progress) {
 		cg_st_buf_release(&f->sb, &p->pool, f->tx.una < f->tx.tail ? f->tx.una : f->tx.tail);
@@ -1519,7 +1522,7 @@ static int send_one(struct cg_pctl *p, struct flow *f, struct peer *r, uint64_t 
 	if (!cg_scc_may_repair(&r->cc) || !cg_st_tx_next(&f->tx, p->cfg.mss, &idx, &off, &len, &fin))
 		return 0;
 	/* new bytes need room in flight; a repair, tokens only */
-	if (idx == f->tx.n && !cg_scc_may(&r->cc, &p->ccf, cg_scc_reo(&r->cc, peer_reo(p, r))))
+	if (idx == f->tx.n && !cg_scc_may(&r->cc, &r->ccf, cg_scc_reo(&r->cc, peer_reo(p, r))))
 		return 0;
 	cg_scc_restart(&r->cc, now);
 	/* a stream that had nothing in flight waits for no answer: protocontroller_dead_s
@@ -1644,7 +1647,7 @@ void cg_pctl_service(struct cg_pctl *p)
 	/* the sends: a segment per flow per round, while the pacers let them */
 	for (uint32_t i = 0; i < p->npr; i++)
 		if (p->pr[i].used)
-			cg_scc_refill(&p->pr[i].cc, &p->ccf, now);
+			cg_scc_refill(&p->pr[i].cc, &p->pr[i].ccf, now);
 	for (int any = 1; any && p->nused;) {
 		any = 0;
 		for (uint32_t k = 0; k < p->nused; k++) {
@@ -1666,7 +1669,7 @@ void cg_pctl_service(struct cg_pctl *p)
 		struct cg_st_tx t = f->tx; /* cg_st_tx_next may move lost_from: a copy */
 
 		if (cg_st_tx_next(&t, p->cfg.mss, &idx, &off, &len, &fin) &&
-		    r->cc.inflight < cg_scc_cwnd(&r->cc, &p->ccf, cg_scc_reo(&r->cc, peer_reo(p, r))))
+		    r->cc.inflight < cg_scc_cwnd(&r->cc, &r->ccf, cg_scc_reo(&r->cc, peer_reo(p, r))))
 			due(p, now + cg_scc_wait_us(&r->cc));
 	}
 	/* tokens left and room in flight with nothing to send: the samples
@@ -1675,7 +1678,7 @@ void cg_pctl_service(struct cg_pctl *p)
 		struct peer *r = &p->pr[i];
 
 		if (r->used)
-			r->app = r->cc.tokens > 0 && r->cc.inflight < cg_scc_cwnd(&r->cc, &p->ccf, cg_scc_reo(&r->cc, peer_reo(p, r)));
+			r->app = r->cc.tokens > 0 && r->cc.inflight < cg_scc_cwnd(&r->cc, &r->ccf, cg_scc_reo(&r->cc, peer_reo(p, r)));
 	}
 }
 
@@ -1728,6 +1731,9 @@ void cg_pctl_tick(struct cg_pctl *p)
 		p->ops.hint(p->ops.ctx, i, r->sid, &bps, &full);
 		cg_scc_hint(&r->cc, bps, full);
 		r->horizon_us = p->ops.horizon ? p->ops.horizon(p->ops.ctx, i, r->sid) : 0;
+		r->reach_us = p->ops.reach ? p->ops.reach(p->ops.ctx, i, r->sid) : 0;
+		r->ccf = p->ccf;
+		r->ccf.queue_us += r->reach_us;
 		if (r->reo_us > p->cfg.reo_ms * 1000 + PCTL_REO_DECAY_US)
 			r->reo_us -= PCTL_REO_DECAY_US;
 		else
@@ -1980,7 +1986,7 @@ void cg_pctl_json(const struct cg_pctl *p, struct cg_json *j)
 		cg_json_ms(j, "min_rtt_ms", c->min_rtt);
 		cg_json_ms(j, "srtt_ms", c->srtt);
 		cg_json_u64(j, "inflight", c->inflight);
-		cg_json_u64(j, "cwnd", cg_scc_cwnd(c, &p->ccf, cg_scc_reo(c, peer_reo(p, &p->pr[i]))));
+		cg_json_u64(j, "cwnd", cg_scc_cwnd(c, &p->pr[i].ccf, cg_scc_reo(c, peer_reo(p, &p->pr[i]))));
 		cg_json_str(j, "mode", c->mode == CG_SCC_STARTUP_M ? "startup" : c->mode == CG_SCC_DRAIN_M ? "drain" : "probe");
 		cg_json_ms(j, "reo_ms", peer_reo(p, &p->pr[i]));
 		cg_json_bool(j, "heavy_loss", c->heavy);
@@ -1992,6 +1998,7 @@ void cg_pctl_json(const struct cg_pctl *p, struct cg_json *j)
 		cg_json_u64(j, "cuts", c->n_cut);
 		cg_json_u64(j, "rebases", c->n_rebase);
 		cg_json_ms(j, "horizon_ms", p->pr[i].horizon_us); /* the engine's repair horizon (task #77) */
+		cg_json_ms(j, "reach_ms", p->pr[i].reach_us);     /* the queue its split needs for the slower links */
 		/* what each link adds to the delay of what comes from this peer
 		 * (linkowd.h): taken off before the ACK's least */
 		{

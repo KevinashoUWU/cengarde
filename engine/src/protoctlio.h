@@ -62,6 +62,25 @@ static inline uint32_t cg_pctl_spread(const int32_t *behind_us, uint16_t known, 
 	return s < CG_PCTL_SPREAD_MAX_US ? s : CG_PCTL_SPREAD_MAX_US;
 }
 
+#define CG_PCTL_REACH_MAX_US 100000u
+
+/* How much queue the fastest link must hold for the engine's split by
+ * expected arrival to reach the slower links of set, us: the largest of
+ * their path delays behind the fastest (eta.h's base_us; known: those with
+ * a rate) up to cap_us, 0 with none. A stream that keeps its queue under
+ * that never makes the split spill: two links of 50 Mbit/s 50 ms apart,
+ * GRIT's queue at its 5 ms and the slower link idle (reorder50: 37 Mbit/s,
+ * split TCP 61). Links farther than cap_us are not worth the queue. */
+static inline uint32_t cg_pctl_reach(const uint32_t *base_us, uint16_t known, uint16_t set, unsigned n, uint32_t cap_us)
+{
+	uint32_t r = 0;
+
+	for (unsigned i = 0; i < n && i < 16; i++)
+		if ((set & known) >> i & 1 && base_us[i] <= cap_us && base_us[i] > r)
+			r = base_us[i];
+	return r;
+}
+
 struct cg_pctl_ops {
 	void *ctx;
 	/* Sends n messages to peer (the server: session index peer whose id is
@@ -77,6 +96,10 @@ struct cg_pctl_ops {
 	 * repairs (while it sends them) and for the rescue's NACK (while the
 	 * rescue is on); 0: neither (RACK alone). NULL: 0. */
 	uint32_t (*horizon)(void *ctx, uint32_t peer, uint32_t sid);
+	/* The queue the stream to peer may hold beyond protocontroller_queue_ms
+	 * for the split to reach its slower links, us (cg_pctl_reach; task
+	 * #77). NULL: 0. */
+	uint32_t (*reach)(void *ctx, uint32_t peer, uint32_t sid);
 };
 
 struct cg_pctl;

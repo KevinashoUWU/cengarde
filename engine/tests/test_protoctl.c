@@ -240,8 +240,24 @@ static void test_spread(void)
 	CHECK_EQ(cg_pctl_spread(b, 0x3f, 0x3f, 16), CG_PCTL_SPREAD_MAX_US);
 }
 
+
+/* The queue the split needs to reach the slower links (task #77): the
+ * largest path delay behind the fastest among the known links of the set,
+ * those farther than the cap left out. */
+static void test_reach(void)
+{
+	uint32_t b[16] = { 0, 47000, 130000, 20000, 5000 };
+
+	CHECK_EQ(cg_pctl_reach(b, 0x1f, 0x1f, 16, CG_PCTL_REACH_MAX_US), 47000);
+	CHECK_EQ(cg_pctl_reach(b, 0x1d, 0x1f, 16, CG_PCTL_REACH_MAX_US), 20000); /* link 1 not known */
+	CHECK_EQ(cg_pctl_reach(b, 0x1f, 0x15, 16, CG_PCTL_REACH_MAX_US), 5000);  /* link 2 past the cap */
+	CHECK_EQ(cg_pctl_reach(b, 0x1f, 0x01, 16, CG_PCTL_REACH_MAX_US), 0);     /* the fastest alone */
+	CHECK_EQ(cg_pctl_reach(b, 0x1f, 0x1f, 16, 200000), 130000);
+}
+
 void test_protoctl(void)
 {
+	test_reach();
 	test_spread();
 	test_codec();
 	test_dest();
