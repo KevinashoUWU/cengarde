@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "protoctl.h"
+#include "protoctlio.h"
 #include "test.h"
 
 static void test_codec(void)
@@ -223,8 +224,25 @@ static void test_nack_kind(void)
 	CHECK_EQ(cg_pctl_nack_kind(b, n, &id, &off, &ts), CG_PCTL_NACK_RESEND);
 }
 
+
+/* The spread of the links a stream takes (task #77): the largest delay
+ * behind the fastest among the known links of the set, capped. */
+static void test_spread(void)
+{
+	int32_t b[16] = { 0, 40000, 300000, -5000, 590000 };
+
+	CHECK_EQ(cg_pctl_spread(b, 0x1f, 0x1f, 16), 590000);
+	CHECK_EQ(cg_pctl_spread(b, 0x0f, 0x1f, 16), 300000); /* link 4 not known */
+	CHECK_EQ(cg_pctl_spread(b, 0x1f, 0x0b, 16), 40000);  /* links 0, 1, 3 carry */
+	CHECK_EQ(cg_pctl_spread(b, 0x1f, 0x09, 16), 0);      /* ahead counts as none */
+	CHECK_EQ(cg_pctl_spread(b, 0, 0x1f, 16), 0);
+	b[5] = 5000000;
+	CHECK_EQ(cg_pctl_spread(b, 0x3f, 0x3f, 16), CG_PCTL_SPREAD_MAX_US);
+}
+
 void test_protoctl(void)
 {
+	test_spread();
 	test_codec();
 	test_dest();
 	test_tab();

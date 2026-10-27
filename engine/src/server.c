@@ -2853,15 +2853,26 @@ static void pctl_send(void *ctx, uint32_t peer, uint32_t sid, uint8_t *const *ms
 static uint32_t pctl_horizon(void *ctx, uint32_t peer, uint32_t sid)
 {
 	struct server *s = ctx;
-	const struct session *S;
-	uint32_t ms;
+	struct session *S;
+	uint32_t us;
 
 	if (peer >= s->cap || !(S = &s->s[peer])->used || S->id != sid)
 		return 0;
-	ms = sf3_on(s, S) && S->df3.mode != CG_F3_OFF && S->df3.pct ? s->cfg->rescue_code_ms : 0;
-	if (s->cfg->reorder && s->cfg->rescue_kb)
-		ms += cg_rescue_wait_ms(s->cfg);
-	return ms * 1000;
+	us = sf3_on(s, S) && S->df3.mode != CG_F3_OFF && S->df3.pct ? s->cfg->rescue_code_ms * 1000 : 0;
+	/* with the rescue, its NACK and the reordering of the split: what the
+	 * slowest link carrying the data runs behind the fastest */
+	if (s->cfg->reorder && s->cfg->rescue_kb) {
+		struct dpaths d = down_paths(s, S, cg_now_ms());
+		uint16_t set = d.split ? (uint16_t)((d.k.eligible | d.k.dup) & d.carry) : d.carry, known = 0;
+		int32_t behind[CG_MAX_LINKS];
+
+		for (int i = 0; i < CG_MAX_LINKS; i++) {
+			behind[i] = S->dh[i].behind_us;
+			known |= (uint16_t)(S->dh[i].have_behind ? 1u << i : 0);
+		}
+		us += cg_rescue_wait_ms(s->cfg) * 1000 + cg_pctl_spread(behind, known, set, CG_MAX_LINKS);
+	}
+	return us;
 }
 
 static void pctl_hint(void *ctx, uint32_t peer, uint32_t sid, uint64_t *bps, int *full)

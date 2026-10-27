@@ -2565,13 +2565,26 @@ static uint32_t pctl_horizon(void *ctx, uint32_t peer, uint32_t sid)
 {
 	struct client *c = ctx;
 	int code = (f3_on(c) && c->f3.mode != CG_F3_OFF && c->f3.pct) || c->cfg->redund_spare >= 2;
-	uint32_t ms = code ? c->cfg->rescue_code_ms : 0;
+	uint32_t us = code ? c->cfg->rescue_code_ms * 1000 : 0;
 
 	(void)peer;
 	(void)sid;
-	if (c->cfg->reorder && c->cfg->rescue_kb)
-		ms += cg_rescue_wait_ms(c->cfg);
-	return ms * 1000;
+	/* with the rescue, its NACK and the reordering of the split: what the
+	 * slowest link carrying the data runs behind the fastest */
+	if (c->cfg->reorder && c->cfg->rescue_kb) {
+		int32_t behind[CG_MAX_LINKS];
+		uint16_t known = 0, set;
+		struct upctx u;
+
+		up_begin(c, cg_now_ms(), &u);
+		set = u.split ? (uint16_t)((u.k.eligible | u.k.dup) & u.carry) : u.carry;
+		for (int i = 0; i < CG_MAX_LINKS; i++) {
+			behind[i] = c->uh[i].behind_us;
+			known |= (uint16_t)(c->uh[i].have_behind ? 1u << i : 0);
+		}
+		us += cg_rescue_wait_ms(c->cfg) * 1000 + cg_pctl_spread(behind, known, set, CG_MAX_LINKS);
+	}
+	return us;
 }
 
 static void pctl_hint(void *ctx, uint32_t peer, uint32_t sid, uint64_t *bps, int *full)
