@@ -72,6 +72,7 @@
 #define CG_SCC_FLOOR 62500u      /* bytes/s: 0.5 Mbit/s, the least rate */
 #define CG_SCC_START 2000000u    /* bytes/s: 16 Mbit/s, the first rate without a hint (2 left a live stream's start
 				  * waiting at the router for 5 rounds) */
+#define CG_SCC_KICK_US 5000000u   /* restarts under the engine's capacity at most this often */
 #define CG_SCC_HINT_MAX 3u        /* a rate sample past STARTUP is at most this many times the engine's hint */
 #define CG_SCC_BURST_US 2000u    /* the token bucket's depth, in time at the rate */
 #define CG_SCC_MINRTT_US 10000000ull /* min_rtt's window */
@@ -150,6 +151,7 @@ struct cg_scc {
 	uint64_t n_heavy; /* windows with heavy loss */
 	uint64_t n_cong, n_cut, n_rounds; /* congested samples; rounds that cut bw; rounds */
 	uint64_t last_send, n_restart;    /* the last send (cg_scc_restart); restarts from idle */
+	uint64_t kick_t, n_kick;          /* the last restart under the engine's capacity, and how many */
 };
 
 static inline void cg_scc_init(struct cg_scc *p, uint64_t now)
@@ -562,6 +564,18 @@ static inline void cg_scc_ack(struct cg_scc *p, const struct cg_scc_cfg *c, uint
 			} else if (sig && ++p->full_n >= 3) {
 				p->mode = CG_SCC_DRAIN_M;
 			}
+		}
+		/* a round without queue at under half what the engine sees its
+		 * links take: start again, at most every CG_SCC_KICK_US (NR to
+		 * LTE: cut to 11.7 Mbit/s with the queue NR left, then 7 s at
+		 * PROBE's 5/4 a cycle back to 28 with the engine at 35) */
+		if (p->mode == CG_SCC_PROBE_M && !p->r_q && !p->cong && !p->heavy && p->hint >= CG_SCC_START / 2 &&
+		    cg_scc_bw(p) * 2 < p->hint && (!p->kick_t || now - p->kick_t >= CG_SCC_KICK_US)) {
+			p->mode = CG_SCC_STARTUP_M;
+			p->full_bw = 0;
+			p->full_n = 0;
+			p->kick_t = now;
+			p->n_kick++;
 		}
 		p->r_q = 0;
 		p->r_lost = p->r_dla = 0;

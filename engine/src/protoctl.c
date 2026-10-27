@@ -2036,6 +2036,7 @@ void cg_pctl_json(const struct cg_pctl *p, struct cg_json *j)
 		cg_json_u64(j, "congested", c->n_cong);
 		cg_json_u64(j, "cuts", c->n_cut);
 		cg_json_u64(j, "rebases", c->n_rebase);
+		cg_json_u64(j, "kicks", c->n_kick); /* restarts under the engine's capacity */
 		cg_json_ms(j, "horizon_ms", p->pr[i].horizon_us); /* the engine's repair horizon (task #77) */
 		/* what each link adds to the delay of what comes from this peer
 		 * (linkowd.h): taken off before the ACK's least */

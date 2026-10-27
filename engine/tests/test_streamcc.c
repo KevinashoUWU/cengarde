@@ -238,6 +238,40 @@ void test_streamcc(void)
 		CHECK(cg_scc_bw(&q) > 3000000);
 	}
 
+	/* a round without queue at under half the engine's capacity starts
+	 * again (NR to LTE), at most every CG_SCC_KICK_US */
+	{
+		struct cg_scc q;
+		uint64_t t = 10000000;
+
+		cg_scc_init(&q, 0);
+		q.mode = CG_SCC_PROBE_M;
+		q.min_rtt = 20000;
+		q.bw = q.bmax[0] = q.bmax[1] = 1000000;
+		q.bt = t; /* the estimator's bucket current: the sample does not roll it away */
+		cg_scc_hint(&q, 4000000, 0);
+		q.sent = 100000;
+		cg_scc_ack(&q, &c, t, 1200, 1, 1, 0, t - 20000, 0, 0, t - 20000, 0);
+		CHECK_EQ(q.mode, CG_SCC_STARTUP_M);
+		CHECK_EQ(q.n_kick, 1);
+		/* not again within CG_SCC_KICK_US */
+		q.mode = CG_SCC_PROBE_M;
+		q.round_dl = 0;
+		cg_scc_ack(&q, &c, t + 1000000, 1200, 1, 1, 0, t + 980000, 0, 0, t + 980000, 0);
+		CHECK_EQ(q.mode, CG_SCC_PROBE_M);
+		CHECK_EQ(q.n_kick, 1);
+		/* near the engine's capacity: nothing */
+		cg_scc_init(&q, 0);
+		q.mode = CG_SCC_PROBE_M;
+		q.min_rtt = 20000;
+		q.bw = q.bmax[0] = q.bmax[1] = 3000000;
+		q.bt = t;
+		cg_scc_hint(&q, 4000000, 0);
+		q.sent = 100000;
+		cg_scc_ack(&q, &c, t, 1200, 1, 1, 0, t - 20000, 0, 0, t - 20000, 0);
+		CHECK_EQ(q.n_kick, 0);
+	}
+
 	/* the repair horizon (task #77): while a code sends repairs, RACK waits
 	 * for them and the NACK; without, the window duplicates widened; a
 	 * heavy loss takes the base back; never past a second */
