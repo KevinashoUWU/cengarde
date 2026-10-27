@@ -1,7 +1,7 @@
 # 013 — Capacidad por enlace y dosificación (paso 4 del bonding)
 
-- **Fecha:** 2026-10-14
-- **Estado:** vigente. PR 1 hecho (PR #32, 0.6.5): el plazo del reordenador según la oscilación de cada enlace. PR 2 hecho (PR #33, 0.6.6): la capacidad de cada enlace. PR 3 (PR #34, 0.6.7): los pesos según la capacidad (`capacity_weights`), +50 % en la bajada (n = 5, p = 0,075). Medidos en la red de pruebas. PR 4 (PR #35, 0.6.8): `shape_mbit` y `bench/shaper.sh`, experimental; todavía cuesta ~40 % de la bajada.
+- **Fecha:** 2026-10-14 (actualizada el 2026-10-26: C2, la máscara de enlaces activos)
+- **Estado:** vigente. C2 (PR #118, protocolo 11): el reordenador espera solo a los enlaces por los que el otro extremo manda datos. PR 1 hecho (PR #32, 0.6.5): el plazo del reordenador según la oscilación de cada enlace. PR 2 hecho (PR #33, 0.6.6): la capacidad de cada enlace. PR 3 (PR #34, 0.6.7): los pesos según la capacidad (`capacity_weights`), +50 % en la bajada (n = 5, p = 0,075). Medidos en la red de pruebas. PR 4 (PR #35, 0.6.8): `shape_mbit` y `bench/shaper.sh`, experimental; todavía cuesta ~40 % de la bajada.
 - **Fuentes:**
   - las medidas del 2026-10-14 en el banco y en la Pi, en [012](012-bonding.md) («El gobernador en el banco…», «El gobernador en la bajada y `cake`…», «… en la Pi»);
   - código leído: `engine/src/reorder.h` (plazo de un hueco, líneas 70–80 del comentario), `govern.h`, `split.h`, `health.h`, `proto.h` (`struct cg_probe_info`: `rx` por camino), `clientpath.h`, `server.c` (`peer_asks`, `apply_config`);
@@ -14,6 +14,7 @@
 - **El gobernador por cola sirve en la bajada** (+22 % a +108 %; los enlaces bajan entre 20 y 230 Mbit/s), **no en la subida** (los cuatro suben parecido). Un `cake` con tope fijo cuesta 35–40 % del caudal de bajada, porque la capacidad cambia con la hora. Lo que falta es **la capacidad de cada enlace**, medida, para repartir según ella y fijar el tope de un `cake` que la siga.
 - **La capacidad sale de lo que el otro extremo dice haber recibido** por cada camino (`rx` en cada sonda, ya en el protocolo v4): no hace falta cambiar el formato.
 - **La cola queda en `cake`, no en el motor ni en el módem:** el motor calcula los pesos del reparto y el tope total, y un `cake` sobre la interfaz del túnel (router: subida; VPS: bajada) lo aplica, con su reparto justo entre flujos y su AQM. El motor sigue sin colas propias ni bloqueos (reglas del plano de datos). Dosificar cada enlace dentro del motor queda para después, solo si esto no alcanza.
+- **Un enlace vivo y ocioso ya no lleva cada hueco al tope** (C2, 2026-10-26, abajo): las sondas llevan la máscara de los enlaces por los que el emisor manda datos, y el receptor espera solo a esos (más lo que llegó y lo que pudo quedar en camino). Con un enlace de 150 ms que el ETA no usa, los huecos que iban al tope bajan de 165 a 8 por corrida (bajada) y de 242 a 30 (subida) [medido, n = 3, cordura]; el A/B fino está pendiente.
 - **Abierto:** un equipo de la LAN que sube con Cubic rinde la mitad que la Pi misma, sin pérdidas en ningún tramo medido (LAN, Pi, enlaces, entrada del VPS) y con retransmisiones que no son espurias. Con `fq` o BBR en el emisor, casi se iguala.
 
 ## Contexto
@@ -536,6 +537,113 @@ con 4 flujos y 20 s, 3 rondas alternadas, salvo que se diga otra cosa.
 - **Pendiente:** el A/B en la red de pruebas cuando vuelvan los módems
   (`fastab.sh`: reinicio, carga de 8 s, reposo de 40 s y la rampa).
 
+### 2026-10-26: el receptor espera solo a los enlaces con datos (C2, PR #118)
+
+- **El problema (auditoría de relojería, 2026-10-17, C2;
+  `~/campo/2026-10-17/relojeria/analysis.md`):** el `rset` del reordenador
+  era todo enlace no silenciado (`ro_rset` en `client.c` y `server.c`), y ni
+  G4 ni el ETA viajan al receptor. RACK suelta un hueco solo cuando todos
+  los enlaces de `rset` trajeron algo posterior, y el plazo toma el peor
+  retardo + 4 desvíos + el margen adaptativo, que no decae en un enlace
+  ocioso: con un enlace vivo que no lleva nada (un respaldo, uno que el ETA
+  o G4 dejan fuera), cada hueco esperaba el tope (`reorder_max_wait_ms`).
+  Descartado el 2026-10-18: sacar de `rset` los enlaces sin retardo medido
+  (rompe una garantía buscada: un hueco puede ir por un enlace aún sin
+  medir; `sc_rack` y el verificador de modelo de `test_reorder.c`) y
+  `reorder_idle_ms = 500` (no ayudó).
+- **El diseño (`engine/src/active.h`, puro, nota del mapa «Enlaces
+  activos»):**
+  - **En el cable** (protocolo 11, aún sin publicar: sin versión nueva):
+    4 bytes tras la cola de bonding de cada sonda y respuesta
+    (`cg_probe_act`): 16 bits, uno por enlace, con los que llevaron datos
+    dentro de la retención anterior al ts del mensaje, y la retención en ms
+    (200, `CG_ACT_HOLD_MS`). Un enlace fuera de la máscara no llevó nada
+    enviado después de ts − retención. La respuesta la lleva solo si la
+    sonda la traía; sin ella, todo como antes.
+  - **Emisor:** cuenta un enlace por lo que va solo por él (DATA repartido),
+    un reenvío por NACK, una paridad o una reparación; de lo copiado, solo
+    el enlace que debería llegar primero según sus retardos de ida (y los de
+    retardo desconocido). La primera versión contaba toda copia, y en el
+    laboratorio el enlace ocioso seguía «activo» para siempre: el ping de
+    84 bytes y los ACK, chicos, van por todos los portadores (`early` 0 en la
+    subida). Tras un arranque o una recarga, todos durante la retención.
+  - **Receptor:** la máscara de la sonda más nueva (por secuencia de
+    control, como la cola de bonding). Un enlace cuenta en `rset` si no hay
+    máscara en vigor (ninguna, o de hace más de 2 s), si la máscara lo tiene,
+    si algo que llegó dice que llevó datos en el ts de la máscara o después
+    (una primera copia verificada por él, una que lo nombra en `CG_F_PREV`,
+    una paridad o reparación por él), o, fuera de la máscara, hasta que pudo
+    llegar todo lo que llevó: el tiempo desde el que no llevó nada (ts −
+    retención, que se mantiene mientras las máscaras siguientes se toquen)
+    más su retardo, cuatro desvíos, su margen adaptativo y
+    `reorder_margin_ms`. Uno sin retardo medido sigue (la garantía de
+    `sc_rack`). Ese momento entra en el plazo de `epoll`.
+  - **La garantía:** ningún hueco se suelta mientras su paquete pueda
+    llegar todavía (con los retardos del propio reordenador) por un enlace
+    que llevó datos cuando salió. Lo que llevó un enlace cerrado llega
+    antes de su horizonte; un enlace que se empieza a usar después de la
+    última máscara abre con su propio paquete o con el siguiente, que lo
+    nombra, por un enlace más rápido: el paquete retenido más bajo llegó
+    por un enlace abierto, así que el plazo cuenta el enlace del paquete
+    anterior, que llega dentro de ese plazo y abre el del anterior, y así
+    hasta el hueco; RACK espera a cada enlace así abierto. Lo que no cubre:
+    la pérdida justo del paquete que nombraría a un enlace recién activado,
+    y las copias que no son la primera esperada (con la primera perdida,
+    llegan tarde, como un paquete repartido perdido en su enlace).
+  - **`reorder_active`** (`yes`) apaga el recorte en el que recibe; el
+    emisor manda la máscara siempre. Estado: `active` (máscara del otro,
+    `rset`, `early`: huecos soltados antes gracias a la máscara, `at_cap`:
+    huecos que fueron al tope).
+- **Tests [`make -C engine test`, ASan, TSAN, aarch64 en qemu]:**
+  `test_active.c` prueba la regla, la garantía de `sc_rack` (un enlace sin
+  retardo se queda, y el plazo es el tope) y flujos aleatorios (120
+  semillas, 2–4 enlaces de hasta 150 ms que el emisor prende y apaga,
+  sondas perdidas y desordenadas, una recarga): sin pérdida no se suelta
+  ningún hueco con la regla ni con todos los enlaces, y sí con reglas más
+  débiles (la máscara sola: 2457; sin la evidencia de lo que llega: 2428);
+  con 0,5 % de pérdida se sueltan los mismos 1601 huecos, 287 antes, ninguno
+  antes de tiempo. El verificador de modelo de `test_reorder.c` suma el
+  conjunto ancho y los contadores nuevos.
+- **Laboratorio, cordura [medido, n = 3, `labq.py --lab-offset 8 -j 6`,
+  `BOND_TUNNEL=native`, el perfil de la 026, 20 s, Cubic;
+  `~/campo/2026-10-26/c2/`]:** master `6d1e9a5` contra `7af8ce0`; caso nuevo
+  `idleslow` (enlaces de 50 Mbit/s a 20 y 25 ms y uno de 20 Mbit/s a 150 ms
+  que el ETA no usa mientras las colas de los otros no pasan de 125 ms).
+  Por corrida, en el extremo que recibe:
+
+  | `idleslow` | Mbit/s master / C2 | `lost.cap` | `lost.rack` | `early` |
+  | --- | --- | --- | --- | --- |
+  | bajada | 62,5 / 62,5 | 165 → 8 | 13 → 139 | 118 |
+  | subida | 61,5 / 60,7 | 242 → 30 | 0 → 251 | 251 |
+  | bajada, FEC v3 | 57,1 / 55,6 (otra ronda: 54,9 / 57,3) | 23 → 9 | 4096 → 8577 | 4137 |
+  | subida, FEC v3 | 60,8 / 53,3 (otra ronda: 56,8 / 56,9) | 40 → 0 | 3 → 4911 | 2248 |
+
+  - Sin FEC, ningún tardío nuevo: `late.after_*` 0 en `het`, `idleslow`,
+    `clean4` y `lossy` en los dos brazos; en `ltespikerand`, 1368 y 1132
+    (master) contra 1136 y 1148. La máscara actúa también en `het` subida
+    (82 huecos antes), `lossy` (34–38) y `ltespikerand` (14–36; ahí 440
+    huecos van al tope, de un enlace en su salto).
+  - El caudal queda dentro del ruido (n = 3): `het` bajada 60,7 / 55,8 en
+    una ronda y 55,6 / 55,9 en otra, sin un solo hueco soltado antes en
+    ninguna (con `early` 0 las decisiones son las de master: es ruido);
+    `clean4` 49,0 / 48,8 y 57,6 / 55,2; `ltespikerand` 63,7 / 59,5 y
+    67,8 / 67,8; con FEC, `lossy` 45,6 / 60,1 y 55,7 / 61,2.
+  - **Con la FEC v3 sin rescate**, RACK suelta los huecos antes de que
+    llegue la reparación, y lo rehecho llega tarde (`late.after_rack` ≈
+    `lost.rack`, ya en master en `clean4`: 9184 y 9152). El enlace ocioso lo
+    escondía en `idleslow`, porque bloqueaba a RACK: con la máscara, el
+    doble de huecos se rehace tarde. Con `rescue_wait_ms = 60` (el perfil de
+    terreno) master y C2 quedan parejos (bajada 51,7 / 53,3, subida 60,1 /
+    55,7, n = 3).
+  - `d5c41f6` (la máscara sigue en vigor para un reloj algo atrás del suyo:
+    el hub juzga un lote por la hora en que la bomba lo leyó), repetido en
+    `idleslow` y `het` (n = 3, otra semilla): `lost.cap` 113 → 14 (bajada) y
+    300 → 34 (subida), sin tardíos; `het` igual (59,3 / 57,5 y 67,4 / 66,2).
+    Es el commit para el A/B.
+- **Pendiente:** el A/B intercalado n = 6 (el usuario); el terreno; que un
+  hueco que protege un código espere su reparación antes de RACK cuando no
+  hay rescate (FEC v3).
+
 ## Qué hacemos con esto (diseño)
 
 ### Piezas
@@ -592,3 +700,4 @@ con 4 flujos y 20 s, 3 rondas alternadas, salvo que se diga otra cosa.
 - 2026-10-15: los A/B de ETA y de la dosificación, MPTCP, el falso hundimiento por `tcp_mem` del VPS, speedtest y la capacidad con cola (PR 5).
 - 2026-10-15: el PR 5 medido en la red de pruebas: neutro; la bajada de 16 flujos llega a 280–344 con los enlaces de la mañana.
 - 2026-10-15: el arranque rápido (PR #56): neutro en el laboratorio, que no reproduce el enfriamiento; el A/B en terreno, pendiente.
+- 2026-10-26: C2 (PR #118): la máscara de enlaces activos en las sondas y el `rset` del receptor recortado a ella (`active.h`, `reorder_active`, caso `idleslow`); cordura en el laboratorio.

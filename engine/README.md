@@ -415,6 +415,24 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
   0–1000). Donde no hay reparto, es decir, con redundancia pura, la espera
   es `reorder_dup_wait_ms` (0; de 0 a `reorder_max_wait_ms`): con 0 no se
   retiene nada y el orden de entrega es el de siempre.
+- **`reorder_active` (`yes`; `yes` o `no`), en el que recibe:** un hueco
+  espera solo a los enlaces por los que el otro extremo está mandando datos
+  (la auditoría de relojería C2, historia 013, protocolo 11). Antes esperaba
+  a todo enlace no silenciado: un enlace vivo pero ocioso (un respaldo, o
+  uno que el ETA deja sin nada) no traía nada, RACK no saltaba nunca y cada
+  hueco iba al tope (`reorder_max_wait_ms`). Cada sonda y su respuesta
+  llevan ahora la máscara de los enlaces por los que su emisor llevó datos
+  en los últimos 200 ms: lo que fue solo por un enlace, un reenvío, una
+  paridad o una reparación; de lo copiado (los paquetes chicos van por
+  todos), solo el enlace que debería llegar primero. El receptor espera a
+  un enlace mientras la máscara lo tenga, mientras llegue algo por él o
+  algo que diga que el paquete anterior fue por él (`CG_F_PREV`), y, cuando
+  sale de la máscara, hasta que pudo llegar todo lo que llevó (su retraso,
+  cuatro desvíos y `reorder_margin_ms`); uno todavía sin retraso medido
+  sigue esperándose. Con `no`, como antes. En el laboratorio, con un tercer
+  enlace de 150 ms que el ETA no usa (`idleslow`), los huecos que iban al
+  tope bajaron de 165 a 8 por corrida en la bajada y de 242 a 30 en la
+  subida (n = 3, cordura); el estado lo cuenta en `active`.
 - **`reorder_bypass` (128; 0–2048 bytes):** los datagramas de datos de
   WireGuard de hasta ese tamaño (keepalives, ACK de TCP vacíos) y los
   handshakes se entregan al instante, sin esperar. Con 0, solo los handshakes.
@@ -1670,6 +1688,15 @@ subida:
   soltó una sola pasada del bucle, que entrega a lo sumo 512 (el resto va
   en las pasadas siguientes, cada una con su tanda), salvo cuando la
   ventana se desborda y sale todo junto.
+A su lado, `active` dice a qué enlaces espera (`reorder_active`):
+`peer_mask`, la máscara de la sonda más nueva del otro extremo (bit i: el
+enlace i), con `peer_hold_ms` y `peer_age_ms` (`null` sin ninguna);
+`base`, los enlaces no silenciados, y `rset`, los que espera ahora;
+`masks`, las máscaras tomadas; `opened`, los enlaces que abrió algo que
+llegó antes que la máscara; `early`, los huecos que se soltaron antes
+gracias a la máscara (con todos los enlaces habrían esperado más);
+`at_cap`, los que vencieron en el tope mismo; y `sent`, la máscara que
+manda este extremo.
 Por enlace, `rx_owd_spread_ms` es cuánto va su retraso de llegada (bajada
 en el cliente, subida en el servidor) por detrás del más rápido de los
 enlaces que espera el reordenador (`null` sin medida), y
@@ -1910,6 +1937,14 @@ mapa de 64 bits; `src/repair.h`), y `CG_T_REPAIR`/`CG_T_PARQ` en los dos
 sentidos. Un servidor 10 contaría una reparación ancha como mal formada y el
 router protegería en vano. `cengarde-vps-setup` acepta 4 a 11 y tiene
 `fec on|off` (el anillo y los decodificadores en el VPS).
+
+En la misma versión, antes de publicarla (historia 013, C2): tras los 4
+bytes de la cola de bonding, 4 más con la máscara de enlaces activos
+(`cg_probe_act`): 16 bits, uno por enlace, con los que llevaron datos en
+la retención anterior al ts del mensaje, y la retención en ms (16 bits).
+El cliente la manda en cada sonda; el servidor, solo en la respuesta a una
+sonda que la traía (una respuesta nunca es más grande que su sonda). Sin
+ella, el receptor espera a todos los enlaces no silenciados, como antes.
 
 ## Limitaciones conocidas
 

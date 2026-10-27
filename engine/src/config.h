@@ -216,6 +216,7 @@ struct cg_config {
 	uint32_t reorder_bypass;      /* data datagrams of up to this many bytes skip the reorderer */
 	int reorder_by_link;          /* a gap waits for the link the next packet says it went on (reorder.h) */
 	int reorder_adaptive;         /* each link's margin learns from its late packets (reorder.h) */
+	int reorder_active;           /* wait for a gap only on the links the peer carried DATA on lately (active.h, C2) */
 	uint32_t rescue_kb;           /* server: the ring of DATA sent lately, for NACKs (rescue.h); 0: none */
 	uint32_t rescue_pct;          /* server: what a rescue may cost, % of the download */
 	uint32_t rescue_wait_ms;      /* a gap about to go is asked for and waits this long; 0: never */

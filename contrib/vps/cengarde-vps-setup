@@ -902,8 +902,9 @@ check_proto() {
 	# 7 the FEC parity, 8 the erasure codes' repairs, 9 the parity requests
 	# (PARQ) and the hint sealed after the copies, 10 the protocontroller's
 	# streams (story 025; protocontroller is the engine's own knob), 11 FEC
-	# v3's wide windows (story 026; fec_code is the engine's own knob): the
-	# same configurations.
+	# v3's wide windows (story 026; fec_code is the engine's own knob) and
+	# the active mask in the probes (story 013, reorder_active, on by
+	# default): the same configurations.
 	case "$P" in
 	4 | 5 | 6 | 7 | 8 | 9 | 10 | 11) ;;
 	*) die "this cengarde-vps-setup writes configurations of protocol 4 to 11 (cengarde 0.5.2 on, a [client NAME] section per router), and the engine says protocol ${P:-unknown}: install both from one checkout (contrib/vps/install.sh)" ;;

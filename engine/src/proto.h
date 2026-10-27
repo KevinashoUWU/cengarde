@@ -6,7 +6,9 @@
  * CG_F_PREV written after the copies were decided, version 10 no
  * protocontroller's streams in DATA, story 025: protoctl.h; version 11 adds
  * FEC v3's wide windows, story 026: CG_REP_RLCW repairs, repair.h, and
- * repairs and parity requests either way).
+ * repairs and parity requests either way, and the active mask after the
+ * bonding tail, cg_probe_act: the links the sender carries DATA on, for
+ * the receiver's reorderer, active.h).
  *
  * Every datagram between client and server carries a 24-byte header followed
  * by the payload (a WireGuard datagram for DATA). All integers are big-endian.
@@ -303,6 +305,26 @@ struct cg_probe_bond {
 	uint8_t tcpmark;  /* CG_BOND_TCPMARK */
 };
 
+/* The active mask (version 11, clockwork audit C2, active.h): 4 bytes after
+ * the bonding tail, at CG_PROBE_BOND_LEN: a big-endian 16-bit mask whose
+ * bit i says the sender carried DATA, a copy, a packet sent again, a parity
+ * or a repair on link i within hold before this message's ts, and the hold
+ * in ms (big-endian 16 bits). A link out of the mask carried nothing sent
+ * after ts - hold; for hold after a start or a reload every link is in it.
+ * The receiver's reorderer waits for a gap only on the links it does not
+ * mute that are in the newest mask, or that it knows carried something
+ * since, or whose packets may still be on their way (active.h). A client
+ * sends it in every probe (its upload), a server in its reply to a probe
+ * that had one (the download): a reply is never larger than its probe. A
+ * receiver without it reads 0 (cg_probe_act_read) and waits for every link
+ * it does not mute, as before. */
+#define CG_PROBE_ACT_LEN (CG_PROBE_BOND_LEN + 4)
+
+struct cg_probe_act {
+	uint16_t mask;    /* links that carried something within hold_ms before ts */
+	uint16_t hold_ms; /* the sender's hold */
+};
+
 /* HELLO payload: the server answers a probe it cannot take yet. echo_ts ties
  * it to that probe (the client takes each echo once, epoch.h), cookie is what
  * the probes of that link have to carry from then on. */
@@ -338,6 +360,11 @@ void cg_probe_bond_write(uint8_t *payload, const struct cg_probe_bond *b);
  * weight above CG_BOND_WEIGHT_MAX read as the maximum; 0 with *b zeroed when
  * the payload has none (a peer without it, plen < CG_PROBE_BOND_LEN). */
 int cg_probe_bond_read(struct cg_probe_bond *b, const uint8_t *payload, size_t plen);
+/* The active mask, at payload + CG_PROBE_BOND_LEN (after the tail). */
+void cg_probe_act_write(uint8_t *payload, const struct cg_probe_act *a);
+/* The active mask of a probe or reply payload of plen bytes: 1 with *a
+ * read; 0 with *a zeroed when it has none (plen < CG_PROBE_ACT_LEN). */
+int cg_probe_act_read(struct cg_probe_act *a, const uint8_t *payload, size_t plen);
 
 /* A NACK payload (at most CG_NACK_LEN bytes into out) for seq[0..n) (n >=
  * 1), as ranges in their order: a sequence within 64 after a range's base

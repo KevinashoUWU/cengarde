@@ -41,6 +41,7 @@ Las decisiones del emisor de la **FEC v3** (`fec = yes` con `fec_code = rlc`, [[
 ## Choques conocidos
 - Una detención más larga que la que cubre la parte (s·T / (r·(1 − s)) más allá de la espera del receptor) no se rehace con la ventana sola: lo que falta lo pide la PARQ, una ida y vuelta ([[Reparación coherente (harq.h)]]); con TCP adentro el hueco no se retiene (la regla de la historia 023) y lo rehecho llega tarde.
 - Bajo saturación, mientras la parte está arriba (una ráfaga o pérdida al azar), las reparaciones toman su parte de la capacidad de los enlaces y rehacen también lo que una cola llena tiró; con `fec_pct_min` igual a `fec_pct`, siempre (la parte fija).
+- Sin rescate (`rescue_wait_ms` 0), RACK suelta un hueco en cuanto todos los enlaces de `rset` lo pasaron, antes de que llegue la reparación, y lo rehecho llega tarde (`late.after_rack` ≈ `lost.rack` en `clean4`). Un enlace ocioso en `rset` lo escondía, porque bloqueaba a RACK; desde la máscara de [[Enlaces activos (active.h)]] se ve también en `idleslow` (2026-10-26, [[013-capacidad-y-dosificacion]]).
 - La ventana guarda una copia de cada DATA (~2 MB en el router); al receptor le cuesta el anillo de 2048 y ~600 KB de ecuaciones por sesión.
 
 ## Archivos

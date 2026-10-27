@@ -104,6 +104,11 @@ FEC3 = [("fec_par", ("upload", "fec", "parities"), ("download_fec", "parities"))
         ("rlc_evicted", ("download_fec", "rlc_evicted"), ("repair", "rlc", "evicted")),
         ("rlc_peak", ("download_fec", "rlc_peak"), ("repair", "rlc", "peak"))]
 REPAIR += [k for k, _, _ in FEC3]
+# Which links the reorderer waits for (active.h, clockwork audit C2): the gaps
+# first due that the peer's active mask let go sooner, and those first due at
+# the hold cap itself.
+ACT = [("act_early", ("active", "early")), ("act_at_cap", ("active", "at_cap"))]
+REPAIR += [k for k, _ in ACT]
 GAUGES = GAUGES + ("rlc_peak",)
 COUNTERS = [k for k in RO_PATHS if k not in GAUGES] + ["too_old", "wireguard_drops", "lost_all"] + SENDS + REPAIR
 NAMES = list(RO_PATHS) + ["too_old", "wireguard_drops", "lost_all"] + SENDS + REPAIR
@@ -174,6 +179,8 @@ def flat_client(d):
         out[k] = None
     for k, cp, _ in FEC3:
         out[k] = num(dig(d, *cp))
+    for k, p in ACT:
+        out[k] = num(dig(d, *p))
     return out
 
 
@@ -204,6 +211,8 @@ def flat_session(s):
         out[k] = num(dig(s, *path))
     for k, _, sp in FEC3:
         out[k] = num(dig(s, *sp))
+    for k, p in ACT:
+        out[k] = num(dig(s, *p))
     return out
 
 

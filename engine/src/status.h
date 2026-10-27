@@ -50,6 +50,16 @@ struct cg_reorder;
 struct cg_ro_pool;
 void cg_json_reorder(struct cg_json *j, const char *key, const struct cg_reorder *r, int enabled,
 		     const struct cg_ro_pool *pool);
+/* Which links the reorderer waits for (active.h, clockwork audit C2), the
+ * same object at both ends: on (reorder_active), the peer's newest mask,
+ * its hold and age (ms, null before one), the links not muted (base) and
+ * those rset keeps now, the masks taken, the links evidence opened before
+ * a mask said so, the gaps first due that the narrowing let go sooner
+ * (early) and those first due at the hold cap (at_cap), and the mask this
+ * end sends (sent). now_us: the clock the masks were taken on. */
+struct cg_act_rx;
+void cg_json_active(struct cg_json *j, const char *key, const struct cg_act_rx *a, const struct cg_reorder *r, int on,
+		    uint16_t base, uint16_t rset, uint16_t sent, uint64_t now_us);
 /* How far link's receive delay (as the reorderer measures it) is behind the
  * fastest of the links in rset, ms (negative: ahead of them); null until
  * the link and one of rset have a delay. */

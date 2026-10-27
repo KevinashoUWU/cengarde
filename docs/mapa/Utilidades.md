@@ -20,7 +20,7 @@ archivos:
   - engine/src/engine.h
   - engine/src/main.c
   - engine/src/os.c
-sello: 0b9f6946ca7e1520
+sello: f592651a70209553
 ---
 # Utilidades
 
@@ -41,7 +41,7 @@ Cabeceras sin lógica de decisión ni medida propia. Una línea cada una.
 - `names.h` / `names.c`: los sockets de las búsquedas DNS ([[Nombres del servidor (resolve.h)]]).
 - `dns.h`: el códec DNS, con lectura acotada de entrada no confiable.
 - `tun.h` / `tun.c`, `ippkt.h`: la TUN del túnel nativo y la forma de un paquete IP ([[Rutas del túnel nativo (tunroute.h)]]).
-- `status.h` / `status.c`: el JSON de estado, escrito atómico (`sig` por enlace: [[Observaciones del enlace (linksig.h)]]; `tcp_e2e`: [[Liberación TCP (tcpfree.h)]]; `rule` y `tcp_rule`: [[Retransmisión según la evidencia (tcpack.h)]]).
+- `status.h` / `status.c`: el JSON de estado, escrito atómico (`sig` por enlace: [[Observaciones del enlace (linksig.h)]]; `tcp_e2e`: [[Liberación TCP (tcpfree.h)]]; `rule` y `tcp_rule`: [[Retransmisión según la evidencia (tcpack.h)]]; `active`: [[Enlaces activos (active.h)]]).
 - `ctl.h` / `ctl.c`: el socket de control (`cengarde ctl`).
 - `log.h` / `log.c`: el registro.
 - `engine.h`: piezas comunes de los bucles; traduce la config a `cg_hcfg` ([[Salud y silenciado (health.h)]]) y `cg_ro_cfg` ([[Reordenador (reorder.h)]]); las etiquetas de epoll (`CG_EV_PCTL`: los sockets de [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]]).

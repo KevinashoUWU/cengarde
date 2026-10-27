@@ -115,7 +115,13 @@
  *
  * rset: the links the peer sends DATA on. One left out may give up a gap
  * early (its packets then come late); one too many only waits for the
- * deadline. The window, N = 4096, stays under the anti-replay window (8128):
+ * deadline. The callers take the links the peer does not mute and narrow
+ * them to those it carried DATA on lately (active.h: the mask in its
+ * probes, clockwork audit C2), so that an idle live link no longer holds
+ * every gap to the cap; wide (set by the caller, 0: not counted) is rset
+ * without that narrowing, and due_narrow counts the gaps first due (given
+ * up, or asked for) that wide would have kept waiting, due_capped those
+ * first due at the hold cap itself. The window, N = 4096, stays under the anti-replay window (8128):
  * a packet the head waits for still passes cg_replay_check, and a packet
  * whose gap was given up has 8128 - 4096 sequences to come late.
  *
@@ -262,6 +268,11 @@ struct cg_ro_stats {
 	uint64_t asked, rescued, ask_lost; /* rescue: gaps asked for, that came, that did not */
 	uint64_t ask_repaired;            /* of the asked gaps that came, those rebuilt (story 023), not in rescued */
 	uint64_t ask_refused;             /* of ask_lost, those the sender said would not come */
+	/* Gaps first due (given up, or asked for with rescue) by RACK or the
+	 * deadline that wide would have kept waiting: let go sooner thanks to
+	 * the peer's active mask (active.h, C2); and gaps first due at the hold
+	 * cap itself (no delay for every link of rset, or one beyond the cap). */
+	uint64_t due_narrow, due_capped;
 	uint32_t held_max, max_burst;
 	uint64_t wait[CG_RO_HIST], late_by[CG_RO_HIST];
 };
@@ -277,6 +288,7 @@ struct cg_reorder {
 	uint32_t retx_to;      /* with retx_on: gaps up to it, of packets held sent by retx_ts - release, go */
 	uint32_t retx_ts;      /* the sender's ts of the newest TCP retransmission */
 	uint8_t init, force, split_seen, retx_on;
+	uint16_t wide; /* the caller's rset without the active mask (active.h), for due_narrow; 0: not counted */
 	struct cg_ro_link link[CG_MAX_LINKS];
 	struct cg_ro_stats st;
 	uint32_t ask[CG_RO_ASK_MAX]; /* rescue: the sequences to ask for, nask of them; the caller empties it */
@@ -620,6 +632,60 @@ static inline uint32_t cg_ro_deadline_link(const struct cg_reorder *r, const str
 	return dl;
 }
 
+/* When a packet link l carried, sent at ts, has arrived by its delay, swing
+ * and adaptive margin plus margin_us (the deadline's terms): 1 and *until,
+ * on the local clock; 0 when the link has no delay yet (active.h). */
+static inline int cg_ro_link_until(const struct cg_reorder *r, unsigned l, uint32_t margin_us, uint32_t ts,
+				   uint32_t *until)
+{
+	const struct cg_ro_link *k;
+	uint32_t sw;
+
+	if (l >= CG_MAX_LINKS)
+		return 0;
+	k = &r->link[l];
+	sw = cg_ro_swing(k);
+	if (!k->owd_ok || sw >= INT32_MAX / 2)
+		return 0;
+	*until = ts + k->owd + sw + k->adapt_us + margin_us;
+	return 1;
+}
+
+/* Whether the deadline of a gap whose lowest held packet above is (ts,
+ * t_arr), with cap c > 0, is the cap itself: no delay for every link of
+ * rset, or the slowest one's beyond it. */
+static inline int cg_ro_capped(const struct cg_reorder *r, const struct cg_ro_cfg *cf, uint16_t rset, uint32_t ts,
+			       uint32_t t_arr, uint32_t c)
+{
+	uint32_t m;
+
+	return !cg_ro_owd_max(r, rset, &m) || (int32_t)(ts + m + cf->margin_us - (t_arr + c)) >= 0;
+}
+
+/* The same for a gap that went on link l alone (cg_ro_deadline_link). */
+static inline int cg_ro_capped_link(const struct cg_reorder *r, const struct cg_ro_cfg *cf, int l, uint32_t ts,
+				    uint32_t t_arr, uint32_t c)
+{
+	uint32_t e;
+
+	return !cg_ro_link_until(r, (unsigned)l, cf->margin_us, ts, &e) || (int32_t)(e - (t_arr + c)) >= 0;
+}
+
+/* With wide (r->wide, 0: not counted): 1 when gap g, which rset gives up
+ * at now by RACK or its deadline (lowest held packet above it (ts, t_arr),
+ * cap c), would still wait under wide: let go sooner by the narrowing. */
+static inline int cg_ro_narrowed(const struct cg_reorder *r, const struct cg_ro_cfg *cf, uint16_t rset, uint32_t g,
+				 uint32_t ts, uint32_t t_arr, uint32_t c, uint32_t now)
+{
+	uint32_t lim = 0;
+
+	if (!r->wide || !(r->wide & (uint16_t)~rset))
+		return 0;
+	if (cg_ro_rack(r, r->wide, &lim) && (int32_t)(lim - g) > 0)
+		return 0;
+	return c && (int32_t)(now - cg_ro_deadline(r, cf, r->wide, ts, t_arr, c)) < 0;
+}
+
 /* Whether gap g goes when a packet (ts, t_arr) with cap c arrives at its
  * end and nothing is held: forced, given up by RACK (its own link's when
  * known, else every link's: rack and lim), or past its deadline. *why says
@@ -952,6 +1018,8 @@ static inline int cg_ro_skip(struct cg_reorder *r, const struct cg_ro_cfg *cf, c
 				s->state = CG_RO_EMPTY;
 				r->passed_ahead--;
 			} else {
+				if (!cg_ro_forced(r, g) && cg_ro_narrowed(r, cf, rset, g, k->ts, k->t_arr, c, k->t_arr))
+					r->st.due_narrow++;
 				cg_ro_lose(r, g,
 					   cg_ro_forced(r, g)                   ? CG_RO_LOST_OVF
 					   : rack && (int32_t)(lim - g) > 0 ? CG_RO_LOST_RACK
@@ -981,6 +1049,9 @@ static inline int cg_ro_skip(struct cg_reorder *r, const struct cg_ro_cfg *cf, c
 			r->passed_ahead--;
 		} else {
 			cg_ro_gap_gone(r, cf, rset, g, rack, lim, k->ts, k->t_arr, c, &why);
+			if (why != CG_RO_LOST_OVF && cg_ro_gap_link(r, cf, g) < 0 &&
+			    cg_ro_narrowed(r, cf, rset, g, k->ts, k->t_arr, c, k->t_arr))
+				r->st.due_narrow++;
 			cg_ro_lose(r, g, why, k->t_arr);
 		}
 	}
@@ -1102,7 +1173,7 @@ static inline int cg_ro_next(struct cg_reorder *r, const struct cg_ro_cfg *cf, u
 	while (r->held || r->passed_ahead || r->force) {
 		uint32_t g = r->head;
 		struct cg_ro_slot *s = &r->slot[g % CG_RO_SLOTS];
-		uint8_t why;
+		uint8_t why, dn = 0, dc = 0; /* first due: let go sooner by the narrowing, at the cap */
 
 		if (s->seq == g && s->state == CG_RO_HELD) {
 			o->seq = g;
@@ -1150,11 +1221,12 @@ static inline int cg_ro_next(struct cg_reorder *r, const struct cg_ro_cfg *cf, u
 				why = CG_RO_LOST_RACK;
 			} else {
 				const struct cg_ro_slot *n = cg_ro_lowest_slot(r);
+				uint32_t c = cg_ro_cap(r, cf, n->flags, n->t_arr);
 
-				if ((int32_t)(now - cg_ro_deadline_link(r, cf, l, n->ts, n->t_arr,
-									cg_ro_cap(r, cf, n->flags, n->t_arr))) < 0)
+				if ((int32_t)(now - cg_ro_deadline_link(r, cf, l, n->ts, n->t_arr, c)) < 0)
 					break;
 				why = CG_RO_LOST_CAP;
+				dc = c && cg_ro_capped_link(r, cf, l, n->ts, n->t_arr, c);
 			}
 		} else {
 			if (rack < 0)
@@ -1173,16 +1245,30 @@ static inline int cg_ro_next(struct cg_reorder *r, const struct cg_ro_cfg *cf, u
 					break;
 				why = CG_RO_LOST_CAP;
 			}
+			{
+				const struct cg_ro_slot *n = cg_ro_lowest_slot(r);
+				uint32_t c = cg_ro_cap(r, cf, n->flags, n->t_arr);
+
+				dn = (uint8_t)cg_ro_narrowed(r, cf, rset, g, n->ts, n->t_arr, c, now);
+				dc = why == CG_RO_LOST_CAP && c && cg_ro_capped(r, cf, rset, n->ts, n->t_arr, c);
+			}
 		}
 		/* Rescue: a gap about to go is asked for once, and waits; not one
 		 * that nothing waits for (C 0) unless every link is past it. */
 		if (cf->rescue_us && why != CG_RO_LOST_OVF && why != CG_RO_LOST_RETX &&
 		    !(s->seq == g && s->state == CG_RO_ASKED)) {
 			const struct cg_ro_slot *n = cg_ro_lowest_slot(r);
+			uint32_t asked = r->nask;
 
-			if ((why == CG_RO_LOST_RACK || cg_ro_cap(r, cf, n->flags, n->t_arr)) && cg_ro_ask(r, g, why, now))
+			if ((why == CG_RO_LOST_RACK || cg_ro_cap(r, cf, n->flags, n->t_arr)) && cg_ro_ask(r, g, why, now)) {
+				/* the gaps asked with it are due alike */
+				r->st.due_narrow += dn * (uint64_t)(r->nask - asked);
+				r->st.due_capped += dc * (uint64_t)(r->nask - asked);
 				break;
+			}
 		}
+		r->st.due_narrow += dn;
+		r->st.due_capped += dc;
 		cg_ro_lose(r, g, why, now);
 		r->head++;
 		cg_ro_moved(r);

@@ -5,7 +5,7 @@ archivos:
   - engine/src/split.h
   - engine/src/capacity.h
   - engine/src/reorder.h
-sello: 7a55fff237c62027
+sello: 17856b30098c0c21
 ---
 # Glosario
 
@@ -65,7 +65,8 @@ Términos del proyecto, en español, con el nombre del código entre paréntesis
 - **Reordenador / hueco / plazo / margen:** pone en orden; un hueco es una secuencia que falta; el plazo es cuánto se la espera. → [[Reordenador (reorder.h)]]
 - **RACK:** abandonar un hueco cuando todos los enlaces trajeron algo posterior. → [[Reordenador (reorder.h)]]
 - **Tardío (late):** llegó después de abandonado su hueco. → [[Reordenador (reorder.h)]]
-- **rset:** los enlaces que el reordenador espera. → [[Reordenador (reorder.h)]]
+- **rset:** los enlaces que el reordenador espera: los no silenciados que el otro extremo usa. → [[Reordenador (reorder.h)]]
+- **Máscara de enlaces activos / retención / horizonte:** los enlaces por los que el emisor llevó datos dentro de su retención (200 ms), en cada sonda; un enlace que salió de ella sigue esperándose hasta que pudo llegar todo lo que llevó. → [[Enlaces activos (active.h)]]
 - **Rescate / NACK / GONE:** pedir de nuevo un hueco; el aviso de que no vendrá. → [[Rescate (rescue.h)]]
 - **PARQ / sellado / déficit de rango:** pedir paridad en vez de paquetes; un hueco sellado ya no lo cubrirá ninguna reparación nueva del código; el déficit es cuántas reparaciones más lo rehacen. → [[Reparación coherente (harq.h)]]
 - **Presupuesto de TCP:** el RTT de los flujos más un cuarto (RACK): lo que tarda TCP en retransmitir un hueco; ninguna reparación del túnel se pide ni se retiene más allá. → [[Reparación coherente (harq.h)]]
