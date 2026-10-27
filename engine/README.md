@@ -1479,7 +1479,10 @@ Solo la variante B:
   3/2, ciclo 5/4–3/4–1, 3/4 mientras la cola pase `protocontroller_queue_ms`
   (5), la cola de una ida y vuelta baja el estimador (el primer corte a lo
   más entregado hace poco, los siguientes a lo entregado), y en vuelo dos
-  veces el camino más lo que RACK no declaró perdido todavía. La
+  veces el camino más lo que RACK no declaró perdido todavía. Una cola que
+  los cortes no vacían (4 idas y vueltas y 4 veces su hondura sin bajar) no
+  es del flujo: el motor lo pasó a un enlace de más retardo, o es de otros;
+  la base del retardo sube y el arranque vuelve. La
   capacidad del motor (`capacity.h`) es el comienzo y el techo cuando halla
   lleno el enlace de los datos.
 - **Contrapresión:** el VPS escribe al destino con un `TCP_NOTSENT_LOWAT` de
@@ -1508,7 +1511,9 @@ Despliegue:
   escritura, memoria y su pico, conexiones pasadas a BBR, `a_opened`,
   `a_bytes_in`, `a_bytes_out` y `a_held_bytes` de la variante A, y por par el
   estimador, el ritmo, `min_rtt`, `srtt`, en vuelo, ventana, modo, la
-  ventana de RACK, `heavy_loss` y `heavy_windows`); `protocol` dice
+  ventana de RACK, `heavy_loss`, `heavy_windows` y `rebases`: las colas
+  que los cortes no vaciaron, cuando la base del retardo de ida subió;
+  también en total); `protocol` dice
   `GRIT` con la variante B. Los reenvíos por causa (`retx_by`: `rack`,
   `rto`, `nack`), los NACK del rescate de los DATA propios (`nacks`: `lost`,
   marcados perdidos; `delivered`, ya entregados; `stale`, de una copia
