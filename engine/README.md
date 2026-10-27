@@ -1513,7 +1513,10 @@ Despliegue:
   estimador, el ritmo, `min_rtt`, `srtt`, en vuelo, ventana, modo, la
   ventana de RACK, `heavy_loss`, `heavy_windows` y `rebases`: las colas
   que los cortes no vaciaron, cuando la base del retardo de ida subió;
-  también en total); `protocol` dice
+  también en total; `owd_samples`, `owd_corrected` y `link_extra_ms`: lo
+  que cada enlace agrega al retardo de lo que llega de ese par, que el
+  receptor le quita cuando llega al objetivo de cola, historia 028);
+  `protocol` dice
   `GRIT` con la variante B. Los reenvíos por causa (`retx_by`: `rack`,
   `rto`, `nack`), los NACK del rescate de los DATA propios (`nacks`: `lost`,
   marcados perdidos; `delivered`, ya entregados; `stale`, de una copia
