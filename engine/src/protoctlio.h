@@ -43,6 +43,25 @@ struct cg_pctl_cfg {
 	char cc[16];         /* the VPS's congestion control toward the destination ("" the kernel's) */
 };
 
+#define CG_PCTL_SPREAD_MAX_US 1000000u
+
+/* The spread of the links a peer's data takes, us: the largest delay behind
+ * the fastest link (health.h's behind_us: path and queue) among those of set
+ * whose delay is known; 0 with none. What the engine's split may reorder a
+ * stream by: RACK waiting less takes for lost what is only queued on a
+ * slower link (cell4: queues of 300-590 ms on the small links, bursts of
+ * up to 1435 retransmissions, nearly all of them duplicates, and the
+ * estimator inflated by the "lost" bytes counted twice). */
+static inline uint32_t cg_pctl_spread(const int32_t *behind_us, uint16_t known, uint16_t set, unsigned n)
+{
+	uint32_t s = 0;
+
+	for (unsigned i = 0; i < n && i < 16; i++)
+		if ((set & known) >> i & 1 && behind_us[i] > 0 && (uint32_t)behind_us[i] > s)
+			s = (uint32_t)behind_us[i];
+	return s < CG_PCTL_SPREAD_MAX_US ? s : CG_PCTL_SPREAD_MAX_US;
+}
+
 struct cg_pctl_ops {
 	void *ctx;
 	/* Sends n messages to peer (the server: session index peer whose id is
@@ -53,6 +72,11 @@ struct cg_pctl_ops {
 	/* The engine's capacity for the links that carry the data to peer,
 	 * bytes/s (0: none), and whether it sees them queued. */
 	void (*hint)(void *ctx, uint32_t peer, uint32_t sid, uint64_t *bps, int *full);
+	/* The tunnel's repair horizon for what this end sends to peer now, us
+	 * (task #77): how long a hole may wait at the receiver for the code's
+	 * repairs (while it sends them) and for the rescue's NACK (while the
+	 * rescue is on); 0: neither (RACK alone). NULL: 0. */
+	uint32_t (*horizon)(void *ctx, uint32_t peer, uint32_t sid);
 };
 
 struct cg_pctl;
@@ -65,8 +89,10 @@ void cg_pctl_free(struct cg_pctl *p);
 int cg_pctl_peers(struct cg_pctl *p, uint32_t n);
 /* An epoll event tagged CG_EV(CG_EV_PCTL, idx). */
 void cg_pctl_event(struct cg_pctl *p, uint32_t idx, uint32_t events);
-/* A stream message out of the tunnel, from peer (see ops->send). */
-void cg_pctl_rx(struct cg_pctl *p, uint32_t peer, uint32_t sid, const uint8_t *msg, size_t len);
+/* A stream message out of the tunnel, from peer (see ops->send), that came
+ * by link (the server's path index); CG_PCTL_NOLINK: rebuilt by the tunnel's
+ * codes, or not known (no delay sample: linkowd.h). */
+void cg_pctl_rx(struct cg_pctl *p, uint32_t peer, uint32_t sid, const uint8_t *msg, size_t len, unsigned link);
 /* The rescue's NACK named msg (len bytes), a stream message this end sent
  * to peer and kept (rescue.h), on link (the one link it went on, the
  * server's path index; CG_PCTL_NOLINK: copied, or not known): its loss goes

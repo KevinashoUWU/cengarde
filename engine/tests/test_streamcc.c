@@ -214,6 +214,15 @@ void test_streamcc(void)
 	CHECK_EQ(cg_scc_reo_cap(50000, 0), 50000);
 	CHECK_EQ(cg_scc_reo_cap(50000, 30000), 50000);
 
+	/* the repair horizon (task #77): while a code sends repairs, RACK waits
+	 * for them and the NACK; without, the window duplicates widened; a
+	 * heavy loss takes the base back; never past a second */
+	CHECK_EQ(cg_scc_reo_win(10000, 14000, 0, 0), 14000);
+	CHECK_EQ(cg_scc_reo_win(10000, 14000, 160000, 0), 160000);
+	CHECK_EQ(cg_scc_reo_win(10000, 100000, 60000, 0), 100000);
+	CHECK_EQ(cg_scc_reo_win(10000, 14000, 160000, 1), 10000);
+	CHECK_EQ(cg_scc_reo_win(10000, 14000, 5000000, 0), CG_SCC_HORIZON_MAX_US);
+
 	/* the forward delay decides the queue: a round trip inflated by the
 	 * ACK's way back (its copies on a slow link) is no queue */
 	{

@@ -1459,7 +1459,13 @@ Solo la variante B:
   horizonte del código, `rescue_code_ms` con `fec` o con lo que sobra
   codificado y a lo más 100, o 20 sin código; con pérdida al azar pesada,
   más de 1 byte de cada 5 en 100 ms, vuelve a `protocontroller_reo_ms`: las
-  reparaciones del túnel no alcanzan), el **NACK del rescate** (el rescate
+  reparaciones del túnel no alcanzan; desde el comienzo, al menos el
+  **horizonte de reparación** del motor: `rescue_code_ms` mientras el código
+  manda reparaciones más, con el rescate encendido, su espera y lo que el
+  enlace más lento que lleva los datos va detrás del más rápido (la cola de
+  un búfer hondo no es pérdida), así el NACK del túnel, exacto, llega
+  primero y RACK solo lo respalda; el estado
+  lo muestra como `horizon_ms`), el **NACK del rescate** (el rescate
   no reenvía un mensaje de GRIT: le pasa la pérdida a su flujo, que marca
   perdido el segmento si ese DATA era su envío más nuevo y lo reenvía en la
   pasada siguiente con su ritmo; contesta `CG_F_GONE` para que el receptor
@@ -1511,9 +1517,12 @@ Despliegue:
   escritura, memoria y su pico, conexiones pasadas a BBR, `a_opened`,
   `a_bytes_in`, `a_bytes_out` y `a_held_bytes` de la variante A, y por par el
   estimador, el ritmo, `min_rtt`, `srtt`, en vuelo, ventana, modo, la
-  ventana de RACK, `heavy_loss`, `heavy_windows` y `rebases`: las colas
+  ventana de RACK, `horizon_ms`, `heavy_loss`, `heavy_windows` y `rebases`: las colas
   que los cortes no vaciaron, cuando la base del retardo de ida subió;
-  también en total); `protocol` dice
+  también en total; `owd_samples`, `owd_corrected` y `link_extra_ms`: lo
+  que cada enlace agrega al retardo de lo que llega de ese par, que el
+  receptor le quita cuando llega al objetivo de cola, historia 028);
+  `protocol` dice
   `GRIT` con la variante B. Los reenvíos por causa (`retx_by`: `rack`,
   `rto`, `nack`), los NACK del rescate de los DATA propios (`nacks`: `lost`,
   marcados perdidos; `delivered`, ya entregados; `stale`, de una copia

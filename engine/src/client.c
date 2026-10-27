@@ -2554,6 +2554,39 @@ static void pctl_send(void *ctx, uint32_t peer, uint32_t sid, uint8_t *const *ms
  * delivers). Full: the engine found that capacity under a standing queue
  * (CG_CAP_CUT_FULL), so it is what the link carries and no more; a loss
  * cut (a microcut) is not a ceiling, the ARQ answers loss. */
+/* The protocontroller's repair horizon for the upload (task #77, protoctlio.h's
+ * ops.horizon): how long a hole may wait at the VPS for the code's repairs
+ * (rescue_code_ms, while FEC v3 sends a share now or redund_spare's codes
+ * are on) and for the rescue's NACK, asked as soon as the link the hole
+ * went on brings something later (reorder.h: exact, whatever the links'
+ * delays) and once more within the rescue wait (the VPS's, taken as ours:
+ * the two ends are set alike; with our ring, rescue_kb, the VPS asks). */
+static uint32_t pctl_horizon(void *ctx, uint32_t peer, uint32_t sid)
+{
+	struct client *c = ctx;
+	int code = (f3_on(c) && c->f3.mode != CG_F3_OFF && c->f3.pct) || c->cfg->redund_spare >= 2;
+	uint32_t us = code ? c->cfg->rescue_code_ms * 1000 : 0;
+
+	(void)peer;
+	(void)sid;
+	/* with the rescue, its NACK and the reordering of the split: what the
+	 * slowest link carrying the data runs behind the fastest */
+	if (c->cfg->reorder && c->cfg->rescue_kb) {
+		int32_t behind[CG_MAX_LINKS];
+		uint16_t known = 0, set;
+		struct upctx u;
+
+		up_begin(c, cg_now_ms(), &u);
+		set = u.split ? (uint16_t)((u.k.eligible | u.k.dup) & u.carry) : u.carry;
+		for (int i = 0; i < CG_MAX_LINKS; i++) {
+			behind[i] = c->uh[i].behind_us;
+			known |= (uint16_t)(c->uh[i].have_behind ? 1u << i : 0);
+		}
+		us += cg_rescue_wait_ms(c->cfg) * 1000 + cg_pctl_spread(behind, known, set, CG_MAX_LINKS);
+	}
+	return us;
+}
+
 static void pctl_hint(void *ctx, uint32_t peer, uint32_t sid, uint64_t *bps, int *full)
 {
 	struct client *c = ctx;
@@ -3240,7 +3273,7 @@ static void down_deliver(struct client *c, const struct cg_hdr *h, unsigned link
 				cg_ro_in(&c->rxs.ro, &c->pool, &c->rocf, &k, rset, &buf);
 			}
 		}
-		cg_pctl_rx(c->pctl, 0, 0, payload, len);
+		cg_pctl_rx(c->pctl, 0, 0, payload, len, c->drebuilding ? CG_PCTL_NOLINK : link);
 		if (c->cfg->reorder)
 			ro_drain(c, rset, now, 0, now_ms);
 		return;
@@ -5376,7 +5409,7 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 					  * redundancy's spare carries (parity, rs, rlc) */
 					 .code_ms = cfg->fec || cfg->redund_spare >= 2 ? cfg->rescue_code_ms : 0,
 					 .mode = cfg->protocontroller };
-		struct cg_pctl_ops ops = { .ctx = c, .send = pctl_send, .hint = pctl_hint };
+		struct cg_pctl_ops ops = { .ctx = c, .send = pctl_send, .hint = pctl_hint, .horizon = pctl_horizon };
 
 		snprintf(pc.mid_cc, sizeof(pc.mid_cc), "%s", cfg->protocontroller_mid_cc);
 		if (cfg->protocontroller == CG_PCTL_A && pctl_vps_addr(cfg, &pc.a_peer, err, sizeof(err)) < 0) {

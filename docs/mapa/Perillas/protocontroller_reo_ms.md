@@ -7,7 +7,7 @@ archivos:
 
 # `protocontroller_reo_ms`
 
-Variante B: la ventana de RACK sobre un cuarto de la ida y vuelta (la reparación del túnel va primero); un duplicado la agranda 4 ms (hasta 100) y vuelve sola.
+Variante B: la ventana de RACK sobre un cuarto de la ida y vuelta (la reparación del túnel va primero); un duplicado la agranda 4 ms (hasta 100) y vuelve sola; con un código o el rescate, al menos el horizonte de reparación del motor (historia 028).
 
 - **Sección:** global
 - **Extremo:** los dos
