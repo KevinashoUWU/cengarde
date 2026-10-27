@@ -2870,7 +2870,8 @@ static uint32_t pctl_horizon(void *ctx, uint32_t peer, uint32_t sid)
 			behind[i] = S->dh[i].behind_us;
 			known |= (uint16_t)(S->dh[i].have_behind ? 1u << i : 0);
 		}
-		us += cg_rescue_wait_ms(s->cfg) * 1000 + cg_pctl_spread(behind, known, set, CG_MAX_LINKS);
+		us += cg_rescue_wait_ms(s->cfg) * 1000 + cg_pctl_spread(behind, known, set, CG_MAX_LINKS,
+										      s->cfg->reorder_max_wait_ms * 1000);
 	}
 	return us;
 }
