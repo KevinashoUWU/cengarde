@@ -4,14 +4,14 @@ archivos:
   - engine/src/eta.h
   - engine/src/capacity.h
   - engine/tests/test_eta.c
-sello: 41b62a23b9cf1317
+sello: d8fb5210ff83d932
 ---
 # ETA (eta.h)
 
 **Grupo:** Decidir — [[Mapa del motor]]
 
 ## Qué hace
-El reparto por **llegada esperada**: cada paquete va por el enlace donde llegaría antes, `eta_i = base_i + (backlog_i + len) / rate_i`. `base_i` es el retardo sin cola (relativo al menor), `rate_i` la capacidad y `backlog_i` una cola virtual que se vacía a `rate_i` entre paquetes y se vuelve a fijar cada tick con la cola medida. Así, paquetes enviados en orden llegan casi en orden, y un enlace lento solo recibe cuando la cola de los rápidos haría llegar el paquete más tarde. Si un enlace no tiene tasa, reparte por pesos.
+El reparto por **llegada esperada**: cada paquete va por el enlace donde llegaría antes, `eta_i = base_i + (backlog_i + len) / rate_i`. `base_i` es el retardo sin cola (relativo al menor), `rate_i` la capacidad y `backlog_i` una cola virtual que se vacía a `rate_i` entre paquetes y se vuelve a fijar cada tick con la cola medida. Así, paquetes enviados en orden llegan casi en orden, y un enlace lento solo recibe cuando la cola de los rápidos haría llegar el paquete más tarde. Un enlace sin tasa (ninguna todavía, o su capacidad se hundió) no recibe paquetes mientras otro tenga; solo si ninguno tiene se reparte por pesos (2026-10-28, [[029-mpgrit]]: antes un enlace sin tasa mandaba todo el reparto a los pesos, y en la testnet Claro, que perdía 28–78 %, seguía llevando un cuarto del tráfico).
 
 ## Lee
 - `cg_cap_eta` (cada tick, desde [[Capacidad (capacity.h)]]): tasa, base y cola de cada enlace ([[Cola por enlace (cg_gov_base)]]). Un enlace con cola corta se toma a 5/4 de su capacidad (y 1/16 del mayor); uno ocioso 3 s cuenta el doble cada 3 s hasta `split_stale_max`.

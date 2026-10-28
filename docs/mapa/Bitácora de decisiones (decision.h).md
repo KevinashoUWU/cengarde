@@ -4,14 +4,14 @@ archivos:
   - engine/src/decision.h
   - engine/src/decrec.h
   - engine/tests/test_decision.c
-sello: 5d998947fdff916f
+sello: 725004e4b57a55d1
 ---
 # Bitácora de decisiones (decision.h)
 
 **Grupo:** Observar — [[Mapa del motor]]
 
 ## Qué hace
-El registro de la «relojería»: las últimas 64 decisiones (`CG_DEC_N`) de un sentido (la subida del cliente, la bajada de cada sesión del servidor), para el estado. Cada guarda o medida que cambia cómo se reparten los paquetes deja una entrada cuando cambia de idea. Solo transiciones, desde los ticks (unos diez por segundo), nunca por paquete. `decrec.h` traduce lo que dicen las funciones puras a entradas.
+El registro de la «relojería»: las últimas 64 decisiones (`CG_DEC_N`) de un sentido (la subida del cliente, la bajada de cada sesión del servidor), para el estado. Cada guarda o medida que cambia cómo se reparten los paquetes deja una entrada cuando cambia de idea. Solo transiciones, desde los ticks (unos diez por segundo), nunca por paquete. `decrec.h` traduce lo que dicen las funciones puras a entradas, y dice qué decide el reparto en el estado (`weights_used`: «eta» cuando algún enlace del reparto tiene tasa, desde el 2026-10-28; antes, solo si todos la tenían).
 
 ## Lee
 - [[Salud y silenciado (health.h)]] (G1: silenciar, volver, forzado; con `mute_queue`, el porqué es el atraso que comparó).

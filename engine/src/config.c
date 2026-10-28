@@ -1094,6 +1094,23 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	 * as up to 0.6.2, but not with the governor: the copies keep filling
 	 * the queue of a link whose weight it turns down (story 012, the
 	 * bench, 2026-10-14). */
+	/* MPGRIT (story 029, step 2): with subflow, the targets the field found
+	 * where the configuration says nothing of them. A modem grants more as
+	 * its queue grows and the latency budget is ~300 ms: GRIT's queue 50 ms
+	 * (5) and the engine's 60 (20, the capacity's and the rescue's follow);
+	 * each link's own losses say when it is too much: its capacity is cut at
+	 * 5 % lost (off; a modem that lost 30-78 % kept a quarter of the
+	 * traffic); 2 MB a stream (1). */
+	if (c->subflow) {
+		if (!cg_ini_get(&ini, "", "protocontroller_queue_ms"))
+			c->protocontroller_queue_ms = 50;
+		if (!cg_ini_get(&ini, "", "governor_target_ms"))
+			c->governor_target_ms = 60;
+		if (!cg_ini_get(&ini, "", "capacity_loss_pct"))
+			c->capacity_loss_pct = 5;
+		if (!cg_ini_get(&ini, "", "protocontroller_buf_kb"))
+			c->protocontroller_buf_kb = 2048;
+	}
 	/* governor_target_ms drove four loops at once (clockwork audit C12):
 	 * the capacity's full and the rescue's weight can have their own */
 	if (!c->capacity_sat_ms)

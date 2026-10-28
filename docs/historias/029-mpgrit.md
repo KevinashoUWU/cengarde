@@ -262,9 +262,55 @@ Rama `claude/mpgrit-step1` (`741d267`, `7fba66d`); nota del mapa
   por su pérdida; sin el RACK de la mezcla, lo recupera el NACK (con
   `protocontroller_nack yes`) o el temporizador.
 
+### Paso 2: llenar los enlaces (2026-10-28, tarde)
+
+El usuario: el RTT puede estirarse hasta ~500 ms, «hay que ser permisivo,
+pero reordenar mejor que la competencia». Terreno con calentamiento previo
+(50 MB: cada brazo reiniciaba el motor de la VPS y las capacidades
+partían de cero), descargas de 100 MB, brazos alternados.
+
+- **El objetivo de cola** (`field-s2`, `s2b`): GRIT con 5 ms de cola sobre
+  su RTT mínimo se cortaba solo (`congested` 920–1755 por corrida); con 50
+  ms (y 60 en el gobernador y la capacidad del motor) sube 53–75 % y llegó
+  a 84–88 % de OMR una vez, con el ping p95 en 46–48 (OMR 179–201). En el
+  laboratorio, neutro (netem no imita al planificador del operador, que da
+  más cuando la cola crece).
+- **Por qué para un flujo** (`stops` en el estado, `2a603ab`): casi siempre
+  el ritmo, después el búfer todo enviado sin acuse.
+- **La oferta del motor** (`protocontroller_offer`, `9bcadd8`,
+  `field-s5`): con `subflow`, el ritmo es al menos la capacidad del motor y
+  un cuarto mientras no estén todos los enlaces llenos: 97,6 contra 53,9
+  Mbit/s en promedio (+81 %, tres de tres rondas).
+- **Lo que no ayudó:** el búfer de 4 MB (empate con 2 MB, más pérdida), la
+  dosificación por socket en la VPS (83 contra 92; además su tarjeta tenía
+  `fq_codel` y la dosificación de UDP no se aplicaba).
+- **Un módem que pierde la mitad** (`field-s7`, `s8`): Claro perdía 28–78 %
+  de lo que llevaba con la cola casi vacía (el operador descarta sin
+  encolar) y seguía con un cuarto del tráfico: con su capacidad en cero, el
+  reparto por llegada esperada se rendía entero y repartía por pesos. Ahora
+  un enlace sin tasa no recibe mientras otro tenga (`bf4b603`). Y la
+  capacidad baja con la pérdida del enlace (`capacity_loss_pct 5`):
+  85,1 / 51,6 contra 45,5 / 36,0 (`field-s9`).
+- **Claro en su mejor celda:** anclado en B28 con SINR −5 (RSRQ −18); el
+  usuario pidió fijarlo a la mejor: bandas LTE 2, 4 y 66 → ancla B4 PCI 90
+  (SINR +11) con B2 de 20 MHz (SINR +13). Pierde 5–6 % en vez de 28–78 %.
+- **Por omisión con `subflow`** (si la configuración no los dice):
+  `protocontroller_queue_ms` 50, `governor_target_ms` 60,
+  `capacity_loss_pct` 5, `protocontroller_buf_kb` 2048.
+- **La VPS de OMR:** BBR, `fq`, `netdev_max_backlog` 10000,
+  `tcp_slow_start_after_idle` 0 y el planificador MPTCP **BLEST** (no usa
+  un subflujo lento si bloquearía al rápido en el receptor: su forma de
+  reordenar). Llevamos los dos primeros ajustes a `contrib/vps/sysctl.conf`.
+- **Dónde quedamos:** 40–105 Mbit/s según la ronda contra 26–205 de OMR en
+  las mismas rondas; ping p95 de GRIT 43–51 ms contra 82–397 de OMR. La red
+  cambia mucho entre rondas: comparar solo dentro de la misma ronda.
+
 ## Pendiente
 
-- El búfer de cada flujo por omisión (1 MB hoy; 2 MB rinde más en terreno).
+- Paso 2, lo que sigue: un controlador por enlace (BBR por subflujo, como
+  OMR) en vez de la capacidad del motor y la oferta; un enlace que muere en
+  plena descarga hace caer el ritmo de GRIT y deja sus pérdidas al
+  temporizador (sin paquetes posteriores ni sondas que las digan).
 - El paso 2: llenar cada enlace hasta su cola objetivo (OMR 45–60 ms por
   módem) dentro del presupuesto de 300 ms.
 - La pérdida de lo copiado, por enlace (qué enlaces llevaron cada copia).
