@@ -665,10 +665,12 @@ else
 fi
 
 # The VPS's administration from the router (LuCI's VPS tab, story 029): its
-# key, made once, and cengarde-vps-admin's commands over SSH with it. The VPS
-# VM's dropbear runs cengarde-vps-admin for that key (as OpenSSH does on a
-# real VPS, there with restrict too), with a stand-in for cengarde-vps-setup
-# that logs what it is asked.
+# key, made once, and cengarde-vps-admin's commands over SSH with it. A
+# second dropbear on the VPS VM, port 2222 and keys only (OpenWrt's lets root
+# in without a password, so the key would never be asked), runs
+# cengarde-vps-admin for that key (as OpenSSH does on a real VPS, there with
+# restrict too), with a stand-in for cengarde-vps-setup that logs what it is
+# asked.
 pub=$("$VM" ssh router 'cengarde-setup vps-key')
 if printf '%s\n' "$pub" | grep -Eqx 'ssh-ed25519 [A-Za-z0-9+/=]+ cengarde-[a-z0-9-]+' &&
 	[ "$("$VM" ssh router 'cengarde-setup vps-key')" = "$pub" ]; then
@@ -683,10 +685,12 @@ printf '#!/bin/sh\necho "$*" >>/tmp/adm/calls\n' >/tmp/adm/setup
 chmod +x /tmp/adm/setup
 cp /etc/dropbear/authorized_keys /tmp/adm/keys.was 2>/dev/null || :
 echo "command=\"CENGARDE_ROOT=/tmp/adm CENGARDE_VPS_SETUP=/tmp/adm/setup sh /tmp/adm/cengarde-vps-admin\" $PUB" >>/etc/dropbear/authorized_keys
+dropbear -s -p 2222 -P /tmp/adm/dropbear.pid
 EOF
 if "$VM" ssh router sh -s <<'EOF'
 r=0
 uci set cengarde.main.vps_ssh_host=10.1.1.1
+uci set cengarde.main.vps_ssh_port=2222
 uci commit cengarde
 out=$(cengarde-setup vps get) || { echo "vps get: $out"; r=1; }
 echo "$out" | grep -qx mode=redundancy || { echo "vps get: no mode=redundancy in: $out"; r=1; }
@@ -695,6 +699,7 @@ cengarde-setup vps set secret x 2>/dev/null && { echo "vps set secret: not refus
 cengarde-setup vps 'get;id' 2>/dev/null && { echo "vps: a word with ; not refused"; r=1; }
 cengarde-setup vps mode bonding || { echo "vps mode bonding failed"; r=1; }
 uci -q delete cengarde.main.vps_ssh_host
+uci -q delete cengarde.main.vps_ssh_port
 uci commit cengarde
 exit $r
 EOF
@@ -708,7 +713,8 @@ then
 else
 	bad "vps: the router's commands to the VPS"
 fi
-"$VM" ssh vps 'if [ -e /tmp/adm/keys.was ]; then cp /tmp/adm/keys.was /etc/dropbear/authorized_keys; else rm -f /etc/dropbear/authorized_keys; fi; rm -rf /tmp/adm'
+# shellcheck disable=SC2016 # expanded on the VPS
+"$VM" ssh vps 'kill $(cat /tmp/adm/dropbear.pid) 2>/dev/null; if [ -e /tmp/adm/keys.was ]; then cp /tmp/adm/keys.was /etc/dropbear/authorized_keys; else rm -f /etc/dropbear/authorized_keys; fi; rm -rf /tmp/adm'
 
 # The repair data (story 026, LuCI's Protection tab): fec, its code and FEC
 # v3's share, window and lone-uplink gate reach the engine's file, which it
