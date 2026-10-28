@@ -3,7 +3,7 @@ tags: [mapa, pieza]
 archivos:
   - engine/src/linkcc.h
   - engine/tests/test_linkcc.c
-sello: 4334f4237ae4baf6
+sello: cf3103ebe305126d
 ---
 # Ritmo por enlace (linkcc.h)
 
@@ -21,12 +21,23 @@ los dejaban a medias.
   tomó el receptor por el enlace; el emisor las convierte en la tasa de
   entrega de BBR (lo entregado desde que salió el `sseq` más nuevo, sobre el
   tiempo en el reloj del receptor) y en su RTT.
-- **Estimación:** `bw`, la mayor muestra de 1–2 s (dos baldes); `rtprop`, el
-  menor RTT de 10 s. Antes de su primera muestra, la capacidad del motor como
-  semilla (`cg_lc_seed`), si no 2 Mbit/s.
-- **Modos:** STARTUP a ×2 hasta que `bw` deja de crecer un cuarto en tres
-  rondas (una ronda: un RTT, al menos 10 ms); DRAIN a ×½ hasta que lo que va
-  en vuelo cabe en `bw × rtprop`; PROBE en ciclo (5/4 una ronda, 3/4, y 1 seis).
+- **Estimación:** `bw`, la mayor muestra de 1–2 s (dos baldes), a lo más 5/4
+  de lo que el enlace entregó mientras tenía cola (`sat`, promedio; caduca a
+  los 2 s sin muestras así): el operador concede en ráfagas y la mayor
+  muestra de las subidas sumaba 140 Mbit/s para 86–100 entregados (terreno,
+  2026-10-28). `rtprop`, el menor RTT de 10 s. Antes de su primera muestra,
+  la capacidad del motor como semilla (`cg_lc_seed`), si no 2 Mbit/s.
+- **Su cola (`q_us`, `cg_lc_owd`):** el retardo de ida del `sseq` más nuevo
+  que nombra un `SFACK` (el reloj del receptor menos la hora de envío: dos
+  relojes, solo cuentan sus cambios) sobre su mínimo de 15–30 s (dos
+  baldes); no depende de `bw` ni del camino de vuelta.
+- **Modos, por la cola** (objetivo `target_us`, `governor_target_ms`):
+  STARTUP a ×3/2 (×2 se pasaba; la capacidad del motor es la semilla) hasta
+  que `bw` deja de crecer un cuarto en tres rondas (una ronda: un RTT, al
+  menos 10 ms) o la cola pasa el objetivo; DRAIN a ×½ hasta que la cola baja
+  de la mitad (sin retardo de ida: hasta que lo que va en vuelo cabe en
+  `bw × rtprop`); PROBE en ciclo (5/4 una ronda, 3/4, y 1 seis), pero sobre el
+  objetivo drena (3/4) y sondea a 5/4 solo bajo la mitad (`cg_lc_qstate`).
 - **Ventana:** en vuelo a lo más `2 × bw × (rtprop + objetivo de cola)`, al
   menos 16 000 bytes (`cg_lc_cwnd`, `cg_lc_room`).
 - **Pérdida:** una ronda que pierde más del 5 % de lo que envió (con al menos
@@ -48,14 +59,15 @@ los dejaban a medias.
   - [[ETA (eta.h)]] (`cg_eta_own`, en cada tic y cada `SFACK`): el ritmo del
     enlace, su retardo sin cola (su `rtprop` sobre el menor: los `SFACK`
     vuelven por el enlace más rápido, así que las diferencias son las de ida)
-    y su cola ahora (`cg_lc_queued`, lo que va en vuelo sobre `bw × rtprop`).
+    y su cola ahora (`cg_lc_queued`: su retardo de cola al ritmo del enlace;
+    sin retardo de ida, lo que va en vuelo sobre `bw × rtprop`).
     Pasado `governor_target_ms` de cola, el enlace es último recurso.
   - El [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] recibe como
     oferta la suma de los ritmos de los enlaces (`CG_SCC_OFFER_LINKS`), tenga
     o no cola: cada enlace sondea y cuida su propia cola.
 - Estado: `subflow.up.rate` (router) y `subflow.down.rate` (VPS), por enlace:
   `mode`, `bw_bps`, `pacing_bps`, `rtprop_ms`, `srtt_ms`, `cwnd`,
-  `inflight`, `cuts`, `sfacks`, `app_limited`.
+  `inflight`, `cuts`, `queue_ms`, `sat_bps`, `sfacks`, `app_limited`.
 
 ## Perillas
 - [[Mapa/Perillas/link_cc|link_cc]]: no. Exige `subflow` en los dos extremos.
@@ -68,12 +80,21 @@ los dejaban a medias.
   rápido); de bajada 49, 25 y 6 Mbit/s, con recortes por pérdida cuando las
   colas desbordan.
 
+- Terreno, 2026-10-28 (`field-l1`, antes de la cola por retardo): la bajada
+  con `link_cc` 124,6 / 97,7 Mbit/s contra 62,8 / 64,7 sin él (OMR 145 /
+  155), ping p95 45; la subida igual (86 / 84), en la capacidad de subida de
+  los módems, con el ping p95 de 65 a 128 ms ([[029-mpgrit]]).
+
 ## Choques conocidos
 - La [[Capacidad (capacity.h)]] sigue corriendo: con `link_cc` solo da la
   semilla y decide qué enlaces entran al reparto (los vivos con tasa).
 - Si la capacidad del enlace cae, `bw` la sigue recién cuando la ventana de
-  1–2 s olvida las muestras mayores; mientras tanto la cola crece, pero el
-  [[ETA (eta.h)]] la ve en cada `SFACK` y desvía el tráfico.
+  1–2 s olvida las muestras mayores; mientras tanto la cola crece, la ve el
+  retardo de ida (el enlace drena y `sat` recorta `bw`) y el
+  [[ETA (eta.h)]] desvía el tráfico.
+- Sin PROBE_RTT: una cola que nunca baja en 30 s haría del mínimo del
+  retardo de ida uno con cola; el drenaje sobre el objetivo lo evita en la
+  práctica.
 
 ## Archivos
 - `linkcc.h`; tests `engine/tests/test_linkcc.c`.

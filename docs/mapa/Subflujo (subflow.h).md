@@ -3,7 +3,7 @@ tags: [mapa, pieza]
 archivos:
   - engine/src/subflow.h
   - engine/tests/test_subflow.c
-sello: 93a1c4fb509ecbcb
+sello: acb8c501bd747d4f
 ---
 # Subflujo (subflow.h)
 
@@ -53,13 +53,14 @@ entre enlaces, que en terreno se leía como pérdida en el túnel y en GRIT
   bytes que tomó por cada enlace (`NEW`, `FILL` o `LATE`; una copia no) y su
   `sseq` más nuevo (`cg_sf_rx_took`); a lo más cada 10 ms (`CG_SFACK_US`), un
   `SFACK` dice, enlace por enlace con novedades, el `sseq` más nuevo, los
-  bytes tomados, cuándo llegaron los últimos (en el reloj del receptor) y
-  cuánto esperó el más nuevo (`cg_sf_rx_ack`). El emisor recuerda de cada
+  bytes tomados, cuándo llegó el más nuevo (en el reloj del receptor) y
+  cuánto esperó (`cg_sf_rx_ack`). El emisor recuerda de cada
   `sseq` cuándo salió, su largo, los bytes enviados hasta él y el último
   `SFACK` conocido entonces; con cada respuesta (`cg_sf_tx_ack`) saca lo que
   va en vuelo (lo que salió después del más nuevo), una tasa de entrega en el
-  reloj del receptor (así no cuentan la espera ni el lote de las respuestas)
-  y un RTT menos la espera, para el [[Ritmo por enlace (linkcc.h)]]. Una
+  reloj del receptor (así no cuentan la espera ni el lote de las respuestas),
+  un RTT menos la espera y el retardo de ida del más nuevo (la cola del
+  enlace), para el [[Ritmo por enlace (linkcc.h)]]. Una
   respuesta más vieja que la última (por `sseq`) no dice nada; una cuyos
   bytes retroceden es un receptor que volvió a empezar: la nueva base.
 - Funciones: `cg_sf_rx_init`, `cg_sf_rx_in` (`NEW`, `FILL`, `LATE`, `DUP`,
