@@ -443,19 +443,19 @@ static void test_config_bonding(void)
 	/* subflow (MPGRIT, story 029): the field's targets where nothing is said */
 	CHECK_EQ(cg_config_parse(&c, CLIENT "subflow = yes\n", err, sizeof(err), warn, sizeof(warn)), 0);
 	CHECK(c.protocontroller_queue_ms == 50 && c.governor_target_ms == 60 && c.capacity_sat_ms == 60 &&
-	      c.capacity_loss_pct == 5 && c.protocontroller_buf_kb == 4080);
+	      c.capacity_loss_pct == 5 && c.protocontroller_buf_kb == 8176);
 	cg_config_free(&c);
 	CHECK_EQ(cg_config_parse(&c, CLIENT "subflow = yes\ngovernor_target_ms = 30\ncapacity_loss_pct = 0\n", err,
 				 sizeof(err), warn, sizeof(warn)), 0);
 	CHECK(c.governor_target_ms == 30 && c.capacity_loss_pct == 0 && c.protocontroller_queue_ms == 50);
 	cg_config_free(&c);
 	/* link_cc_bits: the router's adds the cap (its upload is granted in
-	 * bursts), the VPS's does not; one said wins */
+	 * bursts), the VPS's caps only while a link holds a queue; one said wins */
 	CHECK_EQ(cg_config_parse(&c, CLIENT "subflow = yes\nlink_cc = yes\n", err, sizeof(err), warn, sizeof(warn)), 0);
 	CHECK(c.link_cc && c.link_cc_bits == 14);
 	cg_config_free(&c);
 	CHECK_EQ(cg_config_parse(&c, SERVER "subflow = yes\nlink_cc = yes\n", err, sizeof(err), warn, sizeof(warn)), 0);
-	CHECK(c.link_cc && c.link_cc_bits == 10);
+	CHECK(c.link_cc && c.link_cc_bits == 46);
 	cg_config_free(&c);
 	CHECK_EQ(cg_config_parse(&c, CLIENT "subflow = yes\nlink_cc = yes\nlink_cc_bits = 2\n", err, sizeof(err), warn,
 				 sizeof(warn)), 0);

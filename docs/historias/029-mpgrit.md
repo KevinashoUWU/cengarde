@@ -441,6 +441,35 @@ reporte de retardo de hace 300–500 ms.
     el enlace rápido se degradó solo (su `bw` de 118 a 10–21). Con n = 2 el
     terreno no separa diferencias de ±20 %: OMR anda estable en 145–167 y
     nosotros entre 66 y 126 según la ronda.
+  - **`fade` en el laboratorio** (`019be64`, `fade1`, n = 4): tres enlaces
+    cuya tasa salta al azar (150/40/15 Mbit/s por 100–500 ms, etc.), como en
+    terreno: `bw` 108–146 para ~65 de promedio. En la bajada, 46 (el tope
+    solo con cola) gana +23 % sobre 10, 14 +14 %, 62 +6 %; 8 MB nada (los
+    RTT del laboratorio son cortos). En la subida, el router con 46 +9 %
+    sobre 14 (`fade2`).
+  - **Cuatro rondas** (`field-l7`, ~2,2 GB):
+
+    | brazo | media | rondas | contra A | ping p95 |
+    | --- | --- | --- | --- | --- |
+    | A: 14 / 10, 4 MB | 89,0 | 102 / 84 / 98 / 72 | | 44 |
+    | B: 46 / 46, 4 MB | 98,2 | 108 / 105 / 93 / 87 | +11 % | 44 |
+    | **C: 46 / 46, 8 MB** | **133,3** | **132 / 163 / 134 / 104** | **+49 %** | 45 |
+    | OMR | 153,2 | 154 / 184 / 172 / 103 | +70 % | 82 |
+
+    8 MB gana las cuatro rondas (+29 a +95 %) y llega a 78–102 % de OMR
+    con la mitad de su ping. Por omisión con `subflow`: 8 MB, y 46 en el
+    VPS (el router sigue en 14 hasta medir su subida); el anillo admite
+    ahora 16 MB, como el TCP de OMR.
+- **OMR por dentro, en la bajada** (`~/campo/2026-10-28/omr-down`, solo
+  lectura): xanmod 6.12, BBR y `fq`, `tcp_rmem`/`wmem` hasta 16 MB en los
+  dos extremos, `tcp_notsent_lowat` 128 KB, `ss-server --mptcp` con el
+  planificador MPTCP `default`. Sus BBR también se inflan (suman 460–500
+  Mbit/s para 109–167) y también llenan colas (WOM a 380 ms); lo que tiene
+  de más es volumen: ~2 MB de ventana en cada enlace rápido y hasta 7 MB
+  esperando en la VPS, y que el planificador da datos a un subflujo solo
+  mientras su ventana tiene espacio (un enlace que se frena deja de
+  recibir solo). Nuestro reparto es por ritmo; `cg_lc_cwnd` existe pero
+  todavía no frena nada.
 
 ## Pendiente
 

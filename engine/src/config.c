@@ -908,7 +908,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	c->subflow = 0;
 	c->protocontroller_offer = 1;
 	c->link_cc = 0;
-	c->link_cc_bits = 10; /* linkcc.h's CG_LC_BITS; the router's: 14 */
+	c->link_cc_bits = 10; /* linkcc.h's CG_LC_BITS; the router's 14 and the VPS's 46 (below) */
 	strcpy(c->protocontroller_cc, "auto");
 	strcpy(c->protocontroller_mid_cc, "bbr");
 	c->fec_wait_ms = 10;
@@ -1024,7 +1024,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	    get_bool(&ini, "", "tcp_ack_rule", &c->tcp_ack_rule, err, errlen) ||
 	    get_protocontroller(&ini, c, err, errlen) ||
 	    get_u32(&ini, "", "protocontroller_port", 1, 65535, &c->protocontroller_port, err, errlen) ||
-	    get_u32(&ini, "", "protocontroller_buf_kb", 64, 8176, &c->protocontroller_buf_kb, err, errlen) ||
+	    get_u32(&ini, "", "protocontroller_buf_kb", 64, 16368, &c->protocontroller_buf_kb, err, errlen) ||
 	    get_u32(&ini, "", "protocontroller_mem_mb", 4, 4096, &c->protocontroller_mem_mb, err, errlen) ||
 	    get_u32(&ini, "", "protocontroller_max_flows", 1, 65535, &c->protocontroller_max_flows, err, errlen) ||
 	    get_u32(&ini, "", "protocontroller_queue_ms", 1, 1000, &c->protocontroller_queue_ms, err, errlen) ||
@@ -1104,8 +1104,9 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	 * (5) and the engine's 60 (20, the capacity's and the rescue's follow);
 	 * each link's own losses say when it is too much: its capacity is cut at
 	 * 5 % lost (off; a modem that lost 30-78 % kept a quarter of the
-	 * traffic); 4 MB a stream (1; with each link's own rate, 2 MB held the
-	 * download at 51-87 Mbit/s and 4 MB took it to 105-119, field-l3). */
+	 * traffic); 8 MB a stream (1; with each link's own rate, 2 MB held the
+	 * download at 51-87 Mbit/s, 4 MB at 72-108 and 8 MB took it to 104-163,
+	 * 49 % over in four rounds out of four, field-l3, field-l7). */
 	if (c->subflow) {
 		if (!cg_ini_get(&ini, "", "protocontroller_queue_ms"))
 			c->protocontroller_queue_ms = 50;
@@ -1114,16 +1115,18 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 		if (!cg_ini_get(&ini, "", "capacity_loss_pct"))
 			c->capacity_loss_pct = 5;
 		if (!cg_ini_get(&ini, "", "protocontroller_buf_kb"))
-			c->protocontroller_buf_kb = 4080;
+			c->protocontroller_buf_kb = 8176;
 	}
 	if (!c->subflow) /* each link's own rate needs its SFACKs */
 		c->link_cc = 0;
 	/* The router sends the upload: the operator grants it in bursts, and
 	 * the cap from what a queued link delivered took the upload from 78 and
-	 * 59 to 96 and 101 Mbit/s (OMR 93-95), while the download was better
-	 * without it (98 against 75; field, 2026-10-28, story 029). */
-	if (!cg_ini_get(&ini, "", "link_cc_bits") && c->mode == CG_MODE_CLIENT)
-		c->link_cc_bits = 14;
+	 * 59 to 96 and 101 Mbit/s (OMR 93-95). The VPS sends the download: there
+	 * the cap held always starved a fast link, only while a link holds a
+	 * queue (SATQ) it won +23 % in the lab's fade and +11 % in four field
+	 * rounds (field-l7; 2026-10-28, story 029). */
+	if (!cg_ini_get(&ini, "", "link_cc_bits"))
+		c->link_cc_bits = c->mode == CG_MODE_CLIENT ? 14 : 46;
 	/* governor_target_ms drove four loops at once (clockwork audit C12):
 	 * the capacity's full and the rescue's weight can have their own */
 	if (!c->capacity_sat_ms)

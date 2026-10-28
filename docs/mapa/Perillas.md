@@ -202,7 +202,7 @@ Secciones: «global» es la parte sin sección; `[link NOMBRE]` es del cliente; 
 | [[Mapa/Perillas/protocontroller_port\|protocontroller_port]] | 7801 | [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[025-protocontrolador]] |
 | [[Mapa/Perillas/protocontroller_vps\|protocontroller_vps]] | vacío (la primera dirección del prefijo de `tun_addr`) | [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[025-protocontrolador]] |
 | [[Mapa/Perillas/protocontroller_mid_cc\|protocontroller_mid_cc]] | `bbr` | [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[025-protocontrolador]] |
-| [[Mapa/Perillas/protocontroller_buf_kb\|protocontroller_buf_kb]] | 1024 (con `subflow`, 4080) | [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[025-protocontrolador]], [[029-mpgrit]] |
+| [[Mapa/Perillas/protocontroller_buf_kb\|protocontroller_buf_kb]] | 1024 (con `subflow`, 8176) | [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[025-protocontrolador]], [[029-mpgrit]] |
 | [[Mapa/Perillas/protocontroller_mem_mb\|protocontroller_mem_mb]] | 64 | [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[025-protocontrolador]] |
 | [[Mapa/Perillas/protocontroller_max_flows\|protocontroller_max_flows]] | 256 | [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[025-protocontrolador]] |
 | [[Mapa/Perillas/protocontroller_queue_ms\|protocontroller_queue_ms]] | 5 | [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[025-protocontrolador]] |
@@ -216,7 +216,7 @@ Secciones: «global» es la parte sin sección; `[link NOMBRE]` es del cliente; 
 | Perilla | Por omisión | Pieza | Historia |
 | --- | --- | --- | --- |
 | [[Mapa/Perillas/link_cc\|link_cc]] | `no` | [[Ritmo por enlace (linkcc.h)]], [[Subflujo (subflow.h)]], [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[029-mpgrit]] |
-| [[Mapa/Perillas/link_cc_bits\|link_cc_bits]] | `14` en el router, `10` en el VPS | [[Ritmo por enlace (linkcc.h)]] | [[029-mpgrit]] |
+| [[Mapa/Perillas/link_cc_bits\|link_cc_bits]] | `14` en el router, `46` en el VPS | [[Ritmo por enlace (linkcc.h)]] | [[029-mpgrit]] |
 | [[Mapa/Perillas/protocontroller_nack\|protocontroller_nack]] | `yes` | [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[029-mpgrit]] |
 | [[Mapa/Perillas/protocontroller_offer\|protocontroller_offer]] | `yes` | [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[029-mpgrit]] |
 | [[Mapa/Perillas/subflow\|subflow]] | `no` | [[Subflujo (subflow.h)]], [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[029-mpgrit]] |
