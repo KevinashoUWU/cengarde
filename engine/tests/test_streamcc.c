@@ -207,12 +207,13 @@ void test_streamcc(void)
 
 	/* how far duplicates widen RACK's window: the code's horizon (at most
 	 * 100 ms), 20 ms of reordering without a code, never under the base */
-	CHECK_EQ(cg_scc_reo_cap(10000, 0), CG_SCC_REO_NOCODE_US);
-	CHECK_EQ(cg_scc_reo_cap(10000, 60000), 60000);
-	CHECK_EQ(cg_scc_reo_cap(10000, 100000), 100000);
+	/* the latency budget, code or not; never under the floor */
+	CHECK_EQ(cg_scc_reo_cap(10000, 0), CG_SCC_REO_MAX_US);
+	CHECK_EQ(cg_scc_reo_cap(10000, 60000), CG_SCC_REO_MAX_US);
 	CHECK_EQ(cg_scc_reo_cap(10000, 1000000), CG_SCC_REO_MAX_US);
-	CHECK_EQ(cg_scc_reo_cap(50000, 0), 50000);
-	CHECK_EQ(cg_scc_reo_cap(50000, 30000), 50000);
+	CHECK_EQ(CG_SCC_REO_MAX_US, 300000);
+	CHECK_EQ(cg_scc_reo_cap(400000, 0), 400000);
+	CHECK_EQ(cg_scc_reo_cap(400000, 30000), 400000);
 
 	/* past STARTUP, a rate sample is at most CG_SCC_HINT_MAX times the
 	 * engine's hint: 1 MB learnt in 10 ms on a path the engine sees at

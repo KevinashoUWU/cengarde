@@ -706,8 +706,7 @@ static inline uint64_t cg_scc_reo(const struct cg_scc *p, uint32_t extra_us)
 	return (uint64_t)p->min_rtt / 4 + extra_us;
 }
 
-#define CG_SCC_REO_MAX_US 100000u   /* duplicates widen RACK's window up to this, at most */
-#define CG_SCC_REO_NOCODE_US 20000u /* and up to this without a code: reordering between links alone */
+#define CG_SCC_REO_MAX_US 300000u /* duplicates widen RACK's window up to this, at most: the latency budget */
 
 /* How far duplicates may widen RACK's window beyond min_rtt / 4 (extra_us
  * starts at base_us, protocontroller_reo_ms), with code_us the tunnel's
@@ -720,11 +719,18 @@ static inline uint64_t cg_scc_reo(const struct cg_scc *p, uint32_t extra_us)
  * RACK waiting longer only delays. Before, a rescued copy behind every
  * retransmission said "duplicate" and the window sat at 100 ms. Without
  * a code a duplicate means only reordering (a stream goes on one link, a
- * switch reorders by the links' delay difference). Never under base_us. */
+ * switch reorders by the links' delay difference). In the field (story
+ * 028, «Terreno», 2026-10-27) that reordering between modems went past
+ * both old caps (20 ms without a code, 100 with one): 8-28 thousand of
+ * RACK's retransmissions per 100 MB came back as duplicates. The window
+ * only grows on that evidence (a duplicate the receiver reports) and
+ * narrows again by itself (PCTL_REO_DECAY_US), so its cap is the latency
+ * budget, code or not (story 029). Never under base_us. */
 static inline uint32_t cg_scc_reo_cap(uint32_t base_us, uint32_t code_us)
 {
-	uint32_t cap = code_us ? (code_us < CG_SCC_REO_MAX_US ? code_us : CG_SCC_REO_MAX_US) : CG_SCC_REO_NOCODE_US;
+	uint32_t cap = CG_SCC_REO_MAX_US;
 
+	(void)code_us;
 	return cap > base_us ? cap : base_us;
 }
 
