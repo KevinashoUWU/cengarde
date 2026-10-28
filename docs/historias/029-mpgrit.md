@@ -228,14 +228,43 @@ Rama `claude/mpgrit-step1` (`741d267`, `7fba66d`); nota del mapa
   temporizador siguió alto en `field-u4`); (2) un ACK lleva 8 rangos, el
   más nuevo y los 7 más bajos: con más huecos, los del medio nunca se
   decían y el temporizador los reenviaba; ahora van por turno
-  (`315f724`, en el laboratorio `rot1`).
+  (`315f724`, en el laboratorio `rot1`: con 4 MB los duplicados bajan de
+  cientos a decenas o menos, p. ej. `equal` de bajada 477 → 7).
+- **El receptor sin rangos** (terreno `field-u5` con `315f724`): con 4 MB
+  los duplicados en el NUC bajaron a 4–14 (antes 900–2600), pero el
+  temporizador siguió reenviando 4–5 mil por descarga que **no** eran
+  duplicados, sin que el VPS descartara nada al enviar (`tx_drops` 0). El
+  receptor de GRIT guardaba 256 rangos fuera de orden; con varios enlaces
+  cada segmento que llega por uno más rápido antes de los que van por los
+  lentos abre uno, y con 2–4 MB en vuelo se acababan: el receptor
+  descartaba la trama y solo el temporizador la reenviaba. En `rot1`,
+  `drop_frames` del receptor fue 0, 64 y 412 con 1, 2 y 4 MB, y el
+  temporizador 63, 211 y 578. Ahora 1024 rangos (`156c932`, 16 KB por
+  sentido y flujo): en el laboratorio (`rng1`) los descartes van a 0 y el
+  temporizador baja a 181–205.
+- **Terreno con todo** (`field-u6`, `156c932` en el NUC y la VPS, la red
+  más cargada que en la mañana):
+
+  | brazo | Mbit/s | por el temporizador | duplicados | ping p50/p95 |
+  | --- | --- | --- | --- | --- |
+  | `subflow`, 2 MB | 87,5 / 55,0 | 0 / 3 | 9 / 10 | 39–41 / 48 |
+  | `subflow`, 4 MB | 72,4 / 78,8 | 0 / 813 | 2 / 838 | 40 / 47–48 |
+  | sin protocontrolador | 77,1 / 88,2 | — | — | 40–46 / 74–80 |
+  | OMR | 156,7 / 133,2 | — | — | 76–78 / 307–526 |
+
+  GRIT ya va a la par del túnel sin protocontrolador, con el
+  temporizador y los duplicados casi en cero (el 10 % de la segunda ronda
+  de 2 MB fueron pérdidas reales de un enlace, que el subflujo dijo). OMR
+  lleva 1,5–2 veces más, con el ping p95 sobre el presupuesto de 300 ms;
+  GRIT lo deja en 48. Lo que falta es el paso 2: llenar los enlaces dentro
+  del presupuesto.
 - **Hueco conocido:** lo copiado (redundancia) no tiene un enlace que responda
   por su pérdida; sin el RACK de la mezcla, lo recupera el NACK (con
   `protocontroller_nack yes`) o el temporizador.
 
 ## Pendiente
 
-- Las ráfagas del temporizador en corridas sueltas del laboratorio (`sf3`).
+- El búfer de cada flujo por omisión (1 MB hoy; 2 MB rinde más en terreno).
 - El paso 2: llenar cada enlace hasta su cola objetivo (OMR 45–60 ms por
   módem) dentro del presupuesto de 300 ms.
 - La pérdida de lo copiado, por enlace (qué enlaces llevaron cada copia).
