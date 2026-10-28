@@ -11,7 +11,7 @@
 #   changes), a new secret (refused, then --replace: its new address, the
 #   engine restarting), --rename, a second router (its own slot and
 #   address), a tunnel address taken, the 33rd router, an engine of
-#   protocol 3 and --proto 12 refused (with the upgrade command); remove,
+#   protocol 3 and --proto 13 refused (with the upgrade command); remove,
 #   the last one leaving a key that serves nobody; list and forward with
 #   each router's sessions;
 # - the secret never on a command line, and only in clients/NAME;
@@ -358,7 +358,7 @@ say "limits of the routers and of the ports"
 before=$(fingerprint)
 check "a tunnel address taken is refused" not add shop "$S4" --tunnel-addr "$A2"
 check "it says whose" said "router home has the tunnel address $A2"
-check "--proto 12 (a newer router) is refused with the upgrade command" not add shop "$S4" --proto 12
+check "--proto 13 (a newer router) is refused with the upgrade command" not add shop "$S4" --proto 13
 check "it prints the upgrade command" said "contrib/vps/install.sh"
 check "an engine of protocol 3 is refused" not env FAKE_PROTO=3 sh -c 'printf "%s\n" "$1" | env CENGARDE_ROOT="$2" PATH="$3" sh "$4" add shop' \
 	sh "$S4" "$R" "$BIN:$PATH" "$SETUP"

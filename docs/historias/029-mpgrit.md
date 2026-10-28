@@ -167,6 +167,24 @@ Rama `claude/mpgrit-step1` (`741d267`, `7fba66d`); nota del mapa
   al menos el presupuesto de latencia (300 ms): las pérdidas normales las
   hallan antes el subflujo y la sonda de cola. El caudal no cambió con
   significancia en ningún caso (p ≥ 0,08).
+- **Con el margen** (`sf3`, n = 4, `032cebf`): los duplicados que recibe el
+  otro extremo (lo que GRIT reenvió sin que se perdiera), medias por corrida:
+
+  | caso | sin `subflow` | `subflow` | `subflow` + `nack no` |
+  | --- | --- | --- | --- |
+  | `cell4` bajada / subida | 367 / 460 | 142 / 97 | 2 / 6 |
+  | `equal` bajada | 183 | 33 | 1 |
+  | `protect` subida | 832 | 3 | 77 |
+  | `ratswitch` bajada | 896 | 94 | 115 |
+  | `reorder50` subida | 612 | 3 | 213 |
+
+  Con `protocontroller_nack yes`, lo que se reenvía por el NACK solo vuelve
+  casi todo duplicado también en el laboratorio; con `no`, solo se reenvía lo
+  que el enlace certifica, y casi nada sobra. El caudal casi no cambia (solo
+  `cell4` de subida con `nack no`, +15 %, p 0,04). Queda el temporizador en
+  ráfagas, en corridas sueltas (`het` de bajada, una de cuatro: 1264 por él,
+  657 duplicados; `reorder50` de subida, tres de cuatro): al vencer marca
+  perdido todo lo más viejo que el umbral a la vez.
 - **Hueco conocido:** lo copiado (redundancia) no tiene un enlace que responda
   por su pérdida; sin el RACK de la mezcla, lo recupera el NACK (con
   `protocontroller_nack yes`) o el temporizador.
