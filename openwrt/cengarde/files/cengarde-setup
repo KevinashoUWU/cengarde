@@ -1056,7 +1056,7 @@ engine_conf() {
 			log "redund_spare_first '$v': not one of the uplinks that are up, left out"
 		fi
 	fi
-	for k in parq tcp_retx_one tcp_ack_rule rescue_tcp_race subflow; do
+	for k in parq tcp_retx_one tcp_ack_rule rescue_tcp_race subflow link_cc; do
 		config_get v main "$k"
 		case "$v" in
 		'') ;;
