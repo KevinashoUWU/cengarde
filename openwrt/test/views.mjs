@@ -21,7 +21,11 @@
 //   Starlink, the rescue switch and the repair data (fec, its code, and FEC
 //   v3's share, window and lone-uplink gate only with rlc, story 026); the
 //   Layer 4 features tab holds the
-//   protocontroller (only with the tunnel managed) and the TCP-aware switch;
+//   protocontroller (only with the tunnel managed, and in the custom mode:
+//   bonding and redundancy set it) and the TCP-aware switch; the General
+//   tab holds the mode (bonding, redundancy or custom, story 029) and the
+//   VPS tab whether this router administers the VPS, with its SSH address,
+//   port and panel only then;
 // - status.js: the "Reordering" box shows the engine's "reorder" object (and
 //   says so when the engine has it off) and is not there for an engine without
 //   it, the Uplink health table shows each uplink's type, capacity, queue now
@@ -238,10 +242,13 @@ for (const [lang, tr] of [ [ 'en', english ], [ 'es', spanish ] ]) {
 	// what means nothing without its switch is hidden without it
 	assert.deepEqual(o.reorder_max_wait_ms.deps, [ { reorder: '1' } ]);
 	assert.deepEqual(o.reorder_bypass.deps, [ { reorder: '1' } ]);
-	assert.deepEqual(o.split.deps, [ { reorder: '1' } ]);
-	assert.deepEqual(o.split_weight.deps, [ { reorder: '1', split: '1' } ]);
-	assert.deepEqual(o.split_spread_ms.deps, [ { reorder: '1', split: '1' } ], 'shown with the split');
-	assert.deepEqual(o.split_spread_copy.deps, [ { reorder: '1', split: '1' } ], 'shown with the split');
+	// the split is the mode's in bonding and redundancy (story 029): its own
+	// switch only in custom, its tuning with it on or in bonding
+	assert.deepEqual(o.split.deps, [ { reorder: '1', mode: 'custom' } ]);
+	const withSplit = [ { reorder: '1', split: '1', mode: 'custom' }, { reorder: '1', mode: 'bonding' } ];
+	assert.deepEqual(o.split_weight.deps, withSplit);
+	assert.deepEqual(o.split_spread_ms.deps, withSplit, 'shown with the split');
+	assert.deepEqual(o.split_spread_copy.deps, withSplit, 'shown with the split');
 	assert.deepEqual(o.reorder.deps, []);
 
 	// the experimental split says what it does badly, and that the VPS follows
@@ -404,7 +411,18 @@ for (const [lang, tr] of [ [ 'en', english ], [ 'es', spanish ] ]) {
 	for (const name of [ 'protocontroller', 'protocontroller_port', 'protocontroller_dest' ])
 		tab(name, 'layer4');
 	assert.deepEqual(o.protocontroller.values.map((v) => v[0]), [ 'no', 'a', 'b' ]);
-	assert.deepEqual(o.protocontroller.deps, [ { tunnel: '1' } ], 'only with the tunnel managed');
+	assert.deepEqual(o.protocontroller.deps, [ { tunnel: '1', mode: 'custom' } ], 'only with the tunnel managed, in custom (the mode sets it)');
+	// the mode (story 029): bonding, redundancy or custom, in the General tab
+	assert.deepEqual(tab('mode', 'general').values.map((v) => v[0]), [ 'bonding', 'redundancy', 'custom' ]);
+	assert.equal(o.mode.rmempty, false, 'custom is written too');
+	assert.deepEqual(tab('subflow', 'advanced').deps, [ { mode: 'custom' } ], 'the mode sets it otherwise');
+	assert.deepEqual(tab('link_cc', 'advanced').deps, [ { mode: 'custom', subflow: '1' } ]);
+	// the VPS's administration (story 029): its options only with vps_admin
+	assert.equal(tab('vps_admin', 'vps').cls, 'Flag');
+	assert.equal(o.vps_admin.default, '0', 'off unless turned on');
+	for (const name of [ 'vps_ssh_host', 'vps_ssh_port', '_vpsadmin' ])
+		assert.deepEqual(tab(name, 'vps').deps, [ { vps_admin: '1' } ], `${name} only when this router administers the VPS`);
+	assert.equal(o.vps_ssh_port.datatype, 'port');
 	assert.equal(tab('tcp_aware', 'layer4').default, '0', 'TCP-aware is off unless turned on, as in the engine');
 	assert.deepEqual(o.tcp_aware.deps, [], 'TCP-aware in any case');
 	assert.equal(o.tunnel_mode, undefined, 'no tunnel mode: the engine\'s own TUN is the only one');

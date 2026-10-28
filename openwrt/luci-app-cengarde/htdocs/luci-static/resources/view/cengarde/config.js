@@ -346,6 +346,7 @@ return view.extend({
 		// A flag whose default is the mode's (PRESETS): it shows what applies,
 		// and is stored only when it differs, so that it follows the mode.
 		const modeFlag = function(o, name, dflt) {
+			o.default = dflt; // custom's, the engine's
 			o.rmempty = false;
 			o.cfgvalue = function(section_id) {
 				const v = uci.get('cengarde', section_id, name);
