@@ -47,8 +47,11 @@
   por enlace, alimentado por lo que el receptor dice que tomó cada uno,
   maneja el reparto y la oferta de GRIT. **En terreno la bajada pasa de
   63–65 a 98–125 Mbit/s (63–86 % de OMR) con el ping p95 en 45 ms (OMR
-  134–147)**; en el laboratorio gana con enlaces distintos y pierde en
-  `equal` (−13 %). Todavía es un experimento.
+  134–147)**. Con la cola de cada enlace por su retardo de ida (sondeo y
+  drenaje por la cola, STARTUP a ×3/2, `bw` topado por lo entregado con cola
+  en el router) gana +8,7 % en el laboratorio y **la subida llega a 96–101
+  Mbit/s, a la par de OMR (93–95), con menos ping**. Todavía es un
+  experimento.
 
 ## Contexto
 
@@ -389,14 +392,39 @@ reporte de retardo de hace 300–500 ms.
   ganar. Sin protocontrolador, el TCP directo sube a 12–16 Mbit/s (una
   pérdida temprana, `ssthresh` 25, y CUBIC crece lento a 50–70 ms) y la
   variante `a` a 20.
+- **El estimador inflado y el sondeo a ×2** (`360c78d` … `c6da8e5`): el
+  `SFACK` dice ahora cuándo llegó el `sseq` más nuevo, así que el emisor
+  saca el retardo de ida de cada enlace y su cola (sobre su mínimo de 15–30
+  s), sin depender de `bw` ni del camino de vuelta. Con eso, cuatro piezas
+  (`link_cc_bits`): 1, la cola del reparto por retardo; 2, los modos por la
+  cola (STARTUP termina al pasar el objetivo, DRAIN al bajar de la mitad,
+  PROBE drena sobre el objetivo y sondea solo bajo la mitad); 4, `bw` a lo
+  más 5/4 de lo entregado con cola; 8, STARTUP a ×3/2. Las cuatro juntas
+  perdieron 20–46 % en el laboratorio; por piezas (`lc6`, `lc7`, n = 2):
+  **2 + 8 ganan +8,7 %** de media geométrica sobre `link_cc` sin cola, con
+  3–10 veces menos pérdidas por enlace; **1 pierde 20–53 %** (su retardo es
+  el del paquete más nuevo con acuse y deja fuera lo enviado después: el
+  reparto llenó de más los enlaces); 4 es algo peor en netem.
+- **Terreno** (`field-l2`, 2 rondas, ~1,8 GB):
+
+  | brazo | bajada R1 / R2 | ping p95 | subida R1 / R2 | ping p95 |
+  | --- | --- | --- | --- | --- |
+  | 2 + 8 (10) | 85,0 / 97,6 | 45 / 50 | 77,9 / 59,4 | 113 / 133 |
+  | + tope (14) | 83,0 / 75,4 | 44 / 45 | **95,5 / 101,4** | 114 / 110 |
+  | OMR | 165,8 / 89,8 | 74 / 135 | 92,7 / 94,8 | 168 / 144 |
+
+  El tope gana la subida (el operador la concede en ráfagas: es lo que
+  inflaba `bw`) y llega a OMR con menos ping; en la bajada no ayuda. Por
+  omisión, entonces, 14 en el router (manda la subida) y 10 en el VPS.
 
 ## Pendiente
 
-- `link_cc`: ajustar STARTUP (×2 desborda colas cortas), el último recurso
-  (`governor_target_ms`) y la sobreestimación de `bw` en la subida (las
-  ráfagas de concesiones: quizá la mediana de las muestras con cola, o
-  recortar por la cola que crece); después, decidir si pasa a ser lo normal
-  con `subflow`.
+- `link_cc`: decidir si pasa a ser lo normal con `subflow` (más rondas de
+  terreno: la bajada de OMR varía 90–166 entre rondas) y quitar
+  `link_cc_bits` una vez fijo; un enlace de subida débil (Claro) sigue con
+  colas de 280–360 ms.
+- La salida WAN del NUC por el anillo MAN (remoto07 detrás de un CPE): si el
+  trunk o el enrutamiento del NUC limitan.
 - Un enlace que muere en plena descarga hace caer el ritmo de GRIT y deja
   sus pérdidas al temporizador (sin paquetes posteriores ni sondas que las
   digan).

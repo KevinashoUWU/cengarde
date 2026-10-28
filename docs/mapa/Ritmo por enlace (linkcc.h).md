@@ -3,7 +3,7 @@ tags: [mapa, pieza]
 archivos:
   - engine/src/linkcc.h
   - engine/tests/test_linkcc.c
-sello: 2d085d09c5f8798a
+sello: 1328f18ecc48149d
 ---
 # Ritmo por enlace (linkcc.h)
 
@@ -72,7 +72,7 @@ los dejaban a medias.
 ## Perillas
 - [[Mapa/Perillas/link_cc|link_cc]]: no. Exige `subflow` en los dos extremos.
 - El objetivo de cola es `governor_target_ms` (60 con `subflow`).
-- [[Mapa/Perillas/link_cc_bits|link_cc_bits]]: 10 (experimento): qué usos de la cola están encendidos (`CG_LC_QETA`, `CG_LC_QMODE`, `CG_LC_SAT`, `CG_LC_S32`); por omisión los modos por la cola y STARTUP a ×3/2 (`CG_LC_BITS`).
+- [[Mapa/Perillas/link_cc_bits|link_cc_bits]] (experimento): qué usos de la cola están encendidos (`CG_LC_QETA`, `CG_LC_QMODE`, `CG_LC_SAT`, `CG_LC_S32`); por omisión los modos por la cola y STARTUP a ×3/2 (10, `CG_LC_BITS`), y en el router además el tope por lo entregado con cola (14): su subida se concede en ráfagas.
 
 ## Dónde se midió
 - Laboratorio, 2026-10-28 (`~/campo/2026-10-28/lc1`, todavía sin manejar el
@@ -86,6 +86,10 @@ los dejaban a medias.
   `link_cc` sin cola, con 3–10 veces menos pérdidas por enlace (equal de
   bajada 66 → 81 Mbit/s y de 5841 a 542 perdidos; lossy +15–17 %;
   reorder50 +18–26 %); la cola del reparto por retardo (1) pierde 20–53 %.
+- Terreno, 2026-10-28 (`field-l2`, 2 rondas): con el tope (14) la subida 95,5 / 101,4
+  Mbit/s contra 77,9 / 59,4 sin él (10), OMR 92,7 / 94,8, ping p95 110–114 (OMR
+  144–168); la bajada 83,0 / 75,4 con el tope contra 85,0 / 97,6 sin él (OMR
+  165,8 / 89,8).
 - Terreno, 2026-10-28 (`field-l1`, antes de la cola por retardo): la bajada
   con `link_cc` 124,6 / 97,7 Mbit/s contra 62,8 / 64,7 sin él (OMR 145 /
   155), ping p95 45; la subida igual (86 / 84), en la capacidad de subida de

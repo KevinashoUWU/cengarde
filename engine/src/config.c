@@ -908,7 +908,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	c->subflow = 0;
 	c->protocontroller_offer = 1;
 	c->link_cc = 0;
-	c->link_cc_bits = 10; /* linkcc.h's CG_LC_BITS */
+	c->link_cc_bits = 10; /* linkcc.h's CG_LC_BITS; the router's: 14 */
 	strcpy(c->protocontroller_cc, "auto");
 	strcpy(c->protocontroller_mid_cc, "bbr");
 	c->fec_wait_ms = 10;
@@ -1117,6 +1117,12 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	}
 	if (!c->subflow) /* each link's own rate needs its SFACKs */
 		c->link_cc = 0;
+	/* The router sends the upload: the operator grants it in bursts, and
+	 * the cap from what a queued link delivered took the upload from 78 and
+	 * 59 to 96 and 101 Mbit/s (OMR 93-95), while the download was better
+	 * without it (98 against 75; field, 2026-10-28, story 029). */
+	if (!cg_ini_get(&ini, "", "link_cc_bits") && c->mode == CG_MODE_CLIENT)
+		c->link_cc_bits = 14;
 	/* governor_target_ms drove four loops at once (clockwork audit C12):
 	 * the capacity's full and the rescue's weight can have their own */
 	if (!c->capacity_sat_ms)

@@ -449,6 +449,21 @@ static void test_config_bonding(void)
 				 sizeof(err), warn, sizeof(warn)), 0);
 	CHECK(c.governor_target_ms == 30 && c.capacity_loss_pct == 0 && c.protocontroller_queue_ms == 50);
 	cg_config_free(&c);
+	/* link_cc_bits: the router's adds the cap (its upload is granted in
+	 * bursts), the VPS's does not; one said wins */
+	CHECK_EQ(cg_config_parse(&c, CLIENT "subflow = yes\nlink_cc = yes\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK(c.link_cc && c.link_cc_bits == 14);
+	cg_config_free(&c);
+	CHECK_EQ(cg_config_parse(&c, SERVER "subflow = yes\nlink_cc = yes\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK(c.link_cc && c.link_cc_bits == 10);
+	cg_config_free(&c);
+	CHECK_EQ(cg_config_parse(&c, CLIENT "subflow = yes\nlink_cc = yes\nlink_cc_bits = 2\n", err, sizeof(err), warn,
+				 sizeof(warn)), 0);
+	CHECK_EQ(c.link_cc_bits, 2);
+	cg_config_free(&c);
+	CHECK_EQ(cg_config_parse(&c, CLIENT "link_cc = yes\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(c.link_cc, 0); /* without subflow: off */
+	cg_config_free(&c);
 	CHECK_EQ(cg_config_parse(&c, CLIENT KNOBS "split = force\n", err, sizeof(err), warn, sizeof(warn)), 0);
 	CHECK_EQ(c.capacity_sat_ms, 50);  /* its own */
 	CHECK_EQ(c.rescue_target_ms, 35); /* governor_target_ms's */

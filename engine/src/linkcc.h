@@ -65,12 +65,13 @@ enum { CG_LC_STARTUP_M = 0, CG_LC_DRAIN_M, CG_LC_PROBE_M };
  * geometric mean and 3-10 times fewer losses per link; QETA -20 to -53 %,
  * its delay is the newest acknowledged packet's and leaves out what went
  * since, so the split overfilled the links; SAT a little worse in netem,
- * which has no bursts of grants: the field decides it) */
+ * which has no bursts of grants, and in the field it took the upload from
+ * 78 / 59 to 96 / 101 Mbit/s but not the download: on for the router) */
 #define CG_LC_QETA 1u   /* the split's queue: its delay at the pacing rate (else in flight over bw x rtprop) */
 #define CG_LC_QMODE 2u  /* STARTUP ends, DRAIN ends and PROBE drains or probes by the queue */
 #define CG_LC_SAT 4u    /* what a queued link delivered caps bw at 5/4 */
 #define CG_LC_S32 8u    /* STARTUP at 3/2 (else 2) */
-#define CG_LC_BITS (CG_LC_QMODE | CG_LC_S32) /* the default */
+#define CG_LC_BITS (CG_LC_QMODE | CG_LC_S32) /* the default; the router's adds SAT (config.c) */
 
 struct cg_lc {
 	uint64_t bw;             /* the estimate, 0: none yet */
