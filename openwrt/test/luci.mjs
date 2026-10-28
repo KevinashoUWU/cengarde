@@ -261,7 +261,7 @@ try {
 		await addCommand() === `sudo cengarde-vps-setup add router --tunnel-addr ${derived} --proto ${proto}`,
 		'emptied, the name is router again and the address the derived one');
 
-	step('Tunnel tab: an MTU of 1460 is refused (over 1448), IP pass and IPv6 on, the cloud-config follows');
+	step('Tunnel tab: an MTU of 1460 is refused (over 1444), IP pass and IPv6 on, the cloud-config follows');
 	await tab('tunnel');
 	const mtu = page.locator(id('widget.cbid.cengarde.main.mtu'));
 	const mtuSaved = await mtu.inputValue();

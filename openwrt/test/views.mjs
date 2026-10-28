@@ -408,7 +408,7 @@ for (const [lang, tr] of [ [ 'en', english ], [ 'es', spanish ] ]) {
 	assert.equal(tab('tcp_aware', 'layer4').default, '0', 'TCP-aware is off unless turned on, as in the engine');
 	assert.deepEqual(o.tcp_aware.deps, [], 'TCP-aware in any case');
 	assert.equal(o.tunnel_mode, undefined, 'no tunnel mode: the engine\'s own TUN is the only one');
-	assert.equal(tab('mtu', 'tunnel').datatype, 'range(1280,1448)', 'what fits in a 1500-byte path over IPv4');
+	assert.equal(tab('mtu', 'tunnel').datatype, 'range(1280,1444)', 'what fits in a 1500-byte path over IPv4');
 	assert.equal(o.ip_pass.tab, 'tunnel', 'IP pass stays in the Tunnel tab');
 }
 

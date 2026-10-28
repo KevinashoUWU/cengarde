@@ -394,7 +394,8 @@ void cg_hello_read(struct cg_hello *hl, const uint8_t in[CG_HELLO_LEN]);
 /* Size of the IP packet that carries a payload of len bytes (an IP packet
  * from the TUN) over family AF_INET or AF_INET6: IP header, UDP header and
  * ours. The largest tun_mtu over a path MTU is mtu - cg_outer_len(family, 0):
- * 1448 over IPv4 and 1428 over IPv6 on a 1500-byte path. */
+ * 1444 over IPv4 and 1424 over IPv6 on a 1500-byte path (1448 and 1428
+ * before protocol 12's subflow sequence). */
 static inline uint32_t cg_outer_len(int family, uint32_t len)
 {
 	return len + CG_HDR_LEN + 8 + (family == AF_INET6 ? 40 : 20);

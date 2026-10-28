@@ -51,8 +51,8 @@ msgstr "Activado"
 msgid "VPS addresses"
 msgstr "Direcciones del VPS"
 
-msgid "Public IPs of the VPS as the provider shows them, IPv4 and IPv6, in order of preference: each uplink uses the first one of a family it has, and tries the next one when the VPS does not answer there. A name works too: the router looks it up through each uplink (the carrier's DNS first), never through the tunnel, and follows it when its IP changes (dynamic DNS). An MTU above 1428 does not fit if the name has an IPv6 address that the uplinks use."
-msgstr "IP públicas del VPS, tal como las muestra el proveedor, IPv4 e IPv6, en orden de preferencia: cada enlace usa la primera de una familia que tenga, y prueba la siguiente cuando el VPS no le contesta por ahí. También sirve un nombre: el router lo busca por cada enlace (primero en el DNS de la operadora), nunca por el túnel, y lo sigue cuando cambia su IP (DNS dinámico). Un MTU de más de 1428 no cabe si el nombre tiene una dirección IPv6 que usan los enlaces."
+msgid "Public IPs of the VPS as the provider shows them, IPv4 and IPv6, in order of preference: each uplink uses the first one of a family it has, and tries the next one when the VPS does not answer there. A name works too: the router looks it up through each uplink (the carrier's DNS first), never through the tunnel, and follows it when its IP changes (dynamic DNS). An MTU above 1424 does not fit if the name has an IPv6 address that the uplinks use."
+msgstr "IP públicas del VPS, tal como las muestra el proveedor, IPv4 e IPv6, en orden de preferencia: cada enlace usa la primera de una familia que tenga, y prueba la siguiente cuando el VPS no le contesta por ahí. También sirve un nombre: el router lo busca por cada enlace (primero en el DNS de la operadora), nunca por el túnel, y lo sigue cuando cambia su IP (DNS dinámico). Un MTU de más de 1424 no cabe si el nombre tiene una dirección IPv6 que usan los enlaces."
 
 msgid "At most %d addresses"
 msgstr "Como mucho %d direcciones"
@@ -318,8 +318,8 @@ msgstr "Los servidores IPv6 se dejan fuera mientras IPv6 no vaya por el túnel: 
 msgid "Tunnel MTU"
 msgstr "MTU del túnel"
 
-msgid "In a 1500-byte path, packets of up to 1448 bytes fit over IPv4 and of up to 1428 over IPv6. Larger ones get fragmented, and mobile networks often drop the fragments."
-msgstr "En un camino de 1500 bytes caben paquetes de hasta 1448 bytes sobre IPv4 y de hasta 1428 sobre IPv6. Los más grandes se fragmentan, y las redes móviles suelen descartar los fragmentos."
+msgid "In a 1500-byte path, packets of up to 1444 bytes fit over IPv4 and of up to 1424 over IPv6. Larger ones get fragmented, and mobile networks often drop the fragments."
+msgstr "En un camino de 1500 bytes caben paquetes de hasta 1444 bytes sobre IPv4 y de hasta 1424 sobre IPv6. Los más grandes se fragmentan, y las redes móviles suelen descartar los fragmentos."
 
 msgid "At most %d with an IPv6 VPS address"
 msgstr "Como mucho %d con una dirección IPv6 del VPS"

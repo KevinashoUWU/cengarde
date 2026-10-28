@@ -60,9 +60,10 @@ A mano, en cualquier Linux:
    `cg0` son del sistema (`ip route add … dev cg0`), como en
    [Túnel nativo](#túnel-nativo-tunnel--native).
 
-4. **MTU del túnel (`tun_mtu`, 1420 por omisión):** cengarde añade 24 bytes
-   por paquete. Con una ruta de 1500 bytes el máximo es 1448 sobre IPv4 y
-   1428 sobre IPv6 (1500 − IP − 8 UDP − 24 cengarde). Si algún operador tiene
+4. **MTU del túnel (`tun_mtu`, 1420 por omisión):** cengarde añade 28 bytes
+   por paquete (24 hasta el protocolo 11). Con una ruta de 1500 bytes el
+   máximo es 1444 sobre IPv4 y 1424 sobre IPv6 (1500 − IP − 8 UDP − 28
+   cengarde). Si algún operador tiene
    un MTU de camino menor, hay que bajarlo. El cliente lee cada 5 s el MTU
    de camino de cada enlace (`path_mtu` en el estado) y avisa en el log,
    como mucho cada 10 minutos por enlace, si los paquetes más grandes de la
@@ -1295,7 +1296,7 @@ Ajustes, en los dos extremos (cambiarlos reinicia el motor):
   la segunda dirección IPv4, cada una va como secundaria con la etiqueta
   `cg0:1`, `cg0:2`… (hasta 0.11 cada una reemplazaba a la anterior).
 - `tun_mtu`: 1420 por omisión, lo que cabe en un enlace de 1500 por IPv6
-  (1500 − 40 − 8 − 24 de cabecera de cengarde = 1428; por IPv4, 1448). Si
+  (1500 − 40 − 8 − 28 de cabecera de cengarde = 1424; por IPv4, 1444). Si
   un enlace tiene menos, el cliente avisa con la cifra que cabe.
 - `tun_txqueuelen`: la cola de transmisión del TUN, en paquetes; `0` (por
   omisión) deja la del kernel (500). El PC de la testnet usa 5000, que
@@ -1965,6 +1966,26 @@ la retención anterior al ts del mensaje, y la retención en ms (16 bits).
 El cliente la manda en cada sonda; el servidor, solo en la respuesta a una
 sonda que la traía (una respuesta nunca es más grande que su sonda). Sin
 ella, el receptor espera a todos los enlaces no silenciados, como antes.
+
+## Protocolo 12
+
+Historia 029 (MPGRIT, paso U1): la cabecera pasa de 24 a 28 bytes con la
+secuencia propia de cada enlace (`sseq`, desplazamiento 24), fuera del MAC
+como el byte del enlace: una copia por otro enlace lleva la suya. 0 es «sin
+numerar» (con `subflow = no`, todo). Una sonda y su respuesta llevan ahí el
+siguiente `sseq` del enlace (la pérdida de la cola). El tipo `CG_T_SFLOSS`
+(9, de control, en los dos sentidos) dice lo que un enlace perdió dentro de
+sí: un byte con el enlace y los rangos de `sseq` en el formato del NACK
+(`src/subflow.h`). El `tun_mtu` que cabe en una ruta de 1500 bytes baja a
+1444 sobre IPv4 y 1424 sobre IPv6; el de omisión, 1420, cabe igual.
+`cengarde-vps-setup` acepta 4 a 12.
+
+Con `subflow = yes` en los dos extremos, una pérdida de un mensaje de GRIT
+es cierta cuando su único enlace la perdió y nada la reconstruye, o cuando
+además el receptor la pidió (con un código, FEC v3, que pudo
+reconstruirla); con `protocontroller_nack = no`, el NACK solo es una pista.
+El RACK de GRIT sobre la mezcla de los enlaces se apaga y su temporizador
+espera al menos 300 ms más que la ida y vuelta.
 
 ## Limitaciones conocidas
 

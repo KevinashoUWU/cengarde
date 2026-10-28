@@ -344,9 +344,9 @@ configuración del router:
   direcciones a `cg0`.
 - **Sin dirección del VPS o sin enlaces** no se crea el túnel, para no
   dejar el router sin salida.
-- **MTU del túnel:** 1380 por defecto; como mucho 1448 sobre IPv4 y 1428
+- **MTU del túnel:** 1380 por defecto; como mucho 1444 sobre IPv4 y 1424
   si hay una dirección IPv6 del VPS (en caminos de 1500 bytes: IP, UDP y
-  los 24 bytes de cengarde). Si el camino de un enlace es más chico, el
+  los 28 bytes de cengarde). Si el camino de un enlace es más chico, el
   estado lo avisa.
 - **DNS de la pestaña Túnel:** solo los IPv4 van por el túnel; los IPv6 se
   dejan fuera, también con «IPv6 por el túnel» (por ahora).

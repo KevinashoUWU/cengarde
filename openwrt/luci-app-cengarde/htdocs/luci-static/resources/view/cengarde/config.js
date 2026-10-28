@@ -12,7 +12,7 @@ const TEMPLATE = '/usr/share/cengarde/cloud-config.yaml';
 const MAX_SERVERS = 8; // the engine's CG_MAX_SERVERS
 // Largest tunnel MTU in a 1500-byte path: 1500 - (IP, UDP and cengarde
 // headers), 20 + 8 + 24 over IPv4, 40 + 8 + 24 over IPv6.
-const MTU_IPV6 = 1428;
+const MTU_IPV6 = 1424;
 
 // A router's name on the VPS and an address in the tunnel, as the VPS and
 // cengarde-setup take them: cg-NAME has to fit in an interface name, and
@@ -202,7 +202,7 @@ return view.extend({
 		o.rmempty = false;
 
 		o = s.taboption('general', form.DynamicList, 'server', _('VPS addresses'),
-			_('Public IPs of the VPS as the provider shows them, IPv4 and IPv6, in order of preference: each uplink uses the first one of a family it has, and tries the next one when the VPS does not answer there. A name works too: the router looks it up through each uplink (the carrier\'s DNS first), never through the tunnel, and follows it when its IP changes (dynamic DNS). An MTU above 1428 does not fit if the name has an IPv6 address that the uplinks use.'));
+			_('Public IPs of the VPS as the provider shows them, IPv4 and IPv6, in order of preference: each uplink uses the first one of a family it has, and tries the next one when the VPS does not answer there. A name works too: the router looks it up through each uplink (the carrier\'s DNS first), never through the tunnel, and follows it when its IP changes (dynamic DNS). An MTU above 1424 does not fit if the name has an IPv6 address that the uplinks use.'));
 		o.datatype = 'host(0)'; // a name or an IP, without a mask
 		o.placeholder = '203.0.113.10';
 		o.validate = function(section_id) {
@@ -540,8 +540,8 @@ return view.extend({
 		};
 
 		o = s.taboption('tunnel', form.Value, 'mtu', _('Tunnel MTU'),
-			_('In a 1500-byte path, packets of up to 1448 bytes fit over IPv4 and of up to 1428 over IPv6. Larger ones get fragmented, and mobile networks often drop the fragments.'));
-		o.datatype = 'range(1280,1448)';
+			_('In a 1500-byte path, packets of up to 1444 bytes fit over IPv4 and of up to 1424 over IPv6. Larger ones get fragmented, and mobile networks often drop the fragments.'));
+		o.datatype = 'range(1280,1444)';
 		o.placeholder = '1380';
 		o.depends('tunnel', '1');
 		// The form checks every field again on each change, so this follows

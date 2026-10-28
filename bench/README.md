@@ -367,7 +367,7 @@ failover (`FAILOVER_MS`):
 - **MTU de camino:** l2 baja a MTU 1400 mientras suben por el TUN paquetes
   de 1420 bytes (`SIZE` 1392 de carga UDP); el estado tiene que dar
   `path_mtu` 1400 en l2 (1500 en l1) y el log tiene que pedir un `tun_mtu`
-  de 1348 solo para l2, sin perder paquetes.
+  de 1344 solo para l2 (1348 hasta el protocolo 11), sin perder paquetes.
 
 ### `bond`: el laboratorio de bonding (`lab.d/bond.sh`)
 
