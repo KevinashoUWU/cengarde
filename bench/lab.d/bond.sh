@@ -106,6 +106,13 @@
 #   protectcut  not in the default list: protect with a microcut (story 017:
 #               20-40 s of 50-77 % lost on Starlink): link 1 loses 60 % for the
 #               middle third of the run
+#   fade        not in the default list: three cellular links whose rate
+#               jumps at random as a cell's other users come and go (story
+#               029: in the field a link's largest delivery sample ran 3-6
+#               times what it delivered): link 1, 15 ms, 150, 40 or 15
+#               Mbit/s for 100-500 ms each (~65 on average); link 2, 20 ms,
+#               60 or 25 for 300-800 ms; link 3, 25 ms, 20 or 10 for 1-2 s;
+#               300 ms of operator queue each
 #   cell4       not in the default list: story 025's sanity check, four
 #               cellular-like links and no Starlink: 20, 15, 10 and 5 Mbit/s,
 #               25, 30, 35 and 45 ms, 300 ms to 2 s of queue, losing 0.3-0.5 %
@@ -844,6 +851,23 @@ bond_rat() {
 		bond_link_down "$n" "$d" "$dn" $((3000 * 8 / dn)) "$([ "$2" = gap ] && echo 100 || echo 0)"
 }
 
+# bond_fade N DELAY_MS "RATES" MIN_MS MAX_MS SECS SEED: link N's rate jumps
+# to one of RATES (Mbit/s, at random) for MIN_MS-MAX_MS at a time, with 300
+# ms of queue, until SECS (fade).
+bond_fade() {
+	local n=$1 d=$2 min=$4 max=$5 s=$6 el=0 ms r
+	local -a rates
+	read -r -a rates <<<"$3"
+	RANDOM=$7
+	while [ "$el" -lt $((s * 1000)) ]; do
+		r=${rates[RANDOM % ${#rates[@]}]}
+		ms=$((min + RANDOM % (max - min + 1)))
+		bond_link "$n" "$d" "$r" 300 || return 1
+		sleep "$((ms / 1000)).$(printf %03d $((ms % 1000)))"
+		el=$((el + ms))
+	done
+}
+
 # bond_events CASE SECS [REP]: what changes during a run (in the background).
 bond_events() {
 	local c=$1 s=$2 rep=${3:-1} t r2=100 gap
@@ -925,6 +949,13 @@ bond_events() {
 			sleep 0.6
 			bond_rat 1 lte
 		done
+		;;
+	fade)
+		r2=$((${BOND_SEED:-1} * 1000 + rep * 10))
+		bond_fade 1 15 "150 40 15" 100 500 "$s" "$((r2 + 1))" &
+		bond_fade 2 20 "60 25" 300 800 "$s" "$((r2 + 2))" &
+		bond_fade 3 25 "20 10" 1000 2000 "$s" "$((r2 + 3))" &
+		wait
 		;;
 	downstall)
 		RANDOM=$((${BOND_SEED:-1} * 1000 + rep))
@@ -1039,6 +1070,7 @@ bond_shape() {
 	lossy) bond_link 1 20 60 100 1 && bond_link 2 35 30 100 1 && bond_link 3 25 50 100 1 ;;
 	protect | protectcut | beyond) bond_link 1 10 60 15 0.7 && bond_link 2 25 5 2000 ;;
 	cell4) bond_link 1 25 20 300 0.3 && bond_link 2 30 15 500 0.3 && bond_link 3 35 10 1000 0.5 && bond_link 4 45 5 2000 0.5 ;;
+	fade) bond_link 1 15 40 300 && bond_link 2 20 25 300 && bond_link 3 25 10 300 ;;
 	protectslow) bond_link 1 10 5 2000 8 && bond_link 2 25 20 100 ;;
 	spurious) bond_link 1 10 60 15 0 310 && bond_link 2 25 5 2000 ;;
 	lossall) bond_link 1 10 30 100 10 && bond_link 2 15 30 100 10 ;;
@@ -1073,7 +1105,7 @@ bond_msl_types() {
 
 bond_nlinks() {
 	case $1 in
-	het | idleslow | linkdeath | downstall | bloat | lossy | shallowq | shallowqd | shallowqdeep | starsat | dominant | protectpin | msl3) echo 3 ;;
+	het | idleslow | linkdeath | downstall | bloat | lossy | shallowq | shallowqd | shallowqdeep | starsat | dominant | protectpin | msl3 | fade) echo 3 ;;
 	msl1 | single1 | singlecut | singleclean | ratsingle) echo 1 ;;
 	msl2c | cell4 | clean4 | stall50 | stall100 | stall200 | stallr50 | stallr100 | stallr200) echo 4 ;;
 	msl3c) echo 5 ;;
@@ -1296,7 +1328,7 @@ bond_plan() {
 	for w in ${BOND_CC:-cubic bbr quic}; do ccs=$((ccs + 1)); done
 	for c in $BOND_CASES; do
 		case $c in
-		equal | het | idleslow | reorder50 | reorder150 | linkdeath | downstall | shallowq | shallowqd | shallowqdeep | starsat | dominant | starlink15 | starlink15sw | starlink15ramp | ltespike | ltespikerand | deepq | bloat | lossy | spikeloss | protect | protectcut | protectslow | protectpin | beyond | spurious | lossall | sigrand | sigdeep | sigothers | msl1 | msl2 | msl3 | msl2c | msl3c | cell4 | clean4 | stall50 | stall100 | stall200 | stallr50 | stallr100 | stallr200 | single1 | singlecut | singleclean | ratswitch | ratsingle) ;;
+		equal | het | idleslow | reorder50 | reorder150 | linkdeath | downstall | shallowq | shallowqd | shallowqdeep | starsat | dominant | starlink15 | starlink15sw | starlink15ramp | ltespike | ltespikerand | deepq | bloat | lossy | spikeloss | protect | protectcut | protectslow | protectpin | beyond | spurious | lossall | sigrand | sigdeep | sigothers | msl1 | msl2 | msl3 | msl2c | msl3c | cell4 | fade | clean4 | stall50 | stall100 | stall200 | stallr50 | stallr100 | stallr200 | single1 | singlecut | singleclean | ratswitch | ratsingle) ;;
 		*)
 			echo "bond: unknown case $c"
 			return 1
