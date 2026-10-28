@@ -1331,6 +1331,12 @@ bond() {
 		return 1
 	fi
 	bond_ccs || return 1
+	# the stock socket buffer ceiling (208 KB) caps the PEP's far leg and the
+	# engine's sockets: every download at ~20 Mbit/s on a fresh node
+	# (2026-10-28, remoto06; the bench PC had 64 MB from another project)
+	if [ "$(cat /proc/sys/net/core/rmem_max)" -lt 4194304 ] || [ "$(cat /proc/sys/net/core/wmem_max)" -lt 4194304 ]; then
+		echo "bond: WARNING net.core.rmem_max/wmem_max under 4 MB: TCP over the tunnel is capped (set them to 64 MB)"
+	fi
 	bond_settle
 	mkdir -p "$RUN"
 	bond_variants_check || return 1
