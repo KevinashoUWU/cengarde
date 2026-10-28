@@ -84,6 +84,10 @@ int cg_hdr_parse(struct cg_hdr *h, const uint8_t *buf, size_t len)
 		return plen >= CG_PROBE_INFO_LEN ? 0 : -1;
 	case CG_T_HELLO:
 		return plen >= CG_HELLO_LEN ? 0 : -1;
+	case CG_T_SFACK: /* a count (1-16), then 15 bytes a link (subflow.h's cg_sfack_put) */
+		return plen >= 1 && buf[CG_HDR_LEN] >= 1 && buf[CG_HDR_LEN] <= 16 && plen >= 1 + 15 * (size_t)buf[CG_HDR_LEN]
+			       ? 0
+			       : -1;
 	case CG_T_SFLOSS:
 		return plen >= 2 && buf[CG_HDR_LEN + 1] >= 1 && buf[CG_HDR_LEN + 1] <= CG_NACK_RANGES &&
 				       plen >= 2 + 12 * (size_t)buf[CG_HDR_LEN + 1]

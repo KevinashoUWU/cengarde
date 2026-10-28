@@ -28,6 +28,8 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "linkcc.h"
+
 #define CG_SF_WIN 1024u           /* sseqs the receiver remembers per link */
 #define CG_SF_REO_STEP_US 4000u   /* a false loss widens the window by this */
 #define CG_SF_REO_DECAY_US 200u   /* and a tick (100 ms) narrows it by this */
@@ -55,6 +57,10 @@ struct cg_sf_rx {
 	uint32_t floor_us, cap_us;
 	uint64_t got, lost, late, fill, dup, overflow, resync;
 	uint64_t tail; /* gaps a probe opened (cg_sf_rx_sent) */
+	/* for SFACK (cg_sf_rx_took): the bytes taken (wrapping) and when the
+	 * last of them came, the newest sseq and when it came (us, low 32 bits) */
+	uint32_t gotb, gotb_us, top, top_us;
+	uint32_t rep_top, rep_gotb; /* what the last SFACK said of the link */
 };
 
 static inline void cg_sf_rx_init(struct cg_sf_rx *s, uint32_t floor_us, uint32_t cap_us)
@@ -124,6 +130,38 @@ static inline enum cg_sf_in cg_sf_rx_in(struct cg_sf_rx *s, uint32_t q, uint32_t
 	s->got++;
 	s->fill++;
 	return CG_SF_FILL;
+}
+
+/* An arrival q that cg_sf_rx_in answered r was len bytes at now: what an
+ * SFACK says the link delivered (NEW, FILL or LATE) and how far it got. */
+static inline void cg_sf_rx_took(struct cg_sf_rx *s, uint32_t q, enum cg_sf_in r, uint32_t len, uint32_t now)
+{
+	if (r != CG_SF_NEW && r != CG_SF_FILL && r != CG_SF_LATE)
+		return;
+	s->gotb += len;
+	s->gotb_us = now;
+	if (r == CG_SF_NEW) {
+		s->top = q;
+		s->top_us = now;
+	}
+}
+
+/* Whether the link has news for an SFACK at now (its newest sseq, the bytes
+ * it took); if so, takes it as said and gives them, with when the last
+ * bytes came (rts, the receiver's clock) and how long ago the newest sseq
+ * came (age, us, at most 65535). */
+static inline int cg_sf_rx_ack(struct cg_sf_rx *s, uint32_t now, uint32_t *top, uint32_t *gotb,
+			       uint32_t *rts, uint16_t *age)
+{
+	uint32_t a = now - s->top_us;
+
+	if (!s->top || (s->top == s->rep_top && s->gotb == s->rep_gotb))
+		return 0;
+	*top = s->rep_top = s->top;
+	*gotb = s->rep_gotb = s->gotb;
+	*rts = s->gotb_us;
+	*age = (uint16_t)(a < 65535 ? a : 65535);
+	return 1;
 }
 
 /* A probe on the link said every sseq below top went before it (the link
@@ -204,25 +242,50 @@ struct cg_sf_tx {
 	uint32_t next;            /* the next sseq to give; 0 until the first */
 	uint32_t sseq[CG_SF_WIN]; /* by sseq % CG_SF_WIN: which sseq the slot holds */
 	uint32_t seq[CG_SF_WIN];  /* and the tunnel sequence it carried */
-	uint64_t sent, unsent, lost_rx, stale;
+	/* and for each one's delivery sample (BBR's): when it went, its bytes,
+	 * the bytes sent up to it, and the bytes the receiver had said it took
+	 * by then with when they came (the receiver's clock) */
+	uint32_t at_us[CG_SF_WIN], cum[CG_SF_WIN], dgot[CG_SF_WIN], drts[CG_SF_WIN];
+	uint16_t len[CG_SF_WIN];
+	uint8_t flag[CG_SF_WIN];  /* CG_SF_BASE, CG_SF_APP */
+	uint32_t sentb;           /* bytes sent, wrapping */
+	uint32_t got, rts, top;   /* what the newest SFACK said */
+	uint8_t have_got;
+	uint8_t app;              /* set by the caller: what goes now is app-limited */
+	struct cg_lc lc;          /* the link's own rate (linkcc.h) */
+	uint64_t sent, unsent, lost_rx, stale, acks, app_n;
 };
+
+#define CG_SF_BASE 1 /* an SFACK was known when it went: a sample may start there */
+#define CG_SF_APP 2  /* it went app-limited: a smaller rate says nothing */
 
 static inline void cg_sf_tx_init(struct cg_sf_tx *t)
 {
 	memset(t, 0, sizeof(*t));
 	t->next = 1;
+	cg_lc_init(&t->lc);
 }
 
-/* The sseq for a DATA of tunnel sequence seq going on the link now. */
-static inline uint32_t cg_sf_tx_take(struct cg_sf_tx *t, uint32_t seq)
+/* The sseq for a DATA of tunnel sequence seq and len bytes going on the
+ * link at now (us). */
+static inline uint32_t cg_sf_tx_take(struct cg_sf_tx *t, uint32_t seq, uint32_t len, uint32_t now)
 {
-	uint32_t q = t->next++;
+	uint32_t q = t->next++, i = q % CG_SF_WIN;
 
 	if (!t->next)
 		t->next = 1;
-	t->sseq[q % CG_SF_WIN] = q;
-	t->seq[q % CG_SF_WIN] = seq;
+	t->sseq[i] = q;
+	t->seq[i] = seq;
+	t->at_us[i] = now;
+	t->len[i] = (uint16_t)len;
+	t->sentb += len;
+	t->cum[i] = t->sentb;
+	t->dgot[i] = t->got;
+	t->drts[i] = t->rts;
+	t->flag[i] = (uint8_t)((t->have_got ? CG_SF_BASE : 0) | (t->app ? CG_SF_APP : 0));
+	t->app_n += t->app;
 	t->sent++;
+	cg_lc_sent(&t->lc, len);
 	return q;
 }
 
@@ -234,12 +297,16 @@ static inline void cg_sf_tx_unsend(struct cg_sf_tx *t, uint32_t n)
 			t->next = 0; /* step back over the skipped 0 */
 		t->next--;
 		t->sseq[t->next % CG_SF_WIN] = 0;
+		t->sentb -= t->len[t->next % CG_SF_WIN];
+		t->lc.inflight -= t->lc.inflight >= t->len[t->next % CG_SF_WIN] ? t->len[t->next % CG_SF_WIN] : t->lc.inflight;
+		t->lc.r_sent -= t->lc.r_sent > 0;
 		t->sent--;
 		t->unsent++;
 	}
 }
 
-/* The tunnel sequence sseq q carried, if still remembered: 1 and *seq. */
+/* The tunnel sequence sseq q carried, if still remembered: 1 and *seq.
+ * The link lost it: its rate learns of it. */
 static inline int cg_sf_tx_find(struct cg_sf_tx *t, uint32_t q, uint32_t *seq)
 {
 	t->lost_rx++;
@@ -248,7 +315,108 @@ static inline int cg_sf_tx_find(struct cg_sf_tx *t, uint32_t q, uint32_t *seq)
 		return 0;
 	}
 	*seq = t->seq[q % CG_SF_WIN];
+	cg_lc_lost(&t->lc, t->len[q % CG_SF_WIN]);
 	return 1;
+}
+
+/* An SFACK said the link got as far as sseq top and took gotb bytes
+ * (wrapping), the last of them at rts on the receiver's clock, top age us
+ * before it answered; it came at now (us). An answer older than the last
+ * (by top) says nothing; one whose bytes went back is a receiver that
+ * started again: it is the new base.
+ * - In flight: what went after top (the gaps below it are the receiver's
+ *   to settle; SFLOSS takes what was lost).
+ * - The delivery sample: the bytes taken since top went over the time
+ *   between the two answers on the receiver's clock, so the answers' own
+ *   delay and batching do not count; app-limited, it counts only if larger
+ *   than the estimate (BBR's).
+ * - Its round trip: since top went, less the receiver's wait. */
+static inline void cg_sf_tx_ack(struct cg_sf_tx *t, uint32_t top, uint32_t gotb, uint32_t rts, uint16_t age,
+				uint64_t now)
+{
+	uint32_t i = top % CG_SF_WIN, delta = 0, rtt = 0;
+	int known = top && t->sseq[i] == top;
+	uint64_t rate = 0;
+
+	if (t->have_got && ((int32_t)(top - t->top) < 0 || (top == t->top && (int32_t)(gotb - t->got) <= 0)))
+		return;
+	if (t->have_got && (int32_t)(gotb - t->got) >= 0) {
+		delta = gotb - t->got;
+		if (known && (t->flag[i] & CG_SF_BASE)) {
+			uint32_t dt = rts - t->drts[i];
+
+			if (dt >= 1000 && (int32_t)dt > 0 && (int32_t)(gotb - t->dgot[i]) > 0)
+				rate = (uint64_t)(gotb - t->dgot[i]) * 1000000 / dt;
+			if ((t->flag[i] & CG_SF_APP) && rate <= t->lc.bw)
+				rate = 0;
+		}
+	}
+	if (known) {
+		uint32_t r = (uint32_t)now - t->at_us[i];
+
+		rtt = r > age ? r - age : 1;
+	}
+	t->got = gotb;
+	t->rts = rts;
+	t->top = top;
+	t->have_got = 1;
+	t->acks++;
+	cg_lc_acked(&t->lc, now, delta, rate, rtt);
+	if (known)
+		t->lc.inflight = (uint32_t)(t->sentb - t->cum[i]);
+}
+
+/* An SFACK's payload: a count, then for each link its id, its newest sseq,
+ * the bytes it took, when the last came (rts) and the newest's age (15
+ * bytes, big-endian). */
+#define CG_SFACK_ENTRY 15u
+#define CG_SFACK_US 10000u /* at most one SFACK each way this often */
+#define CG_SFACK_LEN (1 + 16 * CG_SFACK_ENTRY)
+
+struct cg_sfack_e {
+	uint8_t link;
+	uint32_t top, gotb, rts;
+	uint16_t age;
+};
+
+static inline void cg_sfack_be32(uint8_t *p, uint32_t v)
+{
+	p[0] = (uint8_t)(v >> 24);
+	p[1] = (uint8_t)(v >> 16);
+	p[2] = (uint8_t)(v >> 8);
+	p[3] = (uint8_t)v;
+}
+
+static inline uint32_t cg_sfack_rd32(const uint8_t *p)
+{
+	return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3];
+}
+
+/* Writes entry k (the count becomes k + 1: entries go in order). */
+static inline void cg_sfack_put(uint8_t *out, unsigned k, const struct cg_sfack_e *e)
+{
+	uint8_t *p = out + 1 + CG_SFACK_ENTRY * k;
+
+	p[0] = e->link;
+	cg_sfack_be32(p + 1, e->top);
+	cg_sfack_be32(p + 5, e->gotb);
+	cg_sfack_be32(p + 9, e->rts);
+	p[13] = (uint8_t)(e->age >> 8);
+	p[14] = (uint8_t)e->age;
+	out[0] = (uint8_t)(k + 1);
+}
+
+/* Entry k of an SFACK's payload (k below payload[0]; proto.c checked the
+ * length). */
+static inline void cg_sfack_get(const uint8_t *in, unsigned k, struct cg_sfack_e *e)
+{
+	const uint8_t *p = in + 1 + CG_SFACK_ENTRY * k;
+
+	e->link = p[0];
+	e->top = cg_sfack_rd32(p + 1);
+	e->gotb = cg_sfack_rd32(p + 5);
+	e->rts = cg_sfack_rd32(p + 9);
+	e->age = (uint16_t)(p[13] << 8 | p[14]);
 }
 
 /* A tick (100 ms): the window narrows back toward its floor. */

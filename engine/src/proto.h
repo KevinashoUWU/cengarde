@@ -84,6 +84,7 @@ enum cg_type {
 	CG_T_REPAIR = 7,      /* either way (client -> server before 11), one link; payload: an erasure code's repair (repair.h) */
 	CG_T_PARQ = 8,        /* either way (server -> client before 11), one link; payload: repairs asked for again (harq.h) */
 	CG_T_SFLOSS = 9,      /* either way (12), one link; payload: a link id, then the sseqs that link lost as a NACK's ranges (subflow.h) */
+	CG_T_SFACK = 10,      /* either way (12), one link; payload: how far each link got, and the bytes it took (subflow.h) */
 };
 
 /* Probes, replies, NACKs and parities count in the control sequence, DATA
@@ -91,7 +92,7 @@ enum cg_type {
 static inline int cg_type_ctl(uint8_t type)
 {
 	return type == CG_T_PROBE || type == CG_T_PROBE_REPLY || type == CG_T_NACK || type == CG_T_FEC ||
-	       type == CG_T_REPAIR || type == CG_T_PARQ || type == CG_T_SFLOSS;
+	       type == CG_T_REPAIR || type == CG_T_PARQ || type == CG_T_SFLOSS || type == CG_T_SFACK;
 }
 
 /* PARQ (version 9, story 023: the parity asked for again): the server,

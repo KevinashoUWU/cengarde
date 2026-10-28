@@ -242,6 +242,8 @@ struct client {
 	int peer_tcpmark;          /* and that it marks its TCP ACKs CG_F_TUNHOLE (tcpack.h) */
 	uint64_t nacks_sent;       /* NACK messages sent, for the rescue */
 	uint64_t sfloss_sent, sfloss_rx; /* SFLOSS messages (subflow.h) sent, and received */
+	uint64_t sfack_sent, sfack_rx;   /* SFACK messages */
+	uint64_t sfack_us;               /* when the last SFACK went */
 	uint64_t retx_one, retx_copied; /* tcp_aware in redundancy: TCP retransmissions sent on one link; copied (story 023) */
 	/* tcp_ack_rule (tcpack.h): the upload's ACKs as they come down, and its
 	 * retransmissions by what was known of their originals; of them, copied */
@@ -1530,7 +1532,8 @@ static void send_links(struct client *c, int m, uint64_t now_ms, uint16_t live, 
 		for (int x = 0; x < k; x++) {
 			cg_hdr_set_link(c->hdr[sel[x]], (uint8_t)i);
 			/* its sseq on this link (subflow.h), outside the MAC as the link */
-			cg_hdr_set_sseq(c->hdr[sel[x]], c->cfg->subflow ? cg_sf_tx_take(&l->sft, c->sseq[sel[x]]) : 0);
+			cg_hdr_set_sseq(c->hdr[sel[x]], c->cfg->subflow ? cg_sf_tx_take(&l->sft, c->sseq[sel[x]],
+					(uint32_t)(c->oiov[sel[x]][0].iov_len + c->oiov[sel[x]][1].iov_len), (uint32_t)mark_us) : 0);
 			memset(&c->out[x].msg_hdr, 0, sizeof(c->out[x].msg_hdr));
 			c->out[x].msg_hdr.msg_iov = c->oiov[sel[x]];
 			c->out[x].msg_hdr.msg_iovlen = 2;
@@ -3192,9 +3195,63 @@ static void on_sfloss(struct client *c, const uint8_t *payload, size_t plen, uin
 	}
 }
 
+/* An SFACK from the server: how far each of our links got up; each one's
+ * rate learns of it (subflow.h, linkcc.h). */
+static void on_sfack(struct client *c, const uint8_t *payload, uint64_t now_us)
+{
+	c->sfack_rx++;
+	if (!c->cfg->subflow)
+		return;
+	for (unsigned k = 0; k < payload[0]; k++) {
+		struct cg_sfack_e e;
+
+		cg_sfack_get(payload, k, &e);
+		if (e.link < CG_MAX_LINKS && c->link[e.link].used)
+			cg_sf_tx_ack(&c->link[e.link].sft, e.top, e.gotb, e.rts, e.age, now_us);
+	}
+}
+
+/* Whether some link down has news for an SFACK. */
+static int sfack_news(struct client *c)
+{
+	for (int i = 0; i < CG_MAX_LINKS; i++) {
+		struct cg_sf_rx *s = &c->link[i].rxl.sf;
+
+		if (c->link[i].used && s->top && (s->top != s->rep_top || s->gotb != s->rep_gotb))
+			return 1;
+	}
+	return 0;
+}
+
+/* What each link down got, in one SFACK to the server on best, at most
+ * every CG_SFACK_US. */
+static void sfack_send(struct client *c, struct link *best, uint64_t now_us)
+{
+	uint8_t pkt[CG_HDR_LEN + CG_SFACK_LEN];
+	unsigned k = 0;
+
+	if (now_us - c->sfack_us < CG_SFACK_US)
+		return;
+	for (int i = 0; i < CG_MAX_LINKS && k < 16; i++) {
+		struct cg_sfack_e e = { .link = (uint8_t)i };
+
+		if (c->link[i].used && cg_sf_rx_ack(&c->link[i].rxl.sf, (uint32_t)now_us, &e.top, &e.gotb, &e.rts, &e.age))
+			cg_sfack_put(pkt + CG_HDR_LEN, k++, &e);
+	}
+	if (!k)
+		return;
+	c->sfack_us = now_us;
+	cg_up_header(&c->txs, pkt, CG_T_SFACK, 0, (uint8_t)(best - c->link), (uint32_t)now_us, pkt + CG_HDR_LEN,
+		     1 + CG_SFACK_ENTRY * k);
+	if (send(best->fd, pkt, CG_HDR_LEN + 1 + CG_SFACK_ENTRY * k, MSG_DONTWAIT) ==
+	    (ssize_t)(CG_HDR_LEN + 1 + CG_SFACK_ENTRY * k))
+		c->sfack_sent++;
+}
+
 /* The subflows down (subflow.h): what each link lost within itself goes
- * back to the server in SFLOSS messages, on the live link of least RTT.
- * After every loop pass, and when the oldest gap is due (sf_timeout). */
+ * back to the server in SFLOSS messages, and how far each got in SFACK
+ * ones, on the live link of least RTT. After every loop pass, and when the
+ * oldest gap or the next SFACK is due (sf_timeout). */
 static void sf_service(struct client *c)
 {
 	uint64_t now_us, now_ms;
@@ -3205,6 +3262,8 @@ static void sf_service(struct client *c)
 	now_us = cg_now_us();
 	now_ms = now_us / 1000;
 	best = NULL;
+	if (now_us - c->sfack_us >= CG_SFACK_US && sfack_news(c) && (best = fastest_link(c, now_ms)))
+		sfack_send(c, best, now_us);
 	for (int i = 0; i < CG_MAX_LINKS; i++) {
 		struct link *l = &c->link[i];
 		uint32_t q[CG_NACK_SEQ_MAX];
@@ -3244,6 +3303,13 @@ static int sf_timeout(struct client *c)
 		int32_t d = c->link[i].used ? cg_sf_rx_due_us(&c->link[i].rxl.sf, now) : -1;
 
 		if (d >= 0 && (due < 0 || d < due))
+			due = d;
+	}
+	if (sfack_news(c)) {
+		uint64_t since = (uint32_t)(now - (uint32_t)c->sfack_us);
+		int32_t d = since >= CG_SFACK_US ? 0 : (int32_t)(CG_SFACK_US - since);
+
+		if (due < 0 || d < due)
 			due = d;
 	}
 	return due < 0 ? -1 : cg_due_ms(due);
@@ -3960,6 +4026,8 @@ static void link_read(struct client *c, struct link *l)
 					on_nack(c, h.flags, b + CG_HDR_LEN, len - CG_HDR_LEN, now_ms);
 				} else if (v == CG_RXV_SFLOSS) {
 					on_sfloss(c, b + CG_HDR_LEN, len - CG_HDR_LEN, now_ms);
+				} else if (v == CG_RXV_SFACK) {
+					on_sfack(c, b + CG_HDR_LEN, now_us);
 				} else if (v == CG_RXV_PARQ) {
 					on_parq(c, b + CG_HDR_LEN, len - CG_HDR_LEN, now_ms);
 				} else if (v == CG_RXV_REPAIR) {
@@ -4013,6 +4081,8 @@ static void hub_slot(struct client *c, struct cg_rxslot *sl, uint16_t *expect, u
 		on_nack(c, h.flags, sl->buf + CG_HDR_LEN, (size_t)sl->len - CG_HDR_LEN, now_ms);
 	} else if (v == CG_RXV_SFLOSS) {
 		on_sfloss(c, sl->buf + CG_HDR_LEN, (size_t)sl->len - CG_HDR_LEN, now_ms);
+	} else if (v == CG_RXV_SFACK) {
+		on_sfack(c, sl->buf + CG_HDR_LEN, sl->t_us);
 	} else if (v == CG_RXV_PARQ) {
 		on_parq(c, sl->buf + CG_HDR_LEN, (size_t)sl->len - CG_HDR_LEN, now_ms);
 	} else if (v == CG_RXV_REPAIR) {
@@ -4758,6 +4828,8 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 	/* SFLOSS (subflow.h): what links lost within themselves, said and heard */
 	cg_json_u64(j, "sfloss_sent", c->sfloss_sent);
 	cg_json_u64(j, "sfloss_rx", c->sfloss_rx);
+	cg_json_u64(j, "sfack_sent", c->sfack_sent);
+	cg_json_u64(j, "sfack_rx", c->sfack_rx);
 	cg_json_ms(j, "wait_ms", c->rocf.rescue_us);
 	cg_json_ms(j, "tcp_budget_ms", tcp_budget_us(c, now_ms * 1000));
 	cg_json_u64(j, "left_to_tcp", c->ask_tcp);
@@ -4883,7 +4955,7 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 			cg_json_u64(j, "overflow", sr->overflow);
 			cg_json_u64(j, "resync", sr->resync);
 			cg_json_u64(j, "tail", sr->tail); /* gaps a probe opened: the end of what the link carried */
-			cg_json_ms(j, "window_ms", sr->reo_us / 1000);
+			cg_json_ms(j, "window_ms", sr->reo_us);
 			cg_json_end(j, '}');
 			cg_json_obj(j, "up");
 			cg_json_u64(j, "sent", st->sent);
@@ -4896,6 +4968,7 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 			cg_json_u64(j, "other", l->sf_other);
 			cg_json_u64(j, "unsure", l->sf_unsure);
 			cg_json_u64(j, "suspects", l->sf_suspect);
+			cg_json_linkcc(j, "rate", st, c->cfg->governor_target_ms * 1000);
 			cg_json_end(j, '}');
 			cg_json_end(j, '}');
 		}

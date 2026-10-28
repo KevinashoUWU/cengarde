@@ -136,30 +136,101 @@ static void test_sf_tx(void)
 	uint32_t seq = 0;
 
 	cg_sf_tx_init(&t);
-	CHECK_EQ(cg_sf_tx_take(&t, 500), 1);
-	CHECK_EQ(cg_sf_tx_take(&t, 501), 2);
-	CHECK_EQ(cg_sf_tx_take(&t, 502), 3);
+	CHECK_EQ(cg_sf_tx_take(&t, 500, 1400, 0), 1);
+	CHECK_EQ(cg_sf_tx_take(&t, 501, 1400, 0), 2);
+	CHECK_EQ(cg_sf_tx_take(&t, 502, 1400, 0), 3);
 	cg_sf_tx_unsend(&t, 2); /* 2 and 3 did not go */
-	CHECK_EQ(cg_sf_tx_take(&t, 503), 2);
+	CHECK_EQ(cg_sf_tx_take(&t, 503, 1400, 0), 2);
 	CHECK(cg_sf_tx_find(&t, 2, &seq));
 	CHECK_EQ(seq, 503);
 	CHECK(!cg_sf_tx_find(&t, 3, &seq)); /* never went */
 	CHECK(cg_sf_tx_find(&t, 1, &seq));
 	CHECK_EQ(seq, 500);
 	for (uint32_t i = 0; i < CG_SF_WIN; i++)
-		cg_sf_tx_take(&t, 1000 + i);
+		cg_sf_tx_take(&t, 1000 + i, 1400, 0);
 	CHECK(!cg_sf_tx_find(&t, 1, &seq)); /* forgotten */
 	CHECK(!cg_sf_tx_find(&t, 0, &seq));
 	/* the wrap */
 	t.next = 0xFFFFFFFFu;
-	CHECK_EQ(cg_sf_tx_take(&t, 7), 0xFFFFFFFFu);
-	CHECK_EQ(cg_sf_tx_take(&t, 8), 1);
+	CHECK_EQ(cg_sf_tx_take(&t, 7, 1400, 0), 0xFFFFFFFFu);
+	CHECK_EQ(cg_sf_tx_take(&t, 8, 1400, 0), 1);
 	cg_sf_tx_unsend(&t, 2);
 	CHECK_EQ(t.next, 0xFFFFFFFFu);
 }
 
+/* The receiver counts what each link delivered and says it once; the
+ * sender turns the answer into the link's flight, a delivery rate on the
+ * receiver's clock and a round trip less the receiver's wait. */
+static void test_sf_ack(void)
+{
+	struct cg_sf_rx r;
+	struct cg_sf_tx t;
+	struct cg_sfack_e e = { 0 }, g;
+	uint8_t pay[CG_SFACK_LEN];
+	uint32_t q;
+
+	cg_sf_rx_init(&r, 10 * MS, 300 * MS);
+	CHECK(!cg_sf_rx_ack(&r, 0, &e.top, &e.gotb, &e.rts, &e.age));
+	cg_sf_tx_init(&t);
+	/* 20 packets of 1000 bytes, one a ms; the first 10 come 40 ms later */
+	for (uint32_t i = 0; i < 20; i++)
+		cg_sf_tx_take(&t, 100 + i, 1000, i * MS);
+	CHECK_EQ(t.lc.inflight, 20000);
+	for (q = 1; q <= 10; q++)
+		cg_sf_rx_took(&r, q, cg_sf_rx_in(&r, q, (q + 39) * MS), 1000, (q + 39) * MS);
+	cg_sf_rx_took(&r, 3, cg_sf_rx_in(&r, 3, 50 * MS), 1000, 50 * MS); /* a copy: not counted */
+	CHECK(cg_sf_rx_ack(&r, 52 * MS, &e.top, &e.gotb, &e.rts, &e.age));
+	CHECK_EQ(e.top, 10);
+	CHECK_EQ(e.gotb, 10000);
+	CHECK_EQ(e.rts, 49 * MS);
+	CHECK_EQ(e.age, 3 * MS);
+	CHECK(!cg_sf_rx_ack(&r, 53 * MS, &e.top, &e.gotb, &e.rts, &e.age)); /* said already */
+	/* on the wire and back */
+	e.link = 3;
+	cg_sfack_put(pay, 0, &e);
+	CHECK_EQ(pay[0], 1);
+	cg_sfack_get(pay, 0, &g);
+	CHECK_EQ(g.link, 3);
+	CHECK_EQ(g.top, 10);
+	CHECK_EQ(g.gotb, 10000);
+	CHECK_EQ(g.rts, 49 * MS);
+	CHECK_EQ(g.age, 3 * MS);
+	/* the first answer is the base: no rate, the round trip less the
+	 * receiver's wait (sseq 10 went at 9 ms, the answer came at 70) */
+	cg_sf_tx_ack(&t, g.top, g.gotb, g.rts, g.age, 70 * MS);
+	CHECK_EQ(t.lc.inflight, 10000);
+	CHECK_EQ(t.lc.rtprop, 58 * MS);
+	CHECK_EQ(t.lc.bw, 0);
+	/* 10 more go after the base was known, and come one a ms */
+	for (uint32_t i = 0; i < 10; i++)
+		cg_sf_tx_take(&t, 200 + i, 1000, (70 + i) * MS);
+	for (q = 11; q <= 30; q++)
+		cg_sf_rx_took(&r, q, cg_sf_rx_in(&r, q, (q + 89) * MS), 1000, (q + 89) * MS);
+	CHECK(cg_sf_rx_ack(&r, 120 * MS, &e.top, &e.gotb, &e.rts, &e.age));
+	CHECK_EQ(e.gotb, 30000);
+	cg_sf_tx_ack(&t, e.top, e.gotb, e.rts, e.age, 135 * MS);
+	CHECK_EQ(t.lc.inflight, 0);
+	/* 20000 bytes from rts 49 ms to 119 ms */
+	CHECK_EQ(t.lc.bw, 20000ull * 1000000 / (70 * MS));
+	/* an older answer says nothing */
+	cg_sf_tx_ack(&t, 20, 20000, 109 * MS, 0, 140 * MS);
+	CHECK_EQ(t.acks, 2);
+	/* the receiver started again: its bytes went back, a new base */
+	cg_sf_tx_take(&t, 300, 1000, 140 * MS);
+	cg_sf_tx_ack(&t, 31, 1000, 5 * MS, 0, 190 * MS);
+	CHECK_EQ(t.acks, 3);
+	CHECK_EQ(t.got, 1000);
+	/* app-limited, a smaller rate says nothing */
+	t.app = 1;
+	cg_sf_tx_take(&t, 301, 1000, 200 * MS);
+	CHECK_EQ(t.app_n, 1);
+	cg_sf_tx_ack(&t, 32, 2000, 1005 * MS, 0, 250 * MS);
+	CHECK_EQ(t.lc.bw, 20000ull * 1000000 / (70 * MS));
+}
+
 void test_subflow(void)
 {
+	test_sf_ack();
 	test_sf_tx();
 	test_sf_basic();
 	test_sf_late();
