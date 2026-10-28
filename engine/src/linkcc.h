@@ -107,6 +107,22 @@ static inline uint64_t cg_lc_cwnd(const struct cg_lc *c, uint32_t target_us)
 	return w > CG_LC_MIN_CWND ? w : CG_LC_MIN_CWND;
 }
 
+/* The bytes queued on the link: what is in flight over bw x rtprop. */
+static inline uint64_t cg_lc_queued(const struct cg_lc *c)
+{
+	uint64_t bdp = c->rtprop ? cg_lc_bw(c) * c->rtprop / 1000000 : 0;
+
+	return c->inflight > bdp ? c->inflight - bdp : 0;
+}
+
+/* Whether the link is short of data: less in flight than bw x rtprop, so
+ * what it delivers says how much it was given, not how much it can carry
+ * (BBR's app-limited; such a sample counts only if larger). */
+static inline int cg_lc_idle(const struct cg_lc *c)
+{
+	return c->rtprop && c->bw && c->inflight < c->bw * c->rtprop / 1000000;
+}
+
 /* Whether len more bytes fit in flight. */
 static inline int cg_lc_room(const struct cg_lc *c, uint32_t len, uint32_t target_us)
 {

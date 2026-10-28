@@ -2620,19 +2620,26 @@ static void pctl_hint(void *ctx, uint32_t peer, uint32_t sid, uint64_t *bps, int
 	for (int i = 0; i < CG_MAX_LINKS; i++) {
 		uint64_t b;
 
-		if (!(set >> i & 1) || !c->cap[i].have_rate)
+		if (!(set >> i & 1))
 			continue;
-		b = cg_cap_bps(&c->cap[i]) / 8;
+		if (c->cfg->link_cc && c->link[i].sft.acks) { /* its own rate (linkcc.h), probing included */
+			b = cg_lc_rate(&c->link[i].sft.lc);
+		} else if (c->cap[i].have_rate) {
+			b = cg_cap_bps(&c->cap[i]) / 8;
+			nfull += c->cap[i].cut == CG_CAP_CUT_FULL;
+		} else {
+			continue;
+		}
 		sum += b;
 		n++;
-		nfull += c->cap[i].cut == CG_CAP_CUT_FULL;
 		if (b > best) {
 			best = b;
 			bi = i;
 		}
 	}
 	*bps = u.split ? sum : best;
-	*full = u.split ? n && nfull == n : bi >= 0 && c->cap[bi].cut == CG_CAP_CUT_FULL;
+	*full = c->cfg->link_cc ? 0
+				: u.split ? n && nfull == n : bi >= 0 && c->cap[bi].cut == CG_CAP_CUT_FULL;
 }
 
 static void rescue_apply(struct client *c);
@@ -3195,6 +3202,36 @@ static void on_sfloss(struct client *c, const uint8_t *payload, size_t plen, uin
 	}
 }
 
+/* With link_cc, link i's own rate (linkcc.h) in the split (eta.h): its
+ * pacing rate, its delay without a queue over ref (its rtprop: the SFACKs
+ * come back on the fastest link, so the differences are the links' one-way
+ * ones) and what it has queued now; past the queue target it is a last
+ * resort. Each tick and each SFACK; a link not in the split (no rate from
+ * cg_cap_eta: dead, or not known) stays out. */
+static void lc_eta(struct client *c, unsigned i, uint32_t ref, uint64_t now_us)
+{
+	const struct cg_lc *lc = &c->link[i].sft.lc;
+
+	if (!c->eta.l[i].bps || !c->link[i].sft.acks || !lc->rtprop)
+		return;
+	cg_eta_own(&c->eta, i, cg_lc_rate(lc) * 8, lc->rtprop > ref ? lc->rtprop - ref : 0, cg_lc_queued(lc),
+		   c->cfg->governor_target_ms * 1000, now_us);
+}
+
+/* The least rtprop of the links in the split, for lc_eta; 0: none. */
+static uint32_t lc_ref(struct client *c)
+{
+	uint32_t ref = 0;
+
+	for (int i = 0; i < CG_MAX_LINKS; i++) {
+		uint32_t r = c->link[i].sft.lc.rtprop;
+
+		if (c->eta.l[i].bps && c->link[i].sft.acks && r && (!ref || r < ref))
+			ref = r;
+	}
+	return ref;
+}
+
 /* An SFACK from the server: how far each of our links got up; each one's
  * rate learns of it (subflow.h, linkcc.h). */
 static void on_sfack(struct client *c, const uint8_t *payload, uint64_t now_us)
@@ -3206,8 +3243,11 @@ static void on_sfack(struct client *c, const uint8_t *payload, uint64_t now_us)
 		struct cg_sfack_e e;
 
 		cg_sfack_get(payload, k, &e);
-		if (e.link < CG_MAX_LINKS && c->link[e.link].used)
+		if (e.link < CG_MAX_LINKS && c->link[e.link].used) {
 			cg_sf_tx_ack(&c->link[e.link].sft, e.top, e.gotb, e.rts, e.age, now_us);
+			if (c->cfg->link_cc)
+				lc_eta(c, e.link, lc_ref(c), now_us);
+		}
 	}
 }
 
@@ -4339,6 +4379,16 @@ static void cap_tick(struct client *c, uint16_t live, uint16_t in, uint64_t now_
 		c->eta.tick_ms = CG_TICK_MS;
 		cg_cap_eta(&c->eta, c->cap, live, cc.sat_us / 2, c->lm, c->cfg->split_stale_max,
 			   cg_tickle_backoff(&c->tk), now_ms * 1000);
+		if (c->cfg->link_cc) {
+			uint32_t ref;
+
+			for (int i = 0; i < CG_MAX_LINKS; i++) /* the engine's capacity, as a start */
+				if (c->cap[i].have_rate)
+					cg_lc_seed(&c->link[i].sft.lc, cg_cap_bps(&c->cap[i]) / 8);
+			ref = lc_ref(c);
+			for (unsigned i = 0; i < CG_MAX_LINKS; i++)
+				lc_eta(c, i, ref, now_ms * 1000);
+		}
 		cg_cap_tickle(c->cap, live, now_ms, &due, tb, tc);
 		cg_tickle_tick(&c->tk, now_ms * 1000, (uint64_t)c->cfg->split_tickle_ms * 1000, due, tb, tc);
 	}
@@ -5711,7 +5761,7 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 					 .backlog_ms = cfg->protocontroller_backlog_ms,
 					 .dead_s = cfg->protocontroller_dead_s,
 					 .reo_ms = cfg->protocontroller_reo_ms,
-					 .offer = cfg->protocontroller_offer,
+					 .offer = cfg->link_cc ? CG_PCTL_OFFER_LINKS : cfg->protocontroller_offer,
 					 /* the upload's codes: the spatial parity or FEC v3, or what
 					  * redundancy's spare carries (parity, rs, rlc) */
 					 .code_ms = cfg->fec || cfg->redund_spare >= 2 ? cfg->rescue_code_ms : 0,

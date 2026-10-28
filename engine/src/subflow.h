@@ -271,6 +271,7 @@ static inline void cg_sf_tx_init(struct cg_sf_tx *t)
 static inline uint32_t cg_sf_tx_take(struct cg_sf_tx *t, uint32_t seq, uint32_t len, uint32_t now)
 {
 	uint32_t q = t->next++, i = q % CG_SF_WIN;
+	int app;
 
 	if (!t->next)
 		t->next = 1;
@@ -282,8 +283,9 @@ static inline uint32_t cg_sf_tx_take(struct cg_sf_tx *t, uint32_t seq, uint32_t 
 	t->cum[i] = t->sentb;
 	t->dgot[i] = t->got;
 	t->drts[i] = t->rts;
-	t->flag[i] = (uint8_t)((t->have_got ? CG_SF_BASE : 0) | (t->app ? CG_SF_APP : 0));
-	t->app_n += t->app;
+	app = t->app || cg_lc_idle(&t->lc);
+	t->flag[i] = (uint8_t)((t->have_got ? CG_SF_BASE : 0) | (app ? CG_SF_APP : 0));
+	t->app_n += (uint64_t)app;
 	t->sent++;
 	cg_lc_sent(&t->lc, len);
 	return q;

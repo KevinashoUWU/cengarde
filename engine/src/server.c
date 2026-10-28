@@ -1160,17 +1160,47 @@ static void sf_up(struct session *S, unsigned p, uint32_t q, size_t len, uint32_
 		cg_sf_rx_took(&F->rx, q, cg_sf_rx_in(&F->rx, q, now), (uint32_t)len, now);
 }
 
+/* With link_cc, path p's own rate (linkcc.h) in S's split (eta.h), as
+ * the client's lc_eta: its pacing rate, its delay without a queue over ref
+ * (rtprop), what it has queued now, past the queue target a last resort. */
+static void lc_eta(const struct server *s, struct session *S, unsigned p, uint32_t ref, uint64_t now_us)
+{
+	const struct sfpath *F = S->sf[p];
+
+	if (!S->eta.l[p].bps || !F || !F->tx.acks || !F->tx.lc.rtprop)
+		return;
+	cg_eta_own(&S->eta, p, cg_lc_rate(&F->tx.lc) * 8, F->tx.lc.rtprop > ref ? F->tx.lc.rtprop - ref : 0,
+		   cg_lc_queued(&F->tx.lc), s->cfg->governor_target_ms * 1000, now_us);
+}
+
+/* The least rtprop of S's paths in the split, for lc_eta; 0: none. */
+static uint32_t lc_ref(const struct session *S)
+{
+	uint32_t ref = 0;
+
+	for (int p = 0; p < CG_MAX_LINKS; p++) {
+		const struct sfpath *F = S->sf[p];
+
+		if (S->eta.l[p].bps && F && F->tx.acks && F->tx.lc.rtprop && (!ref || F->tx.lc.rtprop < ref))
+			ref = F->tx.lc.rtprop;
+	}
+	return ref;
+}
+
 /* An SFACK from S's client: how far each path got down; each one's rate
  * learns of it (subflow.h, linkcc.h). */
-static void on_sfack(struct session *S, const uint8_t *payload, uint64_t now_us)
+static void on_sfack(const struct server *s, struct session *S, const uint8_t *payload, uint64_t now_us)
 {
 	S->sfack_rx++;
 	for (unsigned k = 0; k < payload[0]; k++) {
 		struct cg_sfack_e e;
 
 		cg_sfack_get(payload, k, &e);
-		if (e.link < CG_MAX_LINKS && S->sf[e.link])
+		if (e.link < CG_MAX_LINKS && S->sf[e.link]) {
 			cg_sf_tx_ack(&S->sf[e.link]->tx, e.top, e.gotb, e.rts, e.age, now_us);
+			if (s->cfg->link_cc)
+				lc_eta(s, S, e.link, lc_ref(S), now_us);
+		}
 	}
 }
 
@@ -2383,7 +2413,7 @@ static void listen_read(struct server *s, struct lane *ln)
 				continue;
 			}
 			if (h.type == CG_T_SFACK) {
-				on_sfack(S, b + CG_HDR_LEN, now_us);
+				on_sfack(s, S, b + CG_HDR_LEN, now_us);
 				continue;
 			}
 			if (h.type == CG_T_DATA && h.sseq && s->cfg->subflow)
@@ -3181,19 +3211,26 @@ static void pctl_hint(void *ctx, uint32_t peer, uint32_t sid, uint64_t *bps, int
 	for (int i = 0; i < CG_MAX_LINKS; i++) {
 		uint64_t b;
 
-		if (!(set >> i & 1) || !S->cap[i].have_rate)
+		if (!(set >> i & 1))
 			continue;
-		b = cg_cap_bps(&S->cap[i]) / 8;
+		if (s->cfg->link_cc && S->sf[i] && S->sf[i]->tx.acks) { /* its own rate (linkcc.h), probing included */
+			b = cg_lc_rate(&S->sf[i]->tx.lc);
+		} else if (S->cap[i].have_rate) {
+			b = cg_cap_bps(&S->cap[i]) / 8;
+			nfull += S->cap[i].cut == CG_CAP_CUT_FULL;
+		} else {
+			continue;
+		}
 		sum += b;
 		n++;
-		nfull += S->cap[i].cut == CG_CAP_CUT_FULL;
 		if (b > best) {
 			best = b;
 			bi = i;
 		}
 	}
 	*bps = d.split ? sum : best;
-	*full = d.split ? n && nfull == n : bi >= 0 && S->cap[bi].cut == CG_CAP_CUT_FULL;
+	*full = s->cfg->link_cc ? 0
+				: d.split ? n && nfull == n : bi >= 0 && S->cap[bi].cut == CG_CAP_CUT_FULL;
 }
 
 /* Packets the kernel routed into the TUN, each down the newest
@@ -3396,6 +3433,16 @@ static void cap_tick(struct server *s, struct session *S, uint16_t live, uint64_
 		S->eta.tick_ms = CG_TICK_MS;
 		cg_cap_eta(&S->eta, S->cap, live, cc.sat_us / 2, S->lm, s->cfg->split_stale_max,
 			   cg_tickle_backoff(&S->tk), now_ms * 1000);
+		if (s->cfg->link_cc) {
+			uint32_t ref;
+
+			for (int p = 0; p < CG_MAX_LINKS; p++) /* the engine's capacity, as a start */
+				if (S->sf[p] && S->cap[p].have_rate)
+					cg_lc_seed(&S->sf[p]->tx.lc, cg_cap_bps(&S->cap[p]) / 8);
+			ref = lc_ref(S);
+			for (unsigned p = 0; p < CG_MAX_LINKS; p++)
+				lc_eta(s, S, p, ref, now_ms * 1000);
+		}
 		cg_cap_tickle(S->cap, live, now_ms, &due, tb, tc);
 		cg_tickle_tick(&S->tk, now_ms * 1000, (uint64_t)s->cfg->split_tickle_ms * 1000, due, tb, tc);
 	}
@@ -4964,7 +5011,7 @@ int cg_server_run(struct cg_config *cfg, const struct cg_run *run)
 					 .backlog_ms = cfg->protocontroller_backlog_ms,
 					 .dead_s = cfg->protocontroller_dead_s,
 					 .reo_ms = cfg->protocontroller_reo_ms,
-					 .offer = cfg->protocontroller_offer,
+					 .offer = cfg->link_cc ? CG_PCTL_OFFER_LINKS : cfg->protocontroller_offer,
 					 /* the download's code: the spatial parity or FEC v3 */
 					 .code_ms = cfg->fec ? cfg->rescue_code_ms : 0,
 					 .peers = s->cap };

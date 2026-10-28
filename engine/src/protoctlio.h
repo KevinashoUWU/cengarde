@@ -21,6 +21,8 @@ enum { CG_PCTL_NO = 0, CG_PCTL_A, CG_PCTL_B };
 
 struct cg_json;
 
+#define CG_PCTL_OFFER_LINKS 2 /* cfg.offer: each link's own rate (link_cc), streamcc.h's CG_SCC_OFFER_LINKS */
+
 struct cg_pctl_cfg {
 	int server;          /* the VPS: connects; else the router: listens */
 	int mode;            /* the router: CG_PCTL_A (plain TCP in the middle) or CG_PCTL_B (a stream); the VPS takes both */
@@ -37,7 +39,7 @@ struct cg_pctl_cfg {
 	uint32_t backlog_ms; /* what a stream holds unsent or unwritten, in time at its rate */
 	uint32_t dead_s;     /* a stream without progress this long, with something pending: reset */
 	uint32_t reo_ms;     /* RACK's window beyond min_rtt / 4: the tunnel's repairs come first */
-	int offer;           /* with subflow (cg_pctl_rack off): the engine's offer (streamcc.h's cg_scc_offer) */
+	int offer;           /* with subflow (cg_pctl_rack off): the engine's offer (streamcc.h's cg_scc_offer); CG_PCTL_OFFER_LINKS: each link's own rate */
 	uint32_t code_ms;    /* the tunnel's code horizon for what this end sends (rescue_code_ms with fec; 0: no code):
 			      * how far duplicates may widen that window (streamcc.h's cg_scc_reo_cap) */
 	uint32_t peers;      /* the server: sessions it may have (their pacers) */

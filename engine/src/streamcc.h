@@ -110,7 +110,7 @@ struct cg_scc {
 	uint32_t min_rtt, srtt, rttvar; /* us; 0: none yet */
 	uint64_t min_t;  /* when min_rtt was taken */
 	uint8_t mode, cycle, full_n, cong;
-	uint8_t offer;      /* take the engine's offer (cg_scc_offer): the subflows find each link's losses */
+	uint8_t offer;      /* take the engine's offer (cg_scc_offer): the subflows find each link's losses; CG_SCC_OFFER_LINKS: each link's own rate */
 	uint8_t qnow;       /* the last sample was over min_rtt + queue_us: what is sent now may overflow */
 	uint64_t cycle_t;
 	uint64_t round_dl;  /* a round ends with the ACK of a segment sent once dl had passed this */
@@ -220,10 +220,18 @@ static inline uint64_t cg_scc_bw(const struct cg_scc *p)
  * held the sends back far more than anything else). Not while the stream
  * sees a queue over its target (cong). */
 #define CG_SCC_OFFER 320 /* 5/4 of CG_SCC_ONE */
+/* offer = CG_SCC_OFFER_LINKS (link_cc): the hint is the sum of each link's
+ * own pacing rate (linkcc.h), each probing for more on its own, and each
+ * holding its own queue: offered as it is, whatever the stream's queue. */
+#define CG_SCC_OFFER_LINKS 2
 
 static inline uint64_t cg_scc_offer(const struct cg_scc *p)
 {
-	if (!p->offer || !p->hint || p->hint_full || p->cong)
+	if (!p->offer || !p->hint)
+		return 0;
+	if (p->offer == CG_SCC_OFFER_LINKS)
+		return p->hint;
+	if (p->hint_full || p->cong)
 		return 0;
 	return cg_scc_mul(p->hint, CG_SCC_OFFER, CG_SCC_ONE);
 }

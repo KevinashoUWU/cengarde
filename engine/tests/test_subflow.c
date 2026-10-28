@@ -220,10 +220,13 @@ static void test_sf_ack(void)
 	cg_sf_tx_ack(&t, 31, 1000, 5 * MS, 0, 190 * MS);
 	CHECK_EQ(t.acks, 3);
 	CHECK_EQ(t.got, 1000);
-	/* app-limited, a smaller rate says nothing */
+	/* the packet at 140 ms went with less in flight than bw x rtprop: the
+	 * link was short of data; one the caller says is app-limited too; a
+	 * smaller rate says nothing */
+	CHECK_EQ(t.app_n, 1);
 	t.app = 1;
 	cg_sf_tx_take(&t, 301, 1000, 200 * MS);
-	CHECK_EQ(t.app_n, 1);
+	CHECK_EQ(t.app_n, 2);
 	cg_sf_tx_ack(&t, 32, 2000, 1005 * MS, 0, 250 * MS);
 	CHECK_EQ(t.lc.bw, 20000ull * 1000000 / (70 * MS));
 }

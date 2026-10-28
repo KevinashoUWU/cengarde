@@ -136,6 +136,25 @@ static inline void cg_eta_set(struct cg_eta *e, unsigned i, uint64_t bps, uint32
 	l->t_us = now_us;
 }
 
+/* Link i from its own controller (link_cc, linkcc.h), fed by its SFACKs
+ * every ~10 ms: its pacing rate (bps), its delay without a queue over the
+ * least (us), the bytes queued on it now (what is in flight over its rate
+ * times its round trip: fresher than a tick's queue from delay reports
+ * 300-500 ms old) and the queue past which it is a last resort (limit_us,
+ * 0: none). */
+static inline void cg_eta_own(struct cg_eta *e, unsigned i, uint64_t bps, uint32_t base_us, uint64_t queued,
+			      uint32_t limit_us, uint64_t now_us)
+{
+	struct cg_eta_link *l = &e->l[i];
+
+	l->bps = bps;
+	l->base_us = base_us;
+	l->backlog = queued * 8 * 1000000;
+	l->t_us = now_us;
+	l->limit_us = limit_us;
+	l->over_us = 0;
+}
+
 /* The link of set where a packet of len bytes sent at now_us arrives first,
  * which then counts it in its backlog; -1 when a link of set has no rate
  * (the caller splits by weights then). */
