@@ -3,7 +3,7 @@ tags: [mapa, pieza]
 archivos:
   - engine/src/split.h
   - engine/tests/test_split.c
-sello: 2255eb198b74e539
+sello: 66ec508d9b9710ab
 ---
 # G3 enlace sin respuesta (split.h)
 

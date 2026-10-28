@@ -11,7 +11,7 @@ archivos:
   - engine/tests/test_stream.c
   - engine/tests/test_streamcc.c
   - engine/tests/test_linkowd.c
-sello: b4a09c9bad6277ee
+sello: 7b1d41827a4176e9
 ---
 # Protocontrolador (protoctl.c, stream.h, streamcc.h)
 
