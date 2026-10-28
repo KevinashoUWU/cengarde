@@ -4,7 +4,8 @@
 //
 //   node views.mjs
 //
-// - config.js: the reordering and split options sit in the Advanced tab with
+// - config.js: no option's cfgvalue reads the form while the map loads (it
+//   has no root yet, and LuCI throws); the reordering and split options sit in the Advanced tab with
 //   the ranges of the engine, the weights of the split take NAME=WEIGHT for an
 //   uplink of the router, from 0 to 1000, once each, both as they are typed
 //   and as the whole list LuCI checks (with an empty value) on every change
@@ -91,9 +92,16 @@ const find = (n, pred, out = []) => {
 
 // ---- config.js
 
+// While the map loads it has no root, and LuCI's findElements (behind
+// getUIElement) throws: a cfgvalue must not read the form.
+let loading = false;
 class Opt {
 	constructor(cls, tab, name, title, descr) { Object.assign(this, { cls, tab, name, title, descr, deps: [] }); }
-	getUIElement() { return this.ui || null; }
+	getUIElement() {
+		if (loading)
+			throw new TypeError(`${this.name}: the form read while the map loads (LuCI: reading 'querySelectorAll' of undefined)`);
+		return this.ui || null;
+	}
 	formvalue() { return this.ui ? this.ui.getValue() : undefined; }
 	depends(d, v) { this.deps.push(typeof d == 'string' ? { [d]: v } : d); }
 	value(k, t) { (this.values = this.values || []).push([ k, t ]); }
@@ -178,7 +186,20 @@ async function renderConfig(tr, uplinks, extra = {}) {
 		}
 		section() { return this.s; }
 		lookupOption(name) { return options[name] ? [ options[name] ] : null; }
-		render() { return Promise.resolve(); }
+		// LuCI's Map.load asks every option its cfgvalue before the map has a
+		// root; then the render
+		render() {
+			loading = true;
+			try {
+				for (const o of Object.values(options))
+					if (o instanceof Opt && typeof o.cfgvalue == 'function')
+						o.cfgvalue('main');
+			} finally {
+				loading = false;
+			}
+			this.root = {};
+			return Promise.resolve();
+		}
 	}
 	const form = { Map, NamedSection: class {}, Value, Flag, DynamicList, DummyValue, ListValue };
 	const document = { addEventListener() {}, getElementById() { return {}; }, body: E('body') };

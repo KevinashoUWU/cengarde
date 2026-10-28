@@ -117,11 +117,12 @@ function copyField(field) {
 	ui.addTimeLimitedNotification(null, E('p', _('Copied to the clipboard.')), 3000, 'info');
 }
 
-// The value in the form once it is on the page, the saved one before.
+// The value in the form once it is on the page, the saved one before (also
+// while the map loads, before it has a root to look in).
 function value(map, name) {
 	const found = map.lookupOption(name, 'main');
 
-	if (found && found[0].getUIElement('main'))
+	if (found && map.root && found[0].getUIElement('main'))
 		return found[0].formvalue('main');
 	return uci.get('cengarde', 'main', name);
 }
@@ -603,14 +604,14 @@ return view.extend({
 		o.depends({ tunnel: '1', mode: 'custom' });
 		o.onchange = refresh;
 
-		o = s.taboption('layer4', form.DummyValue, '_pctl_mode', _('Protocontroller'));
-		o.rawhtml = true;
-		o.cfgvalue = function() {
-			return value(m, 'mode') == 'bonding'
-				? _('B (GRIT), with each uplink\'s subflow and rate: set by the bonding mode (General tab).')
-				: _('A, a plain TCP in the middle: set by the redundancy mode (General tab).');
-		};
+		// What the mode sets instead, one line each (a cfgvalue runs while the
+		// map loads, before the form can be read).
+		o = s.taboption('layer4', form.DummyValue, '_pctl_bonding', _('Protocontroller'));
+		o.cfgvalue = function() { return _('B (GRIT), with each uplink\'s subflow and rate: set by the bonding mode (General tab).'); };
 		o.depends('mode', 'bonding');
+
+		o = s.taboption('layer4', form.DummyValue, '_pctl_redundancy', _('Protocontroller'));
+		o.cfgvalue = function() { return _('A, a plain TCP in the middle: set by the redundancy mode (General tab).'); };
 		o.depends('mode', 'redundancy');
 
 		o = s.taboption('layer4', form.DynamicList, 'protocontroller_port', _('Protocontroller ports'),
