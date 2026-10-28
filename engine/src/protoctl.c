@@ -1149,7 +1149,7 @@ static void rto_arm(const struct cg_pctl *p, struct flow *f, struct peer *r)
 	 * flight */
 	if (!o && f->tx.n && cg_st_tx_seg(&f->tx, 0)->st == CG_ST_SACKED)
 		o = cg_st_tx_seg(&f->tx, 0)->sent_us;
-	f->rto_at = o ? o + cg_scc_rto(&r->cc, f->backoff, peer_reo(p, r)) : 0;
+	f->rto_at = o ? o + cg_scc_rto(&r->cc, f->backoff, cg_scc_rto_extra(peer_reo(p, r), p->rack_off)) : 0;
 }
 
 static void ack_in(struct cg_pctl *p, struct flow *f, const struct cg_pctl_msg *m, uint64_t now)
@@ -1569,7 +1569,7 @@ static int send_one(struct cg_pctl *p, struct flow *f, struct peer *r, uint64_t 
 	r->cc.inflight += sent;
 	cg_scc_spend(&r->cc, sent ? sent : 1);
 	if (!f->rto_at)
-		f->rto_at = now + cg_scc_rto(&r->cc, f->backoff, peer_reo(p, r));
+		f->rto_at = now + cg_scc_rto(&r->cc, f->backoff, cg_scc_rto_extra(peer_reo(p, r), p->rack_off));
 	p->data_tx++;
 	(void)now;
 	return 1;
@@ -1597,7 +1597,9 @@ static int timers(struct cg_pctl *p, struct flow *f, uint64_t now)
 	}
 	if (f->rto_at && now >= f->rto_at) {
 		uint64_t rn = f->tx.reneged, lq = 0,
-			 lost = cg_st_tx_rto(&f->tx, now, cg_scc_rto(&r->cc, f->backoff, peer_reo(p, r)), &lq);
+			 lost = cg_st_tx_rto(&f->tx, now,
+					     cg_scc_rto(&r->cc, f->backoff, cg_scc_rto_extra(peer_reo(p, r), p->rack_off)),
+					     &lq);
 
 		p->reneged += f->tx.reneged - rn;
 		r->cc.inflight -= r->cc.inflight >= lost ? lost : r->cc.inflight;

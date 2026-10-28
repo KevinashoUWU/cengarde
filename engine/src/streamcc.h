@@ -708,6 +708,17 @@ static inline uint64_t cg_scc_reo(const struct cg_scc *p, uint32_t extra_us)
 
 #define CG_SCC_REO_MAX_US 300000u /* duplicates widen RACK's window up to this, at most: the latency budget */
 
+/* The timer's extra wait beyond the round trip, from RACK's window reo_us:
+ * with RACK over the mix off (the engine's subflows find each link's
+ * losses, story 029), the timer is the only backstop, and the round trip
+ * of the mix is shorter than the slowest link's: at least the latency
+ * budget, or what was sent on the slowest link times out spuriously (in the
+ * lab, nearly every one of its losses came as a duplicate). */
+static inline uint32_t cg_scc_rto_extra(uint32_t reo_us, int rack_off)
+{
+	return rack_off && reo_us < CG_SCC_REO_MAX_US ? CG_SCC_REO_MAX_US : reo_us;
+}
+
 /* How far duplicates may widen RACK's window beyond min_rtt / 4 (extra_us
  * starts at base_us, protocontroller_reo_ms), with code_us the tunnel's
  * code horizon (rescue_code_ms while the sender sends repairs; 0: none).

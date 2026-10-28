@@ -192,6 +192,10 @@ void test_streamcc(void)
 	CHECK_EQ(cg_scc_cwnd(&p, &c, 0), CG_SCC_IW_SEGS * 1200);
 	CHECK_EQ(cg_scc_rto(&p, 0, 0), 200000);
 	CHECK_EQ(cg_scc_rto(&p, 10, 0), 2000000);
+	/* with RACK over the mix off, the timer waits the latency budget at least */
+	CHECK_EQ(cg_scc_rto_extra(20000, 0), 20000);
+	CHECK_EQ(cg_scc_rto_extra(20000, 1), CG_SCC_REO_MAX_US);
+	CHECK_EQ(cg_scc_rto_extra(CG_SCC_REO_MAX_US + 5, 1), CG_SCC_REO_MAX_US + 5);
 	/* a hint starts it there */
 	cg_scc_hint(&p, 5000000, 0);
 	CHECK_EQ(cg_scc_bw(&p), 5000000);
