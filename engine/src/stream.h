@@ -48,7 +48,7 @@
 #include <string.h>
 
 #define CG_ST_CHUNK 16384u /* bytes per chunk of a stream's buffer */
-#define CG_ST_SLOTS 256u   /* chunks a buffer spans: its window is under (CG_ST_SLOTS - 1) chunks */
+#define CG_ST_SLOTS 512u   /* chunks a buffer spans: its window is under (CG_ST_SLOTS - 1) chunks (8 MB: 4 MB held the download at 105-119 Mbit/s, story 029) */
 #define CG_ST_NOCH UINT32_MAX
 #define CG_ST_MAXWIN ((uint64_t)(CG_ST_SLOTS - 1) * CG_ST_CHUNK)
 /* Out-of-order ranges a receiver keeps. Over several links every segment

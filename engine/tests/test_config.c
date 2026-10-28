@@ -443,7 +443,7 @@ static void test_config_bonding(void)
 	/* subflow (MPGRIT, story 029): the field's targets where nothing is said */
 	CHECK_EQ(cg_config_parse(&c, CLIENT "subflow = yes\n", err, sizeof(err), warn, sizeof(warn)), 0);
 	CHECK(c.protocontroller_queue_ms == 50 && c.governor_target_ms == 60 && c.capacity_sat_ms == 60 &&
-	      c.capacity_loss_pct == 5 && c.protocontroller_buf_kb == 2048);
+	      c.capacity_loss_pct == 5 && c.protocontroller_buf_kb == 4080);
 	cg_config_free(&c);
 	CHECK_EQ(cg_config_parse(&c, CLIENT "subflow = yes\ngovernor_target_ms = 30\ncapacity_loss_pct = 0\n", err,
 				 sizeof(err), warn, sizeof(warn)), 0);

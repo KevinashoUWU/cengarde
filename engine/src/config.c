@@ -1024,7 +1024,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	    get_bool(&ini, "", "tcp_ack_rule", &c->tcp_ack_rule, err, errlen) ||
 	    get_protocontroller(&ini, c, err, errlen) ||
 	    get_u32(&ini, "", "protocontroller_port", 1, 65535, &c->protocontroller_port, err, errlen) ||
-	    get_u32(&ini, "", "protocontroller_buf_kb", 64, 4080, &c->protocontroller_buf_kb, err, errlen) ||
+	    get_u32(&ini, "", "protocontroller_buf_kb", 64, 8176, &c->protocontroller_buf_kb, err, errlen) ||
 	    get_u32(&ini, "", "protocontroller_mem_mb", 4, 4096, &c->protocontroller_mem_mb, err, errlen) ||
 	    get_u32(&ini, "", "protocontroller_max_flows", 1, 65535, &c->protocontroller_max_flows, err, errlen) ||
 	    get_u32(&ini, "", "protocontroller_queue_ms", 1, 1000, &c->protocontroller_queue_ms, err, errlen) ||
@@ -1104,7 +1104,8 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	 * (5) and the engine's 60 (20, the capacity's and the rescue's follow);
 	 * each link's own losses say when it is too much: its capacity is cut at
 	 * 5 % lost (off; a modem that lost 30-78 % kept a quarter of the
-	 * traffic); 2 MB a stream (1). */
+	 * traffic); 4 MB a stream (1; with each link's own rate, 2 MB held the
+	 * download at 51-87 Mbit/s and 4 MB took it to 105-119, field-l3). */
 	if (c->subflow) {
 		if (!cg_ini_get(&ini, "", "protocontroller_queue_ms"))
 			c->protocontroller_queue_ms = 50;
@@ -1113,7 +1114,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 		if (!cg_ini_get(&ini, "", "capacity_loss_pct"))
 			c->capacity_loss_pct = 5;
 		if (!cg_ini_get(&ini, "", "protocontroller_buf_kb"))
-			c->protocontroller_buf_kb = 2048;
+			c->protocontroller_buf_kb = 4080;
 	}
 	if (!c->subflow) /* each link's own rate needs its SFACKs */
 		c->link_cc = 0;
