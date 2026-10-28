@@ -306,8 +306,8 @@ C=$R/etc/cengarde/clients/router
 check "clients/router: 0600 root, in a 0700 directory" [ "$(mode "$C") $(mode "${C%/*}")" = "600 root 700 root" ]
 check "it holds the secret, slot 0, the tunnel address of its secret ($A1), forwarding on" \
 	[ "$(val "$C" SECRET) $(val "$C" SLOT) $(val "$C" TUNNEL_ADDR) $(val "$C" LEGACY_ADDR) $(val "$C" FORWARD)" = "$S1 0 $A1  yes" ]
-check "cengarde.conf: 0640, the engine's TUN cg0 at 10.79.0.1/16, the forward table and the reserved set, no global key, no IP pass file, nothing of WireGuard" \
-	sh -c '[ "$(stat -c %a "$1")" = 640 ] && grep -qx "tun = cg0" "$1" && grep -qx "tun_addr = 10.79.0.1/16" "$1" &&
+check "cengarde.conf: 0640, the engine's TUN cg0 at 10.79.0.1/16 with the routers' MTU (1380), the forward table and the reserved set, no global key, no IP pass file, nothing of WireGuard" \
+	sh -c '[ "$(stat -c %a "$1")" = 640 ] && grep -qx "tun = cg0" "$1" && grep -qx "tun_addr = 10.79.0.1/16" "$1" && grep -qx "tun_mtu = 1380" "$1" &&
 		grep -qx "forward_file = /var/lib/cengarde/forward" "$1" &&
 		grep -qx "# reserved: tcp:1-1023 tcp:8123 udp:1-1023 udp:65500" "$1" &&
 		[ "$(sed "/^\[/q" "$1" | grep -c "^key = ")" = 0 ] && ! grep -q "^passthrough_file\|^wireguard\|^tunnel" "$1"' sh "$R/etc/cengarde/cengarde.conf"

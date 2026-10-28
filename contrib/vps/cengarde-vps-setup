@@ -152,6 +152,11 @@ SERVER_ADDR=10.79.0.1
 # inside their prefixes).
 TUN_DEV=cg0
 TUN_NET=$SERVER_ADDR/16
+# The TUN's MTU, the routers' (OpenWrt's mtu 1380): the engine's own 1420
+# made 1476-byte download packets, and Claro's path back takes 1460, so the
+# kernel cut every full one in two over it (the ceiling capture of
+# 2026-10-28: GRIT's download 97 -> 137-152 Mbit/s with 1380).
+TUN_MTU=1380
 TUN_NET6=fd79::1/8
 # The drop-in that let the engine open /dev/net/tun before 0.12, when only
 # TUNNEL=native needed it: cengarde.service allows it itself now.
@@ -463,6 +468,9 @@ engine_conf() {
 		# encrypted; each router's own addresses are its tun_route.
 		tun = $TUN_DEV
 		tun_addr = $TUN_NET$(! tunnel_v6 || echo " $TUN_NET6")
+		# The routers' MTU: a path that takes less than 1500 bytes (Claro's,
+		# 1460) cuts larger download packets in two.
+		tun_mtu = $TUN_MTU
 	EOF
 	[ "$PROTOCONTROLLER" = yes ] && cat <<-EOF
 		# The protocontroller (cengarde-vps-setup protocontroller off removes
