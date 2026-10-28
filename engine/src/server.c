@@ -3439,6 +3439,7 @@ static void cap_tick(struct server *s, struct session *S, uint16_t live, uint64_
 			for (int p = 0; p < CG_MAX_LINKS; p++) /* the engine's capacity, as a start */
 				if (S->sf[p]) {
 					S->sf[p]->tx.lc.target_us = s->cfg->governor_target_ms * 1000;
+					S->sf[p]->tx.lc.bits = (uint8_t)s->cfg->link_cc_bits;
 					if (S->cap[p].have_rate)
 						cg_lc_seed(&S->sf[p]->tx.lc, cg_cap_bps(&S->cap[p]) / 8);
 				}

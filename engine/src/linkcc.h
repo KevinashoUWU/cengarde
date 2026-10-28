@@ -60,6 +60,14 @@
 
 enum { CG_LC_STARTUP_M = 0, CG_LC_DRAIN_M, CG_LC_PROBE_M };
 
+/* What of the queue's use is on (link_cc_bits, an experiment: the four
+ * together lost 20-46 % in the lab, 2026-10-28) */
+#define CG_LC_QETA 1u   /* the split's queue: its delay at the pacing rate (else in flight over bw x rtprop) */
+#define CG_LC_QMODE 2u  /* STARTUP ends, DRAIN ends and PROBE drains or probes by the queue */
+#define CG_LC_SAT 4u    /* what a queued link delivered caps bw at 5/4 */
+#define CG_LC_S32 8u    /* STARTUP at 3/2 (else 2) */
+#define CG_LC_ALL 15u
+
 struct cg_lc {
 	uint64_t bw;             /* the estimate, 0: none yet */
 	uint64_t bmax[2], bt;    /* the window's two buckets, the current one's start */
@@ -78,12 +86,14 @@ struct cg_lc {
 	uint32_t q_us;
 	uint32_t target_us;      /* the queue the link may hold (set by the caller) */
 	uint64_t sat, sat_t;     /* what it delivered while queued (EWMA), and when */
+	uint8_t bits;            /* CG_LC_QETA...: set by the caller */
 };
 
 static inline void cg_lc_init(struct cg_lc *c)
 {
 	memset(c, 0, sizeof(*c));
 	c->target_us = CG_LC_TARGET_US;
+	c->bits = CG_LC_ALL;
 }
 
 /* The estimate, bytes/s: the window's largest sample, at most 5/4 of what
@@ -92,7 +102,7 @@ static inline uint64_t cg_lc_bw(const struct cg_lc *c)
 {
 	uint64_t b = c->bw ? c->bw : CG_LC_START;
 
-	if (c->sat && c->sat * 5 / 4 < b)
+	if ((c->bits & CG_LC_SAT) && c->sat && c->sat * 5 / 4 < b)
 		b = c->sat * 5 / 4 > CG_LC_FLOOR ? c->sat * 5 / 4 : CG_LC_FLOOR;
 	return b;
 }
@@ -101,7 +111,7 @@ static inline uint64_t cg_lc_bw(const struct cg_lc *c)
  * (-1), by its one-way delay; 0: in between, or not known. */
 static inline int cg_lc_qstate(const struct cg_lc *c)
 {
-	if (!c->have_owd)
+	if (!c->have_owd || !(c->bits & CG_LC_QMODE))
 		return 0;
 	if (c->q_us > c->target_us)
 		return 1;
@@ -123,10 +133,12 @@ static inline uint32_t cg_lc_gain(const struct cg_lc *c)
 	uint32_t g;
 
 	if (c->mode == CG_LC_STARTUP_M)
-		return CG_LC_STARTUP;
+		return c->bits & CG_LC_S32 ? CG_LC_STARTUP : 512;
 	if (c->mode == CG_LC_DRAIN_M)
 		return CG_LC_DRAIN;
 	g = cyc[c->cycle % CG_LC_CYCLE];
+	if (!(c->bits & CG_LC_QMODE))
+		return g;
 	if (cg_lc_qstate(c) > 0) /* over the target: drain */
 		return 192;
 	if (g > CG_LC_ONE && cg_lc_qstate(c) == 0) /* probe only well under it */
@@ -157,7 +169,7 @@ static inline uint64_t cg_lc_queued(const struct cg_lc *c)
 {
 	uint64_t bdp = c->rtprop ? cg_lc_bw(c) * c->rtprop / 1000000 : 0;
 
-	if (c->have_owd)
+	if (c->have_owd && (c->bits & CG_LC_QETA))
 		return cg_lc_rate(c) * c->q_us / 1000000;
 	return c->inflight > bdp ? c->inflight - bdp : 0;
 }
@@ -234,7 +246,7 @@ static inline void cg_lc_round(struct cg_lc *c, uint64_t now)
 			c->mode = CG_LC_DRAIN_M;
 		}
 	}
-	if (c->mode == CG_LC_DRAIN_M && (c->have_owd ? cg_lc_qstate(c) < 0
+	if (c->mode == CG_LC_DRAIN_M && (c->have_owd && (c->bits & CG_LC_QMODE) ? cg_lc_qstate(c) < 0
 					   : c->inflight <= cg_lc_bw(c) * (c->rtprop ? c->rtprop : 0) / 1000000)) {
 		c->mode = CG_LC_PROBE_M;
 		c->cycle = 2; /* after the probe's 5/4 and its 3/4: cruise first */
