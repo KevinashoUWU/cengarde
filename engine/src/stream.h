@@ -53,6 +53,7 @@
 #define CG_ST_MAXWIN ((uint64_t)(CG_ST_SLOTS - 1) * CG_ST_CHUNK)
 #define CG_ST_RANGES 256   /* out-of-order ranges a receiver keeps */
 #define CG_ST_ACK_RANGES 8 /* SACK ranges an ACK carries */
+#define CG_ST_ACK_LOW 3    /* of them, the lowest ones always; the others after the newest rotate */
 #define CG_ST_NOFIN UINT64_MAX
 
 /* ---- the pool of chunks ---- */
@@ -239,6 +240,7 @@ struct cg_st_rx {
 	uint16_t nr;  /* ranges above nxt, sorted, disjoint and not touching */
 	uint64_t rs[CG_ST_RANGES], re[CG_ST_RANGES];
 	uint64_t last;   /* the offset of the newest frame taken (its range goes first in an ACK) */
+	uint16_t rot;    /* where an ACK's rotating ranges start (cg_st_rx_ack) */
 	uint64_t frames, dup_frames, ooo_frames, drop_frames; /* data frames taken, all duplicate, out of order, dropped */
 };
 
@@ -370,10 +372,15 @@ struct cg_st_ack {
 /* The ACK of what r holds, the edge given (the caller's window): the
  * range of the newest frame first (the sender's RACK learns the newest
  * delivery even with more holes than an ACK says), then the lowest ones
- * (the holes nearest to the cumulative offset). */
-static inline void cg_st_rx_ack(const struct cg_st_rx *r, uint64_t edge, uint16_t aseq, struct cg_st_ack *a)
+ * (the holes nearest to the cumulative offset), then others in turn from
+ * one ACK to the next. With more ranges than an ACK carries, the ones in
+ * the middle were never said until the holes below them filled: their
+ * sender took them as still in flight and its timer sent them again
+ * (story 029, the field with 2-4 MB buffers: thousands by the timer,
+ * duplicates). In turn, every range is said within a few ACKs. */
+static inline void cg_st_rx_ack(struct cg_st_rx *r, uint64_t edge, uint16_t aseq, struct cg_st_ack *a)
 {
-	unsigned newest = CG_ST_RANGES;
+	unsigned newest = CG_ST_RANGES, m, k;
 
 	a->aseq = aseq;
 	a->cum = r->nxt;
@@ -387,13 +394,26 @@ static inline void cg_st_rx_ack(const struct cg_st_rx *r, uint64_t edge, uint16_
 			a->n = 1;
 			break;
 		}
-	for (unsigned i = 0; i < r->nr && a->n < CG_ST_ACK_RANGES; i++) {
+	for (unsigned i = 0; i < r->nr && i < CG_ST_ACK_LOW; i++) {
 		if (i == newest)
 			continue;
 		a->s[a->n] = r->rs[i];
 		a->e[a->n] = r->re[i];
 		a->n++;
 	}
+	if (r->nr <= CG_ST_ACK_LOW)
+		return;
+	m = r->nr - CG_ST_ACK_LOW;
+	for (k = 0; k < m && a->n < CG_ST_ACK_RANGES; k++) {
+		unsigned i = CG_ST_ACK_LOW + (r->rot + k) % m;
+
+		if (i == newest)
+			continue;
+		a->s[a->n] = r->rs[i];
+		a->e[a->n] = r->re[i];
+		a->n++;
+	}
+	r->rot = (uint16_t)((r->rot + k) % m);
 }
 
 /* ---- the sending side ---- */

@@ -86,6 +86,28 @@ static void test_rx(void)
 	CHECK_EQ(a.s[1], 200);
 	CHECK_EQ(a.e[1], 300);
 	CHECK_EQ(a.aseq, 7);
+	/* with more ranges than an ACK carries, the middle ones in turn: twelve
+	 * holes, every range said within a few ACKs */
+	{
+		struct cg_st_rx q;
+		struct cg_st_ack b;
+		int said[13] = { 0 };
+
+		cg_st_rx_init(&q);
+		for (int i = 0; i < 13; i++)
+			cg_st_rx_add(&q, 1000 + 200 * (uint64_t)i, 100, 0);
+		CHECK_EQ(q.nr, 13);
+		for (int n = 0; n < 4; n++) {
+			cg_st_rx_ack(&q, 1u << 20, (uint16_t)n, &b);
+			CHECK_EQ(b.n, CG_ST_ACK_RANGES);
+			CHECK_EQ(b.s[0], 1000 + 200 * 12); /* the newest first */
+			CHECK_EQ(b.s[1], 1000);            /* then the lowest */
+			for (int k = 0; k < b.n; k++)
+				said[(b.s[k] - 1000) / 200]++;
+		}
+		for (int i = 0; i < 13; i++)
+			CHECK(said[i] > 0);
+	}
 	/* filling 300..400 joins the two ranges */
 	cg_st_rx_add(&r, 300, 100, 0);
 	CHECK_EQ(r.nr, 1);
