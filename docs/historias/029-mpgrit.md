@@ -43,6 +43,12 @@
   reenvía 0,6–1 % en vez de 10 %, y casi nada llega duplicado** (3–13 en vez
   de 6–8 mil); el caudal sigue lejos de OMR porque GRIT no llena los
   módems (paso 2).
+- **Paso 2b, un ritmo por enlace (`link_cc`, `SFACK`, `linkcc.h`):** un BBR
+  por enlace, alimentado por lo que el receptor dice que tomó cada uno,
+  maneja el reparto y la oferta de GRIT. **En terreno la bajada pasa de
+  63–65 a 98–125 Mbit/s (63–86 % de OMR) con el ping p95 en 45 ms (OMR
+  134–147)**; en el laboratorio gana con enlaces distintos y pierde en
+  `equal` (−13 %). Todavía es un experimento.
 
 ## Contexto
 
@@ -305,14 +311,78 @@ partían de cero), descargas de 100 MB, brazos alternados.
   las mismas rondas; ping p95 de GRIT 43–51 ms contra 82–397 de OMR. La red
   cambia mucho entre rondas: comparar solo dentro de la misma ronda.
 
+### Paso 2b: un ritmo por enlace (`link_cc`, 2026-10-28, tarde)
+
+El usuario: «el scheduler por enlace será la mejor ganancia». OMR corre un
+BBR por subflujo MPTCP y su VPS usa **BLEST** como planificador: no pone un
+paquete en el subflujo lento si llegaría después de que el rápido, con su
+ventana, ya hubiera mandado lo siguiente (evita el bloqueo en el receptor).
+Nuestro reparto por llegada esperada (ETA) ya busca lo mismo; lo que faltaba
+era que cada enlace supiera su propio ritmo y su cola **ahora**, no por la
+capacidad del motor (lo más que entregó, cortado al ver cola) ni por un
+reporte de retardo de hace 300–500 ms.
+
+- **`SFACK`** (tipo 10, protocolo 12 sin versión nueva): cada 10 ms como
+  mucho, por el enlace más rápido, el receptor dice por enlace su `sseq` más
+  nuevo, los bytes que tomó, cuándo llegaron (en su reloj) y cuánto esperó
+  el más nuevo. El emisor saca de ahí lo que va en vuelo por cada enlace, su
+  tasa de entrega (como BBR, pero medida en el reloj del receptor: las
+  respuestas en lote no la inflan) y su RTT.
+- **`linkcc.h`**, un BBR por enlace: `bw` la mayor muestra de 1–2 s,
+  `rtprop` el menor RTT de 10 s, STARTUP ×2, DRAIN, PROBE (5/4, 3/4, 1×6);
+  una ronda que pierde más del 5 % baja `bw` a 7/8 (las pérdidas son las del
+  enlace, por `SFLOSS`); con menos en vuelo que `bw × rtprop` la muestra
+  solo cuenta si es mayor (*app-limited*). La capacidad del motor es la
+  semilla.
+- **`link_cc`** (experimento, apagado): el ETA toma de cada enlace su ritmo,
+  su retardo sin cola (`rtprop` sobre el menor: los `SFACK` vuelven todos
+  por el mismo enlace, así que la diferencia es la de ida) y su cola en
+  vuelo; pasado `governor_target_ms` de cola el enlace es último recurso. La
+  oferta de GRIT es la suma de los ritmos de los enlaces, tenga o no cola el
+  flujo: cada enlace sondea y cuida la suya.
+- **Laboratorio** (`~/campo/2026-10-28/lc4`, n = 2, 7 casos × 2 sentidos,
+  `1a16000`): gana donde los enlaces son distintos — `cell4` +11 % bajando
+  y +31 % subiendo, `ratswitch` +21 / +5, `reorder50` +8 / +10, `het` +4 /
+  +9 — y pierde en `equal` (−13 / −5: empuja más de lo que la cola de netem
+  aguanta, más pérdidas y p99 de 126 a 354 ms) y en `protect` de bajada
+  (−10). netem no premia la cola como un módem real (lo vimos en el paso 2):
+  decide el terreno.
+- **Lo que el laboratorio escondía:** remoto06 tenía los techos de fábrica
+  de los búferes de socket (`net.core.rmem_max` 208 KB) y toda bajada ahí
+  quedaba en ~20 Mbit/s con el RTT plano: el socket del protocontrolador hacia
+  el destino fija su `SO_RCVBUF` (eso apaga el autoajuste) y el techo lo
+  dejaba en ~200 KB a 100 ms. Las corridas de la mañana que mezclaban nodos
+  (q1, rot1, rng1, s2q) tienen la bajada sesgada hacia abajo. Arreglado en
+  el nodo (`/etc/sysctl.d/90-cengarde-lab.conf`, también en
+  `setup-node.sh`), en el laboratorio (aviso si el techo es menor que 4 MB)
+  y en el motor (`SO_RCVBUFFORCE`, como los sockets del túnel: cualquier VPS
+  sin nuestro `sysctl.conf` habría tenido lo mismo).
+- **Terreno** (`~/campo/2026-10-28/field-l1`, `1a16000` en el NUC y el VPS,
+  2 rondas alternadas, 100 MB de bajada de cachefly y 15 s de subida con
+  iperf3, calentamiento de 50 MB por brazo):
+
+  | brazo | bajada R1 / R2 | ping p95 | subida R1 / R2 | ping p95 |
+  | --- | --- | --- | --- | --- |
+  | `subflow` solo | 62,8 / 64,7 | 45 / 44 | 84,5 / 81,2 | 65 / 68 |
+  | **`link_cc`** | **124,6 / 97,7** | 46 / 45 | 86,3 / 83,7 | 129 / 128 |
+  | OMR | 144,8 / 154,7 | 147 / 134 | 94,8 / 76,7 | 301 / 157 |
+
+  La bajada sube 98 y 51 % y llega a 86 y 63 % de OMR con un tercio de su
+  ping p95. El VPS midió 231 Mbit/s en un enlace (94 sin `link_cc`): el
+  módem daba eso y la capacidad del motor no lo veía. El enlace que pierde
+  (Claro) se recorta solo (59–70 rondas con más de 5 % perdido). La subida
+  no cambia: GRIT se queda sin qué enviar (`empty`, 98 mil turnos), así que
+  el límite está en lo que llega desde la LAN, no en los enlaces; su ping
+  p95 sí sube (65 → 128 ms, OMR 157–301). Datos móviles de la tanda: ~1,7 GB.
+
 ## Pendiente
 
-- Paso 2, lo que sigue: un controlador por enlace (BBR por subflujo, como
-  OMR) en vez de la capacidad del motor y la oferta; un enlace que muere en
-  plena descarga hace caer el ritmo de GRIT y deja sus pérdidas al
-  temporizador (sin paquetes posteriores ni sondas que las digan).
-- El paso 2: llenar cada enlace hasta su cola objetivo (OMR 45–60 ms por
-  módem) dentro del presupuesto de 300 ms.
+- `link_cc` en terreno contra OMR; según eso, ajustar STARTUP (×2 desborda
+  colas cortas) y el último recurso (`governor_target_ms`), y decidir si
+  pasa a ser lo normal con `subflow`.
+- Un enlace que muere en plena descarga hace caer el ritmo de GRIT y deja
+  sus pérdidas al temporizador (sin paquetes posteriores ni sondas que las
+  digan).
 - La pérdida de lo copiado, por enlace (qué enlaces llevaron cada copia).
 - El DATA del túnel (IP) con la misma evidencia: el rescate reenvía hoy lo
   que el reordenador pide, y en terreno eso llegó tarde.
@@ -326,3 +396,5 @@ partían de cero), descargas de 100 MB, brazos alternados.
 - 2026-10-28: creada.
 - 2026-10-28: el paso U1 (protocolo 12, `subflow`), la regla de la evidencia
   y el RACK de la mezcla apagado; el temporizador con margen; terreno.
+- 2026-10-28: el paso 2 (oferta, objetivos por omisión) y el 2b (`SFACK`,
+  `linkcc.h`, `link_cc`); el techo de búferes de remoto06.
