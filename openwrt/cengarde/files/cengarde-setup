@@ -1320,10 +1320,11 @@ vps_key() {
 
 # One of cengarde-vps-admin's commands on the VPS: vps_ssh_host (else the
 # first VPS address) at vps_ssh_port, as root with this router's key, whose
-# only command there is cengarde-vps-admin. A host key it has not seen is
-# taken and kept (dbclient -y): a VPS rebuilt with the same address needs its
-# old line out of /root/.ssh/known_hosts. Words of letters, digits, ., _ and
-# - only; the VPS checks the rest.
+# only command there is cengarde-vps-admin, and never a password prompt
+# (BatchMode: without it dbclient exits 0 when the key is not taken). A host
+# key it has not seen is taken and kept (dbclient -y): a VPS rebuilt with the
+# same address needs its old line out of /root/.ssh/known_hosts. Words of
+# letters, digits, ., _ and - only; the VPS checks the rest.
 vps() {
 	local host w
 
@@ -1337,11 +1338,24 @@ vps() {
 	[ -n "$host" ] || host=${SERVER%% *}
 	[ -n "$host" ] || die "no VPS address (server) nor vps_ssh_host"
 	case "$VPS_SSH_PORT" in '' | *[!0-9]*) die "vps_ssh_port $VPS_SSH_PORT: expected a port" ;; esac
-	if command -v timeout >/dev/null; then
-		timeout "$VPS_TIMEOUT" dbclient -y -i "$VPS_KEY" -p "$VPS_SSH_PORT" "root@$host" "$*" </dev/null
-	else
-		dbclient -y -i "$VPS_KEY" -p "$VPS_SSH_PORT" "root@$host" "$*" </dev/null
-	fi
+	limit "$VPS_TIMEOUT" dbclient -o BatchMode=yes -y -i "$VPS_KEY" -p "$VPS_SSH_PORT" "root@$host" "$*"
+}
+
+# limit SECONDS CMD...: CMD, killed after SECONDS (OpenWrt's busybox may have
+# no timeout). The watchdog holds none of the caller's output, so that LuCI,
+# which reads until it closes, does not wait for it.
+limit() {
+	local secs="$1" pid w rc
+
+	shift
+	"$@" </dev/null &
+	pid=$!
+	(sleep "$secs" && kill "$pid") </dev/null >/dev/null 2>&1 &
+	w=$!
+	wait "$pid"
+	rc=$?
+	kill "$w" 2>/dev/null
+	return $rc
 }
 
 # With vps_admin = 1 this router administers its VPS, whose settings every

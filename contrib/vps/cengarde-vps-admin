@@ -6,8 +6,10 @@
 # argument reaches a shell.
 #
 #   get                       the server's settings that a router can see
-#                             and change, as KEY=VALUE lines (keys= lists
-#                             those "set" takes)
+#                             and change, as KEY=VALUE lines: its routers,
+#                             mode, the FEC and the protocontroller as the
+#                             engine has them, keys= (what "set" takes) and
+#                             what engine.local sets of those (local.KEY=)
 #   mode bonding|redundancy|custom
 #   fec on|rlc|off
 #   protocontroller on|off    as cengarde-vps-setup's (the engine restarts)
@@ -27,8 +29,9 @@ SETUP=${CENGARDE_VPS_SETUP:-cengarde-vps-setup}
 ETC=$R/etc/cengarde
 NAT_CONF=$ETC/nat.conf
 LOCAL_CONF=$ETC/engine.local
+ENGINE_CONF=$ETC/cengarde.conf
 # The engine's global settings a router may set here (engine/examples/server.conf).
-KEYS='fec_pct fec_pct_min fec_window_ms fec_single rescue_kb rescue_wait_ms rescue_code_ms pace_peers_ms
+KEYS='fec fec_code fec_pct fec_pct_min fec_window_ms fec_single rescue_kb rescue_wait_ms rescue_code_ms pace_peers_ms
 split_spread_ms split_spread_copy reorder_margin_ms reorder_max_wait_ms governor governor_target_ms
 capacity_weights split_eta tcp_aware link_cc_bits protocontroller_buf_kb protocontroller_queue_ms parq'
 
@@ -49,14 +52,19 @@ allowed() {
 # kv FILE VAR: VAR's value in a nat.conf (VAR="value"), else empty.
 kv() { sed -n "s/^$2=\"\{0,1\}\([^\"]*\)\"\{0,1\}\$/\1/p" "$1" 2>/dev/null | tail -n 1; }
 
+# ini FILE KEY: KEY's value in an engine file (KEY = value; the last wins).
+ini() { sed -n "s/^[[:space:]]*$2[[:space:]]*=[[:space:]]*//p" "$1" 2>/dev/null | tail -n 1; }
+
 cmd_get() {
 	local b p f k v
 
 	b=$(kv "$NAT_CONF" BONDING)
 	p=$(kv "$NAT_CONF" PROTOCONTROLLER)
-	f=$(kv "$NAT_CONF" FEC)
 	echo "version=$(cengarde version 2>/dev/null | head -n 1)"
-	echo "routers=$(find "$ETC/clients" -mindepth 1 -maxdepth 1 -type f 2>/dev/null | wc -l)"
+	# the routers by name (a file of another name there is not one)
+	v=$(find "$ETC/clients" -mindepth 1 -maxdepth 1 -type f 2>/dev/null | sed 's|.*/||' |
+		grep -xE '[a-z0-9][a-z0-9-]{0,11}' | grep -vx default | sort | tr '\n' ' ')
+	echo "routers=${v% }"
 	# what cengarde-vps-setup mode leaves: custom keeps the protocontroller
 	if [ "$b" = yes ]; then
 		echo mode=bonding
@@ -65,13 +73,17 @@ cmd_get() {
 	else
 		echo mode=custom
 	fi
-	echo "protocontroller=$([ "$p" = yes ] && echo on || echo off)"
+	# the FEC and the protocontroller as the engine has them, engine.local
+	# included
+	f=$(ini "$ENGINE_CONF" fec)
+	[ "$f" = yes ] && [ "$(ini "$ENGINE_CONF" fec_code)" = rlc ] && f=rlc
+	echo "protocontroller=$(case $(ini "$ENGINE_CONF" protocontroller) in '' | no) echo off ;; *) echo on ;; esac)"
 	echo "fec=$(case "$f" in yes) echo on ;; rlc) echo rlc ;; *) echo off ;; esac)"
 	v=$(echo "$KEYS" | tr '\n' ' ')
 	echo "keys=${v% }"
 	for k in $KEYS; do
-		v=$(sed -n "s/^[[:space:]]*${k}[[:space:]]*=[[:space:]]*//p" "$LOCAL_CONF" 2>/dev/null | tail -n 1)
-		[ -z "$v" ] || echo "$k=$v"
+		v=$(ini "$LOCAL_CONF" "$k")
+		[ -z "$v" ] || echo "local.$k=$v"
 	done
 }
 

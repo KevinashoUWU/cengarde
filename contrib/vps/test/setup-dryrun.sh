@@ -45,10 +45,11 @@
 # - admin-key add|list|remove: a router's key in root's authorized_keys,
 #   bound to cengarde-vps-admin and restricted, once; not a key refused;
 #   removed by its comment, exactly; and cengarde-vps-admin as sshd runs it
-#   for that key: get (the mode, the FEC, the keys "set" takes), set and
-#   unset in engine.local with the configuration again, mode and fec through
-#   cengarde-vps-setup; refused: a setting not on its list, a value that is
-#   not a number or a word, a shell, more words than its command takes;
+#   for that key: get (its routers, the mode, the FEC as the engine has it,
+#   the keys "set" takes), set and unset in engine.local with the
+#   configuration again, mode and fec through cengarde-vps-setup; refused:
+#   a setting not on its list, a value that is not a number or a word, a
+#   shell, more words than its command takes;
 #   engine.local wins (story 029);
 # - forward add|del: one spelling of a rule, in the router's file and its
 #   section; refused: a reserved port (with the reason), an overlap with
@@ -770,10 +771,11 @@ admin() {
 	printf '%s\n' "$OUT" | sed 's/^/    /'
 	return "$RC"
 }
+touch "$R/etc/cengarde/clients/router.before-rename"
 check "get" admin get
-check "the mode, the FEC and what set takes" \
-	sh -c 'printf "%s\n" "$1" | grep -qx mode=custom && printf "%s\n" "$1" | grep -qx fec=off &&
-		printf "%s\n" "$1" | grep -q "^keys=fec_pct .*link_cc_bits"' sh "$OUT"
+check "its routers by name, the mode, the FEC and what set takes" \
+	sh -c 'printf "%s\n" "$1" | grep -qx routers=router && printf "%s\n" "$1" | grep -qx mode=custom &&
+		printf "%s\n" "$1" | grep -qx fec=off && printf "%s\n" "$1" | grep -q "^keys=fec fec_code fec_pct .*link_cc_bits"' sh "$OUT"
 : >"$CALLS"
 check "set fec_pct 30" admin set fec_pct 30
 check "in engine.local, and in cengarde.conf after the configuration again" \
@@ -782,7 +784,11 @@ check "the engine took it" called '^cengarde -t -c .*cengarde.conf.new'
 check "set fec_pct 25: one line, the new one" admin set fec_pct 25
 check "so" [ "$(grep -c '^fec_pct' "$R/etc/cengarde/engine.local")" = 1 ]
 check "get shows it" admin get
-check "so" said "fec_pct=25"
+check "so" said "local.fec_pct=25"
+check "set fec yes" admin set fec yes
+check "get: the FEC as the engine has it, from engine.local" admin get
+check "so" said "fec=on"
+check "unset fec" admin unset fec
 check "unset fec_pct" admin unset fec_pct
 check "gone" not grep -q '^fec_pct' "$R/etc/cengarde/engine.local" "$R/etc/cengarde/cengarde.conf"
 check "mode bonding" admin mode bonding

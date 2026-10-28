@@ -192,7 +192,9 @@ function vpsPanel() {
 			pctl.value = v.protocontroller || 'off';
 			key.innerHTML = '';
 			(v.keys || '').split(' ').filter(Boolean).forEach(function(k) {
-				key.appendChild(E('option', { 'value': k }, [ k + (v[k] != null ? ' = ' + v[k] : '') ]));
+				const set = v['local.' + k];
+
+				key.appendChild(E('option', { 'value': k }, [ k + (set != null ? ' = ' + set : '') ]));
 			});
 			if (was)
 				key.value = was;
