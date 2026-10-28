@@ -141,14 +141,14 @@ static void test_rx(void)
 		cg_st_rx_add(&r, 100 + 20 * i, 10, 0);
 	CHECK_EQ(r.nr, CG_ST_RANGES);
 	CHECK_EQ(cg_st_rx_judge(&r, 50000, 10, 0, 100000), CG_ST_RX_DROP);
-	CHECK_EQ(cg_st_rx_judge(&r, 5195, 10, 0, 100000), CG_ST_RX_NEW); /* touches the last */
+	CHECK_EQ(cg_st_rx_judge(&r, 95 + 20 * (CG_ST_RANGES - 1), 10, 0, 100000), CG_ST_RX_NEW); /* touches the last */
 	CHECK_EQ(cg_st_rx_judge(&r, 110, 10, 0, 100000), CG_ST_RX_NEW);
 	CHECK_EQ(cg_st_rx_judge(&r, 0, 10, 0, 100000), CG_ST_RX_NEW); /* at nxt */
 	/* a merge with every range taken keeps them all (the count once went
 	 * through 8 bits: 256 ranges and a merge forgot them all) */
-	cg_st_rx_add(&r, 5195, 10, 0);
+	cg_st_rx_add(&r, 95 + 20 * (CG_ST_RANGES - 1), 10, 0);
 	CHECK_EQ(r.nr, CG_ST_RANGES);
-	CHECK_EQ(r.rs[CG_ST_RANGES - 1], 5195);
+	CHECK_EQ(r.rs[CG_ST_RANGES - 1], 95 + 20 * (CG_ST_RANGES - 1));
 	cg_st_rx_add(&r, 110, 10, 0); /* joins the first two */
 	CHECK_EQ(r.nr, CG_ST_RANGES - 1);
 	CHECK_EQ(r.nxt, 0);

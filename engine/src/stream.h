@@ -51,7 +51,12 @@
 #define CG_ST_SLOTS 256u   /* chunks a buffer spans: its window is under (CG_ST_SLOTS - 1) chunks */
 #define CG_ST_NOCH UINT32_MAX
 #define CG_ST_MAXWIN ((uint64_t)(CG_ST_SLOTS - 1) * CG_ST_CHUNK)
-#define CG_ST_RANGES 256   /* out-of-order ranges a receiver keeps */
+/* Out-of-order ranges a receiver keeps. Over several links every segment
+ * that comes by a faster one ahead of those still on slower ones opens a
+ * range: with 2-4 MB in flight 256 ran out, frames were dropped and only
+ * the sender's timer sent them again (story 029; the lab's drop_frames
+ * followed the buffer, 0, 64, 412 for 1, 2, 4 MB). 16 KB a direction. */
+#define CG_ST_RANGES 1024
 #define CG_ST_ACK_RANGES 8 /* SACK ranges an ACK carries */
 #define CG_ST_ACK_LOW 3    /* of them, the lowest ones always; the others after the newest rotate */
 #define CG_ST_NOFIN UINT64_MAX
