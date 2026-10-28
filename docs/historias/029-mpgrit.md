@@ -112,6 +112,17 @@ toca hasta que lo nuevo lo supere.
    nocturno: la carga de los demás usuarios de la celda.
 3. Lo aprendido, dentro de los subflujos.
 
+### Paso 1 en el laboratorio (2026-10-28, `~/campo/2026-10-28/s1a/`)
+
+`e2d8935` (base) contra `1a7f6df` (RACK hasta 300 ms), GRIT por el túnel
+nativo con la configuración del terreno, 7 casos × 2 sentidos × 6 réplicas
+de 20 s (168 corridas, el PC y remoto06): **neutro**, ninguna diferencia con
+p < 0,13; `reorder50` de subida +25 % (p 0,13), `ratswitch` de subida p99
+774 → 311 ms, `protect` de bajada −33 % con mucha varianza (p 0,94). En el
+laboratorio netem entrega cada enlace en orden: el desorden que confunde a
+GRIT es el del terreno, donde se mide. `protocontroller_nack no` queda por
+medir en terreno.
+
 ## Pendiente
 
 - Medir el paso 1 (laboratorio `~/campo/2026-10-28/s1a/` y siguientes) y
