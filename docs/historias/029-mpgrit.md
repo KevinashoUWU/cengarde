@@ -54,6 +54,15 @@
   (+49 % en cuatro rondas) **la bajada llega al 93 % de OMR (129 contra 140
   de media) con 40 % de su ping, y la subida le gana ~10 %**. Todavía es un
   experimento.
+- **Los modos (LuCI, `option mode`):** *Bonding* (lo de arriba: `split`,
+  GRIT, `subflow`, `link_cc`; lo que trae un router nuevo), *Redundancia*
+  (copias, rescate y el **protocontrolador A**, que en el laboratorio llevó
+  24–45 % más por enlaces que pierden o celulares y 5 veces más con el
+  principal cortado; GRIT, con o sin subflujos, rindió menos ahí) y
+  *Personalizado* (como antes). El VPS los sigue con `cengarde-vps-setup
+  mode`, y **un router lo administra** con una llave SSH que solo puede
+  correr `cengarde-vps-admin` (modo, FEC, protocontrolador y una lista de
+  ajustes del motor), desde la pestaña *VPS* de LuCI.
 
 ## Contexto
 
@@ -495,6 +504,82 @@ reporte de retardo de hace 300–500 ms.
   apagado. La ventana de un enlace sale del mismo `bw` inflado, así que
   frena tarde, igual que la de BBR en OMR.
 
+### Los modos y el VPS administrado desde el router (2026-10-28, noche)
+
+El usuario pidió dejar lo ganador como lo normal del bonding, la redundancia
+«como siempre ha servido», un cambio rápido entre las dos en el modo simple,
+la FEC, la paridad y el rescate en el avanzado, el VPS espejado, y un panel en
+el NUC para cambiar ajustes del VPS sin entrar a él (el NUC administra el VPS
+para todos los routers: no hay ajustes por router todavía).
+
+- **El modo del router** (`option mode`, `cengarde-setup` `mode_presets`):
+  `bonding` y `redundancy` fijan los cuatro interruptores (`split`,
+  `protocontroller`, `subflow`, `link_cc`) y traen el resto de su ajuste
+  como valor por defecto, que una opción puesta aparte gana; `custom` (o sin
+  `mode`, un router que ya existía) toma todo como está. Bonding: `split`
+  con `split_eta`, `capacity_weights`, `split_spread_ms` 250 sin copias,
+  `probe_idle_ms` 100, `mute_behind_ms` 0, `reorder_max_wait_ms` 500,
+  `reorder_pool_kb` 32768, rescate, `tcp_aware`, GRIT con
+  `protocontroller_nack` apagado (el perfil de terreno y lo de esta
+  historia). Redundancia: copias, rescate, `tcp_aware` y el protocontrolador
+  A. LuCI muestra el modo en *General*, y cada opción que el modo decide
+  muestra su valor y se guarda solo si se aparta; el cloud-config lleva el
+  modo al VPS (`cengarde-vps-setup mode`).
+- **El VPS** (`cengarde-vps-setup mode`): `bonding` pone `BONDING="yes"` en
+  `nat.conf` (el motor recibe `subflow`, `link_cc` y `protocontroller_nack =
+  no`) y el protocontrolador; `redundancy`, el protocontrolador sin
+  `BONDING`; `custom`, sin `BONDING` y el protocontrolador como esté.
+  `engine.local` va después y gana (el motor toma la última línea de una
+  clave).
+- **La administración** (`cengarde-vps-setup admin-key`,
+  `cengarde-vps-admin`, `cengarde-setup vps-key` y `vps`): el router hace una
+  vez una llave ed25519 de dropbear (`/etc/cengarde/vps_admin_key`, en
+  `conffiles`) y LuCI muestra la orden para autorizarla; en el VPS entra a
+  `authorized_keys` de root con `command="/usr/local/sbin/cengarde-vps-admin",restrict`.
+  Ese comando forzado solo acepta `get`, `mode`, `fec`, `protocontroller`,
+  `set CLAVE VALOR` y `unset CLAVE`, con las claves de una lista (FEC,
+  rescate, reparto, gobernador, `tcp_aware`, `link_cc_bits`, búfer y cola
+  del protocontrolador, `parq`) y valores de letras, cifras, `.`, `_` y `-`
+  (hasta 16); parte las palabras sin globos y nunca pasa nada a una shell.
+  `set` reescribe `engine.local` y regenera la configuración (`refresh`).
+  El router se conecta con `dbclient -y` (acepta la llave de host la
+  primera vez y la recuerda) a la primera dirección del VPS o a
+  `vps_ssh_host`. Con `vps_admin` encendido, el modo del router va solo al
+  VPS en cada cambio.
+- **Probado:** la prueba en seco del VPS (`setup-dryrun.sh`: la llave una
+  vez, rechazos, `get`, `set`, `unset`, `mode`, `fec`, lo que no está en la
+  lista, valores con `;`, `-` o `*`, una shell; encontró que `$(printf
+  '\n')` en un `case` dejaba el patrón vacío y rechazaba toda llave) y
+  `e2e.sh` (los modos en el archivo del motor; la llave y `cengarde-setup
+  vps` contra el dropbear de la VM del VPS con el comando forzado).
+
+**La redundancia con lo nuevo** (`~/campo/2026-10-28/red1`, `73123f7`,
+remoto06 y remoto07, `split` apagado, FEC v3 y rescate en todos los brazos,
+n = 3 × 30 s, cubic, Mbit/s y su cambio contra el túnel transparente):
+
+| caso | sentido | túnel | A (TCP en el medio) | B (GRIT) | B con `subflow` |
+| --- | --- | --- | --- | --- | --- |
+| lossy | bajada | 39,7 | **51,7 (+30 %)** | 44,0 (+11 %) | 46,5 (+17 %) |
+| lossy | subida | 38,0 | **47,3 (+24 %)** | 44,5 (+17 %) | 46,2 (+22 %) |
+| cell4 | bajada | 12,2 | **17,7 (+45 %)** | 14,2 (+17 %) | 17,7 (+45 %) |
+| cell4 | subida | 12,5 | **17,7 (+41 %)** | 15,5 (+23 %) | 16,8 (+34 %) |
+| protectcut | bajada | 6,5 | **35,3 (×5,4)** | 10,0 | 18,4 |
+| protectcut | subida | 6,6 | **33,2 (×5,0)** | 13,4 | 16,9 |
+| fade | bajada | **49,8** | 46,3 (−7 %) | 27,4 (−45 %) | 41,4 (−17 %) |
+| fade | subida | **49,3** | 45,2 (−8 %) | 27,1 (−45 %) | 39,8 (−19 %) |
+| het | bajada | **54,7** | 53,2 (−3 %) | 52,5 (−4 %) | 45,8 (−16 %) |
+| linkdeath | bajada | **36,5** | 35,5 (−3 %) | 35,9 (−2 %) | 33,9 (−7 %) |
+
+En redundancia gana A: el TCP del kernel en el medio con las copias por
+debajo no ve pérdidas que repetir, y gana mucho donde el túnel solo no
+alcanza (pérdida al azar, celulares, el principal cortado), a cambio de
+2–8 % en enlaces limpios y un ping p99 mayor (lossy 128 contra 65 ms, cell4
+215 contra 92: dentro del presupuesto de ~300 ms). GRIT en redundancia
+pierde en `fade` (−45 %): su ritmo sigue la mezcla de copias, que se ve como
+un enlace que salta; los subflujos sin `split` reenvían miles de paquetes
+(una copia que llega por otro enlace no tapa la pérdida del suyo). Por eso
+la redundancia queda con A.
+
 ## Pendiente
 
 - `link_cc`: decidir si pasa a ser lo normal con `subflow` (más rondas de
@@ -521,3 +606,6 @@ reporte de retardo de hace 300–500 ms.
   y el RACK de la mezcla apagado; el temporizador con margen; terreno.
 - 2026-10-28: el paso 2 (oferta, objetivos por omisión) y el 2b (`SFACK`,
   `linkcc.h`, `link_cc`); el techo de búferes de remoto06.
+- 2026-10-28: los modos (bonding, redundancia, personalizado) en el router,
+  LuCI y el VPS; el VPS administrado desde el router (`cengarde-vps-admin`);
+  la redundancia con lo nuevo (`red1`: queda con el protocontrolador A).
