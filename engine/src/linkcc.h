@@ -71,6 +71,13 @@ enum { CG_LC_STARTUP_M = 0, CG_LC_DRAIN_M, CG_LC_PROBE_M };
 #define CG_LC_QMODE 2u  /* STARTUP ends, DRAIN ends and PROBE drains or probes by the queue */
 #define CG_LC_SAT 4u    /* what a queued link delivered caps bw at 5/4 */
 #define CG_LC_S32 8u    /* STARTUP at 3/2 (else 2) */
+/* The field's download, 2026-10-28 (field-l5): without SAT two links held
+ * 513-587 ms of queue (their bw 3-6 times what they delivered) and the
+ * timer resent ~800 a download; with it the fast link starved (60 Mbit/s
+ * where it gave 176 uncapped): its queued samples come when it slows down,
+ * which is when a queue builds, so they run low. */
+#define CG_LC_QMAX 16u  /* the split's queue: the larger of in flight over bw x rtprop and its delay at the pacing rate */
+#define CG_LC_SATQ 32u  /* SAT caps only while the link holds a queue (half the target or more) */
 #define CG_LC_BITS (CG_LC_QMODE | CG_LC_S32) /* the default; the router's adds SAT (config.c) */
 
 struct cg_lc {
@@ -107,7 +114,10 @@ static inline uint64_t cg_lc_bw(const struct cg_lc *c)
 {
 	uint64_t b = c->bw ? c->bw : CG_LC_START;
 
-	if ((c->bits & CG_LC_SAT) && c->sat && c->sat * 5 / 4 < b)
+	int cap = (c->bits & CG_LC_SAT) &&
+		  (!(c->bits & CG_LC_SATQ) || (c->have_owd && c->q_us >= c->target_us / 2));
+
+	if (cap && c->sat && c->sat * 5 / 4 < b)
 		b = c->sat * 5 / 4 > CG_LC_FLOOR ? c->sat * 5 / 4 : CG_LC_FLOOR;
 	return b;
 }
@@ -168,15 +178,19 @@ static inline uint64_t cg_lc_cwnd(const struct cg_lc *c, uint32_t target_us)
 	return w > CG_LC_MIN_CWND ? w : CG_LC_MIN_CWND;
 }
 
-/* The bytes queued on the link: its queue's delay at its pacing rate, or
- * without one, what is in flight over bw x rtprop. */
+/* The bytes queued on the link: what is in flight over bw x rtprop, or
+ * (QETA) its queue's delay at its pacing rate, or (QMAX) the larger. */
 static inline uint64_t cg_lc_queued(const struct cg_lc *c)
 {
 	uint64_t bdp = c->rtprop ? cg_lc_bw(c) * c->rtprop / 1000000 : 0;
+	uint64_t fl = c->inflight > bdp ? c->inflight - bdp : 0, d;
 
-	if (c->have_owd && (c->bits & CG_LC_QETA))
-		return cg_lc_rate(c) * c->q_us / 1000000;
-	return c->inflight > bdp ? c->inflight - bdp : 0;
+	if (!c->have_owd || !(c->bits & (CG_LC_QETA | CG_LC_QMAX)))
+		return fl;
+	d = cg_lc_rate(c) * c->q_us / 1000000;
+	if (c->bits & CG_LC_QETA)
+		return d;
+	return d > fl ? d : fl;
 }
 
 /* The one-way delay of a packet at now (us, the receiver's clock less the

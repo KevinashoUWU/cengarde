@@ -3,7 +3,7 @@ tags: [mapa, pieza]
 archivos:
   - engine/src/linkcc.h
   - engine/tests/test_linkcc.c
-sello: 1328f18ecc48149d
+sello: 6153a34af2798ff5
 ---
 # Ritmo por enlace (linkcc.h)
 
@@ -72,7 +72,7 @@ los dejaban a medias.
 ## Perillas
 - [[Mapa/Perillas/link_cc|link_cc]]: no. Exige `subflow` en los dos extremos.
 - El objetivo de cola es `governor_target_ms` (60 con `subflow`).
-- [[Mapa/Perillas/link_cc_bits|link_cc_bits]] (experimento): qué usos de la cola están encendidos (`CG_LC_QETA`, `CG_LC_QMODE`, `CG_LC_SAT`, `CG_LC_S32`); por omisión los modos por la cola y STARTUP a ×3/2 (10, `CG_LC_BITS`), y en el router además el tope por lo entregado con cola (14): su subida se concede en ráfagas.
+- [[Mapa/Perillas/link_cc_bits|link_cc_bits]] (experimento): qué usos de la cola están encendidos (`CG_LC_QETA`, `CG_LC_QMODE`, `CG_LC_SAT`, `CG_LC_S32`, `CG_LC_QMAX`, `CG_LC_SATQ`); por omisión los modos por la cola y STARTUP a ×3/2 (10, `CG_LC_BITS`), y en el router además el tope por lo entregado con cola (14): su subida se concede en ráfagas.
 
 ## Dónde se midió
 - Laboratorio, 2026-10-28 (`~/campo/2026-10-28/lc1`, todavía sin manejar el

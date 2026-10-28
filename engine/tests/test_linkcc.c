@@ -173,8 +173,45 @@ static void test_lc_queue(void)
 	CHECK_EQ(c.q_us, 0);
 }
 
+/* SATQ: the cap holds only while the link holds a queue; QMAX: the split's
+ * queue is the larger of in flight and the delay's. */
+static void test_lc_satq_qmax(void)
+{
+	struct cg_lc c;
+	uint64_t t = 1 * MS;
+
+	cg_lc_init(&c);
+	c.bits = CG_LC_QMODE | CG_LC_SAT | CG_LC_SATQ;
+	c.target_us = 60 * MS;
+	cg_lc_owd(&c, t, 1000000);
+	cg_lc_acked(&c, t, 0, 100 * MBIT, 40 * MS);
+	/* queued: what it delivered caps bw */
+	cg_lc_owd(&c, t, 1000000 + 40 * MS);
+	for (int i = 0; i < 8; i++)
+		cg_lc_acked(&c, t + (uint64_t)i * MS, 0, 20 * MBIT, 40 * MS);
+	CHECK(c.sat > 19 * MBIT && c.sat < 21 * MBIT);
+	CHECK_EQ(cg_lc_bw(&c), c.sat * 5 / 4);
+	/* the queue gone: the cap with it */
+	cg_lc_owd(&c, t + 10 * MS, 1000000 + 5 * MS);
+	CHECK_EQ(cg_lc_bw(&c), 100 * MBIT);
+	/* without SATQ it holds */
+	c.bits = CG_LC_QMODE | CG_LC_SAT;
+	CHECK_EQ(cg_lc_bw(&c), c.sat * 5 / 4);
+	/* QMAX: in flight over the BDP, or the delay at the rate, the larger */
+	c.bits = CG_LC_QMAX;
+	c.rtprop = 40 * MS;
+	c.inflight = cg_lc_bw(&c) * 40 * MS / 1000000 + 100000;
+	cg_lc_owd(&c, t + 20 * MS, 1000000 + 2 * MS);
+	CHECK_EQ(cg_lc_queued(&c), 100000); /* in flight: the larger */
+	cg_lc_owd(&c, t + 30 * MS, 1000000 + 500 * MS);
+	CHECK_EQ(cg_lc_queued(&c), cg_lc_rate(&c) * 500 * MS / 1000000); /* the delay */
+	c.bits = 0;
+	CHECK_EQ(cg_lc_queued(&c), 100000);
+}
+
 void test_linkcc(void)
 {
+	test_lc_satq_qmax();
 	test_lc_queue();
 	test_lc_startup();
 	test_lc_loss();
