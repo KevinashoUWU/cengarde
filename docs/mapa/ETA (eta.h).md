@@ -4,7 +4,7 @@ archivos:
   - engine/src/eta.h
   - engine/src/capacity.h
   - engine/tests/test_eta.c
-sello: d8fb5210ff83d932
+sello: ee2332217f301302
 ---
 # ETA (eta.h)
 
@@ -17,6 +17,7 @@ El reparto por **llegada esperada**: cada paquete va por el enlace donde llegar�
 - `cg_cap_eta` (cada tick, desde [[Capacidad (capacity.h)]]): tasa, base y cola de cada enlace ([[Cola por enlace (cg_gov_base)]]). Un enlace con cola corta se toma a 5/4 de su capacidad (y 1/16 del mayor); uno ocioso 3 s cuenta el doble cada 3 s hasta `split_stale_max`.
 - Del [[Modelo de enlace (linkmodel.h)]]: `lossy_hold` (retenido en la cola más alta que mostró en 10 s), `hold_over_ms` (costo de pasarse: `over_us`), `qpred_*`, `eta_keep*`.
 - Lo que otros ponen en el enlace (`cg_eta_add`, p. ej. sondas).
+- Con `link_cc` (experimento, [[029-mpgrit]] paso 2), el [[Ritmo por enlace (linkcc.h)]] reemplaza, para los enlaces que ya tienen `SFACK`, lo que puso `cg_cap_eta` (`cg_eta_own`, en cada tick y en cada `SFACK`): su ritmo, su retardo sin cola (`rtprop` sobre el menor) y su cola ahora (lo que va en vuelo sobre `bw × rtprop`, fresco cada ~10 ms: lo que C9 extrañaba); pasado `governor_target_ms` de cola es último recurso.
 
 ## Decide / escribe
 - El enlace de cada paquete repartido → [[Reparto (split.h)]] (`cg_split_pick_eta`).
@@ -35,11 +36,11 @@ El reparto por **llegada esperada**: cada paquete va por el enlace donde llegar�
 
 ## Choques conocidos
 - Con `capacity_expire_ms`, cada mitad de la caducidad cuenta como medida (`loaded_ms`): `cg_cap_stale` no la vuelve a agrandar durante `CG_CAP_STALE_MS` ([[Capacidad (capacity.h)]], [[016-celda-virtual]]).
-- C9: reinicia su cola cada tick con una cola de hace 300–500 ms, sin lo que está en vuelo; oscila con período de 0,6–1 s ([[audit-pending]]). `eta_keep` quedó apagado.
+- C9: reinicia su cola cada tick con una cola de hace 300–500 ms, sin lo que está en vuelo; oscila con período de 0,6–1 s ([[audit-pending]]). `eta_keep` quedó apagado. Con `link_cc` la cola sale de lo que va en vuelo.
 - C2 (resuelto el 2026-10-26): con el ETA, los enlaces ociosos no avanzaban y el RACK del [[Reordenador (reorder.h)]] los esperaba; ahora el receptor sabe por la máscara de [[Enlaces activos (active.h)]] qué enlaces usa el ETA.
 - Sin carga un enlace no se mide: [[Cosquilla (tickle.h)]].
 - Con ETA, los pesos del [[Gobernador (govern.h)]] y de la capacidad no deciden, pero salen en el estado (auditoría, métrica 10).
 
 ## Archivos
-- `eta.h`, `capacity.h` (`cg_cap_eta`, `cg_cap_qpred`, `cg_cap_stale`); tests `engine/tests/test_eta.c`.
-- `client.c`: `cap_tick`, `tun_read`. `server.c`: `cap_tick`, `down_prepare`.
+- `eta.h` (`cg_eta_own`), `capacity.h` (`cg_cap_eta`, `cg_cap_qpred`, `cg_cap_stale`); tests `engine/tests/test_eta.c`.
+- `client.c`: `cap_tick`, `tun_read`, `lc_eta`. `server.c`: `cap_tick`, `down_prepare`, `lc_eta`.

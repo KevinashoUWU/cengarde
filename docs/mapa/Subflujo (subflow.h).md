@@ -3,7 +3,7 @@ tags: [mapa, pieza]
 archivos:
   - engine/src/subflow.h
   - engine/tests/test_subflow.c
-sello: 67a54fbaac843b4b
+sello: 93a1c4fb509ecbcb
 ---
 # Subflujo (subflow.h)
 
@@ -49,11 +49,25 @@ entre enlaces, que en terreno se leía como pérdida en el túnel y en GRIT
   reordenador del receptor. El NACK solo nunca basta con `subflow` (en
   terreno, 4–8 mil por descarga de lo que ningún enlace había perdido). Lo
   copiado por varios enlaces nunca se da por perdido por uno solo.
+- **Lo que entregó cada enlace (`SFACK`, paso 2):** el receptor cuenta los
+  bytes que tomó por cada enlace (`NEW`, `FILL` o `LATE`; una copia no) y su
+  `sseq` más nuevo (`cg_sf_rx_took`); a lo más cada 10 ms (`CG_SFACK_US`), un
+  `SFACK` dice, enlace por enlace con novedades, el `sseq` más nuevo, los
+  bytes tomados, cuándo llegaron los últimos (en el reloj del receptor) y
+  cuánto esperó el más nuevo (`cg_sf_rx_ack`). El emisor recuerda de cada
+  `sseq` cuándo salió, su largo, los bytes enviados hasta él y el último
+  `SFACK` conocido entonces; con cada respuesta (`cg_sf_tx_ack`) saca lo que
+  va en vuelo (lo que salió después del más nuevo), una tasa de entrega en el
+  reloj del receptor (así no cuentan la espera ni el lote de las respuestas)
+  y un RTT menos la espera, para el [[Ritmo por enlace (linkcc.h)]]. Una
+  respuesta más vieja que la última (por `sseq`) no dice nada; una cuyos
+  bytes retroceden es un receptor que volvió a empezar: la nueva base.
 - Funciones: `cg_sf_rx_init`, `cg_sf_rx_in` (`NEW`, `FILL`, `LATE`, `DUP`,
-  `OLD`), `cg_sf_rx_poll` (los huecos vencidos, del más viejo al más nuevo),
-  `cg_sf_rx_due_us` (cuándo vence el más viejo, para despertar el bucle),
-  `cg_sf_rx_decay`; `cg_sf_tx_init`, `cg_sf_tx_take`, `cg_sf_tx_unsend`,
-  `cg_sf_tx_find`.
+  `OLD`), `cg_sf_rx_took`, `cg_sf_rx_ack`, `cg_sf_rx_poll` (los huecos
+  vencidos, del más viejo al más nuevo), `cg_sf_rx_due_us` (cuándo vence el
+  más viejo, para despertar el bucle), `cg_sf_rx_decay`; `cg_sf_tx_init`,
+  `cg_sf_tx_take`, `cg_sf_tx_unsend`, `cg_sf_tx_find`, `cg_sf_tx_ack`;
+  `cg_sfack_put`, `cg_sfack_get`.
 
 ## Lee
 - Cada DATA que sale (`client.c`, el lote de `sendmmsg` por enlace;
@@ -67,6 +81,11 @@ entre enlaces, que en terreno se leía como pérdida en el túnel y en GRIT
   del NACK; por el enlace vivo de menor RTT (router) o de menor retardo (VPS).
   Al vencer un hueco: después de cada pasada del bucle y cuando
   `cg_sf_rx_due_us` dice (el tic de 100 ms es muy grueso).
+- `SFACK` (tipo 10): una cuenta (1–16) y 15 bytes por enlace (el enlace, el
+  `sseq` más nuevo, los bytes tomados, su hora y la espera; `cg_hdr_parse`
+  exige ese largo); por el mismo enlace que el `SFLOSS`, a lo más cada 10 ms
+  y solo si algún enlace tiene novedades (el bucle despierta para eso,
+  `sf_timeout`).
 - Con `subflow`, el RACK de GRIT sobre la mezcla de los enlaces se apaga
   (`cg_pctl_rack`): un segmento enviado antes que el último entregado no está
   perdido porque fue por un enlace más lento; quedan las pérdidas de cada
@@ -79,7 +98,9 @@ entre enlaces, que en terreno se leía como pérdida en el túnel y en GRIT
   sigue este extremo (`got`, `lost`, `late`, `reordered`, `copies`,
   `overflow`, `resync`, `tail`, `window_ms`) y lo que el otro dijo de lo enviado
   (`sent`, `unsent`, `lost`, `forgotten`, `to_grit`, `copied`, `not_kept`,
-  `other`, `unsure`); `sfloss_sent` y `sfloss_rx` en `rescue`.
+  `other`, `unsure`, y `rate`, el [[Ritmo por enlace (linkcc.h)]]);
+  `sfloss_sent`, `sfloss_rx`, `sfack_sent` y `sfack_rx` en `rescue`.
+  `window_ms` salía mil veces más chico hasta el paso 2.
 
 ## Perillas
 - [[Mapa/Perillas/subflow|subflow]]: no. Tienen que tenerla los dos extremos.
@@ -106,11 +127,14 @@ entre enlaces, que en terreno se leía como pérdida en el túnel y en GRIT
 - Lo copiado por varios enlaces (redundancia) no tiene un enlace que responda
   por su pérdida: sin el RACK de la mezcla, GRIT lo recupera por el NACK (con
   `protocontroller_nack yes`) o por el temporizador.
-- Memoria: en el VPS, 13 KiB por camino con `subflow` (se toma al primer uso);
-  en el router, 13 KiB por enlace dentro de `struct client`.
+- Memoria: en el VPS, 33 KiB por camino con `subflow` (se toma al primer uso);
+  en el router, otro tanto por enlace dentro de `struct client` (27 KiB el
+  emisor, con lo de cada `sseq` para las muestras del `SFACK`; 5 KiB el
+  receptor).
 
 ## Archivos
 - `subflow.h`; tests `engine/tests/test_subflow.c`.
-- `client.c`: el sello en el lote, `on_sfloss`, `sf_service`, `sf_timeout`,
-  `fastest_link`. `server.c`: `struct sfpath`, `sf_get`, `sf_up`,
-  `sf_service`, `on_sfloss`, `say_gone`. `clientpath.h`: la llegada.
+- `client.c`: el sello en el lote, `on_sfloss`, `on_sfack`, `sfack_send`,
+  `sf_service`, `sf_timeout`, `fastest_link`. `server.c`: `struct sfpath`,
+  `sf_get`, `sf_up`, `sf_service`, `sfack_service`, `on_sfloss`, `on_sfack`,
+  `say_gone`. `clientpath.h`: la llegada (`CG_RXV_SFACK`).

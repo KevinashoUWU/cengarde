@@ -50,6 +50,7 @@ CODES = "Códigos de borrado (rs.h, rlc.h)"
 HARQ = "Reparación coherente (harq.h)"
 PCTL = "Protocontrolador (protoctl.c, stream.h, streamcc.h)"
 SUBF = "Subflujo (subflow.h)"
+LCC = "Ritmo por enlace (linkcc.h)"
 
 H = {
     "002": "002-wireguard-para-cengarde", "005": "005-motor-c-v1", "006": "006-salud-de-enlaces",
@@ -212,6 +213,7 @@ T = {
  "protocontroller_nack": ([G], BOTH, "`yes`", "`yes`, `no`", [PCTL], ["029"], "Variante B: el NACK del túnel de un mensaje de GRIT es una pérdida que se envía otra vez (`yes`) o solo una pista y decide el RACK de GRIT (`no`); en terreno lo que el túnel dio por perdido llegó tarde (historia 029). Con `subflow` no cuenta: el NACK solo es siempre una pista y decide la palabra del enlace."),
  "subflow": ([G], BOTH, "`no`", "`yes`, `no`", [SUBF, PCTL], ["029"], "MPGRIT (paso U1): cada extremo numera lo que pone en cada enlace (`sseq`, protocolo 12) y sigue la secuencia de cada enlace que recibe; lo que un enlace perdió dentro de sí (un `sseq` posterior del mismo enlace llegó hace más que su ventana) va de vuelta en un `SFLOSS`; un mensaje de GRIT que fue solo por ese enlace se envía otra vez cuando nada lo reconstruye o el receptor también lo pidió. El NACK solo del túnel pasa a ser una pista (`protocontroller_nack` no cuenta), el RACK de GRIT sobre la mezcla se apaga y su temporizador espera al menos 300 ms más. En terreno: GRIT reenvía 0,6–1 % en vez de 10 %. Si la configuración no los dice, cambia los objetivos que ganaron en terreno (paso 2): `protocontroller_queue_ms` 50, `governor_target_ms` 60, `capacity_loss_pct` 5 y `protocontroller_buf_kb` 2048. Tienen que tenerla los dos extremos."),
  "protocontroller_offer": ([G], BOTH, "`yes`", "`yes`, `no`", [PCTL], ["029"], "Con `subflow`, GRIT ofrece la capacidad del motor y un cuarto mientras no estén llenos todos los enlaces que llevan los datos (`cg_scc_offer`): cada enlace recibe más que su capacidad y lo que entrega la sube donde hay espacio (un módem da más cuando su cola crece). Experimento del paso 2 (historia 029)."),
+ "link_cc": ([G], BOTH, "`no`", "`yes`, `no`", [LCC, SUBF, PCTL], ["029"], "MPGRIT (paso 2, experimento): con `subflow`, un BBR por enlace ([[Ritmo por enlace (linkcc.h)]]) alimentado por los `SFACK` decide el reparto por llegada (su ritmo, su retardo sin cola, su cola en vuelo; pasado `governor_target_ms` de cola, último recurso) y la oferta de GRIT es la suma de los ritmos de los enlaces, como OpenMPTCProuter corre un BBR por subflujo. Sin `subflow` no hace nada. Tienen que tenerla los dos extremos."),
  "protocontroller_cc": ([G], SRVS, "`auto`", "`auto`, un control de congestión del kernel, o vacío", [PCTL], ["025"], "Control de congestión del TCP del VPS hacia el destino; `auto`: el del kernel (cubic) y BBR en cuanto ese tramo pierde (sin el ProbeRTT de BBR para el vídeo en vivo); si el kernel no lo tiene, el suyo (un aviso)."),
 }
 
