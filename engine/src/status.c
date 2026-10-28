@@ -677,6 +677,11 @@ void cg_json_linkcc(struct cg_json *j, const char *k, const struct cg_sf_tx *t, 
 	cg_json_u64(j, "cwnd", cg_lc_cwnd(c, target_us));
 	cg_json_u64(j, "inflight", c->inflight);
 	cg_json_u64(j, "cuts", c->cuts);
+	if (c->have_owd)
+		cg_json_ms(j, "queue_ms", c->q_us);
+	else
+		cg_json_null(j, "queue_ms");
+	cg_json_u64(j, "sat_bps", c->sat * 8);
 	cg_json_u64(j, "sfacks", t->acks);
 	cg_json_u64(j, "app_limited", t->app_n);
 	cg_json_end(j, '}');

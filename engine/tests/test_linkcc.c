@@ -6,7 +6,7 @@
 #define MS 1000u
 #define MBIT 125000ull /* bytes/s */
 
-/* STARTUP doubles toward what the link delivers, stops when bw no longer
+/* STARTUP grows by half toward what the link delivers, stops when bw no longer
  * grows by a quarter, drains, then cruises; the window covers the round
  * trip and the queue target. */
 static void test_lc_startup(void)
@@ -17,7 +17,7 @@ static void test_lc_startup(void)
 	cg_lc_init(&c);
 	CHECK_EQ(cg_lc_bw(&c), CG_LC_START);
 	CHECK_EQ(c.mode, CG_LC_STARTUP_M);
-	CHECK_EQ(cg_lc_rate(&c), 2 * CG_LC_START);
+	CHECK_EQ(cg_lc_rate(&c), 3 * CG_LC_START / 2);
 	/* the link delivers what is offered up to 40 Mbit/s */
 	for (int r = 0; r < 30; r++) {
 		uint64_t offered = cg_lc_rate(&c), got = offered < 40 * MBIT ? offered : 40 * MBIT;
@@ -112,8 +112,69 @@ static void test_lc_rtt(void)
 	CHECK(c.srtt > 30 * MS && c.srtt < 80 * MS);
 }
 
+/* The queue by the one-way delay: STARTUP ends when it passes the target,
+ * DRAIN when it is under half, PROBE drains over the target and probes only
+ * well under it; what a queued link delivered caps bw at 5/4. */
+static void test_lc_queue(void)
+{
+	struct cg_lc c;
+	uint64_t t = 1 * MS; /* 0 is "no round yet" */
+
+	cg_lc_init(&c);
+	CHECK_EQ(c.target_us, CG_LC_TARGET_US);
+	c.target_us = 60 * MS;
+	CHECK_EQ(cg_lc_qstate(&c), 0); /* not known */
+	cg_lc_owd(&c, t, 1000000 + 20 * MS); /* two clocks apart: only changes count */
+	CHECK_EQ(c.q_us, 0);
+	CHECK_EQ(cg_lc_qstate(&c), -1);
+	/* STARTUP while bw grows; the queue passes the target: DRAIN */
+	cg_lc_acked(&c, t, 0, 2 * MBIT, 40 * MS);
+	t += 40 * MS;
+	cg_lc_owd(&c, t, 1000000 + 90 * MS);
+	CHECK_EQ(c.q_us, 70 * MS);
+	CHECK_EQ(cg_lc_qstate(&c), 1);
+	cg_lc_acked(&c, t, 0, 4 * MBIT, 40 * MS);
+	CHECK_EQ(c.mode, CG_LC_DRAIN_M);
+	/* still over half the target: DRAIN; under it: PROBE */
+	t += 40 * MS;
+	cg_lc_owd(&c, t, 1000000 + 60 * MS);
+	cg_lc_acked(&c, t, 0, 4 * MBIT, 40 * MS);
+	CHECK_EQ(c.mode, CG_LC_DRAIN_M);
+	t += 40 * MS;
+	cg_lc_owd(&c, t, 1000000 + 30 * MS);
+	cg_lc_acked(&c, t, 0, 4 * MBIT, 40 * MS);
+	CHECK_EQ(c.mode, CG_LC_PROBE_M);
+	/* the probe's phase: 5/4 only well under the target */
+	c.cycle = 0;
+	CHECK_EQ(cg_lc_gain(&c), 320);
+	cg_lc_owd(&c, t, 1000000 + 70 * MS); /* 50 ms: between half and the target */
+	CHECK_EQ(cg_lc_gain(&c), CG_LC_ONE);
+	cg_lc_owd(&c, t, 1000000 + 100 * MS); /* over it: drain, whatever the phase */
+	CHECK_EQ(cg_lc_gain(&c), 192);
+	c.cycle = 3;
+	CHECK_EQ(cg_lc_gain(&c), 192);
+	/* the queue in bytes is its delay at the pacing rate */
+	CHECK_EQ(cg_lc_queued(&c), cg_lc_rate(&c) * 80 * MS / 1000000);
+	/* bursts: samples of 8 Mbit/s with a queue cap the 20 Mbit/s one at 10 */
+	cg_lc_acked(&c, t, 0, 20 * MBIT, 40 * MS);
+	CHECK_EQ(c.bw, 20 * MBIT);
+	for (int i = 0; i < 8; i++)
+		cg_lc_acked(&c, t + (uint64_t)i * MS, 0, 8 * MBIT, 40 * MS);
+	CHECK(c.sat > 7 * MBIT && c.sat < 9 * MBIT);
+	CHECK_EQ(cg_lc_bw(&c), c.sat * 5 / 4);
+	/* the cap lapses without queued samples for CG_LC_SAT_US */
+	cg_lc_owd(&c, t, 1000000 + 25 * MS);
+	cg_lc_acked(&c, t + CG_LC_SAT_US + 10 * MS, 0, 0, 40 * MS);
+	CHECK_EQ(c.sat, 0);
+	/* the least moves on: after two buckets a new floor counts */
+	cg_lc_owd(&c, t + CG_LC_OWD_WIN_US, 1000000 + 50 * MS);
+	cg_lc_owd(&c, t + 2 * CG_LC_OWD_WIN_US, 1000000 + 45 * MS);
+	CHECK_EQ(c.q_us, 0);
+}
+
 void test_linkcc(void)
 {
+	test_lc_queue();
 	test_lc_startup();
 	test_lc_loss();
 	test_lc_rtt();

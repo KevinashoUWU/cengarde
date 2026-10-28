@@ -57,9 +57,9 @@ struct cg_sf_rx {
 	uint32_t floor_us, cap_us;
 	uint64_t got, lost, late, fill, dup, overflow, resync;
 	uint64_t tail; /* gaps a probe opened (cg_sf_rx_sent) */
-	/* for SFACK (cg_sf_rx_took): the bytes taken (wrapping) and when the
-	 * last of them came, the newest sseq and when it came (us, low 32 bits) */
-	uint32_t gotb, gotb_us, top, top_us;
+	/* for SFACK (cg_sf_rx_took): the bytes taken (wrapping), the newest sseq
+	 * and when it came (us, low 32 bits) */
+	uint32_t gotb, top, top_us;
 	uint32_t rep_top, rep_gotb; /* what the last SFACK said of the link */
 };
 
@@ -139,7 +139,6 @@ static inline void cg_sf_rx_took(struct cg_sf_rx *s, uint32_t q, enum cg_sf_in r
 	if (r != CG_SF_NEW && r != CG_SF_FILL && r != CG_SF_LATE)
 		return;
 	s->gotb += len;
-	s->gotb_us = now;
 	if (r == CG_SF_NEW) {
 		s->top = q;
 		s->top_us = now;
@@ -147,9 +146,9 @@ static inline void cg_sf_rx_took(struct cg_sf_rx *s, uint32_t q, enum cg_sf_in r
 }
 
 /* Whether the link has news for an SFACK at now (its newest sseq, the bytes
- * it took); if so, takes it as said and gives them, with when the last
- * bytes came (rts, the receiver's clock) and how long ago the newest sseq
- * came (age, us, at most 65535). */
+ * it took); if so, takes it as said and gives them, with when the newest
+ * sseq came (rts, the receiver's clock: its one-way delay, and the
+ * delivery's time) and how long ago (age, us, at most 65535). */
 static inline int cg_sf_rx_ack(struct cg_sf_rx *s, uint32_t now, uint32_t *top, uint32_t *gotb,
 			       uint32_t *rts, uint16_t *age)
 {
@@ -159,7 +158,7 @@ static inline int cg_sf_rx_ack(struct cg_sf_rx *s, uint32_t now, uint32_t *top, 
 		return 0;
 	*top = s->rep_top = s->top;
 	*gotb = s->rep_gotb = s->gotb;
-	*rts = s->gotb_us;
+	*rts = s->top_us;
 	*age = (uint16_t)(a < 65535 ? a : 65535);
 	return 1;
 }
@@ -322,8 +321,8 @@ static inline int cg_sf_tx_find(struct cg_sf_tx *t, uint32_t q, uint32_t *seq)
 }
 
 /* An SFACK said the link got as far as sseq top and took gotb bytes
- * (wrapping), the last of them at rts on the receiver's clock, top age us
- * before it answered; it came at now (us). An answer older than the last
+ * (wrapping), top at rts on the receiver's clock and age us before it
+ * answered; it came at now (us). An answer older than the last
  * (by top) says nothing; one whose bytes went back is a receiver that
  * started again: it is the new base.
  * - In flight: what went after top (the gaps below it are the receiver's
@@ -332,7 +331,9 @@ static inline int cg_sf_tx_find(struct cg_sf_tx *t, uint32_t q, uint32_t *seq)
  *   between the two answers on the receiver's clock, so the answers' own
  *   delay and batching do not count; app-limited, it counts only if larger
  *   than the estimate (BBR's).
- * - Its round trip: since top went, less the receiver's wait. */
+ * - Its round trip: since top went, less the receiver's wait; and top's
+ *   one-way delay (rts less its send time, two clocks: only its changes
+ *   count), the link's queue (linkcc.h). */
 static inline void cg_sf_tx_ack(struct cg_sf_tx *t, uint32_t top, uint32_t gotb, uint32_t rts, uint16_t age,
 				uint64_t now)
 {
@@ -363,6 +364,8 @@ static inline void cg_sf_tx_ack(struct cg_sf_tx *t, uint32_t top, uint32_t gotb,
 	t->top = top;
 	t->have_got = 1;
 	t->acks++;
+	if (known)
+		cg_lc_owd(&t->lc, now, (int32_t)(rts - t->at_us[i]));
 	cg_lc_acked(&t->lc, now, delta, rate, rtt);
 	if (known)
 		t->lc.inflight = (uint32_t)(t->sentb - t->cum[i]);
