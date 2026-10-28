@@ -906,6 +906,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	c->protocontroller_reo_ms = 10;
 	c->protocontroller_nack = 1;
 	c->subflow = 0;
+	c->protocontroller_offer = 1;
 	strcpy(c->protocontroller_cc, "auto");
 	strcpy(c->protocontroller_mid_cc, "bbr");
 	c->fec_wait_ms = 10;
@@ -1030,6 +1031,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	    get_u32(&ini, "", "protocontroller_reo_ms", 0, 1000, &c->protocontroller_reo_ms, err, errlen) ||
 	    get_bool(&ini, "", "protocontroller_nack", &c->protocontroller_nack, err, errlen) ||
 	    get_bool(&ini, "", "subflow", &c->subflow, err, errlen) ||
+	    get_bool(&ini, "", "protocontroller_offer", &c->protocontroller_offer, err, errlen) ||
 	    get_str(&ini, "", "protocontroller_cc", c->protocontroller_cc, sizeof(c->protocontroller_cc), err, errlen) ||
 	    get_str(&ini, "", "protocontroller_mid_cc", c->protocontroller_mid_cc, sizeof(c->protocontroller_mid_cc), err, errlen) ||
 	    get_str(&ini, "", "protocontroller_vps", c->protocontroller_vps, sizeof(c->protocontroller_vps), err, errlen) ||
@@ -1423,6 +1425,7 @@ const char *cg_config_restart_needed(const struct cg_config *a, const struct cg_
 					     a->protocontroller_queue_ms != b->protocontroller_queue_ms || a->protocontroller_backlog_ms != b->protocontroller_backlog_ms ||
 					     a->protocontroller_dead_s != b->protocontroller_dead_s || a->protocontroller_reo_ms != b->protocontroller_reo_ms ||
 					     a->protocontroller_nack != b->protocontroller_nack ||
+					     a->protocontroller_offer != b->protocontroller_offer ||
 					     strcmp(a->protocontroller_cc, b->protocontroller_cc) ||
 					     strcmp(a->protocontroller_mid_cc, b->protocontroller_mid_cc) ||
 					     strcmp(a->protocontroller_vps, b->protocontroller_vps))))

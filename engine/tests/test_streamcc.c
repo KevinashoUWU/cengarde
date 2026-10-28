@@ -192,6 +192,31 @@ void test_streamcc(void)
 	CHECK_EQ(cg_scc_cwnd(&p, &c, 0), CG_SCC_IW_SEGS * 1200);
 	CHECK_EQ(cg_scc_rto(&p, 0, 0), 200000);
 	CHECK_EQ(cg_scc_rto(&p, 10, 0), 2000000);
+	/* the engine's offer (subflow): at least its capacity and a quarter,
+	 * in the rate and in the window, until every link is full or the
+	 * stream sees a queue */
+	{
+		struct cg_scc q;
+		uint64_t r0, w0;
+
+		cg_scc_init(&q, 0);
+		q.bw = 2000000;
+		q.min_rtt = 40000;
+		cg_scc_hint(&q, 4000000, 0);
+		r0 = cg_scc_rate(&q);
+		w0 = cg_scc_cwnd(&q, &c, 0);
+		CHECK(r0 < 5000000);
+		q.offer = 1;
+		CHECK_EQ(cg_scc_rate(&q), 5000000);
+		CHECK(cg_scc_cwnd(&q, &c, 0) > w0);
+		q.cong = 1;
+		CHECK(cg_scc_rate(&q) < 5000000);
+		q.cong = 0;
+		cg_scc_hint(&q, 1000000, 1); /* all full: the engine's capacity is the ceiling */
+		CHECK(cg_scc_rate(&q) < 5000000);
+		cg_scc_hint(&q, 4000000, 0);
+		CHECK_EQ(cg_scc_rate(&q), 5000000);
+	}
 	/* with RACK over the mix off, the timer waits the latency budget at least */
 	CHECK_EQ(cg_scc_rto_extra(20000, 0), 20000);
 	CHECK_EQ(cg_scc_rto_extra(20000, 1), CG_SCC_REO_MAX_US);

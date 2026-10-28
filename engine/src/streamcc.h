@@ -110,6 +110,7 @@ struct cg_scc {
 	uint32_t min_rtt, srtt, rttvar; /* us; 0: none yet */
 	uint64_t min_t;  /* when min_rtt was taken */
 	uint8_t mode, cycle, full_n, cong;
+	uint8_t offer;      /* take the engine's offer (cg_scc_offer): the subflows find each link's losses */
 	uint8_t qnow;       /* the last sample was over min_rtt + queue_us: what is sent now may overflow */
 	uint64_t cycle_t;
 	uint64_t round_dl;  /* a round ends with the ACK of a segment sent once dl had passed this */
@@ -207,11 +208,33 @@ static inline uint64_t cg_scc_bw(const struct cg_scc *p)
 	return p->hint > CG_SCC_START ? p->hint : CG_SCC_START;
 }
 
-/* The pacing rate, bytes/s. */
+/* The engine's offer (story 029, step 2), bytes/s, 0: none. With each
+ * link's own losses (offer: subflow), while not every link that carries
+ * the data is full, the engine's capacity for them and a quarter: each
+ * link gets more than its capacity, so what it delivers raises it where
+ * there is room (a modem grants more as its queue grows: OMR found 2-3
+ * times the engine's capacities), and where there is not its queue grows
+ * and the split sends the rest to the others. Without it only the
+ * stream's probe offered more, a round in eight, and the links'
+ * capacities and the rate with them grew slowly (in the field the pacer
+ * held the sends back far more than anything else). Not while the stream
+ * sees a queue over its target (cong). */
+#define CG_SCC_OFFER 320 /* 5/4 of CG_SCC_ONE */
+
+static inline uint64_t cg_scc_offer(const struct cg_scc *p)
+{
+	if (!p->offer || !p->hint || p->hint_full || p->cong)
+		return 0;
+	return cg_scc_mul(p->hint, CG_SCC_OFFER, CG_SCC_ONE);
+}
+
+/* The pacing rate, bytes/s: the estimate's, or the engine's offer. */
 static inline uint64_t cg_scc_rate(const struct cg_scc *p)
 {
-	uint64_t r = cg_scc_mul(cg_scc_bw(p), cg_scc_gain(p), CG_SCC_ONE);
+	uint64_t r = cg_scc_mul(cg_scc_bw(p), cg_scc_gain(p), CG_SCC_ONE), o = cg_scc_offer(p);
 
+	if (o > r)
+		r = o;
 	return r > CG_SCC_FLOOR ? r : CG_SCC_FLOOR;
 }
 
@@ -219,7 +242,7 @@ static inline uint64_t cg_scc_rate(const struct cg_scc *p)
  * stays in flight that long before it is declared). */
 static inline uint64_t cg_scc_cwnd(const struct cg_scc *p, const struct cg_scc_cfg *c, uint64_t reo_us)
 {
-	uint64_t w;
+	uint64_t w, b;
 
 	if (!p->min_rtt)
 		return (uint64_t)CG_SCC_IW_SEGS * c->mss;
@@ -230,9 +253,10 @@ static inline uint64_t cg_scc_cwnd(const struct cg_scc *p, const struct cg_scc_c
 	 * lost and not declared yet (60 % lost and a window of 100 ms filled
 	 * it with the lost, the sends stopped and the estimate sank: the
 	 * microcut) */
-	w = 2 * cg_scc_mul(cg_scc_bw(p), (uint64_t)p->min_rtt + c->queue_us, 1000000);
+	b = cg_scc_bw(p) > cg_scc_offer(p) ? cg_scc_bw(p) : cg_scc_offer(p); /* room for the offer too */
+	w = 2 * cg_scc_mul(b, (uint64_t)p->min_rtt + c->queue_us, 1000000);
 	if (p->mode != CG_SCC_STARTUP_M) /* STARTUP's overshoot is bounded by the path's alone */
-		w += cg_scc_mul(cg_scc_bw(p), reo_us, 1000000);
+		w += cg_scc_mul(b, reo_us, 1000000);
 	return w + (uint64_t)CG_SCC_SEGS * c->mss;
 }
 
