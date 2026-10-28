@@ -470,6 +470,12 @@ reporte de retardo de hace 300–500 ms.
   mientras su ventana tiene espacio (un enlace que se frena deja de
   recibir solo). Nuestro reparto es por ritmo; `cg_lc_cwnd` existe pero
   todavía no frena nada.
+- **El freno de ventana** (`43f32cd`, `link_cc_bits` 64, `wnd1`): el reparto
+  le da datos a un enlace solo mientras su ventana tiene espacio, como el
+  planificador de OMR. Neutro en el laboratorio (n = 4; `fade`, `cell4`,
+  `equal`, `het`, `reorder50`, `lossy`: bajada −6 a 0 %, subida 0 a +4 %);
+  apagado. La ventana de un enlace sale del mismo `bw` inflado, así que
+  frena tarde, igual que la de BBR en OMR.
 
 ## Pendiente
 
