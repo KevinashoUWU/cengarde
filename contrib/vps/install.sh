@@ -114,7 +114,7 @@ fi
 say "3/6: install"
 make -C "$SRC/engine" install DESTDIR="$R" PREFIX=/usr/local
 install -d -m 0755 "$SBIN"
-install -m 0755 "$VPS/cengarde-nat" "$VPS/cengarde-vps-setup" "$SBIN/"
+install -m 0755 "$VPS/cengarde-nat" "$VPS/cengarde-vps-setup" "$VPS/cengarde-vps-admin" "$SBIN/"
 install -d -m 0755 "$R/etc/sysusers.d"
 install -m 0644 "$SRC/contrib/systemd/cengarde.sysusers" "$R/etc/sysusers.d/cengarde.conf"
 # The previous unit's DynamicUser was also named cengarde; while it runs,

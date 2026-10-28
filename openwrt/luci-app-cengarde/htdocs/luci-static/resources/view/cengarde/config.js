@@ -82,17 +82,30 @@ function setUplinkType(list, uplink, type) {
 	return out;
 }
 
+// What bonding and redundancy bring as defaults (cengarde-setup's
+// mode_presets): an option set apart overrides them. The core switches
+// (split, protocontroller, subflow, link_cc) belong to the mode outright.
+const PRESETS = {
+	bonding: { tcp_aware: '1', rescue: '1', split_spread_copy: '0' },
+	redundancy: { tcp_aware: '1', rescue: '1' }
+};
+
+function presetOf(mode, name, dflt) {
+	return (PRESETS[mode] && PRESETS[mode][name] != null) ? PRESETS[mode][name] : dflt;
+}
+
 // Same substitutions as "cengarde-setup cloud-config", on the values in the
 // form, so the text follows unsaved changes. Without an address (a new secret
 // that is not saved yet) its placeholder stays, and the VPS derives it.
-function cloudConfig(template, secret, port, ipPass, ipv6, name, addr) {
+function cloudConfig(template, secret, port, ipPass, ipv6, name, addr, mode) {
 	return template
 		.replace(/^(\s+)REPLACE_SECRET$/m, '$1' + (secret || 'REPLACE_SECRET'))
 		.replace(/^(\s*CENGARDE_PORT=).*$/m, '$1' + (port || '65500'))
 		.replace(/^(\s*PASSTHROUGH=).*$/m, '$1' + (ipPass == '1' ? 'yes' : 'no'))
 		.replace(/^(\s*TUNNEL_IPV6=).*$/m, '$1' + (ipv6 == '1' ? 'yes' : 'no'))
 		.replace(/^(\s*ROUTER_NAME=).*$/m, '$1' + (isName(name) ? name : 'router'))
-		.replace(/^(\s*ROUTER_TUNNEL_ADDR=).*$/m, '$1' + (addr || 'REPLACE_TUNNEL_ADDR'));
+		.replace(/^(\s*ROUTER_TUNNEL_ADDR=).*$/m, '$1' + (addr || 'REPLACE_TUNNEL_ADDR'))
+		.replace(/REPLACE_MODE$/m, mode || 'custom');
 }
 
 function copyField(field) {
@@ -121,6 +134,120 @@ function readStatus() {
 
 function isIPv6(addr) {
 	return String(addr).indexOf(':') >= 0;
+}
+
+// One of cengarde-vps-admin's commands on the VPS (cengarde-setup vps):
+// its output, or its error as a rejected promise.
+function vpsRun(words) {
+	return fs.exec('/usr/sbin/cengarde-setup', [ 'vps' ].concat(words)).then(function(r) {
+		if (r.code != 0)
+			throw new Error((r.stderr || r.stdout || '').trim() || _('The VPS did not answer (code %d).').format(r.code));
+		return (r.stdout || '').trim();
+	});
+}
+
+// KEY=VALUE lines into an object.
+function vpsParse(out) {
+	const o = {};
+
+	String(out).split('\n').forEach(function(l) {
+		const i = l.indexOf('=');
+
+		if (i > 0)
+			o[l.substring(0, i)] = l.substring(i + 1);
+	});
+	return o;
+}
+
+// The VPS tab's panel: the command that authorizes this router's key on the
+// VPS, what the VPS has, and a line per setting to change it.
+function vpsPanel() {
+	const select = function(opts) {
+		return E('select', { 'class': 'cbi-input-select' }, opts.map(function(v) {
+			return E('option', { 'value': v[0] }, [ v[1] ]);
+		}));
+	};
+	const cmd = E('input', { 'class': 'cbi-input-text', 'type': 'text', 'readonly': 'readonly',
+		'style': 'width:100%;font-family:monospace;font-size:12px', 'id': 'cengarde-vps-key' });
+	const out = E('pre', { 'style': 'white-space:pre-wrap;margin:.5em 0;font-size:12px', 'id': 'cengarde-vps-out' });
+	const mode = select([ [ 'bonding', _('Bonding') ], [ 'redundancy', _('Redundancy') ], [ 'custom', _('Custom') ] ]);
+	const fec = select([ [ 'off', _('Off') ], [ 'on', _('Upload: the routers\' repairs rebuilt') ], [ 'rlc', _('Upload and download (RLC)') ] ]);
+	const pctl = select([ [ 'on', _('On') ], [ 'off', _('Off') ] ]);
+	const key = E('select', { 'class': 'cbi-input-select' });
+	const val = E('input', { 'class': 'cbi-input-text', 'type': 'text', 'style': 'width:8em', 'placeholder': _('value') });
+	let busy = false;
+
+	const show = function(text, err) {
+		out.textContent = text;
+		out.style.color = err ? 'var(--error-color, #c00)' : '';
+	};
+	const read = function() {
+		show(_('Reading the VPS…'));
+		return vpsRun([ 'get' ]).then(function(text) {
+			const v = vpsParse(text);
+			const was = key.value;
+
+			mode.value = v.mode || 'custom';
+			fec.value = v.fec || 'off';
+			pctl.value = v.protocontroller || 'off';
+			key.innerHTML = '';
+			(v.keys || '').split(' ').filter(Boolean).forEach(function(k) {
+				key.appendChild(E('option', { 'value': k }, [ k + (v[k] != null ? ' = ' + v[k] : '') ]));
+			});
+			if (was)
+				key.value = was;
+			show(text.split('\n').filter(function(l) { return l.indexOf('keys=') != 0; }).join('\n'));
+		}).catch(function(e) { show(e.message, true); });
+	};
+	const run = function(words) {
+		if (busy)
+			return;
+		busy = true;
+		show(_('On the VPS: %s…').format(words.join(' ')));
+		return vpsRun(words).then(function(text) {
+			return read().then(function() {
+				if (text)
+					show(text + '\n\n' + out.textContent);
+			});
+		}).catch(function(e) { show(e.message, true); }).finally(function() { busy = false; });
+	};
+	const button = function(label, cls, fn) {
+		return E('button', { 'class': 'cbi-button ' + cls, 'click': function(ev) { ev.preventDefault(); fn(); } }, [ label ]);
+	};
+	const row = function(label, items) {
+		return E('div', { 'style': 'display:flex;flex-wrap:wrap;gap:.5em;align-items:center;margin-top:.5em' },
+			[ E('span', { 'style': 'min-width:9em' }, [ label ]) ].concat(items));
+	};
+
+	fs.exec('/usr/sbin/cengarde-setup', [ 'vps-key' ]).then(function(r) {
+		const line = (r.stdout || '').trim();
+
+		if (r.code == 0 && line)
+			cmd.value = 'sudo cengarde-vps-setup admin-key add \'' + line + '\'';
+		else
+			show((r.stderr || '').trim() || _('No key: save and apply with this option on first.'), true);
+	}).catch(function(e) { show(e.message, true); });
+
+	return E('div', {}, [
+		E('div', { 'style': 'display:flex;gap:.5em;align-items:center' }, [
+			cmd,
+			button(_('Copy'), 'cbi-button-action', function() { if (cmd.value) copyField(cmd); })
+		]),
+		row(_('Mode'), [ mode, button(_('Apply'), 'cbi-button-apply', function() { run([ 'mode', mode.value ]); }) ]),
+		row(_('FEC'), [ fec, button(_('Apply'), 'cbi-button-apply', function() { run([ 'fec', fec.value ]); }) ]),
+		row(_('Protocontroller'), [ pctl, button(_('Apply'), 'cbi-button-apply', function() { run([ 'protocontroller', pctl.value ]); }) ]),
+		row(_('Engine setting'), [ key, val,
+			button(_('Set'), 'cbi-button-apply', function() {
+				if (key.value && /^[A-Za-z0-9._-]{1,16}$/.test(val.value))
+					run([ 'set', key.value, val.value ]);
+				else
+					show(_('Pick a setting and give it a number or a word (up to 16 characters).'), true);
+			}),
+			button(_('Remove'), 'cbi-button-remove', function() { if (key.value) run([ 'unset', key.value ]); })
+		]),
+		E('div', { 'style': 'margin-top:.5em' }, [ button(_('Read'), 'cbi-button-neutral', read) ]),
+		out
+	]);
 }
 
 return view.extend({
@@ -162,7 +289,8 @@ return view.extend({
 			if (textarea)
 				textarea.value = cloudConfig(template, value(m, 'secret'), value(m, 'port'),
 					on('ip_pass', '0') && on('tunnel', '1') && on('route_all', '1') ? '1' : '0',
-					on('tunnel_ipv6', '0') && on('tunnel', '1') && on('route_all', '1') ? '1' : '0', name, addr);
+					on('tunnel_ipv6', '0') && on('tunnel', '1') && on('route_all', '1') ? '1' : '0', name, addr,
+					value(m, 'mode') || 'custom');
 			if (addCommand) {
 				const ready = addr != null && isName(name);
 
@@ -200,6 +328,35 @@ return view.extend({
 
 		o = s.taboption('general', form.Flag, 'enabled', _('Enabled'));
 		o.rmempty = false;
+
+		// The mode of the saved configuration (no mode: custom, as before).
+		const savedMode = function() { return uci.get('cengarde', 'main', 'mode') || 'custom'; };
+
+		o = s.taboption('general', form.ListValue, 'mode', _('Mode'),
+			_('Bonding adds the uplinks up: each large packet goes over the uplink where it arrives first, each uplink with its own rate, and the TCP of the LAN travels as GRIT, cengarde\'s own stream (in the field: the download at 93 % of OpenMPTCProuter\'s and the upload above it, at half its ping). Redundancy copies every packet over every uplink and the first copy wins, and the TCP of the LAN travels as a plain TCP between the router and the VPS (protocontroller A): the safest in a cut and for live broadcasts, and the most data. Custom: the Protection, Layer 4 and Advanced tabs decide everything, as before. The VPS has to match: "sudo cengarde-vps-setup mode bonding" (or redundancy) there, or from the VPS tab when this router administers it. A change restarts the engine.'));
+		o.value('bonding', _('Bonding (add the uplinks up)'));
+		o.value('redundancy', _('Redundancy (every packet over every uplink)'));
+		o.value('custom', _('Custom (the other tabs decide)'));
+		o.cfgvalue = function() { return savedMode(); };
+		o.rmempty = false;
+		o.onchange = refresh;
+
+		// A flag whose default is the mode's (PRESETS): it shows what applies,
+		// and is stored only when it differs, so that it follows the mode.
+		const modeFlag = function(o, name, dflt) {
+			o.rmempty = false;
+			o.cfgvalue = function(section_id) {
+				const v = uci.get('cengarde', section_id, name);
+
+				return v != null ? v : presetOf(savedMode(), name, dflt);
+			};
+			o.write = function(section_id, v) {
+				if (v == presetOf(value(m, 'mode') || 'custom', name, dflt))
+					uci.unset('cengarde', section_id, name);
+				else
+					uci.set('cengarde', section_id, name, v);
+			};
+		};
 
 		o = s.taboption('general', form.DynamicList, 'server', _('VPS addresses'),
 			_('Public IPs of the VPS as the provider shows them, IPv4 and IPv6, in order of preference: each uplink uses the first one of a family it has, and tries the next one when the VPS does not answer there. A name works too: the router looks it up through each uplink (the carrier\'s DNS first), never through the tunnel, and follows it when its IP changes (dynamic DNS). An MTU above 1424 does not fit if the name has an IPv6 address that the uplinks use.'));
@@ -392,6 +549,29 @@ return view.extend({
 			]);
 		};
 
+		o = s.taboption('vps', form.Flag, 'vps_admin', _('Administer the VPS from here'),
+			_('The settings of the VPS (its mode, the FEC of the download, the protocontroller and some of the engine\'s) are the same for every router it serves: one router administers them, over SSH with a key of its own that can do that and nothing else. On: this router\'s mode goes to the VPS on each change, and the panel below reads and changes the rest. Save and apply first.'));
+		o.default = '0';
+
+		o = s.taboption('vps', form.Value, 'vps_ssh_host', _('VPS address for SSH'),
+			_('Empty: the first VPS address (General tab).'));
+		o.datatype = 'host';
+		o.depends('vps_admin', '1');
+
+		o = s.taboption('vps', form.Value, 'vps_ssh_port', _('VPS SSH port'));
+		o.datatype = 'port';
+		o.placeholder = '22';
+		o.depends('vps_admin', '1');
+
+		o = s.taboption('vps', form.DummyValue, '_vpsadmin', _('The VPS\'s settings'),
+			_('First, once, run the command below on the VPS: it lets this router\'s key change these settings and nothing else (cengarde-vps-admin). Then "Read" shows what the VPS has, and each "Apply" changes it at once, for every router of the VPS; the engine there restarts or reloads.'));
+		o.write = function() {};
+		o.remove = function() {};
+		o.depends('vps_admin', '1');
+		o.renderWidget = function(section_id) {
+			return vpsPanel();
+		};
+
 		o = s.taboption('tunnel', form.Flag, 'tunnel', _('Manage the tunnel'),
 			_('cengarde carries the packets itself through its own interface cg0: authenticated (nobody can inject or replay packets) but NOT encrypted, so the carriers see the traffic. On: cg0 gets this router\'s address in the tunnel (VPS tab) and its routes, in the wan firewall zone. Off: cengarde still carries what reaches cg0, but its interface, routes and firewall zone are yours to set up.'));
 		o.default = '1';
@@ -417,25 +597,38 @@ return view.extend({
 		o.value('a', _('A: TCP in the middle'));
 		o.value('b', _('B (GRIT): cengarde\'s stream in the middle (experimental)'));
 		o.default = 'no';
-		o.depends('tunnel', '1');
+		o.depends({ tunnel: '1', mode: 'custom' });
 		o.onchange = refresh;
+
+		o = s.taboption('layer4', form.DummyValue, '_pctl_mode', _('Protocontroller'));
+		o.rawhtml = true;
+		o.cfgvalue = function() {
+			return value(m, 'mode') == 'bonding'
+				? _('B (GRIT), with each uplink\'s subflow and rate: set by the bonding mode (General tab).')
+				: _('A, a plain TCP in the middle: set by the redundancy mode (General tab).');
+		};
+		o.depends('mode', 'bonding');
+		o.depends('mode', 'redundancy');
 
 		o = s.taboption('layer4', form.DynamicList, 'protocontroller_port', _('Protocontroller ports'),
 			_('Only the TCP to these destination ports (or ranges such as 8000-8100). Empty: every port.'));
 		o.datatype = 'or(port, portrange)';
-		o.depends('protocontroller', 'a');
-		o.depends('protocontroller', 'b');
+		o.depends({ protocontroller: 'a', mode: 'custom' });
+		o.depends({ protocontroller: 'b', mode: 'custom' });
+		o.depends('mode', 'bonding');
+		o.depends('mode', 'redundancy');
 
 		o = s.taboption('layer4', form.DynamicList, 'protocontroller_dest', _('Protocontroller destinations'),
 			_('Only the TCP to these addresses or prefixes. Empty: every address that is not private, local or link-local.'));
 		o.datatype = 'or(ipaddr, cidr)';
-		o.depends('protocontroller', 'a');
-		o.depends('protocontroller', 'b');
+		o.depends({ protocontroller: 'a', mode: 'custom' });
+		o.depends({ protocontroller: 'b', mode: 'custom' });
+		o.depends('mode', 'bonding');
+		o.depends('mode', 'redundancy');
 
 		o = s.taboption('layer4', form.Flag, 'tcp_aware', _('TCP-aware tunnel'),
 			_('The router and the VPS look at the TCP inside the tunnel: its ACKs and handshakes are handed on at once instead of waiting behind a missing packet, and a TCP retransmission is copied over every uplink only when the tunnel lost the original on all of them (from the ACKs it has seen), so a spurious one does not load every uplink. Off: TCP is carried like any other packet.'));
-		o.default = '0';
-		o.rmempty = false;
+		modeFlag(o, 'tcp_aware', '0');
 
 		o = s.taboption('protection', form.ListValue, 'redund_spare', _('Protection mode'),
 			_('Full copies: every packet over every uplink, as always; the safest in a cut, and the most data. Mixed: full copies while they fit, and XOR parity on an uplink that cannot carry them all. Parity: XOR only, the least data. RLC and Reed-Solomon: erasure codes that rebuild several lost packets at once from what the backup uplinks have to spare (in the lab, the most TCP over a choked backup uplink); RLC repairs sooner. Partial copies: copies only of what fits. Every mode but full copies needs "fec = yes" on the VPS to rebuild the upload.'));
@@ -497,9 +690,8 @@ return view.extend({
 		o.depends('fec_code', 'rlc');
 
 		o = s.taboption('protection', form.Flag, 'rescue', _('Rescue missing packets'),
-			_('A packet that no uplink delivered is asked for again (as parity when an erasure code is on) before the receiver gives up on it, within 60 ms. The router keeps what it sent for the VPS to ask, and asks the VPS for the download. The VPS needs rescue_kb and rescue_wait_ms in its cengarde.conf for its side. In the lab it doubled TCP with full copies over a lossy main uplink.'));
-		o.default = '0';
-		o.rmempty = false;
+			_('A packet that no uplink delivered is asked for again (as parity when an erasure code is on) before the receiver gives up on it, within 60 ms. The router keeps what it sent for the VPS to ask, and asks the VPS for the download. The VPS needs rescue_kb and rescue_wait_ms in its cengarde.conf for its side. In the lab it doubled TCP with full copies over a lossy main uplink. On in bonding and redundancy unless set apart.'));
+		modeFlag(o, 'rescue', '0');
 
 		o = s.taboption('tunnel', form.Flag, 'ip_pass', _('IP pass'),
 			_('The VPS forwards TCP and UDP ports 1024-65000 to this router and UPnP hands them on to the LAN: devices and services here get the public IP of the VPS. The VPS follows this switch on its own, within a second of saving.') +
@@ -603,12 +795,23 @@ return view.extend({
 		o = s.taboption('advanced', form.Flag, 'split', _('Split large packets across the uplinks (experimental)'),
 			_('Instead of a copy over every uplink, each large packet (over 256 bytes, by default) goes over one uplink, chosen by weight; the small ones still go over all of them. This adds up the speed of the uplinks (in the lab, two equal uplinks carried 1.98 times what one does), but it protects less than copying: an uplink that dies keeps its share of the packets until the engine takes it out (about 300 ms by estimate, 1.5 s before that), and the packets sent to it in the meantime are lost; the slowest uplink in the split sets the latency of all (see the largest delay difference below); and a weight above what an uplink can carry fills the queue of its modem and makes the uplink unstable. The VPS follows this router: it splits the download the same way, with the same weights, when the router asks for it, and needs no setting. It needs "Reorder at the receiver".'));
 		o.rmempty = false;
-		o.depends('reorder', '1');
+		o.depends({ reorder: '1', mode: 'custom' });
+
+		o = s.taboption('advanced', form.Flag, 'subflow', _('Subflow per uplink'),
+			_('Each uplink numbers what it carries and says back what it lost within itself (protocol 12), so a late packet on another uplink is never taken for a loss, and GRIT resends only what was really lost. Both ends need it. On in bonding.'));
+		o.rmempty = false;
+		o.depends('mode', 'custom');
+
+		o = s.taboption('advanced', form.Flag, 'link_cc', _('Each uplink its own rate'),
+			_('With the subflow on: each uplink runs its own rate controller (a BBR per uplink) fed by what the other end says it received, which decides the split and how fast GRIT sends. Both ends need it. On in bonding.'));
+		o.rmempty = false;
+		o.depends({ mode: 'custom', subflow: '1' });
 
 		o = s.taboption('advanced', form.DynamicList, 'split_weight', _('Weight of each uplink in the split'),
 			_('One entry per uplink, as NAME=WEIGHT (for example wan=3), with NAME as in the list of uplinks of the General tab and a weight from 0 to 1000. An uplink gets a share of the split packets in proportion to its weight; with no entry its weight is 1. 0: the uplink carries a copy of every packet, split or not. The weights do not follow the speed of the uplinks: choose them in proportion to what each one carries.'));
 		o.placeholder = 'wan=2';
-		o.depends({ reorder: '1', split: '1' });
+		o.depends({ reorder: '1', split: '1', mode: 'custom' });
+		o.depends({ reorder: '1', mode: 'bonding' });
 		// LuCI calls this with the entry being typed, and with '' for the list
 		// itself (its element has no value of its own) on each change of the
 		// list and when the page is saved. The entry: its weight, an uplink of
@@ -630,16 +833,17 @@ return view.extend({
 		};
 
 		o = s.taboption('advanced', form.Value, 'split_spread_ms', _('Largest delay difference to split (ms)'),
-			_('Only the uplinks whose delay towards the VPS is at most this much behind the fastest one get a share of the split; the others leave it (the next option says what they carry), and get their share back once they stay within three quarters of it for the settle time. The VPS does the same with the download, with its own setting (30 ms unless changed there). Measured in the lab: two equal uplinks split give almost twice one uplink, but 50 ms apart most of that gain is lost, and 150 ms apart the speed collapses: the slowest uplink in the split sets the pace of all. 0: no limit.'));
+			_('Only the uplinks whose delay towards the VPS is at most this much behind the fastest one get a share of the split; the others leave it (the next option says what they carry), and get their share back once they stay within three quarters of it for the settle time. The VPS does the same with the download, with its own setting (30 ms unless changed there). Measured in the lab: two equal uplinks split give almost twice one uplink, but 50 ms apart most of that gain is lost, and 150 ms apart the speed collapses: the slowest uplink in the split sets the pace of all. 0: no limit. Bonding: 250 unless set.'));
 		o.datatype = 'range(0,2000)';
 		o.placeholder = '30';
-		o.depends({ reorder: '1', split: '1' });
+		o.depends({ reorder: '1', split: '1', mode: 'custom' });
+		o.depends({ reorder: '1', mode: 'bonding' });
 
 		o = s.taboption('advanced', form.Flag, 'split_spread_copy', _('Copies to the uplinks out of the split'),
 			_('On (as up to version 0.6.2): an uplink that leaves the split for its delay carries a copy of every packet, to fill the gaps of the others, and with fewer than two uplinks left in the split everything goes on every uplink. Off: it carries only the small packets, which go on every uplink, and one uplink left in the split carries everything that is split. An uplink falls behind most often because its modem\'s queue is full: in the first field test the copies loaded the late uplinks even more, and the router dropped thousands of packets; in the lab they helped QUIC. Only for the upload: the VPS has its own setting (on unless changed there).'));
-		o.default = '1';
-		o.rmempty = false;
-		o.depends({ reorder: '1', split: '1' });
+		modeFlag(o, 'split_spread_copy', '1');
+		o.depends({ reorder: '1', split: '1', mode: 'custom' });
+		o.depends({ reorder: '1', mode: 'bonding' });
 
 		o = s.taboption('advanced', form.Value, 'probe_interval_ms', _('Probe interval (ms)'),
 			_('While there is traffic; each idle link is probed every second, or at this interval if it is longer. The next VPS address is tried after three idle probes at the least.'));

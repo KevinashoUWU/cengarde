@@ -1,0 +1,132 @@
+#!/bin/sh
+# What a router may do on this server with its admin key: the forced command
+# of the keys that "cengarde-vps-setup admin-key add" puts in root's
+# authorized_keys (command=..., restrict). The router's LuCI (VPS tab) sends
+# one of these in SSH_ORIGINAL_COMMAND; anything else is refused, and no
+# argument reaches a shell.
+#
+#   get                       the server's settings that a router can see
+#                             and change, as KEY=VALUE lines (keys= lists
+#                             those "set" takes)
+#   mode bonding|redundancy|custom
+#   fec on|rlc|off
+#   protocontroller on|off    as cengarde-vps-setup's (the engine restarts)
+#   set KEY VALUE             KEY = VALUE in engine.local (KEYS below; a
+#                             number or a word), then the configuration again
+#   unset KEY                 KEY out of engine.local, then the same
+#
+# Every router of the server shares these settings (no setting a router has
+# for itself yet): a key is for the router that administers the server.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+set -eu
+
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+R=${CENGARDE_ROOT:-}
+SETUP=${CENGARDE_VPS_SETUP:-cengarde-vps-setup}
+ETC=$R/etc/cengarde
+NAT_CONF=$ETC/nat.conf
+LOCAL_CONF=$ETC/engine.local
+# The engine's global settings a router may set here (engine/examples/server.conf).
+KEYS='fec_pct fec_pct_min fec_window_ms fec_single rescue_kb rescue_wait_ms rescue_code_ms pace_peers_ms
+split_spread_ms split_spread_copy reorder_margin_ms reorder_max_wait_ms governor governor_target_ms
+capacity_weights split_eta tcp_aware link_cc_bits protocontroller_buf_kb protocontroller_queue_ms parq'
+
+refuse() {
+	echo "cengarde-vps-admin: $*" >&2
+	exit 2
+}
+
+allowed() {
+	local k
+
+	for k in $KEYS; do
+		[ "$k" = "$1" ] && return 0
+	done
+	return 1
+}
+
+# kv FILE VAR: VAR's value in a nat.conf (VAR="value"), else empty.
+kv() { sed -n "s/^$2=\"\{0,1\}\([^\"]*\)\"\{0,1\}\$/\1/p" "$1" 2>/dev/null | tail -n 1; }
+
+cmd_get() {
+	local b p f k v
+
+	b=$(kv "$NAT_CONF" BONDING)
+	p=$(kv "$NAT_CONF" PROTOCONTROLLER)
+	f=$(kv "$NAT_CONF" FEC)
+	echo "version=$(cengarde version 2>/dev/null | head -n 1)"
+	echo "routers=$(find "$ETC/clients" -mindepth 1 -maxdepth 1 -type f 2>/dev/null | wc -l)"
+	# what cengarde-vps-setup mode leaves: custom keeps the protocontroller
+	if [ "$b" = yes ]; then
+		echo mode=bonding
+	elif [ "$p" = yes ]; then
+		echo mode=redundancy
+	else
+		echo mode=custom
+	fi
+	echo "protocontroller=$([ "$p" = yes ] && echo on || echo off)"
+	echo "fec=$(case "$f" in yes) echo on ;; rlc) echo rlc ;; *) echo off ;; esac)"
+	v=$(echo "$KEYS" | tr '\n' ' ')
+	echo "keys=${v% }"
+	for k in $KEYS; do
+		v=$(sed -n "s/^[[:space:]]*${k}[[:space:]]*=[[:space:]]*//p" "$LOCAL_CONF" 2>/dev/null | tail -n 1)
+		[ -z "$v" ] || echo "$k=$v"
+	done
+}
+
+# set_local KEY [VALUE]: KEY's lines out of engine.local, and KEY = VALUE at
+# its end when given; then the engine's configuration again.
+set_local() {
+	local tmp="$LOCAL_CONF.admin"
+
+	mkdir -p "$ETC"
+	: >"$tmp"
+	if [ -e "$LOCAL_CONF" ]; then
+		grep -v "^[[:space:]]*$1[[:space:]]*=" "$LOCAL_CONF" >"$tmp" || :
+	fi
+	[ -z "${2:-}" ] || echo "$1 = $2" >>"$tmp"
+	chmod 0644 "$tmp"
+	mv "$tmp" "$LOCAL_CONF"
+	"$SETUP" refresh
+}
+
+set -f # no globs in the words below
+# shellcheck disable=SC2086 # split on purpose: words, never a shell
+set -- ${SSH_ORIGINAL_COMMAND:-}
+case ${1:-} in
+get)
+	[ $# -eq 1 ] || refuse "usage: get"
+	cmd_get
+	;;
+mode)
+	[ $# -eq 2 ] || refuse "usage: mode bonding|redundancy|custom"
+	case $2 in bonding | redundancy | custom) ;; *) refuse "mode: bonding, redundancy or custom" ;; esac
+	exec "$SETUP" mode "$2"
+	;;
+fec)
+	[ $# -eq 2 ] || refuse "usage: fec on|rlc|off"
+	case $2 in on | rlc | off) ;; *) refuse "fec: on, rlc or off" ;; esac
+	exec "$SETUP" fec "$2"
+	;;
+protocontroller)
+	[ $# -eq 2 ] || refuse "usage: protocontroller on|off"
+	case $2 in on | off) ;; *) refuse "protocontroller: on or off" ;; esac
+	exec "$SETUP" protocontroller "$2"
+	;;
+set)
+	[ $# -eq 3 ] || refuse "usage: set KEY VALUE"
+	allowed "$2" || refuse "set: $2 is not a setting a router may change"
+	case $3 in *[!A-Za-z0-9._-]* | '' | -*) refuse "set: $3: a number or a word" ;; esac
+	[ ${#3} -le 16 ] || refuse "set: $3: too long"
+	set_local "$2" "$3"
+	;;
+unset)
+	[ $# -eq 2 ] || refuse "usage: unset KEY"
+	allowed "$2" || refuse "unset: $2 is not a setting a router may change"
+	set_local "$2"
+	;;
+*)
+	refuse "not allowed: ${SSH_ORIGINAL_COMMAND:-a shell} (get, mode, fec, protocontroller, set, unset)"
+	;;
+esac

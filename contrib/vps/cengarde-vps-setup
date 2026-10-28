@@ -55,6 +55,25 @@
 #                                    download too (fec_pct and fec_window_ms
 #                                    as the engine's, or in engine.local);
 #                                    the engine restarts
+#   cengarde-vps-setup mode bonding|redundancy|custom
+#                                    what the routers' mode (LuCI's General
+#                                    tab, story 029) needs here: bonding, the
+#                                    protocontroller and BONDING (each link's
+#                                    subflow and own rate, the tunnel's NACK
+#                                    a hint for GRIT); redundancy, the
+#                                    protocontroller (the routers use A) and
+#                                    BONDING off; custom, BONDING off (the
+#                                    protocontroller stays as it is); the
+#                                    engine restarts. What engine.local says
+#                                    wins
+#   cengarde-vps-setup admin-key add "ssh-ed25519 KEY [COMMENT]"|list|remove KEY|COMMENT
+#                                    a router's admin key (its LuCI shows it,
+#                                    VPS tab): in root's authorized_keys
+#                                    with cengarde-vps-admin as its only
+#                                    command (restrict), which reads and
+#                                    changes this server's shared settings
+#                                    (mode, fec, protocontroller, some of
+#                                    engine.local) and nothing else
 #   cengarde-vps-setup refresh       the engine's configuration again, reloaded
 #                                    if it changed (cengarde-nat check)
 #   cengarde-vps-setup purge [--all] the services of install.sh removed and the
@@ -102,6 +121,7 @@ FORWARD_MAX_PORTS=1024
 TUNNEL_IPV6=no
 PROTOCONTROLLER=no
 FEC=no
+BONDING=no
 ROUTER_NAME=router
 # ROUTER_TUNNEL_ADDR, the cloud-config's router's tunnel address, is left
 # unset: a cloud-config without it is older than 0.5.2, and its router has
@@ -450,6 +470,15 @@ engine_conf() {
 		# end of the tunnel (a), opened here to its destination (story 025; a
 		# server takes both variants with either).
 		protocontroller = b
+	EOF
+	[ "$BONDING" = yes ] && cat <<-EOF
+		# Bonding (cengarde-vps-setup mode, story 029): each link a subflow
+		# with its own rate, and the tunnel's NACK only a hint for GRIT. The
+		# routers in bonding mode need it; a router in custom mode with GRIT
+		# and no subflow would lose RACK over the mix of its download.
+		subflow = yes
+		link_cc = yes
+		protocontroller_nack = no
 	EOF
 	[ "$FEC" = no ] || cat <<-EOF
 		# The repair data (cengarde-vps-setup fec off removes it): each
@@ -1401,6 +1430,91 @@ cmd_fec() {
 	fi
 }
 
+# cmd_mode bonding|redundancy|custom: BONDING in nat.conf (and with it the
+# protocontroller, which bonding's GRIT needs), and the engine to match.
+cmd_mode() {
+	local b p
+	case ${1:-} in
+	bonding) b=yes p=yes ;;
+	redundancy) b=no p=yes ;;
+	custom) b=no p=$PROTOCONTROLLER ;;
+	*) die "usage: mode bonding|redundancy|custom" ;;
+	esac
+	check_proto
+	lock
+	if [ "$BONDING" = "$b" ] && [ "$PROTOCONTROLLER" = "$p" ]; then
+		say "mode $1 already"
+		return 0
+	fi
+	keep "$CONF"
+	set_conf BONDING "$b"
+	if [ "$p" = yes ] && [ "$PROTOCONTROLLER" != yes ]; then
+		mkdir -p "$R/etc/modules-load.d"
+		echo tcp_bbr >"$R/etc/modules-load.d/cengarde-bbr.conf"
+		[ -n "$R" ] || modprobe tcp_bbr 2>/dev/null || say "modprobe tcp_bbr failed: the engine keeps the kernel's congestion control instead"
+		set_conf PROTOCONTROLLER yes
+	fi
+	regen
+	kept
+	case $1 in
+	bonding) say "mode bonding: the protocontroller, each link's subflow and own rate (the routers set Bonding in LuCI's General tab)" ;;
+	redundancy) say "mode redundancy: the protocontroller (the routers' A), no subflows" ;;
+	*) say "mode custom: no subflows here (the protocontroller stays $([ "$PROTOCONTROLLER" = yes ] && echo on || echo off))" ;;
+	esac
+}
+
+# cmd_admin_key add KEY|list|remove KEY: the routers' admin keys in root's
+# authorized_keys, each bound to cengarde-vps-admin.
+cmd_admin_key() {
+	local f="$R/root/.ssh/authorized_keys" k
+	local opts='command="/usr/local/sbin/cengarde-vps-admin",restrict'
+	local NL='
+'
+
+	case ${1:-} in
+	add)
+		[ $# -eq 2 ] || die 'usage: admin-key add "ssh-ed25519 KEY [COMMENT]"'
+		case $2 in
+		ssh-ed25519\ ?* | ecdsa-sha2-nistp256\ ?* | ssh-rsa\ ?*) ;;
+		*) die "admin-key: expected an OpenSSH public key (ssh-ed25519 KEY [COMMENT]) as one argument" ;;
+		esac
+		case $2 in *[\"\\]* | *,command=* | *"$NL"*) die "admin-key: not a plain public key" ;; esac
+		k=$(echo "$2" | awk '{ print $2 }')
+		mkdir -p "$R/root/.ssh"
+		chmod 0700 "$R/root/.ssh"
+		if [ -e "$f" ] && grep -qF -- "$k" "$f"; then
+			say "admin-key: that key is there already"
+			return 0
+		fi
+		echo "$opts $2" >>"$f"
+		chmod 0600 "$f"
+		say "admin-key added: that router reads and changes this server's shared settings (cengarde-vps-admin), and nothing else"
+		;;
+	list)
+		[ -e "$f" ] || return 0
+		grep -F 'cengarde-vps-admin' "$f" | awk '{ printf "%s %s...%s %s\n", $2, substr($3, 1, 12), substr($3, length($3) - 7), $4 }'
+		;;
+	remove)
+		if [ $# -ne 2 ] || [ -z "$2" ]; then
+			die "usage: admin-key remove KEY|COMMENT"
+		fi
+		# an admin key line: the options, its type, the key, its comment
+		# shellcheck disable=SC2016 # awk's fields
+		k='index($0, "cengarde-vps-admin") && ($3 == m || $4 == m)'
+		if ! [ -e "$f" ] || ! awk -v m="$2" "$k { found = 1 } END { exit !found }" "$f"; then
+			die "admin-key: no admin key is $2"
+		fi
+		TMPF=$f.new
+		awk -v m="$2" "$k { next } { print }" "$f" >"$TMPF"
+		chmod 0600 "$TMPF"
+		mv "$TMPF" "$f"
+		TMPF=
+		say "admin-key removed"
+		;;
+	*) die "usage: admin-key add|list|remove" ;;
+	esac
+}
+
 cmd_refresh() {
 	check_proto
 	lock
@@ -1497,6 +1611,14 @@ protocontroller)
 fec)
 	shift
 	cmd_fec "$@"
+	;;
+mode)
+	shift
+	cmd_mode "$@"
+	;;
+admin-key)
+	shift
+	cmd_admin_key "$@"
 	;;
 refresh) cmd_refresh ;;
 purge)

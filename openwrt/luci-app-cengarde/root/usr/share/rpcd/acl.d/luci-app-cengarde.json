@@ -11,7 +11,9 @@
 		"write": {
 			"file": {
 				"/usr/sbin/cengarde genkey": [ "exec" ],
-				"/usr/sbin/cengarde ctl link *": [ "exec" ]
+				"/usr/sbin/cengarde ctl link *": [ "exec" ],
+				"/usr/sbin/cengarde-setup vps-key": [ "exec" ],
+				"/usr/sbin/cengarde-setup vps *": [ "exec" ]
 			},
 			"uci": [ "cengarde" ]
 		}

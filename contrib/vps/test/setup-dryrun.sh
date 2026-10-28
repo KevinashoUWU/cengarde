@@ -39,6 +39,17 @@
 # - protocontroller on|off: protocontroller = b, tcp_bbr at boot,
 #   PROTOCONTROLLER in nat.conf;
 # - fec on|rlc|off: fec = yes (and fec_code = rlc), FEC in nat.conf (story 026);
+# - mode bonding|redundancy: subflow, link_cc and the protocontroller,
+#   BONDING in nat.conf; redundancy takes them out but the protocontroller,
+#   custom leaves the protocontroller as it is;
+# - admin-key add|list|remove: a router's key in root's authorized_keys,
+#   bound to cengarde-vps-admin and restricted, once; not a key refused;
+#   removed by its comment, exactly; and cengarde-vps-admin as sshd runs it
+#   for that key: get (the mode, the FEC, the keys "set" takes), set and
+#   unset in engine.local with the configuration again, mode and fec through
+#   cengarde-vps-setup; refused: a setting not on its list, a value that is
+#   not a number or a word, a shell, more words than its command takes;
+#   engine.local wins (story 029);
 # - forward add|del: one spelling of a rule, in the router's file and its
 #   section; refused: a reserved port (with the reason), an overlap with
 #   its own rule or another router's, past its limit, a bad rule; forward
@@ -701,6 +712,97 @@ check "cengarde.conf: fec = yes and fec_code = rlc; FEC=rlc in nat.conf" \
 check "fec off" setup fec off
 check "no fec in cengarde.conf" not grep -q "^fec" "$R/etc/cengarde/cengarde.conf"
 check "fec maybe is refused" not setup fec maybe
+: >"$CALLS"
+check "mode bonding" setup mode bonding
+check "cengarde.conf: subflow, link_cc, the NACK a hint and the protocontroller; BONDING and PROTOCONTROLLER in nat.conf" \
+	sh -c 'grep -qx "subflow = yes" "$1" && grep -qx "link_cc = yes" "$1" && grep -qx "protocontroller_nack = no" "$1" &&
+		grep -qx "protocontroller = b" "$1" && grep -qx "BONDING=\"yes\"" "$2" && grep -qx "PROTOCONTROLLER=\"yes\"" "$2"' \
+	sh "$R/etc/cengarde/cengarde.conf" "$R/etc/cengarde/nat.conf"
+check "the engine takes it" called '^cengarde -t -c .*cengarde.conf.new'
+check "mode bonding again changes nothing" setup mode bonding
+check "so" said "mode bonding already"
+echo "link_cc = no" >>"$R/etc/cengarde/engine.local"
+check "refresh with engine.local's link_cc" setup refresh
+check "engine.local's comes after the mode's: it wins" \
+	sh -c 'grep "^link_cc = " "$1" | tail -n 1 | grep -qx "link_cc = no"' sh "$R/etc/cengarde/cengarde.conf"
+sed -i '/^link_cc = no$/d' "$R/etc/cengarde/engine.local"
+check "mode redundancy" setup mode redundancy
+check "no subflow in cengarde.conf, the protocontroller stays" \
+	sh -c '! grep -q "^subflow" "$1" && grep -qx "protocontroller = b" "$1" && grep -qx "BONDING=\"no\"" "$2"' \
+	sh "$R/etc/cengarde/cengarde.conf" "$R/etc/cengarde/nat.conf"
+setup protocontroller off >/dev/null
+check "mode custom leaves the protocontroller off" setup mode custom
+check "so" said "mode custom already"
+check "mode redundancy turns it on" setup mode redundancy
+check "PROTOCONTROLLER in nat.conf, protocontroller = b" \
+	sh -c 'grep -qx "protocontroller = b" "$1" && grep -qx "PROTOCONTROLLER=\"yes\"" "$2"' \
+	sh "$R/etc/cengarde/cengarde.conf" "$R/etc/cengarde/nat.conf"
+check "mode fast is refused" not setup mode fast
+setup protocontroller off >/dev/null
+say "the routers' admin keys and what they may do (cengarde-vps-admin)"
+fresh admin
+check "add router" add router "$S1"
+AK=$R/root/.ssh/authorized_keys
+PUB='ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGNlbmdhcmRlLXRlc3Qta2V5LW5vdC1hLXJlYWwtb25l cengarde-router'
+check "admin-key add" setup admin-key add "$PUB"
+check "bound to cengarde-vps-admin and restricted, root's only, in a 0700 .ssh" \
+	sh -c '[ "$(cat "$1")" = "command=\"/usr/local/sbin/cengarde-vps-admin\",restrict $2" ] &&
+		[ "$(stat -c %a "$1") $(stat -c %a "${1%/*}")" = "600 700" ]' sh "$AK" "$PUB"
+check "the same key again" setup admin-key add "$PUB"
+check "is there once" [ "$(grep -c AAAAC3Nz "$AK")" = 1 ]
+check "not a key: refused" not setup admin-key add 'hello world'
+check "a key with options of its own: refused" not setup admin-key add 'ssh-ed25519 AAAA x,command="sh"'
+check "admin-key list" setup admin-key list
+check "shows it by its comment" said "cengarde-router"
+check "a comment that only begins like it removes nothing" not setup admin-key remove cengarde-rout
+check "the key is still there" grep -q AAAAC3Nz "$AK"
+# admin COMMAND...: cengarde-vps-admin as sshd runs it for that key, with
+# cengarde-vps-setup in the test's root and the fakes in its PATH.
+cat >"$TMP/vps-setup" <<EOF
+#!/bin/sh
+exec env PATH="$BIN:$PATH" CENGARDE_CTL_TIMEOUT=2 sh "$SETUP" "\$@"
+EOF
+chmod +x "$TMP/vps-setup"
+admin() {
+	OUT=$(env CENGARDE_ROOT="$R" CENGARDE_VPS_SETUP="$TMP/vps-setup" SSH_ORIGINAL_COMMAND="$*" \
+		sh "$SRC/contrib/vps/cengarde-vps-admin" 2>&1)
+	RC=$?
+	printf '%s\n' "$OUT" | sed 's/^/    /'
+	return "$RC"
+}
+check "get" admin get
+check "the mode, the FEC and what set takes" \
+	sh -c 'printf "%s\n" "$1" | grep -qx mode=custom && printf "%s\n" "$1" | grep -qx fec=off &&
+		printf "%s\n" "$1" | grep -q "^keys=fec_pct .*link_cc_bits"' sh "$OUT"
+: >"$CALLS"
+check "set fec_pct 30" admin set fec_pct 30
+check "in engine.local, and in cengarde.conf after the configuration again" \
+	sh -c 'grep -qx "fec_pct = 30" "$1/etc/cengarde/engine.local" && grep -qx "fec_pct = 30" "$1/etc/cengarde/cengarde.conf"' sh "$R"
+check "the engine took it" called '^cengarde -t -c .*cengarde.conf.new'
+check "set fec_pct 25: one line, the new one" admin set fec_pct 25
+check "so" [ "$(grep -c '^fec_pct' "$R/etc/cengarde/engine.local")" = 1 ]
+check "get shows it" admin get
+check "so" said "fec_pct=25"
+check "unset fec_pct" admin unset fec_pct
+check "gone" not grep -q '^fec_pct' "$R/etc/cengarde/engine.local" "$R/etc/cengarde/cengarde.conf"
+check "mode bonding" admin mode bonding
+check "as cengarde-vps-setup's: BONDING in nat.conf" grep -qx 'BONDING="yes"' "$R/etc/cengarde/nat.conf"
+check "fec rlc" admin fec rlc
+check "as cengarde-vps-setup's: FEC in nat.conf" grep -qx 'FEC="rlc"' "$R/etc/cengarde/nat.conf"
+check "get again" admin get
+check "says bonding and rlc" sh -c 'printf "%s\n" "$1" | grep -qx mode=bonding && printf "%s\n" "$1" | grep -qx fec=rlc' sh "$OUT"
+check "a setting not on the list: refused" not admin set secret x
+check "nor touched engine.local" not grep -q '^secret' "$R/etc/cengarde/engine.local"
+check "a value that is not a number or a word: refused" not admin set fec_pct '1;reboot'
+check "a value with a leading -: refused" not admin set fec_pct -1
+check "a shell: refused" not admin
+check "so" said "not allowed"
+check "a command with a word too many: refused" not admin mode bonding now
+check "a glob does not expand" not admin set fec_pct '*'
+check "admin-key remove by its comment" setup admin-key remove cengarde-router
+check "authorized_keys without it" not grep -q AAAAC3Nz "$AK"
+check "remove again: none" not setup admin-key remove cengarde-router
+
 say "  the import of a cloud-config with TUNNEL=wireguard"
 fresh importwg 'TUNNEL=wireguard
 ROUTER_TUNNEL_ADDR=REPLACE_TUNNEL_ADDR

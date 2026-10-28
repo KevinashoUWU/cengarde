@@ -47,6 +47,7 @@ endef
 
 define Package/cengarde/conffiles
 /etc/config/cengarde
+/etc/cengarde/vps_admin_key
 endef
 
 define Build/Prepare

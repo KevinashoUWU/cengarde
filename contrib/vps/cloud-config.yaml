@@ -57,3 +57,6 @@ write_files:
 runcmd:
   - CENGARDE_REF=master; git init -q /opt/cengarde && git -C /opt/cengarde fetch -q --depth 1 https://github.com/KevinashoUWU/cengarde "$CENGARDE_REF" && git -C /opt/cengarde checkout -q FETCH_HEAD
   - sh /opt/cengarde/contrib/vps/install.sh
+  # The router's mode (its LuCI fills it in): bonding needs the
+  # protocontroller and each link's subflow and rate here too.
+  - /usr/local/sbin/cengarde-vps-setup mode REPLACE_MODE
