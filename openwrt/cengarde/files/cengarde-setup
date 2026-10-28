@@ -1056,7 +1056,7 @@ engine_conf() {
 			log "redund_spare_first '$v': not one of the uplinks that are up, left out"
 		fi
 	fi
-	for k in parq tcp_retx_one tcp_ack_rule rescue_tcp_race; do
+	for k in parq tcp_retx_one tcp_ack_rule rescue_tcp_race subflow; do
 		config_get v main "$k"
 		case "$v" in
 		'') ;;
@@ -1072,10 +1072,18 @@ engine_conf() {
 		# variant A's middle TCP goes to the VPS's end of the tunnel (this
 		# router's own tun_addr is a /32: nothing to take it from)
 		echo "protocontroller_vps = $VPS_ADDR"
-		for k in protocontroller_mid_cc protocontroller_buf_kb protocontroller_mem_mb protocontroller_max_flows protocontroller_queue_ms protocontroller_backlog_ms protocontroller_dead_s; do
+		for k in protocontroller_mid_cc protocontroller_buf_kb protocontroller_mem_mb protocontroller_max_flows protocontroller_queue_ms protocontroller_backlog_ms protocontroller_dead_s protocontroller_reo_ms; do
 			config_get v main "$k"
 			[ -n "$v" ] && echo "$k = $v"
 		done
+		# a tunnel NACK of a GRIT message: a loss (1, the default) or a hint (0, story 029)
+		config_get v main protocontroller_nack
+		case "$v" in
+		'') ;;
+		1 | on | yes | true | enabled) echo "protocontroller_nack = yes" ;;
+		0 | off | no | false | disabled) echo "protocontroller_nack = no" ;;
+		*) log "protocontroller_nack '$v': expected 0 or 1, left out" ;;
+		esac
 	fi
 	# Reordering at the receiver is on in the engine unless this says no; the
 	# split is off unless this says so, and only on, never force (the lab's):
