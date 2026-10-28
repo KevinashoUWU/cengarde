@@ -407,6 +407,15 @@ static int set_int(int fd, int level, int opt, int v)
 	return setsockopt(fd, level, opt, &v, sizeof(v));
 }
 
+/* SO_RCVBUF past net.core.rmem_max when allowed (as sock.c): a set size
+ * also turns autotuning off, so under the stock 208 KB ceiling the far
+ * leg's window stayed there (~20 Mbit/s at 100 ms: the lab, 2026-10-28). */
+static void set_rcvbuf(int fd, int v)
+{
+	if (set_int(fd, SOL_SOCKET, SO_RCVBUFFORCE, v) < 0)
+		set_int(fd, SOL_SOCKET, SO_RCVBUF, v);
+}
+
 static uint8_t reason_of(int err)
 {
 	switch (err) {
@@ -457,7 +466,7 @@ static int listen_one(struct cg_pctl *p, int family, char *err, size_t errlen)
 	set_int(fd, SOL_SOCKET, SO_REUSEADDR, 1);
 	/* small, so that a full stream's window reaches the sender soon; set
 	 * before listen, the connections inherit it (and the window scale) */
-	set_int(fd, SOL_SOCKET, SO_RCVBUF, PCTL_LAN_RCVBUF);
+	set_rcvbuf(fd, PCTL_LAN_RCVBUF);
 	if (bind(fd, (struct sockaddr *)&a, al) < 0 || listen(fd, 128) < 0 ||
 	    epoll_ctl(p->ep, EPOLL_CTL_ADD, fd, &e) < 0) {
 		snprintf(err, errlen, "protocontroller: listen on port %u (%s): %s", p->cfg.port, family == AF_INET ? "IPv4" : "IPv6",
@@ -489,7 +498,7 @@ static int listen_a(struct cg_pctl *p, char *err, size_t errlen)
 	} else {
 		set_int(fd, IPPROTO_IP, IP_FREEBIND, 1);
 	}
-	set_int(fd, SOL_SOCKET, SO_RCVBUF, (int)p->buf_cap);
+	set_rcvbuf(fd, (int)p->buf_cap);
 	if (bind(fd, (const struct sockaddr *)a, al) < 0 || listen(fd, 128) < 0 ||
 	    epoll_ctl(p->ep, EPOLL_CTL_ADD, fd, &e) < 0) {
 		snprintf(err, errlen, "protocontroller: listen on the tunnel's address, port %u: %s", p->cfg.port,
@@ -637,7 +646,7 @@ static int dest_connect(struct cg_pctl *p, int family, const uint8_t *addr, uint
 	/* what the destination sends while the stream is full waits in this
 	 * socket: as much as the stream's own buffer (the kernel doubles it),
 	 * not the autotuned 6 MB (a download, 7 MB a connection) */
-	set_int(fd, SOL_SOCKET, SO_RCVBUF, (int)p->buf_cap);
+	set_rcvbuf(fd, (int)p->buf_cap);
 	if (connect(fd, (struct sockaddr *)&a, al) < 0 && errno != EINPROGRESS) {
 		*why = reason_of(errno);
 		close(fd);
