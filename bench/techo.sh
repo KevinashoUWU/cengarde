@@ -19,11 +19,13 @@
 #             (-u, in %), STEP_SECS each: short queues to deep ones
 #   -T  seconds of tcp and grit (30), -S of each udp step (20)
 #   -r  record size (1300: one record per TCP segment on every path)
+#   -s  tcp and udp one modem after another instead of all at once (each with
+#       the whole of the VPS; techomat aligns them by each one's start)
 #   -k  keep the offloads off and the VPS's server up at the end (another run)
 #
 # What it touches, and puts back on exit: TSO/GSO/GRO off on the PC's eno2
-# and vlan10..40 and on the VPS's NIC (one wire packet per record in the
-# captures), a ufw rule for TCP 5310 and UDP 5320 on the VPS, tcpdump on the
+# and vlan10..40 and on the VPS's NIC, GRO off on the NUC's uplinks (one
+# wire packet per record in the captures), a ufw rule for TCP 5310 and UDP 5320 on the VPS, tcpdump on the
 # NUC (installed if missing). The NUC's tunnel and the OMR VM keep running:
 # their own traffic on the modems is small, but it is there.
 #
@@ -31,8 +33,12 @@
 #   PHASE-DIR/pc-vlanNN.pcap, vps.pcap     direct: headers and the record's
 #                                          first bytes (snaplen 128)
 #   PHASE-DIR/nuc-DEV.pcap, vps.pcap       grit: the tunnel's packets whole
+#                                          (the NUC's kept in its RAM, then
+#                                          fetched)
 #   PHASE-DIR/pc-LINK*.log, vps-*.log      techo's logs (see techo.c)
-#   PHASE-DIR/ss-pc.txt, ss-vps.txt        ss -tin at 20 Hz (direct tcp)
+#   PHASE-DIR/ss-pc.txt, ss-vps.txt        ss -tin at 20 Hz on the PC, 10 Hz on
+#                                          the VPS going down (direct tcp)
+#   *.cap.txt                              what each tcpdump says it dropped
 #   PHASE-DIR/ctl-nuc.jsonl, ctl-vps.jsonl cengarde ctl status at 10 Hz (grit)
 #   radio.jsonl                            evm.at answers of each modem, 1 Hz
 #   clock-*.txt                            chronyc tracking at both ends,
@@ -41,7 +47,7 @@
 #   README.md                              what ran, and the data it used
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
-# shellcheck disable=SC2024,SC2029 # files written by this shell; remote words expanded here on purpose
+# shellcheck disable=SC2016,SC2024,SC2029 # files written by this shell; remote words expanded here or there on purpose
 set -u
 
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -54,12 +60,13 @@ LINKS=(1 2 3 4)
 DEVS=(vlan10 vlan20 vlan30 vlan40)
 NAMES=(ENTEL WOM MOVISTAR CLARO)
 NUC_DEVS=(ENTEL WOM MOVISTAR CLARO)
+NUC_TRUNK=cpe # the NUC's VLANs to the CPEs ride on it
 # The modems as evm.at knows them: CPE alias and modem name.
 RADIOS=("cpe1 entel" "cpe1 wom" "cpe2 movistar" "cpe3 claro")
 NETNS=nucc
 
-name=$(date +%F-%H%M) dirs=both phases=tcp,grit,udp secs=30 step=20 shares=50,80,100,120 rec=1300 keep=0
-while getopts "n:d:p:T:S:u:r:k" o; do
+name=$(date +%F-%H%M) dirs=both phases=tcp,grit,udp secs=30 step=20 shares=50,80,100,120 rec=1300 keep=0 seq=0
+while getopts "n:d:p:T:S:u:r:ks" o; do
 	case $o in
 	n) name=$OPTARG ;;
 	d) dirs=$OPTARG ;;
@@ -69,6 +76,7 @@ while getopts "n:d:p:T:S:u:r:k" o; do
 	u) shares=$OPTARG ;;
 	r) rec=$OPTARG ;;
 	k) keep=1 ;;
+	s) seq=1 ;;
 	*) exit 2 ;;
 	esac
 done
@@ -85,21 +93,26 @@ say() { echo "techo.sh: $*" | tee -a "$DIR/run.log"; }
 # cap_local NAME IFACE SNAP FILTER: tcpdump on the PC into DIR/NAME.pcap
 # (written by the shell: tcpdump's own profile may not write here).
 cap_local() {
-	sudo -n sh -c "echo \$\$ > '$DIR/.cap-$1.pid'; exec tcpdump -i '$2' -s '$3' -U -w - '$4' 2>/dev/null" >"$DIR/$1.pcap" &
+	sudo -n sh -c "echo \$\$ > '$DIR/.cap-${1//\//_}.pid'; exec tcpdump -i '$2' -B 65536 -s '$3' -U -w - '$4' 2>'$DIR/$1.cap.txt'" >"$DIR/$1.pcap" &
 }
-cap_local_stop() { sudo -n kill "$(cat "$DIR/.cap-$1.pid")" 2>/dev/null; rm -f "$DIR/.cap-$1.pid"; }
+cap_local_stop() { sudo -n kill "$(cat "$DIR/.cap-${1//\//_}.pid")" 2>/dev/null; rm -f "$DIR/.cap-${1//\//_}.pid"; }
 
 # cap_vps NAME SNAP FILTER: tcpdump on the VPS's NIC into VDIR/NAME.pcap.
 cap_vps() {
-	ssh "$VPS" "cd $VDIR && nohup sh -c 'echo \$\$ > .cap-$1.pid; exec tcpdump -i $VIF -s $2 -U -w - \"$3\" > $1.pcap 2>/dev/null' >/dev/null 2>&1 &"
+	ssh "$VPS" "cd $VDIR || exit; nohup sh -c 'echo \$\$ > .cap-${1//\//_}.pid; exec tcpdump -i $VIF -B 65536 -s $2 -U -w - \"$3\" > $1.pcap 2> $1.cap.txt' </dev/null >/dev/null 2>&1 &"
 }
-cap_vps_stop() { ssh "$VPS" "cd $VDIR && kill \$(cat .cap-$1.pid) 2>/dev/null; rm -f .cap-$1.pid"; }
+cap_vps_stop() { ssh "$VPS" "cd $VDIR && kill \$(cat .cap-${1//\//_}.pid) 2>/dev/null; rm -f .cap-${1//\//_}.pid"; }
 
-# cap_nuc DEV FILE: the NUC's uplink DEV, streamed to the PC over the LAN.
+# cap_nuc DEV / cap_nuc_stop DEV FILE: the NUC's uplink DEV into its own
+# /tmp (RAM; streaming four whole captures over ssh lost packets), fetched
+# into FILE at the end of the phase, with what tcpdump says it dropped.
 cap_nuc() {
-	"${NUC[@]}" "echo \$\$ > /tmp/techo-cap-$1.pid; exec tcpdump -i $1 -s 0 -U -w - udp port 65500 2>/dev/null" >"$2" &
+	"${NUC[@]}" "sh -c 'tcpdump -i $1 -B 65536 -s 0 -U -w /tmp/techo-$1.pcap udp port 65500 2>/tmp/techo-$1.txt & echo \$! > /tmp/techo-$1.pid' </dev/null >/dev/null 2>&1"
 }
-cap_nuc_stop() { "${NUC[@]}" "kill \$(cat /tmp/techo-cap-$1.pid) 2>/dev/null; rm -f /tmp/techo-cap-$1.pid"; }
+cap_nuc_stop() {
+	"${NUC[@]}" "kill \$(cat /tmp/techo-$1.pid) 2>/dev/null; sleep 1; cat /tmp/techo-$1.txt; rm -f /tmp/techo-$1.pid /tmp/techo-$1.txt" >"${2%.pcap}.cap.txt"
+	"${NUC[@]}" "cat /tmp/techo-$1.pcap && rm -f /tmp/techo-$1.pcap" >"$2"
+}
 
 clock() { # TAG: chronyc tracking at each end
 	{ date +%s.%N; chronyc tracking; } >"$DIR/clock-pc-$1.txt" 2>&1
@@ -107,12 +120,14 @@ clock() { # TAG: chronyc tracking at each end
 	"${NUC[@]}" 'date +%s; chronyc tracking' >"$DIR/clock-nuc-$1.txt" 2>&1
 }
 
-offloads() { # on|off, PC and VPS
+offloads() { # on|off, PC, VPS and the NUC's uplinks (whose GRO merged the
+	# tunnel's datagrams before tcpdump saw them)
 	local d
 	for d in eno2 "${DEVS[@]}"; do
 		sudo -n /usr/sbin/ethtool -K "$d" tso "$1" gso "$1" gro "$1" 2>/dev/null
 	done
 	ssh "$VPS" "ethtool -K $VIF tso $1 gso $1 gro $1"
+	"${NUC[@]}" "for d in $NUC_TRUNK ${NUC_DEVS[*]}; do ethtool -K \$d gro $1 2>/dev/null; done"
 }
 
 # Each modem's serving cell and carriers every second, through evm.at (the
@@ -134,10 +149,13 @@ radio_start() {
 	done
 }
 
-# ss_start / ss_stop PHASE-DIR: ss -tin at 20 Hz on the PC and the VPS.
+# ss_start / ss_stop PHASE-DIR up|down: ss -tin at 20 Hz on the PC, and at
+# 10 Hz on the VPS when it is the one sending (on its one vCPU a faster
+# sampler while it receives cost the capture a third of its packets).
 ss_start() {
 	sudo -n sh -c "echo \$\$ > '$DIR/.ss.pid'; while :; do date +%s.%N; ss -tinH '( dport = :$TPORT or sport = :$TPORT )'; sleep 0.05; done" >"$DIR/$1/ss-pc.txt" 2>/dev/null &
-	ssh "$VPS" "cd $VDIR/$1 && nohup sh -c 'echo \$\$ > .ss.pid; while :; do date +%s.%N; ss -tinH \"( sport = :$TPORT or dport = :$TPORT )\"; sleep 0.05; done > ss-vps.txt' >/dev/null 2>&1 &"
+	[ "$2" = down ] || return 0
+	ssh "$VPS" "cd $VDIR/$1 || exit; nohup sh -c 'echo \$\$ > .ss.pid; while :; do date +%s.%N; ss -tinH \"( sport = :$TPORT or dport = :$TPORT )\"; sleep 0.1; done > ss-vps.txt' </dev/null >/dev/null 2>&1 &"
 }
 ss_stop() {
 	sudo -n kill "$(cat "$DIR/.ss.pid")" 2>/dev/null
@@ -149,11 +167,11 @@ ss_stop() {
 ctl_start() {
 	(while :; do echo; sleep 0.1; done | "${NUC[@]}" 'while read -r x; do cengarde ctl status; done' >"$DIR/$1/ctl-nuc.jsonl") &
 	CTL_NUC=$!
-	ssh "$VPS" "cd $VDIR/$1 && nohup sh -c 'echo \$\$ > .ctl.pid; while :; do cengarde ctl status; sleep 0.1; done > ctl-vps.jsonl' >/dev/null 2>&1 &"
+	ssh "$VPS" "cd $VDIR/$1 || exit; nohup sh -c 'echo \$\$ > .ctl.pid; while :; do cengarde ctl status; sleep 0.1; done > ctl-vps.jsonl' </dev/null >/dev/null 2>&1 &"
 }
 ctl_stop() {
+	pkill -P "$CTL_NUC" 2>/dev/null # its pipeline first: once it is gone they are init's
 	kill "$CTL_NUC" 2>/dev/null
-	pkill -P "$CTL_NUC" 2>/dev/null
 	ssh "$VPS" "cd $VDIR/$1 && kill \$(cat .ctl.pid) 2>/dev/null; rm -f .ctl.pid"
 }
 
@@ -165,7 +183,7 @@ prepare() {
 	ssh "$VPS" "mkdir -p $VDIR" && scp -q "$HERE/techo.c" "$VPS:$VDIR/" &&
 		ssh "$VPS" "gcc -O2 -pthread -o $VDIR/techo $VDIR/techo.c" || exit 1
 	ssh "$VPS" "ufw insert 1 allow $TPORT/tcp comment techo >/dev/null; ufw insert 1 allow $UPORT/udp comment techo >/dev/null"
-	ssh "$VPS" "cd $VDIR && nohup sh -c 'echo \$\$ > .srv.pid; exec ./techo serve -t $TPORT -u $UPORT -r $rec -o srv 2> srv.err' >/dev/null 2>&1 &"
+	ssh "$VPS" "cd $VDIR || exit; nohup sh -c 'echo \$\$ > .srv.pid; exec ./techo serve -t $TPORT -u $UPORT -r $rec -o srv 2> srv.err' </dev/null >/dev/null 2>&1 &"
 	"${NUC[@]}" 'command -v tcpdump >/dev/null || apk add tcpdump >/dev/null 2>&1 || opkg install tcpdump >/dev/null 2>&1; command -v tcpdump' >/dev/null ||
 		say "no tcpdump on the NUC: grit runs without its captures"
 	offloads off
@@ -176,9 +194,14 @@ prepare() {
 }
 
 finish() {
-	local p
+	local p f
 	trap - EXIT INT TERM
 	for p in "${PIDS[@]}"; do kill "$p" 2>/dev/null; done # the CPEs' loops end with their ssh
+	# no capture left running, whatever stopped the run
+	for f in "$DIR"/.cap-*.pid "$DIR"/.ss.pid; do [ -e "$f" ] && sudo -n kill "$(cat "$f")" 2>/dev/null; rm -f "$f"; done
+	ssh "$VPS" "cd $VDIR 2>/dev/null && for f in .cap-*.pid */.ss.pid */.ctl.pid; do [ -e \$f ] && kill \$(cat \$f); rm -f \$f; done" 2>/dev/null
+	"${NUC[@]}" 'for f in /tmp/techo-*.pid; do [ -e $f ] && kill $(cat $f); rm -f $f; done' 2>/dev/null
+	[ "$CTL_NUC" != 0 ] && { pkill -P "$CTL_NUC" 2>/dev/null; kill "$CTL_NUC" 2>/dev/null; }
 	clock after
 	if [ "$keep" = 0 ]; then
 		offloads on
@@ -198,13 +221,15 @@ phase_tcp() { # up|down
 	ssh "$VPS" "mkdir -p $VDIR/$p"
 	for i in "${!DEVS[@]}"; do cap_local "$p/pc-${DEVS[$i]}" "${DEVS[$i]}" 128 "tcp port $TPORT"; done
 	cap_vps "$p/vps" 128 "tcp port $TPORT"
-	ss_start "$p"
+	ss_start "$p" "$d"
 	sleep 1
-	say "$p: four TCP BBR connections, one per modem, $secs s"
+	say "$p: four TCP BBR connections, one per modem$([ "$seq" = 1 ] && echo ', one after another'), $secs s"
+	[ "$seq" = 1 ] && : >"$DIR/$p/sequential"
 	for i in "${!DEVS[@]}"; do
 		sudo -n "$BIN" "tcp-$d" -s "$VPS_IP" -t "$TPORT" -l "${LINKS[$i]}" -i "${DEVS[$i]}" -r "$rec" -T "$secs" \
 			-o "$DIR/$p/pc-L${LINKS[$i]}.log" 2>>"$DIR/$p/pc.err" &
 		CLIENTS+=($!)
+		[ "$seq" = 1 ] && wait_clients && sleep 2
 	done
 	wait_clients
 	sleep 2
@@ -222,7 +247,7 @@ phase_grit() { # up|down
 	local d=$1 p="grit-$1" i
 	mkdir -p "$DIR/$p"
 	ssh "$VPS" "mkdir -p $VDIR/$p"
-	for i in "${!NUC_DEVS[@]}"; do cap_nuc "${NUC_DEVS[$i]}" "$DIR/$p/nuc-${NUC_DEVS[$i]}.pcap"; done
+	for i in "${!NUC_DEVS[@]}"; do cap_nuc "${NUC_DEVS[$i]}"; done
 	cap_vps "$p/vps" 0 "udp port 65500"
 	ctl_start "$p"
 	sleep 1
@@ -233,7 +258,7 @@ phase_grit() { # up|down
 	wait_clients
 	sleep 2
 	ctl_stop "$p"
-	for i in "${!NUC_DEVS[@]}"; do cap_nuc_stop "${NUC_DEVS[$i]}"; done
+	for i in "${!NUC_DEVS[@]}"; do cap_nuc_stop "${NUC_DEVS[$i]}" "$DIR/$p/nuc-${NUC_DEVS[$i]}.pcap"; done
 	cap_vps_stop "$p/vps"
 	echo "$p bonded $(mbits "$DIR/$p/pc-L0.log" "$secs")" >>"$DIR/rates.txt"
 	say "$p: $(mbits "$DIR/$p/pc-L0.log" "$secs") Mbit/s"
@@ -246,14 +271,16 @@ phase_udp() { # up|down
 	for i in "${!DEVS[@]}"; do cap_local "$p/pc-${DEVS[$i]}" "${DEVS[$i]}" 128 "udp port $UPORT"; done
 	cap_vps "$p/vps" 128 "udp port $UPORT"
 	sleep 1
+	[ "$seq" = 1 ] && : >"$DIR/$p/sequential"
 	for s in ${shares//,/ }; do
-		say "$p: $s % of each modem's TCP ceiling, $step s"
+		say "$p: $s % of each modem's TCP ceiling$([ "$seq" = 1 ] && echo ', one after another'), $step s"
 		for i in "${!DEVS[@]}"; do
 			r=$(awk -v c="$(awk -v p="tcp-$d" -v n="${NAMES[$i]}" '$1 == p && $2 == n { print $3 }' "$DIR/rates.txt" | tail -n 1)" \
 				-v s="$s" 'BEGIN { r = c * s / 100; print (r > 1 ? r : 1) }')
 			sudo -n "$BIN" "udp-$d" -s "$VPS_IP" -u "$UPORT" -l "${LINKS[$i]}" -i "${DEVS[$i]}" -r "$rec" -R "$r" -T "$step" \
 				-o "$DIR/$p/pc-L${LINKS[$i]}-$s.log" 2>>"$DIR/$p/pc.err" &
 			CLIENTS+=($!)
+			[ "$seq" = 1 ] && wait_clients && sleep 2
 		done
 		wait_clients
 		sleep 2

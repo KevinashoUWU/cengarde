@@ -13,8 +13,10 @@ in RUN_DIR/matrix/:
     PHASE.md            per link: records, Mbit/s, sends per record, wire
                         loss, one-way delay, TCP's head-of-line wait; for all
                         links merged in the order they left (the bonding
-                        ideal): the hold a reorderer needs and the share in
-                        order within each wait D
+                        ideal; with techo.sh -s, which runs the links one
+                        after another, each from its own start): the hold a
+                        reorderer needs and the share in order within each
+                        wait D
     PHASE-records.csv.gz one line per record: link, number, global order,
                         first send, sends, first arrival, arrival link,
                         delivery (ns since the epoch; empty when it never
@@ -24,8 +26,10 @@ in RUN_DIR/matrix/:
 
 How a record is found in a packet:
     tcp   the TCP sequence (both ends fix the MSS to the record: number =
-          (seq - ISN - 1) / size - 1, the hello taking the first slot), and
-          the record's own header when the packet starts with one
+          (seq - ISN - 1) / size - 1, the hello taking the first slot), every
+          record starting within the segment's length when a NIC or a
+          hypervisor merged several (the VPS's does), and the record's own
+          header when the packet starts with one
     udp   the record's header (one per datagram)
     grit  every "CGT L" header inside a tunnel DATA packet (GRIT cuts the
           stream its own way; one cut in two is not counted where its header
@@ -96,7 +100,10 @@ def packets(path):
 
 
 def l4(ip):
-    """proto, src, sport, dst, dport, tcp seq, tcp flags, payload."""
+    """proto, src, sport, dst, dport, tcp seq, tcp flags, payload (as
+    captured), and for TCP the payload's whole length (from the IP header:
+    the capture may be cut, and a NIC or a hypervisor may have merged
+    several segments into one)."""
     ihl = (ip[0] & 15) * 4
     proto = ip[9]
     src, dst = ip[12:16], ip[16:20]
@@ -104,10 +111,11 @@ def l4(ip):
     if proto == 6 and len(t) >= 20:
         sport, dport, seq = struct.unpack_from('>HHI', t, 0)
         doff = (t[12] >> 4) * 4
-        return 6, src, sport, dst, dport, seq, t[13], t[doff:]
+        whole = struct.unpack_from('>H', ip, 2)[0] - ihl - doff
+        return 6, src, sport, dst, dport, seq, t[13], t[doff:], whole
     if proto == 17 and len(t) >= 8:
         sport, dport = struct.unpack_from('>HH', t, 0)
-        return 17, src, sport, dst, dport, 0, 0, t[8:]
+        return 17, src, sport, dst, dport, 0, 0, t[8:], len(t) - 8
     return None
 
 
@@ -170,7 +178,7 @@ def tcp_records(path, book, sender, forward, link_of, rec):
         x = l4(ip)
         if not x or x[0] != 6:
             continue
-        _, src, sport, dst, dport, seq, flags, pl = x
+        _, src, sport, dst, dport, seq, flags, pl, whole = x
         flow = (src, sport, dst, dport)
         if flags & 0x02: # SYN: the data starts at ISN + 1
             isn[flow] = seq
@@ -186,13 +194,12 @@ def tcp_records(path, book, sender, forward, link_of, rec):
         if link is None:
             continue
         rel = (seq - isn[flow] - 1) % (1 << 32)
-        if rel < rec: # the hello
-            continue
-        num = rel // rec - 1
-        if sender:
-            book.send(link, num, t)
-        else:
-            book.arrive(link, num, t)
+        # every record that starts in this segment (one, or several merged)
+        for num in range(max(rel // rec, 1) - 1, (rel + max(whole, 1) - 1) // rec):
+            if sender:
+                book.send(link, num, t)
+            else:
+                book.arrive(link, num, t)
 
 
 def udp_records(path, book, sender, forward):
@@ -299,7 +306,7 @@ def links_by_packet(book, names):
     return lines
 
 
-def summary(name, tb, rec, names, book=None):
+def summary(name, tb, rec, names, book=None, sequential=False):
     lines = [f'# {name}', '']
     lines.append('| link | records | Mbit/s | sends/record | wire loss | OWD p50 | p95 | p99 | max | HoL p50 | p95 | p99 |')
     lines.append('| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |')
@@ -313,6 +320,10 @@ def summary(name, tb, rec, names, book=None):
         if not n:
             continue
         span = (tb['t_send'][sel].max() - tb['t_send'][sel].min()) / 1e9 or 1
+        if sequential and label == 'all': # the links one after another: their rates add up
+            span = n / sum((tb['link'] == lk).sum() / (((tb['t_send'][tb['link'] == lk].max() -
+                                                        tb['t_send'][tb['link'] == lk].min()) / 1e9) or 1)
+                           for lk in set(tb['link'].tolist()))
         owd = ms(tb['t_arr'][arr] - tb['t_send'][arr])
         dl = arr & (tb['t_del'] >= 0)
         hol = ms(tb['t_del'][dl] - tb['t_arr'][dl])
@@ -322,18 +333,30 @@ def summary(name, tb, rec, names, book=None):
                      f'| {pct(hol, 50):.1f} | {pct(hol, 95):.1f} | {pct(hol, 99):.1f} |')
     if book is not None and book.pk_sent:
         lines += links_by_packet(book, names)
-    h = ms(hold(tb['t_arr']))
-    lines += ['', 'Every link merged in the order the records left (the bonding ideal): what a reorderer holds, ms', '',
+    t_send, t_arr = tb['t_send'], tb['t_arr']
+    if sequential: # one link after another: each from its own start
+        t_send, t_arr = t_send.copy(), t_arr.copy()
+        for lk in set(tb['link'].tolist()):
+            sel = tb['link'] == lk
+            off = t_send[sel].min()
+            t_send[sel] -= off
+            t_arr[sel & (t_arr >= 0)] -= off
+        o = np.argsort(t_send, kind='stable')
+        t_send, t_arr = t_send[o], t_arr[o]
+    h = ms(hold(t_arr))
+    lines += ['', 'Every link merged in the order the records left (the bonding ideal' +
+              ('; the links ran one after another, each aligned to its own start' if sequential else '') +
+              '): what a reorderer holds, ms', '',
               f'p50 {pct(h, 50):.1f}, p90 {pct(h, 90):.1f}, p99 {pct(h, 99):.1f}, p99.9 {pct(h, 99.9):.1f}, max '
               f'{h.max() if len(h) else float("nan"):.1f}', '',
               '| wait D (ms) | ' + ' | '.join(str(d) for d in DEADLINES_MS) + ' |',
               '| --- |' + ' --- |' * len(DEADLINES_MS),
               '| in order within D | ' + ' | '.join(f'{100 * (h <= d).mean():.2f} %' if len(h) else '-' for d in DEADLINES_MS) + ' |']
     # how far each record came from its place: arrival rank minus departure rank
-    ok = tb['t_arr'] >= 0
+    ok = t_arr >= 0
     if ok.any():
         rank = np.empty(ok.sum(), dtype=np.int64)
-        rank[np.argsort(tb['t_arr'][ok], kind='stable')] = np.arange(ok.sum())
+        rank[np.argsort(t_arr[ok], kind='stable')] = np.arange(ok.sum())
         disp = np.abs(rank - np.arange(ok.sum()))
         lines += ['', f'Displacement (records between where it left and where it came): p50 {pct(disp, 50):.0f}, '
                   f'p99 {pct(disp, 99):.0f}, max {disp.max()}']
@@ -415,7 +438,8 @@ def phase(run, ph, vps, rec):
     tb = table(book, rec, (hi - lo) / 1e9)
     out = os.path.join(run, 'matrix')
     os.makedirs(out, exist_ok=True)
-    text = summary(ph, tb, rec, names, book if kind == 'grit' else None)
+    text = summary(ph, tb, rec, names, book if kind == 'grit' else None,
+                   os.path.exists(os.path.join(pdir, 'sequential')))
     with open(os.path.join(out, f'{ph}.md'), 'w') as f:
         f.write(text)
     write_records(os.path.join(out, f'{ph}-records.csv.gz'), tb)

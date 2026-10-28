@@ -104,6 +104,16 @@ def make(run):
             # link 1 takes 20 ms, link 2 50 ms; link 1's record 2 is lost once
             # and sent again 30 ms later
             owd = 20 if lk == 1 else 50
+            if lk == 2 and n == 3: # comes merged with record 4 (the VPS's hypervisor does that)
+                pc[lk].append((t, seg))
+                deliv.append((n, t, T0 + (2 * 4 + 1) * MS + owd * MS + MS, lk, 2))
+                continue
+            if lk == 2 and n == 4:
+                both = record(ord('T'), lk, 3, t) + record(ord('T'), lk, 4, t)
+                pc[lk].append((t, tcp(PC, port, VPS, 5310, seq, 0x18, record(ord('T'), lk, n, t)[:60])))
+                vps.append((t + owd * MS, tcp(PC, port, VPS, 5310, seq - REC, 0x18, both)))
+                deliv.append((n, t, t + owd * MS + MS, lk, 2))
+                continue
             if lk == 1 and n == 2:
                 pc[lk].append((t + 30 * MS, seg))
                 vps.append((t + 30 * MS + owd * MS, seg))
@@ -165,6 +175,7 @@ def main():
         check(h.max() == 30 * MS + 50 * MS - 50 * MS - 5 * MS + 0 or h.max() > 0, 'some record waits')
         check('| ENTEL | 5 |' in text and '| WOM | 5 |' in text, 'a line per link, named')
         check('| ENTEL | 5 | ' in text and ' 1.200 |' in text, 'ENTEL: 1.2 sends per record')
+        check(by[(2, 3)][6] == by[(2, 4)][6] != '', 'two records merged in one captured segment both arrive')
 
         # grit-up
         text = techomat.phase(run, 'grit-up', VPS, REC)
