@@ -78,6 +78,7 @@ enum { CG_LC_STARTUP_M = 0, CG_LC_DRAIN_M, CG_LC_PROBE_M };
  * which is when a queue builds, so they run low. */
 #define CG_LC_QMAX 16u  /* the split's queue: the larger of in flight over bw x rtprop and its delay at the pacing rate */
 #define CG_LC_SATQ 32u  /* SAT caps only while the link holds a queue (half the target or more) */
+#define CG_LC_WND 64u   /* the split gives a link data only while its window (cg_lc_cwnd) has room (eta.h's cg_eta_wnd) */
 #define CG_LC_BITS (CG_LC_QMODE | CG_LC_S32) /* the default; the router's adds SAT (config.c) */
 
 struct cg_lc {
@@ -221,6 +222,12 @@ static inline void cg_lc_owd(struct cg_lc *c, uint64_t now, int32_t owd)
 static inline int cg_lc_idle(const struct cg_lc *c)
 {
 	return c->rtprop && c->bw && c->inflight < cg_lc_bw(c) * c->rtprop / 1000000;
+}
+
+/* The bytes that still fit in flight (negative: over the window). */
+static inline int64_t cg_lc_wnd_left(const struct cg_lc *c)
+{
+	return (int64_t)cg_lc_cwnd(c, c->target_us) - (int64_t)c->inflight;
 }
 
 /* Whether len more bytes fit in flight. */

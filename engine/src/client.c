@@ -3216,6 +3216,8 @@ static void lc_eta(struct client *c, unsigned i, uint32_t ref, uint64_t now_us)
 		return;
 	cg_eta_own(&c->eta, i, cg_lc_rate(lc) * 8, lc->rtprop > ref ? lc->rtprop - ref : 0, cg_lc_queued(lc),
 		   c->cfg->governor_target_ms * 1000, now_us);
+	if (lc->bits & CG_LC_WND)
+		cg_eta_wnd(&c->eta, i, cg_lc_wnd_left(lc));
 }
 
 /* The least rtprop of the links in the split, for lc_eta; 0: none. */

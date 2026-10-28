@@ -1171,6 +1171,8 @@ static void lc_eta(const struct server *s, struct session *S, unsigned p, uint32
 		return;
 	cg_eta_own(&S->eta, p, cg_lc_rate(&F->tx.lc) * 8, F->tx.lc.rtprop > ref ? F->tx.lc.rtprop - ref : 0,
 		   cg_lc_queued(&F->tx.lc), s->cfg->governor_target_ms * 1000, now_us);
+	if (F->tx.lc.bits & CG_LC_WND)
+		cg_eta_wnd(&S->eta, p, cg_lc_wnd_left(&F->tx.lc));
 }
 
 /* The least rtprop of S's paths in the split, for lc_eta; 0: none. */

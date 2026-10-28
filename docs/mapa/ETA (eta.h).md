@@ -4,7 +4,7 @@ archivos:
   - engine/src/eta.h
   - engine/src/capacity.h
   - engine/tests/test_eta.c
-sello: ee2332217f301302
+sello: 07c4b8eef0a75e7b
 ---
 # ETA (eta.h)
 
@@ -42,5 +42,5 @@ El reparto por **llegada esperada**: cada paquete va por el enlace donde llegar�
 - Con ETA, los pesos del [[Gobernador (govern.h)]] y de la capacidad no deciden, pero salen en el estado (auditoría, métrica 10).
 
 ## Archivos
-- `eta.h` (`cg_eta_own`), `capacity.h` (`cg_cap_eta`, `cg_cap_qpred`, `cg_cap_stale`); tests `engine/tests/test_eta.c`.
+- `eta.h` (`cg_eta_own`, `cg_eta_wnd`: con `link_cc_bits` 64, un enlace con la ventana llena es último recurso), `capacity.h` (`cg_cap_eta`, `cg_cap_qpred`, `cg_cap_stale`); tests `engine/tests/test_eta.c`.
 - `client.c`: `cap_tick`, `tun_read`, `lc_eta`. `server.c`: `cap_tick`, `down_prepare`, `lc_eta`.
