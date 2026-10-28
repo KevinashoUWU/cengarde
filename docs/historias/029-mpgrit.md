@@ -50,7 +50,9 @@
   134–147)**. Con la cola de cada enlace por su retardo de ida (sondeo y
   drenaje por la cola, STARTUP a ×3/2, `bw` topado por lo entregado con cola
   en el router) gana +8,7 % en el laboratorio y **la subida llega a 96–101
-  Mbit/s, a la par de OMR (93–95), con menos ping**. Todavía es un
+  Mbit/s, a la par de OMR (93–95), con menos ping**. Con 8 MB por flujo
+  (+49 % en cuatro rondas) **la bajada llega al 93 % de OMR (129 contra 140
+  de media) con 40 % de su ping, y la subida le gana ~10 %**. Todavía es un
   experimento.
 
 ## Contexto
@@ -470,6 +472,22 @@ reporte de retardo de hace 300–500 ms.
   mientras su ventana tiene espacio (un enlace que se frena deja de
   recibir solo). Nuestro reparto es por ritmo; `cg_lc_cwnd` existe pero
   todavía no frena nada.
+- **16 MB contra 8 MB y el router con 46** (`field-l8`, `73123f7`, ~3 GB):
+
+  | brazo | media | rondas | ping p95 |
+  | --- | --- | --- | --- |
+  | **bajada, 8 MB** | **129,2** | 73,7 / 157,3 / 174,9 / 111,1 | 50 |
+  | bajada, 16 MB | 97,4 | 142,2 / 64,7 / 103,8 / 78,9 | 48 |
+  | OMR | 139,5 | 116,2 / 160,3 / 120,0 / 161,3 | 130 |
+  | **subida, router 14** | **100,5** | 98,0 / 103,0 | 182 |
+  | subida, router 46 | 97,0 | 90,8 / 103,3 | 186 |
+  | OMR | 91,6 | 90,5 / 92,7 | 272 |
+
+  16 MB pierde (−24 % de media geométrica): más volumen en vuelo llena de
+  más los enlaces. Queda 8 MB por omisión (el tope de 16 se queda). Con 8 MB
+  la bajada es el 93 % de OMR con 40 % de su ping, y gana una ronda (175
+  contra 120); la subida le gana ~10 % con 2/3 de su ping. El router sigue
+  en 14.
 - **El freno de ventana** (`43f32cd`, `link_cc_bits` 64, `wnd1`): el reparto
   le da datos a un enlace solo mientras su ventana tiene espacio, como el
   planificador de OMR. Neutro en el laboratorio (n = 4; `fade`, `cell4`,
