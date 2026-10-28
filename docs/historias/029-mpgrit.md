@@ -63,6 +63,16 @@
   mode`, y **un router lo administra** con una llave SSH que solo puede
   correr `cengarde-vps-admin` (modo, FEC, protocontrolador y una lista de
   ajustes del motor), desde la pestaña *VPS* de LuCI.
+- **La prueba de techo con captura** (`bench/techo.c`, `techo.sh`,
+  `techomat.py`): registros de texto plano numerados por cada módem directo
+  al VPS, luego por GRIT y luego por UDP a tasa fija, con cada paquete
+  capturado en los dos extremos. Encontró que **el VPS partía en dos cada
+  paquete lleno de bajada por Claro** (su `cg0` de 1420 contra los 1460 de
+  la ruta de vuelta): con `tun_mtu = 1380` la bajada de GRIT pasó de 97 a
+  137–152 Mbit/s y Claro de 9 a 41–56. Y mostró que el codo de cada módem
+  es abrupto y se mueve (WOM en bajada: limpio a 52 Mbit/s, 1,2 s de cola a
+  60): de ahí el **MTPT** (*Maximum Transfer Point Tracking*, nombre del
+  usuario), la cola objetivo de cada enlace por perturbar y observar.
 
 ## Contexto
 
@@ -580,6 +590,82 @@ un enlace que salta; los subflujos sin `split` reenvían miles de paquetes
 (una copia que llega por otro enlace no tapa la pérdida del suyo). Por eso
 la redundancia queda con A.
 
+### La prueba de techo con captura (2026-10-28, noche)
+
+El plan del usuario (`capture-matrix-plan`): un flujo de texto plano con
+números que caigan justo en el MTU, enviado por los cuatro módems a la vez
+(TCP BBR, luego GRIT, luego UDP a tasas fijas), con cada paquete guardado en
+los dos extremos, el reloj de pared común (chrony con el SHOA), el estado de
+TCP y de GRIT y la radio; después ordenarlo y ver el desorden real, cuánto
+habría que esperar y cómo TCP y GRIT entregan.
+
+- **Las herramientas** (`bench/techo.c`, `techo.sh`, `techomat.py`, en
+  `bench/README.md`): registros de 1300 bytes `CGT L2 Q… T…`; en TCP los dos
+  extremos fijan el MSS al registro y la prueba apaga TSO, GSO y GRO, así
+  cada segmento lleva uno y su secuencia lo dice (en el campo, todos los
+  segmentos de los cuatro módems medían 1300); el VPS y el NUC capturan con
+  búfer de 64 MB y dicen lo que descartaron (0 en las tandas válidas). `-s`
+  corre un módem tras otro, y `techomat` alinea cada uno por su inicio.
+- **Lo que el campo enseñó a la herramienta:** un `ssh` que no volvía (el
+  trabajo de fondo se quedaba con su entrada); capturas que no se detenían y
+  se apilaban en el único vCPU del VPS; el NUC perdiendo paquetes al mandar
+  cuatro capturas completas por SSH (ahora en su RAM); el GRO del NUC y el
+  hipervisor del VPS juntando paquetes antes de `tcpdump` (GRO apagado en el
+  NUC; `techomat` cuenta por el largo IP).
+
+**El MTU de Claro.** En la bajada de GRIT (`techo1-seq`), 51 966 de los
+51 982 paquetes que el VPS mandó por Claro salieron fragmentados: su `cg0`
+tenía 1420 (lo del motor) y los paquetes 1476 bytes, y la ruta de vuelta de
+Claro acepta 1460 (el VPS lo aprende por ICMP). Perder cualquiera de las dos
+mitades pierde el paquete: Claro llevaba 9 Mbit/s con GRIT (68 directo) y
+reenviaba la mitad (1,995 envíos por registro). La subida no lo sufría (el
+router usa 1380: 1436 bytes). Con `tun_mtu = 1380` en el VPS
+(`cengarde-vps-setup` lo escribe desde `4d01b32`):
+
+| tanda | bajada de GRIT | Claro | envíos por registro |
+| --- | --- | --- | --- |
+| `techo1-seq`, 1420 | 96,9 Mbit/s | 8,9 | 1,307 |
+| `grit-mtu1380` | 137,3 | 40,8 | 1,034 |
+| `techo2-sim` (los cuatro a la vez) | 152,3 | 55,9 | 1,040 |
+
+**La curva de cada módem** (`curva1`: UDP de 40 a 160 % del techo TCP en
+pasos de 10 %, 10 s cada uno, un módem a la vez; retardo de ida p50 / p95):
+
+| módem | bajada limpia hasta | pasado el codo | subida limpia hasta | pasado el codo |
+| --- | --- | --- | --- | --- |
+| Entel | ~49 Mbit/s (26 / 84 ms) | 64–69: p95 0,8 s, 2–4 % de pérdida | ~14 (34 / 65) | 1 s |
+| WOM | ~52 (34 / 175) | 60: p50 1,2 s; 75: 63 % de pérdida y 4,7 s | ~22 (59 / 347) | 28: 21 % |
+| Movistar | ~16 (50 / 210), inestable aun abajo | colas de 5 a 60 s | ~21 (38 / 111) | 27: 22 % |
+| Claro | ~78 (20 / 155) | 108: 5 % y p95 2 s | ~44 (51 / 158) | 48: 10 % |
+
+- **El codo es abrupto:** 10–15 % de más pasa de decenas de ms a segundos.
+  En la bajada los operadores tienen búferes enormes (Movistar 60 s, WOM
+  20 s, Claro 2 s, Entel 1 s); en la subida pierden (20–40 % con 0,5–1 s).
+- **Bajo el codo los enlaces son rápidos:** p50 de ida de 15–30 ms en la
+  bajada y 26–60 en la subida; la espera del reordenador viene de la cola.
+- **El codo se mueve:** Entel a 79 Mbit/s salió limpio minutos después de
+  perder a 64.
+- **La suma de los codos con colas sanas:** ~195 Mbit/s de bajada y ~100 de
+  subida; OMR saca 140–150 de bajada con colas de 300–500 ms.
+
+**Los cuatro a la vez** (`techo2-sim`, 30 s): TCP BBR por módem suma 96,5 de
+subida y 225,7 de bajada, GRIT 87,3 (90 %) y 140–152 (62–67 %). Juntando los
+registros de BBR en el orden en que salieron (el bonding ideal), un
+reordenador habría retenido p50 103 ms en la subida y 250 ms en la bajada, y
+en 300 ms habría entregado en orden el 89 % y el 57 %: BBR llena las colas
+(Movistar p95 870 ms). Con GRIT en la subida, p50 46 ms y 90 % en 300 ms.
+
+**MTPT** (`df322d9`, `link_cc_bits` 128, `link_cc_budget_ms` 300): cada
+enlace busca su propia cola objetivo perturbando y observando, como el MPPT
+de un cargador solar (el nombre, *Maximum Transfer Point Tracking*, es del
+usuario). Cada segundo el objetivo se mueve un paso de 20 ms: sigue si lo
+entregado creció 3 % o más, vuelve si cayó, baja si quedó plano, baja dos
+pasos con más de 5 % de pérdida y se queda quieto si el enlace no llegó a la
+mitad de su objetivo. Su techo es `link_cc_budget_ms` menos cuánto más lento
+es el enlace que el más rápido: un enlace chico (Movistar con 2 Mbit/s en
+congestión) suma lo que llega a tiempo y no estira la espera de los demás
+(la regla del usuario). Laboratorio en curso (`~/campo/2026-10-28/mtpt1`).
+
 ## Pendiente
 
 - `link_cc`: decidir si pasa a ser lo normal con `subflow` (más rondas de
@@ -609,3 +695,5 @@ la redundancia queda con A.
 - 2026-10-28: los modos (bonding, redundancia, personalizado) en el router,
   LuCI y el VPS; el VPS administrado desde el router (`cengarde-vps-admin`);
   la redundancia con lo nuevo (`red1`: queda con el protocontrolador A).
+- 2026-10-28: la prueba de techo con captura (`techo`), el MTU de Claro, la
+  curva de cada módem y el MTPT.
