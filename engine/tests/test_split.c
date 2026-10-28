@@ -41,7 +41,7 @@ static void test_split_proportions(void)
 	static const uint16_t w235[CG_MAX_LINKS] = { 2, 0, 3, 0, 0, 5 };
 	static const uint16_t w124[CG_MAX_LINKS] = { 1, 2, 4 };
 	static const uint16_t wskew[CG_MAX_LINKS] = { 1, 1000 };
-	struct cg_split s;
+	struct cg_split s = { 0 };
 	unsigned n[CG_MAX_LINKS];
 
 	/* Whole periods are exact: 10000 packets are 5000 periods of 1:1, 2500
@@ -113,7 +113,7 @@ static void test_split_interleave(void)
 	/* nginx's example, a a b a c a a, twice. */
 	static const int want511[14] = { 0, 0, 1, 0, 2, 0, 0, 0, 0, 1, 0, 2, 0, 0 };
 	static const int want13[8] = { 1, 0, 1, 1, 1, 0, 1, 1 };
-	struct cg_split s;
+	struct cg_split s = { 0 };
 	int run5 = 0, longest = 0;
 
 	cg_split_reset(&s);
@@ -140,7 +140,7 @@ static void test_split_interleave(void)
 static void test_split_eligible(void)
 {
 	static const uint16_t w[CG_MAX_LINKS] = { 1, 1, 1, 0, 1 };
-	struct cg_split s;
+	struct cg_split s = { 0 };
 	unsigned n[CG_MAX_LINKS];
 
 	/* Link 1 is not eligible (muted, stalled or stale): it gets nothing. */
@@ -189,7 +189,7 @@ static void test_split_eligible(void)
 static void test_split_credits(void)
 {
 	static const uint16_t w[CG_MAX_LINKS] = { 3, 1, 2 };
-	struct cg_split s, fresh;
+	struct cg_split s = { 0 }, fresh = { 0 };
 
 	cg_split_reset(&s);
 	for (int k = 0; k < 5; k++)
@@ -251,7 +251,7 @@ static void test_split_credits(void)
 static void test_split_duplicate(void)
 {
 	static const uint16_t w[CG_MAX_LINKS] = { 1, 1, 1, 1 };
-	struct cg_split s, ref;
+	struct cg_split s = { 0 }, ref = { 0 };
 	uint8_t flags = CG_F_TUNHOLE;
 
 	cg_split_reset(&s);
@@ -307,7 +307,7 @@ static void test_split_dst(void)
 	/* Links 0, 1 and 4 are eligible; 3 has weight 0; 2 carries but has no
 	 * share (it is stale). */
 	const uint16_t eligible = bit(0) | bit(1) | bit(4), dup0 = bit(3), carriers = eligible | dup0 | bit(2);
-	struct cg_split s;
+	struct cg_split s = { 0 };
 	unsigned to[CG_MAX_LINKS] = { 0 }, dup = 0, n = 4500;
 
 	CHECK_EQ(cg_split_dst(-1, carriers, dup0), carriers);
@@ -388,7 +388,7 @@ static void test_split_flag(void)
 		{ CG_F_TUNHOLE, 92 },  /* a small one, marked */
 		{ 0, 40 },             /* a small one */
 	};
-	struct cg_split s;
+	struct cg_split s = { 0 };
 	unsigned flagged = 0, plain = 0;
 
 	CHECK_EQ(CG_F_SPLIT, 0x04);
@@ -447,7 +447,7 @@ static void test_split_stale(void)
 	const uint64_t now = 10300;
 	uint64_t last[3] = { 10300, 9999, 10250 }; /* link 1: 301 ms of silence */
 	uint16_t eligible = 0;
-	struct cg_split s;
+	struct cg_split s = { 0 };
 
 	CHECK(cg_split_stale(0, 5000, iv)); /* never heard from */
 	CHECK(cg_split_stale(0, 0, iv));
@@ -880,7 +880,7 @@ static void test_split_spread(void)
 	static const uint16_t w1[CG_MAX_LINKS] = { 1, 1, 1, 1 };
 	struct cg_hlink h[CG_MAX_LINKS];
 	struct cg_spread sp;
-	struct cg_split s;
+	struct cg_split s = { 0 };
 	uint64_t t = 1000000;
 	uint16_t ch, out;
 	unsigned count[CG_MAX_LINKS];

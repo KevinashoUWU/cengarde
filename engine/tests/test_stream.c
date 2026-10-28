@@ -141,9 +141,9 @@ static void test_renege(void)
 	struct cg_st_tx t;
 	struct cg_st_ack a;
 	struct cg_st_ackres r;
-	uint32_t idx, len;
-	uint64_t off;
-	int fin;
+	uint32_t idx = 0, len = 0;
+	uint64_t off = 0;
+	int fin = 0;
 
 	cg_st_tx_init(&t, seg, 16, 10000);
 	t.tail = 3000;
