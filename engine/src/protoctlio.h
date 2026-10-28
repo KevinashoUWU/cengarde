@@ -37,6 +37,7 @@ struct cg_pctl_cfg {
 	uint32_t backlog_ms; /* what a stream holds unsent or unwritten, in time at its rate */
 	uint32_t dead_s;     /* a stream without progress this long, with something pending: reset */
 	uint32_t reo_ms;     /* RACK's window beyond min_rtt / 4: the tunnel's repairs come first */
+	int nack;            /* the tunnel's NACK of a DATA message is a loss (1) or a hint RACK decides on (0) */
 	uint32_t code_ms;    /* the tunnel's code horizon for what this end sends (rescue_code_ms with fec; 0: no code):
 			      * how far duplicates may widen that window (streamcc.h's cg_scc_reo_cap) */
 	uint32_t peers;      /* the server: sessions it may have (their pacers) */

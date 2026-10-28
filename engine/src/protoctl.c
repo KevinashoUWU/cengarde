@@ -168,6 +168,7 @@ struct cg_pctl {
 	uint64_t retx_by[CG_ST_BY_N]; /* segments sent again, by why they were lost (RACK, the timer, a NACK) */
 	uint64_t nack[CG_ST_NACK_N];  /* the rescue's NACKs of DATA, by what they did (cg_st_tx_nack) */
 	uint64_t nack_noflow, nack_ack; /* NACKs of a stream gone; of an ACK (a fresh one sent instead) */
+	uint64_t nack_hint;             /* NACKs of DATA left to RACK (protocontroller_nack no) */
 	uint64_t nack_link[CG_PCTL_LINKS + 1]; /* segments a NACK found lost, by the link they went on (the last: copied or not known) */
 	uint64_t a_opened, a_bytes_in, a_bytes_out; /* variant A: relays opened, bytes read and written */
 	uint8_t cc_auto;      /* protocontroller_cc auto */
@@ -1206,6 +1207,14 @@ int cg_pctl_nack(struct cg_pctl *p, uint32_t peer, uint32_t sid, const uint8_t *
 		return k;
 	}
 	(void)peer;
+	/* protocontroller_nack no (story 029): in the field the tunnel's
+	 * losses all came late (51 of 51 on the testnet NUC, 2026-10-28), so a
+	 * NACK of DATA is only a hint; RACK, whose window the duplicates
+	 * widen, decides. The tunnel stops waiting for the gap all the same. */
+	if (!p->cfg.nack) {
+		p->nack_hint++;
+		return k;
+	}
 	v = cg_st_tx_nack(&f->tx, off, ts, &bytes, &lq);
 	p->nack[v]++;
 	if (v != CG_ST_NACK_LOST)
@@ -1917,6 +1926,7 @@ void cg_pctl_json(const struct cg_pctl *p, struct cg_json *j)
 	cg_json_u64(j, "unknown", p->nack[CG_ST_NACK_UNKNOWN]);
 	cg_json_u64(j, "no_stream", p->nack_noflow);
 	cg_json_u64(j, "acks", p->nack_ack);
+	cg_json_u64(j, "hints", p->nack_hint);
 	/* the segments found lost, by the link they went on (the server: the
 	 * path index, every session together); then copied or not known */
 	cg_json_arr(j, "lost_by_link");

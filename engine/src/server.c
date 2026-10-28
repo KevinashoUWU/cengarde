@@ -4630,6 +4630,7 @@ int cg_server_run(struct cg_config *cfg, const struct cg_run *run)
 					 .backlog_ms = cfg->protocontroller_backlog_ms,
 					 .dead_s = cfg->protocontroller_dead_s,
 					 .reo_ms = cfg->protocontroller_reo_ms,
+					 .nack = cfg->protocontroller_nack,
 					 /* the download's code: the spatial parity or FEC v3 */
 					 .code_ms = cfg->fec ? cfg->rescue_code_ms : 0,
 					 .peers = s->cap };
