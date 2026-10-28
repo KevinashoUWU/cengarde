@@ -122,6 +122,7 @@ static void test_lc_queue(void)
 
 	cg_lc_init(&c);
 	CHECK_EQ(c.target_us, CG_LC_TARGET_US);
+	c.bits = CG_LC_QMODE | CG_LC_SAT | CG_LC_S32 | CG_LC_QETA; /* every use of the queue */
 	c.target_us = 60 * MS;
 	CHECK_EQ(cg_lc_qstate(&c), 0); /* not known */
 	cg_lc_owd(&c, t, 1000000 + 20 * MS); /* two clocks apart: only changes count */

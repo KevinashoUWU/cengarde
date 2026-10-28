@@ -216,7 +216,7 @@ Secciones: «global» es la parte sin sección; `[link NOMBRE]` es del cliente; 
 | Perilla | Por omisión | Pieza | Historia |
 | --- | --- | --- | --- |
 | [[Mapa/Perillas/link_cc\|link_cc]] | `no` | [[Ritmo por enlace (linkcc.h)]], [[Subflujo (subflow.h)]], [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[029-mpgrit]] |
-| [[Mapa/Perillas/link_cc_bits\|link_cc_bits]] | `15` | [[Ritmo por enlace (linkcc.h)]] | [[029-mpgrit]] |
+| [[Mapa/Perillas/link_cc_bits\|link_cc_bits]] | `10` | [[Ritmo por enlace (linkcc.h)]] | [[029-mpgrit]] |
 | [[Mapa/Perillas/protocontroller_nack\|protocontroller_nack]] | `yes` | [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[029-mpgrit]] |
 | [[Mapa/Perillas/protocontroller_offer\|protocontroller_offer]] | `yes` | [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[029-mpgrit]] |
 | [[Mapa/Perillas/subflow\|subflow]] | `no` | [[Subflujo (subflow.h)]], [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[029-mpgrit]] |

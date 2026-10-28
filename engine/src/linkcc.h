@@ -60,13 +60,17 @@
 
 enum { CG_LC_STARTUP_M = 0, CG_LC_DRAIN_M, CG_LC_PROBE_M };
 
-/* What of the queue's use is on (link_cc_bits, an experiment: the four
- * together lost 20-46 % in the lab, 2026-10-28) */
+/* What of the queue's use is on (link_cc_bits, an experiment; the lab,
+ * 2026-10-28, n = 2, 7 cases x 2 ways, against none: QMODE and S32 +8.7 %
+ * geometric mean and 3-10 times fewer losses per link; QETA -20 to -53 %,
+ * its delay is the newest acknowledged packet's and leaves out what went
+ * since, so the split overfilled the links; SAT a little worse in netem,
+ * which has no bursts of grants: the field decides it) */
 #define CG_LC_QETA 1u   /* the split's queue: its delay at the pacing rate (else in flight over bw x rtprop) */
 #define CG_LC_QMODE 2u  /* STARTUP ends, DRAIN ends and PROBE drains or probes by the queue */
 #define CG_LC_SAT 4u    /* what a queued link delivered caps bw at 5/4 */
 #define CG_LC_S32 8u    /* STARTUP at 3/2 (else 2) */
-#define CG_LC_ALL 15u
+#define CG_LC_BITS (CG_LC_QMODE | CG_LC_S32) /* the default */
 
 struct cg_lc {
 	uint64_t bw;             /* the estimate, 0: none yet */
@@ -93,7 +97,7 @@ static inline void cg_lc_init(struct cg_lc *c)
 {
 	memset(c, 0, sizeof(*c));
 	c->target_us = CG_LC_TARGET_US;
-	c->bits = CG_LC_ALL;
+	c->bits = CG_LC_BITS;
 }
 
 /* The estimate, bytes/s: the window's largest sample, at most 5/4 of what
