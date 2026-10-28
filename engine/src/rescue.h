@@ -30,7 +30,9 @@
  * the receiver. The receiver asked for it (a NACK): sure it lacks it, but
  * maybe only because it is late on another link (in the field all the
  * tunnel gave up came later). Both: a certain loss. Done: handed over as
- * one, not again.
+ * one, not again. The link's word alone where a code may rebuild it: a
+ * suspect, lost if the code has not rebuilt it by the repair horizon (the
+ * receiver's NACK may never come: it waits for the code, then gives up).
  *
  * Pure: no clock, no I/O, no allocation (the caller owns the memory).
  *
@@ -49,6 +51,7 @@
 #define CG_RESC_EV_LINK 1u  /* its one link lost it (an SFLOSS) */
 #define CG_RESC_EV_ASKED 2u /* the receiver asked for it (a NACK) */
 #define CG_RESC_EV_DONE 4u  /* handed over as a certain loss */
+#define CG_RESC_EV_SUSPECT 8u /* handed over as a suspect: lost unless the code rebuilds it in time */
 
 _Static_assert(!(CG_RESC_IDX & (CG_RESC_IDX - 1)), "CG_RESC_IDX is a power of two");
 
@@ -122,16 +125,21 @@ static inline unsigned cg_resc_ev(struct cg_resc_ring *r, const uint32_t *idx, u
 /* How sure a loss is, from its evidence ev (CG_RESC_EV_*): coded, a code
  * (or a copy the ring does not know of) may rebuild what the link lost;
  * asked_is_lost, the receiver's ask alone is taken as a loss
- * (protocontroller_nack yes). CG_RESC_UNSURE also when it was handed over
- * already. */
-enum { CG_RESC_UNSURE, CG_RESC_SURE_ASKED, CG_RESC_SURE_LINK };
+ * (protocontroller_nack yes). CG_RESC_SURE_LATER: the link's word alone
+ * with a code, a suspect (once). CG_RESC_UNSURE also when it was handed
+ * over already. */
+enum { CG_RESC_UNSURE, CG_RESC_SURE_ASKED, CG_RESC_SURE_LINK, CG_RESC_SURE_LATER };
 
 static inline int cg_resc_sure(unsigned ev, int coded, int asked_is_lost)
 {
 	if (ev & CG_RESC_EV_DONE)
 		return CG_RESC_UNSURE;
-	if ((ev & CG_RESC_EV_LINK) && (!coded || (ev & CG_RESC_EV_ASKED)))
-		return CG_RESC_SURE_LINK;
+	if (ev & CG_RESC_EV_LINK) {
+		if (!coded || (ev & CG_RESC_EV_ASKED))
+			return CG_RESC_SURE_LINK;
+		if (!(ev & CG_RESC_EV_SUSPECT))
+			return CG_RESC_SURE_LATER;
+	}
 	return (ev & CG_RESC_EV_ASKED) && asked_is_lost ? CG_RESC_SURE_ASKED : CG_RESC_UNSURE;
 }
 

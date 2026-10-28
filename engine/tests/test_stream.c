@@ -276,6 +276,56 @@ static void test_tx(void)
 
 /* Two ends through a channel that loses, duplicates and reorders: every
  * byte arrives, in order, and the FIN; the sender never gives up. */
+/* A suspect (cg_st_tx_suspect, story 029): its link lost it, a code may
+ * still rebuild it. Lost at its deadline if still SENT; delivered first
+ * (SACKed), never; sent again, its deadline goes. */
+static void test_suspect(void)
+{
+	struct cg_st_seg seg[16];
+	struct cg_st_tx t;
+	struct cg_st_ack a;
+	struct cg_st_ackres r;
+	uint32_t idx = 0, len = 0;
+	uint64_t off = 0, next = 0, lq = 0;
+	int fin = 0;
+
+	cg_st_tx_init(&t, seg, 16, 1u << 20);
+	t.tail = 4000;
+	for (int i = 0; i < 4; i++) {
+		CHECK(cg_st_tx_next(&t, 1000, &idx, &off, &len, &fin));
+		cg_st_tx_sent(&t, idx, off, len, fin, 1000 * (uint64_t)(i + 1), 0, 0, 0, 0, 0, 0);
+	}
+	/* 1 and 2 suspects (deadlines 50 and 40 ms); not sent there, stale */
+	CHECK_EQ(cg_st_tx_suspect(&t, 1000, 2000, 50000), CG_ST_NACK_SUSPECT);
+	CHECK_EQ(cg_st_tx_suspect(&t, 2000, 3000, 40000), CG_ST_NACK_SUSPECT);
+	CHECK_EQ(cg_st_tx_suspect(&t, 2500, 3000, 40000), CG_ST_NACK_UNKNOWN);
+	CHECK_EQ(cg_st_tx_suspect(&t, 3000, 1, 40000), CG_ST_NACK_STALE);
+	CHECK_EQ(t.nlost, 0);
+	/* 2 is delivered (rebuilt by the code): SACKed, no longer a suspect */
+	memset(&a, 0, sizeof(a));
+	a.aseq = 1;
+	a.edge = t.edge;
+	a.n = 1;
+	a.s[0] = 2000;
+	a.e[0] = 3000;
+	cg_st_tx_ack(&t, &a, &r);
+	CHECK_EQ(cg_st_tx_suspects(&t, 39000, &next, &lq), 0);
+	CHECK_EQ(next, 50000);
+	CHECK_EQ(cg_st_tx_suspects(&t, 45000, &next, &lq), 0);
+	/* 1 at its deadline: lost, by the NACK (the tunnel's word) */
+	CHECK_EQ(cg_st_tx_suspects(&t, 50000, &next, &lq), 1000);
+	CHECK_EQ(next, 0);
+	CHECK_EQ(t.nlost, 1);
+	CHECK_EQ(cg_st_tx_seg(&t, 1)->by, CG_ST_BY_NACK);
+	CHECK_EQ(cg_st_tx_suspect(&t, 1000, 2000, 90000), CG_ST_NACK_PENDING);
+	/* sent again: a new suspect only for the new copy */
+	CHECK(cg_st_tx_next(&t, 1000, &idx, &off, &len, &fin));
+	CHECK_EQ(idx, 1);
+	cg_st_tx_sent(&t, idx, off, len, fin, 60000, 0, 0, 0, 0, 0, 0);
+	CHECK_EQ(cg_st_tx_seg(&t, 1)->sus_us, 0);
+	CHECK_EQ(cg_st_tx_suspects(&t, 1000000, &next, &lq), 0);
+}
+
 /* The tunnel's NACK of a DATA (cg_st_tx_nack): a loss only for the
  * segment's latest transmission, a no-op for what was delivered, sent
  * again since or lost already; its retransmission counted as the NACK's. */
@@ -561,5 +611,6 @@ void test_stream(void)
 	test_rx();
 	test_tx();
 	test_nack();
+	test_suspect();
 	test_e2e();
 }

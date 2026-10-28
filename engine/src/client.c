@@ -170,6 +170,7 @@ struct link {
 	 * on it alone (to its stream), copied, not kept, not GRIT's, not sure
 	 * yet (a code may have rebuilt it: rescue.h's cg_resc_sure) */
 	uint64_t sf_grit, sf_copied, sf_unkept, sf_other, sf_unsure;
+	uint64_t sf_suspect; /* of them, handed over as suspects (a code may rebuild them) */
 	uint8_t pump;      /* its pump (off and on), once it had a socket: sticky */
 	uint8_t has_pump;
 	uint64_t open_failed; /* sockets its pump could not poll */
@@ -2965,7 +2966,7 @@ static int up_full(const struct client *c, unsigned i)
 _Static_assert(CG_PCTL_LINKS == CG_MAX_LINKS && CG_PCTL_NOLINK == CG_RESC_NOLINK,
 	       "cg_pctl_nack takes the rescue ring's link as it is");
 _Static_assert((int)CG_PCTL_UNSURE == (int)CG_RESC_UNSURE && (int)CG_PCTL_SURE_ASKED == (int)CG_RESC_SURE_ASKED &&
-		       (int)CG_PCTL_SURE_LINK == (int)CG_RESC_SURE_LINK,
+		       (int)CG_PCTL_SURE_LINK == (int)CG_RESC_SURE_LINK && (int)CG_PCTL_SURE_LATER == (int)CG_RESC_SURE_LATER,
 	       "cg_pctl_nack takes cg_resc_sure as it is");
 
 /* Whether the tunnel's NACK alone is a loss to GRIT (protocontroller_nack):
@@ -3158,11 +3159,16 @@ static void on_sfloss(struct client *c, const uint8_t *payload, size_t plen, uin
 		}
 		ev = cg_resc_ev(&c->resc, c->resc_idx, c->txs.session, seq, CG_RESC_EV_LINK);
 		sure = cg_resc_sure(ev, up_coded(c), asked_is_lost(c->cfg));
-		if (!sure) { /* handed over already, or waits for the server's ask */
-			l->sf_unsure += !(ev & CG_RESC_EV_DONE);
+		if (!sure) { /* handed over already, or a suspect waiting */
+			l->sf_unsure += !(ev & (CG_RESC_EV_DONE | CG_RESC_EV_SUSPECT));
 			continue;
 		}
 		k = cg_pctl_nack(c->pctl, 0, 0, e + CG_HDR_LEN, (size_t)len - CG_HDR_LEN, went, sure);
+		if (sure == CG_RESC_SURE_LATER) { /* a code may still rebuild it: GRIT waits for it */
+			cg_resc_ev(&c->resc, c->resc_idx, c->txs.session, seq, CG_RESC_EV_SUSPECT);
+			l->sf_suspect += k == CG_PCTL_NACK_DATA;
+			continue;
+		}
 		if (k == CG_PCTL_NACK_DATA || k == CG_PCTL_NACK_ACK) {
 			cg_resc_ev(&c->resc, c->resc_idx, c->txs.session, seq, CG_RESC_EV_DONE);
 			l->sf_grit++;
@@ -4889,6 +4895,7 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 			cg_json_u64(j, "not_kept", l->sf_unkept);
 			cg_json_u64(j, "other", l->sf_other);
 			cg_json_u64(j, "unsure", l->sf_unsure);
+			cg_json_u64(j, "suspects", l->sf_suspect);
 			cg_json_end(j, '}');
 			cg_json_end(j, '}');
 		}

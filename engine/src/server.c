@@ -282,6 +282,7 @@ struct sfpath {
 	struct cg_sf_tx tx;
 	struct cg_sf_rx rx;
 	uint64_t grit, copied, unkept, other, unsure;
+	uint64_t suspect; /* of them, handed over as suspects (a code may rebuild them) */
 };
 
 /* A client: a [client NAME] section, or the global key of a server with one
@@ -2077,12 +2078,17 @@ static void on_sfloss(struct server *s, struct session *S, const uint8_t *payloa
 		}
 		ev = cg_resc_ev(&s->resc, S->resc_idx, S->id, seq, CG_RESC_EV_LINK);
 		sure = cg_resc_sure(ev, down_coded(s, S), s->cfg->protocontroller_nack && !s->cfg->subflow);
-		if (!sure) { /* handed over already, or waits for the client's ask */
-			F->unsure += !(ev & CG_RESC_EV_DONE);
+		if (!sure) { /* handed over already, or a suspect waiting */
+			F->unsure += !(ev & (CG_RESC_EV_DONE | CG_RESC_EV_SUSPECT));
 			continue;
 		}
 		k = cg_pctl_nack(s->pctl, (uint32_t)(S - s->s), S->id, e + CG_HDR_LEN, (size_t)len - CG_HDR_LEN, went,
 				 sure);
+		if (sure == CG_RESC_SURE_LATER) { /* a code may still rebuild it: GRIT waits for it */
+			cg_resc_ev(&s->resc, S->resc_idx, S->id, seq, CG_RESC_EV_SUSPECT);
+			F->suspect += k == CG_PCTL_NACK_DATA;
+			continue;
+		}
 		if (k == CG_PCTL_NACK_DATA || k == CG_PCTL_NACK_ACK) {
 			cg_resc_ev(&s->resc, S->resc_idx, S->id, seq, CG_RESC_EV_DONE);
 			F->grit++;
@@ -3968,6 +3974,7 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 				cg_json_u64(j, "not_kept", F->unkept);
 				cg_json_u64(j, "other", F->other);
 				cg_json_u64(j, "unsure", F->unsure);
+				cg_json_u64(j, "suspects", F->suspect);
 				cg_json_end(j, '}');
 				cg_json_end(j, '}');
 			}

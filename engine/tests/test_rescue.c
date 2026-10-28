@@ -90,8 +90,9 @@ void test_rescue(void)
 	 * never twice. */
 	CHECK_EQ(cg_resc_sure(0, 0, 1), CG_RESC_UNSURE);
 	CHECK_EQ(cg_resc_sure(CG_RESC_EV_LINK, 0, 0), CG_RESC_SURE_LINK);
-	CHECK_EQ(cg_resc_sure(CG_RESC_EV_LINK, 1, 0), CG_RESC_UNSURE);
-	CHECK_EQ(cg_resc_sure(CG_RESC_EV_LINK, 1, 1), CG_RESC_UNSURE);
+	CHECK_EQ(cg_resc_sure(CG_RESC_EV_LINK, 1, 0), CG_RESC_SURE_LATER); /* a suspect, once */
+	CHECK_EQ(cg_resc_sure(CG_RESC_EV_LINK | CG_RESC_EV_SUSPECT, 1, 1), CG_RESC_UNSURE);
+	CHECK_EQ(cg_resc_sure(CG_RESC_EV_LINK | CG_RESC_EV_SUSPECT | CG_RESC_EV_ASKED, 1, 0), CG_RESC_SURE_LINK);
 	CHECK_EQ(cg_resc_sure(CG_RESC_EV_ASKED, 1, 0), CG_RESC_UNSURE);
 	CHECK_EQ(cg_resc_sure(CG_RESC_EV_ASKED, 0, 1), CG_RESC_SURE_ASKED);
 	CHECK_EQ(cg_resc_sure(CG_RESC_EV_LINK | CG_RESC_EV_ASKED, 1, 0), CG_RESC_SURE_LINK);

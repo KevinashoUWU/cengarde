@@ -105,8 +105,10 @@ void cg_pctl_rx(struct cg_pctl *p, uint32_t peer, uint32_t sid, const uint8_t *m
  * was lost; CG_PCTL_UNSURE, it is only a hint, and RACK decides (in the
  * field what the tunnel gave up came later); CG_PCTL_SURE_ASKED, the
  * tunnel's NACK alone (protocontroller_nack yes); CG_PCTL_SURE_LINK, its
- * one link lost it as well (subflow.h). */
-enum { CG_PCTL_UNSURE, CG_PCTL_SURE_ASKED, CG_PCTL_SURE_LINK };
+ * one link lost it as well (subflow.h); CG_PCTL_SURE_LATER, its link lost
+ * it but a code may rebuild it: a suspect, lost at the engine's repair
+ * horizon (and a round trip) unless delivered first. */
+enum { CG_PCTL_UNSURE, CG_PCTL_SURE_ASKED, CG_PCTL_SURE_LINK, CG_PCTL_SURE_LATER };
 #define CG_PCTL_LINKS 16      /* links counted (CG_MAX_LINKS) */
 #define CG_PCTL_NOLINK 0xffu  /* as rescue.h's CG_RESC_NOLINK */
 int cg_pctl_nack(struct cg_pctl *p, uint32_t peer, uint32_t sid, const uint8_t *msg, size_t len, uint8_t link,

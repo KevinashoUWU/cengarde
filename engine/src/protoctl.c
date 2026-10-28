@@ -99,6 +99,7 @@ struct flow {
 	uint64_t consumed; /* received bytes written to the socket */
 	uint64_t adv_edge; /* the edge of the last ACK sent */
 	uint64_t open_due, rto_at, progress_t, created_t;
+	uint64_t sus_at; /* its nearest suspect's deadline (cg_st_tx_suspect), 0: none */
 	uint64_t s_bytes, s_t, s_rate; /* bytes delivered to the peer, a window's start, the rate */
 	uint64_t w_bytes, w_t, w_rate; /* bytes written to the socket, idem */
 	uint64_t up, down;             /* bytes read from and written to the socket */
@@ -171,6 +172,7 @@ struct cg_pctl {
 	uint64_t nack_hint;             /* NACKs of DATA left to RACK (protocontroller_nack no) */
 	int rack_off;                   /* RACK over the mix off: the subflows find the losses (cg_pctl_rack) */
 	uint64_t nack_sf;               /* of the losses, the ones their link's subflow found too (subflow.h) */
+	uint64_t sus_lost;              /* bytes of suspects their deadline found still undelivered */
 	uint64_t nack_link[CG_PCTL_LINKS + 1]; /* segments a NACK found lost, by the link they went on (the last: copied or not known) */
 	uint64_t a_opened, a_bytes_in, a_bytes_out; /* variant A: relays opened, bytes read and written */
 	uint8_t cc_auto;      /* protocontroller_cc auto */
@@ -1218,6 +1220,22 @@ int cg_pctl_nack(struct cg_pctl *p, uint32_t peer, uint32_t sid, const uint8_t *
 		p->nack_hint++;
 		return k;
 	}
+	/* Its link lost it, a code may still rebuild it: a suspect until the
+	 * engine's repair horizon and a round trip, lost then unless its
+	 * delivery came back (the receiver's NACK may never come). */
+	if (sure == CG_PCTL_SURE_LATER) {
+		uint64_t at;
+
+		r = peer_of(p, f);
+		at = cg_now_us() + r->horizon_us + r->cc.srtt;
+		v = cg_st_tx_suspect(&f->tx, off, ts, at);
+		p->nack[v]++;
+		if (v == CG_ST_NACK_SUSPECT && (!f->sus_at || at < f->sus_at)) {
+			f->sus_at = at;
+			due(p, at);
+		}
+		return k;
+	}
 	v = cg_st_tx_nack(&f->tx, off, ts, &bytes, &lq);
 	p->nack[v]++;
 	if (v != CG_ST_NACK_LOST)
@@ -1595,6 +1613,17 @@ static int timers(struct cg_pctl *p, struct flow *f, uint64_t now)
 		flow_reset(p, f, CG_PCTL_R_TIMEOUT);
 		return -1;
 	}
+	if (f->sus_at && now >= f->sus_at) {
+		uint64_t lq = 0, lost = cg_st_tx_suspects(&f->tx, now, &f->sus_at, &lq);
+
+		if (lost) {
+			p->sus_lost += lost;
+			r->cc.inflight -= r->cc.inflight >= lost ? lost : r->cc.inflight;
+			cg_scc_lost(&r->cc, lost - lq);
+			rto_arm(p, f, r);
+			due(p, now); /* it goes again at once */
+		}
+	}
 	if (f->rto_at && now >= f->rto_at) {
 		uint64_t rn = f->tx.reneged, lq = 0,
 			 lost = cg_st_tx_rto(&f->tx, now,
@@ -1660,6 +1689,7 @@ void cg_pctl_service(struct cg_pctl *p)
 		f->s_rate = ewma_rate(&f->s_bytes, &f->s_t, f->s_rate, now);
 		f->w_rate = ewma_rate(&f->w_bytes, &f->w_t, f->w_rate, now);
 		due(p, f->rto_at);
+		due(p, f->sus_at);
 		if (!p->cfg.server && f->state == F_OPEN)
 			due(p, f->open_due);
 		i++;
@@ -1936,6 +1966,10 @@ void cg_pctl_json(const struct cg_pctl *p, struct cg_json *j)
 	cg_json_u64(j, "stale", p->nack[CG_ST_NACK_STALE]);
 	cg_json_u64(j, "pending", p->nack[CG_ST_NACK_PENDING]);
 	cg_json_u64(j, "unknown", p->nack[CG_ST_NACK_UNKNOWN]);
+	/* a link's loss a code may still rebuild: suspects, and the bytes of
+	 * them their deadline found undelivered (story 029) */
+	cg_json_u64(j, "suspects", p->nack[CG_ST_NACK_SUSPECT]);
+	cg_json_u64(j, "suspect_lost_bytes", p->sus_lost);
 	cg_json_u64(j, "no_stream", p->nack_noflow);
 	cg_json_u64(j, "acks", p->nack_ack);
 	cg_json_u64(j, "hints", p->nack_hint);

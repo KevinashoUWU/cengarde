@@ -411,6 +411,7 @@ struct cg_st_seg {
 	uint8_t fin, st, tx, app;
 	uint8_t q;              /* sent while the path showed a queue (streamcc.h's cong) */
 	uint8_t by;             /* LOST: why (CG_ST_BY_*) */
+	uint64_t sus_us;        /* a suspect's deadline (cg_st_tx_suspect), 0: none */
 };
 
 /* A segment sent again a second time or more goes as a copy (a priority
@@ -553,6 +554,7 @@ static inline uint32_t cg_st_tx_sent(struct cg_st_tx *t, uint32_t idx, uint64_t 
 	if (s->tx < 255)
 		s->tx++;
 	s->sent_us = now;
+	s->sus_us = 0;
 	s->dl = dl;
 	s->dla = dla;
 	s->dl_us = dl_us;
@@ -747,6 +749,7 @@ enum {
 	CG_ST_NACK_STALE,     /* sent again since: the DATA asked for is an older copy, a newer is in flight */
 	CG_ST_NACK_PENDING,   /* LOST already (RACK or the timer), waiting to go again */
 	CG_ST_NACK_UNKNOWN,   /* no segment starts there (not sent yet, or another framing) */
+	CG_ST_NACK_SUSPECT,   /* a suspect now (cg_st_tx_suspect): lost at its deadline unless delivered */
 	CG_ST_NACK_N
 };
 
@@ -781,6 +784,58 @@ static inline int cg_st_tx_nack(struct cg_st_tx *t, uint32_t off32, uint32_t ts3
 	*bytes = cg_st_tx_lose(t, s, i, lq, CG_ST_BY_NACK);
 	t->nack_lost += *bytes;
 	return CG_ST_NACK_LOST;
+}
+
+/* The engine's subflow says the DATA that carried the segment at off32
+ * (sent at ts32) was lost on its link, but a code may still rebuild it at
+ * the receiver (story 029): the segment is a suspect until due_us, lost
+ * then unless its delivery was acknowledged before (cg_st_tx_suspects);
+ * the receiver's own NACK makes it lost at once (cg_st_tx_nack). Returns
+ * CG_ST_NACK_* as cg_st_tx_nack, SUSPECT instead of LOST. */
+static inline int cg_st_tx_suspect(struct cg_st_tx *t, uint32_t off32, uint32_t ts32, uint64_t due_us)
+{
+	uint64_t off = cg_st_unwrap(t->una, off32);
+	uint32_t i;
+	struct cg_st_seg *s;
+
+	if (off < t->una)
+		return CG_ST_NACK_DELIVERED;
+	i = cg_st_tx_find(t, off);
+	if (i >= t->n || (s = cg_st_tx_seg(t, i))->off != off)
+		return CG_ST_NACK_UNKNOWN;
+	if (s->st == CG_ST_SACKED)
+		return CG_ST_NACK_DELIVERED;
+	if (s->st == CG_ST_LOST)
+		return CG_ST_NACK_PENDING;
+	if ((uint32_t)s->sent_us != ts32)
+		return CG_ST_NACK_STALE;
+	if (!s->sus_us || due_us < s->sus_us)
+		s->sus_us = due_us ? due_us : 1;
+	return CG_ST_NACK_SUSPECT;
+}
+
+/* The suspects whose deadline passed at now, still SENT: lost (by the NACK,
+ * the tunnel's word). *next: the nearest deadline left, 0: none. Returns
+ * the bytes marked (*lq as cg_st_tx_rack's). */
+static inline uint64_t cg_st_tx_suspects(struct cg_st_tx *t, uint64_t now, uint64_t *next, uint64_t *lq)
+{
+	uint64_t lost = 0;
+
+	*next = 0;
+	for (uint32_t i = 0; i < t->n; i++) {
+		struct cg_st_seg *s = cg_st_tx_seg(t, i);
+
+		if (s->st != CG_ST_SENT || !s->sus_us)
+			continue;
+		if (s->sus_us <= now) {
+			s->sus_us = 0;
+			lost += cg_st_tx_lose(t, s, i, lq, CG_ST_BY_NACK);
+		} else if (!*next || s->sus_us < *next) {
+			*next = s->sus_us;
+		}
+	}
+	t->nack_lost += lost;
+	return lost;
 }
 
 /* Bytes the stream holds in flight or lost (what the timer guards). */
