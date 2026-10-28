@@ -207,6 +207,28 @@ Rama `claude/mpgrit-step1` (`741d267`, `7fba66d`); nota del mapa
   ya nunca es una pérdida (`protocontroller_nack` deja de contar). El caudal
   no lo frena eso: GRIT deja el ping en reposo (p50 38 ms), no llena los
   módems; OMR sí (p50 56–61, p95 hasta 385). Es el paso 2.
+- **El búfer de cada flujo** (terreno, `field-u3` y `field-u4`): sin
+  reenvíos falsos, lo que frenaba era el búfer de 1 MB: en la VPS quedaba
+  lleno (`held_tx` 1 048 576), lo entregado detrás de un hueco lo ocupa
+  hasta que el hueco se llena. Con `subflow`:
+
+  | búfer | `field-u3` | `field-u4` (sospechosos) | por el temporizador |
+  | --- | --- | --- | --- |
+  | 1 MB | 43,9 / 56,4 | 50,5 / 50,6 | 0–74 |
+  | 2 MB | 121,5 / 95,3 | 91,3 / 131,3 | 346–3028 |
+  | 4 MB | 57,6 / 65,1 | 90,2 / 79,6 | 4579–5978 |
+  | sin protocontrolador | 101,0 / 123,4 | 106,7 / 99,3 | — |
+
+  Con 2 MB GRIT alcanza al túnel sin protocontrolador y una vez lo pasa
+  (131 contra 99), con el ping en reposo; con más búfer el temporizador
+  vuelve. Dos causas: (1) con la FEC v3 una pérdida del enlace esperaba el
+  NACK del receptor, que puede no llegar; ahora es un **sospechoso**
+  (`CG_RESC_SURE_LATER`, `cg_st_tx_suspect`), perdido al vencer el
+  horizonte de reparación si su entrega no volvió (`5782e61`; el
+  temporizador siguió alto en `field-u4`); (2) un ACK lleva 8 rangos, el
+  más nuevo y los 7 más bajos: con más huecos, los del medio nunca se
+  decían y el temporizador los reenviaba; ahora van por turno
+  (`315f724`, en el laboratorio `rot1`).
 - **Hueco conocido:** lo copiado (redundancia) no tiene un enlace que responda
   por su pérdida; sin el RACK de la mezcla, lo recupera el NACK (con
   `protocontroller_nack yes`) o el temporizador.
