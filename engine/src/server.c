@@ -895,6 +895,8 @@ static void queue_reply(struct server *s, int *nr, struct session *S, unsigned l
 		cg_probe_act_write(r + CG_HDR_LEN, &pa);
 	}
 	cg_hdr_write(r, &h, C->key + CG_SIPHASH_KEY_LEN, r + CG_HDR_LEN, plen);
+	/* how far the path's subflow went: the client sees a lost tail (subflow.h) */
+	cg_hdr_set_sseq(r, s->cfg->subflow && S->sf[link] ? S->sf[link]->tx.next : 0);
 	s->reply_to[*nr] = P->addr;
 	s->riov[*nr].iov_base = r;
 	s->riov[*nr].iov_len = CG_HDR_LEN + plen;
@@ -2348,6 +2350,8 @@ static void listen_read(struct server *s, struct lane *ln)
 				}
 				P = path_update(s, S, h.link, from, &s->in.msg[i].msg_hdr, now_ms);
 				P->last_rx_ms = now_ms;
+				if (h.sseq && s->cfg->subflow && S->sf[h.link]) /* how far the client sent on it */
+					cg_sf_rx_sent(&S->sf[h.link]->rx, h.sseq, now32);
 				on_probe(s, S, P, h.link, &h, &pi, bond ? &pb : NULL, act ? &pa : NULL, now_ms);
 				queue_reply(s, &nr, S, h.link, &h, now32 - h.ts, bond, act, now_us);
 				/* Its trip up this path, for the reorderer's deadlines;
@@ -3951,6 +3955,7 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 				cg_json_u64(j, "copies", F->rx.dup);
 				cg_json_u64(j, "overflow", F->rx.overflow);
 				cg_json_u64(j, "resync", F->rx.resync);
+				cg_json_u64(j, "tail", F->rx.tail); /* gaps a probe opened: the end of what the path carried */
 				cg_json_ms(j, "window_ms", F->rx.reo_us / 1000);
 				cg_json_end(j, '}');
 				cg_json_obj(j, "down");
@@ -4311,8 +4316,10 @@ static void tick(struct server *s)
 		threads_sample(s, now_ms);
 	health_tick(s, now_ms);
 	pace_lanes(s);
-	if (s->pctl)
+	if (s->pctl) {
+		cg_pctl_rack(s->pctl, !s->cfg->subflow);
 		cg_pctl_tick(s->pctl);
+	}
 	if (now_ms >= s->next_sweep_ms) {
 		sweep(s, now_ms);
 		s->next_sweep_ms = now_ms + 1000;
@@ -4908,6 +4915,7 @@ int cg_server_run(struct cg_config *cfg, const struct cg_run *run)
 			cg_err("%s", err);
 			goto out;
 		}
+		cg_pctl_rack(s->pctl, !cfg->subflow); /* and at every tick: subflow reloads */
 		cg_info("protocontroller: opening the TCP connections routers ask for (variant B, and variant A's on port %u of the tunnel's address; story 025; %s toward them)",
 			cfg->protocontroller_port, cfg->protocontroller_cc[0] ? cfg->protocontroller_cc : "the kernel's congestion control");
 	}

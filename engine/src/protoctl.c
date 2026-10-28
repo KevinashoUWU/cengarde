@@ -169,6 +169,7 @@ struct cg_pctl {
 	uint64_t nack[CG_ST_NACK_N];  /* the rescue's NACKs of DATA, by what they did (cg_st_tx_nack) */
 	uint64_t nack_noflow, nack_ack; /* NACKs of a stream gone; of an ACK (a fresh one sent instead) */
 	uint64_t nack_hint;             /* NACKs of DATA left to RACK (protocontroller_nack no) */
+	int rack_off;                   /* RACK over the mix off: the subflows find the losses (cg_pctl_rack) */
 	uint64_t nack_sf;               /* of the losses, the ones their link's subflow found too (subflow.h) */
 	uint64_t nack_link[CG_PCTL_LINKS + 1]; /* segments a NACK found lost, by the link they went on (the last: copied or not known) */
 	uint64_t a_opened, a_bytes_in, a_bytes_out; /* variant A: relays opened, bytes read and written */
@@ -1176,7 +1177,7 @@ static void ack_in(struct cg_pctl *p, struct flow *f, const struct cg_pctl_msg *
 		f->backoff = 0;
 		f->s_bytes += res.freed;
 	}
-	lost = cg_st_tx_rack(&f->tx, cg_scc_reo(&r->cc, peer_reo(p, r)), &lq);
+	lost = p->rack_off ? 0 : cg_st_tx_rack(&f->tx, cg_scc_reo(&r->cc, peer_reo(p, r)), &lq);
 	if (lost) {
 		r->cc.inflight -= r->cc.inflight >= lost ? lost : r->cc.inflight;
 		cg_scc_lost(&r->cc, lost - lq);
@@ -1733,6 +1734,11 @@ static void cc_auto(struct cg_pctl *p, struct flow *f)
 		cg_warn("protocontroller: protocontroller_cc auto: bbr: %s (modprobe tcp_bbr?)", strerror(errno));
 }
 
+void cg_pctl_rack(struct cg_pctl *p, int on)
+{
+	p->rack_off = !on;
+}
+
 void cg_pctl_tick(struct cg_pctl *p)
 {
 	if (p->cc_auto)
@@ -1911,6 +1917,7 @@ void cg_pctl_json(const struct cg_pctl *p, struct cg_json *j)
 	cg_json_u64(j, "acks_rx", p->acks_rx);
 	cg_json_u64(j, "opens_tx", p->opens_tx);
 	cg_json_u64(j, "retx", p->retx);
+	cg_json_bool(j, "rack", !p->rack_off); /* RACK over the mix (off: the subflows', story 029) */
 	/* the segments sent again by why they were lost: RACK, the timer, the
 	 * tunnel's NACK (the rescue hands the loss over, story 025) */
 	cg_json_obj(j, "retx_by");

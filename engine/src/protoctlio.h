@@ -111,6 +111,11 @@ enum { CG_PCTL_UNSURE, CG_PCTL_SURE_ASKED, CG_PCTL_SURE_LINK };
 #define CG_PCTL_NOLINK 0xffu  /* as rescue.h's CG_RESC_NOLINK */
 int cg_pctl_nack(struct cg_pctl *p, uint32_t peer, uint32_t sid, const uint8_t *msg, size_t len, uint8_t link,
 		 int sure);
+/* RACK over the mix of the links: on (1, the default), or off (0) when the
+ * engine's subflows find each link's losses (subflow.h, story 029): a
+ * segment sent before the newest one delivered is not lost because it went
+ * on a slower link, and the timer stays as the backstop. */
+void cg_pctl_rack(struct cg_pctl *p, int on);
 /* After every loop pass: the sockets, the timers, the sends. */
 void cg_pctl_service(struct cg_pctl *p);
 /* The epoll timeout it needs, ms: -1 none. */

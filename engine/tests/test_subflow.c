@@ -101,6 +101,33 @@ static void test_sf_edges(void)
 	CHECK_EQ(s.resync, 0);
 }
 
+/* A probe says how far the link sent: the tail it did not deliver is lost
+ * after the window, and still a late arrival if it comes after all. */
+static void test_sf_tail(void)
+{
+	struct cg_sf_rx s;
+	uint32_t out[8];
+
+	cg_sf_rx_init(&s, 20 * MS, 300 * MS);
+	cg_sf_rx_sent(&s, 50, 0); /* nothing seen yet: nothing to say */
+	CHECK_EQ(s.tail, 0);
+	for (uint32_t q = 1; q < 10; q++)
+		cg_sf_rx_in(&s, q, q * MS);
+	cg_sf_rx_sent(&s, 10, 50 * MS); /* all came */
+	CHECK_EQ(cg_sf_rx_due_us(&s, 50 * MS), -1);
+	cg_sf_rx_sent(&s, 13, 100 * MS); /* 10, 11 and 12 went and did not come */
+	CHECK_EQ(s.tail, 3);
+	CHECK_EQ(cg_sf_rx_poll(&s, 119 * MS, out, 8), 0);
+	CHECK_EQ(cg_sf_rx_poll(&s, 120 * MS, out, 8), 3);
+	CHECK_EQ(out[0], 10);
+	CHECK_EQ(out[2], 12);
+	CHECK_EQ(cg_sf_rx_in(&s, 11, 130 * MS), CG_SF_LATE);
+	CHECK_EQ(cg_sf_rx_in(&s, 13, 131 * MS), CG_SF_NEW);
+	cg_sf_rx_sent(&s, 12, 140 * MS); /* behind: nothing */
+	cg_sf_rx_sent(&s, 14 + CG_SF_WIN, 140 * MS); /* a window ahead: nothing */
+	CHECK_EQ(s.tail, 3);
+}
+
 /* The sender numbers from 1, skips 0 when it wraps, takes back what did not
  * go out, and finds what a lost sseq carried while it remembers it. */
 static void test_sf_tx(void)
@@ -137,4 +164,5 @@ void test_subflow(void)
 	test_sf_basic();
 	test_sf_late();
 	test_sf_edges();
+	test_sf_tail();
 }

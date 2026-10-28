@@ -190,8 +190,11 @@ static inline enum cg_rxv cg_rx_entry(struct cg_rxs *r, struct cg_rxl *l, unsign
 	l->last_rx_ms = now_ms;
 	if (now_ms > r->newest_ms)
 		r->newest_ms = now_ms;
-	if (h->type == CG_T_PROBE_REPLY)
+	if (h->type == CG_T_PROBE_REPLY) {
+		if (r->subflow && h->sseq) /* how far the server sent on this link */
+			cg_sf_rx_sent(&l->sf, h->sseq, now32);
 		return CG_RXV_REPLY;
+	}
 	if (h->type == CG_T_NACK)
 		return CG_RXV_NACK;
 	if (h->type == CG_T_FEC)

@@ -54,6 +54,7 @@ struct cg_sf_rx {
 	uint32_t reo_us;         /* the window: a gap this old behind a later arrival is lost */
 	uint32_t floor_us, cap_us;
 	uint64_t got, lost, late, fill, dup, overflow, resync;
+	uint64_t tail; /* gaps a probe opened (cg_sf_rx_sent) */
 };
 
 static inline void cg_sf_rx_init(struct cg_sf_rx *s, uint32_t floor_us, uint32_t cap_us)
@@ -123,6 +124,29 @@ static inline enum cg_sf_in cg_sf_rx_in(struct cg_sf_rx *s, uint32_t q, uint32_t
 	s->got++;
 	s->fill++;
 	return CG_SF_FILL;
+}
+
+/* A probe on the link said every sseq below top went before it (the link
+ * keeps order; a probe goes on the same socket as the DATA): what of them
+ * has not come is a gap from now. A loss at the end of what the link
+ * carried shows no later DATA; this is its tail probe. A top a window or
+ * more ahead says nothing. */
+static inline void cg_sf_rx_sent(struct cg_sf_rx *s, uint32_t top, uint32_t now)
+{
+	int32_t d = (int32_t)(top - s->next);
+
+	if (!s->started || d <= 0 || d >= (int32_t)CG_SF_WIN)
+		return;
+	while ((uint32_t)(top - 1 - s->base) >= CG_SF_WIN)
+		cg_sf_rx_slide(s);
+	if ((int32_t)(s->lo - s->base) < 0)
+		s->lo = s->base;
+	for (uint32_t g = s->next; g != top; g++) {
+		s->st[g % CG_SF_WIN] = g ? CG_SF_GAP : CG_SF_GOT;
+		s->seen[g % CG_SF_WIN] = now;
+	}
+	s->next = top;
+	s->tail += (uint32_t)d;
 }
 
 /* The gaps that are lost at now: a later sseq of this link came more than

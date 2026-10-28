@@ -4103,6 +4103,8 @@ static void send_probe(struct client *c, struct link *l, uint64_t now_us, uint32
 	cg_probe_bond_write(pkt + CG_HDR_LEN, &pb);
 	cg_probe_act_write(pkt + CG_HDR_LEN, &pa);
 	cg_up_header(&c->txs, pkt, CG_T_PROBE, flags, (uint8_t)id, (uint32_t)now_us, pkt + CG_HDR_LEN, CG_PROBE_ACT_LEN);
+	/* how far the link's subflow went: the server sees a lost tail (subflow.h) */
+	cg_hdr_set_sseq(pkt, c->cfg->subflow ? l->sft.next : 0);
 	/* A full queue drops the probe like any other packet: that is a measurement, not an error. */
 	if (send(l->fd, pkt, sizeof(pkt), MSG_DONTWAIT) < 0 && errno != EAGAIN && errno != ENOBUFS &&
 	    cg_ratelimit_ok(&l->rl, now_ms, 10000))
@@ -4866,6 +4868,7 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 			cg_json_u64(j, "copies", sr->dup);
 			cg_json_u64(j, "overflow", sr->overflow);
 			cg_json_u64(j, "resync", sr->resync);
+			cg_json_u64(j, "tail", sr->tail); /* gaps a probe opened: the end of what the link carried */
 			cg_json_ms(j, "window_ms", sr->reo_us / 1000);
 			cg_json_end(j, '}');
 			cg_json_obj(j, "up");
@@ -5369,8 +5372,10 @@ static void tick(struct client *c)
 	}
 	health_tick(c, now_ms);
 	names_tick(c, now_ms);
-	if (c->pctl)
+	if (c->pctl) {
+		cg_pctl_rack(c->pctl, !c->cfg->subflow);
 		cg_pctl_tick(c->pctl);
+	}
 	if (failover || now_ms >= c->next_reconcile_ms)
 		reconcile(c, now_ms);
 	if (now_ms >= c->next_path_ms)
@@ -5633,6 +5638,7 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 			cg_err("%s", err);
 			goto out;
 		}
+		cg_pctl_rack(c->pctl, !cfg->subflow); /* and at every tick: subflow reloads */
 		if (cfg->protocontroller == CG_PCTL_A)
 			cg_info("protocontroller: taking the TCP redirected to port %u, a TCP to %s through the tunnel for each (variant A, story 025)",
 				cfg->protocontroller_port, cg_addr_str(&pc.a_peer, buf, sizeof(buf)));
