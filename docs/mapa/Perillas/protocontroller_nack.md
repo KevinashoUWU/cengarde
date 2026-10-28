@@ -7,7 +7,7 @@ archivos:
 
 # `protocontroller_nack`
 
-Variante B: el NACK del túnel de un mensaje de GRIT es una pérdida que se envía otra vez (`yes`) o solo una pista y decide el RACK de GRIT (`no`); en terreno lo que el túnel dio por perdido llegó tarde (historia 029).
+Variante B: el NACK del túnel de un mensaje de GRIT es una pérdida que se envía otra vez (`yes`) o solo una pista y decide el RACK de GRIT (`no`); en terreno lo que el túnel dio por perdido llegó tarde (historia 029). Con `subflow` no cuenta: el NACK solo es siempre una pista y decide la palabra del enlace.
 
 - **Sección:** global
 - **Extremo:** los dos

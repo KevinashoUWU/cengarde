@@ -1992,7 +1992,7 @@ static void on_nack(struct server *s, struct session *S, uint8_t flags, const ui
 		 * it (story 029), and the client stops waiting. */
 		if (s->pctl) {
 			unsigned ev = cg_resc_ev(&s->resc, S->resc_idx, S->id, seq[i], CG_RESC_EV_ASKED);
-			int sure = cg_resc_sure(ev, down_coded(s, S), s->cfg->protocontroller_nack);
+			int sure = cg_resc_sure(ev, down_coded(s, S), s->cfg->protocontroller_nack && !s->cfg->subflow);
 			int k = cg_pctl_nack(s->pctl, (uint32_t)(S - s->s), S->id, e + CG_HDR_LEN, (size_t)len - CG_HDR_LEN,
 					     went, sure);
 
@@ -2076,7 +2076,7 @@ static void on_sfloss(struct server *s, struct session *S, const uint8_t *payloa
 			continue;
 		}
 		ev = cg_resc_ev(&s->resc, S->resc_idx, S->id, seq, CG_RESC_EV_LINK);
-		sure = cg_resc_sure(ev, down_coded(s, S), s->cfg->protocontroller_nack);
+		sure = cg_resc_sure(ev, down_coded(s, S), s->cfg->protocontroller_nack && !s->cfg->subflow);
 		if (!sure) { /* handed over already, or waits for the client's ask */
 			F->unsure += !(ev & CG_RESC_EV_DONE);
 			continue;

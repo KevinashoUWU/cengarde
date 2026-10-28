@@ -35,12 +35,14 @@
 - **Paso 1:** la ventana de RACK hasta 300 ms (antes 20 ms sin código y 100
   con código) y `protocontroller_nack` (el NACK del túnel como pista, no como
   pérdida): neutro en el laboratorio.
-- **Paso U1 (en curso, protocolo 12, `subflow`):** cada enlace con su propia
-  secuencia (`sseq`) y sus pérdidas (`subflow.h`, `SFLOSS`); una pérdida es
-  cierta cuando el enlace la perdió y nada la reconstruye, o el receptor
-  también la pidió (`cg_resc_sure`); el RACK de GRIT sobre la mezcla se
-  apaga. En el laboratorio, con el RACK de la mezcla, casi todo lo que GRIT
-  reenviaba era por RACK y llegaba duplicado.
+- **Paso U1 (protocolo 12, `subflow`):** cada enlace con su propia secuencia
+  (`sseq`) y sus pérdidas (`subflow.h`, `SFLOSS`); una pérdida es cierta
+  cuando el enlace la perdió y nada la reconstruye, o el receptor también la
+  pidió (`cg_resc_sure`); el NACK solo es una pista; el RACK de GRIT sobre
+  la mezcla se apaga y su temporizador espera 300 ms más. **En terreno GRIT
+  reenvía 0,6–1 % en vez de 10 %, y casi nada llega duplicado** (3–13 en vez
+  de 6–8 mil); el caudal sigue lejos de OMR porque GRIT no llena los
+  módems (paso 2).
 
 ## Contexto
 
@@ -185,14 +187,35 @@ Rama `claude/mpgrit-step1` (`741d267`, `7fba66d`); nota del mapa
   ráfagas, en corridas sueltas (`het` de bajada, una de cuatro: 1264 por él,
   657 duplicados; `reorder50` de subida, tres de cuatro): al vencer marca
   perdido todo lo más viejo que el umbral a la vez.
+- **Terreno** (2026-10-28, ~05:40, `~/campo/2026-10-28/field-u1/`): el NUC
+  y la VPS con el protocolo 12 (`317b9b9`, paquetes del CI), los cuatro
+  módems, 100 MB de cachefly detrás del NUC y de OMR, brazos alternados, dos
+  rondas:
+
+  | brazo | Mbit/s | reenviado | duplicados en el NUC | ping p50/p95 |
+  | --- | --- | --- | --- | --- |
+  | GRIT sin `subflow` | 50,3 / 58,5 | 10 % | 8343 / 6279 | 37–40 / 45–47 |
+  | `subflow`, el NACK como pérdida | 57,0 / 58,0 | 7,8 / 4,1 % | 6148 / 3416 | 38–39 / 45–46 |
+  | `subflow`, el NACK como pista | 86,6 / 43,2 | 0,6 / 1,0 % | 3 / 13 | 38–39 / 46–47 |
+  | el túnel sin protocontrolador | 112,2 / 125,4 | — | — | 37–40 / 50–64 |
+  | OMR | 233,5 / 281,5 | — | — | 56–61 / 169–385 |
+
+  Lo que el paso U1 buscaba se cumple en terreno: GRIT reenvía 0,6–1 % (OMR
+  0–1,8 %) y casi nada llega duplicado. Los subflujos hallaron 76–762
+  pérdidas reales por descarga; el reordenador del túnel pidió 4–8 mil cosas
+  que ningún enlace había perdido (las `hints`): con `subflow`, el NACK solo
+  ya nunca es una pérdida (`protocontroller_nack` deja de contar). El caudal
+  no lo frena eso: GRIT deja el ping en reposo (p50 38 ms), no llena los
+  módems; OMR sí (p50 56–61, p95 hasta 385). Es el paso 2.
 - **Hueco conocido:** lo copiado (redundancia) no tiene un enlace que responda
   por su pérdida; sin el RACK de la mezcla, lo recupera el NACK (con
   `protocontroller_nack yes`) o el temporizador.
 
 ## Pendiente
 
-- Medir el paso U1 en el laboratorio (`~/campo/2026-10-28/sf2/`) y en la
-  testnet contra OMR (sube el protocolo: el NUC y el VPS a la vez).
+- Las ráfagas del temporizador en corridas sueltas del laboratorio (`sf3`).
+- El paso 2: llenar cada enlace hasta su cola objetivo (OMR 45–60 ms por
+  módem) dentro del presupuesto de 300 ms.
 - La pérdida de lo copiado, por enlace (qué enlaces llevaron cada copia).
 - El DATA del túnel (IP) con la misma evidencia: el rescate reenvía hoy lo
   que el reordenador pide, y en terreno eso llegó tarde.
@@ -205,4 +228,4 @@ Rama `claude/mpgrit-step1` (`741d267`, `7fba66d`); nota del mapa
 
 - 2026-10-28: creada.
 - 2026-10-28: el paso U1 (protocolo 12, `subflow`), la regla de la evidencia
-  y el RACK de la mezcla apagado.
+  y el RACK de la mezcla apagado; el temporizador con margen; terreno.

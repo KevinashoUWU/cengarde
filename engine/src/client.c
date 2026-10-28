@@ -2968,6 +2968,14 @@ _Static_assert((int)CG_PCTL_UNSURE == (int)CG_RESC_UNSURE && (int)CG_PCTL_SURE_A
 		       (int)CG_PCTL_SURE_LINK == (int)CG_RESC_SURE_LINK,
 	       "cg_pctl_nack takes cg_resc_sure as it is");
 
+/* Whether the tunnel's NACK alone is a loss to GRIT (protocontroller_nack):
+ * never with subflow, where its link's word decides (story 029: in the
+ * field, 4-8 thousand NACKs a download of what no link had lost). */
+static int asked_is_lost(const struct cg_config *cfg)
+{
+	return cfg->protocontroller_nack && !cfg->subflow;
+}
+
 /* Whether what the upload loses may come back without being sent again: a
  * code rebuilds it (FEC v3's share now, the XOR parity, redund_spare's
  * codes), so its link's loss alone is not the receiver's (story 029). */
@@ -3045,7 +3053,7 @@ static void on_nack(struct client *c, uint8_t flags, const uint8_t *payload, siz
 		 * it (story 029), and the server stops waiting */
 		if (c->pctl) {
 			unsigned ev = cg_resc_ev(&c->resc, c->resc_idx, c->txs.session, seq[i], CG_RESC_EV_ASKED);
-			int sure = cg_resc_sure(ev, up_coded(c), c->cfg->protocontroller_nack);
+			int sure = cg_resc_sure(ev, up_coded(c), asked_is_lost(c->cfg));
 			int k = cg_pctl_nack(c->pctl, 0, 0, e + CG_HDR_LEN, (size_t)len - CG_HDR_LEN, went, sure);
 
 			if (sure && (k == CG_PCTL_NACK_DATA || k == CG_PCTL_NACK_ACK))
@@ -3149,7 +3157,7 @@ static void on_sfloss(struct client *c, const uint8_t *payload, size_t plen, uin
 			continue;
 		}
 		ev = cg_resc_ev(&c->resc, c->resc_idx, c->txs.session, seq, CG_RESC_EV_LINK);
-		sure = cg_resc_sure(ev, up_coded(c), c->cfg->protocontroller_nack);
+		sure = cg_resc_sure(ev, up_coded(c), asked_is_lost(c->cfg));
 		if (!sure) { /* handed over already, or waits for the server's ask */
 			l->sf_unsure += !(ev & CG_RESC_EV_DONE);
 			continue;

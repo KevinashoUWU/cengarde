@@ -46,8 +46,9 @@ entre enlaces, que en terreno se leía como pérdida en el túnel y en GRIT
   paridad XOR, `redund_spare`) puede haberla reconstruido. El emisor junta la
   evidencia en el anillo del [[Rescate (rescue.h)]] (`cg_resc_sure`): sin
   código, el `SFLOSS` basta; con código, hace falta además el NACK del
-  reordenador del receptor. Lo copiado por varios enlaces nunca se da por
-  perdido por uno solo.
+  reordenador del receptor. El NACK solo nunca basta con `subflow` (en
+  terreno, 4–8 mil por descarga de lo que ningún enlace había perdido). Lo
+  copiado por varios enlaces nunca se da por perdido por uno solo.
 - Funciones: `cg_sf_rx_init`, `cg_sf_rx_in` (`NEW`, `FILL`, `LATE`, `DUP`,
   `OLD`), `cg_sf_rx_poll` (los huecos vencidos, del más viejo al más nuevo),
   `cg_sf_rx_due_us` (cuándo vence el más viejo, para despertar el bucle),
@@ -92,6 +93,9 @@ entre enlaces, que en terreno se leía como pérdida en el túnel y en GRIT
   mezcla encendido, casi todo lo que GRIT reenvió fue por RACK y llegó
   duplicado, también con su ventana en 250 ms (`protocontroller_reo_ms`);
   de ahí apagarlo con `subflow`.
+- Terreno (2026-10-28, `~/campo/2026-10-28/field-u1`, NUC y VPS): GRIT
+  reenvía 0,6–1 % en vez de 10 %; los duplicados en el NUC, 3–13 en vez de
+  6–8 mil ([[029-mpgrit]]).
 - `sf2` (n = 4, `7fba66d`): sin el RACK de la mezcla se fueron sus
   reenvíos (`reorder50` de subida: 2094 → 210 y 75), pero el temporizador
   ocupó su lugar, casi todo falso (`cell4` de subida: 386 por él, 514

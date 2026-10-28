@@ -1983,7 +1983,9 @@ sí: un byte con el enlace y los rangos de `sseq` en el formato del NACK
 Con `subflow = yes` en los dos extremos, una pérdida de un mensaje de GRIT
 es cierta cuando su único enlace la perdió y nada la reconstruye, o cuando
 además el receptor la pidió (con un código, FEC v3, que pudo
-reconstruirla); con `protocontroller_nack = no`, el NACK solo es una pista.
+reconstruirla); el NACK solo del túnel es una pista (`protocontroller_nack`
+no cuenta con `subflow`: en terreno, 4–8 mil por descarga de lo que ningún
+enlace había perdido).
 El RACK de GRIT sobre la mezcla de los enlaces se apaga y su temporizador
 espera al menos 300 ms más que la ida y vuelta.
 
