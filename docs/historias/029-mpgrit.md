@@ -416,6 +416,31 @@ reporte de retardo de hace 300–500 ms.
   El tope gana la subida (el operador la concede en ráfagas: es lo que
   inflaba `bw`) y llega a OMR con menos ping; en la bajada no ayuda. Por
   omisión, entonces, 14 en el router (manda la subida) y 10 en el VPS.
+- **La bajada, después** (terreno, solo bajada, 100 MB, 2 rondas cada una,
+  ~4 GB en total):
+  - **El búfer por flujo era el techo** (`field-l3`): lo enviado queda
+    retenido hasta su acuse (~150–240 ms con las colas de los enlaces y la
+    espera de los huecos), así que 2 MB daban 87,2 / 51,3 Mbit/s y 4 MB
+    104,7 / 119,4 (OMR 167,5 / 179,5). Por omisión con `subflow`, 4 MB
+    (`6bf192f`); el anillo admite ahora hasta 8 MB (`CG_ST_SLOTS` 512).
+  - **8 MB** (`field-l4`): 91,5 / 152,1 contra 108,0 / 108,0 con 4 MB (OMR
+    154 / 221): sin decidir.
+  - **Lo que retiene los bytes:** con 4 MB el ritmo de GRIT (280–476
+    Mbit/s) ya no frena; frena el tiempo que cada byte espera su acuse. Un
+    enlace con `bw` 3–6 veces lo que entrega se llena hasta 165–587 ms de
+    cola, lo que va por él llega tarde, abre huecos y el temporizador
+    reenvía 500–1800 por descarga.
+  - **El tope en el VPS** (`field-l5`, 14 contra 10): sin colas hondas y la
+    mitad de reenvíos, pero 114,1 / 65,7 contra 89,9 / 104,9: en la ronda 2
+    dejó al enlace rápido en ~60 Mbit/s donde sin tope dio 176. Las
+    muestras «con cola» salen justo cuando el enlace se frena: subestiman.
+  - **Tope solo con cola (`SATQ`, 32) y la cola del reparto como la mayor
+    de las dos estimaciones (`QMAX`, 16)** (`968c3ab`, `field-l6`):
+    neutros en el laboratorio (−2,5 y −0,9 %); en terreno 126,3 / 87,9 y
+    126,3 / 90,1 contra 120,3 / 119,7 (OMR 146,8 / 144,5), y en la ronda 2
+    el enlace rápido se degradó solo (su `bw` de 118 a 10–21). Con n = 2 el
+    terreno no separa diferencias de ±20 %: OMR anda estable en 145–167 y
+    nosotros entre 66 y 126 según la ronda.
 
 ## Pendiente
 
