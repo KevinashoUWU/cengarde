@@ -69,7 +69,7 @@
 				 * up to reo_cap (streamcc.h's cg_scc_reo_cap: the code's horizon) */
 
 enum { F_FREE = 0, F_OPEN, F_EST };
-enum { PCTL_STOP_PACER, PCTL_STOP_CWND, PCTL_STOP_WINDOW, PCTL_STOP_EMPTY, PCTL_STOP_SEGS };
+enum { PCTL_STOP_PACER, PCTL_STOP_CWND, PCTL_STOP_WINDOW, PCTL_STOP_EMPTY, PCTL_STOP_SEGS, PCTL_STOP_BUF };
 
 struct flow {
 	uint32_t id;
@@ -174,9 +174,10 @@ struct cg_pctl {
 	uint64_t nack_hint;             /* NACKs of DATA left to RACK (protocontroller_nack no) */
 	int rack_off;                   /* RACK over the mix off: the subflows find the losses (cg_pctl_rack) */
 	/* why a flow with a turn stopped sending, a pass at a time: no tokens,
-	 * no room in flight, past the receiver's window, nothing buffered,
-	 * no free segment (what holds the middle leg back, story 029) */
-	uint64_t stop[5];
+	 * no room in flight, past the receiver's window, nothing buffered, no
+	 * free segment, the buffer all sent and unacknowledged (behind a hole):
+	 * what holds the middle leg back (story 029) */
+	uint64_t stop[6];
 	uint64_t nack_sf;               /* of the losses, the ones their link's subflow found too (subflow.h) */
 	uint64_t sus_lost;              /* bytes of suspects their deadline found still undelivered */
 	uint64_t nack_link[CG_PCTL_LINKS + 1]; /* segments a NACK found lost, by the link they went on (the last: copied or not known) */
@@ -1564,9 +1565,10 @@ static int send_one(struct cg_pctl *p, struct flow *f, struct peer *r, uint64_t 
 		return 0;
 	}
 	if (!cg_st_tx_next(&f->tx, p->cfg.mss, &idx, &off, &len, &fin)) {
-		f->stop = f->tx.n >= f->tx.cap		    ? PCTL_STOP_SEGS
+		f->stop = f->tx.n >= f->tx.cap				 ? PCTL_STOP_SEGS
 			  : f->tx.tail > f->tx.nxt && f->tx.nxt >= f->tx.edge ? PCTL_STOP_WINDOW
-									    : PCTL_STOP_EMPTY;
+			  : f->tx.tail - f->tx.una >= p->buf_cap		 ? PCTL_STOP_BUF
+										 : PCTL_STOP_EMPTY;
 		return 0;
 	}
 	/* new bytes need room in flight; a repair, tokens only */
@@ -1974,6 +1976,7 @@ void cg_pctl_json(const struct cg_pctl *p, struct cg_json *j)
 	cg_json_u64(j, "cwnd", p->stop[PCTL_STOP_CWND]);
 	cg_json_u64(j, "window", p->stop[PCTL_STOP_WINDOW]);
 	cg_json_u64(j, "empty", p->stop[PCTL_STOP_EMPTY]);
+	cg_json_u64(j, "buffer", p->stop[PCTL_STOP_BUF]); /* all of the buffer sent and not acknowledged */
 	cg_json_u64(j, "segments", p->stop[PCTL_STOP_SEGS]);
 	cg_json_end(j, '}');
 	/* the segments sent again by why they were lost: RACK, the timer, the
