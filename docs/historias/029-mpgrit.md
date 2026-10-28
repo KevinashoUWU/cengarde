@@ -374,12 +374,29 @@ reporte de retardo de hace 300–500 ms.
   no cambia: GRIT se queda sin qué enviar (`empty`, 98 mil turnos), así que
   el límite está en lo que llega desde la LAN, no en los enlaces; su ping
   p95 sí sube (65 → 128 ms, OMR 157–301). Datos móviles de la tanda: ~1,7 GB.
+- **Por qué la subida «se queda sin datos»** (`~/campo/2026-10-28/up1`, ~1,1
+  GB): no se queda. `empty` es el equilibrio de un proxy (cada pasada manda
+  todo lo que leyó), y el emisor de la LAN pasa el 99 % del tiempo limitado
+  por la ventana del NUC (`rwnd_limited`) porque GRIT lee al ritmo al que
+  despacha. El socket de la LAN nunca se llena (0 la mitad de las muestras,
+  64–174 KB la otra). Duplicar el búfer de GRIT no cambia nada (4 MB: 99,7 y
+  81,7; 2 MB: 95,9, 94,8 y 89,3). Durante la subida cada enlace tiene 40–100
+  ms de cola sobre su `rtprop`, el ping sube con `link_cc` sin que suba el
+  caudal, y OMR pasa lo mismo o menos (77–95): **la subida está en la
+  capacidad de subida de los módems**. Lo que sí está mal: `link_cc` suma
+  140 Mbit/s de `bw` en la subida para 86–100 entregados (el máximo de 1–2 s
+  toma las ráfagas de concesiones del operador), así que mete cola sin
+  ganar. Sin protocontrolador, el TCP directo sube a 12–16 Mbit/s (una
+  pérdida temprana, `ssthresh` 25, y CUBIC crece lento a 50–70 ms) y la
+  variante `a` a 20.
 
 ## Pendiente
 
-- `link_cc` en terreno contra OMR; según eso, ajustar STARTUP (×2 desborda
-  colas cortas) y el último recurso (`governor_target_ms`), y decidir si
-  pasa a ser lo normal con `subflow`.
+- `link_cc`: ajustar STARTUP (×2 desborda colas cortas), el último recurso
+  (`governor_target_ms`) y la sobreestimación de `bw` en la subida (las
+  ráfagas de concesiones: quizá la mediana de las muestras con cola, o
+  recortar por la cola que crece); después, decidir si pasa a ser lo normal
+  con `subflow`.
 - Un enlace que muere en plena descarga hace caer el ritmo de GRIT y deja
   sus pérdidas al temporizador (sin paquetes posteriores ni sondas que las
   digan).
