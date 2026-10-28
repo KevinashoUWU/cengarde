@@ -905,6 +905,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	c->protocontroller_dead_s = 60;
 	c->protocontroller_reo_ms = 10;
 	c->protocontroller_nack = 1;
+	c->subflow = 0;
 	strcpy(c->protocontroller_cc, "auto");
 	strcpy(c->protocontroller_mid_cc, "bbr");
 	c->fec_wait_ms = 10;
@@ -1028,6 +1029,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	    get_u32(&ini, "", "protocontroller_dead_s", 0, 3600, &c->protocontroller_dead_s, err, errlen) ||
 	    get_u32(&ini, "", "protocontroller_reo_ms", 0, 1000, &c->protocontroller_reo_ms, err, errlen) ||
 	    get_bool(&ini, "", "protocontroller_nack", &c->protocontroller_nack, err, errlen) ||
+	    get_bool(&ini, "", "subflow", &c->subflow, err, errlen) ||
 	    get_str(&ini, "", "protocontroller_cc", c->protocontroller_cc, sizeof(c->protocontroller_cc), err, errlen) ||
 	    get_str(&ini, "", "protocontroller_mid_cc", c->protocontroller_mid_cc, sizeof(c->protocontroller_mid_cc), err, errlen) ||
 	    get_str(&ini, "", "protocontroller_vps", c->protocontroller_vps, sizeof(c->protocontroller_vps), err, errlen) ||

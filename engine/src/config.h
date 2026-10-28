@@ -222,6 +222,7 @@ struct cg_config {
 	uint32_t protocontroller_dead_s;          /* a stream without progress this long, with something pending, is reset; 0: never */
 	uint32_t protocontroller_reo_ms;          /* RACK's reordering window beyond a quarter of the round trip */
 	int protocontroller_nack;                 /* a tunnel NACK of a GRIT message is a loss to send again (1) or only a hint (0) */
+	int subflow;                  /* number each link's DATA (sseq) and say back what a link lost within itself (subflow.h) */
 	char protocontroller_cc[16];              /* VPS: the congestion control toward the destination ("": the kernel's; auto: the kernel's, BBR once it loses) */
 	char protocontroller_mid_cc[16];          /* variant A: the middle TCP's congestion control, each end for what it sends (bbr; "": the kernel's) */
 	char protocontroller_vps[64];             /* router, variant A: the VPS's tunnel address ("": the tunnel prefix's first address) */

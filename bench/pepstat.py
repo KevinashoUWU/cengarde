@@ -130,6 +130,11 @@ def status_pep(path):
 CG_COUNTERS = ("data_tx", "data_rx", "retx", "copies", "rto", "dup_frames", "ooo_frames", "drop_frames",
                "acks_tx", "acks_rx", "opened", "closed", "rst_tx", "nomem", "sock_rx_bytes", "sock_tx_bytes",
                "a_opened", "a_bytes_in", "a_bytes_out", "corrupt", "bad")
+# nested ones: why GRIT sent again (RACK, the timer, the tunnel's NACK), and
+# the NACKs that were only a hint or a link's own loss (story 029)
+CG_NESTED = (("retx_rack", "retx_by", "rack"), ("retx_rto", "retx_by", "rto"), ("retx_nack", "retx_by", "nack"),
+             ("nack_hints", "nacks", "hints"), ("nack_subflow", "nacks", "subflow"),
+             ("nack_delivered", "nacks", "delivered"))
 
 
 def cg_summary(d):
@@ -140,6 +145,8 @@ def cg_summary(d):
         if not e:
             continue
         o = {n: (e.get(n) or 0) - (b.get(n) or 0) for n in CG_COUNTERS}
+        for n, k, sub in CG_NESTED:
+            o[n] = ((e.get(k) or {}).get(sub) or 0) - ((b.get(k) or {}).get(sub) or 0)
         mem, htx, hrx, srtt = [], [], [], []
         for f in sorted(glob.glob(os.path.join(d, "status-%s-*" % side))):
             p = status_pep(f)

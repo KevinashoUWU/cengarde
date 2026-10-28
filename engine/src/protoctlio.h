@@ -37,7 +37,6 @@ struct cg_pctl_cfg {
 	uint32_t backlog_ms; /* what a stream holds unsent or unwritten, in time at its rate */
 	uint32_t dead_s;     /* a stream without progress this long, with something pending: reset */
 	uint32_t reo_ms;     /* RACK's window beyond min_rtt / 4: the tunnel's repairs come first */
-	int nack;            /* the tunnel's NACK of a DATA message is a loss (1) or a hint RACK decides on (0) */
 	uint32_t code_ms;    /* the tunnel's code horizon for what this end sends (rescue_code_ms with fec; 0: no code):
 			      * how far duplicates may widen that window (streamcc.h's cg_scc_reo_cap) */
 	uint32_t peers;      /* the server: sessions it may have (their pacers) */
@@ -101,10 +100,17 @@ void cg_pctl_rx(struct cg_pctl *p, uint32_t peer, uint32_t sid, const uint8_t *m
  * ACK: a fresh one). The link is only counted for now (the losses each
  * link had, for a view the engine and the streams share later). Returns
  * CG_PCTL_NACK_* (protoctl.h): NOT or RESEND, the rescue sends the packet
- * again as before; DATA or ACK, it does not, and answers CG_F_GONE. */
+ * again as before; DATA or ACK, it does not, and answers CG_F_GONE. sure
+ * (rescue.h's cg_resc_sure, story 029): how sure the engine is that a DATA
+ * was lost; CG_PCTL_UNSURE, it is only a hint, and RACK decides (in the
+ * field what the tunnel gave up came later); CG_PCTL_SURE_ASKED, the
+ * tunnel's NACK alone (protocontroller_nack yes); CG_PCTL_SURE_LINK, its
+ * one link lost it as well (subflow.h). */
+enum { CG_PCTL_UNSURE, CG_PCTL_SURE_ASKED, CG_PCTL_SURE_LINK };
 #define CG_PCTL_LINKS 16      /* links counted (CG_MAX_LINKS) */
 #define CG_PCTL_NOLINK 0xffu  /* as rescue.h's CG_RESC_NOLINK */
-int cg_pctl_nack(struct cg_pctl *p, uint32_t peer, uint32_t sid, const uint8_t *msg, size_t len, uint8_t link);
+int cg_pctl_nack(struct cg_pctl *p, uint32_t peer, uint32_t sid, const uint8_t *msg, size_t len, uint8_t link,
+		 int sure);
 /* After every loop pass: the sockets, the timers, the sends. */
 void cg_pctl_service(struct cg_pctl *p);
 /* The epoll timeout it needs, ms: -1 none. */

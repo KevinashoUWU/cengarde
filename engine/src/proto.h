@@ -66,9 +66,10 @@
 
 #include "siphash.h"
 
-#define CG_PROTO_VERSION 11
-#define CG_HDR_LEN 24
+#define CG_PROTO_VERSION 12
+#define CG_HDR_LEN 28
 #define CG_MAC_OFF 16
+#define CG_SSEQ_OFF 24 /* the link's own sequence (MPGRIT's subflow, story 029): after the MAC, like the link, so a copy on another link takes its own */
 #define CG_HINT_OFF 2
 #define CG_LINK_OFF 3
 #define CG_KEY_LEN 32 /* shared secret: c2s key || s2c key */
@@ -82,6 +83,7 @@ enum cg_type {
 	CG_T_FEC = 6,         /* either way, one link; payload: the parity of a group of DATA (fec.h) */
 	CG_T_REPAIR = 7,      /* either way (client -> server before 11), one link; payload: an erasure code's repair (repair.h) */
 	CG_T_PARQ = 8,        /* either way (server -> client before 11), one link; payload: repairs asked for again (harq.h) */
+	CG_T_SFLOSS = 9,      /* either way (12), one link; payload: a link id, then the sseqs that link lost as a NACK's ranges (subflow.h) */
 };
 
 /* Probes, replies, NACKs and parities count in the control sequence, DATA
@@ -89,7 +91,7 @@ enum cg_type {
 static inline int cg_type_ctl(uint8_t type)
 {
 	return type == CG_T_PROBE || type == CG_T_PROBE_REPLY || type == CG_T_NACK || type == CG_T_FEC ||
-	       type == CG_T_REPAIR || type == CG_T_PARQ;
+	       type == CG_T_REPAIR || type == CG_T_PARQ || type == CG_T_SFLOSS;
 }
 
 /* PARQ (version 9, story 023: the parity asked for again): the server,
@@ -217,6 +219,7 @@ struct cg_hdr {
 	uint32_t session;
 	uint32_t seq;
 	uint32_t ts;
+	uint32_t sseq; /* the link's own sequence of a DATA (subflow.h, 12); 0: not numbered */
 };
 
 /* Probe and probe reply payload: each side reports what it measures on this
@@ -349,6 +352,16 @@ int cg_hdr_verify(const uint8_t *buf, size_t len, const uint8_t key[CG_SIPHASH_K
 static inline void cg_hdr_set_link(uint8_t *hdr, uint8_t link)
 {
 	hdr[CG_LINK_OFF] = link;
+}
+
+/* The link's own sequence of a packet about to go on it (subflow.h): out
+ * of the MAC, set at send time like the link. */
+static inline void cg_hdr_set_sseq(uint8_t *hdr, uint32_t sseq)
+{
+	hdr[CG_SSEQ_OFF] = (uint8_t)(sseq >> 24);
+	hdr[CG_SSEQ_OFF + 1] = (uint8_t)(sseq >> 16);
+	hdr[CG_SSEQ_OFF + 2] = (uint8_t)(sseq >> 8);
+	hdr[CG_SSEQ_OFF + 3] = (uint8_t)sseq;
 }
 
 void cg_probe_info_write(uint8_t out[CG_PROBE_INFO_LEN], const struct cg_probe_info *pi);

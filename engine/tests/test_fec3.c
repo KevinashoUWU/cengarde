@@ -35,7 +35,7 @@ static void test_f3_credit(void)
 			rep++;
 		}
 	}
-	CHECK_EQ(cg_f3_cost(1400), 1440);
+	CHECK_EQ(cg_f3_cost(1400), 1444);
 	CHECK(rep >= 965 && rep <= 975);
 	CHECK(bytes * 1000 / (10000ull * 1400) >= 99 && bytes * 1000 / (10000ull * 1400) <= 100);
 	/* a burst of 3 and nothing after: the tail repair at the wait, on

@@ -11,6 +11,7 @@ static uint32_t sess[N], seqs[N], ia[CG_RESC_IDX], ib[CG_RESC_IDX];
 static uint16_t lens[N];
 static uint8_t links[N];
 static uint32_t sents[N];
+static uint8_t evs[N];
 
 static void put(struct cg_resc_ring *r, uint32_t *idx, uint32_t s, uint32_t q)
 {
@@ -30,7 +31,7 @@ static int has(const struct cg_resc_ring *r, const uint32_t *idx, uint32_t s, ui
 
 void test_rescue(void)
 {
-	struct cg_resc_ring r = { .mem = mem, .sess = sess, .seq = seqs, .len = lens, .link = links, .sent = sents, .n = N };
+	struct cg_resc_ring r = { .mem = mem, .sess = sess, .seq = seqs, .len = lens, .link = links, .sent = sents, .ev = evs, .n = N };
 	struct cg_resc_budget b = { 0 };
 
 	memset(lens, 0, sizeof(lens));
@@ -73,6 +74,29 @@ void test_rescue(void)
 	CHECK(!cg_resc_dup(&r, ia, 4, 1000 + CG_RESC_DUP_MS + 1));
 	put(&r, ia, 1, 4 + CG_RESC_IDX); /* a new packet in that entry: never sent again yet */
 	CHECK(!cg_resc_dup(&r, ia, 4 + CG_RESC_IDX, 1006));
+
+	/* The evidence of a loss gathers from either side, kept with the
+	 * packet; a new packet in the entry starts with none. */
+	CHECK_EQ(cg_resc_ev(&r, ia, 1, 4 + CG_RESC_IDX, CG_RESC_EV_LINK), CG_RESC_EV_LINK);
+	CHECK_EQ(cg_resc_ev(&r, ia, 1, 4 + CG_RESC_IDX, CG_RESC_EV_ASKED), CG_RESC_EV_LINK | CG_RESC_EV_ASKED);
+	CHECK_EQ(cg_resc_ev(&r, ia, 1, 4 + CG_RESC_IDX, 0), CG_RESC_EV_LINK | CG_RESC_EV_ASKED);
+	CHECK_EQ(cg_resc_ev(&r, ia, 1, 4, CG_RESC_EV_LINK), 0); /* not kept any more */
+	CHECK_EQ(cg_resc_ev(&r, ia, 2, 4 + CG_RESC_IDX, CG_RESC_EV_LINK), 0); /* another session's */
+	put(&r, ia, 1, 4);
+	CHECK_EQ(cg_resc_ev(&r, ia, 1, 4, 0), 0);
+
+	/* How sure: the link alone where nothing rebuilds; with a code, the
+	 * link and the receiver's ask; the ask alone only as the knob says;
+	 * never twice. */
+	CHECK_EQ(cg_resc_sure(0, 0, 1), CG_RESC_UNSURE);
+	CHECK_EQ(cg_resc_sure(CG_RESC_EV_LINK, 0, 0), CG_RESC_SURE_LINK);
+	CHECK_EQ(cg_resc_sure(CG_RESC_EV_LINK, 1, 0), CG_RESC_UNSURE);
+	CHECK_EQ(cg_resc_sure(CG_RESC_EV_LINK, 1, 1), CG_RESC_UNSURE);
+	CHECK_EQ(cg_resc_sure(CG_RESC_EV_ASKED, 1, 0), CG_RESC_UNSURE);
+	CHECK_EQ(cg_resc_sure(CG_RESC_EV_ASKED, 0, 1), CG_RESC_SURE_ASKED);
+	CHECK_EQ(cg_resc_sure(CG_RESC_EV_LINK | CG_RESC_EV_ASKED, 1, 0), CG_RESC_SURE_LINK);
+	CHECK_EQ(cg_resc_sure(CG_RESC_EV_LINK | CG_RESC_EV_ASKED | CG_RESC_EV_DONE, 0, 1), CG_RESC_UNSURE);
+	CHECK_EQ(cg_resc_sure(CG_RESC_EV_ASKED | CG_RESC_EV_DONE, 0, 1), CG_RESC_UNSURE);
 
 	/* The budget: pct % of what goes down, up to the cap. */
 	cg_resc_earn(&b, 1400, 5);

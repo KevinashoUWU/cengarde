@@ -16,6 +16,7 @@ static void test_sf_basic(void)
 	for (uint32_t q = 100; q < 110; q++)
 		CHECK_EQ(cg_sf_rx_in(&s, q, q * MS), CG_SF_NEW);
 	CHECK_EQ(cg_sf_rx_poll(&s, 200 * MS, out, 8), 0);
+	CHECK_EQ(cg_sf_rx_due_us(&s, 200 * MS), -1);
 	/* 110 missing, 111 came: filled 10 ms later, within 20 */
 	CHECK_EQ(cg_sf_rx_in(&s, 111, 300 * MS), CG_SF_NEW);
 	CHECK_EQ(cg_sf_rx_poll(&s, 305 * MS, out, 8), 0);
@@ -23,7 +24,9 @@ static void test_sf_basic(void)
 	CHECK_EQ(cg_sf_rx_poll(&s, 400 * MS, out, 8), 0);
 	/* 112 missing behind 113: lost 20 ms after 113 came */
 	CHECK_EQ(cg_sf_rx_in(&s, 113, 500 * MS), CG_SF_NEW);
+	CHECK_EQ(cg_sf_rx_due_us(&s, 505 * MS), 15 * MS);
 	CHECK_EQ(cg_sf_rx_poll(&s, 519 * MS, out, 8), 0);
+	CHECK_EQ(cg_sf_rx_due_us(&s, 521 * MS), 0);
 	CHECK_EQ(cg_sf_rx_poll(&s, 520 * MS, out, 8), 1);
 	CHECK_EQ(out[0], 112);
 	CHECK_EQ(cg_sf_rx_poll(&s, 600 * MS, out, 8), 0);
@@ -60,8 +63,9 @@ static void test_sf_late(void)
 	CHECK_EQ(s.reo_us, 20 * MS);
 }
 
-/* A jump past the window gives up what it leaves behind; the sequence
- * wraps. */
+/* What slides out of the window unfilled is given up unsaid; a jump of a
+ * window or more, either way, is a new start that says no loss; the
+ * sequence wraps. */
 static void test_sf_edges(void)
 {
 	struct cg_sf_rx s;
@@ -70,21 +74,66 @@ static void test_sf_edges(void)
 	cg_sf_rx_init(&s, 20 * MS, 300 * MS);
 	cg_sf_rx_in(&s, 0, 0);
 	cg_sf_rx_in(&s, 2, 1 * MS); /* 1 is a gap */
-	CHECK_EQ(cg_sf_rx_in(&s, 2 + CG_SF_WIN + 5, 2 * MS), CG_SF_NEW);
+	CHECK_EQ(cg_sf_rx_in(&s, CG_SF_WIN + 1, 2 * MS), CG_SF_NEW);
 	CHECK_EQ(s.overflow, 1);
 	CHECK_EQ(s.lost, 1);
-	/* the wrap */
+	CHECK_EQ(s.base, 2);
+	CHECK_EQ(cg_sf_rx_poll(&s, 100 * MS, out, 8), 8); /* the gaps 3.. it opened, oldest first */
+	CHECK_EQ(out[0], 3);
+	/* far ahead: a new start, nothing said */
+	CHECK_EQ(cg_sf_rx_in(&s, 0x80000000u, 200 * MS), CG_SF_NEW);
+	CHECK_EQ(s.resync, 1);
+	CHECK_EQ(cg_sf_rx_poll(&s, 400 * MS, out, 8), 0);
+	/* far behind: a sender that began again from 1 */
+	CHECK_EQ(cg_sf_rx_in(&s, 1, 401 * MS), CG_SF_NEW);
+	CHECK_EQ(s.resync, 2);
+	CHECK_EQ(cg_sf_rx_in(&s, 0, 402 * MS), CG_SF_OLD); /* only just behind: old */
+	CHECK_EQ(cg_sf_rx_poll(&s, 500 * MS, out, 8), 0);
+	/* the wrap, where the sender skips 0 */
 	cg_sf_rx_init(&s, 20 * MS, 300 * MS);
 	CHECK_EQ(cg_sf_rx_in(&s, 0xFFFFFFFEu, 0), CG_SF_NEW);
 	CHECK_EQ(cg_sf_rx_in(&s, 0xFFFFFFFFu, 1 * MS), CG_SF_NEW);
-	CHECK_EQ(cg_sf_rx_in(&s, 1, 2 * MS), CG_SF_NEW); /* 0 is a gap */
+	CHECK_EQ(cg_sf_rx_in(&s, 1, 2 * MS), CG_SF_NEW); /* 0 is no gap */
+	CHECK_EQ(cg_sf_rx_in(&s, 3, 3 * MS), CG_SF_NEW); /* 2 is */
 	CHECK_EQ(cg_sf_rx_poll(&s, 30 * MS, out, 8), 1);
-	CHECK_EQ(out[0], 0);
-	CHECK_EQ(cg_sf_rx_in(&s, 0, 40 * MS), CG_SF_LATE);
+	CHECK_EQ(out[0], 2);
+	CHECK_EQ(cg_sf_rx_in(&s, 2, 40 * MS), CG_SF_LATE);
+	CHECK_EQ(s.resync, 0);
+}
+
+/* The sender numbers from 1, skips 0 when it wraps, takes back what did not
+ * go out, and finds what a lost sseq carried while it remembers it. */
+static void test_sf_tx(void)
+{
+	struct cg_sf_tx t;
+	uint32_t seq = 0;
+
+	cg_sf_tx_init(&t);
+	CHECK_EQ(cg_sf_tx_take(&t, 500), 1);
+	CHECK_EQ(cg_sf_tx_take(&t, 501), 2);
+	CHECK_EQ(cg_sf_tx_take(&t, 502), 3);
+	cg_sf_tx_unsend(&t, 2); /* 2 and 3 did not go */
+	CHECK_EQ(cg_sf_tx_take(&t, 503), 2);
+	CHECK(cg_sf_tx_find(&t, 2, &seq));
+	CHECK_EQ(seq, 503);
+	CHECK(!cg_sf_tx_find(&t, 3, &seq)); /* never went */
+	CHECK(cg_sf_tx_find(&t, 1, &seq));
+	CHECK_EQ(seq, 500);
+	for (uint32_t i = 0; i < CG_SF_WIN; i++)
+		cg_sf_tx_take(&t, 1000 + i);
+	CHECK(!cg_sf_tx_find(&t, 1, &seq)); /* forgotten */
+	CHECK(!cg_sf_tx_find(&t, 0, &seq));
+	/* the wrap */
+	t.next = 0xFFFFFFFFu;
+	CHECK_EQ(cg_sf_tx_take(&t, 7), 0xFFFFFFFFu);
+	CHECK_EQ(cg_sf_tx_take(&t, 8), 1);
+	cg_sf_tx_unsend(&t, 2);
+	CHECK_EQ(t.next, 0xFFFFFFFFu);
 }
 
 void test_subflow(void)
 {
+	test_sf_tx();
 	test_sf_basic();
 	test_sf_late();
 	test_sf_edges();

@@ -49,6 +49,7 @@ SPARE = "Lo que sobra (spare.h)"
 CODES = "Códigos de borrado (rs.h, rlc.h)"
 HARQ = "Reparación coherente (harq.h)"
 PCTL = "Protocontrolador (protoctl.c, stream.h, streamcc.h)"
+SUBF = "Subflujo (subflow.h)"
 
 H = {
     "002": "002-wireguard-para-cengarde", "005": "005-motor-c-v1", "006": "006-salud-de-enlaces",
@@ -209,6 +210,7 @@ T = {
  "protocontroller_dead_s": ([G], BOTH, "60", "0–3600", [PCTL], ["025"], "Variante B: un flujo sin avance este tiempo, con algo pendiente (el túnel caído), se cierra con RST en los dos lados; cuenta desde el último mensaje del otro lado o desde que el flujo vuelve a tener algo en vuelo; 0: nunca."),
  "protocontroller_reo_ms": ([G], BOTH, "10", "0–1000", [PCTL], ["025"], "Variante B: el piso de la ventana de RACK sobre un cuarto de la ida y vuelta (la reparación del túnel va primero); un duplicado la agranda 4 ms, hasta 300 (el presupuesto de latencia, historia 029), y vuelve sola; con un código o el rescate, al menos el horizonte de reparación del motor (historia 028)."),
  "protocontroller_nack": ([G], BOTH, "`yes`", "`yes`, `no`", [PCTL], ["029"], "Variante B: el NACK del túnel de un mensaje de GRIT es una pérdida que se envía otra vez (`yes`) o solo una pista y decide el RACK de GRIT (`no`); en terreno lo que el túnel dio por perdido llegó tarde (historia 029)."),
+ "subflow": ([G], BOTH, "`no`", "`yes`, `no`", [SUBF, PCTL], ["029"], "MPGRIT (paso U1): cada extremo numera lo que pone en cada enlace (`sseq`, protocolo 12) y sigue la secuencia de cada enlace que recibe; lo que un enlace perdió dentro de sí (un `sseq` posterior del mismo enlace llegó hace más que su ventana) va de vuelta en un `SFLOSS`, y un mensaje de GRIT que fue solo por ese enlace se envía otra vez como pérdida cierta, aun con `protocontroller_nack no`. Tienen que tenerla los dos extremos."),
  "protocontroller_cc": ([G], SRVS, "`auto`", "`auto`, un control de congestión del kernel, o vacío", [PCTL], ["025"], "Control de congestión del TCP del VPS hacia el destino; `auto`: el del kernel (cubic) y BBR en cuanto ese tramo pierde (sin el ProbeRTT de BBR para el vídeo en vivo); si el kernel no lo tiene, el suyo (un aviso)."),
 }
 

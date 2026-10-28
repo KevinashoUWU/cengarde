@@ -55,6 +55,7 @@ void cg_hdr_write(uint8_t out[CG_HDR_LEN], const struct cg_hdr *h, const uint8_t
 	put32(out + 4, h->session);
 	put32(out + 8, h->seq);
 	put32(out + 12, h->ts);
+	put32(out + CG_SSEQ_OFF, h->sseq);
 	m = mac(out, key, payload, plen);
 	for (int i = 0; i < 8; i++)
 		out[CG_MAC_OFF + i] = (uint8_t)(m >> (8 * i));
@@ -73,6 +74,7 @@ int cg_hdr_parse(struct cg_hdr *h, const uint8_t *buf, size_t len)
 	h->session = get32(buf + 4);
 	h->seq = get32(buf + 8);
 	h->ts = get32(buf + 12);
+	h->sseq = get32(buf + CG_SSEQ_OFF);
 	plen = len - CG_HDR_LEN;
 	switch (h->type) {
 	case CG_T_DATA:
@@ -82,6 +84,11 @@ int cg_hdr_parse(struct cg_hdr *h, const uint8_t *buf, size_t len)
 		return plen >= CG_PROBE_INFO_LEN ? 0 : -1;
 	case CG_T_HELLO:
 		return plen >= CG_HELLO_LEN ? 0 : -1;
+	case CG_T_SFLOSS:
+		return plen >= 2 && buf[CG_HDR_LEN + 1] >= 1 && buf[CG_HDR_LEN + 1] <= CG_NACK_RANGES &&
+				       plen >= 2 + 12 * (size_t)buf[CG_HDR_LEN + 1]
+			       ? 0
+			       : -1;
 	case CG_T_NACK:
 		return plen >= 1 && buf[CG_HDR_LEN] >= 1 && buf[CG_HDR_LEN] <= CG_NACK_RANGES &&
 				       plen >= 1 + 12 * (size_t)buf[CG_HDR_LEN]
