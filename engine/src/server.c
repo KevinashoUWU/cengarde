@@ -1162,7 +1162,8 @@ static void sf_up(struct session *S, unsigned p, uint32_t q, size_t len, uint32_
 
 /* With link_cc, path p's own rate (linkcc.h) in S's split (eta.h), as
  * the client's lc_eta: its pacing rate, its delay without a queue over ref
- * (rtprop), what it has queued now, past the queue target a last resort. */
+ * (rtprop), what it has queued now, past the queue target (its own with
+ * MTPT) a last resort. */
 static void lc_eta(const struct server *s, struct session *S, unsigned p, uint32_t ref, uint64_t now_us)
 {
 	const struct sfpath *F = S->sf[p];
@@ -1170,7 +1171,8 @@ static void lc_eta(const struct server *s, struct session *S, unsigned p, uint32
 	if (!S->eta.l[p].bps || !F || !F->tx.acks || !F->tx.lc.rtprop)
 		return;
 	cg_eta_own(&S->eta, p, cg_lc_rate(&F->tx.lc) * 8, F->tx.lc.rtprop > ref ? F->tx.lc.rtprop - ref : 0,
-		   cg_lc_queued(&F->tx.lc), s->cfg->governor_target_ms * 1000, now_us);
+		   cg_lc_queued(&F->tx.lc), F->tx.lc.bits & CG_LC_MTPT ? F->tx.lc.target_us : s->cfg->governor_target_ms * 1000,
+		   now_us);
 	if (F->tx.lc.bits & CG_LC_WND)
 		cg_eta_wnd(&S->eta, p, cg_lc_wnd_left(&F->tx.lc));
 }
@@ -3436,16 +3438,18 @@ static void cap_tick(struct server *s, struct session *S, uint16_t live, uint64_
 		cg_cap_eta(&S->eta, S->cap, live, cc.sat_us / 2, S->lm, s->cfg->split_stale_max,
 			   cg_tickle_backoff(&S->tk), now_ms * 1000);
 		if (s->cfg->link_cc) {
-			uint32_t ref;
+			uint32_t ref = lc_ref(S);
 
 			for (int p = 0; p < CG_MAX_LINKS; p++) /* the engine's capacity, as a start */
 				if (S->sf[p]) {
-					S->sf[p]->tx.lc.target_us = s->cfg->governor_target_ms * 1000;
-					S->sf[p]->tx.lc.bits = (uint8_t)s->cfg->link_cc_bits;
+					struct cg_lc *lc = &S->sf[p]->tx.lc;
+
+					lc->bits = (uint8_t)s->cfg->link_cc_bits;
+					cg_lc_target(lc, s->cfg->governor_target_ms * 1000,
+						     cg_lc_mtpt_cap(lc, s->cfg->link_cc_budget_ms, ref));
 					if (S->cap[p].have_rate)
-						cg_lc_seed(&S->sf[p]->tx.lc, cg_cap_bps(&S->cap[p]) / 8);
+						cg_lc_seed(lc, cg_cap_bps(&S->cap[p]) / 8);
 				}
-			ref = lc_ref(S);
 			for (unsigned p = 0; p < CG_MAX_LINKS; p++)
 				lc_eta(s, S, p, ref, now_ms * 1000);
 		}

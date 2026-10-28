@@ -209,8 +209,87 @@ static void test_lc_satq_qmax(void)
 	CHECK_EQ(cg_lc_queued(&c), 100000);
 }
 
+/* One MTPT epoch on a model link: its queue reaches q_ms (binding the
+ * target when at least half of it), it delivers mbit Mbit/s, and loses
+ * lost of sent packets. */
+static void mtpt_epoch(struct cg_lc *c, uint64_t *t, uint32_t q_ms, uint64_t mbit, uint32_t sent, uint32_t lost)
+{
+	for (uint32_t i = 0; i < sent; i++)
+		cg_lc_sent(c, 1400);
+	for (uint32_t i = 0; i < lost; i++)
+		cg_lc_lost(c, 1400);
+	cg_lc_owd(c, *t + 500 * MS, 1000000 + (int32_t)q_ms * (int32_t)MS);
+	*t += CG_LC_MTPT_EPOCH_US;
+	cg_lc_acked(c, *t, mbit * MBIT, 0, 0);
+}
+
+/* MTPT: without the bit the caller's target is the target; with it the
+ * target starts there and climbs while the link delivers more, turns
+ * around at the knee and stays near it, falls two steps on a lossy epoch,
+ * holds while it does not bind, and never passes the caller's ceiling. */
+static void test_lc_mtpt(void)
+{
+	struct cg_lc c;
+	uint64_t t = 1000;
+	uint32_t lo = UINT32_MAX, hi = 0;
+
+	cg_lc_init(&c);
+	c.bits = CG_LC_QMODE;
+	cg_lc_target(&c, 60 * MS, 300 * MS);
+	CHECK_EQ(c.target_us, 60 * MS);
+	c.bits |= CG_LC_MTPT;
+	cg_lc_target(&c, 60 * MS, 300 * MS);
+	CHECK_EQ(c.target_us, 60 * MS);
+	CHECK_EQ(c.mt_cap_us, 300 * MS);
+	cg_lc_owd(&c, t, 1000000); /* the least one-way delay */
+	cg_lc_acked(&c, t, 0, 0, 0); /* the first epoch starts */
+	/* a link that gives 40 Mbit/s with 100 ms of queue or more, less with
+	 * less (a modem grants more as its queue grows) */
+	for (int e = 0; e < 40; e++) {
+		uint64_t mbit = c.target_us >= 100 * MS ? 40 : 40 * c.target_us / (100 * MS);
+
+		mtpt_epoch(&c, &t, c.target_us / MS, mbit, 200, 0);
+		cg_lc_target(&c, 60 * MS, 300 * MS); /* the caller, each tick: the base no longer resets it */
+		if (e >= 10) {
+			lo = c.target_us < lo ? c.target_us : lo;
+			hi = c.target_us > hi ? c.target_us : hi;
+		}
+	}
+	CHECK(lo >= 60 * MS && hi <= 140 * MS); /* around the knee, not up to the ceiling */
+	CHECK(c.mt_up > 0 && c.mt_down > 0);
+	/* an epoch losing 10 %: two steps down */
+	{
+		uint32_t before = c.target_us;
+
+		mtpt_epoch(&c, &t, c.target_us / MS, 40, 200, 20);
+		CHECK_EQ(c.target_us, before - 2 * CG_LC_MTPT_STEP_US);
+		CHECK_EQ(c.mt_dir, -1);
+	}
+	/* a link with less to carry than its target allows: it holds */
+	{
+		uint32_t before = c.target_us;
+
+		for (int e = 0; e < 5; e++)
+			mtpt_epoch(&c, &t, 5, 10, 200, 0);
+		CHECK_EQ(c.target_us, before);
+	}
+	/* the ceiling: a slower link's (the caller's budget less its lag) */
+	cg_lc_target(&c, 60 * MS, 50 * MS);
+	CHECK(c.target_us <= 50 * MS);
+	for (int e = 0; e < 10; e++) {
+		mtpt_epoch(&c, &t, c.target_us / MS, 10 + 10 * (uint64_t)e, 200, 0); /* always more */
+		cg_lc_target(&c, 60 * MS, 50 * MS);
+		CHECK(c.target_us <= 50 * MS);
+	}
+	/* and never under the least */
+	for (int e = 0; e < 20; e++)
+		mtpt_epoch(&c, &t, c.target_us / MS, 40, 200, 40);
+	CHECK_EQ(c.target_us, CG_LC_MTPT_MIN_US);
+}
+
 void test_linkcc(void)
 {
+	test_lc_mtpt();
 	test_lc_satq_qmax();
 	test_lc_queue();
 	test_lc_startup();

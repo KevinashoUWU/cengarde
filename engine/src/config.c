@@ -909,6 +909,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	c->protocontroller_offer = 1;
 	c->link_cc = 0;
 	c->link_cc_bits = 10; /* linkcc.h's CG_LC_BITS; the router's 14 and the VPS's 46 (below) */
+	c->link_cc_budget_ms = 300; /* MTPT's (the user's: ~300 ms of loaded round trip, up to 500 to explore) */
 	strcpy(c->protocontroller_cc, "auto");
 	strcpy(c->protocontroller_mid_cc, "bbr");
 	c->fec_wait_ms = 10;
@@ -1035,7 +1036,8 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	    get_bool(&ini, "", "subflow", &c->subflow, err, errlen) ||
 	    get_bool(&ini, "", "protocontroller_offer", &c->protocontroller_offer, err, errlen) ||
 	    get_bool(&ini, "", "link_cc", &c->link_cc, err, errlen) ||
-	    get_u32(&ini, "", "link_cc_bits", 0, 127, &c->link_cc_bits, err, errlen) ||
+	    get_u32(&ini, "", "link_cc_bits", 0, 255, &c->link_cc_bits, err, errlen) ||
+	    get_u32(&ini, "", "link_cc_budget_ms", 20, 1000, &c->link_cc_budget_ms, err, errlen) ||
 	    get_str(&ini, "", "protocontroller_cc", c->protocontroller_cc, sizeof(c->protocontroller_cc), err, errlen) ||
 	    get_str(&ini, "", "protocontroller_mid_cc", c->protocontroller_mid_cc, sizeof(c->protocontroller_mid_cc), err, errlen) ||
 	    get_str(&ini, "", "protocontroller_vps", c->protocontroller_vps, sizeof(c->protocontroller_vps), err, errlen) ||

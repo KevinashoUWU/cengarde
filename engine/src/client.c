@@ -3205,9 +3205,9 @@ static void on_sfloss(struct client *c, const uint8_t *payload, size_t plen, uin
 /* With link_cc, link i's own rate (linkcc.h) in the split (eta.h): its
  * pacing rate, its delay without a queue over ref (its rtprop: the SFACKs
  * come back on the fastest link, so the differences are the links' one-way
- * ones) and what it has queued now; past the queue target it is a last
- * resort. Each tick and each SFACK; a link not in the split (no rate from
- * cg_cap_eta: dead, or not known) stays out. */
+ * ones) and what it has queued now; past the queue target (its own with
+ * MTPT) it is a last resort. Each tick and each SFACK; a link not in the
+ * split (no rate from cg_cap_eta: dead, or not known) stays out. */
 static void lc_eta(struct client *c, unsigned i, uint32_t ref, uint64_t now_us)
 {
 	const struct cg_lc *lc = &c->link[i].sft.lc;
@@ -3215,7 +3215,7 @@ static void lc_eta(struct client *c, unsigned i, uint32_t ref, uint64_t now_us)
 	if (!c->eta.l[i].bps || !c->link[i].sft.acks || !lc->rtprop)
 		return;
 	cg_eta_own(&c->eta, i, cg_lc_rate(lc) * 8, lc->rtprop > ref ? lc->rtprop - ref : 0, cg_lc_queued(lc),
-		   c->cfg->governor_target_ms * 1000, now_us);
+		   lc->bits & CG_LC_MTPT ? lc->target_us : c->cfg->governor_target_ms * 1000, now_us);
 	if (lc->bits & CG_LC_WND)
 		cg_eta_wnd(&c->eta, i, cg_lc_wnd_left(lc));
 }
@@ -4382,15 +4382,16 @@ static void cap_tick(struct client *c, uint16_t live, uint16_t in, uint64_t now_
 		cg_cap_eta(&c->eta, c->cap, live, cc.sat_us / 2, c->lm, c->cfg->split_stale_max,
 			   cg_tickle_backoff(&c->tk), now_ms * 1000);
 		if (c->cfg->link_cc) {
-			uint32_t ref;
+			uint32_t ref = lc_ref(c);
 
 			for (int i = 0; i < CG_MAX_LINKS; i++) { /* the engine's capacity, as a start */
-				c->link[i].sft.lc.target_us = c->cfg->governor_target_ms * 1000;
-				c->link[i].sft.lc.bits = (uint8_t)c->cfg->link_cc_bits;
+				struct cg_lc *lc = &c->link[i].sft.lc;
+
+				lc->bits = (uint8_t)c->cfg->link_cc_bits;
+				cg_lc_target(lc, c->cfg->governor_target_ms * 1000, cg_lc_mtpt_cap(lc, c->cfg->link_cc_budget_ms, ref));
 				if (c->cap[i].have_rate)
-					cg_lc_seed(&c->link[i].sft.lc, cg_cap_bps(&c->cap[i]) / 8);
+					cg_lc_seed(lc, cg_cap_bps(&c->cap[i]) / 8);
 			}
-			ref = lc_ref(c);
 			for (unsigned i = 0; i < CG_MAX_LINKS; i++)
 				lc_eta(c, i, ref, now_ms * 1000);
 		}

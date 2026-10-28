@@ -3,7 +3,7 @@ tags: [mapa, pieza]
 archivos:
   - engine/src/linkcc.h
   - engine/tests/test_linkcc.c
-sello: 9f433946a51afe31
+sello: 53f2b561fcacae9c
 ---
 # Ritmo por enlace (linkcc.h)
 
@@ -46,6 +46,17 @@ los dejaban a medias.
 - **Sin datos:** con menos en vuelo que `bw × rtprop` el enlace estaba corto
   de datos (`cg_lc_idle`): su muestra cuenta solo si es mayor (el
   *app-limited* de BBR).
+- **MTPT** (*Maximum Transfer Point Tracking*, `CG_LC_MTPT`, `link_cc_bits`
+  128; el nombre es del usuario): cada enlace busca su propia cola objetivo
+  perturbando y observando, como el MPPT de un cargador solar
+  (`cg_lc_mtpt`). Cada segundo mueve su objetivo un paso de 20 ms: en el mismo
+  sentido si lo entregado creció 3 % o más, al revés si cayó otro tanto, hacia
+  abajo si quedó plano (lo mismo con menos cola), dos pasos abajo si perdió
+  más de 5 %, y se queda quieto si su cola no llegó a la mitad del objetivo
+  (tenía menos que llevar). Entre 20 ms y el techo que da quien lo usa
+  (`cg_lc_target`, `cg_lc_mtpt_cap`): `link_cc_budget_ms` menos cuánto más
+  lento es el enlace que el más rápido, así un enlace chico suma lo que puede
+  dentro de la ventana del grupo y no estira la espera del reordenador.
 - Pura: sin reloj ni E/S; tiempos en µs, tasas en bytes/s.
 
 ## Lee
@@ -61,18 +72,22 @@ los dejaban a medias.
     vuelven por el enlace más rápido, así que las diferencias son las de ida)
     y su cola ahora (`cg_lc_queued`: su retardo de cola al ritmo del enlace;
     sin retardo de ida, lo que va en vuelo sobre `bw × rtprop`).
-    Pasado `governor_target_ms` de cola, el enlace es último recurso.
+    Pasado `governor_target_ms` de cola (con MTPT, su propio objetivo), el
+    enlace es último recurso.
   - El [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] recibe como
     oferta la suma de los ritmos de los enlaces (`CG_SCC_OFFER_LINKS`), tenga
     o no cola: cada enlace sondea y cuida su propia cola.
 - Estado: `subflow.up.rate` (router) y `subflow.down.rate` (VPS), por enlace:
   `mode`, `bw_bps`, `pacing_bps`, `rtprop_ms`, `srtt_ms`, `cwnd`,
-  `inflight`, `cuts`, `queue_ms`, `sat_bps`, `sfacks`, `app_limited`.
+  `inflight`, `cuts`, `queue_ms`, `sat_bps`, `sfacks`, `app_limited`,
+  `target_ms`, y con MTPT `mtpt_cap_ms`, `mtpt_up`, `mtpt_down`.
 
 ## Perillas
 - [[Mapa/Perillas/link_cc|link_cc]]: no. Exige `subflow` en los dos extremos.
-- El objetivo de cola es `governor_target_ms` (60 con `subflow`).
-- [[Mapa/Perillas/link_cc_bits|link_cc_bits]] (experimento): qué usos de la cola están encendidos (`CG_LC_QETA`, `CG_LC_QMODE`, `CG_LC_SAT`, `CG_LC_S32`, `CG_LC_QMAX`, `CG_LC_SATQ`, `CG_LC_WND`); por omisión los modos por la cola y STARTUP a ×3/2 (10, `CG_LC_BITS`), y en el router además el tope por lo entregado con cola (14): su subida se concede en ráfagas; en el VPS el tope solo mientras el enlace tiene cola (46: siempre, dejaba al enlace rápido corto).
+- El objetivo de cola es `governor_target_ms` (60 con `subflow`); con MTPT
+  es de donde parte, y [[Mapa/Perillas/link_cc_budget_ms|link_cc_budget_ms]]
+  (300) da su techo.
+- [[Mapa/Perillas/link_cc_bits|link_cc_bits]] (experimento): qué usos de la cola están encendidos (`CG_LC_QETA`, `CG_LC_QMODE`, `CG_LC_SAT`, `CG_LC_S32`, `CG_LC_QMAX`, `CG_LC_SATQ`, `CG_LC_WND`, `CG_LC_MTPT`); por omisión los modos por la cola y STARTUP a ×3/2 (10, `CG_LC_BITS`), y en el router además el tope por lo entregado con cola (14): su subida se concede en ráfagas; en el VPS el tope solo mientras el enlace tiene cola (46: siempre, dejaba al enlace rápido corto).
 
 ## Dónde se midió
 - Laboratorio, 2026-10-28 (`~/campo/2026-10-28/lc1`, todavía sin manejar el

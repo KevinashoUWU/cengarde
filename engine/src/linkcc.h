@@ -32,6 +32,23 @@
  *   least CG_LC_LOSS_MIN packets) is the link saying it is too much: bw
  *   falls to 7/8 of itself and STARTUP ends (BBRv2's answer to loss; the
  *   subflows' losses are each link's own, never another's lateness).
+ * - MTPT, Maximum Transfer Point Tracking (CG_LC_MTPT, story 029; the
+ *   user's name): perturb and observe, as a solar charger's MPPT finds its
+ *   panel's best point, so that each link finds its own queue target. The
+ *   ceiling capture of 2026-10-28 (bench/techo.c, curva1) showed each
+ *   modem's knee sharp and moving: WOM's download clean at 52 Mbit/s with
+ *   a p95 of 175 ms, at 60 Mbit/s 1.2 s of queue; Entel's lossy at 64 and
+ *   clean at 79 minutes later. So once a second (CG_LC_MTPT_EPOCH_US) the
+ *   target moves a step (CG_LC_MTPT_STEP_US): on the same way while what the
+ *   link delivered grew by CG_LC_MTPT_GAIN_PCT % or more, back when it fell
+ *   as much, down when it stayed flat (the same for less queue), two steps
+ *   down when the epoch lost more than CG_LC_LOSS_PCT %, and it holds when
+ *   the link did not reach half its target (it had less to carry: nothing
+ *   to learn). Between CG_LC_MTPT_MIN_US and the caller's ceiling, which is
+ *   the latency budget less how much slower the link is than the fastest:
+ *   a small link adds what it can within the group's window, never
+ *   stretching the reorder wait (the user's rule: 2 Mbit/s that arrive in
+ *   time add up, 2 that make everyone wait do not).
  *
  * Pure: no clock, no I/O. Times in us, rates in bytes/s.
  *
@@ -57,6 +74,11 @@
 #define CG_LC_OWD_WIN_US 15000000u /* a bucket of the one-way delay's least (two: 15-30 s) */
 #define CG_LC_SAT_US 2000000u      /* how long what a queued link delivered caps bw */
 #define CG_LC_TARGET_US 60000u     /* the queue target until the caller sets one */
+#define CG_LC_MTPT_EPOCH_US 1000000u /* MTPT: one step a second at most */
+#define CG_LC_MTPT_STEP_US 20000u    /* by this much */
+#define CG_LC_MTPT_MIN_US 20000u     /* the least target */
+#define CG_LC_MTPT_CAP_US 300000u    /* the ceiling until the caller sets one */
+#define CG_LC_MTPT_GAIN_PCT 3u       /* a change of what the link delivered under this is flat */
 
 enum { CG_LC_STARTUP_M = 0, CG_LC_DRAIN_M, CG_LC_PROBE_M };
 
@@ -79,6 +101,7 @@ enum { CG_LC_STARTUP_M = 0, CG_LC_DRAIN_M, CG_LC_PROBE_M };
 #define CG_LC_QMAX 16u  /* the split's queue: the larger of in flight over bw x rtprop and its delay at the pacing rate */
 #define CG_LC_SATQ 32u  /* SAT caps only while the link holds a queue (half the target or more) */
 #define CG_LC_WND 64u   /* the split gives a link data only while its window (cg_lc_cwnd) has room (eta.h's cg_eta_wnd) */
+#define CG_LC_MTPT 128u /* MTPT: the queue target by perturb and observe, each link its own (cg_lc_mtpt) */
 #define CG_LC_BITS (CG_LC_QMODE | CG_LC_S32) /* the default; the router's adds SAT (config.c) */
 
 struct cg_lc {
@@ -100,6 +123,13 @@ struct cg_lc {
 	uint32_t target_us;      /* the queue the link may hold (set by the caller) */
 	uint64_t sat, sat_t;     /* what it delivered while queued (EWMA), and when */
 	uint8_t bits;            /* CG_LC_QETA...: set by the caller */
+	/* MTPT (CG_LC_MTPT): the epoch's start, what the link
+	 * delivered in it, its largest queue, packets sent and lost; the
+	 * previous epoch's delivery; the way the target moves; the ceiling */
+	uint64_t mt_t, mt_bytes, mt_rate;
+	uint32_t mt_qmax, mt_sent, mt_lost, mt_cap_us;
+	int8_t mt_dir;
+	uint32_t mt_up, mt_down;  /* steps taken each way (status) */
 };
 
 static inline void cg_lc_init(struct cg_lc *c)
@@ -107,6 +137,92 @@ static inline void cg_lc_init(struct cg_lc *c)
 	memset(c, 0, sizeof(*c));
 	c->target_us = CG_LC_TARGET_US;
 	c->bits = CG_LC_BITS;
+	c->mt_cap_us = CG_LC_MTPT_CAP_US;
+	c->mt_dir = 1;
+}
+
+/* The caller's queue target, each tick: base_us is the target (without
+ * CG_LC_MTPT), or where MTPT starts (with it, then only the ceiling cap_us
+ * is the caller's). */
+static inline void cg_lc_target(struct cg_lc *c, uint32_t base_us, uint32_t cap_us)
+{
+	if (!(c->bits & CG_LC_MTPT)) {
+		c->target_us = base_us;
+		return;
+	}
+	c->mt_cap_us = cap_us > CG_LC_MTPT_MIN_US ? cap_us : CG_LC_MTPT_MIN_US;
+	if (!c->mt_t)
+		c->target_us = base_us;
+	if (c->target_us > c->mt_cap_us)
+		c->target_us = c->mt_cap_us;
+	if (c->target_us < CG_LC_MTPT_MIN_US)
+		c->target_us = CG_LC_MTPT_MIN_US;
+}
+
+/* MTPT's ceiling for a link: the budget less how much slower it is than
+ * the fastest link in the split (its rtprop over ref, the least: the SFACKs
+ * come back on the fastest link, so that is the one-way difference), so
+ * that what it carries arrives within the group's window; at least the
+ * least target. */
+static inline uint32_t cg_lc_mtpt_cap(const struct cg_lc *c, uint32_t budget_ms, uint32_t ref)
+{
+	uint64_t b = (uint64_t)budget_ms * 1000, lag = ref && c->rtprop > ref ? c->rtprop - ref : 0;
+
+	return b > lag + CG_LC_MTPT_MIN_US ? (uint32_t)(b - lag) : CG_LC_MTPT_MIN_US;
+}
+
+/* MTPT at now, the receiver having said the link delivered bytes more:
+ * perturb and observe, at the end of an epoch the target moves a step, or
+ * holds. */
+static inline void cg_lc_mtpt(struct cg_lc *c, uint64_t now, uint64_t bytes)
+{
+	uint64_t dt, rate;
+	int64_t t;
+	int steps;
+
+	if (!c->mt_t) {
+		c->mt_t = now;
+		return;
+	}
+	c->mt_bytes += bytes;
+	if (c->have_owd && c->q_us > c->mt_qmax)
+		c->mt_qmax = c->q_us;
+	dt = now - c->mt_t;
+	if (dt < CG_LC_MTPT_EPOCH_US)
+		return;
+	rate = c->mt_bytes * 1000000 / dt;
+	if (c->mt_sent >= CG_LC_LOSS_MIN && (uint64_t)c->mt_lost * 100 > (uint64_t)CG_LC_LOSS_PCT * c->mt_sent) {
+		c->mt_dir = -1; /* too much: back two steps */
+		steps = -2;
+	} else if (c->mt_qmax < c->target_us / 2) {
+		steps = 0; /* the target did not bind: nothing to learn */
+	} else if (!c->mt_rate || rate * 100 >= c->mt_rate * (100 + CG_LC_MTPT_GAIN_PCT)) {
+		steps = c->mt_dir; /* it gained: on the same way */
+	} else if (rate * 100 <= c->mt_rate * (100 - CG_LC_MTPT_GAIN_PCT)) {
+		c->mt_dir = (int8_t)-c->mt_dir; /* it lost: the other way */
+		steps = c->mt_dir;
+	} else {
+		c->mt_dir = -1; /* flat: the same for less queue */
+		steps = -1;
+	}
+	t = (int64_t)c->target_us + (int64_t)steps * CG_LC_MTPT_STEP_US;
+	if (t > c->mt_cap_us) {
+		t = c->mt_cap_us;
+		c->mt_dir = -1;
+	}
+	if (t < CG_LC_MTPT_MIN_US) {
+		t = CG_LC_MTPT_MIN_US;
+		c->mt_dir = 1;
+	}
+	if (t > c->target_us)
+		c->mt_up++;
+	else if (t < c->target_us)
+		c->mt_down++;
+	c->target_us = (uint32_t)t;
+	c->mt_rate = rate;
+	c->mt_bytes = 0;
+	c->mt_qmax = c->mt_sent = c->mt_lost = 0;
+	c->mt_t = now;
 }
 
 /* The estimate, bytes/s: the window's largest sample, at most 5/4 of what
@@ -241,6 +357,7 @@ static inline void cg_lc_sent(struct cg_lc *c, uint32_t len)
 {
 	c->inflight += len;
 	c->r_sent++;
+	c->mt_sent++;
 }
 
 /* A packet of len bytes the link lost (its subflow said, subflow.h). */
@@ -248,6 +365,7 @@ static inline void cg_lc_lost(struct cg_lc *c, uint32_t len)
 {
 	c->inflight -= c->inflight >= len ? len : c->inflight;
 	c->r_lost++;
+	c->mt_lost++;
 }
 
 /* The end of a round at now: STARTUP's exit, the loss's verdict, PROBE's
@@ -317,6 +435,8 @@ static inline void cg_lc_acked(struct cg_lc *c, uint64_t now, uint64_t bytes, ui
 		if (c->bw < CG_LC_FLOOR)
 			c->bw = CG_LC_FLOOR;
 	}
+	if (c->bits & CG_LC_MTPT)
+		cg_lc_mtpt(c, now, bytes);
 	round_us = c->srtt > CG_LC_ROUND_MIN_US ? c->srtt : CG_LC_ROUND_MIN_US;
 	if (!c->round_t)
 		c->round_t = now;
