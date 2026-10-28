@@ -32,9 +32,15 @@
   51 paquetes que dio por perdidos (4 por evidencia del enlace, 47 por
   plazo) **llegaron todos después**, y de 3538 pedidos de rescate 3509 se
   llenaron.
-- **Paso 1 (en curso):** la ventana de RACK hasta 300 ms (antes 20 ms sin
-  código y 100 con código) y `protocontroller_nack` (el NACK del túnel como
-  pista, no como pérdida).
+- **Paso 1:** la ventana de RACK hasta 300 ms (antes 20 ms sin código y 100
+  con código) y `protocontroller_nack` (el NACK del túnel como pista, no como
+  pérdida): neutro en el laboratorio.
+- **Paso U1 (en curso, protocolo 12, `subflow`):** cada enlace con su propia
+  secuencia (`sseq`) y sus pérdidas (`subflow.h`, `SFLOSS`); una pérdida es
+  cierta cuando el enlace la perdió y nada la reconstruye, o el receptor
+  también la pidió (`cg_resc_sure`); el RACK de GRIT sobre la mezcla se
+  apaga. En el laboratorio, con el RACK de la mezcla, casi todo lo que GRIT
+  reenviaba era por RACK y llegaba duplicado.
 
 ## Contexto
 
@@ -123,10 +129,45 @@ laboratorio netem entrega cada enlace en orden: el desorden que confunde a
 GRIT es el del terreno, donde se mide. `protocontroller_nack no` queda por
 medir en terreno.
 
+### Paso U1: el subflujo por enlace (protocolo 12, 2026-10-28)
+
+Rama `claude/mpgrit-step1` (`741d267`, `7fba66d`); nota del mapa
+`docs/mapa/Subflujo (subflow.h).md`.
+
+- **El formato:** la cabecera pasa de 24 a 28 bytes con `sseq`, fuera del MAC
+  como el byte del enlace (una copia por otro enlace lleva el suyo); el tipo
+  `CG_T_SFLOSS` (9) lleva el enlace y los rangos de `sseq` perdidos. La sonda
+  y su respuesta llevan el siguiente `sseq` del enlace: la pérdida de la cola.
+- **El receptor** da por perdido un hueco cuando por ese mismo enlace llegó un
+  `sseq` posterior hace más que la ventana del enlace (piso 10 ms; un hueco
+  que llega tarde la agranda 4 ms, hasta 300). Un salto de una ventana o más
+  no dice nada (un `SFLOSS` tiene que ser cierto). Las copias pagan su MAC:
+  dicen que su enlace no perdió.
+- **La evidencia:** el primer ensayo (`sf-smoke`) mostró que «el enlace lo
+  perdió» no es «el receptor no lo tiene»: en `lossy` de bajada el subflujo
+  halló 900 pérdidas, GRIT reenvió 906 y el router recibió 904 duplicados,
+  porque la FEC v3 ya las había reconstruido. El anillo del rescate guarda la
+  evidencia de cada paquete (su enlace lo perdió; el receptor lo pidió) y
+  `cg_resc_sure` decide: sin código basta el enlace; con código, los dos; el
+  NACK solo, según `protocontroller_nack`. Con la regla: 0–3 duplicados.
+- **El RACK de la mezcla** (`sf1`, n = 3, el PC y remoto06): con él
+  encendido, casi todo lo que GRIT reenvió fue por RACK y llegó duplicado, en
+  todos los brazos, también con su ventana en 250 ms
+  (`protocontroller_reo_ms`): las colas del laboratorio llevan el RTT de un
+  enlace más allá (p99 de 783 ms en `ratswitch` de subida). Es la lección de
+  MPTCP: la pérdida se decide por subflujo y el nivel de datos solo tiene un
+  temporizador de respaldo. Con `subflow`, `cg_pctl_rack` lo apaga.
+- **Hueco conocido:** lo copiado (redundancia) no tiene un enlace que responda
+  por su pérdida; sin el RACK de la mezcla, lo recupera el NACK (con
+  `protocontroller_nack yes`) o el temporizador.
+
 ## Pendiente
 
-- Medir el paso 1 (laboratorio `~/campo/2026-10-28/s1a/` y siguientes) y
-  llevarlo a la testnet contra OMR.
+- Medir el paso U1 en el laboratorio (`~/campo/2026-10-28/sf2/`) y en la
+  testnet contra OMR (sube el protocolo: el NUC y el VPS a la vez).
+- La pérdida de lo copiado, por enlace (qué enlaces llevaron cada copia).
+- El DATA del túnel (IP) con la misma evidencia: el rescate reenvía hoy lo
+  que el reordenador pide, y en terreno eso llegó tarde.
 - Por qué el túnel declara perdido lo que llega tarde con estos módems (¿los
   enlaces no son FIFO?, ¿plazos cortos para la cola de Claro?).
 - El nombre nuevo (propuestas de Sonnet: Rhizon, Cordyn, Ligra…; revisar
@@ -135,3 +176,5 @@ medir en terreno.
 ## Cambios
 
 - 2026-10-28: creada.
+- 2026-10-28: el paso U1 (protocolo 12, `subflow`), la regla de la evidencia
+  y el RACK de la mezcla apagado.

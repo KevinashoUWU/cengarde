@@ -66,7 +66,7 @@ flowchart LR
 - **Decidir:** [[Modelo de enlace (linkmodel.h)]], [[Gobernador (govern.h)]], [[Reparto (split.h)]], [[G3 enlace sin respuesta (split.h)]], [[G4 guarda de dispersión (split.h)]], [[Copias bajo estrés (split.h)]], [[ETA (eta.h)]], [[Copias a tiempo (eta.h)]], [[Lo que sobra (spare.h)]], [[Cosquilla (tickle.h)]], [[Enlace dominante (dominant.h)]].
 - **Enviar:** [[Dosificación (pace.h)]], [[Liberación TCP (tcpfree.h)]], [[Retransmisión según la evidencia (tcpack.h)]], [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]], [[Elección de servidor (srvpick.h)]], [[Dirección de origen (addrpick.h)]], [[Dirección de llegada (pktinfo.h)]], [[Nombres del servidor (resolve.h)]].
 - **Recibir:** [[Camino del router (clientpath.h)]], [[Anti-replay (replay.h)]], [[Reordenador (reorder.h)]], [[Enlaces activos (active.h)]], [[Colas del servidor (steer.h)]], [[Presupuesto de recepción (rcvbudget.h)]], [[Hilos por enlace (thrplan.h)]], [[Eco de sondas (epoch.h)]], [[Cookies y HELLO (cookie.h)]], [[Varios clientes (clients.h)]], [[Rutas del túnel nativo (tunroute.h)]].
-- **Recuperar:** [[Rescate (rescue.h)]], [[Reparación coherente (harq.h)]], [[FEC (fec.h)]], [[FEC v3 (fec3.h)]], [[Códigos de borrado (rs.h, rlc.h)]], [[Lo que sobra (spare.h)]].
+- **Recuperar:** [[Rescate (rescue.h)]], [[Subflujo (subflow.h)]], [[Reparación coherente (harq.h)]], [[FEC (fec.h)]], [[FEC v3 (fec3.h)]], [[Códigos de borrado (rs.h, rlc.h)]], [[Lo que sobra (spare.h)]].
 - **Configurar:** [[Configuración (config.c)]], [[Perillas]], [[Tabla de reenvío (fwdtable.h)]].
 - **Observar:** [[Llegadas (arrival.h)]], [[Bitácora de decisiones (decision.h)]].
 - **Otros:** [[Utilidades]], [[Glosario]].

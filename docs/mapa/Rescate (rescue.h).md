@@ -3,7 +3,7 @@ tags: [mapa, pieza]
 archivos:
   - engine/src/rescue.h
   - engine/tests/test_rescue.c
-sello: fb6a5c6d1fd7e06a
+sello: fbbf242fa59d2ab4
 ---
 # Rescate (rescue.h)
 
@@ -11,6 +11,8 @@ sello: fb6a5c6d1fd7e06a
 
 ## Qué hace
 Un ARQ estilo XLINK. El emisor guarda lo enviado hace poco en un anillo; cuando el [[Reordenador (reorder.h)]] del receptor va a abandonar un hueco, lo pide (`CG_T_NACK`) y el emisor lo reenvía por su camino más rápido, para que llegue antes de que TCP note la pérdida. Funciona en los dos sentidos: el servidor rescata la bajada y el cliente la subida. **GRIT no se rescata** (2026-10-27, [[025-protocontrolador]]): si lo pedido es un mensaje del protocontrolador B, la pérdida va a su flujo ([[Protocontrolador (protoctl.c, stream.h, streamcc.h)]], `cg_pctl_nack`, con el enlace por el que fue) en vez de reenviarse, y se contesta `CG_F_GONE`. **No se rescata la congestión:** lo perdido en un camino lleno no se reenvía (esa pérdida es la que frena a TCP), y el emisor avisa lo que no vendrá (`CG_F_GONE`). Lo reenviado sale de un crédito: cada paquete suma `pct` % de su tamaño, hasta 1 MiB.
+
+**La evidencia de una pérdida** ([[029-mpgrit]], 2026-10-28): cada paquete guardado junta lo que se sabe de su pérdida desde dos lados, cada uno inseguro solo: su único enlace lo perdió (`CG_RESC_EV_LINK`, un `SFLOSS` del [[Subflujo (subflow.h)]]; pero un código o una copia pudo reconstruirlo en el receptor) y el receptor lo pidió (`CG_RESC_EV_ASKED`, un NACK; pero quizá solo llega tarde por otro enlace: en terreno todo lo que el túnel dio por perdido llegó). `cg_resc_sure` decide: sin código, basta el enlace; con código, los dos; el NACK solo, si `protocontroller_nack` lo toma por pérdida; nunca dos veces (`CG_RESC_EV_DONE`). Por ahora solo decide para GRIT.
 
 ## Lee
 - Los huecos que pide el reordenador (`send_nacks`), con `rescue_wait_ms` y `rescue_tries`.
@@ -20,7 +22,7 @@ Un ARQ estilo XLINK. El emisor guarda lo enviado hace poco en un anillo; cuando 
 - El enlace de cada paquete en el anillo (`went`) sale de las copias ya decididas (`seal_batch`, `down_seal`, historia 023).
 
 ## Decide / escribe
-- Qué se reenvía y por dónde (`on_nack`); lo de GRIT, a su flujo (`to_grit`, `to_grit_bytes` en el estado de los dos extremos); `CG_BOND_RESCUE` y `CG_BOND_FULL` en la cola de bonding ([[Sondas y cola de bonding (proto.h)]]).
+- Qué se reenvía y por dónde (`on_nack`); lo de GRIT, a su flujo con la certeza de `cg_resc_sure` (`to_grit`, `to_grit_bytes` en el estado de los dos extremos); `CG_BOND_RESCUE` y `CG_BOND_FULL` en la cola de bonding ([[Sondas y cola de bonding (proto.h)]]).
 - `CG_DEC_RESCUE_FULL_ON/OFF` → [[Bitácora de decisiones (decision.h)]].
 - [[Ranuras de Starlink (slot.h)]] lo usa para las copias solo en el borde.
 
