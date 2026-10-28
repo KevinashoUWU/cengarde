@@ -33,7 +33,7 @@ ENGINE_CONF=$ETC/cengarde.conf
 # The engine's global settings a router may set here (engine/examples/server.conf).
 KEYS='fec fec_code fec_pct fec_pct_min fec_window_ms fec_single rescue_kb rescue_wait_ms rescue_code_ms pace_peers_ms
 split_spread_ms split_spread_copy reorder_margin_ms reorder_max_wait_ms governor governor_target_ms
-capacity_weights split_eta tcp_aware link_cc_bits protocontroller_buf_kb protocontroller_queue_ms parq'
+capacity_weights split_eta tcp_aware link_cc_bits link_cc_budget_ms protocontroller_buf_kb protocontroller_queue_ms parq'
 
 refuse() {
 	echo "cengarde-vps-admin: $*" >&2
