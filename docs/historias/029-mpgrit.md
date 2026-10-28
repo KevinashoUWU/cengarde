@@ -157,6 +157,16 @@ Rama `claude/mpgrit-step1` (`741d267`, `7fba66d`); nota del mapa
   enlace más allá (p99 de 783 ms en `ratswitch` de subida). Es la lección de
   MPTCP: la pérdida se decide por subflujo y el nivel de datos solo tiene un
   temporizador de respaldo. Con `subflow`, `cg_pctl_rack` lo apaga.
+- **El temporizador** (`sf2`, n = 4, `7fba66d`): sin el RACK de la mezcla se
+  fueron sus reenvíos (`reorder50` de subida: 2094 → 210 con `subflow` y 75
+  con además `protocontroller_nack no`), pero el temporizador de GRIT ocupó
+  su lugar, casi todo falso: `cell4` de subida, 386 reenvíos por él y 514
+  duplicados; `ratswitch` de subida, 864. Vence cada segmento enviado hace
+  más que `srtt + 4·rttvar` más la ventana, y el RTT de la mezcla es más
+  corto que el del enlace más lento. Con `subflow`, `cg_scc_rto_extra` le da
+  al menos el presupuesto de latencia (300 ms): las pérdidas normales las
+  hallan antes el subflujo y la sonda de cola. El caudal no cambió con
+  significancia en ningún caso (p ≥ 0,08).
 - **Hueco conocido:** lo copiado (redundancia) no tiene un enlace que responda
   por su pérdida; sin el RACK de la mezcla, lo recupera el NACK (con
   `protocontroller_nack yes`) o el temporizador.

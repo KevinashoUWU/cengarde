@@ -69,7 +69,8 @@ entre enlaces, que en terreno se leía como pérdida en el túnel y en GRIT
 - Con `subflow`, el RACK de GRIT sobre la mezcla de los enlaces se apaga
   (`cg_pctl_rack`): un segmento enviado antes que el último entregado no está
   perdido porque fue por un enlace más lento; quedan las pérdidas de cada
-  enlace y el temporizador como respaldo.
+  enlace y el temporizador como respaldo, con al menos 300 ms sobre el RTT de
+  la mezcla (`cg_scc_rto_extra`).
 - Al recibir un `SFLOSS`, para un mensaje de GRIT que fue solo por ese enlace:
   `cg_pctl_nack` con la certeza de `cg_resc_sure` ([[Protocontrolador (protoctl.c, stream.h, streamcc.h)]]) y `CG_F_GONE` al otro extremo. El DATA
   del túnel (IP) sigue con el reordenador y sus NACK.
@@ -91,6 +92,11 @@ entre enlaces, que en terreno se leía como pérdida en el túnel y en GRIT
   mezcla encendido, casi todo lo que GRIT reenvió fue por RACK y llegó
   duplicado, también con su ventana en 250 ms (`protocontroller_reo_ms`);
   de ahí apagarlo con `subflow`.
+- `sf2` (n = 4, `7fba66d`): sin el RACK de la mezcla se fueron sus
+  reenvíos (`reorder50` de subida: 2094 → 210 y 75), pero el temporizador
+  ocupó su lugar, casi todo falso (`cell4` de subida: 386 por él, 514
+  duplicados; `ratswitch`: 864): el RTT de la mezcla es más corto que el del
+  enlace más lento. De ahí `cg_scc_rto_extra`.
 
 ## Choques conocidos
 - Lo copiado por varios enlaces (redundancia) no tiene un enlace que responda
