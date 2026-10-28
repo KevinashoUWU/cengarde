@@ -24,14 +24,24 @@ static void test_eta_basics(void)
 	for (int i = 0; i < 5; i++)
 		CHECK_EQ(cg_eta_pick(&e, 0x3, 1000, 0), 0);
 	CHECK_EQ(cg_eta_pick(&e, 0x3, 1000, 0), 1); /* 0 would arrive at 7 ms, 1 at 6 */
+	/* a link of no rate in the set takes nothing while another has one */
+	{
+		struct cg_eta z;
+
+		cg_eta_reset(&z);
+		cg_eta_set(&z, 0, 8000000, 0, 0, 0);
+		for (int i = 0; i < 50; i++)
+			CHECK_EQ(cg_eta_pick(&z, 0x3, 1000, 0), 0);
+		CHECK_EQ(cg_eta_pick(&z, 0x2, 1000, 0), -1); /* none with a rate: the weights */
+	}
 	/* 10 ms later link 0 has drained */
 	CHECK_EQ(cg_eta_pick(&e, 0x3, 1000, 10 * MS), 0);
 	CHECK_EQ(e.l[0].backlog, 8000ull * 1000000);
 	/* a tick says link 0 holds 20 ms of queue: link 1 now */
 	cg_eta_set(&e, 0, 8000000, 0, 20 * MS, 10 * MS);
 	CHECK_EQ(cg_eta_pick(&e, 0x3, 1000, 10 * MS), 1);
-	/* a link of the set without a rate: the caller decides */
-	CHECK_EQ(cg_eta_pick(&e, 0x7, 1000, 10 * MS), -1);
+	/* a link of the set without a rate: it takes nothing, the others go on */
+	CHECK_EQ(cg_eta_pick(&e, 0x7, 1000, 10 * MS), 1);
 }
 
 /* Two links, 30 Mbit/s at 20 ms and 8 Mbit/s at 70 ms, fed 36 Mbit/s of
@@ -113,7 +123,7 @@ static void test_eta_feed(void)
 	CHECK(e.l[0].bps == 30000000 && e.l[0].base_us == 0 && e.l[0].backlog == 30000000ull * 2000);
 	CHECK(e.l[1].bps == 8000000 && e.l[1].base_us == 0xc350u + 0x1000u && e.l[1].backlog == 0);
 	CHECK(e.l[2].bps == 0); /* no rate yet */
-	CHECK_EQ(cg_eta_pick(&e, 0x7, 1400, 1000), -1);
+	CHECK_EQ(cg_eta_pick(&e, 0x7, 1400, 1000), 0); /* link 2, no rate, takes nothing */
 	CHECK(cg_eta_pick(&e, 0x3, 1400, 1000) == 0);
 	/* with room (queue under 10 ms): 5/4 of its own and 1/16 of the largest */
 	cg_cap_eta(&e, l, 0x7, 10000, NULL, 16, 0, 1000);

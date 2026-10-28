@@ -419,7 +419,8 @@ static void test_decision_weights_used(void)
 	e.l[0].bps = 10 * MBIT;
 	e.l[1].bps = 20 * MBIT;
 	CHECK(!strcmp(cg_weights_used(1, &e, 0x3, 1, 1), "eta"));
-	CHECK(!strcmp(cg_weights_used(1, &e, 0x7, 1, 1), "capacity")); /* 2 has no rate */
+	CHECK(!strcmp(cg_weights_used(1, &e, 0x7, 1, 1), "eta")); /* 2 has no rate: it takes nothing, ETA goes on */
+	CHECK(!strcmp(cg_weights_used(1, &e, 0x4, 1, 1), "capacity")); /* only 2, of no rate: the weights */
 	CHECK(!strcmp(cg_weights_used(0, &e, 0x3, 0, 1), "governor"));
 	CHECK(!strcmp(cg_weights_used(1, &e, 0, 0, 0), "links"));
 }

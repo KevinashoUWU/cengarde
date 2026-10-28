@@ -148,10 +148,14 @@ static inline int cg_eta_pick(struct cg_eta *e, uint16_t set, uint32_t len, uint
 		struct cg_eta_link *l = &e->l[i];
 		uint64_t eta;
 
-		if (!(set >> i & 1))
+		/* a link of no rate (none yet, or its capacity sank to nothing)
+		 * takes no packet while another has one, and only when none has
+		 * does the caller go to the weights: a link that lost half of what
+		 * it took had no rate, so every packet went by the weights, and its
+		 * weight kept a quarter of the traffic on it (story 029, Claro on
+		 * the testnet: 28-78 % lost, the holes held the streams) */
+		if (!(set >> i & 1) || !l->bps)
 			continue;
-		if (!l->bps)
-			return -1;
 		cg_eta_drain(l, now_us);
 		/* us: base + (backlog + 8 len 10^6) / bps */
 		eta = l->base_us + (l->backlog + (uint64_t)len * 8 * 1000000) / l->bps;
