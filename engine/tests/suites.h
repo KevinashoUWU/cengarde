@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later */
 SUITE(linkowd)
 SUITE(subflow)
+SUITE(linkcc)
 SUITE(siphash)
 SUITE(proto)
 SUITE(cookie)
