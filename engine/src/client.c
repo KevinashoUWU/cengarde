@@ -170,6 +170,7 @@ struct link {
 	 * on it alone (to its stream), copied, not kept, not GRIT's, not sure
 	 * yet (a code may have rebuilt it: rescue.h's cg_resc_sure) */
 	uint64_t sf_grit, sf_copied, sf_unkept, sf_other, sf_unsure;
+	uint64_t sf_allcopies; /* of sf_grit's checks, copied ones every link of theirs lost (cg_resc_lost_on) */
 	uint64_t sf_suspect; /* of them, handed over as suspects (a code may rebuild them) */
 	uint8_t pump;      /* its pump (off and on), once it had a socket: sticky */
 	uint8_t has_pump;
@@ -1439,6 +1440,9 @@ static void seal_batch(struct client *c, int m, uint16_t carry, uint16_t dup)
 
 			memcpy(e, c->hdr[j], CG_HDR_LEN);
 			memcpy(e + CG_HDR_LEN, p, len);
+			if (only < 0 && !(c->pick[j] < 0 && c->cfg->mute_trickle)) /* its copies' links */
+				cg_resc_copies(&c->resc, c->resc_idx, c->txs.session, c->sseq[j],
+					       (uint16_t)(cg_split_dst(c->pick[j], carry, dup) & c->cmask[j]));
 			/* the budget grows with the link's weight (capacity.h) */
 			cg_resc_earn(&c->resc_b,
 				     only >= 0 ? (uint32_t)((uint64_t)len *
@@ -3135,8 +3139,8 @@ static struct link *fastest_link(struct client *c, uint64_t now_ms)
  * (cg_pctl_nack), and the server stops waiting for it (GONE), when nothing
  * rebuilds it on the way, or once the server's reorderer asked for it as
  * well (rescue.h's cg_resc_sure); a copied one may have come on another
- * link, and the tunnel's own DATA is left to the server's reorderer and
- * its NACKs. */
+ * link, until every link it went on lost it (cg_resc_lost_on), and the
+ * tunnel's own DATA is left to the server's reorderer and its NACKs. */
 static void on_sfloss(struct client *c, const uint8_t *payload, size_t plen, uint64_t now_ms)
 {
 	uint32_t q[CG_NACK_SEQ_MAX], gone[CG_NACK_SEQ_MAX];
@@ -3164,8 +3168,12 @@ static void on_sfloss(struct client *c, const uint8_t *payload, size_t plen, uin
 			continue;
 		}
 		if (went != link) {
-			l->sf_copied++;
-			continue;
+			if (!cg_resc_lost_on(&c->resc, c->resc_idx, c->txs.session, seq, link)) {
+				l->sf_copied++;
+				continue;
+			}
+			went = (uint8_t)link; /* every copy lost: as sure as on this link alone */
+			l->sf_allcopies++;
 		}
 		ev = cg_resc_ev(&c->resc, c->resc_idx, c->txs.session, seq, CG_RESC_EV_LINK);
 		sure = cg_resc_sure(ev, up_coded(c), asked_is_lost(c->cfg));
@@ -5044,6 +5052,7 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 			cg_json_u64(j, "forgotten", st->stale);
 			cg_json_u64(j, "to_grit", l->sf_grit);
 			cg_json_u64(j, "copied", l->sf_copied);
+			cg_json_u64(j, "all_copies", l->sf_allcopies);
 			cg_json_u64(j, "not_kept", l->sf_unkept);
 			cg_json_u64(j, "other", l->sf_other);
 			cg_json_u64(j, "unsure", l->sf_unsure);
@@ -5737,9 +5746,11 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 		c->resc.link = calloc(n, sizeof(*c->resc.link));
 		c->resc.sent = calloc(n, sizeof(*c->resc.sent));
 		c->resc.ev = calloc(n, sizeof(*c->resc.ev));
+		c->resc.copies = calloc(n, sizeof(*c->resc.copies));
+		c->resc.lost = calloc(n, sizeof(*c->resc.lost));
 		c->resc_idx = calloc(CG_RESC_IDX, sizeof(*c->resc_idx));
 		if (!c->resc.mem || !c->resc.sess || !c->resc.seq || !c->resc.len || !c->resc.link || !c->resc.sent ||
-		    !c->resc.ev || !c->resc_idx) {
+		    !c->resc.ev || !c->resc.copies || !c->resc.lost || !c->resc_idx) {
 			cg_err("rescue_kb = %u: out of memory", cfg->rescue_kb);
 			goto out;
 		}
@@ -5975,6 +5986,8 @@ out:
 	free(c->resc.link);
 	free(c->resc.sent);
 	free(c->resc.ev);
+	free(c->resc.copies);
+	free(c->resc.lost);
 	free(c->resc_idx);
 	if (c->tun_fd >= 0)
 		close(c->tun_fd);

@@ -292,6 +292,7 @@ struct sfpath {
 	struct cg_sf_tx tx;
 	struct cg_sf_rx rx;
 	uint64_t grit, copied, unkept, other, unsure;
+	uint64_t allcopies; /* of grit's checks, copied ones every path of theirs lost (cg_resc_lost_on) */
 	uint64_t suspect; /* of them, handed over as suspects (a code may rebuild them) */
 };
 
@@ -2172,8 +2173,8 @@ static void on_nack(struct server *s, struct session *S, uint8_t flags, const ui
  * (cg_pctl_nack), and the client stops waiting for it (GONE), when nothing
  * rebuilds it on the way, or once the client's reorderer asked for it as
  * well (rescue.h's cg_resc_sure); a copied one may have come on another
- * path, and the tunnel's own DATA is left to the client's reorderer and
- * its NACKs. */
+ * path, until every path it went on lost it (cg_resc_lost_on), and the
+ * tunnel's own DATA is left to the client's reorderer and its NACKs. */
 static void on_sfloss(struct server *s, struct session *S, const uint8_t *payload, size_t plen, uint64_t now_ms)
 {
 	uint32_t q[CG_NACK_SEQ_MAX], gone[CG_NACK_SEQ_MAX];
@@ -2201,8 +2202,12 @@ static void on_sfloss(struct server *s, struct session *S, const uint8_t *payloa
 			continue;
 		}
 		if (went != p) {
-			F->copied++;
-			continue;
+			if (!cg_resc_lost_on(&s->resc, S->resc_idx, S->id, seq, p)) {
+				F->copied++;
+				continue;
+			}
+			went = (uint8_t)p; /* every copy lost: as sure as on this path alone */
+			F->allcopies++;
 		}
 		ev = cg_resc_ev(&s->resc, S->resc_idx, S->id, seq, CG_RESC_EV_LINK);
 		sure = cg_resc_sure(ev, down_coded(s, S), s->cfg->protocontroller_nack && !s->cfg->subflow);
@@ -3048,6 +3053,9 @@ static void down_seal(struct server *s, struct session *S, int m, const struct d
 
 			memcpy(e, s->hdr[j], CG_HDR_LEN);
 			memcpy(e + CG_HDR_LEN, buf, len);
+			if (only < 0 && !(s->pick[j] < 0 && s->cfg->mute_trickle)) /* its copies' paths */
+				cg_resc_copies(&s->resc, S->resc_idx, S->id, h.seq,
+					       (uint16_t)(cg_split_dst(s->pick[j], d->carry, d->k.dup) & s->cmask[j]));
 			/* the budget grows with the path's weight (capacity.h): less as
 			 * it nears congestion */
 			cg_resc_earn(&S->resc_b,
@@ -4176,6 +4184,7 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 				cg_json_u64(j, "forgotten", F->tx.stale);
 				cg_json_u64(j, "to_grit", F->grit);
 				cg_json_u64(j, "copied", F->copied);
+				cg_json_u64(j, "all_copies", F->allcopies);
 				cg_json_u64(j, "not_kept", F->unkept);
 				cg_json_u64(j, "other", F->other);
 				cg_json_u64(j, "unsure", F->unsure);
@@ -5035,8 +5044,10 @@ int cg_server_run(struct cg_config *cfg, const struct cg_run *run)
 		s->resc.link = calloc(n, sizeof(*s->resc.link));
 		s->resc.sent = calloc(n, sizeof(*s->resc.sent));
 		s->resc.ev = calloc(n, sizeof(*s->resc.ev));
+		s->resc.copies = calloc(n, sizeof(*s->resc.copies));
+		s->resc.lost = calloc(n, sizeof(*s->resc.lost));
 		if (!s->resc.mem || !s->resc.sess || !s->resc.seq || !s->resc.len || !s->resc.link || !s->resc.sent ||
-		    !s->resc.ev) {
+		    !s->resc.ev || !s->resc.copies || !s->resc.lost) {
 			cg_err("rescue_kb = %u: out of memory", cfg->rescue_kb);
 			goto out;
 		}
@@ -5273,6 +5284,8 @@ out:
 	free(s->resc.link);
 	free(s->resc.sent);
 	free(s->resc.ev);
+	free(s->resc.copies);
+	free(s->resc.lost);
 	cg_idmap_free(&s->ids);
 	cg_config_free(s->cfg);
 	free(s->cfg);

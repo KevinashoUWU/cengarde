@@ -33,6 +33,12 @@
  * one, not again. The link's word alone where a code may rebuild it: a
  * suspect, lost if the code has not rebuilt it by the repair horizon (the
  * receiver's NACK may never come: it waits for the code, then gives up).
+ * A copied packet (redundancy): its links each lost their copy, every one
+ * of them, is the same certain word as one link losing a packet that went
+ * on it alone (cg_resc_lost_on). Before, a copy lost on every link was
+ * never told to GRIT, whose RACK is off with subflows: only its timer, 300
+ * ms past the round trip, found it (story 029, red1: thousands of
+ * retransmissions in fade, every one of them by the timer).
  *
  * Pure: no clock, no I/O, no allocation (the caller owns the memory).
  *
@@ -63,6 +69,8 @@ struct cg_resc_ring {
 	uint8_t *link;  /* and the one path it went on, CG_RESC_NOLINK: several */
 	uint32_t *sent; /* and when it was last sent again (ms, low bits | 1), 0: never */
 	uint8_t *ev;    /* and the evidence of its loss (CG_RESC_EV_*); NULL: none kept */
+	uint16_t *copies; /* and the links its copies went on (0: not known); NULL: none kept */
+	uint16_t *lost;   /* of them, those whose SFLOSS said they lost it */
 	uint32_t n, next;
 };
 
@@ -86,6 +94,8 @@ static inline uint8_t *cg_resc_put(struct cg_resc_ring *r, uint32_t *idx, uint32
 	r->sent[i] = 0;
 	if (r->ev)
 		r->ev[i] = 0;
+	if (r->copies)
+		r->copies[i] = r->lost[i] = 0;
 	idx[seq & (CG_RESC_IDX - 1)] = i + 1;
 	return r->mem + (size_t)i * CG_RESC_ENTRY;
 }
@@ -120,6 +130,43 @@ static inline unsigned cg_resc_ev(struct cg_resc_ring *r, const uint32_t *idx, u
 		return 0;
 	r->ev[e] |= (uint8_t)ev;
 	return r->ev[e];
+}
+
+/* The links session sess's packet seq (kept) went on, when several: its
+ * copies (cg_resc_lost_on). links 0: not known (a copy may go where the
+ * ring does not see it: mute_trickle). */
+static inline void cg_resc_copies(struct cg_resc_ring *r, const uint32_t *idx, uint32_t sess, uint32_t seq,
+				  uint16_t links)
+{
+	uint32_t e = idx[seq & (CG_RESC_IDX - 1)];
+
+	if (!r->copies || !e || e > r->n)
+		return;
+	e--;
+	if (r->len[e] && r->sess[e] == sess && r->seq[e] == seq)
+		r->copies[e] = links;
+}
+
+/* Link's SFLOSS said it lost session sess's packet seq, a copied one: 1
+ * when now every link its copies went on has lost it (a certain loss on
+ * the links, as one link's word on a packet that went on it alone), 0
+ * while a copy may still come on another or its links are not known. */
+static inline int cg_resc_lost_on(struct cg_resc_ring *r, const uint32_t *idx, uint32_t sess, uint32_t seq,
+				  unsigned link)
+{
+	uint32_t e = idx[seq & (CG_RESC_IDX - 1)];
+	uint16_t m;
+
+	if (!r->copies || !e || e > r->n || link >= 16)
+		return 0;
+	e--;
+	if (!r->len[e] || r->sess[e] != sess || r->seq[e] != seq)
+		return 0;
+	m = r->copies[e];
+	if (!(m >> link & 1))
+		return 0;
+	r->lost[e] |= (uint16_t)(1u << link);
+	return (r->lost[e] & m) == m;
 }
 
 /* How sure a loss is, from its evidence ev (CG_RESC_EV_*): coded, a code
