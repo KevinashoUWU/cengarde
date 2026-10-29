@@ -589,11 +589,17 @@ estaba.
   (`protocontroller 'b'`). Lo que ganó en terreno el 2026-10-28: la bajada
   al 93 % de OpenMPTCProuter y la subida por encima, con la mitad de su
   ping.
-- **Redundancia** copia cada paquete por todos los enlaces y gana la primera
-  copia, con el rescate encendido y el TCP de la LAN como un TCP simple en
-  el medio (`protocontroller 'a'`): en el laboratorio del 2026-10-28 llevó
-  24–45 % más por enlaces que pierden o celulares y 5 veces más con el
-  principal cortado, a cambio de 2–8 % menos en enlaces limpios.
+- **Redundancia** copia cada paquete por cada enlace que lo entrega a tiempo
+  y gana la primera copia, con el rescate encendido y el TCP de la LAN como
+  un TCP simple en el medio (`protocontroller 'a'`): en el laboratorio del
+  2026-10-28 llevó 24–45 % más por enlaces que pierden o celulares y 5 veces
+  más con el principal cortado. Cada enlace tiene su subflujo y su propio
+  ritmo (`subflow`, `link_cc`) y lleva copia solo si llegaría a menos de
+  150 ms de la primera (`redund_pace_ms`): en terreno (2026-10-29) la
+  bajada pasó de 59–60 a 113–117 Mbit/s con 40–55 % menos datos, y las colas
+  de los enlaces lentos de 3,5–6,7 s a 0,5–2,5 s. Un SQM (`cake`) en `cg0`
+  limita lo que va por el TCP del protocontrolador A: el de 22 Mbit/s del
+  NUC dejaba la subida en 20.
 - **Personalizado** (o sin `mode`): las pestañas *Protección*, *Funciones
   de capa 4* y *Avanzado* deciden todo, como antes.
 
@@ -606,7 +612,9 @@ motor.
 **El VPS tiene que coincidir:** `sudo cengarde-vps-setup mode bonding` (o
 `redundancy`), o desde el router con el panel de abajo. Bonding enciende
 allá el protocontrolador y `subflow`, `link_cc` y la NACK como pista para
-GRIT; redundancia, el protocontrolador. Lo que diga `engine.local` gana.
+GRIT; redundancia, el protocontrolador, `subflow`, `link_cc` y
+`redund_pace_ms = 150` para las copias de la bajada. Lo que diga
+`engine.local` gana.
 
 ### Administrar el VPS desde el router
 

@@ -56,19 +56,18 @@ kv() { sed -n "s/^$2=\"\{0,1\}\([^\"]*\)\"\{0,1\}\$/\1/p" "$1" 2>/dev/null | tai
 ini() { sed -n "s/^[[:space:]]*$2[[:space:]]*=[[:space:]]*//p" "$1" 2>/dev/null | tail -n 1; }
 
 cmd_get() {
-	local b p f k v
+	local b f k v
 
 	b=$(kv "$NAT_CONF" BONDING)
-	p=$(kv "$NAT_CONF" PROTOCONTROLLER)
 	echo "version=$(cengarde version 2>/dev/null | head -n 1)"
 	# the routers by name (a file of another name there is not one)
 	v=$(find "$ETC/clients" -mindepth 1 -maxdepth 1 -type f 2>/dev/null | sed 's|.*/||' |
 		grep -xE '[a-z0-9][a-z0-9-]{0,11}' | grep -vx default | sort | tr '\n' ' ')
 	echo "routers=${v% }"
-	# what cengarde-vps-setup mode leaves: custom keeps the protocontroller
+	# what cengarde-vps-setup mode leaves
 	if [ "$b" = yes ]; then
 		echo mode=bonding
-	elif [ "$p" = yes ]; then
+	elif [ "$(kv "$NAT_CONF" REDUNDANCY)" = yes ]; then
 		echo mode=redundancy
 	else
 		echo mode=custom

@@ -62,10 +62,12 @@
 #                                    subflow and own rate, the tunnel's NACK
 #                                    a hint for GRIT); redundancy, the
 #                                    protocontroller (the routers use A) and
-#                                    BONDING off; custom, BONDING off (the
-#                                    protocontroller stays as it is); the
-#                                    engine restarts. What engine.local says
-#                                    wins
+#                                    REDUNDANCY (each link's subflow and own
+#                                    rate deciding the copies of the
+#                                    download, redund_pace_ms 150); custom,
+#                                    neither (the protocontroller stays as it
+#                                    is); the engine restarts. What
+#                                    engine.local says wins
 #   cengarde-vps-setup admin-key add "ssh-ed25519 KEY [COMMENT]"|list|remove KEY|COMMENT
 #                                    a router's admin key (its LuCI shows it,
 #                                    VPS tab): in root's authorized_keys
@@ -122,6 +124,7 @@ TUNNEL_IPV6=no
 PROTOCONTROLLER=no
 FEC=no
 BONDING=no
+REDUNDANCY=no
 ROUTER_NAME=router
 # ROUTER_TUNNEL_ADDR, the cloud-config's router's tunnel address, is left
 # unset: a cloud-config without it is older than 0.5.2, and its router has
@@ -205,6 +208,7 @@ if [ -e "$CONF" ]; then
 	. "$CONF"
 fi
 is_port "$CENGARDE_PORT" || die "CENGARDE_PORT in $CONF: not a port"
+case $REDUNDANCY in yes | no) ;; *) die "REDUNDANCY in $CONF: yes or no" ;; esac
 case $PROTOCONTROLLER in yes | no) ;; *) die "PROTOCONTROLLER in $CONF: yes or no" ;; esac
 case $FEC in yes | rlc | no) ;; *) die "FEC in $CONF: yes, rlc or no" ;; esac
 # What IP pass forwards (cengarde-nat refuses a bad one).
@@ -487,6 +491,16 @@ engine_conf() {
 		subflow = yes
 		link_cc = yes
 		protocontroller_nack = no
+	EOF
+	[ "$REDUNDANCY" = yes ] && cat <<-EOF
+		# Redundancy (cengarde-vps-setup mode, story 029): each link a
+		# subflow with its own rate, which decides the copies of the
+		# download: a link whose copy would arrive more than redund_pace_ms
+		# after the first takes none (the field, 2026-10-29: 59-60 ->
+		# 113-117 Mbit/s with 40-55 % less data).
+		subflow = yes
+		link_cc = yes
+		redund_pace_ms = 150
 	EOF
 	[ "$FEC" = no ] || cat <<-EOF
 		# The repair data (cengarde-vps-setup fec off removes it): each
@@ -1441,21 +1455,22 @@ cmd_fec() {
 # cmd_mode bonding|redundancy|custom: BONDING in nat.conf (and with it the
 # protocontroller, which bonding's GRIT needs), and the engine to match.
 cmd_mode() {
-	local b p
+	local b r p
 	case ${1:-} in
-	bonding) b=yes p=yes ;;
-	redundancy) b=no p=yes ;;
-	custom) b=no p=$PROTOCONTROLLER ;;
+	bonding) b=yes r=no p=yes ;;
+	redundancy) b=no r=yes p=yes ;;
+	custom) b=no r=no p=$PROTOCONTROLLER ;;
 	*) die "usage: mode bonding|redundancy|custom" ;;
 	esac
 	check_proto
 	lock
-	if [ "$BONDING" = "$b" ] && [ "$PROTOCONTROLLER" = "$p" ]; then
+	if [ "$BONDING" = "$b" ] && [ "$REDUNDANCY" = "$r" ] && [ "$PROTOCONTROLLER" = "$p" ]; then
 		say "mode $1 already"
 		return 0
 	fi
 	keep "$CONF"
 	set_conf BONDING "$b"
+	set_conf REDUNDANCY "$r"
 	if [ "$p" = yes ] && [ "$PROTOCONTROLLER" != yes ]; then
 		mkdir -p "$R/etc/modules-load.d"
 		echo tcp_bbr >"$R/etc/modules-load.d/cengarde-bbr.conf"
@@ -1466,7 +1481,7 @@ cmd_mode() {
 	kept
 	case $1 in
 	bonding) say "mode bonding: the protocontroller, each link's subflow and own rate (the routers set Bonding in LuCI's General tab)" ;;
-	redundancy) say "mode redundancy: the protocontroller (the routers' A), no subflows" ;;
+	redundancy) say "mode redundancy: the protocontroller (the routers' A), each link's subflow and own rate deciding the copies" ;;
 	*) say "mode custom: no subflows here (the protocontroller stays $([ "$PROTOCONTROLLER" = yes ] && echo on || echo off))" ;;
 	esac
 }

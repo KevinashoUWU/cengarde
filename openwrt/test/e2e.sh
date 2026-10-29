@@ -640,8 +640,8 @@ uci set cengarde.main.mode=redundancy
 uci set cengarde.main.split=1
 uci set cengarde.main.protocontroller=b
 uci commit cengarde
-conf | grep -qE '^(split = on|protocontroller = b|subflow = yes|link_cc = yes)' && { echo "redundancy: a bonding switch is left"; r=1; }
-for kv in 'protocontroller = a' 'subflow = no' 'link_cc = no' 'rescue_wait_ms = 60' 'tcp_aware = yes'; do
+conf | grep -qE '^(split = on|protocontroller = b)' && { echo "redundancy: a bonding switch is left"; r=1; }
+for kv in 'protocontroller = a' 'subflow = yes' 'link_cc = yes' 'redund_pace_ms = 150' 'rescue_wait_ms = 60' 'tcp_aware = yes'; do
 	conf | grep -qxF "$kv" || { echo "redundancy: missing $kv"; r=1; }
 done
 (umask 077 && conf > /tmp/mode.conf)
@@ -680,7 +680,7 @@ else
 fi
 "$VM" ssh vps 'mkdir -p /tmp/adm/etc/cengarde && cat > /tmp/adm/cengarde-vps-admin' <"$HERE/../../contrib/vps/cengarde-vps-admin"
 "$VM" ssh vps "PUB='$pub' sh -s" <<'EOF'
-printf 'BONDING="no"\nPROTOCONTROLLER="yes"\nFEC="no"\n' >/tmp/adm/etc/cengarde/nat.conf
+printf 'BONDING="no"\nREDUNDANCY="yes"\nPROTOCONTROLLER="yes"\nFEC="no"\n' >/tmp/adm/etc/cengarde/nat.conf
 printf '#!/bin/sh\necho "$*" >>/tmp/adm/calls\n' >/tmp/adm/setup
 chmod +x /tmp/adm/setup
 cp /etc/dropbear/authorized_keys /tmp/adm/keys.was 2>/dev/null || :

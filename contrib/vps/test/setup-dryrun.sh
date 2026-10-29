@@ -39,9 +39,10 @@
 # - protocontroller on|off: protocontroller = b, tcp_bbr at boot,
 #   PROTOCONTROLLER in nat.conf;
 # - fec on|rlc|off: fec = yes (and fec_code = rlc), FEC in nat.conf (story 026);
-# - mode bonding|redundancy: subflow, link_cc and the protocontroller,
-#   BONDING in nat.conf; redundancy takes them out but the protocontroller,
-#   custom leaves the protocontroller as it is;
+# - mode bonding|redundancy|custom: bonding, subflow, link_cc, the NACK a
+#   hint and the protocontroller (BONDING in nat.conf); redundancy, subflow,
+#   link_cc, redund_pace_ms 150 and the protocontroller (REDUNDANCY);
+#   custom, neither, the protocontroller as it is;
 # - admin-key add|list|remove: a router's key in root's authorized_keys,
 #   bound to cengarde-vps-admin and restricted, once; not a key refused;
 #   removed by its comment, exactly; and cengarde-vps-admin as sshd runs it
@@ -728,11 +729,17 @@ check "engine.local's comes after the mode's: it wins" \
 	sh -c 'grep "^link_cc = " "$1" | tail -n 1 | grep -qx "link_cc = no"' sh "$R/etc/cengarde/cengarde.conf"
 sed -i '/^link_cc = no$/d' "$R/etc/cengarde/engine.local"
 check "mode redundancy" setup mode redundancy
-check "no subflow in cengarde.conf, the protocontroller stays" \
-	sh -c '! grep -q "^subflow" "$1" && grep -qx "protocontroller = b" "$1" && grep -qx "BONDING=\"no\"" "$2"' \
+check "each link's subflow and rate deciding the copies (redund_pace_ms 150), the protocontroller stays, no NACK hint" \
+	sh -c 'grep -qx "subflow = yes" "$1" && grep -qx "link_cc = yes" "$1" && grep -qx "redund_pace_ms = 150" "$1" &&
+		! grep -q "^protocontroller_nack" "$1" && grep -qx "protocontroller = b" "$1" &&
+		grep -qx "BONDING=\"no\"" "$2" && grep -qx "REDUNDANCY=\"yes\"" "$2"' \
 	sh "$R/etc/cengarde/cengarde.conf" "$R/etc/cengarde/nat.conf"
 setup protocontroller off >/dev/null
-check "mode custom leaves the protocontroller off" setup mode custom
+check "mode custom" setup mode custom
+check "no subflow, the protocontroller left off" \
+	sh -c '! grep -q "^subflow" "$1" && ! grep -q "^protocontroller = " "$1" && grep -qx "REDUNDANCY=\"no\"" "$2"' \
+	sh "$R/etc/cengarde/cengarde.conf" "$R/etc/cengarde/nat.conf"
+check "mode custom again" setup mode custom
 check "so" said "mode custom already"
 check "mode redundancy turns it on" setup mode redundancy
 check "PROTOCONTROLLER in nat.conf, protocontroller = b" \

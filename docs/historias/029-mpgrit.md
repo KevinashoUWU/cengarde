@@ -711,6 +711,44 @@ congestión) suma lo que llega a tiempo y no estira la espera de los demás
   `tun_mtu` que cabría si los paquetes de bajada no caben; el cliente ya lo
   hacía con la subida.
 
+### La redundancia sobre el motor del bonding (2026-10-29)
+
+El usuario: «arreglemos el modo redundancia, que está pobre», y que use el
+mismo motor del bonding con el protocontrolador A (GRIT perdió en `red1`).
+
+- **El SQM del NUC** (`sqm.cg0`, `cake` de 22 Mbit/s de subida en `cg0`)
+  dejaba la subida de redundancia clavada en 20,3–20,7 Mbit/s: el TCP del
+  protocontrolador A pasa por `cg0`; el bonding no lo sentía porque GRIT
+  escribe directo en los sockets de los enlaces. Sin él: 43–44. Apagado
+  con el OK del usuario.
+- **La bajada mandaba copias completas por todos los caminos:** el servidor
+  no tiene la lógica de lo que sobra (`redund_spare` es solo del router),
+  así que `mix` y `rlc` no cambiaron un byte (3,7–4,2 bytes por byte útil) y
+  las colas de los enlaces lentos llegaban a 1–10 s (`field-r1`).
+- **Copias a tiempo con el ritmo de cada enlace** (`a31e8b4`): con
+  `link_cc` y `redund_pace_ms`, la llegada esperada de las copias toma el
+  ritmo, el retardo sin cola y la cola de cada enlace de su `linkcc.h`,
+  como el reparto del bonding; una copia va por un enlace solo si llega a
+  menos de 150 ms de la primera. Laboratorio (`red2`, n = 3, contra copias
+  completas): `fade` +13 / +10 %, `lossy` subida +12 %, `protectcut` p99 del
+  RTT de 1,9 s a 0,19 s; bytes por byte útil de ~3 a ~2 (`protectcut` 2,1 →
+  1,3). Con la capacidad del motor en vez del ritmo propio (`pace150`)
+  ahorra menos y no gana tasa; con MTPT, parecido al ritmo propio.
+- **Terreno** (`field-r3`, protocontrolador A, sin SQM, 2 rondas):
+
+  | brazo | bajada | ping p95 | bytes / útil | subida | bytes / útil |
+  | --- | --- | --- | --- | --- | --- |
+  | copias completas | 60,0 / 58,5 | 48–52 | 3,53 / 3,94 | 42,0 / 40,9 | 2,62 / 2,71 |
+  | **ritmo propio + 150 ms** | **117,4 / 112,9** | 182–242 | **1,59 / 2,26** | 43,9 / 35,5 | 2,60 / 2,99 |
+  | ritmo propio + MTPT | 111,1 / 74,6 | 137–221 | 1,92 / 2,57 | 42,2 / 48,1 | 2,69 / 2,30 |
+
+  La bajada en redundancia se duplica con 40–55 % menos datos; la subida
+  la pone el mejor enlace (Claro, ~40–45), pero la cola de Entel baja de
+  1,3–2 s a 0,15 s. **El modo redundancia queda así**: protocontrolador A,
+  `split` apagado, `subflow` y `link_cc`, `redund_pace_ms` 150, rescate y
+  `tcp_aware` (router, LuCI y `cengarde-vps-setup mode redundancy`, que
+  escribe `REDUNDANCY` en `nat.conf`).
+
 ## Pendiente
 
 - `link_cc`: decidir si pasa a ser lo normal con `subflow` (más rondas de
