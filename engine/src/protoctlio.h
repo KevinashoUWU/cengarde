@@ -22,6 +22,8 @@ enum { CG_PCTL_NO = 0, CG_PCTL_A, CG_PCTL_B };
 struct cg_json;
 
 #define CG_PCTL_OFFER_LINKS 2 /* cfg.offer: each link's own rate (link_cc), streamcc.h's CG_SCC_OFFER_LINKS */
+#define CG_PCTL_HINT_COPIED 2 /* ops.hint's *full: the data is copied, not split (with CG_PCTL_OFFER_LINKS:
+			       * streamcc.h's CG_SCC_OFFER_COPIES) */
 
 struct cg_pctl_cfg {
 	int server;          /* the VPS: connects; else the router: listens */
@@ -73,7 +75,8 @@ struct cg_pctl_ops {
 	void (*send)(void *ctx, uint32_t peer, uint32_t sid, uint8_t *const *msg, const uint16_t *len,
 		     const uint8_t *copy, int n);
 	/* The engine's capacity for the links that carry the data to peer,
-	 * bytes/s (0: none), and whether it sees them queued. */
+	 * bytes/s (0: none), and whether it sees them queued (or
+	 * CG_PCTL_HINT_COPIED: the data is copied to them, not split). */
 	void (*hint)(void *ctx, uint32_t peer, uint32_t sid, uint64_t *bps, int *full);
 	/* The tunnel's repair horizon for what this end sends to peer now, us
 	 * (task #77): how long a hole may wait at the receiver for the code's

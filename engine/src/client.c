@@ -2642,7 +2642,7 @@ static void pctl_hint(void *ctx, uint32_t peer, uint32_t sid, uint64_t *bps, int
 		}
 	}
 	*bps = u.split ? sum : best;
-	*full = c->cfg->link_cc ? 0
+	*full = c->cfg->link_cc ? (u.split ? 0 : CG_PCTL_HINT_COPIED)
 				: u.split ? n && nfull == n : bi >= 0 && c->cap[bi].cut == CG_CAP_CUT_FULL;
 }
 

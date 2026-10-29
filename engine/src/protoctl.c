@@ -1808,14 +1808,19 @@ void cg_pctl_tick(struct cg_pctl *p)
 	for (uint32_t i = 0; i < p->npr; i++) {
 		struct peer *r = &p->pr[i];
 		uint64_t bps = 0;
-		int full = 0;
+		int full = 0, copied;
 
 		if (!r->used)
 			continue;
 		p->ops.hint(p->ops.ctx, i, r->sid, &bps, &full);
-		cg_scc_hint(&r->cc, bps, full);
+		copied = full == CG_PCTL_HINT_COPIED;
+		cg_scc_hint(&r->cc, bps, copied ? 0 : full);
 		_Static_assert(CG_PCTL_OFFER_LINKS == CG_SCC_OFFER_LINKS, "one offer");
-		r->cc.offer = (uint8_t)(p->rack_off ? p->cfg.offer : 0); /* with subflow: the engine's offer (step 2, story 029) */
+		/* with subflow: the engine's offer (step 2, story 029); copied, only
+		 * while the stream holds no queue */
+		r->cc.offer = (uint8_t)(!p->rack_off		      ? 0
+					: copied && p->cfg.offer == CG_PCTL_OFFER_LINKS ? CG_SCC_OFFER_COPIES
+										: p->cfg.offer);
 		r->horizon_us = p->ops.horizon ? p->ops.horizon(p->ops.ctx, i, r->sid) : 0;
 		if (r->reo_us > p->cfg.reo_ms * 1000 + PCTL_REO_DECAY_US)
 			r->reo_us -= PCTL_REO_DECAY_US;

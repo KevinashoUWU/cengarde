@@ -216,6 +216,16 @@ void test_streamcc(void)
 		CHECK(cg_scc_rate(&q) < 5000000);
 		cg_scc_hint(&q, 4000000, 0);
 		CHECK_EQ(cg_scc_rate(&q), 5000000);
+		/* each link's own rate: as it is, whatever the stream's queue */
+		q.offer = CG_SCC_OFFER_LINKS;
+		q.cong = 1;
+		CHECK_EQ(cg_scc_rate(&q), 4000000);
+		/* copied (redundancy): only while the stream holds no queue */
+		q.offer = CG_SCC_OFFER_COPIES;
+		CHECK(cg_scc_rate(&q) < 4000000);
+		CHECK(cg_scc_cwnd(&q, &c, 0) <= w0);
+		q.cong = 0;
+		CHECK_EQ(cg_scc_rate(&q), 4000000);
 	}
 	/* with RACK over the mix off, the timer waits the latency budget at least */
 	CHECK_EQ(cg_scc_rto_extra(20000, 0), 20000);

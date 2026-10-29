@@ -224,6 +224,14 @@ static inline uint64_t cg_scc_bw(const struct cg_scc *p)
  * own pacing rate (linkcc.h), each probing for more on its own, and each
  * holding its own queue: offered as it is, whatever the stream's queue. */
 #define CG_SCC_OFFER_LINKS 2
+/* offer = CG_SCC_OFFER_COPIES (link_cc, the data copied, not split: the
+ * redundancy): the hint is the best link's own pacing rate, and with every
+ * packet copied no link's probing promises what gets through: offered only
+ * while the stream holds no queue of its own over its target (cong), as the
+ * engine's capacity is. Offered whatever the queue, in the field (story
+ * 029, field-r5) it read 218-273 Mbit/s for a single modem, the stream's
+ * srtt reached 665 ms and the ping's p95 under load doubled. */
+#define CG_SCC_OFFER_COPIES 3
 
 static inline uint64_t cg_scc_offer(const struct cg_scc *p)
 {
@@ -231,6 +239,8 @@ static inline uint64_t cg_scc_offer(const struct cg_scc *p)
 		return 0;
 	if (p->offer == CG_SCC_OFFER_LINKS)
 		return p->hint;
+	if (p->offer == CG_SCC_OFFER_COPIES)
+		return p->cong ? 0 : p->hint;
 	if (p->hint_full || p->cong)
 		return 0;
 	return cg_scc_mul(p->hint, CG_SCC_OFFER, CG_SCC_ONE);
