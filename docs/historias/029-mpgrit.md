@@ -687,6 +687,29 @@ congestión) suma lo que llega a tiempo y no estira la espera de los demás
   ellas algunos enlaces bajaron su objetivo a 20–40 ms (el reparto los trata
   como último recurso antes que con 60). Lo que sigue: que explore solo
   hacia arriba desde el objetivo base y que lo plano lo deje quieto.
+- **MTPT v2** (`9c06ce5`: solo por encima de `governor_target_ms`, quieto
+  con lo plano). Laboratorio (`mtpt2`, n = 3): −3 % de media (`fade` −9 /
+  −6 %, `lossy` subida −10 %, `ratswitch` subida +12 %). Terreno
+  (`field-m2`, 3 rondas de bajada y 2 de subida):
+
+  | brazo | bajada | ping p95 | subida | ping p95 |
+  | --- | --- | --- | --- | --- |
+  | **objetivo fijo** | **146,7** (146 / 148 / 146) | 47–60 | **108,1** (107 / 110) | 156–163 |
+  | MTPT v2 | 129,6 (123 / 121 / 145) | 49–53 | 101,4 (98 / 105) | 161–193 |
+  | OMR | 115,9 (74 / 160 / 113) | 79–448 | 93,9 (93 / 95) | 355–726 |
+
+  **El MTPT queda apagado** (−12 % y −6 %): con el MTU arreglado, el
+  objetivo fijo de 60 ms ya llena bien los módems, y subirlo solo agrega
+  cola. El brazo fijo le ganó a OMR en las dos tandas: bajada 142,7 y
+  146,7 contra 101,8 y 115,9 (+27 a +40 %), subida 104,9 y 108,1 contra
+  90,4 y 93,9 (+15 %), con una fracción de su ping. Lo que el MTPT podría
+  aportar queda para enlaces que hoy se quedan cortos (un Starlink, una
+  fibra) o colas que cambien más lento que una descarga.
+- **El MTU de cada camino, vigilado** (`f9b9f1e`): el servidor lee cada 10 s
+  el MTU de la ruta hacia cada enlace del router (el que el kernel aprendió
+  por ICMP incluido), lo dice en el estado (`path_mtu`) y avisa con el
+  `tun_mtu` que cabría si los paquetes de bajada no caben; el cliente ya lo
+  hacía con la subida.
 
 ## Pendiente
 
