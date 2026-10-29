@@ -664,7 +664,29 @@ pasos con más de 5 % de pérdida y se queda quieto si el enlace no llegó a la
 mitad de su objetivo. Su techo es `link_cc_budget_ms` menos cuánto más lento
 es el enlace que el más rápido: un enlace chico (Movistar con 2 Mbit/s en
 congestión) suma lo que llega a tiempo y no estira la espera de los demás
-(la regla del usuario). Laboratorio en curso (`~/campo/2026-10-28/mtpt1`).
+(la regla del usuario).
+
+- **Laboratorio** (`mtpt1`, n = 3, 8 casos × 2 sentidos, contra 14 / 46):
+  con 300 ms casi neutro (+0,6 % de media: `ratswitch` bajada +11 %,
+  `lossy` subida +7 %, `cell4` bajada +5 %, `protect` subida −9 %); con
+  500 ms peor (−2 a −3 %, y el p99 de `protect` sube). Netem tiene tasa fija
+  y no premia una cola más honda como un módem.
+- **Terreno** (`field-m1`, ambos extremos en `9616051` con el VPS en
+  `tun_mtu = 1380`, 4 rondas de bajada de 100 MB y 2 de subida de 15 s):
+
+  | brazo | bajada | ping p95 | subida | ping p95 |
+  | --- | --- | --- | --- | --- |
+  | **objetivo fijo (14 / 46)** | **142,7** (129 / 144 / 180 / 118) | 50–58 | **104,9** (98 / 111) | 146–159 |
+  | MTPT 300 ms | 111,0 (150 / 101 / 97 / 96) | 47–70 | 104,7 (101 / 108) | 163–190 |
+  | OMR | 101,8 (96 / 94 / 76 / 141) | 99–219 | 90,4 (91 / 90) | 271–279 |
+
+  **Con el MTU de Claro arreglado, el bonding le gana a OMR en los dos
+  sentidos: +40 % en la bajada y +16 % en la subida, con la mitad o menos
+  de su ping.** MTPT v1 queda apagado: neutro en la subida y −22 % en la
+  bajada; una descarga de 100 MB dura 6–8 s, cinco a siete épocas, y en
+  ellas algunos enlaces bajaron su objetivo a 20–40 ms (el reparto los trata
+  como último recurso antes que con 60). Lo que sigue: que explore solo
+  hacia arriba desde el objetivo base y que lo plano lo deje quieto.
 
 ## Pendiente
 

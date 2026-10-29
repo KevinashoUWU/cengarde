@@ -226,7 +226,8 @@ static void mtpt_epoch(struct cg_lc *c, uint64_t *t, uint32_t q_ms, uint64_t mbi
 /* MTPT: without the bit the caller's target is the target; with it the
  * target starts there and climbs while the link delivers more, turns
  * around at the knee and stays near it, falls two steps on a lossy epoch,
- * holds while it does not bind, and never passes the caller's ceiling. */
+ * holds while it does not bind or delivers the same, and stays between the
+ * caller's target and its ceiling. */
 static void test_lc_mtpt(void)
 {
 	struct cg_lc c;
@@ -255,8 +256,8 @@ static void test_lc_mtpt(void)
 			hi = c.target_us > hi ? c.target_us : hi;
 		}
 	}
-	CHECK(lo >= 60 * MS && hi <= 140 * MS); /* around the knee, not up to the ceiling */
-	CHECK(c.mt_up > 0 && c.mt_down > 0);
+	CHECK(lo >= 60 * MS && hi <= 160 * MS); /* around the knee, not up to the ceiling */
+	CHECK(c.mt_up > 0);
 	/* an epoch losing 10 %: two steps down */
 	{
 		uint32_t before = c.target_us;
@@ -281,10 +282,22 @@ static void test_lc_mtpt(void)
 		cg_lc_target(&c, 60 * MS, 50 * MS);
 		CHECK(c.target_us <= 50 * MS);
 	}
-	/* and never under the least */
+	/* never under the caller's target, however lossy */
+	cg_lc_target(&c, 60 * MS, 300 * MS);
 	for (int e = 0; e < 20; e++)
 		mtpt_epoch(&c, &t, c.target_us / MS, 40, 200, 40);
-	CHECK_EQ(c.target_us, CG_LC_MTPT_MIN_US);
+	CHECK_EQ(c.target_us, 60 * MS);
+	/* flat: it stays */
+	{
+		uint32_t before;
+
+		for (int e = 0; e < 3; e++)
+			mtpt_epoch(&c, &t, c.target_us / MS, 40, 200, 0);
+		before = c.target_us;
+		mtpt_epoch(&c, &t, c.target_us / MS, 40, 200, 0);
+		mtpt_epoch(&c, &t, c.target_us / MS, 40, 200, 0);
+		CHECK_EQ(c.target_us, before);
+	}
 }
 
 void test_linkcc(void)

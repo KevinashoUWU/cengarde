@@ -3,7 +3,7 @@ tags: [mapa, pieza]
 archivos:
   - engine/src/linkcc.h
   - engine/tests/test_linkcc.c
-sello: 53f2b561fcacae9c
+sello: 1aea7f95ccf0fdec
 ---
 # Ritmo por enlace (linkcc.h)
 
@@ -50,10 +50,12 @@ los dejaban a medias.
   128; el nombre es del usuario): cada enlace busca su propia cola objetivo
   perturbando y observando, como el MPPT de un cargador solar
   (`cg_lc_mtpt`). Cada segundo mueve su objetivo un paso de 20 ms: en el mismo
-  sentido si lo entregado creció 3 % o más, al revés si cayó otro tanto, hacia
-  abajo si quedó plano (lo mismo con menos cola), dos pasos abajo si perdió
-  más de 5 %, y se queda quieto si su cola no llegó a la mitad del objetivo
-  (tenía menos que llevar). Entre 20 ms y el techo que da quien lo usa
+  sentido si lo entregado creció 3 % o más, al revés si cayó otro tanto, dos
+  pasos abajo si perdió más de 5 %, y se queda quieto si quedó plano o si su
+  cola no llegó a la mitad del objetivo (tenía menos que llevar). Entre el
+  objetivo base (`governor_target_ms`: solo explora por encima; la primera
+  versión, que bajaba hasta 20 ms y bajaba con lo plano, perdió 22 % de la
+  bajada en terreno) y el techo que da quien lo usa
   (`cg_lc_target`, `cg_lc_mtpt_cap`): `link_cc_budget_ms` menos cuánto más
   lento es el enlace que el más rápido, así un enlace chico suma lo que puede
   dentro de la ventana del grupo y no estira la espera del reordenador.

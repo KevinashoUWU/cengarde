@@ -41,10 +41,12 @@
  *   clean at 79 minutes later. So once a second (CG_LC_MTPT_EPOCH_US) the
  *   target moves a step (CG_LC_MTPT_STEP_US): on the same way while what the
  *   link delivered grew by CG_LC_MTPT_GAIN_PCT % or more, back when it fell
- *   as much, down when it stayed flat (the same for less queue), two steps
- *   down when the epoch lost more than CG_LC_LOSS_PCT %, and it holds when
- *   the link did not reach half its target (it had less to carry: nothing
- *   to learn). Between CG_LC_MTPT_MIN_US and the caller's ceiling, which is
+ *   as much, two steps down when the epoch lost more than CG_LC_LOSS_PCT %,
+ *   and it holds when it stayed flat or the link did not reach half its
+ *   target (it had less to carry: nothing to learn). Between the caller's
+ *   target (governor_target_ms: it only explores above it; the first try,
+ *   down to 20 ms and down on flat, lost 22 % of the field's download,
+ *   whose 6-8 s left links at 20-40 ms) and the caller's ceiling, which is
  *   the latency budget less how much slower the link is than the fastest:
  *   a small link adds what it can within the group's window, never
  *   stretching the reorder wait (the user's rule: 2 Mbit/s that arrive in
@@ -127,7 +129,7 @@ struct cg_lc {
 	 * delivered in it, its largest queue, packets sent and lost; the
 	 * previous epoch's delivery; the way the target moves; the ceiling */
 	uint64_t mt_t, mt_bytes, mt_rate;
-	uint32_t mt_qmax, mt_sent, mt_lost, mt_cap_us;
+	uint32_t mt_qmax, mt_sent, mt_lost, mt_cap_us, mt_base_us;
 	int8_t mt_dir;
 	uint32_t mt_up, mt_down;  /* steps taken each way (status) */
 };
@@ -151,12 +153,13 @@ static inline void cg_lc_target(struct cg_lc *c, uint32_t base_us, uint32_t cap_
 		return;
 	}
 	c->mt_cap_us = cap_us > CG_LC_MTPT_MIN_US ? cap_us : CG_LC_MTPT_MIN_US;
-	if (!c->mt_t)
-		c->target_us = base_us;
+	c->mt_base_us = base_us > CG_LC_MTPT_MIN_US ? base_us : CG_LC_MTPT_MIN_US;
+	if (c->mt_base_us > c->mt_cap_us)
+		c->mt_base_us = c->mt_cap_us;
+	if (!c->mt_t || c->target_us < c->mt_base_us)
+		c->target_us = c->mt_base_us;
 	if (c->target_us > c->mt_cap_us)
 		c->target_us = c->mt_cap_us;
-	if (c->target_us < CG_LC_MTPT_MIN_US)
-		c->target_us = CG_LC_MTPT_MIN_US;
 }
 
 /* MTPT's ceiling for a link: the budget less how much slower it is than
@@ -202,16 +205,15 @@ static inline void cg_lc_mtpt(struct cg_lc *c, uint64_t now, uint64_t bytes)
 		c->mt_dir = (int8_t)-c->mt_dir; /* it lost: the other way */
 		steps = c->mt_dir;
 	} else {
-		c->mt_dir = -1; /* flat: the same for less queue */
-		steps = -1;
+		steps = 0; /* flat: it stays */
 	}
 	t = (int64_t)c->target_us + (int64_t)steps * CG_LC_MTPT_STEP_US;
 	if (t > c->mt_cap_us) {
 		t = c->mt_cap_us;
 		c->mt_dir = -1;
 	}
-	if (t < CG_LC_MTPT_MIN_US) {
-		t = CG_LC_MTPT_MIN_US;
+	if (t < c->mt_base_us) { /* never under the caller's target: it only explores above */
+		t = c->mt_base_us;
 		c->mt_dir = 1;
 	}
 	if (t > c->target_us)
