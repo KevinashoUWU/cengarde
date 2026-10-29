@@ -1102,7 +1102,7 @@ engine_conf() {
 		probe_interval_ms probe_idle_ms status_interval_ms busy_poll_us cpu rt_priority sndbuf link_threads \
 		io_queue description reorder_max_wait_ms reorder_dup_wait_ms reorder_margin_ms reorder_bypass \
 		reorder_pool_kb rescue_kb rescue_pct rescue_tries rescue_wait_ms rescue_code_ms fec_wait_ms fec_share_max split_small split_spread_ms governor_target_ms governor_window_ms \
-		pace_peers_ms redund_spare_ms redund_spare_code_ms link_cc_bits link_cc_budget_ms; do
+		pace_peers_ms redund_pace_ms redund_spare_ms redund_spare_code_ms link_cc_bits link_cc_budget_ms; do
 		config_get v main "$k"
 		[ -n "$v" ] && echo "$k = $v"
 	done

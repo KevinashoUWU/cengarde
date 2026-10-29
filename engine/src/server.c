@@ -1168,35 +1168,55 @@ static void sf_up(struct session *S, unsigned p, uint32_t q, size_t len, uint32_
 		cg_sf_rx_took(&F->rx, q, cg_sf_rx_in(&F->rx, q, now), (uint32_t)len, now);
 }
 
-/* With link_cc, path p's own rate (linkcc.h) in S's split (eta.h), as
- * the client's lc_eta: its pacing rate, its delay without a queue over ref
+/* With link_cc, path p's own rate (linkcc.h) in one of S's expected
+ * arrivals (eta.h: the split's, or with redundancy the copies'), as the
+ * client's lc_eta: its pacing rate, its delay without a queue over ref
  * (rtprop), what it has queued now, past the queue target (its own with
  * MTPT) a last resort. */
-static void lc_eta(const struct server *s, struct session *S, unsigned p, uint32_t ref, uint64_t now_us)
+static void lc_eta(const struct server *s, struct session *S, struct cg_eta *e, unsigned p, uint32_t ref,
+		   uint64_t now_us)
 {
 	const struct sfpath *F = S->sf[p];
 
-	if (!S->eta.l[p].bps || !F || !F->tx.acks || !F->tx.lc.rtprop)
+	if (!e->l[p].bps || !F || !F->tx.acks || !F->tx.lc.rtprop)
 		return;
-	cg_eta_own(&S->eta, p, cg_lc_rate(&F->tx.lc) * 8, F->tx.lc.rtprop > ref ? F->tx.lc.rtprop - ref : 0,
+	cg_eta_own(e, p, cg_lc_rate(&F->tx.lc) * 8, F->tx.lc.rtprop > ref ? F->tx.lc.rtprop - ref : 0,
 		   cg_lc_queued(&F->tx.lc), F->tx.lc.bits & CG_LC_MTPT ? F->tx.lc.target_us : s->cfg->governor_target_ms * 1000,
 		   now_us);
 	if (F->tx.lc.bits & CG_LC_WND)
-		cg_eta_wnd(&S->eta, p, cg_lc_wnd_left(&F->tx.lc));
+		cg_eta_wnd(e, p, cg_lc_wnd_left(&F->tx.lc));
 }
 
-/* The least rtprop of S's paths in the split, for lc_eta; 0: none. */
-static uint32_t lc_ref(const struct session *S)
+/* The least rtprop of S's paths in e, for lc_eta; 0: none. */
+static uint32_t lc_ref(const struct session *S, const struct cg_eta *e)
 {
 	uint32_t ref = 0;
 
 	for (int p = 0; p < CG_MAX_LINKS; p++) {
 		const struct sfpath *F = S->sf[p];
 
-		if (S->eta.l[p].bps && F && F->tx.acks && F->tx.lc.rtprop && (!ref || F->tx.lc.rtprop < ref))
+		if (e->l[p].bps && F && F->tx.acks && F->tx.lc.rtprop && (!ref || F->tx.lc.rtprop < ref))
 			ref = F->tx.lc.rtprop;
 	}
 	return ref;
+}
+
+/* With link_cc, each of S's paths' rate for this tick: the bits, its queue
+ * target (with MTPT, its ceiling) and the engine's capacity as a start;
+ * the split and the copies' expected arrivals take it (lc_eta). */
+static void lc_tick(const struct server *s, struct session *S)
+{
+	uint32_t ref = lc_ref(S, s->cfg->split_eta ? &S->eta : &S->pace);
+
+	for (int p = 0; p < CG_MAX_LINKS; p++)
+		if (S->sf[p]) {
+			struct cg_lc *lc = &S->sf[p]->tx.lc;
+
+			lc->bits = (uint8_t)s->cfg->link_cc_bits;
+			cg_lc_target(lc, s->cfg->governor_target_ms * 1000, cg_lc_mtpt_cap(lc, s->cfg->link_cc_budget_ms, ref));
+			if (S->cap[p].have_rate)
+				cg_lc_seed(lc, cg_cap_bps(&S->cap[p]) / 8);
+		}
 }
 
 /* An SFACK from S's client: how far each path got down; each one's rate
@@ -1210,8 +1230,8 @@ static void on_sfack(const struct server *s, struct session *S, const uint8_t *p
 		cg_sfack_get(payload, k, &e);
 		if (e.link < CG_MAX_LINKS && S->sf[e.link]) {
 			cg_sf_tx_ack(&S->sf[e.link]->tx, e.top, e.gotb, e.rts, e.age, now_us);
-			if (s->cfg->link_cc)
-				lc_eta(s, S, e.link, lc_ref(S), now_us);
+			if (s->cfg->link_cc && s->cfg->split_eta)
+				lc_eta(s, S, &S->eta, e.link, lc_ref(S, &S->eta), now_us);
 		}
 	}
 }
@@ -3446,27 +3466,31 @@ static void cap_tick(struct server *s, struct session *S, uint16_t live, uint64_
 		cg_cap_eta(&S->eta, S->cap, live, cc.sat_us / 2, S->lm, s->cfg->split_stale_max,
 			   cg_tickle_backoff(&S->tk), now_ms * 1000);
 		if (s->cfg->link_cc) {
-			uint32_t ref = lc_ref(S);
+			uint32_t ref;
 
-			for (int p = 0; p < CG_MAX_LINKS; p++) /* the engine's capacity, as a start */
-				if (S->sf[p]) {
-					struct cg_lc *lc = &S->sf[p]->tx.lc;
-
-					lc->bits = (uint8_t)s->cfg->link_cc_bits;
-					cg_lc_target(lc, s->cfg->governor_target_ms * 1000,
-						     cg_lc_mtpt_cap(lc, s->cfg->link_cc_budget_ms, ref));
-					if (S->cap[p].have_rate)
-						cg_lc_seed(lc, cg_cap_bps(&S->cap[p]) / 8);
-				}
+			lc_tick(s, S);
+			ref = lc_ref(S, &S->eta);
 			for (unsigned p = 0; p < CG_MAX_LINKS; p++)
-				lc_eta(s, S, p, ref, now_ms * 1000);
+				lc_eta(s, S, &S->eta, p, ref, now_ms * 1000);
 		}
 		cg_cap_tickle(S->cap, live, now_ms, &due, tb, tc);
 		cg_tickle_tick(&S->tk, now_ms * 1000, (uint64_t)s->cfg->split_tickle_ms * 1000, due, tb, tc);
 	}
-	if (S->pace_any) /* the copies' expected arrivals (redund_pace_ms, per path) */
+	if (S->pace_any) { /* the copies' expected arrivals (redund_pace_ms, per path) */
 		cg_cap_eta(&S->pace, S->cap, live, cc.sat_us / 2, NULL, s->cfg->split_stale_max,
 			   cg_tickle_backoff(&S->tk), now_ms * 1000);
+		/* with link_cc, each path's own rate, delay and queue, as the
+		 * split's (redundancy on the bonding engine, story 029) */
+		if (s->cfg->link_cc) {
+			uint32_t ref;
+
+			if (!s->cfg->split_eta)
+				lc_tick(s, S);
+			ref = lc_ref(S, &S->pace);
+			for (unsigned p = 0; p < CG_MAX_LINKS; p++)
+				lc_eta(s, S, &S->pace, p, ref, now_ms * 1000);
+		}
+	}
 }
 
 /* SO_MAX_PACING_RATE on a lane's socket (pace.h): fq on the way out paces
