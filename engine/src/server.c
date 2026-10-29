@@ -148,7 +148,15 @@ struct path {
 	uint64_t local_errors; /* datagrams that could not leave: our address gone, no route */
 	struct cg_probe_info peer_view; /* client's view of this path (download) */
 	uint64_t peer_view_ms;
+	/* the route's MTU toward the client's address (the kernel learns a
+	 * smaller one from ICMP and then cuts larger packets in two: Claro's
+	 * 1460, 2026-10-28), read every CG_PATH_MTU_MS */
+	uint32_t path_mtu;
+	uint64_t mtu_ms;
+	struct cg_ratelimit rl_mtu;
 };
+
+#define CG_PATH_MTU_MS 10000
 
 #define CG_HQ_N 256 /* upload gaps one session may hold waiting for the code (harq.h) */
 
@@ -3523,6 +3531,46 @@ static void path_models(const struct server *s, struct session *S)
 	S->pace_any = (uint8_t)cg_link_pace_windows(S->lm, CG_MAX_LINKS, S->pace_w);
 }
 
+/* The route's MTU toward a, as the kernel has it (a learned path MTU
+ * included): a throwaway socket connected to it; 0: not known. */
+static uint32_t route_mtu(const struct sockaddr_storage *a)
+{
+	int fd = socket(a->ss_family, SOCK_DGRAM | SOCK_CLOEXEC, 0), v = 0;
+	socklen_t len = sizeof(v);
+
+	if (fd < 0)
+		return 0;
+	if (connect(fd, (const struct sockaddr *)a, cg_addr_len(a)) < 0 ||
+	    (a->ss_family == AF_INET6 ? getsockopt(fd, IPPROTO_IPV6, IPV6_MTU, &v, &len)
+				      : getsockopt(fd, IPPROTO_IP, IP_MTU, &v, &len)))
+		v = 0;
+	close(fd);
+	return v > 0 ? (uint32_t)v : 0;
+}
+
+/* Each path's route MTU, and a warning when the TUN's largest packet does
+ * not fit in it: the download would go cut in two, and losing either half
+ * loses the packet (story 029: GRIT carried 9 Mbit/s over Claro so). */
+static void path_mtu_tick(struct server *s, struct session *S, const char *tag, uint64_t now_ms)
+{
+	for (int p = 0; p < CG_MAX_LINKS; p++) {
+		struct path *P = &S->path[p];
+		int f = P->addr.ss_family;
+		uint32_t need = cg_outer_len(f, s->cfg->tun_mtu), wrap = cg_outer_len(f, 0);
+		char a[64];
+
+		if (!P->used || now_ms - P->mtu_ms < CG_PATH_MTU_MS)
+			continue;
+		P->mtu_ms = now_ms;
+		P->path_mtu = route_mtu(&P->addr);
+		if (P->path_mtu && need > P->path_mtu && cg_ratelimit_ok(&P->rl_mtu, now_ms, 600000))
+			cg_warn("%ssession %08x link %d: download packets of up to %u bytes over IPv%c, more than the path "
+				"MTU of %u toward %s: the kernel cuts them in two; tun_mtu %u or less fits",
+				tag, S->id, p, need, f == AF_INET6 ? '6' : '4', P->path_mtu,
+				cg_addr_str(&P->addr, a, sizeof(a)), P->path_mtu > wrap ? P->path_mtu - wrap : 0);
+	}
+}
+
 static void health_tick(struct server *s, uint64_t now_ms)
 {
 	for (uint32_t i = 0; i < s->cap; i++) {
@@ -3544,6 +3592,7 @@ static void health_tick(struct server *s, uint64_t now_ms)
 		spread_tick(s, S, tag, now_ms);
 		gov_tick(s, S, now_ms);
 		cap_tick(s, S, live, now_ms);
+		path_mtu_tick(s, S, tag, now_ms);
 		for (int p = 0; changed; p++, changed >>= 1) {
 			const struct cg_hlink *h = &S->dh[p];
 
@@ -4075,6 +4124,7 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 			cg_json_u64(j, "tx_packets", P->tx_pkts);
 			cg_json_u64(j, "tx_bytes", P->tx_bytes);
 			cg_json_u64(j, "tx_drops", P->tx_drops);
+			cg_json_u64(j, "path_mtu", P->path_mtu); /* the route's toward the client, 0: not known */
 			cg_json_u64(j, "fec_repairs", P->f3_rep); /* FEC v3's, not in tx_packets (story 026) */
 			cg_json_u64(j, "fec_repair_bytes", P->f3_bytes);
 			cg_json_u64(j, "tx_split", P->tx_split);
