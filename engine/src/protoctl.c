@@ -162,6 +162,7 @@ struct cg_pctl {
 	/* counters */
 	uint64_t opened, closed, refused[CG_PCTL_R_N], rst_tx, rst_lost, rst_rx[CG_PCTL_R_N], bad, corrupt, unknown;
 	uint64_t up_bytes, down_bytes, data_tx, data_rx, acks_tx, acks_rx, opens_tx, retx, copies, rto_n;
+	uint64_t reneged; /* timeouts that found the oldest segment SACKed and sent the SACKed again */
 	uint64_t dup_frames, ooo_frames, drop_frames, nomem;
 	uint64_t cc_switches; /* protocontroller_cc auto: connections switched to BBR */
 	uint64_t retx_by[CG_ST_BY_N]; /* segments sent again, by why they were lost (RACK, the timer, a NACK) */
@@ -1140,6 +1141,11 @@ static void rto_arm(const struct cg_pctl *p, struct flow *f, struct peer *r)
 {
 	uint64_t o = f->tx.inflight ? cg_st_tx_oldest(&f->tx) : 0;
 
+	/* the oldest segment SACKed while the cumulative offset waits at it:
+	 * the timer looks for a renege (cg_st_tx_rto) even with nothing in
+	 * flight */
+	if (!o && f->tx.n && cg_st_tx_seg(&f->tx, 0)->st == CG_ST_SACKED)
+		o = cg_st_tx_seg(&f->tx, 0)->sent_us;
 	f->rto_at = o ? o + cg_scc_rto(&r->cc, f->backoff, peer_reo(p, r)) : 0;
 }
 
@@ -1577,8 +1583,10 @@ static int timers(struct cg_pctl *p, struct flow *f, uint64_t now)
 		return -1;
 	}
 	if (f->rto_at && now >= f->rto_at) {
-		uint64_t lq = 0, lost = cg_st_tx_rto(&f->tx, now, cg_scc_rto(&r->cc, f->backoff, peer_reo(p, r)), &lq);
+		uint64_t rn = f->tx.reneged, lq = 0,
+			 lost = cg_st_tx_rto(&f->tx, now, cg_scc_rto(&r->cc, f->backoff, peer_reo(p, r)), &lq);
 
+		p->reneged += f->tx.reneged - rn;
 		r->cc.inflight -= r->cc.inflight >= lost ? lost : r->cc.inflight;
 		cg_scc_lost(&r->cc, lost - lq);
 		if (lost) {
@@ -1929,6 +1937,7 @@ void cg_pctl_json(const struct cg_pctl *p, struct cg_json *j)
 	}
 	cg_json_u64(j, "copies", p->copies);
 	cg_json_u64(j, "rto", p->rto_n);
+	cg_json_u64(j, "reneged", p->reneged);
 	cg_json_u64(j, "dup_frames", p->dup_frames);
 	cg_json_u64(j, "ooo_frames", p->ooo_frames);
 	cg_json_u64(j, "drop_frames", p->drop_frames);

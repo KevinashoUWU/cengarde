@@ -9,7 +9,9 @@
   colapso de la bajada, el estimador desbocado, el arranque) y 023 (el
   rescate, la PARQ); tarea #77; laboratorio `bench/labq.py` con
   `BOND_PEP=cgb`, datos en `~/campo/2026-10-27/gshare{1,2,3}/`, `bondvs/`,
-  `nackfirst/out45/`, `nackfirst-nofec/` y `spread/`.
+  `nackfirst/out45/`, `nackfirst-nofec/`, `spread/`, `reach/`, `start/`,
+  `cap/`, `rat/`, `buf/`, `bufedge/` y `buf2/`; terreno en
+  `~/campo/2026-10-27/grit-split/` (su README tiene las tablas).
 
 ## TL;DR
 
@@ -40,6 +42,11 @@
   enlaces). Ahora: duplicados de miles a decenas, el ping p99 de 1200 B
   baja a la mitad en `equal`, `lossy` y `stall50`, el caudal igual o
   mejor (+4 a +12 %).
+- **Otro error de GRIT, corregido:** el receptor contaba sus rangos fuera
+  de orden con 8 bits; con 256 y una fusión los olvidaba todos, el emisor
+  los tenía confirmados y nunca los reenviaba: el flujo quedaba trabado
+  para siempre. Solo aparece con búferes de más de 1 MB. El emisor ahora
+  además se recupera de un SACK «renegado», como TCP.
 - **Un error de GRIT, corregido:** `protocontroller_dead_s` contaba desde el
   último mensaje recibido, así que un flujo ocioso más de 60 s (SSH, el
   control de iperf) se reseteaba al mandar su siguiente byte. Ahora cuenta
@@ -59,6 +66,15 @@
   el reordenador no retiene; las copias prioritarias; la capacidad del
   motor como comienzo y techo del ritmo; los bytes que la pérdida no frena
   (la FEC v3 no los cobra con un enlace, historia 026).
+
+- **En terreno (testnet, 2026-10-27 noche) GRIT pierde con el TCP directo
+  por el mismo túnel** (bajada de 100 MB: 24–54 frente a 50–95 Mbit/s;
+  OMR 58–155), aunque con el mejor ping con carga (p95 45–50 ms frente a
+  56–84 y 142–185). La causa: **retransmite lo que no se perdió**. RACK,
+  con su ventana topada en 100 ms, lee como pérdida el desorden entre
+  módems (8–28 mil retransmisiones por descarga; con un piso de 300 ms,
+  1–3 mil y GRIT sube), y los NACK del túnel (~5 mil) son en más del 90 %
+  huecos que se llenan solos: los enlaces perdieron ~940. Ver «Terreno».
 
 ## La vista compartida
 
@@ -182,6 +198,50 @@ primero el NACK, exacto por enlace. En la corrida de prueba: 24,8 → 33,5
 Mbit/s (Split TCP 33,2), sin colapso, 978 reenvíos (casi todos en los
 primeros 4 s, antes de conocer los retardos), ping p99 523 → 337 ms.
 
+## Lo probado y descartado después de `cell4`
+
+- **El alcance** (que GRIT tolere la cola que el reparto por ETA necesita
+  para llegar a los enlaces lentos, `ops.reach`): `reorder50` +35 / +52 %,
+  `het` +5 / +8 %, `idleslow` +8 / +16 %, pero el ping p99 subió (`reorder50`
+  278 → 412 y 255 → 466 ms) y `protect` de subida cayó 20 % con miles de
+  duplicados en las 6 corridas (`reach/`). Una cola permanente en el enlace
+  rápido es la herramienta equivocada: lo correcto es que el reparto mande
+  a los lentos una parte de los bytes de GRIT y que GRIT reordene.
+  Revertido.
+- **La dispersión supuesta al arrancar** (`reorder_max_wait_ms` mientras no
+  se conocen los retardos): `cell4` no duplica menos (1097 → 1452) y el ping
+  de `protect` de bajada sube (109 → 308 ms). Revertido.
+- **La cota del estimador** (fuera de STARTUP, una muestra no pasa de 3
+  veces la capacidad del motor; `protect` leyó 389 y 606 Mbit/s en enlaces
+  de 60 y 5): neutra en `cap/` (n = 6, nada significativo). Queda de
+  resguardo.
+
+## El búfer por conexión y los rangos del receptor
+
+El cambio de RAT (`ratswitch`, `ratsingle`: LTE 30/15 Mbit/s ↔ NR 180/60,
+búfer del operador de 3 MB de bajada) mostró a GRIT 15–31 % bajo el Split
+TCP (`rat/`). En NR no pasaba de ~120 Mbit/s: `protocontroller_buf_kb`
+(1 MB) sobre ~70 ms de ida y vuelta. Con 4 MB, en una corrida, 58 → 76
+Mbit/s. Subirlo por defecto destapó un error: con 2–4 MB la mayoría de las
+corridas de `equal` caía a 5–12 Mbit/s y una se colgó 35 minutos. El
+receptor guarda hasta 256 rangos fuera de orden y `cg_st_rx_add` los
+contaba con un cast a 8 bits: llenos, una fusión los dejaba en 0; lo
+recibido más allá del hueco quedaba sin registro, el emisor lo tenía
+confirmado por SACK y nunca lo reenviaba (en el registro: el segmento en
+`una` SACKED, enviado una sola vez). Corregido el conteo, y el emisor se
+recupera como TCP de un SACK «renegado»: un RTO que encuentra el segmento
+más viejo SACKED con el acumulado aún en él reenvía todo lo SACKED
+(`reneged` en el estado; el temporizador se arma también sin nada en
+vuelo). Con el arreglo, 64 de 64 corridas con 2–4 MB sin atascos y
+`reneged` 0 (`bufedge/`).
+
+Con el arreglo, 4 MB frente a 1 MB (`buf2/`, n = 6): `ratsingle` de bajada
+43 → 60 y `ratswitch` de bajada 52 → 60,5 Mbit/s (el Split TCP 63 y 60),
+pero `lossy` 97 / 100 → 90 / 93 con el ping p99 de 104–109 a 356–374 ms y
+~5000 duplicados, y `cell4` −2 a −4 % con más ping. El valor por defecto
+queda en 1 MB; lo correcto es un búfer que crezca solo cuando el flujo
+está limitado por la ventana y sin pérdida ni cola.
+
 ## El temporizador de flujo muerto
 
 `protocontroller_dead_s` (60) cierra un flujo con algo pendiente que no
@@ -255,12 +315,58 @@ ms (p 0,02). Frente al Split TCP, GRIT con la dispersión gana en `equal`,
 `reorder50` de bajada (−16 %); su ping p99 es menor salvo en `reorder50` de
 bajada y `protect` de bajada.
 
+## Terreno: GRIT contra OMR y el TCP directo
+
+El NUC de la testnet y su VPS con este commit (c9229d0) y `protocontroller
+= b`; OMR v0.63 en una VM del PC contra su VPS, por los mismos cuatro
+módems. Cada prueba baja 100 MB de cachefly desde un netns detrás de cada
+router, con ping a 1.1.1.1 durante la bajada; brazos alternados, nunca a la
+vez, dos rondas por tanda (datos y tablas en el README de
+`~/campo/2026-10-27/grit-split/`).
+
+- **El reparto no es el freno:** la VPS manda por cada módem casi lo mismo
+  que OMR (Claro 40–52 %), y con GRIT las colas de los módems quedan en
+  2–3 ms. Lo que frena es el emisor.
+- **RACK:** su ventana es `min_rtt/4` más el reordenamiento aprendido (los
+  duplicados la agrandan, `cg_scc_reo_cap`: 100 ms sin código) o el
+  horizonte (~65 ms). En terreno el desorden entre módems pasa de eso: el
+  reordenador del túnel deja pasar sin ordenar lo de GRIT (bypassed 116 839
+  de 118 937 en una bajada) y GRIT ve la mitad de sus tramas fuera de orden.
+  Con `protocontroller_reo_ms = 300` en la VPS, RACK baja de 27 536 / 8 189 a
+  1 060 / 2 851 retransmisiones y GRIT de 27,1 / 46,6 a 49,9 / 53,7 Mbit/s.
+- **Los NACK del túnel:** con RACK calmado quedan ~5 mil duplicados por
+  bajada, casi tantos como los NACK que el túnel le pasa a GRIT. No cambian
+  con la FEC (solo en la VPS, apagada o en ambos extremos) ni con
+  `rescue_wait_ms` 60 o 200. El NUC mandó 10 252 NACK donde los enlaces
+  perdieron ~940 (`rx_missed`: Claro 482, Movistar 450): son huecos de la
+  secuencia que se llenan solos, no pérdidas.
+- **El búfer de 4 MB empeora** (más en vuelo, RACK 38 mil, 36–37 %); el de
+  1 MB no es el techo mientras sobren las retransmisiones.
+- Sin el RACK falso GRIT queda en 35–54 Mbit/s, el TCP directo en 50–95 y
+  OMR en 58–155 (OMR varía mucho entre rondas). El ping con carga de GRIT es
+  el mejor: p95 45–50 ms.
+- Para cambiar perillas de la VPS en una prueba: `engine.local` y
+  `cengarde-vps-setup refresh`; `protocontroller on` no regenera si ya está.
+
 ## Pendiente
 
-- **Deshacer las pérdidas falsas:** un segmento que RACK dio por perdido y
-  que llega igual sigue contado dos veces en lo entregado (`cg_scc_lost`).
-  Con el horizonte casi no pasa, pero en el arranque (antes de conocer los
-  retardos) quedan ráfagas: `cell4` aún duplica ~1100–1300 por corrida.
+- **La ventana de RACK como la de TCP (RFC 8985), urgente por el terreno:**
+  sin el tope fijo de 100 ms; la agrandan los duplicados que reporta el
+  receptor (el DSACK de GRIT) hasta ~`srtt`, y se olvida de a poco.
+- **El NACK del túnel hacia GRIT solo con evidencia de pérdida en el enlace**
+  (el FIFO por enlace, `rx_missed`), no por un hueco de la secuencia: hoy
+  ~5 mil por bajada en terreno, más del 90 % falsos.
+
+- **El búfer adaptativo:** crecer de 1 a 4 MB solo con el flujo limitado
+  por la ventana y sin pérdida ni cola (NR: +40 % en `ratsingle`; fijo,
+  triplica el ping de `lossy`).
+- **Reponerse con la capacidad del motor:** al caer de NR a LTE GRIT cortó
+  a 11,7 Mbit/s y tardó ~7 s en volver a 28, con el motor ya en ~35.
+- **La subida de `ratsingle`** (22 frente a 32 del Split TCP) no mejora con
+  el búfer: otro freno.
+- **Repartir los bytes de GRIT a los enlaces lentos** por su capacidad, sin
+  esperar la cola del rápido (`reorder50`, el alcance revertido).
+- **Las ráfagas del arranque** en `cell4` (~1100–1300 duplicados) siguen.
 - **`cell4`** queda a −4 % del Split TCP; **`reorder50`** de bajada a −16 %
   (51,7 frente a 61,3) y con más ping (390 frente a 141 ms); `het` de
   bajada −12 %; `protect` de bajada −11 % frente a `grit2` (no
@@ -283,3 +389,8 @@ bajada y `protect` de bajada.
   `cell4` como pendiente.
 - 2026-10-27: `cell4` analizado; la dispersión de los enlaces en el
   horizonte.
+- 2026-10-27: el alcance y la dispersión de arranque, probados y
+  revertidos; la cota del estimador; el cambio de RAT en el laboratorio;
+  el error de los 256 rangos y el SACK renegado; el búfer de 4 MB.
+- 2026-10-27: el terreno: GRIT contra OMR y el TCP directo en la testnet;
+  RACK y los NACK del túnel retransmiten lo que no se perdió.

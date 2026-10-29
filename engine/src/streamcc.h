@@ -72,6 +72,7 @@
 #define CG_SCC_FLOOR 62500u      /* bytes/s: 0.5 Mbit/s, the least rate */
 #define CG_SCC_START 2000000u    /* bytes/s: 16 Mbit/s, the first rate without a hint (2 left a live stream's start
 				  * waiting at the router for 5 rounds) */
+#define CG_SCC_HINT_MAX 3u        /* a rate sample past STARTUP is at most this many times the engine's hint */
 #define CG_SCC_BURST_US 2000u    /* the token bucket's depth, in time at the rate */
 #define CG_SCC_MINRTT_US 10000000ull /* min_rtt's window */
 #define CG_SCC_WIN_MIN_US 1000000u   /* bw's bucket: at least this, else 8 round trips (shorter, the
@@ -491,6 +492,19 @@ static inline void cg_scc_ack(struct cg_scc *p, const struct cg_scc_cfg *c, uint
 		uint64_t drate = cg_scc_mul(p->dla - s_dla, 1000000, iv);
 
 		rate = cg_scc_mul(bytes, 1000000, iv);
+		/* past STARTUP, never over CG_SCC_HINT_MAX times what the engine
+		 * sees its links take (protect: with the slow link's queue at
+		 * 2 s, deliveries learnt in bursts read 389 and 606 Mbit/s on
+		 * links of 60 and 5; a small hint is an idle link's probes and
+		 * caps nothing) */
+		if (p->mode != CG_SCC_STARTUP_M && p->hint >= CG_SCC_START / 2) {
+			uint64_t m = p->hint * CG_SCC_HINT_MAX;
+
+			if (rate > m)
+				rate = m;
+			if (drate > m)
+				drate = m;
+		}
 		cg_scc_filter(p, now, rate, drate, app);
 		/* a whole round trip with a queue: what is delivered, no more
 		 * (and STARTUP is over). The first cut of a run goes to the

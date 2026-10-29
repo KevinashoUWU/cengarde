@@ -122,6 +122,56 @@ static void test_rx(void)
 	CHECK_EQ(cg_st_rx_judge(&r, 5195, 10, 0, 100000), CG_ST_RX_NEW); /* touches the last */
 	CHECK_EQ(cg_st_rx_judge(&r, 110, 10, 0, 100000), CG_ST_RX_NEW);
 	CHECK_EQ(cg_st_rx_judge(&r, 0, 10, 0, 100000), CG_ST_RX_NEW); /* at nxt */
+	/* a merge with every range taken keeps them all (the count once went
+	 * through 8 bits: 256 ranges and a merge forgot them all) */
+	cg_st_rx_add(&r, 5195, 10, 0);
+	CHECK_EQ(r.nr, CG_ST_RANGES);
+	CHECK_EQ(r.rs[CG_ST_RANGES - 1], 5195);
+	cg_st_rx_add(&r, 110, 10, 0); /* joins the first two */
+	CHECK_EQ(r.nr, CG_ST_RANGES - 1);
+	CHECK_EQ(r.nxt, 0);
+}
+
+/* A receiver that forgot what it SACKed: at the timeout, the oldest segment
+ * SACKed while the cumulative offset waits at it, every SACKed one goes
+ * again. */
+static void test_renege(void)
+{
+	struct cg_st_seg seg[16];
+	struct cg_st_tx t;
+	struct cg_st_ack a;
+	struct cg_st_ackres r;
+	uint32_t idx = 0, len = 0;
+	uint64_t off = 0;
+	int fin = 0;
+
+	cg_st_tx_init(&t, seg, 16, 10000);
+	t.tail = 3000;
+	for (int i = 0; i < 3; i++) {
+		cg_st_tx_next(&t, 1000, &idx, &off, &len, &fin);
+		cg_st_tx_sent(&t, idx, off, len, fin, 100 + i, 0, 0, 0, 0, 0, 0);
+	}
+	memset(&a, 0, sizeof(a));
+	a.aseq = 1;
+	a.cum = 0;
+	a.edge = 10000;
+	a.n = 1;
+	a.s[0] = 0;
+	a.e[0] = 2000; /* SACKs the first two, the cumulative offset stays */
+	cg_st_tx_ack(&t, &a, &r);
+	CHECK_EQ(cg_st_tx_seg(&t, 0)->st, CG_ST_SACKED);
+	CHECK_EQ(t.inflight, 1000);
+	CHECK_EQ(cg_st_tx_rto(&t, 1000000, 500000, NULL), 1000); /* only the SENT one counts as lost */
+	CHECK_EQ(t.reneged, 1);
+	CHECK_EQ(cg_st_tx_seg(&t, 0)->st, CG_ST_LOST);
+	CHECK_EQ(cg_st_tx_seg(&t, 1)->st, CG_ST_LOST);
+	CHECK_EQ(t.nlost, 3);
+	CHECK_EQ(t.lost_from, 0);
+	CHECK_EQ(t.inflight, 0);
+	/* they go again, oldest first */
+	CHECK(cg_st_tx_next(&t, 1000, &idx, &off, &len, &fin));
+	CHECK_EQ(idx, 0);
+	CHECK_EQ(off, 0);
 }
 
 static void test_tx(void)
@@ -504,6 +554,7 @@ static void test_e2e(void)
 
 void test_stream(void)
 {
+	test_renege();
 	test_copy();
 	test_pool_buf();
 	test_unwrap();
