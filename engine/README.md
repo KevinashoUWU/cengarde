@@ -1448,9 +1448,16 @@ En los dos:
   pierde (3 segmentos reenviados): BBR no toma la pérdida al azar por
   congestión (historia 024), pero su ProbeRTT retenía un vivo 200 ms cada
   10 s. Un nombre (`bbr`, `cubic`) lo fija.
-- **Memoria:** trozos de 16 KB de un fondo común (`protocontroller_mem_mb`,
-  64), hasta `protocontroller_buf_kb` (1024) por conexión y sentido;
-  `protocontroller_max_flows` (256) conexiones a la vez.
+- **Memoria:** trozos de 16 KB de un fondo común (`protocontroller_mem_mb`;
+  0, lo normal: un octavo de la RAM, de 64 a 1024 MB, y sus páginas solo se
+  tocan al usarse), hasta `protocontroller_buf_kb` (1024; 8176 con
+  `subflow`) por conexión y sentido, y como mucho la parte pareja del fondo
+  entre las conexiones abiertas (al menos 256 KB); `protocontroller_max_flows`
+  (256) conexiones a la vez. Con el fondo lleno, lo que llega en orden
+  siempre cabe: el receptor olvida lo que guarda fuera de orden (`rx_reneged`
+  en el estado) y el emisor lo manda otra vez. Antes, 31 conexiones de un
+  speed test llenaron los 64 MB de los dos extremos con bytes fuera de orden
+  y se quedaron esperando su hueco hasta `protocontroller_dead_s`.
 
 Solo la variante B:
 

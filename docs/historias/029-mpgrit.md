@@ -867,6 +867,41 @@ que necesitamos pronto».
   El usuario, al saberlo: los presets de cada modo pueden diferir en
   cualquier perilla que le sirva a uno y no al otro.
 
+### La noche de los 500 Mbit/s y la memoria de GRIT (2026-10-29, 02:20)
+
+- **El usuario, con Speedtest en un notebook de la LAN del NUC:** 469 Mbit/s
+  de bajada y 98,6 de subida, saliendo por el VPS (proveedor «Vultr»). Medido
+  en el NUC cada segundo durante la bajada: ~570 Mbit/s entraban por los
+  módems (Entel 220, WOM 187, Claro 107, Movistar 58 de media; Entel con
+  picos de 284) y ~450 salían a la LAN. De madrugada las celdas están vacías
+  y los módems usan 5G desde que se quitaron los bloqueos de banda (el 27):
+  el techo de ~195 Mbit/s de la prueba de techo era de la tarde. Cada
+  enlace con su propio ritmo (`link_cc`) halló solo esa capacidad.
+- **Contra OMR, con el CLI de Ookla y el mismo servidor** (Mundo Chile,
+  `~/campo/2026-10-29/st-omr/`), sin FEC en los dos extremos, 3 rondas
+  alternadas:
+
+  | | bajada | subida | ping con carga (bajada) |
+  | --- | --- | --- | --- |
+  | cengarde | 454 / 529 / 678 (554) | 132 / 112 / 133 (126) | 75–135 ms |
+  | OMR | 665 / 456 / 746 (622) | 113 / 51 / 146 (103) | 349–871 ms |
+
+  La bajada de OMR ~12 % arriba, dentro de lo que varía una ronda; la
+  subida de cengarde +22 % y su ping con carga un quinto del de OMR.
+- **La memoria de GRIT se trababa.** Con FEC (RLC), la primera ronda dio
+  568; en las dos siguientes el NUC rechazó las conexiones
+  (`protocontroller_mem_mb is full`): los dos extremos guardaban 31 flujos
+  y sus 64 MB llenos (el VPS 66 MB por enviar, el NUC 26 MB recibidos). El
+  fondo es uno para todos los flujos y cada ventana prometía su búfer entero
+  (8 MB con `subflow`); lleno de bytes fuera de orden, la trama que tapaba
+  cada hueco no hallaba trozo y se descartaba en cada reenvío hasta
+  `protocontroller_dead_s`. Con 512 / 256 MB, la memoria volvía a cero tras
+  cada prueba. **Arreglo** (`edbfa96`): lo que llega en orden siempre cabe
+  (el receptor olvida lo que guarda fuera de orden, `cg_st_rx_renege`, y el
+  emisor lo reenvía), cada flujo toma su parte pareja del fondo
+  (`flow_cap`) y el fondo es por omisión un octavo de la RAM, de 64 a 1024
+  MB (`cg_pctl_mem_auto`).
+
 ## Pendiente
 
 - `link_cc`: decidir si pasa a ser lo normal con `subflow` (más rondas de
