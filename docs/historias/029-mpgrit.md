@@ -1,7 +1,8 @@
 # 029 — MPGRIT: el motor y GRIT en un solo protocolo multienlace
 
 - **Fecha:** 2026-10-28
-- **Estado:** vigente (decisión tomada; paso 1 en curso)
+- **Estado:** vigente (decisión tomada; paso 1 en curso; 2026-10-29: la
+  redundancia sobre GRIT)
 - **Fuentes:** historia 028 («Terreno»: GRIT contra OMR y el TCP directo);
   `~/campo/2026-10-27/grit-split/README.md` (tandas t2–t6),
   `~/campo/2026-10-27/omr-inside/README.md` (subflujos MPTCP de OMR); estado
@@ -56,10 +57,14 @@
   experimento.
 - **Los modos (LuCI, `option mode`):** *Bonding* (lo de arriba: `split`,
   GRIT, `subflow`, `link_cc`; lo que trae un router nuevo), *Redundancia*
-  (copias, rescate y el **protocontrolador A**, que en el laboratorio llevó
-  24–45 % más por enlaces que pierden o celulares y 5 veces más con el
-  principal cortado; GRIT, con o sin subflujos, rindió menos ahí) y
-  *Personalizado* (como antes). El VPS los sigue con `cengarde-vps-setup
+  (copias, rescate, el mismo motor; primero con el protocontrolador A,
+  porque GRIT perdía ahí) y *Personalizado* (como antes). **GRIT perdía en
+  redundancia por dos cosas** (2026-10-29): una copia perdida en todos sus
+  enlaces nunca le llegaba como pérdida (solo su temporizador, 300 ms
+  tarde) y el ritmo del mejor enlace lo empujaba aunque tuviera cola (srtt
+  de 665 ms). Arregladas (`99f04c5`, `6139fd3`), **en terreno le gana a A:
+  bajada +9 % con menos ping y 15 % menos datos, subida +12 %**, y la
+  redundancia pasa a GRIT. El VPS los sigue con `cengarde-vps-setup
   mode`, y **un router lo administra** con una llave SSH que solo puede
   correr `cengarde-vps-admin` (modo, FEC, protocontrolador y una lista de
   ajustes del motor), desde la pestaña *VPS* de LuCI.
@@ -748,6 +753,119 @@ mismo motor del bonding con el protocontrolador A (GRIT perdió en `red1`).
   `split` apagado, `subflow` y `link_cc`, `redund_pace_ms` 150, rescate y
   `tcp_aware` (router, LuCI y `cengarde-vps-setup mode redundancy`, que
   escribe `REDUNDANCY` en `nat.conf`).
+
+### La redundancia con GRIT (2026-10-29)
+
+El usuario: «¿y en B? ¿por qué la redundancia aún pierde en B? Sería el modo
+que necesitamos pronto».
+
+- **Lo de `red1` eran dos cosas distintas.** Sin subflujos, GRIT no pierde
+  paquetes en `fade` (0 reenvíos) pero va a la mitad: su ritmo sigue la
+  mezcla de copias, con el ping más bajo de todos (p99 53–70 ms). Con
+  subflujos, el RACK de GRIT se apaga (lo deciden los enlaces), pero el
+  `SFLOSS` de una copia se descartaba (`copied`: pudo llegar por otro
+  enlace), así que un paquete perdido en *todos* sus enlaces solo lo
+  encontraba el temporizador, 300 ms después de la ida y vuelta. En `red1`
+  los 1900–2700 reenvíos de `fade` fueron todos por temporizador.
+- **La oferta no era el problema:** en redundancia la pista de GRIT ya es el
+  ritmo del mejor enlace, no la suma (`*bps = split ? sum : best`).
+- **Con el motor nuevo** (`red3`, `afba781`, n = 3, contra A con el mismo
+  preset): B con `subflow`, `link_cc` y `redund_pace_ms` 150 ya empata en
+  caudal (`fade` +8 / −6 %, `protectcut` +6 / −3 %, `lossy` 0 / −13 %),
+  pero con ~20 mil reenvíos por temporizador en `fade` (ninguno duplicado:
+  pérdidas reales) y ping p99 más alto (het 253 contra 124 ms). B sin el
+  ritmo por enlace (copias completas o según la capacidad) sigue en la
+  mitad en `fade` y `protectcut`.
+- **Una copia perdida en todos sus enlaces es una pérdida segura**
+  (`99f04c5`): el anillo del rescate guarda los enlaces de las copias de
+  cada paquete y el `SFLOSS` del último se lo entrega a GRIT como si el
+  paquete hubiera ido solo por ese enlace (`cg_resc_lost_on`, `all_copies`
+  en el estado). `red4` contra `red3`:
+
+  | caso | sentido | A | B | B con el arreglo |
+  | --- | --- | --- | --- | --- |
+  | lossy | bajada | 51,8 | 52,0 | **55,5** |
+  | lossy | subida | **52,5** | 45,7 | 47,7 |
+  | cell4 | bajada | 17,6 | 18,3 | **18,4** |
+  | fade | bajada | 52,1 | **56,5** | 54,9 |
+  | fade | subida | **53,3** | 50,1 | 47,7 |
+  | linkdeath | subida | 35,7 | 35,6 | **37,0** |
+  | protectcut | bajada | 33,3 | 35,2 | **35,4** |
+  | protectcut | subida | 34,1 | 33,1 | **35,2** |
+  | het | bajada | 52,5 | 50,8 | **54,4** |
+  | het | subida | 53,0 | 52,8 | **54,7** |
+
+  Los reenvíos por temporizador caen a una fracción (het 903 → 65, lossy
+  1295 → 283); los que quedan son pérdidas reales (0 duplicados en el
+  receptor) que GRIT ahora repara a tiempo. El ping p99 de B sigue sobre el
+  de A (het 311 contra 124 ms, `protectcut` 368 contra 201).
+- **Terreno** (`field-r4`, VPS en `99f04c5`, NUC en `a31e8b4`, es decir, la
+  subida sin el arreglo; 3 rondas, ~2,3 GB):
+
+  | brazo | bajada | ping p95 | bytes / útil | subida | ping p95 | bytes / útil |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | A | 133,2 / 125,1 / 108,8 | 140–176 | 2,10–2,59 | 41,5 / 43,5 / 45,5 | 92–95 | 2,65–2,81 |
+  | B | 111,5 / 144,9 / 99,5 | 300–349 | 2,02–3,14 | 47,6 / 48,9 / 52,5 | 172–252 | 2,34–2,51 |
+
+  En redundancia B ya no pierde: la bajada empata (118,6 contra 122,4, dentro
+  de lo que varía una ronda) y la subida gana 14 % con menos datos. Lo que le
+  queda es el ping, el doble que A, en el borde del presupuesto de ~300 ms.
+  Con el arreglo en los dos extremos (`field-r5`): bajada 112,4 contra 122,3
+  (−8 %), subida 46,5 contra 41,7 (+11 %), el ping igual de alto.
+- **Por qué el ping:** el estado de GRIT en el VPS durante la bajada de B
+  (`field-r5/pacers.jsonl`) mostró la oferta del motor en 155–273 Mbit/s,
+  el ritmo del mejor enlace con su sondeo, para un solo módem (los
+  estimados por enlace se inflan con las ráfagas: 68–115 Mbit/s cada uno en
+  reposo), ofrecida tenga o no cola el flujo (`CG_SCC_OFFER_LINKS`, pensada
+  para el bonding, donde cada enlace cuida su cola). GRIT llegó a un srtt de
+  665 ms, 6,7 MB en vuelo, una ventana de 19,7 MB y ~960 reenvíos por
+  temporizador en los primeros segundos.
+- **Copiado, la oferta solo sin cola** (`6139fd3`): la pista dice cuando el
+  motor copia (`CG_PCTL_HINT_COPIED`) y entonces la oferta se calla mientras
+  el flujo vea cola sobre su objetivo (`CG_SCC_OFFER_COPIES`, como la
+  capacidad del motor); el bonding sigue igual. Laboratorio (`red5`, n = 3,
+  contra A de `red3`):
+
+  | caso | sentido | A | B con los dos arreglos | ping p99 A / B |
+  | --- | --- | --- | --- | --- |
+  | lossy | bajada | 51,8 | **55,0** | 127 / 130 |
+  | lossy | subida | 52,5 | **55,3** | 127 / 127 |
+  | cell4 | bajada | 17,6 | **18,3** | 211 / 175 |
+  | cell4 | subida | 17,7 | **18,4** | 194 / 188 |
+  | fade | bajada | 52,1 | **57,2** | 283 / 282 |
+  | fade | subida | **53,3** | 46,9 | 285 / 277 |
+  | linkdeath | bajada | 35,6 | **36,5** | 131 / 129 |
+  | linkdeath | subida | 35,7 | **37,2** | 132 / 132 |
+  | protectcut | bajada | 33,3 | **34,3** | 201 / 280 |
+  | protectcut | subida | 34,1 | **35,4** | 206 / 293 |
+  | het | bajada | 52,5 | **55,4** | 124 / 292 |
+  | het | subida | 53,0 | **55,7** | 120 / 239 |
+
+  B gana en 11 de 12, con el ping de A salvo en `het` y `protectcut`; los
+  reenvíos bajan a la mitad o menos (`lossy` 3898 → 1416, `linkdeath`
+  3264 → 378). En terreno, la bajada (`field-r6`, VPS en `6139fd3`):
+  A 125,3 / 123,4 / 120,9 (ping p95 161–204, 2,12–2,30 bytes por útil),
+  B 116,7 / 118,8 / 137,7 (161–190, 1,88–2,04): el mismo caudal, el mismo
+  ping o menos, ~12 % menos datos.
+- **Terreno con los dos arreglos en los dos extremos** (`field-r7`, 3
+  rondas, ~2,3 GB):
+
+  | brazo | bajada | ping p95 | bytes / útil | subida | ping p95 | bytes / útil |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | A | 123,5 / 135,3 / 140,1 | 152–194 | 2,29–2,53 | 44,6 / 44,4 / 50,6 | 96–143 | 2,37–2,72 |
+  | **B** | **125,8 / 162,3 / 148,5** | **102–147** | **1,71–2,20** | **52,6 / 52,7 / 51,4** | 129–151 | **2,04–2,40** |
+
+  B gana: bajada +9 % (145,5 contra 133,0) con menos ping y 15 % menos
+  datos, subida +12 % (52,2 contra 46,5) con 12 % menos datos y un ping
+  algo mayor.
+- **El bonding no cambia** (`bondchk`, 8 casos × 2 sentidos, `afba781`
+  contra `6139fd3`, media geométrica −1,3 %): las caídas de bajada en
+  `equal` y `cell4` son de esos casos, bimodales en cualquier versión; con
+  otra semilla (`bondbis`) `afba781` también cae a 75–77 y 38,5.
+- **El modo redundancia pasa a B** (`cengarde-setup`, LuCI, `e2e.sh`,
+  README; el VPS sirve los dos): lo mismo que el bonding salvo el reparto.
+  El usuario, al saberlo: los presets de cada modo pueden diferir en
+  cualquier perilla que le sirva a uno y no al otro.
 
 ## Pendiente
 
