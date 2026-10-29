@@ -196,6 +196,85 @@ static void test_renege(void)
 	CHECK_EQ(off, 0);
 }
 
+/* The receiver's renege: what came out of order goes, what came in order
+ * stays, and the frame that fills the hole fits again in a full pool. */
+static void test_rx_renege(void)
+{
+	static uint8_t m8[8 * CG_ST_CHUNK];
+	static uint32_t s8[8];
+	static uint8_t data[3 * CG_ST_CHUNK];
+	struct cg_st_pool p;
+	struct cg_st_buf b;
+	struct cg_st_rx r;
+	uint64_t off;
+
+	cg_st_pool_init(&p, m8, s8, 8);
+	cg_st_buf_init(&b);
+	cg_st_rx_init(&r);
+	memset(data, 0x5a, sizeof(data));
+	/* 20000 bytes in order: chunks 0 and 1 */
+	CHECK_EQ(cg_st_buf_write(&b, &p, 0, data, 20000), 0);
+	cg_st_rx_add(&r, 0, 20000, 0);
+	CHECK_EQ(cg_st_rx_ooo_chunks(&r, &b), 0);
+	/* out of order, past a hole at 20000: the rest of the pool */
+	for (off = 2 * CG_ST_CHUNK; off < 8 * CG_ST_CHUNK; off += CG_ST_CHUNK) {
+		CHECK_EQ(cg_st_rx_judge(&r, off, CG_ST_CHUNK, 0, 64 * CG_ST_CHUNK), CG_ST_RX_NEW);
+		CHECK_EQ(cg_st_buf_write(&b, &p, off, data, CG_ST_CHUNK), 0);
+		cg_st_rx_add(&r, off, CG_ST_CHUNK, 0);
+	}
+	CHECK_EQ(p.nfree, 0);
+	CHECK_EQ(r.nr, 1);
+	CHECK_EQ(cg_st_rx_ooo_chunks(&r, &b), 6);
+	/* the hole (20000 to chunk 2) lies in chunk 1, held: it fits, and
+	 * everything is in order */
+	CHECK_EQ(cg_st_buf_write(&b, &p, 20000, data, 2 * CG_ST_CHUNK - 20000), 0);
+	cg_st_rx_add(&r, 20000, 2 * CG_ST_CHUNK - 20000, 0);
+	CHECK_EQ(r.nxt, 8 * CG_ST_CHUNK);
+	CHECK_EQ(cg_st_rx_ooo_chunks(&r, &b), 0);
+	/* a second stream on the same pool, its hole at 0, finds none */
+	{
+		struct cg_st_buf b2;
+		struct cg_st_rx r2;
+
+		cg_st_buf_init(&b2);
+		cg_st_rx_init(&r2);
+		CHECK(cg_st_buf_write(&b2, &p, 0, data, 100) < 0);
+		/* the first stream forgets nothing in order: nothing to free */
+		CHECK_EQ(cg_st_rx_renege(&r, &b, &p), 0);
+		CHECK_EQ(cg_st_rx_ended(&r), 0);
+	}
+	/* a stream whose pool holds only bytes out of order */
+	cg_st_pool_init(&p, m8, s8, 8);
+	cg_st_buf_init(&b);
+	cg_st_rx_init(&r);
+	CHECK_EQ(cg_st_buf_write(&b, &p, 0, data, 1000), 0);
+	cg_st_rx_add(&r, 0, 1000, 0);
+	for (off = CG_ST_CHUNK; off < 8 * CG_ST_CHUNK; off += CG_ST_CHUNK) {
+		CHECK_EQ(cg_st_buf_write(&b, &p, off, data, 500), 0);
+		cg_st_rx_add(&r, off, 500, off == 7 * CG_ST_CHUNK);
+	}
+	CHECK_EQ(p.nfree, 0);
+	CHECK_EQ(r.nr, 7);
+	CHECK_EQ(cg_st_rx_ooo_chunks(&r, &b), 7);
+	/* the frame at nxt fits in chunk 0, which holds bytes in order */
+	CHECK_EQ(cg_st_buf_write(&b, &p, 1000, data, 1000), 0);
+	/* one reaching chunk 1 too would need it: held out of order, it is
+	 * there; one past chunk 7 needs a new one: none */
+	CHECK(cg_st_buf_write(&b, &p, 8 * CG_ST_CHUNK, data, 100) < 0);
+	/* the renege: chunks 1 to 7 go, chunk 0 (in order) stays, the ranges and
+	 * the early FIN are forgotten */
+	CHECK_EQ(cg_st_rx_renege(&r, &b, &p), 7);
+	CHECK_EQ(p.nfree, 7);
+	CHECK_EQ(b.nch, 1);
+	CHECK_EQ(r.nr, 0);
+	CHECK_EQ(r.nxt, 1000);
+	CHECK(r.fin == CG_ST_NOFIN);
+	CHECK_EQ(cg_st_rx_ooo_chunks(&r, &b), 0);
+	/* what was forgotten comes again and is taken as new */
+	CHECK_EQ(cg_st_rx_judge(&r, CG_ST_CHUNK, 500, 0, 64 * CG_ST_CHUNK), CG_ST_RX_NEW);
+	CHECK_EQ(cg_st_rx_judge(&r, 7 * CG_ST_CHUNK, 500, 1, 64 * CG_ST_CHUNK), CG_ST_RX_NEW);
+}
+
 static void test_tx(void)
 {
 	struct cg_st_seg seg[16];
@@ -632,6 +711,7 @@ void test_stream(void)
 	test_unwrap();
 	test_rx();
 	test_tx();
+	test_rx_renege();
 	test_nack();
 	test_suspect();
 	test_e2e();

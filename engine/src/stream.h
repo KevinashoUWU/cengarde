@@ -23,7 +23,11 @@
  *   protocontroller_dead_s).
  * - The receiver keeps the next byte in order (nxt) and up to
  *   CG_ST_RANGES ranges above it; more holes than that, and a frame that
- *   would need a new range is dropped (the sender sends it again). The FIN
+ *   would need a new range is dropped (the sender sends it again). With
+ *   the pool full, it may forget what it holds out of order (a renege,
+ *   cg_st_rx_renege), so that what comes in order always fits: the
+ *   sender's timer finds the oldest segment SACKed and sends the SACKed
+ *   again (cg_st_tx_rto). The FIN
  *   takes one byte of the sequence, as in TCP: the stream's length is the
  *   FIN's offset, and an ACK past it acknowledges the FIN.
  * - Every ACK carries the whole state: the cumulative offset, the window's
@@ -363,6 +367,45 @@ static inline uint64_t cg_st_rx_ready(const struct cg_st_rx *r, uint64_t done)
 static inline int cg_st_rx_ended(const struct cg_st_rx *r)
 {
 	return r->fin != CG_ST_NOFIN && r->nxt > r->fin;
+}
+
+/* The chunks of b (r's buffer, from its lo) that hold nothing below r's
+ * next byte in order: only what came out of order. */
+static inline uint32_t cg_st_rx_ooo_chunks(const struct cg_st_rx *r, const struct cg_st_buf *b)
+{
+	uint64_t c0 = b->lo / CG_ST_CHUNK, c1 = (r->nxt + CG_ST_CHUNK - 1) / CG_ST_CHUNK;
+	uint64_t in = c1 > c0 ? c1 - c0 : 0; /* the bytes in order fill these, every one held */
+
+	return b->nch > in ? b->nch - (uint32_t)in : 0;
+}
+
+/* A renege (TCP's word): r forgets what it holds out of order, its ranges
+ * and the FIN if it came early, and the chunks of b that held only that go
+ * back to p. With every stream waiting for a hole and the pool full of the
+ * out-of-order bytes above them, the frame that fills a hole found no chunk
+ * and was dropped, again at each retransmission: in the field (2026-10-29)
+ * 31 streams of a speed test held both ends' pools until
+ * protocontroller_dead_s, and no new connection was taken. The sender gets
+ * the bytes again (cg_st_tx_rto's renege). Returns the chunks freed. */
+static inline uint32_t cg_st_rx_renege(struct cg_st_rx *r, struct cg_st_buf *b, struct cg_st_pool *p)
+{
+	uint64_t base = b->lo / CG_ST_CHUNK, c = (r->nxt + CG_ST_CHUNK - 1) / CG_ST_CHUNK;
+	uint32_t n = 0;
+
+	for (c = c < base ? base : c; c < base + CG_ST_SLOTS; c++) {
+		uint32_t *s = &b->ch[c % CG_ST_SLOTS];
+
+		if (*s != CG_ST_NOCH) {
+			cg_st_put(p, *s);
+			*s = CG_ST_NOCH;
+			b->nch--;
+			n++;
+		}
+	}
+	r->nr = 0;
+	if (r->fin != CG_ST_NOFIN && r->fin >= r->nxt)
+		r->fin = CG_ST_NOFIN;
+	return n;
 }
 
 /* ---- ACK ---- */

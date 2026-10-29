@@ -898,7 +898,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	c->tcp_ack_rule = 1;
 	c->protocontroller_port = 7801;
 	c->protocontroller_buf_kb = 1024;
-	c->protocontroller_mem_mb = 64;
+	c->protocontroller_mem_mb = 0; /* an eighth of the RAM (protoctlio.h's cg_pctl_mem_auto) */
 	c->protocontroller_max_flows = 256;
 	c->protocontroller_queue_ms = 5;
 	c->protocontroller_backlog_ms = 200;
@@ -1026,7 +1026,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	    get_protocontroller(&ini, c, err, errlen) ||
 	    get_u32(&ini, "", "protocontroller_port", 1, 65535, &c->protocontroller_port, err, errlen) ||
 	    get_u32(&ini, "", "protocontroller_buf_kb", 64, 16368, &c->protocontroller_buf_kb, err, errlen) ||
-	    get_u32(&ini, "", "protocontroller_mem_mb", 4, 4096, &c->protocontroller_mem_mb, err, errlen) ||
+	    get_u32(&ini, "", "protocontroller_mem_mb", 0, 4096, &c->protocontroller_mem_mb, err, errlen) ||
 	    get_u32(&ini, "", "protocontroller_max_flows", 1, 65535, &c->protocontroller_max_flows, err, errlen) ||
 	    get_u32(&ini, "", "protocontroller_queue_ms", 1, 1000, &c->protocontroller_queue_ms, err, errlen) ||
 	    get_u32(&ini, "", "protocontroller_backlog_ms", 10, 10000, &c->protocontroller_backlog_ms, err, errlen) ||

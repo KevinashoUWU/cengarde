@@ -215,7 +215,7 @@ struct cg_config {
 	int protocontroller;          /* CG_PCTL_NO, _A or _B (protoctlio.h): router, take the LAN's TCP redirected to protocontroller_port; VPS, open what routers ask (A and B) */
 	uint32_t protocontroller_port;            /* router: the listening port the firewall redirects to */
 	uint32_t protocontroller_buf_kb;          /* each stream's buffer per direction, at most */
-	uint32_t protocontroller_mem_mb;          /* every stream's buffers together */
+	uint32_t protocontroller_mem_mb;          /* every stream's buffers together; 0: an eighth of the RAM */
 	uint32_t protocontroller_max_flows;       /* streams at once */
 	uint32_t protocontroller_queue_ms;        /* the queue the middle leg may build over its least round trip (streamcc.h) */
 	uint32_t protocontroller_backlog_ms;      /* what a stream holds unsent or unwritten, in time at its rate */
