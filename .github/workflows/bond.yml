@@ -98,7 +98,7 @@ jobs:
       - name: Install iperf3 and aioquic; load BBR and netem
         run: |
           sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends iperf3 python3-pip
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends iperf3 python3-pip python3-numpy
           # --ignore-installed: the runner has python3-cryptography from apt, which pip cannot uninstall.
           # System-wide, so that "sudo python3 -I bench/quicperf.py" finds it.
           sudo python3 -m pip install --break-system-packages --ignore-installed --no-cache-dir 'aioquic==1.2.0'
@@ -109,7 +109,7 @@ jobs:
             }
           done
       - name: Test the tables of the lab
-        run: python3 bench/bondtab_test.py && python3 bench/labq_test.py && python3 bench/starslot_test.py && python3 bench/multisl_test.py && python3 bench/starfield_test.py
+        run: python3 bench/bondtab_test.py && python3 bench/labq_test.py && python3 bench/starslot_test.py && python3 bench/multisl_test.py && python3 bench/starfield_test.py && python3 bench/techomat_test.py
       - name: Build the lab (udpgen and cengarde)
         run: sudo bench/lab.sh build
       - name: Bonding lab

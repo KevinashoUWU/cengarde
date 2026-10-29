@@ -7,6 +7,7 @@
 #include "dominant.h"
 #include "linksig.h"
 #include "split.h"
+#include "subflow.h"
 #include "tcpack.h"
 #include "tcpfree.h"
 
@@ -660,4 +661,34 @@ void cg_status_writer_stop(struct cg_status_writer *w)
 	pthread_cond_destroy(&w->cv);
 	pthread_mutex_destroy(&w->mu);
 	w->running = 0;
+}
+
+void cg_json_linkcc(struct cg_json *j, const char *k, const struct cg_sf_tx *t, uint32_t target_us)
+{
+	static const char *const mode[] = { "startup", "drain", "probe" };
+	const struct cg_lc *c = &t->lc;
+
+	cg_json_obj(j, k);
+	cg_json_str(j, "mode", mode[c->mode < 3 ? c->mode : 2]);
+	cg_json_u64(j, "bw_bps", c->bw * 8);
+	cg_json_u64(j, "pacing_bps", cg_lc_rate(c) * 8);
+	cg_json_ms(j, "rtprop_ms", c->rtprop);
+	cg_json_ms(j, "srtt_ms", c->srtt);
+	cg_json_u64(j, "cwnd", cg_lc_cwnd(c, c->bits & CG_LC_MTPT ? c->target_us : target_us));
+	cg_json_u64(j, "inflight", c->inflight);
+	cg_json_u64(j, "cuts", c->cuts);
+	if (c->have_owd)
+		cg_json_ms(j, "queue_ms", c->q_us);
+	else
+		cg_json_null(j, "queue_ms");
+	cg_json_u64(j, "sat_bps", c->sat * 8);
+	cg_json_u64(j, "sfacks", t->acks);
+	cg_json_u64(j, "app_limited", t->app_n);
+	cg_json_ms(j, "target_ms", c->bits & CG_LC_MTPT ? c->target_us : target_us);
+	if (c->bits & CG_LC_MTPT) { /* MTPT: its ceiling and the steps it took */
+		cg_json_ms(j, "mtpt_cap_ms", c->mt_cap_us);
+		cg_json_u64(j, "mtpt_up", c->mt_up);
+		cg_json_u64(j, "mtpt_down", c->mt_down);
+	}
+	cg_json_end(j, '}');
 }

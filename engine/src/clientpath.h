@@ -22,6 +22,8 @@
  *   8. a probe reply goes back to the caller (it updates the link's health);
  *      DATA is the first copy, noted in the arrival ring (expected on every
  *      link of expect, or on its own link only when split), for the TUN.
+ * With subflow, every DATA's sseq goes to its link's subflow (subflow.h),
+ * a copy's too (5: a copy says its link did not lose it), after its MAC.
  * A server that restarted needs no window reset here: it goes on past what
  * the probes say we received (cg_probe_info), and the reorderer takes its
  * 2^20 leap as a far packet, then resyncs (reorder.h).
@@ -47,6 +49,7 @@
 #include "proto.h"
 #include "reorder.h"
 #include "replay.h"
+#include "subflow.h"
 
 /* A link as the download sees it. */
 struct cg_rxl {
@@ -57,6 +60,7 @@ struct cg_rxl {
 	uint64_t last_rx_ms;   /* newest verified packet on it */
 	uint64_t hello_ms;     /* its newest HELLO */
 	struct cg_echo probes; /* its probes, for the echoes in replies and HELLOs (epoch.h) */
+	struct cg_sf_rx sf;    /* its subflow (subflow.h): the sseq the server numbers its DATA with */
 };
 
 /* The download state of the session (one owner: the loop, or the hub). */
@@ -69,6 +73,7 @@ struct cg_rxs {
 	struct cg_arrivals arr;  /* by link, and joint lateness (the status's joint) */
 	struct cg_link_rx rx[CG_MAX_LINKS];
 	uint64_t malformed, foreign, auth_fail, old, dups, trunc, stale_gen, hellos, hellos_stale;
+	int subflow;         /* follow each link's subflow (the subflow knob): a copy's MAC is checked too */
 	struct cg_reorder ro; /* the first copies, back in sequence (reorder.h); about 81 KiB */
 };
 
@@ -82,6 +87,8 @@ enum cg_rxv {
 	CG_RXV_FEC,      /* a verified parity: the caller may rebuild DATA from it (fec.h) */
 	CG_RXV_PARQ,     /* a verified PARQ: the caller sends the repairs it asks for (harq.h) */
 	CG_RXV_REPAIR,   /* a verified repair of the download: the caller may rebuild DATA from it (rlc.h, story 026) */
+	CG_RXV_SFLOSS,   /* a verified SFLOSS: what a link's subflow lost up, for the caller to send again (subflow.h) */
+	CG_RXV_SFACK,    /* a verified SFACK: how far each link's subflow got up (subflow.h) */
 };
 
 /* The upload side of the session. */
@@ -145,7 +152,8 @@ static inline enum cg_rxv cg_rx_entry(struct cg_rxs *r, struct cg_rxl *l, unsign
 	}
 	if (cg_hdr_parse(h, b, len) < 0 ||
 	    (h->type != CG_T_DATA && h->type != CG_T_PROBE_REPLY && h->type != CG_T_HELLO && h->type != CG_T_NACK &&
-	     h->type != CG_T_FEC && h->type != CG_T_PARQ && h->type != CG_T_REPAIR)) {
+	     h->type != CG_T_FEC && h->type != CG_T_PARQ && h->type != CG_T_REPAIR && h->type != CG_T_SFLOSS &&
+	     h->type != CG_T_SFACK)) {
 		r->malformed++;
 		return CG_RXV_DROP;
 	}
@@ -162,8 +170,17 @@ static inline enum cg_rxv cg_rx_entry(struct cg_rxs *r, struct cg_rxl *l, unsign
 		return CG_RXV_DROP;
 	case CG_RP_DUP:
 		r->dups++;
-		if (h->type == CG_T_DATA)
-			cg_arr_dup(&r->arr, r->rx, h->seq, now32, link);
+		if (h->type != CG_T_DATA)
+			return CG_RXV_DROP;
+		cg_arr_dup(&r->arr, r->rx, h->seq, now32, link);
+		/* a copy is still its link's: its sseq says the link did not
+		 * lose it, once its MAC says the server sent it */
+		if (r->subflow && h->sseq) {
+			if (cg_hdr_verify(b, len, r->k_rx))
+				cg_sf_rx_took(&l->sf, h->sseq, cg_sf_rx_in(&l->sf, h->sseq, now32), (uint32_t)len, now32);
+			else
+				r->auth_fail++;
+		}
 		return CG_RXV_DROP;
 	default:
 		if (!cg_hdr_verify(b, len, r->k_rx)) {
@@ -175,8 +192,11 @@ static inline enum cg_rxv cg_rx_entry(struct cg_rxs *r, struct cg_rxl *l, unsign
 	l->last_rx_ms = now_ms;
 	if (now_ms > r->newest_ms)
 		r->newest_ms = now_ms;
-	if (h->type == CG_T_PROBE_REPLY)
+	if (h->type == CG_T_PROBE_REPLY) {
+		if (r->subflow && h->sseq) /* how far the server sent on this link */
+			cg_sf_rx_sent(&l->sf, h->sseq, now32);
 		return CG_RXV_REPLY;
+	}
 	if (h->type == CG_T_NACK)
 		return CG_RXV_NACK;
 	if (h->type == CG_T_FEC)
@@ -185,6 +205,12 @@ static inline enum cg_rxv cg_rx_entry(struct cg_rxs *r, struct cg_rxl *l, unsign
 		return CG_RXV_PARQ;
 	if (h->type == CG_T_REPAIR)
 		return CG_RXV_REPAIR;
+	if (h->type == CG_T_SFLOSS)
+		return CG_RXV_SFLOSS;
+	if (h->type == CG_T_SFACK)
+		return CG_RXV_SFACK;
+	if (r->subflow && h->sseq)
+		cg_sf_rx_took(&l->sf, h->sseq, cg_sf_rx_in(&l->sf, h->sseq, now32), (uint32_t)len, now32);
 	/* A split packet (split.h) comes on its one link: the others do not
 	 * miss it, and are not late for it. */
 	cg_arr_first(&r->arr, r->rx, h->seq, now32, link, h->flags & CG_F_SPLIT ? (uint16_t)(1u << link) : expect);

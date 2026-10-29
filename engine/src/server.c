@@ -112,6 +112,7 @@
 #include "tunroute.h"
 #include "util.h"
 #include "active.h"
+#include "subflow.h"
 
 /* split = force shares the packets out evenly (split.h): every path weighs
  * 1. With split = client, the weights the client sends per link. */
@@ -147,7 +148,15 @@ struct path {
 	uint64_t local_errors; /* datagrams that could not leave: our address gone, no route */
 	struct cg_probe_info peer_view; /* client's view of this path (download) */
 	uint64_t peer_view_ms;
+	/* the route's MTU toward the client's address (the kernel learns a
+	 * smaller one from ICMP and then cuts larger packets in two: Claro's
+	 * 1460, 2026-10-28), read every CG_PATH_MTU_MS */
+	uint32_t path_mtu;
+	uint64_t mtu_ms;
+	struct cg_ratelimit rl_mtu;
 };
+
+#define CG_PATH_MTU_MS 10000
 
 #define CG_HQ_N 256 /* upload gaps one session may hold waiting for the code (harq.h) */
 
@@ -267,6 +276,24 @@ struct session {
 	struct cg_act_tx act_tx;
 	uint16_t act_base;
 	struct cg_reorder ro;  /* the upload, back in sequence (reorder.h); about 322 KiB */
+	struct sfpath *sf[CG_MAX_LINKS]; /* each path as a subflow (subflow.h), with subflow; NULL: not yet */
+	uint64_t sfloss_sent, sfloss_rx; /* SFLOSS messages sent to the client, and received */
+	uint64_t sfack_sent, sfack_rx;   /* SFACK messages */
+	uint64_t sfack_us;               /* when the last SFACK went */
+};
+
+/* A path as a subflow of MPGRIT (subflow.h), both ways: the sseq of each
+ * DATA it carried down, and the upload's as this end follows it; and what
+ * the client's SFLOSS said it lost down: a GRIT message that went on it
+ * alone (to its stream), copied, not kept, not GRIT's, not sure yet (a code
+ * may have rebuilt it: rescue.h's cg_resc_sure). 13 KiB, so taken
+ * only for a path that carries something with subflow on. */
+struct sfpath {
+	struct cg_sf_tx tx;
+	struct cg_sf_rx rx;
+	uint64_t grit, copied, unkept, other, unsure;
+	uint64_t allcopies; /* of grit's checks, copied ones every path of theirs lost (cg_resc_lost_on) */
+	uint64_t suspect; /* of them, handed over as suspects (a code may rebuild them) */
 };
 
 /* A client: a [client NAME] section, or the global key of a server with one
@@ -611,6 +638,10 @@ static void session_destroy(struct server *s, struct session *S, const char *why
 	S->rsx = NULL;
 	free(S->dw);
 	S->dw = NULL;
+	for (int p = 0; p < CG_MAX_LINKS; p++) {
+		free(S->sf[p]);
+		S->sf[p] = NULL;
+	}
 	S->used = 0;
 	if (!--C->nsess)
 		C->alone_ms = now_ms;
@@ -876,6 +907,8 @@ static void queue_reply(struct server *s, int *nr, struct session *S, unsigned l
 		cg_probe_act_write(r + CG_HDR_LEN, &pa);
 	}
 	cg_hdr_write(r, &h, C->key + CG_SIPHASH_KEY_LEN, r + CG_HDR_LEN, plen);
+	/* how far the path's subflow went: the client sees a lost tail (subflow.h) */
+	cg_hdr_set_sseq(r, s->cfg->subflow && S->sf[link] ? S->sf[link]->tx.next : 0);
 	s->reply_to[*nr] = P->addr;
 	s->riov[*nr].iov_base = r;
 	s->riov[*nr].iov_len = CG_HDR_LEN + plen;
@@ -1109,6 +1142,206 @@ static void q_add(struct server *s, int *nq, struct session *S, uint8_t *payload
 }
 
 /* S's two live paths of least delay down (best[0] first), -1: none. */
+static void best_paths(const struct session *S, uint64_t now_ms, int best[2]);
+static int send_path(struct server *s, struct session *S, int p, const uint8_t *b, size_t len);
+
+/* Path p of S as a subflow (subflow.h), taken the first time it is needed;
+ * NULL: no memory (its DATA goes unnumbered). */
+static struct sfpath *sf_get(struct session *S, unsigned p)
+{
+	struct sfpath *F = S->sf[p];
+
+	if (!F && (F = calloc(1, sizeof(*F)))) {
+		cg_sf_tx_init(&F->tx);
+		cg_sf_rx_init(&F->rx, CG_SF_FLOOR_US, CG_SF_CAP_US);
+		S->sf[p] = F;
+	}
+	return F;
+}
+
+/* An arrival of sseq q, len bytes, up path p of S, at now (us), for its
+ * subflow. */
+static void sf_up(struct session *S, unsigned p, uint32_t q, size_t len, uint32_t now)
+{
+	struct sfpath *F = sf_get(S, p);
+
+	if (F)
+		cg_sf_rx_took(&F->rx, q, cg_sf_rx_in(&F->rx, q, now), (uint32_t)len, now);
+}
+
+/* With link_cc, path p's own rate (linkcc.h) in one of S's expected
+ * arrivals (eta.h: the split's, or with redundancy the copies'), as the
+ * client's lc_eta: its pacing rate, its delay without a queue over ref
+ * (rtprop), what it has queued now, past the queue target (its own with
+ * MTPT) a last resort. */
+static void lc_eta(const struct server *s, struct session *S, struct cg_eta *e, unsigned p, uint32_t ref,
+		   uint64_t now_us)
+{
+	const struct sfpath *F = S->sf[p];
+
+	if (!e->l[p].bps || !F || !F->tx.acks || !F->tx.lc.rtprop)
+		return;
+	cg_eta_own(e, p, cg_lc_rate(&F->tx.lc) * 8, F->tx.lc.rtprop > ref ? F->tx.lc.rtprop - ref : 0,
+		   cg_lc_queued(&F->tx.lc), F->tx.lc.bits & CG_LC_MTPT ? F->tx.lc.target_us : s->cfg->governor_target_ms * 1000,
+		   now_us);
+	if (F->tx.lc.bits & CG_LC_WND)
+		cg_eta_wnd(e, p, cg_lc_wnd_left(&F->tx.lc));
+}
+
+/* The least rtprop of S's paths in e, for lc_eta; 0: none. */
+static uint32_t lc_ref(const struct session *S, const struct cg_eta *e)
+{
+	uint32_t ref = 0;
+
+	for (int p = 0; p < CG_MAX_LINKS; p++) {
+		const struct sfpath *F = S->sf[p];
+
+		if (e->l[p].bps && F && F->tx.acks && F->tx.lc.rtprop && (!ref || F->tx.lc.rtprop < ref))
+			ref = F->tx.lc.rtprop;
+	}
+	return ref;
+}
+
+/* With link_cc, each of S's paths' rate for this tick: the bits, its queue
+ * target (with MTPT, its ceiling) and the engine's capacity as a start;
+ * the split and the copies' expected arrivals take it (lc_eta). */
+static void lc_tick(const struct server *s, struct session *S)
+{
+	uint32_t ref = lc_ref(S, s->cfg->split_eta ? &S->eta : &S->pace);
+
+	for (int p = 0; p < CG_MAX_LINKS; p++)
+		if (S->sf[p]) {
+			struct cg_lc *lc = &S->sf[p]->tx.lc;
+
+			lc->bits = (uint8_t)s->cfg->link_cc_bits;
+			cg_lc_target(lc, s->cfg->governor_target_ms * 1000, cg_lc_mtpt_cap(lc, s->cfg->link_cc_budget_ms, ref));
+			if (S->cap[p].have_rate)
+				cg_lc_seed(lc, cg_cap_bps(&S->cap[p]) / 8);
+		}
+}
+
+/* An SFACK from S's client: how far each path got down; each one's rate
+ * learns of it (subflow.h, linkcc.h). */
+static void on_sfack(const struct server *s, struct session *S, const uint8_t *payload, uint64_t now_us)
+{
+	S->sfack_rx++;
+	for (unsigned k = 0; k < payload[0]; k++) {
+		struct cg_sfack_e e;
+
+		cg_sfack_get(payload, k, &e);
+		if (e.link < CG_MAX_LINKS && S->sf[e.link]) {
+			cg_sf_tx_ack(&S->sf[e.link]->tx, e.top, e.gotb, e.rts, e.age, now_us);
+			if (s->cfg->link_cc && s->cfg->split_eta)
+				lc_eta(s, S, &S->eta, e.link, lc_ref(S, &S->eta), now_us);
+		}
+	}
+}
+
+/* What each path of S got up, in one SFACK to its client on path best, at
+ * most every CG_SFACK_US; returns when the next is due (us), or -1. */
+static int32_t sfack_service(struct server *s, struct session *S, const struct client *C, int best, uint64_t now_us)
+{
+	uint8_t pkt[CG_HDR_LEN + CG_SFACK_LEN];
+	unsigned k = 0, news = 0;
+
+	for (int p = 0; p < CG_MAX_LINKS; p++) {
+		const struct cg_sf_rx *r = S->sf[p] ? &S->sf[p]->rx : NULL;
+
+		news |= r && r->top && (r->top != r->rep_top || r->gotb != r->rep_gotb);
+	}
+	if (!news)
+		return -1;
+	if (now_us - S->sfack_us < CG_SFACK_US)
+		return (int32_t)(CG_SFACK_US - (now_us - S->sfack_us));
+	if (best < 0)
+		return -1; /* no live path: nothing to say it on */
+	for (int p = 0; p < CG_MAX_LINKS && k < 16; p++) {
+		struct cg_sfack_e e = { .link = (uint8_t)p };
+
+		if (S->sf[p] && cg_sf_rx_ack(&S->sf[p]->rx, (uint32_t)now_us, &e.top, &e.gotb, &e.rts, &e.age))
+			cg_sfack_put(pkt + CG_HDR_LEN, k++, &e);
+	}
+	if (k) {
+		struct cg_hdr h = { .type = CG_T_SFACK,
+				    .hint = C->hint,
+				    .link = (uint8_t)best,
+				    .session = S->id,
+				    .seq = S->tx_ctl++,
+				    .ts = (uint32_t)now_us };
+		size_t plen = 1 + CG_SFACK_ENTRY * k;
+
+		cg_hdr_write(pkt, &h, C->key + CG_SIPHASH_KEY_LEN, pkt + CG_HDR_LEN, plen);
+		if (!send_path(s, S, best, pkt, CG_HDR_LEN + plen))
+			S->sfack_sent++;
+		S->sfack_us = now_us;
+	}
+	return -1;
+}
+
+/* The subflows up (subflow.h): what each path lost within itself goes back
+ * to its client in SFLOSS messages, down the path of least delay. Before
+ * every wait; returns when the next gap is due, in ms (epoll), or -1. */
+static int sf_service(struct server *s)
+{
+	uint64_t now_us, now_ms;
+	int32_t due = -1;
+
+	if (!s->cfg->subflow)
+		return -1;
+	now_us = cg_now_us();
+	now_ms = now_us / 1000;
+	for (uint32_t i = 0; i < s->cap; i++) {
+		struct session *S = &s->s[i];
+		const struct client *C;
+		int best[2] = { -2, -2 }; /* -2: not looked for yet */
+
+		if (!S->used)
+			continue;
+		C = client_of(s, S);
+		for (int p = 0; p < CG_MAX_LINKS; p++) {
+			struct sfpath *F = S->sf[p];
+			uint32_t q[CG_NACK_SEQ_MAX];
+			int32_t d = F ? cg_sf_rx_due_us(&F->rx, (uint32_t)now_us) : -1;
+			unsigned n;
+
+			if (d == 0) {
+				if (best[0] == -2)
+					best_paths(S, now_ms, best);
+				n = cg_sf_rx_poll(&F->rx, (uint32_t)now_us, q, CG_NACK_SEQ_MAX);
+				for (unsigned k = 0; best[0] >= 0 && k < n;) { /* no live path: nothing to say them on */
+					uint8_t pkt[CG_HDR_LEN + 1 + CG_NACK_LEN];
+					unsigned used;
+					size_t plen = 1 + cg_nack_write(pkt + CG_HDR_LEN + 1, q + k, n - k, &used);
+					struct cg_hdr h = { .type = CG_T_SFLOSS,
+							    .hint = C->hint,
+							    .link = (uint8_t)best[0],
+							    .session = S->id,
+							    .seq = S->tx_ctl++,
+							    .ts = (uint32_t)now_us };
+
+					k += used;
+					pkt[CG_HDR_LEN] = (uint8_t)p;
+					cg_hdr_write(pkt, &h, C->key + CG_SIPHASH_KEY_LEN, pkt + CG_HDR_LEN, plen);
+					if (!send_path(s, S, best[0], pkt, CG_HDR_LEN + plen))
+						S->sfloss_sent++;
+				}
+				d = cg_sf_rx_due_us(&F->rx, (uint32_t)now_us);
+			}
+			if (d >= 0 && (due < 0 || d < due))
+				due = d;
+		}
+		if (now_us - S->sfack_us >= CG_SFACK_US && best[0] == -2)
+			best_paths(S, now_ms, best);
+		{
+			int32_t d = sfack_service(s, S, C, best[0], now_us);
+
+			if (d >= 0 && (due < 0 || d < due))
+				due = d;
+		}
+	}
+	return due < 0 ? -1 : cg_due_ms(due);
+}
+
 static void best_paths(const struct session *S, uint64_t now_ms, int best[2])
 {
 	uint16_t present, live;
@@ -1811,6 +2044,41 @@ static int path_full(const struct server *s, const struct session *S, unsigned p
 	return cg_cap_full(&S->cap[p], s->cfg->rescue_target_ms * 1000, S->lm[p].rfull_hyst);
 }
 
+static int sf3_on(const struct server *s, const struct session *S);
+
+/* Whether what S's download loses may come back without being sent again:
+ * FEC v3's share now rebuilds it, so its path's loss alone is not the
+ * client's (story 029). */
+static int down_coded(const struct server *s, const struct session *S)
+{
+	return sf3_on(s, S) && S->df3.mode != CG_F3_OFF && S->df3.pct;
+}
+
+/* NACKs with CG_F_GONE for gone[0..n), down path p of S: the client stops
+ * waiting for what will not come again. */
+static void say_gone(struct server *s, struct session *S, int p, const uint32_t *gone, unsigned n)
+{
+	const struct client *C = client_of(s, S);
+
+	for (unsigned i = 0; i < n;) {
+		uint8_t pkt[CG_HDR_LEN + CG_NACK_LEN];
+		unsigned used;
+		size_t glen = cg_nack_write(pkt + CG_HDR_LEN, gone + i, n - i, &used);
+		struct cg_hdr h = { .type = CG_T_NACK,
+				    .flags = CG_F_GONE,
+				    .hint = C->hint,
+				    .link = (uint8_t)p,
+				    .session = S->id,
+				    .seq = S->tx_ctl++,
+				    .ts = (uint32_t)cg_now_us() };
+
+		i += used;
+		cg_hdr_write(pkt, &h, C->key + CG_SIPHASH_KEY_LEN, pkt + CG_HDR_LEN, glen);
+		if (!send_path(s, S, p, pkt, CG_HDR_LEN + glen))
+			S->resc_gone_tx++;
+	}
+}
+
 /* A verified NACK of S (rescue.h): each sequence it names that the ring
  * still keeps goes again, within S's budget, on its live path of least
  * delay (the delays of one session's paths share the client's clock); not
@@ -1850,11 +2118,16 @@ static void on_nack(struct server *s, struct session *S, uint8_t flags, const ui
 		if (cg_resc_dup(&s->resc, S->resc_idx, seq[i], (uint32_t)now_ms))
 			continue;
 		/* A GRIT message (story 025): its stream retransmits what it
-		 * loses, so the loss goes to it, and the client stops waiting. */
+		 * loses, so the loss goes to it, as sure as the evidence makes
+		 * it (story 029), and the client stops waiting. */
 		if (s->pctl) {
+			unsigned ev = cg_resc_ev(&s->resc, S->resc_idx, S->id, seq[i], CG_RESC_EV_ASKED);
+			int sure = cg_resc_sure(ev, down_coded(s, S), s->cfg->protocontroller_nack && !s->cfg->subflow);
 			int k = cg_pctl_nack(s->pctl, (uint32_t)(S - s->s), S->id, e + CG_HDR_LEN, (size_t)len - CG_HDR_LEN,
-					     went);
+					     went, sure);
 
+			if (sure && (k == CG_PCTL_NACK_DATA || k == CG_PCTL_NACK_ACK))
+				cg_resc_ev(&s->resc, S->resc_idx, S->id, seq[i], CG_RESC_EV_DONE);
 			if (k == CG_PCTL_NACK_DATA || k == CG_PCTL_NACK_ACK) {
 				S->resc_grit++;
 				S->resc_grit_bytes += len - CG_HDR_LEN;
@@ -1890,24 +2163,77 @@ static void on_nack(struct server *s, struct session *S, uint8_t flags, const ui
 		}
 	}
 	/* What will not come again, said back so the client does not wait. */
-	for (unsigned i = 0; best[0] >= 0 && i < ngone;) {
-		const struct client *C = client_of(s, S);
-		uint8_t pkt[CG_HDR_LEN + CG_NACK_LEN];
-		unsigned used;
-		size_t glen = cg_nack_write(pkt + CG_HDR_LEN, gone + i, ngone - i, &used);
-		struct cg_hdr h = { .type = CG_T_NACK,
-				    .flags = CG_F_GONE,
-				    .hint = C->hint,
-				    .link = (uint8_t)best[0],
-				    .session = S->id,
-				    .seq = S->tx_ctl++,
-				    .ts = (uint32_t)cg_now_us() };
+	if (best[0] >= 0)
+		say_gone(s, S, best[0], gone, ngone);
+}
 
-		i += used;
-		cg_hdr_write(pkt, &h, C->key + CG_SIPHASH_KEY_LEN, pkt + CG_HDR_LEN, glen);
-		if (!send_path(s, S, best[0], pkt, CG_HDR_LEN + glen))
-			S->resc_gone_tx++;
+/* A verified SFLOSS of S (subflow.h): what one of its paths lost down
+ * within itself, never a late arrival on another path. A GRIT message
+ * that went on that path alone is a certain loss for its stream
+ * (cg_pctl_nack), and the client stops waiting for it (GONE), when nothing
+ * rebuilds it on the way, or once the client's reorderer asked for it as
+ * well (rescue.h's cg_resc_sure); a copied one may have come on another
+ * path, until every path it went on lost it (cg_resc_lost_on), and the
+ * tunnel's own DATA is left to the client's reorderer and its NACKs. */
+static void on_sfloss(struct server *s, struct session *S, const uint8_t *payload, size_t plen, uint64_t now_ms)
+{
+	uint32_t q[CG_NACK_SEQ_MAX], gone[CG_NACK_SEQ_MAX];
+	unsigned n, ngone = 0, p = payload[0];
+	struct sfpath *F;
+	int best[2];
+
+	S->sfloss_rx++;
+	if (p >= CG_MAX_LINKS || !(F = S->sf[p]))
+		return;
+	n = cg_nack_read(q, CG_NACK_SEQ_MAX, payload + 1, plen - 1);
+	for (unsigned i = 0; i < n; i++) {
+		uint32_t seq;
+		uint16_t len;
+		uint8_t went;
+		const uint8_t *e;
+		unsigned ev;
+		int k, sure;
+
+		if (!cg_sf_tx_find(&F->tx, q[i], &seq))
+			continue;
+		e = s->pctl && S->resc_idx ? cg_resc_get(&s->resc, S->resc_idx, S->id, seq, &len, &went) : NULL;
+		if (!e) {
+			F->unkept++;
+			continue;
+		}
+		if (went != p) {
+			if (!cg_resc_lost_on(&s->resc, S->resc_idx, S->id, seq, p)) {
+				F->copied++;
+				continue;
+			}
+			went = (uint8_t)p; /* every copy lost: as sure as on this path alone */
+			F->allcopies++;
+		}
+		ev = cg_resc_ev(&s->resc, S->resc_idx, S->id, seq, CG_RESC_EV_LINK);
+		sure = cg_resc_sure(ev, down_coded(s, S), s->cfg->protocontroller_nack && !s->cfg->subflow);
+		if (!sure) { /* handed over already, or a suspect waiting */
+			F->unsure += !(ev & (CG_RESC_EV_DONE | CG_RESC_EV_SUSPECT));
+			continue;
+		}
+		k = cg_pctl_nack(s->pctl, (uint32_t)(S - s->s), S->id, e + CG_HDR_LEN, (size_t)len - CG_HDR_LEN, went,
+				 sure);
+		if (sure == CG_RESC_SURE_LATER) { /* a code may still rebuild it: GRIT waits for it */
+			cg_resc_ev(&s->resc, S->resc_idx, S->id, seq, CG_RESC_EV_SUSPECT);
+			F->suspect += k == CG_PCTL_NACK_DATA;
+			continue;
+		}
+		if (k == CG_PCTL_NACK_DATA || k == CG_PCTL_NACK_ACK) {
+			cg_resc_ev(&s->resc, S->resc_idx, S->id, seq, CG_RESC_EV_DONE);
+			F->grit++;
+			if (!(ev & CG_RESC_EV_ASKED)) /* else its NACK said it already */
+				gone[ngone++] = seq;
+		} else {
+			F->other++;
+		}
 	}
+	best_paths(S, now_ms, best);
+	if (best[0] >= 0)
+		say_gone(s, S, best[0], gone, ngone);
 }
 
 /* A verified PARQ of S (harq.h, story 026: the client receives FEC v3's
@@ -2020,7 +2346,8 @@ static void listen_read(struct server *s, struct lane *ln)
 			}
 			if (cg_hdr_parse(&h, b, len) < 0 ||
 			    (h.type != CG_T_DATA && h.type != CG_T_PROBE && h.type != CG_T_NACK && h.type != CG_T_FEC &&
-			     h.type != CG_T_REPAIR && h.type != CG_T_PARQ) ||
+			     h.type != CG_T_REPAIR && h.type != CG_T_PARQ && h.type != CG_T_SFLOSS &&
+			     h.type != CG_T_SFACK) ||
 			    h.link >= CG_MAX_LINKS) {
 				s->rx_malformed++;
 				if (cg_ratelimit_ok(&s->rl_auth, now_ms, 10000))
@@ -2088,8 +2415,17 @@ static void listen_read(struct server *s, struct lane *ln)
 				continue;
 			case CG_RP_DUP:
 				s->rx_dups++;
-				if (h.type == CG_T_DATA)
-					cg_arr_dup(&S->arr, S->rx, h.seq, now32, h.link);
+				if (h.type != CG_T_DATA)
+					continue;
+				cg_arr_dup(&S->arr, S->rx, h.seq, now32, h.link);
+				/* a copy is still its path's: its sseq says the path did
+				 * not lose it, once its MAC says the client sent it */
+				if (h.sseq && s->cfg->subflow) {
+					if (verified || cg_hdr_verify(b, len, C->key))
+						sf_up(S, h.link, h.sseq, len, now32);
+					else
+						s->rx_auth_fail++;
+				}
 				continue;
 			default:
 				break;
@@ -2109,6 +2445,16 @@ static void listen_read(struct server *s, struct lane *ln)
 				on_nack(s, S, h.flags, b + CG_HDR_LEN, len - CG_HDR_LEN, now_ms);
 				continue;
 			}
+			if (h.type == CG_T_SFLOSS) {
+				on_sfloss(s, S, b + CG_HDR_LEN, len - CG_HDR_LEN, now_ms);
+				continue;
+			}
+			if (h.type == CG_T_SFACK) {
+				on_sfack(s, S, b + CG_HDR_LEN, now_us);
+				continue;
+			}
+			if (h.type == CG_T_DATA && h.sseq && s->cfg->subflow)
+				sf_up(S, h.link, h.sseq, len, now32);
 			if (h.type == CG_T_PARQ) {
 				on_parq(s, S, b + CG_HDR_LEN, len - CG_HDR_LEN, now_ms);
 				continue;
@@ -2148,6 +2494,8 @@ static void listen_read(struct server *s, struct lane *ln)
 				}
 				P = path_update(s, S, h.link, from, &s->in.msg[i].msg_hdr, now_ms);
 				P->last_rx_ms = now_ms;
+				if (h.sseq && s->cfg->subflow && S->sf[h.link]) /* how far the client sent on it */
+					cg_sf_rx_sent(&S->sf[h.link]->rx, h.sseq, now32);
 				on_probe(s, S, P, h.link, &h, &pi, bond ? &pb : NULL, act ? &pa : NULL, now_ms);
 				queue_reply(s, &nr, S, h.link, &h, now32 - h.ts, bond, act, now_us);
 				/* Its trip up this path, for the reorderer's deadlines;
@@ -2705,6 +3053,9 @@ static void down_seal(struct server *s, struct session *S, int m, const struct d
 
 			memcpy(e, s->hdr[j], CG_HDR_LEN);
 			memcpy(e + CG_HDR_LEN, buf, len);
+			if (only < 0 && !(s->pick[j] < 0 && s->cfg->mute_trickle)) /* its copies' paths */
+				cg_resc_copies(&s->resc, S->resc_idx, S->id, h.seq,
+					       (uint16_t)(cg_split_dst(s->pick[j], d->carry, d->k.dup) & s->cmask[j]));
 			/* the budget grows with the path's weight (capacity.h): less as
 			 * it nears congestion */
 			cg_resc_earn(&S->resc_b,
@@ -2774,6 +3125,7 @@ static void down_send(struct server *s, struct session *S, int m, uint64_t now_m
 		int p = order[(o + S->rot) % (unsigned)no];
 		struct path *P = &S->path[p];
 		int sel[CG_BATCH], k = 0, sent;
+		struct sfpath *F;
 
 		if (carry >> p & 1) {
 			for (int j = 0; j < m; j++)
@@ -2788,8 +3140,12 @@ static void down_send(struct server *s, struct session *S, int m, uint64_t now_m
 			continue;
 		if (counts >> p & 1)
 			cg_act_tx_sent(&S->act_tx, (unsigned)p, mark_us);
+		F = s->cfg->subflow ? sf_get(S, (unsigned)p) : NULL;
 		for (int x = 0; x < k; x++) {
 			cg_hdr_set_link(s->hdr[sel[x]], (uint8_t)p);
+			/* its sseq on this path (subflow.h), outside the MAC as the link */
+			cg_hdr_set_sseq(s->hdr[sel[x]], F ? cg_sf_tx_take(&F->tx, s->sseq[sel[x]],
+					(uint32_t)(s->oiov[sel[x]][0].iov_len + s->oiov[sel[x]][1].iov_len), (uint32_t)mark_us) : 0);
 			memset(&s->out[x].msg_hdr, 0, sizeof(s->out[x].msg_hdr));
 			s->out[x].msg_hdr.msg_name = &P->addr;
 			s->out[x].msg_hdr.msg_namelen = cg_addr_len(&P->addr);
@@ -2804,6 +3160,8 @@ static void down_send(struct server *s, struct session *S, int m, uint64_t now_m
 		 * path that cannot send never holds up the others, and with
 		 * lanes it does not fill their send buffer either. */
 		sent = sendmmsg(s->lane[(unsigned)p & (s->nlanes - 1)].fd, s->out, (unsigned)k, MSG_DONTWAIT);
+		if (F) /* what did not go gives its sseq back */
+			cg_sf_tx_unsend(&F->tx, (uint32_t)(sent < 0 ? k : k - sent));
 		if (sent < 0) {
 			P->tx_drops += (uint64_t)k;
 			send_failed(s, S, (unsigned)p, errno, (unsigned)k, now_ms);
@@ -2893,19 +3251,26 @@ static void pctl_hint(void *ctx, uint32_t peer, uint32_t sid, uint64_t *bps, int
 	for (int i = 0; i < CG_MAX_LINKS; i++) {
 		uint64_t b;
 
-		if (!(set >> i & 1) || !S->cap[i].have_rate)
+		if (!(set >> i & 1))
 			continue;
-		b = cg_cap_bps(&S->cap[i]) / 8;
+		if (s->cfg->link_cc && S->sf[i] && S->sf[i]->tx.acks) { /* its own rate (linkcc.h), probing included */
+			b = cg_lc_rate(&S->sf[i]->tx.lc);
+		} else if (S->cap[i].have_rate) {
+			b = cg_cap_bps(&S->cap[i]) / 8;
+			nfull += S->cap[i].cut == CG_CAP_CUT_FULL;
+		} else {
+			continue;
+		}
 		sum += b;
 		n++;
-		nfull += S->cap[i].cut == CG_CAP_CUT_FULL;
 		if (b > best) {
 			best = b;
 			bi = i;
 		}
 	}
 	*bps = d.split ? sum : best;
-	*full = d.split ? n && nfull == n : bi >= 0 && S->cap[bi].cut == CG_CAP_CUT_FULL;
+	*full = s->cfg->link_cc ? (d.split ? 0 : CG_PCTL_HINT_COPIED)
+				: d.split ? n && nfull == n : bi >= 0 && S->cap[bi].cut == CG_CAP_CUT_FULL;
 }
 
 /* Packets the kernel routed into the TUN, each down the newest
@@ -3108,12 +3473,32 @@ static void cap_tick(struct server *s, struct session *S, uint16_t live, uint64_
 		S->eta.tick_ms = CG_TICK_MS;
 		cg_cap_eta(&S->eta, S->cap, live, cc.sat_us / 2, S->lm, s->cfg->split_stale_max,
 			   cg_tickle_backoff(&S->tk), now_ms * 1000);
+		if (s->cfg->link_cc) {
+			uint32_t ref;
+
+			lc_tick(s, S);
+			ref = lc_ref(S, &S->eta);
+			for (unsigned p = 0; p < CG_MAX_LINKS; p++)
+				lc_eta(s, S, &S->eta, p, ref, now_ms * 1000);
+		}
 		cg_cap_tickle(S->cap, live, now_ms, &due, tb, tc);
 		cg_tickle_tick(&S->tk, now_ms * 1000, (uint64_t)s->cfg->split_tickle_ms * 1000, due, tb, tc);
 	}
-	if (S->pace_any) /* the copies' expected arrivals (redund_pace_ms, per path) */
+	if (S->pace_any) { /* the copies' expected arrivals (redund_pace_ms, per path) */
 		cg_cap_eta(&S->pace, S->cap, live, cc.sat_us / 2, NULL, s->cfg->split_stale_max,
 			   cg_tickle_backoff(&S->tk), now_ms * 1000);
+		/* with link_cc, each path's own rate, delay and queue, as the
+		 * split's (redundancy on the bonding engine, story 029) */
+		if (s->cfg->link_cc) {
+			uint32_t ref;
+
+			if (!s->cfg->split_eta)
+				lc_tick(s, S);
+			ref = lc_ref(S, &S->pace);
+			for (unsigned p = 0; p < CG_MAX_LINKS; p++)
+				lc_eta(s, S, &S->pace, p, ref, now_ms * 1000);
+		}
+	}
 }
 
 /* SO_MAX_PACING_RATE on a lane's socket (pace.h): fq on the way out paces
@@ -3178,6 +3563,46 @@ static void path_models(const struct server *s, struct session *S)
 	S->pace_any = (uint8_t)cg_link_pace_windows(S->lm, CG_MAX_LINKS, S->pace_w);
 }
 
+/* The route's MTU toward a, as the kernel has it (a learned path MTU
+ * included): a throwaway socket connected to it; 0: not known. */
+static uint32_t route_mtu(const struct sockaddr_storage *a)
+{
+	int fd = socket(a->ss_family, SOCK_DGRAM | SOCK_CLOEXEC, 0), v = 0;
+	socklen_t len = sizeof(v);
+
+	if (fd < 0)
+		return 0;
+	if (connect(fd, (const struct sockaddr *)a, cg_addr_len(a)) < 0 ||
+	    (a->ss_family == AF_INET6 ? getsockopt(fd, IPPROTO_IPV6, IPV6_MTU, &v, &len)
+				      : getsockopt(fd, IPPROTO_IP, IP_MTU, &v, &len)))
+		v = 0;
+	close(fd);
+	return v > 0 ? (uint32_t)v : 0;
+}
+
+/* Each path's route MTU, and a warning when the TUN's largest packet does
+ * not fit in it: the download would go cut in two, and losing either half
+ * loses the packet (story 029: GRIT carried 9 Mbit/s over Claro so). */
+static void path_mtu_tick(struct server *s, struct session *S, const char *tag, uint64_t now_ms)
+{
+	for (int p = 0; p < CG_MAX_LINKS; p++) {
+		struct path *P = &S->path[p];
+		int f = P->addr.ss_family;
+		uint32_t need = cg_outer_len(f, s->cfg->tun_mtu), wrap = cg_outer_len(f, 0);
+		char a[64];
+
+		if (!P->used || now_ms - P->mtu_ms < CG_PATH_MTU_MS)
+			continue;
+		P->mtu_ms = now_ms;
+		P->path_mtu = route_mtu(&P->addr);
+		if (P->path_mtu && need > P->path_mtu && cg_ratelimit_ok(&P->rl_mtu, now_ms, 600000))
+			cg_warn("%ssession %08x link %d: download packets of up to %u bytes over IPv%c, more than the path "
+				"MTU of %u toward %s: the kernel cuts them in two; tun_mtu %u or less fits",
+				tag, S->id, p, need, f == AF_INET6 ? '6' : '4', P->path_mtu,
+				cg_addr_str(&P->addr, a, sizeof(a)), P->path_mtu > wrap ? P->path_mtu - wrap : 0);
+	}
+}
+
 static void health_tick(struct server *s, uint64_t now_ms)
 {
 	for (uint32_t i = 0; i < s->cap; i++) {
@@ -3199,6 +3624,7 @@ static void health_tick(struct server *s, uint64_t now_ms)
 		spread_tick(s, S, tag, now_ms);
 		gov_tick(s, S, now_ms);
 		cap_tick(s, S, live, now_ms);
+		path_mtu_tick(s, S, tag, now_ms);
 		for (int p = 0; changed; p++, changed >>= 1) {
 			const struct cg_hlink *h = &S->dh[p];
 
@@ -3555,6 +3981,11 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 		/* asked-for GRIT messages handed to their streams, not sent again */
 		cg_json_u64(j, "to_grit", S->resc_grit);
 		cg_json_u64(j, "to_grit_bytes", S->resc_grit_bytes);
+		/* SFLOSS (subflow.h): what paths lost within themselves, said and heard */
+		cg_json_u64(j, "sfloss_sent", S->sfloss_sent);
+		cg_json_u64(j, "sfloss_rx", S->sfloss_rx);
+		cg_json_u64(j, "sfack_sent", S->sfack_sent);
+		cg_json_u64(j, "sfack_rx", S->sfack_rx);
 		cg_json_u64(j, "nack_seqs", S->nack_seqs);
 		/* the upload's asks with a code on (harq.h, story 023): waited for
 		 * its repairs, not asked (here or decodable), left to TCP, no
@@ -3725,9 +4156,43 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 			cg_json_u64(j, "tx_packets", P->tx_pkts);
 			cg_json_u64(j, "tx_bytes", P->tx_bytes);
 			cg_json_u64(j, "tx_drops", P->tx_drops);
+			cg_json_u64(j, "path_mtu", P->path_mtu); /* the route's toward the client, 0: not known */
 			cg_json_u64(j, "fec_repairs", P->f3_rep); /* FEC v3's, not in tx_packets (story 026) */
 			cg_json_u64(j, "fec_repair_bytes", P->f3_bytes);
 			cg_json_u64(j, "tx_split", P->tx_split);
+			/* subflow: the path as a subflow (subflow.h), up as this
+			 * end follows it, down as the client's SFLOSS said */
+			if (S->sf[p]) {
+				const struct sfpath *F = S->sf[p];
+
+				cg_json_obj(j, "subflow");
+				cg_json_obj(j, "up");
+				cg_json_u64(j, "got", F->rx.got);
+				cg_json_u64(j, "lost", F->rx.lost);
+				cg_json_u64(j, "late", F->rx.late); /* called lost, came after: the window widens */
+				cg_json_u64(j, "reordered", F->rx.fill);
+				cg_json_u64(j, "copies", F->rx.dup);
+				cg_json_u64(j, "overflow", F->rx.overflow);
+				cg_json_u64(j, "resync", F->rx.resync);
+				cg_json_u64(j, "tail", F->rx.tail); /* gaps a probe opened: the end of what the path carried */
+				cg_json_ms(j, "window_ms", F->rx.reo_us);
+				cg_json_end(j, '}');
+				cg_json_obj(j, "down");
+				cg_json_u64(j, "sent", F->tx.sent);
+				cg_json_u64(j, "unsent", F->tx.unsent);
+				cg_json_u64(j, "lost", F->tx.lost_rx);
+				cg_json_u64(j, "forgotten", F->tx.stale);
+				cg_json_u64(j, "to_grit", F->grit);
+				cg_json_u64(j, "copied", F->copied);
+				cg_json_u64(j, "all_copies", F->allcopies);
+				cg_json_u64(j, "not_kept", F->unkept);
+				cg_json_u64(j, "other", F->other);
+				cg_json_u64(j, "unsure", F->unsure);
+				cg_json_u64(j, "suspects", F->suspect);
+				cg_json_linkcc(j, "rate", &F->tx, s->cfg->governor_target_ms * 1000);
+				cg_json_end(j, '}');
+				cg_json_end(j, '}');
+			}
 			if (P->bond_ok)
 				cg_json_u64(j, "client_weight", P->bond_w);
 			else
@@ -4064,12 +4529,19 @@ static void tick(struct server *s)
 	for (uint32_t i = 0; i < s->cap; i++)
 		if (s->s[i].used && s->s[i].hq_n)
 			harq_service(s, &s->s[i], cg_now_us());
+	/* the subflows' windows narrow (CG_TICK_MS is the 100 ms they narrow by) */
+	for (uint32_t i = 0; i < s->cap; i++)
+		for (int p = 0; s->s[i].used && p < CG_MAX_LINKS; p++)
+			if (s->s[i].sf[p])
+				cg_sf_rx_decay(&s->s[i].sf[p]->rx);
 	if (now_ms >= s->next_cpu_ms)
 		threads_sample(s, now_ms);
 	health_tick(s, now_ms);
 	pace_lanes(s);
-	if (s->pctl)
+	if (s->pctl) {
+		cg_pctl_rack(s->pctl, !s->cfg->subflow);
 		cg_pctl_tick(s->pctl);
+	}
 	if (now_ms >= s->next_sweep_ms) {
 		sweep(s, now_ms);
 		s->next_sweep_ms = now_ms + 1000;
@@ -4571,7 +5043,11 @@ int cg_server_run(struct cg_config *cfg, const struct cg_run *run)
 		s->resc.len = calloc(n, sizeof(*s->resc.len));
 		s->resc.link = calloc(n, sizeof(*s->resc.link));
 		s->resc.sent = calloc(n, sizeof(*s->resc.sent));
-		if (!s->resc.mem || !s->resc.sess || !s->resc.seq || !s->resc.len || !s->resc.link || !s->resc.sent) {
+		s->resc.ev = calloc(n, sizeof(*s->resc.ev));
+		s->resc.copies = calloc(n, sizeof(*s->resc.copies));
+		s->resc.lost = calloc(n, sizeof(*s->resc.lost));
+		if (!s->resc.mem || !s->resc.sess || !s->resc.seq || !s->resc.len || !s->resc.link || !s->resc.sent ||
+		    !s->resc.ev || !s->resc.copies || !s->resc.lost) {
 			cg_err("rescue_kb = %u: out of memory", cfg->rescue_kb);
 			goto out;
 		}
@@ -4630,6 +5106,7 @@ int cg_server_run(struct cg_config *cfg, const struct cg_run *run)
 					 .backlog_ms = cfg->protocontroller_backlog_ms,
 					 .dead_s = cfg->protocontroller_dead_s,
 					 .reo_ms = cfg->protocontroller_reo_ms,
+					 .offer = cfg->link_cc ? CG_PCTL_OFFER_LINKS : cfg->protocontroller_offer,
 					 /* the download's code: the spatial parity or FEC v3 */
 					 .code_ms = cfg->fec ? cfg->rescue_code_ms : 0,
 					 .peers = s->cap };
@@ -4663,6 +5140,7 @@ int cg_server_run(struct cg_config *cfg, const struct cg_run *run)
 			cg_err("%s", err);
 			goto out;
 		}
+		cg_pctl_rack(s->pctl, !cfg->subflow); /* and at every tick: subflow reloads */
 		cg_info("protocontroller: opening the TCP connections routers ask for (variant B, and variant A's on port %u of the tunnel's address; story 025; %s toward them)",
 			cfg->protocontroller_port, cfg->protocontroller_cc[0] ? cfg->protocontroller_cc : "the kernel's congestion control");
 	}
@@ -4694,12 +5172,15 @@ int cg_server_run(struct cg_config *cfg, const struct cg_run *run)
 		/* Until the reorderer's nearest deadline at most (CG_TICK_MS is
 		 * too coarse for it). */
 		{
-			int due = ro_timeout(s), pdue = s->pctl ? cg_pctl_timeout(s->pctl) : -1, fdue = sf3_service(s);
+			int due = ro_timeout(s), pdue = s->pctl ? cg_pctl_timeout(s->pctl) : -1, fdue = sf3_service(s),
+			    sdue = sf_service(s);
 
 			if (pdue >= 0 && (due < 0 || pdue < due))
 				due = pdue;
 			if (fdue >= 0 && (due < 0 || fdue < due))
 				due = fdue;
+			if (sdue >= 0 && (due < 0 || sdue < due))
+				due = sdue;
 			n = cg_wait(s->ep, ev, 32, busy, last_traffic_us, due);
 		}
 		s->ro_budget = CG_RO_PASS_MAX;
@@ -4802,6 +5283,9 @@ out:
 	free(s->resc.len);
 	free(s->resc.link);
 	free(s->resc.sent);
+	free(s->resc.ev);
+	free(s->resc.copies);
+	free(s->resc.lost);
 	cg_idmap_free(&s->ids);
 	cg_config_free(s->cfg);
 	free(s->cfg);

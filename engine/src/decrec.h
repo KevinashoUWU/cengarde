@@ -100,19 +100,19 @@ static inline void cg_decrec_gov_before(const struct cg_gov *g, uint16_t w0[CG_M
 }
 
 /* What decides a split now, for the status ("weights_used"): "eta" when
- * the split by expected arrival has a rate for every link of mask (the
- * links that share the split; cg_eta_pick falls back to the weights when
- * one has none), and the weights (governor's, capacity's) are unused;
- * else whose weights it takes. */
+ * the split by expected arrival has a rate for a link of mask (the links
+ * that share the split; cg_eta_pick skips a link of none, and falls back to
+ * the weights only when no link has one), and the weights (governor's,
+ * capacity's) are unused; else whose weights it takes. */
 static inline const char *cg_weights_used(int split_eta, const struct cg_eta *e, uint16_t mask, int capacity,
 					  int governor)
 {
-	int all = split_eta && mask;
+	int any = 0;
 
-	for (unsigned i = 0; all && i < CG_MAX_LINKS; i++)
-		if ((mask >> i & 1) && !e->l[i].bps)
-			all = 0;
-	if (all)
+	for (unsigned i = 0; split_eta && i < CG_MAX_LINKS; i++)
+		if ((mask >> i & 1) && e->l[i].bps)
+			any = 1;
+	if (any)
 		return "eta";
 	return capacity ? "capacity" : governor ? "governor" : "links";
 }

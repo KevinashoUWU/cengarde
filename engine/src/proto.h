@@ -66,9 +66,10 @@
 
 #include "siphash.h"
 
-#define CG_PROTO_VERSION 11
-#define CG_HDR_LEN 24
+#define CG_PROTO_VERSION 12
+#define CG_HDR_LEN 28
 #define CG_MAC_OFF 16
+#define CG_SSEQ_OFF 24 /* the link's own sequence (MPGRIT's subflow, story 029): after the MAC, like the link, so a copy on another link takes its own */
 #define CG_HINT_OFF 2
 #define CG_LINK_OFF 3
 #define CG_KEY_LEN 32 /* shared secret: c2s key || s2c key */
@@ -82,6 +83,8 @@ enum cg_type {
 	CG_T_FEC = 6,         /* either way, one link; payload: the parity of a group of DATA (fec.h) */
 	CG_T_REPAIR = 7,      /* either way (client -> server before 11), one link; payload: an erasure code's repair (repair.h) */
 	CG_T_PARQ = 8,        /* either way (server -> client before 11), one link; payload: repairs asked for again (harq.h) */
+	CG_T_SFLOSS = 9,      /* either way (12), one link; payload: a link id, then the sseqs that link lost as a NACK's ranges (subflow.h) */
+	CG_T_SFACK = 10,      /* either way (12), one link; payload: how far each link got, and the bytes it took (subflow.h) */
 };
 
 /* Probes, replies, NACKs and parities count in the control sequence, DATA
@@ -89,7 +92,7 @@ enum cg_type {
 static inline int cg_type_ctl(uint8_t type)
 {
 	return type == CG_T_PROBE || type == CG_T_PROBE_REPLY || type == CG_T_NACK || type == CG_T_FEC ||
-	       type == CG_T_REPAIR || type == CG_T_PARQ;
+	       type == CG_T_REPAIR || type == CG_T_PARQ || type == CG_T_SFLOSS || type == CG_T_SFACK;
 }
 
 /* PARQ (version 9, story 023: the parity asked for again): the server,
@@ -217,6 +220,7 @@ struct cg_hdr {
 	uint32_t session;
 	uint32_t seq;
 	uint32_t ts;
+	uint32_t sseq; /* the link's own sequence of a DATA (subflow.h, 12); 0: not numbered */
 };
 
 /* Probe and probe reply payload: each side reports what it measures on this
@@ -351,6 +355,16 @@ static inline void cg_hdr_set_link(uint8_t *hdr, uint8_t link)
 	hdr[CG_LINK_OFF] = link;
 }
 
+/* The link's own sequence of a packet about to go on it (subflow.h): out
+ * of the MAC, set at send time like the link. */
+static inline void cg_hdr_set_sseq(uint8_t *hdr, uint32_t sseq)
+{
+	hdr[CG_SSEQ_OFF] = (uint8_t)(sseq >> 24);
+	hdr[CG_SSEQ_OFF + 1] = (uint8_t)(sseq >> 16);
+	hdr[CG_SSEQ_OFF + 2] = (uint8_t)(sseq >> 8);
+	hdr[CG_SSEQ_OFF + 3] = (uint8_t)sseq;
+}
+
 void cg_probe_info_write(uint8_t out[CG_PROBE_INFO_LEN], const struct cg_probe_info *pi);
 void cg_probe_info_read(struct cg_probe_info *pi, const uint8_t in[CG_PROBE_INFO_LEN]);
 /* The bonding tail, written at payload + CG_PROBE_INFO_LEN (a weight above
@@ -381,7 +395,8 @@ void cg_hello_read(struct cg_hello *hl, const uint8_t in[CG_HELLO_LEN]);
 /* Size of the IP packet that carries a payload of len bytes (an IP packet
  * from the TUN) over family AF_INET or AF_INET6: IP header, UDP header and
  * ours. The largest tun_mtu over a path MTU is mtu - cg_outer_len(family, 0):
- * 1448 over IPv4 and 1428 over IPv6 on a 1500-byte path. */
+ * 1444 over IPv4 and 1424 over IPv6 on a 1500-byte path (1448 and 1428
+ * before protocol 12's subflow sequence). */
 static inline uint32_t cg_outer_len(int family, uint32_t len)
 {
 	return len + CG_HDR_LEN + 8 + (family == AF_INET6 ? 40 : 20);

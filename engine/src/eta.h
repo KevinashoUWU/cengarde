@@ -47,6 +47,10 @@ struct cg_eta_link {
 	 * ticks (times 10^6, as backlog), the newest at put_i, and in this one */
 	uint8_t put_i;
 	uint64_t put[CG_ETA_PUT_N], put_now;
+	/* link_cc's window (cg_eta_wnd): with has_wnd, the bytes it may still
+	 * take before its window is full; past it, as past limit_us */
+	uint8_t has_wnd;
+	int64_t wnd;
 };
 
 /* What a packet past a link's limit_us costs by default: last resort, it
@@ -133,7 +137,39 @@ static inline void cg_eta_set(struct cg_eta *e, unsigned i, uint64_t bps, uint32
 	l->backlog = q;
 	l->limit_us = 0;
 	l->over_us = 0;
+	l->has_wnd = 0;
 	l->t_us = now_us;
+}
+
+/* Link i from its own controller (link_cc, linkcc.h), fed by its SFACKs
+ * every ~10 ms: its pacing rate (bps), its delay without a queue over the
+ * least (us), the bytes queued on it now (what is in flight over its rate
+ * times its round trip: fresher than a tick's queue from delay reports
+ * 300-500 ms old) and the queue past which it is a last resort (limit_us,
+ * 0: none). */
+static inline void cg_eta_own(struct cg_eta *e, unsigned i, uint64_t bps, uint32_t base_us, uint64_t queued,
+			      uint32_t limit_us, uint64_t now_us)
+{
+	struct cg_eta_link *l = &e->l[i];
+
+	l->bps = bps;
+	l->base_us = base_us;
+	l->backlog = queued * 8 * 1000000;
+	l->t_us = now_us;
+	l->limit_us = limit_us;
+	l->over_us = 0;
+	l->has_wnd = 0;
+}
+
+/* Link i's window (link_cc, linkcc.h's CG_LC_WND): it may take wnd bytes
+ * more before what is in flight fills it; each packet it takes counts, and
+ * a packet past it goes there only as a last resort, as one past limit_us
+ * (OMR's MPTCP scheduler gives a subflow data only while its window has
+ * room: a link that slows down stops taking it by itself). */
+static inline void cg_eta_wnd(struct cg_eta *e, unsigned i, int64_t wnd)
+{
+	e->l[i].has_wnd = 1;
+	e->l[i].wnd = wnd;
 }
 
 /* The link of set where a packet of len bytes sent at now_us arrives first,
@@ -148,16 +184,20 @@ static inline int cg_eta_pick(struct cg_eta *e, uint16_t set, uint32_t len, uint
 		struct cg_eta_link *l = &e->l[i];
 		uint64_t eta;
 
-		if (!(set >> i & 1))
+		/* a link of no rate (none yet, or its capacity sank to nothing)
+		 * takes no packet while another has one, and only when none has
+		 * does the caller go to the weights: a link that lost half of what
+		 * it took had no rate, so every packet went by the weights, and its
+		 * weight kept a quarter of the traffic on it (story 029, Claro on
+		 * the testnet: 28-78 % lost, the holes held the streams) */
+		if (!(set >> i & 1) || !l->bps)
 			continue;
-		if (!l->bps)
-			return -1;
 		cg_eta_drain(l, now_us);
 		/* us: base + (backlog + 8 len 10^6) / bps */
 		eta = l->base_us + (l->backlog + (uint64_t)len * 8 * 1000000) / l->bps;
 		/* past the queue it holds it would be dropped: over_us later, last
 		 * resort by default */
-		if (l->limit_us && eta - l->base_us > l->limit_us)
+		if ((l->limit_us && eta - l->base_us > l->limit_us) || (l->has_wnd && l->wnd < (int64_t)len))
 			eta += l->over_us ? l->over_us : CG_ETA_OVER_US;
 		if (eta < best_eta) {
 			best_eta = eta;
@@ -167,6 +207,7 @@ static inline int cg_eta_pick(struct cg_eta *e, uint16_t set, uint32_t len, uint
 	if (best >= 0) {
 		e->l[best].backlog += (uint64_t)len * 8 * 1000000;
 		e->l[best].put_now += (uint64_t)len * 8 * 1000000;
+		e->l[best].wnd -= len;
 	}
 	return best;
 }

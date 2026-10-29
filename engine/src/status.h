@@ -64,6 +64,10 @@ void cg_json_owd_spread(struct cg_json *j, const char *key, const struct cg_reor
 /* How far above its mean receive delay the reorderer waits for link's
  * packets (CG_RO_DEV_K deviations), ms; null until it has a delay. */
 void cg_json_owd_swing(struct cg_json *j, const char *key, const struct cg_reorder *r, unsigned link);
+struct cg_sf_tx;
+/* A link's own rate (linkcc.h) as its subflow's sender keeps it
+ * (subflow.h), with a queue target of target_us. */
+void cg_json_linkcc(struct cg_json *j, const char *key, const struct cg_sf_tx *t, uint32_t target_us);
 /* A link's capacity in the direction this end sends (capacity.h):
  * capacity_mbit, delivery_mbit (null until measured) and queue_ms (null
  * until a delay). */

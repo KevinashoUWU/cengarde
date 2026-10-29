@@ -69,6 +69,7 @@
 				 * up to reo_cap (streamcc.h's cg_scc_reo_cap: the code's horizon) */
 
 enum { F_FREE = 0, F_OPEN, F_EST };
+enum { PCTL_STOP_PACER, PCTL_STOP_CWND, PCTL_STOP_WINDOW, PCTL_STOP_EMPTY, PCTL_STOP_SEGS, PCTL_STOP_BUF };
 
 struct flow {
 	uint32_t id;
@@ -99,6 +100,8 @@ struct flow {
 	uint64_t consumed; /* received bytes written to the socket */
 	uint64_t adv_edge; /* the edge of the last ACK sent */
 	uint64_t open_due, rto_at, progress_t, created_t;
+	uint64_t sus_at; /* its nearest suspect's deadline (cg_st_tx_suspect), 0: none */
+	uint8_t stop;    /* why its last turn ended (PCTL_STOP_*) */
 	uint64_t s_bytes, s_t, s_rate; /* bytes delivered to the peer, a window's start, the rate */
 	uint64_t w_bytes, w_t, w_rate; /* bytes written to the socket, idem */
 	uint64_t up, down;             /* bytes read from and written to the socket */
@@ -168,6 +171,15 @@ struct cg_pctl {
 	uint64_t retx_by[CG_ST_BY_N]; /* segments sent again, by why they were lost (RACK, the timer, a NACK) */
 	uint64_t nack[CG_ST_NACK_N];  /* the rescue's NACKs of DATA, by what they did (cg_st_tx_nack) */
 	uint64_t nack_noflow, nack_ack; /* NACKs of a stream gone; of an ACK (a fresh one sent instead) */
+	uint64_t nack_hint;             /* NACKs of DATA left to RACK (protocontroller_nack no) */
+	int rack_off;                   /* RACK over the mix off: the subflows find the losses (cg_pctl_rack) */
+	/* why a flow with a turn stopped sending, a pass at a time: no tokens,
+	 * no room in flight, past the receiver's window, nothing buffered, no
+	 * free segment, the buffer all sent and unacknowledged (behind a hole):
+	 * what holds the middle leg back (story 029) */
+	uint64_t stop[6];
+	uint64_t nack_sf;               /* of the losses, the ones their link's subflow found too (subflow.h) */
+	uint64_t sus_lost;              /* bytes of suspects their deadline found still undelivered */
 	uint64_t nack_link[CG_PCTL_LINKS + 1]; /* segments a NACK found lost, by the link they went on (the last: copied or not known) */
 	uint64_t a_opened, a_bytes_in, a_bytes_out; /* variant A: relays opened, bytes read and written */
 	uint8_t cc_auto;      /* protocontroller_cc auto */
@@ -395,6 +407,15 @@ static int set_int(int fd, int level, int opt, int v)
 	return setsockopt(fd, level, opt, &v, sizeof(v));
 }
 
+/* SO_RCVBUF past net.core.rmem_max when allowed (as sock.c): a set size
+ * also turns autotuning off, so under the stock 208 KB ceiling the far
+ * leg's window stayed there (~20 Mbit/s at 100 ms: the lab, 2026-10-28). */
+static void set_rcvbuf(int fd, int v)
+{
+	if (set_int(fd, SOL_SOCKET, SO_RCVBUFFORCE, v) < 0)
+		set_int(fd, SOL_SOCKET, SO_RCVBUF, v);
+}
+
 static uint8_t reason_of(int err)
 {
 	switch (err) {
@@ -445,7 +466,7 @@ static int listen_one(struct cg_pctl *p, int family, char *err, size_t errlen)
 	set_int(fd, SOL_SOCKET, SO_REUSEADDR, 1);
 	/* small, so that a full stream's window reaches the sender soon; set
 	 * before listen, the connections inherit it (and the window scale) */
-	set_int(fd, SOL_SOCKET, SO_RCVBUF, PCTL_LAN_RCVBUF);
+	set_rcvbuf(fd, PCTL_LAN_RCVBUF);
 	if (bind(fd, (struct sockaddr *)&a, al) < 0 || listen(fd, 128) < 0 ||
 	    epoll_ctl(p->ep, EPOLL_CTL_ADD, fd, &e) < 0) {
 		snprintf(err, errlen, "protocontroller: listen on port %u (%s): %s", p->cfg.port, family == AF_INET ? "IPv4" : "IPv6",
@@ -477,7 +498,7 @@ static int listen_a(struct cg_pctl *p, char *err, size_t errlen)
 	} else {
 		set_int(fd, IPPROTO_IP, IP_FREEBIND, 1);
 	}
-	set_int(fd, SOL_SOCKET, SO_RCVBUF, (int)p->buf_cap);
+	set_rcvbuf(fd, (int)p->buf_cap);
 	if (bind(fd, (const struct sockaddr *)a, al) < 0 || listen(fd, 128) < 0 ||
 	    epoll_ctl(p->ep, EPOLL_CTL_ADD, fd, &e) < 0) {
 		snprintf(err, errlen, "protocontroller: listen on the tunnel's address, port %u: %s", p->cfg.port,
@@ -625,7 +646,7 @@ static int dest_connect(struct cg_pctl *p, int family, const uint8_t *addr, uint
 	/* what the destination sends while the stream is full waits in this
 	 * socket: as much as the stream's own buffer (the kernel doubles it),
 	 * not the autotuned 6 MB (a download, 7 MB a connection) */
-	set_int(fd, SOL_SOCKET, SO_RCVBUF, (int)p->buf_cap);
+	set_rcvbuf(fd, (int)p->buf_cap);
 	if (connect(fd, (struct sockaddr *)&a, al) < 0 && errno != EINPROGRESS) {
 		*why = reason_of(errno);
 		close(fd);
@@ -1146,7 +1167,7 @@ static void rto_arm(const struct cg_pctl *p, struct flow *f, struct peer *r)
 	 * flight */
 	if (!o && f->tx.n && cg_st_tx_seg(&f->tx, 0)->st == CG_ST_SACKED)
 		o = cg_st_tx_seg(&f->tx, 0)->sent_us;
-	f->rto_at = o ? o + cg_scc_rto(&r->cc, f->backoff, peer_reo(p, r)) : 0;
+	f->rto_at = o ? o + cg_scc_rto(&r->cc, f->backoff, cg_scc_rto_extra(peer_reo(p, r), p->rack_off)) : 0;
 }
 
 static void ack_in(struct cg_pctl *p, struct flow *f, const struct cg_pctl_msg *m, uint64_t now)
@@ -1174,7 +1195,7 @@ static void ack_in(struct cg_pctl *p, struct flow *f, const struct cg_pctl_msg *
 		f->backoff = 0;
 		f->s_bytes += res.freed;
 	}
-	lost = cg_st_tx_rack(&f->tx, cg_scc_reo(&r->cc, peer_reo(p, r)), &lq);
+	lost = p->rack_off ? 0 : cg_st_tx_rack(&f->tx, cg_scc_reo(&r->cc, peer_reo(p, r)), &lq);
 	if (lost) {
 		r->cc.inflight -= r->cc.inflight >= lost ? lost : r->cc.inflight;
 		cg_scc_lost(&r->cc, lost - lq);
@@ -1182,7 +1203,8 @@ static void ack_in(struct cg_pctl *p, struct flow *f, const struct cg_pctl_msg *
 	rto_arm(p, f, r);
 }
 
-int cg_pctl_nack(struct cg_pctl *p, uint32_t peer, uint32_t sid, const uint8_t *msg, size_t len, uint8_t link)
+int cg_pctl_nack(struct cg_pctl *p, uint32_t peer, uint32_t sid, const uint8_t *msg, size_t len, uint8_t link,
+		 int sure)
 {
 	uint32_t id = 0, off = 0, ts = 0, bytes;
 	int k = cg_pctl_nack_kind(msg, len, &id, &off, &ts), v;
@@ -1206,11 +1228,36 @@ int cg_pctl_nack(struct cg_pctl *p, uint32_t peer, uint32_t sid, const uint8_t *
 		return k;
 	}
 	(void)peer;
+	/* Unsure (story 029): in the field the tunnel's losses all came late
+	 * (51 of 51 on the testnet NUC, 2026-10-28), so a NACK of DATA alone
+	 * is only a hint; RACK, whose window the duplicates widen, decides.
+	 * The tunnel stops waiting for the gap all the same. */
+	if (sure == CG_PCTL_UNSURE) {
+		p->nack_hint++;
+		return k;
+	}
+	/* Its link lost it, a code may still rebuild it: a suspect until the
+	 * engine's repair horizon and a round trip, lost then unless its
+	 * delivery came back (the receiver's NACK may never come). */
+	if (sure == CG_PCTL_SURE_LATER) {
+		uint64_t at;
+
+		r = peer_of(p, f);
+		at = cg_now_us() + r->horizon_us + r->cc.srtt;
+		v = cg_st_tx_suspect(&f->tx, off, ts, at);
+		p->nack[v]++;
+		if (v == CG_ST_NACK_SUSPECT && (!f->sus_at || at < f->sus_at)) {
+			f->sus_at = at;
+			due(p, at);
+		}
+		return k;
+	}
 	v = cg_st_tx_nack(&f->tx, off, ts, &bytes, &lq);
 	p->nack[v]++;
 	if (v != CG_ST_NACK_LOST)
 		return k;
 	p->nack_link[link < CG_PCTL_LINKS ? link : CG_PCTL_LINKS]++;
+	p->nack_sf += sure == CG_PCTL_SURE_LINK;
 	/* as a loss RACK found: out of flight, into the rate's losses; it goes
 	 * again first, at the next service, within the pacer's tokens */
 	r = peer_of(p, f);
@@ -1522,11 +1569,22 @@ static int send_one(struct cg_pctl *p, struct flow *f, struct peer *r, uint64_t 
 	int fin, copy;
 	uint8_t *b;
 
-	if (!cg_scc_may_repair(&r->cc) || !cg_st_tx_next(&f->tx, p->cfg.mss, &idx, &off, &len, &fin))
+	if (!cg_scc_may_repair(&r->cc)) {
+		f->stop = PCTL_STOP_PACER;
 		return 0;
+	}
+	if (!cg_st_tx_next(&f->tx, p->cfg.mss, &idx, &off, &len, &fin)) {
+		f->stop = f->tx.n >= f->tx.cap				 ? PCTL_STOP_SEGS
+			  : f->tx.tail > f->tx.nxt && f->tx.nxt >= f->tx.edge ? PCTL_STOP_WINDOW
+			  : f->tx.tail - f->tx.una >= p->buf_cap		 ? PCTL_STOP_BUF
+										 : PCTL_STOP_EMPTY;
+		return 0;
+	}
 	/* new bytes need room in flight; a repair, tokens only */
-	if (idx == f->tx.n && !cg_scc_may(&r->cc, &p->ccf, cg_scc_reo(&r->cc, peer_reo(p, r))))
+	if (idx == f->tx.n && !cg_scc_may(&r->cc, &p->ccf, cg_scc_reo(&r->cc, peer_reo(p, r)))) {
+		f->stop = PCTL_STOP_CWND;
 		return 0;
+	}
 	cg_scc_restart(&r->cc, now);
 	/* a stream that had nothing in flight waits for no answer: protocontroller_dead_s
 	 * counts from now, not from the peer's last message (an SSH session or
@@ -1556,7 +1614,7 @@ static int send_one(struct cg_pctl *p, struct flow *f, struct peer *r, uint64_t 
 	r->cc.inflight += sent;
 	cg_scc_spend(&r->cc, sent ? sent : 1);
 	if (!f->rto_at)
-		f->rto_at = now + cg_scc_rto(&r->cc, f->backoff, peer_reo(p, r));
+		f->rto_at = now + cg_scc_rto(&r->cc, f->backoff, cg_scc_rto_extra(peer_reo(p, r), p->rack_off));
 	p->data_tx++;
 	(void)now;
 	return 1;
@@ -1582,9 +1640,22 @@ static int timers(struct cg_pctl *p, struct flow *f, uint64_t now)
 		flow_reset(p, f, CG_PCTL_R_TIMEOUT);
 		return -1;
 	}
+	if (f->sus_at && now >= f->sus_at) {
+		uint64_t lq = 0, lost = cg_st_tx_suspects(&f->tx, now, &f->sus_at, &lq);
+
+		if (lost) {
+			p->sus_lost += lost;
+			r->cc.inflight -= r->cc.inflight >= lost ? lost : r->cc.inflight;
+			cg_scc_lost(&r->cc, lost - lq);
+			rto_arm(p, f, r);
+			due(p, now); /* it goes again at once */
+		}
+	}
 	if (f->rto_at && now >= f->rto_at) {
 		uint64_t rn = f->tx.reneged, lq = 0,
-			 lost = cg_st_tx_rto(&f->tx, now, cg_scc_rto(&r->cc, f->backoff, peer_reo(p, r)), &lq);
+			 lost = cg_st_tx_rto(&f->tx, now,
+					     cg_scc_rto(&r->cc, f->backoff, cg_scc_rto_extra(peer_reo(p, r), p->rack_off)),
+					     &lq);
 
 		p->reneged += f->tx.reneged - rn;
 		r->cc.inflight -= r->cc.inflight >= lost ? lost : r->cc.inflight;
@@ -1645,6 +1716,7 @@ void cg_pctl_service(struct cg_pctl *p)
 		f->s_rate = ewma_rate(&f->s_bytes, &f->s_t, f->s_rate, now);
 		f->w_rate = ewma_rate(&f->w_bytes, &f->w_t, f->w_rate, now);
 		due(p, f->rto_at);
+		due(p, f->sus_at);
 		if (!p->cfg.server && f->state == F_OPEN)
 			due(p, f->open_due);
 		i++;
@@ -1660,6 +1732,8 @@ void cg_pctl_service(struct cg_pctl *p)
 
 			if (f->state != F_FREE && send_one(p, f, peer_of(p, f), now))
 				any = 1;
+			else if (f->state != F_FREE && f->state != F_OPEN)
+				p->stop[f->stop]++;
 		}
 	}
 	p->rr++;
@@ -1721,6 +1795,11 @@ static void cc_auto(struct cg_pctl *p, struct flow *f)
 		cg_warn("protocontroller: protocontroller_cc auto: bbr: %s (modprobe tcp_bbr?)", strerror(errno));
 }
 
+void cg_pctl_rack(struct cg_pctl *p, int on)
+{
+	p->rack_off = !on;
+}
+
 void cg_pctl_tick(struct cg_pctl *p)
 {
 	if (p->cc_auto)
@@ -1729,12 +1808,19 @@ void cg_pctl_tick(struct cg_pctl *p)
 	for (uint32_t i = 0; i < p->npr; i++) {
 		struct peer *r = &p->pr[i];
 		uint64_t bps = 0;
-		int full = 0;
+		int full = 0, copied;
 
 		if (!r->used)
 			continue;
 		p->ops.hint(p->ops.ctx, i, r->sid, &bps, &full);
-		cg_scc_hint(&r->cc, bps, full);
+		copied = full == CG_PCTL_HINT_COPIED;
+		cg_scc_hint(&r->cc, bps, copied ? 0 : full);
+		_Static_assert(CG_PCTL_OFFER_LINKS == CG_SCC_OFFER_LINKS, "one offer");
+		/* with subflow: the engine's offer (step 2, story 029); copied, only
+		 * while the stream holds no queue */
+		r->cc.offer = (uint8_t)(!p->rack_off		      ? 0
+					: copied && p->cfg.offer == CG_PCTL_OFFER_LINKS ? CG_SCC_OFFER_COPIES
+										: p->cfg.offer);
 		r->horizon_us = p->ops.horizon ? p->ops.horizon(p->ops.ctx, i, r->sid) : 0;
 		if (r->reo_us > p->cfg.reo_ms * 1000 + PCTL_REO_DECAY_US)
 			r->reo_us -= PCTL_REO_DECAY_US;
@@ -1899,6 +1985,16 @@ void cg_pctl_json(const struct cg_pctl *p, struct cg_json *j)
 	cg_json_u64(j, "acks_rx", p->acks_rx);
 	cg_json_u64(j, "opens_tx", p->opens_tx);
 	cg_json_u64(j, "retx", p->retx);
+	cg_json_bool(j, "rack", !p->rack_off); /* RACK over the mix (off: the subflows', story 029) */
+	/* why a flow's turn ended, a pass at a time (story 029) */
+	cg_json_obj(j, "stops");
+	cg_json_u64(j, "pacer", p->stop[PCTL_STOP_PACER]);
+	cg_json_u64(j, "cwnd", p->stop[PCTL_STOP_CWND]);
+	cg_json_u64(j, "window", p->stop[PCTL_STOP_WINDOW]);
+	cg_json_u64(j, "empty", p->stop[PCTL_STOP_EMPTY]);
+	cg_json_u64(j, "buffer", p->stop[PCTL_STOP_BUF]); /* all of the buffer sent and not acknowledged */
+	cg_json_u64(j, "segments", p->stop[PCTL_STOP_SEGS]);
+	cg_json_end(j, '}');
 	/* the segments sent again by why they were lost: RACK, the timer, the
 	 * tunnel's NACK (the rescue hands the loss over, story 025) */
 	cg_json_obj(j, "retx_by");
@@ -1915,8 +2011,14 @@ void cg_pctl_json(const struct cg_pctl *p, struct cg_json *j)
 	cg_json_u64(j, "stale", p->nack[CG_ST_NACK_STALE]);
 	cg_json_u64(j, "pending", p->nack[CG_ST_NACK_PENDING]);
 	cg_json_u64(j, "unknown", p->nack[CG_ST_NACK_UNKNOWN]);
+	/* a link's loss a code may still rebuild: suspects, and the bytes of
+	 * them their deadline found undelivered (story 029) */
+	cg_json_u64(j, "suspects", p->nack[CG_ST_NACK_SUSPECT]);
+	cg_json_u64(j, "suspect_lost_bytes", p->sus_lost);
 	cg_json_u64(j, "no_stream", p->nack_noflow);
 	cg_json_u64(j, "acks", p->nack_ack);
+	cg_json_u64(j, "hints", p->nack_hint);
+	cg_json_u64(j, "subflow", p->nack_sf);
 	/* the segments found lost, by the link they went on (the server: the
 	 * path index, every session together); then copied or not known */
 	cg_json_arr(j, "lost_by_link");

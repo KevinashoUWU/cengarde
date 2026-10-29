@@ -16,6 +16,19 @@
 #   cengarde-setup companions     the uplinks' IPv6 interfaces (init triggers)
 #   cengarde-setup status         JSON for LuCI: problems, tunnel address (and
 #                                 its IPv6 one) and VPS name, tunnel, engine
+#   cengarde-setup vps-key        the key this router administers its VPS
+#                                 with (made once): its public line, for
+#                                 "cengarde-vps-setup admin-key add" there
+#   cengarde-setup vps WORD...    one of cengarde-vps-admin's commands (get,
+#                                 mode, fec, protocontroller, set, unset) on
+#                                 the VPS, over SSH with that key; what the
+#                                 VPS answers comes back
+#
+# The mode (option mode, LuCI's General tab): bonding adds the uplinks up,
+# redundancy copies every packet over all of them, custom (or no mode, as
+# before) takes every option as set. Bonding and redundancy own the core
+# switches (split, protocontroller, subflow, link_cc) and bring their tuning
+# as defaults, which an option set apart overrides (mode_presets).
 #
 # What apply maintains while cengarde is enabled with tunnel = 1, once the
 # VPS addresses and at least one uplink are set (metrics also before that):
@@ -108,6 +121,9 @@ DEFAULT_DNS="1.1.1.1 9.9.9.9"
 CLOUD_CONFIG=/usr/share/cengarde/cloud-config.yaml
 STATUS_FILE=/var/run/cengarde.json
 CONTROL_SOCKET=/var/run/cengarde/cengarde.sock # cengarde ctl's default
+VPS_KEY=/etc/cengarde/vps_admin_key            # dropbear's format (dbclient -i)
+VPS_SYNCED=/var/run/cengarde-vps-mode          # the mode the VPS last took from here
+VPS_TIMEOUT=120                                # a VPS command may restart its engine
 CHANGED=
 
 log() { logger -t cengarde-setup "$*"; }
@@ -223,8 +239,70 @@ sections() { # CONFIG TYPE (anonymous ones by their cfgXXXXXX name)
 	uci -q -X show "$1" | sed -n "s/^$1\.\([^.=]*\)=$2\$/\1/p"
 }
 
+# preset OPTION VALUE: the mode's default for OPTION, unless it is set.
+preset() {
+	local v
+
+	config_get v main "$1"
+	[ -n "$v" ] || config_set main "$1" "$2"
+}
+
+# The mode's switches and defaults, in the loaded configuration (story 029).
+# bonding: the field's winner of 2026-10-28, MPGRIT: every large packet on
+# one uplink by expected arrival, each uplink's own subflow and rate, GRIT in
+# the middle of the TCP (with 8 MB streams the download reached 93 % of
+# OpenMPTCProuter's and the upload passed it, at half its ping). redundancy:
+# every packet on every uplink that can deliver it in time, the rescue on,
+# GRIT in the middle of the TCP (protocontroller B, as bonding), and each
+# uplink's own rate (subflow, link_cc) deciding which take a copy: one whose
+# copy would arrive more than redund_pace_ms after the first takes none (the
+# field of 2026-10-29: the download 59-60 -> 113-117 Mbit/s with 40-55 %
+# less data, the slow uplinks' queues from 3.5-6.7 s to 0.5-2.5 s). GRIT
+# lost there until a copy lost on every uplink reached it as a loss and the
+# links' rate stopped pushing it while it held a queue (story 029, 6139fd3:
+# against a plain TCP in the middle, A, the download +9 % with a lower ping
+# and less data, the upload +12 %).
+mode_presets() {
+	config_get MODE main mode custom
+	case "$MODE" in
+	bonding)
+		config_set main split 1
+		config_set main protocontroller b
+		config_set main subflow 1
+		config_set main link_cc 1
+		preset split_eta 1
+		preset capacity_weights 1
+		preset split_spread_ms 250
+		preset split_spread_copy 0
+		preset probe_idle_ms 100
+		preset mute_behind_ms 0
+		preset min_active_links 1
+		preset reorder_max_wait_ms 500
+		preset reorder_pool_kb 32768
+		preset rescue 1
+		preset tcp_aware 1
+		preset protocontroller_nack 0
+		;;
+	redundancy)
+		config_set main split 0
+		config_set main protocontroller b
+		config_set main subflow 1
+		config_set main link_cc 1
+		preset redund_pace_ms 150
+		preset rescue 1
+		preset tcp_aware 1
+		;;
+	custom | '') MODE=custom ;;
+	*)
+		log "mode '$MODE': expected bonding, redundancy or custom, taken as custom"
+		MODE=custom
+		;;
+	esac
+}
+
 load() {
 	config_load cengarde
+	mode_presets
 	config_get_bool ENABLED main enabled 0
 	config_get_bool TUNNEL main tunnel 1
 	config_get_bool ROUTE_ALL main route_all 1
@@ -251,6 +329,10 @@ load() {
 	esac
 	config_get PCTL_PORTS main protocontroller_port
 	config_get PCTL_DEST main protocontroller_dest
+	# the VPS's administration from here (cengarde-vps-admin there)
+	config_get_bool VPS_ADMIN main vps_admin 0
+	config_get VPS_SSH_HOST main vps_ssh_host
+	config_get VPS_SSH_PORT main vps_ssh_port 22
 	# IP pass needs the tunnel to carry everything: replies go back through it.
 	PASS=no
 	[ "$IP_PASS" = 1 ] && [ "$TUNNEL" = 1 ] && [ "$ROUTE_ALL" = 1 ] && PASS=yes
@@ -877,6 +959,7 @@ apply() {
 		fix_upnp off
 	fi
 	commit
+	vps_sync
 }
 
 disable() {
@@ -1026,7 +1109,7 @@ engine_conf() {
 		probe_interval_ms probe_idle_ms status_interval_ms busy_poll_us cpu rt_priority sndbuf link_threads \
 		io_queue description reorder_max_wait_ms reorder_dup_wait_ms reorder_margin_ms reorder_bypass \
 		reorder_pool_kb rescue_kb rescue_pct rescue_tries rescue_wait_ms rescue_code_ms fec_wait_ms fec_share_max split_small split_spread_ms governor_target_ms governor_window_ms \
-		pace_peers_ms redund_spare_ms redund_spare_code_ms; do
+		pace_peers_ms redund_pace_ms redund_spare_ms redund_spare_code_ms link_cc_bits link_cc_budget_ms; do
 		config_get v main "$k"
 		[ -n "$v" ] && echo "$k = $v"
 	done
@@ -1056,7 +1139,7 @@ engine_conf() {
 			log "redund_spare_first '$v': not one of the uplinks that are up, left out"
 		fi
 	fi
-	for k in parq tcp_retx_one tcp_ack_rule rescue_tcp_race; do
+	for k in parq tcp_retx_one tcp_ack_rule rescue_tcp_race subflow link_cc; do
 		config_get v main "$k"
 		case "$v" in
 		'') ;;
@@ -1072,10 +1155,18 @@ engine_conf() {
 		# variant A's middle TCP goes to the VPS's end of the tunnel (this
 		# router's own tun_addr is a /32: nothing to take it from)
 		echo "protocontroller_vps = $VPS_ADDR"
-		for k in protocontroller_mid_cc protocontroller_buf_kb protocontroller_mem_mb protocontroller_max_flows protocontroller_queue_ms protocontroller_backlog_ms protocontroller_dead_s; do
+		for k in protocontroller_mid_cc protocontroller_buf_kb protocontroller_mem_mb protocontroller_max_flows protocontroller_queue_ms protocontroller_backlog_ms protocontroller_dead_s protocontroller_reo_ms; do
 			config_get v main "$k"
 			[ -n "$v" ] && echo "$k = $v"
 		done
+		# a tunnel NACK of a GRIT message: a loss (1, the default) or a hint (0, story 029)
+		config_get v main protocontroller_nack
+		case "$v" in
+		'') ;;
+		1 | on | yes | true | enabled) echo "protocontroller_nack = yes" ;;
+		0 | off | no | false | disabled) echo "protocontroller_nack = no" ;;
+		*) log "protocontroller_nack '$v': expected 0 or 1, left out" ;;
+		esac
 	fi
 	# Reordering at the receiver is on in the engine unless this says no; the
 	# split is off unless this says so, and only on, never force (the lab's):
@@ -1216,7 +1307,85 @@ cloud_config() {
 		-e "s|^\( *PASSTHROUGH=\).*|\1$PASS|" \
 		-e "s|^\( *TUNNEL_IPV6=\).*|\1$VPS_IPV6|" \
 		-e "s|^\( *ROUTER_NAME=\).*|\1$VPS_NAME|" \
-		-e "s|^\( *ROUTER_TUNNEL_ADDR=\).*|\1$ADDR|" "$CLOUD_CONFIG"
+		-e "s|^\( *ROUTER_TUNNEL_ADDR=\).*|\1$ADDR|" \
+		-e "s|REPLACE_MODE\$|$MODE|" "$CLOUD_CONFIG"
+}
+
+# The key this router administers its VPS with, made once (dropbear's
+# ed25519): its public line, named after the router, which the VPS takes
+# with "cengarde-vps-setup admin-key add" and binds to cengarde-vps-admin.
+vps_key() {
+	load
+	if [ ! -s "$VPS_KEY" ]; then
+		mkdir -p "${VPS_KEY%/*}"
+		(umask 077 && dropbearkey -t ed25519 -f "$VPS_KEY" >/dev/null 2>&1) ||
+			die "dropbearkey could not make $VPS_KEY"
+	fi
+	dropbearkey -y -f "$VPS_KEY" 2>/dev/null |
+		sed -n "s|^\(ssh-[a-z0-9-]* [A-Za-z0-9+/=]*\).*|\1 cengarde-$VPS_NAME|p"
+}
+
+# One of cengarde-vps-admin's commands on the VPS: vps_ssh_host (else the
+# first VPS address) at vps_ssh_port, as root with this router's key, whose
+# only command there is cengarde-vps-admin, and never a password prompt
+# (BatchMode: without it dbclient exits 0 when the key is not taken). A host
+# key it has not seen is taken and kept (dbclient -y): a VPS rebuilt with the
+# same address needs its old line out of /root/.ssh/known_hosts. Words of
+# letters, digits, ., _ and - only; the VPS checks the rest.
+vps() {
+	local host w
+
+	load
+	[ $# -gt 0 ] || die "usage: cengarde-setup vps get|mode M|fec F|protocontroller P|set KEY VALUE|unset KEY"
+	for w in "$@"; do
+		case "$w" in '' | -* | *[!A-Za-z0-9._-]*) die "vps: '$w': letters, digits, ., _ and - only" ;; esac
+	done
+	[ -s "$VPS_KEY" ] || die "no admin key yet: cengarde-setup vps-key, then on the VPS: sudo cengarde-vps-setup admin-key add '<its line>'"
+	host=$VPS_SSH_HOST
+	[ -n "$host" ] || host=${SERVER%% *}
+	[ -n "$host" ] || die "no VPS address (server) nor vps_ssh_host"
+	case "$VPS_SSH_PORT" in '' | *[!0-9]*) die "vps_ssh_port $VPS_SSH_PORT: expected a port" ;; esac
+	limit "$VPS_TIMEOUT" dbclient -o BatchMode=yes -y -i "$VPS_KEY" -p "$VPS_SSH_PORT" "root@$host" "$*"
+}
+
+# limit SECONDS CMD...: CMD, killed after SECONDS (OpenWrt's busybox may have
+# no timeout). The watchdog holds none of the caller's output, so that LuCI,
+# which reads until it closes, does not wait for it.
+limit() {
+	local secs="$1" pid w rc
+
+	shift
+	"$@" </dev/null &
+	pid=$!
+	(sleep "$secs" && kill "$pid") </dev/null >/dev/null 2>&1 &
+	w=$!
+	wait "$pid"
+	rc=$?
+	kill "$w" 2>/dev/null
+	return $rc
+}
+
+# With vps_admin = 1 this router administers its VPS, whose settings every
+# router there shares: its mode goes there (cengarde-vps-admin's "mode") on
+# the first apply after a boot and on each change, in the background, as the
+# VPS may be out of reach for a while (five tries, 30 s apart).
+vps_sync() {
+	[ "$VPS_ADMIN" = 1 ] && [ -s "$VPS_KEY" ] || return 0
+	[ "$(cat "$VPS_SYNCED" 2>/dev/null)" = "$MODE" ] && return 0
+	(
+		exec 9>&- # not the lock: the VPS may take a while
+		i=0
+		while [ $i -lt 5 ]; do
+			if /usr/sbin/cengarde-setup vps mode "$MODE"; then
+				echo "$MODE" >"$VPS_SYNCED"
+				log "the VPS took mode $MODE"
+				exit 0
+			fi
+			i=$((i + 1))
+			sleep 30
+		done
+		log "the VPS did not take mode $MODE (cengarde-setup vps get, or LuCI's VPS tab)"
+	) </dev/null >/dev/null 2>&1 &
 }
 
 # Every IPv6 interface of the uplinks, for the init script's triggers: the
@@ -1394,6 +1563,14 @@ status() {
 		"$name" "$PROBLEMS" "$rx" "$tx" "$engine"
 }
 
+# Not under the lock: an SSH command to the VPS may take a while.
+case "$1" in
+vps)
+	shift
+	vps "$@"
+	exit
+	;;
+esac
 exec 9>/var/lock/cengarde-setup.lock
 flock 9
 case "$1" in
@@ -1403,8 +1580,9 @@ engine-conf) engine_conf ;;
 cloud-config) cloud_config ;;
 companions) list_companions ;;
 status) status ;;
+vps-key) vps_key ;;
 *)
-	echo "usage: cengarde-setup apply|disable|engine-conf|cloud-config|companions|status" >&2
+	echo "usage: cengarde-setup apply|disable|engine-conf|cloud-config|companions|status|vps-key|vps WORD..." >&2
 	exit 2
 	;;
 esac

@@ -41,7 +41,7 @@ void test_proto(void)
 
 	/* Layout: version/type, the client hint at byte 2, link at byte 3,
 	 * session, seq and ts in network order. */
-	CHECK_EQ(pkt[0], 0xb1);
+	CHECK_EQ(pkt[0], 0xc1);
 	CHECK_EQ(pkt[2], 0x5a);
 	CHECK_EQ(pkt[3], 5);
 	CHECK(!memcmp(pkt + 4, "\xde\xad\xbe\xef\x01\x02\x03\x04\xa0\xb0\xc0\xd0", 12));
@@ -62,9 +62,16 @@ void test_proto(void)
 	cg_hdr_set_link(pkt, 9);
 	CHECK(cg_hdr_verify(pkt, sizeof(pkt), key_a));
 
+	/* So is the link's own sequence (12): a copy on another link takes its
+	 * own, and it parses back. */
+	cg_hdr_set_sseq(pkt, 0x11223344);
+	CHECK(cg_hdr_verify(pkt, sizeof(pkt), key_a));
+	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), 0);
+	CHECK_EQ(p.sseq, 0x11223344);
+
 	/* Every other header byte and every payload byte is authenticated. */
 	for (size_t i = 0; i < sizeof(pkt); i++) {
-		if (i == CG_LINK_OFF)
+		if (i == CG_LINK_OFF || (i >= CG_SSEQ_OFF && i < CG_SSEQ_OFF + 4))
 			continue;
 		pkt[i] ^= 0x01;
 		CHECK(!cg_hdr_verify(pkt, sizeof(pkt), key_a));
@@ -96,12 +103,14 @@ void test_proto(void)
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
 	pkt[0] = 0xa1; /* version 10 (no wide windows, FEC v3) too */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
-	pkt[0] = 0xbf; /* unknown type */
+	pkt[0] = 0xb1; /* version 11 (no subflow sequence) too */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
-	pkt[0] = 0xb6; /* a parity (fec.h): its header and a byte at least */
+	pkt[0] = 0xcf; /* unknown type */
+	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
+	pkt[0] = 0xc6; /* a parity (fec.h): its header and a byte at least */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), sizeof(pkt) > CG_HDR_LEN + CG_FEC_HDR ? 0 : -1);
 	CHECK_EQ(cg_hdr_parse(&p, pkt, CG_HDR_LEN + CG_FEC_HDR), -1);
-	pkt[0] = 0xb7; /* a repair (repair.h): its header and a byte at least */
+	pkt[0] = 0xc7; /* a repair (repair.h): its header and a byte at least */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), sizeof(pkt) > CG_HDR_LEN + CG_REP_HDR ? 0 : -1);
 	CHECK_EQ(cg_hdr_parse(&p, pkt, CG_HDR_LEN + CG_REP_HDR), -1);
 	CHECK(cg_type_ctl(CG_T_REPAIR));
@@ -111,7 +120,7 @@ void test_proto(void)
 		uint8_t q[CG_HDR_LEN + CG_PARQ_LEN];
 
 		memcpy(q, pkt, CG_HDR_LEN);
-		q[0] = 0xb8;
+		q[0] = 0xc8;
 		memset(q + CG_HDR_LEN, 0, sizeof(q) - CG_HDR_LEN);
 		q[CG_HDR_LEN] = 2;
 		CHECK_EQ(cg_hdr_parse(&p, q, CG_HDR_LEN + 1 + 2 * CG_PARQ_REQ), 0);
@@ -124,7 +133,7 @@ void test_proto(void)
 		q[CG_HDR_LEN] = CG_PARQ_MAX;
 		CHECK_EQ(cg_hdr_parse(&p, q, sizeof(q)), 0);
 	}
-	pkt[0] = 0xb1;
+	pkt[0] = 0xc1;
 	pkt[2] = 0xff; /* any hint parses: the server judges it */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), 0);
 	CHECK_EQ(p.hint, 0xff);
@@ -257,12 +266,13 @@ void test_proto(void)
 		h.type = CG_T_PROBE;
 	}
 
-	/* Outer packet sizes: the tun_mtu that fills a 1500-byte path is 1448
-	 * over IPv4 and 1428 over IPv6; the default 1420 fits both. */
-	CHECK_EQ(cg_outer_len(AF_INET, 1448), 1500);
-	CHECK_EQ(cg_outer_len(AF_INET6, 1428), 1500);
-	CHECK_EQ(cg_outer_len(AF_INET6, 1420), 1492); /* CG_TUN_MTU_DEFAULT */
-	CHECK_EQ(1500 - cg_outer_len(AF_INET6, 0), 1428);
+	/* Outer packet sizes: the tun_mtu that fills a 1500-byte path is 1444
+	 * over IPv4 and 1424 over IPv6 (12: 4 bytes of subflow sequence); the
+	 * default 1420 fits both. */
+	CHECK_EQ(cg_outer_len(AF_INET, 1444), 1500);
+	CHECK_EQ(cg_outer_len(AF_INET6, 1424), 1500);
+	CHECK_EQ(cg_outer_len(AF_INET6, 1420), 1496); /* CG_TUN_MTU_DEFAULT */
+	CHECK_EQ(1500 - cg_outer_len(AF_INET6, 0), 1424);
 	CHECK_EQ(cg_outer_len(AF_INET, 0), CG_HDR_LEN + 28);
 
 	/* The rescue bit of a reply's bonding tail (version 5). */

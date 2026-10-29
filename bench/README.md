@@ -367,7 +367,7 @@ failover (`FAILOVER_MS`):
 - **MTU de camino:** l2 baja a MTU 1400 mientras suben por el TUN paquetes
   de 1420 bytes (`SIZE` 1392 de carga UDP); el estado tiene que dar
   `path_mtu` 1400 en l2 (1500 en l1) y el log tiene que pedir un `tun_mtu`
-  de 1348 solo para l2, sin perder paquetes.
+  de 1344 solo para l2 (1348 hasta el protocolo 11), sin perder paquetes.
 
 ### `bond`: el laboratorio de bonding (`lab.d/bond.sh`)
 
@@ -1295,6 +1295,45 @@ a tiempo (historia [011](../docs/historias/011-hilos.md)).
   que no se pudieron vigilar, todas las recargas dicen `ok` y el RSS del
   cliente no crece más de 1 MiB tras los primeros 5 min. Al final de cada
   modo dice cuántas recargas, caídas de l2 y cambios de l3 hubo.
+
+## La prueba de techo con captura (`techo`, en terreno)
+
+La imagen en bruto de los cuatro enlaces (historia 029): registros de texto
+plano numerados (`techo.c`: `CGT L2 Q000000000123 T<ns de escritura>` y
+relleno legible, 1300 bytes) del PC al VPS y de vuelta, por cada módem a la
+vez, luego con GRIT y luego por UDP a tasa fija, con cada paquete capturado en
+los dos extremos.
+
+```sh
+bench/techo.sh -n NOMBRE [-d up|down|both] [-p tcp,grit,udp] [-T 30] [-S 20] [-u 50,80,100,120]
+python3 bench/techomat.py ~/campo/FECHA/techo/NOMBRE
+```
+
+- **`tcp`:** una conexión TCP BBR por módem (vlan10–vlan40 del PC, cada una
+  con su tabla), `-T` segundos: el techo de cada enlace, un bonding ideal.
+  Los dos extremos fijan el MSS al registro (`TCP_MAXSEG`) y la prueba apaga
+  TSO, GSO y GRO, así cada segmento lleva un registro y su secuencia lo dice:
+  número = (seq − ISN − 1) / 1300 − 1 (el saludo ocupa el primero).
+- **`grit`:** una conexión desde el netns `nucc` detrás del NUC; el
+  protocontrolador la lleva por GRIT. Los paquetes del túnel van completos (el
+  túnel no cifra): el número se lee dentro, donde GRIT lo haya cortado.
+- **`udp`:** un flujo por módem a cada porcentaje de su techo TCP (`-u`),
+  `-S` segundos cada escalón: de colas cortas a hondas.
+- **Lo que guarda** (`~/campo/FECHA/techo/NOMBRE`): capturas del PC por VLAN,
+  del NUC por uplink y del VPS; el registro de `techo` en cada extremo (cuándo
+  salió y cuándo TCP lo entregó o llegó el datagrama, hora del kernel);
+  `ss -tin` a 20 Hz, `cengarde ctl status` a 10 Hz, la radio de cada módem
+  por `evm.at` cada segundo y `chronyc tracking` al inicio y al final.
+- **`techomat.py`:** por fase, cada registro con su salida, sus envíos, su
+  primera llegada, el enlace por el que llegó y su entrega; por enlace, el
+  retardo de ida, la pérdida en el cable y la espera de cabeza de línea de
+  TCP; con todos los enlaces juntos en el orden en que salieron, lo que un
+  reordenador tendría que retener y qué parte sale en orden con cada espera
+  D. Para GRIT, además, los paquetes del túnel por enlace (byte de enlace y
+  secuencia de su cabecera).
+- Cuesta unos 5 GB por tanda completa, según los techos; toca TSO/GSO/GRO del
+  PC y del VPS, una regla de ufw del VPS (TCP 5310, UDP 5320) y `tcpdump` en
+  el NUC, y lo devuelve al terminar (`-k` lo deja para otra tanda).
 
 ## Cómo leer la salida
 

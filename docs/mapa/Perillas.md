@@ -7,7 +7,7 @@ archivos:
 
 # Perillas
 
-Las 133 claves que `engine/src/config.c` lee (comprobado al generar esta nota: ni falta ni sobra ninguna).
+Las 139 claves que `engine/src/config.c` lee (comprobado al generar esta nota: ni falta ni sobra ninguna).
 Por omisión y rango salen de `cg_config_parse`; el significado, de los comentarios de `config.h` y de [[engine-README]].
 Las perillas marcadas como experimento están apagadas por omisión.
 
@@ -202,7 +202,7 @@ Secciones: «global» es la parte sin sección; `[link NOMBRE]` es del cliente; 
 | [[Mapa/Perillas/protocontroller_port\|protocontroller_port]] | 7801 | [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[025-protocontrolador]] |
 | [[Mapa/Perillas/protocontroller_vps\|protocontroller_vps]] | vacío (la primera dirección del prefijo de `tun_addr`) | [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[025-protocontrolador]] |
 | [[Mapa/Perillas/protocontroller_mid_cc\|protocontroller_mid_cc]] | `bbr` | [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[025-protocontrolador]] |
-| [[Mapa/Perillas/protocontroller_buf_kb\|protocontroller_buf_kb]] | 1024 | [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[025-protocontrolador]] |
+| [[Mapa/Perillas/protocontroller_buf_kb\|protocontroller_buf_kb]] | 1024 (con `subflow`, 8176) | [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[025-protocontrolador]], [[029-mpgrit]] |
 | [[Mapa/Perillas/protocontroller_mem_mb\|protocontroller_mem_mb]] | 64 | [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[025-protocontrolador]] |
 | [[Mapa/Perillas/protocontroller_max_flows\|protocontroller_max_flows]] | 256 | [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[025-protocontrolador]] |
 | [[Mapa/Perillas/protocontroller_queue_ms\|protocontroller_queue_ms]] | 5 | [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[025-protocontrolador]] |
@@ -210,5 +210,16 @@ Secciones: «global» es la parte sin sección; `[link NOMBRE]` es del cliente; 
 | [[Mapa/Perillas/protocontroller_dead_s\|protocontroller_dead_s]] | 60 | [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[025-protocontrolador]] |
 | [[Mapa/Perillas/protocontroller_reo_ms\|protocontroller_reo_ms]] | 10 | [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[025-protocontrolador]] |
 | [[Mapa/Perillas/protocontroller_cc\|protocontroller_cc]] | `auto` | [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[025-protocontrolador]] |
+
+## Sin grupo (agrégalas a un grupo en perillas.py)
+
+| Perilla | Por omisión | Pieza | Historia |
+| --- | --- | --- | --- |
+| [[Mapa/Perillas/link_cc\|link_cc]] | `no` | [[Ritmo por enlace (linkcc.h)]], [[Subflujo (subflow.h)]], [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[029-mpgrit]] |
+| [[Mapa/Perillas/link_cc_bits\|link_cc_bits]] | `14` en el router, `46` en el VPS | [[Ritmo por enlace (linkcc.h)]] | [[029-mpgrit]] |
+| [[Mapa/Perillas/link_cc_budget_ms\|link_cc_budget_ms]] | `300` | [[Ritmo por enlace (linkcc.h)]] | [[029-mpgrit]] |
+| [[Mapa/Perillas/protocontroller_nack\|protocontroller_nack]] | `yes` | [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[029-mpgrit]] |
+| [[Mapa/Perillas/protocontroller_offer\|protocontroller_offer]] | `yes` | [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[029-mpgrit]] |
+| [[Mapa/Perillas/subflow\|subflow]] | `no` | [[Subflujo (subflow.h)]], [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[029-mpgrit]] |
 
 Volver a [[Mapa del motor]].

@@ -13,6 +13,72 @@ msgstr ""
 msgid "Copied to the clipboard."
 msgstr ""
 
+msgid "The VPS did not answer (code %d)."
+msgstr ""
+
+msgid "Bonding"
+msgstr ""
+
+msgid "Redundancy"
+msgstr ""
+
+msgid "Custom"
+msgstr ""
+
+msgid "Off"
+msgstr ""
+
+msgid "Upload: the routers' repairs rebuilt"
+msgstr ""
+
+msgid "Upload and download (RLC)"
+msgstr ""
+
+msgid "On"
+msgstr ""
+
+msgid "value"
+msgstr ""
+
+msgid "Reading the VPS…"
+msgstr ""
+
+msgid "On the VPS: %s…"
+msgstr ""
+
+msgid "No key: save and apply with this option on first."
+msgstr ""
+
+msgid "Copy"
+msgstr ""
+
+msgid "Mode"
+msgstr ""
+
+msgid "Apply"
+msgstr ""
+
+msgid "FEC"
+msgstr ""
+
+msgid "Protocontroller"
+msgstr ""
+
+msgid "Engine setting"
+msgstr ""
+
+msgid "Set"
+msgstr ""
+
+msgid "Pick a setting and give it a number or a word (up to 16 characters)."
+msgstr ""
+
+msgid "Remove"
+msgstr ""
+
+msgid "Read"
+msgstr ""
+
 msgid "cengarde"
 msgstr ""
 
@@ -46,10 +112,22 @@ msgstr ""
 msgid "Enabled"
 msgstr ""
 
+msgid "Bonding adds the uplinks up: each large packet goes over the uplink where it arrives first, each uplink with its own rate, and the TCP of the LAN travels as GRIT, cengarde's own stream (in the field: the download at 93 % of OpenMPTCProuter's and the upload above it, at half its ping). Redundancy copies every packet over every uplink that delivers it in time by its own measured rate, the first copy wins, and the TCP of the LAN travels as GRIT too: the safest in a cut and for live broadcasts, and the most data. Custom: the Protection, Layer 4 and Advanced tabs decide everything, as before. The VPS has to match: \"sudo cengarde-vps-setup mode bonding\" (or redundancy) there, or from the VPS tab when this router administers it. A change restarts the engine."
+msgstr ""
+
+msgid "Bonding (add the uplinks up)"
+msgstr ""
+
+msgid "Redundancy (every packet over every uplink)"
+msgstr ""
+
+msgid "Custom (the other tabs decide)"
+msgstr ""
+
 msgid "VPS addresses"
 msgstr ""
 
-msgid "Public IPs of the VPS as the provider shows them, IPv4 and IPv6, in order of preference: each uplink uses the first one of a family it has, and tries the next one when the VPS does not answer there. A name works too: the router looks it up through each uplink (the carrier's DNS first), never through the tunnel, and follows it when its IP changes (dynamic DNS). An MTU above 1428 does not fit if the name has an IPv6 address that the uplinks use."
+msgid "Public IPs of the VPS as the provider shows them, IPv4 and IPv6, in order of preference: each uplink uses the first one of a family it has, and tries the next one when the VPS does not answer there. A name works too: the router looks it up through each uplink (the carrier's DNS first), never through the tunnel, and follows it when its IP changes (dynamic DNS). An MTU above 1424 does not fit if the name has an IPv6 address that the uplinks use."
 msgstr ""
 
 msgid "At most %d addresses"
@@ -130,9 +208,6 @@ msgstr ""
 msgid "For a new VPS. Paste it as \"user data\" (cloud-init) when creating an Ubuntu 22.04 or 24.04 VPS, e.g. on Vultr. It builds the same cengarde version as this router and sets up the tunnel, NAT and IP pass, with the name and address of this router. Setup log on the VPS: /var/log/cloud-init-output.log."
 msgstr ""
 
-msgid "Copy"
-msgstr ""
-
 msgid "Download"
 msgstr ""
 
@@ -143,6 +218,27 @@ msgid "Instead of the cloud-config, run this on the VPS over SSH: it adds this r
 msgstr ""
 
 msgid "The command shows once the name and the address in the tunnel are valid and known: after a new secret, save and apply first."
+msgstr ""
+
+msgid "Administer the VPS from here"
+msgstr ""
+
+msgid "The settings of the VPS (its mode, the FEC of the download, the protocontroller and some of the engine's) are the same for every router it serves: one router administers them, over SSH with a key of its own that can do that and nothing else. On: this router's mode goes to the VPS on each change, and the panel below reads and changes the rest. Save and apply first."
+msgstr ""
+
+msgid "VPS address for SSH"
+msgstr ""
+
+msgid "Empty: the first VPS address (General tab)."
+msgstr ""
+
+msgid "VPS SSH port"
+msgstr ""
+
+msgid "The VPS's settings"
+msgstr ""
+
+msgid "First, once, run the command below on the VPS: it lets this router's key change these settings and nothing else (cengarde-vps-admin). Then \"Read\" shows what the VPS has, and each \"Apply\" changes it at once, for every router of the VPS; the engine there restarts or reloads."
 msgstr ""
 
 msgid "Manage the tunnel"
@@ -163,9 +259,6 @@ msgstr ""
 msgid "Carries IPv6 through the tunnel too, translated (NAT66) here and at the VPS: this router gets a ULA address in the tunnel, derived from the secret, and with \"Route all traffic through the tunnel\" the IPv6 of the router and of the LAN leaves through the VPS. The VPS needs IPv6 of its own and the command \"sudo cengarde-vps-setup ipv6 on\" (the cloud-config of a new VPS follows this switch when all traffic goes through the tunnel). The LAN needs a ULA prefix (Network > Interfaces > Global network options); its devices have only that, so they prefer IPv4 for sites that have both, and this serves mainly IPv6-only sites. Off until it has been tested on real hardware."
 msgstr ""
 
-msgid "Protocontroller"
-msgstr ""
-
 msgid "With A or B the router answers the TCP connections of the LAN itself and the VPS opens a fresh one to each destination (cubic, BBR once that leg loses). Between them each connection travels as a plain TCP through the tunnel (A) or, experimental, as GRIT, a reliable stream of cengarde paced by what the uplinks carry instead of by loss (B). It helps TCP uploads such as RTMP over lossy uplinks and long paths beyond the VPS. UDP, QUIC and the rest go through the tunnel as always. The VPS needs \"sudo cengarde-vps-setup protocontroller on\". A change restarts the engine."
 msgstr ""
 
@@ -176,6 +269,12 @@ msgid "A: TCP in the middle"
 msgstr ""
 
 msgid "B (GRIT): cengarde's stream in the middle (experimental)"
+msgstr ""
+
+msgid "B (GRIT), with each uplink's subflow and rate: set by the bonding mode (General tab)."
+msgstr ""
+
+msgid "B (GRIT), with each uplink's subflow and rate: set by the redundancy mode (General tab)."
 msgstr ""
 
 msgid "Protocontroller ports"
@@ -283,7 +382,7 @@ msgstr ""
 msgid "Rescue missing packets"
 msgstr ""
 
-msgid "A packet that no uplink delivered is asked for again (as parity when an erasure code is on) before the receiver gives up on it, within 60 ms. The router keeps what it sent for the VPS to ask, and asks the VPS for the download. The VPS needs rescue_kb and rescue_wait_ms in its cengarde.conf for its side. In the lab it doubled TCP with full copies over a lossy main uplink."
+msgid "A packet that no uplink delivered is asked for again (as parity when an erasure code is on) before the receiver gives up on it, within 60 ms. The router keeps what it sent for the VPS to ask, and asks the VPS for the download. The VPS needs rescue_kb and rescue_wait_ms in its cengarde.conf for its side. In the lab it doubled TCP with full copies over a lossy main uplink. On in bonding and redundancy unless set apart."
 msgstr ""
 
 msgid "IP pass"
@@ -316,7 +415,7 @@ msgstr ""
 msgid "Tunnel MTU"
 msgstr ""
 
-msgid "In a 1500-byte path, packets of up to 1448 bytes fit over IPv4 and of up to 1428 over IPv6. Larger ones get fragmented, and mobile networks often drop the fragments."
+msgid "In a 1500-byte path, packets of up to 1444 bytes fit over IPv4 and of up to 1424 over IPv6. Larger ones get fragmented, and mobile networks often drop the fragments."
 msgstr ""
 
 msgid "At most %d with an IPv6 VPS address"
@@ -376,6 +475,18 @@ msgstr ""
 msgid "Instead of a copy over every uplink, each large packet (over 256 bytes, by default) goes over one uplink, chosen by weight; the small ones still go over all of them. This adds up the speed of the uplinks (in the lab, two equal uplinks carried 1.98 times what one does), but it protects less than copying: an uplink that dies keeps its share of the packets until the engine takes it out (about 300 ms by estimate, 1.5 s before that), and the packets sent to it in the meantime are lost; the slowest uplink in the split sets the latency of all (see the largest delay difference below); and a weight above what an uplink can carry fills the queue of its modem and makes the uplink unstable. The VPS follows this router: it splits the download the same way, with the same weights, when the router asks for it, and needs no setting. It needs \"Reorder at the receiver\"."
 msgstr ""
 
+msgid "Subflow per uplink"
+msgstr ""
+
+msgid "Each uplink numbers what it carries and says back what it lost within itself (protocol 12), so a late packet on another uplink is never taken for a loss, and GRIT resends only what was really lost. Both ends need it. On in bonding."
+msgstr ""
+
+msgid "Each uplink its own rate"
+msgstr ""
+
+msgid "With the subflow on: each uplink runs its own rate controller (a BBR per uplink) fed by what the other end says it received, which decides the split and how fast GRIT sends. Both ends need it. On in bonding."
+msgstr ""
+
 msgid "Weight of each uplink in the split"
 msgstr ""
 
@@ -385,7 +496,7 @@ msgstr ""
 msgid "Largest delay difference to split (ms)"
 msgstr ""
 
-msgid "Only the uplinks whose delay towards the VPS is at most this much behind the fastest one get a share of the split; the others leave it (the next option says what they carry), and get their share back once they stay within three quarters of it for the settle time. The VPS does the same with the download, with its own setting (30 ms unless changed there). Measured in the lab: two equal uplinks split give almost twice one uplink, but 50 ms apart most of that gain is lost, and 150 ms apart the speed collapses: the slowest uplink in the split sets the pace of all. 0: no limit."
+msgid "Only the uplinks whose delay towards the VPS is at most this much behind the fastest one get a share of the split; the others leave it (the next option says what they carry), and get their share back once they stay within three quarters of it for the settle time. The VPS does the same with the download, with its own setting (30 ms unless changed there). Measured in the lab: two equal uplinks split give almost twice one uplink, but 50 ms apart most of that gain is lost, and 150 ms apart the speed collapses: the slowest uplink in the split sets the pace of all. 0: no limit. Bonding: 250 unless set."
 msgstr ""
 
 msgid "Copies to the uplinks out of the split"
@@ -812,9 +923,6 @@ msgid "%d asked of the VPS, %d sent again for the VPS, %d repair packets on requ
 msgstr ""
 
 msgid "Lost on every uplink: packets that no uplink delivered and that nothing repaired, counted with a delay of up to a few minutes. The mode is set in the Protection tab."
-msgstr ""
-
-msgid "Mode"
 msgstr ""
 
 msgid "B (GRIT): cengarde's stream in the middle"

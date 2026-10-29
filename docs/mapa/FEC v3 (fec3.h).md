@@ -3,7 +3,7 @@ tags: [mapa, pieza]
 archivos:
   - engine/src/fec3.h
   - engine/tests/test_fec3.c
-sello: d5fcccfe1194c2cb
+sello: 4cfdccf65c38b024
 ---
 # FEC v3 (fec3.h)
 

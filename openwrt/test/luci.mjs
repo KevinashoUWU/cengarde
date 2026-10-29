@@ -207,6 +207,12 @@ try {
 	await linkType('up1').selectOption('starlink');
 	check(await linkType('up1').inputValue() === 'starlink', 'up1 set to starlink');
 
+	step('General tab: a new router is in bonding mode; custom lets the other tabs decide');
+	const mode = page.locator(id('widget.cbid.cengarde.main.mode'));
+	check(await mode.inputValue() === 'bonding', 'a new router is in bonding mode');
+	await mode.selectOption('custom');
+	check(await mode.inputValue() === 'custom', 'custom chosen: the steps below set the split by hand');
+
 	step('VPS tab: secret and cloud-config');
 	await tab('vps');
 	const secret = await page.inputValue(id('widget.cbid.cengarde.main.secret'));
@@ -261,7 +267,7 @@ try {
 		await addCommand() === `sudo cengarde-vps-setup add router --tunnel-addr ${derived} --proto ${proto}`,
 		'emptied, the name is router again and the address the derived one');
 
-	step('Tunnel tab: an MTU of 1460 is refused (over 1448), IP pass and IPv6 on, the cloud-config follows');
+	step('Tunnel tab: an MTU of 1460 is refused (over 1444), IP pass and IPv6 on, the cloud-config follows');
 	await tab('tunnel');
 	const mtu = page.locator(id('widget.cbid.cengarde.main.mtu'));
 	const mtuSaved = await mtu.inputValue();

@@ -192,6 +192,45 @@ void test_streamcc(void)
 	CHECK_EQ(cg_scc_cwnd(&p, &c, 0), CG_SCC_IW_SEGS * 1200);
 	CHECK_EQ(cg_scc_rto(&p, 0, 0), 200000);
 	CHECK_EQ(cg_scc_rto(&p, 10, 0), 2000000);
+	/* the engine's offer (subflow): at least its capacity and a quarter,
+	 * in the rate and in the window, until every link is full or the
+	 * stream sees a queue */
+	{
+		struct cg_scc q;
+		uint64_t r0, w0;
+
+		cg_scc_init(&q, 0);
+		q.bw = 2000000;
+		q.min_rtt = 40000;
+		cg_scc_hint(&q, 4000000, 0);
+		r0 = cg_scc_rate(&q);
+		w0 = cg_scc_cwnd(&q, &c, 0);
+		CHECK(r0 < 5000000);
+		q.offer = 1;
+		CHECK_EQ(cg_scc_rate(&q), 5000000);
+		CHECK(cg_scc_cwnd(&q, &c, 0) > w0);
+		q.cong = 1;
+		CHECK(cg_scc_rate(&q) < 5000000);
+		q.cong = 0;
+		cg_scc_hint(&q, 1000000, 1); /* all full: the engine's capacity is the ceiling */
+		CHECK(cg_scc_rate(&q) < 5000000);
+		cg_scc_hint(&q, 4000000, 0);
+		CHECK_EQ(cg_scc_rate(&q), 5000000);
+		/* each link's own rate: as it is, whatever the stream's queue */
+		q.offer = CG_SCC_OFFER_LINKS;
+		q.cong = 1;
+		CHECK_EQ(cg_scc_rate(&q), 4000000);
+		/* copied (redundancy): only while the stream holds no queue */
+		q.offer = CG_SCC_OFFER_COPIES;
+		CHECK(cg_scc_rate(&q) < 4000000);
+		CHECK(cg_scc_cwnd(&q, &c, 0) <= w0);
+		q.cong = 0;
+		CHECK_EQ(cg_scc_rate(&q), 4000000);
+	}
+	/* with RACK over the mix off, the timer waits the latency budget at least */
+	CHECK_EQ(cg_scc_rto_extra(20000, 0), 20000);
+	CHECK_EQ(cg_scc_rto_extra(20000, 1), CG_SCC_REO_MAX_US);
+	CHECK_EQ(cg_scc_rto_extra(CG_SCC_REO_MAX_US + 5, 1), CG_SCC_REO_MAX_US + 5);
 	/* a hint starts it there */
 	cg_scc_hint(&p, 5000000, 0);
 	CHECK_EQ(cg_scc_bw(&p), 5000000);
@@ -207,12 +246,13 @@ void test_streamcc(void)
 
 	/* how far duplicates widen RACK's window: the code's horizon (at most
 	 * 100 ms), 20 ms of reordering without a code, never under the base */
-	CHECK_EQ(cg_scc_reo_cap(10000, 0), CG_SCC_REO_NOCODE_US);
-	CHECK_EQ(cg_scc_reo_cap(10000, 60000), 60000);
-	CHECK_EQ(cg_scc_reo_cap(10000, 100000), 100000);
+	/* the latency budget, code or not; never under the floor */
+	CHECK_EQ(cg_scc_reo_cap(10000, 0), CG_SCC_REO_MAX_US);
+	CHECK_EQ(cg_scc_reo_cap(10000, 60000), CG_SCC_REO_MAX_US);
 	CHECK_EQ(cg_scc_reo_cap(10000, 1000000), CG_SCC_REO_MAX_US);
-	CHECK_EQ(cg_scc_reo_cap(50000, 0), 50000);
-	CHECK_EQ(cg_scc_reo_cap(50000, 30000), 50000);
+	CHECK_EQ(CG_SCC_REO_MAX_US, 300000);
+	CHECK_EQ(cg_scc_reo_cap(400000, 0), 400000);
+	CHECK_EQ(cg_scc_reo_cap(400000, 30000), 400000);
 
 	/* past STARTUP, a rate sample is at most CG_SCC_HINT_MAX times the
 	 * engine's hint: 1 MB learnt in 10 ms on a path the engine sees at

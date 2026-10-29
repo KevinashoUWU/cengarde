@@ -55,6 +55,27 @@
 #                                    download too (fec_pct and fec_window_ms
 #                                    as the engine's, or in engine.local);
 #                                    the engine restarts
+#   cengarde-vps-setup mode bonding|redundancy|custom
+#                                    what the routers' mode (LuCI's General
+#                                    tab, story 029) needs here: bonding, the
+#                                    protocontroller and BONDING (each link's
+#                                    subflow and own rate, the tunnel's NACK
+#                                    a hint for GRIT); redundancy, the
+#                                    protocontroller (the routers use A) and
+#                                    REDUNDANCY (each link's subflow and own
+#                                    rate deciding the copies of the
+#                                    download, redund_pace_ms 150); custom,
+#                                    neither (the protocontroller stays as it
+#                                    is); the engine restarts. What
+#                                    engine.local says wins
+#   cengarde-vps-setup admin-key add "ssh-ed25519 KEY [COMMENT]"|list|remove KEY|COMMENT
+#                                    a router's admin key (its LuCI shows it,
+#                                    VPS tab): in root's authorized_keys
+#                                    with cengarde-vps-admin as its only
+#                                    command (restrict), which reads and
+#                                    changes this server's shared settings
+#                                    (mode, fec, protocontroller, some of
+#                                    engine.local) and nothing else
 #   cengarde-vps-setup refresh       the engine's configuration again, reloaded
 #                                    if it changed (cengarde-nat check)
 #   cengarde-vps-setup purge [--all] the services of install.sh removed and the
@@ -102,6 +123,8 @@ FORWARD_MAX_PORTS=1024
 TUNNEL_IPV6=no
 PROTOCONTROLLER=no
 FEC=no
+BONDING=no
+REDUNDANCY=no
 ROUTER_NAME=router
 # ROUTER_TUNNEL_ADDR, the cloud-config's router's tunnel address, is left
 # unset: a cloud-config without it is older than 0.5.2, and its router has
@@ -132,6 +155,11 @@ SERVER_ADDR=10.79.0.1
 # inside their prefixes).
 TUN_DEV=cg0
 TUN_NET=$SERVER_ADDR/16
+# The TUN's MTU, the routers' (OpenWrt's mtu 1380): the engine's own 1420
+# made 1476-byte download packets, and Claro's path back takes 1460, so the
+# kernel cut every full one in two over it (the ceiling capture of
+# 2026-10-28: GRIT's download 97 -> 137-152 Mbit/s with 1380).
+TUN_MTU=1380
 TUN_NET6=fd79::1/8
 # The drop-in that let the engine open /dev/net/tun before 0.12, when only
 # TUNNEL=native needed it: cengarde.service allows it itself now.
@@ -180,6 +208,7 @@ if [ -e "$CONF" ]; then
 	. "$CONF"
 fi
 is_port "$CENGARDE_PORT" || die "CENGARDE_PORT in $CONF: not a port"
+case $REDUNDANCY in yes | no) ;; *) die "REDUNDANCY in $CONF: yes or no" ;; esac
 case $PROTOCONTROLLER in yes | no) ;; *) die "PROTOCONTROLLER in $CONF: yes or no" ;; esac
 case $FEC in yes | rlc | no) ;; *) die "FEC in $CONF: yes, rlc or no" ;; esac
 # What IP pass forwards (cengarde-nat refuses a bad one).
@@ -443,6 +472,9 @@ engine_conf() {
 		# encrypted; each router's own addresses are its tun_route.
 		tun = $TUN_DEV
 		tun_addr = $TUN_NET$(! tunnel_v6 || echo " $TUN_NET6")
+		# The routers' MTU: a path that takes less than 1500 bytes (Claro's,
+		# 1460) cuts larger download packets in two.
+		tun_mtu = $TUN_MTU
 	EOF
 	[ "$PROTOCONTROLLER" = yes ] && cat <<-EOF
 		# The protocontroller (cengarde-vps-setup protocontroller off removes
@@ -450,6 +482,25 @@ engine_conf() {
 		# end of the tunnel (a), opened here to its destination (story 025; a
 		# server takes both variants with either).
 		protocontroller = b
+	EOF
+	[ "$BONDING" = yes ] && cat <<-EOF
+		# Bonding (cengarde-vps-setup mode, story 029): each link a subflow
+		# with its own rate, and the tunnel's NACK only a hint for GRIT. The
+		# routers in bonding mode need it; a router in custom mode with GRIT
+		# and no subflow would lose RACK over the mix of its download.
+		subflow = yes
+		link_cc = yes
+		protocontroller_nack = no
+	EOF
+	[ "$REDUNDANCY" = yes ] && cat <<-EOF
+		# Redundancy (cengarde-vps-setup mode, story 029): each link a
+		# subflow with its own rate, which decides the copies of the
+		# download: a link whose copy would arrive more than redund_pace_ms
+		# after the first takes none (the field, 2026-10-29: 59-60 ->
+		# 113-117 Mbit/s with 40-55 % less data).
+		subflow = yes
+		link_cc = yes
+		redund_pace_ms = 150
 	EOF
 	[ "$FEC" = no ] || cat <<-EOF
 		# The repair data (cengarde-vps-setup fec off removes it): each
@@ -749,10 +800,11 @@ check_proto() {
 	# streams (story 025; protocontroller is the engine's own knob), 11 FEC
 	# v3's wide windows (story 026; fec_code is the engine's own knob) and
 	# the active mask in the probes (story 013, reorder_active, on by
-	# default): the same configurations.
+	# default), 12 each link's sequence and SFLOSS (story 029; subflow is
+	# the engine's own knob): the same configurations.
 	case "$P" in
-	4 | 5 | 6 | 7 | 8 | 9 | 10 | 11) ;;
-	*) die "this cengarde-vps-setup writes configurations of protocol 4 to 11 (cengarde 0.5.2 on, a [client NAME] section per router), and the engine says protocol ${P:-unknown}: install both from one checkout (contrib/vps/install.sh)" ;;
+	4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12) ;;
+	*) die "this cengarde-vps-setup writes configurations of protocol 4 to 12 (cengarde 0.5.2 on, a [client NAME] section per router), and the engine says protocol ${P:-unknown}: install both from one checkout (contrib/vps/install.sh)" ;;
 	esac
 }
 
@@ -1400,6 +1452,92 @@ cmd_fec() {
 	fi
 }
 
+# cmd_mode bonding|redundancy|custom: BONDING in nat.conf (and with it the
+# protocontroller, which bonding's GRIT needs), and the engine to match.
+cmd_mode() {
+	local b r p
+	case ${1:-} in
+	bonding) b=yes r=no p=yes ;;
+	redundancy) b=no r=yes p=yes ;;
+	custom) b=no r=no p=$PROTOCONTROLLER ;;
+	*) die "usage: mode bonding|redundancy|custom" ;;
+	esac
+	check_proto
+	lock
+	if [ "$BONDING" = "$b" ] && [ "$REDUNDANCY" = "$r" ] && [ "$PROTOCONTROLLER" = "$p" ]; then
+		say "mode $1 already"
+		return 0
+	fi
+	keep "$CONF"
+	set_conf BONDING "$b"
+	set_conf REDUNDANCY "$r"
+	if [ "$p" = yes ] && [ "$PROTOCONTROLLER" != yes ]; then
+		mkdir -p "$R/etc/modules-load.d"
+		echo tcp_bbr >"$R/etc/modules-load.d/cengarde-bbr.conf"
+		[ -n "$R" ] || modprobe tcp_bbr 2>/dev/null || say "modprobe tcp_bbr failed: the engine keeps the kernel's congestion control instead"
+		set_conf PROTOCONTROLLER yes
+	fi
+	regen
+	kept
+	case $1 in
+	bonding) say "mode bonding: the protocontroller, each link's subflow and own rate (the routers set Bonding in LuCI's General tab)" ;;
+	redundancy) say "mode redundancy: the protocontroller (the routers' B, GRIT), each link's subflow and own rate deciding the copies" ;;
+	*) say "mode custom: no subflows here (the protocontroller stays $([ "$PROTOCONTROLLER" = yes ] && echo on || echo off))" ;;
+	esac
+}
+
+# cmd_admin_key add KEY|list|remove KEY: the routers' admin keys in root's
+# authorized_keys, each bound to cengarde-vps-admin.
+cmd_admin_key() {
+	local f="$R/root/.ssh/authorized_keys" k
+	local opts='command="/usr/local/sbin/cengarde-vps-admin",restrict'
+	local NL='
+'
+
+	case ${1:-} in
+	add)
+		[ $# -eq 2 ] || die 'usage: admin-key add "ssh-ed25519 KEY [COMMENT]"'
+		case $2 in
+		ssh-ed25519\ ?* | ecdsa-sha2-nistp256\ ?* | ssh-rsa\ ?*) ;;
+		*) die "admin-key: expected an OpenSSH public key (ssh-ed25519 KEY [COMMENT]) as one argument" ;;
+		esac
+		case $2 in *[\"\\]* | *,command=* | *"$NL"*) die "admin-key: not a plain public key" ;; esac
+		k=$(echo "$2" | awk '{ print $2 }')
+		mkdir -p "$R/root/.ssh"
+		chmod 0700 "$R/root/.ssh"
+		if [ -e "$f" ] && grep -qF -- "$k" "$f"; then
+			say "admin-key: that key is there already"
+			return 0
+		fi
+		echo "$opts $2" >>"$f"
+		chmod 0600 "$f"
+		say "admin-key added: that router reads and changes this server's shared settings (cengarde-vps-admin), and nothing else"
+		;;
+	list)
+		[ -e "$f" ] || return 0
+		grep -F 'cengarde-vps-admin' "$f" | awk '{ printf "%s %s...%s %s\n", $2, substr($3, 1, 12), substr($3, length($3) - 7), $4 }'
+		;;
+	remove)
+		if [ $# -ne 2 ] || [ -z "$2" ]; then
+			die "usage: admin-key remove KEY|COMMENT"
+		fi
+		# an admin key line: the options, its type, the key, its comment
+		# shellcheck disable=SC2016 # awk's fields
+		k='index($0, "cengarde-vps-admin") && ($3 == m || $4 == m)'
+		if ! [ -e "$f" ] || ! awk -v m="$2" "$k { found = 1 } END { exit !found }" "$f"; then
+			die "admin-key: no admin key is $2"
+		fi
+		TMPF=$f.new
+		awk -v m="$2" "$k { next } { print }" "$f" >"$TMPF"
+		chmod 0600 "$TMPF"
+		mv "$TMPF" "$f"
+		TMPF=
+		say "admin-key removed"
+		;;
+	*) die "usage: admin-key add|list|remove" ;;
+	esac
+}
+
 cmd_refresh() {
 	check_proto
 	lock
@@ -1496,6 +1634,14 @@ protocontroller)
 fec)
 	shift
 	cmd_fec "$@"
+	;;
+mode)
+	shift
+	cmd_mode "$@"
+	;;
+admin-key)
+	shift
+	cmd_admin_key "$@"
 	;;
 refresh) cmd_refresh ;;
 purge)

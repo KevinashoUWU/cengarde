@@ -4,7 +4,8 @@
 //
 //   node views.mjs
 //
-// - config.js: the reordering and split options sit in the Advanced tab with
+// - config.js: no option's cfgvalue reads the form while the map loads (it
+//   has no root yet, and LuCI throws); the reordering and split options sit in the Advanced tab with
 //   the ranges of the engine, the weights of the split take NAME=WEIGHT for an
 //   uplink of the router, from 0 to 1000, once each, both as they are typed
 //   and as the whole list LuCI checks (with an empty value) on every change
@@ -21,7 +22,11 @@
 //   Starlink, the rescue switch and the repair data (fec, its code, and FEC
 //   v3's share, window and lone-uplink gate only with rlc, story 026); the
 //   Layer 4 features tab holds the
-//   protocontroller (only with the tunnel managed) and the TCP-aware switch;
+//   protocontroller (only with the tunnel managed, and in the custom mode:
+//   bonding and redundancy set it) and the TCP-aware switch; the General
+//   tab holds the mode (bonding, redundancy or custom, story 029) and the
+//   VPS tab whether this router administers the VPS, with its SSH address,
+//   port and panel only then;
 // - status.js: the "Reordering" box shows the engine's "reorder" object (and
 //   says so when the engine has it off) and is not there for an engine without
 //   it, the Uplink health table shows each uplink's type, capacity, queue now
@@ -87,9 +92,16 @@ const find = (n, pred, out = []) => {
 
 // ---- config.js
 
+// While the map loads it has no root, and LuCI's findElements (behind
+// getUIElement) throws: a cfgvalue must not read the form.
+let loading = false;
 class Opt {
 	constructor(cls, tab, name, title, descr) { Object.assign(this, { cls, tab, name, title, descr, deps: [] }); }
-	getUIElement() { return this.ui || null; }
+	getUIElement() {
+		if (loading)
+			throw new TypeError(`${this.name}: the form read while the map loads (LuCI: reading 'querySelectorAll' of undefined)`);
+		return this.ui || null;
+	}
 	formvalue() { return this.ui ? this.ui.getValue() : undefined; }
 	depends(d, v) { this.deps.push(typeof d == 'string' ? { [d]: v } : d); }
 	value(k, t) { (this.values = this.values || []).push([ k, t ]); }
@@ -174,7 +186,20 @@ async function renderConfig(tr, uplinks, extra = {}) {
 		}
 		section() { return this.s; }
 		lookupOption(name) { return options[name] ? [ options[name] ] : null; }
-		render() { return Promise.resolve(); }
+		// LuCI's Map.load asks every option its cfgvalue before the map has a
+		// root; then the render
+		render() {
+			loading = true;
+			try {
+				for (const o of Object.values(options))
+					if (o instanceof Opt && typeof o.cfgvalue == 'function')
+						o.cfgvalue('main');
+			} finally {
+				loading = false;
+			}
+			this.root = {};
+			return Promise.resolve();
+		}
 	}
 	const form = { Map, NamedSection: class {}, Value, Flag, DynamicList, DummyValue, ListValue };
 	const document = { addEventListener() {}, getElementById() { return {}; }, body: E('body') };
@@ -238,10 +263,13 @@ for (const [lang, tr] of [ [ 'en', english ], [ 'es', spanish ] ]) {
 	// what means nothing without its switch is hidden without it
 	assert.deepEqual(o.reorder_max_wait_ms.deps, [ { reorder: '1' } ]);
 	assert.deepEqual(o.reorder_bypass.deps, [ { reorder: '1' } ]);
-	assert.deepEqual(o.split.deps, [ { reorder: '1' } ]);
-	assert.deepEqual(o.split_weight.deps, [ { reorder: '1', split: '1' } ]);
-	assert.deepEqual(o.split_spread_ms.deps, [ { reorder: '1', split: '1' } ], 'shown with the split');
-	assert.deepEqual(o.split_spread_copy.deps, [ { reorder: '1', split: '1' } ], 'shown with the split');
+	// the split is the mode's in bonding and redundancy (story 029): its own
+	// switch only in custom, its tuning with it on or in bonding
+	assert.deepEqual(o.split.deps, [ { reorder: '1', mode: 'custom' } ]);
+	const withSplit = [ { reorder: '1', split: '1', mode: 'custom' }, { reorder: '1', mode: 'bonding' } ];
+	assert.deepEqual(o.split_weight.deps, withSplit);
+	assert.deepEqual(o.split_spread_ms.deps, withSplit, 'shown with the split');
+	assert.deepEqual(o.split_spread_copy.deps, withSplit, 'shown with the split');
 	assert.deepEqual(o.reorder.deps, []);
 
 	// the experimental split says what it does badly, and that the VPS follows
@@ -404,11 +432,22 @@ for (const [lang, tr] of [ [ 'en', english ], [ 'es', spanish ] ]) {
 	for (const name of [ 'protocontroller', 'protocontroller_port', 'protocontroller_dest' ])
 		tab(name, 'layer4');
 	assert.deepEqual(o.protocontroller.values.map((v) => v[0]), [ 'no', 'a', 'b' ]);
-	assert.deepEqual(o.protocontroller.deps, [ { tunnel: '1' } ], 'only with the tunnel managed');
+	assert.deepEqual(o.protocontroller.deps, [ { tunnel: '1', mode: 'custom' } ], 'only with the tunnel managed, in custom (the mode sets it)');
+	// the mode (story 029): bonding, redundancy or custom, in the General tab
+	assert.deepEqual(tab('mode', 'general').values.map((v) => v[0]), [ 'bonding', 'redundancy', 'custom' ]);
+	assert.equal(o.mode.rmempty, false, 'custom is written too');
+	assert.deepEqual(tab('subflow', 'advanced').deps, [ { mode: 'custom' } ], 'the mode sets it otherwise');
+	assert.deepEqual(tab('link_cc', 'advanced').deps, [ { mode: 'custom', subflow: '1' } ]);
+	// the VPS's administration (story 029): its options only with vps_admin
+	assert.equal(tab('vps_admin', 'vps').cls, 'Flag');
+	assert.equal(o.vps_admin.default, '0', 'off unless turned on');
+	for (const name of [ 'vps_ssh_host', 'vps_ssh_port', '_vpsadmin' ])
+		assert.deepEqual(tab(name, 'vps').deps, [ { vps_admin: '1' } ], `${name} only when this router administers the VPS`);
+	assert.equal(o.vps_ssh_port.datatype, 'port');
 	assert.equal(tab('tcp_aware', 'layer4').default, '0', 'TCP-aware is off unless turned on, as in the engine');
 	assert.deepEqual(o.tcp_aware.deps, [], 'TCP-aware in any case');
 	assert.equal(o.tunnel_mode, undefined, 'no tunnel mode: the engine\'s own TUN is the only one');
-	assert.equal(tab('mtu', 'tunnel').datatype, 'range(1280,1448)', 'what fits in a 1500-byte path over IPv4');
+	assert.equal(tab('mtu', 'tunnel').datatype, 'range(1280,1444)', 'what fits in a 1500-byte path over IPv4');
 	assert.equal(o.ip_pass.tab, 'tunnel', 'IP pass stays in the Tunnel tab');
 }
 

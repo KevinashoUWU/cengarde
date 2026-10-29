@@ -48,11 +48,17 @@
 #include <string.h>
 
 #define CG_ST_CHUNK 16384u /* bytes per chunk of a stream's buffer */
-#define CG_ST_SLOTS 256u   /* chunks a buffer spans: its window is under (CG_ST_SLOTS - 1) chunks */
+#define CG_ST_SLOTS 1024u  /* chunks a buffer spans: its window is under (CG_ST_SLOTS - 1) chunks (16 MB as OMR's TCP: 8 MB took the download 49 % over 4 MB, story 029) */
 #define CG_ST_NOCH UINT32_MAX
 #define CG_ST_MAXWIN ((uint64_t)(CG_ST_SLOTS - 1) * CG_ST_CHUNK)
-#define CG_ST_RANGES 256   /* out-of-order ranges a receiver keeps */
+/* Out-of-order ranges a receiver keeps. Over several links every segment
+ * that comes by a faster one ahead of those still on slower ones opens a
+ * range: with 2-4 MB in flight 256 ran out, frames were dropped and only
+ * the sender's timer sent them again (story 029; the lab's drop_frames
+ * followed the buffer, 0, 64, 412 for 1, 2, 4 MB). 16 KB a direction. */
+#define CG_ST_RANGES 1024
 #define CG_ST_ACK_RANGES 8 /* SACK ranges an ACK carries */
+#define CG_ST_ACK_LOW 3    /* of them, the lowest ones always; the others after the newest rotate */
 #define CG_ST_NOFIN UINT64_MAX
 
 /* ---- the pool of chunks ---- */
@@ -239,6 +245,7 @@ struct cg_st_rx {
 	uint16_t nr;  /* ranges above nxt, sorted, disjoint and not touching */
 	uint64_t rs[CG_ST_RANGES], re[CG_ST_RANGES];
 	uint64_t last;   /* the offset of the newest frame taken (its range goes first in an ACK) */
+	uint16_t rot;    /* where an ACK's rotating ranges start (cg_st_rx_ack) */
 	uint64_t frames, dup_frames, ooo_frames, drop_frames; /* data frames taken, all duplicate, out of order, dropped */
 };
 
@@ -370,10 +377,15 @@ struct cg_st_ack {
 /* The ACK of what r holds, the edge given (the caller's window): the
  * range of the newest frame first (the sender's RACK learns the newest
  * delivery even with more holes than an ACK says), then the lowest ones
- * (the holes nearest to the cumulative offset). */
-static inline void cg_st_rx_ack(const struct cg_st_rx *r, uint64_t edge, uint16_t aseq, struct cg_st_ack *a)
+ * (the holes nearest to the cumulative offset), then others in turn from
+ * one ACK to the next. With more ranges than an ACK carries, the ones in
+ * the middle were never said until the holes below them filled: their
+ * sender took them as still in flight and its timer sent them again
+ * (story 029, the field with 2-4 MB buffers: thousands by the timer,
+ * duplicates). In turn, every range is said within a few ACKs. */
+static inline void cg_st_rx_ack(struct cg_st_rx *r, uint64_t edge, uint16_t aseq, struct cg_st_ack *a)
 {
-	unsigned newest = CG_ST_RANGES;
+	unsigned newest = CG_ST_RANGES, m, k;
 
 	a->aseq = aseq;
 	a->cum = r->nxt;
@@ -387,13 +399,26 @@ static inline void cg_st_rx_ack(const struct cg_st_rx *r, uint64_t edge, uint16_
 			a->n = 1;
 			break;
 		}
-	for (unsigned i = 0; i < r->nr && a->n < CG_ST_ACK_RANGES; i++) {
+	for (unsigned i = 0; i < r->nr && i < CG_ST_ACK_LOW; i++) {
 		if (i == newest)
 			continue;
 		a->s[a->n] = r->rs[i];
 		a->e[a->n] = r->re[i];
 		a->n++;
 	}
+	if (r->nr <= CG_ST_ACK_LOW)
+		return;
+	m = r->nr - CG_ST_ACK_LOW;
+	for (k = 0; k < m && a->n < CG_ST_ACK_RANGES; k++) {
+		unsigned i = CG_ST_ACK_LOW + (r->rot + k) % m;
+
+		if (i == newest)
+			continue;
+		a->s[a->n] = r->rs[i];
+		a->e[a->n] = r->re[i];
+		a->n++;
+	}
+	r->rot = (uint16_t)((r->rot + k) % m);
 }
 
 /* ---- the sending side ---- */
@@ -411,6 +436,7 @@ struct cg_st_seg {
 	uint8_t fin, st, tx, app;
 	uint8_t q;              /* sent while the path showed a queue (streamcc.h's cong) */
 	uint8_t by;             /* LOST: why (CG_ST_BY_*) */
+	uint64_t sus_us;        /* a suspect's deadline (cg_st_tx_suspect), 0: none */
 };
 
 /* A segment sent again a second time or more goes as a copy (a priority
@@ -553,6 +579,7 @@ static inline uint32_t cg_st_tx_sent(struct cg_st_tx *t, uint32_t idx, uint64_t 
 	if (s->tx < 255)
 		s->tx++;
 	s->sent_us = now;
+	s->sus_us = 0;
 	s->dl = dl;
 	s->dla = dla;
 	s->dl_us = dl_us;
@@ -747,6 +774,7 @@ enum {
 	CG_ST_NACK_STALE,     /* sent again since: the DATA asked for is an older copy, a newer is in flight */
 	CG_ST_NACK_PENDING,   /* LOST already (RACK or the timer), waiting to go again */
 	CG_ST_NACK_UNKNOWN,   /* no segment starts there (not sent yet, or another framing) */
+	CG_ST_NACK_SUSPECT,   /* a suspect now (cg_st_tx_suspect): lost at its deadline unless delivered */
 	CG_ST_NACK_N
 };
 
@@ -781,6 +809,58 @@ static inline int cg_st_tx_nack(struct cg_st_tx *t, uint32_t off32, uint32_t ts3
 	*bytes = cg_st_tx_lose(t, s, i, lq, CG_ST_BY_NACK);
 	t->nack_lost += *bytes;
 	return CG_ST_NACK_LOST;
+}
+
+/* The engine's subflow says the DATA that carried the segment at off32
+ * (sent at ts32) was lost on its link, but a code may still rebuild it at
+ * the receiver (story 029): the segment is a suspect until due_us, lost
+ * then unless its delivery was acknowledged before (cg_st_tx_suspects);
+ * the receiver's own NACK makes it lost at once (cg_st_tx_nack). Returns
+ * CG_ST_NACK_* as cg_st_tx_nack, SUSPECT instead of LOST. */
+static inline int cg_st_tx_suspect(struct cg_st_tx *t, uint32_t off32, uint32_t ts32, uint64_t due_us)
+{
+	uint64_t off = cg_st_unwrap(t->una, off32);
+	uint32_t i;
+	struct cg_st_seg *s;
+
+	if (off < t->una)
+		return CG_ST_NACK_DELIVERED;
+	i = cg_st_tx_find(t, off);
+	if (i >= t->n || (s = cg_st_tx_seg(t, i))->off != off)
+		return CG_ST_NACK_UNKNOWN;
+	if (s->st == CG_ST_SACKED)
+		return CG_ST_NACK_DELIVERED;
+	if (s->st == CG_ST_LOST)
+		return CG_ST_NACK_PENDING;
+	if ((uint32_t)s->sent_us != ts32)
+		return CG_ST_NACK_STALE;
+	if (!s->sus_us || due_us < s->sus_us)
+		s->sus_us = due_us ? due_us : 1;
+	return CG_ST_NACK_SUSPECT;
+}
+
+/* The suspects whose deadline passed at now, still SENT: lost (by the NACK,
+ * the tunnel's word). *next: the nearest deadline left, 0: none. Returns
+ * the bytes marked (*lq as cg_st_tx_rack's). */
+static inline uint64_t cg_st_tx_suspects(struct cg_st_tx *t, uint64_t now, uint64_t *next, uint64_t *lq)
+{
+	uint64_t lost = 0;
+
+	*next = 0;
+	for (uint32_t i = 0; i < t->n; i++) {
+		struct cg_st_seg *s = cg_st_tx_seg(t, i);
+
+		if (s->st != CG_ST_SENT || !s->sus_us)
+			continue;
+		if (s->sus_us <= now) {
+			s->sus_us = 0;
+			lost += cg_st_tx_lose(t, s, i, lq, CG_ST_BY_NACK);
+		} else if (!*next || s->sus_us < *next) {
+			*next = s->sus_us;
+		}
+	}
+	t->nack_lost += lost;
+	return lost;
 }
 
 /* Bytes the stream holds in flight or lost (what the timer guards). */

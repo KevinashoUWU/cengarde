@@ -11,6 +11,8 @@ static uint32_t sess[N], seqs[N], ia[CG_RESC_IDX], ib[CG_RESC_IDX];
 static uint16_t lens[N];
 static uint8_t links[N];
 static uint32_t sents[N];
+static uint8_t evs[N];
+static uint16_t copies[N], losts[N];
 
 static void put(struct cg_resc_ring *r, uint32_t *idx, uint32_t s, uint32_t q)
 {
@@ -30,7 +32,7 @@ static int has(const struct cg_resc_ring *r, const uint32_t *idx, uint32_t s, ui
 
 void test_rescue(void)
 {
-	struct cg_resc_ring r = { .mem = mem, .sess = sess, .seq = seqs, .len = lens, .link = links, .sent = sents, .n = N };
+	struct cg_resc_ring r = { .mem = mem, .sess = sess, .seq = seqs, .len = lens, .link = links, .sent = sents, .ev = evs, .n = N };
 	struct cg_resc_budget b = { 0 };
 
 	memset(lens, 0, sizeof(lens));
@@ -73,6 +75,60 @@ void test_rescue(void)
 	CHECK(!cg_resc_dup(&r, ia, 4, 1000 + CG_RESC_DUP_MS + 1));
 	put(&r, ia, 1, 4 + CG_RESC_IDX); /* a new packet in that entry: never sent again yet */
 	CHECK(!cg_resc_dup(&r, ia, 4 + CG_RESC_IDX, 1006));
+
+	/* The evidence of a loss gathers from either side, kept with the
+	 * packet; a new packet in the entry starts with none. */
+	CHECK_EQ(cg_resc_ev(&r, ia, 1, 4 + CG_RESC_IDX, CG_RESC_EV_LINK), CG_RESC_EV_LINK);
+	CHECK_EQ(cg_resc_ev(&r, ia, 1, 4 + CG_RESC_IDX, CG_RESC_EV_ASKED), CG_RESC_EV_LINK | CG_RESC_EV_ASKED);
+	CHECK_EQ(cg_resc_ev(&r, ia, 1, 4 + CG_RESC_IDX, 0), CG_RESC_EV_LINK | CG_RESC_EV_ASKED);
+	CHECK_EQ(cg_resc_ev(&r, ia, 1, 4, CG_RESC_EV_LINK), 0); /* not kept any more */
+	CHECK_EQ(cg_resc_ev(&r, ia, 2, 4 + CG_RESC_IDX, CG_RESC_EV_LINK), 0); /* another session's */
+	put(&r, ia, 1, 4);
+	CHECK_EQ(cg_resc_ev(&r, ia, 1, 4, 0), 0);
+
+	/* How sure: the link alone where nothing rebuilds; with a code, the
+	 * link and the receiver's ask; the ask alone only as the knob says;
+	 * never twice. */
+	CHECK_EQ(cg_resc_sure(0, 0, 1), CG_RESC_UNSURE);
+	CHECK_EQ(cg_resc_sure(CG_RESC_EV_LINK, 0, 0), CG_RESC_SURE_LINK);
+	CHECK_EQ(cg_resc_sure(CG_RESC_EV_LINK, 1, 0), CG_RESC_SURE_LATER); /* a suspect, once */
+	CHECK_EQ(cg_resc_sure(CG_RESC_EV_LINK | CG_RESC_EV_SUSPECT, 1, 1), CG_RESC_UNSURE);
+	CHECK_EQ(cg_resc_sure(CG_RESC_EV_LINK | CG_RESC_EV_SUSPECT | CG_RESC_EV_ASKED, 1, 0), CG_RESC_SURE_LINK);
+	CHECK_EQ(cg_resc_sure(CG_RESC_EV_ASKED, 1, 0), CG_RESC_UNSURE);
+	CHECK_EQ(cg_resc_sure(CG_RESC_EV_ASKED, 0, 1), CG_RESC_SURE_ASKED);
+	CHECK_EQ(cg_resc_sure(CG_RESC_EV_LINK | CG_RESC_EV_ASKED, 1, 0), CG_RESC_SURE_LINK);
+	CHECK_EQ(cg_resc_sure(CG_RESC_EV_LINK | CG_RESC_EV_ASKED | CG_RESC_EV_DONE, 0, 1), CG_RESC_UNSURE);
+	CHECK_EQ(cg_resc_sure(CG_RESC_EV_ASKED | CG_RESC_EV_DONE, 0, 1), CG_RESC_UNSURE);
+
+	/* A copied packet (links 0, 2 and 3): lost for sure only once every
+	 * link it went on lost it; a link it did not go on says nothing; a
+	 * packet whose links are not known never; a new packet in the entry
+	 * starts over. */
+	{
+		struct cg_resc_ring rc = r;
+
+		CHECK(!cg_resc_lost_on(&rc, ia, 1, 4, 0)); /* no masks kept: never */
+		rc.copies = copies;
+		rc.lost = losts;
+		put(&rc, ia, 1, 20);
+		CHECK(!cg_resc_lost_on(&rc, ia, 1, 20, 0)); /* links not known */
+		put(&rc, ia, 1, 21);
+		cg_resc_copies(&rc, ia, 1, 21, 0x0d);
+		CHECK(!cg_resc_lost_on(&rc, ia, 1, 21, 1)); /* not one of its links */
+		CHECK(!cg_resc_lost_on(&rc, ia, 1, 21, 0));
+		CHECK(!cg_resc_lost_on(&rc, ia, 1, 21, 3));
+		CHECK(!cg_resc_lost_on(&rc, ia, 1, 21, 0)); /* the same link again */
+		CHECK(cg_resc_lost_on(&rc, ia, 1, 21, 2));  /* the last of them */
+		CHECK(!cg_resc_lost_on(&rc, ia, 2, 21, 2)); /* another session */
+		CHECK(!cg_resc_lost_on(&rc, ia, 1, 21, 16));
+		for (uint32_t q = 22; q < 22 + N; q++) /* the ring goes round */
+			put(&rc, ia, 1, q);
+		CHECK(!cg_resc_lost_on(&rc, ia, 1, 21, 2)); /* overwritten */
+		put(&rc, ia, 1, 21 + 2 * N);
+		cg_resc_copies(&rc, ia, 1, 21 + 2 * N, 0x05);
+		CHECK(!cg_resc_lost_on(&rc, ia, 1, 21 + 2 * N, 2)); /* the old marks are gone */
+		CHECK(cg_resc_lost_on(&rc, ia, 1, 21 + 2 * N, 0));
+	}
 
 	/* The budget: pct % of what goes down, up to the cap. */
 	cg_resc_earn(&b, 1400, 5);

@@ -15,6 +15,72 @@ msgstr "%s ya tiene un peso"
 msgid "Copied to the clipboard."
 msgstr "Copiado al portapapeles."
 
+msgid "The VPS did not answer (code %d)."
+msgstr "El VPS no respondió (código %d)."
+
+msgid "Bonding"
+msgstr "Bonding"
+
+msgid "Redundancy"
+msgstr "Redundancia"
+
+msgid "Custom"
+msgstr "Personalizado"
+
+msgid "Off"
+msgstr "Apagado"
+
+msgid "Upload: the routers' repairs rebuilt"
+msgstr "Subida: se rehacen las reparaciones de los routers"
+
+msgid "Upload and download (RLC)"
+msgstr "Subida y bajada (RLC)"
+
+msgid "On"
+msgstr "Encendido"
+
+msgid "value"
+msgstr "valor"
+
+msgid "Reading the VPS…"
+msgstr "Leyendo el VPS…"
+
+msgid "On the VPS: %s…"
+msgstr "En el VPS: %s…"
+
+msgid "No key: save and apply with this option on first."
+msgstr "Sin llave: primero guarda y aplica con esta opción encendida."
+
+msgid "Copy"
+msgstr "Copiar"
+
+msgid "Mode"
+msgstr "Modo"
+
+msgid "Apply"
+msgstr "Aplicar"
+
+msgid "FEC"
+msgstr "FEC"
+
+msgid "Protocontroller"
+msgstr "Protocontrolador"
+
+msgid "Engine setting"
+msgstr "Ajuste del motor"
+
+msgid "Set"
+msgstr "Fijar"
+
+msgid "Pick a setting and give it a number or a word (up to 16 characters)."
+msgstr "Elige un ajuste y dale un número o una palabra (hasta 16 caracteres)."
+
+msgid "Remove"
+msgstr "Quitar"
+
+msgid "Read"
+msgstr "Leer"
+
 msgid "cengarde"
 msgstr "cengarde"
 
@@ -48,11 +114,23 @@ msgstr "Avanzado"
 msgid "Enabled"
 msgstr "Activado"
 
+msgid "Bonding adds the uplinks up: each large packet goes over the uplink where it arrives first, each uplink with its own rate, and the TCP of the LAN travels as GRIT, cengarde's own stream (in the field: the download at 93 % of OpenMPTCProuter's and the upload above it, at half its ping). Redundancy copies every packet over every uplink that delivers it in time by its own measured rate, the first copy wins, and the TCP of the LAN travels as GRIT too: the safest in a cut and for live broadcasts, and the most data. Custom: the Protection, Layer 4 and Advanced tabs decide everything, as before. The VPS has to match: \"sudo cengarde-vps-setup mode bonding\" (or redundancy) there, or from the VPS tab when this router administers it. A change restarts the engine."
+msgstr "Bonding suma los enlaces: cada paquete grande va por el enlace donde llega primero, cada enlace con su propio ritmo, y el TCP de la LAN viaja como GRIT, el flujo propio de cengarde (en terreno: la bajada al 93 % de la de OpenMPTCProuter y la subida por encima, con la mitad de su ping). Redundancia copia cada paquete por cada enlace que lo entrega a tiempo según su propio ritmo medido, gana la primera copia, y el TCP de la LAN viaja también como GRIT: lo más seguro ante un corte y para transmisiones en vivo, y lo que más datos gasta. Personalizado: las pestañas Protección, Capa 4 y Avanzado deciden todo, como antes. El VPS tiene que coincidir: «sudo cengarde-vps-setup mode bonding» (o redundancy) allá, o desde la pestaña VPS cuando este router lo administra. Un cambio reinicia el motor."
+
+msgid "Bonding (add the uplinks up)"
+msgstr "Bonding (sumar los enlaces)"
+
+msgid "Redundancy (every packet over every uplink)"
+msgstr "Redundancia (cada paquete por todos los enlaces)"
+
+msgid "Custom (the other tabs decide)"
+msgstr "Personalizado (deciden las otras pestañas)"
+
 msgid "VPS addresses"
 msgstr "Direcciones del VPS"
 
-msgid "Public IPs of the VPS as the provider shows them, IPv4 and IPv6, in order of preference: each uplink uses the first one of a family it has, and tries the next one when the VPS does not answer there. A name works too: the router looks it up through each uplink (the carrier's DNS first), never through the tunnel, and follows it when its IP changes (dynamic DNS). An MTU above 1428 does not fit if the name has an IPv6 address that the uplinks use."
-msgstr "IP públicas del VPS, tal como las muestra el proveedor, IPv4 e IPv6, en orden de preferencia: cada enlace usa la primera de una familia que tenga, y prueba la siguiente cuando el VPS no le contesta por ahí. También sirve un nombre: el router lo busca por cada enlace (primero en el DNS de la operadora), nunca por el túnel, y lo sigue cuando cambia su IP (DNS dinámico). Un MTU de más de 1428 no cabe si el nombre tiene una dirección IPv6 que usan los enlaces."
+msgid "Public IPs of the VPS as the provider shows them, IPv4 and IPv6, in order of preference: each uplink uses the first one of a family it has, and tries the next one when the VPS does not answer there. A name works too: the router looks it up through each uplink (the carrier's DNS first), never through the tunnel, and follows it when its IP changes (dynamic DNS). An MTU above 1424 does not fit if the name has an IPv6 address that the uplinks use."
+msgstr "IP públicas del VPS, tal como las muestra el proveedor, IPv4 e IPv6, en orden de preferencia: cada enlace usa la primera de una familia que tenga, y prueba la siguiente cuando el VPS no le contesta por ahí. También sirve un nombre: el router lo busca por cada enlace (primero en el DNS de la operadora), nunca por el túnel, y lo sigue cuando cambia su IP (DNS dinámico). Un MTU de más de 1424 no cabe si el nombre tiene una dirección IPv6 que usan los enlaces."
 
 msgid "At most %d addresses"
 msgstr "Como mucho %d direcciones"
@@ -132,9 +210,6 @@ msgstr "Cloud-config del VPS"
 msgid "For a new VPS. Paste it as \"user data\" (cloud-init) when creating an Ubuntu 22.04 or 24.04 VPS, e.g. on Vultr. It builds the same cengarde version as this router and sets up the tunnel, NAT and IP pass, with the name and address of this router. Setup log on the VPS: /var/log/cloud-init-output.log."
 msgstr "Para un VPS nuevo. Pégalo como \"user data\" (cloud-init) al crear un VPS con Ubuntu 22.04 o 24.04, por ejemplo en Vultr. Compila la misma versión de cengarde que este router y configura el túnel, NAT e IP pass, con el nombre y la dirección de este router. Registro de la instalación en el VPS: /var/log/cloud-init-output.log."
 
-msgid "Copy"
-msgstr "Copiar"
-
 msgid "Download"
 msgstr "Descargar"
 
@@ -146,6 +221,27 @@ msgstr "En lugar del cloud-config, ejecuta esto en el VPS por SSH: agrega este r
 
 msgid "The command shows once the name and the address in the tunnel are valid and known: after a new secret, save and apply first."
 msgstr "El comando aparece cuando el nombre y la dirección en el túnel son válidos y se conocen: tras un secreto nuevo, guarda y aplica primero."
+
+msgid "Administer the VPS from here"
+msgstr "Administrar el VPS desde aquí"
+
+msgid "The settings of the VPS (its mode, the FEC of the download, the protocontroller and some of the engine's) are the same for every router it serves: one router administers them, over SSH with a key of its own that can do that and nothing else. On: this router's mode goes to the VPS on each change, and the panel below reads and changes the rest. Save and apply first."
+msgstr "Los ajustes del VPS (su modo, la FEC de la bajada, el protocontrolador y algunos del motor) son los mismos para todos los routers que atiende: un router los administra, por SSH con una llave propia que puede hacer eso y nada más. Encendido: el modo de este router va al VPS con cada cambio, y el panel de abajo lee y cambia el resto. Primero guarda y aplica."
+
+msgid "VPS address for SSH"
+msgstr "Dirección del VPS para SSH"
+
+msgid "Empty: the first VPS address (General tab)."
+msgstr "Vacío: la primera dirección del VPS (pestaña General)."
+
+msgid "VPS SSH port"
+msgstr "Puerto SSH del VPS"
+
+msgid "The VPS's settings"
+msgstr "Ajustes del VPS"
+
+msgid "First, once, run the command below on the VPS: it lets this router's key change these settings and nothing else (cengarde-vps-admin). Then \"Read\" shows what the VPS has, and each \"Apply\" changes it at once, for every router of the VPS; the engine there restarts or reloads."
+msgstr "Primero, una sola vez, ejecuta en el VPS la orden de abajo: deja que la llave de este router cambie estos ajustes y nada más (cengarde-vps-admin). Después «Leer» muestra lo que tiene el VPS, y cada «Aplicar» lo cambia al tiro, para todos los routers del VPS; el motor de allá se reinicia o se recarga."
 
 msgid "Manage the tunnel"
 msgstr "Gestionar el túnel"
@@ -165,9 +261,6 @@ msgstr "IPv6 por el túnel"
 msgid "Carries IPv6 through the tunnel too, translated (NAT66) here and at the VPS: this router gets a ULA address in the tunnel, derived from the secret, and with \"Route all traffic through the tunnel\" the IPv6 of the router and of the LAN leaves through the VPS. The VPS needs IPv6 of its own and the command \"sudo cengarde-vps-setup ipv6 on\" (the cloud-config of a new VPS follows this switch when all traffic goes through the tunnel). The LAN needs a ULA prefix (Network > Interfaces > Global network options); its devices have only that, so they prefer IPv4 for sites that have both, and this serves mainly IPv6-only sites. Off until it has been tested on real hardware."
 msgstr "Lleva también la IPv6 por el túnel, traducida (NAT66) aquí y en el VPS: este router recibe en el túnel una dirección ULA, derivada del secreto, y con \"Enrutar todo el tráfico por el túnel\" la IPv6 del router y de la LAN sale por el VPS. El VPS necesita IPv6 propia y la orden \"sudo cengarde-vps-setup ipv6 on\" (el cloud-config de un VPS nuevo sigue este interruptor cuando todo el tráfico va por el túnel). La LAN necesita un prefijo ULA (Red > Interfaces > Opciones globales de red); sus equipos solo tienen ese, así que prefieren la IPv4 para los sitios que tienen las dos, y esto sirve sobre todo para sitios solo IPv6. Apagado hasta que se pruebe en hardware real."
 
-msgid "Protocontroller"
-msgstr "Protocontrolador"
-
 msgid "With A or B the router answers the TCP connections of the LAN itself and the VPS opens a fresh one to each destination (cubic, BBR once that leg loses). Between them each connection travels as a plain TCP through the tunnel (A) or, experimental, as GRIT, a reliable stream of cengarde paced by what the uplinks carry instead of by loss (B). It helps TCP uploads such as RTMP over lossy uplinks and long paths beyond the VPS. UDP, QUIC and the rest go through the tunnel as always. The VPS needs \"sudo cengarde-vps-setup protocontroller on\". A change restarts the engine."
 msgstr "Con A o B el router responde él mismo las conexiones TCP de la LAN y el VPS abre una nueva hacia cada destino (cubic, BBR en cuanto ese tramo pierde). Entre ellos, cada conexión viaja como un TCP simple por el túnel (A) o, experimental, como GRIT, un flujo fiable de cengarde dosificado por lo que llevan los enlaces y no por la pérdida (B). Ayuda a las subidas por TCP, como RTMP, con enlaces que pierden y caminos largos más allá del VPS. UDP, QUIC y lo demás van por el túnel como siempre. El VPS necesita \"sudo cengarde-vps-setup protocontroller on\". Un cambio reinicia el motor."
 
@@ -179,6 +272,12 @@ msgstr "A: TCP en el medio"
 
 msgid "B (GRIT): cengarde's stream in the middle (experimental)"
 msgstr "B (GRIT): el flujo de cengarde en el medio (experimental)"
+
+msgid "B (GRIT), with each uplink's subflow and rate: set by the bonding mode (General tab)."
+msgstr "B (GRIT), con el subflujo y el ritmo de cada enlace: lo fija el modo bonding (pestaña General)."
+
+msgid "B (GRIT), with each uplink's subflow and rate: set by the redundancy mode (General tab)."
+msgstr "B (GRIT), con el subflujo y el ritmo de cada enlace: lo fija el modo redundancia (pestaña General)."
 
 msgid "Protocontroller ports"
 msgstr "Puertos del protocontrolador"
@@ -285,8 +384,8 @@ msgstr "Nunca"
 msgid "Rescue missing packets"
 msgstr "Rescatar paquetes faltantes"
 
-msgid "A packet that no uplink delivered is asked for again (as parity when an erasure code is on) before the receiver gives up on it, within 60 ms. The router keeps what it sent for the VPS to ask, and asks the VPS for the download. The VPS needs rescue_kb and rescue_wait_ms in its cengarde.conf for its side. In the lab it doubled TCP with full copies over a lossy main uplink."
-msgstr "Un paquete que ningún enlace entregó se vuelve a pedir (como paridad si hay un código de borrado) antes de que el receptor lo dé por perdido, dentro de 60 ms. El router guarda lo que envió para que el VPS lo pida, y le pide al VPS lo de la bajada. El VPS necesita rescue_kb y rescue_wait_ms en su cengarde.conf para su lado. En el laboratorio duplicó el TCP con copias completas sobre un enlace principal con pérdidas."
+msgid "A packet that no uplink delivered is asked for again (as parity when an erasure code is on) before the receiver gives up on it, within 60 ms. The router keeps what it sent for the VPS to ask, and asks the VPS for the download. The VPS needs rescue_kb and rescue_wait_ms in its cengarde.conf for its side. In the lab it doubled TCP with full copies over a lossy main uplink. On in bonding and redundancy unless set apart."
+msgstr "Un paquete que ningún enlace entregó se vuelve a pedir (como paridad si hay un código de borrado) antes de que el receptor lo dé por perdido, dentro de 60 ms. El router guarda lo que envió para que el VPS lo pida, y le pide al VPS lo de la bajada. El VPS necesita rescue_kb y rescue_wait_ms en su cengarde.conf para su lado. En el laboratorio duplicó el TCP con copias completas sobre un enlace principal con pérdidas. Activo en bonding y redundancia salvo que se indique otra cosa."
 
 msgid "IP pass"
 msgstr "IP pass"
@@ -318,8 +417,8 @@ msgstr "Los servidores IPv6 se dejan fuera mientras IPv6 no vaya por el túnel: 
 msgid "Tunnel MTU"
 msgstr "MTU del túnel"
 
-msgid "In a 1500-byte path, packets of up to 1448 bytes fit over IPv4 and of up to 1428 over IPv6. Larger ones get fragmented, and mobile networks often drop the fragments."
-msgstr "En un camino de 1500 bytes caben paquetes de hasta 1448 bytes sobre IPv4 y de hasta 1428 sobre IPv6. Los más grandes se fragmentan, y las redes móviles suelen descartar los fragmentos."
+msgid "In a 1500-byte path, packets of up to 1444 bytes fit over IPv4 and of up to 1424 over IPv6. Larger ones get fragmented, and mobile networks often drop the fragments."
+msgstr "En un camino de 1500 bytes caben paquetes de hasta 1444 bytes sobre IPv4 y de hasta 1424 sobre IPv6. Los más grandes se fragmentan, y las redes móviles suelen descartar los fragmentos."
 
 msgid "At most %d with an IPv6 VPS address"
 msgstr "Como mucho %d con una dirección IPv6 del VPS"
@@ -378,6 +477,18 @@ msgstr "Repartir los paquetes grandes entre los enlaces (experimental)"
 msgid "Instead of a copy over every uplink, each large packet (over 256 bytes, by default) goes over one uplink, chosen by weight; the small ones still go over all of them. This adds up the speed of the uplinks (in the lab, two equal uplinks carried 1.98 times what one does), but it protects less than copying: an uplink that dies keeps its share of the packets until the engine takes it out (about 300 ms by estimate, 1.5 s before that), and the packets sent to it in the meantime are lost; the slowest uplink in the split sets the latency of all (see the largest delay difference below); and a weight above what an uplink can carry fills the queue of its modem and makes the uplink unstable. The VPS follows this router: it splits the download the same way, with the same weights, when the router asks for it, and needs no setting. It needs \"Reorder at the receiver\"."
 msgstr "En vez de una copia por cada enlace, cada paquete grande (de más de 256 bytes, por omisión) va por un solo enlace, elegido según su peso; los pequeños siguen yendo por todos. Suma la velocidad de los enlaces (en el laboratorio, dos enlaces iguales llevaron 1,98 veces lo de uno), pero protege menos que copiar: un enlace que muere conserva su parte de los paquetes hasta que el motor lo saca (unos 300 ms según la estimación, 1,5 s antes de esa protección), y los paquetes enviados por él mientras tanto se pierden; el enlace más lento del reparto fija la latencia de todos (ver la diferencia máxima de retardo, más abajo); y un peso mayor que lo que un enlace puede llevar llena la cola de su módem y lo vuelve inestable. El VPS sigue a este router: reparte la bajada del mismo modo, con los mismos pesos, cuando el router se lo pide, y no necesita ningún ajuste. Requiere \"Reordenar en el receptor\"."
 
+msgid "Subflow per uplink"
+msgstr "Subflujo por enlace"
+
+msgid "Each uplink numbers what it carries and says back what it lost within itself (protocol 12), so a late packet on another uplink is never taken for a loss, and GRIT resends only what was really lost. Both ends need it. On in bonding."
+msgstr "Cada enlace numera lo que lleva y avisa lo que perdió dentro de sí (protocolo 12): un paquete atrasado en otro enlace nunca se toma por perdido, y GRIT reenvía solo lo que de verdad se perdió. Lo necesitan los dos extremos. Activo en bonding."
+
+msgid "Each uplink its own rate"
+msgstr "Un ritmo por enlace"
+
+msgid "With the subflow on: each uplink runs its own rate controller (a BBR per uplink) fed by what the other end says it received, which decides the split and how fast GRIT sends. Both ends need it. On in bonding."
+msgstr "Con el subflujo activo: cada enlace lleva su propio control de ritmo (un BBR por enlace), alimentado por lo que el otro extremo dice que recibió, que decide el reparto y la velocidad de GRIT. Lo necesitan los dos extremos. Activo en bonding."
+
 msgid "Weight of each uplink in the split"
 msgstr "Peso de cada enlace en el reparto"
 
@@ -387,8 +498,8 @@ msgstr "Una entrada por enlace, como NOMBRE=PESO (por ejemplo wan=3), con NOMBRE
 msgid "Largest delay difference to split (ms)"
 msgstr "Diferencia máxima de retardo para repartir (ms)"
 
-msgid "Only the uplinks whose delay towards the VPS is at most this much behind the fastest one get a share of the split; the others leave it (the next option says what they carry), and get their share back once they stay within three quarters of it for the settle time. The VPS does the same with the download, with its own setting (30 ms unless changed there). Measured in the lab: two equal uplinks split give almost twice one uplink, but 50 ms apart most of that gain is lost, and 150 ms apart the speed collapses: the slowest uplink in the split sets the pace of all. 0: no limit."
-msgstr "Solo reciben parte del reparto los enlaces cuyo retardo hacia el VPS va a lo sumo esta cantidad detrás del más rápido; los demás salen de él (la opción siguiente dice qué llevan) y recuperan su parte cuando se mantienen dentro de tres cuartos de ella durante el tiempo de asentamiento. El VPS hace lo mismo con la bajada, con su propio ajuste (30 ms si no se cambia allí). Medido en laboratorio: dos enlaces iguales repartiendo dan casi el doble que uno solo, pero con 50 ms de diferencia se pierde casi toda esa ganancia, y con 150 ms la velocidad se desploma: el enlace más lento del reparto marca el paso de todos. 0: sin límite."
+msgid "Only the uplinks whose delay towards the VPS is at most this much behind the fastest one get a share of the split; the others leave it (the next option says what they carry), and get their share back once they stay within three quarters of it for the settle time. The VPS does the same with the download, with its own setting (30 ms unless changed there). Measured in the lab: two equal uplinks split give almost twice one uplink, but 50 ms apart most of that gain is lost, and 150 ms apart the speed collapses: the slowest uplink in the split sets the pace of all. 0: no limit. Bonding: 250 unless set."
+msgstr "Solo reciben parte del reparto los enlaces cuyo retardo hacia el VPS va a lo sumo esta cantidad detrás del más rápido; los demás salen de él (la opción siguiente dice qué llevan) y recuperan su parte cuando se mantienen dentro de tres cuartos de ella durante el tiempo de asentamiento. El VPS hace lo mismo con la bajada, con su propio ajuste (30 ms si no se cambia allí). Medido en laboratorio: dos enlaces iguales repartiendo dan casi el doble que uno solo, pero con 50 ms de diferencia se pierde casi toda esa ganancia, y con 150 ms la velocidad se desploma: el enlace más lento del reparto marca el paso de todos. 0: sin límite. Bonding: 250 salvo que se indique otro."
 
 msgid "Copies to the uplinks out of the split"
 msgstr "Copias a los enlaces fuera del reparto"
@@ -815,9 +926,6 @@ msgstr "%d pedidos al VPS, %d reenviados al VPS, %d reparaciones a pedido, %d de
 
 msgid "Lost on every uplink: packets that no uplink delivered and that nothing repaired, counted with a delay of up to a few minutes. The mode is set in the Protection tab."
 msgstr "Perdidos en todos los enlaces: paquetes que ningún enlace entregó y que nada reparó, contados con un atraso de hasta unos minutos. El modo se elige en la pestaña Protección."
-
-msgid "Mode"
-msgstr "Modo"
 
 msgid "B (GRIT): cengarde's stream in the middle"
 msgstr "B (GRIT): el flujo de cengarde en el medio"

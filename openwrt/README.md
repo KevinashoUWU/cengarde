@@ -314,7 +314,9 @@ En *Servicios → cengarde → Configuración*, pestaña *General*:
   el propio cengarde por cada enlace, primero en los DNS de su operadora y
   nunca por el túnel, y lo sigue si cambia de IP (ver
   [En casa, con IP dinámica](#en-casa-con-ip-dinámica-dns-dinámico));
-- **Enlaces:** los del paso 2.
+- **Enlaces:** los del paso 2;
+- **Modo** (ver [El modo](#el-modo-bonding-redundancia-o-personalizado)):
+  *Bonding* en un router nuevo.
 
 Luego *Guardar y aplicar*. Desde ese momento cengarde mantiene en la
 configuración del router:
@@ -344,9 +346,9 @@ configuración del router:
   direcciones a `cg0`.
 - **Sin dirección del VPS o sin enlaces** no se crea el túnel, para no
   dejar el router sin salida.
-- **MTU del túnel:** 1380 por defecto; como mucho 1448 sobre IPv4 y 1428
+- **MTU del túnel:** 1380 por defecto; como mucho 1444 sobre IPv4 y 1424
   si hay una dirección IPv6 del VPS (en caminos de 1500 bytes: IP, UDP y
-  los 24 bytes de cengarde). Si el camino de un enlace es más chico, el
+  los 28 bytes de cengarde). Si el camino de un enlace es más chico, el
   estado lo avisa.
 - **DNS de la pestaña Túnel:** solo los IPv4 van por el túnel; los IPv6 se
   dejan fuera, también con «IPv6 por el túnel» (por ahora).
@@ -574,6 +576,77 @@ Desde la 0.10.1, la página de estado suma tres recuadros:
   reparaciones enviadas con su parte de los datos.
 - **Protocontrolador:** solo cuando está en A o B: conexiones abiertas y en
   total, bytes desde y hacia la LAN y lo reenviado en el medio.
+
+## El modo (bonding, redundancia o personalizado)
+
+Pestaña *General*, *Modo* (`option mode`, historia 029). Un router nuevo
+viene en *Bonding*; uno que ya existía queda en *Personalizado*, como
+estaba.
+
+- **Bonding** suma los enlaces: cada paquete grande va por el enlace donde
+  llega primero (`split`, `split_eta`), cada enlace con su propio ritmo y su
+  subflujo (`subflow`, `link_cc`), y el TCP de la LAN viaja como GRIT
+  (`protocontroller 'b'`). Lo que ganó en terreno el 2026-10-28: la bajada
+  al 93 % de OpenMPTCProuter y la subida por encima, con la mitad de su
+  ping.
+- **Redundancia** copia cada paquete por cada enlace que lo entrega a tiempo
+  y gana la primera copia, con el rescate encendido y el TCP de la LAN
+  también como GRIT (`protocontroller 'b'`): en el laboratorio del
+  2026-10-28 la redundancia llevó 24–45 % más que el túnel solo por enlaces
+  que pierden o celulares y 5 veces más con el principal cortado, y en
+  terreno (2026-10-29) GRIT le ganó al TCP simple en el medio (`'a'`): la
+  bajada +9 % con menos ping y menos datos, la subida +12 %. Cada enlace
+  tiene su subflujo y su propio ritmo (`subflow`, `link_cc`) y lleva copia
+  solo si llegaría a menos de 150 ms de la primera (`redund_pace_ms`): en
+  terreno (2026-10-29) la bajada pasó de 59–60 a 113–117 Mbit/s con 40–55 %
+  menos datos, y las colas de los enlaces lentos de 3,5–6,7 s a 0,5–2,5 s.
+  Un SQM (`cake`) en `cg0` limita solo lo que pasa por la TUN (UDP, el
+  protocontrolador A), no a GRIT: el de 22 Mbit/s del NUC dejaba en 20 la
+  subida de la redundancia cuando iba por A.
+- **Personalizado** (o sin `mode`): las pestañas *Protección*, *Funciones
+  de capa 4* y *Avanzado* deciden todo, como antes.
+
+Bonding y redundancia fijan `split`, `protocontroller`, `subflow` y
+`link_cc`, y traen como valor por defecto el resto de su ajuste (rescate,
+`tcp_aware`, los del reparto): una opción puesta aparte le gana al modo
+(`cengarde-setup engine-conf` muestra el resultado). Un cambio reinicia el
+motor.
+
+**El VPS tiene que coincidir:** `sudo cengarde-vps-setup mode bonding` (o
+`redundancy`), o desde el router con el panel de abajo. Bonding enciende
+allá el protocontrolador y `subflow`, `link_cc` y la NACK como pista para
+GRIT; redundancia, el protocontrolador, `subflow`, `link_cc` y
+`redund_pace_ms = 150` para las copias de la bajada. Lo que diga
+`engine.local` gana.
+
+### Administrar el VPS desde el router
+
+Los ajustes del VPS (su modo, la FEC de la bajada, el protocontrolador y
+algunos del motor) son los mismos para todos los routers que atiende (aún no
+hay ajustes por router): uno los administra. Pestaña *VPS*, *Administrar el
+VPS desde aquí* (`vps_admin '1'`), y *Guardar y aplicar*:
+
+1. el router hace una vez su llave (`/etc/cengarde/vps_admin_key`, ed25519
+   de dropbear; se conserva al actualizar) y muestra la orden para el VPS:
+   `sudo cengarde-vps-setup admin-key add 'ssh-ed25519 … cengarde-NOMBRE'`.
+   Ejecutarla una vez en el VPS. Esa llave entra en `authorized_keys` de
+   root con `command="/usr/local/sbin/cengarde-vps-admin",restrict`: solo
+   puede leer y cambiar esos ajustes, sin consola ni túneles;
+2. *Leer* muestra lo que tiene el VPS; cada *Aplicar* cambia al tiro el
+   modo, la FEC (*Subida*: rehace las reparaciones de los routers; *Subida
+   y bajada*: además la FEC v3 de la bajada), el protocontrolador o un
+   ajuste del motor de la lista (`fec_pct`, `rescue_wait_ms`,
+   `link_cc_bits`, …) en `engine.local`, para todos los routers del VPS;
+3. con `vps_admin` el modo del router va solo al VPS con cada cambio (y una
+   vez tras arrancar), en segundo plano, cinco intentos.
+
+El router entra por SSH a la primera dirección del VPS (o a
+`vps_ssh_host`), puerto 22 (`vps_ssh_port`), y acepta la llave de host la
+primera vez: un VPS rehecho con la misma dirección pide borrar su línea de
+`/root/.ssh/known_hosts` en el router. Por consola: `cengarde-setup
+vps-key`, `cengarde-setup vps get`, `cengarde-setup vps set fec_pct 30`. En
+el VPS, `cengarde-vps-setup admin-key list` y `admin-key remove
+cengarde-NOMBRE`.
 
 ## Protección (copias, paridad y rescate)
 

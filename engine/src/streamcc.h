@@ -110,6 +110,7 @@ struct cg_scc {
 	uint32_t min_rtt, srtt, rttvar; /* us; 0: none yet */
 	uint64_t min_t;  /* when min_rtt was taken */
 	uint8_t mode, cycle, full_n, cong;
+	uint8_t offer;      /* take the engine's offer (cg_scc_offer): the subflows find each link's losses; CG_SCC_OFFER_LINKS: each link's own rate */
 	uint8_t qnow;       /* the last sample was over min_rtt + queue_us: what is sent now may overflow */
 	uint64_t cycle_t;
 	uint64_t round_dl;  /* a round ends with the ACK of a segment sent once dl had passed this */
@@ -207,11 +208,51 @@ static inline uint64_t cg_scc_bw(const struct cg_scc *p)
 	return p->hint > CG_SCC_START ? p->hint : CG_SCC_START;
 }
 
-/* The pacing rate, bytes/s. */
+/* The engine's offer (story 029, step 2), bytes/s, 0: none. With each
+ * link's own losses (offer: subflow), while not every link that carries
+ * the data is full, the engine's capacity for them and a quarter: each
+ * link gets more than its capacity, so what it delivers raises it where
+ * there is room (a modem grants more as its queue grows: OMR found 2-3
+ * times the engine's capacities), and where there is not its queue grows
+ * and the split sends the rest to the others. Without it only the
+ * stream's probe offered more, a round in eight, and the links'
+ * capacities and the rate with them grew slowly (in the field the pacer
+ * held the sends back far more than anything else). Not while the stream
+ * sees a queue over its target (cong). */
+#define CG_SCC_OFFER 320 /* 5/4 of CG_SCC_ONE */
+/* offer = CG_SCC_OFFER_LINKS (link_cc): the hint is the sum of each link's
+ * own pacing rate (linkcc.h), each probing for more on its own, and each
+ * holding its own queue: offered as it is, whatever the stream's queue. */
+#define CG_SCC_OFFER_LINKS 2
+/* offer = CG_SCC_OFFER_COPIES (link_cc, the data copied, not split: the
+ * redundancy): the hint is the best link's own pacing rate, and with every
+ * packet copied no link's probing promises what gets through: offered only
+ * while the stream holds no queue of its own over its target (cong), as the
+ * engine's capacity is. Offered whatever the queue, in the field (story
+ * 029, field-r5) it read 218-273 Mbit/s for a single modem, the stream's
+ * srtt reached 665 ms and the ping's p95 under load doubled. */
+#define CG_SCC_OFFER_COPIES 3
+
+static inline uint64_t cg_scc_offer(const struct cg_scc *p)
+{
+	if (!p->offer || !p->hint)
+		return 0;
+	if (p->offer == CG_SCC_OFFER_LINKS)
+		return p->hint;
+	if (p->offer == CG_SCC_OFFER_COPIES)
+		return p->cong ? 0 : p->hint;
+	if (p->hint_full || p->cong)
+		return 0;
+	return cg_scc_mul(p->hint, CG_SCC_OFFER, CG_SCC_ONE);
+}
+
+/* The pacing rate, bytes/s: the estimate's, or the engine's offer. */
 static inline uint64_t cg_scc_rate(const struct cg_scc *p)
 {
-	uint64_t r = cg_scc_mul(cg_scc_bw(p), cg_scc_gain(p), CG_SCC_ONE);
+	uint64_t r = cg_scc_mul(cg_scc_bw(p), cg_scc_gain(p), CG_SCC_ONE), o = cg_scc_offer(p);
 
+	if (o > r)
+		r = o;
 	return r > CG_SCC_FLOOR ? r : CG_SCC_FLOOR;
 }
 
@@ -219,7 +260,7 @@ static inline uint64_t cg_scc_rate(const struct cg_scc *p)
  * stays in flight that long before it is declared). */
 static inline uint64_t cg_scc_cwnd(const struct cg_scc *p, const struct cg_scc_cfg *c, uint64_t reo_us)
 {
-	uint64_t w;
+	uint64_t w, b;
 
 	if (!p->min_rtt)
 		return (uint64_t)CG_SCC_IW_SEGS * c->mss;
@@ -230,9 +271,10 @@ static inline uint64_t cg_scc_cwnd(const struct cg_scc *p, const struct cg_scc_c
 	 * lost and not declared yet (60 % lost and a window of 100 ms filled
 	 * it with the lost, the sends stopped and the estimate sank: the
 	 * microcut) */
-	w = 2 * cg_scc_mul(cg_scc_bw(p), (uint64_t)p->min_rtt + c->queue_us, 1000000);
+	b = cg_scc_bw(p) > cg_scc_offer(p) ? cg_scc_bw(p) : cg_scc_offer(p); /* room for the offer too */
+	w = 2 * cg_scc_mul(b, (uint64_t)p->min_rtt + c->queue_us, 1000000);
 	if (p->mode != CG_SCC_STARTUP_M) /* STARTUP's overshoot is bounded by the path's alone */
-		w += cg_scc_mul(cg_scc_bw(p), reo_us, 1000000);
+		w += cg_scc_mul(b, reo_us, 1000000);
 	return w + (uint64_t)CG_SCC_SEGS * c->mss;
 }
 
@@ -706,8 +748,18 @@ static inline uint64_t cg_scc_reo(const struct cg_scc *p, uint32_t extra_us)
 	return (uint64_t)p->min_rtt / 4 + extra_us;
 }
 
-#define CG_SCC_REO_MAX_US 100000u   /* duplicates widen RACK's window up to this, at most */
-#define CG_SCC_REO_NOCODE_US 20000u /* and up to this without a code: reordering between links alone */
+#define CG_SCC_REO_MAX_US 300000u /* duplicates widen RACK's window up to this, at most: the latency budget */
+
+/* The timer's extra wait beyond the round trip, from RACK's window reo_us:
+ * with RACK over the mix off (the engine's subflows find each link's
+ * losses, story 029), the timer is the only backstop, and the round trip
+ * of the mix is shorter than the slowest link's: at least the latency
+ * budget, or what was sent on the slowest link times out spuriously (in the
+ * lab, nearly every one of its losses came as a duplicate). */
+static inline uint32_t cg_scc_rto_extra(uint32_t reo_us, int rack_off)
+{
+	return rack_off && reo_us < CG_SCC_REO_MAX_US ? CG_SCC_REO_MAX_US : reo_us;
+}
 
 /* How far duplicates may widen RACK's window beyond min_rtt / 4 (extra_us
  * starts at base_us, protocontroller_reo_ms), with code_us the tunnel's
@@ -720,11 +772,18 @@ static inline uint64_t cg_scc_reo(const struct cg_scc *p, uint32_t extra_us)
  * RACK waiting longer only delays. Before, a rescued copy behind every
  * retransmission said "duplicate" and the window sat at 100 ms. Without
  * a code a duplicate means only reordering (a stream goes on one link, a
- * switch reorders by the links' delay difference). Never under base_us. */
+ * switch reorders by the links' delay difference). In the field (story
+ * 028, «Terreno», 2026-10-27) that reordering between modems went past
+ * both old caps (20 ms without a code, 100 with one): 8-28 thousand of
+ * RACK's retransmissions per 100 MB came back as duplicates. The window
+ * only grows on that evidence (a duplicate the receiver reports) and
+ * narrows again by itself (PCTL_REO_DECAY_US), so its cap is the latency
+ * budget, code or not (story 029). Never under base_us. */
 static inline uint32_t cg_scc_reo_cap(uint32_t base_us, uint32_t code_us)
 {
-	uint32_t cap = code_us ? (code_us < CG_SCC_REO_MAX_US ? code_us : CG_SCC_REO_MAX_US) : CG_SCC_REO_NOCODE_US;
+	uint32_t cap = CG_SCC_REO_MAX_US;
 
+	(void)code_us;
 	return cap > base_us ? cap : base_us;
 }
 
