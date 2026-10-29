@@ -590,16 +590,19 @@ estaba.
   al 93 % de OpenMPTCProuter y la subida por encima, con la mitad de su
   ping.
 - **Redundancia** copia cada paquete por cada enlace que lo entrega a tiempo
-  y gana la primera copia, con el rescate encendido y el TCP de la LAN como
-  un TCP simple en el medio (`protocontroller 'a'`): en el laboratorio del
-  2026-10-28 llevó 24–45 % más por enlaces que pierden o celulares y 5 veces
-  más con el principal cortado. Cada enlace tiene su subflujo y su propio
-  ritmo (`subflow`, `link_cc`) y lleva copia solo si llegaría a menos de
-  150 ms de la primera (`redund_pace_ms`): en terreno (2026-10-29) la
-  bajada pasó de 59–60 a 113–117 Mbit/s con 40–55 % menos datos, y las colas
-  de los enlaces lentos de 3,5–6,7 s a 0,5–2,5 s. Un SQM (`cake`) en `cg0`
-  limita lo que va por el TCP del protocontrolador A: el de 22 Mbit/s del
-  NUC dejaba la subida en 20.
+  y gana la primera copia, con el rescate encendido y el TCP de la LAN
+  también como GRIT (`protocontroller 'b'`): en el laboratorio del
+  2026-10-28 la redundancia llevó 24–45 % más que el túnel solo por enlaces
+  que pierden o celulares y 5 veces más con el principal cortado, y en
+  terreno (2026-10-29) GRIT le ganó al TCP simple en el medio (`'a'`): la
+  bajada +9 % con menos ping y menos datos, la subida +12 %. Cada enlace
+  tiene su subflujo y su propio ritmo (`subflow`, `link_cc`) y lleva copia
+  solo si llegaría a menos de 150 ms de la primera (`redund_pace_ms`): en
+  terreno (2026-10-29) la bajada pasó de 59–60 a 113–117 Mbit/s con 40–55 %
+  menos datos, y las colas de los enlaces lentos de 3,5–6,7 s a 0,5–2,5 s.
+  Un SQM (`cake`) en `cg0` limita solo lo que pasa por la TUN (UDP, el
+  protocontrolador A), no a GRIT: el de 22 Mbit/s del NUC dejaba en 20 la
+  subida de la redundancia cuando iba por A.
 - **Personalizado** (o sin `mode`): las pestañas *Protección*, *Funciones
   de capa 4* y *Avanzado* deciden todo, como antes.
 

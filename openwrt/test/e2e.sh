@@ -638,10 +638,10 @@ conf | grep -qx 'split_spread_ms = 250' && { echo "bonding: its default beat an 
 cengarde -t -c /tmp/mode.conf || { echo "bonding: the engine refuses its file"; r=1; }
 uci set cengarde.main.mode=redundancy
 uci set cengarde.main.split=1
-uci set cengarde.main.protocontroller=b
+uci set cengarde.main.protocontroller=a
 uci commit cengarde
-conf | grep -qE '^(split = on|protocontroller = b)' && { echo "redundancy: a bonding switch is left"; r=1; }
-for kv in 'protocontroller = a' 'subflow = yes' 'link_cc = yes' 'redund_pace_ms = 150' 'rescue_wait_ms = 60' 'tcp_aware = yes'; do
+conf | grep -qE '^(split = on|protocontroller = a)' && { echo "redundancy: a switch set apart is left"; r=1; }
+for kv in 'protocontroller = b' 'subflow = yes' 'link_cc = yes' 'redund_pace_ms = 150' 'rescue_wait_ms = 60' 'tcp_aware = yes'; do
 	conf | grep -qxF "$kv" || { echo "redundancy: missing $kv"; r=1; }
 done
 (umask 077 && conf > /tmp/mode.conf)

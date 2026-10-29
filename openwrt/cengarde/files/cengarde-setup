@@ -252,15 +252,16 @@ preset() {
 # one uplink by expected arrival, each uplink's own subflow and rate, GRIT in
 # the middle of the TCP (with 8 MB streams the download reached 93 % of
 # OpenMPTCProuter's and the upload passed it, at half its ping). redundancy:
-# every packet on every uplink that can deliver it in time, the rescue on, a
-# plain TCP in the middle of the TCP (protocontroller A: in the lab of
-# 2026-10-28 it carried 24-45 % more over lossy and cellular uplinks and 5x
-# over a cut main one, for 2-8 % less over clean ones; GRIT, with or
-# without subflows, did worse there), and each uplink's own rate (subflow,
-# link_cc) deciding which take a copy: one whose copy would arrive more than
-# redund_pace_ms after the first takes none (the field of 2026-10-29: the
-# download 59-60 -> 113-117 Mbit/s with 40-55 % less data, the slow
-# uplinks' queues from 3.5-6.7 s to 0.5-2.5 s).
+# every packet on every uplink that can deliver it in time, the rescue on,
+# GRIT in the middle of the TCP (protocontroller B, as bonding), and each
+# uplink's own rate (subflow, link_cc) deciding which take a copy: one whose
+# copy would arrive more than redund_pace_ms after the first takes none (the
+# field of 2026-10-29: the download 59-60 -> 113-117 Mbit/s with 40-55 %
+# less data, the slow uplinks' queues from 3.5-6.7 s to 0.5-2.5 s). GRIT
+# lost there until a copy lost on every uplink reached it as a loss and the
+# links' rate stopped pushing it while it held a queue (story 029, 6139fd3:
+# against a plain TCP in the middle, A, the download +9 % with a lower ping
+# and less data, the upload +12 %).
 mode_presets() {
 	config_get MODE main mode custom
 	case "$MODE" in
@@ -284,7 +285,7 @@ mode_presets() {
 		;;
 	redundancy)
 		config_set main split 0
-		config_set main protocontroller a
+		config_set main protocontroller b
 		config_set main subflow 1
 		config_set main link_cc 1
 		preset redund_pace_ms 150

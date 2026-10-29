@@ -1481,7 +1481,7 @@ cmd_mode() {
 	kept
 	case $1 in
 	bonding) say "mode bonding: the protocontroller, each link's subflow and own rate (the routers set Bonding in LuCI's General tab)" ;;
-	redundancy) say "mode redundancy: the protocontroller (the routers' A), each link's subflow and own rate deciding the copies" ;;
+	redundancy) say "mode redundancy: the protocontroller (the routers' B, GRIT), each link's subflow and own rate deciding the copies" ;;
 	*) say "mode custom: no subflows here (the protocontroller stays $([ "$PROTOCONTROLLER" = yes ] && echo on || echo off))" ;;
 	esac
 }
