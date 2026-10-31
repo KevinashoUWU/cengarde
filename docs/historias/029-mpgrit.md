@@ -950,6 +950,26 @@ La bajada +21 % (las tres rondas), la subida +6 %, con algo menos de ping.
 Lo que sigue: más rondas (de noche también) antes de dejarlo por omisión, y
 la otra mitad de la pieza, quitar la capacidad vieja del reparto.
 
+**Que el ritmo por enlace decida solo** (`3ac9794`, `link_cc_bits` + 512):
+un enlace con muestras propias entra al reparto antes de que la capacidad
+vieja lo mida, los pesos de la capacidad nunca lo dejan solo con copias
+(peso 0) y «lleno» para el rescate es su propia cola sobre el objetivo
+(`cg_lc_full`); la capacidad sigue midiendo (estado, pérdidas de la FEC, el
+enlace dominante). Laboratorio (`onlylab`, n = 3, contra la media sola):
++3,4 % de media geométrica, `fade` subida +19,7 %, `ratswitch` subida
++12,6 %, `protect` con la mitad de p99 (1493 → 659 y 494 → 249 ms),
+`cell4` bajada −4,5 %. Terreno (`onlyfield`, 3 rondas, tarde): la subida
++8 % en las tres (119,5 contra 110,4), la bajada −8 % (234,1 contra 255,0,
+perdió dos de tres). Como cada extremo decide su propio sentido, la
+propuesta es por sentido: el router con 512 (la subida) y el VPS sin él,
+por medir de noche.
+
+**El enlace que muere** (`594ec25`, revertido): al salir un enlace de los
+vivos, lo que su subflujo tenía en vuelo tras el último SFACK pasaba a GRIT
+como perdido. En el laboratorio (`flushlab`) no ganó: los reenvíos por
+temporizador de `linkdeath` no bajaron y el caudal quedó en el ruido
+(−1,4 %): lo que muere con un enlace no es lo que espera al temporizador.
+
 ## Pendiente
 
 - `link_cc`: decidir si pasa a ser lo normal con `subflow` (más rondas de
