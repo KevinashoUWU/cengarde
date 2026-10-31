@@ -1028,6 +1028,39 @@ reenvíos por temporizador (9 952 contra 9 903 por corrida, 3+3 rondas) y la
 diferencia de caudal cambió de signo entre rondas: la causa es otra, y hace
 falta medir la edad de lo que vence contra el enlace que lo llevó.
 
+### Paso U2a: el temporizador de GRIT por segmento (2026-10-31, noche)
+
+Primer trozo del paso U2 (GRIT reparte en los subflujos): que GRIT sepa
+cuándo llega cada segmento. El motor elige el enlace de cada DATA en el
+mismo `ops.send` en que GRIT se lo entrega, y su reparto ya sabe cuándo lo
+trae ese enlace, detrás del más rápido (`cg_eta_behind`: su retardo sin
+cola sobre el menor y su cola sobre su ritmo). Lo devuelve mensaje a
+mensaje; GRIT lo guarda en el segmento (`eta_us`) y con `subflow` cada uno
+vence a su propio plazo: el de siempre, o el RTT más vez y media su llegada
+si eso pasa el presupuesto de 300 ms (`cg_st_seg_rto`). Antes de esto, el
+registro del temporizador (`rto_obs`, `dup_by_link`) mostró por qué vencía:
+RTO de ~460 ms con un srtt de ~100 y un rttvar de 14 (el RTT que aprende es
+el del enlace más rápido, cada ACK lleva el menor retardo), el segmento más
+viejo con ~500–680 ms al vencer, los duplicados por los cuatro enlaces y
+el 76 % de los mensajes fuera de orden. Dos arreglos sin el motor, medidos
+y descartados (3+3 rondas): esperar como sospechosos los vencidos salvo el
+más viejo (F-RTO; 204 contra 214 Mbit/s, casi todos vencían igual) y la
+rotación de los rangos de SACK (con ~2600 ACK/s cada rango se dice cada
+~10 ms).
+
+Terreno, bajada `iperf3 -R -P 4` de 30 s, solo el binario del VPS cambia,
+tres rondas alternadas (de tarde: la red da menos que antes):
+
+| brazo | Mbit/s | media | reenviado | por temporizador | duplicados | vencimientos |
+| --- | --- | --- | --- | --- | --- | --- |
+| antes | 142 / 147 / 144 | 144 | 2,2 % | 7 813 | 6 474 | 256–312 |
+| U2a | 156 / 187 / 166 | 170 | 1,5 % | 6 007 | 4 202 | 112–253 |
+
+La llegada media que dio el motor: 143–159 ms detrás del enlace más rápido,
+en 450–530 mil segmentos por corrida. Queda un temporizador que todavía
+reenvía ~6000 por corrida (dos tercios duplicados): el paso U2b (GRIT elige
+el subflujo) y el RTT por subflujo (U2c).
+
 ## Pendiente
 
 - `link_cc`: decidir si pasa a ser lo normal con `subflow` (más rondas de
@@ -1061,3 +1094,5 @@ falta medir la edad de lo que vence contra el enlace que lo llevó.
   curva de cada módem y el MTPT.
 - 2026-10-31: por qué GRIT reenviaba por temporizador: la ventana del
   subflujo (8192) y las copias de estrés en un enlace con cola de segundos.
+- 2026-10-31: el paso U2a, el temporizador de GRIT por segmento con la
+  llegada que da el motor (+17 % de bajada, −35 % de duplicados).
