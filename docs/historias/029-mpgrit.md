@@ -902,6 +902,39 @@ que necesitamos pronto».
   (`flow_cap`) y el fondo es por omisión un octavo de la RAM, de 64 a 1024
   MB (`cg_pctl_mem_auto`).
 
+### Tres ideas para el ritmo por enlace, contra la captura (2026-10-31)
+
+El usuario trajo ideas de otro asistente; se evaluaron sin salir a terreno
+con la captura de `curva1` (UDP a tasa fija por módem, 40–160 % de su techo,
+cada paquete con su hora de envío y de llegada; `bench/rateeval.py`,
+`~/campo/2026-10-31/copilot/results.txt`):
+
+- **La tasa por el máximo de las muestras sobreestima mucho.** En los
+  escalones saturados (lo entregado es la capacidad), el máximo de 1,5 s de
+  muestras de 40 ms da 5,2 veces la capacidad de bajada y 3,7 de subida; con
+  muestras de 100 ms, 3,0 y 2,2; de 200 ms, 2,1 y 1,7 (Movistar el peor:
+  6–8 veces). Sin saturar, igual 2,1–2,8 veces lo enviado: el operador
+  entrega a ráfagas. **La media de lo llegado en 500 ms acierta**: 0,96 de
+  bajada y 1,00 de subida (p90 1,25–1,55), saturado o no. Es lo que explica
+  los estimados inflados del terreno (68–115 Mbit/s por enlace en reposo,
+  218–273 en la oferta de GRIT).
+- **Olvidar rápido no hace falta una vez que no se toma el máximo:** la
+  entrega cada 100 ms varía con un coeficiente de 0,45–1,05; un EWMA que se
+  acelera con el jitter queda 10–29 % arriba y 12–28 % abajo, puro ruido
+  del operador.
+- **La pendiente de la cola avisa poco y en falso:** con más de 100 ms/s y
+  15 ms de cola, se adelanta al cruce de 60 ms en 65 de 97 escalones, con
+  una mediana de 65–70 ms (menos de una ida y vuelta), y saltó también en
+  los 7 escalones que nunca cruzaron.
+- Las otras dos (la ganancia de sondeo según el jitter, el estado compartido
+  entre hilos) no aplican: el sondeo ya se frena por la cola y los módems
+  son de operadores distintos.
+
+**Lo que queda:** en la pieza «un solo ritmo por enlace», el estimado de
+`linkcc.h` como la media de lo entregado en ~500 ms mientras el enlace
+tiene cola (hoy ya existe `sat`, que solo topa el máximo a 5/4), y sondeo
+cuando no la tiene; A/B en el laboratorio y en terreno.
+
 ## Pendiente
 
 - `link_cc`: decidir si pasa a ser lo normal con `subflow` (más rondas de
