@@ -3,7 +3,7 @@ tags: [mapa, pieza]
 archivos:
   - engine/src/subflow.h
   - engine/tests/test_subflow.c
-sello: acb8c501bd747d4f
+sello: 1d65f48d7a2698f3
 ---
 # Subflujo (subflow.h)
 
@@ -23,8 +23,12 @@ entre enlaces, que en terreno se leía como pérdida en el túnel y en GRIT
   falso (`late`): la ventana sube 4 ms, como un DSACK agranda la de TCP, hasta
   su tope (`CG_SF_CAP_US`, el presupuesto de latencia de 300 ms), y baja
   0,2 ms por tic de 100 ms hasta su piso (`CG_SF_FLOOR_US`, 10 ms).
-- **Ventana de 1024 `sseq`** por enlace: lo que sale de ella sin llenarse se da
-  por perdido sin decirlo (`overflow`). Un salto de una ventana o más, hacia
+- **Ventana de 8192 `sseq`** por enlace, en los dos extremos: lo que sale de
+  ella sin llenarse se da por perdido sin decirlo (`overflow`). El emisor
+  tiene que recordar qué llevó cada `sseq` hasta que llega su `SFLOSS` (la
+  cola del enlace, la ventana y la vuelta): con 1024 (~110 ms a 100 Mbit/s)
+  el VPS había olvidado dos tercios de lo que el NUC le dijo perdido en
+  terreno (`forgotten`), y GRIT lo reenviaba solo por su temporizador. Un salto de una ventana o más, hacia
   adelante o hacia atrás, es un comienzo nuevo (`resync`: el otro extremo
   volvió a empezar, un enlace tomó la ranura de otro, o el enlace lo perdió
   todo) y no dice ninguna pérdida, porque un `SFLOSS` tiene que ser cierto. La
