@@ -1008,8 +1008,12 @@ llegar por los subflujos. Dos causas:
   las rondas sin estrés no mandan copias y quedan como con 0; la que entró
   en estrés cayó a 139 Mbit/s con 266 MB de copias, 17 % reenviado y 26 294
   olvidados aun con 8192. Las copias de estrés son del túnel sin ARQ: con
-  GRIT sobran. El modo bonding del VPS deja `split_stress_dup = 0` (PR
-  #137; la testnet, en `engine.local`); la subida no está medida.
+  GRIT sobran. El modo bonding deja `split_stress_dup = 0` en el VPS y en
+  el router (PR #137; la testnet, en `engine.local` y por el modo). En la
+  subida (`iperf3 -P 4`, 3+3 rondas): 121 / 123 / 132 (media 125) con 0
+  contra 114 / 123 / 126 (121) con 50, sin una sola copia: el estrés no
+  saltó, es ruido. La subida va como se diseñó: todo por NACK (unos 15 700
+  por corrida, ~4,3 %), sin temporizador, sin olvidados ni duplicados.
 
 Queda: el temporizador todavía reenvía unos 4 900 por corrida y casi todo
 llega duplicado (4 306); y a más de 300 Mbit/s por enlace 8192 `sseq` son
