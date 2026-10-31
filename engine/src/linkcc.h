@@ -69,6 +69,8 @@
 #define CG_LC_RTPROP_US 10000000u  /* rtprop's window */
 #define CG_LC_ROUND_MIN_US 10000u  /* a round lasts a round trip, at least this */
 #define CG_LC_FLOOR 125000u        /* bytes/s: 1 Mbit/s, the least rate */
+#define CG_LC_MEAN_N 5u            /* CG_LC_MEAN: buckets of the delivery's mean */
+#define CG_LC_MEAN_BKT_US 100000u  /* of this long each: the mean is over the last 0.5 s */
 #define CG_LC_START 250000u        /* bytes/s: 2 Mbit/s before any sample, unless seeded */
 #define CG_LC_LOSS_PCT 5u
 #define CG_LC_LOSS_MIN 20u         /* packets a round needs before its loss says anything */
@@ -104,6 +106,22 @@ enum { CG_LC_STARTUP_M = 0, CG_LC_DRAIN_M, CG_LC_PROBE_M };
 #define CG_LC_SATQ 32u  /* SAT caps only while the link holds a queue (half the target or more) */
 #define CG_LC_WND 64u   /* the split gives a link data only while its window (cg_lc_cwnd) has room (eta.h's cg_eta_wnd) */
 #define CG_LC_MTPT 128u /* MTPT: the queue target by perturb and observe, each link its own (cg_lc_mtpt) */
+/* MEAN: past STARTUP, bw is what the link delivered over the last
+ * CG_LC_MEAN_US (cg_lc_mean): while it holds a queue that is its capacity,
+ * up or down; without one, what it was sent, which may only raise bw. The
+ * largest sample of 1-2 s reads the operator's bursts: against the ceiling
+ * capture (curva1, every packet of fixed-rate UDP timed at both ends,
+ * bench/rateeval.py) the largest 40 ms sample of 1.5 s read 5.2 times a
+ * saturated modem's capacity down and 3.7 up (200 ms samples: 2.1 and 1.7;
+ * Movistar 6-8), the mean of 500 ms 0.96 and 1.00 (story 029, 2026-10-31). */
+#define CG_LC_MEAN 256u
+/* ONLY: each link's own rate alone decides, the engine's capacity
+ * (capacity.h) left to measure (story 029, "one rate per link"): a link
+ * with its own samples enters the split before the capacity has a rate for
+ * it, the capacity's split weights never leave it out (weight 0: copies
+ * only), and it is full for the rescue (congestion, not a loss to send
+ * again) when its own queue passes its target. */
+#define CG_LC_ONLY 512u
 #define CG_LC_BITS (CG_LC_QMODE | CG_LC_S32) /* the default; the router's adds SAT (config.c) */
 
 struct cg_lc {
@@ -124,7 +142,11 @@ struct cg_lc {
 	uint32_t q_us;
 	uint32_t target_us;      /* the queue the link may hold (set by the caller) */
 	uint64_t sat, sat_t;     /* what it delivered while queued (EWMA), and when */
-	uint8_t bits;            /* CG_LC_QETA...: set by the caller */
+	uint16_t bits;           /* CG_LC_QETA...: set by the caller */
+	/* CG_LC_MEAN: bytes delivered in each bucket (mb_i the current one,
+	 * started at mb_t), and how many whole buckets are behind it */
+	uint64_t mb[CG_LC_MEAN_N + 1], mb_t;
+	uint8_t mb_i, mb_n;
 	/* MTPT (CG_LC_MTPT): the epoch's start, what the link
 	 * delivered in it, its largest queue, packets sent and lost; the
 	 * previous epoch's delivery; the way the target moves; the ceiling */
@@ -280,6 +302,13 @@ static inline uint32_t cg_lc_gain(const struct cg_lc *c)
 	return g;
 }
 
+/* CG_LC_ONLY: whether the link holds more than its queue target now, by its
+ * own one-way delay; 0 while not known. */
+static inline int cg_lc_full(const struct cg_lc *c)
+{
+	return c->have_owd && c->q_us > c->target_us;
+}
+
 /* The pacing rate, bytes/s. */
 static inline uint64_t cg_lc_rate(const struct cg_lc *c)
 {
@@ -403,6 +432,43 @@ static inline void cg_lc_round(struct cg_lc *c, uint64_t now)
 	c->round_t = now;
 }
 
+/* CG_LC_MEAN: bytes delivered at now go into the current bucket; buckets
+ * the clock passed over are empty ones. */
+static inline void cg_lc_mean_add(struct cg_lc *c, uint64_t now, uint64_t bytes)
+{
+	if (!c->mb_t)
+		c->mb_t = now;
+	while (now - c->mb_t >= CG_LC_MEAN_BKT_US) {
+		c->mb_i = (uint8_t)((c->mb_i + 1) % (CG_LC_MEAN_N + 1));
+		c->mb[c->mb_i] = 0;
+		c->mb_t += CG_LC_MEAN_BKT_US;
+		if (c->mb_n < CG_LC_MEAN_N)
+			c->mb_n++;
+		if (now - c->mb_t > CG_LC_MEAN_N * CG_LC_MEAN_BKT_US) { /* a long silence: start over */
+			memset(c->mb, 0, sizeof(c->mb));
+			c->mb_t = now;
+			c->mb_n = 0;
+		}
+	}
+	c->mb[c->mb_i] += bytes;
+}
+
+/* What the link delivered over its last CG_LC_MEAN_N whole buckets,
+ * bytes/s; 0 until it has them. The current one does not count: an answer
+ * at its start counted over a sliver read high, and "only up" without a
+ * queue kept the reading. */
+static inline uint64_t cg_lc_mean(const struct cg_lc *c)
+{
+	uint64_t sum = 0;
+
+	if (c->mb_n < CG_LC_MEAN_N)
+		return 0;
+	for (unsigned i = 0; i <= CG_LC_MEAN_N; i++)
+		if (i != c->mb_i)
+			sum += c->mb[i];
+	return sum * 1000000 / ((uint64_t)CG_LC_MEAN_N * CG_LC_MEAN_BKT_US);
+}
+
 /* The receiver says the link delivered bytes more (since the previous
  * answer), and the newest sseq they cover gives a sample: rate (bytes/s,
  * 0: none) and its round trip rtt_us (0: none). */
@@ -432,7 +498,16 @@ static inline void cg_lc_acked(struct cg_lc *c, uint64_t now, uint64_t bytes, ui
 	} else if (c->sat && now - c->sat_t >= CG_LC_SAT_US) {
 		c->sat = 0;
 	}
-	if (c->bmax[0] || c->bmax[1]) {
+	if (c->bits & CG_LC_MEAN)
+		cg_lc_mean_add(c, now, bytes);
+	if ((c->bits & CG_LC_MEAN) && c->mode != CG_LC_STARTUP_M) {
+		uint64_t m = cg_lc_mean(c);
+
+		/* queued, its capacity; else what it was sent, which only raises
+		 * bw; without its 0.5 s yet (after a silence), bw as it was */
+		if (m && ((c->have_owd && c->q_us >= c->target_us / 2) || m > c->bw))
+			c->bw = m > CG_LC_FLOOR ? m : CG_LC_FLOOR;
+	} else if (c->bmax[0] || c->bmax[1]) {
 		c->bw = c->bmax[0] > c->bmax[1] ? c->bmax[0] : c->bmax[1];
 		if (c->bw < CG_LC_FLOOR)
 			c->bw = CG_LC_FLOOR;

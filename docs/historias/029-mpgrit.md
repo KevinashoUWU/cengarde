@@ -902,6 +902,132 @@ que necesitamos pronto».
   (`flow_cap`) y el fondo es por omisión un octavo de la RAM, de 64 a 1024
   MB (`cg_pctl_mem_auto`).
 
+### Tres ideas para el ritmo por enlace, contra la captura (2026-10-31)
+
+El usuario trajo ideas de otro asistente; se evaluaron sin salir a terreno
+con la captura de `curva1` (UDP a tasa fija por módem, 40–160 % de su techo,
+cada paquete con su hora de envío y de llegada; `bench/rateeval.py`,
+`~/campo/2026-10-31/copilot/results.txt`):
+
+- **La tasa por el máximo de las muestras sobreestima mucho.** En los
+  escalones saturados (lo entregado es la capacidad), el máximo de 1,5 s de
+  muestras de 40 ms da 5,2 veces la capacidad de bajada y 3,7 de subida; con
+  muestras de 100 ms, 3,0 y 2,2; de 200 ms, 2,1 y 1,7 (Movistar el peor:
+  6–8 veces). Sin saturar, igual 2,1–2,8 veces lo enviado: el operador
+  entrega a ráfagas. **La media de lo llegado en 500 ms acierta**: 0,96 de
+  bajada y 1,00 de subida (p90 1,25–1,55), saturado o no. Es lo que explica
+  los estimados inflados del terreno (68–115 Mbit/s por enlace en reposo,
+  218–273 en la oferta de GRIT).
+- **Olvidar rápido no hace falta una vez que no se toma el máximo:** la
+  entrega cada 100 ms varía con un coeficiente de 0,45–1,05; un EWMA que se
+  acelera con el jitter queda 10–29 % arriba y 12–28 % abajo, puro ruido
+  del operador.
+- **La pendiente de la cola avisa poco y en falso:** con más de 100 ms/s y
+  15 ms de cola, se adelanta al cruce de 60 ms en 65 de 97 escalones, con
+  una mediana de 65–70 ms (menos de una ida y vuelta), y saltó también en
+  los 7 escalones que nunca cruzaron.
+- Las otras dos (la ganancia de sondeo según el jitter, el estado compartido
+  entre hilos) no aplican: el sondeo ya se frena por la cola y los módems
+  son de operadores distintos.
+
+**El ritmo por la media** (`437ae7c`, `link_cc_bits` + 256): pasado el
+arranque, `bw` es la media de lo entregado en los últimos cinco baldes
+enteros de 100 ms; con cola en el enlace es su capacidad, sube o baja; sin
+cola solo puede subir; tras un silencio queda como estaba hasta tener sus
+0,5 s. El máximo de las medias de 500 ms también sobreestima (1,57 y 1,31
+saturado), por eso no se usa. Laboratorio (`meanlab`, n = 3, 7 casos × 2
+sentidos): neutro (−0,9 % de media geométrica), con menos ping en `fade`
+(p99 300 → 223 ms) y `cell4` (214 → 164): netem entrega parejo, sin las
+ráfagas que esto corrige. **Terreno** (`meanfield`, 2026-10-31 de tarde,
+Ookla, 3 rondas alternadas, bonding):
+
+| brazo | bajada | subida | ping con carga (bajada) |
+| --- | --- | --- | --- |
+| máximo (14 / 46) | 228,7 / 195,2 / 187,2 (203,7) | 115,8 / 114,2 / 138,1 (122,7) | 79–104 ms |
+| **media (270 / 302)** | **238,3 / 250,5 / 250,5 (246,4)** | **131,0 / 128,7 / 131,6 (130,4)** | 69–87 ms |
+
+La bajada +21 % (las tres rondas), la subida +6 %, con algo menos de ping.
+Lo que sigue: más rondas (de noche también) antes de dejarlo por omisión, y
+la otra mitad de la pieza, quitar la capacidad vieja del reparto.
+
+**Que el ritmo por enlace decida solo** (`3ac9794`, `link_cc_bits` + 512):
+un enlace con muestras propias entra al reparto antes de que la capacidad
+vieja lo mida, los pesos de la capacidad nunca lo dejan solo con copias
+(peso 0) y «lleno» para el rescate es su propia cola sobre el objetivo
+(`cg_lc_full`); la capacidad sigue midiendo (estado, pérdidas de la FEC, el
+enlace dominante). Laboratorio (`onlylab`, n = 3, contra la media sola):
++3,4 % de media geométrica, `fade` subida +19,7 %, `ratswitch` subida
++12,6 %, `protect` con la mitad de p99 (1493 → 659 y 494 → 249 ms),
+`cell4` bajada −4,5 %. Terreno (`onlyfield`, 3 rondas, tarde): la subida
++8 % en las tres (119,5 contra 110,4), la bajada −8 % (234,1 contra 255,0,
+perdió dos de tres). Cuatro rondas más (`onlyfield2`) dieron lo contrario:
+bajada +7 % (239,1 contra 222,5), subida −21 % (79,1 contra 99,8). Las 7
+rondas juntas: bajada igual (237,0 contra 236,5), subida −8 % (96,4 contra
+104,4); el mismo brazo varía ±30 % entre rondas (la subida de 512, de 54 a
+128). **Queda en el código, apagado**: el terreno no le ve ganancia y el
+laboratorio, +3,4 %. La testnet vuelve a 270 / 302 (la media).
+
+**El enlace que muere** (`594ec25`, revertido): al salir un enlace de los
+vivos, lo que su subflujo tenía en vuelo tras el último SFACK pasaba a GRIT
+como perdido. En el laboratorio (`flushlab`) no ganó: los reenvíos por
+temporizador de `linkdeath` no bajaron y el caudal quedó en el ruido
+(−1,4 %): lo que muere con un enlace no es lo que espera al temporizador.
+
+### Por qué GRIT reenviaba por temporizador (2026-10-31, tarde)
+
+En una bajada de 30 s por GRIT (`iperf3 -R -P 4`, `~/campo/2026-10-31/rto/`)
+el GRIT del VPS reenvió 57 636 mensajes (13 % de lo enviado): 57 118 por su
+temporizador, 518 por NACK, y el NUC recibió 37 682 duplicados. El RACK de la
+mezcla está apagado con `subflow` (arriba), así que las pérdidas tenían que
+llegar por los subflujos. Dos causas:
+
+- **El emisor olvidaba** (`down.forgotten`): los subflujos del NUC hallaban
+  las pérdidas (unas 10 000 por corrida, cerca de `lost_all`), pero el emisor
+  del VPS solo recordaba las últimas 1024 `sseq` de cada enlace (~110 ms a
+  100 Mbit/s). Un `SFLOSS` llega tras la cola del enlace, la ventana del
+  receptor (hasta 300 ms) y la vuelta, y para entonces ya se había olvidado
+  qué llevaba esa `sseq`: el 63–69 % de las pérdidas sin copias de estrés,
+  el 95–99 % con ellas. GRIT las recuperaba solo por su temporizador.
+  `CG_SF_WIN` pasa a 8192 (PR #136). A/B en terreno, solo cambia el binario
+  del VPS, tres rondas alternadas:
+
+  | ventana | Mbit/s | media | reenviado | por RTO | por NACK | olvidados | duplicados |
+  | --- | --- | --- | --- | --- | --- | --- | --- |
+  | 1024 | 224 / 218 / 228 | 223 | 3,6 % | 23 313 | 779 | 16 975 | 9 197 |
+  | 8192 | 263 / 298 / 305 | 289 | 0,9 % | 4 856 | 2 430 | 0 | 4 306 |
+
+- **Las copias de estrés** (`split_stress_dup`, 50 %): bajo el estrés de G4
+  van copias a todos los enlaces, también a uno fuera del reparto. Movistar
+  (~20 Mbit/s) recibió hasta 56 Mbit/s con capacidad estimada de 8, su cola
+  subió a 10 s y no se vació hasta 25 s después; lo que sí le tocaba llegaba
+  tan tarde que el NUC lo botaba fuera de la ventana anti-replay
+  (`download.too_old`, 42 794 en 30 s). Con `split_stress_dup = 0` (ventana
+  vieja, tres rondas): `too_old` 0 en las tres, 189 contra 167 Mbit/s,
+  reenviado 4,2 contra 6,8 %. Sobre la ventana nueva, tres rondas más por
+  brazo: 213 / 316 / 255 (media 261) contra 258 / 139 / 247 (214). Con 50,
+  las rondas sin estrés no mandan copias y quedan como con 0; la que entró
+  en estrés cayó a 139 Mbit/s con 266 MB de copias, 17 % reenviado y 26 294
+  olvidados aun con 8192. Las copias de estrés son del túnel sin ARQ: con
+  GRIT sobran. El modo bonding deja `split_stress_dup = 0` en el VPS y en
+  el router (PR #137; la testnet, en `engine.local` y por el modo). En la
+  subida (`iperf3 -P 4`, 3+3 rondas): 121 / 123 / 132 (media 125) con 0
+  contra 114 / 123 / 126 (121) con 50, sin una sola copia: el estrés no
+  saltó, es ruido. La subida va como se diseñó: todo por NACK (unos 15 700
+  por corrida, ~4,3 %), sin temporizador, sin olvidados ni duplicados.
+
+Queda: el temporizador todavía reenvía unos 4 900 por corrida y casi todo
+llega duplicado (4 306); y a más de 300 Mbit/s por enlace 8192 `sseq` son
+~0,3 s: la ventana debería medirse en tiempo, no en paquetes.
+
+**Probado y revertido: el horizonte sobre todos los enlaces.** Muestreando
+cada segundo, las ráfagas del temporizador (400–600 reenvíos) coincidían con
+un enlace 300–470 ms atrasado que salía del reparto (G4): el horizonte que
+el motor le da a GRIT (`ops.horizon`) contaba solo los enlaces del reparto.
+Contarlos todos (`claude/grit-horizon-carry`, `d4f5263`) no movió los
+reenvíos por temporizador (9 952 contra 9 903 por corrida, 3+3 rondas) y la
+diferencia de caudal cambió de signo entre rondas: la causa es otra, y hace
+falta medir la edad de lo que vence contra el enlace que lo llevó.
+
 ## Pendiente
 
 - `link_cc`: decidir si pasa a ser lo normal con `subflow` (más rondas de
@@ -933,3 +1059,5 @@ que necesitamos pronto».
   la redundancia con lo nuevo (`red1`: queda con el protocontrolador A).
 - 2026-10-28: la prueba de techo con captura (`techo`), el MTU de Claro, la
   curva de cada módem y el MTPT.
+- 2026-10-31: por qué GRIT reenviaba por temporizador: la ventana del
+  subflujo (8192) y las copias de estrés en un enlace con cola de segundos.

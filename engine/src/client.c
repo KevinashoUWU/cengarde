@@ -2974,6 +2974,10 @@ static void send_nacks(struct client *c, uint64_t now_ms)
  * (capacity.h's cg_cap_rescue_w) is 0. */
 static int up_full(const struct client *c, unsigned i)
 {
+	const struct cg_lc *lc = &c->link[i].sft.lc;
+
+	if (c->cfg->link_cc && (lc->bits & CG_LC_ONLY) && c->link[i].sft.acks)
+		return cg_lc_full(lc); /* its own queue (CG_LC_ONLY) */
 	return cg_cap_full(&c->cap[i], c->cfg->rescue_target_ms * 1000, c->lm[i].rfull_hyst);
 }
 
@@ -3217,11 +3221,12 @@ static void on_sfloss(struct client *c, const uint8_t *payload, size_t plen, uin
  * what it has queued now; past the queue target (its own with MTPT) it is
  * a last resort. Each tick and each SFACK; a link not in e (no rate from
  * cg_cap_eta: dead, or not known) stays out. */
-static void lc_eta(struct client *c, struct cg_eta *e, unsigned i, uint32_t ref, uint64_t now_us)
+static void lc_eta(struct client *c, struct cg_eta *e, unsigned i, uint32_t ref, uint16_t live, uint64_t now_us)
 {
 	const struct cg_lc *lc = &c->link[i].sft.lc;
 
-	if (!e->l[i].bps || !c->link[i].sft.acks || !lc->rtprop)
+	/* the capacity's entry, or with ONLY a live link's own samples alone */
+	if (!c->link[i].sft.acks || !lc->rtprop || (!e->l[i].bps && !((lc->bits & CG_LC_ONLY) && (live >> i & 1))))
 		return;
 	cg_eta_own(e, i, cg_lc_rate(lc) * 8, lc->rtprop > ref ? lc->rtprop - ref : 0, cg_lc_queued(lc),
 		   lc->bits & CG_LC_MTPT ? lc->target_us : c->cfg->governor_target_ms * 1000, now_us);
@@ -3253,7 +3258,7 @@ static void lc_tick(struct client *c)
 	for (int i = 0; i < CG_MAX_LINKS; i++) {
 		struct cg_lc *lc = &c->link[i].sft.lc;
 
-		lc->bits = (uint8_t)c->cfg->link_cc_bits;
+		lc->bits = (uint16_t)c->cfg->link_cc_bits;
 		cg_lc_target(lc, c->cfg->governor_target_ms * 1000, cg_lc_mtpt_cap(lc, c->cfg->link_cc_budget_ms, ref));
 		if (c->cap[i].have_rate)
 			cg_lc_seed(lc, cg_cap_bps(&c->cap[i]) / 8);
@@ -3274,7 +3279,7 @@ static void on_sfack(struct client *c, const uint8_t *payload, uint64_t now_us)
 		if (e.link < CG_MAX_LINKS && c->link[e.link].used) {
 			cg_sf_tx_ack(&c->link[e.link].sft, e.top, e.gotb, e.rts, e.age, now_us);
 			if (c->cfg->link_cc && c->cfg->split_eta)
-				lc_eta(c, &c->eta, e.link, lc_ref(c, &c->eta), now_us);
+				lc_eta(c, &c->eta, e.link, lc_ref(c, &c->eta), 0, now_us);
 		}
 	}
 }
@@ -4399,9 +4404,15 @@ static void cap_tick(struct client *c, uint16_t live, uint16_t in, uint64_t now_
 		}
 	}
 	cg_f3_mix_tick(&c->f3);
-	if (c->cfg->capacity_weights)
+	if (c->cfg->capacity_weights) {
 		cg_cap_weights(c->cap, c->cfg->split == CG_SPLIT_FORCE ? 0 : c->dup0, c->cfg->governor ? c->gw : NULL,
 			       cc.sat_us / 2, c->cw);
+		/* CG_LC_ONLY: a link with its own rate is never left to copies by
+		 * the capacity's weight 0; the expected arrivals share it out */
+		for (int i = 0; c->cfg->link_cc && (c->cfg->link_cc_bits & CG_LC_ONLY) && i < CG_MAX_LINKS; i++)
+			if (c->link[i].sft.acks && c->link[i].sft.lc.rtprop && !(c->dup0 >> i & 1))
+				c->cw[i] = CG_GOV_MAX;
+	}
 	cg_cap_total_tick(&c->ctot, c->cap, live, cc.sat_us);
 	cg_dom_tick(&c->dom, c->cap, c->lm, live, now_ms);
 	if (c->cfg->split_eta) {
@@ -4417,7 +4428,7 @@ static void cap_tick(struct client *c, uint16_t live, uint16_t in, uint64_t now_
 			lc_tick(c);
 			ref = lc_ref(c, &c->eta);
 			for (unsigned i = 0; i < CG_MAX_LINKS; i++)
-				lc_eta(c, &c->eta, i, ref, now_ms * 1000);
+				lc_eta(c, &c->eta, i, ref, live, now_ms * 1000);
 		}
 		cg_cap_tickle(c->cap, live, now_ms, &due, tb, tc);
 		cg_tickle_tick(&c->tk, now_ms * 1000, (uint64_t)c->cfg->split_tickle_ms * 1000, due, tb, tc);
@@ -4434,7 +4445,7 @@ static void cap_tick(struct client *c, uint16_t live, uint16_t in, uint64_t now_
 				lc_tick(c);
 			ref = lc_ref(c, &c->pace);
 			for (unsigned i = 0; i < CG_MAX_LINKS; i++)
-				lc_eta(c, &c->pace, i, ref, now_ms * 1000);
+				lc_eta(c, &c->pace, i, ref, live, now_ms * 1000);
 		}
 	}
 	if (c->cfg->redund_spare) {

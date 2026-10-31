@@ -300,8 +300,64 @@ static void test_lc_mtpt(void)
 	}
 }
 
+/* MEAN: past STARTUP, bw is the delivery's mean of 0.5 s, not its bursts'
+ * largest sample; queued it follows the link down, without a queue what it
+ * was sent only raises it. */
+static void test_lc_mean(void)
+{
+	struct cg_lc c;
+	uint64_t t = 1 * MS;
+
+	cg_lc_init(&c);
+	c.bits = CG_LC_QMODE | CG_LC_S32 | CG_LC_MEAN;
+	c.target_us = 60 * MS;
+	c.mode = CG_LC_PROBE_M;
+	c.cycle = 2;
+	cg_lc_owd(&c, t, 1000000);
+	CHECK_EQ(cg_lc_mean(&c), 0); /* nothing yet */
+	/* 40 Mbit/s on average, in bursts: 10 ms of 200, 40 of nothing, each
+	 * burst sampled at 200 Mbit/s; queued (80 ms of queue) */
+	for (int i = 0; i < 40; i++) {
+		cg_lc_owd(&c, t, 1000000 + 80 * MS);
+		cg_lc_acked(&c, t, 250000, 200 * MBIT, 40 * MS);
+		t += 50 * MS;
+	}
+	CHECK(c.bw > 36 * MBIT && c.bw < 44 * MBIT); /* the max filter read 200 */
+	/* the link slows to 20 while queued: bw follows it down */
+	for (int i = 0; i < 20; i++) {
+		cg_lc_owd(&c, t, 1000000 + 80 * MS);
+		cg_lc_acked(&c, t, 125000, 100 * MBIT, 40 * MS);
+		t += 50 * MS;
+	}
+	CHECK(c.bw > 18 * MBIT && c.bw < 22 * MBIT);
+	/* no queue, less sent (10): bw stays; more sent (30): bw rises */
+	for (int i = 0; i < 20; i++) {
+		cg_lc_owd(&c, t, 1000000 + 5 * MS);
+		cg_lc_acked(&c, t, 62500, 10 * MBIT, 40 * MS);
+		t += 50 * MS;
+	}
+	CHECK(c.bw > 18 * MBIT && c.bw < 22 * MBIT);
+	for (int i = 0; i < 20; i++) {
+		cg_lc_owd(&c, t, 1000000 + 5 * MS);
+		cg_lc_acked(&c, t, 187500, 30 * MBIT, 40 * MS);
+		t += 50 * MS;
+	}
+	CHECK(c.bw > 27 * MBIT && c.bw < 33 * MBIT);
+	/* a silence of a second starts the mean over */
+	t += 1000 * MS;
+	cg_lc_acked(&c, t, 1000, 1 * MBIT, 40 * MS);
+	CHECK_EQ(cg_lc_mean(&c), 0);
+	CHECK(c.bw > 27 * MBIT); /* kept until the mean has its 0.5 s again */
+	/* ONLY's "full": the queue past its target, by the one-way delay */
+	cg_lc_owd(&c, t, 1000000 + 61 * MS);
+	CHECK(cg_lc_full(&c));
+	cg_lc_owd(&c, t, 1000000 + 59 * MS);
+	CHECK(!cg_lc_full(&c));
+}
+
 void test_linkcc(void)
 {
+	test_lc_mean();
 	test_lc_mtpt();
 	test_lc_satq_qmax();
 	test_lc_queue();
