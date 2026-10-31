@@ -30,7 +30,12 @@
 
 #include "linkcc.h"
 
-#define CG_SF_WIN 1024u           /* sseqs the receiver remembers per link */
+/* sseqs each end remembers per link: an SFLOSS comes a queue, the window
+ * (up to CG_SF_CAP_US) and a way back after its sseq went, and the sender
+ * has to still know what it carried; at 1024, ~110 ms at 100 Mbit/s, the
+ * field's sender had forgotten two thirds of them, which GRIT then sent
+ * again only on its timer. 8192: ~0.9 s there. */
+#define CG_SF_WIN 8192u
 #define CG_SF_REO_STEP_US 4000u   /* a false loss widens the window by this */
 #define CG_SF_REO_DECAY_US 200u   /* and a tick (100 ms) narrows it by this */
 #define CG_SF_FLOOR_US 10000u     /* the engine's window: from 10 ms */
