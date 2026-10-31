@@ -630,7 +630,7 @@ uci set cengarde.main.split_spread_ms=40
 uci commit cengarde
 for kv in 'split = on' 'protocontroller = b' 'subflow = yes' 'link_cc = yes' 'split_eta = yes' 'capacity_weights = yes' \
 	'split_spread_copy = no' 'probe_idle_ms = 100' 'reorder_max_wait_ms = 500' 'rescue_wait_ms = 60' 'tcp_aware = yes' \
-	'protocontroller_nack = no' 'split_spread_ms = 40'; do
+	'protocontroller_nack = no' 'split_stress_dup = 0' 'split_spread_ms = 40'; do
 	conf | grep -qxF "$kv" || { echo "bonding: missing $kv"; r=1; }
 done
 conf | grep -qx 'split_spread_ms = 250' && { echo "bonding: its default beat an option set apart"; r=1; }
