@@ -7,14 +7,14 @@ archivos:
 
 # `protocontroller_mem_mb`
 
-Memoria de todas las conexiones juntas (trozos de 16 KB). Sin trozos libres, no se aceptan conexiones nuevas ni se lee más.
+Memoria de todas las conexiones juntas (trozos de 16 KB). Cada conexión toma como mucho su parte pareja; lleno, lo que llega en orden cabe olvidando lo que está fuera de orden; sin trozos libres no se aceptan conexiones nuevas ni se lee más.
 
 - **Sección:** global
 - **Extremo:** los dos
-- **Por omisión:** 64
-- **Rango:** 4–4096
+- **Por omisión:** 0 (un octavo de la RAM, 64–1024)
+- **Rango:** 0–4096
 - **Pieza:** [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]]
-- **Historia:** [[025-protocontrolador]]
+- **Historia:** [[025-protocontrolador]], [[029-mpgrit]]
 - **Recarga:** cambiarla reinicia el proceso (`cg_config_restart_needed`).
 
 Índice: [[Perillas]] · Mapa: [[Mapa del motor]]

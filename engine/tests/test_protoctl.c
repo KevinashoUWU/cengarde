@@ -187,6 +187,12 @@ static void test_edge(void)
 	CHECK_EQ(cg_pctl_edge(1000, 61000, 100000, 200000), 101000);
 	CHECK_EQ(cg_pctl_backlog(1000000, 200, 65536), 200000);
 	CHECK_EQ(cg_pctl_backlog(1000, 200, 65536), 65536);
+	/* the pool by the RAM: an eighth, from 64 to 1024 MB */
+	CHECK_EQ(cg_pctl_mem_auto(0), 64);
+	CHECK_EQ(cg_pctl_mem_auto(256ull << 20), 64);
+	CHECK_EQ(cg_pctl_mem_auto(2048ull << 20), 256);
+	CHECK_EQ(cg_pctl_mem_auto(7732388ull << 10), 943);
+	CHECK_EQ(cg_pctl_mem_auto(64ull << 30), 1024);
 }
 
 /* What the rescue does with a kept packet a NACK names (cg_pctl_nack_kind). */

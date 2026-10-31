@@ -203,7 +203,7 @@ Secciones: «global» es la parte sin sección; `[link NOMBRE]` es del cliente; 
 | [[Mapa/Perillas/protocontroller_vps\|protocontroller_vps]] | vacío (la primera dirección del prefijo de `tun_addr`) | [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[025-protocontrolador]] |
 | [[Mapa/Perillas/protocontroller_mid_cc\|protocontroller_mid_cc]] | `bbr` | [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[025-protocontrolador]] |
 | [[Mapa/Perillas/protocontroller_buf_kb\|protocontroller_buf_kb]] | 1024 (con `subflow`, 8176) | [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[025-protocontrolador]], [[029-mpgrit]] |
-| [[Mapa/Perillas/protocontroller_mem_mb\|protocontroller_mem_mb]] | 64 | [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[025-protocontrolador]] |
+| [[Mapa/Perillas/protocontroller_mem_mb\|protocontroller_mem_mb]] | 0 (un octavo de la RAM, 64–1024) | [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[025-protocontrolador]], [[029-mpgrit]] |
 | [[Mapa/Perillas/protocontroller_max_flows\|protocontroller_max_flows]] | 256 | [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[025-protocontrolador]] |
 | [[Mapa/Perillas/protocontroller_queue_ms\|protocontroller_queue_ms]] | 5 | [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[025-protocontrolador]] |
 | [[Mapa/Perillas/protocontroller_backlog_ms\|protocontroller_backlog_ms]] | 200 | [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[025-protocontrolador]] |

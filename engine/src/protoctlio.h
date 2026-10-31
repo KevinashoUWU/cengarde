@@ -35,7 +35,7 @@ struct cg_pctl_cfg {
 	uint16_t port;       /* the router's listening port (the firewall's REDIRECT) */
 	uint32_t mss;        /* stream bytes per DATA (the tunnel's MTU less the header) */
 	uint32_t buf_kb;     /* each stream's buffer per direction, at most */
-	uint32_t mem_mb;     /* every stream's buffers together */
+	uint32_t mem_mb;     /* every stream's buffers together; 0: cg_pctl_mem_auto */
 	uint32_t max_flows;  /* streams at once */
 	uint32_t queue_ms;   /* the queue the middle leg may build (streamcc.h) */
 	uint32_t backlog_ms; /* what a stream holds unsent or unwritten, in time at its rate */
@@ -47,6 +47,16 @@ struct cg_pctl_cfg {
 	uint32_t peers;      /* the server: sessions it may have (their pacers) */
 	char cc[16];         /* the VPS's congestion control toward the destination ("" the kernel's) */
 };
+
+/* protocontroller_mem_mb 0: an eighth of the RAM, from 64 to 1024 MB. The
+ * pool's pages are touched only as streams fill them. 64 MB fixed held a
+ * speed test's 31 streams of 8 MB at 570 Mbit/s (field, 2026-10-29). */
+static inline uint32_t cg_pctl_mem_auto(uint64_t ram_bytes)
+{
+	uint64_t mb = ram_bytes / 8 / (1024 * 1024);
+
+	return mb < 64 ? 64 : mb > 1024 ? 1024 : (uint32_t)mb;
+}
 
 #define CG_PCTL_SPREAD_MAX_US 1000000u
 

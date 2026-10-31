@@ -18,6 +18,7 @@
 #include <sys/epoll.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
+#include <sys/sysinfo.h>
 #include <unistd.h>
 #include <linux/sockios.h>
 
@@ -47,6 +48,7 @@
 #define PCTL_LAN_RCVBUF 131072  /* the router's LAN sockets' receive buffer (the kernel doubles it) */
 #define PCTL_INIT_EDGE 262144u  /* the peer's window before its first ACK */
 #define PCTL_MIN_BACKLOG 65536u   /* what a stream may hold unsent or unwritten, at least */
+#define PCTL_SHARE_MIN 262144u    /* a stream's share of the pool, at least (flow_cap) */
 #define PCTL_START_BACKLOG 262144u /* and in its first PCTL_START_US: under it a stream that started slow stopped
 				   * reading, the LAN socket's small buffer dropped a segment (its window
 				   * before the kernel learned the segments' overhead) and the sender waited
@@ -167,6 +169,7 @@ struct cg_pctl {
 	uint64_t up_bytes, down_bytes, data_tx, data_rx, acks_tx, acks_rx, opens_tx, retx, copies, rto_n;
 	uint64_t reneged; /* timeouts that found the oldest segment SACKed and sent the SACKed again */
 	uint64_t dup_frames, ooo_frames, drop_frames, nomem;
+	uint64_t rx_reneged, rx_reneged_chunks; /* reneges to make room for what came in order (make_room), and the chunks they freed */
 	uint64_t cc_switches; /* protocontroller_cc auto: connections switched to BBR */
 	uint64_t retx_by[CG_ST_BY_N]; /* segments sent again, by why they were lost (RACK, the timer, a NACK) */
 	uint64_t nack[CG_ST_NACK_N];  /* the rescue's NACKs of DATA, by what they did (cg_st_tx_nack) */
@@ -1079,6 +1082,33 @@ static struct flow *find(struct cg_pctl *p, uint32_t sid, uint32_t id)
 	}
 }
 
+/* The pool is full and f's frame would move its next byte in order: room
+ * for it by a renege (stream.h's cg_st_rx_renege) of what f holds out of
+ * order, or else of the stream holding the most. 0: nothing to forget
+ * (every chunk holds bytes in order, which leave as the sockets take
+ * them). */
+static int make_room(struct cg_pctl *p, struct flow *f)
+{
+	struct flow *v = f;
+	uint32_t most = cg_st_rx_ooo_chunks(&f->rx, &f->rb);
+
+	for (uint32_t i = 0; !most && i < p->nused; i++) {
+		struct flow *g = &p->f[p->used[i]];
+		uint32_t k = g == f ? 0 : cg_st_rx_ooo_chunks(&g->rx, &g->rb);
+
+		if (k > most) {
+			most = k;
+			v = g;
+		}
+	}
+	if (!most)
+		return 0;
+	p->rx_reneged_chunks += cg_st_rx_renege(&v->rx, &v->rb, &p->pool);
+	p->rx_reneged++;
+	v->ack_now = 1; /* its ACK no longer names those ranges */
+	return 1;
+}
+
 static void data_in(struct cg_pctl *p, struct flow *f, const struct cg_pctl_msg *m, uint64_t now, unsigned link)
 {
 	uint64_t off = cg_st_unwrap(f->rx.nxt, m->off);
@@ -1114,7 +1144,10 @@ static void data_in(struct cg_pctl *p, struct flow *f, const struct cg_pctl_msg 
 		f->ack_now = 1;
 		return;
 	}
-	if (m->len && cg_st_buf_write(&f->rb, &p->pool, off, m->data, m->len) < 0) {
+	/* what comes in order always fits: else every stream may wait for its
+	 * hole while the pool holds what came above it (make_room) */
+	if (m->len && cg_st_buf_write(&f->rb, &p->pool, off, m->data, m->len) < 0 &&
+	    (off > f->rx.nxt || !make_room(p, f) || cg_st_buf_write(&f->rb, &p->pool, off, m->data, m->len) < 0)) {
 		p->nomem++;
 		f->ack_now = 1;
 		return;
@@ -1343,6 +1376,20 @@ static void rx_one(struct cg_pctl *p, uint32_t peer, uint32_t sid, const uint8_t
 
 /* ---- the sockets ---- */
 
+/* What a stream may hold in each direction: its buffer (protocontroller_buf_kb),
+ * at most an even share of the pool among the streams open, and at least
+ * PCTL_SHARE_MIN. The pool is one for every stream, and each one's window
+ * as if it had the whole buffer promised more than the pool holds: 31
+ * streams of a speed test, 8 MB each, on 64 MB (field, 2026-10-29). */
+static uint64_t flow_cap(const struct cg_pctl *p)
+{
+	uint64_t share = (uint64_t)p->pool.n * CG_ST_CHUNK / (p->nused ? p->nused : 1);
+
+	if (share < PCTL_SHARE_MIN)
+		share = PCTL_SHARE_MIN;
+	return share < p->buf_cap ? share : p->buf_cap;
+}
+
 static uint64_t backlog_max(const struct cg_pctl *p, const struct flow *f, uint64_t rate, uint64_t now)
 {
 	return cg_pctl_backlog(rate, p->cfg.backlog_ms,
@@ -1374,7 +1421,7 @@ static int sock_read(struct cg_pctl *p, struct flow *f)
 
 	while (f->rd_ready && !f->tx.eof && got < PCTL_READ_PASS) {
 		uint64_t held = f->tx.tail - f->tx.una, unsent = cg_st_tx_unsent(&f->tx);
-		uint64_t room = p->buf_cap > held ? p->buf_cap - held : 0, bl = backlog_max(p, f, f->s_rate, cg_now_us());
+		uint64_t cap = flow_cap(p), room = cap > held ? cap - held : 0, bl = backlog_max(p, f, f->s_rate, cg_now_us());
 		uint32_t crun;
 		uint8_t *d;
 		ssize_t n;
@@ -1461,12 +1508,12 @@ static int sock_write(struct cg_pctl *p, struct flow *f, uint64_t now)
 		return -1;
 	}
 	if (f->consumed != was) {
-		uint64_t e = cg_pctl_edge(f->consumed, f->rx.nxt, p->buf_cap, backlog_max(p, f, f->w_rate, now));
+		uint64_t cap = flow_cap(p), e = cg_pctl_edge(f->consumed, f->rx.nxt, cap, backlog_max(p, f, f->w_rate, now));
 
 		age_pop(f->io, &f->io_h, &f->io_n, f->consumed, now, p->writeq);
 		f->progress_t = now;
 		/* a window that opened by a quarter of the buffer: tell the sender */
-		if (e >= f->adv_edge + p->buf_cap / 4)
+		if (e >= f->adv_edge + cap / 4)
 			f->ack_now = 1;
 	}
 	if (cg_st_rx_ended(&f->rx) && f->consumed >= f->rx.fin && !f->wr_shut) {
@@ -1527,7 +1574,7 @@ void cg_pctl_event(struct cg_pctl *p, uint32_t idx, uint32_t events)
 static void send_ack(struct cg_pctl *p, struct flow *f)
 {
 	struct cg_st_ack a;
-	uint64_t edge = cg_pctl_edge(f->consumed, f->rx.nxt, p->buf_cap, backlog_max(p, f, f->w_rate, cg_now_us()));
+	uint64_t edge = cg_pctl_edge(f->consumed, f->rx.nxt, flow_cap(p), backlog_max(p, f, f->w_rate, cg_now_us()));
 	uint8_t *b = slot_for(p, f->peer, f->sid);
 	int32_t d = 0;
 
@@ -1576,7 +1623,7 @@ static int send_one(struct cg_pctl *p, struct flow *f, struct peer *r, uint64_t 
 	if (!cg_st_tx_next(&f->tx, p->cfg.mss, &idx, &off, &len, &fin)) {
 		f->stop = f->tx.n >= f->tx.cap				 ? PCTL_STOP_SEGS
 			  : f->tx.tail > f->tx.nxt && f->tx.nxt >= f->tx.edge ? PCTL_STOP_WINDOW
-			  : f->tx.tail - f->tx.una >= p->buf_cap		 ? PCTL_STOP_BUF
+			  : f->tx.tail - f->tx.una >= flow_cap(p)		 ? PCTL_STOP_BUF
 										 : PCTL_STOP_EMPTY;
 		return 0;
 	}
@@ -1703,7 +1750,7 @@ void cg_pctl_service(struct cg_pctl *p)
 			want = EPOLLOUT;
 		} else {
 			uint64_t held = f->tx.tail - f->tx.una;
-			int can = !f->tx.eof && held < p->buf_cap &&
+			int can = !f->tx.eof && held < flow_cap(p) &&
 				  cg_st_tx_unsent(&f->tx) < backlog_max(p, f, f->s_rate, now);
 
 			if (can && !(f->ev & EPOLLIN)) {
@@ -1863,7 +1910,7 @@ struct cg_pctl *cg_pctl_new(const struct cg_pctl_cfg *cfg, int ep, const struct 
 			  size_t errlen)
 {
 	struct cg_pctl *p = calloc(1, sizeof(*p));
-	uint32_t nch, tsz;
+	uint32_t nch, tsz, mem_mb;
 
 	if (!p) {
 		snprintf(err, errlen, "protocontroller: out of memory");
@@ -1882,7 +1929,13 @@ struct cg_pctl *cg_pctl_new(const struct cg_pctl_cfg *cfg, int ep, const struct 
 	p->reo_cap = cg_scc_reo_cap(cfg->reo_ms * 1000, cfg->code_ms * 1000);
 	/* a segment per mss of the buffer, and some for small writes */
 	p->nseg = (uint32_t)(p->buf_cap / (cfg->mss > 256 ? cfg->mss / 2 : 128)) + 64;
-	nch = (uint32_t)((uint64_t)cfg->mem_mb * 1024 * 1024 / CG_ST_CHUNK);
+	mem_mb = cfg->mem_mb;
+	if (!mem_mb) {
+		struct sysinfo si;
+
+		mem_mb = cg_pctl_mem_auto(sysinfo(&si) == 0 ? (uint64_t)si.totalram * si.mem_unit : 0);
+	}
+	nch = (uint32_t)((uint64_t)mem_mb * 1024 * 1024 / CG_ST_CHUNK);
 	p->mem = malloc((size_t)nch * CG_ST_CHUNK); /* untouched pages stay free */
 	p->stack = malloc((size_t)nch * sizeof(*p->stack));
 	p->f = calloc(cfg->max_flows, sizeof(*p->f));
@@ -1896,7 +1949,7 @@ struct cg_pctl *cg_pctl_new(const struct cg_pctl_cfg *cfg, int ep, const struct 
 	p->tval = calloc(tsz, sizeof(*p->tval));
 	if (!nch || !p->mem || !p->stack || !p->f || !p->segs || !p->gen || !p->used || !p->freeslot || !p->tkey ||
 	    !p->tval || cg_pctl_peers(p, cfg->server ? (cfg->peers ? cfg->peers : 1) : 1) < 0) {
-		snprintf(err, errlen, "protocontroller: out of memory (protocontroller_mem_mb %u, protocontroller_max_flows %u)", cfg->mem_mb, cfg->max_flows);
+		snprintf(err, errlen, "protocontroller: out of memory (protocontroller_mem_mb %u, protocontroller_max_flows %u)", mem_mb, cfg->max_flows);
 		cg_pctl_free(p);
 		return NULL;
 	}
@@ -2044,6 +2097,9 @@ void cg_pctl_json(const struct cg_pctl *p, struct cg_json *j)
 	cg_json_u64(j, "ooo_frames", p->ooo_frames);
 	cg_json_u64(j, "drop_frames", p->drop_frames);
 	cg_json_u64(j, "nomem", p->nomem);
+	/* the pool full: reneges to fit what came in order, and the chunks freed */
+	cg_json_u64(j, "rx_reneged", p->rx_reneged);
+	cg_json_u64(j, "rx_reneged_chunks", p->rx_reneged_chunks);
 	if (p->cc_auto)
 		cg_json_u64(j, "cc_to_bbr", p->cc_switches);
 	cg_json_arr(j, "holes_ms"); /* < 5, 10, 20, 40, 80, 160, 320, more */
@@ -2075,6 +2131,8 @@ void cg_pctl_json(const struct cg_pctl *p, struct cg_json *j)
 	cg_json_u64(j, "held_tx_bytes", txb);
 	cg_json_u64(j, "held_rx_bytes", rxb);
 	cg_json_u64(j, "mem_bytes", (uint64_t)cg_st_pool_used(&p->pool) * CG_ST_CHUNK);
+	cg_json_u64(j, "mem_cap_bytes", (uint64_t)p->pool.n * CG_ST_CHUNK);
+	cg_json_u64(j, "flow_cap_bytes", flow_cap(p)); /* what each stream may hold now (its share) */
 	cg_json_u64(j, "mem_peak_bytes", (uint64_t)p->pool.peak * CG_ST_CHUNK);
 	cg_json_arr(j, "pacers");
 	for (uint32_t i = 0; i < p->npr; i++) {
