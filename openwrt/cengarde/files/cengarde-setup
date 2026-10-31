@@ -123,6 +123,7 @@ STATUS_FILE=/var/run/cengarde.json
 CONTROL_SOCKET=/var/run/cengarde/cengarde.sock # cengarde ctl's default
 VPS_KEY=/etc/cengarde/vps_admin_key            # dropbear's format (dbclient -i)
 VPS_SYNCED=/var/run/cengarde-vps-mode          # the mode the VPS last took from here
+VPS_SYNC_LOCK=/var/lock/cengarde-vps-sync.lock  # one sync at a time
 VPS_TIMEOUT=120                                # a VPS command may restart its engine
 CHANGED=
 
@@ -1368,23 +1369,35 @@ limit() {
 # With vps_admin = 1 this router administers its VPS, whose settings every
 # router there shares: its mode goes there (cengarde-vps-admin's "mode") on
 # the first apply after a boot and on each change, in the background, as the
-# VPS may be out of reach for a while (five tries, 30 s apart).
+# VPS may be out of reach for a while (five tries, 30 s apart), one at a
+# time (a newer apply's waits for it; each try takes the mode as it is
+# then). It holds no lock of ours nor procd's: run from the init script, it
+# kept procd_cengarde.lock (fd 1000), and with the VPS out of reach (a
+# rebuilt one at a new address, the tunnel still on the old) every restart,
+# reload and status of the service waited behind its tries, minutes
+# (2026-10-31).
 vps_sync() {
 	[ "$VPS_ADMIN" = 1 ] && [ -s "$VPS_KEY" ] || return 0
 	[ "$(cat "$VPS_SYNCED" 2>/dev/null)" = "$MODE" ] && return 0
 	(
-		exec 9>&- # not the lock: the VPS may take a while
+		# shellcheck disable=SC3023 # busybox ash has them, and procd takes 1000
+		exec 9>&- 1000>&-
+		exec 8>"$VPS_SYNC_LOCK"
+		flock -n 8 || exit 0
 		i=0
 		while [ $i -lt 5 ]; do
-			if /usr/sbin/cengarde-setup vps mode "$MODE"; then
-				echo "$MODE" >"$VPS_SYNCED"
-				log "the VPS took mode $MODE"
+			m=$(uci -q get cengarde.main.mode)
+			case "$m" in bonding | redundancy) ;; *) m=custom ;; esac
+			[ "$(cat "$VPS_SYNCED" 2>/dev/null)" = "$m" ] && exit 0
+			if /usr/sbin/cengarde-setup vps mode "$m"; then
+				echo "$m" >"$VPS_SYNCED"
+				log "the VPS took mode $m"
 				exit 0
 			fi
 			i=$((i + 1))
 			sleep 30
 		done
-		log "the VPS did not take mode $MODE (cengarde-setup vps get, or LuCI's VPS tab)"
+		log "the VPS did not take mode $m (cengarde-setup vps get, or LuCI's VPS tab)"
 	) </dev/null >/dev/null 2>&1 &
 }
 
