@@ -3590,6 +3590,10 @@ static void down_deliver(struct client *c, const struct cg_hdr *h, unsigned link
 			c->down_pctl_off++;
 			return;
 		}
+		/* delivered too, as the upload counts it: the download's TCP
+		 * goes this way, not to the TUN */
+		c->down_pkts++;
+		c->down_bytes += len;
 		if (c->cfg->reorder) {
 			k.nohold = 1;
 			if (cg_ro_in(&c->rxs.ro, &c->pool, &c->rocf, &k, rset, &buf) == CG_RO_AGAIN) {
