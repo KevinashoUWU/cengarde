@@ -278,7 +278,6 @@ struct session {
 	struct cg_reorder ro;  /* the upload, back in sequence (reorder.h); about 322 KiB */
 	struct sfpath *sf[CG_MAX_LINKS]; /* each path as a subflow (subflow.h), with subflow; NULL: not yet */
 	uint64_t sfloss_sent, sfloss_rx; /* SFLOSS messages sent to the client, and received */
-	uint16_t sf_live; /* the live paths at the last tick, for path_flush */
 	uint64_t sfack_sent, sfack_rx;   /* SFACK messages */
 	uint64_t sfack_us;               /* when the last SFACK went */
 };
@@ -294,7 +293,6 @@ struct sfpath {
 	struct cg_sf_rx rx;
 	uint64_t grit, copied, unkept, other, unsure;
 	uint64_t allcopies; /* of grit's checks, copied ones every path of theirs lost (cg_resc_lost_on) */
-	uint64_t flushed;   /* times it left the live paths with its in-flight handed over (path_flush) */
 	uint64_t suspect; /* of them, handed over as suspects (a code may rebuild them) */
 };
 
@@ -2183,51 +2181,17 @@ static void on_nack(struct server *s, struct session *S, uint8_t flags, const ui
  * well (rescue.h's cg_resc_sure); a copied one may have come on another
  * path, until every path it went on lost it (cg_resc_lost_on), and the
  * tunnel's own DATA is left to the client's reorderer and its NACKs. */
-static void path_lost(struct server *s, struct session *S, unsigned p, const uint32_t *q, unsigned n, uint64_t now_ms);
-
 static void on_sfloss(struct server *s, struct session *S, const uint8_t *payload, size_t plen, uint64_t now_ms)
 {
-	uint32_t q[CG_NACK_SEQ_MAX];
-	unsigned n, p = payload[0];
-
-	S->sfloss_rx++;
-	if (p >= CG_MAX_LINKS || !S->sf[p])
-		return;
-	n = cg_nack_read(q, CG_NACK_SEQ_MAX, payload + 1, plen - 1);
-	path_lost(s, S, p, q, n, now_ms);
-}
-
-/* A path of S that left the live ones took with it what its subflow had in
- * flight past the newest SFACK, as the client's sf_flush: each goes as an
- * SFLOSS of its own would. */
-static void path_flush(struct server *s, struct session *S, unsigned p, uint64_t now_ms)
-{
-	struct cg_sf_tx *t = &S->sf[p]->tx;
-	uint32_t q[CG_NACK_SEQ_MAX], sq = t->have_got ? t->top + 1 : 1;
-	unsigned n = 0;
-
-	if ((int32_t)(t->next - sq) > (int32_t)CG_SF_WIN)
-		sq = t->next - CG_SF_WIN;
-	for (; (int32_t)(t->next - sq) > 0; sq++) {
-		q[n++] = sq;
-		if (n == CG_NACK_SEQ_MAX) {
-			path_lost(s, S, p, q, n, now_ms);
-			n = 0;
-		}
-	}
-	if (n)
-		path_lost(s, S, p, q, n, now_ms);
-	S->sf[p]->flushed++;
-}
-
-/* Path p of S lost q[0..n) (sseqs) down: what GRIT should hear of it. */
-static void path_lost(struct server *s, struct session *S, unsigned p, const uint32_t *q, unsigned n, uint64_t now_ms)
-{
-	uint32_t gone[CG_NACK_SEQ_MAX];
-	unsigned ngone = 0;
-	struct sfpath *F = S->sf[p];
+	uint32_t q[CG_NACK_SEQ_MAX], gone[CG_NACK_SEQ_MAX];
+	unsigned n, ngone = 0, p = payload[0];
+	struct sfpath *F;
 	int best[2];
 
+	S->sfloss_rx++;
+	if (p >= CG_MAX_LINKS || !(F = S->sf[p]))
+		return;
+	n = cg_nack_read(q, CG_NACK_SEQ_MAX, payload + 1, plen - 1);
 	for (unsigned i = 0; i < n; i++) {
 		uint32_t seq;
 		uint16_t len;
@@ -3449,15 +3413,6 @@ static void gov_tick(struct server *s, struct session *S, uint64_t now_ms)
  * path_models). */
 static void cap_tick(struct server *s, struct session *S, uint16_t live, uint64_t now_ms)
 {
-	/* subflow: a path that left the live ones hands its in-flight over */
-	if (s->cfg->subflow) {
-		uint16_t gone = (uint16_t)(S->sf_live & ~live);
-
-		for (unsigned p = 0; gone && p < CG_MAX_LINKS; p++)
-			if ((gone >> p & 1) && S->sf[p])
-				path_flush(s, S, p, now_ms);
-		S->sf_live = live;
-	}
 	struct cg_cap_cfg cc = { .window_ms = s->cfg->governor_window_ms, .sat_us = s->cfg->capacity_sat_ms * 1000 };
 	struct cg_slot slot = cg_config_slot(s->cfg);
 	uint64_t wall = cg_wall_ms();
@@ -4241,7 +4196,6 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 				cg_json_u64(j, "to_grit", F->grit);
 				cg_json_u64(j, "copied", F->copied);
 				cg_json_u64(j, "all_copies", F->allcopies);
-				cg_json_u64(j, "flushed", F->flushed);
 				cg_json_u64(j, "not_kept", F->unkept);
 				cg_json_u64(j, "other", F->other);
 				cg_json_u64(j, "unsure", F->unsure);

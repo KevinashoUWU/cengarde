@@ -171,7 +171,6 @@ struct link {
 	 * yet (a code may have rebuilt it: rescue.h's cg_resc_sure) */
 	uint64_t sf_grit, sf_copied, sf_unkept, sf_other, sf_unsure;
 	uint64_t sf_allcopies; /* of sf_grit's checks, copied ones every link of theirs lost (cg_resc_lost_on) */
-	uint64_t sf_dead;      /* times it left the live links with its in-flight handed over (sf_flush) */
 	uint64_t sf_suspect; /* of them, handed over as suspects (a code may rebuild them) */
 	uint8_t pump;      /* its pump (off and on), once it had a socket: sticky */
 	uint8_t has_pump;
@@ -244,7 +243,6 @@ struct client {
 	int peer_tcpmark;          /* and that it marks its TCP ACKs CG_F_TUNHOLE (tcpack.h) */
 	uint64_t nacks_sent;       /* NACK messages sent, for the rescue */
 	uint64_t sfloss_sent, sfloss_rx; /* SFLOSS messages (subflow.h) sent, and received */
-	uint16_t sf_live; /* the live links at the last tick, for sf_flush */
 	uint64_t sfack_sent, sfack_rx;   /* SFACK messages */
 	uint64_t sfack_us;               /* when the last SFACK went */
 	uint64_t retx_one, retx_copied; /* tcp_aware in redundancy: TCP retransmissions sent on one link; copied (story 023) */
@@ -3147,51 +3145,17 @@ static struct link *fastest_link(struct client *c, uint64_t now_ms)
  * well (rescue.h's cg_resc_sure); a copied one may have come on another
  * link, until every link it went on lost it (cg_resc_lost_on), and the
  * tunnel's own DATA is left to the server's reorderer and its NACKs. */
-static void sf_lost(struct client *c, unsigned link, const uint32_t *q, unsigned n, uint64_t now_ms);
-
 static void on_sfloss(struct client *c, const uint8_t *payload, size_t plen, uint64_t now_ms)
 {
-	uint32_t q[CG_NACK_SEQ_MAX];
-	unsigned n, link = payload[0];
+	uint32_t q[CG_NACK_SEQ_MAX], gone[CG_NACK_SEQ_MAX];
+	unsigned n, ngone = 0, link = payload[0];
+	struct link *l, *best;
 
 	c->sfloss_rx++;
 	if (link >= CG_MAX_LINKS)
 		return;
+	l = &c->link[link];
 	n = cg_nack_read(q, CG_NACK_SEQ_MAX, payload + 1, plen - 1);
-	sf_lost(c, link, q, n, now_ms);
-}
-
-/* A link that left the live ones (no probe answered) took with it what its
- * subflow had in flight past the newest SFACK: nothing later on that link
- * will ever show those holes, and GRIT's timer found them, its round trip
- * and 300 ms late. Each goes as an SFLOSS of its own would (sf_lost). */
-static void sf_flush(struct client *c, unsigned link, uint64_t now_ms)
-{
-	struct cg_sf_tx *t = &c->link[link].sft;
-	uint32_t q[CG_NACK_SEQ_MAX], s = t->have_got ? t->top + 1 : 1;
-	unsigned n = 0;
-
-	if ((int32_t)(t->next - s) > (int32_t)CG_SF_WIN)
-		s = t->next - CG_SF_WIN;
-	for (; (int32_t)(t->next - s) > 0; s++) {
-		q[n++] = s;
-		if (n == CG_NACK_SEQ_MAX) {
-			sf_lost(c, link, q, n, now_ms);
-			n = 0;
-		}
-	}
-	if (n)
-		sf_lost(c, link, q, n, now_ms);
-	c->link[link].sf_dead++;
-}
-
-/* Link's subflow lost q[0..n) (sseqs): what GRIT should hear of it. */
-static void sf_lost(struct client *c, unsigned link, const uint32_t *q, unsigned n, uint64_t now_ms)
-{
-	uint32_t gone[CG_NACK_SEQ_MAX];
-	unsigned ngone = 0;
-	struct link *l = &c->link[link], *best;
-
 	for (unsigned i = 0; i < n; i++) {
 		uint32_t seq;
 		uint16_t len;
@@ -4395,15 +4359,6 @@ static void pace_set(struct link *l, uint64_t rate)
  * Each link with its own model (c->lm, link_models). */
 static void cap_tick(struct client *c, uint16_t live, uint16_t in, uint64_t now_ms)
 {
-	/* subflow: a link that left the live ones hands its in-flight over */
-	if (c->cfg->subflow) {
-		uint16_t gone = (uint16_t)(c->sf_live & ~live);
-
-		for (unsigned i = 0; gone && i < CG_MAX_LINKS; i++)
-			if (gone >> i & 1)
-				sf_flush(c, i, now_ms);
-		c->sf_live = live;
-	}
 	struct cg_cap_cfg cc = { .window_ms = c->cfg->governor_window_ms, .sat_us = c->cfg->capacity_sat_ms * 1000 };
 	struct cg_slot slot = cg_config_slot(c->cfg);
 	uint64_t wall = cg_wall_ms();
@@ -5109,7 +5064,6 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 			cg_json_u64(j, "to_grit", l->sf_grit);
 			cg_json_u64(j, "copied", l->sf_copied);
 			cg_json_u64(j, "all_copies", l->sf_allcopies);
-			cg_json_u64(j, "flushed", l->sf_dead);
 			cg_json_u64(j, "not_kept", l->sf_unkept);
 			cg_json_u64(j, "other", l->sf_other);
 			cg_json_u64(j, "unsure", l->sf_unsure);
