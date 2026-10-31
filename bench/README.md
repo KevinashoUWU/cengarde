@@ -23,6 +23,24 @@ l3 10.0.3.1 ──────────────────────�
 Las cifras citadas en [`ROADMAP.md`](../ROADMAP.md) y en las historias 001,
 005, 006, 009, 010 y 011 salen de aquí.
 
+
+## Probar en el router sin esperar al CI (`nucpush.sh`)
+
+`bench/nucpush.sh` compila esta copia con el SDK oficial de OpenWrt (el mismo
+del CI, bajado una vez a `~/.cache/cengarde-sdk` y comprobado contra los
+`sha256sums` de OpenWrt) y lo instala en el router por SSH:
+
+- `quick [HOST]`: solo el motor, con la cadena musl del SDK, más
+  `cengarde-setup`, el init y las vistas de LuCI; reinicia el motor. ~5 s.
+- `apk [HOST]`: los paquetes `cengarde` y `luci-app-cengarde` como los arma el
+  CI, y `apk add` en el router. La primera vez ~10 min (las dependencias,
+  módulos del kernel incluidos); luego ~15 s, porque compila solo el Makefile
+  de cada paquete.
+- `build`: el motor de `quick`, sin router.
+
+`HOST` por omisión es el NUC de la testnet; `SDK_TARGET=bcm27xx/bcm2711` para
+una Pi 4. La verificación final sigue siendo la del CI.
+
 ## Requisitos
 
 root, iproute2 (`ip`, `tc` con `sch_tbf`), el módulo `tun`, gcc, make y
