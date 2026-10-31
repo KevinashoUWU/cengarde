@@ -1019,6 +1019,15 @@ Queda: el temporizador todavía reenvía unos 4 900 por corrida y casi todo
 llega duplicado (4 306); y a más de 300 Mbit/s por enlace 8192 `sseq` son
 ~0,3 s: la ventana debería medirse en tiempo, no en paquetes.
 
+**Probado y revertido: el horizonte sobre todos los enlaces.** Muestreando
+cada segundo, las ráfagas del temporizador (400–600 reenvíos) coincidían con
+un enlace 300–470 ms atrasado que salía del reparto (G4): el horizonte que
+el motor le da a GRIT (`ops.horizon`) contaba solo los enlaces del reparto.
+Contarlos todos (`claude/grit-horizon-carry`, `d4f5263`) no movió los
+reenvíos por temporizador (9 952 contra 9 903 por corrida, 3+3 rondas) y la
+diferencia de caudal cambió de signo entre rondas: la causa es otra, y hace
+falta medir la edad de lo que vence contra el enlace que lo llevó.
+
 ## Pendiente
 
 - `link_cc`: decidir si pasa a ser lo normal con `subflow` (más rondas de
