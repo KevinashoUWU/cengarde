@@ -960,9 +960,12 @@ enlace dominante). Laboratorio (`onlylab`, n = 3, contra la media sola):
 +12,6 %, `protect` con la mitad de p99 (1493 → 659 y 494 → 249 ms),
 `cell4` bajada −4,5 %. Terreno (`onlyfield`, 3 rondas, tarde): la subida
 +8 % en las tres (119,5 contra 110,4), la bajada −8 % (234,1 contra 255,0,
-perdió dos de tres). Como cada extremo decide su propio sentido, la
-propuesta es por sentido: el router con 512 (la subida) y el VPS sin él,
-por medir de noche.
+perdió dos de tres). Cuatro rondas más (`onlyfield2`) dieron lo contrario:
+bajada +7 % (239,1 contra 222,5), subida −21 % (79,1 contra 99,8). Las 7
+rondas juntas: bajada igual (237,0 contra 236,5), subida −8 % (96,4 contra
+104,4); el mismo brazo varía ±30 % entre rondas (la subida de 512, de 54 a
+128). **Queda en el código, apagado**: el terreno no le ve ganancia y el
+laboratorio, +3,4 %. La testnet vuelve a 270 / 302 (la media).
 
 **El enlace que muere** (`594ec25`, revertido): al salir un enlace de los
 vivos, lo que su subflujo tenía en vuelo tras el último SFACK pasaba a GRIT
