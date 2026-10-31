@@ -3,7 +3,7 @@ tags: [mapa, pieza]
 archivos:
   - engine/src/linkcc.h
   - engine/tests/test_linkcc.c
-sello: 1aea7f95ccf0fdec
+sello: 484193bada7bd70d
 ---
 # Ritmo por enlace (linkcc.h)
 
@@ -60,6 +60,8 @@ los dejaban a medias.
   lento es el enlace que el más rápido, así un enlace chico suma lo que puede
   dentro de la ventana del grupo y no estira la espera del reordenador.
 - Pura: sin reloj ni E/S; tiempos en µs, tasas en bytes/s.
+
+**La media en vez del máximo** (`link_cc_bits` 256, 2026-10-31, [[029-mpgrit]]): pasado el arranque, `bw` es lo entregado en los últimos cinco baldes enteros de 100 ms (`cg_lc_mean_add`, `cg_lc_mean`; `mean_bps` en el estado); con cola en el enlace es su capacidad y sube o baja, sin cola solo sube, y tras un silencio queda como estaba. Contra la captura de techo el máximo de 1–2 s leía 1,7–5,2 veces la capacidad de un módem saturado (las ráfagas del operador) y la media 0,96–1,00; en terreno, la bajada +21 % y la subida +6 %. En prueba antes de quedar por omisión.
 
 ## Lee
 - Cada `SFACK` (`cg_sf_tx_ack`): bytes entregados, tasa, RTT.
