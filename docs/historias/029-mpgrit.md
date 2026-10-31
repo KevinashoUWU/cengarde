@@ -1003,9 +1003,13 @@ llegar por los subflujos. Dos causas:
   tan tarde que el NUC lo botaba fuera de la ventana anti-replay
   (`download.too_old`, 42 794 en 30 s). Con `split_stress_dup = 0` (ventana
   vieja, tres rondas): `too_old` 0 en las tres, 189 contra 167 Mbit/s,
-  reenviado 4,2 contra 6,8 %. Con la ventana nueva casi no hay estrés (0
-  copias en las tres rondas), así que el A/B de esta perilla queda por
-  repetir sobre ella.
+  reenviado 4,2 contra 6,8 %. Sobre la ventana nueva, tres rondas más por
+  brazo: 213 / 316 / 255 (media 261) contra 258 / 139 / 247 (214). Con 50,
+  las rondas sin estrés no mandan copias y quedan como con 0; la que entró
+  en estrés cayó a 139 Mbit/s con 266 MB de copias, 17 % reenviado y 26 294
+  olvidados aun con 8192. Las copias de estrés son del túnel sin ARQ: con
+  GRIT sobran. El modo bonding del VPS deja `split_stress_dup = 0` (PR
+  #137; la testnet, en `engine.local`); la subida no está medida.
 
 Queda: el temporizador todavía reenvía unos 4 900 por corrida y casi todo
 llega duplicado (4 306); y a más de 300 Mbit/s por enlace 8192 `sseq` son
