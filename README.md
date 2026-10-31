@@ -1,221 +1,193 @@
 # cengarde
 
-*Redundant multi-link tunnel: a C rewrite of engarde for OpenWrt routers.
-Documentation in Spanish.*
+**REAL UDP BONDING: every packet over every link.**
 
-**Un túnel por varios enlaces a la vez, sin perder un paquete.**
-- cengarde lleva cada paquete IP de tu red por todos tus enlaces a la vez
-  (módems 4G/5G, fibra, satelital…) hacia un VPS, por un túnel propio (una
-  interfaz TUN, `cg0`, en cada extremo).
-- En el otro extremo gana la primera copia que llega. Si un enlace se corta
-  o se atrasa, la conexión sigue como si nada.
+*A C engine that bonds several WAN links (4G/5G modems, fiber, Starlink) into
+one fast, steady connection, per packet, not per flow. For OpenWrt routers and
+a Linux VPS.*
 
-Nació como fork de [engarde](https://github.com/porech/engarde) y hoy es
-un motor nuevo en C con protocolo propio, pensado para routers OpenWrt (una Raspberry Pi 4, un PC x86) y configurable
-entera desde LuCI.
+cengarde carries your LAN's IP packets over all your links at once to a VPS,
+through its own tunnel: a TUN interface (`cg0`) at each end and its own UDP
+protocol (protocol 12). It began as a fork of
+[engarde](https://github.com/porech/engarde) (Go) and is now a new engine,
+with no WireGuard since 0.12. Both ends are always cengarde.
 
 ```
-                         ┌══ enlace 1 (5G) ══┐
-LAN ── router OpenWrt ───┼══ enlace 2 (5G) ══┼─── VPS ─── Internet
-       cg0 (cengarde)    └══ enlace 3 (…)  ══┘    cengarde → cg0
-                              cada paquete por todos; gana la primera copia
+                          +== link 1 (5G)  ==+
+LAN -- OpenWrt router ----+== link 2 (5G)  ==+---- VPS ---- Internet
+        cg0 (cengarde)    +== link 3 (fiber)=+     cg0 (cengarde)
+              each packet goes where it arrives first (bonding),
+              or on every link (redundancy); the far end reorders
 ```
 
-## Qué hace
+## Why per-packet bonding
 
-- **Redundancia sin cortes:** cada paquete sale por todos los enlaces
-  activos, en los dos sentidos. Un enlace caído no hace perder nada mientras
-  quede otro.
-- **Aparta los enlaces atrasados:**
-  - un enlace que queda más de 150 ms por detrás del más rápido (por
-    ejemplo, un módem con la cola llena) deja de llevar datos hasta que se
-    recupera;
-  - sigue sondeándose y no corta el túnel;
-  - siempre quedan al menos dos enlaces activos.
-- **Reordena lo que recibe:** cada extremo pone en secuencia los paquetes
-  antes de entregarlos al túnel (activado), con ventanas que cubren
-  ~600 ms a ~27.000 paquetes por segundo. Con redundancia pura no retiene
-  nada.
-- **Experimental, apagado por omisión:**
-  - **repartir** los paquetes grandes entre los enlaces en vez de copiarlos
-    por todos (`split`);
-  - **el rescate:** si el reordenador va a dar un paquete por perdido, lo
-    pide al otro extremo (un NACK, por los dos enlaces más rápidos, con
-    reintentos), que lo reenvía por su camino más rápido, en la bajada y en
-    la subida. No tapa la congestión (esa pérdida es la que hace frenar a
-    TCP) y sirve sobre todo con tráfico de tasa fija (`rescue_wait_ms`,
-    `rescue_kb`; ver [`engine/README.md`](engine/README.md));
-  - plazos del reordenador por enlace (`reorder_by_link`) y adaptativos
-    (`reorder_adaptive`).
-- **Arranque rápido de la capacidad:** cada enlace recuerda su mejor
-  capacidad de los últimos 5 min y, tras 10 s sin llenarse, vuelve al menos
-  a la mitad de ella, para que un enlace en reposo recupere su parte sin
-  esperar segundos.
-- **Seguro:**
-  - protocolo propio autenticado (SipHash-2-4) con ventana anti-replay;
-  - el servidor solo atiende paquetes autenticados;
-  - el túnel autentica pero no cifra: lo que necesite reserva va cifrado
-    por encima (HTTPS, SSH, SRT/RIST con clave).
-- **Liviano:** C11 sin dependencias, un hilo con epoll y lotes
-  (`recvmmsg`/`sendmmsg`). El binario ocupa unos 110 KB.
-- **OpenWrt de punta a punta:**
-  - paquetes para 25.12 y 24.10, e imágenes listas para la Pi 4 y x86-64;
-  - una pestaña de LuCI en español;
-  - el túnel se crea solo, a partir de un único secreto compartido con el
-    VPS;
-  - **IP pass**: la IP pública del VPS en tu red, con UPnP. Se enciende y se
-    apaga desde el router, y el VPS lo sigue solo.
-- **El VPS en un paso:** LuCI entrega el cloud-config listo para pegar al
-  crear el VPS (Ubuntu, por ejemplo en Vultr).
-- **Estado en vivo:** RTT, atraso y qué enlace entrega primero cada paquete,
-  en LuCI, en JSON o con `cengarde ctl`.
-- **Cambios sin cortar:** la configuración se aplica en marcha, con la misma
-  sesión, y un enlace se puede pausar y reanudar desde LuCI o con
-  `cengarde ctl link NOMBRE off`.
-- **IPv4 e IPv6 hasta el VPS:** el router acepta varias direcciones del VPS
-  y cada enlace usa la primera que puede (por ejemplo, la IPv6 por
-  Starlink), con failover a la siguiente. El VPS contesta desde la
-  dirección a la que llegó cada paquete, así que sirve cualquier IP suya, y
-  el prefijo IPv6 de un enlace no se escapa a la LAN por fuera del túnel.
+| | Per-flow load balancing (multi-WAN routers) | MPTCP (OpenMPTCProuter) | cengarde |
+| --- | --- | --- | --- |
+| Unit of balancing | one connection stays on one link | TCP subflows per link | **every packet** |
+| One TCP download uses all links | no | yes | yes |
+| One UDP / RIST / QUIC stream uses all links | no | no (TCP only) | **yes** |
+| Rides out a link cut | the connection breaks | TCP recovers | yes; in redundancy mode, without losing a packet |
+| Loss protection (FEC, resend) | no | TCP retransmits only | FEC and a rescue ARQ |
 
-## Medidas
+How it works:
 
-En el laboratorio de [`bench/`](bench/): 3 enlaces, paquetes de 1400 B,
-VM Xeon de 2,1 GHz, cada motor en ambos extremos, con WireGuard encima como
-era hasta 0.11 (historias [005](docs/historias/005-motor-c-v1.md) y
-[006](docs/historias/006-salud-de-enlaces.md)); engarde solo funciona sobre
-WireGuard, así que la comparación ya no se repite en el laboratorio actual.
+- Each packet goes on the link where it will arrive first (an ETA split), so a
+  single connection can use the capacity of every link at once.
+- Each link has its own subflow, with its own sequence numbers, its own loss
+  detection (SFLOSS/SFACK) and its own rate: a BBR per link (`link_cc`).
+- A reorderer at the far end puts the packets back in order.
+- Classic multi-WAN routers balance per connection, and MPTCP only bonds TCP.
+  cengarde bonds every packet, UDP included.
 
-| Prueba | engarde (Go) | cengarde |
+## Features
+
+**Modes** (LuCI, or UCI `option mode`):
+
+- **Bonding** adds the links up: the ETA split, GRIT, subflows and `link_cc`.
+- **Redundancy** copies each packet over every link that delivers it within
+  150 ms of the first copy, in proportion to each link's own rate. The first
+  copy wins. It is for live broadcasts and for links that cut.
+- **Custom** sets every knob by hand.
+
+The VPS follows with `cengarde-vps-setup mode`, and one router can
+administer the VPS over a restricted SSH key.
+
+**GRIT, the protocontroller.** The router and the VPS split TCP: the LAN's
+TCP ends at the router, crosses the links as GRIT (cengarde's own reliable
+multipath stream, variant B) and the VPS opens a fresh TCP to the
+destination. Variant A puts a plain kernel TCP in the middle.
+
+**Protection:**
+
+- FEC v3: sliding-window RLC (`fec_code = rlc`);
+- a rescue ARQ: the receiver sends a NACK and the sender resends on the
+  fastest link;
+- copies at Starlink slot edges;
+- per-link types (`cellular`, `starlink`, `fiber`, `ethernet`, `radio`), each
+  with its own preset.
+
+**Operation:**
+
+- an OpenWrt package with a LuCI app (Spanish translation), and images for the
+  Raspberry Pi 4 and x86-64;
+- pairing with one shared secret;
+- live status (RTT, delay, which link delivers first) in LuCI, as JSON or with
+  `cengarde ctl`;
+- reload without cutting, and pause or resume a link;
+- IPv4 and IPv6 to the VPS, and optional IPv6 inside the tunnel;
+- several routers per VPS;
+- a VPS installer: `contrib/vps`, cloud-init and `cengarde-vps-setup`;
+- authenticated protocol (SipHash-2-4, anti-replay window); the tunnel
+  authenticates but does not encrypt, so use HTTPS, SSH or keyed SRT/RIST on
+  top when you need secrecy.
+
+## Field results
+
+Testnet: an Intel NUC running OpenWrt with four 5G/LTE modems (Entel, WOM,
+Movistar, Claro, in Chile) and a Vultr VPS in Santiago, against
+OpenMPTCProuter (OMR) on the same modems. These are field measurements, not
+`bench/` figures, and cells vary by hour, so read them as a snapshot.
+
+| Run | cengarde | OMR |
 | --- | --- | --- |
-| CPU del cliente, bajada a 10.000 paquetes/s | 91–94 µs por paquete | 13–14 µs por paquete |
-| Pérdida en subida a 60.000 paquetes/s (~670 Mbit/s) | 34–38 % | 0 % |
-| Pérdida con un enlace lento (5 Mbit/s) bajo carga | hasta 77 % | 0 % |
+| Afternoon 2026-10-28 (`field-m1`, `field-m2`), 100 MB from cachefly + iperf3 upload: download | 142.7 and 146.7 Mbit/s | 101.8 and 115.9 |
+| same, upload | 104.9 and 108.1 | 90.4 and 93.9 |
+| same, loaded ping p95 | 47-60 ms | 79-448 ms |
+| Night 2026-10-29 02:30, empty cells, Ookla CLI, 3 alternating rounds, FEC off: download (mean) | 454 / 529 / 678 (554) | 665 / 456 / 746 (622) |
+| same, upload (mean) | 132 / 112 / 133 (126) | 113 / 51 / 146 (103) |
+| same, loaded ping | 75-135 ms | 349-871 ms |
 
-- Un enlace con 500 ms de cola se aparta en 3–3,6 s, sin que el túnel pierda
-  nada.
-- **El rescate, en el laboratorio** (3 enlaces con 1 % de pérdida al azar
-  cada uno, 4 flujos Cubic de bajada, 3 rondas): de 10–11 a ~50 Mbit/s; donde
-  la pérdida es de un enlace lleno, cuesta ~15 %. En la red de pruebas, con
-  16 flujos de bajada saturando, no mejoró (86,4 contra 91,0 Mbit/s): la
-  pérdida bajo carga es casi toda de colas llenas, no de radio (historia
-  [013](docs/historias/013-capacidad-y-dosificacion.md)).
-- **Falta medir en la Pi 4.** Con engarde, el usuario la vio quedarse en
-  20–30 Mbit/s con 4 enlaces, por CPU
-  ([historia 004](docs/historias/004-entorno-real.md)).
+- Afternoon: download +27 to +40 %, upload +15 %, at half the ping or less.
+- Night: download about level (OMR +12 %, within the round-to-round spread),
+  upload +22 % for cengarde, loaded ping about a fifth of OMR's.
+- Redundancy mode (2026-10-29, `field-r7`), GRIT against a plain TCP in the
+  middle: download +9 % with lower ping and 15 % less data, upload +12 %.
 
-## Empezar
+## Quick start
 
-### En OpenWrt (lo recomendado)
+### Router (OpenWrt, recommended)
 
-1. **Instala:** graba la imagen (Pi 4 o x86-64) o instala los paquetes en tu
-   OpenWrt.
-2. **Crea los enlaces:** una interfaz por enlace (DHCP en cada VLAN o
-   módem).
-3. **Crea el VPS:** en **Servicios → cengarde → VPS**, copia el cloud-config
-   y pégalo como *user data* al crear el VPS.
-4. **Activa:** pon la IP del VPS (o varias, IPv4 e IPv6), elige los
-   enlaces y activa.
-5. **Comprueba:** mira la página **Estado**.
+1. **Install:** flash the image (Pi 4 or x86-64) or install the packages
+   (`cengarde`, `luci-app-cengarde`) on your OpenWrt.
+2. **Create the links:** one interface per link (DHCP on each VLAN or modem).
+3. **Create the VPS:** in LuCI, **Services -> cengarde -> VPS** gives you a
+   ready cloud-config to paste as *user data* when you create the VPS.
+4. **Pair and enable:** put the VPS address (or several, IPv4 and IPv6) and
+   the one shared secret, pick the links and enable.
+5. **Check:** open the **Status** page.
 
-Guía completa, con las imágenes y los paquetes: [`openwrt/README.md`](openwrt/README.md).
+The full guide, with images and packages, is in
+[`openwrt/README.md`](openwrt/README.md).
 
-### En otro Linux, a mano
+### VPS
+
+Either paste the cloud-config at creation, or on an existing Linux VPS run
+`sudo sh contrib/vps/install.sh`, then use `cengarde-vps-setup` to follow the
+mode or add routers and port forwards. See [`contrib/vps/`](contrib/vps/).
+
+### Another Linux, by hand
 
 ```sh
 make -C engine && sudo make -C engine install   # /usr/sbin/cengarde
-cengarde genkey                                  # el secreto compartido
+cengarde genkey                                  # the shared secret
 ```
 
-Las configuraciones de cliente y servidor se explican en
-[`engine/README.md`](engine/README.md), y el VPS en [`contrib/vps/`](contrib/vps/).
+Client and server configurations are explained in
+[`engine/README.md`](engine/README.md).
 
-## Estado
+## Status and roadmap
 
-- **Motor:** listo lo esencial:
-  - redundancia;
-  - protocolo propio v5;
-  - salud de los enlaces;
-  - perillas de baja latencia;
-  - recarga en caliente y socket de control (`cengarde ctl`);
-  - FEC en lo que sobra (`redund_spare = rlc | rs`, historia 021), con lo
-    rehecho revisado antes de entregarlo;
-  - el protocontrolador, TCP partido en el router y el VPS (historia 025):
-    A, un TCP simple en el medio; B, el protocolo GRIT (experimental).
-- **OpenWrt:** paquetes, LuCI, imágenes y emparejamiento con un solo secreto.
-  Se prueba de punta a punta en QEMU en cada cambio: dos VMs, configuradas
-  desde LuCI.
-- **Falta probarlo en hardware real:** la Pi 4 y un VPS en Vultr.
-- **Compatibilidad:** los dos extremos tienen que ser cengarde con la misma
-  versión del protocolo; no habla con engarde.
-- **Sin WireGuard desde 0.12** (historia
-  [027](docs/historias/027-adios-wireguard.md)): el túnel nativo es el único.
-  Un router que venía con WireGuard pasa solo a `cg0` al actualizar (el
-  paquete borra `wgcg` y `tunnel_mode`, y `cengarde-setup` mueve rutas,
-  zona y UPnP a `cg0`); el VPS se limpia en la siguiente pasada de
-  `cengarde-vps-setup` (o de `install.sh`). Las claves viejas del motor
-  (`wireguard`, `wireguard_poke`, `wireguard_port_file`, `listen` en el
-  cliente, `tunnel = wireguard`) son errores que apuntan a la historia.
+- Latest release: v0.13.0; 0.13.1 is coming (a fix for GRIT's shared memory
+  pool).
+- Done: the engine, bonding and redundancy modes, GRIT, FEC v3, the rescue
+  ARQ, link types, IPv6, several routers per VPS, names with dynamic DNS, and
+  OpenWrt with LuCI and images, all tested end to end in QEMU.
+- Missing: more time on real hardware beyond the testnet, a signed OpenWrt
+  feed, static binaries, Debian and Raspberry Pi OS packages, and optional
+  eBPF/XDP on the VPS.
+- Compatibility: both ends must be cengarde at the same protocol version; it
+  does not talk to engarde.
 
-## Hoja de ruta
+The plan is in [`ROADMAP.md`](ROADMAP.md).
 
-Lo que viene; el detalle está en [ROADMAP.md](ROADMAP.md):
+## Repository layout
 
-- **IPv6, varios routers por VPS y nombres** (historia
-  [010](docs/historias/010-ipv6-varias-ip-multicliente-nombres.md)): hechos
-  los cinco PRs (los arreglos, la respuesta desde la dirección de llegada
-  con IPv6 por fuera del túnel, varios routers por VPS con un panel de
-  reenvío de puertos, IPv6 dentro del túnel apagado por defecto, y nombres
-  con DNS dinámico, también para un servidor casero); falta probarlos en
-  la Pi, en Vultr y con un servidor en casa.
-- **Servidor:** varios hilos.
-- **Distribución:** un feed de OpenWrt firmado, binarios estáticos y paquetes
-  para Debian y Raspberry Pi OS.
-- **eBPF/XDP opcional** para bajar la CPU en el VPS (Fase 4).
-- **Más allá de la redundancia** (Fase 5):
-  - usar solo los k mejores enlaces;
-  - sumar enlaces (bonding);
-  - FEC (las retransmisiones ya están, como el rescate experimental).
-
-## Estructura
-
-| Carpeta | Qué hay |
+| Folder | What is in it |
 | --- | --- |
-| [`engine/`](engine/) | el motor en C: fuentes, tests y ejemplos de configuración |
-| [`openwrt/`](openwrt/) | los paquetes `cengarde` y `luci-app-cengarde`, la guía y la prueba en QEMU |
-| [`contrib/`](contrib/) | el VPS: cloud-config, NAT y la unidad de systemd |
-| [`bench/`](bench/) | el laboratorio de medidas (network namespaces) |
-| [`docs/historias/`](docs/historias/) | investigación y decisiones |
+| [`engine/`](engine/) | the C engine: sources, tests and config examples |
+| [`openwrt/`](openwrt/) | the `cengarde` and `luci-app-cengarde` packages, the guide and the QEMU tests |
+| [`contrib/`](contrib/) | the VPS: cloud-config, NAT and the systemd units |
+| [`bench/`](bench/) | the measurement lab (network namespaces, netem) |
+| [`docs/`](docs/) | research stories (`historias/`) and the engine map (`mapa/`) |
 
-## Desarrollo
+## Development
 
 ```sh
-make -C engine test                                    # tests unitarios
-make -C engine SANITIZE=1 test                         # con ASan y UBSan
-sudo bench/lab.sh build && sudo bench/lab.sh smoke     # laboratorio
-openwrt/test/e2e.sh <imagen-x86-64>                    # OpenWrt de punta a punta, en QEMU
+make -C engine test                                    # unit tests
+make -C engine SANITIZE=1 test                         # with ASan and UBSan
+sudo bench/lab.sh build && sudo bench/lab.sh ci        # the lab
+openwrt/test/e2e.sh <x86-64-image>                     # OpenWrt end to end, in QEMU
 ```
 
-**El CI:**
-- compila con gcc y clang (`-Werror`), y prueba en aarch64, armhf y MIPS
-  big-endian;
-- arma los paquetes y las imágenes de OpenWrt;
-- corre la prueba de punta a punta;
-- con un tag `v*`, publica todo como release.
+CI builds with gcc and clang (`-Werror`), runs ASan and TSAN, tests on
+aarch64, armhf and MIPS big-endian, runs the lab in netns, builds the OpenWrt
+packages and images, runs the end-to-end test, and publishes a release on a
+`v*` tag.
 
-## Créditos y licencia
+The detailed docs and the research stories in `docs/historias/` are in
+Spanish.
 
-cengarde nace de [engarde](https://github.com/porech/engarde), de
-Alessandro Rinaldi. De engarde vienen la idea de duplicar los paquetes por
-todos los enlaces (allí, los de WireGuard) y años de uso real transmitiendo
-radio en vivo desde terreno.
+## Credits and license
 
-El código Go original sigue en el historial de este repositorio (commit
-`3492df9`); el laboratorio de 0.11 lo compilaba desde ahí para compararse.
+cengarde began as a fork of [engarde](https://github.com/porech/engarde) by
+Alessandro Rinaldi (porech): the idea of sending packets over every link, and
+years of real use broadcasting live radio from the field. The original Go
+code remains in the git history (commit `3492df9`). The link-health ideas
+(muting, weighted round robin, ARQ) come from libRIST, and the Reed-Solomon
+FEC vendors [Leopard-RS](https://github.com/catid/leopard).
 
-Licencia: GPL-3.0 o posterior (`GPL-3.0-or-later`), [LICENSE.txt](LICENSE.txt).
-Hasta el cambio de licencia, cengarde se publicó bajo GPL-2.0, como
-engarde. Del código de engarde no queda nada en el árbol: el motor, el
-protocolo, los paquetes de OpenWrt y LuCI, el laboratorio y la
-documentación son trabajo nuevo de este proyecto. La historia de git
-conserva los commits de engarde con su licencia original.
+License: GPL-3.0-or-later, see [LICENSE.txt](LICENSE.txt). Until the license
+change cengarde was published under GPL-2.0, like engarde. Nothing of
+engarde's code is left in the tree; the git history keeps its commits under
+their original license.
