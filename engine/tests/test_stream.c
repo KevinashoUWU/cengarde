@@ -183,7 +183,7 @@ static void test_renege(void)
 	cg_st_tx_ack(&t, &a, &r);
 	CHECK_EQ(cg_st_tx_seg(&t, 0)->st, CG_ST_SACKED);
 	CHECK_EQ(t.inflight, 1000);
-	CHECK_EQ(cg_st_tx_rto(&t, 1000000, 500000, NULL), 1000); /* only the SENT one counts as lost */
+	CHECK_EQ(cg_st_tx_rto(&t, 1000000, 500000, 0, NULL), 1000); /* only the SENT one counts as lost */
 	CHECK_EQ(t.reneged, 1);
 	CHECK_EQ(cg_st_tx_seg(&t, 0)->st, CG_ST_LOST);
 	CHECK_EQ(cg_st_tx_seg(&t, 1)->st, CG_ST_LOST);
@@ -343,7 +343,7 @@ static void test_tx(void)
 	cg_st_tx_ack(&t, &a, &r);
 	CHECK_EQ(t.edge, 10000);
 	/* the timer: the oldest SENT is lost */
-	CHECK_EQ(cg_st_tx_rto(&t, 1000000, 500000, NULL), 500);
+	CHECK_EQ(cg_st_tx_rto(&t, 1000000, 500000, 0, NULL), 500);
 	CHECK(cg_st_tx_busy(&t));
 	cg_st_tx_next(&t, 1000, &idx, &off, &len, &fin);
 	cg_st_tx_sent(&t, idx, off, len, fin, 1000000, 0, 0, 0, 0, 0, 0);
@@ -427,6 +427,59 @@ static void test_suspect(void)
 	CHECK_EQ(cg_st_tx_suspects(&t, 1000000, &next, &lq), 0);
 }
 
+/* The timer with the subflows (cg_st_tx_rto's sus_us): only the oldest
+ * expired segment is lost, the others wait as suspects; one delivered late
+ * meanwhile goes no more, a suspect already (the subflow's) keeps its own
+ * deadline and cause. */
+static void test_rto_suspect(void)
+{
+	struct cg_st_seg seg[16];
+	struct cg_st_tx t;
+	struct cg_st_ack a;
+	struct cg_st_ackres r;
+	uint32_t idx = 0, len = 0;
+	uint64_t off = 0, next = 0, lq = 0;
+	int fin = 0;
+
+	cg_st_tx_init(&t, seg, 16, 1u << 20);
+	t.tail = 4000;
+	for (int i = 0; i < 4; i++) {
+		CHECK(cg_st_tx_next(&t, 1000, &idx, &off, &len, &fin));
+		cg_st_tx_sent(&t, idx, off, len, fin, 1000 * (uint64_t)(i + 1), 0, 0, 0, 0, 0, 0);
+	}
+	/* 3: the subflow's suspect, until 700 ms */
+	CHECK_EQ(cg_st_tx_suspect(&t, 3000, 4000, 700000), CG_ST_NACK_SUSPECT);
+	/* the timer at 600 ms (all four expired): 0 lost, 1 and 2 suspects */
+	CHECK_EQ(cg_st_tx_rto(&t, 600000, 500000, 900000, &lq), 1000);
+	CHECK_EQ(t.nlost, 1);
+	CHECK_EQ(cg_st_tx_seg(&t, 0)->st, CG_ST_LOST);
+	CHECK_EQ(cg_st_tx_seg(&t, 0)->by, CG_ST_BY_RTO);
+	CHECK_EQ(t.rto_sus, 2);
+	CHECK_EQ(cg_st_tx_seg(&t, 1)->sus_us, 900000);
+	CHECK_EQ(cg_st_tx_seg(&t, 3)->sus_us, 700000);
+	CHECK_EQ(t.inflight, 3000);
+	/* 1 came late: SACKed, no longer a suspect */
+	memset(&a, 0, sizeof(a));
+	a.aseq = 1;
+	a.edge = t.edge;
+	a.n = 1;
+	a.s[0] = 1000;
+	a.e[0] = 2000;
+	cg_st_tx_ack(&t, &a, &r);
+	/* 3 at 700 ms: lost, the subflow's */
+	CHECK_EQ(cg_st_tx_suspects(&t, 700000, &next, &lq), 1000);
+	CHECK_EQ(cg_st_tx_seg(&t, 3)->by, CG_ST_BY_NACK);
+	CHECK_EQ(next, 900000);
+	/* 2 at 900 ms: lost, the timer's */
+	CHECK_EQ(cg_st_tx_suspects(&t, 900000, &next, &lq), 1000);
+	CHECK_EQ(cg_st_tx_seg(&t, 2)->by, CG_ST_BY_RTO);
+	CHECK_EQ(next, 0);
+	CHECK_EQ(t.nlost, 3);
+	CHECK_EQ(t.rto_lost, 2000);
+	CHECK_EQ(t.nack_lost, 1000);
+	CHECK_EQ(cg_st_tx_seg(&t, 1)->st, CG_ST_SACKED);
+}
+
 /* The tunnel's NACK of a DATA (cg_st_tx_nack): a loss only for the
  * segment's latest transmission, a no-op for what was delivered, sent
  * again since or lost already; its retransmission counted as the NACK's. */
@@ -490,7 +543,7 @@ static void test_nack(void)
 	CHECK_EQ(cg_st_tx_nack(&t, 0xFFFFFC00u, 0, &b, NULL), CG_ST_NACK_DELIVERED);
 	/* the timer marks the two still SENT (the NACK's retransmission and
 	 * the last one): their retransmissions counted as the timer's */
-	CHECK_EQ(cg_st_tx_rto(&t, 0x100000000ull + 100000, 50000, NULL), 2000);
+	CHECK_EQ(cg_st_tx_rto(&t, 0x100000000ull + 100000, 50000, 0, NULL), 2000);
 	while (cg_st_tx_next(&t, 1000, &idx, &off, &len, &fin) && idx < t.n)
 		cg_st_tx_sent(&t, idx, off, len, fin, 0x100000000ull + 100000, 0, 0, 0, 0, 0, 0);
 	CHECK_EQ(t.retx_by[CG_ST_BY_RTO], 2);
@@ -672,7 +725,7 @@ static void e2e_run(int nack)
 			}
 		}
 		if (rto_at && now >= rto_at) {
-			cg_st_tx_rto(&t, now, 20000, NULL);
+			cg_st_tx_rto(&t, now, 20000, 0, NULL);
 			rto_at = now + 20000;
 		}
 	}
@@ -714,5 +767,6 @@ void test_stream(void)
 	test_rx_renege();
 	test_nack();
 	test_suspect();
+	test_rto_suspect();
 	test_e2e();
 }

@@ -174,7 +174,7 @@ struct cg_pctl {
 	 * segments each took for lost (1, <10, <100, more), the sums of the
 	 * timeout, srtt, rttvar and the oldest's age they saw (us); and the
 	 * duplicates received by the link that brought them (the slower copy) */
-	uint64_t rto_by_ms[5], rto_burst[4], rto_sum_us, rto_srtt_us, rto_var_us, rto_age_us;
+	uint64_t rto_by_ms[5], rto_burst[4], rto_sum_us, rto_srtt_us, rto_var_us, rto_age_us, rto_sus;
 	uint64_t dup_by_link[CG_PCTL_LINKS + 1];
 	uint64_t rx_reneged, rx_reneged_chunks; /* reneges to make room for what came in order (make_room), and the chunks they freed */
 	uint64_t cc_switches; /* protocontroller_cc auto: connections switched to BBR */
@@ -1709,7 +1709,12 @@ static int timers(struct cg_pctl *p, struct flow *f, uint64_t now)
 	if (f->rto_at && now >= f->rto_at) {
 		uint64_t rto = cg_scc_rto(&r->cc, f->backoff, cg_scc_rto_extra(peer_reo(p, r), p->rack_off));
 		uint64_t old = f->tx.inflight ? cg_st_tx_oldest(&f->tx) : 0;
-		uint64_t rn = f->tx.reneged, lq = 0, lost = cg_st_tx_rto(&f->tx, now, rto, &lq);
+		/* with the subflows, the oldest goes again and the rest wait a
+		 * horizon and a round trip more (cg_st_tx_rto) */
+		uint64_t sus = p->rack_off ? now + r->horizon_us + r->cc.srtt : 0;
+		uint64_t ns = f->tx.rto_sus, nl = f->tx.nlost;
+		uint64_t rn = f->tx.reneged, lq = 0, lost = cg_st_tx_rto(&f->tx, now, rto, sus, &lq);
+		uint64_t segs = f->tx.nlost - nl + f->tx.rto_sus - ns;
 
 		p->reneged += f->tx.reneged - rn;
 		r->cc.inflight -= r->cc.inflight >= lost ? lost : r->cc.inflight;
@@ -1721,11 +1726,16 @@ static int timers(struct cg_pctl *p, struct flow *f, uint64_t now)
 				f->backoff++;
 			p->rto_n++;
 			p->rto_by_ms[ms < 200 ? 0 : ms < 400 ? 1 : ms < 600 ? 2 : ms < 1000 ? 3 : 4]++;
-			p->rto_burst[lost == 1 ? 0 : lost < 10 ? 1 : lost < 100 ? 2 : 3]++;
+			p->rto_burst[segs <= 1 ? 0 : segs < 10 ? 1 : segs < 100 ? 2 : 3]++;
+			p->rto_sus += f->tx.rto_sus - ns;
 			p->rto_sum_us += rto;
 			p->rto_srtt_us += r->cc.srtt;
 			p->rto_var_us += r->cc.rttvar;
 			p->rto_age_us += old && now > old ? now - old : 0;
+		}
+		if (sus && f->tx.rto_sus && (!f->sus_at || sus < f->sus_at)) {
+			f->sus_at = sus;
+			due(p, sus);
 		}
 		rto_arm(p, f, r);
 	}
@@ -2118,10 +2128,11 @@ void cg_pctl_json(const struct cg_pctl *p, struct cg_json *j)
 	for (int i = 0; i < 5; i++)
 		cg_json_u64(j, NULL, p->rto_by_ms[i]);
 	cg_json_end(j, ']');
-	cg_json_arr(j, "burst"); /* segments each took for lost: 1, <10, <100, more */
+	cg_json_arr(j, "burst"); /* segments each found expired: 1, <10, <100, more */
 	for (int i = 0; i < 4; i++)
 		cg_json_u64(j, NULL, p->rto_burst[i]);
 	cg_json_end(j, ']');
+	cg_json_u64(j, "suspects", p->rto_sus); /* expired but not the oldest: they waited (cg_st_tx_rto) */
 	cg_json_ms(j, "rto_mean_ms", p->rto_n ? p->rto_sum_us / p->rto_n : 0);
 	cg_json_ms(j, "srtt_mean_ms", p->rto_n ? p->rto_srtt_us / p->rto_n : 0);
 	cg_json_ms(j, "rttvar_mean_ms", p->rto_n ? p->rto_var_us / p->rto_n : 0);

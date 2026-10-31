@@ -510,6 +510,7 @@ struct cg_st_tx {
 	uint64_t inflight;     /* bytes of SENT segments */
 	uint64_t rack_us;      /* the newest send time of a delivered segment */
 	uint64_t retx_segs, retx_bytes, rack_lost, rto_lost, copies;
+	uint64_t rto_sus; /* segments a firing made suspects, not lost (cg_st_tx_rto's sus_us) */
 	uint64_t retx_by[CG_ST_BY_N]; /* segments sent again, by why they were lost */
 	uint64_t nack_lost;           /* bytes a NACK declared lost (cg_st_tx_nack) */
 	uint64_t reneged;             /* timeouts that found the oldest segment SACKed (cg_st_tx_rto) */
@@ -777,15 +778,24 @@ static inline uint64_t cg_st_tx_rack(struct cg_st_tx *t, uint64_t reo_us, uint64
 /* The timer fired at now: every SENT segment sent at least rto_us ago is
  * lost. Returns the bytes marked (*lq as cg_st_tx_rack's).
  *
+ * With sus_us (the engine's subflows on, story 029), only the oldest of
+ * them is lost; the others become suspects until sus_us (cg_st_tx_suspects)
+ * unless they already are, as F-RTO (RFC 5682) waits for the first ACK
+ * after a timeout before it sends more: the round trip the timer learns
+ * is the fastest link's (each ACK carries the least delay), and what a link
+ * with a queue carries came late, not lost (the field, 2026-10-31: ~38
+ * segments a firing, ~90 % of them duplicates at the router).
+ *
  * With the oldest segment SACKed and the cumulative offset still at it, the
  * receiver no longer holds what it said it had (a renege, TCP's word): every
  * SACKed segment goes again, as TCP forgets its SACKs at a timeout. Its
  * ranges counted in 8 bits once (2026-10-27): 256 holes, one merge, and it
  * forgot them all; the sender never sent those segments again and the
  * stream stuck for good (buffers over 1 MB). */
-static inline uint64_t cg_st_tx_rto(struct cg_st_tx *t, uint64_t now, uint64_t rto_us, uint64_t *lq)
+static inline uint64_t cg_st_tx_rto(struct cg_st_tx *t, uint64_t now, uint64_t rto_us, uint64_t sus_us, uint64_t *lq)
 {
 	uint64_t lost = 0;
+	int one = 0;
 
 	if (t->n && cg_st_tx_seg(t, 0)->st == CG_ST_SACKED) {
 		for (uint32_t i = 0; i < t->n; i++) {
@@ -803,8 +813,15 @@ static inline uint64_t cg_st_tx_rto(struct cg_st_tx *t, uint64_t now, uint64_t r
 	for (uint32_t i = 0; i < t->n; i++) {
 		struct cg_st_seg *s = cg_st_tx_seg(t, i);
 
-		if (s->st == CG_ST_SENT && s->sent_us + rto_us <= now)
+		if (s->st != CG_ST_SENT || s->sent_us + rto_us > now)
+			continue;
+		if (!sus_us || !one++) {
 			lost += cg_st_tx_lose(t, s, i, lq, CG_ST_BY_RTO);
+		} else if (!s->sus_us) {
+			s->sus_us = sus_us;
+			s->by = CG_ST_BY_RTO; /* whose suspect (cg_st_tx_suspects) */
+			t->rto_sus++;
+		}
 	}
 	t->rto_lost += lost;
 	return lost;
@@ -879,12 +896,14 @@ static inline int cg_st_tx_suspect(struct cg_st_tx *t, uint32_t off32, uint32_t 
 		return CG_ST_NACK_STALE;
 	if (!s->sus_us || due_us < s->sus_us)
 		s->sus_us = due_us ? due_us : 1;
+	s->by = CG_ST_BY_NACK;
 	return CG_ST_NACK_SUSPECT;
 }
 
 /* The suspects whose deadline passed at now, still SENT: lost (by the NACK,
- * the tunnel's word). *next: the nearest deadline left, 0: none. Returns
- * the bytes marked (*lq as cg_st_tx_rack's). */
+ * the tunnel's word, or the timer's, as by says). *next: the nearest
+ * deadline left, 0: none. Returns the bytes marked (*lq as
+ * cg_st_tx_rack's). */
 static inline uint64_t cg_st_tx_suspects(struct cg_st_tx *t, uint64_t now, uint64_t *next, uint64_t *lq)
 {
 	uint64_t lost = 0;
@@ -896,13 +915,19 @@ static inline uint64_t cg_st_tx_suspects(struct cg_st_tx *t, uint64_t now, uint6
 		if (s->st != CG_ST_SENT || !s->sus_us)
 			continue;
 		if (s->sus_us <= now) {
+			uint8_t by = s->by == CG_ST_BY_RTO ? CG_ST_BY_RTO : CG_ST_BY_NACK;
+			uint64_t b = cg_st_tx_lose(t, s, i, lq, by);
+
 			s->sus_us = 0;
-			lost += cg_st_tx_lose(t, s, i, lq, CG_ST_BY_NACK);
+			lost += b;
+			if (by == CG_ST_BY_RTO)
+				t->rto_lost += b;
+			else
+				t->nack_lost += b;
 		} else if (!*next || s->sus_us < *next) {
 			*next = s->sus_us;
 		}
 	}
-	t->nack_lost += lost;
 	return lost;
 }
 
