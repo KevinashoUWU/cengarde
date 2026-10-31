@@ -1213,7 +1213,7 @@ static void lc_tick(const struct server *s, struct session *S)
 		if (S->sf[p]) {
 			struct cg_lc *lc = &S->sf[p]->tx.lc;
 
-			lc->bits = (uint8_t)s->cfg->link_cc_bits;
+			lc->bits = (uint16_t)s->cfg->link_cc_bits;
 			cg_lc_target(lc, s->cfg->governor_target_ms * 1000, cg_lc_mtpt_cap(lc, s->cfg->link_cc_budget_ms, ref));
 			if (S->cap[p].have_rate)
 				cg_lc_seed(lc, cg_cap_bps(&S->cap[p]) / 8);

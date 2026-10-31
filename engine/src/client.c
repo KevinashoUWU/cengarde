@@ -3253,7 +3253,7 @@ static void lc_tick(struct client *c)
 	for (int i = 0; i < CG_MAX_LINKS; i++) {
 		struct cg_lc *lc = &c->link[i].sft.lc;
 
-		lc->bits = (uint8_t)c->cfg->link_cc_bits;
+		lc->bits = (uint16_t)c->cfg->link_cc_bits;
 		cg_lc_target(lc, c->cfg->governor_target_ms * 1000, cg_lc_mtpt_cap(lc, c->cfg->link_cc_budget_ms, ref));
 		if (c->cap[i].have_rate)
 			cg_lc_seed(lc, cg_cap_bps(&c->cap[i]) / 8);
