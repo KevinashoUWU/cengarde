@@ -930,10 +930,25 @@ cada paquete con su hora de envío y de llegada; `bench/rateeval.py`,
   entre hilos) no aplican: el sondeo ya se frena por la cola y los módems
   son de operadores distintos.
 
-**Lo que queda:** en la pieza «un solo ritmo por enlace», el estimado de
-`linkcc.h` como la media de lo entregado en ~500 ms mientras el enlace
-tiene cola (hoy ya existe `sat`, que solo topa el máximo a 5/4), y sondeo
-cuando no la tiene; A/B en el laboratorio y en terreno.
+**El ritmo por la media** (`437ae7c`, `link_cc_bits` + 256): pasado el
+arranque, `bw` es la media de lo entregado en los últimos cinco baldes
+enteros de 100 ms; con cola en el enlace es su capacidad, sube o baja; sin
+cola solo puede subir; tras un silencio queda como estaba hasta tener sus
+0,5 s. El máximo de las medias de 500 ms también sobreestima (1,57 y 1,31
+saturado), por eso no se usa. Laboratorio (`meanlab`, n = 3, 7 casos × 2
+sentidos): neutro (−0,9 % de media geométrica), con menos ping en `fade`
+(p99 300 → 223 ms) y `cell4` (214 → 164): netem entrega parejo, sin las
+ráfagas que esto corrige. **Terreno** (`meanfield`, 2026-10-31 de tarde,
+Ookla, 3 rondas alternadas, bonding):
+
+| brazo | bajada | subida | ping con carga (bajada) |
+| --- | --- | --- | --- |
+| máximo (14 / 46) | 228,7 / 195,2 / 187,2 (203,7) | 115,8 / 114,2 / 138,1 (122,7) | 79–104 ms |
+| **media (270 / 302)** | **238,3 / 250,5 / 250,5 (246,4)** | **131,0 / 128,7 / 131,6 (130,4)** | 69–87 ms |
+
+La bajada +21 % (las tres rondas), la subida +6 %, con algo menos de ping.
+Lo que sigue: más rondas (de noche también) antes de dejarlo por omisión, y
+la otra mitad de la pieza, quitar la capacidad vieja del reparto.
 
 ## Pendiente
 
