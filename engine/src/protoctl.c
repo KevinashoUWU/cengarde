@@ -169,6 +169,13 @@ struct cg_pctl {
 	uint64_t up_bytes, down_bytes, data_tx, data_rx, acks_tx, acks_rx, opens_tx, retx, copies, rto_n;
 	uint64_t reneged; /* timeouts that found the oldest segment SACKed and sent the SACKed again */
 	uint64_t dup_frames, ooo_frames, drop_frames, nomem;
+	/* the timer's firings, to tell a late segment from a lost one: by the
+	 * timeout they used (ms: <200, <400, <600, <1000, more), by the
+	 * segments each took for lost (1, <10, <100, more), the sums of the
+	 * timeout, srtt, rttvar and the oldest's age they saw (us); and the
+	 * duplicates received by the link that brought them (the slower copy) */
+	uint64_t rto_by_ms[5], rto_burst[4], rto_sum_us, rto_srtt_us, rto_var_us, rto_age_us;
+	uint64_t dup_by_link[CG_PCTL_LINKS + 1];
 	uint64_t rx_reneged, rx_reneged_chunks; /* reneges to make room for what came in order (make_room), and the chunks they freed */
 	uint64_t cc_switches; /* protocontroller_cc auto: connections switched to BBR */
 	uint64_t retx_by[CG_ST_BY_N]; /* segments sent again, by why they were lost (RACK, the timer, a NACK) */
@@ -1134,6 +1141,7 @@ static void data_in(struct cg_pctl *p, struct flow *f, const struct cg_pctl_msg 
 	v = cg_st_rx_judge(&f->rx, off, m->len, fin, f->consumed + p->buf_cap);
 	if (v == CG_ST_RX_DUP) {
 		p->dup_frames++;
+		p->dup_by_link[link < CG_PCTL_LINKS ? link : CG_PCTL_LINKS]++;
 		f->dup_seen = 1;
 		if (!f->ack_pend++)
 			f->ack_t = now;
@@ -1699,18 +1707,25 @@ static int timers(struct cg_pctl *p, struct flow *f, uint64_t now)
 		}
 	}
 	if (f->rto_at && now >= f->rto_at) {
-		uint64_t rn = f->tx.reneged, lq = 0,
-			 lost = cg_st_tx_rto(&f->tx, now,
-					     cg_scc_rto(&r->cc, f->backoff, cg_scc_rto_extra(peer_reo(p, r), p->rack_off)),
-					     &lq);
+		uint64_t rto = cg_scc_rto(&r->cc, f->backoff, cg_scc_rto_extra(peer_reo(p, r), p->rack_off));
+		uint64_t old = f->tx.inflight ? cg_st_tx_oldest(&f->tx) : 0;
+		uint64_t rn = f->tx.reneged, lq = 0, lost = cg_st_tx_rto(&f->tx, now, rto, &lq);
 
 		p->reneged += f->tx.reneged - rn;
 		r->cc.inflight -= r->cc.inflight >= lost ? lost : r->cc.inflight;
 		cg_scc_lost(&r->cc, lost - lq);
 		if (lost) {
+			uint64_t ms = rto / 1000;
+
 			if (f->backoff < 6)
 				f->backoff++;
 			p->rto_n++;
+			p->rto_by_ms[ms < 200 ? 0 : ms < 400 ? 1 : ms < 600 ? 2 : ms < 1000 ? 3 : 4]++;
+			p->rto_burst[lost == 1 ? 0 : lost < 10 ? 1 : lost < 100 ? 2 : 3]++;
+			p->rto_sum_us += rto;
+			p->rto_srtt_us += r->cc.srtt;
+			p->rto_var_us += r->cc.rttvar;
+			p->rto_age_us += old && now > old ? now - old : 0;
 		}
 		rto_arm(p, f, r);
 	}
@@ -2094,6 +2109,24 @@ void cg_pctl_json(const struct cg_pctl *p, struct cg_json *j)
 	cg_json_u64(j, "rto", p->rto_n);
 	cg_json_u64(j, "reneged", p->reneged);
 	cg_json_u64(j, "dup_frames", p->dup_frames);
+	cg_json_arr(j, "dup_by_link"); /* by the link that brought each (the last: rebuilt, no link) */
+	for (int i = 0; i <= CG_PCTL_LINKS; i++)
+		cg_json_u64(j, NULL, p->dup_by_link[i]);
+	cg_json_end(j, ']');
+	cg_json_obj(j, "rto_obs");
+	cg_json_arr(j, "by_ms"); /* the timeout each firing used: <200, <400, <600, <1000 ms, more */
+	for (int i = 0; i < 5; i++)
+		cg_json_u64(j, NULL, p->rto_by_ms[i]);
+	cg_json_end(j, ']');
+	cg_json_arr(j, "burst"); /* segments each took for lost: 1, <10, <100, more */
+	for (int i = 0; i < 4; i++)
+		cg_json_u64(j, NULL, p->rto_burst[i]);
+	cg_json_end(j, ']');
+	cg_json_ms(j, "rto_mean_ms", p->rto_n ? p->rto_sum_us / p->rto_n : 0);
+	cg_json_ms(j, "srtt_mean_ms", p->rto_n ? p->rto_srtt_us / p->rto_n : 0);
+	cg_json_ms(j, "rttvar_mean_ms", p->rto_n ? p->rto_var_us / p->rto_n : 0);
+	cg_json_ms(j, "oldest_age_mean_ms", p->rto_n ? p->rto_age_us / p->rto_n : 0);
+	cg_json_end(j, '}');
 	cg_json_u64(j, "ooo_frames", p->ooo_frames);
 	cg_json_u64(j, "drop_frames", p->drop_frames);
 	cg_json_u64(j, "nomem", p->nomem);
