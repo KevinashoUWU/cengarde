@@ -3218,10 +3218,14 @@ static uint32_t pctl_horizon(void *ctx, uint32_t peer, uint32_t sid)
 		return 0;
 	us = sf3_on(s, S) && S->df3.mode != CG_F3_OFF && S->df3.pct ? s->cfg->rescue_code_ms * 1000 : 0;
 	/* with the rescue, its NACK and the reordering of the split: what the
-	 * slowest link carrying the data runs behind the fastest */
+	 * slowest link carrying the data runs behind the fastest. Every
+	 * carrier, not only the split's: one the split just left (G4) still
+	 * holds what it took in its queue, and a shorter horizon times that out
+	 * (the field, 2026-10-31: bursts of 400-600 timer resends each time a
+	 * link 300-470 ms behind left the split) */
 	if (s->cfg->reorder && s->cfg->rescue_kb) {
 		struct dpaths d = down_paths(s, S, cg_now_ms());
-		uint16_t set = d.split ? (uint16_t)((d.k.eligible | d.k.dup) & d.carry) : d.carry, known = 0;
+		uint16_t set = d.carry, known = 0;
 		int32_t behind[CG_MAX_LINKS];
 
 		for (int i = 0; i < CG_MAX_LINKS; i++) {

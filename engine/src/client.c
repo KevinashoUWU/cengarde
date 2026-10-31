@@ -2590,14 +2590,18 @@ static uint32_t pctl_horizon(void *ctx, uint32_t peer, uint32_t sid)
 	(void)peer;
 	(void)sid;
 	/* with the rescue, its NACK and the reordering of the split: what the
-	 * slowest link carrying the data runs behind the fastest */
+	 * slowest link carrying the data runs behind the fastest. Every
+	 * carrier, not only the split's: one the split just left (G4) still
+	 * holds what it took in its queue, and a shorter horizon times that out
+	 * (the field, 2026-10-31: bursts of 400-600 timer resends each time a
+	 * link 300-470 ms behind left the split) */
 	if (c->cfg->reorder && c->cfg->rescue_kb) {
 		int32_t behind[CG_MAX_LINKS];
 		uint16_t known = 0, set;
 		struct upctx u;
 
 		up_begin(c, cg_now_ms(), &u);
-		set = u.split ? (uint16_t)((u.k.eligible | u.k.dup) & u.carry) : u.carry;
+		set = u.carry;
 		for (int i = 0; i < CG_MAX_LINKS; i++) {
 			behind[i] = c->uh[i].behind_us;
 			known |= (uint16_t)(c->uh[i].have_behind ? 1u << i : 0);
