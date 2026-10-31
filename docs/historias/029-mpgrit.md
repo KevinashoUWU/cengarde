@@ -973,6 +973,44 @@ como perdido. En el laboratorio (`flushlab`) no ganó: los reenvíos por
 temporizador de `linkdeath` no bajaron y el caudal quedó en el ruido
 (−1,4 %): lo que muere con un enlace no es lo que espera al temporizador.
 
+### Por qué GRIT reenviaba por temporizador (2026-10-31, tarde)
+
+En una bajada de 30 s por GRIT (`iperf3 -R -P 4`, `~/campo/2026-10-31/rto/`)
+el GRIT del VPS reenvió 57 636 mensajes (13 % de lo enviado): 57 118 por su
+temporizador, 518 por NACK, y el NUC recibió 37 682 duplicados. El RACK de la
+mezcla está apagado con `subflow` (arriba), así que las pérdidas tenían que
+llegar por los subflujos. Dos causas:
+
+- **El emisor olvidaba** (`down.forgotten`): los subflujos del NUC hallaban
+  las pérdidas (unas 10 000 por corrida, cerca de `lost_all`), pero el emisor
+  del VPS solo recordaba las últimas 1024 `sseq` de cada enlace (~110 ms a
+  100 Mbit/s). Un `SFLOSS` llega tras la cola del enlace, la ventana del
+  receptor (hasta 300 ms) y la vuelta, y para entonces ya se había olvidado
+  qué llevaba esa `sseq`: el 63–69 % de las pérdidas sin copias de estrés,
+  el 95–99 % con ellas. GRIT las recuperaba solo por su temporizador.
+  `CG_SF_WIN` pasa a 8192 (PR #136). A/B en terreno, solo cambia el binario
+  del VPS, tres rondas alternadas:
+
+  | ventana | Mbit/s | media | reenviado | por RTO | por NACK | olvidados | duplicados |
+  | --- | --- | --- | --- | --- | --- | --- | --- |
+  | 1024 | 224 / 218 / 228 | 223 | 3,6 % | 23 313 | 779 | 16 975 | 9 197 |
+  | 8192 | 263 / 298 / 305 | 289 | 0,9 % | 4 856 | 2 430 | 0 | 4 306 |
+
+- **Las copias de estrés** (`split_stress_dup`, 50 %): bajo el estrés de G4
+  van copias a todos los enlaces, también a uno fuera del reparto. Movistar
+  (~20 Mbit/s) recibió hasta 56 Mbit/s con capacidad estimada de 8, su cola
+  subió a 10 s y no se vació hasta 25 s después; lo que sí le tocaba llegaba
+  tan tarde que el NUC lo botaba fuera de la ventana anti-replay
+  (`download.too_old`, 42 794 en 30 s). Con `split_stress_dup = 0` (ventana
+  vieja, tres rondas): `too_old` 0 en las tres, 189 contra 167 Mbit/s,
+  reenviado 4,2 contra 6,8 %. Con la ventana nueva casi no hay estrés (0
+  copias en las tres rondas), así que el A/B de esta perilla queda por
+  repetir sobre ella.
+
+Queda: el temporizador todavía reenvía unos 4 900 por corrida y casi todo
+llega duplicado (4 306); y a más de 300 Mbit/s por enlace 8192 `sseq` son
+~0,3 s: la ventana debería medirse en tiempo, no en paquetes.
+
 ## Pendiente
 
 - `link_cc`: decidir si pasa a ser lo normal con `subflow` (más rondas de
@@ -1004,3 +1042,5 @@ temporizador de `linkdeath` no bajaron y el caudal quedó en el ruido
   la redundancia con lo nuevo (`red1`: queda con el protocontrolador A).
 - 2026-10-28: la prueba de techo con captura (`techo`), el MTU de Claro, la
   curva de cada módem y el MTPT.
+- 2026-10-31: por qué GRIT reenviaba por temporizador: la ventana del
+  subflujo (8192) y las copias de estrés en un enlace con cola de segundos.
