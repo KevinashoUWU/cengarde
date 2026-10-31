@@ -115,6 +115,13 @@ enum { CG_LC_STARTUP_M = 0, CG_LC_DRAIN_M, CG_LC_PROBE_M };
  * saturated modem's capacity down and 3.7 up (200 ms samples: 2.1 and 1.7;
  * Movistar 6-8), the mean of 500 ms 0.96 and 1.00 (story 029, 2026-10-31). */
 #define CG_LC_MEAN 256u
+/* ONLY: each link's own rate alone decides, the engine's capacity
+ * (capacity.h) left to measure (story 029, "one rate per link"): a link
+ * with its own samples enters the split before the capacity has a rate for
+ * it, the capacity's split weights never leave it out (weight 0: copies
+ * only), and it is full for the rescue (congestion, not a loss to send
+ * again) when its own queue passes its target. */
+#define CG_LC_ONLY 512u
 #define CG_LC_BITS (CG_LC_QMODE | CG_LC_S32) /* the default; the router's adds SAT (config.c) */
 
 struct cg_lc {
@@ -293,6 +300,13 @@ static inline uint32_t cg_lc_gain(const struct cg_lc *c)
 	if (g > CG_LC_ONE && cg_lc_qstate(c) == 0) /* probe only well under it */
 		return CG_LC_ONE;
 	return g;
+}
+
+/* CG_LC_ONLY: whether the link holds more than its queue target now, by its
+ * own one-way delay; 0 while not known. */
+static inline int cg_lc_full(const struct cg_lc *c)
+{
+	return c->have_owd && c->q_us > c->target_us;
 }
 
 /* The pacing rate, bytes/s. */

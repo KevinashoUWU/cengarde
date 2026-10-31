@@ -348,6 +348,11 @@ static void test_lc_mean(void)
 	cg_lc_acked(&c, t, 1000, 1 * MBIT, 40 * MS);
 	CHECK_EQ(cg_lc_mean(&c), 0);
 	CHECK(c.bw > 27 * MBIT); /* kept until the mean has its 0.5 s again */
+	/* ONLY's "full": the queue past its target, by the one-way delay */
+	cg_lc_owd(&c, t, 1000000 + 61 * MS);
+	CHECK(cg_lc_full(&c));
+	cg_lc_owd(&c, t, 1000000 + 59 * MS);
+	CHECK(!cg_lc_full(&c));
 }
 
 void test_linkcc(void)
