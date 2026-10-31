@@ -81,6 +81,21 @@ static inline void cg_eta_drain(struct cg_eta_link *l, uint64_t now_us)
 	l->t_us = now_us;
 }
 
+/* When what link i holds now arrives, us behind the fastest link (its
+ * delay without a queue over the smallest, and its backlog over its rate):
+ * right after a pick, the packet just put there (MPGRIT step U2a, story
+ * 029: GRIT's timer per segment). UINT32_MAX: no rate known. */
+static inline uint32_t cg_eta_behind(const struct cg_eta *e, unsigned i)
+{
+	const struct cg_eta_link *l = &e->l[i];
+	uint64_t us;
+
+	if (i >= CG_MAX_LINKS || !l->bps)
+		return UINT32_MAX;
+	us = l->base_us + l->backlog / l->bps;
+	return us < UINT32_MAX ? (uint32_t)us : UINT32_MAX - 1;
+}
+
 /* A packet of len bytes put on link i at now_us by someone else (a probe,
  * probe.h): counted in its backlog. */
 static inline void cg_eta_add(struct cg_eta *e, unsigned i, uint32_t len, uint64_t now_us)

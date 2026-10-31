@@ -2538,7 +2538,7 @@ static int pctl_vps_addr(const struct cg_config *cfg, struct sockaddr_storage *a
 
 /* the protocontroller (variant B) (protoctlio.h): n stream messages into the tunnel, as one batch. */
 static void pctl_send(void *ctx, uint32_t peer, uint32_t sid, uint8_t *const *msg, const uint16_t *len,
-		     const uint8_t *copy, int n)
+		     const uint8_t *copy, int n, uint32_t *eta_us)
 {
 	struct client *c = ctx;
 	uint64_t now_us = cg_now_us(), now_ms = now_us / 1000;
@@ -2558,8 +2558,10 @@ static void pctl_send(void *ctx, uint32_t peer, uint32_t sid, uint8_t *const *ms
 		u.carry |= ps;
 	}
 	f3_begin(c, &u);
-	for (int m = 0; m < n; m++)
+	for (int m = 0; m < n; m++) {
 		up_one(c, &u, m, msg[m], len[m], now_us, copy[m]);
+		eta_us[m] = c->pick[m] >= 0 && c->cfg->split_eta ? cg_eta_behind(&c->eta, (unsigned)c->pick[m]) : CG_PCTL_NOETA;
+	}
 	c->last_traffic_ms = now_ms;
 	send_links(c, n, now_ms, u.live, u.carry, u.k.dup);
 	f3_send(c, now_us);

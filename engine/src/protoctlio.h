@@ -81,9 +81,12 @@ struct cg_pctl_ops {
 	void *ctx;
 	/* Sends n messages to peer (the server: session index peer whose id is
 	 * sid; the router: 0, 0) through the tunnel; copy[i]: on every link
-	 * that carries. */
+	 * that carries. eta_us[i] back: when message i arrives, us behind the
+	 * fastest link (eta.h's cg_eta_behind of the link the split chose),
+	 * CG_PCTL_NOETA when not split or not known (MPGRIT step U2a: GRIT's
+	 * timer per segment). */
 	void (*send)(void *ctx, uint32_t peer, uint32_t sid, uint8_t *const *msg, const uint16_t *len,
-		     const uint8_t *copy, int n);
+		     const uint8_t *copy, int n, uint32_t *eta_us);
 	/* The engine's capacity for the links that carry the data to peer,
 	 * bytes/s (0: none), and whether it sees them queued (or
 	 * CG_PCTL_HINT_COPIED: the data is copied to them, not split). */
@@ -126,6 +129,7 @@ void cg_pctl_rx(struct cg_pctl *p, uint32_t peer, uint32_t sid, const uint8_t *m
  * horizon (and a round trip) unless delivered first. */
 enum { CG_PCTL_UNSURE, CG_PCTL_SURE_ASKED, CG_PCTL_SURE_LINK, CG_PCTL_SURE_LATER };
 #define CG_PCTL_LINKS 16      /* links counted (CG_MAX_LINKS) */
+#define CG_PCTL_NOETA UINT32_MAX /* ops.send's eta_us: not known */
 #define CG_PCTL_NOLINK 0xffu  /* as rescue.h's CG_RESC_NOLINK */
 int cg_pctl_nack(struct cg_pctl *p, uint32_t peer, uint32_t sid, const uint8_t *msg, size_t len, uint8_t link,
 		 int sure);
