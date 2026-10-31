@@ -716,8 +716,9 @@ check "no fec in cengarde.conf" not grep -q "^fec" "$R/etc/cengarde/cengarde.con
 check "fec maybe is refused" not setup fec maybe
 : >"$CALLS"
 check "mode bonding" setup mode bonding
-check "cengarde.conf: subflow, link_cc, the NACK a hint and the protocontroller; BONDING and PROTOCONTROLLER in nat.conf" \
+check "cengarde.conf: subflow, link_cc, the NACK a hint, no stress copies and the protocontroller; BONDING and PROTOCONTROLLER in nat.conf" \
 	sh -c 'grep -qx "subflow = yes" "$1" && grep -qx "link_cc = yes" "$1" && grep -qx "protocontroller_nack = no" "$1" &&
+		grep -qx "split_stress_dup = 0" "$1" &&
 		grep -qx "protocontroller = b" "$1" && grep -qx "BONDING=\"yes\"" "$2" && grep -qx "PROTOCONTROLLER=\"yes\"" "$2"' \
 	sh "$R/etc/cengarde/cengarde.conf" "$R/etc/cengarde/nat.conf"
 check "the engine takes it" called '^cengarde -t -c .*cengarde.conf.new'

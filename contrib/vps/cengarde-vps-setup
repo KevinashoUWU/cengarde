@@ -491,6 +491,12 @@ engine_conf() {
 		subflow = yes
 		link_cc = yes
 		protocontroller_nack = no
+		# No copies under G4's stress: GRIT sends again what a link loses,
+		# and the copies went to every link, a slow one out of the split
+		# too, whose queue grew to seconds (the field, 2026-10-31, 3+3
+		# rounds a side: 261 against 214 Mbit/s; 189 against 167 with the
+		# old subflow window).
+		split_stress_dup = 0
 	EOF
 	[ "$REDUNDANCY" = yes ] && cat <<-EOF
 		# Redundancy (cengarde-vps-setup mode, story 029): each link a
