@@ -48,6 +48,16 @@ jobs:
         run: make -C engine CC=${{ matrix.cc }} CFLAGS="-O2 -g -Werror" all test
       - name: Unit tests with ASan and UBSan
         run: make -C engine clean && make -C engine CC=${{ matrix.cc }} SANITIZE=1 test
+      # bench/dectrace.c compiles the pure headers as they are now: a change
+      # of their API must keep the decision verifier building (and running
+      # the same twice: its traces are deterministic)
+      - name: Decision verifier builds and repeats itself
+        run: |
+          ${{ matrix.cc }} -std=c11 -D_GNU_SOURCE -O2 -Wall -Wextra -Wshadow -Wno-unused-parameter -Werror \
+            -Iengine/src -o dectrace bench/dectrace.c
+          for s in equal het fade lossy death dominant idle; do
+            ./dectrace "$s" > a.txt && ./dectrace "$s" > b.txt && cmp a.txt b.txt && head -1 a.txt
+          done
       # Leopard-RS's portable path (armhf, MIPS) on x86: it had a bug
       # upstream (story 021), and only test_rs sees it
       - name: Unit tests with Leopard's portable path
