@@ -194,6 +194,10 @@ struct cg_pctl {
 	 * own timeout */
 	uint64_t eta_n, eta_sum_us, rto_waited;
 	uint64_t retx_left[2]; /* U2b: resends that went by the same link again (no other), by another */
+	/* the link whose frame moved a stream's head while it had a hole open,
+	 * and of those, the ones that came 160 ms or more after the hole
+	 * opened: which links hold the streams up (the last: rebuilt) */
+	uint64_t head_fill[CG_PCTL_LINKS + 1], head_fill_long[CG_PCTL_LINKS + 1];
 	uint64_t rx_reneged, rx_reneged_chunks; /* reneges to make room for what came in order (make_room), and the chunks they freed */
 	uint64_t cc_switches; /* protocontroller_cc auto: connections switched to BBR */
 	uint64_t retx_by[CG_ST_BY_N]; /* segments sent again, by why they were lost (RACK, the timer, a NACK) */
@@ -1209,6 +1213,12 @@ static void data_in(struct cg_pctl *p, struct flow *f, const struct cg_pctl_msg 
 	}
 	nr = f->rx.nr;
 	cg_st_rx_add(&f->rx, off, m->len, fin);
+	if (f->hole_t && off <= was && f->rx.nxt > was) {
+		unsigned l = link < CG_PCTL_LINKS ? link : CG_PCTL_LINKS;
+
+		p->head_fill[l]++;
+		p->head_fill_long[l] += now - f->hole_t >= 160000;
+	}
 	if (f->rx.nxt > was)
 		age_push(f->io, &f->io_h, &f->io_n, f->rx.nxt, now);
 	if (off > was)
@@ -2199,6 +2209,14 @@ void cg_pctl_json(const struct cg_pctl *p, struct cg_json *j)
 	cg_json_u64(j, "rto", p->rto_n);
 	cg_json_u64(j, "reneged", p->reneged);
 	cg_json_u64(j, "dup_frames", p->dup_frames);
+	cg_json_arr(j, "head_fill_by_link"); /* the link that moved a stream's head while a hole was open (the last: rebuilt) */
+	for (int i = 0; i <= CG_PCTL_LINKS; i++)
+		cg_json_u64(j, NULL, p->head_fill[i]);
+	cg_json_end(j, ']');
+	cg_json_arr(j, "head_fill_long_by_link"); /* of them, 160 ms or more after the hole opened */
+	for (int i = 0; i <= CG_PCTL_LINKS; i++)
+		cg_json_u64(j, NULL, p->head_fill_long[i]);
+	cg_json_end(j, ']');
 	cg_json_arr(j, "dup_by_link"); /* by the link that brought each (the last: rebuilt, no link) */
 	for (int i = 0; i <= CG_PCTL_LINKS; i++)
 		cg_json_u64(j, NULL, p->dup_by_link[i]);
