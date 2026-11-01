@@ -1084,10 +1084,14 @@ Los cuatro módems, alternados (nunca a la vez), cengarde con U2a.
   su VPN habría quedado en otro módem).
 - Ventaja chica de cengarde en estas dos pruebas: el destino es su VPS (OMR
   llega a él por internet, un salto dentro del mismo datacenter).
-- **Hallazgo:** iperf3 en UDP no anda cuando su control TCP pasa por GRIT
-  (aborta con «Resource temporarily unavailable»); con el Shadowsocks de
-  OMR sí. Por eso el UDP de cengarde se midió contra 10.79.0.1 (el control
-  no pasa por GRIT; el UDP va por el túnel como cualquier otro).
+- **Hallazgo (no es GRIT):** iperf3 en UDP contra la IP pública del VPS
+  desde la LAN aborta («Resource temporarily unavailable»): el UDP llega por
+  `cg0`, pero el VPS contesta con origen 10.79.0.1 (la dirección del túnel,
+  la que elige la ruta) y el socket del cliente, conectado a la pública, lo
+  descarta. Solo afecta a servicios UDP del propio VPS alcanzados por su IP
+  pública; el UDP hacia internet no. Por eso el UDP de cengarde se midió
+  contra 10.79.0.1. Arreglo posible: que el VPS conteste por el túnel con la
+  pública como origen (la ruta de la red del túnel con `src`), por probar.
 
 ## Pendiente
 
@@ -1107,6 +1111,8 @@ Los cuatro módems, alternados (nunca a la vez), cengarde con U2a.
   enlaces no son FIFO?, ¿plazos cortos para la cola de Claro?).
 - El nombre nuevo (propuestas de Sonnet: Rhizon, Cordyn, Ligra…; revisar
   choques).
+- El VPS contesta el UDP de sus propios servicios con origen 10.79.0.1
+  cuando la LAN le habla a su IP pública (iperf3 UDP, 2026-10-31).
 
 ## Cambios
 
@@ -1125,4 +1131,4 @@ Los cuatro módems, alternados (nunca a la vez), cengarde con U2a.
 - 2026-10-31: el paso U2a, el temporizador de GRIT por segmento con la
   llegada que da el motor (+17 % de bajada, −35 % de duplicados).
 - 2026-10-31: contra OMR con U2a: Speedtest, UDP y la caída del enlace
-  principal; iperf3 UDP con el control por GRIT.
+  principal; el origen del UDP que contesta el propio VPS.
