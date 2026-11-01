@@ -1,12 +1,13 @@
 # 030 — Protocolo 13: el túnel dentro de GRIT
 
 - **Fecha:** 2026-11-01
-- **Estado:** vigente (etapa A en curso: la clase STREAM hecha y medida en el laboratorio)
+- **Estado:** vigente (etapa A hecha y medida en el laboratorio; falta el terreno)
 - **Fuentes:** el NUC y el VPS de la testnet el 2026-11-01 (estado antes y
   después de 20 s de bajada y 20 s de subida); laboratorio
   `~/campo/2026-11-01/u3a/` (el reordenador apagado),
   `~/campo/2026-11-01/p13a/` (protocolo 12 contra 13) y `p13ts`–`p13ts3`
-  (con un flujo como MPEG-TS); `engine/src/proto.h`,
+  (con un flujo como MPEG-TS), `p13skip`, `skipbis`, `p13voice` y
+  `p13tsreal`; `engine/src/proto.h`,
   `clientpath.h`, `subflow.h`, `client.c`, `server.c`; historia 029 (U1–U7).
 
 ## TL;DR
@@ -38,6 +39,9 @@
   esperaba 60 ms fijos y los STREAM no le ganaban presupuesto. Con la espera
   de un RTT del enlace más rápido y el presupuesto, 11,2 → 8,3 ‰, y los fuera
   de orden del flujo bajan en los 24 casos (a un tercio o menos en 13).
+  Un MPEG-TS real (ffmpeg) decodifica 93,4 % de los cuadros en vez de
+  89,9 %; la voz baja de 94 a 68 ms de mediana y casi no pasa los 200 ms;
+  el TCP que no va por GRIT (otra zona, un puerto reenviado) queda igual.
 - **Lo que viene:** el encabezado de subflujo con anti-replay por enlace,
   frames `STREAM` y `DATAGRAM` (de ~46 a ~25 B por paquete), las clases por
   flujo para los datagramas (MPEG-TS/RTP en orden con plazo, RIST directo,
@@ -147,6 +151,43 @@ de bajada (−6 %), `lossy` y `starlink15` de subida (−6 %), dentro de lo que
 varía `protect` (−22 / +15 %, piso de ruido 20–36 %) pero fuera del de los
 casos estables (0–3 %): vigilar en la ronda de terreno.
 
+### Lo sensible al orden: voz y MPEG-TS de verdad
+
+Las mismas 144 corridas por ronda, `p12` (`4070eca`) contra `p13b`
+(`72302ef`), el TCP por GRIT:
+
+- **Voz** (`p13voice`: 50 paquetes/s de 172 B, como Opus o G.711 en RTP): la
+  latencia mediana del flujo baja de 94 a 68 ms y lo que un búfer de
+  jitter de 200 ms tiraría por tarde cae en 23 de 24 casos (`dominant` de
+  subida: 1177 → 1 paquete por corrida; `het` de subida: 595 → 51). El TCP
+  queda igual (−1,9 %, todo por `dominant` de bajada, que en todas las rondas
+  salta entre 23 y 83 Mbit/s en los dos brazos; sin él, +1 %).
+- **MPEG-TS real** (`p13tsreal`: ffmpeg codifica H.264 a 6 Mbit/s en un TS
+  CBR de 8 Mbit/s y otro ffmpeg lo decodifica al otro lado): los errores del
+  decodificador bajan 27 % (95 723 → 69 571 en la ronda) y los cuadros
+  decodificados suben de 89,9 a 93,4 % (los perdidos, −35 %); mejora en 21
+  de 24 casos (5 a 8 veces menos errores en `downstall` de subida y `lossy`). TCP
+  +1,3 %.
+
+### El TCP que no pasa por GRIT
+
+Una LAN en otra zona del firewall o una conexión que entra por un puerto
+reenviado desde el VPS cruzan el túnel como DATA, con el reordenador y el
+rescate de siempre, junto a los STREAM de los demás. El laboratorio lo arma
+con `BOND_PEP_SKIP=5201` (el iperf3 queda fuera del `REDIRECT`, el resto
+igual, con el flujo como MPEG-TS al lado):
+
+- `p13skip` (12 casos): TCP −2,1 %, la pérdida del flujo TS igual
+  (2,0 → 1,9 ‰).
+- `skipbis`, para separar ruido de efecto (6 casos × 2 × 3, cinco brazos):
+  `p12` contra sí mismo da +2,8 % y −16 a +59 % por caso (`cell4` de subida);
+  contra `0367caf` +2,0 %, `59b9e5d` −1,5 %, `72302ef` +6,2 %. La media de
+  las 36 corridas de cada brazo queda entre 52 y 55 Mbit/s.
+
+Un TCP de punta a punta por el túnel varía mucho más que el de GRIT (su
+piso A/A no es el 0–3 % de la historia 029): el protocolo 13 no le cambia
+nada que el laboratorio pueda ver.
+
 ### Etapa A2: el encabezado de subflujo y los frames
 
 - Encabezado por paquete y enlace: sesión, enlace y `sseq` dentro del MAC,
@@ -171,9 +212,8 @@ casos estables (0–3 %): vigilar en la ronda de terreno.
 ## Pendiente
 
 - Una ronda en terreno (el NUC y el VPS juntos: el protocolo cambia).
-- El TCP que no pasa por GRIT (otra zona del firewall, una conexión entrante
-  por un puerto reenviado: `BOND_PEP_SKIP`), la voz (50 paquetes/s de 172 B)
-  y el MPEG-TS real con ffmpeg (`BOND_TSREAL`).
+- RTP de verdad con GStreamer (`rtpjitterbuffer`) y un túnel WireGuard o
+  IPsec adentro.
 - La FEC v3 sobre STREAM: hoy no lo cubre (en terreno está apagada); si se
   enciende, decidir si protege también la clase STREAM.
 
@@ -181,4 +221,5 @@ casos estables (0–3 %): vigilar en la ronda de terreno.
 
 - 2026-11-01: creada, con la etapa A.
 - 2026-11-01: las rondas con un flujo como MPEG-TS, la espera de un RTT y el
-  presupuesto del rescate para los STREAM.
+  presupuesto del rescate para los STREAM; la voz, el MPEG-TS real y el TCP
+  que no pasa por GRIT.
