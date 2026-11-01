@@ -184,7 +184,6 @@ struct cg_config {
 	uint32_t mute_settle_ms;
 	uint32_t mute_trickle;
 	uint32_t min_active_links;
-	int mute_queue;          /* mute by lateness: also the queue and unanswered probes (health.h, story 016); default no */
 
 	/* Reordering what arrives and splitting what is sent (story 012), both
 	 * ends. Each end reorders what it receives with them (reorder.h): the
@@ -229,8 +228,6 @@ struct cg_config {
 	char protocontroller_mid_cc[16];          /* variant A: the middle TCP's congestion control, each end for what it sends (bbr; "": the kernel's) */
 	char protocontroller_vps[64];             /* router, variant A: the VPS's tunnel address ("": the tunnel prefix's first address) */
 	int tcp_aware;                /* mark inner TCP's retransmissions and ACKs free (tcpfree.h) */
-	uint32_t reorder_idle_ms;     /* EXPERIMENT: the reorderer stops waiting for a link that brought no data this long; 0: off */
-	uint32_t reorder_retx_release_ms; /* a TCP retransmission gives up the gaps held this long before it; 0: off */
 	int fec;                      /* send a parity of each group of split DATA, rebuild from it (fec.h) */
 	uint32_t fec_wait_ms;         /* a group's parity goes at the latest this long after its first packet */
 	uint32_t fec_share_max;       /* with fec, no link takes over this % of the split DATA (fec.h); 0 (default): no cap */
@@ -244,7 +241,6 @@ struct cg_config {
 	uint32_t split_spread_ms;     /* only links this close to the fastest share the split (split.h G4); 0: off */
 	uint32_t split_stress_dup;    /* while G4 sees the delays come apart, copies may add this % of the bytes (cg_sdup); 0: never */
 	int split_stress_rejoin;      /* G4: the fastest link that left comes back at once, not after mute_settle_ms */
-	int split_stress_single;      /* EXPERIMENT (off): under G4 stress the split uses the fastest link in only */
 	int split_spread_copy;        /* links out of the split get every packet (split.h); default: not with governor */
 	int governor;                 /* the split's weights from each link's queue (govern.h) */
 	int capacity_weights;         /* the split's weights from each link's capacity (capacity.h) */
@@ -260,20 +256,15 @@ struct cg_config {
 	uint32_t eta_keep;            /* the ETA backlog over a stale queue: 1 the larger, 2 + net growth since, 3 half */
 	uint32_t eta_keep_ms;         /* eta_keep 2: how stale the queue measured is */
 	uint32_t cap_g4_episode;      /* a G4 leave for the queue: 1 a full episode, 2 if the capacity overshot, 3 2 for 3 s */
-	int rescue_by_owd;            /* the client's rescue on the link of least upload delay, not RTT (audit C10) */
 	uint32_t rescue_full_hyst;    /* the rescue's full bit: 1 off under 3x, 2 off under 3x only while not rising */
 	uint32_t redund_pace_ms;      /* a copy goes on a link only if it arrives within this of the first (eta.h cg_eta_copies) */
 	int32_t pace_peers_ms;        /* both ends: over the starlink preset's pace_peers_ms (60), the copies to its peers; -1: the preset's, 0: off */
 	uint32_t split_dominant_pct;  /* dominant.h's threshold over the preset's (starlink: 250), a large value: off */
 	uint32_t split_dominant_hold; /* dominant.h's hold: 1 on, 2 off, 0 the preset's */
-	uint32_t capacity_expire_ms;  /* out of the send set this long: the capacity halves (capacity.h, story 016); 0: off */
-	uint32_t capacity_loss_queue_ms; /* losing >= 1 % with a queue over the minute's minimum this long: full at any load (capacity.h, story 019); 0: off */
-	uint32_t capacity_stand;      /* a standing queue holds fast start back (1), and room lets it go early (2) (capacity.h, story 019); 0: off */
 	int capacity_seq_lag;         /* a sample's loss against what was sent before the newest arrival (capacity.h); default yes */
 	uint32_t starlink_slot_clock; /* Starlink's slot clock (slot.h) on starlink links: 1 on, 2 off, 0 the preset's */
 	uint32_t starlink_edge_ms;    /* the slots' edge in each 15 s of the wall clock (12000: :12, :27, :42, :57) */
 	uint32_t starlink_edge_pre_ms, starlink_edge_post_ms; /* the window around it */
-	int starlink_edge_copies;     /* redundancy: copies to a starlink link's peers only in an edge's window */
 	uint32_t redund_spare;        /* client, redundancy: what the links after the first carry in their spare (spare.h, story 020): 0 off, 1 copies, 2 parity, 3 mix, 4 rs, 5 rlc (story 021) */
 	uint32_t redund_spare_code_ms; /* ... rs and rlc: how long a block (or window) of source packets spans (default 30) */
 	uint32_t redund_spare_ms;     /* ... the queue they hold it to (default 50) */

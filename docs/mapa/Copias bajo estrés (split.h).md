@@ -3,7 +3,7 @@ tags: [mapa, pieza]
 archivos:
   - engine/src/split.h
   - engine/tests/test_split.c
-sello: 3d5742203f4bfe1d
+sello: 22c0e59c52526614
 ---
 # Copias bajo estrés (split.h)
 
@@ -21,7 +21,6 @@ Mientras [[G4 guarda de dispersión (split.h)]] está en estrés, un paquete rep
 
 ## Perillas
 - [[Mapa/Perillas/split_stress_dup|split_stress_dup]]: 50; 0–400.
-- [[Mapa/Perillas/split_stress_single|split_stress_single]]: no (bajo estrés, solo el más rápido en vez de copiar).
 
 ## Dónde se midió
 - `split.h`: en el laboratorio (`ltespike` bajada), el reparto vacío que copiaba todo por accidente tuvo 44 retransmisiones de TCP donde repartir tuvo 700–800.
@@ -32,5 +31,5 @@ Mientras [[G4 guarda de dispersión (split.h)]] está en estrés, un paquete rep
 - C13 (resuelto): es el paso 4 de `cg_split_plan` ([[Reparto (split.h)]]): una copia no elige enlace; la FEC v3 igual gana reparaciones por ella (bajo estrés rehacen los repartidos del enlace lento).
 
 ## Archivos
-- `split.h` (`cg_sdup`, `CG_SDUP_CAP`, `cg_split_stress_elig`).
+- `split.h` (`cg_sdup`, `CG_SDUP_CAP`).
 - `client.c`: `tun_read`, `spread_tick`. `server.c`: `down_prepare`.

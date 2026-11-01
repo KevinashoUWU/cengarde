@@ -242,7 +242,6 @@ void cg_json_reorder(struct cg_json *j, const char *k, const struct cg_reorder *
 	cg_json_u64(j, "cap", st->lost_cap);
 	cg_json_u64(j, "overflow", st->lost_overflow);
 	cg_json_u64(j, "flush", st->lost_flush);
-	cg_json_u64(j, "retx", st->lost_retx);
 	cg_json_end(j, '}');
 	/* adaptive: each link's learned margin, by link id */
 	cg_json_arr(j, "adapt_ms");
@@ -253,7 +252,6 @@ void cg_json_reorder(struct cg_json *j, const char *k, const struct cg_reorder *
 	cg_json_u64(j, "after_rack", st->late_rack);
 	cg_json_u64(j, "after_cap", st->late_cap);
 	cg_json_u64(j, "after_overflow", st->late_overflow);
-	cg_json_u64(j, "after_retx", st->late_retx);
 	cg_json_u64(j, "old", st->late_old);
 	cg_json_end(j, '}');
 	cg_json_u64(j, "far", st->far);
@@ -422,9 +420,6 @@ void cg_json_capacity(struct cg_json *j, const struct cg_cap_link *l, uint32_t t
 	cg_json_u64(j, "cut_short", l->n_cut_short);
 	cg_json_u64(j, "cut_loss", l->n_cut_loss);
 	cg_json_u64(j, "restore_rest", l->n_restore);
-	cg_json_u64(j, "expired", l->n_expire); /* capacity_expire_ms halvings */
-	cg_json_u64(j, "cut_lossq", l->n_cut_lossq); /* capacity_loss_queue_ms cuts (also in cut_loss) */
-	cg_json_u64(j, "restore_room", l->n_room);   /* capacity_stand 2: fast start before its rest (also in restore_rest) */
 	cg_json_end(j, '}');
 }
 

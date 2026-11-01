@@ -28,7 +28,6 @@ sello: b9f384883487c2db
 
 ## Choques conocidos
 - C4: la ventana de 600 ms frente a muestras de ≥ 500 ms alineadas a los informes: solo ~0–20 % de las cosquillas cubren una muestra entera; puede explicar el «no creció» y la espera. Su período de 2 s resuena con G4 y el silenciado ([[audit-pending]], tarea #50).
-- C13: bajo `split_stress_single`, la cosquilla no corre.
 
 ## Archivos
 - `tickle.h`; tests `engine/tests/test_tickle.c`.

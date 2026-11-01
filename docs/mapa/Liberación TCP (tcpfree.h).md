@@ -23,14 +23,13 @@ Desde el 2026-10-24 ese extremo juzga cada ACK con SACK y lo marca para el otro 
 ## Decide / escribe
 - `CG_F_FREE` en la cabecera → [[Reordenador (reorder.h)]] del otro extremo, que distingue (`cg_tcp_data`) una retransmisión (con datos) de un ACK.
 - Con `redund_spare`, la misma marca hace prioritario al paquete en lo que sobra de los otros enlaces ([[Lo que sobra (spare.h)]]).
-- Una retransmisión va **en su lugar** de la secuencia, no adelantada; con `reorder_retx_release_ms` suelta los huecos retenidos antes.
+- Una retransmisión va **en su lugar** de la secuencia, no adelantada (soltar los huecos retenidos antes, `reorder_retx_release_ms`, está en `docs/desvan/`).
 - En redundancia, con `tcp_retx_one`, la primera retransmisión va por un enlace (`retx_masks`, `down_retx_masks`); la repetida, copiada.
 - El RTT de los flujos → el presupuesto de TCP de [[Reparación coherente (harq.h)]]; `tcp_e2e` y `upload.tcp` en el estado.
 - `CG_F_TUNHOLE` en el DATA de un ACK (`OWN`) → [[Retransmisión según la evidencia (tcpack.h)]] del otro extremo; `tcp_e2e`: `in_flight`, `unvouched`, `marked`.
 
 ## Perillas
 - [[Mapa/Perillas/tcp_aware|tcp_aware]]: no.
-- [[Mapa/Perillas/reorder_retx_release_ms|reorder_retx_release_ms]]: 0 (apagado); 0–2000.
 - [[Mapa/Perillas/tcp_retx_one|tcp_retx_one]]: sí. [[Mapa/Perillas/rescue_tcp_race|rescue_tcp_race]]: sí. [[Mapa/Perillas/tcp_ack_rule|tcp_ack_rule]]: sí.
 
 ## Dónde se midió

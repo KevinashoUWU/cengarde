@@ -146,20 +146,12 @@ static void test_joint(void)
 	}
 }
 
-/* cg_arr_idle: a link idle for idle_us (no copy since), never with 0. */
+/* cg_arr_top: the newest sequence of a link. */
 static void test_arrival_idle(void)
 {
 	struct cg_link_rx l;
 
-	memset(&l, 0, sizeof(l));
-	CHECK(!cg_arr_idle(&l, 1000000, 0));    /* off */
-	CHECK(cg_arr_idle(&l, 1000000, 500000)); /* never brought one */
-	l.last_us = 900000;
-	CHECK(!cg_arr_idle(&l, 1000000, 500000));
-	CHECK(cg_arr_idle(&l, 1500001, 500000));
-	l.last_us = 0xfffffff0u;                /* wraps */
-	CHECK(!cg_arr_idle(&l, 0x10, 500000));
-	/* the newest sequence: a serial max, the first copy sets it */
+	/* a serial max, the first copy sets it */
 	memset(&l, 0, sizeof(l));
 	cg_arr_top(&l, 0xfffffffeu);
 	l.last_us = 1;

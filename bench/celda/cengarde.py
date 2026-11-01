@@ -35,7 +35,7 @@ phase; 0: none), RET_GAIN (the gain then, BASE_GAIN; the tail is then the TCP up
 RET, and "ret" says what the LTE link did after it: its capacity, share,
 RTT, when it carried again, and the TCP), SETTLE (6), ARMS (more modes,
 "name=base:client extra|server extra" separated by "/", base one of MODES,
-e.g. "redq=redund:min_active_links = 1;mute_queue = yes|mute_queue = yes"),
+e.g. "redq=redund:min_active_links = 1|min_active_links = 1"),
 FIJO_NETEM (netem on each direction of fijo: "delay 15ms rate 10mbit loss
 1% limit 100", ~110 ms of queue), FIJO_TYPE (fijo's link type, auto),
 CENGARDE_BIN (engine/cengarde), CLIENT_EXTRA and SERVER_EXTRA

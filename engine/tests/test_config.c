@@ -455,7 +455,15 @@ static void test_config_bonding(void)
 	CHECK_EQ(cg_config_parse(&c, CLIENT "subflow = yes\nlink_cc = yes\nlink_cc_bits = 2\nlink_cc_budget_ms = 300\n", err,
 				 sizeof(err), warn, sizeof(warn)), 0);
 	CHECK(c.link_cc);
-	CHECK(strstr(warn, "link_cc_bits: fixed in the engine now") && strstr(warn, "link_cc_budget_ms: fixed"));
+	CHECK(strstr(warn, "link_cc_bits: no longer an option") && strstr(warn, "link_cc_budget_ms: no longer"));
+	CHECK(!strstr(warn, "unknown key"));
+	cg_config_free(&c);
+	/* the experiments no preset turned on (docs/desvan/): the same */
+	warn[0] = 0;
+	CHECK_EQ(cg_config_parse(&c, SERVER "mute_queue = yes\ncapacity_expire_ms = 2000\ncapacity_stand = 2\n"
+					    "starlink_edge_copies = yes\nreorder_retx_release_ms = 10\n", err, sizeof(err),
+				 warn, sizeof(warn)), 0);
+	CHECK(strstr(warn, "mute_queue: no longer an option") && strstr(warn, "starlink_edge_copies: no longer"));
 	CHECK(!strstr(warn, "unknown key"));
 	cg_config_free(&c);
 	CHECK_EQ(cg_config_parse(&c, CLIENT "link_cc = yes\n", err, sizeof(err), warn, sizeof(warn)), 0);
@@ -727,13 +735,12 @@ static void test_config_bonding(void)
 	cg_config_free(&c);
 	bad(SERVER "split_dominant_pct = 70000\n", "split_dominant_pct", "70000");
 	/* the Starlink gears (task #63-#65): seq lag on, the slot clock at
-	 * :12 +- 100/50 ms, hold and edge copies off, by default */
+	 * :12 +- 100/50 ms, hold off, by default */
 	CHECK_EQ(cg_config_parse(&c, SERVER "\n", err, sizeof(err), warn, sizeof(warn)), 0);
 	CHECK_EQ(c.capacity_seq_lag, 1);
 	CHECK_EQ(c.starlink_edge_ms, 12000);
 	CHECK_EQ(c.starlink_edge_pre_ms, 100);
 	CHECK_EQ(c.starlink_edge_post_ms, 50);
-	CHECK_EQ(c.starlink_edge_copies, 0);
 	CHECK_EQ(cg_config_link_knobs(&c).dominant_hold, 0);
 	CHECK_EQ(cg_config_link_knobs(&c).slot_clock, 0);
 	CHECK_EQ(c.pace_peers_ms, -1); /* the preset's */
@@ -749,41 +756,15 @@ static void test_config_bonding(void)
 	cg_config_free(&c);
 	bad(CLIENT "pace_peers_ms = 2001\n", "pace_peers_ms", "2001");
 	CHECK_EQ(cg_config_parse(&c, CLIENT "capacity_seq_lag = no\nstarlink_slot_clock = 2\nsplit_dominant_hold = 1\n"
-				      "starlink_edge_ms = 11950\nstarlink_edge_copies = yes\n",
+				      "starlink_edge_ms = 11950\n",
 				 err, sizeof(err), warn, sizeof(warn)),
 		 0);
 	CHECK_EQ(c.capacity_seq_lag, 0);
 	CHECK_EQ(c.starlink_edge_ms, 11950);
-	CHECK_EQ(c.starlink_edge_copies, 1);
 	CHECK_EQ(cg_config_link_knobs(&c).slot_clock, 2);
 	CHECK_EQ(cg_config_link_knobs(&c).dominant_hold, 1);
 	cg_config_free(&c);
 	bad(SERVER "starlink_edge_ms = 15000\n", "starlink_edge_ms", "15000");
-	/* the virtual cell's knobs (story 016): off by default */
-	CHECK_EQ(cg_config_parse(&c, CLIENT "\n", err, sizeof(err), warn, sizeof(warn)), 0);
-	CHECK_EQ(c.mute_queue, 0);
-	CHECK_EQ(c.capacity_expire_ms, 0);
-	cg_config_free(&c);
-	CHECK_EQ(cg_config_parse(&c, SERVER "mute_queue = yes\ncapacity_expire_ms = 2000\n", err, sizeof(err), warn,
-				 sizeof(warn)),
-		 0);
-	CHECK_EQ(c.mute_queue, 1);
-	CHECK_EQ(c.capacity_expire_ms, 2000);
-	cg_config_free(&c);
-	bad(CLIENT "capacity_expire_ms = 600001\n", "capacity_expire_ms", "600001");
-	/* the ns-3 traces' knobs (story 019): off by default */
-	CHECK_EQ(cg_config_parse(&c, CLIENT "\n", err, sizeof(err), warn, sizeof(warn)), 0);
-	CHECK_EQ(c.capacity_loss_queue_ms, 0);
-	CHECK_EQ(c.capacity_stand, 0);
-	cg_config_free(&c);
-	CHECK_EQ(cg_config_parse(&c, SERVER "capacity_loss_queue_ms = 10\ncapacity_stand = 2\n", err, sizeof(err), warn,
-				 sizeof(warn)),
-		 0);
-	CHECK_EQ(c.capacity_loss_queue_ms, 10);
-	CHECK_EQ(c.capacity_stand, 2);
-	cg_config_free(&c);
-	bad(CLIENT "capacity_loss_queue_ms = 1001\n", "capacity_loss_queue_ms", "1001");
-	bad(SERVER "capacity_stand = 3\n", "capacity_stand", "3");
 	/* redund_spare (story 020): off by default, a 50 ms target */
 	CHECK_EQ(cg_config_parse(&c, CLIENT "\n", err, sizeof(err), warn, sizeof(warn)), 0);
 	CHECK_EQ(c.redund_spare, 0);

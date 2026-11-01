@@ -79,7 +79,6 @@ Entre el código, sus comentarios y las historias (2026-10-21):
 - `reorder.h` dice «la ventana, N = 4096, queda bajo la anti-replay (8128)»; el código tiene `CG_RO_SLOTS` 16384 y `CG_REPLAY_BITS` 32768 (PR #46, [[013-capacidad-y-dosificacion]]; [[engine-README]] ya dice 16384). `replay.h` también habla de «8129 a 8255 secuencias».
 - `steer.h` habla de «cengarde protocol 4» para el socket de basura.
 - `slot.h`: 477 ranuras en 1,7 h; [[015-modelo-de-enlace]] (TL;DR): 479 ranuras en 2 h.
-- `arrival.h`: «ninguna decisión lo lee»; `reorder_idle_ms` (experimento C2) usa `cg_arr_idle` para el `rset` del reordenador.
 - [[engine-README]]: el peso del rescate y el sondeo de `capacity_weights` se describen con `governor_target_ms`; desde C12 son `rescue_target_ms` y `capacity_sat_ms` (mismo valor por omisión). Dice que `pacing` es del cliente, pero el servidor también dosifica sus carriles (`pace.h`, `pace_lanes`). Para `split_dominant_hold` da «0 apagado, 1 sí»; `config.h` dice «0 el del preset, 1 sí, 2 no».
 - `config.h` marca `rescue_kb` y `rescue_pct` como «server:», pero el cliente también guarda un anillo para la subida.
 - `dominant.h` ubica `pace_peers_ms` en `eta.h`; vive en `linkmodel.h`.

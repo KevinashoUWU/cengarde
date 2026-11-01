@@ -1315,6 +1315,22 @@ escenario (pedido del usuario: «no lo mates del todo»).
   11 de 24, los casos ruidosos para los dos lados (`cell4` de subida −10 %
   en la primera tanda y +11 % en la segunda).
 
+### El desván, segunda tanda (2026-11-01)
+
+Nueve perillas apagadas que no encendía ningún preset, ni la testnet, ni el
+laboratorio salen del motor a `docs/desvan/`, con su código desacoplado, sus
+tests y lo que se midió: `mute_queue` (historia 016), `reorder_idle_ms`
+(013), `reorder_retx_release_ms` (014), `rescue_by_owd` (015, C10),
+`split_stress_single` (012, 013), `capacity_expire_ms`,
+`capacity_loss_queue_ms`, `capacity_stand` (016, 019) y
+`starlink_edge_copies` (015, 022). Una configuración que todavía las dice
+arranca con un aviso (`retired_keys`). Salen con ellas del estado
+`upload_late_ms` / `download_late_ms`, `reorder.lost.retx`,
+`reorder.late.after_retx`, `cap_diag.expired`, `cut_lossq`,
+`restore_room`, `split_plan.single` y la decisión `cap_expire`. Las FEC
+viejas (la XOR y las variantes de `redund_spare`) se quedan hasta decidir
+la protección por omisión.
+
 ## Pendiente
 
 - `link_cc`: decidir si pasa a ser lo normal en el motor con `subflow` (hoy
@@ -1362,3 +1378,4 @@ escenario (pedido del usuario: «no lo mates del todo»).
   (`link_cc_bits` 1024, 2048 y 4096, por omisión: 7438 / 7470).
 - 2026-11-01: la limpieza del ritmo por enlace: lo que ganó queda fijo,
   `link_cc_bits` sale y lo que perdió va a `docs/desvan/`.
+- 2026-11-01: el desván, segunda tanda: nueve perillas que nadie encendía.

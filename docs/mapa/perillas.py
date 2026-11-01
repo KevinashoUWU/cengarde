@@ -95,7 +95,7 @@ T = {
  "mute_settle_ms": ([G], BOTH, "2000", "100–600000", [SALUD, G4], ["006", "012"], "Cuánto tiene que durar la condición para silenciar (y el doble para volver). G4 lo usa para la vuelta al reparto."),
  "mute_trickle": ([G], BOTH, "0", "0–1000000", [SALUD], ["006"], "Un enlace silenciado lleva un paquete duplicado de cada tantos (0: ninguno)."),
  "min_active_links": ([G], BOTH, "2", "1–16", [SALUD], ["006"], "Enlaces vivos que siempre llevan todo; el silenciado se detiene ahí."),
- "mute_queue": ([G], BOTH, "`no`", "`yes` o `no`", [SALUD, COLA], ["016"], "EXPERIMENTO: el silenciado compara el atraso, la cola propia sobre la del más rápido y las sondas sin respuesta (el mayor); un informe viejo de un enlace callado no reinicia la espera."),
+
  # --- probes / servers (client) ---
  "probe_interval_ms": ([G], CLI, "100", "100–60000", [SONDAS, SALUD, G3], ["006"], "Intervalo de sondas con tráfico. G3 y el mudo cuentan en intervalos de sonda."),
  "probe_idle_ms": ([G], CLI, "1000", "`probe_interval_ms`–600000", [SONDAS], ["006"], "Intervalo de sondas en reposo."),
@@ -130,8 +130,8 @@ T = {
  "reorder_adaptive": ([G], BOTH, "`no`", "`yes` o `no`", [RO], ["013"], "El margen de cada enlace aprende de sus tardíos. Experimental."),
  "reorder_pool_kb": ([G], BOTH, "8192", "256–131070", [RO], ["012", "013"], "Memoria para lo retenido."),
  "reorder_active": ([G], BOTH, "`yes`", "`yes` o `no`", [RO, ACT], ["013"], "Un hueco espera solo a los enlaces por los que el otro extremo llevó datos hace poco (la máscara de sus sondas, C2); `no`: a todos los no silenciados, como antes."),
- "reorder_idle_ms": ([G], BOTH, "0 (apagado)", "0–60000", [RO, ARR], ["audit"], "EXPERIMENTO (C2): el reordenador deja de esperar a un enlace que no trajo datos este tiempo."),
- "reorder_retx_release_ms": ([G], BOTH, "0 (apagado)", "0–2000", [RO, TCPF], ["014"], "Una retransmisión de TCP suelta los huecos retenidos desde este tiempo antes de ella."),
+
+
  "tcp_aware": ([G], BOTH, "`no`", "`yes` o `no`", [TCPF, RO], ["014"], "Marca libres los segmentos sin datos y las retransmisiones de TCP del túnel."),
  # --- rescue / fec ---
  "rescue_kb": ([G], BOTH, "0 (apagado)", "0–262144", [RESC], ["013"], "Anillo de lo enviado hace poco, para los NACK (servidor: bajada; cliente: subida)."),
@@ -144,7 +144,7 @@ T = {
  "tcp_retx_one": ([G], BOTH, "`yes`", "`yes` o `no`", [TCPF, HARQ, TCPA], ["023"], "Con `tcp_aware`, en redundancia la primera retransmisión de un segmento va por un solo enlace (el más rápido), no copiada; una segunda del mismo, copiada. Con `no`, toda retransmisión va copiada (y `tcp_ack_rule` no cuenta)."),
  "tcp_ack_rule": ([G], BOTH, "`yes`", "`yes` o `no`", [TCPA, TCPF], ["023"], "Con `tcp_retx_one`, los enlaces de una retransmisión según lo que se sabe de su original: ya ACK o SACK, por un enlace (también repetida); perdida por el túnel en todos los enlaces, copiada (también la primera); entregada por el túnel, en camino o nada sabido, como `tcp_retx_one`. Lo dicen los ACK que vuelven y la marca `CG_F_TUNHOLE` del otro extremo."),
  "rescue_target_ms": ([G], BOTH, "20 (el de `governor_target_ms`; 0 lo sigue)", "0–1000", [RESC, CAP], ["audit"], "Cola donde empieza a bajar el peso del rescate (cero a 4 veces). Auditoría C12."),
- "rescue_by_owd": ([G], CLI, "`no`", "`yes` o `no`", [RESC], ["015", "audit"], "El rescate del cliente por el enlace de menor retardo de subida, no de RTT (C10). Experimento."),
+
  "rescue_full_hyst": ([G], BOTH, "0 (apagado)", "0–2", [RESC, CAP, MODEL], ["015", "audit"], "Histéresis del bit `full` del rescate (C11). Experimento, campo del modelo."),
  "fec": ([G], BOTH, "`no`", "`yes` o `no`", [FEC, F3, CODES], ["013", "021", "026"], "Paridad XOR de cada grupo de DATA repartido, o con `fec_code = rlc` la ventana deslizante de la FEC v3. En el servidor, también la memoria con la que usa las paridades y las reparaciones de `redund_spare` (`parity`, `mix`, `rs`, `rlc`) y de la FEC v3 (el anillo de 2048 DATA y las ecuaciones: ~5 MB por sesión). En el router, con un servidor que manda reparaciones en la bajada (`fec_code = rlc` allí), el mismo anillo y las ecuaciones para rehacerlas."),
  "fec_code": ([G], BOTH, "`xor`", "`xor` o `rlc`", [F3, FEC, CODES], ["026"], "Lo que manda `fec = yes`: `xor`, la paridad espacial de siempre (un paquete por enlace por grupo, rehace una pérdida por grupo); `rlc`, la FEC v3: reparaciones de una ventana deslizante sobre todo DATA, una parte fija de los bytes repartida por los enlaces, con reparto o con un solo enlace (protocolo 11; el servidor con `fec = yes`). En el servidor, las mismas reparaciones sobre la bajada de cada sesión (~2 MB más por sesión; `cengarde-vps-setup fec rlc`), que el router rehace con `fec = yes`. Se cambia sin reiniciar."),
@@ -161,7 +161,7 @@ T = {
  "split_spread_copy": ([G], BOTH, "`yes` salvo con `governor`, `capacity_weights` o `split_eta`", "`yes` o `no`", [G4, SPLIT], ["012"], "Los enlaces fuera del reparto llevan copia de todo (y G2 duplica)."),
  "split_stress_dup": ([G], BOTH, "50", "0–400", [SDUP], ["012"], "Bajo el estrés de G4, las copias pueden sumar este % de los bytes."),
  "split_stress_rejoin": ([G], BOTH, "`yes`", "`yes` o `no`", [G4], ["012"], "El enlace más rápido que salió vuelve al instante, no tras `mute_settle_ms`."),
- "split_stress_single": ([G], BOTH, "`no`", "`yes` o `no`", [G4, SDUP], ["audit"], "EXPERIMENTO: bajo estrés, el reparto usa solo el enlace más rápido."),
+
  "split_dwell_ms": ([G], BOTH, "0 (apagado)", "0–5000", [G4, MODEL], ["015", "audit"], "C3: G4 retiene un enlace que volvió por recuperación este tiempo."),
  "split_dwell_oq_ms": ([G], BOTH, "0 (cualquiera)", "0–5000", [G4, MODEL], ["015", "audit"], "C3: lo anterior solo mientras su propia cola es como mucho esto."),
  "governor": ([G], BOTH, "`no`", "`yes` o `no`", [GOV], ["012", "013"], "Los pesos del reparto salen de la cola de cada enlace."),
@@ -171,9 +171,9 @@ T = {
  "capacity_sat_ms": ([G], BOTH, "20 (el de `governor_target_ms`; 0 lo sigue)", "0–1000", [CAP, CAKE, ETA], ["audit"], "La cola que dice que un enlace está lleno (C12)."),
  "capacity_loss_pct": ([G], BOTH, "0 (apagado)", "0–50", [CAP, MODEL], ["015"], "EXPERIMENTO: un enlace cargado que pierde más de esto está lleno."),
  "capacity_seq_lag": ([G], BOTH, "`yes`", "`yes` o `no`", [CAP], ["015"], "La pérdida de una muestra se cuenta por secuencia (`rx_top`), no 250 ms antes del informe."),
- "capacity_expire_ms": ([G], BOTH, "0 (apagado)", "0–600000", [CAP], ["016"], "EXPERIMENTO: un enlace fuera del envío (silenciado, mudo o fuera del reparto) tanto tiempo sin medirse ve su capacidad a la mitad, y otra vez cada tanto, hasta 1/16 de su mejor."),
- "capacity_loss_queue_ms": ([G], BOTH, "0 (apagado)", "0–1000", [CAP, COLA, MODEL], ["019"], "EXPERIMENTO: un enlace que pierde al menos 1 % de lo enviado, mandándole más de lo que entrega, con la cola sobre su mínimo de 60 s en al menos esto, dos muestras seguidas, está lleno a cualquier carga (con el preset de Starlink, solo cargado). Sugerido: 10."),
- "capacity_stand": ([G], BOTH, "0 (apagado)", "0–2", [CAP, COLA], ["019"], "EXPERIMENTO: 1, una cola permanente (sobre el mínimo de 60 s, sobre `capacity_sat_ms`, 4 muestras) frena el arranque rápido; 2, además el arranque rápido va antes de 10 s si el enlace entrega 9/8 de su capacidad sin pérdida ni cola, dos muestras."),
+
+
+
  "cap_g4_episode": ([G], BOTH, "0 (apagado)", "0–3", [CAP, G4, MODEL], ["015", "audit"], "C5: una salida de G4 por cola cuenta para el arranque rápido."),
  "split_eta": ([G], BOTH, "`no`", "`yes` o `no`", [ETA], ["013"], "Reparto por llegada esperada."),
  "split_tickle_ms": ([G], BOTH, "0 (nunca)", "0–60000", [TICKLE], ["013"], "Con `split_eta`, cada este tiempo se le da carga a un enlace ocioso."),
@@ -192,7 +192,7 @@ T = {
  "starlink_edge_ms": ([G], BOTH, "12000 (:12, :27, :42, :57)", "0–14999", [SLOT], ["015"], "Dónde cae el borde dentro de cada período de 15 s del reloj de pared."),
  "starlink_edge_pre_ms": ([G], BOTH, "100", "0–5000", [SLOT], ["015"], "La ventana empieza este tiempo antes del borde."),
  "starlink_edge_post_ms": ([G], BOTH, "50", "0–5000", [SLOT], ["015"], "La ventana termina este tiempo después del borde."),
- "starlink_edge_copies": ([G], BOTH, "`no`", "`yes` o `no`", [SLOT, COPIAS], ["015"], "En redundancia, copias a los demás enlaces solo dentro de la ventana del borde."),
+
  "redund_spare": ([G], CLI, "`no`", "`no`, `copies`, `parity`, `mix`, `rs` o `rlc`", [SPARE, COPIAS, FEC, CODES], ["020", "021"], "EXPERIMENTO: en redundancia, lo que llevan los enlaces que no son el primero, en lo que les sobra (su cola bajo `redund_spare_ms`): copias parciales, paridad XOR sobre k paquetes del primero (el servidor necesita `fec = yes`), la mezcla (copias si cabe todo o en un microcorte, paridad si no), o como la mezcla con un código de borrado en vez del XOR: bloques Reed-Solomon (`rs`, Leopard) o una ventana deslizante (`rlc`), con k y m según la pérdida del primero (protocolo 8; el servidor necesita `fec = yes`)."),
  "redund_spare_code_ms": ([G], CLI, "30", "1–500", [CODES, SPARE], ["021"], "Con `redund_spare = rs` o `rlc`, cuánto abarca un bloque (o la ventana) de paquetes fuente: k son los paquetes de ese tiempo (de 4 a 64), y un bloque que no se llena cierra a ese plazo (la ventana manda una reparación)."),
  "redund_spare_ms": ([G], CLI, "50", "1–2000", [SPARE], ["020"], "Con `redund_spare`, la cola (sobre el mínimo de 60 s) en la que cada enlace que no es el primero sostiene lo que lleva."),
@@ -270,24 +270,21 @@ def generate():
                                "label", "enabled", "weight", "type"]),
         ("Servidor", ["max_sessions", "session_timeout_ms",
                       "path_timeout_ms", "passthrough_file", "forward_file", "forward", "lanes"]),
-        ("Salud", ["mute_behind_ms", "unmute_behind_ms", "mute_settle_ms", "mute_trickle", "min_active_links", "mute_queue"]),
+        ("Salud", ["mute_behind_ms", "unmute_behind_ms", "mute_settle_ms", "mute_trickle", "min_active_links"]),
         ("Reordenador", ["reorder", "reorder_max_wait_ms", "reorder_dup_wait_ms", "reorder_margin_ms", "reorder_bypass",
-                         "reorder_by_link", "reorder_adaptive", "reorder_pool_kb", "reorder_active", "reorder_idle_ms",
-                         "reorder_retx_release_ms", "tcp_aware"]),
-        ("Rescate y FEC", ["rescue_kb", "rescue_pct", "rescue_wait_ms", "rescue_tries", "rescue_target_ms",
-                           "rescue_by_owd", "rescue_full_hyst", "rescue_code_ms", "parq", "rescue_tcp_race",
+                         "reorder_by_link", "reorder_adaptive", "reorder_pool_kb", "reorder_active", "tcp_aware"]),
+        ("Rescate y FEC", ["rescue_kb", "rescue_pct", "rescue_wait_ms", "rescue_tries", "rescue_target_ms", "rescue_full_hyst", "rescue_code_ms", "parq", "rescue_tcp_race",
                            "tcp_retx_one", "tcp_ack_rule", "fec", "fec_wait_ms", "fec_share_max", "fec_code",
                            "fec_pct", "fec_pct_min", "fec_window_ms", "fec_single"]),
         ("Reparto y guardas", ["split", "split_small", "split_spread_ms", "split_spread_copy", "split_stress_dup",
-                               "split_stress_rejoin", "split_stress_single", "split_dwell_ms", "split_dwell_oq_ms"]),
+                               "split_stress_rejoin", "split_dwell_ms", "split_dwell_oq_ms"]),
         ("Gobernador y capacidad", ["governor", "governor_target_ms", "governor_window_ms", "capacity_weights",
-                                    "capacity_sat_ms", "capacity_loss_pct", "capacity_seq_lag", "capacity_expire_ms",
-                                    "capacity_loss_queue_ms", "capacity_stand", "cap_g4_episode"]),
+                                    "capacity_sat_ms", "capacity_loss_pct", "capacity_seq_lag", "cap_g4_episode"]),
         ("ETA, cosquilla, copias, dosificación", ["split_eta", "split_tickle_ms", "split_stale_max", "eta_buffer",
                                "split_qpred_ms", "split_qpred_mode", "eta_keep", "eta_keep_ms", "redund_pace_ms", "pace_peers_ms", "pacing"]),
         ("Modelo de enlace y Starlink", ["exp_link_types", "split_dominant_pct", "split_dominant_hold",
                                "starlink_slot_clock", "starlink_edge_ms", "starlink_edge_pre_ms",
-                               "starlink_edge_post_ms", "starlink_edge_copies"]),
+                               "starlink_edge_post_ms"]),
         ("Lo que sobra (redundancia)", ["redund_spare", "redund_spare_ms", "redund_spare_first", "redund_spare_code_ms"]),
         ("Protocontrolador", ["protocontroller", "protocontroller_port", "protocontroller_vps", "protocontroller_mid_cc",
                               "protocontroller_buf_kb", "protocontroller_mem_mb", "protocontroller_max_flows",

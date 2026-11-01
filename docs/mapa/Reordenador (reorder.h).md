@@ -3,7 +3,7 @@ tags: [mapa, pieza]
 archivos:
   - engine/src/reorder.h
   - engine/tests/test_reorder.c
-sello: 39fb428d9f1ec356
+sello: 1bf681a74edd7fd3
 ---
 # Reordenador (reorder.h)
 
@@ -15,7 +15,7 @@ Pone en orden de secuencia lo que llega antes de entregarlo a la TUN. Retiene lo
 ## Lee
 - Primeras copias verificadas del [[Anti-replay (replay.h)]]: secuencia, ts del emisor, flags (`CG_F_SPLIT`, `CG_F_PREV`, `CG_F_FREE`), enlace y hora de llegada.
 - El retardo de cada enlace (`cg_ro_owd`) de las sondas verificadas ([[Sondas y cola de bonding (proto.h)]]).
-- `rset`: los enlaces por los que el otro manda: los no silenciados (con `reorder_idle_ms`, sin los ociosos según [[Llegadas (arrival.h)]]), y de ellos solo los activos según la máscara del otro extremo y lo que llegó ([[Enlaces activos (active.h)]], `reorder_active`). `wide`, el mismo sin la máscara, sirve para contar.
+- `rset`: los enlaces por los que el otro manda: los no silenciados, y de ellos solo los activos según la máscara del otro extremo y lo que llegó ([[Enlaces activos (active.h)]], `reorder_active`). `wide`, el mismo sin la máscara, sirve para contar.
 
 ## Decide / escribe
 - La entrega en orden (`down_deliver` / `up_deliver`).
@@ -29,7 +29,7 @@ Pone en orden de secuencia lo que llega antes de entregarlo a la TUN. Retiene lo
 ## Perillas
 - [[Mapa/Perillas/reorder|reorder]]: sí. [[Mapa/Perillas/reorder_max_wait_ms|reorder_max_wait_ms]]: 200. [[Mapa/Perillas/reorder_dup_wait_ms|reorder_dup_wait_ms]]: 0.
 - [[Mapa/Perillas/reorder_margin_ms|reorder_margin_ms]]: 10. [[Mapa/Perillas/reorder_bypass|reorder_bypass]]: 128. [[Mapa/Perillas/reorder_pool_kb|reorder_pool_kb]]: 8192.
-- [[Mapa/Perillas/reorder_by_link|reorder_by_link]], [[Mapa/Perillas/reorder_adaptive|reorder_adaptive]]: no. [[Mapa/Perillas/reorder_idle_ms|reorder_idle_ms]], [[Mapa/Perillas/reorder_retx_release_ms|reorder_retx_release_ms]]: 0. [[Mapa/Perillas/reorder_active|reorder_active]]: sí.
+- [[Mapa/Perillas/reorder_by_link|reorder_by_link]], [[Mapa/Perillas/reorder_adaptive|reorder_adaptive]]: no. [[Mapa/Perillas/reorder_active|reorder_active]]: sí.
 - [[Mapa/Perillas/rescue_wait_ms|rescue_wait_ms]], [[Mapa/Perillas/rescue_tries|rescue_tries]], [[Mapa/Perillas/tcp_aware|tcp_aware]].
 
 ## Dónde se midió

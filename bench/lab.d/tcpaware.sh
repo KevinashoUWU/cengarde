@@ -16,7 +16,7 @@
 # EXTRA_MS slower for ON_S seconds every EVERY_S. TCPA_VARIANTS: off
 # (tcp_aware = no), on (tcp_aware = yes at both ends); any other word W runs
 # with the settings in the variable TCPA_CONF_W ("key = value;..."), e.g.
-# TCPA_CONF_rel10="tcp_aware = yes;reorder_retx_release_ms = 10".
+# TCPA_CONF_m20="tcp_aware = yes;reorder_margin_ms = 20".
 # TCPA_CONF goes to both ends in every variant (reorder_max_wait_ms = 500, as
 # on the testnet), TCPA_CONF_CLIENT to the client only (split = on: the
 # server then splits the download too). TCPA_N repetitions, each variant in

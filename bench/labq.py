@@ -9,7 +9,7 @@ once (bench/lab.sh with LAB_ID), to compare engine builds ("arms").
 PLAN is a JSON file:
 
   {"arms": [{"name": "base", "rev": "origin/master"},
-            {"name": "idle50", "rev": "HEAD", "client_extra": "reorder_idle_ms = 50"}],
+            {"name": "margin20", "rev": "HEAD", "client_extra": "reorder_margin_ms = 20"}],
    "grid": {"cases": ["equal", "het"], "dirs": ["down", "up"], "cc": ["cubic"],
             "reps": 4, "secs": 30, "seed": 1},
    "env": {"BOND_NETEM_INFLIGHT": "1"}}

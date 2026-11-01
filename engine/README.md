@@ -379,18 +379,6 @@ servidor la bajada):
 - **Mínimo:** al menos `min_active_links` (2) enlaces vivos llevan siempre
   todo. Si uno se queda mudo, el silenciado más rápido vuelve al instante.
   Con dos enlaces, entonces, nada se silencia.
-- **`mute_queue` (`no`; `yes` o `no`), experimental, en los dos extremos:**
-  el silenciado compara, en vez de solo lo que un enlace va detrás del más
-  rápido, el mayor entre eso, su cola (su retardo sobre su mínimo de 60 s)
-  menos la del más rápido y, en el cliente, cuánto lleva sin respuesta su
-  sonda más vieja menos el RTT del enlace más rápido. Un enlace atrasado
-  cuyos informes llegan a ráfagas ya no reinicia su espera en cada hueco.
-  En la celda virtual (un LTE cayendo al acantilado del SNR junto a un
-  fijo, con `min_active_links = 1`) se silencia a los 3,3 s en vez de
-  3,8–7,9 s o nunca, pero el TCP de la redundancia no mejora y la vuelta de
-  la señal cuesta 6–9 s sin el LTE por la espera exponencial; en el
-  laboratorio no cambia nada (*medido*, historia 016). El estado dice
-  `upload_late_ms` (cliente) y `download_late_ms` (servidor).
 - `mute_behind_ms = 0` desactiva el silenciado y deja redundancia pura,
   también en una recarga: los enlaces que estaban silenciados vuelven al
   instante (`sudo bench/lab.sh muteoff`).
@@ -941,8 +929,7 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
   el del preset, 250 en `starlink`) mueve el umbral del enlace dominante
   solo donde el preset lo tiene; un valor grande (65535) lo apaga. Cada una es un campo del
   modelo de cada enlace (`linkmodel.h`); la perilla global lo fija en todos
-  los enlaces, encima del preset de su tipo. `rescue_by_owd` (C10, solo el
-  cliente) sigue global. Ninguna entró en un preset salvo lo dicho de
+  los enlaces, encima del preset de su tipo. Ninguna entró en un preset salvo lo dicho de
   `starlink` (historia 015, tabla por tipo).
 - **Los engranes de Starlink (historia 015, sección 9; los dos extremos):**
   `capacity_seq_lag` (`yes`) cuenta la pérdida de cada muestra contra lo
@@ -954,49 +941,18 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
   (`starlink_edge_ms`, 12000) cambia de satélite, y lo que se envía de
   `starlink_edge_pre_ms` (100) antes a `starlink_edge_post_ms` (50) después
   no cuenta como pérdida del enlace. Usa la hora del sistema: hace falta NTP
-  en el router y el VPS. `starlink_edge_copies` (`no`): en redundancia, fuera
-  de esa ventana un paquete grande va solo por Starlink, como dato repartido
-  que el otro extremo pide de nuevo si se pierde (`rescue_kb`); dentro, o con
-  Starlink sin reportes o perdiendo, va por todos (≈ −65 % de datos en los
-  celulares con un stream de 8 Mbit/s, sin pérdida, y el p99 del ping
-  grande hasta +30 %). `split_dominant_hold` (0: apagado; 1 sí) mantiene el
+  en el router y el VPS. `split_dominant_hold` (0: apagado; 1 sí) mantiene el
   modo dominante mientras Starlink no pierde y lo presume en reposo si su
   historia lo muestra dominante; no ganó en el laboratorio y costó en
   `shallowq`, por eso queda como perilla. El estado dice `edge_samples` y
   `lost_age_ms` en `cap_diag`, y `presumed` y `why` en `dominant`.
-- **`capacity_expire_ms` (0, apagado; 0–600000), experimental, en los dos
-  extremos:** un enlace fuera del envío (silenciado, mudo o fuera del
-  reparto) ese tiempo sin una muestra cargada ve su capacidad a la mitad, y
-  otra vez cada tanto, hasta 1/16 de su mejor; cada mitad cuenta como
-  muestra llena para el arranque rápido, y al volver lo sube el sondeo al
-  doble. Sin ella, la capacidad de un enlace fuera queda congelada en la de
-  antes. En la celda virtual el LTE volvió con 0,3–1,3 Mbit/s en vez de
-  3,6–21, pero eso costó cuando la señal volvió entera (bonding 20,8 frente
-  a 23,0 Mbit/s en los 10 s siguientes) y no ganó cuando volvió débil (los
-  cortes de siempre bajan la vieja en 1,5–2,5 s); en el laboratorio, igual
-  (*medido*, historia 016). El estado cuenta las mitades en `cap_diag`
-  (`expired`) y en las decisiones (`cap_expire`).
-- **`capacity_loss_queue_ms` (0, apagado; 0–1000; sugerido 10) y
-  `capacity_stand` (0, apagado; 0–2), experimentales, en los dos extremos
-  (historia 019):** `capacity_loss_queue_ms` toma como lleno, a cualquier
-  carga, un enlace que en dos muestras seguidas pierde al menos el 1 % de
-  lo enviado, recibe más de lo que entrega y tiene una cola sobre su mínimo
-  de 60 s de al menos ese valor: su capacidad pasa a lo que entrega. Es el
-  búfer corto de un operador delante de un TCP: la cola no pasa de
-  `capacity_sat_ms` y el enlace nunca está «cargado» frente a una capacidad
-  vieja. Con el preset de Starlink (que descarta sin cola y se retiene por
-  eso) solo cuenta cargado. `capacity_stand = 1` frena el arranque rápido
-  mientras la cola sobre el mínimo de 60 s pasa `capacity_sat_ms` (4
-  muestras): una cola que dura más que `governor_window_ms` se vuelve base y
-  el arranque rápido devolvía la capacidad a la mitad de la mejor (choque C5
-  de la auditoría). `capacity_stand = 2` además deja ir el arranque rápido
-  antes de los 10 s si el enlace entrega 9/8 de su capacidad, sin pérdida ni
-  cola, dos muestras. En las trazas de ns-3 (LTE, 10 KB de RLC, emisor AIMD)
-  la capacidad pasó de +275–510 % de error a −2 % en 1,0–1,4 s, sin cortes
-  en pérdida aleatoria sin cola, y la cola permanente de +523 % a +3 %; en
-  la celda calibrada la capacidad se corrige antes, pero ni ahí ni en el
-  laboratorio cambia el TCP, por eso quedan apagadas (*medido*, historia
-  019). El estado cuenta `cut_lossq` y `restore_room` en `cap_diag`.
+- **Lo que salió del motor:** los experimentos que ningún preset ni el
+  terreno encendían (`mute_queue`, `reorder_idle_ms`,
+  `reorder_retx_release_ms`, `rescue_by_owd`, `split_stress_single`,
+  `capacity_expire_ms`, `capacity_loss_queue_ms`, `capacity_stand`,
+  `starlink_edge_copies`) y los usos perdedores de `link_cc_bits` están en
+  `docs/desvan/`, desacoplados, con lo medido y cómo volver a meterlos. Una
+  configuración que todavía los dice arranca igual, con un aviso.
 - **`exp_link_types` (vacío; nombres de tipo):** las perillas globales de
   arriba (y `eta_buffer` y `capacity_loss_pct`) solo para los enlaces de
   esos tipos, para probar una antes de ponerla en un preset; vacío: todos.
@@ -1403,14 +1359,6 @@ las retransmisiones por fila: `unknown`, `spurious`, `delivered`, `tunnel`, y
 `tcp_rule` global en el VPS (los ACK de la bajada), y en `tcp_e2e` del
 extremo de salida `in_flight`, `unvouched` y `marked`.
 
-- **`reorder_retx_release_ms` (0, apagado; 0–2000), experimental, en el
-  que recibe:** una retransmisión de TCP abandona los huecos anteriores a
-  ella cuyo paquete retenido se envió al menos ese tiempo antes que ella
-  (`lost.retx`), y sale en orden justo detrás. En el laboratorio no
-  conviene: donde el hueco es un paquete atrasado en un enlace lento (una
-  cola que salta), el original llega después como duplicado y el
-  rendimiento bajó de 45 a 34 Mbit/s (historia 014).
-
 ## Protocontrolador (`protocontroller`)
 
 El protocontrolador (historia 025): TCP partido en los dos extremos (lo que
@@ -1703,10 +1651,9 @@ subida:
   extremo (`tcp_aware`), sea cual sea su suerte;
 - `lost`: huecos que dejó de esperar, por qué: `rack` (todos los enlaces
   trajeron uno posterior), `cap` (el plazo), `overflow` (la ventana se
-  llenó), `flush` (al apagarlo) y `retx` (una retransmisión de TCP, con
-  `reorder_retx_release_ms`);
+  llenó) y `flush` (al apagarlo);
 - `late`: los que llegaron después de eso, por la regla que soltó su hueco
-  (`after_rack`, `after_cap`, `after_overflow`, `after_retx`; `old`, si su
+  (`after_rack`, `after_cap`, `after_overflow`; `old`, si su
   casilla ya era de otro). `after_rack` > 0 dice que un enlace no entrega en orden o que se
   esperaba a uno equivocado; `after_cap`, que el plazo es corto;
 - `wait` (cuánto esperó cada retenido) y `late_by` (cuánto después de

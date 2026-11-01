@@ -3,7 +3,7 @@ tags: [mapa, pieza]
 archivos:
   - engine/src/capacity.h
   - engine/tests/test_capacity.c
-sello: 1c21235f79bdca5f
+sello: fbff9c563990e7a4
 ---
 # Tope para cake (capacity.h)
 
@@ -26,7 +26,6 @@ sello: 1c21235f79bdca5f
 - [[012-bonding]]: el gobernador de bajada y `cake` en el banco y en la Pi.
 
 ## Choques conocidos
-- Con `capacity_expire_ms`, la entrega suavizada (`rate_bps`) de un enlace caducado baja con su capacidad: un silenciado vivo cuenta menos en lo entregado ([[016-celda-virtual]]).
 - C10: el tope suma copias, rescates y paridad, que no son tráfico útil ([[audit-pending]], tarea #51).
 
 ## Archivos

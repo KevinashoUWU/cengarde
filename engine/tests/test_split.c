@@ -836,13 +836,7 @@ static void test_split_spread_stall(void)
 	}
 	CHECK(sp.stress);
 	CHECK_EQ(sp.qleft, 0x2);
-	/* under stress the split takes the lead only (0 here), or as given */
 	CHECK_EQ(sp.lead, 0);
-	CHECK_EQ(cg_split_stress_elig(&sp, 0x3, 1), 0x1);
-	CHECK_EQ(cg_split_stress_elig(&sp, 0x3, 0), 0x3);
-	CHECK_EQ(cg_split_stress_elig(&sp, 0x2, 1), 0x2); /* lead not eligible */
-	sp.stress = sp.recover = 0;
-	CHECK_EQ(cg_split_stress_elig(&sp, 0x3, 1), 0x3); /* no stress */
 }
 
 /* Audit C1 (2026-10-17): a link slow by its base delay (40 ms more) gets in
@@ -1183,29 +1177,23 @@ static void test_split_plan(void)
 {
 	struct cg_split_plan p;
 
-	p = cg_split_plan(0x7, 0x7, 0x7, 0);
+	p = cg_split_plan(0x7, 0x7, 0);
 	CHECK_EQ(p.pick, 0x7);
 	CHECK_EQ(p.xor_by, 0x7);
 	CHECK_EQ(p.by, CG_PLAN_SPLIT);
 	CHECK(!p.copy);
-	p = cg_split_plan(0x7, 0x1, 0x1, 0); /* stress: the lead alone */
-	CHECK_EQ(p.pick, 0x1);
-	CHECK_EQ(p.xor_by, 0x1); /* one link: no XOR group (was 0x7) */
-	CHECK_EQ(p.by, CG_PLAN_SINGLE);
-	p = cg_split_plan(0x7, 0x7, 0x6, 0); /* the XOR's cap */
+	p = cg_split_plan(0x7, 0x6, 0); /* the XOR's cap */
 	CHECK_EQ(p.pick, 0x6);
+	CHECK_EQ(p.xor_by, 0x6);
 	CHECK_EQ(p.by, CG_PLAN_SHARE);
-	p = cg_split_plan(0x7, 0x1, 0x1, 1); /* copied under stress */
+	p = cg_split_plan(0x7, 0x1, 1); /* copied under stress */
 	CHECK_EQ(p.pick, 0);
 	CHECK_EQ(p.xor_by, 0);
 	CHECK(p.copy);
 	CHECK_EQ(p.by, CG_PLAN_COPY);
-	p = cg_split_plan(0x3, 0x7, 0xf, 0); /* a step cannot widen */
+	p = cg_split_plan(0x3, 0xf, 0); /* a step cannot widen */
 	CHECK_EQ(p.pick, 0x3);
 	CHECK_EQ(p.by, CG_PLAN_SPLIT);
-	p = cg_split_plan(0x3, 0x1, 0x3, 0); /* the cap after single: on single's */
-	CHECK_EQ(p.pick, 0x1);
-	CHECK_EQ(p.by, CG_PLAN_SINGLE);
 }
 
 /* A resend leaves the link that lost it when another stays (U2b). */

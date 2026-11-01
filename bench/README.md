@@ -734,7 +734,7 @@ lista los brazos (las versiones del motor que se comparan) y la rejilla:
 
 ```json
 {"arms": [{"name": "base", "rev": "origin/master"},
-          {"name": "idle50", "rev": "HEAD", "client_extra": "reorder_idle_ms = 50"}],
+          {"name": "margin20", "rev": "HEAD", "client_extra": "reorder_margin_ms = 20"}],
  "grid": {"cases": ["equal", "het"], "dirs": ["down", "up"], "cc": ["cubic"],
           "reps": 8, "secs": 30, "seed": 1},
  "env": {"BOND_NETEM_INFLIGHT": "1"}}
@@ -744,11 +744,11 @@ lista los brazos (las versiones del motor que se comparan) y la rejilla:
 python3 -I bench/labq.py plan plan.json -j 4               # los trabajos, en orden, y el tiempo
 python3 -I bench/labq.py run plan.json -j 4 --out /tmp/cmp  # compila, corre; otra vez: sigue donde quedó
 python3 -I bench/bondtab.py table /tmp/cmp/all.jsonl --ref base   # cada brazo frente a base
-python3 -I bench/bondtab.py table /tmp/cmp/idle50.jsonl           # un brazo solo
+python3 -I bench/bondtab.py table /tmp/cmp/margin20.jsonl           # un brazo solo
 python3 -I bench/fectab.py /tmp/cmp/all.jsonl --ref base          # las tablas de la FEC (historia 026): n, caudal y p de Mann-Whitney, retardos, perdidos, rehechos, bytes de reparación por byte útil
 # lo mismo sin archivo:
-python3 -I bench/labq.py run --arm base=origin/master --arm idle50=HEAD \
-  --client idle50='reorder_idle_ms = 50' --cases equal,het --reps 8 --secs 30 -j 4 --out /tmp/cmp
+python3 -I bench/labq.py run --arm base=origin/master --arm margin20=HEAD \
+  --client margin20='reorder_margin_ms = 20' --cases equal,het --reps 8 --secs 30 -j 4 --out /tmp/cmp
 ```
 
 - **Brazos.** `rev` se compila una vez por commit en `bench/labq-cache/SHA/`

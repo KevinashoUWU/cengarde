@@ -4,7 +4,7 @@ archivos:
   - engine/src/eta.h
   - engine/src/capacity.h
   - engine/tests/test_eta.c
-sello: 6937bd18b5b42861
+sello: ade4c9a5f4f5e75c
 ---
 # ETA (eta.h)
 
@@ -37,7 +37,6 @@ El reparto por **llegada esperada**: cada paquete va por el enlace donde llegar�
 - Con el protocontrolador B, a GRIT (MPGRIT, paso U2a, 2026-10-31): `cg_eta_behind`, cuándo llega lo que el enlace elegido tiene ahora (su retardo sin cola sobre el menor y su cola sobre su ritmo), vuelve por `ops.send` mensaje a mensaje y fija el temporizador de cada segmento ([[Protocontrolador (protoctl.c, stream.h, streamcc.h)]]).
 
 ## Choques conocidos
-- Con `capacity_expire_ms`, cada mitad de la caducidad cuenta como medida (`loaded_ms`): `cg_cap_stale` no la vuelve a agrandar durante `CG_CAP_STALE_MS` ([[Capacidad (capacity.h)]], [[016-celda-virtual]]).
 - C9: reinicia su cola cada tick con una cola de hace 300–500 ms, sin lo que está en vuelo; oscila con período de 0,6–1 s ([[audit-pending]]). `eta_keep` quedó apagado. Con `link_cc` la cola sale de lo que va en vuelo.
 - C2 (resuelto el 2026-10-26): con el ETA, los enlaces ociosos no avanzaban y el RACK del [[Reordenador (reorder.h)]] los esperaba; ahora el receptor sabe por la máscara de [[Enlaces activos (active.h)]] qué enlaces usa el ETA.
 - Sin carga un enlace no se mide: [[Cosquilla (tickle.h)]].

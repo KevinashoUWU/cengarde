@@ -3,7 +3,7 @@ tags: [mapa, pieza]
 archivos:
   - engine/src/split.h
   - engine/tests/test_split.c
-sello: 3d5742203f4bfe1d
+sello: 22c0e59c52526614
 ---
 # G4 guarda de dispersión (split.h)
 
@@ -18,7 +18,7 @@ Solo comparten el reparto los enlaces de retardo parecido: el receptor entrega e
 
 ## Decide / escribe
 - La máscara de salida (`cg_split_spread_out`, `cg_split_spread_apply`) → [[Reparto (split.h)]].
-- `stress` → [[Copias bajo estrés (split.h)]]; con `split_stress_single`, solo el más rápido (`cg_split_stress_elig`).
+- `stress` → [[Copias bajo estrés (split.h)]].
 - Una salida por cola → [[Capacidad (capacity.h)]] con `cap_g4_episode` (C5).
 - Salidas, vueltas y estrés → [[Bitácora de decisiones (decision.h)]].
 
@@ -26,7 +26,7 @@ Solo comparten el reparto los enlaces de retardo parecido: el receptor entrega e
 - [[Mapa/Perillas/split_spread_ms|split_spread_ms]]: 30; 0–2000 (0: sin guarda).
 - [[Mapa/Perillas/split_spread_copy|split_spread_copy]]: `yes` salvo con gobernador, capacidad o ETA.
 - [[Mapa/Perillas/mute_settle_ms|mute_settle_ms]]: 2000. [[Mapa/Perillas/split_stress_rejoin|split_stress_rejoin]]: sí.
-- [[Mapa/Perillas/split_stress_single|split_stress_single]]: no. [[Mapa/Perillas/split_dwell_ms|split_dwell_ms]], [[Mapa/Perillas/split_dwell_oq_ms|split_dwell_oq_ms]]: 0.
+- [[Mapa/Perillas/split_dwell_ms|split_dwell_ms]], [[Mapa/Perillas/split_dwell_oq_ms|split_dwell_oq_ms]]: 0.
 
 ## Dónde se midió
 - [[012-bonding]]: con 50 ms de diferencia Cubic ~1,15×, BBR 1,47×; con 150 ms se hunden todos, con el reordenador limpio. En la Pi (4 enlaces 5G) la guarda entró en espiral: copias sobre los enlaces atrasados, hasta 2,6 s de atraso y miles de envíos perdidos.
