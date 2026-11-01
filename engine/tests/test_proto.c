@@ -42,7 +42,7 @@ void test_proto(void)
 
 	/* Layout: version/type, the client hint at byte 2, link at byte 3,
 	 * session, seq and ts in network order. */
-	CHECK_EQ(pkt[0], 0xd1);
+	CHECK_EQ(pkt[0], 0xe1);
 	CHECK_EQ(pkt[2], 0x5a);
 	CHECK_EQ(pkt[3], 5);
 	CHECK(!memcmp(pkt + 4, "\xde\xad\xbe\xef\x01\x02\x03\x04\xa0\xb0\xc0\xd0", 12));
@@ -108,19 +108,21 @@ void test_proto(void)
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
 	pkt[0] = 0xc1; /* version 12 (no STREAM class) too */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
-	pkt[0] = 0xdb; /* a STREAM (13): a protocontroller message, its own class */
+	pkt[0] = 0xd1; /* version 13 (stream messages with their own tag) too */
+	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
+	pkt[0] = 0xeb; /* a STREAM (13): a protocontroller message, its own class */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), 0);
 	CHECK_EQ(p.type, CG_T_STREAM);
 	CHECK(!cg_type_ctl(CG_T_STREAM));
 	CHECK_EQ(cg_type_cls(CG_T_STREAM), CG_CLS_STREAM);
 	CHECK_EQ(cg_type_cls(CG_T_DATA), CG_CLS_DATA);
 	CHECK_EQ(cg_type_cls(CG_T_SFACK), CG_CLS_CTL);
-	pkt[0] = 0xdf; /* unknown type */
+	pkt[0] = 0xef; /* unknown type */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
-	pkt[0] = 0xd6; /* a parity (fec.h): its header and a byte at least */
+	pkt[0] = 0xe6; /* a parity (fec.h): its header and a byte at least */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), sizeof(pkt) > CG_HDR_LEN + CG_FEC_HDR ? 0 : -1);
 	CHECK_EQ(cg_hdr_parse(&p, pkt, CG_HDR_LEN + CG_FEC_HDR), -1);
-	pkt[0] = 0xd7; /* a repair (repair.h): its header and a byte at least */
+	pkt[0] = 0xe7; /* a repair (repair.h): its header and a byte at least */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), sizeof(pkt) > CG_HDR_LEN + CG_REP_HDR ? 0 : -1);
 	CHECK_EQ(cg_hdr_parse(&p, pkt, CG_HDR_LEN + CG_REP_HDR), -1);
 	CHECK(cg_type_ctl(CG_T_REPAIR));
@@ -130,7 +132,7 @@ void test_proto(void)
 		uint8_t q[CG_HDR_LEN + CG_PARQ_LEN];
 
 		memcpy(q, pkt, CG_HDR_LEN);
-		q[0] = 0xd8;
+		q[0] = 0xe8;
 		memset(q + CG_HDR_LEN, 0, sizeof(q) - CG_HDR_LEN);
 		q[CG_HDR_LEN] = 2;
 		CHECK_EQ(cg_hdr_parse(&p, q, CG_HDR_LEN + 1 + 2 * CG_PARQ_REQ), 0);
@@ -143,7 +145,7 @@ void test_proto(void)
 		q[CG_HDR_LEN] = CG_PARQ_MAX;
 		CHECK_EQ(cg_hdr_parse(&p, q, sizeof(q)), 0);
 	}
-	pkt[0] = 0xd1;
+	pkt[0] = 0xe1;
 	pkt[2] = 0xff; /* any hint parses: the server judges it */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), 0);
 	CHECK_EQ(p.hint, 0xff);
