@@ -130,7 +130,13 @@ struct peer {
 	uint32_t horizon_us; /* the engine's repair horizon toward this peer (ops.horizon, task #77) */
 	struct cg_scc cc;
 	struct cg_lowd lo; /* what each link adds to this peer's messages' delay, as they come (linkowd.h) */
+	/* each link's own round trip, measured on the segments it carried
+	 * (Karn's rule, RFC 6298's smoothing; U2c), and its timeout: srtt +
+	 * 4 rttvar + PCTL_LRTO_PAD_US, 0: not measured yet */
+	uint32_t lsrtt[CG_ST_LINKS], lvar[CG_ST_LINKS], lrto[CG_ST_LINKS];
 };
+
+#define PCTL_LRTO_PAD_US 20000u /* a link's timeout beyond srtt + 4 rttvar: the ACK's own delay */
 
 struct cg_pctl {
 	struct cg_pctl_cfg cfg;
@@ -1273,6 +1279,26 @@ static void ack_in(struct cg_pctl *p, struct flow *f, const struct cg_pctl_msg *
 	}
 	cg_pctl_ack_of(m, f->tx.una, f->tx.edge, &a);
 	cg_st_tx_ack(&f->tx, &a, &res);
+	/* each link's round trip, on what it carried once (U2c) */
+	for (unsigned l = 0; l < CG_ST_LINKS; l++) {
+		uint64_t s;
+
+		if (!res.lk_sent[l] || now <= res.lk_sent[l])
+			continue;
+		s = now - res.lk_sent[l];
+		if (s > 10000000)
+			continue;
+		if (!r->lsrtt[l]) {
+			r->lsrtt[l] = (uint32_t)s;
+			r->lvar[l] = (uint32_t)(s / 2);
+		} else {
+			uint32_t d = (uint32_t)(s > r->lsrtt[l] ? s - r->lsrtt[l] : r->lsrtt[l] - s);
+
+			r->lvar[l] = (3 * r->lvar[l] + d) / 4;
+			r->lsrtt[l] = (uint32_t)((7 * (uint64_t)r->lsrtt[l] + s) / 8);
+		}
+		r->lrto[l] = r->lsrtt[l] + 4 * r->lvar[l] + PCTL_LRTO_PAD_US;
+	}
 	if (m->owd != CG_PCTL_NOOWD)
 		cg_scc_owd(&r->cc, &p->ccf, now, m->owd);
 	r->cc.inflight -= r->cc.inflight >= res.was_inflight ? res.was_inflight : r->cc.inflight;
@@ -1768,7 +1794,8 @@ static int timers(struct cg_pctl *p, struct flow *f, uint64_t now)
 		 * the latency budget is its floor */
 		uint64_t floor = p->rack_off ? cg_scc_rto_extra(peer_reo(p, r), p->rack_off) : 0, next = 0;
 		uint64_t nl = f->tx.nlost;
-		uint64_t rn = f->tx.reneged, lq = 0, lost = cg_st_tx_rto(&f->tx, now, rto, floor, &next, &lq);
+		uint64_t rn = f->tx.reneged, lq = 0,
+			 lost = cg_st_tx_rto(&f->tx, now, rto, floor, p->rack_off ? r->lrto : NULL, &next, &lq);
 		uint64_t segs = f->tx.nlost - nl;
 
 		p->reneged += f->tx.reneged - rn;
@@ -2262,6 +2289,13 @@ void cg_pctl_json(const struct cg_pctl *p, struct cg_json *j)
 		cg_json_u64(j, "cuts", c->n_cut);
 		cg_json_u64(j, "rebases", c->n_rebase);
 		cg_json_ms(j, "horizon_ms", p->pr[i].horizon_us); /* the engine's repair horizon (task #77) */
+		cg_json_arr(j, "link_srtt_ms"); /* each link's own round trip (U2c), null: not measured */
+		for (unsigned l = 0; l < CG_ST_LINKS; l++)
+			if (p->pr[i].lsrtt[l])
+				cg_json_ms(j, NULL, p->pr[i].lsrtt[l]);
+			else
+				cg_json_null(j, NULL);
+		cg_json_end(j, ']');
 		/* what each link adds to the delay of what comes from this peer
 		 * (linkowd.h): taken off before the ACK's least */
 		{
