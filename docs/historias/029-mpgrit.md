@@ -1028,6 +1028,94 @@ reenvíos por temporizador (9 952 contra 9 903 por corrida, 3+3 rondas) y la
 diferencia de caudal cambió de signo entre rondas: la causa es otra, y hace
 falta medir la edad de lo que vence contra el enlace que lo llevó.
 
+### Paso U2a: el temporizador de GRIT por segmento (2026-10-31, noche)
+
+Primer trozo del paso U2 (GRIT reparte en los subflujos): que GRIT sepa
+cuándo llega cada segmento. El motor elige el enlace de cada DATA en el
+mismo `ops.send` en que GRIT se lo entrega, y su reparto ya sabe cuándo lo
+trae ese enlace, detrás del más rápido (`cg_eta_behind`: su retardo sin
+cola sobre el menor y su cola sobre su ritmo). Lo devuelve mensaje a
+mensaje; GRIT lo guarda en el segmento (`eta_us`) y con `subflow` cada uno
+vence a su propio plazo: el de siempre, o el RTT más vez y media su llegada
+si eso pasa el presupuesto de 300 ms (`cg_st_seg_rto`). Antes de esto, el
+registro del temporizador (`rto_obs`, `dup_by_link`) mostró por qué vencía:
+RTO de ~460 ms con un srtt de ~100 y un rttvar de 14 (el RTT que aprende es
+el del enlace más rápido, cada ACK lleva el menor retardo), el segmento más
+viejo con ~500–680 ms al vencer, los duplicados por los cuatro enlaces y
+el 76 % de los mensajes fuera de orden. Dos arreglos sin el motor, medidos
+y descartados (3+3 rondas): esperar como sospechosos los vencidos salvo el
+más viejo (F-RTO; 204 contra 214 Mbit/s, casi todos vencían igual) y la
+rotación de los rangos de SACK (con ~2600 ACK/s cada rango se dice cada
+~10 ms).
+
+Terreno, bajada `iperf3 -R -P 4` de 30 s, solo el binario del VPS cambia,
+tres rondas alternadas (de tarde: la red da menos que antes):
+
+| brazo | Mbit/s | media | reenviado | por temporizador | duplicados | vencimientos |
+| --- | --- | --- | --- | --- | --- | --- |
+| antes | 142 / 147 / 144 | 144 | 2,2 % | 7 813 | 6 474 | 256–312 |
+| U2a | 156 / 187 / 166 | 170 | 1,5 % | 6 007 | 4 202 | 112–253 |
+
+La llegada media que dio el motor: 143–159 ms detrás del enlace más rápido,
+en 450–530 mil segmentos por corrida. Queda un temporizador que todavía
+reenvía ~6000 por corrida (dos tercios duplicados): el paso U2b (GRIT elige
+el subflujo) y el RTT por subflujo (U2c).
+
+### Contra OMR con U2a: el cara a cara, el UDP y la caída del principal (2026-10-31, noche)
+
+Los cuatro módems, alternados (nunca a la vez), cengarde con U2a.
+
+- **Speedtest** (Ookla, servidor 51218 de Santiago, 3 rondas,
+  `~/campo/2026-10-31/vsomr/`): bajada 181 / 177 / 195 (media 184) contra
+  196 / 206 / 181 (194) de OMR, ruido; subida 119 contra 94 (+27 % en la media; cengarde
+  arriba en dos de las tres rondas); ping con carga en la bajada 54–62 ms contra 624–798 (12 ×
+  menos), en la subida 78–91 contra 128–167. De noche la red da mucho menos
+  que la madrugada del 10-29 (más de 500 Mbit/s los dos).
+- **UDP** a caudal fijo, 10 s (`~/campo/2026-10-31/omrweak/`): OMR lleva
+  el UDP por su VPN (OpenVPN) sobre un solo enlace y se queda en ~25 Mbit/s
+  (bajada a 60 / 100 / 150: 53 / 77 / 86 % perdido); cengarde lo reparte:
+  bajada a 150 Mbit/s con 0 % perdido, subida hasta ~80 (a 150 manda más de
+  lo que la subida de los módems lleva: 53 % y 316 ms de jitter).
+- **El enlace principal muerto con la interfaz arriba** (Entel, el `wan1`
+  maestro de OMR: nft bota todo lo suyo 25 s en una bajada de 70 s, 2
+  rondas): cengarde 0 y 1 segundos casi sin caudal, 0 % de ping perdido en
+  las dos; OMR 8 segundos casi muerto y 32 % de ping perdido en la primera
+  (su ping va por la VPN del maestro), bien en la segunda (sin verificar:
+  su VPN habría quedado en otro módem).
+- **TCP con el principal muerto 45 s** (`~/campo/2026-10-31/mptcp/`, 2
+  rondas): un solo flujo de 90 s sobrevive en los dos, pero cengarde queda
+  0–1 segundos casi sin caudal (de ~190 a ~150 Mbit/s con tres módems) y OMR
+  5–14 (unos 15 s casi en cero hasta que MPTCP lo pasa a otros subflujos;
+  su flujo único ya iba irregular, 52–62 con caídas a 0). Las conexiones
+  nuevas (HTTPS corto a Vultr Santiago cada 2 s): cengarde 23/23 y 23/23,
+  0,23–0,26 s de mediana; OMR 12/15 y 8/12, 1,7–1,8 s de mediana y hasta
+  3,4: cada conexión MPTCP abre su primer subflujo por el maestro.
+- Ventaja chica de cengarde en estas pruebas: el destino del iperf es su
+  VPS (OMR llega a él por internet, un salto dentro del mismo datacenter);
+  las conexiones nuevas van a un servidor neutro.
+- **OMR con Xray VLESS y el UDP por el proxy** (2026-11-01, ~00:30, la red
+  más holgada; `~/campo/2026-11-01/xray/`; la configuración de antes en
+  `/root/cfg-before-xray/` de la VM): Speedtest, bajada 442 / 376 / 445
+  (media 421) contra 301 / 318 / 331 / 442 (348; un par extra, el último,
+  empató), subida 111 contra 86, ping con carga 69–83 contra 317–517 ms.
+  UDP en bajada: cengarde 150 sin pérdida, OMR 80 a 100 Mbit/s (1,9 %) y
+  106 a 150 (29 %); en subida **OMR gana**: a 100 recibe 91 (8 %) contra 68
+  (32 %) de cengarde, a 150 recibe 100 (29 %) contra 50 (65 %): Xray lleva el
+  UDP dentro de un TCP que reenvía lo perdido (a cambio de retardo). El UDP
+  de subida de cengarde va por el túnel sin protección: el paso U5 (los
+  datagramas como clase). Entel muerto: con 4 flujos, 0 y 0 contra 1 y 0
+  segundos casi sin caudal, 0 % de ping perdido los dos; un flujo, 2 y 0
+  contra 2 y 2; conexiones nuevas 46/46 a 0,3 s contra 39/45 a 1,0 s (hasta
+  2,4): MPTCP sigue abriendo por el maestro.
+- **Hallazgo (no es GRIT):** iperf3 en UDP contra la IP pública del VPS
+  desde la LAN aborta («Resource temporarily unavailable»): el UDP llega por
+  `cg0`, pero el VPS contesta con origen 10.79.0.1 (la dirección del túnel,
+  la que elige la ruta) y el socket del cliente, conectado a la pública, lo
+  descarta. Solo afecta a servicios UDP del propio VPS alcanzados por su IP
+  pública; el UDP hacia internet no. Por eso el UDP de cengarde se midió
+  contra 10.79.0.1. Arreglo posible: que el VPS conteste por el túnel con la
+  pública como origen (la ruta de la red del túnel con `src`), por probar.
+
 ## Pendiente
 
 - `link_cc`: decidir si pasa a ser lo normal con `subflow` (más rondas de
@@ -1046,6 +1134,8 @@ falta medir la edad de lo que vence contra el enlace que lo llevó.
   enlaces no son FIFO?, ¿plazos cortos para la cola de Claro?).
 - El nombre nuevo (propuestas de Sonnet: Rhizon, Cordyn, Ligra…; revisar
   choques).
+- El VPS contesta el UDP de sus propios servicios con origen 10.79.0.1
+  cuando la LAN le habla a su IP pública (iperf3 UDP, 2026-10-31).
 
 ## Cambios
 
@@ -1061,3 +1151,7 @@ falta medir la edad de lo que vence contra el enlace que lo llevó.
   curva de cada módem y el MTPT.
 - 2026-10-31: por qué GRIT reenviaba por temporizador: la ventana del
   subflujo (8192) y las copias de estrés en un enlace con cola de segundos.
+- 2026-10-31: el paso U2a, el temporizador de GRIT por segmento con la
+  llegada que da el motor (+17 % de bajada, −35 % de duplicados).
+- 2026-10-31: contra OMR con U2a: Speedtest, UDP y la caída del enlace
+  principal; el origen del UDP que contesta el propio VPS.

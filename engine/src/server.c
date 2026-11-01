@@ -3186,7 +3186,7 @@ static void down_send(struct server *s, struct session *S, int m, uint64_t now_m
 
 /* the protocontroller (variant B) (protoctlio.h): n stream messages down session peer (id sid). */
 static void pctl_send(void *ctx, uint32_t peer, uint32_t sid, uint8_t *const *msg, const uint16_t *len,
-		     const uint8_t *copy, int n)
+		     const uint8_t *copy, int n, uint32_t *eta_us)
 {
 	struct server *s = ctx;
 	uint64_t now_us = cg_now_us();
@@ -3202,6 +3202,7 @@ static void pctl_send(void *ctx, uint32_t peer, uint32_t sid, uint8_t *const *ms
 			s->pick[m] = -1;
 			s->sflags[m] &= (uint8_t)~CG_F_SPLIT;
 		}
+		eta_us[m] = s->pick[m] >= 0 && s->cfg->split_eta ? cg_eta_behind(&S->eta, (unsigned)s->pick[m]) : CG_PCTL_NOETA;
 	}
 	down_send(s, S, n, now_us / 1000, &d);
 }

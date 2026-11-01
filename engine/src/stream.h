@@ -480,6 +480,7 @@ struct cg_st_seg {
 	uint8_t q;              /* sent while the path showed a queue (streamcc.h's cong) */
 	uint8_t by;             /* LOST: why (CG_ST_BY_*) */
 	uint64_t sus_us;        /* a suspect's deadline (cg_st_tx_suspect), 0: none */
+	uint32_t eta_us;        /* when its last transmission arrives, us behind the fastest link (the engine's, U2a), 0: none */
 };
 
 /* A segment sent again a second time or more goes as a copy (a priority
@@ -623,6 +624,7 @@ static inline uint32_t cg_st_tx_sent(struct cg_st_tx *t, uint32_t idx, uint64_t 
 		s->tx++;
 	s->sent_us = now;
 	s->sus_us = 0;
+	s->eta_us = 0;
 	s->dl = dl;
 	s->dla = dla;
 	s->dl_us = dl_us;
@@ -774,8 +776,11 @@ static inline uint64_t cg_st_tx_rack(struct cg_st_tx *t, uint64_t reo_us, uint64
 	return lost;
 }
 
-/* The timer fired at now: every SENT segment sent at least rto_us ago is
- * lost. Returns the bytes marked (*lq as cg_st_tx_rack's).
+/* The timer fired at now: every SENT segment sent at least its timeout ago
+ * (cg_st_seg_rto: rto_us, or more for one the engine said arrives late;
+ * floor_us 0: rto_us for all) is lost; *next (may be NULL): the earliest
+ * timeout of the SENT left, 0: none. Returns the bytes marked (*lq as
+ * cg_st_tx_rack's).
  *
  * With the oldest segment SACKed and the cumulative offset still at it, the
  * receiver no longer holds what it said it had (a renege, TCP's word): every
@@ -783,7 +788,21 @@ static inline uint64_t cg_st_tx_rack(struct cg_st_tx *t, uint64_t reo_us, uint64
  * ranges counted in 8 bits once (2026-10-27): 256 holes, one merge, and it
  * forgot them all; the sender never sent those segments again and the
  * stream stuck for good (buffers over 1 MB). */
-static inline uint64_t cg_st_tx_rto(struct cg_st_tx *t, uint64_t now, uint64_t rto_us, uint64_t *lq)
+/* The timeout of segment s (cg_st_tx_rto's floor_us): with the engine's
+ * arrival behind the fastest link, its timer waits at least half of it
+ * more than that (MPGRIT step U2a, story 029: the round trip the timer
+ * learns is the fastest link's, each ACK carrying the least delay, and what
+ * a link with a queue carries timed out and came as a duplicate); never
+ * less than rto_us, whose own wait beyond the round trip is floor_us. */
+static inline uint64_t cg_st_seg_rto(const struct cg_st_seg *s, uint64_t rto_us, uint64_t floor_us)
+{
+	uint64_t want = (uint64_t)s->eta_us + s->eta_us / 2;
+
+	return floor_us && want > floor_us ? rto_us + (want - floor_us) : rto_us;
+}
+
+static inline uint64_t cg_st_tx_rto(struct cg_st_tx *t, uint64_t now, uint64_t rto_us, uint64_t floor_us, uint64_t *next,
+				    uint64_t *lq)
 {
 	uint64_t lost = 0;
 
@@ -800,11 +819,19 @@ static inline uint64_t cg_st_tx_rto(struct cg_st_tx *t, uint64_t now, uint64_t r
 		}
 		t->reneged++;
 	}
+	if (next)
+		*next = 0;
 	for (uint32_t i = 0; i < t->n; i++) {
 		struct cg_st_seg *s = cg_st_tx_seg(t, i);
+		uint64_t due;
 
-		if (s->st == CG_ST_SENT && s->sent_us + rto_us <= now)
+		if (s->st != CG_ST_SENT)
+			continue;
+		due = s->sent_us + cg_st_seg_rto(s, rto_us, floor_us);
+		if (due <= now)
 			lost += cg_st_tx_lose(t, s, i, lq, CG_ST_BY_RTO);
+		else if (next && (!*next || due < *next))
+			*next = due;
 	}
 	t->rto_lost += lost;
 	return lost;

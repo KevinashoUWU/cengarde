@@ -103,6 +103,7 @@ struct flow {
 	uint64_t adv_edge; /* the edge of the last ACK sent */
 	uint64_t open_due, rto_at, progress_t, created_t;
 	uint64_t sus_at; /* its nearest suspect's deadline (cg_st_tx_suspect), 0: none */
+	uint64_t rto_hold; /* the earliest timeout the last firing left (cg_st_tx_rto's next): not before it, 0: none */
 	uint8_t stop;    /* why its last turn ended (PCTL_STOP_*) */
 	uint64_t s_bytes, s_t, s_rate; /* bytes delivered to the peer, a window's start, the rate */
 	uint64_t w_bytes, w_t, w_rate; /* bytes written to the socket, idem */
@@ -161,6 +162,11 @@ struct cg_pctl {
 	uint8_t *mptr[CG_BATCH];
 	uint16_t mlen[CG_BATCH];
 	uint8_t mcopy[CG_BATCH];
+	/* each DATA's stream and offset, for the engine's eta of where it went
+	 * (ops.send, U2a); mdata 0: not a DATA */
+	uint8_t mdata[CG_BATCH];
+	uint32_t mid[CG_BATCH];
+	uint64_t moff[CG_BATCH];
 	int nmsg;
 	uint32_t mpeer, msid;
 	uint8_t in_rx; /* in cg_pctl_rx: the engine is mid-batch, nothing may be sent now */
@@ -169,6 +175,17 @@ struct cg_pctl {
 	uint64_t up_bytes, down_bytes, data_tx, data_rx, acks_tx, acks_rx, opens_tx, retx, copies, rto_n;
 	uint64_t reneged; /* timeouts that found the oldest segment SACKed and sent the SACKed again */
 	uint64_t dup_frames, ooo_frames, drop_frames, nomem;
+	/* the timer's firings, to tell a late segment from a lost one: by the
+	 * timeout they used (ms: <200, <400, <600, <1000, more), by the
+	 * segments each took for lost (1, <10, <100, more), the sums of the
+	 * timeout, srtt, rttvar and the oldest's age they saw (us); and the
+	 * duplicates received by the link that brought them (the slower copy) */
+	uint64_t rto_by_ms[5], rto_burst[4], rto_sum_us, rto_srtt_us, rto_var_us, rto_age_us;
+	uint64_t dup_by_link[CG_PCTL_LINKS + 1];
+	/* U2a: DATA the engine said when it arrives (and the sum of what it
+	 * said, us), and firings that found only segments still within their
+	 * own timeout */
+	uint64_t eta_n, eta_sum_us, rto_waited;
 	uint64_t rx_reneged, rx_reneged_chunks; /* reneges to make room for what came in order (make_room), and the chunks they freed */
 	uint64_t cc_switches; /* protocontroller_cc auto: connections switched to BBR */
 	uint64_t retx_by[CG_ST_BY_N]; /* segments sent again, by why they were lost (RACK, the timer, a NACK) */
@@ -243,10 +260,31 @@ static void age_pop(struct age *a, uint8_t *h, uint8_t *n, uint64_t off, uint64_
 
 /* ---- the batch ---- */
 
+static struct flow *find(struct cg_pctl *p, uint32_t sid, uint32_t id);
+
+/* The batch through the tunnel; each DATA's segment learns when the link
+ * the engine chose brings it (U2a: its timer, cg_st_seg_rto). */
 static void flush(struct cg_pctl *p)
 {
-	if (p->nmsg)
-		p->ops.send(p->ops.ctx, p->mpeer, p->msid, p->mptr, p->mlen, p->mcopy, p->nmsg);
+	uint32_t eta[CG_BATCH];
+
+	if (!p->nmsg)
+		return;
+	p->ops.send(p->ops.ctx, p->mpeer, p->msid, p->mptr, p->mlen, p->mcopy, p->nmsg, eta);
+	for (int m = 0; m < p->nmsg; m++) {
+		struct flow *f;
+		uint32_t i;
+		struct cg_st_seg *s;
+
+		if (!p->mdata[m] || eta[m] == CG_PCTL_NOETA || !(f = find(p, p->msid, p->mid[m])))
+			continue;
+		i = cg_st_tx_find(&f->tx, p->moff[m]);
+		if (i >= f->tx.n || (s = cg_st_tx_seg(&f->tx, i))->off != p->moff[m] || s->st != CG_ST_SENT)
+			continue;
+		s->eta_us = eta[m] ? eta[m] : 1;
+		p->eta_n++;
+		p->eta_sum_us += eta[m];
+	}
 	p->nmsg = 0;
 }
 
@@ -271,6 +309,7 @@ static void push(struct cg_pctl *p, size_t len, int copy)
 	p->mptr[p->nmsg] = p->msg[p->nmsg];
 	p->mlen[p->nmsg] = (uint16_t)len;
 	p->mcopy[p->nmsg] = (uint8_t)copy;
+	p->mdata[p->nmsg] = 0;
 	p->nmsg++;
 }
 
@@ -1134,6 +1173,7 @@ static void data_in(struct cg_pctl *p, struct flow *f, const struct cg_pctl_msg 
 	v = cg_st_rx_judge(&f->rx, off, m->len, fin, f->consumed + p->buf_cap);
 	if (v == CG_ST_RX_DUP) {
 		p->dup_frames++;
+		p->dup_by_link[link < CG_PCTL_LINKS ? link : CG_PCTL_LINKS]++;
 		f->dup_seen = 1;
 		if (!f->ack_pend++)
 			f->ack_t = now;
@@ -1201,6 +1241,12 @@ static void rto_arm(const struct cg_pctl *p, struct flow *f, struct peer *r)
 	if (!o && f->tx.n && cg_st_tx_seg(&f->tx, 0)->st == CG_ST_SACKED)
 		o = cg_st_tx_seg(&f->tx, 0)->sent_us;
 	f->rto_at = o ? o + cg_scc_rto(&r->cc, f->backoff, cg_scc_rto_extra(peer_reo(p, r), p->rack_off)) : 0;
+	/* not before what the last firing left: a segment the engine said
+	 * arrives late waits more than the oldest's plain timeout (U2a) */
+	if (!o)
+		f->rto_hold = 0;
+	else if (f->rto_hold > f->rto_at)
+		f->rto_at = f->rto_hold;
 }
 
 static void ack_in(struct cg_pctl *p, struct flow *f, const struct cg_pctl_msg *m, uint64_t now)
@@ -1644,6 +1690,9 @@ static int send_one(struct cg_pctl *p, struct flow *f, struct peer *r, uint64_t 
 	if (len && cg_st_buf_read(&f->sb, &p->pool, off, b + CG_PCTL_DATA_HDR, len) < 0)
 		return 0; /* not reached: unacknowledged bytes are held */
 	push(p, CG_PCTL_DATA_HDR + len, copy);
+	p->mdata[p->nmsg - 1] = 1;
+	p->mid[p->nmsg - 1] = f->id;
+	p->moff[p->nmsg - 1] = off;
 	if (idx < f->tx.n) {
 		uint8_t by = cg_st_tx_seg(&f->tx, idx)->by;
 
@@ -1699,19 +1748,34 @@ static int timers(struct cg_pctl *p, struct flow *f, uint64_t now)
 		}
 	}
 	if (f->rto_at && now >= f->rto_at) {
-		uint64_t rn = f->tx.reneged, lq = 0,
-			 lost = cg_st_tx_rto(&f->tx, now,
-					     cg_scc_rto(&r->cc, f->backoff, cg_scc_rto_extra(peer_reo(p, r), p->rack_off)),
-					     &lq);
+		uint64_t rto = cg_scc_rto(&r->cc, f->backoff, cg_scc_rto_extra(peer_reo(p, r), p->rack_off));
+		uint64_t old = f->tx.inflight ? cg_st_tx_oldest(&f->tx) : 0;
+		/* with the subflows, each segment's own timeout (cg_st_seg_rto):
+		 * the latency budget is its floor */
+		uint64_t floor = p->rack_off ? cg_scc_rto_extra(peer_reo(p, r), p->rack_off) : 0, next = 0;
+		uint64_t nl = f->tx.nlost;
+		uint64_t rn = f->tx.reneged, lq = 0, lost = cg_st_tx_rto(&f->tx, now, rto, floor, &next, &lq);
+		uint64_t segs = f->tx.nlost - nl;
 
 		p->reneged += f->tx.reneged - rn;
 		r->cc.inflight -= r->cc.inflight >= lost ? lost : r->cc.inflight;
 		cg_scc_lost(&r->cc, lost - lq);
 		if (lost) {
+			uint64_t ms = rto / 1000;
+
 			if (f->backoff < 6)
 				f->backoff++;
 			p->rto_n++;
+			p->rto_by_ms[ms < 200 ? 0 : ms < 400 ? 1 : ms < 600 ? 2 : ms < 1000 ? 3 : 4]++;
+			p->rto_burst[segs <= 1 ? 0 : segs < 10 ? 1 : segs < 100 ? 2 : 3]++;
+			p->rto_sum_us += rto;
+			p->rto_srtt_us += r->cc.srtt;
+			p->rto_var_us += r->cc.rttvar;
+			p->rto_age_us += old && now > old ? now - old : 0;
+		} else if (next) {
+			p->rto_waited++; /* due by the plain timeout, not by its own */
 		}
+		f->rto_hold = next;
 		rto_arm(p, f, r);
 	}
 	if (!p->cfg.server && f->state == F_OPEN && (!f->open_sent || now >= f->open_due))
@@ -2094,6 +2158,27 @@ void cg_pctl_json(const struct cg_pctl *p, struct cg_json *j)
 	cg_json_u64(j, "rto", p->rto_n);
 	cg_json_u64(j, "reneged", p->reneged);
 	cg_json_u64(j, "dup_frames", p->dup_frames);
+	cg_json_arr(j, "dup_by_link"); /* by the link that brought each (the last: rebuilt, no link) */
+	for (int i = 0; i <= CG_PCTL_LINKS; i++)
+		cg_json_u64(j, NULL, p->dup_by_link[i]);
+	cg_json_end(j, ']');
+	cg_json_obj(j, "rto_obs");
+	cg_json_arr(j, "by_ms"); /* the timeout each firing used: <200, <400, <600, <1000 ms, more */
+	for (int i = 0; i < 5; i++)
+		cg_json_u64(j, NULL, p->rto_by_ms[i]);
+	cg_json_end(j, ']');
+	cg_json_arr(j, "burst"); /* segments each took for lost: 1, <10, <100, more */
+	for (int i = 0; i < 4; i++)
+		cg_json_u64(j, NULL, p->rto_burst[i]);
+	cg_json_end(j, ']');
+	cg_json_ms(j, "rto_mean_ms", p->rto_n ? p->rto_sum_us / p->rto_n : 0);
+	cg_json_ms(j, "srtt_mean_ms", p->rto_n ? p->rto_srtt_us / p->rto_n : 0);
+	cg_json_ms(j, "rttvar_mean_ms", p->rto_n ? p->rto_var_us / p->rto_n : 0);
+	cg_json_ms(j, "oldest_age_mean_ms", p->rto_n ? p->rto_age_us / p->rto_n : 0);
+	cg_json_u64(j, "waited", p->rto_waited); /* firings with every segment still within its own timeout (U2a) */
+	cg_json_u64(j, "eta_segments", p->eta_n); /* DATA the engine said when it arrives */
+	cg_json_ms(j, "eta_mean_ms", p->eta_n ? p->eta_sum_us / p->eta_n : 0);
+	cg_json_end(j, '}');
 	cg_json_u64(j, "ooo_frames", p->ooo_frames);
 	cg_json_u64(j, "drop_frames", p->drop_frames);
 	cg_json_u64(j, "nomem", p->nomem);

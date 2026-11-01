@@ -20,6 +20,11 @@ static void test_eta_basics(void)
 	cg_eta_set(&e, 1, 8000000, 5 * MS, 0, 0);  /* 5 ms further */
 	CHECK_EQ(cg_eta_pick(&e, 0x3, 1000, 0), 0); /* 1 ms against 6 */
 	CHECK_EQ(e.l[0].backlog, 8000ull * 1000000);
+	/* where the packet just put arrives (U2a): 1 ms on 0; 5 ms on idle 1;
+	 * no rate, not known */
+	CHECK_EQ(cg_eta_behind(&e, 0), 1 * MS);
+	CHECK_EQ(cg_eta_behind(&e, 1), 5 * MS);
+	CHECK_EQ(cg_eta_behind(&e, 2), UINT32_MAX);
 	/* five more at once: the last ties with link 1 (6 ms each) and stays */
 	for (int i = 0; i < 5; i++)
 		CHECK_EQ(cg_eta_pick(&e, 0x3, 1000, 0), 0);

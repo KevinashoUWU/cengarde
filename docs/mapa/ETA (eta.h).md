@@ -4,7 +4,7 @@ archivos:
   - engine/src/eta.h
   - engine/src/capacity.h
   - engine/tests/test_eta.c
-sello: 07c4b8eef0a75e7b
+sello: 860f876a278b8c11
 ---
 # ETA (eta.h)
 
@@ -33,6 +33,8 @@ El reparto por **llegada esperada**: cada paquete va por el enlace donde llegar�
 - [[015-modelo-de-enlace]]: el ETA nunca desbordaba a los celulares, con 25–30 ms más de base que Starlink; lo resolvió el preset `starlink`. C9 (`eta_keep = 2`) en Starlink: −16 a −48 %.
 
 - [[020-copias-parciales-y-paridad]]: con el enlace lento ahogado, el ETA de cada paquete se daba vuelta a él unos paquetes por tick; por eso [[Lo que sobra (spare.h)]] elige su primer enlace por el retardo sin cola, no por esto.
+
+- Con el protocontrolador B, a GRIT (MPGRIT, paso U2a, 2026-10-31): `cg_eta_behind`, cuándo llega lo que el enlace elegido tiene ahora (su retardo sin cola sobre el menor y su cola sobre su ritmo), vuelve por `ops.send` mensaje a mensaje y fija el temporizador de cada segmento ([[Protocontrolador (protoctl.c, stream.h, streamcc.h)]]).
 
 ## Choques conocidos
 - Con `capacity_expire_ms`, cada mitad de la caducidad cuenta como medida (`loaded_ms`): `cg_cap_stale` no la vuelve a agrandar durante `CG_CAP_STALE_MS` ([[Capacidad (capacity.h)]], [[016-celda-virtual]]).

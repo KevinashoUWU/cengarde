@@ -183,7 +183,7 @@ static void test_renege(void)
 	cg_st_tx_ack(&t, &a, &r);
 	CHECK_EQ(cg_st_tx_seg(&t, 0)->st, CG_ST_SACKED);
 	CHECK_EQ(t.inflight, 1000);
-	CHECK_EQ(cg_st_tx_rto(&t, 1000000, 500000, NULL), 1000); /* only the SENT one counts as lost */
+	CHECK_EQ(cg_st_tx_rto(&t, 1000000, 500000, 0, NULL, NULL), 1000); /* only the SENT one counts as lost */
 	CHECK_EQ(t.reneged, 1);
 	CHECK_EQ(cg_st_tx_seg(&t, 0)->st, CG_ST_LOST);
 	CHECK_EQ(cg_st_tx_seg(&t, 1)->st, CG_ST_LOST);
@@ -343,7 +343,7 @@ static void test_tx(void)
 	cg_st_tx_ack(&t, &a, &r);
 	CHECK_EQ(t.edge, 10000);
 	/* the timer: the oldest SENT is lost */
-	CHECK_EQ(cg_st_tx_rto(&t, 1000000, 500000, NULL), 500);
+	CHECK_EQ(cg_st_tx_rto(&t, 1000000, 500000, 0, NULL, NULL), 500);
 	CHECK(cg_st_tx_busy(&t));
 	cg_st_tx_next(&t, 1000, &idx, &off, &len, &fin);
 	cg_st_tx_sent(&t, idx, off, len, fin, 1000000, 0, 0, 0, 0, 0, 0);
@@ -427,6 +427,43 @@ static void test_suspect(void)
 	CHECK_EQ(cg_st_tx_suspects(&t, 1000000, &next, &lq), 0);
 }
 
+/* Each segment's own timeout (U2a, cg_st_seg_rto): one the engine said
+ * arrives late waits half of that more than its delay beyond the floor;
+ * without a floor (no subflows) every segment has the plain timeout. */
+static void test_seg_rto(void)
+{
+	struct cg_st_seg seg[16];
+	struct cg_st_tx t;
+	uint32_t idx = 0, len = 0;
+	uint64_t off = 0, next = 0, lq = 0;
+	int fin = 0;
+
+	cg_st_tx_init(&t, seg, 16, 1u << 20);
+	t.tail = 3000;
+	for (int i = 0; i < 3; i++) {
+		CHECK(cg_st_tx_next(&t, 1000, &idx, &off, &len, &fin));
+		cg_st_tx_sent(&t, idx, off, len, fin, 1000 * (uint64_t)(i + 1), 0, 0, 0, 0, 0, 0);
+	}
+	CHECK_EQ(cg_st_tx_seg(&t, 0)->eta_us, 0);
+	cg_st_tx_seg(&t, 1)->eta_us = 400000; /* wants 600 ms: 300 over the floor */
+	cg_st_tx_seg(&t, 2)->eta_us = 100000; /* 150 ms, under the floor: the plain timeout */
+	CHECK_EQ(cg_st_seg_rto(cg_st_tx_seg(&t, 1), 450000, 300000), 750000);
+	CHECK_EQ(cg_st_seg_rto(cg_st_tx_seg(&t, 2), 450000, 300000), 450000);
+	CHECK_EQ(cg_st_seg_rto(cg_st_tx_seg(&t, 1), 450000, 0), 450000);
+	/* at 453 ms: 0 and 2 due, 1 waits until 752 */
+	CHECK_EQ(cg_st_tx_rto(&t, 453000, 450000, 300000, &next, &lq), 2000);
+	CHECK_EQ(next, 752000);
+	CHECK_EQ(cg_st_tx_seg(&t, 1)->st, CG_ST_SENT);
+	CHECK_EQ(cg_st_tx_rto(&t, 751999, 450000, 300000, &next, &lq), 0);
+	CHECK_EQ(cg_st_tx_rto(&t, 752000, 450000, 300000, &next, &lq), 1000);
+	CHECK_EQ(next, 0);
+	CHECK_EQ(t.nlost, 3);
+	/* sent again: the engine's word is for the copy before */
+	CHECK(cg_st_tx_next(&t, 1000, &idx, &off, &len, &fin));
+	cg_st_tx_sent(&t, idx, off, len, fin, 800000, 0, 0, 0, 0, 0, 0);
+	CHECK_EQ(cg_st_tx_seg(&t, idx)->eta_us, 0);
+}
+
 /* The tunnel's NACK of a DATA (cg_st_tx_nack): a loss only for the
  * segment's latest transmission, a no-op for what was delivered, sent
  * again since or lost already; its retransmission counted as the NACK's. */
@@ -490,7 +527,7 @@ static void test_nack(void)
 	CHECK_EQ(cg_st_tx_nack(&t, 0xFFFFFC00u, 0, &b, NULL), CG_ST_NACK_DELIVERED);
 	/* the timer marks the two still SENT (the NACK's retransmission and
 	 * the last one): their retransmissions counted as the timer's */
-	CHECK_EQ(cg_st_tx_rto(&t, 0x100000000ull + 100000, 50000, NULL), 2000);
+	CHECK_EQ(cg_st_tx_rto(&t, 0x100000000ull + 100000, 50000, 0, NULL, NULL), 2000);
 	while (cg_st_tx_next(&t, 1000, &idx, &off, &len, &fin) && idx < t.n)
 		cg_st_tx_sent(&t, idx, off, len, fin, 0x100000000ull + 100000, 0, 0, 0, 0, 0, 0);
 	CHECK_EQ(t.retx_by[CG_ST_BY_RTO], 2);
@@ -672,7 +709,7 @@ static void e2e_run(int nack)
 			}
 		}
 		if (rto_at && now >= rto_at) {
-			cg_st_tx_rto(&t, now, 20000, NULL);
+			cg_st_tx_rto(&t, now, 20000, 0, NULL, NULL);
 			rto_at = now + 20000;
 		}
 	}
@@ -714,5 +751,6 @@ void test_stream(void)
 	test_rx_renege();
 	test_nack();
 	test_suspect();
+	test_seg_rto();
 	test_e2e();
 }
