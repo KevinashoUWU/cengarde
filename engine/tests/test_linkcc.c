@@ -355,8 +355,31 @@ static void test_lc_mean(void)
 	CHECK(!cg_lc_full(&c));
 }
 
+/* CG_LC_F3: FEC v3's guard by the link's own queue once known, and a
+ * tick's loss by its subflow's counters. */
+static void test_lc_f3(void)
+{
+	struct cg_lc c;
+	uint64_t ps = 0, pl = 0;
+
+	cg_lc_init(&c);
+	CHECK_EQ(cg_lc_f3_queue(&c, 7000), 7000); /* bit off */
+	c.bits = CG_LC_F3;
+	CHECK_EQ(cg_lc_f3_queue(&c, 7000), 7000); /* no delay of its own yet */
+	c.have_owd = 1;
+	c.q_us = 42000;
+	CHECK_EQ(cg_lc_f3_queue(&c, 7000), 42000);
+	CHECK_EQ(cg_lc_tick_loss(1000, 10, &ps, &pl), 10);    /* 10 of 1000: 10 per mille */
+	CHECK_EQ(cg_lc_tick_loss(1000, 10, &ps, &pl), -1);    /* nothing sent this tick */
+	CHECK_EQ(cg_lc_tick_loss(1500, 260, &ps, &pl), 500);  /* 250 of 500 */
+	CHECK_EQ(cg_lc_tick_loss(1600, 500, &ps, &pl), 1000); /* more lost than sent (late SFLOSS): capped */
+	CHECK_EQ(ps, 1600);
+	CHECK_EQ(pl, 500);
+}
+
 void test_linkcc(void)
 {
+	test_lc_f3();
 	test_lc_mean();
 	test_lc_mtpt();
 	test_lc_satq_qmax();

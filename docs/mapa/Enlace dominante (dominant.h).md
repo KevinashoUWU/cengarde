@@ -13,7 +13,7 @@ sello: 93d382051254f0d4
 Un Starlink muy por encima de los celulares se queda el envío para él. Si un enlace con `dominant_pct` entrega (su mejor tasa en 10 s) al menos ese % de lo que pueden juntos los enlaces más lentos (2 ms o más de base detrás), **el reparto se hace a un lado**: todo va como en redundancia, con las copias a los lentos a tiempo, y el receptor no retiene nada. Vuelve el reparto cuando entrega menos de 4/5 de eso. Con varios platos ([[022-multistarlink]]), los otros enlaces con `dominant_pct` son sus **pares**: nunca cuentan como más lentos (ni fuera ni en la suma), y el candidato solo cambia por un par que entrega más de 5/4 de lo suyo (`CG_DOM_SWITCH_NUM/DEN`). Con `hold`, mientras no pierde se toma su pico como lo que puede, y en reposo se **presume** dominante si su historia lo muestra.
 
 ## Lee
-- Capacidad, pico y `lost_ms` de [[Capacidad (capacity.h)]]; la base de [[Cola por enlace (cg_gov_base)]].
+- Capacidad, pico y `lost_ms` de [[Capacidad (capacity.h)]], o con `link_cc` (por omisión, `link_cc_bits` 2048) el `bw` de cada enlace del [[Ritmo por enlace (linkcc.h)]] como tasa y pico; la base de [[Cola por enlace (cg_gov_base)]].
 - `dominant_pct`, `dominant_hold` del [[Modelo de enlace (linkmodel.h)]] (preset `starlink`: 250).
 
 ## Decide / escribe

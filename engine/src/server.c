@@ -221,6 +221,7 @@ struct session {
 	uint8_t df3_dn;
 	uint32_t df3_lag;
 	uint64_t df3_rep, df3_bytes, df3_data, df3_tail, df3_guarded, df3_nolink, df3_empty, df3_gated, df3_quiet, df3_switches;
+	uint64_t df3_lsent[CG_MAX_LINKS], df3_llost[CG_MAX_LINKS]; /* CG_LC_F3: each subflow's counters at the last tick */
 	uint16_t parq_seed;
 	uint64_t parq_rx, parq_bad, parq_reqs, parq_sent, parq_bytes, parq_missing, parq_budget, parq_nolink;
 	struct cg_ro_cfg rocf;    /* the server's reorder settings, with its rescue */
@@ -1218,7 +1219,7 @@ static void lc_tick(const struct server *s, struct session *S)
 
 			lc->bits = (uint16_t)s->cfg->link_cc_bits;
 			cg_lc_target(lc, s->cfg->governor_target_ms * 1000, cg_lc_mtpt_cap(lc, s->cfg->link_cc_budget_ms, ref));
-			if (S->cap[p].have_rate)
+			if (S->cap[p].have_rate && !(lc->bits & CG_LC_NOSEED))
 				cg_lc_seed(lc, cg_cap_bps(&S->cap[p]) / 8);
 		}
 }
@@ -2830,7 +2831,8 @@ static void sf3_repair(struct server *s, struct session *S, uint64_t now_us)
 	for (int i = 0; i < CG_MAX_LINKS; i++) {
 		if (!(S->df3_links >> i & 1) || !S->path[i].used)
 			continue;
-		if (cg_f3_guard(S->cap[i].ql_us, (uint32_t)win,
+		if (cg_f3_guard(S->sf[i] ? (int32_t)cg_lc_f3_queue(&S->sf[i]->tx.lc, (uint32_t)S->cap[i].ql_us) : S->cap[i].ql_us,
+				(uint32_t)win,
 				!cg_cap_rescue_w(&S->cap[i], s->cfg->rescue_target_ms * 1000))) {
 			S->df3_guarded++;
 			continue;
@@ -3267,7 +3269,7 @@ static void pctl_hint(void *ctx, uint32_t peer, uint32_t sid, uint64_t *bps, int
 			continue;
 		if (s->cfg->link_cc && S->sf[i] && S->sf[i]->tx.acks) { /* its own rate (linkcc.h), probing included */
 			b = cg_lc_rate(&S->sf[i]->tx.lc);
-		} else if (S->cap[i].have_rate) {
+		} else if (S->cap[i].have_rate && !(s->cfg->link_cc && (s->cfg->link_cc_bits & CG_LC_NOSEED))) {
 			b = cg_cap_bps(&S->cap[i]) / 8;
 			nfull += S->cap[i].cut == CG_CAP_CUT_FULL;
 		} else {
@@ -3463,9 +3465,20 @@ static void cap_tick(struct server *s, struct session *S, uint16_t live, uint64_
 			cg_sig_cap(&S->sig[p], &S->cap[p], now_ms);
 			/* FEC v3 down: where its repairs go, and a lone path's loss */
 			cg_f3_weigh(&S->df3, (unsigned)p, P->tx_bytes);
-			cg_f3_loss(&S->df3, (unsigned)p, S->cap[p].loss_pm, S->cap[p].loss_pm_ms, S->cap[p].ql_us,
-				   S->sig[p].last_qmax > S->cap[p].ql_us ? S->sig[p].last_qmax : S->cap[p].ql_us,
-				   S->cap[p].loaded_ms == S->cap[p].loss_pm_ms);
+			if (S->sf[p] && (S->sf[p]->tx.lc.bits & CG_LC_F3)) {
+				/* its loss by its own subflow, its queue by its own delay */
+				const struct cg_sf_tx *t = &S->sf[p]->tx;
+				int pm = cg_lc_tick_loss(t->sent, t->lost_rx, &S->df3_lsent[p], &S->df3_llost[p]);
+				int32_t q = (int32_t)cg_lc_f3_queue(&t->lc, (uint32_t)S->cap[p].ql_us);
+
+				if (pm >= 0)
+					cg_f3_loss(&S->df3, (unsigned)p, (uint16_t)pm, now_ms, q, q,
+						   t->lc.have_owd && t->lc.q_us >= t->lc.target_us / 2);
+			} else {
+				cg_f3_loss(&S->df3, (unsigned)p, S->cap[p].loss_pm, S->cap[p].loss_pm_ms, S->cap[p].ql_us,
+					   S->sig[p].last_qmax > S->cap[p].ql_us ? S->sig[p].last_qmax : S->cap[p].ql_us,
+					   S->cap[p].loaded_ms == S->cap[p].loss_pm_ms);
+			}
 
 			cg_decrec_cap(&S->dec, &S->cap[p], (unsigned)p, ev, was, now_ms);
 		}
@@ -3482,7 +3495,21 @@ static void cap_tick(struct server *s, struct session *S, uint16_t live, uint64_
 				S->cw[p] = CG_GOV_MAX;
 	}
 	cg_cap_total_tick(&S->ctot, S->cap, live, cc.sat_us);
-	cg_dom_tick(&S->dom, S->cap, S->lm, live, now_ms);
+	if (s->cfg->link_cc && (s->cfg->link_cc_bits & CG_LC_DOM)) {
+		/* the dominant link by each path's own rate */
+		struct cg_cap_link dv[CG_MAX_LINKS];
+
+		memcpy(dv, S->cap, sizeof(dv));
+		for (int p = 0; p < CG_MAX_LINKS; p++) {
+			const struct cg_sf_tx *t = S->sf[p] ? &S->sf[p]->tx : NULL;
+
+			dv[p].have_rate = (uint8_t)(t && t->acks && t->lc.bw);
+			dv[p].rate_bps = dv[p].peak_bps = t ? t->lc.bw * 8 : 0;
+		}
+		cg_dom_tick(&S->dom, dv, S->lm, live, now_ms);
+	} else {
+		cg_dom_tick(&S->dom, S->cap, S->lm, live, now_ms);
+	}
 	if (s->cfg->split_eta) {
 		uint64_t tb[CG_MAX_LINKS], tc[CG_MAX_LINKS];
 		uint16_t due;

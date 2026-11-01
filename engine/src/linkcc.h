@@ -122,6 +122,18 @@ enum { CG_LC_STARTUP_M = 0, CG_LC_DRAIN_M, CG_LC_PROBE_M };
  * only), and it is full for the rescue (congestion, not a loss to send
  * again) when its own queue passes its target. */
 #define CG_LC_ONLY 512u
+/* What the old capacity (capacity.h) still decided, each taken over by the
+ * link's own rate (MPGRIT, story 029: retire the capacity), on by default:
+ * NOSEED, no capacity seed for bw nor capacity fallback in GRIT's hint (the
+ * link starts from its own STARTUP); DOM, the dominant link (dominant.h)
+ * by each link's bw; F3, FEC v3's guard by the link's own queue and its loss
+ * by the subflow's (cg_lc_f3_queue, cg_lc_tick_loss). In the lab (12 cases
+ * x 2 directions, 7 runs each, the three together 4): F3 +4.4 % geometric mean, 16 of 24
+ * won; the three +4.1 %; NOSEED and DOM level (+0.5, +1.1 %), so the
+ * capacity's path goes for them too (2026-11-01). */
+#define CG_LC_NOSEED 1024u
+#define CG_LC_DOM 2048u
+#define CG_LC_F3 4096u
 #define CG_LC_BITS (CG_LC_QMODE | CG_LC_S32) /* the default; the router's adds SAT (config.c) */
 
 struct cg_lc {
@@ -300,6 +312,28 @@ static inline uint32_t cg_lc_gain(const struct cg_lc *c)
 	if (g > CG_LC_ONE && cg_lc_qstate(c) == 0) /* probe only well under it */
 		return CG_LC_ONE;
 	return g;
+}
+
+/* CG_LC_F3: the queue FEC v3's guard reads, us: the link's own (its one-way
+ * delay over its least) once it has one and the bit is on, else the
+ * capacity's cap_q. */
+static inline uint32_t cg_lc_f3_queue(const struct cg_lc *c, uint32_t cap_q)
+{
+	return (c->bits & CG_LC_F3) && c->have_owd ? c->q_us : cap_q;
+}
+
+/* CG_LC_F3: a link's loss over the last tick, per mille, from its subflow's
+ * counters (sent, and lost as the receiver's SFLOSS said; *psent, *plost:
+ * the last tick's, updated); -1 when nothing was sent. */
+static inline int cg_lc_tick_loss(uint64_t sent, uint64_t lost, uint64_t *psent, uint64_t *plost)
+{
+	uint64_t ds = sent - *psent, dl = lost - *plost;
+
+	*psent = sent;
+	*plost = lost;
+	if (!ds)
+		return -1;
+	return dl >= ds ? 1000 : (int)(dl * 1000 / ds);
 }
 
 /* CG_LC_ONLY: whether the link holds more than its queue target now, by its

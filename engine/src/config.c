@@ -908,7 +908,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	c->subflow = 0;
 	c->protocontroller_offer = 1;
 	c->link_cc = 0;
-	c->link_cc_bits = 10; /* linkcc.h's CG_LC_BITS; the router's 270 and the VPS's 302 (below) */
+	c->link_cc_bits = 10; /* linkcc.h's CG_LC_BITS; the router's 7438 and the VPS's 7470 (below) */
 	c->link_cc_budget_ms = 300; /* MTPT's (the user's: ~300 ms of loaded round trip, up to 500 to explore) */
 	strcpy(c->protocontroller_cc, "auto");
 	strcpy(c->protocontroller_mid_cc, "bbr");
@@ -1036,7 +1036,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	    get_bool(&ini, "", "subflow", &c->subflow, err, errlen) ||
 	    get_bool(&ini, "", "protocontroller_offer", &c->protocontroller_offer, err, errlen) ||
 	    get_bool(&ini, "", "link_cc", &c->link_cc, err, errlen) ||
-	    get_u32(&ini, "", "link_cc_bits", 0, 1023, &c->link_cc_bits, err, errlen) ||
+	    get_u32(&ini, "", "link_cc_bits", 0, 8191, &c->link_cc_bits, err, errlen) ||
 	    get_u32(&ini, "", "link_cc_budget_ms", 20, 1000, &c->link_cc_budget_ms, err, errlen) ||
 	    get_str(&ini, "", "protocontroller_cc", c->protocontroller_cc, sizeof(c->protocontroller_cc), err, errlen) ||
 	    get_str(&ini, "", "protocontroller_mid_cc", c->protocontroller_mid_cc, sizeof(c->protocontroller_mid_cc), err, errlen) ||
@@ -1131,9 +1131,12 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	 * read 1.7-5.2 times a saturated modem's capacity, and on the testnet
 	 * at night the download rose 25 % (iperf3) and 12 % (Speedtest) in all
 	 * three rounds, the loaded ping fell from 95 to 71 ms, the upload stayed
-	 * level (2026-11-01, story 029). */
+	 * level (2026-11-01, story 029). And the old capacity's last three
+	 * decisions by the link's own rate (NOSEED, DOM, F3: 1024 + 2048 +
+	 * 4096): in the lab +4.1 %, FEC v3's guard and loss the gain (story
+	 * 029). */
 	if (!cg_ini_get(&ini, "", "link_cc_bits"))
-		c->link_cc_bits = c->mode == CG_MODE_CLIENT ? 270 : 302;
+		c->link_cc_bits = c->mode == CG_MODE_CLIENT ? 7438 : 7470;
 	/* governor_target_ms drove four loops at once (clockwork audit C12):
 	 * the capacity's full and the rescue's weight can have their own */
 	if (!c->capacity_sat_ms)
