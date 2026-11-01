@@ -58,13 +58,17 @@ version() {
 }
 
 # The engine with the SDK's toolchain, in a copy (the checkout's objects stay
-# the PC's own).
+# the PC's own), built afresh each time: the copy is shared by every
+# checkout and worktree, rsync keeps each source's own time, and another
+# worktree's newer objects looked up to date to make (an old engine went
+# to the router under the new version's name).
 engine() {
 	sdk
 	export STAGING_DIR="$SDK/staging_dir"
 	tc=$(echo "$STAGING_DIR"/toolchain-*)
 	cc=$(echo "$tc"/bin/*-openwrt-linux-musl-gcc)
 	mkdir -p "$OUT"
+	rm -rf "$OUT/engine"
 	rsync -a --delete --exclude '*.o' --exclude cengarde --exclude cengarde-test "$SRC/engine/" "$OUT/engine/"
 	make -s -C "$OUT/engine" -j"$(nproc)" CC="$cc" CXX="${cc%gcc}g++" CFLAGS="-Os -pipe" CXXFLAGS="-Os -pipe" \
 		HARDEN= HARDEN_LDFLAGS= VERSION="$(version)" cengarde
