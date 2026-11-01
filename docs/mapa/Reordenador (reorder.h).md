@@ -3,7 +3,7 @@ tags: [mapa, pieza]
 archivos:
   - engine/src/reorder.h
   - engine/tests/test_reorder.c
-sello: aff5d2b78177201e
+sello: 01b159bf79af2a01
 ---
 # Reordenador (reorder.h)
 
@@ -20,7 +20,7 @@ Pone en orden de secuencia lo que llega antes de entregarlo a la TUN. Retiene lo
 ## Decide / escribe
 - La entrega en orden (`down_deliver` / `up_deliver`).
 - Huecos a punto de abandonarse → [[Rescate (rescue.h)]] (NACK), por [[Reparación coherente (harq.h)]]; [[FEC (fec.h)]] reconstruye antes.
-- Un hueco que la pista `CG_F_PREV` dio por perdido en todos los enlaces se pide al instante y retiene lo que sigue aunque el tope sea 0 (redundancia); un hueco pedido espera `rescue_us` desde el pedido, acotado por el tope **más** `rescue_us` (`cg_ro_ask_left`), no por el tope solo ([[023-reparacion-coherente]]).
+- Un hueco que la pista `CG_F_PREV` dio por perdido en todos los enlaces se pide al instante y retiene lo que sigue aunque el tope sea 0 (redundancia); un hueco pedido espera `rescue_us` desde el pedido, nunca más allá del plazo que ya tenía (el enlace más lento con su desvío, a lo más el tope; con tope 0, `rescue_us` desde el paquete retenido: `cg_ro_ask_left`). Hasta el 2026-11-01 era el tope **más** `rescue_us` ([[023-reparacion-coherente]]): con todo hueco pedido, lo que venía detrás esperaba más que el búfer de un video RTP ([[030-protocolo-13]]).
 - Lo rehecho (`rebuilt`) que llena un hueco pedido cuenta en `rescue.repaired`, no en `rescued`.
 - Estadísticas `in_order`, `held_total`, `lost.*`, `late.*` → estado; `due_narrow` (huecos que vencieron por RACK o plazo y que con `wide` habrían esperado: lo que soltó antes la máscara) y `due_capped` (huecos que vencieron en el tope mismo) → `active.early` y `active.at_cap`.
 - `cg_ro_link_until`: hasta cuándo puede llegar lo que un enlace llevó en un instante (su retardo, cuatro desvíos, su margen adaptativo y el margen), el horizonte de un enlace cerrado.

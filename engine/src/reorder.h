@@ -881,19 +881,22 @@ static inline int cg_ro_refused(struct cg_reorder *r, const struct cg_ro_cfg *cf
 }
 
 /* How long the asked gap at the head (slot s) may still wait at now: its
- * rescue_us from when it was asked, and never longer than the hold cap of
- * the lowest held packet plus rescue_us from that packet's arrival. The
- * cap alone (as before story 023) left nothing to a gap asked at its
- * deadline when that deadline was the cap (the slowest link seconds
- * behind, or redundancy's dup_wait), and nothing at all where the cap is
- * 0. <= 0: it goes now. */
-static inline int32_t cg_ro_ask_left(const struct cg_reorder *r, const struct cg_ro_cfg *cf,
+ * rescue_us from when it was asked, and never past the deadline the gap
+ * had anyway (cg_ro_deadline from the lowest held packet: the slowest
+ * link's delay and swing, at most the cap), the latency the reorderer may
+ * add to what came after it; where the cap is 0 (redundancy's dup_wait,
+ * story 023), rescue_us from that packet's arrival. Until 2026-11-01 it
+ * was the cap plus rescue_us: a real RTP video in the lab, its receiver
+ * waiting 200 ms, decoded 52 % of its frames instead of 94 % once every
+ * gap was asked for (story 030). <= 0: it goes now. */
+static inline int32_t cg_ro_ask_left(const struct cg_reorder *r, const struct cg_ro_cfg *cf, uint16_t rset,
 				     const struct cg_ro_slot *s, uint32_t now)
 {
 	const struct cg_ro_slot *n = cg_ro_lowest_slot(r);
 	uint32_t c = cg_ro_cap(r, cf, n->flags, n->t_arr);
 	int32_t left = (int32_t)(s->t_arr + cf->rescue_us - now);
-	int32_t cap_left = (int32_t)(n->t_arr + c + cf->rescue_us - now);
+	int32_t cap_left = c ? (int32_t)(cg_ro_deadline(r, cf, rset, n->ts, n->t_arr, c) - now)
+			     : (int32_t)(n->t_arr + cf->rescue_us - now);
 
 	return cap_left < left ? cap_left : left;
 }
@@ -1211,7 +1214,7 @@ static inline int cg_ro_next(struct cg_reorder *r, const struct cg_ro_cfg *cf, u
 			/* Asked for: it waits rescue_us from then, never past the
 			 * hold cap of the packet after it plus rescue_us, and goes
 			 * as it was due (cg_ro_ask_left). */
-			if (cg_ro_ask_left(r, cf, s, now) > 0) {
+			if (cg_ro_ask_left(r, cf, rset, s, now) > 0) {
 				cg_ro_retry(r, cf, g, now);
 				break;
 			}
@@ -1298,7 +1301,7 @@ static inline int32_t cg_ro_due_us(const struct cg_reorder *r, const struct cg_r
 	if (s->seq == r->head && s->state == CG_RO_ASKED && !cg_ro_forced(r, r->head)) {
 		uint32_t at = cg_ro_retry_at(cf, s);
 
-		left = cg_ro_ask_left(r, cf, s, now);
+		left = cg_ro_ask_left(r, cf, rset, s, now);
 		if (at != UINT32_MAX && (int32_t)(at - now) < left)
 			left = (int32_t)(at - now);
 		return left < 0 ? 0 : left;
