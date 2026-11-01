@@ -4,8 +4,9 @@
 - **Estado:** vigente (etapa A en curso: la clase STREAM hecha y medida en el laboratorio)
 - **Fuentes:** el NUC y el VPS de la testnet el 2026-11-01 (estado antes y
   después de 20 s de bajada y 20 s de subida); laboratorio
-  `~/campo/2026-11-01/u3a/` (el reordenador apagado) y
-  `~/campo/2026-11-01/p13a/` (protocolo 12 contra 13); `engine/src/proto.h`,
+  `~/campo/2026-11-01/u3a/` (el reordenador apagado),
+  `~/campo/2026-11-01/p13a/` (protocolo 12 contra 13) y `p13ts`–`p13ts3`
+  (con un flujo como MPEG-TS); `engine/src/proto.h`,
   `clientpath.h`, `subflow.h`, `client.c`, `server.c`; historia 029 (U1–U7).
 
 ## TL;DR
@@ -30,6 +31,13 @@
   que pierde un subflujo les llega por un anillo propio. Pueden repartirse
   aunque el otro extremo no reordene. La capacidad cuenta su pérdida contra
   la `sseq` de cada enlace.
+- **Medido en el laboratorio** (12 casos × 2 sentidos × 3, semilla 2026, TCP
+  por GRIT): el TCP +1 a +3 % (media geométrica) y el p99 del ping de 1200 B
+  de 401 a 220 ms. Con un flujo como MPEG-TS al lado (760 paquetes/s de
+  1316 B), la primera versión perdía 2,4 veces más (10 → 25 ‰): el rescate
+  esperaba 60 ms fijos y los STREAM no le ganaban presupuesto. Con la espera
+  de un RTT del enlace más rápido y el presupuesto, 11,2 → 8,3 ‰, y los fuera
+  de orden del flujo bajan en los 24 casos (a un tercio o menos en 13).
 - **Lo que viene:** el encabezado de subflujo con anti-replay por enlace,
   frames `STREAM` y `DATAGRAM` (de ~46 a ~25 B por paquete), las clases por
   flujo para los datagramas (MPEG-TS/RTP en orden con plazo, RIST directo,
@@ -109,6 +117,36 @@ reparto exige un receptor que reordene.
   `sseq` del enlace (`tx_seq` = la próxima `sseq`, `rx_top` = `rx_sseq`, sin
   descontar el atraso respecto del más rápido: el número ya es del enlace).
 
+### Lo que el MPEG-TS destapó: la espera y el presupuesto del rescate
+
+Con los STREAM fuera del reordenador, los huecos que quedan en DATA son de
+verdad del tráfico de la TUN, y el rescate tiene que salvarlos. Dos cosas lo
+impedían:
+
+- **La espera fija:** `rescue_wait_ms` (60) es menor que el RTT de los
+  enlaces celulares del laboratorio; el NACK salía antes de que la copia
+  pudiera llegar y el reenvío llegaba tarde. `cg_harq_rtt_wait_us`
+  (`harq.h`) estira la espera a 1⅛ del RTT del enlace más rápido más 10 ms,
+  con el tope de siempre.
+- **El presupuesto:** el rescate reenvía en proporción a lo que el emisor
+  mandó; los STREAM ya no sumaban y el servidor se quedaba sin presupuesto
+  (`over_budget` 113 en un caso, 0 después). Un STREAM vuelve a ganar
+  presupuesto aunque él mismo no se rescate.
+
+| Ronda | Brazos | TCP (media geométrica) | Pérdida del flujo TS (‰) |
+| --- | --- | --- | --- |
+| `p13ts` | 12 frente a 13 (`dbbd884`) | +1,1 % | 10,3 → 24,9 |
+| `p13ts2` | + la espera de un RTT (`59b9e5d`) | +1,9 % | 11,4 → 27,2 |
+| `p13ts3` | + el presupuesto (`72302ef`) | +1,4 % | 11,2 → 8,3 |
+
+Pérdida: media por caso de la mediana de `1 − únicos/enviados`. En `p13ts3`
+los fuera de orden del flujo caen de 70–1369 a 8–1037 por corrida (a un
+tercio o menos en 13 de 24, y bajan en todos); lo que sube: `downstall` de bajada (15 → 20 ‰),
+`ratswitch` de subida (5 → 10) y `starlink15` (8 → 9). El TCP baja en `het`
+de bajada (−6 %), `lossy` y `starlink15` de subida (−6 %), dentro de lo que
+varía `protect` (−22 / +15 %, piso de ruido 20–36 %) pero fuera del de los
+casos estables (0–3 %): vigilar en la ronda de terreno.
+
 ### Etapa A2: el encabezado de subflujo y los frames
 
 - Encabezado por paquete y enlace: sesión, enlace y `sseq` dentro del MAC,
@@ -132,14 +170,15 @@ reparto exige un receptor que reordene.
 
 ## Pendiente
 
-- La tanda del laboratorio del protocolo 12 contra el 13 (`p13a`) y una
-  ronda en terreno.
-- Un caso de MPEG-TS/RTP en el laboratorio: un stream UDP constante junto a
-  la carga de TCP, con los fuera de orden, los huecos y la latencia por
-  paquete en el receptor.
+- Una ronda en terreno (el NUC y el VPS juntos: el protocolo cambia).
+- El TCP que no pasa por GRIT (otra zona del firewall, una conexión entrante
+  por un puerto reenviado: `BOND_PEP_SKIP`), la voz (50 paquetes/s de 172 B)
+  y el MPEG-TS real con ffmpeg (`BOND_TSREAL`).
 - La FEC v3 sobre STREAM: hoy no lo cubre (en terreno está apagada); si se
   enciende, decidir si protege también la clase STREAM.
 
 ## Cambios
 
 - 2026-11-01: creada, con la etapa A.
+- 2026-11-01: las rondas con un flujo como MPEG-TS, la espera de un RTT y el
+  presupuesto del rescate para los STREAM.
