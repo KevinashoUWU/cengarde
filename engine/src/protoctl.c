@@ -167,6 +167,7 @@ struct cg_pctl {
 	uint8_t mdata[CG_BATCH];
 	uint32_t mid[CG_BATCH];
 	uint64_t moff[CG_BATCH];
+	uint8_t mavoid[CG_BATCH]; /* a resend's link to leave (link + 1, 0: none; U2b) */
 	int nmsg;
 	uint32_t mpeer, msid;
 	uint8_t in_rx; /* in cg_pctl_rx: the engine is mid-batch, nothing may be sent now */
@@ -186,6 +187,7 @@ struct cg_pctl {
 	 * said, us), and firings that found only segments still within their
 	 * own timeout */
 	uint64_t eta_n, eta_sum_us, rto_waited;
+	uint64_t retx_left[2]; /* U2b: resends that went by the same link again (no other), by another */
 	uint64_t rx_reneged, rx_reneged_chunks; /* reneges to make room for what came in order (make_room), and the chunks they freed */
 	uint64_t cc_switches; /* protocontroller_cc auto: connections switched to BBR */
 	uint64_t retx_by[CG_ST_BY_N]; /* segments sent again, by why they were lost (RACK, the timer, a NACK) */
@@ -267,19 +269,25 @@ static struct flow *find(struct cg_pctl *p, uint32_t sid, uint32_t id);
 static void flush(struct cg_pctl *p)
 {
 	uint32_t eta[CG_BATCH];
+	uint8_t link[CG_BATCH];
 
 	if (!p->nmsg)
 		return;
-	p->ops.send(p->ops.ctx, p->mpeer, p->msid, p->mptr, p->mlen, p->mcopy, p->nmsg, eta);
+	p->ops.send(p->ops.ctx, p->mpeer, p->msid, p->mptr, p->mlen, p->mcopy, p->mavoid, p->nmsg, eta, link);
 	for (int m = 0; m < p->nmsg; m++) {
 		struct flow *f;
 		uint32_t i;
 		struct cg_st_seg *s;
 
-		if (!p->mdata[m] || eta[m] == CG_PCTL_NOETA || !(f = find(p, p->msid, p->mid[m])))
+		if (p->mavoid[m] && link[m] != CG_PCTL_NOLINK)
+			p->retx_left[link[m] + 1 != p->mavoid[m]]++; /* [0]: the same link again (no other), [1]: another */
+		if (!p->mdata[m] || !(f = find(p, p->msid, p->mid[m])))
 			continue;
 		i = cg_st_tx_find(&f->tx, p->moff[m]);
 		if (i >= f->tx.n || (s = cg_st_tx_seg(&f->tx, i))->off != p->moff[m] || s->st != CG_ST_SENT)
+			continue;
+		s->link = link[m] != CG_PCTL_NOLINK ? link[m] : CG_ST_NOLINK;
+		if (eta[m] == CG_PCTL_NOETA)
 			continue;
 		s->eta_us = eta[m] ? eta[m] : 1;
 		p->eta_n++;
@@ -310,6 +318,7 @@ static void push(struct cg_pctl *p, size_t len, int copy)
 	p->mlen[p->nmsg] = (uint16_t)len;
 	p->mcopy[p->nmsg] = (uint8_t)copy;
 	p->mdata[p->nmsg] = 0;
+	p->mavoid[p->nmsg] = 0;
 	p->nmsg++;
 }
 
@@ -1694,7 +1703,12 @@ static int send_one(struct cg_pctl *p, struct flow *f, struct peer *r, uint64_t 
 	p->mid[p->nmsg - 1] = f->id;
 	p->moff[p->nmsg - 1] = off;
 	if (idx < f->tx.n) {
-		uint8_t by = cg_st_tx_seg(&f->tx, idx)->by;
+		uint8_t by = cg_st_tx_seg(&f->tx, idx)->by, was = cg_st_tx_seg(&f->tx, idx)->link;
+
+		/* with the subflows, a resend leaves the link that did not bring
+		 * it, when another can take it (U2b: as MPTCP) */
+		if (p->rack_off && was != CG_ST_NOLINK && !copy)
+			p->mavoid[p->nmsg - 1] = (uint8_t)(was + 1);
 
 		p->retx++;
 		p->retx_by[by < CG_ST_BY_N ? by : CG_ST_BY_RACK]++;
@@ -2178,6 +2192,8 @@ void cg_pctl_json(const struct cg_pctl *p, struct cg_json *j)
 	cg_json_u64(j, "waited", p->rto_waited); /* firings with every segment still within its own timeout (U2a) */
 	cg_json_u64(j, "eta_segments", p->eta_n); /* DATA the engine said when it arrives */
 	cg_json_ms(j, "eta_mean_ms", p->eta_n ? p->eta_sum_us / p->eta_n : 0);
+	cg_json_u64(j, "resend_other_link", p->retx_left[1]); /* U2b: a resend left the link that lost it */
+	cg_json_u64(j, "resend_same_link", p->retx_left[0]);  /* no other could take it */
 	cg_json_end(j, '}');
 	cg_json_u64(j, "ooo_frames", p->ooo_frames);
 	cg_json_u64(j, "drop_frames", p->drop_frames);

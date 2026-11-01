@@ -260,6 +260,7 @@ struct client {
 	struct cg_tcpe tcpe; /* where TCP leaves the tunnel (the download): round trips, losses beyond (tcpfree.h) */
 	struct cg_split_tail tail; /* which reply that was (split.h) */
 	int8_t pick[CG_BATCH]; /* per packet of an upload batch: its one link (split), or -1 (every carrier) */
+	int pavoid;            /* the link up_one's split leaves out when another stays (a GRIT resend, U2b), -1: none */
 	uint16_t cmask[CG_BATCH]; /* with a link's pace_ms: the carriers a packet of every carrier goes on */
 	uint32_t up_max;     /* largest packet from the TUN since the last path check */
 	uint32_t up_largest; /* the same over the last check period, for the status */
@@ -2371,7 +2372,7 @@ static void up_one(struct client *c, struct upctx *u, int m, uint8_t *buf, size_
 		stress = split && cg_sdup(&c->sdup, c->spread.stress, (uint32_t)len,
 					  (unsigned)__builtin_popcount(u->carry), c->cfg->split_stress_dup);
 		plan = cg_split_plan(u->k.eligible, elig, share, stress);
-		elig = plan.pick;
+		elig = cg_split_avoid(plan.pick, c->pavoid);
 		if (split)
 			c->plan_n[plan.by]++;
 	}
@@ -2538,7 +2539,7 @@ static int pctl_vps_addr(const struct cg_config *cfg, struct sockaddr_storage *a
 
 /* the protocontroller (variant B) (protoctlio.h): n stream messages into the tunnel, as one batch. */
 static void pctl_send(void *ctx, uint32_t peer, uint32_t sid, uint8_t *const *msg, const uint16_t *len,
-		     const uint8_t *copy, int n, uint32_t *eta_us)
+		     const uint8_t *copy, const uint8_t *avoid, int n, uint32_t *eta_us, uint8_t *link)
 {
 	struct client *c = ctx;
 	uint64_t now_us = cg_now_us(), now_ms = now_us / 1000;
@@ -2559,8 +2560,11 @@ static void pctl_send(void *ctx, uint32_t peer, uint32_t sid, uint8_t *const *ms
 	}
 	f3_begin(c, &u);
 	for (int m = 0; m < n; m++) {
+		c->pavoid = avoid[m] ? avoid[m] - 1 : -1;
 		up_one(c, &u, m, msg[m], len[m], now_us, copy[m]);
+		c->pavoid = -1;
 		eta_us[m] = c->pick[m] >= 0 && c->cfg->split_eta ? cg_eta_behind(&c->eta, (unsigned)c->pick[m]) : CG_PCTL_NOETA;
+		link[m] = c->pick[m] >= 0 ? (uint8_t)c->pick[m] : CG_PCTL_NOLINK;
 	}
 	c->last_traffic_ms = now_ms;
 	send_links(c, n, now_ms, u.live, u.carry, u.k.dup);
@@ -5671,6 +5675,7 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 		return 1;
 	}
 	memset(c, 0, sizeof(*c));
+	c->pavoid = -1;
 	/* the erasure codes (story 021): GF(2^8)'s tables (rlc.h) and Leopard
 	 * (rs.h), before any thread; rs falls back to rlc without Leopard */
 	cg_gf_init(&c->sp_gf);

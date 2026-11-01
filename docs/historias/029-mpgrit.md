@@ -1061,6 +1061,27 @@ en 450–530 mil segmentos por corrida. Queda un temporizador que todavía
 reenvía ~6000 por corrida (dos tercios duplicados): el paso U2b (GRIT elige
 el subflujo) y el RTT por subflujo (U2c).
 
+### Paso U2b: un reenvío deja el enlace que lo perdió (2026-11-01, ~01:30)
+
+Primera decisión de GRIT sobre los enlaces: `ops.send` devuelve además el
+enlace de cada DATA, GRIT lo guarda en el segmento y, con `subflow`, un
+reenvío le pide al reparto dejar fuera ese enlace cuando otro lo puede
+llevar (`cg_split_avoid`): lo que un subflujo perdió va por otro, como en
+MPTCP, y por el que entrega primero (la ETA). Terreno, bajada `iperf3 -R
+-P 4` de 30 s, solo el binario del VPS cambia, 3 rondas alternadas (la red
+holgada de madrugada, más de 350 Mbit/s):
+
+| brazo | Mbit/s | media | por temporizador | duplicados | huecos ≥ 320 ms en el NUC |
+| --- | --- | --- | --- | --- | --- |
+| U2a | 372 / 329 / 349 | 350 | 2 356 | 2 262 | 71 (de 367) |
+| U2b | 354 / 380 / 401 | 378 | 985 | 963 | 35 (de 219) |
+
+Los 18 835 reenvíos cambiaron de enlace, ninguno tuvo que repetir el suyo.
+El caudal gana dos de tres rondas (+8 % de media, ruidoso); los huecos
+largos y lo que reenvía el temporizador bajan a la mitad o menos. Sigue
+U2c: con el enlace de cada segmento, el RTT medido por enlace para su
+temporizador.
+
 ### Contra OMR con U2a: el cara a cara, el UDP y la caída del principal (2026-10-31, noche)
 
 Los cuatro módems, alternados (nunca a la vez), cengarde con U2a.
@@ -1155,3 +1176,4 @@ Los cuatro módems, alternados (nunca a la vez), cengarde con U2a.
   llegada que da el motor (+17 % de bajada, −35 % de duplicados).
 - 2026-10-31: contra OMR con U2a: Speedtest, UDP y la caída del enlace
   principal; el origen del UDP que contesta el propio VPS.
+- 2026-11-01: el paso U2b, un reenvío deja el enlace que lo perdió.

@@ -4,7 +4,7 @@ archivos:
   - engine/src/govern.h
   - engine/src/capacity.h
   - engine/src/split.h
-sello: cf18616110b17ee7
+sello: 1e33fc938455030f
 ---
 # Cola por enlace (cg_gov_base)
 

@@ -1208,8 +1208,20 @@ static void test_split_plan(void)
 	CHECK_EQ(p.by, CG_PLAN_SINGLE);
 }
 
+/* A resend leaves the link that lost it when another stays (U2b). */
+static void test_split_avoid(void)
+{
+	CHECK_EQ(cg_split_avoid(0x0f, -1), 0x0f);
+	CHECK_EQ(cg_split_avoid(0x0f, 2), 0x0b);
+	CHECK_EQ(cg_split_avoid(0x04, 2), 0x04); /* the only one: it stays */
+	CHECK_EQ(cg_split_avoid(0x0b, 2), 0x0b); /* not in the set */
+	CHECK_EQ(cg_split_avoid(0x0f, 16), 0x0f);
+	CHECK_EQ(cg_split_avoid(0, 1), 0);
+}
+
 void test_split(void)
 {
+	test_split_avoid();
 	test_split_plan();
 	test_split_proportions();
 	test_split_interleave();
