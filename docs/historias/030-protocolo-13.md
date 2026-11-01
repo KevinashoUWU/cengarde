@@ -1,13 +1,13 @@
 # 030 — Protocolo 13: el túnel dentro de GRIT
 
 - **Fecha:** 2026-11-01
-- **Estado:** vigente (etapa A hecha y medida en el laboratorio; falta el terreno)
+- **Estado:** vigente (etapa A hecha y medida en el laboratorio y en terreno)
 - **Fuentes:** el NUC y el VPS de la testnet el 2026-11-01 (estado antes y
   después de 20 s de bajada y 20 s de subida); laboratorio
   `~/campo/2026-11-01/u3a/` (el reordenador apagado),
   `~/campo/2026-11-01/p13a/` (protocolo 12 contra 13) y `p13ts`–`p13ts3`
   (con un flujo como MPEG-TS), `p13skip`, `skipbis`, `p13voice` y
-  `p13tsreal`; `engine/src/proto.h`,
+  `p13tsreal`, `p13wg`, `wgbis`; terreno `~/campo/2026-11-01/p13field/`; `engine/src/proto.h`,
   `clientpath.h`, `subflow.h`, `client.c`, `server.c`; historia 029 (U1–U7).
 
 ## TL;DR
@@ -41,7 +41,9 @@
   de orden del flujo bajan en los 24 casos (a un tercio o menos en 13).
   Un MPEG-TS real (ffmpeg) decodifica 93,4 % de los cuadros en vez de
   89,9 %; la voz baja de 94 a 68 ms de mediana y casi no pasa los 200 ms;
-  el TCP que no va por GRIT (otra zona, un puerto reenviado) queda igual.
+  el TCP que no va por GRIT (otra zona, un puerto reenviado) y uno dentro
+  de un WireGuard quedan igual. En terreno, el mismo TCP y un flujo UDP de
+  subida que pierde 3,5 veces menos (7,6–12,9 % → 1,9–4,5 %).
 - **Lo que viene:** el encabezado de subflujo con anti-replay por enlace,
   frames `STREAM` y `DATAGRAM` (de ~46 a ~25 B por paquete), las clases por
   flujo para los datagramas (MPEG-TS/RTP en orden con plazo, RIST directo,
@@ -188,6 +190,38 @@ Un TCP de punta a punta por el túnel varía mucho más que el de GRIT (su
 piso A/A no es el 0–3 % de la historia 029): el protocolo 13 no le cambia
 nada que el laboratorio pueda ver.
 
+### WireGuard adentro
+
+`p13wg` (`BOND_PEP_INNER=wg`: el iperf3 dentro de un WireGuard propio del
+host de la LAN al lejano, UDP opaco que va como DATA): −3,6 % de media
+geométrica, con `lossy` −25 a −32 % y `protect` −23 % en los dos sentidos.
+`wgbis` (esos dos casos, 4 repeticiones, cinco brazos, uno el protocolo 13
+con la capacidad por la `seq` global): `lossy` 23,6 → 29,5 de bajada y
+32,2 → 37,6 de subida, `protect` igual; cada corrida de `lossy` salta entre
+15 y 56 Mbit/s en cualquier brazo. Era ruido; el túnel adentro no pierde.
+
+### Terreno (2026-11-01, tarde)
+
+El NUC y el VPS con los dos binarios, cambiados juntos y alternados
+(`~/campo/2026-11-01/p13field/`), 6 rondas por brazo; iperf3 de 4 flujos por
+GRIT y un flujo UDP de 8 Mbit/s en paquetes de 1316 B al lado (como un TS):
+
+| | Protocolo 12 | Protocolo 13 |
+| --- | --- | --- |
+| Bajada (media de 6) | 249 Mbit/s | 253 Mbit/s |
+| Subida (media de 6) | 124 Mbit/s | 124 Mbit/s |
+| Ping con carga en la bajada, p50 / p95 (3 rondas) | 47–57 / 135–190 ms | 48–60 / 146–197 ms |
+| Pérdida del flujo UDP de subida (3 rondas) | 7,6–12,9 % | 1,9–4,5 % |
+| Pérdida del flujo UDP de bajada (3 rondas) | 0–0,15 % | 0–0,04 % |
+
+La subida es la que se llena (los módems dan ~125 Mbit/s): ahí el flujo UDP
+pierde un cuarto de lo que perdía. El terreno quedó en el protocolo 13.
+
+Una trampa del banco: el servidor UDP del VPS (sin `bind`) responde por el
+túnel desde 10.79.0.1, no desde la IP pública a la que se le habló, y el
+socket conectado de iperf3 descarta la respuesta («unable to read from
+stream socket»). Un flujo UDP al propio VPS va a su dirección del túnel.
+
 ### Etapa A2: el encabezado de subflujo y los frames
 
 - Encabezado por paquete y enlace: sesión, enlace y `sseq` dentro del MAC,
@@ -211,9 +245,7 @@ nada que el laboratorio pueda ver.
 
 ## Pendiente
 
-- Una ronda en terreno (el NUC y el VPS juntos: el protocolo cambia).
-- RTP de verdad con GStreamer (`rtpjitterbuffer`) y un túnel WireGuard o
-  IPsec adentro.
+- RTP de verdad con GStreamer (`rtpjitterbuffer`).
 - La FEC v3 sobre STREAM: hoy no lo cubre (en terreno está apagada); si se
   enciende, decidir si protege también la clase STREAM.
 
@@ -222,4 +254,4 @@ nada que el laboratorio pueda ver.
 - 2026-11-01: creada, con la etapa A.
 - 2026-11-01: las rondas con un flujo como MPEG-TS, la espera de un RTT y el
   presupuesto del rescate para los STREAM; la voz, el MPEG-TS real y el TCP
-  que no pasa por GRIT.
+  que no pasa por GRIT; WireGuard adentro y el terreno.
