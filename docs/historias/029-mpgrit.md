@@ -1093,6 +1093,20 @@ Los cuatro módems, alternados (nunca a la vez), cengarde con U2a.
 - Ventaja chica de cengarde en estas pruebas: el destino del iperf es su
   VPS (OMR llega a él por internet, un salto dentro del mismo datacenter);
   las conexiones nuevas van a un servidor neutro.
+- **OMR con Xray VLESS y el UDP por el proxy** (2026-11-01, ~00:30, la red
+  más holgada; `~/campo/2026-11-01/xray/`; la configuración de antes en
+  `/root/cfg-before-xray/` de la VM): Speedtest, bajada 442 / 376 / 445
+  (media 421) contra 301 / 318 / 331 / 442 (348; un par extra, el último,
+  empató), subida 111 contra 86, ping con carga 69–83 contra 317–517 ms.
+  UDP en bajada: cengarde 150 sin pérdida, OMR 80 a 100 Mbit/s (1,9 %) y
+  106 a 150 (29 %); en subida **OMR gana**: a 100 recibe 91 (8 %) contra 68
+  (32 %) de cengarde, a 150 recibe 100 (29 %) contra 50 (65 %): Xray lleva el
+  UDP dentro de un TCP que reenvía lo perdido (a cambio de retardo). El UDP
+  de subida de cengarde va por el túnel sin protección: el paso U5 (los
+  datagramas como clase). Entel muerto: con 4 flujos, 0 y 0 contra 1 y 0
+  segundos casi sin caudal, 0 % de ping perdido los dos; un flujo, 2 y 0
+  contra 2 y 2; conexiones nuevas 46/46 a 0,3 s contra 39/45 a 1,0 s (hasta
+  2,4): MPTCP sigue abriendo por el maestro.
 - **Hallazgo (no es GRIT):** iperf3 en UDP contra la IP pública del VPS
   desde la LAN aborta («Resource temporarily unavailable»): el UDP llega por
   `cg0`, pero el VPS contesta con origen 10.79.0.1 (la dirección del túnel,
