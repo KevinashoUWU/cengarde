@@ -192,35 +192,8 @@ static void test_eta_keep(void)
 	CHECK_EQ(e.l[0].backlog, 8000000ull * 10 * MS);
 }
 
-/* link_cc's window: a link whose window is full takes a packet only as a
- * last resort, whatever its arrival; each packet it takes counts. */
-static void test_eta_wnd(void)
-{
-	struct cg_eta e;
-
-	cg_eta_reset(&e);
-	cg_eta_own(&e, 0, 100000000, 0, 0, 0, 1000); /* fast: arrives first */
-	cg_eta_own(&e, 1, 10000000, 5000, 0, 0, 1000);
-	cg_eta_wnd(&e, 0, 3000);
-	CHECK_EQ(cg_eta_pick(&e, 3, 1400, 1000), 0);
-	CHECK_EQ(cg_eta_pick(&e, 3, 1400, 1000), 0);
-	CHECK_EQ(e.l[0].wnd, 200);
-	CHECK_EQ(cg_eta_pick(&e, 3, 1400, 1000), 1); /* its window is full */
-	/* a new window (the next SFACK) opens it again */
-	cg_eta_wnd(&e, 0, 100000);
-	CHECK_EQ(cg_eta_pick(&e, 3, 1400, 1000), 0);
-	/* every window full: the earliest arrival, as without them */
-	cg_eta_wnd(&e, 0, 0);
-	cg_eta_wnd(&e, 1, 0);
-	CHECK_EQ(cg_eta_pick(&e, 3, 1400, 1000), 0);
-	/* cg_eta_own clears it */
-	cg_eta_own(&e, 0, 100000000, 0, 0, 0, 2000);
-	CHECK_EQ(e.l[0].has_wnd, 0);
-}
-
 void test_eta(void)
 {
-	test_eta_wnd();
 	test_eta_limit();
 	test_eta_keep();
 	test_eta_feed();

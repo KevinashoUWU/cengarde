@@ -636,7 +636,7 @@ VPS desde aquí* (`vps_admin '1'`), y *Guardar y aplicar*:
    modo, la FEC (*Subida*: rehace las reparaciones de los routers; *Subida
    y bajada*: además la FEC v3 de la bajada), el protocontrolador o un
    ajuste del motor de la lista (`fec_pct`, `rescue_wait_ms`,
-   `link_cc_bits`, …) en `engine.local`, para todos los routers del VPS;
+   `governor_target_ms`, …) en `engine.local`, para todos los routers del VPS;
 3. con `vps_admin` el modo del router va solo al VPS con cada cambio (y una
    vez tras arrancar), en segundo plano, cinco intentos.
 

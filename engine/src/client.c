@@ -395,7 +395,7 @@ struct client {
 	uint32_t f3_lag; /* the last repair's window ended this long before now, us (cg_f3_lag_us) */
 	uint8_t f3_dn;
 	uint64_t f3_rep, f3_bytes, f3_data, f3_tail, f3_guarded, f3_nolink, f3_empty, f3_gated, f3_quiet, f3_switches;
-	uint64_t f3_lsent[CG_MAX_LINKS], f3_llost[CG_MAX_LINKS]; /* CG_LC_F3: each subflow's counters at the last tick */
+	uint64_t f3_lsent[CG_MAX_LINKS], f3_llost[CG_MAX_LINKS]; /* with link_cc: each subflow's counters at the last tick */
 	uint16_t f3_ins_port; /* variant A's middle TCP with BBR: its port (f3_apply), 0: none */
 	/* FEC v3 down (story 026): the server's repairs of the download,
 	 * rebuilt as the server rebuilds the upload (with fec): the DATA got
@@ -2635,7 +2635,7 @@ static void pctl_hint(void *ctx, uint32_t peer, uint32_t sid, uint64_t *bps, int
 			continue;
 		if (c->cfg->link_cc && c->link[i].sft.acks) { /* its own rate (linkcc.h), probing included */
 			b = cg_lc_rate(&c->link[i].sft.lc);
-		} else if (c->cap[i].have_rate && !(c->cfg->link_cc && (c->cfg->link_cc_bits & CG_LC_NOSEED))) {
+		} else if (c->cap[i].have_rate && !c->cfg->link_cc) {
 			b = cg_cap_bps(&c->cap[i]) / 8;
 			nfull += c->cap[i].cut == CG_CAP_CUT_FULL;
 		} else {
@@ -2981,10 +2981,6 @@ static void send_nacks(struct client *c, uint64_t now_ms)
  * (capacity.h's cg_cap_rescue_w) is 0. */
 static int up_full(const struct client *c, unsigned i)
 {
-	const struct cg_lc *lc = &c->link[i].sft.lc;
-
-	if (c->cfg->link_cc && (lc->bits & CG_LC_ONLY) && c->link[i].sft.acks)
-		return cg_lc_full(lc); /* its own queue (CG_LC_ONLY) */
 	return cg_cap_full(&c->cap[i], c->cfg->rescue_target_ms * 1000, c->lm[i].rfull_hyst);
 }
 
@@ -3225,20 +3221,16 @@ static void on_sfloss(struct client *c, const uint8_t *payload, size_t plen, uin
  * (eta.h: the split's, or with redundancy the copies'): its pacing rate,
  * its delay without a queue over ref (its rtprop: the SFACKs come back on
  * the fastest link, so the differences are the links' one-way ones) and
- * what it has queued now; past the queue target (its own with MTPT) it is
- * a last resort. Each tick and each SFACK; a link not in e (no rate from
+ * what it has queued now; past the queue target it is a last resort. Each tick and each SFACK; a link not in e (no rate from
  * cg_cap_eta: dead, or not known) stays out. */
-static void lc_eta(struct client *c, struct cg_eta *e, unsigned i, uint32_t ref, uint16_t live, uint64_t now_us)
+static void lc_eta(struct client *c, struct cg_eta *e, unsigned i, uint32_t ref, uint64_t now_us)
 {
 	const struct cg_lc *lc = &c->link[i].sft.lc;
 
-	/* the capacity's entry, or with ONLY a live link's own samples alone */
-	if (!c->link[i].sft.acks || !lc->rtprop || (!e->l[i].bps && !((lc->bits & CG_LC_ONLY) && (live >> i & 1))))
+	if (!c->link[i].sft.acks || !lc->rtprop || !e->l[i].bps)
 		return;
 	cg_eta_own(e, i, cg_lc_rate(lc) * 8, lc->rtprop > ref ? lc->rtprop - ref : 0, cg_lc_queued(lc),
-		   lc->bits & CG_LC_MTPT ? lc->target_us : c->cfg->governor_target_ms * 1000, now_us);
-	if (lc->bits & CG_LC_WND)
-		cg_eta_wnd(e, i, cg_lc_wnd_left(lc));
+		   c->cfg->governor_target_ms * 1000, now_us);
 }
 
 /* The least rtprop of the links in e, for lc_eta; 0: none. */
@@ -3255,21 +3247,13 @@ static uint32_t lc_ref(struct client *c, const struct cg_eta *e)
 	return ref;
 }
 
-/* With link_cc, each link's rate for this tick: the bits, its queue target
- * (with MTPT, its ceiling) and the engine's capacity as a start; the split
- * and the copies' expected arrivals take it (lc_eta). */
+/* With link_cc, each link's queue target for this tick; the split and the
+ * copies' expected arrivals take its rate (lc_eta). The upload's SAT
+ * always (the operator grants it in bursts; linkcc.h). */
 static void lc_tick(struct client *c)
 {
-	uint32_t ref = lc_ref(c, c->cfg->split_eta ? &c->eta : &c->pace);
-
-	for (int i = 0; i < CG_MAX_LINKS; i++) {
-		struct cg_lc *lc = &c->link[i].sft.lc;
-
-		lc->bits = (uint16_t)c->cfg->link_cc_bits;
-		cg_lc_target(lc, c->cfg->governor_target_ms * 1000, cg_lc_mtpt_cap(lc, c->cfg->link_cc_budget_ms, ref));
-		if (c->cap[i].have_rate && !(lc->bits & CG_LC_NOSEED))
-			cg_lc_seed(lc, cg_cap_bps(&c->cap[i]) / 8);
-	}
+	for (int i = 0; i < CG_MAX_LINKS; i++)
+		cg_lc_target(&c->link[i].sft.lc, c->cfg->governor_target_ms * 1000);
 }
 
 /* An SFACK from the server: how far each of our links got up; each one's
@@ -3286,7 +3270,7 @@ static void on_sfack(struct client *c, const uint8_t *payload, uint64_t now_us)
 		if (e.link < CG_MAX_LINKS && c->link[e.link].used) {
 			cg_sf_tx_ack(&c->link[e.link].sft, e.top, e.gotb, e.rts, e.age, now_us);
 			if (c->cfg->link_cc && c->cfg->split_eta)
-				lc_eta(c, &c->eta, e.link, lc_ref(c, &c->eta), 0, now_us);
+				lc_eta(c, &c->eta, e.link, lc_ref(c, &c->eta), now_us);
 		}
 	}
 }
@@ -4403,7 +4387,7 @@ static void cap_tick(struct client *c, uint16_t live, uint16_t in, uint64_t now_
 			cg_sig_cap(&c->sig[i], &c->cap[i], now_ms);
 			/* FEC v3: where its repairs go, and a lone link's loss */
 			cg_f3_weigh(&c->f3, (unsigned)i, l->tx_bytes);
-			if (l->sft.lc.bits & CG_LC_F3) {
+			if (c->cfg->link_cc) {
 				/* its loss by its own subflow, its queue by its own delay */
 				const struct cg_lc *lc = &l->sft.lc;
 				int pm = cg_lc_tick_loss(l->sft.sent, l->sft.lost_rx, &c->f3_lsent[i], &c->f3_llost[i]);
@@ -4425,14 +4409,9 @@ static void cap_tick(struct client *c, uint16_t live, uint16_t in, uint64_t now_
 	if (c->cfg->capacity_weights) {
 		cg_cap_weights(c->cap, c->cfg->split == CG_SPLIT_FORCE ? 0 : c->dup0, c->cfg->governor ? c->gw : NULL,
 			       cc.sat_us / 2, c->cw);
-		/* CG_LC_ONLY: a link with its own rate is never left to copies by
-		 * the capacity's weight 0; the expected arrivals share it out */
-		for (int i = 0; c->cfg->link_cc && (c->cfg->link_cc_bits & CG_LC_ONLY) && i < CG_MAX_LINKS; i++)
-			if (c->link[i].sft.acks && c->link[i].sft.lc.rtprop && !(c->dup0 >> i & 1))
-				c->cw[i] = CG_GOV_MAX;
 	}
 	cg_cap_total_tick(&c->ctot, c->cap, live, cc.sat_us);
-	if (c->cfg->link_cc && (c->cfg->link_cc_bits & CG_LC_DOM)) {
+	if (c->cfg->link_cc) {
 		/* the dominant link by each link's own rate */
 		struct cg_cap_link dv[CG_MAX_LINKS];
 
@@ -4460,7 +4439,7 @@ static void cap_tick(struct client *c, uint16_t live, uint16_t in, uint64_t now_
 			lc_tick(c);
 			ref = lc_ref(c, &c->eta);
 			for (unsigned i = 0; i < CG_MAX_LINKS; i++)
-				lc_eta(c, &c->eta, i, ref, live, now_ms * 1000);
+				lc_eta(c, &c->eta, i, ref, now_ms * 1000);
 		}
 		cg_cap_tickle(c->cap, live, now_ms, &due, tb, tc);
 		cg_tickle_tick(&c->tk, now_ms * 1000, (uint64_t)c->cfg->split_tickle_ms * 1000, due, tb, tc);
@@ -4477,7 +4456,7 @@ static void cap_tick(struct client *c, uint16_t live, uint16_t in, uint64_t now_
 				lc_tick(c);
 			ref = lc_ref(c, &c->pace);
 			for (unsigned i = 0; i < CG_MAX_LINKS; i++)
-				lc_eta(c, &c->pace, i, ref, live, now_ms * 1000);
+				lc_eta(c, &c->pace, i, ref, now_ms * 1000);
 		}
 	}
 	if (c->cfg->redund_spare) {

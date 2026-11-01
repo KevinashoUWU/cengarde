@@ -225,8 +225,6 @@ struct cg_config {
 	int subflow;                  /* number each link's DATA (sseq) and say back what a link lost within itself (subflow.h) */
 	int protocontroller_offer;    /* with subflow, GRIT offers the engine's capacity and a quarter (streamcc.h's cg_scc_offer) */
 	int link_cc;                  /* with subflow: each link's own rate (linkcc.h) drives the split and GRIT's offer */
-	uint32_t link_cc_bits;        /* an experiment: which of linkcc.h's uses of the queue are on (CG_LC_QETA...) */
-	uint32_t link_cc_budget_ms;   /* MTPT's ceiling (link_cc_bits 128): the queue a link may hold, less its lag behind the fastest */
 	char protocontroller_cc[16];              /* VPS: the congestion control toward the destination ("": the kernel's; auto: the kernel's, BBR once it loses) */
 	char protocontroller_mid_cc[16];          /* variant A: the middle TCP's congestion control, each end for what it sends (bbr; "": the kernel's) */
 	char protocontroller_vps[64];             /* router, variant A: the VPS's tunnel address ("": the tunnel prefix's first address) */

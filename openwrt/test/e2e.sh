@@ -565,7 +565,7 @@ if "$VM" ssh router sh -s <<'EOF'
 conf() { cengarde-setup engine-conf; }
 clear() {
 	for o in redund_spare redund_spare_first redund_spare_ms redund_spare_code_ms pace_peers_ms rescue rescue_wait_ms \
-		rescue_kb rescue_code_ms parq tcp_retx_one tcp_ack_rule rescue_tcp_race subflow link_cc link_cc_bits; do
+		rescue_kb rescue_code_ms parq tcp_retx_one tcp_ack_rule rescue_tcp_race subflow link_cc; do
 		uci -q delete "cengarde.main.$o"
 	done
 	uci commit cengarde
@@ -582,10 +582,9 @@ uci set cengarde.main.parq=0
 uci set cengarde.main.tcp_ack_rule=1
 uci set cengarde.main.subflow=1
 uci set cengarde.main.link_cc=1
-uci set cengarde.main.link_cc_bits=14
 uci commit cengarde
 for kv in 'redund_spare = rlc' 'redund_spare_first = eth2' 'redund_spare_code_ms = 40' 'pace_peers_ms = 250' \
-	'rescue_wait_ms = 60' 'rescue_kb = 32768' 'parq = no' 'tcp_ack_rule = yes' 'subflow = yes' 'link_cc = yes' 'link_cc_bits = 14'; do
+	'rescue_wait_ms = 60' 'rescue_kb = 32768' 'parq = no' 'tcp_ack_rule = yes' 'subflow = yes' 'link_cc = yes'; do
 	conf | grep -qxF "$kv" || { echo "missing: $kv"; r=1; }
 done
 (umask 077 && conf > /tmp/prot.conf)

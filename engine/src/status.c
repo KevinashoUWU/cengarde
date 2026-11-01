@@ -674,7 +674,7 @@ void cg_json_linkcc(struct cg_json *j, const char *k, const struct cg_sf_tx *t, 
 	cg_json_u64(j, "pacing_bps", cg_lc_rate(c) * 8);
 	cg_json_ms(j, "rtprop_ms", c->rtprop);
 	cg_json_ms(j, "srtt_ms", c->srtt);
-	cg_json_u64(j, "cwnd", cg_lc_cwnd(c, c->bits & CG_LC_MTPT ? c->target_us : target_us));
+	cg_json_u64(j, "cwnd", cg_lc_cwnd(c, target_us));
 	cg_json_u64(j, "inflight", c->inflight);
 	cg_json_u64(j, "cuts", c->cuts);
 	if (c->have_owd)
@@ -682,15 +682,9 @@ void cg_json_linkcc(struct cg_json *j, const char *k, const struct cg_sf_tx *t, 
 	else
 		cg_json_null(j, "queue_ms");
 	cg_json_u64(j, "sat_bps", c->sat * 8);
-	if (c->bits & CG_LC_MEAN) /* the delivery's mean of 0.5 s (CG_LC_MEAN) */
-		cg_json_u64(j, "mean_bps", cg_lc_mean(c) * 8);
+	cg_json_u64(j, "mean_bps", cg_lc_mean(c) * 8); /* the delivery's mean of 0.5 s */
 	cg_json_u64(j, "sfacks", t->acks);
 	cg_json_u64(j, "app_limited", t->app_n);
-	cg_json_ms(j, "target_ms", c->bits & CG_LC_MTPT ? c->target_us : target_us);
-	if (c->bits & CG_LC_MTPT) { /* MTPT: its ceiling and the steps it took */
-		cg_json_ms(j, "mtpt_cap_ms", c->mt_cap_us);
-		cg_json_u64(j, "mtpt_up", c->mt_up);
-		cg_json_u64(j, "mtpt_down", c->mt_down);
-	}
+	cg_json_ms(j, "target_ms", target_us);
 	cg_json_end(j, '}');
 }

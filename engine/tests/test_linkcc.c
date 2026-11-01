@@ -47,8 +47,7 @@ static void test_lc_loss(void)
 	uint64_t t = 0, before;
 
 	cg_lc_init(&c);
-	cg_lc_seed(&c, 40 * MBIT);
-	CHECK_EQ(c.bw, 40 * MBIT);
+	c.bw = c.bmax[0] = 40 * MBIT; /* as if STARTUP had found it */
 	cg_lc_acked(&c, t, 0, 40 * MBIT, 40 * MS);
 	/* a round with 3 lost of 100: no cut */
 	for (int i = 0; i < 100; i++)
@@ -79,16 +78,19 @@ static void test_lc_loss(void)
 	t += 50 * MS;
 	cg_lc_acked(&c, t, 5 * 1400, 35 * MBIT, 40 * MS);
 	CHECK_EQ(c.cuts, 1);
-	/* after 2 s without larger samples bw follows the delivery down */
+	/* past STARTUP, queued, bw follows what the link delivers down (its
+	 * mean, test_lc_mean) */
+	cg_lc_owd(&c, t, 1000000);
+	cg_lc_owd(&c, t, 1000000 + 50 * MS);
 	for (int i = 0; i < 50; i++) {
 		t += 50 * MS;
-		cg_lc_acked(&c, t, 0, 10 * MBIT, 40 * MS);
+		cg_lc_acked(&c, t, 10 * MBIT / 20, 10 * MBIT, 40 * MS);
 	}
-	CHECK_EQ(c.bw, 10 * MBIT);
+	CHECK(c.bw > 9 * MBIT && c.bw <= 10 * MBIT);
 	/* never under the floor */
 	for (int i = 0; i < 100; i++) {
 		t += 50 * MS;
-		cg_lc_acked(&c, t, 0, 1000, 40 * MS);
+		cg_lc_acked(&c, t, 50, 1000, 40 * MS);
 	}
 	CHECK_EQ(c.bw, CG_LC_FLOOR);
 	CHECK_EQ(cg_lc_rate(&c) >= CG_LC_FLOOR, 1);
@@ -122,7 +124,6 @@ static void test_lc_queue(void)
 
 	cg_lc_init(&c);
 	CHECK_EQ(c.target_us, CG_LC_TARGET_US);
-	c.bits = CG_LC_QMODE | CG_LC_SAT | CG_LC_S32 | CG_LC_QETA; /* every use of the queue */
 	c.target_us = 60 * MS;
 	CHECK_EQ(cg_lc_qstate(&c), 0); /* not known */
 	cg_lc_owd(&c, t, 1000000 + 20 * MS); /* two clocks apart: only changes count */
@@ -154,11 +155,12 @@ static void test_lc_queue(void)
 	CHECK_EQ(cg_lc_gain(&c), 192);
 	c.cycle = 3;
 	CHECK_EQ(cg_lc_gain(&c), 192);
-	/* the queue in bytes is its delay at the pacing rate */
-	CHECK_EQ(cg_lc_queued(&c), cg_lc_rate(&c) * 80 * MS / 1000000);
+	/* the queue in bytes: what is in flight over bw x rtprop */
+	c.inflight = cg_lc_bw(&c) * c.rtprop / 1000000 + 5000;
+	CHECK_EQ(cg_lc_queued(&c), 5000);
+	c.inflight = 0;
 	/* bursts: samples of 8 Mbit/s with a queue cap the 20 Mbit/s one at 10 */
-	cg_lc_acked(&c, t, 0, 20 * MBIT, 40 * MS);
-	CHECK_EQ(c.bw, 20 * MBIT);
+	c.bw = 20 * MBIT; /* past STARTUP bw is the delivery's mean (test_lc_mean) */
 	for (int i = 0; i < 8; i++)
 		cg_lc_acked(&c, t + (uint64_t)i * MS, 0, 8 * MBIT, 40 * MS);
 	CHECK(c.sat > 7 * MBIT && c.sat < 9 * MBIT);
@@ -173,15 +175,15 @@ static void test_lc_queue(void)
 	CHECK_EQ(c.q_us, 0);
 }
 
-/* SATQ: the cap holds only while the link holds a queue; QMAX: the split's
- * queue is the larger of in flight and the delay's. */
-static void test_lc_satq_qmax(void)
+/* satq (the VPS's download): the cap holds only while the link holds a
+ * queue; without it (the router's upload) always. */
+static void test_lc_satq(void)
 {
 	struct cg_lc c;
 	uint64_t t = 1 * MS;
 
 	cg_lc_init(&c);
-	c.bits = CG_LC_QMODE | CG_LC_SAT | CG_LC_SATQ;
+	c.satq = 1;
 	c.target_us = 60 * MS;
 	cg_lc_owd(&c, t, 1000000);
 	cg_lc_acked(&c, t, 0, 100 * MBIT, 40 * MS);
@@ -194,110 +196,9 @@ static void test_lc_satq_qmax(void)
 	/* the queue gone: the cap with it */
 	cg_lc_owd(&c, t + 10 * MS, 1000000 + 5 * MS);
 	CHECK_EQ(cg_lc_bw(&c), 100 * MBIT);
-	/* without SATQ it holds */
-	c.bits = CG_LC_QMODE | CG_LC_SAT;
+	/* without satq it holds */
+	c.satq = 0;
 	CHECK_EQ(cg_lc_bw(&c), c.sat * 5 / 4);
-	/* QMAX: in flight over the BDP, or the delay at the rate, the larger */
-	c.bits = CG_LC_QMAX;
-	c.rtprop = 40 * MS;
-	c.inflight = cg_lc_bw(&c) * 40 * MS / 1000000 + 100000;
-	cg_lc_owd(&c, t + 20 * MS, 1000000 + 2 * MS);
-	CHECK_EQ(cg_lc_queued(&c), 100000); /* in flight: the larger */
-	cg_lc_owd(&c, t + 30 * MS, 1000000 + 500 * MS);
-	CHECK_EQ(cg_lc_queued(&c), cg_lc_rate(&c) * 500 * MS / 1000000); /* the delay */
-	c.bits = 0;
-	CHECK_EQ(cg_lc_queued(&c), 100000);
-}
-
-/* One MTPT epoch on a model link: its queue reaches q_ms (binding the
- * target when at least half of it), it delivers mbit Mbit/s, and loses
- * lost of sent packets. */
-static void mtpt_epoch(struct cg_lc *c, uint64_t *t, uint32_t q_ms, uint64_t mbit, uint32_t sent, uint32_t lost)
-{
-	for (uint32_t i = 0; i < sent; i++)
-		cg_lc_sent(c, 1400);
-	for (uint32_t i = 0; i < lost; i++)
-		cg_lc_lost(c, 1400);
-	cg_lc_owd(c, *t + 500 * MS, 1000000 + (int32_t)q_ms * (int32_t)MS);
-	*t += CG_LC_MTPT_EPOCH_US;
-	cg_lc_acked(c, *t, mbit * MBIT, 0, 0);
-}
-
-/* MTPT: without the bit the caller's target is the target; with it the
- * target starts there and climbs while the link delivers more, turns
- * around at the knee and stays near it, falls two steps on a lossy epoch,
- * holds while it does not bind or delivers the same, and stays between the
- * caller's target and its ceiling. */
-static void test_lc_mtpt(void)
-{
-	struct cg_lc c;
-	uint64_t t = 1000;
-	uint32_t lo = UINT32_MAX, hi = 0;
-
-	cg_lc_init(&c);
-	c.bits = CG_LC_QMODE;
-	cg_lc_target(&c, 60 * MS, 300 * MS);
-	CHECK_EQ(c.target_us, 60 * MS);
-	c.bits |= CG_LC_MTPT;
-	cg_lc_target(&c, 60 * MS, 300 * MS);
-	CHECK_EQ(c.target_us, 60 * MS);
-	CHECK_EQ(c.mt_cap_us, 300 * MS);
-	cg_lc_owd(&c, t, 1000000); /* the least one-way delay */
-	cg_lc_acked(&c, t, 0, 0, 0); /* the first epoch starts */
-	/* a link that gives 40 Mbit/s with 100 ms of queue or more, less with
-	 * less (a modem grants more as its queue grows) */
-	for (int e = 0; e < 40; e++) {
-		uint64_t mbit = c.target_us >= 100 * MS ? 40 : 40 * c.target_us / (100 * MS);
-
-		mtpt_epoch(&c, &t, c.target_us / MS, mbit, 200, 0);
-		cg_lc_target(&c, 60 * MS, 300 * MS); /* the caller, each tick: the base no longer resets it */
-		if (e >= 10) {
-			lo = c.target_us < lo ? c.target_us : lo;
-			hi = c.target_us > hi ? c.target_us : hi;
-		}
-	}
-	CHECK(lo >= 60 * MS && hi <= 160 * MS); /* around the knee, not up to the ceiling */
-	CHECK(c.mt_up > 0);
-	/* an epoch losing 10 %: two steps down */
-	{
-		uint32_t before = c.target_us;
-
-		mtpt_epoch(&c, &t, c.target_us / MS, 40, 200, 20);
-		CHECK_EQ(c.target_us, before - 2 * CG_LC_MTPT_STEP_US);
-		CHECK_EQ(c.mt_dir, -1);
-	}
-	/* a link with less to carry than its target allows: it holds */
-	{
-		uint32_t before = c.target_us;
-
-		for (int e = 0; e < 5; e++)
-			mtpt_epoch(&c, &t, 5, 10, 200, 0);
-		CHECK_EQ(c.target_us, before);
-	}
-	/* the ceiling: a slower link's (the caller's budget less its lag) */
-	cg_lc_target(&c, 60 * MS, 50 * MS);
-	CHECK(c.target_us <= 50 * MS);
-	for (int e = 0; e < 10; e++) {
-		mtpt_epoch(&c, &t, c.target_us / MS, 10 + 10 * (uint64_t)e, 200, 0); /* always more */
-		cg_lc_target(&c, 60 * MS, 50 * MS);
-		CHECK(c.target_us <= 50 * MS);
-	}
-	/* never under the caller's target, however lossy */
-	cg_lc_target(&c, 60 * MS, 300 * MS);
-	for (int e = 0; e < 20; e++)
-		mtpt_epoch(&c, &t, c.target_us / MS, 40, 200, 40);
-	CHECK_EQ(c.target_us, 60 * MS);
-	/* flat: it stays */
-	{
-		uint32_t before;
-
-		for (int e = 0; e < 3; e++)
-			mtpt_epoch(&c, &t, c.target_us / MS, 40, 200, 0);
-		before = c.target_us;
-		mtpt_epoch(&c, &t, c.target_us / MS, 40, 200, 0);
-		mtpt_epoch(&c, &t, c.target_us / MS, 40, 200, 0);
-		CHECK_EQ(c.target_us, before);
-	}
 }
 
 /* MEAN: past STARTUP, bw is the delivery's mean of 0.5 s, not its bursts'
@@ -309,7 +210,6 @@ static void test_lc_mean(void)
 	uint64_t t = 1 * MS;
 
 	cg_lc_init(&c);
-	c.bits = CG_LC_QMODE | CG_LC_S32 | CG_LC_MEAN;
 	c.target_us = 60 * MS;
 	c.mode = CG_LC_PROBE_M;
 	c.cycle = 2;
@@ -348,14 +248,9 @@ static void test_lc_mean(void)
 	cg_lc_acked(&c, t, 1000, 1 * MBIT, 40 * MS);
 	CHECK_EQ(cg_lc_mean(&c), 0);
 	CHECK(c.bw > 27 * MBIT); /* kept until the mean has its 0.5 s again */
-	/* ONLY's "full": the queue past its target, by the one-way delay */
-	cg_lc_owd(&c, t, 1000000 + 61 * MS);
-	CHECK(cg_lc_full(&c));
-	cg_lc_owd(&c, t, 1000000 + 59 * MS);
-	CHECK(!cg_lc_full(&c));
 }
 
-/* CG_LC_F3: FEC v3's guard by the link's own queue once known, and a
+/* FEC v3's guard by the link's own queue once known, and a
  * tick's loss by its subflow's counters. */
 static void test_lc_f3(void)
 {
@@ -363,8 +258,6 @@ static void test_lc_f3(void)
 	uint64_t ps = 0, pl = 0;
 
 	cg_lc_init(&c);
-	CHECK_EQ(cg_lc_f3_queue(&c, 7000), 7000); /* bit off */
-	c.bits = CG_LC_F3;
 	CHECK_EQ(cg_lc_f3_queue(&c, 7000), 7000); /* no delay of its own yet */
 	c.have_owd = 1;
 	c.q_us = 42000;
@@ -381,8 +274,7 @@ void test_linkcc(void)
 {
 	test_lc_f3();
 	test_lc_mean();
-	test_lc_mtpt();
-	test_lc_satq_qmax();
+	test_lc_satq();
 	test_lc_queue();
 	test_lc_startup();
 	test_lc_loss();
