@@ -317,6 +317,11 @@
 #                a plain TCP of the engines' through the tunnel in the middle
 #                with BOND_PEP_CGMIDCC (protocontroller_mid_cc at both ends;
 #                empty: the engine's own, bbr)
+#                BOND_PEP_SKIP (cga, cgb): TCP destination ports the router
+#                leaves out of the REDIRECT (5201: iperf3's), so that TCP
+#                crosses the tunnel as plain DATA next to the engines' streams:
+#                a LAN in another firewall zone, or a connection forwarded in
+#                from the VPS (stories 025 and 030)
 # BOND_PEP_MIDCC and BOND_PEP_FARCC (cubic): the congestion control of the
 # router's netns (the middle leg's sender in an upload) and the VPS's (the far
 # leg's); BOND_PEP_LANCC (empty: the run's cc for iperf3, cubic for live) the
@@ -386,6 +391,7 @@ BOND_PEP_FAR_MS=${BOND_PEP_FAR_MS:-50}
 BOND_PEP_NEAR_MS=${BOND_PEP_NEAR_MS:-5}
 BOND_PEP_PORT=${BOND_PEP_PORT:-7801}
 BOND_PEP_CGCC=${BOND_PEP_CGCC:-auto}
+BOND_PEP_SKIP=${BOND_PEP_SKIP:-} # cga/cgb: TCP ports (iptables multiport) the router does not hand to GRIT
 BOND_PEP_CGMIDCC=${BOND_PEP_CGMIDCC:-} # cga: protocontroller_mid_cc at both ends (empty: the engine's, bbr)
 BOND_PEP_KCP=${BOND_PEP_KCP:---mode fast --datashard 0 --parityshard 0 --nocomp --crypt none --mtu 1300}
 BOND_LIVE_MBIT=${BOND_LIVE_MBIT:-8}
@@ -623,6 +629,10 @@ bond_pep_start() {
 	case $BOND_PEP in
 	transparent) return 0 ;;
 	cg | cga | cgb)
+		if [ -n "$BOND_PEP_SKIP" ]; then
+			ip netns exec "$NS_CLI" iptables -w -t nat -A PREROUTING -i lan0 -p tcp -m multiport \
+				--dports "$BOND_PEP_SKIP" -j RETURN || return 1
+		fi
 		ip netns exec "$NS_CLI" iptables -w -t nat -A PREROUTING -i lan0 -p tcp -j REDIRECT \
 			--to-ports "$BOND_PEP_PORT" || return 1
 		for i in $(seq 1 50); do

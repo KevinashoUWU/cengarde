@@ -188,11 +188,11 @@ def test_line(d):
     tx = os.path.join(d, "tx.out")
     rx = os.path.join(d, "rx.out")
     write(tx, "sent=500 send_err=0 rx=0 uniq=0 dup=0 reord=0\n")
-    write(rx, "sent=0 send_err=0 rx=498 uniq=498 dup=0 reord=2 lat_avg_us=50 p50_us=45 p99_us=1200 p999_us=1500 over200ms=0 over50ms=0 big=0 bigord=0\n")
+    write(rx, "sent=0 send_err=0 rx=498 uniq=498 dup=0 reord=2 lat_avg_us=50 p50_us=45 p99_us=1200 p999_us=1500 over200ms=1 over50ms=3 big=0 bigord=0\n")
     rc, j = run_line(d, ["--small-tx", tx, "--small-rx", rx], {"junk": 1}, ping="", pingbig=None)
     check(rc == 1 and j["mbps"] == 0.0 and j["retrans"] is None, "no traffic: exit 1")
     check(j["rtt_p50"] is None and j["rtt_big_p50"] is None and j["pings_big"] == 0, "no pings: null")
-    check(j["small"] == {"sent": 500, "uniq": 498, "p50_us": 45, "p99_us": 1200, "reord": 2}, "the small flow")
+    check(j["small"] == {"sent": 500, "uniq": 498, "p50_us": 45, "p99_us": 1200, "reord": 2, "over50ms": 3, "over200ms": 1}, "the small flow")
 
     # the one-line summary and the check of zero counters
     path = os.path.join(d, "bond.jsonl")

@@ -532,7 +532,9 @@ def line(a):
     if a.small_rx:  # the flow of small packets alongside (BOND_SMALL)
         rx, tx = udpgen_fields(a.small_rx), udpgen_fields(a.small_tx) if a.small_tx else {}
         out["small"] = {"sent": tx.get("sent"), "uniq": rx.get("uniq"), "p50_us": rx.get("p50_us"),
-                        "p99_us": rx.get("p99_us"), "reord": rx.get("reord")} if rx else None
+                        "p99_us": rx.get("p99_us"), "reord": rx.get("reord"),
+                        # past an RTP jitter buffer's deadline: late is lost
+                        "over50ms": rx.get("over50ms"), "over200ms": rx.get("over200ms")} if rx else None
     if a.cc in ("live", "soak") and isinstance(j, dict):
         out["live"] = j
     if a.tsreal:  # a real MPEG-TS next to the run (story 030): what its decoder saw

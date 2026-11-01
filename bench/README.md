@@ -677,6 +677,11 @@ sentido, con netem.
 | `cgb` (`cg`) | el protocontrolador de los motores, variante B (historia 025): `protocontroller = b`, iptables `REDIRECT` al `BOND_PEP_PORT` (7801) del router, el flujo fiable de cengarde en el medio y el TCP del VPS al destino con `BOND_PEP_CGCC` (`auto`: cubic, BBR cuando ese tramo pierde) |
 | `cga` | lo mismo con la variante A (`protocontroller = a`): un TCP del motor por el túnel en el medio, con `BOND_PEP_CGMIDCC` (`protocontroller_mid_cc` en los dos extremos; vacío, el del motor: `bbr`) |
 
+Con `cga` y `cgb`, `BOND_PEP_SKIP` deja fuera del `REDIRECT` los puertos TCP
+de destino que lista (`5201`: el de iperf3): ese TCP cruza el túnel como DATA
+junto a los flujos del motor, como una LAN en otra zona del firewall o una
+conexión que entra por un puerto reenviado desde el VPS (historia 030).
+
 `BOND_PEP_MIDCC`, `BOND_PEP_FARCC` y `BOND_PEP_LANCC` fijan el control de
 congestión de cada `netns` (el del router manda el tramo del medio en una
 subida, el del VPS el lejano, el de la LAN el emisor; `cubic`, y la LAN, el
