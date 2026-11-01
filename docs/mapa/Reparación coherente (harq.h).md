@@ -3,7 +3,7 @@ tags: [mapa, pieza]
 archivos:
   - engine/src/harq.h
   - engine/tests/test_harq.c
-sello: 771ead11b10fd4ed
+sello: e99baf400cbf9e56
 ---
 # Reparación coherente (harq.h)
 
@@ -29,7 +29,7 @@ También dice qué escribe un emisor en `CG_F_PREV` una vez decididas las copias
 ## Decide / escribe
 - `send_nacks` del servidor: cada hueco pedido por el [[Reordenador (reorder.h)]] espera al código (`hq`, hasta 256 por sesión), o va como PARQ o NACK, o se suelta para TCP (`cg_ro_refused`). `ro_timeout` despierta al cumplirse `rescue_code_ms`.
 - Lo mismo en el cliente para la bajada con reparaciones anchas (`d_harq_one`, `d_harq_service`, `d_send_asks`; `dhq`, hasta 256): la PARQ sube al servidor (`parq_out`), que la responde desde su anillo de rescate o su ventana (`on_parq` de `server.c`, con el presupuesto del rescate que gana cada DATA) por su camino vivo de menor retardo.
-- La espera de un hueco pedido (`rocf.rescue_us`, `cg_harq_wait_us`): `rescue_wait_ms`, más `rescue_code_ms` con un código, nunca más que el presupuesto de TCP.
+- La espera de un hueco pedido (`rocf.rescue_us`, `cg_harq_wait_us`): `rescue_wait_ms` estirado al viaje de ida y vuelta del enlace más rápido (`cg_harq_rtt_wait_us`: su RTT suavizado con cola, un octavo más y 10 ms, nunca más que `reorder_max_wait_ms`; protocolo 13, [[030-protocolo-13]]: sin GRIT en el reordenador, 60 ms soltaban los huecos de la TUN antes de que llegara la respuesta), más `rescue_code_ms` con un código, nunca más que el presupuesto de TCP.
 - El cliente responde una PARQ desde su anillo de rescate (`on_parq`): RLC con semillas nuevas (`cg_rlc_combine`), RS codificando otra vez el bloque (`cg_rs_encode` con la geometría) y los índices que el servidor no tiene (`cg_parq_rs_pick`); por un enlace con lugar (no ahogado ni lleno, el de menor RTT; si no hay ninguno, no sale: antes iba por el ahogado, y en un microcorte 1 500 reparaciones por segundo llevaron la cola del celular a 1,6 s, [[025-protocontrolador]]), dentro del crédito del rescate. Un enlace con las sondas detenidas que todavía trae paquetes cuenta como vivo (`link_masks_tx`, [[Salud y silenciado (health.h)]]), también para el NACK.
 - Estado del cliente con la FEC v3 de la bajada: `download_fec` (`repairs`, `rlc_recovered`, `rlc_wide`, `rlc_peak`, `unknowns`, `waited_code`, `parq_asked`, `parq_repairs_asked`, `no_nack`, `left_to_tcp`, …); del servidor por sesión, `download_fec` (`rlc`, `parq_received`).
 - Estado: servidor por sesión `rescue` (`nack_seqs`, `wait_ms`, `tcp_budget_ms`, `waited_code`, `not_asked`, `left_to_tcp`, `wait_full`, `waiting`, `no_nack`), `repair.parq` (`asked`, `repairs_asked`, `messages`), `tcp` (`retx_one`, `retx_copied`); global `tcp_e2e`. Cliente: `rescue.parq` (`received`, `requests`, `repairs`, `bytes`, `missing`, `over_budget`, `no_link`), `rescue.left_to_tcp`, `upload.tcp`, `tcp_e2e`. El reordenador separa `rescue.rescued` (llegó el paquete) de `rescue.repaired` (lo rehizo un código).
