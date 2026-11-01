@@ -783,11 +783,14 @@ bond_quic_server() {
 }
 
 BOND_NETEM=
-# bond_netem_ok: whether netem works here (once).
+BOND_SEED_TC=no
+# bond_netem_ok: whether netem works here (once), and whether it takes a
+# seed (BOND_SEED_TC).
 bond_netem_ok() {
 	if [ -z "$BOND_NETEM" ]; then
 		BOND_NETEM=no
 		ip netns exec "$NS_CLI" tc qdisc replace dev l1 root netem delay 1ms 2>/dev/null && BOND_NETEM=yes
+		ip netns exec "$NS_CLI" tc qdisc replace dev l1 root netem delay 1ms seed 1 2>/dev/null && BOND_SEED_TC=yes
 		ip netns exec "$NS_CLI" tc qdisc del dev l1 root 2>/dev/null
 		[ "$BOND_NETEM" = yes ] || echo "   note: no netem here: links get a rate only, no delay, loss or events"
 	fi
@@ -827,13 +830,21 @@ bond_link() {
 
 # bond_seed TAG: netem's own seed for the qdisc TAG (a number), from
 # BOND_SEED and the repetition, so that each run of a case draws the same
-# random loss on each link, whatever the arm (BOND_NETEM_SEED=0: netem's
-# own random, as before 2026-11-01). The draws still fall on whichever
-# packets are there at the time: two arms that send the same see the same
-# losses only as long as their packets keep the same timing.
+# random loss on each link, whatever the arm (BOND_NETEM_SEED=0, or a tc
+# without it: netem's own random, as before 2026-11-01). The draws still
+# fall on whichever packets are there at the time: two arms that send the
+# same see the same losses only as long as their packets keep the same
+# timing.
 bond_seed() {
-	[ "${BOND_NETEM_SEED:-1}" = 1 ] || return 0
+	[ "${BOND_NETEM_SEED:-1}" = 1 ] && bond_seed_ok || return 0
 	printf 'seed %d' $(((${BOND_SEED:-1} * 1000 + ${rep:-1}) * 64 + $1))
+}
+
+# bond_seed_ok: whether this tc takes netem's seed (iproute2 6.5 and later:
+# Ubuntu 24.04's 6.1 does not), as bond_netem_ok found it the first time
+# (never tried here: bond_seed runs in a subshell, and the try rewrites l1).
+bond_seed_ok() {
+	[ "$BOND_NETEM" = yes ] && [ "$BOND_SEED_TC" = yes ]
 }
 
 # bond_link_down N DELAY_MS RATE_MBIT [QUEUE_MS [LOSS_PCT]]: as bond_link,

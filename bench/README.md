@@ -775,7 +775,8 @@ python3 -I bench/labq.py run --arm base=origin/master --arm margin20=HEAD \
   con sus hilos hermanos). No ayudó (abajo), así que va apagado.
 - **Semilla fija: 2026** (por omisión desde el 2026-11-01). Fija el guion de
   cada caso y, con `BOND_NETEM_SEED` (1 por omisión), la pérdida al azar de
-  netem en cada enlace y sentido (`seed` de netem, `bond_seed`). Con todo
+  netem en cada enlace y sentido (`seed` de netem, `bond_seed`; con un
+  iproute2 que la acepta, 6.5 o más: el 6.1 de Ubuntu 24.04 en CI no). Con todo
   eso, un A/A (la misma versión en los dos brazos) **no** da exacto: la
   pérdida cae sobre el paquete que pasa en ese instante, el motor y TCP
   corren en tiempo real, y un microsegundo distinto lleva a otra corrida.
