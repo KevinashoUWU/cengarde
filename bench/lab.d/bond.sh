@@ -1246,15 +1246,37 @@ bond_small_start() {
 # ffmpeg encodes a test pattern in H.264 at 6 Mbit/s into an 8 Mbit/s CBR
 # transport stream over UDP (1316-byte datagrams), and the far end's ffmpeg
 # decodes it; bondtab.py counts its continuity errors, damaged frames and
-# frames decoded. Needs ffmpeg with libx264; the pids go to BOND_BG.
+# frames decoded. BOND_TSREAL=rtp sends it as RTP instead (no transport
+# stream), to a receiver whose reorder queue waits 200 ms for a hole like a
+# jitter buffer: bondtab.py adds the packets it missed and the times it
+# played past a hole. Needs ffmpeg with libx264; the pids go to BOND_BG.
 bond_tsreal_start() {
-	local tx rx rxa
+	local tx rx rxa i
 	if [ "$1" = up ]; then
 		tx=$NS_CLI rx=$NS_SRV rxa=10.79.0.1
 	else
 		tx=$NS_SRV rx=$NS_CLI rxa=10.79.0.2
 	fi
-	rm -f "$RUN/tsreal-rx.err" "$RUN/tsreal-tx.err"
+	rm -f "$RUN/tsreal-rx.err" "$RUN/tsreal-tx.err" "$RUN/tsreal.sdp"
+	if [ "$BOND_TSREAL" = rtp ]; then
+		# H.264 in RTP (RFC 6184): the sender writes the SDP the receiver
+		# opens; the receiver's RTP reorder queue waits max_delay (200 ms,
+		# a jitter buffer's depth) for a hole, then plays past it
+		ip netns exec "$tx" ffmpeg -hide_banner -nostdin -loglevel error -re -f lavfi \
+			-i testsrc2=size=1280x720:rate=30 -t "$2" -c:v libx264 -preset veryfast -tune zerolatency -b:v 6M \
+			-maxrate 6M -bufsize 1M -g 30 -x264-params nal-hrd=cbr -f rtp -sdp_file "$RUN/tsreal.sdp" \
+			"rtp://$rxa:7004?pkt_size=1316" 2>"$RUN/tsreal-tx.err" &
+		BOND_BG="$BOND_BG $!"
+		for i in $(seq 1 50); do
+			[ -s "$RUN/tsreal.sdp" ] && break
+			sleep 0.05
+		done
+		ip netns exec "$rx" timeout -k 2 $(($2 + 8)) ffmpeg -hide_banner -nostdin -protocol_whitelist file,udp,rtp \
+			-max_delay 200000 -reorder_queue_size 2000 -buffer_size 4000000 \
+			-i "$RUN/tsreal.sdp" -f null - 2>"$RUN/tsreal-rx.err" &
+		BOND_BG="$BOND_BG $!"
+		return 0
+	fi
 	# udp's timeout (us): it ends 3 s after the stream does (a blocked recv
 	# does not take SIGTERM); timeout -k as the backstop
 	ip netns exec "$rx" timeout -k 2 $(($2 + 8)) ffmpeg -hide_banner -nostdin -i \
@@ -1315,7 +1337,7 @@ bond_run() {
 		bond_sample_start "$s"
 		small+=(--samples "$RUN/samples")
 	fi
-	if [ "${BOND_TSREAL:-0}" = 1 ]; then
+	if [ "${BOND_TSREAL:-0}" != 0 ]; then
 		bond_tsreal_start "$dir" "$s"
 		small+=(--tsreal "$RUN/tsreal-rx.err")
 	fi

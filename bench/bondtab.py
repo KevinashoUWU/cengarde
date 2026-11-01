@@ -692,7 +692,8 @@ def md_table(head, rows, left=4):
 def tsreal_fields(path, secs):
     """The receiving ffmpeg's log (BOND_TSREAL): frames decoded of the 30 a
     second sent, the transport stream's continuity errors (a packet lost or
-    out of order) and the decoder's complaints (damaged frames)."""
+    out of order), the decoder's complaints (damaged frames) and, for RTP,
+    what its reorder queue missed or waited out."""
     try:
         text = open(path, errors="replace").read().replace("\r", "\n")
     except OSError:
@@ -702,7 +703,11 @@ def tsreal_fields(path, secs):
            "decode_slice_header error", "missing picture", "Packet corrupt")
     return {"frames": frames[-1] if frames else 0, "expect": 30 * secs,
             "cc_err": text.count("Continuity check failed"),
-            "dec_err": sum(text.count(b) for b in bad)}
+            "dec_err": sum(text.count(b) for b in bad),
+            # RTP (BOND_TSREAL=rtp): packets the reorder queue never got, and
+            # the times it waited its max_delay out
+            "rtp_missed": sum(int(m) for m in re.findall(r"RTP: missed (\d+) packets", text)),
+            "rtp_late": text.count("max delay reached")}
 
 
 def main_columns(rows):
