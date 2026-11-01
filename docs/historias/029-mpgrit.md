@@ -1077,10 +1077,31 @@ holgada de madrugada, más de 350 Mbit/s):
 | U2b | 354 / 380 / 401 | 378 | 985 | 963 | 35 (de 219) |
 
 Los 18 835 reenvíos cambiaron de enlace, ninguno tuvo que repetir el suyo.
+Segunda tanda (3+3): 420 / 392 / 379 (397) contra 433 / 385 / 407 (408),
+huecos ≥ 320 ms 69 contra 29. Con las dos: U2b gana 4 de 6 rondas, +5 % de
+media (374 → 393), y los huecos largos bajan a menos de la mitad en las dos.
 El caudal gana dos de tres rondas (+8 % de media, ruidoso); los huecos
 largos y lo que reenvía el temporizador bajan a la mitad o menos. Sigue
 U2c: con el enlace de cada segmento, el RTT medido por enlace para su
 temporizador.
+
+### Paso U2c: el RTT de cada enlace para el temporizador (2026-11-01, ~02:20)
+
+Con el enlace de cada segmento (U2b), cada ACK da a cada enlace su muestra
+de RTT (el envío más nuevo entre lo que entregó que fue una sola vez y
+seguía en vuelo: regla de Karn); GRIT la suaviza por enlace como RFC 6298 y
+el plazo de un segmento es también el de su enlace (srtt + 4 rttvar +
+20 ms) cuando es mayor. El RTT de la mezcla es el del enlace más rápido:
+en una ronda, 92 ms con enlaces de 173 / 137 / 103 / 94. Terreno, 3+3:
+
+| brazo | Mbit/s | media | por temporizador | duplicados | huecos ≥ 320 ms |
+| --- | --- | --- | --- | --- | --- |
+| U2b | 378 / 417 / 379 | 391 | 3 717 | 3 671 | 53 |
+| U2c | 410 / 433 / 418 | 420 | 68 | 16 | 35 |
+
+Las tres de U2c sobre las tres de U2b (+7,5 %); el temporizador casi ya no
+reenvía de más (−98 %, los duplicados de 3671 a 16). Un evento de pérdida
+grande de la red (~75 mil NACK) tocó una ronda de cada brazo.
 
 ### Contra OMR con U2a: el cara a cara, el UDP y la caída del principal (2026-10-31, noche)
 
@@ -1177,3 +1198,4 @@ Los cuatro módems, alternados (nunca a la vez), cengarde con U2a.
 - 2026-10-31: contra OMR con U2a: Speedtest, UDP y la caída del enlace
   principal; el origen del UDP que contesta el propio VPS.
 - 2026-11-01: el paso U2b, un reenvío deja el enlace que lo perdió.
+- 2026-11-01: el paso U2c, el RTT de cada enlace para el temporizador.
