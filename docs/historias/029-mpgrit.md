@@ -1061,6 +1061,34 @@ en 450–530 mil segmentos por corrida. Queda un temporizador que todavía
 reenvía ~6000 por corrida (dos tercios duplicados): el paso U2b (GRIT elige
 el subflujo) y el RTT por subflujo (U2c).
 
+### Contra OMR con U2a: el cara a cara, el UDP y la caída del principal (2026-10-31, noche)
+
+Los cuatro módems, alternados (nunca a la vez), cengarde con U2a.
+
+- **Speedtest** (Ookla, servidor 51218 de Santiago, 3 rondas,
+  `~/campo/2026-10-31/vsomr/`): bajada 181 / 177 / 195 (media 184) contra
+  196 / 206 / 181 (194) de OMR, ruido; subida 119 contra 94 (+27 %, las
+  tres rondas); ping con carga en la bajada 54–62 ms contra 624–798 (12 ×
+  menos), en la subida 78–91 contra 128–167. De noche la red da mucho menos
+  que la madrugada del 10-29 (más de 500 Mbit/s los dos).
+- **UDP** a caudal fijo, 10 s (`~/campo/2026-10-31/omrweak/`): OMR lleva
+  el UDP por su VPN (OpenVPN) sobre un solo enlace y se queda en ~25 Mbit/s
+  (bajada a 60 / 100 / 150: 53 / 77 / 86 % perdido); cengarde lo reparte:
+  bajada a 150 Mbit/s con 0 % perdido, subida hasta ~80 (a 150 manda más de
+  lo que la subida de los módems lleva: 53 % y 316 ms de jitter).
+- **El enlace principal muerto con la interfaz arriba** (Entel, el `wan1`
+  maestro de OMR: nft bota todo lo suyo 25 s en una bajada de 70 s, 2
+  rondas): cengarde 0 y 1 segundos casi sin caudal, 0 % de ping perdido en
+  las dos; OMR 8 segundos casi muerto y 32 % de ping perdido en la primera
+  (su ping va por la VPN del maestro), bien en la segunda (sin verificar:
+  su VPN habría quedado en otro módem).
+- Ventaja chica de cengarde en estas dos pruebas: el destino es su VPS (OMR
+  llega a él por internet, un salto dentro del mismo datacenter).
+- **Hallazgo:** iperf3 en UDP no anda cuando su control TCP pasa por GRIT
+  (aborta con «Resource temporarily unavailable»); con el Shadowsocks de
+  OMR sí. Por eso el UDP de cengarde se midió contra 10.79.0.1 (el control
+  no pasa por GRIT; el UDP va por el túnel como cualquier otro).
+
 ## Pendiente
 
 - `link_cc`: decidir si pasa a ser lo normal con `subflow` (más rondas de
@@ -1096,3 +1124,5 @@ el subflujo) y el RTT por subflujo (U2c).
   subflujo (8192) y las copias de estrés en un enlace con cola de segundos.
 - 2026-10-31: el paso U2a, el temporizador de GRIT por segmento con la
   llegada que da el motor (+17 % de bajada, −35 % de duplicados).
+- 2026-10-31: contra OMR con U2a: Speedtest, UDP y la caída del enlace
+  principal; iperf3 UDP con el control por GRIT.
