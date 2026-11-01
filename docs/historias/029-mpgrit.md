@@ -1067,8 +1067,8 @@ Los cuatro módems, alternados (nunca a la vez), cengarde con U2a.
 
 - **Speedtest** (Ookla, servidor 51218 de Santiago, 3 rondas,
   `~/campo/2026-10-31/vsomr/`): bajada 181 / 177 / 195 (media 184) contra
-  196 / 206 / 181 (194) de OMR, ruido; subida 119 contra 94 (+27 %, las
-  tres rondas); ping con carga en la bajada 54–62 ms contra 624–798 (12 ×
+  196 / 206 / 181 (194) de OMR, ruido; subida 119 contra 94 (+27 % en la media; cengarde
+  arriba en dos de las tres rondas); ping con carga en la bajada 54–62 ms contra 624–798 (12 ×
   menos), en la subida 78–91 contra 128–167. De noche la red da mucho menos
   que la madrugada del 10-29 (más de 500 Mbit/s los dos).
 - **UDP** a caudal fijo, 10 s (`~/campo/2026-10-31/omrweak/`): OMR lleva
