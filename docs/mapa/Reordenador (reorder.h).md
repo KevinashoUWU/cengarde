@@ -3,7 +3,9 @@ tags: [mapa, pieza]
 archivos:
   - engine/src/reorder.h
   - engine/tests/test_reorder.c
-sello: 01b159bf79af2a01
+  - engine/src/dgclass.h
+  - engine/tests/test_dgclass.c
+sello: 4b893e3b51e8e9b7
 ---
 # Reordenador (reorder.h)
 
@@ -20,7 +22,10 @@ Pone en orden de secuencia lo que llega antes de entregarlo a la TUN. Retiene lo
 ## Decide / escribe
 - La entrega en orden (`down_deliver` / `up_deliver`).
 - Huecos a punto de abandonarse → [[Rescate (rescue.h)]] (NACK), por [[Reparación coherente (harq.h)]]; [[FEC (fec.h)]] reconstruye antes.
-- Un hueco que la pista `CG_F_PREV` dio por perdido en todos los enlaces se pide al instante y retiene lo que sigue aunque el tope sea 0 (redundancia); un hueco pedido espera `rescue_us` desde el pedido, nunca más allá del plazo que ya tenía (el enlace más lento con su desvío, a lo más el tope; con tope 0, `rescue_us` desde el paquete retenido: `cg_ro_ask_left`). Hasta el 2026-11-01 era el tope **más** `rescue_us` ([[023-reparacion-coherente]]): con todo hueco pedido, lo que venía detrás esperaba más que el búfer de un video RTP ([[030-protocolo-13]]).
+- Un hueco que la pista `CG_F_PREV` dio por perdido en todos los enlaces se pide al instante y retiene lo que sigue aunque el tope sea 0 (redundancia); un hueco pedido espera `rescue_us` desde el pedido y, desde la llegada del paquete retenido más bajo, según la clase de ese paquete (`dgclass.h`, [[030-protocolo-13]]):
+  - **MPEG-TS sobre UDP** (bloques de 188 bytes con el 0x47; sin búfer propio, un paquete tarde vale lo que uno perdido; `waits`, guardado en el bit alto del `link` del casillero retenido): el tope **más** `rescue_us` ([[023-reparacion-coherente]]), a lo más `CG_RO_ASK_MAX_US` (500 ms) o el tope;
+  - **RTP/RTCP** (primer byte 10xxxxxx, tipo de carga de RTP o RTCP; RIST incluido): nunca se retiene (`nohold`): su búfer de jitter ordena y mete en su lugar lo rescatado que llega tarde;
+  - **lo demás** (TCP fuera de GRIT, QUIC, VPN, otro UDP): el plazo que ya tenía (el enlace más lento con su desvío, a lo más el tope; con tope 0, `rescue_us`: `cg_ro_ask_left`). Con el tope más `rescue_us` para todos, un video RTP esperaba más que su búfer.
 - Lo rehecho (`rebuilt`) que llena un hueco pedido cuenta en `rescue.repaired`, no en `rescued`.
 - Estadísticas `in_order`, `held_total`, `lost.*`, `late.*` → estado; `due_narrow` (huecos que vencieron por RACK o plazo y que con `wide` habrían esperado: lo que soltó antes la máscara) y `due_capped` (huecos que vencieron en el tope mismo) → `active.early` y `active.at_cap`.
 - `cg_ro_link_until`: hasta cuándo puede llegar lo que un enlace llevó en un instante (su retardo, cuatro desvíos, su margen adaptativo y el margen), el horizonte de un enlace cerrado.

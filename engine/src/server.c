@@ -88,6 +88,7 @@
 #include "replay.h"
 #include "sock.h"
 #include "capacity.h"
+#include "dgclass.h"
 #include "dominant.h"
 #include "linksig.h"
 #include "fec.h"
@@ -1791,6 +1792,7 @@ static void up_deliver(struct server *s, int *nq, struct session *S, const struc
 			       /* free with TCP data: a retransmission (tcp_aware) */
 			       .retx = (uint8_t)((h->flags & CG_F_FREE) && cg_tcp_data(payload, len)),
 			       .rebuilt = S->rebuilding };
+	int dg = cg_dg_class(payload, len); /* RTP orders itself, MPEG-TS does not (dgclass.h) */
 	enum cg_ro_v v;
 	uint16_t buf;
 
@@ -1813,6 +1815,8 @@ static void up_deliver(struct server *s, int *nq, struct session *S, const struc
 		q_add(s, nq, S, payload, len, CG_RO_NOBUF, h->seq, h->flags);
 		return;
 	}
+	k.nohold = dg == CG_DG_RTP;
+	k.waits = dg == CG_DG_TS;
 	v = cg_ro_in(&S->ro, &s->pool, &S->rocf, &k, rset, &buf);
 	if (v == CG_RO_AGAIN) {
 		/* The window overflowed: the gaps it forces out go, with what was

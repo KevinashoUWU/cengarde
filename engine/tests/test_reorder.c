@@ -697,6 +697,38 @@ static void sc_rescue(const struct base *b)
 	CHECK_EQ(in(2, 2 * MS, 32 * MS, 1, cg_prev_flags(0), DATA, BIG), CG_RO_NOW);
 	CHECK_EQ(R.r.st.asked, 0);
 
+	/* MPEG-TS over UDP behind the gap (waits, dgclass.h): no reorder buffer
+	 * of its own, so the asked gap waits the cap plus rescue_us, as in
+	 * story 023, at most CG_RO_ASK_MAX_US. Links 0 (10 ms) and 1 (30 ms):
+	 * due at 2 + 30 + 10, asked, and held until 12 + 100 + 60. */
+	rig(CG_RO_SLOTS, b, 100 * MS, 0, 10 * MS, 0, 0x3);
+	R.cf.rescue_us = 60 * MS;
+	owd(0, 10 * MS);
+	owd(1, 30 * MS);
+	CHECK_EQ(in(0, 0, 10 * MS, 0, SPLIT, DATA, BIG), CG_RO_NOW);
+	{
+		struct cg_ro_pkt k = pkt(2, 2 * MS, 12 * MS, 0, SPLIT, DATA, BIG);
+
+		k.waits = 1;
+		CHECK_EQ(in_pkt(k, 12 * MS), CG_RO_HOLD);
+	}
+	CHECK_EQ(drain(43 * MS), 0); /* asked */
+	CHECK_EQ(R.r.nask, 1);
+	R.r.nask = 0;
+	CHECK(due(43 * MS) > (int32_t)(55 * MS)); /* the rescue's 60 ms from the ask */
+	CHECK_EQ(drain(100 * MS), 0);
+	CHECK_EQ(in(1, 1 * MS, 101 * MS, 0, 0, DATA, BIG), CG_RO_NOW);
+	CHECK_EQ(R.r.st.rescued, 1);
+	CHECK_EQ(R.r.held, 0);
+	/* RTP (nohold): never held, its jitter buffer orders it */
+	CHECK_EQ(in(3, 3 * MS, 110 * MS, 0, SPLIT, DATA, BIG), CG_RO_NOW);
+	{
+		struct cg_ro_pkt k = pkt(5, 5 * MS, 112 * MS, 0, SPLIT, NOHOLD, BIG);
+
+		CHECK_EQ(in_pkt(k, 112 * MS), CG_RO_NOW);
+	}
+	CHECK_EQ(R.r.held, 0);
+
 	/* Asked at the hold cap (the slowest link seconds behind, split): it
 	 * goes then (story 030; story 023 waited rescue_us beyond the cap). */
 	rig(CG_RO_SLOTS, b, 100 * MS, 0, 10 * MS, 0, 0x3);

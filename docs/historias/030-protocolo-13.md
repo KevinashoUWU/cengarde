@@ -7,7 +7,7 @@
   `~/campo/2026-11-01/u3a/` (el reordenador apagado),
   `~/campo/2026-11-01/p13a/` (protocolo 12 contra 13) y `p13ts`–`p13ts3`
   (con un flujo como MPEG-TS), `p13skip`, `skipbis`, `p13voice` y
-  `p13tsreal`, `p13wg`, `wgbis`, `p13rtp`, `rtp2`–`rtp4`, `rtpbis`, `ts4`, `ts5`, `voice2`, `tsreal2`; terreno `~/campo/2026-11-01/p13field/`; `engine/src/proto.h`,
+  `p13tsreal`, `p13wg`, `wgbis`, `p13rtp`, `rtp2`–`rtp4`, `rtpbis`, `ts4`, `ts5`, `voice2`, `tsreal2`, `cls_rtp`, `cls_ts`, `cls_tsl`; terreno `~/campo/2026-11-01/p13field/`; `engine/src/proto.h`,
   `clientpath.h`, `subflow.h`, `client.c`, `server.c`; historia 029 (U1–U7).
 
 ## TL;DR
@@ -45,7 +45,9 @@
   de un WireGuard quedan igual. En terreno, el mismo TCP y un flujo UDP de
   subida que pierde 3,5 veces menos (7,6–12,9 % → 1,9–4,5 %). Un video RTP
   de verdad destapó que un hueco pedido retenía de más: ahora espera solo
-  hasta su plazo, y el RTP decodifica 92,4 % de los cuadros (88,4 % el 12).
+  hasta su plazo, salvo el MPEG-TS, que no tiene búfer propio y espera su
+  rescate; el RTP nunca se retiene (`dgclass.h`). RTP 94 % de los cuadros
+  (88 % el 12), MPEG-TS real 93 % (91 % el 12).
 - **Lo que viene:** el encabezado de subflujo con anti-replay por enlace,
   frames `STREAM` y `DATAGRAM` (de ~46 a ~25 B por paquete), las clases por
   flujo para los datagramas (MPEG-TS/RTP en orden con plazo, RIST directo,
@@ -270,6 +272,42 @@ final (`232d4c7`, `voice2` y `tsreal2`):
   salida de verdad son las clases por flujo de U5 (el TS en orden con su
   plazo, el RTP sin esperas). TCP −0,6 %.
 
+### El reordenador por clase de datagrama
+
+Por qué el MPEG-TS real perdía con la regla del plazo (contadores de
+`tsreal2`, el router recibiendo): los rescatados a tiempo bajaron de 43 957 a
+18 699 y los que llegaron después de soltar el hueco subieron de 13 929 a
+33 941. La copia llega, pero 10–40 ms después del plazo: el MPEG-TS sobre UDP
+no tiene búfer propio y un paquete fuera de orden le vale lo que uno perdido;
+el RTP sí lo tiene (ordena por su secuencia y mete en su lugar lo que llega
+tarde). Una sola regla no sirve a los dos.
+
+`dgclass.h` mira el datagrama que entrega la TUN (unas comparaciones, sin
+estado):
+
+- **MPEG-TS sobre UDP** (múltiplo de 188 bytes, 0x47 al comienzo de cada
+  bloque): el hueco pedido delante espera el tope más `rescue_us` (la regla
+  de la historia 023), a lo más 500 ms (`CG_RO_ASK_MAX_US`, el presupuesto
+  de latencia) o el tope. La marca va en el bit alto del `link` del
+  casillero retenido (el casillero sigue de 20 bytes).
+- **RTP/RTCP** (primer byte 10xxxxxx, el demux de la RFC 7983, con un tipo de
+  carga de RTP o RTCP y su lista de CSRC dentro; RIST es RTP): nunca se
+  retiene (`nohold`).
+- **Lo demás** (TCP fuera de GRIT, QUIC, VPN, otro UDP): la regla del plazo.
+  GRIT no pasa por el reordenador (STREAM).
+
+| Ronda (`cls_*`) | Brazo | Cuadros RTP | Cuadros TS | Errores del TS | Flujo tipo TS | TCP |
+| --- | --- | --- | --- | --- | --- | --- |
+| | el plazo para todos (`232d4c7`) | 92,7 % | 89,0 % | 113 277 | 8,2 ‰ | — |
+| | por clase (`6b2fc03`) | 94,1 % | 93,3 % | 70 579 | 9,2 ‰ | −0,9 / −0,1 / −1,8 % |
+| | todo menos RTP espera el rescate | 94,2 % | 93,4 % | 67 574 | 8,4 ‰ | −2,7 / +2,3 / +1,0 % |
+
+Por clase gana: el TS real con 38 % menos errores, el RTP un poco mejor, el
+resto igual (el flujo tipo TS no es TS para `dgclass.h`, va por la regla del
+plazo; 8,2 contra 9,2 ‰ con la misma regla es el piso de ruido). Que todo
+espere el rescate no agrega nada medible y cambiaría el TCP de fuera de
+GRIT: queda la variante por clase.
+
 ### Etapa A2: el encabezado de subflujo y los frames
 
 - Encabezado por paquete y enlace: sesión, enlace y `sseq` dentro del MAC,
@@ -303,4 +341,5 @@ final (`232d4c7`, `voice2` y `tsreal2`):
 - 2026-11-01: las rondas con un flujo como MPEG-TS, la espera de un RTT y el
   presupuesto del rescate para los STREAM; la voz, el MPEG-TS real y el TCP
   que no pasa por GRIT; WireGuard adentro y el terreno; el RTP real, `cg_ro_note`
-  y el hueco pedido que espera solo hasta su plazo.
+  y el hueco pedido que espera solo hasta su plazo; el reordenador por
+  clase de datagrama (`dgclass.h`).

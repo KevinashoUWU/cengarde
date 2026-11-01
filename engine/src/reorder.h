@@ -160,6 +160,8 @@
  * 4096 the window held 150 ms, and on the testnet 36 % of the gaps given up
  * were forced by it (story 013). */
 #define CG_RO_SLOTS 16384u
+#define CG_RO_WAITS 0x80       /* a HELD slot's link: cg_ro_pkt's waits (its link ids stay below CG_MAX_LINKS) */
+#define CG_RO_ASK_MAX_US 500000u /* the most a gap asked for holds what waits behind it (the latency budget) */
 #define CG_RO_FAR (2u * CG_RO_SLOTS)    /* a packet this far ahead, while holding, passes through */
 #define CG_RO_WORDS (CG_RO_SLOTS / 64)  /* of the held bitmap */
 #define CG_RO_BUF 2048u                 /* bytes per pool buffer: CG_BUF (engine.h) */
@@ -211,7 +213,8 @@ struct cg_ro_pkt {
 	uint16_t len;     /* of the packet (the DATA payload) */
 	uint8_t link;     /* ids from CG_MAX_LINKS up take no per-link state */
 	uint8_t flags;    /* verified header flags */
-	uint8_t nohold;   /* never held: a protocontroller stream's message, which has its own order */
+	uint8_t nohold;   /* never held: an RTP datagram (dgclass.h), which its jitter buffer orders */
+	uint8_t waits;    /* MPEG-TS over UDP (dgclass.h): no reorder buffer of its own, worth a rescue (cg_ro_ask_left) */
 	uint8_t prev;     /* 1 + the link seq - 1 went on alone (CG_F_PREV), 0: not said */
 	uint8_t retx;     /* CG_F_FREE with TCP data: a TCP retransmission (tcpfree.h's cg_tcp_data) */
 	uint8_t rebuilt;  /* rebuilt by the receiver (a parity, an erasure code), not received */
@@ -881,23 +884,32 @@ static inline int cg_ro_refused(struct cg_reorder *r, const struct cg_ro_cfg *cf
 }
 
 /* How long the asked gap at the head (slot s) may still wait at now: its
- * rescue_us from when it was asked, and never past the deadline the gap
- * had anyway (cg_ro_deadline from the lowest held packet: the slowest
- * link's delay and swing, at most the cap), the latency the reorderer may
- * add to what came after it; where the cap is 0 (redundancy's dup_wait,
- * story 023), rescue_us from that packet's arrival. Until 2026-11-01 it
- * was the cap plus rescue_us: a real RTP video in the lab, its receiver
- * waiting 200 ms, decoded 52 % of its frames instead of 94 % once every
- * gap was asked for (story 030). <= 0: it goes now. */
+ * rescue_us from when it was asked, and from the lowest held packet's
+ * arrival
+ *   - when that packet is MPEG-TS over UDP (waits: a packet that comes late
+ *     is as bad as a lost one to its receiver), the hold cap plus rescue_us
+ *     (story 023), at most CG_RO_ASK_MAX_US or the cap;
+ *   - else the deadline the gap had anyway (cg_ro_deadline: the slowest
+ *     link's delay and swing, at most the cap), or rescue_us where the cap
+ *     is 0 (redundancy's dup_wait).
+ * Until 2026-11-01 every gap had the first rule: once every gap was asked
+ * for, an RTP video's frames waited past its jitter buffer (story 030); RTP
+ * is never held now (nohold), TS keeps its wait. <= 0: it goes now. */
 static inline int32_t cg_ro_ask_left(const struct cg_reorder *r, const struct cg_ro_cfg *cf, uint16_t rset,
 				     const struct cg_ro_slot *s, uint32_t now)
 {
 	const struct cg_ro_slot *n = cg_ro_lowest_slot(r);
 	uint32_t c = cg_ro_cap(r, cf, n->flags, n->t_arr);
-	int32_t left = (int32_t)(s->t_arr + cf->rescue_us - now);
-	int32_t cap_left = c ? (int32_t)(cg_ro_deadline(r, cf, rset, n->ts, n->t_arr, c) - now)
-			     : (int32_t)(n->t_arr + cf->rescue_us - now);
+	int32_t left = (int32_t)(s->t_arr + cf->rescue_us - now), cap_left;
 
+	if (n->link & CG_RO_WAITS) {
+		uint32_t w = c + cf->rescue_us, most = c > CG_RO_ASK_MAX_US ? c : CG_RO_ASK_MAX_US;
+
+		cap_left = (int32_t)(n->t_arr + (w < most ? w : most) - now);
+	} else {
+		cap_left = c ? (int32_t)(cg_ro_deadline(r, cf, rset, n->ts, n->t_arr, c) - now)
+			     : (int32_t)(n->t_arr + cf->rescue_us - now);
+	}
 	return cap_left < left ? cap_left : left;
 }
 
@@ -1161,7 +1173,7 @@ static inline enum cg_ro_v cg_ro_in(struct cg_reorder *r, struct cg_ro_pool *p, 
 	s->len = k->len;
 	s->buf = *buf;
 	s->state = CG_RO_HELD;
-	s->link = k->link;
+	s->link = (uint8_t)(k->link | (k->waits ? CG_RO_WAITS : 0));
 	s->flags = k->flags;
 	s->gap_link = 0;
 	r->held_bits[(k->seq % CG_RO_SLOTS) / 64] |= 1ULL << (k->seq % 64);
