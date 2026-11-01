@@ -229,6 +229,16 @@ static void test_classes(void)
 	n = mk(CG_T_REPAIR, SESSION, top + CG_SEQ_LEAP + 1, 1, CG_REP_HDR + 40);
 	CHECK_EQ(in(&l2, 1, 7, n, 20003), CG_RXV_REPAIR);
 	CHECK_EQ(in(&l2, 1, 7, n, 20004), CG_RXV_DROP); /* a copy: DUP in the control window */
+	/* A STREAM (protocol 13): its own window, so the same number as a DATA
+	 * is new; to the protocontroller, never to the arrival ring or the
+	 * reorderer; a copy is a DUP of its own class, counted for the probe. */
+	n = mk(CG_T_STREAM, SESSION, top + 1, 1, 40);
+	CHECK_EQ(in(&l1, 0, 3, n, 20005), CG_RXV_STREAM);
+	CHECK_EQ(cg_rx_top(&r.stream), top + 1);
+	CHECK_EQ(cg_rx_top(&r.replay), top + CG_SEQ_LEAP); /* DATA's window untouched */
+	CHECK_EQ(in(&l2, 1, 7, n, 20006), CG_RXV_DROP);
+	CHECK_EQ(r.rx[0].stream, 1);
+	CHECK_EQ(r.rx[1].stream, 1);
 	/* Nothing received: the probes say 0. */
 	reset_state();
 	CHECK_EQ(cg_rx_top(&r.replay), 0);

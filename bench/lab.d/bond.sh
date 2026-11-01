@@ -724,7 +724,23 @@ bond_pep_sample_start() {
 # bond_pep_traffic DIR CC SECS RES ERR: the run's traffic between the hosts:
 # iperf3 from the LAN host to the far one, or (cc live) the two streams.
 bond_pep_traffic() {
-	local dir=$1 cc=$2 s=$3 res=$4 err=$5 rc=0 k rx=()
+	local dir=$1 cc=$2 s=$3 res=$4 err=$5 rc=0 k rx=() qs
+	# QUIC (UDP, so it crosses the TUN, never the protocontroller): its
+	# server on the far host, its client on the LAN, as on the testnet
+	if [ "$cc" = quic ]; then
+		ip netns exec "$NS_FAR" python3 -I "$LAB/quicperf.py" server --bind 172.30.1.2 --cc "$BOND_QUIC_CC" \
+			--mtu "$BOND_QUIC_MTU" >"$RUN/quic-far.log" 2>&1 &
+		qs=$!
+		for k in $(seq 50); do
+			grep -q listening "$RUN/quic-far.log" 2>/dev/null && break
+			sleep 0.1
+		done
+		ip netns exec "$NS_LAN" python3 -I "$LAB/quicperf.py" client 172.30.1.2 --dir "$dir" --secs "$s" \
+			--cc "$BOND_QUIC_CC" --mtu "$BOND_QUIC_MTU" >"$res" 2>"$err" || rc=1
+		kill "$qs" 2>/dev/null
+		wait "$qs" 2>/dev/null
+		return "$rc"
+	fi
 	if [ "$cc" != live ] && [ "$cc" != soak ]; then
 		# shellcheck disable=SC2046 # -R or nothing
 		ip netns exec "$NS_LAN" iperf3 -c 172.30.1.2 -t "$s" -C "${BOND_PEP_LANCC:-$cc}" -P "$BOND_P" -J ${BOND_KEEP:+-i 0.5} \
