@@ -7,7 +7,7 @@
   `~/campo/2026-11-01/u3a/` (el reordenador apagado),
   `~/campo/2026-11-01/p13a/` (protocolo 12 contra 13) y `p13ts`–`p13ts3`
   (con un flujo como MPEG-TS), `p13skip`, `skipbis`, `p13voice` y
-  `p13tsreal`, `p13wg`, `wgbis`; terreno `~/campo/2026-11-01/p13field/`; `engine/src/proto.h`,
+  `p13tsreal`, `p13wg`, `wgbis`, `p13rtp`, `rtp2`–`rtp4`, `rtpbis`, `ts4`, `ts5`; terreno `~/campo/2026-11-01/p13field/`; `engine/src/proto.h`,
   `clientpath.h`, `subflow.h`, `client.c`, `server.c`; historia 029 (U1–U7).
 
 ## TL;DR
@@ -43,7 +43,9 @@
   89,9 %; la voz baja de 94 a 68 ms de mediana y casi no pasa los 200 ms;
   el TCP que no va por GRIT (otra zona, un puerto reenviado) y uno dentro
   de un WireGuard quedan igual. En terreno, el mismo TCP y un flujo UDP de
-  subida que pierde 3,5 veces menos (7,6–12,9 % → 1,9–4,5 %).
+  subida que pierde 3,5 veces menos (7,6–12,9 % → 1,9–4,5 %). Un video RTP
+  de verdad destapó que un hueco pedido retenía de más: ahora espera solo
+  hasta su plazo, y el RTP decodifica 92,4 % de los cuadros (88,4 % el 12).
 - **Lo que viene:** el encabezado de subflujo con anti-replay por enlace,
   frames `STREAM` y `DATAGRAM` (de ~46 a ~25 B por paquete), las clases por
   flujo para los datagramas (MPEG-TS/RTP en orden con plazo, RIST directo,
@@ -222,6 +224,42 @@ túnel desde 10.79.0.1, no desde la IP pública a la que se le habló, y el
 socket conectado de iperf3 descarta la respuesta («unable to read from
 stream socket»). Un flujo UDP al propio VPS va a su dirección del túnel.
 
+### RTP de verdad: el rescate que esperaba de más
+
+`BOND_TSREAL=rtp`: ffmpeg manda el mismo H.264 en RTP (sin TS, a ráfagas por
+cuadro) y el receptor lo abre con su cola de reorden de 200 ms
+(`max_delay`, como un búfer de jitter); `bondtab.py` cuenta los paquetes que
+esa cola nunca tuvo (`rtp_missed`) y las veces que esperó de más
+(`rtp_late`). Con `72302ef` el video decodificaba 77–80 % de los cuadros
+contra 88–89 % del protocolo 12, y perdía el doble de paquetes.
+
+- **Primera sospecha, descartada:** sin los mensajes de GRIT en DATA, la regla
+  RACK del reordenador (cada enlace trajo un DATA posterior) casi nunca se
+  cumple con DATA ralo. Un STREAM le dice ahora cuán lejos va su enlace por
+  el `ts` del emisor (`cg_ro_note`: un enlace que trajo algo enviado después
+  del paquete retenido más bajo pasó todos los huecos debajo); correcto,
+  pero el RTP no cambió (79,3 %).
+- **La causa** (`rtpbis`, 3 casos, cinco brazos): antes del presupuesto el
+  video decodificaba 93–94 %, con él 52 %. Con presupuesto se pide todo
+  hueco, y un hueco pedido retenía lo que venía detrás el tope **más**
+  `rescue_us` (historia 023): 200 + 60–120 ms, más que el búfer del video.
+  Sin presupuesto el servidor respondía «no viene» y el hueco salía al tiro.
+- **La regla:** un hueco pedido espera `rescue_us` desde el pedido, nunca más
+  allá del plazo que ya tenía (el enlace más lento con su desvío, a lo más
+  el tope); con tope 0 (redundancia) sigue esperando `rescue_us`. Un hueco
+  que RACK encontró temprano le deja al rescate hasta ese plazo; uno pedido
+  en su plazo sale. Lo que llega tarde igual se entrega (tarde).
+
+| Ronda | Brazo | Cuadros RTP | Paquetes RTP perdidos | Pérdida del flujo TS | TCP |
+| --- | --- | --- | --- | --- | --- |
+| `rtp4`, `ts5` | `p12` | 88,4 % | 159 k | 10,5 ‰ | — |
+| | tope o `rescue_us`, el mayor (`825509c`) | 81,3 % | 272 k | 8,2 ‰ | +5,4 / −1,6 % |
+| | el plazo propio (`136b9ab`) | 92,4 % | 110 k | 9,8 ‰ | +6,4 / +0,6 % |
+
+El protocolo 13 queda mejor que el 12 en las tres cosas: el video RTP, el
+flujo constante tipo TS y el TCP. Las rondas anteriores de esta historia
+(voz, MPEG-TS real, WireGuard, terreno) son de `72302ef`, sin esta regla.
+
 ### Etapa A2: el encabezado de subflujo y los frames
 
 - Encabezado por paquete y enlace: sesión, enlace y `sseq` dentro del MAC,
@@ -245,7 +283,8 @@ stream socket»). Un flujo UDP al propio VPS va a su dirección del túnel.
 
 ## Pendiente
 
-- RTP de verdad con GStreamer (`rtpjitterbuffer`).
+- Repetir la voz, el MPEG-TS real y el terreno con `136b9ab` (la regla del
+  plazo).
 - La FEC v3 sobre STREAM: hoy no lo cubre (en terreno está apagada); si se
   enciende, decidir si protege también la clase STREAM.
 
@@ -254,4 +293,5 @@ stream socket»). Un flujo UDP al propio VPS va a su dirección del túnel.
 - 2026-11-01: creada, con la etapa A.
 - 2026-11-01: las rondas con un flujo como MPEG-TS, la espera de un RTT y el
   presupuesto del rescate para los STREAM; la voz, el MPEG-TS real y el TCP
-  que no pasa por GRIT; WireGuard adentro y el terreno.
+  que no pasa por GRIT; WireGuard adentro y el terreno; el RTP real, `cg_ro_note`
+  y el hueco pedido que espera solo hasta su plazo.
