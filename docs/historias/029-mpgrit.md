@@ -1186,6 +1186,36 @@ Los cuatro módems, alternados (nunca a la vez), cengarde con U2a.
   contra 10.79.0.1. Arreglo posible: que el VPS conteste por el túnel con la
   pública como origen (la ruta de la red del túnel con `src`), por probar.
 
+### GRIT elige el enlace de lo nuevo: medido y aparcado (2026-11-01, ~03:00)
+
+El motor ya elige para cada paquete el enlace donde llega primero (como
+ECF); mover esa decisión a GRIT con lo mismo no cambia nada. Lo que solo
+GRIT podría hacer es mandar por adelantado, por un enlace lento, un segmento
+de más adelante del flujo (como DAPS u OTIAS). Antes de construirlo se midió
+cuánto espera la cabeza de un flujo de GRIT por el segmento que la destraba,
+según el enlace que lo trae (rama `claude/grit-holes-by-link`,
+`head_wait_by_link`), en tres bajadas de 427–473 Mbit/s: menos de 5 ms el
+98,6 / 98,1 / 95,1 / 97,8 % de las veces (Claro, Entel, Movistar, WOM), 80 ms
+o más el 0,04–0,13 %. La ETA ya entrega casi en orden: no queda bloqueo de
+cabeza de línea que justifique el envío por adelantado con estos módems. Se
+vuelve a probar si cambian las condiciones (Starlink con celulares, RTT muy
+distintos). Los cuatro enlaces cargados tenían RTT casi iguales (188–209 ms):
+el reparto por la llegada los empareja.
+
+### El UDP de subida no perdía: era el búfer del iperf (2026-11-01, ~03:20)
+
+La pérdida del UDP de subida de cengarde que se midió esa noche (14–53 %
+contra OMR con Shadowsocks; 32 y 65 % contra OMR con Xray, que «ganaba») era
+el búfer de recepción del iperf3 en el VPS (212 kB) desbordado: los errores
+de búfer UDP del kernel subieron exactamente lo que iperf3 contó como
+perdido (2310 de 2310). Con un búfer de 8 MB (`-w 8M`): 0 % perdido a 70 y a
+100 Mbit/s. La causa de fondo es real: el reordenador del túnel retuvo el
+68 % del UDP (89 mil de 132 mil paquetes) para entregarlo en orden y lo
+soltó en ráfagas; un programa con un búfer chico (un reproductor en la LAN)
+también las sufriría. Es el argumento concreto del paso U5: los datagramas
+pasan sin esperar, solo se quitan los duplicados. La comparación con OMR en
+UDP de subida queda por repetir con búferes grandes en los dos.
+
 ### La media por omisión: las rondas de madrugada (2026-11-01, 03:33)
 
 El estimador de la media (`link_cc_bits` 256) contra el máximo, de madrugada
@@ -1331,6 +1361,8 @@ ABBA, `~/campo/2026-11-01/capfec/`; Ookla cortó 3 Speedtest por límite):
 - 2026-11-01: el paso U2c, el RTT de cada enlace para el temporizador.
 - 2026-11-01: los nombres (GRIT con SLATE) y el plan de la compresión
   con diccionarios (DC-SYN, DC-ACK).
+- 2026-11-01: GRIT eligiendo el enlace de lo nuevo, medido y aparcado; el UDP
+  de subida que no perdía (el búfer del iperf) y el reordenador que retiene el UDP.
 - 2026-11-01: la media por omisión (270 / 302), tras las rondas de madrugada.
 - 2026-11-01: la capacidad vieja deja la semilla, el dominante y la FEC v3
   (`link_cc_bits` 1024, 2048 y 4096, por omisión: 7438 / 7470).
