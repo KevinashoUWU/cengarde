@@ -1103,6 +1103,34 @@ Las tres de U2c sobre las tres de U2b (+7,5 %); el temporizador casi ya no
 reenvía de más (−98 %, los duplicados de 3671 a 16). Un evento de pérdida
 grande de la red (~75 mil NACK) tocó una ronda de cada brazo.
 
+### Nombres: GRIT con SLATE (2026-11-01)
+
+GRIT sigue siendo el protocolo; su planificador y control de congestión se
+llama **SLATE** (*Subflow Latency-bounded Arrival-Time Estimation*), como
+QUIC con BBR: el ritmo por enlace (`link_cc`), cada paquete por el enlace
+donde llega primero (la ETA), el RTT y el plazo de cada enlace y segmento
+(U2a–U2c), el reenvío por otro enlace (U2b) y la pérdida por enlace (los
+subflujos). Dos rondas de Sonnet buscaron siglas y choques (IETF, GitHub,
+arXiv); SLATE comparte el nombre con un planificador de clústeres de
+microservicios (otro rubro). Falta revisar las marcas (USPTO, INAPI) y el
+nombre del producto (propuesta: MPDT, *Multipath Deadline Transport*).
+
+### La compresión, como se piensa (2026-11-01)
+
+Primero medir la mezcla de tráfico (lo cifrado y el video no se comprimen);
+los encabezados antes que zstd (el protocolo 13; contextos al estilo ROHC
+para el UDP/IP de adentro); zstd solo por flujo donde rinde, antes de la
+FEC y con presupuesto de CPU. Los flujos de GRIT usan la ventana continua
+de zstd (sin diccionario); los datagramas, diccionarios por clase (DNS,
+syslog, MQTT/JSON, Modbus) con número por hash. La sincronización (idea del
+usuario): **DC-SYN** lleva un diccionario nuevo (los dos extremos aprenden y
+proponen, cada uno para lo que envía), **DC-ACK** confirma que está
+completo, y el emisor lo usa solo después: ningún paquete espera, salen sin
+comprimir (o con el anterior) hasta entonces; viajan por un flujo de GRIT
+de fondo, en pedazos, y lo aprendido localmente no sale de los equipos del
+cliente. El túnel va autenticado, no cifrado (tarea #27): un diccionario no
+expone nada que el túnel no lleve ya.
+
 ### Contra OMR con U2a: el cara a cara, el UDP y la caída del principal (2026-10-31, noche)
 
 Los cuatro módems, alternados (nunca a la vez), cengarde con U2a.
@@ -1199,3 +1227,5 @@ Los cuatro módems, alternados (nunca a la vez), cengarde con U2a.
   principal; el origen del UDP que contesta el propio VPS.
 - 2026-11-01: el paso U2b, un reenvío deja el enlace que lo perdió.
 - 2026-11-01: el paso U2c, el RTT de cada enlace para el temporizador.
+- 2026-11-01: los nombres (GRIT con SLATE) y el plan de la compresión
+  con diccionarios (DC-SYN, DC-ACK).
