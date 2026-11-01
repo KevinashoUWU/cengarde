@@ -1263,6 +1263,31 @@ celulares no hay dominante. Parejo, como en el laboratorio: iperf3 de bajada
 subidas 116 / 114 y 114 / 115, el ping con carga de bajada 72 en los dos y
 el de subida 74 contra 79 ms. La testnet queda en 7438 / 7470.
 
+Con la FEC v3 encendida en los dos extremos (`fec_code = rlc`), solo el
+bit 4096 contra la capacidad (3342 / 3374 contra 7438 / 7470; 4 rondas
+ABBA, `~/campo/2026-11-01/capfec/`; Ookla cortó 3 Speedtest por límite):
+
+| | capacidad | subflujo |
+| --- | --- | --- |
+| iperf3 bajada / subida | 355 / 96 | 388 / 104 (+9 % / +9 %) |
+| Speedtest bajada / subida | 379 / 106 | 425 / 117 |
+| ping con carga bajada / subida | 62 / 81 ms | 63 / 76 ms |
+| reparaciones de la bajada (sobre el DATA) | 12,2 % | 7,2 % |
+| rehechos en la bajada por ronda | 5233 | 1630 |
+| reparaciones de la subida | 18,6 % | 18,3 % |
+| rehechos en la subida por ronda (sin la primera, vacía) | 21 985 | 21 887 |
+
+- **La bajada:** el subflujo no ve pérdida al azar en el camino del VPS
+  (la que hay es de cola, la cuenta en la cola propia) y la parte cae a 0
+  en tres de cuatro rondas: BBR no paga reparaciones que no necesita, y la
+  bajada sube 9 % aunque rehace menos. Con la capacidad la parte quedaba
+  en 20 % todo el rato, y casi dos tercios de las reparaciones llegaban
+  sin hueco que tapar.
+- **La subida:** rehace lo mismo con el mismo gasto, y sube 9 %.
+- Contra la FEC apagada (las rondas de antes, misma mañana) la FEC todavía
+  cuesta: 388 / 104 contra 412 / 115. La testnet vuelve a como estaba (sin
+  FEC en el NUC).
+
 ## Pendiente
 
 - `link_cc`: decidir si pasa a ser lo normal con `subflow` (más rondas de
