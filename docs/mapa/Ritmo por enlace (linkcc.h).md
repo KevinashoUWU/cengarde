@@ -3,7 +3,7 @@ tags: [mapa, pieza]
 archivos:
   - engine/src/linkcc.h
   - engine/tests/test_linkcc.c
-sello: ca09bf442188f139
+sello: c55c3110ed30e3bb
 ---
 # Ritmo por enlace (linkcc.h)
 
@@ -63,6 +63,8 @@ los dejaban a medias.
 
 **La media en vez del máximo** (`link_cc_bits` 256, 2026-10-31, [[029-mpgrit]]): pasado el arranque, `bw` es lo entregado en los últimos cinco baldes enteros de 100 ms (`cg_lc_mean_add`, `cg_lc_mean`; `mean_bps` en el estado); con cola en el enlace es su capacidad y sube o baja, sin cola solo sube, y tras un silencio queda como estaba. Contra la captura de techo el máximo de 1–2 s leía 1,7–5,2 veces la capacidad de un módem saturado (las ráfagas del operador) y la media 0,96–1,00; en terreno, la bajada +21 % y la subida +6 %, y de madrugada (2026-11-01, 3 + 3 rondas) la bajada +25 % (iperf3) y +12 % (Speedtest) en las tres rondas, el ping con carga de 95 a 71 ms, la subida igual: **por omisión** desde entonces (270 en el router, 302 en el VPS).
 
+**Lo último que decidía la capacidad vieja** (`link_cc_bits` 1024, 2048 y 4096, 2026-11-01, [[029-mpgrit]]): con `CG_LC_NOSEED` el ritmo de un enlace nace de su propio arranque, sin la semilla de [[Capacidad (capacity.h)]], y la pista a GRIT (`pctl_hint`) no cae a la capacidad; con `CG_LC_DOM` el [[Enlace dominante (dominant.h)]] se elige por el `bw` de cada enlace; con `CG_LC_F3` la guarda de la [[FEC v3 (fec3.h)]] lee la cola propia del enlace (`cg_lc_f3_queue`: su retardo de ida sobre el mínimo, si lo tiene) y su pérdida es la del subflujo en el último tick (`cg_lc_tick_loss`: perdidos sobre enviados, por mil), con carga si la cola pasa la mitad del objetivo. En el laboratorio (12 casos × 2 sentidos, 7 corridas por brazo, los tres juntos 4): F3 +4,4 % de media geométrica (16 de 24 casos, arranque +7,4 %, general +4,4 %), los tres juntos +4,1 %, NOSEED y DOM parejos (+0,5 y +1,1 %): **por omisión** los tres (7438 en el router, 7470 en el VPS), y la capacidad ya no decide estas tres cosas mientras `link_cc` esté encendido. Lo que cuesta: `lossy` de subida baja de 113 a 104 Mbit/s con F3 (más reparaciones por la pérdida que sí ve el subflujo) y su ping con carga baja de 145 a 105 ms.
+
 **Solo el ritmo propio** (`link_cc_bits` 512, 2026-10-31): un enlace con muestras propias entra al reparto sin esperar a la [[Capacidad (capacity.h)]], los pesos de la capacidad no lo dejan en copias y el rescate lo ve lleno por su propia cola (`cg_lc_full`). Laboratorio +3,4 % (subidas de `fade` +20 %, `ratswitch` +13 %); terreno, 7 rondas: bajada igual, subida −8 %, con ±30 % entre rondas: queda apagado.
 
 ## Lee
@@ -93,7 +95,7 @@ los dejaban a medias.
 - El objetivo de cola es `governor_target_ms` (60 con `subflow`); con MTPT
   es de donde parte, y [[Mapa/Perillas/link_cc_budget_ms|link_cc_budget_ms]]
   (300) da su techo.
-- [[Mapa/Perillas/link_cc_bits|link_cc_bits]] (experimento): qué usos de la cola están encendidos (`CG_LC_QETA`, `CG_LC_QMODE`, `CG_LC_SAT`, `CG_LC_S32`, `CG_LC_QMAX`, `CG_LC_SATQ`, `CG_LC_WND`, `CG_LC_MTPT`); por omisión los modos por la cola y STARTUP a ×3/2 (10, `CG_LC_BITS`), y en el router además el tope por lo entregado con cola (14): su subida se concede en ráfagas; en el VPS el tope solo mientras el enlace tiene cola (46: siempre, dejaba al enlace rápido corto); los dos con la media (256): 270 en el router y 302 en el VPS.
+- [[Mapa/Perillas/link_cc_bits|link_cc_bits]] (experimento): qué usos de la cola están encendidos (`CG_LC_QETA`, `CG_LC_QMODE`, `CG_LC_SAT`, `CG_LC_S32`, `CG_LC_QMAX`, `CG_LC_SATQ`, `CG_LC_WND`, `CG_LC_MTPT`, `CG_LC_MEAN`, `CG_LC_ONLY`, `CG_LC_NOSEED`, `CG_LC_DOM`, `CG_LC_F3`); por omisión los modos por la cola y STARTUP a ×3/2 (10, `CG_LC_BITS`), y en el router además el tope por lo entregado con cola (14): su subida se concede en ráfagas; en el VPS el tope solo mientras el enlace tiene cola (46: siempre, dejaba al enlace rápido corto); los dos con la media (256) y sin las tres decisiones de la capacidad (1024 + 2048 + 4096): 7438 en el router y 7470 en el VPS.
 
 ## Dónde se midió
 - Laboratorio, 2026-10-28 (`~/campo/2026-10-28/lc1`, todavía sin manejar el

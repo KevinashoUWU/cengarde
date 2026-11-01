@@ -452,10 +452,10 @@ static void test_config_bonding(void)
 	/* link_cc_bits: the router's adds the cap (its upload is granted in
 	 * bursts), the VPS's caps only while a link holds a queue; one said wins */
 	CHECK_EQ(cg_config_parse(&c, CLIENT "subflow = yes\nlink_cc = yes\n", err, sizeof(err), warn, sizeof(warn)), 0);
-	CHECK(c.link_cc && c.link_cc_bits == 270);
+	CHECK(c.link_cc && c.link_cc_bits == 7438);
 	cg_config_free(&c);
 	CHECK_EQ(cg_config_parse(&c, SERVER "subflow = yes\nlink_cc = yes\n", err, sizeof(err), warn, sizeof(warn)), 0);
-	CHECK(c.link_cc && c.link_cc_bits == 302);
+	CHECK(c.link_cc && c.link_cc_bits == 7470);
 	cg_config_free(&c);
 	CHECK_EQ(cg_config_parse(&c, CLIENT "subflow = yes\nlink_cc = yes\nlink_cc_bits = 2\n", err, sizeof(err), warn,
 				 sizeof(warn)), 0);

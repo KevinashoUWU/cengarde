@@ -21,7 +21,7 @@ Las decisiones del emisor de la **FEC v3** (`fec = yes` con `fec_code = rlc`, [[
 - **La bajada** (`server.c`: `sf3_apply`, `sf3_begin`, `sf3_feed`, `sf3_repair`, `sf3_send`, `sf3_service`): con `fec = yes` y `fec_code = rlc` en el servidor (`cengarde-vps-setup fec rlc`), las mismas decisiones por sesión sobre los caminos de la bajada (una ventana de ~2 MB por sesión, asignada con la perilla, nunca por paquete), con su guarda en el peso del rescate de cada camino; el router las rehace con `fec = yes` (su anillo de 2048 DATA y el receptor de la RLC, ~5 MB) y pide la PARQ por la subida ([[Reparación coherente (harq.h)]]).
 ## Lee
 - De [[Reparto (split.h)]]: los enlaces elegibles del lote y los de peso 0 (`u->k`), o los portadores en redundancia; `split_active` y el dominante.
-- De [[Capacidad (capacity.h)]]: la pérdida de cada muestra (`loss_pm`, `loss_pm_ms`) y la cola sobre el mínimo del minuto (`ql_us`); de [[Observaciones del enlace (linksig.h)]], `kind`.
+- Con `link_cc` (por omisión con `subflow`, `link_cc_bits` 4096): la pérdida de cada enlace por su subflujo en el último tick y su cola por su retardo de ida ([[Ritmo por enlace (linkcc.h)]]: `cg_lc_tick_loss`, `cg_lc_f3_queue`); sin él, de [[Capacidad (capacity.h)]]: la pérdida de cada muestra (`loss_pm`, `loss_pm_ms`) y la cola sobre el mínimo del minuto (`ql_us`). De [[Observaciones del enlace (linksig.h)]], `kind`.
 - Los bytes de DATA de cada enlace por tick (`tx_bytes`) y su atraso (`behind_us`).
 
 ## Decide / escribe

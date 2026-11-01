@@ -122,12 +122,15 @@ enum { CG_LC_STARTUP_M = 0, CG_LC_DRAIN_M, CG_LC_PROBE_M };
  * only), and it is full for the rescue (congestion, not a loss to send
  * again) when its own queue passes its target. */
 #define CG_LC_ONLY 512u
-/* What the old capacity (capacity.h) still decides, each taken over by the
- * link's own rate (MPGRIT, story 029: retire the capacity), an experiment:
+/* What the old capacity (capacity.h) still decided, each taken over by the
+ * link's own rate (MPGRIT, story 029: retire the capacity), on by default:
  * NOSEED, no capacity seed for bw nor capacity fallback in GRIT's hint (the
  * link starts from its own STARTUP); DOM, the dominant link (dominant.h)
  * by each link's bw; F3, FEC v3's guard by the link's own queue and its loss
- * by the subflow's (cg_lc_f3_queue, cg_lc_tick_loss). */
+ * by the subflow's (cg_lc_f3_queue, cg_lc_tick_loss). In the lab (12 cases
+ * x 2 directions, 7 runs each, the three together 4): F3 +4.4 % geometric mean, 16 of 24
+ * won; the three +4.1 %; NOSEED and DOM level (+0.5, +1.1 %), so the
+ * capacity's path goes for them too (2026-11-01). */
 #define CG_LC_NOSEED 1024u
 #define CG_LC_DOM 2048u
 #define CG_LC_F3 4096u

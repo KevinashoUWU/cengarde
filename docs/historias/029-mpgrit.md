@@ -1209,6 +1209,52 @@ en TCP (Speedtest, servidor 51218, 3 rondas alternadas,
 cengarde adelante en todas las rondas. De tarde se empataba la bajada
 (184 contra 194).
 
+### La capacidad vieja deja sus tres decisiones chicas (2026-11-01, laboratorio)
+
+Con el ritmo por enlace (`link_cc`) la capacidad de `capacity.h` todavía
+decidía tres cosas: la semilla del `bw` de cada enlace (y el respaldo de la
+pista a GRIT cuando un enlace aún no tiene acuses), el enlace dominante
+(`dominant.h`) y la FEC v3 (su guarda por la cola y la pérdida que fija su
+parte). Cada una pasó a un bit de `link_cc_bits` para medirla por separado:
+1024 (`CG_LC_NOSEED`: el enlace nace de su propio arranque), 2048
+(`CG_LC_DOM`: el dominante por el `bw` de cada enlace) y 4096 (`CG_LC_F3`: la
+guarda por el retardo de ida propio, `cg_lc_f3_queue`, y la pérdida por el
+subflujo en el último tick, `cg_lc_tick_loss`, con carga si la cola pasa la
+mitad del objetivo).
+
+Dos tandas en los 14 laboratorios (PC 6, remoto06 4, remoto07 4; 12 casos:
+`equal het fade cell4 lossy protect clean4 linkdeath downstall ratswitch
+dominant starlink15`, bajada y subida, cubic; 672 corridas, 0 fallidas,
+`~/campo/2026-11-01/caplab{,2}/`). Media geométrica de la mediana de Mbit/s
+contra la base (270 / 302), juntando las dos tandas (7 corridas por brazo;
+los tres juntos solo en la segunda, 4):
+
+| brazo | arranque | dominante | FEC | general | todo | gana |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1024 | +0,2 % | +2,3 % | +2,9 % | −2,0 % | +0,5 % | 14 / 24 |
+| 2048 | +0,2 % | −0,7 % | +5,9 % | −0,8 % | +1,1 % | 13 / 24 |
+| 4096 | +7,4 % | +4,4 % | +1,3 % | +4,4 % | +4,4 % | 16 / 24 |
+| los tres | +4,9 % | +6,9 % | −0,2 % | +5,5 % | +4,1 % | 14 / 24 |
+
+(arranque: `linkdeath`, `downstall`, `ratswitch`; dominante: `dominant`,
+`starlink15`; FEC: `lossy`, `protect`, `clean4`; general: el resto.)
+
+- La FEC por el subflujo es lo que gana: `fade` +11 % de bajada y +19 % de
+  subida, `clean4` +12 % y `linkdeath` +18 % de bajada. La capacidad medía la pérdida por
+  muestra y la cola sobre el mínimo del minuto; el subflujo la cuenta por
+  enlace, exacta, y la cola propia es la de ahora.
+- Lo que cuesta: `lossy` de subida de 113 a 104 Mbit/s (el subflujo ve la
+  pérdida al azar entera y la FEC manda más reparaciones), con el ping con
+  carga de 145 a 105 ms. Los tres juntos bajan `downstall` de subida 15 %
+  (4 corridas; 4096 solo, +6 %).
+- El dominante es ruido: `dominant` de bajada va de 17 a 119 Mbit/s entre
+  corridas en todos los brazos (la primera tanda dio +20 % en el grupo, la
+  segunda −9 %). La semilla, pareja. Al ser parejos, igual salen de la
+  capacidad: es lo que se buscaba, que la capacidad deje de decidir.
+- **Por omisión los tres:** 7438 en el router y 7470 en el VPS. El camino
+  viejo queda solo para `link_cc = no` (sin `subflow`), que no tiene el
+  ritmo propio.
+
 ## Pendiente
 
 - `link_cc`: decidir si pasa a ser lo normal con `subflow` (más rondas de
@@ -1253,3 +1299,5 @@ cengarde adelante en todas las rondas. De tarde se empataba la bajada
 - 2026-11-01: los nombres (GRIT con SLATE) y el plan de la compresión
   con diccionarios (DC-SYN, DC-ACK).
 - 2026-11-01: la media por omisión (270 / 302), tras las rondas de madrugada.
+- 2026-11-01: la capacidad vieja deja la semilla, el dominante y la FEC v3
+  (`link_cc_bits` 1024, 2048 y 4096, por omisión: 7438 / 7470).
