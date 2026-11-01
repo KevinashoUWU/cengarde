@@ -68,7 +68,7 @@ sys.dont_write_bytecode = True
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*$")
-GRID_DEFAULTS = {"cases": ["equal", "het"], "dirs": ["down", "up"], "cc": ["cubic"], "reps": 1, "secs": 10, "seed": 1}
+GRID_DEFAULTS = {"cases": ["equal", "het"], "dirs": ["down", "up"], "cc": ["cubic"], "reps": 1, "secs": 10, "seed": 2026}
 KEY = ("arm", "case", "dir", "cc", "rep")
 
 

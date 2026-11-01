@@ -597,8 +597,10 @@ bond_hosts_up() {
 	ip netns exec "$NS_SRV" sysctl -qw net.ipv4.tcp_congestion_control="$BOND_PEP_FARCC" || return 1
 	ip netns exec "$NS_LAN" sysctl -qw net.ipv4.tcp_congestion_control="${BOND_PEP_LANCC:-cubic}" || return 1
 	[ "${BOND_CASE:-}" = beyond ] && loss=$BOND_BEYOND_LOSS
-	ip netns exec "$NS_SRV" tc qdisc replace dev fv root netem delay "${BOND_PEP_FAR_MS}ms" limit 100000 loss "${loss}%" || return 1
-	ip netns exec "$NS_FAR" tc qdisc replace dev f0 root netem delay "${BOND_PEP_FAR_MS}ms" limit 100000 loss "${loss}%" || return 1
+	# shellcheck disable=SC2046 # bond_seed: two words or none
+	ip netns exec "$NS_SRV" tc qdisc replace dev fv root netem delay "${BOND_PEP_FAR_MS}ms" limit 100000 loss "${loss}%" $(bond_seed 60) || return 1
+	# shellcheck disable=SC2046
+	ip netns exec "$NS_FAR" tc qdisc replace dev f0 root netem delay "${BOND_PEP_FAR_MS}ms" limit 100000 loss "${loss}%" $(bond_seed 61) || return 1
 	ip netns exec "$NS_SRV" tc qdisc replace dev nv root netem delay "${BOND_PEP_NEAR_MS}ms" limit 100000 || return 1
 	ip netns exec "$NS_NEAR" tc qdisc replace dev n0 root netem delay "${BOND_PEP_NEAR_MS}ms" limit 100000 || return 1
 	ip netns exec "$NS_FAR" iperf3 -s -B 172.30.1.2 -D || return 1
@@ -814,11 +816,24 @@ bond_link() {
 	for ns in "$NS_CLI" "$NS_SRV"; do
 		dev=$([ "$ns" = "$NS_CLI" ] && echo "l$n" || echo "s$n")
 		if bond_netem_ok; then
-			ip netns exec "$ns" tc qdisc replace dev "$dev" root netem delay "${d}ms" rate "${r}mbit" limit $((lim + inflight)) loss "${loss}%"
+			# shellcheck disable=SC2046 # bond_seed: two words or none
+			ip netns exec "$ns" tc qdisc replace dev "$dev" root netem delay "${d}ms" rate "${r}mbit" limit $((lim + inflight)) loss "${loss}%" \
+				$(bond_seed $((n * 2 + ($([ "$ns" = "$NS_CLI" ] && echo 0 || echo 1)))))
 		else
 			ip netns exec "$ns" tc qdisc replace dev "$dev" root tbf rate "${r}mbit" burst 32kb limit $((lim * 1500))
 		fi
 	done
+}
+
+# bond_seed TAG: netem's own seed for the qdisc TAG (a number), from
+# BOND_SEED and the repetition, so that each run of a case draws the same
+# random loss on each link, whatever the arm (BOND_NETEM_SEED=0: netem's
+# own random, as before 2026-11-01). The draws still fall on whichever
+# packets are there at the time: two arms that send the same see the same
+# losses only as long as their packets keep the same timing.
+bond_seed() {
+	[ "${BOND_NETEM_SEED:-1}" = 1 ] || return 0
+	printf 'seed %d' $(((${BOND_SEED:-1} * 1000 + ${rep:-1}) * 64 + $1))
 }
 
 # bond_link_down N DELAY_MS RATE_MBIT [QUEUE_MS [LOSS_PCT]]: as bond_link,
@@ -828,7 +843,9 @@ bond_link_down() {
 	bond_netem_ok || return 0
 	lim=$((r * 1000000 * q / 8000 / 1400 + 10))
 	[ "${BOND_NETEM_INFLIGHT:-0}" = 1 ] && inflight=$((r * 1000000 * d / 8000 / 1400))
-	ip netns exec "$NS_SRV" tc qdisc replace dev "s$n" root netem delay "${d}ms" rate "${r}mbit" limit $((lim + inflight)) loss "${loss}%"
+	# shellcheck disable=SC2046 # bond_seed: two words or none
+	ip netns exec "$NS_SRV" tc qdisc replace dev "s$n" root netem delay "${d}ms" rate "${r}mbit" limit $((lim + inflight)) loss "${loss}%" \
+		$(bond_seed $((n * 2 + 1)))
 }
 
 # bond_link_ud N DELAY_MS UP_MBIT DOWN_MBIT [QUEUE_MS [LOSS_PCT]]: as

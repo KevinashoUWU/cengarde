@@ -773,6 +773,22 @@ python3 -I bench/labq.py run --arm base=origin/master --arm margin20=HEAD \
   niega (usa otro `--out`).
 - `--pin` le da a cada laboratorio sus núcleos (`taskset`, núcleos enteros
   con sus hilos hermanos). No ayudó (abajo), así que va apagado.
+- **Semilla fija: 2026** (por omisión desde el 2026-11-01). Fija el guion de
+  cada caso y, con `BOND_NETEM_SEED` (1 por omisión), la pérdida al azar de
+  netem en cada enlace y sentido (`seed` de netem, `bond_seed`). Con todo
+  eso, un A/A (la misma versión en los dos brazos) **no** da exacto: la
+  pérdida cae sobre el paquete que pasa en ese instante, el motor y TCP
+  corren en tiempo real, y un microsegundo distinto lleva a otra corrida.
+  El piso de ruido medido (`~/campo/2026-11-01/aa/`, 12 casos × 2 sentidos
+  × 3, cubic, `|log B/A|` por par): mediana 2,2 % sin la semilla de netem y
+  1,6 % con ella, p90 15–17 %; por caso, la mediana 0–3 % en `equal`,
+  `het`, `fade`, `cell4`, `lossy`, `clean4` y `ratswitch`, 3–9 % en
+  `downstall`, `linkdeath` y `starlink15`, y 20–36 % en `dominant` y
+  `protect` (bimodales: `dominant` de bajada dio 23–84 Mbit/s en el mismo
+  brazo). Con 3 corridas, la media geométrica de un A/A dio +0,3 % y
+  −5,0 %. Lo que una tanda dice de `dominant` o `protect` sin 9 corridas o
+  más es ruido; para saber si un cambio no cambia nada, el simulador con
+  reloj virtual o repetir las decisiones grabadas.
 - `--lab-offset N` numera los laboratorios locales desde `N + 1`: dos colas
   en la misma máquina (una con `--node local:4`, otra con `--node local:2
   --lab-offset 4`) no se pisan los `netns` ni los directorios `run-N`.
