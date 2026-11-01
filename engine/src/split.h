@@ -685,6 +685,19 @@ struct cg_split_plan {
 /* elig: step 1's; single: cg_split_stress_elig's on it; share:
  * cg_fec_share_mask's on single (single itself without the XOR); copy:
  * cg_sdup's verdict. A step can only narrow: what it adds is ignored. */
+/* The links a stream's resend may take (MPGRIT step U2b, story 029): its
+ * last transmission's link (avoid, -1: none) out, when another stays: what
+ * a subflow lost goes again by another, as MPTCP does. */
+static inline uint16_t cg_split_avoid(uint16_t pick, int avoid)
+{
+	uint16_t rest;
+
+	if (avoid < 0 || avoid >= 16)
+		return pick;
+	rest = (uint16_t)(pick & ~(1u << avoid));
+	return rest ? rest : pick;
+}
+
 static inline struct cg_split_plan cg_split_plan(uint16_t elig, uint16_t single, uint16_t share, int copy)
 {
 	struct cg_split_plan p = { elig, 0, 0, CG_PLAN_SPLIT };

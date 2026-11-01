@@ -429,6 +429,7 @@ struct server {
 	uint8_t fec_out[CG_BATCH][CG_FEC_PLEN_MAX];
 	int fec_nout;
 	int8_t pick[CG_BATCH]; /* per packet of a download batch: its one path (split), or -1 (every carrier) */
+	int pavoid;            /* the path down_prepare's split leaves out when another stays (a GRIT resend, U2b), -1: none */
 	uint16_t cmask[CG_BATCH]; /* the carriers a packet goes on (its copies, a retransmission's one path) */
 	uint32_t sseq[CG_BATCH], sts[CG_BATCH]; /* per entry of a download batch: its sequence and ts */
 	uint8_t sflags[CG_BATCH];               /* and its flags, but CG_F_PREV (down_seal) */
@@ -2934,6 +2935,7 @@ static void down_prepare(struct server *s, struct session *S, int m, uint8_t *bu
 					 s->cfg->split_stress_dup);
 	struct cg_split_plan plan = cg_split_plan(d->k.eligible, single, single, stress);
 
+	plan.pick = cg_split_avoid(plan.pick, s->pavoid);
 	if (d->split)
 		S->plan_n[plan.by]++;
 
@@ -3186,7 +3188,7 @@ static void down_send(struct server *s, struct session *S, int m, uint64_t now_m
 
 /* the protocontroller (variant B) (protoctlio.h): n stream messages down session peer (id sid). */
 static void pctl_send(void *ctx, uint32_t peer, uint32_t sid, uint8_t *const *msg, const uint16_t *len,
-		     const uint8_t *copy, int n, uint32_t *eta_us)
+		     const uint8_t *copy, const uint8_t *avoid, int n, uint32_t *eta_us, uint8_t *link)
 {
 	struct server *s = ctx;
 	uint64_t now_us = cg_now_us();
@@ -3197,12 +3199,15 @@ static void pctl_send(void *ctx, uint32_t peer, uint32_t sid, uint8_t *const *ms
 		return;
 	d = down_paths(s, S, now_us / 1000);
 	for (int m = 0; m < n; m++) {
+		s->pavoid = avoid[m] ? avoid[m] - 1 : -1;
 		down_prepare(s, S, m, msg[m], len[m], now_us, &d);
+		s->pavoid = -1;
 		if (copy[m]) {
 			s->pick[m] = -1;
 			s->sflags[m] &= (uint8_t)~CG_F_SPLIT;
 		}
 		eta_us[m] = s->pick[m] >= 0 && s->cfg->split_eta ? cg_eta_behind(&S->eta, (unsigned)s->pick[m]) : CG_PCTL_NOETA;
+		link[m] = s->pick[m] >= 0 ? (uint8_t)s->pick[m] : CG_PCTL_NOLINK;
 	}
 	down_send(s, S, n, now_us / 1000, &d);
 }
@@ -5023,6 +5028,7 @@ int cg_server_run(struct cg_config *cfg, const struct cg_run *run)
 		return 1;
 	}
 	s->cfg = cfg;
+	s->pavoid = -1;
 	s->run = run;
 	s->ep = s->tfd = s->jfd = s->tun_fd = -1;
 	if (cg_random(&s->flow_seed, sizeof(s->flow_seed)) < 0)

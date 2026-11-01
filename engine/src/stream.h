@@ -481,7 +481,10 @@ struct cg_st_seg {
 	uint8_t by;             /* LOST: why (CG_ST_BY_*) */
 	uint64_t sus_us;        /* a suspect's deadline (cg_st_tx_suspect), 0: none */
 	uint32_t eta_us;        /* when its last transmission arrives, us behind the fastest link (the engine's, U2a), 0: none */
+	uint8_t link;           /* the link its last transmission took (the engine's, U2b), CG_ST_NOLINK: none */
 };
+
+#define CG_ST_NOLINK 0xffu
 
 /* A segment sent again a second time or more goes as a copy (a priority
  * copy on a link with room, client.c) only among the CG_ST_COPY_HEAD
@@ -625,6 +628,7 @@ static inline uint32_t cg_st_tx_sent(struct cg_st_tx *t, uint32_t idx, uint64_t 
 	s->sent_us = now;
 	s->sus_us = 0;
 	s->eta_us = 0;
+	s->link = CG_ST_NOLINK;
 	s->dl = dl;
 	s->dla = dla;
 	s->dl_us = dl_us;

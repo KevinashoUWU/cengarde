@@ -84,9 +84,12 @@ struct cg_pctl_ops {
 	 * that carries. eta_us[i] back: when message i arrives, us behind the
 	 * fastest link (eta.h's cg_eta_behind of the link the split chose),
 	 * CG_PCTL_NOETA when not split or not known (MPGRIT step U2a: GRIT's
-	 * timer per segment). */
+	 * timer per segment); link[i] back: the link the split chose,
+	 * CG_PCTL_NOLINK when not split. avoid[i]: a link the split should
+	 * not choose for message i when another can take it (link + 1, 0:
+	 * none; U2b: a resend leaves the link that lost it). */
 	void (*send)(void *ctx, uint32_t peer, uint32_t sid, uint8_t *const *msg, const uint16_t *len,
-		     const uint8_t *copy, int n, uint32_t *eta_us);
+		     const uint8_t *copy, const uint8_t *avoid, int n, uint32_t *eta_us, uint8_t *link);
 	/* The engine's capacity for the links that carry the data to peer,
 	 * bytes/s (0: none), and whether it sees them queued (or
 	 * CG_PCTL_HINT_COPIED: the data is copied to them, not split). */
