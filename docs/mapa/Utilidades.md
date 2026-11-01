@@ -20,7 +20,7 @@ archivos:
   - engine/src/engine.h
   - engine/src/main.c
   - engine/src/os.c
-sello: 4e1b95488221460d
+sello: a9adb8f653fa649c
 ---
 # Utilidades
 

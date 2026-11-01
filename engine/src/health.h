@@ -20,20 +20,6 @@
  *   threshold cannot be above 0 then, so a late link would otherwise stay
  *   muted for as long as it is late.
  *
- * - With queue_mode (mute_queue, story 016), what a link is compared with
- *   is its lateness (cg_health_late), not only how far behind the fastest
- *   active link it is: also its own queue over the fastest one's (the
- *   shared queue sensor, one-way delay over its own minimum: a link with a
- *   short base delay and a long queue), and how long its oldest unanswered
- *   probe has been out over the fastest round trip (a lower bound on how
- *   late it is while its replies do not come). A link whose report goes
- *   stale while that bound says it is late keeps holding its mute instead
- *   of starting it over: on the virtual cell an LTE link with 1-4 s of
- *   queue answered in bursts, and every gap between them reset its 2 s.
- *   The queue and the silence are inputs set by the caller each tick
- *   (queue_us, silent_us); unmuting asks the same lateness to be back under
- *   unmute_behind_us.
- *
  * Liveness (stall) is separate and immediate: a stalled link carries nothing
  * until it answers again, whatever its state. A stall does not erase what a
  * link was doing (a late link that falls silent while its queue fills keeps
@@ -66,7 +52,6 @@ struct cg_hcfg {
 	uint32_t unmute_behind_us; /* <= mute_behind_us */
 	uint32_t settle_ms;
 	uint32_t min_active;       /* >= 1 */
-	uint8_t queue_mode;        /* mute_queue: compare cg_health_late, not behind_us alone */
 };
 
 struct cg_hlink {
@@ -76,12 +61,6 @@ struct cg_hlink {
 	uint8_t holding;   /* the pending transition's condition holds since cond_ms */
 	uint8_t have_behind;
 	int32_t behind_us; /* last delay behind the fastest active link (negative: ahead) */
-	/* queue_mode: inputs, set by the caller before each evaluation, and
-	 * the lateness the guard last compared (have_late) */
-	int32_t queue_us;  /* its own queue (one-way delay over its own minimum), -1: none */
-	uint32_t silent_us; /* its oldest unanswered probe's age over the fastest round trip, 0: none */
-	int32_t late_us;
-	uint8_t have_late;
 	uint32_t owd;      /* filtered one-way delay reported by the receiver (raw, wraps) */
 	uint64_t fresh_until_ms;
 	uint64_t cond_ms;
@@ -103,54 +82,6 @@ static inline void cg_health_reset(struct cg_hlink *h, uint64_t now_ms)
 {
 	memset(h, 0, sizeof(*h));
 	h->changed_ms = now_ms;
-	h->queue_us = -1;
-}
-
-/* How late a link is for the mute guard with queue_mode: the largest of
- * what is known of it. have_behind, behind_us: its delay behind the
- * fastest active link (a fresh report); q_us, q_best_us: its queue and the
- * fastest one's (-1: none), the difference counting only when both are
- * known (a queue the fastest has too makes no copy later than the
- * fastest's); silent_us: the bound from its unanswered probes. *have 0
- * when none of them is known (then 0). */
-static inline int32_t cg_health_late(int have_behind, int32_t behind_us, int32_t q_us, int32_t q_best_us,
-				     uint32_t silent_us, int *have)
-{
-	int64_t late = 0;
-
-	*have = 0;
-	if (have_behind) {
-		late = behind_us;
-		*have = 1;
-	}
-	if (q_us >= 0 && q_best_us >= 0 && (!*have || (int64_t)q_us - q_best_us > late)) {
-		late = (int64_t)q_us - q_best_us;
-		*have = 1;
-	}
-	if (silent_us && (!*have || (int64_t)silent_us > late)) {
-		late = silent_us;
-		*have = 1;
-	}
-	return late > INT32_MAX ? INT32_MAX : (int32_t)late;
-}
-
-/* The bound from a link's unanswered probes (client): its oldest
- * unanswered probe has been out for now_ms - first_ms, so its round trip
- * is at least that, and it is at least that minus ref_rtt_ms (the fastest
- * link's round trip) later than the fastest. 0 with no probe unanswered or
- * a shorter wait. */
-static inline uint32_t cg_health_silent_us(uint32_t unanswered, uint64_t first_ms, uint64_t now_ms,
-					   uint32_t ref_rtt_ms)
-{
-	uint64_t age;
-
-	if (!unanswered || now_ms <= first_ms)
-		return 0;
-	age = now_ms - first_ms;
-	if (age <= ref_rtt_ms)
-		return 0;
-	age = (age - ref_rtt_ms) * 1000;
-	return age > INT32_MAX ? INT32_MAX : (uint32_t)age;
 }
 
 /* a - b for two raw one-way delays of the same session, wrap-safe. */
@@ -239,13 +170,6 @@ static inline int cg_health_fastest(const struct cg_hlink *h, int n, uint16_t ma
 	return best;
 }
 
-/* What the guard compares a link by: its lateness with queue_mode (when
- * known), else its delay behind the fastest. */
-static inline int32_t cg_health_cmp_late(const struct cg_hlink *h, const struct cg_hcfg *c)
-{
-	return c->queue_mode && h->have_late ? h->late_us : h->behind_us;
-}
-
 /* One evaluation of links 0..n-1 (n <= CG_MAX_LINKS), every ~100 ms. live:
  * links that can carry right now. Returns the links whose state changed. */
 static inline uint16_t cg_health_eval(struct cg_hlink *h, int n, uint16_t live, uint64_t now_ms,
@@ -301,29 +225,14 @@ static inline uint16_t cg_health_eval(struct cg_hlink *h, int n, uint16_t live, 
 		if (!((act | muted) >> i & 1))
 			continue;
 		int32_t late;
-		int fresh = best >= 0 && cg_health_fresh(&h[i], now_ms), have = 1;
 
-		h[i].have_late = 0;
-		if (!fresh) {
+		if (best < 0 || !cg_health_fresh(&h[i], now_ms)) {
 			h[i].have_behind = 0;
-			/* queue_mode: a stale report with its probes unanswered for
-			 * longer than the threshold is a late link, not an unknown one */
-			if (!c->queue_mode || best < 0 || h[i].state != CG_H_ACTIVE || !c->mute_behind_us ||
-			    h[i].silent_us <= c->mute_behind_us) {
-				h[i].holding = 0;
-				continue;
-			}
-		} else {
-			h[i].behind_us = cg_owd_diff(h[i].owd, h[best].owd);
-			h[i].have_behind = 1;
+			h[i].holding = 0;
+			continue;
 		}
-		late = h[i].behind_us;
-		if (c->queue_mode) {
-			late = cg_health_late(h[i].have_behind, h[i].behind_us, h[i].queue_us, h[best].queue_us,
-					      h[i].silent_us, &have);
-			h[i].late_us = late;
-			h[i].have_late = (uint8_t)have;
-		}
+		h[i].behind_us = late = cg_owd_diff(h[i].owd, h[best].owd);
+		h[i].have_behind = 1;
 		if (h[i].state == CG_H_ACTIVE)
 			cond = c->mute_behind_us && late > (int32_t)c->mute_behind_us;
 		else
@@ -356,7 +265,7 @@ static inline uint16_t cg_health_eval(struct cg_hlink *h, int n, uint16_t live, 
 
 		for (int i = 0; i < n; i++)
 			if ((act >> i & 1) && h[i].holding && now_ms - h[i].cond_ms >= c->settle_ms &&
-			    (w < 0 || cg_health_cmp_late(&h[i], c) > cg_health_cmp_late(&h[w], c)))
+			    (w < 0 || h[i].behind_us > h[w].behind_us))
 				w = i;
 		if (w < 0 || nact - 1 < (int)c->min_active)
 			break;

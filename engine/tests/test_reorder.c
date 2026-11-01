@@ -257,13 +257,13 @@ static int out_from(unsigned k, const uint32_t *want, unsigned n)
 /* The counters that partition the packets taken. */
 static uint64_t taken(const struct cg_ro_stats *s)
 {
-	return s->in_order + s->held_total + s->bypassed + s->late_rack + s->late_cap + s->late_overflow + s->late_retx +
+	return s->in_order + s->held_total + s->bypassed + s->late_rack + s->late_cap + s->late_overflow +
 	       s->late_old + s->far + s->resyncs + s->pool_full;
 }
 
 static uint64_t lost(const struct cg_ro_stats *s)
 {
-	return s->lost_rack + s->lost_cap + s->lost_overflow + s->lost_flush + s->lost_retx;
+	return s->lost_rack + s->lost_cap + s->lost_overflow + s->lost_flush;
 }
 
 static uint64_t hsum(const uint64_t h[CG_RO_HIST])
@@ -1576,8 +1576,7 @@ static void sc_offon(const struct base *b)
 
 /* 22: TCP retransmissions (tcp_aware, story 014). Marked free like an ACK,
  * a retransmission still takes its place in sequence: handed on ahead of
- * what is held, it made TCP send that again. With retx_release_us it gives
- * up the gaps before it whose held packets were sent that long before it. */
+ * what is held, it made TCP send that again. */
 static void sc_retx(const struct base *b)
 {
 	/* seq 1 missing, 2 and 3 held: the retransmission 4 waits with them,
@@ -1591,141 +1590,11 @@ static void sc_retx(const struct base *b)
 	CHECK(OUT_IS(0, 5));
 	CHECK_EQ(R.r.st.retx, 1);
 	CHECK_EQ(R.r.st.bypassed, 1);
-	CHECK(!R.r.retx_on); /* no release: no horizon */
 	CHECK_EQ(in(1, 0, 60 * MS, 0, SPLIT, DATA, BIG), CG_RO_NOW);
 	CHECK(OUT_IS(0, 5, 1, 2, 3, 4));
-	CHECK_EQ(R.r.st.lost_retx, 0);
 	CHECK_EQ(R.r.held, 0);
 	CHECK_EQ(taken(&R.r.st), 6);
 	CHECK(marks_ok(&R.r));
-
-	/* Release 10 ms: a retransmission sent 5 ms after the held 2 leaves
-	 * the gap waiting, one sent 10 ms after it gives the gap up; both go
-	 * in order behind 2. 1 then comes late, after a retransmission, and
-	 * teaches the adaptive margin nothing. */
-	rig(CG_RO_SLOTS, b, 500 * MS, 0, 10 * MS, 0, 0);
-	R.cf.retx_release_us = 10 * MS;
-	R.cf.adaptive = 1;
-	in(0, 0, 10 * MS, 0, SPLIT, DATA, BIG);
-	CHECK_EQ(in(2, 1 * MS, 11 * MS, 0, SPLIT, DATA, BIG), CG_RO_HOLD);
-	CHECK_EQ(in_free(3, 6 * MS, 16 * MS, 1), CG_RO_HOLD);
-	CHECK(OUT_IS(0));
-	CHECK(R.r.retx_on);
-	CHECK(due(16 * MS) > 0);
-	CHECK_EQ(in_free(4, 11 * MS, 21 * MS, 1), CG_RO_HOLD);
-	CHECK(OUT_IS(0, 2, 3, 4));
-	CHECK_EQ(R.r.st.lost_retx, 1);
-	CHECK_EQ(R.r.st.retx, 2);
-	CHECK_EQ(R.r.held, 0);
-	CHECK(!R.r.retx_on); /* the head passed it */
-	CHECK_EQ(in(1, 0, 30 * MS, 0, SPLIT, DATA, BIG), CG_RO_NOW);
-	CHECK_EQ(R.r.st.late_retx, 1);
-	CHECK_EQ(R.r.link[0].adapt_us, 0);
-	CHECK_EQ(hsum(R.r.st.late_by), 1);
-	CHECK_EQ(taken(&R.r.st), 5);
-
-	/* Only up to it: gap 1 goes (2 held behind it, sent before the
-	 * retransmission 3); gap 4, whose held 5 was sent after 3, waits. */
-	rig(CG_RO_SLOTS, b, 500 * MS, 0, 10 * MS, 0, 0);
-	R.cf.retx_release_us = 10 * MS;
-	in(0, 0, 10 * MS, 0, SPLIT, DATA, BIG);
-	CHECK_EQ(in(2, 1 * MS, 11 * MS, 0, SPLIT, DATA, BIG), CG_RO_HOLD);
-	CHECK_EQ(in(5, 21 * MS, 31 * MS, 0, SPLIT, DATA, BIG), CG_RO_HOLD);
-	CHECK_EQ(in_free(3, 20 * MS, 32 * MS, 1), CG_RO_HOLD);
-	CHECK(OUT_IS(0, 2, 3));
-	CHECK_EQ(R.r.st.lost_retx, 1);
-	CHECK_EQ(R.r.held, 1);
-	CHECK_EQ(R.r.head, b->sb + 4);
-	CHECK(!R.r.retx_on);
-	CHECK(marks_ok(&R.r));
-
-	/* Several gaps before it, each with held packets: all go, gap by gap;
-	 * the one just before it (7, nothing held between) says nothing of its
-	 * age and waits, with the retransmission and what follows. */
-	rig(CG_RO_SLOTS, b, 500 * MS, 0, 10 * MS, 0, 0);
-	R.cf.retx_release_us = 10 * MS;
-	in(0, 0, 10 * MS, 0, SPLIT, DATA, BIG);
-	CHECK_EQ(in(2, 1 * MS, 11 * MS, 0, SPLIT, DATA, BIG), CG_RO_HOLD);
-	CHECK_EQ(in(5, 2 * MS, 12 * MS, 0, SPLIT, DATA, BIG), CG_RO_HOLD);
-	CHECK_EQ(in(6, 3 * MS, 13 * MS, 0, SPLIT, DATA, BIG), CG_RO_HOLD);
-	CHECK_EQ(in(9, 31 * MS, 41 * MS, 0, SPLIT, DATA, BIG), CG_RO_HOLD);
-	CHECK_EQ(in_free(8, 30 * MS, 42 * MS, 1), CG_RO_HOLD);
-	CHECK(OUT_IS(0, 2, 5, 6));
-	CHECK_EQ(R.r.st.lost_retx, 3); /* 1, 3 and 4 */
-	CHECK_EQ(R.r.held, 2);
-	CHECK_EQ(R.r.head, b->sb + 7);
-	CHECK_EQ(in(7, 29 * MS, 43 * MS, 0, SPLIT, DATA, BIG), CG_RO_NOW);
-	CHECK(OUT_TAIL(4, 7, 8, 9));
-	CHECK(!R.r.retx_on);
-	CHECK(marks_ok(&R.r));
-
-	/* Nothing held but itself: nothing to give up; the horizon stays for a
-	 * packet held next before it (a split packet late on its link). */
-	rig(CG_RO_SLOTS, b, 500 * MS, 0, 10 * MS, 0, 0);
-	R.cf.retx_release_us = 10 * MS;
-	in(0, 0, 10 * MS, 0, SPLIT, DATA, BIG);
-	CHECK_EQ(in_free(4, 30 * MS, 40 * MS, 1), CG_RO_HOLD);
-	CHECK_EQ(R.r.st.lost_retx, 0);
-	CHECK(R.r.retx_on);
-	CHECK_EQ(in(2, 1 * MS, 45 * MS, 0, SPLIT, DATA, BIG), CG_RO_HOLD); /* and out at once */
-	CHECK(OUT_IS(0, 2));
-	CHECK_EQ(R.r.st.lost_retx, 1);
-	CHECK_EQ(R.r.head, b->sb + 3);
-	CHECK(R.r.retx_on);
-	CHECK_EQ(in(3, 2 * MS, 46 * MS, 0, SPLIT, DATA, BIG), CG_RO_NOW);
-	CHECK(OUT_TAIL(2, 3, 4));
-	CHECK(!R.r.retx_on);
-	CHECK_EQ(R.r.head, b->sb + 5);
-	CHECK(marks_ok(&R.r));
-
-	/* Due at once once the horizon covers the head gap (a caller that has
-	 * not drained yet). */
-	rig(CG_RO_SLOTS, b, 500 * MS, 0, 10 * MS, 0, 0);
-	R.cf.retx_release_us = 10 * MS;
-	in(0, 0, 10 * MS, 0, SPLIT, DATA, BIG);
-	CHECK_EQ(in(2, 1 * MS, 11 * MS, 0, SPLIT, DATA, BIG), CG_RO_HOLD);
-	CHECK(due(20 * MS) > 0);
-	{
-		struct cg_ro_pkt k = pkt(3, 30 * MS, 40 * MS, 0, CG_F_FREE, DATA, BIG);
-		uint16_t buf;
-
-		k.retx = 1;
-		CHECK_EQ(cg_ro_in(&R.r, &R.p, &R.cf, &k, R.rset, &buf), CG_RO_HOLD);
-		fill(cg_ro_pool_buf(&R.p, buf), k.seq, BIG);
-	}
-	CHECK_EQ(due(40 * MS), 0);
-	CHECK_EQ(drain(40 * MS), 2);
-	CHECK_EQ(R.r.head, b->sb + 4);
-	CHECK_EQ(R.bad, 0);
-
-	/* Rescue: a gap asked for goes for the retransmission (asked, not
-	 * rescued: ask_lost), and none is asked for in its place. */
-	rig(CG_RO_SLOTS, b, 400 * MS, 0, 10 * MS, 0, 0x3);
-	R.cf.rescue_us = 60 * MS;
-	R.cf.retx_release_us = 10 * MS;
-	owd(0, 10 * MS);
-	owd(1, 30 * MS);
-	in(0, 0, 10 * MS, 0, SPLIT, DATA, BIG);
-	CHECK_EQ(in(2, 2 * MS, 12 * MS, 0, SPLIT, DATA, BIG), CG_RO_HOLD);
-	CHECK_EQ(drain(43 * MS), 0);
-	CHECK_EQ(R.r.nask, 1);
-	R.r.nask = 0;
-	CHECK_EQ(in_free(3, 40 * MS, 50 * MS, 1), CG_RO_HOLD);
-	CHECK(OUT_IS(0, 2, 3));
-	CHECK_EQ(R.r.nask, 0);
-	CHECK_EQ(R.r.st.ask_lost, 1);
-	CHECK_EQ(R.r.st.lost_retx, 1);
-	CHECK_EQ(R.r.st.lost_cap, 0);
-	CHECK_EQ(R.r.held, 0);
-
-	/* A flush forgets the horizon. */
-	rig(CG_RO_SLOTS, b, 500 * MS, 0, 10 * MS, 0, 0);
-	R.cf.retx_release_us = 10 * MS;
-	in(0, 0, 10 * MS, 0, SPLIT, DATA, BIG);
-	in_free(4, 30 * MS, 40 * MS, 1);
-	CHECK(R.r.retx_on);
-	flush_all();
-	CHECK(!R.r.retx_on);
 }
 
 /* ---- 13: random streams against a slow model ---- */

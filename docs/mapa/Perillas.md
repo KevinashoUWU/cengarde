@@ -7,7 +7,7 @@ archivos:
 
 # Perillas
 
-Las 137 claves que `engine/src/config.c` lee (comprobado al generar esta nota: ni falta ni sobra ninguna).
+Las 128 claves que `engine/src/config.c` lee (comprobado al generar esta nota: ni falta ni sobra ninguna).
 Por omisión y rango salen de `cg_config_parse`; el significado, de los comentarios de `config.h` y de [[engine-README]].
 Las perillas marcadas como experimento están apagadas por omisión.
 
@@ -82,7 +82,6 @@ Secciones: «global» es la parte sin sección; `[link NOMBRE]` es del cliente; 
 | [[Mapa/Perillas/mute_settle_ms\|mute_settle_ms]] | 2000 | [[Salud y silenciado (health.h)]], [[G4 guarda de dispersión (split.h)]] | [[006-salud-de-enlaces]], [[012-bonding]] |
 | [[Mapa/Perillas/mute_trickle\|mute_trickle]] | 0 | [[Salud y silenciado (health.h)]] | [[006-salud-de-enlaces]] |
 | [[Mapa/Perillas/min_active_links\|min_active_links]] | 2 | [[Salud y silenciado (health.h)]] | [[006-salud-de-enlaces]] |
-| [[Mapa/Perillas/mute_queue\|mute_queue]] | `no` | [[Salud y silenciado (health.h)]], [[Cola por enlace (cg_gov_base)]] | [[016-celda-virtual]] |
 
 ## Reordenador
 
@@ -97,8 +96,6 @@ Secciones: «global» es la parte sin sección; `[link NOMBRE]` es del cliente; 
 | [[Mapa/Perillas/reorder_adaptive\|reorder_adaptive]] | `no` | [[Reordenador (reorder.h)]] | [[013-capacidad-y-dosificacion]] |
 | [[Mapa/Perillas/reorder_pool_kb\|reorder_pool_kb]] | 8192 | [[Reordenador (reorder.h)]] | [[012-bonding]], [[013-capacidad-y-dosificacion]] |
 | [[Mapa/Perillas/reorder_active\|reorder_active]] | `yes` | [[Reordenador (reorder.h)]], [[Enlaces activos (active.h)]] | [[013-capacidad-y-dosificacion]] |
-| [[Mapa/Perillas/reorder_idle_ms\|reorder_idle_ms]] | 0 (apagado) | [[Reordenador (reorder.h)]], [[Llegadas (arrival.h)]] | [[audit-pending]] |
-| [[Mapa/Perillas/reorder_retx_release_ms\|reorder_retx_release_ms]] | 0 (apagado) | [[Reordenador (reorder.h)]], [[Liberación TCP (tcpfree.h)]] | [[014-tunel-nativo]] |
 | [[Mapa/Perillas/tcp_aware\|tcp_aware]] | `no` | [[Liberación TCP (tcpfree.h)]], [[Reordenador (reorder.h)]] | [[014-tunel-nativo]] |
 
 ## Rescate y FEC
@@ -110,7 +107,6 @@ Secciones: «global» es la parte sin sección; `[link NOMBRE]` es del cliente; 
 | [[Mapa/Perillas/rescue_wait_ms\|rescue_wait_ms]] | 0 (no pide) | [[Rescate (rescue.h)]], [[Reordenador (reorder.h)]], [[Reparación coherente (harq.h)]] | [[013-capacidad-y-dosificacion]], [[023-reparacion-coherente]] |
 | [[Mapa/Perillas/rescue_tries\|rescue_tries]] | 2 | [[Rescate (rescue.h)]], [[Reordenador (reorder.h)]] | [[013-capacidad-y-dosificacion]] |
 | [[Mapa/Perillas/rescue_target_ms\|rescue_target_ms]] | 20 (el de `governor_target_ms`; 0 lo sigue) | [[Rescate (rescue.h)]], [[Capacidad (capacity.h)]] | [[audit-pending]] |
-| [[Mapa/Perillas/rescue_by_owd\|rescue_by_owd]] | `no` | [[Rescate (rescue.h)]] | [[015-modelo-de-enlace]], [[audit-pending]] |
 | [[Mapa/Perillas/rescue_full_hyst\|rescue_full_hyst]] | 0 (apagado) | [[Rescate (rescue.h)]], [[Capacidad (capacity.h)]], [[Modelo de enlace (linkmodel.h)]] | [[015-modelo-de-enlace]], [[audit-pending]] |
 | [[Mapa/Perillas/rescue_code_ms\|rescue_code_ms]] | 100 | [[Reparación coherente (harq.h)]], [[Rescate (rescue.h)]] | [[023-reparacion-coherente]] |
 | [[Mapa/Perillas/parq\|parq]] | `yes` | [[Reparación coherente (harq.h)]], [[Códigos de borrado (rs.h, rlc.h)]] | [[023-reparacion-coherente]] |
@@ -136,7 +132,6 @@ Secciones: «global» es la parte sin sección; `[link NOMBRE]` es del cliente; 
 | [[Mapa/Perillas/split_spread_copy\|split_spread_copy]] | `yes` salvo con `governor`, `capacity_weights` o `split_eta` | [[G4 guarda de dispersión (split.h)]], [[Reparto (split.h)]] | [[012-bonding]] |
 | [[Mapa/Perillas/split_stress_dup\|split_stress_dup]] | 50 | [[Copias bajo estrés (split.h)]] | [[012-bonding]] |
 | [[Mapa/Perillas/split_stress_rejoin\|split_stress_rejoin]] | `yes` | [[G4 guarda de dispersión (split.h)]] | [[012-bonding]] |
-| [[Mapa/Perillas/split_stress_single\|split_stress_single]] | `no` | [[G4 guarda de dispersión (split.h)]], [[Copias bajo estrés (split.h)]] | [[audit-pending]] |
 | [[Mapa/Perillas/split_dwell_ms\|split_dwell_ms]] | 0 (apagado) | [[G4 guarda de dispersión (split.h)]], [[Modelo de enlace (linkmodel.h)]] | [[015-modelo-de-enlace]], [[audit-pending]] |
 | [[Mapa/Perillas/split_dwell_oq_ms\|split_dwell_oq_ms]] | 0 (cualquiera) | [[G4 guarda de dispersión (split.h)]], [[Modelo de enlace (linkmodel.h)]] | [[015-modelo-de-enlace]], [[audit-pending]] |
 
@@ -151,9 +146,6 @@ Secciones: «global» es la parte sin sección; `[link NOMBRE]` es del cliente; 
 | [[Mapa/Perillas/capacity_sat_ms\|capacity_sat_ms]] | 20 (el de `governor_target_ms`; 0 lo sigue) | [[Capacidad (capacity.h)]], [[Tope para cake (capacity.h)]], [[ETA (eta.h)]] | [[audit-pending]] |
 | [[Mapa/Perillas/capacity_loss_pct\|capacity_loss_pct]] | 0 (apagado) | [[Capacidad (capacity.h)]], [[Modelo de enlace (linkmodel.h)]] | [[015-modelo-de-enlace]] |
 | [[Mapa/Perillas/capacity_seq_lag\|capacity_seq_lag]] | `yes` | [[Capacidad (capacity.h)]] | [[015-modelo-de-enlace]] |
-| [[Mapa/Perillas/capacity_expire_ms\|capacity_expire_ms]] | 0 (apagado) | [[Capacidad (capacity.h)]] | [[016-celda-virtual]] |
-| [[Mapa/Perillas/capacity_loss_queue_ms\|capacity_loss_queue_ms]] | 0 (apagado) | [[Capacidad (capacity.h)]], [[Cola por enlace (cg_gov_base)]], [[Modelo de enlace (linkmodel.h)]] | [[019-perdida-con-cola]] |
-| [[Mapa/Perillas/capacity_stand\|capacity_stand]] | 0 (apagado) | [[Capacidad (capacity.h)]], [[Cola por enlace (cg_gov_base)]] | [[019-perdida-con-cola]] |
 | [[Mapa/Perillas/cap_g4_episode\|cap_g4_episode]] | 0 (apagado) | [[Capacidad (capacity.h)]], [[G4 guarda de dispersión (split.h)]], [[Modelo de enlace (linkmodel.h)]] | [[015-modelo-de-enlace]], [[audit-pending]] |
 
 ## ETA, cosquilla, copias, dosificación
@@ -183,7 +175,6 @@ Secciones: «global» es la parte sin sección; `[link NOMBRE]` es del cliente; 
 | [[Mapa/Perillas/starlink_edge_ms\|starlink_edge_ms]] | 12000 (:12, :27, :42, :57) | [[Ranuras de Starlink (slot.h)]] | [[015-modelo-de-enlace]] |
 | [[Mapa/Perillas/starlink_edge_pre_ms\|starlink_edge_pre_ms]] | 100 | [[Ranuras de Starlink (slot.h)]] | [[015-modelo-de-enlace]] |
 | [[Mapa/Perillas/starlink_edge_post_ms\|starlink_edge_post_ms]] | 50 | [[Ranuras de Starlink (slot.h)]] | [[015-modelo-de-enlace]] |
-| [[Mapa/Perillas/starlink_edge_copies\|starlink_edge_copies]] | `no` | [[Ranuras de Starlink (slot.h)]], [[Copias a tiempo (eta.h)]] | [[015-modelo-de-enlace]] |
 
 ## Lo que sobra (redundancia)
 

@@ -5,14 +5,13 @@ archivos:
   - engine/src/split.h
   - engine/src/capacity.h
   - engine/src/reorder.h
-sello: dd550c6548c3715a
+sello: 065ce21f5b48b1e5
 ---
 # Glosario
 
 Términos del proyecto, en español, con el nombre del código entre paréntesis. «Cosquilla», «presunto», «bomba» y «carril» son traducciones de este mapa; el código dice *tickle*, *presumed*, *pump* y *lane*.
 
 ## Enlaces y salud
-- **Atraso (`mute_queue`):** lo que compara el silenciado con esa perilla: el mayor entre lo que va detrás, la cola propia sobre la del más rápido y las sondas sin respuesta. → [[Salud y silenciado (health.h)]]
 - **Enlace / camino:** un enlace es una subida del router; en el servidor, un camino es sesión + enlace. → [[Sondas y cola de bonding (proto.h)]]
 - **Sonda / respuesta:** mensaje de control por enlace que trae las medidas del otro extremo. → [[Sondas y cola de bonding (proto.h)]]
 - **Cola de bonding (bonding tail):** 4 bytes al final de cada sonda: peso, si reordena, si pide reparto, rescate, lleno, tipo. → [[Sondas y cola de bonding (proto.h)]]
@@ -45,12 +44,9 @@ Términos del proyecto, en español, con el nombre del código entre paréntesis
 - **Copias a tiempo:** copia solo si llegaría cerca de la primera (`pace_ms`, `pace_peers_ms`). → [[Copias a tiempo (eta.h)]]
 
 ## Medidas
-- **Caducidad (`capacity_expire_ms`):** la capacidad de un enlace fuera del envío baja a la mitad cada tanto. → [[Capacidad (capacity.h)]]
 - **Cola:** retardo de ida menos su propio mínimo de ventana. → [[Cola por enlace (cg_gov_base)]]
 - **Base:** el retardo sin cola (el mínimo). → [[Cola por enlace (cg_gov_base)]]
 - **Capacidad:** lo más que entregó un enlace; baja solo lleno. → [[Capacidad (capacity.h)]]
-- **Pérdida con cola (`capacity_loss_queue_ms`):** pierde ≥ 1 % con cola sobre el mínimo de 60 s: lleno a cualquier carga. → [[Capacidad (capacity.h)]]
-- **Cola permanente (`capacity_stand`):** la cola sobre el mínimo de 60 s que el de 10 s ya tomó de base; frena el arranque rápido. → [[Capacidad (capacity.h)]]
 - **Lleno (full, sat):** cola sobre `capacity_sat_ms`, entregas cortas o pérdida con carga. → [[Capacidad (capacity.h)]]
 - **Corte / arranque rápido:** bajar la capacidad al llenarse / volver a la mitad de la mejor tras 10 s. → [[Capacidad (capacity.h)]]
 - **Sondeo a 5/4 (probe):** ofrecer más de lo medido a un enlace de cola corta. → [[Capacidad (capacity.h)]]

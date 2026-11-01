@@ -477,17 +477,13 @@ static uint16_t expect_mask(const struct session *S, uint64_t now_ms)
 }
 
 /* The paths the upload's reorderer waits for at now32 (its clock): the
- * expected ones, less those that brought no data for reorder_idle_ms, in
- * *base; narrowed to those the client carries the upload on lately
+ * expected ones, in *base; narrowed to those the client carries the upload on lately
  * (reorder_active, active.h: clockwork audit C2). */
 static uint16_t ro_rset_of(const struct server *s, const struct session *S, uint64_t now_ms, uint32_t now32,
 			   uint16_t *base)
 {
 	uint16_t m = expect_mask(S, now_ms);
 
-	for (int i = 0; s->cfg->reorder_idle_ms && i < CG_MAX_LINKS; i++)
-		if ((m >> i & 1) && cg_arr_idle(&S->rx[i], (uint32_t)(now_ms * 1000), s->cfg->reorder_idle_ms * 1000))
-			m &= (uint16_t)~(1u << i);
 	*base = m;
 	if (s->cfg->reorder_active)
 		m = cg_act_rx_rset(&S->act_rx, &S->ro, S->rocf.margin_us, m, now_ms * 1000, now32);
@@ -2584,32 +2580,7 @@ struct dpaths {
 	uint16_t dup0;           /* weight 0 */
 	struct cg_split_masks k; /* for cg_split_pick and cg_split_dst */
 	uint16_t w[CG_MAX_LINKS];
-	uint16_t esolo;          /* starlink_edge_copies with a client that reorders: cg_slot_pick's */
 };
-
-/* starlink_edge_copies (slot.h): the Starlink paths a copied packet goes
- * on alone now, 0: every carrier. */
-static uint16_t edge_solo(const struct server *s, const struct session *S, uint16_t carry, uint64_t now_ms)
-{
-	struct cg_slot sl_ = cg_config_slot(s->cfg);
-	uint64_t wall = cg_wall_ms();
-	uint16_t sl = 0, fit = 0;
-
-	if (wall < CG_WALL_SET_MS)
-		return 0;
-	for (int i = 0; i < CG_MAX_LINKS; i++) {
-		const struct cg_hlink *h = &S->dh[i];
-		const struct cg_cap_link *k = &S->cap[i];
-
-		if (!S->lm[i].slot_clock)
-			continue;
-		sl |= (uint16_t)(1u << i);
-		if (h->state == CG_H_ACTIVE && h->report_ms && now_ms - h->report_ms < CG_SLOT_FIT_MS &&
-		    !(k->lost_ms && now_ms - k->lost_ms < CG_SLOT_LOST_MS))
-			fit |= (uint16_t)(1u << i);
-	}
-	return cg_slot_solo(&sl_, wall, sl, fit, carry);
-}
 
 /* The paths that may take a share of a split download (split.h): live and
  * carrying, not muted for delay (guard G1), and with a verified packet from
@@ -2651,8 +2622,6 @@ static struct dpaths down_paths(const struct server *s, const struct session *S,
 	path_masks(S, now_ms, &d.present, &d.live);
 	d.carry = cg_health_carriers(S->dh, CG_MAX_LINKS, d.present, d.live);
 	d.split = cg_split_active(s->cfg->split, S->peer_reorders, S->peer_asks);
-	if (s->cfg->starlink_edge_copies && S->peer_reorders && S->resc_idx)
-		d.esolo = edge_solo(s, S, d.carry, now_ms);
 	if (!d.split)
 		return d;
 	d.elig = split_eligible(S, &d, now_ms);
@@ -2914,12 +2883,11 @@ static void down_prepare(struct server *s, struct session *S, int m, uint8_t *bu
 	struct cg_hdr h = { .type = CG_T_DATA, .hint = C->hint, .session = S->id, .ts = (uint32_t)now_us };
 
 	/* The paths it may take, in one order (split.h's cg_split_plan, audit
-	 * C13): G3/G4 (the batch's), the lead alone under stress, a copy on
-	 * every carrier under stress (cg_sdup) */
-	uint16_t single = cg_split_stress_elig(&S->spread, d->k.eligible, s->cfg->split_stress_single);
+	 * C13): G3/G4 (the batch's), a copy on every carrier under stress
+	 * (cg_sdup) */
 	int stress = d->split && cg_sdup(&S->sdup, S->spread.stress, (uint32_t)len, (unsigned)__builtin_popcount(d->carry),
 					 s->cfg->split_stress_dup);
-	struct cg_split_plan plan = cg_split_plan(d->k.eligible, single, single, stress);
+	struct cg_split_plan plan = cg_split_plan(d->k.eligible, d->k.eligible, stress);
 
 	plan.pick = cg_split_avoid(plan.pick, s->pavoid);
 	if (d->split)
@@ -2932,7 +2900,7 @@ static void down_prepare(struct server *s, struct session *S, int m, uint8_t *bu
 							   s->cfg->split_eta ? &S->tk : NULL, now_us,
 							   d->k.carriers, plan.pick, d->k.dup, d->w,
 							   (uint32_t)len, s->cfg->split_small, &h.flags)
-				       : cg_slot_pick(d->esolo, (uint32_t)len, CG_PACE_SMALL, &h.flags));
+				       : -1);
 	S->down_split += s->pick[m] >= 0;
 	S->last_down_ms = now_us / 1000;
 	s->tcpk[m] = 0;
@@ -3087,13 +3055,6 @@ static void down_send(struct server *s, struct session *S, int m, uint64_t now_m
 					      ? 0xffff
 					      : cg_eta_copies(&S->pace, carry, (uint32_t)s->oiov[j][1].iov_len, now_us,
 							      S->pace_w);
-		if (s->cfg->starlink_edge_copies) {
-			uint16_t cm = cg_slot_copy_mask(edge_solo(s, S, carry, now_ms), S->peer_reorders && S->resc_idx);
-
-			for (int j = 0; cm != 0xffff && j < m; j++)
-				if (s->pick[j] < 0 && s->oiov[j][1].iov_len >= CG_PACE_SMALL)
-					s->cmask[j] &= cm;
-		}
 	} else {
 		for (int j = 0; j < m; j++)
 			s->cmask[j] = 0xffff;
@@ -3408,24 +3369,10 @@ static void cap_tick(struct server *s, struct session *S, uint16_t live, uint64_
 	struct cg_cap_cfg cc = { .window_ms = s->cfg->governor_window_ms, .sat_us = s->cfg->capacity_sat_ms * 1000 };
 	struct cg_slot slot = cg_config_slot(s->cfg);
 	uint64_t wall = cg_wall_ms();
-	uint16_t in = 0xffff;
 
 	cc.seq_lag = (uint8_t)s->cfg->capacity_seq_lag;
 	cc.tx_seq = S->tx_seq;
 	cc.real_off_ms = (int64_t)wall - (int64_t)now_ms;
-	cc.expire_ms = s->cfg->capacity_expire_ms;
-	cc.lossq_us = s->cfg->capacity_loss_queue_ms * 1000;
-	cc.stand = (uint8_t)s->cfg->capacity_stand;
-	if (cc.expire_ms) {
-		/* the paths that carry the download now (capacity_expire_ms):
-		 * live carriers, and when it is split, in the split or taking a
-		 * copy of every packet */
-		struct dpaths d = down_paths(s, S, now_ms);
-
-		in = (uint16_t)(d.carry & d.live);
-		if (d.split)
-			in &= (uint16_t)(d.k.eligible | d.k.dup);
-	}
 
 	for (int p = 0; p < CG_MAX_LINKS; p++) {
 		const struct path *P = &S->path[p];
@@ -3437,13 +3384,11 @@ static void cap_tick(struct server *s, struct session *S, uint16_t live, uint64_
 
 			cc.loss_pct = m->loss_pct;
 			cc.lossy = cg_link_tracks_loss(m);
-			cc.lossq_loaded = (uint8_t)cc.lossy; /* Starlink's preset: its loss without a queue is held, not cut */
 			cc.lossy_probe = !m->lossy_noprobe;
 			cc.rfull_mode = m->rfull_hyst;
 			cc.rx_top = P->peer_view.rx_top;
 			cc.behind_us = S->dh[p].have_behind ? S->dh[p].behind_us : 0;
 			cc.slot = m->slot_clock && wall >= CG_WALL_SET_MS ? &slot : NULL;
-			cc.out = !(in >> p & 1);
 			ev = cg_cap_tick(&S->cap[p], now_ms, P->peer_view_ms, P->peer_view.rx, P->tx_pkts, P->tx_bytes,
 					 &S->dh[p], &cc);
 			cg_sig_cap(&S->sig[p], &S->cap[p], now_ms);
@@ -3637,11 +3582,6 @@ static void health_tick(struct server *s, uint64_t now_ms)
 			continue;
 		path_models(s, S);
 		path_masks(S, now_ms, &present, &live);
-		/* mute_queue's input (health.h): each path's queue over its
-		 * minute's minimum (capacity.h, the last tick's); the server has
-		 * no probes of its own to time out */
-		for (int p = 0; p < CG_MAX_LINKS; p++)
-			S->dh[p].queue_us = S->path[p].used ? S->cap[p].ql_us : -1;
 		changed = cg_health_eval(S->dh, CG_MAX_LINKS, live, now_ms, &s->hcfg);
 		cg_decrec_health(&S->dec, S->dh, changed, now_ms);
 		spread_tick(s, S, tag, now_ms);
@@ -3655,7 +3595,7 @@ static void health_tick(struct server *s, uint64_t now_ms)
 				continue;
 			if (h->state == CG_H_MUTED)
 				cg_info("%ssession %08x link %d: download muted, %d ms behind the fastest link", tag, S->id,
-					p, (h->have_late ? h->late_us : h->behind_us) / 1000);
+					p, h->behind_us / 1000);
 			else if (h->unmuted_ms == now_ms)
 				cg_info("%ssession %08x link %d: download unmuted, within %d ms of the fastest link", tag,
 					S->id, p, h->behind_us > 0 ? h->behind_us / 1000 : 0);
@@ -3927,7 +3867,6 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 		/* which step set a split packet's paths last (cg_split_plan, audit C13) */
 		cg_json_obj(j, "split_plan");
 		cg_json_u64(j, "split", S->plan_n[CG_PLAN_SPLIT]);
-		cg_json_u64(j, "single", S->plan_n[CG_PLAN_SINGLE]);
 		cg_json_u64(j, "share", S->plan_n[CG_PLAN_SHARE]);
 		cg_json_u64(j, "copy", S->plan_n[CG_PLAN_COPY]);
 		cg_json_end(j, '}');
@@ -4169,10 +4108,6 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 				cg_json_ms_signed(j, "download_behind_ms", h->behind_us);
 			else
 				cg_json_null(j, "download_behind_ms");
-			if (h->have_late) /* mute_queue: the lateness the guard compared */
-				cg_json_ms_signed(j, "download_late_ms", h->late_us);
-			else
-				cg_json_null(j, "download_late_ms");
 			cg_json_u64(j, "download_mutes", h->mutes);
 			cg_json_u64(j, "download_state_ms", now_ms - h->changed_ms);
 			cg_json_bool(j, "upload_muted", P->peer_muted);

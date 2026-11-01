@@ -161,8 +161,7 @@ static inline struct cg_hcfg cg_hcfg_of(const struct cg_config *cfg)
 	return (struct cg_hcfg){ .mute_behind_us = cfg->mute_behind_ms * 1000,
 				 .unmute_behind_us = cfg->unmute_behind_ms * 1000,
 				 .settle_ms = cfg->mute_settle_ms,
-				 .min_active = cfg->min_active_links,
-				 .queue_mode = (uint8_t)!!cfg->mute_queue };
+				 .min_active = cfg->min_active_links };
 }
 
 /* The reorderer's settings (reorder.h) from the configuration. */
@@ -174,8 +173,7 @@ static inline struct cg_ro_cfg cg_ro_cfg_of(const struct cg_config *cfg)
 				   .bypass_len = cfg->reorder_bypass,
 				   .by_link = (uint8_t)!!cfg->reorder_by_link,
 				   .adaptive = (uint8_t)!!cfg->reorder_adaptive,
-				   .rescue_tries = (uint8_t)cfg->rescue_tries,
-				   .retx_release_us = cfg->reorder_retx_release_ms * 1000 };
+				   .rescue_tries = (uint8_t)cfg->rescue_tries };
 }
 
 /* A pool of reorder_pool_kb / 2 buffers (CG_RO_BUF bytes each), allocated

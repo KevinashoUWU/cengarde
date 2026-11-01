@@ -815,12 +815,16 @@ static int get_split(struct cg_ini *ini, struct cg_config *c, char *err, size_t 
 	return 0;
 }
 
-/* The experiments' keys whose winners became the engine's own (story
- * 029, link_cc_bits' uses of the queue; the rest in docs/desvan/): a
- * config that still says them runs as before, with a warning. */
+/* The experiments' keys gone from the engine (story 029): link_cc_bits'
+ * winners became the engine's own, the rest and the experiments no preset
+ * turned on are in docs/desvan/. A config that still says them runs, with
+ * a warning. */
 static void retired_keys(struct cg_ini *ini, char *warn, size_t warnlen)
 {
-	static const char *const keys[] = { "link_cc_bits", "link_cc_budget_ms" };
+	static const char *const keys[] = { "link_cc_bits", "link_cc_budget_ms", "mute_queue", "reorder_idle_ms",
+					     "reorder_retx_release_ms", "split_stress_single", "rescue_by_owd",
+					     "capacity_expire_ms", "capacity_loss_queue_ms", "capacity_stand",
+					     "starlink_edge_copies" };
 
 	for (int i = 0; i < ini->n; i++)
 		for (size_t j = 0; j < sizeof(keys) / sizeof(keys[0]); j++) {
@@ -833,7 +837,7 @@ static void retired_keys(struct cg_ini *ini, char *warn, size_t warnlen)
 			if (!warnlen)
 				continue;
 			used = strlen(warn);
-			snprintf(warn + used, warnlen - used, "%sline %d: %s: fixed in the engine now, ignored (docs/historias/029)",
+			snprintf(warn + used, warnlen - used, "%sline %d: %s: no longer an option, ignored (docs/historias/029)",
 				 used ? "\n" : "", x->line, x->key);
 		}
 }
@@ -945,7 +949,6 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	c->split_spread_ms = 30;
 	c->split_stress_dup = 50;
 	c->split_stress_rejoin = 1;
-	c->split_stress_single = 0;
 	c->split_tickle_ms = 0;
 	c->pace_peers_ms = -1;
 	c->split_stale_max = 1;
@@ -1019,7 +1022,6 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	    get_u32(&ini, "", "mute_settle_ms", 100, 600000, &c->mute_settle_ms, err, errlen) ||
 	    get_u32(&ini, "", "mute_trickle", 0, 1000000, &c->mute_trickle, err, errlen) ||
 	    get_u32(&ini, "", "min_active_links", 1, CG_MAX_LINKS, &c->min_active_links, err, errlen) ||
-	    get_bool(&ini, "", "mute_queue", &c->mute_queue, err, errlen) ||
 	    get_u32(&ini, "", "busy_poll_us", 0, 1000000, &c->busy_poll_us, err, errlen) ||
 	    get_u32(&ini, "", "rt_priority", 0, 99, &c->rt_priority, err, errlen))
 		goto out;
@@ -1069,14 +1071,11 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	    get_u32(&ini, "", "fec_window_ms", 10, 1000, &c->fec_window_ms, err, errlen) ||
 	    get_u32(&ini, "", "reorder_pool_kb", 256, 131070, &c->reorder_pool_kb, err, errlen) ||
 	    get_bool(&ini, "", "tcp_aware", &c->tcp_aware, err, errlen) ||
-	    get_u32(&ini, "", "reorder_idle_ms", 0, 60000, &c->reorder_idle_ms, err, errlen) ||
-	    get_u32(&ini, "", "reorder_retx_release_ms", 0, 2000, &c->reorder_retx_release_ms, err, errlen) ||
 	    get_split(&ini, c, err, errlen) ||
 	    get_u32(&ini, "", "split_small", 0, 2048, &c->split_small, err, errlen) ||
 	    get_u32(&ini, "", "split_spread_ms", 0, 2000, &c->split_spread_ms, err, errlen) ||
 	    get_u32(&ini, "", "split_stress_dup", 0, 400, &c->split_stress_dup, err, errlen) ||
 	    get_bool(&ini, "", "split_stress_rejoin", &c->split_stress_rejoin, err, errlen) ||
-	    get_bool(&ini, "", "split_stress_single", &c->split_stress_single, err, errlen) ||
 	    get_bool(&ini, "", "split_spread_copy", &c->split_spread_copy, err, errlen) ||
 	    get_bool(&ini, "", "governor", &c->governor, err, errlen) ||
 	    get_bool(&ini, "", "capacity_weights", &c->capacity_weights, err, errlen) ||
@@ -1091,20 +1090,15 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	    get_u32(&ini, "", "eta_keep", 0, 3, &c->eta_keep, err, errlen) ||
 	    get_u32(&ini, "", "eta_keep_ms", 0, 2000, &c->eta_keep_ms, err, errlen) ||
 	    get_u32(&ini, "", "cap_g4_episode", 0, 3, &c->cap_g4_episode, err, errlen) ||
-	    get_bool(&ini, "", "rescue_by_owd", &c->rescue_by_owd, err, errlen) ||
 	    get_u32(&ini, "", "rescue_full_hyst", 0, 2, &c->rescue_full_hyst, err, errlen) ||
 	    get_u32(&ini, "", "redund_pace_ms", 0, 2000, &c->redund_pace_ms, err, errlen) ||
 	    get_u32(&ini, "", "split_dominant_pct", 0, 65535, &c->split_dominant_pct, err, errlen) ||
 	    get_u32(&ini, "", "split_dominant_hold", 0, 2, &c->split_dominant_hold, err, errlen) ||
 	    get_bool(&ini, "", "capacity_seq_lag", &c->capacity_seq_lag, err, errlen) ||
-	    get_u32(&ini, "", "capacity_expire_ms", 0, 600000, &c->capacity_expire_ms, err, errlen) ||
-	    get_u32(&ini, "", "capacity_loss_queue_ms", 0, 1000, &c->capacity_loss_queue_ms, err, errlen) ||
-	    get_u32(&ini, "", "capacity_stand", 0, 2, &c->capacity_stand, err, errlen) ||
 	    get_u32(&ini, "", "starlink_slot_clock", 0, 2, &c->starlink_slot_clock, err, errlen) ||
 	    get_u32(&ini, "", "starlink_edge_ms", 0, CG_SLOT_PERIOD_MS - 1, &c->starlink_edge_ms, err, errlen) ||
 	    get_u32(&ini, "", "starlink_edge_pre_ms", 0, 5000, &c->starlink_edge_pre_ms, err, errlen) ||
 	    get_u32(&ini, "", "starlink_edge_post_ms", 0, 5000, &c->starlink_edge_post_ms, err, errlen) ||
-	    get_bool(&ini, "", "starlink_edge_copies", &c->starlink_edge_copies, err, errlen) ||
 	    get_spare(&ini, c, err, errlen) ||
 	    get_u32(&ini, "", "redund_spare_ms", 1, 2000, &c->redund_spare_ms, err, errlen) ||
 	    get_u32(&ini, "", "redund_spare_code_ms", 1, 500, &c->redund_spare_code_ms, err, errlen) ||

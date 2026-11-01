@@ -78,13 +78,6 @@ static inline void cg_arr_top(struct cg_link_rx *l, uint32_t seq)
 		l->top = seq;
 }
 
-/* Whether link i brought no copy for idle_us (0: never idle): the reorderer
- * need not wait for it (reorder_idle_ms; clockwork audit C2). */
-static inline int cg_arr_idle(const struct cg_link_rx *l, uint32_t now_us, uint32_t idle_us)
-{
-	return idle_us && (!l->last_us || now_us - l->last_us > idle_us);
-}
-
 struct cg_arrivals {
 	struct cg_arr_slot slot[CG_ARR_SLOTS];
 	uint64_t evaluated; /* packets whose slot was reused (denominator for missed) */

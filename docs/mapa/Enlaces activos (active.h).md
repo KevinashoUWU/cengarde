@@ -3,7 +3,7 @@ tags: [mapa, pieza]
 archivos:
   - engine/src/active.h
   - engine/tests/test_active.c
-sello: 4e1293e83541a6f4
+sello: 667e9557d8f33794
 ---
 # Enlaces activos (active.h)
 

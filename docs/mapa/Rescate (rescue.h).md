@@ -31,7 +31,7 @@ Un ARQ estilo XLINK. El emisor guarda lo enviado hace poco en un anillo; cuando 
 ## Perillas
 - [[Mapa/Perillas/rescue_kb|rescue_kb]]: 0 (apagado); hasta 262144. [[Mapa/Perillas/rescue_pct|rescue_pct]]: 5; 1–50.
 - [[Mapa/Perillas/rescue_wait_ms|rescue_wait_ms]]: 0 (no pide); hasta 1000. [[Mapa/Perillas/rescue_tries|rescue_tries]]: 2; 1–4.
-- [[Mapa/Perillas/rescue_target_ms|rescue_target_ms]]: 0 (= `governor_target_ms`). [[Mapa/Perillas/rescue_by_owd|rescue_by_owd]]: no. [[Mapa/Perillas/rescue_full_hyst|rescue_full_hyst]]: 0.
+- [[Mapa/Perillas/rescue_target_ms|rescue_target_ms]]: 0 (= `governor_target_ms`). [[Mapa/Perillas/rescue_full_hyst|rescue_full_hyst]]: 0.
 
 ## Dónde se midió
 - [[013-capacidad-y-dosificacion]]: en la red de pruebas, 1–2 % de la bajada se perdía en todos los enlaces. Con TCP saturando rindió algo menos (86,4 contra 91,0 Mbit/s); con MPEG-TS crudo, margen 10 + rescate dio 0 errores. Su lugar es el tráfico de tasa fija.
@@ -39,7 +39,7 @@ Un ARQ estilo XLINK. El emisor guarda lo enviado hace poco en un anillo; cuando 
 
 ## Choques conocidos
 - Estaba casi mudo en redundancia (112 pedidos en un día de ~25 000 pérdidas, [[017-terreno-nostalgica]]): la pista `CG_F_PREV` se escribía antes de decidir las copias y nada se retenía con `reorder_dup_wait_ms` 0. Arreglado en [[023-reparacion-coherente]].
-- C10: el rescate del cliente elige enlace por SRTT, no por OWD; `rescue_by_owd` quedó neutro ([[audit-pending]]).
+- C10: el rescate del cliente elige enlace por SRTT, no por OWD; `rescue_by_owd` quedó neutro ([[audit-pending]]) y está en `docs/desvan/`.
 - C11: el bit `full` parpadeaba; la histéresis quedó como perilla, mixta.
 - C12: su peso dependía de `governor_target_ms`; ahora `rescue_target_ms`.
 

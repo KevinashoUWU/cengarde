@@ -36,7 +36,7 @@ En **redundancia** no hace nada: cada paquete va por todos los enlaces y ninguno
 ## Choques conocidos
 - El anillo del receptor (`CG_FEC_RING`) pasó de 1024 a 2048 entradas con la FEC v3 ([[026-fec-v3]]): sus ventanas de hasta 1024 secuencias caben con margen; con `fec = yes` cada sesión del servidor guarda 4 MB (antes 2).
 - C10: la paridad elige enlace por RTT, no por OWD, y no se cuenta en el ETA ni en `cake` ([[audit-pending]]).
-- C13 (resuelto): la XOR agrupa por los enlaces que el reparto deja tomar (`cg_split_plan`); bajo `split_stress_single`, con uno solo, no arma grupos (antes los armaba de uno, sin paridad). Su tope `fec_share_max` vale solo con la XOR.
+- C13 (resuelto): la XOR agrupa por los enlaces que el reparto deja tomar (`cg_split_plan`); con uno solo no arma grupos (antes los armaba de uno, sin paridad). Su tope `fec_share_max` vale solo con la XOR.
 - Si el reparto manda casi todo por un enlace (88 % en el caso `lossy`), casi todos los grupos son de uno (sin paridad); los cubre el rescate.
 
 ## Archivos

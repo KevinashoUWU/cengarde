@@ -19,13 +19,11 @@ En redundancia (o en el modo dominante), decide qué enlaces reciben copia de un
 
 ## Decide / escribe
 - `cmask[]`, la máscara de copias de cada paquete → el envío (`send_links`, `down_send`).
-- Con `starlink_edge_copies`, [[Ranuras de Starlink (slot.h)]] recorta además esa máscara fuera del borde.
 - Con `redund_spare`, [[Lo que sobra (spare.h)]] recorta después la máscara de los enlaces que no son el primero según lo que les sobra (`cg_eta_copies_first` da además el enlace donde llega primero, y `cg_eta_unadd` saca de su cola virtual una copia que al final no salió); la perilla deja esta instancia activa aunque ningún enlace tenga ventana.
 
 ## Perillas
 - [[Mapa/Perillas/redund_pace_ms|redund_pace_ms]]: 0 (apagado); 0–2000.
 - Preset `starlink`: `pace_peers_ms = 60`; encima, [[Mapa/Perillas/pace_peers_ms|pace_peers_ms]] (-1: el del preset, 0: apagado; 0–2000). En terreno, 250 (historia 017).
-- [[Mapa/Perillas/starlink_edge_copies|starlink_edge_copies]].
 
 ## Dónde se midió
 - [[015-modelo-de-enlace]] §6: con Starlink, el p99 del ping de 1200 B en `starsat` bajó de ~360 a ~95 ms, caudal ±5 %; cuesta 1,1–3× retransmisiones. Aplicado a todos los celulares, `het` perdía 8–18 %: por eso solo junto a un Starlink.

@@ -17,7 +17,7 @@ Un Starlink muy por encima de los celulares se queda el envío para él. Si un e
 - `dominant_pct`, `dominant_hold` del [[Modelo de enlace (linkmodel.h)]] (preset `starlink`: 250).
 
 ## Decide / escribe
-- `dom.out` → [[Reparto (split.h)]]: si no es 0, `cg_slot_pick` en vez de `cg_split_pick_eta`; las copias van por [[Copias a tiempo (eta.h)]].
+- `dom.out` → [[Reparto (split.h)]]: si no es 0, no reparte: todo va copiado por [[Copias a tiempo (eta.h)]].
 - `presumed` y `why` en el estado.
 
 ## Perillas

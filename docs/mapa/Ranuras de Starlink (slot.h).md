@@ -3,14 +3,14 @@ tags: [mapa, pieza]
 archivos:
   - engine/src/slot.h
   - engine/tests/test_slot.c
-sello: 97a4b82387fde755
+sello: f6f2e277e3257234
 ---
 # Ranuras de Starlink (slot.h)
 
 **Grupo:** Medir · Decidir — [[Mapa del motor]]
 
 ## Qué hace
-Cada 15 s, a los :12, :27, :42 y :57 de cada minuto (UTC), Starlink reconfigura sus enlaces y un enlace se para ~45 ms. Este reloj usa la hora de pared (`CLOCK_REALTIME`, con NTP en router y VPS) y marca una **ventana** alrededor de cada **borde**: en ella, las pérdidas de un enlace con reloj son el cambio de satélite, no un enlace lleno. Con `starlink_edge_copies`, en redundancia las copias a los demás enlaces van solo dentro de la ventana.
+Cada 15 s, a los :12, :27, :42 y :57 de cada minuto (UTC), Starlink reconfigura sus enlaces y un enlace se para ~45 ms. Este reloj usa la hora de pared (`CLOCK_REALTIME`, con NTP en router y VPS) y marca una **ventana** alrededor de cada **borde**: en ella, las pérdidas de un enlace con reloj son el cambio de satélite, no un enlace lleno. Las copias a los demás enlaces solo dentro de la ventana (`starlink_edge_copies`) están en `docs/desvan/starlink-edge-copies.h`: con varios platos empeoraba ([[022-multistarlink]]).
 
 ## Lee
 - La hora de pared; el [[Modelo de enlace (linkmodel.h)]] (`slot_clock`, encendido en el preset `starlink`).
@@ -18,12 +18,10 @@ Cada 15 s, a los :12, :27, :42 y :57 de cada minuto (UTC), Starlink reconfigura 
 
 ## Decide / escribe
 - `cg_slot_touches` → [[Capacidad (capacity.h)]]: la muestra no cuenta pérdida (`n_edge`, `edge_samples` en el estado).
-- `cg_slot_solo` / `cg_slot_pick` / `cg_slot_copy_mask` → el envío: fuera de la ventana, un paquete de 300 B o más va solo por Starlink; si el otro extremo reordena y guarda, como DATA repartido (`CG_F_SPLIT`), para que un hueco se pida al [[Rescate (rescue.h)]]. Con dos platos aptos o más, una copia en cada uno en vez de DATA repartido en el primero ([[022-multistarlink]]): los demás platos quedaban ociosos.
 
 ## Perillas
 - [[Mapa/Perillas/starlink_slot_clock|starlink_slot_clock]]: 0 (preset); 1 sí, 2 no.
 - [[Mapa/Perillas/starlink_edge_ms|starlink_edge_ms]]: 12000; [[Mapa/Perillas/starlink_edge_pre_ms|starlink_edge_pre_ms]]: 100; [[Mapa/Perillas/starlink_edge_post_ms|starlink_edge_post_ms]]: 50.
-- [[Mapa/Perillas/starlink_edge_copies|starlink_edge_copies]]: no.
 
 ## Dónde se midió
 - [[015-modelo-de-enlace]] §7: en «nostalgica», borde a los :12/:27/:42/:57 (±50 ms); ~45 ms parado en la subida en cada borde.
@@ -37,4 +35,4 @@ Cada 15 s, a los :12, :27, :42 y :57 de cada minuto (UTC), Starlink reconfigura 
 
 ## Archivos
 - `slot.h`; tests `engine/tests/test_slot.c`.
-- `client.c`: `cap_tick` (`cc.slot`), `edge_solo`, `tun_read` (`cg_slot_pick`), `send_links`. `server.c`: lo mismo en `cap_tick` y `down_prepare`.
+- `client.c` y `server.c`: `cap_tick` (`cc.slot`).

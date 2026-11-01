@@ -1,8 +1,6 @@
 /* Starlink's slot clock (slot.h, story 015, task #65): the edges at :12,
- * :27, :42 and :57 of the wall clock, the window around them, and the
- * copies of starlink_edge_copies.
+ * :27, :42 and :57 of the wall clock and the window around them.
  * SPDX-License-Identifier: GPL-3.0-or-later */
-#include "proto.h" /* CG_F_SPLIT */
 #include "slot.h"
 #include "test.h"
 
@@ -42,36 +40,4 @@ void test_slot(void)
 		CHECK(cg_slot_near(&o, T0 + 26955));
 		CHECK(!cg_slot_near(&o, T0 + 27000));
 	}
-	/* the copies: outside a window, on the fit Starlink links of carry only */
-	CHECK_EQ(cg_slot_solo(&s, T0 + 20000, 0x1, 0x1, 0x7), 0x1);
-	CHECK_EQ(cg_slot_solo(&s, T0 + 11950, 0x1, 0x1, 0x7), 0); /* in a window: every carrier */
-	CHECK_EQ(cg_slot_solo(&s, T0 + 20000, 0x1, 0x0, 0x7), 0); /* not fit */
-	CHECK_EQ(cg_slot_solo(&s, T0 + 20000, 0x1, 0x1, 0x6), 0); /* not carrying */
-	CHECK_EQ(cg_slot_solo(&s, T0 + 20000, 0x5, 0x4, 0x7), 0x4);
-	CHECK_EQ(cg_slot_solo(&s, T0 + 20000, 0x0, 0x7, 0x7), 0); /* no Starlink */
-	/* as split DATA on the first of them, small packets copied */
-	{
-		uint8_t fl = 0;
-
-		CHECK_EQ(cg_slot_pick(0x4, 1200, 300, &fl), 2);
-		CHECK_EQ(fl, CG_F_SPLIT);
-		fl = 0;
-		/* two dishes fit: a copy on both, not split DATA on the first */
-		CHECK_EQ(cg_slot_pick(0x6, 1200, 300, &fl), -1);
-		CHECK_EQ(fl, 0);
-		CHECK_EQ(cg_slot_pick(0x8, 1200, 300, &fl), 3);
-		fl = 0;
-		CHECK_EQ(cg_slot_pick(0x4, 100, 300, &fl), -1);
-		CHECK_EQ(cg_slot_pick(0, 1200, 300, &fl), -1);
-		CHECK_EQ(fl, 0);
-	}
-	/* the copies' mask: solo without a reordering peer, or with two dishes
-	 * or more; one dish with a reordering peer goes as split DATA, its
-	 * copies (small packets) on every carrier */
-	CHECK_EQ(cg_slot_copy_mask(0, 0), 0xffff);
-	CHECK_EQ(cg_slot_copy_mask(0, 1), 0xffff);
-	CHECK_EQ(cg_slot_copy_mask(0x4, 0), 0x4);
-	CHECK_EQ(cg_slot_copy_mask(0x4, 1), 0xffff);
-	CHECK_EQ(cg_slot_copy_mask(0x6, 1), 0x6);
-	CHECK_EQ(cg_slot_copy_mask(0x6, 0), 0x6);
 }

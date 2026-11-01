@@ -532,7 +532,7 @@ static uint64_t s_trial(int rule, uint32_t seed, int jitter, unsigned loss, uint
 	*gone += ro.st.lost_rack + ro.st.lost_cap;
 	/* given up, then came (late.old: before the window started, the
 	 * first packet's) */
-	return ro.st.late_rack + ro.st.late_cap + ro.st.late_overflow + ro.st.late_retx;
+	return ro.st.late_rack + ro.st.late_cap + ro.st.late_overflow;
 }
 
 static void test_streams(void)
