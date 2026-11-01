@@ -317,6 +317,9 @@
 #                a plain TCP of the engines' through the tunnel in the middle
 #                with BOND_PEP_CGMIDCC (protocontroller_mid_cc at both ends;
 #                empty: the engine's own, bbr)
+#                BOND_PEP_INNER=wg: iperf3 inside a WireGuard tunnel from
+#                the LAN host to the far host (any BOND_PEP): opaque UDP that
+#                crosses the TUN as DATA, as a VPN inside would
 #                BOND_PEP_SKIP (cga, cgb): TCP destination ports the router
 #                leaves out of the REDIRECT (5201: iperf3's), so that TCP
 #                crosses the tunnel as plain DATA next to the engines' streams:
@@ -391,6 +394,9 @@ BOND_PEP_FAR_MS=${BOND_PEP_FAR_MS:-50}
 BOND_PEP_NEAR_MS=${BOND_PEP_NEAR_MS:-5}
 BOND_PEP_PORT=${BOND_PEP_PORT:-7801}
 BOND_PEP_CGCC=${BOND_PEP_CGCC:-auto}
+BOND_PEP_INNER=${BOND_PEP_INNER:-} # wg: iperf3 inside a WireGuard tunnel of its own from the LAN host to the far host
+BOND_PEP_DST=172.30.1.2
+[ "$BOND_PEP_INNER" = wg ] && BOND_PEP_DST=10.99.0.2
 BOND_PEP_SKIP=${BOND_PEP_SKIP:-} # cga/cgb: TCP ports (iptables multiport) the router does not hand to GRIT
 BOND_PEP_CGMIDCC=${BOND_PEP_CGMIDCC:-} # cga: protocontroller_mid_cc at both ends (empty: the engine's, bbr)
 BOND_PEP_KCP=${BOND_PEP_KCP:---mode fast --datashard 0 --parityshard 0 --nocomp --crypt none --mtu 1300}
@@ -611,10 +617,41 @@ bond_hosts_up() {
 	ip netns exec "$NS_NEAR" tc qdisc replace dev n0 root netem delay "${BOND_PEP_NEAR_MS}ms" limit 100000 || return 1
 	ip netns exec "$NS_FAR" iperf3 -s -B 172.30.1.2 -D || return 1
 	for ns in $(seq 1 30); do
-		ip netns exec "$NS_LAN" ping -q -c 1 -W 1 172.30.1.2 >/dev/null 2>&1 && return 0
+		ip netns exec "$NS_LAN" ping -q -c 1 -W 1 172.30.1.2 >/dev/null 2>&1 && break
 		sleep 0.2
 	done
-	echo "FAIL: the LAN host does not reach the far host through the tunnel"
+	if [ "$ns" = 30 ]; then
+		echo "FAIL: the LAN host does not reach the far host through the tunnel"
+		return 1
+	fi
+	[ "$BOND_PEP_INNER" = wg ] || return 0
+	bond_pep_wg
+}
+
+# bond_pep_wg (BOND_PEP_INNER=wg, story 030): a WireGuard tunnel of its own
+# from the LAN host to the far host, through cengarde's: its UDP is opaque
+# to the protocontroller, so the TCP inside crosses the TUN as DATA, under
+# the reorderer and the rescue. iperf3 then runs to the far host's end of it
+# (BOND_PEP_DST, 10.99.0.2), MTU the tunnel's less WireGuard's 80 bytes.
+bond_pep_wg() {
+	local kl kf i
+	kl=$(wg genkey) kf=$(wg genkey)
+	ip -n "$NS_LAN" link add wgi type wireguard || return 1
+	ip -n "$NS_FAR" link add wgi type wireguard || return 1
+	ip netns exec "$NS_LAN" wg set wgi private-key <(echo "$kl") \
+		peer "$(echo "$kf" | wg pubkey)" endpoint 172.30.1.2:51820 allowed-ips 10.99.0.2/32 || return 1
+	ip netns exec "$NS_FAR" wg set wgi listen-port 51820 private-key <(echo "$kf") \
+		peer "$(echo "$kl" | wg pubkey)" allowed-ips 10.99.0.1/32 || return 1
+	ip -n "$NS_LAN" addr add 10.99.0.1/24 dev wgi
+	ip -n "$NS_FAR" addr add 10.99.0.2/24 dev wgi
+	ip -n "$NS_LAN" link set wgi mtu 1300 up
+	ip -n "$NS_FAR" link set wgi mtu 1300 up
+	ip netns exec "$NS_FAR" iperf3 -s -B 10.99.0.2 -D || return 1
+	for i in $(seq 1 30); do
+		ip netns exec "$NS_LAN" ping -q -c 1 -W 1 10.99.0.2 >/dev/null 2>&1 && return 0
+		sleep 0.2
+	done
+	echo "FAIL: no WireGuard between the LAN host and the far host"
 	return 1
 }
 
@@ -753,7 +790,7 @@ bond_pep_traffic() {
 	fi
 	if [ "$cc" != live ] && [ "$cc" != soak ]; then
 		# shellcheck disable=SC2046 # -R or nothing
-		ip netns exec "$NS_LAN" iperf3 -c 172.30.1.2 -t "$s" -C "${BOND_PEP_LANCC:-$cc}" -P "$BOND_P" -J ${BOND_KEEP:+-i 0.5} \
+		ip netns exec "$NS_LAN" iperf3 -c "$BOND_PEP_DST" -t "$s" -C "${BOND_PEP_LANCC:-$cc}" -P "$BOND_P" -J ${BOND_KEEP:+-i 0.5} \
 			${BOND_RATE:+-b "$BOND_RATE"} $([ "$dir" = down ] && echo -R) >"$res" 2>"$err" || rc=1
 		return "$rc"
 	fi
