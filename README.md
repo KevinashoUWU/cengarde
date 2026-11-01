@@ -126,9 +126,13 @@ two columns, not the figures with the night above.
 - **UDP at fixed rates** (iperf3, 10 s). OMR carries UDP through its VPN over
   a single link and receives no more than about 25 Mbit/s; downloading at 60,
   100 and 150 Mbit/s it lost 53, 77 and 86 %. cengarde spreads UDP over all
-  the links: 0 % loss downloading at 150 Mbit/s. Uploading it carried up to
-  about 80 Mbit/s (the modems' total upload is about 120); at 150 Mbit/s it
-  sent more than they carry and lost 53 %.
+  the links: 0 % loss downloading at 150 Mbit/s. Uploading, the losses
+  measured that night (14–53 % from 60 Mbit/s up) turned out to be the iperf3
+  server's 212 kB socket buffer overflowing, not the tunnel: with an 8 MB
+  buffer cengarde's UDP upload lost 0 % at 70 and at 100 Mbit/s (2026-11-01;
+  the kernel's UDP receive-buffer errors matched iperf3's "lost" exactly). The
+  bursts come from the tunnel holding UDP to deliver it in order, which UDP
+  does not need; the plan is to let datagrams pass at once.
 - **The primary link dies with its interface still up** (Entel, OMR's MPTCP
   master; all its traffic dropped), in the middle of a download:
 
