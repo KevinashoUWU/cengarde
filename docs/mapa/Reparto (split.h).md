@@ -3,7 +3,7 @@ tags: [mapa, pieza]
 archivos:
   - engine/src/split.h
   - engine/tests/test_split.c
-sello: 66ec508d9b9710ab
+sello: 3d5742203f4bfe1d
 ---
 # Reparto (split.h)
 
@@ -24,6 +24,7 @@ Decide por qué enlace va cada paquete cuando se reparte en vez de copiar todo p
 - `CG_F_SPLIT` y `CG_F_PREV` → [[Reordenador (reorder.h)]] del otro extremo.
 - La cola de bonding propia (`cg_split_probe_tail`, `cg_split_reply_tail`) → [[Sondas y cola de bonding (proto.h)]].
 - Qué decidió cada paquete (`split_by`) → estado.
+- Un reenvío de GRIT deja fuera el enlace de su envío anterior cuando otro lo puede llevar (`cg_split_avoid`, MPGRIT paso U2b, 2026-10-31): lo que un subflujo perdió va por otro, como en MPTCP ([[Protocontrolador (protoctl.c, stream.h, streamcc.h)]]).
 
 ## Perillas
 - [[Mapa/Perillas/split|split]]: cliente `off`, servidor `client`.
