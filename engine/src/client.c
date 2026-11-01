@@ -395,6 +395,7 @@ struct client {
 	uint32_t f3_lag; /* the last repair's window ended this long before now, us (cg_f3_lag_us) */
 	uint8_t f3_dn;
 	uint64_t f3_rep, f3_bytes, f3_data, f3_tail, f3_guarded, f3_nolink, f3_empty, f3_gated, f3_quiet, f3_switches;
+	uint64_t f3_lsent[CG_MAX_LINKS], f3_llost[CG_MAX_LINKS]; /* CG_LC_F3: each subflow's counters at the last tick */
 	uint16_t f3_ins_port; /* variant A's middle TCP with BBR: its port (f3_apply), 0: none */
 	/* FEC v3 down (story 026): the server's repairs of the download,
 	 * rebuilt as the server rebuilds the upload (with fec): the DATA got
@@ -2231,7 +2232,7 @@ static void f3_repair(struct client *c, uint64_t now_us)
 	for (int i = 0; i < CG_MAX_LINKS; i++) {
 		if (!(c->f3_links >> i & 1) || c->link[i].fd < 0)
 			continue;
-		if (cg_f3_guard(c->cap[i].ql_us, (uint32_t)win,
+		if (cg_f3_guard((int32_t)cg_lc_f3_queue(&c->link[i].sft.lc, (uint32_t)c->cap[i].ql_us), (uint32_t)win,
 				!cg_cap_rescue_w(&c->cap[i], c->cfg->rescue_target_ms * 1000))) {
 			c->f3_guarded++;
 			continue;
@@ -2634,7 +2635,7 @@ static void pctl_hint(void *ctx, uint32_t peer, uint32_t sid, uint64_t *bps, int
 			continue;
 		if (c->cfg->link_cc && c->link[i].sft.acks) { /* its own rate (linkcc.h), probing included */
 			b = cg_lc_rate(&c->link[i].sft.lc);
-		} else if (c->cap[i].have_rate) {
+		} else if (c->cap[i].have_rate && !(c->cfg->link_cc && (c->cfg->link_cc_bits & CG_LC_NOSEED))) {
 			b = cg_cap_bps(&c->cap[i]) / 8;
 			nfull += c->cap[i].cut == CG_CAP_CUT_FULL;
 		} else {
@@ -3266,7 +3267,7 @@ static void lc_tick(struct client *c)
 
 		lc->bits = (uint16_t)c->cfg->link_cc_bits;
 		cg_lc_target(lc, c->cfg->governor_target_ms * 1000, cg_lc_mtpt_cap(lc, c->cfg->link_cc_budget_ms, ref));
-		if (c->cap[i].have_rate)
+		if (c->cap[i].have_rate && !(lc->bits & CG_LC_NOSEED))
 			cg_lc_seed(lc, cg_cap_bps(&c->cap[i]) / 8);
 	}
 }
@@ -4402,9 +4403,20 @@ static void cap_tick(struct client *c, uint16_t live, uint16_t in, uint64_t now_
 			cg_sig_cap(&c->sig[i], &c->cap[i], now_ms);
 			/* FEC v3: where its repairs go, and a lone link's loss */
 			cg_f3_weigh(&c->f3, (unsigned)i, l->tx_bytes);
-			cg_f3_loss(&c->f3, (unsigned)i, c->cap[i].loss_pm, c->cap[i].loss_pm_ms, c->cap[i].ql_us,
-				   c->sig[i].last_qmax > c->cap[i].ql_us ? c->sig[i].last_qmax : c->cap[i].ql_us,
-				   c->cap[i].loaded_ms == c->cap[i].loss_pm_ms);
+			if (l->sft.lc.bits & CG_LC_F3) {
+				/* its loss by its own subflow, its queue by its own delay */
+				const struct cg_lc *lc = &l->sft.lc;
+				int pm = cg_lc_tick_loss(l->sft.sent, l->sft.lost_rx, &c->f3_lsent[i], &c->f3_llost[i]);
+				int32_t q = (int32_t)cg_lc_f3_queue(lc, (uint32_t)c->cap[i].ql_us);
+
+				if (pm >= 0)
+					cg_f3_loss(&c->f3, (unsigned)i, (uint16_t)pm, now_ms, q, q,
+						   lc->have_owd && lc->q_us >= lc->target_us / 2);
+			} else {
+				cg_f3_loss(&c->f3, (unsigned)i, c->cap[i].loss_pm, c->cap[i].loss_pm_ms, c->cap[i].ql_us,
+					   c->sig[i].last_qmax > c->cap[i].ql_us ? c->sig[i].last_qmax : c->cap[i].ql_us,
+					   c->cap[i].loaded_ms == c->cap[i].loss_pm_ms);
+			}
 
 			cg_decrec_cap(&c->dec, &c->cap[i], (unsigned)i, ev, was, now_ms);
 		}
@@ -4420,7 +4432,21 @@ static void cap_tick(struct client *c, uint16_t live, uint16_t in, uint64_t now_
 				c->cw[i] = CG_GOV_MAX;
 	}
 	cg_cap_total_tick(&c->ctot, c->cap, live, cc.sat_us);
-	cg_dom_tick(&c->dom, c->cap, c->lm, live, now_ms);
+	if (c->cfg->link_cc && (c->cfg->link_cc_bits & CG_LC_DOM)) {
+		/* the dominant link by each link's own rate */
+		struct cg_cap_link dv[CG_MAX_LINKS];
+
+		memcpy(dv, c->cap, sizeof(dv));
+		for (int i = 0; i < CG_MAX_LINKS; i++) {
+			const struct cg_sf_tx *t = &c->link[i].sft;
+
+			dv[i].have_rate = (uint8_t)(t->acks && t->lc.bw);
+			dv[i].rate_bps = dv[i].peak_bps = t->lc.bw * 8;
+		}
+		cg_dom_tick(&c->dom, dv, c->lm, live, now_ms);
+	} else {
+		cg_dom_tick(&c->dom, c->cap, c->lm, live, now_ms);
+	}
 	if (c->cfg->split_eta) {
 		uint64_t tb[CG_MAX_LINKS], tc[CG_MAX_LINKS];
 		uint16_t due;
