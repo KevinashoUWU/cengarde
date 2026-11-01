@@ -485,6 +485,7 @@ struct cg_st_seg {
 };
 
 #define CG_ST_NOLINK 0xffu
+#define CG_ST_LINKS 16 /* links a segment may name (CG_MAX_LINKS) */
 
 /* A segment sent again a second time or more goes as a copy (a priority
  * copy on a link with room, client.c) only among the CG_ST_COPY_HEAD
@@ -645,6 +646,10 @@ struct cg_st_ackres {
 	uint64_t freed;     /* bytes below the new una, to release from the buffer */
 	uint64_t was_inflight, was_lost; /* of delivered, bytes that were SENT, and LOST */
 	struct cg_st_rs rs;
+	/* per link, the newest send time among the segments this ACK
+	 * delivered that went once and were still in flight: its round trip
+	 * (Karn's rule; U2c: each subflow's own RTT), 0: none */
+	uint64_t lk_sent[CG_ST_LINKS];
 	uint8_t progress;   /* una moved */
 	uint8_t edge_moved;
 };
@@ -674,6 +679,8 @@ static inline void cg_st_tx_deliver(struct cg_st_tx *t, struct cg_st_seg *s, str
 	if (s->st == CG_ST_SENT) {
 		t->inflight -= sp;
 		r->was_inflight += sp;
+		if (s->tx == 1 && s->link < CG_ST_LINKS && s->sent_us > r->lk_sent[s->link])
+			r->lk_sent[s->link] = s->sent_us;
 	} else {
 		t->nlost--;
 		r->was_lost += sp;
@@ -792,21 +799,26 @@ static inline uint64_t cg_st_tx_rack(struct cg_st_tx *t, uint64_t reo_us, uint64
  * ranges counted in 8 bits once (2026-10-27): 256 holes, one merge, and it
  * forgot them all; the sender never sent those segments again and the
  * stream stuck for good (buffers over 1 MB). */
-/* The timeout of segment s (cg_st_tx_rto's floor_us): with the engine's
+/* The timeout of segment s (cg_st_tx_rto's floor_us, lrto): with the engine's
  * arrival behind the fastest link, its timer waits at least half of it
  * more than that (MPGRIT step U2a, story 029: the round trip the timer
  * learns is the fastest link's, each ACK carrying the least delay, and what
  * a link with a queue carries timed out and came as a duplicate); never
  * less than rto_us, whose own wait beyond the round trip is floor_us. */
-static inline uint64_t cg_st_seg_rto(const struct cg_st_seg *s, uint64_t rto_us, uint64_t floor_us)
+/* lrto (may be NULL): each link's own timeout, srtt + 4 rttvar measured
+ * on its segments (U2c), 0: not known. */
+static inline uint64_t cg_st_seg_rto(const struct cg_st_seg *s, uint64_t rto_us, uint64_t floor_us, const uint32_t *lrto)
 {
-	uint64_t want = (uint64_t)s->eta_us + s->eta_us / 2;
+	uint64_t want = (uint64_t)s->eta_us + s->eta_us / 2, r = floor_us && want > floor_us ? rto_us + (want - floor_us) : rto_us;
 
-	return floor_us && want > floor_us ? rto_us + (want - floor_us) : rto_us;
+	/* and its own link's measured timeout (U2c), when longer */
+	if (lrto && s->link < CG_ST_LINKS && lrto[s->link] > r)
+		r = lrto[s->link];
+	return r;
 }
 
-static inline uint64_t cg_st_tx_rto(struct cg_st_tx *t, uint64_t now, uint64_t rto_us, uint64_t floor_us, uint64_t *next,
-				    uint64_t *lq)
+static inline uint64_t cg_st_tx_rto(struct cg_st_tx *t, uint64_t now, uint64_t rto_us, uint64_t floor_us,
+				    const uint32_t *lrto, uint64_t *next, uint64_t *lq)
 {
 	uint64_t lost = 0;
 
@@ -831,7 +843,7 @@ static inline uint64_t cg_st_tx_rto(struct cg_st_tx *t, uint64_t now, uint64_t r
 
 		if (s->st != CG_ST_SENT)
 			continue;
-		due = s->sent_us + cg_st_seg_rto(s, rto_us, floor_us);
+		due = s->sent_us + cg_st_seg_rto(s, rto_us, floor_us, lrto);
 		if (due <= now)
 			lost += cg_st_tx_lose(t, s, i, lq, CG_ST_BY_RTO);
 		else if (next && (!*next || due < *next))

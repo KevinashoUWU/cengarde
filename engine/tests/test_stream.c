@@ -183,7 +183,7 @@ static void test_renege(void)
 	cg_st_tx_ack(&t, &a, &r);
 	CHECK_EQ(cg_st_tx_seg(&t, 0)->st, CG_ST_SACKED);
 	CHECK_EQ(t.inflight, 1000);
-	CHECK_EQ(cg_st_tx_rto(&t, 1000000, 500000, 0, NULL, NULL), 1000); /* only the SENT one counts as lost */
+	CHECK_EQ(cg_st_tx_rto(&t, 1000000, 500000, 0, NULL, NULL, NULL), 1000); /* only the SENT one counts as lost */
 	CHECK_EQ(t.reneged, 1);
 	CHECK_EQ(cg_st_tx_seg(&t, 0)->st, CG_ST_LOST);
 	CHECK_EQ(cg_st_tx_seg(&t, 1)->st, CG_ST_LOST);
@@ -343,7 +343,7 @@ static void test_tx(void)
 	cg_st_tx_ack(&t, &a, &r);
 	CHECK_EQ(t.edge, 10000);
 	/* the timer: the oldest SENT is lost */
-	CHECK_EQ(cg_st_tx_rto(&t, 1000000, 500000, 0, NULL, NULL), 500);
+	CHECK_EQ(cg_st_tx_rto(&t, 1000000, 500000, 0, NULL, NULL, NULL), 500);
 	CHECK(cg_st_tx_busy(&t));
 	cg_st_tx_next(&t, 1000, &idx, &off, &len, &fin);
 	cg_st_tx_sent(&t, idx, off, len, fin, 1000000, 0, 0, 0, 0, 0, 0);
@@ -447,21 +447,73 @@ static void test_seg_rto(void)
 	CHECK_EQ(cg_st_tx_seg(&t, 0)->eta_us, 0);
 	cg_st_tx_seg(&t, 1)->eta_us = 400000; /* wants 600 ms: 300 over the floor */
 	cg_st_tx_seg(&t, 2)->eta_us = 100000; /* 150 ms, under the floor: the plain timeout */
-	CHECK_EQ(cg_st_seg_rto(cg_st_tx_seg(&t, 1), 450000, 300000), 750000);
-	CHECK_EQ(cg_st_seg_rto(cg_st_tx_seg(&t, 2), 450000, 300000), 450000);
-	CHECK_EQ(cg_st_seg_rto(cg_st_tx_seg(&t, 1), 450000, 0), 450000);
+	CHECK_EQ(cg_st_seg_rto(cg_st_tx_seg(&t, 1), 450000, 300000, NULL), 750000);
+	CHECK_EQ(cg_st_seg_rto(cg_st_tx_seg(&t, 2), 450000, 300000, NULL), 450000);
+	CHECK_EQ(cg_st_seg_rto(cg_st_tx_seg(&t, 1), 450000, 0, NULL), 450000);
 	/* at 453 ms: 0 and 2 due, 1 waits until 752 */
-	CHECK_EQ(cg_st_tx_rto(&t, 453000, 450000, 300000, &next, &lq), 2000);
+	CHECK_EQ(cg_st_tx_rto(&t, 453000, 450000, 300000, NULL, &next, &lq), 2000);
 	CHECK_EQ(next, 752000);
 	CHECK_EQ(cg_st_tx_seg(&t, 1)->st, CG_ST_SENT);
-	CHECK_EQ(cg_st_tx_rto(&t, 751999, 450000, 300000, &next, &lq), 0);
-	CHECK_EQ(cg_st_tx_rto(&t, 752000, 450000, 300000, &next, &lq), 1000);
+	CHECK_EQ(cg_st_tx_rto(&t, 751999, 450000, 300000, NULL, &next, &lq), 0);
+	CHECK_EQ(cg_st_tx_rto(&t, 752000, 450000, 300000, NULL, &next, &lq), 1000);
 	CHECK_EQ(next, 0);
 	CHECK_EQ(t.nlost, 3);
 	/* sent again: the engine's word is for the copy before */
 	CHECK(cg_st_tx_next(&t, 1000, &idx, &off, &len, &fin));
 	cg_st_tx_sent(&t, idx, off, len, fin, 800000, 0, 0, 0, 0, 0, 0);
 	CHECK_EQ(cg_st_tx_seg(&t, idx)->eta_us, 0);
+}
+
+/* Each link's round trip from an ACK (U2c): the newest send time among
+ * what it delivered that went once and was in flight, per link; and a
+ * segment's timeout, its link's own when longer. */
+static void test_link_rtt(void)
+{
+	struct cg_st_seg seg[16];
+	struct cg_st_tx t;
+	struct cg_st_ack a;
+	struct cg_st_ackres r;
+	uint32_t idx = 0, len = 0, lrto[CG_ST_LINKS] = { 0 };
+	uint64_t off = 0, lq = 0;
+	int fin = 0;
+
+	cg_st_tx_init(&t, seg, 16, 1u << 20);
+	t.tail = 4000;
+	for (int i = 0; i < 4; i++) {
+		CHECK(cg_st_tx_next(&t, 1000, &idx, &off, &len, &fin));
+		cg_st_tx_sent(&t, idx, off, len, fin, 1000 * (uint64_t)(i + 1), 0, 0, 0, 0, 0, 0);
+	}
+	cg_st_tx_seg(&t, 0)->link = 0;
+	cg_st_tx_seg(&t, 1)->link = 1;
+	cg_st_tx_seg(&t, 2)->link = 1;
+	cg_st_tx_seg(&t, 3)->link = 2;
+	/* 3 lost and sent again: its sample would be ambiguous (Karn) */
+	cg_st_tx_lose(&t, cg_st_tx_seg(&t, 3), 3, &lq, CG_ST_BY_RTO);
+	CHECK(cg_st_tx_next(&t, 1000, &idx, &off, &len, &fin));
+	CHECK_EQ(idx, 3);
+	cg_st_tx_sent(&t, idx, off, len, fin, 9000, 0, 0, 0, 0, 0, 0);
+	cg_st_tx_seg(&t, 3)->link = 2;
+	memset(&a, 0, sizeof(a));
+	a.aseq = 1;
+	a.cum = 4000;
+	a.edge = t.edge;
+	cg_st_tx_ack(&t, &a, &r);
+	CHECK_EQ(r.lk_sent[0], 1000);
+	CHECK_EQ(r.lk_sent[1], 3000); /* the newest of the two */
+	CHECK_EQ(r.lk_sent[2], 0);    /* sent twice */
+	/* the timeout: its link's own when longer than the rest */
+	{
+		struct cg_st_seg x = { 0 };
+
+		x.link = 1;
+		lrto[1] = 900000;
+		CHECK_EQ(cg_st_seg_rto(&x, 450000, 300000, lrto), 900000);
+		lrto[1] = 200000;
+		CHECK_EQ(cg_st_seg_rto(&x, 450000, 300000, lrto), 450000);
+		x.link = CG_ST_NOLINK;
+		lrto[1] = 900000;
+		CHECK_EQ(cg_st_seg_rto(&x, 450000, 300000, lrto), 450000);
+	}
 }
 
 /* The tunnel's NACK of a DATA (cg_st_tx_nack): a loss only for the
@@ -527,7 +579,7 @@ static void test_nack(void)
 	CHECK_EQ(cg_st_tx_nack(&t, 0xFFFFFC00u, 0, &b, NULL), CG_ST_NACK_DELIVERED);
 	/* the timer marks the two still SENT (the NACK's retransmission and
 	 * the last one): their retransmissions counted as the timer's */
-	CHECK_EQ(cg_st_tx_rto(&t, 0x100000000ull + 100000, 50000, 0, NULL, NULL), 2000);
+	CHECK_EQ(cg_st_tx_rto(&t, 0x100000000ull + 100000, 50000, 0, NULL, NULL, NULL), 2000);
 	while (cg_st_tx_next(&t, 1000, &idx, &off, &len, &fin) && idx < t.n)
 		cg_st_tx_sent(&t, idx, off, len, fin, 0x100000000ull + 100000, 0, 0, 0, 0, 0, 0);
 	CHECK_EQ(t.retx_by[CG_ST_BY_RTO], 2);
@@ -709,7 +761,7 @@ static void e2e_run(int nack)
 			}
 		}
 		if (rto_at && now >= rto_at) {
-			cg_st_tx_rto(&t, now, 20000, 0, NULL, NULL);
+			cg_st_tx_rto(&t, now, 20000, 0, NULL, NULL, NULL);
 			rto_at = now + 20000;
 		}
 	}
@@ -752,5 +804,6 @@ void test_stream(void)
 	test_nack();
 	test_suspect();
 	test_seg_rto();
+	test_link_rtt();
 	test_e2e();
 }
