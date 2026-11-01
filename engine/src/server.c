@@ -1792,7 +1792,7 @@ static void up_deliver(struct server *s, int *nq, struct session *S, const struc
 			       /* free with TCP data: a retransmission (tcp_aware) */
 			       .retx = (uint8_t)((h->flags & CG_F_FREE) && cg_tcp_data(payload, len)),
 			       .rebuilt = S->rebuilding };
-	int dg = cg_dg_class(payload, len); /* RTP orders itself, MPEG-TS does not (dgclass.h) */
+	int dg = cg_dg_class(payload, len); /* MPEG-TS has no reorder buffer of its own (dgclass.h) */
 	enum cg_ro_v v;
 	uint16_t buf;
 
@@ -1815,7 +1815,9 @@ static void up_deliver(struct server *s, int *nq, struct session *S, const struc
 		q_add(s, nq, S, payload, len, CG_RO_NOBUF, h->seq, h->flags);
 		return;
 	}
-	k.nohold = dg == CG_DG_RTP;
+	/* RTP keeps the deadline rule: held, it is asked for (a gap is asked
+	 * only while something waits behind it), and its jitter buffer takes
+	 * what comes late; never held, it lost every rescue (story 030) */
 	k.waits = dg == CG_DG_TS;
 	v = cg_ro_in(&S->ro, &s->pool, &S->rocf, &k, rset, &buf);
 	if (v == CG_RO_AGAIN) {
