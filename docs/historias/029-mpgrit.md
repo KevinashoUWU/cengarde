@@ -1082,8 +1082,17 @@ Los cuatro módems, alternados (nunca a la vez), cengarde con U2a.
   las dos; OMR 8 segundos casi muerto y 32 % de ping perdido en la primera
   (su ping va por la VPN del maestro), bien en la segunda (sin verificar:
   su VPN habría quedado en otro módem).
-- Ventaja chica de cengarde en estas dos pruebas: el destino es su VPS (OMR
-  llega a él por internet, un salto dentro del mismo datacenter).
+- **TCP con el principal muerto 45 s** (`~/campo/2026-10-31/mptcp/`, 2
+  rondas): un solo flujo de 90 s sobrevive en los dos, pero cengarde queda
+  0–1 segundos casi sin caudal (de ~190 a ~150 Mbit/s con tres módems) y OMR
+  5–14 (unos 15 s casi en cero hasta que MPTCP lo pasa a otros subflujos;
+  su flujo único ya iba irregular, 52–62 con caídas a 0). Las conexiones
+  nuevas (HTTPS corto a Vultr Santiago cada 2 s): cengarde 23/23 y 23/23,
+  0,23–0,26 s de mediana; OMR 12/15 y 8/12, 1,7–1,8 s de mediana y hasta
+  3,4: cada conexión MPTCP abre su primer subflujo por el maestro.
+- Ventaja chica de cengarde en estas pruebas: el destino del iperf es su
+  VPS (OMR llega a él por internet, un salto dentro del mismo datacenter);
+  las conexiones nuevas van a un servidor neutro.
 - **Hallazgo (no es GRIT):** iperf3 en UDP contra la IP pública del VPS
   desde la LAN aborta («Resource temporarily unavailable»): el UDP llega por
   `cg0`, pero el VPS contesta con origen 10.79.0.1 (la dirección del túnel,
