@@ -1255,6 +1255,14 @@ los tres juntos solo en la segunda, 4):
   viejo queda solo para `link_cc = no` (sin `subflow`), que no tiene el
   ritmo propio.
 
+En terreno (testnet, 2026-11-01 de día, 6 rondas alternadas, 3 en cada
+orden, `~/campo/2026-11-01/capfield/`) solo actúa la semilla: el NUC no
+tiene la FEC y el VPS no manda reparaciones de la v3, y con cuatro
+celulares no hay dominante. Parejo, como en el laboratorio: iperf3 de bajada
+428 contra 412 (−4 %), Speedtest de bajada 421 contra 449 (+7 %), las
+subidas 116 / 114 y 114 / 115, el ping con carga de bajada 72 en los dos y
+el de subida 74 contra 79 ms. La testnet queda en 7438 / 7470.
+
 ## Pendiente
 
 - `link_cc`: decidir si pasa a ser lo normal con `subflow` (más rondas de
