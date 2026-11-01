@@ -309,23 +309,6 @@ plazo; 8,2 contra 9,2 ‰ con la misma regla es el piso de ruido). Que todo
 espere el rescate no agrega nada medible y cambiaría el TCP de fuera de
 GRIT: queda la variante por clase.
 
-### Protocolo 14: sin la etiqueta de GRIT (A2a)
-
-Desde el 13 un mensaje de GRIT viaja solo como STREAM, bajo el MAC del túnel
-y fuera de todo código de reparación: su etiqueta SipHash de 4 bytes (contra
-las reconstrucciones erradas de la FEC) ya no cuida nada. El 14 la quita
-(`protoctl.h`), con su hash en cada mensaje de los dos extremos y el contador
-`corrupt`; `rebuilt.h` da por basura lo rehecho que parezca un mensaje.
-Laboratorio (`p14a`, 12 casos × 2 × 3, contra el 13 final): TCP +2,6 % y
-pérdida del flujo TS 8,0 → 9,2 ‰, las dos cosas por `protect` de bajada
-(su piso de ruido es 20–36 %); el resto, ±3 %. Neutro, como se esperaba de 4
-bytes.
-
-Lo siguiente de A2, la marca de tiempo de GRIT por la del túnel (4 bytes
-más), pide que el túnel selle cada STREAM con el reloj que GRIT anotó: el NACK
-de una pérdida reconoce la transmisión por ese valor exacto
-(`cg_st_tx_nack`). Queda para el encabezado de subflujo.
-
 **Terreno** (`~/campo/2026-11-01/fieldvid/`, el NUC y el VPS cambiados juntos,
 3 rondas por brazo; un H.264 pregrabado que el VPS manda con `-c copy`, como
 MPEG-TS sobre UDP y como RTP con TS adentro, junto a un iperf3 de 4 flujos
@@ -348,6 +331,23 @@ PC hacia la dirección del túnel del VPS):
 En terreno hay mucha menos pérdida que en el laboratorio y las diferencias se
 achican: el 13 final queda igual al 12 con video real y mejor en el UDP
 constante de subida (la ronda de la tarde).
+
+### Protocolo 14: sin la etiqueta de GRIT (A2a)
+
+Desde el 13 un mensaje de GRIT viaja solo como STREAM, bajo el MAC del túnel
+y fuera de todo código de reparación: su etiqueta SipHash de 4 bytes (contra
+las reconstrucciones erradas de la FEC) ya no cuida nada. El 14 la quita
+(`protoctl.h`), con su hash en cada mensaje de los dos extremos y el contador
+`corrupt`; `rebuilt.h` da por basura lo rehecho que parezca un mensaje.
+Laboratorio (`p14a`, 12 casos × 2 × 3, contra el 13 final): TCP +2,6 % y
+pérdida del flujo TS 8,0 → 9,2 ‰, las dos cosas por `protect` de bajada
+(su piso de ruido es 20–36 %); el resto, ±3 %. Neutro, como se esperaba de 4
+bytes.
+
+Lo siguiente de A2, la marca de tiempo de GRIT por la del túnel (4 bytes
+más), pide que el túnel selle cada STREAM con el reloj que GRIT anotó: el NACK
+de una pérdida reconoce la transmisión por ese valor exacto
+(`cg_st_tx_nack`). Queda para el encabezado de subflujo.
 
 ### Etapa A2: el encabezado de subflujo y los frames
 
