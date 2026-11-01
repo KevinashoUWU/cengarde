@@ -104,6 +104,59 @@ OpenMPTCProuter (OMR) on the same modems. These are field measurements, not
 - Redundancy mode (2026-10-29, `field-r7`), GRIT against a plain TCP in the
   middle: download +9 % with lower ping and 15 % less data, upload +12 %.
 
+### Evening of 2026-10-31: against OMR, UDP and a dead primary link
+
+Same four modems, one router, and two Vultr VPSes in Santiago, one per
+system. The arms always alternated, never at once. This is one evening on one
+testnet, and a busy one: absolute numbers are far below the early-morning
+tests of 2026-10-29 (both systems were above 500 Mbit/s then), so compare the
+two columns, not the figures with the night above.
+
+| Test | cengarde | OMR |
+| --- | --- | --- |
+| Speedtest (Ookla CLI, Santiago server, 3 rounds): download, mean | 184 Mbit/s | 194 Mbit/s |
+| same, upload, mean | 119 Mbit/s | 94 Mbit/s |
+| same, idle ping | 37-41 ms | 44 ms |
+| same, ping loaded by the download | 54-62 ms | 624-798 ms |
+| same, ping loaded by the upload | 78-91 ms | 128-167 ms |
+
+- Download is level (OMR ahead in two rounds, cengarde in one, within the
+  noise). Upload is +27 % on the mean, with cengarde ahead in two of the three
+  rounds. The loaded ping during the download is about 12 times lower.
+- **UDP at fixed rates** (iperf3, 10 s). OMR carries UDP through its VPN over
+  a single link and receives no more than about 25 Mbit/s; downloading at 60,
+  100 and 150 Mbit/s it lost 53, 77 and 86 %. cengarde spreads UDP over all
+  the links: 0 % loss downloading at 150 Mbit/s. Uploading it carried up to
+  about 80 Mbit/s (the modems' total upload is about 120); at 150 Mbit/s it
+  sent more than they carry and lost 53 %.
+- **The primary link dies with its interface still up** (Entel, OMR's MPTCP
+  master; all its traffic dropped), in the middle of a download:
+
+| Cut | cengarde | OMR |
+| --- | --- | --- |
+| 4 TCP flows, 25 s cut, 2 rounds: seconds near zero | 0 and 1 | 8 and 1 |
+| same, ping loss | 0 % in both rounds | 32 % in round 1, 0 % in round 2 |
+| 1 TCP flow of 90 s, 45 s cut, 2 rounds: connection survives | yes, both | yes, both |
+| same, seconds near zero | 0 and 1 (about 190 to 150 Mbit/s on three modems) | 14 and 5 |
+| New HTTPS connection every 2 s during the cut: succeeded | 46 of 46 | 20 of 27 |
+| same, median time to connect | 0.23-0.26 s | 1.7-1.8 s (worst 3.4 s) |
+
+  Each MPTCP connection opens its first subflow on the master, so OMR's new
+  connections wait on the dead link. cengarde has no master link.
+- **Fairness caveat:** the iperf3 target of the UDP and cut tests was the
+  cengarde VPS, which OMR reached over the internet, one hop inside the same
+  datacenter. The new-connection test went to a neutral server. cengarde's
+  UDP was measured through its tunnel address.
+- **Engine changes behind these numbers** (this week, A/B of 3 alternating
+  rounds per arm, in the field):
+  - a wider per-link subflow memory, so lost packets are always resent
+    promptly: download +29 % (223 to 289 Mbit/s, PR #136);
+  - the stress copies are off in bonding mode, because they flooded slow
+    links (PR #137);
+  - GRIT's retransmission timer now knows when each packet's link should
+    deliver it (MPGRIT step U2a): download +17 % and 35 % fewer duplicate
+    retransmissions (PR #139, open).
+
 ## Quick start
 
 ### Router (OpenWrt, recommended)
