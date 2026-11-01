@@ -1308,6 +1308,12 @@ escenario (pedido del usuario: «no lo mates del todo»).
 - `link_cc_bits` y `link_cc_budget_ms` en una configuración vieja: un aviso
   y sigue (`retired_keys`), no una clave desconocida; `cengarde-setup` y
   `cengarde-vps-admin` ya no las pasan.
+- **El mismo motor:** con la configuración de hoy (7438 / 7470 antes, nada
+  ahora) los caminos activos son los mismos. Laboratorio
+  (`~/campo/2026-11-01/lcclean/`, 12 casos × 2 sentidos × 3, más 6 de
+  `fade` y `cell4`; 192 corridas, 0 fallidas): +1,6 % de media geométrica,
+  11 de 24, los casos ruidosos para los dos lados (`cell4` de subida −10 %
+  en la primera tanda y +11 % en la segunda).
 
 ## Pendiente
 
