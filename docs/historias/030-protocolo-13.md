@@ -308,6 +308,7 @@ resto igual (el flujo tipo TS no es TS para `dgclass.h`, va por la regla del
 plazo; 8,2 contra 9,2 ‰ con la misma regla es el piso de ruido). Que todo
 espere el rescate no agrega nada medible y cambiaría el TCP de fuera de
 GRIT: queda la variante por clase.
+
 ### Protocolo 14: sin la etiqueta de GRIT (A2a)
 
 Desde el 13 un mensaje de GRIT viaja solo como STREAM, bajo el MAC del túnel
