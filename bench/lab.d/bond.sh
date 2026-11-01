@@ -1208,8 +1208,10 @@ bond_tsreal_start() {
 		tx=$NS_SRV rx=$NS_CLI rxa=10.79.0.2
 	fi
 	rm -f "$RUN/tsreal-rx.err" "$RUN/tsreal-tx.err"
-	ip netns exec "$rx" timeout $(($2 + 4)) ffmpeg -hide_banner -nostdin -i \
-		"udp://$rxa:7004?fifo_size=1000000&overrun_nonfatal=1" -f null - 2>"$RUN/tsreal-rx.err" &
+	# udp's timeout (us): it ends 3 s after the stream does (a blocked recv
+	# does not take SIGTERM); timeout -k as the backstop
+	ip netns exec "$rx" timeout -k 2 $(($2 + 8)) ffmpeg -hide_banner -nostdin -i \
+		"udp://$rxa:7004?fifo_size=1000000&overrun_nonfatal=1&timeout=3000000" -f null - 2>"$RUN/tsreal-rx.err" &
 	BOND_BG="$BOND_BG $!"
 	sleep 0.3
 	ip netns exec "$tx" ffmpeg -hide_banner -nostdin -loglevel error -re -f lavfi -i testsrc2=size=1280x720:rate=30 \
