@@ -1331,6 +1331,14 @@ arranca con un aviso (`retired_keys`). Salen con ellas del estado
 viejas (la XOR y las variantes de `redund_spare`) se quedan hasta decidir
 la protección por omisión.
 
+Con ellas apagadas los caminos activos son los mismos (lo que llamaban sin
+ellas, como el `send_set` del cliente, no tenía efectos). Laboratorio
+(`~/campo/2026-11-01/desvan2/`, 12 casos × 2 sentidos × 3, más 6 de
+`downstall`, `dominant` y `protect`; 216 corridas, 0 fallidas): −0,1 % de
+media geométrica, 12 de 24. `downstall` de subida −17 % con 3 corridas
+quedó en −0,7 % con 9; `dominant` de bajada va de 15 a 125 Mbit/s en todos
+los brazos de todas las tandas del día.
+
 ## Pendiente
 
 - `link_cc`: decidir si pasa a ser lo normal en el motor con `subflow` (hoy
