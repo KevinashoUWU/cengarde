@@ -1201,6 +1201,14 @@ La bajada +25 % (iperf3) y +12 % (Speedtest), las tres rondas en los dos;
 GRIT reenvía menos (89 contra 118 mil por bajada); la subida igual. Queda
 por omisión: 270 en el router y 302 en el VPS.
 
+Con la media, U2a–U2c y la red de madrugada, una ronda contra OMR (con Xray)
+en TCP (Speedtest, servidor 51218, 3 rondas alternadas,
+`~/campo/2026-11-01/vsomr-mean/`): bajada 608 / 607 / 630 (615) contra
+465 / 444 / 536 (482), +28 %; subida 152 / 145 / 157 (151) contra
+101 / 117 / 112 (110), +38 %; ping con carga 74 / 78 ms contra 304 / 101;
+cengarde adelante en todas las rondas. De tarde se empataba la bajada
+(184 contra 194).
+
 ## Pendiente
 
 - `link_cc`: decidir si pasa a ser lo normal con `subflow` (más rondas de
