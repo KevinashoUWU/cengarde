@@ -7,7 +7,7 @@
   `~/campo/2026-11-01/u3a/` (el reordenador apagado),
   `~/campo/2026-11-01/p13a/` (protocolo 12 contra 13) y `p13ts`–`p13ts3`
   (con un flujo como MPEG-TS), `p13skip`, `skipbis`, `p13voice` y
-  `p13tsreal`, `p13wg`, `wgbis`, `p13rtp`, `rtp2`–`rtp4`, `rtpbis`, `ts4`, `ts5`, `voice2`, `tsreal2`, `cls_rtp`, `cls_ts`, `cls_tsl`; terreno `~/campo/2026-11-01/p13field/`; `engine/src/proto.h`,
+  `p13tsreal`, `p13wg`, `wgbis`, `p13rtp`, `rtp2`–`rtp4`, `rtpbis`, `ts4`, `ts5`, `voice2`, `tsreal2`, `cls_rtp`, `cls_ts`, `cls_tsl`; terreno `fieldvid/`; terreno `~/campo/2026-11-01/p13field/`; `engine/src/proto.h`,
   `clientpath.h`, `subflow.h`, `client.c`, `server.c`; historia 029 (U1–U7).
 
 ## TL;DR
@@ -46,8 +46,8 @@
   subida que pierde 3,5 veces menos (7,6–12,9 % → 1,9–4,5 %). Un video RTP
   de verdad destapó que un hueco pedido retenía de más: ahora espera solo
   hasta su plazo, salvo el MPEG-TS, que no tiene búfer propio y espera su
-  rescate; el RTP nunca se retiene (`dgclass.h`). RTP 94 % de los cuadros
-  (88 % el 12), MPEG-TS real 93 % (91 % el 12).
+  rescate (`dgclass.h`). Laboratorio: RTP 93 % de los cuadros (88 % el 12),
+  MPEG-TS real 93 % (91 % el 12); en terreno, con video real, igual al 12.
 - **Lo que viene:** el encabezado de subflujo con anti-replay por enlace,
   frames `STREAM` y `DATAGRAM` (de ~46 a ~25 B por paquete), las clases por
   flujo para los datagramas (MPEG-TS/RTP en orden con plazo, RIST directo,
@@ -291,8 +291,9 @@ estado):
   de latencia) o el tope. La marca va en el bit alto del `link` del
   casillero retenido (el casillero sigue de 20 bytes).
 - **RTP/RTCP** (primer byte 10xxxxxx, el demux de la RFC 7983, con un tipo de
-  carga de RTP o RTCP y su lista de CSRC dentro; RIST es RTP): nunca se
-  retiene (`nohold`).
+  carga de RTP o RTCP y su lista de CSRC dentro; RIST es RTP): en la primera
+  versión nunca se retenía (`nohold`); en terreno eso le quitó el rescate y
+  quedó con la regla del plazo, como lo demás (abajo).
 - **Lo demás** (TCP fuera de GRIT, QUIC, VPN, otro UDP): la regla del plazo.
   GRIT no pasa por el reordenador (STREAM).
 
@@ -307,6 +308,29 @@ resto igual (el flujo tipo TS no es TS para `dgclass.h`, va por la regla del
 plazo; 8,2 contra 9,2 ‰ con la misma regla es el piso de ruido). Que todo
 espere el rescate no agrega nada medible y cambiaría el TCP de fuera de
 GRIT: queda la variante por clase.
+
+**Terreno** (`~/campo/2026-11-01/fieldvid/`, el NUC y el VPS cambiados juntos,
+3 rondas por brazo; un H.264 pregrabado que el VPS manda con `-c copy`, como
+MPEG-TS sobre UDP y como RTP con TS adentro, junto a un iperf3 de 4 flujos
+por GRIT, en los dos sentidos; la bajada abre la asignación del NUC desde el
+PC hacia la dirección del túnel del VPS):
+
+- Con el RTP sin retener (`3f1455a`): el TS un poco mejor (errores 830 →
+  736 de bajada, 1 188 → 1 063 de subida), pero el RTP perdió 11 veces más
+  paquetes de bajada (123 → 1 406) y casi el doble de subida. Sin retener no
+  hay rescate: un hueco se pide solo mientras algo espera detrás, y en
+  terreno la pérdida de los enlaces es real. En el laboratorio ya se veía
+  (+10 % de paquetes RTP perdidos), escondido bajo más cuadros.
+- El RTP vuelve a la regla del plazo (`8014cea`) y queda igual que el 12:
+  bajada 106 → 73 perdidos, 2 925 → 2 950 errores; subida 285 → 293 y 4 035
+  → 4 008. El TS (la misma regla en las dos rondas del 13), sumado: bajada
+  1 286 contra 1 314 errores, subida 2 233 contra 2 208. TCP 205 → 224
+  Mbit/s de bajada y 91 → 89 de subida (en las dos rondas, entre el ruido
+  del terreno, 160–350).
+
+En terreno hay mucha menos pérdida que en el laboratorio y las diferencias se
+achican: el 13 final queda igual al 12 con video real y mejor en el UDP
+constante de subida (la ronda de la tarde).
 
 ### Etapa A2: el encabezado de subflujo y los frames
 
@@ -331,7 +355,6 @@ GRIT: queda la variante por clase.
 
 ## Pendiente
 
-- Repetir el terreno con `232d4c7` (la regla del plazo): está desplegado.
 - La FEC v3 sobre STREAM: hoy no lo cubre (en terreno está apagada); si se
   enciende, decidir si protege también la clase STREAM.
 
