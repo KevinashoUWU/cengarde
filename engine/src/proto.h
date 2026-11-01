@@ -1,4 +1,4 @@
-/* cengarde wire protocol, version 11 (version 1 had no delay reports,
+/* cengarde wire protocol, version 13 (version 1 had no delay reports,
  * version 2 no IP pass flags, version 3 no client hint, cookies or separate
  * control sequence, version 4 no previous link in DATA's flags, version 5
  * no NACK, version 6 no CG_F_FREE, version 7 no parity, version 8 no
@@ -8,7 +8,12 @@
  * FEC v3's wide windows, story 026: CG_REP_RLCW repairs, repair.h, and
  * repairs and parity requests either way, and the active mask after the
  * bonding tail, cg_probe_act: the links the sender carries DATA on, for
- * the receiver's reorderer, active.h).
+ * the receiver's reorderer, active.h; version 12 adds each link's own
+ * sequence, sseq, and SFLOSS / SFACK, story 029; version 13 moves the
+ * protocontroller's stream messages out of DATA into their own class,
+ * CG_T_STREAM, with its own sequence: the reorderer, the rescue and the
+ * codes see the TUN's DATA only, GRIT recovers its own from the subflows,
+ * story 030).
  *
  * Every datagram between client and server carries a 24-byte header followed
  * by the payload (an IP packet from the TUN for DATA, or a protocontroller
@@ -23,9 +28,9 @@
  *                             once and patches this byte per link
  *   4..7    session id     (random, chosen by the client)
  *   8..11   sequence       (per session, direction and class: DATA has one,
- *                          the control messages, probes and replies, another,
- *                          so that the DATA sequence has no holes of their
- *                          making; HELLO carries 0)
+ *                          STREAM another, the control messages, probes and
+ *                          replies, a third, so that the DATA sequence has no
+ *                          holes of their making; HELLO carries 0)
  *   12..15  timestamp      (sender monotonic clock, microseconds, wraps)
  *   16..23  MAC            SipHash-2-4 over bytes 0..15 (byte 3 zeroed) and
  *                          the payload, stored little-endian
@@ -66,7 +71,7 @@
 
 #include "siphash.h"
 
-#define CG_PROTO_VERSION 12
+#define CG_PROTO_VERSION 13
 #define CG_HDR_LEN 28
 #define CG_MAC_OFF 16
 #define CG_SSEQ_OFF 24 /* the link's own sequence (MPGRIT's subflow, story 029): after the MAC, like the link, so a copy on another link takes its own */
@@ -85,7 +90,11 @@ enum cg_type {
 	CG_T_PARQ = 8,        /* either way (server -> client before 11), one link; payload: repairs asked for again (harq.h) */
 	CG_T_SFLOSS = 9,      /* either way (12), one link; payload: a link id, then the sseqs that link lost as a NACK's ranges (subflow.h) */
 	CG_T_SFACK = 10,      /* either way (12), one link; payload: how far each link got, and the bytes it took (subflow.h) */
+	CG_T_STREAM = 11,     /* either way (13); payload: a protocontroller stream's message (protoctl.h), its own sequence */
 };
+
+/* The anti-replay class of a type: DATA, STREAM, or the control messages. */
+enum { CG_CLS_DATA = 0, CG_CLS_STREAM, CG_CLS_CTL };
 
 /* Probes, replies, NACKs and parities count in the control sequence, DATA
  * in its own. */
@@ -93,6 +102,11 @@ static inline int cg_type_ctl(uint8_t type)
 {
 	return type == CG_T_PROBE || type == CG_T_PROBE_REPLY || type == CG_T_NACK || type == CG_T_FEC ||
 	       type == CG_T_REPAIR || type == CG_T_PARQ || type == CG_T_SFLOSS || type == CG_T_SFACK;
+}
+
+static inline int cg_type_cls(uint8_t type)
+{
+	return type == CG_T_DATA ? CG_CLS_DATA : type == CG_T_STREAM ? CG_CLS_STREAM : CG_CLS_CTL;
 }
 
 /* PARQ (version 9, story 023: the parity asked for again): the server,
@@ -254,8 +268,11 @@ struct cg_probe_info {
 	uint32_t rx_top;      /* newest DATA sequence received from the other end (0: none) */
 	uint32_t rx_top_ctl;  /* newest control sequence received from it (0: none) */
 	uint32_t tx_next;     /* the sender's next DATA sequence */
+	uint32_t rx_top_stream; /* newest STREAM sequence received from it (0: none; 13) */
+	uint32_t tx_next_stream; /* the sender's next STREAM sequence (13) */
+	uint32_t rx_sseq;     /* newest sseq received on this path (0: none; 13): what its loss counts against (capacity.h) */
 };
-#define CG_PROBE_INFO_LEN 40
+#define CG_PROBE_INFO_LEN 52
 #define CG_SEQ_LEAP (1u << 20)
 
 /* The bonding tail (story 012, the field mode of split.h): 4 bytes after

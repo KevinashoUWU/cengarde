@@ -14,16 +14,20 @@
  *      sequence: its MAC verifies and it answers a probe of this link that
  *      no reply or HELLO answered yet (epoch.h), or it is dropped; the
  *      caller keeps its cookie for the link's next probes;
- *   5. the anti-replay window of the packet's class (DATA, or the control
- *      messages), before any MAC: OLD is dropped; DUP is dropped once its
+ *   5. the anti-replay window of the packet's class (DATA, STREAM, or the
+ *      control messages), before any MAC: OLD is dropped; DUP is dropped once its
  *      arrival is noted (cg_arr_dup, display only: no MAC was checked);
  *   6. the MAC, paid only by NEW packets;
  *   7. the window is marked, only now;
  *   8. a probe reply goes back to the caller (it updates the link's health);
  *      DATA is the first copy, noted in the arrival ring (expected on every
- *      link of expect, or on its own link only when split), for the TUN.
- * With subflow, every DATA's sseq goes to its link's subflow (subflow.h),
- * a copy's too (5: a copy says its link did not lose it), after its MAC.
+ *      link of expect, or on its own link only when split), for the TUN; a
+ *      STREAM (13) goes to the protocontroller as it comes, past the
+ *      reorderer (its stream keeps its own order, and recovers its own
+ *      losses from the subflows).
+ * With subflow, every DATA's and STREAM's sseq goes to its link's subflow
+ * (subflow.h), a copy's too (5: a copy says its link did not lose it),
+ * after its MAC.
  * A server that restarted needs no window reset here: it goes on past what
  * the probes say we received (cg_probe_info), and the reorderer takes its
  * 2^20 leap as a far packet, then resyncs (reorder.h).
@@ -69,6 +73,7 @@ struct cg_rxs {
 	const uint8_t *k_rx;
 	uint64_t newest_ms;  /* newest verified NEW packet on any link */
 	struct cg_replay replay; /* DATA; its lost: lost on every link (the status's lost_all) */
+	struct cg_replay stream; /* STREAM (13) */
 	struct cg_replay ctl;    /* probe replies */
 	struct cg_arrivals arr;  /* by link, and joint lateness (the status's joint) */
 	struct cg_link_rx rx[CG_MAX_LINKS];
@@ -89,12 +94,14 @@ enum cg_rxv {
 	CG_RXV_REPAIR,   /* a verified repair of the download: the caller may rebuild DATA from it (rlc.h, story 026) */
 	CG_RXV_SFLOSS,   /* a verified SFLOSS: what a link's subflow lost up, for the caller to send again (subflow.h) */
 	CG_RXV_SFACK,    /* a verified SFACK: how far each link's subflow got up (subflow.h) */
+	CG_RXV_STREAM,   /* a first copy of a STREAM: to the protocontroller, past the reorderer (13) */
 };
 
 /* The upload side of the session. */
 struct cg_txs {
 	uint32_t session;
 	uint32_t seq;     /* next DATA sequence */
+	uint32_t seq_stream; /* next STREAM sequence (13) */
 	uint32_t seq_ctl; /* next probe sequence */
 	uint8_t hint;     /* cg_client_hint() of the key */
 	const uint8_t *k_tx;
@@ -153,7 +160,7 @@ static inline enum cg_rxv cg_rx_entry(struct cg_rxs *r, struct cg_rxl *l, unsign
 	if (cg_hdr_parse(h, b, len) < 0 ||
 	    (h->type != CG_T_DATA && h->type != CG_T_PROBE_REPLY && h->type != CG_T_HELLO && h->type != CG_T_NACK &&
 	     h->type != CG_T_FEC && h->type != CG_T_PARQ && h->type != CG_T_REPAIR && h->type != CG_T_SFLOSS &&
-	     h->type != CG_T_SFACK)) {
+	     h->type != CG_T_SFACK && h->type != CG_T_STREAM)) {
 		r->malformed++;
 		return CG_RXV_DROP;
 	}
@@ -163,16 +170,19 @@ static inline enum cg_rxv cg_rx_entry(struct cg_rxs *r, struct cg_rxl *l, unsign
 	}
 	if (h->type == CG_T_HELLO)
 		return cg_rx_hello(r, l, h, b, len, now_ms);
-	w = h->type == CG_T_DATA ? &r->replay : &r->ctl;
+	w = h->type == CG_T_DATA ? &r->replay : h->type == CG_T_STREAM ? &r->stream : &r->ctl;
 	switch (cg_replay_check(w, h->seq)) {
 	case CG_RP_OLD:
 		r->old++;
 		return CG_RXV_DROP;
 	case CG_RP_DUP:
 		r->dups++;
-		if (h->type != CG_T_DATA)
+		if (h->type != CG_T_DATA && h->type != CG_T_STREAM)
 			return CG_RXV_DROP;
-		cg_arr_dup(&r->arr, r->rx, h->seq, now32, link);
+		if (h->type == CG_T_DATA)
+			cg_arr_dup(&r->arr, r->rx, h->seq, now32, link);
+		else
+			r->rx[link].stream++;
 		/* a copy is still its link's: its sseq says the link did not
 		 * lose it, once its MAC says the server sent it */
 		if (r->subflow && h->sseq) {
@@ -211,6 +221,11 @@ static inline enum cg_rxv cg_rx_entry(struct cg_rxs *r, struct cg_rxl *l, unsign
 		return CG_RXV_SFACK;
 	if (r->subflow && h->sseq)
 		cg_sf_rx_took(&l->sf, h->sseq, cg_sf_rx_in(&l->sf, h->sseq, now32), (uint32_t)len, now32);
+	if (h->type == CG_T_STREAM) {
+		r->rx[link].stream++;
+		r->rx[link].last_us = now32 ? now32 : 1;
+		return CG_RXV_STREAM;
+	}
 	/* A split packet (split.h) comes on its one link: the others do not
 	 * miss it, and are not late for it. */
 	cg_arr_first(&r->arr, r->rx, h->seq, now32, link, h->flags & CG_F_SPLIT ? (uint16_t)(1u << link) : expect);
@@ -227,7 +242,7 @@ static inline uint32_t cg_up_header(struct cg_txs *t, uint8_t out[CG_HDR_LEN], u
 			    .hint = t->hint,
 			    .link = link,
 			    .session = t->session,
-			    .seq = cg_type_ctl(type) ? t->seq_ctl++ : t->seq++,
+			    .seq = cg_type_ctl(type) ? t->seq_ctl++ : type == CG_T_STREAM ? t->seq_stream++ : t->seq++,
 			    .ts = ts };
 
 	cg_hdr_write(out, &h, t->k_tx, payload, len);
@@ -240,6 +255,12 @@ static inline uint32_t cg_up_header(struct cg_txs *t, uint8_t out[CG_HDR_LEN], u
 static inline uint32_t cg_up_next(struct cg_txs *t)
 {
 	return t->seq++;
+}
+
+/* The next STREAM sequence going up (13), as cg_up_next. */
+static inline uint32_t cg_up_next_stream(struct cg_txs *t)
+{
+	return t->seq_stream++;
 }
 
 /* Writes the header of a packet going up with sequence seq (cg_up_next),
