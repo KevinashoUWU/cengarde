@@ -12,7 +12,8 @@ void test_proto(void)
 	struct cg_hdr h = { .type = CG_T_DATA, .flags = 0, .hint = 0x5a, .link = 5, .session = 0xdeadbeef,
 			    .seq = 0x01020304, .ts = 0xa0b0c0d0 },
 		      p;
-	struct cg_probe_info pi = { 1, 0x80000001, 100, 2, 3, 0xfffffffe, 0xc00c1e, 0x11223344, 0x55667788, 0x99aabbcc },
+	struct cg_probe_info pi = { 1, 0x80000001, 100, 2, 3, 0xfffffffe, 0xc00c1e, 0x11223344, 0x55667788, 0x99aabbcc,
+				    0x0badf00d, 0x13572468, 0x7e7e7e7e },
 			     po;
 	struct cg_hello hl = { 0x01020304, 0xcafef00d }, ho;
 	uint8_t pib[CG_PROBE_INFO_LEN + 8], hb[CG_HELLO_LEN];
@@ -176,7 +177,8 @@ void test_proto(void)
 	cg_probe_info_read(&po, pkt + CG_HDR_LEN);
 	CHECK(po.echo_ts == 1 && po.owd == 0x80000001 && po.interval_ms == 100 && po.rx == 2 && po.wins == 3 &&
 	      po.lag_us == 0xfffffffe && po.cookie == 0xc00c1e && po.rx_top == 0x11223344 &&
-	      po.rx_top_ctl == 0x55667788 && po.tx_next == 0x99aabbcc);
+	      po.rx_top_ctl == 0x55667788 && po.tx_next == 0x99aabbcc && po.rx_top_stream == 0x0badf00d &&
+	      po.tx_next_stream == 0x13572468 && po.rx_sseq == 0x7e7e7e7e);
 	CHECK(!memcmp(pkt + CG_HDR_LEN, "\x00\x00\x00\x01\x80\x00\x00\x01\x00\x00\x00\x64", 12));
 	CHECK(!memcmp(pkt + CG_HDR_LEN + 24, "\x00\xc0\x0c\x1e\x11\x22\x33\x44\x55\x66\x77\x88\x99\xaa\xbb\xcc", 16));
 

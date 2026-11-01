@@ -1392,6 +1392,24 @@ static void rescue_apply(const struct server *s, struct session *S)
 	S->rescue_base_us = S->rocf.rescue_us;
 }
 
+/* With the rescue, S's asked gaps wait at least the least round trip of its
+ * paths (each one's own from the SFACKs, with its queue; cg_harq_rtt_wait_us),
+ * each tick; harq_wait takes it. */
+static void rescue_rtt(const struct server *s, struct session *S)
+{
+	uint32_t best = 0;
+
+	if (!s->cfg->reorder || !S->peer_rescue)
+		return;
+	for (int p = 0; p < CG_MAX_LINKS; p++) {
+		const struct sfpath *F = S->sf[p];
+
+		if (F && F->tx.acks && F->tx.lc.srtt && (!best || F->tx.lc.srtt < best))
+			best = F->tx.lc.srtt;
+	}
+	S->rescue_base_us = cg_harq_rtt_wait_us(cg_rescue_wait_ms(s->cfg) * 1000, best, s->cfg->reorder_max_wait_ms * 1000);
+}
+
 static struct cg_rep_ring rep_ring(const struct session *S);
 
 /* A repair or parity of S's upload whose base is base came at now_ms: no
@@ -3649,6 +3667,7 @@ static void health_tick(struct server *s, uint64_t now_ms)
 		spread_tick(s, S, tag, now_ms);
 		gov_tick(s, S, now_ms);
 		cap_tick(s, S, live, now_ms);
+		rescue_rtt(s, S);
 		path_mtu_tick(s, S, tag, now_ms);
 		for (int p = 0; changed; p++, changed >>= 1) {
 			const struct cg_hlink *h = &S->dh[p];

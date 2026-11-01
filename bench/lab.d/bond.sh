@@ -1194,6 +1194,30 @@ bond_small_start() {
 	BOND_BG="$BOND_BG $!"
 }
 
+# bond_tsreal_start DIR SECS (BOND_TSREAL=1, story 030): a real MPEG-TS
+# through the tunnel, towards where DIR sends, next to the run's traffic:
+# ffmpeg encodes a test pattern in H.264 at 6 Mbit/s into an 8 Mbit/s CBR
+# transport stream over UDP (1316-byte datagrams), and the far end's ffmpeg
+# decodes it; bondtab.py counts its continuity errors, damaged frames and
+# frames decoded. Needs ffmpeg with libx264; the pids go to BOND_BG.
+bond_tsreal_start() {
+	local tx rx rxa
+	if [ "$1" = up ]; then
+		tx=$NS_CLI rx=$NS_SRV rxa=10.79.0.1
+	else
+		tx=$NS_SRV rx=$NS_CLI rxa=10.79.0.2
+	fi
+	rm -f "$RUN/tsreal-rx.err" "$RUN/tsreal-tx.err"
+	ip netns exec "$rx" timeout $(($2 + 4)) ffmpeg -hide_banner -nostdin -i \
+		"udp://$rxa:7004?fifo_size=1000000&overrun_nonfatal=1" -f null - 2>"$RUN/tsreal-rx.err" &
+	BOND_BG="$BOND_BG $!"
+	sleep 0.3
+	ip netns exec "$tx" ffmpeg -hide_banner -nostdin -loglevel error -re -f lavfi -i testsrc2=size=1280x720:rate=30 \
+		-t "$2" -c:v libx264 -preset veryfast -tune zerolatency -b:v 6M -maxrate 6M -bufsize 1M -g 30 \
+		-x264-params nal-hrd=cbr -f mpegts -muxrate 8M "udp://$rxa:7004?pkt_size=1316" 2>"$RUN/tsreal-tx.err" &
+	BOND_BG="$BOND_BG $!"
+}
+
 # bond_sample_start SECS: the engine's status files every second of the run
 # into $RUN/samples (BOND_SAMPLE=1), for bondtab.py's per-link summary of the
 # run's second half; the pid goes to BOND_BG.
@@ -1241,6 +1265,10 @@ bond_run() {
 	if [ "$BOND_SAMPLE" = 1 ]; then
 		bond_sample_start "$s"
 		small+=(--samples "$RUN/samples")
+	fi
+	if [ "${BOND_TSREAL:-0}" = 1 ]; then
+		bond_tsreal_start "$dir" "$s"
+		small+=(--tsreal "$RUN/tsreal-rx.err")
 	fi
 	local pc0 ps0 pepargs=()
 	if [ -n "$BOND_PEP" ]; then

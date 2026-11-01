@@ -2928,10 +2928,29 @@ static uint32_t tcp_budget_us(struct client *c, uint64_t now_us)
 		cg_tcpe_rtt(&c->tcpe, fastest_rtt_us(c, now_us / 1000), (uint32_t)now_us, 10u * 1000 * 1000));
 }
 
+/* The least smoothed round trip of the live links, us (each link's own
+ * from its SFACKs, with its queue, or its probes'); 0: none known. What an
+ * asked gap of the download waits for at least (cg_harq_rtt_wait_us). */
+static uint32_t rtt_floor_us(const struct client *c)
+{
+	uint32_t best = 0;
+
+	for (int i = 0; i < CG_MAX_LINKS; i++) {
+		const struct link *l = &c->link[i];
+		uint32_t r = l->fd < 0 ? 0 : l->sft.acks && l->sft.lc.srtt ? l->sft.lc.srtt : (uint32_t)(l->srtt8_us / 8);
+
+		if (r && (!best || r < best))
+			best = r;
+	}
+	return best;
+}
+
 static void rescue_apply(struct client *c)
 {
 	uint64_t now_us = cg_now_us();
-	uint32_t w = c->cfg->reorder && c->peer_rescue ? cg_rescue_wait_ms(c->cfg) * 1000 : 0,
+	uint32_t w = c->cfg->reorder && c->peer_rescue ? cg_harq_rtt_wait_us(cg_rescue_wait_ms(c->cfg) * 1000, rtt_floor_us(c),
+										       c->cfg->reorder_max_wait_ms * 1000)
+						       : 0,
 		 code = dwide(c, now_us / 1000) ? c->cfg->rescue_code_ms * 1000 : 0, budget = tcp_budget_us(c, now_us);
 
 	/* within TCP's budget (harq.h): held longer, its own repair comes
