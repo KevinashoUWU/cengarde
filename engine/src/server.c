@@ -3060,7 +3060,8 @@ static void down_seal(struct server *s, struct session *S, int m, const struct d
 		cg_hdr_write(s->hdr[j], &h, C->key + CG_SIPHASH_KEY_LEN, buf, len);
 		if (s->scls[j]) {
 			/* a STREAM: kept by its own sequence for its paths' losses
-			 * (on_sfloss), no rescue budget (never sent again here) */
+			 * (on_sfloss); never sent again here, it earns the rescue's
+			 * budget */
 			if (S->sresc_idx && CG_HDR_LEN + len <= CG_RESC_ENTRY) {
 				uint8_t *e = cg_resc_put(&s->sresc, S->sresc_idx, S->id, h.seq, (uint16_t)(CG_HDR_LEN + len),
 							 only < 0 ? CG_RESC_NOLINK : (uint8_t)only);
@@ -3071,6 +3072,14 @@ static void down_seal(struct server *s, struct session *S, int m, const struct d
 					cg_resc_copies(&s->sresc, S->sresc_idx, S->id, h.seq,
 						       (uint16_t)(cg_split_dst(s->pick[j], d->carry, d->k.dup) & s->cmask[j]));
 			}
+			/* it earns the TUN's rescue its share all the same (story 030) */
+			if (S->resc_idx)
+				cg_resc_earn(&S->resc_b,
+					     only < 0 ? (uint32_t)len
+						      : (uint32_t)((uint64_t)len *
+								   cg_cap_rescue_w(&S->cap[only], s->cfg->rescue_target_ms * 1000) /
+								   CG_CAP_W_ONE),
+					     s->cfg->rescue_pct);
 			continue;
 		}
 		S->prev_only = (uint8_t)(only + 1);

@@ -1416,7 +1416,7 @@ static void seal_batch(struct client *c, int m, uint16_t carry, uint16_t dup)
 
 		if (c->scls[j]) {
 			/* a STREAM: kept by its own sequence for its links' losses
-			 * (on_sfloss), no rescue budget (it is never sent again here) */
+			 * (on_sfloss); never sent again here, it earns the rescue's budget */
 			cg_up_seal(&c->txs, c->hdr[j], CG_T_STREAM, c->sflags[j], 0, c->sseq[j], c->sts[j], p, len);
 			if (c->sresc_idx && CG_HDR_LEN + len <= CG_RESC_ENTRY) {
 				uint8_t *e = cg_resc_put(&c->sresc, c->sresc_idx, c->txs.session, c->sseq[j],
@@ -1428,6 +1428,16 @@ static void seal_batch(struct client *c, int m, uint16_t carry, uint16_t dup)
 					cg_resc_copies(&c->sresc, c->sresc_idx, c->txs.session, c->sseq[j],
 						       (uint16_t)(cg_split_dst(c->pick[j], carry, dup) & c->cmask[j]));
 			}
+			/* it earns the TUN's rescue its share all the same: it rides the
+			 * same links, and without it the rescue of a stream next to
+			 * GRIT's ran dry (over_budget, story 030) */
+			if (c->resc_idx)
+				cg_resc_earn(&c->resc_b,
+					     only >= 0 ? (uint32_t)((uint64_t)len *
+								    cg_cap_rescue_w(&c->cap[only], c->cfg->rescue_target_ms * 1000) /
+								    CG_CAP_W_ONE)
+						       : (uint32_t)len,
+					     c->cfg->rescue_pct);
 			continue;
 		}
 		cg_up_seal(&c->txs, c->hdr[j], CG_T_DATA, (uint8_t)(c->sflags[j] | cg_prev_flags((int)c->prev_only - 1)), 0,
