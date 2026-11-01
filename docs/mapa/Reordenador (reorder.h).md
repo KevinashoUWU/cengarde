@@ -3,14 +3,14 @@ tags: [mapa, pieza]
 archivos:
   - engine/src/reorder.h
   - engine/tests/test_reorder.c
-sello: 1bf681a74edd7fd3
+sello: aff5d2b78177201e
 ---
 # Reordenador (reorder.h)
 
 **Grupo:** Recibir — [[Mapa del motor]]
 
 ## Qué hace
-Pone en orden de secuencia lo que llega antes de entregarlo a la TUN. Retiene lo que llegó adelantado por un tiempo acotado; **nunca tira nada**: cada paquete sale una vez. Un hueco se abandona (1) si se fuerza (desborde, pool lleno), (2) nunca mientras no hay nada retenido, (3) por una retransmisión de TCP con `retx_release`, (4) por **RACK**: cada enlace de `rset` trajo un DATA posterior, o (5) en su **plazo**. El plazo sale del enlace más lento: su retardo más 4 desvíos (`CG_RO_DEV_K`) más el margen, acotado por `max_wait` (si hay reparto) o `dup_wait`.
+Pone en orden de secuencia lo que llega antes de entregarlo a la TUN. Retiene lo que llegó adelantado por un tiempo acotado; **nunca tira nada**: cada paquete sale una vez. Un hueco se abandona (1) si se fuerza (desborde, pool lleno), (2) nunca mientras no hay nada retenido, (3) por una retransmisión de TCP con `retx_release`, (4) por **RACK**: cada enlace de `rset` trajo un DATA posterior, o algo de otra clase enviado después del paquete retenido más bajo (`cg_ro_note`: un STREAM del protocontrolador, desde el protocolo 13; sin eso un DATA ralo o a ráfagas, como el video RTP, esperaba hasta el plazo porque los mensajes de GRIT ya no movían la secuencia de DATA en cada enlace, [[030-protocolo-13]]), o (5) en su **plazo**. El plazo sale del enlace más lento: su retardo más 4 desvíos (`CG_RO_DEV_K`) más el margen, acotado por `max_wait` (si hay reparto) o `dup_wait`.
 
 ## Lee
 - Primeras copias verificadas del [[Anti-replay (replay.h)]]: secuencia, ts del emisor, flags (`CG_F_SPLIT`, `CG_F_PREV`, `CG_F_FREE`), enlace y hora de llegada.
