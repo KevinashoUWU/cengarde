@@ -2481,6 +2481,15 @@ static void listen_read(struct server *s, struct lane *ln)
 					continue;
 				}
 				cg_pctl_rx(s->pctl, (uint32_t)(S - s->s), S->id, b + CG_HDR_LEN, len - CG_HDR_LEN, h.link);
+				/* how far its path is, for the reorderer's RACK on the
+				 * sparse DATA (cg_ro_note) */
+				if (s->cfg->reorder) {
+					cg_ro_note(&S->ro, h.link, h.ts);
+					if (S->ro.held) {
+						up_drain(s, &nq, S, ro_rset(s, S, now_ms, now32), now32, 0);
+						ro_track(s, S);
+					}
+				}
 				continue;
 			}
 			if (h.type == CG_T_PARQ) {

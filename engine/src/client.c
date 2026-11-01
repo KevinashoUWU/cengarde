@@ -3599,6 +3599,18 @@ static void ro_drain(struct client *c, uint16_t rset, uint32_t now, int all, uin
 		send_nacks(c, now_ms);
 }
 
+/* A STREAM came on link: the reorderer learns how far that link is (by the
+ * sender's ts, cg_ro_note), which may let a gap of the sparse DATA go by
+ * RACK instead of its deadline. */
+static void ro_stream(struct client *c, unsigned link, uint32_t ts, uint16_t rset, uint32_t now, uint64_t now_ms)
+{
+	if (!c->cfg->reorder)
+		return;
+	cg_ro_note(&c->rxs.ro, link, ts);
+	if (c->rxs.ro.held)
+		ro_drain(c, rset, now, 0, now_ms);
+}
+
 /* A first copy of a STREAM (13) from link: to its stream at once, past the
  * reorderer (a stream keeps its own order and recovers its own losses). */
 static void stream_deliver(struct client *c, unsigned link, uint8_t *payload, size_t len)
@@ -4134,6 +4146,7 @@ static void link_read(struct client *c, struct link *l)
 				continue;
 			if (v == CG_RXV_STREAM) {
 				stream_deliver(c, id, b + CG_HDR_LEN, len - CG_HDR_LEN);
+				ro_stream(c, (unsigned)id, h.ts, rset, now32, now_ms);
 				continue;
 			}
 			if (v != CG_RXV_DATA) {
@@ -4183,6 +4196,7 @@ static void hub_slot(struct client *c, struct cg_rxslot *sl, uint16_t *expect, u
 
 	if (v == CG_RXV_STREAM) {
 		stream_deliver(c, sl->link, sl->buf + CG_HDR_LEN, sl->len - CG_HDR_LEN);
+		ro_stream(c, sl->link, h.ts, *rset, (uint32_t)clock_us, clock_us / 1000);
 		return;
 	}
 	if (v == CG_RXV_DATA) {

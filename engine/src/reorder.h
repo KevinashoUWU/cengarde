@@ -238,12 +238,13 @@ _Static_assert(sizeof(struct cg_ro_slot) == 20, "cg_ro_slot is 20 bytes");
 
 struct cg_ro_link {
 	uint32_t hw;  /* newest DATA sequence it brought (serial max) */
+	uint32_t hts; /* the sender's ts of the newest packet of any class it brought (cg_ro_note, serial max) */
 	uint32_t owd; /* its delay, raw (local clock minus the sender's ts), EWMA 1/8 */
 	uint32_t dev; /* mean of |sample - owd|, gain 1/4 (us) */
 	uint32_t late; /* packets it brought after their gap was given up (wraps) */
 	uint32_t adapt_us; /* adaptive: margin learned from how late its late packets came */
 	uint32_t adapt_t;  /* when it last grew or halved */
-	uint8_t hw_ok, owd_ok;
+	uint8_t hw_ok, owd_ok, hts_ok;
 };
 
 struct cg_ro_stats {
@@ -412,9 +413,40 @@ static inline void cg_ro_owd(struct cg_reorder *r, unsigned link, uint32_t raw_o
  * arithmetic would put it ahead. */
 static inline void cg_ro_sweep(struct cg_reorder *r)
 {
+	uint32_t top = 0;
+	int any = 0;
+
+	for (unsigned i = 0; i < CG_MAX_LINKS; i++) {
+		struct cg_ro_link *l = &r->link[i];
+
+		if (l->hw_ok && (int32_t)(r->head - l->hw) > (int32_t)CG_RO_STALE)
+			l->hw_ok = l->hts_ok = 0; /* its ts is as old as its sequence */
+		if (l->hts_ok && (!any || (int32_t)(l->hts - top) > 0)) {
+			top = l->hts;
+			any = 1;
+		}
+	}
+	/* and a ts half a wrap behind the newest (a link silent ~18 min) before
+	 * serial arithmetic would put it ahead */
 	for (unsigned i = 0; i < CG_MAX_LINKS; i++)
-		if (r->link[i].hw_ok && (int32_t)(r->head - r->link[i].hw) > (int32_t)CG_RO_STALE)
-			r->link[i].hw_ok = 0;
+		if (r->link[i].hts_ok && top - r->link[i].hts > (UINT32_MAX >> 2))
+			r->link[i].hts_ok = 0;
+}
+
+/* Link l brought a verified packet the sender stamped ts, of any class (a
+ * STREAM too, story 030): a gap sent before it is not coming on l either
+ * (FIFO), whatever sequence it had. */
+static inline void cg_ro_note(struct cg_reorder *r, unsigned l, uint32_t ts)
+{
+	struct cg_ro_link *k;
+
+	if (l >= CG_MAX_LINKS)
+		return;
+	k = &r->link[l];
+	if (!k->hts_ok || (int32_t)(ts - k->hts) > 0) {
+		k->hts = ts;
+		k->hts_ok = 1;
+	}
 }
 
 /* What every packet taken teaches. */
@@ -427,6 +459,7 @@ static inline void cg_ro_learn(struct cg_reorder *r, const struct cg_ro_pkt *k)
 			l->hw = k->seq;
 			l->hw_ok = 1;
 		}
+		cg_ro_note(r, k->link, k->ts);
 		cg_ro_owd_sample(l, k->t_arr - k->ts);
 		/* adaptive: no late packet for a while, half of what it learned */
 		if (l->adapt_us && k->t_arr - l->adapt_t >= CG_RO_ADAPT_DECAY_US) {
@@ -467,23 +500,43 @@ static inline void cg_ro_moved(struct cg_reorder *r)
 		r->force = 0;
 }
 
+static inline uint32_t cg_ro_lowest(const struct cg_reorder *r);
+
 /* RACK: 1 and *lim when every link of rset brought a sequence after head,
  * so that every gap before *lim is lost (links are FIFO); 0 when rset is
- * empty or a link of it brought nothing after head. */
+ * empty or a link of it brought nothing after head. A link that brought
+ * no later DATA but something of another class sent after the lowest held
+ * packet (cg_ro_note: a protocontroller's STREAM, 13) is past every gap
+ * below that packet: sparse DATA (an RTP video's frames) between dense
+ * streams would else wait out the deadline, as GRIT's messages no longer
+ * move the DATA sequence on every link. */
 static inline int cg_ro_rack(const struct cg_reorder *r, uint16_t rset, uint32_t *lim)
 {
-	int32_t min = INT32_MAX;
+	int32_t min = INT32_MAX, low = 0;
+	uint32_t low_ts = 0;
+	int have_low = 0;
 
 	if (!rset)
 		return 0;
+	if (r->held) {
+		const struct cg_ro_slot *n = &r->slot[cg_ro_lowest(r) % CG_RO_SLOTS];
+
+		low = (int32_t)(n->seq - r->head);
+		low_ts = n->ts;
+		have_low = 1;
+	}
 	for (unsigned i = 0; rset; i++, rset >>= 1) {
-		int32_t a;
+		const struct cg_ro_link *l = &r->link[i];
+		int32_t a = INT32_MIN;
 
 		if (!(rset & 1))
 			continue;
-		if (!r->link[i].hw_ok)
+		if (l->hw_ok)
+			a = (int32_t)(l->hw - r->head);
+		if (have_low && l->hts_ok && (int32_t)(l->hts - low_ts) > 0 && low > a)
+			a = low;
+		if (a == INT32_MIN)
 			return 0;
-		a = (int32_t)(r->link[i].hw - r->head);
 		if (a < min)
 			min = a;
 	}
@@ -1302,7 +1355,7 @@ static inline int cg_ro_flush(struct cg_reorder *r, struct cg_ro_out *o)
 	r->split_seen = 0;
 	cg_ro_burst_end(r);
 	for (unsigned i = 0; i < CG_MAX_LINKS; i++)
-		r->link[i].hw_ok = 0;
+		r->link[i].hw_ok = r->link[i].hts_ok = 0;
 	memset(r->held_bits, 0, sizeof(r->held_bits));
 	memset(r->slot, 0, sizeof(r->slot));
 	return 0;

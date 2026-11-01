@@ -749,6 +749,36 @@ static void sc_adapt(const struct base *b)
 	CHECK_EQ(R.r.link[1].adapt_us, 0);
 }
 
+/* RACK from another class (story 030): a link that brought no later DATA
+ * but a STREAM sent after the lowest held packet is past the gaps below it. */
+static void sc_note(const struct base *b)
+{
+	rig(CG_RO_SLOTS, b, 200 * MS, 0, 10 * MS, 128, 0x3);
+	in(0, 0, 100, 0, SPLIT, DATA, BIG);
+	CHECK_EQ(in(2, 2 * MS, 200, 0, SPLIT, DATA, BIG), CG_RO_HOLD); /* link 1: nothing yet */
+	cg_ro_note(&R.r, 1, R.b.tsb + 1 * MS); /* sent before 2: says nothing about 1 */
+	CHECK_EQ(drain(300), 0);
+	CHECK_EQ(R.r.held, 1);
+	cg_ro_note(&R.r, 1, R.b.tsb + 2 * MS); /* sent with it: not after */
+	CHECK_EQ(drain(300), 0);
+	cg_ro_note(&R.r, 1, R.b.tsb + 3 * MS); /* after 2: 1 is not coming on link 1 */
+	CHECK_EQ(drain(400), 1);
+	CHECK(OUT_IS(0, 2));
+	CHECK_EQ(R.r.st.lost_rack, 1);
+	CHECK_EQ(R.r.held, 0);
+	/* only the gaps below the lowest held packet: one above it waits */
+	CHECK_EQ(in(4, 4 * MS, 500, 0, SPLIT, DATA, BIG), CG_RO_HOLD);
+	CHECK_EQ(in(6, 6 * MS, 600, 0, SPLIT, DATA, BIG), CG_RO_HOLD);
+	cg_ro_note(&R.r, 1, R.b.tsb + 5 * MS);
+	CHECK_EQ(drain(700), 1); /* 3 goes, 4 out; 5 waits for link 1 */
+	CHECK_EQ(R.r.held, 1);
+	CHECK_EQ(R.r.st.lost_rack, 2);
+	cg_ro_note(&R.r, 1, R.b.tsb + 7 * MS);
+	CHECK_EQ(drain(800), 1);
+	CHECK_EQ(R.r.st.lost_rack, 3);
+	CHECK_EQ(R.r.held, 0);
+}
+
 static void sc_rack(const struct base *b)
 {
 	uint64_t held_total;
@@ -2422,6 +2452,7 @@ void test_reorder(void)
 		sc_spread(b);
 		sc_swing(b);
 		sc_rack(b);
+		sc_note(b);
 		sc_by_link(b);
 		sc_rescue(b);
 		sc_adapt(b);
