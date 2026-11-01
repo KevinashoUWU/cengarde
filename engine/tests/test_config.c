@@ -449,17 +449,14 @@ static void test_config_bonding(void)
 				 sizeof(err), warn, sizeof(warn)), 0);
 	CHECK(c.governor_target_ms == 30 && c.capacity_loss_pct == 0 && c.protocontroller_queue_ms == 50);
 	cg_config_free(&c);
-	/* link_cc_bits: the router's adds the cap (its upload is granted in
-	 * bursts), the VPS's caps only while a link holds a queue; one said wins */
-	CHECK_EQ(cg_config_parse(&c, CLIENT "subflow = yes\nlink_cc = yes\n", err, sizeof(err), warn, sizeof(warn)), 0);
-	CHECK(c.link_cc && c.link_cc_bits == 7438);
-	cg_config_free(&c);
-	CHECK_EQ(cg_config_parse(&c, SERVER "subflow = yes\nlink_cc = yes\n", err, sizeof(err), warn, sizeof(warn)), 0);
-	CHECK(c.link_cc && c.link_cc_bits == 7470);
-	cg_config_free(&c);
-	CHECK_EQ(cg_config_parse(&c, CLIENT "subflow = yes\nlink_cc = yes\nlink_cc_bits = 2\n", err, sizeof(err), warn,
-				 sizeof(warn)), 0);
-	CHECK_EQ(c.link_cc_bits, 2);
+	/* link_cc_bits and link_cc_budget_ms: fixed in the engine, a config
+	 * that still says them runs, with a warning, not an unknown key */
+	warn[0] = 0;
+	CHECK_EQ(cg_config_parse(&c, CLIENT "subflow = yes\nlink_cc = yes\nlink_cc_bits = 2\nlink_cc_budget_ms = 300\n", err,
+				 sizeof(err), warn, sizeof(warn)), 0);
+	CHECK(c.link_cc);
+	CHECK(strstr(warn, "link_cc_bits: fixed in the engine now") && strstr(warn, "link_cc_budget_ms: fixed"));
+	CHECK(!strstr(warn, "unknown key"));
 	cg_config_free(&c);
 	CHECK_EQ(cg_config_parse(&c, CLIENT "link_cc = yes\n", err, sizeof(err), warn, sizeof(warn)), 0);
 	CHECK_EQ(c.link_cc, 0); /* without subflow: off */

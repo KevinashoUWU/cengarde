@@ -4,7 +4,7 @@ archivos:
   - engine/src/eta.h
   - engine/src/linkmodel.h
   - engine/tests/test_eta.c
-sello: cfbd103c913c589c
+sello: 0b12adff1b4e179a
 ---
 # Copias a tiempo (eta.h)
 

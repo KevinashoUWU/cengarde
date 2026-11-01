@@ -783,7 +783,7 @@ touch "$R/etc/cengarde/clients/router.before-rename"
 check "get" admin get
 check "its routers by name, the mode, the FEC and what set takes" \
 	sh -c 'printf "%s\n" "$1" | grep -qx routers=router && printf "%s\n" "$1" | grep -qx mode=custom &&
-		printf "%s\n" "$1" | grep -qx fec=off && printf "%s\n" "$1" | grep -q "^keys=fec fec_code fec_pct .*link_cc_bits"' sh "$OUT"
+		printf "%s\n" "$1" | grep -qx fec=off && printf "%s\n" "$1" | grep -q "^keys=fec fec_code fec_pct .*tcp_aware"' sh "$OUT"
 : >"$CALLS"
 check "set fec_pct 30" admin set fec_pct 30
 check "in engine.local, and in cengarde.conf after the configuration again" \

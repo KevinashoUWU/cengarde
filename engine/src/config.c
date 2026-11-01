@@ -815,6 +815,29 @@ static int get_split(struct cg_ini *ini, struct cg_config *c, char *err, size_t 
 	return 0;
 }
 
+/* The experiments' keys whose winners became the engine's own (story
+ * 029, link_cc_bits' uses of the queue; the rest in docs/desvan/): a
+ * config that still says them runs as before, with a warning. */
+static void retired_keys(struct cg_ini *ini, char *warn, size_t warnlen)
+{
+	static const char *const keys[] = { "link_cc_bits", "link_cc_budget_ms" };
+
+	for (int i = 0; i < ini->n; i++)
+		for (size_t j = 0; j < sizeof(keys) / sizeof(keys[0]); j++) {
+			struct cg_ini_entry *x = &ini->e[i];
+			size_t used;
+
+			if (x->section[0] || strcmp(x->key, keys[j]))
+				continue;
+			x->used = 1;
+			if (!warnlen)
+				continue;
+			used = strlen(warn);
+			snprintf(warn + used, warnlen - used, "%sline %d: %s: fixed in the engine now, ignored (docs/historias/029)",
+				 used ? "\n" : "", x->line, x->key);
+		}
+}
+
 /* The keys only the WireGuard tunnel had (removed in 0.12, story 027): an
  * error that says so, not an unknown key a router or a VPS would run on
  * without. Returns -1 at the first. */
@@ -908,8 +931,6 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	c->subflow = 0;
 	c->protocontroller_offer = 1;
 	c->link_cc = 0;
-	c->link_cc_bits = 10; /* linkcc.h's CG_LC_BITS; the router's 7438 and the VPS's 7470 (below) */
-	c->link_cc_budget_ms = 300; /* MTPT's (the user's: ~300 ms of loaded round trip, up to 500 to explore) */
 	strcpy(c->protocontroller_cc, "auto");
 	strcpy(c->protocontroller_mid_cc, "bbr");
 	c->fec_wait_ms = 10;
@@ -1036,8 +1057,6 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	    get_bool(&ini, "", "subflow", &c->subflow, err, errlen) ||
 	    get_bool(&ini, "", "protocontroller_offer", &c->protocontroller_offer, err, errlen) ||
 	    get_bool(&ini, "", "link_cc", &c->link_cc, err, errlen) ||
-	    get_u32(&ini, "", "link_cc_bits", 0, 8191, &c->link_cc_bits, err, errlen) ||
-	    get_u32(&ini, "", "link_cc_budget_ms", 20, 1000, &c->link_cc_budget_ms, err, errlen) ||
 	    get_str(&ini, "", "protocontroller_cc", c->protocontroller_cc, sizeof(c->protocontroller_cc), err, errlen) ||
 	    get_str(&ini, "", "protocontroller_mid_cc", c->protocontroller_mid_cc, sizeof(c->protocontroller_mid_cc), err, errlen) ||
 	    get_str(&ini, "", "protocontroller_vps", c->protocontroller_vps, sizeof(c->protocontroller_vps), err, errlen) ||
@@ -1121,22 +1140,6 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	}
 	if (!c->subflow) /* each link's own rate needs its SFACKs */
 		c->link_cc = 0;
-	/* The router sends the upload: the operator grants it in bursts, and
-	 * the cap from what a queued link delivered took the upload from 78 and
-	 * 59 to 96 and 101 Mbit/s (OMR 93-95). The VPS sends the download: there
-	 * the cap held always starved a fast link, only while a link holds a
-	 * queue (SATQ) it won +23 % in the lab's fade and +11 % in four field
-	 * rounds (field-l7; 2026-10-28, story 029). Both with the mean of what
-	 * was delivered in 0.5 s for bw (CG_LC_MEAN, 256): the samples' maximum
-	 * read 1.7-5.2 times a saturated modem's capacity, and on the testnet
-	 * at night the download rose 25 % (iperf3) and 12 % (Speedtest) in all
-	 * three rounds, the loaded ping fell from 95 to 71 ms, the upload stayed
-	 * level (2026-11-01, story 029). And the old capacity's last three
-	 * decisions by the link's own rate (NOSEED, DOM, F3: 1024 + 2048 +
-	 * 4096): in the lab +4.1 %, FEC v3's guard and loss the gain (story
-	 * 029). */
-	if (!cg_ini_get(&ini, "", "link_cc_bits"))
-		c->link_cc_bits = c->mode == CG_MODE_CLIENT ? 7438 : 7470;
 	/* governor_target_ms drove four loops at once (clockwork audit C12):
 	 * the capacity's full and the rescue's weight can have their own */
 	if (!c->capacity_sat_ms)
@@ -1317,6 +1320,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 		}
 	}
 
+	retired_keys(&ini, warn, warnlen);
 	for (int i = 0; i < ini.n; i++) {
 		size_t used;
 

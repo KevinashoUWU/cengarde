@@ -1288,12 +1288,32 @@ ABBA, `~/campo/2026-11-01/capfec/`; Ookla cortó 3 Speedtest por límite):
   cuesta: 388 / 104 contra 412 / 115. La testnet vuelve a como estaba (sin
   FEC en el NUC).
 
+### La limpieza del ritmo por enlace (2026-11-01)
+
+`link_cc_bits` tenía 13 bits de experimento. Lo que ganó pasa a ser el
+motor y la perilla desaparece; lo que perdió sale del motor a
+`docs/desvan/`, desacoplado y con lo medido, para retomarlo en otro
+escenario (pedido del usuario: «no lo mates del todo»).
+
+- **Fijo:** los modos por la cola y STARTUP a ×3/2 (2 y 8), el tope por lo
+  entregado con cola (4: siempre en la subida del router; solo con cola en
+  la bajada del VPS, que era el 32, ahora `satq` lo pone `server.c`), la
+  media de 0,5 s (256) y las tres decisiones de la capacidad (1024, 2048,
+  4096).
+- **Al desván:** el MTPT con `link_cc_budget_ms` (128), la cola del reparto
+  por el retardo (1 y 16), la ventana como el planificador de OMR (64, con
+  su parte de `eta.h`) y que el ritmo propio decida solo (512); también lo
+  que hacían los bits ganadores apagados (la semilla de la capacidad,
+  STARTUP a ×2, `bw` por la mayor muestra).
+- `link_cc_bits` y `link_cc_budget_ms` en una configuración vieja: un aviso
+  y sigue (`retired_keys`), no una clave desconocida; `cengarde-setup` y
+  `cengarde-vps-admin` ya no las pasan.
+
 ## Pendiente
 
-- `link_cc`: decidir si pasa a ser lo normal con `subflow` (más rondas de
-  terreno: la bajada de OMR varía 90–166 entre rondas) y quitar
-  `link_cc_bits` una vez fijo; un enlace de subida débil (Claro) sigue con
-  colas de 280–360 ms.
+- `link_cc`: decidir si pasa a ser lo normal en el motor con `subflow` (hoy
+  lo encienden los modos del router y del VPS); un enlace de subida débil
+  (Claro) sigue con colas de 280–360 ms.
 - La salida WAN del NUC por el anillo MAN (remoto07 detrás de un CPE): si el
   trunk o el enrutamiento del NUC limitan.
 - Un enlace que muere en plena descarga hace caer el ritmo de GRIT y deja
@@ -1334,3 +1354,5 @@ ABBA, `~/campo/2026-11-01/capfec/`; Ookla cortó 3 Speedtest por límite):
 - 2026-11-01: la media por omisión (270 / 302), tras las rondas de madrugada.
 - 2026-11-01: la capacidad vieja deja la semilla, el dominante y la FEC v3
   (`link_cc_bits` 1024, 2048 y 4096, por omisión: 7438 / 7470).
+- 2026-11-01: la limpieza del ritmo por enlace: lo que ganó queda fijo,
+  `link_cc_bits` sale y lo que perdió va a `docs/desvan/`.

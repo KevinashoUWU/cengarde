@@ -21,6 +21,7 @@ routers por VPS, nombres con DNS dinámico) en QEMU; falta hardware real.
   y Playwright) y guía; `contrib/`: VPS (cloud-init, NAT) y systemd.
 - `bench/`: laboratorio netns/veth con `udpgen` por el túnel; `docs/historias/`: investigación (índice abajo);
   `docs/mapa/`: mapa del motor (una nota por pieza y por perilla; bóveda Obsidian `~/Obsidian/cengarde`).
+  `docs/desvan/`: lo experimental que sale del motor, desacoplado y con lo medido, para retomarlo.
 
 ## Comandos
 

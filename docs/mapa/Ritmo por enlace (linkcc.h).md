@@ -3,7 +3,7 @@ tags: [mapa, pieza]
 archivos:
   - engine/src/linkcc.h
   - engine/tests/test_linkcc.c
-sello: c55c3110ed30e3bb
+sello: c7c84cbdcada122d
 ---
 # Ritmo por enlace (linkcc.h)
 
@@ -21,18 +21,23 @@ los dejaban a medias.
   tomó el receptor por el enlace; el emisor las convierte en la tasa de
   entrega de BBR (lo entregado desde que salió el `sseq` más nuevo, sobre el
   tiempo en el reloj del receptor) y en su RTT.
-- **Estimación:** `bw`, la mayor muestra de 1–2 s (dos baldes), a lo más 5/4
-  de lo que el enlace entregó mientras tenía cola (`sat`, promedio; caduca a
-  los 2 s sin muestras así): el operador concede en ráfagas y la mayor
-  muestra de las subidas sumaba 140 Mbit/s para 86–100 entregados (terreno,
-  2026-10-28). `rtprop`, el menor RTT de 10 s. Antes de su primera muestra,
-  la capacidad del motor como semilla (`cg_lc_seed`), si no 2 Mbit/s.
+- **Estimación:** `bw`, en STARTUP la mayor muestra de 1–2 s (dos baldes);
+  pasado el arranque, lo entregado en los últimos cinco baldes enteros de
+  100 ms (la media de 0,5 s, `cg_lc_mean_add`, `cg_lc_mean`): con cola en
+  el enlace es su capacidad y sube o baja, sin cola solo sube, y tras un
+  silencio queda como estaba. A lo más 5/4 de lo que el enlace entregó
+  mientras tenía cola (`sat`, promedio; caduca a los 2 s sin muestras así):
+  el operador concede en ráfagas y la mayor muestra de las subidas sumaba
+  140 Mbit/s para 86–100 entregados (terreno, 2026-10-28). En el VPS
+  (`satq`, lo pone `server.c`) ese tope rige solo mientras el enlace tiene
+  cola. `rtprop`, el menor RTT de 10 s. Antes de su primera muestra,
+  2 Mbit/s: nace de su propio arranque, sin la capacidad del motor.
 - **Su cola (`q_us`, `cg_lc_owd`):** el retardo de ida del `sseq` más nuevo
   que nombra un `SFACK` (el reloj del receptor menos la hora de envío: dos
   relojes, solo cuentan sus cambios) sobre su mínimo de 15–30 s (dos
   baldes); no depende de `bw` ni del camino de vuelta.
 - **Modos, por la cola** (objetivo `target_us`, `governor_target_ms`):
-  STARTUP a ×3/2 (×2 se pasaba; la capacidad del motor es la semilla) hasta
+  STARTUP a ×3/2 (×2 se pasaba) hasta
   que `bw` deja de crecer un cuarto en tres rondas (una ronda: un RTT, al
   menos 10 ms) o la cola pasa el objetivo; DRAIN a ×½ hasta que la cola baja
   de la mitad (sin retardo de ida: hasta que lo que va en vuelo cabe en
@@ -46,56 +51,41 @@ los dejaban a medias.
 - **Sin datos:** con menos en vuelo que `bw × rtprop` el enlace estaba corto
   de datos (`cg_lc_idle`): su muestra cuenta solo si es mayor (el
   *app-limited* de BBR).
-- **MTPT** (*Maximum Transfer Point Tracking*, `CG_LC_MTPT`, `link_cc_bits`
-  128; el nombre es del usuario): cada enlace busca su propia cola objetivo
-  perturbando y observando, como el MPPT de un cargador solar
-  (`cg_lc_mtpt`). Cada segundo mueve su objetivo un paso de 20 ms: en el mismo
-  sentido si lo entregado creció 3 % o más, al revés si cayó otro tanto, dos
-  pasos abajo si perdió más de 5 %, y se queda quieto si quedó plano o si su
-  cola no llegó a la mitad del objetivo (tenía menos que llevar). Entre el
-  objetivo base (`governor_target_ms`: solo explora por encima; la primera
-  versión, que bajaba hasta 20 ms y bajaba con lo plano, perdió 22 % de la
-  bajada en terreno) y el techo que da quien lo usa
-  (`cg_lc_target`, `cg_lc_mtpt_cap`): `link_cc_budget_ms` menos cuánto más
-  lento es el enlace que el más rápido, así un enlace chico suma lo que puede
-  dentro de la ventana del grupo y no estira la espera del reordenador.
 - Pura: sin reloj ni E/S; tiempos en µs, tasas en bytes/s.
 
-**La media en vez del máximo** (`link_cc_bits` 256, 2026-10-31, [[029-mpgrit]]): pasado el arranque, `bw` es lo entregado en los últimos cinco baldes enteros de 100 ms (`cg_lc_mean_add`, `cg_lc_mean`; `mean_bps` en el estado); con cola en el enlace es su capacidad y sube o baja, sin cola solo sube, y tras un silencio queda como estaba. Contra la captura de techo el máximo de 1–2 s leía 1,7–5,2 veces la capacidad de un módem saturado (las ráfagas del operador) y la media 0,96–1,00; en terreno, la bajada +21 % y la subida +6 %, y de madrugada (2026-11-01, 3 + 3 rondas) la bajada +25 % (iperf3) y +12 % (Speedtest) en las tres rondas, el ping con carga de 95 a 71 ms, la subida igual: **por omisión** desde entonces (270 en el router, 302 en el VPS).
+**Lo que quedó fijo** (2026-11-01, [[029-mpgrit]], «La limpieza del ritmo por enlace»): cada uso de la cola fue un bit de `link_cc_bits` hasta que se midió; los que ganaron son el motor y la perilla ya no existe (si una configuración vieja la dice, el motor avisa y sigue):
+- Los modos por la cola y STARTUP a ×3/2 (laboratorio, 2026-10-28: +8,7 % y 3–10 veces menos pérdidas por enlace).
+- El tope por lo entregado con cola: siempre en la subida del router (de 78 / 59 a 96 / 101 Mbit/s en terreno), solo con cola en la bajada del VPS (+23 % en `fade`, +11 % en terreno).
+- La media de 0,5 s (contra la captura de techo el máximo leía 1,7–5,2 veces la capacidad de un módem saturado y la media 0,96–1,00; de madrugada la bajada +25 %).
+- Sin la semilla de la [[Capacidad (capacity.h)]] y sin su respaldo en la pista a GRIT (`pctl_hint`); el [[Enlace dominante (dominant.h)]] por el `bw` de cada enlace; la guarda de la [[FEC v3 (fec3.h)]] por la cola propia (`cg_lc_f3_queue`) y su pérdida por el subflujo en el último tick (`cg_lc_tick_loss`). Laboratorio +4,1 %; con la FEC v3 encendida en terreno +9 % de bajada y de subida, con 7,2 % de reparaciones en la bajada en vez de 12,2 %.
 
-**Lo último que decidía la capacidad vieja** (`link_cc_bits` 1024, 2048 y 4096, 2026-11-01, [[029-mpgrit]]): con `CG_LC_NOSEED` el ritmo de un enlace nace de su propio arranque, sin la semilla de [[Capacidad (capacity.h)]], y la pista a GRIT (`pctl_hint`) no cae a la capacidad; con `CG_LC_DOM` el [[Enlace dominante (dominant.h)]] se elige por el `bw` de cada enlace; con `CG_LC_F3` la guarda de la [[FEC v3 (fec3.h)]] lee la cola propia del enlace (`cg_lc_f3_queue`: su retardo de ida sobre el mínimo, si lo tiene) y su pérdida es la del subflujo en el último tick (`cg_lc_tick_loss`: perdidos sobre enviados, por mil), con carga si la cola pasa la mitad del objetivo. En el laboratorio (12 casos × 2 sentidos, 7 corridas por brazo, los tres juntos 4): F3 +4,4 % de media geométrica (16 de 24 casos, arranque +7,4 %, general +4,4 %), los tres juntos +4,1 %, NOSEED y DOM parejos (+0,5 y +1,1 %): **por omisión** los tres (7438 en el router, 7470 en el VPS), y la capacidad ya no decide estas tres cosas mientras `link_cc` esté encendido. Lo que cuesta: `lossy` de subida baja de 113 a 104 Mbit/s con F3 (más reparaciones por la pérdida que sí ve el subflujo) y su ping con carga baja de 145 a 105 ms.
-
-**Solo el ritmo propio** (`link_cc_bits` 512, 2026-10-31): un enlace con muestras propias entra al reparto sin esperar a la [[Capacidad (capacity.h)]], los pesos de la capacidad no lo dejan en copias y el rescate lo ve lleno por su propia cola (`cg_lc_full`). Laboratorio +3,4 % (subidas de `fade` +20 %, `ratswitch` +13 %); terreno, 7 rondas: bajada igual, subida −8 %, con ±30 % entre rondas: queda apagado.
+Lo que perdió está en `docs/desvan/`, fuera del motor: la cola del reparto por el retardo (1 y 16: −20 a −53 %), la ventana como el planificador de OMR (64: neutro), el MTPT, que buscaba la cola objetivo de cada enlace perturbando y observando (128, con `link_cc_budget_ms`: −12 % y −6 % en terreno), y que el ritmo propio decida solo (512: subida −8 % en terreno).
 
 ## Lee
 - Cada `SFACK` (`cg_sf_tx_ack`): bytes entregados, tasa, RTT.
 - Cada envío (`cg_sf_tx_take`: `cg_lc_sent`) y cada `SFLOSS`
   (`cg_sf_tx_find`: `cg_lc_lost`).
-- La capacidad del motor en cada tic, como semilla.
 
 ## Decide / escribe
-- Con `link_cc` (experimento, apagado):
+- Con `link_cc` (encendido por los modos del router y del VPS; en el motor, apagado):
   - [[ETA (eta.h)]] (`cg_eta_own`, en cada tic y cada `SFACK`): el ritmo del
     enlace, su retardo sin cola (su `rtprop` sobre el menor: los `SFACK`
     vuelven por el enlace más rápido, así que las diferencias son las de ida)
-    y su cola ahora (`cg_lc_queued`: su retardo de cola al ritmo del enlace;
-    sin retardo de ida, lo que va en vuelo sobre `bw × rtprop`).
-    Pasado `governor_target_ms` de cola (con MTPT, su propio objetivo), el
-    enlace es último recurso.
+    y su cola ahora (`cg_lc_queued`: lo que va en vuelo sobre `bw × rtprop`).
+    Pasado `governor_target_ms` de cola, el enlace es último recurso.
+  - La [[FEC v3 (fec3.h)]] (su guarda y la pérdida de cada enlace) y el
+    [[Enlace dominante (dominant.h)]] (su tasa).
   - El [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] recibe como
     oferta la suma de los ritmos de los enlaces (`CG_SCC_OFFER_LINKS`), tenga
     o no cola: cada enlace sondea y cuida su propia cola.
 - Estado: `subflow.up.rate` (router) y `subflow.down.rate` (VPS), por enlace:
   `mode`, `bw_bps`, `pacing_bps`, `rtprop_ms`, `srtt_ms`, `cwnd`,
-  `inflight`, `cuts`, `queue_ms`, `sat_bps`, `sfacks`, `app_limited`,
-  `target_ms`, y con MTPT `mtpt_cap_ms`, `mtpt_up`, `mtpt_down`.
+  `inflight`, `cuts`, `queue_ms`, `sat_bps`, `mean_bps`, `sfacks`,
+  `app_limited`, `target_ms`.
 
 ## Perillas
 - [[Mapa/Perillas/link_cc|link_cc]]: no. Exige `subflow` en los dos extremos.
-- El objetivo de cola es `governor_target_ms` (60 con `subflow`); con MTPT
-  es de donde parte, y [[Mapa/Perillas/link_cc_budget_ms|link_cc_budget_ms]]
-  (300) da su techo.
-- [[Mapa/Perillas/link_cc_bits|link_cc_bits]] (experimento): qué usos de la cola están encendidos (`CG_LC_QETA`, `CG_LC_QMODE`, `CG_LC_SAT`, `CG_LC_S32`, `CG_LC_QMAX`, `CG_LC_SATQ`, `CG_LC_WND`, `CG_LC_MTPT`, `CG_LC_MEAN`, `CG_LC_ONLY`, `CG_LC_NOSEED`, `CG_LC_DOM`, `CG_LC_F3`); por omisión los modos por la cola y STARTUP a ×3/2 (10, `CG_LC_BITS`), y en el router además el tope por lo entregado con cola (14): su subida se concede en ráfagas; en el VPS el tope solo mientras el enlace tiene cola (46: siempre, dejaba al enlace rápido corto); los dos con la media (256) y sin las tres decisiones de la capacidad (1024 + 2048 + 4096): 7438 en el router y 7470 en el VPS.
+- El objetivo de cola es `governor_target_ms` (60 con `subflow`).
 
 ## Dónde se midió
 - Laboratorio, 2026-10-28 (`~/campo/2026-10-28/lc1`, todavía sin manejar el
@@ -119,12 +109,13 @@ los dejaban a medias.
   los módems, con el ping p95 de 65 a 128 ms ([[029-mpgrit]]).
 
 ## Choques conocidos
-- La [[Capacidad (capacity.h)]] sigue corriendo: con `link_cc` solo da la
-  semilla y decide qué enlaces entran al reparto (los vivos con tasa).
-- Si la capacidad del enlace cae, `bw` la sigue recién cuando la ventana de
-  1–2 s olvida las muestras mayores; mientras tanto la cola crece, la ve el
-  retardo de ida (el enlace drena y `sat` recorta `bw`) y el
-  [[ETA (eta.h)]] desvía el tráfico.
+- La [[Capacidad (capacity.h)]] sigue corriendo: con `link_cc` decide qué
+  enlaces entran al reparto (los vivos con tasa), sus pesos, el rescate
+  lleno y el tope de `cake`.
+- Si la capacidad del enlace cae, `bw` la sigue en medio segundo (la
+  media, con cola); mientras tanto la cola crece, la ve el retardo de ida
+  (el enlace drena y `sat` recorta `bw`) y el [[ETA (eta.h)]] desvía el
+  tráfico.
 - Sin PROBE_RTT: una cola que nunca baja en 30 s haría del mínimo del
   retardo de ida uno con cola; el drenaje sobre el objetivo lo evita en la
   práctica.
