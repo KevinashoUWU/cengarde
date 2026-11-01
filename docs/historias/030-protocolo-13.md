@@ -7,7 +7,7 @@
   `~/campo/2026-11-01/u3a/` (el reordenador apagado),
   `~/campo/2026-11-01/p13a/` (protocolo 12 contra 13) y `p13ts`–`p13ts3`
   (con un flujo como MPEG-TS), `p13skip`, `skipbis`, `p13voice` y
-  `p13tsreal`, `p13wg`, `wgbis`, `p13rtp`, `rtp2`–`rtp4`, `rtpbis`, `ts4`, `ts5`; terreno `~/campo/2026-11-01/p13field/`; `engine/src/proto.h`,
+  `p13tsreal`, `p13wg`, `wgbis`, `p13rtp`, `rtp2`–`rtp4`, `rtpbis`, `ts4`, `ts5`, `voice2`, `tsreal2`; terreno `~/campo/2026-11-01/p13field/`; `engine/src/proto.h`,
   `clientpath.h`, `subflow.h`, `client.c`, `server.c`; historia 029 (U1–U7).
 
 ## TL;DR
@@ -258,7 +258,17 @@ contra 88–89 % del protocolo 12, y perdía el doble de paquetes.
 
 El protocolo 13 queda mejor que el 12 en las tres cosas: el video RTP, el
 flujo constante tipo TS y el TCP. Las rondas anteriores de esta historia
-(voz, MPEG-TS real, WireGuard, terreno) son de `72302ef`, sin esta regla.
+(WireGuard, terreno) son de `72302ef`, sin esta regla. Repetidas con el 13
+final (`232d4c7`, `voice2` y `tsreal2`):
+
+- **Voz:** latencia mediana 99 → 68 ms; paquetes de más de 200 ms 20 423 →
+  1 934 en la ronda (10 veces menos). TCP −1,1 %.
+- **MPEG-TS real:** cuadros decodificados 90,6 → 89,2 %, errores del
+  decodificador +19 % (91 310 → 108 991), en 17 de 24 casos; con `72302ef`
+  eran −27 %. El rescate largo le servía al TS constante y la regla del
+  plazo se lo quita: es el precio del RTP (88 → 92 %) y de la voz. La
+  salida de verdad son las clases por flujo de U5 (el TS en orden con su
+  plazo, el RTP sin esperas). TCP −0,6 %.
 
 ### Etapa A2: el encabezado de subflujo y los frames
 
@@ -283,8 +293,7 @@ flujo constante tipo TS y el TCP. Las rondas anteriores de esta historia
 
 ## Pendiente
 
-- Repetir la voz, el MPEG-TS real y el terreno con `136b9ab` (la regla del
-  plazo).
+- Repetir el terreno con `232d4c7` (la regla del plazo): está desplegado.
 - La FEC v3 sobre STREAM: hoy no lo cubre (en terreno está apagada); si se
   enciende, decidir si protege también la clase STREAM.
 
