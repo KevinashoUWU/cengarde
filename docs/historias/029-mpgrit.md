@@ -1216,6 +1216,29 @@ también las sufriría. Es el argumento concreto del paso U5: los datagramas
 pasan sin esperar, solo se quitan los duplicados. La comparación con OMR en
 UDP de subida queda por repetir con búferes grandes en los dos.
 
+### La media por omisión: las rondas de madrugada (2026-11-01, 03:33)
+
+El estimador de la media (`link_cc_bits` 256) contra el máximo, de madrugada
+(la red holgada, ~500 Mbit/s), brazos alternados, 3 rondas
+(`~/campo/2026-11-01/meannight/`): «media» = 270 / 302, «sin media» = 14 / 46.
+
+| brazo | bajada iperf3 | bajada Speedtest | subida iperf3 | subida Speedtest | ping con carga | p95 en la bajada |
+| --- | --- | --- | --- | --- | --- | --- |
+| media | 486 / 495 / 513 (498) | 577 / 636 / 589 (601) | 151 | 144 | 71 ms | 121 ms |
+| sin media | 454 / 385 / 359 (399) | 552 / 598 / 464 (538) | 150 | 156 | 95 ms | 134 ms |
+
+La bajada +25 % (iperf3) y +12 % (Speedtest), las tres rondas en los dos;
+GRIT reenvía menos (89 contra 118 mil por bajada); la subida igual. Queda
+por omisión: 270 en el router y 302 en el VPS.
+
+Con la media, U2a–U2c y la red de madrugada, una ronda contra OMR (con Xray)
+en TCP (Speedtest, servidor 51218, 3 rondas alternadas,
+`~/campo/2026-11-01/vsomr-mean/`): bajada 608 / 607 / 630 (615) contra
+465 / 444 / 536 (482), +28 %; subida 152 / 145 / 157 (151) contra
+101 / 117 / 112 (110), +38 %; ping con carga 74 / 78 ms contra 304 / 101;
+cengarde adelante en todas las rondas. De tarde se empataba la bajada
+(184 contra 194).
+
 ## Pendiente
 
 - `link_cc`: decidir si pasa a ser lo normal con `subflow` (más rondas de
@@ -1261,3 +1284,4 @@ UDP de subida queda por repetir con búferes grandes en los dos.
   con diccionarios (DC-SYN, DC-ACK).
 - 2026-11-01: GRIT eligiendo el enlace de lo nuevo, medido y aparcado; el UDP
   de subida que no perdía (el búfer del iperf) y el reordenador que retiene el UDP.
+- 2026-11-01: la media por omisión (270 / 302), tras las rondas de madrugada.

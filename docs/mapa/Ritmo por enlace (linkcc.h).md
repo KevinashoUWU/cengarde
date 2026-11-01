@@ -61,7 +61,7 @@ los dejaban a medias.
   dentro de la ventana del grupo y no estira la espera del reordenador.
 - Pura: sin reloj ni E/S; tiempos en µs, tasas en bytes/s.
 
-**La media en vez del máximo** (`link_cc_bits` 256, 2026-10-31, [[029-mpgrit]]): pasado el arranque, `bw` es lo entregado en los últimos cinco baldes enteros de 100 ms (`cg_lc_mean_add`, `cg_lc_mean`; `mean_bps` en el estado); con cola en el enlace es su capacidad y sube o baja, sin cola solo sube, y tras un silencio queda como estaba. Contra la captura de techo el máximo de 1–2 s leía 1,7–5,2 veces la capacidad de un módem saturado (las ráfagas del operador) y la media 0,96–1,00; en terreno, la bajada +21 % y la subida +6 %. En prueba antes de quedar por omisión.
+**La media en vez del máximo** (`link_cc_bits` 256, 2026-10-31, [[029-mpgrit]]): pasado el arranque, `bw` es lo entregado en los últimos cinco baldes enteros de 100 ms (`cg_lc_mean_add`, `cg_lc_mean`; `mean_bps` en el estado); con cola en el enlace es su capacidad y sube o baja, sin cola solo sube, y tras un silencio queda como estaba. Contra la captura de techo el máximo de 1–2 s leía 1,7–5,2 veces la capacidad de un módem saturado (las ráfagas del operador) y la media 0,96–1,00; en terreno, la bajada +21 % y la subida +6 %, y de madrugada (2026-11-01, 3 + 3 rondas) la bajada +25 % (iperf3) y +12 % (Speedtest) en las tres rondas, el ping con carga de 95 a 71 ms, la subida igual: **por omisión** desde entonces (270 en el router, 302 en el VPS).
 
 **Solo el ritmo propio** (`link_cc_bits` 512, 2026-10-31): un enlace con muestras propias entra al reparto sin esperar a la [[Capacidad (capacity.h)]], los pesos de la capacidad no lo dejan en copias y el rescate lo ve lleno por su propia cola (`cg_lc_full`). Laboratorio +3,4 % (subidas de `fade` +20 %, `ratswitch` +13 %); terreno, 7 rondas: bajada igual, subida −8 %, con ±30 % entre rondas: queda apagado.
 
@@ -93,7 +93,7 @@ los dejaban a medias.
 - El objetivo de cola es `governor_target_ms` (60 con `subflow`); con MTPT
   es de donde parte, y [[Mapa/Perillas/link_cc_budget_ms|link_cc_budget_ms]]
   (300) da su techo.
-- [[Mapa/Perillas/link_cc_bits|link_cc_bits]] (experimento): qué usos de la cola están encendidos (`CG_LC_QETA`, `CG_LC_QMODE`, `CG_LC_SAT`, `CG_LC_S32`, `CG_LC_QMAX`, `CG_LC_SATQ`, `CG_LC_WND`, `CG_LC_MTPT`); por omisión los modos por la cola y STARTUP a ×3/2 (10, `CG_LC_BITS`), y en el router además el tope por lo entregado con cola (14): su subida se concede en ráfagas; en el VPS el tope solo mientras el enlace tiene cola (46: siempre, dejaba al enlace rápido corto).
+- [[Mapa/Perillas/link_cc_bits|link_cc_bits]] (experimento): qué usos de la cola están encendidos (`CG_LC_QETA`, `CG_LC_QMODE`, `CG_LC_SAT`, `CG_LC_S32`, `CG_LC_QMAX`, `CG_LC_SATQ`, `CG_LC_WND`, `CG_LC_MTPT`); por omisión los modos por la cola y STARTUP a ×3/2 (10, `CG_LC_BITS`), y en el router además el tope por lo entregado con cola (14): su subida se concede en ráfagas; en el VPS el tope solo mientras el enlace tiene cola (46: siempre, dejaba al enlace rápido corto); los dos con la media (256): 270 en el router y 302 en el VPS.
 
 ## Dónde se midió
 - Laboratorio, 2026-10-28 (`~/campo/2026-10-28/lc1`, todavía sin manejar el
