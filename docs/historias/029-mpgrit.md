@@ -1186,6 +1186,21 @@ Los cuatro módems, alternados (nunca a la vez), cengarde con U2a.
   contra 10.79.0.1. Arreglo posible: que el VPS conteste por el túnel con la
   pública como origen (la ruta de la red del túnel con `src`), por probar.
 
+### La media por omisión: las rondas de madrugada (2026-11-01, 03:33)
+
+El estimador de la media (`link_cc_bits` 256) contra el máximo, de madrugada
+(la red holgada, ~500 Mbit/s), brazos alternados, 3 rondas
+(`~/campo/2026-11-01/meannight/`): «media» = 270 / 302, «sin media» = 14 / 46.
+
+| brazo | bajada iperf3 | bajada Speedtest | subida iperf3 | subida Speedtest | ping con carga | p95 en la bajada |
+| --- | --- | --- | --- | --- | --- | --- |
+| media | 486 / 495 / 513 (498) | 577 / 636 / 589 (601) | 151 | 144 | 71 ms | 121 ms |
+| sin media | 454 / 385 / 359 (399) | 552 / 598 / 464 (538) | 150 | 156 | 95 ms | 134 ms |
+
+La bajada +25 % (iperf3) y +12 % (Speedtest), las tres rondas en los dos;
+GRIT reenvía menos (89 contra 118 mil por bajada); la subida igual. Queda
+por omisión: 270 en el router y 302 en el VPS.
+
 ## Pendiente
 
 - `link_cc`: decidir si pasa a ser lo normal con `subflow` (más rondas de
@@ -1229,3 +1244,4 @@ Los cuatro módems, alternados (nunca a la vez), cengarde con U2a.
 - 2026-11-01: el paso U2c, el RTT de cada enlace para el temporizador.
 - 2026-11-01: los nombres (GRIT con SLATE) y el plan de la compresión
   con diccionarios (DC-SYN, DC-ACK).
+- 2026-11-01: la media por omisión (270 / 302), tras las rondas de madrugada.
