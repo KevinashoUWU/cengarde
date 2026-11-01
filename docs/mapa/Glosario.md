@@ -5,7 +5,7 @@ archivos:
   - engine/src/split.h
   - engine/src/capacity.h
   - engine/src/reorder.h
-sello: bbf9b00b5920192f
+sello: 8c817cb2e711c4bf
 ---
 # Glosario
 
