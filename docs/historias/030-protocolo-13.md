@@ -7,7 +7,7 @@
   `~/campo/2026-11-01/u3a/` (el reordenador apagado),
   `~/campo/2026-11-01/p13a/` (protocolo 12 contra 13) y `p13ts`–`p13ts3`
   (con un flujo como MPEG-TS), `p13skip`, `skipbis`, `p13voice` y
-  `p13tsreal`, `p13wg`, `wgbis`, `p13rtp`, `rtp2`–`rtp4`, `rtpbis`, `ts4`, `ts5`, `voice2`, `tsreal2`, `cls_rtp`, `cls_ts`, `cls_tsl`; terreno `fieldvid/`; terreno `~/campo/2026-11-01/p13field/`; `engine/src/proto.h`,
+  `p13tsreal`, `p13wg`, `wgbis`, `p13rtp`, `rtp2`–`rtp4`, `rtpbis`, `ts4`, `ts5`, `voice2`, `tsreal2`, `cls_rtp`, `cls_ts`, `cls_tsl`, `p14a`; terreno `~/campo/2026-11-01/p13field/` y `fieldvid/`; `engine/src/proto.h`,
   `clientpath.h`, `subflow.h`, `client.c`, `server.c`; historia 029 (U1–U7).
 
 ## TL;DR
@@ -308,6 +308,22 @@ resto igual (el flujo tipo TS no es TS para `dgclass.h`, va por la regla del
 plazo; 8,2 contra 9,2 ‰ con la misma regla es el piso de ruido). Que todo
 espere el rescate no agrega nada medible y cambiaría el TCP de fuera de
 GRIT: queda la variante por clase.
+### Protocolo 14: sin la etiqueta de GRIT (A2a)
+
+Desde el 13 un mensaje de GRIT viaja solo como STREAM, bajo el MAC del túnel
+y fuera de todo código de reparación: su etiqueta SipHash de 4 bytes (contra
+las reconstrucciones erradas de la FEC) ya no cuida nada. El 14 la quita
+(`protoctl.h`), con su hash en cada mensaje de los dos extremos y el contador
+`corrupt`; `rebuilt.h` da por basura lo rehecho que parezca un mensaje.
+Laboratorio (`p14a`, 12 casos × 2 × 3, contra el 13 final): TCP +2,6 % y
+pérdida del flujo TS 8,0 → 9,2 ‰, las dos cosas por `protect` de bajada
+(su piso de ruido es 20–36 %); el resto, ±3 %. Neutro, como se esperaba de 4
+bytes.
+
+Lo siguiente de A2, la marca de tiempo de GRIT por la del túnel (4 bytes
+más), pide que el túnel selle cada STREAM con el reloj que GRIT anotó: el NACK
+de una pérdida reconoce la transmisión por ese valor exacto
+(`cg_st_tx_nack`). Queda para el encabezado de subflujo.
 
 **Terreno** (`~/campo/2026-11-01/fieldvid/`, el NUC y el VPS cambiados juntos,
 3 rondas por brazo; un H.264 pregrabado que el VPS manda con `-c copy`, como
@@ -355,6 +371,7 @@ constante de subida (la ronda de la tarde).
 
 ## Pendiente
 
+- El protocolo 14 en terreno.
 - La FEC v3 sobre STREAM: hoy no lo cubre (en terreno está apagada); si se
   enciende, decidir si protege también la clase STREAM.
 
@@ -366,3 +383,4 @@ constante de subida (la ronda de la tarde).
   que no pasa por GRIT; WireGuard adentro y el terreno; el RTP real, `cg_ro_note`
   y el hueco pedido que espera solo hasta su plazo; el reordenador por
   clase de datagrama (`dgclass.h`).
+  y el hueco pedido que espera solo hasta su plazo; el protocolo 14 (A2a).
