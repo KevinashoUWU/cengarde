@@ -4,14 +4,14 @@ archivos:
   - engine/src/proto.h
   - engine/src/proto.c
   - engine/tests/test_proto.c
-sello: 994a5b4395a36300
+sello: 20703754ff859156
 ---
 # Sondas y cola de bonding (proto.h)
 
 **Grupo:** Medir — [[Mapa del motor]]
 
 ## Qué hace
-Es la fuente de casi todas las medidas. El cliente manda una sonda por enlace; el servidor responde por el mismo enlace. Cada sonda o respuesta lleva lo que el otro extremo midió: el retardo de ida (`owd`), los paquetes verificados recibidos por ese camino (`rx`), la secuencia DATA más nueva recibida (`rx_top`) y el intervalo hasta la próxima sonda. Al final va la «cola de bonding» (`cg_probe_bond`), 4 bytes con el peso del enlace, si el extremo reordena, si pide reparto, si guarda para el rescate, si la ruta está llena, el tipo del enlace y si marca sus ACK de TCP (`CG_BOND_TCPMARK`, bit 23); y tras ella la máscara de enlaces activos (`cg_probe_act`, protocolo 11): 16 bits con los enlaces por los que el emisor llevó datos dentro de su retención antes del ts, y la retención en ms ([[Enlaces activos (active.h)]]). La respuesta la lleva solo si la sonda la traía.
+Es la fuente de casi todas las medidas. El cliente manda una sonda por enlace; el servidor responde por el mismo enlace. Cada sonda o respuesta lleva lo que el otro extremo midió: el retardo de ida (`owd`), los paquetes verificados recibidos por ese camino (`rx`), la secuencia DATA más nueva recibida (`rx_top`), y desde el protocolo 13 la de STREAM (`rx_top_stream`, con `tx_next_stream`, para que un servidor reiniciado retome las dos) y la `sseq` más nueva recibida por ese enlace (`rx_sseq`), y el intervalo hasta la próxima sonda. La información son 52 bytes (40 antes del 13). Al final va la «cola de bonding» (`cg_probe_bond`), 4 bytes con el peso del enlace, si el extremo reordena, si pide reparto, si guarda para el rescate, si la ruta está llena, el tipo del enlace y si marca sus ACK de TCP (`CG_BOND_TCPMARK`, bit 23); y tras ella la máscara de enlaces activos (`cg_probe_act`, protocolo 11): 16 bits con los enlaces por los que el emisor llevó datos dentro de su retención antes del ts, y la retención en ms ([[Enlaces activos (active.h)]]). La respuesta la lleva solo si la sonda la traía.
 
 ## Lee
 - El reloj monotónico del emisor (timestamp de la cabecera) y lo recibido por cada camino.
@@ -19,7 +19,7 @@ Es la fuente de casi todas las medidas. El cliente manda una sonda por enlace; e
 
 ## Decide / escribe
 - `owd` → [[Salud y silenciado (health.h)]] (filtro EWMA 1/4), y desde ahí [[Cola por enlace (cg_gov_base)]], [[G4 guarda de dispersión (split.h)]], [[Gobernador (govern.h)]], [[Capacidad (capacity.h)]], [[ETA (eta.h)]].
-- `rx` y `rx_top` → [[Capacidad (capacity.h)]] (lo entregado y la pérdida por secuencia).
+- `rx` y, con `subflow`, `rx_sseq` (si no, `rx_top`) → [[Capacidad (capacity.h)]] (lo entregado y la pérdida por secuencia, contra la secuencia propia del enlace sea cual sea la clase).
 - La cola de bonding → `cg_split_active` en [[Reparto (split.h)]] (vale solo la del mensaje de control más nuevo, `cg_split_tail_newer`).
 - La máscara de enlaces activos de la más nueva → el `rset` del [[Reordenador (reorder.h)]] ([[Enlaces activos (active.h)]]).
 - Respuestas verificadas → [[G3 enlace sin respuesta (split.h)]] (`last_reply_ms`) y el retardo de cada enlace para el [[Reordenador (reorder.h)]] (`cg_ro_owd`).

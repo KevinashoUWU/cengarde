@@ -3,7 +3,7 @@ tags: [mapa, pieza]
 archivos:
   - engine/src/subflow.h
   - engine/tests/test_subflow.c
-sello: 1d65f48d7a2698f3
+sello: 007dc2d961c30433
 ---
 # Subflujo (subflow.h)
 
@@ -71,7 +71,7 @@ entre enlaces, que en terreno se leía como pérdida en el túnel y en GRIT
   `OLD`), `cg_sf_rx_took`, `cg_sf_rx_ack`, `cg_sf_rx_poll` (los huecos
   vencidos, del más viejo al más nuevo), `cg_sf_rx_due_us` (cuándo vence el
   más viejo, para despertar el bucle), `cg_sf_rx_decay`; `cg_sf_tx_init`,
-  `cg_sf_tx_take`, `cg_sf_tx_unsend`, `cg_sf_tx_find`, `cg_sf_tx_ack`;
+  `cg_sf_tx_take`, `cg_sf_tx_unsend`, `cg_sf_tx_find` (y `cg_sf_tx_find_cls`, que dice si la `sseq` llevaba un STREAM: `CG_SF_STREAM`, puesto con `cg_sf_tx_stream`, protocolo 13), `cg_sf_tx_ack`;
   `cg_sfack_put`, `cg_sfack_get`.
 
 ## Lee
