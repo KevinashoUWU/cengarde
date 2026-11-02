@@ -14,7 +14,9 @@
   recuperación es solo su ARQ (SFLOSS por dos enlaces, RACK, temporizador).
   Con pérdida al azar eso cuesta un RTT por reenvío; la FEC v3 la bajaba 9 a
   24 veces en la historia 026.
-- **Paso 1 hecho: `fec_stream` (apagada; el operador decide).** Con los
+- **Paso 1 hecho: `fec_stream` (apagada; el operador decide).** En terreno,
+  el video por GRIT con el jitter más bajo (p99 − p50 13–24 ms contra
+  14–79 del 16) por ~6 % de la subida. Con los
   enlaces llenos cuesta 4–20 % del caudal (GRIT ya recupera la pérdida
   suelta con su ARQ y nadie espera sus huecos desde el 13); con video en
   vivo (limitado por la aplicación) baja el p99 (`lossy` 83 → 49 ms,
@@ -147,6 +149,30 @@ en los dos modos, bonding (FEC v3) y redundancia (`redund_spare`).
   esperar el código; en redundancia la protección depende de lo que sobre,
   así que es un extra y GRIT reenvía al tiro.
 
+## Terreno (2026-11-02, testnet: NUC con 4 celulares, VPS Vultr)
+
+Bonding, `protocontroller = b`, los dos extremos cambiados juntos, 3 rondas
+alternadas por rama: p16; p17 con la configuración del testnet (`base`,
+sin FEC en la subida y XOR en la bajada); p17 con la FEC v3 (`fec = yes`,
+`fec_code = rlc`) en los dos extremos (`f3`); y además `fec_stream` (`fs`).
+Cada rama: iperf3 `-P 4` 15 s de bajada y de subida por GRIT, y un video en
+vivo por GRIT de subida (`livesim`, 8 Mbit/s, 30 s; entre máquinas solo vale
+su jitter, p99 − p50, y el peor sobre la mediana).
+
+| Rama | Bajada (Mbit/s) | Subida | Jitter p99 − p50 (ms) | Peor − p50 (ms) | Rehechos (VPS / router) |
+| --- | --- | --- | --- | --- | --- |
+| p16 | 360/393/381 (378) | 119/125/127 (124) | 14/51/79 | 19/302/243 | — |
+| p17 `base` | 249/429/424 (367) | 108/128/129 (122) | 251/34/21 | 376/66/51 | — |
+| p17 `f3` | 393/420/413 (409) | 122/123/120 (122) | 18/28/21 | 45/60/63 | 0 |
+| p17 `fs` | 338/398/414 (383) | 104/124/116 (115) | 13/16/24 | 22/53/54 | 9270–12 150 / 99–1711 |
+
+- El 17 sin `fec_stream` es el 16 (la bajada y la subida dentro del ruido).
+- Con `fec_stream` el video por GRIT es el más parejo de las cuatro ramas;
+  cuesta ~6 % de la subida llena. Sobrecarga 15–20 %, ningún CRC32C malo.
+- Un tropiezo de la prueba: las claves agregadas al final de un `.conf`
+  caen en su última sección (`[link]`, `[client]`), no en la global; la
+  primera vuelta midió sin FEC.
+
 ## Diseño del paso 3: las clases de UDP (2026-11-02, con el usuario)
 
 El UDP manda a su tasa sin saber de pérdida ni de cola: el túnel no puede
@@ -199,7 +225,7 @@ que le conviene:
 ## Pendiente
 
 - El paso 1 en terreno.
-- Los pasos 1 y 2 en terreno.
+- El paso 2 (redundancia) en terreno.
 - El paso 3.
 
 ## Cambios
@@ -209,3 +235,4 @@ que le conviene:
 - 2026-11-02: la telemetría fiable como caso de uso, del usuario.
 - 2026-11-02: el paso 1 hecho y medido (`fec_stream`, protocolo 17).
 - 2026-11-02: el paso 2 (la protección en redundancia), tres rondas.
+- 2026-11-02: el paso 1 en terreno.
