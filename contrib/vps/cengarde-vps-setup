@@ -507,6 +507,9 @@ engine_conf() {
 		subflow = yes
 		link_cc = yes
 		redund_pace_ms = 150
+		# QUIC, SRT and RIST unheld on the upload (story 031): deduplicated,
+		# never put in order, as the routers' redundancy does
+		flow_learn = yes
 	EOF
 	[ "$FEC" = no ] || cat <<-EOF
 		# The repair data (cengarde-vps-setup fec off removes it): each

@@ -608,7 +608,8 @@ estaba.
 
 Bonding y redundancia fijan `split`, `protocontroller`, `subflow` y
 `link_cc`, y traen como valor por defecto el resto de su ajuste (rescate,
-`tcp_aware`, los del reparto): una opción puesta aparte le gana al modo
+`tcp_aware`, los del reparto; en redundancia, `flow_learn`: QUIC, SRT y RIST
+deduplicados pero sin ordenar): una opción puesta aparte le gana al modo
 (`cengarde-setup engine-conf` muestra el resultado). Un cambio reinicia el
 motor.
 
@@ -616,7 +617,8 @@ motor.
 `redundancy`), o desde el router con el panel de abajo. Bonding enciende
 allá el protocontrolador y `subflow`, `link_cc` y la NACK como pista para
 GRIT; redundancia, el protocontrolador, `subflow`, `link_cc` y
-`redund_pace_ms = 150` para las copias de la bajada. Lo que diga
+`redund_pace_ms = 150` para las copias de la bajada y `flow_learn` para la
+subida. Lo que diga
 `engine.local` gana.
 
 ### Administrar el VPS desde el router

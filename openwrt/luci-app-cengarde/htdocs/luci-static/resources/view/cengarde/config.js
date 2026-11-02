@@ -925,7 +925,7 @@ return view.extend({
 		o.default = 'ordered';
 
 		o = s2.taboption('layer4', form.Flag, 'flow_learn', _('Learn QUIC, SRT and RIST'),
-			_('A flow that says what it is (QUIC\'s handshake, SRT\'s, an RTP stream whose receiver asks for what it lost) is never held by the receiver, when it is not split: each orders and recovers its own. In redundancy it lowered the delay under load (p99 228 to 68 ms in the lab) and cost a third of the rate on lossy uplinks; never in bonding, where unheld QUIC lost half its rate or more. The VPS needs it too for the upload.'));
+			_('A flow that says what it is (QUIC\'s handshake, SRT\'s, an RTP stream whose receiver asks for what it lost) is never held by the receiver, when it is not split: each orders and recovers its own. In redundancy it lowered the delay under load (p99 228 to 68 ms in the lab) and cost a third of the rate on lossy uplinks; never in bonding, where unheld QUIC lost half its rate or more. The redundancy mode turns it on, here and on the VPS.'));
 		o.default = '0';
 
 		o = s2.taboption('layer4', form.Flag, 'reliable_zstd', _('Compress the reliable lane'),

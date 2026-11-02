@@ -733,7 +733,7 @@ sed -i '/^link_cc = no$/d' "$R/etc/cengarde/engine.local"
 check "mode redundancy" setup mode redundancy
 check "each link's subflow and rate deciding the copies (redund_pace_ms 150), the protocontroller stays, no NACK hint" \
 	sh -c 'grep -qx "subflow = yes" "$1" && grep -qx "link_cc = yes" "$1" && grep -qx "redund_pace_ms = 150" "$1" &&
-		! grep -q "^protocontroller_nack" "$1" && grep -qx "protocontroller = b" "$1" &&
+		grep -qx "flow_learn = yes" "$1" && ! grep -q "^protocontroller_nack" "$1" && grep -qx "protocontroller = b" "$1" &&
 		grep -qx "BONDING=\"no\"" "$2" && grep -qx "REDUNDANCY=\"yes\"" "$2"' \
 	sh "$R/etc/cengarde/cengarde.conf" "$R/etc/cengarde/nat.conf"
 setup protocontroller off >/dev/null

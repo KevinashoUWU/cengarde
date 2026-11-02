@@ -270,7 +270,8 @@ preset() {
 # lost there until a copy lost on every uplink reached it as a loss and the
 # links' rate stopped pushing it while it held a queue (story 029, 6139fd3:
 # against a plain TCP in the middle, A, the download +9 % with a lower ping
-# and less data, the upload +12 %).
+# and less data, the upload +12 %). And the flows that say what they are
+# (QUIC, SRT, RIST) unheld: deduplicated, never put in order (story 031).
 mode_presets() {
 	config_get MODE main mode custom
 	case "$MODE" in
@@ -301,6 +302,11 @@ mode_presets() {
 		preset redund_pace_ms 150
 		preset rescue 1
 		preset tcp_aware 1
+		# QUIC, SRT and RIST unheld (story 031): nothing is split, so
+		# their own recovery sees little disorder, and the delay under
+		# load fell (p99 228 -> 68 ms in the lab), for a third of the
+		# rate on lossy uplinks
+		preset flow_learn 1
 		;;
 	custom | '') MODE=custom ;;
 	*)
