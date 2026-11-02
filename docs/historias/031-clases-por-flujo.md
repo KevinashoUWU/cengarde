@@ -579,9 +579,12 @@ azar los paquetes del túnel en los dos sentidos (iptables `statistic`).
   UDP dentro de GRIT llega entero en vez de perder 17 %, el TCP del otro
   equipo queda igual o mejor y el ping baja; en la bajada (~180 Mbit/s)
   30 Mbit/s no llenan nada y los dos dan parecido. 62 mil datagramas por
-  sentido, ninguno botado por viejo. Para probarlo: `cengarde-setup apply`
-  no reinicia el motor, y sin el motor escuchando en el puerto siguiente
-  el TPROXY bota el UDP de la LAN (`/etc/init.d/cengarde restart`).
+  sentido, ninguno botado por viejo. Para probarlo a mano: `uci commit` y
+  `cengarde-setup apply` ponen la regla pero no regeneran la configuración
+  del motor (eso lo hace la recarga del script de inicio: LuCI,
+  `reload_config` o `/etc/init.d/cengarde reload`, y el motor se reinicia
+  solo porque la perilla lo pide); sin el motor escuchando en el puerto
+  siguiente, el TPROXY bota el UDP de la LAN.
 - **Apagada por omisión** hasta más terreno: `protocontroller_udp` en el
   motor, `udp_grit` en OpenWrt (LuCI: «UDP dentro de GRIT»).
 
