@@ -5375,6 +5375,7 @@ int cg_server_run(struct cg_config *cfg, const struct cg_run *run)
 					 .peers = s->cap };
 		struct cg_pctl_ops ops = { .ctx = s, .send = pctl_send, .hint = pctl_hint, .horizon = pctl_horizon };
 
+		pc.fair = cfg->protocontroller_fair;
 		snprintf(pc.cc, sizeof(pc.cc), "%s", cfg->protocontroller_cc);
 		snprintf(pc.mid_cc, sizeof(pc.mid_cc), "%s", cfg->protocontroller_mid_cc);
 		/* variant A's routers connect to the first tunnel address, IPv4 first */

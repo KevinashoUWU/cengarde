@@ -23,6 +23,7 @@
 #include <linux/sockios.h>
 
 #include "engine.h"
+#include "fair.h"
 #include "linkowd.h"
 #include "log.h"
 #include "protoctl.h"
@@ -97,6 +98,7 @@ struct flow {
 	uint8_t family;
 	uint16_t port;
 	uint8_t addr[16];
+	uint32_t host; /* whose it is, for the sends' turns (fair.h): the router's LAN device, the VPS's router */
 	uint32_t ev; /* the epoll events registered */
 	uint16_t aseq, ack_pend;
 	uint64_t ack_t;
@@ -175,6 +177,7 @@ struct cg_pctl {
 	uint32_t *freeslot;
 	uint32_t nfree;
 	uint32_t rr;
+	uint32_t *host, *ford, *fstart, *fcur; /* the sends by host (fair.h): each slot's host, the groups, their cursors */
 	struct cg_pctl_tab tab; /* the server */
 	uint64_t *tkey;
 	uint32_t *tval;
@@ -645,11 +648,17 @@ static void refuse_fd(struct cg_pctl *p, int fd, unsigned reason)
 
 static void a_open(struct cg_pctl *p, int fd, const struct flow *tmp);
 
+static void sa_to(const struct sockaddr_storage *a, uint8_t *family, uint8_t *addr, uint16_t *port);
+
 static void accept_some(struct cg_pctl *p, int v6)
 {
 	for (int k = 0; k < 32; k++) {
-		int fd = accept4(p->lfd[v6], NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC);
+		struct sockaddr_storage from;
+		socklen_t fl = sizeof(from);
+		int fd = accept4(p->lfd[v6], (struct sockaddr *)&from, &fl, SOCK_NONBLOCK | SOCK_CLOEXEC);
 		struct flow *f, tmp;
+		uint8_t hfam, ha[16];
+		uint16_t hport;
 		struct epoll_event e = { .events = EPOLLIN };
 
 		if (fd < 0)
@@ -672,6 +681,8 @@ static void accept_some(struct cg_pctl *p, int v6)
 		f->family = tmp.family;
 		f->port = tmp.port;
 		memcpy(f->addr, tmp.addr, 16);
+		sa_to(&from, &hfam, ha, &hport);
+		f->host = cg_fair_key(ha);
 		f->fd = fd;
 		f->state = F_OPEN;
 		f->id = cg_pctl_id(p->gen[f - p->f], (uint16_t)(f - p->f));
@@ -867,6 +878,7 @@ static struct flow *dg_flow(struct cg_pctl *p, const struct sockaddr_storage *sr
 	memcpy(f->addr, a, 16);
 	f->sport = sport;
 	memcpy(f->saddr, sa, 16);
+	f->host = cg_fair_key(sa);
 	f->dgram = 1;
 #ifdef CG_ZSTD
 	f->zstd = (uint8_t)!!p->cfg.zstd;
@@ -1099,6 +1111,7 @@ static void open_in(struct cg_pctl *p, uint32_t peer, uint32_t sid, const struct
 	f->id = m->id;
 	f->peer = peer;
 	f->sid = sid;
+	f->host = sid; /* the VPS knows the router, not its LAN device */
 	f->family = m->family;
 	f->port = m->port;
 	memcpy(f->addr, m->addr, 16);
@@ -2274,19 +2287,49 @@ void cg_pctl_service(struct cg_pctl *p)
 			due(p, f->open_due);
 		i++;
 	}
-	/* the sends: a segment per flow per round, while the pacers let them */
+	/* the sends, while the pacers let them: a segment per host per round,
+	 * a host's flows taking its turns in rotation (fair.h); without fair, a
+	 * segment per flow per round */
 	for (uint32_t i = 0; i < p->npr; i++)
 		if (p->pr[i].used)
 			cg_scc_refill(&p->pr[i].cc, &p->ccf, now);
-	for (int any = 1; any && p->nused;) {
-		any = 0;
-		for (uint32_t k = 0; k < p->nused; k++) {
-			struct flow *f = &p->f[p->used[(p->rr + k) % p->nused]];
+	if (p->cfg.fair && p->nused) {
+		uint32_t ng;
 
-			if (f->state != F_FREE && send_one(p, f, peer_of(p, f), now))
-				any = 1;
-			else if (f->state != F_FREE && f->state != F_OPEN)
-				p->stop[f->stop]++;
+		for (uint32_t i = 0; i < p->nused; i++)
+			p->host[p->used[i]] = p->f[p->used[i]].host;
+		ng = cg_fair_group(p->used, p->nused, p->rr, p->host, p->ford, p->fstart);
+		memset(p->fcur, 0, ng * sizeof(*p->fcur));
+		for (int any = 1; any;) {
+			any = 0;
+			for (uint32_t g = 0; g < ng; g++) {
+				uint32_t len = p->fstart[g + 1] - p->fstart[g];
+
+				for (uint32_t t = 0; t < len; t++) {
+					uint32_t j = p->fstart[g] + (p->fcur[g] + t) % len;
+					struct flow *f = &p->f[p->ford[j]];
+
+					if (f->state != F_FREE && send_one(p, f, peer_of(p, f), now)) {
+						p->fcur[g] = (p->fcur[g] + t + 1) % len;
+						any = 1;
+						break;
+					}
+					if (f->state != F_FREE && f->state != F_OPEN)
+						p->stop[f->stop]++;
+				}
+			}
+		}
+	} else {
+		for (int any = 1; any && p->nused;) {
+			any = 0;
+			for (uint32_t k = 0; k < p->nused; k++) {
+				struct flow *f = &p->f[p->used[(p->rr + k) % p->nused]];
+
+				if (f->state != F_FREE && send_one(p, f, peer_of(p, f), now))
+					any = 1;
+				else if (f->state != F_FREE && f->state != F_OPEN)
+					p->stop[f->stop]++;
+			}
 		}
 	}
 	p->rr++;
@@ -2455,6 +2498,10 @@ struct cg_pctl *cg_pctl_new(const struct cg_pctl_cfg *cfg, int ep, const struct 
 	p->segs = malloc((size_t)cfg->max_flows * p->nseg * sizeof(*p->segs));
 	p->gen = calloc(cfg->max_flows, sizeof(*p->gen));
 	p->used = calloc(cfg->max_flows, sizeof(*p->used));
+	p->host = calloc(cfg->max_flows, sizeof(*p->host));
+	p->ford = calloc(cfg->max_flows, sizeof(*p->ford));
+	p->fstart = calloc(cfg->max_flows + 1, sizeof(*p->fstart));
+	p->fcur = calloc(cfg->max_flows, sizeof(*p->fcur));
 	p->freeslot = calloc(cfg->max_flows, sizeof(*p->freeslot));
 	for (tsz = 16; tsz < 2 * cfg->max_flows; tsz *= 2)
 		;
@@ -2526,6 +2573,10 @@ void cg_pctl_free(struct cg_pctl *p)
 	free(p->segs);
 	free(p->gen);
 	free(p->used);
+	free(p->host);
+	free(p->ford);
+	free(p->fstart);
+	free(p->fcur);
 	free(p->freeslot);
 	free(p->tkey);
 	free(p->tval);

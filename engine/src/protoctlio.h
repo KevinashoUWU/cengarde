@@ -48,6 +48,7 @@ struct cg_pctl_cfg {
 	char cc[16];         /* the VPS's congestion control toward the destination ("" the kernel's) */
 	int dgram;           /* the router: the reliable lane's UDP (TPROXY on port), flow_class reliable (story 031) */
 	int zstd;            /* the router: the lane's streams compressed (reliable_zstd, zlane.h), when built with zstd */
+	int fair;            /* the sends shared by host before flow (fair.h): the router's LAN device, the VPS's router */
 };
 
 /* protocontroller_mem_mb 0: an eighth of the RAM, from 64 to 1024 MB. The
