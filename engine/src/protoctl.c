@@ -1111,7 +1111,8 @@ static void open_in(struct cg_pctl *p, uint32_t peer, uint32_t sid, const struct
 	f->id = m->id;
 	f->peer = peer;
 	f->sid = sid;
-	f->host = sid; /* the VPS knows the router, not its LAN device */
+	/* the router's LAN device (protocol 19's OPEN), within its router */
+	f->host = m->host ^ (sid * 2654435761u);
 	f->family = m->family;
 	f->port = m->port;
 	memcpy(f->addr, m->addr, 16);
@@ -2089,7 +2090,7 @@ static void send_open(struct cg_pctl *p, struct flow *f, uint64_t now)
 	uint8_t *b = slot_for(p, f->peer, f->sid);
 
 	push(p, cg_pctl_put_open(b, f->id, (uint8_t)((f->dgram ? CG_PCTLF_DGRAM : 0) | (f->zstd ? CG_PCTLF_ZSTD : 0)), f->family,
-				 f->addr, f->port),
+				 f->addr, f->port, f->host),
 	     1);
 	f->open_sent = 1;
 	f->open_due = now + cg_scc_rto(&r->cc, f->open_tries < 6 ? f->open_tries : 6, peer_reo(p, r));
