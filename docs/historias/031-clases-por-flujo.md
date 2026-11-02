@@ -389,10 +389,56 @@ que le conviene:
   rápido y el carril fiable ya lleva su sincronía; cada mensaje sigue
   comprimido por su cuenta, así que el desorden no estorba.
 
+## QUIC por TCP (`quic`, 2026-11-02)
+
+- **La pregunta** (el usuario): ¿se puede hacer proxy de QUIC como el PEP de
+  TCP? Partirlo no: su transporte (números de paquete, ACK, control de flujo)
+  va cifrado, y terminarlo es terminar TLS 1.3 haciéndose pasar por el sitio
+  (una CA propia en cada equipo: se rompe con certificados fijados y ECH).
+  Las propuestas sin descifrar (Sidecar y sus quACK, las extensiones de QUIC
+  para satélite de la IETF) piden que el servidor coopere; MASQUE solo lo
+  mete en otro túnel.
+- **Lo que sí:** todo navegador y casi toda app que habla QUIC vuelve a TCP
+  si el UDP 443 no responde, y ese TCP lo toma GRIT. Es lo que hacen los
+  operadores satelitales con su PEP. Rechazado con «puerto inalcanzable»
+  (no descartado) la vuelta es inmediata: en terreno, el HTTP/3 forzado
+  falló en 0,03 s y Chrome en `auto` usó solo h2. No mete UDP en TCP: la
+  app elige TCP sola.
+- **Perilla** (OpenWrt, no del motor): `quic` = `pass` | `tcp` y
+  `quic_allow` (direcciones o prefijos cuyo QUIC pasa igual); con el
+  protocontrolador encendido, una cadena `cengarde_quic` en la tabla de fw4
+  (gancho `forward`): el UDP 443 de la LAN hacia `cg0` → `reject with icmpx
+  type port-unreachable`. Bonding la trae en `tcp`; redundancia, en `pass`.
+- **Terreno** (p16, 4 módems, Chromium 155, `h3perf.py`, 2 rondas;
+  `~/campo/2026-11-02/quic2tcp`). Bajada de `dl.google.com` (el mismo
+  servidor, por QUIC o por TCP); subida por QUIC a un quic-go del VPS y por
+  TCP a `speed.cloudflare.com` (servidores distintos: la subida la manda
+  Chrome en los dos casos). Mbit/s; p50 y p99 de una consulta chica con
+  carga.
+
+  | Brazo | Google `auto` | Google forzado (h3 / h2) | Subida de Chrome |
+  | --- | --- | --- | --- |
+  | bonding, QUIC | 66 y 91 (p50 65–74 ms) | 79 y 112 (p50 79–100) | 6,0 y 10,6 |
+  | bonding, TCP | 96 y 173 (p50 210–329, p99 0,7–3,4 s) | 158 y 172 (p50 187–252) | 93 y 71 |
+  | redundancia, QUIC | 121 y 100 (p50 102–106) | 86 y 112 (p50 92–96) | 24,0 y 15,6 |
+  | redundancia, TCP | 132 y 89 (p50 247–288, p99 0,9–2,5 s) | 102 y 112 (p50 344–356) | 33 y 36 |
+
+  - **Bonding:** por TCP, la bajada ~1,6× y la subida ~8× (un QUIC por el
+    reparto no llena los enlaces; GRIT sí, cada uno a su tasa). Cuesta
+    retardo con carga: el p50 de ~70–100 a ~190–330 ms (los búferes de GRIT;
+    dentro del presupuesto de ~300 ms, con colas de segundos en el p99).
+  - **Redundancia:** la bajada empata (~105) y QUIC tiene menos retardo;
+    queda en `pass`.
+  - Del mismo día, la variación de corrida a corrida es grande (Google por
+    QUIC en bonding: 38–86 en una tanda, 66–112 en otra).
+- **Se pierde:** lo que solo habla QUIC (WebTransport, algún juego; las VPN
+  sobre QUIC como iCloud Private Relay o WARP tienen su propia vuelta) y el
+  0-RTT de QUIC (el saludo de TCP lo absorbe GRIT en el router).
+
 ## Pendiente
 
 - Terreno: `fec_stream` en redundancia y el carril fiable (con zstd).
-- QUIC en bonding (38–86 Mbit/s contra ~100 en redundancia): repartir por
+- QUIC en bonding, cuando pasa (`quic = pass` o `quic_allow`): repartir por
   flujo (todo un flujo QUIC por un enlace, el plan por flujo de la historia
   014) en vez de por paquete, que MPGRIT haría natural.
 - Prioridad del carril fiable sobre lo masivo dentro de GRIT.

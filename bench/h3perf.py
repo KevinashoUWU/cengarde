@@ -6,7 +6,13 @@ Targets: google (dl.google.com, Google's QUIC sender; download only) and vps
 (Caddy, quic-go, on the VPS's tunnel address; down and up). Prints one JSON
 object.
 
-    h3perf.py h3|h2 google|vps [--secs 15] [--spki HASH] [--g4 IPV4]
+    h3perf.py h3|h2|auto google|vps|cloudflare [--secs 15] [--spki HASH]
+              [--map HOST=IPV4]...
+
+h3 forces QUIC on the target, h2 turns QUIC off, auto leaves Chromium to
+choose (as a user's browser: TCP first, QUIC once the site offers it, TCP
+again when UDP is refused). cloudflare is speed.cloudflare.com, TCP only
+(it offers no HTTP/3): down and up.
 """
 import argparse
 import json
@@ -17,6 +23,8 @@ from playwright.sync_api import sync_playwright
 T = {
     "google": dict(origin="dl.google.com:443", page="https://dl.google.com/cengarde-h3perf",
                    down="/linux/direct/google-chrome-stable_current_amd64.deb", up=None, ping="/robots.txt"),
+    "cloudflare": dict(origin="speed.cloudflare.com:443", page="https://speed.cloudflare.com/cdn-cgi/trace",
+                       down="/__down?bytes=2000000000", up="/__up", ping="/cdn-cgi/trace"),
     "vps": dict(origin="10.79.0.1:5210", page="https://10.79.0.1:5210/index.html",
                 down="/big.bin", up="/up", ping="/index.html"),
 }
@@ -60,21 +68,21 @@ async ([secs, down, up, ping]) => {
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("proto", choices=["h3", "h2"])
+    ap.add_argument("proto", choices=["h3", "h2", "auto"])
     ap.add_argument("target", choices=list(T))
     ap.add_argument("--secs", type=int, default=15)
     ap.add_argument("--spki", default="")
-    ap.add_argument("--g4", default="")
+    ap.add_argument("--map", action="append", default=[])
     a = ap.parse_args()
     t = T[a.target]
     args = ["--no-sandbox"]
     if a.spki:
         args.append(f"--ignore-certificate-errors-spki-list={a.spki}")
-    if a.g4:  # IPv4 only: the testnet's tunnel carries no IPv6
-        args.append(f"--host-resolver-rules=MAP dl.google.com {a.g4}")
+    if a.map:  # IPv4 only: the testnet's tunnel carries no IPv6
+        args.append("--host-resolver-rules=" + ", ".join("MAP %s %s" % tuple(m.split("=", 1)) for m in a.map))
     if a.proto == "h3":
         args += ["--enable-quic", f"--origin-to-force-quic-on={t['origin']}"]
-    else:
+    elif a.proto == "h2":
         args += ["--disable-quic"]
     with sync_playwright() as p:
         b = p.chromium.launch(executable_path="/usr/bin/chromium", args=args, headless=True)

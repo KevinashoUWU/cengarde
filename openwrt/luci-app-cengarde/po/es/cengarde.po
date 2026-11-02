@@ -291,6 +291,24 @@ msgstr "Destinos del protocontrolador"
 msgid "Only the TCP to these addresses or prefixes. Empty: every address that is not private, local or link-local."
 msgstr "Solo el TCP hacia estas direcciones o prefijos. Vacío: toda dirección que no sea privada, local ni de enlace local."
 
+msgid "QUIC"
+msgstr "QUIC"
+
+msgid "No proxy can split QUIC: its transport is encrypted end to end. Over TCP: the LAN's UDP to port 443 into the tunnel is refused, and browsers and apps fall back to TCP at once, which the protocontroller carries over every uplink. As it comes: QUIC passes, one path with jumping delay to its sender. In the field, in bonding, Google's download went from 78-95 to 134-165 Mbit/s over TCP and Chrome's upload from 6-11 to 71-93, with more delay under load; in redundancy both did ~105, QUIC with less delay. The bonding mode takes it over TCP, redundancy as it comes."
+msgstr "Ningún proxy puede partir QUIC: su transporte va cifrado de punta a punta. Por TCP: se rechaza el UDP de la LAN al puerto 443 hacia el túnel, y los navegadores y las apps vuelven al instante a TCP, que el protocontrolador lleva por todos los enlaces. Tal como viene: QUIC pasa, y su emisor ve un solo camino con un retardo que salta. En terreno, en bonding, la bajada de Google pasó de 78–95 a 134–165 Mbit/s por TCP y la subida de Chrome de 6–11 a 71–93, con más retardo con carga; en redundancia ambos hicieron ~105, QUIC con menos retardo. El modo bonding lo lleva por TCP; redundancia, tal como viene."
+
+msgid "As it comes"
+msgstr "Tal como viene"
+
+msgid "Over TCP (the protocontroller)"
+msgstr "Por TCP (el protocontrolador)"
+
+msgid "QUIC allowed to"
+msgstr "QUIC permitido hacia"
+
+msgid "Addresses or prefixes whose QUIC passes anyway."
+msgstr "Direcciones o prefijos cuyo QUIC pasa igual."
+
 msgid "TCP-aware tunnel"
 msgstr "Túnel consciente de TCP"
 

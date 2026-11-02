@@ -1355,6 +1355,30 @@ for v in b a; do
 	fi
 	"$VM" ssh router 'nft delete table ip cgpctltest' || true
 done
+# QUIC to TCP (story 031): the LAN's UDP 443 into the tunnel refused, but to
+# quic_allow; gone with quic = pass
+quic_set() { # MODE
+	"$VM" ssh router "uci set cengarde.main.quic=$1; uci -q delete cengarde.main.quic_allow
+		[ $1 = tcp ] && uci add_list cengarde.main.quic_allow=142.250.0.0/15; uci commit cengarde
+		ubus call service event '{\"type\":\"config.change\",\"data\":{\"package\":\"cengarde\"}}'"
+}
+quic_rule() { "$VM" ssh router "nft list chain inet fw4 cengarde_quic 2>/dev/null | grep -q 'udp dport 443 reject' &&
+	nft list chain inet fw4 cengarde_quic | grep -q '142.250.0.0/15'"; }
+quic_set tcp
+if until_ok 90 quic_rule; then
+	ok "quic tcp: the LAN's UDP 443 into the tunnel refused (fw4's chain cengarde_quic), but to quic_allow"
+else
+	bad "quic tcp: no reject in cengarde_quic"
+	"$VM" ssh router 'nft list chain inet fw4 cengarde_quic; cat /etc/cengarde/protoctl.nft; logread | grep -E "cengarde|firewall" | tail -10'
+fi
+quic_set pass
+quic_gone() { ! "$VM" ssh router "nft list chain inet fw4 cengarde_quic" >/dev/null 2>&1; }
+if until_ok 90 quic_gone; then
+	ok "quic pass: the chain is gone"
+else
+	bad "quic pass: cengarde_quic left behind"
+fi
+"$VM" ssh router 'uci -q delete cengarde.main.quic; uci commit cengarde'
 pctl_set no
 if until_ok 90 eval '! pctl_rule' && until_ok 30 eval '! pctl_conf a' && until_ok 90 tunnel_back &&
 	[ -z "$("$VM" ssh router 'uci show firewall | grep cengarde_protoctl' || true)" ]; then
