@@ -420,6 +420,11 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
   lleva por un flujo de datagramas del protocontrolador, cada datagrama
   entregado en orden, tarde antes que nunca; el firewall y la ruta por marca
   los pone `cengarde-setup`). Ej.: `flow_class = 203.0.113.7:9330 ordered`.
+- **`reliable_zstd` (`yes`), en el router:** el carril fiable comprimido con
+  zstd, cada datagrama sobre la historia de su flujo (`zlane.h`; telemetría
+  JSON en el laboratorio: 5 veces más chica). Necesita que los dos motores se
+  hayan compilado con libzstd (`ZSTD=auto` lo usa si lo encuentra, `ZSTD=1`
+  lo exige, `ZSTD=0` lo deja fuera); un VPS sin zstd rechaza el flujo.
   Cada extremo con las suyas: el VPS para la subida, el router para la bajada.
 - **`reorder_active` (`yes`; `yes` o `no`), en el que recibe:** un hueco
   espera solo a los enlaces por los que el otro extremo está mandando datos

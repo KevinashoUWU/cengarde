@@ -135,6 +135,15 @@ jobs:
           mkdir -p package/feeds/luci
           ln -s ../../../feeds/luci/modules/luci-base package/feeds/luci/luci-base
 
+      # libzstd for the reliable lane's compression (story 031): zstd from
+      # the packages feed, the rest of it stays out.
+      - name: Add zstd from the packages feed
+        run: |
+          cd sdk
+          ./scripts/feeds update packages
+          mkdir -p package/feeds/packages
+          ln -s ../../../feeds/packages/utils/zstd package/feeds/packages/zstd
+
       - name: Build the packages
         run: |
           ln -s "$GITHUB_WORKSPACE/openwrt/cengarde" sdk/package/cengarde
@@ -159,8 +168,10 @@ jobs:
         run: |
           tc=$(echo "$PWD"/sdk/staging_dir/toolchain-*)
           bin=$(find "$PWD/sdk/build_dir" -path '*/.pkgdir/cengarde/usr/sbin/cengarde')
+          # libzstd (the reliable lane) comes from the target's staging dir
+          tgt=$(echo "$PWD"/sdk/staging_dir/target-*)
           printf '#!/bin/sh\nexec %s --library-path %s %s "$@"\n' \
-            "$tc/lib/ld-musl-x86_64.so.1" "$tc/lib" "$bin" > cengarde-musl
+            "$tc/lib/ld-musl-x86_64.so.1" "$tc/lib:$tgt/usr/lib" "$bin" > cengarde-musl
           chmod +x cengarde-musl
           ./cengarde-musl version
           sudo ENGINE=c bench/lab.sh build

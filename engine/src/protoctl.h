@@ -17,6 +17,8 @@
  *         CG_PCTLF_DGRAM (protocol 18, story 031): a datagram stream, the
  *         reliable lane: the destination is UDP, and the stream's bytes are
  *         datagrams, each behind its 16-bit big-endian length (dgframe).
+ *         With CG_PCTLF_ZSTD too, each datagram is compressed on the
+ *         stream's history, both ways (zlane.h, step 3d).
  *   DATA  6..9: the offset's low 32 bits; then the bytes (the sender's
  *         clock when it sent it is the tunnel header's ts, protocol 15:
  *         the engine says which it stamped, cg_pctl_ops.send's ts, and the
@@ -64,6 +66,7 @@ enum { CG_PCTL_OPEN = 1, CG_PCTL_DATA = 2, CG_PCTL_ACK = 3, CG_PCTL_RST = 4 };
 #define CG_PCTLF_EST 0x02
 #define CG_PCTLF_DUP 0x04 /* ACK: a duplicate came since the last ACK (the sender widens its RACK window) */
 #define CG_PCTLF_DGRAM 0x08 /* OPEN: a datagram stream to a UDP destination (protocol 18, story 031) */
+#define CG_PCTLF_ZSTD 0x10  /* OPEN of a datagram stream: each datagram zstd-compressed on the stream's history (zlane.h) */
 #define CG_PCTL_DGRAM_MAX 65507 /* a datagram, at most (IPv4's UDP) */
 #define CG_PCTL_HDR 6
 #define CG_PCTL_DATA_HDR 10

@@ -966,6 +966,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	c->fec_wait_ms = 10;
 	c->fec_pct = 20;
 	c->fec_pct_min = 0;
+	c->reliable_zstd = 1;
 	c->fec_window_ms = 300;
 	c->redund_spare_ms = 50;
 	c->redund_spare_code_ms = 30;
@@ -1093,6 +1094,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	    get_u32(&ini, "", "fec_share_max", 0, 100, &c->fec_share_max, err, errlen) ||
 	    get_fec(&ini, c, err, errlen) ||
 	    get_flow_class(&ini, c, err, errlen) ||
+	    get_bool(&ini, "", "reliable_zstd", &c->reliable_zstd, err, errlen) ||
 	    get_u32(&ini, "", "fec_pct", 1, 50, &c->fec_pct, err, errlen) ||
 	    get_u32(&ini, "", "fec_pct_min", 0, 50, &c->fec_pct_min, err, errlen) ||
 	    get_u32(&ini, "", "fec_window_ms", 10, 1000, &c->fec_window_ms, err, errlen) ||

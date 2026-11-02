@@ -80,6 +80,20 @@ LEO_OBJ = $(patsubst $(LEO_DIR)/%.cpp,$(LEO_TAG)-%.o,$(LEO_SRC))
 CG_CFLAGS += -I$(LEO_DIR)
 endif
 
+# zstd (libzstd, story 031's step 3d): the reliable lane's compression.
+# ZSTD=auto (the default) builds with it when the compiler finds zstd.h and
+# libzstd, 1 requires it, 0 leaves it out (the lane then goes uncompressed;
+# a stream the peer opens compressed is refused).
+ZSTD ?= auto
+ifeq ($(ZSTD),auto)
+ZSTD := $(shell printf '\043include <zstd.h>\nint main(void){return ZSTD_versionNumber()>0?0:1;}\n' | \
+	$(CC) $(CPPFLAGS) $(CFLAGS) -x c - -o /dev/null $(LDFLAGS) -lzstd >/dev/null 2>&1 && echo 1 || echo 0)
+endif
+ifeq ($(ZSTD),1)
+CG_CFLAGS += -DCG_ZSTD
+CG_LDFLAGS += -lzstd
+endif
+
 CORE = src/siphash.c src/proto.c src/util.c src/log.c src/config.c src/blake2s.c src/pair.c src/rs.c
 NET = src/netlink.c src/sock.c src/tun.c src/status.c src/os.c src/ctl.c src/names.c src/protoctl.c src/client.c src/server.c
 # The router's link pumps: threads the unit tests run too (test_threads).

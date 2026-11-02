@@ -14,6 +14,9 @@
 //       packets were big (256 bytes or more) and how many of those arrived
 //       behind a later one: what a reorderer holds is the big ones, and what
 //       overtakes it is mostly small
+//   -j  each packet's payload after the header is a sensor's JSON reading
+//       (the same keys, changing numbers; ~180 bytes): telemetry for the
+//       reliable lane's zstd (story 031), -s ignored
 #define _GNU_SOURCE
 #include <arpa/inet.h>
 #include <endian.h>
@@ -185,8 +188,8 @@ static uint64_t pct(double p)
 int main(int argc, char **argv)
 {
 	struct sockaddr_in bind_a;
-	int have_bind = 0, opt;
-	while ((opt = getopt(argc, argv, "b:p:lr:s:d:g:")) != -1) {
+	int have_bind = 0, opt, json = 0;
+	while ((opt = getopt(argc, argv, "b:p:lr:s:d:g:j")) != -1) {
 		switch (opt) {
 		case 'b': parse_addr(optarg, &bind_a); have_bind = 1; break;
 		case 'p': parse_addr(optarg, &peer); atomic_store(&have_peer, 1); break;
@@ -200,6 +203,7 @@ int main(int argc, char **argv)
 			break;
 		case 'd': duration = atol(optarg); break;
 		case 'g': grace = atol(optarg); break;
+		case 'j': json = 1; break;
 		default: fprintf(stderr, "bad args\n"); return 1;
 		}
 	}
@@ -247,9 +251,18 @@ int main(int argc, char **argv)
 				peer.sin_port = (uint16_t)v;
 			}
 			while (sent < due) {
+				long len = imix ? imix_size(sent) : size;
+
 				h->seq = sent;
 				h->ts_ns = now_ns();
-				if (sendto(sock, pkt, imix ? imix_size(sent) : size, 0, (struct sockaddr *)&peer, sizeof(peer)) < 0)
+				if (json)
+					len = (long)sizeof(*h) +
+					      snprintf(pkt + sizeof(*h), 2048 - sizeof(*h),
+						       "{\"site\":\"manto-verde\",\"sensor\":\"pump-%02d\",\"seq\":%lu,"
+						       "\"pressure_kpa\":%lu.%lu,\"flow_lps\":%lu.%lu,\"temp_c\":%lu,\"ok\":true}",
+						       (int)(sent % 8), (unsigned long)sent, 300 + sent % 17, sent % 10,
+						       40 + sent % 5, sent * 7 % 10, 20 + sent % 9);
+				if (sendto(sock, pkt, (size_t)len, 0, (struct sockaddr *)&peer, sizeof(peer)) < 0)
 					send_err++;
 				sent++;
 			}

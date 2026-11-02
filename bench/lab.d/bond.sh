@@ -405,6 +405,7 @@ BOND_PEP_DST=172.30.1.2
 [ "$BOND_PEP_INNER" = wg ] && BOND_PEP_DST=10.99.0.2
 BOND_PEP_SKIP=${BOND_PEP_SKIP:-} # cga/cgb: TCP ports (iptables multiport) the router does not hand to GRIT
 BOND_RELIABLE=${BOND_RELIABLE:-0} # cgb, up: the small flow from the LAN host to the far host's 7400 on the reliable lane (story 031)
+BOND_SMALL_JSON=${BOND_SMALL_JSON:-0} # 1: the small flow's payload a sensor's JSON reading (udpgen -j), telemetry for zstd
 BOND_PEP_CGMIDCC=${BOND_PEP_CGMIDCC:-} # cga: protocontroller_mid_cc at both ends (empty: the engine's, bbr)
 BOND_PEP_KCP=${BOND_PEP_KCP:---mode fast --datashard 0 --parityshard 0 --nocomp --crypt none --mtu 1300}
 BOND_LIVE_MBIT=${BOND_LIVE_MBIT:-8}
@@ -1257,8 +1258,10 @@ bond_small_start() {
 	ip netns exec "$rx" "$BIN/udpgen" -b "$rxa:$rp" -d $(($2 + 3)) -g 1 >"$RUN/small-rx.out" &
 	BOND_BG="$BOND_BG $!"
 	sleep 0.2
+	local -a jo=()
+	if [ "$BOND_SMALL_JSON" = 1 ]; then jo=(-j); fi
 	ip netns exec "$tx" "$BIN/udpgen" -b "$txa:7001" -p "$rxa:$rp" -r "$BOND_SMALL" -s "$BOND_SMALL_SIZE" \
-		-d "$2" -g 0 >"$RUN/small-tx.out" &
+		"${jo[@]}" -d "$2" -g 0 >"$RUN/small-tx.out" &
 	BOND_BG="$BOND_BG $!"
 }
 

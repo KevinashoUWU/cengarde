@@ -255,6 +255,23 @@ su jitter, p99 − p50, y el peor sobre la mediana).
   excede su búfer; el iperf de al lado baja de 23 a 9 Mbit/s. Pendiente:
   prioridad del carril sobre lo masivo.
 
+## Paso 3d hecho: zstd en el carril fiable (2026-11-02)
+
+- **Sin diccionario que acordar:** el carril es un flujo de GRIT, ordenado y
+  fiable, así que los dos extremos ven los mismos datagramas en el mismo
+  orden. Un contexto de zstd por flujo y sentido, en modo flujo y vaciado
+  al final de cada datagrama (`zlane.h`: 128 KB de historia, nivel 3),
+  aprende la forma de la telemetría con la primera ráfaga; el diseño del
+  2026-11-01 (DC-SYN y DC-ACK) queda para lo que no es ordenado ni fiable.
+  El OPEN lo dice (`CG_PCTLF_ZSTD`); un motor sin zstd rechaza el flujo.
+  `reliable_zstd` (sí por omisión) en el router; libzstd opcional al
+  compilar (`ZSTD=auto`), en el paquete de OpenWrt y en el cloud-config del
+  VPS.
+- **Laboratorio** (`BOND_SMALL_JSON=1`: cada datagrama una lectura JSON de un
+  sensor, ~180 bytes más la cabecera de 24 de udpgen; 760 por segundo por el
+  carril; × 2): 3,09 MB → 0,62 MB (5,0 veces) en `lossy` y `cell4`, todos
+  entregados, la misma mediana (122–157 ms con y sin zstd).
+
 ## Diseño del paso 3: las clases de UDP (2026-11-02, con el usuario)
 
 El UDP manda a su tasa sin saber de pérdida ni de cola: el túnel no puede

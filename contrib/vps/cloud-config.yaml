@@ -26,6 +26,7 @@
 package_update: true
 packages:
   - build-essential
+  - libzstd-dev
   - git
   - iptables
   - conntrack
