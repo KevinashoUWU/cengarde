@@ -116,6 +116,11 @@
 #   cell4       not in the default list: story 025's sanity check, four
 #               cellular-like links and no Starlink: 20, 15, 10 and 5 Mbit/s,
 #               25, 30, 35 and 45 ms, 300 ms to 2 s of queue, losing 0.3-0.5 %
+#   fiber4      not in the default list: asymmetric bonding (2026-11-02), a
+#               fiber (60 Mbit/s, 3 ms, 50 ms of queue, clean) next to
+#               cell4's four links; fiber1 the fiber alone, the reference: the
+#               cellular links add only past the fiber's capacity, at their
+#               own delay
 #   ratswitch   not in the default list: a CPE that changes RAT, LTE <-> NR
 #               (NSA, the field's n78), next to another operator's steady LTE
 #               (25/10 Mbit/s, 30 ms, 2 MB of buffer). The operator's buffer
@@ -1161,6 +1166,9 @@ bond_shape() {
 	lossy) bond_link 1 20 60 100 1 && bond_link 2 35 30 100 1 && bond_link 3 25 50 100 1 ;;
 	protect | protectcut | beyond) bond_link 1 10 60 15 0.7 && bond_link 2 25 5 2000 ;;
 	cell4) bond_link 1 25 20 300 0.3 && bond_link 2 30 15 500 0.3 && bond_link 3 35 10 1000 0.5 && bond_link 4 45 5 2000 0.5 ;;
+	fiber1) bond_link 1 3 60 50 ;;
+	fiber4) bond_link 1 3 60 50 && bond_link 2 25 20 300 0.3 && bond_link 3 30 15 500 0.3 && bond_link 4 35 10 1000 0.5 &&
+		bond_link 5 45 5 2000 0.5 ;;
 	fade) bond_link 1 15 40 300 && bond_link 2 20 25 300 && bond_link 3 25 10 300 ;;
 	protectslow) bond_link 1 10 5 2000 8 && bond_link 2 25 20 100 ;;
 	spurious) bond_link 1 10 60 15 0 310 && bond_link 2 25 5 2000 ;;
@@ -1197,9 +1205,9 @@ bond_msl_types() {
 bond_nlinks() {
 	case $1 in
 	het | idleslow | linkdeath | downstall | bloat | lossy | shallowq | shallowqd | shallowqdeep | starsat | dominant | protectpin | msl3 | fade) echo 3 ;;
-	msl1 | single1 | singlecut | singleclean | ratsingle) echo 1 ;;
+	msl1 | single1 | singlecut | singleclean | ratsingle | fiber1) echo 1 ;;
 	msl2c | cell4 | clean4 | stall50 | stall100 | stall200 | stallr50 | stallr100 | stallr200) echo 4 ;;
-	msl3c) echo 5 ;;
+	msl3c | fiber4) echo 5 ;;
 	*) echo 2 ;;
 	esac
 }
@@ -1471,7 +1479,7 @@ bond_plan() {
 	for w in ${BOND_CC:-cubic bbr quic}; do ccs=$((ccs + 1)); done
 	for c in $BOND_CASES; do
 		case $c in
-		equal | het | idleslow | reorder50 | reorder150 | linkdeath | downstall | shallowq | shallowqd | shallowqdeep | starsat | dominant | starlink15 | starlink15sw | starlink15ramp | ltespike | ltespikerand | deepq | bloat | lossy | spikeloss | protect | protectcut | protectslow | protectpin | beyond | spurious | lossall | sigrand | sigdeep | sigothers | msl1 | msl2 | msl3 | msl2c | msl3c | cell4 | fade | clean4 | stall50 | stall100 | stall200 | stallr50 | stallr100 | stallr200 | single1 | singlecut | singleclean | ratswitch | ratsingle) ;;
+		equal | het | idleslow | reorder50 | reorder150 | linkdeath | downstall | shallowq | shallowqd | shallowqdeep | starsat | dominant | starlink15 | starlink15sw | starlink15ramp | ltespike | ltespikerand | deepq | bloat | lossy | spikeloss | protect | protectcut | protectslow | protectpin | beyond | spurious | lossall | sigrand | sigdeep | sigothers | msl1 | msl2 | msl3 | msl2c | msl3c | cell4 | fiber1 | fiber4 | fade | clean4 | stall50 | stall100 | stall200 | stallr50 | stallr100 | stallr200 | single1 | singlecut | singleclean | ratswitch | ratsingle) ;;
 		*)
 			echo "bond: unknown case $c"
 			return 1
