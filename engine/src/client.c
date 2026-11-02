@@ -3363,13 +3363,17 @@ static struct link *fastest_link(struct client *c, uint64_t now_ms)
  * well (rescue.h's cg_resc_sure); a copied one may have come on another
  * link, until every link it went on lost it (cg_resc_lost_on), and the
  * tunnel's own DATA is left to the server's reorderer and its NACKs. */
-/* Whether FEC v3 covers STREAM seq now (story 031): it sends a share and
- * the STREAMs' window still holds it, so a repair may rebuild it. */
+/* Whether FEC v3 covers STREAM seq now (story 031): it sends a share in
+ * bonding and the STREAMs' window still holds it, so a repair may rebuild
+ * it. */
 static int f3_stream_covers(const struct client *c, uint32_t seq)
 {
 	uint16_t l;
 
-	return c->f3s && ((f3_on(c) && c->f3.mode != CG_F3_OFF && c->f3.pct) || sr_on(c)) && cg_rlcw_get(c->f3s, seq, &l);
+	/* not in redundancy: its repairs go only in what the links spare, and
+	 * GRIT waiting for them cost the live video's p99 (protect 48 -> 321
+	 * ms): there they are a bonus and GRIT resends at once */
+	return c->f3s && f3_on(c) && c->f3.mode != CG_F3_OFF && c->f3.pct && cg_rlcw_get(c->f3s, seq, &l);
 }
 
 static void on_sfloss(struct client *c, const uint8_t *payload, size_t plen, uint64_t now_ms)
