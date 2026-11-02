@@ -13,7 +13,7 @@ static void test_codec(void)
 	struct cg_st_ack a = { .aseq = 0xbeef, .cum = 0x100000005ull, .edge = 0x100100000ull, .n = 2 }, u;
 	size_t n;
 
-	n = cg_pctl_put_open(b, 0x00020003, 4, a4, 5201);
+	n = cg_pctl_put_open(b, 0x00020003, 0, 4, a4, 5201);
 	CHECK_EQ(n, 13);
 	CHECK(cg_pctl_is(b, n));
 	CHECK_EQ(cg_pctl_parse(b, n, &m), 0);
@@ -22,11 +22,13 @@ static void test_codec(void)
 	CHECK_EQ(m.family, 4);
 	CHECK_EQ(m.port, 5201);
 	CHECK(!memcmp(m.addr, a4, 4));
+	CHECK_EQ(m.flags, 0); /* a TCP destination */
 	CHECK(cg_pctl_parse(b, n - 1, &m) < 0);
-	n = cg_pctl_put_open(b, 9, 6, a6, 443);
+	n = cg_pctl_put_open(b, 9, CG_PCTLF_DGRAM, 6, a6, 443);
 	CHECK_EQ(n, 25);
 	CHECK_EQ(cg_pctl_parse(b, n, &m), 0);
 	CHECK(!memcmp(m.addr, a6, 16));
+	CHECK_EQ(m.flags, CG_PCTLF_DGRAM); /* the reliable lane's: UDP (18) */
 
 	n = cg_pctl_put_data(b, 7, CG_PCTLF_FIN | CG_PCTLF_EST, 0x1234567890ull);
 	CHECK_EQ(n, 10); /* its clock is the tunnel header's (15) */
@@ -214,7 +216,7 @@ static void test_nack_kind(void)
 	CHECK_EQ(cg_pctl_nack_kind(b, n, &id, &off), CG_PCTL_NACK_ACK);
 	CHECK_EQ(id, 9);
 	/* an OPEN, a RST: sent again */
-	n = cg_pctl_put_open(b, 9, 4, a4, 80);
+	n = cg_pctl_put_open(b, 9, 0, 4, a4, 80);
 	CHECK_EQ(cg_pctl_nack_kind(b, n, &id, &off), CG_PCTL_NACK_RESEND);
 	n = cg_pctl_put_rst(b, 9, CG_PCTL_R_PEER);
 	CHECK_EQ(cg_pctl_nack_kind(b, n, &id, &off), CG_PCTL_NACK_RESEND);

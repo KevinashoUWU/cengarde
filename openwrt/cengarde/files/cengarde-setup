@@ -116,6 +116,8 @@ NAT66_FILE=/usr/share/cengarde/nat66.nft
 PCTL=cengarde_protoctl
 PCTL_FILE=/etc/cengarde/protoctl.nft # written by pctl_rules from protocontroller_port and _dest
 PCTL_LISTEN=7801                      # the engine's listening port (protocontroller_port in its configuration)
+TPROXY_MARK=0x4347                    # the reliable lane's datagrams (story 031): TPROXY's mark,
+TPROXY_TABLE=17223                    # and the routing table that hands them to the engine
 VPS_ADDR=10.79.0.1 # the VPS end of every tunnel
 DEFAULT_DNS="1.1.1.1 9.9.9.9"
 CLOUD_CONFIG=/usr/share/cengarde/cloud-config.yaml
@@ -780,9 +782,17 @@ pctl_rules() {
 		echo "	$m ip6 daddr != { ::1, fc00::/7, fe80::/10 } redirect to :$PCTL_LISTEN comment \"!cengarde: protocontroller\""
 	fi
 	echo "}"
+	[ "$PCTL_MODE" = b ] && reliable_rules "$devs"
+	return 0
 }
 
 fix_pctl() { # on|off
+	flow_classes >/dev/null
+	if [ "$1" = on ] && [ "$PCTL_MODE" = b ] && [ -n "$RELIABLE" ]; then
+		fix_tproxy on
+	else
+		fix_tproxy off
+	fi
 	if [ "$1" = on ]; then
 		mkdir -p "${PCTL_FILE%/*}"
 		pctl_rules >"$PCTL_FILE.new" && if ! cmp -s "$PCTL_FILE.new" "$PCTL_FILE"; then
@@ -1438,6 +1448,7 @@ vps_sync() {
 # port becomes the port alone (NAT keeps it, mostly), without one it is
 # left out; the far end's address, or a port, is what both ends see.
 FLOWS=''
+RELIABLE=''
 flow_class_one() {
 	local s="$1" e c en
 
@@ -1446,9 +1457,9 @@ flow_class_one() {
 	config_get e "$s" endpoint
 	config_get c "$s" class
 	case "$c" in
-	auto | ordered | deadline | direct) ;;
+	auto | ordered | deadline | direct | reliable) ;;
 	*)
-		log "flowclass $s: class '$c': expected auto, ordered, deadline or direct, left out"
+		log "flowclass $s: class '$c': expected auto, ordered, deadline, direct or reliable, left out"
 		return 0
 		;;
 	esac
@@ -1458,6 +1469,9 @@ flow_class_one() {
 	fi
 	case "$e" in
 	10.* | 192.168.* | 172.1[6-9].* | 172.2[0-9].* | 172.3[01].*)
+		# the reliable lane takes its datagrams before the NAT (TPROXY):
+		# a LAN address is what it sees
+		[ "$c" = reliable ] && RELIABLE="$RELIABLE${RELIABLE:+ }$e" && echo "flow_class = $e $c" && return 0
 		case "$e" in
 		*:*)
 			log "flowclass $s: '$e' is behind the router's NAT, taken as ':${e##*:}' (the tunnel sees the port)"
@@ -1470,12 +1484,98 @@ flow_class_one() {
 		esac
 		;;
 	esac
+	[ "$c" = reliable ] && RELIABLE="$RELIABLE${RELIABLE:+ }$e"
 	echo "flow_class = $e $c"
 	FLOWS="$FLOWS${FLOWS:+ }$e $c"
 }
 flow_classes() {
 	FLOWS=''
+	RELIABLE=''
 	config_foreach flow_class_one flowclass
+}
+
+# ep_split ENDPOINT: its address or prefix in EA and its port in EP (either
+# empty): ADDR[/LEN][:PORT], [IPv6][/LEN][:PORT] or :PORT.
+ep_split() {
+	local rest
+
+	EA='' EP=''
+	case "$1" in
+	:*) EP=${1#:} ;;
+	\[*)
+		EA=${1#[}
+		rest=${EA#*]}
+		EA=${EA%%]*}
+		case "$rest" in
+		/*:*)
+			EA="$EA${rest%:*}"
+			EP=${rest##*:}
+			;;
+		/*) EA="$EA$rest" ;;
+		:*) EP=${rest#:} ;;
+		esac
+		;;
+	*:*)
+		EA=${1%:*}
+		EP=${1##*:}
+		;;
+	*) EA=$1 ;;
+	esac
+}
+
+# The reliable lane's TPROXY rules (story 031, step 3c): the UDP of the LAN
+# zone's devices DEVS to or from each endpoint of RELIABLE goes to the
+# engine's port, marked for the table that delivers it locally (fix_tproxy);
+# never what goes to the router itself.
+reliable_rules() { # DEVS
+	local e a p fam m d s
+
+	[ -n "$RELIABLE" ] || return 0
+	echo "chain cengarde_reliable {"
+	echo "	type filter hook prerouting priority mangle; policy accept;"
+	for e in $RELIABLE; do
+		ep_split "$e"
+		a=$EA p=$EP
+		fam=ip
+		case "$a" in *:*) fam=ip6 ;; esac
+		m="iifname { $1 } meta l4proto udp"
+		for dir in d s; do
+			d=''
+			[ -n "$a" ] && d="$fam ${dir}addr $a"
+			[ -n "$p" ] && d="$d udp ${dir}port $p"
+			if [ "$dir" = d ]; then s="fib daddr type != { local, broadcast, multicast } "; else s=''; fi
+			if [ -z "$a" ]; then # a port alone: each family its own
+				echo "	$m meta nfproto ipv4 ${s}$d tproxy ip to :$PCTL_LISTEN meta mark set $TPROXY_MARK accept comment \"!cengarde: reliable\""
+				echo "	$m meta nfproto ipv6 ${s}$d tproxy ip6 to :$PCTL_LISTEN meta mark set $TPROXY_MARK accept comment \"!cengarde: reliable\""
+			else
+				echo "	$m ${s}$d tproxy $fam to :$PCTL_LISTEN meta mark set $TPROXY_MARK accept comment \"!cengarde: reliable\""
+			fi
+		done
+	done
+	echo "}"
+}
+
+# The table TPROXY's mark leads to: every address local (fix_tproxy on|off).
+fix_tproxy() {
+	local r
+
+	if [ "$1" = on ]; then
+		for r in 4 6; do
+			want "network.cengarde_tproxy$r" "$([ $r = 4 ] && echo rule || echo rule6)"
+			want "network.cengarde_tproxy$r.mark" "$TPROXY_MARK"
+			want "network.cengarde_tproxy$r.lookup" "$TPROXY_TABLE"
+			want "network.cengarde_tproxy${r}r" "$([ $r = 4 ] && echo route || echo route6)"
+			want "network.cengarde_tproxy${r}r.interface" loopback
+			want "network.cengarde_tproxy${r}r.target" "$([ $r = 4 ] && echo 0.0.0.0/0 || echo ::/0)"
+			want "network.cengarde_tproxy${r}r.type" local
+			want "network.cengarde_tproxy${r}r.table" "$TPROXY_TABLE"
+		done
+	else
+		for r in 4 6; do
+			drop "network.cengarde_tproxy$r"
+			drop "network.cengarde_tproxy${r}r"
+		done
+	fi
 }
 
 # Every IPv6 interface of the uplinks, for the init script's triggers: the

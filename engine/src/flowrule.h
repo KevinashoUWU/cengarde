@@ -19,6 +19,11 @@
  *             ARQ and order)
  *   auto      what dgclass.h guesses (a rule that keeps a flow out of a
  *             broader one after it)
+ *   reliable  the reliable lane (step 3c): the router takes these datagrams
+ *             off the tunnel (TPROXY) into a datagram stream of the
+ *             protocontroller (B), which delivers every one, in order, late
+ *             rather than never; for telemetry, not for real time. The
+ *             reorderer never sees them: for it, the guess
  *
  * Pure: parsing and a few comparisons, no state.
  *
@@ -35,7 +40,7 @@
 
 #include "ippkt.h"
 
-enum { CG_FC_NONE = 0, CG_FC_AUTO, CG_FC_ORDERED, CG_FC_DEADLINE, CG_FC_DIRECT };
+enum { CG_FC_NONE = 0, CG_FC_AUTO, CG_FC_ORDERED, CG_FC_DEADLINE, CG_FC_DIRECT, CG_FC_RELIABLE };
 
 #define CG_FC_MAX 32 /* rules, at most */
 
@@ -54,9 +59,9 @@ struct cg_fc {
 
 static inline int cg_fc_class_of(const char *s)
 {
-	static const char *const names[] = { "auto", "ordered", "deadline", "direct" };
+	static const char *const names[] = { "auto", "ordered", "deadline", "direct", "reliable" };
 
-	for (int i = 0; i < 4; i++)
+	for (int i = 0; i < 5; i++)
 		if (!strcmp(s, names[i]))
 			return CG_FC_AUTO + i;
 	return CG_FC_NONE;
@@ -182,8 +187,17 @@ static inline int cg_fc_match(const struct cg_fc *t, const uint8_t *b, size_t le
  * guess, ts: dgclass.h took it for MPEG-TS). */
 static inline void cg_fc_hold(int fc, int ts, uint8_t *waits, uint8_t *nohold)
 {
-	*waits = (uint8_t)(fc == CG_FC_ORDERED || ((fc == CG_FC_NONE || fc == CG_FC_AUTO) && ts));
+	*waits = (uint8_t)(fc == CG_FC_ORDERED || ((fc == CG_FC_NONE || fc == CG_FC_AUTO || fc == CG_FC_RELIABLE) && ts));
 	*nohold = (uint8_t)(fc == CG_FC_DIRECT);
+}
+
+/* Whether table t has a reliable rule: the router opens the lane. */
+static inline int cg_fc_reliable(const struct cg_fc *t)
+{
+	for (unsigned i = 0; i < t->n; i++)
+		if (t->r[i].cls == CG_FC_RELIABLE)
+			return 1;
+	return 0;
 }
 
 #endif

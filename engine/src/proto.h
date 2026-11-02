@@ -74,7 +74,7 @@
 
 #include "siphash.h"
 
-#define CG_PROTO_VERSION 17
+#define CG_PROTO_VERSION 18
 /* The version in the first byte's high nibble, 1 to 15: past 15 it goes
  * round from 1 (16 is 1, 17 is 2), over versions retired long ago (every
  * engine still running speaks 12 or more). Never 0: a WireGuard message

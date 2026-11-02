@@ -14,6 +14,9 @@
  *
  *   OPEN  6: family (4 or 6), 7..8: port, 9..: address (4 or 16 bytes).
  *         Router -> VPS, again on the timer until the VPS's first ACK.
+ *         CG_PCTLF_DGRAM (protocol 18, story 031): a datagram stream, the
+ *         reliable lane: the destination is UDP, and the stream's bytes are
+ *         datagrams, each behind its 16-bit big-endian length (dgframe).
  *   DATA  6..9: the offset's low 32 bits; then the bytes (the sender's
  *         clock when it sent it is the tunnel header's ts, protocol 15:
  *         the engine says which it stamped, cg_pctl_ops.send's ts, and the
@@ -60,6 +63,8 @@ enum { CG_PCTL_OPEN = 1, CG_PCTL_DATA = 2, CG_PCTL_ACK = 3, CG_PCTL_RST = 4 };
 #define CG_PCTLF_FIN 0x01
 #define CG_PCTLF_EST 0x02
 #define CG_PCTLF_DUP 0x04 /* ACK: a duplicate came since the last ACK (the sender widens its RACK window) */
+#define CG_PCTLF_DGRAM 0x08 /* OPEN: a datagram stream to a UDP destination (protocol 18, story 031) */
+#define CG_PCTL_DGRAM_MAX 65507 /* a datagram, at most (IPv4's UDP) */
 #define CG_PCTL_HDR 6
 #define CG_PCTL_DATA_HDR 10
 #define CG_PCTL_OPEN_MAX (CG_PCTL_HDR + 3 + 16)
@@ -120,11 +125,12 @@ static inline size_t cg_pctl_hdr(uint8_t *b, unsigned type, uint8_t flags, uint3
 
 /* OPEN to family (4 or 6) addr (4 or 16 bytes, network order), port (host
  * order). Returns its length. */
-static inline size_t cg_pctl_put_open(uint8_t *b, uint32_t id, int family, const uint8_t *addr, uint16_t port)
+static inline size_t cg_pctl_put_open(uint8_t *b, uint32_t id, uint8_t flags, int family, const uint8_t *addr,
+				       uint16_t port)
 {
 	size_t al = family == 6 ? 16 : 4;
 
-	cg_pctl_hdr(b, CG_PCTL_OPEN, 0, id);
+	cg_pctl_hdr(b, CG_PCTL_OPEN, flags, id);
 	b[6] = (uint8_t)family;
 	b[7] = (uint8_t)(port >> 8);
 	b[8] = (uint8_t)port;

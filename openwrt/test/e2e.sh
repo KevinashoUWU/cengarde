@@ -789,8 +789,9 @@ add 192.168.1.51 ordered
 add :5004 fast
 add 'a;b' direct
 add :6000 direct 0
+add 192.168.1.60:9330 reliable
 uci commit cengarde
-want='flow_class = 203.0.113.7:9330 ordered;flow_class = [2001:db8::7]:5000 direct;flow_class = :4000 deadline;'
+want='flow_class = 203.0.113.7:9330 ordered;flow_class = [2001:db8::7]:5000 direct;flow_class = :4000 deadline;flow_class = 192.168.1.60:9330 reliable;'
 got=$(conf | grep '^flow_class' | tr '\n' ';')
 [ "$got" = "$want" ] || { echo "got '$got'"; r=1; }
 first=$(conf | grep -n '^\[' | head -n 1 | cut -d: -f1)
