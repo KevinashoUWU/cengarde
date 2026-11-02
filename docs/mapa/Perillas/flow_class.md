@@ -7,12 +7,12 @@ archivos:
 
 # `flow_class`
 
-La clase de un flujo para el reordenador del que recibe, sobre lo que adivina `dgclass.h`: `ordered` espera su rescate (como MPEG-TS), `deadline` la regla del plazo (como RTP), `direct` nunca retenido ni rescatado (QUIC, SRT, WebRTC, juegos), `auto` lo adivinado. Calza el origen o el destino del paquete; gana la primera regla.
+La clase de un flujo para el reordenador del que recibe, sobre lo que adivina `dgclass.h`: `ordered` espera su rescate (como MPEG-TS), `deadline` la regla del plazo (como RTP), `direct` nunca retenido ni rescatado (QUIC, SRT, WebRTC, juegos), `auto` lo adivinado, `reliable` el carril fiable (con `protocontroller = b`: el router lo pasa por un flujo de datagramas del protocontrolador, protocolo 18). Calza el origen o el destino del paquete; gana la primera regla.
 
 - **Sección:** global
 - **Extremo:** los dos
 - **Por omisión:** ninguna
-- **Rango:** repetible, hasta 32: `ADDR[/LEN][:PORT]`, `[IPv6][/LEN][:PORT]` o `:PORT`, y `auto`, `ordered`, `deadline` o `direct`
+- **Rango:** repetible, hasta 32: `ADDR[/LEN][:PORT]`, `[IPv6][/LEN][:PORT]` o `:PORT`, y `auto`, `ordered`, `deadline`, `direct` o `reliable`
 - **Pieza:** [[Reordenador (reorder.h)]]
 - **Historia:** [[031-clases-por-flujo]]
 

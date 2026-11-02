@@ -415,7 +415,11 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
   Clases: `ordered` (retenido en orden, espera su rescate, como MPEG-TS),
   `deadline` (la regla del plazo, como RTP), `direct` (nunca retenido ni
   rescatado: QUIC, SRT, WebRTC, un juego, con su propio ARQ y orden) y
-  `auto` (lo adivinado). Ej.: `flow_class = 192.168.50.158:9330 ordered`.
+  `auto` (lo adivinado) y `reliable` (el carril fiable, protocolo 18: con
+  `protocontroller = b`, el router toma por TPROXY el UDP de esa regla y lo
+  lleva por un flujo de datagramas del protocontrolador, cada datagrama
+  entregado en orden, tarde antes que nunca; el firewall y la ruta por marca
+  los pone `cengarde-setup`). Ej.: `flow_class = 203.0.113.7:9330 ordered`.
   Cada extremo con las suyas: el VPS para la subida, el router para la bajada.
 - **`reorder_active` (`yes`; `yes` o `no`), en el que recibe:** un hueco
   espera solo a los enlaces por los que el otro extremo está mandando datos
