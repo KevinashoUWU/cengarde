@@ -344,6 +344,12 @@ pérdida del flujo TS 8,0 → 9,2 ‰, las dos cosas por `protect` de bajada
 (su piso de ruido es 20–36 %); el resto, ±3 %. Neutro, como se esperaba de 4
 bytes.
 
+Terreno (`~/campo/2026-11-01/fieldvid/r3/`, el mismo video en los dos
+sentidos junto a GRIT, 3 rondas por brazo, el 13 final contra el 14): TCP
+233 → 236 Mbit/s de bajada y 81 → 83 de subida; errores del RTP 2 757 → 2 838
+de bajada y 6 175 → 6 126 de subida; del MPEG-TS 715 → 754 y 2 602 → 2 537.
+Igual. La testnet quedó en el 14 (`20e993c`).
+
 Lo siguiente de A2, la marca de tiempo de GRIT por la del túnel (4 bytes
 más), pide que el túnel selle cada STREAM con el reloj que GRIT anotó: el NACK
 de una pérdida reconoce la transmisión por ese valor exacto
@@ -372,7 +378,6 @@ de una pérdida reconoce la transmisión por ese valor exacto
 
 ## Pendiente
 
-- El protocolo 14 en terreno.
 - La FEC v3 sobre STREAM: hoy no lo cubre (en terreno está apagada); si se
   enciende, decidir si protege también la clase STREAM.
 
