@@ -15,7 +15,7 @@ archivos:
   - engine/tests/test_stream.c
   - engine/tests/test_streamcc.c
   - engine/tests/test_linkowd.c
-sello: cf44b38a208d0755
+sello: 5bcdc89c22cecbe2
 ---
 # Protocontrolador (protoctl.c, stream.h, streamcc.h)
 
@@ -51,4 +51,5 @@ El protocontrolador ([[025-protocontrolador]]): TCP partido en los dos extremos 
 - [[025-protocontrolador]] (2026-10-27): el NACK a GRIT, cordura n = 2–3 (`protect` subida: RTT de 1200 B p99 296 → 109 ms, reenvíos de GRIT 1014 → 159; sin cambio fuera del protocontrolador; el microcorte, igual de variable).
 - [[025-protocontrolador]]: el laboratorio de la 024 (`protect`, `beyond`, `protectcut`, vivo, bajada, cuatro celulares) con A y B contra el túnel transparente y el A de la 024 (shadowsocks); el 26-10, GRIT en el microcorte tras sus correcciones (ver la historia).
 - **Los envíos por equipo** ([[Mapa/Perillas/protocontroller_fair|protocontroller_fair]], `fair.h`, [[031-clases-por-flujo]], protocolo 19): cada vuelta de envíos da un segmento por equipo y, dentro de cada equipo, sus flujos se turnan (`cg_fair_group` agrupa los flujos en uso por equipo, en el orden de la rotación; antes era un segmento por flujo). El equipo es el dispositivo de la LAN que abrió el flujo: en el router, la dirección que `accept4` devuelve (o el origen de un flujo de datagramas), en el VPS la que el router manda en el OPEN (4 bytes nuevos, protocolo 19) junto con la sesión del router. En el laboratorio (`BOND_HOG=8`: otro equipo con 8 conexiones al lado de la medida), el equipo de una conexión pasa de 13–18 % a 31–41 % del total en `equal` y `het`, de subida y de bajada, sin bajar el total; en `cell4` no cambia.
+- **El UDP dentro de GRIT** ([[Mapa/Perillas/protocontroller_udp|protocontroller_udp]], [[031-clases-por-flujo]], protocolo 20): el router toma el resto del UDP de la LAN por TPROXY en el puerto siguiente (`xfd`, `udp_listen` con `unrel`) y abre un flujo de datagramas no fiable por origen y destino (`dg_flow` con `unrel`, OPEN con `CG_PCTLF_UNREL`). Sus datagramas esperan en una cola de 32 (`struct dgq`, `dq_put`: llena, se bota el más viejo) y salen como DGM en `dgm_send`, con los tokens del ritmo y en los turnos por equipo, sin ventana ni ACK; más de 300 ms esperando (`PCTL_DGM_AGE_US`), se botan. Hasta el ACK del OPEN van por todos los enlaces. El receptor los escribe al socket al llegar (`rx_one`, caso DGM). Cada par lleva la parte de lo enviado que son datagramas (`xb`, `ab`, `cc.xs` en `streamcc.h`) y `cg_scc_rate` divide la estimación por lo que queda: sin eso el TCP y el UDP se hundían juntos (de 91 a 68 Mbit/s en `equal`). El estado: `protocontroller.datagrams` y `datagrams_permille` en cada ritmo.
 

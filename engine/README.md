@@ -1463,6 +1463,16 @@ Solo la variante B:
   el equipo viene en el OPEN (protocolo 19). Laboratorio (`BOND_HOG=8`): el
   equipo de una conexión al lado de otro de ocho pasa de 13–18 % a 31–41 %
   del total en `equal` y `het`, de subida y de bajada, sin bajar el total.
+- **UDP dentro de GRIT** (`protocontroller_udp`, `no`; protocolo 20,
+  historia 031): el resto del UDP de la LAN, por TPROXY en el puerto
+  siguiente a `protocontroller_port`, entra como datagramas no fiables
+  (mensajes DGM): un flujo por origen y destino, una cola de 32 por flujo
+  (llena, se bota el más viejo; más de 300 ms, se bota), los tokens del
+  ritmo y los turnos por equipo del TCP, sin reenvío ni orden. El ritmo
+  cuenta la parte que no miden los ACK. Laboratorio: con 30–60 Mbit/s de
+  UDP de un equipo, el TCP de otro pasa de 3–9 a 25 Mbit/s en `cell4`
+  (ping p99 de 0,8–1 s a 0,2 s) y de 42 a 51 en `equal` y `het`, con el
+  mismo total.
 - **Fiabilidad** (`src/stream.h`): RACK con una ventana de un cuarto de la
   ida y vuelta más `protocontroller_reo_ms` (10, los códigos del túnel van
   primero; cada duplicado que el receptor avisa la agranda 4 ms, hasta el

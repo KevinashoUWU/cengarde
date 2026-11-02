@@ -213,6 +213,7 @@ T = {
  "protocontroller_queue_ms": ([G], BOTH, "5", "1–1000", [PCTL], ["025"], "Variante B: la cola que el tramo del medio puede armar sobre su menor ida y vuelta: más, y el ritmo baja a lo entregado (`streamcc.h`)."),
  "protocontroller_backlog_ms": ([G], BOTH, "200", "10–10000", [PCTL], ["025"], "Variante B: lo que un flujo guarda sin enviar o sin escribir, en tiempo a su ritmo (al menos 64 KB): la contrapresión hacia el emisor."),
  "protocontroller_dead_s": ([G], BOTH, "60", "0–3600", [PCTL], ["025"], "Variante B: un flujo sin avance este tiempo, con algo pendiente (el túnel caído), se cierra con RST en los dos lados; cuenta desde el último mensaje del otro lado o desde que el flujo vuelve a tener algo en vuelo; 0: nunca."),
+ "protocontroller_udp": ([G], CLI, "`no`", "`yes` o `no`", [PCTL], ["031"], "El resto del UDP de la LAN dentro de GRIT como datagramas no fiables (protocolo 20): un segundo socket TPROXY en el puerto siguiente a `protocontroller_port` (en OpenWrt, `udp_grit`), un flujo por origen y destino, cada datagrama entero en un mensaje DGM, sin reenvío ni orden, a lo más 300 ms en su cola, por turnos por equipo con el TCP (`fair.h`); el ritmo cuenta la parte que no miden los ACK (`cc.xs`). Laboratorio: con 30–60 Mbit/s de UDP de un equipo, el TCP de otro pasa de 3–9 a 25 Mbit/s en `cell4` (ping p99 de 0,8–1 s a 0,2 s) y de 42 a 51 en `equal` y `het`, con el mismo total."),
  "protocontroller_fair": ([G], BOTH, "`yes`", "`yes` o `no`", [PCTL], ["031"], "Los envíos del protocontrolador por equipo antes que por flujo (`fair.h`): cada vuelta da un segmento por dispositivo de la LAN y sus flujos se turnan; un equipo con muchas conexiones (un gestor de descargas, una actualización) se lleva la parte de uno. En el VPS el equipo viene en el OPEN (protocolo 19). Laboratorio: el equipo de una conexión al lado de otro de ocho pasa de 13–18 % a 31–41 % en `equal` y `het`, sin bajar el total."),
  "protocontroller_reo_ms": ([G], BOTH, "10", "0–1000", [PCTL], ["025"], "Variante B: el piso de la ventana de RACK sobre un cuarto de la ida y vuelta (la reparación del túnel va primero); un duplicado la agranda 4 ms, hasta 300 (el presupuesto de latencia, historia 029), y vuelve sola; con un código o el rescate, al menos el horizonte de reparación del motor (historia 028)."),
  "protocontroller_nack": ([G], BOTH, "`yes`", "`yes`, `no`", [PCTL], ["029"], "Variante B: el NACK del túnel de un mensaje de GRIT es una pérdida que se envía otra vez (`yes`) o solo una pista y decide el RACK de GRIT (`no`); en terreno lo que el túnel dio por perdido llegó tarde (historia 029). Con `subflow` no cuenta: el NACK solo es siempre una pista y decide la palabra del enlace."),
@@ -228,7 +229,7 @@ RESTART = {"mode", "key", "listen", "control_socket", "busy_poll_us", "cpu", "rt
            "rescue_kb", "fec", "link_threads", "io_queue", "lanes", "tunnel", "tun", "tun_addr", "tun_mtu",
            "tun_txqueuelen", "protocontroller", "protocontroller_port", "protocontroller_vps", "protocontroller_mid_cc",
            "protocontroller_buf_kb", "protocontroller_mem_mb", "protocontroller_max_flows", "protocontroller_queue_ms",
-           "protocontroller_backlog_ms", "protocontroller_dead_s", "protocontroller_reo_ms", "protocontroller_nack", "protocontroller_offer", "protocontroller_cc", "protocontroller_fair"}
+           "protocontroller_backlog_ms", "protocontroller_dead_s", "protocontroller_reo_ms", "protocontroller_nack", "protocontroller_offer", "protocontroller_cc", "protocontroller_fair", "protocontroller_udp"}
 
 def parsed_keys():
     s = open(SRC).read()
@@ -294,7 +295,7 @@ def generate():
         ("Protocontrolador", ["protocontroller", "protocontroller_port", "protocontroller_vps", "protocontroller_mid_cc",
                               "protocontroller_buf_kb", "protocontroller_mem_mb", "protocontroller_max_flows",
                               "protocontroller_queue_ms", "protocontroller_backlog_ms", "protocontroller_dead_s",
-                              "protocontroller_reo_ms", "protocontroller_cc", "protocontroller_fair"]),
+                              "protocontroller_reo_ms", "protocontroller_cc", "protocontroller_fair", "protocontroller_udp"]),
     ]
     seen = [k for _, ks in groups for k in ks]
     unplaced = sorted(set(T) - set(seen))
