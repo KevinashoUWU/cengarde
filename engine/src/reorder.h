@@ -213,8 +213,8 @@ struct cg_ro_pkt {
 	uint16_t len;     /* of the packet (the DATA payload) */
 	uint8_t link;     /* ids from CG_MAX_LINKS up take no per-link state */
 	uint8_t flags;    /* verified header flags */
-	uint8_t nohold;   /* never held: an RTP datagram (dgclass.h), which its jitter buffer orders */
-	uint8_t waits;    /* MPEG-TS over UDP (dgclass.h): no reorder buffer of its own, worth a rescue (cg_ro_ask_left) */
+	uint8_t nohold;   /* never held: flow_class direct (flowrule.h), its own ARQ and order */
+	uint8_t waits;    /* MPEG-TS over UDP (dgclass.h) or flow_class ordered: no reorder buffer of its own, worth a rescue (cg_ro_ask_left) */
 	uint8_t prev;     /* 1 + the link seq - 1 went on alone (CG_F_PREV), 0: not said */
 	uint8_t retx;     /* CG_F_FREE with TCP data: a TCP retransmission (tcpfree.h's cg_tcp_data) */
 	uint8_t rebuilt;  /* rebuilt by the receiver (a parity, an erasure code), not received */

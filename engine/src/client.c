@@ -3865,7 +3865,7 @@ static void down_deliver(struct client *c, const struct cg_hdr *h, unsigned link
 	/* RTP keeps the deadline rule: held, it is asked for (a gap is asked
 	 * only while something waits behind it), and its jitter buffer takes
 	 * what comes late; never held, it lost every rescue (story 030) */
-	k.waits = dg == CG_DG_TS;
+	cg_fc_hold(cg_fc_match(&c->cfg->flow_class, payload, len), dg == CG_DG_TS, &k.waits, &k.nohold); /* as the server's */
 	v = cg_ro_in(&c->rxs.ro, &c->pool, &c->rocf, &k, rset, &buf);
 	if (v == CG_RO_AGAIN) {
 		/* The window overflowed: the gaps it forces out go, with what was

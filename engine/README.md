@@ -407,6 +407,16 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
   0–1000). Donde no hay reparto, es decir, con redundancia pura, la espera
   es `reorder_dup_wait_ms` (0; de 0 a `reorder_max_wait_ms`): con 0 no se
   retiene nada y el orden de entrega es el de siempre.
+- **`flow_class` (ninguna; repetible, hasta 32), en el que recibe:** la
+  clase de un flujo para el reordenador, sobre lo que adivina `dgclass.h`
+  (historia 031): `flow_class = ADDR[/LEN][:PORT] CLASE`, `[IPv6][/LEN][:PORT]`
+  o `:PORT` (cualquier dirección); cubre el origen o el destino de cada
+  paquete (el flujo en los dos sentidos) y gana la primera regla que calza.
+  Clases: `ordered` (retenido en orden, espera su rescate, como MPEG-TS),
+  `deadline` (la regla del plazo, como RTP), `direct` (nunca retenido ni
+  rescatado: QUIC, SRT, WebRTC, un juego, con su propio ARQ y orden) y
+  `auto` (lo adivinado). Ej.: `flow_class = 192.168.50.158:9330 ordered`.
+  Cada extremo con las suyas: el VPS para la subida, el router para la bajada.
 - **`reorder_active` (`yes`; `yes` o `no`), en el que recibe:** un hueco
   espera solo a los enlaces por los que el otro extremo está mandando datos
   (la auditoría de relojería C2, historia 013, protocolo 11). Antes esperaba

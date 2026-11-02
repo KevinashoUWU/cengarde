@@ -97,6 +97,7 @@ Secciones: «global» es la parte sin sección; `[link NOMBRE]` es del cliente; 
 | [[Mapa/Perillas/reorder_pool_kb\|reorder_pool_kb]] | 8192 | [[Reordenador (reorder.h)]] | [[012-bonding]], [[013-capacidad-y-dosificacion]] |
 | [[Mapa/Perillas/reorder_active\|reorder_active]] | `yes` | [[Reordenador (reorder.h)]], [[Enlaces activos (active.h)]] | [[013-capacidad-y-dosificacion]] |
 | [[Mapa/Perillas/tcp_aware\|tcp_aware]] | `no` | [[Liberación TCP (tcpfree.h)]], [[Reordenador (reorder.h)]] | [[014-tunel-nativo]] |
+| [[Mapa/Perillas/flow_class\|flow_class]] | ninguna | [[Reordenador (reorder.h)]] | [[031-clases-por-flujo]] |
 
 ## Rescate y FEC
 

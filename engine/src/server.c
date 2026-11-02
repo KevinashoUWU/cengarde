@@ -1834,8 +1834,9 @@ static void up_deliver(struct server *s, int *nq, struct session *S, const struc
 	}
 	/* RTP keeps the deadline rule: held, it is asked for (a gap is asked
 	 * only while something waits behind it), and its jitter buffer takes
-	 * what comes late; never held, it lost every rescue (story 030) */
-	k.waits = dg == CG_DG_TS;
+	 * what comes late; never held, it lost every rescue (story 030). The
+	 * operator's flow_class has the last word (flowrule.h, story 031). */
+	cg_fc_hold(cg_fc_match(&s->cfg->flow_class, payload, len), dg == CG_DG_TS, &k.waits, &k.nohold);
 	v = cg_ro_in(&S->ro, &s->pool, &S->rocf, &k, rset, &buf);
 	if (v == CG_RO_AGAIN) {
 		/* The window overflowed: the gaps it forces out go, with what was
