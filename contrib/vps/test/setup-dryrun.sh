@@ -814,6 +814,21 @@ check "a shell: refused" not admin
 check "so" said "not allowed"
 check "a command with a word too many: refused" not admin mode bonding now
 check "a glob does not expand" not admin set fec_pct '*'
+check "flows: two rules" admin flows 64.176.19.43:9330 ordered :443 direct
+check "in engine.local, in order, and in cengarde.conf's global section" sh -c '
+	[ "$(grep "^flow_class" "$1/etc/cengarde/engine.local" | tr "\n" ";")" = "flow_class = 64.176.19.43:9330 ordered;flow_class = :443 direct;" ] &&
+	grep -qx "flow_class = :443 direct" "$1/etc/cengarde/cengarde.conf" &&
+	[ "$(grep -n "^flow_class" "$1/etc/cengarde/cengarde.conf" | tail -n 1 | cut -d: -f1)" -lt "$(grep -n "^\[" "$1/etc/cengarde/cengarde.conf" | head -n 1 | cut -d: -f1)" ]' sh "$R"
+check "get shows them" admin get
+check "so" said "flows=64.176.19.43:9330 ordered;:443 direct"
+check "flows again: replaced, not added" admin flows "[2001:db8::]/32:5000" deadline
+check "one rule left" [ "$(grep -c '^flow_class' "$R/etc/cengarde/engine.local")" = 1 ]
+check "flows with no rules: none" admin flows
+check "gone" not grep -q '^flow_class' "$R/etc/cengarde/engine.local"
+check "flows: an odd count refused" not admin flows :443
+check "flows: a class not known refused" not admin flows :443 fast
+check "flows: an endpoint with a shell character refused" not admin flows ':443;reboot' direct
+check "flows: nothing written by a refusal" not grep -q '^flow_class' "$R/etc/cengarde/engine.local"
 check "admin-key remove by its comment" setup admin-key remove cengarde-router
 check "authorized_keys without it" not grep -q AAAAC3Nz "$AK"
 check "remove again: none" not setup admin-key remove cengarde-router

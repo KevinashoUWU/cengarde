@@ -184,7 +184,15 @@ async function renderConfig(tr, uplinks, extra = {}) {
 		constructor() {
 			this.s = { tab() {}, taboption: (tab, C, name, title, descr) => (options[name] = new C(C.name, tab, name, title, descr)) };
 		}
-		section() { return this.s; }
+		// the main section's options by name; a grid's (the flows) by
+		// 'TYPE.name', with its own settings on options['TYPE']
+		section(C, type) {
+			if (C !== GridSection)
+				return this.s;
+			const g = { option: (O, name, title, descr) => (options[`${type}.${name}`] = new O(O.name, type, name, title, descr)) };
+			options[type] = Object.assign(g, { title: arguments[2], descr: arguments[3] });
+			return g;
+		}
 		lookupOption(name) { return options[name] ? [ options[name] ] : null; }
 		// LuCI's Map.load asks every option its cfgvalue before the map has a
 		// root; then the render
@@ -201,7 +209,8 @@ async function renderConfig(tr, uplinks, extra = {}) {
 			return Promise.resolve();
 		}
 	}
-	const form = { Map, NamedSection: class {}, Value, Flag, DynamicList, DummyValue, ListValue };
+	class GridSection {}
+	const form = { Map, NamedSection: class {}, GridSection, Value, Flag, DynamicList, DummyValue, ListValue };
 	const document = { addEventListener() {}, getElementById() { return {}; }, body: E('body') };
 	const saved = { secret: 'A'.repeat(43) + '=', uplink: uplinks, ...extra };
 	// the router's interfaces: lan, loopback and the tunnel are never uplinks,
@@ -429,6 +438,20 @@ for (const [lang, tr] of [ [ 'en', english ], [ 'es', spanish ] ]) {
 	assert.deepEqual(tab('fec_single', 'protection').values.map((v) => v[0]), [ 'auto', 'yes', 'no' ]);
 	for (const name of [ 'fec_pct', 'fec_pct_min', 'fec_window_ms', 'fec_single' ])
 		assert.deepEqual(o[name].deps, [ { fec_code: 'rlc' } ], `${lang}: ${name} only with FEC v3`);
+	// the flows (story 031): the TCP said, a grid of rules, the endpoint's check
+	assert.ok(o.flowclass && o.flowclass.addremove && o.flowclass.sortable, 'the flows: rules added, removed and ordered');
+	assert.match(o.flowclass.descr, /^TCP: [^<]*\(.*protocontrol\w+ (is off|está apagado)/, 'the TCP line: the protocontroller off');
+	{
+		const b = await renderConfig(tr, [ 'wan', 'lte2' ], { mode: 'bonding', protocontroller_port: [ '443' ] });
+
+		assert.match(b.flowclass.descr, /\(protocontrol\w+ B\)/, 'the TCP line: bonding takes B');
+		assert.match(b.flowclass.descr, /443/, 'and says its ports');
+	}
+	assert.deepEqual(o['flowclass.class'].values.map((v) => v[0]), [ 'ordered', 'deadline', 'direct', 'auto' ]);
+	for (const ok of [ '203.0.113.7:9330', '10.0.0.0/8', ':5004', '[2001:db8::7]:5000', '[2001:db8::]/32' ])
+		assert.equal(o['flowclass.endpoint'].validate('x', ok), true, `${lang}: ${ok} taken`);
+	for (const bad of [ '', '2001:db8::7', 'host:80', '1.2.3.4 :5', ':' ])
+		assert.notEqual(o['flowclass.endpoint'].validate('x', bad), true, `${lang}: '${bad}' refused`);
 	assert.deepEqual(tab('fec_stream', 'protection').deps,
 		[ { fec_code: 'rlc', protocontroller: 'b' } ].concat([ 'mix', 'parity', 'rlc', 'rs' ].map((v) => ({ redund_spare: v, protocontroller: 'b' }))),
 		'repairs over GRIT only with GRIT, and FEC v3 or a protection mode');

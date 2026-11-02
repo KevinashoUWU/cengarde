@@ -16,6 +16,9 @@
 #   set KEY VALUE             KEY = VALUE in engine.local (KEYS below; a
 #                             number or a word), then the configuration again
 #   unset KEY                 KEY out of engine.local, then the same
+#   flows [ENDPOINT CLASS]... the flow_class lines of engine.local replaced
+#                             by these (story 031; none: no rules), then
+#                             the same; at most 32
 #
 # Every router of the server shares these settings (no setting a router has
 # for itself yet): a key is for the router that administers the server.
@@ -84,6 +87,27 @@ cmd_get() {
 		v=$(ini "$LOCAL_CONF" "$k")
 		[ -z "$v" ] || echo "local.$k=$v"
 	done
+	v=$(sed -n 's/^[[:space:]]*flow_class[[:space:]]*=[[:space:]]*//p' "$LOCAL_CONF" 2>/dev/null | tr '\n' ';')
+	echo "flows=${v%;}"
+}
+
+# set_flows [ENDPOINT CLASS]...: engine.local's flow_class lines replaced by
+# these, then the engine's configuration again.
+set_flows() {
+	local tmp="$LOCAL_CONF.admin"
+
+	mkdir -p "$ETC"
+	: >"$tmp"
+	if [ -e "$LOCAL_CONF" ]; then
+		grep -v "^[[:space:]]*flow_class[[:space:]]*=" "$LOCAL_CONF" >"$tmp" || :
+	fi
+	while [ $# -ge 2 ]; do
+		echo "flow_class = $1 $2" >>"$tmp"
+		shift 2
+	done
+	chmod 0644 "$tmp"
+	mv "$tmp" "$LOCAL_CONF"
+	"$SETUP" refresh
 }
 
 # set_local KEY [VALUE]: KEY's lines out of engine.local, and KEY = VALUE at
@@ -137,7 +161,22 @@ unset)
 	allowed "$2" || refuse "unset: $2 is not a setting a router may change"
 	set_local "$2"
 	;;
+flows)
+	shift
+	[ $(($# % 2)) -eq 0 ] && [ $# -le 64 ] || refuse "usage: flows [ENDPOINT CLASS]... (at most 32)"
+	i=1
+	for w in "$@"; do
+		if [ $((i % 2)) -eq 1 ]; then
+			case $w in '' | *[!0-9a-fA-F.:/\[\]]*) refuse "flows: $w: ADDR[/LEN][:PORT], [IPv6][/LEN][:PORT] or :PORT" ;; esac
+			[ ${#w} -le 64 ] || refuse "flows: $w: too long"
+		else
+			case $w in auto | ordered | deadline | direct) ;; *) refuse "flows: $w: auto, ordered, deadline or direct" ;; esac
+		fi
+		i=$((i + 1))
+	done
+	set_flows "$@"
+	;;
 *)
-	refuse "not allowed: ${SSH_ORIGINAL_COMMAND:-a shell} (get, mode, fec, protocontroller, set, unset)"
+	refuse "not allowed: ${SSH_ORIGINAL_COMMAND:-a shell} (get, mode, fec, protocontroller, set, unset, flows)"
 	;;
 esac
