@@ -7,7 +7,7 @@
   `~/campo/2026-11-01/u3a/` (el reordenador apagado),
   `~/campo/2026-11-01/p13a/` (protocolo 12 contra 13) y `p13ts`–`p13ts3`
   (con un flujo como MPEG-TS), `p13skip`, `skipbis`, `p13voice` y
-  `p13tsreal`, `p13wg`, `wgbis`, `p13rtp`, `rtp2`–`rtp4`, `rtpbis`, `ts4`, `ts5`, `voice2`, `tsreal2`, `cls_rtp`, `cls_ts`, `cls_tsl`, `p14a`; terreno `~/campo/2026-11-01/p13field/` y `fieldvid/`; `engine/src/proto.h`,
+  `p13tsreal`, `p13wg`, `wgbis`, `p13rtp`, `rtp2`–`rtp4`, `rtpbis`, `ts4`, `ts5`, `voice2`, `tsreal2`, `cls_rtp`, `cls_ts`, `cls_tsl`, `p14a`; `sf2`; terreno `~/campo/2026-11-01/p13field/` y `fieldvid/`; `engine/src/proto.h`,
   `clientpath.h`, `subflow.h`, `client.c`, `server.c`; historia 029 (U1–U7).
 
 ## TL;DR
@@ -354,6 +354,28 @@ Lo siguiente de A2, la marca de tiempo de GRIT por la del túnel (4 bytes
 más), pide que el túnel selle cada STREAM con el reloj que GRIT anotó: el NACK
 de una pérdida reconoce la transmisión por ese valor exacto
 (`cg_st_tx_nack`). Queda para el encabezado de subflujo.
+
+### El SFLOSS por dos enlaces
+
+El `SFLOSS` es el NACK de GRIT: usa los rangos del NACK del túnel (base y
+máscara de 64 bits, hasta 16) y su propio RACK por enlace, con ventana que se
+ensancha con cada falsa pérdida. Pero iba por un solo enlace y sin
+reintento: si ese paquete se perdía, la pérdida esperaba al RACK de GRIT o a
+su temporizador. Ahora va por los dos enlaces más rápidos, como el NACK, y el
+emisor cuenta una vez el segundo aviso de una misma `sseq` (`CG_SF_LOST`,
+`repeat` en el estado): ni la pérdida del enlace ni el ritmo de `link_cc` la
+ven dos veces. GRIT ya no reenviaba dos veces (un segmento perdido, pendiente
+o de una copia vieja no se marca otra vez). Sin cambio de formato.
+
+- Laboratorio (`sf2`, 12 casos × 2 × 3): TCP +7,6 % (+1,8 % sin `dominant`
+  ni `protect` de bajada); `lossy` de bajada +10,8 %, `ratswitch` de bajada
+  +12,5 %, `starlink15` de subida +17,1 %. El flujo tipo TS (DATA, no GRIT)
+  9,9 → 11,7 ‰, por `protect` y `fade`.
+- Terreno (`fieldvid/r4/`, 3 rondas): TCP 261 → 246 de bajada (una corrida
+  de 204; las otras 259–275) y 90 → 87 de subida; de subida, errores del RTP
+  6 272 → 5 665 y del TS 2 566 → 2 181; de bajada parejo. En el NUC cada
+  pérdida llegó avisada dos veces (WOM: 11 535 pérdidas y 11 535 `repeat`):
+  el primer aviso casi nunca se pierde; el segundo es el seguro.
 
 ### Etapa A2: el encabezado de subflujo y los frames
 
