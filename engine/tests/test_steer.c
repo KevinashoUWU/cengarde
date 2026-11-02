@@ -102,14 +102,14 @@ static void test_steer_v3(void)
 	}
 	/* Concretely, with 8 lanes. */
 	CHECK_EQ(cg_steer_prog(prog, CG_STEER_MAX, 8), 9);
-	pkt[0] = (uint8_t)(CG_PROTO_VERSION << 4 | CG_T_DATA);
+	pkt[0] = (uint8_t)(CG_PROTO_WIRE << 4 | CG_T_DATA);
 	pkt[CG_LINK_OFF] = 2;
 	CHECK_EQ(cbpf_run(prog, 9, pkt, 1400), 2);
 	CHECK_EQ(cbpf_run(prog, 9, pkt, CG_HDR_LEN), 2);
 	CHECK_EQ(cbpf_run(prog, 9, pkt, CG_HDR_LEN - 1), 8); /* short: junk */
 	pkt[CG_LINK_OFF] = 13;
 	CHECK_EQ(cbpf_run(prog, 9, pkt, 1400), 5);
-	pkt[0] = (uint8_t)((CG_PROTO_VERSION + 1) << 4 | CG_T_DATA);
+	pkt[0] = (uint8_t)(((CG_PROTO_WIRE + 1) & 0x0f) << 4 | CG_T_DATA);
 	CHECK_EQ(cbpf_run(prog, 9, pkt, 1400), 8); /* the next protocol version: junk */
 	pkt[0] = 4; /* a WireGuard data message sent to the wrong port */
 	CHECK_EQ(cbpf_run(prog, 9, pkt, 1400), 8);

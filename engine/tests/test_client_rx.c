@@ -294,7 +294,9 @@ static void test_up(void)
 	CHECK(h.type == CG_T_PROBE && h.flags == CG_F_OWD && h.hint == 0x5a && h.link == 3 && h.session == SESSION &&
 	      h.seq == 40 && h.ts == 99);
 	CHECK(cg_hdr_verify(hdr, sizeof(hdr), key));
-	cg_hdr_set_link(hdr, 9); /* patched per link, outside the MAC */
+	cg_hdr_set_link(hdr, 9); /* the link is under the MAC (16): patched, it is resealed */
+	CHECK(!cg_hdr_verify(hdr, sizeof(hdr), key));
+	cg_hdr_reseal(hdr, key, hdr + CG_HDR_LEN, sizeof(hdr) - CG_HDR_LEN);
 	CHECK(cg_hdr_verify(hdr, sizeof(hdr), key));
 	CHECK(!cg_hdr_verify(hdr, sizeof(hdr), key + CG_SIPHASH_KEY_LEN));
 }

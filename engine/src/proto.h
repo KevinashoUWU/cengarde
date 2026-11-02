@@ -1,4 +1,4 @@
-/* cengarde wire protocol, version 15 (version 1 had no delay reports,
+/* cengarde wire protocol, version 16 (version 1 had no delay reports,
  * version 2 no IP pass flags, version 3 no client hint, cookies or separate
  * control sequence, version 4 no previous link in DATA's flags, version 5
  * no NACK, version 6 no CG_F_FREE, version 7 no parity, version 8 no
@@ -15,7 +15,8 @@
  * codes see the TUN's DATA only, GRIT recovers its own from the subflows,
  * story 030; version 14 drops the stream messages' own tag, protoctl.h:
  * the MAC covers every one of them; version 15 their DATA's own clock: the
- * header's ts is it).
+ * header's ts is it; version 16 puts the link and the sseq under the MAC,
+ * last, so that each copy only finishes it: cg_hdr_mac_finish).
  *
  * Every datagram between client and server carries a 24-byte header followed
  * by the payload (an IP packet from the TUN for DATA, or a protocontroller
@@ -73,11 +74,16 @@
 
 #include "siphash.h"
 
-#define CG_PROTO_VERSION 15
+#define CG_PROTO_VERSION 16
+/* The version in the first byte's high nibble, 1 to 15: past 15 it goes
+ * round from 1 (16 is 1, 17 is 2), over versions retired long ago (every
+ * engine still running speaks 12 or more). Never 0: a WireGuard message
+ * (first byte 1-4) or most junk starts with it, and goes before any MAC. */
+#define CG_PROTO_WIRE ((CG_PROTO_VERSION - 1) % 15 + 1)
 #define CG_HDR_LEN 28
 #define CG_TS_OFF 12
 #define CG_MAC_OFF 16
-#define CG_SSEQ_OFF 24 /* the link's own sequence (MPGRIT's subflow, story 029): after the MAC, like the link, so a copy on another link takes its own */
+#define CG_SSEQ_OFF 24 /* the link's own sequence (MPGRIT's subflow, story 029): after the MAC field; the MAC covers it last with the link (16), so a copy on another link finishes the MAC with its own */
 #define CG_HINT_OFF 2
 #define CG_LINK_OFF 3
 #define CG_KEY_LEN 32 /* shared secret: c2s key || s2c key */
@@ -359,9 +365,26 @@ struct cg_hello {
 };
 #define CG_HELLO_LEN 8
 
-/* Writes a complete header, MAC included, for hdr and payload. */
+/* Writes a complete header, MAC included, for hdr and payload. The MAC
+ * (16) covers the header without its link, the payload, and then the link
+ * and the sseq: a copy that goes on another link, with that link's sseq,
+ * only finishes it from the base (cg_hdr_mac_finish, ~0.1 us on a
+ * Cortex-A53 against ~2.1 us for 1400 bytes), and neither can be rewritten
+ * on the way (a forged sseq made the receiver say losses that never were). */
 void cg_hdr_write(uint8_t out[CG_HDR_LEN], const struct cg_hdr *h, const uint8_t key[CG_SIPHASH_KEY_LEN],
 		  const void *payload, size_t plen);
+/* The same, and *base: the MAC's state before the link and the sseq. */
+void cg_hdr_write_base(uint8_t out[CG_HDR_LEN], const struct cg_hdr *h, const uint8_t key[CG_SIPHASH_KEY_LEN],
+		       const void *payload, size_t plen, struct cg_siphash *base);
+/* The MAC's state of hdr (its link left out) and payload under key. */
+void cg_hdr_mac_base(struct cg_siphash *s, const uint8_t *hdr, const uint8_t key[CG_SIPHASH_KEY_LEN],
+		     const void *payload, size_t plen);
+/* The MAC of hdr from base and the link and sseq hdr holds now, into hdr:
+ * after cg_hdr_set_link and cg_hdr_set_sseq. */
+void cg_hdr_mac_finish(const struct cg_siphash *base, uint8_t *hdr);
+/* The whole MAC again (a kept copy sent on another link, a probe given its
+ * sseq after it was written). */
+void cg_hdr_reseal(uint8_t *hdr, const uint8_t key[CG_SIPHASH_KEY_LEN], const void *payload, size_t plen);
 
 /* Parses buf (header + payload) without checking the MAC. Returns 0 when the
  * header is well formed and the payload length fits the type, -1 otherwise. */
