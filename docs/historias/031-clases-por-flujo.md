@@ -389,6 +389,36 @@ que le conviene:
   rápido y el carril fiable ya lleva su sincronía; cada mensaje sigue
   comprimido por su cuenta, así que el desorden no estorba.
 
+## El carril fiable con zstd en terreno (2026-11-02)
+
+Testnet (4 módems, bonding, p18 con zstd en los dos extremos;
+`~/campo/2026-11-02/lane`): una lectura JSON de sensor por datagrama
+(`udpgen -j`, 500 por segundo, 30 s, ~135 bytes) desde detrás del NUC a un
+receptor en el VPS, como UDP por el túnel o por el carril (TPROXY a mano en
+el NUC, como lo escribe `cengarde-setup`); luego con el VPS descartando al
+azar los paquetes del túnel en los dos sentidos (iptables `statistic`).
+
+| Brazo | Entregados | Desordenados | GRIT reenvió |
+| --- | --- | --- | --- |
+| UDP, la red tal cual | 14 999 / 14 999 | 2 | — |
+| carril, la red tal cual | 14 999 / 14 999 | 0 | 0 |
+| UDP, 5 % descartado | 14 999 / 14 999 | 551 | — |
+| carril, 5 % descartado | 14 999 / 14 999 | 0 | 0 |
+| UDP, 40 % descartado | 14 591 (−2,7 %) | 3355 | — |
+| carril, 40 % descartado | 14 999 / 14 999 | 0 | 400 (206 por RTO, 194 por NACK) |
+
+- **zstd en terreno igual que en el laboratorio:** 2,03 MB → 0,40 MB (5,0×),
+  ~27 bytes por lectura.
+- **Los datagramas chicos van copiados:** bajo `split_small` (256 bytes) el
+  reparto del bonding manda un paquete por todos los enlaces (era para los
+  ACK y los saludos de TCP). Las lecturas, crudas o comprimidas, caben, así
+  que con 5 % descartado nadie perdió nada (0,05⁴) y GRIT no tuvo que
+  reenviar; con 40 %, el UDP perdió lo que perdieron las cuatro copias
+  (0,4⁴ ≈ 2,6 %) y el carril lo reenvió todo, en orden (el VPS recibió
+  14 234 marcos fuera de orden y los ordenó). Copiado ×4, el carril con zstd
+  manda ~1,6 MB, menos que una sola copia del JSON crudo; con telemetría muy
+  pesada, bajar `split_small` deja el trabajo a los reenvíos de GRIT.
+
 ## QUIC por TCP (`quic`, 2026-11-02)
 
 - **La pregunta** (el usuario): ¿se puede hacer proxy de QUIC como el PEP de
@@ -437,7 +467,7 @@ que le conviene:
 
 ## Pendiente
 
-- Terreno: `fec_stream` en redundancia y el carril fiable (con zstd).
+- Terreno: `fec_stream` en redundancia.
 - QUIC en bonding, cuando pasa (`quic = pass` o `quic_allow`): repartir por
   flujo (todo un flujo QUIC por un enlace, el plan por flujo de la historia
   014) en vez de por paquete, que MPGRIT haría natural.
