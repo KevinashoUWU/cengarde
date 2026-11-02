@@ -135,6 +135,15 @@ jobs:
           mkdir -p package/feeds/luci
           ln -s ../../../feeds/luci/modules/luci-base package/feeds/luci/luci-base
 
+      # libzstd for the reliable lane's compression (story 031): zstd from
+      # the packages feed, the rest of it stays out.
+      - name: Add zstd from the packages feed
+        run: |
+          cd sdk
+          ./scripts/feeds update packages
+          mkdir -p package/feeds/packages
+          ln -s ../../../feeds/packages/utils/zstd package/feeds/packages/zstd
+
       - name: Build the packages
         run: |
           ln -s "$GITHUB_WORKSPACE/openwrt/cengarde" sdk/package/cengarde

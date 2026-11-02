@@ -1248,8 +1248,10 @@ bond_small_start() {
 	ip netns exec "$rx" "$BIN/udpgen" -b "$rxa:$rp" -d $(($2 + 3)) -g 1 >"$RUN/small-rx.out" &
 	BOND_BG="$BOND_BG $!"
 	sleep 0.2
+	local -a jo=()
+	if [ "$BOND_SMALL_JSON" = 1 ]; then jo=(-j); fi
 	ip netns exec "$tx" "$BIN/udpgen" -b "$txa:7001" -p "$rxa:$rp" -r "$BOND_SMALL" -s "$BOND_SMALL_SIZE" \
-		$([ "$BOND_SMALL_JSON" = 1 ] && echo -j) -d "$2" -g 0 >"$RUN/small-tx.out" &
+		"${jo[@]}" -d "$2" -g 0 >"$RUN/small-tx.out" &
 	BOND_BG="$BOND_BG $!"
 }
 

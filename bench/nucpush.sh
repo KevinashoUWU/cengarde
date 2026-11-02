@@ -101,6 +101,12 @@ apk() {
 		mkdir -p "$SDK/package/feeds/luci"
 		ln -s ../../../feeds/luci/modules/luci-base "$SDK/package/feeds/luci/luci-base"
 	fi
+	# libzstd (the reliable lane's compression), as CI does
+	if [ ! -e "$SDK/package/feeds/packages/zstd" ]; then
+		(cd "$SDK" && ./scripts/feeds update packages >/dev/null)
+		mkdir -p "$SDK/package/feeds/packages"
+		ln -s ../../../feeds/packages/utils/zstd "$SDK/package/feeds/packages/zstd"
+	fi
 	ln -sfn "$SRC/openwrt/cengarde" "$SDK/package/cengarde"
 	ln -sfn "$SRC/openwrt/luci-app-cengarde" "$SDK/package/luci-app-cengarde"
 	[ -f "$SDK/.config" ] || make -s -C "$SDK" defconfig >/dev/null
