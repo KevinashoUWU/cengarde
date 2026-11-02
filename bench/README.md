@@ -848,6 +848,40 @@ CPU solo se comparan dentro de una misma corrida de `labq.py` (mismo `-j`):
 los brazos van intercalados, así que lo que quede del efecto les toca a todos
 por igual.
 
+### `dectrace`: las decisiones del motor, exactas (`dectrace.c`, `dectrace.sh`)
+
+Para saber si un cambio (una limpieza, un refactor) cambia lo que el motor
+decide, el laboratorio no alcanza: un A/A de la misma versión difiere 2 % en
+un caso típico y 20–36 % en `dominant` o `protect` (arriba). `dectrace`
+compila las cabeceras puras con que decide el motor (`health.h`,
+`capacity.h`, `linkcc.h`, `eta.h`, `dominant.h`, `fec3.h`, `reorder.h`) y las
+hace correr con un reloj virtual y una semilla sobre enlaces como los arma
+`bond.sh` (retardo, tasa, cola en ms, pérdida al azar), con una carga fija
+1,2 veces lo que llevan; cada 100 ms escribe lo que decidió cada pieza y al
+final un hash por pieza. La misma versión, escenario y semilla dan la misma
+traza bit a bit (con gcc y con clang).
+
+```sh
+bench/dectrace.sh REV_A REV_B            # 7 escenarios × semillas 2026 1 2
+bench/dectrace.sh origin/master HEAD 2026
+```
+
+Cada revisión se compila en un `git worktree` aparte con su propio
+`bench/dectrace.c` (o el de este árbol si no lo tiene). Dice por escenario y
+semilla `same` o `DIFFERENT`, con las piezas que cambiaron y la primera en
+cambiar (pieza y tick); sale con 0 si todo coincide. Medido el 2026-11-01:
+la segunda tanda del desván (`4569dec` contra `2522adc`) da 0 de 21 trazas
+distintas; subir de 5 a 6 % el umbral de pérdida de una ronda de
+`linkcc.h` cambia 5 de 7 escenarios, primero en `linkcc` y de ahí en la
+salud, la capacidad, la ETA y el reordenador.
+
+No es un modelo del terreno: no hay TCP (la carga es fija) y el pegamento
+de `client.c` y `server.c` que alimenta esas cabeceras está escrito de nuevo
+en `dectrace.c`, así que un cambio en ese pegamento no se ve aquí (para eso,
+el laboratorio contra el piso de ruido). El CI lo compila con `-Werror` y
+comprueba que se repite: una cabecera que cambia de API obliga a ponerlo al
+día en el mismo PR.
+
 ### `reorder`: el reordenador del receptor y el reparto (`lab.d/reorder.sh`, `robench`)
 
 Para el paso 1 de la Fase 5 (historia 012). `lab.d/reorder.sh` se escribió

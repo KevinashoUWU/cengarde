@@ -1369,6 +1369,18 @@ media geométrica, 12 de 24. `downstall` de subida −17 % con 3 corridas
 quedó en −0,7 % con 9; `dominant` de bajada va de 15 a 125 Mbit/s en todos
 los brazos de todas las tandas del día.
 
+### Las decisiones, exactas: `dectrace` (2026-11-01)
+
+El laboratorio no puede decir que una limpieza no cambió nada (el A/A de la
+misma versión: 2 % en un caso típico, 20–36 % en `dominant` y `protect`).
+`bench/dectrace.c` hace correr las cabeceras puras del motor (salud,
+capacidad, ritmo por enlace, ETA, dominante, FEC v3, reordenador) con un
+reloj virtual y una semilla sobre enlaces simulados, y `bench/dectrace.sh`
+compara dos revisiones traza por traza. La segunda tanda del desván dio 0 de
+21 trazas distintas; un cambio plantado (el umbral de pérdida de una ronda
+de `linkcc.h`, 5 → 6 %) cambió 5 de 7 escenarios. No cubre el pegamento de
+`client.c` y `server.c`.
+
 ## Pendiente
 
 - `link_cc`: decidir si pasa a ser lo normal en el motor con `subflow` (hoy
@@ -1419,3 +1431,5 @@ los brazos de todas las tandas del día.
 - 2026-11-01: la limpieza del ritmo por enlace: lo que ganó queda fijo,
   `link_cc_bits` sale y lo que perdió va a `docs/desvan/`.
 - 2026-11-01: el desván, segunda tanda: nueve perillas que nadie encendía.
+- 2026-11-01: la semilla fija del laboratorio (2026), el piso de ruido A/A y
+  `dectrace`, las decisiones exactas entre dos revisiones.

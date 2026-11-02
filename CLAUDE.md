@@ -29,6 +29,8 @@ routers por VPS, nombres con DNS dinámico) en QEMU; falta hardware real.
   test` (TSAN) y, en cruzado, `make CC=aarch64-linux-gnu-gcc`.
 - Laboratorio (root): `bench/lab.sh build`, `ci` (smoke, health, control y
   `lab.d/`) y `latency`.
+- ¿Un cambio cambia lo que el motor decide? `bench/dectrace.sh REV_A REV_B`
+  (exacto, reloj virtual); el laboratorio tiene 2–36 % de ruido A/A.
 - OpenWrt de punta a punta: `openwrt/test/e2e.sh IMAGEN` (`openwrt/README.md`).
 - Contenedor cloud: `apt-get update`, `iproute2 iptables strace` (laboratorio)
   o `qemu-system-x86 openssh-client` (e2e); sin IPv6, netem, systemd.
