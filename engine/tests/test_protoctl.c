@@ -13,8 +13,8 @@ static void test_codec(void)
 	struct cg_st_ack a = { .aseq = 0xbeef, .cum = 0x100000005ull, .edge = 0x100100000ull, .n = 2 }, u;
 	size_t n;
 
-	n = cg_pctl_seal(b, cg_pctl_put_open(b, 0x00020003, 4, a4, 5201));
-	CHECK_EQ(n, 13 + CG_PCTL_TAG);
+	n = cg_pctl_put_open(b, 0x00020003, 4, a4, 5201);
+	CHECK_EQ(n, 13);
 	CHECK(cg_pctl_is(b, n));
 	CHECK_EQ(cg_pctl_parse(b, n, &m), 0);
 	CHECK_EQ(m.type, CG_PCTL_OPEN);
@@ -23,14 +23,13 @@ static void test_codec(void)
 	CHECK_EQ(m.port, 5201);
 	CHECK(!memcmp(m.addr, a4, 4));
 	CHECK(cg_pctl_parse(b, n - 1, &m) < 0);
-	n = cg_pctl_seal(b, cg_pctl_put_open(b, 9, 6, a6, 443));
-	CHECK_EQ(n, 25 + CG_PCTL_TAG);
+	n = cg_pctl_put_open(b, 9, 6, a6, 443);
+	CHECK_EQ(n, 25);
 	CHECK_EQ(cg_pctl_parse(b, n, &m), 0);
 	CHECK(!memcmp(m.addr, a6, 16));
 
 	n = cg_pctl_put_data(b, 7, CG_PCTLF_FIN | CG_PCTLF_EST, 0x1234567890ull, 0xdeadbeef);
 	memcpy(b + n, "hello", 5);
-	n = cg_pctl_seal(b, n + 5) - 5;
 	CHECK_EQ(cg_pctl_parse(b, n + 5, &m), 0);
 	CHECK_EQ(m.type, CG_PCTL_DATA);
 	CHECK_EQ(m.flags, CG_PCTLF_FIN | CG_PCTLF_EST);
@@ -43,8 +42,8 @@ static void test_codec(void)
 	a.e[0] = 0x100000200ull;
 	a.s[1] = 0x100000300ull;
 	a.e[1] = 0x100000400ull;
-	n = cg_pctl_seal(b, cg_pctl_put_ack(b, 7, CG_PCTLF_EST, &a, -1234));
-	CHECK_EQ(n, 21 + 16 + CG_PCTL_TAG);
+	n = cg_pctl_put_ack(b, 7, CG_PCTLF_EST, &a, -1234);
+	CHECK_EQ(n, 21 + 16);
 	CHECK(n <= CG_PCTL_ACK_MAX);
 	CHECK_EQ(cg_pctl_parse(b, n, &m), 0);
 	CHECK_EQ(m.type, CG_PCTL_ACK);
@@ -57,18 +56,11 @@ static void test_codec(void)
 	CHECK_EQ(u.s[1], a.s[1]);
 	CHECK_EQ(u.e[0], a.e[0]);
 	b[20] = CG_ST_ACK_RANGES + 1;
-	CHECK_EQ(cg_pctl_parse(b, n, &m), -2); /* the tag no longer matches */
-	cg_pctl_seal(b, n - CG_PCTL_TAG);
-	CHECK_EQ(cg_pctl_parse(b, n, &m), -1); /* sealed again: malformed */
+	CHECK_EQ(cg_pctl_parse(b, n, &m), -1); /* more ranges than allowed: malformed */
 
-	n = cg_pctl_seal(b, cg_pctl_put_rst(b, 7, CG_PCTL_R_REFUSED));
+	n = cg_pctl_put_rst(b, 7, CG_PCTL_R_REFUSED);
 	CHECK_EQ(cg_pctl_parse(b, n, &m), 0);
-	/* a wrong rebuild: any byte changed */
-	for (size_t i = 0; i < n; i++) {
-		b[i] ^= 0x20;
-		CHECK(cg_pctl_parse(b, n, &m) < 0);
-		b[i] ^= 0x20;
-	}
+	CHECK(cg_pctl_parse(b, n - 1, &m) < 0);
 	CHECK_EQ(m.type, CG_PCTL_RST);
 	CHECK_EQ(m.reason, CG_PCTL_R_REFUSED);
 	CHECK(!strcmp(cg_pctl_reason(CG_PCTL_R_REFUSED), "refused"));
@@ -79,7 +71,6 @@ static void test_codec(void)
 	b[0] = 0x60;
 	CHECK(!cg_pctl_is(b, 40));
 	b[0] = 0xF9;
-	cg_pctl_seal(b, 16);
 	CHECK_EQ(cg_pctl_parse(b, 20, &m), -1); /* no such type */
 }
 
@@ -210,23 +201,23 @@ static void test_nack_kind(void)
 	/* a DATA: its stream, offset and clock */
 	n = cg_pctl_put_data(b, 0x00050007, CG_PCTLF_EST, 0x1234567890ull, 0xdeadbeef);
 	memset(b + n, 0xab, 100);
-	n = cg_pctl_seal(b, n + 100);
+	n += 100;
 	CHECK_EQ(cg_pctl_nack_kind(b, n, &id, &off, &ts), CG_PCTL_NACK_DATA);
 	CHECK_EQ(id, 0x00050007);
 	CHECK_EQ(off, 0x34567890);
 	CHECK_EQ(ts, 0xdeadbeef);
 	/* too short for its header: sent again as before */
-	CHECK_EQ(cg_pctl_nack_kind(b, CG_PCTL_DATA_HDR, &id, &off, &ts), CG_PCTL_NACK_RESEND);
+	CHECK_EQ(cg_pctl_nack_kind(b, CG_PCTL_DATA_HDR - 1, &id, &off, &ts), CG_PCTL_NACK_RESEND);
 	CHECK_EQ(cg_pctl_nack_kind(b, 3, &id, &off, &ts), CG_PCTL_NACK_RESEND);
 	/* an ACK: a fresh one instead */
 	id = 0;
-	n = cg_pctl_seal(b, cg_pctl_put_ack(b, 9, CG_PCTLF_EST, &a, 5));
+	n = cg_pctl_put_ack(b, 9, CG_PCTLF_EST, &a, 5);
 	CHECK_EQ(cg_pctl_nack_kind(b, n, &id, &off, &ts), CG_PCTL_NACK_ACK);
 	CHECK_EQ(id, 9);
 	/* an OPEN, a RST: sent again */
-	n = cg_pctl_seal(b, cg_pctl_put_open(b, 9, 4, a4, 80));
+	n = cg_pctl_put_open(b, 9, 4, a4, 80);
 	CHECK_EQ(cg_pctl_nack_kind(b, n, &id, &off, &ts), CG_PCTL_NACK_RESEND);
-	n = cg_pctl_seal(b, cg_pctl_put_rst(b, 9, CG_PCTL_R_PEER));
+	n = cg_pctl_put_rst(b, 9, CG_PCTL_R_PEER);
 	CHECK_EQ(cg_pctl_nack_kind(b, n, &id, &off, &ts), CG_PCTL_NACK_RESEND);
 }
 

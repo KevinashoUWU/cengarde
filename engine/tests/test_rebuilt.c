@@ -135,10 +135,9 @@ void test_rebuilt(void)
 	for (size_t i = 0; i < 1400; i++)
 		p[i] = (uint8_t)(i * 131 + 17);
 	CHECK_EQ(cg_rebuilt_check(p, 1400), CG_RB_BAD);
-	/* a protocontroller message: its tag */
-	len = cg_pctl_seal(p, cg_pctl_put_rst(p, 0x10002, 3));
-	CHECK_EQ(cg_rebuilt_check(p, len), CG_RB_OK);
-	p[3] ^= 1;
+	/* a protocontroller message: never rebuilt (a STREAM, which no code
+	 * covers), so one that comes out of a code is garbage */
+	len = cg_pctl_put_rst(p, 0x10002, 3);
 	CHECK_EQ(cg_rebuilt_check(p, len), CG_RB_BAD);
 	CHECK_EQ(cg_rebuilt_check(p, 3), CG_RB_BAD);
 }

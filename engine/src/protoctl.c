@@ -178,7 +178,7 @@ struct cg_pctl {
 	uint32_t mpeer, msid;
 	uint8_t in_rx; /* in cg_pctl_rx: the engine is mid-batch, nothing may be sent now */
 	/* counters */
-	uint64_t opened, closed, refused[CG_PCTL_R_N], rst_tx, rst_lost, rst_rx[CG_PCTL_R_N], bad, corrupt, unknown;
+	uint64_t opened, closed, refused[CG_PCTL_R_N], rst_tx, rst_lost, rst_rx[CG_PCTL_R_N], bad, unknown;
 	uint64_t up_bytes, down_bytes, data_tx, data_rx, acks_tx, acks_rx, opens_tx, retx, copies, rto_n;
 	uint64_t reneged; /* timeouts that found the oldest segment SACKed and sent the SACKed again */
 	uint64_t dup_frames, ooo_frames, drop_frames, nomem;
@@ -319,7 +319,6 @@ static uint8_t *slot_for(struct cg_pctl *p, uint32_t peer, uint32_t sid)
 
 static void push(struct cg_pctl *p, size_t len, int copy)
 {
-	len = cg_pctl_seal(p->msg[p->nmsg], len);
 	p->mptr[p->nmsg] = p->msg[p->nmsg];
 	p->mlen[p->nmsg] = (uint16_t)len;
 	p->mcopy[p->nmsg] = (uint8_t)copy;
@@ -1400,9 +1399,6 @@ static void rx_one(struct cg_pctl *p, uint32_t peer, uint32_t sid, const uint8_t
 	switch (cg_pctl_parse(msg, len, &m)) {
 	case 0:
 		break;
-	case -2:
-		p->corrupt++;
-		return;
 	default:
 		p->bad++;
 		return;
@@ -2133,7 +2129,6 @@ void cg_pctl_json(const struct cg_pctl *p, struct cg_json *j)
 	cg_json_u64(j, "rst_tx", p->rst_tx);
 	cg_json_u64(j, "rst_lost", p->rst_lost);
 	cg_json_u64(j, "bad", p->bad);
-	cg_json_u64(j, "corrupt", p->corrupt); /* tags that did not match: wrong rebuilds of the tunnel's repairs */
 	cg_json_u64(j, "unknown", p->unknown);
 	cg_json_u64(j, "sock_rx_bytes", p->up_bytes);
 	cg_json_u64(j, "sock_tx_bytes", p->down_bytes);

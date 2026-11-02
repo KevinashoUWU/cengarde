@@ -7,7 +7,7 @@
   `~/campo/2026-11-01/u3a/` (el reordenador apagado),
   `~/campo/2026-11-01/p13a/` (protocolo 12 contra 13) y `p13ts`–`p13ts3`
   (con un flujo como MPEG-TS), `p13skip`, `skipbis`, `p13voice` y
-  `p13tsreal`, `p13wg`, `wgbis`, `p13rtp`, `rtp2`–`rtp4`, `rtpbis`, `ts4`, `ts5`, `voice2`, `tsreal2`, `cls_rtp`, `cls_ts`, `cls_tsl`; terreno `fieldvid/`; terreno `~/campo/2026-11-01/p13field/`; `engine/src/proto.h`,
+  `p13tsreal`, `p13wg`, `wgbis`, `p13rtp`, `rtp2`–`rtp4`, `rtpbis`, `ts4`, `ts5`, `voice2`, `tsreal2`, `cls_rtp`, `cls_ts`, `cls_tsl`, `p14a`; terreno `~/campo/2026-11-01/p13field/` y `fieldvid/`; `engine/src/proto.h`,
   `clientpath.h`, `subflow.h`, `client.c`, `server.c`; historia 029 (U1–U7).
 
 ## TL;DR
@@ -332,6 +332,29 @@ En terreno hay mucha menos pérdida que en el laboratorio y las diferencias se
 achican: el 13 final queda igual al 12 con video real y mejor en el UDP
 constante de subida (la ronda de la tarde).
 
+### Protocolo 14: sin la etiqueta de GRIT (A2a)
+
+Desde el 13 un mensaje de GRIT viaja solo como STREAM, bajo el MAC del túnel
+y fuera de todo código de reparación: su etiqueta SipHash de 4 bytes (contra
+las reconstrucciones erradas de la FEC) ya no cuida nada. El 14 la quita
+(`protoctl.h`), con su hash en cada mensaje de los dos extremos y el contador
+`corrupt`; `rebuilt.h` da por basura lo rehecho que parezca un mensaje.
+Laboratorio (`p14a`, 12 casos × 2 × 3, contra el 13 final): TCP +2,6 % y
+pérdida del flujo TS 8,0 → 9,2 ‰, las dos cosas por `protect` de bajada
+(su piso de ruido es 20–36 %); el resto, ±3 %. Neutro, como se esperaba de 4
+bytes.
+
+Terreno (`~/campo/2026-11-01/fieldvid/r3/`, el mismo video en los dos
+sentidos junto a GRIT, 3 rondas por brazo, el 13 final contra el 14): TCP
+233 → 236 Mbit/s de bajada y 81 → 83 de subida; errores del RTP 2 757 → 2 838
+de bajada y 6 175 → 6 126 de subida; del MPEG-TS 715 → 754 y 2 602 → 2 537.
+Igual. La testnet quedó en el 14 (`20e993c`).
+
+Lo siguiente de A2, la marca de tiempo de GRIT por la del túnel (4 bytes
+más), pide que el túnel selle cada STREAM con el reloj que GRIT anotó: el NACK
+de una pérdida reconoce la transmisión por ese valor exacto
+(`cg_st_tx_nack`). Queda para el encabezado de subflujo.
+
 ### Etapa A2: el encabezado de subflujo y los frames
 
 - Encabezado por paquete y enlace: sesión, enlace y `sseq` dentro del MAC,
@@ -366,3 +389,4 @@ constante de subida (la ronda de la tarde).
   que no pasa por GRIT; WireGuard adentro y el terreno; el RTP real, `cg_ro_note`
   y el hueco pedido que espera solo hasta su plazo; el reordenador por
   clase de datagrama (`dgclass.h`).
+  y el hueco pedido que espera solo hasta su plazo; el protocolo 14 (A2a).

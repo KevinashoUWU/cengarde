@@ -10,7 +10,7 @@ archivos:
   - engine/tests/test_rlc.c
   - engine/tests/test_rs.c
   - engine/tests/test_rebuilt.c
-sello: 8a073f4373288c0a
+sello: a138d77dbaf5978d
 ---
 # Códigos de borrado (rs.h, rlc.h)
 
@@ -27,7 +27,7 @@ Los códigos de `redund_spare = rs | rlc` ([[021-fec-v2]]): en redundancia, prot
 
 Los dos receptores usan el anillo de DATA de la [[FEC (fec.h)]] del servidor (2048 entradas desde la FEC v3, `cg_rep_ring`; 4 MB por sesión con `fec`), escriben ahí lo que rehacen y lo entregan como la paridad (`fec_deliver`). Un bloque RS viejo (más de 384 secuencias detrás del más nuevo) se suelta. Lo rehecho nunca pisa en el anillo un DATA más nuevo de la misma ranura (`cg_rep_put_sym` devuelve −2, se cuenta en `dropped`).
 
-**La guarda de lo rehecho** (`rebuilt.h`, [[025-protocontrolador]]): el MAC del túnel cubre los miembros y las reparaciones, no la suma que hace el decodificador. Antes de entregar algo rehecho (por el XOR, el RS o la RLC), `fec_deliver` lo revisa con lo que trae (`cg_rebuilt_check`): la forma IP de `ippkt.h` y una suma de verificación (TCP, UDP con suma, ICMP, ICMPv6 sobre todo el paquete; IPv4 sin ellas, la de la cabecera; IPv6 sin ellas no se puede confirmar), un mensaje del protocontrolador por su etiqueta (hasta 0.12 revisaba también el tipo y el largo de un mensaje de WireGuard: [[026-fec-v3]], [[027-adios-wireguard]]). Lo que no pasa no se marca en el anti-replay (el paquete o su rescate pueden llegar todavía), el anillo lo olvida y las ecuaciones de la RLC se sueltan (`cg_rlc_rx_clear`). Cuesta una pasada por paquete rehecho, no por DATA.
+**La guarda de lo rehecho** (`rebuilt.h`, [[025-protocontrolador]]): el MAC del túnel cubre los miembros y las reparaciones, no la suma que hace el decodificador. Antes de entregar algo rehecho (por el XOR, el RS o la RLC), `fec_deliver` lo revisa con lo que trae (`cg_rebuilt_check`): la forma IP de `ippkt.h` y una suma de verificación (TCP, UDP con suma, ICMP, ICMPv6 sobre todo el paquete; IPv4 sin ellas, la de la cabecera; IPv6 sin ellas no se puede confirmar), un mensaje del protocontrolador nunca (desde el protocolo 13 viaja solo como STREAM, que ningún código cubre, y el 14 le quitó su etiqueta: [[030-protocolo-13]]; hasta 0.12 revisaba también el tipo y el largo de un mensaje de WireGuard: [[026-fec-v3]], [[027-adios-wireguard]]). Lo que no pasa no se marca en el anti-replay (el paquete o su rescate pueden llegar todavía), el anillo lo olvida y las ecuaciones de la RLC se sueltan (`cg_rlc_rx_clear`). Cuesta una pasada por paquete rehecho, no por DATA.
 
 ## Lee
 - Del cliente: el plan del tick de [[Lo que sobra (spare.h)]] (`cg_spare_plan`: k, m o la tasa) y los paquetes que `spare_masks` dejó solo en el primero.

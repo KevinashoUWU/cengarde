@@ -32,12 +32,11 @@
  *         window widens, as RACK's with DSACK).
  *   RST   6: the reason (CG_PCTL_R_*).
  *
- * Every message ends in a 4-byte tag, SipHash-2-4 of the rest under a fixed
- * key (cg_pctl_seal): not for authenticity (the tunnel's MAC is that), but
- * because a DATA the tunnel rebuilds from its repairs (fec.h, rlc.h) is not
- * under any MAC, and a wrong rebuild (seen in the lab: the RLC receiver's
- * "bad" by thousands, its garbage counted not_ip) must not write bytes into a
- * stream, nor a clock into the rate's delay.
+ * No tag of its own (protocol 14, story 030): a message travels only in the
+ * tunnel's STREAM class, always under its MAC, which no repair code covers
+ * (until 13 each ended in a SipHash tag, because a DATA the tunnel rebuilt
+ * from its repairs carried no MAC; rebuilt.h now drops a rebuilt payload
+ * that looks like a message).
  *
  * Also here: which destinations the VPS refuses to connect to, the
  * server's table of streams by (session, id), and the slots' generations.
@@ -52,7 +51,6 @@
 #include <stdint.h>
 #include <string.h>
 
-#include "siphash.h"
 #include "stream.h"
 
 #define CG_PCTL_MAGIC 0xF0
@@ -66,8 +64,7 @@ enum { CG_PCTL_OPEN = 1, CG_PCTL_DATA = 2, CG_PCTL_ACK = 3, CG_PCTL_RST = 4 };
 #define CG_PCTL_ACK_MAX (CG_PCTL_HDR + 15 + 8 * CG_ST_ACK_RANGES)
 #define CG_PCTL_NOOWD INT32_MIN /* an ACK with no one-way delay */
 #define CG_PCTL_RST_LEN (CG_PCTL_HDR + 1)
-#define CG_PCTL_TAG 4                                /* the trailer: cg_pctl_seal */
-#define CG_PCTL_OVERHEAD (CG_PCTL_DATA_HDR + CG_PCTL_TAG) /* a DATA's bytes besides the stream's */
+#define CG_PCTL_OVERHEAD CG_PCTL_DATA_HDR /* a DATA's bytes besides the stream's */
 
 /* Why a stream was reset. */
 enum {
@@ -167,21 +164,6 @@ static inline size_t cg_pctl_put_rst(uint8_t *b, uint32_t id, uint8_t reason)
 	return CG_PCTL_RST_LEN;
 }
 
-static inline uint32_t cg_pctl_tag(const uint8_t *b, size_t len)
-{
-	static const uint8_t key[CG_SIPHASH_KEY_LEN] = { 'c', 'e', 'n', 'g', 'a', 'r', 'd', 'e',
-							 '-', 'p', 'c', 't', 'l', 't', 'a', 'g' };
-
-	return (uint32_t)cg_siphash24(key, b, len);
-}
-
-/* A message of len bytes at b, its tag after it (room for CG_PCTL_TAG
- * more). Returns the length with it. */
-static inline size_t cg_pctl_seal(uint8_t *b, size_t len)
-{
-	cg_pctl_be32(b + len, cg_pctl_tag(b, len));
-	return len + CG_PCTL_TAG;
-}
 
 /* A message, parsed. Offsets are the wire's 32 bits (cg_st_unwrap). */
 struct cg_pctl_msg {
@@ -205,15 +187,11 @@ struct cg_pctl_msg {
 	uint8_t reason;
 };
 
-/* Returns 0, -1 for a malformed message, -2 for one whose tag does not
- * match (a wrong rebuild). */
+/* Returns 0, or -1 for a malformed message. */
 static inline int cg_pctl_parse(const uint8_t *p, size_t len, struct cg_pctl_msg *m)
 {
-	if (len < CG_PCTL_HDR + CG_PCTL_TAG || !cg_pctl_is(p, len))
+	if (len < CG_PCTL_HDR || !cg_pctl_is(p, len))
 		return -1;
-	len -= CG_PCTL_TAG;
-	if (cg_pctl_rd32(p + len) != cg_pctl_tag(p, len))
-		return -2;
 	m->type = p[0] & 0x0F;
 	m->flags = p[1];
 	m->id = cg_pctl_rd32(p + 2);
@@ -274,20 +252,19 @@ static inline int cg_pctl_parse(const uint8_t *p, size_t len, struct cg_pctl_msg
  *                       ACK carries the whole state), not the packet again;
  *   CG_PCTL_NACK_RESEND an OPEN or a RST (rare, idempotent), or one that
  *                       does not parse: sent again, as before.
- * The packet is the sender's own copy (no tag to check: it was sealed when
- * kept). */
+ * The packet is the sender's own copy. */
 enum { CG_PCTL_NACK_NOT = 0, CG_PCTL_NACK_DATA, CG_PCTL_NACK_ACK, CG_PCTL_NACK_RESEND };
 
 static inline int cg_pctl_nack_kind(const uint8_t *p, size_t len, uint32_t *id, uint32_t *off, uint32_t *ts)
 {
 	if (!cg_pctl_is(p, len))
 		return CG_PCTL_NACK_NOT;
-	if (len < CG_PCTL_HDR + CG_PCTL_TAG)
+	if (len < CG_PCTL_HDR)
 		return CG_PCTL_NACK_RESEND;
 	*id = cg_pctl_rd32(p + 2);
 	switch (p[0] & 0x0F) {
 	case CG_PCTL_DATA:
-		if (len < CG_PCTL_DATA_HDR + CG_PCTL_TAG)
+		if (len < CG_PCTL_DATA_HDR)
 			return CG_PCTL_NACK_RESEND;
 		*off = cg_pctl_rd32(p + 6);
 		*ts = cg_pctl_rd32(p + 10);

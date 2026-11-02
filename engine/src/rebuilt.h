@@ -6,8 +6,7 @@
  * did not: the MAC covered the members and the repairs, not the sum the
  * decoder made of them. A decoder bug, or a member that was not what the
  * sender coded, gives bytes nobody sent. So, before a rebuilt payload is
- * written to the TUN (or a protocontroller stream), it is checked with what
- * it carries:
+ * written to the TUN, it is checked with what it carries:
  *
  *  - an IP packet: the shape of ippkt.h (version, header length,
  *    total length == what was rebuilt), then a checksum: TCP, UDP (a
@@ -15,7 +14,9 @@
  *    header); IPv4 without one of those (a fragment, another protocol,
  *    UDP with checksum 0) by its header checksum. IPv6 without one (an
  *    extension header, a fragment, another protocol) cannot be confirmed.
- *  - a protocontroller message (protoctl.h): its tag.
+ *  - a protocontroller message (protoctl.h): never good (since protocol
+ *    13 one travels only as a STREAM, which no code covers; 14 dropped
+ *    its tag).
  *
  * A random 16-bit sum passes by chance once in 65 536, after the length
  * prefix (rlc.h, rs.h: about one in 40 of 1400-byte garbage) and the IP
@@ -81,11 +82,10 @@ static inline int cg_rb_native(const uint8_t *p, size_t len)
 {
 	int ver;
 
-	if (cg_pctl_is(p, len)) {
-		if (len < CG_PCTL_HDR + CG_PCTL_TAG)
-			return CG_RB_BAD;
-		return cg_pctl_rd32(p + len - CG_PCTL_TAG) == cg_pctl_tag(p, len - CG_PCTL_TAG) ? CG_RB_OK : CG_RB_BAD;
-	}
+	/* a stream message travels only as a STREAM (13), which no code
+	 * covers: one rebuilt is garbage */
+	if (cg_pctl_is(p, len))
+		return CG_RB_BAD;
 	if (!(ver = cg_ip_check(p, len)))
 		return CG_RB_BAD;
 	if (ver == 4) {
