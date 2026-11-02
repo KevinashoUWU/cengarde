@@ -396,11 +396,14 @@ struct client {
 	 * lone link's gate kept off */
 	struct cg_rlcw_tx *f3w;
 	/* FEC v3 over the STREAMs (streamfec.h, story 031): their own window,
-	 * with protocontroller = b; the credit is the one above, each repair
-	 * goes to the class owed most (f3_due: its bytes' share less its
-	 * repairs' cost); repairs over STREAMs */
+	 * with protocontroller = b; one repair at the end of each burst of
+	 * them (fec_wait_ms after the last), none in proportion: GRIT's ARQ
+	 * answers the rest, and a share of the links cost 4-20 % of the
+	 * throughput (lab, 2026-11-02); when the last went, whether one is
+	 * owed, the repairs */
 	struct cg_rlcw_tx *f3s;
-	int64_t f3_due[2];
+	uint64_t f3s_last_us;
+	uint8_t f3s_owed;
 	uint64_t f3_srep;
 	struct cg_crc32c crc;
 	struct cg_f3 f3;
@@ -1743,6 +1746,12 @@ static int fec_timeout(const struct client *c)
 		if (fd && (!due || fd < due))
 			due = fd;
 	}
+	if (c->f3s_owed && c->f3.mode != CG_F3_OFF) { /* the STREAMs' tail repair */
+		uint64_t fd = c->f3s_last_us + (uint64_t)c->cfg->fec_wait_ms * 1000;
+
+		if (!due || fd < due)
+			due = fd;
+	}
 	if (!due)
 		return -1;
 	now_us = cg_now_us();
@@ -2223,41 +2232,42 @@ static void f3_begin(struct client *c, const struct upctx *u)
  * window; its share of repairs, while FEC v3 protects. */
 static void f3_feed(struct client *c, int stream, uint32_t seq, const uint8_t *p, size_t len, uint64_t now_us)
 {
-	if (stream) {
-		cg_sfec_add(c->f3s, &c->crc, seq, p, len, now_us);
-	} else {
-		cg_rlcw_add(c->f3w, seq, p, (uint16_t)(len > CG_SYM_PLEN ? CG_SYM_PLEN : len), now_us);
-		/* the parity the server asks for again comes from this window
-		 * too (on_parq): without the rescue ring, the rescue's budget
-		 * grows here */
-		if (!c->resc_idx)
-			cg_resc_earn(&c->resc_b, (uint32_t)len, c->cfg->rescue_pct);
-	}
 	/* the protocontroller's bytes, which loss does not hold back: B's
 	 * stream, and A's middle TCP to the VPS with BBR (fec3.h's cg_f3_mix) */
 	cg_f3_mix(&c->f3, (uint32_t)len,
 		  stream || (c->f3_ins_port && cg_f3_tcp_port(p, len, c->f3_ins_port, 1)));
+	if (stream) {
+		/* no credit: its repair waits for the end of the burst (f3_tail) */
+		cg_sfec_add(c->f3s, &c->crc, seq, p, len, now_us);
+		c->f3s_last_us = now_us;
+		c->f3s_owed = c->f3.mode != CG_F3_OFF;
+		return;
+	}
+	cg_rlcw_add(c->f3w, seq, p, (uint16_t)(len > CG_SYM_PLEN ? CG_SYM_PLEN : len), now_us);
+	/* the parity the server asks for again comes from this window too
+	 * (on_parq): without the rescue ring, the rescue's budget grows here */
+	if (!c->resc_idx)
+		cg_resc_earn(&c->resc_b, (uint32_t)len, c->cfg->rescue_pct);
 	if (c->f3.mode == CG_F3_OFF)
 		return;
 	cg_f3_earn(&c->f3, (uint32_t)len, c->f3.pct, now_us);
 	c->f3_data += len;
-	/* its share, so that each class gets repairs in proportion to its
-	 * bytes, the smaller one too */
-	c->f3_due[stream] += (int64_t)len * c->f3.pct / 100;
 }
 
-/* One repair over the window, on the link the round-robin picks among
+/* One repair over the window (stream: the STREAMs', at the end of their
+ * burst, outside the credit), on the link the round-robin picks among
  * those it protects whose queue is within the window (cg_f3_guard), after
  * the batch's DATA (fecq); its bytes spent from the credit either way. */
-static void f3_repair(struct client *c, uint64_t now_us)
+static void f3_repair(struct client *c, uint64_t now_us, int stream)
 {
+	struct cg_rlcw_tx *t = stream ? c->f3s : c->f3w;
 	uint64_t win = f3_window_us(c);
 	struct cg_rep_hdr h;
 	uint16_t cand = 0;
-	unsigned w = 0, slen = 0;
+	unsigned w, slen;
 	uint32_t top = 0, lag;
 	uint8_t *p;
-	int link, stream;
+	int link;
 
 	for (int i = 0; i < CG_MAX_LINKS; i++) {
 		if (!(c->f3_links >> i & 1) || c->link[i].fd < 0)
@@ -2272,7 +2282,8 @@ static void f3_repair(struct client *c, uint64_t now_us)
 	link = cg_f3_pick(&c->f3, cand);
 	if (link < 0) {
 		c->f3_nolink++;
-		cg_f3_spend(&c->f3, c->f3.cost ? c->f3.cost : CG_F3_COST0);
+		if (!stream)
+			cg_f3_spend(&c->f3, c->f3.cost ? c->f3.cost : CG_F3_COST0);
 		return;
 	}
 	{
@@ -2288,24 +2299,14 @@ static void f3_repair(struct client *c, uint64_t now_us)
 			have |= (uint16_t)(c->uh[i].have_behind ? 1u << i : 0);
 		}
 		lag = cg_f3_lag_us(behind, have, c->f3_links, (unsigned)link, (uint32_t)(span / 2));
-		if (c->nfecq == CG_FEC_Q)
-			fec_send(c, now_us);
-		p = c->fecq[c->nfecq].p + CG_HDR_LEN;
-		/* the class owed most first (f3_due); a window with nothing in
-		 * it is owed nothing, and the other one is tried */
-		stream = c->f3s && c->f3_due[1] > c->f3_due[0];
-		for (int k = 0; k < 2 && !slen; k++, stream = !stream) {
-			struct cg_rlcw_tx *t = stream ? c->f3s : c->f3w;
-
-			if (!t)
-				continue;
-			w = cg_rlcw_window(t, now_us > span ? now_us - span : 0, now_us - lag, CG_RLCW_SPAN, &top);
-			slen = w ? cg_rlcw_repair(&c->sp_gf, t, top, w, &h, p + CG_REP_HDR) : 0;
-			if (!slen)
-				c->f3_due[stream] = 0;
-		}
-		stream = !stream; /* the one that went */
+		w = cg_rlcw_window(t, now_us > span ? now_us - span : 0, now_us - lag, CG_RLCW_SPAN, &top);
 	}
+	if (c->nfecq == CG_FEC_Q)
+		fec_send(c, now_us);
+	p = c->fecq[c->nfecq].p + CG_HDR_LEN;
+	slen = w ? cg_rlcw_repair(&c->sp_gf, t, top, w, &h, p + CG_REP_HDR) : 0;
+	if (!slen && stream)
+		return;
 	if (!slen) {
 		/* nothing sent between the window's start and its end (traffic
 		 * paused, or all of it newer than the lag): paid all the same, so
@@ -2317,14 +2318,14 @@ static void f3_repair(struct client *c, uint64_t now_us)
 	}
 	h.cls = stream ? CG_REP_STREAM : 0;
 	cg_rep_put(p, &h);
-	c->f3_due[stream] -= (int64_t)cg_f3_cost(slen);
 	c->f3_srep += (uint64_t)stream;
 	c->fecq[c->nfecq].mask = (uint16_t)~(1u << link); /* fec_send: the one link out of the mask */
 	c->fecq[c->nfecq].type = CG_T_REPAIR;
 	c->fecq[c->nfecq].f3 = 1;
 	c->fecq[c->nfecq].plen = (uint16_t)(CG_REP_HDR + slen);
 	c->nfecq++;
-	cg_f3_spend(&c->f3, cg_f3_cost(slen));
+	if (!stream)
+		cg_f3_spend(&c->f3, cg_f3_cost(slen));
 	/* the split's expected arrivals count its bytes on that link */
 	if (c->cfg->split_eta)
 		cg_eta_add(&c->eta, (unsigned)link, cg_f3_cost(slen), now_us);
@@ -2339,17 +2340,25 @@ static void f3_send(struct client *c, uint64_t now_us)
 	if (!f3_on(c) || c->f3.mode == CG_F3_OFF)
 		return;
 	for (int n = 0; n < CG_F3_BURST && cg_f3_owed(&c->f3); n++)
-		f3_repair(c, now_us);
+		f3_repair(c, now_us, 0);
 }
 
-/* The repair at the end of a burst (cg_f3_due); whether one was queued. */
+/* The repair at the end of a burst (cg_f3_due), and the STREAMs' once
+ * fec_wait_ms passed since the last of theirs; whether one was queued. */
 static int f3_tail(struct client *c, uint64_t now_us)
 {
+	uint64_t wait = (uint64_t)c->cfg->fec_wait_ms * 1000;
 	int n = c->nfecq;
 
-	if (!f3_on(c) || c->f3.mode == CG_F3_OFF || !cg_f3_due(&c->f3, now_us, (uint64_t)c->cfg->fec_wait_ms * 1000))
+	if (!f3_on(c) || c->f3.mode == CG_F3_OFF)
 		return 0;
-	f3_repair(c, now_us);
+	if (cg_f3_due(&c->f3, now_us, wait))
+		f3_repair(c, now_us, 0);
+	if (c->f3s_owed && now_us - c->f3s_last_us >= wait) {
+		c->f3s_owed = 0;
+		if (c->f3.pct)
+			f3_repair(c, now_us, 1);
+	}
 	c->f3_tail += c->nfecq != n;
 	return c->nfecq != n;
 }
@@ -2380,7 +2389,7 @@ static void f3_apply(struct client *c)
 	if ((!c->cfg->fec || c->cfg->fec_code != CG_FEC_RLC || c->cfg->protocontroller != CG_PCTL_B) && c->f3s) {
 		free(c->f3s);
 		c->f3s = NULL;
-		c->f3_due[0] = c->f3_due[1] = 0;
+		c->f3s_owed = 0;
 	}
 }
 
@@ -3258,15 +3267,6 @@ static struct link *fastest_link(struct client *c, uint64_t now_ms)
  * well (rescue.h's cg_resc_sure); a copied one may have come on another
  * link, until every link it went on lost it (cg_resc_lost_on), and the
  * tunnel's own DATA is left to the server's reorderer and its NACKs. */
-/* Whether FEC v3 covers STREAM seq now (story 031): it sends a share and
- * the STREAMs' window still holds it, so a repair may rebuild it. */
-static int f3_stream_covers(const struct client *c, uint32_t seq)
-{
-	uint16_t l;
-
-	return f3_on(c) && c->f3s && c->f3.mode != CG_F3_OFF && c->f3.pct && cg_rlcw_get(c->f3s, seq, &l);
-}
-
 static void on_sfloss(struct client *c, const uint8_t *payload, size_t plen, uint64_t now_ms)
 {
 	uint32_t q[CG_NACK_SEQ_MAX], gone[CG_NACK_SEQ_MAX];
@@ -3308,7 +3308,10 @@ static void on_sfloss(struct client *c, const uint8_t *payload, size_t plen, uin
 			l->sf_allcopies++;
 		}
 		ev = cg_resc_ev(rr, ri, c->txs.session, seq, CG_RESC_EV_LINK);
-		sure = cg_resc_sure(ev, stream && f3_stream_covers(c, seq), asked_is_lost(c->cfg));
+		/* the STREAMs' tail repair is a bonus, not a cover: GRIT
+		 * resends at once (whichever comes first, the other is a
+		 * duplicate) */
+		sure = cg_resc_sure(ev, 0, asked_is_lost(c->cfg));
 		if (!sure) { /* handed over already, or a suspect waiting */
 			l->sf_unsure += !(ev & (CG_RESC_EV_DONE | CG_RESC_EV_SUSPECT));
 			continue;
