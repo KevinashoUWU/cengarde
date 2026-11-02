@@ -24,9 +24,14 @@ void test_dscp(void)
 	CHECK_EQ(cg_ds_flow_tier(1, 0, 10000000), CG_DS_LOW);
 	CHECK_EQ(cg_ds_flow_tier(0, 9000000, 10000000), CG_DS_NORMAL);
 
-	/* a lower-effort flow is owed a segment 250 ms after its last one */
-	CHECK(!cg_ds_low_owed(1000000, 0, 1100000));
-	CHECK(cg_ds_low_owed(1000000, 0, 1250000));
-	CHECK(!cg_ds_low_owed(0, 2000000, 2100000)); /* never sent: from its start */
-	CHECK(cg_ds_low_owed(0, 2000000, 2300000));
+	/* a lower-effort flow is owed a segment 50 ms after its last one */
+	CHECK(!cg_ds_low_owed(1000000, 0, 1040000));
+	CHECK(cg_ds_low_owed(1000000, 0, 1050000));
+	CHECK(!cg_ds_low_owed(0, 2000000, 2040000)); /* never sent: from its start */
+	CHECK(cg_ds_low_owed(0, 2000000, 2060000));
+
+	/* and puts in flight only while a quarter of the window is free */
+	CHECK(cg_ds_low_room(700, 1000));
+	CHECK(!cg_ds_low_room(750, 1000));
+	CHECK(!cg_ds_low_room(0, 0));
 }

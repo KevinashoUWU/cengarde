@@ -2471,10 +2471,19 @@ static int timers(struct cg_pctl *p, struct flow *f, uint64_t now)
 	return 0;
 }
 
-/* One send of f, its tier's count and its time. */
-static int send_turn(struct cg_pctl *p, struct flow *f, uint64_t now)
+/* One send of f, its tier's count and its time; a lower-effort flow's
+ * only while a quarter of the window is free (owed: one it is owed, at
+ * any rate). */
+static int send_turn(struct cg_pctl *p, struct flow *f, uint64_t now, int owed)
 {
-	if (!send_one(p, f, peer_of(p, f), now))
+	struct peer *r = peer_of(p, f);
+
+	if (p->cfg.dscp && f->tier == CG_DS_LOW && !owed &&
+	    !cg_ds_low_room(r->cc.inflight, cg_scc_cwnd(&r->cc, &p->ccf, cg_scc_reo(&r->cc, peer_reo(p, r))))) {
+		f->stop = PCTL_STOP_CWND;
+		return 0;
+	}
+	if (!send_one(p, f, r, now))
 		return 0;
 	f->last_tx = now;
 	p->ds_sent[f->tier < CG_DS_TIERS ? f->tier : CG_DS_NORMAL]++;
@@ -2502,7 +2511,7 @@ static void send_rounds(struct cg_pctl *p, const uint32_t *list, uint32_t n, uin
 					uint32_t j = p->fstart[g] + (p->fcur[g] + t) % len;
 					struct flow *f = &p->f[p->ford[j]];
 
-					if (f->state != F_FREE && send_turn(p, f, now)) {
+					if (f->state != F_FREE && send_turn(p, f, now, 0)) {
 						p->fcur[g] = (p->fcur[g] + t + 1) % len;
 						any = 1;
 						break;
@@ -2518,7 +2527,7 @@ static void send_rounds(struct cg_pctl *p, const uint32_t *list, uint32_t n, uin
 			for (uint32_t k = 0; k < n; k++) {
 				struct flow *f = &p->f[list[(p->rr + k) % n]];
 
-				if (f->state != F_FREE && send_turn(p, f, now))
+				if (f->state != F_FREE && send_turn(p, f, now, 0))
 					any = 1;
 				else if (f->state != F_FREE && f->state != F_OPEN)
 					p->stop[f->stop]++;
@@ -2608,7 +2617,7 @@ void cg_pctl_service(struct cg_pctl *p)
 				if (t == CG_DS_PRIO)
 					f->tier = (uint8_t)cg_ds_flow_tier(f->dscp, f->s_rate, cg_scc_rate(&peer_of(p, f)->cc));
 				if (t == CG_DS_NORMAL && f->tier == CG_DS_LOW && cg_ds_low_owed(f->last_tx, f->created_t, now) &&
-				    send_turn(p, f, now))
+				    send_turn(p, f, now, 1))
 					p->ds_owed++;
 				if (f->tier == t)
 					p->tsel[n++] = p->used[i];

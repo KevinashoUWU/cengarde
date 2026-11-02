@@ -10,9 +10,14 @@
  *                 served as the rest, not before it)
  *   CG_DS_NORMAL  everything else, CS0 included
  *   CG_DS_LOW     lower effort (LE, RFC 8622; CS1, its older mark): only
- *                 what the rest leaves, but a segment after
- *                 CG_DS_LOW_STARVE_US without one, so a starved flow keeps
- *                 going (protocontroller_dead_s would reset it)
+ *                 what the rest leaves, and only while a quarter of the
+ *                 peer's window in flight is free (cg_ds_low_room: what it
+ *                 put in flight held the rest back once they had more to
+ *                 send), but a segment after CG_DS_LOW_STARVE_US without
+ *                 one, so a starved flow keeps going (with 250 ms, an
+ *                 iperf3 run marked CS1 failed once in the field to get its
+ *                 control messages; protocontroller_dead_s would reset a
+ *                 silent one)
  *
  * Pure: no clock, no I/O.
  *
@@ -24,7 +29,7 @@
 
 enum { CG_DS_PRIO = 0, CG_DS_NORMAL, CG_DS_LOW, CG_DS_TIERS };
 
-#define CG_DS_LOW_STARVE_US 250000u /* a lower-effort flow's segment at least this often */
+#define CG_DS_LOW_STARVE_US 50000u /* a lower-effort flow's segment at least this often */
 #define CG_DS_PRIO_SHARE 4u         /* a priority flow under 1 / this of the pacer's rate */
 
 /* The tier a DSCP asks for (its 6 bits, the TOS byte >> 2). */
@@ -70,6 +75,13 @@ static inline int cg_ds_low_owed(uint64_t last_us, uint64_t created_us, uint64_t
 	uint64_t from = last_us ? last_us : created_us;
 
 	return now_us >= from + CG_DS_LOW_STARVE_US;
+}
+
+/* Whether a lower-effort flow may put more in flight: a quarter of the
+ * window (cwnd, bytes) left free for the rest. */
+static inline int cg_ds_low_room(uint64_t inflight, uint64_t cwnd)
+{
+	return inflight < cwnd - cwnd / 4;
 }
 
 #endif
