@@ -4,7 +4,7 @@ archivos:
   - engine/src/config.c
   - engine/src/config.h
   - engine/tests/test_config.c
-sello: d44ba868e585ec26
+sello: e86de58d290385c1
 ---
 # Configuración (config.c)
 
@@ -21,6 +21,7 @@ Lee el archivo INI: una parte global, secciones `[link NOMBRE]` (cliente) y `[cl
 - `redund_spare` se lee por nombre (`no`/`off`, `copies`, `parity`, `mix`, `rs`, `rlc` → 0–5, `get_spare`) → [[Lo que sobra (spare.h)]]; `rs` se rechaza en un binario sin Leopard (`make LEOPARD=0`) → [[Códigos de borrado (rs.h, rlc.h)]].
 - `redund_spare_first` tiene que nombrar un `[link NOMBRE]` del archivo (con alguna clave: una sección vacía no existe para el INI); si no, error → [[Lo que sobra (spare.h)]].
 - `fec_code` se lee por nombre (`xor`, `rlc`, `get_fec`) y `fec_single` (`auto`, `yes`, `no`); `fec_pct` (20), `fec_pct_min` (0) y `fec_window_ms` (300) se aplican sin reiniciar → [[FEC v3 (fec3.h)]].
+- `flow_class` es la única clave global repetible (`get_flow_class`): cada línea, en orden, hasta `CG_FC_MAX` (32), con su número de línea en el error → [[Reordenador (reorder.h)]].
 - `cg_config_link_knobs` → [[Modelo de enlace (linkmodel.h)]]; `cg_config_slot` → [[Ranuras de Starlink (slot.h)]]; `cg_rescue_wait_ms` → [[Rescate (rescue.h)]] y [[FEC (fec.h)]].
 
 ## Perillas

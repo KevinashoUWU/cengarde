@@ -841,6 +841,21 @@ static void test_config_bonding(void)
 	bad(CLIENT "fec_window_ms = 9\n", "fec_window_ms", "9");
 	bad(CLIENT "fec_window_ms = 1001\n", "fec_window_ms", "1001");
 	bad(CLIENT "fec_single = sometimes\n", "fec_single", "sometimes");
+	/* flow_class (story 031): every line, in order; none by default */
+	CHECK_EQ(cg_config_parse(&c, CLIENT "\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(c.flow_class.n, 0);
+	cg_config_free(&c);
+	CHECK_EQ(cg_config_parse(&c, SERVER "flow_class = 192.168.50.158:9330 ordered\nflow_class = :443 direct\n", err,
+				 sizeof(err), warn, sizeof(warn)),
+		 0);
+	CHECK_EQ(c.flow_class.n, 2);
+	CHECK_EQ(c.flow_class.r[0].cls, CG_FC_ORDERED);
+	CHECK_EQ(c.flow_class.r[0].port, 9330);
+	CHECK_EQ(c.flow_class.r[1].cls, CG_FC_DIRECT);
+	CHECK(!strstr(warn, "flow_class"));
+	cg_config_free(&c);
+	bad(CLIENT "flow_class = 10.0.0.1:9330 fast\n", "flow_class", "fast");
+	bad(CLIENT "flow_class = 2001:db8::1 direct\n", "flow_class", "2001:db8::1");
 	/* The weight is a link's, not global; a server has no [link] weights (its
 	 * client's probes say them), and says so. */
 	CHECK_EQ(cg_config_parse(&c, CLIENT "weight = 2\n", err, sizeof(err), warn, sizeof(warn)), 0);

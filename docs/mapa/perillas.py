@@ -126,6 +126,7 @@ T = {
  "reorder_dup_wait_ms": ([G], BOTH, "0", "0–`reorder_max_wait_ms`", [RO], ["012"], "La misma espera donde nada se reparte (redundancia). 0: no retiene."),
  "reorder_margin_ms": ([G], BOTH, "10", "0–1000", [RO], ["013"], "Se suma al retardo del enlace más lento al esperar un hueco."),
  "reorder_bypass": ([G], BOTH, "128", "0–2048 bytes", [RO], ["012"], "Paquetes de hasta este tamaño se entregan sin esperar."),
+ "flow_class": ([G], BOTH, "ninguna", "repetible, hasta 32: `ADDR[/LEN][:PORT]`, `[IPv6][/LEN][:PORT]` o `:PORT`, y `auto`, `ordered`, `deadline` o `direct`", [RO], ["031"], "La clase de un flujo para el reordenador del que recibe, sobre lo que adivina `dgclass.h`: `ordered` espera su rescate (como MPEG-TS), `deadline` la regla del plazo (como RTP), `direct` nunca retenido ni rescatado (QUIC, SRT, WebRTC, juegos), `auto` lo adivinado. Calza el origen o el destino del paquete; gana la primera regla."),
  "reorder_by_link": ([G], BOTH, "`no`", "`yes` o `no`", [RO], ["013"], "Un hueco espera solo al enlace por el que salió (`CG_F_PREV`). Experimental."),
  "reorder_adaptive": ([G], BOTH, "`no`", "`yes` o `no`", [RO], ["013"], "El margen de cada enlace aprende de sus tardíos. Experimental."),
  "reorder_pool_kb": ([G], BOTH, "8192", "256–131070", [RO], ["012", "013"], "Memoria para lo retenido."),
@@ -231,7 +232,7 @@ def parsed_keys():
     keys = set(re.findall(r'get_(?:u32|bool|str|addrs|pfxs)\(&?ini, (?:""|sec), "([a-z_0-9]+)"', s))
     keys |= set(re.findall(r'cg_ini_get\(&?ini, (?:""|sec), "([a-z_0-9]+)"', s))
     keys |= set(re.findall(r'cg_ini_get\(ini, sec, "([a-z_0-9]+)"', s))
-    keys |= {"server", "resolver"}  # get_servers / get_resolvers
+    keys |= {"server", "resolver", "flow_class"}  # get_servers / get_resolvers / get_flow_class
     return keys
 
 def link(p):
@@ -273,7 +274,7 @@ def generate():
                       "path_timeout_ms", "passthrough_file", "forward_file", "forward", "lanes"]),
         ("Salud", ["mute_behind_ms", "unmute_behind_ms", "mute_settle_ms", "mute_trickle", "min_active_links"]),
         ("Reordenador", ["reorder", "reorder_max_wait_ms", "reorder_dup_wait_ms", "reorder_margin_ms", "reorder_bypass",
-                         "reorder_by_link", "reorder_adaptive", "reorder_pool_kb", "reorder_active", "tcp_aware"]),
+                         "reorder_by_link", "reorder_adaptive", "reorder_pool_kb", "reorder_active", "tcp_aware", "flow_class"]),
         ("Rescate y FEC", ["rescue_kb", "rescue_pct", "rescue_wait_ms", "rescue_tries", "rescue_target_ms", "rescue_full_hyst", "rescue_code_ms", "parq", "rescue_tcp_race",
                            "tcp_retx_one", "tcp_ack_rule", "fec", "fec_wait_ms", "fec_share_max", "fec_code",
                            "fec_pct", "fec_pct_min", "fec_window_ms", "fec_single", "fec_stream"]),

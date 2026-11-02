@@ -7,7 +7,7 @@ archivos:
 
 # Perillas
 
-Las 129 claves que `engine/src/config.c` lee (comprobado al generar esta nota: ni falta ni sobra ninguna).
+Las 130 claves que `engine/src/config.c` lee (comprobado al generar esta nota: ni falta ni sobra ninguna).
 Por omisión y rango salen de `cg_config_parse`; el significado, de los comentarios de `config.h` y de [[engine-README]].
 Las perillas marcadas como experimento están apagadas por omisión.
 
@@ -97,6 +97,7 @@ Secciones: «global» es la parte sin sección; `[link NOMBRE]` es del cliente; 
 | [[Mapa/Perillas/reorder_pool_kb\|reorder_pool_kb]] | 8192 | [[Reordenador (reorder.h)]] | [[012-bonding]], [[013-capacidad-y-dosificacion]] |
 | [[Mapa/Perillas/reorder_active\|reorder_active]] | `yes` | [[Reordenador (reorder.h)]], [[Enlaces activos (active.h)]] | [[013-capacidad-y-dosificacion]] |
 | [[Mapa/Perillas/tcp_aware\|tcp_aware]] | `no` | [[Liberación TCP (tcpfree.h)]], [[Reordenador (reorder.h)]] | [[014-tunel-nativo]] |
+| [[Mapa/Perillas/flow_class\|flow_class]] | ninguna | [[Reordenador (reorder.h)]] | [[031-clases-por-flujo]] |
 
 ## Rescate y FEC
 

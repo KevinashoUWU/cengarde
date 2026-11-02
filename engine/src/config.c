@@ -795,6 +795,32 @@ static int get_fec(struct cg_ini *ini, struct cg_config *c, char *err, size_t er
 	return 0;
 }
 
+/* flow_class (flowrule.h, story 031): every line of the global section, in
+ * order (the first rule that matches wins), at most CG_FC_MAX. */
+static int get_flow_class(struct cg_ini *ini, struct cg_config *c, char *err, size_t errlen)
+{
+	c->flow_class.n = 0;
+	for (int i = 0; i < ini->n; i++) {
+		struct cg_ini_entry *e = &ini->e[i];
+
+		if (e->section[0] || strcmp(e->key, "flow_class"))
+			continue;
+		e->used = 1;
+		if (c->flow_class.n == CG_FC_MAX) {
+			snprintf(err, errlen, "flow_class: more than %d rules", CG_FC_MAX);
+			return -1;
+		}
+		if (cg_fc_parse(&c->flow_class.r[c->flow_class.n], e->value) < 0) {
+			snprintf(err, errlen,
+				 "flow_class: expected ADDR[/LEN][:PORT], [IPv6][/LEN][:PORT] or :PORT, then auto, ordered, deadline or direct, got '%s' (line %d)",
+				 e->value, e->line);
+			return -1;
+		}
+		c->flow_class.n++;
+	}
+	return 0;
+}
+
 static int get_split(struct cg_ini *ini, struct cg_config *c, char *err, size_t errlen)
 {
 	const char *v = cg_ini_get(ini, "", "split");
@@ -1066,6 +1092,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	    get_u32(&ini, "", "fec_wait_ms", 1, 200, &c->fec_wait_ms, err, errlen) ||
 	    get_u32(&ini, "", "fec_share_max", 0, 100, &c->fec_share_max, err, errlen) ||
 	    get_fec(&ini, c, err, errlen) ||
+	    get_flow_class(&ini, c, err, errlen) ||
 	    get_u32(&ini, "", "fec_pct", 1, 50, &c->fec_pct, err, errlen) ||
 	    get_u32(&ini, "", "fec_pct_min", 0, 50, &c->fec_pct_min, err, errlen) ||
 	    get_u32(&ini, "", "fec_window_ms", 10, 1000, &c->fec_window_ms, err, errlen) ||
