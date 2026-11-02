@@ -3,7 +3,7 @@ tags: [mapa, pieza]
 archivos:
   - engine/src/subflow.h
   - engine/tests/test_subflow.c
-sello: 007dc2d961c30433
+sello: c3bf335428a7bc21
 ---
 # Subflujo (subflow.h)
 
@@ -13,7 +13,10 @@ sello: 007dc2d961c30433
 La primera pieza de MPGRIT ([[029-mpgrit]], paso U1): cada enlace es un
 subflujo con su propia secuencia (`sseq`, protocolo 12, [[Sondas y cola de bonding (proto.h)]]). Con la perilla `subflow`, cada extremo numera el DATA que
 pone en cada enlace y sigue la secuencia de cada enlace que recibe; lo que un
-enlace perdió **dentro de sí** vuelve al emisor en un `SFLOSS`. El desorden
+enlace perdió **dentro de sí** vuelve al emisor en un `SFLOSS` (los rangos del
+NACK: base y máscara de 64 bits, hasta 16), por los dos enlaces más rápidos,
+como el NACK: si uno lo pierde, la pérdida no espera al RACK ni al
+temporizador de GRIT. El desorden
 entre enlaces, que en terreno se leía como pérdida en el túnel y en GRIT
 ([[028-grit-y-el-motor-como-uno]] «Terreno»), ya no cuenta como pérdida.
 
@@ -34,7 +37,9 @@ entre enlaces, que en terreno se leía como pérdida en el túnel y en GRIT
   todo) y no dice ninguna pérdida, porque un `SFLOSS` tiene que ser cierto. La
   secuencia da la vuelta en 32 bits y el 0 no existe (es «sin numerar»).
 - **Emisor (`cg_sf_tx`):** numera desde 1, salta el 0 al dar la vuelta,
-  recuerda qué secuencia del túnel llevó cada `sseq` (para `SFLOSS`) y devuelve
+  recuerda qué secuencia del túnel llevó cada `sseq` (para `SFLOSS`; el segundo
+  aviso de una misma `sseq`, su copia por el otro enlace, no cuenta: `repeat`,
+  `CG_SF_LOST`, así la pérdida del enlace y su ritmo no la ven dos veces) y devuelve
   los números de lo que el socket no tomó (`cg_sf_tx_unsend`), o el receptor
   leería una pérdida falsa.
 - **La cola:** una pérdida al final de lo que llevó un enlace no la delata
