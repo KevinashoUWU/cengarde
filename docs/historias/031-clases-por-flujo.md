@@ -563,7 +563,26 @@ azar los paquetes del túnel en los dos sentidos (iptables `statistic`).
   el ping p99 en `cell4` vuelve a la línea sin UDP (176–184 ms) en vez de
   0,8–1 s; en `equal` de bajada sube algo (290 contra 192 por la TUN), a
   mirar en terreno.
-- **Apagada por omisión** hasta el terreno: `protocontroller_udp` en el
+- **Terreno** (2026-11-02, testnet en bonding, NUC y VPS en `880c635`;
+  `~/campo/2026-11-02/udpgritfield`): desde `nucc`, el equipo A
+  (192.168.50.240) con TCP por GRIT al VPS (4 flujos, 20 s) y el B (.241,
+  una segunda dirección) con UDP a 30 Mbit/s, `udp_grit` apagado (el UDP
+  por la TUN, a 10.79.0.1) y encendido (dentro de GRIT, a la dirección
+  pública del VPS); un ping de A por la TUN todo el rato. Dos rondas:
+
+  | Sentido | TCP de A: TUN / GRIT | UDP de B entregado (pérdida): TUN / GRIT | Ping p50 / p99: TUN / GRIT (ms) |
+  | --- | --- | --- | --- |
+  | subida | 52 y 66 / 69 y 64 | 24,8 (17 %) / 29,9 (0 %) y 28,5 (5 %) | 198/424 y 169/289 / 134/217 y 89/162 |
+  | bajada | 131 y 146 / 135 y 166 | 30 (0 %) / 30 (0–1 %) | 49/204 y 56/223 / 45/312 y 56/177 |
+
+  En la subida, donde los enlaces están cerca de su tope (~90 Mbit/s), el
+  UDP dentro de GRIT llega entero en vez de perder 17 %, el TCP del otro
+  equipo queda igual o mejor y el ping baja; en la bajada (~180 Mbit/s)
+  30 Mbit/s no llenan nada y los dos dan parecido. 62 mil datagramas por
+  sentido, ninguno botado por viejo. Para probarlo: `cengarde-setup apply`
+  no reinicia el motor, y sin el motor escuchando en el puerto siguiente
+  el TPROXY bota el UDP de la LAN (`/etc/init.d/cengarde restart`).
+- **Apagada por omisión** hasta más terreno: `protocontroller_udp` en el
   motor, `udp_grit` en OpenWrt (LuCI: «UDP dentro de GRIT»).
 
 ## Pendiente
