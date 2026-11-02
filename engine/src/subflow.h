@@ -262,6 +262,7 @@ struct cg_sf_tx {
 
 #define CG_SF_BASE 1 /* an SFACK was known when it went: a sample may start there */
 #define CG_SF_APP 2  /* it went app-limited: a smaller rate says nothing */
+#define CG_SF_STREAM 4 /* it carried a STREAM (proto.h, 13): seq is that class's */
 
 static inline void cg_sf_tx_init(struct cg_sf_tx *t)
 {
@@ -313,7 +314,7 @@ static inline void cg_sf_tx_unsend(struct cg_sf_tx *t, uint32_t n)
 
 /* The tunnel sequence sseq q carried, if still remembered: 1 and *seq.
  * The link lost it: its rate learns of it. */
-static inline int cg_sf_tx_find(struct cg_sf_tx *t, uint32_t q, uint32_t *seq)
+static inline int cg_sf_tx_find_cls(struct cg_sf_tx *t, uint32_t q, uint32_t *seq, int *stream)
 {
 	t->lost_rx++;
 	if (!q || t->sseq[q % CG_SF_WIN] != q) {
@@ -321,8 +322,23 @@ static inline int cg_sf_tx_find(struct cg_sf_tx *t, uint32_t q, uint32_t *seq)
 		return 0;
 	}
 	*seq = t->seq[q % CG_SF_WIN];
+	*stream = !!(t->flag[q % CG_SF_WIN] & CG_SF_STREAM);
 	cg_lc_lost(&t->lc, t->len[q % CG_SF_WIN]);
 	return 1;
+}
+
+static inline int cg_sf_tx_find(struct cg_sf_tx *t, uint32_t q, uint32_t *seq)
+{
+	int stream;
+
+	return cg_sf_tx_find_cls(t, q, seq, &stream);
+}
+
+/* sseq q (cg_sf_tx_take's) carried a STREAM: its seq is that class's. */
+static inline void cg_sf_tx_stream(struct cg_sf_tx *t, uint32_t q)
+{
+	if (q)
+		t->flag[q % CG_SF_WIN] |= CG_SF_STREAM;
 }
 
 /* An SFACK said the link got as far as sseq top and took gotb bytes

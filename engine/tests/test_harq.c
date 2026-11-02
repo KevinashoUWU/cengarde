@@ -177,8 +177,22 @@ static void test_harq_route(void)
 	CHECK_EQ(cg_harq_wait_us(60000, 0, 200000), 60000);
 }
 
+/* Protocol 13: an asked gap of the TUN waits the fastest link's round trip,
+ * an eighth more and 10 ms, never past the hold; without the rescue or a
+ * round trip, as configured. */
+static void test_rtt_wait(void)
+{
+	CHECK_EQ(cg_harq_rtt_wait_us(60000, 0, 200000), 60000);       /* no round trip known */
+	CHECK_EQ(cg_harq_rtt_wait_us(0, 150000, 200000), 0);          /* no rescue */
+	CHECK_EQ(cg_harq_rtt_wait_us(60000, 40000, 200000), 60000);   /* 55 ms: the knob's wait stays */
+	CHECK_EQ(cg_harq_rtt_wait_us(60000, 120000, 200000), 145000); /* 120 + 15 + 10 */
+	CHECK_EQ(cg_harq_rtt_wait_us(60000, 250000, 200000), 200000); /* never past the hold */
+	CHECK_EQ(cg_harq_rtt_wait_us(60000, 250000, 0), 291250);      /* no hold given */
+}
+
 void test_harq(void)
 {
+	test_rtt_wait();
 	test_harq_only();
 	test_parq_wire();
 	test_rs_geometry();

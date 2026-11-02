@@ -88,6 +88,7 @@
 #include "replay.h"
 #include "sock.h"
 #include "capacity.h"
+#include "dgclass.h"
 #include "dominant.h"
 #include "linksig.h"
 #include "fec.h"
@@ -165,8 +166,10 @@ struct session {
 	uint32_t id;
 	int client; /* its client's slot in server.c */
 	uint32_t tx_seq; /* next DATA sequence down */
+	uint32_t tx_stream; /* next STREAM sequence down (13) */
 	uint8_t prev_only; /* 1 + the path the previous one went on alone, 0: several (proto.h) */
 	uint32_t *resc_idx; /* its index into the rescue ring (rescue.h), NULL: none */
+	uint32_t *sresc_idx; /* and into the STREAMs' (13), NULL: none */
 	struct cg_resc_budget resc_b;
 	uint64_t nacks, resc_sent, resc_miss, resc_budget; /* NACKs taken; sequences sent again, not kept, over budget */
 	uint64_t resc_congested; /* not sent again: lost on a full path (TCP has to see it) */
@@ -243,6 +246,7 @@ struct session {
 	uint32_t pace_w[CG_MAX_LINKS];        /* each path's copy window (cg_link_pace_windows), us, 0: every copy */
 	uint8_t pace_any;                     /* a path with one */
 	struct cg_replay replay; /* DATA up; its lost: lost on every link (lost_all) */
+	struct cg_replay stream; /* STREAM up (13) */
 	struct cg_replay ctl;    /* probes */
 	struct cg_arrivals arr;  /* by link, and joint lateness (joint) */
 	struct cg_link_rx rx[CG_MAX_LINKS];
@@ -410,6 +414,7 @@ struct server {
 	 * are looked at; and the releases left in this loop pass. */
 	struct cg_ro_pool pool;
 	struct cg_resc_ring resc; /* DATA sent lately, for NACKs (rescue_kb; n 0: none) */
+	struct cg_resc_ring sresc; /* STREAMs sent lately (13), for what the subflows lose to reach their streams */
 	struct cg_ro_cfg rocf;
 	uint32_t *ro_active;
 	uint32_t nactive;
@@ -433,6 +438,7 @@ struct server {
 	int pavoid;            /* the path down_prepare's split leaves out when another stays (a GRIT resend, U2b), -1: none */
 	uint16_t cmask[CG_BATCH]; /* the carriers a packet goes on (its copies, a retransmission's one path) */
 	uint32_t sseq[CG_BATCH], sts[CG_BATCH]; /* per entry of a download batch: its sequence and ts */
+	uint8_t scls[CG_BATCH]; /* and whether it is a STREAM (13): its sequence is that class's */
 	uint8_t sflags[CG_BATCH];               /* and its flags, but CG_F_PREV (down_seal) */
 	uint8_t tcpk[CG_BATCH];                 /* and its class for tcp_aware (tcpfree.h's CG_TCPF_*) */
 	uint8_t tcpr[CG_BATCH];                 /* a retransmission's row (tcpack.h's CG_TCPA_*) */
@@ -628,6 +634,8 @@ static void session_destroy(struct server *s, struct session *S, const char *why
 	cg_idmap_del(&s->ids, cg_sesskey(C->mix, S->id));
 	free(S->resc_idx);
 	S->resc_idx = NULL;
+	free(S->sresc_idx);
+	S->sresc_idx = NULL;
 	free(S->fec);
 	S->fec = NULL;
 	free(S->rlc);
@@ -726,16 +734,20 @@ static struct session *session_create(struct server *s, struct client *C, const 
 	S->id = id;
 	S->client = (int)(C - s->c);
 	S->tx_seq = pi->rx_top + CG_SEQ_LEAP;
+	S->tx_stream = pi->rx_top_stream + CG_SEQ_LEAP;
 	S->tx_ctl = pi->rx_top_ctl + CG_SEQ_LEAP;
 	S->created_ms = S->last_rx_ms = now_ms;
 	S->pass = -1;
 	cg_replay_init_marked(&S->replay, pi->tx_next - 1);
+	cg_replay_init_marked(&S->stream, pi->tx_next_stream - 1);
 	cg_replay_init_marked(&S->ctl, h->seq);
 	cg_idmap_put(&s->ids, key, (int32_t)(S - s->s));
 	rescue_apply(s, S);
 	/* Its index into the rescue ring; without memory, no rescue for it. */
 	if (s->resc.n)
 		S->resc_idx = calloc(CG_RESC_IDX, sizeof(*S->resc_idx));
+	if (s->sresc.n)
+		S->sresc_idx = calloc(CG_RESC_IDX, sizeof(*S->sresc_idx));
 	S->fec = s->cfg->fec ? fec_rx_new() : NULL;
 	rep_rx_new(s, S);
 	sf3_apply(s, S);
@@ -875,12 +887,15 @@ static void queue_reply(struct server *s, int *nr, struct session *S, unsigned l
 	uint8_t *r = s->reply[*nr];
 	struct cg_probe_info pi = { .echo_ts = probe->ts,
 				    .owd = up_owd,
-				    .rx = (uint32_t)(S->rx[link].wins + S->rx[link].dups),
+				    .rx = (uint32_t)(S->rx[link].wins + S->rx[link].dups + S->rx[link].stream),
 				    .wins = (uint32_t)S->rx[link].wins,
 				    .lag_us = cg_lag_us(&S->rx[link]),
 				    .rx_top = S->replay.top,
 				    .rx_top_ctl = S->ctl.top,
-				    .tx_next = S->tx_seq };
+				    .tx_next = S->tx_seq,
+				    .rx_top_stream = S->stream.top,
+				    .tx_next_stream = S->tx_stream,
+				    .rx_sseq = S->sf[link] && S->sf[link]->rx.started ? S->sf[link]->rx.next - 1 : 0 };
 	struct cg_hdr h = { .type = CG_T_PROBE_REPLY,
 			    .flags = (uint8_t)(CG_F_OWD | (S->dh[link].state == CG_H_MUTED ? CG_F_MUTED : 0) |
 				       cg_pass_flags(pass_told(s, C))),
@@ -1378,6 +1393,24 @@ static void rescue_apply(const struct server *s, struct session *S)
 	S->rescue_base_us = S->rocf.rescue_us;
 }
 
+/* With the rescue, S's asked gaps wait at least the least round trip of its
+ * paths (each one's own from the SFACKs, with its queue; cg_harq_rtt_wait_us),
+ * each tick; harq_wait takes it. */
+static void rescue_rtt(const struct server *s, struct session *S)
+{
+	uint32_t best = 0;
+
+	if (!s->cfg->reorder || !S->peer_rescue)
+		return;
+	for (int p = 0; p < CG_MAX_LINKS; p++) {
+		const struct sfpath *F = S->sf[p];
+
+		if (F && F->tx.acks && F->tx.lc.srtt && (!best || F->tx.lc.srtt < best))
+			best = F->tx.lc.srtt;
+	}
+	S->rescue_base_us = cg_harq_rtt_wait_us(cg_rescue_wait_ms(s->cfg) * 1000, best, s->cfg->reorder_max_wait_ms * 1000);
+}
+
 static struct cg_rep_ring rep_ring(const struct session *S);
 
 /* A repair or parity of S's upload whose base is base came at now_ms: no
@@ -1759,29 +1792,13 @@ static void up_deliver(struct server *s, int *nq, struct session *S, const struc
 			       /* free with TCP data: a retransmission (tcp_aware) */
 			       .retx = (uint8_t)((h->flags & CG_F_FREE) && cg_tcp_data(payload, len)),
 			       .rebuilt = S->rebuilding };
+	int dg = cg_dg_class(payload, len); /* MPEG-TS has no reorder buffer of its own (dgclass.h) */
 	enum cg_ro_v v;
 	uint16_t buf;
 
-	/* A protocontroller stream's message (story 025): to its stream at once, its
-	 * sequence still counted by the reorderer (never held: it has its own
-	 * order). */
+	/* a stream's message comes as STREAM (13), never in DATA */
 	if (cg_pctl_is(payload, len)) {
-		if (!s->pctl) {
-			s->pctl_off++;
-			return;
-		}
-		if (s->cfg->reorder) {
-			k.nohold = 1;
-			if (cg_ro_in(&S->ro, &s->pool, &S->rocf, &k, rset, &buf) == CG_RO_AGAIN) {
-				up_drain(s, nq, S, rset, now, 1);
-				cg_ro_in(&S->ro, &s->pool, &S->rocf, &k, rset, &buf);
-			}
-		}
-		cg_pctl_rx(s->pctl, (uint32_t)(S - s->s), S->id, payload, len, S->rebuilding ? CG_PCTL_NOLINK : h->link);
-		if (s->cfg->reorder) {
-			up_drain(s, nq, S, rset, now, 0);
-			ro_track(s, S);
-		}
+		s->pctl_off++;
 		return;
 	}
 
@@ -1798,6 +1815,10 @@ static void up_deliver(struct server *s, int *nq, struct session *S, const struc
 		q_add(s, nq, S, payload, len, CG_RO_NOBUF, h->seq, h->flags);
 		return;
 	}
+	/* RTP keeps the deadline rule: held, it is asked for (a gap is asked
+	 * only while something waits behind it), and its jitter buffer takes
+	 * what comes late; never held, it lost every rescue (story 030) */
+	k.waits = dg == CG_DG_TS;
 	v = cg_ro_in(&S->ro, &s->pool, &S->rocf, &k, rset, &buf);
 	if (v == CG_RO_AGAIN) {
 		/* The window overflowed: the gaps it forces out go, with what was
@@ -2180,25 +2201,27 @@ static void on_sfloss(struct server *s, struct session *S, const uint8_t *payloa
 		uint8_t went;
 		const uint8_t *e;
 		unsigned ev;
-		int k, sure;
+		int k, sure, stream;
 
-		if (!cg_sf_tx_find(&F->tx, q[i], &seq))
+		/* a STREAM's by its own sequence (13); a DATA carrying a
+		 * stream's message no longer goes */
+		if (!cg_sf_tx_find_cls(&F->tx, q[i], &seq, &stream))
 			continue;
-		e = s->pctl && S->resc_idx ? cg_resc_get(&s->resc, S->resc_idx, S->id, seq, &len, &went) : NULL;
+		e = s->pctl && S->sresc_idx && stream ? cg_resc_get(&s->sresc, S->sresc_idx, S->id, seq, &len, &went) : NULL;
 		if (!e) {
 			F->unkept++;
 			continue;
 		}
 		if (went != p) {
-			if (!cg_resc_lost_on(&s->resc, S->resc_idx, S->id, seq, p)) {
+			if (!cg_resc_lost_on(&s->sresc, S->sresc_idx, S->id, seq, p)) {
 				F->copied++;
 				continue;
 			}
 			went = (uint8_t)p; /* every copy lost: as sure as on this path alone */
 			F->allcopies++;
 		}
-		ev = cg_resc_ev(&s->resc, S->resc_idx, S->id, seq, CG_RESC_EV_LINK);
-		sure = cg_resc_sure(ev, down_coded(s, S), s->cfg->protocontroller_nack && !s->cfg->subflow);
+		ev = cg_resc_ev(&s->sresc, S->sresc_idx, S->id, seq, CG_RESC_EV_LINK);
+		sure = cg_resc_sure(ev, 0, s->cfg->protocontroller_nack && !s->cfg->subflow); /* no code covers a STREAM (13) */
 		if (!sure) { /* handed over already, or a suspect waiting */
 			F->unsure += !(ev & (CG_RESC_EV_DONE | CG_RESC_EV_SUSPECT));
 			continue;
@@ -2206,15 +2229,15 @@ static void on_sfloss(struct server *s, struct session *S, const uint8_t *payloa
 		k = cg_pctl_nack(s->pctl, (uint32_t)(S - s->s), S->id, e + CG_HDR_LEN, (size_t)len - CG_HDR_LEN, went,
 				 sure);
 		if (sure == CG_RESC_SURE_LATER) { /* a code may still rebuild it: GRIT waits for it */
-			cg_resc_ev(&s->resc, S->resc_idx, S->id, seq, CG_RESC_EV_SUSPECT);
+			cg_resc_ev(&s->sresc, S->sresc_idx, S->id, seq, CG_RESC_EV_SUSPECT);
 			F->suspect += k == CG_PCTL_NACK_DATA;
 			continue;
 		}
 		if (k == CG_PCTL_NACK_DATA || k == CG_PCTL_NACK_ACK) {
-			cg_resc_ev(&s->resc, S->resc_idx, S->id, seq, CG_RESC_EV_DONE);
+			cg_resc_ev(&s->sresc, S->sresc_idx, S->id, seq, CG_RESC_EV_DONE);
 			F->grit++;
-			if (!(ev & CG_RESC_EV_ASKED)) /* else its NACK said it already */
-				gone[ngone++] = seq;
+			/* the client's reorderer never waits for a STREAM: nothing
+			 * to say gone (13) */
 		} else {
 			F->other++;
 		}
@@ -2335,7 +2358,7 @@ static void listen_read(struct server *s, struct lane *ln)
 			if (cg_hdr_parse(&h, b, len) < 0 ||
 			    (h.type != CG_T_DATA && h.type != CG_T_PROBE && h.type != CG_T_NACK && h.type != CG_T_FEC &&
 			     h.type != CG_T_REPAIR && h.type != CG_T_PARQ && h.type != CG_T_SFLOSS &&
-			     h.type != CG_T_SFACK) ||
+			     h.type != CG_T_SFACK && h.type != CG_T_STREAM) ||
 			    h.link >= CG_MAX_LINKS) {
 				s->rx_malformed++;
 				if (cg_ratelimit_ok(&s->rl_auth, now_ms, 10000))
@@ -2396,16 +2419,19 @@ static void listen_read(struct server *s, struct lane *ln)
 				verified = fresh = 1;
 			}
 			C = client_of(s, S);
-			w = h.type == CG_T_DATA ? &S->replay : &S->ctl;
+			w = h.type == CG_T_DATA ? &S->replay : h.type == CG_T_STREAM ? &S->stream : &S->ctl;
 			switch (fresh ? CG_RP_NEW : cg_replay_check(w, h.seq)) {
 			case CG_RP_OLD:
 				s->rx_old++;
 				continue;
 			case CG_RP_DUP:
 				s->rx_dups++;
-				if (h.type != CG_T_DATA)
+				if (h.type != CG_T_DATA && h.type != CG_T_STREAM)
 					continue;
-				cg_arr_dup(&S->arr, S->rx, h.seq, now32, h.link);
+				if (h.type == CG_T_DATA)
+					cg_arr_dup(&S->arr, S->rx, h.seq, now32, h.link);
+				else
+					S->rx[h.link].stream++;
 				/* a copy is still its path's: its sseq says the path did
 				 * not lose it, once its MAC says the client sent it */
 				if (h.sseq && s->cfg->subflow) {
@@ -2441,8 +2467,37 @@ static void listen_read(struct server *s, struct lane *ln)
 				on_sfack(s, S, b + CG_HDR_LEN, now_us);
 				continue;
 			}
-			if (h.type == CG_T_DATA && h.sseq && s->cfg->subflow)
+			if ((h.type == CG_T_DATA || h.type == CG_T_STREAM) && h.sseq && s->cfg->subflow)
 				sf_up(S, h.link, h.sseq, len, now32);
+			if (h.type == CG_T_STREAM) {
+				/* A stream's message (13): to its stream at once, past
+				 * the reorderer, the rescue and the codes; it tells the
+				 * path which address of ours it went to, as DATA does. */
+				P = &S->path[h.link];
+				if (P->used && path_may_move(s, C, P, S->id, h.link, from, 0, now_ms)) {
+					P = path_update(s, S, h.link, from, &s->in.msg[i].msg_hdr, now_ms);
+					P->last_rx_ms = now_ms;
+				}
+				S->rx[h.link].stream++;
+				S->rx[h.link].last_us = now32 ? now32 : 1;
+				S->up_pkts++;
+				S->up_bytes += len - CG_HDR_LEN;
+				if (!s->pctl || !cg_pctl_is(b + CG_HDR_LEN, len - CG_HDR_LEN)) {
+					s->pctl_off++;
+					continue;
+				}
+				cg_pctl_rx(s->pctl, (uint32_t)(S - s->s), S->id, b + CG_HDR_LEN, len - CG_HDR_LEN, h.link);
+				/* how far its path is, for the reorderer's RACK on the
+				 * sparse DATA (cg_ro_note) */
+				if (s->cfg->reorder) {
+					cg_ro_note(&S->ro, h.link, h.ts);
+					if (S->ro.held) {
+						up_drain(s, &nq, S, ro_rset(s, S, now_ms, now32), now32, 0);
+						ro_track(s, S);
+					}
+				}
+				continue;
+			}
 			if (h.type == CG_T_PARQ) {
 				on_parq(s, S, b + CG_HDR_LEN, len - CG_HDR_LEN, now_ms);
 				continue;
@@ -2614,14 +2669,16 @@ static uint16_t split_eligible(const struct session *S, const struct dpaths *d, 
 	return split_eligible_g3(S, d, now_ms, NULL);
 }
 
-static struct dpaths down_paths(const struct server *s, const struct session *S, uint64_t now_ms)
+/* stream: for STREAMs (13), which may be split whether the client
+ * reorders or not (a stream keeps its own order). */
+static struct dpaths down_paths_of(const struct server *s, const struct session *S, uint64_t now_ms, int stream)
 {
 	struct dpaths d;
 
 	memset(&d, 0, sizeof(d));
 	path_masks(S, now_ms, &d.present, &d.live);
 	d.carry = cg_health_carriers(S->dh, CG_MAX_LINKS, d.present, d.live);
-	d.split = cg_split_active(s->cfg->split, S->peer_reorders, S->peer_asks);
+	d.split = cg_split_active(s->cfg->split, stream || S->peer_reorders, S->peer_asks);
 	if (!d.split)
 		return d;
 	d.elig = split_eligible(S, &d, now_ms);
@@ -2643,6 +2700,11 @@ static struct dpaths down_paths(const struct server *s, const struct session *S,
 				    cg_split_spread_out(&S->spread, d.elig, d.dup0, s->cfg->split_spread_ms * 1000), d.carry,
 				    d.elig, d.dup0);
 	return d;
+}
+
+static struct dpaths down_paths(const struct server *s, const struct session *S, uint64_t now_ms)
+{
+	return down_paths_of(s, S, now_ms, 0);
 }
 
 /* What the server does with S's download, for the status: off, force,
@@ -2931,8 +2993,11 @@ static void down_prepare(struct server *s, struct session *S, int m, uint8_t *bu
 	 * harq.h), under the MAC. */
 	s->sflags[m] = h.flags;
 	s->sts[m] = h.ts;
-	s->sseq[m] = S->tx_seq++;
-	if (sf3_on(s, S)) {
+	/* a stream's message is a STREAM (13), in its own sequence: neither the
+	 * client's reorderer nor its asks nor the codes see it */
+	s->scls[m] = (uint8_t)(s->pctl && cg_pctl_is(buf, len));
+	s->sseq[m] = s->scls[m] ? S->tx_stream++ : S->tx_seq++;
+	if (sf3_on(s, S) && !s->scls[m]) {
 		if (!m)
 			sf3_begin(s, S, d, now_us / 1000); /* once a batch, at its first */
 		sf3_feed(s, S, s->sseq[m], buf, len, now_us);
@@ -3000,14 +3065,38 @@ static void down_seal(struct server *s, struct session *S, int m, const struct d
 		size_t len = s->oiov[j][1].iov_len;
 		const uint8_t *buf = s->oiov[j][1].iov_base;
 		int only = cg_harq_only(s->pick[j], d->carry, d->k.dup, s->cmask[j], s->cfg->mute_trickle);
-		struct cg_hdr h = { .type = CG_T_DATA,
-				    .flags = (uint8_t)(s->sflags[j] | cg_prev_flags((int)S->prev_only - 1)),
+		struct cg_hdr h = { .type = s->scls[j] ? CG_T_STREAM : CG_T_DATA,
+				    .flags = (uint8_t)(s->sflags[j] | (s->scls[j] ? 0 : cg_prev_flags((int)S->prev_only - 1))),
 				    .hint = C->hint,
 				    .session = S->id,
 				    .seq = s->sseq[j],
 				    .ts = s->sts[j] };
 
 		cg_hdr_write(s->hdr[j], &h, C->key + CG_SIPHASH_KEY_LEN, buf, len);
+		if (s->scls[j]) {
+			/* a STREAM: kept by its own sequence for its paths' losses
+			 * (on_sfloss); never sent again here, it earns the rescue's
+			 * budget */
+			if (S->sresc_idx && CG_HDR_LEN + len <= CG_RESC_ENTRY) {
+				uint8_t *e = cg_resc_put(&s->sresc, S->sresc_idx, S->id, h.seq, (uint16_t)(CG_HDR_LEN + len),
+							 only < 0 ? CG_RESC_NOLINK : (uint8_t)only);
+
+				memcpy(e, s->hdr[j], CG_HDR_LEN);
+				memcpy(e + CG_HDR_LEN, buf, len);
+				if (only < 0 && !(s->pick[j] < 0 && s->cfg->mute_trickle))
+					cg_resc_copies(&s->sresc, S->sresc_idx, S->id, h.seq,
+						       (uint16_t)(cg_split_dst(s->pick[j], d->carry, d->k.dup) & s->cmask[j]));
+			}
+			/* it earns the TUN's rescue its share all the same (story 030) */
+			if (S->resc_idx)
+				cg_resc_earn(&S->resc_b,
+					     only < 0 ? (uint32_t)len
+						      : (uint32_t)((uint64_t)len *
+								   cg_cap_rescue_w(&S->cap[only], s->cfg->rescue_target_ms * 1000) /
+								   CG_CAP_W_ONE),
+					     s->cfg->rescue_pct);
+			continue;
+		}
 		S->prev_only = (uint8_t)(only + 1);
 		if (S->resc_idx && CG_HDR_LEN + len <= CG_RESC_ENTRY) {
 			uint8_t *e = cg_resc_put(&s->resc, S->resc_idx, S->id, h.seq, (uint16_t)(CG_HDR_LEN + len),
@@ -3072,8 +3161,9 @@ static void down_send(struct server *s, struct session *S, int m, uint64_t now_m
 			known |= (uint16_t)(S->dh[p].have_owd ? 1u << p : 0);
 		}
 		for (int j = 0; j < m; j++)
-			counts |= cg_act_tx_counts((uint16_t)(cg_split_dst(s->pick[j], carry, d->k.dup) & s->cmask[j]), known,
-						   owd);
+			if (!s->scls[j]) /* the reorderer waits for DATA only (13) */
+				counts |= cg_act_tx_counts((uint16_t)(cg_split_dst(s->pick[j], carry, d->k.dup) & s->cmask[j]),
+							   known, owd);
 	}
 	mark_us = cg_now_us(); /* after every ts of the batch */
 	for (int o = 0; o < no; o++) {
@@ -3099,8 +3189,14 @@ static void down_send(struct server *s, struct session *S, int m, uint64_t now_m
 		for (int x = 0; x < k; x++) {
 			cg_hdr_set_link(s->hdr[sel[x]], (uint8_t)p);
 			/* its sseq on this path (subflow.h), outside the MAC as the link */
-			cg_hdr_set_sseq(s->hdr[sel[x]], F ? cg_sf_tx_take(&F->tx, s->sseq[sel[x]],
-					(uint32_t)(s->oiov[sel[x]][0].iov_len + s->oiov[sel[x]][1].iov_len), (uint32_t)mark_us) : 0);
+			{
+				uint32_t q = F ? cg_sf_tx_take(&F->tx, s->sseq[sel[x]],
+						(uint32_t)(s->oiov[sel[x]][0].iov_len + s->oiov[sel[x]][1].iov_len), (uint32_t)mark_us) : 0;
+
+				if (F && s->scls[sel[x]])
+					cg_sf_tx_stream(&F->tx, q);
+				cg_hdr_set_sseq(s->hdr[sel[x]], q);
+			}
 			memset(&s->out[x].msg_hdr, 0, sizeof(s->out[x].msg_hdr));
 			s->out[x].msg_hdr.msg_name = &P->addr;
 			s->out[x].msg_hdr.msg_namelen = cg_addr_len(&P->addr);
@@ -3144,7 +3240,7 @@ static void pctl_send(void *ctx, uint32_t peer, uint32_t sid, uint8_t *const *ms
 
 	if (peer >= s->cap || !(S = &s->s[peer])->used || S->id != sid || n <= 0)
 		return;
-	d = down_paths(s, S, now_us / 1000);
+	d = down_paths_of(s, S, now_us / 1000, 1);
 	for (int m = 0; m < n; m++) {
 		s->pavoid = avoid[m] ? avoid[m] - 1 : -1;
 		down_prepare(s, S, m, msg[m], len[m], now_us, &d);
@@ -3179,7 +3275,7 @@ static uint32_t pctl_horizon(void *ctx, uint32_t peer, uint32_t sid)
 	/* with the rescue, its NACK and the reordering of the split: what the
 	 * slowest link carrying the data runs behind the fastest */
 	if (s->cfg->reorder && s->cfg->rescue_kb) {
-		struct dpaths d = down_paths(s, S, cg_now_ms());
+		struct dpaths d = down_paths_of(s, S, cg_now_ms(), 1);
 		uint16_t set = d.split ? (uint16_t)((d.k.eligible | d.k.dup) & d.carry) : d.carry, known = 0;
 		int32_t behind[CG_MAX_LINKS];
 
@@ -3205,7 +3301,7 @@ static void pctl_hint(void *ctx, uint32_t peer, uint32_t sid, uint64_t *bps, int
 	*full = 0;
 	if (peer >= s->cap || !(S = &s->s[peer])->used || S->id != sid)
 		return;
-	d = down_paths(s, S, cg_now_ms());
+	d = down_paths_of(s, S, cg_now_ms(), 1);
 	set = d.split ? (uint16_t)((d.k.eligible | d.k.dup) & d.carry) : d.carry;
 	for (int i = 0; i < CG_MAX_LINKS; i++) {
 		uint64_t b;
@@ -3388,6 +3484,14 @@ static void cap_tick(struct server *s, struct session *S, uint16_t live, uint64_
 			cc.rfull_mode = m->rfull_hyst;
 			cc.rx_top = P->peer_view.rx_top;
 			cc.behind_us = S->dh[p].have_behind ? S->dh[p].behind_us : 0;
+			if (s->cfg->subflow && S->sf[p]) {
+				/* by the path's own sequence (13), as the client's */
+				cc.tx_seq = S->sf[p]->tx.next;
+				cc.rx_top = P->peer_view.rx_sseq;
+				cc.behind_us = 0;
+			} else {
+				cc.tx_seq = S->tx_seq;
+			}
 			cc.slot = m->slot_clock && wall >= CG_WALL_SET_MS ? &slot : NULL;
 			ev = cg_cap_tick(&S->cap[p], now_ms, P->peer_view_ms, P->peer_view.rx, P->tx_pkts, P->tx_bytes,
 					 &S->dh[p], &cc);
@@ -3587,6 +3691,7 @@ static void health_tick(struct server *s, uint64_t now_ms)
 		spread_tick(s, S, tag, now_ms);
 		gov_tick(s, S, now_ms);
 		cap_tick(s, S, live, now_ms);
+		rescue_rtt(s, S);
 		path_mtu_tick(s, S, tag, now_ms);
 		for (int p = 0; changed; p++, changed >>= 1) {
 			const struct cg_hlink *h = &S->dh[p];
@@ -4950,6 +5055,37 @@ static int signals(struct server *s)
 	return stop;
 }
 
+/* A rescue ring of n entries (rescue.h); 0 or -1. */
+static int resc_alloc(struct cg_resc_ring *r, uint32_t n)
+{
+	r->mem = malloc((size_t)n * CG_RESC_ENTRY);
+	r->sess = calloc(n, sizeof(*r->sess));
+	r->seq = calloc(n, sizeof(*r->seq));
+	r->len = calloc(n, sizeof(*r->len));
+	r->link = calloc(n, sizeof(*r->link));
+	r->sent = calloc(n, sizeof(*r->sent));
+	r->ev = calloc(n, sizeof(*r->ev));
+	r->copies = calloc(n, sizeof(*r->copies));
+	r->lost = calloc(n, sizeof(*r->lost));
+	if (!r->mem || !r->sess || !r->seq || !r->len || !r->link || !r->sent || !r->ev || !r->copies || !r->lost)
+		return -1;
+	r->n = n;
+	return 0;
+}
+
+static void resc_free(struct cg_resc_ring *r)
+{
+	free(r->mem);
+	free(r->sess);
+	free(r->seq);
+	free(r->len);
+	free(r->link);
+	free(r->sent);
+	free(r->ev);
+	free(r->copies);
+	free(r->lost);
+}
+
 int cg_server_run(struct cg_config *cfg, const struct cg_run *run)
 {
 	struct server *s = calloc(1, sizeof(*s));
@@ -4996,21 +5132,11 @@ int cg_server_run(struct cg_config *cfg, const struct cg_run *run)
 	if (cfg->rescue_kb) {
 		uint32_t n = (uint32_t)((uint64_t)cfg->rescue_kb * 1024 / CG_RESC_ENTRY);
 
-		s->resc.mem = malloc((size_t)n * CG_RESC_ENTRY);
-		s->resc.sess = calloc(n, sizeof(*s->resc.sess));
-		s->resc.seq = calloc(n, sizeof(*s->resc.seq));
-		s->resc.len = calloc(n, sizeof(*s->resc.len));
-		s->resc.link = calloc(n, sizeof(*s->resc.link));
-		s->resc.sent = calloc(n, sizeof(*s->resc.sent));
-		s->resc.ev = calloc(n, sizeof(*s->resc.ev));
-		s->resc.copies = calloc(n, sizeof(*s->resc.copies));
-		s->resc.lost = calloc(n, sizeof(*s->resc.lost));
-		if (!s->resc.mem || !s->resc.sess || !s->resc.seq || !s->resc.len || !s->resc.link || !s->resc.sent ||
-		    !s->resc.ev || !s->resc.copies || !s->resc.lost) {
+		/* the STREAMs' (13) the same size: GRIT carries most of what goes */
+		if (resc_alloc(&s->resc, n) < 0 || (cfg->protocontroller && resc_alloc(&s->sresc, n) < 0)) {
 			cg_err("rescue_kb = %u: out of memory", cfg->rescue_kb);
 			goto out;
 		}
-		s->resc.n = n;
 	}
 	s->rocf = cg_ro_cfg_of(cfg);
 
@@ -5226,6 +5352,7 @@ out:
 		close(s->ep);
 	for (uint32_t i = 0; s->s && i < s->cap; i++) {
 		free(s->s[i].resc_idx);
+		free(s->s[i].sresc_idx);
 		free(s->s[i].fec);
 		free(s->s[i].rlc);
 		free(s->s[i].rsx);
@@ -5236,15 +5363,8 @@ out:
 	free(s->s);
 	free(s->ro_active);
 	cg_ro_pool_free(&s->pool);
-	free(s->resc.mem);
-	free(s->resc.sess);
-	free(s->resc.seq);
-	free(s->resc.len);
-	free(s->resc.link);
-	free(s->resc.sent);
-	free(s->resc.ev);
-	free(s->resc.copies);
-	free(s->resc.lost);
+	resc_free(&s->resc);
+	resc_free(&s->sresc);
 	cg_idmap_free(&s->ids);
 	cg_config_free(s->cfg);
 	free(s->cfg);

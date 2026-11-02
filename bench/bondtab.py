@@ -532,9 +532,13 @@ def line(a):
     if a.small_rx:  # the flow of small packets alongside (BOND_SMALL)
         rx, tx = udpgen_fields(a.small_rx), udpgen_fields(a.small_tx) if a.small_tx else {}
         out["small"] = {"sent": tx.get("sent"), "uniq": rx.get("uniq"), "p50_us": rx.get("p50_us"),
-                        "p99_us": rx.get("p99_us"), "reord": rx.get("reord")} if rx else None
+                        "p99_us": rx.get("p99_us"), "reord": rx.get("reord"),
+                        # past an RTP jitter buffer's deadline: late is lost
+                        "over50ms": rx.get("over50ms"), "over200ms": rx.get("over200ms")} if rx else None
     if a.cc in ("live", "soak") and isinstance(j, dict):
         out["live"] = j
+    if a.tsreal:  # a real MPEG-TS next to the run (story 030): what its decoder saw
+        out["tsreal"] = tsreal_fields(a.tsreal, int(a.secs))
     if a.pep:  # story 024's hosts: each leg's retransmissions, the proxies' memory
         try:
             out["pep"] = json.load(open(a.pep))
@@ -685,6 +689,27 @@ def md_table(head, rows, left=4):
 
 
 # the columns of the main table: (header, field, decimals)
+def tsreal_fields(path, secs):
+    """The receiving ffmpeg's log (BOND_TSREAL): frames decoded of the 30 a
+    second sent, the transport stream's continuity errors (a packet lost or
+    out of order), the decoder's complaints (damaged frames) and, for RTP,
+    what its reorder queue missed or waited out."""
+    try:
+        text = open(path, errors="replace").read().replace("\r", "\n")
+    except OSError:
+        return None
+    frames = [int(m) for m in re.findall(r"frame=\s*(\d+)", text)]
+    bad = ("error while decoding", "concealing", "corrupt", "Invalid NAL", "non-existing PPS",
+           "decode_slice_header error", "missing picture", "Packet corrupt")
+    return {"frames": frames[-1] if frames else 0, "expect": 30 * secs,
+            "cc_err": text.count("Continuity check failed"),
+            "dec_err": sum(text.count(b) for b in bad),
+            # RTP (BOND_TSREAL=rtp): packets the reorder queue never got, and
+            # the times it waited its max_delay out
+            "rtp_missed": sum(int(m) for m in re.findall(r"RTP: missed (\d+) packets", text)),
+            "rtp_late": text.count("max delay reached")}
+
+
 def main_columns(rows):
     has = lambda f: any(r.get(f) is not None for r in rows)
     cols = [("Mbit/s", "mbps", 1), ("retrans", "retrans", 0)]
@@ -927,6 +952,7 @@ def main(argv):
     p.add_argument("--after")
     p.add_argument("--samples", help="BOND_SAMPLE's directory of status files, one a second")
     p.add_argument("--pep", help="pepstat.py's JSON (story 024's hosts, BOND_PEP)")
+    p.add_argument("--tsreal", help="the receiving ffmpeg's log of BOND_TSREAL's transport stream (story 030)")
     for n in ("case", "variant", "dir", "cc", "rep", "secs", "cpu-client", "cpu-server", "hz", "netem"):
         p.add_argument("--" + n, required=True)
     p = sp.add_parser("show")

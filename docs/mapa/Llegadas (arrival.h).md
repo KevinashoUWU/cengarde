@@ -3,14 +3,14 @@ tags: [mapa, pieza]
 archivos:
   - engine/src/arrival.h
   - engine/tests/test_arrival.c
-sello: 2ff5a0ed20e7e47f
+sello: 1819b06c9b0253e3
 ---
 # Llegadas (arrival.h)
 
 **Grupo:** Observar — [[Mapa del motor]]
 
 ## Qué hace
-Estadísticas de recepción por enlace en un flujo redundante: qué enlace trajo primero cada paquete (`wins`), cuánto atrás llegaron los otros (`lag_us`) y qué enlaces nunca trajeron copia. También la **tardanza conjunta**: para plazos de 50, 100 y 150 ms tras la primera copia, un histograma por máscara de enlaces tardíos, lo que haría falta para decidir un k-de-N. Las copias duplicadas se anotan sin verificar el MAC: **solo para mostrar**.
+Estadísticas de recepción por enlace en un flujo redundante: qué enlace trajo primero cada paquete (`wins`), cuánto atrás llegaron los otros (`lag_us`) y qué enlaces nunca trajeron copia. También la **tardanza conjunta**: para plazos de 50, 100 y 150 ms tras la primera copia, un histograma por máscara de enlaces tardíos, lo que haría falta para decidir un k-de-N. Las copias duplicadas se anotan sin verificar el MAC: **solo para mostrar**. Solo DATA entra a las casillas; un STREAM (protocolo 13) se cuenta aparte por enlace (`stream`), para que el `rx` de la sonda siga contando todo lo que llegó.
 
 ## Lee
 - Las primeras copias y los duplicados de [[Camino del router (clientpath.h)]] (cliente) y `listen_read` (servidor), con la hora de cada lote.

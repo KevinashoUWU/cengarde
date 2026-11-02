@@ -66,6 +66,7 @@ struct cg_link_rx {
 	uint64_t dups;   /* later copies inside the stats window */
 	uint64_t late;   /* copies later than the stats window */
 	uint64_t missed; /* packets this link never delivered */
+	uint64_t stream; /* STREAM copies, first or later (13): not in the slots, counted for the probe's rx */
 	uint64_t lag8;   /* 8 x smoothed delay behind the first copy, microseconds */
 	uint32_t last_us; /* when it last brought a copy (any), 0: never */
 	uint32_t top;     /* the newest sequence it brought, any copy (with last_us; story 023: tcpfree.h's view) */

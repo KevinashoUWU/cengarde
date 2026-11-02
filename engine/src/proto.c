@@ -78,6 +78,7 @@ int cg_hdr_parse(struct cg_hdr *h, const uint8_t *buf, size_t len)
 	plen = len - CG_HDR_LEN;
 	switch (h->type) {
 	case CG_T_DATA:
+	case CG_T_STREAM:
 		return plen > 0 ? 0 : -1;
 	case CG_T_PROBE:
 	case CG_T_PROBE_REPLY:
@@ -140,6 +141,9 @@ void cg_probe_info_write(uint8_t out[CG_PROBE_INFO_LEN], const struct cg_probe_i
 	put32(out + 28, pi->rx_top);
 	put32(out + 32, pi->rx_top_ctl);
 	put32(out + 36, pi->tx_next);
+	put32(out + 40, pi->rx_top_stream);
+	put32(out + 44, pi->tx_next_stream);
+	put32(out + 48, pi->rx_sseq);
 }
 
 void cg_probe_info_read(struct cg_probe_info *pi, const uint8_t in[CG_PROBE_INFO_LEN])
@@ -154,6 +158,9 @@ void cg_probe_info_read(struct cg_probe_info *pi, const uint8_t in[CG_PROBE_INFO
 	pi->rx_top = get32(in + 28);
 	pi->rx_top_ctl = get32(in + 32);
 	pi->tx_next = get32(in + 36);
+	pi->rx_top_stream = get32(in + 40);
+	pi->tx_next_stream = get32(in + 44);
+	pi->rx_sseq = get32(in + 48);
 }
 
 void cg_probe_bond_write(uint8_t *payload, const struct cg_probe_bond *b)

@@ -257,6 +257,27 @@ static inline uint64_t cg_parq_overlap(uint32_t qbase, uint64_t qmap, uint32_t b
  * the code's horizon before it when a code is on, and never past TCP's
  * budget when TCP flows are seen (held longer, TCP's probes and timers
  * fire on a tunnel that only delays). Never 0 when rescue_us is not. */
+/* The rescue's wait for an asked gap of the TUN (rescue_us, rescue_wait_ms's)
+ * stretched to the round trip its answer needs: the NACK up the fastest link
+ * and the packet back down it, rtt_us (that link's smoothed round trip, with
+ * its queue; 0: not known), an eighth more and 10 ms; never past cap_us (the
+ * reorderer's hold, reorder_max_wait_ms). Under protocol 12 the TUN waited
+ * for GRIT's gaps up to the hold anyway and a late answer still filled its
+ * gap; once GRIT left the reorderer (protocol 13, story 030), 60 ms with a
+ * loaded round trip of 150-250 ms gave up the gap before its answer came:
+ * an 8 Mbit/s MPEG-TS lost 17 per mille against 4.5. */
+static inline uint32_t cg_harq_rtt_wait_us(uint32_t rescue_us, uint32_t rtt_us, uint32_t cap_us)
+{
+	uint64_t w;
+
+	if (!rescue_us || !rtt_us)
+		return rescue_us;
+	w = (uint64_t)rtt_us + rtt_us / 8 + 10000;
+	if (cap_us && w > cap_us)
+		w = cap_us;
+	return w > rescue_us ? (uint32_t)w : rescue_us;
+}
+
 static inline uint32_t cg_harq_wait_us(uint32_t rescue_us, uint32_t code_us, uint32_t budget_us)
 {
 	uint32_t w = rescue_us + code_us;

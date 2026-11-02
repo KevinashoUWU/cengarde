@@ -160,6 +160,8 @@
  * 4096 the window held 150 ms, and on the testnet 36 % of the gaps given up
  * were forced by it (story 013). */
 #define CG_RO_SLOTS 16384u
+#define CG_RO_WAITS 0x80       /* a HELD slot's link: cg_ro_pkt's waits (its link ids stay below CG_MAX_LINKS) */
+#define CG_RO_ASK_MAX_US 500000u /* the most a gap asked for holds what waits behind it (the latency budget) */
 #define CG_RO_FAR (2u * CG_RO_SLOTS)    /* a packet this far ahead, while holding, passes through */
 #define CG_RO_WORDS (CG_RO_SLOTS / 64)  /* of the held bitmap */
 #define CG_RO_BUF 2048u                 /* bytes per pool buffer: CG_BUF (engine.h) */
@@ -211,7 +213,8 @@ struct cg_ro_pkt {
 	uint16_t len;     /* of the packet (the DATA payload) */
 	uint8_t link;     /* ids from CG_MAX_LINKS up take no per-link state */
 	uint8_t flags;    /* verified header flags */
-	uint8_t nohold;   /* never held: a protocontroller stream's message, which has its own order */
+	uint8_t nohold;   /* never held: an RTP datagram (dgclass.h), which its jitter buffer orders */
+	uint8_t waits;    /* MPEG-TS over UDP (dgclass.h): no reorder buffer of its own, worth a rescue (cg_ro_ask_left) */
 	uint8_t prev;     /* 1 + the link seq - 1 went on alone (CG_F_PREV), 0: not said */
 	uint8_t retx;     /* CG_F_FREE with TCP data: a TCP retransmission (tcpfree.h's cg_tcp_data) */
 	uint8_t rebuilt;  /* rebuilt by the receiver (a parity, an erasure code), not received */
@@ -238,12 +241,13 @@ _Static_assert(sizeof(struct cg_ro_slot) == 20, "cg_ro_slot is 20 bytes");
 
 struct cg_ro_link {
 	uint32_t hw;  /* newest DATA sequence it brought (serial max) */
+	uint32_t hts; /* the sender's ts of the newest packet of any class it brought (cg_ro_note, serial max) */
 	uint32_t owd; /* its delay, raw (local clock minus the sender's ts), EWMA 1/8 */
 	uint32_t dev; /* mean of |sample - owd|, gain 1/4 (us) */
 	uint32_t late; /* packets it brought after their gap was given up (wraps) */
 	uint32_t adapt_us; /* adaptive: margin learned from how late its late packets came */
 	uint32_t adapt_t;  /* when it last grew or halved */
-	uint8_t hw_ok, owd_ok;
+	uint8_t hw_ok, owd_ok, hts_ok;
 };
 
 struct cg_ro_stats {
@@ -412,9 +416,40 @@ static inline void cg_ro_owd(struct cg_reorder *r, unsigned link, uint32_t raw_o
  * arithmetic would put it ahead. */
 static inline void cg_ro_sweep(struct cg_reorder *r)
 {
+	uint32_t top = 0;
+	int any = 0;
+
+	for (unsigned i = 0; i < CG_MAX_LINKS; i++) {
+		struct cg_ro_link *l = &r->link[i];
+
+		if (l->hw_ok && (int32_t)(r->head - l->hw) > (int32_t)CG_RO_STALE)
+			l->hw_ok = l->hts_ok = 0; /* its ts is as old as its sequence */
+		if (l->hts_ok && (!any || (int32_t)(l->hts - top) > 0)) {
+			top = l->hts;
+			any = 1;
+		}
+	}
+	/* and a ts half a wrap behind the newest (a link silent ~18 min) before
+	 * serial arithmetic would put it ahead */
 	for (unsigned i = 0; i < CG_MAX_LINKS; i++)
-		if (r->link[i].hw_ok && (int32_t)(r->head - r->link[i].hw) > (int32_t)CG_RO_STALE)
-			r->link[i].hw_ok = 0;
+		if (r->link[i].hts_ok && top - r->link[i].hts > (UINT32_MAX >> 2))
+			r->link[i].hts_ok = 0;
+}
+
+/* Link l brought a verified packet the sender stamped ts, of any class (a
+ * STREAM too, story 030): a gap sent before it is not coming on l either
+ * (FIFO), whatever sequence it had. */
+static inline void cg_ro_note(struct cg_reorder *r, unsigned l, uint32_t ts)
+{
+	struct cg_ro_link *k;
+
+	if (l >= CG_MAX_LINKS)
+		return;
+	k = &r->link[l];
+	if (!k->hts_ok || (int32_t)(ts - k->hts) > 0) {
+		k->hts = ts;
+		k->hts_ok = 1;
+	}
 }
 
 /* What every packet taken teaches. */
@@ -427,6 +462,7 @@ static inline void cg_ro_learn(struct cg_reorder *r, const struct cg_ro_pkt *k)
 			l->hw = k->seq;
 			l->hw_ok = 1;
 		}
+		cg_ro_note(r, k->link, k->ts);
 		cg_ro_owd_sample(l, k->t_arr - k->ts);
 		/* adaptive: no late packet for a while, half of what it learned */
 		if (l->adapt_us && k->t_arr - l->adapt_t >= CG_RO_ADAPT_DECAY_US) {
@@ -467,23 +503,43 @@ static inline void cg_ro_moved(struct cg_reorder *r)
 		r->force = 0;
 }
 
+static inline uint32_t cg_ro_lowest(const struct cg_reorder *r);
+
 /* RACK: 1 and *lim when every link of rset brought a sequence after head,
  * so that every gap before *lim is lost (links are FIFO); 0 when rset is
- * empty or a link of it brought nothing after head. */
+ * empty or a link of it brought nothing after head. A link that brought
+ * no later DATA but something of another class sent after the lowest held
+ * packet (cg_ro_note: a protocontroller's STREAM, 13) is past every gap
+ * below that packet: sparse DATA (an RTP video's frames) between dense
+ * streams would else wait out the deadline, as GRIT's messages no longer
+ * move the DATA sequence on every link. */
 static inline int cg_ro_rack(const struct cg_reorder *r, uint16_t rset, uint32_t *lim)
 {
-	int32_t min = INT32_MAX;
+	int32_t min = INT32_MAX, low = 0;
+	uint32_t low_ts = 0;
+	int have_low = 0;
 
 	if (!rset)
 		return 0;
+	if (r->held) {
+		const struct cg_ro_slot *n = &r->slot[cg_ro_lowest(r) % CG_RO_SLOTS];
+
+		low = (int32_t)(n->seq - r->head);
+		low_ts = n->ts;
+		have_low = 1;
+	}
 	for (unsigned i = 0; rset; i++, rset >>= 1) {
-		int32_t a;
+		const struct cg_ro_link *l = &r->link[i];
+		int32_t a = INT32_MIN;
 
 		if (!(rset & 1))
 			continue;
-		if (!r->link[i].hw_ok)
+		if (l->hw_ok)
+			a = (int32_t)(l->hw - r->head);
+		if (have_low && l->hts_ok && (int32_t)(l->hts - low_ts) > 0 && low > a)
+			a = low;
+		if (a == INT32_MIN)
 			return 0;
-		a = (int32_t)(r->link[i].hw - r->head);
 		if (a < min)
 			min = a;
 	}
@@ -828,20 +884,32 @@ static inline int cg_ro_refused(struct cg_reorder *r, const struct cg_ro_cfg *cf
 }
 
 /* How long the asked gap at the head (slot s) may still wait at now: its
- * rescue_us from when it was asked, and never longer than the hold cap of
- * the lowest held packet plus rescue_us from that packet's arrival. The
- * cap alone (as before story 023) left nothing to a gap asked at its
- * deadline when that deadline was the cap (the slowest link seconds
- * behind, or redundancy's dup_wait), and nothing at all where the cap is
- * 0. <= 0: it goes now. */
-static inline int32_t cg_ro_ask_left(const struct cg_reorder *r, const struct cg_ro_cfg *cf,
+ * rescue_us from when it was asked, and from the lowest held packet's
+ * arrival
+ *   - when that packet is MPEG-TS over UDP (waits: a packet that comes late
+ *     is as bad as a lost one to its receiver), the hold cap plus rescue_us
+ *     (story 023), at most CG_RO_ASK_MAX_US or the cap;
+ *   - else the deadline the gap had anyway (cg_ro_deadline: the slowest
+ *     link's delay and swing, at most the cap), or rescue_us where the cap
+ *     is 0 (redundancy's dup_wait).
+ * Until 2026-11-01 every gap had the first rule: once every gap was asked
+ * for, an RTP video's frames waited past its jitter buffer (story 030); RTP
+ * is never held now (nohold), TS keeps its wait. <= 0: it goes now. */
+static inline int32_t cg_ro_ask_left(const struct cg_reorder *r, const struct cg_ro_cfg *cf, uint16_t rset,
 				     const struct cg_ro_slot *s, uint32_t now)
 {
 	const struct cg_ro_slot *n = cg_ro_lowest_slot(r);
 	uint32_t c = cg_ro_cap(r, cf, n->flags, n->t_arr);
-	int32_t left = (int32_t)(s->t_arr + cf->rescue_us - now);
-	int32_t cap_left = (int32_t)(n->t_arr + c + cf->rescue_us - now);
+	int32_t left = (int32_t)(s->t_arr + cf->rescue_us - now), cap_left;
 
+	if (n->link & CG_RO_WAITS) {
+		uint32_t w = c + cf->rescue_us, most = c > CG_RO_ASK_MAX_US ? c : CG_RO_ASK_MAX_US;
+
+		cap_left = (int32_t)(n->t_arr + (w < most ? w : most) - now);
+	} else {
+		cap_left = c ? (int32_t)(cg_ro_deadline(r, cf, rset, n->ts, n->t_arr, c) - now)
+			     : (int32_t)(n->t_arr + cf->rescue_us - now);
+	}
 	return cap_left < left ? cap_left : left;
 }
 
@@ -1105,7 +1173,7 @@ static inline enum cg_ro_v cg_ro_in(struct cg_reorder *r, struct cg_ro_pool *p, 
 	s->len = k->len;
 	s->buf = *buf;
 	s->state = CG_RO_HELD;
-	s->link = k->link;
+	s->link = (uint8_t)(k->link | (k->waits ? CG_RO_WAITS : 0));
 	s->flags = k->flags;
 	s->gap_link = 0;
 	r->held_bits[(k->seq % CG_RO_SLOTS) / 64] |= 1ULL << (k->seq % 64);
@@ -1158,7 +1226,7 @@ static inline int cg_ro_next(struct cg_reorder *r, const struct cg_ro_cfg *cf, u
 			/* Asked for: it waits rescue_us from then, never past the
 			 * hold cap of the packet after it plus rescue_us, and goes
 			 * as it was due (cg_ro_ask_left). */
-			if (cg_ro_ask_left(r, cf, s, now) > 0) {
+			if (cg_ro_ask_left(r, cf, rset, s, now) > 0) {
 				cg_ro_retry(r, cf, g, now);
 				break;
 			}
@@ -1245,7 +1313,7 @@ static inline int32_t cg_ro_due_us(const struct cg_reorder *r, const struct cg_r
 	if (s->seq == r->head && s->state == CG_RO_ASKED && !cg_ro_forced(r, r->head)) {
 		uint32_t at = cg_ro_retry_at(cf, s);
 
-		left = cg_ro_ask_left(r, cf, s, now);
+		left = cg_ro_ask_left(r, cf, rset, s, now);
 		if (at != UINT32_MAX && (int32_t)(at - now) < left)
 			left = (int32_t)(at - now);
 		return left < 0 ? 0 : left;
@@ -1302,7 +1370,7 @@ static inline int cg_ro_flush(struct cg_reorder *r, struct cg_ro_out *o)
 	r->split_seen = 0;
 	cg_ro_burst_end(r);
 	for (unsigned i = 0; i < CG_MAX_LINKS; i++)
-		r->link[i].hw_ok = 0;
+		r->link[i].hw_ok = r->link[i].hts_ok = 0;
 	memset(r->held_bits, 0, sizeof(r->held_bits));
 	memset(r->slot, 0, sizeof(r->slot));
 	return 0;

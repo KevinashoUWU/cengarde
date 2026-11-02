@@ -317,6 +317,14 @@
 #                a plain TCP of the engines' through the tunnel in the middle
 #                with BOND_PEP_CGMIDCC (protocontroller_mid_cc at both ends;
 #                empty: the engine's own, bbr)
+#                BOND_PEP_INNER=wg: iperf3 inside a WireGuard tunnel from
+#                the LAN host to the far host (any BOND_PEP): opaque UDP that
+#                crosses the TUN as DATA, as a VPN inside would
+#                BOND_PEP_SKIP (cga, cgb): TCP destination ports the router
+#                leaves out of the REDIRECT (5201: iperf3's), so that TCP
+#                crosses the tunnel as plain DATA next to the engines' streams:
+#                a LAN in another firewall zone, or a connection forwarded in
+#                from the VPS (stories 025 and 030)
 # BOND_PEP_MIDCC and BOND_PEP_FARCC (cubic): the congestion control of the
 # router's netns (the middle leg's sender in an upload) and the VPS's (the far
 # leg's); BOND_PEP_LANCC (empty: the run's cc for iperf3, cubic for live) the
@@ -386,6 +394,10 @@ BOND_PEP_FAR_MS=${BOND_PEP_FAR_MS:-50}
 BOND_PEP_NEAR_MS=${BOND_PEP_NEAR_MS:-5}
 BOND_PEP_PORT=${BOND_PEP_PORT:-7801}
 BOND_PEP_CGCC=${BOND_PEP_CGCC:-auto}
+BOND_PEP_INNER=${BOND_PEP_INNER:-} # wg: iperf3 inside a WireGuard tunnel of its own from the LAN host to the far host
+BOND_PEP_DST=172.30.1.2
+[ "$BOND_PEP_INNER" = wg ] && BOND_PEP_DST=10.99.0.2
+BOND_PEP_SKIP=${BOND_PEP_SKIP:-} # cga/cgb: TCP ports (iptables multiport) the router does not hand to GRIT
 BOND_PEP_CGMIDCC=${BOND_PEP_CGMIDCC:-} # cga: protocontroller_mid_cc at both ends (empty: the engine's, bbr)
 BOND_PEP_KCP=${BOND_PEP_KCP:---mode fast --datashard 0 --parityshard 0 --nocomp --crypt none --mtu 1300}
 BOND_LIVE_MBIT=${BOND_LIVE_MBIT:-8}
@@ -605,10 +617,41 @@ bond_hosts_up() {
 	ip netns exec "$NS_NEAR" tc qdisc replace dev n0 root netem delay "${BOND_PEP_NEAR_MS}ms" limit 100000 || return 1
 	ip netns exec "$NS_FAR" iperf3 -s -B 172.30.1.2 -D || return 1
 	for ns in $(seq 1 30); do
-		ip netns exec "$NS_LAN" ping -q -c 1 -W 1 172.30.1.2 >/dev/null 2>&1 && return 0
+		ip netns exec "$NS_LAN" ping -q -c 1 -W 1 172.30.1.2 >/dev/null 2>&1 && break
 		sleep 0.2
 	done
-	echo "FAIL: the LAN host does not reach the far host through the tunnel"
+	if [ "$ns" = 30 ]; then
+		echo "FAIL: the LAN host does not reach the far host through the tunnel"
+		return 1
+	fi
+	[ "$BOND_PEP_INNER" = wg ] || return 0
+	bond_pep_wg
+}
+
+# bond_pep_wg (BOND_PEP_INNER=wg, story 030): a WireGuard tunnel of its own
+# from the LAN host to the far host, through cengarde's: its UDP is opaque
+# to the protocontroller, so the TCP inside crosses the TUN as DATA, under
+# the reorderer and the rescue. iperf3 then runs to the far host's end of it
+# (BOND_PEP_DST, 10.99.0.2), MTU the tunnel's less WireGuard's 80 bytes.
+bond_pep_wg() {
+	local kl kf i
+	kl=$(wg genkey) kf=$(wg genkey)
+	ip -n "$NS_LAN" link add wgi type wireguard || return 1
+	ip -n "$NS_FAR" link add wgi type wireguard || return 1
+	ip netns exec "$NS_LAN" wg set wgi private-key <(echo "$kl") \
+		peer "$(echo "$kf" | wg pubkey)" endpoint 172.30.1.2:51820 allowed-ips 10.99.0.2/32 || return 1
+	ip netns exec "$NS_FAR" wg set wgi listen-port 51820 private-key <(echo "$kf") \
+		peer "$(echo "$kl" | wg pubkey)" allowed-ips 10.99.0.1/32 || return 1
+	ip -n "$NS_LAN" addr add 10.99.0.1/24 dev wgi
+	ip -n "$NS_FAR" addr add 10.99.0.2/24 dev wgi
+	ip -n "$NS_LAN" link set wgi mtu 1300 up
+	ip -n "$NS_FAR" link set wgi mtu 1300 up
+	ip netns exec "$NS_FAR" iperf3 -s -B 10.99.0.2 -D || return 1
+	for i in $(seq 1 30); do
+		ip netns exec "$NS_LAN" ping -q -c 1 -W 1 10.99.0.2 >/dev/null 2>&1 && return 0
+		sleep 0.2
+	done
+	echo "FAIL: no WireGuard between the LAN host and the far host"
 	return 1
 }
 
@@ -623,6 +666,10 @@ bond_pep_start() {
 	case $BOND_PEP in
 	transparent) return 0 ;;
 	cg | cga | cgb)
+		if [ -n "$BOND_PEP_SKIP" ]; then
+			ip netns exec "$NS_CLI" iptables -w -t nat -A PREROUTING -i lan0 -p tcp -m multiport \
+				--dports "$BOND_PEP_SKIP" -j RETURN || return 1
+		fi
 		ip netns exec "$NS_CLI" iptables -w -t nat -A PREROUTING -i lan0 -p tcp -j REDIRECT \
 			--to-ports "$BOND_PEP_PORT" || return 1
 		for i in $(seq 1 50); do
@@ -724,10 +771,26 @@ bond_pep_sample_start() {
 # bond_pep_traffic DIR CC SECS RES ERR: the run's traffic between the hosts:
 # iperf3 from the LAN host to the far one, or (cc live) the two streams.
 bond_pep_traffic() {
-	local dir=$1 cc=$2 s=$3 res=$4 err=$5 rc=0 k rx=()
+	local dir=$1 cc=$2 s=$3 res=$4 err=$5 rc=0 k rx=() qs
+	# QUIC (UDP, so it crosses the TUN, never the protocontroller): its
+	# server on the far host, its client on the LAN, as on the testnet
+	if [ "$cc" = quic ]; then
+		ip netns exec "$NS_FAR" python3 -I "$LAB/quicperf.py" server --bind 172.30.1.2 --cc "$BOND_QUIC_CC" \
+			--mtu "$BOND_QUIC_MTU" >"$RUN/quic-far.log" 2>&1 &
+		qs=$!
+		for k in $(seq 50); do
+			grep -q listening "$RUN/quic-far.log" 2>/dev/null && break
+			sleep 0.1
+		done
+		ip netns exec "$NS_LAN" python3 -I "$LAB/quicperf.py" client 172.30.1.2 --dir "$dir" --secs "$s" \
+			--cc "$BOND_QUIC_CC" --mtu "$BOND_QUIC_MTU" >"$res" 2>"$err" || rc=1
+		kill "$qs" 2>/dev/null
+		wait "$qs" 2>/dev/null
+		return "$rc"
+	fi
 	if [ "$cc" != live ] && [ "$cc" != soak ]; then
 		# shellcheck disable=SC2046 # -R or nothing
-		ip netns exec "$NS_LAN" iperf3 -c 172.30.1.2 -t "$s" -C "${BOND_PEP_LANCC:-$cc}" -P "$BOND_P" -J ${BOND_KEEP:+-i 0.5} \
+		ip netns exec "$NS_LAN" iperf3 -c "$BOND_PEP_DST" -t "$s" -C "${BOND_PEP_LANCC:-$cc}" -P "$BOND_P" -J ${BOND_KEEP:+-i 0.5} \
 			${BOND_RATE:+-b "$BOND_RATE"} $([ "$dir" = down ] && echo -R) >"$res" 2>"$err" || rc=1
 		return "$rc"
 	fi
@@ -1178,6 +1241,54 @@ bond_small_start() {
 	BOND_BG="$BOND_BG $!"
 }
 
+# bond_tsreal_start DIR SECS (BOND_TSREAL=1, story 030): a real MPEG-TS
+# through the tunnel, towards where DIR sends, next to the run's traffic:
+# ffmpeg encodes a test pattern in H.264 at 6 Mbit/s into an 8 Mbit/s CBR
+# transport stream over UDP (1316-byte datagrams), and the far end's ffmpeg
+# decodes it; bondtab.py counts its continuity errors, damaged frames and
+# frames decoded. BOND_TSREAL=rtp sends it as RTP instead (no transport
+# stream), to a receiver whose reorder queue waits 200 ms for a hole like a
+# jitter buffer: bondtab.py adds the packets it missed and the times it
+# played past a hole. Needs ffmpeg with libx264; the pids go to BOND_BG.
+bond_tsreal_start() {
+	local tx rx rxa i
+	if [ "$1" = up ]; then
+		tx=$NS_CLI rx=$NS_SRV rxa=10.79.0.1
+	else
+		tx=$NS_SRV rx=$NS_CLI rxa=10.79.0.2
+	fi
+	rm -f "$RUN/tsreal-rx.err" "$RUN/tsreal-tx.err" "$RUN/tsreal.sdp"
+	if [ "$BOND_TSREAL" = rtp ]; then
+		# H.264 in RTP (RFC 6184): the sender writes the SDP the receiver
+		# opens; the receiver's RTP reorder queue waits max_delay (200 ms,
+		# a jitter buffer's depth) for a hole, then plays past it
+		ip netns exec "$tx" ffmpeg -hide_banner -nostdin -loglevel error -re -f lavfi \
+			-i testsrc2=size=1280x720:rate=30 -t "$2" -c:v libx264 -preset veryfast -tune zerolatency -b:v 6M \
+			-maxrate 6M -bufsize 1M -g 30 -x264-params nal-hrd=cbr -f rtp -sdp_file "$RUN/tsreal.sdp" \
+			"rtp://$rxa:7004?pkt_size=1316" 2>"$RUN/tsreal-tx.err" &
+		BOND_BG="$BOND_BG $!"
+		for i in $(seq 1 50); do
+			[ -s "$RUN/tsreal.sdp" ] && break
+			sleep 0.05
+		done
+		ip netns exec "$rx" timeout -k 2 $(($2 + 8)) ffmpeg -hide_banner -nostdin -protocol_whitelist file,udp,rtp \
+			-max_delay 200000 -reorder_queue_size 2000 -buffer_size 4000000 \
+			-i "$RUN/tsreal.sdp" -f null - 2>"$RUN/tsreal-rx.err" &
+		BOND_BG="$BOND_BG $!"
+		return 0
+	fi
+	# udp's timeout (us): it ends 3 s after the stream does (a blocked recv
+	# does not take SIGTERM); timeout -k as the backstop
+	ip netns exec "$rx" timeout -k 2 $(($2 + 8)) ffmpeg -hide_banner -nostdin -i \
+		"udp://$rxa:7004?fifo_size=1000000&overrun_nonfatal=1&timeout=3000000" -f null - 2>"$RUN/tsreal-rx.err" &
+	BOND_BG="$BOND_BG $!"
+	sleep 0.3
+	ip netns exec "$tx" ffmpeg -hide_banner -nostdin -loglevel error -re -f lavfi -i testsrc2=size=1280x720:rate=30 \
+		-t "$2" -c:v libx264 -preset veryfast -tune zerolatency -b:v 6M -maxrate 6M -bufsize 1M -g 30 \
+		-x264-params nal-hrd=cbr -f mpegts -muxrate 8M "udp://$rxa:7004?pkt_size=1316" 2>"$RUN/tsreal-tx.err" &
+	BOND_BG="$BOND_BG $!"
+}
+
 # bond_sample_start SECS: the engine's status files every second of the run
 # into $RUN/samples (BOND_SAMPLE=1), for bondtab.py's per-link summary of the
 # run's second half; the pid goes to BOND_BG.
@@ -1225,6 +1336,10 @@ bond_run() {
 	if [ "$BOND_SAMPLE" = 1 ]; then
 		bond_sample_start "$s"
 		small+=(--samples "$RUN/samples")
+	fi
+	if [ "${BOND_TSREAL:-0}" != 0 ]; then
+		bond_tsreal_start "$dir" "$s"
+		small+=(--tsreal "$RUN/tsreal-rx.err")
 	fi
 	local pc0 ps0 pepargs=()
 	if [ -n "$BOND_PEP" ]; then

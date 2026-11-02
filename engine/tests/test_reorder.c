@@ -535,89 +535,102 @@ static void sc_by_link(const struct base *b)
 	}
 }
 
-/* Rescue: a gap about to be given up is asked for (r.ask), and waits
- * rescue_us more. Links 0 (10 ms) and 1 (30 ms). */
+/* Rescue: a gap about to be given up is asked for (r.ask) and waits for
+ * it, never past its own deadline (story 030): asked by RACK, the rescue
+ * has until then; asked at the deadline, it goes. Links 0 (10 ms) and 1
+ * (100 ms): seq 2 (ts 2) waits until 2 + 100 + 10 = 112 ms at most. */
 static void sc_rescue(const struct base *b)
 {
 	for (int come = 0; come < 2; come++) {
-		/* seq 1 lost; seq 2 at 12 ms waits until 2 + 30 + 10 = 42 ms. */
 		rig(CG_RO_SLOTS, b, 400 * MS, 0, 10 * MS, 0, 0x3);
 		R.cf.rescue_us = 60 * MS;
 		owd(0, 10 * MS);
-		owd(1, 30 * MS);
+		owd(1, 100 * MS);
 		CHECK_EQ(in(0, 0, 10 * MS, 0, SPLIT, DATA, BIG), CG_RO_NOW);
 		CHECK_EQ(in(2, 2 * MS, 12 * MS, 0, SPLIT, DATA, BIG), CG_RO_HOLD);
 		CHECK_EQ(R.r.nask, 0);
-		CHECK_EQ(drain(41 * MS), 0);
-		CHECK_EQ(R.r.nask, 0);
-		/* Due: asked for, not given up. */
-		CHECK_EQ(drain(43 * MS), 0);
+		/* Every link past it (RACK): asked for, not given up. */
+		CHECK_EQ(in(3, 3 * MS, 103 * MS, 1, SPLIT, DATA, BIG), CG_RO_HOLD);
 		CHECK_EQ(R.r.nask, 1);
 		CHECK_EQ(R.r.ask[0], b->sb + 1);
 		CHECK_EQ(R.r.st.asked, 1);
-		CHECK_EQ(R.r.st.lost_cap, 0);
-		CHECK(due(43 * MS) > (int32_t)(55 * MS) && due(43 * MS) <= (int32_t)(60 * MS));
+		CHECK_EQ(R.r.st.lost_rack + R.r.st.lost_cap, 0);
+		CHECK(due(103 * MS) > 0 && due(103 * MS) <= (int32_t)(10 * MS));
 		R.r.nask = 0; /* the caller sent the NACK */
-		CHECK_EQ(drain(80 * MS), 0);
+		CHECK_EQ(drain(106 * MS), 0);
 		CHECK_EQ(R.r.nask, 0); /* asked once */
 		if (come) {
 			/* The copy comes on the fast link: in order, nothing lost. */
-			CHECK_EQ(in(1, 1 * MS, 90 * MS, 0, SPLIT, DATA, BIG), CG_RO_NOW);
+			CHECK_EQ(in(1, 1 * MS, 108 * MS, 0, SPLIT, DATA, BIG), CG_RO_NOW);
 			CHECK_EQ(R.r.st.rescued, 1);
 			CHECK_EQ(R.r.st.lost_cap + R.r.st.lost_rack + R.r.st.ask_lost, 0);
 		} else {
-			/* It does not come: given up at 43 + 60 ms, as due then (cap). */
-			CHECK_EQ(drain(102 * MS), 0);
-			CHECK_EQ(drain(104 * MS), 1);
+			/* It does not come: given up at its deadline, as RACK found it. */
+			CHECK_EQ(drain(113 * MS), 2);
 			CHECK_EQ(R.r.st.ask_lost, 1);
-			CHECK_EQ(R.r.st.lost_cap, 1);
+			CHECK_EQ(R.r.st.lost_rack, 1);
 			CHECK_EQ(R.r.st.rescued, 0);
 		}
-		CHECK_EQ(R.r.head, b->sb + 3);
+		CHECK_EQ(R.r.head, b->sb + 4);
 	}
+
+	/* Asked at the deadline itself: nothing left to wait, it goes. */
+	rig(CG_RO_SLOTS, b, 400 * MS, 0, 10 * MS, 0, 0x3);
+	R.cf.rescue_us = 60 * MS;
+	owd(0, 10 * MS);
+	owd(1, 30 * MS);
+	CHECK_EQ(in(0, 0, 10 * MS, 0, SPLIT, DATA, BIG), CG_RO_NOW);
+	CHECK_EQ(in(2, 2 * MS, 12 * MS, 0, SPLIT, DATA, BIG), CG_RO_HOLD);
+	CHECK_EQ(drain(41 * MS), 0);
+	CHECK_EQ(drain(43 * MS), 0); /* due at 2 + 30 + 10: asked */
+	CHECK_EQ(R.r.nask, 1);
+	R.r.nask = 0;
+	CHECK_EQ(due(43 * MS), 0);
+	CHECK_EQ(drain(43 * MS), 1);
+	CHECK(R.r.st.ask_lost == 1 && R.r.st.lost_cap == 1);
 
 	/* rescue_tries 2: asked for again at half the wait (ask2), once. */
 	rig(CG_RO_SLOTS, b, 400 * MS, 0, 10 * MS, 0, 0x3);
-	R.cf.rescue_us = 60 * MS;
+	R.cf.rescue_us = 10 * MS;
 	R.cf.rescue_tries = 2;
 	owd(0, 10 * MS);
-	owd(1, 30 * MS);
+	owd(1, 100 * MS);
 	CHECK_EQ(in(0, 0, 10 * MS, 0, SPLIT, DATA, BIG), CG_RO_NOW);
 	CHECK_EQ(in(2, 2 * MS, 12 * MS, 0, SPLIT, DATA, BIG), CG_RO_HOLD);
-	CHECK_EQ(drain(43 * MS), 0);
+	CHECK_EQ(in(3, 3 * MS, 103 * MS, 1, SPLIT, DATA, BIG), CG_RO_HOLD);
 	CHECK(R.r.nask == 1 && R.r.nask2 == 0);
 	R.r.nask = 0;
-	CHECK(due(43 * MS) > 0 && due(43 * MS) <= (int32_t)(30 * MS)); /* the retry at 73 ms */
-	CHECK_EQ(drain(72 * MS), 0);
+	CHECK(due(103 * MS) > 0 && due(103 * MS) <= (int32_t)(5 * MS)); /* the retry at 108 ms */
+	CHECK_EQ(drain(107 * MS), 0);
 	CHECK_EQ(R.r.nask2, 0);
-	CHECK_EQ(drain(74 * MS), 0);
+	CHECK_EQ(drain(109 * MS), 0);
 	CHECK_EQ(R.r.nask2, 1);
 	CHECK_EQ(R.r.ask2[0], b->sb + 1);
 	R.r.nask2 = 0;
-	CHECK_EQ(drain(90 * MS), 0);
+	CHECK_EQ(drain(111 * MS), 0);
 	CHECK_EQ(R.r.nask2, 0); /* twice at most */
 	CHECK_EQ(R.r.st.asked, 2);
-	CHECK_EQ(drain(104 * MS), 1); /* given up at 43 + 60 ms */
+	CHECK_EQ(drain(114 * MS), 2); /* given up at 103 + 10 ms */
 	CHECK_EQ(R.r.st.ask_lost, 1);
 
 	/* The sender says it will not come (CG_F_GONE): it goes at once, not
-	 * at 43 + 60 ms, and is asked for no more. */
+	 * at its deadline, and is asked for no more. */
 	rig(CG_RO_SLOTS, b, 400 * MS, 0, 10 * MS, 0, 0x3);
 	R.cf.rescue_us = 60 * MS;
 	R.cf.rescue_tries = 2;
 	owd(0, 10 * MS);
-	owd(1, 30 * MS);
+	owd(1, 100 * MS);
 	CHECK_EQ(in(0, 0, 10 * MS, 0, SPLIT, DATA, BIG), CG_RO_NOW);
 	CHECK_EQ(in(2, 2 * MS, 12 * MS, 0, SPLIT, DATA, BIG), CG_RO_HOLD);
-	CHECK_EQ(drain(43 * MS), 0);
+	CHECK_EQ(in(3, 3 * MS, 103 * MS, 1, SPLIT, DATA, BIG), CG_RO_HOLD);
 	R.r.nask = 0;
-	CHECK(!cg_ro_refused(&R.r, &R.cf, b->sb + 5, R.b.tb + 50 * MS)); /* not asked for */
-	CHECK(cg_ro_refused(&R.r, &R.cf, b->sb + 1, R.b.tb + 50 * MS));
-	CHECK(!cg_ro_refused(&R.r, &R.cf, b->sb + 1, R.b.tb + 50 * MS)); /* once */
-	CHECK_EQ(due(50 * MS), 0);
-	CHECK_EQ(drain(50 * MS), 1);
+	CHECK(!cg_ro_refused(&R.r, &R.cf, b->sb + 5, R.b.tb + 104 * MS)); /* not asked for */
+	CHECK(cg_ro_refused(&R.r, &R.cf, b->sb + 1, R.b.tb + 104 * MS));
+	CHECK(!cg_ro_refused(&R.r, &R.cf, b->sb + 1, R.b.tb + 104 * MS)); /* once */
+	CHECK_EQ(due(104 * MS), 0);
+	CHECK_EQ(drain(104 * MS), 2);
 	CHECK(R.r.st.ask_refused == 1 && R.r.st.ask_lost == 1 && R.r.nask2 == 0);
-	CHECK_EQ(R.r.head, b->sb + 3);
+	CHECK_EQ(R.r.head, b->sb + 4);
 
 	/* Several gaps before the held packet: asked for together. */
 	rig(CG_RO_SLOTS, b, 400 * MS, 0, 10 * MS, 0, 0x3);
@@ -684,9 +697,40 @@ static void sc_rescue(const struct base *b)
 	CHECK_EQ(in(2, 2 * MS, 32 * MS, 1, cg_prev_flags(0), DATA, BIG), CG_RO_NOW);
 	CHECK_EQ(R.r.st.asked, 0);
 
+	/* MPEG-TS over UDP behind the gap (waits, dgclass.h): no reorder buffer
+	 * of its own, so the asked gap waits the cap plus rescue_us, as in
+	 * story 023, at most CG_RO_ASK_MAX_US. Links 0 (10 ms) and 1 (30 ms):
+	 * due at 2 + 30 + 10, asked, and held until 12 + 100 + 60. */
+	rig(CG_RO_SLOTS, b, 100 * MS, 0, 10 * MS, 0, 0x3);
+	R.cf.rescue_us = 60 * MS;
+	owd(0, 10 * MS);
+	owd(1, 30 * MS);
+	CHECK_EQ(in(0, 0, 10 * MS, 0, SPLIT, DATA, BIG), CG_RO_NOW);
+	{
+		struct cg_ro_pkt k = pkt(2, 2 * MS, 12 * MS, 0, SPLIT, DATA, BIG);
+
+		k.waits = 1;
+		CHECK_EQ(in_pkt(k, 12 * MS), CG_RO_HOLD);
+	}
+	CHECK_EQ(drain(43 * MS), 0); /* asked */
+	CHECK_EQ(R.r.nask, 1);
+	R.r.nask = 0;
+	CHECK(due(43 * MS) > (int32_t)(55 * MS)); /* the rescue's 60 ms from the ask */
+	CHECK_EQ(drain(100 * MS), 0);
+	CHECK_EQ(in(1, 1 * MS, 101 * MS, 0, 0, DATA, BIG), CG_RO_NOW);
+	CHECK_EQ(R.r.st.rescued, 1);
+	CHECK_EQ(R.r.held, 0);
+	/* RTP (nohold): never held, its jitter buffer orders it */
+	CHECK_EQ(in(3, 3 * MS, 110 * MS, 0, SPLIT, DATA, BIG), CG_RO_NOW);
+	{
+		struct cg_ro_pkt k = pkt(5, 5 * MS, 112 * MS, 0, SPLIT, NOHOLD, BIG);
+
+		CHECK_EQ(in_pkt(k, 112 * MS), CG_RO_NOW);
+	}
+	CHECK_EQ(R.r.held, 0);
+
 	/* Asked at the hold cap (the slowest link seconds behind, split): it
-	 * still waits rescue_us beyond the cap, not nothing (before story 023
-	 * it went at once). */
+	 * goes then (story 030; story 023 waited rescue_us beyond the cap). */
 	rig(CG_RO_SLOTS, b, 100 * MS, 0, 10 * MS, 0, 0x3);
 	R.cf.rescue_us = 60 * MS;
 	owd(0, 10 * MS);
@@ -694,15 +738,13 @@ static void sc_rescue(const struct base *b)
 	CHECK_EQ(in(0, 0, 10 * MS, 0, SPLIT, DATA, BIG), CG_RO_NOW);
 	CHECK_EQ(in(2, 2 * MS, 12 * MS, 0, SPLIT, DATA, BIG), CG_RO_HOLD);
 	CHECK_EQ(drain(111 * MS), 0);
-	CHECK_EQ(R.r.nask, 0);
 	CHECK_EQ(drain(113 * MS), 0); /* due at 12 + 100: asked */
 	CHECK_EQ(R.r.nask, 1);
 	R.r.nask = 0;
-	CHECK(due(113 * MS) > (int32_t)(55 * MS));
-	CHECK_EQ(drain(160 * MS), 0);
-	CHECK_EQ(in(1, 1 * MS, 165 * MS, 0, 0, DATA, BIG), CG_RO_NOW);
-	CHECK_EQ(R.r.st.rescued, 1);
-	CHECK_EQ(R.r.st.ask_lost, 0);
+	CHECK_EQ(due(113 * MS), 0);
+	CHECK_EQ(drain(113 * MS), 1);
+	CHECK_EQ(R.r.st.ask_lost, 1);
+	CHECK_EQ(R.r.held, 0);
 }
 
 /* adaptive: a link's margin grows to how late its late packets come, and
@@ -747,6 +789,36 @@ static void sc_adapt(const struct base *b)
 	CHECK_EQ(drain(43 * MS), 1);
 	CHECK_EQ(in(1, 1 * MS, 243 * MS, 1, SPLIT, DATA, BIG), CG_RO_NOW);
 	CHECK_EQ(R.r.link[1].adapt_us, 0);
+}
+
+/* RACK from another class (story 030): a link that brought no later DATA
+ * but a STREAM sent after the lowest held packet is past the gaps below it. */
+static void sc_note(const struct base *b)
+{
+	rig(CG_RO_SLOTS, b, 200 * MS, 0, 10 * MS, 128, 0x3);
+	in(0, 0, 100, 0, SPLIT, DATA, BIG);
+	CHECK_EQ(in(2, 2 * MS, 200, 0, SPLIT, DATA, BIG), CG_RO_HOLD); /* link 1: nothing yet */
+	cg_ro_note(&R.r, 1, R.b.tsb + 1 * MS); /* sent before 2: says nothing about 1 */
+	CHECK_EQ(drain(300), 0);
+	CHECK_EQ(R.r.held, 1);
+	cg_ro_note(&R.r, 1, R.b.tsb + 2 * MS); /* sent with it: not after */
+	CHECK_EQ(drain(300), 0);
+	cg_ro_note(&R.r, 1, R.b.tsb + 3 * MS); /* after 2: 1 is not coming on link 1 */
+	CHECK_EQ(drain(400), 1);
+	CHECK(OUT_IS(0, 2));
+	CHECK_EQ(R.r.st.lost_rack, 1);
+	CHECK_EQ(R.r.held, 0);
+	/* only the gaps below the lowest held packet: one above it waits */
+	CHECK_EQ(in(4, 4 * MS, 500, 0, SPLIT, DATA, BIG), CG_RO_HOLD);
+	CHECK_EQ(in(6, 6 * MS, 600, 0, SPLIT, DATA, BIG), CG_RO_HOLD);
+	cg_ro_note(&R.r, 1, R.b.tsb + 5 * MS);
+	CHECK_EQ(drain(700), 1); /* 3 goes, 4 out; 5 waits for link 1 */
+	CHECK_EQ(R.r.held, 1);
+	CHECK_EQ(R.r.st.lost_rack, 2);
+	cg_ro_note(&R.r, 1, R.b.tsb + 7 * MS);
+	CHECK_EQ(drain(800), 1);
+	CHECK_EQ(R.r.st.lost_rack, 3);
+	CHECK_EQ(R.r.held, 0);
 }
 
 static void sc_rack(const struct base *b)
@@ -2422,6 +2494,7 @@ void test_reorder(void)
 		sc_spread(b);
 		sc_swing(b);
 		sc_rack(b);
+		sc_note(b);
 		sc_by_link(b);
 		sc_rescue(b);
 		sc_adapt(b);

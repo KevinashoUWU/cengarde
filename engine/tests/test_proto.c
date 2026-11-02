@@ -12,7 +12,8 @@ void test_proto(void)
 	struct cg_hdr h = { .type = CG_T_DATA, .flags = 0, .hint = 0x5a, .link = 5, .session = 0xdeadbeef,
 			    .seq = 0x01020304, .ts = 0xa0b0c0d0 },
 		      p;
-	struct cg_probe_info pi = { 1, 0x80000001, 100, 2, 3, 0xfffffffe, 0xc00c1e, 0x11223344, 0x55667788, 0x99aabbcc },
+	struct cg_probe_info pi = { 1, 0x80000001, 100, 2, 3, 0xfffffffe, 0xc00c1e, 0x11223344, 0x55667788, 0x99aabbcc,
+				    0x0badf00d, 0x13572468, 0x7e7e7e7e },
 			     po;
 	struct cg_hello hl = { 0x01020304, 0xcafef00d }, ho;
 	uint8_t pib[CG_PROBE_INFO_LEN + 8], hb[CG_HELLO_LEN];
@@ -41,7 +42,7 @@ void test_proto(void)
 
 	/* Layout: version/type, the client hint at byte 2, link at byte 3,
 	 * session, seq and ts in network order. */
-	CHECK_EQ(pkt[0], 0xc1);
+	CHECK_EQ(pkt[0], 0xd1);
 	CHECK_EQ(pkt[2], 0x5a);
 	CHECK_EQ(pkt[3], 5);
 	CHECK(!memcmp(pkt + 4, "\xde\xad\xbe\xef\x01\x02\x03\x04\xa0\xb0\xc0\xd0", 12));
@@ -105,12 +106,21 @@ void test_proto(void)
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
 	pkt[0] = 0xb1; /* version 11 (no subflow sequence) too */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
-	pkt[0] = 0xcf; /* unknown type */
+	pkt[0] = 0xc1; /* version 12 (no STREAM class) too */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
-	pkt[0] = 0xc6; /* a parity (fec.h): its header and a byte at least */
+	pkt[0] = 0xdb; /* a STREAM (13): a protocontroller message, its own class */
+	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), 0);
+	CHECK_EQ(p.type, CG_T_STREAM);
+	CHECK(!cg_type_ctl(CG_T_STREAM));
+	CHECK_EQ(cg_type_cls(CG_T_STREAM), CG_CLS_STREAM);
+	CHECK_EQ(cg_type_cls(CG_T_DATA), CG_CLS_DATA);
+	CHECK_EQ(cg_type_cls(CG_T_SFACK), CG_CLS_CTL);
+	pkt[0] = 0xdf; /* unknown type */
+	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
+	pkt[0] = 0xd6; /* a parity (fec.h): its header and a byte at least */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), sizeof(pkt) > CG_HDR_LEN + CG_FEC_HDR ? 0 : -1);
 	CHECK_EQ(cg_hdr_parse(&p, pkt, CG_HDR_LEN + CG_FEC_HDR), -1);
-	pkt[0] = 0xc7; /* a repair (repair.h): its header and a byte at least */
+	pkt[0] = 0xd7; /* a repair (repair.h): its header and a byte at least */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), sizeof(pkt) > CG_HDR_LEN + CG_REP_HDR ? 0 : -1);
 	CHECK_EQ(cg_hdr_parse(&p, pkt, CG_HDR_LEN + CG_REP_HDR), -1);
 	CHECK(cg_type_ctl(CG_T_REPAIR));
@@ -120,7 +130,7 @@ void test_proto(void)
 		uint8_t q[CG_HDR_LEN + CG_PARQ_LEN];
 
 		memcpy(q, pkt, CG_HDR_LEN);
-		q[0] = 0xc8;
+		q[0] = 0xd8;
 		memset(q + CG_HDR_LEN, 0, sizeof(q) - CG_HDR_LEN);
 		q[CG_HDR_LEN] = 2;
 		CHECK_EQ(cg_hdr_parse(&p, q, CG_HDR_LEN + 1 + 2 * CG_PARQ_REQ), 0);
@@ -133,7 +143,7 @@ void test_proto(void)
 		q[CG_HDR_LEN] = CG_PARQ_MAX;
 		CHECK_EQ(cg_hdr_parse(&p, q, sizeof(q)), 0);
 	}
-	pkt[0] = 0xc1;
+	pkt[0] = 0xd1;
 	pkt[2] = 0xff; /* any hint parses: the server judges it */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), 0);
 	CHECK_EQ(p.hint, 0xff);
@@ -167,7 +177,8 @@ void test_proto(void)
 	cg_probe_info_read(&po, pkt + CG_HDR_LEN);
 	CHECK(po.echo_ts == 1 && po.owd == 0x80000001 && po.interval_ms == 100 && po.rx == 2 && po.wins == 3 &&
 	      po.lag_us == 0xfffffffe && po.cookie == 0xc00c1e && po.rx_top == 0x11223344 &&
-	      po.rx_top_ctl == 0x55667788 && po.tx_next == 0x99aabbcc);
+	      po.rx_top_ctl == 0x55667788 && po.tx_next == 0x99aabbcc && po.rx_top_stream == 0x0badf00d &&
+	      po.tx_next_stream == 0x13572468 && po.rx_sseq == 0x7e7e7e7e);
 	CHECK(!memcmp(pkt + CG_HDR_LEN, "\x00\x00\x00\x01\x80\x00\x00\x01\x00\x00\x00\x64", 12));
 	CHECK(!memcmp(pkt + CG_HDR_LEN + 24, "\x00\xc0\x0c\x1e\x11\x22\x33\x44\x55\x66\x77\x88\x99\xaa\xbb\xcc", 16));
 
@@ -215,7 +226,7 @@ void test_proto(void)
 		struct cg_probe_bond b = { .weight = 1000, .reorders = 1, .split_me = 1 }, r;
 		uint8_t tp[CG_PROBE_BOND_LEN + 8];
 
-		CHECK_EQ(CG_PROBE_BOND_LEN, 44);
+		CHECK_EQ(CG_PROBE_BOND_LEN, 56);
 		memset(tp, 0xee, sizeof(tp));
 		cg_probe_info_write(tp, &pi);
 		cg_probe_bond_write(tp, &b);

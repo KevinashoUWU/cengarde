@@ -3,14 +3,16 @@ tags: [mapa, pieza]
 archivos:
   - engine/src/reorder.h
   - engine/tests/test_reorder.c
-sello: 1bf681a74edd7fd3
+  - engine/src/dgclass.h
+  - engine/tests/test_dgclass.c
+sello: 4b893e3b51e8e9b7
 ---
 # Reordenador (reorder.h)
 
 **Grupo:** Recibir — [[Mapa del motor]]
 
 ## Qué hace
-Pone en orden de secuencia lo que llega antes de entregarlo a la TUN. Retiene lo que llegó adelantado por un tiempo acotado; **nunca tira nada**: cada paquete sale una vez. Un hueco se abandona (1) si se fuerza (desborde, pool lleno), (2) nunca mientras no hay nada retenido, (3) por una retransmisión de TCP con `retx_release`, (4) por **RACK**: cada enlace de `rset` trajo un DATA posterior, o (5) en su **plazo**. El plazo sale del enlace más lento: su retardo más 4 desvíos (`CG_RO_DEV_K`) más el margen, acotado por `max_wait` (si hay reparto) o `dup_wait`.
+Pone en orden de secuencia lo que llega antes de entregarlo a la TUN. Retiene lo que llegó adelantado por un tiempo acotado; **nunca tira nada**: cada paquete sale una vez. Un hueco se abandona (1) si se fuerza (desborde, pool lleno), (2) nunca mientras no hay nada retenido, (3) por una retransmisión de TCP con `retx_release`, (4) por **RACK**: cada enlace de `rset` trajo un DATA posterior, o algo de otra clase enviado después del paquete retenido más bajo (`cg_ro_note`: un STREAM del protocontrolador, desde el protocolo 13; sin eso un DATA ralo o a ráfagas, como el video RTP, esperaba hasta el plazo porque los mensajes de GRIT ya no movían la secuencia de DATA en cada enlace, [[030-protocolo-13]]), o (5) en su **plazo**. El plazo sale del enlace más lento: su retardo más 4 desvíos (`CG_RO_DEV_K`) más el margen, acotado por `max_wait` (si hay reparto) o `dup_wait`.
 
 ## Lee
 - Primeras copias verificadas del [[Anti-replay (replay.h)]]: secuencia, ts del emisor, flags (`CG_F_SPLIT`, `CG_F_PREV`, `CG_F_FREE`), enlace y hora de llegada.
@@ -20,7 +22,9 @@ Pone en orden de secuencia lo que llega antes de entregarlo a la TUN. Retiene lo
 ## Decide / escribe
 - La entrega en orden (`down_deliver` / `up_deliver`).
 - Huecos a punto de abandonarse → [[Rescate (rescue.h)]] (NACK), por [[Reparación coherente (harq.h)]]; [[FEC (fec.h)]] reconstruye antes.
-- Un hueco que la pista `CG_F_PREV` dio por perdido en todos los enlaces se pide al instante y retiene lo que sigue aunque el tope sea 0 (redundancia); un hueco pedido espera `rescue_us` desde el pedido, acotado por el tope **más** `rescue_us` (`cg_ro_ask_left`), no por el tope solo ([[023-reparacion-coherente]]).
+- Un hueco que la pista `CG_F_PREV` dio por perdido en todos los enlaces se pide al instante y retiene lo que sigue aunque el tope sea 0 (redundancia); un hueco pedido espera `rescue_us` desde el pedido y, desde la llegada del paquete retenido más bajo, según la clase de ese paquete (`dgclass.h`, [[030-protocolo-13]]):
+  - **MPEG-TS sobre UDP** (bloques de 188 bytes con el 0x47; sin búfer propio, un paquete tarde vale lo que uno perdido; `waits`, guardado en el bit alto del `link` del casillero retenido): el tope **más** `rescue_us` ([[023-reparacion-coherente]]), a lo más `CG_RO_ASK_MAX_US` (500 ms) o el tope;
+  - **lo demás** (RTP incluido, TCP fuera de GRIT, QUIC, VPN, otro UDP): el plazo que ya tenía (el enlace más lento con su desvío, a lo más el tope; con tope 0, `rescue_us`: `cg_ro_ask_left`). Con el tope más `rescue_us` para todos, un video RTP esperaba más que su búfer; sin retenerlo nunca (`nohold`, probado el 2026-11-01), perdía todo rescate: un hueco se pide solo mientras algo espera detrás, y en terreno el RTP perdió 11 veces más paquetes.
 - Lo rehecho (`rebuilt`) que llena un hueco pedido cuenta en `rescue.repaired`, no en `rescued`.
 - Estadísticas `in_order`, `held_total`, `lost.*`, `late.*` → estado; `due_narrow` (huecos que vencieron por RACK o plazo y que con `wide` habrían esperado: lo que soltó antes la máscara) y `due_capped` (huecos que vencieron en el tope mismo) → `active.early` y `active.at_cap`.
 - `cg_ro_link_until`: hasta cuándo puede llegar lo que un enlace llevó en un instante (su retardo, cuatro desvíos, su margen adaptativo y el margen), el horizonte de un enlace cerrado.
