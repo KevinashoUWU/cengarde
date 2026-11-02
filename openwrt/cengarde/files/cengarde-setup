@@ -270,7 +270,8 @@ preset() {
 # lost there until a copy lost on every uplink reached it as a loss and the
 # links' rate stopped pushing it while it held a queue (story 029, 6139fd3:
 # against a plain TCP in the middle, A, the download +9 % with a lower ping
-# and less data, the upload +12 %).
+# and less data, the upload +12 %). In bonding QUIC goes over TCP (quic
+# tcp); in redundancy it passes, as fast as TCP there with less delay.
 mode_presets() {
 	config_get MODE main mode custom
 	case "$MODE" in
@@ -292,6 +293,12 @@ mode_presets() {
 		preset tcp_aware 1
 		preset protocontroller_nack 0
 		preset split_stress_dup 0
+		# QUIC over TCP (story 031): no proxy splits QUIC, and over the
+		# split its sender sees one path with jumping delay; refused, the
+		# browser takes TCP, which GRIT carries (the field, 2026-11-02:
+		# Google's download 78-95 -> 134-165 Mbit/s, Chrome's upload 6-11
+		# -> 71-93, for more delay under load)
+		preset quic tcp
 		;;
 	redundancy)
 		config_set main split 0
@@ -339,6 +346,14 @@ load() {
 	esac
 	config_get PCTL_PORTS main protocontroller_port
 	config_get PCTL_DEST main protocontroller_dest
+	# QUIC (story 031): pass, or tcp (UDP 443 into the tunnel refused, the
+	# browser falls back to TCP, which the protocontroller carries)
+	config_get QUIC_MODE main quic pass
+	case "$QUIC_MODE" in
+	pass | tcp) ;;
+	*) log "quic '$QUIC_MODE': expected pass or tcp, taken as pass"; QUIC_MODE=pass ;;
+	esac
+	config_get QUIC_ALLOW main quic_allow
 	# the VPS's administration from here (cengarde-vps-admin there)
 	config_get_bool VPS_ADMIN main vps_admin 0
 	config_get VPS_SSH_HOST main vps_ssh_host
@@ -783,7 +798,32 @@ pctl_rules() {
 	fi
 	echo "}"
 	[ "$PCTL_MODE" = b ] && reliable_rules "$devs"
+	[ "$QUIC_MODE" = tcp ] && quic_rules "$devs"
 	return 0
+}
+
+# QUIC to TCP (story 031): no proxy can split QUIC (its transport is
+# encrypted end to end), but a browser that finds UDP 443 refused falls back
+# to TCP in milliseconds, and the protocontroller carries that. The LAN zone's
+# devices DEVS: their UDP to port 443 into the tunnel answered with a port
+# unreachable (a reject, so the fallback is at once), but to the quic_allow
+# addresses.
+quic_rules() { # DEVS
+	local d a4='' a6=''
+
+	for d in $QUIC_ALLOW; do
+		case "$d" in
+		*:*) a6="$a6${a6:+, }$d" ;;
+		*.*) a4="$a4${a4:+, }$d" ;;
+		*) log "quic_allow '$d': expected an address or a prefix, left out" ;;
+		esac
+	done
+	echo "chain cengarde_quic {"
+	echo "	type filter hook forward priority filter - 5; policy accept;"
+	[ -n "$a4" ] && echo "	iifname { $1 } oifname \"$TUN\" ip daddr { $a4 } udp dport 443 accept comment \"!cengarde: quic allowed\""
+	[ -n "$a6" ] && echo "	iifname { $1 } oifname \"$TUN\" ip6 daddr { $a6 } udp dport 443 accept comment \"!cengarde: quic allowed\""
+	echo "	iifname { $1 } oifname \"$TUN\" udp dport 443 reject with icmpx type port-unreachable comment \"!cengarde: quic to tcp\""
+	echo "}"
 }
 
 fix_pctl() { # on|off

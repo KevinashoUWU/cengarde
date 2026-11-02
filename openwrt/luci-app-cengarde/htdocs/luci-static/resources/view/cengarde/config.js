@@ -630,6 +630,21 @@ return view.extend({
 		o.depends('mode', 'bonding');
 		o.depends('mode', 'redundancy');
 
+		o = s.taboption('layer4', form.ListValue, 'quic', _('QUIC'),
+			_('No proxy can split QUIC: its transport is encrypted end to end. Over TCP: the LAN\'s UDP to port 443 into the tunnel is refused, and browsers and apps fall back to TCP at once, which the protocontroller carries over every uplink. As it comes: QUIC passes, one path with jumping delay to its sender. In the field, in bonding, Google\'s download went from 78-95 to 134-165 Mbit/s over TCP and Chrome\'s upload from 6-11 to 71-93, with more delay under load; in redundancy both did ~105, QUIC with less delay. The bonding mode takes it over TCP, redundancy as it comes.'));
+		o.value('pass', _('As it comes'));
+		o.value('tcp', _('Over TCP (the protocontroller)'));
+		o.default = 'pass';
+		o.depends({ protocontroller: 'a', mode: 'custom' });
+		o.depends({ protocontroller: 'b', mode: 'custom' });
+		o.depends('mode', 'bonding');
+		o.depends('mode', 'redundancy');
+
+		o = s.taboption('layer4', form.DynamicList, 'quic_allow', _('QUIC allowed to'),
+			_('Addresses or prefixes whose QUIC passes anyway.'));
+		o.datatype = 'or(ipaddr, cidr)';
+		o.depends('quic', 'tcp');
+
 		o = s.taboption('layer4', form.Flag, 'tcp_aware', _('TCP-aware tunnel'),
 			_('The router and the VPS look at the TCP inside the tunnel: its ACKs and handshakes are handed on at once instead of waiting behind a missing packet, and a TCP retransmission is copied over every uplink only when the tunnel lost the original on all of them (from the ACKs it has seen), so a spurious one does not load every uplink. Off: TCP is carried like any other packet.'));
 		modeFlag(o, 'tcp_aware', '0');

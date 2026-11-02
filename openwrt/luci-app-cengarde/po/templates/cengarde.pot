@@ -289,6 +289,24 @@ msgstr ""
 msgid "Only the TCP to these addresses or prefixes. Empty: every address that is not private, local or link-local."
 msgstr ""
 
+msgid "QUIC"
+msgstr ""
+
+msgid "No proxy can split QUIC: its transport is encrypted end to end. Over TCP: the LAN's UDP to port 443 into the tunnel is refused, and browsers and apps fall back to TCP at once, which the protocontroller carries over every uplink. As it comes: QUIC passes, one path with jumping delay to its sender. In the field, in bonding, Google's download went from 78-95 to 134-165 Mbit/s over TCP and Chrome's upload from 6-11 to 71-93, with more delay under load; in redundancy both did ~105, QUIC with less delay. The bonding mode takes it over TCP, redundancy as it comes."
+msgstr ""
+
+msgid "As it comes"
+msgstr ""
+
+msgid "Over TCP (the protocontroller)"
+msgstr ""
+
+msgid "QUIC allowed to"
+msgstr ""
+
+msgid "Addresses or prefixes whose QUIC passes anyway."
+msgstr ""
+
 msgid "TCP-aware tunnel"
 msgstr ""
 

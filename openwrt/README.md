@@ -608,7 +608,7 @@ estaba.
 
 Bonding y redundancia fijan `split`, `protocontroller`, `subflow` y
 `link_cc`, y traen como valor por defecto el resto de su ajuste (rescate,
-`tcp_aware`, los del reparto): una opción puesta aparte le gana al modo
+`tcp_aware`, los del reparto; en bonding, QUIC por TCP): una opción puesta aparte le gana al modo
 (`cengarde-setup engine-conf` muestra el resultado). Un cambio reinicia el
 motor.
 
@@ -922,6 +922,24 @@ router que siga con A o B ve entonces sus conexiones rehusadas.
 `GRIT` o `TCP`); en el VPS,
 lo mismo. `test/e2e.sh` lo prueba con B y con A (una página del VPS a
 través del corte) y la vuelta a `no` sin restos.
+
+**QUIC** (opción *QUIC*, `quic`; historia 031). Ningún proxy puede partir
+QUIC: su transporte va cifrado de punta a punta. Con *Por TCP* (`tcp`) el
+router rechaza con «puerto inalcanzable» el UDP de la LAN al puerto 443 que
+va hacia el túnel, y los navegadores y las apps vuelven a TCP al instante
+(en terreno, Chrome en 0,03 s), que el protocontrolador lleva. *QUIC
+permitido hacia* (`quic_allow`) deja pasar el de algunas direcciones o
+prefijos. Bonding la trae en `tcp`; redundancia, en `pass` (tal como viene).
+En terreno (2026-11-02, 4 módems, Chromium):
+
+| Modo | Bajada de Google, QUIC → TCP | Subida de Chrome, QUIC → TCP | p50 con carga |
+| --- | --- | --- | --- |
+| bonding | 78–95 → 134–165 Mbit/s | 6–11 → 71–93 | ~70–100 → ~190–330 ms |
+| redundancia | ~104 → ~109 | 16–24 → 33–38 | ~95–105 → ~250–350 ms |
+
+Se pierde lo que solo habla QUIC (WebTransport, algún juego; las VPN sobre
+QUIC, como iCloud Private Relay o WARP, tienen su propia vuelta a TCP) y el
+0-RTT de QUIC. Comprobar: `nft list chain inet fw4 cengarde_quic`.
 
 ## Por consola (sin LuCI)
 
