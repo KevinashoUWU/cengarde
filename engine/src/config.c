@@ -967,7 +967,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	c->fec_pct = 20;
 	c->fec_pct_min = 0;
 	c->reliable_zstd = 1;
-	c->flow_learn = 1;
+	c->flow_learn = 0; /* lab: latency for rate on lossy links, never a clear win (story 031) */
 	c->fec_window_ms = 300;
 	c->redund_spare_ms = 50;
 	c->redund_spare_code_ms = 30;

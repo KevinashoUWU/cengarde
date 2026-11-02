@@ -1,7 +1,7 @@
 # 031 — Clases por flujo (U5): la FEC y la protección para GRIT, y el proxy UDP
 
 - **Fecha:** 2026-11-02
-- **Estado:** en curso (pasos 1 y 2 hechos y medidos en laboratorio: `fec_stream`, protocolo 17, PR #158; el paso 3 por hacer)
+- **Estado:** pasos 1, 2 y 3 hechos (PR #158 a #164, protocolos 17 y 18): `fec_stream`, `flow_class` con su tabla «Flujos», el carril fiable con zstd y `flow_learn`; falta terreno de los pasos 2 y 3
 - **Fuentes:** historia 030 (protocolos 13–16, el reordenador por clase de
   datagrama), 026 (FEC v3), 020 y 021 (`redund_spare`), 025 (GRIT en
   redundancia), 029 (MPGRIT U5); `engine/src/fec3.h`, `repair.h`, `rlc.h`,
@@ -272,6 +272,37 @@ su jitter, p99 − p50, y el peor sobre la mediana).
   carril; × 2): 3,09 MB → 0,62 MB (5,0 veces) en `lossy` y `cell4`, todos
   entregados, la misma mediana (122–157 ms con y sin zstd).
 
+## Paso 3e hecho: lo aprendido por flujo (2026-11-02)
+
+- **Qué:** `flowlearn.h`: el encabezado largo de QUIC (versión 1, 2, un
+  borrador o 0), el handshake de SRT (control de tipo 0, UDT 4 o 5) y un
+  NACK de RTCP (PT 205, FMT 1: RIST, WebRTC; con RTCP en el puerto siguiente,
+  también su flujo RTP) dicen qué es un flujo. Una tabla de 512 flujos (los
+  dos sentidos una clave; cada paquete del flujo lo renueva; olvidado tras
+  120 s sin nada) lo guarda, alimentada con lo que cada extremo recibe y
+  envía (un NACK va contra su medio). Sin regla y sin reparto, un flujo
+  conocido va como `direct`. `flow_learn`, **apagado**; el estado cuenta lo
+  aprendido.
+- **Lo que enseñó el laboratorio** (QUIC de aioquic, × 2):
+
+  | Modo | Caso | Retenido (Mbit/s) | Aprendido, sin retener |
+  | --- | --- | --- | --- |
+  | bonding | `equal` bajada / subida | 26,7 / 12,5 | 13,3 / 5,5 |
+  | bonding | `het` bajada / subida | 42,0 / 12,6 | 6,2 / 4,8 |
+  | redundancia | `equal` bajada / subida | 36,3 / 34,6 | 36,5 / 36,4 |
+  | redundancia | `het` bajada / subida | 40,9 / 43,4 | 45,2 / 43,8 |
+  | redundancia | `lossy` bajada / subida | 3,8 / 3,1 | 2,6 / 2,4 |
+  | redundancia | `cell4` bajada / subida | 4,4 / 4,2 | 3,2 / 3,3 |
+
+  En redundancia el p99 cargado de `cell4` bajó de 228 a 68 ms (bajada) y de
+  286 a 81 (subida), y las retransmisiones a la mitad o menos.
+- **La lección** (contra la tabla de clases de arriba): un protocolo que se
+  recupera solo igual gana con el reordenador del túnel en bonding, porque
+  el desorden entre enlaces lo hace el túnel, no la red; su «pasar directo»
+  solo vale sin reparto, y aun ahí cambia caudal en enlaces con pérdida (el
+  rescate del túnel) por latencia. Por eso actúa solo sin reparto
+  (`CG_F_SPLIT`) y queda a elección del operador.
+
 ## Diseño del paso 3: las clases de UDP (2026-11-02, con el usuario)
 
 El UDP manda a su tasa sin saber de pérdida ni de cola: el túnel no puede
@@ -323,10 +354,13 @@ que le conviene:
 
 ## Pendiente
 
-- El paso 1 en terreno.
-- El paso 2 (redundancia) en terreno.
-- El paso 3c (el carril fiable) y 3d (zstd en él); el detector `auto` con
-  analizador de encabezados (QUIC, RIST, SRT).
+- Terreno: `fec_stream` en redundancia, el carril fiable (con zstd) y
+  `flow_learn` en redundancia.
+- Prioridad del carril fiable sobre lo masivo dentro de GRIT.
+- Un analizador de encabezados más amplio y firmas configurables o
+  aprendidas para el detector (usuario).
+- El ahorro de cabeceras (frames `DATAGRAM` sin IP ni UDP) pasa a la tarea
+  de compresión de cabeceras (#78).
 
 ## Cambios
 
@@ -338,3 +372,5 @@ que le conviene:
 - 2026-11-02: el paso 1 en terreno.
 - 2026-11-02: el paso 3a (`flow_class`), con su laboratorio.
 - 2026-11-02: el paso 3b (UCI, LuCI, la copia al VPS, el NAT del router).
+- 2026-11-02: los pasos 3c (el carril fiable, protocolo 18), 3d (zstd en él)
+  y 3e (`flow_learn`), con su laboratorio.

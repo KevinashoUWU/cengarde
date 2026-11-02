@@ -14,7 +14,11 @@
  *
  * Each of them recovers what it loses and orders what it gets, its own way:
  * the reorderer should neither hold them nor rescue them (flowrule.h's
- * direct). A flow is both ways of a pair of endpoints (the key is the same
+ * direct), when it is not split: the links' reordering is the tunnel's
+ * own, and unheld QUIC lost half to 85 % of its rate to it in the lab's
+ * bonding; in redundancy it trades the tunnel's rescue (rate on lossy
+ * links, -30 %) for latency (p99 228 -> 68 ms on cell4), so flow_learn is
+ * the operator's (off by default). A flow is both ways of a pair of endpoints (the key is the same
  * either way); it is forgotten CG_FL_TTL_MS after its last packet (a QUIC
  * connection says it only in its handshake: every packet of it after keeps
  * it remembered). A rule (flow_class) still has the last word.

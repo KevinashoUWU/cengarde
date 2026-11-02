@@ -1841,10 +1841,11 @@ static void up_deliver(struct server *s, int *nq, struct session *S, const struc
 	fc = cg_fc_match(&s->cfg->flow_class, payload, len);
 	/* a flow that said what it is (QUIC, SRT, RTP with NACK) orders and
 	 * recovers its own: never held (flowlearn.h, story 031), unless a rule
-	 * says otherwise */
+	 * says otherwise; never when split: the links' reordering is the
+	 * tunnel's, and unheld QUIC lost half to 85 % of its rate to it (lab) */
 	if (s->cfg->flow_learn) {
 		cg_fl_observe(&S->fl, payload, len, S->last_rx_ms);
-		if (fc == CG_FC_NONE && cg_fl_kind(&S->fl, payload, len, S->last_rx_ms))
+		if (fc == CG_FC_NONE && !(h->flags & CG_F_SPLIT) && cg_fl_kind(&S->fl, payload, len, S->last_rx_ms))
 			fc = CG_FC_DIRECT;
 	}
 	cg_fc_hold(fc, dg == CG_DG_TS, &k.waits, &k.nohold);

@@ -240,7 +240,7 @@ struct cg_config {
 	int fec_stream;               /* FEC v3 over the protocontroller's STREAMs too (streamfec.h, story 031; default no) */
 	struct cg_fc flow_class;      /* the operator's flow classes for the reorderer (flowrule.h, story 031): flow_class lines */
 	int reliable_zstd;            /* the reliable lane compressed with zstd (zlane.h; default yes, when built with it) */
-	int flow_learn;               /* learn QUIC, SRT and RTP with NACK by flow, and never hold them (flowlearn.h, story 031) */
+	int flow_learn;               /* learn QUIC, SRT and RTP with NACK by flow and, unsplit, never hold them (flowlearn.h, story 031; default no) */
 	int split;                    /* enum cg_split_mode */
 	uint32_t split_small;         /* datagrams of up to this many bytes are never split */
 	uint32_t split_spread_ms;     /* only links this close to the fastest share the split (split.h G4); 0: off */
