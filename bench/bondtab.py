@@ -108,6 +108,7 @@ FEC3 = [("fec_par", ("upload", "fec", "parities"), ("download_fec", "parities"))
         # over the STREAMs (story 031): repairs sent, and taken, rebuilt, failing
         # their CRC32C at the receiving end
         ("s3_rep", ("upload", "fec", "rlc", "stream_repairs"), ("download_fec", "rlc", "stream_repairs")),
+        ("s3_rep_red", ("upload", "spare", "code", "stream_repairs"), ("none",)),  # in redundancy (redund_spare)
         ("s3_taken", ("download_fec", "stream_repairs"), ("fec", "stream_repairs")),
         ("s3_rec", ("download_fec", "stream_rebuilt"), ("fec", "stream_rebuilt")),
         ("s3_bad", ("download_fec", "stream_bad"), ("fec", "stream_bad"))]

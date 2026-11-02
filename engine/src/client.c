@@ -1818,9 +1818,10 @@ static void spare_feed(struct client *c, uint32_t seq, int link, const uint8_t *
 /* redund_spare = rs | rlc (story 021): a repair (header h, its symbol
  * of slen bytes at sym, or already in place in the queue when sym is
  * NULL) on the link other than the first (f) with the most room in its
- * bucket, if that has room for it (a priority take), after the batch's
+ * bucket, if that has room for it (prio: a priority take), after the batch's
  * DATA. The repairs of a block spread over the links by their buckets. */
-static void code_send(struct client *c, struct cg_rep_hdr *h, const uint8_t *sym, unsigned slen, int f, uint64_t now_us)
+static void code_send(struct client *c, struct cg_rep_hdr *h, const uint8_t *sym, unsigned slen, int f, int prio,
+		      uint64_t now_us)
 {
 	int best = -1;
 	uint8_t *p;
@@ -1833,7 +1834,7 @@ static void code_send(struct client *c, struct cg_rep_hdr *h, const uint8_t *sym
 		c->sp_rep_nolink++;
 		return;
 	}
-	if (!cg_spare_take(&c->spare[best], now_us, (CG_HDR_LEN + CG_REP_HDR + slen) * 8, 1, 0)) {
+	if (!cg_spare_take(&c->spare[best], now_us, (CG_HDR_LEN + CG_REP_HDR + slen) * 8, prio, 0)) {
 		c->sp_rep_skip++;
 		return;
 	}
@@ -1864,7 +1865,7 @@ static void code_rs_close(struct client *c, int f, uint64_t now_us)
 		if (c->nfecq == CG_FEC_Q)
 			fec_send(c, now_us);
 		h.idx = (uint16_t)j;
-		code_send(c, &h, sym[j], bytes, f, now_us);
+		code_send(c, &h, sym[j], bytes, f, 1, now_us);
 	}
 }
 
@@ -1879,7 +1880,7 @@ static void code_rlc_repair(struct client *c, int f, uint64_t now_us)
 	slen = cg_rlc_tx_repair(&c->sp_gf, &c->sp_rlc, c->sp_plan.k,
 				&h, c->fecq[c->nfecq].p + CG_HDR_LEN + CG_REP_HDR);
 	if (slen)
-		code_send(c, &h, NULL, slen, f, now_us);
+		code_send(c, &h, NULL, slen, f, 1, now_us);
 }
 
 /* DATA seq (len bytes at p) went on the first link f alone: into the block
@@ -1955,7 +1956,10 @@ static void sr_repair(struct client *c, uint64_t now_us)
 		return;
 	h.cls = CG_REP_STREAM;
 	n = c->nfecq;
-	code_send(c, &h, NULL, slen, c->sr_link, now_us);
+	/* within the allowance, not a priority take: as one they filled the
+	 * other links' queues (protect: 48 -> 21 Mbit/s, the ping's p99 at
+	 * 2.1 s; story 025 saw the same with a stream's repeats) */
+	code_send(c, &h, NULL, slen, c->sr_link, 0, now_us);
 	if (c->nfecq != n)
 		c->f3_srep++;
 }
@@ -5102,6 +5106,7 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 		cg_json_u64(j, "skipped", c->sp_rep_skip);
 		cg_json_u64(j, "no_link", c->sp_rep_nolink);
 		cg_json_u64(j, "failed", c->sp_rep_fail);
+		cg_json_u64(j, "stream_repairs", c->f3_srep); /* over GRIT's messages, fec_stream (story 031) */
 		cg_json_end(j, '}');
 		cg_json_end(j, '}');
 	} else {
