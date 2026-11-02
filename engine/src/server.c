@@ -1852,7 +1852,7 @@ static void up_deliver(struct server *s, int *nq, struct session *S, const struc
 		    cg_fl_kind(&S->fl, payload, len, S->last_rx_ms))
 			fc = CG_FC_DIRECT;
 	}
-	cg_fc_hold(fc, dg == CG_DG_TS, &k.waits, &k.nohold);
+	cg_fc_hold(fc, dg == CG_DG_TS, &k.waits, &k.nohold, &k.noask);
 	v = cg_ro_in(&S->ro, &s->pool, &S->rocf, &k, rset, &buf);
 	if (v == CG_RO_AGAIN) {
 		/* The window overflowed: the gaps it forces out go, with what was

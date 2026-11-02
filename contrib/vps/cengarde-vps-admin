@@ -177,7 +177,7 @@ flows)
 				refuse "flows: $w: ADDR[/LEN][:PORT], [IPv6][/LEN][:PORT] or :PORT"
 			[ ${#w} -le 64 ] || refuse "flows: $w: too long"
 		else
-			case $w in auto | ordered | deadline | direct | reliable) ;; *) refuse "flows: $w: auto, ordered, deadline, direct or reliable" ;; esac
+			case $w in auto | ordered | deadline | reorder | direct | reliable) ;; *) refuse "flows: $w: auto, ordered, deadline, reorder, direct or reliable" ;; esac
 		fi
 		i=$((i + 1))
 	done
