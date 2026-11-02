@@ -159,6 +159,7 @@ struct peer {
 	uint32_t horizon_us; /* the engine's repair horizon toward this peer (ops.horizon, task #77) */
 	struct cg_scc cc;
 	struct cg_lowd lo; /* what each link adds to this peer's messages' delay, as they come (linkowd.h) */
+	uint64_t xb, ab, xt; /* bytes paced as unreliable datagrams and in all since xt (cc.xs, protocol 20) */
 	/* each link's own round trip, measured on the segments it carried
 	 * (Karn's rule, RFC 6298's smoothing; U2c), and its timeout: srtt +
 	 * 4 rttvar + PCTL_LRTO_PAD_US, 0: not measured yet */
@@ -2236,6 +2237,8 @@ static int dgm_send(struct cg_pctl *p, struct flow *f, struct peer *r, uint64_t 
 	memcpy(b + CG_PCTL_HDR, q->d + (size_t)q->h * p->dgm_max, n);
 	push(p, CG_PCTL_HDR + n, !f->est);
 	cg_scc_spend(&r->cc, CG_PCTL_HDR + n);
+	r->xb += CG_PCTL_HDR + n;
+	r->ab += CG_PCTL_HDR + n;
 	q->h = (uint8_t)((q->h + 1) % PCTL_DQ);
 	q->n--;
 	p->dgm_tx++;
@@ -2305,6 +2308,7 @@ static int send_one(struct cg_pctl *p, struct flow *f, struct peer *r, uint64_t 
 			     r->app || (!cg_st_tx_unsent(&f->tx) && !f->tx.nlost), r->cc.qnow || r->cc.cong);
 	r->cc.inflight += sent;
 	cg_scc_spend(&r->cc, sent ? sent : 1);
+	r->ab += CG_PCTL_DATA_HDR + len;
 	if (!f->rto_at)
 		f->rto_at = now + cg_scc_rto(&r->cc, f->backoff, cg_scc_rto_extra(peer_reo(p, r), p->rack_off));
 	p->data_tx++;
@@ -2441,9 +2445,22 @@ void cg_pctl_service(struct cg_pctl *p)
 	/* the sends, while the pacers let them: a segment per host per round,
 	 * a host's flows taking its turns in rotation (fair.h); without fair, a
 	 * segment per flow per round */
-	for (uint32_t i = 0; i < p->npr; i++)
-		if (p->pr[i].used)
-			cg_scc_refill(&p->pr[i].cc, &p->ccf, now);
+	for (uint32_t i = 0; i < p->npr; i++) {
+		struct peer *r = &p->pr[i];
+
+		if (!r->used)
+			continue;
+		/* the datagrams' share of what went (cc.xs): a quarter of each
+		 * window's, in an EWMA */
+		if (now - r->xt >= PCTL_RATE_US) {
+			uint32_t x = r->ab ? (uint32_t)(r->xb * 1000 / r->ab) : 0;
+
+			r->cc.xs = (uint16_t)((3u * r->cc.xs + x) / 4);
+			r->xb = r->ab = 0;
+			r->xt = now;
+		}
+		cg_scc_refill(&r->cc, &p->ccf, now);
+	}
 	if (p->cfg.fair && p->nused) {
 		uint32_t ng;
 
@@ -2947,6 +2964,7 @@ void cg_pctl_json(const struct cg_pctl *p, struct cg_json *j)
 		cg_json_u64(j, "rate_bps", cg_scc_rate(c) * 8);
 		cg_json_u64(j, "hint_bps", c->hint * 8);
 		cg_json_bool(j, "hint_full", c->hint_full);
+		cg_json_u64(j, "datagrams_permille", c->xs); /* of what went, unreliable datagrams (protocol 20) */
 		cg_json_ms(j, "min_rtt_ms", c->min_rtt);
 		cg_json_ms(j, "srtt_ms", c->srtt);
 		cg_json_u64(j, "inflight", c->inflight);

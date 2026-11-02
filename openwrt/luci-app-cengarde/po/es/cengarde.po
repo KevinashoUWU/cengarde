@@ -1064,3 +1064,9 @@ msgstr "Cada paquete sale por todos los enlaces activos y el otro extremo se que
 
 msgid "Settings"
 msgstr "Configuración"
+
+msgid "UDP into GRIT"
+msgstr "UDP dentro de GRIT"
+
+msgid "The LAN's other UDP (not to private addresses, not larger than the tunnel's MTU) travels inside GRIT as unreliable datagrams: never resent nor held in order, at most 300 ms late, and sent in turns by device like the TCP, so that one device's UDP (a stream, a game update, a VPN) cannot take every uplink from the rest. In the lab, 30 Mbit/s of UDP from one device left another device's TCP at 7 Mbit/s over the plain tunnel and at 24 inside GRIT, with its ping from 500 to 80 ms. Needs the protocontroller in GRIT mode on both ends."
+msgstr "El resto del UDP de la LAN (no a direcciones privadas, no más grande que el MTU del túnel) viaja dentro de GRIT como datagramas no fiables: nunca se reenvían ni se retienen en orden, a lo más 300 ms tarde, y salen por turnos por equipo como el TCP, para que el UDP de un equipo (una transmisión, una actualización de un juego, una VPN) no le quite todos los enlaces al resto. En el laboratorio, 30 Mbit/s de UDP de un equipo dejaban el TCP de otro en 7 Mbit/s por el túnel simple y en 24 dentro de GRIT, con su ping de 500 a 80 ms. Necesita el protocontrolador en modo GRIT en ambos extremos."
