@@ -354,6 +354,31 @@ Dos tercios menos de datos por los celulares, sin pérdida, a cambio de hasta +3
 
 **Lo que no se probó todavía:** campo (hace falta NTP en el router; «nostalgica» congelada hasta después del vivo del 2026-10-20), los cortes de 0,24–0,9 s con las copias en el borde (1,45 por hora: el rescate o el silenciado tardan), y la API del plato para adelantarse a ellos.
 
+### Fibra: bonding asimétrico y de pares (laboratorio, 2026-11-02)
+
+Casos nuevos de `bond.sh` (a escala del laboratorio): `fiber1`, una fibra
+sola (60 Mbit/s, 3 ms de ida, 50 ms de cola, limpia); `fiber4`, esa fibra
+junto a los cuatro celulares de `cell4`; `fiber2`, dos fibras parecidas (3 y
+4 ms). Bonding con GRIT, cubic, 30 s × 3, el flujo chico de 8 Mbit/s al lado:
+
+| Caso | Bajada / subida (Mbit/s) | Ping cargado p50 / p99 (ms) | Video en vivo, cercano p50 / p99 |
+| --- | --- | --- | --- |
+| `cell4` | 38,3 / 38,2 | 157 / 228–247 | 38 / 103 |
+| `fiber1` | 47,3 / 47,4 | 56–115 / 196–263 | 9 / 12 |
+| `fiber4` | 90,2 / 90,5 | 56 / 120–123 | 9 / 10 |
+| `fiber2` | 101,8 / 101,8 | 54 / 145–165 | — |
+
+- **Asimétrico:** la fibra más los celulares casi duplica a la fibra sola
+  (+91 %), con mejor ping cargado (la fibra sola se llena; el excedente
+  se va por los celulares en vez de encolarse en ella). Con un tráfico que
+  cabe en la fibra (el video), los celulares no entran y la latencia es la
+  de la fibra: el reparto por llegada (`split_eta`) solo paga el desfase de
+  los celulares por lo que la fibra no da (la frontera de BLEST/ECF).
+- **Pares:** dos fibras parecidas dan 2,15 veces una (~91 % de lo que caben);
+  el desfase de 1 ms no cuesta nada. El costo es de CPU (~31 % del extremo
+  que envía en el laboratorio): para 2 × 300 reales, un VPS de varios
+  núcleos con `lanes` y un router x86.
+
 ## Lo que falta
 
 La visión: con un modelo por tipo, el reparto sabe cómo se comporta cada rama y encuentra la mejor manera de repartir entre un Starlink y celulares sin oscilar.
@@ -380,3 +405,4 @@ La visión: con un modelo por tipo, el reparto sabe cómo se comporta cada rama 
 - 2026-10-19 (tarde): las correcciones mixtas de la auditoría por tipo de enlace (sección 6, rama `claude/link-model-presets`); `pace_peers_ms = 60` en el preset de `starlink`.
 - 2026-10-20 (tarde): los engranes de Starlink (sección 9): `capacity_seq_lag` y el reloj de las ranuras (`slot.h`) encendidos; `split_dominant_hold` y `starlink_edge_copies` como perillas; netem antes de los motores en `bond.sh`.
 - 2026-10-20: las ranuras de Starlink medidas en «nostalgica» (sección 7, `bench/starslot.py` y `starfield.py`, `starsat` y `starlink15ramp` recalibrados) y el enlace dominante (sección 8, `dominant.h`, caso `dominant`, `dominant_pct = 250` en el preset de `starlink`).
+- 2026-11-02: la fibra en el laboratorio (`fiber1`, `fiber2`, `fiber4`).
