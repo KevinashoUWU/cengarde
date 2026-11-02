@@ -11,7 +11,8 @@
 # - 2000 pps down and up exactly once (dup 0, loss within 0.5 %, as smoke);
 # - lanes 0, 1 and 2 received, each from its own link only; lanes 3 to 7
 #   and the junk socket received nothing;
-# - a short datagram and a protocol 3 one (an older router) land in the junk socket
+# - a short datagram and a protocol 16 one (an older router: the nibble 1,
+#   current again only at 31) land in the junk socket
 #   (rx.junk, rx.short, rx.bad_version), not in a lane;
 # - a second server on the same port fails to start ("Address already in
 #   use") instead of joining the group, and the first keeps its 8 lanes;
@@ -138,7 +139,7 @@ lanes_send() {
 import socket, sys
 
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-data = b"x" * 10 if sys.argv[1] == "short" else bytes([0x31, 0, 0, 1]) + bytes(60)
+data = b"x" * 10 if sys.argv[1] == "short" else bytes([0x11, 0, 0, 1]) + bytes(60)
 s.sendto(data, ("10.0.3.2", 59402))
 EOF
 }
