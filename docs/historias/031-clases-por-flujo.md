@@ -1,7 +1,7 @@
 # 031 — Clases por flujo (U5): la FEC y la protección para GRIT, y el proxy UDP
 
 - **Fecha:** 2026-11-02
-- **Estado:** en curso (diseño; el primer paso, la FEC v3 sobre STREAM, en `claude/u5-fec-stream`)
+- **Estado:** en curso (paso 1 hecho y medido en laboratorio: `fec_stream`, protocolo 17, en `claude/u5-fec-stream`; pasos 2 y 3 por hacer)
 - **Fuentes:** historia 030 (protocolos 13–16, el reordenador por clase de
   datagrama), 026 (FEC v3), 020 y 021 (`redund_spare`), 025 (GRIT en
   redundancia), 029 (MPGRIT U5); `engine/src/fec3.h`, `repair.h`, `rlc.h`,
@@ -14,6 +14,13 @@
   recuperación es solo su ARQ (SFLOSS por dos enlaces, RACK, temporizador).
   Con pérdida al azar eso cuesta un RTT por reenvío; la FEC v3 la bajaba 9 a
   24 veces en la historia 026.
+- **Paso 1 hecho: `fec_stream` (apagada; el operador decide).** Con los
+  enlaces llenos cuesta 4–20 % del caudal (GRIT ya recupera la pérdida
+  suelta con su ARQ y nadie espera sus huecos desde el 13); con video en
+  vivo (limitado por la aplicación) baja el p99 (`lossy` 83 → 49 ms,
+  `cell4` 104 → 58) y las detenciones bajo microcortes (`protect`, 9,8 →
+  2,6 s). Solo la reparación de cola (sin parte) no costaba nada, pero casi
+  no salía (2–20 por corrida): descartada.
 - **Paso 1, la FEC v3 sobre STREAM (protocolo 17):** una segunda ventana
   deslizante de RLC con la secuencia de la clase STREAM, sus reparaciones
   marcadas por clase (el byte 13 de `CG_REP_RLCW`), y lo rehecho revisado
@@ -64,6 +71,53 @@ en los dos modos, bonding (FEC v3) y redundancia (`redund_spare`).
 - **Medir:** los casos con pérdida al azar (`lossy`, `starlink15`, `cell4`)
   y el video real; laboratorio y terreno, con la FEC encendida en los dos
   extremos.
+
+## Lo hecho y medido del paso 1 (2026-11-02)
+
+- **El código** (`streamfec.h`, `client.c`, `server.c`): la ventana de los
+  STREAM (`cg_sfec_add`) con el CRC32C detrás de cada mensaje (SSE4.2 o la
+  instrucción de ARMv8 si la compilación la trae; si no, tablas de a 8
+  bytes); la clase en el byte 13 de `CG_REP_RLCW` (`CG_REP_STREAM`); el
+  receptor (`cg_sfec_rx`, ~4,7 MB) creado con la primera reparación de
+  STREAM y guardando solo mientras llegan (2 s): sin la FEC no cuesta nada;
+  lo rehecho pasa si cuadra su CRC32C, se marca en el anti-replay de STREAM
+  y va a GRIT sin enlace. Un solo crédito para las dos clases: cada
+  reparación va a la que más se le debe (su parte de bytes menos lo que
+  costaron sus reparaciones). Con `fec_stream`, un SFLOSS de un STREAM
+  cubierto es `SURE_LATER`.
+- **Laboratorio, carga masiva** (`cgb`, cubic, 30 s × 3, `fec = yes`,
+  `fec_code = rlc` en los dos arms; p16 = master, p17 = la parte entera):
+
+  | Caso | Sentido | p16 | p17 | Δ |
+  | --- | --- | --- | --- | --- |
+  | `lossy` | bajada / subida | 118,9 / 119,4 | 100,4 / 98,2 | −16 / −18 % |
+  | `cell4` | bajada / subida | 36,7 / 36,8 | 29,2 / 31,0 | −21 / −16 % |
+  | `het` | bajada / subida | 75,8 / 79,2 | 71,3 / 73,5 | −6 / −7 % |
+  | `equal` | bajada / subida | 83,9 / 83,8 | 81,2 / 80,4 | −3 / −4 % |
+  | `starlink15` | bajada / subida | 114,3 / 105,9 | 103,5 / 106,2 | −10 / 0 % |
+  | `protect` | bajada / subida | 29,4 / 24,0 | 33,6 / 24,8 | +14 / +3 % |
+
+  En `cell4` el p99 del ping cargado sube de 349 a 583 ms.
+- **Laboratorio, video en vivo** (`live`: dos flujos de 8 Mbit/s por GRIT;
+  `soak`: lo mismo con conexiones cortas al lado; subida, × 3): p99 del
+  retardo del flujo cercano, ms, y detenciones del lejano:
+
+  | Caso | `live` p16 → p17 | `soak` p16 → p17 | detenciones `soak` |
+  | --- | --- | --- | --- |
+  | `lossy` | 83 → 49 | 454 → 246 | 0 / 0 |
+  | `cell4` | 104 → 58 | 563 → 2629 | 0 → 1,9 s |
+  | `protect` | 64 → 46 | 3246 → 1780 | 9,8 → 2,6 s |
+  | `starlink15` | 373 → 391 | 780 → 579 | 0,3 → 0 s |
+  | `het` | 45 → 43 | 346 → 480 | 0 / 0 |
+
+- **Solo la reparación de cola** (sin parte, una al final de cada ráfaga de
+  STREAM): igual que p16 en la carga masiva (±0,5 %), pero salieron 2 a 20
+  por corrida (el video no deja pausas de `fec_wait_ms`): inútil, se quitó.
+  El camino entero sí quedó probado en el motor: todas tomadas, una rehecha
+  con su CRC32C bien, ninguna mala.
+- **Decisión** (usuario): como la FEC del túnel, con su espera y su lógica,
+  en los dos sentidos y con varios enlaces; el operador la enciende
+  (`fec_stream`, LuCI «Reparaciones también sobre GRIT»).
 
 ## Diseño del paso 3: las clases de UDP (2026-11-02, con el usuario)
 
@@ -116,11 +170,12 @@ que le conviene:
 
 ## Pendiente
 
-- Implementar y medir el paso 1.
-- El paso 2 y el 3.
+- El paso 1 en terreno.
+- El paso 2 (la protección en redundancia sobre STREAM) y el 3.
 
 ## Cambios
 
 - 2026-11-02: creada, con el diseño de los tres pasos.
 - 2026-11-02: las cuatro clases de UDP y el ECN, del usuario.
 - 2026-11-02: la telemetría fiable como caso de uso, del usuario.
+- 2026-11-02: el paso 1 hecho y medido (`fec_stream`, protocolo 17).
