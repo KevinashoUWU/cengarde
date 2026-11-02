@@ -1987,6 +1987,10 @@ static void spare_masks(struct client *c, int m, uint16_t carry, uint64_t now_us
 		c->cmask[j] = mask;
 		if (!small)
 			c->sp_pkts++;
+		/* a STREAM never goes into the parity or the codes: its sequence
+		 * is its class's, not DATA's (13), and GRIT answers its loss */
+		if (c->scls[j])
+			continue;
 		if (c->sp_how == CG_SPARE_PARITY && !small && mask == (uint16_t)(1u << f))
 			spare_feed(c, c->sseq[j], f, c->oiov[j][1].iov_base, len, now_us);
 		else if ((c->sp_how == CG_SPARE_RS || c->sp_how == CG_SPARE_RLC) && !small && mask == (uint16_t)(1u << f))
