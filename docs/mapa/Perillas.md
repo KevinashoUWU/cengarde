@@ -7,7 +7,7 @@ archivos:
 
 # Perillas
 
-Las 129 claves que `engine/src/config.c` lee (comprobado al generar esta nota: ni falta ni sobra ninguna).
+Las 130 claves que `engine/src/config.c` lee (comprobado al generar esta nota: ni falta ni sobra ninguna).
 Por omisión y rango salen de `cg_config_parse`; el significado, de los comentarios de `config.h` y de [[engine-README]].
 Las perillas marcadas como experimento están apagadas por omisión.
 

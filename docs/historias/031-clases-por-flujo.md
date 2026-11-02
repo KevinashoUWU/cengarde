@@ -173,6 +173,32 @@ su jitter, p99 − p50, y el peor sobre la mediana).
   caen en su última sección (`[link]`, `[client]`), no en la global; la
   primera vuelta midió sin FEC.
 
+## Paso 3a hecho: `flow_class` (2026-11-02)
+
+- **Qué:** `flow_class = ADDR[/LEN][:PORT] CLASE` (o `[IPv6]…`, o `:PORT`),
+  repetible hasta 32, en el extremo que recibe; calza el origen o el
+  destino de cada paquete (cubre el flujo en los dos sentidos), gana la
+  primera regla y manda sobre lo que adivina `dgclass.h`. Clases para el
+  reordenador: `ordered` (espera su rescate, como MPEG-TS), `deadline` (la
+  regla del plazo, como RTP), `direct` (nunca retenido ni rescatado: QUIC,
+  SRT, WebRTC, juegos) y `auto` (lo adivinado). `flowrule.h` puro con sus
+  tests (`cg_fc_parse`, `cg_fc_match`, `cg_fc_hold`); sin reglas, una
+  comparación por paquete. Las reglas de TCP ya existen en la intercepción
+  del protocontrolador (qué va por GRIT); la tabla de LuCI (3b) mostrará las
+  dos.
+- **Laboratorio** (el flujo chico de udpgen, 1316 B a 760 por segundo, que
+  no parece TS; 3 corridas por brazo; el caudal masivo igual en todos):
+
+  | Caso, sentido | Brazo | Perdidos | Desordenados | p50 (ms) | > 200 ms |
+  | --- | --- | --- | --- | --- | --- |
+  | `cell4` bajada | ninguna / `ordered` / `direct` | 14 / 9 / 13 | 78 / 19 / 11 508 | 147 / 162 / 130 | 3468 / 6578 / 2456 |
+  | `het` bajada | ninguna / `ordered` / `direct` | 53 / 67 / 21 | 218 / 104 / 12 145 | 191 / 195 / 92 | 12 074 / 11 325 / 945 |
+  | `lossy` bajada | ninguna / `ordered` / `direct` | 58 / 30 / 22 | 731 / 38 / 9885 | 98 / 180 / 93 | 1943 / 9870 / 836 |
+  | `lossy` subida | ninguna / `ordered` / `direct` | 59 / 27 / 23 | 553 / 45 / 10 236 | 96 / 182 / 92 | 1109 / 9984 / 686 |
+
+  `ordered` pierde la mitad y casi no desordena a cambio de esperar;
+  `direct` entrega al tiro y deja el orden a la aplicación.
+
 ## Diseño del paso 3: las clases de UDP (2026-11-02, con el usuario)
 
 El UDP manda a su tasa sin saber de pérdida ni de cola: el túnel no puede
@@ -226,7 +252,8 @@ que le conviene:
 
 - El paso 1 en terreno.
 - El paso 2 (redundancia) en terreno.
-- El paso 3.
+- El paso 3b (UCI y LuCI, una tabla «Flujos» con las reglas de TCP y de
+  UDP), 3c (el carril fiable) y 3d (zstd en él).
 
 ## Cambios
 
@@ -236,3 +263,4 @@ que le conviene:
 - 2026-11-02: el paso 1 hecho y medido (`fec_stream`, protocolo 17).
 - 2026-11-02: el paso 2 (la protección en redundancia), tres rondas.
 - 2026-11-02: el paso 1 en terreno.
+- 2026-11-02: el paso 3a (`flow_class`), con su laboratorio.
