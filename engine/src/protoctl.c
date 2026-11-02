@@ -2215,7 +2215,8 @@ static int dgm_send(struct cg_pctl *p, struct flow *f, struct peer *r, uint64_t 
 	uint8_t *b;
 	uint16_t n;
 
-	while (q->n && now - q->t[q->h] > PCTL_DGM_AGE_US) {
+	/* (one read in this same service came after its now) */
+	while (q->n && q->t[q->h] + PCTL_DGM_AGE_US < now) {
 		q->h = (uint8_t)((q->h + 1) % PCTL_DQ);
 		q->n--;
 		p->dgm_old++;
