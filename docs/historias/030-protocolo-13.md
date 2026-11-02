@@ -350,10 +350,25 @@ sentidos junto a GRIT, 3 rondas por brazo, el 13 final contra el 14): TCP
 de bajada y 6 175 → 6 126 de subida; del MPEG-TS 715 → 754 y 2 602 → 2 537.
 Igual. La testnet quedó en el 14 (`20e993c`).
 
-Lo siguiente de A2, la marca de tiempo de GRIT por la del túnel (4 bytes
-más), pide que el túnel selle cada STREAM con el reloj que GRIT anotó: el NACK
-de una pérdida reconoce la transmisión por ese valor exacto
-(`cg_st_tx_nack`). Queda para el encabezado de subflujo.
+### Protocolo 15: GRIT sin reloj propio (A2b)
+
+El DATA de GRIT llevaba el reloj del emisor (4 bytes) junto a la `ts` del
+encabezado del túnel: el mismo reloj, a microsegundos. El 15 lo quita
+(`CG_PCTL_DATA_HDR` 14 → 10). Como el NACK de una pérdida reconoce la
+transmisión por su reloj exacto (`cg_st_tx_nack`), el motor le dice a GRIT
+qué `ts` selló en cada mensaje (`ops.send`, `ts`) y GRIT la toma como el
+momento de envío del segmento; un NACK la saca de la copia guardada
+(`cg_hdr_ts`), y el receptor se la pasa a GRIT (`cg_pctl_rx`) para el retardo
+de ida. Si el motor no sella un mensaje (una sesión que se fue), queda el
+reloj de GRIT. Con el 14, de 18 a 10 bytes de GRIT por DATA.
+
+- Laboratorio (`p15a`, 12 casos × 2 × 3, contra el 14 con el SFLOSS por dos
+  enlaces): TCP −0,5 %; `starlink15` de subida −14,5 % con 3, −2,4 % con 6
+  repeticiones (`p15b`: 99–117 contra 102–117 Mbit/s, ruido).
+- Terreno (`fieldvid/r5/`): TCP 219 → 242 de bajada (el 14 con una corrida
+  de 127) y 93 → 92 de subida; errores del RTP 2 980 → 3 361 de bajada y
+  6 171 → 6 048 de subida; del TS 564 → 542 y 2 278 → 2 372. Igual. La
+  testnet quedó en el 15 (`14fb0b0`).
 
 ### El SFLOSS por dos enlaces
 
