@@ -406,6 +406,7 @@ BOND_PEP_DST=172.30.1.2
 BOND_PEP_SKIP=${BOND_PEP_SKIP:-} # cga/cgb: TCP ports (iptables multiport) the router does not hand to GRIT
 BOND_RELIABLE=${BOND_RELIABLE:-0} # cgb, up: the small flow from the LAN host to the far host's 7400 on the reliable lane (story 031)
 BOND_SMALL_JSON=${BOND_SMALL_JSON:-0} # 1: the small flow's payload a sensor's JSON reading (udpgen -j), telemetry for zstd
+BOND_HOG=${BOND_HOG:-0} # cgb: a second LAN device (192.168.79.3) with this many TCP connections at once next to the measured one (story 031, the sends by host)
 BOND_PEP_CGMIDCC=${BOND_PEP_CGMIDCC:-} # cga: protocontroller_mid_cc at both ends (empty: the engine's, bbr)
 BOND_PEP_KCP=${BOND_PEP_KCP:---mode fast --datashard 0 --parityshard 0 --nocomp --crypt none --mtu 1300}
 BOND_LIVE_MBIT=${BOND_LIVE_MBIT:-8}
@@ -593,6 +594,7 @@ bond_hosts_up() {
 	ip link add f0 netns "$NS_FAR" type veth peer name fv netns "$NS_SRV" || return 1
 	ip link add n0 netns "$NS_NEAR" type veth peer name nv netns "$NS_SRV" || return 1
 	ip -n "$NS_LAN" addr add 192.168.79.2/24 dev h0
+	[ "$BOND_HOG" -gt 0 ] && ip -n "$NS_LAN" addr add 192.168.79.3/24 dev h0
 	ip -n "$NS_CLI" addr add 192.168.79.1/24 dev lan0
 	ip -n "$NS_FAR" addr add 172.30.1.2/24 dev f0
 	ip -n "$NS_SRV" addr add 172.30.1.1/24 dev fv
@@ -624,6 +626,9 @@ bond_hosts_up() {
 	ip netns exec "$NS_SRV" tc qdisc replace dev nv root netem delay "${BOND_PEP_NEAR_MS}ms" limit 100000 || return 1
 	ip netns exec "$NS_NEAR" tc qdisc replace dev n0 root netem delay "${BOND_PEP_NEAR_MS}ms" limit 100000 || return 1
 	ip netns exec "$NS_FAR" iperf3 -s -B 172.30.1.2 -D || return 1
+	if [ "$BOND_HOG" -gt 0 ]; then
+		ip netns exec "$NS_FAR" iperf3 -s -B 172.30.1.2 -p 5202 -D || return 1
+	fi
 	for ns in $(seq 1 30); do
 		ip netns exec "$NS_LAN" ping -q -c 1 -W 1 172.30.1.2 >/dev/null 2>&1 && break
 		sleep 0.2
@@ -805,9 +810,18 @@ bond_pep_traffic() {
 		return "$rc"
 	fi
 	if [ "$cc" != live ] && [ "$cc" != soak ]; then
+		local hog=
+		# BOND_HOG: a second device's many connections next to the measured one
+		if [ "$BOND_HOG" -gt 0 ]; then
+			# shellcheck disable=SC2046 # -R or nothing
+			ip netns exec "$NS_LAN" iperf3 -c "$BOND_PEP_DST" -p 5202 -B 192.168.79.3 -t "$s" -C "${BOND_PEP_LANCC:-$cc}" \
+				-P "$BOND_HOG" -J $([ "$dir" = down ] && echo -R) >"$RUN/hog.json" 2>"$RUN/hog.err" &
+			hog=$!
+		fi
 		# shellcheck disable=SC2046 # -R or nothing
-		ip netns exec "$NS_LAN" iperf3 -c "$BOND_PEP_DST" -t "$s" -C "${BOND_PEP_LANCC:-$cc}" -P "$BOND_P" -J ${BOND_KEEP:+-i 0.5} \
+		ip netns exec "$NS_LAN" iperf3 -c "$BOND_PEP_DST" ${hog:+-B 192.168.79.2} -t "$s" -C "${BOND_PEP_LANCC:-$cc}" -P "$BOND_P" -J ${BOND_KEEP:+-i 0.5} \
 			${BOND_RATE:+-b "$BOND_RATE"} $([ "$dir" = down ] && echo -R) >"$res" 2>"$err" || rc=1
+		[ -n "$hog" ] && wait "$hog"
 		return "$rc"
 	fi
 	[ "$dir" = up ] || { echo "live runs up only" >"$err"; return 1; }
@@ -1380,6 +1394,7 @@ bond_run() {
 			--cpu-cli $(($(bond_pep_cpu "$NS_CLI") - pc0)) --cpu-srv $(($(bond_pep_cpu "$NS_SRV") - ps0)) \
 			--hz "$(getconf CLK_TCK)" >"$RUN/pep.json" || rc=1
 		pepargs=(--pep "$RUN/pep.json")
+		[ "$BOND_HOG" -gt 0 ] && pepargs+=(--hog "$RUN/hog.json")
 		[ -n "$BOND_KEEP" ] && mkdir -p "$BOND_KEEP" && cp "$res" "$BOND_KEEP/$c-$v-$dir-$cc-$rep.json"
 	elif [ "$cc" = quic ]; then
 		res=$RUN/quic.json err=$RUN/quic.err
