@@ -87,6 +87,19 @@ que le conviene:
   hace bajar su tasa sin perder un paquete. Para los demás, CAKE.
 - **La protección para quien no la tiene:** FEC y rescate para las dos
   primeras clases; las otras dos, directo.
+- **Una quinta, a pedido: telemetría fiable** (idea del usuario, 2026-11-02;
+  caso de uso guardado, sin fecha). La excepción declarada a «el UDP sigue
+  siendo UDP», encendida a mano en las funciones de L4 por puerto o destino:
+  el router intercepta ese UDP y lo entrega sí o sí, reintentando hasta que
+  llegue, con un búfer de memoria que se pueda configurar (JSON a buena tasa
+  de muestreo durante un corte). Llega fuera de orden, sin bloqueo en cabeza
+  de línea: el registrador del otro extremo ordena por las marcas de tiempo
+  que la telemetría ya trae. Con GRIT sale casi gratis: cada datagrama, un
+  mensaje fiable de un flujo propio sin el orden de un flujo TCP (el ARQ y
+  el SFLOSS ya están). Con el búfer lleno se va lo más viejo, contado en el
+  estado; nunca bloquea. Aviso en LuCI: «pensado para telemetría o UDP que no
+  es de tiempo real y debe llegar; suma latencia, no sirve para voz ni
+  video».
 
 ## Pendiente
 
@@ -97,3 +110,4 @@ que le conviene:
 
 - 2026-11-02: creada, con el diseño de los tres pasos.
 - 2026-11-02: las cuatro clases de UDP y el ECN, del usuario.
+- 2026-11-02: la telemetría fiable como caso de uso, del usuario.
