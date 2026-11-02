@@ -903,8 +903,8 @@ msgstr "Subida"
 msgid "Download (from the VPS)"
 msgstr "Bajada"
 
-msgid "Arrived first"
-msgstr "Llegó primero"
+msgid "Delivered"
+msgstr "Entregó"
 
 msgid "Sent"
 msgstr "Enviado"
@@ -1044,8 +1044,8 @@ msgstr "Estado"
 msgid "Upload and download are decided apart, by the end that sends: an uplink can be on standby one way and in use the other, as is usual when carriers are faster one way (upload through one, download through another). On standby it carries only probes until it catches up with the best, and at least the minimum of active uplinks (Advanced tab) always stays in use."
 msgstr "La subida y la bajada se deciden aparte, cada una en el extremo que envía: un enlace puede estar en reserva en un sentido y en uso en el otro, algo normal cuando un operador es más rápido en un sentido (subir por uno, bajar por otro). En reserva solo lleva sondas hasta que alcanza al mejor, y siempre quedan en uso al menos los enlaces activos mínimos (pestaña Avanzado)."
 
-msgid "Behind the fastest: how much later this uplink delivers the upload than the quickest one; past the limit its upload goes on standby. Arrived first: share of the download that came through this uplink before any other copy. Pause: takes an uplink out without touching the configuration, until you resume it or cengarde restarts."
-msgstr "Atraso frente al más rápido: cuánto más tarde entrega este enlace la subida que el más rápido; pasado el límite, su subida pasa a reserva. Llegó primero: parte de la bajada que entró por este enlace antes que cualquier otra copia. Pausar: saca un enlace sin tocar la configuración, hasta que lo reanudes o cengarde se reinicie."
+msgid "Behind the fastest: how much later this uplink delivers the upload than the quickest one; past the limit its upload goes on standby. Delivered: share of the download that came through this uplink, what GRIT carried included. Pause: takes an uplink out without touching the configuration, until you resume it or cengarde restarts."
+msgstr "Atraso frente al más rápido: cuánto más tarde entrega este enlace la subida que el más rápido; pasado el límite, su subida pasa a reserva. Entregó: parte de la bajada que entró por este enlace, incluido lo que llevó GRIT. Pausar: saca un enlace sin tocar la configuración, hasta que lo reanudes o cengarde se reinicie."
 
 msgid "VPS address: where the uplink sends to; \"failover\" when the first VPS address it can use did not answer. Path MTU: the largest packet the path to the VPS takes."
 msgstr "Dirección del VPS: adónde envía el enlace; \"alternativa\" cuando la primera dirección del VPS que puede usar no contestó. MTU del camino: el paquete más grande que admite el camino hasta el VPS."
