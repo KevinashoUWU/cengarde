@@ -434,6 +434,7 @@ struct client {
 
 	struct cg_rxbatch in;
 	uint8_t hdr[CG_BATCH][CG_HDR_LEN];
+	struct cg_siphash hmac[CG_BATCH]; /* each one's MAC before the link and the sseq (16) */
 	struct mmsghdr out[CG_BATCH];
 	struct iovec oiov[CG_BATCH][2];
 };
@@ -1418,7 +1419,8 @@ static void seal_batch(struct client *c, int m, uint16_t carry, uint16_t dup)
 		if (c->scls[j]) {
 			/* a STREAM: kept by its own sequence for its links' losses
 			 * (on_sfloss); never sent again here, it earns the rescue's budget */
-			cg_up_seal(&c->txs, c->hdr[j], CG_T_STREAM, c->sflags[j], 0, c->sseq[j], c->sts[j], p, len);
+			cg_up_seal(&c->txs, c->hdr[j], CG_T_STREAM, c->sflags[j], 0, c->sseq[j], c->sts[j], p, len,
+				   &c->hmac[j]);
 			if (c->sresc_idx && CG_HDR_LEN + len <= CG_RESC_ENTRY) {
 				uint8_t *e = cg_resc_put(&c->sresc, c->sresc_idx, c->txs.session, c->sseq[j],
 							 (uint16_t)(CG_HDR_LEN + len), only >= 0 ? (uint8_t)only : CG_RESC_NOLINK);
@@ -1442,7 +1444,7 @@ static void seal_batch(struct client *c, int m, uint16_t carry, uint16_t dup)
 			continue;
 		}
 		cg_up_seal(&c->txs, c->hdr[j], CG_T_DATA, (uint8_t)(c->sflags[j] | cg_prev_flags((int)c->prev_only - 1)), 0,
-			   c->sseq[j], c->sts[j], p, len);
+			   c->sseq[j], c->sts[j], p, len, &c->hmac[j]);
 		c->prev_only = (uint8_t)(only + 1);
 		if (c->resc_idx && CG_HDR_LEN + len <= CG_RESC_ENTRY) {
 			uint8_t *e = cg_resc_put(&c->resc, c->resc_idx, c->txs.session, c->sseq[j], (uint16_t)(CG_HDR_LEN + len),
@@ -1539,7 +1541,8 @@ static void send_links(struct client *c, int m, uint64_t now_ms, uint16_t live, 
 			cg_act_tx_sent(&c->act_tx, (unsigned)i, mark_us);
 		for (int x = 0; x < k; x++) {
 			cg_hdr_set_link(c->hdr[sel[x]], (uint8_t)i);
-			/* its sseq on this link (subflow.h), outside the MAC as the link */
+			/* its sseq on this link (subflow.h); the MAC finished with
+			 * both, for this copy (16) */
 			{
 				uint32_t q = c->cfg->subflow ? cg_sf_tx_take(&l->sft, c->sseq[sel[x]],
 						(uint32_t)(c->oiov[sel[x]][0].iov_len + c->oiov[sel[x]][1].iov_len), (uint32_t)mark_us) : 0;
@@ -1547,6 +1550,7 @@ static void send_links(struct client *c, int m, uint64_t now_ms, uint16_t live, 
 				if (c->scls[sel[x]])
 					cg_sf_tx_stream(&l->sft, q);
 				cg_hdr_set_sseq(c->hdr[sel[x]], q);
+				cg_hdr_mac_finish(&c->hmac[sel[x]], c->hdr[sel[x]]);
 			}
 			memset(&c->out[x].msg_hdr, 0, sizeof(c->out[x].msg_hdr));
 			c->out[x].msg_hdr.msg_iov = c->oiov[sel[x]];
@@ -3159,6 +3163,7 @@ static void on_nack(struct client *c, uint8_t flags, const uint8_t *payload, siz
 				break;
 			}
 			cg_hdr_set_link(e, (uint8_t)(best[b] - c->link));
+			cg_hdr_reseal(e, c->txs.k_tx, e + CG_HDR_LEN, (size_t)len - CG_HDR_LEN); /* its link under the MAC (16) */
 			cg_act_tx_sent(&c->act_tx, (unsigned)(best[b] - c->link), cg_now_us());
 			if (send(best[b]->fd, e, len, MSG_DONTWAIT) == (ssize_t)len) {
 				best[b]->tx_pkts++;
@@ -4355,6 +4360,7 @@ static void send_probe(struct client *c, struct link *l, uint64_t now_us, uint32
 	cg_up_header(&c->txs, pkt, CG_T_PROBE, flags, (uint8_t)id, (uint32_t)now_us, pkt + CG_HDR_LEN, CG_PROBE_ACT_LEN);
 	/* how far the link's subflow went: the server sees a lost tail (subflow.h) */
 	cg_hdr_set_sseq(pkt, c->cfg->subflow ? l->sft.next : 0);
+	cg_hdr_reseal(pkt, c->txs.k_tx, pkt + CG_HDR_LEN, CG_PROBE_ACT_LEN); /* its sseq under the MAC (16) */
 	/* A full queue drops the probe like any other packet: that is a measurement, not an error. */
 	if (send(l->fd, pkt, sizeof(pkt), MSG_DONTWAIT) < 0 && errno != EAGAIN && errno != ENOBUFS &&
 	    cg_ratelimit_ok(&l->rl, now_ms, 10000))

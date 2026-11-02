@@ -42,7 +42,7 @@ void test_proto(void)
 
 	/* Layout: version/type, the client hint at byte 2, link at byte 3,
 	 * session, seq and ts in network order. */
-	CHECK_EQ(pkt[0], 0xf1);
+	CHECK_EQ(pkt[0], 0x11);
 	CHECK_EQ(pkt[2], 0x5a);
 	CHECK_EQ(pkt[3], 5);
 	CHECK(!memcmp(pkt + 4, "\xde\xad\xbe\xef\x01\x02\x03\x04\xa0\xb0\xc0\xd0", 12));
@@ -59,24 +59,41 @@ void test_proto(void)
 	/* The other direction's key does not verify. */
 	CHECK(!cg_hdr_verify(pkt, sizeof(pkt), key_b));
 
-	/* The link id is not authenticated: patching it keeps the MAC valid. */
+	/* The link id and the link's own sequence are authenticated too (16):
+	 * patching either breaks the MAC... */
 	cg_hdr_set_link(pkt, 9);
+	CHECK(!cg_hdr_verify(pkt, sizeof(pkt), key_a));
+	cg_hdr_set_link(pkt, 5);
 	CHECK(cg_hdr_verify(pkt, sizeof(pkt), key_a));
-
-	/* So is the link's own sequence (12): a copy on another link takes its
-	 * own, and it parses back. */
 	cg_hdr_set_sseq(pkt, 0x11223344);
-	CHECK(cg_hdr_verify(pkt, sizeof(pkt), key_a));
-	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), 0);
-	CHECK_EQ(p.sseq, 0x11223344);
+	CHECK(!cg_hdr_verify(pkt, sizeof(pkt), key_a));
+	/* ...and a copy for another link only finishes the MAC from its base,
+	 * which gives what a whole MAC of it gives */
+	{
+		struct cg_siphash base;
+		uint8_t whole[sizeof(pkt)];
 
-	/* Every other header byte and every payload byte is authenticated. */
+		cg_hdr_write_base(pkt, &h, key_a, pkt + CG_HDR_LEN, sizeof(pkt) - CG_HDR_LEN, &base);
+		CHECK(cg_hdr_verify(pkt, sizeof(pkt), key_a));
+		cg_hdr_set_link(pkt, 9);
+		cg_hdr_set_sseq(pkt, 0x11223344);
+		cg_hdr_mac_finish(&base, pkt);
+		CHECK(cg_hdr_verify(pkt, sizeof(pkt), key_a));
+		CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), 0);
+		CHECK_EQ(p.link, 9);
+		CHECK_EQ(p.sseq, 0x11223344);
+		memcpy(whole, pkt, sizeof(pkt));
+		memset(whole + CG_MAC_OFF, 0, 8);
+		cg_hdr_reseal(whole, key_a, whole + CG_HDR_LEN, sizeof(whole) - CG_HDR_LEN);
+		CHECK(!memcmp(whole, pkt, sizeof(pkt)));
+	}
+
+	/* Every header byte (the MAC's own aside) and every payload byte is
+	 * authenticated. */
 	for (size_t i = 0; i < sizeof(pkt); i++) {
-		if (i == CG_LINK_OFF || (i >= CG_SSEQ_OFF && i < CG_SSEQ_OFF + 4))
-			continue;
-		pkt[i] ^= 0x01;
+		pkt[i] ^= 0x11;
 		CHECK(!cg_hdr_verify(pkt, sizeof(pkt), key_a));
-		pkt[i] ^= 0x01;
+		pkt[i] ^= 0x11;
 	}
 	/* Truncation is detected. */
 	CHECK(!cg_hdr_verify(pkt, sizeof(pkt) - 1, key_a));
@@ -84,7 +101,7 @@ void test_proto(void)
 	/* Malformed headers. */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, CG_HDR_LEN), -1); /* DATA without payload */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, CG_HDR_LEN - 1), -1);
-	pkt[0] = 0x11; /* version 1 (no delay reports) is refused */
+	pkt[0] = 0x01; /* nibble 0: never a version (WireGuard's first bytes) */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
 	pkt[0] = 0x21; /* version 2 (no IP pass flags) too */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
@@ -112,19 +129,21 @@ void test_proto(void)
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
 	pkt[0] = 0xe1; /* version 14 (a stream DATA with its own clock) too */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
-	pkt[0] = 0xfb; /* a STREAM (13): a protocontroller message, its own class */
+	pkt[0] = 0xf1; /* version 15 (link and sseq outside the MAC) too */
+	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
+	pkt[0] = 0x1b; /* a STREAM (13): a protocontroller message, its own class */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), 0);
 	CHECK_EQ(p.type, CG_T_STREAM);
 	CHECK(!cg_type_ctl(CG_T_STREAM));
 	CHECK_EQ(cg_type_cls(CG_T_STREAM), CG_CLS_STREAM);
 	CHECK_EQ(cg_type_cls(CG_T_DATA), CG_CLS_DATA);
 	CHECK_EQ(cg_type_cls(CG_T_SFACK), CG_CLS_CTL);
-	pkt[0] = 0xff; /* unknown type */
+	pkt[0] = 0x1f; /* unknown type (version 16 is the nibble 1) */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
-	pkt[0] = 0xf6; /* a parity (fec.h): its header and a byte at least */
+	pkt[0] = 0x16; /* a parity (fec.h): its header and a byte at least */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), sizeof(pkt) > CG_HDR_LEN + CG_FEC_HDR ? 0 : -1);
 	CHECK_EQ(cg_hdr_parse(&p, pkt, CG_HDR_LEN + CG_FEC_HDR), -1);
-	pkt[0] = 0xf7; /* a repair (repair.h): its header and a byte at least */
+	pkt[0] = 0x17; /* a repair (repair.h): its header and a byte at least */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), sizeof(pkt) > CG_HDR_LEN + CG_REP_HDR ? 0 : -1);
 	CHECK_EQ(cg_hdr_parse(&p, pkt, CG_HDR_LEN + CG_REP_HDR), -1);
 	CHECK(cg_type_ctl(CG_T_REPAIR));
@@ -134,7 +153,7 @@ void test_proto(void)
 		uint8_t q[CG_HDR_LEN + CG_PARQ_LEN];
 
 		memcpy(q, pkt, CG_HDR_LEN);
-		q[0] = 0xf8;
+		q[0] = 0x18;
 		memset(q + CG_HDR_LEN, 0, sizeof(q) - CG_HDR_LEN);
 		q[CG_HDR_LEN] = 2;
 		CHECK_EQ(cg_hdr_parse(&p, q, CG_HDR_LEN + 1 + 2 * CG_PARQ_REQ), 0);
@@ -147,7 +166,7 @@ void test_proto(void)
 		q[CG_HDR_LEN] = CG_PARQ_MAX;
 		CHECK_EQ(cg_hdr_parse(&p, q, sizeof(q)), 0);
 	}
-	pkt[0] = 0xf1;
+	pkt[0] = 0x11;
 	pkt[2] = 0xff; /* any hint parses: the server judges it */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), 0);
 	CHECK_EQ(p.hint, 0xff);
@@ -275,7 +294,7 @@ void test_proto(void)
 			CHECK_EQ(cg_hdr_parse(&p, pkt, CG_HDR_LEN + CG_PROBE_BOND_LEN), 0);
 			CHECK(cg_hdr_verify(pkt, CG_HDR_LEN + CG_PROBE_BOND_LEN, key_a));
 			CHECK(!cg_hdr_verify(pkt, CG_HDR_LEN + CG_PROBE_INFO_LEN, key_a)); /* cut to 40: no */
-			pkt[CG_HDR_LEN + CG_PROBE_BOND_LEN - 3] ^= 0x01; /* CG_BOND_REORDERS on the way */
+			pkt[CG_HDR_LEN + CG_PROBE_BOND_LEN - 3] ^= 0x11; /* CG_BOND_REORDERS on the way */
 			CHECK(!cg_hdr_verify(pkt, CG_HDR_LEN + CG_PROBE_BOND_LEN, key_a));
 		}
 		h.type = CG_T_PROBE;

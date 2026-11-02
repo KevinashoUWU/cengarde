@@ -423,6 +423,7 @@ struct server {
 	struct cg_rxbatch in;
 	union cg_ctl_rx rxctl[CG_BATCH]; /* arrival addresses of a listen batch */
 	uint8_t hdr[CG_BATCH][CG_HDR_LEN];
+	struct cg_siphash hmac[CG_BATCH]; /* each one's MAC before the link and the sseq (16) */
 	struct mmsghdr out[CG_BATCH];
 	struct iovec oiov[CG_BATCH][2];
 	/* per listen batch: payloads for the TUN (the session of each, and
@@ -919,9 +920,10 @@ static void queue_reply(struct server *s, int *nr, struct session *S, unsigned l
 
 		cg_probe_act_write(r + CG_HDR_LEN, &pa);
 	}
+	/* how far the path's subflow went: the client sees a lost tail (subflow.h),
+	 * under the MAC (16) */
+	h.sseq = s->cfg->subflow && S->sf[link] ? S->sf[link]->tx.next : 0;
 	cg_hdr_write(r, &h, C->key + CG_SIPHASH_KEY_LEN, r + CG_HDR_LEN, plen);
-	/* how far the path's subflow went: the client sees a lost tail (subflow.h) */
-	cg_hdr_set_sseq(r, s->cfg->subflow && S->sf[link] ? S->sf[link]->tx.next : 0);
 	s->reply_to[*nr] = P->addr;
 	s->riov[*nr].iov_base = r;
 	s->riov[*nr].iov_len = CG_HDR_LEN + plen;
@@ -2165,6 +2167,8 @@ static void on_nack(struct server *s, struct session *S, uint8_t flags, const ui
 				break;
 			}
 			cg_hdr_set_link(e, (uint8_t)best[b]);
+			/* its link under the MAC (16) */
+			cg_hdr_reseal(e, client_of(s, S)->key + CG_SIPHASH_KEY_LEN, e + CG_HDR_LEN, (size_t)len - CG_HDR_LEN);
 			if (send_path(s, S, best[b], e, len) < 0) {
 				P->tx_drops++;
 				send_failed(s, S, (unsigned)best[b], errno, 1, now_ms);
@@ -2615,12 +2619,15 @@ static void junk_read(struct server *s)
 			if (cg_ratelimit_ok(&s->rl_junk, now_ms, 10000))
 				cg_warn("short packet (%zu bytes) from %s: not cengarde", len,
 					cg_addr_str(&s->in.from[i], a, sizeof(a)));
-		} else if (b[0] >> 4 != CG_PROTO_VERSION) {
+		} else if (b[0] >> 4 != CG_PROTO_WIRE) {
 			s->rx_bad_version++;
+			/* the nibble goes round past 15 (proto.h's CG_PROTO_WIRE): 12-15
+			 * say themselves, 1 says 16 */
 			if (cg_ratelimit_ok(&s->rl_version, now_ms, 10000))
 				cg_warn("protocol v%d packet from %s: update the router or the VPS (this server speaks "
 					"v%d), or it is not cengarde",
-					b[0] >> 4, cg_addr_str(&s->in.from[i], a, sizeof(a)), CG_PROTO_VERSION);
+					(b[0] >> 4) < 12 ? (b[0] >> 4) + 15 : b[0] >> 4, cg_addr_str(&s->in.from[i], a, sizeof(a)),
+					CG_PROTO_VERSION);
 		}
 	}
 }
@@ -3076,7 +3083,7 @@ static void down_seal(struct server *s, struct session *S, int m, const struct d
 				    .seq = s->sseq[j],
 				    .ts = s->sts[j] };
 
-		cg_hdr_write(s->hdr[j], &h, C->key + CG_SIPHASH_KEY_LEN, buf, len);
+		cg_hdr_write_base(s->hdr[j], &h, C->key + CG_SIPHASH_KEY_LEN, buf, len, &s->hmac[j]);
 		if (s->scls[j]) {
 			/* a STREAM: kept by its own sequence for its paths' losses
 			 * (on_sfloss); never sent again here, it earns the rescue's
@@ -3192,7 +3199,8 @@ static void down_send(struct server *s, struct session *S, int m, uint64_t now_m
 		F = s->cfg->subflow ? sf_get(S, (unsigned)p) : NULL;
 		for (int x = 0; x < k; x++) {
 			cg_hdr_set_link(s->hdr[sel[x]], (uint8_t)p);
-			/* its sseq on this path (subflow.h), outside the MAC as the link */
+			/* its sseq on this path (subflow.h); the MAC finished with
+			 * both, for this copy (16) */
 			{
 				uint32_t q = F ? cg_sf_tx_take(&F->tx, s->sseq[sel[x]],
 						(uint32_t)(s->oiov[sel[x]][0].iov_len + s->oiov[sel[x]][1].iov_len), (uint32_t)mark_us) : 0;
@@ -3200,6 +3208,7 @@ static void down_send(struct server *s, struct session *S, int m, uint64_t now_m
 				if (F && s->scls[sel[x]])
 					cg_sf_tx_stream(&F->tx, q);
 				cg_hdr_set_sseq(s->hdr[sel[x]], q);
+				cg_hdr_mac_finish(&s->hmac[sel[x]], s->hdr[sel[x]]);
 			}
 			memset(&s->out[x].msg_hdr, 0, sizeof(s->out[x].msg_hdr));
 			s->out[x].msg_hdr.msg_name = &P->addr;

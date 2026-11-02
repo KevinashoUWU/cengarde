@@ -808,11 +808,12 @@ check_proto() {
 	# the active mask in the probes (story 013, reorder_active, on by
 	# default), 12 each link's sequence and SFLOSS (story 029; subflow is
 	# the engine's own knob), 13 the protocontroller's messages in their own
-	# class, 14 without their tag and 15 without their DATA's own clock
-	# (story 030): the same configurations.
+	# class, 14 without their tag, 15 without their DATA's own clock and 16
+	# with the link and its sequence under the MAC (story 030): the same
+	# configurations.
 	case "$P" in
-	4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15) ;;
-	*) die "this cengarde-vps-setup writes configurations of protocol 4 to 15 (cengarde 0.5.2 on, a [client NAME] section per router), and the engine says protocol ${P:-unknown}: install both from one checkout (contrib/vps/install.sh)" ;;
+	4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16) ;;
+	*) die "this cengarde-vps-setup writes configurations of protocol 4 to 16 (cengarde 0.5.2 on, a [client NAME] section per router), and the engine says protocol ${P:-unknown}: install both from one checkout (contrib/vps/install.sh)" ;;
 	esac
 }
 

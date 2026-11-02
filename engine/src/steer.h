@@ -49,7 +49,7 @@ static inline int cg_lanes_valid(unsigned lanes)
  * of len bytes at p. The tests run the program against it. */
 static inline unsigned cg_steer_ref(const uint8_t *p, size_t len, unsigned lanes)
 {
-	if (len < CG_HDR_LEN || p[0] >> 4 != CG_PROTO_VERSION)
+	if (len < CG_HDR_LEN || p[0] >> 4 != CG_PROTO_WIRE)
 		return lanes; /* junk */
 	return p[CG_LINK_OFF] & (lanes - 1);
 }
@@ -67,7 +67,7 @@ static inline int cg_steer_prog(struct sock_filter *prog, int max, unsigned lane
 		[I_JLEN] = BPF_JUMP(BPF_JMP | BPF_JGE | BPF_K, CG_HDR_LEN, 0, CG_STEER_TO(I_JLEN, I_JUNK)),
 		[I_VER] = BPF_STMT(BPF_LD | BPF_B | BPF_ABS, 0),
 		[I_VMASK] = BPF_STMT(BPF_ALU | BPF_AND | BPF_K, 0xf0),
-		[I_JVER] = BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, CG_PROTO_VERSION << 4, 0, CG_STEER_TO(I_JVER, I_JUNK)),
+		[I_JVER] = BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, CG_PROTO_WIRE << 4, 0, CG_STEER_TO(I_JVER, I_JUNK)),
 		[I_LINK] = BPF_STMT(BPF_LD | BPF_B | BPF_ABS, CG_LINK_OFF),
 		[I_LMASK] = BPF_STMT(BPF_ALU | BPF_AND | BPF_K, lanes - 1),
 		[I_LANE] = BPF_STMT(BPF_RET | BPF_A, 0),

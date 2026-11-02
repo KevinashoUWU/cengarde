@@ -392,6 +392,41 @@ o de una copia vieja no se marca otra vez). Sin cambio de formato.
   pérdida llegó avisada dos veces (WOM: 11 535 pérdidas y 11 535 `repeat`):
   el primer aviso casi nunca se pierde; el segundo es el seguro.
 
+### Protocolo 16: el enlace y su secuencia bajo el MAC
+
+El byte del enlace y la `sseq` iban fuera del MAC para que una copia por
+otro enlace llevara los suyos sin un segundo MAC. Cualquiera en el camino
+podía reescribirlos: una `sseq` falsa hacía que el receptor dijera pérdidas
+que no hubo (`SFLOSS`) y el emisor reenviara por ellas.
+
+Firmar cada copia entera cuesta: en el Cortex-A53 del CPE1 (más lento que la
+Pi 4), un MAC de 1424 bytes son 2 135 ns (469 en el PC); con 4 copias en
+redundancia, +6,6 µs por paquete, un 6 % de un núcleo a 100 Mbit/s. El 16
+pone el enlace y la `sseq` **al final** de lo que cubre el MAC: el emisor
+guarda el estado de la SipHash tras el encabezado y el payload
+(`cg_hdr_write_base`) y cada copia solo lo cierra con los 5 bytes suyos
+(`cg_hdr_mac_finish`): 101 ns en el A53, 16 en el PC. Lo guardado que el
+rescate reenvía por otro enlace, y una sonda que recibe su `sseq` después,
+se sellan enteros otra vez (`cg_hdr_reseal`). El encabezado no cambia de
+forma (28 bytes, los mismos desplazamientos).
+
+El 16 no cabe en el nibble de versión: `CG_PROTO_WIRE` vuelve desde el 1
+pasado el 15 (el 16 es 1), sobre versiones retiradas hace semanas, y nunca
+usa el 0, que es el primer byte de un mensaje de WireGuard (el programa BPF
+lo manda a la basura antes de cualquier MAC).
+
+- Laboratorio (`p16a`, 12 casos × 2 × 3, contra el 15): TCP −0,8 %, flujo
+  tipo TS 12,0 → 10,4 ‰.
+- Terreno (`fieldvid/r6/`): TCP 306 → 328 de bajada y 98 → 100 de subida;
+  RTP de bajada 94 → 9 perdidos y 3 160 → 2 283 errores, de subida 5 934 →
+  6 259; TS 584 → 622 y 2 099 → 2 404. Igual. La testnet quedó en el 16
+  (`13c6931`).
+
+Lo que no se hizo: quitarle al STREAM su secuencia de clase (4 bytes, ~0,3
+%). Pide un encabezado de largo variable según el tipo, que toca casi todo
+el motor. Con el enlace y la `sseq` firmados, el anti-replay por enlace ya
+es posible para cuando llegue el encabezado MPGRIT.
+
 ### Etapa A2: el encabezado de subflujo y los frames
 
 - Encabezado por paquete y enlace: sesión, enlace y `sseq` dentro del MAC,

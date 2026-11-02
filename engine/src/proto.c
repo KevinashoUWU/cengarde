@@ -29,26 +29,50 @@ static inline uint64_t get64(const uint8_t *p)
 	return (uint64_t)get32(p) << 32 | get32(p + 4);
 }
 
-static uint64_t mac(const uint8_t *hdr, const uint8_t key[CG_SIPHASH_KEY_LEN], const void *payload,
-		    size_t plen)
+void cg_hdr_mac_base(struct cg_siphash *s, const uint8_t *hdr, const uint8_t key[CG_SIPHASH_KEY_LEN],
+		     const void *payload, size_t plen)
 {
-	struct cg_siphash s;
 	uint8_t canon[CG_MAC_OFF];
 
 	memcpy(canon, hdr, CG_MAC_OFF);
 	canon[CG_LINK_OFF] = 0;
-	cg_siphash_init(&s, key);
-	cg_siphash_update(&s, canon, sizeof(canon));
-	cg_siphash_update(&s, payload, plen);
+	cg_siphash_init(s, key);
+	cg_siphash_update(s, canon, sizeof(canon));
+	cg_siphash_update(s, payload, plen);
+}
+
+/* The MAC of hdr from its base: the base, then the link and the sseq the
+ * header holds now. */
+static uint64_t mac_finish(const struct cg_siphash *base, const uint8_t *hdr)
+{
+	struct cg_siphash s = *base;
+	uint8_t tail[5] = { hdr[CG_LINK_OFF], hdr[CG_SSEQ_OFF], hdr[CG_SSEQ_OFF + 1], hdr[CG_SSEQ_OFF + 2],
+			    hdr[CG_SSEQ_OFF + 3] };
+
+	cg_siphash_update(&s, tail, sizeof(tail));
 	return cg_siphash_final(&s);
 }
 
-void cg_hdr_write(uint8_t out[CG_HDR_LEN], const struct cg_hdr *h, const uint8_t key[CG_SIPHASH_KEY_LEN],
-		  const void *payload, size_t plen)
+void cg_hdr_mac_finish(const struct cg_siphash *base, uint8_t *hdr)
 {
-	uint64_t m;
+	uint64_t m = mac_finish(base, hdr);
 
-	out[0] = (uint8_t)(CG_PROTO_VERSION << 4 | (h->type & 0x0f));
+	for (int i = 0; i < 8; i++)
+		hdr[CG_MAC_OFF + i] = (uint8_t)(m >> (8 * i));
+}
+
+void cg_hdr_reseal(uint8_t *hdr, const uint8_t key[CG_SIPHASH_KEY_LEN], const void *payload, size_t plen)
+{
+	struct cg_siphash base;
+
+	cg_hdr_mac_base(&base, hdr, key, payload, plen);
+	cg_hdr_mac_finish(&base, hdr);
+}
+
+void cg_hdr_write_base(uint8_t out[CG_HDR_LEN], const struct cg_hdr *h, const uint8_t key[CG_SIPHASH_KEY_LEN],
+		       const void *payload, size_t plen, struct cg_siphash *base)
+{
+	out[0] = (uint8_t)(CG_PROTO_WIRE << 4 | (h->type & 0x0f));
 	out[1] = h->flags;
 	out[CG_HINT_OFF] = h->hint;
 	out[CG_LINK_OFF] = h->link;
@@ -56,16 +80,23 @@ void cg_hdr_write(uint8_t out[CG_HDR_LEN], const struct cg_hdr *h, const uint8_t
 	put32(out + 8, h->seq);
 	put32(out + 12, h->ts);
 	put32(out + CG_SSEQ_OFF, h->sseq);
-	m = mac(out, key, payload, plen);
-	for (int i = 0; i < 8; i++)
-		out[CG_MAC_OFF + i] = (uint8_t)(m >> (8 * i));
+	cg_hdr_mac_base(base, out, key, payload, plen);
+	cg_hdr_mac_finish(base, out);
+}
+
+void cg_hdr_write(uint8_t out[CG_HDR_LEN], const struct cg_hdr *h, const uint8_t key[CG_SIPHASH_KEY_LEN],
+		  const void *payload, size_t plen)
+{
+	struct cg_siphash base;
+
+	cg_hdr_write_base(out, h, key, payload, plen, &base);
 }
 
 int cg_hdr_parse(struct cg_hdr *h, const uint8_t *buf, size_t len)
 {
 	size_t plen;
 
-	if (len < CG_HDR_LEN || buf[0] >> 4 != CG_PROTO_VERSION)
+	if (len < CG_HDR_LEN || buf[0] >> 4 != CG_PROTO_WIRE)
 		return -1;
 	h->type = buf[0] & 0x0f;
 	h->flags = buf[1];
@@ -121,9 +152,12 @@ int cg_hdr_verify(const uint8_t *buf, size_t len, const uint8_t key[CG_SIPHASH_K
 	uint64_t m;
 	uint8_t diff = 0;
 
+	struct cg_siphash base;
+
 	if (len < CG_HDR_LEN)
 		return 0;
-	m = mac(buf, key, buf + CG_HDR_LEN, len - CG_HDR_LEN);
+	cg_hdr_mac_base(&base, buf, key, buf + CG_HDR_LEN, len - CG_HDR_LEN);
+	m = mac_finish(&base, buf);
 	for (int i = 0; i < 8; i++)
 		diff |= buf[CG_MAC_OFF + i] ^ (uint8_t)(m >> (8 * i));
 	return diff == 0;

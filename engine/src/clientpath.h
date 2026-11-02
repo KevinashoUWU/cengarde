@@ -264,15 +264,17 @@ static inline uint32_t cg_up_next_stream(struct cg_txs *t)
 }
 
 /* Writes the header of a packet going up with sequence seq (cg_up_next),
- * MAC included. */
+ * MAC included; *base: the MAC's state before the link and the sseq,
+ * which each link's copy finishes (cg_hdr_mac_finish, 16). */
 static inline void cg_up_seal(const struct cg_txs *t, uint8_t out[CG_HDR_LEN], uint8_t type, uint8_t flags,
-			      uint8_t link, uint32_t seq, uint32_t ts, const void *payload, size_t len)
+			      uint8_t link, uint32_t seq, uint32_t ts, const void *payload, size_t len,
+			      struct cg_siphash *base)
 {
 	struct cg_hdr h = {
 		.type = type, .flags = flags, .hint = t->hint, .link = link, .session = t->session, .seq = seq, .ts = ts
 	};
 
-	cg_hdr_write(out, &h, t->k_tx, payload, len);
+	cg_hdr_write_base(out, &h, t->k_tx, payload, len, base);
 }
 
 #endif
