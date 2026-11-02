@@ -279,6 +279,10 @@ static void flush(struct cg_pctl *p)
 
 	if (!p->nmsg)
 		return;
+	/* what the engine does not stamp (it sent nothing: a session gone)
+	 * keeps GRIT's own clock */
+	for (int m = 0; m < p->nmsg; m++)
+		ts[m] = (uint32_t)cg_now_us();
 	p->ops.send(p->ops.ctx, p->mpeer, p->msid, p->mptr, p->mlen, p->mcopy, p->mavoid, p->nmsg, eta, link, ts);
 	for (int m = 0; m < p->nmsg; m++) {
 		struct flow *f;
