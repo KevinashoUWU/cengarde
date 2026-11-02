@@ -10,8 +10,9 @@
 #
 #   sudo sh contrib/vps/install.sh
 #
-# Needs build-essential, git, iptables and conntrack (cloud-config.yaml
-# installs them). With /etc/cengarde/secret (the cloud-config writes it) its
+# Needs build-essential, git, iptables and conntrack, and libzstd-dev for
+# the reliable lane's compression (cloud-config.yaml installs them; without
+# it the engine builds without zstd and refuses a compressed lane). With /etc/cengarde/secret (the cloud-config writes it) its
 # router is imported; without it, add one with "sudo cengarde-vps-setup add
 # NAME ..." (the router's LuCI shows the whole command). The routers'
 # tunnels are the engine's TUN, cg0; a server set up for WireGuard before

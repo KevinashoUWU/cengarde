@@ -32,7 +32,7 @@ define Package/cengarde
   CATEGORY:=Network
   TITLE:=Redundant multi-link tunnel
   URL:=https://github.com/KevinashoUWU/cengarde
-  DEPENDS:=+kmod-tun +kmod-tcp-bbr +kmod-nft-tproxy
+  DEPENDS:=+kmod-tun +kmod-tcp-bbr +kmod-nft-tproxy +libzstd
 endef
 
 define Package/cengarde/description
@@ -64,7 +64,7 @@ define Build/Compile
 		CXXFLAGS="$(TARGET_CXXFLAGS)" \
 		CPPFLAGS="$(TARGET_CPPFLAGS)" \
 		LDFLAGS="$(TARGET_LDFLAGS)" \
-		HARDEN= HARDEN_LDFLAGS= \
+		HARDEN= HARDEN_LDFLAGS= ZSTD=1 \
 		VERSION="$(PKG_VERSION)-r$(PKG_RELEASE)$(if $(GIT_SHORT),-g$(GIT_SHORT))" \
 		cengarde
 endef

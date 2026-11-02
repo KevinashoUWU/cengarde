@@ -31,6 +31,7 @@
 #include "status.h"
 #include "stream.h"
 #include "util.h"
+#include "zlane.h"
 
 #ifndef SO_ORIGINAL_DST
 #define SO_ORIGINAL_DST 80
@@ -128,6 +129,11 @@ struct flow {
 	uint16_t sport;
 	uint8_t saddr[16];
 	uint64_t dg_t;
+	uint8_t zstd; /* its datagrams compressed (zlane.h): the contexts made at the first one each way */
+#ifdef CG_ZSTD
+	ZSTD_CCtx *zc;
+	ZSTD_DCtx *zd;
+#endif
 };
 
 struct peer {
@@ -154,7 +160,9 @@ struct cg_pctl {
 	int lfd[3]; /* the router's v4 and v6; the VPS's variant A */
 	int ufd[2]; /* the router's reliable lane: UDP, TPROXY, v4 and v6 (story 031) */
 	uint8_t *dgbuf; /* a datagram's room (CG_PCTL_DGRAM_MAX) */
+	uint8_t *zbuf;  /* a compressed one's (65535: what its length says) */
 	uint64_t dg_in, dg_out, dg_drop, dg_flows, dg_bad; /* datagrams taken, sent, dropped; streams opened; without a destination */
+	uint64_t dg_zin, dg_zout; /* the compressed ones' bytes before and after (zlane.h) */
 	struct cg_st_pool pool;
 	uint8_t *mem;
 	uint32_t *stack;
@@ -434,6 +442,12 @@ static void flow_free(struct cg_pctl *p, struct flow *f, int abort_sock)
 			epoll_ctl(p->ep, EPOLL_CTL_DEL, f->fd, NULL);
 		close(f->fd);
 	}
+#ifdef CG_ZSTD
+	ZSTD_freeCCtx(f->zc);
+	ZSTD_freeDCtx(f->zd);
+	f->zc = NULL;
+	f->zd = NULL;
+#endif
 	if (f->mfd >= 0) {
 		if (abort_sock) {
 			struct linger lg = { 1, 0 };
@@ -745,7 +759,7 @@ static uint64_t backlog_max(const struct cg_pctl *p, const struct flow *f, uint6
 static void dg_put(struct cg_pctl *p, struct flow *f, const uint8_t *d, size_t n)
 {
 	uint64_t held = f->tx.tail - f->tx.una, o = f->tx.tail, now = cg_now_us();
-	uint8_t h[2] = { (uint8_t)(n >> 8), (uint8_t)n };
+	uint8_t h[2];
 	const uint8_t *src[2] = { h, d };
 	size_t len[2] = { 2, n };
 
@@ -753,6 +767,24 @@ static void dg_put(struct cg_pctl *p, struct flow *f, const uint8_t *d, size_t n
 		p->dg_drop++;
 		return;
 	}
+#ifdef CG_ZSTD
+	if (f->zstd) { /* on the stream's history (zlane.h): from here on, every one */
+		size_t k;
+
+		if ((!f->zc && !(f->zc = cg_zl_cnew())) ||
+		    (k = cg_zl_comp(f->zc, d, n, p->zbuf, 65535)) == (size_t)-1) {
+			p->dg_drop++;
+			f->tx.eof = 1; /* its history is no use any more: the stream ends */
+			return;
+		}
+		src[1] = p->zbuf;
+		p->dg_zin += n;
+		p->dg_zout += k;
+		len[1] = n = k;
+	}
+#endif
+	h[0] = (uint8_t)(n >> 8);
+	h[1] = (uint8_t)n;
 	for (int k = 0; k < 2; k++)
 		for (size_t at = 0; at < len[k];) {
 			uint32_t crun;
@@ -836,6 +868,9 @@ static struct flow *dg_flow(struct cg_pctl *p, const struct sockaddr_storage *sr
 	f->sport = sport;
 	memcpy(f->saddr, sa, 16);
 	f->dgram = 1;
+#ifdef CG_ZSTD
+	f->zstd = (uint8_t)!!p->cfg.zstd;
+#endif
 	f->dg_t = cg_now_us();
 	f->fd = fd;
 	f->state = F_OPEN;
@@ -925,14 +960,22 @@ static int dg_write(struct cg_pctl *p, struct flow *f, uint64_t now)
 	for (;;) {
 		uint64_t ready = cg_st_rx_ready(&f->rx, f->consumed);
 		uint8_t h[2];
-		size_t n;
+		size_t n, m;
 
 		if (ready < 2 || rb_copy(p, f, f->consumed, h, 2) < 0)
 			break;
 		n = (size_t)h[0] << 8 | h[1];
-		if (ready < 2 + n || rb_copy(p, f, f->consumed + 2, p->dgbuf, n) < 0)
+		if (ready < 2 + n || rb_copy(p, f, f->consumed + 2, f->zstd ? p->zbuf : p->dgbuf, n) < 0)
 			break;
-		if (send(f->fd, p->dgbuf, n, MSG_DONTWAIT | MSG_NOSIGNAL) < 0) {
+		m = n;
+#ifdef CG_ZSTD
+		if (f->zstd && ((!f->zd && !(f->zd = cg_zl_dnew())) ||
+				(m = cg_zl_decomp(f->zd, p->zbuf, n, p->dgbuf, CG_PCTL_DGRAM_MAX)) == (size_t)-1)) {
+			flow_reset(p, f, CG_PCTL_R_ERROR);
+			return -1;
+		}
+#endif
+		if (send(f->fd, p->dgbuf, m, MSG_DONTWAIT | MSG_NOSIGNAL) < 0) {
 			if (errno == EAGAIN || errno == EWOULDBLOCK) {
 				f->wr_blocked = 1;
 				break;
@@ -1074,6 +1117,16 @@ static void open_in(struct cg_pctl *p, uint32_t peer, uint32_t sid, const struct
 			return;
 		}
 		f->dgram = 1;
+		if (m->flags & CG_PCTLF_ZSTD) {
+#ifdef CG_ZSTD
+			f->zstd = 1;
+#else
+			if (cg_ratelimit_ok(&p->rl_open, cg_now_ms(), 60000))
+				cg_warn("protocontroller: a reliable lane's stream asks for zstd, and this engine was built without it (ZSTD=1)");
+			flow_reset(p, f, CG_PCTL_R_ERROR);
+			return;
+#endif
+		}
 		f->dg_t = cg_now_us();
 		f->connecting = 0;
 		f->rd_ready = 1;
@@ -2022,7 +2075,9 @@ static void send_open(struct cg_pctl *p, struct flow *f, uint64_t now)
 	struct peer *r = peer_of(p, f);
 	uint8_t *b = slot_for(p, f->peer, f->sid);
 
-	push(p, cg_pctl_put_open(b, f->id, f->dgram ? CG_PCTLF_DGRAM : 0, f->family, f->addr, f->port), 1);
+	push(p, cg_pctl_put_open(b, f->id, (uint8_t)((f->dgram ? CG_PCTLF_DGRAM : 0) | (f->zstd ? CG_PCTLF_ZSTD : 0)), f->family,
+				 f->addr, f->port),
+	     1);
 	f->open_sent = 1;
 	f->open_due = now + cg_scc_rto(&r->cc, f->open_tries < 6 ? f->open_tries : 6, peer_reo(p, r));
 	if (f->open_tries < 255)
@@ -2372,7 +2427,8 @@ struct cg_pctl *cg_pctl_new(const struct cg_pctl_cfg *cfg, int ep, const struct 
 	p->ep = ep;
 	p->lfd[0] = p->lfd[1] = p->lfd[2] = -1;
 	p->ufd[0] = p->ufd[1] = -1;
-	if (!(p->dgbuf = malloc(CG_PCTL_DGRAM_MAX))) {
+	if (!(p->dgbuf = malloc(CG_PCTL_DGRAM_MAX)) || !(p->zbuf = malloc(65535))) {
+		free(p->dgbuf);
 		free(p);
 		snprintf(err, errlen, "protocontroller: out of memory");
 		return NULL;
@@ -2463,6 +2519,7 @@ void cg_pctl_free(struct cg_pctl *p)
 			close(p->ufd[i]);
 		}
 	free(p->dgbuf);
+	free(p->zbuf);
 	free(p->mem);
 	free(p->stack);
 	free(p->f);
@@ -2496,6 +2553,8 @@ void cg_pctl_json(const struct cg_pctl *p, struct cg_json *j)
 	cg_json_u64(j, "sent", p->dg_out);
 	cg_json_u64(j, "dropped", p->dg_drop);
 	cg_json_u64(j, "no_destination", p->dg_bad);
+	cg_json_u64(j, "zstd_in_bytes", p->dg_zin);   /* the compressed ones' bytes before (zlane.h) */
+	cg_json_u64(j, "zstd_out_bytes", p->dg_zout); /* and after */
 	cg_json_end(j, '}');
 	cg_json_u64(j, "closed", p->closed);
 	cg_json_obj(j, "refused");

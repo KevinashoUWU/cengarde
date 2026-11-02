@@ -134,7 +134,10 @@ CG_COUNTERS = ("data_tx", "data_rx", "retx", "copies", "rto", "dup_frames", "ooo
 # the NACKs that were only a hint or a link's own loss (story 029)
 CG_NESTED = (("retx_rack", "retx_by", "rack"), ("retx_rto", "retx_by", "rto"), ("retx_nack", "retx_by", "nack"),
              ("nack_hints", "nacks", "hints"), ("nack_subflow", "nacks", "subflow"),
-             ("nack_delivered", "nacks", "delivered"))
+             ("nack_delivered", "nacks", "delivered"),
+             # the reliable lane (story 031): datagrams taken, sent, dropped, and zstd's bytes before and after
+             ("dg_taken", "reliable", "taken"), ("dg_sent", "reliable", "sent"), ("dg_dropped", "reliable", "dropped"),
+             ("dg_zin", "reliable", "zstd_in_bytes"), ("dg_zout", "reliable", "zstd_out_bytes"))
 
 
 def cg_summary(d):
