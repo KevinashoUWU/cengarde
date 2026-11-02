@@ -1455,6 +1455,14 @@ En los dos:
 
 Solo la variante B:
 
+- **Envíos por equipo** (`protocontroller_fair`, `yes`; `src/fair.h`,
+  historia 031): cada vuelta de envíos da un segmento por dispositivo de la
+  LAN, y sus flujos se turnan; un equipo con muchas conexiones (un gestor de
+  descargas, una actualización) se lleva la parte de uno y un flujo que no
+  drena (un servidor lejano y lento) solo los turnos de su equipo. En el VPS
+  el equipo viene en el OPEN (protocolo 19). Laboratorio (`BOND_HOG=8`): el
+  equipo de una conexión al lado de otro de ocho pasa de 13–18 % a 31–41 %
+  del total en `equal` y `het`, de subida y de bajada, sin bajar el total.
 - **Fiabilidad** (`src/stream.h`): RACK con una ventana de un cuarto de la
   ida y vuelta más `protocontroller_reo_ms` (10, los códigos del túnel van
   primero; cada duplicado que el receptor avisa la agranda 4 ms, hasta el

@@ -419,6 +419,36 @@ azar los paquetes del túnel en los dos sentidos (iptables `statistic`).
   manda ~1,6 MB, menos que una sola copia del JSON crudo; con telemetría muy
   pesada, bajar `split_small` deja el trabajo a los reenvíos de GRIT.
 
+## Los envíos por equipo (`protocontroller_fair`, protocolo 19, 2026-11-02)
+
+- **El caso** (el usuario): un stream de Facebook que resolvía a Miami
+  acalambraba el enlace y a todos los demás. GRIT ya repartía un segmento
+  por flujo en cada vuelta y tiene un tope de memoria por flujo, pero un
+  equipo con veinte conexiones se llevaba veinte turnos.
+- **Ahora:** cada vuelta da un segmento por equipo, y los flujos de cada
+  equipo se turnan (`fair.h`, `cg_fair_group`). El equipo es el dispositivo
+  de la LAN que abrió el flujo: en el router, la dirección de `accept4` (u
+  el origen de un flujo de datagramas); en el VPS, la que el router manda
+  en el OPEN (4 bytes, protocolo 19) junto con la sesión del router. La
+  perilla `protocontroller_fair` (sí por omisión) vuelve al reparto por
+  flujo.
+- **Laboratorio** (`BOND_HOG=8`: un segundo equipo, 192.168.79.3, con 8
+  conexiones al lado de la medida, de 1; cubic, n = 2;
+  `~/campo/2026-11-02/fair`, `out19`): la parte del equipo de una conexión.
+
+  | Caso | Subida, por flujo → por equipo | Bajada, por flujo → por equipo | Total |
+  | --- | --- | --- | --- |
+  | `equal` | 18 % → 40 % | 16 % → 41 % | igual (88–92 Mbit/s) |
+  | `het` | 18 % → 31 % | 13 % → 31 % | igual (84–86) |
+  | `cell4` | 16 % → 16 % | 27 % → 21 % | igual (46) |
+
+  No llega al 50 %: el reparto es por segmentos en cada vuelta mientras los
+  ritmos lo dejan, y el TCP de cada equipo en la LAN también limita. En
+  `cell4` los enlaces lentos mandan.
+- **Lo que falta:** la cola justa por flujo en la TUN (el UDP que no entra
+  a GRIT) y las clases encima (el carril fiable y lo `deadline` antes que
+  lo masivo).
+
 ## QUIC por TCP (`quic`, 2026-11-02)
 
 - **La pregunta** (el usuario): ¿se puede hacer proxy de QUIC como el PEP de

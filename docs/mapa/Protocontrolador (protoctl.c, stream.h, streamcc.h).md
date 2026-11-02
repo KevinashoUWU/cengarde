@@ -1,6 +1,8 @@
 ---
 tags: [mapa, pieza]
 archivos:
+  - engine/src/fair.h
+  - engine/tests/test_fair.c
   - engine/src/zlane.h
   - engine/tests/test_zlane.c
   - engine/src/protoctl.c
@@ -13,7 +15,7 @@ archivos:
   - engine/tests/test_stream.c
   - engine/tests/test_streamcc.c
   - engine/tests/test_linkowd.c
-sello: 96a556baefc21b23
+sello: cf44b38a208d0755
 ---
 # Protocontrolador (protoctl.c, stream.h, streamcc.h)
 
@@ -48,3 +50,5 @@ El protocontrolador ([[025-protocontrolador]]): TCP partido en los dos extremos 
 - [[025-protocontrolador]] (2026-10-27): el colapso de la bajada de GRIT (la base del retardo de ida fijada en un enlace y el flujo en otro de más retardo), corregido con `cg_scc_stuck`; matriz n = 8 en la historia.
 - [[025-protocontrolador]] (2026-10-27): el NACK a GRIT, cordura n = 2–3 (`protect` subida: RTT de 1200 B p99 296 → 109 ms, reenvíos de GRIT 1014 → 159; sin cambio fuera del protocontrolador; el microcorte, igual de variable).
 - [[025-protocontrolador]]: el laboratorio de la 024 (`protect`, `beyond`, `protectcut`, vivo, bajada, cuatro celulares) con A y B contra el túnel transparente y el A de la 024 (shadowsocks); el 26-10, GRIT en el microcorte tras sus correcciones (ver la historia).
+- **Los envíos por equipo** ([[Mapa/Perillas/protocontroller_fair|protocontroller_fair]], `fair.h`, [[031-clases-por-flujo]], protocolo 19): cada vuelta de envíos da un segmento por equipo y, dentro de cada equipo, sus flujos se turnan (`cg_fair_group` agrupa los flujos en uso por equipo, en el orden de la rotación; antes era un segmento por flujo). El equipo es el dispositivo de la LAN que abrió el flujo: en el router, la dirección que `accept4` devuelve (o el origen de un flujo de datagramas), en el VPS la que el router manda en el OPEN (4 bytes nuevos, protocolo 19) junto con la sesión del router. En el laboratorio (`BOND_HOG=8`: otro equipo con 8 conexiones al lado de la medida), el equipo de una conexión pasa de 13–18 % a 31–41 % del total en `equal` y `het`, de subida y de bajada, sin bajar el total; en `cell4` no cambia.
+

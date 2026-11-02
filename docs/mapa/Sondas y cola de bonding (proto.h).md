@@ -4,7 +4,7 @@ archivos:
   - engine/src/proto.h
   - engine/src/proto.c
   - engine/tests/test_proto.c
-sello: 53a9961265034b71
+sello: 0abc11805941fe8e
 ---
 # Sondas y cola de bonding (proto.h)
 
@@ -40,7 +40,7 @@ Es la fuente de casi todas las medidas. El cliente manda una sonda por enlace; e
 - [[026-fec-v3]]: protocolo 11, las reparaciones de ventana ancha (`CG_REP_RLCW` en `CG_T_REPAIR`: base, largo, densidad y semilla en vez del mapa) y `CG_T_REPAIR`/`CG_T_PARQ` en los dos sentidos: un servidor 10 tomaría una reparación ancha por mal formada (contada, sin daño), pero un cliente con la FEC v3 contra él protegería en vano → [[FEC v3 (fec3.h)]]. `cengarde-vps-setup` acepta 4 a 16.
 - [[029-mpgrit]]: protocolo 12, la secuencia de cada enlace (`sseq`, 4 bytes en el desplazamiento 24: la cabecera pasa de 24 a 28 bytes), fuera del MAC como el byte del enlace hasta el 15 (una copia por otro enlace lleva el suyo, `cg_hdr_set_sseq`), 0 sin numerar; desde el 16 el MAC los cubre a los dos, al final: cada copia cierra el MAC desde su base (`cg_hdr_write_base`, `cg_hdr_mac_finish`: ~0,1 µs en un Cortex-A53 contra ~2,1 µs de un MAC de 1400 bytes) y nadie en el camino reescribe la `sseq` para inventar pérdidas; lo guardado que se reenvía por otro enlace se vuelve a sellar entero (`cg_hdr_reseal`). La versión va en el nibble alto como `CG_PROTO_WIRE`: pasado el 15 vuelve desde el 1 (el 16 es 1), nunca 0, que es el primer byte de WireGuard; en una sonda o su respuesta, el siguiente `sseq` del enlace (la sonda de cola del subflujo); y el tipo `CG_T_SFLOSS` (9, de control, en los dos sentidos): un byte con el enlace y los rangos de un NACK (`cg_hdr_parse` exige ese largo) → [[Subflujo (subflow.h)]]. Paso 2: `CG_T_SFACK` (10, de control, en los dos sentidos, sin versión nueva: los dos extremos de 12 lo traen desde esta rama): una cuenta de 1 a 16 y 15 bytes por enlace (`cg_hdr_parse` exige ese largo) → [[Subflujo (subflow.h)]], [[Ritmo por enlace (linkcc.h)]].
 - [[031-clases-por-flujo]]: protocolo 17 (nibble 2), las reparaciones anchas sobre los STREAM (`CG_REP_RLCW` con la clase `CG_REP_STREAM` en el byte 13, antes 0): un extremo 16 las tomaría por mal formadas → [[Códigos de borrado (rs.h, rlc.h)]]. `cengarde-vps-setup` acepta 4 a 17.
-- [[031-clases-por-flujo]]: protocolo 18 (nibble 3), los flujos de datagramas del protocontrolador (`CG_PCTLF_DGRAM` en el OPEN): un VPS 17 abriría un TCP hacia un destino UDP → [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]]. `cengarde-vps-setup` acepta 4 a 18.
+- [[031-clases-por-flujo]]: protocolo 18 (nibble 3), los flujos de datagramas del protocontrolador (`CG_PCTLF_DGRAM` en el OPEN): un VPS 17 abriría un TCP hacia un destino UDP → [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]]. `cengarde-vps-setup` acepta 4 a 18. Protocolo 19 (nibble 4): el OPEN lleva el equipo de la LAN (`fair.h`); el nibble 4 deja de ser el de una versión retirada en `test_proto.c`; `cengarde-vps-setup` acepta 4 a 19.
 - [[023-reparacion-coherente]] (2026-10-24): `CG_F_TUNHOLE` (0x02 de DATA, reservado hasta entonces) y `CG_BOND_TCPMARK` (bit 23 de la cola, también en la respuesta), sin versión nueva, como el tipo: un par anterior escribe 0 y los ignora → [[Retransmisión según la evidencia (tcpack.h)]].
 
 ## Choques conocidos

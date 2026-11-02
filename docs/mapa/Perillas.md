@@ -7,7 +7,7 @@ archivos:
 
 # Perillas
 
-Las 132 claves que `engine/src/config.c` lee (comprobado al generar esta nota: ni falta ni sobra ninguna).
+Las 133 claves que `engine/src/config.c` lee (comprobado al generar esta nota: ni falta ni sobra ninguna).
 Por omisión y rango salen de `cg_config_parse`; el significado, de los comentarios de `config.h` y de [[engine-README]].
 Las perillas marcadas como experimento están apagadas por omisión.
 
@@ -205,6 +205,7 @@ Secciones: «global» es la parte sin sección; `[link NOMBRE]` es del cliente; 
 | [[Mapa/Perillas/protocontroller_dead_s\|protocontroller_dead_s]] | 60 | [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[025-protocontrolador]] |
 | [[Mapa/Perillas/protocontroller_reo_ms\|protocontroller_reo_ms]] | 10 | [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[025-protocontrolador]] |
 | [[Mapa/Perillas/protocontroller_cc\|protocontroller_cc]] | `auto` | [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[025-protocontrolador]] |
+| [[Mapa/Perillas/protocontroller_fair\|protocontroller_fair]] | `yes` | [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[031-clases-por-flujo]] |
 
 ## Sin grupo (agrégalas a un grupo en perillas.py)
 
