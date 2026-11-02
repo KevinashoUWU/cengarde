@@ -220,11 +220,9 @@ struct session {
 	 * counts as the client's (f3_*), and the parity the client asked for
 	 * again (PARQ) */
 	struct cg_rlcw_tx *dw;
-	/* the download's STREAMs (story 031), as the client's f3s, f3s_last_us,
-	 * f3s_owed, f3_srep: one repair at the end of each burst */
+	/* the download's STREAMs (story 031), as the client's f3s, f3_due, f3_srep */
 	struct cg_rlcw_tx *dws;
-	uint64_t df3s_last_us;
-	uint8_t df3s_owed;
+	int64_t df3_due[2];
 	uint64_t df3_srep;
 	struct cg_f3 df3;
 	uint16_t df3_links;
@@ -2280,6 +2278,15 @@ static void on_nack(struct server *s, struct session *S, uint8_t flags, const ui
  * well (rescue.h's cg_resc_sure); a copied one may have come on another
  * path, until every path it went on lost it (cg_resc_lost_on), and the
  * tunnel's own DATA is left to the client's reorderer and its NACKs. */
+/* Whether FEC v3 covers S's STREAM seq now (story 031), as the client's
+ * f3_stream_covers. */
+static int sf3_stream_covers(const struct server *s, const struct session *S, uint32_t seq)
+{
+	uint16_t l;
+
+	return sf3_on(s, S) && S->dws && S->df3.mode != CG_F3_OFF && S->df3.pct && cg_rlcw_get(S->dws, seq, &l);
+}
+
 static void on_sfloss(struct server *s, struct session *S, const uint8_t *payload, size_t plen, uint64_t now_ms)
 {
 	uint32_t q[CG_NACK_SEQ_MAX], gone[CG_NACK_SEQ_MAX];
@@ -2317,9 +2324,8 @@ static void on_sfloss(struct server *s, struct session *S, const uint8_t *payloa
 			F->allcopies++;
 		}
 		ev = cg_resc_ev(&s->sresc, S->sresc_idx, S->id, seq, CG_RESC_EV_LINK);
-		/* the STREAMs' tail repair is a bonus, not a cover (the
-		 * client's on_sfloss) */
-		sure = cg_resc_sure(ev, 0, s->cfg->protocontroller_nack && !s->cfg->subflow);
+		sure = cg_resc_sure(ev, stream && sf3_stream_covers(s, S, seq),
+				    s->cfg->protocontroller_nack && !s->cfg->subflow);
 		if (!sure) { /* handed over already, or a suspect waiting */
 			F->unsure += !(ev & (CG_RESC_EV_DONE | CG_RESC_EV_SUSPECT));
 			continue;
@@ -2877,7 +2883,7 @@ static void sf3_apply(struct server *s, struct session *S)
 	if (!S->dw && S->dws) {
 		free(S->dws);
 		S->dws = NULL;
-		S->df3s_owed = 0;
+		S->df3_due[0] = S->df3_due[1] = 0;
 	}
 }
 
@@ -2929,41 +2935,38 @@ static void sf3_begin(struct server *s, struct session *S, const struct dpaths *
 static void sf3_feed(struct server *s, struct session *S, int stream, uint32_t seq, const uint8_t *p, size_t len,
 		     uint64_t now_us)
 {
+	if (stream) {
+		cg_sfec_add(S->dws, &s->crc, seq, p, len, now_us);
+	} else {
+		cg_rlcw_add(S->dw, seq, p, (uint16_t)(len > CG_SYM_PLEN ? CG_SYM_PLEN : len), now_us);
+		if (!S->resc_idx)
+			cg_resc_earn(&S->resc_b, (uint32_t)len, s->cfg->rescue_pct);
+	}
 	/* the protocontroller's bytes, which loss does not hold back: B's
 	 * stream, and A's middle TCP from here with BBR (fec3.h's cg_f3_mix) */
 	cg_f3_mix(&S->df3, (uint32_t)len,
 		  stream || (s->cfg->protocontroller && !strncmp(s->cfg->protocontroller_mid_cc, "bbr", 3) &&
 			     cg_f3_tcp_port(p, len, (uint16_t)s->cfg->protocontroller_port, 0)));
-	if (stream) { /* no credit: the repair at the end of the burst (sf3_service) */
-		cg_sfec_add(S->dws, &s->crc, seq, p, len, now_us);
-		S->df3s_last_us = now_us;
-		S->df3s_owed = S->df3.mode != CG_F3_OFF;
-		return;
-	}
-	cg_rlcw_add(S->dw, seq, p, (uint16_t)(len > CG_SYM_PLEN ? CG_SYM_PLEN : len), now_us);
-	if (!S->resc_idx)
-		cg_resc_earn(&S->resc_b, (uint32_t)len, s->cfg->rescue_pct);
 	if (S->df3.mode == CG_F3_OFF)
 		return;
 	cg_f3_earn(&S->df3, (uint32_t)len, S->df3.pct, now_us);
 	S->df3_data += len;
+	S->df3_due[stream] += (int64_t)len * S->df3.pct / 100; /* as the client's f3_feed */
 }
 
-/* One repair over S's window (stream: the STREAMs', outside the credit)
- * down the path the round-robin picks (as the client's f3_repair), sent at
- * once; its bytes spent either way. */
-static void sf3_repair(struct server *s, struct session *S, uint64_t now_us, int stream)
+/* One repair over S's window down the path the round-robin picks (as the
+ * client's f3_repair), sent at once; its bytes spent either way. */
+static void sf3_repair(struct server *s, struct session *S, uint64_t now_us)
 {
-	struct cg_rlcw_tx *t = stream ? S->dws : S->dw;
 	const struct client *C = client_of(s, S);
 	uint64_t win = (uint64_t)s->cfg->fec_window_ms * 1000, span;
 	uint8_t pkt[CG_HDR_LEN + CG_REP_HDR + CG_SYM_MAX];
 	struct cg_rep_hdr rh;
 	int32_t behind[CG_MAX_LINKS];
 	uint16_t cand = 0, have = 0;
-	unsigned w, slen;
+	unsigned w = 0, slen = 0;
 	uint32_t top = 0, lag;
-	int p;
+	int p, stream;
 
 	for (int i = 0; i < CG_MAX_LINKS; i++) {
 		if (!(S->df3_links >> i & 1) || !S->path[i].used)
@@ -2979,8 +2982,7 @@ static void sf3_repair(struct server *s, struct session *S, uint64_t now_us, int
 	p = cg_f3_pick(&S->df3, cand);
 	if (p < 0) {
 		S->df3_nolink++;
-		if (!stream)
-			cg_f3_spend(&S->df3, S->df3.cost ? S->df3.cost : CG_F3_COST0);
+		cg_f3_spend(&S->df3, S->df3.cost ? S->df3.cost : CG_F3_COST0);
 		return;
 	}
 	span = cg_f3_span_us(&S->df3, win);
@@ -2989,10 +2991,19 @@ static void sf3_repair(struct server *s, struct session *S, uint64_t now_us, int
 		have |= (uint16_t)(S->dh[i].have_behind ? 1u << i : 0);
 	}
 	lag = cg_f3_lag_us(behind, have, S->df3_links, (unsigned)p, (uint32_t)(span / 2));
-	w = cg_rlcw_window(t, now_us > span ? now_us - span : 0, now_us - lag, CG_RLCW_SPAN, &top);
-	slen = w ? cg_rlcw_repair(s->gf, t, top, w, &rh, pkt + CG_HDR_LEN + CG_REP_HDR) : 0;
-	if (!slen && stream)
-		return;
+	/* the class owed most first, as the client's f3_repair */
+	stream = S->dws && S->df3_due[1] > S->df3_due[0];
+	for (int k = 0; k < 2 && !slen; k++, stream = !stream) {
+		struct cg_rlcw_tx *t = stream ? S->dws : S->dw;
+
+		if (!t)
+			continue;
+		w = cg_rlcw_window(t, now_us > span ? now_us - span : 0, now_us - lag, CG_RLCW_SPAN, &top);
+		slen = w ? cg_rlcw_repair(s->gf, t, top, w, &rh, pkt + CG_HDR_LEN + CG_REP_HDR) : 0;
+		if (!slen)
+			S->df3_due[stream] = 0;
+	}
+	stream = !stream; /* the one that went */
 	if (!slen) {
 		S->df3_empty++;
 		cg_f3_pay(&S->df3, S->df3.cost ? S->df3.cost : CG_F3_COST0);
@@ -3000,6 +3011,7 @@ static void sf3_repair(struct server *s, struct session *S, uint64_t now_us, int
 	}
 	rh.cls = stream ? CG_REP_STREAM : 0;
 	cg_rep_put(pkt + CG_HDR_LEN, &rh);
+	S->df3_due[stream] -= (int64_t)cg_f3_cost(slen);
 	S->df3_srep += (uint64_t)stream;
 	{
 		struct cg_hdr h = { .type = CG_T_REPAIR,
@@ -3021,8 +3033,7 @@ static void sf3_repair(struct server *s, struct session *S, uint64_t now_us, int
 	} else {
 		S->path[p].tx_drops++;
 	}
-	if (!stream)
-		cg_f3_spend(&S->df3, cg_f3_cost(slen));
+	cg_f3_spend(&S->df3, cg_f3_cost(slen));
 	if (s->cfg->split_eta)
 		cg_eta_add(&S->eta, (unsigned)p, cg_f3_cost(slen), now_us);
 	S->df3_span = w;
@@ -3036,7 +3047,7 @@ static void sf3_send(struct server *s, struct session *S, uint64_t now_us)
 	if (!sf3_on(s, S) || S->df3.mode == CG_F3_OFF)
 		return;
 	for (int n = 0; n < CG_F3_BURST && cg_f3_owed(&S->df3); n++)
-		sf3_repair(s, S, now_us, 0);
+		sf3_repair(s, S, now_us);
 }
 
 /* The repairs at the end of the sessions' bursts (cg_f3_due); and when the
@@ -3054,22 +3065,12 @@ static int sf3_service(struct server *s)
 		if (!S->used || !sf3_on(s, S) || S->df3.mode == CG_F3_OFF)
 			continue;
 		if (cg_f3_due(&S->df3, now_us, wait)) {
-			sf3_repair(s, S, now_us, 0);
+			sf3_repair(s, S, now_us);
 			S->df3_tail++;
-		}
-		/* the STREAMs' at the end of their burst (story 031) */
-		if (S->df3s_owed && now_us - S->df3s_last_us >= wait) {
-			S->df3s_owed = 0;
-			if (S->df3.pct) {
-				sf3_repair(s, S, now_us, 1);
-				S->df3_tail++;
-			}
 		}
 		at = S->df3.credit >= 0 ? cg_f3_due_at(&S->df3, wait) : 0;
 		if (at && (!next || at < next))
 			next = at;
-		if (S->df3s_owed && (!next || S->df3s_last_us + wait < next))
-			next = S->df3s_last_us + wait;
 	}
 	if (!next)
 		return -1;
