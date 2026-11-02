@@ -141,6 +141,11 @@ uint_in() {
 	[ "${#1}" -le 9 ] && [ "$1" -ge "$2" ] && [ "$1" -le "$3" ]
 }
 
+# only_chars WORD SET: whether WORD has nothing but SET's characters (tr's
+# notation; brackets as \133 and \135: a bracket expression with them reads
+# differently in busybox's ash and in dash).
+only_chars() { [ -z "$(printf '%s' "$1" | tr -d "$2")" ]; }
+
 list_has() {
 	case " $1 " in *" $2 "*) return 0 ;; esac
 	return 1
@@ -1351,7 +1356,8 @@ vps() {
 	for w in "$@"; do
 		# : / [ ] for the flow classes' endpoints (the VPS splits on spaces
 		# with no globs, cengarde-vps-admin)
-		case "$w" in '' | -* | *[!A-Za-z0-9._:/\[\]-]*) die "vps: '$w': letters, digits, ., _, -, :, / and brackets only" ;; esac
+		case "$w" in '' | -*) die "vps: '$w': letters, digits, ., _, -, :, / and brackets only" ;; esac
+		only_chars "$w" 'A-Za-z0-9._:/\133\135-' || die "vps: '$w': letters, digits, ., _, -, :, / and brackets only"
 	done
 	[ -s "$VPS_KEY" ] || die "no admin key yet: cengarde-setup vps-key, then on the VPS: sudo cengarde-vps-setup admin-key add '<its line>'"
 	host=$VPS_SSH_HOST
@@ -1446,11 +1452,11 @@ flow_class_one() {
 		return 0
 		;;
 	esac
-	case "$e" in
-	'' | *[!0-9a-fA-F.:/\[\]]*)
+	if [ -z "$e" ] || ! only_chars "$e" '0-9a-fA-F.:/\133\135'; then
 		log "flowclass $s: endpoint '$e': expected ADDR[/LEN][:PORT], [IPv6][/LEN][:PORT] or :PORT, left out"
 		return 0
-		;;
+	fi
+	case "$e" in
 	10.* | 192.168.* | 172.1[6-9].* | 172.2[0-9].* | 172.3[01].*)
 		case "$e" in
 		*:*)

@@ -38,6 +38,10 @@ KEYS='fec fec_code fec_pct fec_pct_min fec_window_ms fec_single fec_stream rescu
 split_spread_ms split_spread_copy reorder_margin_ms reorder_max_wait_ms governor governor_target_ms
 capacity_weights split_eta tcp_aware protocontroller_buf_kb protocontroller_queue_ms parq'
 
+# only_chars WORD SET: whether WORD has nothing but SET's characters (tr's
+# notation; brackets as \133 and \135, never in a bracket expression).
+only_chars() { [ -z "$(printf '%s' "$1" | tr -d "$2")" ]; }
+
 refuse() {
 	echo "cengarde-vps-admin: $*" >&2
 	exit 2
@@ -169,7 +173,8 @@ flows)
 	i=1
 	for w in "$@"; do
 		if [ $((i % 2)) -eq 1 ]; then
-			case $w in '' | *[!0-9a-fA-F.:/\[\]]*) refuse "flows: $w: ADDR[/LEN][:PORT], [IPv6][/LEN][:PORT] or :PORT" ;; esac
+			{ [ -n "$w" ] && only_chars "$w" '0-9a-fA-F.:/\133\135'; } ||
+				refuse "flows: $w: ADDR[/LEN][:PORT], [IPv6][/LEN][:PORT] or :PORT"
 			[ ${#w} -le 64 ] || refuse "flows: $w: too long"
 		else
 			case $w in auto | ordered | deadline | direct) ;; *) refuse "flows: $w: auto, ordered, deadline or direct" ;; esac
