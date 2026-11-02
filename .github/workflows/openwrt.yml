@@ -168,8 +168,10 @@ jobs:
         run: |
           tc=$(echo "$PWD"/sdk/staging_dir/toolchain-*)
           bin=$(find "$PWD/sdk/build_dir" -path '*/.pkgdir/cengarde/usr/sbin/cengarde')
+          # libzstd (the reliable lane) comes from the target's staging dir
+          tgt=$(echo "$PWD"/sdk/staging_dir/target-*)
           printf '#!/bin/sh\nexec %s --library-path %s %s "$@"\n' \
-            "$tc/lib/ld-musl-x86_64.so.1" "$tc/lib" "$bin" > cengarde-musl
+            "$tc/lib/ld-musl-x86_64.so.1" "$tc/lib:$tgt/usr/lib" "$bin" > cengarde-musl
           chmod +x cengarde-musl
           ./cengarde-musl version
           sudo ENGINE=c bench/lab.sh build
