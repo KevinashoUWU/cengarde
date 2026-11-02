@@ -42,7 +42,7 @@ void test_proto(void)
 
 	/* Layout: version/type, the client hint at byte 2, link at byte 3,
 	 * session, seq and ts in network order. */
-	CHECK_EQ(pkt[0], CG_PROTO_WIRE << 4 | 1); /* version 18: the nibble 3 */
+	CHECK_EQ(pkt[0], CG_PROTO_WIRE << 4 | 1); /* version 20: the nibble 5 */
 	CHECK_EQ(pkt[2], 0x5a);
 	CHECK_EQ(pkt[3], 5);
 	CHECK(!memcmp(pkt + 4, "\xde\xad\xbe\xef\x01\x02\x03\x04\xa0\xb0\xc0\xd0", 12));
@@ -104,9 +104,7 @@ void test_proto(void)
 	pkt[0] = 0x01; /* nibble 0: never a version (WireGuard's first bytes) */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
 	/* (version 2's nibble is 17's now: the versions go round) */
-	/* (version 3's nibble is 18's now, and 4's 19's) */
-	pkt[0] = 0x51; /* version 5 (no CG_F_FREE) too */
-	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
+	/* (version 3's nibble is 18's now, 4's 19's and 5's 20's) */
 	pkt[0] = 0x61; /* version 6 (no FEC parity) too */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
 	pkt[0] = 0x71; /* version 7 (no repairs) too */

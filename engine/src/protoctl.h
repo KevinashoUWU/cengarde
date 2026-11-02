@@ -8,7 +8,7 @@
  * packets by their first byte, and hands them on at once (the reorderer
  * does not hold them: a stream keeps its own order). Big-endian:
  *
- *   0     0xF0 | type     CG_PCTL_OPEN, _DATA, _ACK, _RST
+ *   0     0xF0 | type     CG_PCTL_OPEN, _DATA, _ACK, _RST, _DGM
  *   1     flags           CG_PCTLF_*
  *   2..5  stream id       chosen by the router: generation << 16 | slot
  *
@@ -21,7 +21,9 @@
  *         stream's history, both ways (zlane.h, step 3d). Protocol 19:
  *         then 4 bytes, the router's LAN device that opened it (fair.h's
  *         key of its address), so that the VPS shares its sends by device
- *         too.
+ *         too. CG_PCTLF_DGRAM with CG_PCTLF_UNREL (protocol 20): an
+ *         unreliable datagram stream, UDP into GRIT: its datagrams go as
+ *         DGM, no offsets, no ACKs, no resends of its own.
  *   DATA  6..9: the offset's low 32 bits; then the bytes (the sender's
  *         clock when it sent it is the tunnel header's ts, protocol 15:
  *         the engine says which it stamped, cg_pctl_ops.send's ts, and the
@@ -41,6 +43,9 @@
  *         last ACK (a segment sent again for nothing: the sender's RACK
  *         window widens, as RACK's with DSACK).
  *   RST   6: the reason (CG_PCTL_R_*).
+ *   DGM   6..: one datagram of an unreliable datagram stream (protocol 20),
+ *         whole: lost, late or dropped, as UDP is; the receiver writes it
+ *         at once, in the order it comes.
  *
  * No tag of its own (protocol 14, story 030): a message travels only in the
  * tunnel's STREAM class, always under its MAC, which no repair code covers
@@ -64,12 +69,13 @@
 #include "stream.h"
 
 #define CG_PCTL_MAGIC 0xF0
-enum { CG_PCTL_OPEN = 1, CG_PCTL_DATA = 2, CG_PCTL_ACK = 3, CG_PCTL_RST = 4 };
+enum { CG_PCTL_OPEN = 1, CG_PCTL_DATA = 2, CG_PCTL_ACK = 3, CG_PCTL_RST = 4, CG_PCTL_DGM = 5 };
 #define CG_PCTLF_FIN 0x01
 #define CG_PCTLF_EST 0x02
 #define CG_PCTLF_DUP 0x04 /* ACK: a duplicate came since the last ACK (the sender widens its RACK window) */
 #define CG_PCTLF_DGRAM 0x08 /* OPEN: a datagram stream to a UDP destination (protocol 18, story 031) */
 #define CG_PCTLF_ZSTD 0x10  /* OPEN of a datagram stream: each datagram zstd-compressed on the stream's history (zlane.h) */
+#define CG_PCTLF_UNREL 0x20 /* OPEN of a datagram stream: unreliable, its datagrams as DGM (protocol 20) */
 #define CG_PCTL_DGRAM_MAX 65507 /* a datagram, at most (IPv4's UDP) */
 #define CG_PCTL_HDR 6
 #define CG_PCTL_DATA_HDR 10
@@ -172,6 +178,12 @@ static inline size_t cg_pctl_put_ack(uint8_t *b, uint32_t id, uint8_t flags, con
 	return 21 + 8 * n;
 }
 
+/* A DGM's header, the datagram after it (CG_PCTL_HDR on). */
+static inline size_t cg_pctl_put_dgm(uint8_t *b, uint32_t id)
+{
+	return cg_pctl_hdr(b, CG_PCTL_DGM, 0, id);
+}
+
 static inline size_t cg_pctl_put_rst(uint8_t *b, uint32_t id, uint8_t reason)
 {
 	cg_pctl_hdr(b, CG_PCTL_RST, 0, id);
@@ -189,7 +201,7 @@ struct cg_pctl_msg {
 	uint16_t port;
 	uint8_t addr[16];
 	uint32_t host; /* the router's LAN device (protocol 19) */
-	/* DATA */
+	/* DATA, DGM */
 	uint32_t off, ts; /* ts: the tunnel header's (cg_pctl_rx sets it) */
 	const uint8_t *data;
 	uint32_t len;
@@ -254,6 +266,10 @@ static inline int cg_pctl_parse(const uint8_t *p, size_t len, struct cg_pctl_msg
 			return -1;
 		m->reason = p[6];
 		return 0;
+	case CG_PCTL_DGM:
+		m->data = p + CG_PCTL_HDR;
+		m->len = (uint32_t)(len - CG_PCTL_HDR);
+		return 0;
 	default:
 		return -1;
 	}
@@ -269,8 +285,10 @@ static inline int cg_pctl_parse(const uint8_t *p, size_t len, struct cg_pctl_msg
  *                       the packet again;
  *   CG_PCTL_NACK_ACK    an ACK: a fresh one says more than the old (every
  *                       ACK carries the whole state), not the packet again;
- *   CG_PCTL_NACK_RESEND an OPEN or a RST (rare, idempotent), or one that
- *                       does not parse: sent again, as before.
+ *   CG_PCTL_NACK_RESEND an OPEN or a RST (rare, idempotent), a DGM (UDP's
+ *                       datagram, again while the rescue's horizon lasts:
+ *                       protection within its deadline), or one that does
+ *                       not parse: sent again, as before.
  * The packet is the sender's own copy. */
 enum { CG_PCTL_NACK_NOT = 0, CG_PCTL_NACK_DATA, CG_PCTL_NACK_ACK, CG_PCTL_NACK_RESEND };
 

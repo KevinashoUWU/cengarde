@@ -222,6 +222,8 @@ struct cg_config {
 	uint32_t protocontroller_dead_s;          /* a stream without progress this long, with something pending, is reset; 0: never */
 	uint32_t protocontroller_reo_ms;          /* RACK's reordering window beyond a quarter of the round trip */
 	int protocontroller_fair;                 /* the sends shared by host before flow (fair.h, story 031) */
+	int protocontroller_udp;                  /* the router: the LAN's other UDP into GRIT as unreliable datagrams
+						   * (TPROXY on protocontroller_port + 1, protocol 20) */
 	int protocontroller_nack;                 /* a tunnel NACK of a GRIT message is a loss to send again (1) or only a hint (0) */
 	int subflow;                  /* number each link's DATA (sseq) and say back what a link lost within itself (subflow.h) */
 	int protocontroller_offer;    /* with subflow, GRIT offers the engine's capacity and a quarter (streamcc.h's cg_scc_offer) */

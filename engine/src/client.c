@@ -6168,6 +6168,7 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 		pc.dgram = cg_fc_reliable(&cfg->flow_class); /* the reliable lane (story 031) */
 		pc.zstd = cfg->reliable_zstd;
 		pc.fair = cfg->protocontroller_fair;
+		pc.udp = cfg->protocontroller_udp; /* the LAN's other UDP, unreliable (protocol 20) */
 		if (cfg->protocontroller == CG_PCTL_A && pctl_vps_addr(cfg, &pc.a_peer, err, sizeof(err)) < 0) {
 			cg_err("%s", err);
 			goto out;
