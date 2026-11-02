@@ -402,6 +402,15 @@ struct client {
 	struct cg_rlcw_tx *f3s;
 	int64_t f3_due[2];
 	uint64_t f3_srep;
+	/* in redundancy with redund_spare's protection (story 031, step 2):
+	 * the STREAMs' repairs in what the other links spare (code_send), a
+	 * credit at fec_pct of their bytes (x100) and a repair at the latest
+	 * redund_spare_code_ms after the first STREAM without one; whether the
+	 * last batch was redundancy; the link the streams went on alone */
+	int64_t sr_credit;
+	uint64_t sr_fresh_us;
+	uint8_t sr_live;
+	int8_t sr_link;
 	struct cg_crc32c crc;
 	struct cg_f3 f3;
 	uint16_t f3_links;
@@ -1368,6 +1377,10 @@ static int pnc_first(const struct client *c, uint16_t set)
 static void spare_masks(struct client *c, int m, uint16_t carry, uint64_t now_us, const int8_t *first);
 static void spare_close(struct client *c, uint64_t now_us);
 static int code_service(struct client *c, uint64_t now_us);
+static int sr_on(const struct client *c);
+static uint64_t f3_window_us(const struct client *c);
+static int sr_service(struct client *c, uint64_t now_us);
+static uint64_t sr_due(const struct client *c);
 static uint64_t code_due(const struct client *c);
 static int f3_tail(struct client *c, uint64_t now_us);
 static int dwide(const struct client *c, uint64_t now_ms);
@@ -1716,6 +1729,7 @@ static void fec_service(struct client *c)
 		any = 1;
 	}
 	any |= code_service(c, now_us); /* rs | rlc: the block's or the window's deadline */
+	any |= sr_service(c, now_us);   /* the STREAMs' in redundancy (story 031) */
 	any |= f3_tail(c, now_us);      /* FEC v3: the repair at the end of a burst */
 	if (any)
 		fec_send(c, now_us);
@@ -1729,10 +1743,12 @@ static int fec_timeout(const struct client *c)
 	if (c->sp_grp.n && (!due || c->sp_grp.t0_us + (uint64_t)c->cfg->fec_wait_ms * 1000 < due))
 		due = c->sp_grp.t0_us + (uint64_t)c->cfg->fec_wait_ms * 1000;
 	{
-		uint64_t cd = code_due(c);
+		uint64_t cd = code_due(c), sd = sr_due(c);
 
 		if (cd && (!due || cd < due))
 			due = cd;
+		if (sd && (!due || sd < due))
+			due = sd;
 	}
 	if (c->f3w && c->f3.mode != CG_F3_OFF && c->f3.credit >= 0) {
 		/* in debt, nothing is due until a DATA pays it (and that DATA
@@ -1917,6 +1933,60 @@ static int code_service(struct client *c, uint64_t now_us)
 	return c->nfecq != n;
 }
 
+/* Redundancy, the STREAMs' protection (story 031, step 2): one repair
+ * over their window (the last fec_window_ms), in what a link other than
+ * the streams' spares (code_send, a priority take of its bucket); paid
+ * from the credit whether it went or not. */
+static void sr_repair(struct client *c, uint64_t now_us)
+{
+	uint64_t win = f3_window_us(c);
+	struct cg_rep_hdr h;
+	uint32_t top = 0;
+	unsigned w, slen;
+	int n;
+
+	if (c->nfecq == CG_FEC_Q)
+		fec_send(c, now_us);
+	w = cg_rlcw_window(c->f3s, now_us > win ? now_us - win : 0, now_us, CG_RLCW_SPAN, &top);
+	slen = w ? cg_rlcw_repair(&c->sp_gf, c->f3s, top, w, &h, c->fecq[c->nfecq].p + CG_HDR_LEN + CG_REP_HDR) : 0;
+	c->sr_credit -= (int64_t)cg_f3_cost(slen ? slen : CG_F3_COST0) * 100;
+	c->sr_fresh_us = 0;
+	if (!slen)
+		return;
+	h.cls = CG_REP_STREAM;
+	n = c->nfecq;
+	code_send(c, &h, NULL, slen, c->sr_link, now_us);
+	if (c->nfecq != n)
+		c->f3_srep++;
+}
+
+/* After a batch in redundancy: the repairs its STREAMs earned. */
+static void sr_send(struct client *c, uint64_t now_us)
+{
+	for (int n = 0; n < CG_F3_BURST && sr_on(c) && c->sr_credit >= (int64_t)CG_F3_COST0 * 100; n++)
+		sr_repair(c, now_us);
+}
+
+/* The repair at the latest redund_spare_code_ms after the first STREAM
+ * without one (0: none waits); whether one was queued. */
+static uint64_t sr_due(const struct client *c)
+{
+	return sr_on(c) && c->sr_fresh_us && c->sr_credit >= 0
+		       ? c->sr_fresh_us + (uint64_t)c->cfg->redund_spare_code_ms * 1000
+		       : 0;
+}
+
+static int sr_service(struct client *c, uint64_t now_us)
+{
+	uint64_t due = sr_due(c);
+	int n = c->nfecq;
+
+	if (!due || now_us < due)
+		return 0;
+	sr_repair(c, now_us);
+	return c->nfecq != n;
+}
+
 /* redund_spare (spare.h): of the m packets of a batch that go to every
  * carrier, what the links after the first (first[], from eta.h; -1: not
  * known, every copy) carry: a small packet always (counted), the rest by
@@ -1953,6 +2023,8 @@ static void spare_masks(struct client *c, int m, uint16_t carry, uint64_t now_us
 			}
 			pf = pnc_first(c, pset);
 
+			if (pf >= 0)
+				c->sr_link = (int8_t)pf; /* its repairs go elsewhere (sr_send) */
 			if (pf >= 0 && (pf != f || c->sp_how == CG_SPARE_COPIES)) {
 				c->cmask[j] = (uint16_t)(1u << pf);
 				continue;
@@ -2225,6 +2297,11 @@ static void f3_feed(struct client *c, int stream, uint32_t seq, const uint8_t *p
 {
 	if (stream) {
 		cg_sfec_add(c->f3s, &c->crc, seq, p, len, now_us);
+		if (sr_on(c)) { /* redundancy: redund_spare's repairs (sr_send) */
+			c->sr_credit += (int64_t)len * c->cfg->fec_pct;
+			if (!c->sr_fresh_us)
+				c->sr_fresh_us = now_us ? now_us : 1;
+		}
 	} else {
 		cg_rlcw_add(c->f3w, seq, p, (uint16_t)(len > CG_SYM_PLEN ? CG_SYM_PLEN : len), now_us);
 		/* the parity the server asks for again comes from this window
@@ -2354,6 +2431,20 @@ static int f3_tail(struct client *c, uint64_t now_us)
 	return c->nfecq != n;
 }
 
+/* Whether the STREAMs get a window (fec_stream, story 031): with GRIT,
+ * and FEC v3 or redund_spare's protection (parity, mix, rs or rlc). */
+static int sr_wanted(const struct cg_config *cfg)
+{
+	return cfg->fec_stream && cfg->protocontroller == CG_PCTL_B &&
+	       ((cfg->fec && cfg->fec_code == CG_FEC_RLC) || cfg->redund_spare >= CG_SPARE_PARITY);
+}
+
+/* Whether the STREAMs are protected in redundancy now (step 2). */
+static int sr_on(const struct client *c)
+{
+	return c->f3s && c->sr_live && c->cfg->redund_spare >= CG_SPARE_PARITY;
+}
+
 /* The window allocated or freed with the knobs (start and each reload),
  * never per packet. */
 static void f3_apply(struct client *c)
@@ -2368,23 +2459,27 @@ static void f3_apply(struct client *c)
 		/* the STREAMs' window (story 031): with a stream to protect,
 		 * when the operator asks (fec_stream: resilience for latency
 		 * and capacity) */
-		if (c->cfg->fec_stream && c->cfg->protocontroller == CG_PCTL_B && !c->f3s) {
-			cg_crc32c_init(&c->crc);
-			if (!(c->f3s = calloc(1, sizeof(*c->f3s))))
-				cg_warn("fec_code = rlc: out of memory for the streams' window, no repairs over them");
-		}
 	} else if (c->f3w) {
 		free(c->f3w);
 		c->f3w = NULL;
 		cg_f3_idle(&c->f3);
 		c->f3.mode = CG_F3_OFF;
 	}
-	if ((!c->cfg->fec || c->cfg->fec_code != CG_FEC_RLC || c->cfg->protocontroller != CG_PCTL_B ||
-	     !c->cfg->fec_stream) &&
-	    c->f3s) {
+	/* the STREAMs' window (story 031): with a stream to protect, when the
+	 * operator asks (fec_stream: resilience for latency and capacity), for
+	 * FEC v3 in bonding or redund_spare's protection in redundancy */
+	if (sr_wanted(c->cfg)) {
+		if (!c->f3s) {
+			cg_crc32c_init(&c->crc);
+			if (!(c->f3s = calloc(1, sizeof(*c->f3s))))
+				cg_warn("fec_stream: out of memory for the streams' window, no repairs over them");
+		}
+	} else if (c->f3s) {
 		free(c->f3s);
 		c->f3s = NULL;
 		c->f3_due[0] = c->f3_due[1] = 0;
+		c->sr_credit = 0;
+		c->sr_fresh_us = 0;
 	}
 }
 
@@ -2486,7 +2581,7 @@ static void up_one(struct client *c, struct upctx *u, int m, uint8_t *buf, size_
 	if (c->scls[m]) {
 		/* GRIT recovers its own; FEC v3 covers it in its own window
 		 * (story 031) */
-		if (f3_on(c) && c->f3s)
+		if (c->f3s && (f3_on(c) || sr_on(c)))
 			f3_feed(c, 1, c->sseq[m], buf, len, now_us);
 	} else if (f3_on(c)) {
 		f3_feed(c, 0, c->sseq[m], buf, len, now_us);
@@ -2628,6 +2723,7 @@ static void pctl_send(void *ctx, uint32_t peer, uint32_t sid, uint8_t *const *ms
 		u.carry |= ps;
 	}
 	f3_begin(c, &u);
+	c->sr_live = (uint8_t)!u.split; /* redundancy: redund_spare protects the STREAMs */
 	for (int m = 0; m < n; m++) {
 		c->pavoid = avoid[m] ? avoid[m] - 1 : -1;
 		up_one(c, &u, m, msg[m], len[m], now_us, copy[m]);
@@ -2639,6 +2735,7 @@ static void pctl_send(void *ctx, uint32_t peer, uint32_t sid, uint8_t *const *ms
 	c->last_traffic_ms = now_ms;
 	send_links(c, n, now_ms, u.live, u.carry, u.k.dup);
 	f3_send(c, now_us);
+	sr_send(c, now_us);
 	if (c->nfecq)
 		fec_send(c, now_us);
 }
@@ -3268,7 +3365,7 @@ static int f3_stream_covers(const struct client *c, uint32_t seq)
 {
 	uint16_t l;
 
-	return f3_on(c) && c->f3s && c->f3.mode != CG_F3_OFF && c->f3.pct && cg_rlcw_get(c->f3s, seq, &l);
+	return c->f3s && ((f3_on(c) && c->f3.mode != CG_F3_OFF && c->f3.pct) || sr_on(c)) && cg_rlcw_get(c->f3s, seq, &l);
 }
 
 static void on_sfloss(struct client *c, const uint8_t *payload, size_t plen, uint64_t now_ms)
@@ -5889,6 +5986,7 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 	}
 	memset(c, 0, sizeof(*c));
 	c->pavoid = -1;
+	c->sr_link = -1; /* no stream went on a link of its own yet */
 	/* the erasure codes (story 021): GF(2^8)'s tables (rlc.h) and Leopard
 	 * (rs.h), before any thread; rs falls back to rlc without Leopard */
 	cg_gf_init(&c->sp_gf);
