@@ -407,6 +407,7 @@ BOND_PEP_SKIP=${BOND_PEP_SKIP:-} # cga/cgb: TCP ports (iptables multiport) the r
 BOND_RELIABLE=${BOND_RELIABLE:-0} # cgb, up: the small flow from the LAN host to the far host's 7400 on the reliable lane (story 031)
 BOND_SMALL_JSON=${BOND_SMALL_JSON:-0} # 1: the small flow's payload a sensor's JSON reading (udpgen -j), telemetry for zstd
 BOND_HOG=${BOND_HOG:-0} # cgb: a second LAN device (192.168.79.3) with this many TCP connections at once next to the measured one (story 031, the sends by host)
+BOND_HOG_UDP=${BOND_HOG_UDP:-} # cgb, with BOND_HOG 1: that device sends UDP at this rate instead (iperf3 -b, e.g. 40M), what the TUN carries
 BOND_PEP_CGMIDCC=${BOND_PEP_CGMIDCC:-} # cga: protocontroller_mid_cc at both ends (empty: the engine's, bbr)
 BOND_PEP_KCP=${BOND_PEP_KCP:---mode fast --datashard 0 --parityshard 0 --nocomp --crypt none --mtu 1300}
 BOND_LIVE_MBIT=${BOND_LIVE_MBIT:-8}
@@ -815,7 +816,8 @@ bond_pep_traffic() {
 		if [ "$BOND_HOG" -gt 0 ]; then
 			# shellcheck disable=SC2046 # -R or nothing
 			ip netns exec "$NS_LAN" iperf3 -c "$BOND_PEP_DST" -p 5202 -B 192.168.79.3 -t "$s" -C "${BOND_PEP_LANCC:-$cc}" \
-				-P "$BOND_HOG" -J $([ "$dir" = down ] && echo -R) >"$RUN/hog.json" 2>"$RUN/hog.err" &
+				-P "$BOND_HOG" -J ${BOND_HOG_UDP:+-u -b "$BOND_HOG_UDP" -l 1200} $([ "$dir" = down ] && echo -R) \
+				>"$RUN/hog.json" 2>"$RUN/hog.err" &
 			hog=$!
 		fi
 		# shellcheck disable=SC2046 # -R or nothing
