@@ -13,8 +13,8 @@ static void test_codec(void)
 	struct cg_st_ack a = { .aseq = 0xbeef, .cum = 0x100000005ull, .edge = 0x100100000ull, .n = 2 }, u;
 	size_t n;
 
-	n = cg_pctl_put_open(b, 0x00020003, 0, 4, a4, 5201, 0xdeadbeef);
-	CHECK_EQ(n, 17); /* the LAN device behind the address (19) */
+	n = cg_pctl_put_open(b, 0x00020003, 0, 4, a4, 5201, 0xdeadbeef, 46);
+	CHECK_EQ(n, 18); /* the LAN device behind the address (19), its DSCP (21) */
 	CHECK(cg_pctl_is(b, n));
 	CHECK_EQ(cg_pctl_parse(b, n, &m), 0);
 	CHECK_EQ(m.type, CG_PCTL_OPEN);
@@ -24,11 +24,13 @@ static void test_codec(void)
 	CHECK(!memcmp(m.addr, a4, 4));
 	CHECK_EQ(m.flags, 0); /* a TCP destination */
 	CHECK_EQ(m.host, 0xdeadbeef);
-	CHECK(cg_pctl_parse(b, n - 1, &m) < 0);
-	n = cg_pctl_put_open(b, 9, CG_PCTLF_DGRAM, 6, a6, 443, 7);
-	CHECK_EQ(n, 29);
+	CHECK_EQ(m.dscp, 46);
+	CHECK(cg_pctl_parse(b, n - 1, &m) < 0); /* a 20's OPEN, without it */
+	n = cg_pctl_put_open(b, 9, CG_PCTLF_DGRAM, 6, a6, 443, 7, 0xff);
+	CHECK_EQ(n, 30);
 	CHECK_EQ(cg_pctl_parse(b, n, &m), 0);
 	CHECK_EQ(m.host, 7);
+	CHECK_EQ(m.dscp, 0x3f); /* its 6 bits */
 	CHECK(cg_pctl_parse(b, 25, &m) < 0); /* an 18's OPEN, without it */
 	CHECK(!memcmp(m.addr, a6, 16));
 	CHECK_EQ(m.flags, CG_PCTLF_DGRAM); /* the reliable lane's: UDP (18) */
@@ -231,7 +233,7 @@ static void test_nack_kind(void)
 	CHECK_EQ(cg_pctl_nack_kind(b, n, &id, &off), CG_PCTL_NACK_ACK);
 	CHECK_EQ(id, 9);
 	/* an OPEN, a RST: sent again */
-	n = cg_pctl_put_open(b, 9, 0, 4, a4, 80, 0);
+	n = cg_pctl_put_open(b, 9, 0, 4, a4, 80, 0, 0);
 	CHECK_EQ(cg_pctl_nack_kind(b, n, &id, &off), CG_PCTL_NACK_RESEND);
 	n = cg_pctl_put_rst(b, 9, CG_PCTL_R_PEER);
 	CHECK_EQ(cg_pctl_nack_kind(b, n, &id, &off), CG_PCTL_NACK_RESEND);

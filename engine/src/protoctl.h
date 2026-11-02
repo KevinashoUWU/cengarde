@@ -21,7 +21,10 @@
  *         stream's history, both ways (zlane.h, step 3d). Protocol 19:
  *         then 4 bytes, the router's LAN device that opened it (fair.h's
  *         key of its address), so that the VPS shares its sends by device
- *         too. CG_PCTLF_DGRAM with CG_PCTLF_UNREL (protocol 20): an
+ *         too. Protocol 21: then 1 byte, the DSCP the device marked the
+ *         flow with (its SYN's, its first datagram's; dscp.h): both ends
+ *         mark their sockets with it, and it chooses its tier in the
+ *         sends. CG_PCTLF_DGRAM with CG_PCTLF_UNREL (protocol 20): an
  *         unreliable datagram stream, UDP into GRIT: its datagrams go as
  *         DGM, no offsets, no ACKs, no resends of its own.
  *   DATA  6..9: the offset's low 32 bits; then the bytes (the sender's
@@ -79,7 +82,7 @@ enum { CG_PCTL_OPEN = 1, CG_PCTL_DATA = 2, CG_PCTL_ACK = 3, CG_PCTL_RST = 4, CG_
 #define CG_PCTL_DGRAM_MAX 65507 /* a datagram, at most (IPv4's UDP) */
 #define CG_PCTL_HDR 6
 #define CG_PCTL_DATA_HDR 10
-#define CG_PCTL_OPEN_MAX (CG_PCTL_HDR + 3 + 16 + 4)
+#define CG_PCTL_OPEN_MAX (CG_PCTL_HDR + 3 + 16 + 5)
 #define CG_PCTL_ACK_MAX (CG_PCTL_HDR + 15 + 8 * CG_ST_ACK_RANGES)
 #define CG_PCTL_NOOWD INT32_MIN /* an ACK with no one-way delay */
 #define CG_PCTL_RST_LEN (CG_PCTL_HDR + 1)
@@ -136,9 +139,10 @@ static inline size_t cg_pctl_hdr(uint8_t *b, unsigned type, uint8_t flags, uint3
 }
 
 /* OPEN to family (4 or 6) addr (4 or 16 bytes, network order), port (host
- * order), for the LAN device host (fair.h). Returns its length. */
+ * order), for the LAN device host (fair.h), marked dscp (dscp.h). Returns
+ * its length. */
 static inline size_t cg_pctl_put_open(uint8_t *b, uint32_t id, uint8_t flags, int family, const uint8_t *addr,
-				       uint16_t port, uint32_t host)
+				       uint16_t port, uint32_t host, uint8_t dscp)
 {
 	size_t al = family == 6 ? 16 : 4;
 
@@ -148,7 +152,8 @@ static inline size_t cg_pctl_put_open(uint8_t *b, uint32_t id, uint8_t flags, in
 	b[8] = (uint8_t)port;
 	memcpy(b + 9, addr, al);
 	cg_pctl_be32(b + 9 + al, host);
-	return 9 + al + 4;
+	b[13 + al] = dscp;
+	return 9 + al + 5;
 }
 
 /* A DATA's header, the bytes after it (CG_PCTL_DATA_HDR on). Its clock is
@@ -201,6 +206,7 @@ struct cg_pctl_msg {
 	uint16_t port;
 	uint8_t addr[16];
 	uint32_t host; /* the router's LAN device (protocol 19) */
+	uint8_t dscp;  /* its DSCP (protocol 21) */
 	/* DATA, DGM */
 	uint32_t off, ts; /* ts: the tunnel header's (cg_pctl_rx sets it) */
 	const uint8_t *data;
@@ -229,12 +235,14 @@ static inline int cg_pctl_parse(const uint8_t *p, size_t len, struct cg_pctl_msg
 			return -1;
 		m->family = p[6];
 		m->port = (uint16_t)(p[7] << 8 | p[8]);
-		if (m->family == 4 && len >= 17) {
+		if (m->family == 4 && len >= 18) {
 			memcpy(m->addr, p + 9, 4);
 			m->host = cg_pctl_rd32(p + 13);
-		} else if (m->family == 6 && len >= 29) {
+			m->dscp = p[17] & 0x3f;
+		} else if (m->family == 6 && len >= 30) {
 			memcpy(m->addr, p + 9, 16);
 			m->host = cg_pctl_rd32(p + 25);
+			m->dscp = p[29] & 0x3f;
 		} else {
 			return -1;
 		}

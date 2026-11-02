@@ -958,6 +958,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	c->protocontroller_dead_s = 60;
 	c->protocontroller_reo_ms = 10;
 	c->protocontroller_fair = 1;
+	c->protocontroller_dscp = 1;
 	c->protocontroller_nack = 1;
 	c->subflow = 0;
 	c->protocontroller_offer = 1;
@@ -1086,6 +1087,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	    get_u32(&ini, "", "protocontroller_reo_ms", 0, 1000, &c->protocontroller_reo_ms, err, errlen) ||
 	    get_bool(&ini, "", "protocontroller_fair", &c->protocontroller_fair, err, errlen) ||
 	    get_bool(&ini, "", "protocontroller_udp", &c->protocontroller_udp, err, errlen) ||
+	    get_bool(&ini, "", "protocontroller_dscp", &c->protocontroller_dscp, err, errlen) ||
 	    get_bool(&ini, "", "protocontroller_nack", &c->protocontroller_nack, err, errlen) ||
 	    get_bool(&ini, "", "subflow", &c->subflow, err, errlen) ||
 	    get_bool(&ini, "", "protocontroller_offer", &c->protocontroller_offer, err, errlen) ||
@@ -1507,6 +1509,7 @@ const char *cg_config_restart_needed(const struct cg_config *a, const struct cg_
 					     a->protocontroller_nack != b->protocontroller_nack ||
 					     a->protocontroller_fair != b->protocontroller_fair ||
 					     a->protocontroller_udp != b->protocontroller_udp ||
+					     a->protocontroller_dscp != b->protocontroller_dscp ||
 					     a->protocontroller_offer != b->protocontroller_offer || a->link_cc != b->link_cc ||
 					     strcmp(a->protocontroller_cc, b->protocontroller_cc) ||
 					     strcmp(a->protocontroller_mid_cc, b->protocontroller_mid_cc) ||
