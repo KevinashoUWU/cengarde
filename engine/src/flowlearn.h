@@ -18,7 +18,12 @@
  * own, and unheld QUIC lost half to 85 % of its rate to it in the lab's
  * bonding; in redundancy it trades the tunnel's rescue (rate on lossy
  * links, -30 %) for latency (p99 228 -> 68 ms on cell4), so flow_learn is
- * the operator's (off by default). A flow is both ways of a pair of endpoints (the key is the same
+ * the operator's (off by default). Split is the sender's mode, not a
+ * packet's: a few of a split flow's packets go unsplit (small ones, a quiet
+ * moment), and unheld they jumped the held rest (the field, 2026-11-02:
+ * aioquic in bonding 2.1 against 4.4 Mbit/s held), so nothing goes unheld
+ * until CG_FL_QUIET_MS after the last split packet. A flow is both ways of
+ * a pair of endpoints (the key is the same
  * either way); it is forgotten CG_FL_TTL_MS after its last packet (a QUIC
  * connection says it only in its handshake: every packet of it after keeps
  * it remembered). A rule (flow_class) still has the last word.
@@ -38,6 +43,7 @@
 #define CG_FL_SLOTS 512 /* flows remembered at once (a power of two) */
 #define CG_FL_PROBE 8   /* slots looked at for a key */
 #define CG_FL_TTL_MS 120000
+#define CG_FL_QUIET_MS 2000 /* the sender splits no more: unheld from then */
 
 enum { CG_FL_NONE = 0, CG_FL_QUIC, CG_FL_SRT, CG_FL_NACK, CG_FL_KINDS };
 
@@ -46,6 +52,7 @@ struct cg_fl {
 	uint64_t seen_ms[CG_FL_SLOTS];
 	uint8_t kind[CG_FL_SLOTS];
 	uint64_t learned[CG_FL_KINDS]; /* flows learned, by kind (the status) */
+	uint64_t split_ms;             /* the last split packet (0: none yet) */
 };
 
 _Static_assert(!(CG_FL_SLOTS & (CG_FL_SLOTS - 1)), "a power of two");
@@ -177,6 +184,19 @@ static inline int cg_fl_observe(struct cg_fl *t, const uint8_t *b, size_t len, u
 	if (kind == CG_FL_NACK && (sp & 1) && (dp & 1))
 		cg_fl_put(t, cg_fl_key(sa, (uint16_t)(sp - 1), da, (uint16_t)(dp - 1)), kind, now_ms);
 	return kind;
+}
+
+/* A packet that came split (CG_F_SPLIT) at now_ms: the sender splits. */
+static inline void cg_fl_split(struct cg_fl *t, uint64_t now_ms)
+{
+	t->split_ms = now_ms ? now_ms : 1;
+}
+
+/* Whether the sender has not split for CG_FL_QUIET_MS (or ever) by now_ms:
+ * only then does a learned flow go unheld. */
+static inline int cg_fl_unsplit(const struct cg_fl *t, uint64_t now_ms)
+{
+	return !t->split_ms || now_ms - t->split_ms > CG_FL_QUIET_MS;
 }
 
 /* What t knows of the flow of IP packet b (len bytes) at now_ms: its kind

@@ -300,8 +300,45 @@ su jitter, p99 − p50, y el peor sobre la mediana).
   recupera solo igual gana con el reordenador del túnel en bonding, porque
   el desorden entre enlaces lo hace el túnel, no la red; su «pasar directo»
   solo vale sin reparto, y aun ahí cambia caudal en enlaces con pérdida (el
-  rescate del túnel) por latencia. Por eso actúa solo sin reparto
-  (`CG_F_SPLIT`) y queda a elección del operador.
+  rescate del túnel) por latencia. Por eso actúa solo sin reparto y queda a
+  elección del operador.
+- **El terreno** (2026-11-02, testnet de 4 módems, p18 en los dos extremos,
+  2 rondas por brazo; `~/campo/2026-11-02/quic18` y `quic18b`). Primero
+  aioquic (`quicperf.py`, cubic, por `10.79.0.1`: la IP pública del VPS sale
+  por fuera del túnel), luego un navegador de verdad: Chromium 155 con
+  HTTP/3 forzado (Playwright, `h3perf.py`) contra `dl.google.com` (el QUIC
+  de Google) y contra un Caddy del VPS (quic-go), al que Chrome le sube.
+  Mbit/s; entre paréntesis el p99 de una consulta chica con carga.
+
+  | Brazo | aioquic bajada / subida | Google → Chrome | quic-go → Chrome | Chrome → quic-go |
+  | --- | --- | --- | --- | --- |
+  | bonding, retenido | 3,8 y 5,0 / 1,8 y 1,7 | 38 (2677 ms) y 77 (386) | 14,0 y 13,7 | 23,0 y 10,5 |
+  | bonding, aprendido | 2,2 y 2,1 / 1,0 y 1,1 | 75 (789) y 86 (187) | 3,4 y 2,5 | 12,9 y 11,8 |
+  | redundancia, retenido | 8,4 y 10,4 / 15,9 y 19,1 | 95 (318) y 108 (257) | 9,2 y 2,9 | 15,5 y 17,3 |
+  | redundancia, aprendido | 5,3 y 6,8 / 23,1 y 8,2 | 107 (203) y 98 (296) | 2,2 y 2,2 | 19,0 y 19,3 |
+
+  - **Manda la pila del que envía.** La de Google (la de Chrome) adapta sus
+    umbrales de pérdida a lo que ve: sin retener empata o gana, también en
+    bonding. aioquic y quic-go usan los de la RFC 9002 fijos (3 paquetes,
+    9/8 del RTT): con ~34 ms de RTT, unos 4 ms de variación del celular ya
+    son «pérdida»; el 98–100 % de lo que aioquic dio por perdido llegó
+    después (el túnel no perdió nada: `lost` = `late`), y sin retener caen a
+    la cuarta parte o menos.
+  - **El reparto por paquete le pega a QUIC:** Google bajó ~100 Mbit/s en
+    redundancia y 38–86 en bonding, donde TCP va por GRIT (más de 200 con
+    TCP contra Cloudflare). QUIC no entra en GRIT (UDP sigue siendo UDP).
+  - **Un defecto del guarda:** se miraba `CG_F_SPLIT` por paquete, y los
+    pocos paquetes sin repartir de un flujo repartido (los chicos, un
+    momento quieto) pasaban adelante del resto retenido. Ahora el reparto es
+    el modo del que envía: nada pasa sin retener hasta `CG_FL_QUIET_MS`
+    (2 s) después del último paquete repartido (`cg_fl_split`,
+    `cg_fl_unsplit`).
+  - **El preset de redundancia no lo enciende:** se probó (el usuario:
+    «deduplicado pero desordenado») y se revirtió. Retenido, Chrome con
+    Google pierde poco (la bajada empata, la subida 16 contra 19); sin
+    retener, un servidor con una pila ingenua cae a la cuarta parte.
+    `flow_learn` queda para quien sabe que su QUIC va a Google, Meta y
+    parecidos.
 
 ## Diseño del paso 3: las clases de UDP (2026-11-02, con el usuario)
 
@@ -354,8 +391,10 @@ que le conviene:
 
 ## Pendiente
 
-- Terreno: `fec_stream` en redundancia, el carril fiable (con zstd) y
-  `flow_learn` en redundancia.
+- Terreno: `fec_stream` en redundancia y el carril fiable (con zstd).
+- QUIC en bonding (38–86 Mbit/s contra ~100 en redundancia): repartir por
+  flujo (todo un flujo QUIC por un enlace, el plan por flujo de la historia
+  014) en vez de por paquete, que MPGRIT haría natural.
 - Prioridad del carril fiable sobre lo masivo dentro de GRIT.
 - Un analizador de encabezados más amplio y firmas configurables o
   aprendidas para el detector (usuario).

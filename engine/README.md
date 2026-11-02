@@ -427,7 +427,10 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
   (`flowlearn.h`). En bonding nunca actúa: sin retener, el QUIC del
   laboratorio perdió de la mitad al 85 % de su caudal; en redundancia bajó el
   p99 con carga (228 → 68 ms en `cell4`) y costó ~30 % del caudal en enlaces
-  con pérdida. Una regla `flow_class` manda sobre lo aprendido.
+  con pérdida; en terreno, Chrome con el QUIC de Google empató o ganó sin
+  retener, y aioquic y quic-go (umbrales de pérdida fijos) cayeron a la
+  cuarta parte. Mientras el otro extremo reparta (y 2 s después), no actúa.
+  Una regla `flow_class` manda sobre lo aprendido.
 - **`reliable_zstd` (`yes`), en el router:** el carril fiable comprimido con
   zstd, cada datagrama sobre la historia de su flujo (`zlane.h`; telemetría
   JSON en el laboratorio: 5 veces más chica). Necesita que los dos motores se

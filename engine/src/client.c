@@ -3872,8 +3872,10 @@ static void down_deliver(struct client *c, const struct cg_hdr *h, unsigned link
 	fc = cg_fc_match(&c->cfg->flow_class, payload, len); /* as the server's */
 	if (c->cfg->flow_learn) {
 		cg_fl_observe(&c->fl, payload, len, now_ms);
-		if (fc == CG_FC_NONE && !(h->flags & CG_F_SPLIT) && cg_fl_kind(&c->fl, payload, len, now_ms))
-			fc = CG_FC_DIRECT; /* as the server's: never when split */
+		if (h->flags & CG_F_SPLIT)
+			cg_fl_split(&c->fl, now_ms);
+		if (fc == CG_FC_NONE && cg_fl_unsplit(&c->fl, now_ms) && cg_fl_kind(&c->fl, payload, len, now_ms))
+			fc = CG_FC_DIRECT; /* as the server's: never while the sender splits */
 	}
 	cg_fc_hold(fc, dg == CG_DG_TS, &k.waits, &k.nohold);
 	v = cg_ro_in(&c->rxs.ro, &c->pool, &c->rocf, &k, rset, &buf);

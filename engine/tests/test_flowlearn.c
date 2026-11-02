@@ -119,5 +119,13 @@ void test_flowlearn(void)
 	}
 	len = udp4(b, "10.7.255.1", 40000, "142.250.0.1", 443, p, 1200);
 	CHECK_EQ(cg_fl_kind(t, b, len, 5000 + 4 * CG_FL_SLOTS), CG_FL_QUIC); /* the newest stays */
+
+	/* split is the sender's mode: unheld only CG_FL_QUIET_MS after the
+	 * last split packet */
+	CHECK(cg_fl_unsplit(t, 1)); /* never split */
+	cg_fl_split(t, 10000);
+	CHECK(!cg_fl_unsplit(t, 10000));
+	CHECK(!cg_fl_unsplit(t, 10000 + CG_FL_QUIET_MS));
+	CHECK(cg_fl_unsplit(t, 10001 + CG_FL_QUIET_MS));
 	free(t);
 }

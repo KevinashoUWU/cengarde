@@ -7,7 +7,7 @@ archivos:
 
 # `flow_learn`
 
-Reconoce por flujo QUIC (su encabezado largo), SRT (su handshake) y RTP con NACK de RTCP (RIST, WebRTC) y, sin reparto, no los retiene (`direct`). En bonding nunca actúa (el QUIC sin retener perdió de la mitad al 85 %); en redundancia baja el retardo con carga y cuesta ~30 % del caudal en enlaces con pérdida.
+Reconoce por flujo QUIC (su encabezado largo), SRT (su handshake) y RTP con NACK de RTCP (RIST, WebRTC) y, sin reparto, no los retiene (`direct`). En bonding nunca actúa (el QUIC sin retener perdió de la mitad al 85 %); en redundancia baja el retardo con carga y cuesta ~30 % del caudal en enlaces con pérdida; en terreno, bien con el QUIC de Google, mal (÷4) con pilas de umbrales fijos.
 
 - **Sección:** global
 - **Extremo:** los dos
