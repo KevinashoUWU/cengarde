@@ -382,7 +382,7 @@ msgstr ""
 msgid "Repairs over GRIT too"
 msgstr ""
 
-msgid "The same repairs over the connections the protocontroller (B, GRIT) carries, which otherwise only resend what was lost: GRIT waits for a repair before it resends. More resilience for more latency and capacity (4 to 20 % less throughput in the lab with the uplinks full). The VPS needs it too for the download."
+msgid "The same repairs over the connections the protocontroller (B, GRIT) carries, which otherwise only resend what was lost: GRIT waits for a repair before it resends. More resilience for more latency and capacity (4 to 20 % less throughput in the lab with the uplinks full). The VPS needs it too for the download. In redundancy, with a protection mode other than copies, the repairs go in what the other uplinks spare and GRIT does not wait for them."
 msgstr ""
 
 msgid "Rescue missing packets"

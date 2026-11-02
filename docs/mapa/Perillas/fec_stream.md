@@ -7,7 +7,7 @@ archivos:
 
 # `fec_stream`
 
-FEC v3 también sobre los mensajes de GRIT (STREAM, `streamfec.h`), con su ventana propia y su CRC32C, y GRIT esperando el código antes de reenviar; cada extremo para lo que envía (el VPS, la bajada). Cuesta 4–20 % del caudal con los enlaces llenos (laboratorio 2026-11-02).
+FEC v3 también sobre los mensajes de GRIT (STREAM, `streamfec.h`), con su ventana propia y su CRC32C, y GRIT esperando el código antes de reenviar; cada extremo para lo que envía (el VPS, la bajada). Cuesta 4–20 % del caudal con los enlaces llenos (laboratorio 2026-11-02). En redundancia, con la protección de `redund_spare`, la subida las manda en lo que sobra a los otros enlaces y GRIT no las espera.
 
 - **Sección:** global
 - **Extremo:** los dos

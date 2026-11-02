@@ -1,7 +1,7 @@
 # 031 — Clases por flujo (U5): la FEC y la protección para GRIT, y el proxy UDP
 
 - **Fecha:** 2026-11-02
-- **Estado:** en curso (paso 1 hecho y medido en laboratorio: `fec_stream`, protocolo 17, en `claude/u5-fec-stream`; pasos 2 y 3 por hacer)
+- **Estado:** en curso (pasos 1 y 2 hechos y medidos en laboratorio: `fec_stream`, protocolo 17, PR #158; el paso 3 por hacer)
 - **Fuentes:** historia 030 (protocolos 13–16, el reordenador por clase de
   datagrama), 026 (FEC v3), 020 y 021 (`redund_spare`), 025 (GRIT en
   redundancia), 029 (MPGRIT U5); `engine/src/fec3.h`, `repair.h`, `rlc.h`,
@@ -119,6 +119,34 @@ en los dos modos, bonding (FEC v3) y redundancia (`redund_spare`).
   en los dos sentidos y con varios enlaces; el operador la enciende
   (`fec_stream`, LuCI «Reparaciones también sobre GRIT»).
 
+## El paso 2: la protección en redundancia (2026-11-02)
+
+- **Qué:** en redundancia el DATA de GRIT va por un solo enlace
+  (`pnc_first`). Con `fec_stream` y la protección de `redund_spare`
+  (`parity`, `mix`, `rs` o `rlc`), reparaciones de la ventana de los STREAM
+  (las mismas del protocolo 17, sin versión nueva) por otro enlace que el
+  suyo (`code_send`), a `fec_pct` de sus bytes y a más tardar
+  `redund_spare_code_ms` tras el primero sin reparación (`sr_send`,
+  `sr_service`). Solo la subida: el servidor no tiene `redund_spare` y en
+  redundancia copia la bajada por todos los caminos.
+- **Tres rondas** (subida, cubic y `live`, × 3, `redund_spare = rlc`,
+  sin y con `fec_stream`):
+  1. Como toma prioritaria del balde y con GRIT esperando: peor (`protect`
+     cubic 48 → 21 Mbit/s, el p99 del ping 471 → 2106 ms; el video de
+     `protect` 48 → 258 ms).
+  2. Dentro de la asignación, GRIT esperando: el video todavía peor
+     (`protect` 48 → 321 ms, `lossy` 79 → 247): muchas pérdidas no se
+     rehacen (lo que sobra no alcanza) y GRIT las espera hasta el horizonte.
+  3. **Dentro de la asignación y sin espera** (quedó así): caudal +1–8 %
+     (`cell4` 15,1 → 16,3, `starlink15` 60,5 → 62,1), el video de `cell4`
+     con el p99 del cercano de 3762 a 2387 ms y el ping cargado de 137 a
+     62, `lossy` 79 → 68; peor el ping grande (DATA) en `cell4` (804 →
+     1775) y `starlink15`, y el video de `protect` (48 → 104, un caso con
+     mucho ruido).
+- **La regla que deja:** en bonding la parte va siempre, así que GRIT puede
+  esperar el código; en redundancia la protección depende de lo que sobre,
+  así que es un extra y GRIT reenvía al tiro.
+
 ## Diseño del paso 3: las clases de UDP (2026-11-02, con el usuario)
 
 El UDP manda a su tasa sin saber de pérdida ni de cola: el túnel no puede
@@ -171,7 +199,8 @@ que le conviene:
 ## Pendiente
 
 - El paso 1 en terreno.
-- El paso 2 (la protección en redundancia sobre STREAM) y el 3.
+- Los pasos 1 y 2 en terreno.
+- El paso 3.
 
 ## Cambios
 
@@ -179,3 +208,4 @@ que le conviene:
 - 2026-11-02: las cuatro clases de UDP y el ECN, del usuario.
 - 2026-11-02: la telemetría fiable como caso de uso, del usuario.
 - 2026-11-02: el paso 1 hecho y medido (`fec_stream`, protocolo 17).
+- 2026-11-02: el paso 2 (la protección en redundancia), tres rondas.

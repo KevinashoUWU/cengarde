@@ -703,7 +703,8 @@ de reparación** (historia 026):
   reenvían lo perdido; GRIT espera una reparación antes de reenviar. Más
   resiliencia a cambio de latencia y capacidad (4 a 20 % menos de caudal en
   el laboratorio con los enlaces llenos, historia 031). El VPS también lo
-  necesita para la bajada.
+  necesita para la bajada. En redundancia, con la protección de
+  `redund_spare`, van en lo que les sobra a los otros enlaces.
 
 La pestaña *Funciones de capa 4* tiene el protocontrolador (abajo) y el
 **túnel consciente de TCP** (`tcp_aware`): los ACK del TCP de

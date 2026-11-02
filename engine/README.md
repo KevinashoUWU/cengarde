@@ -608,8 +608,12 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
       servidor, la bajada); el receptor se arma solo con la primera
       reparación. Cuesta 4–20 % del caudal con los enlaces llenos
       (laboratorio, 2026-11-02): resiliencia a cambio de latencia y capacidad.
-      Estado: `stream_repairs` en `upload.fec.rlc` (y `download_fec.rlc` del
-      servidor); del lado que recibe, `stream_repairs`, `stream_rebuilt`,
+      En redundancia con la protección de `redund_spare` (`parity`, `mix`,
+      `rs` o `rlc`), las reparaciones de los STREAM de la subida van en lo que
+      sobra a los otros enlaces (dentro de su asignación), a `fec_pct` de sus
+      bytes, y GRIT no las espera. Estado: `stream_repairs` en
+      `upload.fec.rlc` (en redundancia, en `upload.spare.code`; y
+      `download_fec.rlc` del servidor); del lado que recibe, `stream_repairs`, `stream_rebuilt`,
       `stream_bad` y `stream_already_there`.
     - Estado: `upload.fec.code` y `upload.fec.rlc` (`mode`: `bonding`,
       `single` u `off`; `window`, `lag_ms`, `density`, `repairs`,
