@@ -100,6 +100,19 @@ que le conviene:
   estado; nunca bloquea. Aviso en LuCI: «pensado para telemetría o UDP que no
   es de tiempo real y debe llegar; suma latencia, no sirve para voz ni
   video».
+- **Reglas que mandan sobre lo adivinado** (usuario, 2026-11-02): en UCI,
+  una tabla de origen o destino (IP:puerto o prefijo) y su clase (`auto`,
+  `ordered` para TS, `deadline` para RTP, `direct`, `reliable`), p. ej.
+  `config flowclass` / `option src '192.168.50.158:9330'` / `option class
+  'reliable'` para un JSON de telemetría. El motor la aplica al leer cada
+  paquete de la TUN (como `dgclass.h`), no con marcas de nftables, que no
+  cruzan la TUN; LuCI la muestra como tabla en las funciones de L4.
+- **zstd en ese carril** (usuario, 2026-11-02): la telemetría JSON repite
+  claves y forma, el caso ideal para los diccionarios de zstd (diseño del
+  2026-11-01: DC-SYN/DC-ACK, usar el diccionario solo después de su ACK,
+  nunca bloqueo en cabeza de línea). Una ráfaga entrena el diccionario
+  rápido y el carril fiable ya lleva su sincronía; cada mensaje sigue
+  comprimido por su cuenta, así que el desorden no estorba.
 
 ## Pendiente
 

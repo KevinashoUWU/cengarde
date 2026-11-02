@@ -168,7 +168,15 @@ static void test_rep_hdr(void)
 	CHECK_EQ(g.dn, 34);
 	CHECK_EQ(g.seed, 0xdeadbeefu);
 	CHECK(g.map == 0);
+	CHECK_EQ(g.cls, 0);
 	CHECK_EQ(slen, 100);
+	h.cls = CG_REP_STREAM; /* over STREAMs (protocol 17) */
+	cg_rep_put(p, &h);
+	CHECK_EQ(cg_rep_get(p, CG_REP_HDR + 100, &g, &slen), 0);
+	CHECK_EQ(g.cls, CG_REP_STREAM);
+	p[13] = 2; /* no such class */
+	CHECK_EQ(cg_rep_get(p, CG_REP_HDR + 100, &g, &slen), -1);
+	h.cls = 0;
 	h.span = 0;
 	cg_rep_put(p, &h);
 	CHECK_EQ(cg_rep_get(p, CG_REP_HDR + 100, &g, &slen), -1);
