@@ -2972,11 +2972,12 @@ static void rescue_apply(struct client *c)
 
 /* NACKs for seq[0..n) on the two live links of least RTT (retry:
  * CG_F_RETRY; the request waits for its answer: the fastest way there). */
-static void nack_out(struct client *c, const uint32_t *seq, uint32_t n, int retry, uint64_t now_ms)
+/* The two live links of least RTT into best (NULL where there is none). */
+static void fastest_links(struct client *c, uint64_t now_ms, struct link *best[2])
 {
 	uint16_t present, live;
-	struct link *best[2] = { NULL, NULL };
 
+	best[0] = best[1] = NULL;
 	link_masks(c, now_ms, &present, &live);
 	for (int i = 0; i < CG_MAX_LINKS; i++) {
 		struct link *l = &c->link[i];
@@ -2990,6 +2991,13 @@ static void nack_out(struct client *c, const uint32_t *seq, uint32_t n, int retr
 			best[1] = l;
 		}
 	}
+}
+
+static void nack_out(struct client *c, const uint32_t *seq, uint32_t n, int retry, uint64_t now_ms)
+{
+	struct link *best[2];
+
+	fastest_links(c, now_ms, best);
 	for (uint32_t i = 0; best[0] && i < n;) {
 		uint8_t pkt[CG_HDR_LEN + CG_NACK_LEN];
 		unsigned used;
@@ -3374,7 +3382,8 @@ static void sfack_send(struct client *c, struct link *best, uint64_t now_us)
 static void sf_service(struct client *c)
 {
 	uint64_t now_us, now_ms;
-	struct link *best;
+	struct link *best, *two[2] = { NULL, NULL };
+	int looked = 0;
 
 	if (!c->cfg->subflow)
 		return;
@@ -3391,20 +3400,26 @@ static void sf_service(struct client *c)
 
 		if (due != 0)
 			continue;
-		if (!best)
-			best = fastest_link(c, now_ms);
+		if (!looked) {
+			fastest_links(c, now_ms, two);
+			looked = 1;
+		}
 		n = cg_sf_rx_poll(&l->rxl.sf, (uint32_t)now_us, q, CG_NACK_SEQ_MAX);
-		for (unsigned k = 0; best && k < n;) { /* no live link: nothing to say them on */
+		/* on the two fastest links, as the NACKs (one may lose it; the
+		 * server counts a repeat once, cg_sf_tx_find_cls) */
+		for (unsigned k = 0; two[0] && k < n;) { /* no live link: nothing to say them on */
 			uint8_t pkt[CG_HDR_LEN + 1 + CG_NACK_LEN];
 			unsigned used;
 			size_t plen = 1 + cg_nack_write(pkt + CG_HDR_LEN + 1, q + k, n - k, &used);
 
 			k += used;
 			pkt[CG_HDR_LEN] = (uint8_t)i;
-			cg_up_header(&c->txs, pkt, CG_T_SFLOSS, 0, (uint8_t)(best - c->link), (uint32_t)now_us,
-				     pkt + CG_HDR_LEN, plen);
-			if (send(best->fd, pkt, CG_HDR_LEN + plen, MSG_DONTWAIT) == (ssize_t)(CG_HDR_LEN + plen))
-				c->sfloss_sent++;
+			for (int b = 0; b < 2 && two[b]; b++) {
+				cg_up_header(&c->txs, pkt, CG_T_SFLOSS, 0, (uint8_t)(two[b] - c->link), (uint32_t)now_us,
+					     pkt + CG_HDR_LEN, plen);
+				if (send(two[b]->fd, pkt, CG_HDR_LEN + plen, MSG_DONTWAIT) == (ssize_t)(CG_HDR_LEN + plen))
+					c->sfloss_sent++;
+			}
 		}
 	}
 }
@@ -5119,6 +5134,7 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 			cg_json_u64(j, "unsent", st->unsent);
 			cg_json_u64(j, "lost", st->lost_rx);
 			cg_json_u64(j, "forgotten", st->stale);
+			cg_json_u64(j, "repeat", st->repeat); /* its SFLOSS said twice (two links), counted once */
 			cg_json_u64(j, "to_grit", l->sf_grit);
 			cg_json_u64(j, "copied", l->sf_copied);
 			cg_json_u64(j, "all_copies", l->sf_allcopies);

@@ -1317,16 +1317,20 @@ static int sf_service(struct server *s)
 					size_t plen = 1 + cg_nack_write(pkt + CG_HDR_LEN + 1, q + k, n - k, &used);
 					struct cg_hdr h = { .type = CG_T_SFLOSS,
 							    .hint = C->hint,
-							    .link = (uint8_t)best[0],
 							    .session = S->id,
-							    .seq = S->tx_ctl++,
 							    .ts = (uint32_t)now_us };
 
 					k += used;
 					pkt[CG_HDR_LEN] = (uint8_t)p;
-					cg_hdr_write(pkt, &h, C->key + CG_SIPHASH_KEY_LEN, pkt + CG_HDR_LEN, plen);
-					if (!send_path(s, S, best[0], pkt, CG_HDR_LEN + plen))
-						S->sfloss_sent++;
+					/* on the two fastest paths, as the NACKs (one may lose it;
+					 * the client counts a repeat once, cg_sf_tx_find_cls) */
+					for (int b = 0; b < 2 && best[b] >= 0; b++) {
+						h.link = (uint8_t)best[b];
+						h.seq = S->tx_ctl++;
+						cg_hdr_write(pkt, &h, C->key + CG_SIPHASH_KEY_LEN, pkt + CG_HDR_LEN, plen);
+						if (!send_path(s, S, best[b], pkt, CG_HDR_LEN + plen))
+							S->sfloss_sent++;
+					}
 				}
 				d = cg_sf_rx_due_us(&F->rx, (uint32_t)now_us);
 			}
@@ -4245,6 +4249,7 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 				cg_json_u64(j, "unsent", F->tx.unsent);
 				cg_json_u64(j, "lost", F->tx.lost_rx);
 				cg_json_u64(j, "forgotten", F->tx.stale);
+				cg_json_u64(j, "repeat", F->tx.repeat); /* its SFLOSS said twice (two links), counted once */
 				cg_json_u64(j, "to_grit", F->grit);
 				cg_json_u64(j, "copied", F->copied);
 				cg_json_u64(j, "all_copies", F->allcopies);

@@ -251,18 +251,19 @@ struct cg_sf_tx {
 	 * by then with when they came (the receiver's clock) */
 	uint32_t at_us[CG_SF_WIN], cum[CG_SF_WIN], dgot[CG_SF_WIN], drts[CG_SF_WIN];
 	uint16_t len[CG_SF_WIN];
-	uint8_t flag[CG_SF_WIN];  /* CG_SF_BASE, CG_SF_APP */
+	uint8_t flag[CG_SF_WIN];  /* CG_SF_BASE, CG_SF_APP, CG_SF_STREAM, CG_SF_LOST */
 	uint32_t sentb;           /* bytes sent, wrapping */
 	uint32_t got, rts, top;   /* what the newest SFACK said */
 	uint8_t have_got;
 	uint8_t app;              /* set by the caller: what goes now is app-limited */
 	struct cg_lc lc;          /* the link's own rate (linkcc.h) */
-	uint64_t sent, unsent, lost_rx, stale, acks, app_n;
+	uint64_t sent, unsent, lost_rx, stale, repeat, acks, app_n;
 };
 
 #define CG_SF_BASE 1 /* an SFACK was known when it went: a sample may start there */
 #define CG_SF_APP 2  /* it went app-limited: a smaller rate says nothing */
 #define CG_SF_STREAM 4 /* it carried a STREAM (proto.h, 13): seq is that class's */
+#define CG_SF_LOST 8   /* an SFLOSS said it already: the next one (its copy on another link) is a repeat */
 
 static inline void cg_sf_tx_init(struct cg_sf_tx *t)
 {
@@ -313,14 +314,21 @@ static inline void cg_sf_tx_unsend(struct cg_sf_tx *t, uint32_t n)
 }
 
 /* The tunnel sequence sseq q carried, if still remembered: 1 and *seq.
- * The link lost it: its rate learns of it. */
+ * The link lost it: its rate learns of it, once. The receiver sends each
+ * SFLOSS on its two fastest links: the second report of the same sseq
+ * returns 0 (repeat). */
 static inline int cg_sf_tx_find_cls(struct cg_sf_tx *t, uint32_t q, uint32_t *seq, int *stream)
 {
+	if (q && t->sseq[q % CG_SF_WIN] == q && (t->flag[q % CG_SF_WIN] & CG_SF_LOST)) {
+		t->repeat++; /* the receiver says each loss on two links: counted once */
+		return 0;
+	}
 	t->lost_rx++;
 	if (!q || t->sseq[q % CG_SF_WIN] != q) {
 		t->stale++;
 		return 0;
 	}
+	t->flag[q % CG_SF_WIN] |= CG_SF_LOST;
 	*seq = t->seq[q % CG_SF_WIN];
 	*stream = !!(t->flag[q % CG_SF_WIN] & CG_SF_STREAM);
 	cg_lc_lost(&t->lc, t->len[q % CG_SF_WIN]);

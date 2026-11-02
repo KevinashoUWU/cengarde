@@ -146,9 +146,20 @@ static void test_sf_tx(void)
 	CHECK(!cg_sf_tx_find(&t, 3, &seq)); /* never went */
 	CHECK(cg_sf_tx_find(&t, 1, &seq));
 	CHECK_EQ(seq, 500);
+	/* the same loss said again (the SFLOSS's copy on the second link):
+	 * counted once, its rate not told twice */
+	{
+		uint64_t lost = t.lost_rx;
+
+		CHECK(!cg_sf_tx_find(&t, 1, &seq));
+		CHECK(!cg_sf_tx_find(&t, 2, &seq));
+		CHECK_EQ(t.lost_rx, lost);
+		CHECK_EQ(t.repeat, 2);
+	}
 	for (uint32_t i = 0; i < CG_SF_WIN; i++)
 		cg_sf_tx_take(&t, 1000 + i, 1400, 0);
 	CHECK(!cg_sf_tx_find(&t, 1, &seq)); /* forgotten */
+	CHECK(cg_sf_tx_find(&t, 1 + CG_SF_WIN, &seq)); /* its slot taken again: a loss of its own */
 	CHECK(!cg_sf_tx_find(&t, 0, &seq));
 	/* the wrap */
 	t.next = 0xFFFFFFFFu;
