@@ -2365,8 +2365,10 @@ static void f3_apply(struct client *c)
 	if (c->cfg->fec && c->cfg->fec_code == CG_FEC_RLC) {
 		if (!c->f3w && !(c->f3w = calloc(1, sizeof(*c->f3w))))
 			cg_warn("fec_code = rlc: out of memory for its window, no repairs");
-		/* the STREAMs' window (story 031), with a stream to protect */
-		if (c->cfg->protocontroller == CG_PCTL_B && !c->f3s) {
+		/* the STREAMs' window (story 031): with a stream to protect,
+		 * when the operator asks (fec_stream: resilience for latency
+		 * and capacity) */
+		if (c->cfg->fec_stream && c->cfg->protocontroller == CG_PCTL_B && !c->f3s) {
 			cg_crc32c_init(&c->crc);
 			if (!(c->f3s = calloc(1, sizeof(*c->f3s))))
 				cg_warn("fec_code = rlc: out of memory for the streams' window, no repairs over them");
@@ -2377,7 +2379,9 @@ static void f3_apply(struct client *c)
 		cg_f3_idle(&c->f3);
 		c->f3.mode = CG_F3_OFF;
 	}
-	if ((!c->cfg->fec || c->cfg->fec_code != CG_FEC_RLC || c->cfg->protocontroller != CG_PCTL_B) && c->f3s) {
+	if ((!c->cfg->fec || c->cfg->fec_code != CG_FEC_RLC || c->cfg->protocontroller != CG_PCTL_B ||
+	     !c->cfg->fec_stream) &&
+	    c->f3s) {
 		free(c->f3s);
 		c->f3s = NULL;
 		c->f3_due[0] = c->f3_due[1] = 0;

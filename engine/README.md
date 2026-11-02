@@ -599,6 +599,18 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
       reparaciones mueren con él en un corte; `auto` repara solo mientras
       pierde al azar (sin cola, como Starlink), no con pérdida por cola llena
       ni en un corte (pérdida sobre la mitad de la tasa).
+    - **`fec_stream` (`no`; `yes`):** las mismas reparaciones sobre los
+      mensajes del protocontrolador B (STREAM, protocolo 17, `streamfec.h`,
+      historia 031): una ventana propia en la secuencia de STREAM, cada
+      símbolo con el CRC32C del mensaje (calculado en los dos extremos, nunca
+      enviado) para revisar lo rehecho, y GRIT esperando el código antes de
+      reenviar (`CG_RESC_SURE_LATER`). Cada extremo para lo que envía (el
+      servidor, la bajada); el receptor se arma solo con la primera
+      reparación. Cuesta 4–20 % del caudal con los enlaces llenos
+      (laboratorio, 2026-11-02): resiliencia a cambio de latencia y capacidad.
+      Estado: `stream_repairs` en `upload.fec.rlc` (y `download_fec.rlc` del
+      servidor); del lado que recibe, `stream_repairs`, `stream_rebuilt`,
+      `stream_bad` y `stream_already_there`.
     - Estado: `upload.fec.code` y `upload.fec.rlc` (`mode`: `bonding`,
       `single` u `off`; `window`, `lag_ms`, `density`, `repairs`,
       `repair_bytes`, `data_bytes`, `overhead_pm`, `tail`, `guarded`,

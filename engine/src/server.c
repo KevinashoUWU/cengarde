@@ -2867,8 +2867,9 @@ static void sf3_apply(struct server *s, struct session *S)
 		if (!S->dw && (!s->gf || !(S->dw = calloc(1, sizeof(*S->dw)))))
 			cg_warn("%ssession %08x: fec_code = rlc: out of memory for its window, no repairs",
 				client_of(s, S)->tag, S->id);
-		/* the STREAMs' window (story 031), with streams to protect */
-		if (s->pctl && S->dw && !S->dws) {
+		/* the STREAMs' window (story 031), with streams to protect and
+		 * fec_stream */
+		if (s->cfg->fec_stream && s->pctl && S->dw && !S->dws) {
 			cg_crc32c_init(&s->crc);
 			if (!(S->dws = calloc(1, sizeof(*S->dws))))
 				cg_warn("%ssession %08x: fec_code = rlc: out of memory for the streams' window",
@@ -2880,7 +2881,7 @@ static void sf3_apply(struct server *s, struct session *S)
 		cg_f3_idle(&S->df3);
 		S->df3.mode = CG_F3_OFF;
 	}
-	if (!S->dw && S->dws) {
+	if ((!S->dw || !s->cfg->fec_stream) && S->dws) {
 		free(S->dws);
 		S->dws = NULL;
 		S->df3_due[0] = S->df3_due[1] = 0;

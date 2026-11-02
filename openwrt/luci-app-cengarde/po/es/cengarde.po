@@ -372,6 +372,12 @@ msgstr "Hasta dónde alcanza cada reparación hacia atrás: tiene que cubrir una
 msgid "Repairs on a lone uplink"
 msgstr "Reparaciones con un solo enlace"
 
+msgid "Repairs over GRIT too"
+msgstr "Reparaciones también sobre GRIT"
+
+msgid "The same repairs over the connections the protocontroller (B, GRIT) carries, which otherwise only resend what was lost: GRIT waits for a repair before it resends. More resilience for more latency and capacity (4 to 20 % less throughput in the lab with the uplinks full). The VPS needs it too for the download."
+msgstr "Las mismas reparaciones sobre las conexiones que lleva el protocontrolador (B, GRIT), que si no solo reenvían lo perdido: GRIT espera una reparación antes de reenviar. Más resiliencia a cambio de latencia y capacidad (4 a 20 % menos de caudal en el laboratorio con los enlaces llenos). El VPS también lo necesita para la bajada."
+
 msgid "With one uplink, repairs cannot save a cut (they are lost with it); they rebuild scattered losses. Automatic: only while the uplink loses at random (as Starlink does), not when its queue overflows, and never in a cut."
 msgstr "Con un solo enlace, las reparaciones no salvan un corte (se pierden con él); rehacen las pérdidas sueltas. Automático: solo mientras el enlace pierde al azar (como Starlink), no cuando se le llena la cola, y nunca en un corte."
 

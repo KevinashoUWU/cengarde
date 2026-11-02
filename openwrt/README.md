@@ -698,6 +698,12 @@ de reparación** (historia 026):
 - **Reparaciones con un solo enlace** (`fec_single`): *Automático* repara
   solo mientras el enlace pierde al azar (como Starlink), no cuando se le
   llena la cola ni en un corte; *Siempre*, *Nunca*.
+- **Reparaciones también sobre GRIT** (`fec_stream`, apagado): las mismas
+  reparaciones sobre las conexiones del protocontrolador B, que si no solo
+  reenvían lo perdido; GRIT espera una reparación antes de reenviar. Más
+  resiliencia a cambio de latencia y capacidad (4 a 20 % menos de caudal en
+  el laboratorio con los enlaces llenos, historia 031). El VPS también lo
+  necesita para la bajada.
 
 La pestaña *Funciones de capa 4* tiene el protocontrolador (abajo) y el
 **túnel consciente de TCP** (`tcp_aware`): los ACK del TCP de

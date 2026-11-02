@@ -693,6 +693,11 @@ return view.extend({
 		o.default = 'auto';
 		o.depends('fec_code', 'rlc');
 
+		o = s.taboption('protection', form.Flag, 'fec_stream', _('Repairs over GRIT too'),
+			_('The same repairs over the connections the protocontroller (B, GRIT) carries, which otherwise only resend what was lost: GRIT waits for a repair before it resends. More resilience for more latency and capacity (4 to 20 % less throughput in the lab with the uplinks full). The VPS needs it too for the download.'));
+		o.default = '0';
+		o.depends({ fec_code: 'rlc', protocontroller: 'b' });
+
 		o = s.taboption('protection', form.Flag, 'rescue', _('Rescue missing packets'),
 			_('A packet that no uplink delivered is asked for again (as parity when an erasure code is on) before the receiver gives up on it, within 60 ms. The router keeps what it sent for the VPS to ask, and asks the VPS for the download. The VPS needs rescue_kb and rescue_wait_ms in its cengarde.conf for its side. In the lab it doubled TCP with full copies over a lossy main uplink. On in bonding and redundancy unless set apart.'));
 		modeFlag(o, 'rescue', '0');

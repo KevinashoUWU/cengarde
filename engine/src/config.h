@@ -236,6 +236,7 @@ struct cg_config {
 	uint32_t fec_pct_min;         /* FEC v3: the share without bursts nor random loss (default 0; at fec_pct or over: fixed, fec3.h's cg_f3_pct) */
 	uint32_t fec_window_ms;       /* FEC v3: the window's span (default 300; at most CG_RLCW_SPAN sequences) */
 	int fec_single;               /* FEC v3 on a lone link: enum cg_f3_single, auto (by its loss; default), yes or no */
+	int fec_stream;               /* FEC v3 over the protocontroller's STREAMs too (streamfec.h, story 031; default no) */
 	int split;                    /* enum cg_split_mode */
 	uint32_t split_small;         /* datagrams of up to this many bytes are never split */
 	uint32_t split_spread_ms;     /* only links this close to the fastest share the split (split.h G4); 0: off */
