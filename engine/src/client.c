@@ -2550,7 +2550,7 @@ static int pctl_vps_addr(const struct cg_config *cfg, struct sockaddr_storage *a
 
 /* the protocontroller (variant B) (protoctlio.h): n stream messages into the tunnel, as one batch. */
 static void pctl_send(void *ctx, uint32_t peer, uint32_t sid, uint8_t *const *msg, const uint16_t *len,
-		     const uint8_t *copy, const uint8_t *avoid, int n, uint32_t *eta_us, uint8_t *link)
+		     const uint8_t *copy, const uint8_t *avoid, int n, uint32_t *eta_us, uint8_t *link, uint32_t *ts)
 {
 	struct client *c = ctx;
 	uint64_t now_us = cg_now_us(), now_ms = now_us / 1000;
@@ -2579,6 +2579,7 @@ static void pctl_send(void *ctx, uint32_t peer, uint32_t sid, uint8_t *const *ms
 		c->pavoid = -1;
 		eta_us[m] = c->pick[m] >= 0 && c->cfg->split_eta ? cg_eta_behind(&c->eta, (unsigned)c->pick[m]) : CG_PCTL_NOETA;
 		link[m] = c->pick[m] >= 0 ? (uint8_t)c->pick[m] : CG_PCTL_NOLINK;
+		ts[m] = c->sts[m]; /* its header's ts: a DATA's clock (15) */
 	}
 	c->last_traffic_ms = now_ms;
 	send_links(c, n, now_ms, u.live, u.carry, u.k.dup);
@@ -3132,7 +3133,8 @@ static void on_nack(struct client *c, uint8_t flags, const uint8_t *payload, siz
 		if (c->pctl) {
 			unsigned ev = cg_resc_ev(&c->resc, c->resc_idx, c->txs.session, seq[i], CG_RESC_EV_ASKED);
 			int sure = cg_resc_sure(ev, up_coded(c), asked_is_lost(c->cfg));
-			int k = cg_pctl_nack(c->pctl, 0, 0, e + CG_HDR_LEN, (size_t)len - CG_HDR_LEN, went, sure);
+			int k = cg_pctl_nack(c->pctl, 0, 0, e + CG_HDR_LEN, (size_t)len - CG_HDR_LEN, cg_hdr_ts(e), went,
+					     sure);
 
 			if (sure && (k == CG_PCTL_NACK_DATA || k == CG_PCTL_NACK_ACK))
 				cg_resc_ev(&c->resc, c->resc_idx, c->txs.session, seq[i], CG_RESC_EV_DONE);
@@ -3250,7 +3252,7 @@ static void on_sfloss(struct client *c, const uint8_t *payload, size_t plen, uin
 			l->sf_unsure += !(ev & (CG_RESC_EV_DONE | CG_RESC_EV_SUSPECT));
 			continue;
 		}
-		k = cg_pctl_nack(c->pctl, 0, 0, e + CG_HDR_LEN, (size_t)len - CG_HDR_LEN, went, sure);
+		k = cg_pctl_nack(c->pctl, 0, 0, e + CG_HDR_LEN, (size_t)len - CG_HDR_LEN, cg_hdr_ts(e), went, sure);
 		if (sure == CG_RESC_SURE_LATER) { /* a code may still rebuild it: GRIT waits for it */
 			cg_resc_ev(rr, ri, c->txs.session, seq, CG_RESC_EV_SUSPECT);
 			l->sf_suspect += k == CG_PCTL_NACK_DATA;
@@ -3629,7 +3631,7 @@ static void ro_stream(struct client *c, unsigned link, uint32_t ts, uint16_t rse
 
 /* A first copy of a STREAM (13) from link: to its stream at once, past the
  * reorderer (a stream keeps its own order and recovers its own losses). */
-static void stream_deliver(struct client *c, unsigned link, uint8_t *payload, size_t len)
+static void stream_deliver(struct client *c, unsigned link, uint8_t *payload, size_t len, uint32_t ts)
 {
 	if (!c->pctl || !cg_pctl_is(payload, len)) {
 		c->down_pctl_off++;
@@ -3639,7 +3641,7 @@ static void stream_deliver(struct client *c, unsigned link, uint8_t *payload, si
 	 * this way, not to the TUN */
 	c->down_pkts++;
 	c->down_bytes += len;
-	cg_pctl_rx(c->pctl, 0, 0, payload, len, link);
+	cg_pctl_rx(c->pctl, 0, 0, payload, len, ts, link);
 }
 
 /* A first copy for the TUN, payload (len bytes) of DATA h from link,
@@ -4166,7 +4168,7 @@ static void link_read(struct client *c, struct link *l)
 			if (v == CG_RXV_DROP)
 				continue;
 			if (v == CG_RXV_STREAM) {
-				stream_deliver(c, id, b + CG_HDR_LEN, len - CG_HDR_LEN);
+				stream_deliver(c, id, b + CG_HDR_LEN, len - CG_HDR_LEN, h.ts);
 				ro_stream(c, (unsigned)id, h.ts, rset, now32, now_ms);
 				continue;
 			}
@@ -4216,7 +4218,7 @@ static void hub_slot(struct client *c, struct cg_rxslot *sl, uint16_t *expect, u
 				    *expect, &h);
 
 	if (v == CG_RXV_STREAM) {
-		stream_deliver(c, sl->link, sl->buf + CG_HDR_LEN, sl->len - CG_HDR_LEN);
+		stream_deliver(c, sl->link, sl->buf + CG_HDR_LEN, sl->len - CG_HDR_LEN, h.ts);
 		ro_stream(c, sl->link, h.ts, *rset, (uint32_t)clock_us, clock_us / 1000);
 		return;
 	}

@@ -28,13 +28,13 @@ static void test_codec(void)
 	CHECK_EQ(cg_pctl_parse(b, n, &m), 0);
 	CHECK(!memcmp(m.addr, a6, 16));
 
-	n = cg_pctl_put_data(b, 7, CG_PCTLF_FIN | CG_PCTLF_EST, 0x1234567890ull, 0xdeadbeef);
+	n = cg_pctl_put_data(b, 7, CG_PCTLF_FIN | CG_PCTLF_EST, 0x1234567890ull);
+	CHECK_EQ(n, 10); /* its clock is the tunnel header's (15) */
 	memcpy(b + n, "hello", 5);
 	CHECK_EQ(cg_pctl_parse(b, n + 5, &m), 0);
 	CHECK_EQ(m.type, CG_PCTL_DATA);
 	CHECK_EQ(m.flags, CG_PCTLF_FIN | CG_PCTLF_EST);
 	CHECK_EQ(m.off, 0x34567890u);
-	CHECK_EQ(m.ts, 0xdeadbeefu);
 	CHECK_EQ(m.len, 5);
 	CHECK(!memcmp(m.data, "hello", 5));
 
@@ -190,35 +190,34 @@ static void test_edge(void)
 static void test_nack_kind(void)
 {
 	uint8_t b[256], ip[20] = { 0x45 };
-	uint32_t id = 0, off = 0, ts = 0;
+	uint32_t id = 0, off = 0;
 	struct cg_st_ack a = { .aseq = 3, .cum = 100, .edge = 200 };
 	uint8_t a4[4] = { 192, 0, 2, 1 };
 	size_t n;
 
 	/* an IP packet: the rescue as always */
-	CHECK_EQ(cg_pctl_nack_kind(ip, sizeof(ip), &id, &off, &ts), CG_PCTL_NACK_NOT);
-	CHECK_EQ(cg_pctl_nack_kind(ip, 0, &id, &off, &ts), CG_PCTL_NACK_NOT);
-	/* a DATA: its stream, offset and clock */
-	n = cg_pctl_put_data(b, 0x00050007, CG_PCTLF_EST, 0x1234567890ull, 0xdeadbeef);
+	CHECK_EQ(cg_pctl_nack_kind(ip, sizeof(ip), &id, &off), CG_PCTL_NACK_NOT);
+	CHECK_EQ(cg_pctl_nack_kind(ip, 0, &id, &off), CG_PCTL_NACK_NOT);
+	/* a DATA: its stream and offset (its clock, the kept header's) */
+	n = cg_pctl_put_data(b, 0x00050007, CG_PCTLF_EST, 0x1234567890ull);
 	memset(b + n, 0xab, 100);
 	n += 100;
-	CHECK_EQ(cg_pctl_nack_kind(b, n, &id, &off, &ts), CG_PCTL_NACK_DATA);
+	CHECK_EQ(cg_pctl_nack_kind(b, n, &id, &off), CG_PCTL_NACK_DATA);
 	CHECK_EQ(id, 0x00050007);
 	CHECK_EQ(off, 0x34567890);
-	CHECK_EQ(ts, 0xdeadbeef);
 	/* too short for its header: sent again as before */
-	CHECK_EQ(cg_pctl_nack_kind(b, CG_PCTL_DATA_HDR - 1, &id, &off, &ts), CG_PCTL_NACK_RESEND);
-	CHECK_EQ(cg_pctl_nack_kind(b, 3, &id, &off, &ts), CG_PCTL_NACK_RESEND);
+	CHECK_EQ(cg_pctl_nack_kind(b, CG_PCTL_DATA_HDR - 1, &id, &off), CG_PCTL_NACK_RESEND);
+	CHECK_EQ(cg_pctl_nack_kind(b, 3, &id, &off), CG_PCTL_NACK_RESEND);
 	/* an ACK: a fresh one instead */
 	id = 0;
 	n = cg_pctl_put_ack(b, 9, CG_PCTLF_EST, &a, 5);
-	CHECK_EQ(cg_pctl_nack_kind(b, n, &id, &off, &ts), CG_PCTL_NACK_ACK);
+	CHECK_EQ(cg_pctl_nack_kind(b, n, &id, &off), CG_PCTL_NACK_ACK);
 	CHECK_EQ(id, 9);
 	/* an OPEN, a RST: sent again */
 	n = cg_pctl_put_open(b, 9, 4, a4, 80);
-	CHECK_EQ(cg_pctl_nack_kind(b, n, &id, &off, &ts), CG_PCTL_NACK_RESEND);
+	CHECK_EQ(cg_pctl_nack_kind(b, n, &id, &off), CG_PCTL_NACK_RESEND);
 	n = cg_pctl_put_rst(b, 9, CG_PCTL_R_PEER);
-	CHECK_EQ(cg_pctl_nack_kind(b, n, &id, &off, &ts), CG_PCTL_NACK_RESEND);
+	CHECK_EQ(cg_pctl_nack_kind(b, n, &id, &off), CG_PCTL_NACK_RESEND);
 }
 
 
