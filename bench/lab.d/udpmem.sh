@@ -149,7 +149,8 @@ import socket, sys
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 s.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1 << 20)
 for link in range(16):
-    pkt = bytes([int(sys.argv[2]) << 4 | 1, 0, 0, link]) + bytes(1396)  # DATA
+    wire = (int(sys.argv[2]) - 1) % 15 + 1  # proto.h's CG_PROTO_WIRE: past 15 it goes round from 1
+    pkt = bytes([wire << 4 | 1, 0, 0, link]) + bytes(1396)  # DATA
     for _ in range(int(sys.argv[1])):
         try:
             s.sendto(pkt, ("10.0.1.2", 59402))
