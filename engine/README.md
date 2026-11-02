@@ -1473,6 +1473,13 @@ Solo la variante B:
   UDP de un equipo, el TCP de otro pasa de 3–9 a 25 Mbit/s en `cell4`
   (ping p99 de 0,8–1 s a 0,2 s) y de 42 a 51 en `equal` y `het`, con el
   mismo total.
+- **DiffServ** (`protocontroller_dscp`, `yes`; `src/dscp.h`, protocolo 21,
+  historia 031): el DSCP con que el equipo marcó su flujo (el SYN, el
+  primer datagrama) va en el OPEN y los dos extremos lo ponen en sus
+  sockets; elige el nivel del flujo: tiempo real (EF, CS5, AF4x…) primero
+  bajo un cuarto del ritmo, menor esfuerzo (LE, CS1) solo con lo que sobra
+  y un segmento cada 250 ms. Laboratorio: 8 conexiones en CS1 de un equipo
+  le dejan al otro el 99 % del total (antes 27–41 %).
 - **Fiabilidad** (`src/stream.h`): RACK con una ventana de un cuarto de la
   ida y vuelta más `protocontroller_reo_ms` (10, los códigos del túnel van
   primero; cada duplicado que el receptor avisa la agranda 4 ms, hasta el

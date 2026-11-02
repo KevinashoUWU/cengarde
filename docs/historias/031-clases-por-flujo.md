@@ -1,7 +1,7 @@
 # 031 — Clases por flujo (U5): la FEC y la protección para GRIT, y el proxy UDP
 
 - **Fecha:** 2026-11-02
-- **Estado:** pasos 1, 2 y 3 hechos (PR #158 a #164, protocolos 17 y 18): `fec_stream`, `flow_class` con su tabla «Flujos», el carril fiable con zstd y `flow_learn`; los envíos por equipo (19) y el UDP dentro de GRIT (20, `protocontroller_udp`); falta terreno de los pasos 2 y 3 y del 20
+- **Estado:** pasos 1, 2 y 3 hechos (PR #158 a #164, protocolos 17 y 18): `fec_stream`, `flow_class` con su tabla «Flujos», el carril fiable con zstd y `flow_learn`; los envíos por equipo (19), el UDP dentro de GRIT (20, `protocontroller_udp`) y DiffServ (21, `protocontroller_dscp`); falta terreno de los pasos 2 y 3
 - **Fuentes:** historia 030 (protocolos 13–16, el reordenador por clase de
   datagrama), 026 (FEC v3), 020 y 021 (`redund_spare`), 025 (GRIT en
   redundancia), 029 (MPGRIT U5); `engine/src/fec3.h`, `repair.h`, `rlc.h`,
@@ -588,15 +588,63 @@ azar los paquetes del túnel en los dos sentidos (iptables `statistic`).
 - **Apagada por omisión** hasta más terreno: `protocontroller_udp` en el
   motor, `udp_grit` en OpenWrt (LuCI: «UDP dentro de GRIT»).
 
+## DiffServ a través de GRIT (protocolo 21, 2026-11-02)
+
+- **El caso** (el usuario: «podríamos considerar compatibilidad con
+  servicios diferenciados»): la TUN lleva el paquete entero y la marca DSCP
+  va adentro; GRIT termina el TCP (y desde el 20 el UDP) en el router y el
+  VPS abre su propio socket: la marca se perdía en los dos sentidos.
+- **Lo hecho:** el router lee el DSCP del flujo (el del SYN de un TCP
+  aceptado: `rcv_tos` con `IP_PKTOPTIONS`, o `IPV6_2292PKTOPTIONS` con
+  `IPV6_RECVTCLASS` puesto en el socket que escucha; el del primer
+  datagrama con `IP_RECVTOS`) y lo manda en el OPEN (un byte más,
+  protocolo 21). El VPS marca su socket hacia el destino y el router el
+  suyo hacia el equipo (la marca del equipo, en los dos sentidos). Y elige
+  el nivel del flujo en los envíos de GRIT (`dscp.h`), según RFC 4594:
+  - **primero:** EF, VOICE-ADMIT, CS5, AF4x, CS4, CS3, CS6 y CS7, mientras
+    el flujo mande menos de un cuarto del ritmo; una aplicación que marca
+    todo EF va como el resto.
+  - **el resto:** CS0 y lo demás, como antes (por equipo, `fair.h`).
+  - **menor esfuerzo:** LE (RFC 8622) y CS1, solo con lo que deja el resto,
+    más un segmento cada 250 ms para que no lo resetee
+    `protocontroller_dead_s`.
+  Perilla `protocontroller_dscp` (sí); en OpenWrt la misma opción, en LuCI
+  «DiffServ (DSCP) a través de GRIT».
+- **Por qué no se espera mucho de EF en el retardo:** dentro de GRIT los
+  flujos ya se turnan segmento a segmento y la cola grande está en los
+  enlaces (la meta de cola del reparto), no en el ritmo. Lo que sí cambia
+  es el relleno y que la marca llegue.
+- **Laboratorio** (`BOND_HOG=8`, `BOND_HOG_DSCP=8`: el segundo equipo con
+  8 conexiones en CS1, el medido con una sin marca; cubic, n = 2, 30 s;
+  `86ca682`, `~/campo/2026-11-02/dscp`, `table.md`): apagada / encendida /
+  encendida con el segundo equipo sin marca.
+
+  | Caso | Sentido | Equipo de 1 conexión (Mbit/s) | El de 8 en CS1 | Parte del primero | Total |
+  | --- | --- | --- | --- | --- | --- |
+  | `equal` | subida | 37,9 / 91,7 / 37,5 | 54,0 / 0,3 / 54,4 | 41 / 100 / 41 % | 92 |
+  | `equal` | bajada | 25,0 / 91,6 / 38,3 | 66,8 / 0,3 / 53,8 | 27 / 100 / 42 % | 92 |
+  | `het` | subida | 26,2 / 85,3 / 26,1 | 59,5 / 0,6 / 59,7 | 31 / 99 / 30 % | 86 |
+  | `het` | bajada | 26,1 / 83,5 / 25,8 | 58,0 / 0,6 / 57,7 | 31 / 99 / 31 % | 84 |
+  | `cell4` | subida | 9,4 / 27,2 / 9,4 | 36,8 / 18,9 / 36,7 | 20 / 59 / 20 % | 46 |
+  | `cell4` | bajada | 9,6 / 45,7 / 9,5 | 36,5 / 0,3 / 36,6 | 21 / 99 / 21 % | 46 |
+
+  Sin marcas (la tercera columna) da lo mismo que apagada; el total no
+  cambia. Las 8 conexiones en CS1 quedan en 0,3–0,6 Mbit/s (un segmento
+  cada 250 ms por flujo) y ninguna se resetea. En `cell4` de subida el CS1
+  aún se lleva 18,9: lo que el TCP del otro no alcanza a usar (eso es LE).
+- **Fuera de esto:** copiar el DSCP de adentro al encabezado de afuera del
+  túnel (para un SQM con `diffserv4` en el WAN del router, o la red del
+  operador); y la cola por clase en la TUN.
+
 ## Pendiente
 
 - Terreno: `fec_stream` en redundancia.
 - QUIC en bonding, cuando pasa (`quic = pass` o `quic_allow`): repartir por
   flujo (todo un flujo QUIC por un enlace, el plan por flujo de la historia
   014) en vez de por paquete, que MPGRIT haría natural.
-- Prioridad del carril fiable sobre lo masivo dentro de GRIT, y las
-  clases por DSCP (EF y CS5 de voz antes, CS1 y LE como relleno; marcar
-  DSCP de vuelta en el otro extremo).
+- Prioridad del carril fiable sobre lo masivo dentro de GRIT (las clases
+  por DSCP están, protocolo 21); el DSCP de adentro en el encabezado de
+  afuera del túnel.
 - Terreno del UDP dentro de GRIT (protocolo 20), y los datagramas sin las
   cabeceras IP y UDP (#78).
 - Un analizador de encabezados más amplio y firmas configurables o
@@ -618,3 +666,5 @@ azar los paquetes del túnel en los dos sentidos (iptables `statistic`).
   y 3e (`flow_learn`), con su laboratorio.
 - 2026-11-02: los envíos por equipo (protocolo 19) y el UDP dentro de GRIT
   (protocolo 20, `protocontroller_udp`), con su laboratorio.
+- 2026-11-02: DiffServ a través de GRIT (protocolo 21,
+  `protocontroller_dscp`), con su laboratorio.

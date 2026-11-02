@@ -3,6 +3,8 @@ tags: [mapa, pieza]
 archivos:
   - engine/src/fair.h
   - engine/tests/test_fair.c
+  - engine/src/dscp.h
+  - engine/tests/test_dscp.c
   - engine/src/zlane.h
   - engine/tests/test_zlane.c
   - engine/src/protoctl.c
@@ -15,7 +17,7 @@ archivos:
   - engine/tests/test_stream.c
   - engine/tests/test_streamcc.c
   - engine/tests/test_linkowd.c
-sello: 5bcdc89c22cecbe2
+sello: 1c59e0c8a417c047
 ---
 # Protocontrolador (protoctl.c, stream.h, streamcc.h)
 
@@ -52,4 +54,5 @@ El protocontrolador ([[025-protocontrolador]]): TCP partido en los dos extremos 
 - [[025-protocontrolador]]: el laboratorio de la 024 (`protect`, `beyond`, `protectcut`, vivo, bajada, cuatro celulares) con A y B contra el túnel transparente y el A de la 024 (shadowsocks); el 26-10, GRIT en el microcorte tras sus correcciones (ver la historia).
 - **Los envíos por equipo** ([[Mapa/Perillas/protocontroller_fair|protocontroller_fair]], `fair.h`, [[031-clases-por-flujo]], protocolo 19): cada vuelta de envíos da un segmento por equipo y, dentro de cada equipo, sus flujos se turnan (`cg_fair_group` agrupa los flujos en uso por equipo, en el orden de la rotación; antes era un segmento por flujo). El equipo es el dispositivo de la LAN que abrió el flujo: en el router, la dirección que `accept4` devuelve (o el origen de un flujo de datagramas), en el VPS la que el router manda en el OPEN (4 bytes nuevos, protocolo 19) junto con la sesión del router. En el laboratorio (`BOND_HOG=8`: otro equipo con 8 conexiones al lado de la medida), el equipo de una conexión pasa de 13–18 % a 31–41 % del total en `equal` y `het`, de subida y de bajada, sin bajar el total; en `cell4` no cambia.
 - **El UDP dentro de GRIT** ([[Mapa/Perillas/protocontroller_udp|protocontroller_udp]], [[031-clases-por-flujo]], protocolo 20): el router toma el resto del UDP de la LAN por TPROXY en el puerto siguiente (`xfd`, `udp_listen` con `unrel`) y abre un flujo de datagramas no fiable por origen y destino (`dg_flow` con `unrel`, OPEN con `CG_PCTLF_UNREL`). Sus datagramas esperan en una cola de 32 (`struct dgq`, `dq_put`: llena, se bota el más viejo) y salen como DGM en `dgm_send`, con los tokens del ritmo y en los turnos por equipo, sin ventana ni ACK; más de 300 ms esperando (`PCTL_DGM_AGE_US`), se botan. Hasta el ACK del OPEN van por todos los enlaces. El receptor los escribe al socket al llegar (`rx_one`, caso DGM). Cada par lleva la parte de lo enviado que son datagramas (`xb`, `ab`, `cc.xs` en `streamcc.h`) y `cg_scc_rate` divide la estimación por lo que queda: sin eso el TCP y el UDP se hundían juntos (de 91 a 68 Mbit/s en `equal`). El estado: `protocontroller.datagrams` y `datagrams_permille` en cada ritmo.
+- **DiffServ** ([[Mapa/Perillas/protocontroller_dscp|protocontroller_dscp]], `dscp.h`, [[031-clases-por-flujo]], protocolo 21): el router lee el DSCP de cada flujo (`syn_dscp`: el `rcv_tos` del SYN con `IP_PKTOPTIONS`, o `IPV6_2292PKTOPTIONS` con `IPV6_RECVTCLASS` en el socket que escucha; `cmsg_dscp` del primer datagrama con `IP_RECVTOS`) y lo manda en el OPEN; los dos extremos marcan sus sockets con él (`set_dscp`). En los envíos, `send_rounds` (las vueltas por equipo de antes) corre por nivel: `cg_ds_flow_tier` pone primero lo de tiempo real mientras mande menos de un cuarto del ritmo, después el resto (y un segmento a cada flujo de menor esfuerzo que lleva 250 ms sin mandar, `cg_ds_low_owed`), y al final lo de menor esfuerzo con lo que queda. El estado: `protocontroller.dscp` (flujos y segmentos por nivel, `owed`).
 

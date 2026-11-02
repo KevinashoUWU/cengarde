@@ -1229,6 +1229,14 @@ engine_conf() {
 		*) log "protocontroller_nack '$v': expected 0 or 1, left out" ;;
 		esac
 		[ "$UDP_GRIT" = 1 ] && echo "protocontroller_udp = yes"
+		# DiffServ through GRIT (protocol 21): on unless this says no
+		config_get v main protocontroller_dscp
+		case "$v" in
+		'') ;;
+		1 | on | yes | true | enabled) echo "protocontroller_dscp = yes" ;;
+		0 | off | no | false | disabled) echo "protocontroller_dscp = no" ;;
+		*) log "protocontroller_dscp '$v': expected 0 or 1, left out" ;;
+		esac
 	fi
 	# Reordering at the receiver is on in the engine unless this says no; the
 	# split is off unless this says so, and only on, never force (the lab's):
