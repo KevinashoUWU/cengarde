@@ -33,7 +33,9 @@
  *   8..11   seed: the hash's, which also gives each member's coefficient
  *           (big-endian)
  *   12      kind: CG_REP_RLCW
- *   13..15  0
+ *   13      class: 0, the DATA sequence; CG_REP_STREAM (protocol 17, story
+ *           031), the STREAM sequence (streamfec.h)
+ *   14..15  0
  *   16..    the combination, as long as its longest member's symbol
  *
  * A member's symbol is its DATA payload behind its 16-bit big-endian length
@@ -71,6 +73,7 @@ _Static_assert(!(CG_RLCW_SPAN & (CG_RLCW_SPAN - 1)) && CG_RLCW_SPAN <= 65535 && 
 	       "a wide window fits its 16-bit span, and an unknown its ring slot");
 
 enum { CG_REP_RS = 1, CG_REP_RLC = 2, CG_REP_RLCW = 3 };
+#define CG_REP_STREAM 1 /* an RLCW repair's class: over STREAMs (streamfec.h) */
 
 struct cg_rep_hdr {
 	uint32_t base;
@@ -81,6 +84,7 @@ struct cg_rep_hdr {
 	uint16_t span; /* RLCW: the window's sequences */
 	uint8_t dn;    /* RLCW: its density */
 	uint32_t seed; /* RLCW: the members' and coefficients' seed */
+	uint8_t cls;   /* RLCW: 0, or CG_REP_STREAM */
 };
 
 static inline void cg_rep_put(uint8_t *o, const struct cg_rep_hdr *h)
@@ -95,7 +99,8 @@ static inline void cg_rep_put(uint8_t *o, const struct cg_rep_hdr *h)
 		for (int i = 0; i < 4; i++)
 			o[8 + i] = (uint8_t)(h->seed >> (24 - 8 * i));
 		o[12] = h->kind;
-		o[13] = o[14] = o[15] = 0;
+		o[13] = h->cls;
+		o[14] = o[15] = 0;
 		return;
 	}
 	for (int i = 0; i < 8; i++)
@@ -120,6 +125,7 @@ static inline int cg_rep_get(const uint8_t *p, unsigned plen, struct cg_rep_hdr 
 	h->span = 0;
 	h->dn = 0;
 	h->seed = 0;
+	h->cls = 0;
 	*slen = plen - CG_REP_HDR;
 	if (h->kind == CG_REP_RLCW) {
 		h->span = (uint16_t)(p[4] << 8 | p[5]);
@@ -127,7 +133,8 @@ static inline int cg_rep_get(const uint8_t *p, unsigned plen, struct cg_rep_hdr 
 		h->seed = (uint32_t)p[8] << 24 | (uint32_t)p[9] << 16 | (uint32_t)p[10] << 8 | p[11];
 		h->m = 0;
 		h->idx = 0;
-		return h->span && h->span <= CG_RLCW_SPAN && !p[7] && !p[13] && !p[14] && !p[15] && *slen > 2 &&
+		h->cls = p[13];
+		return h->span && h->span <= CG_RLCW_SPAN && !p[7] && p[13] <= CG_REP_STREAM && !p[14] && !p[15] && *slen > 2 &&
 				       *slen <= CG_SYM_MAX
 			       ? 0
 			       : -1;

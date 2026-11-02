@@ -381,6 +381,12 @@ msgstr "Siempre"
 msgid "Never"
 msgstr "Nunca"
 
+msgid "Repairs over GRIT too"
+msgstr "Reparaciones también sobre GRIT"
+
+msgid "The same repairs over the connections the protocontroller (B, GRIT) carries, which otherwise only resend what was lost: GRIT waits for a repair before it resends. More resilience for more latency and capacity (4 to 20 % less throughput in the lab with the uplinks full). The VPS needs it too for the download. In redundancy, with a protection mode other than copies, the repairs go in what the other uplinks spare and GRIT does not wait for them."
+msgstr "Las mismas reparaciones sobre las conexiones que lleva el protocontrolador (B, GRIT), que si no solo reenvían lo perdido: GRIT espera una reparación antes de reenviar. Más resiliencia a cambio de latencia y capacidad (4 a 20 % menos de caudal en el laboratorio con los enlaces llenos). El VPS también lo necesita para la bajada. En redundancia, con un modo de protección que no sea de copias, las reparaciones van en lo que les sobra a los otros enlaces y GRIT no las espera."
+
 msgid "Rescue missing packets"
 msgstr "Rescatar paquetes faltantes"
 

@@ -429,6 +429,9 @@ for (const [lang, tr] of [ [ 'en', english ], [ 'es', spanish ] ]) {
 	assert.deepEqual(tab('fec_single', 'protection').values.map((v) => v[0]), [ 'auto', 'yes', 'no' ]);
 	for (const name of [ 'fec_pct', 'fec_pct_min', 'fec_window_ms', 'fec_single' ])
 		assert.deepEqual(o[name].deps, [ { fec_code: 'rlc' } ], `${lang}: ${name} only with FEC v3`);
+	assert.deepEqual(tab('fec_stream', 'protection').deps,
+		[ { fec_code: 'rlc', protocontroller: 'b' } ].concat([ 'mix', 'parity', 'rlc', 'rs' ].map((v) => ({ redund_spare: v, protocontroller: 'b' }))),
+		'repairs over GRIT only with GRIT, and FEC v3 or a protection mode');
 	for (const name of [ 'protocontroller', 'protocontroller_port', 'protocontroller_dest' ])
 		tab(name, 'layer4');
 	assert.deepEqual(o.protocontroller.values.map((v) => v[0]), [ 'no', 'a', 'b' ]);

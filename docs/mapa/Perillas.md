@@ -7,7 +7,7 @@ archivos:
 
 # Perillas
 
-Las 128 claves que `engine/src/config.c` lee (comprobado al generar esta nota: ni falta ni sobra ninguna).
+Las 129 claves que `engine/src/config.c` lee (comprobado al generar esta nota: ni falta ni sobra ninguna).
 Por omisión y rango salen de `cg_config_parse`; el significado, de los comentarios de `config.h` y de [[engine-README]].
 Las perillas marcadas como experimento están apagadas por omisión.
 
@@ -121,6 +121,7 @@ Secciones: «global» es la parte sin sección; `[link NOMBRE]` es del cliente; 
 | [[Mapa/Perillas/fec_pct_min\|fec_pct_min]] | 0 | [[FEC v3 (fec3.h)]], [[Observaciones del enlace (linksig.h)]] | [[026-fec-v3]] |
 | [[Mapa/Perillas/fec_window_ms\|fec_window_ms]] | 300 | [[FEC v3 (fec3.h)]], [[Códigos de borrado (rs.h, rlc.h)]] | [[026-fec-v3]] |
 | [[Mapa/Perillas/fec_single\|fec_single]] | `auto` | [[FEC v3 (fec3.h)]], [[Observaciones del enlace (linksig.h)]] | [[026-fec-v3]] |
+| [[Mapa/Perillas/fec_stream\|fec_stream]] | no | [[FEC v3 (fec3.h)]], [[Códigos de borrado (rs.h, rlc.h)]] | [[031-clases-por-flujo]] |
 
 ## Reparto y guardas
 

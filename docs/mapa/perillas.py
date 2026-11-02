@@ -59,7 +59,7 @@ H = {
     "013": "013-capacidad-y-dosificacion", "014": "014-tunel-nativo", "015": "015-modelo-de-enlace", "016": "016-celda-virtual",
     "017": "017-terreno-nostalgica", "019": "019-perdida-con-cola", "020": "020-copias-parciales-y-paridad", "021": "021-fec-v2",
     "023": "023-reparacion-coherente", "025": "025-protocontrolador", "026": "026-fec-v3",
-    "027": "027-adios-wireguard", "029": "029-mpgrit",
+    "027": "027-adios-wireguard", "029": "029-mpgrit", "031": "031-clases-por-flujo",
     "audit": "audit-pending",
 }
 
@@ -151,6 +151,7 @@ T = {
  "fec_pct": ([G], BOTH, "20", "1–50", [F3], ["026"], "FEC v3: las reparaciones, % de los bytes de DATA: la parte entera tras una ráfaga, menos con pérdida al azar sola (`fec_pct_min`). Un enlace de parte s detenido T se rehace unos s·T / (r·(1 − s)) después de empezar. Medido con cuatro enlaces: 20 % rinde en la pérdida al azar y en detenciones de 50 ms, 33 % en las de 100–200 ms; con BBR se paga la parte entera."),
  "fec_pct_min": ([G], BOTH, "0", "0–50", [F3, "Observaciones del enlace (linksig.h)"], ["026"], "FEC v3: la parte de las reparaciones cuando no hay pérdida que la pida (`cg_f3_pct`). Lo que la pide, en muestras **sin cola** (la más alta de la muestra y de la anterior, 10 ms sobre el mínimo del minuto): una **ráfaga** (5 % o más en la muestra: una detención, un corte) da `fec_pct` entero por 30 s; la pérdida **al azar**, además **bajo la capacidad del enlace**, esto más 25 veces la pérdida (pesada por los bytes de cada enlace) hasta `fec_pct`, entera 30 s y luego a la mitad cada 10 s (se desvanece, no se corta: cortarla de golpe hacía ping-pong con cubic). Los primeros 10 s, `fec_pct` entero (nada se sabe aún). Los bytes del protocontrolador (B, y A con BBR en el medio) no la piden con un solo enlace; con varios sí (el reordenador espera cada hueco). La pérdida de un enlace con cola o lleno (TCP que desborda; BBR hace 15–70 ms de cola) no cuenta: las reparaciones sobre ella pedían más reparaciones. Igual a `fec_pct` o más: la parte fija."),
  "fec_window_ms": ([G], BOTH, "300", "10–1000", [F3, CODES], ["026"], "FEC v3: hasta dónde alcanza una reparación (una de cada dos cubre su último cuarto); como mucho `CG_RLCW_SPAN` (1024) secuencias, y lo útil queda dentro de lo que el receptor espera un hueco (su plazo más `rescue_code_ms`)."),
+ "fec_stream": ([G], BOTH, "no", "`yes` o `no`", [F3, "Códigos de borrado (rs.h, rlc.h)"], ["031"], "FEC v3 también sobre los mensajes de GRIT (STREAM, `streamfec.h`), con su ventana propia y su CRC32C, y GRIT esperando el código antes de reenviar; cada extremo para lo que envía (el VPS, la bajada). Cuesta 4–20 % del caudal con los enlaces llenos (laboratorio 2026-11-02). En redundancia, con la protección de `redund_spare`, la subida las manda en lo que sobra a los otros enlaces y GRIT no las espera."),
  "fec_single": ([G], BOTH, "`auto`", "`auto`, `yes` o `no`", [F3, "Observaciones del enlace (linksig.h)"], ["026"], "FEC v3 con un solo enlace: `auto` repara mientras pierde al azar (sin cola, como Starlink) y no con pérdida por congestión ni en un corte (pérdida sobre la mitad de la tasa); `yes` siempre, `no` nunca."),
  "fec_wait_ms": ([G], BOTH, "10", "1–200", [FEC, RESC], ["013"], "Plazo máximo de un grupo antes de mandar su paridad."),
  "fec_share_max": ([G], BOTH, "0 (sin tope)", "0–100", [FEC, SPLIT], ["012", "013"], "Con `fec`, ningún enlace lleva más de este % de lo repartido reciente."),
@@ -275,7 +276,7 @@ def generate():
                          "reorder_by_link", "reorder_adaptive", "reorder_pool_kb", "reorder_active", "tcp_aware"]),
         ("Rescate y FEC", ["rescue_kb", "rescue_pct", "rescue_wait_ms", "rescue_tries", "rescue_target_ms", "rescue_full_hyst", "rescue_code_ms", "parq", "rescue_tcp_race",
                            "tcp_retx_one", "tcp_ack_rule", "fec", "fec_wait_ms", "fec_share_max", "fec_code",
-                           "fec_pct", "fec_pct_min", "fec_window_ms", "fec_single"]),
+                           "fec_pct", "fec_pct_min", "fec_window_ms", "fec_single", "fec_stream"]),
         ("Reparto y guardas", ["split", "split_small", "split_spread_ms", "split_spread_copy", "split_stress_dup",
                                "split_stress_rejoin", "split_dwell_ms", "split_dwell_oq_ms"]),
         ("Gobernador y capacidad", ["governor", "governor_target_ms", "governor_window_ms", "capacity_weights",
