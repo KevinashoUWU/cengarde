@@ -14,8 +14,10 @@
  *
  *   OPEN  6: family (4 or 6), 7..8: port, 9..: address (4 or 16 bytes).
  *         Router -> VPS, again on the timer until the VPS's first ACK.
- *   DATA  6..9: the offset's low 32 bits; 10..13: the sender's clock when it
- *         sent it (us, low 32 bits); then the bytes. CG_PCTLF_FIN: the
+ *   DATA  6..9: the offset's low 32 bits; then the bytes (the sender's
+ *         clock when it sent it is the tunnel header's ts, protocol 15:
+ *         the engine says which it stamped, cg_pctl_ops.send's ts, and the
+ *         receiver's engine passes it, cg_pctl_rx). CG_PCTLF_FIN: the
  *         stream ends after them (the FIN takes one byte of the sequence);
  *         CG_PCTLF_EST: the sender got an ACK of this stream already (a peer
  *         that does not know it answers RST; without it, the OPEN may have
@@ -59,7 +61,7 @@ enum { CG_PCTL_OPEN = 1, CG_PCTL_DATA = 2, CG_PCTL_ACK = 3, CG_PCTL_RST = 4 };
 #define CG_PCTLF_EST 0x02
 #define CG_PCTLF_DUP 0x04 /* ACK: a duplicate came since the last ACK (the sender widens its RACK window) */
 #define CG_PCTL_HDR 6
-#define CG_PCTL_DATA_HDR 14
+#define CG_PCTL_DATA_HDR 10
 #define CG_PCTL_OPEN_MAX (CG_PCTL_HDR + 3 + 16)
 #define CG_PCTL_ACK_MAX (CG_PCTL_HDR + 15 + 8 * CG_ST_ACK_RANGES)
 #define CG_PCTL_NOOWD INT32_MIN /* an ACK with no one-way delay */
@@ -130,12 +132,12 @@ static inline size_t cg_pctl_put_open(uint8_t *b, uint32_t id, int family, const
 	return 9 + al;
 }
 
-/* A DATA's header, sent at ts (us), the bytes after it (CG_PCTL_DATA_HDR on). */
-static inline size_t cg_pctl_put_data(uint8_t *b, uint32_t id, uint8_t flags, uint64_t off, uint32_t ts)
+/* A DATA's header, the bytes after it (CG_PCTL_DATA_HDR on). Its clock is
+ * the tunnel header's (15). */
+static inline size_t cg_pctl_put_data(uint8_t *b, uint32_t id, uint8_t flags, uint64_t off)
 {
 	cg_pctl_hdr(b, CG_PCTL_DATA, flags, id);
 	cg_pctl_be32(b + 6, (uint32_t)off);
-	cg_pctl_be32(b + 10, ts);
 	return CG_PCTL_DATA_HDR;
 }
 
@@ -174,7 +176,7 @@ struct cg_pctl_msg {
 	uint16_t port;
 	uint8_t addr[16];
 	/* DATA */
-	uint32_t off, ts;
+	uint32_t off, ts; /* ts: the tunnel header's (cg_pctl_rx sets it) */
 	const uint8_t *data;
 	uint32_t len;
 	/* ACK */
@@ -212,7 +214,6 @@ static inline int cg_pctl_parse(const uint8_t *p, size_t len, struct cg_pctl_msg
 		if (len < CG_PCTL_DATA_HDR || len - CG_PCTL_DATA_HDR > 0xffff)
 			return -1;
 		m->off = cg_pctl_rd32(p + 6);
-		m->ts = cg_pctl_rd32(p + 10);
 		m->data = p + CG_PCTL_DATA_HDR;
 		m->len = (uint32_t)(len - CG_PCTL_DATA_HDR);
 		return 0;
@@ -246,8 +247,9 @@ static inline int cg_pctl_parse(const uint8_t *p, size_t len, struct cg_pctl_msg
  * messages again):
  *   CG_PCTL_NACK_NOT    not a stream message (an IP packet): the rescue
  *                       sends it again, as always;
- *   CG_PCTL_NACK_DATA   a DATA: its loss goes to its stream (id, off and
- *                       ts set: cg_st_tx_nack), not the packet again;
+ *   CG_PCTL_NACK_DATA   a DATA: its loss goes to its stream (id and off
+ *                       set, its ts the kept header's: cg_st_tx_nack), not
+ *                       the packet again;
  *   CG_PCTL_NACK_ACK    an ACK: a fresh one says more than the old (every
  *                       ACK carries the whole state), not the packet again;
  *   CG_PCTL_NACK_RESEND an OPEN or a RST (rare, idempotent), or one that
@@ -255,7 +257,7 @@ static inline int cg_pctl_parse(const uint8_t *p, size_t len, struct cg_pctl_msg
  * The packet is the sender's own copy. */
 enum { CG_PCTL_NACK_NOT = 0, CG_PCTL_NACK_DATA, CG_PCTL_NACK_ACK, CG_PCTL_NACK_RESEND };
 
-static inline int cg_pctl_nack_kind(const uint8_t *p, size_t len, uint32_t *id, uint32_t *off, uint32_t *ts)
+static inline int cg_pctl_nack_kind(const uint8_t *p, size_t len, uint32_t *id, uint32_t *off)
 {
 	if (!cg_pctl_is(p, len))
 		return CG_PCTL_NACK_NOT;
@@ -267,7 +269,6 @@ static inline int cg_pctl_nack_kind(const uint8_t *p, size_t len, uint32_t *id, 
 		if (len < CG_PCTL_DATA_HDR)
 			return CG_PCTL_NACK_RESEND;
 		*off = cg_pctl_rd32(p + 6);
-		*ts = cg_pctl_rd32(p + 10);
 		return CG_PCTL_NACK_DATA;
 	case CG_PCTL_ACK:
 		return CG_PCTL_NACK_ACK;

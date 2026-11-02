@@ -87,9 +87,11 @@ struct cg_pctl_ops {
 	 * timer per segment); link[i] back: the link the split chose,
 	 * CG_PCTL_NOLINK when not split. avoid[i]: a link the split should
 	 * not choose for message i when another can take it (link + 1, 0:
-	 * none; U2b: a resend leaves the link that lost it). */
+	 * none; U2b: a resend leaves the link that lost it). ts[i] back: the
+	 * tunnel header's ts that went with message i (us, low 32 bits; 15:
+	 * a DATA's clock, its delay at the receiver and its NACKs). */
 	void (*send)(void *ctx, uint32_t peer, uint32_t sid, uint8_t *const *msg, const uint16_t *len,
-		     const uint8_t *copy, const uint8_t *avoid, int n, uint32_t *eta_us, uint8_t *link);
+		     const uint8_t *copy, const uint8_t *avoid, int n, uint32_t *eta_us, uint8_t *link, uint32_t *ts);
 	/* The engine's capacity for the links that carry the data to peer,
 	 * bytes/s (0: none), and whether it sees them queued (or
 	 * CG_PCTL_HINT_COPIED: the data is copied to them, not split). */
@@ -113,10 +115,12 @@ int cg_pctl_peers(struct cg_pctl *p, uint32_t n);
 void cg_pctl_event(struct cg_pctl *p, uint32_t idx, uint32_t events);
 /* A stream message out of the tunnel, from peer (see ops->send), that came
  * by link (the server's path index); CG_PCTL_NOLINK: rebuilt by the tunnel's
- * codes, or not known (no delay sample: linkowd.h). */
-void cg_pctl_rx(struct cg_pctl *p, uint32_t peer, uint32_t sid, const uint8_t *msg, size_t len, unsigned link);
+ * codes, or not known (no delay sample: linkowd.h). ts: its tunnel header's
+ * (15: the sender's clock for a DATA). */
+void cg_pctl_rx(struct cg_pctl *p, uint32_t peer, uint32_t sid, const uint8_t *msg, size_t len, uint32_t ts,
+		unsigned link);
 /* The rescue's NACK named msg (len bytes), a stream message this end sent
- * to peer and kept (rescue.h), on link (the one link it went on, the
+ * to peer and kept (rescue.h) with its tunnel header's ts, on link (the one link it went on, the
  * server's path index; CG_PCTL_NOLINK: copied, or not known): its loss goes
  * to its stream (a DATA: marked lost, sent again at the next service; an
  * ACK: a fresh one). The link is only counted for now (the losses each
@@ -134,8 +138,8 @@ enum { CG_PCTL_UNSURE, CG_PCTL_SURE_ASKED, CG_PCTL_SURE_LINK, CG_PCTL_SURE_LATER
 #define CG_PCTL_LINKS 16      /* links counted (CG_MAX_LINKS) */
 #define CG_PCTL_NOETA UINT32_MAX /* ops.send's eta_us: not known */
 #define CG_PCTL_NOLINK 0xffu  /* as rescue.h's CG_RESC_NOLINK */
-int cg_pctl_nack(struct cg_pctl *p, uint32_t peer, uint32_t sid, const uint8_t *msg, size_t len, uint8_t link,
-		 int sure);
+int cg_pctl_nack(struct cg_pctl *p, uint32_t peer, uint32_t sid, const uint8_t *msg, size_t len, uint32_t ts,
+		 uint8_t link, int sure);
 /* RACK over the mix of the links: on (1, the default), or off (0) when the
  * engine's subflows find each link's losses (subflow.h, story 029): a
  * segment sent before the newest one delivered is not lost because it went

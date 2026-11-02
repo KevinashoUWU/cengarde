@@ -1,4 +1,4 @@
-/* cengarde wire protocol, version 14 (version 1 had no delay reports,
+/* cengarde wire protocol, version 15 (version 1 had no delay reports,
  * version 2 no IP pass flags, version 3 no client hint, cookies or separate
  * control sequence, version 4 no previous link in DATA's flags, version 5
  * no NACK, version 6 no CG_F_FREE, version 7 no parity, version 8 no
@@ -14,7 +14,8 @@
  * CG_T_STREAM, with its own sequence: the reorderer, the rescue and the
  * codes see the TUN's DATA only, GRIT recovers its own from the subflows,
  * story 030; version 14 drops the stream messages' own tag, protoctl.h:
- * the MAC covers every one of them).
+ * the MAC covers every one of them; version 15 their DATA's own clock: the
+ * header's ts is it).
  *
  * Every datagram between client and server carries a 24-byte header followed
  * by the payload (an IP packet from the TUN for DATA, or a protocontroller
@@ -72,8 +73,9 @@
 
 #include "siphash.h"
 
-#define CG_PROTO_VERSION 14
+#define CG_PROTO_VERSION 15
 #define CG_HDR_LEN 28
+#define CG_TS_OFF 12
 #define CG_MAC_OFF 16
 #define CG_SSEQ_OFF 24 /* the link's own sequence (MPGRIT's subflow, story 029): after the MAC, like the link, so a copy on another link takes its own */
 #define CG_HINT_OFF 2
@@ -371,6 +373,14 @@ int cg_hdr_verify(const uint8_t *buf, size_t len, const uint8_t key[CG_SIPHASH_K
 static inline void cg_hdr_set_link(uint8_t *hdr, uint8_t link)
 {
 	hdr[CG_LINK_OFF] = link;
+}
+
+/* The ts of a header the sender kept (its own copy, already verified when
+ * sealed): bytes 12..15, big-endian. */
+static inline uint32_t cg_hdr_ts(const uint8_t *hdr)
+{
+	return (uint32_t)hdr[CG_TS_OFF] << 24 | (uint32_t)hdr[CG_TS_OFF + 1] << 16 | (uint32_t)hdr[CG_TS_OFF + 2] << 8 |
+	       hdr[CG_TS_OFF + 3];
 }
 
 /* The link's own sequence of a packet about to go on it (subflow.h): out

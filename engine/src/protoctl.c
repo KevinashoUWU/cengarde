@@ -274,12 +274,12 @@ static struct flow *find(struct cg_pctl *p, uint32_t sid, uint32_t id);
  * the engine chose brings it (U2a: its timer, cg_st_seg_rto). */
 static void flush(struct cg_pctl *p)
 {
-	uint32_t eta[CG_BATCH];
+	uint32_t eta[CG_BATCH], ts[CG_BATCH];
 	uint8_t link[CG_BATCH];
 
 	if (!p->nmsg)
 		return;
-	p->ops.send(p->ops.ctx, p->mpeer, p->msid, p->mptr, p->mlen, p->mcopy, p->mavoid, p->nmsg, eta, link);
+	p->ops.send(p->ops.ctx, p->mpeer, p->msid, p->mptr, p->mlen, p->mcopy, p->mavoid, p->nmsg, eta, link, ts);
 	for (int m = 0; m < p->nmsg; m++) {
 		struct flow *f;
 		uint32_t i;
@@ -292,6 +292,9 @@ static void flush(struct cg_pctl *p)
 		i = cg_st_tx_find(&f->tx, p->moff[m]);
 		if (i >= f->tx.n || (s = cg_st_tx_seg(&f->tx, i))->off != p->moff[m] || s->st != CG_ST_SENT)
 			continue;
+		/* sent when the tunnel stamped it (15): the receiver's delay and
+		 * a NACK of this transmission go by that ts */
+		s->sent_us += (uint64_t)(int64_t)(int32_t)(ts[m] - (uint32_t)s->sent_us);
 		s->link = link[m] != CG_PCTL_NOLINK ? link[m] : CG_ST_NOLINK;
 		if (eta[m] == CG_PCTL_NOETA)
 			continue;
@@ -1316,11 +1319,11 @@ static void ack_in(struct cg_pctl *p, struct flow *f, const struct cg_pctl_msg *
 	rto_arm(p, f, r);
 }
 
-int cg_pctl_nack(struct cg_pctl *p, uint32_t peer, uint32_t sid, const uint8_t *msg, size_t len, uint8_t link,
-		 int sure)
+int cg_pctl_nack(struct cg_pctl *p, uint32_t peer, uint32_t sid, const uint8_t *msg, size_t len, uint32_t ts,
+		 uint8_t link, int sure)
 {
-	uint32_t id = 0, off = 0, ts = 0, bytes;
-	int k = cg_pctl_nack_kind(msg, len, &id, &off, &ts), v;
+	uint32_t id = 0, off = 0, bytes;
+	int k = cg_pctl_nack_kind(msg, len, &id, &off), v;
 	struct flow *f;
 	struct peer *r;
 	uint64_t lq = 0;
@@ -1381,16 +1384,19 @@ int cg_pctl_nack(struct cg_pctl *p, uint32_t peer, uint32_t sid, const uint8_t *
 	return k;
 }
 
-static void rx_one(struct cg_pctl *p, uint32_t peer, uint32_t sid, const uint8_t *msg, size_t len, unsigned link);
+static void rx_one(struct cg_pctl *p, uint32_t peer, uint32_t sid, const uint8_t *msg, size_t len, uint32_t ts,
+		   unsigned link);
 
-void cg_pctl_rx(struct cg_pctl *p, uint32_t peer, uint32_t sid, const uint8_t *msg, size_t len, unsigned link)
+void cg_pctl_rx(struct cg_pctl *p, uint32_t peer, uint32_t sid, const uint8_t *msg, size_t len, uint32_t ts,
+		unsigned link)
 {
 	p->in_rx = 1;
-	rx_one(p, peer, sid, msg, len, link);
+	rx_one(p, peer, sid, msg, len, ts, link);
 	p->in_rx = 0;
 }
 
-static void rx_one(struct cg_pctl *p, uint32_t peer, uint32_t sid, const uint8_t *msg, size_t len, unsigned link)
+static void rx_one(struct cg_pctl *p, uint32_t peer, uint32_t sid, const uint8_t *msg, size_t len, uint32_t ts,
+		   unsigned link)
 {
 	struct cg_pctl_msg m;
 	struct flow *f;
@@ -1398,6 +1404,7 @@ static void rx_one(struct cg_pctl *p, uint32_t peer, uint32_t sid, const uint8_t
 
 	switch (cg_pctl_parse(msg, len, &m)) {
 	case 0:
+		m.ts = ts; /* the tunnel header's (15) */
 		break;
 	default:
 		p->bad++;
@@ -1717,7 +1724,7 @@ static int send_one(struct cg_pctl *p, struct flow *f, struct peer *r, uint64_t 
 		f->progress_t = now;
 	copy = cg_st_tx_copy(&f->tx, idx);
 	b = slot_for(p, f->peer, f->sid);
-	cg_pctl_put_data(b, f->id, (uint8_t)((fin ? CG_PCTLF_FIN : 0) | (f->est ? CG_PCTLF_EST : 0)), off, (uint32_t)now);
+	cg_pctl_put_data(b, f->id, (uint8_t)((fin ? CG_PCTLF_FIN : 0) | (f->est ? CG_PCTLF_EST : 0)), off);
 	if (len && cg_st_buf_read(&f->sb, &p->pool, off, b + CG_PCTL_DATA_HDR, len) < 0)
 		return 0; /* not reached: unacknowledged bytes are held */
 	push(p, CG_PCTL_DATA_HDR + len, copy);

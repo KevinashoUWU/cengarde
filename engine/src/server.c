@@ -2137,7 +2137,7 @@ static void on_nack(struct server *s, struct session *S, uint8_t flags, const ui
 			unsigned ev = cg_resc_ev(&s->resc, S->resc_idx, S->id, seq[i], CG_RESC_EV_ASKED);
 			int sure = cg_resc_sure(ev, down_coded(s, S), s->cfg->protocontroller_nack && !s->cfg->subflow);
 			int k = cg_pctl_nack(s->pctl, (uint32_t)(S - s->s), S->id, e + CG_HDR_LEN, (size_t)len - CG_HDR_LEN,
-					     went, sure);
+					     cg_hdr_ts(e), went, sure);
 
 			if (sure && (k == CG_PCTL_NACK_DATA || k == CG_PCTL_NACK_ACK))
 				cg_resc_ev(&s->resc, S->resc_idx, S->id, seq[i], CG_RESC_EV_DONE);
@@ -2230,8 +2230,8 @@ static void on_sfloss(struct server *s, struct session *S, const uint8_t *payloa
 			F->unsure += !(ev & (CG_RESC_EV_DONE | CG_RESC_EV_SUSPECT));
 			continue;
 		}
-		k = cg_pctl_nack(s->pctl, (uint32_t)(S - s->s), S->id, e + CG_HDR_LEN, (size_t)len - CG_HDR_LEN, went,
-				 sure);
+		k = cg_pctl_nack(s->pctl, (uint32_t)(S - s->s), S->id, e + CG_HDR_LEN, (size_t)len - CG_HDR_LEN,
+				 cg_hdr_ts(e), went, sure);
 		if (sure == CG_RESC_SURE_LATER) { /* a code may still rebuild it: GRIT waits for it */
 			cg_resc_ev(&s->sresc, S->sresc_idx, S->id, seq, CG_RESC_EV_SUSPECT);
 			F->suspect += k == CG_PCTL_NACK_DATA;
@@ -2490,7 +2490,7 @@ static void listen_read(struct server *s, struct lane *ln)
 					s->pctl_off++;
 					continue;
 				}
-				cg_pctl_rx(s->pctl, (uint32_t)(S - s->s), S->id, b + CG_HDR_LEN, len - CG_HDR_LEN, h.link);
+				cg_pctl_rx(s->pctl, (uint32_t)(S - s->s), S->id, b + CG_HDR_LEN, len - CG_HDR_LEN, h.ts, h.link);
 				/* how far its path is, for the reorderer's RACK on the
 				 * sparse DATA (cg_ro_note) */
 				if (s->cfg->reorder) {
@@ -3235,7 +3235,7 @@ static void down_send(struct server *s, struct session *S, int m, uint64_t now_m
 
 /* the protocontroller (variant B) (protoctlio.h): n stream messages down session peer (id sid). */
 static void pctl_send(void *ctx, uint32_t peer, uint32_t sid, uint8_t *const *msg, const uint16_t *len,
-		     const uint8_t *copy, const uint8_t *avoid, int n, uint32_t *eta_us, uint8_t *link)
+		     const uint8_t *copy, const uint8_t *avoid, int n, uint32_t *eta_us, uint8_t *link, uint32_t *ts)
 {
 	struct server *s = ctx;
 	uint64_t now_us = cg_now_us();
@@ -3255,6 +3255,7 @@ static void pctl_send(void *ctx, uint32_t peer, uint32_t sid, uint8_t *const *ms
 		}
 		eta_us[m] = s->pick[m] >= 0 && s->cfg->split_eta ? cg_eta_behind(&S->eta, (unsigned)s->pick[m]) : CG_PCTL_NOETA;
 		link[m] = s->pick[m] >= 0 ? (uint8_t)s->pick[m] : CG_PCTL_NOLINK;
+		ts[m] = s->sts[m]; /* its header's ts: a DATA's clock (15) */
 	}
 	down_send(s, S, n, now_us / 1000, &d);
 }
