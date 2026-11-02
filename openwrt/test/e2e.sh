@@ -1372,11 +1372,14 @@ else
 	"$VM" ssh router 'nft list chain inet fw4 cengarde_quic; cat /etc/cengarde/protoctl.nft; logread | grep -E "cengarde|firewall" | tail -10'
 fi
 quic_set pass
-quic_gone() { ! "$VM" ssh router "nft list chain inet fw4 cengarde_quic" >/dev/null 2>&1; }
+# fw4's reload flushes its table's rules, not the chains an include added:
+# an empty cengarde_quic (policy accept) may stay, so what must go is the reject
+quic_gone() { ! "$VM" ssh router "nft list chain inet fw4 cengarde_quic 2>/dev/null | grep -q reject"; }
 if until_ok 90 quic_gone; then
-	ok "quic pass: the chain is gone"
+	ok "quic pass: no reject left"
 else
-	bad "quic pass: cengarde_quic left behind"
+	bad "quic pass: the reject in cengarde_quic left behind"
+	"$VM" ssh router 'nft list chain inet fw4 cengarde_quic; cat /etc/cengarde/protoctl.nft'
 fi
 "$VM" ssh router 'uci -q delete cengarde.main.quic; uci commit cengarde'
 pctl_set no
