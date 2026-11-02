@@ -120,6 +120,14 @@ struct flow {
 	int mfd;
 	uint8_t hdr[CG_PCTL_AHDR_MAX];
 	struct rdir { uint64_t in, out; uint8_t eof, shut, nomem; } d[2];
+	/* a datagram stream (the reliable lane, story 031): fd a UDP socket,
+	 * the router's bound to the destination and connected to the LAN's
+	 * sender (saddr, sport), the VPS's connected to the destination; when
+	 * the last datagram went either way */
+	uint8_t dgram;
+	uint16_t sport;
+	uint8_t saddr[16];
+	uint64_t dg_t;
 };
 
 struct peer {
@@ -144,6 +152,9 @@ struct cg_pctl {
 	struct cg_scc_cfg ccf;
 	int ep;
 	int lfd[3]; /* the router's v4 and v6; the VPS's variant A */
+	int ufd[2]; /* the router's reliable lane: UDP, TPROXY, v4 and v6 (story 031) */
+	uint8_t *dgbuf; /* a datagram's room (CG_PCTL_DGRAM_MAX) */
+	uint64_t dg_in, dg_out, dg_drop, dg_flows, dg_bad; /* datagrams taken, sent, dropped; streams opened; without a destination */
 	struct cg_st_pool pool;
 	uint8_t *mem;
 	uint32_t *stack;
@@ -665,6 +676,313 @@ static void accept_some(struct cg_pctl *p, int v6)
 	}
 }
 
+/* ---- the reliable lane (story 031, protocol 18): datagram streams ---- */
+
+#define PCTL_DGRAM_IDLE_S 120 /* a datagram stream with nothing either way this long ends */
+
+/* The router's UDP socket for the lane, on the protocontroller's port: the
+ * firewall's TPROXY hands it the datagrams of flow_class reliable, with
+ * their destination (IP_ORIGDSTADDR). */
+static int udp_listen(struct cg_pctl *p, int family, char *err, size_t errlen)
+{
+	int fd = socket(family, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0), v6 = family == AF_INET6;
+	struct sockaddr_storage a;
+	socklen_t al;
+	struct epoll_event e = { .events = EPOLLIN, .data.u64 = CG_EV(CG_EV_PCTL, CG_PCTL_LISTEN_IDX + 3 + v6) };
+
+	if (fd < 0) {
+		snprintf(err, errlen, "protocontroller: the reliable lane's socket: %s", strerror(errno));
+		return -1;
+	}
+	memset(&a, 0, sizeof(a));
+	a.ss_family = (sa_family_t)family;
+	if (v6) {
+		((struct sockaddr_in6 *)&a)->sin6_port = htons(p->cfg.port);
+		al = sizeof(struct sockaddr_in6);
+		set_int(fd, IPPROTO_IPV6, IPV6_V6ONLY, 1);
+	} else {
+		((struct sockaddr_in *)&a)->sin_port = htons(p->cfg.port);
+		al = sizeof(struct sockaddr_in);
+	}
+	set_int(fd, SOL_SOCKET, SO_REUSEADDR, 1);
+	if ((v6 ? set_int(fd, IPPROTO_IPV6, IPV6_TRANSPARENT, 1) || set_int(fd, IPPROTO_IPV6, IPV6_RECVORIGDSTADDR, 1)
+		: set_int(fd, IPPROTO_IP, IP_TRANSPARENT, 1) || set_int(fd, IPPROTO_IP, IP_RECVORIGDSTADDR, 1)) ||
+	    bind(fd, (struct sockaddr *)&a, al) < 0 || epoll_ctl(p->ep, EPOLL_CTL_ADD, fd, &e) < 0) {
+		snprintf(err, errlen, "protocontroller: the reliable lane on UDP port %u (%s): %s", p->cfg.port,
+			 v6 ? "IPv6" : "IPv4", strerror(errno));
+		close(fd);
+		return -1;
+	}
+	p->ufd[v6] = fd;
+	return 0;
+}
+
+static void sa_to(const struct sockaddr_storage *a, uint8_t *family, uint8_t *addr, uint16_t *port)
+{
+	memset(addr, 0, 16);
+	if (a->ss_family == AF_INET6) {
+		const struct sockaddr_in6 *s = (const struct sockaddr_in6 *)a;
+
+		*family = 6;
+		memcpy(addr, &s->sin6_addr, 16);
+		*port = ntohs(s->sin6_port);
+	} else {
+		const struct sockaddr_in *s = (const struct sockaddr_in *)a;
+
+		*family = 4;
+		memcpy(addr, &s->sin_addr, 4);
+		*port = ntohs(s->sin_port);
+	}
+}
+
+static socklen_t sa_of(struct sockaddr_storage *a, int family, const uint8_t *addr, uint16_t port);
+static uint64_t flow_cap(const struct cg_pctl *p);
+static uint64_t backlog_max(const struct cg_pctl *p, const struct flow *f, uint64_t rate, uint64_t now);
+
+/* A datagram (n bytes at d) into f's stream behind its length, whole or
+ * not at all: dropped when the stream holds as much as it may or the pool
+ * has no room (UDP's own fate, counted). */
+static void dg_put(struct cg_pctl *p, struct flow *f, const uint8_t *d, size_t n)
+{
+	uint64_t held = f->tx.tail - f->tx.una, o = f->tx.tail, now = cg_now_us();
+	uint8_t h[2] = { (uint8_t)(n >> 8), (uint8_t)n };
+	const uint8_t *src[2] = { h, d };
+	size_t len[2] = { 2, n };
+
+	if (f->tx.eof || held + n + 2 > flow_cap(p)) {
+		p->dg_drop++;
+		return;
+	}
+	for (int k = 0; k < 2; k++)
+		for (size_t at = 0; at < len[k];) {
+			uint32_t crun;
+			uint8_t *w = cg_st_buf_at(&f->sb, &p->pool, o, 1, &crun);
+			size_t c = len[k] - at < crun ? len[k] - at : crun;
+
+			if (!w) { /* the pool is full: nothing of it counts (tail stays) */
+				p->dg_drop++;
+				return;
+			}
+			memcpy(w, src[k] + at, c);
+			at += c;
+			o += c;
+		}
+	f->tx.tail = o;
+	age_push(f->rd, &f->rd_h, &f->rd_n, f->tx.tail, now);
+	f->up += n + 2;
+	p->up_bytes += n + 2;
+	f->dg_t = now;
+	p->dg_in++;
+}
+
+/* n received bytes of f from offset off into dst; -1 when not held. */
+static int rb_copy(struct cg_pctl *p, struct flow *f, uint64_t off, uint8_t *dst, size_t n)
+{
+	for (size_t at = 0; at < n;) {
+		uint32_t crun;
+		const uint8_t *s = cg_st_buf_at(&f->rb, &p->pool, off + at, 0, &crun);
+		size_t c = n - at < crun ? n - at : crun;
+
+		if (!s)
+			return -1;
+		memcpy(dst + at, s, c);
+		at += c;
+	}
+	return 0;
+}
+
+/* The router: the stream of the LAN's sender src to dst, else a new one
+ * (its socket bound to dst, transparently, and connected to src: the
+ * replies go out from the destination, and the sender's later datagrams
+ * come straight to it). NULL: none. */
+static struct flow *dg_flow(struct cg_pctl *p, const struct sockaddr_storage *src, const struct sockaddr_storage *dst)
+{
+	uint8_t fam, sfam, a[16], sa[16];
+	uint16_t port, sport;
+	struct sockaddr_storage b;
+	struct flow *f;
+	struct epoll_event e = { .events = EPOLLIN };
+	int fd, v6 = dst->ss_family == AF_INET6;
+
+	sa_to(dst, &fam, a, &port);
+	sa_to(src, &sfam, sa, &sport);
+	for (uint32_t i = 0; i < p->nused; i++) {
+		f = &p->f[p->used[i]];
+		if (f->dgram && f->family == fam && f->port == port && f->sport == sport && !memcmp(f->addr, a, 16) &&
+		    !memcmp(f->saddr, sa, 16))
+			return f->tx.eof ? NULL : f;
+	}
+	if (cg_pctl_dest_ok(fam, a) || !(f = flow_alloc(p)))
+		return NULL;
+	fd = socket(dst->ss_family, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+	if (fd < 0) {
+		flow_free(p, f, 0);
+		return NULL;
+	}
+	set_int(fd, SOL_SOCKET, SO_REUSEADDR, 1);
+	if (v6)
+		set_int(fd, IPPROTO_IPV6, IPV6_TRANSPARENT, 1);
+	else
+		set_int(fd, IPPROTO_IP, IP_TRANSPARENT, 1);
+	if (bind(fd, (const struct sockaddr *)dst, sa_of(&b, fam, a, port)) < 0 ||
+	    connect(fd, (const struct sockaddr *)src, sa_of(&b, sfam, sa, sport)) < 0) {
+		close(fd);
+		flow_free(p, f, 0);
+		return NULL;
+	}
+	f->family = fam;
+	f->port = port;
+	memcpy(f->addr, a, 16);
+	f->sport = sport;
+	memcpy(f->saddr, sa, 16);
+	f->dgram = 1;
+	f->dg_t = cg_now_us();
+	f->fd = fd;
+	f->state = F_OPEN;
+	f->id = cg_pctl_id(p->gen[f - p->f], (uint16_t)(f - p->f));
+	f->rd_ready = 1;
+	e.data.u64 = CG_EV(CG_EV_PCTL, f - p->f);
+	if (epoll_ctl(p->ep, EPOLL_CTL_ADD, fd, &e) < 0) {
+		flow_free(p, f, 0);
+		return NULL;
+	}
+	f->ev = EPOLLIN;
+	f->reg = 1;
+	peer_of(p, f);
+	p->opened++;
+	p->dg_flows++;
+	return f;
+}
+
+/* The router: what TPROXY handed the lane's socket. */
+static void udp_accept(struct cg_pctl *p, int v6)
+{
+	for (int k = 0; k < 64; k++) {
+		struct sockaddr_storage src, dst;
+		union {
+			struct cmsghdr h;
+			char b[CMSG_SPACE(sizeof(struct sockaddr_in6))];
+		} cm;
+		struct iovec iov = { p->dgbuf, CG_PCTL_DGRAM_MAX };
+		struct msghdr mh = { .msg_name = &src, .msg_namelen = sizeof(src), .msg_iov = &iov, .msg_iovlen = 1,
+				     .msg_control = cm.b, .msg_controllen = sizeof(cm.b) };
+		ssize_t n = recvmsg(p->ufd[v6], &mh, 0);
+		int have = 0;
+		struct flow *f;
+
+		if (n < 0)
+			return;
+		memset(&dst, 0, sizeof(dst));
+		for (struct cmsghdr *c = CMSG_FIRSTHDR(&mh); c; c = CMSG_NXTHDR(&mh, c))
+			if ((c->cmsg_level == SOL_IP && c->cmsg_type == IP_ORIGDSTADDR) ||
+			    (c->cmsg_level == SOL_IPV6 && c->cmsg_type == IPV6_ORIGDSTADDR)) {
+				size_t l = c->cmsg_len - CMSG_LEN(0);
+
+				memcpy(&dst, CMSG_DATA(c), l < sizeof(dst) ? l : sizeof(dst));
+				have = 1;
+			}
+		if (!have || dst.ss_family != src.ss_family) {
+			p->dg_bad++;
+			continue;
+		}
+		if (!(f = dg_flow(p, &src, &dst))) {
+			p->dg_drop++;
+			continue;
+		}
+		dg_put(p, f, p->dgbuf, (size_t)n);
+	}
+}
+
+/* A datagram stream's socket: what came into the stream. Returns -1 when
+ * the flow was reset. */
+static int dg_read(struct cg_pctl *p, struct flow *f)
+{
+	for (int k = 0; f->rd_ready && k < 64; k++) {
+		ssize_t n = recv(f->fd, p->dgbuf, CG_PCTL_DGRAM_MAX, 0);
+
+		if (n >= 0) {
+			dg_put(p, f, p->dgbuf, (size_t)n);
+			continue;
+		}
+		if (errno == EAGAIN || errno == EWOULDBLOCK) {
+			f->rd_ready = 0;
+			break;
+		}
+		if (errno == EINTR || errno == ECONNREFUSED) /* an ICMP for an earlier one: UDP goes on */
+			continue;
+		flow_reset(p, f, reason_of(errno));
+		return -1;
+	}
+	return 0;
+}
+
+/* A datagram stream's socket: each whole datagram that came in order, sent
+ * as one (one that the network refuses is UDP's loss, counted). */
+static int dg_write(struct cg_pctl *p, struct flow *f, uint64_t now)
+{
+	uint64_t was = f->consumed;
+
+	for (;;) {
+		uint64_t ready = cg_st_rx_ready(&f->rx, f->consumed);
+		uint8_t h[2];
+		size_t n;
+
+		if (ready < 2 || rb_copy(p, f, f->consumed, h, 2) < 0)
+			break;
+		n = (size_t)h[0] << 8 | h[1];
+		if (ready < 2 + n || rb_copy(p, f, f->consumed + 2, p->dgbuf, n) < 0)
+			break;
+		if (send(f->fd, p->dgbuf, n, MSG_DONTWAIT | MSG_NOSIGNAL) < 0) {
+			if (errno == EAGAIN || errno == EWOULDBLOCK) {
+				f->wr_blocked = 1;
+				break;
+			}
+			if (errno == EINTR)
+				continue;
+			p->dg_drop++;
+		} else {
+			p->dg_out++;
+		}
+		f->consumed += 2 + n;
+		f->down += 2 + n;
+		f->w_bytes += 2 + n;
+		p->down_bytes += 2 + n;
+		cg_st_buf_release(&f->rb, &p->pool, f->consumed);
+		f->wr_blocked = 0;
+		f->dg_t = now;
+	}
+	if (f->consumed != was) {
+		uint64_t cap = flow_cap(p), e = cg_pctl_edge(f->consumed, f->rx.nxt, cap, backlog_max(p, f, f->w_rate, now));
+
+		age_pop(f->io, &f->io_h, &f->io_n, f->consumed, now, p->writeq);
+		f->progress_t = now;
+		if (e >= f->adv_edge + cap / 4)
+			f->ack_now = 1;
+	}
+	/* the other end closed it (idle): this way ends too */
+	if (cg_st_rx_ended(&f->rx) && f->consumed >= f->rx.fin && !f->wr_shut) {
+		f->wr_shut = 1;
+		f->tx.eof = 1;
+	}
+	return 0;
+}
+
+/* The VPS: a datagram stream's socket, connected to its destination. */
+static int dg_connect(int family, const uint8_t *addr, uint16_t port, int *why)
+{
+	struct sockaddr_storage a;
+	socklen_t al = sa_of(&a, family, addr, port);
+	int fd = socket(a.ss_family, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+
+	if (fd < 0 || connect(fd, (struct sockaddr *)&a, al) < 0) {
+		*why = fd < 0 ? CG_PCTL_R_ERROR : reason_of(errno);
+		if (fd >= 0)
+			close(fd);
+		return -1;
+	}
+	return fd;
+}
+
 /* ---- the VPS: connecting to the destination ---- */
 
 static socklen_t sa_of(struct sockaddr_storage *a, int family, const uint8_t *addr, uint16_t port)
@@ -750,7 +1068,18 @@ static void open_in(struct cg_pctl *p, uint32_t peer, uint32_t sid, const struct
 		send_rst(p, peer, sid, m->id, CG_PCTL_R_FULL);
 		return;
 	}
-	if ((fd = dest_connect(p, m->family, m->addr, m->port, &r)) < 0) {
+	if (m->flags & CG_PCTLF_DGRAM) { /* the reliable lane (18): UDP to the destination */
+		if ((fd = dg_connect(m->family, m->addr, m->port, &r)) < 0) {
+			flow_reset(p, f, (uint8_t)r);
+			return;
+		}
+		f->dgram = 1;
+		f->dg_t = cg_now_us();
+		f->connecting = 0;
+		f->rd_ready = 1;
+		e.events = EPOLLIN;
+		p->dg_flows++;
+	} else if ((fd = dest_connect(p, m->family, m->addr, m->port, &r)) < 0) {
 		flow_reset(p, f, (uint8_t)r);
 		return;
 	}
@@ -760,7 +1089,7 @@ static void open_in(struct cg_pctl *p, uint32_t peer, uint32_t sid, const struct
 		flow_reset(p, f, CG_PCTL_R_ERROR);
 		return;
 	}
-	f->ev = EPOLLOUT;
+	f->ev = e.events;
 	f->reg = 1;
 	peer_of(p, f);
 	p->opened++;
@@ -1507,6 +1836,8 @@ static int sock_read(struct cg_pctl *p, struct flow *f)
 {
 	uint32_t got = 0;
 
+	if (f->dgram)
+		return dg_read(p, f);
 	while (f->rd_ready && !f->tx.eof && got < PCTL_READ_PASS) {
 		uint64_t held = f->tx.tail - f->tx.una, unsent = cg_st_tx_unsent(&f->tx);
 		uint64_t cap = flow_cap(p), room = cap > held ? cap - held : 0, bl = backlog_max(p, f, f->s_rate, cg_now_us());
@@ -1556,6 +1887,8 @@ static int sock_write(struct cg_pctl *p, struct flow *f, uint64_t now)
 
 	if (f->connecting)
 		return 0;
+	if (f->dgram)
+		return dg_write(p, f, now);
 	lowat = lowat_of(f);
 	for (;;) {
 		uint64_t ready = cg_st_rx_ready(&f->rx, f->consumed);
@@ -1634,6 +1967,8 @@ void cg_pctl_event(struct cg_pctl *p, uint32_t idx, uint32_t events)
 	if (idx >= CG_PCTL_LISTEN_IDX) {
 		if (!p->cfg.server && idx - CG_PCTL_LISTEN_IDX < 2 && p->lfd[idx - CG_PCTL_LISTEN_IDX] >= 0)
 			accept_some(p, (int)(idx - CG_PCTL_LISTEN_IDX));
+		else if (!p->cfg.server && idx - CG_PCTL_LISTEN_IDX - 3 < 2 && p->ufd[idx - CG_PCTL_LISTEN_IDX - 3] >= 0)
+			udp_accept(p, (int)(idx - CG_PCTL_LISTEN_IDX - 3));
 		else if (p->cfg.server && idx == CG_PCTL_LISTEN_IDX + 2 && p->lfd[2] >= 0)
 			a_accept(p);
 		return;
@@ -1687,7 +2022,7 @@ static void send_open(struct cg_pctl *p, struct flow *f, uint64_t now)
 	struct peer *r = peer_of(p, f);
 	uint8_t *b = slot_for(p, f->peer, f->sid);
 
-	push(p, cg_pctl_put_open(b, f->id, f->family, f->addr, f->port), 1);
+	push(p, cg_pctl_put_open(b, f->id, f->dgram ? CG_PCTLF_DGRAM : 0, f->family, f->addr, f->port), 1);
 	f->open_sent = 1;
 	f->open_due = now + cg_scc_rto(&r->cc, f->open_tries < 6 ? f->open_tries : 6, peer_reo(p, r));
 	if (f->open_tries < 255)
@@ -1774,6 +2109,10 @@ static int timers(struct cg_pctl *p, struct flow *f, uint64_t now)
 {
 	struct peer *r = peer_of(p, f);
 
+	/* a datagram stream ends after a while with nothing either way (UDP has
+	 * no FIN of its own) */
+	if (f->dgram && !f->tx.eof && now - f->dg_t > (uint64_t)PCTL_DGRAM_IDLE_S * 1000000)
+		f->tx.eof = 1;
 	if (f->connecting && now - f->created_t > (uint64_t)PCTL_CONNECT_S * 1000000) {
 		flow_reset(p, f, CG_PCTL_R_TIMEOUT);
 		return -1;
@@ -2032,6 +2371,12 @@ struct cg_pctl *cg_pctl_new(const struct cg_pctl_cfg *cfg, int ep, const struct 
 	p->ops = *ops;
 	p->ep = ep;
 	p->lfd[0] = p->lfd[1] = p->lfd[2] = -1;
+	p->ufd[0] = p->ufd[1] = -1;
+	if (!(p->dgbuf = malloc(CG_PCTL_DGRAM_MAX))) {
+		free(p);
+		snprintf(err, errlen, "protocontroller: out of memory");
+		return NULL;
+	}
 	p->cc_auto = cfg->server && !strcmp(cfg->cc, "auto");
 	p->buf_cap = (uint64_t)cfg->buf_kb * 1024;
 	if (p->buf_cap > CG_ST_MAXWIN)
@@ -2086,6 +2431,17 @@ struct cg_pctl *cg_pctl_new(const struct cg_pctl_cfg *cfg, int ep, const struct 
 			cg_warn("%s: IPv4 only", err);
 			err[0] = '\0';
 		}
+		/* the reliable lane (story 031): variant B's streams only */
+		if (cfg->dgram && cfg->mode == CG_PCTL_B) {
+			if (udp_listen(p, AF_INET, err, errlen) < 0) {
+				cg_pctl_free(p);
+				return NULL;
+			}
+			if (udp_listen(p, AF_INET6, err, errlen) < 0) {
+				cg_warn("%s: IPv4 only", err);
+				err[0] = '\0';
+			}
+		}
 	}
 	return p;
 }
@@ -2101,6 +2457,12 @@ void cg_pctl_free(struct cg_pctl *p)
 			epoll_ctl(p->ep, EPOLL_CTL_DEL, p->lfd[i], NULL);
 			close(p->lfd[i]);
 		}
+	for (int i = 0; i < 2; i++)
+		if (p->ufd[i] >= 0) {
+			epoll_ctl(p->ep, EPOLL_CTL_DEL, p->ufd[i], NULL);
+			close(p->ufd[i]);
+		}
+	free(p->dgbuf);
 	free(p->mem);
 	free(p->stack);
 	free(p->f);
@@ -2126,6 +2488,15 @@ void cg_pctl_json(const struct cg_pctl *p, struct cg_json *j)
 	}
 	cg_json_u64(j, "flows", p->nused);
 	cg_json_u64(j, "opened", p->opened);
+	/* the reliable lane (story 031) */
+	cg_json_obj(j, "reliable");
+	cg_json_bool(j, "on", p->ufd[0] >= 0 || p->ufd[1] >= 0);
+	cg_json_u64(j, "streams", p->dg_flows);
+	cg_json_u64(j, "taken", p->dg_in);
+	cg_json_u64(j, "sent", p->dg_out);
+	cg_json_u64(j, "dropped", p->dg_drop);
+	cg_json_u64(j, "no_destination", p->dg_bad);
+	cg_json_end(j, '}');
 	cg_json_u64(j, "closed", p->closed);
 	cg_json_obj(j, "refused");
 	for (unsigned r = 1; r < CG_PCTL_R_N; r++)

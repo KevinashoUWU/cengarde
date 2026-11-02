@@ -6147,6 +6147,7 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 		struct cg_pctl_ops ops = { .ctx = c, .send = pctl_send, .hint = pctl_hint, .horizon = pctl_horizon };
 
 		snprintf(pc.mid_cc, sizeof(pc.mid_cc), "%s", cfg->protocontroller_mid_cc);
+		pc.dgram = cg_fc_reliable(&cfg->flow_class); /* the reliable lane (story 031) */
 		if (cfg->protocontroller == CG_PCTL_A && pctl_vps_addr(cfg, &pc.a_peer, err, sizeof(err)) < 0) {
 			cg_err("%s", err);
 			goto out;

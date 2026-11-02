@@ -892,7 +892,8 @@ return view.extend({
 					pctlPort.length ? _('ports %s').format(pctlPort.join(', ')) : _('every port'), pctl.toUpperCase());
 		s = m.section(form.GridSection, 'flowclass', _('Flows'),
 			tcpLine + '<br />' +
-			_('UDP and the rest: the engine guesses MPEG-TS and RTP from their bytes; a rule here has the last word, for the address and port of either end of a flow, the first rule that matches. Ordered: held in order and waits for what is missing (MPEG-TS, telemetry with no buffer of its own). Deadline: held up to its deadline (RTP). Direct: never held nor rescued (QUIC, SRT, WebRTC, games: their own retransmissions and order). Automatic: what the engine guesses. Behind the router\'s NAT the tunnel sees the far end and the port: a LAN address with a port is taken as the port alone; the VPS takes the same rules for the upload.'));
+			_('UDP and the rest: the engine guesses MPEG-TS and RTP from their bytes; a rule here has the last word, for the address and port of either end of a flow, the first rule that matches. Ordered: held in order and waits for what is missing (MPEG-TS, telemetry with no buffer of its own). Deadline: held up to its deadline (RTP). Direct: never held nor rescued (QUIC, SRT, WebRTC, games: their own retransmissions and order). Automatic: what the engine guesses. Behind the router\'s NAT the tunnel sees the far end and the port: a LAN address with a port is taken as the port alone; the VPS takes the same rules for the upload.') +
+			'<br /><strong>' + _('Reliable (telemetry): every datagram of the flow arrives, in order, late rather than never: they ride the protocontroller (B) as a stream of their own, with its retransmissions, and the VPS sends them on as UDP. For telemetry or data that must arrive, never for voice or video: it adds latency. A LAN address works here (the router takes them before its NAT).') + '</strong>');
 		s.anonymous = true;
 		s.addremove = true;
 		s.sortable = true;
@@ -918,6 +919,7 @@ return view.extend({
 		o.value('ordered', _('Ordered'));
 		o.value('deadline', _('Deadline'));
 		o.value('direct', _('Direct'));
+		o.value('reliable', _('Reliable (telemetry)'));
 		o.value('auto', _('Automatic'));
 		o.default = 'ordered';
 

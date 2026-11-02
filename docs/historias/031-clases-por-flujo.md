@@ -223,6 +223,38 @@ su jitter, p99 − p50, y el peor sobre la mediana).
   configurables o aprendidas; la regla IP:puerto queda para lo que no sepa
   reconocer (las máquinas de telemetría).
 
+## Paso 3c hecho: el carril fiable (2026-11-02, protocolo 18)
+
+- **Qué:** `flow_class = … reliable`. Con `protocontroller = b`, el router
+  toma por TPROXY el UDP de esas reglas antes de su NAT (por eso aquí sí
+  sirve una dirección del LAN) y lo lleva por un **flujo de datagramas** de
+  GRIT: cada datagrama detrás de su largo de 16 bits, con el ARQ, el ritmo y
+  los códigos de GRIT (`fec_stream` incluido). El OPEN lleva
+  `CG_PCTLF_DGRAM`; el VPS abre un UDP conectado al destino y manda cada
+  datagrama completo, en orden, como uno; las respuestas vuelven igual. Sin
+  FIN propio, el flujo se cierra tras 120 s sin nada en ningún sentido. Un
+  datagrama que no cabe en el búfer del flujo se tira y se cuenta (lo que
+  haría UDP). En orden, no fuera de orden como pedía el diseño: un flujo de
+  GRIT ordena, y para telemetría el orden sobra pero no estorba.
+- **OpenWrt:** la cadena `cengarde_reliable` (TPROXY en `mangle`, la marca
+  `0x4347`), la regla y la ruta local de la tabla 17223 (secciones propias
+  de `network`), `kmod-nft-tproxy` como dependencia; LuCI ofrece la clase con
+  su aviso.
+- **Laboratorio** (`BOND_RELIABLE=1`: el flujo chico, 1316 B a 760 por
+  segundo, del host del LAN al lejano por el carril; subida, cubic, × 2):
+
+  | Caso | UDP: perdidos / desordenados / p50 | Fiable: perdidos / desordenados / p50 |
+  | --- | --- | --- |
+  | `lossy` | 44 / 593 / 97 ms | 0 / 2 / 172 ms |
+  | `cell4` | 6 / 86 / 153 ms | 0 / 2 / 155 ms |
+  | `het` | 122 / 1218 / 114 ms | 0 / 3 / ≥ 200 ms |
+  | `protect` | 630 / 730 / 35 ms | 5100 / 0 / ≥ 200 ms |
+
+  En `protect` el carril (8 Mbit/s, mucho más que telemetría) no cabe en
+  su parte del enlace chico (~5 Mbit/s entre cuatro flujos) y tira lo que
+  excede su búfer; el iperf de al lado baja de 23 a 9 Mbit/s. Pendiente:
+  prioridad del carril sobre lo masivo.
+
 ## Diseño del paso 3: las clases de UDP (2026-11-02, con el usuario)
 
 El UDP manda a su tasa sin saber de pérdida ni de cola: el túnel no puede

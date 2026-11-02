@@ -139,7 +139,17 @@ void test_flowrule(void)
 		CHECK(!w && !nh);
 		cg_fc_hold(CG_FC_DIRECT, 1, &w, &nh); /* never held */
 		CHECK(!w && nh);
+		cg_fc_hold(CG_FC_RELIABLE, 1, &w, &nh); /* the lane's: never in the reorderer, the guess */
+		CHECK(w && !nh);
 	}
+	/* the reliable lane: parsed, and found in a table */
+	CHECK_EQ(cg_fc_parse(&r, "203.0.113.7:9330 reliable"), 0);
+	CHECK_EQ(r.cls, CG_FC_RELIABLE);
+	memset(&t, 0, sizeof(t));
+	add(&t, ":5004 deadline");
+	CHECK(!cg_fc_reliable(&t));
+	add(&t, "203.0.113.7:9330 reliable");
+	CHECK(cg_fc_reliable(&t));
 
 	/* a prefix not on a byte boundary */
 	memset(&t, 0, sizeof(t));

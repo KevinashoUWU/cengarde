@@ -11,7 +11,7 @@ archivos:
   - engine/tests/test_stream.c
   - engine/tests/test_streamcc.c
   - engine/tests/test_linkowd.c
-sello: 0c6f632bcc61fdf1
+sello: a3a3a6a4738d1509
 ---
 # Protocontrolador (protoctl.c, stream.h, streamcc.h)
 
@@ -19,6 +19,8 @@ sello: 0c6f632bcc61fdf1
 
 ## Qué hace
 El protocontrolador ([[025-protocontrolador]]): TCP partido en los dos extremos (lo que la RFC 3135 llama un PEP). Con `protocontroller = a` o `b`, el router acepta el TCP que el firewall redirige a `protocontroller_port` (destino original con `SO_ORIGINAL_DST`, o `getsockname` con TPROXY), y el VPS abre un TCP nuevo hacia ese destino (`protocontroller_cc`, `auto` por omisión: cubic y BBR desde 3 segmentos reenviados). Lo que no se intercepta (UDP, QUIC) sigue por la TUN. El VPS acepta las dos variantes con cualquiera de las dos.
+
+- **El carril fiable** ([[031-clases-por-flujo]], paso 3c, protocolo 18, `flow_class = … reliable`, solo con B): el router abre un socket UDP transparente en el mismo puerto (`udp_listen`: `IP_TRANSPARENT`, `IP_RECVORIGDSTADDR`) y el firewall le pasa por TPROXY el UDP de esas reglas, antes del NAT (la marca `0x4347` y la tabla 17223 con todo local, que escribe `cengarde-setup`). Cada par (origen del LAN, destino) es un **flujo de datagramas**: un socket propio ligado al destino (transparente) y conectado al origen, así que las respuestas salen desde el destino y los datagramas siguientes llegan directo a él (`dg_flow`). Cada datagrama entra al flujo entero o nada, detrás de su largo de 16 bits (`dg_put`; uno que no cabe en el búfer del flujo o en el fondo se tira y se cuenta, como haría UDP); el OPEN lleva `CG_PCTLF_DGRAM` y el VPS abre un UDP conectado al destino (`dg_connect`) y manda cada datagrama completo y en orden como uno (`dg_write`). El mismo ARQ, ritmo y códigos (`fec_stream`) que un flujo TCP; sin FIN propio, se cierra tras 120 s sin nada en ningún sentido (`PCTL_DGRAM_IDLE_S`). Estado: `reliable` (`streams`, `taken`, `sent`, `dropped`, `no_destination`). Laboratorio (`BOND_RELIABLE=1`, el flujo chico de 8 Mbit/s del LAN al host lejano): `lossy`, `cell4` y `het` sin un perdido y en orden (contra 6–122 perdidos y 86–1218 desordenados como UDP), la mediana 97 → 172 ms en `lossy`; en `protect` el carril no cabe en su parte del enlace (~5 de 8 Mbit/s) y tira lo que excede su búfer.
 
 - **Variante A** (`a`): el tramo del medio es un **TCP simple del kernel** por el túnel, del router a la dirección del VPS en el túnel (`protocontroller_vps`, por omisión la primera del prefijo de `tun_addr`) y `protocontroller_port`; lo primero que escribe el router es una cabecera (`0xA5`, familia, puerto, dirección) con el destino. El VPS escucha ahí (`IP_FREEBIND`) y solo acepta direcciones del prefijo del túnel (`cg_pctl_in_pfx`). El motor solo copia bytes entre los dos sockets (`a_move`, con los trozos del fondo común y el tope `protocontroller_buf_kb` por sentido); `protocontroller_mid_cc` elige el control de congestión del medio en cada extremo.
 - **Variante B** (`b`), el protocolo **GRIT** (*Guaranteed Redundant IP Transport*; en el código, `stream.h` y `streamcc.h`): entre los dos, cada conexión es un **flujo de bytes fiable** dentro del túnel: sus mensajes van como carga de DATA con el primer nibble en `0xF` (protocolo 10), así que el MAC, el anti-replay, las copias, la FEC y el rescate les aplican sin cambios.

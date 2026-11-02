@@ -720,6 +720,11 @@ RTP); gana la primera regla que calza.
 - **Con plazo:** retenido hasta su plazo (RTP).
 - **Directo:** nunca retenido ni rescatado (QUIC, SRT, WebRTC, juegos).
 - **Automático:** lo que reconoce el motor.
+- **Fiable (telemetría):** cada datagrama llega, en orden, tarde antes que
+  nunca: con el protocontrolador B, el router los toma antes de su NAT
+  (TPROXY; aquí sirve una dirección del LAN) y los lleva por un flujo propio
+  de GRIT, con sus retransmisiones; el VPS los vuelve a emitir como UDP.
+  Para telemetría o datos que deben llegar, nunca para voz ni video.
 
 Detrás del NAT del router el túnel ve el otro extremo y el puerto: una
 dirección del LAN con puerto se toma como el puerto solo (y queda en el log);

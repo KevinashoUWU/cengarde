@@ -447,7 +447,7 @@ for (const [lang, tr] of [ [ 'en', english ], [ 'es', spanish ] ]) {
 		assert.match(b.flowclass.descr, /\(protocontrol\w+ B\)/, 'the TCP line: bonding takes B');
 		assert.match(b.flowclass.descr, /443/, 'and says its ports');
 	}
-	assert.deepEqual(o['flowclass.class'].values.map((v) => v[0]), [ 'ordered', 'deadline', 'direct', 'auto' ]);
+	assert.deepEqual(o['flowclass.class'].values.map((v) => v[0]), [ 'ordered', 'deadline', 'direct', 'reliable', 'auto' ]);
 	for (const ok of [ '203.0.113.7:9330', '10.0.0.0/8', ':5004', '[2001:db8::7]:5000', '[2001:db8::]/32' ])
 		assert.equal(o['flowclass.endpoint'].validate('x', ok), true, `${lang}: ${ok} taken`);
 	for (const bad of [ '', '2001:db8::7', 'host:80', '1.2.3.4 :5', ':' ])

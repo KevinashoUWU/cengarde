@@ -32,7 +32,7 @@ define Package/cengarde
   CATEGORY:=Network
   TITLE:=Redundant multi-link tunnel
   URL:=https://github.com/KevinashoUWU/cengarde
-  DEPENDS:=+kmod-tun +kmod-tcp-bbr
+  DEPENDS:=+kmod-tun +kmod-tcp-bbr +kmod-nft-tproxy
 endef
 
 define Package/cengarde/description
