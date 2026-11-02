@@ -65,6 +65,29 @@ en los dos modos, bonding (FEC v3) y redundancia (`redund_spare`).
   y el video real; laboratorio y terreno, con la FEC encendida en los dos
   extremos.
 
+## Diseño del paso 3: las clases de UDP (2026-11-02, con el usuario)
+
+El UDP manda a su tasa sin saber de pérdida ni de cola: el túnel no puede
+frenarlo, solo repartir, proteger o descartar. Cuatro clases, cada una con lo
+que le conviene:
+
+| Clase | Ejemplos | Su recuperación | Del túnel |
+| --- | --- | --- | --- |
+| Constante sin defensa | MPEG-TS crudo, cámaras, telemetría | ninguna, sin búfer de reorden | orden, rescate y FEC, reteniendo hasta el presupuesto (~500 ms) |
+| Con búfer, sin reenvío | RTP de voz o video sin NACK | búfer de jitter | rescate y FEC dentro de su plazo; el orden lo pone él |
+| Se recupera sola («RUDP») | QUIC, SRT, RIST, WebRTC con NACK, juegos con ARQ | su ARQ, su FEC, su control de congestión | directo: sin retener ni rescatar (duplica sus reenvíos y le enturbia el RTT); a lo más una FEC liviana |
+| Tolera la pérdida | VoIP con Opus FEC, DNS, juegos de estado | ninguna o la propia | directo, sin nada |
+
+- **Reconocerlas por flujo, no por paquete:** `dgclass.h` ve MPEG-TS y RTP;
+  una tabla de flujos que mire los dos sentidos agrega QUIC (encabezado largo
+  y versión), SRT (su handshake y sus paquetes de control) y el RTP con NACK
+  en su RTCP de vuelta (RIST, WebRTC), que pasa de la segunda clase a la
+  tercera. Es la tabla del proxy UDP (`DATAGRAM` con id de flujo).
+- **ECN:** QUIC y WebRTC lo hablan; marcar CE cuando un enlace se encola los
+  hace bajar su tasa sin perder un paquete. Para los demás, CAKE.
+- **La protección para quien no la tiene:** FEC y rescate para las dos
+  primeras clases; las otras dos, directo.
+
 ## Pendiente
 
 - Implementar y medir el paso 1.
@@ -73,3 +96,4 @@ en los dos modos, bonding (FEC v3) y redundancia (`redund_spare`).
 ## Cambios
 
 - 2026-11-02: creada, con el diseño de los tres pasos.
+- 2026-11-02: las cuatro clases de UDP y el ECN, del usuario.
