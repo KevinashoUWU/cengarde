@@ -89,6 +89,7 @@
 #include "sock.h"
 #include "capacity.h"
 #include "dgclass.h"
+#include "flowlearn.h"
 #include "dominant.h"
 #include "linksig.h"
 #include "fec.h"
@@ -234,6 +235,7 @@ struct session {
 	uint16_t parq_seed;
 	uint64_t parq_rx, parq_bad, parq_reqs, parq_sent, parq_bytes, parq_missing, parq_budget, parq_nolink;
 	struct cg_ro_cfg rocf;    /* the server's reorder settings, with its rescue */
+	struct cg_fl fl;          /* its flows learned (flowlearn.h, story 031): what it sends and receives */
 	uint32_t rescue_base_us;  /* rescue_wait_ms's wait, before the code's horizon and TCP's budget (harq_wait) */
 	uint32_t tx_ctl; /* next probe reply sequence */
 	int pass; /* IP pass its probes ask for: -1 nothing */
@@ -1809,7 +1811,7 @@ static void up_deliver(struct server *s, int *nq, struct session *S, const struc
 			       /* free with TCP data: a retransmission (tcp_aware) */
 			       .retx = (uint8_t)((h->flags & CG_F_FREE) && cg_tcp_data(payload, len)),
 			       .rebuilt = S->rebuilding };
-	int dg = cg_dg_class(payload, len); /* MPEG-TS has no reorder buffer of its own (dgclass.h) */
+	int dg = cg_dg_class(payload, len), fc; /* MPEG-TS has no reorder buffer of its own (dgclass.h) */
 	enum cg_ro_v v;
 	uint16_t buf;
 
@@ -1836,7 +1838,16 @@ static void up_deliver(struct server *s, int *nq, struct session *S, const struc
 	 * only while something waits behind it), and its jitter buffer takes
 	 * what comes late; never held, it lost every rescue (story 030). The
 	 * operator's flow_class has the last word (flowrule.h, story 031). */
-	cg_fc_hold(cg_fc_match(&s->cfg->flow_class, payload, len), dg == CG_DG_TS, &k.waits, &k.nohold);
+	fc = cg_fc_match(&s->cfg->flow_class, payload, len);
+	/* a flow that said what it is (QUIC, SRT, RTP with NACK) orders and
+	 * recovers its own: never held (flowlearn.h, story 031), unless a rule
+	 * says otherwise */
+	if (s->cfg->flow_learn) {
+		cg_fl_observe(&S->fl, payload, len, S->last_rx_ms);
+		if (fc == CG_FC_NONE && cg_fl_kind(&S->fl, payload, len, S->last_rx_ms))
+			fc = CG_FC_DIRECT;
+	}
+	cg_fc_hold(fc, dg == CG_DG_TS, &k.waits, &k.nohold);
 	v = cg_ro_in(&S->ro, &s->pool, &S->rocf, &k, rset, &buf);
 	if (v == CG_RO_AGAIN) {
 		/* The window overflowed: the gaps it forces out go, with what was
@@ -3085,6 +3096,11 @@ static void down_prepare(struct server *s, struct session *S, int m, uint8_t *bu
 	const struct client *C = client_of(s, S);
 	struct cg_hdr h = { .type = CG_T_DATA, .hint = C->hint, .session = S->id, .ts = (uint32_t)now_us };
 
+	/* what the flow says of itself, this way too (an RTCP NACK goes
+	 * against its media: flowlearn.h) */
+	if (s->cfg->flow_learn)
+		cg_fl_observe(&S->fl, buf, len, now_us / 1000);
+
 	/* The paths it may take, in one order (split.h's cg_split_plan, audit
 	 * C13): G3/G4 (the batch's), a copy on every carrier under stress
 	 * (cg_sdup) */
@@ -4226,6 +4242,12 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
 		cg_json_u64(j, "unrecovered", S->fec ? S->fec->unrecovered : 0);
 		cg_json_u64(j, "malformed", S->fec ? S->fec->bad : 0);
 		cg_json_u64(j, "already_there", S->fec_dups);
+		/* the flows that said what they are (flowlearn.h, story 031) */
+		cg_json_obj(j, "learned");
+		cg_json_u64(j, "quic", S->fl.learned[CG_FL_QUIC]);
+		cg_json_u64(j, "srt", S->fl.learned[CG_FL_SRT]);
+		cg_json_u64(j, "nack", S->fl.learned[CG_FL_NACK]);
+		cg_json_end(j, '}');
 		/* over the STREAMs (story 031) */
 		cg_json_u64(j, "stream_repairs", S->sfx ? S->sfx->repairs : 0);
 		cg_json_u64(j, "stream_rebuilt", S->sfx ? S->sfx->rebuilt : 0);
