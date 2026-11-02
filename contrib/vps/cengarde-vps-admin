@@ -163,7 +163,9 @@ unset)
 	;;
 flows)
 	shift
-	[ $(($# % 2)) -eq 0 ] && [ $# -le 64 ] || refuse "usage: flows [ENDPOINT CLASS]... (at most 32)"
+	if [ $(($# % 2)) -ne 0 ] || [ $# -gt 64 ]; then
+		refuse "usage: flows [ENDPOINT CLASS]... (at most 32)"
+	fi
 	i=1
 	for w in "$@"; do
 		if [ $((i % 2)) -eq 1 ]; then

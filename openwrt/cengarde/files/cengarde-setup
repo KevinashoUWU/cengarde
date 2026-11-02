@@ -1433,7 +1433,7 @@ vps_sync() {
 # left out; the far end's address, or a port, is what both ends see.
 FLOWS=''
 flow_class_one() {
-	local s=$1 e c en
+	local s="$1" e c en
 
 	config_get_bool en "$s" enabled 1
 	[ "$en" = 1 ] || return 0
