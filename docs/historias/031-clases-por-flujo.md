@@ -281,11 +281,8 @@ su jitter, p99 − p50, y el peor sobre la mediana).
   dos sentidos una clave; cada paquete del flujo lo renueva; olvidado tras
   120 s sin nada) lo guarda, alimentada con lo que cada extremo recibe y
   envía (un NACK va contra su medio). Sin regla y sin reparto, un flujo
-  conocido va como `direct`. `flow_learn`, **apagado** por defecto y
-  **encendido por el modo redundancia** en el router y el VPS (2026-11-02,
-  el usuario: deduplicado pero desordenado; sin reparto el desorden es poco
-  y la recuperación de QUIC, la RFC 9002, umbral de 3 paquetes o 9/8 del
-  RTT, no ve pérdidas falsas); el estado cuenta lo aprendido.
+  conocido va como `direct`. `flow_learn`, **apagado**; el estado cuenta lo
+  aprendido.
 - **Lo que enseñó el laboratorio** (QUIC de aioquic, × 2):
 
   | Modo | Caso | Retenido (Mbit/s) | Aprendido, sin retener |
@@ -358,9 +355,7 @@ que le conviene:
 ## Pendiente
 
 - Terreno: `fec_stream` en redundancia, el carril fiable (con zstd) y
-  `flow_learn` en redundancia (ya en su preset).
-- QUIC sin retener también en bonding: repartir por flujo (todo un flujo por
-  un enlace, el plan por flujo de la historia 014), que MPGRIT haría natural.
+  `flow_learn` en redundancia.
 - Prioridad del carril fiable sobre lo masivo dentro de GRIT.
 - Un analizador de encabezados más amplio y firmas configurables o
   aprendidas para el detector (usuario).

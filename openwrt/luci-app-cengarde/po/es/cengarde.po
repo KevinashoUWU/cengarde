@@ -609,8 +609,8 @@ msgstr "Fiable (telemetría)"
 msgid "Learn QUIC, SRT and RIST"
 msgstr "Reconocer QUIC, SRT y RIST"
 
-msgid "A flow that says what it is (QUIC's handshake, SRT's, an RTP stream whose receiver asks for what it lost) is never held by the receiver, when it is not split: each orders and recovers its own. In redundancy it lowered the delay under load (p99 228 to 68 ms in the lab) and cost a third of the rate on lossy uplinks; never in bonding, where unheld QUIC lost half its rate or more. The redundancy mode turns it on, here and on the VPS."
-msgstr "Un flujo que dice lo que es (el saludo de QUIC, el de SRT, un RTP cuyo receptor pide lo que perdió) nunca lo retiene el receptor cuando no hay reparto: cada uno ordena y recupera lo suyo. En redundancia bajó el retardo con carga (p99 de 228 a 68 ms en el laboratorio) y costó un tercio del caudal en enlaces con pérdida; nunca en bonding, donde el QUIC sin retener perdió la mitad del caudal o más. El modo redundancia lo enciende, aquí y en el VPS."
+msgid "A flow that says what it is (QUIC's handshake, SRT's, an RTP stream whose receiver asks for what it lost) is never held by the receiver, when it is not split: each orders and recovers its own. In redundancy it lowered the delay under load (p99 228 to 68 ms in the lab) and cost a third of the rate on lossy uplinks; never in bonding, where unheld QUIC lost half its rate or more. The VPS needs it too for the upload."
+msgstr "Un flujo que dice lo que es (el saludo de QUIC, el de SRT, un RTP cuyo receptor pide lo que perdió) nunca lo retiene el receptor cuando no hay reparto: cada uno ordena y recupera lo suyo. En redundancia bajó el retardo con carga (p99 de 228 a 68 ms en el laboratorio) y costó un tercio del caudal en enlaces con pérdida; nunca en bonding, donde el QUIC sin retener perdió la mitad del caudal o más. El VPS también lo necesita para la subida."
 
 msgid "Compress the reliable lane"
 msgstr "Comprimir el carril fiable"
