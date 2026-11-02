@@ -75,6 +75,7 @@
 #include "sock.h"
 #include "capacity.h"
 #include "dgclass.h"
+#include "flowlearn.h"
 #include "dominant.h"
 #include "linksig.h"
 #include "tcpack.h"
@@ -195,6 +196,7 @@ struct client {
 	uint32_t session;
 	struct cg_txs txs; /* sequence and key up */
 	struct cg_rxs rxs; /* window, arrivals and counters down (clientpath.h) */
+	struct cg_fl fl;   /* the flows learned (flowlearn.h, story 031): what it sends and receives */
 	int ep, tun_fd, tfd; /* tun_fd: the TUN device */
 	uint64_t ticks_missed, tick_max_us; /* timer expirations the tick ran late for, and its longest run */
 	struct cg_nl nl;
@@ -2586,6 +2588,8 @@ static void up_one(struct client *c, struct upctx *u, int m, uint8_t *buf, size_
 	c->pnc[m] = (uint8_t)(!copy && len >= CG_PACE_SMALL && cg_pctl_is(buf, len));
 	c->prc[m] = (uint8_t)copy;
 	c->sp_bytes += len;
+	if (c->cfg->flow_learn) /* what the flow says of itself, this way too (flowlearn.h) */
+		cg_fl_observe(&c->fl, buf, len, now_us / 1000);
 	if (c->scls[m]) {
 		/* GRIT recovers its own; FEC v3 covers it in its own window
 		 * (story 031) */
@@ -3835,7 +3839,7 @@ static void down_deliver(struct client *c, const struct cg_hdr *h, unsigned link
 			       /* free with TCP data: a retransmission (tcp_aware) */
 			       .retx = (uint8_t)((h->flags & CG_F_FREE) && cg_tcp_data(payload, len)),
 			       .rebuilt = c->drebuilding };
-	int dg = cg_dg_class(payload, len); /* MPEG-TS has no reorder buffer of its own (dgclass.h) */
+	int dg = cg_dg_class(payload, len), fc; /* MPEG-TS has no reorder buffer of its own (dgclass.h) */
 	enum cg_ro_v v;
 	uint16_t buf;
 
@@ -3869,7 +3873,15 @@ static void down_deliver(struct client *c, const struct cg_hdr *h, unsigned link
 	/* RTP keeps the deadline rule: held, it is asked for (a gap is asked
 	 * only while something waits behind it), and its jitter buffer takes
 	 * what comes late; never held, it lost every rescue (story 030) */
-	cg_fc_hold(cg_fc_match(&c->cfg->flow_class, payload, len), dg == CG_DG_TS, &k.waits, &k.nohold); /* as the server's */
+	fc = cg_fc_match(&c->cfg->flow_class, payload, len); /* as the server's */
+	if (c->cfg->flow_learn) {
+		cg_fl_observe(&c->fl, payload, len, now_ms);
+		if (h->flags & CG_F_SPLIT)
+			cg_fl_split(&c->fl, now_ms);
+		if (fc == CG_FC_NONE && cg_fl_unsplit(&c->fl, now_ms) && cg_fl_kind(&c->fl, payload, len, now_ms))
+			fc = CG_FC_DIRECT; /* as the server's: never while the sender splits */
+	}
+	cg_fc_hold(fc, dg == CG_DG_TS, &k.waits, &k.nohold);
 	v = cg_ro_in(&c->rxs.ro, &c->pool, &c->rocf, &k, rset, &buf);
 	if (v == CG_RO_AGAIN) {
 		/* The window overflowed: the gaps it forces out go, with what was
@@ -5197,6 +5209,12 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
 	cg_json_u64(j, "tun_drops", c->down_tun_drops);
 	cg_json_u64(j, "not_ip", c->down_not_ip);
 	cg_json_u64(j, "protocontroller_off", c->down_pctl_off);
+	/* the flows that said what they are (flowlearn.h, story 031) */
+	cg_json_obj(j, "learned");
+	cg_json_u64(j, "quic", c->fl.learned[CG_FL_QUIC]);
+	cg_json_u64(j, "srt", c->fl.learned[CG_FL_SRT]);
+	cg_json_u64(j, "nack", c->fl.learned[CG_FL_NACK]);
+	cg_json_end(j, '}');
 	cg_json_end(j, '}');
 	/* FEC v3's repairs of the download (story 026), as the server's
 	 * session repair, rebuilt and rescue counts */

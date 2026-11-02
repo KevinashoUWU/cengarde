@@ -609,6 +609,16 @@ Es Python puro, en un solo núcleo: a más de 100–200 Mbit/s lo limita su CPU
 versión de aioquic está fijada porque `quicperf.py` usa dos de sus
 internos (la recuperación de pérdidas y el emisor del flujo).
 
+**QUIC de navegador (`h3perf.py`).** Chromium con HTTP/3 forzado (o con
+QUIC apagado, `h2`, como referencia de TCP), manejado por Playwright: 15 s de
+bajada, 15 s de subida (cuatro bucles de POST de 2 MB) y una consulta chica
+cada 250 ms como latencia con carga. Contra `dl.google.com` (el QUIC de
+Google, que adapta sus umbrales de pérdida; solo bajada) o contra un Caddy
+(quic-go) en la dirección del túnel del VPS, con un certificado propio que
+Chrome acepta por su SPKI (`--spki`). Necesita Playwright en un venv
+(`pip install playwright`) y el Chromium del sistema; se corre desde el
+espacio de red de detrás del router (historia 031, `~/campo/2026-11-02/quic18b`).
+
 ```sh
 sudo bench/lab.sh bond                                  # todos los casos, ~18 min
 sudo BOND_CASES="equal reorder150" BOND_S=20 BOND_N=3 bench/lab.sh bond

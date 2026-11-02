@@ -420,6 +420,17 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
   lleva por un flujo de datagramas del protocontrolador, cada datagrama
   entregado en orden, tarde antes que nunca; el firewall y la ruta por marca
   los pone `cengarde-setup`). Ej.: `flow_class = 203.0.113.7:9330 ordered`.
+- **`flow_learn` (`no`), en el que recibe:** reconoce por flujo QUIC (su
+  encabezado largo), SRT (su handshake) y el RTP cuyo receptor pide lo que
+  perdió (un NACK de RTCP: RIST, WebRTC) y, cuando no hay reparto, no los
+  retiene (`direct`); cada extremo aprende de lo que recibe y de lo que envía
+  (`flowlearn.h`). En bonding nunca actúa: sin retener, el QUIC del
+  laboratorio perdió de la mitad al 85 % de su caudal; en redundancia bajó el
+  p99 con carga (228 → 68 ms en `cell4`) y costó ~30 % del caudal en enlaces
+  con pérdida; en terreno, Chrome con el QUIC de Google empató o ganó sin
+  retener, y aioquic y quic-go (umbrales de pérdida fijos) cayeron a la
+  cuarta parte. Mientras el otro extremo reparta (y 2 s después), no actúa.
+  Una regla `flow_class` manda sobre lo aprendido.
 - **`reliable_zstd` (`yes`), en el router:** el carril fiable comprimido con
   zstd, cada datagrama sobre la historia de su flujo (`zlane.h`; telemetría
   JSON en el laboratorio: 5 veces más chica). Necesita que los dos motores se

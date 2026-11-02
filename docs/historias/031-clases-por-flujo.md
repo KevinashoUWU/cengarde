@@ -1,7 +1,7 @@
 # 031 — Clases por flujo (U5): la FEC y la protección para GRIT, y el proxy UDP
 
 - **Fecha:** 2026-11-02
-- **Estado:** en curso (pasos 1 y 2 hechos y medidos en laboratorio: `fec_stream`, protocolo 17, PR #158; el paso 3 por hacer)
+- **Estado:** pasos 1, 2 y 3 hechos (PR #158 a #164, protocolos 17 y 18): `fec_stream`, `flow_class` con su tabla «Flujos», el carril fiable con zstd y `flow_learn`; falta terreno de los pasos 2 y 3
 - **Fuentes:** historia 030 (protocolos 13–16, el reordenador por clase de
   datagrama), 026 (FEC v3), 020 y 021 (`redund_spare`), 025 (GRIT en
   redundancia), 029 (MPGRIT U5); `engine/src/fec3.h`, `repair.h`, `rlc.h`,
@@ -272,6 +272,74 @@ su jitter, p99 − p50, y el peor sobre la mediana).
   carril; × 2): 3,09 MB → 0,62 MB (5,0 veces) en `lossy` y `cell4`, todos
   entregados, la misma mediana (122–157 ms con y sin zstd).
 
+## Paso 3e hecho: lo aprendido por flujo (2026-11-02)
+
+- **Qué:** `flowlearn.h`: el encabezado largo de QUIC (versión 1, 2, un
+  borrador o 0), el handshake de SRT (control de tipo 0, UDT 4 o 5) y un
+  NACK de RTCP (PT 205, FMT 1: RIST, WebRTC; con RTCP en el puerto siguiente,
+  también su flujo RTP) dicen qué es un flujo. Una tabla de 512 flujos (los
+  dos sentidos una clave; cada paquete del flujo lo renueva; olvidado tras
+  120 s sin nada) lo guarda, alimentada con lo que cada extremo recibe y
+  envía (un NACK va contra su medio). Sin regla y sin reparto, un flujo
+  conocido va como `direct`. `flow_learn`, **apagado**; el estado cuenta lo
+  aprendido.
+- **Lo que enseñó el laboratorio** (QUIC de aioquic, × 2):
+
+  | Modo | Caso | Retenido (Mbit/s) | Aprendido, sin retener |
+  | --- | --- | --- | --- |
+  | bonding | `equal` bajada / subida | 26,7 / 12,5 | 13,3 / 5,5 |
+  | bonding | `het` bajada / subida | 42,0 / 12,6 | 6,2 / 4,8 |
+  | redundancia | `equal` bajada / subida | 36,3 / 34,6 | 36,5 / 36,4 |
+  | redundancia | `het` bajada / subida | 40,9 / 43,4 | 45,2 / 43,8 |
+  | redundancia | `lossy` bajada / subida | 3,8 / 3,1 | 2,6 / 2,4 |
+  | redundancia | `cell4` bajada / subida | 4,4 / 4,2 | 3,2 / 3,3 |
+
+  En redundancia el p99 cargado de `cell4` bajó de 228 a 68 ms (bajada) y de
+  286 a 81 (subida), y las retransmisiones a la mitad o menos.
+- **La lección** (contra la tabla de clases de arriba): un protocolo que se
+  recupera solo igual gana con el reordenador del túnel en bonding, porque
+  el desorden entre enlaces lo hace el túnel, no la red; su «pasar directo»
+  solo vale sin reparto, y aun ahí cambia caudal en enlaces con pérdida (el
+  rescate del túnel) por latencia. Por eso actúa solo sin reparto y queda a
+  elección del operador.
+- **El terreno** (2026-11-02, testnet de 4 módems, p18 en los dos extremos,
+  2 rondas por brazo; `~/campo/2026-11-02/quic18` y `quic18b`). Primero
+  aioquic (`quicperf.py`, cubic, por `10.79.0.1`: la IP pública del VPS sale
+  por fuera del túnel), luego un navegador de verdad: Chromium 155 con
+  HTTP/3 forzado (Playwright, `h3perf.py`) contra `dl.google.com` (el QUIC
+  de Google) y contra un Caddy del VPS (quic-go), al que Chrome le sube.
+  Mbit/s; entre paréntesis el p99 de una consulta chica con carga.
+
+  | Brazo | aioquic bajada / subida | Google → Chrome | quic-go → Chrome | Chrome → quic-go |
+  | --- | --- | --- | --- | --- |
+  | bonding, retenido | 3,8 y 5,0 / 1,8 y 1,7 | 38 (2677 ms) y 77 (386) | 14,0 y 13,7 | 23,0 y 10,5 |
+  | bonding, aprendido | 2,2 y 2,1 / 1,0 y 1,1 | 75 (789) y 86 (187) | 3,4 y 2,5 | 12,9 y 11,8 |
+  | redundancia, retenido | 8,4 y 10,4 / 15,9 y 19,1 | 95 (318) y 108 (257) | 9,2 y 2,9 | 15,5 y 17,3 |
+  | redundancia, aprendido | 5,3 y 6,8 / 23,1 y 8,2 | 107 (203) y 98 (296) | 2,2 y 2,2 | 19,0 y 19,3 |
+
+  - **Manda la pila del que envía.** La de Google (la de Chrome) adapta sus
+    umbrales de pérdida a lo que ve: sin retener empata o gana, también en
+    bonding. aioquic y quic-go usan los de la RFC 9002 fijos (3 paquetes,
+    9/8 del RTT): con ~34 ms de RTT, unos 4 ms de variación del celular ya
+    son «pérdida»; el 98–100 % de lo que aioquic dio por perdido llegó
+    después (el túnel no perdió nada: `lost` = `late`), y sin retener caen a
+    la cuarta parte o menos.
+  - **El reparto por paquete le pega a QUIC:** Google bajó ~100 Mbit/s en
+    redundancia y 38–86 en bonding, donde TCP va por GRIT (más de 200 con
+    TCP contra Cloudflare). QUIC no entra en GRIT (UDP sigue siendo UDP).
+  - **Un defecto del guarda:** se miraba `CG_F_SPLIT` por paquete, y los
+    pocos paquetes sin repartir de un flujo repartido (los chicos, un
+    momento quieto) pasaban adelante del resto retenido. Ahora el reparto es
+    el modo del que envía: nada pasa sin retener hasta `CG_FL_QUIET_MS`
+    (2 s) después del último paquete repartido (`cg_fl_split`,
+    `cg_fl_unsplit`).
+  - **El preset de redundancia no lo enciende:** se probó (el usuario:
+    «deduplicado pero desordenado») y se revirtió. Retenido, Chrome con
+    Google pierde poco (la bajada empata, la subida 16 contra 19); sin
+    retener, un servidor con una pila ingenua cae a la cuarta parte.
+    `flow_learn` queda para quien sabe que su QUIC va a Google, Meta y
+    parecidos.
+
 ## Diseño del paso 3: las clases de UDP (2026-11-02, con el usuario)
 
 El UDP manda a su tasa sin saber de pérdida ni de cola: el túnel no puede
@@ -323,10 +391,15 @@ que le conviene:
 
 ## Pendiente
 
-- El paso 1 en terreno.
-- El paso 2 (redundancia) en terreno.
-- El paso 3c (el carril fiable) y 3d (zstd en él); el detector `auto` con
-  analizador de encabezados (QUIC, RIST, SRT).
+- Terreno: `fec_stream` en redundancia y el carril fiable (con zstd).
+- QUIC en bonding (38–86 Mbit/s contra ~100 en redundancia): repartir por
+  flujo (todo un flujo QUIC por un enlace, el plan por flujo de la historia
+  014) en vez de por paquete, que MPGRIT haría natural.
+- Prioridad del carril fiable sobre lo masivo dentro de GRIT.
+- Un analizador de encabezados más amplio y firmas configurables o
+  aprendidas para el detector (usuario).
+- El ahorro de cabeceras (frames `DATAGRAM` sin IP ni UDP) pasa a la tarea
+  de compresión de cabeceras (#78).
 
 ## Cambios
 
@@ -338,3 +411,5 @@ que le conviene:
 - 2026-11-02: el paso 1 en terreno.
 - 2026-11-02: el paso 3a (`flow_class`), con su laboratorio.
 - 2026-11-02: el paso 3b (UCI, LuCI, la copia al VPS, el NAT del router).
+- 2026-11-02: los pasos 3c (el carril fiable, protocolo 18), 3d (zstd en él)
+  y 3e (`flow_learn`), con su laboratorio.

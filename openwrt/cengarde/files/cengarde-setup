@@ -1269,13 +1269,15 @@ engine_conf() {
 	auto | yes | no) echo "fec_single = $v" ;;
 	*) log "fec_single '$v': expected auto, yes or no, left out" ;;
 	esac
-	config_get v main fec_stream
-	case "$v" in
-	'') ;;
-	1 | on | yes | true | enabled) echo "fec_stream = yes" ;;
-	0 | off | no | false | disabled) echo "fec_stream = no" ;;
-	*) log "fec_stream '$v': expected a boolean, left out" ;;
-	esac
+	for k in fec_stream flow_learn reliable_zstd; do
+		config_get v main "$k"
+		case "$v" in
+		'') ;;
+		1 | on | yes | true | enabled) echo "$k = yes" ;;
+		0 | off | no | false | disabled) echo "$k = no" ;;
+		*) log "$k '$v': expected a boolean, left out" ;;
+		esac
+	done
 	config_get v main split_eta
 	case "$v" in
 	'') ;;

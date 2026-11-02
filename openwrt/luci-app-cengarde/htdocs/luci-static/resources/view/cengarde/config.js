@@ -890,6 +890,7 @@ return view.extend({
 			: _('TCP: each connection from the LAN to %s, on %s, goes as its own reliable stream (protocontroller %s); the rest of the TCP goes through the tunnel as datagrams.')
 				.format(pctlDest.length ? pctlDest.join(', ') : _('any public address'),
 					pctlPort.length ? _('ports %s').format(pctlPort.join(', ')) : _('every port'), pctl.toUpperCase());
+		const s2 = s;
 		s = m.section(form.GridSection, 'flowclass', _('Flows'),
 			tcpLine + '<br />' +
 			_('UDP and the rest: the engine guesses MPEG-TS and RTP from their bytes; a rule here has the last word, for the address and port of either end of a flow, the first rule that matches. Ordered: held in order and waits for what is missing (MPEG-TS, telemetry with no buffer of its own). Deadline: held up to its deadline (RTP). Direct: never held nor rescued (QUIC, SRT, WebRTC, games: their own retransmissions and order). Automatic: what the engine guesses. Behind the router\'s NAT the tunnel sees the far end and the port: a LAN address with a port is taken as the port alone; the VPS takes the same rules for the upload.') +
@@ -922,6 +923,14 @@ return view.extend({
 		o.value('reliable', _('Reliable (telemetry)'));
 		o.value('auto', _('Automatic'));
 		o.default = 'ordered';
+
+		o = s2.taboption('layer4', form.Flag, 'flow_learn', _('Learn QUIC, SRT and RIST'),
+			_('A flow that says what it is (QUIC\'s handshake, SRT\'s, an RTP stream whose receiver asks for what it lost) is never held by the receiver, when it is not split: each orders and recovers its own. In redundancy it lowered the delay under load (p99 228 to 68 ms in the lab) and cost a third of the rate on lossy uplinks; never in bonding, where unheld QUIC lost half its rate or more. The VPS needs it too for the upload.'));
+		o.default = '0';
+
+		o = s2.taboption('layer4', form.Flag, 'reliable_zstd', _('Compress the reliable lane'),
+			_('Each datagram of a reliable flow compressed with zstd on what went before it: telemetry in JSON was five times smaller in the lab. The VPS\'s engine needs zstd too.'));
+		o.default = '1';
 
 		return m.render();
 	}
