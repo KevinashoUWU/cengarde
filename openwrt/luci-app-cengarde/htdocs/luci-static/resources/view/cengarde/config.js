@@ -879,6 +879,48 @@ return view.extend({
 		o.value('debug', _('Debug'));
 		o.default = 'info';
 
+		/* The flows (story 031): what the protocontroller does with the TCP,
+		 * and the class of a flow for the receiver's reorderer (flow_class),
+		 * over what the engine guesses from its bytes */
+		const pctl = savedMode() === 'custom' ? (uci.get('cengarde', 'main', 'protocontroller') || 'no') : 'b';
+		const pctlDest = [].concat(uci.get('cengarde', 'main', 'protocontroller_dest') || []);
+		const pctlPort = [].concat(uci.get('cengarde', 'main', 'protocontroller_port') || []);
+		const tcpLine = pctl === 'no'
+			? _('TCP: through the tunnel as datagrams (the protocontroller is off).')
+			: _('TCP: each connection from the LAN to %s, on %s, goes as its own reliable stream (protocontroller %s); the rest of the TCP goes through the tunnel as datagrams.')
+				.format(pctlDest.length ? pctlDest.join(', ') : _('any public address'),
+					pctlPort.length ? _('ports %s').format(pctlPort.join(', ')) : _('every port'), pctl.toUpperCase());
+		s = m.section(form.GridSection, 'flowclass', _('Flows'),
+			tcpLine + '<br />' +
+			_('UDP and the rest: the engine guesses MPEG-TS and RTP from their bytes; a rule here has the last word, for the address and port of either end of a flow, the first rule that matches. Ordered: held in order and waits for what is missing (MPEG-TS, telemetry with no buffer of its own). Deadline: held up to its deadline (RTP). Direct: never held nor rescued (QUIC, SRT, WebRTC, games: their own retransmissions and order). Automatic: what the engine guesses. Behind the router\'s NAT the tunnel sees the far end and the port: a LAN address with a port is taken as the port alone; the VPS takes the same rules for the upload.'));
+		s.anonymous = true;
+		s.addremove = true;
+		s.sortable = true;
+		s.nodescriptions = true;
+
+		o = s.option(form.Flag, 'enabled', _('Enabled'));
+		o.default = '1';
+		o.editable = true;
+
+		o = s.option(form.Value, 'name', _('Name'));
+		o.placeholder = _('telemetry');
+
+		o = s.option(form.Value, 'endpoint', _('Address and port'));
+		o.placeholder = '203.0.113.7:9330';
+		o.rmempty = false;
+		o.validate = function(section_id, value) {
+			if (/^((\d{1,3}\.){3}\d{1,3}(\/\d{1,2})?(:\d{1,5})?|\[[0-9a-fA-F:.]+\](\/\d{1,3})?(:\d{1,5})?|:\d{1,5})$/.test(value || ''))
+				return true;
+			return _('An IPv4 address with an optional /prefix and :port, an IPv6 one in brackets ([2001:db8::7]:5000), or :port alone');
+		};
+
+		o = s.option(form.ListValue, 'class', _('Class'));
+		o.value('ordered', _('Ordered'));
+		o.value('deadline', _('Deadline'));
+		o.value('direct', _('Direct'));
+		o.value('auto', _('Automatic'));
+		o.default = 'ordered';
+
 		return m.render();
 	}
 });

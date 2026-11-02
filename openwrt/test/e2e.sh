@@ -763,6 +763,54 @@ else
 	bad "engine-conf: repair data options"
 fi
 
+# The flow classes (story 031): flowclass sections become flow_class lines
+# in the global section, in order; a LAN address with a port is the port
+# alone (the router's NAT), without one it is left out, as a bad class or
+# endpoint, each logged; a disabled rule is not written.
+if "$VM" ssh router sh -s <<'EOF'
+conf() { cengarde-setup engine-conf; }
+clear() {
+	while uci -q delete cengarde.@flowclass[0]; do :; done
+	uci commit cengarde
+}
+add() { # ENDPOINT CLASS [ENABLED]
+	s=$(uci add cengarde flowclass)
+	uci set "cengarde.$s.endpoint=$1"
+	uci set "cengarde.$s.class=$2"
+	[ -z "${3:-}" ] || uci set "cengarde.$s.enabled=$3"
+}
+r=0
+clear
+conf | grep -q '^flow_class' && { echo "rules without sections"; r=1; }
+add 203.0.113.7:9330 ordered
+add '[2001:db8::7]:5000' direct
+add 192.168.1.50:4000 deadline
+add 192.168.1.51 ordered
+add :5004 fast
+add 'a;b' direct
+add :6000 direct 0
+uci commit cengarde
+want='flow_class = 203.0.113.7:9330 ordered;flow_class = [2001:db8::7]:5000 direct;flow_class = :4000 deadline;'
+got=$(conf | grep '^flow_class' | tr '\n' ';')
+[ "$got" = "$want" ] || { echo "got '$got'"; r=1; }
+first=$(conf | grep -n '^\[' | head -n 1 | cut -d: -f1)
+last=$(conf | grep -n '^flow_class' | tail -n 1 | cut -d: -f1)
+[ -z "$first" ] || [ "$last" -lt "$first" ] || { echo "a rule after a section"; r=1; }
+(umask 077 && conf > /tmp/fc.conf)
+cengarde -t -c /tmp/fc.conf || r=1
+rm -f /tmp/fc.conf
+for k in "taken as ':4000'" "has no port" "class 'fast'" "endpoint 'a;b'"; do
+	logread | grep -qF "$k" || { echo "$k not logged"; r=1; }
+done
+clear
+exit $r
+EOF
+then
+	ok "engine-conf: flowclass sections reach the engine's global section as flow_class lines, which it takes; a LAN address becomes its port, bad rules are left out and logged"
+else
+	bad "engine-conf: flow classes"
+fi
+
 # No PPPoE server here: only the configuration. PPP copies the uplink's
 # delegate onto the IPv6 interface it creates (ppp9_6), so the uplink gets
 # delegate 0 while everything goes through the tunnel, and loses it after.

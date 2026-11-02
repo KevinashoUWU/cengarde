@@ -553,6 +553,51 @@ msgstr ""
 msgid "Debug"
 msgstr ""
 
+msgid "TCP: through the tunnel as datagrams (the protocontroller is off)."
+msgstr ""
+
+msgid "TCP: each connection from the LAN to %s, on %s, goes as its own reliable stream (protocontroller %s); the rest of the TCP goes through the tunnel as datagrams."
+msgstr ""
+
+msgid "any public address"
+msgstr ""
+
+msgid "ports %s"
+msgstr ""
+
+msgid "every port"
+msgstr ""
+
+msgid "Flows"
+msgstr ""
+
+msgid "UDP and the rest: the engine guesses MPEG-TS and RTP from their bytes; a rule here has the last word, for the address and port of either end of a flow, the first rule that matches. Ordered: held in order and waits for what is missing (MPEG-TS, telemetry with no buffer of its own). Deadline: held up to its deadline (RTP). Direct: never held nor rescued (QUIC, SRT, WebRTC, games: their own retransmissions and order). Automatic: what the engine guesses. Behind the router's NAT the tunnel sees the far end and the port: a LAN address with a port is taken as the port alone; the VPS takes the same rules for the upload."
+msgstr ""
+
+msgid "Name"
+msgstr ""
+
+msgid "telemetry"
+msgstr ""
+
+msgid "Address and port"
+msgstr ""
+
+msgid "An IPv4 address with an optional /prefix and :port, an IPv6 one in brackets ([2001:db8::7]:5000), or :port alone"
+msgstr ""
+
+msgid "Class"
+msgstr ""
+
+msgid "Ordered"
+msgstr ""
+
+msgid "Deadline"
+msgstr ""
+
+msgid "Direct"
+msgstr ""
+
 msgid "no answer"
 msgstr ""
 

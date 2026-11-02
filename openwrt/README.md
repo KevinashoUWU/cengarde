@@ -706,6 +706,27 @@ de reparación** (historia 026):
   necesita para la bajada. En redundancia, con la protección de
   `redund_spare`, van en lo que les sobra a los otros enlaces.
 
+### Flujos
+
+La tabla **Flujos** (debajo de las pestañas) dice primero qué pasa con el
+TCP (con el protocontrolador, cada conexión del LAN a sus destinos va como su
+propio flujo fiable) y después tiene las reglas de lo demás (`flow_class`,
+historia 031): la dirección y el puerto de cualquiera de los dos extremos de
+un flujo y su clase, sobre lo que el motor reconoce por sus bytes (MPEG-TS y
+RTP); gana la primera regla que calza.
+
+- **En orden:** retenido en orden, espera lo que falta (MPEG-TS, telemetría
+  sin búfer propio).
+- **Con plazo:** retenido hasta su plazo (RTP).
+- **Directo:** nunca retenido ni rescatado (QUIC, SRT, WebRTC, juegos).
+- **Automático:** lo que reconoce el motor.
+
+Detrás del NAT del router el túnel ve el otro extremo y el puerto: una
+dirección del LAN con puerto se toma como el puerto solo (y queda en el log);
+mejor la dirección del otro extremo, `203.0.113.7:9330`, o el puerto, `:9330`.
+Con `vps_admin`, el VPS toma las mismas reglas para la subida
+(`cengarde-vps-admin flows`).
+
 La pestaña *Funciones de capa 4* tiene el protocontrolador (abajo) y el
 **túnel consciente de TCP** (`tcp_aware`): los ACK del TCP de
 adentro no esperan detrás de un hueco, y una retransmisión de TCP se copia

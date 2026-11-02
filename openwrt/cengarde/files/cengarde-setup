@@ -124,6 +124,7 @@ CONTROL_SOCKET=/var/run/cengarde/cengarde.sock # cengarde ctl's default
 VPS_KEY=/etc/cengarde/vps_admin_key            # dropbear's format (dbclient -i)
 VPS_SYNCED=/var/run/cengarde-vps-mode          # the mode the VPS last took from here
 VPS_SYNC_LOCK=/var/lock/cengarde-vps-sync.lock  # one sync at a time
+VPS_FLOWS=/var/run/cengarde-vps-flows          # the flow classes the VPS last took from here
 VPS_TIMEOUT=120                                # a VPS command may restart its engine
 CHANGED=
 
@@ -139,6 +140,11 @@ uint_in() {
 	case "$1" in '' | 0?* | *[!0-9]*) return 1 ;; esac
 	[ "${#1}" -le 9 ] && [ "$1" -ge "$2" ] && [ "$1" -le "$3" ]
 }
+
+# only_chars WORD SET: whether WORD has nothing but SET's characters (tr's
+# notation; brackets as \133 and \135: a bracket expression with them reads
+# differently in busybox's ash and in dash).
+only_chars() { [ -z "$(printf '%s' "$1" | tr -d "$2")" ]; }
 
 list_has() {
 	case " $1 " in *" $2 "*) return 0 ;; esac
@@ -1287,6 +1293,7 @@ engine_conf() {
 	1 | on | yes | true | enabled) echo "split = on" ;;
 	*) log "split '$v': expected 0 or 1, left out" ;;
 	esac
+	flow_classes
 	config_get SPLIT_WEIGHT main split_weight
 	split_weights
 	config_get UPLINK_TYPE main uplink_type
@@ -1345,9 +1352,12 @@ vps() {
 	local host w
 
 	load
-	[ $# -gt 0 ] || die "usage: cengarde-setup vps get|mode M|fec F|protocontroller P|set KEY VALUE|unset KEY"
+	[ $# -gt 0 ] || die "usage: cengarde-setup vps get|mode M|fec F|protocontroller P|set KEY VALUE|unset KEY|flows [ENDPOINT CLASS]..."
 	for w in "$@"; do
-		case "$w" in '' | -* | *[!A-Za-z0-9._-]*) die "vps: '$w': letters, digits, ., _ and - only" ;; esac
+		# : / [ ] for the flow classes' endpoints (the VPS splits on spaces
+		# with no globs, cengarde-vps-admin)
+		case "$w" in '' | -*) die "vps: '$w': letters, digits, ., _, -, :, / and brackets only" ;; esac
+		only_chars "$w" 'A-Za-z0-9._:/\133\135-' || die "vps: '$w': letters, digits, ., _, -, :, / and brackets only"
 	done
 	[ -s "$VPS_KEY" ] || die "no admin key yet: cengarde-setup vps-key, then on the VPS: sudo cengarde-vps-setup admin-key add '<its line>'"
 	host=$VPS_SSH_HOST
@@ -1386,7 +1396,8 @@ limit() {
 # (2026-10-31).
 vps_sync() {
 	[ "$VPS_ADMIN" = 1 ] && [ -s "$VPS_KEY" ] || return 0
-	[ "$(cat "$VPS_SYNCED" 2>/dev/null)" = "$MODE" ] && return 0
+	flow_classes >/dev/null
+	[ "$(cat "$VPS_SYNCED" 2>/dev/null)" = "$MODE" ] && [ "$(cat "$VPS_FLOWS" 2>/dev/null)" = "$FLOWS" ] && return 0
 	(
 		# shellcheck disable=SC3023 # busybox ash has them, and procd takes 1000
 		exec 9>&- 1000>&-
@@ -1396,17 +1407,75 @@ vps_sync() {
 		while [ $i -lt 5 ]; do
 			m=$(uci -q get cengarde.main.mode)
 			case "$m" in bonding | redundancy) ;; *) m=custom ;; esac
-			[ "$(cat "$VPS_SYNCED" 2>/dev/null)" = "$m" ] && exit 0
-			if /usr/sbin/cengarde-setup vps mode "$m"; then
+			# the flow classes too (story 031): the VPS's reorderer judges
+			# the upload
+			if [ "$(cat "$VPS_FLOWS" 2>/dev/null)" != "$FLOWS" ]; then
+				# shellcheck disable=SC2086 # pairs of words, on purpose
+				if /usr/sbin/cengarde-setup vps flows $FLOWS; then
+					echo "$FLOWS" >"$VPS_FLOWS"
+					log "the VPS took the flow classes${FLOWS:+: $FLOWS}"
+				fi
+			fi
+			if [ "$(cat "$VPS_SYNCED" 2>/dev/null)" = "$m" ] && [ "$(cat "$VPS_FLOWS" 2>/dev/null)" = "$FLOWS" ]; then
+				exit 0
+			fi
+			if [ "$(cat "$VPS_SYNCED" 2>/dev/null)" != "$m" ] && /usr/sbin/cengarde-setup vps mode "$m"; then
 				echo "$m" >"$VPS_SYNCED"
 				log "the VPS took mode $m"
-				exit 0
+				[ "$(cat "$VPS_FLOWS" 2>/dev/null)" = "$FLOWS" ] && exit 0
 			fi
 			i=$((i + 1))
 			sleep 30
 		done
 		log "the VPS did not take mode $m (cengarde-setup vps get, or LuCI's VPS tab)"
 	) </dev/null >/dev/null 2>&1 &
+}
+
+# The flowclass sections (story 031): flow_class lines for the engine's
+# global section, the enabled ones in order, and the same rules in FLOWS
+# for the VPS ("ENDPOINT CLASS" pairs, one space apart). The tunnel sees
+# the LAN behind the router's masquerade: a private IPv4 endpoint with a
+# port becomes the port alone (NAT keeps it, mostly), without one it is
+# left out; the far end's address, or a port, is what both ends see.
+FLOWS=''
+flow_class_one() {
+	local s="$1" e c en
+
+	config_get_bool en "$s" enabled 1
+	[ "$en" = 1 ] || return 0
+	config_get e "$s" endpoint
+	config_get c "$s" class
+	case "$c" in
+	auto | ordered | deadline | direct) ;;
+	*)
+		log "flowclass $s: class '$c': expected auto, ordered, deadline or direct, left out"
+		return 0
+		;;
+	esac
+	if [ -z "$e" ] || ! only_chars "$e" '0-9a-fA-F.:/\133\135'; then
+		log "flowclass $s: endpoint '$e': expected ADDR[/LEN][:PORT], [IPv6][/LEN][:PORT] or :PORT, left out"
+		return 0
+	fi
+	case "$e" in
+	10.* | 192.168.* | 172.1[6-9].* | 172.2[0-9].* | 172.3[01].*)
+		case "$e" in
+		*:*)
+			log "flowclass $s: '$e' is behind the router's NAT, taken as ':${e##*:}' (the tunnel sees the port)"
+			e=":${e##*:}"
+			;;
+		*)
+			log "flowclass $s: '$e' is behind the router's NAT and has no port: the tunnel never sees it, left out"
+			return 0
+			;;
+		esac
+		;;
+	esac
+	echo "flow_class = $e $c"
+	FLOWS="$FLOWS${FLOWS:+ }$e $c"
+}
+flow_classes() {
+	FLOWS=''
+	config_foreach flow_class_one flowclass
 }
 
 # Every IPv6 interface of the uplinks, for the init script's triggers: the

@@ -555,6 +555,51 @@ msgstr "Información"
 msgid "Debug"
 msgstr "Depuración"
 
+msgid "TCP: through the tunnel as datagrams (the protocontroller is off)."
+msgstr "TCP: por el túnel como datagramas (el protocontrolador está apagado)."
+
+msgid "TCP: each connection from the LAN to %s, on %s, goes as its own reliable stream (protocontroller %s); the rest of the TCP goes through the tunnel as datagrams."
+msgstr "TCP: cada conexión del LAN a %s, en %s, va como su propio flujo fiable (protocontrolador %s); el resto del TCP va por el túnel como datagramas."
+
+msgid "any public address"
+msgstr "cualquier dirección pública"
+
+msgid "ports %s"
+msgstr "los puertos %s"
+
+msgid "every port"
+msgstr "todos los puertos"
+
+msgid "Flows"
+msgstr "Flujos"
+
+msgid "UDP and the rest: the engine guesses MPEG-TS and RTP from their bytes; a rule here has the last word, for the address and port of either end of a flow, the first rule that matches. Ordered: held in order and waits for what is missing (MPEG-TS, telemetry with no buffer of its own). Deadline: held up to its deadline (RTP). Direct: never held nor rescued (QUIC, SRT, WebRTC, games: their own retransmissions and order). Automatic: what the engine guesses. Behind the router's NAT the tunnel sees the far end and the port: a LAN address with a port is taken as the port alone; the VPS takes the same rules for the upload."
+msgstr "UDP y lo demás: el motor reconoce MPEG-TS y RTP por sus bytes; una regla aquí tiene la última palabra, para la dirección y el puerto de cualquiera de los dos extremos de un flujo, la primera que calce. En orden: retenido en orden, espera lo que falta (MPEG-TS, telemetría sin búfer propio). Con plazo: retenido hasta su plazo (RTP). Directo: nunca retenido ni rescatado (QUIC, SRT, WebRTC, juegos: sus propias retransmisiones y su orden). Automático: lo que reconoce el motor. Detrás del NAT del router el túnel ve el otro extremo y el puerto: una dirección del LAN con puerto se toma como el puerto solo; el VPS toma las mismas reglas para la subida."
+
+msgid "Name"
+msgstr "Nombre"
+
+msgid "telemetry"
+msgstr "telemetría"
+
+msgid "Address and port"
+msgstr "Dirección y puerto"
+
+msgid "An IPv4 address with an optional /prefix and :port, an IPv6 one in brackets ([2001:db8::7]:5000), or :port alone"
+msgstr "Una dirección IPv4 con /prefijo y :puerto opcionales, una IPv6 entre corchetes ([2001:db8::7]:5000), o :puerto solo"
+
+msgid "Class"
+msgstr "Clase"
+
+msgid "Ordered"
+msgstr "En orden"
+
+msgid "Deadline"
+msgstr "Con plazo"
+
+msgid "Direct"
+msgstr "Directo"
+
 msgid "no answer"
 msgstr "sin respuesta"
 

@@ -199,6 +199,30 @@ su jitter, p99 − p50, y el peor sobre la mediana).
   `ordered` pierde la mitad y casi no desordena a cambio de esperar;
   `direct` entrega al tiro y deja el orden a la aplicación.
 
+## Paso 3b hecho: la tabla «Flujos» (2026-11-02)
+
+- **UCI:** secciones `config flowclass` (`name`, `endpoint`, `class`,
+  `enabled`); `cengarde-setup` las escribe como `flow_class` en la sección
+  global, en orden, y deja fuera (con su línea en el log) una clase o un
+  extremo que no sirven.
+- **El NAT del router:** `cg0` está en la zona WAN con masquerade, así que el
+  túnel nunca ve la IP del LAN (la subida llega al VPS con el origen ya
+  traducido; la bajada sale del motor del router antes de que el kernel
+  deshaga el NAT). Una dirección privada con puerto se toma como el puerto
+  solo (el NAT casi siempre lo conserva); sin puerto, se deja fuera. Lo que
+  ven los dos extremos es la dirección del otro lado o el puerto.
+- **El VPS:** `cengarde-vps-admin flows [ENDPOINT CLASS]...` reemplaza las
+  líneas `flow_class` de `engine.local` (hasta 32, cada palabra revisada); el
+  router se las manda con `vps_admin` en su sincronía de fondo, junto al modo
+  (`/var/run/cengarde-vps-flows` guarda lo que el VPS ya tomó).
+- **LuCI:** la tabla «Flujos» debajo de las pestañas: una línea con lo que
+  hace el protocontrolador con el TCP (a qué destinos y puertos, o apagado)
+  y las reglas de lo demás, con su revisión del extremo.
+- **El detector `auto`, más adelante** (usuario): un analizador de
+  encabezados que reconozca QUIC, RIST, SRT y más, y después firmas
+  configurables o aprendidas; la regla IP:puerto queda para lo que no sepa
+  reconocer (las máquinas de telemetría).
+
 ## Diseño del paso 3: las clases de UDP (2026-11-02, con el usuario)
 
 El UDP manda a su tasa sin saber de pérdida ni de cola: el túnel no puede
@@ -252,8 +276,8 @@ que le conviene:
 
 - El paso 1 en terreno.
 - El paso 2 (redundancia) en terreno.
-- El paso 3b (UCI y LuCI, una tabla «Flujos» con las reglas de TCP y de
-  UDP), 3c (el carril fiable) y 3d (zstd en él).
+- El paso 3c (el carril fiable) y 3d (zstd en él); el detector `auto` con
+  analizador de encabezados (QUIC, RIST, SRT).
 
 ## Cambios
 
@@ -264,3 +288,4 @@ que le conviene:
 - 2026-11-02: el paso 2 (la protección en redundancia), tres rondas.
 - 2026-11-02: el paso 1 en terreno.
 - 2026-11-02: el paso 3a (`flow_class`), con su laboratorio.
+- 2026-11-02: el paso 3b (UCI, LuCI, la copia al VPS, el NAT del router).
