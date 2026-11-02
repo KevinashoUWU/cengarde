@@ -104,7 +104,13 @@ FEC3 = [("fec_par", ("upload", "fec", "parities"), ("download_fec", "parities"))
         ("rlc_rec", ("download_fec", "rlc_recovered"), ("repair", "rlc", "recovered")),
         ("rlc_wide", ("download_fec", "rlc_wide"), ("repair", "rlc", "wide")),
         ("rlc_evicted", ("download_fec", "rlc_evicted"), ("repair", "rlc", "evicted")),
-        ("rlc_peak", ("download_fec", "rlc_peak"), ("repair", "rlc", "peak"))]
+        ("rlc_peak", ("download_fec", "rlc_peak"), ("repair", "rlc", "peak")),
+        # over the STREAMs (story 031): repairs sent, and taken, rebuilt, failing
+        # their CRC32C at the receiving end
+        ("s3_rep", ("upload", "fec", "rlc", "stream_repairs"), ("download_fec", "rlc", "stream_repairs")),
+        ("s3_taken", ("download_fec", "stream_repairs"), ("fec", "stream_repairs")),
+        ("s3_rec", ("download_fec", "stream_rebuilt"), ("fec", "stream_rebuilt")),
+        ("s3_bad", ("download_fec", "stream_bad"), ("fec", "stream_bad"))]
 REPAIR += [k for k, _, _ in FEC3]
 # Which links the reorderer waits for (active.h, clockwork audit C2): the gaps
 # first due that the peer's active mask let go sooner, and those first due at
