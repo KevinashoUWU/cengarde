@@ -70,6 +70,18 @@ static void test_codec(void)
 	CHECK_EQ(m.reason, CG_PCTL_R_REFUSED);
 	CHECK(!strcmp(cg_pctl_reason(CG_PCTL_R_REFUSED), "refused"));
 
+	/* a DGM (protocol 20): the datagram after the header, whole; an empty one too */
+	n = cg_pctl_put_dgm(b, 0x10002);
+	memcpy(b + n, "\x01\x02\x03", 3);
+	CHECK_EQ(cg_pctl_parse(b, n + 3, &m), 0);
+	CHECK_EQ(m.type, CG_PCTL_DGM);
+	CHECK_EQ(m.id, 0x10002u);
+	CHECK_EQ(m.len, 3u);
+	CHECK_EQ(m.data[2], 3);
+	CHECK_EQ(cg_pctl_parse(b, n, &m), 0);
+	CHECK_EQ(m.len, 0u);
+	CHECK(cg_pctl_parse(b, n - 1, &m) < 0);
+
 	/* an IP packet is not a stream message */
 	b[0] = 0x45;
 	CHECK(!cg_pctl_is(b, 20));
@@ -223,6 +235,9 @@ static void test_nack_kind(void)
 	CHECK_EQ(cg_pctl_nack_kind(b, n, &id, &off), CG_PCTL_NACK_RESEND);
 	n = cg_pctl_put_rst(b, 9, CG_PCTL_R_PEER);
 	CHECK_EQ(cg_pctl_nack_kind(b, n, &id, &off), CG_PCTL_NACK_RESEND);
+	/* a DGM: sent again while the rescue's horizon lasts */
+	n = cg_pctl_put_dgm(b, 9);
+	CHECK_EQ(cg_pctl_nack_kind(b, n + 10, &id, &off), CG_PCTL_NACK_RESEND);
 }
 
 

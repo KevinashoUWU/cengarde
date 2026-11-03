@@ -354,6 +354,9 @@ load() {
 	*) log "quic '$QUIC_MODE': expected pass or tcp, taken as pass"; QUIC_MODE=pass ;;
 	esac
 	config_get QUIC_ALLOW main quic_allow
+	# the LAN's other UDP into GRIT as unreliable datagrams (protocol 20)
+	config_get_bool UDP_GRIT main udp_grit 0
+	[ "$PCTL_MODE" = b ] || UDP_GRIT=0
 	# the VPS's administration from here (cengarde-vps-admin there)
 	config_get_bool VPS_ADMIN main vps_admin 0
 	config_get VPS_SSH_HOST main vps_ssh_host
@@ -828,7 +831,7 @@ quic_rules() { # DEVS
 
 fix_pctl() { # on|off
 	flow_classes >/dev/null
-	if [ "$1" = on ] && [ "$PCTL_MODE" = b ] && [ -n "$RELIABLE" ]; then
+	if [ "$1" = on ] && [ "$PCTL_MODE" = b ] && { [ -n "$RELIABLE" ] || [ "$UDP_GRIT" = 1 ]; }; then
 		fix_tproxy on
 	else
 		fix_tproxy off
@@ -1225,6 +1228,7 @@ engine_conf() {
 		0 | off | no | false | disabled) echo "protocontroller_nack = no" ;;
 		*) log "protocontroller_nack '$v': expected 0 or 1, left out" ;;
 		esac
+		[ "$UDP_GRIT" = 1 ] && echo "protocontroller_udp = yes"
 	fi
 	# Reordering at the receiver is on in the engine unless this says no; the
 	# split is off unless this says so, and only on, never force (the lab's):
@@ -1568,11 +1572,16 @@ ep_split() {
 # The reliable lane's TPROXY rules (story 031, step 3c): the UDP of the LAN
 # zone's devices DEVS to or from each endpoint of RELIABLE goes to the
 # engine's port, marked for the table that delivers it locally (fix_tproxy);
-# never what goes to the router itself.
+# never what goes to the router itself. Then, with udp_grit (protocol 20),
+# the rest of their UDP to the port after it, as unreliable datagrams into
+# GRIT, as the TCP rule: not to private or local addresses (or only to
+# protocontroller_dest), not UDP 443 when QUIC goes over TCP (it is refused
+# in the forward hook), and not a packet larger than the tunnel's MTU (the
+# TUN fragments it; a datagram must fit in one message).
 reliable_rules() { # DEVS
-	local e a p fam m d s
+	local e a p fam m d s d4='' d6=''
 
-	[ -n "$RELIABLE" ] || return 0
+	[ -n "$RELIABLE" ] || [ "$UDP_GRIT" = 1 ] || return 0
 	echo "chain cengarde_reliable {"
 	echo "	type filter hook prerouting priority mangle; policy accept;"
 	for e in $RELIABLE; do
@@ -1594,6 +1603,25 @@ reliable_rules() { # DEVS
 			fi
 		done
 	done
+	if [ "$UDP_GRIT" = 1 ]; then
+		m="iifname { $1 } meta l4proto udp fib daddr type != { local, broadcast, multicast } meta length <= $MTU"
+		[ "$QUIC_MODE" = tcp ] && m="$m udp dport != 443"
+		if [ -n "$PCTL_DEST" ]; then
+			for d in $PCTL_DEST; do
+				case "$d" in
+				*:*) d6="$d6${d6:+, }$d" ;;
+				*.*) d4="$d4${d4:+, }$d" ;;
+				esac
+			done
+		else
+			d4='!= { 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16 }'
+			d6='!= { ::1, fc00::/7, fe80::/10 }'
+		fi
+		case "$d4" in '!='* | '') ;; *) d4="{ $d4 }" ;; esac
+		case "$d6" in '!='* | '') ;; *) d6="{ $d6 }" ;; esac
+		[ -n "$d4" ] && echo "	$m ip daddr $d4 tproxy ip to :$((PCTL_LISTEN + 1)) meta mark set $TPROXY_MARK accept comment \"!cengarde: udp into grit\""
+		[ -n "$d6" ] && echo "	$m ip6 daddr $d6 tproxy ip6 to :$((PCTL_LISTEN + 1)) meta mark set $TPROXY_MARK accept comment \"!cengarde: udp into grit\""
+	fi
 	echo "}"
 }
 

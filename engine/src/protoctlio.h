@@ -15,7 +15,8 @@
 #include <stdint.h>
 #include <sys/socket.h>
 
-#define CG_PCTL_LISTEN_IDX 0xFFFF0000u /* CG_EV_PCTL's index for the listening sockets (+ 0 v4, + 1 v6, + 2 the VPS's A) */
+#define CG_PCTL_LISTEN_IDX 0xFFFF0000u /* CG_EV_PCTL's index for the listening sockets (+ 0 v4, + 1 v6, + 2 the VPS's A,
+					* + 3 and 4 the reliable lane's UDP, + 5 and 6 the unreliable datagrams') */
 #define CG_PCTL_MID 0x01000000u        /* CG_EV_PCTL's index of a flow's middle socket (variant A): slot | this */
 enum { CG_PCTL_NO = 0, CG_PCTL_A, CG_PCTL_B };
 
@@ -49,6 +50,8 @@ struct cg_pctl_cfg {
 	int dgram;           /* the router: the reliable lane's UDP (TPROXY on port), flow_class reliable (story 031) */
 	int zstd;            /* the router: the lane's streams compressed (reliable_zstd, zlane.h), when built with zstd */
 	int fair;            /* the sends shared by host before flow (fair.h): the router's LAN device, the VPS's router */
+	int udp;             /* the router: the LAN's other UDP as unreliable datagram streams (TPROXY on port + 1,
+			      * protocontroller_udp, protocol 20) */
 };
 
 /* protocontroller_mem_mb 0: an eighth of the RAM, from 64 to 1024 MB. The

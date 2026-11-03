@@ -1,7 +1,7 @@
 # 031 — Clases por flujo (U5): la FEC y la protección para GRIT, y el proxy UDP
 
 - **Fecha:** 2026-11-02
-- **Estado:** pasos 1, 2 y 3 hechos (PR #158 a #164, protocolos 17 y 18): `fec_stream`, `flow_class` con su tabla «Flujos», el carril fiable con zstd y `flow_learn`; falta terreno de los pasos 2 y 3
+- **Estado:** pasos 1, 2 y 3 hechos (PR #158 a #164, protocolos 17 y 18): `fec_stream`, `flow_class` con su tabla «Flujos», el carril fiable con zstd y `flow_learn`; los envíos por equipo (19) y el UDP dentro de GRIT (20, `protocontroller_udp`); falta terreno de los pasos 2 y 3 y del 20
 - **Fuentes:** historia 030 (protocolos 13–16, el reordenador por clase de
   datagrama), 026 (FEC v3), 020 y 021 (`redund_spare`), 025 (GRIT en
   redundancia), 029 (MPGRIT U5); `engine/src/fec3.h`, `repair.h`, `rlc.h`,
@@ -43,6 +43,12 @@
   demás, QUIC reordenado por flujo (un hueco de un flujo no frena a otro),
   DNS directo. El UDP sigue siendo UDP: sin ARQ, protección solo dentro del
   plazo.
+- **El UDP dentro de GRIT (protocolo 20, `protocontroller_udp`, `udp_grit`
+  en OpenWrt):** el resto del UDP de la LAN entra a GRIT como datagramas no
+  fiables (DGM), por turnos por equipo con el TCP. En el laboratorio, con
+  30–60 Mbit/s de UDP de un equipo, el TCP de otro pasa de 3–9 a 25 Mbit/s
+  en `cell4` (ping p99 de 0,8–1 s a 0,2 s) y de 42 a 51 en `equal` y `het`,
+  con el mismo total.
 
 ## Contexto
 
@@ -520,13 +526,104 @@ azar los paquetes del túnel en los dos sentidos (iptables `statistic`).
   sobre QUIC como iCloud Private Relay o WARP tienen su propia vuelta) y el
   0-RTT de QUIC (el saludo de TCP lo absorbe GRIT en el router).
 
+## El UDP dentro de GRIT (protocolo 20, 2026-11-02)
+
+- **El caso** (el usuario: «pronto la TUN quedará para cosas chicas y UDP
+  entrará pura a GRIT»): los envíos por equipo (19) solo reparten lo que
+  pasa por GRIT; el UDP iba por la TUN, que reparte por paquete sin saber
+  de equipos. Línea base (`BOND_HOG=1`, `BOND_HOG_UDP`: un segundo equipo
+  manda UDP con iperf3 a un ritmo fijo; `~/campo/2026-11-02/udphog`): en
+  `cell4`, 30 Mbit/s de UDP dejan el TCP del otro equipo en 7 Mbit/s y su
+  ping p50/p99 en 497/1417 ms (sin UDP: 45,9 Mbit/s, 120/196 ms). La TUN
+  manda todo lo que llega y llena las colas de los enlaces chicos.
+- **El diseño:** un flujo de datagramas no fiable por (origen, destino),
+  como el carril fiable pero sin flujo: el OPEN lleva `CG_PCTLF_DGRAM |
+  CG_PCTLF_UNREL`, y cada datagrama va entero en un mensaje DGM (tipo 5,
+  6 bytes de encabezado, sin offset ni ACK ni reenvío propio). El emisor lo
+  guarda en una cola de 32 por flujo (llena: se bota el más viejo; más de
+  300 ms esperando: se bota, el presupuesto de latencia de la historia 029)
+  y lo manda con los mismos tokens del ritmo que el TCP y en los mismos
+  turnos por equipo (`fair.h`). Hasta que el VPS contesta el OPEN, los DGM
+  van por todos los enlaces: en cada enlace el OPEN llega antes. El
+  receptor lo escribe al socket apenas llega, en el orden en que llega. Un
+  NACK del rescate de un DGM lo reenvía mientras dure su horizonte
+  (protección dentro del plazo, la regla «el UDP sigue siendo UDP»). En el
+  router, un segundo socket TPROXY en el puerto siguiente al del
+  protocontrolador (`protocontroller_udp`); en OpenWrt, `udp_grit`: el UDP
+  de la LAN a direcciones no privadas, después de las reglas del carril
+  fiable, sin el DNS al router, sin UDP 443 con `quic = tcp` (lo rechaza el
+  hook forward) y sin paquetes más grandes que el MTU del túnel (un
+  datagrama tiene que caber en un mensaje: esos van por la TUN, que los
+  fragmenta).
+- **Lo que el ritmo no veía:** la primera versión dejó el total en 68–77
+  Mbit/s en `equal` y `het` (por la TUN, 90). La estimación de GRIT es lo
+  que miden los ACK; el UDP gastaba tokens sin medirse, la estimación se
+  achicaba a la parte del TCP y los dos se hundían juntos. Ahora cada par
+  lleva la parte de los bytes enviados que son datagramas (`cc.xs`, EWMA de
+  ventanas de 100 ms) y el ritmo divide la estimación por lo que queda (a
+  lo más 5 veces). Un error del primer intento: el `now` del servicio se
+  toma antes de leer los sockets, y `now - t` de un datagrama recién leído
+  daba la vuelta: todos parecían viejos.
+- **Laboratorio** (cubic, n = 2, 30 s, nodos local, remoto06 y remoto07;
+  `~/campo/2026-11-02/udpgrit`, `table.md`): el TCP del equipo medido al
+  lado del UDP del otro, por la TUN, por GRIT sin `xs` y con `xs`
+  (`e572172`).
+
+  | Caso | Sentido | UDP | TCP: TUN / GRIT / +xs (Mbit/s) | UDP entregado | Total | Ping p99 (ms) |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | `equal` | subida | 30 | 61,7 / 44,8 / 63,0 | 29,2 / 23,6 / 28,9 | 91 / 68 / 92 | 203 / 105 / 129 |
+  | `equal` | subida | 60 | 42,7 / 39,7 / 51,7 | 47,0 / 31,3 / 40,4 | 90 / 71 / 92 | 262 / 103 / 126 |
+  | `equal` | bajada | 60 | 41,1 / 39,2 / 51,4 | 48,9 / 30,9 / 40,6 | 90 / 70 / 92 | 192 / 97 / 290 |
+  | `het` | subida | 60 | 44,1 / 42,9 / 51,0 | 45,7 / 34,0 / 41,0 | 90 / 77 / 92 | 122 / 102 / 120 |
+  | `het` | bajada | 60 | 43,4 / 42,2 / 50,4 | 46,6 / 33,3 / 40,0 | 90 / 75 / 90 | 122 / 82 / 120 |
+  | `cell4` | subida | 30 | 8,5 / 23,6 / 25,7 | 21,1 / 19,0 / 20,5 | 30 / 43 / 46 | 852 / 104 / 229 |
+  | `cell4` | subida | 60 | 3,0 / 23,4 / 25,4 | 27,6 / 19,0 / 20,9 | 31 / 42 / 46 | 962 / 104 / 250 |
+  | `cell4` | bajada | 30 | 9,5 / 23,9 / 25,9 | 21,5 / 18,8 / 20,3 | 31 / 43 / 46 | 799 / 104 / 184 |
+  | `cell4` | bajada | 60 | 3,6 / 23,7 / 25,5 | 27,2 / 18,9 / 20,9 | 31 / 43 / 46 | 977 / 104 / 179 |
+
+  Sin UDP al lado, los tres brazos dan lo mismo (91–92, 83–86 y 46 Mbit/s).
+  En `cell4` la TUN además perdía capacidad (30 de 46): el UDP llenaba las
+  colas de los enlaces chicos y el TCP retrocedía. Con `xs` el reparto queda
+  cerca de la mitad cuando el UDP pide más que eso (51 / 40 en `equal`), y
+  el ping p99 en `cell4` vuelve a la línea sin UDP (176–184 ms) en vez de
+  0,8–1 s; en `equal` de bajada sube algo (290 contra 192 por la TUN), a
+  mirar en terreno.
+- **Terreno** (2026-11-02, testnet en bonding, NUC y VPS en `880c635`;
+  `~/campo/2026-11-02/udpgritfield`): desde `nucc`, el equipo A
+  (192.168.50.240) con TCP por GRIT al VPS (4 flujos, 20 s) y el B (.241,
+  una segunda dirección) con UDP a 30 Mbit/s, `udp_grit` apagado (el UDP
+  por la TUN, a 10.79.0.1) y encendido (dentro de GRIT, a la dirección
+  pública del VPS); un ping de A por la TUN todo el rato. Dos rondas:
+
+  | Sentido | TCP de A: TUN / GRIT | UDP de B entregado (pérdida): TUN / GRIT | Ping p50 / p99: TUN / GRIT (ms) |
+  | --- | --- | --- | --- |
+  | subida | 52 y 66 / 69 y 64 | 24,8 (17 %) / 29,9 (0 %) y 28,5 (5 %) | 198/424 y 169/289 / 134/217 y 89/162 |
+  | bajada | 131 y 146 / 135 y 166 | 30 (0 %) / 30 (0–1 %) | 49/204 y 56/223 / 45/312 y 56/177 |
+
+  En la subida, donde los enlaces están cerca de su tope (~90 Mbit/s), el
+  UDP dentro de GRIT llega entero en vez de perder 17 %, el TCP del otro
+  equipo queda igual o mejor y el ping baja; en la bajada (~180 Mbit/s)
+  30 Mbit/s no llenan nada y los dos dan parecido. 62 mil datagramas por
+  sentido, ninguno botado por viejo. Para probarlo a mano: `uci commit` y
+  `cengarde-setup apply` ponen la regla pero no regeneran la configuración
+  del motor (eso lo hace la recarga del script de inicio: LuCI,
+  `reload_config` o `/etc/init.d/cengarde reload`, y el motor se reinicia
+  solo porque la perilla lo pide); sin el motor escuchando en el puerto
+  siguiente, el TPROXY bota el UDP de la LAN.
+- **Apagada por omisión** hasta más terreno: `protocontroller_udp` en el
+  motor, `udp_grit` en OpenWrt (LuCI: «UDP dentro de GRIT»).
+
 ## Pendiente
 
 - Terreno: `fec_stream` en redundancia.
 - QUIC en bonding, cuando pasa (`quic = pass` o `quic_allow`): repartir por
   flujo (todo un flujo QUIC por un enlace, el plan por flujo de la historia
   014) en vez de por paquete, que MPGRIT haría natural.
-- Prioridad del carril fiable sobre lo masivo dentro de GRIT.
+- Prioridad del carril fiable sobre lo masivo dentro de GRIT, y las
+  clases por DSCP (EF y CS5 de voz antes, CS1 y LE como relleno; marcar
+  DSCP de vuelta en el otro extremo).
+- Terreno del UDP dentro de GRIT (protocolo 20), y los datagramas sin las
+  cabeceras IP y UDP (#78).
 - Un analizador de encabezados más amplio y firmas configurables o
   aprendidas para el detector (usuario).
 - El ahorro de cabeceras (frames `DATAGRAM` sin IP ni UDP) pasa a la tarea
@@ -544,3 +641,5 @@ azar los paquetes del túnel en los dos sentidos (iptables `statistic`).
 - 2026-11-02: el paso 3b (UCI, LuCI, la copia al VPS, el NAT del router).
 - 2026-11-02: los pasos 3c (el carril fiable, protocolo 18), 3d (zstd en él)
   y 3e (`flow_learn`), con su laboratorio.
+- 2026-11-02: los envíos por equipo (protocolo 19) y el UDP dentro de GRIT
+  (protocolo 20, `protocontroller_udp`), con su laboratorio.

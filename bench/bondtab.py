@@ -549,7 +549,12 @@ def line(a):
     if a.hog:  # BOND_HOG: the second device's connections next to the measured one
         try:
             h = json.load(open(a.hog))["end"]
-            out["hog_mbps"] = round(h["sum_received"]["bits_per_second"] / 1e6, 2)
+            if "sum_received" in h:
+                out["hog_mbps"] = round(h["sum_received"]["bits_per_second"] / 1e6, 2)
+            else:  # UDP (BOND_HOG_UDP): what arrived, and the share lost
+                s = h["sum"]
+                out["hog_mbps"] = round(s["bits_per_second"] * (1 - s.get("lost_percent", 0) / 100) / 1e6, 2)
+                out["hog_lost_pct"] = s.get("lost_percent")
         except (OSError, ValueError, KeyError, TypeError):
             out["hog_mbps"] = None
     if a.pep:  # story 024's hosts: each leg's retransmissions, the proxies' memory

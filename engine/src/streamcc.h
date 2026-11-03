@@ -70,6 +70,7 @@
 #define CG_SCC_DRAIN 171         /* 2/3 */
 #define CG_SCC_CYCLE 8
 #define CG_SCC_FLOOR 62500u      /* bytes/s: 0.5 Mbit/s, the least rate */
+#define CG_SCC_XS_MAX 800u       /* xs at most (the rate five times the estimate) */
 #define CG_SCC_START 2000000u    /* bytes/s: 16 Mbit/s, the first rate without a hint (2 left a live stream's start
 				  * waiting at the router for 5 rounds) */
 #define CG_SCC_HINT_MAX 3u        /* a rate sample past STARTUP is at most this many times the engine's hint */
@@ -112,6 +113,8 @@ struct cg_scc {
 	uint8_t mode, cycle, full_n, cong;
 	uint8_t offer;      /* take the engine's offer (cg_scc_offer): the subflows find each link's losses; CG_SCC_OFFER_LINKS: each link's own rate */
 	uint8_t qnow;       /* the last sample was over min_rtt + queue_us: what is sent now may overflow */
+	uint16_t xs;        /* the share of the paced bytes that no ACK measures, per mille (unreliable datagrams,
+			     * protocol 20): the estimate is only the rest's, the rate is for all (CG_SCC_XS_MAX) */
 	uint64_t cycle_t;
 	uint64_t round_dl;  /* a round ends with the ACK of a segment sent once dl had passed this */
 	uint8_t r_q;        /* this round, a sample over a quarter of queue_us: the pipe may be full */
@@ -251,6 +254,11 @@ static inline uint64_t cg_scc_rate(const struct cg_scc *p)
 {
 	uint64_t r = cg_scc_mul(cg_scc_bw(p), cg_scc_gain(p), CG_SCC_ONE), o = cg_scc_offer(p);
 
+	/* the estimate is what the ACKs measure; datagrams without ACKs took
+	 * xs of the tokens too: in the lab, without this, 30 Mbit/s of UDP
+	 * beside a TCP sank the two together from 91 to 68 Mbit/s */
+	if (p->xs)
+		r = cg_scc_mul(r, 1000, 1000 - (p->xs < CG_SCC_XS_MAX ? p->xs : CG_SCC_XS_MAX));
 	if (o > r)
 		r = o;
 	return r > CG_SCC_FLOOR ? r : CG_SCC_FLOOR;

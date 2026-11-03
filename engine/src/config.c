@@ -1085,6 +1085,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	    get_u32(&ini, "", "protocontroller_dead_s", 0, 3600, &c->protocontroller_dead_s, err, errlen) ||
 	    get_u32(&ini, "", "protocontroller_reo_ms", 0, 1000, &c->protocontroller_reo_ms, err, errlen) ||
 	    get_bool(&ini, "", "protocontroller_fair", &c->protocontroller_fair, err, errlen) ||
+	    get_bool(&ini, "", "protocontroller_udp", &c->protocontroller_udp, err, errlen) ||
 	    get_bool(&ini, "", "protocontroller_nack", &c->protocontroller_nack, err, errlen) ||
 	    get_bool(&ini, "", "subflow", &c->subflow, err, errlen) ||
 	    get_bool(&ini, "", "protocontroller_offer", &c->protocontroller_offer, err, errlen) ||
@@ -1207,6 +1208,10 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 			goto out;
 		if (!c->nsrv) {
 			snprintf(err, errlen, "server: required in client mode");
+			goto out;
+		}
+		if (c->protocontroller_udp && c->protocontroller_port == 65535) {
+			snprintf(err, errlen, "protocontroller_udp: takes the port after protocontroller_port (65535)");
 			goto out;
 		}
 		if (get_u32(&ini, "", "probe_interval_ms", 100, 60000, &c->probe_interval_ms, err, errlen))
@@ -1500,6 +1505,8 @@ const char *cg_config_restart_needed(const struct cg_config *a, const struct cg_
 					     a->protocontroller_queue_ms != b->protocontroller_queue_ms || a->protocontroller_backlog_ms != b->protocontroller_backlog_ms ||
 					     a->protocontroller_dead_s != b->protocontroller_dead_s || a->protocontroller_reo_ms != b->protocontroller_reo_ms ||
 					     a->protocontroller_nack != b->protocontroller_nack ||
+					     a->protocontroller_fair != b->protocontroller_fair ||
+					     a->protocontroller_udp != b->protocontroller_udp ||
 					     a->protocontroller_offer != b->protocontroller_offer || a->link_cc != b->link_cc ||
 					     strcmp(a->protocontroller_cc, b->protocontroller_cc) ||
 					     strcmp(a->protocontroller_mid_cc, b->protocontroller_mid_cc) ||

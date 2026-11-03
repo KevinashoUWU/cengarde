@@ -66,6 +66,8 @@
 #define PCTL_CC_LOSSES 1        /* protocontroller_cc auto: segments the destination's leg sent again before BBR (3 left
 				* a stream at cubic's 1 % at 100 ms for its first 2-3 s: beyond) */
 #define PCTL_AGES 16
+#define PCTL_DQ 32               /* an unreliable stream's datagrams waiting for the pacer, at most (the oldest go first) */
+#define PCTL_DGM_AGE_US 300000u  /* and how long one waits: later, it is dropped (the latency budget, story 029) */
 #define CG_PCTL_AHDR_MAX 20    /* variant A's header: magic, family, port, address */
 #define PCTL_AMAGIC 0xA5
 #define PCTL_REO_STEP_US 4000u  /* a duplicate widens RACK's window by this */
@@ -74,6 +76,15 @@
 
 enum { F_FREE = 0, F_OPEN, F_EST };
 enum { PCTL_STOP_PACER, PCTL_STOP_CWND, PCTL_STOP_WINDOW, PCTL_STOP_EMPTY, PCTL_STOP_SEGS, PCTL_STOP_BUF };
+
+/* An unreliable datagram stream's datagrams waiting for the pacer (protocol
+ * 20): a ring, each datagram in a slot of cg_pctl's dgm_max bytes. */
+struct dgq {
+	uint8_t h, n;
+	uint16_t len[PCTL_DQ];
+	uint64_t t[PCTL_DQ]; /* when it came */
+	uint8_t d[];
+};
 
 struct flow {
 	uint32_t id;
@@ -132,6 +143,8 @@ struct flow {
 	uint8_t saddr[16];
 	uint64_t dg_t;
 	uint8_t zstd; /* its datagrams compressed (zlane.h): the contexts made at the first one each way */
+	uint8_t unrel; /* unreliable (protocol 20): its datagrams go as DGM from dq, no stream */
+	struct dgq *dq;
 #ifdef CG_ZSTD
 	ZSTD_CCtx *zc;
 	ZSTD_DCtx *zd;
@@ -146,6 +159,7 @@ struct peer {
 	uint32_t horizon_us; /* the engine's repair horizon toward this peer (ops.horizon, task #77) */
 	struct cg_scc cc;
 	struct cg_lowd lo; /* what each link adds to this peer's messages' delay, as they come (linkowd.h) */
+	uint64_t xb, ab, xt; /* bytes paced as unreliable datagrams and in all since xt (cc.xs, protocol 20) */
 	/* each link's own round trip, measured on the segments it carried
 	 * (Karn's rule, RFC 6298's smoothing; U2c), and its timeout: srtt +
 	 * 4 rttvar + PCTL_LRTO_PAD_US, 0: not measured yet */
@@ -161,6 +175,10 @@ struct cg_pctl {
 	int ep;
 	int lfd[3]; /* the router's v4 and v6; the VPS's variant A */
 	int ufd[2]; /* the router's reliable lane: UDP, TPROXY, v4 and v6 (story 031) */
+	int xfd[2]; /* the router's unreliable datagrams: UDP, TPROXY on port + 1, v4 and v6 (protocol 20) */
+	uint32_t dgm_max; /* a DGM's datagram, at most: what a DATA carries and its header, less a DGM's header */
+	uint64_t dgm_flows, dgm_in, dgm_tx, dgm_rx, dgm_out; /* unreliable streams; datagrams taken, sent, received, written */
+	uint64_t dgm_full, dgm_old, dgm_big, dgm_lost; /* dropped: the queue full, too old, too big, refused by the socket */
 	uint8_t *dgbuf; /* a datagram's room (CG_PCTL_DGRAM_MAX) */
 	uint8_t *zbuf;  /* a compressed one's (65535: what its length says) */
 	uint64_t dg_in, dg_out, dg_drop, dg_flows, dg_bad; /* datagrams taken, sent, dropped; streams opened; without a destination */
@@ -451,6 +469,8 @@ static void flow_free(struct cg_pctl *p, struct flow *f, int abort_sock)
 	f->zc = NULL;
 	f->zd = NULL;
 #endif
+	free(f->dq);
+	f->dq = NULL;
 	if (f->mfd >= 0) {
 		if (abort_sock) {
 			struct linger lg = { 1, 0 };
@@ -707,38 +727,43 @@ static void accept_some(struct cg_pctl *p, int v6)
 
 /* The router's UDP socket for the lane, on the protocontroller's port: the
  * firewall's TPROXY hands it the datagrams of flow_class reliable, with
- * their destination (IP_ORIGDSTADDR). */
-static int udp_listen(struct cg_pctl *p, int family, char *err, size_t errlen)
+ * their destination (IP_ORIGDSTADDR). unrel: the one for the unreliable
+ * datagram streams instead (protocol 20), on the port after it: the LAN's
+ * other UDP. */
+static int udp_listen(struct cg_pctl *p, int family, int unrel, char *err, size_t errlen)
 {
 	int fd = socket(family, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0), v6 = family == AF_INET6;
+	uint16_t port = (uint16_t)(p->cfg.port + !!unrel);
 	struct sockaddr_storage a;
 	socklen_t al;
-	struct epoll_event e = { .events = EPOLLIN, .data.u64 = CG_EV(CG_EV_PCTL, CG_PCTL_LISTEN_IDX + 3 + v6) };
+	struct epoll_event e = { .events = EPOLLIN,
+				 .data.u64 = CG_EV(CG_EV_PCTL, CG_PCTL_LISTEN_IDX + 3 + 2 * !!unrel + v6) };
 
 	if (fd < 0) {
-		snprintf(err, errlen, "protocontroller: the reliable lane's socket: %s", strerror(errno));
+		snprintf(err, errlen, "protocontroller: the %s socket: %s", unrel ? "datagrams'" : "reliable lane's",
+			 strerror(errno));
 		return -1;
 	}
 	memset(&a, 0, sizeof(a));
 	a.ss_family = (sa_family_t)family;
 	if (v6) {
-		((struct sockaddr_in6 *)&a)->sin6_port = htons(p->cfg.port);
+		((struct sockaddr_in6 *)&a)->sin6_port = htons(port);
 		al = sizeof(struct sockaddr_in6);
 		set_int(fd, IPPROTO_IPV6, IPV6_V6ONLY, 1);
 	} else {
-		((struct sockaddr_in *)&a)->sin_port = htons(p->cfg.port);
+		((struct sockaddr_in *)&a)->sin_port = htons(port);
 		al = sizeof(struct sockaddr_in);
 	}
 	set_int(fd, SOL_SOCKET, SO_REUSEADDR, 1);
 	if ((v6 ? set_int(fd, IPPROTO_IPV6, IPV6_TRANSPARENT, 1) || set_int(fd, IPPROTO_IPV6, IPV6_RECVORIGDSTADDR, 1)
 		: set_int(fd, IPPROTO_IP, IP_TRANSPARENT, 1) || set_int(fd, IPPROTO_IP, IP_RECVORIGDSTADDR, 1)) ||
 	    bind(fd, (struct sockaddr *)&a, al) < 0 || epoll_ctl(p->ep, EPOLL_CTL_ADD, fd, &e) < 0) {
-		snprintf(err, errlen, "protocontroller: the reliable lane on UDP port %u (%s): %s", p->cfg.port,
-			 v6 ? "IPv6" : "IPv4", strerror(errno));
+		snprintf(err, errlen, "protocontroller: the %s on UDP port %u (%s): %s",
+			 unrel ? "unreliable datagrams" : "reliable lane", port, v6 ? "IPv6" : "IPv4", strerror(errno));
 		close(fd);
 		return -1;
 	}
-	p->ufd[v6] = fd;
+	(unrel ? p->xfd : p->ufd)[v6] = fd;
 	return 0;
 }
 
@@ -764,9 +789,38 @@ static socklen_t sa_of(struct sockaddr_storage *a, int family, const uint8_t *ad
 static uint64_t flow_cap(const struct cg_pctl *p);
 static uint64_t backlog_max(const struct cg_pctl *p, const struct flow *f, uint64_t rate, uint64_t now);
 
+/* A datagram into an unreliable stream's queue: one too big for a DGM is
+ * dropped, and with the queue full its oldest goes (the newest says more,
+ * as a live stream's). */
+static void dq_put(struct cg_pctl *p, struct flow *f, const uint8_t *d, size_t n, uint64_t now)
+{
+	struct dgq *q = f->dq;
+	unsigned k;
+
+	if (n > p->dgm_max) {
+		p->dgm_big++;
+		return;
+	}
+	if (q->n == PCTL_DQ) {
+		q->h = (uint8_t)((q->h + 1) % PCTL_DQ);
+		q->n--;
+		p->dgm_full++;
+	}
+	k = (q->h + q->n) % PCTL_DQ;
+	memcpy(q->d + (size_t)k * p->dgm_max, d, n);
+	q->len[k] = (uint16_t)n;
+	q->t[k] = now;
+	q->n++;
+	f->up += n;
+	p->up_bytes += n;
+	f->dg_t = now;
+	p->dgm_in++;
+}
+
 /* A datagram (n bytes at d) into f's stream behind its length, whole or
  * not at all: dropped when the stream holds as much as it may or the pool
- * has no room (UDP's own fate, counted). */
+ * has no room (UDP's own fate, counted). An unreliable stream's goes to
+ * its queue. */
 static void dg_put(struct cg_pctl *p, struct flow *f, const uint8_t *d, size_t n)
 {
 	uint64_t held = f->tx.tail - f->tx.una, o = f->tx.tail, now = cg_now_us();
@@ -774,6 +828,10 @@ static void dg_put(struct cg_pctl *p, struct flow *f, const uint8_t *d, size_t n
 	const uint8_t *src[2] = { h, d };
 	size_t len[2] = { 2, n };
 
+	if (f->unrel) {
+		dq_put(p, f, d, n, now);
+		return;
+	}
 	if (f->tx.eof || held + n + 2 > flow_cap(p)) {
 		p->dg_drop++;
 		return;
@@ -837,8 +895,10 @@ static int rb_copy(struct cg_pctl *p, struct flow *f, uint64_t off, uint8_t *dst
 /* The router: the stream of the LAN's sender src to dst, else a new one
  * (its socket bound to dst, transparently, and connected to src: the
  * replies go out from the destination, and the sender's later datagrams
- * come straight to it). NULL: none. */
-static struct flow *dg_flow(struct cg_pctl *p, const struct sockaddr_storage *src, const struct sockaddr_storage *dst)
+ * come straight to it); unrel, an unreliable one (protocol 20). NULL:
+ * none. */
+static struct flow *dg_flow(struct cg_pctl *p, const struct sockaddr_storage *src, const struct sockaddr_storage *dst,
+			    int unrel)
 {
 	uint8_t fam, sfam, a[16], sa[16];
 	uint16_t port, sport;
@@ -851,12 +911,16 @@ static struct flow *dg_flow(struct cg_pctl *p, const struct sockaddr_storage *sr
 	sa_to(src, &sfam, sa, &sport);
 	for (uint32_t i = 0; i < p->nused; i++) {
 		f = &p->f[p->used[i]];
-		if (f->dgram && f->family == fam && f->port == port && f->sport == sport && !memcmp(f->addr, a, 16) &&
-		    !memcmp(f->saddr, sa, 16))
+		if (f->dgram && f->unrel == !!unrel && f->family == fam && f->port == port && f->sport == sport &&
+		    !memcmp(f->addr, a, 16) && !memcmp(f->saddr, sa, 16))
 			return f->tx.eof ? NULL : f;
 	}
 	if (cg_pctl_dest_ok(fam, a) || !(f = flow_alloc(p)))
 		return NULL;
+	if (unrel && !(f->dq = calloc(1, sizeof(*f->dq) + (size_t)PCTL_DQ * p->dgm_max))) {
+		flow_free(p, f, 0);
+		return NULL;
+	}
 	fd = socket(dst->ss_family, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
 	if (fd < 0) {
 		flow_free(p, f, 0);
@@ -880,8 +944,9 @@ static struct flow *dg_flow(struct cg_pctl *p, const struct sockaddr_storage *sr
 	memcpy(f->saddr, sa, 16);
 	f->host = cg_fair_key(sa);
 	f->dgram = 1;
+	f->unrel = (uint8_t)!!unrel;
 #ifdef CG_ZSTD
-	f->zstd = (uint8_t)!!p->cfg.zstd;
+	f->zstd = (uint8_t)(p->cfg.zstd && !unrel);
 #endif
 	f->dg_t = cg_now_us();
 	f->fd = fd;
@@ -897,13 +962,19 @@ static struct flow *dg_flow(struct cg_pctl *p, const struct sockaddr_storage *sr
 	f->reg = 1;
 	peer_of(p, f);
 	p->opened++;
-	p->dg_flows++;
+	if (unrel)
+		p->dgm_flows++;
+	else
+		p->dg_flows++;
 	return f;
 }
 
-/* The router: what TPROXY handed the lane's socket. */
-static void udp_accept(struct cg_pctl *p, int v6)
+/* The router: what TPROXY handed the lane's socket (unrel: the unreliable
+ * datagrams'). */
+static void udp_accept(struct cg_pctl *p, int v6, int unrel)
 {
+	int fd = (unrel ? p->xfd : p->ufd)[v6];
+
 	for (int k = 0; k < 64; k++) {
 		struct sockaddr_storage src, dst;
 		union {
@@ -913,7 +984,7 @@ static void udp_accept(struct cg_pctl *p, int v6)
 		struct iovec iov = { p->dgbuf, CG_PCTL_DGRAM_MAX };
 		struct msghdr mh = { .msg_name = &src, .msg_namelen = sizeof(src), .msg_iov = &iov, .msg_iovlen = 1,
 				     .msg_control = cm.b, .msg_controllen = sizeof(cm.b) };
-		ssize_t n = recvmsg(p->ufd[v6], &mh, 0);
+		ssize_t n = recvmsg(fd, &mh, 0);
 		int have = 0;
 		struct flow *f;
 
@@ -932,7 +1003,7 @@ static void udp_accept(struct cg_pctl *p, int v6)
 			p->dg_bad++;
 			continue;
 		}
-		if (!(f = dg_flow(p, &src, &dst))) {
+		if (!(f = dg_flow(p, &src, &dst, unrel))) {
 			p->dg_drop++;
 			continue;
 		}
@@ -1126,12 +1197,18 @@ static void open_in(struct cg_pctl *p, uint32_t peer, uint32_t sid, const struct
 		return;
 	}
 	if (m->flags & CG_PCTLF_DGRAM) { /* the reliable lane (18): UDP to the destination */
+		if ((m->flags & CG_PCTLF_UNREL) && /* or the unreliable datagrams (20) */
+		    !(f->dq = calloc(1, sizeof(*f->dq) + (size_t)PCTL_DQ * p->dgm_max))) {
+			flow_reset(p, f, CG_PCTL_R_FULL);
+			return;
+		}
 		if ((fd = dg_connect(m->family, m->addr, m->port, &r)) < 0) {
 			flow_reset(p, f, (uint8_t)r);
 			return;
 		}
 		f->dgram = 1;
-		if (m->flags & CG_PCTLF_ZSTD) {
+		f->unrel = !!(m->flags & CG_PCTLF_UNREL);
+		if ((m->flags & CG_PCTLF_ZSTD) && !f->unrel) {
 #ifdef CG_ZSTD
 			f->zstd = 1;
 #else
@@ -1145,7 +1222,10 @@ static void open_in(struct cg_pctl *p, uint32_t peer, uint32_t sid, const struct
 		f->connecting = 0;
 		f->rd_ready = 1;
 		e.events = EPOLLIN;
-		p->dg_flows++;
+		if (f->unrel)
+			p->dgm_flows++;
+		else
+			p->dg_flows++;
 	} else if ((fd = dest_connect(p, m->family, m->addr, m->port, &r)) < 0) {
 		flow_reset(p, f, (uint8_t)r);
 		return;
@@ -1845,7 +1925,28 @@ static void rx_one(struct cg_pctl *p, uint32_t peer, uint32_t sid, const uint8_t
 			f->state = F_EST;
 			f->est = 1;
 		}
-		ack_in(p, f, &m, now);
+		if (!f->unrel) /* an unreliable stream's: only that the VPS has it */
+			ack_in(p, f, &m, now);
+		break;
+	case CG_PCTL_DGM:
+		if (!f->unrel) {
+			p->bad++;
+			break;
+		}
+		if (!p->cfg.server && f->state == F_OPEN) {
+			f->state = F_EST;
+			f->est = 1;
+		}
+		/* written at once, in the order it came: UDP's */
+		p->dgm_rx++;
+		if (send(f->fd, m.data, m.len, MSG_DONTWAIT | MSG_NOSIGNAL) < 0) {
+			p->dgm_lost++;
+		} else {
+			p->dgm_out++;
+			f->down += m.len;
+			p->down_bytes += m.len;
+		}
+		f->dg_t = now;
 		break;
 	case CG_PCTL_RST:
 		p->rst_rx[m.reason < CG_PCTL_R_N ? m.reason : CG_PCTL_R_ERROR]++;
@@ -2035,7 +2136,9 @@ void cg_pctl_event(struct cg_pctl *p, uint32_t idx, uint32_t events)
 		if (!p->cfg.server && idx - CG_PCTL_LISTEN_IDX < 2 && p->lfd[idx - CG_PCTL_LISTEN_IDX] >= 0)
 			accept_some(p, (int)(idx - CG_PCTL_LISTEN_IDX));
 		else if (!p->cfg.server && idx - CG_PCTL_LISTEN_IDX - 3 < 2 && p->ufd[idx - CG_PCTL_LISTEN_IDX - 3] >= 0)
-			udp_accept(p, (int)(idx - CG_PCTL_LISTEN_IDX - 3));
+			udp_accept(p, (int)(idx - CG_PCTL_LISTEN_IDX - 3), 0);
+		else if (!p->cfg.server && idx - CG_PCTL_LISTEN_IDX - 5 < 2 && p->xfd[idx - CG_PCTL_LISTEN_IDX - 5] >= 0)
+			udp_accept(p, (int)(idx - CG_PCTL_LISTEN_IDX - 5), 1);
 		else if (p->cfg.server && idx == CG_PCTL_LISTEN_IDX + 2 && p->lfd[2] >= 0)
 			a_accept(p);
 		return;
@@ -2089,14 +2192,57 @@ static void send_open(struct cg_pctl *p, struct flow *f, uint64_t now)
 	struct peer *r = peer_of(p, f);
 	uint8_t *b = slot_for(p, f->peer, f->sid);
 
-	push(p, cg_pctl_put_open(b, f->id, (uint8_t)((f->dgram ? CG_PCTLF_DGRAM : 0) | (f->zstd ? CG_PCTLF_ZSTD : 0)), f->family,
-				 f->addr, f->port, f->host),
+	push(p, cg_pctl_put_open(b, f->id,
+				 (uint8_t)((f->dgram ? CG_PCTLF_DGRAM : 0) | (f->zstd ? CG_PCTLF_ZSTD : 0) |
+					   (f->unrel ? CG_PCTLF_UNREL : 0)),
+				 f->family, f->addr, f->port, f->host),
 	     1);
 	f->open_sent = 1;
 	f->open_due = now + cg_scc_rto(&r->cc, f->open_tries < 6 ? f->open_tries : 6, peer_reo(p, r));
 	if (f->open_tries < 255)
 		f->open_tries++;
 	p->opens_tx++;
+}
+
+/* One datagram of an unreliable stream, if its pacer lets it (the same
+ * tokens as the streams', in the same turns by device: fair.h), after
+ * dropping those that waited past PCTL_DGM_AGE_US. No window and no ACK:
+ * the pacer's rate is the links' (cg_scc_offer), which counts these bytes
+ * too. Until the peer answers its OPEN, on every link: each link brings
+ * the OPEN first. Returns 1 if it sent. */
+static int dgm_send(struct cg_pctl *p, struct flow *f, struct peer *r, uint64_t now)
+{
+	struct dgq *q = f->dq;
+	uint8_t *b;
+	uint16_t n;
+
+	/* (one read in this same service came after its now) */
+	while (q->n && q->t[q->h] + PCTL_DGM_AGE_US < now) {
+		q->h = (uint8_t)((q->h + 1) % PCTL_DQ);
+		q->n--;
+		p->dgm_old++;
+	}
+	if (!q->n || (!p->cfg.server && !f->open_sent)) {
+		f->stop = PCTL_STOP_EMPTY;
+		return 0;
+	}
+	if (!cg_scc_may_repair(&r->cc)) {
+		f->stop = PCTL_STOP_PACER;
+		return 0;
+	}
+	cg_scc_restart(&r->cc, now);
+	n = q->len[q->h];
+	b = slot_for(p, f->peer, f->sid);
+	cg_pctl_put_dgm(b, f->id);
+	memcpy(b + CG_PCTL_HDR, q->d + (size_t)q->h * p->dgm_max, n);
+	push(p, CG_PCTL_HDR + n, !f->est);
+	cg_scc_spend(&r->cc, CG_PCTL_HDR + n);
+	r->xb += CG_PCTL_HDR + n;
+	r->ab += CG_PCTL_HDR + n;
+	q->h = (uint8_t)((q->h + 1) % PCTL_DQ);
+	q->n--;
+	p->dgm_tx++;
+	return 1;
 }
 
 /* One segment of f, if it has one and its pacer lets it. Returns 1 if it
@@ -2108,6 +2254,8 @@ static int send_one(struct cg_pctl *p, struct flow *f, struct peer *r, uint64_t 
 	int fin, copy;
 	uint8_t *b;
 
+	if (f->unrel)
+		return dgm_send(p, f, r, now);
 	if (!cg_scc_may_repair(&r->cc)) {
 		f->stop = PCTL_STOP_PACER;
 		return 0;
@@ -2160,6 +2308,7 @@ static int send_one(struct cg_pctl *p, struct flow *f, struct peer *r, uint64_t 
 			     r->app || (!cg_st_tx_unsent(&f->tx) && !f->tx.nlost), r->cc.qnow || r->cc.cong);
 	r->cc.inflight += sent;
 	cg_scc_spend(&r->cc, sent ? sent : 1);
+	r->ab += CG_PCTL_DATA_HDR + len;
 	if (!f->rto_at)
 		f->rto_at = now + cg_scc_rto(&r->cc, f->backoff, cg_scc_rto_extra(peer_reo(p, r), p->rack_off));
 	p->data_tx++;
@@ -2178,6 +2327,11 @@ static int timers(struct cg_pctl *p, struct flow *f, uint64_t now)
 {
 	struct peer *r = peer_of(p, f);
 
+	/* an unreliable one has no stream to close: it just goes */
+	if (f->unrel && now - f->dg_t > (uint64_t)PCTL_DGRAM_IDLE_S * 1000000) {
+		flow_reset(p, f, CG_PCTL_R_TIMEOUT);
+		return -1;
+	}
 	/* a datagram stream ends after a while with nothing either way (UDP has
 	 * no FIN of its own) */
 	if (f->dgram && !f->tx.eof && now - f->dg_t > (uint64_t)PCTL_DGRAM_IDLE_S * 1000000)
@@ -2291,9 +2445,22 @@ void cg_pctl_service(struct cg_pctl *p)
 	/* the sends, while the pacers let them: a segment per host per round,
 	 * a host's flows taking its turns in rotation (fair.h); without fair, a
 	 * segment per flow per round */
-	for (uint32_t i = 0; i < p->npr; i++)
-		if (p->pr[i].used)
-			cg_scc_refill(&p->pr[i].cc, &p->ccf, now);
+	for (uint32_t i = 0; i < p->npr; i++) {
+		struct peer *r = &p->pr[i];
+
+		if (!r->used)
+			continue;
+		/* the datagrams' share of what went (cc.xs): a quarter of each
+		 * window's, in an EWMA */
+		if (now - r->xt >= PCTL_RATE_US) {
+			uint32_t x = r->ab ? (uint32_t)(r->xb * 1000 / r->ab) : 0;
+
+			r->cc.xs = (uint16_t)((3u * r->cc.xs + x) / 4);
+			r->xb = r->ab = 0;
+			r->xt = now;
+		}
+		cg_scc_refill(&r->cc, &p->ccf, now);
+	}
 	if (p->cfg.fair && p->nused) {
 		uint32_t ng;
 
@@ -2344,6 +2511,11 @@ void cg_pctl_service(struct cg_pctl *p)
 		int fin;
 		struct cg_st_tx t = f->tx; /* cg_st_tx_next may move lost_from: a copy */
 
+		if (f->unrel) {
+			if (f->dq->n)
+				due(p, now + cg_scc_wait_us(&r->cc));
+			continue;
+		}
 		if (cg_st_tx_next(&t, p->cfg.mss, &idx, &off, &len, &fin) &&
 		    r->cc.inflight < cg_scc_cwnd(&r->cc, &p->ccf, cg_scc_reo(&r->cc, peer_reo(p, r))))
 			due(p, now + cg_scc_wait_us(&r->cc));
@@ -2470,7 +2642,8 @@ struct cg_pctl *cg_pctl_new(const struct cg_pctl_cfg *cfg, int ep, const struct 
 	p->ops = *ops;
 	p->ep = ep;
 	p->lfd[0] = p->lfd[1] = p->lfd[2] = -1;
-	p->ufd[0] = p->ufd[1] = -1;
+	p->ufd[0] = p->ufd[1] = p->xfd[0] = p->xfd[1] = -1;
+	p->dgm_max = cfg->mss + CG_PCTL_DATA_HDR - CG_PCTL_HDR;
 	if (!(p->dgbuf = malloc(CG_PCTL_DGRAM_MAX)) || !(p->zbuf = malloc(65535))) {
 		free(p->dgbuf);
 		free(p);
@@ -2537,11 +2710,22 @@ struct cg_pctl *cg_pctl_new(const struct cg_pctl_cfg *cfg, int ep, const struct 
 		}
 		/* the reliable lane (story 031): variant B's streams only */
 		if (cfg->dgram && cfg->mode == CG_PCTL_B) {
-			if (udp_listen(p, AF_INET, err, errlen) < 0) {
+			if (udp_listen(p, AF_INET, 0, err, errlen) < 0) {
 				cg_pctl_free(p);
 				return NULL;
 			}
-			if (udp_listen(p, AF_INET6, err, errlen) < 0) {
+			if (udp_listen(p, AF_INET6, 0, err, errlen) < 0) {
+				cg_warn("%s: IPv4 only", err);
+				err[0] = '\0';
+			}
+		}
+		/* and the unreliable datagrams (protocol 20), on the port after it */
+		if (cfg->udp && cfg->mode == CG_PCTL_B) {
+			if (udp_listen(p, AF_INET, 1, err, errlen) < 0) {
+				cg_pctl_free(p);
+				return NULL;
+			}
+			if (udp_listen(p, AF_INET6, 1, err, errlen) < 0) {
 				cg_warn("%s: IPv4 only", err);
 				err[0] = '\0';
 			}
@@ -2565,6 +2749,11 @@ void cg_pctl_free(struct cg_pctl *p)
 		if (p->ufd[i] >= 0) {
 			epoll_ctl(p->ep, EPOLL_CTL_DEL, p->ufd[i], NULL);
 			close(p->ufd[i]);
+		}
+	for (int i = 0; i < 2; i++)
+		if (p->xfd[i] >= 0) {
+			epoll_ctl(p->ep, EPOLL_CTL_DEL, p->xfd[i], NULL);
+			close(p->xfd[i]);
 		}
 	free(p->dgbuf);
 	free(p->zbuf);
@@ -2607,6 +2796,19 @@ void cg_pctl_json(const struct cg_pctl *p, struct cg_json *j)
 	cg_json_u64(j, "no_destination", p->dg_bad);
 	cg_json_u64(j, "zstd_in_bytes", p->dg_zin);   /* the compressed ones' bytes before (zlane.h) */
 	cg_json_u64(j, "zstd_out_bytes", p->dg_zout); /* and after */
+	cg_json_end(j, '}');
+	/* the unreliable datagrams (protocol 20): the LAN's other UDP */
+	cg_json_obj(j, "datagrams");
+	cg_json_bool(j, "on", p->xfd[0] >= 0 || p->xfd[1] >= 0);
+	cg_json_u64(j, "streams", p->dgm_flows);
+	cg_json_u64(j, "taken", p->dgm_in);
+	cg_json_u64(j, "sent", p->dgm_tx);
+	cg_json_u64(j, "received", p->dgm_rx);
+	cg_json_u64(j, "written", p->dgm_out);
+	cg_json_u64(j, "dropped_full", p->dgm_full); /* the queue full: its oldest */
+	cg_json_u64(j, "dropped_old", p->dgm_old);   /* waited past 300 ms for the pacer */
+	cg_json_u64(j, "dropped_big", p->dgm_big);   /* too big for one DGM */
+	cg_json_u64(j, "dropped_socket", p->dgm_lost); /* the socket refused it */
 	cg_json_end(j, '}');
 	cg_json_u64(j, "closed", p->closed);
 	cg_json_obj(j, "refused");
@@ -2762,6 +2964,7 @@ void cg_pctl_json(const struct cg_pctl *p, struct cg_json *j)
 		cg_json_u64(j, "rate_bps", cg_scc_rate(c) * 8);
 		cg_json_u64(j, "hint_bps", c->hint * 8);
 		cg_json_bool(j, "hint_full", c->hint_full);
+		cg_json_u64(j, "datagrams_permille", c->xs); /* of what went, unreliable datagrams (protocol 20) */
 		cg_json_ms(j, "min_rtt_ms", c->min_rtt);
 		cg_json_ms(j, "srtt_ms", c->srtt);
 		cg_json_u64(j, "inflight", c->inflight);

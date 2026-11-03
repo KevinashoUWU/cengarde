@@ -192,6 +192,21 @@ void test_streamcc(void)
 	CHECK_EQ(cg_scc_cwnd(&p, &c, 0), CG_SCC_IW_SEGS * 1200);
 	CHECK_EQ(cg_scc_rto(&p, 0, 0), 200000);
 	CHECK_EQ(cg_scc_rto(&p, 10, 0), 2000000);
+	/* datagrams without ACKs took half the tokens: the rate doubles the
+	 * estimate's; never more than five times it */
+	{
+		struct cg_scc q;
+		uint64_t r0;
+
+		cg_scc_init(&q, 0);
+		q.bw = 2000000;
+		q.min_rtt = 40000;
+		r0 = cg_scc_rate(&q);
+		q.xs = 500;
+		CHECK_EQ(cg_scc_rate(&q), 2 * r0);
+		q.xs = 1000;
+		CHECK_EQ(cg_scc_rate(&q), 5 * r0);
+	}
 	/* the engine's offer (subflow): at least its capacity and a quarter,
 	 * in the rate and in the window, until every link is full or the
 	 * stream sees a queue */

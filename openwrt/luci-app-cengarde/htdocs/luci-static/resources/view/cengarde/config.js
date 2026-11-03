@@ -645,6 +645,12 @@ return view.extend({
 		o.datatype = 'or(ipaddr, cidr)';
 		o.depends('quic', 'tcp');
 
+		o = s.taboption('layer4', form.Flag, 'udp_grit', _('UDP into GRIT'),
+			_('The LAN\'s other UDP (not to private addresses, not larger than the tunnel\'s MTU) travels inside GRIT as unreliable datagrams: never resent nor held in order, at most 300 ms late, and sent in turns by device like the TCP, so that one device\'s UDP (a stream, a game update, a VPN) cannot take every uplink from the rest. In the lab, with 30-60 Mbit/s of UDP from one device, another device\'s TCP went from 3-9 to 25 Mbit/s over four cellular-like uplinks (its ping p99 from 0.8-1 s to 0.2 s) and from 42 to 51 over faster ones, with the same total. Needs the protocontroller in GRIT mode on both ends.'));
+		o.depends({ protocontroller: 'b', mode: 'custom' });
+		o.depends('mode', 'bonding');
+		o.depends('mode', 'redundancy');
+
 		o = s.taboption('layer4', form.Flag, 'tcp_aware', _('TCP-aware tunnel'),
 			_('The router and the VPS look at the TCP inside the tunnel: its ACKs and handshakes are handed on at once instead of waiting behind a missing packet, and a TCP retransmission is copied over every uplink only when the tunnel lost the original on all of them (from the ACKs it has seen), so a spurious one does not load every uplink. Off: TCP is carried like any other packet.'));
 		modeFlag(o, 'tcp_aware', '0');
