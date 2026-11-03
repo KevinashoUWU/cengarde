@@ -51,7 +51,7 @@
 set -u
 
 HERE=$(cd "$(dirname "$0")" && pwd)
-VPS_IP=64.176.14.91
+VPS_IP=${VPS_IP:-64.176.19.43} # the testnet VPS (2026-10-31)
 VPS=vps # ssh alias (root)
 NUC=(ssh -o BatchMode=yes -o HostKeyAlias=10.79.173.140 root@192.168.50.1)
 TPORT=5310
