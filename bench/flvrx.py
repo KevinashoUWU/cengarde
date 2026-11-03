@@ -5,9 +5,10 @@ credit): it reads the tags as they come and says how late each one arrived.
 
 The sender is ffmpeg -re: it writes each frame when its time comes, so a
 tag's timestamp is when it was written, give or take a constant. A tag's
-lateness is (its arrival less its timestamp) less the least of that over
-the stream: what the path and its queues added on top of the fastest
-tag. A keyframe is many times a frame's size and leaves in a burst: its
+lateness is (its arrival less its timestamp) less the 5th percentile of
+that over the stream: what the path and its queues added on top of the
+fast tags. The first 3 s are left out (the encoder's start writes faster
+than real time). A keyframe is many times a frame's size and leaves in a burst: its
 lateness is what a pacer that holds bursts adds.
 
   flvrx.py --listen ADDR:PORT --secs N > out.json    (the far end, upload)
@@ -89,11 +90,11 @@ def main():
                 del buf[:11 + size + 4]
     except socket.timeout:
         pass
-    vid = [t for t in tags if t[3] in "kv"]
-    out = {"bytes": total, "tags": len(tags), "frames": len(vid),
+    vid = [t for t in tags if t[3] in "kv" and t[1] >= 3000]
+    out = {"bytes": total, "tags": len(tags), "frames": sum(1 for t in tags if t[3] in "kv"),
            "keyframes": sum(1 for t in vid if t[3] == "k")}
     if vid:
-        off = min(t[0] * 1000 - t[1] for t in vid)
+        off = pct([t[0] * 1000 - t[1] for t in vid], 0.05)
         late = [(t[0] * 1000 - t[1] - off, t) for t in vid]
         key = [x for x, t in late if t[3] == "k"]
         oth = [x for x, t in late if t[3] == "v"]
