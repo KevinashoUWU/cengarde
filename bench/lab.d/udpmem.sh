@@ -139,7 +139,7 @@ EOF2
 # cli to the server's port: every lane gets 2 N. Their version nibble is the
 # engine's: the steering program sends any other version to the junk socket
 # (steer.h), and a fixed one stopped filling the lanes when the protocol
-# went from 6 to 7.
+# went from 6 to 7. The link is byte 2 of the sealed format (22, wire.h).
 udpmem_flood() {
 	local v
 	v=$(sed -n 's/^#define CG_PROTO_VERSION \([0-9]*\).*/\1/p' "$REPO/engine/src/proto.h")
@@ -150,7 +150,7 @@ s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 s.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1 << 20)
 for link in range(16):
     wire = (int(sys.argv[2]) - 1) % 15 + 1  # proto.h's CG_PROTO_WIRE: past 15 it goes round from 1
-    pkt = bytes([wire << 4 | 1, 0, 0, link]) + bytes(1396)  # DATA
+    pkt = bytes([wire << 4, 0, link]) + bytes(1397)  # kind 0, hint, link (wire.h: byte 2, in the clear)
     for _ in range(int(sys.argv[1])):
         try:
             s.sendto(pkt, ("10.0.1.2", 59402))
