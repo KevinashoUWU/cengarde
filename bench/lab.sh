@@ -55,9 +55,9 @@ build() {
 	gcc -O2 -Wall -Wextra -pthread -I"$REPO/engine/src" -o "$BIN/ringbench" "$LAB/ringbench.c" || return 1
 	gcc -O2 -Wall -Wextra -I"$REPO/engine/src" -o "$BIN/robench" "$LAB/robench.c" || return 1
 	gcc -O2 -Wall -Wextra -I"$REPO/engine/src" -o "$BIN/cgprobe" "$LAB/cgprobe.c" \
-		"$REPO"/engine/src/{proto,siphash,util,log,blake2s,pair}.c || return 1
+		"$REPO"/engine/src/{proto,siphash,util,log,blake2s,pair,aead,wire}.c || return 1
 	gcc -O2 -Wall -Wextra -I"$REPO/engine/src" -o "$BIN/macbench" "$LAB/macbench.c" \
-		"$REPO"/engine/src/{proto,siphash,aead}.c || return 1
+		"$REPO"/engine/src/{proto,siphash,aead,wire,blake2s}.c || return 1
 	make -s -C "$REPO/engine" cengarde && cp "$REPO/engine/cengarde" "$BIN/cengarde" || return 1
 	# the erasure codes' cost (story 021), on the engine's Leopard objects
 	local leo o objs=

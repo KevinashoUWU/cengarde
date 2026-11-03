@@ -1,4 +1,4 @@
-/* cengarde wire protocol, version 16 (version 1 had no delay reports,
+/* cengarde wire protocol, version 22 (version 1 had no delay reports,
  * version 2 no IP pass flags, version 3 no client hint, cookies or separate
  * control sequence, version 4 no previous link in DATA's flags, version 5
  * no NACK, version 6 no CG_F_FREE, version 7 no parity, version 8 no
@@ -16,30 +16,29 @@
  * story 030; version 14 drops the stream messages' own tag, protoctl.h:
  * the MAC covers every one of them; version 15 their DATA's own clock: the
  * header's ts is it; version 16 puts the link and the sseq under the MAC,
- * last, so that each copy only finishes it: cg_hdr_mac_finish).
+ * last, so that each copy only finishes it; version 22, the 1.0 format,
+ * story 032, seals every packet with ChaCha20-Poly1305 instead: wire.h).
  *
- * Every datagram between client and server carries a 24-byte header followed
- * by the payload (an IP packet from the TUN for DATA, or a protocontroller
- * stream's message). All integers are big-endian.
+ * This is the packet in memory: what the engine builds and reads, a 28-byte
+ * header followed by the payload (an IP packet from the TUN for DATA, or a
+ * protocontroller stream's message). On the network it goes sealed (wire.h):
+ * its hint, link and session in the clear, the rest encrypted and under a
+ * tag. All integers are big-endian.
  *
  *   0       ver(4 bits) | type(4 bits)
  *   1       flags          (CG_F_*, by type)
  *   2       client hint    (cg_client_hint() of the client's key, pair.h):
  *                          lets a server with several clients pick the key
- *                          before it computes a MAC
- *   3       link id        <- not authenticated, so the sender MACs a packet
- *                             once and patches this byte per link
+ *                          before it checks a tag
+ *   3       link id        (set per copy as it goes)
  *   4..7    session id     (random, chosen by the client)
  *   8..11   sequence       (per session, direction and class: DATA has one,
  *                          STREAM another, the control messages, probes and
  *                          replies, a third, so that the DATA sequence has no
  *                          holes of their making; HELLO carries 0)
  *   12..15  timestamp      (sender monotonic clock, microseconds, wraps)
- *   16..23  MAC            SipHash-2-4 over bytes 0..15 (byte 3 zeroed) and
- *                          the payload, stored little-endian
- *
- * Each direction has its own 16-byte key (client->server, server->client),
- * both taken from the 32-byte shared secret.
+ *   16..23  zero           (protocol 21's MAC; nothing in memory)
+ *   24..27  sseq           (the link's own sequence, set per copy)
  *
  * Invariant of DATA: the sender writes the sequence and the timestamp
  * together and in order, so a packet with a higher sequence never carries an
@@ -72,9 +71,7 @@
 #include <stdint.h>
 #include <sys/socket.h>
 
-#include "siphash.h"
-
-#define CG_PROTO_VERSION 21
+#define CG_PROTO_VERSION 22
 /* The version in the first byte's high nibble, 1 to 15: past 15 it goes
  * round from 1 (16 is 1, 17 is 2), over versions retired long ago (every
  * engine still running speaks 12 or more). Never 0: a WireGuard message
@@ -83,10 +80,10 @@
 #define CG_HDR_LEN 28
 #define CG_TS_OFF 12
 #define CG_MAC_OFF 16
-#define CG_SSEQ_OFF 24 /* the link's own sequence (MPGRIT's subflow, story 029): after the MAC field; the MAC covers it last with the link (16), so a copy on another link finishes the MAC with its own */
+#define CG_SSEQ_OFF 24 /* the link's own sequence (MPGRIT's subflow, story 029), set per copy like the link */
 #define CG_HINT_OFF 2
 #define CG_LINK_OFF 3
-#define CG_KEY_LEN 32 /* shared secret: c2s key || s2c key */
+#define CG_KEY_LEN 32 /* the shared secret: each session's keys come from it (wire.h) */
 
 enum cg_type {
 	CG_T_DATA = 1,        /* payload: an IP packet (or a protocontroller stream's message) */
@@ -169,7 +166,7 @@ static inline int cg_type_cls(uint8_t type)
 #define CG_F_GONE 0x02
 
 /* Header flags on DATA, for bonding (story 012). CG_F_SPLIT is written
- * only by a sender that splits (split.h), and is under the MAC: this packet
+ * only by a sender that splits (split.h), and is under the tag: this packet
  * skips at least one carrier, some link that carries payload does not bring
  * this sequence (a weight-0 link may bring it too, so it is not "the only
  * copy"). */
@@ -195,7 +192,7 @@ static inline int cg_type_cls(uint8_t type)
  * alone (version 5, story 013): CG_F_PREV, and its id in the high 4 bits.
  * The receiver's reorderer then waits for that gap as long as that link
  * may take, not the slowest, and gives it up as soon as that link brings a
- * later sequence (links are FIFO). Under the MAC, as every flag. */
+ * later sequence (links are FIFO). Under the tag, as every flag. */
 #define CG_F_PREV 0x08
 #define CG_F_PREV_SHIFT 4
 
@@ -365,39 +362,15 @@ struct cg_hello {
 };
 #define CG_HELLO_LEN 8
 
-/* Writes a complete header, MAC included, for hdr and payload. The MAC
- * (16) covers the header without its link, the payload, and then the link
- * and the sseq: a copy that goes on another link, with that link's sseq,
- * only finishes it from the base (cg_hdr_mac_finish, ~0.1 us on a
- * Cortex-A53 against ~2.1 us for 1400 bytes), and neither can be rewritten
- * on the way (a forged sseq made the receiver say losses that never were). */
-void cg_hdr_write(uint8_t out[CG_HDR_LEN], const struct cg_hdr *h, const uint8_t key[CG_SIPHASH_KEY_LEN],
-		  const void *payload, size_t plen);
-/* The same, and *base: the MAC's state before the link and the sseq. */
-void cg_hdr_write_base(uint8_t out[CG_HDR_LEN], const struct cg_hdr *h, const uint8_t key[CG_SIPHASH_KEY_LEN],
-		       const void *payload, size_t plen, struct cg_siphash *base);
-/* The MAC's state of hdr (its link left out) and payload under key. */
-void cg_hdr_mac_base(struct cg_siphash *s, const uint8_t *hdr, const uint8_t key[CG_SIPHASH_KEY_LEN],
-		     const void *payload, size_t plen);
-/* The MAC of hdr from base and the link and sseq hdr holds now, into hdr:
- * after cg_hdr_set_link and cg_hdr_set_sseq. */
-void cg_hdr_mac_finish(const struct cg_siphash *base, uint8_t *hdr);
-/* The whole MAC again (a kept copy sent on another link, a probe given its
- * sseq after it was written). */
-void cg_hdr_reseal(uint8_t *hdr, const uint8_t key[CG_SIPHASH_KEY_LEN], const void *payload, size_t plen);
-
 /* The in-memory header of h (its MAC field zeroed: wire.h seals it). */
 void cg_hdr_put(uint8_t out[CG_HDR_LEN], const struct cg_hdr *h);
 
 /* Whether a payload p of plen bytes fits a packet of type. */
 int cg_hdr_plen_ok(uint8_t type, const uint8_t *p, size_t plen);
 
-/* Parses buf (header + payload) without checking the MAC. Returns 0 when the
+/* Parses the in-memory packet buf (header + payload). Returns 0 when the
  * header is well formed and the payload length fits the type, -1 otherwise. */
 int cg_hdr_parse(struct cg_hdr *h, const uint8_t *buf, size_t len);
-
-/* Returns 1 when the MAC of buf (header + payload) is valid under key. */
-int cg_hdr_verify(const uint8_t *buf, size_t len, const uint8_t key[CG_SIPHASH_KEY_LEN]);
 
 static inline void cg_hdr_set_link(uint8_t *hdr, uint8_t link)
 {
@@ -412,8 +385,8 @@ static inline uint32_t cg_hdr_ts(const uint8_t *hdr)
 	       hdr[CG_TS_OFF + 3];
 }
 
-/* The link's own sequence of a packet about to go on it (subflow.h): out
- * of the MAC, set at send time like the link. */
+/* The link's own sequence of a packet about to go on it (subflow.h), set
+ * at send time like the link (each copy sealed with its own, wire.h). */
 static inline void cg_hdr_set_sseq(uint8_t *hdr, uint32_t sseq)
 {
 	hdr[CG_SSEQ_OFF] = (uint8_t)(sseq >> 24);
@@ -449,14 +422,19 @@ unsigned cg_nack_read(uint32_t *seq, unsigned max, const uint8_t *payload, size_
 void cg_hello_write(uint8_t out[CG_HELLO_LEN], const struct cg_hello *hl);
 void cg_hello_read(struct cg_hello *hl, const uint8_t in[CG_HELLO_LEN]);
 
+/* What a packet weighs on the wire more than in memory (wire.h's
+ * CG_WIRE_EXTRA: its clear header, inner header and tag against our 28). */
+#define CG_WIRE_OVER 13
+
 /* Size of the IP packet that carries a payload of len bytes (an IP packet
  * from the TUN) over family AF_INET or AF_INET6: IP header, UDP header and
- * ours. The largest tun_mtu over a path MTU is mtu - cg_outer_len(family, 0):
- * 1444 over IPv4 and 1424 over IPv6 on a 1500-byte path (1448 and 1428
- * before protocol 12's subflow sequence). */
+ * ours, sealed (wire.h). The largest tun_mtu over a path MTU is mtu -
+ * cg_outer_len(family, 0): 1431 over IPv4 and 1411 over IPv6 on a 1500-byte
+ * path (1444 and 1424 before protocol 22's seal, 1448 and 1428 before
+ * protocol 12's subflow sequence). */
 static inline uint32_t cg_outer_len(int family, uint32_t len)
 {
-	return len + CG_HDR_LEN + 8 + (family == AF_INET6 ? 40 : 20);
+	return len + CG_HDR_LEN + CG_WIRE_OVER + 8 + (family == AF_INET6 ? 40 : 20);
 }
 
 #endif

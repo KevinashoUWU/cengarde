@@ -59,7 +59,7 @@ static void test_cbpf(void)
  * header (and a full datagram), every version byte, every link byte. */
 static void test_steer_v3(void)
 {
-	static const size_t lens[] = { 0, 1, 3, 4, 5, 16, 23, 24, 25, 48, 1400 };
+	static const size_t lens[] = { 0, 1, 2, 3, 5, 16, 40, 41, 42, 64, 1400 };
 	static const unsigned lanes_ok[] = { 1, 2, 4, 8, 16 };
 	static const unsigned lanes_bad[] = { 0, 3, 5, 6, 12, 32, 64 };
 	struct sock_filter prog[CG_STEER_MAX];
@@ -84,7 +84,7 @@ static void test_steer_v3(void)
 					uint32_t got, want;
 
 					pkt[0] = (uint8_t)v;
-					pkt[CG_LINK_OFF] = (uint8_t)link;
+					pkt[CG_WIRE_LINK_OFF] = (uint8_t)link;
 					got = cbpf_run(prog, n, pkt, (uint32_t)lens[k]);
 					want = cg_steer_ref(pkt, lens[k], L);
 					wrong += got != want;
@@ -103,11 +103,11 @@ static void test_steer_v3(void)
 	/* Concretely, with 8 lanes. */
 	CHECK_EQ(cg_steer_prog(prog, CG_STEER_MAX, 8), 9);
 	pkt[0] = (uint8_t)(CG_PROTO_WIRE << 4 | CG_T_DATA);
-	pkt[CG_LINK_OFF] = 2;
+	pkt[CG_WIRE_LINK_OFF] = 2;
 	CHECK_EQ(cbpf_run(prog, 9, pkt, 1400), 2);
-	CHECK_EQ(cbpf_run(prog, 9, pkt, CG_HDR_LEN), 2);
-	CHECK_EQ(cbpf_run(prog, 9, pkt, CG_HDR_LEN - 1), 8); /* short: junk */
-	pkt[CG_LINK_OFF] = 13;
+	CHECK_EQ(cbpf_run(prog, 9, pkt, CG_WIRE_MIN), 2);
+	CHECK_EQ(cbpf_run(prog, 9, pkt, CG_WIRE_MIN - 1), 8); /* short: junk */
+	pkt[CG_WIRE_LINK_OFF] = 13;
 	CHECK_EQ(cbpf_run(prog, 9, pkt, 1400), 5);
 	pkt[0] = (uint8_t)(((CG_PROTO_WIRE + 1) & 0x0f) << 4 | CG_T_DATA);
 	CHECK_EQ(cbpf_run(prog, 9, pkt, 1400), 8); /* the next protocol version: junk */

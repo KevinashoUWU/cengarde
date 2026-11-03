@@ -50,6 +50,8 @@
 #define CG_WIRE_INNER 14 /* the encrypted inner header */
 #define CG_WIRE_TAG CG_AEAD_TAG_LEN
 #define CG_EPOCH_LEN 8
+/* The shortest packet on the wire: a clear header, an inner one, a tag. */
+#define CG_WIRE_MIN (CG_WIRE_HDR + CG_WIRE_INNER + CG_WIRE_TAG)
 /* What a packet on the wire weighs more than in memory (kind 0): 13. */
 #define CG_WIRE_EXTRA (CG_WIRE_HDR + CG_WIRE_INNER + CG_WIRE_TAG - CG_HDR_LEN)
 /* The most a kind 1 adds on top of that. */
@@ -57,6 +59,8 @@
 #define CG_WIRE_HINT_OFF 1
 #define CG_WIRE_LINK_OFF 2
 #define CG_WIRE_SESSION_OFF 3
+
+_Static_assert(CG_WIRE_EXTRA == CG_WIRE_OVER, "proto.h's cg_outer_len counts the seal");
 
 enum { CG_WIRE_KIND_PLAIN = 0, CG_WIRE_KIND_EPOCH = 1 };
 enum { CG_DIR_C2S = 0, CG_DIR_S2C = 1 };

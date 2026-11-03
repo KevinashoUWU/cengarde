@@ -86,7 +86,7 @@ T = {
  "tunnel": ([G], BOTH, "`native`", "`native` (`wireguard` es un error desde 0.12)", [TUNR, TCPF], ["014", "027"], "Qué lleva el túnel: paquetes IP de una TUN propia (autenticados, sin cifrar), el único modo desde 0.12."),
  "tun": ([G], BOTH, "`cg0`", "nombre de interfaz", [TUNR], ["014"], "Nombre de la TUN del túnel."),
  "tun_addr": ([G], BOTH, "ninguna (las pone el sistema)", "hasta 4 prefijos", [TUNR], ["014"], "Direcciones que cengarde pone en la TUN."),
- "tun_mtu": ([G], BOTH, "1420", "576–2024", [TUNR], ["014"], "MTU de la TUN."),
+ "tun_mtu": ([G], BOTH, "1420", "576–1995", [TUNR], ["014"], "MTU de la TUN."),
  "tun_txqueuelen": ([G], BOTH, "0 (el del kernel, 500)", "0–100000 paquetes", [TUNR], ["audit"], "Cola de transmisión de la TUN."),
  "tun_route": ([G, K], SRVS, "un cliente sin ella: `0.0.0.0/0` y `::/0`", "hasta los prefijos de `CG_TUN_ROUTES`", [TUNR], ["014"], "Prefijos de cada cliente en la TUN del servidor; también comprueba el origen de lo que manda (como AllowedIPs)."),
  # --- health ---

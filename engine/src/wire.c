@@ -102,7 +102,7 @@ int cg_wire_peek(struct cg_wire *w, const uint8_t *buf, size_t len)
 	if (w->kind > CG_WIRE_KIND_EPOCH)
 		return -1;
 	w->hlen = w->kind == CG_WIRE_KIND_EPOCH ? CG_WIRE_HDR + CG_WIRE_EXT : CG_WIRE_HDR;
-	if (len < w->hlen + CG_WIRE_INNER + CG_WIRE_TAG)
+	if (len < w->hlen + CG_WIRE_INNER + CG_WIRE_TAG) /* CG_WIRE_MIN, or kind 1's */
 		return -1;
 	w->hint = buf[CG_WIRE_HINT_OFF];
 	w->link = buf[CG_WIRE_LINK_OFF];

@@ -14,9 +14,12 @@
  * same functions and the same headers (proto.h, clients.h, idmap.h,
  * cookie.h):
  *
- *   1. the header: cg_hdr_parse, cg_hdr_verify and cg_hdr_write (SipHash-2-4
- *      over the header and the payload) for DATA with 1400 payload bytes and
- *      for a probe with 40;
+ *   1. the header: cg_hdr_parse, and protocol 21's MAC (SipHash-2-4 over
+ *      the header and the payload, kept here for comparison: p21_verify,
+ *      p21_write) for DATA with 1400 payload bytes and for a probe with 40;
+ *      then the 1.0 format's AEAD and its seal and open (wire.h, story
+ *      032): the cost of a packet sent, of one opened, and of a copy that
+ *      came second (its tag and inner header only);
  *   2. the lookup of an existing session: the clients of the packet's hint
  *      (cg_hintidx), the idmap get under cg_sesskey, and the check that the
  *      session found is that client's and has that id; for 1 client with 1
@@ -31,7 +34,7 @@
  *   5. cg_cookie_make and cg_cookie_ok, over IPv4 and IPv6 (the cookie of the
  *      current epoch, and of the previous one, which costs a second hash);
  *   6. what the one-client server did before: cg_idmap_get plus
- *      cg_hdr_verify, next to the lookup plus cg_hdr_verify of this one.
+ *      p21_verify, next to the lookup plus p21_verify of this one.
  *
  * Read the figures knowing that: the loops run back to back on hot caches (a
  * packet in the middle of a recvmmsg batch, not the first after a syscall);
@@ -59,6 +62,51 @@
 #include "idmap.h"
 #include "aead.h"
 #include "proto.h"
+#include "siphash.h"
+#include "wire.h"
+
+/* Protocol 21's MAC (SipHash-2-4 over the header without its link, the
+ * payload, then the link and the sseq), which the 1.0 format replaced: kept
+ * here only to compare (sections 1, 2, 4 and 6 still measure it). */
+static uint64_t p21_mac(const uint8_t *hdr, const uint8_t key[CG_SIPHASH_KEY_LEN], const void *payload, size_t plen)
+{
+	struct cg_siphash s;
+	uint8_t canon[CG_MAC_OFF];
+	uint8_t tail[5] = { hdr[CG_LINK_OFF], hdr[CG_SSEQ_OFF], hdr[CG_SSEQ_OFF + 1], hdr[CG_SSEQ_OFF + 2],
+			    hdr[CG_SSEQ_OFF + 3] };
+
+	memcpy(canon, hdr, CG_MAC_OFF);
+	canon[CG_LINK_OFF] = 0;
+	cg_siphash_init(&s, key);
+	cg_siphash_update(&s, canon, sizeof(canon));
+	cg_siphash_update(&s, payload, plen);
+	cg_siphash_update(&s, tail, sizeof(tail));
+	return cg_siphash_final(&s);
+}
+
+static __attribute__((noinline)) void p21_write(uint8_t *out, const struct cg_hdr *h,
+						const uint8_t key[CG_SIPHASH_KEY_LEN], const void *payload, size_t plen)
+{
+	uint64_t m;
+
+	cg_hdr_put(out, h);
+	m = p21_mac(out, key, payload, plen);
+	for (int i = 0; i < 8; i++)
+		out[CG_MAC_OFF + i] = (uint8_t)(m >> (8 * i));
+}
+
+static __attribute__((noinline)) int p21_verify(const uint8_t *buf, size_t len, const uint8_t key[CG_SIPHASH_KEY_LEN])
+{
+	uint64_t m;
+	uint8_t d = 0;
+
+	if (len < CG_HDR_LEN)
+		return 0;
+	m = p21_mac(buf, key, buf + CG_HDR_LEN, len - CG_HDR_LEN);
+	for (int i = 0; i < 8; i++)
+		d |= (uint8_t)(buf[CG_MAC_OFF + i] ^ (uint8_t)(m >> (8 * i)));
+	return d == 0;
+}
 
 #define PICKS 2048 /* a power of two */
 #define NAME_W 60
@@ -243,9 +291,9 @@ static uint64_t op_verify(const void *p, uint64_t iters)
 	uint64_t acc = 0;
 
 	/* the same packet each turn: since protocol 16 the link byte is under
-	 * the MAC too, so nothing may change (cg_hdr_verify is not inlined) */
+	 * the MAC too, so nothing may change (p21_verify is not inlined) */
 	for (uint64_t i = 0; i < iters; i++)
-		acc += (uint64_t)cg_hdr_verify(x->buf, x->len, x->key);
+		acc += (uint64_t)p21_verify(x->buf, x->len, x->key);
 	return acc;
 }
 
@@ -257,7 +305,7 @@ static uint64_t op_write(const void *p, uint64_t iters)
 
 	for (uint64_t i = 0; i < iters; i++) {
 		h.seq = (uint32_t)i;
-		cg_hdr_write(x->buf, &h, x->key, x->buf + CG_HDR_LEN, x->len - CG_HDR_LEN);
+		p21_write(x->buf, &h, x->key, x->buf + CG_HDR_LEN, x->len - CG_HDR_LEN);
 		acc += x->buf[CG_MAC_OFF];
 	}
 	return acc;
@@ -272,6 +320,57 @@ struct ectx {
 	uint8_t key[CG_AEAD_KEY_LEN];
 	uint8_t tag[CG_AEAD_TAG_LEN];
 };
+
+/* The 1.0 format (wire.h): a packet of plen payload bytes sealed, opened
+ * whole, and the copy that came second (its tag and inner header only). */
+struct wctx {
+	uint8_t mem[CG_HDR_LEN + 1400];
+	uint8_t wire[CG_HDR_LEN + 1400 + CG_WIRE_EXTRA_MAX];
+	uint8_t scratch[CG_HDR_LEN + 1400 + CG_WIRE_EXTRA_MAX];
+	size_t plen, wlen;
+	struct cg_seal seal;
+};
+
+static uint64_t op_wseal(const void *p, uint64_t iters)
+{
+	struct wctx *x = (struct wctx *)p;
+	uint64_t acc = 0;
+
+	for (uint64_t i = 0; i < iters; i++)
+		acc += cg_wire_seal(x->wire, x->mem, x->mem + CG_HDR_LEN, x->plen, &x->seal, 0) + x->wire[7];
+	return acc;
+}
+
+static uint64_t op_whead(const void *p, uint64_t iters)
+{
+	const struct wctx *x = p;
+	struct cg_wire w;
+	struct cg_hdr h;
+	uint64_t acc = 0;
+
+	for (uint64_t i = 0; i < iters; i++)
+		acc += (uint64_t)(cg_wire_peek(&w, x->wire, x->wlen) == 0 &&
+				  cg_wire_open_head(&h, x->wire, x->wlen, &w, x->seal.key, x->seal.dir,
+						    cg_wire_ctr(&w, x->seal.ctr)) == 0);
+	return acc;
+}
+
+static uint64_t op_wopen(const void *p, uint64_t iters)
+{
+	struct wctx *x = (struct wctx *)p;
+	struct cg_wire w;
+	struct cg_hdr h;
+	uint64_t acc = 0, ctr;
+
+	for (uint64_t i = 0; i < iters; i++) {
+		memcpy(x->scratch, x->wire, x->wlen); /* opened in place: a fresh copy each turn */
+		cg_wire_peek(&w, x->scratch, x->wlen);
+		ctr = cg_wire_ctr(&w, x->seal.ctr);
+		acc += (uint64_t)(cg_wire_open_head(&h, x->scratch, x->wlen, &w, x->seal.key, x->seal.dir, ctr) == 0 &&
+				  cg_wire_open_body(x->scratch, x->wlen, &h, &w, x->seal.key, x->seal.dir, ctr) > 0);
+	}
+	return acc;
+}
 
 static uint64_t op_seal(const void *p, uint64_t iters)
 {
@@ -361,7 +460,7 @@ static uint64_t op_lookup_verify(const void *p, uint64_t iters)
 
 		if (lookup(x->w, k->hint, k->id, &c) < 0)
 			continue;
-		acc += (uint64_t)cg_hdr_verify(x->buf, x->len, x->w->key[c]);
+		acc += (uint64_t)p21_verify(x->buf, x->len, x->w->key[c]);
 	}
 	return acc;
 }
@@ -384,7 +483,7 @@ static uint64_t op_old_verify(const void *p, uint64_t iters)
 	for (uint64_t i = 0; i < iters; i++) {
 		if (cg_idmap_get(&x->map, x->id) < 0)
 			continue;
-		acc += (uint64_t)cg_hdr_verify(x->buf, x->len, x->key);
+		acc += (uint64_t)p21_verify(x->buf, x->len, x->key);
 	}
 	return acc;
 }
@@ -405,7 +504,7 @@ static uint64_t op_admit(const void *p, uint64_t iters)
 
 	for (uint64_t i = 0; i < iters; i++) {
 		for (int c = x->hx.first[x->buf[CG_HINT_OFF]]; c >= 0; c = x->hx.next[c]) {
-			if (cg_hdr_verify(x->buf, x->len, x->key[c])) {
+			if (p21_verify(x->buf, x->len, x->key[c])) {
 				acc++;
 				break;
 			}
@@ -552,7 +651,7 @@ static void fill_packet(uint8_t *buf, size_t plen, uint8_t type, uint8_t hint, c
 	struct cg_hdr h = { .type = type, .hint = hint, .link = 1, .session = (uint32_t)rnd(), .seq = 7, .ts = 99 };
 
 	rnd_bytes(buf + CG_HDR_LEN, plen);
-	cg_hdr_write(buf, &h, key, buf + CG_HDR_LEN, plen);
+	p21_write(buf, &h, key, buf + CG_HDR_LEN, plen);
 }
 
 #define DATA_LEN 1400
@@ -666,7 +765,7 @@ int main(int argc, char **argv)
 				      "unknown session under a known hint");
 			}
 		}
-		check(cg_hdr_verify(data, sizeof(data), key) && cg_hdr_verify(probe, sizeof(probe), key), "own MAC verifies");
+		check(p21_verify(data, sizeof(data), key) && p21_verify(probe, sizeof(probe), key), "own MAC verifies");
 		check(op_verify(&vdata, 100) == 100 && op_verify(&vprobe, 100) == 100, "verify keeps succeeding");
 		fill_packet(own, DATA_LEN, CG_T_DATA, W[0].hint[0], W[0].key[0]);
 		check(op_lookup_verify(&lc, 100) == 100, "lookup + verify succeeds under the client's key");
@@ -699,12 +798,12 @@ int main(int argc, char **argv)
 		       pl(W[i].nclients), W[i].nper, pl(W[i].nper), W[i].longest);
 	printf("\n\n%-*s %9s %9s %7s\n", NAME_W, "operation", "ns/op", "min", "spread");
 
-	section("1. header (proto.h)");
+	section("1. header (proto.h), and protocol 21's MAC (SipHash) for comparison");
 	bench("cg_hdr_parse, DATA", op_parse, &vdata);
-	bench("cg_hdr_verify, DATA 1400 B", op_verify, &vdata);
-	bench("cg_hdr_verify, probe 40 B", op_verify, &vprobe);
-	bench("cg_hdr_write, DATA 1400 B", op_write, &vdata);
-	bench("cg_hdr_write, probe 40 B", op_write, &vprobe);
+	bench("p21_verify, DATA 1400 B", op_verify, &vdata);
+	bench("p21_verify, probe 40 B", op_verify, &vprobe);
+	bench("p21_write, DATA 1400 B", op_write, &vdata);
+	bench("p21_write, probe 40 B", op_write, &vprobe);
 
 	{
 		static uint8_t ebuf[2][DATA_LEN];
@@ -722,6 +821,30 @@ int main(int argc, char **argv)
 		bench("cg_aead_seal, probe 40 B", op_seal, &e[1]);
 		bench("cg_chacha20 alone, 1424 B", op_chacha, &e[0]);
 		bench("cg_poly1305 alone, 1424 B", op_poly, &e[0]);
+	}
+	{
+		static struct wctx wx[2];
+		static const uint8_t ep[CG_EPOCH_LEN] = { 1 };
+		uint8_t secret[CG_KEY_LEN];
+
+		rnd_bytes(secret, sizeof(secret));
+		for (int i = 0; i < 2; i++) {
+			struct cg_hdr h = { .type = i ? CG_T_PROBE : CG_T_DATA, .hint = 0x5a, .session = 0x12345678u };
+
+			wx[i].plen = i ? PROBE_LEN : DATA_LEN;
+			rnd_bytes(wx[i].mem + CG_HDR_LEN, wx[i].plen);
+			cg_hdr_put(wx[i].mem, &h);
+			cg_seal_init(&wx[i].seal, secret, CG_DIR_C2S, h.session, ep);
+			wx[i].wlen = cg_wire_seal(wx[i].wire, wx[i].mem, wx[i].mem + CG_HDR_LEN, wx[i].plen, &wx[i].seal, 0);
+			wx[i].seal.ctr = 0; /* the counter op_whead and op_wopen widen against */
+			check(op_wopen(&wx[i], 1) == 1 && op_whead(&wx[i], 1) == 1, "the 1.0 format opens what it sealed");
+		}
+		section("1c. the 1.0 format (wire.h, story 032): seal, open, a second copy");
+		bench("cg_wire_seal, DATA 1400 B", op_wseal, &wx[0]);
+		bench("open: tag + inner + body, DATA 1400 B", op_wopen, &wx[0]);
+		bench("a second copy: tag + inner, DATA 1400 B", op_whead, &wx[0]);
+		bench("cg_wire_seal, probe 52 B", op_wseal, &wx[1]);
+		bench("open, probe 52 B", op_wopen, &wx[1]);
 	}
 
 	section("2. lookup of an existing session (hint chain + idmap + owner)");

@@ -8,7 +8,7 @@
 
 void test_proto(void)
 {
-	uint8_t key_a[16], key_b[16], pkt[CG_HDR_LEN + 64], payload[64];
+	uint8_t pkt[CG_HDR_LEN + 64], payload[64];
 	struct cg_hdr h = { .type = CG_T_DATA, .flags = 0, .hint = 0x5a, .link = 5, .session = 0xdeadbeef,
 			    .seq = 0x01020304, .ts = 0xa0b0c0d0 },
 		      p;
@@ -18,10 +18,6 @@ void test_proto(void)
 	struct cg_hello hl = { 0x01020304, 0xcafef00d }, ho;
 	uint8_t pib[CG_PROBE_INFO_LEN + 8], hb[CG_HELLO_LEN];
 
-	for (int i = 0; i < 16; i++) {
-		key_a[i] = (uint8_t)i;
-		key_b[i] = (uint8_t)(i + 100);
-	}
 	for (int i = 0; i < 64; i++)
 		payload[i] = (uint8_t)(i * 3);
 
@@ -37,7 +33,7 @@ void test_proto(void)
 	CHECK_EQ(cg_prev_flags(16), 0);
 	CHECK_EQ(cg_prev_link(CG_F_SPLIT | 0x03), -1);
 
-	cg_hdr_write(pkt, &h, key_a, payload, sizeof(payload));
+	cg_hdr_put(pkt, &h);
 	memcpy(pkt + CG_HDR_LEN, payload, sizeof(payload));
 
 	/* Layout: version/type, the client hint at byte 2, link at byte 3,
@@ -54,79 +50,27 @@ void test_proto(void)
 	CHECK_EQ(p.session, 0xdeadbeef);
 	CHECK_EQ(p.seq, 0x01020304);
 	CHECK_EQ(p.ts, 0xa0b0c0d0);
-	CHECK(cg_hdr_verify(pkt, sizeof(pkt), key_a));
 
-	/* The other direction's key does not verify. */
-	CHECK(!cg_hdr_verify(pkt, sizeof(pkt), key_b));
-
-	/* The link id and the link's own sequence are authenticated too (16):
-	 * patching either breaks the MAC... */
-	cg_hdr_set_link(pkt, 9);
-	CHECK(!cg_hdr_verify(pkt, sizeof(pkt), key_a));
-	cg_hdr_set_link(pkt, 5);
-	CHECK(cg_hdr_verify(pkt, sizeof(pkt), key_a));
+	/* The MAC field is zeroed in memory (wire.h seals the packet) and the
+	 * link's own sequence is at CG_SSEQ_OFF. */
+	CHECK(!memcmp(pkt + CG_MAC_OFF, "\0\0\0\0\0\0\0\0", 8));
 	cg_hdr_set_sseq(pkt, 0x11223344);
-	CHECK(!cg_hdr_verify(pkt, sizeof(pkt), key_a));
-	/* ...and a copy for another link only finishes the MAC from its base,
-	 * which gives what a whole MAC of it gives */
-	{
-		struct cg_siphash base;
-		uint8_t whole[sizeof(pkt)];
-
-		cg_hdr_write_base(pkt, &h, key_a, pkt + CG_HDR_LEN, sizeof(pkt) - CG_HDR_LEN, &base);
-		CHECK(cg_hdr_verify(pkt, sizeof(pkt), key_a));
-		cg_hdr_set_link(pkt, 9);
-		cg_hdr_set_sseq(pkt, 0x11223344);
-		cg_hdr_mac_finish(&base, pkt);
-		CHECK(cg_hdr_verify(pkt, sizeof(pkt), key_a));
-		CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), 0);
-		CHECK_EQ(p.link, 9);
-		CHECK_EQ(p.sseq, 0x11223344);
-		memcpy(whole, pkt, sizeof(pkt));
-		memset(whole + CG_MAC_OFF, 0, 8);
-		cg_hdr_reseal(whole, key_a, whole + CG_HDR_LEN, sizeof(whole) - CG_HDR_LEN);
-		CHECK(!memcmp(whole, pkt, sizeof(pkt)));
-	}
-
-	/* Every header byte (the MAC's own aside) and every payload byte is
-	 * authenticated. */
-	for (size_t i = 0; i < sizeof(pkt); i++) {
-		pkt[i] ^= 0x11;
-		CHECK(!cg_hdr_verify(pkt, sizeof(pkt), key_a));
-		pkt[i] ^= 0x11;
-	}
-	/* Truncation is detected. */
-	CHECK(!cg_hdr_verify(pkt, sizeof(pkt) - 1, key_a));
+	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), 0);
+	CHECK_EQ(p.sseq, 0x11223344);
+	cg_hdr_set_link(pkt, 9);
+	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), 0);
+	CHECK_EQ(p.link, 9);
+	cg_hdr_set_link(pkt, 5);
 
 	/* Malformed headers. */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, CG_HDR_LEN), -1); /* DATA without payload */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, CG_HDR_LEN - 1), -1);
-	pkt[0] = 0x01; /* nibble 0: never a version (WireGuard's first bytes) */
-	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
-	/* (version 2's nibble is 17's now: the versions go round) */
-	/* (version 3's nibble is 18's now, 4's 19's, 5's 20's and 6's 21's) */
-	pkt[0] = 0x71; /* version 7 (no repairs) too */
-	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
-	pkt[0] = 0x81; /* version 8 (no parity asked for again) too */
-	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
-	pkt[0] = 0x91; /* version 9 (no protocontroller streams) too */
-	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
-	pkt[0] = 0xa1; /* version 10 (no wide windows, FEC v3) too */
-	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
-	pkt[0] = 0xb1; /* version 11 (no subflow sequence) too */
-	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
-	pkt[0] = 0xc1; /* version 12 (no STREAM class) too */
-	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
-	pkt[0] = 0xd1; /* version 13 (stream messages with their own tag) too */
-	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
-	pkt[0] = 0xe1; /* version 14 (a stream DATA with its own clock) too */
-	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
-	pkt[0] = 0xf1; /* version 15 (link and sseq outside the MAC) too */
-	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
-	pkt[0] = 0x11; /* version 16 (no FEC over the STREAMs) too */
-	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
-	pkt[0] = 0x21; /* version 17 (no datagram streams) too */
-	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
+	/* any other nibble: another version (0 never is one: WireGuard's
+	 * first bytes) */
+	for (unsigned v = 0; v < 16; v++) {
+		pkt[0] = (uint8_t)(v << 4 | 1);
+		CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), v == CG_PROTO_WIRE ? 0 : -1);
+	}
 	pkt[0] = (uint8_t)(CG_PROTO_WIRE << 4 | 0xb); /* a STREAM (13): a protocontroller message, its own class */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), 0);
 	CHECK_EQ(p.type, CG_T_STREAM);
@@ -168,31 +112,20 @@ void test_proto(void)
 	CHECK_EQ(p.hint, 0xff);
 	pkt[2] = 0x5a;
 
-	/* The hint is authenticated, unlike the link id. */
-	CHECK(cg_hdr_verify(pkt, sizeof(pkt), key_a));
-	pkt[CG_HINT_OFF] ^= 1;
-	CHECK(!cg_hdr_verify(pkt, sizeof(pkt), key_a));
-	pkt[CG_HINT_OFF] ^= 1;
-
 	/* Probes carry at least one cg_probe_info, and a longer payload parses
-	 * (its tail is for later fields); flags are authenticated. */
+	 * (its tail is for later fields). */
 	h.type = CG_T_PROBE;
 	h.flags = CG_F_OWD | CG_F_MUTED;
 	memset(pib, 0xee, sizeof(pib));
 	cg_probe_info_write(pib, &pi);
-	cg_hdr_write(pkt, &h, key_a, pib, CG_PROBE_INFO_LEN);
+	cg_hdr_put(pkt, &h);
 	memcpy(pkt + CG_HDR_LEN, pib, sizeof(pib));
 	CHECK_EQ(cg_hdr_parse(&p, pkt, CG_HDR_LEN + CG_PROBE_INFO_LEN), 0);
 	CHECK_EQ(cg_hdr_parse(&p, pkt, CG_HDR_LEN + CG_PROBE_INFO_LEN + 8), 0);
 	CHECK_EQ(cg_hdr_parse(&p, pkt, CG_HDR_LEN + CG_PROBE_INFO_LEN - 1), -1);
 	CHECK_EQ(cg_hdr_parse(&p, pkt, CG_HDR_LEN + 24), -1); /* a version 3 probe */
-	CHECK(cg_hdr_verify(pkt, CG_HDR_LEN + CG_PROBE_INFO_LEN, key_a));
-	CHECK(!cg_hdr_verify(pkt, CG_HDR_LEN + CG_PROBE_INFO_LEN + 8, key_a)); /* the tail is under the MAC */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, CG_HDR_LEN + CG_PROBE_INFO_LEN), 0);
 	CHECK_EQ(p.flags, CG_F_OWD | CG_F_MUTED);
-	pkt[1] ^= CG_F_MUTED;
-	CHECK(!cg_hdr_verify(pkt, CG_HDR_LEN + CG_PROBE_INFO_LEN, key_a));
-	pkt[1] ^= CG_F_MUTED;
 	cg_probe_info_read(&po, pkt + CG_HDR_LEN);
 	CHECK(po.echo_ts == 1 && po.owd == 0x80000001 && po.interval_ms == 100 && po.rx == 2 && po.wins == 3 &&
 	      po.lag_us == 0xfffffffe && po.cookie == 0xc00c1e && po.rx_top == 0x11223344 &&
@@ -206,13 +139,12 @@ void test_proto(void)
 	h.flags = CG_F_REFUSED;
 	h.seq = 0;
 	cg_hello_write(hb, &hl);
-	cg_hdr_write(pkt, &h, key_a, hb, sizeof(hb));
+	cg_hdr_put(pkt, &h);
 	memcpy(pkt + CG_HDR_LEN, hb, sizeof(hb));
 	CHECK_EQ(cg_hdr_parse(&p, pkt, CG_HDR_LEN + CG_HELLO_LEN), 0);
 	CHECK_EQ(p.type, CG_T_HELLO);
 	CHECK_EQ(p.flags, CG_F_REFUSED);
 	CHECK_EQ(cg_hdr_parse(&p, pkt, CG_HDR_LEN + CG_HELLO_LEN - 1), -1);
-	CHECK(cg_hdr_verify(pkt, CG_HDR_LEN + CG_HELLO_LEN, key_a));
 	cg_hello_read(&ho, pkt + CG_HDR_LEN);
 	CHECK(ho.echo_ts == 0x01020304 && ho.cookie == 0xcafef00d);
 
@@ -232,11 +164,8 @@ void test_proto(void)
 	CHECK_EQ(cg_pass_get(CG_F_OWD | cg_pass_flags(1)), 1);
 	CHECK_EQ(cg_pass_flags(1) & (CG_F_OWD | CG_F_MUTED), 0);
 	h.flags = (uint8_t)(CG_F_OWD | cg_pass_flags(1));
-	cg_hdr_write(pkt, &h, key_a, pib, CG_PROBE_INFO_LEN);
+	cg_hdr_put(pkt, &h);
 	memcpy(pkt + CG_HDR_LEN, pib, CG_PROBE_INFO_LEN);
-	CHECK(cg_hdr_verify(pkt, CG_HDR_LEN + CG_PROBE_INFO_LEN, key_a));
-	pkt[1] ^= CG_F_PASS; /* nobody on the way can turn it off */
-	CHECK(!cg_hdr_verify(pkt, CG_HDR_LEN + CG_PROBE_INFO_LEN, key_a));
 
 	/* The bonding tail (proto.h): 4 bytes after cg_probe_info, the same
 	 * version; a 40-byte peer has none, and what a reader does not know is
@@ -280,30 +209,26 @@ void test_proto(void)
 		CHECK_EQ(cg_probe_bond_read(&r, tp, CG_PROBE_INFO_LEN), 0);
 		CHECK(r.weight == 0 && !r.reorders && !r.split_me);
 		CHECK_EQ(cg_probe_bond_read(&r, tp, CG_PROBE_BOND_LEN - 1), 0);
-		/* A probe and a reply with it parse, and the MAC covers it. */
+		/* A probe and a reply with it parse. */
 		b = (struct cg_probe_bond){ .weight = 3, .reorders = 1 };
 		cg_probe_bond_write(tp, &b);
 		for (uint8_t t = CG_T_PROBE; t <= CG_T_PROBE_REPLY; t++) {
 			h.type = t;
-			cg_hdr_write(pkt, &h, key_a, tp, CG_PROBE_BOND_LEN);
+			cg_hdr_put(pkt, &h);
 			memcpy(pkt + CG_HDR_LEN, tp, CG_PROBE_BOND_LEN);
 			CHECK_EQ(cg_hdr_parse(&p, pkt, CG_HDR_LEN + CG_PROBE_BOND_LEN), 0);
-			CHECK(cg_hdr_verify(pkt, CG_HDR_LEN + CG_PROBE_BOND_LEN, key_a));
-			CHECK(!cg_hdr_verify(pkt, CG_HDR_LEN + CG_PROBE_INFO_LEN, key_a)); /* cut to 40: no */
-			pkt[CG_HDR_LEN + CG_PROBE_BOND_LEN - 3] ^= 0x11; /* CG_BOND_REORDERS on the way */
-			CHECK(!cg_hdr_verify(pkt, CG_HDR_LEN + CG_PROBE_BOND_LEN, key_a));
 		}
 		h.type = CG_T_PROBE;
 	}
 
-	/* Outer packet sizes: the tun_mtu that fills a 1500-byte path is 1444
-	 * over IPv4 and 1424 over IPv6 (12: 4 bytes of subflow sequence); the
-	 * default 1420 fits both. */
-	CHECK_EQ(cg_outer_len(AF_INET, 1444), 1500);
-	CHECK_EQ(cg_outer_len(AF_INET6, 1424), 1500);
-	CHECK_EQ(cg_outer_len(AF_INET6, 1420), 1496); /* CG_TUN_MTU_DEFAULT */
-	CHECK_EQ(1500 - cg_outer_len(AF_INET6, 0), 1424);
-	CHECK_EQ(cg_outer_len(AF_INET, 0), CG_HDR_LEN + 28);
+	/* Outer packet sizes: the tun_mtu that fills a 1500-byte path is 1431
+	 * over IPv4 and 1411 over IPv6 (22: the seal's 13 bytes); the default
+	 * 1420 fits IPv4. */
+	CHECK_EQ(cg_outer_len(AF_INET, 1431), 1500);
+	CHECK_EQ(cg_outer_len(AF_INET6, 1411), 1500);
+	CHECK_EQ(cg_outer_len(AF_INET, 1420), 1489); /* CG_TUN_MTU_DEFAULT */
+	CHECK_EQ(1500 - cg_outer_len(AF_INET6, 0), 1411);
+	CHECK_EQ(cg_outer_len(AF_INET, 0), CG_HDR_LEN + CG_WIRE_OVER + 28);
 
 	/* The rescue bit of a reply's bonding tail (version 5). */
 	{
@@ -396,10 +321,9 @@ void test_proto(void)
 		CHECK_EQ(used, n);
 		CHECK_EQ(nb[CG_HDR_LEN], 4); /* 0xffffffe0 + 64 more, 6 more, 5000 (+5064), 5065 */
 		CHECK_EQ(nl, 1 + 12 * 4);
-		cg_hdr_write(nb, &nh, key_a, nb + CG_HDR_LEN, nl);
+		cg_hdr_put(nb, &nh);
 		CHECK_EQ(cg_hdr_parse(&np, nb, CG_HDR_LEN + nl), 0);
 		CHECK(np.type == CG_T_NACK && np.flags == CG_F_RETRY);
-		CHECK(cg_hdr_verify(nb, CG_HDR_LEN + nl, key_a));
 		CHECK_EQ(cg_nack_read(got, CG_NACK_SEQ_MAX, nb + CG_HDR_LEN, nl), n);
 		CHECK(!memcmp(got, seq, n * sizeof(seq[0])));
 		CHECK_EQ(cg_nack_read(got, 10, nb + CG_HDR_LEN, nl), 10); /* at most max */
@@ -421,3 +345,4 @@ void test_proto(void)
 		CHECK_EQ(cg_hdr_parse(&np, nb, sizeof(nb)), -1);
 	}
 }
+

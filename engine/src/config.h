@@ -81,9 +81,9 @@ void cg_ini_free(struct cg_ini *ini);
 enum cg_mode { CG_MODE_CLIENT = 1, CG_MODE_SERVER = 2 };
 
 #define CG_TUN_ADDRS 4         /* tun_addr entries */
-#define CG_TUN_MTU_DEFAULT 1420 /* 1500 - IPv6 - UDP - the cengarde header, rounded down */
+#define CG_TUN_MTU_DEFAULT 1420 /* 1500 - IPv4 - UDP - the sealed cengarde header (1431), rounded down; over IPv6, 1411 */
 #define CG_TUN_MTU_MIN 576
-#define CG_TUN_MTU_MAX (2048 - CG_HDR_LEN) /* CG_MAX_PAYLOAD (engine.h) */
+#define CG_TUN_MTU_MAX (2048 - CG_HDR_LEN - 25) /* CG_MAX_PAYLOAD (engine.h) */
 
 /* How the client handles its link sockets (pump.h, thrplan.h): legacy is
  * the loop of 0.4 (the default until the per-link threads are measured on

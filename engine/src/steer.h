@@ -4,13 +4,13 @@
  * datagram to the socket whose index in the group it returns.
  *
  * The group is built once, in a fixed order: the lanes 0 to L - 1, then the
- * junk socket, index L. Lane l gets every datagram whose link id (byte 3)
- * is l modulo L, so the copies of one packet, one per client link, wait in
+ * junk socket, index L. Lane l gets every datagram whose link id (byte 2
+ * of the wire format, in the clear: wire.h) is l modulo L, so the copies of one packet, one per client link, wait in
  * different receive queues: a stall that overflows one queue rarely takes
  * every copy of a packet, and each path has its own send buffer for the
  * download, since the server answers path p on lane p & (L - 1). The junk
- * socket gets what is not cengarde protocol 4: datagrams shorter than a
- * header, and a wrong version nibble (a client of another protocol
+ * socket gets what is not this cengarde protocol: datagrams shorter than
+ * the shortest sealed packet (CG_WIRE_MIN), and a wrong version nibble (a client of another protocol
  * version). Nothing else ever reaches it, so a flood of garbage fills only
  * that socket's small buffer.
  *
@@ -19,7 +19,7 @@
  * index past the group would make the kernel fall back to its hash, which
  * is why junk has a socket of its own.
  *
- * Protocol 4 carries the client hint (byte 2), which could pick a group of
+ * The client hint (byte 1, in the clear) could pick a group of
  * lanes per router (one comparison per hint, design PR 3d2); for now one
  * group serves every client.
  *
@@ -32,6 +32,7 @@
 #include <stdint.h>
 
 #include "proto.h"
+#include "wire.h"
 
 #define CG_MAX_LANES 16
 /* lanes = auto: a router's links 0 to 7 each on a queue of their own (one
@@ -49,9 +50,9 @@ static inline int cg_lanes_valid(unsigned lanes)
  * of len bytes at p. The tests run the program against it. */
 static inline unsigned cg_steer_ref(const uint8_t *p, size_t len, unsigned lanes)
 {
-	if (len < CG_HDR_LEN || p[0] >> 4 != CG_PROTO_WIRE)
+	if (len < CG_WIRE_MIN || p[0] >> 4 != CG_PROTO_WIRE)
 		return lanes; /* junk */
-	return p[CG_LINK_OFF] & (lanes - 1);
+	return p[CG_WIRE_LINK_OFF] & (lanes - 1);
 }
 
 /* Writes the program into prog, which has room for max
@@ -64,11 +65,11 @@ static inline int cg_steer_prog(struct sock_filter *prog, int max, unsigned lane
 #define CG_STEER_TO(from, to) ((uint8_t)((to) - (from) - 1))
 	const struct sock_filter p[I_N] = {
 		[I_LEN] = BPF_STMT(BPF_LD | BPF_W | BPF_LEN, 0),
-		[I_JLEN] = BPF_JUMP(BPF_JMP | BPF_JGE | BPF_K, CG_HDR_LEN, 0, CG_STEER_TO(I_JLEN, I_JUNK)),
+		[I_JLEN] = BPF_JUMP(BPF_JMP | BPF_JGE | BPF_K, CG_WIRE_MIN, 0, CG_STEER_TO(I_JLEN, I_JUNK)),
 		[I_VER] = BPF_STMT(BPF_LD | BPF_B | BPF_ABS, 0),
 		[I_VMASK] = BPF_STMT(BPF_ALU | BPF_AND | BPF_K, 0xf0),
 		[I_JVER] = BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, CG_PROTO_WIRE << 4, 0, CG_STEER_TO(I_JVER, I_JUNK)),
-		[I_LINK] = BPF_STMT(BPF_LD | BPF_B | BPF_ABS, CG_LINK_OFF),
+		[I_LINK] = BPF_STMT(BPF_LD | BPF_B | BPF_ABS, CG_WIRE_LINK_OFF),
 		[I_LMASK] = BPF_STMT(BPF_ALU | BPF_AND | BPF_K, lanes - 1),
 		[I_LANE] = BPF_STMT(BPF_RET | BPF_A, 0),
 		[I_JUNK] = BPF_STMT(BPF_RET | BPF_K, lanes),
