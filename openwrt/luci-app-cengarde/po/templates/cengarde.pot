@@ -904,7 +904,7 @@ msgstr ""
 msgid "Download (from the VPS)"
 msgstr ""
 
-msgid "Arrived first"
+msgid "Delivered"
 msgstr ""
 
 msgid "Sent"
@@ -1045,7 +1045,7 @@ msgstr ""
 msgid "Upload and download are decided apart, by the end that sends: an uplink can be on standby one way and in use the other, as is usual when carriers are faster one way (upload through one, download through another). On standby it carries only probes until it catches up with the best, and at least the minimum of active uplinks (Advanced tab) always stays in use."
 msgstr ""
 
-msgid "Behind the fastest: how much later this uplink delivers the upload than the quickest one; past the limit its upload goes on standby. Arrived first: share of the download that came through this uplink before any other copy. Pause: takes an uplink out without touching the configuration, until you resume it or cengarde restarts."
+msgid "Behind the fastest: how much later this uplink delivers the upload than the quickest one; past the limit its upload goes on standby. Delivered: share of the download that came through this uplink, what GRIT carried included. Pause: takes an uplink out without touching the configuration, until you resume it or cengarde restarts."
 msgstr ""
 
 msgid "VPS address: where the uplink sends to; \"failover\" when the first VPS address it can use did not answer. Path MTU: the largest packet the path to the VPS takes."
