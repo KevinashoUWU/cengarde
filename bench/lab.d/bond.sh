@@ -409,6 +409,8 @@ BOND_SMALL_JSON=${BOND_SMALL_JSON:-0} # 1: the small flow's payload a sensor's J
 BOND_HOG=${BOND_HOG:-0} # cgb: a second LAN device (192.168.79.3) with this many TCP connections at once next to the measured one (story 031, the sends by host)
 BOND_HOG_UDP=${BOND_HOG_UDP:-} # cgb, with BOND_HOG 1: that device sends UDP at this rate instead (iperf3 -b, e.g. 40M), what the TUN carries
 BOND_HOG_DSCP=${BOND_HOG_DSCP:-} # cgb, with BOND_HOG: that device marks its traffic with this DSCP (iperf3 --dscp: 8 CS1, 1 LE, 46 EF; story 031, protocol 21)
+BOND_FLV=${BOND_FLV:-} # cgb: an FLV stream over TCP at this rate (e.g. 8M; RTMP-like: x264 CBR, a keyframe every 2 s) from the LAN host to the far host (down: back), next to the run; flvrx.py says how late its frames came
+BOND_TSREAL_LAN=${BOND_TSREAL_LAN:-0} # with BOND_TSREAL, up: the stream from the LAN host to the far host (so that BOND_UDP_GRIT takes it into GRIT)
 BOND_UDP_GRIT=${BOND_UDP_GRIT:-0} # cgb: the LAN's UDP into GRIT as unreliable datagrams (protocontroller_udp, protocol 20), by TPROXY on the port after BOND_PEP_PORT
 BOND_PEP_CGMIDCC=${BOND_PEP_CGMIDCC:-} # cga: protocontroller_mid_cc at both ends (empty: the engine's, bbr)
 BOND_PEP_KCP=${BOND_PEP_KCP:---mode fast --datashard 0 --parityshard 0 --nocomp --crypt none --mtu 1300}
@@ -1303,7 +1305,9 @@ bond_small_start() {
 # played past a hole. Needs ffmpeg with libx264; the pids go to BOND_BG.
 bond_tsreal_start() {
 	local tx rx rxa i
-	if [ "$1" = up ]; then
+	if [ "$1" = up ] && [ "$BOND_TSREAL_LAN" = 1 ]; then # the LAN host to the far host (into GRIT with BOND_UDP_GRIT)
+		tx=$NS_LAN rx=$NS_FAR rxa=172.30.1.2
+	elif [ "$1" = up ]; then
 		tx=$NS_CLI rx=$NS_SRV rxa=10.79.0.1
 	else
 		tx=$NS_SRV rx=$NS_CLI rxa=10.79.0.2
@@ -1337,6 +1341,29 @@ bond_tsreal_start() {
 	ip netns exec "$tx" ffmpeg -hide_banner -nostdin -loglevel error -re -f lavfi -i testsrc2=size=1280x720:rate=30 \
 		-t "$2" -c:v libx264 -preset veryfast -tune zerolatency -b:v 6M -maxrate 6M -bufsize 1M -g 30 \
 		-x264-params nal-hrd=cbr -f mpegts -muxrate 8M "udp://$rxa:7004?pkt_size=1316" 2>"$RUN/tsreal-tx.err" &
+	BOND_BG="$BOND_BG $!"
+}
+
+# bond_flv_start DIR SECS (BOND_FLV, story 031): an FLV stream over TCP, as
+# RTMP carries it (no handshake), from the LAN host to the far host's 1935
+# (down: the far host listens and sends, the LAN host connects), through the
+# protocontroller: ffmpeg -re encodes a test pattern in H.264 CBR at
+# BOND_FLV with a keyframe every 2 s (60 frames, a 1 s VBV, as OBS), and
+# flvrx.py says how late each frame came, keyframes apart; pids to BOND_BG.
+bond_flv_start() {
+	local enc=(-hide_banner -nostdin -loglevel error -re -f lavfi -i testsrc2=size=1280x720:rate=30 -t "$2"
+		-c:v libx264 -preset veryfast -b:v "$BOND_FLV" -maxrate "$BOND_FLV" -bufsize "$BOND_FLV" -g 60 -f flv)
+	rm -f "$RUN/flv.json" "$RUN/flv-tx.err"
+	if [ "$1" = up ]; then
+		ip netns exec "$NS_FAR" python3 -I "$LAB/flvrx.py" --listen 172.30.1.2:1935 --secs "$2" >"$RUN/flv.json" 2>"$RUN/flv-rx.err" &
+		BOND_BG="$BOND_BG $!"
+		sleep 0.3
+		ip netns exec "$NS_LAN" ffmpeg "${enc[@]}" tcp://172.30.1.2:1935 2>"$RUN/flv-tx.err" &
+	else
+		ip netns exec "$NS_FAR" ffmpeg "${enc[@]}" "tcp://172.30.1.2:1935?listen=1" 2>"$RUN/flv-tx.err" &
+		BOND_BG="$BOND_BG $!"
+		ip netns exec "$NS_LAN" python3 -I "$LAB/flvrx.py" --connect 172.30.1.2:1935 --secs "$2" >"$RUN/flv.json" 2>"$RUN/flv-rx.err" &
+	fi
 	BOND_BG="$BOND_BG $!"
 }
 
@@ -1391,6 +1418,10 @@ bond_run() {
 	if [ "${BOND_TSREAL:-0}" != 0 ]; then
 		bond_tsreal_start "$dir" "$s"
 		small+=(--tsreal "$RUN/tsreal-rx.err")
+	fi
+	if [ -n "$BOND_FLV" ]; then
+		bond_flv_start "$dir" "$s"
+		small+=(--flv "$RUN/flv.json")
 	fi
 	local pc0 ps0 pepargs=()
 	if [ -n "$BOND_PEP" ]; then

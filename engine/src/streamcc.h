@@ -75,6 +75,7 @@
 				  * waiting at the router for 5 rounds) */
 #define CG_SCC_HINT_MAX 3u        /* a rate sample past STARTUP is at most this many times the engine's hint */
 #define CG_SCC_BURST_US 2000u    /* the token bucket's depth, in time at the rate */
+#define CG_SCC_CREDIT_US 100000u /* the burst credit, at most this long at the rate (and cfg.burst bytes) */
 #define CG_SCC_MINRTT_US 10000000ull /* min_rtt's window */
 #define CG_SCC_WIN_MIN_US 1000000u   /* bw's bucket: at least this, else 8 round trips (shorter, the
 					 * estimate fell with the noise of a microcut's losses) */
@@ -97,6 +98,7 @@ enum { CG_SCC_STARTUP_M = 0, CG_SCC_DRAIN_M, CG_SCC_PROBE_M };
 struct cg_scc_cfg {
 	uint32_t queue_us; /* protocontroller_queue_ms: the queue the middle leg may build */
 	uint32_t mss;      /* the largest segment's bytes */
+	uint32_t burst;    /* protocontroller_burst_kb: the burst credit, bytes at most (0: none) */
 };
 
 struct cg_scc {
@@ -145,6 +147,12 @@ struct cg_scc {
 	uint8_t app;        /* the senders ran out of bytes with tokens and room left (protoctl.c sets it) */
 	int64_t tokens;
 	uint64_t tok_t;
+	/* the burst credit: what overflowed the full bucket while the senders
+	 * had less than the rate (applim) and the path showed no queue, spent
+	 * when they have more at once (a video's keyframe every 2 s): it left
+	 * at the rate before, up to 150 ms late in GRIT with idle links */
+	int64_t credit;
+	uint8_t applim; /* the senders ran out of bytes with tokens left (the caller says) */
 	/* heavy random loss (cg_scc_heavy): of the last window, more than 1
 	 * byte in 5 declared lost while the queue was short */
 	uint64_t lw_t, lw_lost, lw_dl;
@@ -686,6 +694,8 @@ static inline void cg_scc_lost(struct cg_scc *p, uint64_t bytes)
 	p->dl += bytes;
 	p->lw_lost += bytes;
 	p->r_lost += bytes;
+	if (bytes)
+		p->credit = 0; /* a loss: no bursts until the bucket overflows again */
 }
 
 /* The token bucket at now. */
@@ -697,15 +707,27 @@ static inline void cg_scc_refill(struct cg_scc *p, const struct cg_scc_cfg *c, u
 	if (dt > 1000000)
 		dt = 1000000;
 	p->tokens += (int64_t)cg_scc_mul(r, dt, 1000000);
-	if (p->tokens > cap)
+	if (p->tokens > cap) {
+		/* what the full bucket spills goes to the credit, while the
+		 * senders have less than the rate and nothing says queue */
+		int64_t over = p->tokens - cap, m = (int64_t)cg_scc_mul(r, CG_SCC_CREDIT_US, 1000000);
+
 		p->tokens = cap;
+		if (c->burst && p->applim && !p->cong && !p->qnow) {
+			if (m > (int64_t)c->burst)
+				m = c->burst;
+			p->credit = p->credit + over < m ? p->credit + over : m;
+		}
+	}
+	if (p->cong || p->qnow)
+		p->credit = 0;
 	p->tok_t = now;
 }
 
 /* Whether a segment may go now: tokens left and room in flight. */
 static inline int cg_scc_may(const struct cg_scc *p, const struct cg_scc_cfg *c, uint64_t reo_us)
 {
-	return p->tokens > 0 && p->inflight < cg_scc_cwnd(p, c, reo_us);
+	return (p->tokens > 0 || p->credit > 0) && p->inflight < cg_scc_cwnd(p, c, reo_us);
 }
 
 /* Whether a segment declared lost may go again now: tokens left (the
@@ -714,7 +736,7 @@ static inline int cg_scc_may(const struct cg_scc *p, const struct cg_scc_cfg *c,
  * second at a time after STARTUP's overflow) */
 static inline int cg_scc_may_repair(const struct cg_scc *p)
 {
-	return p->tokens > 0;
+	return p->tokens > 0 || p->credit > 0;
 }
 
 /* A segment of bytes went (the caller adds it to inflight). */
@@ -722,12 +744,18 @@ static inline void cg_scc_spend(struct cg_scc *p, uint32_t bytes)
 {
 	p->tokens -= bytes;
 	p->sent += bytes;
+	if (p->tokens < 0 && p->credit > 0) { /* past the bucket: the credit pays */
+		int64_t m = -p->tokens < p->credit ? -p->tokens : p->credit;
+
+		p->credit -= m;
+		p->tokens += m;
+	}
 }
 
 /* The us until the bucket has tokens again, 0: it has. */
 static inline uint64_t cg_scc_wait_us(const struct cg_scc *p)
 {
-	if (p->tokens > 0)
+	if (p->tokens > 0 || p->credit > 0)
 		return 0;
 	return cg_scc_mul((uint64_t)(-p->tokens) + 1, 1000000, cg_scc_rate(p)) + 1;
 }

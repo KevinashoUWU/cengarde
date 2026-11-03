@@ -6170,6 +6170,7 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 		pc.fair = cfg->protocontroller_fair;
 		pc.udp = cfg->protocontroller_udp; /* the LAN's other UDP, unreliable (protocol 20) */
 		pc.dscp = cfg->protocontroller_dscp; /* DiffServ (protocol 21) */
+		pc.burst_kb = cfg->protocontroller_burst_kb;
 		if (cfg->protocontroller == CG_PCTL_A && pctl_vps_addr(cfg, &pc.a_peer, err, sizeof(err)) < 0) {
 			cg_err("%s", err);
 			goto out;

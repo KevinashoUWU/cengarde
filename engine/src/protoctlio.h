@@ -52,6 +52,7 @@ struct cg_pctl_cfg {
 	int fair;            /* the sends shared by host before flow (fair.h): the router's LAN device, the VPS's router */
 	int udp;             /* the router: the LAN's other UDP as unreliable datagram streams (TPROXY on port + 1,
 			      * protocontroller_udp, protocol 20) */
+	uint32_t burst_kb;   /* protocontroller_burst_kb: the pacer's burst credit, at most (streamcc.h; 0: none) */
 	int dscp;            /* DiffServ (protocontroller_dscp, protocol 21, dscp.h): the LAN device's mark kept both
 			      * ways and its flow's tier in the sends */
 };

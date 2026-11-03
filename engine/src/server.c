@@ -5377,6 +5377,7 @@ int cg_server_run(struct cg_config *cfg, const struct cg_run *run)
 
 		pc.fair = cfg->protocontroller_fair;
 		pc.dscp = cfg->protocontroller_dscp; /* DiffServ (protocol 21) */
+		pc.burst_kb = cfg->protocontroller_burst_kb;
 		snprintf(pc.cc, sizeof(pc.cc), "%s", cfg->protocontroller_cc);
 		snprintf(pc.mid_cc, sizeof(pc.mid_cc), "%s", cfg->protocontroller_mid_cc);
 		/* variant A's routers connect to the first tunnel address, IPv4 first */

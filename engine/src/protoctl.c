@@ -2600,6 +2600,7 @@ void cg_pctl_service(struct cg_pctl *p)
 			r->xb = r->ab = 0;
 			r->xt = now;
 		}
+		r->cc.applim = r->app; /* the burst credit fills only while the senders had less (streamcc.h) */
 		cg_scc_refill(&r->cc, &p->ccf, now);
 	}
 	if (!p->cfg.dscp) {
@@ -2782,6 +2783,7 @@ struct cg_pctl *cg_pctl_new(const struct cg_pctl_cfg *cfg, int ep, const struct 
 		p->buf_cap = CG_ST_MAXWIN;
 	p->ccf.queue_us = cfg->queue_ms * 1000;
 	p->ccf.mss = cfg->mss;
+	p->ccf.burst = cfg->burst_kb * 1024;
 	p->reo_cap = cg_scc_reo_cap(cfg->reo_ms * 1000, cfg->code_ms * 1000);
 	/* a segment per mss of the buffer, and some for small writes */
 	p->nseg = (uint32_t)(p->buf_cap / (cfg->mss > 256 ? cfg->mss / 2 : 128)) + 64;
@@ -3107,6 +3109,7 @@ void cg_pctl_json(const struct cg_pctl *p, struct cg_json *j)
 		cg_json_u64(j, "hint_bps", c->hint * 8);
 		cg_json_bool(j, "hint_full", c->hint_full);
 		cg_json_u64(j, "datagrams_permille", c->xs); /* of what went, unreliable datagrams (protocol 20) */
+		cg_json_u64(j, "burst_credit", c->credit > 0 ? (uint64_t)c->credit : 0); /* bytes a burst may take at once */
 		cg_json_ms(j, "min_rtt_ms", c->min_rtt);
 		cg_json_ms(j, "srtt_ms", c->srtt);
 		cg_json_u64(j, "inflight", c->inflight);
