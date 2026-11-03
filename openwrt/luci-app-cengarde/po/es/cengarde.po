@@ -309,6 +309,12 @@ msgstr "QUIC permitido hacia"
 msgid "Addresses or prefixes whose QUIC passes anyway."
 msgstr "Direcciones o prefijos cuyo QUIC pasa igual."
 
+msgid "UDP into GRIT"
+msgstr "UDP dentro de GRIT"
+
+msgid "The LAN's other UDP (not to private addresses, not larger than the tunnel's MTU) travels inside GRIT as unreliable datagrams: never resent nor held in order, at most 300 ms late, and sent in turns by device like the TCP, so that one device's UDP (a stream, a game update, a VPN) cannot take every uplink from the rest. In the lab, with 30-60 Mbit/s of UDP from one device, another device's TCP went from 3-9 to 25 Mbit/s over four cellular-like uplinks (its ping p99 from 0.8-1 s to 0.2 s) and from 42 to 51 over faster ones, with the same total. Needs the protocontroller in GRIT mode on both ends."
+msgstr "El resto del UDP de la LAN (no a direcciones privadas, no más grande que el MTU del túnel) viaja dentro de GRIT como datagramas no fiables: nunca se reenvían ni se retienen en orden, a lo más 300 ms tarde, y salen por turnos por equipo como el TCP, para que el UDP de un equipo (una transmisión, una actualización de un juego, una VPN) no le quite todos los enlaces al resto. En el laboratorio, con 30–60 Mbit/s de UDP de un equipo, el TCP de otro pasó de 3–9 a 25 Mbit/s con cuatro enlaces tipo celular (su ping p99 de 0,8–1 s a 0,2 s) y de 42 a 51 con enlaces más rápidos, con el mismo total. Necesita el protocontrolador en modo GRIT en ambos extremos."
+
 msgid "TCP-aware tunnel"
 msgstr "Túnel consciente de TCP"
 
@@ -1064,9 +1070,3 @@ msgstr "Cada paquete sale por todos los enlaces activos y el otro extremo se que
 
 msgid "Settings"
 msgstr "Configuración"
-
-msgid "UDP into GRIT"
-msgstr "UDP dentro de GRIT"
-
-msgid "The LAN's other UDP (not to private addresses, not larger than the tunnel's MTU) travels inside GRIT as unreliable datagrams: never resent nor held in order, at most 300 ms late, and sent in turns by device like the TCP, so that one device's UDP (a stream, a game update, a VPN) cannot take every uplink from the rest. In the lab, with 30-60 Mbit/s of UDP from one device, another device's TCP went from 3-9 to 25 Mbit/s over four cellular-like uplinks (its ping p99 from 0.8-1 s to 0.2 s) and from 42 to 51 over faster ones, with the same total. Needs the protocontroller in GRIT mode on both ends."
-msgstr "El resto del UDP de la LAN (no a direcciones privadas, no más grande que el MTU del túnel) viaja dentro de GRIT como datagramas no fiables: nunca se reenvían ni se retienen en orden, a lo más 300 ms tarde, y salen por turnos por equipo como el TCP, para que el UDP de un equipo (una transmisión, una actualización de un juego, una VPN) no le quite todos los enlaces al resto. En el laboratorio, con 30–60 Mbit/s de UDP de un equipo, el TCP de otro pasó de 3–9 a 25 Mbit/s con cuatro enlaces tipo celular (su ping p99 de 0,8–1 s a 0,2 s) y de 42 a 51 con enlaces más rápidos, con el mismo total. Necesita el protocontrolador en modo GRIT en ambos extremos."
