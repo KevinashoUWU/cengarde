@@ -22,7 +22,7 @@ archivos:
   - engine/src/engine.h
   - engine/src/main.c
   - engine/src/os.c
-sello: 69af0b65d61ca3ed
+sello: 243487685121fdf6
 ---
 # Utilidades
 
@@ -31,7 +31,7 @@ sello: 69af0b65d61ca3ed
 Cabeceras sin lógica de decisión ni medida propia. Una línea cada una.
 
 - `siphash.h` / `siphash.c`: SipHash-2-4, el MAC de cada datagrama y las cookies ([[Cookies y HELLO (cookie.h)]]).
-- `aead.h` / `aead.c`: ChaCha20-Poly1305 (RFC 8439), el AEAD del formato 1.0 ([[032-formato-1-0]]); C portable, 4 bloques a la vez con los vectores de GCC (NEON en ARM con sus rotaciones, SSE2 en x86), Poly1305 de 44 bits en x86-64 y de 26 en el resto. Aún sin usar en el plano de datos (paso 1).
+- `aead.h` / `aead.c`: ChaCha20-Poly1305 (RFC 8439), el AEAD del formato 1.0 ([[032-formato-1-0]]); C portable, 4 bloques a la vez con los vectores de GCC (NEON en ARM con sus rotaciones, SSE2 en x86), Poly1305 de 44 bits en x86-64 y de 26 en el resto. Lo usa el [[Formato de cable (wire.h)]] (protocolo 22): `cg_chacha20_at` (desde un byte cualquiera del flujo, para el cuerpo después de la cabecera interna), `cg_aead_tag` y `cg_aead_tag_eq`.
 - `blake2s.h` / `blake2s.c`: BLAKE2s; deriva todas las claves de un solo secreto (`pair.h`), fuera del plano de datos ([[008-luci-uci-y-emparejamiento]]).
 - `pair.h` / `pair.c`: emparejamiento con un solo secreto: la clave de cengarde y las direcciones del túnel (las claves de WireGuard salieron en 0.12; sus etiquetas no se reusan).
 - `util.h` / `util.c`: utilidades generales (listas, base64, direcciones, relojes).

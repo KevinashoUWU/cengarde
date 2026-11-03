@@ -10,7 +10,7 @@ sello: dcb3794b5f00a244
 **Grupo:** Recibir — [[Mapa del motor]]
 
 ## Qué hace
-Es la **deduplicación** de la redundancia y la defensa contra repeticiones: una ventana sobre las secuencias autenticadas, con el mismo diseño que el filtro de WireGuard (un anillo de bloques de 64 bits). El receptor llama a `cg_replay_check` **antes** del MAC (una secuencia ya marcada es duplicado y se tira sin pagar el MAC) y a `cg_replay_mark` **solo después** de verificarlo, así un paquete falso nunca marca una secuencia y tapa la copia buena. Cuenta además `lost`: secuencias que salieron de la ventana sin marcarse, es decir, perdidas por todos los enlaces.
+Es la **deduplicación** de la redundancia y la defensa contra repeticiones: una ventana sobre las secuencias autenticadas, con el mismo diseño que el filtro de WireGuard (un anillo de bloques de 64 bits). El receptor llama a `cg_replay_check` **antes** del MAC (una secuencia ya marcada es duplicado y se tira sin pagar el MAC; desde el protocolo 22, con el tag ya revisado pero sin descifrar el cuerpo, [[Formato de cable (wire.h)]]) y a `cg_replay_mark` **solo después** de verificarlo, así un paquete falso nunca marca una secuencia y tapa la copia buena. Cuenta además `lost`: secuencias que salieron de la ventana sin marcarse, es decir, perdidas por todos los enlaces.
 
 ## Lee
 - La secuencia de cada DATA y de cada mensaje de control (dos ventanas: DATA y control).

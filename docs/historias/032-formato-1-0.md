@@ -1,7 +1,7 @@
 # 032 — El formato 1.0: cifrado y frames
 
 - **Fecha:** 2026-11-03
-- **Estado:** diseño; paso 1 (las primitivas) hecho; paso 2 en curso
+- **Estado:** pasos 1 (las primitivas) y 2 (protocolo 22: todo paquete sellado en el borde) hechos; faltan los frames (3) y congelar (4)
 - **Fuentes:** historia 030 (protocolo 13, «Etapa A2: el encabezado de
   subflujo y los frames»; el 16, el enlace y la `sseq` bajo el MAC), 029
   (MPGRIT), 027 (el túnel nativo, «autenticado, no cifrado»); RFC 8439
@@ -185,9 +185,62 @@ frame (0,6 % a 1400), menos con los acuses que hoy viajan solos.
   desplazamientos que se leen antes de abrir (pista, sesión: el programa
   BPF de `lanes`); el MTU (13 bytes más por paquete).
 
+## Paso 2: hecho (protocolo 22, 2026-11-03)
+
+- `engine/src/wire.h` y `wire.c`: sellar (`cg_wire_seal`) y abrir en dos
+  pasos (`cg_wire_open_head`: el tag y la cabecera interna;
+  `cg_wire_open_body`: el cuerpo, y el paquete en memoria en el mismo
+  búfer). `proto.c` queda con el paquete en memoria (`cg_hdr_put`,
+  `cg_hdr_plen_ok`); la SipHash del protocolo 21 salió del motor (queda en
+  `bench/macbench.c` para comparar).
+- **Lo que cambió del diseño fino:**
+  - La clase 1 (sondas, sus respuestas y HELLO) lleva el contador
+    **entero** (la mitad alta, 4 bytes) además de la época: un servidor que
+    arma una sesión desde una sonda no sabe por dónde va el contador de un
+    cliente que lleva días andando.
+  - **Época del emisor, en los dos sentidos:** también el cliente pone la
+    suya en las sondas (al azar al arrancar), y la llave de subida sale de
+    ella. Así, dos arranques del cliente que eligieran la misma sesión (1 en
+    2^32) no repiten nonces.
+  - **Época del servidor por estado de sesión y por HELLO**, no por
+    arranque: una sesión que vence y se rearma en el mismo proceso empieza
+    su contador de 0 con otra llave. El HELLO no tiene estado de sesión:
+    lleva una época propia, con el contador en 0, y el cliente lo abre con
+    ella sin cambiar la llave de su bajada.
+  - Una llave nueva se adopta solo con un paquete que pasó el anti-replay
+    (`cg_unseal_accept`): una respuesta vieja repetida se abre con su época
+    vieja, pero su secuencia es vieja y no recupera la llave (prueba
+    `rx_epoch` de `test_client_rx.c`).
+  - Una copia con el tag roto ahora cuenta como falsa (`auth_fail`), no
+    como duplicado: el tag se revisa antes del anti-replay. Una copia buena
+    repetida paga el tag y la cabecera interna, no el cuerpo.
+- **Lo que tocó:** el envío del cliente (`wsend` para lo que sale solo,
+  `send_links` sella cada copia en su búfer) y del servidor (`send_path`,
+  `down_send`, las respuestas y el HELLO); la recepción de los dos
+  (`cg_rx_entry`, `listen_read`, `lookup`: la admisión prueba la llave de
+  subida de cada cliente de la pista con la época de la sonda); el programa
+  BPF de `lanes` (el enlace va en el byte 2 del cable, en claro); el MTU
+  (`cg_outer_len`: 1431 sobre IPv4 y 1411 sobre IPv6 en un camino de 1500;
+  `tun_mtu` máximo 1995; LuCI); `cgprobe` y `macbench`.
+- **Costo** (`bench/macbench.c`, sección 1c, i7-9700): sellar un DATA de
+  1400 B 1,9 µs; abrirlo entero 2,1 µs; una copia que llega segunda (tag y
+  cabecera interna) 0,87 µs, contra 0,51 µs de la SipHash del 21; sellar una
+  sonda 0,43 µs.
+- Pruebas: `test_wire` (ida y vuelta en los bordes de bloque, igual al AEAD
+  de la RFC sobre la cabecera interna y el cuerpo, cualquier bit cambiado,
+  el contador equivocado o el sentido equivocado se rechazan, la extensión
+  del contador a los dos lados de 2^32, las épocas), `test_client_rx`
+  (el orden de `cg_rx_entry` con paquetes sellados y el cambio de época),
+  `test_steer` (el byte del enlace en el cable).
+
 ## Pendiente
 
-- Todo lo de arriba.
+- El paso 2 en el laboratorio contra el 21 (el CPU de la Pi y del VPS a
+  plena carga) y en el terreno; medir sellar y abrir en la Pi 4 y en el
+  CPE (A53).
+- `bench/techomat.py`: la fase `grit` leía los registros dentro del túnel
+  en claro; con el cifrado necesita descifrar con la llave (`--key`).
+- Paso 3: los frames; paso 4: congelar.
 - Después de la 1.0: secreto hacia adelante (un intercambio Noise al iniciar
   la sesión), NEON y AVX2 para ChaCha20 si el costo lo pide.
 
@@ -195,3 +248,4 @@ frame (0,6 % a 1400), menos con los acuses que hoy viajan solos.
 
 - 2026-11-03: creada, con el diseño y el plan.
 - 2026-11-03: el paso 1, las primitivas, sus pruebas y su costo.
+- 2026-11-03: el paso 2 hecho (protocolo 22), con lo que cambió del diseño fino.
