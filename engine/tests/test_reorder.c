@@ -535,6 +535,49 @@ static void sc_by_link(const struct base *b)
 	}
 }
 
+/* flow_class reorder (noask): held in order like any packet, but the gap
+ * before it is never asked for, by RACK nor at its deadline: it goes at
+ * the deadline, as without the rescue (its own flow resends it). The same
+ * links as sc_rescue: seq 2 waits until 2 + 100 + 10 = 112 ms. */
+static void sc_noask(const struct base *b)
+{
+	struct cg_ro_pkt k;
+
+	rig(CG_RO_SLOTS, b, 400 * MS, 0, 10 * MS, 0, 0x3);
+	R.cf.rescue_us = 60 * MS;
+	owd(0, 10 * MS);
+	owd(1, 100 * MS);
+	CHECK_EQ(in(0, 0, 10 * MS, 0, SPLIT, DATA, BIG), CG_RO_NOW);
+	k = pkt(2, 2 * MS, 12 * MS, 0, SPLIT, DATA, BIG);
+	k.noask = 1;
+	CHECK_EQ(in_pkt(k, 12 * MS), CG_RO_HOLD);
+	k = pkt(3, 3 * MS, 103 * MS, 1, SPLIT, DATA, BIG);
+	k.noask = 1;
+	/* every link past the gap (RACK): not asked for, it goes at once, and
+	 * what waited behind it in order */
+	CHECK_EQ(in_pkt(k, 103 * MS), CG_RO_HOLD);
+	CHECK_EQ(R.r.nask, 0);
+	CHECK_EQ(R.r.st.asked, 0);
+	CHECK_EQ(R.r.st.lost_rack, 1);
+	CHECK_EQ(R.r.head, b->sb + 4);
+	CHECK_EQ(R.nout, 3);
+
+	/* only the slow link behind: held up to its deadline, then given up
+	 * there, never asked for */
+	rig(CG_RO_SLOTS, b, 400 * MS, 0, 10 * MS, 0, 0x3);
+	R.cf.rescue_us = 60 * MS;
+	owd(0, 10 * MS);
+	owd(1, 30 * MS);
+	CHECK_EQ(in(0, 0, 10 * MS, 0, SPLIT, DATA, BIG), CG_RO_NOW);
+	k = pkt(2, 2 * MS, 12 * MS, 0, SPLIT, DATA, BIG);
+	k.noask = 1;
+	CHECK_EQ(in_pkt(k, 12 * MS), CG_RO_HOLD);
+	CHECK_EQ(drain(41 * MS), 0);
+	CHECK_EQ(drain(43 * MS), 1); /* due at 2 + 30 + 10: given up, not asked */
+	CHECK_EQ(R.r.nask, 0);
+	CHECK(R.r.st.asked == 0 && R.r.st.lost_cap == 1);
+}
+
 /* Rescue: a gap about to be given up is asked for (r.ask) and waits for
  * it, never past its own deadline (story 030): asked by RACK, the rescue
  * has until then; asked at the deadline, it goes. Links 0 (10 ms) and 1
@@ -2497,6 +2540,7 @@ void test_reorder(void)
 		sc_note(b);
 		sc_by_link(b);
 		sc_rescue(b);
+		sc_noask(b);
 		sc_adapt(b);
 		sc_deadline(b);
 		sc_late(b);

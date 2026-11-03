@@ -161,6 +161,7 @@
  * were forced by it (story 013). */
 #define CG_RO_SLOTS 16384u
 #define CG_RO_WAITS 0x80       /* a HELD slot's link: cg_ro_pkt's waits (its link ids stay below CG_MAX_LINKS) */
+#define CG_RO_NOASK 0x40       /* a HELD slot's link: cg_ro_pkt's noask */
 #define CG_RO_ASK_MAX_US 500000u /* the most a gap asked for holds what waits behind it (the latency budget) */
 #define CG_RO_FAR (2u * CG_RO_SLOTS)    /* a packet this far ahead, while holding, passes through */
 #define CG_RO_WORDS (CG_RO_SLOTS / 64)  /* of the held bitmap */
@@ -215,6 +216,7 @@ struct cg_ro_pkt {
 	uint8_t flags;    /* verified header flags */
 	uint8_t nohold;   /* never held: flow_class direct (flowrule.h), its own ARQ and order */
 	uint8_t waits;    /* MPEG-TS over UDP (dgclass.h) or flow_class ordered: no reorder buffer of its own, worth a rescue (cg_ro_ask_left) */
+	uint8_t noask;    /* flow_class reorder: held in order up to its deadline, the gaps before it never asked for (its own ARQ) */
 	uint8_t prev;     /* 1 + the link seq - 1 went on alone (CG_F_PREV), 0: not said */
 	uint8_t retx;     /* CG_F_FREE with TCP data: a TCP retransmission (tcpfree.h's cg_tcp_data) */
 	uint8_t rebuilt;  /* rebuilt by the receiver (a parity, an erasure code), not received */
@@ -1148,7 +1150,7 @@ static inline enum cg_ro_v cg_ro_in(struct cg_reorder *r, struct cg_ro_pool *p, 
 			}
 		}
 	}
-	if (cf->rescue_us)
+	if (cf->rescue_us && !k->noask)
 		cg_ro_pend_take(r, k->link, k->seq, k->t_arr);
 	s = &r->slot[k->seq % CG_RO_SLOTS];
 	cg_ro_answered(r, s, k->seq, k->rebuilt);
@@ -1173,7 +1175,7 @@ static inline enum cg_ro_v cg_ro_in(struct cg_reorder *r, struct cg_ro_pool *p, 
 	s->len = k->len;
 	s->buf = *buf;
 	s->state = CG_RO_HELD;
-	s->link = (uint8_t)(k->link | (k->waits ? CG_RO_WAITS : 0));
+	s->link = (uint8_t)(k->link | (k->waits ? CG_RO_WAITS : 0) | (k->noask ? CG_RO_NOASK : 0));
 	s->flags = k->flags;
 	s->gap_link = 0;
 	r->held_bits[(k->seq % CG_RO_SLOTS) / 64] |= 1ULL << (k->seq % 64);
@@ -1272,9 +1274,11 @@ static inline int cg_ro_next(struct cg_reorder *r, const struct cg_ro_cfg *cf, u
 			}
 		}
 		/* Rescue: a gap about to go is asked for once, and waits; not one
-		 * that nothing waits for (C 0) unless every link is past it. */
+		 * that nothing waits for (C 0) unless every link is past it, nor
+		 * one before a packet that takes no rescue (flow_class reorder:
+		 * the gap is most likely its own flow's, which resends it). */
 		if (cf->rescue_us && why != CG_RO_LOST_OVF &&
-		    !(s->seq == g && s->state == CG_RO_ASKED)) {
+		    !(s->seq == g && s->state == CG_RO_ASKED) && !(cg_ro_lowest_slot(r)->link & CG_RO_NOASK)) {
 			const struct cg_ro_slot *n = cg_ro_lowest_slot(r);
 			uint32_t asked = r->nask;
 

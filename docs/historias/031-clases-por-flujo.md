@@ -419,6 +419,31 @@ azar los paquetes del túnel en los dos sentidos (iptables `statistic`).
   manda ~1,6 MB, menos que una sola copia del JSON crudo; con telemetría muy
   pesada, bajar `split_small` deja el trabajo a los reenvíos de GRIT.
 
+## La clase `reorder`: orden sin rescate (2026-11-02)
+
+- **Para qué:** un flujo con ARQ propio que igual quiere llegar en orden
+  (QUIC que pasa en bonding, una VPN adentro). En terreno el orden subió
+  aioquic y quic-go 2–4×, y el rescate del túnel solo repite lo que su
+  emisor reenvía.
+- **Cómo:** `flow_class = … reorder`. Se retiene en orden como cualquier
+  paquete, pero el hueco que tiene delante nunca se pide: ni por RACK ni en
+  su plazo (`noask`, bit `CG_RO_NOASK` del enlace de su ranura; el hueco es
+  casi siempre de su mismo flujo). Con RACK el hueco se suelta en el acto;
+  si no, en su plazo.
+- **Laboratorio** (QUIC de aioquic, bonding, n = 2 × 4 casos × 2 sentidos;
+  `~/campo/2026-11-02/reorderclass`), en Mbit/s:
+
+  | Clase | `equal` | `het` | Pedidos de rescate (toda la tanda) |
+  | --- | --- | --- | --- |
+  | `deadline` (lo de hoy) | 22,7 | 26,2 | 9 240 (26 rescatados) |
+  | `reorder` | 23,6 | 27,9 | 4 303 (31) |
+  | `direct` | 10,3 | 12,1 | 1 475 |
+
+  `lossy` y `cell4` quedan en 1–2 Mbit/s con las tres clases. `reorder`
+  rinde igual o un poco mejor que `deadline` (dentro del ruido), con la
+  mitad de los pedidos; los que quedan son del resto del tráfico (pings, el
+  flujo chico). Para QUIC el rescate casi no sirve: 26 de 9 240 pedidos.
+
 ## QUIC por TCP (`quic`, 2026-11-02)
 
 - **La pregunta** (el usuario): ¿se puede hacer proxy de QUIC como el PEP de
