@@ -221,11 +221,19 @@ frame (0,6 % a 1400), menos con los acuses que hoy viajan solos.
   subida de cada cliente de la pista con la época de la sonda); el programa
   BPF de `lanes` (el enlace va en el byte 2 del cable, en claro); el MTU
   (`cg_outer_len`: 1431 sobre IPv4 y 1411 sobre IPv6 en un camino de 1500;
-  `tun_mtu` máximo 1995; LuCI); `cgprobe` y `macbench`.
+  `tun_mtu` máximo 1995; LuCI); `cgprobe` y `macbench`; `techomat` abre
+  el túnel con `--key` (la fase `grit` leía los registros en claro).
 - **Costo** (`bench/macbench.c`, sección 1c, i7-9700): sellar un DATA de
   1400 B 1,9 µs; abrirlo entero 2,1 µs; una copia que llega segunda (tag y
   cabecera interna) 0,87 µs, contra 0,51 µs de la SipHash del 21; sellar una
   sonda 0,43 µs.
+- **Laboratorio** (`labq`, remoto06, 3 repeticiones de 30 s, cubic, el
+  21 contra el 22, `ab-fmt1`): caudal 0,98–0,99× en `equal`, `het`,
+  `cell4` y `clean4`, en los dos sentidos (lo que pesan los 13 bytes, 0,9 %);
+  `lossy` 0,95× de subida y 0,98× de bajada, dentro del ruido (rangos
+  solapados); RTT p50 +0 a +1 ms; las retransmisiones iguales; CPU de cada
+  extremo 1,14–1,47× (de 5–7 % a 6–10 % en `equal` y `het`, de 15–17 % a
+  18–20 % en `cell4`).
 - Pruebas: `test_wire` (ida y vuelta en los bordes de bloque, igual al AEAD
   de la RFC sobre la cabecera interna y el cuerpo, cualquier bit cambiado,
   el contador equivocado o el sentido equivocado se rechazan, la extensión
@@ -235,11 +243,8 @@ frame (0,6 % a 1400), menos con los acuses que hoy viajan solos.
 
 ## Pendiente
 
-- El paso 2 en el laboratorio contra el 21 (el CPU de la Pi y del VPS a
-  plena carga) y en el terreno; medir sellar y abrir en la Pi 4 y en el
+- El paso 2 en el terreno, y el CPU de la Pi y del VPS a plena carga; medir sellar y abrir en la Pi 4 y en el
   CPE (A53).
-- `bench/techomat.py`: la fase `grit` leía los registros dentro del túnel
-  en claro; con el cifrado necesita descifrar con la llave (`--key`).
 - Paso 3: los frames; paso 4: congelar.
 - Después de la 1.0: secreto hacia adelante (un intercambio Noise al iniciar
   la sesión), NEON y AVX2 para ChaCha20 si el costo lo pide.
