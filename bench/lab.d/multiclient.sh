@@ -50,7 +50,10 @@ mc_conf() {
 		status_file = $RUN/$name.json
 		control_socket = $RUN/$name.sock
 		status_interval_ms = 100
+		protocontroller = no
 	EOF
+	# (no protocontroller: three routers in one namespace would share its
+	# port 7801; what this case checks is the tunnel)
 	for i in 1 2 3 4 5; do
 		printf '[link l%s]\nserver = 10.0.%s.2:59402\nenabled = %s\n' "$i" "$i" \
 			"$(case " $(mc_links "$name") " in *" $i "*) echo yes ;; *) echo no ;; esac)"
