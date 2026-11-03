@@ -342,14 +342,18 @@ return view.extend({
 				E('th', { 'class': 'th' }, [ _('Path MTU') ]),
 				E('th', { 'class': 'th' }, [ _('Upload (to the VPS)') ]),
 				E('th', { 'class': 'th' }, [ _('Download (from the VPS)') ]),
-				E('th', { 'class': 'th' }, [ _('Arrived first') ]),
+				E('th', { 'class': 'th' }, [ _('Delivered') ]),
 				E('th', { 'class': 'th' }, [ _('Sent') ]),
 				E('th', { 'class': 'th' }, [ _('Upload to standby') ]),
 				E('th', { 'class': 'th' }, [ ' ' ])
 			])
 		]);
 
-		links.forEach(function(l) { firsts += l.rx_first; });
+		/* what each uplink delivered: its subflow's packets got here (GRIT's
+		 * messages included); rx_first counts the TUN's packets only, a few
+		 * with GRIT carrying the TCP */
+		const got = function(l) { return l.subflow && l.subflow.down && l.subflow.down.got != null ? l.subflow.down.got : l.rx_first || 0; };
+		links.forEach(function(l) { firsts += got(l); });
 		cbi_update_table(table, links.map(L.bind(function(l) {
 			const manual = l.override && l.override != 'auto';
 			const out = (l.state == 'paused' || l.state == 'down'); // its figures are old
@@ -365,7 +369,7 @@ return view.extend({
 					_('Behind the fastest uplink by more than the limit: the router sends through the others, and only probes through this one, until it catches up.')) ].concat(splitNote(l, copy))),
 				out ? '-' : direction(l.download_muted,
 					_('Slower than the best uplink from the VPS: the VPS sends through the others, and only probes through this one, until it catches up.')),
-				firsts ? '%.0f %%'.format(100 * l.rx_first / firsts) : '-',
+				firsts ? '%.0f %%'.format(100 * got(l) / firsts) : '-',
 				'%1024.2mB'.format(l.tx_bytes),
 				'%d'.format(l.upload_mutes),
 				E('button', {
@@ -521,7 +525,7 @@ return view.extend({
 			E('p', { 'class': 'cbi-section-descr' }, [
 				_('Upload and download are decided apart, by the end that sends: an uplink can be on standby one way and in use the other, as is usual when carriers are faster one way (upload through one, download through another). On standby it carries only probes until it catches up with the best, and at least the minimum of active uplinks (Advanced tab) always stays in use.'),
 				' ',
-				_('Behind the fastest: how much later this uplink delivers the upload than the quickest one; past the limit its upload goes on standby. Arrived first: share of the download that came through this uplink before any other copy. Pause: takes an uplink out without touching the configuration, until you resume it or cengarde restarts.'),
+				_('Behind the fastest: how much later this uplink delivers the upload than the quickest one; past the limit its upload goes on standby. Delivered: share of the download that came through this uplink, what GRIT carried included. Pause: takes an uplink out without touching the configuration, until you resume it or cengarde restarts.'),
 				' ',
 				_('VPS address: where the uplink sends to; "failover" when the first VPS address it can use did not answer. Path MTU: the largest packet the path to the VPS takes.')
 			])

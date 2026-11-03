@@ -413,7 +413,9 @@ valores por omisión no retiene nada: el orden de entrega es el de siempre.
   o `:PORT` (cualquier dirección); cubre el origen o el destino de cada
   paquete (el flujo en los dos sentidos) y gana la primera regla que calza.
   Clases: `ordered` (retenido en orden, espera su rescate, como MPEG-TS),
-  `deadline` (la regla del plazo, como RTP), `direct` (nunca retenido ni
+  `deadline` (la regla del plazo, como RTP), `reorder` (retenido en orden
+  hasta su plazo, nunca rescatado: QUIC que pasa en bonding, una VPN
+  adentro, con su propio ARQ; en terreno el orden subió QUIC 2–4×), `direct` (nunca retenido ni
   rescatado: QUIC, SRT, WebRTC, un juego, con su propio ARQ y orden) y
   `auto` (lo adivinado) y `reliable` (el carril fiable, protocolo 18: con
   `protocontroller = b`, el router toma por TPROXY el UDP de esa regla y lo
