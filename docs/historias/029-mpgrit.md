@@ -1,8 +1,9 @@
 # 029 — MPGRIT: el motor y GRIT en un solo protocolo multienlace
 
 - **Fecha:** 2026-10-28
-- **Estado:** vigente (decisión tomada; paso 1 en curso; 2026-10-29: la
-  redundancia sobre GRIT)
+- **Estado:** vigente (decisión tomada; 2026-10-29: la redundancia sobre
+  GRIT; 2026-11-03, 0.17: el paso 4, GRIT por omisión y la variante A
+  retirada)
 - **Fuentes:** historia 028 («Terreno»: GRIT contra OMR y el TCP directo);
   `~/campo/2026-10-27/grit-split/README.md` (tandas t2–t6),
   `~/campo/2026-10-27/omr-inside/README.md` (subflujos MPTCP de OMR); estado
@@ -1381,6 +1382,42 @@ compara dos revisiones traza por traza. La segunda tanda del desván dio 0 de
 de `linkcc.h`, 5 → 6 %) cambió 5 de 7 escenarios. No cubre el pegamento de
 `client.c` y `server.c`.
 
+### Paso 4: el proxy por omisión y el retiro de la variante A (2026-11-03, 0.17)
+
+- **La decisión** (el usuario, 2026-11-02/03: «ese modo TCP directo ya está
+  entrando a depreciación… y Split TCP también»; «vamos al proxy por
+  omisión y el retiro/migrador»): GRIT es el único tramo del medio del
+  TCP, encendido por omisión en el router y en el VPS.
+- **Lo que salió:** la variante A (`protocontroller = a`: un TCP simple del
+  kernel por el túnel en el medio), con sus perillas `protocontroller_mid_cc`
+  y `protocontroller_vps`, el TCP 7801 que `cengarde-nat` abría desde `cg0`,
+  la variante `cga` del laboratorio (`BOND_PEP_CGMIDCC`) y su parte de la
+  FEC v3 (`cg_f3_tcp_port`). El código queda en
+  `docs/desvan/protoctl-variante-a.c`. GRIT le había ganado en terreno (la
+  redundancia del 2026-10-29: la bajada +9 % con menos ping y menos datos,
+  la subida +12 %) y en el laboratorio (historias 024 y 025).
+- **Lo que queda:** `protocontroller = no` como salida de emergencia (el TCP
+  cruza el túnel como paquetes); el camino del TCP por la TUN sigue para lo
+  que el firewall no intercepta (puertos o destinos fuera de
+  `protocontroller_port` y `protocontroller_dest`, las redes privadas), así
+  que mantenerlo no cuesta código.
+- **El migrador:**
+  - el motor: `protocontroller = b` por omisión; un archivo con `a` corre
+    como `b` y lo dice, igual que con las dos perillas retiradas;
+  - el router: `uci-defaults` pasa `protocontroller 'a'` a `'b'` y borra
+    `protocontroller_mid_cc`; `cengarde-setup` toma `b` por omisión y
+    escribe `protocontroller = no` explícito cuando está apagado; LuCI
+    ofrece *GRIT (por omisión)* y *Apagado (emergencia)*;
+  - el VPS: `PROTOCONTROLLER=yes` por omisión; apagado escribe
+    `protocontroller = no` (antes no escribía nada, y con el motor nuevo eso
+    sería encendido); al actualizar, un VPS con el `no` viejo (su archivo
+    del motor sin la clave) pasa a `yes` una vez, y
+    `cengarde-vps-setup protocontroller off` lo vuelve a apagar;
+  - un router con GRIT contra un VPS apagado ve su TCP rehusado: ahora lo
+    dice en su log (cada minuto a lo más) con cómo arreglarlo.
+- **Sin cambio de formato:** el protocolo sigue en 21 (la variante A no
+  tenía mensajes propios: su TCP era un paquete más de la TUN).
+
 ## Pendiente
 
 - `link_cc`: decidir si pasa a ser lo normal en el motor con `subflow` (hoy
@@ -1433,3 +1470,5 @@ de `linkcc.h`, 5 → 6 %) cambió 5 de 7 escenarios. No cubre el pegamento de
 - 2026-11-01: el desván, segunda tanda: nueve perillas que nadie encendía.
 - 2026-11-01: la semilla fija del laboratorio (2026), el piso de ruido A/A y
   `dectrace`, las decisiones exactas entre dos revisiones.
+- 2026-11-03: el paso 4, el proxy por omisión: GRIT encendido en los dos
+  extremos, la variante A al desván y el migrador.

@@ -83,7 +83,7 @@ cmd_get() {
 	# included
 	f=$(ini "$ENGINE_CONF" fec)
 	[ "$f" = yes ] && [ "$(ini "$ENGINE_CONF" fec_code)" = rlc ] && f=rlc
-	echo "protocontroller=$(case $(ini "$ENGINE_CONF" protocontroller) in '' | no) echo off ;; *) echo on ;; esac)"
+	echo "protocontroller=$(case $(ini "$ENGINE_CONF" protocontroller) in no) echo off ;; *) echo on ;; esac)"
 	echo "fec=$(case "$f" in yes) echo on ;; rlc) echo rlc ;; *) echo off ;; esac)"
 	v=$(echo "$KEYS" | tr '\n' ' ')
 	echo "keys=${v% }"

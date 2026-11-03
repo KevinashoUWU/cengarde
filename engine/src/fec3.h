@@ -305,8 +305,8 @@ static inline void cg_f3_loss(struct cg_f3 *f, unsigned i, uint16_t loss_pm, uin
 }
 
 /* A DATA of len bytes, ins: one whose sender is not held back by loss (the
- * protocontroller's: B's stream, with its own ARQ and its rate from
- * capacity.h, or A's middle TCP with BBR): on a lone link repairs only take
+ * protocontroller's: GRIT's stream, with its own ARQ and its rate from
+ * capacity.h): on a lone link repairs only take
  * its capacity (story 026: 15-17 %), so its part of the bytes asks for none
  * there (cg_f3_pct). */
 static inline void cg_f3_mix(struct cg_f3 *f, uint32_t len, int ins)
@@ -323,31 +323,6 @@ static inline void cg_f3_mix_tick(struct cg_f3 *f)
 		return;
 	f->ins_q10 = (uint16_t)((f->ins_q10 * 3u + (uint32_t)(f->b_ins * 1024 / f->b_all)) / 4);
 	f->b_all = f->b_ins = 0;
-}
-
-/* Whether a packet is TCP to (dst) or from (!dst) port, IPv4 or IPv6
- * without extension headers: variant A's middle TCP (protocontroller_port). */
-static inline int cg_f3_tcp_port(const uint8_t *p, size_t len, uint16_t port, int dst)
-{
-	size_t off;
-
-	if (!port || len < 1)
-		return 0;
-	if (p[0] >> 4 == 4) {
-		if (len < 20 || p[9] != 6)
-			return 0;
-		off = (size_t)(p[0] & 15) * 4;
-	} else if (p[0] >> 4 == 6) {
-		if (len < 40 || p[6] != 6)
-			return 0;
-		off = 40;
-	} else {
-		return 0;
-	}
-	if (off < 20 || len < off + 4)
-		return 0;
-	off += dst ? 2 : 0;
-	return (uint16_t)(p[off] << 8 | p[off + 1]) == port;
 }
 
 /* The loss-driven part of the share for the bytes that are held back by

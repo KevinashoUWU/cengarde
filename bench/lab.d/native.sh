@@ -127,6 +127,8 @@ native_multi() {
 				"$([ "$name" = alpha ] && echo "$KEY" || echo ZWZnaGlqa2xtbm9wcXJzdHV2d3h5ent8fX5/gIGCg4Q=)" "$n" "$n"
 			printf 'tunnel = native\ntun = cg%s\ntun_addr = 10.79.0.%s/16\n' "${name:0:1}" $((n + 1))
 			printf 'status_file = %s/%s.json\nstatus_interval_ms = 200\n' "$RUN" "$name"
+			# two routers in one namespace would share the protocontroller's port 7801
+			printf 'protocontroller = no\n'
 			[ -n "$1" ] && echo "$1" | tr ';' '\n'
 		} >"$RUN/$name.conf"
 	done

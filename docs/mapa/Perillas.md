@@ -7,7 +7,7 @@ archivos:
 
 # Perillas
 
-Las 136 claves que `engine/src/config.c` lee (comprobado al generar esta nota: ni falta ni sobra ninguna).
+Las 134 claves que `engine/src/config.c` lee (comprobado al generar esta nota: ni falta ni sobra ninguna).
 Por omisión y rango salen de `cg_config_parse`; el significado, de los comentarios de `config.h` y de [[engine-README]].
 Las perillas marcadas como experimento están apagadas por omisión.
 
@@ -193,10 +193,8 @@ Secciones: «global» es la parte sin sección; `[link NOMBRE]` es del cliente; 
 
 | Perilla | Por omisión | Pieza | Historia |
 | --- | --- | --- | --- |
-| [[Mapa/Perillas/protocontroller\|protocontroller]] | `no` | [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[025-protocontrolador]] |
+| [[Mapa/Perillas/protocontroller\|protocontroller]] | `b` | [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[025-protocontrolador]], [[029-mpgrit]] |
 | [[Mapa/Perillas/protocontroller_port\|protocontroller_port]] | 7801 | [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[025-protocontrolador]] |
-| [[Mapa/Perillas/protocontroller_vps\|protocontroller_vps]] | vacío (la primera dirección del prefijo de `tun_addr`) | [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[025-protocontrolador]] |
-| [[Mapa/Perillas/protocontroller_mid_cc\|protocontroller_mid_cc]] | `bbr` | [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[025-protocontrolador]] |
 | [[Mapa/Perillas/protocontroller_buf_kb\|protocontroller_buf_kb]] | 1024 (con `subflow`, 8176) | [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[025-protocontrolador]], [[029-mpgrit]] |
 | [[Mapa/Perillas/protocontroller_mem_mb\|protocontroller_mem_mb]] | 0 (un octavo de la RAM, 64–1024) | [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[025-protocontrolador]], [[029-mpgrit]] |
 | [[Mapa/Perillas/protocontroller_max_flows\|protocontroller_max_flows]] | 256 | [[Protocontrolador (protoctl.c, stream.h, streamcc.h)]] | [[025-protocontrolador]] |

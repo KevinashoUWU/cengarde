@@ -203,10 +203,8 @@ T = {
  "redund_spare_first": ([G], CLI, "vacío (el de menor retardo sin cola)", "el nombre de un `[link NAME]` del archivo", [SPARE], ["020"], "Con `redund_spare`, el primer enlace (el que los demás protegen) fijado: ese mientras esté vivo y llevando, medido ahora y sin ahogarse; si se ahoga como primero queda vetado 15 s y manda la elección automática, y vuelve cuando se despeja; mientras los demás copian toda la subida, solo tras 2 s seguidos de ahogo (un salto de retardo más corto no lo saca). El estado dice por qué no es el primero (`upload.spare.pin`)."),
  "exp_link_types": ([G], BOTH, "vacía (todos los tipos)", "nombres de tipo", [MODEL], ["015"], "Limita las perillas globales del modelo a los enlaces de esos tipos."),
  # --- the protocontroller (story 025) ---
- "protocontroller": ([G], BOTH, "`no`", "`no`, `a` o `b`", [PCTL], ["025"], "El protocontrolador (solo con `tunnel = native`): en el router, con `a` o `b`, el motor toma el TCP que el firewall redirige a `protocontroller_port` y lo lleva al VPS como un TCP simple por el túnel (`a`) o como flujo fiable propio (`b`); en el VPS, `a` o `b` da lo mismo: abre al destino el TCP que pidan los routers con cualquiera de las dos. Con `no`, un mensaje de flujo que llega se cuenta y se descarta."),
+ "protocontroller": ([G], BOTH, "`b`", "`b` o `no`", [PCTL], ["025", "029"], "El protocontrolador (solo con `tunnel = native`), encendido por omisión desde la 0.17: en el router el motor toma el TCP que el firewall redirige a `protocontroller_port` y lo lleva al VPS como GRIT, su flujo fiable; el VPS lo abre al destino. Con `no`, el TCP cruza el túnel como paquetes (una salida de emergencia; los dos extremos tienen que decir lo mismo, o el router avisa que el VPS rechaza) y un mensaje de flujo que llega se cuenta y se descarta. La variante `a` (un TCP simple en el medio) salió en la 0.17 (`docs/desvan/protoctl-variante-a.c`): un archivo que la dice corre como `b`, con un aviso, como `protocontroller_mid_cc` y `protocontroller_vps`."),
  "protocontroller_port": ([G], BOTH, "7801", "1–65535", [PCTL], ["025"], "Puerto donde escucha el router (IPv4 e IPv6) lo que el firewall redirige (`REDIRECT`); en el VPS, el de la variante A en su dirección del túnel."),
- "protocontroller_vps": ([G], CLI, "vacío (la primera dirección del prefijo de `tun_addr`)", "una dirección IP", [PCTL], ["025"], "Variante A: la dirección del VPS en el túnel, a la que el router abre el TCP del medio."),
- "protocontroller_mid_cc": ([G], BOTH, "`bbr`", "un control de congestión del kernel, o vacío (el del kernel)", [PCTL], ["025"], "Variante A: el control de congestión del TCP del medio, en cada extremo para lo que envía (el router la subida, el VPS la bajada). Con cubic, la pérdida que el túnel no repara a tiempo lo frena (42 contra 54 Mbit/s en `protect`; 7 contra 50 de bajada); si el kernel no lo tiene, el suyo (un aviso)."),
  "protocontroller_buf_kb": ([G], BOTH, "1024 (con `subflow`, 8176)", "64–16368", [PCTL], ["025", "029"], "Búfer de cada conexión por sentido, como tope: lo leído del socket y no confirmado (al enviar), lo llegado y no escrito (al recibir: su ventana); en la variante A, lo leído de un lado y no escrito en el otro. Con el ritmo por enlace (`link_cc`) es el techo de la bajada: lo enviado queda retenido hasta su acuse (~150 ms con las colas de los enlaces), y en terreno 2 MB dieron 51–87 Mbit/s, 4 MB 72–108 y 8 MB 104–163 (+49 % en cuatro rondas de cuatro; OMR, con 16 MB, 103–184; historia 029)."),
  "protocontroller_mem_mb": ([G], BOTH, "0 (un octavo de la RAM, 64–1024)", "0–4096", [PCTL], ["025", "029"], "Memoria de todas las conexiones juntas (trozos de 16 KB). Cada conexión toma como mucho su parte pareja; lleno, lo que llega en orden cabe olvidando lo que está fuera de orden; sin trozos libres no se aceptan conexiones nuevas ni se lee más."),
  "protocontroller_max_flows": ([G], BOTH, "256", "1–65535", [PCTL], ["025"], "Conexiones a la vez; la siguiente se rehúsa con RST."),
@@ -229,7 +227,7 @@ T = {
 
 RESTART = {"mode", "key", "listen", "control_socket", "busy_poll_us", "cpu", "rt_priority", "reorder_pool_kb",
            "rescue_kb", "fec", "link_threads", "io_queue", "lanes", "tunnel", "tun", "tun_addr", "tun_mtu",
-           "tun_txqueuelen", "protocontroller", "protocontroller_port", "protocontroller_vps", "protocontroller_mid_cc",
+           "tun_txqueuelen", "protocontroller", "protocontroller_port",
            "protocontroller_buf_kb", "protocontroller_mem_mb", "protocontroller_max_flows", "protocontroller_queue_ms",
            "protocontroller_backlog_ms", "protocontroller_dead_s", "protocontroller_reo_ms", "protocontroller_nack", "protocontroller_offer", "protocontroller_cc", "protocontroller_fair", "protocontroller_udp", "protocontroller_dscp", "protocontroller_burst_kb"}
 
@@ -294,7 +292,7 @@ def generate():
                                "starlink_slot_clock", "starlink_edge_ms", "starlink_edge_pre_ms",
                                "starlink_edge_post_ms"]),
         ("Lo que sobra (redundancia)", ["redund_spare", "redund_spare_ms", "redund_spare_first", "redund_spare_code_ms"]),
-        ("Protocontrolador", ["protocontroller", "protocontroller_port", "protocontroller_vps", "protocontroller_mid_cc",
+        ("Protocontrolador", ["protocontroller", "protocontroller_port",
                               "protocontroller_buf_kb", "protocontroller_mem_mb", "protocontroller_max_flows",
                               "protocontroller_queue_ms", "protocontroller_backlog_ms", "protocontroller_dead_s",
                               "protocontroller_reo_ms", "protocontroller_cc", "protocontroller_fair", "protocontroller_udp", "protocontroller_dscp", "protocontroller_burst_kb"]),

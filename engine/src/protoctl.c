@@ -69,8 +69,6 @@
 #define PCTL_AGES 16
 #define PCTL_DQ 32               /* an unreliable stream's datagrams waiting for the pacer, at most (the oldest go first) */
 #define PCTL_DGM_AGE_US 300000u  /* and how long one waits: later, it is dropped (the latency budget, story 029) */
-#define CG_PCTL_AHDR_MAX 20    /* variant A's header: magic, family, port, address */
-#define PCTL_AMAGIC 0xA5
 #define PCTL_REO_STEP_US 4000u  /* a duplicate widens RACK's window by this */
 #define PCTL_REO_DECAY_US 200u  /* and it narrows by this a tick (2 ms a second), down to protocontroller_reo_ms;
 				 * up to reo_cap (streamcc.h's cg_scc_reo_cap: the code's horizon) */
@@ -127,14 +125,6 @@ struct flow {
 	struct cg_st_tx tx;
 	struct cg_st_rx rx;
 	struct cg_st_buf sb, rb;
-	/* variant A (relay): fd is the LAN's (router) or the destination's (VPS)
-	 * socket, mfd the middle TCP through the tunnel; sb carries fd -> mfd,
-	 * rb mfd -> fd */
-	uint8_t relay, mreg, mhup, mconn, hdr_n, hdr_want, m_rd, m_wb;
-	uint32_t mev;
-	int mfd;
-	uint8_t hdr[CG_PCTL_AHDR_MAX];
-	struct rdir { uint64_t in, out; uint8_t eof, shut, nomem; } d[2];
 	/* a datagram stream (the reliable lane, story 031): fd a UDP socket,
 	 * the router's bound to the destination and connected to the LAN's
 	 * sender (saddr, sport), the VPS's connected to the destination; when
@@ -176,7 +166,7 @@ struct cg_pctl {
 	struct cg_pctl_ops ops;
 	struct cg_scc_cfg ccf;
 	int ep;
-	int lfd[3]; /* the router's v4 and v6; the VPS's variant A */
+	int lfd[2]; /* the router's v4 and v6 */
 	int ufd[2]; /* the router's reliable lane: UDP, TPROXY, v4 and v6 (story 031) */
 	int xfd[2]; /* the router's unreliable datagrams: UDP, TPROXY on port + 1, v4 and v6 (protocol 20) */
 	uint32_t dgm_max; /* a DGM's datagram, at most: what a DATA carries and its header, less a DGM's header */
@@ -255,7 +245,6 @@ struct cg_pctl {
 	uint64_t nack_sf;               /* of the losses, the ones their link's subflow found too (subflow.h) */
 	uint64_t sus_lost;              /* bytes of suspects their deadline found still undelivered */
 	uint64_t nack_link[CG_PCTL_LINKS + 1]; /* segments a NACK found lost, by the link they went on (the last: copied or not known) */
-	uint64_t a_opened, a_bytes_in, a_bytes_out; /* variant A: relays opened, bytes read and written */
 	uint8_t cc_auto;      /* protocontroller_cc auto */
 	uint64_t holes[PCTL_HOLE_BUCKETS]; /* how long the receivers missed something: < 5, 10, 20, 40, 80, 160, 320 ms, more */
 	uint64_t sendq[PCTL_HOLE_BUCKETS]; /* how long read bytes waited to be sent: < 1, 2, 4, 8, 16, 32, 64 ms, more */
@@ -445,7 +434,7 @@ static struct flow *flow_alloc(struct cg_pctl *p)
 	s = p->freeslot[--p->nfree];
 	f = &p->f[s];
 	memset(f, 0, sizeof(*f));
-	f->fd = f->mfd = -1;
+	f->fd = -1;
 	f->tier = CG_DS_NORMAL;
 	cg_st_buf_init(&f->sb);
 	cg_st_buf_init(&f->rb);
@@ -478,18 +467,7 @@ static void flow_free(struct cg_pctl *p, struct flow *f, int abort_sock)
 #endif
 	free(f->dq);
 	f->dq = NULL;
-	if (f->mfd >= 0) {
-		if (abort_sock) {
-			struct linger lg = { 1, 0 };
-
-			setsockopt(f->mfd, SOL_SOCKET, SO_LINGER, &lg, sizeof(lg));
-		}
-		if (f->mreg)
-			epoll_ctl(p->ep, EPOLL_CTL_DEL, f->mfd, NULL);
-		close(f->mfd);
-		f->mfd = -1;
-	}
-	if (f->state != F_FREE && !f->relay) {
+	if (f->state != F_FREE) {
 		struct peer *r = &p->pr[p->cfg.server ? f->peer : 0];
 
 		if (r->used && r->sid == f->sid)
@@ -497,9 +475,9 @@ static void flow_free(struct cg_pctl *p, struct flow *f, int abort_sock)
 	}
 	cg_st_buf_free(&f->sb, &p->pool);
 	cg_st_buf_free(&f->rb, &p->pool);
-	if (p->cfg.server && !f->relay)
+	if (p->cfg.server)
 		cg_pctl_tab_del(&p->tab, cg_pctl_key(f->sid, f->id));
-	else if (!p->cfg.server)
+	else
 		p->gen[s] = cg_pctl_next_gen(p->gen[s]);
 	f->state = F_FREE;
 	f->fd = -1;
@@ -515,8 +493,7 @@ static void flow_free(struct cg_pctl *p, struct flow *f, int abort_sock)
 /* Resets f: a RST to the peer (reason), the socket closed with a RST. */
 static void flow_reset(struct cg_pctl *p, struct flow *f, uint8_t reason)
 {
-	if (!f->relay)
-		send_rst(p, f->peer, f->sid, f->id, reason);
+	send_rst(p, f->peer, f->sid, f->id, reason);
 	flow_free(p, f, 1);
 }
 
@@ -648,38 +625,6 @@ static int listen_one(struct cg_pctl *p, int family, char *err, size_t errlen)
 	return 0;
 }
 
-/* The VPS: variant A's listening socket, on its tunnel address. The
- * address may not be up yet (IP_FREEBIND). */
-static int listen_a(struct cg_pctl *p, char *err, size_t errlen)
-{
-	const struct sockaddr_storage *a = &p->cfg.a_bind;
-	socklen_t al = a->ss_family == AF_INET6 ? sizeof(struct sockaddr_in6) : sizeof(struct sockaddr_in);
-	int fd = socket(a->ss_family, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
-	struct epoll_event e = { .events = EPOLLIN, .data.u64 = CG_EV(CG_EV_PCTL, CG_PCTL_LISTEN_IDX + 2) };
-
-	if (fd < 0) {
-		snprintf(err, errlen, "protocontroller: socket: %s", strerror(errno));
-		return -1;
-	}
-	set_int(fd, SOL_SOCKET, SO_REUSEADDR, 1);
-	if (a->ss_family == AF_INET6) {
-		set_int(fd, IPPROTO_IPV6, IPV6_V6ONLY, 1);
-		set_int(fd, IPPROTO_IPV6, IPV6_FREEBIND, 1);
-	} else {
-		set_int(fd, IPPROTO_IP, IP_FREEBIND, 1);
-	}
-	set_rcvbuf(fd, (int)p->buf_cap);
-	if (bind(fd, (const struct sockaddr *)a, al) < 0 || listen(fd, 128) < 0 ||
-	    epoll_ctl(p->ep, EPOLL_CTL_ADD, fd, &e) < 0) {
-		snprintf(err, errlen, "protocontroller: listen on the tunnel's address, port %u: %s", p->cfg.port,
-			 strerror(errno));
-		close(fd);
-		return -1;
-	}
-	p->lfd[2] = fd;
-	return 0;
-}
-
 /* The connection's original destination: conntrack's (REDIRECT), else
  * the local address (TPROXY). 0, or -1 for one that is not redirected
  * (a connection to the listening port itself). */
@@ -725,7 +670,6 @@ static void refuse_fd(struct cg_pctl *p, int fd, unsigned reason)
 	p->refused[reason < CG_PCTL_R_N ? reason : CG_PCTL_R_ERROR]++;
 }
 
-static void a_open(struct cg_pctl *p, int fd, const struct flow *tmp);
 
 static void sa_to(const struct sockaddr_storage *a, uint8_t *family, uint8_t *addr, uint16_t *port);
 
@@ -745,10 +689,6 @@ static void accept_some(struct cg_pctl *p, int v6)
 		memset(&tmp, 0, sizeof(tmp));
 		if (orig_dst(p, fd, v6, &tmp) < 0 || cg_pctl_dest_ok(tmp.family, tmp.addr)) {
 			refuse_fd(p, fd, CG_PCTL_R_DENIED);
-			continue;
-		}
-		if (p->cfg.mode == CG_PCTL_A) {
-			a_open(p, fd, &tmp);
 			continue;
 		}
 		if (!(f = flow_alloc(p))) {
@@ -1327,363 +1267,7 @@ static void open_in(struct cg_pctl *p, uint32_t peer, uint32_t sid, const struct
 }
 
 
-/* ---- variant A: the middle leg is a plain TCP through the tunnel ---- */
-
 static void due(struct cg_pctl *p, uint64_t t);
-
-/* The events f's middle socket is watched for. */
-static void mid_ev_set(struct cg_pctl *p, struct flow *f, uint32_t want)
-{
-	struct epoll_event e = { .events = want, .data.u64 = CG_EV(CG_EV_PCTL, (uint32_t)(f - p->f) | CG_PCTL_MID) };
-
-	if (f->mfd < 0)
-		return;
-	if (f->mhup && !want) { /* as ev_set */
-		if (f->mreg && epoll_ctl(p->ep, EPOLL_CTL_DEL, f->mfd, NULL) == 0)
-			f->mreg = 0;
-		f->mev = 0;
-		return;
-	}
-	if (!f->mreg) {
-		if (epoll_ctl(p->ep, EPOLL_CTL_ADD, f->mfd, &e) == 0) {
-			f->mreg = 1;
-			f->mev = want;
-		}
-		return;
-	}
-	if (want != f->mev && epoll_ctl(p->ep, EPOLL_CTL_MOD, f->mfd, &e) == 0)
-		f->mev = want;
-}
-
-/* The header the router writes first on the middle connection: magic,
- * family, port, address. Returns its length. */
-static size_t a_hdr(const struct flow *f, uint8_t *b)
-{
-	size_t al = f->family == 6 ? 16 : 4;
-
-	b[0] = PCTL_AMAGIC;
-	b[1] = f->family;
-	b[2] = (uint8_t)(f->port >> 8);
-	b[3] = (uint8_t)f->port;
-	memcpy(b + 4, f->addr, al);
-	return 4 + al;
-}
-
-/* The router: a LAN connection (fd, its destination in tmp) for variant A:
- * a TCP to the VPS's end of the tunnel. */
-static void a_open(struct cg_pctl *p, int fd, const struct flow *tmp)
-{
-	struct flow *f = flow_alloc(p);
-	int m;
-	socklen_t al;
-
-	if (!f) {
-		refuse_fd(p, fd, CG_PCTL_R_FULL);
-		return;
-	}
-	f->relay = 1;
-	f->family = tmp->family;
-	f->port = tmp->port;
-	memcpy(f->addr, tmp->addr, 16);
-	f->fd = fd;
-	f->state = F_EST;
-	f->rd_ready = 1;
-	set_int(fd, IPPROTO_TCP, TCP_NODELAY, 1);
-	set_int(fd, IPPROTO_TCP, TCP_NOTSENT_LOWAT, PCTL_LOWAT_MIN);
-	m = socket(p->cfg.a_peer.ss_family, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
-	if (m < 0) {
-		flow_free(p, f, 1);
-		return;
-	}
-	f->mfd = m;
-	if (p->cfg.mid_cc[0])
-		setsockopt(m, IPPROTO_TCP, TCP_CONGESTION, p->cfg.mid_cc, (socklen_t)strlen(p->cfg.mid_cc));
-	set_int(m, IPPROTO_TCP, TCP_NODELAY, 1);
-	set_int(m, IPPROTO_TCP, TCP_NOTSENT_LOWAT, PCTL_LOWAT_MIN);
-	al = p->cfg.a_peer.ss_family == AF_INET6 ? sizeof(struct sockaddr_in6) : sizeof(struct sockaddr_in);
-	if (connect(m, (const struct sockaddr *)&p->cfg.a_peer, al) < 0 && errno != EINPROGRESS) {
-		flow_free(p, f, 1);
-		return;
-	}
-	f->mconn = 1;
-	ev_set(p, f, 0);
-	mid_ev_set(p, f, EPOLLOUT);
-	p->opened++;
-	p->a_opened++;
-}
-
-/* Whether a middle connection comes from the tunnel's prefix. */
-static int from_tunnel(const struct cg_pctl *p, const struct sockaddr_storage *a)
-{
-	const struct sockaddr_storage *b = &p->cfg.a_bind;
-
-	if (a->ss_family != b->ss_family)
-		return 0;
-	if (a->ss_family == AF_INET)
-		return cg_pctl_in_pfx(4, (const uint8_t *)&((const struct sockaddr_in *)a)->sin_addr,
-				      (const uint8_t *)&((const struct sockaddr_in *)b)->sin_addr, p->cfg.a_len);
-	return cg_pctl_in_pfx(6, (const uint8_t *)&((const struct sockaddr_in6 *)a)->sin6_addr,
-			      (const uint8_t *)&((const struct sockaddr_in6 *)b)->sin6_addr, p->cfg.a_len);
-}
-
-/* The VPS: variant A's connections from the routers, through the tunnel. */
-static void a_accept(struct cg_pctl *p)
-{
-	for (int k = 0; k < 32; k++) {
-		struct sockaddr_storage from;
-		socklen_t fl = sizeof(from);
-		int m = accept4(p->lfd[2], (struct sockaddr *)&from, &fl, SOCK_NONBLOCK | SOCK_CLOEXEC);
-		struct flow *f;
-
-		if (m < 0)
-			return;
-		if (!from_tunnel(p, &from)) {
-			refuse_fd(p, m, CG_PCTL_R_DENIED);
-			continue;
-		}
-		if (!(f = flow_alloc(p))) {
-			refuse_fd(p, m, CG_PCTL_R_FULL);
-			continue;
-		}
-		f->relay = 1;
-		f->mfd = m;
-		f->state = F_OPEN; /* until the header came */
-		if (p->cfg.mid_cc[0])
-			setsockopt(m, IPPROTO_TCP, TCP_CONGESTION, p->cfg.mid_cc, (socklen_t)strlen(p->cfg.mid_cc));
-		f->hdr_want = 4;
-		f->m_rd = 1;
-		set_int(m, IPPROTO_TCP, TCP_NODELAY, 1);
-		set_int(m, IPPROTO_TCP, TCP_NOTSENT_LOWAT, PCTL_LOWAT_MIN);
-		mid_ev_set(p, f, EPOLLIN);
-		p->opened++;
-		p->a_opened++;
-	}
-}
-
-/* One direction of a relay: what from has, into the buffer (cap), and on
- * to to; the FIN once all went. Returns -1 on an error (reset). */
-static int a_move(struct cg_pctl *p, int from, int to, int *rd, int *wb, struct cg_st_buf *b, struct rdir *d,
-		  int can_read)
-{
-	uint32_t got = 0;
-
-	while (can_read && *rd && !d->eof && d->in - d->out < p->buf_cap && got < PCTL_READ_PASS) {
-		uint32_t room;
-		uint64_t k = p->buf_cap - (d->in - d->out);
-		uint8_t *w = cg_st_buf_at(b, &p->pool, d->in, 1, &room);
-		ssize_t n;
-
-		if (!w) { /* out of chunks: again when some came back */
-			d->nomem = 1;
-			p->nomem++;
-			break;
-		}
-		if (k > room)
-			k = room;
-		n = recv(from, w, k, 0);
-		if (n > 0) {
-			d->in += (uint64_t)n;
-			got += (uint32_t)n;
-			p->a_bytes_in += (uint64_t)n;
-			continue;
-		}
-		if (n == 0) {
-			d->eof = 1;
-			break;
-		}
-		if (errno == EAGAIN || errno == EWOULDBLOCK) {
-			*rd = 0;
-			break;
-		}
-		if (errno == EINTR)
-			continue;
-		return -1;
-	}
-	while (d->out < d->in) {
-		uint32_t room;
-		const uint8_t *r = cg_st_buf_at(b, &p->pool, d->out, 0, &room);
-		uint64_t k = d->in - d->out;
-		ssize_t n;
-
-		if (!r)
-			return -1;
-		if (k > room)
-			k = room;
-		n = send(to, r, k, MSG_NOSIGNAL | MSG_DONTWAIT);
-		if (n > 0) {
-			d->out += (uint64_t)n;
-			p->a_bytes_out += (uint64_t)n;
-			cg_st_buf_release(b, &p->pool, d->out);
-			*wb = 0;
-			continue;
-		}
-		if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-			*wb = 1;
-			break;
-		}
-		if (n < 0 && errno == EINTR)
-			continue;
-		return -1;
-	}
-	if (d->eof && d->out == d->in && !d->shut) {
-		shutdown(to, SHUT_WR);
-		d->shut = 1;
-	}
-	return 0;
-}
-
-/* A relay's pass. Returns -1 when the flow went. */
-static int a_service(struct cg_pctl *p, struct flow *f, uint64_t now)
-{
-	int rd, wb, mrd, mwb, why;
-
-	if (f->state == F_OPEN && p->cfg.server) { /* the VPS: the header */
-		while (f->m_rd && f->hdr_n < f->hdr_want) {
-			ssize_t n = recv(f->mfd, f->hdr + f->hdr_n, f->hdr_want - f->hdr_n, 0);
-
-			if (n > 0) {
-				f->hdr_n = (uint8_t)(f->hdr_n + n);
-				if (f->hdr_n == 4) {
-					if (f->hdr[0] != PCTL_AMAGIC || (f->hdr[1] != 4 && f->hdr[1] != 6)) {
-						p->bad++;
-						flow_free(p, f, 1);
-						return -1;
-					}
-					f->hdr_want = (uint8_t)(4 + (f->hdr[1] == 6 ? 16 : 4));
-				}
-				continue;
-			}
-			if (n == 0 || (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)) {
-				flow_free(p, f, 1);
-				return -1;
-			}
-			f->m_rd = 0;
-		}
-		if (f->hdr_n < f->hdr_want || f->hdr_want == 4) {
-			if (now - f->created_t > (uint64_t)PCTL_CONNECT_S * 1000000) {
-				flow_free(p, f, 1);
-				return -1;
-			}
-			mid_ev_set(p, f, EPOLLIN);
-			return 0;
-		}
-		f->family = f->hdr[1];
-		f->port = (uint16_t)(f->hdr[2] << 8 | f->hdr[3]);
-		memcpy(f->addr, f->hdr + 4, f->family == 6 ? 16 : 4);
-		if ((why = cg_pctl_dest_ok(f->family, f->addr)) || (f->fd = dest_connect(p, f->family, f->addr, f->port, 0, &why)) < 0) {
-			p->refused[why < CG_PCTL_R_N ? why : CG_PCTL_R_ERROR]++;
-			flow_free(p, f, 1);
-			return -1;
-		}
-		f->state = F_EST;
-		f->connecting = 1;
-		mid_ev_set(p, f, 0);
-		ev_set(p, f, EPOLLOUT);
-		return 0;
-	}
-	if (f->connecting || f->mconn) {
-		if ((f->connecting || f->mconn) && now - f->created_t > (uint64_t)PCTL_CONNECT_S * 1000000) {
-			p->refused[CG_PCTL_R_TIMEOUT]++;
-			flow_free(p, f, 1);
-			return -1;
-		}
-		return 0;
-	}
-	f->d[0].nomem = f->d[1].nomem = 0;
-	rd = f->rd_ready;
-	wb = f->wr_blocked;
-	mrd = f->m_rd;
-	mwb = f->m_wb;
-	if (a_move(p, f->fd, f->mfd, &rd, &mwb, &f->sb, &f->d[0], 1) < 0 ||
-	    a_move(p, f->mfd, f->fd, &mrd, &wb, &f->rb, &f->d[1], 1) < 0) {
-		flow_free(p, f, 1);
-		return -1;
-	}
-	f->rd_ready = (uint8_t)rd;
-	f->wr_blocked = (uint8_t)wb;
-	f->m_rd = (uint8_t)mrd;
-	f->m_wb = (uint8_t)mwb;
-	if (f->d[0].in - f->d[0].out + f->d[1].in - f->d[1].out)
-		f->progress_t = now;
-	if (f->d[0].shut && f->d[1].shut) {
-		flow_free(p, f, 0);
-		return -1;
-	}
-	{
-		int can0 = !f->d[0].eof && !f->d[0].nomem && f->d[0].in - f->d[0].out < p->buf_cap;
-		int can1 = !f->d[1].eof && !f->d[1].nomem && f->d[1].in - f->d[1].out < p->buf_cap;
-
-		if (f->d[0].nomem || f->d[1].nomem)
-			due(p, now + 10000);
-		if (can0 && !(f->ev & EPOLLIN))
-			f->rd_ready = 1;
-		if (can1 && !(f->mev & EPOLLIN))
-			f->m_rd = 1;
-		ev_set(p, f, (can0 ? EPOLLIN : 0) | (f->wr_blocked ? EPOLLOUT : 0));
-		mid_ev_set(p, f, (can1 ? EPOLLIN : 0) | (f->m_wb ? EPOLLOUT : 0));
-	}
-	return 0;
-}
-
-/* A relay's socket became ready (mid: the middle one). */
-static void a_event(struct cg_pctl *p, struct flow *f, int mid, uint32_t events)
-{
-	int err = 0;
-	socklen_t el = sizeof(err);
-
-	if (mid && f->mconn) { /* the router's connect to the VPS */
-		if (getsockopt(f->mfd, SOL_SOCKET, SO_ERROR, &err, &el) < 0)
-			err = errno;
-		if (err) {
-			p->refused[reason_of(err)]++;
-			flow_free(p, f, 1);
-			return;
-		}
-		{
-			uint8_t h[CG_PCTL_AHDR_MAX];
-			size_t hl = a_hdr(f, h);
-
-			if (send(f->mfd, h, hl, MSG_NOSIGNAL | MSG_DONTWAIT) != (ssize_t)hl) {
-				flow_free(p, f, 1);
-				return;
-			}
-		}
-		f->mconn = 0;
-		f->m_rd = f->rd_ready = 1;
-		return;
-	}
-	if (!mid && f->connecting) { /* the VPS's connect to the destination */
-		if (getsockopt(f->fd, SOL_SOCKET, SO_ERROR, &err, &el) < 0)
-			err = errno;
-		if (err) {
-			p->refused[reason_of(err)]++;
-			flow_free(p, f, 1);
-			return;
-		}
-		f->connecting = 0;
-		f->rd_ready = f->m_rd = 1;
-		return;
-	}
-	if (events & EPOLLERR) { /* a reset or an error: both go */
-		flow_free(p, f, 1);
-		return;
-	}
-	if (mid) {
-		if (events & (EPOLLIN | EPOLLHUP))
-			f->m_rd = 1;
-		if (events & EPOLLHUP)
-			f->mhup = 1;
-		if (events & EPOLLOUT)
-			f->m_wb = 0;
-	} else {
-		if (events & (EPOLLIN | EPOLLHUP))
-			f->rd_ready = 1;
-		if (events & EPOLLHUP)
-			f->hup = 1;
-		if (events & EPOLLOUT)
-			f->wr_blocked = 0;
-	}
-}
 
 /* ---- messages in ---- */
 
@@ -1897,7 +1481,7 @@ int cg_pctl_nack(struct cg_pctl *p, uint32_t peer, uint32_t sid, const uint8_t *
 	if (!p->cfg.server)
 		sid = 0;
 	f = find(p, sid, id);
-	if (!f || f->relay) {
+	if (!f) {
 		p->nack_noflow++; /* gone: nothing to send again */
 		return k;
 	}
@@ -2034,6 +1618,11 @@ static void rx_one(struct cg_pctl *p, uint32_t peer, uint32_t sid, const uint8_t
 		break;
 	case CG_PCTL_RST:
 		p->rst_rx[m.reason < CG_PCTL_R_N ? m.reason : CG_PCTL_R_ERROR]++;
+		/* the router's TCP refused because the VPS has it off (GRIT is
+		 * the default at both ends since 0.17): say how to match them */
+		if (!p->cfg.server && m.reason == CG_PCTL_R_OFF && cg_ratelimit_ok(&p->rl_open, now / 1000, 60000))
+			cg_warn("protocontroller: the VPS refuses the LAN's TCP (its protocontroller is off): "
+				"\"sudo cengarde-vps-setup protocontroller on\" there, or protocontroller = no here");
 		/* all said both ways but the FIN's ACK: a clean close */
 		flow_free(p, f, !(f->tx.eof && f->tx.una >= f->tx.tail && cg_st_rx_ended(&f->rx) &&
 				  f->consumed >= f->rx.fin));
@@ -2223,16 +1812,10 @@ void cg_pctl_event(struct cg_pctl *p, uint32_t idx, uint32_t events)
 			udp_accept(p, (int)(idx - CG_PCTL_LISTEN_IDX - 3), 0);
 		else if (!p->cfg.server && idx - CG_PCTL_LISTEN_IDX - 5 < 2 && p->xfd[idx - CG_PCTL_LISTEN_IDX - 5] >= 0)
 			udp_accept(p, (int)(idx - CG_PCTL_LISTEN_IDX - 5), 1);
-		else if (p->cfg.server && idx == CG_PCTL_LISTEN_IDX + 2 && p->lfd[2] >= 0)
-			a_accept(p);
 		return;
 	}
-	if ((idx & ~CG_PCTL_MID) >= p->cfg.max_flows || (f = &p->f[idx & ~CG_PCTL_MID])->state == F_FREE)
+	if (idx >= p->cfg.max_flows || (f = &p->f[idx])->state == F_FREE)
 		return;
-	if (f->relay) {
-		a_event(p, f, !!(idx & CG_PCTL_MID), events);
-		return;
-	}
 	if (f->connecting) {
 		if (events & (EPOLLOUT | EPOLLERR | EPOLLHUP))
 			connected(p, f);
@@ -2552,11 +2135,6 @@ void cg_pctl_service(struct cg_pctl *p)
 		struct flow *f = &p->f[p->used[i]];
 		uint32_t want;
 
-		if (f->relay) {
-			if (a_service(p, f, now) == 0)
-				i++;
-			continue;
-		}
 		if (timers(p, f, now) < 0 || sock_read(p, f) < 0 || sock_write(p, f, now) < 0)
 			continue; /* freed: used[i] is another flow now */
 		if (f->ack_pend || f->ack_now) {
@@ -2780,7 +2358,7 @@ struct cg_pctl *cg_pctl_new(const struct cg_pctl_cfg *cfg, int ep, const struct 
 	p->cfg = *cfg;
 	p->ops = *ops;
 	p->ep = ep;
-	p->lfd[0] = p->lfd[1] = p->lfd[2] = -1;
+	p->lfd[0] = p->lfd[1] = -1;
 	p->ufd[0] = p->ufd[1] = p->xfd[0] = p->xfd[1] = -1;
 	p->dgm_max = cfg->mss + CG_PCTL_DATA_HDR - CG_PCTL_HDR;
 	if (!(p->dgbuf = malloc(CG_PCTL_DGRAM_MAX)) || !(p->zbuf = malloc(65535))) {
@@ -2836,10 +2414,6 @@ struct cg_pctl *cg_pctl_new(const struct cg_pctl_cfg *cfg, int ep, const struct 
 		p->f[i].fd = -1;
 	}
 	p->nfree = cfg->max_flows;
-	if (cfg->server && cfg->a_bind.ss_family && listen_a(p, err, errlen) < 0) {
-		cg_pctl_free(p);
-		return NULL;
-	}
 	if (!cfg->server) {
 		if (listen_one(p, AF_INET, err, errlen) < 0) {
 			cg_pctl_free(p);
@@ -2849,8 +2423,8 @@ struct cg_pctl *cg_pctl_new(const struct cg_pctl_cfg *cfg, int ep, const struct 
 			cg_warn("%s: IPv4 only", err);
 			err[0] = '\0';
 		}
-		/* the reliable lane (story 031): variant B's streams only */
-		if (cfg->dgram && cfg->mode == CG_PCTL_B) {
+		/* the reliable lane (story 031) */
+		if (cfg->dgram) {
 			if (udp_listen(p, AF_INET, 0, err, errlen) < 0) {
 				cg_pctl_free(p);
 				return NULL;
@@ -2861,7 +2435,7 @@ struct cg_pctl *cg_pctl_new(const struct cg_pctl_cfg *cfg, int ep, const struct 
 			}
 		}
 		/* and the unreliable datagrams (protocol 20), on the port after it */
-		if (cfg->udp && cfg->mode == CG_PCTL_B) {
+		if (cfg->udp) {
 			if (udp_listen(p, AF_INET, 1, err, errlen) < 0) {
 				cg_pctl_free(p);
 				return NULL;
@@ -2881,7 +2455,7 @@ void cg_pctl_free(struct cg_pctl *p)
 		return;
 	while (p->nused)
 		flow_free(p, &p->f[p->used[0]], 1);
-	for (int i = 0; i < 3; i++)
+	for (int i = 0; i < 2; i++)
 		if (p->lfd[i] >= 0) {
 			epoll_ctl(p->ep, EPOLL_CTL_DEL, p->lfd[i], NULL);
 			close(p->lfd[i]);
@@ -2918,14 +2492,11 @@ void cg_pctl_free(struct cg_pctl *p)
 
 void cg_pctl_json(const struct cg_pctl *p, struct cg_json *j)
 {
-	uint64_t txb = 0, rxb = 0, ab = 0;
+	uint64_t txb = 0, rxb = 0;
 
 	cg_json_obj(j, "protocontroller");
-	if (!p->cfg.server) {
-		cg_json_str(j, "mode", p->cfg.mode == CG_PCTL_A ? "a" : "b");
-		/* the middle leg's protocol: a plain TCP (A) or GRIT (B) */
-		cg_json_str(j, "protocol", p->cfg.mode == CG_PCTL_A ? "TCP" : "GRIT");
-	}
+	if (!p->cfg.server)
+		cg_json_str(j, "protocol", "GRIT"); /* the middle leg's (variant A's plain TCP left in 0.17) */
 	cg_json_u64(j, "flows", p->nused);
 	cg_json_u64(j, "opened", p->opened);
 	/* the reliable lane (story 031) */
@@ -3091,17 +2662,9 @@ void cg_pctl_json(const struct cg_pctl *p, struct cg_json *j)
 	for (uint32_t i = 0; i < p->nused; i++) {
 		const struct flow *f = &p->f[p->used[i]];
 
-		if (f->relay) {
-			ab += f->d[0].in - f->d[0].out + f->d[1].in - f->d[1].out;
-			continue;
-		}
 		txb += f->tx.tail > f->tx.una ? f->tx.tail - f->tx.una : 0;
 		rxb += f->rx.nxt > f->consumed ? f->rx.nxt - f->consumed : 0;
 	}
-	cg_json_u64(j, "a_opened", p->a_opened); /* variant A's connections (a plain TCP in the middle) */
-	cg_json_u64(j, "a_bytes_in", p->a_bytes_in);
-	cg_json_u64(j, "a_bytes_out", p->a_bytes_out);
-	cg_json_u64(j, "a_held_bytes", ab);
 	cg_json_u64(j, "held_tx_bytes", txb);
 	cg_json_u64(j, "held_rx_bytes", rxb);
 	cg_json_u64(j, "mem_bytes", (uint64_t)cg_st_pool_used(&p->pool) * CG_ST_CHUNK);

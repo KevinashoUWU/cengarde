@@ -1410,36 +1410,27 @@ extremo de salida `in_flight`, `unvouched` y `marked`.
 ## Protocontrolador (`protocontroller`)
 
 El protocontrolador (historia 025): TCP partido en los dos extremos (lo que
-la RFC 3135 llama un PEP). Apagado por omisión (`protocontroller = no`), protocolo 10. Dos variantes:
+la RFC 3135 llama un PEP). **Encendido por omisión desde la 0.17**
+(`protocontroller = b`; `no`, el TCP por el túnel como paquetes, queda como
+salida de emergencia, y los dos extremos tienen que decir lo mismo). El tramo
+del medio es **GRIT** (*Guaranteed Redundant IP Transport*): cada conexión es
+un **flujo fiable propio** dentro del túnel; sus mensajes (`OPEN`, `DATA`,
+`ACK`, `RST`, `DGM`, `src/protoctl.h`) van en su propia clase del túnel
+(`CG_T_STREAM`, bajo el MAC, con las copias, la FEC v3 y el rescate), y el
+receptor los entrega al instante. La variante A (un TCP simple del kernel en
+el medio, `protocontroller = a`, `protocontroller_mid_cc`,
+`protocontroller_vps`) salió en la 0.17 (historia 029, paso 4; su código en
+`docs/desvan/protoctl-variante-a.c`): un archivo que todavía la dice corre
+como `b`, con un aviso.
 
-- **`a`:** el tramo del medio es un **TCP simple del kernel** por el túnel,
-  del router a la dirección del VPS en el túnel (`protocontroller_vps`; vacío:
-  la primera del prefijo de `tun_addr`, 10.79.0.1) y a
-  `protocontroller_port`. El router escribe primero una cabecera con el
-  destino; el VPS la lee y abre el destino. `protocontroller_mid_cc` (`bbr`;
-  vacío: el del kernel) es el control de congestión del medio, en cada
-  extremo para lo que envía: con cubic, la pérdida que el túnel no repara a
-  tiempo frena ese tramo. Sin proxies aparte, sin doble cifrado.
-- **`b` (experimental; protocolo GRIT, *Guaranteed Redundant IP
-  Transport*):** cada conexión es un **flujo fiable propio** dentro del túnel: sus mensajes (`OPEN`, `DATA`,
-  `ACK`, `RST`, `src/protoctl.h`) van como carga de DATA con el primer nibble
-  en `0xF` y una etiqueta SipHash de 4 bytes al final (descarta una
-  reconstrucción errada de la FEC), así que el MAC, el anti-replay, las
-  copias, la FEC y el rescate les aplican sin cambios; el receptor los
-  entrega al instante (el reordenador solo cuenta su secuencia).
-
-En los dos:
-
-- **El router** (`protocontroller = a` o `b`, `protocontroller_port`, 7801):
+- **El router** (`protocontroller = b`, `protocontroller_port`, 7801):
   escucha en IPv4 e IPv6 lo que el firewall le redirige (`REDIRECT`; el
   destino original sale de `SO_ORIGINAL_DST`, o con TPROXY de la dirección
   local).
-- **El VPS** (`a` o `b`, da lo mismo: acepta las dos): abre un TCP nuevo
+- **El VPS** (`b`): abre un TCP nuevo
   hacia el destino, no bloqueante, desde su propia dirección (sin NAT; el MSS
   de cada tramo es el de su interfaz). No conecta a loopback, sin
-  especificar, multicast ni enlace local. Escucha la variante A en su
-  dirección del túnel y `protocontroller_port`, y solo acepta direcciones
-  del prefijo del túnel. `protocontroller_cc` (`auto`): el control de
+  especificar, multicast ni enlace local. `protocontroller_cc` (`auto`): el control de
   congestión del kernel (cubic) hacia el destino y BBR en cuanto ese tramo
   pierde (3 segmentos reenviados): BBR no toma la pérdida al azar por
   congestión (historia 024), pero su ProbeRTT retenía un vivo 200 ms cada
@@ -1539,19 +1530,19 @@ Solo la variante B:
 Despliegue:
 
 - **Interceptar** (OpenWrt, `cengarde-setup`): UCI `protocontroller`
-  (`no`, `a`, `b`), `protocontroller_port` (puertos de destino; vacío: todos)
+  (`b` por omisión, o `no`; `a` pasa a `b` al actualizar), `protocontroller_port` (puertos de destino; vacío: todos)
   y `protocontroller_dest` (prefijos; vacío: todo lo que no es privado ni
   local): un include de firewall4 con una cadena propia,
   `cengarde_protoctl`, enganchada justo antes de la `dstnat` de fw4, para lo
   que entra por los dispositivos de la zona `lan`
-  (`/etc/cengarde/protoctl.nft`). En el VPS: `sudo cengarde-vps-setup
-  protocontroller on` (carga `tcp_bbr` al arrancar
-  y abre a `cengarde-nat` el TCP 7801 desde `cg0` para la variante A).
-- **Estado:** `protocontroller` (`mode` en el router, conexiones, abiertas,
+  (`/etc/cengarde/protoctl.nft`). En el VPS, encendido por omisión
+  (`sudo cengarde-vps-setup protocontroller off|on`; carga `tcp_bbr` al
+  arrancar); al actualizar a la 0.17, un VPS con el `no` viejo pasa a `on`.
+  Si el VPS lo tiene apagado y el router no, el router avisa en su log.
+- **Estado:** `protocontroller` (`protocol` en el router, conexiones, abiertas,
   rehusadas por motivo, RST, mensajes, reenvíos, copias, duplicados,
   `corrupt`, huecos del receptor por duración, esperas de envío y de
-  escritura, memoria y su pico, conexiones pasadas a BBR, `a_opened`,
-  `a_bytes_in`, `a_bytes_out` y `a_held_bytes` de la variante A, y por par el
+  escritura, memoria y su pico, conexiones pasadas a BBR, y por par el
   estimador, el ritmo, `min_rtt`, `srtt`, en vuelo, ventana, modo, la
   ventana de RACK, `horizon_ms`, `heavy_loss`, `heavy_windows` y `rebases`: las colas
   que los cortes no vaciaron, cuando la base del retardo de ida subió;

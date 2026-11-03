@@ -212,7 +212,7 @@ struct cg_config {
 	 * ends, a plain TCP (variant A) or a reliable stream of cengarde's
 	 * (variant B) in the middle. Changing any of these
 	 * restarts the connections. */
-	int protocontroller;          /* CG_PCTL_NO, _A or _B (protoctlio.h): router, take the LAN's TCP redirected to protocontroller_port; VPS, open what routers ask (A and B) */
+	int protocontroller;          /* CG_PCTL_B (GRIT, the default) or CG_PCTL_NO (protoctlio.h): router, take the LAN's TCP redirected to protocontroller_port; VPS, open what routers ask */
 	uint32_t protocontroller_port;            /* router: the listening port the firewall redirects to */
 	uint32_t protocontroller_buf_kb;          /* each stream's buffer per direction, at most */
 	uint32_t protocontroller_mem_mb;          /* every stream's buffers together; 0: an eighth of the RAM */
@@ -232,8 +232,6 @@ struct cg_config {
 	int protocontroller_offer;    /* with subflow, GRIT offers the engine's capacity and a quarter (streamcc.h's cg_scc_offer) */
 	int link_cc;                  /* with subflow: each link's own rate (linkcc.h) drives the split and GRIT's offer */
 	char protocontroller_cc[16];              /* VPS: the congestion control toward the destination ("": the kernel's; auto: the kernel's, BBR once it loses) */
-	char protocontroller_mid_cc[16];          /* variant A: the middle TCP's congestion control, each end for what it sends (bbr; "": the kernel's) */
-	char protocontroller_vps[64];             /* router, variant A: the VPS's tunnel address ("": the tunnel prefix's first address) */
 	int tcp_aware;                /* mark inner TCP's retransmissions and ACKs free (tcpfree.h) */
 	int fec;                      /* send a parity of each group of split DATA, rebuild from it (fec.h) */
 	uint32_t fec_wait_ms;         /* a group's parity goes at the latest this long after its first packet */
