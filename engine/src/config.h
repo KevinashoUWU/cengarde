@@ -15,7 +15,7 @@
  * file is read.
  *
  * The tunnel carries IP packets from a TUN device each end owns
- * (tunnel = native, the only kind: authenticated, not encrypted). Both ends
+ * (tunnel = native, the only kind: sealed with ChaCha20-Poly1305, wire.h). Both ends
  * take tun (cg0), tun_addr and tun_mtu; a server routes what the kernel
  * puts in its TUN by tun_route, the prefixes each client owns.
  *

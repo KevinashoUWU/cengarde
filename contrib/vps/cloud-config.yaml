@@ -10,7 +10,7 @@
 #   service with a user of its own;
 # - the router, imported once from /etc/cengarde/secret (then deleted) as
 #   ROUTER_NAME: its tunnel through the engine's TUN (cg0, 10.79.0.1, the
-#   router at ROUTER_TUNNEL_ADDR), authenticated but not encrypted; every
+#   router at ROUTER_TUNNEL_ADDR), encrypted and authenticated (protocol 22); every
 #   key derives from the secret (cengarde-vps-setup). More routers join
 #   later with "cengarde-vps-setup add" (their LuCI shows the command);
 # - the firewall (cengarde-nat): NAT for the tunnel and IP pass, TCP and

@@ -98,7 +98,7 @@
 # allow" frees one below 1024). The engine writes the outcome to its forward
 # table, /var/lib/cengarde/forward, and cengarde-passthrough.path has
 # cengarde-nat apply it. The tunnels are the engine's TUN, authenticated
-# but not encrypted (story 014).
+# and, since protocol 22, encrypted (story 032).
 # Settings: /etc/cengarde/nat.conf (see cengarde-nat). The engine's own
 # global settings by hand (governor, split_spread_ms...: see
 # engine/examples/server.conf) go in /etc/cengarde/engine.local, one
@@ -1056,7 +1056,7 @@ cmd_list() {
 	done
 	[ "$(nrouters)" -gt 0 ] || say "no router (cengarde-vps-setup add NAME)"
 	[ ! -e "$NAT_STATE/applied" ] || say "IP pass: $(pass_view)"
-	say "tunnels: the engine's TUN $TUN_DEV, authenticated but not encrypted"
+	say "tunnels: the engine's TUN $TUN_DEV, encrypted and authenticated (ChaCha20-Poly1305)"
 	if tunnel_v6; then
 		say "IPv6 through the tunnels: on (cengarde-vps-setup ipv6 off)"
 	elif [ "$TUNNEL_IPV6" = yes ]; then

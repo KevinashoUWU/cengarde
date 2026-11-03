@@ -246,8 +246,8 @@ msgstr "Primero, una sola vez, ejecuta en el VPS la orden de abajo: deja que la 
 msgid "Manage the tunnel"
 msgstr "Gestionar el túnel"
 
-msgid "cengarde carries the packets itself through its own interface cg0: authenticated (nobody can inject or replay packets) but NOT encrypted, so the carriers see the traffic. On: cg0 gets this router's address in the tunnel (VPS tab) and its routes, in the wan firewall zone. Off: cengarde still carries what reaches cg0, but its interface, routes and firewall zone are yours to set up."
-msgstr "cengarde lleva él mismo los paquetes por su propia interfaz cg0: autenticados (nadie puede inyectar ni repetir paquetes) pero NO cifrados, así que las operadoras ven el tráfico. Activado: cg0 recibe la dirección de este router en el túnel (pestaña VPS) y sus rutas, en la zona wan del cortafuegos. Desactivado: cengarde sigue llevando lo que llega a cg0, pero su interfaz, sus rutas y su zona del cortafuegos las configuras tú."
+msgid "cengarde carries the packets itself through its own interface cg0, encrypted and authenticated (ChaCha20-Poly1305: the carriers see sizes and timing, not the traffic; nobody can inject or replay packets). On: cg0 gets this router's address in the tunnel (VPS tab) and its routes, in the wan firewall zone. Off: cengarde still carries what reaches cg0, but its interface, routes and firewall zone are yours to set up."
+msgstr "cengarde lleva él mismo los paquetes por su propia interfaz cg0, cifrados y autenticados (ChaCha20-Poly1305: las operadoras ven tamaños y tiempos, no el tráfico; nadie puede inyectar ni repetir paquetes). Activado: cg0 recibe la dirección de este router en el túnel (pestaña VPS) y sus rutas, en la zona wan del cortafuegos. Desactivado: cengarde sigue llevando lo que llega a cg0, pero su interfaz, sus rutas y su zona del cortafuegos las configuras tú."
 
 msgid "Route all traffic through the tunnel"
 msgstr "Enrutar todo el tráfico por el túnel"
@@ -834,8 +834,8 @@ msgstr "Servicio"
 msgid "connected"
 msgstr "conectado"
 
-msgid "Tunnel (not encrypted)"
-msgstr "Túnel (sin cifrar)"
+msgid "Tunnel (encrypted)"
+msgstr "Túnel (cifrado)"
 
 msgid "IPv6 address in the tunnel"
 msgstr "Dirección IPv6 en el túnel"

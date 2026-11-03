@@ -583,7 +583,7 @@ for (const [lang, tr] of [ [ 'en', english ], [ 'es', spanish ] ]) {
 		v.update(n, st);
 		return find(n, (x) => x.tag == 'tr').map((r) => r.children.map(text));
 	};
-	const TUNNEL = L('Tunnel (not encrypted)', 'Túnel (sin cifrar)');
+	const TUNNEL = L('Tunnel (encrypted)', 'Túnel (cifrado)');
 	const CONNECTED = L('connected', 'conectado'), WAITING = L('waiting for the VPS', 'esperando al VPS');
 	const tunnelRow = (rows) => rows.find((r) => r[0] == TUNNEL);
 	const up = tunnelRow(summary(base({ links: [ { ...link('up1', null), state: 'live' } ] })));

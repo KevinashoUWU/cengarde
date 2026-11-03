@@ -83,7 +83,7 @@ T = {
  "busy_poll_us": ([G], BOTH, "0", "0–1000000", [THR], ["006"], "Tras tráfico, sondea sin dormir este tiempo. `thrplan.h` lo limita si los hilos no caben en las CPU."),
  "rt_priority": ([G], BOTH, "0 (normal)", "0–99", [THR], ["006"], "Prioridad `SCHED_FIFO` de los hilos de datos."),
  # --- tunnel ---
- "tunnel": ([G], BOTH, "`native`", "`native` (`wireguard` es un error desde 0.12)", [TUNR, TCPF], ["014", "027"], "Qué lleva el túnel: paquetes IP de una TUN propia (autenticados, sin cifrar), el único modo desde 0.12."),
+ "tunnel": ([G], BOTH, "`native`", "`native` (`wireguard` es un error desde 0.12)", [TUNR, TCPF], ["014", "027"], "Qué lleva el túnel: paquetes IP de una TUN propia (cifrados y autenticados desde el protocolo 22), el único modo desde 0.12."),
  "tun": ([G], BOTH, "`cg0`", "nombre de interfaz", [TUNR], ["014"], "Nombre de la TUN del túnel."),
  "tun_addr": ([G], BOTH, "ninguna (las pone el sistema)", "hasta 4 prefijos", [TUNR], ["014"], "Direcciones que cengarde pone en la TUN."),
  "tun_mtu": ([G], BOTH, "1420", "576–1995", [TUNR], ["014"], "MTU de la TUN."),

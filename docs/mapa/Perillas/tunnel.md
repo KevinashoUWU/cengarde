@@ -7,7 +7,7 @@ archivos:
 
 # `tunnel`
 
-Qué lleva el túnel: paquetes IP de una TUN propia (autenticados, sin cifrar), el único modo desde 0.12.
+Qué lleva el túnel: paquetes IP de una TUN propia (cifrados y autenticados desde el protocolo 22), el único modo desde 0.12.
 
 - **Sección:** global
 - **Extremo:** los dos

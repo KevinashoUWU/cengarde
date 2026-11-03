@@ -241,6 +241,18 @@ frame (0,6 % a 1400), menos con los acuses que hoy viajan solos.
   (el orden de `cg_rx_entry` con paquetes sellados y el cambio de época),
   `test_steer` (el byte del enlace en el cable).
 
+## Paso 3: lo que valen los frames (medido, 2026-11-03)
+
+- Testnet en el 22 (`c8d74d9`), una bajada de 449 Mbit/s (iperf3 -R, 4
+  TCP, 10 s, desde `nucc`): el router mandó 23 100 acuses de GRIT (uno cada
+  18 segmentos de bajada, ~2 300 por segundo, 84 bytes), cada uno copiado a
+  los 4 módems (23 202 paquetes por enlace): ~1,5 Mbit/s de subida en total
+  (0,35 % de la bajada), ~2 300 pps por módem. Sin datos de subida no hay
+  con qué juntarlos: los frames ganarían poco con este tráfico.
+- **Decisión:** el paso 3 queda para después de la 1.0 (lo que más
+  ahorraría es otra cosa: no copiar cada acuse a todos los enlaces, o
+  espaciarlos, en GRIT). El formato 1.0 queda en el protocolo 22.
+
 ## Pendiente
 
 - El paso 2 en el terreno, y el CPU de la Pi y del VPS a plena carga; medir sellar y abrir en la Pi 4 y en el

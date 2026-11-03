@@ -577,7 +577,7 @@ return view.extend({
 		};
 
 		o = s.taboption('tunnel', form.Flag, 'tunnel', _('Manage the tunnel'),
-			_('cengarde carries the packets itself through its own interface cg0: authenticated (nobody can inject or replay packets) but NOT encrypted, so the carriers see the traffic. On: cg0 gets this router\'s address in the tunnel (VPS tab) and its routes, in the wan firewall zone. Off: cengarde still carries what reaches cg0, but its interface, routes and firewall zone are yours to set up.'));
+			_('cengarde carries the packets itself through its own interface cg0, encrypted and authenticated (ChaCha20-Poly1305: the carriers see sizes and timing, not the traffic; nobody can inject or replay packets). On: cg0 gets this router\'s address in the tunnel (VPS tab) and its routes, in the wan firewall zone. Off: cengarde still carries what reaches cg0, but its interface, routes and firewall zone are yours to set up.'));
 		o.default = '1';
 		o.rmempty = false;
 		o.onchange = refresh;
