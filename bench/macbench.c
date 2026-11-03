@@ -57,6 +57,7 @@
 #include "clients.h"
 #include "cookie.h"
 #include "idmap.h"
+#include "aead.h"
 #include "proto.h"
 
 #define PICKS 2048 /* a power of two */
@@ -202,9 +203,8 @@ static void world_init(struct world *w, int nclients, int nper)
 
 /* ---- the operations: each loop returns what it accumulated ---- */
 
-/* A header and payload in buf; verify and write vary byte 3 (the link id),
- * which the MAC leaves out, so that the input changes at each turn and the
- * answer stays the same. */
+/* A header and payload in buf; parse varies byte 3 (the link id), so that
+ * the input changes at each turn and the answer stays the same. */
 struct vctx {
 	uint8_t *buf;
 	size_t len;
@@ -242,10 +242,10 @@ static uint64_t op_verify(const void *p, uint64_t iters)
 	const struct vctx *x = p;
 	uint64_t acc = 0;
 
-	for (uint64_t i = 0; i < iters; i++) {
-		x->buf[CG_LINK_OFF] = (uint8_t)i;
+	/* the same packet each turn: since protocol 16 the link byte is under
+	 * the MAC too, so nothing may change (cg_hdr_verify is not inlined) */
+	for (uint64_t i = 0; i < iters; i++)
 		acc += (uint64_t)cg_hdr_verify(x->buf, x->len, x->key);
-	}
 	return acc;
 }
 
@@ -259,6 +259,71 @@ static uint64_t op_write(const void *p, uint64_t iters)
 		h.seq = (uint32_t)i;
 		cg_hdr_write(x->buf, &h, x->key, x->buf + CG_HDR_LEN, x->len - CG_HDR_LEN);
 		acc += x->buf[CG_MAC_OFF];
+	}
+	return acc;
+}
+
+/* ChaCha20-Poly1305 (aead.h, story 032): the 1.0 format's seal and open of
+ * a body of len bytes behind an 11-byte header (the AAD); the nonce's
+ * counter changes at each turn, as a link's sseq. */
+struct ectx {
+	uint8_t *buf;
+	size_t len;
+	uint8_t key[CG_AEAD_KEY_LEN];
+	uint8_t tag[CG_AEAD_TAG_LEN];
+};
+
+static uint64_t op_seal(const void *p, uint64_t iters)
+{
+	struct ectx *x = (struct ectx *)p;
+	uint8_t nonce[CG_AEAD_NONCE_LEN] = { 0 };
+	uint64_t acc = 0;
+
+	for (uint64_t i = 0; i < iters; i++) {
+		memcpy(nonce + 4, &i, sizeof(i));
+		cg_aead_seal(x->buf + 11, x->tag, x->buf + 11, x->len - 11, x->buf, 11, x->key, nonce);
+		acc += x->tag[0];
+	}
+	return acc;
+}
+
+static uint64_t op_open(const void *p, uint64_t iters)
+{
+	struct ectx *x = (struct ectx *)p;
+	uint8_t nonce[CG_AEAD_NONCE_LEN] = { 0 };
+	uint64_t acc = 0;
+
+	/* the same packet each turn: its tag checked, the body decrypted back
+	 * and forth (open then seal again would time both) */
+	cg_aead_seal(x->buf + 11, x->tag, x->buf + 11, x->len - 11, x->buf, 11, x->key, nonce);
+	for (uint64_t i = 0; i < iters; i++) {
+		acc += (uint64_t)(cg_aead_open(x->buf + 11, x->buf + 11, x->len - 11, x->tag, x->buf, 11, x->key, nonce) + 1);
+		cg_chacha20(x->buf + 11, x->buf + 11, x->len - 11, x->key, nonce, 1); /* back to the ciphertext */
+	}
+	return acc;
+}
+
+static uint64_t op_chacha(const void *p, uint64_t iters)
+{
+	struct ectx *x = (struct ectx *)p;
+	uint8_t nonce[CG_AEAD_NONCE_LEN] = { 0 };
+
+	for (uint64_t i = 0; i < iters; i++) {
+		memcpy(nonce + 4, &i, sizeof(i));
+		cg_chacha20(x->buf, x->buf, x->len, x->key, nonce, 1);
+	}
+	return x->buf[0];
+}
+
+static uint64_t op_poly(const void *p, uint64_t iters)
+{
+	struct ectx *x = (struct ectx *)p;
+	uint64_t acc = 0;
+
+	for (uint64_t i = 0; i < iters; i++) {
+		x->key[0] = (uint8_t)i;
+		cg_poly1305(x->tag, x->buf, x->len, x->key);
+		acc += x->tag[0];
 	}
 	return acc;
 }
@@ -296,7 +361,6 @@ static uint64_t op_lookup_verify(const void *p, uint64_t iters)
 
 		if (lookup(x->w, k->hint, k->id, &c) < 0)
 			continue;
-		x->buf[CG_LINK_OFF] = (uint8_t)i;
 		acc += (uint64_t)cg_hdr_verify(x->buf, x->len, x->w->key[c]);
 	}
 	return acc;
@@ -320,7 +384,6 @@ static uint64_t op_old_verify(const void *p, uint64_t iters)
 	for (uint64_t i = 0; i < iters; i++) {
 		if (cg_idmap_get(&x->map, x->id) < 0)
 			continue;
-		x->buf[CG_LINK_OFF] = (uint8_t)i;
 		acc += (uint64_t)cg_hdr_verify(x->buf, x->len, x->key);
 	}
 	return acc;
@@ -341,7 +404,6 @@ static uint64_t op_admit(const void *p, uint64_t iters)
 	uint64_t acc = 0;
 
 	for (uint64_t i = 0; i < iters; i++) {
-		x->buf[CG_LINK_OFF] = (uint8_t)i;
 		for (int c = x->hx.first[x->buf[CG_HINT_OFF]]; c >= 0; c = x->hx.next[c]) {
 			if (cg_hdr_verify(x->buf, x->len, x->key[c])) {
 				acc++;
@@ -643,6 +705,24 @@ int main(int argc, char **argv)
 	bench("cg_hdr_verify, probe 40 B", op_verify, &vprobe);
 	bench("cg_hdr_write, DATA 1400 B", op_write, &vdata);
 	bench("cg_hdr_write, probe 40 B", op_write, &vprobe);
+
+	{
+		static uint8_t ebuf[2][DATA_LEN];
+		static struct ectx e[2];
+
+		for (int i = 0; i < 2; i++) {
+			e[i].buf = ebuf[i];
+			e[i].len = i ? PROBE_LEN + 11 : DATA_LEN;
+			rnd_bytes(e[i].buf, e[i].len);
+			rnd_bytes(e[i].key, sizeof(e[i].key));
+		}
+		section("1b. the 1.0 format's AEAD (aead.h, story 032): ChaCha20-Poly1305");
+		bench("cg_aead_seal, body 1413 B", op_seal, &e[0]);
+		bench("cg_aead_open, body 1413 B", op_open, &e[0]);
+		bench("cg_aead_seal, probe 40 B", op_seal, &e[1]);
+		bench("cg_chacha20 alone, 1424 B", op_chacha, &e[0]);
+		bench("cg_poly1305 alone, 1424 B", op_poly, &e[0]);
+	}
 
 	section("2. lookup of an existing session (hint chain + idmap + owner)");
 	bench("harness: pick load + add (floor of the loops below)", op_harness, W[0].hit);
