@@ -1499,9 +1499,9 @@ flow_class_one() {
 	config_get e "$s" endpoint
 	config_get c "$s" class
 	case "$c" in
-	auto | ordered | deadline | direct | reliable) ;;
+	auto | ordered | deadline | reorder | direct | reliable) ;;
 	*)
-		log "flowclass $s: class '$c': expected auto, ordered, deadline, direct or reliable, left out"
+		log "flowclass $s: class '$c': expected auto, ordered, deadline, reorder, direct or reliable, left out"
 		return 0
 		;;
 	esac

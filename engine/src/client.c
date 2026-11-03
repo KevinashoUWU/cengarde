@@ -3881,7 +3881,7 @@ static void down_deliver(struct client *c, const struct cg_hdr *h, unsigned link
 		if (fc == CG_FC_NONE && cg_fl_unsplit(&c->fl, now_ms) && cg_fl_kind(&c->fl, payload, len, now_ms))
 			fc = CG_FC_DIRECT; /* as the server's: never while the sender splits */
 	}
-	cg_fc_hold(fc, dg == CG_DG_TS, &k.waits, &k.nohold);
+	cg_fc_hold(fc, dg == CG_DG_TS, &k.waits, &k.nohold, &k.noask);
 	v = cg_ro_in(&c->rxs.ro, &c->pool, &c->rocf, &k, rset, &buf);
 	if (v == CG_RO_AGAIN) {
 		/* The window overflowed: the gaps it forces out go, with what was

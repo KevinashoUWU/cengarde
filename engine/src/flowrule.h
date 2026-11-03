@@ -15,6 +15,11 @@
  *             receiver with no reorder buffer of its own)
  *   deadline  held up to its deadline, asked for, never waited for longer
  *             (RTP's rule: a jitter buffer orders what comes late)
+ *   reorder   held up to its deadline and handed on in order, never asked
+ *             for: order without the tunnel's rescue (QUIC passing in
+ *             bonding, a VPN inside: their own ARQ, which a rescue would
+ *             only repeat; in the field order took aioquic and quic-go
+ *             2-4x higher)
  *   direct    never held nor rescued (QUIC, SRT, WebRTC, a game: their own
  *             ARQ and order)
  *   auto      what dgclass.h guesses (a rule that keeps a flow out of a
@@ -40,7 +45,7 @@
 
 #include "ippkt.h"
 
-enum { CG_FC_NONE = 0, CG_FC_AUTO, CG_FC_ORDERED, CG_FC_DEADLINE, CG_FC_DIRECT, CG_FC_RELIABLE };
+enum { CG_FC_NONE = 0, CG_FC_AUTO, CG_FC_ORDERED, CG_FC_DEADLINE, CG_FC_DIRECT, CG_FC_RELIABLE, CG_FC_REORDER };
 
 #define CG_FC_MAX 32 /* rules, at most */
 
@@ -59,9 +64,9 @@ struct cg_fc {
 
 static inline int cg_fc_class_of(const char *s)
 {
-	static const char *const names[] = { "auto", "ordered", "deadline", "direct", "reliable" };
+	static const char *const names[] = { "auto", "ordered", "deadline", "direct", "reliable", "reorder" };
 
-	for (int i = 0; i < 5; i++)
+	for (int i = 0; i < (int)(sizeof(names) / sizeof(names[0])); i++)
 		if (!strcmp(s, names[i]))
 			return CG_FC_AUTO + i;
 	return CG_FC_NONE;
@@ -182,13 +187,15 @@ static inline int cg_fc_match(const struct cg_fc *t, const uint8_t *b, size_t le
 	return CG_FC_NONE;
 }
 
-/* For the reorderer: whether a datagram waits for its rescue (*waits) or is
- * never held (*nohold), from its rule's class fc (CG_FC_NONE or AUTO: the
- * guess, ts: dgclass.h took it for MPEG-TS). */
-static inline void cg_fc_hold(int fc, int ts, uint8_t *waits, uint8_t *nohold)
+/* For the reorderer: whether a datagram waits for its rescue (*waits), is
+ * never held (*nohold) or held without asking for what it waits on
+ * (*noask), from its rule's class fc (CG_FC_NONE or AUTO: the guess, ts:
+ * dgclass.h took it for MPEG-TS). */
+static inline void cg_fc_hold(int fc, int ts, uint8_t *waits, uint8_t *nohold, uint8_t *noask)
 {
 	*waits = (uint8_t)(fc == CG_FC_ORDERED || ((fc == CG_FC_NONE || fc == CG_FC_AUTO || fc == CG_FC_RELIABLE) && ts));
 	*nohold = (uint8_t)(fc == CG_FC_DIRECT);
+	*noask = (uint8_t)(fc == CG_FC_REORDER);
 }
 
 /* Whether table t has a reliable rule: the router opens the lane. */

@@ -589,7 +589,7 @@ msgstr ""
 msgid "Flows"
 msgstr ""
 
-msgid "UDP and the rest: the engine guesses MPEG-TS and RTP from their bytes; a rule here has the last word, for the address and port of either end of a flow, the first rule that matches. Ordered: held in order and waits for what is missing (MPEG-TS, telemetry with no buffer of its own). Deadline: held up to its deadline (RTP). Direct: never held nor rescued (QUIC, SRT, WebRTC, games: their own retransmissions and order). Automatic: what the engine guesses. Behind the router's NAT the tunnel sees the far end and the port: a LAN address with a port is taken as the port alone; the VPS takes the same rules for the upload."
+msgid "UDP and the rest: the engine guesses MPEG-TS and RTP from their bytes; a rule here has the last word, for the address and port of either end of a flow, the first rule that matches. Ordered: held in order and waits for what is missing (MPEG-TS, telemetry with no buffer of its own). Deadline: held up to its deadline (RTP). Reorder: held in order up to its deadline, never rescued (QUIC that passes in bonding, a VPN inside: their own retransmissions; in the field, order took QUIC 2 to 4 times higher). Direct: never held nor rescued (QUIC, SRT, WebRTC, games: their own retransmissions and order). Automatic: what the engine guesses. Behind the router's NAT the tunnel sees the far end and the port: a LAN address with a port is taken as the port alone; the VPS takes the same rules for the upload."
 msgstr ""
 
 msgid "Reliable (telemetry): every datagram of the flow arrives, in order, late rather than never: they ride the protocontroller (B) as a stream of their own, with its retransmissions, and the VPS sends them on as UDP. For telemetry or data that must arrive, never for voice or video: it adds latency. A LAN address works here (the router takes them before its NAT)."
@@ -614,6 +614,9 @@ msgid "Ordered"
 msgstr ""
 
 msgid "Deadline"
+msgstr ""
+
+msgid "Reorder only"
 msgstr ""
 
 msgid "Direct"
@@ -901,7 +904,7 @@ msgstr ""
 msgid "Download (from the VPS)"
 msgstr ""
 
-msgid "Arrived first"
+msgid "Delivered"
 msgstr ""
 
 msgid "Sent"
@@ -1042,7 +1045,7 @@ msgstr ""
 msgid "Upload and download are decided apart, by the end that sends: an uplink can be on standby one way and in use the other, as is usual when carriers are faster one way (upload through one, download through another). On standby it carries only probes until it catches up with the best, and at least the minimum of active uplinks (Advanced tab) always stays in use."
 msgstr ""
 
-msgid "Behind the fastest: how much later this uplink delivers the upload than the quickest one; past the limit its upload goes on standby. Arrived first: share of the download that came through this uplink before any other copy. Pause: takes an uplink out without touching the configuration, until you resume it or cengarde restarts."
+msgid "Behind the fastest: how much later this uplink delivers the upload than the quickest one; past the limit its upload goes on standby. Delivered: share of the download that came through this uplink, what GRIT carried included. Pause: takes an uplink out without touching the configuration, until you resume it or cengarde restarts."
 msgstr ""
 
 msgid "VPS address: where the uplink sends to; \"failover\" when the first VPS address it can use did not answer. Path MTU: the largest packet the path to the VPS takes."
