@@ -1,7 +1,7 @@
 # 031 — Clases por flujo (U5): la FEC y la protección para GRIT, y el proxy UDP
 
 - **Fecha:** 2026-11-02
-- **Estado:** pasos 1, 2 y 3 hechos (PR #158 a #164, protocolos 17 y 18): `fec_stream`, `flow_class` con su tabla «Flujos», el carril fiable con zstd y `flow_learn`; los envíos por equipo (19), el UDP dentro de GRIT (20, `protocontroller_udp`), DiffServ (21, `protocontroller_dscp`) y el crédito de ráfaga (`protocontroller_burst_kb`); falta terreno de los pasos 2 y 3 y del crédito
+- **Estado:** pasos 1, 2 y 3 hechos (PR #158 a #164, protocolos 17 y 18): `fec_stream`, `flow_class` con su tabla «Flujos», el carril fiable con zstd y `flow_learn`; los envíos por equipo (19), el UDP dentro de GRIT (20, `protocontroller_udp`), DiffServ (21, `protocontroller_dscp`), el crédito de ráfaga (`protocontroller_burst_kb`) y la clase «en vivo» (`livesni.h`); falta terreno de los pasos 2 y 3 y del crédito
 - **Fuentes:** historia 030 (protocolos 13–16, el reordenador por clase de
   datagrama), 026 (FEC v3), 020 y 021 (`redund_spare`), 025 (GRIT en
   redundancia), 029 (MPGRIT U5); `engine/src/fec3.h`, `repair.h`, `rlc.h`,
@@ -755,6 +755,46 @@ azar los paquetes del túnel en los dos sentidos (iptables `statistic`).
   2–9 ms, como antes.
 - **Pendiente:** en la pestaña Túnel, una línea promedio de 4–6 s sobre la instantánea para que
   un stream no se vea como electrocardiograma.
+
+## La clase «en vivo» y los datagramas a tiempo (2026-11-03)
+
+- **La clase «en vivo» (`livesni.h`):** el router mira lo primero que lee
+  de cada TCP interceptado. Si va al puerto 1935 (RTMP) o es un ClientHello
+  de TLS que pide una ingesta conocida (YouTube `rtmp(s).youtube.com`,
+  Facebook `live-api(-s).facebook.com`, Instagram, Twitch y Kick por
+  `live-video.net`, Restream, Mux), el flujo va en la clase de video de
+  `dscp.h` (AF41) aunque el equipo no lo marque: antes que el bulto mientras
+  no pase de la mitad del ritmo del marcapasos. Solo el orden de los envíos
+  (`flow_ds`); la marca que sigue (el OPEN, los sockets) es la del equipo.
+  Estado: `protocontroller.dscp.live`.
+- **Laboratorio** (`labq`, remoto06 y remoto07, preset bonding, FLV de
+  8 Mbit/s al 1935 con otro equipo de 4 TCP al lado, `BOND_FLV=8M`
+  `BOND_HOG=4`, cubic, 4 × 30 s, subida; ms de atraso de los keyframes):
+
+  | Caso | Keyframe p50 | Keyframe p99 | TCP del equipo medido |
+  | --- | --- | --- | --- |
+  | `equal` | 110 → 63 | 236 → 187 | 34,8 → 37,0 Mbit/s |
+  | `het` | 179 → 117 | 311 → 210 | 29,1 → 29,3 |
+  | `cell4` | 250 → 136 | 370 → 227 | 10,4 → 12,0 |
+
+- **Los datagramas solo por los enlaces a tiempo: no.** Mandar cada DGM
+  solo por los enlaces donde el ETA dice que llega a menos de 100 ms del
+  primero dejó igual el bonding (el reparto por ETA ya elige el que llega
+  primero) y empeoró la redundancia (`cell4` 5–7 → 50–132 RTP perdidos: las
+  copias de los enlaces "tarde" sí llegaban dentro del jitter buffer).
+  Fuera, en `docs/desvan/dgm-en-plazo.h`.
+- **Los datagramas sin marca en la clase de video: no.** `cell4` igual,
+  `het` algo peor (bonding 990–1168 → 1079–1568). Los DGM no se botan por
+  viejos ni por cola llena (`dgm_old`, `dgm_full` en 0).
+- **Lo que sí se vio: los presets de terreno.** El mismo RTP en `het` pierde
+  0–5 por corrida con la configuración por omisión del laboratorio y
+  ~500 (redundancia) a ~1000 (bonding) con los presets de terreno; sin
+  `link_cc` peor (800–1677), sin `redund_pace_ms` algo mejor (152–796).
+  Los presets son de versiones anteriores: se revisan contra el motor de hoy
+  (TCP, latencia y datagramas a la vez).
+- **A favor, de antes:** el DGM no lleva las cabeceras IP/UDP (el router
+  conoce las direcciones del flujo): 28–48 bytes menos por paquete que por la
+  TUN, la mitad de la compresión de cabeceras del UDP de la tarea #78.
 
 ## Pendiente
 

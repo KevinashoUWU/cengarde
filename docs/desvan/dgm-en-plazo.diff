@@ -1,0 +1,312 @@
+diff --git a/engine/src/client.c b/engine/src/client.c
+index cc96480..71b46d4 100644
+--- a/engine/src/client.c
++++ b/engine/src/client.c
+@@ -265,6 +265,9 @@ struct client {
+ 	struct cg_split_tail tail; /* which reply that was (split.h) */
+ 	int8_t pick[CG_BATCH]; /* per packet of an upload batch: its one link (split), or -1 (every carrier) */
+ 	int pavoid;            /* the link up_one's split leaves out when another stays (a GRIT resend, U2b), -1: none */
++	int pdgm;              /* up_one's packet is a GRIT datagram (CG_PCTL_SEND_DGM): only links in time */
++	uint8_t dgm[CG_BATCH]; /* per packet of the batch: such a datagram (send_links' copies) */
++	uint64_t dgm_cut;      /* datagrams whose links were narrowed to those in time */
+ 	uint16_t cmask[CG_BATCH]; /* with a link's pace_ms: the carriers a packet of every carrier goes on */
+ 	uint32_t up_max;     /* largest packet from the TUN since the last path check */
+ 	uint32_t up_largest; /* the same over the last check period, for the status */
+@@ -1507,6 +1510,18 @@ static ssize_t wsend(struct client *c, int fd, const uint8_t *pkt, size_t len, i
+ 	return s == (ssize_t)n ? (ssize_t)len : s;
+ }
+ 
++/* The carriers where GRIT datagram j of the batch arrives in time (its
++ * copies, protoctlio.h's CG_PCTL_SEND_DGM), by e; carry when none is known. */
++static uint16_t dgm_in_time(struct client *c, struct cg_eta *e, uint16_t carry, int j, uint64_t now_us)
++{
++	uint16_t in = cg_eta_within(e, carry, (uint32_t)c->oiov[j][1].iov_len, now_us, CG_PCTL_DGM_LATE_US);
++
++	if (!in || in == carry)
++		return carry;
++	c->dgm_cut++;
++	return in;
++}
++
+ static void send_links(struct client *c, int m, uint64_t now_ms, uint16_t live, uint16_t carry, uint16_t dup)
+ {
+ 	int ids[CG_MAX_LINKS], n = 0, first = 0;
+@@ -1526,10 +1541,11 @@ static void send_links(struct client *c, int m, uint64_t now_ms, uint16_t live,
+ 
+ 		for (int j = 0; j < m; j++) {
+ 			int f = -1;
++			uint16_t set = c->dgm[j] && c->pick[j] < 0 ? dgm_in_time(c, &c->pace, carry, j, now_us) : carry;
+ 
+ 			c->cmask[j] = c->pick[j] >= 0 || c->oiov[j][1].iov_len < CG_PACE_SMALL
+-					      ? 0xffff
+-					      : cg_eta_copies_first(&c->pace, carry, (uint32_t)c->oiov[j][1].iov_len, now_us,
++					      ? (set == carry ? 0xffff : set)
++					      : cg_eta_copies_first(&c->pace, set, (uint32_t)c->oiov[j][1].iov_len, now_us,
+ 								    c->pace_w, &f);
+ 			/* redund_spare: the first link of the last tick (spare_tick) */
+ 			fl[j] = (int8_t)(c->cfg->redund_spare ? c->sp_first1 - 1 : f);
+@@ -1537,8 +1553,15 @@ static void send_links(struct client *c, int m, uint64_t now_ms, uint16_t live,
+ 		if (c->cfg->redund_spare)
+ 			spare_masks(c, m, carry, now_us, fl);
+ 	} else {
+-		for (int j = 0; j < m; j++)
+-			c->cmask[j] = 0xffff;
++		uint64_t now_us = cg_now_us();
++
++		for (int j = 0; j < m; j++) {
++			uint16_t set = c->dgm[j] && c->pick[j] < 0 && c->cfg->split_eta
++					       ? dgm_in_time(c, &c->eta, carry, j, now_us)
++					       : carry;
++
++			c->cmask[j] = set == carry ? 0xffff : set;
++		}
+ 	}
+ 	retx_masks(c, m, carry, dup);
+ 	seal_batch(c, m, carry, dup);
+@@ -2544,6 +2567,13 @@ static void up_one(struct client *c, struct upctx *u, int m, uint8_t *buf, size_
+ 					  (unsigned)__builtin_popcount(u->carry), c->cfg->split_stress_dup);
+ 		plan = cg_split_plan(elig, share, stress);
+ 		elig = cg_split_avoid(plan.pick, c->pavoid);
++		/* a GRIT datagram: only the links where it arrives in time */
++		if (c->pdgm && !copy && split && c->cfg->split_eta) {
++			uint16_t in = cg_eta_within(&c->eta, elig, (uint32_t)len, now_us, CG_PCTL_DGM_LATE_US);
++
++			c->dgm_cut += in && in != elig;
++			elig = in ? in : elig;
++		}
+ 		if (split)
+ 			c->plan_n[plan.by]++;
+ 	}
+@@ -2556,6 +2586,7 @@ static void up_one(struct client *c, struct upctx *u, int m, uint8_t *buf, size_
+ 							  elig, u->k.dup, u->w, (uint32_t)len, c->cfg->split_small, &flags)
+ 				      : -1);
+ 	c->up_split += c->pick[m] >= 0;
++	c->dgm[m] = (uint8_t)(c->pdgm && !copy);
+ 	c->tcpk[m] = 0;
+ 	c->tcpr[m] = CG_TCPA_UNKNOWN;
+ 	if (c->cfg->tcp_aware) {
+@@ -2686,8 +2717,10 @@ static void pctl_send(void *ctx, uint32_t peer, uint32_t sid, uint8_t *const *ms
+ 	c->sr_live = (uint8_t)!u.split; /* redundancy: redund_spare protects the STREAMs */
+ 	for (int m = 0; m < n; m++) {
+ 		c->pavoid = avoid[m] ? avoid[m] - 1 : -1;
+-		up_one(c, &u, m, msg[m], len[m], now_us, copy[m]);
++		c->pdgm = !!(copy[m] & CG_PCTL_SEND_DGM);
++		up_one(c, &u, m, msg[m], len[m], now_us, copy[m] & CG_PCTL_SEND_COPY);
+ 		c->pavoid = -1;
++		c->pdgm = 0;
+ 		eta_us[m] = c->pick[m] >= 0 && c->cfg->split_eta ? cg_eta_behind(&c->eta, (unsigned)c->pick[m]) : CG_PCTL_NOETA;
+ 		link[m] = c->pick[m] >= 0 ? (uint8_t)c->pick[m] : CG_PCTL_NOLINK;
+ 		ts[m] = c->sts[m]; /* its header's ts: a DATA's clock (15) */
+@@ -5080,6 +5113,7 @@ static void status_json(struct client *c, uint64_t now_ms, struct cg_json *j)
+ 		cg_json_null(j, "spare");
+ 	}
+ 	/* Its parities (fec.h). */
++	cg_json_u64(j, "dgm_narrowed", c->dgm_cut); /* GRIT datagrams kept to the links in time */
+ 	cg_json_obj(j, "fec");
+ 	cg_json_bool(j, "on", c->cfg->fec);
+ 	cg_json_u64(j, "parities", c->fec_parities);
+diff --git a/engine/src/eta.h b/engine/src/eta.h
+index 077afb2..3171e30 100644
+--- a/engine/src/eta.h
++++ b/engine/src/eta.h
+@@ -261,6 +261,37 @@ static inline uint16_t cg_eta_copies_first(struct cg_eta *e, uint16_t set, uint3
+ 	return out;
+ }
+ 
++/* The links of set where a packet of len bytes put now arrives within
++ * window_us of the first of them, without putting it anywhere: an
++ * unreliable datagram's useful links (a DGM, story 031: one that comes
++ * later than its receiver's jitter buffer is lost all the same, and on a
++ * link behind a long queue it only lengthens that queue). A link without
++ * a rate is in; with set holding one, the first always is. */
++static inline uint16_t cg_eta_within(struct cg_eta *e, uint16_t set, uint32_t len, uint64_t now_us, uint32_t window_us)
++{
++	uint64_t at[CG_MAX_LINKS], best = UINT64_MAX, bits = (uint64_t)len * 8 * 1000000;
++	uint16_t out = 0;
++
++	for (unsigned i = 0; i < CG_MAX_LINKS; i++) {
++		struct cg_eta_link *l = &e->l[i];
++
++		if (!(set >> i & 1))
++			continue;
++		if (!l->bps) {
++			out |= (uint16_t)(1u << i);
++			continue;
++		}
++		cg_eta_drain(l, now_us);
++		at[i] = l->base_us + (l->backlog + bits) / l->bps;
++		if (at[i] < best)
++			best = at[i];
++	}
++	for (unsigned i = 0; best != UINT64_MAX && i < CG_MAX_LINKS; i++)
++		if ((set >> i & 1) && e->l[i].bps && at[i] - best <= window_us)
++			out |= (uint16_t)(1u << i);
++	return out;
++}
++
+ static inline uint16_t cg_eta_copies(struct cg_eta *e, uint16_t set, uint32_t len, uint64_t now_us,
+ 				     const uint32_t window_us[CG_MAX_LINKS])
+ {
+diff --git a/engine/src/protoctlio.h b/engine/src/protoctlio.h
+index dd160b1..a16864c 100644
+--- a/engine/src/protoctlio.h
++++ b/engine/src/protoctlio.h
+@@ -82,6 +82,16 @@ static inline uint32_t cg_pctl_spread(const int32_t *behind_us, uint16_t known,
+ 	return s < CG_PCTL_SPREAD_MAX_US ? s : CG_PCTL_SPREAD_MAX_US;
+ }
+ 
++/* What a message asks of the engine's send (ops->send's copy[i]). */
++#define CG_PCTL_SEND_COPY 1u /* a copy on every carrier */
++/* An unreliable datagram (DGM, protocol 20): only on the links where it
++ * arrives within CG_PCTL_DGM_LATE_US of the first (eta.h's cg_eta_within):
++ * later, a receiver's jitter buffer (200 ms in the lab's RTP case) has
++ * played past it, and the link's queue only grew. Half of that, for the
++ * ETA's error. */
++#define CG_PCTL_SEND_DGM 2u
++#define CG_PCTL_DGM_LATE_US 100000u
++
+ struct cg_pctl_ops {
+ 	void *ctx;
+ 	/* Sends n messages to peer (the server: session index peer whose id is
+@@ -95,6 +105,7 @@ struct cg_pctl_ops {
+ 	 * none; U2b: a resend leaves the link that lost it). ts[i] back: the
+ 	 * tunnel header's ts that went with message i (us, low 32 bits; 15:
+ 	 * a DATA's clock, its delay at the receiver and its NACKs). */
++	/* copy[i]: CG_PCTL_SEND_* bits. */
+ 	void (*send)(void *ctx, uint32_t peer, uint32_t sid, uint8_t *const *msg, const uint16_t *len,
+ 		     const uint8_t *copy, const uint8_t *avoid, int n, uint32_t *eta_us, uint8_t *link, uint32_t *ts);
+ 	/* The engine's capacity for the links that carry the data to peer,
+diff --git a/engine/src/server.c b/engine/src/server.c
+index b2f6ecc..749a2cd 100644
+--- a/engine/src/server.c
++++ b/engine/src/server.c
+@@ -265,6 +265,7 @@ struct session {
+ 	uint64_t not_ip, spoofed; /* upload not written to the TUN (not IP; a source not the client's) */
+ 	uint32_t rot; /* download batches sent: the first path of each rotates */
+ 	uint64_t down_split; /* of down_pkts, packets split (split.h) instead of copied to every path */
++	uint64_t dgm_cut;    /* GRIT datagrams whose paths were narrowed to those in time */
+ 	uint64_t plan_n[CG_PLAN_N]; /* split packets by the step that set their paths last (cg_split_plan) */
+ 	struct cg_split sp;  /* the split's round-robin credits */
+ 	struct cg_spread spread; /* guard G4: the paths of similar delay that share the split (split.h) */
+@@ -452,6 +453,8 @@ struct server {
+ 	int fec_nout;
+ 	int8_t pick[CG_BATCH]; /* per packet of a download batch: its one path (split), or -1 (every carrier) */
+ 	int pavoid;            /* the path down_prepare's split leaves out when another stays (a GRIT resend, U2b), -1: none */
++	int pdgm;              /* down_prepare's packet is a GRIT datagram (CG_PCTL_SEND_DGM): only paths in time */
++	uint8_t dgm[CG_BATCH]; /* per packet of a download batch: such a datagram (down_send's copies) */
+ 	uint16_t cmask[CG_BATCH]; /* the carriers a packet goes on (its copies, a retransmission's one path) */
+ 	uint32_t sseq[CG_BATCH], sts[CG_BATCH]; /* per entry of a download batch: its sequence and ts */
+ 	uint8_t scls[CG_BATCH]; /* and whether it is a STREAM (13): its sequence is that class's */
+@@ -3176,6 +3179,14 @@ static void down_prepare(struct server *s, struct session *S, int m, uint8_t *bu
+ 	struct cg_split_plan plan = cg_split_plan(d->k.eligible, d->k.eligible, stress);
+ 
+ 	plan.pick = cg_split_avoid(plan.pick, s->pavoid);
++	/* a GRIT datagram: only the paths where it arrives in time */
++	if (s->pdgm && d->split && s->cfg->split_eta) {
++		uint16_t in = cg_eta_within(&S->eta, plan.pick, (uint32_t)len, now_us, CG_PCTL_DGM_LATE_US);
++
++		S->dgm_cut += in && in != plan.pick;
++		plan.pick = in ? in : plan.pick;
++	}
++	s->dgm[m] = (uint8_t)s->pdgm;
+ 	if (d->split)
+ 		S->plan_n[plan.by]++;
+ 
+@@ -3360,17 +3371,27 @@ static void down_send(struct server *s, struct session *S, int m, uint64_t now_m
+ 	for (int p = 0; p < CG_MAX_LINKS; p++)
+ 		if ((carry >> p & 1) || ((live >> p & 1) && s->cfg->mute_trickle))
+ 			order[no++] = p;
+-	if (S->pace_any) {
++	{
+ 		uint64_t now_us = cg_now_us();
++		/* a GRIT datagram's copies: only on the paths where it arrives in time */
++		struct cg_eta *de = S->pace_any ? &S->pace : s->cfg->split_eta ? &S->eta : NULL;
+ 
+-		for (int j = 0; j < m; j++)
+-			s->cmask[j] = s->pick[j] >= 0 || s->oiov[j][1].iov_len < CG_PACE_SMALL
+-					      ? 0xffff
+-					      : cg_eta_copies(&S->pace, carry, (uint32_t)s->oiov[j][1].iov_len, now_us,
+-							      S->pace_w);
+-	} else {
+-		for (int j = 0; j < m; j++)
+-			s->cmask[j] = 0xffff;
++		for (int j = 0; j < m; j++) {
++			uint16_t set = carry;
++
++			if (s->dgm[j] && s->pick[j] < 0 && de) {
++				uint16_t in = cg_eta_within(de, carry, (uint32_t)s->oiov[j][1].iov_len, now_us,
++							    CG_PCTL_DGM_LATE_US);
++
++				if (in && in != carry) {
++					set = in;
++					S->dgm_cut++;
++				}
++			}
++			s->cmask[j] = S->pace_any && s->pick[j] < 0 && s->oiov[j][1].iov_len >= CG_PACE_SMALL
++					      ? cg_eta_copies(&S->pace, set, (uint32_t)s->oiov[j][1].iov_len, now_us, S->pace_w)
++					      : set == carry ? 0xffff : set;
++		}
+ 	}
+ 	down_retx_masks(s, S, m, d);
+ 	down_seal(s, S, m, d);
+@@ -3471,9 +3492,11 @@ static void pctl_send(void *ctx, uint32_t peer, uint32_t sid, uint8_t *const *ms
+ 	d = down_paths_of(s, S, now_us / 1000, 1);
+ 	for (int m = 0; m < n; m++) {
+ 		s->pavoid = avoid[m] ? avoid[m] - 1 : -1;
++		s->pdgm = (copy[m] & CG_PCTL_SEND_DGM) && !(copy[m] & CG_PCTL_SEND_COPY);
+ 		down_prepare(s, S, m, msg[m], len[m], now_us, &d);
+ 		s->pavoid = -1;
+-		if (copy[m]) {
++		s->pdgm = 0;
++		if (copy[m] & CG_PCTL_SEND_COPY) {
+ 			s->pick[m] = -1;
+ 			s->sflags[m] &= (uint8_t)~CG_F_SPLIT;
+ 		}
+@@ -4199,6 +4222,7 @@ static void status_json(struct server *s, uint64_t now_ms, struct cg_json *j)
+ 		cg_json_u64(j, "tickle", S->sp.n_by[CG_SPLIT_BY_TICKLE]);
+ 		cg_json_end(j, '}');
+ 		/* which step set a split packet's paths last (cg_split_plan, audit C13) */
++		cg_json_u64(j, "dgm_narrowed", S->dgm_cut); /* GRIT datagrams kept to the paths in time */
+ 		cg_json_obj(j, "split_plan");
+ 		cg_json_u64(j, "split", S->plan_n[CG_PLAN_SPLIT]);
+ 		cg_json_u64(j, "share", S->plan_n[CG_PLAN_SHARE]);
+diff --git a/engine/tests/test_eta.c b/engine/tests/test_eta.c
+index 092cc70..cb08857 100644
+--- a/engine/tests/test_eta.c
++++ b/engine/tests/test_eta.c
+@@ -192,8 +192,28 @@ static void test_eta_keep(void)
+ 	CHECK_EQ(e.l[0].backlog, 8000000ull * 10 * MS);
+ }
+ 
++/* A datagram's links in time (cg_eta_within): those within the window of
++ * the first, nothing put anywhere; a link of no rate is in. */
++static void test_eta_within(void)
++{
++	struct cg_eta e;
++
++	cg_eta_reset(&e);
++	CHECK_EQ(cg_eta_within(&e, 0x3, 1000, 0, 100 * MS), 0x3); /* no rate: every link */
++	cg_eta_set(&e, 0, 8000000, 0, 0, 0);          /* 1 ms */
++	cg_eta_set(&e, 1, 8000000, 50 * MS, 0, 0);    /* 51 ms */
++	cg_eta_set(&e, 2, 8000000, 20 * MS, 300 * MS, 0); /* a 300 ms queue: 321 ms */
++	CHECK_EQ(cg_eta_within(&e, 0x7, 1000, 0, 100 * MS), 0x3);
++	CHECK_EQ(e.l[0].backlog, 0); /* nothing put */
++	CHECK_EQ(cg_eta_within(&e, 0x7, 1000, 0, 400 * MS), 0x7);
++	CHECK_EQ(cg_eta_within(&e, 0x4, 1000, 0, 100 * MS), 0x4); /* the first is always in */
++	CHECK_EQ(cg_eta_within(&e, 0xd, 1000, 0, 100 * MS), 0x9); /* link 3, no rate, in */
++	CHECK_EQ(cg_eta_within(&e, 0, 1000, 0, 100 * MS), 0);
++}
++
+ void test_eta(void)
+ {
++	test_eta_within();
+ 	test_eta_limit();
+ 	test_eta_keep();
+ 	test_eta_feed();
+ 	cg_pctl_put_dgm(b, f->id);
+ 	memcpy(b + CG_PCTL_HDR, q->d + (size_t)q->h * p->dgm_max, n);
+ 	push(p, CG_PCTL_HDR + n, !f->est);
++	p->mcopy[p->nmsg - 1] |= CG_PCTL_SEND_DGM; /* only where it arrives in time */
+ 	cg_scc_spend(&r->cc, CG_PCTL_HDR + n);
+ 	r->xb += CG_PCTL_HDR + n;
+ 	r->ab += CG_PCTL_HDR + n;

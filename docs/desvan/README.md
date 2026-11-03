@@ -18,6 +18,7 @@ Para volver a usar uno:
 
 | Bloque | Qué hacía | Perilla de entonces | Por qué salió | Último commit | Historia |
 | --- | --- | --- | --- | --- | --- |
+| [dgm-en-plazo.h](dgm-en-plazo.h) | Los datagramas de GRIT solo por los enlaces donde el ETA dice que llegan a menos de 100 ms del primero (reparto y copias) | bit `CG_PCTL_SEND_DGM` (sin perilla) | bonding igual, redundancia peor (cell4 5–7 → 50–132 RTP perdidos): las copias "tarde" sí llegaban a tiempo | sin commit | 031 |
 | [linkcc-mtpt.h](linkcc-mtpt.h) | MTPT: la cola objetivo de cada enlace por perturbar y observar, como el MPPT de un cargador solar, con techo por el presupuesto de latencia menos el atraso del enlace | `link_cc_bits` 128, `link_cc_budget_ms` | v1 −22 % de bajada, v2 −12 % / −6 % en terreno | `3e35f6f` | 029 |
 | [linkcc-cola-reparto.h](linkcc-cola-reparto.h) | La cola que ve el reparto por el retardo de ida al ritmo del enlace (QETA), o el mayor entre eso y lo que va en vuelo (QMAX) | `link_cc_bits` 1 y 16 | QETA −20 a −53 % en el laboratorio: su retardo es el del paquete más nuevo con acuse y deja fuera lo enviado después | `3e35f6f` | 029 |
 | [linkcc-ventana.h](linkcc-ventana.h) | El reparto le da datos a un enlace solo mientras su ventana tiene espacio, como el planificador MPTCP de OMR (incluye la parte de `eta.h`) | `link_cc_bits` 64 | neutro en el laboratorio (bajada −6 a 0 %, subida 0 a +4 %) | `3e35f6f` | 029 |
