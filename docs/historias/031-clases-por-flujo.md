@@ -716,8 +716,19 @@ azar los paquetes del túnel en los dos sentidos (iptables `statistic`).
   `het` y `cell4` llega después de los 200 ms del jitter buffer del
   receptor (los enlaces lentos), no lo bota GRIT. El paso siguiente sería
   mandar los datagramas solo por los enlaces que llegan a tiempo.
-- **Pendiente:** terreno del crédito con el RTMP del usuario; y en la
-  pestaña Túnel, una línea promedio de 4–6 s sobre la instantánea para que
+- **Terreno** (2026-11-03, NUC y VPS en `d58c495`, el mismo RTMP del
+  usuario a Facebook, 7,6 Mbit/s): lo leído que esperó en GRIT antes de
+  salir, en 15 s.
+
+  | | < 1 ms | 1–16 ms | 16–32 ms | 32–64 ms | > 64 ms |
+  | --- | --- | --- | --- | --- | --- |
+  | sin crédito (11-02) | 33 % | 16 % | 23 % | 10 % | 3,8 % |
+  | con crédito (11-03) | 97 % | 1 % | 1,2 % | 0,8 % | 0,2 % |
+
+  Cero reenvíos de GRIT en la ventana; el crédito en 125 KB al medir
+  (gastándose y llenándose en cada keyframe); colas de los enlaces de
+  2–9 ms, como antes.
+- **Pendiente:** en la pestaña Túnel, una línea promedio de 4–6 s sobre la instantánea para que
   un stream no se vea como electrocardiograma.
 
 ## Pendiente
