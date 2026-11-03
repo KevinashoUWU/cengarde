@@ -279,6 +279,11 @@ frame (0,6 % a 1400), menos con los acuses que hoy viajan solos.
 
   Con el cifrado, cengarde saca 11–27 % más de bajada, 1,5–3,4 veces la
   subida y un ping cargado de bajada 3 a 7 veces menor.
+- **¿El búfer por flujo de GRIT limita un flujo solo?** No. Con 16 MB
+  (`protocontroller_buf_kb` 16368) en los dos extremos, un TCP por GRIT dio
+  276,6 Mbit/s; de vuelta en 8 MB, minutos después, 289,0 (la celda ya
+  daba menos que en la primera prueba, 405,6). Se queda en 8 MB. Ookla, con
+  varias conexiones, sí llega al techo de los módems.
 
 ## Pendiente
 
