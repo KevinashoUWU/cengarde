@@ -6147,7 +6147,7 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 		cg_warn("control socket: %s", err);
 	if (cfg->status_file[0] && cg_status_writer_start(&c->sw, cfg->status_file, "cg-status") < 0)
 		cg_warn("status file %s: cannot start the writer thread", cfg->status_file);
-	cg_info("client %s: session %08x, native tunnel on %s (MTU %u; authenticated, not encrypted), "
+	cg_info("client %s: session %08x, native tunnel on %s (MTU %u; sealed, ChaCha20-Poly1305), "
 		"link_threads %s",
 		CG_VERSION, c->session, cfg->tun, cfg->tun_mtu, cg_lt_name(c->lt));
 	if (cfg->passthrough >= 0)

@@ -3888,7 +3888,7 @@ static void path_mtu_tick(struct server *s, struct session *S, const char *tag, 
 {
 	for (int p = 0; p < CG_MAX_LINKS; p++) {
 		struct path *P = &S->path[p];
-		int f = P->addr.ss_family;
+		int f = cg_addr_is4(&P->addr) == 1 ? AF_INET : AF_INET6; /* a v4-mapped address goes over IPv4 */
 		uint32_t need = cg_outer_len(f, s->cfg->tun_mtu), wrap = cg_outer_len(f, 0);
 		char a[64];
 
@@ -5463,7 +5463,7 @@ int cg_server_run(struct cg_config *cfg, const struct cg_run *run)
 		if (cg_status_writer_start(&s->fw, cfg->forward_file, "cg-forward") < 0)
 			cg_warn("%s: cannot start the writer thread", cfg->forward_file);
 	}
-	cg_info("server %s: listening on %s%s, native tunnel on %s (MTU %u; authenticated, not encrypted), "
+	cg_info("server %s: listening on %s%s, native tunnel on %s (MTU %u; sealed, ChaCha20-Poly1305), "
 		"%d client%s, up to %u sessions",
 		CG_VERSION, s->laddr, s->pktinfo ? ", replying from each packet's arrival address" : "", cfg->tun,
 		cfg->tun_mtu, s->multi ? cfg->nclients : 1, s->multi && cfg->nclients > 1 ? "s" : "", s->max);
