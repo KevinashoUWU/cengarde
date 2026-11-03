@@ -309,6 +309,18 @@ msgstr "QUIC permitido hacia"
 msgid "Addresses or prefixes whose QUIC passes anyway."
 msgstr "Direcciones o prefijos cuyo QUIC pasa igual."
 
+msgid "UDP into GRIT"
+msgstr "UDP dentro de GRIT"
+
+msgid "The LAN's other UDP (not to private addresses, not larger than the tunnel's MTU) travels inside GRIT as unreliable datagrams: never resent nor held in order, at most 300 ms late, and sent in turns by device like the TCP, so that one device's UDP (a stream, a game update, a VPN) cannot take every uplink from the rest. In the lab, with 30-60 Mbit/s of UDP from one device, another device's TCP went from 3-9 to 25 Mbit/s over four cellular-like uplinks (its ping p99 from 0.8-1 s to 0.2 s) and from 42 to 51 over faster ones, with the same total. Needs the protocontroller in GRIT mode on both ends."
+msgstr "El resto del UDP de la LAN (no a direcciones privadas, no más grande que el MTU del túnel) viaja dentro de GRIT como datagramas no fiables: nunca se reenvían ni se retienen en orden, a lo más 300 ms tarde, y salen por turnos por equipo como el TCP, para que el UDP de un equipo (una transmisión, una actualización de un juego, una VPN) no le quite todos los enlaces al resto. En el laboratorio, con 30–60 Mbit/s de UDP de un equipo, el TCP de otro pasó de 3–9 a 25 Mbit/s con cuatro enlaces tipo celular (su ping p99 de 0,8–1 s a 0,2 s) y de 42 a 51 con enlaces más rápidos, con el mismo total. Necesita el protocontrolador en modo GRIT en ambos extremos."
+
+msgid "DiffServ (DSCP) through GRIT"
+msgstr "DiffServ (DSCP) a través de GRIT"
+
+msgid "GRIT ends the TCP and the UDP it carries, and with them the DSCP mark a LAN device put on them: with this, the mark goes on both ways (Wi-Fi, the networks beyond the VPS) and chooses the flow's turn. EF, CS5, AF4x and the like (calls, video calls) go first while under a quarter of the rate; LE and CS1 (backups, updates, downloads that mark themselves as background) only with what the rest leaves. In the lab, a device with 8 connections marked CS1 next to one with a single unmarked connection left it 96-98 % of the total instead of 20-41 % (in the field, 90-99 % of the upload and 65-72 % of the download); without marks nothing changes."
+msgstr "GRIT termina el TCP y el UDP que lleva, y con ellos la marca DSCP que un equipo de la LAN les puso: con esto la marca sigue en los dos sentidos (el Wi-Fi, las redes más allá del VPS) y decide el turno del flujo. EF, CS5, AF4x y parecidos (llamadas, videollamadas) van primero mientras estén bajo un cuarto del ritmo; LE y CS1 (respaldos, actualizaciones, descargas que se marcan de fondo) solo con lo que deja el resto. En el laboratorio, un equipo con 8 conexiones marcadas CS1 al lado de otro con una sin marca le dejó el 96–98 % del total en vez de 20–41 % (en terreno, 90–99 % de la subida y 65–72 % de la bajada); sin marcas nada cambia."
+
 msgid "TCP-aware tunnel"
 msgstr "Túnel consciente de TCP"
 
@@ -1064,15 +1076,3 @@ msgstr "Cada paquete sale por todos los enlaces activos y el otro extremo se que
 
 msgid "Settings"
 msgstr "Configuración"
-
-msgid "UDP into GRIT"
-msgstr "UDP dentro de GRIT"
-
-msgid "The LAN's other UDP (not to private addresses, not larger than the tunnel's MTU) travels inside GRIT as unreliable datagrams: never resent nor held in order, at most 300 ms late, and sent in turns by device like the TCP, so that one device's UDP (a stream, a game update, a VPN) cannot take every uplink from the rest. In the lab, with 30-60 Mbit/s of UDP from one device, another device's TCP went from 3-9 to 25 Mbit/s over four cellular-like uplinks (its ping p99 from 0.8-1 s to 0.2 s) and from 42 to 51 over faster ones, with the same total. Needs the protocontroller in GRIT mode on both ends."
-msgstr "El resto del UDP de la LAN (no a direcciones privadas, no más grande que el MTU del túnel) viaja dentro de GRIT como datagramas no fiables: nunca se reenvían ni se retienen en orden, a lo más 300 ms tarde, y salen por turnos por equipo como el TCP, para que el UDP de un equipo (una transmisión, una actualización de un juego, una VPN) no le quite todos los enlaces al resto. En el laboratorio, con 30–60 Mbit/s de UDP de un equipo, el TCP de otro pasó de 3–9 a 25 Mbit/s con cuatro enlaces tipo celular (su ping p99 de 0,8–1 s a 0,2 s) y de 42 a 51 con enlaces más rápidos, con el mismo total. Necesita el protocontrolador en modo GRIT en ambos extremos."
-
-msgid "DiffServ (DSCP) through GRIT"
-msgstr "DiffServ (DSCP) a través de GRIT"
-
-msgid "GRIT ends the TCP and the UDP it carries, and with them the DSCP mark a LAN device put on them: with this, the mark goes on both ways (Wi-Fi, the networks beyond the VPS) and chooses the flow's turn. EF, CS5, AF4x and the like (calls, video calls) go first while under a quarter of the rate; LE and CS1 (backups, updates, downloads that mark themselves as background) only with what the rest leaves. In the lab, a device with 8 connections marked CS1 next to one with a single unmarked connection left it 96-98 % of the total instead of 20-41 % (in the field, 90-99 % of the upload and 65-72 % of the download); without marks nothing changes."
-msgstr "GRIT termina el TCP y el UDP que lleva, y con ellos la marca DSCP que un equipo de la LAN les puso: con esto la marca sigue en los dos sentidos (el Wi-Fi, las redes más allá del VPS) y decide el turno del flujo. EF, CS5, AF4x y parecidos (llamadas, videollamadas) van primero mientras estén bajo un cuarto del ritmo; LE y CS1 (respaldos, actualizaciones, descargas que se marcan de fondo) solo con lo que deja el resto. En el laboratorio, un equipo con 8 conexiones marcadas CS1 al lado de otro con una sin marca le dejó el 96–98 % del total en vez de 20–41 % (en terreno, 90–99 % de la subida y 65–72 % de la bajada); sin marcas nada cambia."
