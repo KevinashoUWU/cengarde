@@ -424,7 +424,7 @@ void cg_poly1305(uint8_t tag[CG_AEAD_TAG_LEN], const uint8_t *m, size_t len, con
 }
 
 /* Poly1305 over aad, ct and their lengths, as RFC 8439 2.8 pads them. */
-static void aead_tag(uint8_t tag[CG_AEAD_TAG_LEN], const uint8_t *ct, size_t len, const uint8_t *aad, size_t aadlen,
+void cg_aead_tag(uint8_t tag[CG_AEAD_TAG_LEN], const uint8_t *ct, size_t len, const uint8_t *aad, size_t aadlen,
 		     const uint8_t key[CG_AEAD_KEY_LEN], const uint8_t nonce[CG_AEAD_NONCE_LEN])
 {
 	static const uint8_t zero[16];
@@ -450,20 +450,47 @@ void cg_aead_seal(uint8_t *ct, uint8_t tag[CG_AEAD_TAG_LEN], const uint8_t *pt, 
 		  size_t aadlen, const uint8_t key[CG_AEAD_KEY_LEN], const uint8_t nonce[CG_AEAD_NONCE_LEN])
 {
 	cg_chacha20(ct, pt, len, key, nonce, 1);
-	aead_tag(tag, ct, len, aad, aadlen, key, nonce);
+	cg_aead_tag(tag, ct, len, aad, aadlen, key, nonce);
 }
 
 int cg_aead_open(uint8_t *pt, const uint8_t *ct, size_t len, const uint8_t tag[CG_AEAD_TAG_LEN], const uint8_t *aad,
 		 size_t aadlen, const uint8_t key[CG_AEAD_KEY_LEN], const uint8_t nonce[CG_AEAD_NONCE_LEN])
 {
 	uint8_t want[CG_AEAD_TAG_LEN];
-	uint32_t d = 0;
 
-	aead_tag(want, ct, len, aad, aadlen, key, nonce);
-	for (int i = 0; i < CG_AEAD_TAG_LEN; i++)
-		d |= (uint32_t)(want[i] ^ tag[i]);
-	if (d)
+	cg_aead_tag(want, ct, len, aad, aadlen, key, nonce);
+	if (!cg_aead_tag_eq(want, tag))
 		return -1;
 	cg_chacha20(pt, ct, len, key, nonce, 1);
 	return 0;
+}
+
+int cg_aead_tag_eq(const uint8_t a[CG_AEAD_TAG_LEN], const uint8_t b[CG_AEAD_TAG_LEN])
+{
+	uint32_t d = 0;
+
+	for (int i = 0; i < CG_AEAD_TAG_LEN; i++)
+		d |= (uint32_t)(a[i] ^ b[i]);
+	return d == 0;
+}
+
+void cg_chacha20_at(uint8_t *out, const uint8_t *in, size_t len, const uint8_t key[CG_AEAD_KEY_LEN],
+		    const uint8_t nonce[CG_AEAD_NONCE_LEN], uint64_t off)
+{
+	uint32_t block = (uint32_t)(1 + off / 64);
+	size_t skip = (size_t)(off % 64);
+
+	if (skip && len) { /* the rest of a block begun before */
+		uint8_t ks[64];
+		size_t n = 64 - skip < len ? 64 - skip : len;
+
+		cg_chacha20_block(ks, key, nonce, block++);
+		for (size_t i = 0; i < n; i++)
+			out[i] = in[i] ^ ks[skip + i];
+		out += n;
+		in += n;
+		len -= n;
+	}
+	if (len)
+		cg_chacha20(out, in, len, key, nonce, block);
 }

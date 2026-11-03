@@ -386,6 +386,12 @@ void cg_hdr_mac_finish(const struct cg_siphash *base, uint8_t *hdr);
  * sseq after it was written). */
 void cg_hdr_reseal(uint8_t *hdr, const uint8_t key[CG_SIPHASH_KEY_LEN], const void *payload, size_t plen);
 
+/* The in-memory header of h (its MAC field zeroed: wire.h seals it). */
+void cg_hdr_put(uint8_t out[CG_HDR_LEN], const struct cg_hdr *h);
+
+/* Whether a payload p of plen bytes fits a packet of type. */
+int cg_hdr_plen_ok(uint8_t type, const uint8_t *p, size_t plen);
+
 /* Parses buf (header + payload) without checking the MAC. Returns 0 when the
  * header is well formed and the payload length fits the type, -1 otherwise. */
 int cg_hdr_parse(struct cg_hdr *h, const uint8_t *buf, size_t len);

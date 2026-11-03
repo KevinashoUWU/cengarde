@@ -43,6 +43,20 @@ void cg_poly1305_update(struct cg_poly1305 *st, const uint8_t *m, size_t len);
 void cg_poly1305_final(struct cg_poly1305 *st, uint8_t tag[CG_AEAD_TAG_LEN]);
 void cg_poly1305(uint8_t tag[CG_AEAD_TAG_LEN], const uint8_t *m, size_t len, const uint8_t key[32]);
 
+/* ChaCha20 from byte off of the keystream that starts at block 1 (the
+ * AEAD's: off 0 is block 1's first byte): a body sealed or opened in
+ * pieces (proto.c's wire). in and out may be the same buffer. */
+void cg_chacha20_at(uint8_t *out, const uint8_t *in, size_t len, const uint8_t key[CG_AEAD_KEY_LEN],
+		    const uint8_t nonce[CG_AEAD_NONCE_LEN], uint64_t off);
+
+/* The AEAD's tag over aad and the ciphertext ct (RFC 8439 2.8's Poly1305
+ * input, with the one-time key of block 0). */
+void cg_aead_tag(uint8_t tag[CG_AEAD_TAG_LEN], const uint8_t *ct, size_t len, const uint8_t *aad, size_t aadlen,
+		 const uint8_t key[CG_AEAD_KEY_LEN], const uint8_t nonce[CG_AEAD_NONCE_LEN]);
+
+/* Whether two tags are the same, in constant time. */
+int cg_aead_tag_eq(const uint8_t a[CG_AEAD_TAG_LEN], const uint8_t b[CG_AEAD_TAG_LEN]);
+
 /* The AEAD (RFC 8439 2.8): ct = ChaCha20(key, nonce, from block 1) of pt
  * (len bytes; ct may be pt), and tag = Poly1305 over aad and ct with the
  * one-time key of block 0. */

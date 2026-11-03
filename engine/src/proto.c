@@ -92,10 +92,53 @@ void cg_hdr_write(uint8_t out[CG_HDR_LEN], const struct cg_hdr *h, const uint8_t
 	cg_hdr_write_base(out, h, key, payload, plen, &base);
 }
 
+void cg_hdr_put(uint8_t out[CG_HDR_LEN], const struct cg_hdr *h)
+{
+	out[0] = (uint8_t)(CG_PROTO_WIRE << 4 | (h->type & 0x0f));
+	out[1] = h->flags;
+	out[CG_HINT_OFF] = h->hint;
+	out[CG_LINK_OFF] = h->link;
+	put32(out + 4, h->session);
+	put32(out + 8, h->seq);
+	put32(out + 12, h->ts);
+	memset(out + CG_MAC_OFF, 0, 8);
+	put32(out + CG_SSEQ_OFF, h->sseq);
+}
+
+int cg_hdr_plen_ok(uint8_t type, const uint8_t *p, size_t plen)
+{
+	switch (type) {
+	case CG_T_DATA:
+	case CG_T_STREAM:
+		return plen > 0;
+	case CG_T_PROBE:
+	case CG_T_PROBE_REPLY:
+		return plen >= CG_PROBE_INFO_LEN;
+	case CG_T_HELLO:
+		return plen >= CG_HELLO_LEN;
+	case CG_T_SFACK: /* a count (1-16), then 15 bytes a link (subflow.h's cg_sfack_put) */
+		return plen >= 1 && p[0] >= 1 && p[0] <= 16 && plen >= 1 + 15 * (size_t)p[0];
+	case CG_T_SFLOSS:
+		return plen >= 2 && p[1] >= 1 && p[1] <= CG_NACK_RANGES && plen >= 2 + 12 * (size_t)p[1];
+	case CG_T_NACK:
+		return plen >= 1 && p[0] >= 1 && p[0] <= CG_NACK_RANGES && plen >= 1 + 12 * (size_t)p[0];
+	case CG_T_FEC:
+		/* fec.h's header and one byte at least */
+		return plen > CG_FEC_HDR;
+	case CG_T_REPAIR:
+		/* repair.h's header and one byte at least (the rest: cg_rep_get) */
+		return plen > CG_REP_HDR;
+	case CG_T_PARQ:
+		/* a count and that many requests (the rest: harq.h's cg_parq_read) */
+		return plen >= 1 + CG_PARQ_REQ && p[0] >= 1 && p[0] <= CG_PARQ_MAX &&
+		       plen == 1 + CG_PARQ_REQ * (size_t)p[0];
+	default:
+		return 0;
+	}
+}
+
 int cg_hdr_parse(struct cg_hdr *h, const uint8_t *buf, size_t len)
 {
-	size_t plen;
-
 	if (len < CG_HDR_LEN || buf[0] >> 4 != CG_PROTO_WIRE)
 		return -1;
 	h->type = buf[0] & 0x0f;
@@ -106,45 +149,7 @@ int cg_hdr_parse(struct cg_hdr *h, const uint8_t *buf, size_t len)
 	h->seq = get32(buf + 8);
 	h->ts = get32(buf + 12);
 	h->sseq = get32(buf + CG_SSEQ_OFF);
-	plen = len - CG_HDR_LEN;
-	switch (h->type) {
-	case CG_T_DATA:
-	case CG_T_STREAM:
-		return plen > 0 ? 0 : -1;
-	case CG_T_PROBE:
-	case CG_T_PROBE_REPLY:
-		return plen >= CG_PROBE_INFO_LEN ? 0 : -1;
-	case CG_T_HELLO:
-		return plen >= CG_HELLO_LEN ? 0 : -1;
-	case CG_T_SFACK: /* a count (1-16), then 15 bytes a link (subflow.h's cg_sfack_put) */
-		return plen >= 1 && buf[CG_HDR_LEN] >= 1 && buf[CG_HDR_LEN] <= 16 && plen >= 1 + 15 * (size_t)buf[CG_HDR_LEN]
-			       ? 0
-			       : -1;
-	case CG_T_SFLOSS:
-		return plen >= 2 && buf[CG_HDR_LEN + 1] >= 1 && buf[CG_HDR_LEN + 1] <= CG_NACK_RANGES &&
-				       plen >= 2 + 12 * (size_t)buf[CG_HDR_LEN + 1]
-			       ? 0
-			       : -1;
-	case CG_T_NACK:
-		return plen >= 1 && buf[CG_HDR_LEN] >= 1 && buf[CG_HDR_LEN] <= CG_NACK_RANGES &&
-				       plen >= 1 + 12 * (size_t)buf[CG_HDR_LEN]
-			       ? 0
-			       : -1;
-	case CG_T_FEC:
-		/* fec.h's header and one byte at least */
-		return plen > CG_FEC_HDR ? 0 : -1;
-	case CG_T_REPAIR:
-		/* repair.h's header and one byte at least (the rest: cg_rep_get) */
-		return plen > CG_REP_HDR ? 0 : -1;
-	case CG_T_PARQ:
-		/* a count and that many requests (the rest: harq.h's cg_parq_read) */
-		return plen >= 1 + CG_PARQ_REQ && buf[CG_HDR_LEN] >= 1 && buf[CG_HDR_LEN] <= CG_PARQ_MAX &&
-				       plen == 1 + CG_PARQ_REQ * (size_t)buf[CG_HDR_LEN]
-			       ? 0
-			       : -1;
-	default:
-		return -1;
-	}
+	return cg_hdr_plen_ok(h->type, buf + CG_HDR_LEN, len - CG_HDR_LEN) ? 0 : -1;
 }
 
 int cg_hdr_verify(const uint8_t *buf, size_t len, const uint8_t key[CG_SIPHASH_KEY_LEN])

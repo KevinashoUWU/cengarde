@@ -94,7 +94,7 @@ CG_CFLAGS += -DCG_ZSTD
 CG_LDFLAGS += -lzstd
 endif
 
-CORE = src/siphash.c src/aead.c src/proto.c src/util.c src/log.c src/config.c src/blake2s.c src/pair.c src/rs.c
+CORE = src/siphash.c src/aead.c src/wire.c src/proto.c src/util.c src/log.c src/config.c src/blake2s.c src/pair.c src/rs.c
 NET = src/netlink.c src/sock.c src/tun.c src/status.c src/os.c src/ctl.c src/names.c src/protoctl.c src/client.c src/server.c
 # The router's link pumps: threads the unit tests run too (test_threads).
 THR = src/pump.c
