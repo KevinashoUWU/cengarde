@@ -39,12 +39,15 @@
 #                                    the router turns it on in LuCI too
 #   cengarde-vps-setup protocontroller on|off
 #                                    the protocontroller (PROTOCONTROLLER,
-#                                    story 025): the routers that set it to
-#                                    A or B in LuCI hand their TCP to this
-#                                    engine, which opens a fresh TCP to each
-#                                    destination (cubic, BBR once that leg
-#                                    loses; tcp_bbr loaded at boot); the
-#                                    engine restarts
+#                                    story 025; on by default since 0.17):
+#                                    the routers hand their TCP to this
+#                                    engine over GRIT, and it opens a fresh
+#                                    TCP to each destination (cubic, BBR once
+#                                    that leg loses; tcp_bbr loaded at boot);
+#                                    off, their TCP crosses the tunnel as
+#                                    packets (the routers must say No too,
+#                                    or their TCP is refused); the engine
+#                                    restarts
 #   cengarde-vps-setup fec on|rlc|off
 #                                    the repair data (FEC, story 026): on,
 #                                    the rings and decoders that rebuild
@@ -61,7 +64,7 @@
 #                                    protocontroller and BONDING (each link's
 #                                    subflow and own rate, the tunnel's NACK
 #                                    a hint for GRIT); redundancy, the
-#                                    protocontroller (the routers use A) and
+#                                    protocontroller (GRIT) and
 #                                    REDUNDANCY (each link's subflow and own
 #                                    rate deciding the copies of the
 #                                    download, redund_pace_ms 150); custom,
@@ -121,7 +124,7 @@ FORWARD_RESERVED=
 FORWARD_UNRESERVE=
 FORWARD_MAX_PORTS=1024
 TUNNEL_IPV6=no
-PROTOCONTROLLER=no
+PROTOCONTROLLER=yes
 FEC=no
 BONDING=no
 REDUNDANCY=no
@@ -476,13 +479,20 @@ engine_conf() {
 		# 1460) cuts larger download packets in two.
 		tun_mtu = $TUN_MTU
 	EOF
-	[ "$PROTOCONTROLLER" = yes ] && cat <<-EOF
-		# The protocontroller (cengarde-vps-setup protocontroller off removes
-		# it): the TCP the routers hand over, as a stream (b) or a TCP to this
-		# end of the tunnel (a), opened here to its destination (story 025; a
-		# server takes both variants with either).
-		protocontroller = b
-	EOF
+	if [ "$PROTOCONTROLLER" = yes ]; then
+		cat <<-EOF
+			# The protocontroller (cengarde-vps-setup protocontroller off): the
+			# TCP the routers hand over as GRIT streams, opened here to its
+			# destination (story 025).
+			protocontroller = b
+		EOF
+	else
+		cat <<-EOF
+			# The protocontroller off (cengarde-vps-setup protocontroller on): the
+			# routers' TCP crosses the tunnel as packets (the engine's default is b).
+			protocontroller = no
+		EOF
+	fi
 	[ "$BONDING" = yes ] && cat <<-EOF
 		# Bonding (cengarde-vps-setup mode, story 029): each link a subflow
 		# with its own rate, and the tunnel's NACK only a hint for GRIT. The
@@ -873,11 +883,24 @@ regen() {
 	nat_apply
 }
 
+# 0.17: GRIT is the default at both ends (story 029). PROTOCONTROLLER=no
+# was the old default, and routers now on GRIT by default would have their
+# TCP refused against it: it moves to yes when the engine's file is one of
+# before 0.17 (off, it said no protocontroller at all; since, it says "no").
+# "cengarde-vps-setup protocontroller off" still turns it off.
+migrate_017() {
+	[ "$PROTOCONTROLLER" = no ] && [ -e "$ENGINE_CONF" ] && ! grep -q '^protocontroller' "$ENGINE_CONF" || return 0
+	keep "$CONF"
+	set_conf PROTOCONTROLLER yes
+	say "0.17: the protocontroller (GRIT) on, the routers' default now (cengarde-vps-setup protocontroller off to undo)"
+}
+
 cmd_default() {
 	check_proto
 	stop_04_wg0
 	lock
 	migrate_04
+	migrate_017
 	import
 	behind_nat
 	regen
@@ -1428,7 +1451,7 @@ cmd_protocontroller() {
 	regen
 	kept
 	if [ "$v" = yes ]; then
-		say "protocontroller on: the routers that set \"Protocontroller\" to A or B in LuCI (Tunnel tab) hand their TCP to this server, which opens it to each destination"
+		say "protocontroller on: the routers hand their TCP to this server over GRIT, and it opens it to each destination"
 	else
 		say "protocontroller off: the routers' TCP goes through the tunnel as packets again (set \"Protocontroller\" to No on them too, or their TCP is refused)"
 	fi

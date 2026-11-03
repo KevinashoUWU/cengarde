@@ -20,8 +20,8 @@
 #   with TUNNEL_IPV6=yes the routers' IPv6 masqueraded (NAT66), without and
 #   with PUB_IF, and its jumps; a TUNNEL_IPV6 that is neither yes nor no;
 # - the tunnels are the engine's TUN, cg0, everywhere; with
-#   PROTOCONTROLLER=yes, variant A's TCP to the engine (story 025) accepted
-#   from cg0 only; a nat.conf of before 0.12 (TUNNEL, WG_PORT_BASE, 0.4's
+#   PROTOCONTROLLER=yes no TCP port opened to the engine (variant A's left in
+#   0.17: GRIT rides the tunnel's UDP); a nat.conf of before 0.12 (TUNNEL, WG_PORT_BASE, 0.4's
 #   WG_PORT): the same rules, nothing for WireGuard (story 027);
 # - a forward table with bad lines (fixtures/forward-bad): each skipped and
 #   logged by its number and reason, never its content; a table or IP pass
@@ -353,8 +353,8 @@ check "a PUB_IF that is no interface name is refused" not nat rules 4
 say "the engine's TUN, cg0; a nat.conf of before 0.12"
 root pctl 'PROTOCONTROLLER=yes'
 nat rules 4
-check "PROTOCONTROLLER=yes: variant A's TCP from cg0 to 10.79.0.1:7801 accepted" \
-	out_has "-A CG_IN -i cg0 -d 10.79.0.1 -p tcp --dport 7801 -j ACCEPT"
+check "PROTOCONTROLLER=yes: no TCP 7801 opened (variant A's left in 0.17)" \
+	not out_has "--dport 7801"
 check "iptables-restore --test takes it" loads 4
 root pctlbad 'PROTOCONTROLLER=b'
 check "a PROTOCONTROLLER that is neither yes nor no is refused" not nat rules 4

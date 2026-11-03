@@ -30,6 +30,7 @@ Para volver a usar uno:
 | [split-stress-single.h](split-stress-single.h) | Bajo estrés, el reparto usa solo el enlace más rápido | `split_stress_single` | lo reemplazaron las copias bajo estrés (`split_stress_dup`) | `4569dec` | 012, 013 |
 | [capacity-experimentos.h](capacity-experimentos.h) | Tres experimentos de la capacidad vieja: caducidad de un enlace fuera, pérdida con cola, cola permanente y arranque con lugar | `capacity_expire_ms`, `capacity_loss_queue_ms`, `capacity_stand` | arreglan el estimador en ns-3 y la celda, pero ni la celda ni el laboratorio ganaron TCP; el ritmo por enlace tomó lo que decidía la capacidad | `4569dec` | 016, 019 |
 | [starlink-edge-copies.h](starlink-edge-copies.h) | En redundancia, copias a los demás enlaces solo en el borde de las ranuras de Starlink | `starlink_edge_copies` | con un plato baja las copias de 3 a 1 sin pérdida; con varios platos empeora | `4569dec` | 015, 022 |
+| [protoctl-variante-a.c](protoctl-variante-a.c) | La variante A del protocontrolador: el TCP partido en el router y el VPS con un TCP simple de los motores por el túnel en el medio | `protocontroller = a`, `protocontroller_mid_cc`, `protocontroller_vps` | GRIT (B) le ganó en terreno y en el laboratorio y quedó como el único medio (0.17, el proxy por omisión) | `8eb670f` | 024, 025, 029 |
 
 Un bloque nuevo: archivo con la cabecera de los demás (de dónde salió, el
 commit, el porqué) y una fila aquí.

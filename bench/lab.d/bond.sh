@@ -319,14 +319,10 @@
 #                with BOND_PEP_CGCC (auto, the engine's protocontroller_cc:
 #                cubic, BBR once that leg loses);
 #                "pep" then carries the engines' streams too (pepstat.py)
-#   cga          the protocontroller's variant A: the same, protocontroller = a,
-#                a plain TCP of the engines' through the tunnel in the middle
-#                with BOND_PEP_CGMIDCC (protocontroller_mid_cc at both ends;
-#                empty: the engine's own, bbr)
 #                BOND_PEP_INNER=wg: iperf3 inside a WireGuard tunnel from
 #                the LAN host to the far host (any BOND_PEP): opaque UDP that
 #                crosses the TUN as DATA, as a VPN inside would
-#                BOND_PEP_SKIP (cga, cgb): TCP destination ports the router
+#                BOND_PEP_SKIP (cgb): TCP destination ports the router
 #                leaves out of the REDIRECT (5201: iperf3's), so that TCP
 #                crosses the tunnel as plain DATA next to the engines' streams:
 #                a LAN in another firewall zone, or a connection forwarded in
@@ -403,7 +399,7 @@ BOND_PEP_CGCC=${BOND_PEP_CGCC:-auto}
 BOND_PEP_INNER=${BOND_PEP_INNER:-} # wg: iperf3 inside a WireGuard tunnel of its own from the LAN host to the far host
 BOND_PEP_DST=172.30.1.2
 [ "$BOND_PEP_INNER" = wg ] && BOND_PEP_DST=10.99.0.2
-BOND_PEP_SKIP=${BOND_PEP_SKIP:-} # cga/cgb: TCP ports (iptables multiport) the router does not hand to GRIT
+BOND_PEP_SKIP=${BOND_PEP_SKIP:-} # cgb: TCP ports (iptables multiport) the router does not hand to GRIT
 BOND_RELIABLE=${BOND_RELIABLE:-0} # cgb, up: the small flow from the LAN host to the far host's 7400 on the reliable lane (story 031)
 BOND_SMALL_JSON=${BOND_SMALL_JSON:-0} # 1: the small flow's payload a sensor's JSON reading (udpgen -j), telemetry for zstd
 BOND_HOG=${BOND_HOG:-0} # cgb: a second LAN device (192.168.79.3) with this many TCP connections at once next to the measured one (story 031, the sends by host)
@@ -412,7 +408,6 @@ BOND_HOG_DSCP=${BOND_HOG_DSCP:-} # cgb, with BOND_HOG: that device marks its tra
 BOND_FLV=${BOND_FLV:-} # cgb: an FLV stream over TCP at this rate (e.g. 8M; RTMP-like: x264 CBR, a keyframe every 2 s) from the LAN host to the far host (down: back), next to the run; flvrx.py says how late its frames came
 BOND_TSREAL_LAN=${BOND_TSREAL_LAN:-0} # with BOND_TSREAL, up: the stream from the LAN host to the far host (so that BOND_UDP_GRIT takes it into GRIT)
 BOND_UDP_GRIT=${BOND_UDP_GRIT:-0} # cgb: the LAN's UDP into GRIT as unreliable datagrams (protocontroller_udp, protocol 20), by TPROXY on the port after BOND_PEP_PORT
-BOND_PEP_CGMIDCC=${BOND_PEP_CGMIDCC:-} # cga: protocontroller_mid_cc at both ends (empty: the engine's, bbr)
 BOND_PEP_KCP=${BOND_PEP_KCP:---mode fast --datashard 0 --parityshard 0 --nocomp --crypt none --mtu 1300}
 BOND_LIVE_MBIT=${BOND_LIVE_MBIT:-8}
 BOND_LIVE_DROP_MS=${BOND_LIVE_DROP_MS:-700}
@@ -683,7 +678,7 @@ bond_pep_start() {
 	local inrun='cd "$1" && shift && exec "$@"'
 	case $BOND_PEP in
 	transparent) return 0 ;;
-	cg | cga | cgb)
+	cg | cgb)
 		if [ -n "$BOND_PEP_SKIP" ]; then
 			ip netns exec "$NS_CLI" iptables -w -t nat -A PREROUTING -i lan0 -p tcp -m multiport \
 				--dports "$BOND_PEP_SKIP" -j RETURN || return 1
@@ -736,7 +731,7 @@ bond_pep_start() {
 		echo $! >"$RUN/pep-ss-redir.pid"
 		;;
 	*)
-		echo "FAIL: BOND_PEP is transparent, tcp, kcp, cga or cgb (cg), not $BOND_PEP"
+		echo "FAIL: BOND_PEP is transparent, tcp, kcp or cgb (cg), not $BOND_PEP"
 		return 1
 		;;
 	esac
@@ -1490,17 +1485,11 @@ bond_case() {
 	CLIENT_EXTRA=$(bond_join "$BV_CLIENT" "$CLIENT_EXTRA")
 	SERVER_EXTRA=$(bond_join "$BV_SERVER" "$SERVER_EXTRA")
 	case $BOND_PEP in
-	cg | cgb | cga)
-		local pv=b
-		[ "$BOND_PEP" = cga ] && pv=a
-		CLIENT_EXTRA=$(bond_join "protocontroller = $pv;protocontroller_port = $BOND_PEP_PORT" "$CLIENT_EXTRA")
+	cg | cgb)
+		CLIENT_EXTRA=$(bond_join "protocontroller = b;protocontroller_port = $BOND_PEP_PORT" "$CLIENT_EXTRA")
 		[ "$BOND_RELIABLE" = 1 ] && CLIENT_EXTRA=$(bond_join "flow_class = 172.30.1.2:7400 reliable" "$CLIENT_EXTRA")
 		[ "$BOND_UDP_GRIT" = 1 ] && CLIENT_EXTRA=$(bond_join "protocontroller_udp = yes" "$CLIENT_EXTRA")
-		SERVER_EXTRA=$(bond_join "protocontroller = $pv;protocontroller_port = $BOND_PEP_PORT;protocontroller_cc = $BOND_PEP_CGCC" "$SERVER_EXTRA")
-		if [ -n "$BOND_PEP_CGMIDCC" ]; then
-			CLIENT_EXTRA=$(bond_join "$CLIENT_EXTRA" "protocontroller_mid_cc = $BOND_PEP_CGMIDCC")
-			SERVER_EXTRA=$(bond_join "$SERVER_EXTRA" "protocontroller_mid_cc = $BOND_PEP_CGMIDCC")
-		fi
+		SERVER_EXTRA=$(bond_join "protocontroller = b;protocontroller_port = $BOND_PEP_PORT;protocontroller_cc = $BOND_PEP_CGCC" "$SERVER_EXTRA")
 		;;
 	esac
 	BOND_CASE=$c

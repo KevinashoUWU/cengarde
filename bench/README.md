@@ -684,10 +684,9 @@ sentido, con netem.
 | `transparent` | nada: el router reenvía (lo de hoy) |
 | `tcp` | `ss-redir` en el router (iptables `REDIRECT` del TCP de la LAN) → TCP por el túnel → `ss-server` en `10.79.0.1`, que abre un TCP nuevo al destino (shadowsocks-libev de Debian, `chacha20-ietf-poly1305`, `--no-delay`) |
 | `kcp` | lo mismo con KCP en el medio (kcptun de Debian: ARQ sobre UDP, `BOND_PEP_KCP`, sin FEC propia ni cifrado) |
-| `cgb` (`cg`) | el protocontrolador de los motores, variante B (historia 025): `protocontroller = b`, iptables `REDIRECT` al `BOND_PEP_PORT` (7801) del router, el flujo fiable de cengarde en el medio y el TCP del VPS al destino con `BOND_PEP_CGCC` (`auto`: cubic, BBR cuando ese tramo pierde) |
-| `cga` | lo mismo con la variante A (`protocontroller = a`): un TCP del motor por el túnel en el medio, con `BOND_PEP_CGMIDCC` (`protocontroller_mid_cc` en los dos extremos; vacío, el del motor: `bbr`) |
+| `cgb` (`cg`) | el protocontrolador de los motores, GRIT (historia 025): `protocontroller = b`, iptables `REDIRECT` al `BOND_PEP_PORT` (7801) del router, el flujo fiable de cengarde en el medio y el TCP del VPS al destino con `BOND_PEP_CGCC` (`auto`: cubic, BBR cuando ese tramo pierde) |
 
-Con `cga` y `cgb`, `BOND_PEP_SKIP` deja fuera del `REDIRECT` los puertos TCP
+Con `cgb` (`cga`, la variante A, salió en la 0.17), `BOND_PEP_SKIP` deja fuera del `REDIRECT` los puertos TCP
 de destino que lista (`5201`: el de iperf3): ese TCP cruza el túnel como DATA
 junto a los flujos del motor, como una LAN en otra zona del firewall o una
 conexión que entra por un puerto reenviado desde el VPS (historia 030).
@@ -706,7 +705,7 @@ retransmisiones de cada tramo desde los contadores TCP de cada `netns`, la
 memoria TCP del router y del VPS en su pico y mediana, el RSS y la CPU de los
 proxies, el RTT de cada tramo) y, en `live`, `live` (goodput por segundo y sus
 percentiles, cortes de más de 500 ms, demora de cada registro, descartes).
-Con `cga` y `cgb`, `pep` lleva además los contadores de los flujos de cada motor (`cg`:
+Con `cgb`, `pep` lleva además los contadores de los flujos de cada motor (`cg`:
 mensajes enviados y reenviados, copias, temporizadores, duplicados, la memoria
 de los flujos en su pico, el RTT del dosificador) y el JSON de estado de cada
 segundo queda en `pep/`. El `cc` `soak` es `live` más las conexiones cortas de

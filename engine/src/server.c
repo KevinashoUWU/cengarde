@@ -2960,11 +2960,9 @@ static void sf3_feed(struct server *s, struct session *S, int stream, uint32_t s
 		if (!S->resc_idx)
 			cg_resc_earn(&S->resc_b, (uint32_t)len, s->cfg->rescue_pct);
 	}
-	/* the protocontroller's bytes, which loss does not hold back: B's
-	 * stream, and A's middle TCP from here with BBR (fec3.h's cg_f3_mix) */
-	cg_f3_mix(&S->df3, (uint32_t)len,
-		  stream || (s->cfg->protocontroller && !strncmp(s->cfg->protocontroller_mid_cc, "bbr", 3) &&
-			     cg_f3_tcp_port(p, len, (uint16_t)s->cfg->protocontroller_port, 0)));
+	/* the protocontroller's bytes, which loss does not hold back: GRIT's
+	 * stream (fec3.h's cg_f3_mix) */
+	cg_f3_mix(&S->df3, (uint32_t)len, stream);
 	if (S->df3.mode == CG_F3_OFF)
 		return;
 	cg_f3_earn(&S->df3, (uint32_t)len, S->df3.pct, now_us);
@@ -5379,36 +5377,13 @@ int cg_server_run(struct cg_config *cfg, const struct cg_run *run)
 		pc.dscp = cfg->protocontroller_dscp; /* DiffServ (protocol 21) */
 		pc.burst_kb = cfg->protocontroller_burst_kb;
 		snprintf(pc.cc, sizeof(pc.cc), "%s", cfg->protocontroller_cc);
-		snprintf(pc.mid_cc, sizeof(pc.mid_cc), "%s", cfg->protocontroller_mid_cc);
-		/* variant A's routers connect to the first tunnel address, IPv4 first */
-		for (int i = 0; i < cfg->ntun_addr; i++) {
-			const struct cg_pfx *t = &cfg->tun_addr[i];
-
-			if (pc.a_bind.ss_family == AF_INET || (pc.a_bind.ss_family && t->family == AF_INET6))
-				continue;
-			memset(&pc.a_bind, 0, sizeof(pc.a_bind));
-			if (t->family == AF_INET) {
-				struct sockaddr_in *b = (struct sockaddr_in *)&pc.a_bind;
-
-				b->sin_family = AF_INET;
-				memcpy(&b->sin_addr, t->a, 4);
-				b->sin_port = htons((uint16_t)cfg->protocontroller_port);
-			} else {
-				struct sockaddr_in6 *b = (struct sockaddr_in6 *)&pc.a_bind;
-
-				b->sin6_family = AF_INET6;
-				memcpy(&b->sin6_addr, t->a, 16);
-				b->sin6_port = htons((uint16_t)cfg->protocontroller_port);
-			}
-			pc.a_len = t->len;
-		}
 		if (!(s->pctl = cg_pctl_new(&pc, s->ep, &ops, err, sizeof(err)))) {
 			cg_err("%s", err);
 			goto out;
 		}
 		cg_pctl_rack(s->pctl, !cfg->subflow); /* and at every tick: subflow reloads */
-		cg_info("protocontroller: opening the TCP connections routers ask for (variant B, and variant A's on port %u of the tunnel's address; story 025; %s toward them)",
-			cfg->protocontroller_port, cfg->protocontroller_cc[0] ? cfg->protocontroller_cc : "the kernel's congestion control");
+		cg_info("protocontroller: opening the TCP connections routers ask for (GRIT, story 025; %s toward them)",
+			cfg->protocontroller_cc[0] ? cfg->protocontroller_cc : "the kernel's congestion control");
 	}
 	/* The control socket is a convenience: the tunnel runs without it. */
 	if (cfg->control_socket[0] && cg_ctl_open(&s->ctl, cfg->control_socket, s->ep, err, sizeof(err)) < 0)

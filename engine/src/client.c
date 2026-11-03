@@ -421,7 +421,6 @@ struct client {
 	uint8_t f3_dn;
 	uint64_t f3_rep, f3_bytes, f3_data, f3_tail, f3_guarded, f3_nolink, f3_empty, f3_gated, f3_quiet, f3_switches;
 	uint64_t f3_lsent[CG_MAX_LINKS], f3_llost[CG_MAX_LINKS]; /* with link_cc: each subflow's counters at the last tick */
-	uint16_t f3_ins_port; /* variant A's middle TCP with BBR: its port (f3_apply), 0: none */
 	/* FEC v3 down (story 026): the server's repairs of the download,
 	 * rebuilt as the server rebuilds the upload (with fec): the DATA got
 	 * lately (fec.h's ring, 4 MB) and the RLC's equations (~600 KB); the
@@ -2320,10 +2319,9 @@ static void f3_feed(struct client *c, int stream, uint32_t seq, const uint8_t *p
 		if (!c->resc_idx)
 			cg_resc_earn(&c->resc_b, (uint32_t)len, c->cfg->rescue_pct);
 	}
-	/* the protocontroller's bytes, which loss does not hold back: B's
-	 * stream, and A's middle TCP to the VPS with BBR (fec3.h's cg_f3_mix) */
-	cg_f3_mix(&c->f3, (uint32_t)len,
-		  stream || (c->f3_ins_port && cg_f3_tcp_port(p, len, c->f3_ins_port, 1)));
+	/* the protocontroller's bytes, which loss does not hold back: GRIT's
+	 * stream (fec3.h's cg_f3_mix) */
+	cg_f3_mix(&c->f3, (uint32_t)len, stream);
 	if (c->f3.mode == CG_F3_OFF)
 		return;
 	cg_f3_earn(&c->f3, (uint32_t)len, c->f3.pct, now_us);
@@ -2459,10 +2457,6 @@ static int sr_on(const struct client *c)
  * never per packet. */
 static void f3_apply(struct client *c)
 {
-	/* variant A's middle TCP, when its congestion control does not slow
-	 * down for loss (BBR): its port, for cg_f3_mix */
-	c->f3_ins_port = c->cfg->protocontroller == CG_PCTL_A && !strncmp(c->cfg->protocontroller_mid_cc, "bbr", 3)
-				 ? (uint16_t)c->cfg->protocontroller_port : 0;
 	if (c->cfg->fec && c->cfg->fec_code == CG_FEC_RLC) {
 		if (!c->f3w && !(c->f3w = calloc(1, sizeof(*c->f3w))))
 			cg_warn("fec_code = rlc: out of memory for its window, no repairs");
@@ -2648,66 +2642,6 @@ static void tun_read(struct client *c)
 		if (n < CG_BATCH)
 			return;
 	}
-}
-
-/* Variant A: where the middle TCP goes, the VPS's tunnel address
- * (protocontroller_vps; empty: the first address of tun_addr's prefix, the
- * VPS's by convention, story 010) and protocontroller_port. 0 or -1. */
-static int pctl_vps_addr(const struct cg_config *cfg, struct sockaddr_storage *a, char *err, size_t errlen)
-{
-	uint8_t ad[16];
-	int fam = 0;
-
-	memset(a, 0, sizeof(*a));
-	if (cfg->protocontroller_vps[0]) {
-		if (inet_pton(AF_INET, cfg->protocontroller_vps, ad) == 1)
-			fam = AF_INET;
-		else if (inet_pton(AF_INET6, cfg->protocontroller_vps, ad) == 1)
-			fam = AF_INET6;
-		else {
-			snprintf(err, errlen, "protocontroller_vps: '%s' is not an IP address", cfg->protocontroller_vps);
-			return -1;
-		}
-	} else {
-		for (int i = 0; i < cfg->ntun_addr && !fam; i++) {
-			const struct cg_pfx *t = &cfg->tun_addr[i];
-			unsigned n = t->family == AF_INET ? 4 : 16, len = t->len;
-
-			if (t->family == AF_INET6 && i + 1 < cfg->ntun_addr)
-				continue; /* IPv4 first */
-			if (len + 1 >= n * 8) { /* OpenWrt's /32: no prefix to take it from */
-				snprintf(err, errlen, "protocontroller = a: tun_addr is a single address; set protocontroller_vps");
-				return -1;
-			}
-			memcpy(ad, t->a, n);
-			for (unsigned b = len; b < n * 8; b++)
-				ad[b / 8] &= (uint8_t)~(0x80u >> (b % 8));
-			ad[n - 1] |= 1;
-			if (!memcmp(ad, t->a, n)) {
-				snprintf(err, errlen, "protocontroller = a: tun_addr is the VPS's own; set protocontroller_vps");
-				return -1;
-			}
-			fam = t->family;
-		}
-		if (!fam) {
-			snprintf(err, errlen, "protocontroller = a: no tun_addr to take the VPS's from; set protocontroller_vps");
-			return -1;
-		}
-	}
-	if (fam == AF_INET) {
-		struct sockaddr_in *s = (struct sockaddr_in *)a;
-
-		s->sin_family = AF_INET;
-		memcpy(&s->sin_addr, ad, 4);
-		s->sin_port = htons((uint16_t)cfg->protocontroller_port);
-	} else {
-		struct sockaddr_in6 *s = (struct sockaddr_in6 *)a;
-
-		s->sin6_family = AF_INET6;
-		memcpy(&s->sin6_addr, ad, 16);
-		s->sin6_port = htons((uint16_t)cfg->protocontroller_port);
-	}
-	return 0;
 }
 
 /* the protocontroller (variant B) (protoctlio.h): n stream messages into the tunnel, as one batch. */
@@ -6004,7 +5938,7 @@ static void pumps_free(struct client *c)
 int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 {
 	struct client *c = aligned_alloc(CG_CACHELINE, sizeof(*c)); /* sizeof: a multiple of its alignment */
-	char err[256], buf[64];
+	char err[256];
 	uint64_t last_traffic_us = 0;
 	uint32_t busy;
 	int rc = 1;
@@ -6160,32 +6094,22 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 					 .offer = cfg->link_cc ? CG_PCTL_OFFER_LINKS : cfg->protocontroller_offer,
 					 /* the upload's codes: the spatial parity or FEC v3, or what
 					  * redundancy's spare carries (parity, rs, rlc) */
-					 .code_ms = cfg->fec || cfg->redund_spare >= 2 ? cfg->rescue_code_ms : 0,
-					 .mode = cfg->protocontroller };
+					 .code_ms = cfg->fec || cfg->redund_spare >= 2 ? cfg->rescue_code_ms : 0 };
 		struct cg_pctl_ops ops = { .ctx = c, .send = pctl_send, .hint = pctl_hint, .horizon = pctl_horizon };
 
-		snprintf(pc.mid_cc, sizeof(pc.mid_cc), "%s", cfg->protocontroller_mid_cc);
 		pc.dgram = cg_fc_reliable(&cfg->flow_class); /* the reliable lane (story 031) */
 		pc.zstd = cfg->reliable_zstd;
 		pc.fair = cfg->protocontroller_fair;
 		pc.udp = cfg->protocontroller_udp; /* the LAN's other UDP, unreliable (protocol 20) */
 		pc.dscp = cfg->protocontroller_dscp; /* DiffServ (protocol 21) */
 		pc.burst_kb = cfg->protocontroller_burst_kb;
-		if (cfg->protocontroller == CG_PCTL_A && pctl_vps_addr(cfg, &pc.a_peer, err, sizeof(err)) < 0) {
-			cg_err("%s", err);
-			goto out;
-		}
 		if (!(c->pctl = cg_pctl_new(&pc, c->ep, &ops, err, sizeof(err)))) {
 			cg_err("%s", err);
 			goto out;
 		}
 		cg_pctl_rack(c->pctl, !cfg->subflow); /* and at every tick: subflow reloads */
-		if (cfg->protocontroller == CG_PCTL_A)
-			cg_info("protocontroller: taking the TCP redirected to port %u, a TCP to %s through the tunnel for each (variant A, story 025)",
-				cfg->protocontroller_port, cg_addr_str(&pc.a_peer, buf, sizeof(buf)));
-		else
-			cg_info("protocontroller: taking the TCP redirected to port %u, a stream of cengarde's for each (variant B, story 025)",
-				cfg->protocontroller_port);
+		cg_info("protocontroller: taking the TCP redirected to port %u, a GRIT stream for each (story 025)",
+			cfg->protocontroller_port);
 	}
 	/* The control socket is a convenience: the tunnel runs without it. */
 	if (cfg->control_socket[0] && cg_ctl_open(&c->ctl, cfg->control_socket, c->ep, err, sizeof(err)) < 0)

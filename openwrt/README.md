@@ -594,8 +594,9 @@ estaba.
   también como GRIT (`protocontroller 'b'`): en el laboratorio del
   2026-10-28 la redundancia llevó 24–45 % más que el túnel solo por enlaces
   que pierden o celulares y 5 veces más con el principal cortado, y en
-  terreno (2026-10-29) GRIT le ganó al TCP simple en el medio (`'a'`): la
-  bajada +9 % con menos ping y menos datos, la subida +12 %. Cada enlace
+  terreno (2026-10-29) GRIT le ganó al TCP simple en el medio (la variante
+  A, que salió en la 0.17): la bajada +9 % con menos ping y menos datos, la
+  subida +12 %. Cada enlace
   tiene su subflujo y su propio ritmo (`subflow`, `link_cc`) y lleva copia
   solo si llegaría a menos de 150 ms de la primera (`redund_pace_ms`): en
   terreno (2026-10-29) la bajada pasó de 59–60 a 113–117 Mbit/s con 40–55 %
@@ -891,15 +892,14 @@ El router puede responder él mismo el TCP de la LAN y
 el VPS abrir uno nuevo hacia cada destino (historia 025): el TCP de la LAN
 ya no siente la pérdida ni el retardo de los enlaces, y el tramo del VPS al
 destino (cubic, BBR en cuanto pierde) tampoco los del túnel. Ayuda a las
-subidas largas por TCP (RTMP a un ingest lejano, enlaces que pierden). UDP,
-QUIC y lo demás van por el túnel como siempre. Dos variantes:
-
-- **A** (`protocontroller 'a'`): entre los dos extremos, un TCP simple del
-  kernel por el túnel, del router a `10.79.0.1`. Sin proxies aparte.
-- **B** (`protocontroller 'b'`, experimental; en LuCI *B (GRIT)*): entre
-  los dos, **GRIT** (*Guaranteed Redundant IP Transport*), un flujo fiable
-  propio de cengarde, dosificado por lo que llevan los enlaces y no por la
-  pérdida.
+subidas largas por TCP (RTMP a un ingest lejano, enlaces que pierden). Entre
+los dos extremos va **GRIT** (*Guaranteed Redundant IP Transport*), un flujo
+fiable propio de cengarde, dosificado por lo que llevan los enlaces y no por
+la pérdida. **Encendido por omisión desde la 0.17** (`protocontroller 'b'`;
+en LuCI *GRIT (por omisión)*); `protocontroller 'no'` (*Apagado*) deja el TCP
+por el túnel como paquetes, una salida de emergencia. La variante A (un TCP
+simple en el medio, `'a'`) salió en la 0.17: al actualizar, `uci-defaults`
+la pasa a `b`.
 
 **En el router** (pestaña *Funciones de capa 4*, *Protocontrolador*, con
 «Gestionar el túnel»): `cengarde-setup` escribe `/etc/cengarde/protoctl.nft`, un include
@@ -907,21 +907,20 @@ de firewall4 (`cengarde_protoctl`, una cadena propia justo antes de la
 `dstnat` de fw4) que redirige al motor (puerto 7801) el TCP que entra por la
 zona `lan` hacia `protocontroller_port` (vacío: todos los puertos) y
 `protocontroller_dest` (vacío: todo lo que no es privado ni local); nunca el
-del propio router. El motor recibe `protocontroller = a|b` y, para A, la
-dirección del VPS en el túnel (`protocontroller_vps = 10.79.0.1`: la del
-router es una `/32`). Un cambio reinicia el motor.
+del propio router. El motor recibe `protocontroller = b` (o `no`, apagado).
+Un cambio reinicia el motor.
 
-**En el VPS:** `sudo cengarde-vps-setup protocontroller on`:
-`protocontroller = b` en el motor (acepta A y B),
-`PROTOCONTROLLER="yes"` en `nat.conf` (abre el TCP 7801 desde `cg0` para la
-variante A) y `tcp_bbr` al arrancar. `protocontroller off` lo quita; un
-router que siga con A o B ve entonces sus conexiones rehusadas.
+**En el VPS:** encendido por omisión (`PROTOCONTROLLER="yes"` en
+`nat.conf`, `protocontroller = b` en el motor, `tcp_bbr` al arrancar); al
+actualizar a la 0.17, un VPS con el `no` viejo pasa a `yes`. `sudo
+cengarde-vps-setup protocontroller off` lo apaga (`protocontroller = no`); un
+router que siga con GRIT ve entonces sus conexiones rehusadas, y lo dice en
+su log.
 
 **Comprobar:** en el router, `cengarde ctl status | jsonfilter -e
-'@.protocontroller'` (`opened` con B, `a_opened` con A, `mode` y `protocol`:
-`GRIT` o `TCP`); en el VPS,
-lo mismo. `test/e2e.sh` lo prueba con B y con A (una página del VPS a
-través del corte) y la vuelta a `no` sin restos.
+'@.protocontroller'` (`opened`, `protocol`: `GRIT`); en el VPS, lo mismo.
+`test/e2e.sh` lo prueba con GRIT (una página del VPS a través del corte) y la
+vuelta a `no` sin la redirección.
 
 **QUIC** (opción *QUIC*, `quic`; historia 031). Ningún proxy puede partir
 QUIC: su transporte va cifrado de punta a punta. Con *Por TCP* (`tcp`) el

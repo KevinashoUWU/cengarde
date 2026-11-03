@@ -1261,33 +1261,25 @@ static void test_config_native(void)
 	    "tun_route", "in each");
 #undef TWO
 
-	/* the protocontroller (story 025): no, a or b */
+	/* the protocontroller (story 025): b (GRIT, the default since 0.17) or no;
+	 * a left in 0.17 and runs as b, with a warning, as its two knobs */
 #define PNAT CLIENT "tunnel = native\ntun_addr = 10.79.0.2/16\n"
 	CHECK_EQ(cg_config_parse(&c, PNAT, err, sizeof(err), warn, sizeof(warn)), 0);
-	CHECK_EQ(c.protocontroller, CG_PCTL_NO);
-	CHECK(!c.protocontroller_vps[0] && !strcmp(c.protocontroller_mid_cc, "bbr"));
+	CHECK_EQ(c.protocontroller, CG_PCTL_B);
 	CHECK(!strcmp(c.protocontroller_cc, "auto"));
 	cg_config_free(&c);
 	CHECK_EQ(cg_config_parse(&c, PNAT "protocontroller = a\nprotocontroller_vps = 10.79.0.9\nprotocontroller_mid_cc = cubic\n",
 				 err, sizeof(err), warn, sizeof(warn)),
 		 0);
-	CHECK_EQ(c.protocontroller, CG_PCTL_A);
-	CHECK(!strcmp(c.protocontroller_vps, "10.79.0.9"));
-	CHECK(!strcmp(c.protocontroller_mid_cc, "cubic"));
-	CHECK_EQ(cg_config_parse(&o, PNAT "protocontroller = b\n", err, sizeof(err), warn, sizeof(warn)), 0);
-	CHECK_EQ(o.protocontroller, CG_PCTL_B);
+	CHECK_EQ(c.protocontroller, CG_PCTL_B);
+	CHECK(strstr(warn, "protocontroller a") && strstr(warn, "protocontroller_vps") && strstr(warn, "protocontroller_mid_cc"));
+	CHECK(!strstr(warn, "unknown key"));
+	CHECK_EQ(cg_config_parse(&o, PNAT "protocontroller = no\n", err, sizeof(err), warn, sizeof(warn)), 0);
+	CHECK_EQ(o.protocontroller, CG_PCTL_NO);
 	CHECK(!strcmp(cg_config_restart_needed(&c, &o), "protocontroller"));
 	cg_config_free(&o);
-	CHECK_EQ(cg_config_parse(&o, PNAT "protocontroller = a\nprotocontroller_vps = 10.79.0.9\n", err, sizeof(err), warn,
-				 sizeof(warn)),
-		 0);
-	CHECK(!strcmp(cg_config_restart_needed(&c, &o), "protocontroller")); /* mid_cc */
-	cg_config_free(&o);
 	cg_config_free(&c);
-	CHECK_EQ(cg_config_parse(&c, PNAT "protocontroller = no\n", err, sizeof(err), warn, sizeof(warn)), 0);
-	CHECK_EQ(c.protocontroller, CG_PCTL_NO);
-	cg_config_free(&c);
-	bad(PNAT "protocontroller = c\n", "protocontroller", "no, a or b");
+	bad(PNAT "protocontroller = c\n", "protocontroller", "b or no");
 	CHECK_EQ(cg_config_parse(&c, CLIENT "protocontroller = b\n", err, sizeof(err), warn, sizeof(warn)), 0);
 	cg_config_free(&c);
 #undef PNAT

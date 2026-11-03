@@ -15,8 +15,8 @@ DIR holds, for this run:
     kcp-before-SIDE.csv, kcp-after-SIDE.csv   kcptun's own counters (--snmplog,
                                     once a second), if any (SIDE: cli, srv)
     status-before-SIDE.json, status-after-SIDE.json, status-SIDE-I
-                                    the engines' status files (modes cga and
-                                    cgb, the protocontroller: their
+                                    the engines' status files (mode cgb,
+                                    the protocontroller: their
                                     "protocontroller" object, story 025)
 
 Each netns has its own TCP counters, so the retransmissions split by leg (for
@@ -34,13 +34,13 @@ median smoothed RTT of the split legs' senders (the redirector's socket to the
 VPS, the server end's sockets to the far host); cpu_*_pct the proxies' CPU
 (ticks over --hz and --secs).
 
-Modes cga and cgb (cg) (the protocontroller, story 025: the engines are the
-proxies): "cg" holds, per side, the
+Mode cgb (cg) (the protocontroller, story 025: the engines are the
+proxies; variant A, cga, left in 0.17): "cg" holds, per side, the
 engine's stream counters over the run (data messages sent, sent again,
 copied, timer expiries, duplicates and out-of-order arrivals), the peak of its
 streams' memory (the pool's chunks in use) and of the bytes they held each way,
-and, for cgb, the median smoothed RTT of its pacer (mid_rtt_ms, the router's
-for an upload; cga's is its middle TCP's, from ss).
+and the median smoothed RTT of its pacer (mid_rtt_ms, the router's for an
+upload).
 """
 
 import argparse
@@ -234,8 +234,6 @@ def summary(a):
     if a.mode in ("cg", "cgb"):
         out["cg"] = cg_summary(d)
         out["mid_rtt_ms"] = dig_srtt(out["cg"])
-    elif a.mode == "cga":
-        out["cg"] = cg_summary(d)
     return out
 
 

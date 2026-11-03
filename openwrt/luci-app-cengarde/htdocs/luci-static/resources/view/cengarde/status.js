@@ -487,10 +487,10 @@ return view.extend({
 		const p = st.engine && st.engine.protocontroller;
 		const n = function(v) { return (typeof v == 'number') ? v : 0; };
 
-		if (!p || typeof p != 'object' || !p.mode || p.mode == 'no')
+		if (!p || typeof p != 'object' || !p.protocol)
 			return null;
 		return rowsTable([
-			[ _('Mode'), p.mode == 'b' ? _('B (GRIT): cengarde\'s stream in the middle') : _('A: TCP in the middle') ],
+			[ _('In the middle'), p.protocol ],
 			[ _('Connections now'), '%d'.format(n(p.flows)) ],
 			[ _('Connections in total'), _('%d opened, %d closed').format(n(p.opened), n(p.closed)) ],
 			[ _('From the LAN / to the LAN'), '%1024.2mB / %1024.2mB'.format(n(p.sock_rx_bytes), n(p.sock_tx_bytes)) ],

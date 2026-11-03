@@ -596,28 +596,26 @@ return view.extend({
 		o.onchange = refresh;
 
 		o = s.taboption('layer4', form.ListValue, 'protocontroller', _('Protocontroller'),
-			_('With A or B the router answers the TCP connections of the LAN itself and the VPS opens a fresh one to each destination (cubic, BBR once that leg loses). Between them each connection travels as a plain TCP through the tunnel (A) or, experimental, as GRIT, a reliable stream of cengarde paced by what the uplinks carry instead of by loss (B). It helps TCP uploads such as RTMP over lossy uplinks and long paths beyond the VPS. UDP, QUIC and the rest go through the tunnel as always. The VPS needs "sudo cengarde-vps-setup protocontroller on". A change restarts the engine.'));
-		o.value('no', _('No (the tunnel as always)'));
-		o.value('a', _('A: TCP in the middle'));
-		o.value('b', _('B (GRIT): cengarde\'s stream in the middle (experimental)'));
-		o.default = 'no';
+			_('GRIT (the default): the router answers the TCP connections of the LAN itself, each travels as GRIT, a reliable stream of cengarde paced by what the uplinks carry instead of by loss, over every uplink, and the VPS opens a fresh one to each destination (cubic, BBR once that leg loses). Off: TCP crosses the tunnel as packets, a fallback; the VPS needs "sudo cengarde-vps-setup protocontroller off" then, or the TCP is refused. A change restarts the engine.'));
+		o.value('b', _('GRIT (the default)'));
+		o.value('no', _('Off: TCP through the tunnel as packets (fallback)'));
+		o.default = 'b';
 		o.depends({ tunnel: '1', mode: 'custom' });
 		o.onchange = refresh;
 
 		// What the mode sets instead, one line each (a cfgvalue runs while the
 		// map loads, before the form can be read).
 		o = s.taboption('layer4', form.DummyValue, '_pctl_bonding', _('Protocontroller'));
-		o.cfgvalue = function() { return _('B (GRIT), with each uplink\'s subflow and rate: set by the bonding mode (General tab).'); };
+		o.cfgvalue = function() { return _('GRIT, with each uplink\'s subflow and rate: set by the bonding mode (General tab).'); };
 		o.depends('mode', 'bonding');
 
 		o = s.taboption('layer4', form.DummyValue, '_pctl_redundancy', _('Protocontroller'));
-		o.cfgvalue = function() { return _('B (GRIT), with each uplink\'s subflow and rate: set by the redundancy mode (General tab).'); };
+		o.cfgvalue = function() { return _('GRIT, with each uplink\'s subflow and rate: set by the redundancy mode (General tab).'); };
 		o.depends('mode', 'redundancy');
 
 		o = s.taboption('layer4', form.DynamicList, 'protocontroller_port', _('Protocontroller ports'),
 			_('Only the TCP to these destination ports (or ranges such as 8000-8100). Empty: every port.'));
 		o.datatype = 'or(port, portrange)';
-		o.depends({ protocontroller: 'a', mode: 'custom' });
 		o.depends({ protocontroller: 'b', mode: 'custom' });
 		o.depends('mode', 'bonding');
 		o.depends('mode', 'redundancy');
@@ -625,7 +623,6 @@ return view.extend({
 		o = s.taboption('layer4', form.DynamicList, 'protocontroller_dest', _('Protocontroller destinations'),
 			_('Only the TCP to these addresses or prefixes. Empty: every address that is not private, local or link-local.'));
 		o.datatype = 'or(ipaddr, cidr)';
-		o.depends({ protocontroller: 'a', mode: 'custom' });
 		o.depends({ protocontroller: 'b', mode: 'custom' });
 		o.depends('mode', 'bonding');
 		o.depends('mode', 'redundancy');
@@ -635,7 +632,6 @@ return view.extend({
 		o.value('pass', _('As it comes'));
 		o.value('tcp', _('Over TCP (the protocontroller)'));
 		o.default = 'pass';
-		o.depends({ protocontroller: 'a', mode: 'custom' });
 		o.depends({ protocontroller: 'b', mode: 'custom' });
 		o.depends('mode', 'bonding');
 		o.depends('mode', 'redundancy');
@@ -910,7 +906,7 @@ return view.extend({
 		/* The flows (story 031): what the protocontroller does with the TCP,
 		 * and the class of a flow for the receiver's reorderer (flow_class),
 		 * over what the engine guesses from its bytes */
-		const pctl = savedMode() === 'custom' ? (uci.get('cengarde', 'main', 'protocontroller') || 'no') : 'b';
+		const pctl = savedMode() === 'custom' ? (uci.get('cengarde', 'main', 'protocontroller') || 'b') : 'b'; /* GRIT, the default since 0.17 */
 		const pctlDest = [].concat(uci.get('cengarde', 'main', 'protocontroller_dest') || []);
 		const pctlPort = [].concat(uci.get('cengarde', 'main', 'protocontroller_port') || []);
 		const tcpLine = pctl === 'no'

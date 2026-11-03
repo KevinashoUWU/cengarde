@@ -337,12 +337,15 @@ load() {
 	config_get DNS main dns "$DEFAULT_DNS"
 	config_get UPLINKS main uplink
 	config_get LOG_LEVEL main log_level info
-	# the protocontroller: no, a or b (story 025)
-	config_get PCTL_MODE main protocontroller no
+	# the protocontroller (story 025): b, GRIT, the default since 0.17, or
+	# no, TCP by the tunnel (a fallback); a, a plain TCP in the middle, left
+	# in 0.17 (uci-defaults moves it to b)
+	config_get PCTL_MODE main protocontroller b
 	case "$PCTL_MODE" in
-	a | b) PCTL_ON=1 ;;
-	no | '') PCTL_ON=0 ;;
-	*) log "protocontroller '$PCTL_MODE': expected no, a or b, left off"; PCTL_ON=0 ;;
+	b | '') PCTL_MODE=b PCTL_ON=1 ;;
+	a) log "protocontroller 'a' left in 0.17: GRIT (b) instead"; PCTL_MODE=b PCTL_ON=1 ;;
+	no) PCTL_ON=0 ;;
+	*) log "protocontroller '$PCTL_MODE': expected b or no, taken as b"; PCTL_MODE=b PCTL_ON=1 ;;
 	esac
 	config_get PCTL_PORTS main protocontroller_port
 	config_get PCTL_DEST main protocontroller_dest
@@ -1209,14 +1212,13 @@ engine_conf() {
 		*) log "$k '$v': expected 0 or 1, left out" ;;
 		esac
 	done
-	# the protocontroller (story 025): the firewall's redirect lands on PCTL_LISTEN
+	# the protocontroller (story 025): the firewall's redirect lands on
+	# PCTL_LISTEN; off, said so (the engine's default is b since 0.17)
+	[ "$PCTL_ON" = 1 ] && [ "$TUNNEL" = 1 ] || echo "protocontroller = no"
 	if [ "$PCTL_ON" = 1 ] && [ "$TUNNEL" = 1 ]; then
 		echo "protocontroller = $PCTL_MODE"
 		echo "protocontroller_port = $PCTL_LISTEN"
-		# variant A's middle TCP goes to the VPS's end of the tunnel (this
-		# router's own tun_addr is a /32: nothing to take it from)
-		echo "protocontroller_vps = $VPS_ADDR"
-		for k in protocontroller_mid_cc protocontroller_buf_kb protocontroller_mem_mb protocontroller_max_flows protocontroller_queue_ms protocontroller_backlog_ms protocontroller_dead_s protocontroller_reo_ms protocontroller_burst_kb; do
+		for k in protocontroller_buf_kb protocontroller_mem_mb protocontroller_max_flows protocontroller_queue_ms protocontroller_backlog_ms protocontroller_dead_s protocontroller_reo_ms protocontroller_burst_kb; do
 			config_get v main "$k"
 			[ -n "$v" ] && echo "$k = $v"
 		done

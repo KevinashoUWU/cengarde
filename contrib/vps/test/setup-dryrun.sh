@@ -36,8 +36,9 @@
 #   alone, nothing the second time; "tunnel wireguard" refused with the way
 #   forward, "tunnel native" only says so; the import of a cloud-config
 #   with TUNNEL=wireguard;
-# - protocontroller on|off: protocontroller = b, tcp_bbr at boot,
-#   PROTOCONTROLLER in nat.conf;
+# - protocontroller on|off: protocontroller = b (or no: the engine's
+#   default is b since 0.17), tcp_bbr at boot, PROTOCONTROLLER in nat.conf;
+#   0.17's move of the old default PROTOCONTROLLER=no to yes, once;
 # - fec on|rlc|off: fec = yes (and fec_code = rlc), FEC in nat.conf (story 026);
 # - mode bonding|redundancy|custom: bonding, subflow, link_cc, the NACK a
 #   hint and the protocontroller (BONDING in nat.conf); redundancy, subflow,
@@ -695,13 +696,27 @@ check "tunnel native says it is the only one" setup tunnel native
 check "so" said "the only tunnel since cengarde 0.12"
 check "nothing changed" [ "$(fingerprint)" = "$before" ]
 : >"$CALLS"
+check "the protocontroller on by default (0.17): protocontroller = b" grep -qx "protocontroller = b" "$R/etc/cengarde/cengarde.conf"
+check "protocontroller off" setup protocontroller off
+check "protocontroller = no in cengarde.conf (the engine's default is b since 0.17)" grep -qx "protocontroller = no" "$R/etc/cengarde/cengarde.conf"
+check "no arguments keeps it off (no 0.17 move: the file says no)" setup
+check "still protocontroller = no" grep -qx "protocontroller = no" "$R/etc/cengarde/cengarde.conf"
+: >"$CALLS"
 check "protocontroller on" setup protocontroller on
 check "cengarde.conf: protocontroller = b; PROTOCONTROLLER in nat.conf; tcp_bbr at boot" \
 	sh -c 'grep -qx "protocontroller = b" "$1" && grep -qx "PROTOCONTROLLER=\"yes\"" "$2" && grep -qx tcp_bbr "$3"' \
 	sh "$R/etc/cengarde/cengarde.conf" "$R/etc/cengarde/nat.conf" "$R/etc/modules-load.d/cengarde-bbr.conf"
 check "the engine takes it" called '^cengarde -t -c .*cengarde.conf.new'
-check "protocontroller off" setup protocontroller off
-check "no protocontroller in cengarde.conf" not grep -q "^protocontroller" "$R/etc/cengarde/cengarde.conf"
+# a server of before 0.17, off: its file says no protocontroller, and the
+# old default moves to on
+sed -i '/^protocontroller/d' "$R/etc/cengarde/cengarde.conf"
+sed -i 's/^PROTOCONTROLLER=.*/PROTOCONTROLLER="no"/' "$R/etc/cengarde/nat.conf"
+check "no arguments: 0.17's move" setup
+check "said so" said "0.17: the protocontroller (GRIT) on"
+check "PROTOCONTROLLER yes, protocontroller = b" \
+	sh -c 'grep -qx "protocontroller = b" "$1" && grep -qx "PROTOCONTROLLER=\"yes\"" "$2"' \
+	sh "$R/etc/cengarde/cengarde.conf" "$R/etc/cengarde/nat.conf"
+setup protocontroller off >/dev/null
 : >"$CALLS"
 check "fec on" setup fec on
 check "cengarde.conf: fec = yes; FEC in nat.conf" \
@@ -739,7 +754,7 @@ check "each link's subflow and rate deciding the copies (redund_pace_ms 150), th
 setup protocontroller off >/dev/null
 check "mode custom" setup mode custom
 check "no subflow, the protocontroller left off" \
-	sh -c '! grep -q "^subflow" "$1" && ! grep -q "^protocontroller = " "$1" && grep -qx "REDUNDANCY=\"no\"" "$2"' \
+	sh -c '! grep -q "^subflow" "$1" && grep -qx "protocontroller = no" "$1" && grep -qx "REDUNDANCY=\"no\"" "$2"' \
 	sh "$R/etc/cengarde/cengarde.conf" "$R/etc/cengarde/nat.conf"
 check "mode custom again" setup mode custom
 check "so" said "mode custom already"

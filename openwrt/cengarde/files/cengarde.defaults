@@ -37,4 +37,12 @@ if uci -q get network.wgcg >/dev/null || uci -q get network.cengarde_vps >/dev/n
 	uci -q delete network.wgcg
 	uci commit network
 fi
+# 0.17: the protocontroller's variant A (a plain TCP in the middle) left;
+# GRIT (b) is the default and takes its place (story 029).
+if [ "$(uci -q get cengarde.main.protocontroller)" = a ]; then
+	uci set cengarde.main.protocontroller=b
+	uci -q delete cengarde.main.protocontroller_mid_cc
+	uci commit cengarde
+fi
+uci -q get cengarde.main.protocontroller_mid_cc >/dev/null && uci -q delete cengarde.main.protocontroller_mid_cc && uci commit cengarde
 exit 0

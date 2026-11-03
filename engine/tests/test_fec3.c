@@ -301,7 +301,6 @@ static void test_f3_pct(void)
 static void test_f3_mix(void)
 {
 	struct cg_f3 f;
-	uint8_t v4[40] = { 0x45, 0, 0, 40, 0, 0, 0, 0, 64, 6 }, v6[60] = { 0x60 };
 	int i;
 
 	memset(&f, 0, sizeof(f));
@@ -331,21 +330,6 @@ static void test_f3_mix(void)
 	f.ins_q10 = 1024;
 	CHECK_EQ(cg_f3_pct(&f, 0x1, 0, 20, 0, 200), 0);
 	CHECK_EQ(cg_f3_pct(&f, 0x3, 0, 20, 0, 200), 20);
-	/* the port: TCP's destination (or source) port, IPv4 with options, IPv6 */
-	v4[22] = 0x1e;
-	v4[23] = 0x79; /* destination 7801 */
-	CHECK(cg_f3_tcp_port(v4, sizeof(v4), 7801, 1));
-	CHECK(!cg_f3_tcp_port(v4, sizeof(v4), 7801, 0));
-	CHECK(!cg_f3_tcp_port(v4, sizeof(v4), 0, 1));
-	CHECK(!cg_f3_tcp_port(v4, 23, 7801, 1)); /* short */
-	v4[9] = 17;                              /* UDP */
-	CHECK(!cg_f3_tcp_port(v4, sizeof(v4), 7801, 1));
-	v6[6] = 6;
-	v6[40] = 0x1e;
-	v6[41] = 0x79; /* source 7801 */
-	CHECK(cg_f3_tcp_port(v6, sizeof(v6), 7801, 0));
-	CHECK(!cg_f3_tcp_port(v6, sizeof(v6), 7801, 1));
-	CHECK(!cg_f3_tcp_port(v6, 43, 7801, 0));
 }
 
 void test_fec3(void)

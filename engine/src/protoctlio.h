@@ -15,10 +15,11 @@
 #include <stdint.h>
 #include <sys/socket.h>
 
-#define CG_PCTL_LISTEN_IDX 0xFFFF0000u /* CG_EV_PCTL's index for the listening sockets (+ 0 v4, + 1 v6, + 2 the VPS's A,
+#define CG_PCTL_LISTEN_IDX 0xFFFF0000u /* CG_EV_PCTL's index for the listening sockets (+ 0 v4, + 1 v6,
 					* + 3 and 4 the reliable lane's UDP, + 5 and 6 the unreliable datagrams') */
-#define CG_PCTL_MID 0x01000000u        /* CG_EV_PCTL's index of a flow's middle socket (variant A): slot | this */
-enum { CG_PCTL_NO = 0, CG_PCTL_A, CG_PCTL_B };
+/* protocontroller: off (TCP by the tunnel, a fallback) or GRIT (B; variant
+ * A, a plain TCP in the middle, left in 0.17: story 029) */
+enum { CG_PCTL_NO = 0, CG_PCTL_B = 2 };
 
 struct cg_json;
 
@@ -28,11 +29,6 @@ struct cg_json;
 
 struct cg_pctl_cfg {
 	int server;          /* the VPS: connects; else the router: listens */
-	int mode;            /* the router: CG_PCTL_A (plain TCP in the middle) or CG_PCTL_B (a stream); the VPS takes both */
-	struct sockaddr_storage a_peer; /* the router, variant A: the VPS's end of the tunnel and port */
-	struct sockaddr_storage a_bind; /* the VPS: where variant A's connections come (its tunnel address, port) */
-	unsigned a_len;      /* the VPS: the tunnel's prefix length; only its addresses may connect there */
-	char mid_cc[16];     /* variant A: the middle leg's congestion control for what this end sends ("" the kernel's) */
 	uint16_t port;       /* the router's listening port (the firewall's REDIRECT) */
 	uint32_t mss;        /* stream bytes per DATA (the tunnel's MTU less the header) */
 	uint32_t buf_kb;     /* each stream's buffer per direction, at most */

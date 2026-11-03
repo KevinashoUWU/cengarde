@@ -718,10 +718,10 @@ static int parse_lists(struct cg_config *c, struct cg_ini *ini)
  * (enum cg_split_mode). c->mode is set. */
 /* redund_spare: no (off), copies, parity, mix, rs or rlc (spare.h); rs
  * needs Leopard (make LEOPARD=0 builds without it). */
-/* protocontroller = no | a | b (story 025): no, the transparent tunnel;
- * a, TCP split with a plain TCP through the tunnel in the middle; b, TCP
- * split with cengarde's own reliable stream in the middle. A server takes
- * both a and b from its routers with either. */
+/* protocontroller = b | no (story 025): b, the default, TCP split with
+ * GRIT in the middle; no, TCP by the tunnel as any packet (a fallback).
+ * Variant a (a plain TCP through the tunnel in the middle) left in 0.17
+ * (story 029): a config that still says it runs as b, with a warning. */
 static int get_protocontroller(struct cg_ini *ini, struct cg_config *c, char *err, size_t errlen)
 {
 	const char *v = cg_ini_get(ini, "", "protocontroller");
@@ -730,12 +730,10 @@ static int get_protocontroller(struct cg_ini *ini, struct cg_config *c, char *er
 		return 0;
 	if (!strcmp(v, "no") || !strcmp(v, "off") || !strcmp(v, "0"))
 		c->protocontroller = CG_PCTL_NO;
-	else if (!strcmp(v, "a") || !strcmp(v, "A"))
-		c->protocontroller = CG_PCTL_A;
-	else if (!strcmp(v, "b") || !strcmp(v, "B"))
-		c->protocontroller = CG_PCTL_B;
+	else if (!strcmp(v, "b") || !strcmp(v, "B") || !strcmp(v, "a") || !strcmp(v, "A"))
+		c->protocontroller = CG_PCTL_B; /* a: retired_keys warns */
 	else {
-		snprintf(err, errlen, "protocontroller: expected no, a or b, got '%s'", v);
+		snprintf(err, errlen, "protocontroller: expected b or no, got '%s'", v);
 		return -1;
 	}
 	return 0;
@@ -850,8 +848,20 @@ static void retired_keys(struct cg_ini *ini, char *warn, size_t warnlen)
 	static const char *const keys[] = { "link_cc_bits", "link_cc_budget_ms", "mute_queue", "reorder_idle_ms",
 					     "reorder_retx_release_ms", "split_stress_single", "rescue_by_owd",
 					     "capacity_expire_ms", "capacity_loss_queue_ms", "capacity_stand",
-					     "starlink_edge_copies" };
+					     "starlink_edge_copies", "protocontroller_mid_cc", "protocontroller_vps" };
 
+	for (int i = 0; i < ini->n; i++) { /* variant A (a plain TCP in the middle) left in 0.17 */
+		const struct cg_ini_entry *x = &ini->e[i];
+		size_t used;
+
+		if (x->section[0] || strcmp(x->key, "protocontroller") || (strcmp(x->value, "a") && strcmp(x->value, "A")) ||
+		    !warnlen)
+			continue;
+		used = strlen(warn);
+		snprintf(warn + used, warnlen - used,
+			 "%sline %d: protocontroller a (a plain TCP in the middle) left in 0.17: running as b, GRIT (docs/historias/029)",
+			 used ? "\n" : "", x->line);
+	}
 	for (int i = 0; i < ini->n; i++)
 		for (size_t j = 0; j < sizeof(keys) / sizeof(keys[0]); j++) {
 			struct cg_ini_entry *x = &ini->e[i];
@@ -963,9 +973,9 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	c->protocontroller_nack = 1;
 	c->subflow = 0;
 	c->protocontroller_offer = 1;
+	c->protocontroller = CG_PCTL_B; /* GRIT, the default since 0.17 (story 029) */
 	c->link_cc = 0;
 	strcpy(c->protocontroller_cc, "auto");
-	strcpy(c->protocontroller_mid_cc, "bbr");
 	c->fec_wait_ms = 10;
 	c->fec_pct = 20;
 	c->fec_pct_min = 0;
@@ -1095,8 +1105,6 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	    get_bool(&ini, "", "protocontroller_offer", &c->protocontroller_offer, err, errlen) ||
 	    get_bool(&ini, "", "link_cc", &c->link_cc, err, errlen) ||
 	    get_str(&ini, "", "protocontroller_cc", c->protocontroller_cc, sizeof(c->protocontroller_cc), err, errlen) ||
-	    get_str(&ini, "", "protocontroller_mid_cc", c->protocontroller_mid_cc, sizeof(c->protocontroller_mid_cc), err, errlen) ||
-	    get_str(&ini, "", "protocontroller_vps", c->protocontroller_vps, sizeof(c->protocontroller_vps), err, errlen) ||
 	    get_bool(&ini, "", "fec", &c->fec, err, errlen) ||
 	    get_u32(&ini, "", "fec_wait_ms", 1, 200, &c->fec_wait_ms, err, errlen) ||
 	    get_u32(&ini, "", "fec_share_max", 0, 100, &c->fec_share_max, err, errlen) ||
@@ -1514,9 +1522,7 @@ const char *cg_config_restart_needed(const struct cg_config *a, const struct cg_
 					     a->protocontroller_dscp != b->protocontroller_dscp ||
 					     a->protocontroller_burst_kb != b->protocontroller_burst_kb ||
 					     a->protocontroller_offer != b->protocontroller_offer || a->link_cc != b->link_cc ||
-					     strcmp(a->protocontroller_cc, b->protocontroller_cc) ||
-					     strcmp(a->protocontroller_mid_cc, b->protocontroller_mid_cc) ||
-					     strcmp(a->protocontroller_vps, b->protocontroller_vps))))
+					     strcmp(a->protocontroller_cc, b->protocontroller_cc))))
 		return "protocontroller";
 	return NULL;
 }

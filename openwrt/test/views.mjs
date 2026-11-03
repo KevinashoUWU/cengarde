@@ -440,7 +440,7 @@ for (const [lang, tr] of [ [ 'en', english ], [ 'es', spanish ] ]) {
 		assert.deepEqual(o[name].deps, [ { fec_code: 'rlc' } ], `${lang}: ${name} only with FEC v3`);
 	// the flows (story 031): the TCP said, a grid of rules, the endpoint's check
 	assert.ok(o.flowclass && o.flowclass.addremove && o.flowclass.sortable, 'the flows: rules added, removed and ordered');
-	assert.match(o.flowclass.descr, /^TCP: [^<]*\(.*protocontrol\w+ (is off|está apagado)/, 'the TCP line: the protocontroller off');
+	assert.doesNotMatch(o.flowclass.descr, /^TCP: [^<]*\(.*protocontrol\w+ (is off|está apagado)/, 'the TCP line: GRIT by default (0.17)');
 	{
 		const b = await renderConfig(tr, [ 'wan', 'lte2' ], { mode: 'bonding', protocontroller_port: [ '443' ] });
 
@@ -457,7 +457,7 @@ for (const [lang, tr] of [ [ 'en', english ], [ 'es', spanish ] ]) {
 		'repairs over GRIT only with GRIT, and FEC v3 or a protection mode');
 	for (const name of [ 'protocontroller', 'protocontroller_port', 'protocontroller_dest' ])
 		tab(name, 'layer4');
-	assert.deepEqual(o.protocontroller.values.map((v) => v[0]), [ 'no', 'a', 'b' ]);
+	assert.deepEqual(o.protocontroller.values.map((v) => v[0]), [ 'b', 'no' ]); /* a left in 0.17 */
 	assert.deepEqual(o.protocontroller.deps, [ { tunnel: '1', mode: 'custom' } ], 'only with the tunnel managed, in custom (the mode sets it)');
 	// the mode (story 029): bonding, redundancy or custom, in the General tab
 	assert.deepEqual(tab('mode', 'general').values.map((v) => v[0]), [ 'bonding', 'redundancy', 'custom' ]);
@@ -663,7 +663,7 @@ for (const [lang, tr] of [ [ 'en', english ], [ 'es', spanish ] ]) {
 
 	// Protocontroller: only when it is on
 	assert.ok(!heads(base({ links: [], protocontroller: { mode: 'no' } })).includes(PCTL), `${lang}: off, no box`);
-	assert.ok(heads(base({ links: [], protocontroller: { mode: 'b', flows: 3, opened: 10, closed: 7 } })).includes(PCTL), `${lang}: on, the box`);
+	assert.ok(heads(base({ links: [], protocontroller: { protocol: 'GRIT', flows: 3, opened: 10, closed: 7 } })).includes(PCTL), `${lang}: on, the box`);
 }
 assert.deepEqual([ ...new Set(missing) ], [], 'every string the views use has a Spanish translation');
 

@@ -69,7 +69,7 @@
 #     default route, and the status and the cloud-config say so; converged;
 #     off again: all of it gone, as it was, and converged;
 # 13. after a restart of the engine netifd puts cg0 back with its address
-#     and routes; converged; the protocontroller (b, then a, at both ends:
+#     and routes; converged; the protocontroller (GRIT, then off, at both ends:
 #     the redirect in cengarde_protoctl, the engine's protocontroller, a web
 #     page of the VPS fetched by the router through the split, then no and
 #     nothing left);
@@ -637,9 +637,9 @@ conf | grep -qx 'split_spread_ms = 250' && { echo "bonding: its default beat an 
 cengarde -t -c /tmp/mode.conf || { echo "bonding: the engine refuses its file"; r=1; }
 uci set cengarde.main.mode=redundancy
 uci set cengarde.main.split=1
-uci set cengarde.main.protocontroller=a
+uci set cengarde.main.protocontroller=no
 uci commit cengarde
-conf | grep -qE '^(split = on|protocontroller = a)' && { echo "redundancy: a switch set apart is left"; r=1; }
+conf | grep -qE '^(split = on|protocontroller = no)' && { echo "redundancy: a switch set apart is left"; r=1; }
 for kv in 'protocontroller = b' 'subflow = yes' 'link_cc = yes' 'redund_pace_ms = 150' 'rescue_wait_ms = 60' 'tcp_aware = yes'; do
 	conf | grep -qxF "$kv" || { echo "redundancy: missing $kv"; r=1; }
 done
@@ -1314,12 +1314,12 @@ sleep 15
 converged "the engine restarted"
 
 # The protocontroller (story 025): the router's engine takes redirected TCP
-# and the VPS's opens it to the destination, through a stream of cengarde's
-# (b) or a plain TCP to the VPS's tunnel address (a). The firewall redirects
+# and the VPS's opens it to the destination, through GRIT (b, the default
+# since 0.17; variant a left). The firewall redirects
 # only what comes in from the LAN, so for the test the router's own TCP to
 # the VPS's web server (1.2.3.5:80, uhttpd) is redirected too, from a table
 # of the test's.
-say "the protocontroller, a TCP connection split at both ends (b, then a)"
+say "the protocontroller, a TCP connection split at both ends (GRIT)"
 "$VM" ssh vps "sed -i '/^protocontroller/d' /etc/cengarde/server.conf &&
 	printf 'protocontroller = b\nprotocontroller_cc = cubic\n' >>/etc/cengarde/server.conf &&
 	/etc/init.d/cengarde restart"
@@ -1334,27 +1334,37 @@ pctl_opened() { # KEY: both engines opened one
 	[ "$("$VM" ssh router "cengarde ctl status | jsonfilter -e '@.protocontroller.$1'")" -ge 1 ] 2>/dev/null &&
 		[ "$("$VM" ssh vps "cengarde ctl status | jsonfilter -e '@.protocontroller.$1'")" -ge 1 ] 2>/dev/null
 }
-for v in b a; do
-	pctl_set "$v"
-	if until_ok 90 pctl_rule && until_ok 30 pctl_conf "$v" && until_ok 90 tunnel_back; then
-		ok "protocontroller $v: the LAN's TCP redirected to 7801 (fw4's chain cengarde_protoctl), the engine runs protocontroller = $v"
-	else
-		bad "protocontroller $v: no redirect in cengarde_protoctl, or not in the engine's configuration"
-		"$VM" ssh router 'nft list chain inet fw4 cengarde_protoctl; cat /etc/cengarde/protoctl.nft; grep protocontroller /var/etc/cengarde.conf; logread | grep -E "cengarde|firewall" | tail -20'
-	fi
-	"$VM" ssh router "nft add table ip cgpctltest && nft add chain ip cgpctltest out '{ type nat hook output priority -100; }' &&
-		nft add rule ip cgpctltest out ip daddr 1.2.3.5 tcp dport 80 redirect to :7801"
-	key=opened
-	[ "$v" = a ] && key=a_opened
-	if until_ok 30 pctl_fetch && pctl_opened "$key"; then
-		ok "protocontroller $v: a web page of the VPS through the split (both engines opened one)"
-	else
-		bad "protocontroller $v: no page through the split"
-		"$VM" ssh router "cengarde ctl status | jsonfilter -e '@.protocontroller'"
-		"$VM" ssh vps "cengarde ctl status | jsonfilter -e '@.protocontroller'; logread | grep cengarde | tail -10"
-	fi
-	"$VM" ssh router 'nft delete table ip cgpctltest' || true
-done
+v=b
+pctl_set "$v"
+if until_ok 90 pctl_rule && until_ok 30 pctl_conf "$v" && until_ok 90 tunnel_back; then
+	ok "protocontroller $v: the LAN's TCP redirected to 7801 (fw4's chain cengarde_protoctl), the engine runs protocontroller = $v"
+else
+	bad "protocontroller $v: no redirect in cengarde_protoctl, or not in the engine's configuration"
+	"$VM" ssh router 'nft list chain inet fw4 cengarde_protoctl; cat /etc/cengarde/protoctl.nft; grep protocontroller /var/etc/cengarde.conf; logread | grep -E "cengarde|firewall" | tail -20'
+fi
+"$VM" ssh router "nft add table ip cgpctltest && nft add chain ip cgpctltest out '{ type nat hook output priority -100; }' &&
+	nft add rule ip cgpctltest out ip daddr 1.2.3.5 tcp dport 80 redirect to :7801"
+if until_ok 30 pctl_fetch && pctl_opened opened; then
+	ok "protocontroller $v: a web page of the VPS through the split (both engines opened one)"
+else
+	bad "protocontroller $v: no page through the split"
+	"$VM" ssh router "cengarde ctl status | jsonfilter -e '@.protocontroller'"
+	"$VM" ssh vps "cengarde ctl status | jsonfilter -e '@.protocontroller'; logread | grep cengarde | tail -10"
+fi
+"$VM" ssh router 'nft delete table ip cgpctltest' || true
+# off (protocontroller no, a fallback since 0.17): no redirect, and the
+# engine told so (its default is b); then GRIT again for what follows
+pctl_set no
+pctl_norule() { ! pctl_rule; }
+if until_ok 90 pctl_norule && until_ok 30 pctl_conf no && until_ok 90 tunnel_back; then
+	ok "protocontroller no: no redirect, the engine runs protocontroller = no"
+else
+	bad "protocontroller no: the redirect left, or not in the engine's configuration"
+fi
+pctl_set b
+if ! until_ok 90 pctl_rule || ! until_ok 90 tunnel_back; then
+	bad "protocontroller b again: no redirect"
+fi
 # QUIC to TCP (story 031): the LAN's UDP 443 into the tunnel refused, but to
 # quic_allow; gone with quic = pass
 quic_set() { # MODE
