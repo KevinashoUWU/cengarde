@@ -148,6 +148,43 @@ frame (0,6 % a 1400), menos con los acuses que hoy viajan solos.
   redundancia cada copia se sella aparte. La Pi 4 (A72, NEON de 128 bits)
   se mide cuando esté prendida; el i7 sella ~6 Gbit/s por núcleo.
 
+## Paso 2: cómo se implementa (diseño fino, 2026-11-03)
+
+- **El paquete en memoria no cambia:** el motor sigue armando y leyendo el
+  encabezado de 28 bytes de hoy (tipo, flags, pista, enlace, sesión,
+  secuencia de clase, reloj, el campo del MAC sin uso y la `sseq`) con el
+  payload detrás (`b + CG_HDR_LEN`). El formato de cable solo existe en el
+  borde:
+  - **sellar** (al enviar, por cada transmisión): encabezado claro de 11
+    bytes (versión y clase de paquete, pista, enlace, sesión, `nseq`: los
+    32 bits bajos del contador de la sesión), más 8 de época en los de
+    saludo; después, cifrado, el encabezado interno de 14 bytes (tipo,
+    flags, secuencia, reloj, `sseq`) y el payload; al final, el tag. El
+    cable mide 13 bytes más que la memoria (16 de tag, 14 de encabezado
+    interno y 11 de claro, contra los 28 de hoy).
+  - **abrir** (al recibir): el tag primero (en tiempo constante), después
+    se descifran solo los 14 bytes del encabezado interno, y el encabezado
+    de 28 se rearma en su lugar; el payload se descifra solo si el paquete
+    no es un duplicado (las copias por otros enlaces se descartan como hoy,
+    sin pagar el ChaCha20 de su cuerpo).
+- **Un contador por sesión y sentido** (64 bits, todos los enlaces): cada
+  transmisión, copia o reenvío del rescate toma el siguiente; va en el
+  nonce con el sentido. Por sesión y no por enlace, para que recrear el
+  estado de un camino en el servidor nunca vuelva un contador a cero. El
+  receptor extiende los 32 bits del cable contra lo más alto visto.
+- **Las llaves:** el cliente las deriva al arrancar (la de subida) y al
+  conocer la época (la de bajada); el servidor, por sesión al aceptarla
+  (hoy usa la llave fija de cada cliente). La admisión de una sesión nueva
+  prueba la llave de subida de cada cliente de la pista (BLAKE2s y un
+  tag por candidato, como hoy un MAC).
+- **Lo que toca:** `proto.h` y `proto.c` (sellar, abrir, el contador, las
+  llaves); el envío del cliente y del servidor (cada copia sellada en su
+  búfer, en vez de compartir el payload por `iovec`); el anillo del rescate
+  (guarda el paquete en memoria y se sella al reenviar); la recepción del
+  cliente (`clientpath.h`) y del servidor (la admisión, la sesión); los
+  desplazamientos que se leen antes de abrir (pista, sesión: el programa
+  BPF de `lanes`); el MTU (13 bytes más por paquete).
+
 ## Pendiente
 
 - Todo lo de arriba.
