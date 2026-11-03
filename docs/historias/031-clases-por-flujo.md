@@ -1,7 +1,7 @@
 # 031 — Clases por flujo (U5): la FEC y la protección para GRIT, y el proxy UDP
 
 - **Fecha:** 2026-11-02
-- **Estado:** pasos 1, 2 y 3 hechos (PR #158 a #164, protocolos 17 y 18): `fec_stream`, `flow_class` con su tabla «Flujos», el carril fiable con zstd y `flow_learn`; los envíos por equipo (19), el UDP dentro de GRIT (20, `protocontroller_udp`) y DiffServ (21, `protocontroller_dscp`); falta terreno de los pasos 2 y 3
+- **Estado:** pasos 1, 2 y 3 hechos (PR #158 a #164, protocolos 17 y 18): `fec_stream`, `flow_class` con su tabla «Flujos», el carril fiable con zstd y `flow_learn`; los envíos por equipo (19), el UDP dentro de GRIT (20, `protocontroller_udp`), DiffServ (21, `protocontroller_dscp`) y el crédito de ráfaga (`protocontroller_burst_kb`); falta terreno de los pasos 2 y 3 y del crédito
 - **Fuentes:** historia 030 (protocolos 13–16, el reordenador por clase de
   datagrama), 026 (FEC v3), 020 y 021 (`redund_spare`), 025 (GRIT en
   redundancia), 029 (MPGRIT U5); `engine/src/fec3.h`, `repair.h`, `rlc.h`,
@@ -683,6 +683,79 @@ azar los paquetes del túnel en los dos sentidos (iptables `statistic`).
   túnel (para un SQM con `diffserv4` en el WAN del router, o la red del
   operador); y la cola por clase en la TUN.
 
+## El crédito de ráfaga y el RTMP (2026-11-03)
+
+- **El caso** (terreno, 2026-11-02): el usuario transmitía RTMP a Facebook
+  ("solo yo") desde el notebook a 8 Mbit/s. Iba por GRIT (RTMPS a
+  57.144.246.149:443, la ingesta de Meta en Santiago, a 1 ms del VPS),
+  parejo a ~7,4 Mbit/s, repartido ENTEL 4,5 / MOVISTAR 1,4 / CLARO 0,9 /
+  WOM 0,7, colas de 3–7 ms y 0,3 reenvíos por segundo. Cada 2 s un
+  keyframe: 16–28 Mbit/s por 200–300 ms. El ritmo de GRIT sigue a lo que
+  le piden (~12,4 Mbit/s) y su balde tiene 2 ms de hondo: la cola del
+  keyframe esperaba en el router hasta ~150 ms (4 % de lo leído, más de
+  64 ms) con los enlaces casi vacíos. El gráfico de la pestaña Túnel se ve
+  como un electrocardiograma: un pico cada 2 s muestreado a un ritmo
+  parecido.
+- **El crédito** (`protocontroller_burst_kb`, 256 por omisión;
+  `streamcc.h`): lo que rebalsa el balde lleno mientras el par va limitado
+  por la aplicación y sin cola se guarda, hasta 256 KB y 100 ms al ritmo,
+  y paga los envíos cuando se acaban los tokens. Una pérdida, una cola o
+  los flujos usando el ritmo lo vacían; con otro equipo cargando no se
+  carga.
+- **Lo que encontró de paso, en el UDP dentro de GRIT:** un flujo de
+  datagramas no fiable leía su socket antes de mandar (hasta 64 por
+  vuelta), así que la ráfaga de un keyframe desbordaba la cola de 32 antes
+  de que saliera nada. Ahora, con la cola llena, el resto espera en el
+  búfer del socket.
+- **Laboratorio** (remoto06 y remoto07, cubic, n = 2, 30 s;
+  `~/campo/2026-11-03/burst`, `table.md`). `BOND_FLV` es un FLV por TCP
+  tipo RTMP (x264 CBR a 8 Mbit/s, keyframe cada 2 s, VBV de 1 s, ruido
+  quieto sobre el patrón: keyframes de ~300 KB contra ~26 KB de los demás
+  cuadros), y `flvrx.py` mide cuán tarde llega cada cuadro sobre el 5.º
+  percentil. Va con `BOND_RATE=1M` de fondo, sin crédito y con crédito:
+
+  | Caso | Sentido | Keyframe tarde p50 (ms) | p99 | Cuadro tarde p99 | Ping p99 del resto |
+  | --- | --- | --- | --- | --- | --- |
+  | `equal` | subida | 102 → 32 | 134 → 74 | 78 → 14 | 51 → 54 |
+  | `equal` | bajada | 111 → 78 | 155 → 110 | 88 → 69 | 51 → 54 |
+  | `het` | subida | 139 → 75 | 185 → 93 | 125 → 53 | 41 → 49 |
+  | `het` | bajada | 146 → 84 | 191 → 101 | 134 → 61 | 42 → 46 |
+  | `cell4` | subida | 169 → 89 | 220 → 126 | 156 → 94 | 54 → 69 |
+  | `cell4` | bajada | 164 → 103 | 223 → 172 | 157 → 99 | 54 → 63 |
+
+  Con otro equipo con 4 TCP al lado (`BOND_HOG=4`) el crédito no se carga.
+  Medianas iguales; el p99 de los keyframes (13 por corrida, casi el
+  máximo) se mueve en los dos sentidos, y el otro equipo da lo mismo
+  (84, 79 y 38 Mbit/s).
+- **Video RTP desde la LAN dentro de GRIT** (`BOND_TSREAL=rtp`,
+  `BOND_TSREAL_LAN=1`, `BOND_UDP_GRIT=1`; 6 Mbit/s, keyframe cada
+  segundo; RTP perdidos por corrida):
+
+  | Caso | Antes | Con crédito | Y sin leer con la cola llena |
+  | --- | --- | --- | --- |
+  | `equal` | 396–397 | 43–164 | 0–2 |
+  | `het` | 279–429 | 100–142 | 9–48 |
+  | `cell4` | 288–344 | 122–200 | 84–156 |
+
+  Con lo último, ningún datagrama se bota por cola llena; lo que queda en
+  `het` y `cell4` llega después de los 200 ms del jitter buffer del
+  receptor (los enlaces lentos), no lo bota GRIT. El paso siguiente sería
+  mandar los datagramas solo por los enlaces que llegan a tiempo.
+- **Terreno** (2026-11-03, NUC y VPS en `d58c495`, el mismo RTMP del
+  usuario a Facebook, 7,6 Mbit/s): lo leído que esperó en GRIT antes de
+  salir, en 15 s.
+
+  | | < 1 ms | 1–16 ms | 16–32 ms | 32–64 ms | > 64 ms |
+  | --- | --- | --- | --- | --- | --- |
+  | sin crédito (11-02) | 33 % | 16 % | 23 % | 10 % | 3,8 % |
+  | con crédito (11-03) | 97 % | 1 % | 1,2 % | 0,8 % | 0,2 % |
+
+  Cero reenvíos de GRIT en la ventana; el crédito en 125 KB al medir
+  (gastándose y llenándose en cada keyframe); colas de los enlaces de
+  2–9 ms, como antes.
+- **Pendiente:** en la pestaña Túnel, una línea promedio de 4–6 s sobre la instantánea para que
+  un stream no se vea como electrocardiograma.
+
 ## Pendiente
 
 - Terreno: `fec_stream` en redundancia.
@@ -715,3 +788,5 @@ azar los paquetes del túnel en los dos sentidos (iptables `statistic`).
   (protocolo 20, `protocontroller_udp`), con su laboratorio.
 - 2026-11-02: DiffServ a través de GRIT (protocolo 21,
   `protocontroller_dscp`), con su laboratorio.
+- 2026-11-03: el crédito de ráfaga (`protocontroller_burst_kb`), el RTMP
+  del usuario en terreno, el FLV y el RTP desde la LAN en el laboratorio.

@@ -1216,7 +1216,7 @@ engine_conf() {
 		# variant A's middle TCP goes to the VPS's end of the tunnel (this
 		# router's own tun_addr is a /32: nothing to take it from)
 		echo "protocontroller_vps = $VPS_ADDR"
-		for k in protocontroller_mid_cc protocontroller_buf_kb protocontroller_mem_mb protocontroller_max_flows protocontroller_queue_ms protocontroller_backlog_ms protocontroller_dead_s protocontroller_reo_ms; do
+		for k in protocontroller_mid_cc protocontroller_buf_kb protocontroller_mem_mb protocontroller_max_flows protocontroller_queue_ms protocontroller_backlog_ms protocontroller_dead_s protocontroller_reo_ms protocontroller_burst_kb; do
 			config_get v main "$k"
 			[ -n "$v" ] && echo "$k = $v"
 		done

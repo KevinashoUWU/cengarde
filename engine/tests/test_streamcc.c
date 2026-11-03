@@ -192,6 +192,48 @@ void test_streamcc(void)
 	CHECK_EQ(cg_scc_cwnd(&p, &c, 0), CG_SCC_IW_SEGS * 1200);
 	CHECK_EQ(cg_scc_rto(&p, 0, 0), 200000);
 	CHECK_EQ(cg_scc_rto(&p, 10, 0), 2000000);
+	/* the burst credit: the full bucket's spill while the senders had
+	 * less than the rate, spent at once when they have more */
+	{
+		struct cg_scc q;
+		struct cg_scc_cfg cb = c;
+		int n = 0;
+
+		cb.burst = 262144;
+		cg_scc_init(&q, 0);
+		q.bw = 1500000; /* 12 Mbit/s; the rate 1.5 MB/s at least */
+		q.min_rtt = 30000;
+		q.mode = CG_SCC_PROBE_M;
+		q.applim = 1;
+		cg_scc_refill(&q, &cb, 1000000); /* a second idle */
+		CHECK(q.credit > 0);
+		CHECK(q.credit <= (int64_t)cg_scc_mul(cg_scc_rate(&q), CG_SCC_CREDIT_US, 1000000)); /* 100 ms at the rate */
+		CHECK(q.credit <= 262144);
+		/* a keyframe: segments go at once past the bucket while credit lasts */
+		while (cg_scc_may_repair(&q) && n < 1000) {
+			cg_scc_spend(&q, 1400);
+			n++;
+		}
+		CHECK(n * 1400 > 100000); /* over 100 KB at once, not the bucket's 2 ms */
+		CHECK(cg_scc_wait_us(&q) > 0);
+		/* a loss empties it; a queue keeps it from filling */
+		cg_scc_refill(&q, &cb, 2000000);
+		CHECK(q.credit > 0);
+		cg_scc_lost(&q, 1400);
+		CHECK_EQ(q.credit, 0);
+		q.qnow = 1;
+		cg_scc_refill(&q, &cb, 3000000);
+		CHECK_EQ(q.credit, 0);
+		q.qnow = 0;
+		/* the senders using the rate (not app-limited): none */
+		q.applim = 0;
+		cg_scc_refill(&q, &cb, 4000000);
+		CHECK_EQ(q.credit, 0);
+		/* protocontroller_burst_kb 0: none */
+		q.applim = 1;
+		cg_scc_refill(&q, &c, 5000000);
+		CHECK_EQ(q.credit, 0);
+	}
 	/* datagrams without ACKs took half the tokens: the rate doubles the
 	 * estimate's; never more than five times it */
 	{

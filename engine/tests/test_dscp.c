@@ -20,6 +20,10 @@ void test_dscp(void)
 	 * over, as the rest (an app marking all it sends EF) */
 	CHECK_EQ(cg_ds_flow_tier(46, 100000, 10000000), CG_DS_PRIO);
 	CHECK_EQ(cg_ds_flow_tier(46, 2500000, 10000000), CG_DS_NORMAL);
+	/* video (AF41) up to half of it */
+	CHECK_EQ(cg_ds_flow_tier(34, 4000000, 10000000), CG_DS_PRIO);
+	CHECK_EQ(cg_ds_flow_tier(34, 5000000, 10000000), CG_DS_NORMAL);
+	CHECK_EQ(cg_ds_flow_tier(46, 4000000, 10000000), CG_DS_NORMAL); /* voice: a quarter */
 	CHECK_EQ(cg_ds_flow_tier(46, 0, 0), CG_DS_NORMAL); /* no rate yet: never first over nothing */
 	CHECK_EQ(cg_ds_flow_tier(1, 0, 10000000), CG_DS_LOW);
 	CHECK_EQ(cg_ds_flow_tier(0, 9000000, 10000000), CG_DS_NORMAL);

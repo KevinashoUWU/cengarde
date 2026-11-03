@@ -224,6 +224,7 @@ struct cg_config {
 	int protocontroller_fair;                 /* the sends shared by host before flow (fair.h, story 031) */
 	int protocontroller_udp;                  /* the router: the LAN's other UDP into GRIT as unreliable datagrams
 						   * (TPROXY on protocontroller_port + 1, protocol 20) */
+	uint32_t protocontroller_burst_kb;        /* the pacer's burst credit for an app-limited sender's bursts (streamcc.h) */
 	int protocontroller_dscp;                 /* DiffServ: the LAN device's mark kept both ways, tiers in the sends
 						   * (dscp.h, protocol 21) */
 	int protocontroller_nack;                 /* a tunnel NACK of a GRIT message is a loss to send again (1) or only a hint (0) */

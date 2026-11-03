@@ -127,7 +127,11 @@ REPAIR += [k for k, _ in ACT]
 PCTL = [("g_retx", ("retx",)), ("g_rack", ("retx_by", "rack")), ("g_rto", ("retx_by", "rto")),
         ("g_nack", ("retx_by", "nack")), ("g_dup", ("dup_frames",)), ("g_nlost", ("nacks", "lost")),
         ("g_ndeliv", ("nacks", "delivered")), ("g_nstale", ("nacks", "stale")), ("g_npend", ("nacks", "pending")),
-        ("g_corrupt", ("corrupt",)), ("g_rebase", ("rebases",))]
+        ("g_corrupt", ("corrupt",)), ("g_rebase", ("rebases",)),
+        # the unreliable datagrams dropped (protocol 20), and bytes that waited 32-64 ms and more for the
+        # pacer (sendq_ms's last two buckets: the burst credit, story 031)
+        ("g_dgm_full", ("datagrams", "dropped_full")), ("g_dgm_old", ("datagrams", "dropped_old")),
+        ("g_sq32", ("sendq_ms", 6)), ("g_sq64", ("sendq_ms", 7))]
 REPAIR += [k for k, _ in PCTL] + ["to_grit"]
 GAUGES = GAUGES + ("rlc_peak",)
 COUNTERS = [k for k in RO_PATHS if k not in GAUGES] + ["too_old", "tun_drops", "lost_all"] + SENDS + REPAIR
@@ -140,6 +144,11 @@ def num(v):
 
 def dig(d, *path):
     for k in path:
+        if isinstance(k, int) and isinstance(d, list):  # a histogram's bucket
+            if k >= len(d):
+                return None
+            d = d[k]
+            continue
         if not isinstance(d, dict) or k not in d:
             return None
         d = d[k]
@@ -544,6 +553,11 @@ def line(a):
                         "over50ms": rx.get("over50ms"), "over200ms": rx.get("over200ms")} if rx else None
     if a.cc in ("live", "soak") and isinstance(j, dict):
         out["live"] = j
+    if a.flv:  # BOND_FLV: an FLV stream over TCP, RTMP-like (story 031): how late its frames came
+        try:
+            out["flv"] = json.load(open(a.flv))
+        except (OSError, ValueError):
+            out["flv"] = None
     if a.tsreal:  # a real MPEG-TS next to the run (story 030): what its decoder saw
         out["tsreal"] = tsreal_fields(a.tsreal, int(a.secs))
     if a.hog:  # BOND_HOG: the second device's connections next to the measured one
@@ -967,6 +981,7 @@ def main(argv):
     p.add_argument("--small-tx")
     p.add_argument("--small-rx")
     p.add_argument("--hog")
+    p.add_argument("--flv", help="flvrx.py's JSON of BOND_FLV's stream (story 031)")
     p.add_argument("--before")
     p.add_argument("--after")
     p.add_argument("--samples", help="BOND_SAMPLE's directory of status files, one a second")

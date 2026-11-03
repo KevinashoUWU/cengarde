@@ -1087,7 +1087,14 @@ static void udp_accept(struct cg_pctl *p, int v6, int unrel)
 static int dg_read(struct cg_pctl *p, struct flow *f)
 {
 	for (int k = 0; f->rd_ready && k < 64; k++) {
-		ssize_t n = recv(f->fd, p->dgbuf, CG_PCTL_DGRAM_MAX, 0);
+		ssize_t n;
+
+		/* an unreliable stream's queue full: the rest waits in the
+		 * socket's buffer for the sends (read first, a keyframe's burst
+		 * overflowed the queue before any of it went) */
+		if (f->unrel && f->dq->n >= PCTL_DQ)
+			break;
+		n = recv(f->fd, p->dgbuf, CG_PCTL_DGRAM_MAX, 0);
 
 		if (n >= 0) {
 			dg_put(p, f, p->dgbuf, (size_t)n);
@@ -2568,7 +2575,8 @@ void cg_pctl_service(struct cg_pctl *p)
 		} else {
 			uint64_t held = f->tx.tail - f->tx.una;
 			int can = !f->tx.eof && held < flow_cap(p) &&
-				  cg_st_tx_unsent(&f->tx) < backlog_max(p, f, f->s_rate, now);
+				  cg_st_tx_unsent(&f->tx) < backlog_max(p, f, f->s_rate, now) &&
+				  !(f->unrel && f->dq->n >= PCTL_DQ);
 
 			if (can && !(f->ev & EPOLLIN)) {
 				f->rd_ready = 1; /* it may have data already: read it next pass */
@@ -2600,6 +2608,7 @@ void cg_pctl_service(struct cg_pctl *p)
 			r->xb = r->ab = 0;
 			r->xt = now;
 		}
+		r->cc.applim = r->app; /* the burst credit fills only while the senders had less (streamcc.h) */
 		cg_scc_refill(&r->cc, &p->ccf, now);
 	}
 	if (!p->cfg.dscp) {
@@ -2640,6 +2649,10 @@ void cg_pctl_service(struct cg_pctl *p)
 		if (f->unrel) {
 			if (f->dq->n)
 				due(p, now + cg_scc_wait_us(&r->cc));
+			/* its queue had filled (its socket left out of the reads):
+			 * room now, the next pass reads it again */
+			if (!(f->ev & EPOLLIN) && f->dq->n < PCTL_DQ)
+				due(p, now);
 			continue;
 		}
 		if (cg_st_tx_next(&t, p->cfg.mss, &idx, &off, &len, &fin) &&
@@ -2782,6 +2795,7 @@ struct cg_pctl *cg_pctl_new(const struct cg_pctl_cfg *cfg, int ep, const struct 
 		p->buf_cap = CG_ST_MAXWIN;
 	p->ccf.queue_us = cfg->queue_ms * 1000;
 	p->ccf.mss = cfg->mss;
+	p->ccf.burst = cfg->burst_kb * 1024;
 	p->reo_cap = cg_scc_reo_cap(cfg->reo_ms * 1000, cfg->code_ms * 1000);
 	/* a segment per mss of the buffer, and some for small writes */
 	p->nseg = (uint32_t)(p->buf_cap / (cfg->mss > 256 ? cfg->mss / 2 : 128)) + 64;
@@ -3107,6 +3121,7 @@ void cg_pctl_json(const struct cg_pctl *p, struct cg_json *j)
 		cg_json_u64(j, "hint_bps", c->hint * 8);
 		cg_json_bool(j, "hint_full", c->hint_full);
 		cg_json_u64(j, "datagrams_permille", c->xs); /* of what went, unreliable datagrams (protocol 20) */
+		cg_json_u64(j, "burst_credit", c->credit > 0 ? (uint64_t)c->credit : 0); /* bytes a burst may take at once */
 		cg_json_ms(j, "min_rtt_ms", c->min_rtt);
 		cg_json_ms(j, "srtt_ms", c->srtt);
 		cg_json_u64(j, "inflight", c->inflight);

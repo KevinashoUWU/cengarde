@@ -6,8 +6,12 @@
  *   CG_DS_PRIO    voice, video calls and signalling (EF, VOICE-ADMIT, CS5,
  *                 AF4x, CS4, CS3, CS6, CS7; RFC 4594): their turns before
  *                 the rest, while the flow sends under a quarter of the
- *                 pacer's rate (an app that marks all it sends EF is
- *                 served as the rest, not before it)
+ *                 pacer's rate (voice and control) or half of it (video:
+ *                 AF4x, CS4, CS3), as CAKE's diffserv4 tins (an app that
+ *                 marks all it sends EF is served as the rest, not before
+ *                 it). With nothing else to send the rate follows the
+ *                 flow and it looks big, but then no turn is taken from
+ *                 it; with others, the rate is the path's
  *   CG_DS_NORMAL  everything else, CS0 included
  *   CG_DS_LOW     lower effort (LE, RFC 8622; CS1, its older mark): only
  *                 what the rest leaves, and only while a quarter of the
@@ -30,7 +34,8 @@
 enum { CG_DS_PRIO = 0, CG_DS_NORMAL, CG_DS_LOW, CG_DS_TIERS };
 
 #define CG_DS_LOW_STARVE_US 50000u /* a lower-effort flow's segment at least this often */
-#define CG_DS_PRIO_SHARE 4u         /* a priority flow under 1 / this of the pacer's rate */
+#define CG_DS_PRIO_SHARE 4u         /* a voice or control flow under 1 / this of the pacer's rate */
+#define CG_DS_VIDEO_SHARE 2u        /* a video flow (AF4x, CS4, CS3) under 1 / this */
 
 /* The tier a DSCP asks for (its 6 bits, the TOS byte >> 2). */
 static inline unsigned cg_ds_tier(uint8_t dscp)
@@ -56,13 +61,14 @@ static inline unsigned cg_ds_tier(uint8_t dscp)
 }
 
 /* A flow's tier now: its DSCP's, but a priority flow that sends a quarter
- * of the pacer's rate (pace, bytes/s) or more (rate, bytes/s) goes as the
- * rest. */
+ * of the pacer's rate (pace, bytes/s) or more (rate, bytes/s; video: half)
+ * goes as the rest. */
 static inline unsigned cg_ds_flow_tier(uint8_t dscp, uint64_t rate, uint64_t pace)
 {
-	unsigned t = cg_ds_tier(dscp);
+	unsigned t = cg_ds_tier(dscp), d = dscp & 0x3f;
+	uint64_t share = d == 34 || d == 36 || d == 38 || d == 32 || d == 24 ? CG_DS_VIDEO_SHARE : CG_DS_PRIO_SHARE;
 
-	if (t == CG_DS_PRIO && rate * CG_DS_PRIO_SHARE >= pace)
+	if (t == CG_DS_PRIO && rate * share >= pace)
 		return CG_DS_NORMAL;
 	return t;
 }
