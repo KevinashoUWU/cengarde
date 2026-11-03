@@ -959,6 +959,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	c->protocontroller_reo_ms = 10;
 	c->protocontroller_fair = 1;
 	c->protocontroller_dscp = 1;
+	c->protocontroller_burst_kb = 256;
 	c->protocontroller_nack = 1;
 	c->subflow = 0;
 	c->protocontroller_offer = 1;

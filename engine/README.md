@@ -1481,6 +1481,12 @@ Solo la variante B:
   (y un cuarto de la ventana libre) y un segmento cada 50 ms. Laboratorio:
   8 conexiones en CS1 de un equipo le dejan al otro el 96–98 % del total
   (antes 20–41 %); en terreno, 90–99 % de subida y 65–72 % de bajada.
+- **Crédito de ráfaga** (`protocontroller_burst_kb`, 256; `src/streamcc.h`,
+  historia 031): mientras un par pide menos que su ritmo y sin cola, lo
+  que rebalsa el balde se guarda (hasta 256 KB y 100 ms al ritmo) y se
+  gasta de una vez en una ráfaga, como el keyframe de un video. FLV a
+  8 Mbit/s (RTMP): el keyframe 40–80 ms antes en la mediana, por 3–15 ms
+  más de ping p99; video RTP dentro de GRIT, sin datagramas botados.
 - **Fiabilidad** (`src/stream.h`): RACK con una ventana de un cuarto de la
   ida y vuelta más `protocontroller_reo_ms` (10, los códigos del túnel van
   primero; cada duplicado que el receptor avisa la agranda 4 ms, hasta el
