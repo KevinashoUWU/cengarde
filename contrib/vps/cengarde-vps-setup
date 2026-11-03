@@ -822,10 +822,11 @@ check_proto() {
 	# with the link and its sequence under the MAC (story 030), 17 FEC v3
 	# over the protocontroller's messages, 18 its datagram streams, 19
 	# the LAN device in its OPEN, 20 its unreliable datagrams and 21 the
-	# DSCP in its OPEN (story 031): the same configurations.
+	# DSCP in its OPEN (story 031), 22 every packet sealed with
+	# ChaCha20-Poly1305 (story 032; the same key): the same configurations.
 	case "$P" in
-	4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21) ;;
-	*) die "this cengarde-vps-setup writes configurations of protocol 4 to 21 (cengarde 0.5.2 on, a [client NAME] section per router), and the engine says protocol ${P:-unknown}: install both from one checkout (contrib/vps/install.sh)" ;;
+	4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22) ;;
+	*) die "this cengarde-vps-setup writes configurations of protocol 4 to 22 (cengarde 0.5.2 on, a [client NAME] section per router), and the engine says protocol ${P:-unknown}: install both from one checkout (contrib/vps/install.sh)" ;;
 	esac
 }
 
