@@ -790,8 +790,12 @@ azar los paquetes del túnel en los dos sentidos (iptables `statistic`).
   0–5 por corrida con la configuración por omisión del laboratorio y
   ~500 (redundancia) a ~1000 (bonding) con los presets de terreno; sin
   `link_cc` peor (800–1677), sin `redund_pace_ms` algo mejor (152–796).
-  Los presets son de versiones anteriores: se revisan contra el motor de hoy
-  (TCP, latencia y datagramas a la vez).
+  Es el ritmo propio por enlace (`subflow` + `link_cc`): sin él, el RTP
+  en `het` baja a ~100 (redundancia) y ~330 (bonding) perdidos, pero el TCP
+  cae de 82 a 60 Mbit/s en `het` y de 40 a 19 en `cell4` (bonding; 3 × 30
+  s, `ab-sf1`). Los presets se quedan como están (el TCP manda); falta ver
+  dónde esperan esos datagramas con `link_cc` (probablemente la cola
+  objetivo de cada enlace) y darles un camino más corto.
 - **A favor, de antes:** el DGM no lleva las cabeceras IP/UDP (el router
   conoce las direcciones del flujo): 28–48 bytes menos por paquete que por la
   TUN, la mitad de la compresión de cabeceras del UDP de la tarea #78.
