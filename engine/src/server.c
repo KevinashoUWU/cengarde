@@ -78,6 +78,7 @@
 #include "engine.h"
 #include "health.h"
 #include "idmap.h"
+#include "wire.h"
 #include "linkmodel.h"
 #include "log.h"
 #include "pair.h"
@@ -238,6 +239,8 @@ struct session {
 	struct cg_fl fl;          /* its flows learned (flowlearn.h, story 031): what it sends and receives */
 	uint32_t rescue_base_us;  /* rescue_wait_ms's wait, before the code's horizon and TCP's budget (harq_wait) */
 	uint32_t tx_ctl; /* next probe reply sequence */
+	struct cg_seal seal;   /* the download's key and counter, under this state's own epoch (wire.h) */
+	struct cg_unseal un;   /* the upload's, of the client's epoch */
 	int pass; /* IP pass its probes ask for: -1 nothing */
 	uint64_t created_ms, last_rx_ms;
 	struct path path[CG_MAX_LINKS];
@@ -432,9 +435,12 @@ struct server {
 	struct cg_rxbatch in;
 	union cg_ctl_rx rxctl[CG_BATCH]; /* arrival addresses of a listen batch */
 	uint8_t hdr[CG_BATCH][CG_HDR_LEN];
-	struct cg_siphash hmac[CG_BATCH]; /* each one's MAC before the link and the sseq (16) */
 	struct mmsghdr out[CG_BATCH];
-	struct iovec oiov[CG_BATCH][2];
+	struct iovec oiov[CG_BATCH][2]; /* each packet in memory: its header, its payload */
+	struct iovec wiov[CG_BATCH];    /* and one path's copies of them, sealed (wire.h) */
+	uint8_t wout[CG_BATCH][CG_BUF + CG_WIRE_EXTRA_MAX];
+	uint8_t wone[CG_BUF + CG_WIRE_EXTRA_MAX]; /* a packet sent alone, sealed (send_path) */
+	uint8_t rbuild[CG_HDR_LEN + CG_PROBE_ACT_LEN]; /* a reply or a HELLO in memory, before its seal */
 	/* per listen batch: payloads for the TUN (the session of each, and
 	 * the pool buffer it is in, given back once flush_tun sent it, even when
 	 * its session closed meanwhile), and probe replies */
@@ -452,7 +458,7 @@ struct server {
 	uint8_t sflags[CG_BATCH];               /* and its flags, but CG_F_PREV (down_seal) */
 	uint8_t tcpk[CG_BATCH];                 /* and its class for tcp_aware (tcpfree.h's CG_TCPF_*) */
 	uint8_t tcpr[CG_BATCH];                 /* a retransmission's row (tcpack.h's CG_TCPA_*) */
-	uint8_t reply[CG_BATCH][CG_HDR_LEN + CG_PROBE_ACT_LEN];
+	uint8_t reply[CG_BATCH][CG_HDR_LEN + CG_PROBE_ACT_LEN + CG_WIRE_EXTRA_MAX]; /* sealed */
 	struct sockaddr_storage reply_to[CG_BATCH];
 	union cg_ctl_tx reply_ctl[CG_BATCH];
 	struct session *reply_sess[CG_BATCH]; /* whose path each reply is for */
@@ -535,47 +541,54 @@ static struct client *client_of(struct server *s, const struct session *S)
 	return &s->c[S->client];
 }
 
-/* The session of a client of h's hint (a few at worst, clients.h) with h's
- * id, for c >= 0 in the chain from c on; -1 when there is none, else its
+/* The session of a client of the hint (a few at worst, clients.h) with id
+ * session, for c >= 0 in the chain from c on; -1 when there is none, else its
  * index, and *c its client. */
-static int32_t lookup_from(struct server *s, const struct cg_hdr *h, int *c)
+static int32_t lookup_from(struct server *s, uint32_t session, int *c)
 {
 	for (; *c >= 0; *c = s->hx.next[*c]) {
-		int32_t i = cg_idmap_get(&s->ids, cg_sesskey(s->c[*c].mix, h->session));
+		int32_t i = cg_idmap_get(&s->ids, cg_sesskey(s->c[*c].mix, session));
 
-		if (i >= 0 && s->s[i].client == *c && s->s[i].id == h->session)
+		if (i >= 0 && s->s[i].client == *c && s->s[i].id == session)
 			return i;
 	}
 	return -1;
 }
 
-/* The session of packet b (header h), NULL when there is none. One client
- * of h's hint with a session of h's id is the usual case: its MAC is
- * checked later, after the replay window. Two clients sharing the hint
- * may have sessions with the same id (ids travel in the clear: one can
- * pick the other's), and one's probe may carry an id only the other has a
- * session with: then the keys decide, here, and *verified says the MAC
- * was checked. A probe no key of those sessions verifies goes on as one
- * without a session (its client is found by its key). */
-static struct session *lookup(struct server *s, const struct cg_hdr *h, const uint8_t *b, size_t len,
-			      int *verified)
+/* The session of packet b (len bytes, clear part w), NULL when there is
+ * none. One client of w's hint with a session of w's id is the usual case:
+ * its tag is checked later, under that session's key. Two clients sharing
+ * the hint may have sessions with the same id (ids travel in the clear:
+ * one can pick the other's), and one's probe (kind 1) may carry an id only
+ * the other has a session with: then the keys decide, here: *h holds the
+ * inner header, *key and *ctr what opened it (key may be tmp). A probe no
+ * key of those sessions opens goes on as one without a session (its
+ * client is found by its key). */
+static struct session *lookup(struct server *s, const struct cg_wire *w, const uint8_t *b, size_t len,
+			      struct cg_hdr *h, const uint8_t **key, uint64_t *ctr, uint8_t tmp[CG_AEAD_KEY_LEN])
 {
-	int c = s->hx.first[h->hint], n = 0, k;
+	int c = s->hx.first[w->hint], n = 0, k;
 	int32_t one = -1, i;
 
 	if (c < 0)
 		return NULL;
-	for (k = c; (i = lookup_from(s, h, &k)) >= 0; k = s->hx.next[k]) {
+	for (k = c; (i = lookup_from(s, w->session, &k)) >= 0; k = s->hx.next[k]) {
 		one = one < 0 ? i : one;
 		n++;
 	}
-	if (!n || (n == 1 && (s->hx.next[c] < 0 || h->type != CG_T_PROBE)))
+	if (!n || (n == 1 && (s->hx.next[c] < 0 || w->kind != CG_WIRE_KIND_EPOCH)))
 		return one < 0 ? NULL : &s->s[one];
-	for (k = c; (i = lookup_from(s, h, &k)) >= 0; k = s->hx.next[k])
-		if (cg_hdr_verify(b, len, s->c[k].key)) {
-			*verified = 1;
-			return &s->s[i];
+	for (k = c; (i = lookup_from(s, w->session, &k)) >= 0; k = s->hx.next[k]) {
+		struct session *S = &s->s[i];
+		const uint8_t *kk = cg_unseal_key(&S->un, w, s->c[k].key, S->id, tmp);
+		uint64_t cc = cg_wire_ctr(w, S->un.top);
+
+		if (kk && cg_wire_open_head(h, b, len, w, kk, CG_DIR_C2S, cc) == 0) {
+			*key = kk;
+			*ctr = cc;
+			return S;
 		}
+	}
 	return NULL;
 }
 
@@ -704,11 +717,15 @@ static void sf3_apply(struct server *s, struct session *S);
 
 static struct session *session_create(struct server *s, struct client *C, const struct cg_hdr *h,
 				      const struct cg_probe_info *pi, const struct sockaddr_storage *from,
-				      uint64_t now_ms)
+				      const struct cg_wire *wi, uint64_t ctr, uint64_t now_ms)
 {
 	uint32_t id = h->session, key = cg_sesskey(C->mix, id);
 	struct session *S = NULL, *old = NULL;
+	uint8_t epoch[CG_EPOCH_LEN];
 	char a[64];
+
+	if (cg_random(epoch, sizeof(epoch)) < 0)
+		return NULL;
 
 	/* Another client's session already has this key: a 2^-32 chance. */
 	if (cg_idmap_get(&s->ids, key) >= 0) {
@@ -735,6 +752,13 @@ static struct session *session_create(struct server *s, struct client *C, const 
 		return NULL;
 	}
 	memset(S, 0, sizeof(*S));
+	/* its keys (wire.h): the download's from its counter's start under a
+	 * fresh epoch, so that a state that replaces an older one of the same
+	 * session never runs a counter again under the same key; the upload's
+	 * under the epoch of the client's probe */
+	cg_seal_init(&S->seal, C->key, CG_DIR_S2C, id, epoch);
+	cg_unseal_init(&S->un, C->key, CG_DIR_C2S, id, wi->epoch);
+	cg_unseal_accept(&S->un, wi, S->un.key, ctr);
 	cg_act_tx_start(&S->act_tx, cg_now_us()); /* every path in its masks for the hold */
 	cg_gov_reset(&S->gov);
 	cg_dom_reset(&S->dom);
@@ -898,7 +922,7 @@ static void queue_reply(struct server *s, int *nr, struct session *S, unsigned l
 	struct cg_probe_bond pb = cg_split_reply_tail(s->cfg->reorder);
 	const struct client *C = client_of(s, S);
 	const struct path *P = &S->path[link];
-	uint8_t *r = s->reply[*nr];
+	uint8_t *r = s->rbuild;
 	struct cg_probe_info pi = { .echo_ts = probe->ts,
 				    .owd = up_owd,
 				    .rx = (uint32_t)(S->rx[link].wins + S->rx[link].dups + S->rx[link].stream),
@@ -933,13 +957,13 @@ static void queue_reply(struct server *s, int *nr, struct session *S, unsigned l
 
 		cg_probe_act_write(r + CG_HDR_LEN, &pa);
 	}
-	/* how far the path's subflow went: the client sees a lost tail (subflow.h),
-	 * under the MAC (16) */
+	/* how far the path's subflow went: the client sees a lost tail (subflow.h) */
 	h.sseq = s->cfg->subflow && S->sf[link] ? S->sf[link]->tx.next : 0;
-	cg_hdr_write(r, &h, C->key + CG_SIPHASH_KEY_LEN, r + CG_HDR_LEN, plen);
+	cg_hdr_put(r, &h);
 	s->reply_to[*nr] = P->addr;
-	s->riov[*nr].iov_base = r;
-	s->riov[*nr].iov_len = CG_HDR_LEN + plen;
+	s->riov[*nr].iov_base = s->reply[*nr];
+	/* kind 1: the client learns this state's epoch from it (wire.h) */
+	s->riov[*nr].iov_len = cg_wire_seal(s->reply[*nr], r, r + CG_HDR_LEN, plen, &S->seal, 1);
 	memset(&s->rmsg[*nr].msg_hdr, 0, sizeof(s->rmsg[*nr].msg_hdr));
 	s->rmsg[*nr].msg_hdr.msg_name = &s->reply_to[*nr];
 	s->rmsg[*nr].msg_hdr.msg_namelen = cg_addr_len(&s->reply_to[*nr]);
@@ -959,13 +983,14 @@ static void queue_reply(struct server *s, int *nr, struct session *S, unsigned l
 
 /* A HELLO to C's probe h from `from` (its datagram m), which this server
  * cannot take yet: a cookie for this address, or a refusal. Never larger
- * than the probe, only to a probe whose MAC verified, and within C's
+ * than the probe, only to a probe whose tag opened, and within C's
  * HELLO_RATE. */
 static void queue_hello(struct server *s, int *nr, struct client *C, const struct cg_hdr *probe,
 			const struct sockaddr_storage *from, const struct msghdr *m, int refused, uint64_t now_us)
 {
 	uint64_t now_ms = now_us / 1000;
-	uint8_t *r = s->reply[*nr], fresh[CG_SIPHASH_KEY_LEN];
+	uint8_t *r = s->rbuild, fresh[CG_SIPHASH_KEY_LEN], epoch[CG_EPOCH_LEN];
+	struct cg_seal hs;
 	struct cg_local got = { .known = 0 };
 	struct cg_hello hl = { .echo_ts = probe->ts };
 	struct cg_hdr h = { .type = CG_T_HELLO,
@@ -988,10 +1013,15 @@ static void queue_hello(struct server *s, int *nr, struct client *C, const struc
 	}
 	hl.cookie = cg_cookie_make(&s->ck, (uint32_t)(C - s->c), probe->session, probe->link, from);
 	cg_hello_write(r + CG_HDR_LEN, &hl);
-	cg_hdr_write(r, &h, C->key + CG_SIPHASH_KEY_LEN, r + CG_HDR_LEN, CG_HELLO_LEN);
+	cg_hdr_put(r, &h);
+	/* sealed under an epoch of its own (wire.h): no session state holds a
+	 * counter for it */
+	if (cg_random(epoch, sizeof(epoch)) < 0)
+		return;
+	cg_seal_init(&hs, C->key, CG_DIR_S2C, probe->session, epoch);
 	s->reply_to[*nr] = *from;
-	s->riov[*nr].iov_base = r;
-	s->riov[*nr].iov_len = CG_HDR_LEN + CG_HELLO_LEN;
+	s->riov[*nr].iov_base = s->reply[*nr];
+	s->riov[*nr].iov_len = cg_wire_seal(s->reply[*nr], r, r + CG_HDR_LEN, CG_HELLO_LEN, &hs, 1);
 	memset(&s->rmsg[*nr].msg_hdr, 0, sizeof(s->rmsg[*nr].msg_hdr));
 	s->rmsg[*nr].msg_hdr.msg_name = &s->reply_to[*nr];
 	s->rmsg[*nr].msg_hdr.msg_namelen = cg_addr_len(&s->reply_to[*nr]);
@@ -1288,7 +1318,7 @@ static int32_t sfack_service(struct server *s, struct session *S, const struct c
 				    .ts = (uint32_t)now_us };
 		size_t plen = 1 + CG_SFACK_ENTRY * k;
 
-		cg_hdr_write(pkt, &h, C->key + CG_SIPHASH_KEY_LEN, pkt + CG_HDR_LEN, plen);
+		cg_hdr_put(pkt, &h);
 		if (!send_path(s, S, best, pkt, CG_HDR_LEN + plen))
 			S->sfack_sent++;
 		S->sfack_us = now_us;
@@ -1342,7 +1372,7 @@ static int sf_service(struct server *s)
 					for (int b = 0; b < 2 && best[b] >= 0; b++) {
 						h.link = (uint8_t)best[b];
 						h.seq = S->tx_ctl++;
-						cg_hdr_write(pkt, &h, C->key + CG_SIPHASH_KEY_LEN, pkt + CG_HDR_LEN, plen);
+						cg_hdr_put(pkt, &h);
 						if (!send_path(s, S, best[b], pkt, CG_HDR_LEN + plen))
 							S->sfloss_sent++;
 					}
@@ -1382,12 +1412,14 @@ static void best_paths(const struct session *S, uint64_t now_ms, int best[2])
 	}
 }
 
-/* One datagram (len bytes at b) down path p of S. */
+/* One datagram (the in-memory packet b, len bytes) down path p of S,
+ * sealed with S's next counter (wire.h). */
 static int send_path(struct server *s, struct session *S, int p, const uint8_t *b, size_t len)
 {
 	struct path *P = &S->path[p];
 	struct msghdr mh = { 0 };
-	struct iovec iov = { .iov_base = (void *)b, .iov_len = len };
+	struct iovec iov = { .iov_base = s->wone,
+			     .iov_len = cg_wire_seal(s->wone, b, b + CG_HDR_LEN, len - CG_HDR_LEN, &S->seal, 0) };
 
 	mh.msg_name = &P->addr;
 	mh.msg_namelen = cg_addr_len(&P->addr);
@@ -1467,7 +1499,7 @@ static void nack_send(struct server *s, struct session *S, const uint32_t *seq, 
 					    .seq = S->tx_ctl++,
 					    .ts = (uint32_t)cg_now_us() };
 
-			cg_hdr_write(pkt, &h, C->key + CG_SIPHASH_KEY_LEN, pkt + CG_HDR_LEN, plen);
+			cg_hdr_put(pkt, &h);
 			if (!send_path(s, S, best[b], pkt, CG_HDR_LEN + plen))
 				S->nacks_sent++;
 		}
@@ -1493,7 +1525,7 @@ static void parq_send(struct server *s, struct session *S, const struct cg_parq_
 					    .seq = S->tx_ctl++,
 					    .ts = (uint32_t)cg_now_us() };
 
-			cg_hdr_write(pkt, &h, C->key + CG_SIPHASH_KEY_LEN, pkt + CG_HDR_LEN, plen);
+			cg_hdr_put(pkt, &h);
 			if (!send_path(s, S, best[b], pkt, CG_HDR_LEN + plen))
 				S->parq_msgs++;
 		}
@@ -2191,7 +2223,7 @@ static void say_gone(struct server *s, struct session *S, int p, const uint32_t 
 				    .ts = (uint32_t)cg_now_us() };
 
 		i += used;
-		cg_hdr_write(pkt, &h, C->key + CG_SIPHASH_KEY_LEN, pkt + CG_HDR_LEN, glen);
+		cg_hdr_put(pkt, &h);
 		if (!send_path(s, S, p, pkt, CG_HDR_LEN + glen))
 			S->resc_gone_tx++;
 	}
@@ -2270,8 +2302,6 @@ static void on_nack(struct server *s, struct session *S, uint8_t flags, const ui
 				break;
 			}
 			cg_hdr_set_link(e, (uint8_t)best[b]);
-			/* its link under the MAC (16) */
-			cg_hdr_reseal(e, client_of(s, S)->key + CG_SIPHASH_KEY_LEN, e + CG_HDR_LEN, (size_t)len - CG_HDR_LEN);
 			if (send_path(s, S, best[b], e, len) < 0) {
 				P->tx_drops++;
 				send_failed(s, S, (unsigned)best[b], errno, 1, now_ms);
@@ -2433,7 +2463,7 @@ static void on_parq(struct server *s, struct session *S, const uint8_t *payload,
 				break;
 			}
 			cg_rep_put(pkt + CG_HDR_LEN, &rh);
-			cg_hdr_write(pkt, &h, C->key + CG_SIPHASH_KEY_LEN, pkt + CG_HDR_LEN, CG_REP_HDR + sl);
+			cg_hdr_put(pkt, &h);
 			if (send_path(s, S, best[0], pkt, CG_HDR_LEN + CG_REP_HDR + sl) == 0) {
 				S->parq_sent++;
 				S->parq_bytes += CG_REP_HDR + sl;
@@ -2468,7 +2498,12 @@ static void listen_read(struct server *s, struct lane *ln)
 			struct client *C;
 			struct path *P;
 			struct cg_hdr h;
-			int verified = 0, fresh = 0, c;
+			struct cg_wire wi;
+			const uint8_t *key = NULL;
+			uint8_t tmp[CG_AEAD_KEY_LEN];
+			uint64_t ctr = 0;
+			uint32_t mlen;
+			int fresh = 0, c;
 			uint16_t expect, rs;
 			char a[64];
 
@@ -2476,42 +2511,41 @@ static void listen_read(struct server *s, struct lane *ln)
 				s->rx_trunc++;
 				continue;
 			}
-			if (cg_hdr_parse(&h, b, len) < 0 ||
-			    (h.type != CG_T_DATA && h.type != CG_T_PROBE && h.type != CG_T_NACK && h.type != CG_T_FEC &&
-			     h.type != CG_T_REPAIR && h.type != CG_T_PARQ && h.type != CG_T_SFLOSS &&
-			     h.type != CG_T_SFACK && h.type != CG_T_STREAM) ||
-			    h.link >= CG_MAX_LINKS) {
+			if (cg_wire_peek(&wi, b, len) < 0 || wi.link >= CG_MAX_LINKS) {
 				s->rx_malformed++;
 				if (cg_ratelimit_ok(&s->rl_auth, now_ms, 10000))
 					cg_warn("malformed packet from %s (not cengarde protocol v%d?)",
 						cg_addr_str(from, a, sizeof(a)), CG_PROTO_VERSION);
 				continue;
 			}
-			/* No client's hint: not worth a MAC. */
-			if (s->hx.first[h.hint] < 0) {
+			/* No client's hint: not worth a tag. */
+			if (s->hx.first[wi.hint] < 0) {
 				s->rx_hint++;
 				if (cg_ratelimit_ok(&s->rl_hint, now_ms, 10000))
 					cg_warn("packet from %s for another server (client hint %02x is no client's: "
-						"wrong key?)", cg_addr_str(from, a, sizeof(a)), h.hint);
+						"wrong key?)", cg_addr_str(from, a, sizeof(a)), wi.hint);
 				continue;
 			}
-			if (h.type == CG_T_PROBE) {
-				cg_probe_info_read(&pi, b + CG_HDR_LEN);
-				bond = cg_probe_bond_read(&pb, b + CG_HDR_LEN, len - CG_HDR_LEN);
-				act = cg_probe_act_read(&pa, b + CG_HDR_LEN, len - CG_HDR_LEN);
-			}
-			S = lookup(s, &h, b, len, &verified);
+			/* what the packet weighs in memory: the subflow's bytes, as its sender counts them */
+			mlen = (uint32_t)(len - wi.hlen - CG_WIRE_INNER - CG_WIRE_TAG + CG_HDR_LEN);
+			S = lookup(s, &wi, b, len, &h, &key, &ctr, tmp);
 			if (!S) {
+				size_t ml;
+
 				/* Only a probe takes a session up, and only with its
 				 * cookie; the DATA waits for it. Which client it is:
-				 * the one of its hint whose key verifies it. */
-				if (h.type != CG_T_PROBE) {
+				 * the one of its hint whose key opens it, under the
+				 * epoch it says (kind 1). */
+				if (wi.kind != CG_WIRE_KIND_EPOCH) {
 					s->rx_no_session++;
 					continue;
 				}
-				for (c = s->hx.first[h.hint]; c >= 0; c = s->hx.next[c])
-					if (cg_hdr_verify(b, len, s->c[c].key))
+				ctr = cg_wire_ctr(&wi, 0);
+				for (c = s->hx.first[wi.hint]; c >= 0; c = s->hx.next[c]) {
+					cg_wire_key(tmp, s->c[c].key, CG_DIR_C2S, wi.session, wi.epoch);
+					if (cg_wire_open_head(&h, b, len, &wi, tmp, CG_DIR_C2S, ctr) == 0)
 						break;
+				}
 				if (c < 0) {
 					s->rx_auth_fail++;
 					if (cg_ratelimit_ok(&s->rl_auth, now_ms, 10000))
@@ -2519,6 +2553,14 @@ static void listen_read(struct server *s, struct lane *ln)
 							cg_addr_str(from, a, sizeof(a)));
 					continue;
 				}
+				if (h.type != CG_T_PROBE || !(ml = cg_wire_open_body(b, len, &h, &wi, tmp, CG_DIR_C2S, ctr))) {
+					s->rx_malformed++;
+					continue;
+				}
+				len = ml;
+				cg_probe_info_read(&pi, b + CG_HDR_LEN);
+				bond = cg_probe_bond_read(&pb, b + CG_HDR_LEN, len - CG_HDR_LEN);
+				act = cg_probe_act_read(&pa, b + CG_HDR_LEN, len - CG_HDR_LEN);
 				C = &s->c[c];
 				if (!C->enabled) {
 					C->refused++;
@@ -2532,14 +2574,32 @@ static void listen_read(struct server *s, struct lane *ln)
 					queue_hello(s, &nr, C, &h, from, &s->in.msg[i].msg_hdr, 0, now_us);
 					continue;
 				}
-				S = session_create(s, C, &h, &pi, from, now_ms);
+				S = session_create(s, C, &h, &pi, from, &wi, ctr, now_ms);
 				if (!S) {
 					queue_hello(s, &nr, C, &h, from, &s->in.msg[i].msg_hdr, 1, now_us);
 					continue;
 				}
-				verified = fresh = 1;
+				fresh = 1;
+				key = S->un.key; /* opened, and taken */
 			}
 			C = client_of(s, S);
+			if (!key) {
+				key = cg_unseal_key(&S->un, &wi, C->key, S->id, tmp);
+				ctr = cg_wire_ctr(&wi, S->un.top);
+				if (!key || cg_wire_open_head(&h, b, len, &wi, key, CG_DIR_C2S, ctr) < 0) {
+					s->rx_auth_fail++;
+					if (cg_ratelimit_ok(&s->rl_auth, now_ms, 10000))
+						cg_warn("%ssession %08x: packet from %s failed authentication", C->tag, S->id,
+							cg_addr_str(from, a, sizeof(a)));
+					continue;
+				}
+			}
+			if (h.type != CG_T_DATA && h.type != CG_T_PROBE && h.type != CG_T_NACK && h.type != CG_T_FEC &&
+			    h.type != CG_T_REPAIR && h.type != CG_T_PARQ && h.type != CG_T_SFLOSS && h.type != CG_T_SFACK &&
+			    h.type != CG_T_STREAM) {
+				s->rx_malformed++;
+				continue;
+			}
 			w = h.type == CG_T_DATA ? &S->replay : h.type == CG_T_STREAM ? &S->stream : &S->ctl;
 			switch (fresh ? CG_RP_NEW : cg_replay_check(w, h.seq)) {
 			case CG_RP_OLD:
@@ -2554,23 +2614,27 @@ static void listen_read(struct server *s, struct lane *ln)
 				else
 					S->rx[h.link].stream++;
 				/* a copy is still its path's: its sseq says the path did
-				 * not lose it, once its MAC says the client sent it */
-				if (h.sseq && s->cfg->subflow) {
-					if (verified || cg_hdr_verify(b, len, C->key))
-						sf_up(S, h.link, h.sseq, len, now32);
-					else
-						s->rx_auth_fail++;
-				}
+				 * not lose it (its tag said the client sent it) */
+				if (h.sseq && s->cfg->subflow)
+					sf_up(S, h.link, h.sseq, mlen, now32);
 				continue;
 			default:
 				break;
 			}
-			if (!verified && !cg_hdr_verify(b, len, C->key)) {
-				s->rx_auth_fail++;
-				if (cg_ratelimit_ok(&s->rl_auth, now_ms, 10000))
-					cg_warn("%ssession %08x: packet from %s failed authentication", C->tag, S->id,
-						cg_addr_str(from, a, sizeof(a)));
-				continue;
+			if (!fresh) {
+				size_t ml = cg_wire_open_body(b, len, &h, &wi, key, CG_DIR_C2S, ctr);
+
+				if (!ml) {
+					s->rx_malformed++;
+					continue;
+				}
+				len = ml;
+				cg_unseal_accept(&S->un, &wi, key, ctr);
+				if (h.type == CG_T_PROBE) {
+					cg_probe_info_read(&pi, b + CG_HDR_LEN);
+					bond = cg_probe_bond_read(&pb, b + CG_HDR_LEN, len - CG_HDR_LEN);
+					act = cg_probe_act_read(&pa, b + CG_HDR_LEN, len - CG_HDR_LEN);
+				}
 			}
 			if (!fresh)
 				cg_replay_mark(w, h.seq);
@@ -3037,7 +3101,7 @@ static void sf3_repair(struct server *s, struct session *S, uint64_t now_us)
 				    .seq = S->tx_ctl++,
 				    .ts = (uint32_t)now_us };
 
-		cg_hdr_write(pkt, &h, C->key + CG_SIPHASH_KEY_LEN, pkt + CG_HDR_LEN, CG_REP_HDR + slen);
+		cg_hdr_put(pkt, &h);
 	}
 	/* apart from DATA (tx_pkts, tx_bytes): the client counts a path's DATA,
 	 * and the capacity would read a repair counted as sent as lost */
@@ -3214,7 +3278,7 @@ static void down_retx_masks(struct server *s, struct session *S, int m, const st
 }
 
 /* The headers of the m entries, now that each one's paths are decided (as
- * the client's seal_batch): CG_F_PREV of the previous one, the MAC; then
+ * the client's seal_batch): CG_F_PREV of the previous one; then
  * each is kept for a NACK (rescue.h), with its one path, and its share of
  * the rescue budget. */
 static void down_seal(struct server *s, struct session *S, int m, const struct dpaths *d)
@@ -3232,7 +3296,7 @@ static void down_seal(struct server *s, struct session *S, int m, const struct d
 				    .seq = s->sseq[j],
 				    .ts = s->sts[j] };
 
-		cg_hdr_write_base(s->hdr[j], &h, C->key + CG_SIPHASH_KEY_LEN, buf, len, &s->hmac[j]);
+		cg_hdr_put(s->hdr[j], &h);
 		if (s->scls[j]) {
 			/* a STREAM: kept by its own sequence for its paths' losses
 			 * (on_sfloss); never sent again here, it earns the rescue's
@@ -3348,8 +3412,8 @@ static void down_send(struct server *s, struct session *S, int m, uint64_t now_m
 		F = s->cfg->subflow ? sf_get(S, (unsigned)p) : NULL;
 		for (int x = 0; x < k; x++) {
 			cg_hdr_set_link(s->hdr[sel[x]], (uint8_t)p);
-			/* its sseq on this path (subflow.h); the MAC finished with
-			 * both, for this copy (16) */
+			/* its sseq on this path (subflow.h); sealed with both, for
+			 * this copy, with a counter of its own (wire.h) */
 			{
 				uint32_t q = F ? cg_sf_tx_take(&F->tx, s->sseq[sel[x]],
 						(uint32_t)(s->oiov[sel[x]][0].iov_len + s->oiov[sel[x]][1].iov_len), (uint32_t)mark_us) : 0;
@@ -3357,13 +3421,15 @@ static void down_send(struct server *s, struct session *S, int m, uint64_t now_m
 				if (F && s->scls[sel[x]])
 					cg_sf_tx_stream(&F->tx, q);
 				cg_hdr_set_sseq(s->hdr[sel[x]], q);
-				cg_hdr_mac_finish(&s->hmac[sel[x]], s->hdr[sel[x]]);
 			}
+			s->wiov[x].iov_base = s->wout[x];
+			s->wiov[x].iov_len = cg_wire_seal(s->wout[x], s->hdr[sel[x]], s->oiov[sel[x]][1].iov_base,
+							  s->oiov[sel[x]][1].iov_len, &S->seal, 0);
 			memset(&s->out[x].msg_hdr, 0, sizeof(s->out[x].msg_hdr));
 			s->out[x].msg_hdr.msg_name = &P->addr;
 			s->out[x].msg_hdr.msg_namelen = cg_addr_len(&P->addr);
-			s->out[x].msg_hdr.msg_iov = s->oiov[sel[x]];
-			s->out[x].msg_hdr.msg_iovlen = 2;
+			s->out[x].msg_hdr.msg_iov = &s->wiov[x];
+			s->out[x].msg_hdr.msg_iovlen = 1;
 			if (P->ctl_len) {
 				s->out[x].msg_hdr.msg_control = P->ctl.b;
 				s->out[x].msg_hdr.msg_controllen = P->ctl_len;
@@ -3822,7 +3888,7 @@ static void path_mtu_tick(struct server *s, struct session *S, const char *tag, 
 {
 	for (int p = 0; p < CG_MAX_LINKS; p++) {
 		struct path *P = &S->path[p];
-		int f = P->addr.ss_family;
+		int f = cg_addr_is4(&P->addr) == 1 ? AF_INET : AF_INET6; /* a v4-mapped address goes over IPv4 */
 		uint32_t need = cg_outer_len(f, s->cfg->tun_mtu), wrap = cg_outer_len(f, 0);
 		char a[64];
 
@@ -5397,7 +5463,7 @@ int cg_server_run(struct cg_config *cfg, const struct cg_run *run)
 		if (cg_status_writer_start(&s->fw, cfg->forward_file, "cg-forward") < 0)
 			cg_warn("%s: cannot start the writer thread", cfg->forward_file);
 	}
-	cg_info("server %s: listening on %s%s, native tunnel on %s (MTU %u; authenticated, not encrypted), "
+	cg_info("server %s: listening on %s%s, native tunnel on %s (MTU %u; sealed, ChaCha20-Poly1305), "
 		"%d client%s, up to %u sessions",
 		CG_VERSION, s->laddr, s->pktinfo ? ", replying from each packet's arrival address" : "", cfg->tun,
 		cfg->tun_mtu, s->multi ? cfg->nclients : 1, s->multi && cfg->nclients > 1 ? "s" : "", s->max);

@@ -1279,10 +1279,10 @@ un modo menos que probar.
 ## Túnel nativo (`tunnel = native`)
 
 Cada extremo abre un dispositivo TUN propio y lleva paquetes IP tal
-cual, con la misma autenticación de siempre (MAC SipHash y anti-replay, con
-las claves del secreto de emparejamiento). **No cifra:** quien mire los
-enlaces ve el tráfico; solo impide que alguien inyecte o repita paquetes. El
-cifrado llegará después, como opción. La razón de ser de este túnel es ver
+cual. Desde el protocolo 22 cada paquete va sellado con ChaCha20-Poly1305
+(`src/wire.h`, historia 032): cifrado y autenticado, con llaves por sesión y
+época que salen del secreto de emparejamiento, y el anti-replay después del
+tag; quien mire los enlaces ve tamaños y tiempos, no el tráfico. La razón de ser de este túnel es ver
 los paquetes: la liberación según TCP (`tcp_aware`) y el protocontrolador
 van encima, y el reordenador por flujo vendrá (`src/flow.h` da la clave de
 flujo de un paquete y si es TCP). `tunnel = native` puede escribirse o no:
@@ -2016,8 +2016,9 @@ espera al menos 300 ms más que la ida y vuelta.
 
 ## Limitaciones conocidas
 
-- **Sin cifrado:** el túnel autentica (MAC y anti-replay) pero no cifra;
-  quien mire un enlace ve el tráfico.
+- **Sin secreto hacia adelante:** las llaves de cada sesión salen del
+  secreto compartido; quien lo robe de un extremo puede descifrar lo que
+  haya grabado (un intercambio Noise queda para después de la 1.0).
 - **Enlaces asimétricos:** un enlace que sube pero no baja (o al revés) se da
   por mudo en los dos sentidos, aunque uno de ellos funcione.
 - **Aún no** baja privilegios y el servidor es de un solo hilo; en el

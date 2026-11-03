@@ -3,17 +3,17 @@ tags: [mapa, pieza]
 archivos:
   - engine/src/steer.h
   - engine/tests/test_steer.c
-sello: eeb21e0c9edba92b
+sello: 92e22b1782315411
 ---
 # Colas del servidor (steer.h)
 
 **Grupo:** Recibir — [[Mapa del motor]]
 
 ## Qué hace
-El servidor escucha con un grupo `SO_REUSEPORT` de `lanes` sockets (carriles) y uno de basura. Un programa BPF clásico manda cada datagrama al carril de su número de enlace (byte 3) módulo L: las copias de un mismo paquete esperan en colas distintas, y un parón que desborda una rara vez se lleva todas las copias. La bajada del camino p sale por el carril `p & (L − 1)`. Lo que no es del protocolo (corto o de otra versión) va al socket de basura, de búfer pequeño.
+El servidor escucha con un grupo `SO_REUSEPORT` de `lanes` sockets (carriles) y uno de basura. Un programa BPF clásico manda cada datagrama al carril de su número de enlace (byte 2 del cable, en claro: [[Formato de cable (wire.h)]]) módulo L: las copias de un mismo paquete esperan en colas distintas, y un parón que desborda una rara vez se lleva todas las copias. La bajada del camino p sale por el carril `p & (L − 1)`. Lo que no es del protocolo (más corto que el paquete sellado más corto, `CG_WIRE_MIN`, o de otra versión) va al socket de basura, de búfer pequeño.
 
 ## Lee
-- El byte 3 (número de enlace; bajo el MAC desde el protocolo 16, pero el kernel no lo verifica: un enlace falso solo cambia de carril) y el nibble de versión (`CG_PROTO_WIRE`: pasado el 15 vuelve desde el 1, nunca 0) de cada datagrama, en el kernel.
+- El byte 2 (número de enlace; bajo el tag como AAD, pero el kernel no lo verifica: un enlace falso solo cambia de carril) y el nibble de versión (`CG_PROTO_WIRE`: pasado el 15 vuelve desde el 1, nunca 0) de cada datagrama, en el kernel.
 
 ## Decide / escribe
 - En qué socket espera cada datagrama → `listen_read`, `junk_read`.

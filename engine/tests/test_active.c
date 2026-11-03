@@ -80,7 +80,7 @@ static void test_counts(void)
 	CHECK_EQ(cg_act_tx_counts(0x6, 0x0, owd), 0x6);
 }
 
-static void test_wire(void)
+static void active_wire(void)
 {
 	uint8_t p[CG_PROBE_ACT_LEN];
 	struct cg_probe_act a = { 0xa5c3, 200 }, b;
@@ -578,7 +578,7 @@ void test_active(void)
 {
 	test_tx();
 	test_counts();
-	test_wire();
+	active_wire();
 	test_rx();
 	test_keeps_rack();
 	test_streams();

@@ -24,7 +24,7 @@
 
 #define CG_BATCH 64
 #define CG_BUF 2048
-#define CG_MAX_PAYLOAD (CG_BUF - CG_HDR_LEN) /* largest packet carried */
+#define CG_MAX_PAYLOAD (CG_BUF - CG_HDR_LEN - 25) /* largest packet carried: sealed (+ CG_WIRE_EXTRA_MAX, wire.h), it fits a buffer */
 #define CG_TICK_MS 100
 /* Batches read from one socket before going back to epoll, so a busy
  * direction cannot starve the other one or the probes (level-triggered). */

@@ -129,8 +129,8 @@ msgstr "Personalizado (deciden las otras pestañas)"
 msgid "VPS addresses"
 msgstr "Direcciones del VPS"
 
-msgid "Public IPs of the VPS as the provider shows them, IPv4 and IPv6, in order of preference: each uplink uses the first one of a family it has, and tries the next one when the VPS does not answer there. A name works too: the router looks it up through each uplink (the carrier's DNS first), never through the tunnel, and follows it when its IP changes (dynamic DNS). An MTU above 1424 does not fit if the name has an IPv6 address that the uplinks use."
-msgstr "IP públicas del VPS, tal como las muestra el proveedor, IPv4 e IPv6, en orden de preferencia: cada enlace usa la primera de una familia que tenga, y prueba la siguiente cuando el VPS no le contesta por ahí. También sirve un nombre: el router lo busca por cada enlace (primero en el DNS de la operadora), nunca por el túnel, y lo sigue cuando cambia su IP (DNS dinámico). Un MTU de más de 1424 no cabe si el nombre tiene una dirección IPv6 que usan los enlaces."
+msgid "Public IPs of the VPS as the provider shows them, IPv4 and IPv6, in order of preference: each uplink uses the first one of a family it has, and tries the next one when the VPS does not answer there. A name works too: the router looks it up through each uplink (the carrier's DNS first), never through the tunnel, and follows it when its IP changes (dynamic DNS). An MTU above 1411 does not fit if the name has an IPv6 address that the uplinks use."
+msgstr "IP públicas del VPS, tal como las muestra el proveedor, IPv4 e IPv6, en orden de preferencia: cada enlace usa la primera de una familia que tenga, y prueba la siguiente cuando el VPS no le contesta por ahí. También sirve un nombre: el router lo busca por cada enlace (primero en el DNS de la operadora), nunca por el túnel, y lo sigue cuando cambia su IP (DNS dinámico). Un MTU de más de 1411 no cabe si el nombre tiene una dirección IPv6 que usan los enlaces."
 
 msgid "At most %d addresses"
 msgstr "Como mucho %d direcciones"
@@ -246,8 +246,8 @@ msgstr "Primero, una sola vez, ejecuta en el VPS la orden de abajo: deja que la 
 msgid "Manage the tunnel"
 msgstr "Gestionar el túnel"
 
-msgid "cengarde carries the packets itself through its own interface cg0: authenticated (nobody can inject or replay packets) but NOT encrypted, so the carriers see the traffic. On: cg0 gets this router's address in the tunnel (VPS tab) and its routes, in the wan firewall zone. Off: cengarde still carries what reaches cg0, but its interface, routes and firewall zone are yours to set up."
-msgstr "cengarde lleva él mismo los paquetes por su propia interfaz cg0: autenticados (nadie puede inyectar ni repetir paquetes) pero NO cifrados, así que las operadoras ven el tráfico. Activado: cg0 recibe la dirección de este router en el túnel (pestaña VPS) y sus rutas, en la zona wan del cortafuegos. Desactivado: cengarde sigue llevando lo que llega a cg0, pero su interfaz, sus rutas y su zona del cortafuegos las configuras tú."
+msgid "cengarde carries the packets itself through its own interface cg0, encrypted and authenticated (ChaCha20-Poly1305: the carriers see sizes and timing, not the traffic; nobody can inject or replay packets). On: cg0 gets this router's address in the tunnel (VPS tab) and its routes, in the wan firewall zone. Off: cengarde still carries what reaches cg0, but its interface, routes and firewall zone are yours to set up."
+msgstr "cengarde lleva él mismo los paquetes por su propia interfaz cg0, cifrados y autenticados (ChaCha20-Poly1305: las operadoras ven tamaños y tiempos, no el tráfico; nadie puede inyectar ni repetir paquetes). Activado: cg0 recibe la dirección de este router en el túnel (pestaña VPS) y sus rutas, en la zona wan del cortafuegos. Desactivado: cengarde sigue llevando lo que llega a cg0, pero su interfaz, sus rutas y su zona del cortafuegos las configuras tú."
 
 msgid "Route all traffic through the tunnel"
 msgstr "Enrutar todo el tráfico por el túnel"
@@ -450,8 +450,8 @@ msgstr "Los servidores IPv6 se dejan fuera mientras IPv6 no vaya por el túnel: 
 msgid "Tunnel MTU"
 msgstr "MTU del túnel"
 
-msgid "In a 1500-byte path, packets of up to 1444 bytes fit over IPv4 and of up to 1424 over IPv6. Larger ones get fragmented, and mobile networks often drop the fragments."
-msgstr "En un camino de 1500 bytes caben paquetes de hasta 1444 bytes sobre IPv4 y de hasta 1424 sobre IPv6. Los más grandes se fragmentan, y las redes móviles suelen descartar los fragmentos."
+msgid "In a 1500-byte path, packets of up to 1431 bytes fit over IPv4 and of up to 1411 over IPv6. Larger ones get fragmented, and mobile networks often drop the fragments."
+msgstr "En un camino de 1500 bytes caben paquetes de hasta 1431 bytes sobre IPv4 y de hasta 1411 sobre IPv6. Los más grandes se fragmentan, y las redes móviles suelen descartar los fragmentos."
 
 msgid "At most %d with an IPv6 VPS address"
 msgstr "Como mucho %d con una dirección IPv6 del VPS"
@@ -834,8 +834,8 @@ msgstr "Servicio"
 msgid "connected"
 msgstr "conectado"
 
-msgid "Tunnel (not encrypted)"
-msgstr "Túnel (sin cifrar)"
+msgid "Tunnel (encrypted)"
+msgstr "Túnel (cifrado)"
 
 msgid "IPv6 address in the tunnel"
 msgstr "Dirección IPv6 en el túnel"

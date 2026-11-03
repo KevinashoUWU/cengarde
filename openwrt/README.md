@@ -202,7 +202,7 @@ líneas añadir); firewalld no está soportado todavía y la instalación se
 detiene con un mensaje. Detalle en [`contrib/vps/`](../contrib/vps/):
 `install.sh` instala, `cengarde-vps-setup` lleva los routers y deriva sus
 claves del secreto, y `cengarde-nat` hace el cortafuegos. El túnel va
-autenticado pero sin cifrar: ver [El túnel](#el-túnel-autenticado-sin-cifrar).
+cifrado y autenticado: ver [El túnel](#el-túnel-cifrado).
 
 ### Nombre y dirección de cada router
 
@@ -457,7 +457,7 @@ configuración del router:
 
 *Servicios → cengarde → Estado* se actualiza cada 3 s:
 - **Servicio:** si está en marcha.
-- **Túnel (sin cifrar):** conectado mientras algún enlace está vivo.
+- **Túnel (cifrado):** conectado mientras algún enlace está vivo.
 - **IP pass:** activo en el VPS, desactivado, o esperando que el VPS lo
   confirme.
 - **Nombre del VPS** (si pusiste uno): su IP y hace cuánto respondió el DNS,
@@ -842,15 +842,17 @@ proveedor; ver el paso 2 de la sección 3). Luego, en los dos extremos:
   cubre la salida a Internet por IPv6, que pide hardware real y un VPS con
   IPv6.
 
-## El túnel (autenticado, sin cifrar)
+## El túnel (cifrado)
 
 El motor de cada extremo abre un dispositivo TUN propio, `cg0`, y lleva los
-paquetes IP tal cual, con la autenticación de siempre (MAC y anti-replay con
-las claves del secreto). **No cifra:** las operadoras ven el tráfico (IP,
-puertos, SNI); solo impide que alguien inyecte o repita paquetes. Así
-cengarde ve los flujos (historia 014); el cifrado llegará después como
-opción. Hasta la 0.11 había además un modo WireGuard (`wgcg`, cifrado por
-WireGuard), que la 0.12 quitó (historia 027).
+paquetes IP. Desde el protocolo 22 cada paquete va cifrado y autenticado
+con ChaCha20-Poly1305 (historia 032), con llaves por sesión que salen del
+secreto: las operadoras ven tamaños, tiempos y por qué enlace va cada
+paquete, no el tráfico (IP, puertos, SNI, DNS), y nadie puede inyectar ni
+repetir paquetes. Cada extremo ve los flujos en claro dentro de su propio
+motor (historia 014). Cuesta 13 bytes por paquete (el MTU máximo baja a 1431
+sobre IPv4 y 1411 sobre IPv6) y ~2 µs por paquete en un i7. Hasta la 0.11
+había además un modo WireGuard (`wgcg`), que la 0.12 quitó (historia 027).
 
 **En el router** cengarde mantiene la interfaz `cg0` y sus rutas (ver la
 tabla de la sección 4). Necesita `kmod-tun`, que el paquete trae como
@@ -877,7 +879,7 @@ rechaza una configuración escrita a mano con `tunnel = wireguard`,
 `listen`, y dice que se usa el túnel propio.
 
 **Conviene saber:**
-- **El estado** dice *Túnel (sin cifrar)*: conectado mientras algún enlace
+- **El estado** dice *Túnel (cifrado)*: conectado mientras algún enlace
   está vivo; `cengarde-setup status` da los bytes de `cg0` en `tunnel`.
 - **Lo que cubre `test/e2e.sh`** (QEMU): `cg0` con su dirección y rutas,
   ping sin pérdidas por el TUN, un reinicio del motor (netifd devuelve
@@ -987,7 +989,7 @@ cengarde-setup cloud-config > vps.yaml               # el user data del VPS
   por el túnel sale siempre del secreto y cambia también.
 - **Actualizar:** router y VPS con el mismo commit. La 0.12 quita el modo
   WireGuard (historia 027): un router en ese modo pasa solo al túnel propio
-  al actualizarse (ver [El túnel](#el-túnel-autenticado-sin-cifrar)). El
+  al actualizarse (ver [El túnel](#el-túnel-cifrado)). El
   protocolo es ahora el v5 (el enlace anterior en cada paquete de datos y
   el NACK del rescate): un router y un VPS de protocolos distintos no se hablan, así que se
   actualizan juntos, primero el VPS. `cengarde-vps-setup add` se niega si el

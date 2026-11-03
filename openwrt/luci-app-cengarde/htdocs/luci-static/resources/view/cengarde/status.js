@@ -268,7 +268,7 @@ return view.extend({
 		const live = e && Array.isArray(e.links) && e.links.some(function(l) { return l.state == 'live'; });
 
 		tunnel = live ? badge(_('connected'), '#393') : (st.enabled ? badge(_('waiting for the VPS'), '#d80') : '-');
-		rows.push([ _('Tunnel (not encrypted)'), tunnel ]);
+		rows.push([ _('Tunnel (encrypted)'), tunnel ]);
 
 		if (st.tunnel_addr)
 			rows.push([ _('Address in the tunnel'), st.tunnel_addr ]);

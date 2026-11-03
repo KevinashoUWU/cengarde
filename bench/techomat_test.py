@@ -15,6 +15,7 @@ Run: python3 bench/techomat_test.py
 """
 import gzip
 import os
+import hashlib
 import struct
 import sys
 import tempfile
@@ -62,10 +63,25 @@ def udp(src, sport, dst, dport, payload):
     return ip(src, dst, 17, struct.pack('>HHHH', sport, dport, 8 + len(payload), 0) + payload)
 
 
-def cg(link, seq, body):
-    """A protocol 12 DATA packet: version and type, flags, hint, link, session,
-    seq, ts, MAC, sseq."""
-    return bytes([12 << 4 | 1, 0, 0, link]) + struct.pack('>III', 7, seq, 0) + b'\0' * 8 + struct.pack('>I', seq) + body
+KEY = bytes(range(32))
+EPOCH = b'\x11' * 8
+CTR = [0]
+
+
+def cg(link, seq, body, typ=11, kind=0):
+    """A protocol 22 packet (engine/src/wire.h), client to server, sealed
+    under KEY and EPOCH: a STREAM by default, kind 1 (the whole counter and
+    the epoch) or 0."""
+    from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
+    session, ctr = 7, CTR[0]
+    CTR[0] += 1
+    m = b'cengarde 1.0 c2s' + struct.pack('>I', session) + EPOCH
+    aead = ChaCha20Poly1305(hashlib.blake2s(m, key=KEY, digest_size=32).digest())
+    clear = bytes([7 << 4 | kind, 0, link]) + struct.pack('>II', session, ctr & 0xffffffff)
+    if kind:
+        clear += struct.pack('>I', ctr >> 32) + EPOCH
+    inner = bytes([typ, 0]) + struct.pack('>III', seq, 0, seq)
+    return clear + aead.encrypt(b'\0\0\0\0' + ctr.to_bytes(8, 'big'), inner + body, clear)
 
 
 def pcap(path, pkts):
@@ -132,7 +148,7 @@ def make(run):
     os.makedirs(f'{run}/grit-up')
     os.makedirs(f'{run}/vps/grit-up')
     r = [record(ord('T'), 0, n, T0) for n in range(4)]
-    a = cg(1, 1, r[0] + r[1] + r[2][:20])
+    a = cg(1, 1, r[0] + r[1] + r[2][:20], kind=1)  # its epoch: what opens the rest
     b = cg(2, 2, r[2][20:] + r[3])
     c = cg(1, 3, r[3])
     pcap(f'{run}/grit-up/nuc-ENTEL.pcap', [(T0, udp('192.168.10.187', 4000, VPS, 65500, a)),
@@ -178,7 +194,7 @@ def main():
         check(by[(2, 3)][6] == by[(2, 4)][6] != '', 'two records merged in one captured segment both arrive')
 
         # grit-up
-        text = techomat.phase(run, 'grit-up', VPS, REC)
+        text = techomat.phase(run, 'grit-up', VPS, REC, KEY)
         check(text is not None, 'grit-up has records')
         with gzip.open(f'{run}/matrix/grit-up-records.csv.gz', 'rt') as f:
             rows = [line.rstrip('\n').split(',') for line in f][1:]

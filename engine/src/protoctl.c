@@ -24,6 +24,7 @@
 
 #include "engine.h"
 #include "dscp.h"
+#include "livesni.h"
 #include "fair.h"
 #include "linkowd.h"
 #include "log.h"
@@ -137,6 +138,7 @@ struct flow {
 	uint8_t unrel; /* unreliable (protocol 20): its datagrams go as DGM from dq, no stream */
 	struct dgq *dq;
 	uint8_t dscp, tier; /* its DSCP (protocol 21) and its tier in this service's sends (dscp.h) */
+	uint8_t live;       /* the router found it live video (livesni.h): the video tier, its mark untouched */
 	uint64_t last_tx;   /* its last send (a lower-effort flow is owed one, CG_DS_LOW_STARVE_US) */
 #ifdef CG_ZSTD
 	ZSTD_CCtx *zc;
@@ -191,6 +193,7 @@ struct cg_pctl {
 	uint32_t *host, *ford, *fstart, *fcur; /* the sends by host (fair.h): each slot's host, the groups, their cursors */
 	uint32_t *tsel;     /* the flows of one tier (dscp.h) */
 	uint64_t ds_flows[CG_DS_TIERS], ds_sent[CG_DS_TIERS]; /* flows opened and segments sent, by tier */
+	uint64_t ds_live; /* of those, streams the router found live (livesni.h) */
 	uint64_t ds_owed;   /* segments a starved lower-effort flow was owed */
 	struct cg_pctl_tab tab; /* the server */
 	uint64_t *tkey;
@@ -509,6 +512,14 @@ static void set_rcvbuf(int fd, int v)
 {
 	if (set_int(fd, SOL_SOCKET, SO_RCVBUFFORCE, v) < 0)
 		set_int(fd, SOL_SOCKET, SO_RCVBUF, v);
+}
+
+/* The DSCP a flow's tier goes by (dscp.h): its own mark, or, unmarked,
+ * the video tier's for live video (livesni.h). Only the order of the
+ * sends: the mark that goes on (OPEN, sockets) is its own. */
+static uint8_t flow_ds(const struct flow *f)
+{
+	return f->dscp ? f->dscp : f->live ? CG_LIVE_DSCP : 0;
 }
 
 /* protocontroller_dscp: fd (of family 4 or 6) marks what it sends with
@@ -1673,6 +1684,19 @@ static uint32_t lowat_of(struct flow *f)
 
 /* Reads what the socket has into the stream, as far as it may hold.
  * Returns -1 when the flow was reset. */
+/* The router: a stream its device did not mark that carries live video,
+ * by its port or its ClientHello's name in its first bytes (livesni.h),
+ * goes in the video tier. */
+static void live_class(struct cg_pctl *p, struct flow *f, const uint8_t *d, size_t n)
+{
+	if (p->cfg.server || !p->cfg.dscp || f->dscp || !cg_live_flow(f->port, d, n))
+		return;
+	p->ds_flows[cg_ds_tier(flow_ds(f))]--;
+	f->live = 1;
+	p->ds_flows[cg_ds_tier(flow_ds(f))]++;
+	p->ds_live++;
+}
+
 static int sock_read(struct cg_pctl *p, struct flow *f)
 {
 	uint32_t got = 0;
@@ -1696,6 +1720,8 @@ static int sock_read(struct cg_pctl *p, struct flow *f)
 			room = crun;
 		n = recv(f->fd, d, room, 0);
 		if (n > 0) {
+			if (!f->up)
+				live_class(p, f, d, (size_t)n);
 			f->tx.tail += (uint64_t)n;
 			age_push(f->rd, &f->rd_h, &f->rd_n, f->tx.tail, cg_now_us());
 			f->up += (uint64_t)n;
@@ -2202,7 +2228,7 @@ void cg_pctl_service(struct cg_pctl *p)
 				struct flow *f = &p->f[p->used[i]];
 
 				if (t == CG_DS_PRIO)
-					f->tier = (uint8_t)cg_ds_flow_tier(f->dscp, f->s_rate, cg_scc_rate(&peer_of(p, f)->cc));
+					f->tier = (uint8_t)cg_ds_flow_tier(flow_ds(f), f->s_rate, cg_scc_rate(&peer_of(p, f)->cc));
 				if (t == CG_DS_NORMAL && f->tier == CG_DS_LOW && cg_ds_low_owed(f->last_tx, f->created_t, now) &&
 				    send_turn(p, f, now, 1))
 					p->ds_owed++;
@@ -2523,6 +2549,7 @@ void cg_pctl_json(const struct cg_pctl *p, struct cg_json *j)
 		cg_json_u64(j, NULL, p->ds_sent[t]);
 	cg_json_end(j, ']');
 	cg_json_u64(j, "owed", p->ds_owed); /* segments a starved lower-effort flow got among the rest */
+	cg_json_u64(j, "live", p->ds_live); /* streams found live: RTMP's port or an ingest's TLS name (livesni.h) */
 	cg_json_end(j, '}');
 	/* the unreliable datagrams (protocol 20): the LAN's other UDP */
 	cg_json_obj(j, "datagrams");

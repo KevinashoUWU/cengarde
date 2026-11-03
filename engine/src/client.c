@@ -454,9 +454,11 @@ struct client {
 
 	struct cg_rxbatch in;
 	uint8_t hdr[CG_BATCH][CG_HDR_LEN];
-	struct cg_siphash hmac[CG_BATCH]; /* each one's MAC before the link and the sseq (16) */
 	struct mmsghdr out[CG_BATCH];
-	struct iovec oiov[CG_BATCH][2];
+	struct iovec oiov[CG_BATCH][2]; /* each packet in memory: its header, its payload */
+	struct iovec wiov[CG_BATCH];    /* and one link's copies of them, sealed (wire.h) */
+	uint8_t wout[CG_BATCH][CG_BUF + CG_WIRE_EXTRA_MAX];
+	uint8_t wone[CG_BUF + CG_WIRE_EXTRA_MAX]; /* a packet sent alone, sealed (wsend) */
 };
 
 /* Why an interface does or does not carry the tunnel. */
@@ -1443,8 +1445,7 @@ static void seal_batch(struct client *c, int m, uint16_t carry, uint16_t dup)
 		if (c->scls[j]) {
 			/* a STREAM: kept by its own sequence for its links' losses
 			 * (on_sfloss); never sent again here, it earns the rescue's budget */
-			cg_up_seal(&c->txs, c->hdr[j], CG_T_STREAM, c->sflags[j], 0, c->sseq[j], c->sts[j], p, len,
-				   &c->hmac[j]);
+			cg_up_seal(&c->txs, c->hdr[j], CG_T_STREAM, c->sflags[j], 0, c->sseq[j], c->sts[j]);
 			if (c->sresc_idx && CG_HDR_LEN + len <= CG_RESC_ENTRY) {
 				uint8_t *e = cg_resc_put(&c->sresc, c->sresc_idx, c->txs.session, c->sseq[j],
 							 (uint16_t)(CG_HDR_LEN + len), only >= 0 ? (uint8_t)only : CG_RESC_NOLINK);
@@ -1468,7 +1469,7 @@ static void seal_batch(struct client *c, int m, uint16_t carry, uint16_t dup)
 			continue;
 		}
 		cg_up_seal(&c->txs, c->hdr[j], CG_T_DATA, (uint8_t)(c->sflags[j] | cg_prev_flags((int)c->prev_only - 1)), 0,
-			   c->sseq[j], c->sts[j], p, len, &c->hmac[j]);
+			   c->sseq[j], c->sts[j]);
 		c->prev_only = (uint8_t)(only + 1);
 		if (c->resc_idx && CG_HDR_LEN + len <= CG_RESC_ENTRY) {
 			uint8_t *e = cg_resc_put(&c->resc, c->resc_idx, c->txs.session, c->sseq[j], (uint16_t)(CG_HDR_LEN + len),
@@ -1495,6 +1496,17 @@ static void seal_batch(struct client *c, int m, uint16_t carry, uint16_t dup)
  * when split: weight 0, and with split_spread_copy the ones G4 keeps out),
  * and one duplicated packet in mute_trickle on the other live links. live
  * and carry as when the packets were picked. */
+/* Sends the in-memory packet pkt (len bytes) on fd, sealed (wire.h) with
+ * the upload's next counter; epoch1: a probe (kind 1). len when it went,
+ * as send() says of the packet, -1 with errno when it failed. */
+static ssize_t wsend(struct client *c, int fd, const uint8_t *pkt, size_t len, int epoch1)
+{
+	size_t n = cg_up_wire(&c->txs, c->wone, pkt, pkt + CG_HDR_LEN, len - CG_HDR_LEN, epoch1);
+	ssize_t s = send(fd, c->wone, n, MSG_DONTWAIT);
+
+	return s == (ssize_t)n ? (ssize_t)len : s;
+}
+
 static void send_links(struct client *c, int m, uint64_t now_ms, uint16_t live, uint16_t carry, uint16_t dup)
 {
 	int ids[CG_MAX_LINKS], n = 0, first = 0;
@@ -1565,8 +1577,8 @@ static void send_links(struct client *c, int m, uint64_t now_ms, uint16_t live, 
 			cg_act_tx_sent(&c->act_tx, (unsigned)i, mark_us);
 		for (int x = 0; x < k; x++) {
 			cg_hdr_set_link(c->hdr[sel[x]], (uint8_t)i);
-			/* its sseq on this link (subflow.h); the MAC finished with
-			 * both, for this copy (16) */
+			/* its sseq on this link (subflow.h); sealed with both, for
+			 * this copy, with a counter of its own (wire.h) */
 			{
 				uint32_t q = c->cfg->subflow ? cg_sf_tx_take(&l->sft, c->sseq[sel[x]],
 						(uint32_t)(c->oiov[sel[x]][0].iov_len + c->oiov[sel[x]][1].iov_len), (uint32_t)mark_us) : 0;
@@ -1574,11 +1586,13 @@ static void send_links(struct client *c, int m, uint64_t now_ms, uint16_t live, 
 				if (c->scls[sel[x]])
 					cg_sf_tx_stream(&l->sft, q);
 				cg_hdr_set_sseq(c->hdr[sel[x]], q);
-				cg_hdr_mac_finish(&c->hmac[sel[x]], c->hdr[sel[x]]);
 			}
+			c->wiov[x].iov_base = c->wout[x];
+			c->wiov[x].iov_len = cg_up_wire(&c->txs, c->wout[x], c->hdr[sel[x]], c->oiov[sel[x]][1].iov_base,
+							c->oiov[sel[x]][1].iov_len, 0);
 			memset(&c->out[x].msg_hdr, 0, sizeof(c->out[x].msg_hdr));
-			c->out[x].msg_hdr.msg_iov = c->oiov[sel[x]];
-			c->out[x].msg_hdr.msg_iovlen = 2;
+			c->out[x].msg_hdr.msg_iov = &c->wiov[x];
+			c->out[x].msg_hdr.msg_iovlen = 1;
 		}
 		s = sendmmsg(l->fd, c->out, (unsigned)k, MSG_DONTWAIT);
 		if (c->cfg->subflow) /* what did not go gives its sseq back */
@@ -1628,7 +1642,7 @@ static void fec_send(struct client *c, uint64_t now_us)
 		cg_up_header(&c->txs, c->fecq[q].p, c->fecq[q].type, 0, (uint8_t)(best - c->link), (uint32_t)now_us,
 			     c->fecq[q].p + CG_HDR_LEN, c->fecq[q].plen);
 		cg_act_tx_sent(&c->act_tx, (unsigned)(best - c->link), now_us); /* it may fill a gap (active.h) */
-		if (send(best->fd, c->fecq[q].p, CG_HDR_LEN + c->fecq[q].plen, MSG_DONTWAIT) ==
+		if (wsend(c, best->fd, c->fecq[q].p, CG_HDR_LEN + c->fecq[q].plen, 0) ==
 		    (ssize_t)(CG_HDR_LEN + c->fecq[q].plen)) {
 			if (c->fecq[q].f3) {
 				c->f3_rep++;
@@ -3106,7 +3120,7 @@ static void nack_out(struct client *c, const uint32_t *seq, uint32_t n, int retr
 		for (int b = 0; b < 2 && best[b]; b++) {
 			cg_up_header(&c->txs, pkt, CG_T_NACK, retry ? CG_F_RETRY : 0, (uint8_t)(best[b] - c->link),
 				     (uint32_t)cg_now_us(), pkt + CG_HDR_LEN, plen);
-			if (send(best[b]->fd, pkt, CG_HDR_LEN + plen, MSG_DONTWAIT) == (ssize_t)(CG_HDR_LEN + plen))
+			if (wsend(c, best[b]->fd, pkt, CG_HDR_LEN + plen, 0) == (ssize_t)(CG_HDR_LEN + plen))
 				c->nacks_sent++;
 		}
 	}
@@ -3257,9 +3271,8 @@ static void on_nack(struct client *c, uint8_t flags, const uint8_t *payload, siz
 				break;
 			}
 			cg_hdr_set_link(e, (uint8_t)(best[b] - c->link));
-			cg_hdr_reseal(e, c->txs.k_tx, e + CG_HDR_LEN, (size_t)len - CG_HDR_LEN); /* its link under the MAC (16) */
 			cg_act_tx_sent(&c->act_tx, (unsigned)(best[b] - c->link), cg_now_us());
-			if (send(best[b]->fd, e, len, MSG_DONTWAIT) == (ssize_t)len) {
+			if (wsend(c, best[b]->fd, e, len, 0) == (ssize_t)len) {
 				best[b]->tx_pkts++;
 				best[b]->tx_bytes += len - CG_HDR_LEN;
 				c->resc_sent++;
@@ -3275,7 +3288,7 @@ static void on_nack(struct client *c, uint8_t flags, const uint8_t *payload, siz
 		i += used;
 		cg_up_header(&c->txs, pkt, CG_T_NACK, CG_F_GONE, (uint8_t)(best[0] - c->link), (uint32_t)cg_now_us(),
 			     pkt + CG_HDR_LEN, glen);
-		if (send(best[0]->fd, pkt, CG_HDR_LEN + glen, MSG_DONTWAIT) == (ssize_t)(CG_HDR_LEN + glen))
+		if (wsend(c, best[0]->fd, pkt, CG_HDR_LEN + glen, 0) == (ssize_t)(CG_HDR_LEN + glen))
 			c->resc_gone_tx++;
 	}
 }
@@ -3389,7 +3402,7 @@ static void on_sfloss(struct client *c, const uint8_t *payload, size_t plen, uin
 		i += used;
 		cg_up_header(&c->txs, pkt, CG_T_NACK, CG_F_GONE, (uint8_t)(best - c->link), (uint32_t)cg_now_us(),
 			     pkt + CG_HDR_LEN, glen);
-		if (send(best->fd, pkt, CG_HDR_LEN + glen, MSG_DONTWAIT) == (ssize_t)(CG_HDR_LEN + glen))
+		if (wsend(c, best->fd, pkt, CG_HDR_LEN + glen, 0) == (ssize_t)(CG_HDR_LEN + glen))
 			c->resc_gone_tx++;
 	}
 }
@@ -3484,7 +3497,7 @@ static void sfack_send(struct client *c, struct link *best, uint64_t now_us)
 	c->sfack_us = now_us;
 	cg_up_header(&c->txs, pkt, CG_T_SFACK, 0, (uint8_t)(best - c->link), (uint32_t)now_us, pkt + CG_HDR_LEN,
 		     1 + CG_SFACK_ENTRY * k);
-	if (send(best->fd, pkt, CG_HDR_LEN + 1 + CG_SFACK_ENTRY * k, MSG_DONTWAIT) ==
+	if (wsend(c, best->fd, pkt, CG_HDR_LEN + 1 + CG_SFACK_ENTRY * k, 0) ==
 	    (ssize_t)(CG_HDR_LEN + 1 + CG_SFACK_ENTRY * k))
 		c->sfack_sent++;
 }
@@ -3531,7 +3544,7 @@ static void sf_service(struct client *c)
 			for (int b = 0; b < 2 && two[b]; b++) {
 				cg_up_header(&c->txs, pkt, CG_T_SFLOSS, 0, (uint8_t)(two[b] - c->link), (uint32_t)now_us,
 					     pkt + CG_HDR_LEN, plen);
-				if (send(two[b]->fd, pkt, CG_HDR_LEN + plen, MSG_DONTWAIT) == (ssize_t)(CG_HDR_LEN + plen))
+				if (wsend(c, two[b]->fd, pkt, CG_HDR_LEN + plen, 0) == (ssize_t)(CG_HDR_LEN + plen))
 					c->sfloss_sent++;
 			}
 		}
@@ -3604,7 +3617,7 @@ static void parq_one(struct client *c, struct link *l, const struct cg_rep_hdr *
 	memcpy(pkt + CG_HDR_LEN + CG_REP_HDR, sym, slen);
 	cg_up_header(&c->txs, pkt, CG_T_REPAIR, 0, (uint8_t)(l - c->link), (uint32_t)cg_now_us(), pkt + CG_HDR_LEN, plen);
 	cg_act_tx_sent(&c->act_tx, (unsigned)(l - c->link), cg_now_us());
-	if (send(l->fd, pkt, CG_HDR_LEN + plen, MSG_DONTWAIT) == (ssize_t)(CG_HDR_LEN + plen)) {
+	if (wsend(c, l->fd, pkt, CG_HDR_LEN + plen, 0) == (ssize_t)(CG_HDR_LEN + plen)) {
 		c->parq_sent++;
 		c->parq_bytes += plen;
 		l->tx_fec_pkts++;
@@ -4166,7 +4179,7 @@ static void parq_out(struct client *c, const struct cg_parq_req *req, unsigned n
 		for (int b = 0; b < 2 && best[b]; b++) {
 			cg_up_header(&c->txs, pkt, CG_T_PARQ, 0, (uint8_t)(best[b] - c->link), (uint32_t)cg_now_us(),
 				     pkt + CG_HDR_LEN, plen);
-			if (send(best[b]->fd, pkt, CG_HDR_LEN + plen, MSG_DONTWAIT) == (ssize_t)(CG_HDR_LEN + plen))
+			if (wsend(c, best[b]->fd, pkt, CG_HDR_LEN + plen, 0) == (ssize_t)(CG_HDR_LEN + plen))
 				c->dparq_msgs++;
 		}
 	}
@@ -4355,7 +4368,7 @@ static void link_read(struct client *c, struct link *l)
 			uint8_t *b = c->in.buf[i];
 			size_t len = c->in.msg[i].msg_len;
 			struct cg_hdr h;
-			enum cg_rxv v = cg_rx_entry(&c->rxs, &l->rxl, id, l->rxl.gen, b, len,
+			enum cg_rxv v = cg_rx_entry(&c->rxs, &l->rxl, id, l->rxl.gen, b, &len,
 						    !!(c->in.msg[i].msg_hdr.msg_flags & MSG_TRUNC), now_us, expect, &h);
 
 			if (v == CG_RXV_DROP)
@@ -4408,19 +4421,20 @@ static void hub_slot(struct client *c, struct cg_rxslot *sl, uint16_t *expect, u
 	struct link *l = &c->link[sl->link];
 	uint64_t now_ms = sl->t_us / 1000;
 	struct cg_hdr h;
-	enum cg_rxv v = cg_rx_entry(&c->rxs, &l->rxl, sl->link, sl->gen, sl->buf, sl->len, sl->trunc, sl->t_us,
+	size_t len = sl->len;
+	enum cg_rxv v = cg_rx_entry(&c->rxs, &l->rxl, sl->link, sl->gen, sl->buf, &len, sl->trunc, sl->t_us,
 				    *expect, &h);
 
 	if (v == CG_RXV_STREAM) {
-		d_skeep(c, h.seq, sl->buf + CG_HDR_LEN, sl->len - CG_HDR_LEN, now_ms);
-		stream_deliver(c, sl->link, sl->buf + CG_HDR_LEN, sl->len - CG_HDR_LEN, h.ts);
+		d_skeep(c, h.seq, sl->buf + CG_HDR_LEN, len - CG_HDR_LEN, now_ms);
+		stream_deliver(c, sl->link, sl->buf + CG_HDR_LEN, len - CG_HDR_LEN, h.ts);
 		ro_stream(c, sl->link, h.ts, *rset, (uint32_t)clock_us, clock_us / 1000);
 		return;
 	}
 	if (v == CG_RXV_DATA) {
 		if (c->dfec) /* kept for the server's repairs (story 026) */
-			cg_fec_rx_put(c->dfec, h.seq, sl->buf + CG_HDR_LEN, (uint16_t)(sl->len - CG_HDR_LEN));
-		down_deliver(c, &h, sl->link, sl->buf + CG_HDR_LEN, sl->len - CG_HDR_LEN, (uint32_t)sl->t_us, *rset,
+			cg_fec_rx_put(c->dfec, h.seq, sl->buf + CG_HDR_LEN, (uint16_t)(len - CG_HDR_LEN));
+		down_deliver(c, &h, sl->link, sl->buf + CG_HDR_LEN, len - CG_HDR_LEN, (uint32_t)sl->t_us, *rset,
 			     (uint32_t)clock_us, clock_us / 1000);
 		if (c->dfec)
 			d_rep_data(c, h.seq, (uint8_t)sl->link, h.ts, *rset, (uint32_t)clock_us, clock_us / 1000);
@@ -4430,21 +4444,21 @@ static void hub_slot(struct client *c, struct cg_rxslot *sl, uint16_t *expect, u
 		return;
 	rx_verdict_log(c, l, v, now_ms);
 	if (v == CG_RXV_REPLY) {
-		on_probe_reply(c, l, &h, sl->buf + CG_HDR_LEN, (size_t)sl->len - CG_HDR_LEN, (uint32_t)sl->t_us, now_ms);
+		on_probe_reply(c, l, &h, sl->buf + CG_HDR_LEN, len - CG_HDR_LEN, (uint32_t)sl->t_us, now_ms);
 		*expect = expect_mask(c);
 		ro_reply(c, rset, (uint32_t)clock_us, clock_us / 1000);
 	} else if (v == CG_RXV_HELLO) {
 		on_hello(c, l, cg_now_us());
 	} else if (v == CG_RXV_NACK) {
-		on_nack(c, h.flags, sl->buf + CG_HDR_LEN, (size_t)sl->len - CG_HDR_LEN, now_ms);
+		on_nack(c, h.flags, sl->buf + CG_HDR_LEN, len - CG_HDR_LEN, now_ms);
 	} else if (v == CG_RXV_SFLOSS) {
-		on_sfloss(c, sl->buf + CG_HDR_LEN, (size_t)sl->len - CG_HDR_LEN, now_ms);
+		on_sfloss(c, sl->buf + CG_HDR_LEN, len - CG_HDR_LEN, now_ms);
 	} else if (v == CG_RXV_SFACK) {
 		on_sfack(c, sl->buf + CG_HDR_LEN, sl->t_us);
 	} else if (v == CG_RXV_PARQ) {
-		on_parq(c, sl->buf + CG_HDR_LEN, (size_t)sl->len - CG_HDR_LEN, now_ms);
+		on_parq(c, sl->buf + CG_HDR_LEN, len - CG_HDR_LEN, now_ms);
 	} else if (v == CG_RXV_REPAIR) {
-		d_rep_take(c, sl->buf + CG_HDR_LEN, (unsigned)(sl->len - CG_HDR_LEN), (uint8_t)sl->link, h.ts, *rset,
+		d_rep_take(c, sl->buf + CG_HDR_LEN, (unsigned)(len - CG_HDR_LEN), (uint8_t)sl->link, h.ts, *rset,
 			   (uint32_t)clock_us, clock_us / 1000);
 	}
 }
@@ -4550,9 +4564,8 @@ static void send_probe(struct client *c, struct link *l, uint64_t now_us, uint32
 	cg_up_header(&c->txs, pkt, CG_T_PROBE, flags, (uint8_t)id, (uint32_t)now_us, pkt + CG_HDR_LEN, CG_PROBE_ACT_LEN);
 	/* how far the link's subflow went: the server sees a lost tail (subflow.h) */
 	cg_hdr_set_sseq(pkt, c->cfg->subflow ? l->sft.next : 0);
-	cg_hdr_reseal(pkt, c->txs.k_tx, pkt + CG_HDR_LEN, CG_PROBE_ACT_LEN); /* its sseq under the MAC (16) */
 	/* A full queue drops the probe like any other packet: that is a measurement, not an error. */
-	if (send(l->fd, pkt, sizeof(pkt), MSG_DONTWAIT) < 0 && errno != EAGAIN && errno != ENOBUFS &&
+	if (wsend(c, l->fd, pkt, sizeof(pkt), 1) < 0 && errno != EAGAIN && errno != ENOBUFS &&
 	    cg_ratelimit_ok(&l->rl, now_ms, 10000))
 		cg_warn("link %s probe: %s", l->ifname, strerror(errno));
 	cg_echo_push(&l->rxl.probes, (uint32_t)now_us, now_ms);
@@ -5565,6 +5578,20 @@ static void reload_start(struct client *c)
 		c->reload_again = 1; /* once the load under way is done */
 }
 
+/* The session's keys (wire.h): the upload's under a fresh epoch, from its
+ * counter's start; the download's from the server's next probe reply,
+ * which says its epoch. -1 when getrandom failed (the keys untouched). */
+static int seal_start(struct client *c)
+{
+	uint8_t epoch[CG_EPOCH_LEN];
+
+	if (cg_random(epoch, sizeof(epoch)) < 0)
+		return -1;
+	cg_seal_init(&c->txs.seal, c->cfg->key, CG_DIR_C2S, c->session, epoch);
+	cg_unseal_init(&c->rxs.un, c->cfg->key, CG_DIR_S2C, c->session, NULL);
+	return 0;
+}
+
 /* Puts next in place of the running configuration, keeping the session. */
 static void apply_config(struct client *c, struct cg_config *next, uint64_t now_ms)
 {
@@ -5572,9 +5599,10 @@ static void apply_config(struct client *c, struct cg_config *next, uint64_t now_
 	int bond;
 
 	c->cfg = next;
-	c->txs.k_tx = next->key;
 	c->txs.hint = cg_client_hint(next->key);
-	c->rxs.k_rx = next->key + CG_SIPHASH_KEY_LEN;
+	c->rxs.secret = next->key;
+	if (memcmp(old->key, next->key, CG_KEY_LEN))
+		seal_start(c); /* a new secret: new keys both ways (wire.h) */
 	c->hcfg = cg_hcfg_of(next);
 	/* The reorderer's knobs apply from the next packet; turned off, what
 	 * it holds goes on at once, in order. */
@@ -5977,9 +6005,8 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 		c->cw[i] = CG_GOV_MAX;
 	}
 	cg_gov_weights(&c->gov, 0, c->gw);
-	c->txs.k_tx = cfg->key;
 	c->txs.hint = cg_client_hint(cfg->key);
-	c->rxs.k_rx = cfg->key + CG_SIPHASH_KEY_LEN;
+	c->rxs.secret = cfg->key;
 	c->rxs.subflow = cfg->subflow;
 	c->ep = c->tun_fd = c->tfd = -1;
 	c->nl.fd = -1;
@@ -6006,6 +6033,10 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 		}
 	} while (!c->session);
 	c->txs.session = c->rxs.session = c->session;
+	if (seal_start(c) < 0) {
+		cg_err("getrandom: %s", strerror(errno));
+		goto out;
+	}
 	c->start_ms = cg_now_ms();
 	cg_act_tx_start(&c->act_tx, cg_now_us());
 
@@ -6116,7 +6147,7 @@ int cg_client_run(struct cg_config *cfg, const struct cg_run *run)
 		cg_warn("control socket: %s", err);
 	if (cfg->status_file[0] && cg_status_writer_start(&c->sw, cfg->status_file, "cg-status") < 0)
 		cg_warn("status file %s: cannot start the writer thread", cfg->status_file);
-	cg_info("client %s: session %08x, native tunnel on %s (MTU %u; authenticated, not encrypted), "
+	cg_info("client %s: session %08x, native tunnel on %s (MTU %u; sealed, ChaCha20-Poly1305), "
 		"link_threads %s",
 		CG_VERSION, c->session, cfg->tun, cfg->tun_mtu, cg_lt_name(c->lt));
 	if (cfg->passthrough >= 0)

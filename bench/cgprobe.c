@@ -1,4 +1,4 @@
-/* cgprobe: protocol 4 datagrams by hand, for the replay scenario
+/* cgprobe: cengarde datagrams by hand, sealed (wire.h), for the replay scenario
  * (bench/lab.d/replay.sh): a probe with or without a cookie, a DATA packet,
  * or a datagram saved earlier, sent from a chosen address and port; it
  * prints what the server answered within the timeout.
@@ -12,9 +12,11 @@
  * ADDR:PORT. Options: -q SEQ (sequence, default random), -T TX_NEXT and -R
  * RX_TOP (the probe's view of our windows), -P (ask for IP pass), -H HINT
  * (a client hint other than the key's), -t MS (wait, 1000), -w FILE (save
- * the datagram sent). Output, one line: "hello COOKIE", "refused COOKIE",
- * "reply", "data", "none", "bad-mac TYPE" or "bad-echo". Exit 0 unless it
- * could not send.
+ * the datagram sent, sealed). A probe goes as kind 1 under an epoch of
+ * its own (every run plays a client that just started), DATA as kind 0.
+ * Output, one line: "hello COOKIE", "refused COOKIE", "reply", "data" (not
+ * opened: a kind 0 is under the server's epoch), "none", "bad-mac" or
+ * "bad-echo". Exit 0 unless it could not send.
  *
  * SPDX-License-Identifier: GPL-3.0-or-later */
 #include <errno.h>
@@ -29,6 +31,7 @@
 #include "pair.h"
 #include "proto.h"
 #include "util.h"
+#include "wire.h"
 
 static uint32_t now_us(void)
 {
@@ -59,7 +62,8 @@ static int addr(const char *s, struct sockaddr_storage *a)
 
 int main(int argc, char **argv)
 {
-	uint8_t key[CG_KEY_LEN], pkt[2048], in[2048];
+	uint8_t key[CG_KEY_LEN], mem[2048], pkt[2048 + CG_WIRE_EXTRA_MAX], in[2048 + CG_WIRE_EXTRA_MAX];
+	uint8_t epoch[CG_EPOCH_LEN] = { 0 };
 	struct sockaddr_storage srv, bind_to;
 	const char *keyb64 = NULL, *srvs = NULL, *binds = NULL, *save = NULL;
 	uint32_t seq, tx_next = 0, rx_top = 0, ts = now_us();
@@ -70,6 +74,8 @@ int main(int argc, char **argv)
 
 	if (getrandom(&seq, sizeof(seq), 0) != sizeof(seq))
 		seq = ts;
+	if (getrandom(epoch, sizeof(epoch), 0) != sizeof(epoch))
+		memcpy(epoch, &ts, sizeof(ts));
 	while ((o = getopt(argc, argv, "k:s:b:q:T:R:PH:t:w:")) != -1) {
 		switch (o) {
 		case 'k': keyb64 = optarg; break;
@@ -103,11 +109,22 @@ int main(int argc, char **argv)
 	if (!strcmp(argv[0], "raw")) {
 		FILE *f = fopen(argv[1], "rb");
 
-		if (!f || (len = fread(pkt, 1, sizeof(pkt), f)) < CG_HDR_LEN) {
+		if (!f || (len = fread(pkt, 1, sizeof(pkt), f)) < CG_WIRE_MIN) {
 			fprintf(stderr, "cgprobe: %s: cannot read a datagram\n", argv[1]);
 			return 2;
 		}
 		fclose(f);
+		if (have_key) { /* its ts, for the echo of a HELLO: a probe says its epoch */
+			uint8_t k0[CG_AEAD_KEY_LEN];
+			struct cg_wire w0;
+			struct cg_hdr h0;
+
+			if (cg_wire_peek(&w0, pkt, len) == 0 && w0.kind == CG_WIRE_KIND_EPOCH) {
+				cg_wire_key(k0, key, CG_DIR_C2S, w0.session, w0.epoch);
+				if (cg_wire_open_head(&h0, pkt, len, &w0, k0, CG_DIR_C2S, cg_wire_ctr(&w0, 0)) == 0)
+					ts = h0.ts;
+			}
+		}
 	} else if ((!strcmp(argv[0], "probe") || !strcmp(argv[0], "data")) && argc >= 3 && have_key) {
 		struct cg_hdr h = { .type = strcmp(argv[0], "probe") ? CG_T_DATA : CG_T_PROBE,
 				    .hint = (uint8_t)(hint >= 0 ? hint : cg_client_hint(key)),
@@ -123,14 +140,20 @@ int main(int argc, char **argv)
 						    .tx_next = tx_next };
 
 			h.flags = (uint8_t)cg_pass_flags(pass ? 1 : -1);
-			cg_probe_info_write(pkt + CG_HDR_LEN, &pi);
+			cg_probe_info_write(mem + CG_HDR_LEN, &pi);
 			len = CG_HDR_LEN + CG_PROBE_INFO_LEN;
 		} else {
-			memset(pkt + CG_HDR_LEN, 0, 32);
-			pkt[CG_HDR_LEN] = 4; /* any payload: what it carries is never looked at */
+			memset(mem + CG_HDR_LEN, 0, 64);
+			mem[CG_HDR_LEN] = 4; /* any payload: what it carries is never looked at */
 			len = CG_HDR_LEN + 64;
 		}
-		cg_hdr_write(pkt, &h, key, pkt + CG_HDR_LEN, len - CG_HDR_LEN);
+		cg_hdr_put(mem, &h);
+		{
+			struct cg_seal s;
+
+			cg_seal_init(&s, key, CG_DIR_C2S, h.session, epoch);
+			len = cg_wire_seal(pkt, mem, mem + CG_HDR_LEN, len - CG_HDR_LEN, &s, h.type == CG_T_PROBE);
+		}
 	} else {
 		return usage();
 	}
@@ -150,26 +173,36 @@ int main(int argc, char **argv)
 	}
 	p.fd = fd;
 	p.events = POLLIN;
-	if (poll(&p, 1, timeout) <= 0 || (n = recv(fd, in, sizeof(in), 0)) < CG_HDR_LEN) {
+	if (poll(&p, 1, timeout) <= 0 || (n = recv(fd, in, sizeof(in), 0)) < CG_WIRE_MIN) {
 		puts("none");
 		return 0;
 	}
 	{
-		struct cg_hdr h, sent;
+		uint8_t k2[CG_AEAD_KEY_LEN];
+		struct cg_wire w;
+		struct cg_hdr h;
+		uint64_t ctr;
 
-		if (cg_hdr_parse(&h, in, (size_t)n) < 0) {
+		if (cg_wire_peek(&w, in, (size_t)n) < 0) {
 			puts("malformed");
 			return 0;
 		}
-		if (have_key && !cg_hdr_verify(in, (size_t)n, key + CG_SIPHASH_KEY_LEN)) {
-			printf("bad-mac %u\n", h.type);
+		if (w.kind != CG_WIRE_KIND_EPOCH) { /* under the server's epoch, which only a reply says */
+			puts("data");
+			return 0;
+		}
+		ctr = cg_wire_ctr(&w, 0);
+		cg_wire_key(k2, key, CG_DIR_S2C, w.session, w.epoch);
+		if (!have_key || cg_wire_open_head(&h, in, (size_t)n, &w, k2, CG_DIR_S2C, ctr) < 0 ||
+		    !cg_wire_open_body(in, (size_t)n, &h, &w, k2, CG_DIR_S2C, ctr)) {
+			puts("bad-mac");
 			return 0;
 		}
 		if (h.type == CG_T_HELLO) {
 			struct cg_hello hl;
 
 			cg_hello_read(&hl, in + CG_HDR_LEN);
-			if (cg_hdr_parse(&sent, pkt, len) < 0 || hl.echo_ts != sent.ts)
+			if (hl.echo_ts != ts)
 				puts("bad-echo");
 			else
 				printf("%s %08x\n", h.flags & CG_F_REFUSED ? "refused" : "hello", hl.cookie);

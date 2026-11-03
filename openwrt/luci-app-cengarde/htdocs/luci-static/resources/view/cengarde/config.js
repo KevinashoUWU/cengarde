@@ -12,7 +12,7 @@ const TEMPLATE = '/usr/share/cengarde/cloud-config.yaml';
 const MAX_SERVERS = 8; // the engine's CG_MAX_SERVERS
 // Largest tunnel MTU in a 1500-byte path: 1500 - (IP, UDP and cengarde
 // headers), 20 + 8 + 24 over IPv4, 40 + 8 + 24 over IPv6.
-const MTU_IPV6 = 1424;
+const MTU_IPV6 = 1411;
 
 // A router's name on the VPS and an address in the tunnel, as the VPS and
 // cengarde-setup take them: cg-NAME has to fit in an interface name, and
@@ -363,7 +363,7 @@ return view.extend({
 		};
 
 		o = s.taboption('general', form.DynamicList, 'server', _('VPS addresses'),
-			_('Public IPs of the VPS as the provider shows them, IPv4 and IPv6, in order of preference: each uplink uses the first one of a family it has, and tries the next one when the VPS does not answer there. A name works too: the router looks it up through each uplink (the carrier\'s DNS first), never through the tunnel, and follows it when its IP changes (dynamic DNS). An MTU above 1424 does not fit if the name has an IPv6 address that the uplinks use.'));
+			_('Public IPs of the VPS as the provider shows them, IPv4 and IPv6, in order of preference: each uplink uses the first one of a family it has, and tries the next one when the VPS does not answer there. A name works too: the router looks it up through each uplink (the carrier\'s DNS first), never through the tunnel, and follows it when its IP changes (dynamic DNS). An MTU above 1411 does not fit if the name has an IPv6 address that the uplinks use.'));
 		o.datatype = 'host(0)'; // a name or an IP, without a mask
 		o.placeholder = '203.0.113.10';
 		o.validate = function(section_id) {
@@ -577,7 +577,7 @@ return view.extend({
 		};
 
 		o = s.taboption('tunnel', form.Flag, 'tunnel', _('Manage the tunnel'),
-			_('cengarde carries the packets itself through its own interface cg0: authenticated (nobody can inject or replay packets) but NOT encrypted, so the carriers see the traffic. On: cg0 gets this router\'s address in the tunnel (VPS tab) and its routes, in the wan firewall zone. Off: cengarde still carries what reaches cg0, but its interface, routes and firewall zone are yours to set up.'));
+			_('cengarde carries the packets itself through its own interface cg0, encrypted and authenticated (ChaCha20-Poly1305: the carriers see sizes and timing, not the traffic; nobody can inject or replay packets). On: cg0 gets this router\'s address in the tunnel (VPS tab) and its routes, in the wan firewall zone. Off: cengarde still carries what reaches cg0, but its interface, routes and firewall zone are yours to set up.'));
 		o.default = '1';
 		o.rmempty = false;
 		o.onchange = refresh;
@@ -766,8 +766,8 @@ return view.extend({
 		};
 
 		o = s.taboption('tunnel', form.Value, 'mtu', _('Tunnel MTU'),
-			_('In a 1500-byte path, packets of up to 1444 bytes fit over IPv4 and of up to 1424 over IPv6. Larger ones get fragmented, and mobile networks often drop the fragments.'));
-		o.datatype = 'range(1280,1444)';
+			_('In a 1500-byte path, packets of up to 1431 bytes fit over IPv4 and of up to 1411 over IPv6. Larger ones get fragmented, and mobile networks often drop the fragments.'));
+		o.datatype = 'range(1280,1431)';
 		o.placeholder = '1380';
 		o.depends('tunnel', '1');
 		// The form checks every field again on each change, so this follows

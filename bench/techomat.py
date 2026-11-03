@@ -5,7 +5,7 @@ it first came to the other end's NIC and when TCP or GRIT delivered it, and
 what a reorderer would have had to hold to give the links' records back in
 the order they left.
 
-    python3 bench/techomat.py RUN_DIR [-p PHASE ...] [--vps 64.176.14.91]
+    python3 bench/techomat.py RUN_DIR [-p PHASE ...] [--vps 64.176.14.91] [--key KEY]
 
 Per phase (tcp-up, tcp-down, grit-up, grit-down, udp-up, udp-down) it writes
 in RUN_DIR/matrix/:
@@ -34,9 +34,14 @@ How a record is found in a packet:
           from 0, so a record's step is the one whose window (from the PC's
           log of it) holds its write time, and its link in the tables and
           the CSV is share x 10 + link (ENTEL at 80 %: 801)
-    grit  every "CGT L" header inside a tunnel DATA packet (GRIT cuts the
-          stream its own way; one cut in two is not counted where its header
-          is not whole); the link is the tunnel header's link byte
+    grit  every "CGT L" header inside a tunnel DATA or STREAM packet (GRIT
+          cuts the stream its own way; one cut in two is not counted where
+          its header is not whole); the link is the tunnel header's link
+          byte. From protocol 22 (story 032) the tunnel is encrypted: --key
+          (the configuration's base64 key) opens it, with each sender's
+          epoch taken from its probes, replies and HELLOs (kind 1), so what a
+          capture holds before the first of them in each direction is not
+          read
 
 The one-way delay mixes two clocks (the PC's or the NUC's, and the VPS's),
 each on chrony with the SHOA servers: the run's clock-*.txt say how far off
@@ -45,6 +50,8 @@ each one was.
 SPDX-License-Identifier: GPL-3.0-or-later
 """
 import argparse
+import base64
+import hashlib
 import csv
 import glob
 import gzip
@@ -60,6 +67,8 @@ HDR = re.compile(rb'CG([TUH]) L(\d) Q(\d{12}) T(\d{19}) ')
 MARK = b'CGT L'
 CG_HDR_LEN = 28
 CG_T_DATA = 1
+CG_T_STREAM = 11
+CG_PROTO_WIRE_22 = 7  # protocol 22's version nibble ((22 - 1) % 15 + 1)
 DEADLINES_MS = (0, 5, 10, 20, 50, 100, 200, 300, 500, 1000)
 
 
@@ -229,26 +238,33 @@ def udp_records(path, book, sender, forward, steps=None):
             book.arrive(link, num, t)
 
 
-def grit_records(path, book, sender, forward, link_names, dev=None):
-    """Every record header inside the tunnel's DATA packets of one capture;
-    the tunnel link (the header's link byte) is what the book keys on as
-    'via', and the stream is link 0."""
+def grit_records(path, book, sender, forward, link_names, dev=None, unsealer=None):
+    """Every record header inside the tunnel's DATA and STREAM packets of
+    one capture (opened by unsealer from protocol 22); the tunnel link (the
+    header's link byte) is what the book keys on as 'via', and the stream is
+    link 0."""
     for t, ip in packets(path):
         x = l4(ip)
         if not x or x[0] != 17 or not forward(x[1]):
             continue
         pl = bytes(x[7])
-        if len(pl) < CG_HDR_LEN or pl[0] >> 4 < 12 or pl[0] & 15 != CG_T_DATA:
-            continue
-        via = pl[3]
-        seq = struct.unpack_from('>I', pl, 8)[0]
+        if unsealer:
+            got = unsealer.open(pl)
+            if not got or got[0] not in (CG_T_DATA, CG_T_STREAM):
+                continue
+            _, via, seq, body = got
+        else:
+            if len(pl) < CG_HDR_LEN or pl[0] >> 4 < 12 or pl[0] & 15 not in (CG_T_DATA, CG_T_STREAM):
+                continue
+            via = pl[3]
+            seq = struct.unpack_from('>I', pl, 8)[0]
+            body = pl[CG_HDR_LEN:]
         pk = book.pk_sent if sender else book.pk_arr
         if (via, seq) not in pk:
             pk[(via, seq)] = (t, len(pl))
         if dev:
             link_names.setdefault(via, {}).setdefault(dev, 0)
             link_names[via][dev] += 1
-        body = pl[CG_HDR_LEN:]
         i = body.find(MARK)
         while i >= 0:
             m = HDR.match(body, i)
@@ -259,6 +275,67 @@ def grit_records(path, book, sender, forward, link_names, dev=None):
                 else:
                     book.arrive(0, num, t, via)
             i = body.find(MARK, i + 1)
+
+
+class Unsealer:
+    """Opens protocol 22's packets (engine/src/wire.h) with the shared secret:
+    the key of each direction, session and sender epoch is BLAKE2s of the
+    secret over the direction's label, the session and the epoch; a kind 1
+    says the epoch and the whole counter, a kind 0 its low 32 bits, widened
+    against the highest opened under that direction and session's key."""
+
+    def __init__(self, secret):
+        self.secret = secret
+        self.keys = {}
+        self.cur = {}  # (dir, session): [key, top]
+
+    def key(self, d, session, epoch):
+        k = (d, session, epoch)
+        if k not in self.keys:
+            from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
+            m = (b'cengarde 1.0 c2s' if d == 0 else b'cengarde 1.0 s2c') + struct.pack('>I', session) + epoch
+            self.keys[k] = ChaCha20Poly1305(hashlib.blake2s(m, key=self.secret, digest_size=32).digest())
+        return self.keys[k]
+
+    @staticmethod
+    def widen(nseq, top):
+        c = (top & ~0xffffffff) | nseq
+        if c + 0x80000000 < top:
+            c += 1 << 32
+        elif c > top + 0x80000000 and c >= 1 << 32:
+            c -= 1 << 32
+        return c
+
+    def open(self, pl):
+        """(type, link, seq, payload) of a sealed packet, or None."""
+        if len(pl) < 41 or pl[0] >> 4 != CG_PROTO_WIRE_22 or pl[0] & 15 > 1:
+            return None
+        kind, link = pl[0] & 15, pl[2]
+        session, nseq = struct.unpack_from('>II', pl, 3)
+        hlen = 23 if kind else 11
+        if len(pl) < hlen + 30:
+            return None
+        for d in (0, 1):
+            if kind:
+                ctr = struct.unpack_from('>I', pl, 11)[0] << 32 | nseq
+                aead = self.key(d, session, bytes(pl[15:23]))
+            else:
+                cur = self.cur.get((d, session))
+                if not cur:
+                    continue
+                aead, ctr = cur[0], self.widen(nseq, cur[1])
+            try:
+                pt = aead.decrypt(bytes([d, 0, 0, 0]) + ctr.to_bytes(8, 'big'), bytes(pl[hlen:]), bytes(pl[:hlen]))
+            except Exception:
+                continue
+            cur = self.cur.get((d, session))
+            if kind and (not cur or cur[0] is not aead):
+                if pt[0] != 4:  # a HELLO's epoch is its own, never the direction's key
+                    self.cur[(d, session)] = [aead, ctr]
+            elif cur and ctr > cur[1]:
+                cur[1] = ctr
+            return pt[0], link, struct.unpack_from('>I', pt, 2)[0], pt[14:]
+        return None
 
 
 # ---- the matrix
@@ -415,7 +492,7 @@ def write_bins(path, tb, rec, names, key):
                             f'{np.median(owd[s]):.2f}'])
 
 
-def phase(run, ph, vps, rec):
+def phase(run, ph, vps, rec, key=None):
     pdir = os.path.join(run, ph)
     vdir = os.path.join(run, 'vps', ph)
     kind, way = ph.split('-')
@@ -468,10 +545,11 @@ def phase(run, ph, vps, rec):
         logs = []
     else:
         link_names = {}
+        un = Unsealer(key) if key else None  # one for every capture: an epoch seen on one link opens the others
         for p in sorted(glob.glob(os.path.join(pdir, 'nuc-*.pcap'))):
-            grit_records(p, book, up, forward, link_names, os.path.basename(p)[4:-5])
+            grit_records(p, book, up, forward, link_names, os.path.basename(p)[4:-5], un)
         for p in glob.glob(os.path.join(vdir, 'vps.pcap')):
-            grit_records(p, book, not up, forward, link_names)
+            grit_records(p, book, not up, forward, link_names, None, un)
         for via, devs in link_names.items():
             names[via] = max(devs, key=devs.get)
         logs = [os.path.join(vdir, '..', 'srv', 'tcp.log')] if up else glob.glob(os.path.join(pdir, 'pc-L*.log'))
@@ -501,11 +579,13 @@ def main():
     ap.add_argument('-p', '--phase', action='append')
     ap.add_argument('--vps', default='64.176.14.91')
     ap.add_argument('-r', '--rec', type=int, default=1300)
+    ap.add_argument('--key', help="the configuration's base64 key: opens protocol 22's tunnel (grit phases)")
     a = ap.parse_args()
+    key = base64.b64decode(a.key) if a.key else None
     phases = a.phase or sorted(os.path.basename(d) for d in glob.glob(os.path.join(a.run, '*-up')) +
                                glob.glob(os.path.join(a.run, '*-down')))
     for ph in phases:
-        text = phase(a.run, ph, a.vps, a.rec)
+        text = phase(a.run, ph, a.vps, a.rec, key)
         print(text if text else f'{ph}: no records\n')
     return 0
 

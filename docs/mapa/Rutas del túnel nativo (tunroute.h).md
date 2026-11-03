@@ -29,7 +29,7 @@ El servidor tiene una TUN para todos los clientes (el túnel nativo, el único d
 - [[014-tunel-nativo]]: fase 1 (PR #61): 73,5 Mbit/s por sentido con 2 enlaces de 40 Mbit/s; varios routers por VPS con su `tun_route`.
 
 ## Choques conocidos
-- El túnel nativo está autenticado pero no cifrado (experimental).
+- El túnel nativo va cifrado y autenticado desde el protocolo 22 ([[Formato de cable (wire.h)]]).
 
 ## Archivos
 - `tunroute.h`, `tun.h`, `tun.c`, `ippkt.h`; tests `engine/tests/test_tun.c`. `server.c`: `tun_read`, `tun_write`.

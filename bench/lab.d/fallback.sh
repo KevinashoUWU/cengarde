@@ -199,7 +199,7 @@ fallback() {
 	[ -n "$sent" ] && [ $((uniq * 1000)) -ge $((sent * 995)) ] || { echo "FAIL: packets lost"; fail=1; }
 	[ "$(fb_link l2 path_mtu)" = 1400 ] || { echo "FAIL: l2 path_mtu is $(fb_link l2 path_mtu), 1400 wanted"; fail=1; }
 	[ "$(fb_link l1 path_mtu)" = 1500 ] || { echo "FAIL: l1 path_mtu is $(fb_link l1 path_mtu), 1500 wanted"; fail=1; }
-	grep -q "link l2: packets of 1420 bytes from the TUN .* lower tun_mtu to 1344" "$RUN/client.log" ||
+	grep -q "link l2: packets of 1420 bytes from the TUN .* lower tun_mtu to 1331" "$RUN/client.log" ||
 		{ echo "FAIL: no path MTU warning for l2"; fail=1; }
 	grep -q "link l[13]: packets of .* from the TUN" "$RUN/client.log" && { echo "FAIL: a path MTU warning for l1 or l3"; fail=1; }
 
