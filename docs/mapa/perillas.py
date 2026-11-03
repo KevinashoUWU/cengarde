@@ -213,6 +213,7 @@ T = {
  "protocontroller_queue_ms": ([G], BOTH, "5", "1–1000", [PCTL], ["025"], "Variante B: la cola que el tramo del medio puede armar sobre su menor ida y vuelta: más, y el ritmo baja a lo entregado (`streamcc.h`)."),
  "protocontroller_backlog_ms": ([G], BOTH, "200", "10–10000", [PCTL], ["025"], "Variante B: lo que un flujo guarda sin enviar o sin escribir, en tiempo a su ritmo (al menos 64 KB): la contrapresión hacia el emisor."),
  "protocontroller_dead_s": ([G], BOTH, "60", "0–3600", [PCTL], ["025"], "Variante B: un flujo sin avance este tiempo, con algo pendiente (el túnel caído), se cierra con RST en los dos lados; cuenta desde el último mensaje del otro lado o desde que el flujo vuelve a tener algo en vuelo; 0: nunca."),
+ "protocontroller_dscp": ([G], BOTH, "`yes`", "`yes` o `no`", [PCTL], ["031"], "DiffServ a través de GRIT (protocolo 21, `dscp.h`): el DSCP con que un equipo de la LAN marcó su flujo (el SYN de su TCP, su primer datagrama) va en el OPEN, ambos extremos marcan sus sockets con él (GRIT termina la conexión y antes borraba la marca) y elige el nivel del flujo en los envíos: EF, VOICE-ADMIT, CS5, AF4x, CS4, CS3, CS6 y CS7 primero mientras manden menos de un cuarto del ritmo; LE y CS1 solo con lo que deja el resto y con un cuarto de la ventana libre, más un segmento cada 50 ms. Laboratorio: un equipo con 8 conexiones en CS1 al lado de otro con una sin marca le deja el 96–98 % del total (antes 20–41 %); en terreno 90–99 % de subida y 65–72 % de bajada (45 % sin marcas); sin marcas, igual que apagada."),
  "protocontroller_udp": ([G], CLI, "`no`", "`yes` o `no`", [PCTL], ["031"], "El resto del UDP de la LAN dentro de GRIT como datagramas no fiables (protocolo 20): un segundo socket TPROXY en el puerto siguiente a `protocontroller_port` (en OpenWrt, `udp_grit`), un flujo por origen y destino, cada datagrama entero en un mensaje DGM, sin reenvío ni orden, a lo más 300 ms en su cola, por turnos por equipo con el TCP (`fair.h`); el ritmo cuenta la parte que no miden los ACK (`cc.xs`). Laboratorio: con 30–60 Mbit/s de UDP de un equipo, el TCP de otro pasa de 3–9 a 25 Mbit/s en `cell4` (ping p99 de 0,8–1 s a 0,2 s) y de 42 a 51 en `equal` y `het`, con el mismo total."),
  "protocontroller_fair": ([G], BOTH, "`yes`", "`yes` o `no`", [PCTL], ["031"], "Los envíos del protocontrolador por equipo antes que por flujo (`fair.h`): cada vuelta da un segmento por dispositivo de la LAN y sus flujos se turnan; un equipo con muchas conexiones (un gestor de descargas, una actualización) se lleva la parte de uno. En el VPS el equipo viene en el OPEN (protocolo 19). Laboratorio: el equipo de una conexión al lado de otro de ocho pasa de 13–18 % a 31–41 % en `equal` y `het`, sin bajar el total."),
  "protocontroller_reo_ms": ([G], BOTH, "10", "0–1000", [PCTL], ["025"], "Variante B: el piso de la ventana de RACK sobre un cuarto de la ida y vuelta (la reparación del túnel va primero); un duplicado la agranda 4 ms, hasta 300 (el presupuesto de latencia, historia 029), y vuelve sola; con un código o el rescate, al menos el horizonte de reparación del motor (historia 028)."),
@@ -229,7 +230,7 @@ RESTART = {"mode", "key", "listen", "control_socket", "busy_poll_us", "cpu", "rt
            "rescue_kb", "fec", "link_threads", "io_queue", "lanes", "tunnel", "tun", "tun_addr", "tun_mtu",
            "tun_txqueuelen", "protocontroller", "protocontroller_port", "protocontroller_vps", "protocontroller_mid_cc",
            "protocontroller_buf_kb", "protocontroller_mem_mb", "protocontroller_max_flows", "protocontroller_queue_ms",
-           "protocontroller_backlog_ms", "protocontroller_dead_s", "protocontroller_reo_ms", "protocontroller_nack", "protocontroller_offer", "protocontroller_cc", "protocontroller_fair", "protocontroller_udp"}
+           "protocontroller_backlog_ms", "protocontroller_dead_s", "protocontroller_reo_ms", "protocontroller_nack", "protocontroller_offer", "protocontroller_cc", "protocontroller_fair", "protocontroller_udp", "protocontroller_dscp"}
 
 def parsed_keys():
     s = open(SRC).read()
@@ -295,7 +296,7 @@ def generate():
         ("Protocontrolador", ["protocontroller", "protocontroller_port", "protocontroller_vps", "protocontroller_mid_cc",
                               "protocontroller_buf_kb", "protocontroller_mem_mb", "protocontroller_max_flows",
                               "protocontroller_queue_ms", "protocontroller_backlog_ms", "protocontroller_dead_s",
-                              "protocontroller_reo_ms", "protocontroller_cc", "protocontroller_fair", "protocontroller_udp"]),
+                              "protocontroller_reo_ms", "protocontroller_cc", "protocontroller_fair", "protocontroller_udp", "protocontroller_dscp"]),
     ]
     seen = [k for _, ks in groups for k in ks]
     unplaced = sorted(set(T) - set(seen))

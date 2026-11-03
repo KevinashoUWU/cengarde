@@ -23,6 +23,7 @@
 #include <linux/sockios.h>
 
 #include "engine.h"
+#include "dscp.h"
 #include "fair.h"
 #include "linkowd.h"
 #include "log.h"
@@ -145,6 +146,8 @@ struct flow {
 	uint8_t zstd; /* its datagrams compressed (zlane.h): the contexts made at the first one each way */
 	uint8_t unrel; /* unreliable (protocol 20): its datagrams go as DGM from dq, no stream */
 	struct dgq *dq;
+	uint8_t dscp, tier; /* its DSCP (protocol 21) and its tier in this service's sends (dscp.h) */
+	uint64_t last_tx;   /* its last send (a lower-effort flow is owed one, CG_DS_LOW_STARVE_US) */
 #ifdef CG_ZSTD
 	ZSTD_CCtx *zc;
 	ZSTD_DCtx *zd;
@@ -196,6 +199,9 @@ struct cg_pctl {
 	uint32_t nfree;
 	uint32_t rr;
 	uint32_t *host, *ford, *fstart, *fcur; /* the sends by host (fair.h): each slot's host, the groups, their cursors */
+	uint32_t *tsel;     /* the flows of one tier (dscp.h) */
+	uint64_t ds_flows[CG_DS_TIERS], ds_sent[CG_DS_TIERS]; /* flows opened and segments sent, by tier */
+	uint64_t ds_owed;   /* segments a starved lower-effort flow was owed */
 	struct cg_pctl_tab tab; /* the server */
 	uint64_t *tkey;
 	uint32_t *tval;
@@ -440,6 +446,7 @@ static struct flow *flow_alloc(struct cg_pctl *p)
 	f = &p->f[s];
 	memset(f, 0, sizeof(*f));
 	f->fd = f->mfd = -1;
+	f->tier = CG_DS_NORMAL;
 	cg_st_buf_init(&f->sb);
 	cg_st_buf_init(&f->rb);
 	cg_st_rx_init(&f->rx);
@@ -527,6 +534,54 @@ static void set_rcvbuf(int fd, int v)
 		set_int(fd, SOL_SOCKET, SO_RCVBUF, v);
 }
 
+/* protocontroller_dscp: fd (of family 4 or 6) marks what it sends with
+ * dscp (protocol 21: the LAN device's mark, both ways). */
+static void set_dscp(const struct cg_pctl *p, int fd, int family, uint8_t dscp)
+{
+	if (!p->cfg.dscp || !dscp)
+		return;
+	if (family == 6)
+		set_int(fd, IPPROTO_IPV6, IPV6_TCLASS, dscp << 2);
+	else
+		set_int(fd, IPPROTO_IP, IP_TOS, dscp << 2);
+}
+
+/* The DSCP of the ancillary data in mh (IP_RECVTOS, IPV6_RECVTCLASS), 0
+ * without. */
+static uint8_t cmsg_dscp(struct msghdr *mh)
+{
+	for (struct cmsghdr *c = CMSG_FIRSTHDR(mh); c; c = CMSG_NXTHDR(mh, c)) {
+		int v = 0;
+
+		if (c->cmsg_level == IPPROTO_IP && (c->cmsg_type == IP_TOS || c->cmsg_type == IP_RECVTOS))
+			return (uint8_t)(*(const uint8_t *)CMSG_DATA(c) >> 2);
+		if (c->cmsg_level == IPPROTO_IPV6 && c->cmsg_type == IPV6_TCLASS) {
+			memcpy(&v, CMSG_DATA(c), c->cmsg_len - CMSG_LEN(0) < sizeof(v) ? c->cmsg_len - CMSG_LEN(0) : sizeof(v));
+			return (uint8_t)((v >> 2) & 0x3f);
+		}
+	}
+	return 0;
+}
+
+/* The DSCP of the SYN an accepted TCP came with (IPv4: its rcv_tos;
+ * IPv6: the last packet's, IPV6_RECVTCLASS set on the listener), 0 when
+ * the kernel does not say. */
+static uint8_t syn_dscp(int fd, int v6)
+{
+	union {
+		struct cmsghdr h;
+		char b[256];
+	} cm;
+	socklen_t l = sizeof(cm.b);
+	struct msghdr mh = { .msg_control = cm.b };
+
+	if (v6 ? getsockopt(fd, IPPROTO_IPV6, IPV6_2292PKTOPTIONS, cm.b, &l) < 0
+	       : set_int(fd, IPPROTO_IP, IP_RECVTOS, 1) < 0 || getsockopt(fd, IPPROTO_IP, IP_PKTOPTIONS, cm.b, &l) < 0)
+		return 0;
+	mh.msg_controllen = l;
+	return cmsg_dscp(&mh);
+}
+
 static uint8_t reason_of(int err)
 {
 	switch (err) {
@@ -575,6 +630,10 @@ static int listen_one(struct cg_pctl *p, int family, char *err, size_t errlen)
 		set_int(fd, IPPROTO_IPV6, IPV6_V6ONLY, 1);
 	}
 	set_int(fd, SOL_SOCKET, SO_REUSEADDR, 1);
+	/* the connections' traffic class kept for syn_dscp (IPv6 keeps it only
+	 * when asked before the packets come) */
+	if (family == AF_INET6)
+		set_int(fd, IPPROTO_IPV6, IPV6_RECVTCLASS, 1);
 	/* small, so that a full stream's window reaches the sender soon; set
 	 * before listen, the connections inherit it (and the window scale) */
 	set_rcvbuf(fd, PCTL_LAN_RCVBUF);
@@ -707,6 +766,12 @@ static void accept_some(struct cg_pctl *p, int v6)
 		f->state = F_OPEN;
 		f->id = cg_pctl_id(p->gen[f - p->f], (uint16_t)(f - p->f));
 		f->rd_ready = 1;
+		/* the device's mark (protocol 21): to the VPS, and back to it */
+		if (p->cfg.dscp) {
+			f->dscp = syn_dscp(fd, v6);
+			set_dscp(p, fd, f->family, f->dscp);
+		}
+		p->ds_flows[cg_ds_tier(f->dscp)]++;
 		set_int(fd, IPPROTO_TCP, TCP_NODELAY, 1);
 		set_int(fd, IPPROTO_TCP, TCP_NOTSENT_LOWAT, PCTL_LOWAT_MIN);
 		e.data.u64 = CG_EV(CG_EV_PCTL, f - p->f);
@@ -755,6 +820,9 @@ static int udp_listen(struct cg_pctl *p, int family, int unrel, char *err, size_
 		al = sizeof(struct sockaddr_in);
 	}
 	set_int(fd, SOL_SOCKET, SO_REUSEADDR, 1);
+	/* each datagram's mark (protocol 21) */
+	if (p->cfg.dscp)
+		set_int(fd, v6 ? IPPROTO_IPV6 : IPPROTO_IP, v6 ? IPV6_RECVTCLASS : IP_RECVTOS, 1);
 	if ((v6 ? set_int(fd, IPPROTO_IPV6, IPV6_TRANSPARENT, 1) || set_int(fd, IPPROTO_IPV6, IPV6_RECVORIGDSTADDR, 1)
 		: set_int(fd, IPPROTO_IP, IP_TRANSPARENT, 1) || set_int(fd, IPPROTO_IP, IP_RECVORIGDSTADDR, 1)) ||
 	    bind(fd, (struct sockaddr *)&a, al) < 0 || epoll_ctl(p->ep, EPOLL_CTL_ADD, fd, &e) < 0) {
@@ -898,7 +966,7 @@ static int rb_copy(struct cg_pctl *p, struct flow *f, uint64_t off, uint8_t *dst
  * come straight to it); unrel, an unreliable one (protocol 20). NULL:
  * none. */
 static struct flow *dg_flow(struct cg_pctl *p, const struct sockaddr_storage *src, const struct sockaddr_storage *dst,
-			    int unrel)
+			    int unrel, uint8_t dscp)
 {
 	uint8_t fam, sfam, a[16], sa[16];
 	uint16_t port, sport;
@@ -945,6 +1013,9 @@ static struct flow *dg_flow(struct cg_pctl *p, const struct sockaddr_storage *sr
 	f->host = cg_fair_key(sa);
 	f->dgram = 1;
 	f->unrel = (uint8_t)!!unrel;
+	f->dscp = dscp; /* its first datagram's (protocol 21), back to the device too */
+	set_dscp(p, fd, fam, dscp);
+	p->ds_flows[cg_ds_tier(dscp)]++;
 #ifdef CG_ZSTD
 	f->zstd = (uint8_t)(p->cfg.zstd && !unrel);
 #endif
@@ -979,7 +1050,7 @@ static void udp_accept(struct cg_pctl *p, int v6, int unrel)
 		struct sockaddr_storage src, dst;
 		union {
 			struct cmsghdr h;
-			char b[CMSG_SPACE(sizeof(struct sockaddr_in6))];
+			char b[CMSG_SPACE(sizeof(struct sockaddr_in6)) + CMSG_SPACE(sizeof(int))];
 		} cm;
 		struct iovec iov = { p->dgbuf, CG_PCTL_DGRAM_MAX };
 		struct msghdr mh = { .msg_name = &src, .msg_namelen = sizeof(src), .msg_iov = &iov, .msg_iovlen = 1,
@@ -1003,7 +1074,7 @@ static void udp_accept(struct cg_pctl *p, int v6, int unrel)
 			p->dg_bad++;
 			continue;
 		}
-		if (!(f = dg_flow(p, &src, &dst, unrel))) {
+		if (!(f = dg_flow(p, &src, &dst, unrel, cmsg_dscp(&mh)))) {
 			p->dg_drop++;
 			continue;
 		}
@@ -1094,12 +1165,14 @@ static int dg_write(struct cg_pctl *p, struct flow *f, uint64_t now)
 }
 
 /* The VPS: a datagram stream's socket, connected to its destination. */
-static int dg_connect(int family, const uint8_t *addr, uint16_t port, int *why)
+static int dg_connect(const struct cg_pctl *p, int family, const uint8_t *addr, uint16_t port, uint8_t dscp, int *why)
 {
 	struct sockaddr_storage a;
 	socklen_t al = sa_of(&a, family, addr, port);
 	int fd = socket(a.ss_family, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
 
+	if (fd >= 0)
+		set_dscp(p, fd, family, dscp); /* the device's mark (protocol 21) */
 	if (fd < 0 || connect(fd, (struct sockaddr *)&a, al) < 0) {
 		*why = fd < 0 ? CG_PCTL_R_ERROR : reason_of(errno);
 		if (fd >= 0)
@@ -1133,7 +1206,7 @@ static socklen_t sa_of(struct sockaddr_storage *a, int family, const uint8_t *ad
 
 /* A non-blocking connect to the destination, with protocontroller_cc,
  * TCP_NODELAY and the bounded buffers. The socket, or -1 with *why. */
-static int dest_connect(struct cg_pctl *p, int family, const uint8_t *addr, uint16_t port, int *why)
+static int dest_connect(struct cg_pctl *p, int family, const uint8_t *addr, uint16_t port, uint8_t dscp, int *why)
 {
 	struct sockaddr_storage a;
 	socklen_t al = sa_of(&a, family, addr, port);
@@ -1150,6 +1223,7 @@ static int dest_connect(struct cg_pctl *p, int family, const uint8_t *addr, uint
 			strerror(errno), p->cfg.cc);
 	set_int(fd, IPPROTO_TCP, TCP_NODELAY, 1);
 	set_int(fd, IPPROTO_TCP, TCP_NOTSENT_LOWAT, PCTL_LOWAT_MIN);
+	set_dscp(p, fd, family, dscp); /* the device's mark (protocol 21) */
 	/* what the destination sends while the stream is full waits in this
 	 * socket: as much as the stream's own buffer (the kernel doubles it),
 	 * not the autotuned 6 MB (a download, 7 MB a connection) */
@@ -1182,8 +1256,11 @@ static void open_in(struct cg_pctl *p, uint32_t peer, uint32_t sid, const struct
 	f->id = m->id;
 	f->peer = peer;
 	f->sid = sid;
-	/* the router's LAN device (protocol 19's OPEN), within its router */
+	/* the router's LAN device (protocol 19's OPEN), within its router, and
+	 * its mark (21) */
 	f->host = m->host ^ (sid * 2654435761u);
+	f->dscp = p->cfg.dscp ? m->dscp : 0;
+	p->ds_flows[cg_ds_tier(f->dscp)]++;
 	f->family = m->family;
 	f->port = m->port;
 	memcpy(f->addr, m->addr, 16);
@@ -1202,7 +1279,7 @@ static void open_in(struct cg_pctl *p, uint32_t peer, uint32_t sid, const struct
 			flow_reset(p, f, CG_PCTL_R_FULL);
 			return;
 		}
-		if ((fd = dg_connect(m->family, m->addr, m->port, &r)) < 0) {
+		if ((fd = dg_connect(p, m->family, m->addr, m->port, m->dscp, &r)) < 0) {
 			flow_reset(p, f, (uint8_t)r);
 			return;
 		}
@@ -1226,7 +1303,7 @@ static void open_in(struct cg_pctl *p, uint32_t peer, uint32_t sid, const struct
 			p->dgm_flows++;
 		else
 			p->dg_flows++;
-	} else if ((fd = dest_connect(p, m->family, m->addr, m->port, &r)) < 0) {
+	} else if ((fd = dest_connect(p, m->family, m->addr, m->port, m->dscp, &r)) < 0) {
 		flow_reset(p, f, (uint8_t)r);
 		return;
 	}
@@ -1486,7 +1563,7 @@ static int a_service(struct cg_pctl *p, struct flow *f, uint64_t now)
 		f->family = f->hdr[1];
 		f->port = (uint16_t)(f->hdr[2] << 8 | f->hdr[3]);
 		memcpy(f->addr, f->hdr + 4, f->family == 6 ? 16 : 4);
-		if ((why = cg_pctl_dest_ok(f->family, f->addr)) || (f->fd = dest_connect(p, f->family, f->addr, f->port, &why)) < 0) {
+		if ((why = cg_pctl_dest_ok(f->family, f->addr)) || (f->fd = dest_connect(p, f->family, f->addr, f->port, 0, &why)) < 0) {
 			p->refused[why < CG_PCTL_R_N ? why : CG_PCTL_R_ERROR]++;
 			flow_free(p, f, 1);
 			return -1;
@@ -2195,7 +2272,7 @@ static void send_open(struct cg_pctl *p, struct flow *f, uint64_t now)
 	push(p, cg_pctl_put_open(b, f->id,
 				 (uint8_t)((f->dgram ? CG_PCTLF_DGRAM : 0) | (f->zstd ? CG_PCTLF_ZSTD : 0) |
 					   (f->unrel ? CG_PCTLF_UNREL : 0)),
-				 f->family, f->addr, f->port, f->host),
+				 f->family, f->addr, f->port, f->host, f->dscp),
 	     1);
 	f->open_sent = 1;
 	f->open_due = now + cg_scc_rto(&r->cc, f->open_tries < 6 ? f->open_tries : 6, peer_reo(p, r));
@@ -2239,6 +2316,7 @@ static int dgm_send(struct cg_pctl *p, struct flow *f, struct peer *r, uint64_t 
 	cg_scc_spend(&r->cc, CG_PCTL_HDR + n);
 	r->xb += CG_PCTL_HDR + n;
 	r->ab += CG_PCTL_HDR + n;
+	f->s_bytes += n; /* its rate (no ACK says what came): what it sent */
 	q->h = (uint8_t)((q->h + 1) % PCTL_DQ);
 	q->n--;
 	p->dgm_tx++;
@@ -2393,6 +2471,71 @@ static int timers(struct cg_pctl *p, struct flow *f, uint64_t now)
 	return 0;
 }
 
+/* One send of f, its tier's count and its time; a lower-effort flow's
+ * only while a quarter of the window is free (owed: one it is owed, at
+ * any rate). */
+static int send_turn(struct cg_pctl *p, struct flow *f, uint64_t now, int owed)
+{
+	struct peer *r = peer_of(p, f);
+
+	if (p->cfg.dscp && f->tier == CG_DS_LOW && !owed &&
+	    !cg_ds_low_room(r->cc.inflight, cg_scc_cwnd(&r->cc, &p->ccf, cg_scc_reo(&r->cc, peer_reo(p, r))))) {
+		f->stop = PCTL_STOP_CWND;
+		return 0;
+	}
+	if (!send_one(p, f, r, now))
+		return 0;
+	f->last_tx = now;
+	p->ds_sent[f->tier < CG_DS_TIERS ? f->tier : CG_DS_NORMAL]++;
+	return 1;
+}
+
+/* The sends of the n flows (slots) in list, while the pacers let them: a
+ * segment per host per round, a host's flows taking its turns in rotation
+ * (fair.h); without fair, a segment per flow per round. */
+static void send_rounds(struct cg_pctl *p, const uint32_t *list, uint32_t n, uint64_t now)
+{
+	if (p->cfg.fair && n) {
+		uint32_t ng;
+
+		for (uint32_t i = 0; i < n; i++)
+			p->host[list[i]] = p->f[list[i]].host;
+		ng = cg_fair_group(list, n, p->rr, p->host, p->ford, p->fstart);
+		memset(p->fcur, 0, ng * sizeof(*p->fcur));
+		for (int any = 1; any;) {
+			any = 0;
+			for (uint32_t g = 0; g < ng; g++) {
+				uint32_t len = p->fstart[g + 1] - p->fstart[g];
+
+				for (uint32_t t = 0; t < len; t++) {
+					uint32_t j = p->fstart[g] + (p->fcur[g] + t) % len;
+					struct flow *f = &p->f[p->ford[j]];
+
+					if (f->state != F_FREE && send_turn(p, f, now, 0)) {
+						p->fcur[g] = (p->fcur[g] + t + 1) % len;
+						any = 1;
+						break;
+					}
+					if (f->state != F_FREE && f->state != F_OPEN)
+						p->stop[f->stop]++;
+				}
+			}
+		}
+	} else {
+		for (int any = 1; any && n;) {
+			any = 0;
+			for (uint32_t k = 0; k < n; k++) {
+				struct flow *f = &p->f[list[(p->rr + k) % n]];
+
+				if (f->state != F_FREE && send_turn(p, f, now, 0))
+					any = 1;
+				else if (f->state != F_FREE && f->state != F_OPEN)
+					p->stop[f->stop]++;
+			}
+		}
+	}
+}
+
 void cg_pctl_service(struct cg_pctl *p)
 {
 	uint64_t now = cg_now_us();
@@ -2442,9 +2585,7 @@ void cg_pctl_service(struct cg_pctl *p)
 			due(p, f->open_due);
 		i++;
 	}
-	/* the sends, while the pacers let them: a segment per host per round,
-	 * a host's flows taking its turns in rotation (fair.h); without fair, a
-	 * segment per flow per round */
+	/* the sends, while the pacers let them (send_rounds) */
 	for (uint32_t i = 0; i < p->npr; i++) {
 		struct peer *r = &p->pr[i];
 
@@ -2461,43 +2602,28 @@ void cg_pctl_service(struct cg_pctl *p)
 		}
 		cg_scc_refill(&r->cc, &p->ccf, now);
 	}
-	if (p->cfg.fair && p->nused) {
-		uint32_t ng;
-
-		for (uint32_t i = 0; i < p->nused; i++)
-			p->host[p->used[i]] = p->f[p->used[i]].host;
-		ng = cg_fair_group(p->used, p->nused, p->rr, p->host, p->ford, p->fstart);
-		memset(p->fcur, 0, ng * sizeof(*p->fcur));
-		for (int any = 1; any;) {
-			any = 0;
-			for (uint32_t g = 0; g < ng; g++) {
-				uint32_t len = p->fstart[g + 1] - p->fstart[g];
-
-				for (uint32_t t = 0; t < len; t++) {
-					uint32_t j = p->fstart[g] + (p->fcur[g] + t) % len;
-					struct flow *f = &p->f[p->ford[j]];
-
-					if (f->state != F_FREE && send_one(p, f, peer_of(p, f), now)) {
-						p->fcur[g] = (p->fcur[g] + t + 1) % len;
-						any = 1;
-						break;
-					}
-					if (f->state != F_FREE && f->state != F_OPEN)
-						p->stop[f->stop]++;
-				}
-			}
-		}
+	if (!p->cfg.dscp) {
+		send_rounds(p, p->used, p->nused, now);
 	} else {
-		for (int any = 1; any && p->nused;) {
-			any = 0;
-			for (uint32_t k = 0; k < p->nused; k++) {
-				struct flow *f = &p->f[p->used[(p->rr + k) % p->nused]];
+		/* by tier (dscp.h): the priority flows' rounds first, then the
+		 * rest's (with a segment for each lower-effort flow owed one),
+		 * then the lower effort with what is left */
+		for (unsigned t = 0; t < CG_DS_TIERS; t++) {
+			uint32_t n = 0;
 
-				if (f->state != F_FREE && send_one(p, f, peer_of(p, f), now))
-					any = 1;
-				else if (f->state != F_FREE && f->state != F_OPEN)
-					p->stop[f->stop]++;
+			for (uint32_t i = 0; i < p->nused; i++) {
+				struct flow *f = &p->f[p->used[i]];
+
+				if (t == CG_DS_PRIO)
+					f->tier = (uint8_t)cg_ds_flow_tier(f->dscp, f->s_rate, cg_scc_rate(&peer_of(p, f)->cc));
+				if (t == CG_DS_NORMAL && f->tier == CG_DS_LOW && cg_ds_low_owed(f->last_tx, f->created_t, now) &&
+				    send_turn(p, f, now, 1))
+					p->ds_owed++;
+				if (f->tier == t)
+					p->tsel[n++] = p->used[i];
 			}
+			if (n)
+				send_rounds(p, p->tsel, n, now);
 		}
 	}
 	p->rr++;
@@ -2676,12 +2802,13 @@ struct cg_pctl *cg_pctl_new(const struct cg_pctl_cfg *cfg, int ep, const struct 
 	p->ford = calloc(cfg->max_flows, sizeof(*p->ford));
 	p->fstart = calloc(cfg->max_flows + 1, sizeof(*p->fstart));
 	p->fcur = calloc(cfg->max_flows, sizeof(*p->fcur));
+	p->tsel = calloc(cfg->max_flows, sizeof(*p->tsel));
 	p->freeslot = calloc(cfg->max_flows, sizeof(*p->freeslot));
 	for (tsz = 16; tsz < 2 * cfg->max_flows; tsz *= 2)
 		;
 	p->tkey = calloc(tsz, sizeof(*p->tkey));
 	p->tval = calloc(tsz, sizeof(*p->tval));
-	if (!nch || !p->mem || !p->stack || !p->f || !p->segs || !p->gen || !p->used || !p->freeslot || !p->tkey ||
+	if (!nch || !p->mem || !p->stack || !p->f || !p->segs || !p->gen || !p->used || !p->freeslot || !p->tkey || !p->tsel ||
 	    !p->tval || cg_pctl_peers(p, cfg->server ? (cfg->peers ? cfg->peers : 1) : 1) < 0) {
 		snprintf(err, errlen, "protocontroller: out of memory (protocontroller_mem_mb %u, protocontroller_max_flows %u)", mem_mb, cfg->max_flows);
 		cg_pctl_free(p);
@@ -2767,6 +2894,7 @@ void cg_pctl_free(struct cg_pctl *p)
 	free(p->ford);
 	free(p->fstart);
 	free(p->fcur);
+	free(p->tsel);
 	free(p->freeslot);
 	free(p->tkey);
 	free(p->tval);
@@ -2796,6 +2924,20 @@ void cg_pctl_json(const struct cg_pctl *p, struct cg_json *j)
 	cg_json_u64(j, "no_destination", p->dg_bad);
 	cg_json_u64(j, "zstd_in_bytes", p->dg_zin);   /* the compressed ones' bytes before (zlane.h) */
 	cg_json_u64(j, "zstd_out_bytes", p->dg_zout); /* and after */
+	cg_json_end(j, '}');
+	/* DiffServ (protocol 21, dscp.h): flows opened and segments sent by
+	 * tier (priority, normal, lower effort) */
+	cg_json_obj(j, "dscp");
+	cg_json_bool(j, "on", p->cfg.dscp);
+	cg_json_arr(j, "flows");
+	for (unsigned t = 0; t < CG_DS_TIERS; t++)
+		cg_json_u64(j, NULL, p->ds_flows[t]);
+	cg_json_end(j, ']');
+	cg_json_arr(j, "sent");
+	for (unsigned t = 0; t < CG_DS_TIERS; t++)
+		cg_json_u64(j, NULL, p->ds_sent[t]);
+	cg_json_end(j, ']');
+	cg_json_u64(j, "owed", p->ds_owed); /* segments a starved lower-effort flow got among the rest */
 	cg_json_end(j, '}');
 	/* the unreliable datagrams (protocol 20): the LAN's other UDP */
 	cg_json_obj(j, "datagrams");

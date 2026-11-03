@@ -651,6 +651,13 @@ return view.extend({
 		o.depends('mode', 'bonding');
 		o.depends('mode', 'redundancy');
 
+		o = s.taboption('layer4', form.Flag, 'protocontroller_dscp', _('DiffServ (DSCP) through GRIT'),
+			_('GRIT ends the TCP and the UDP it carries, and with them the DSCP mark a LAN device put on them: with this, the mark goes on both ways (Wi-Fi, the networks beyond the VPS) and chooses the flow\'s turn. EF, CS5, AF4x and the like (calls, video calls) go first while under a quarter of the rate; LE and CS1 (backups, updates, downloads that mark themselves as background) only with what the rest leaves. In the lab, a device with 8 connections marked CS1 next to one with a single unmarked connection left it 96-98 % of the total instead of 20-41 % (in the field, 90-99 % of the upload and 65-72 % of the download); without marks nothing changes.'));
+		o.default = '1';
+		o.depends({ protocontroller: 'b', mode: 'custom' });
+		o.depends('mode', 'bonding');
+		o.depends('mode', 'redundancy');
+
 		o = s.taboption('layer4', form.Flag, 'tcp_aware', _('TCP-aware tunnel'),
 			_('The router and the VPS look at the TCP inside the tunnel: its ACKs and handshakes are handed on at once instead of waiting behind a missing packet, and a TCP retransmission is copied over every uplink only when the tunnel lost the original on all of them (from the ACKs it has seen), so a spurious one does not load every uplink. Off: TCP is carried like any other packet.'));
 		modeFlag(o, 'tcp_aware', '0');
