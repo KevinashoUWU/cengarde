@@ -810,11 +810,11 @@ check_proto() {
 	# the engine's own knob), 13 the protocontroller's messages in their own
 	# class, 14 without their tag, 15 without their DATA's own clock and 16
 	# with the link and its sequence under the MAC (story 030), 17 FEC v3
-	# over the protocontroller's messages and 18 its datagram streams (story
-	# 031): the same configurations.
+	# over the protocontroller's messages, 18 its datagram streams and 19
+	# the LAN device in its OPEN (story 031): the same configurations.
 	case "$P" in
-	4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18) ;;
-	*) die "this cengarde-vps-setup writes configurations of protocol 4 to 18 (cengarde 0.5.2 on, a [client NAME] section per router), and the engine says protocol ${P:-unknown}: install both from one checkout (contrib/vps/install.sh)" ;;
+	4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19) ;;
+	*) die "this cengarde-vps-setup writes configurations of protocol 4 to 19 (cengarde 0.5.2 on, a [client NAME] section per router), and the engine says protocol ${P:-unknown}: install both from one checkout (contrib/vps/install.sh)" ;;
 	esac
 }
 

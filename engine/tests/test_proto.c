@@ -104,9 +104,7 @@ void test_proto(void)
 	pkt[0] = 0x01; /* nibble 0: never a version (WireGuard's first bytes) */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
 	/* (version 2's nibble is 17's now: the versions go round) */
-	/* (version 3's nibble is 18's now) */
-	pkt[0] = 0x41; /* version 4 (no previous link in DATA's flags) too */
-	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
+	/* (version 3's nibble is 18's now, and 4's 19's) */
 	pkt[0] = 0x51; /* version 5 (no CG_F_FREE) too */
 	CHECK_EQ(cg_hdr_parse(&p, pkt, sizeof(pkt)), -1);
 	pkt[0] = 0x61; /* version 6 (no FEC parity) too */

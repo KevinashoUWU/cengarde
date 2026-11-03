@@ -546,6 +546,12 @@ def line(a):
         out["live"] = j
     if a.tsreal:  # a real MPEG-TS next to the run (story 030): what its decoder saw
         out["tsreal"] = tsreal_fields(a.tsreal, int(a.secs))
+    if a.hog:  # BOND_HOG: the second device's connections next to the measured one
+        try:
+            h = json.load(open(a.hog))["end"]
+            out["hog_mbps"] = round(h["sum_received"]["bits_per_second"] / 1e6, 2)
+        except (OSError, ValueError, KeyError, TypeError):
+            out["hog_mbps"] = None
     if a.pep:  # story 024's hosts: each leg's retransmissions, the proxies' memory
         try:
             out["pep"] = json.load(open(a.pep))
@@ -955,6 +961,7 @@ def main(argv):
     p.add_argument("--ping-big")
     p.add_argument("--small-tx")
     p.add_argument("--small-rx")
+    p.add_argument("--hog")
     p.add_argument("--before")
     p.add_argument("--after")
     p.add_argument("--samples", help="BOND_SAMPLE's directory of status files, one a second")

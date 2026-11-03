@@ -957,6 +957,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	c->protocontroller_backlog_ms = 200;
 	c->protocontroller_dead_s = 60;
 	c->protocontroller_reo_ms = 10;
+	c->protocontroller_fair = 1;
 	c->protocontroller_nack = 1;
 	c->subflow = 0;
 	c->protocontroller_offer = 1;
@@ -1083,6 +1084,7 @@ int cg_config_parse(struct cg_config *c, const char *text, char *err, size_t err
 	    get_u32(&ini, "", "protocontroller_backlog_ms", 10, 10000, &c->protocontroller_backlog_ms, err, errlen) ||
 	    get_u32(&ini, "", "protocontroller_dead_s", 0, 3600, &c->protocontroller_dead_s, err, errlen) ||
 	    get_u32(&ini, "", "protocontroller_reo_ms", 0, 1000, &c->protocontroller_reo_ms, err, errlen) ||
+	    get_bool(&ini, "", "protocontroller_fair", &c->protocontroller_fair, err, errlen) ||
 	    get_bool(&ini, "", "protocontroller_nack", &c->protocontroller_nack, err, errlen) ||
 	    get_bool(&ini, "", "subflow", &c->subflow, err, errlen) ||
 	    get_bool(&ini, "", "protocontroller_offer", &c->protocontroller_offer, err, errlen) ||

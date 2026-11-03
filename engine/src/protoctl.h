@@ -18,7 +18,10 @@
  *         reliable lane: the destination is UDP, and the stream's bytes are
  *         datagrams, each behind its 16-bit big-endian length (dgframe).
  *         With CG_PCTLF_ZSTD too, each datagram is compressed on the
- *         stream's history, both ways (zlane.h, step 3d).
+ *         stream's history, both ways (zlane.h, step 3d). Protocol 19:
+ *         then 4 bytes, the router's LAN device that opened it (fair.h's
+ *         key of its address), so that the VPS shares its sends by device
+ *         too.
  *   DATA  6..9: the offset's low 32 bits; then the bytes (the sender's
  *         clock when it sent it is the tunnel header's ts, protocol 15:
  *         the engine says which it stamped, cg_pctl_ops.send's ts, and the
@@ -70,7 +73,7 @@ enum { CG_PCTL_OPEN = 1, CG_PCTL_DATA = 2, CG_PCTL_ACK = 3, CG_PCTL_RST = 4 };
 #define CG_PCTL_DGRAM_MAX 65507 /* a datagram, at most (IPv4's UDP) */
 #define CG_PCTL_HDR 6
 #define CG_PCTL_DATA_HDR 10
-#define CG_PCTL_OPEN_MAX (CG_PCTL_HDR + 3 + 16)
+#define CG_PCTL_OPEN_MAX (CG_PCTL_HDR + 3 + 16 + 4)
 #define CG_PCTL_ACK_MAX (CG_PCTL_HDR + 15 + 8 * CG_ST_ACK_RANGES)
 #define CG_PCTL_NOOWD INT32_MIN /* an ACK with no one-way delay */
 #define CG_PCTL_RST_LEN (CG_PCTL_HDR + 1)
@@ -127,9 +130,9 @@ static inline size_t cg_pctl_hdr(uint8_t *b, unsigned type, uint8_t flags, uint3
 }
 
 /* OPEN to family (4 or 6) addr (4 or 16 bytes, network order), port (host
- * order). Returns its length. */
+ * order), for the LAN device host (fair.h). Returns its length. */
 static inline size_t cg_pctl_put_open(uint8_t *b, uint32_t id, uint8_t flags, int family, const uint8_t *addr,
-				       uint16_t port)
+				       uint16_t port, uint32_t host)
 {
 	size_t al = family == 6 ? 16 : 4;
 
@@ -138,7 +141,8 @@ static inline size_t cg_pctl_put_open(uint8_t *b, uint32_t id, uint8_t flags, in
 	b[7] = (uint8_t)(port >> 8);
 	b[8] = (uint8_t)port;
 	memcpy(b + 9, addr, al);
-	return 9 + al;
+	cg_pctl_be32(b + 9 + al, host);
+	return 9 + al + 4;
 }
 
 /* A DATA's header, the bytes after it (CG_PCTL_DATA_HDR on). Its clock is
@@ -184,6 +188,7 @@ struct cg_pctl_msg {
 	uint8_t family;
 	uint16_t port;
 	uint8_t addr[16];
+	uint32_t host; /* the router's LAN device (protocol 19) */
 	/* DATA */
 	uint32_t off, ts; /* ts: the tunnel header's (cg_pctl_rx sets it) */
 	const uint8_t *data;
@@ -212,12 +217,15 @@ static inline int cg_pctl_parse(const uint8_t *p, size_t len, struct cg_pctl_msg
 			return -1;
 		m->family = p[6];
 		m->port = (uint16_t)(p[7] << 8 | p[8]);
-		if (m->family == 4 && len >= 13)
+		if (m->family == 4 && len >= 17) {
 			memcpy(m->addr, p + 9, 4);
-		else if (m->family == 6 && len >= 25)
+			m->host = cg_pctl_rd32(p + 13);
+		} else if (m->family == 6 && len >= 29) {
 			memcpy(m->addr, p + 9, 16);
-		else
+			m->host = cg_pctl_rd32(p + 25);
+		} else {
 			return -1;
+		}
 		return 0;
 	case CG_PCTL_DATA:
 		if (len < CG_PCTL_DATA_HDR || len - CG_PCTL_DATA_HDR > 0xffff)
