@@ -253,6 +253,33 @@ frame (0,6 % a 1400), menos con los acuses que hoy viajan solos.
   ahorraría es otra cosa: no copiar cada acuse a todos los enlaces, o
   espaciarlos, en GRIT). El formato 1.0 queda en el protocolo 22.
 
+## Terreno con el 22: techo y OMR (2026-11-03, tarde)
+
+- **La prueba de techo** (`bench/techo.sh`, NUC y VPS en `c8d74d9`/`485079c`,
+  30 s por fase; `~/campo/2026-11-03/techo/final-p22*`): un TCP BBR por
+  módem directo al VPS, los cuatro a la vez, y después un TCP por GRIT sobre
+  los cuatro.
+
+  | | ENTEL | WOM | MOVISTAR | CLARO | Suma | GRIT | GRIT / suma |
+  | --- | --- | --- | --- | --- | --- | --- | --- |
+  | Subida | 15,0 | 25,0 | 22,9 | 29,8 | 92,7 | 130,5 | 141 % |
+  | Bajada | 122,9 | 99,3 | 113,4 | 187,0 | 522,6 | 405,6 | 78 % |
+
+  (La bajada directa se repitió 2 minutos después: en la primera ENTEL dio
+  0,0 y MOVISTAR 46,6.) El 2026-10-28 GRIT daba 90 % de subida y 62–67 % de
+  bajada de ese techo; un BBR por módem no llena la subida de un módem
+  celular, GRIT sí.
+- **Contra OMR** (v0.63, MPTCP con BBR, los mismos 4 módems; Ookla 51218,
+  dos rondas alternadas; `~/campo/2026-11-03/vsomr2`):
+
+  | Ronda | Bajada cengarde / OMR | Subida | Ping cargado bajada | Ping cargado subida |
+  | --- | --- | --- | --- | --- |
+  | 1 | 541 / 427 | 135 / 88 | 107 / 730 ms | 75 / 74 ms |
+  | 2 | 511 / 462 | 115 / 34 | 91 / 255 ms | 76 / 49 ms |
+
+  Con el cifrado, cengarde saca 11–27 % más de bajada, 1,5–3,4 veces la
+  subida y un ping cargado de bajada 3 a 7 veces menor.
+
 ## Pendiente
 
 - El paso 2 en el terreno, y el CPU de la Pi y del VPS a plena carga; medir sellar y abrir en la Pi 4 y en el
