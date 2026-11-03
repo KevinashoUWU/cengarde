@@ -1353,8 +1353,8 @@ bond_tsreal_start() {
 # A still noise over the pattern makes a keyframe cost what a camera's does
 # (~3 frames' worth and more: the field's bursts), the frames between cheap.
 bond_flv_start() {
-	local enc=(-hide_banner -nostdin -loglevel error -re -f lavfi
-		-i testsrc2=size=1280x720:rate=30,noise=alls=30:allf=u -t "$2"
+	local src='testsrc2=size=1280x720:rate=30,noise=alls=30:allf=u'
+	local enc=(-hide_banner -nostdin -loglevel error -re -f lavfi -i "$src" -t "$2"
 		-c:v libx264 -preset veryfast -b:v "$BOND_FLV" -maxrate "$BOND_FLV" -bufsize "$BOND_FLV" -g 60 -f flv)
 	rm -f "$RUN/flv.json" "$RUN/flv-tx.err"
 	if [ "$1" = up ]; then
