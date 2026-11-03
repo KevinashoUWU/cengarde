@@ -603,8 +603,8 @@ msgstr "todos los puertos"
 msgid "Flows"
 msgstr "Flujos"
 
-msgid "UDP and the rest: the engine guesses MPEG-TS and RTP from their bytes; a rule here has the last word, for the address and port of either end of a flow, the first rule that matches. Ordered: held in order and waits for what is missing (MPEG-TS, telemetry with no buffer of its own). Deadline: held up to its deadline (RTP). Direct: never held nor rescued (QUIC, SRT, WebRTC, games: their own retransmissions and order). Automatic: what the engine guesses. Behind the router's NAT the tunnel sees the far end and the port: a LAN address with a port is taken as the port alone; the VPS takes the same rules for the upload."
-msgstr "UDP y lo demás: el motor reconoce MPEG-TS y RTP por sus bytes; una regla aquí tiene la última palabra, para la dirección y el puerto de cualquiera de los dos extremos de un flujo, la primera que calce. En orden: retenido en orden, espera lo que falta (MPEG-TS, telemetría sin búfer propio). Con plazo: retenido hasta su plazo (RTP). Directo: nunca retenido ni rescatado (QUIC, SRT, WebRTC, juegos: sus propias retransmisiones y su orden). Automático: lo que reconoce el motor. Detrás del NAT del router el túnel ve el otro extremo y el puerto: una dirección del LAN con puerto se toma como el puerto solo; el VPS toma las mismas reglas para la subida."
+msgid "UDP and the rest: the engine guesses MPEG-TS and RTP from their bytes; a rule here has the last word, for the address and port of either end of a flow, the first rule that matches. Ordered: held in order and waits for what is missing (MPEG-TS, telemetry with no buffer of its own). Deadline: held up to its deadline (RTP). Reorder: held in order up to its deadline, never rescued (QUIC that passes in bonding, a VPN inside: their own retransmissions; in the field, order took QUIC 2 to 4 times higher). Direct: never held nor rescued (QUIC, SRT, WebRTC, games: their own retransmissions and order). Automatic: what the engine guesses. Behind the router's NAT the tunnel sees the far end and the port: a LAN address with a port is taken as the port alone; the VPS takes the same rules for the upload."
+msgstr "UDP y lo demás: el motor reconoce MPEG-TS y RTP por sus bytes; una regla aquí tiene la última palabra, para la dirección y el puerto de cualquiera de los dos extremos de un flujo, la primera que calce. En orden: retenido en orden, espera lo que falta (MPEG-TS, telemetría sin búfer propio). Con plazo: retenido hasta su plazo (RTP). Solo reordenar: retenido en orden hasta su plazo, nunca rescatado (QUIC que pasa en bonding, una VPN adentro: sus propias retransmisiones; en terreno el orden subió QUIC de 2 a 4 veces). Directo: nunca retenido ni rescatado (QUIC, SRT, WebRTC, juegos: sus propias retransmisiones y su orden). Automático: lo que reconoce el motor. Detrás del NAT del router el túnel ve el otro extremo y el puerto: una dirección del LAN con puerto se toma como el puerto solo; el VPS toma las mismas reglas para la subida."
 
 msgid "Reliable (telemetry): every datagram of the flow arrives, in order, late rather than never: they ride the protocontroller (B) as a stream of their own, with its retransmissions, and the VPS sends them on as UDP. For telemetry or data that must arrive, never for voice or video: it adds latency. A LAN address works here (the router takes them before its NAT)."
 msgstr "Fiable (telemetría): cada datagrama del flujo llega, en orden, tarde antes que nunca: viajan por el protocontrolador (B) como un flujo propio, con sus retransmisiones, y el VPS los vuelve a emitir como UDP. Para telemetría o datos que deben llegar, nunca para voz ni video: suma latencia. Aquí sirve una dirección del LAN (el router los toma antes de su NAT)."
@@ -629,6 +629,9 @@ msgstr "En orden"
 
 msgid "Deadline"
 msgstr "Con plazo"
+
+msgid "Reorder only"
+msgstr "Solo reordenar"
 
 msgid "Direct"
 msgstr "Directo"
@@ -915,8 +918,8 @@ msgstr "Subida"
 msgid "Download (from the VPS)"
 msgstr "Bajada"
 
-msgid "Arrived first"
-msgstr "Llegó primero"
+msgid "Delivered"
+msgstr "Entregó"
 
 msgid "Sent"
 msgstr "Enviado"
@@ -1056,8 +1059,8 @@ msgstr "Estado"
 msgid "Upload and download are decided apart, by the end that sends: an uplink can be on standby one way and in use the other, as is usual when carriers are faster one way (upload through one, download through another). On standby it carries only probes until it catches up with the best, and at least the minimum of active uplinks (Advanced tab) always stays in use."
 msgstr "La subida y la bajada se deciden aparte, cada una en el extremo que envía: un enlace puede estar en reserva en un sentido y en uso en el otro, algo normal cuando un operador es más rápido en un sentido (subir por uno, bajar por otro). En reserva solo lleva sondas hasta que alcanza al mejor, y siempre quedan en uso al menos los enlaces activos mínimos (pestaña Avanzado)."
 
-msgid "Behind the fastest: how much later this uplink delivers the upload than the quickest one; past the limit its upload goes on standby. Arrived first: share of the download that came through this uplink before any other copy. Pause: takes an uplink out without touching the configuration, until you resume it or cengarde restarts."
-msgstr "Atraso frente al más rápido: cuánto más tarde entrega este enlace la subida que el más rápido; pasado el límite, su subida pasa a reserva. Llegó primero: parte de la bajada que entró por este enlace antes que cualquier otra copia. Pausar: saca un enlace sin tocar la configuración, hasta que lo reanudes o cengarde se reinicie."
+msgid "Behind the fastest: how much later this uplink delivers the upload than the quickest one; past the limit its upload goes on standby. Delivered: share of the download that came through this uplink, what GRIT carried included. Pause: takes an uplink out without touching the configuration, until you resume it or cengarde restarts."
+msgstr "Atraso frente al más rápido: cuánto más tarde entrega este enlace la subida que el más rápido; pasado el límite, su subida pasa a reserva. Entregó: parte de la bajada que entró por este enlace, incluido lo que llevó GRIT. Pausar: saca un enlace sin tocar la configuración, hasta que lo reanudes o cengarde se reinicie."
 
 msgid "VPS address: where the uplink sends to; \"failover\" when the first VPS address it can use did not answer. Path MTU: the largest packet the path to the VPS takes."
 msgstr "Dirección del VPS: adónde envía el enlace; \"alternativa\" cuando la primera dirección del VPS que puede usar no contestó. MTU del camino: el paquete más grande que admite el camino hasta el VPS."

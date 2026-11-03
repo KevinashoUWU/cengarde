@@ -73,6 +73,8 @@ void test_flowrule(void)
 	CHECK_EQ(r.cls, CG_FC_AUTO);
 	CHECK_EQ(cg_fc_parse(&r, "[2001:db8::]/48 ordered"), 0);
 	CHECK_EQ(r.len, 48);
+	CHECK_EQ(cg_fc_parse(&r, "10.0.0.1:443 reorder"), 0);
+	CHECK_EQ(r.cls, CG_FC_REORDER);
 	CHECK_EQ(cg_fc_parse(&r, "10.0.0.1:9330 fast"), -1);   /* no such class */
 	CHECK_EQ(cg_fc_parse(&r, "10.0.0.1:0 direct"), -1);    /* port 0 */
 	CHECK_EQ(cg_fc_parse(&r, "10.0.0.1:70000 direct"), -1);
@@ -125,22 +127,26 @@ void test_flowrule(void)
 
 	/* the reorderer's word: the rule over the guess */
 	{
-		uint8_t w, nh;
+		uint8_t w, nh, na;
 
-		cg_fc_hold(CG_FC_NONE, 1, &w, &nh); /* no rule, MPEG-TS: it waits */
+		cg_fc_hold(CG_FC_NONE, 1, &w, &nh, &na); /* no rule, MPEG-TS: it waits */
 		CHECK(w && !nh);
-		cg_fc_hold(CG_FC_NONE, 0, &w, &nh);
+		cg_fc_hold(CG_FC_NONE, 0, &w, &nh, &na);
 		CHECK(!w && !nh);
-		cg_fc_hold(CG_FC_AUTO, 1, &w, &nh); /* auto: the guess */
+		cg_fc_hold(CG_FC_AUTO, 1, &w, &nh, &na); /* auto: the guess */
 		CHECK(w && !nh);
-		cg_fc_hold(CG_FC_ORDERED, 0, &w, &nh); /* ordered whatever its bytes */
+		cg_fc_hold(CG_FC_ORDERED, 0, &w, &nh, &na); /* ordered whatever its bytes */
 		CHECK(w && !nh);
-		cg_fc_hold(CG_FC_DEADLINE, 1, &w, &nh); /* a TS told to keep the deadline rule */
+		cg_fc_hold(CG_FC_DEADLINE, 1, &w, &nh, &na); /* a TS told to keep the deadline rule */
 		CHECK(!w && !nh);
-		cg_fc_hold(CG_FC_DIRECT, 1, &w, &nh); /* never held */
+		cg_fc_hold(CG_FC_DIRECT, 1, &w, &nh, &na); /* never held */
 		CHECK(!w && nh);
-		cg_fc_hold(CG_FC_RELIABLE, 1, &w, &nh); /* the lane's: never in the reorderer, the guess */
-		CHECK(w && !nh);
+		cg_fc_hold(CG_FC_RELIABLE, 1, &w, &nh, &na); /* the lane's: never in the reorderer, the guess */
+		CHECK(w && !nh && !na);
+		cg_fc_hold(CG_FC_REORDER, 1, &w, &nh, &na); /* order without the rescue, a TS too */
+		CHECK(!w && !nh && na);
+		cg_fc_hold(CG_FC_DEADLINE, 0, &w, &nh, &na);
+		CHECK(!na);
 	}
 	/* the reliable lane: parsed, and found in a table */
 	CHECK_EQ(cg_fc_parse(&r, "203.0.113.7:9330 reliable"), 0);
