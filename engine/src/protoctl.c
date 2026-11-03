@@ -1087,7 +1087,14 @@ static void udp_accept(struct cg_pctl *p, int v6, int unrel)
 static int dg_read(struct cg_pctl *p, struct flow *f)
 {
 	for (int k = 0; f->rd_ready && k < 64; k++) {
-		ssize_t n = recv(f->fd, p->dgbuf, CG_PCTL_DGRAM_MAX, 0);
+		ssize_t n;
+
+		/* an unreliable stream's queue full: the rest waits in the
+		 * socket's buffer for the sends (read first, a keyframe's burst
+		 * overflowed the queue before any of it went) */
+		if (f->unrel && f->dq->n >= PCTL_DQ)
+			break;
+		n = recv(f->fd, p->dgbuf, CG_PCTL_DGRAM_MAX, 0);
 
 		if (n >= 0) {
 			dg_put(p, f, p->dgbuf, (size_t)n);
@@ -2568,7 +2575,8 @@ void cg_pctl_service(struct cg_pctl *p)
 		} else {
 			uint64_t held = f->tx.tail - f->tx.una;
 			int can = !f->tx.eof && held < flow_cap(p) &&
-				  cg_st_tx_unsent(&f->tx) < backlog_max(p, f, f->s_rate, now);
+				  cg_st_tx_unsent(&f->tx) < backlog_max(p, f, f->s_rate, now) &&
+				  !(f->unrel && f->dq->n >= PCTL_DQ);
 
 			if (can && !(f->ev & EPOLLIN)) {
 				f->rd_ready = 1; /* it may have data already: read it next pass */
@@ -2641,6 +2649,10 @@ void cg_pctl_service(struct cg_pctl *p)
 		if (f->unrel) {
 			if (f->dq->n)
 				due(p, now + cg_scc_wait_us(&r->cc));
+			/* its queue had filled (its socket left out of the reads):
+			 * room now, the next pass reads it again */
+			if (!(f->ev & EPOLLIN) && f->dq->n < PCTL_DQ)
+				due(p, now);
 			continue;
 		}
 		if (cg_st_tx_next(&t, p->cfg.mss, &idx, &off, &len, &fin) &&
